@@ -66,13 +66,67 @@ Rust server on ReHLDS or HLDS.
 
 ## 3. Results
 
-### 3.1 Skeleton (before the gameplay packages were merged)
+### 3.1 Final run (all work packages merged)
 
-| Check | Result |
+`cargo test`: all suites pass (162 tests). Builds for host, `i686-unknown-linux-gnu` and
+`i686-pc-windows-gnu` have no warnings. The server matrix below passed with both debug and
+**release** builds (`cargo xtask --release test --map ts_lobby`: all six roots, bots scoring).
+
+**Dedicated servers** (`cargo xtask test --map ts_awaken`, 2 bots, 25 s; also passed earlier on
+`ts_lobby`):
+
+| Root | Result | Bot scores after 25 s (A2S_PLAYER) |
+|---|---|---|
+| `fwgs` | pass | 0 / 0 |
+| `fwgs-win` | pass (bots counted from the log; this engine's query doesn't count them) | 0 / 0 |
+| `rehlds-linux` | pass | 1 / 0 |
+| `rehlds-win` | pass | 0 / 0 |
+| `hlds25-linux` | pass | 0 / 0 |
+| `hlds25-win` | pass | 0 / 1 |
+
+With 4 bots for 90 s on FWGS the scores were 3 / 0 / 1 / 0 (kills vary between runs, 0–7).
+
+**Rust client joining each server** (`cargo xtask client`: FWGS amd64 client with the Rust client
+library, GoldSrc protocol for ReHLDS and HLDS; server with 2 bots, 60 s):
+
+| Server root | Result |
 |---|---|
-| Server library loads, map activates, answers queries: `fwgs`, `rehlds-linux`, `rehlds-win`, `hlds25-linux`, `hlds25-win`, `fwgs-win` | **pass** (all six) |
-| FWGS amd64 client (Rust `client_amd64.so`) joins ReHLDS Linux (Rust `ts_i386.so`) over GoldSrc protocol 48, `ts_arena` | **pass**: HUD shows `Health: 100` from the server's `TSHealth` message |
-| FWGS win32 client under Wine with the Rust `client.dll` + `mp.dll` (listen server, `ts_arena`) | **pass**: client initialises, map renders |
+| `fwgs` | pass |
+| `rehlds-linux` | pass |
+| `rehlds-win` | pass |
+| `hlds25-linux` | pass |
+| `hlds25-win` | pass |
+
+The client reaches the game: the MOTD, the TS loadout menu, the weapon grid with TS sprites, free
+slots, "Press Fire To Play!", and the bots ([screenshot](img/rust-client-vs-rehlds.png)).
+
+**Alive gameplay** (FWGS listen server, scripted: spawn, `ts_give 13_8 1_0`, fire, reload, switch
+to pistol): AK47 view model with scope, shells, TS crosshair with spread ring, HUD with health,
+stance, free slots and weapon panel. The clip counts down from client prediction, and the client
+log has no prediction errors or panics ([screenshot](img/alive-ak47-fwgs.png)).
+
+**Wire compatibility with the original TS 3.0 client:** the unmodified TS 3.0 `client.dll`
+(SHA-256 `1811bd4f…`, in FWGS 0.21 win32 under Wine) joined the Rust server on ReHLDS Linux. It
+showed the VGUI MOTD, the loadout menu, the weapon grid fed by our weapon messages, "Free Slots",
+and the chase camera on a bot, with no user-message errors in its log
+([screenshot](img/original-client-vs-rust-server.png)).
+
+**Windows client library:** the Rust `client.dll` and `mp.dll` load and render in FWGS 0.21
+win32 under Wine (listen server, `ts_arena`).
+
+### 3.2 Not validated
+
+* A Steam GoldSrc **client**, pre- or post-anniversary. Only FWGS clients were available. Steam
+  dedicated servers (HLDS 8684 via ReHLDS, and HL25) were tested.
+* Real keyboard and mouse (all client runs are scripted), including the Steam mouse paths in
+  `input.rs`.
+* Native Windows (only Wine).
+* Long sessions, many players, and real network latency.
+
+### 3.3 Skeleton milestone (before the gameplay packages)
+
+The server library loaded on all six roots. The FWGS client joined ReHLDS (`TSHealth` shown in
+the HUD), and the Windows client library loaded in FWGS win32.
 
 ## 4. Pitfalls found during setup
 
@@ -83,4 +137,7 @@ Rust server on ReHLDS or HLDS.
 | Windows HLDS under Wine: no output, no answer | First-run Wine prefix setup (Mono/Gecko dialogs) blocked startup; a half-created prefix then failed to load `kernel32.dll` | Create the prefix headlessly (§1.1). `hlds.exe -console` writes to its own console window: use `-condebug` (`qconsole.log`). |
 | Windows HLDS answers only after 20–30 s on the first start | Wine plus `server.cfg` plus VAC initialisation | xtask waits up to 120 s for Windows roots. |
 | FWGS 0.21 win32 doesn't answer A2S_INFO | Old FWGS answers only the Xash `info` query | xtask falls back to `info 49`. |
+| Release `mp.dll` never loads on HL25 Windows (crash in `swds.dll` right after `LoadLibrary`); the debug build works | The Steam engine reads the DLL's export names from the file: it finds the section *named* `.rdata` and translates the export RVAs with it (MSVC puts exports there). MinGW emits `.edata`, so the engine walks garbage. The debug build only survived because the garbage happened to be readable memory. | xtask renames `.rdata` to `.rodata` and `.edata` to `.rdata` in every Windows DLL it installs or packages (`msvc_style_export_section`). |
+| Bots never join on GoldSrc; fine on FWGS | Command-line `+cvar` runs before GameInit registers the game's cvars | xtask writes the quota into `xtask_server.cfg` and passes `+servercfgfile`. |
+| HL25 crashes after the last human leaves | HL25 drops every bot then; driving a dropped bot with `pfnRunPlayerMove` crashes `SV_RunCmd` | Bots are driven only while they have a live user id. |
 | `SteamAPI_Init() failed` in HLDS logs | Normal for dedicated servers (they use the game-server API) | none |

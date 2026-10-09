@@ -177,6 +177,10 @@ impl Ctx {
             copy(&self.artifact(t, true), &gamedir.join("dlls/ts.so"));
         }
         copy(&self.artifact(t, false), &gamedir.join("cl_dlls").join(t.client_name));
+        if t.os == Os::Windows {
+            msvc_style_export_section(&gamedir.join("dlls").join(t.server_name));
+            msvc_style_export_section(&gamedir.join("cl_dlls").join(t.client_name));
+        }
     }
 
     fn dist(&self) {
@@ -378,6 +382,36 @@ fn link_ts_content(ts: &Path, gamedir: &Path) {
             fs::copy(e.path(), &dest).unwrap();
         }
     }
+}
+
+/// Steam's engine (HL25 `swds.dll`, and the GoldSrc engines it inherits the code from) reads the
+/// game DLL's export names from the file itself: it finds the section *named* `.rdata` and
+/// translates the export directory's RVAs with that section's mapping, which is where MSVC puts
+/// exports. MinGW's ld emits a separate `.edata` section, so the translation lands on garbage and
+/// the engine crashes (or, by luck, reads junk) while loading the library. The Windows loader
+/// ignores section names, so rename `.rdata` -> `.rodata` and `.edata` -> `.rdata`.
+fn msvc_style_export_section(path: &Path) {
+    let mut pe = fs::read(path).unwrap();
+    let rd = |b: &[u8], o: usize, n: usize| -> usize { b[o..o + n].iter().rev().fold(0, |a, &x| (a << 8) | x as usize) };
+    let nt = rd(&pe, 0x3c, 4);
+    assert_eq!(&pe[nt..nt + 4], b"PE\0\0", "{} is not a PE file", path.display());
+    let count = rd(&pe, nt + 6, 2);
+    let first = nt + 24 + rd(&pe, nt + 20, 2);
+    let names: Vec<[u8; 8]> = (0..count).map(|i| pe[first + 40 * i..first + 40 * i + 8].try_into().unwrap()).collect();
+    if !names.iter().any(|n| n == b".edata\0\0") {
+        return; // already MSVC-style
+    }
+    for (i, n) in names.iter().enumerate() {
+        let new: Option<&[u8; 8]> = match n {
+            b".rdata\0\0" => Some(b".rodata\0"),
+            b".edata\0\0" => Some(b".rdata\0\0"),
+            _ => None,
+        };
+        if let Some(new) = new {
+            pe[first + 40 * i..first + 40 * i + 8].copy_from_slice(new);
+        }
+    }
+    fs::write(path, pe).unwrap();
 }
 
 fn copy(from: &Path, to: &Path) {

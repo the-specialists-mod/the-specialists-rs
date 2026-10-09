@@ -189,6 +189,10 @@ ported.
 * **Bindings** are generated per target from the FWGS headers, which `_Static_assert` the 32-bit layouts.
 * **Windows** builds use MinGW-w64 (UCRT). `GiveFnptrsToDll` is exported undecorated, and the only imports are system DLLs (`api-ms-win-crt-*`, present on Windows 10+ and Wine).
 * **Linux i686** builds currently need glibc 2.34. Building against an older glibc for old HLDS hosts (`cargo zigbuild`) is a later step.
+* **Windows export section.** Steam's engine finds the export names by looking for the section named
+  `.rdata`, as MSVC lays it out. MinGW's `.edata` breaks that, so the xtask renames the sections of
+  every Windows DLL it installs or packages (see `docs/validation.md` §4). DLLs straight out of
+  `cargo build` are not patched: use `cargo xtask install`/`dist`.
 * `panic = "abort"`. A panic hook writes `ts_server_panic.log` / `ts_client_panic.log`.
 
 ## 9. Validation
@@ -200,6 +204,7 @@ ported.
 | `rehlds-win` | ReHLDS 3.15 release on HLDS `steam_legacy`, under Wine | `~/games/hlds_win` |
 | `hlds25-linux` | stock HLDS, post-anniversary (`public` branch) | `~/games/hlds25_linux` |
 | `hlds25-win` | stock HLDS, post-anniversary, under Wine | `~/games/hlds25_win` |
+| `fwgs-win` | Xash3D FWGS 0.21 win32 (from `xash3d-ts`), under Wine | `~/games/xash_win` |
 
 The `cargo xtask` commands:
 
@@ -209,6 +214,8 @@ The `cargo xtask` commands:
   * that the bots joined,
   * that the log has the Rust `GameInit` line and no panic or fatal error.
 * `cargo xtask test` runs the same check on every root.
+* `cargo xtask client <root>` runs that root's dedicated server and joins it with the FWGS
+  client and this client library (GoldSrc protocol for ReHLDS and HLDS), saving a screenshot.
 
 The FWGS client can join GoldSrc-protocol servers (`connect host:port gs`), so one FWGS client
 with this client library validates the full chain against ReHLDS and HLDS. See
