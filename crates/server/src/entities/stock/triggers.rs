@@ -1,0 +1,924 @@
+//! Brush triggers and logic entities (SDK triggers.cpp; TS keeps them as in SDK 2.3):
+//! `trigger_multiple`, `trigger_once`, `trigger_hurt`, `trigger_teleport`, `trigger_push`,
+//! `trigger_gravity`, `trigger_auto`, `trigger_relay`, `trigger_changetarget`, `trigger_camera`,
+//! `multi_manager`, `func_ladder`, `func_friction`.
+
+use super::base::*;
+use crate::entities::{entvars_key_value, fire_targets, remove};
+use crate::messages::{self, Msg};
+use crate::world::{self, Cx, Entity, UseType};
+use goldsrc::ext::entities::{ATTN_NORM, EHandle, is_player, vec};
+use goldsrc::server::engine;
+use goldsrc::sys::*;
+use std::ffi::CStr;
+
+pub const SF_TRIGGER_ALLOWMONSTERS: i32 = 1;
+pub const SF_TRIGGER_NOCLIENTS: i32 = 2;
+pub const SF_TRIGGER_PUSHABLES: i32 = 4;
+
+pub const SF_TRIGGER_HURT_TARGETONCE: i32 = 1;
+pub const SF_TRIGGER_HURT_START_OFF: i32 = 2;
+pub const SF_TRIGGER_HURT_NO_CLIENTS: i32 = 8;
+pub const SF_TRIGGER_HURT_CLIENTONLYFIRE: i32 = 16;
+pub const SF_TRIGGER_HURT_CLIENTONLYTOUCH: i32 = 32;
+
+pub const SF_TRIG_PUSH_ONCE: i32 = 1;
+pub const SF_TRIGGER_PUSH_START_OFF: i32 = 2;
+
+fn show_triggers() -> bool {
+    engine().cvar_float(c"showtriggers") != 0.0
+}
+
+/// `CBaseTrigger::InitTrigger`.
+fn init_trigger(cx: &mut Cx) {
+    let v = cx.pev();
+    if v.angles != [0.0; 3] {
+        set_movedir(v);
+    }
+    v.solid = SOLID_TRIGGER as i32;
+    v.movetype = MOVETYPE_NONE as i32;
+    set_own_model(cx);
+    if !show_triggers() {
+        cx.pev().effects |= EF_NODRAW as i32;
+    }
+}
+
+/// `CBaseTrigger::ToggleUse`.
+fn toggle_use(cx: &mut Cx) {
+    let eng = engine();
+    let v = cx.pev();
+    if v.solid == SOLID_NOT as i32 {
+        v.solid = SOLID_TRIGGER as i32;
+        unsafe { (*eng.globals).force_retouch += 1.0 };
+    } else {
+        v.solid = SOLID_NOT as i32;
+    }
+    let org = cx.pev().origin;
+    eng.set_origin(cx.edict, org);
+}
+
+/// `UTIL_ShowMessage`: `HudText` to one player.
+pub fn show_message(text: &CStr, player: *mut edict_t) {
+    if !is_player(player) {
+        return;
+    }
+    messages::one(Msg::HudText, player).string(text).end();
+}
+
+/// `CBaseTrigger` and its brush subclasses. The kind is decided by the link type.
+#[derive(Default)]
+pub struct Trigger<const KIND: u8> {
+    t: Toggle<Self>,
+    triggers_left: i32,
+    damage_inflict: i32,
+    /// SetUse(ToggleUse) for hurt/push.
+    toggle_usable: bool,
+}
+
+pub const K_MULTIPLE: u8 = 0;
+pub const K_ONCE: u8 = 1;
+pub const K_HURT: u8 = 2;
+pub const K_TELEPORT: u8 = 3;
+pub const K_PUSH: u8 = 4;
+pub const K_GRAVITY: u8 = 5;
+
+impl<const KIND: u8> Mover for Trigger<KIND> {
+    fn toggle(&mut self) -> &mut Toggle<Self> {
+        &mut self.t
+    }
+}
+
+impl<const KIND: u8> Trigger<KIND> {
+    fn multi_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        let ov = unsafe { &(*other).v };
+        let sf = cx.pev().spawnflags;
+        if (ov.flags & FL_CLIENT as i32 != 0 && sf & SF_TRIGGER_NOCLIENTS == 0)
+            || (ov.flags & FL_MONSTER as i32 != 0 && sf & SF_TRIGGER_ALLOWMONSTERS != 0)
+            || (sf & SF_TRIGGER_PUSHABLES != 0 && s(ov.classname) == c"func_pushable")
+        {
+            self.activate_multi_trigger(cx, other);
+        }
+    }
+
+    fn activate_multi_trigger(&mut self, cx: &mut Cx, activator: *mut edict_t) {
+        let now = engine().time();
+        if cx.pev().nextthink > now {
+            return; // still waiting for reset time
+        }
+        if !is_master_triggered(self.t.master, activator) {
+            return;
+        }
+        let me = cx.edict;
+        let noise = cx.pev().noise;
+        if noise != 0 {
+            emit(me, CHAN_VOICE, s(noise), 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+        }
+        self.t.activator = EHandle::new(activator);
+        self.t.use_targets(me, activator, UseType::Toggle, 0.0);
+        let msg = cx.pev().message;
+        if msg != 0 && is_player(activator) {
+            show_message(s(msg), activator);
+        }
+        if self.t.wait > 0.0 {
+            self.t.think = Some(Self::multi_wait_over);
+            cx.pev().nextthink = now + self.t.wait;
+        } else {
+            self.t.touch = None;
+            cx.pev().nextthink = now + 0.1;
+            self.t.think = Some(Self::sub_remove);
+        }
+    }
+
+    fn multi_wait_over(&mut self, _cx: &mut Cx) {
+        self.t.think = None;
+    }
+
+    fn sub_remove(&mut self, cx: &mut Cx) {
+        remove(cx.edict);
+    }
+
+    /// `CBaseTrigger::HurtTouch` (SDK 2.3 multiplayer path; negative damage heals).
+    fn hurt_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        let eng = engine();
+        let now = eng.time();
+        let ov = unsafe { &(*other).v };
+        if ov.takedamage == 0.0 {
+            return;
+        }
+        let sf = cx.pev().spawnflags;
+        let player = is_player(other);
+        if sf & SF_TRIGGER_HURT_CLIENTONLYTOUCH != 0 && !player {
+            return;
+        }
+        if sf & SF_TRIGGER_HURT_NO_CLIENTS != 0 && player {
+            return;
+        }
+        let v = cx.pev();
+        if v.dmgtime > now {
+            if now != v.pain_finished {
+                if player {
+                    let mask = 1i32.wrapping_shl((eng.index_of(other) - 1) as u32);
+                    if v.impulse & mask != 0 {
+                        return;
+                    }
+                    v.impulse |= mask;
+                } else {
+                    return;
+                }
+            }
+        } else {
+            v.impulse = 0;
+            if player {
+                v.impulse |= 1i32.wrapping_shl((eng.index_of(other) - 1) as u32);
+            }
+        }
+        let fldmg = v.dmg * 0.5;
+        let me = cx.edict;
+        if fldmg < 0.0 {
+            super::items::take_health(other, -fldmg);
+        } else {
+            crate::damage::apply(other, &crate::damage::DamageInfo::new(me, me, fldmg, self.damage_inflict));
+        }
+        let v = cx.pev();
+        v.pain_finished = now;
+        v.dmgtime = now + 0.5;
+        if v.target != 0 {
+            if sf & SF_TRIGGER_HURT_CLIENTONLYFIRE != 0 && !player {
+                return;
+            }
+            self.t.use_targets(me, other, UseType::Toggle, 0.0);
+            if sf & SF_TRIGGER_HURT_TARGETONCE != 0 {
+                cx.pev().target = 0;
+            }
+        }
+    }
+
+    fn teleport_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        let eng = engine();
+        let ov = unsafe { &mut (*other).v };
+        if ov.flags & (FL_CLIENT | FL_MONSTER) as i32 == 0 {
+            return;
+        }
+        if !is_master_triggered(self.t.master, other) {
+            return;
+        }
+        let sf = cx.pev().spawnflags;
+        if sf & SF_TRIGGER_ALLOWMONSTERS == 0 && ov.flags & FL_MONSTER as i32 != 0 {
+            return;
+        }
+        let player = is_player(other);
+        if sf & SF_TRIGGER_NOCLIENTS != 0 && player {
+            return;
+        }
+        let target = eng.find_by_target_name(std::ptr::null_mut(), s(cx.pev().target));
+        if target.is_null() {
+            return;
+        }
+        let tv = unsafe { &(*target).v };
+        let mut tmp = tv.origin;
+        if player {
+            tmp[2] -= ov.mins[2];
+        }
+        tmp[2] += 1.0;
+        ov.flags &= !(FL_ONGROUND as i32);
+        eng.set_origin(other, tmp);
+        let ov = unsafe { &mut (*other).v };
+        ov.angles = tv.angles;
+        if player {
+            ov.v_angle = tv.angles;
+        }
+        ov.fixangle = 1;
+        ov.velocity = [0.0; 3];
+        ov.basevelocity = [0.0; 3];
+    }
+
+    fn push_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        let ov = unsafe { &mut (*other).v };
+        if [MOVETYPE_NONE, MOVETYPE_PUSH, MOVETYPE_NOCLIP, MOVETYPE_FOLLOW].contains(&(ov.movetype as u32)) {
+            return;
+        }
+        if ov.solid == SOLID_NOT as i32 || ov.solid == SOLID_BSP as i32 {
+            return;
+        }
+        let v = cx.pev();
+        let push = vec::scale(v.movedir, v.speed);
+        if v.spawnflags & SF_TRIG_PUSH_ONCE != 0 {
+            ov.velocity = vec::add(ov.velocity, push);
+            if ov.velocity[2] > 0.0 {
+                ov.flags &= !(FL_ONGROUND as i32);
+            }
+            remove(cx.edict);
+        } else {
+            let mut p = push;
+            if ov.flags & FL_BASEVELOCITY as i32 != 0 {
+                p = vec::add(p, ov.basevelocity);
+            }
+            ov.basevelocity = p;
+            ov.flags |= FL_BASEVELOCITY as i32;
+        }
+    }
+
+    fn gravity_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if !is_player(other) {
+            return;
+        }
+        let g = cx.pev().gravity;
+        unsafe { (*other).v.gravity = g };
+    }
+}
+
+impl<const KIND: u8> Entity for Trigger<KIND> {
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"damage" => cx.pev().dmg = kv_f(value),
+            b"count" => self.triggers_left = kv_f(value) as i32,
+            b"damagetype" => self.damage_inflict = kv_i(value),
+            _ => return self.t.key_value(key, value),
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        match KIND {
+            K_MULTIPLE | K_ONCE => {
+                if KIND == K_ONCE {
+                    self.t.wait = -1.0;
+                }
+                if self.t.wait == 0.0 {
+                    self.t.wait = 0.2;
+                }
+                init_trigger(cx);
+                self.t.touch = Some(Self::multi_touch);
+            }
+            K_HURT => {
+                init_trigger(cx);
+                self.t.touch = Some(Self::hurt_touch);
+                self.toggle_usable = cx.pev().targetname != 0;
+                // DMG_RADIATION's RadiationThink only drives the HEV geiger counter: not ported.
+                if cx.pev().spawnflags & SF_TRIGGER_HURT_START_OFF != 0 {
+                    cx.pev().solid = SOLID_NOT as i32;
+                }
+                let org = cx.pev().origin;
+                eng.set_origin(cx.edict, org);
+            }
+            K_TELEPORT => {
+                init_trigger(cx);
+                self.t.touch = Some(Self::teleport_touch);
+            }
+            K_PUSH => {
+                if cx.pev().angles == [0.0; 3] {
+                    cx.pev().angles[1] = 360.0;
+                }
+                init_trigger(cx);
+                let v = cx.pev();
+                if v.speed == 0.0 {
+                    v.speed = 100.0;
+                }
+                if v.spawnflags & SF_TRIGGER_PUSH_START_OFF != 0 {
+                    v.solid = SOLID_NOT as i32;
+                }
+                self.toggle_usable = true;
+                self.t.touch = Some(Self::push_touch);
+                let org = cx.pev().origin;
+                eng.set_origin(cx.edict, org);
+            }
+            _ => {
+                init_trigger(cx);
+                self.t.touch = Some(Self::gravity_touch);
+            }
+        }
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        run_think(self, cx);
+    }
+
+    fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        run_touch(self, cx, other);
+    }
+
+    fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        if self.toggle_usable {
+            toggle_use(cx);
+        }
+    }
+}
+
+// ---- func_ladder ------------------------------------------------------------------------------------
+
+/// `func_ladder`: CONTENTS_LADDER brush, invisible unless `showtriggers`.
+#[derive(Default)]
+pub struct Ladder;
+
+impl Entity for Ladder {
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        // CBaseTrigger::KeyValue (damage/count/damagetype go nowhere useful on a ladder).
+        match key.to_bytes() {
+            b"damage" => cx.pev().dmg = kv_f(value),
+            b"count" | b"damagetype" | b"lip" | b"wait" | b"master" | b"distance" | b"delay" | b"killtarget" => {}
+            _ => return false,
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.skin = CONTENTS_LADDER;
+        if !show_triggers() {
+            v.rendermode = kRenderTransTexture as i32;
+            v.renderamt = 0.0;
+        }
+        v.effects &= !(EF_NODRAW as i32);
+        set_own_model(cx);
+        cx.pev().movetype = MOVETYPE_PUSH as i32;
+    }
+}
+
+// ---- func_friction -------------------------------------------------------------------------------------
+
+/// `func_friction`: sets the toucher's friction (`modifier` percent).
+#[derive(Default)]
+pub struct FrictionModifier {
+    friction: f32,
+}
+
+impl Entity for FrictionModifier {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key == c"modifier" {
+            self.friction = kv_f(value) / 100.0;
+            return true;
+        }
+        false
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        v.solid = SOLID_TRIGGER as i32;
+        set_own_model(cx);
+        cx.pev().movetype = MOVETYPE_NONE as i32;
+    }
+
+    fn touch(&mut self, _cx: &mut Cx, other: *mut edict_t) {
+        let ov = unsafe { &mut (*other).v };
+        if ov.movetype != MOVETYPE_BOUNCEMISSILE as i32 && ov.movetype != MOVETYPE_BOUNCE as i32 {
+            ov.friction = self.friction;
+        }
+    }
+}
+
+// ---- trigger_auto / trigger_relay ---------------------------------------------------------------------
+
+fn trigger_state(v: &CStr) -> UseType {
+    match kv_i(v) {
+        0 => UseType::Off,
+        2 => UseType::Toggle,
+        _ => UseType::On,
+    }
+}
+
+pub const SF_AUTO_FIREONCE: i32 = 1;
+pub const SF_RELAY_FIREONCE: i32 = 1;
+
+pub struct AutoTrigger {
+    delay: Delay,
+    globalstate: string_t,
+    kind: UseType,
+}
+
+impl Default for AutoTrigger {
+    fn default() -> Self {
+        Self { delay: Delay::default(), globalstate: 0, kind: UseType::Off }
+    }
+}
+
+impl Entity for AutoTrigger {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"globalstate" => self.globalstate = alloc(value),
+            b"triggerstate" => self.kind = trigger_state(value),
+            _ => return self.delay.key_value(key, value),
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        cx.pev().nextthink = engine().time() + 0.1;
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        if self.globalstate == 0 || global_state(s(self.globalstate)) == GlobalState::On {
+            let me = cx.edict;
+            self.delay.use_targets(me, me, self.kind, 0.0);
+            if cx.pev().spawnflags & SF_AUTO_FIREONCE != 0 {
+                remove(me);
+            }
+        }
+    }
+}
+
+pub struct TriggerRelay {
+    delay: Delay,
+    kind: UseType,
+}
+
+impl Default for TriggerRelay {
+    fn default() -> Self {
+        Self { delay: Delay::default(), kind: UseType::Off }
+    }
+}
+
+impl Entity for TriggerRelay {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key == c"triggerstate" {
+            self.kind = trigger_state(value);
+            return true;
+        }
+        self.delay.key_value(key, value)
+    }
+
+    fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        let me = cx.edict;
+        self.delay.use_targets(me, me, self.kind, 0.0);
+        if cx.pev().spawnflags & SF_RELAY_FIREONCE != 0 {
+            remove(me);
+        }
+    }
+}
+
+// ---- trigger_changetarget -------------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct ChangeTarget {
+    delay: Delay,
+    new_target: string_t,
+}
+
+impl Entity for ChangeTarget {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key == c"m_iszNewTarget" {
+            self.new_target = alloc(value);
+            return true;
+        }
+        self.delay.key_value(key, value)
+    }
+
+    fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        let target = s(cx.pev().target);
+        let e = engine().find_by_target_name(std::ptr::null_mut(), target);
+        if !e.is_null() {
+            unsafe { (*e).v.target = self.new_target };
+        }
+    }
+}
+
+// ---- multi_manager ---------------------------------------------------------------------------------------
+
+const MAX_MULTI_TARGETS: usize = 16;
+const SF_MULTIMAN_THREAD: i32 = 1;
+const SF_MULTIMAN_CLONE: i32 = i32::MIN;
+
+#[derive(Default, Clone)]
+pub struct MultiManager {
+    targets: Vec<(string_t, f32)>,
+    wait: f32,
+    index: usize,
+    start_time: f32,
+    activator: EHandle,
+    thinking: bool,
+    usable: bool,
+}
+
+/// `UTIL_StripToken`: `"name#2"` -> `"name"`.
+pub fn strip_token(key: &str) -> &str {
+    key.split('#').next().unwrap_or("")
+}
+
+/// `CMultiManager::HasTarget`, for multisource registration.
+pub fn multi_manager_has_target(e: *mut edict_t, name: &CStr) -> bool {
+    world::with::<MultiManager, _>(e, |m| m.targets.iter().any(|(t, _)| s(*t) == name)).unwrap_or(false)
+}
+
+impl MultiManager {
+    fn manager_use(&mut self, cx: &mut Cx, activator: *mut edict_t) {
+        let sf = cx.pev().spawnflags;
+        if sf & SF_MULTIMAN_CLONE == 0 && sf & SF_MULTIMAN_THREAD != 0 {
+            // Clone: a copy runs this activation so the original can be re-used at once.
+            let eng = engine();
+            let e = eng.create_entity();
+            if e.is_null() {
+                return;
+            }
+            world::create::<MultiManager>(unsafe { &mut (*e).v });
+            unsafe {
+                let mut copy = *cx.pev();
+                copy.pContainingEntity = e;
+                copy.spawnflags |= SF_MULTIMAN_CLONE;
+                (*e).v = copy;
+            }
+            let targets = self.targets.clone();
+            world::with::<MultiManager, _>(e, |m| m.targets = targets);
+            world::dispatch(e, |ent, ecx| {
+                if let Some(m) = (ent as &mut dyn std::any::Any).downcast_mut::<MultiManager>() {
+                    m.manager_use(ecx, activator);
+                }
+            });
+            return;
+        }
+        self.activator = EHandle::new(activator);
+        self.index = 0;
+        self.start_time = engine().time();
+        self.usable = false;
+        self.thinking = true;
+        cx.pev().nextthink = self.start_time;
+    }
+
+    fn manager_think(&mut self, cx: &mut Cx) {
+        let now = engine().time();
+        let t = now - self.start_time;
+        let me = cx.edict;
+        while self.index < self.targets.len() && self.targets[self.index].1 <= t {
+            let (name, _) = self.targets[self.index];
+            fire_targets(s(name), self.activator.get(), me, UseType::Toggle, 0.0);
+            self.index += 1;
+        }
+        if self.index >= self.targets.len() {
+            self.thinking = false;
+            if cx.pev().spawnflags & SF_MULTIMAN_CLONE != 0 {
+                remove(me);
+                return;
+            }
+            self.usable = true;
+        } else {
+            cx.pev().nextthink = self.start_time + self.targets[self.index].1;
+        }
+    }
+}
+
+impl Entity for MultiManager {
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        // The SDK parses entvars before the class keyvalue; here the class runs first, so let the
+        // generic fields through or they'd become targets.
+        if entvars_key_value(cx.pev(), key, value) {
+            return true;
+        }
+        if key == c"wait" {
+            self.wait = kv_f(value);
+            return true;
+        }
+        if self.targets.len() < MAX_MULTI_TARGETS {
+            let name = strip_token(kv_str(key));
+            self.targets.push((alloc(&goldsrc::util::to_cstring(name)), kv_f(value)));
+            return true;
+        }
+        false
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        cx.pev().solid = SOLID_NOT as i32;
+        self.usable = true;
+        // Bubble sort by delay (stable, like the SDK).
+        let mut swapped = true;
+        while swapped {
+            swapped = false;
+            for i in 1..self.targets.len() {
+                if self.targets[i].1 < self.targets[i - 1].1 {
+                    self.targets.swap(i, i - 1);
+                    swapped = true;
+                }
+            }
+        }
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        if self.thinking {
+            self.manager_think(cx);
+        }
+    }
+
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        if self.usable {
+            self.manager_use(cx, activator);
+        }
+    }
+}
+
+// ---- trigger_camera --------------------------------------------------------------------------------------
+
+pub const SF_CAMERA_PLAYER_POSITION: i32 = 1;
+pub const SF_CAMERA_PLAYER_TARGET: i32 = 2;
+pub const SF_CAMERA_PLAYER_TAKECONTROL: i32 = 4;
+
+#[derive(Default)]
+pub struct TriggerCamera {
+    delay: Delay,
+    player: EHandle,
+    target: EHandle,
+    path: EHandle,
+    path_name: string_t,
+    wait: f32,
+    return_time: f32,
+    stop_time: f32,
+    move_distance: f32,
+    target_speed: f32,
+    initial_speed: f32,
+    acceleration: f32,
+    deceleration: f32,
+    state: bool,
+    following: bool,
+}
+
+/// `EnableControl(on)` on a player: FL_FROZEN.
+pub fn enable_control(p: *mut edict_t, on: bool) {
+    if is_player(p) {
+        let v = unsafe { &mut (*p).v };
+        if on {
+            v.flags &= !(FL_FROZEN as i32);
+        } else {
+            v.flags |= FL_FROZEN as i32;
+        }
+    }
+}
+
+/// `path_corner` delay (`GetDelay`), 0 for anything else.
+fn path_delay(e: *mut edict_t) -> f32 {
+    world::with::<super::trains::PathCorner, _>(e, |p| p.wait).unwrap_or(0.0)
+}
+
+fn next_target(e: *mut edict_t) -> *mut edict_t {
+    let t = unsafe { (*e).v.target };
+    if t == 0 { std::ptr::null_mut() } else { engine().find_by_target_name(std::ptr::null_mut(), s(t)) }
+}
+
+fn approach(target: f32, value: f32, speed: f32) -> f32 {
+    let delta = target - value;
+    if delta > speed {
+        value + speed
+    } else if delta < -speed {
+        value - speed
+    } else {
+        target
+    }
+}
+
+impl TriggerCamera {
+    fn follow_target(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let now = eng.time();
+        let player = self.player.get();
+        if player.is_null() {
+            self.following = false;
+            return;
+        }
+        let target = self.target.get();
+        if target.is_null() || self.return_time < now {
+            let pv = unsafe { &(*player).v };
+            if pv.deadflag == DEAD_NO as i32 && pv.health > 0.0 {
+                eng.set_view(player, player);
+                enable_control(player, true);
+            }
+            let me = cx.edict;
+            self.delay.use_targets(me, me, UseType::Toggle, 0.0);
+            cx.pev().avelocity = [0.0; 3];
+            self.state = false;
+            self.following = false;
+            return;
+        }
+        let v = cx.pev();
+        let mut goal = eng.vec_to_angles(vec::sub(unsafe { (*target).v.origin }, v.origin));
+        goal[0] = -goal[0];
+        if v.angles[1] > 360.0 {
+            v.angles[1] -= 360.0;
+        }
+        if v.angles[1] < 0.0 {
+            v.angles[1] += 360.0;
+        }
+        let wrap = |d: f32| {
+            let d = if d < -180.0 { d + 360.0 } else { d };
+            if d > 180.0 { d - 360.0 } else { d }
+        };
+        let dx = wrap(goal[0] - v.angles[0]);
+        let dy = wrap(goal[1] - v.angles[1]);
+        let ft = eng.globals().frametime;
+        v.avelocity[0] = dx * 40.0 * ft;
+        v.avelocity[1] = dy * 40.0 * ft;
+        if v.spawnflags & SF_CAMERA_PLAYER_TAKECONTROL == 0 {
+            v.velocity = vec::scale(v.velocity, 0.8);
+            if vec::length(v.velocity) < 10.0 {
+                v.velocity = [0.0; 3];
+            }
+        }
+        v.nextthink = now;
+        self.camera_move(cx);
+    }
+
+    fn camera_move(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let now = eng.time();
+        let ft = eng.globals().frametime;
+        let path = self.path.get();
+        if path.is_null() {
+            return;
+        }
+        let v = cx.pev();
+        self.move_distance -= v.speed * ft;
+        if self.move_distance <= 0.0 {
+            let pv = unsafe { &mut (*path).v };
+            if pv.message != 0 {
+                let me = cx.edict;
+                fire_targets(s(pv.message), me, me, UseType::Toggle, 0.0);
+                if pv.spawnflags & super::trains::SF_CORNER_FIREONCE != 0 {
+                    pv.message = 0;
+                }
+            }
+            let next = next_target(path);
+            self.path = EHandle::new(next);
+            let v = cx.pev();
+            if next.is_null() {
+                v.velocity = [0.0; 3];
+            } else {
+                let nv = unsafe { &(*next).v };
+                if nv.speed != 0.0 {
+                    self.target_speed = nv.speed;
+                }
+                let delta = vec::sub(nv.origin, v.origin);
+                self.move_distance = vec::length(delta);
+                v.movedir = vec::normalize(delta);
+                self.stop_time = now + path_delay(next);
+            }
+        }
+        let v = cx.pev();
+        v.speed = if self.stop_time > now {
+            approach(0.0, v.speed, self.deceleration * ft)
+        } else {
+            approach(self.target_speed, v.speed, self.acceleration * ft)
+        };
+        let fraction = 2.0 * ft;
+        v.velocity = vec::add(vec::scale(v.movedir, v.speed * fraction), vec::scale(v.velocity, 1.0 - fraction));
+    }
+}
+
+impl Entity for TriggerCamera {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"wait" => self.wait = kv_f(value),
+            b"moveto" => self.path_name = alloc(value),
+            b"acceleration" => self.acceleration = kv_f(value),
+            b"deceleration" => self.deceleration = kv_f(value),
+            _ => return self.delay.key_value(key, value),
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        v.movetype = MOVETYPE_NOCLIP as i32;
+        v.solid = SOLID_NOT as i32;
+        v.renderamt = 0.0;
+        v.rendermode = kRenderTransTexture as i32;
+        self.initial_speed = v.speed;
+        if self.acceleration == 0.0 {
+            self.acceleration = 500.0;
+        }
+        if self.deceleration == 0.0 {
+            self.deceleration = 500.0;
+        }
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        if self.following {
+            self.follow_target(cx);
+        }
+    }
+
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, _value: f32) {
+        let eng = engine();
+        let now = eng.time();
+        if !should_toggle(kind, self.state) {
+            return;
+        }
+        self.state = !self.state;
+        if !self.state {
+            self.return_time = now;
+            return;
+        }
+        let activator = if is_player(activator) { activator } else { eng.entity_of_index(1) };
+        if !is_player(activator) {
+            self.state = false;
+            return;
+        }
+        self.player = EHandle::new(activator);
+        self.return_time = now + self.wait;
+        cx.pev().speed = self.initial_speed;
+        self.target_speed = self.initial_speed;
+        let sf = cx.pev().spawnflags;
+        self.target = if sf & SF_CAMERA_PLAYER_TARGET != 0 { self.player } else { EHandle::new(next_target(cx.edict)) };
+        if !self.target.is_valid() {
+            return;
+        }
+        if sf & SF_CAMERA_PLAYER_TAKECONTROL != 0 {
+            enable_control(activator, false);
+        }
+        let path = if self.path_name != 0 { eng.find_by_target_name(std::ptr::null_mut(), s(self.path_name)) } else { std::ptr::null_mut() };
+        self.path = EHandle::new(path);
+        self.stop_time = now;
+        if !path.is_null() {
+            let ps = unsafe { (*path).v.speed };
+            if ps != 0.0 {
+                self.target_speed = ps;
+            }
+            self.stop_time += path_delay(path);
+        }
+        let av = unsafe { &(*activator).v };
+        let (aorg, aofs, aang, avel, amodel) = (av.origin, av.view_ofs, av.angles, av.velocity, av.model);
+        if sf & SF_CAMERA_PLAYER_POSITION != 0 {
+            eng.set_origin(cx.edict, vec::add(aorg, aofs));
+            let v = cx.pev();
+            v.angles = [-aang[0], aang[1], 0.0];
+            v.velocity = avel;
+        } else {
+            cx.pev().velocity = [0.0; 3];
+        }
+        eng.set_view(activator, cx.edict);
+        eng.set_model(cx.edict, s(amodel));
+        self.following = true;
+        cx.pev().nextthink = now;
+        self.move_distance = 0.0;
+        self.camera_move(cx);
+    }
+}
+
+// ---- info_teleport_destination / info_target / info_null etc. --------------------------------------------------
+
+/// `CPointEntity` (info_target, info_teleport_destination, info_intermission...): just keeps its
+/// origin/angles. `info_teleport_destination` and `info_target` are found by targetname.
+#[derive(Default)]
+pub struct PointEntity;
+
+impl Entity for PointEntity {
+    fn spawn(&mut self, cx: &mut Cx) {
+        cx.pev().solid = SOLID_NOT as i32;
+    }
+}
+
+/// `info_null`: removes itself.
+#[derive(Default)]
+pub struct NullEntity;
+
+impl Entity for NullEntity {
+    fn spawn(&mut self, cx: &mut Cx) {
+        remove(cx.edict);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn strip_token() {
+        assert_eq!(super::strip_token("door1#2"), "door1");
+        assert_eq!(super::strip_token("door1"), "door1");
+        assert_eq!(super::approach(10.0, 0.0, 3.0), 3.0);
+        assert_eq!(super::approach(1.0, 0.0, 3.0), 1.0);
+    }
+}
