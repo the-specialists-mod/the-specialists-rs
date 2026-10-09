@@ -1,0 +1,495 @@
+use super::*;
+use crate::weapons::id;
+
+/// Records everything the gun asks of its host.
+#[derive(Default)]
+struct Mock {
+    time: f32,
+    slow: f32,
+    powerups: u16,
+    buttons: u32,
+    pressed: u32,
+    velocity: Vec3,
+    flags: i32,
+    iuser4: i32,
+    seed: u32,
+    fov: f32,
+    view_model: Option<u8>,
+    events: Vec<(Event, EventArgs)>,
+    shots: Vec<Shot>,
+    kicks: Vec<(f32, f32)>,
+    melee: Vec<MeleeHit>,
+    melee_result: Option<MeleeResult>,
+    grenades: Vec<(Vec3, Vec3, bool)>,
+    blades: Vec<i32>,
+    slots: i32,
+    anims: Vec<i32>,
+}
+
+impl GunHost for Mock {
+    fn time(&self) -> f32 {
+        self.time
+    }
+    fn slow_mul(&self) -> f32 {
+        if self.slow == 0.0 { 1.0 } else { self.slow }
+    }
+    fn powerups(&self) -> u16 {
+        self.powerups
+    }
+    fn kungfu(&self) -> bool {
+        false
+    }
+    fn alive(&self) -> bool {
+        true
+    }
+    fn buttons(&self) -> u32 {
+        self.buttons
+    }
+    fn pressed(&self) -> u32 {
+        self.pressed
+    }
+    fn origin(&self) -> Vec3 {
+        [0.0; 3]
+    }
+    fn view_ofs(&self) -> Vec3 {
+        [0.0, 0.0, 28.0]
+    }
+    fn velocity(&self) -> Vec3 {
+        self.velocity
+    }
+    fn v_angle(&self) -> Vec3 {
+        [0.0; 3]
+    }
+    fn flags(&self) -> i32 {
+        self.flags
+    }
+    fn waterlevel(&self) -> i32 {
+        0
+    }
+    fn iuser4(&self) -> i32 {
+        self.iuser4
+    }
+    fn set_iuser4(&mut self, v: i32) {
+        self.iuser4 = v;
+    }
+    fn seed(&self) -> u32 {
+        self.seed
+    }
+    fn random_long(&mut self, lo: i32, _hi: i32) -> i32 {
+        lo
+    }
+    fn fov(&self) -> f32 {
+        self.fov
+    }
+    fn set_fov(&mut self, fov: f32) {
+        self.fov = fov;
+    }
+    fn set_view_model(&mut self, id: Option<u8>) {
+        self.view_model = id;
+    }
+    fn view_model_hidden(&self) -> bool {
+        self.view_model.is_none()
+    }
+    fn set_weapon_model(&mut self, _model: Option<(u8, bool)>) {}
+    fn event(&mut self, ev: Event, args: EventArgs) {
+        self.events.push((ev, args));
+    }
+    fn weapon_anim(&mut self, anim: i32, _skip_local: bool, _body: i32) {
+        self.anims.push(anim);
+    }
+    fn player_anim(&mut self, _anim: i32) {}
+    fn kick(&mut self, pitch: f32, yaw: f32) {
+        self.kicks.push((pitch, yaw));
+    }
+    fn sound(&mut self, _s: Sound) {}
+    fn shoot(&mut self, shot: &Shot) {
+        self.shots.push(*shot);
+    }
+    fn melee(&mut self, hit: &MeleeHit) -> MeleeResult {
+        self.melee.push(*hit);
+        self.melee_result.unwrap_or(MeleeResult::Miss)
+    }
+    fn throw_grenade(&mut self, origin: Vec3, velocity: Vec3, roll: bool) {
+        self.grenades.push((origin, velocity, roll));
+    }
+    fn throw_blade(&mut self, btype: i32) {
+        self.blades.push(btype);
+    }
+    fn slots_changed(&mut self, delta_free: i32) {
+        self.slots += delta_free;
+    }
+    fn melee_bar_changed(&mut self, _bar: f32) {}
+    fn block_player(&mut self, _t: f32) {}
+}
+
+fn armed(id: u8) -> (Gun, Mock) {
+    let mut g = Gun::default();
+    let mut h = Mock { flags: 0x200, time: 10.0, ..Default::default() };
+    assert_eq!(g.take_weapon(id, None, 0), Some(id));
+    let ammo = info(id).unwrap().ammo as usize;
+    g.reserve[ammo] = 100;
+    assert!(g.switch_to(id, &mut h));
+    g.next_attack = 0.0;
+    h.events.clear();
+    (g, h)
+}
+
+/// Runs one usercmd: post frame with `buttons`, then timers by `dt`.
+fn frame(g: &mut Gun, h: &mut Mock, buttons: u32, last: &mut u32, dt: f32) {
+    h.buttons = buttons;
+    h.pressed = buttons & !*last;
+    *last = buttons;
+    g.item_post_frame(h);
+    g.decrement_timers(Gun::timer_dt(dt, h.slow_mul(), h.powerups));
+    h.time += dt;
+}
+
+#[test]
+fn auto_fire_rate_and_clip() {
+    let (mut g, mut h) = armed(id::AK47);
+    let mut last = 0;
+    for _ in 0..100 {
+        frame(&mut g, &mut h, 1, &mut last, 0.01);
+    }
+    // 0.08 s per shot over 1 s -> 13 shots (first at t=0)
+    let fired = h.events.iter().filter(|e| e.0 == Event::Fire).count();
+    assert!((12..=14).contains(&fired), "{fired}");
+    assert_eq!(g.status[id::AK47 as usize].clip, 30 - fired as i32);
+    assert_eq!(h.shots[0].pellets, 1);
+    assert_eq!(h.shots[0].damage, 39.0);
+}
+
+#[test]
+fn slow_motion_scales_timers() {
+    let (mut g, mut h) = armed(id::AK47);
+    h.slow = 0.5;
+    let mut last = 0;
+    for _ in 0..100 {
+        frame(&mut g, &mut h, 1, &mut last, 0.01);
+    }
+    let fired = h.events.iter().filter(|e| e.0 == Event::Fire).count();
+    assert!((6..=8).contains(&fired), "{fired}");
+}
+
+#[test]
+fn double_fire_rate_is_1_5x() {
+    let (mut g, mut h) = armed(id::AK47);
+    h.powerups = crate::ts::powerup::DOUBLE_FIRERATE;
+    let mut last = 0;
+    for _ in 0..100 {
+        frame(&mut g, &mut h, 1, &mut last, 0.01);
+    }
+    let fired = h.events.iter().filter(|e| e.0 == Event::Fire).count();
+    assert!((16..=18).contains(&fired), "{fired}"); // 0.08 s at 0.015 s steps = 6 frames
+}
+
+#[test]
+fn semi_needs_a_press_and_uses_0_1s_on_auto_capable_weapons() {
+    let (mut g, mut h) = armed(id::GLOCK18);
+    g.switch_fire_mode();
+    assert_eq!(g.status[id::GLOCK18 as usize].mode, mode::SEMI);
+    let mut last = 0;
+    for _ in 0..50 {
+        frame(&mut g, &mut h, 1, &mut last, 0.01);
+    }
+    assert_eq!(h.events.iter().filter(|e| e.0 == Event::Fire).count(), 1);
+    assert!((g.next_primary + 0.001).abs() < 0.0011 || g.next_primary <= 0.0);
+    // tapping fires every 0.1 s at most
+    h.events.clear();
+    for i in 0..100 {
+        let b = if i % 2 == 0 { 1 } else { 0 };
+        frame(&mut g, &mut h, b, &mut last, 0.01);
+    }
+    let n = h.events.iter().filter(|e| e.0 == Event::Fire).count();
+    assert!((9..=11).contains(&n), "{n}");
+}
+
+#[test]
+fn burst_fires_three_then_waits() {
+    let (mut g, mut h) = armed(id::M16);
+    assert_eq!(g.status[id::M16 as usize].mode, mode::BURST);
+    let mut last = 0;
+    frame(&mut g, &mut h, 1, &mut last, 0.01);
+    for _ in 0..30 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    assert_eq!(h.events.iter().filter(|e| e.0 == Event::Fire).count(), 3);
+    // UMP bursts are two rounds
+    let (mut g, mut h) = armed(id::UMP);
+    g.switch_fire_mode();
+    g.switch_fire_mode();
+    assert_eq!(g.status[id::UMP as usize].mode, mode::BURST);
+    let mut last = 0;
+    frame(&mut g, &mut h, 1, &mut last, 0.01);
+    for _ in 0..30 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    assert_eq!(h.events.iter().filter(|e| e.0 == Event::Fire).count(), 2);
+}
+
+#[test]
+fn pump_alternates_fire_and_pump() {
+    let (mut g, mut h) = armed(id::MOSSBERG);
+    assert_eq!(g.status[id::MOSSBERG as usize].mode, mode::PUMP);
+    let mut last = 0;
+    for _ in 0..60 {
+        frame(&mut g, &mut h, 1, &mut last, 0.01);
+    }
+    let kinds: Vec<Event> = h.events.iter().map(|e| e.0).filter(|e| *e == Event::Fire || *e == Event::Pump).collect();
+    assert!(kinds.len() >= 3);
+    assert_eq!(kinds[0], Event::Fire);
+    assert_eq!(kinds[1], Event::Pump);
+    assert_eq!(kinds[2], Event::Fire);
+    assert_eq!(h.shots[0].pellets, 8);
+    assert_eq!(h.shots[0].btype, 1);
+}
+
+#[test]
+fn magazine_reload_moves_rounds_after_reload_time() {
+    let (mut g, mut h) = armed(id::AK47);
+    g.status[id::AK47 as usize].clip = 5;
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_RELOAD, &mut last, 0.01);
+    assert_eq!(g.status[id::AK47 as usize].in_reload, 1);
+    assert!(h.events.iter().any(|e| e.0 == Event::Reload && e.1.f1 == 0.0));
+    for _ in 0..240 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    assert_eq!(g.status[id::AK47 as usize].clip, 5);
+    for _ in 0..20 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    assert_eq!(g.status[id::AK47 as usize].clip, 30);
+    assert_eq!(g.reserve[6], 75);
+    assert_eq!(g.status[id::AK47 as usize].in_reload, 0);
+}
+
+#[test]
+fn shotgun_reload_three_phases() {
+    let (mut g, mut h) = armed(id::BENELLI);
+    g.status[id::BENELLI as usize].clip = 5;
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_RELOAD, &mut last, 0.01);
+    assert_eq!(g.status[id::BENELLI as usize].state, 1);
+    for _ in 0..200 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    let phases: Vec<f32> = h.events.iter().filter(|e| e.0 == Event::Reload).map(|e| e.1.f1).collect();
+    assert_eq!(phases, vec![8.0, 9.0, 9.0, 10.0]);
+    assert_eq!(g.status[id::BENELLI as usize].clip, 7);
+    assert_eq!(g.status[id::BENELLI as usize].state, 0);
+}
+
+#[test]
+fn spread_penalty_grows_caps_and_decays() {
+    let (mut g, mut h) = armed(id::GLOCK18);
+    let mut last = 0;
+    for _ in 0..100 {
+        frame(&mut g, &mut h, 1, &mut last, 0.01);
+    }
+    assert!(g.spread_penalty > 0.0 && g.spread_penalty <= 0.1);
+    let last_spread = h.events.iter().rev().find(|e| e.0 == Event::Fire).unwrap().1.f1;
+    assert!(last_spread > 0.01);
+    let p = g.spread_penalty;
+    g.pre_frame(0.5, true);
+    assert!((g.spread_penalty - (p - 0.05).max(0.0)).abs() < 1e-6);
+}
+
+#[test]
+fn silencer_multipliers() {
+    let (mut g, mut h) = armed(id::M4);
+    g.status[id::M4 as usize].items |= att::SILENCER;
+    let mut last = 0;
+    frame(&mut g, &mut h, 1, &mut last, 0.01);
+    assert!((h.shots[0].damage - 33.0 * 0.775).abs() < 1e-4);
+    let (p, _) = h.kicks[0];
+    assert!((p - 3.75 * 0.85 * 0.775).abs() < 1e-4);
+    // spread 0.005 * 0.875 on the first shot (no penalty yet)
+    assert!((h.shots[0].spread - 0.005 * 0.875).abs() < 1e-7);
+    // the MP5SD's built-in silencer has no penalty
+    let (mut g, mut h) = armed(id::MP5SD);
+    frame(&mut g, &mut h, 1, &mut 0, 0.01);
+    assert_eq!(h.shots[0].damage, 19.0);
+}
+
+#[test]
+fn akimbo_pickup_merges_and_linked_fire() {
+    let mut g = Gun::default();
+    let mut h = Mock { flags: 0x200, time: 1.0, ..Default::default() };
+    assert_eq!(g.take_weapon(id::BERETTA, None, 0), Some(id::BERETTA));
+    g.status[id::BERETTA as usize].clip = 10;
+    assert_eq!(g.take_weapon(id::BERETTA, None, 0), Some(id::BERETTA_AKIMBO));
+    let a = g.status[id::BERETTA_AKIMBO as usize];
+    assert_eq!((a.left, a.right, a.clip), (10, 15, 25));
+    g.reserve[1] = 60;
+    g.switch_to(id::BERETTA_AKIMBO, &mut h);
+    g.next_attack = 0.0;
+    // switch to akimbo-semi (mode 4) and press both triggers
+    g.switch_fire_mode();
+    assert_eq!(g.status[id::BERETTA_AKIMBO as usize].mode, mode::AKIMBO_SEMI);
+    h.events.clear();
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK | IN_ATTACK2, &mut last, 0.01);
+    assert_eq!(h.events.iter().filter(|e| e.0 == Event::FireLinked).count(), 1);
+    assert_eq!(h.shots.len(), 2);
+    assert_eq!(h.shots[1].seed, h.shots[0].seed.wrapping_add(0x21));
+    assert_eq!(h.shots[0].right_offset, -h.shots[1].right_offset);
+    let a = g.status[id::BERETTA_AKIMBO as usize];
+    assert_eq!((a.left, a.right, a.clip), (9, 14, 23));
+    assert_eq!(g.status[id::BERETTA as usize].clip, 9, "single mirrors the left clip");
+    // single trigger alternation in mode 1 (semi)
+    let mut g2 = g.clone();
+    g2.switch_fire_mode();
+    assert_eq!(g2.status[id::BERETTA_AKIMBO as usize].mode, mode::SEMI);
+}
+
+#[test]
+fn zoom_steps() {
+    let (mut g, mut h) = armed(id::AK47);
+    g.status[id::AK47 as usize].items |= att::SCOPE;
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK2, &mut last, 0.01);
+    assert_eq!(h.fov, 32.0);
+    assert!(h.view_model.is_none(), "fov < 40 hides the view model");
+    for _ in 0..40 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    frame(&mut g, &mut h, IN_ATTACK2, &mut last, 0.01);
+    assert_eq!(h.fov, 13.0);
+    for _ in 0..40 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    frame(&mut g, &mut h, IN_ATTACK2, &mut last, 0.01);
+    assert_eq!(h.fov, 0.0);
+    assert_eq!(h.view_model, Some(id::AK47));
+}
+
+#[test]
+fn grip_toggle_without_scope() {
+    let (mut g, mut h) = armed(id::M4);
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK2, &mut last, 0.01);
+    assert!(g.status[id::M4 as usize].alt_grip);
+    assert_eq!(*h.anims.last().unwrap(), 8, "A[7] of the M4");
+}
+
+#[test]
+fn grenade_pull_and_throw_on_release() {
+    let (mut g, mut h) = armed(id::M61);
+    let mut last = 0;
+    frame(&mut g, &mut h, 1, &mut last, 0.01);
+    assert_eq!(g.status[id::M61 as usize].state, 1);
+    for _ in 0..100 {
+        frame(&mut g, &mut h, 1, &mut last, 0.01);
+    }
+    assert!(h.grenades.is_empty(), "held: no throw");
+    for _ in 0..200 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    assert_eq!(h.grenades.len(), 1);
+    assert!(!h.grenades[0].2);
+    // the only grenade is gone and kung fu is back
+    assert_eq!(g.current, 0);
+    assert!(!g.status[id::M61 as usize].owned);
+    assert_eq!(h.slots, 7);
+    let pins: Vec<i32> = h.events.iter().filter(|e| e.0 == Event::Grenade).map(|e| e.1.i1).collect();
+    assert_eq!(pins, vec![0x13, 0x14]);
+}
+
+#[test]
+fn grenade_throw_math() {
+    let (src, vel) = Gun::grenade_throw([0.0; 3], [0.0, 0.0, 28.0], [0.0; 3], [0.0, 0.0, 0.0], false);
+    // pitch 0 -> -10 (up), speed min(750, 100*7)=700
+    assert!((spread::length(vel) - 700.0).abs() < 1e-3);
+    assert!(vel[2] > 0.0);
+    assert!((src[2] - (28.0 + 16.0 * (10.0f32).to_radians().sin())).abs() < 1e-3);
+    let (_, vel) = Gun::grenade_throw([0.0; 3], [0.0; 3], [0.0; 3], [0.0, 0.0, 0.0], true);
+    assert!((spread::length(vel) - 700.0 * 0.6666667).abs() < 1e-2);
+}
+
+#[test]
+fn knife_throw_consumes_stack() {
+    let (mut g, mut h) = armed(id::KNIFE);
+    g.take_weapon(id::KNIFE, None, 0);
+    assert_eq!(g.status[id::KNIFE as usize].clip, 2);
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK2, &mut last, 0.01);
+    assert_eq!(h.blades, vec![6]);
+    assert_eq!(g.status[id::KNIFE as usize].clip, 1);
+    assert_eq!(h.slots, 1);
+}
+
+#[test]
+fn kungfu_punch_and_bar() {
+    let mut g = Gun::default();
+    let mut h = Mock { flags: 0x200, ..Default::default() };
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    assert_eq!(h.melee.len(), 1);
+    assert_eq!(h.melee[0].damage, 20.0);
+    let cc: Vec<_> = h.events.iter().filter(|e| e.0 == Event::CloseCombat).collect();
+    assert_eq!(cc[0].1.i1, 1);
+    assert_eq!(cc[0].1.i2, 23);
+    assert!((g.next_primary - 0.35 + 0.01).abs() < 0.02);
+    // block costs 33 power
+    for _ in 0..60 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    frame(&mut g, &mut h, IN_RELOAD, &mut last, 0.01);
+    assert!((g.melee_bar - 67.0).abs() < 1e-4);
+    assert!(g.block_kungfu > 0.0);
+    // the bar regenerates at 15/s
+    g.pre_frame(1.0, true);
+    assert!((g.melee_bar - 82.0).abs() < 1e-4);
+}
+
+#[test]
+fn infinite_clip_keeps_clip_and_multiply_doubles() {
+    let (mut g, mut h) = armed(id::AK47);
+    h.powerups = crate::ts::powerup::INFINITE_CLIP;
+    let mut last = 0;
+    for _ in 0..50 {
+        frame(&mut g, &mut h, 1, &mut last, 0.01);
+    }
+    assert_eq!(g.status[id::AK47 as usize].clip, 30);
+    assert_eq!(g.multiply_clips(81), Some(0));
+    assert_eq!(g.status[id::AK47 as usize].clip, 60);
+}
+
+#[test]
+fn drop_switches_by_priority() {
+    let mut g = Gun::default();
+    let mut h = Mock { flags: 0x200, ..Default::default() };
+    g.take_weapon(id::GLOCK18, None, 0);
+    g.take_weapon(id::AK47, None, 0);
+    g.take_weapon(id::BARRETT, None, 0);
+    g.switch_to(id::BARRETT, &mut h);
+    assert!(g.remove_weapon(id::BARRETT, true, &mut h));
+    assert_eq!(g.current, id::AK47);
+}
+
+#[test]
+fn restricted_pickups() {
+    let mut g = Gun::default();
+    // akimbo ids can't be taken directly when the akimbo version exists... but TakeWeapon allows
+    // it (PickUpWeapon rejects them); owning the pair blocks another single.
+    g.take_weapon(id::BERETTA, None, 0);
+    g.take_weapon(id::BERETTA, None, 0);
+    assert_eq!(g.take_weapon(id::BERETTA, None, 0), None);
+    // stackables stop at their max count
+    for _ in 0..10 {
+        g.take_weapon(id::KNIFE, None, 0);
+    }
+    assert_eq!(g.status[id::KNIFE as usize].clip, 5);
+}
+
+#[test]
+fn deploy_remembers_fire_mode() {
+    let (mut g, mut h) = armed(id::AK47);
+    g.switch_fire_mode();
+    assert_eq!(g.status[id::AK47 as usize].mode, mode::SEMI);
+    g.status[id::AK47 as usize].mode = 0;
+    g.switch_to(0, &mut h);
+    g.switch_to(id::AK47, &mut h);
+    assert_eq!(g.status[id::AK47 as usize].mode, mode::SEMI);
+}
