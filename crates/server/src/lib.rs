@@ -244,7 +244,7 @@ unsafe extern "C" fn start_frame() {
 }
 
 unsafe extern "C" fn get_game_description() -> *const c_char {
-    shared::GAME_NAME.as_ptr()
+    rules::game_description().as_ptr()
 }
 
 unsafe extern "C" fn player_customization(_: *mut edict_t, _: *mut customization_t) {}

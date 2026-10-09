@@ -1,0 +1,364 @@
+//! `ts_groundweapon` (CTSGroundWeapon 0xa192c), `ts_groundammo` (CTSGroundAmmo 0xa26f4) and the
+//! HL weapon/ammo classnames TS re-points at them (architecture.md §5.2, weapons.md §7.4).
+//! Weapons are picked up with +use, ammo on touch. Giving goes through `crate::weapons`.
+
+use crate::player::{Player, with_player};
+use crate::rules::{self, msg, state};
+use crate::world::{Cx, Entity, UseType};
+use goldsrc::server::{engine, intern};
+use goldsrc::sys::*;
+use shared::weapons::tables;
+use std::ffi::CStr;
+
+const BRIEFCASE: i32 = 29;
+const ON_WALL: i32 = 16;
+
+/// HL classname → TS weapon ids it picks from (`Random<Kind>`).
+pub fn hl_weapon_ids(class: &CStr) -> Option<&'static [i32]> {
+    Some(match class.to_bytes() {
+        b"weapon_crossbow" => &[18],
+        b"weapon_shotgun" => &[4, 26, 33, 20, 11],
+        b"weapon_gauss" | b"weapon_egon" => &[13, 5, 27, 15],
+        b"weapon_rpg" => &[23, 7, 6, 19, 17, 3],
+        b"weapon_9MMAR" | b"weapon_9mmAR" => &[31, 12, 36],
+        b"weapon_hornetgun" => &[32],
+        b"weapon_satchel" | b"ammo_ARgrenades" => &[25, 35],
+        b"weapon_snark" => &[34],
+        b"weapon_handgrenade" => &[24],
+        _ => return None,
+    })
+}
+
+/// HL ammo classname → the weapon class whose ammo types it carries.
+pub fn hl_ammo_weapons(class: &CStr) -> Option<&'static [i32]> {
+    Some(match class.to_bytes() {
+        b"ammo_9mmAR" => &[31, 12, 36],
+        b"ammo_buckshot" => &[4, 26, 33, 20, 11],
+        b"ammo_crossbow" => &[18],
+        b"ammo_gaussclip" => &[13, 5, 27, 15],
+        b"ammo_rpgclip" => &[23, 7, 6, 19, 17, 3],
+        _ => return None,
+    })
+}
+
+/// Respawn delay of ground items: < 1 → 60 s, 1 → 1 s, else min(v, 180).
+pub fn respawn_delay(v: i32) -> f32 {
+    if v < 1 {
+        60.0
+    } else if v < 2 {
+        1.0
+    } else {
+        v.min(180) as f32
+    }
+}
+
+fn round_mode() -> bool {
+    matches!(state::with(|g| g.mode), state::Mode::RoundTdm | state::Mode::Objective)
+}
+
+/// Shared falling / landing behaviour.
+#[derive(Default)]
+struct Ground {
+    landed: bool,
+    waiting: bool,
+}
+
+impl Ground {
+    /// `Fall` (every 0.5 s): land, snap to a wall if flagged, become pickable.
+    fn fall(&mut self, cx: &mut Cx, ammo: bool) {
+        cx.think_in(0.5);
+        let on_wall = cx.pev().spawnflags & ON_WALL != 0;
+        if !on_wall {
+            if cx.pev().flags & FL_ONGROUND as i32 == 0 && !self.landed {
+                return;
+            }
+            let v = cx.pev();
+            v.angles[0] = 0.0;
+            v.angles[2] = 0.0;
+        } else if !self.landed {
+            put_on_wall(cx);
+        }
+        engine().emit_sound(cx.edict, CHAN_STATIC as i32, c"items/weapondrop1.wav", 1.0, 0.8, 0, 100);
+        // OnGround
+        let e = cx.edict;
+        let v = cx.pev();
+        if ammo {
+            v.movetype = MOVETYPE_FLY as i32;
+            v.effects |= 2;
+        }
+        v.solid = SOLID_TRIGGER as i32;
+        v.effects &= !(EF_NODRAW as i32);
+        v.nextthink = 0.0;
+        let org = v.origin;
+        engine().set_origin(e, org);
+        engine().set_size(e, [-4.0; 3], [4.0; 3]);
+        self.landed = true;
+        self.waiting = true;
+    }
+
+    /// Hide after a pickup and schedule the respawn.
+    fn taken(&mut self, cx: &mut Cx, respawn: i32) {
+        self.waiting = false;
+        let v = cx.pev();
+        v.effects |= EF_NODRAW as i32;
+        v.solid = SOLID_NOT as i32;
+        if respawn < 1 && round_mode() {
+            v.nextthink = 0.0;
+        } else {
+            v.nextthink = engine().time() + respawn_delay(respawn);
+        }
+    }
+}
+
+/// `PutOnWall`: find the closest surface in 8 horizontal directions and stick to it.
+fn put_on_wall(cx: &mut Cx) {
+    let eng = engine();
+    let e = cx.edict;
+    let org = cx.pev().origin;
+    let mut best: Option<(f32, [f32; 3], [f32; 3])> = None;
+    for k in 0..8 {
+        let a = (k as f32 * 45.0).to_radians();
+        let dir = [a.cos(), a.sin(), 0.0];
+        let end = [org[0] + dir[0] * 1024.0, org[1] + dir[1] * 1024.0, org[2]];
+        let tr = eng.trace_line(org, end, goldsrc::server::IGNORE_MONSTERS, e);
+        if tr.flFraction < 1.0 {
+            let d = rules::dist(org, tr.vecEndPos);
+            if best.is_none_or(|b| d < b.0) {
+                best = Some((d, tr.vecEndPos, tr.vecPlaneNormal));
+            }
+        }
+    }
+    let v = cx.pev();
+    match best {
+        Some((_, pos, n)) => {
+            v.origin = [pos[0] + n[0] * 2.0, pos[1] + n[1] * 2.0, pos[2] + n[2] * 2.0];
+            let ang = eng.vec_to_angles(n);
+            v.angles = [ang[0] + 90.0, ang[1], ang[2]];
+        }
+        None => v.angles[2] = 90.0,
+    }
+}
+
+// ---- ts_groundweapon ---------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct GroundWeapon {
+    pub id: i32,
+    respawn: i32,
+    extra_clip: i32,
+    buyable: bool,
+    attacker_team: i32,
+    ground: Ground,
+}
+
+impl GroundWeapon {
+    /// `GetWeapon`: give the weapon (attachments from spawnflags) and extra magazines.
+    fn give(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) -> bool {
+        if !self.ground.waiting || !rules::alive(pcx.pev()) || pcx.pev().effects & EF_NODRAW as i32 != 0 {
+            return false;
+        }
+        if cx.pev().effects & EF_NODRAW as i32 != 0 {
+            return false;
+        }
+        let attachments = (cx.pev().spawnflags & 0xf) as u8;
+        if !crate::weapons::give_weapon(p, pcx, self.id as u8, attachments) {
+            return false;
+        }
+        let extra = self.extra_clip.max(0);
+        if extra != 0 {
+            if let Some(w) = tables().weapon(self.id as u8) {
+                if w.ammo != 0 && crate::weapons::give_ammo(p, pcx, w.ammo, extra * w.clip.max(1)) > 0 {
+                    engine().emit_sound(pcx.edict, CHAN_ITEM as i32, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100);
+                }
+            }
+        }
+        true
+    }
+
+    fn after_give(&mut self, cx: &mut Cx, player: *mut edict_t) {
+        self.ground.taken(cx, self.respawn);
+        let (message, target) = (cx.pev().message, cx.pev().target);
+        if message != 0 {
+            msg::ts_message_one(player, [0, 0, 0], 8, 30, &engine().string(message).to_string_lossy());
+        }
+        if target != 0 {
+            crate::entities::fire_targets(engine().string(target), cx.edict, cx.edict, UseType::Toggle, 0.0);
+        }
+    }
+
+    /// +use from the player's own think (the player is the dispatched entity).
+    pub fn player_use(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
+        if self.give(cx, p, pcx) {
+            self.after_give(cx, pcx.edict);
+        }
+    }
+}
+
+impl Entity for GroundWeapon {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        let v = value.to_str().unwrap_or("").trim();
+        let i = || v.parse::<i32>().unwrap_or(0);
+        match key.to_bytes() {
+            b"tsweaponid" => self.id = i(),
+            b"wduration" => self.respawn = i(),
+            b"wextraclip" => self.extra_clip = i(),
+            b"buyable" => self.buyable = i() != 0,
+            b"attackerteam" => self.attacker_team = i(),
+            _ => return false,
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let e = cx.edict;
+        if let Some(ids) = hl_weapon_ids(eng.string(cx.pev().classname)) {
+            self.id = ids[eng.random_long(0, ids.len() as i32 - 1) as usize];
+        }
+        let Some(asset) = u8::try_from(self.id).ok().and_then(|id| tables().asset(id)).filter(|_| self.id != BRIEFCASE && tables().weapon(self.id as u8).is_some()) else {
+            eng.print(&format!("[ts] ts_groundweapon: unknown weapon id {}, removed\n", self.id));
+            crate::entities::remove(e);
+            return;
+        };
+        let model = intern(&format!("models/w_{}.mdl", asset.w_model));
+        eng.precache_model(model);
+        eng.set_model(e, model);
+        let wall = cx.pev().spawnflags & ON_WALL != 0;
+        let v = cx.pev();
+        v.movetype = if wall { MOVETYPE_FLY } else { MOVETYPE_TOSS } as i32;
+        v.solid = SOLID_BBOX as i32;
+        v.iuser4 |= 2;
+        let org = v.origin;
+        eng.set_origin(e, org);
+        eng.set_size(e, [0.0; 3], [0.0; 3]);
+        cx.think_in(0.1);
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        self.ground.fall(cx, false);
+    }
+
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        if !rules::is_player(activator) {
+            return;
+        }
+        let took = with_player(activator, |p, pcx| self.give(cx, p, pcx)).unwrap_or(false);
+        if took {
+            self.after_give(cx, activator);
+        }
+    }
+}
+
+// ---- ts_groundammo -------------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct GroundAmmo {
+    respawn: i32,
+    /// Rounds per ammo type (index = TS ammo id).
+    rounds: [i32; 16],
+    ground: Ground,
+}
+
+impl Entity for GroundAmmo {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        let k = key.to_str().unwrap_or("");
+        let v: i32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0);
+        if k == "wduration" {
+            self.respawn = v;
+            return true;
+        }
+        if let Some(n) = k.strip_prefix("mags") {
+            let ty: usize = n.trim().parse().unwrap_or(0);
+            if let Some(a) = tables().ammo(ty as u8) {
+                self.rounds[ty.min(15)] = v * a.per_buy;
+            }
+            return true;
+        }
+        false
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let e = cx.edict;
+        if let Some(ids) = hl_ammo_weapons(eng.string(cx.pev().classname)) {
+            // HL ammo: half the max carry of each ammo type the class uses.
+            let count = cvars_ammocount();
+            for &id in ids {
+                if let Some(w) = tables().weapon(id as u8) {
+                    if let Some(a) = tables().ammo(w.ammo) {
+                        self.rounds[w.ammo as usize % 16] = a.max_carry[count] / 2;
+                    }
+                }
+            }
+        }
+        eng.precache_model(c"models/ammopack.mdl");
+        eng.set_model(e, c"models/ammopack.mdl");
+        let wall = cx.pev().spawnflags & ON_WALL != 0;
+        let v = cx.pev();
+        v.movetype = if wall { MOVETYPE_FLY } else { MOVETYPE_TOSS } as i32;
+        v.solid = SOLID_BBOX as i32;
+        v.iuser4 |= 2;
+        let org = v.origin;
+        eng.set_origin(e, org);
+        eng.set_size(e, [0.0; 3], [0.0; 3]);
+        cx.think_in(0.1);
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        self.ground.fall(cx, true);
+    }
+
+    fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if !self.ground.waiting || cx.pev().effects & EF_NODRAW as i32 != 0 || !rules::is_player(other) {
+            return;
+        }
+        let rounds = self.rounds;
+        let took = with_player(other, |p, pcx| {
+            if !rules::alive(pcx.pev()) {
+                return false;
+            }
+            let mut any = false;
+            for (ty, &n) in rounds.iter().enumerate() {
+                if n > 0 && crate::weapons::give_ammo(p, pcx, ty as u8, n) > 0 {
+                    any = true;
+                }
+            }
+            if any {
+                engine().emit_sound(pcx.edict, CHAN_ITEM as i32, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100);
+            }
+            any
+        })
+        .unwrap_or(false);
+        if took {
+            self.ground.taken(cx, self.respawn);
+        }
+    }
+}
+
+fn cvars_ammocount() -> usize {
+    (rules::cvars::f(c"ammocount").round() as i32).clamp(0, 3) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remaps_are_real_weapons() {
+        for c in [c"weapon_shotgun", c"weapon_9MMAR", c"weapon_9mmAR", c"weapon_handgrenade", c"ammo_ARgrenades"] {
+            for &id in hl_weapon_ids(c).unwrap() {
+                assert!(tables().weapon(id as u8).is_some(), "{c:?} → {id}");
+                assert!(tables().asset(id as u8).is_some());
+            }
+        }
+        assert!(hl_weapon_ids(c"weapon_crowbar").is_none());
+    }
+
+    #[test]
+    fn respawn_clamps() {
+        assert_eq!(respawn_delay(0), 60.0);
+        assert_eq!(respawn_delay(1), 1.0);
+        assert_eq!(respawn_delay(45), 45.0);
+        assert_eq!(respawn_delay(1000), 180.0);
+    }
+}

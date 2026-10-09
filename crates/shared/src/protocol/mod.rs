@@ -5,6 +5,7 @@
 
 pub mod effects;
 pub mod hud;
+pub mod hud_wire;
 pub mod rules;
 pub mod stunt;
 pub mod weapons;
@@ -109,5 +110,53 @@ mod tests {
             assert!(name.to_bytes().len() <= 11, "{name:?} too long for the engine");
         }
         assert_eq!(Msg::TsSlowMo.name(), c"TSSlowMo");
+    }
+}
+
+/// The server encodes HUD messages with `hud_wire` (rules package) and the client decodes them
+/// with `hud` (HUD package). These tests pin the two to the same wire layout.
+#[cfg(test)]
+mod wire_agreement {
+    use super::{hud, hud_wire as w};
+
+    fn enc(f: impl Fn(&mut w::Bytes)) -> Vec<u8> {
+        let mut b = w::Bytes::default();
+        f(&mut b);
+        b.buf
+    }
+
+    #[test]
+    fn server_encoders_match_client_decoders() {
+        let b = enc(|b| w::TsHealth { hp: 87 }.write(b));
+        assert_eq!(hud::TsHealth::decode(&b).unwrap().hp, 87);
+        let b = enc(|b| w::TsArmor { armor: 100 }.write(b));
+        assert_eq!(hud::TsArmor::decode(&b).unwrap().armor, 100);
+        let b = enc(|b| w::TsState { state: 2 }.write(b));
+        assert_eq!(hud::TsState::decode(&b).unwrap().stance, 2);
+        let b = enc(|b| w::TsCash { cash: 12345 }.write(b));
+        assert_eq!(hud::TsCash::decode(&b).unwrap().cash, 12345);
+        let b = enc(|b| w::TsSpace { space: 41 }.write(b));
+        assert_eq!(hud::TsSpace::decode(&b).unwrap().slots, 41);
+        let b = enc(|b| w::PwUp { bits: 0x108, secs: 9 }.write(b));
+        let d = hud::PwUp::decode(&b).unwrap();
+        assert_eq!((d.flags, d.value), (0x108, 9));
+        let b = enc(|b| w::PwUpTime { secs: 7 }.write(b));
+        assert_eq!(hud::PwUpTime::decode(&b).unwrap().secs, 7);
+        let b = enc(|b| w::TsSlowMo { factor_x100: 35.0 }.write(b));
+        assert_eq!(hud::TsSlowMo::decode(&b).unwrap().factor100, 35.0);
+        let b = enc(|b| w::TsBTime { on: 1 }.write(b));
+        assert_eq!(hud::TsBTime::decode(&b).unwrap().on, 1);
+        let b = enc(|b| w::TsMBlur { entindex: 5, mode: 2 }.write(b));
+        let d = hud::TsMBlur::decode(&b).unwrap();
+        assert_eq!((d.entity, d.mode), (5, 2));
+        let b = enc(|b| w::TsPAward { entindex: 3, award: 4 }.write(b));
+        let d = hud::TsPAward::decode(&b).unwrap();
+        assert_eq!((d.client, d.award), (3, 4));
+        let b = enc(|b| w::PTakeDam { x: 1.0, y: -2.5, z: 3.0, dx: 0.5, dy: 0.0, dz: -1.0, amount: 130 }.write(b));
+        let d = hud::PTakeDam::decode(&b).unwrap();
+        assert_eq!((d.px, d.py, d.pz, d.dx, d.dz, d.amount), (1.0, -2.5, 3.0, 0.5, -1.0, 130));
+        let b = enc(|b| w::TsFade { duration: 4096, hold: 2048, flags: 1, r: 255, g: 0, b: 0, a: 128 }.write(b));
+        let d = hud::TsFade::decode(&b).unwrap();
+        assert_eq!((d.duration, d.hold, d.flags, d.r, d.a), (4096, 2048, 1, 255, 128));
     }
 }
