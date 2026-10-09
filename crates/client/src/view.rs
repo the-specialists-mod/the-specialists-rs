@@ -148,7 +148,6 @@ pub fn init() {
     let e = goldsrc::client::engine();
     e.add_command(c"thirdperson", cmd_thirdperson);
     e.add_command(c"firstperson", cmd_firstperson);
-    e.hook_user_msg(c"TSFade", Some(msg_tsfade));
     e.add_command(c"ts_test_fade", cmd_test_fade);
     e.add_command(c"ts_test_kick", cmd_test_kick);
     e.add_command(c"ts_test_view", cmd_test_view);

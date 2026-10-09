@@ -4,6 +4,32 @@
 use goldsrc::Global;
 use std::cell::RefCell;
 
+/// A TS effect message the HUD parsed for the effects package (`PTakeDam`, `TSFrags`, `TSPSys`
+/// type 3, `TSMBlur`). The HUD only queues them; `effects` drains `Shared::ts_effects`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TsEffect {
+    /// `PTakeDam` → `FX_PlayerHit` (10048840): blood at `pos` along `dir`.
+    PlayerHit { pos: [f32; 3], dir: [f32; 3], amount: u8 },
+    /// `TSFrags`: 0 breakable gibs, 1 smoke, 2 metal sparks.
+    Frags(shared::protocol::hud::TsFrags),
+    /// `TSPSys` type 3: directional wind/rain emitter.
+    Wind { seed: i32, yaw: i32, strength: f32 },
+    /// `TSMBlur`: toggle the motion-blur trail on an entity.
+    MotionBlur { entity: i32 },
+}
+
+/// `TSFade` as received (applied by `view` in `V_CalcRefdef`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TsFadeState {
+    /// Seconds (the message's 4.12 fixed-point values / 4096).
+    pub duration: f32,
+    pub hold: f32,
+    pub flags: u16,
+    pub rgba: [u8; 4],
+    /// Client time the message arrived.
+    pub start: f32,
+}
+
 #[derive(Default)]
 pub struct Shared {
     /// Slow-motion target from `TSSlowMo` (1.0 = normal) and the eased cosmetic clock.
@@ -16,6 +42,7 @@ pub struct Shared {
     pub weapon: i32,
     pub fov: f32,
 
+
     // ---- added by the render package -------------------------------------------------------
     /// Zoom target from `SetFOV` (0 = default_fov). Written by the HUD `SetFOV` handler; the
     /// render package eases `fov` toward it every frame (TS `CHud::Think`, animated zoom).
@@ -26,18 +53,13 @@ pub struct Shared {
     /// 0x10 double fire rate). Written by prediction.
     pub powerups: i32,
     /// Local weapon state from clientdata (prediction): attachments `vuser3[2]` (1 silencer,
-    /// 2 laser, 4 flashlight, 8 scope), active items `vuser1[2]`, firemode `vuser3[1]`, clip.
+    /// 2 laser, 4 flashlight, 8 scope), active items `vuser1[2]` (`local_items`), firemode `vuser3[1]`, clip.
     pub attachments: i32,
-    pub active_items: i32,
+    pub local_items: i32,
     pub firemode: i32,
     pub clip: i32,
     pub reserve_ammo: i32,
-    /// `ActItems` per player (index = entindex - 1): bit 2 laser on, 4 flashlight on, 0x40 akimbo.
-    /// Written by the HUD `ActItems` handler; read by the laser/flashlight drawing.
-    pub player_items: [u8; 32],
-    /// `PlInfo` key 0 per player (index = entindex - 1): laser colour 0 red, 1 green, 2 blue.
-    pub laser_color: [u8; 32],
-    /// `Spectator` message per player (index = entindex - 1): not drawn when set.
+    /// `Spectator` flag per player (index = entindex - 1): not drawn when set. Filled by the HUD.
     pub spectator: [bool; 32],
     /// Screen positions of the local laser dot(s) this frame (second = akimbo), for the HUD's
     /// `DrawLaserDots`. Written by effects in the transparent pass.
@@ -48,6 +70,29 @@ pub struct Shared {
     pub spec_mode: i32,
     pub spec_target: i32,
     pub spec_flags: i32,
+    // ---- added by the hud package ----
+    /// Local player is an observer (`Spectator` message).
+    pub observer: bool,
+    /// Predicted spread penalty of the current gun (TS `0x1018d188`); the crosshair opens by
+    /// `spread × 160` px. Written by `prediction`, read by the HUD.
+    pub spread: f32,
+    /// Last `TSFade`, if any.
+    pub ts_fade: Option<TsFadeState>,
+    /// Per-client active attachment bits (`ActItems`, laser/flashlight on; 0x40 = akimbo),
+    /// indexed by entity number (0 unused). Read by the laser/flashlight drawing.
+    pub active_items: Vec<u8>,
+    /// Per-client laser colour index (`PlInfo` key 0).
+    pub laser_color: Vec<u8>,
+    /// Effect messages waiting for `effects`.
+    pub ts_effects: Vec<TsEffect>,
+    /// Third-person toggles requested by TS HUD logic (death cam on `TSHealth` 0,
+    /// `cl_thirdpersonswitch`, observer changes). `view` consumes them.
+    pub thirdperson_toggles: u32,
+    /// Leave / restore third person on entering / leaving observer mode.
+    pub thirdperson_leave: bool,
+    pub thirdperson_restore: bool,
+    /// The weapon menu, buy menu or another HUD menu is open (view/effects may hide things).
+    pub menu_open: bool,
 }
 
 static SHARED: Global<RefCell<Option<Shared>>> = Global(RefCell::new(None));
@@ -56,6 +101,13 @@ static SHARED: Global<RefCell<Option<Shared>>> = Global(RefCell::new(None));
 /// back into the client inside `f`.
 pub fn with<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
     let mut s = SHARED.0.borrow_mut();
-    let s = s.get_or_insert_with(|| Shared { time_scale_target: 1.0, time_scale: 1.0, fov: 90.0, ..Default::default() });
+    let s = s.get_or_insert_with(|| Shared {
+        time_scale_target: 1.0,
+        time_scale: 1.0,
+        fov: 90.0,
+        active_items: vec![0; 65],
+        laser_color: vec![0; 65],
+        ..Default::default()
+    });
     f(s)
 }

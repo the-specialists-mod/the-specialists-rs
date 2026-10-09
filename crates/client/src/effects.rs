@@ -170,11 +170,6 @@ pub fn init() {
         gl_fog: Cvar::register(c"gl_fog", c"0", r::FCVAR_ARCHIVE),
     });
     let e = goldsrc::client::engine();
-    e.hook_user_msg(c"TSPSys", Some(msg_tspsys));
-    e.hook_user_msg(c"PTakeDam", Some(msg_ptakedam));
-    e.hook_user_msg(c"TSFrags", Some(msg_tsfrags));
-    e.hook_user_msg(c"TSMBlur", Some(msg_tsmblur));
-    e.hook_user_msg(c"TSBTime", Some(msg_tsbtime));
     e.add_command(c"ts_test_fx", cmd_test_fx);
 }
 

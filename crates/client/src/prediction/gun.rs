@@ -143,7 +143,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         state::with(|s| {
             s.powerups = g.powerups;
             s.attachments = g.attachments;
-            s.active_items = g.active_items;
+            s.local_items = g.active_items;
             s.firemode = g.firemode;
             s.clip = g.clip;
             s.reserve_ammo = g.reserve;

@@ -1,7 +1,7 @@
 //! Laser sights, flashlights and player shadows (transparent pass; rendering doc §3.3).
 //!
-//! Local state comes from prediction (`state.active_items` = `clientdata.vuser1[2]`), other
-//! players' from `ActItems`/`PlInfo` (`state.player_items`/`laser_color`, HUD package).
+//! Local state comes from prediction (`state.local_items` = `clientdata.vuser1[2]`), other
+//! players' from `ActItems`/`PlInfo` (`state.active_items`/`laser_color`, indexed by entity number, HUD package).
 
 use super::psys::Camera;
 use crate::state;
@@ -88,7 +88,7 @@ fn trace_world(a: Vec3, b: Vec3, ignore_player: i32) -> pmtrace_s {
 
 /// `DrawLocalLaser` (`0x1003bb00`) and the local flashlight (`0x1003b250`).
 pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32) {
-    let (items, dead, ts) = state::with(|st| (st.active_items, st.dead, st.time_scale));
+    let (items, dead, ts) = state::with(|st| (st.local_items, st.dead, st.time_scale));
     state::with(|st| st.laser_dots = [None, None]);
     if dead || items & (ITEM_LASER | ITEM_FLASHLIGHT) == 0 {
         return;
@@ -156,12 +156,12 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
 pub fn draw_others(s: &Sprites, cam: &Camera, visible: &[bool; 33]) {
     let local = r::local_player().map_or(0, |e| e.index);
     let max = r::max_clients().min(32);
-    let (items, colors) = state::with(|st| (st.player_items, st.laser_color));
+    let (items, colors) = state::with(|st| (st.active_items.clone(), st.laser_color.clone()));
     for idx in 1..=max {
         if idx == local || !visible[idx as usize] {
             continue;
         }
-        let it = items[(idx - 1) as usize] as i32;
+        let it = items.get(idx as usize).copied().unwrap_or(0) as i32;
         if it & (ITEM_LASER | ITEM_FLASHLIGHT) == 0 {
             continue;
         }
