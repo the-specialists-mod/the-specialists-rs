@@ -288,6 +288,44 @@ fn register_commands() {
     cmd!(c"invnext", select_next_prev(true));
     cmd!(c"invprev", select_next_prev(false));
     cmd!(c"buy", cmd_buy());
+    cmd!(c"ts_hud_selftest", selftest());
+}
+
+/// `ts_hud_selftest`: feed a set of encoded TS messages through the real hooks so the HUD can be
+/// checked on a server that doesn't send them yet (development aid; not in TS).
+fn selftest() {
+    use shared::protocol::hud as p;
+    let li = local_index().max(1) as u8;
+    // `ts_hud_selftest dead`: just report health 0 (the buy menu opens only when dead).
+    if engine().cmd_argv(1) == c"dead" {
+        on_message(Msg::TsHealth, &p::TsHealth { hp: 0 }.encode());
+        return;
+    }
+    let msgs: Vec<(Msg, Vec<u8>)> = vec![
+        (Msg::TsHealth, p::TsHealth { hp: 73 }.encode()),
+        (Msg::TsArmor, p::TsArmor { armor: 40 }.encode()),
+        (Msg::TsCash, p::TsCash { cash: 1200 }.encode()),
+        (Msg::TsSpace, p::TsSpace { slots: 31 }.encode()),
+        (Msg::TsState, p::TsState { stance: 1 }.encode()),
+        (Msg::SrvSett, p::SrvSett { key: 1, value: 1 }.encode()),
+        (Msg::WStatus, p::WStatus { id: 1, owned: 1, clip: 17 }.encode()),
+        (Msg::WStatus, p::WStatus { id: 25, owned: 1, clip: 5 }.encode()),
+        (Msg::WeaponInfo, p::WeaponInfo { id: 13, clip: 24, reserve: 90, mode: 0, attachments: 8 }.encode()),
+        (Msg::PwUp, p::PwUp { flags: 1, value: 3 }.encode()),
+        (Msg::PwUp, p::PwUp { flags: 4, value: 0 }.encode()),
+        (Msg::PwUpTime, p::PwUpTime { secs: 25 }.encode()),
+        (Msg::RoundTime, p::RoundTime { secs: 200, mode: 0 }.encode()),
+        (Msg::KFuPower, p::KFuPower { power: 60 }.encode()),
+        (Msg::TsMessage, p::TsMessage { r: 0, g: 0, b: 0, flags: 1, time: 100, text: "#HUD_Credits selftest (top)".into() }.encode()),
+        (Msg::TsMessage, p::TsMessage { r: 255, g: 200, b: 0, flags: 8, time: 100, text: "TSMessage bottom".into() }.encode()),
+        (Msg::ScoreInfo, p::ScoreInfo { client: li, frags: 7, deaths: 2, class: 0, team: 0 }.encode()),
+        (Msg::TsPAward, p::TsPAward { client: li, award: 10 }.encode()),
+        (Msg::DeathMsg, p::DeathMsg { killer: li, victim: li, weapon: "skull".into() }.encode()),
+        (Msg::SayText, p::SayText { client: li, text: "\u{2}selftest: hello from SayText\n".into() }.encode()),
+    ];
+    for (m, b) in msgs {
+        on_message(m, &b);
+    }
 }
 
 pub fn init() {

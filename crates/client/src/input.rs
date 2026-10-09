@@ -993,8 +993,6 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
     }
     e.set_view_angles(view);
     cmd.viewangles = view;
-    cmd.lerp_msec = 0;
-    cmd.msec = (frametime * 1000.0).clamp(0.0, 255.0) as u8;
 }
 
 #[cfg(test)]
