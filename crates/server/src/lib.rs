@@ -4,7 +4,9 @@
 //! This file holds the engine entry points and routes every callback to a subsystem module.
 //! See docs/design.md §4 for the module map and hook order.
 
-// Skeleton phase: subsystem APIs exist before every caller does. Remove at integration.
+
+// Subsystems expose API for TS features that are dead in 3.0 (round and objective modes, cash)
+// or kept for parity with the SDK; docs/implementation/integration.md lists what is unused.
 #![allow(dead_code)]
 
 mod bots;

@@ -35,6 +35,11 @@ impl Args {
 pub fn client_command(e: *mut edict_t) {
     let args = Args;
     let cmd = args.str(0).to_ascii_lowercase();
+    // The TS client sends `_special` on +attack2 (a TFC viewport leftover). TS's server answers
+    // "Unknown command" every time; accept it silently instead (docs/design.md §10).
+    if cmd == "_special" {
+        return;
+    }
     let handled = world::dispatch(e, |ent, cx| {
         let Some(p) = (ent as &mut dyn std::any::Any).downcast_mut::<Player>() else { return false };
         dispatch_player(p, cx, &cmd, &args)

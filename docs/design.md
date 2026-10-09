@@ -227,6 +227,8 @@ TS bugs found in the decomp are fixed unless parity requires keeping them:
 * `default_fov` being forced to 80
 * `delta.lst`'s missing commas
 * `weapon_9MMAR`: both spellings are exported
+* `_special`, which the TS client sends on every `+attack2`, is accepted silently instead of
+  printing "Unknown command"
 
 Dead 3.0 features (round-based and objective modes, cash) are implemented only as far as the
 port needs them; `docs/implementation/*.md` records what's live.

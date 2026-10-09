@@ -12,7 +12,7 @@ use goldsrc::ext::render::{self as r, Cvar, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use shared::ts::stunt;
 use std::cell::RefCell;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::c_void;
 
 struct Cvars {
     bob: Cvar,
@@ -50,6 +50,8 @@ struct View {
     shake: Shake,
     // third person
     third: bool,
+    /// Third-person state saved by a HUD "leave" request (observer mode), restored on "restore".
+    saved_third: Option<bool>,
     forced_dead: bool,
     cam_back: f32,
     cam_up: f32,
@@ -194,11 +196,6 @@ unsafe extern "C" fn cmd_firstperson() {
     with(|w| w.third = false);
 }
 
-unsafe extern "C" fn msg_tsfade(_n: *const c_char, size: c_int, buf: *mut c_void) -> c_int {
-    let b = if buf.is_null() || size <= 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), size as usize) } };
-    on_tsfade(b);
-    1
-}
 
 /// `TSFade` (`0x1004c1e0`): stored with start = now; applied every frame in `calc_refdef`.
 pub fn on_tsfade(b: &[u8]) {
@@ -241,6 +238,24 @@ pub fn frame(frametime: f64) {
         s.time_scale = ease_time_scale(s.time_scale, s.time_scale_target.max(0.0), ft);
         let target = if s.fov_target > 0.0 { s.fov_target } else { default_fov };
         s.fov = if s.fov <= 0.0 { target } else { ease_fov(s.fov, target, ft) };
+    });
+    // Camera requests from the HUD (death cam on TSHealth 0, cl_thirdpersonswitch, observer).
+    let (toggles, leave, restore) = state::with(|s| {
+        (std::mem::take(&mut s.thirdperson_toggles), std::mem::take(&mut s.thirdperson_leave), std::mem::take(&mut s.thirdperson_restore))
+    });
+    with(|w| {
+        if toggles % 2 == 1 {
+            w.third = !w.third;
+        }
+        if leave {
+            w.saved_third = Some(w.third);
+            w.third = false;
+        }
+        if restore {
+            if let Some(t) = w.saved_third.take() {
+                w.third = t;
+            }
+        }
     });
     // Automatic camera switches: cl_thirdperson on change, cl_thirdpersonswitch on weapon change.
     let tp = cv(|c| c.thirdperson);

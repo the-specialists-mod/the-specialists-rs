@@ -251,6 +251,10 @@ impl Ctx {
             match reply {
                 Ok(i) => {
                     println!("   after {secs}s: {i}");
+                    if let Ok(pl) = a2s::players("127.0.0.1", port) {
+                        let list: Vec<String> = pl.iter().map(|(n, f)| format!("{n}={f}")).collect();
+                        println!("   scores: {}", list.join(", "));
+                    }
                     if i.map != map {
                         println!("   FAIL: map is {:?}, expected {map:?}", i.map);
                         ok = false;

@@ -6,7 +6,9 @@
 //! `input`, `hud`, `menus` (HUD/UI work package) and `view`, `events`, `prediction`, `effects`
 //! (rendering/prediction work package). `state` holds what both sides read.
 
-// Skeleton phase: module APIs exist before every caller does. Remove at integration.
+
+// Subsystems expose API for TS features that are dead in 3.0 (round and objective modes, cash)
+// or kept for parity with the SDK; docs/implementation/integration.md lists what is unused.
 #![allow(dead_code)]
 
 mod effects;

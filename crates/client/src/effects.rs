@@ -295,20 +295,6 @@ pub fn on_tsbtime(b: &[u8]) {
     }
 }
 
-macro_rules! msg_hook {
-    ($name:ident => $f:path) => {
-        unsafe extern "C" fn $name(_n: *const c_char, size: c_int, buf: *mut c_void) -> c_int {
-            $f(unsafe { bytes(buf, size) });
-            1
-        }
-    };
-}
-msg_hook!(msg_tspsys => on_tspsys);
-msg_hook!(msg_ptakedam => on_ptakedam);
-msg_hook!(msg_tsfrags => on_tsfrags);
-msg_hook!(msg_tsmblur => on_tsmblur);
-msg_hook!(msg_tsbtime => on_tsbtime);
-
 // ---- per frame -------------------------------------------------------------------------------
 
 /// Called from `view::frame` (HUD_Frame): map change detection, emitter loading and emission

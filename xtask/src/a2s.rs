@@ -92,3 +92,34 @@ fn xash_info(host: &str, port: u16) -> std::io::Result<Info> {
         max_players: get("maxcl").parse().unwrap_or(0),
     })
 }
+
+/// A2S_PLAYER: (name, score) for each connected player, bots included.
+pub fn players(host: &str, port: u16) -> std::io::Result<Vec<(String, i32)>> {
+    let s = UdpSocket::bind("0.0.0.0:0")?;
+    s.set_read_timeout(Some(Duration::from_millis(1500)))?;
+    let mut buf = [0u8; 1400];
+    s.send_to(b"\xff\xff\xff\xffU\xff\xff\xff\xff", (host, port))?;
+    let mut n = s.recv(&mut buf)?;
+    if n >= 9 && buf[4] == b'A' {
+        let mut q = b"\xff\xff\xff\xffU".to_vec();
+        q.extend_from_slice(&buf[5..9]);
+        s.send_to(&q, (host, port))?;
+        n = s.recv(&mut buf)?;
+    }
+    let d = &buf[..n];
+    if d.len() < 6 || d[4] != b'D' {
+        return Err(std::io::Error::other("bad A2S_PLAYER reply"));
+    }
+    let mut out = Vec::new();
+    let mut p = 6;
+    for _ in 0..d[5] {
+        p += 1; // index
+        let end = d[p..].iter().position(|&b| b == 0).map(|e| e + p).ok_or_else(|| std::io::Error::other("truncated"))?;
+        let name = String::from_utf8_lossy(&d[p..end]).into_owned();
+        p = end + 1;
+        let score = i32::from_le_bytes(d.get(p..p + 4).ok_or_else(|| std::io::Error::other("truncated"))?.try_into().unwrap());
+        p += 8; // score + duration
+        out.push((name, score));
+    }
+    Ok(out)
+}
