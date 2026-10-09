@@ -7,7 +7,7 @@
 use super::base::*;
 use crate::entities::fire_targets;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
-use goldsrc::ext::entities::{ATTN_NORM, EHandle, snd, vec};
+use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, snd, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -281,5 +281,249 @@ impl Entity for FuncTrain {
         let me = cx.edict;
         let d = cx.pev().dmg;
         crate::damage::apply(other, &DamageInfo::new(me, me, d, crate::damage::bits::CRUSH));
+    }
+}
+
+// ---- func_plat ------------------------------------------------------------------------------------------
+
+pub const SF_PLAT_TOGGLE: i32 = 1;
+
+/// `func_plat` (CFuncPlat): a lift that rises when a player steps into its trigger volume (or
+/// toggles on use with spawnflag 1).
+#[derive(Default)]
+pub struct FuncPlat {
+    t: Toggle<Self>,
+    move_snd: i32,
+    stop_snd: i32,
+    volume: f32,
+    t_length: f32,
+    t_width: f32,
+    usable: bool,
+}
+
+impl Mover for FuncPlat {
+    fn toggle(&mut self) -> &mut Toggle<Self> {
+        &mut self.t
+    }
+}
+
+impl FuncPlat {
+    fn is_toggle(cx: &mut Cx) -> bool {
+        cx.pev().spawnflags & SF_PLAT_TOGGLE != 0
+    }
+
+    fn move_sound(&self, cx: &mut Cx) {
+        let n = cx.pev().noise;
+        if n != 0 {
+            emit(cx.edict, CHAN_STATIC, s(n), self.volume, ATTN_NORM, 0, PITCH_NORM as i32);
+        }
+    }
+
+    fn stop_sounds(&self, cx: &mut Cx) {
+        let v = cx.pev();
+        let (n, n1) = (v.noise, v.noise1);
+        if n != 0 {
+            engine().emit_sound(cx.edict, CHAN_STATIC as i32, s(n), 0.0, 0.0, snd::STOP, PITCH_NORM as i32);
+        }
+        if n1 != 0 {
+            emit(cx.edict, CHAN_WEAPON, s(n1), self.volume, ATTN_NORM, 0, PITCH_NORM as i32);
+        }
+    }
+
+    pub fn go_up(&mut self, cx: &mut Cx) {
+        self.move_sound(cx);
+        self.t.state = ToggleState::GoingUp;
+        self.t.move_done = Some(Self::hit_top);
+        let (p, sp) = (self.t.pos1, cx.pev().speed);
+        linear_move(self, cx, p, sp);
+    }
+
+    fn go_down(&mut self, cx: &mut Cx) {
+        self.move_sound(cx);
+        self.t.state = ToggleState::GoingDown;
+        self.t.move_done = Some(Self::hit_bottom);
+        let (p, sp) = (self.t.pos2, cx.pev().speed);
+        linear_move(self, cx, p, sp);
+    }
+
+    fn hit_top(&mut self, cx: &mut Cx) {
+        self.stop_sounds(cx);
+        self.t.state = ToggleState::AtTop;
+        if !Self::is_toggle(cx) {
+            self.t.think = Some(Self::go_down);
+            think_ltime(cx, 3.0);
+        }
+    }
+
+    fn hit_bottom(&mut self, cx: &mut Cx) {
+        self.stop_sounds(cx);
+        self.t.state = ToggleState::AtBottom;
+    }
+
+    /// `CPlatTrigger::Touch` on behalf of the trigger volume.
+    fn trigger_touch(&mut self, cx: &mut Cx) {
+        match self.t.state {
+            ToggleState::AtBottom => self.go_up(cx),
+            ToggleState::AtTop => think_ltime(cx, 1.0),
+            _ => {}
+        }
+    }
+}
+
+impl Entity for FuncPlat {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"height" => self.t.height = kv_f(value),
+            b"rotation" => self.t.final_angle[0] = kv_f(value),
+            b"movesnd" => self.move_snd = kv_f(value) as i32,
+            b"stopsnd" => self.stop_snd = kv_f(value) as i32,
+            b"volume" => self.volume = kv_f(value),
+            _ => return self.t.key_value(key, value),
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        // Setup
+        if self.t_length == 0.0 {
+            self.t_length = 80.0;
+        }
+        if self.t_width == 0.0 {
+            self.t_width = 10.0;
+        }
+        let v = cx.pev();
+        v.angles = [0.0; 3];
+        v.solid = SOLID_BSP as i32;
+        v.movetype = MOVETYPE_PUSH as i32;
+        let org = v.origin;
+        eng.set_origin(cx.edict, org);
+        set_own_model(cx);
+        let v = cx.pev();
+        self.t.pos1 = v.origin;
+        self.t.pos2 = v.origin;
+        self.t.pos2[2] = if self.t.height != 0.0 { v.origin[2] - self.t.height } else { v.origin[2] - v.size[2] + 8.0 };
+        if v.speed == 0.0 {
+            v.speed = 150.0;
+        }
+        if self.volume == 0.0 {
+            self.volume = 0.85;
+        }
+        // Precache
+        let (m, st) = (plat_move_sound(self.move_snd), plat_stop_sound(self.stop_snd));
+        eng.precache_sound(m);
+        eng.precache_sound(st);
+        let v = cx.pev();
+        v.noise = alloc(m);
+        v.noise1 = alloc(st);
+        if !Self::is_toggle(cx) {
+            spawn_plat_trigger(cx, self.t.pos1, self.t.pos2);
+        }
+        if cx.pev().targetname != 0 {
+            let p = self.t.pos1;
+            eng.set_origin(cx.edict, p);
+            self.t.state = ToggleState::AtTop;
+            self.usable = true;
+        } else {
+            let p = self.t.pos2;
+            eng.set_origin(cx.edict, p);
+            self.t.state = ToggleState::AtBottom;
+        }
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        run_think(self, cx);
+    }
+
+    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, kind: UseType, _v: f32) {
+        if !self.usable {
+            return;
+        }
+        if Self::is_toggle(cx) {
+            let on = self.t.state == ToggleState::AtBottom;
+            if !should_toggle(kind, on) {
+                return;
+            }
+            match self.t.state {
+                ToggleState::AtTop => self.go_down(cx),
+                ToggleState::AtBottom => self.go_up(cx),
+                _ => {}
+            }
+        } else {
+            self.usable = false;
+            if self.t.state == ToggleState::AtTop {
+                self.go_down(cx);
+            }
+        }
+    }
+
+    fn blocked(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        let me = cx.edict;
+        crate::damage::apply(other, &DamageInfo::new(me, me, 1.0, crate::damage::bits::CRUSH));
+        let n = cx.pev().noise;
+        if n != 0 {
+            engine().emit_sound(me, CHAN_STATIC as i32, s(n), 0.0, 0.0, snd::STOP, PITCH_NORM as i32);
+        }
+        match self.t.state {
+            ToggleState::GoingUp => self.go_down(cx),
+            ToggleState::GoingDown => self.go_up(cx),
+            _ => {}
+        }
+    }
+}
+
+/// `PlatSpawnInsideTrigger`: the trigger volume that calls the lift.
+fn spawn_plat_trigger(cx: &mut Cx, pos1: Vec3, pos2: Vec3) {
+    let eng = engine();
+    let e = eng.create_entity();
+    if e.is_null() {
+        return;
+    }
+    world::create::<PlatTrigger>(unsafe { &mut (*e).v });
+    let platform = EHandle::new(cx.edict);
+    world::with::<PlatTrigger, _>(e, |t| t.platform = platform);
+    let pv = cx.pev();
+    let tv = unsafe { &mut (*e).v };
+    tv.classname = eng.alloc_string(c"plat_trigger");
+    tv.solid = SOLID_TRIGGER as i32;
+    tv.movetype = MOVETYPE_NONE as i32;
+    tv.origin = pv.origin;
+    let mut tmin = vec::add(pv.mins, [25.0, 25.0, 0.0]);
+    let mut tmax = vec::add(pv.maxs, [25.0, 25.0, 8.0]);
+    tmin[2] = tmax[2] - (pos1[2] - pos2[2] + 8.0);
+    if pv.size[0] <= 50.0 {
+        tmin[0] = (pv.mins[0] + pv.maxs[0]) / 2.0;
+        tmax[0] = tmin[0] + 1.0;
+    }
+    if pv.size[1] <= 50.0 {
+        tmin[1] = (pv.mins[1] + pv.maxs[1]) / 2.0;
+        tmax[1] = tmin[1] + 1.0;
+    }
+    eng.set_size(e, tmin, tmax);
+}
+
+#[derive(Default)]
+pub struct PlatTrigger {
+    platform: EHandle,
+}
+
+impl Entity for PlatTrigger {
+    fn touch(&mut self, _cx: &mut Cx, other: *mut edict_t) {
+        if !goldsrc::ext::entities::is_player(other) {
+            return;
+        }
+        let ov = unsafe { &(*other).v };
+        if ov.deadflag != DEAD_NO as i32 || ov.health <= 0.0 {
+            return;
+        }
+        let p = self.platform.get();
+        if p.is_null() {
+            return;
+        }
+        world::dispatch(p, |ent, pcx| {
+            if let Some(plat) = (ent as &mut dyn std::any::Any).downcast_mut::<FuncPlat>() {
+                plat.trigger_touch(pcx);
+            }
+        });
     }
 }

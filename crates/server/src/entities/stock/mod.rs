@@ -27,11 +27,11 @@ use breakable::{FuncBreakable, FuncPushable};
 use buttons::{Button, ButtonTarget, MultiSource};
 use doors::Door;
 use effects::*;
-use items::{Battery, HealthKit};
+use items::{ArmorCharger, Battery, HealthCharger, HealthKit};
 use lights::Light;
 use maprules::GameText;
 use sound::AmbientGeneric;
-use trains::{FuncTrain, PathCorner};
+use trains::{FuncPlat, FuncTrain, PathCorner};
 use triggers::*;
 
 link_entities! {
@@ -58,6 +58,7 @@ link_entities! {
     multisource               => MultiSource,
     // plats.cpp / pathcorner.cpp
     func_train                => FuncTrain,
+    func_plat                 => FuncPlat,
     path_corner               => PathCorner,
     // triggers.cpp
     trigger_multiple          => Trigger<K_MULTIPLE>,
@@ -106,6 +107,10 @@ link_entities! {
     item_healthkit            => HealthKit,
     item_battery              => Battery,
     game_text                 => GameText,
+    func_healthcharger        => HealthCharger,
+    func_recharge             => ArmorCharger,
+    env_global                => EnvGlobal,
+    env_message               => EnvMessage,
 }
 
 #[derive(Default)]
@@ -181,7 +186,7 @@ pub fn object_caps(e: *mut edict_t) -> i32 {
         b"button_target" => {
             if v.spawnflags & buttons::SF_BTARGET_USE != 0 { FCAP_IMPULSE_USE } else { 0 }
         }
-        b"func_pushable" => FCAP_CONTINUOUS_USE,
+        b"func_pushable" | b"func_healthcharger" | b"func_recharge" => FCAP_CONTINUOUS_USE,
         _ => 0,
     }
 }

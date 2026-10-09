@@ -488,9 +488,18 @@ pub fn set_global_state(name: &CStr, st: GlobalState) {
     }
 }
 
-/// Map change: forget per-map registries.
+pub fn global_in_table(name: &CStr) -> bool {
+    global_exists(name)
+}
+
+/// Map change: forget the per-map master registry. `env_global` states persist across maps like
+/// the SDK's `gGlobalState` (only `pfnResetGlobalState` clears them).
 pub fn reset_registries() {
     MASTERS.0.borrow_mut().take();
+}
+
+/// `pfnResetGlobalState`.
+pub fn reset_global_state() {
     GLOBALS.0.borrow_mut().clear();
 }
 

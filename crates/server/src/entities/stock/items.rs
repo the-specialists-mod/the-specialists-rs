@@ -208,3 +208,130 @@ impl<const KIND: u8> Entity for Item<KIND> {
 
 pub type HealthKit = Item<0>;
 pub type Battery = Item<1>;
+
+// ---- func_healthcharger / func_recharge ---------------------------------------------------------------
+
+/// `func_healthcharger` (`ARMOR = false`) and `func_recharge` (`ARMOR = true`), TS versions: a full
+/// charger empties in one go (full health via `TakeHealth(max - health)`, or `TakeArmor(100)`),
+/// then recharges after 60 s (health) / 30 s (armour). Continuous +use.
+#[derive(Default)]
+pub struct Charger<const ARMOR: bool> {
+    full: bool,
+    on: i32,
+    next_charge: f32,
+    sound_time: f32,
+    recharge_at: Option<f32>,
+}
+
+impl<const ARMOR: bool> Charger<ARMOR> {
+    fn sounds() -> (&'static CStr, &'static CStr, &'static CStr, f32) {
+        if ARMOR {
+            (c"items/suitchargeok1.wav", c"items/suitcharge1.wav", c"items/suitchargeno1.wav", 0.85)
+        } else {
+            (c"items/medshot4.wav", c"items/medcharge4.wav", c"items/medshotno1.wav", 1.0)
+        }
+    }
+
+    fn off(&mut self, cx: &mut Cx) {
+        let (_, charge, _, _) = Self::sounds();
+        if self.on > 1 {
+            engine().emit_sound(cx.edict, CHAN_STATIC as i32, charge, 0.0, 0.0, goldsrc::ext::entities::snd::STOP, PITCH_NORM as i32);
+        }
+        self.on = 0;
+        if !self.full {
+            let t = if ARMOR { 30.0 } else { 60.0 };
+            self.recharge_at = Some(t);
+            think_ltime(cx, t);
+        } else {
+            self.recharge_at = None;
+        }
+    }
+
+    fn recharge(&mut self, cx: &mut Cx) {
+        let (start, _, _, vol) = Self::sounds();
+        emit(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0, PITCH_NORM as i32);
+        self.full = true;
+        cx.pev().frame = 0.0;
+        self.recharge_at = None;
+    }
+}
+
+impl<const ARMOR: bool> Entity for Charger<ARMOR> {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, _value: &CStr) -> bool {
+        // style/height/value1-3/dmdelay are swallowed; the rest go to CBaseToggle (unused here).
+        matches!(key.to_bytes(), b"style" | b"height" | b"value1" | b"value2" | b"value3" | b"dmdelay")
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let (a, b, c, _) = Self::sounds();
+        for snd in [a, b, c] {
+            eng.precache_sound(snd);
+        }
+        let v = cx.pev();
+        v.solid = SOLID_BSP as i32;
+        v.movetype = MOVETYPE_PUSH as i32;
+        let (org, mins, maxs) = (v.origin, v.mins, v.maxs);
+        eng.set_origin(cx.edict, org);
+        eng.set_size(cx.edict, mins, maxs);
+        set_own_model(cx);
+        self.full = true;
+        cx.pev().frame = 0.0;
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        if self.recharge_at.is_some() {
+            self.recharge(cx);
+        } else {
+            self.off(cx);
+        }
+    }
+
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+        if !is_player(activator) {
+            return;
+        }
+        let now = engine().time();
+        let (start, charge, deny, vol) = Self::sounds();
+        if !self.full {
+            cx.pev().frame = 1.0;
+            self.off(cx);
+            if self.sound_time <= now {
+                self.sound_time = now + 0.62;
+                emit(cx.edict, CHAN_ITEM, deny, vol, ATTN_NORM, 0, PITCH_NORM as i32);
+            }
+            return;
+        }
+        // (TS also refuses players without the HEV suit bit; this port's players don't carry it.)
+        self.recharge_at = None;
+        think_ltime(cx, 0.25);
+        if self.next_charge >= now {
+            return;
+        }
+        if self.on == 0 {
+            self.on = 1;
+            emit(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0, PITCH_NORM as i32);
+            self.sound_time = now + 0.56;
+        }
+        if self.on == 1 && self.sound_time <= now {
+            self.on = 2;
+            emit(cx.edict, CHAN_STATIC, charge, vol, ATTN_NORM, 0, PITCH_NORM as i32);
+        }
+        let pv = unsafe { &(*activator).v };
+        if ARMOR {
+            if pv.armorvalue < 100.0 {
+                self.full = false;
+                player_take_armor(activator, 100.0);
+            }
+        } else if pv.health != pv.max_health {
+            let amount = pv.max_health - pv.health;
+            if player_take_health(activator, amount) {
+                self.full = false;
+            }
+        }
+        self.next_charge = now + 0.1;
+    }
+}
+
+pub type HealthCharger = Charger<false>;
+pub type ArmorCharger = Charger<true>;

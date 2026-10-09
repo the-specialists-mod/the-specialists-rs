@@ -922,3 +922,123 @@ mod tests {
         assert_eq!(super::approach(1.0, 0.0, 3.0), 1.0);
     }
 }
+
+// ---- env_global / env_message -----------------------------------------------------------------------------
+
+pub const SF_GLOBAL_SET: i32 = 1;
+
+/// `env_global`: sets a global state (read by masters, trigger_auto).
+#[derive(Default)]
+pub struct EnvGlobal {
+    globalstate: string_t,
+    trigger_mode: i32,
+    initial_state: i32,
+}
+
+fn global_from(i: i32) -> GlobalState {
+    match i {
+        1 => GlobalState::On,
+        2 => GlobalState::Dead,
+        _ => GlobalState::Off,
+    }
+}
+
+impl Entity for EnvGlobal {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"globalstate" => self.globalstate = alloc(value),
+            b"triggermode" => self.trigger_mode = kv_i(value),
+            b"initialstate" => self.initial_state = kv_i(value),
+            _ => return false,
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        if self.globalstate == 0 {
+            remove(cx.edict);
+            return;
+        }
+        if cx.pev().spawnflags & SF_GLOBAL_SET != 0 && !global_in_table(s(self.globalstate)) {
+            set_global_state(s(self.globalstate), global_from(self.initial_state));
+        }
+    }
+
+    fn use_(&mut self, _cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+        let name = s(self.globalstate);
+        let old = global_state(name);
+        let new = match self.trigger_mode {
+            0 => GlobalState::Off,
+            1 => GlobalState::On,
+            2 => GlobalState::Dead,
+            _ => match old {
+                GlobalState::On => GlobalState::Off,
+                GlobalState::Off => GlobalState::On,
+                st => st,
+            },
+        };
+        set_global_state(name, new);
+    }
+}
+
+pub const SF_MESSAGE_ONCE: i32 = 1;
+pub const SF_MESSAGE_ALL: i32 = 2;
+
+/// `env_message`: a titles.txt message (`HudText`) plus an optional sound.
+#[derive(Default)]
+pub struct EnvMessage;
+
+impl Entity for EnvMessage {
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        let v = cx.pev();
+        match key.to_bytes() {
+            b"messagesound" => v.noise = alloc(value),
+            b"messagevolume" => v.scale = kv_f(value) * 0.1,
+            b"messageattenuation" => v.impulse = kv_i(value),
+            _ => return false,
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        precache_sound_s(v.noise);
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_NONE as i32;
+        v.speed = match v.impulse {
+            1 => goldsrc::ext::entities::ATTN_STATIC,
+            2 => ATTN_NORM,
+            3 => 0.0,
+            _ => goldsrc::ext::entities::ATTN_IDLE,
+        };
+        v.impulse = 0;
+        if v.scale <= 0.0 {
+            v.scale = 1.0;
+        }
+    }
+
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+        let eng = engine();
+        let v = cx.pev();
+        let msg = s(v.message);
+        if v.spawnflags & SF_MESSAGE_ALL != 0 {
+            for i in 1..=eng.max_clients() {
+                show_message(msg, eng.player(i));
+            }
+        } else {
+            let p = if is_player(activator) { activator } else { eng.entity_of_index(1) };
+            show_message(msg, p);
+        }
+        let v = cx.pev();
+        let (noise, vol, attn) = (v.noise, v.scale, v.speed);
+        if noise != 0 {
+            emit(cx.edict, CHAN_BODY, s(noise), vol, attn, 0, PITCH_NORM as i32);
+        }
+        let me = cx.edict;
+        if cx.pev().spawnflags & SF_MESSAGE_ONCE != 0 {
+            remove(me);
+        }
+        let target = cx.pev().target;
+        sub_use_targets(me, target, 0, 0.0, me, UseType::Toggle, 0.0);
+    }
+}
