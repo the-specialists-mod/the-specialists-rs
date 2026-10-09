@@ -428,8 +428,13 @@ pub fn precache() {
 
 /// `TSInit` (0x92a4c), the stunt and animation parts.
 pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
+    // Keep what other packages set earlier in the spawn order (rules: The One; weapons: the
+    // animation extensions of the spawn loadout).
     let the_one = p.stunt.the_one;
+    let (ext, ext2) = (std::mem::take(&mut p.stunt.anim.ext), std::mem::take(&mut p.stunt.anim.ext2));
     p.stunt = StuntState { the_one, ..StuntState::default() };
+    p.stunt.anim.ext = ext;
+    p.stunt.anim.ext2 = ext2;
     let pev = cx.pev();
     pev.iuser4 = 0;
     pev.gaitsequence = 0;
