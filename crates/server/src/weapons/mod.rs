@@ -73,6 +73,8 @@ pub struct SvState {
     pub sent_owned: [bool; MAX_WEAPONS],
     pub sent_act_items: Option<u8>,
     pub sent_space: Option<i32>,
+    /// Free-slot count the move speed was last computed for.
+    pub speed_for: Option<i32>,
 }
 
 impl Default for SvState {
@@ -100,6 +102,7 @@ impl Default for SvState {
             sent_owned: [false; MAX_WEAPONS],
             sent_act_items: None,
             sent_space: None,
+            speed_for: None,
         }
     }
 }
@@ -113,6 +116,7 @@ impl SvState {
         self.sent_owned = [false; MAX_WEAPONS];
         self.sent_act_items = None;
         self.sent_space = None;
+        self.speed_for = None;
     }
 }
 
@@ -281,6 +285,13 @@ pub fn multiply_clip(p: &mut Player, cx: &mut Cx) -> bool {
 /// Drops a weapon like the `drop` command / a disarm (rules: flag/briefcase handling stays theirs).
 pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
     inventory::drop_weapon(p, cx, which);
+}
+
+/// `AddToFullPack` glow (TS: `WorldGun` dropped by `host`, or a `knife` it threw): returns
+/// true if `ent` should get `rendermode 0, renderamt 2, renderfx kRenderFxGlowShell (19),
+/// rendercolor (100,100,100)` for this client.
+pub fn glow_for_host(ent: *mut edict_t, host: *mut edict_t) -> bool {
+    worldgun::glows_for(ent, host) || projectiles::knife_glows_for(ent, host)
 }
 
 /// Round-mode loadout items: M61 buys (2 per life) and stealth shoes. TS allows them only when

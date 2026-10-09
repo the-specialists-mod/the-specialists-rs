@@ -21,6 +21,8 @@ pub struct Cvars {
     pub damagemult: &'static cvar_t,
     /// `customweapons`: weapon parameter file (not implemented, see docs).
     pub customweapons: &'static cvar_t,
+    /// Not TS: `ts_weapons_debug 1` logs fires, hits, explosions, drops to the server console.
+    pub debug: &'static cvar_t,
 }
 
 static CVARS: Global<RefCell<Option<Cvars>>> = Global(RefCell::new(None));
@@ -37,6 +39,7 @@ pub fn register_cvars() {
         weaponstay: e.register_cvar("weaponstay", "15", FCVAR_SERVER),
         damagemult: e.register_cvar("damagemult", "0", FCVAR_SERVER),
         customweapons: e.register_cvar("customweapons", "", FCVAR_SERVER),
+        debug: e.register_cvar("ts_weapons_debug", "0", 0),
     };
     *CVARS.0.borrow_mut() = Some(c);
     e.add_server_command(c"weaponrestriction", cmd_weaponrestriction);
@@ -73,6 +76,14 @@ pub fn damage_adjust() -> f32 {
 pub fn max_carry(t: u8) -> i32 {
     let col = (cvars().ammocount as i32).clamp(0, 3) as usize;
     tables().ammo(t).map(|a| a.max_carry[col]).unwrap_or(0)
+}
+
+/// Logs `f()` when `ts_weapons_debug` is set.
+pub fn debug(f: impl FnOnce() -> String) {
+    let on = CVARS.0.borrow().as_ref().map(|c| cvar_value(c.debug) != 0.0).unwrap_or(false);
+    if on {
+        engine().print(&format!("[ts weapons] {}\n", f()));
+    }
 }
 
 pub fn restriction() -> u32 {

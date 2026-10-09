@@ -25,9 +25,15 @@ pub enum Drop {
 
 /// Updates `Player::slots_used` and the move speed from the free slots
 /// (`210 + free * 120 / 81`, rounded, 330 when nothing is carried).
+/// Only acts when the free slots changed (or after a spawn), so other subsystems may adjust
+/// `maxspeed` in between.
 pub fn sync_speed(p: &mut Player, cx: &mut Cx) {
     let free = p.inv.sv.free_slots;
     p.slots_used = SLOTS - free;
+    if p.inv.sv.speed_for == Some(free) {
+        return;
+    }
+    p.inv.sv.speed_for = Some(free);
     let speed = if free < SLOTS { shared::ts::speed_for_free_slots(free).round_ties_even() } else { 330.0 };
     let speed = speed.clamp(0.0, 330.0);
     let pev = cx.pev();
@@ -62,6 +68,7 @@ pub fn pick_up_weapon(p: &mut Player, cx: &mut Cx, id: u8, from: Option<&Status>
     }
     p.inv.sv.free_slots = after;
     sync_speed(p, cx);
+    assets::debug(|| format!("picked up {id}, free slots {after}"));
     emit(cx.edict, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, 0.8, 100);
     if select || p.inv.gun.current == 0 {
         let mut sel = id;
@@ -203,6 +210,7 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
         }
     }
     emit(cx.edict, CHAN_ITEM, c"weapons/weapondrop.wav", 1.0, 0.8, 100);
+    assets::debug(|| format!("dropped {target} ({which:?}), free slots {}", p.inv.sv.free_slots));
     if matches!(which, Drop::Current | Drop::Disarm(_)) && !thrown.is_null() {
         worldgun::set_drop_lifetime(thrown, cx.edict);
     }
@@ -345,5 +353,6 @@ pub fn on_killed(p: &mut Player, cx: &mut Cx) {
     p.inv.sv.armament_ammo = [0; MAX_AMMO];
     net::send_act_items(cx.edict, 0);
     p.inv.sv.sent_act_items = Some(0);
+    net::send_cur_weapon_reset(cx.edict);
     sync_speed(p, cx);
 }

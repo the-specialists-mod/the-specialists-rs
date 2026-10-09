@@ -134,6 +134,13 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
             with_host(p, cx, |gun, h| gun.switch_to(target, h));
             true
         }
+        // Not TS: debug log switch, forwarded here when typed in a listen server's console.
+        "ts_weapons_debug" => {
+            if engine().cvar_float(c"sv_cheats") != 0.0 && args.argc() > 1 {
+                engine().set_cvar_float(c"ts_weapons_debug", args.float(1));
+            }
+            true
+        }
         // Not TS: console helper to arm yourself on servers with sv_cheats (testing).
         "ts_give" => {
             if engine().cvar_float(c"sv_cheats") == 0.0 {

@@ -61,6 +61,16 @@ pub fn send_act_items(player: *mut edict_t, items: u8) {
     s.end();
 }
 
+/// `CurWeapon` 0,0,0 (TS only sends this reset, from `RemoveAllItems`).
+pub fn send_cur_weapon_reset(to: *mut edict_t) {
+    if bot(to) {
+        return;
+    }
+    let mut s = Sink::new(messages::one(Msg::CurWeapon, to));
+    proto::write_cur_weapon_reset(&mut s);
+    s.end();
+}
+
 fn send_wstatus(to: *mut edict_t, id: u8, owned: bool, clip: i32) {
     let mut s = Sink::new(messages::one(Msg::WStatus, to));
     WStatus { id, owned: owned as u8, clip: clip as u8 }.write(&mut s);

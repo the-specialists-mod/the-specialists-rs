@@ -135,6 +135,7 @@ impl GunHost for ServerHost<'_> {
     }
 
     fn event(&mut self, ev: Event, args: EventArgs) {
+        assets::debug(|| format!("event {:?} f1={} f2={} i1={} i2={} b1={} b2={}", ev, args.f1, args.f2, args.i1, args.i2, args.b1, args.b2));
         playback(self.edict, ev, args);
     }
     fn weapon_anim(&mut self, anim: i32, skip_local: bool, body: i32) {
@@ -183,6 +184,7 @@ impl GunHost for ServerHost<'_> {
         melee::attack(self.edict, hit, self.sv.atk_block)
     }
     fn throw_grenade(&mut self, origin: Vec3, velocity: Vec3, roll: bool) {
+        assets::debug(|| format!("throw grenade roll={roll} vel={velocity:?}"));
         projectiles::create_grenade(self.edict, origin, velocity, roll);
     }
     fn throw_blade(&mut self, btype: i32) {

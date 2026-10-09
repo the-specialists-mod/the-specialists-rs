@@ -56,13 +56,19 @@ pub fn bullet_damage(shooter: *mut edict_t, tr: &TraceResult, dmg: f32, dir: Vec
     info.dir = dir;
     info.pos = tr.vecEndPos;
     info.weapon = weapon as i32;
-    damage::apply(hit, &info);
+    let ok = damage::apply(hit, &info);
+    assets::debug(|| {
+        let e = engine();
+        let v = unsafe { &(*hit).v };
+        format!("hit {} #{} dmg={dmg:.2} hitgroup={} bits={bits:#x} applied={ok} health={}", e.string(v.classname).to_string_lossy(), e.index_of(hit), tr.iHitgroup, v.health)
+    });
 }
 
 /// `CBasePlayer::ShootBulletsPlayer`: seeded pellets, range falloff, one wall penetration; or
 /// simulated bullets (`realbullet`, or the shooter in slow motion).
 pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
     let e = engine();
+    assets::debug(|| format!("shoot weapon={} pellets={} spread={:.5} dmg={} seed={}", shot.weapon, shot.pellets, shot.spread, shot.damage, shot.seed));
     let pev = unsafe { &(*shooter).v };
     let real = assets::cvars().realbullet != 0.0 || pev.fuser1 < 0.99;
     let (fwd, right, up) = spread::angle_vectors(pev.v_angle);

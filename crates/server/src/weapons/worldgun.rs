@@ -67,6 +67,11 @@ pub fn set_drop_lifetime(gun: *mut edict_t, dropper: *mut edict_t) {
     });
 }
 
+/// The dropper sees its own dropped gun glow (see `weapons::glow_for_host`).
+pub fn glows_for(ent: *mut edict_t, host: *mut edict_t) -> bool {
+    crate::world::with::<WorldGun, _>(ent, |w| w.dropper == Some(host)).unwrap_or(false)
+}
+
 impl Entity for WorldGun {
     fn spawn(&mut self, cx: &mut Cx) {
         let e = engine();

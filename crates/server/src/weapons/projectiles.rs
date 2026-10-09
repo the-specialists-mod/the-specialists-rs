@@ -257,6 +257,7 @@ pub fn explode(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t, dm
         if v.takedamage == 0.0 || v.deadflag == DEAD_DEAD as i32 {
             continue;
         }
+        super::assets::debug(|| format!("explosion reaches {} #{}", e.string(v.classname).to_string_lossy(), e.index_of(ent)));
         let is_player = e.is_player_edict(ent);
         if is_player && v.deadflag == DEAD_NO as i32 && v.health > 0.0 {
             screen_fade(ent, [222, 227, 189], 0.1, 0.05, 75, 0);
@@ -293,7 +294,8 @@ fn hit(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut edict_t, d:
     info.dir = dir;
     info.pos = pos;
     info.weapon = id::M61 as i32;
-    damage::apply(victim, &info);
+    let ok = damage::apply(victim, &info);
+    super::assets::debug(|| format!("explosion damage {d:.1} applied={ok} health={}", unsafe { (*victim).v.health }));
 }
 
 // ---- thrown knives --------------------------------------------------------------------------
@@ -332,6 +334,11 @@ pub fn throw_blade(owner: *mut edict_t, btype: i32) {
         pev.angles = ang;
         pev.avelocity = [if btype == 8 { -700.0 } else { -1300.0 }, 0.0, 0.0];
     });
+}
+
+/// A thrown knife glows for its thrower.
+pub fn knife_glows_for(ent: *mut edict_t, host: *mut edict_t) -> bool {
+    world::with::<Knife, _>(ent, |k| k.owner == Some(host)).unwrap_or(false)
 }
 
 impl Knife {
