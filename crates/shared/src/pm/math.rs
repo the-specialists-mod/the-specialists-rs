@@ -57,6 +57,7 @@ pub fn normalize(v: &mut Vec3) -> f32 {
 }
 
 /// Quake `AngleVectors` (pitch, yaw, roll in degrees) -> (forward, right, up).
+#[allow(clippy::neg_multiply)] // written as in mathlib.c
 pub fn angle_vectors(angles: Vec3) -> (Vec3, Vec3, Vec3) {
     let (sy, cy) = ((angles[1] * DEG2RAD).sin(), (angles[1] * DEG2RAD).cos());
     let (sp, cp) = ((angles[0] * DEG2RAD).sin(), (angles[0] * DEG2RAD).cos());

@@ -6,8 +6,8 @@
 //! the same operation order as the C source (the x87 build keeps some intermediates in extended
 //! precision, which can't be reproduced exactly).
 //!
-//! * [`ts`]: the TS stunt hooks (`TSHandle`, `TSDive`, `PseudoClimb`, ...).
-//! * [`textures`]: `sound/materials.txt`.
+//! * `ts`: the TS stunt hooks (`TSHandle`, `TSDive`, `PseudoClimb`, ...).
+//! * `textures`: `sound/materials.txt`.
 //! * `sound`: footsteps (`PM_UpdateStepSound`, `PM_PlayStepSound`).
 //!
 //! Global state (`OldrotArray`, the stuck tables, the texture table) is per library, as in C.
