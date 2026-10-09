@@ -76,6 +76,13 @@ pub struct StuntState {
     /// Last physinfo `mj` value written (mirrors `Player::superjump`).
     mj_sent: Option<bool>,
 
+    /// Last `iuser4` seen by the debug trace.
+    debug_last: i32,
+    /// Debug: (takeoff z, highest z) of the current airborne phase.
+    debug_air: Option<(f32, f32)>,
+    /// Frames of simulated `+alt1` left (`ts_debug_alt1`, with `ts_debug_stunt 1`).
+    debug_alt1: i32,
+
     /// Close-combat hit window shared with weapons (pl+0x798..0x7a8): a delayed hit that lands
     /// through `CheckForBreakables` while the player keeps moving (flying kicks, backflip kick).
     pub melee: MeleeWindow,
@@ -132,6 +139,9 @@ impl Default for StuntState {
             stance_sent: None,
             the_one: false,
             mj_sent: None,
+            debug_last: 0,
+            debug_alt1: 0,
+            debug_air: None,
             melee: MeleeWindow::default(),
             anim: AnimState::default(),
         }
@@ -183,8 +193,8 @@ fn stunt_sound(cx: &mut Cx, sample: &CStr) {
 
 /// `gmsgTSNextStunt`: the cooldown in tenths of a second.
 fn send_next_stunt(p: &mut Player, cx: &mut Cx) {
-    let v = (p.stunt.next_stunt * 10.0).round_ties_even() as i32;
-    messages::one(Msg::NextStunt, cx.edict).byte(v).end();
+    let v = shared::protocol::stunt::encode_next_stunt(p.stunt.next_stunt);
+    messages::one(Msg::NextStunt, cx.edict).byte(v as i32).end();
 }
 
 /// `TSMBlur` to everyone in the PVS: (entindex, level).
@@ -292,7 +302,72 @@ pub fn in_airborne_stunt(cx: &mut Cx) -> bool {
 
 // ---- hooks ---------------------------------------------------------------------------------------------
 
-pub fn game_init() {}
+static DEBUG: goldsrc::Global<std::cell::Cell<Option<&'static cvar_t>>> = goldsrc::Global(std::cell::Cell::new(None));
+
+/// `ts_debug_stunt 1` logs every `iuser4` change (with origin, velocity and sequences) to the
+/// server console. Development aid; not in TS.
+pub fn game_init() {
+    DEBUG.0.set(Some(engine().register_cvar("ts_debug_stunt", "0", 0)));
+}
+
+fn debug_enabled() -> bool {
+    DEBUG.0.get().is_some_and(|c| goldsrc::server::cvar_value(c) != 0.0)
+}
+
+/// Debug trace of stunt state changes (see `ts_debug_stunt`).
+fn debug_log(p: &mut Player, cx: &mut Cx, last: &mut i32) {
+    let edict = cx.edict;
+    let time = cx.time();
+    let pev = cx.pev();
+    if pev.iuser4 == *last || !debug_enabled() {
+        *last = pev.iuser4;
+        return;
+    }
+    let name = |seq: i32| {
+        goldsrc::ext::movement::model_ptr(edict)
+            .and_then(|h| h.sequence_name(seq).map(|n| String::from_utf8_lossy(n).into_owned()))
+            .unwrap_or_default()
+    };
+    let msg = format!(
+        "[stunt] t={:.2} iuser4 {:#x} -> {:#x} org=({:.0} {:.0} {:.0}) vel=({:.0} {:.0} {:.0}) view={} hull_duck={} seq={} gait={} next={:.2} recover={:.2}\n",
+        time,
+        *last,
+        pev.iuser4,
+        pev.origin[0],
+        pev.origin[1],
+        pev.origin[2],
+        pev.velocity[0],
+        pev.velocity[1],
+        pev.velocity[2],
+        pev.view_ofs[2],
+        pev.flags & FL_DUCKING as i32 != 0,
+        name(pev.sequence),
+        name(pev.gaitsequence),
+        p.stunt.next_stunt,
+        p.stunt.recover,
+    );
+    *last = pev.iuser4;
+    engine().print(&msg);
+}
+
+/// Debug trace of airborne phases: rise from takeoff to apex, logged on landing.
+fn debug_air(p: &mut Player, cx: &mut Cx) {
+    if !debug_enabled() {
+        return;
+    }
+    let grounded = on_ground(cx);
+    let z = cx.pev().origin[2];
+    match (&mut p.stunt.debug_air, grounded) {
+        (None, false) => p.stunt.debug_air = Some((z, z)),
+        (Some((_, top)), false) => *top = top.max(z),
+        (Some((start, top)), true) => {
+            let msg = format!("[stunt] landed: rise {:.2} (takeoff z {:.2}, apex z {:.2}, landing z {:.2})\n", *top - *start, *start, *top, z);
+            p.stunt.debug_air = None;
+            engine().print(&msg);
+        }
+        (None, true) => {}
+    }
+}
 
 /// Stunt and player-movement sounds (PM plays footsteps through the engine).
 pub fn precache() {
@@ -377,6 +452,14 @@ fn sync_superjump(p: &mut Player, cx: &mut Cx) {
 
 /// The stunt parts of `CBasePlayer::PreThink` (0x908cc), in order.
 pub fn pre_think(p: &mut Player, cx: &mut Cx) {
+    let mut last = p.stunt.debug_last;
+    debug_log(p, cx, &mut last);
+    p.stunt.debug_last = last;
+    debug_air(p, cx);
+    if p.stunt.debug_alt1 > 0 {
+        p.stunt.debug_alt1 -= 1;
+        cx.pev().button |= IN_ALT1;
+    }
     let time = cx.time();
     {
         let button = cx.pev().button;
@@ -490,8 +573,25 @@ pub fn post_think(p: &mut Player, cx: &mut Cx) {
     }
 }
 
-pub fn client_command(_p: &mut Player, _cx: &mut Cx, _cmd: &str, _args: &Args) -> bool {
-    false
+/// TS has no stunt client commands. Development aids, only with `ts_debug_stunt 1`:
+/// `ts_debug_alt1` holds the stunt key for 3 frames (scripted tests before the client has
+/// `+alt1`), `ts_debug_face <pitch> <yaw>` turns the player.
+pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bool {
+    if !debug_enabled() {
+        return false;
+    }
+    match cmd {
+        "ts_debug_alt1" => p.stunt.debug_alt1 = 3,
+        "ts_debug_face" => {
+            let pev = cx.pev();
+            pev.v_angle = [args.float(1), args.float(2), 0.0];
+            // SVC_SETANGLE sends pev->angles as the client view angles.
+            pev.angles = pev.v_angle;
+            pev.fixangle = 1;
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Prediction inputs: the stunt bits and the time scale (TS's `delta.lst` carries both).

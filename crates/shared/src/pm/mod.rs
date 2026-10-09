@@ -176,8 +176,12 @@ pub fn init(pm: &mut playermove_t) {
         }
     }
     let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len.max(0) as usize) };
-    textures::load(bytes);
+    let n = textures::load(bytes);
     unsafe { free(data.cast()) };
+    if let Some(print) = pm.Con_DPrintf {
+        let msg = std::ffi::CString::new(format!("PM_Init: {n} material types from sound/materials.txt\n")).unwrap_or_default();
+        unsafe { print(c"%s".as_ptr(), msg.as_ptr()) };
+    }
 }
 
 /// Material type for footstep and impact sounds (`CHAR_TEX_*`), from TS's sound/materials.txt.
