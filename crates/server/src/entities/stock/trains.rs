@@ -299,6 +299,9 @@ pub struct FuncPlat {
     t_length: f32,
     t_width: f32,
     usable: bool,
+    /// TS: fired when the lift reaches the top / bottom.
+    target_top: string_t,
+    target_bottom: string_t,
 }
 
 impl Mover for FuncPlat {
@@ -353,11 +356,19 @@ impl FuncPlat {
             self.t.think = Some(Self::go_down);
             think_ltime(cx, 3.0);
         }
+        if self.target_top != 0 {
+            let me = cx.edict;
+            fire_targets(s(self.target_top), me, me, UseType::Toggle, 0.0);
+        }
     }
 
     fn hit_bottom(&mut self, cx: &mut Cx) {
         self.stop_sounds(cx);
         self.t.state = ToggleState::AtBottom;
+        if self.target_bottom != 0 {
+            let me = cx.edict;
+            fire_targets(s(self.target_bottom), me, me, UseType::Toggle, 0.0);
+        }
     }
 
     /// `CPlatTrigger::Touch` on behalf of the trigger volume.
@@ -373,6 +384,8 @@ impl FuncPlat {
 impl Entity for FuncPlat {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
+            b"targettop" => self.target_top = alloc(value),
+            b"targetbot" => self.target_bottom = alloc(value),
             b"height" => self.t.height = kv_f(value),
             b"rotation" => self.t.final_angle[0] = kv_f(value),
             b"movesnd" => self.move_snd = kv_f(value) as i32,
