@@ -115,9 +115,10 @@ fn handle_stunt(p: &mut Player, cx: &mut Cx) {
     if cx.pev().iuser4 & (PRONE | DIVING | FLIP_HIGH | FLIP_LOW) != 0 {
         return;
     }
-    p.stunt.melee.window = 0.0;
-    p.stunt.melee.damage = 0.0;
-    p.stunt.melee.kind = 0;
+    let g = &mut p.inv.gun;
+    g.melee_window = 0.0;
+    g.melee_damage = 0.0;
+    g.melee_source = 0;
 
     let alt_pressed = p.stunt.button_pressed & IN_ALT1 != 0;
     if cx.pev().button & IN_JUMP as i32 != 0 {
@@ -485,13 +486,10 @@ fn go_wheel(p: &mut Player, cx: &mut Cx) -> bool {
             stunt_sound(cx, c"player/airwheel.wav");
             p.stunt.wheel_tap = 0.0;
             if dirn == 3 {
-                // Backflip kick: arms a delayed hit (15, 30 with Kung Fu). The melee bar cost
-                // (22.5) belongs to weapons.
-                let m = &mut p.stunt.melee;
-                m.window = 0.3;
-                m.damage = if p.kungfu { 30.0 } else { 15.0 };
-                m.kind = 0;
-                m.block = 0.0;
+                // Backflip kick: costs 22.5 kung-fu power and arms a delayed hit (15, 30 with
+                // Kung Fu) in the gun's close-combat window.
+                let dmg = if p.kungfu { 30.0 } else { 15.0 };
+                crate::weapons::arm_kick(p, cx, 22.5, dmg);
             }
             return true;
         }
@@ -620,8 +618,11 @@ pub(super) fn super_jump_landing(p: &mut Player, cx: &mut Cx) {
     let mut rolled = false;
     if cx.pev().button & IN_DUCK as i32 != 0 {
         p.stunt.roll_tap = cx.time() + 0.3;
-        // TS also delays the next attack by 0.75 s (weapons timer).
         rolled = go_roll(p, cx);
+        if rolled {
+            // m_flNextAttack = UTIL_WeaponTimeBase() + 0.75 (relative weapon timer).
+            p.inv.gun.next_attack = 0.75;
+        }
     }
     if !rolled {
         stunt_sound(cx, c"player/superjump-land.wav");
@@ -634,103 +635,54 @@ pub(super) fn super_jump_landing(p: &mut Player, cx: &mut Cx) {
 
 /// `CTSStunt::CheckForBreakables` (0x9bd9c): diving through glass and delayed kicks.
 ///
-/// Without a close-combat window, the head hull is traced 64 units along the velocity and
-/// non-player victims take `|vel|` damage (`|vel| * 0.1` while the diver is alive, as TS does).
-/// With a window (set by weapons or the backflip), the hit uses the pending damage, ±32 units
-/// along `v_forward`. Weapon-specific block checks and disarming belong to the weapons package
-/// and are not applied here.
+/// With a close-combat window open (pl+0x79c, armed by weapons or the backflip kick) the
+/// delayed hit is resolved by `weapons::pending_melee_hit` (blocks, disarm, knockback). Without
+/// one, the head hull is traced 64 units along the velocity and non-player victims take `|vel|`
+/// damage (`|vel| * 0.1` while the diver is alive, as TS does).
 pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
     let time = cx.time();
     if p.stunt.breakable_check == -1.0 || time < p.stunt.breakable_check {
         return;
     }
     p.stunt.breakable_check = time;
-    if on_ground(cx) && p.stunt.melee.window == 0.0 {
-        p.stunt.melee.last_victim = std::ptr::null_mut();
+    if p.inv.gun.melee_window != 0.0 {
+        if is_alive(cx) {
+            crate::weapons::pending_melee_hit(p, cx);
+        }
+        return;
+    }
+    if on_ground(cx) {
+        p.inv.sv.lunge_victim = std::ptr::null_mut();
         return;
     }
     let v = cx.pev().velocity;
     let speed = (v[2] * v[2] + v[1] * v[1] + v[0] * v[0]).sqrt();
-    if speed < 64.0 && p.stunt.melee.window == 0.0 {
+    if speed < 64.0 {
         return;
     }
     let o = cx.pev().origin;
-    let end = if p.stunt.melee.window == 0.0 {
-        let d = normalized(v);
-        [o[0] + d[0] * 64.0, o[1] + d[1] * 64.0, o[2] + d[2] * 64.0]
-    } else {
-        let f = forward(cx);
-        let k = if p.stunt.melee.damage >= 0.0 { 32.0 } else { -32.0 };
-        [o[0] + k * f[0], o[1] + k * f[1], o[2] + k * f[2]]
-    };
+    let d = normalized(v);
+    let end = [o[0] + d[0] * 64.0, o[1] + d[1] * 64.0, o[2] + d[2] * 64.0];
     let tr = engine().trace_hull(o, end, DONT_IGNORE_MONSTERS, HEAD_HULL, cx.edict);
     if tr.flFraction >= 1.0 {
         return;
     }
     let victim = if tr.pHit.is_null() { engine().entity_of_index(0) } else { tr.pHit };
-    if victim.is_null() || unsafe { (*victim).pvPrivateData.is_null() } {
-        return;
-    }
-    let victim_is_player = is_player(victim);
-    if victim_is_player && p.stunt.melee.window == 0.0 {
+    if victim.is_null() || unsafe { (*victim).pvPrivateData.is_null() } || is_player(victim) {
         return;
     }
     let vv = unsafe { &mut (*victim).v };
     if vv.takedamage == 0.0 || vv.flags & FL_WORLDBRUSH as i32 != 0 || vv.effects & EF_NODRAW as i32 != 0 {
         return;
     }
-    let mut dmg = if is_alive(cx) { speed * 0.1 } else { speed };
-    if p.stunt.melee.last_victim == victim {
+    if p.inv.sv.lunge_victim == victim {
         return;
     }
-    let mut dmg_bits = bits::CLUB | bits::NEVERGIB;
-    let mut apply = true;
-    if p.stunt.melee.window != 0.0 {
-        if p.stunt.melee.kind == 0 {
-            // glast_closecombat: the rules count this as a close-combat kill.
-            dmg_bits |= 0x0400_0000;
-        }
-        dmg = p.stunt.melee.damage.abs();
-        p.stunt.melee.damage *= 0.5;
-        if p.stunt.melee.damage < 5.0 {
-            p.stunt.melee.damage = 0.0;
-        }
-        if victim_is_player && dmg > 0.0 {
-            if same_team(p, victim) {
-                apply = false;
-            } else {
-                if dmg > 30.0 && p.stunt.melee.kind == 0 {
-                    // Knockback: the attacker's speed along attacker -> victim, then up 235.
-                    let a = cx.pev().velocity;
-                    let aspeed = (a[2] * a[2] + a[1] * a[1] + a[0] * a[0]).sqrt();
-                    let dir = normalized([vv.origin[0] - o[0], vv.origin[1] - o[1], vv.origin[2] - o[2]]);
-                    vv.velocity = [vv.velocity[0] + aspeed * dir[0], vv.velocity[1] + aspeed * dir[1], vv.velocity[2] + aspeed * dir[2]];
-                    vv.velocity[2] = 235.0;
-                }
-                let sample = match p.stunt.melee.kind {
-                    0 => c"player/kungfuhit.wav",
-                    1 => c"weapons/knife/knife_hitbody.wav",
-                    _ => c"weapons/katana/hit-body.wav",
-                };
-                let pitch = engine().random_long(0, 31) + 95;
-                emit_sound_dyn(victim, CHAN_BODY_, sample, 1.0, ATTN_NORM, pitch, 0.5);
-            }
-        }
-    }
-    if apply {
-        let mut info = DamageInfo::new(cx.edict, cx.edict, dmg, dmg_bits);
-        info.hitgroup = tr.iHitgroup;
-        info.pos = tr.vecEndPos;
-        crate::damage::apply(victim, &info);
-    }
-    p.stunt.melee.last_victim = victim;
+    let dmg = if is_alive(cx) { speed * 0.1 } else { speed };
+    let mut info = DamageInfo::new(cx.edict, cx.edict, dmg, bits::CLUB | bits::NEVERGIB);
+    info.hitgroup = tr.iHitgroup;
+    info.pos = tr.vecEndPos;
+    crate::damage::apply(victim, &info);
+    p.inv.sv.lunge_victim = victim;
 }
 
-/// `friendlyfire 0` and the rules say teammates (team play only).
-fn same_team(p: &Player, victim: *mut edict_t) -> bool {
-    if engine().cvar_float(c"mp_friendlyfire") != 0.0 || p.team == 0 {
-        return false;
-    }
-    let team = p.team;
-    crate::player::with_player(victim, |v, _| v.team == team).unwrap_or(false)
-}

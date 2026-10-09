@@ -5,6 +5,9 @@
 //! through ClientConnect and ClientPutInServer like a real client and is driven every frame
 //! with `pfnRunPlayerMove`: wander, turn away from walls, walk to items, aim and fire at visible
 //! enemies, and respawn when dead. Robust beats smart.
+//!
+//! TS clears the loadout at death and real clients resend it from the buy menu; bots instead get
+//! a random loadout (a main gun and a sidearm, with spare magazines) every time they spawn.
 
 use crate::commands::Args;
 use crate::player::{Player, with_player};
@@ -38,6 +41,9 @@ pub struct Bot {
     goal: Option<[f32; 3]>,
     next_goal_scan: f32,
     jump: bool,
+    /// The loadout of this life was given.
+    armed: bool,
+    next_reload: f32,
 }
 
 #[derive(Default)]
@@ -173,6 +179,9 @@ fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
     let (mut forward, mut side) = (0.0, 0.0);
 
     let (observer, deadflag) = (cx.pev().iuser1 != 0, cx.pev().deadflag);
+    if observer || deadflag != DEAD_NO as i32 {
+        bot.armed = false;
+    }
     if observer {
         if lifecycle::can_respawn(p, cx) && eng.random_long(0, 20) == 0 {
             lifecycle::respawn_command(p, cx);
@@ -184,6 +193,10 @@ fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
             buttons |= IN_ATTACK as u16;
         }
     } else {
+        if !bot.armed {
+            bot.armed = true;
+            give_loadout(p, cx);
+        }
         let v = cx.pev();
         let eye = rules::eye(v);
         let origin = v.origin;
@@ -212,19 +225,40 @@ fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
         if let Some((d, target)) = enemy {
             let ang = eng.vec_to_angles([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
             bot.yaw = approach_angle(bot.yaw, ang[1], 540.0 * ft);
-            bot.pitch = (-ang[0]).clamp(-60.0, 60.0);
+            // vec_to_angles returns 0..360; v_angle pitch is positive looking down.
+            let pitch = if ang[0] > 180.0 { ang[0] - 360.0 } else { ang[0] };
+            bot.pitch = (-pitch).clamp(-60.0, 60.0);
+            // Only shoot once roughly facing the target (within ~8 degrees, or the body at
+            // close range).
+            let err = angle_mod(ang[1] - bot.yaw);
+            let err = err.min(360.0 - err);
+            let on_target = err < 8.0f32.max(((32.0 / d.max(1.0)).atan()).to_degrees());
             if now >= bot.next_fire_toggle {
                 bot.fire_toggle = !bot.fire_toggle;
                 bot.next_fire_toggle = now + if bot.fire_toggle { 0.25 } else { 0.1 };
             }
-            if bot.fire_toggle {
+            // Weapon handling: reload an empty magazine, switch to the other gun when out of
+            // ammo, close in when only kung fu is left.
+            let gun = &p.inv.gun;
+            let melee = gun.current == 0 || matches!(shared::weapons::kind_of(gun.current), shared::weapons::kind::KNIFE | shared::weapons::kind::KATANA);
+            let empty = gun.slot().is_some_and(|s| s.clip <= 0 && s.in_reload == 0);
+            if empty && gun.current_reserve() > 0 {
+                if now >= bot.next_reload {
+                    buttons |= IN_RELOAD as u16;
+                    bot.next_reload = now + 0.5;
+                }
+            } else if empty {
+                switch_from_empty(p, cx);
+            } else if bot.fire_toggle && on_target && (!melee || d < 96.0) {
                 buttons |= IN_ATTACK as u16;
+
             }
             // Fight in slow motion when holding a power-up.
             if p.ts.held != 0 && p.active_powerup == 0 && d < 1500.0 {
                 rules::powerup::use_powerup(p, cx);
             }
-            forward = if d > 400.0 { 300.0 } else { 0.0 };
+            let close = if melee { 48.0 } else { 400.0 };
+            forward = if d > close { 300.0 } else { 0.0 };
             if now >= bot.next_strafe {
                 bot.strafe = [-300.0, 0.0, 300.0][eng.random_long(0, 2) as usize];
                 bot.next_strafe = now + 0.6;
@@ -236,6 +270,11 @@ fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
             if now >= bot.next_goal_scan {
                 bot.next_goal_scan = now + 1.0;
                 bot.goal = find_item(me, eye);
+                // Nothing to pick up: now and then head for the nearest enemy, so bots on big
+                // maps meet (no waypoints; wall avoidance still steers).
+                if bot.goal.is_none() && eng.random_long(0, 2) == 0 {
+                    bot.goal = nearest_enemy(me, origin);
+                }
             }
             if let Some(g) = bot.goal {
                 let dir = [g[0] - origin[0], g[1] - origin[1], 0.0];
@@ -285,8 +324,73 @@ fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
     }
 
     let angles = [bot.pitch, bot.yaw, 0.0];
+    // The engine only copies the usercmd angles into v_angle while `fixangle` is clear, and
+    // nothing clears it for a fake client (it is reset when svc_setangle is sent): aim directly.
+    if deadflag == DEAD_NO as i32 && !observer {
+        let pev = cx.pev();
+        pev.fixangle = 0;
+        pev.v_angle = angles;
+        pev.angles = [-angles[0] / 3.0, angles[1], 0.0];
+    }
     p.bot = Some(bot);
     Some(Cmd { angles, forward, side, buttons })
+}
+
+/// Main guns and sidearms bots pick from (TS ids).
+const MAIN_GUNS: &[u8] = &[3, 5, 7, 11, 13, 15, 19, 20, 23, 26, 27, 6, 17];
+const SIDEARMS: &[u8] = &[1, 2, 9, 12, 14, 22, 28, 31];
+
+/// A random loadout for this life: a sidearm, then a main gun (selected), each with spare
+/// magazines, within the 81 inventory slots and the map's weapon restriction.
+fn give_loadout(p: &mut Player, cx: &mut Cx) {
+    use shared::weapons::{info, is_restricted};
+    let eng = engine();
+    let allowed = crate::weapons::restriction();
+    let pick = |list: &[u8]| -> Option<u8> {
+        let ok: Vec<u8> = list.iter().copied().filter(|&id| !is_restricted(id, allowed)).collect();
+        (!ok.is_empty()).then(|| ok[eng.random_long(0, ok.len() as i32 - 1) as usize])
+    };
+    let mut given = Vec::new();
+    // Sometimes only a sidearm, like a light TS loadout.
+    let guns = [pick(SIDEARMS), if eng.random_long(0, 4) > 0 { pick(MAIN_GUNS) } else { None }];
+    for id in guns.into_iter().flatten() {
+        let Some(w) = info(id) else { continue };
+        if w.slots > p.inv.sv.free_slots {
+            continue;
+        }
+        if crate::weapons::give_weapon(p, cx, id, 0) {
+            crate::weapons::give_ammo(p, cx, w.ammo, w.clip.max(1) * 4);
+            given.push(id);
+        }
+    }
+    if eng.cvar_float(c"developer") != 0.0 {
+        let name = eng.string(cx.pev().netname).to_string_lossy().into_owned();
+        eng.print(&format!("[ts] bots: {name} spawns with {given:?} (slots used {})\n", p.slots_used));
+    }
+}
+
+/// Out of ammo for the current gun: switch to another owned gun with ammo, or kung fu.
+fn switch_from_empty(p: &mut Player, cx: &mut Cx) {
+    let gun = &p.inv.gun;
+    let cur = gun.current;
+    let next = (1..shared::weapons::MAX_WEAPONS as u8).find(|&id| {
+        let s = &gun.status[id as usize];
+        let ammo = shared::weapons::info(id).map(|w| w.ammo as usize).unwrap_or(0);
+        id != cur && s.owned && (s.clip > 0 || gun.reserve[ammo.min(shared::weapons::MAX_AMMO - 1)] > 0)
+    });
+    crate::weapons::select(p, cx, next.unwrap_or(0));
+}
+
+/// The closest living enemy, seen or not.
+fn nearest_enemy(me: *mut edict_t, origin: [f32; 3]) -> Option<[f32; 3]> {
+    rules::players()
+        .into_iter()
+        .filter(|&o| o != me)
+        .map(|o| unsafe { &(*o).v })
+        .filter(|ov| rules::alive(ov) && ov.iuser1 == 0)
+        .map(|ov| (rules::dist(origin, ov.origin), ov.origin))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, o)| o)
 }
 
 /// The closest visible ground weapon or power-up within 600 units.

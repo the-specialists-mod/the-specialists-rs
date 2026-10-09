@@ -218,6 +218,7 @@ fn knockback(attacker: *mut edict_t, victim: *mut edict_t) {
 /// The delayed hit of a missed melee attack: while the window is open, a head-hull trace 32 u
 /// ahead (behind for the running back kick) lands the stored damage, halving it each time.
 pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
+    let my_team = p.team;
     let g = &mut p.inv.gun;
     if g.melee_window == 0.0 || g.melee_damage == 0.0 {
         p.inv.sv.lunge_victim = std::ptr::null_mut();
@@ -252,6 +253,12 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
         return;
     }
     let is_player = e.is_player_edict(victim);
+    if is_player && same_team(my_team, victim) {
+        // TS: `friendlyfire 0` and PlayerRelationship == GR_TEAMMATE: no damage, but the
+        // victim still counts as hit.
+        p.inv.sv.lunge_victim = victim;
+        return;
+    }
     if is_player {
         let kind = match source {
             0 => MeleeKind::KungFu,
@@ -292,4 +299,12 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     info.pos = tr.vecEndPos;
     info.weapon = p.inv.gun.current as i32;
     damage::apply(victim, &info);
+}
+
+/// `friendlyfire 0` and the rules say teammates (team play only).
+fn same_team(team: u8, victim: *mut edict_t) -> bool {
+    if engine().cvar_float(c"mp_friendlyfire") != 0.0 || team == 0 {
+        return false;
+    }
+    crate::player::with_player(victim, |v, _| v.team == team).unwrap_or(false)
 }

@@ -1723,6 +1723,8 @@ impl Gun {
     pub fn holster_weapon(&mut self, host: &mut impl GunHost) {
         host.set_view_model(None);
         host.set_weapon_model(None);
+        // pl+0xb58 / pl+0x478 = "" (no weapon animation extension).
+        host.set_anim_extension("");
         self.unzoom(host);
         self.next_attack = 0.5;
         self.idle = 3.0;

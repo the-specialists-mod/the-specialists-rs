@@ -17,15 +17,44 @@ pub struct ServerHost<'a> {
     pub sv: &'a mut SvState,
     pub powerups: u16,
     pub kungfu: bool,
+    /// `CTSAnimation::Animate` ids requested during the call; played (in order) once the gun is
+    /// released, because the animation state lives in `Player::stunt`.
+    anims: Vec<i32>,
+    /// The deploy/holster changed the animation extension.
+    ext_changed: bool,
 }
 
-/// Runs `f` with the player's gun and a host for it.
+/// Runs `f` with the player's gun and a host for it, then applies the third-person animation
+/// requests (`set_anim_ext`, `Animate`) to the movement package's state.
 pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut ServerHost) -> R) -> R {
-    let Player { inv, active_powerup, kungfu, .. } = p;
-    let Inventory { gun, sv } = inv;
-    sv.atk_block = gun.block_kungfu;
-    let mut h = ServerHost { edict: cx.edict, sv, powerups: *active_powerup, kungfu: *kungfu };
-    f(gun, &mut h)
+    let (r, anims, ext_changed) = {
+        let Player { inv, active_powerup, kungfu, .. } = p;
+        let Inventory { gun, sv } = inv;
+        sv.atk_block = gun.block_kungfu;
+        let mut h = ServerHost { edict: cx.edict, sv, powerups: *active_powerup, kungfu: *kungfu, anims: Vec::new(), ext_changed: false };
+        let r = f(gun, &mut h);
+        (r, h.anims, h.ext_changed)
+    };
+    if ext_changed {
+        let ext2 = p.inv.sv.anim_ext.clone();
+        crate::stunt::set_anim_ext(p, idle_override(p.inv.gun.current), &ext2);
+    }
+    for a in anims {
+        crate::stunt::animate(p, cx, a);
+    }
+    r
+}
+
+/// `CBasePlayerWeapon::DefaultDeploy` 0xa0178: the idle-gait override (`m_szAnimExtention`,
+/// pl+0x478) for the blades and the briefcase; empty for everything else.
+fn idle_override(id: u8) -> &'static str {
+    use shared::weapons::id;
+    match id {
+        id::KNIFE | id::SEAL_KNIFE => "knife_idle",
+        id::BRIEFCASE => "briefcase_idle",
+        id::KATANA => "katana_idle",
+        _ => "",
+    }
 }
 
 impl ServerHost<'_> {
@@ -132,6 +161,7 @@ impl GunHost for ServerHost<'_> {
     }
     fn set_anim_extension(&mut self, ext: &str) {
         self.sv.anim_ext = ext.to_owned();
+        self.ext_changed = true;
     }
 
     fn event(&mut self, ev: Event, args: EventArgs) {
@@ -150,8 +180,11 @@ impl GunHost for ServerHost<'_> {
         }
         e.send_weapon_anim(self.edict, anim, body);
     }
-    fn player_anim(&mut self, _anim: i32) {
-        // CTSAnimation belongs to the movement package (third-person sequences).
+    fn player_anim(&mut self, anim: i32) {
+        // CTSAnimation (movement package), applied by `with_host` after the gun call.
+        if anim >= 0 {
+            self.anims.push(anim);
+        }
     }
     fn kick(&mut self, pitch: f32, yaw: f32) {
         // VKickback: the server writes pev->punchangle (pev+0x68) only for bots; humans get the
@@ -182,6 +215,8 @@ impl GunHost for ServerHost<'_> {
         fire::shoot_bullets(self.edict, shot);
     }
     fn melee(&mut self, hit: &MeleeHit) -> MeleeResult {
+        // CloseCombatAttack / ColdCockAttack start with Animate(anim) (-1 = none).
+        self.player_anim(hit.player_anim);
         melee::attack(self.edict, hit, self.sv.atk_block)
     }
     fn throw_grenade(&mut self, origin: Vec3, velocity: Vec3, roll: bool) {

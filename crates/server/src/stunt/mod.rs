@@ -83,33 +83,8 @@ pub struct StuntState {
     /// Frames of simulated `+alt1` left (`ts_debug_alt1`, with `ts_debug_stunt 1`).
     debug_alt1: i32,
 
-    /// Close-combat hit window shared with weapons (pl+0x798..0x7a8): a delayed hit that lands
-    /// through `CheckForBreakables` while the player keeps moving (flying kicks, backflip kick).
-    pub melee: MeleeWindow,
-
     /// `CTSAnimation` (pl+0x28c).
     pub anim: AnimState,
-}
-
-/// pl+0x798..0x7a8.
-#[derive(Clone, Copy, Debug)]
-pub struct MeleeWindow {
-    /// pl+0x798: last entity hit by a stunt/kick (not hit twice in a row).
-    pub last_victim: *mut edict_t,
-    /// pl+0x79c: hit window (s); 0 = none.
-    pub window: f32,
-    /// pl+0x7a0: pending damage (sign = forward/back).
-    pub damage: f32,
-    /// pl+0x7a4: 0 kung fu, 1 knife, 2 katana.
-    pub kind: u8,
-    /// pl+0x7a8: kung-fu block window (s).
-    pub block: f32,
-}
-
-impl Default for MeleeWindow {
-    fn default() -> Self {
-        Self { last_victim: std::ptr::null_mut(), window: 0.0, damage: 0.0, kind: 0, block: 0.0 }
-    }
 }
 
 impl Default for StuntState {
@@ -142,7 +117,6 @@ impl Default for StuntState {
             debug_last: 0,
             debug_alt1: 0,
             debug_air: None,
-            melee: MeleeWindow::default(),
             anim: AnimState::default(),
         }
     }
@@ -484,14 +458,11 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     if p.active_powerup & shared::ts::powerup::DOUBLE_FIRERATE != 0 {
         dt *= 1.5;
     }
-    let m = &mut p.stunt.melee;
-    if m.window != 0.0 {
-        m.window = (m.window - dt).max(0.001);
-    }
+    // The close-combat window and block timers (pl+0x79c..0x7b0) live in the gun
+    // (`Gun::pre_frame`, weapons pre_think).
     if p.stunt.block_timer != 0.0 {
         p.stunt.block_timer = (p.stunt.block_timer - dt).max(0.001);
     }
-    m.block = (m.block - dt).max(0.0);
 
     moves::play(p, cx);
     anim::update_timers(p, cx);
@@ -508,17 +479,6 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         cx.pev().iuser4 &= !RECOVER;
         p.stunt.block_timer = 0.0;
     }
-    // Close-combat window expiry.
-    let m = &mut p.stunt.melee;
-    if m.window != 0.0 {
-        if m.window < 0.01 || m.damage == 0.0 {
-            m.window = 0.0;
-            m.damage = 0.0;
-            m.kind = 0;
-        }
-        m.block = 0.0;
-    }
-
     if cx.pev().iuser1 != 0 {
         return; // observer
     }

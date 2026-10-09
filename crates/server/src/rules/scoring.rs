@@ -105,6 +105,16 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
     let killer_is_player = !suicide && is_player(attacker);
     let close = is_close_combat(d);
 
+    // The killer's own think (its weapon frame) is usually what killed: its Player is taken
+    // out further up the stack. Score as soon as that call returns.
+    if killer_is_player && crate::world::is_taken_out(attacker) {
+        let d = *d;
+        crate::world::defer(attacker, move || {
+            crate::player::with_player(victim, |p, cx| player_killed(p, cx, &d));
+        });
+        return;
+    }
+
     let mut killer = if killer_is_player {
         other(attacker, |k| Killer {
             e: attacker,

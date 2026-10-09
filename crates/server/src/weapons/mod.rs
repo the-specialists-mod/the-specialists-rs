@@ -201,9 +201,8 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
             sv.block_timer = 0.0;
         }
     }
-    if alive {
-        melee::pending_hit(p, cx);
-    }
+    // The delayed melee hit lands from the stunt hook (`CheckForBreakables`), which calls
+    // `pending_melee_hit`.
 }
 
 pub fn post_think(p: &mut Player, cx: &mut Cx) {
@@ -267,6 +266,12 @@ pub fn give_ammo(p: &mut Player, _cx: &mut Cx, ammo: u8, rounds: i32) -> i32 {
     p.inv.gun.reserve[ammo as usize] - before
 }
 
+/// Selects weapon `id` like the `weapon_<id>` client command (0 = kung fu).
+pub fn select(p: &mut Player, cx: &mut Cx, id: u8) {
+    p.inv.sv.last_inv = p.inv.gun.current;
+    host::with_host(p, cx, |gun, h| gun.switch_to(id, h));
+}
+
 /// Removes every weapon (death, spectate).
 pub fn strip_all(p: &mut Player, cx: &mut Cx) {
     host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
@@ -288,6 +293,23 @@ pub fn multiply_clip(p: &mut Player, cx: &mut Cx) -> bool {
         }
         None => false,
     }
+}
+
+/// The close-combat window part of `CTSStunt::CheckForBreakables`: lands the delayed hit armed
+/// by a melee attack or the backflip kick (called by the stunt hook while the window is open).
+pub fn pending_melee_hit(p: &mut Player, cx: &mut Cx) {
+    melee::pending_hit(p, cx);
+}
+
+/// The backflip kick (`CTSStunt::GoWheel`): `UpdateMeleeBar(cost)`, then a 0.3 s kung-fu hit
+/// window with `damage`.
+pub fn arm_kick(p: &mut Player, cx: &mut Cx, cost: f32, damage: f32) {
+    host::with_host(p, cx, |gun, h| gun.update_melee_bar(cost, h));
+    let g = &mut p.inv.gun;
+    g.melee_window = 0.3;
+    g.melee_damage = damage;
+    g.melee_source = 0;
+    g.block_kungfu = 0.0;
 }
 
 /// Drops a weapon like the `drop` command / a disarm (rules: flag/briefcase handling stays theirs).

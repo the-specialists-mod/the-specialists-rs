@@ -95,6 +95,10 @@ struct World {
 
 static WORLD: Global<RefCell<World>> = Global(RefCell::new(World { slots: Vec::new(), free: Vec::new() }));
 
+/// Work waiting for a taken-out object to be returned to its slot (see [`defer`]).
+type Deferred = (Handle, Box<dyn FnOnce()>);
+static DEFERRED: Global<RefCell<Vec<Deferred>>> = Global(RefCell::new(Vec::new()));
+
 impl World {
     fn insert(&mut self, ent: Box<dyn Entity>) -> Handle {
         let index = match self.free.pop() {
@@ -155,15 +159,56 @@ pub fn dispatch<R>(e: *mut edict_t, f: impl FnOnce(&mut dyn Entity, &mut Cx) -> 
         }
     };
     let r = f(&mut *ent, &mut Cx { edict: e });
-    let mut w = WORLD.0.borrow_mut();
-    if let Some(slot) = w.slot(h) {
-        if matches!(slot.state, State::FreedWhileOut) {
-            w.release(h);
+    let back = {
+        let mut w = WORLD.0.borrow_mut();
+        match w.slot(h) {
+            Some(slot) if matches!(slot.state, State::FreedWhileOut) => {
+                w.release(h);
+                false
+            }
+            Some(slot) => {
+                slot.state = State::Present(ent);
+                true
+            }
+            None => false,
+        }
+    };
+    // Run what other callbacks deferred until this object was back (or drop it if freed).
+    let pending: Vec<Deferred> = {
+        let mut d = DEFERRED.0.borrow_mut();
+        if d.iter().any(|(dh, _)| *dh == h) {
+            let (mine, rest): (Vec<_>, Vec<_>) = d.drain(..).partition(|(dh, _)| *dh == h);
+            *d = rest;
+            mine
         } else {
-            slot.state = State::Present(ent);
+            Vec::new()
+        }
+    };
+    if back {
+        for (_, job) in pending {
+            job();
         }
     }
     Some(r)
+}
+
+/// True while `e`'s object is taken out for a dispatch further up the stack (so [`with`] and
+/// [`dispatch`] can't reach it).
+pub fn is_taken_out(e: *const edict_t) -> bool {
+    let Some(h) = handle_of(e) else { return false };
+    let mut w = WORLD.0.borrow_mut();
+    w.slot(h).is_some_and(|s| matches!(s.state, State::TakenOut))
+}
+
+/// Runs `job` as soon as `e`'s object is back in its slot: immediately if it isn't taken out,
+/// otherwise when the dispatch that holds it returns. Used when a callback needs to update an
+/// entity that is busy further up the stack (a player's weapon frame killing someone).
+pub fn defer(e: *const edict_t, job: impl FnOnce() + 'static) {
+    match handle_of(e) {
+        Some(h) if is_taken_out(e) => DEFERRED.0.borrow_mut().push((h, Box::new(job))),
+        Some(_) => job(),
+        None => {}
+    }
 }
 
 /// Short, non-reentrant access to a concrete entity type. Never call the engine inside `f`.
