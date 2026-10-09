@@ -7,6 +7,9 @@
 //! cargo xtask server  [--release] <root> [--map M] [--bots N] [--seconds S] [--port P]
 //!                                                 run a dedicated server and check it
 //! cargo xtask test    [--release] [<root>...]     install + server check on every root
+//! cargo xtask client  [--release] <server-root> [--map M] [--port P]
+//!                                                 FWGS client (Rust client library) joins a dedicated
+//!                                                 server on <server-root>; screenshot in target/
 //! cargo xtask roots                               list engine roots and whether they exist
 //! ```
 //!
@@ -17,7 +20,7 @@
 mod a2s;
 mod roots;
 
-use roots::{Os, Root, Target};
+use roots::{Engine, Os, Root, Target};
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 use std::time::{Duration, Instant};
@@ -64,6 +67,23 @@ fn main() {
                 exit(1);
             }
             println!("all server checks passed");
+        }
+        "client" => {
+            let map = take_opt(&mut args, "--map").unwrap_or_else(|| "ts_awaken".into());
+            let port: u16 = take_opt(&mut args, "--port").map_or(27150, |v| v.parse().unwrap());
+            let roots = select_roots(&args);
+            let fwgs = Root::all().into_iter().find(|r| r.name == "fwgs").unwrap();
+            let mut failed = Vec::new();
+            for (i, r) in roots.into_iter().filter(|r| r.exists()).enumerate() {
+                ctx.install(&r);
+                if !ctx.client(&r, &fwgs, &map, port + i as u16) {
+                    failed.push(r.name);
+                }
+            }
+            if !failed.is_empty() {
+                eprintln!("FAILED: {failed:?}");
+                exit(1);
+            }
         }
         "roots" => {
             for r in Root::all() {
@@ -219,7 +239,16 @@ impl Ctx {
         }
         if ok {
             std::thread::sleep(Duration::from_secs(secs));
-            match a2s::info("127.0.0.1", port) {
+            // HL25 rate-limits status queries per address: retry a few times before failing.
+            let mut reply = a2s::info("127.0.0.1", port);
+            for _ in 0..5 {
+                if reply.is_ok() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_secs(2));
+                reply = a2s::info("127.0.0.1", port);
+            }
+            match reply {
                 Ok(i) => {
                     println!("   after {secs}s: {i}");
                     if i.map != map {
@@ -227,8 +256,14 @@ impl Ctx {
                         ok = false;
                     }
                     if i.players < bots as u8 {
-                        println!("   FAIL: {} players, expected {bots} bots", i.players);
-                        ok = false;
+                        // The Xash `info` reply (old FWGS) doesn't count fake clients: use the log.
+                        let added = root.read_log(&self.repo).matches("[ts] bots: added").count();
+                        if i.game.is_empty() && added >= bots as usize {
+                            println!("   {added} bots joined (from the log; this engine's query doesn't count bots)");
+                        } else {
+                            println!("   FAIL: {} players, expected {bots} bots", i.players);
+                            ok = false;
+                        }
                     }
                 }
                 Err(e) => {
@@ -254,6 +289,63 @@ impl Ctx {
         }
         println!("   {}", if ok { "PASS" } else { "FAIL" });
         ok
+    }
+}
+
+impl Ctx {
+    /// Runs `server_root`'s dedicated server (2 bots) on a thread and joins it with the FWGS
+    /// client from `client_root`. Passes when the client connects and the server check passes.
+    fn client(&self, server_root: &Root, client_root: &Root, map: &str, port: u16) -> bool {
+        self.install(client_root);
+        let srv = Ctx { release: self.release, repo: self.repo.clone() };
+        let (sr, m) = (server_root.clone(), map.to_owned());
+        let server = std::thread::spawn(move || srv.server(&sr, &m, 2, 60, port));
+        let start = Instant::now();
+        while a2s::info("127.0.0.1", port).is_err() && start.elapsed() < Duration::from_secs(120) {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        std::thread::sleep(Duration::from_secs(3));
+
+        // GoldSrc servers need the GoldSrc protocol; FWGS servers speak FWGS's own.
+        let proto = if server_root.engine == Engine::Fwgs { "" } else { " gs" };
+        let w = "wait;".repeat(20);
+        let waits = format!("{w}\n").repeat(30);
+        let cfg = format!("connect 127.0.0.1:{port}{proto}\n{waits}echo XTASK: in game\nscreenshot\n{}quit\n", format!("{w}\n").repeat(3));
+        let gamedir = client_root.path.join("ts");
+        fs::write(gamedir.join("xtask_client.cfg"), cfg).unwrap();
+        let _ = fs::remove_dir_all(gamedir.join("scrshots"));
+        let log_path = self.repo.join("target").join(format!("client-{}.log", server_root.name));
+        let log = fs::File::create(&log_path).unwrap();
+        let mut child = Command::new(client_root.path.join("xash3d"))
+            .current_dir(&client_root.path)
+            .args(["-game", "ts", "-dev", "2", "-windowed", "-width", "1024", "-height", "768", "+exec", "xtask_client.cfg"])
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .expect("start client");
+        let t = Instant::now();
+        while child.try_wait().ok().flatten().is_none() && t.elapsed() < Duration::from_secs(90) {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let text = String::from_utf8_lossy(&fs::read(&log_path).unwrap_or_default()).replace('\r', "");
+        let connected = text.contains("client connected");
+        let in_game = text.contains("XTASK: in game");
+        let panicked = text.contains("PANIC");
+        let shot = fs::read_dir(gamedir.join("scrshots")).ok().and_then(|d| d.flatten().next()).map(|e| e.path());
+        if let Some(p) = &shot {
+            let dest = self.repo.join("target").join(format!("client-{}.png", server_root.name));
+            let _ = fs::copy(p, &dest);
+            println!("   client screenshot: {}", dest.display());
+        }
+        // `echo` output isn't always mirrored to stdout, so the screenshot is the in-game evidence.
+        let ok = connected && !panicked && shot.is_some();
+        println!("   client: connected={connected} in_game={in_game} panic={panicked} screenshot={}", shot.is_some());
+        let server_ok = server.join().unwrap();
+        println!("   {} (client + server)", if ok && server_ok { "PASS" } else { "FAIL" });
+        ok && server_ok
     }
 }
 
