@@ -1,4 +1,6 @@
 //! What goes over the wire: entity states, baselines, and the local player's clientdata.
+//! TS versions: `AddToFullPack` (0xaf180), `CreateBaseline` (0xaf81c, stock),
+//! `UpdateClientData` (0xb0294); decomp server/architecture.md §7. Owner: rules work package.
 
 use goldsrc::eng;
 use goldsrc::server::engine;
@@ -18,6 +20,10 @@ pub unsafe extern "C" fn add_to_full_pack(
     let (state, v) = unsafe { (&mut *state, &(*ent).v) };
 
     if v.effects & EF_NODRAW as i32 != 0 && ent != host {
+        return 0;
+    }
+    // Spectators aren't sent to other players.
+    if v.flags & FL_SPECTATOR as i32 != 0 && ent != host {
         return 0;
     }
     if v.modelindex == 0 || engine().string(v.model).is_empty() {
@@ -68,6 +74,22 @@ pub unsafe extern "C" fn add_to_full_pack(
             state.owner = owner; // only players matter to the client
         }
     }
+    // Non-moving animated entities are interpolated by the client (SDK: FL_FLY -> EFLAG_SLERP).
+    if v.flags & FL_FLY as i32 != 0 {
+        state.eflags |= 1;
+    }
+    // TS: the stunt/state bits go out for every entity (delta.lst has iuser4 on both).
+    state.iuser4 = v.iuser4;
+    // TS: the viewer's own dropped guns and thrown knives get a grey glow shell.
+    if !host.is_null() && v.owner == host {
+        let cls = engine().string(v.classname).to_bytes();
+        if cls == b"WorldGun" || cls == b"knife" {
+            state.rendermode = 0;
+            state.renderamt = 2;
+            state.renderfx = kRenderFxGlowShell as i32;
+            state.rendercolor = color24 { r: 100, g: 100, b: 100 };
+        }
+    }
 
     if player != 0 {
         state.basevelocity = v.basevelocity;
@@ -78,6 +100,9 @@ pub unsafe extern "C" fn add_to_full_pack(
         state.gravity = v.gravity;
         state.usehull = (v.flags & FL_DUCKING as i32 != 0) as i32;
         state.health = v.health as i32;
+        state.velocity = v.velocity; // TS copies it; delta.lst doesn't send it for players
+    } else {
+        state.playerclass = v.playerclass; // "decalable" glass hack (stock)
     }
     1
 }

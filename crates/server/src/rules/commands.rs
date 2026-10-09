@@ -1,0 +1,398 @@
+//! Rules client commands (`ClientCommand` 0xad838: say, respawn, power-ups, teams, motd ...) and
+//! the TS server commands (`GameDLLInit`: globalslow, restartround, addbot, weaponrestriction ...).
+
+use super::lifecycle::{give_cash, respawn_command, send_motd};
+use super::msg;
+use super::powerup::{add_powerup, use_powerup};
+use super::{alive, cvars, frame, netname, other, state, teams};
+use crate::commands::Args;
+use crate::messages::Msg;
+use crate::player::Player;
+use crate::world::Cx;
+use goldsrc::server::engine;
+use goldsrc::sys::*;
+use shared::protocol::hud::PwUp;
+use shared::protocol::rules::{SrvSett, VguiMenu, hud_dest};
+use shared::ts::powerup as pw;
+
+pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bool {
+    match cmd {
+        "say" => host_say(p, cx, args, false),
+        "say_team" => host_say(p, cx, args, true),
+        "respawn" => respawn_command(p, cx),
+        "usepowerup" => {
+            use_powerup(p, cx);
+        }
+        "powerup" if cvars::cheats() && args.argc() > 1 => cheat_powerup(p, cx, args.int(1)),
+        "cashala" if cvars::cheats() => give_cash(p, 30000),
+        "fov" => {
+            if cvars::cheats() && args.argc() > 1 {
+                cx.pev().fov = args.int(1) as f32;
+            } else {
+                let fov = cx.pev().fov as i32;
+                engine().client_print(cx.edict, PRINT_TYPE::print_console, &format!("\"fov\" is \"{fov}\"\n"));
+            }
+        }
+        "changeteam" => {
+            if state::teamplay() {
+                msg::one(Msg::VguiMenu, cx.edict, |w| VguiMenu { menu: 2 }.write(w));
+            }
+        }
+        "jointeam" if args.argc() > 1 => {
+            if state::teamplay() {
+                let n = args.int(1) - 1;
+                let name = state::with(|g| g.team_names().get(n.max(0) as usize).cloned().unwrap_or_default());
+                if !name.is_empty() && !name.eq_ignore_ascii_case(&p.ts.team_name) {
+                    teams::change_team(p, cx, &name, false, false);
+                    // A voluntary change outside The One mode sends the player to observer
+                    // with a 5 s respawn.
+                    if !state::the_one_mode() && cx.pev().iuser1 == 0 {
+                        let (o, a) = (cx.pev().origin, cx.pev().v_angle);
+                        super::lifecycle::start_observer(p, cx, o, a);
+                        p.respawn_at = cx.time() + 5.0;
+                    }
+                }
+            }
+        }
+        "motd" => send_motd(cx.edict),
+        "fullupdate" => {
+            crate::player::hud::reset(p);
+            p.ts.init_hud = true;
+        }
+        "lasclr" => {}
+        "menuselect" | "vban" | "vmodenable" => {}
+        c if c.starts_with("lasclr_") => {
+            let n: i32 = c["lasclr_".len()..].parse().unwrap_or(0);
+            let idx = cx.index();
+            crate::messages::all(Msg::PlInfo).byte(idx).byte(0).byte(n).end();
+        }
+        c if c.starts_with("cutwire_") => {} // bomb wires: objective modes are dead in 3.0
+        _ => return false,
+    }
+    true
+}
+
+/// `powerup <n>` (cheat): 1 slow pause, 2 grenade, 3 kung fu + super jump, 4 multiply clip,
+/// 5 double fire rate, other slow motion; +5 s if the same is held.
+fn cheat_powerup(p: &mut Player, cx: &mut Cx, n: i32) {
+    if !alive(cx.pev()) || cx.pev().iuser1 != 0 {
+        return;
+    }
+    let bits = match n {
+        1 => pw::SLOWPAUSE,
+        2 => {
+            add_powerup(p, cx, pw::GRENADE, 0);
+            return;
+        }
+        3 => {
+            add_powerup(p, cx, pw::KUNGFU, 0);
+            add_powerup(p, cx, pw::SUPERJUMP, 0);
+            return;
+        }
+        4 => {
+            crate::weapons::multiply_clip(p, cx);
+            return;
+        }
+        5 => pw::DOUBLE_FIRERATE,
+        _ => pw::SLOWMO,
+    };
+    if p.active_powerup == 0 {
+        msg::one(Msg::PwUp, cx.edict, |w| PwUp { bits: bits as i16, secs: 0 }.write(w));
+        p.ts.held_secs = if p.ts.held == bits { p.ts.held_secs + 5 } else { 5 };
+        p.ts.held = bits;
+        p.powerup_until = 0.0;
+    }
+}
+
+/// Builds the chat line: `\x02name: text` / `\x02(TEAM) name: text`, `%a`/`%h` expanded,
+/// truncated so the line fits TS's 128-byte buffer.
+pub fn format_say(name: &str, team: bool, text: &str, armor: f32, health: f32) -> String {
+    let prefix = if team { format!("\x02(TEAM) {name}: ") } else { format!("\x02{name}: ") };
+    let room = 127usize.saturating_sub(prefix.len());
+    let mut t: String = text.to_owned();
+    while t.len() > room {
+        t.pop();
+    }
+    let mut out = prefix;
+    let mut chars = t.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.peek() {
+                Some('a') => {
+                    chars.next();
+                    out.push_str(if armor == 0.0 { "no kevlar" } else { "with kevlar" });
+                }
+                Some('h') => {
+                    chars.next();
+                    out.push_str(&(health.round() as i32).to_string());
+                }
+                _ => out.push('%'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\n');
+    out
+}
+
+/// `Host_Say` (0xad02c).
+fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
+    let now = cx.time();
+    if now < p.ts.next_say || args.argc() < 2 {
+        return;
+    }
+    let raw = args.rest().to_string_lossy().into_owned();
+    let mut text = raw.as_str();
+    if let Some(t) = text.strip_prefix('"') {
+        text = t.strip_suffix('"').unwrap_or(t);
+    }
+    if text.trim().is_empty() {
+        return;
+    }
+    let e = cx.edict;
+    let idx = cx.index();
+    let name = netname(e);
+    let line = {
+        let v = cx.pev();
+        format_say(&name, team, text, v.armorvalue, v.health)
+    };
+    p.ts.next_say = now + 0.5;
+
+    if text.starts_with("timeleft") {
+        let left = cvars::f(c"mp_timeleft").round() as i32;
+        msg::text_one(e, hud_dest::TALK, &format!("Time left: {}:{:02}\n", left / 60, left % 60));
+    } else {
+        let lms = state::lms();
+        let me_alive = alive(cx.pev());
+        let my_respawn = p.respawn_at;
+        for o in super::players() {
+            if o == e {
+                continue;
+            }
+            if team && !teams::same_team(o, e) {
+                continue;
+            }
+            // LMS: players out for the round only talk to each other.
+            let (o_alive, o_respawn) = (alive(unsafe { &(*o).v }), other(o, |q| q.respawn_at).unwrap_or(0.0));
+            if !lms || me_alive || my_respawn >= 0.0 || (!o_alive && o_respawn < 0.0) {
+                msg::say_one(o, idx, &line);
+            }
+        }
+        msg::say_one(e, idx, &line);
+        engine().print(&line);
+    }
+    msg::log(&format!(
+        "\"{name}<{}><{}><>\" {} \"{text}\"\n",
+        engine().user_id(e),
+        engine().auth_id(e).to_string_lossy(),
+        if team { "say_team" } else { "say" }
+    ));
+}
+
+// ---- server commands -------------------------------------------------------------------------
+
+pub fn register_server_commands() {
+    let e = engine();
+    e.add_server_command(c"addbot", cmd_addbot);
+    e.add_server_command(c"addcustombot", cmd_addbot);
+    e.add_server_command(c"globalslow", cmd_globalslow);
+    e.add_server_command(c"restartround", cmd_restartround);
+    e.add_server_command(c"weaponrestriction", cmd_weaponrestriction);
+    e.add_server_command(c"loadweapons", cmd_weapons_file);
+    e.add_server_command(c"saveweapons", cmd_weapons_file);
+    // Port additions for testing dedicated servers.
+    e.add_server_command(c"ts_status", cmd_status);
+    e.add_server_command(c"ts_hurt", cmd_hurt);
+    e.add_server_command(c"ts_givepowerup", cmd_givepowerup);
+}
+
+/// `ts_status`: one line per player (state, health, frags, power-ups, time scale).
+unsafe extern "C" fn cmd_status() {
+    let e = engine();
+    let (mode, teamplay, lms, the_one) = state::mode();
+    e.print(&format!("[ts] status: {mode:?} teamplay={teamplay} lms={lms} theone={the_one} time={:.1}\n", e.time()));
+    for p in super::players() {
+        let v = unsafe { &(*p).v };
+        let line = other(p, |q| {
+            format!(
+                "[ts]  #{} {:<16} {} hp={} ar={} frags={} deaths={} cash={} team='{}' held={:#x}/{}s active={:#x} slow={:.2}->{:.2} award={} spree={} org=({:.0} {:.0} {:.0})\n",
+                e.index_of(p),
+                netname(p),
+                if v.iuser1 != 0 { "observer" } else if alive(v) { "alive" } else { "dead" },
+                v.health,
+                v.armorvalue,
+                v.frags,
+                q.deaths,
+                q.cash,
+                q.ts.team_name,
+                q.ts.held,
+                q.ts.held_secs,
+                q.active_powerup,
+                v.fuser1,
+                q.slow_target,
+                q.ts.award,
+                q.ts.spree,
+                v.origin[0],
+                v.origin[1],
+                v.origin[2]
+            )
+        });
+        if let Some(l) = line {
+            e.print(&l);
+        }
+    }
+}
+
+/// `ts_hurt <player#> <damage> [hitgroup] [attacker#]`: bullet damage, for testing.
+unsafe extern "C" fn cmd_hurt() {
+    let e = engine();
+    if e.cmd_argc() < 3 {
+        e.print("usage: ts_hurt <player#> <damage> [hitgroup] [attacker#]\n");
+        return;
+    }
+    let arg = |i| e.cmd_argv(i).to_string_lossy().trim().parse::<f32>().unwrap_or(0.0);
+    let victim = e.client(arg(1) as i32);
+    if victim.is_null() {
+        return;
+    }
+    let attacker = if e.cmd_argc() > 4 { e.client(arg(4) as i32) } else { e.entity_of_index(0) };
+    let attacker = if attacker.is_null() { e.entity_of_index(0) } else { attacker };
+    let mut info = crate::damage::DamageInfo::new(attacker, attacker, arg(2), crate::damage::bits::BULLET);
+    info.hitgroup = if e.cmd_argc() > 3 { arg(3) as i32 } else { crate::damage::hitgroup::CHEST };
+    info.pos = unsafe { (*victim).v.origin };
+    info.dir = [1.0, 0.0, 0.0];
+    let took = crate::damage::apply(victim, &info);
+    e.print(&format!("[ts] ts_hurt: applied={took} health={}\n", unsafe { (*victim).v.health }));
+}
+
+/// `ts_givepowerup <player#> <bits>`: applies a power-up pickup, for testing.
+unsafe extern "C" fn cmd_givepowerup() {
+    let e = engine();
+    if e.cmd_argc() < 3 {
+        return;
+    }
+    let p = e.client(e.cmd_argv(1).to_string_lossy().trim().parse().unwrap_or(0));
+    let bits: u16 = e.cmd_argv(2).to_string_lossy().trim().parse().unwrap_or(0);
+    crate::player::with_player(p, |pl, cx| {
+        let secs = crate::entities::ts::powerup::body_and_secs(bits).1;
+        add_powerup(pl, cx, bits, secs);
+    });
+}
+
+/// TS prints "Bots only in listen servers." here; the port adds a bot (bots/mod.rs).
+unsafe extern "C" fn cmd_addbot() {
+    crate::bots::add_bot();
+}
+
+/// `globalslow [percent]` (0xc5580).
+unsafe extern "C" fn cmd_globalslow() {
+    let e = engine();
+    let cur = state::with(|g| if g.global_slow.active { g.global_slow.amount } else { 0.0 });
+    if e.cmd_argc() < 2 {
+        if cur != 0.0 {
+            e.print(&format!("Globalslow is at {:.0}%.\n", cur * 100.0));
+        } else {
+            e.print("Globalslow is off.\n");
+        }
+        return;
+    }
+    let pct: f32 = e.cmd_argv(1).to_string_lossy().trim().parse().unwrap_or(0.0);
+    let amount = globalslow_amount(pct);
+    if amount == 0.0 {
+        state::with(|g| g.global_slow.active = false);
+        e.print("Globalslow is off.\n");
+    } else {
+        frame::set_global_slow(amount, 0.0);
+        e.print(&format!("Globalslow is at {:.0}%.\n", amount * 100.0));
+    }
+}
+
+/// `cmd_globalslow` argument → factor: ×0.01, clamped to [0, 2], ≈1 means off, tiny → 0.01.
+pub fn globalslow_amount(pct: f32) -> f32 {
+    let mut a = (pct * 0.01).clamp(0.0, 2.0);
+    if a > 0.999 && a < 1.001 {
+        a = 0.0;
+    }
+    if a > 0.0 && a < 0.01 {
+        a = 0.01;
+    }
+    a
+}
+
+unsafe extern "C" fn cmd_restartround() {
+    frame::reset_restart_round();
+}
+
+/// `weaponrestriction [n]`: 1 none, 2 knives, 3 knives+pistols, 4 knives+pistols+shotguns,
+/// 5 reset, other everything; masked by the map's base set and broadcast as SrvSett 3.
+unsafe extern "C" fn cmd_weaponrestriction() {
+    let e = engine();
+    if e.cmd_argc() >= 2 {
+        let n: i32 = e.cmd_argv(1).to_string_lossy().trim().parse().unwrap_or(0);
+        let (old, new) = state::with(|g| {
+            let old = g.allowed_weapons;
+            g.allowed_weapons = if n == 5 {
+                0x1f
+            } else {
+                restriction_by_id(n) & g.base_weapons
+            };
+            (old, g.allowed_weapons)
+        });
+        if old != new {
+            msg::all(Msg::SrvSett, |w| SrvSett { key: 3, value: new as i16 }.write(w));
+        }
+    }
+    let mask = state::with(|g| g.allowed_weapons);
+    if mask == 0 {
+        e.print("All weapons are restricted.\n");
+    } else {
+        let names = ["knives ", "pistols ", "SMGs ", "rifles ", "shotguns "];
+        let s: String = (0..5).filter(|i| mask & (1 << i) != 0).map(|i| names[i]).collect();
+        e.print(&format!("Weapons allowed: {s}\n"));
+    }
+}
+
+/// `WeaponRestrictionByID`.
+pub fn restriction_by_id(n: i32) -> i32 {
+    match n {
+        1 => 0,
+        2 => 1,
+        3 => 3,
+        4 => 0x13,
+        _ => 0x1f,
+    }
+}
+
+/// `loadweapons`/`saveweapons` belong to the weapons package (custom weapon parameters).
+unsafe extern "C" fn cmd_weapons_file() {
+    engine().print("loadweapons/saveweapons: custom weapon parameters are not supported yet.\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn say_format() {
+        assert_eq!(format_say("bob", false, "hi", 0.0, 100.0), "\x02bob: hi\n");
+        assert_eq!(format_say("bob", true, "hp %h %a 100%", 50.0, 87.4), "\x02(TEAM) bob: hp 87 with kevlar 100%\n");
+        let long = "x".repeat(300);
+        assert!(format_say("bob", false, &long, 0.0, 0.0).len() <= 128);
+    }
+
+    #[test]
+    fn globalslow_clamps() {
+        assert_eq!(globalslow_amount(50.0), 0.5);
+        assert_eq!(globalslow_amount(100.0), 0.0, "100% is off");
+        assert_eq!(globalslow_amount(500.0), 2.0);
+        assert_eq!(globalslow_amount(0.5), 0.01);
+        assert_eq!(globalslow_amount(-5.0), 0.0);
+    }
+
+    #[test]
+    fn restrictions() {
+        assert_eq!(restriction_by_id(4), 0x13);
+        assert_eq!(restriction_by_id(9), 0x1f);
+    }
+}
