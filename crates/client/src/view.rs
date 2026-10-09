@@ -57,6 +57,8 @@ struct View {
     last_weapon: i32,
     // TSFade
     fade: Option<(f32, state_fade::Fade)>,
+    // view-model framerate latch (`g_vmFramerate` `0x10094cf0`): (sequence, animtime, rate)
+    vm_latch: (i32, f32, f32),
     // outputs
     cam: Camera,
     eye: Vec3,
@@ -609,6 +611,7 @@ fn calc_normal(p: &mut ref_params_t) {
             _ => 0.0,
         };
         vm.origin = org;
+        vm.curstate.framerate = with(|w| view_model_framerate(w, vm.curstate.sequence, vm.curstate.animtime, ts));
         vm.curstate.angles = vm.angles;
         vm.latched.prevangles = vm.angles;
     }
@@ -622,6 +625,32 @@ fn calc_normal(p: &mut ref_params_t) {
         w.eye = eye;
         finish(w, p);
     });
+}
+
+/// TS `StudioDrawModel` change (§2.3): the view model animates at the time scale, faster with the
+/// local power-ups (x3.5556 slow-pause, x1.71429 slow-motion, x1.5 double fire rate), latched once
+/// per animation restart.
+fn view_model_framerate(w: &mut View, sequence: i32, animtime: f32, ts: f32) -> f32 {
+    if w.vm_latch.0 != sequence || w.vm_latch.1 != animtime {
+        let pw = state::with(|s| s.powerups);
+        let rate = if pw & 0x10 != 0 || !(0.999..=1.001).contains(&ts) {
+            let mut r = ts;
+            if pw & 8 != 0 {
+                r *= 3.5556;
+            }
+            if pw & 1 != 0 {
+                r *= 1.71429;
+            }
+            if pw & 0x10 != 0 {
+                r *= 1.5;
+            }
+            r
+        } else {
+            1.0
+        };
+        w.vm_latch = (sequence, animtime, rate);
+    }
+    w.vm_latch.2
 }
 
 fn cl_calc_shake(p: &mut ref_params_t) {
