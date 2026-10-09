@@ -32,6 +32,8 @@ mod server {
         fn send_weapon_anim(&self, to: *mut edict_t, anim: i32, body: i32);
         fn get_global_trace_hit(&self) -> *mut edict_t;
         fn model_index_str(&self, name: &CStr) -> i32;
+        /// `pfnGetGameDir`: the game directory (e.g. `ts`).
+        fn game_dir(&self) -> String;
     }
 
     impl WeaponsEngine for Engine {
@@ -77,6 +79,12 @@ mod server {
 
         fn model_index_str(&self, name: &CStr) -> i32 {
             self.model_index(name)
+        }
+
+        fn game_dir(&self) -> String {
+            let mut buf = [0 as std::ffi::c_char; 512];
+            eng!(pfnGetGameDir(buf.as_mut_ptr()));
+            unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
         }
     }
 }

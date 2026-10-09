@@ -111,6 +111,11 @@ impl Entity for WorldGun {
             return;
         }
         let pev = cx.pev();
+        if pev.flags & FL_ONGROUND as i32 != 0 {
+            // Ground friction: FWGS doesn't slow a sliding MOVETYPE_BOUNCE entity on flat ground.
+            pev.velocity = spread::scale(pev.velocity, 0.5);
+            pev.avelocity = spread::scale(pev.avelocity, 0.5);
+        }
         let slow = if pev.fuser1 > 0.0 { pev.fuser1 } else { 1.0 };
         if pev.flags & FL_ONGROUND as i32 != 0 && spread::length(pev.velocity) < slow * 3.0 {
             emit(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, 0.8, 100);
@@ -186,6 +191,7 @@ impl WorldGun {
         let e = engine();
         let me = cx.edict;
         self.on_ground = true;
+        assets::debug(|| format!("WorldGun {} landed at {:?}", self.id, cx.pev().origin));
         let pev = cx.pev();
         pev.owner = std::ptr::null_mut();
         pev.solid = SOLID_TRIGGER as i32;

@@ -154,11 +154,12 @@ impl GunHost for ServerHost<'_> {
         // CTSAnimation belongs to the movement package (third-person sequences).
     }
     fn kick(&mut self, pitch: f32, yaw: f32) {
-        // VKickback: the server writes the angles only for bots; humans kick on the client.
+        // VKickback: the server writes pev->punchangle (pev+0x68) only for bots; humans get the
+        // same kick from their client's fire-event handler.
         let pev = self.pev();
         if pev.flags & FL_FAKECLIENT as i32 != 0 {
-            pev.v_angle[0] -= pitch;
-            pev.v_angle[1] += yaw;
+            pev.punchangle[0] -= pitch;
+            pev.punchangle[1] += yaw;
         }
     }
     fn sound(&mut self, s: Sound) {

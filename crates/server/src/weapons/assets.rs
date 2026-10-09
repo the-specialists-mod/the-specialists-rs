@@ -43,6 +43,8 @@ pub fn register_cvars() {
     };
     *CVARS.0.borrow_mut() = Some(c);
     e.add_server_command(c"weaponrestriction", cmd_weaponrestriction);
+    e.add_server_command(c"loadweapons", super::custom::cmd_loadweapons);
+    e.add_server_command(c"saveweapons", super::custom::cmd_saveweapons);
 }
 
 /// Current cvar values.
@@ -251,4 +253,12 @@ pub fn precache() {
         }
     }
     *ASSETS.0.borrow_mut() = Some(a);
+    // customweapons: weapon parameter file applied at every map start
+    let file = e.cvar_string(c"customweapons").to_string_lossy().into_owned();
+    if !file.is_empty() {
+        let f = file;
+        if !super::custom::load(&f) {
+            e.print(&format!("customweapons: can't read {f}\n"));
+        }
+    }
 }

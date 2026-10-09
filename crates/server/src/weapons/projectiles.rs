@@ -413,6 +413,12 @@ impl Entity for Knife {
         }
         if !self.stuck {
             impact_damage(cx.edict, 0.1, 0x0800_1000, false);
+        } else {
+            let pev = cx.pev();
+            if pev.flags & FL_ONGROUND as i32 != 0 {
+                pev.velocity = spread::scale(pev.velocity, 0.5);
+                pev.avelocity = spread::scale(pev.avelocity, 0.5);
+            }
         }
     }
 

@@ -6,6 +6,7 @@
 mod assets;
 mod bullets;
 mod commands;
+mod custom;
 mod fire;
 mod host;
 mod inventory;
@@ -75,6 +76,8 @@ pub struct SvState {
     pub sent_space: Option<i32>,
     /// Free-slot count the move speed was last computed for.
     pub speed_for: Option<i32>,
+    /// `CustomWP` sent to this client.
+    pub custom_informed: bool,
 }
 
 impl Default for SvState {
@@ -103,6 +106,7 @@ impl Default for SvState {
             sent_act_items: None,
             sent_space: None,
             speed_for: None,
+            custom_informed: false,
         }
     }
 }
@@ -173,6 +177,10 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     inventory::buy_armament(p, cx);
     inventory::sync_speed(p, cx);
     net::send_kfu_power(cx.edict, p.inv.gun.melee_bar);
+    if !p.inv.sv.custom_informed && unsafe { (*cx.edict).v.flags } & goldsrc::sys::FL_FAKECLIENT as i32 == 0 {
+        p.inv.sv.custom_informed = true;
+        custom::inform(Some(cx.edict));
+    }
 }
 
 pub fn pre_think(p: &mut Player, cx: &mut Cx) {
