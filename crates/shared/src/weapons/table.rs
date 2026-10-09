@@ -1,7 +1,7 @@
 //! Static weapon data. `tables()` parses the embedded TOML once.
 
 use serde::Deserialize;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,6 +179,7 @@ pub struct Combat {
     pub attachment_price: AttachmentPrice,
 }
 
+#[derive(Clone)]
 pub struct Tables {
     weapons: Vec<Option<WeaponInfo>>,
     ammo: Vec<Option<AmmoInfo>>,
@@ -237,10 +238,70 @@ pub fn parse() -> Result<Tables, toml::de::Error> {
     Ok(Tables { weapons: by_id(w.weapon, |w| w.id), ammo: by_id(a.ammo, |a| a.id), assets: by_id(s.asset, |a| a.id), combat })
 }
 
-/// Parsed once; panics on a malformed embedded table (caught by `cargo test`).
-pub fn tables() -> &'static Tables {
+fn base() -> &'static Tables {
     static T: OnceLock<Tables> = OnceLock::new();
     T.get_or_init(|| parse().expect("embedded weapon tables"))
+}
+
+/// Custom weapon parameters (`loadweapons` / `CustomWP`) replace the base tables.
+static CUSTOM: RwLock<Option<&'static Tables>> = RwLock::new(None);
+
+/// The weapon tables: the embedded TS 3.0 values, or the custom ones when a server loaded a
+/// weapons file (`CustomWP`). Parsed once; panics on a malformed embedded table (caught by
+/// `cargo test`).
+pub fn tables() -> &'static Tables {
+    if let Some(t) = *CUSTOM.read().unwrap() {
+        return t;
+    }
+    base()
+}
+
+impl Tables {
+    /// `AdjustSpecificWeapon` / `adjust_weapon_value`: the five fields a weapons file or a
+    /// `CustomWP` message can change. Accuracy is clamped to >= 0.001. False for invalid ids.
+    pub fn with_weapon_params(&self, id: u8, accuracy: f32, view_kick: f32, acc_kick: f32, damage: f32, cost: i32) -> Option<Tables> {
+        let mut t = self.clone();
+        let w = t.weapons.get_mut(id as usize)?.as_mut()?;
+        w.accuracy = accuracy.max(0.001);
+        w.view_kick = view_kick;
+        w.acc_kick = acc_kick;
+        w.damage = damage;
+        w.cost = cost;
+        Some(t)
+    }
+
+    /// `armor_absorb x` line of a weapons file (clamped at 0).
+    pub fn with_armor_absorb(&self, v: f32) -> Tables {
+        let mut t = self.clone();
+        t.combat.armor_absorb = v.max(0.0);
+        t
+    }
+}
+
+/// Installs custom tables (the old ones are leaked; changes are rare).
+pub fn set_custom_tables(t: Tables) {
+    *CUSTOM.write().unwrap() = Some(Box::leak(Box::new(t)));
+}
+
+/// Changes one weapon's custom parameters. False for invalid ids.
+pub fn set_weapon_params(id: u8, accuracy: f32, view_kick: f32, acc_kick: f32, damage: f32, cost: i32) -> bool {
+    match tables().with_weapon_params(id, accuracy, view_kick, acc_kick, damage, cost) {
+        Some(t) => {
+            set_custom_tables(t);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Back to the embedded TS 3.0 values.
+pub fn reset_custom_tables() {
+    *CUSTOM.write().unwrap() = None;
+}
+
+/// True while custom parameters are in effect.
+pub fn custom_tables_active() -> bool {
+    CUSTOM.read().unwrap().is_some()
 }
 
 #[cfg(test)]
@@ -259,5 +320,14 @@ mod tests {
         assert_eq!(t.ammo(4).unwrap().name, "5.56 Nato");
         assert_eq!(t.asset(13).unwrap().model, "ak47");
         assert!((t.combat.armor_absorb - 0.2125).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weapon_params_override() {
+        let t = parse().unwrap();
+        let c = t.with_weapon_params(13, 0.0, 1.0, 2.0, 50.0, 99).unwrap();
+        let ak = c.weapon(13).unwrap();
+        assert_eq!((ak.accuracy, ak.view_kick, ak.acc_kick, ak.damage, ak.cost), (0.001, 1.0, 2.0, 50.0, 99));
+        assert!(t.with_weapon_params(29, 0.0, 0.0, 0.0, 0.0, 0).is_none());
     }
 }
