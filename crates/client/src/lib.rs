@@ -58,8 +58,9 @@ pub unsafe extern "C" fn HUD_Redraw(time: f32, intermission: c_int) -> c_int {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn HUD_UpdateClientData(_cdata: *mut c_void, _time: f32) -> c_int {
-    0
+pub unsafe extern "C" fn HUD_UpdateClientData(cdata: *mut c_void, _time: f32) -> c_int {
+    // Returning 1 tells the engine client_data_t changed (the eased zoom FOV).
+    view::update_client_data(cdata) as c_int
 }
 
 #[unsafe(no_mangle)]
