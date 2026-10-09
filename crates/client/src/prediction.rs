@@ -2,35 +2,116 @@
 //! TS fields (iuser4 stunt bits, fuser1 time scale, vuser1..4 weapon state). Owner:
 //! rendering/prediction work package. Reference: rendering-effects-prediction.md §8.
 
+mod gun;
+
+use crate::state;
+use goldsrc::ext::render as r;
 use goldsrc::sys::*;
 
-pub fn post_run_cmd(_from: &mut local_state_t, _to: &mut local_state_t, _cmd: &mut usercmd_t, _runfuncs: bool, _time: f64, _seed: u32) {}
+pub use gun::alt_grip;
 
+/// TS keeps one weapon, the `CTSGun` container, in HL weapon slot 16.
+pub const TS_GUN_SLOT: usize = 16;
+
+/// `HUD_PostRunCmd` (`0x100045b0` -> `HUD_WeaponsPostThink` `0x10003830`).
+pub fn post_run_cmd(from: &mut local_state_t, to: &mut local_state_t, cmd: &mut usercmd_t, runfuncs: bool, time: f64, seed: u32) {
+    gun::post_think(from, to, cmd, runfuncs, time, seed);
+    if runfuncs {
+        // Store the predicted FOV for the view's zoom easing (TS stores `to->client.fov`).
+        state::with(|s| s.fov_target = to.client.fov);
+    }
+}
+
+/// `HUD_TxferLocalOverrides` (`0x1001b900`): SDK set plus `iuser4`.
 pub fn txfer_local_overrides(s: &mut entity_state_t, c: &clientdata_t) {
     s.origin = c.origin;
     s.iuser1 = c.iuser1;
     s.iuser2 = c.iuser2;
+    s.iuser3 = c.iuser3;
     s.iuser4 = c.iuser4;
 }
 
+/// `HUD_ProcessPlayerState` (`0x1001b950`): the SDK field list plus `iuser4`; for the local
+/// player the spectator globals.
 pub fn process_player_state(dst: &mut entity_state_t, src: &entity_state_t) {
-    *dst = *src;
+    dst.origin = src.origin;
+    dst.angles = src.angles;
+    dst.velocity = src.velocity;
+    dst.frame = src.frame;
+    dst.modelindex = src.modelindex;
+    dst.skin = src.skin;
+    dst.effects = src.effects;
+    dst.weaponmodel = src.weaponmodel;
+    dst.movetype = src.movetype;
+    dst.sequence = src.sequence;
+    dst.animtime = src.animtime;
+    dst.solid = src.solid;
+    dst.rendermode = src.rendermode;
+    dst.renderamt = src.renderamt;
+    dst.rendercolor = src.rendercolor;
+    dst.renderfx = src.renderfx;
+    dst.framerate = src.framerate;
+    dst.body = src.body;
+    dst.controller = src.controller;
+    dst.blending = src.blending;
+    dst.basevelocity = src.basevelocity;
+    dst.friction = src.friction;
+    dst.gravity = src.gravity;
+    dst.gaitsequence = src.gaitsequence;
+    dst.spectator = src.spectator;
+    dst.usehull = src.usehull;
+    dst.playerclass = src.playerclass;
+    dst.team = src.team;
+    dst.colormap = src.colormap;
+    dst.iuser4 = src.iuser4;
+    if r::local_player().is_some_and(|p| p.index == dst.number) {
+        state::with(|s| {
+            s.spec_mode = src.iuser1;
+            s.spec_target = src.iuser2;
+            s.spec_flags = src.iuser3;
+        });
+    }
 }
 
-/// Carries predicted-only fields across a new server frame.
-pub fn txfer_prediction_data(ps: &mut entity_state_t, pps: &entity_state_t, pcd: &mut clientdata_t, ppcd: &clientdata_t,
-                             wd: &mut [weapon_data_t; 32], pwd: &[weapon_data_t; 32]) {
+/// `HUD_TxferPredictionData` (`0x1001bb00`): carries predicted-only fields across a new server
+/// frame. `fuser1` needs no copy (pmove reads it from clientdata every command, never writes it).
+pub fn txfer_prediction_data(ps: &mut entity_state_t, pps: &entity_state_t, pcd: &mut clientdata_t, ppcd: &clientdata_t, wd: &mut [weapon_data_t; 32],
+                             pwd: &[weapon_data_t; 32]) {
     ps.oldbuttons = pps.oldbuttons;
     ps.flFallVelocity = pps.flFallVelocity;
     ps.iStepLeft = pps.iStepLeft;
     ps.playerclass = pps.playerclass;
+
     pcd.viewmodel = ppcd.viewmodel;
     pcd.m_iId = ppcd.m_iId;
+    pcd.ammo_shells = ppcd.ammo_shells;
+    pcd.ammo_nails = ppcd.ammo_nails;
+    pcd.ammo_cells = ppcd.ammo_cells;
+    pcd.ammo_rockets = ppcd.ammo_rockets;
     pcd.m_flNextAttack = ppcd.m_flNextAttack;
     pcd.fov = ppcd.fov;
     pcd.weaponanim = ppcd.weaponanim;
     pcd.tfstate = ppcd.tfstate;
     pcd.maxspeed = ppcd.maxspeed;
     pcd.deadflag = ppcd.deadflag;
-    let _ = (wd, pwd);
+    // Spectator: keep the server's values for spectate-only clients (SDK behaviour).
+    if goldsrc::cl_eng!(IsSpectateOnly()) != 0 {
+        state::with(|s| {
+            pcd.iuser1 = s.spec_mode;
+            pcd.iuser2 = s.spec_target;
+            pcd.iuser3 = s.spec_flags;
+        });
+    } else {
+        pcd.iuser1 = ppcd.iuser1;
+        pcd.iuser2 = ppcd.iuser2;
+        pcd.iuser3 = ppcd.iuser3;
+    }
+    pcd.iuser4 = ppcd.iuser4;
+    pcd.fuser2 = ppcd.fuser2;
+    pcd.fuser3 = ppcd.fuser3;
+    pcd.vuser1 = ppcd.vuser1;
+    pcd.vuser2 = ppcd.vuser2;
+    pcd.vuser3 = ppcd.vuser3;
+    pcd.vuser4 = ppcd.vuser4;
+    *wd = *pwd;
 }
