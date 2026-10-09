@@ -104,6 +104,8 @@ pub enum MeleeKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeleeHit {
     pub kind: MeleeKind,
+    /// Weapon id credited for the hit (0 = kung fu).
+    pub weapon: u8,
     /// Units from the gun position along `v_forward` (negative = behind, the running back kick).
     pub reach: f32,
     /// Hull for the fallback trace (`CheckHull`): 1 human, 3 head.
@@ -925,6 +927,7 @@ impl Gun {
         }
         let r = host.melee(&MeleeHit {
             kind: MeleeKind::ColdCock,
+            weapon: self.current,
             reach: 35.0,
             hull: 3,
             damage: dmg,
@@ -1054,6 +1057,7 @@ impl Gun {
             dmg *= spread::melee_multiplier(self.melee_bar);
             let res = host.melee(&MeleeHit {
                 kind: MeleeKind::Knife,
+                weapon: self.current,
                 reach: 35.0,
                 hull: 3,
                 damage: dmg,
@@ -1146,6 +1150,7 @@ impl Gun {
         dmg *= spread::melee_multiplier(self.melee_bar);
         let res = host.melee(&MeleeHit {
             kind: MeleeKind::Katana,
+            weapon: self.current,
             reach: reach as f32,
             hull: 3,
             damage: dmg,
@@ -1370,6 +1375,7 @@ impl Gun {
             let back = reach == 3;
             let res = host.melee(&MeleeHit {
                 kind: MeleeKind::KungFu,
+                weapon: 0,
                 reach: if back { -(reach as f32) } else { reach as f32 },
                 hull: if back { 1 } else { 3 },
                 damage: dmg,
