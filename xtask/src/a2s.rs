@@ -20,7 +20,12 @@ impl fmt::Display for Info {
     }
 }
 
+/// A2S_INFO, falling back to the Xash `info` query that older FWGS builds answer instead.
 pub fn info(host: &str, port: u16) -> std::io::Result<Info> {
+    a2s_info(host, port).or_else(|_| xash_info(host, port))
+}
+
+fn a2s_info(host: &str, port: u16) -> std::io::Result<Info> {
     let s = UdpSocket::bind("0.0.0.0:0")?;
     s.set_read_timeout(Some(Duration::from_millis(1500)))?;
     let query = b"\xff\xff\xff\xffTSource Engine Query\x00".to_vec();
@@ -61,4 +66,29 @@ fn parse(d: &[u8]) -> Option<Info> {
         }
         _ => None,
     }
+}
+
+/// Xash connectionless `info <protocol>`: replies `info\n\\key\\value...`.
+fn xash_info(host: &str, port: u16) -> std::io::Result<Info> {
+    let s = UdpSocket::bind("0.0.0.0:0")?;
+    s.set_read_timeout(Some(Duration::from_millis(1500)))?;
+    s.send_to(b"\xff\xff\xff\xffinfo 49\n", (host, port))?;
+    let mut buf = [0u8; 1400];
+    let n = s.recv(&mut buf)?;
+    let text = String::from_utf8_lossy(&buf[4..n]);
+    let body = text.strip_prefix("info\n").ok_or_else(|| std::io::Error::other("bad info reply"))?;
+    let mut parts = body.trim_start_matches('\\').split('\\');
+    let mut kv = std::collections::HashMap::new();
+    while let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+        kv.insert(k.to_owned(), v.trim_end().to_owned());
+    }
+    let get = |k: &str| kv.get(k).cloned().unwrap_or_default();
+    Ok(Info {
+        name: get("host"),
+        map: get("map"),
+        dir: get("gamedir"),
+        game: String::new(),
+        players: get("numcl").parse().unwrap_or(0),
+        max_players: get("maxcl").parse().unwrap_or(0),
+    })
 }

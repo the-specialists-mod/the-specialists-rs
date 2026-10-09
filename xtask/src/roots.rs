@@ -86,6 +86,7 @@ impl Root {
         };
         vec![
             mk("fwgs", Os::Linux, Engine::Fwgs, "xash"),
+            mk("fwgs-win", Os::Windows, Engine::Fwgs, "xash_win"),
             mk("rehlds-linux", Os::Linux, Engine::ReHlds, "hlds_linux"),
             mk("rehlds-win", Os::Windows, Engine::ReHlds, "hlds_win"),
             mk("hlds25-linux", Os::Linux, Engine::Hlds25, "hlds25_linux"),
@@ -95,7 +96,8 @@ impl Root {
 
     pub fn exists(&self) -> bool {
         self.path.join(match (self.engine, self.os) {
-            (Engine::Fwgs, _) => "xash",
+            (Engine::Fwgs, Os::Linux) => "xash",
+            (Engine::Fwgs, Os::Windows) => "xash3d.exe",
             (_, Os::Linux) => "hlds_linux",
             (_, Os::Windows) => "hlds.exe",
         }).exists()
@@ -103,7 +105,7 @@ impl Root {
 
     pub fn target(&self) -> Target {
         match (self.engine, self.os) {
-            (Engine::Fwgs, _) => Target::LINUX_X86_64,
+            (Engine::Fwgs, Os::Linux) => Target::LINUX_X86_64,
             (_, Os::Linux) => Target::LINUX_I686,
             (_, Os::Windows) => Target::WINDOWS_I686,
         }
@@ -111,7 +113,10 @@ impl Root {
 
     /// Where the console log ends up (Windows hlds writes it with -condebug).
     pub fn log_path(&self) -> PathBuf {
-        self.path.join("qconsole.log")
+        match self.engine {
+            Engine::Fwgs => self.path.join("engine.log"),
+            _ => self.path.join("qconsole.log"),
+        }
     }
 
     pub fn server_command(&self, map: &str, port: u16, bots: u32) -> Command {
@@ -120,7 +125,15 @@ impl Root {
             c.args(["+ts_bot_quota", &bots.to_string(), "+map", map]);
         };
         match (self.engine, self.os) {
-            (Engine::Fwgs, _) => {
+            (Engine::Fwgs, Os::Windows) => {
+                // FWGS 0.21 win32 (as shipped with xash3d-ts): one exe, -dedicated for servers.
+                let mut c = Command::new("wine");
+                c.env("WINEPREFIX", wineprefix()).env("WINEDEBUG", "-all");
+                c.arg("xash3d.exe").args(["-dedicated", "-dev", "1", "-log"]);
+                common(&mut c);
+                c
+            }
+            (Engine::Fwgs, Os::Linux) => {
                 let mut c = Command::new(self.path.join("xash"));
                 c.arg("-dev").arg("1");
                 common(&mut c);
