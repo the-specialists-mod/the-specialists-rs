@@ -38,6 +38,7 @@ pub fn init() {
     for (name, f) in EVENTS {
         r::hook_event(name, f);
     }
+    register_test_commands();
 }
 
 /// Decoded `event_args_t`.
@@ -152,4 +153,47 @@ mod tests {
             assert!(n.to_bytes().starts_with(b"events/") && n.to_bytes().ends_with(b".sc"));
         }
     }
+}
+
+// ---- developer test commands (exercise the handlers without a server sending events) ---------
+
+/// `ts_test_fire <weapon id> [attachments] [seed]`: runs the fire handler as if the local player
+/// fired (origin and angles from the local view).
+unsafe extern "C" fn cmd_test_fire() {
+    let e = goldsrc::client::engine();
+    let arg = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<i32>().unwrap_or(0);
+    let Some(p) = r::local_player() else { return };
+    let mut a = Args { entindex: p.index, origin: p.origin, angles: e.view_angles(), velocity: v::ZERO, ..Default::default() };
+    a.i1 = if arg(1) == 0 { 13 } else { arg(1) };
+    a.i2 = arg(2);
+    a.b2 = arg(3);
+    let w = shared::weapons::tables().weapon(a.i1 as u8);
+    a.f1 = w.map_or(0.01, |w| w.accuracy);
+    a.f2 = a.f1;
+    fire::fire(&a);
+}
+
+/// `ts_test_event <name> <i1> <i2> <f1>`: runs one of the other handlers for the local player.
+unsafe extern "C" fn cmd_test_event() {
+    let e = goldsrc::client::engine();
+    let name = e.cmd_argv(1).to_string_lossy().into_owned();
+    let arg = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
+    let Some(p) = r::local_player() else { return };
+    let a = Args { entindex: p.index, origin: p.origin, angles: e.view_angles(), i1: arg(2) as i32, i2: arg(3) as i32, f1: arg(4), ..Default::default() };
+    match name.as_str() {
+        "empty" => misc::empty(&a),
+        "pump" => misc::pump(&a),
+        "reload" => misc::reload(&a),
+        "knife" => misc::knife(&a),
+        "katana" => misc::katana(&a),
+        "closecombat" => misc::close_combat(&a),
+        "coldcock" => misc::coldcock(&a),
+        _ => e.print("ts_test_event empty|pump|reload|knife|katana|closecombat|coldcock <i1> <i2> <f1>\n"),
+    }
+}
+
+pub fn register_test_commands() {
+    let e = goldsrc::client::engine();
+    e.add_command(c"ts_test_fire", cmd_test_fire);
+    e.add_command(c"ts_test_event", cmd_test_event);
 }

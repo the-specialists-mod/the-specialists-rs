@@ -207,6 +207,14 @@ impl PSys {
         self.parts.len()
     }
 
+    /// Debug summary: (nearest distance, in view cone, sample particle).
+    pub fn debug(&self, cam: &Camera) -> String {
+        let near = self.parts.iter().map(|p| v::dist(p.origin, cam.origin)).fold(f32::MAX, f32::min);
+        let inview = self.parts.iter().filter(|p| in_view_cone(cam, p.origin)).count();
+        let sample = self.parts.first().map(|p| format!("org {:?} r {:.1} c {:.2} life {:.1} spr {} mode {}", p.origin, p.radius, p.color, p.life, p.sprite, p.rendermode));
+        format!("nearest {near:.0} inview {inview} cam {:?} oldest {:?}", cam.origin, sample)
+    }
+
     pub fn clear(&mut self) {
         self.parts.clear();
         self.cooldown = [0.0; 128];
@@ -364,7 +372,8 @@ impl PSys {
                 }
                 p.next_trace = now + iv as f64;
                 let tr = r::player_trace(p.prev, p.origin, 2, (PM_STUDIO_BOX | PM_WORLD_ONLY) as i32, -1);
-                if tr.fraction < 1.0 || tr.startsolid != 0 {
+                // Particles spawned inside a brush (emitters just under a sky) aren't hits.
+                if tr.fraction < 1.0 && tr.allsolid == 0 && tr.startsolid == 0 {
                     let n = tr.plane.normal;
                     p.origin = v::ma(tr.endpos, 0.5, n);
                     let damp = 0.3 * (1.0 - 7.0 * iv).max(0.0);

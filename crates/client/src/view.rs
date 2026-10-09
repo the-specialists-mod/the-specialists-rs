@@ -147,6 +147,43 @@ pub fn init() {
     e.add_command(c"thirdperson", cmd_thirdperson);
     e.add_command(c"firstperson", cmd_firstperson);
     e.hook_user_msg(c"TSFade", Some(msg_tsfade));
+    e.add_command(c"ts_test_fade", cmd_test_fade);
+    e.add_command(c"ts_test_kick", cmd_test_kick);
+    e.add_command(c"ts_test_view", cmd_test_view);
+    e.add_command(c"ts_test_angles", cmd_test_angles);
+}
+
+/// `ts_test_angles <pitch> <yaw>`: sets the view angles (developer aid for scripted screenshots).
+unsafe extern "C" fn cmd_test_angles() {
+    let e = goldsrc::client::engine();
+    let n = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
+    let mut a = [n(1), n(2), 0.0];
+    goldsrc::cl_eng!(SetViewAngles(a.as_mut_ptr()));
+}
+
+/// `ts_test_view`: prints the view state (developer aid).
+unsafe extern "C" fn cmd_test_view() {
+    let s = with(|w| format!("third {} dead {} cam_back {:.1} cam_up {:.1} origin {:?} eye {:?} angles {:?}\n", w.third, w.forced_dead, w.cam_back, w.cam_up, w.cam.origin, w.eye, w.cam.angles));
+    let ts = state::with(|st| format!("ts {:.3}/{:.3} fov {:.1}/{:.1}\n", st.time_scale, st.time_scale_target, st.fov, st.fov_target));
+    goldsrc::client::engine().print(&s);
+    goldsrc::client::engine().print(&ts);
+}
+
+/// `ts_test_fade <r> <g> <b> <a> <duration> <hold>` (developer test of the TSFade path).
+unsafe extern "C" fn cmd_test_fade() {
+    let e = goldsrc::client::engine();
+    let n = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
+    let f = shared::protocol::effects::TsFade { duration: n(5).max(0.1), hold: n(6), flags: 0, rgba: [n(1) as u8, n(2) as u8, n(3) as u8, n(4) as u8] };
+    let mut b = Vec::new();
+    f.encode(&mut b);
+    on_tsfade(&b);
+}
+
+/// `ts_test_kick <view kick> <class>`: one shot's client-side recoil.
+unsafe extern "C" fn cmd_test_kick() {
+    let e = goldsrc::client::engine();
+    let n = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
+    kick(if n(1) == 0.0 { 5.5 } else { n(1) }, n(2) as u8, false, false);
 }
 
 unsafe extern "C" fn cmd_thirdperson() {
@@ -186,13 +223,14 @@ pub fn ease_fov(cur: f32, target: f32, ft: f32) -> f32 {
     cur + step * d.signum()
 }
 
-/// Called from `HUD_Frame`.
-pub fn frame(time: f64) {
-    let ft = with(|w| {
-        let ft = if w.last_frame > 0.0 { (time - w.last_frame).clamp(0.0, 0.25) as f32 } else { 0.0 };
+/// Called from `HUD_Frame`. The engine passes the frame time (FWGS `host.frametime`, as the
+/// SDK's `HUD_Frame(double time)` does), not an absolute time.
+pub fn frame(frametime: f64) {
+    let ft = (frametime as f32).clamp(0.0, 0.25);
+    let time = r::client_time() as f64;
+    with(|w| {
         w.last_frame = time;
         w.frametime = ft;
-        ft
     });
     let default_fov = {
         let d = cv(|c| c.default_fov);

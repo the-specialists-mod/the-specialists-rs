@@ -38,6 +38,7 @@ struct Fx {
     sprites: Option<laser::Sprites>,
     quality: Quality,
     blur: [u8; 33],
+    draws: u64,
 }
 
 struct Cvars {
@@ -87,6 +88,7 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         sprites: None,
         quality: Quality::default(),
         blur: [0; 33],
+        draws: 0,
     });
     f(fx)
 }
@@ -173,6 +175,56 @@ pub fn init() {
     e.hook_user_msg(c"TSFrags", Some(msg_tsfrags));
     e.hook_user_msg(c"TSMBlur", Some(msg_tsmblur));
     e.hook_user_msg(c"TSBTime", Some(msg_tsbtime));
+    e.add_command(c"ts_test_fx", cmd_test_fx);
+}
+
+/// `ts_test_fx slowmo <scale> | blood | glass | explosion | sparks | wind <speed> | bullettime <0|1>`:
+/// feeds the message handlers locally (developer test; the server package sends the real ones).
+unsafe extern "C" fn cmd_test_fx() {
+    let e = goldsrc::client::engine();
+    let what = e.cmd_argv(1).to_string_lossy().into_owned();
+    let num = e.cmd_argv(2).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
+    let Some(p) = r::local_player() else { return };
+    let (f, _, _) = v::angle_vectors(e.view_angles());
+    let at = v::ma(v::add(p.origin, [0.0, 0.0, 16.0]), 96.0, f);
+    let mut b = Vec::new();
+    match what.as_str() {
+        "stats" => {
+            let line = with(|fx| {
+                let live = fx.map.emitters.iter().filter(|e| !e.dead).count();
+                let first = fx.map.emitters.first().map(|e| format!("{:?} next {:.2} tmpl {:?}", e.origin, e.next_emit, e.template)).unwrap_or_default();
+                format!("draws {} ft {:.4} particles {} / max {} div {} emitters {} live {} first {} time {:.2} wind {:.1}\n", fx.draws, fx.frametime, fx.psys.count(), fx.psys.max, fx.psys.divisor,
+                        fx.map.emitters.len(), live, first, fx.time, fx.psys.wind.speed(fx.time))
+            });
+            e.print(&line);
+            let cam = view::camera();
+            let d = with(|fx| fx.psys.debug(&cam));
+            e.print(&format!("{d}\n"));
+        }
+        "slowmo" => state::with(|s| s.time_scale_target = if num > 0.0 { num } else { 1.0 }),
+        "bullettime" => on_tsbtime(&[num as u8]),
+        "blood" => {
+            msg::PTakeDam { pos: at, dir: f, amount: 40 }.encode(&mut b);
+            on_ptakedam(&b);
+        }
+        "glass" => {
+            msg::TsFrags::Glass { origin: at, size: [32.0, 32.0, 48.0], hit: at, dir: f, dmg_bits: 2, force: 200.0 }.encode(&mut b);
+            on_tsfrags(&b);
+        }
+        "explosion" => {
+            msg::TsFrags::Explosion { origin: at, radius: 300.0 }.encode(&mut b);
+            on_tsfrags(&b);
+        }
+        "sparks" => {
+            msg::TsFrags::Sparks { origin: at, dir: v::scale(f, -1.0) }.encode(&mut b);
+            on_tsfrags(&b);
+        }
+        "wind" => {
+            msg::TsWind { seed: 1234, yaw: 30, speed: num }.encode(&mut b);
+            on_tspsys(&b);
+        }
+        _ => e.print("ts_test_fx slowmo <s>|bullettime <0|1>|blood|glass|explosion|sparks|wind <speed>\n"),
+    }
 }
 
 pub fn vid_init() {
@@ -453,6 +505,7 @@ pub fn draw_transparent() {
     }
     let (dt, requests) = with(|fx| {
         let dt = fx.frametime * ts;
+        fx.draws += 1;
         let t = fx.time;
         fx.psys.update(t, dt, &cam, &players);
         (dt, std::mem::take(&mut fx.psys.spawn_requests))
@@ -478,7 +531,8 @@ pub fn fog_begin() {
     let fog = with(|fx| fx.fog);
     let on = cvar(|c| c.gl_fog) != 0.0;
     if let (Some(f), true) = (fog, on) {
-        let mut c = f.color;
+        // ts_fog colours are 0..1 (TS feeds glFogfv); TriAPI Fog takes 0..255.
+        let mut c = f.color.map(|x| if x <= 1.0 { x * 255.0 } else { x });
         goldsrc::tri!(Fog(c.as_mut_ptr(), f.near, f.far, 1));
     }
 }

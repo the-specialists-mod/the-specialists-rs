@@ -337,10 +337,10 @@ pub fn explosion(ps: &mut PSys, now: f64, origin: Vec3, radius: f32, ts: f32) {
             Particle {
                 sprite: s,
                 origin: v::add(origin, [0.0, 0.0, 24.0]),
-                radius: 64.0,
+                radius: 40.0,
                 life: 0.0,
-                framerate: frames as f32 * 1.5,
-                fadespeed: 0.01,
+                framerate: frames as f32 * 2.0,
+                fadespeed: 0.04,
                 rendermode: kRenderTransAdd as i32,
                 ..Default::default()
             },
@@ -348,17 +348,17 @@ pub fn explosion(ps: &mut PSys, now: f64, origin: Vec3, radius: f32, ts: f32) {
         );
     }
     if let Some(s) = ps.sprite("sprites/gun_smoke_add.spr") {
-        for _ in 0..12 {
+        for _ in 0..8 {
             ps.add(
                 Particle {
                     sprite: s,
-                    origin: v::add(origin, [rf(-32.0, 32.0), rf(-32.0, 32.0), rf(0.0, 48.0)]),
+                    origin: v::add(origin, [rf(-24.0, 24.0), rf(-24.0, 24.0), rf(0.0, 40.0)]),
                     vel: v::scale(rand_dir(), rf(20.0, 80.0)),
-                    radius: rf(20.0, 40.0),
-                    scalespeed: 0.2,
-                    life: rf(0.5, 1.5),
-                    color: 0.35,
-                    fadespeed: 0.003,
+                    radius: rf(12.0, 24.0),
+                    scalespeed: 0.15,
+                    life: rf(0.3, 0.8),
+                    color: 0.25,
+                    fadespeed: 0.004,
                     drag: 1.0,
                     gravity: -0.02,
                     rendermode: kRenderTransAdd as i32,
