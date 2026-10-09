@@ -128,14 +128,24 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     if p.ts.is_the_one {
         state::with(|g| g.the_one_exists = false);
     }
-    let keep = (p.ts.put_in_server, p.ts.game_hud_initialized, p.ts.obs_mode, p.ts.tk_until, p.ts.tk_count, p.ts.next_say);
-    let (was_observer, idx) = {
+    let was_observer = {
         let v = cx.pev();
-        (v.iuser1 != 0 || v.iuser2 != 0, 0)
+        v.iuser1 != 0 || v.iuser2 != 0
     };
-    let _ = idx;
-    p.ts = PlayerRules::default();
-    (p.ts.put_in_server, p.ts.game_hud_initialized, p.ts.obs_mode, p.ts.tk_until, p.ts.tk_count, p.ts.next_say) = keep;
+    // TSInit resets the per-life state; these survive a respawn.
+    let old = std::mem::take(&mut p.ts);
+    p.ts = PlayerRules {
+        put_in_server: old.put_in_server,
+        game_hud_initialized: old.game_hud_initialized,
+        obs_mode: old.obs_mode,
+        tk_until: old.tk_until,
+        tk_count: old.tk_count,
+        next_say: old.next_say,
+        respawns_used: old.respawns_used,
+        team_name: old.team_name,
+        flag: old.flag,
+        ..PlayerRules::default()
+    };
     p.slow_target = 1.0;
     p.ts.slow_display = 1.0;
     p.active_powerup = 0;
