@@ -1,20 +1,516 @@
 //! Entity/temp-entity hooks, TS particle system and map emitters, laser sights. Owner:
 //! rendering/prediction work package.
-//! Reference: decomp docs/client/rendering-effects-prediction.md §3, §5.
+//! Reference: decomp docs/client/rendering-effects-prediction.md §1, §3, §4.6-4.7, §5.
+//!
+//! Messages handled here (hooked in `init`; the HUD package should not hook them, or should
+//! forward to the `msg_*` functions): `TSPSys` (wind), `PTakeDam` (blood), `TSFrags` (glass,
+//! explosion, sparks), `TSMBlur` (motion-blur request), `TSBTime` (bullet time).
 
-use goldsrc::sys::cl_entity_t;
-use std::ffi::{c_char, c_void};
+pub mod emitters;
+pub mod fx;
+mod laser;
+pub mod psys;
+mod tempents;
 
-pub fn init() {}
-pub fn vid_init() {}
-pub fn add_entity(_kind: i32, _ent: *mut cl_entity_t, _model: *const c_char) -> bool {
+use crate::events::ClientBullet;
+use crate::{state, view};
+use emitters::MapFx;
+use goldsrc::Global;
+use goldsrc::ext::render::{self as r, Cvar, Vec3, vec3 as v};
+use goldsrc::sys::*;
+use psys::{Camera, PSys};
+use shared::protocol::effects as msg;
+use std::cell::RefCell;
+use std::ffi::{c_char, c_int, c_void};
+
+struct Fx {
+    psys: PSys,
+    map: MapFx,
+    level: String,
+    fog: Option<emitters::Fog>,
+    bullets: Vec<ClientBullet>,
+    visible: [bool; 33],
+    shells: [usize; 64],
+    shell_next: usize,
+    whizz: u32,
+    time: f64,
+    frametime: f32,
+    sprites: Option<laser::Sprites>,
+    quality: Quality,
+    blur: [u8; 33],
+}
+
+struct Cvars {
+    fx: Cvar,
+    gore: Cvar,
+    laser: Cvar,
+    lasercolor: Cvar,
+    shadow: Cvar,
+    motionblur: Cvar,
+    paintball: Cvar,
+    gl_fog: Cvar,
+}
+
+/// `cl_fx` quality (`FX_ApplyCvar` `0x10057d50`, `FX_AdaptQuality` `0x10057a70`).
+#[derive(Clone, Copy)]
+struct Quality {
+    q: f32,
+    samples: [f32; 20],
+    n: usize,
+    next: f64,
+    applied: f32,
+}
+
+impl Default for Quality {
+    fn default() -> Self {
+        Quality { q: 1.0, samples: [0.0; 20], n: 0, next: 0.0, applied: -1.0 }
+    }
+}
+
+static FX: Global<RefCell<Option<Fx>>> = Global(RefCell::new(None));
+static CVARS: Global<RefCell<Option<Cvars>>> = Global(RefCell::new(None));
+
+fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
+    let mut g = FX.0.borrow_mut();
+    let fx = g.get_or_insert_with(|| Fx {
+        psys: PSys::default(),
+        map: MapFx::default(),
+        level: String::new(),
+        fog: None,
+        bullets: Vec::new(),
+        visible: [false; 33],
+        shells: [0; 64],
+        shell_next: 0,
+        whizz: 0,
+        time: 0.0,
+        frametime: 0.0,
+        sprites: None,
+        quality: Quality::default(),
+        blur: [0; 33],
+    });
+    f(fx)
+}
+
+fn cvar(f: impl FnOnce(&Cvars) -> Cvar) -> f32 {
+    CVARS.0.borrow().as_ref().map_or(0.0, |c| f(c).value())
+}
+
+/// Runs `f` with the particle system. Don't call back into `effects` inside `f`.
+pub fn with_psys<R>(f: impl FnOnce(&mut PSys) -> R) -> R {
+    with(|fx| f(&mut fx.psys))
+}
+
+/// Effects clock (client time, seconds).
+pub fn now() -> f64 {
+    with(|fx| fx.time)
+}
+
+pub fn player_visible(idx: i32) -> bool {
+    with(|fx| fx.visible.get(idx as usize).copied().unwrap_or(false))
+}
+
+pub fn paintball() -> bool {
+    cvar(|c| c.paintball) != 0.0
+}
+
+/// Shell life `max(2, 30 q)`.
+pub fn shell_life() -> f32 {
+    with(|fx| (30.0 * fx.quality.q).max(2.0))
+}
+
+/// Keeps a ring of 64 shells; the oldest is killed when a new one arrives (TS sets its `die`).
+pub fn track_shell(t: &mut TEMPENTITY) {
+    let old = with(|fx| {
+        let slot = fx.shell_next;
+        fx.shell_next = (slot + 1) % 64;
+        std::mem::replace(&mut fx.shells[slot], t as *mut TEMPENTITY as usize)
+    });
+    if old != 0 && old != t as *mut TEMPENTITY as usize {
+        unsafe { (*(old as *mut TEMPENTITY)).die = 0.0 };
+    }
+}
+
+/// Whizz sounds alternate between channels 503 and 504.
+pub fn next_whizz_channel() -> i32 {
+    with(|fx| {
+        fx.whizz = fx.whizz.wrapping_add(1);
+        503 + (fx.whizz & 1) as i32
+    })
+}
+
+pub fn add_client_bullet(b: ClientBullet) {
+    with(|fx| {
+        if fx.bullets.len() >= 256 {
+            fx.bullets.remove(0);
+        }
+        fx.bullets.push(b)
+    });
+}
+
+/// Impact particles at a bullet hit (`TS_ImpactParticles`).
+pub fn impact(pos: Vec3, normal: Vec3, tex: u8, pellets: bool) {
+    let cam = view::origin();
+    with(|fx| {
+        let t = fx.time;
+        fx::impact(&mut fx.psys, t, cam, pos, normal, tex, pellets)
+    });
+}
+
+pub fn init() {
+    *CVARS.0.borrow_mut() = Some(Cvars {
+        fx: Cvar::register(c"cl_fx", c"1", r::FCVAR_ARCHIVE),
+        gore: Cvar::register(c"cl_gore", c"2", r::FCVAR_ARCHIVE),
+        laser: Cvar::register(c"cl_laser", c"0", r::FCVAR_ARCHIVE),
+        lasercolor: Cvar::register(c"cl_lasercolor", c"0", r::FCVAR_ARCHIVE),
+        shadow: Cvar::register(c"cl_shadow", c"2", r::FCVAR_ARCHIVE),
+        motionblur: Cvar::register(c"cl_motionblur", c"1", r::FCVAR_ARCHIVE),
+        paintball: Cvar::register(c"r_paintball", c"0", 0),
+        gl_fog: Cvar::register(c"gl_fog", c"0", r::FCVAR_ARCHIVE),
+    });
+    let e = goldsrc::client::engine();
+    e.hook_user_msg(c"TSPSys", Some(msg_tspsys));
+    e.hook_user_msg(c"PTakeDam", Some(msg_ptakedam));
+    e.hook_user_msg(c"TSFrags", Some(msg_tsfrags));
+    e.hook_user_msg(c"TSMBlur", Some(msg_tsmblur));
+    e.hook_user_msg(c"TSBTime", Some(msg_tsbtime));
+}
+
+pub fn vid_init() {
+    with(|fx| {
+        fx.psys.reset_sprites();
+        fx.sprites = None;
+        fx.level.clear();
+        fx.bullets.clear();
+        fx.shells = [0; 64];
+    });
+}
+
+// ---- messages ------------------------------------------------------------------------------
+
+unsafe fn bytes<'a>(buf: *mut c_void, size: c_int) -> &'a [u8] {
+    if buf.is_null() || size <= 0 { &[] } else { unsafe { std::slice::from_raw_parts(buf.cast(), size as usize) } }
+}
+
+/// `TSPSys` (`0x1004bfd0`): subtype 3 = wind.
+pub fn on_tspsys(b: &[u8]) {
+    if let Some(w) = msg::TsWind::decode(b) {
+        with(|fx| {
+            let t = fx.time;
+            fx.psys.wind.set(w.seed, w.yaw, w.speed, t)
+        });
+    }
+}
+
+/// `PTakeDam` (`0x1004bcd0`) -> `TS_BloodImpact`.
+pub fn on_ptakedam(b: &[u8]) {
+    let Some(d) = msg::PTakeDam::decode(b) else { return };
+    let gore = cvar(|c| c.gore);
+    with(|fx| {
+        let t = fx.time;
+        fx::blood(&mut fx.psys, t, d.pos, d.dir, d.strength(), d.kevlar(), gore)
+    });
+}
+
+/// `TSFrags` (`0x1004bd50`).
+pub fn on_tsfrags(b: &[u8]) {
+    let Some(f) = msg::TsFrags::decode(b) else { return };
+    let ts = state::with(|s| s.time_scale);
+    with(|fx| {
+        let t = fx.time;
+        match f {
+            msg::TsFrags::Glass { origin, size, dir, force, .. } => fx::glass(&mut fx.psys, t, origin, size, dir, force),
+            msg::TsFrags::Explosion { origin, radius } => fx::explosion(&mut fx.psys, t, origin, radius, ts),
+            msg::TsFrags::Sparks { origin, dir } => {
+                fx::scintille(&mut fx.psys, t, origin, 6.0);
+                fx::sparks(&mut fx.psys, t, origin, dir, 12, 1.0, 300.0);
+            }
+        }
+    });
+}
+
+/// `TSMBlur` (`0x1004bf90` -> `MotionBlur_Add`). Recorded only: the ghosts need the TS studio
+/// renderer (renderfx 17 with `rendercolor.b = 1`), which isn't ported.
+pub fn on_tsmblur(b: &[u8]) {
+    if let Some(m) = msg::TsMBlur::decode(b) {
+        let lvl = (m.level as f32).min(cvar(|c| c.fx)) as u8;
+        with(|fx| {
+            if let Some(e) = fx.blur.get_mut(m.entindex as usize) {
+                *e = e.saturating_add(lvl.max(1));
+            }
+        });
+    }
+}
+
+/// `TSBTime` (`0x1004b8e0`).
+pub fn on_tsbtime(b: &[u8]) {
+    if let Some(bt) = msg::decode_btime(b) {
+        state::with(|s| s.bullet_time = bt);
+    }
+}
+
+macro_rules! msg_hook {
+    ($name:ident => $f:path) => {
+        unsafe extern "C" fn $name(_n: *const c_char, size: c_int, buf: *mut c_void) -> c_int {
+            $f(unsafe { bytes(buf, size) });
+            1
+        }
+    };
+}
+msg_hook!(msg_tspsys => on_tspsys);
+msg_hook!(msg_ptakedam => on_ptakedam);
+msg_hook!(msg_tsfrags => on_tsfrags);
+msg_hook!(msg_tsmblur => on_tsmblur);
+msg_hook!(msg_tsbtime => on_tsbtime);
+
+// ---- per frame -------------------------------------------------------------------------------
+
+/// Called from `view::frame` (HUD_Frame): map change detection, emitter loading and emission
+/// (`CTS_CL_Emitter::Frame` `0x1003ab40`), quality adaptation.
+pub fn frame(time: f64, frametime: f32) {
+    with(|fx| {
+        fx.time = time;
+        fx.frametime = frametime;
+    });
+    let level = r::level_name();
+    let changed = with(|fx| fx.level != level);
+    if changed {
+        let map = if level.is_empty() { None } else { r::load_file(&level) };
+        let fxmap = map.as_deref().and_then(emitters::entity_lump).map(MapFx::from_lump).unwrap_or_default();
+        if !level.is_empty() {
+            goldsrc::client::engine().print(&format!(
+                "[ts] effects: {} emitters, {} particle templates{} from {level}\n",
+                fxmap.emitters.len(),
+                fxmap.templates.len(),
+                if fxmap.fog.is_some() { ", fog" } else { "" }
+            ));
+        }
+        with(|fx| {
+            fx.psys.clear();
+            fx.fog = fxmap.fog;
+            fx.map = fxmap;
+            fx.level = level;
+            fx.bullets.clear();
+        });
+    }
+    let fxq = cvar(|c| c.fx);
+    let ts = state::with(|s| s.time_scale);
+    let cam = view::camera();
+    with(|fx| {
+        apply_quality(fx, fxq, frametime);
+        let t = fx.time;
+        fx.map.emit(&mut fx.psys, &cam, t, ts);
+    });
+}
+
+fn apply_quality(fx: &mut Fx, cl_fx: f32, frametime: f32) {
+    let q = &mut fx.quality;
+    if cl_fx != q.applied {
+        q.applied = cl_fx;
+        fx.psys.max = if cl_fx <= 0.0 { 2048 } else { 4096 };
+        match cl_fx as i32 {
+            0 => {
+                q.q = 0.0;
+                fx.psys.divisor = 8.0;
+                fx.psys.physics = false;
+            }
+            2.. => {
+                q.q = 1.0;
+                fx.psys.divisor = 1.0;
+                fx.psys.physics = true;
+            }
+            _ => {}
+        }
+    }
+    if cl_fx as i32 != 1 {
+        return;
+    }
+    q.samples[q.n % 20] = frametime;
+    q.n += 1;
+    if fx.time >= q.next {
+        q.next = fx.time + 0.1;
+        let cnt = q.n.min(20).max(1);
+        let avg10 = q.samples[..cnt].iter().sum::<f32>() / cnt as f32 * 100.0;
+        q.q = 1.0 - (avg10.clamp(1.11, 3.33) - 1.11) / 2.22;
+        fx.psys.divisor = if q.q > 0.75 {
+            1.0
+        } else if q.q > 0.5 {
+            2.0
+        } else if q.q > 0.25 {
+            4.0
+        } else {
+            6.0
+        };
+        fx.psys.physics = q.q > 0.374;
+    }
+}
+
+/// `HUD_AddEntity` (`0x100447f0`).
+pub fn add_entity(kind: i32, ent: *mut cl_entity_t, _model: *const c_char) -> bool {
+    let Some(e) = (unsafe { ent.as_mut() }) else { return true };
+    let cam = view::camera();
+    if kind == 1 {
+        let idx = e.index;
+        let spectator = (1..=32).contains(&idx) && state::with(|s| s.spectator[(idx - 1) as usize]);
+        let in_eye_target = state::with(|s| s.spec_mode == 4 && s.spec_target == idx);
+        let d = v::dist(e.origin, cam.origin);
+        let hemisphere = d < 256.0 || v::dot(v::sub(e.origin, cam.origin), cam.forward) >= 0.0;
+        let visible = hemisphere && !spectator && !in_eye_target && occlusion_visible(e, &cam);
+        with(|fx| {
+            if let Some(v) = fx.visible.get_mut(idx as usize) {
+                *v = visible;
+            }
+        });
+        return visible;
+    }
+    // Item fade / cull by distance, `curstate.iuser4` bits (server sets them).
+    let bits = e.curstate.iuser4;
+    let fov = state::with(|s| s.fov);
+    let (max, start, k) = if bits & 1 != 0 {
+        (592.0, 492.0, 2.55)
+    } else if bits & 4 != 0 {
+        (256.0, 206.0, 5.1)
+    } else if bits & 2 != 0 {
+        (1024.0, 824.0, 1.275)
+    } else {
+        return true;
+    };
+    let max = if fov < 40.0 { max * 2.0 } else { max };
+    let d = v::dist(e.origin, cam.origin);
+    if d >= max || !psys::in_view_cone(&cam, e.origin) {
+        return false;
+    }
+    if fov >= 80.0 && d > start {
+        e.curstate.rendermode = kRenderTransColor as i32;
+        e.curstate.renderfx = 0;
+        e.curstate.renderamt = ((max - d) * k).clamp(0.0, 255.0) as i32;
+    }
     true
 }
-pub fn create_entities() {}
+
+/// `ThirdPersonOcclusionVisible` (`0x10057330`): in third person the camera may not reveal
+/// players the eye can't see.
+fn occlusion_visible(e: &cl_entity_t, cam: &Camera) -> bool {
+    if !view::is_third_person() {
+        return true;
+    }
+    let eye = view::eye();
+    let (_, right, up) = v::angle_vectors(cam.angles);
+    for ofs in [[0.0f32, 0.0], [32.0, 32.0], [-32.0, 32.0], [32.0, -32.0], [-32.0, -32.0]] {
+        let p = v::ma(v::ma(e.origin, ofs[0], right), ofs[1], up);
+        let tr = r::player_trace(eye, p, 2, (PM_GLASS_IGNORE | PM_WORLD_ONLY) as i32, -1);
+        if tr.fraction >= 1.0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// `HUD_CreateEntities` (`0x1001bce0`): client bullets. Motion-blur ghosts (`MotionBlur_Update`)
+/// need the TS studio renderer and are not created.
+pub fn create_entities() {
+    let mut bullets = with(|fx| std::mem::take(&mut fx.bullets));
+    if !bullets.is_empty() {
+        let ft = with(|fx| fx.frametime);
+        crate::events::client_bullets_frame(&mut bullets, ft);
+    }
+    with(|fx| {
+        let mut b = bullets;
+        b.append(&mut fx.bullets);
+        fx.bullets = b;
+    });
+}
+
 pub fn draw_normal() {}
-pub fn draw_transparent() {}
-pub fn studio_event(_event: *const c_void, _ent: *const cl_entity_t) {}
+
+/// `HUD_DrawTransparentTriangles` -> `TS_DrawEffects` (`0x10056dd0`).
+pub fn draw_transparent() {
+    let cam = view::camera();
+    let ts = state::with(|s| s.time_scale);
+    let third = view::is_third_person();
+    let (laser_mode, color, shadow) = (cvar(|c| c.laser), cvar(|c| c.lasercolor) as i32, cvar(|c| c.shadow));
+    let (visible, has_sprites) = with(|fx| (fx.visible, fx.sprites.is_some()));
+    if !has_sprites {
+        let s = laser::Sprites::load();
+        with(|fx| fx.sprites = Some(s));
+    }
+    let sprites = with(|fx| fx.sprites.take()).unwrap();
+    if cam_hardware() {
+        laser::draw_shadows(&sprites, &cam, &visible, shadow, third);
+    }
+    let now = now();
+    laser::draw_local(&sprites, &cam, now, laser_mode, color);
+    laser::draw_others(&sprites, &cam, &visible);
+    with(|fx| fx.sprites = Some(sprites));
+
+    // Players for particle reaction.
+    let mut players = Vec::new();
+    for i in 1..=r::max_clients().min(32) {
+        if visible[i as usize] {
+            if let Some(e) = r::entity(i) {
+                players.push((e.origin, e.curstate.velocity));
+            }
+        }
+    }
+    let (dt, requests) = with(|fx| {
+        let dt = fx.frametime * ts;
+        let t = fx.time;
+        fx.psys.update(t, dt, &cam, &players);
+        (dt, std::mem::take(&mut fx.psys.spawn_requests))
+    });
+    with(|fx| {
+        let t = fx.time;
+        for (tmpl, pos) in requests {
+            fx.map.spawn_one(&mut fx.psys, tmpl, pos, t);
+        }
+        fx.psys.draw(t, dt, &cam);
+        fx.visible = [false; 33];
+    });
+    fog_end();
+}
+
+fn cam_hardware() -> bool {
+    view::hardware()
+}
+
+/// Fog from the map's `ts_fog` (`V_SetFog` `0x10056c20`), through TriAPI instead of raw OpenGL.
+/// Only with `gl_fog` set, as in TS (default 0).
+pub fn fog_begin() {
+    let fog = with(|fx| fx.fog);
+    let on = cvar(|c| c.gl_fog) != 0.0;
+    if let (Some(f), true) = (fog, on) {
+        let mut c = f.color;
+        goldsrc::tri!(Fog(c.as_mut_ptr(), f.near, f.far, 1));
+    }
+}
+
+fn fog_end() {
+    if with(|fx| fx.fog.is_some()) && cvar(|c| c.gl_fog) != 0.0 {
+        let mut c = [0.0f32; 3];
+        goldsrc::tri!(Fog(c.as_mut_ptr(), 0.0, 0.0, 0));
+    }
+}
+
+/// `HUD_StudioEvent` (`0x10044b50`): only 5002 (sparks) and 5004 (sound) remain.
+pub fn studio_event(event: *const c_void, ent: *const cl_entity_t) {
+    let (Some(ev), Some(ent)) = (unsafe { event.cast::<mstudioevent_s>().as_ref() }, unsafe { ent.as_ref() }) else { return };
+    let opts = unsafe { std::ffi::CStr::from_ptr(ev.options.as_ptr()) }.to_string_lossy();
+    match ev.event {
+        5002 => r::spark_effect(ent.attachment[0], opts.trim().parse().unwrap_or(0), -100, 100),
+        5004 => r::play_sound(ent.index, ent.attachment[0], CHAN_BODY as i32, &opts, 1.0, 0.8, 0, crate::events::slow_pitch()),
+        _ => {}
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn temp_ent_update(_frametime: f64, _client_time: f64, _gravity: f64, _free: *mut *mut c_void, _active: *mut *mut c_void,
-                       _add_visible: *mut c_void, _play_sound: *mut c_void) {
+pub fn temp_ent_update(frametime: f64, client_time: f64, gravity: f64, free: *mut *mut c_void, active: *mut *mut c_void, add_visible: *mut c_void,
+                       play_sound: *mut c_void) {
+    if add_visible.is_null() || play_sound.is_null() {
+        return;
+    }
+    let ts = state::with(|s| s.time_scale);
+    unsafe {
+        let add: tempents::AddVisible = std::mem::transmute(add_visible);
+        let snd: tempents::PlaySound = std::mem::transmute(play_sound);
+        tempents::update(frametime, client_time, gravity, free.cast(), active.cast(), add, snd, ts);
+    }
 }

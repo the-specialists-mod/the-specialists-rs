@@ -11,6 +11,20 @@ use std::ffi::{CStr, c_char, c_int};
 
 pub type Vec3 = [f32; 3];
 
+/// Float/flag macros bindgen doesn't export (const.h, cvardef.h).
+pub const ATTN_NORM: f32 = 0.8;
+pub const FCVAR_ARCHIVE: i32 = 1;
+
+/// `client_data_t` (cdll_int.h), the `HUD_UpdateClientData` argument.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ClientData {
+    pub origin: Vec3,
+    pub viewangles: Vec3,
+    pub weapon_bits: i32,
+    pub fov: f32,
+}
+
 pub fn event_api() -> &'static event_api_s {
     unsafe { &*engine().f.pEventAPI }
 }
