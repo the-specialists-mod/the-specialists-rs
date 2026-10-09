@@ -5,6 +5,7 @@
 
 pub use goldsrc_sys as sys;
 
+pub mod ext;
 pub mod msg;
 pub mod panic;
 pub mod util;

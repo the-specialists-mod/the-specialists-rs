@@ -3,6 +3,12 @@
 //! Payload layouts are documented in architecture.md §3.2 and client/architecture-hud.md §3;
 //! per-area encoders/decoders live in submodules.
 
+pub mod effects;
+pub mod hud;
+pub mod rules;
+pub mod stunt;
+pub mod weapons;
+
 use std::ffi::CStr;
 
 macro_rules! messages {
