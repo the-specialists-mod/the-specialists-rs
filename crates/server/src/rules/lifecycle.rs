@@ -309,6 +309,11 @@ fn init_hud(p: &mut Player, cx: &mut Cx) {
     p.ts.init_hud = false;
     let e = cx.edict;
     messages::one(Msg::ResetHUD, e).byte(0).end();
+    // The client clears its status and weapon elements on ResetHUD: resend everything (SDK:
+    // m_iClientHealth = -1 etc. with m_fInitHUD). Without this a value sent before ResetHUD in
+    // the spawn frame (health 100) is never sent again and the HUD stays hidden.
+    crate::player::hud::reset(p);
+    p.inv.sv.reset_net();
     if !p.ts.game_hud_initialized {
         messages::one(Msg::InitHUD, e).end();
         rules_init_hud(p, cx);

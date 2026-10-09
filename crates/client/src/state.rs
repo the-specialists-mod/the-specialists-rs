@@ -59,6 +59,8 @@ pub struct Shared {
     pub firemode: i32,
     pub clip: i32,
     pub reserve_ammo: i32,
+    /// Weapon id the predicted values above belong to (`None` before the first prediction).
+    pub predicted_weapon: Option<i32>,
     /// `Spectator` flag per player (index = entindex - 1): not drawn when set. Filled by the HUD.
     pub spectator: [bool; 32],
     /// Screen positions of the local laser dot(s) this frame (second = akimbo), for the HUD's

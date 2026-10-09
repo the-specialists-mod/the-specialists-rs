@@ -284,20 +284,29 @@ fn draw_weapon_info(dc: &Dc, h: &Hud) {
     }
     y -= row;
     dc.fill(x, y, 128, row - 1, dc.hud, 15);
+    // The server sends WeaponInfo only when the weapon or the reserve changes (CTSGun::
+    // UpdateClientData); the clip, reserve and fire mode in between come from the predicted
+    // weapon state (prediction writes them every command).
+    let (clip, reserve, firemode) = crate::state::with(|s| {
+        if s.predicted_weapon == Some(h.weapon) {
+            (s.clip, s.reserve_ammo, s.firemode)
+        } else {
+            (h.clip, h.reserve[info.ammo as usize & 15], h.firemode as i32)
+        }
+    });
     if info.ammo == 0 {
         draw_kungfu_bar(dc, h, x, y);
         y -= row;
         if info.stack {
-            dc.number(x + 2, y, num::DIGITS_3 | num::DRAW_ZERO, h.clip, dc.hud);
+            dc.number(x + 2, y, num::DIGITS_3 | num::DRAW_ZERO, clip, dc.hud);
         }
     } else {
-        dc.number(x + 2, y, num::DIGITS_3 | num::DRAW_ZERO, h.clip, dc.hud);
+        dc.number(x + 2, y, num::DIGITS_3 | num::DRAW_ZERO, clip, dc.hud);
         dc.string(x + 0x40, y, "|", [dc.hud[0] / 4, dc.hud[1] / 4, dc.hud[2] / 4]);
-        let reserve = h.reserve[info.ammo as usize & 15];
         dc.number(x + 0x48, y, num::DIGITS_3 | num::DRAW_ZERO, reserve, half(dc.hud));
         y -= row;
         dc.fill(x, y, 128, row - 1, dc.hud, 15);
-        let label = FIREMODE_LABELS.get(h.firemode as usize).copied().unwrap_or(FIREMODE_LABELS[0]);
+        let label = FIREMODE_LABELS.get(firemode as usize).copied().unwrap_or(FIREMODE_LABELS[0]);
         dc.string(x + 2, y, &localise(label), dc.hud);
         y -= row;
         dc.fill(x, y, 128, row - 1, dc.hud, 15);

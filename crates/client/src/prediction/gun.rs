@@ -265,6 +265,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
             st.clip = s.clip;
             st.reserve_ammo = if gun.current == 0 { 0 } else { gun.current_reserve() };
             st.spread = gun.spread_penalty;
+            st.predicted_weapon = (!dead).then_some(gun.current as i32);
         });
         with(|p| p.gun = Some(gun));
     }
