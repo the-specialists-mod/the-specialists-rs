@@ -151,6 +151,11 @@ impl Ctx {
     /// Copies the libraries for `t` into `gamedir` under the names each engine loads.
     fn install_libs(&self, t: &Target, gamedir: &Path) {
         copy(&self.artifact(t, true), &gamedir.join("dlls").join(t.server_name));
+        // Stock HLDS (8684 and HL25) strips "_i386" from gamedll_linux and loads dlls/ts.so;
+        // ReHLDS and old engines load the name as written. Install both.
+        if t.server_name == "ts_i386.so" {
+            copy(&self.artifact(t, true), &gamedir.join("dlls/ts.so"));
+        }
         copy(&self.artifact(t, false), &gamedir.join("cl_dlls").join(t.client_name));
     }
 
@@ -192,7 +197,9 @@ impl Ctx {
         let mut child = cmd.spawn().expect("start server");
         let start = Instant::now();
         let mut info = None;
-        while start.elapsed() < Duration::from_secs(60) {
+        // Windows servers run under Wine and take noticeably longer to come up.
+        let limit = Duration::from_secs(if root.os == Os::Windows { 120 } else { 60 });
+        while start.elapsed() < limit {
             std::thread::sleep(Duration::from_millis(500));
             if let Ok(Some(_)) = child.try_wait() {
                 break;
@@ -206,7 +213,7 @@ impl Ctx {
         match &info {
             Some(i) => println!("   up after {:.1}s: {i}", start.elapsed().as_secs_f32()),
             None => {
-                println!("   FAIL: no A2S_INFO reply within 60s");
+                println!("   FAIL: no A2S_INFO reply within {}s", limit.as_secs());
                 ok = false;
             }
         }
