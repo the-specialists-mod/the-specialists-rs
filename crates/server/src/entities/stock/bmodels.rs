@@ -388,3 +388,162 @@ impl Entity for FuncRotating {
         crate::damage::apply(other, &DamageInfo::new(me, me, d, dmg::CRUSH));
     }
 }
+
+// ---- func_pendulum ---------------------------------------------------------------------------------------
+
+pub const SF_PENDULUM_AUTO_RETURN: i32 = 16;
+const SF_DOOR_PASSABLE: i32 = 8;
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum PendulumThink {
+    #[default]
+    None,
+    UseToggle,
+    Swing,
+    Stop,
+}
+
+/// `func_pendulum` (CPendulum).
+#[derive(Default)]
+pub struct Pendulum {
+    distance: f32,
+    damp: f32,
+    accel: f32,
+    max_speed: f32,
+    damp_speed: f32,
+    time: f32,
+    start: [f32; 3],
+    center: [f32; 3],
+    think: PendulumThink,
+    usable: bool,
+}
+
+impl Pendulum {
+    fn pendulum_use(&mut self, cx: &mut Cx) {
+        let now = engine().time();
+        let v = cx.pev();
+        if v.speed != 0.0 {
+            if v.spawnflags & SF_PENDULUM_AUTO_RETURN != 0 {
+                let delta = axis_delta(v.spawnflags, v.angles, self.start);
+                v.avelocity = vec::scale(v.movedir, self.max_speed);
+                v.nextthink = v.ltime + delta / self.max_speed;
+                self.think = PendulumThink::Stop;
+            } else {
+                v.speed = 0.0;
+                self.think = PendulumThink::None;
+                v.avelocity = [0.0; 3];
+            }
+        } else {
+            v.nextthink = v.ltime + 0.1;
+            self.time = now;
+            self.think = PendulumThink::Swing;
+            self.damp_speed = self.max_speed;
+        }
+    }
+
+    fn swing(&mut self, cx: &mut Cx) {
+        let now = engine().time();
+        let v = cx.pev();
+        let delta = axis_delta(v.spawnflags, v.angles, self.center);
+        let dt = now - self.time;
+        self.time = now;
+        if delta > 0.0 && self.accel > 0.0 {
+            v.speed -= self.accel * dt;
+        } else {
+            v.speed += self.accel * dt;
+        }
+        v.speed = v.speed.clamp(-self.max_speed, self.max_speed);
+        v.avelocity = vec::scale(v.movedir, v.speed);
+        v.nextthink = v.ltime + 0.1;
+        if self.damp != 0.0 {
+            self.damp_speed -= self.damp * self.damp_speed * dt;
+            if self.damp_speed < 30.0 {
+                v.angles = self.center;
+                v.speed = 0.0;
+                self.think = PendulumThink::None;
+                v.avelocity = [0.0; 3];
+            } else {
+                v.speed = v.speed.clamp(-self.damp_speed, self.damp_speed);
+            }
+        }
+    }
+}
+
+impl Entity for Pendulum {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"distance" => self.distance = kv_f(value),
+            b"damp" => self.damp = kv_f(value) * 0.001,
+            _ => return false,
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        axis_dir(v);
+        v.solid = if v.spawnflags & SF_DOOR_PASSABLE != 0 { SOLID_NOT } else { SOLID_BSP } as i32;
+        v.movetype = MOVETYPE_PUSH as i32;
+        let org = v.origin;
+        engine().set_origin(cx.edict, org);
+        set_own_model(cx);
+        if self.distance == 0.0 {
+            return;
+        }
+        let v = cx.pev();
+        if v.speed == 0.0 {
+            v.speed = 100.0;
+        }
+        self.accel = v.speed * v.speed / (2.0 * self.distance.abs());
+        self.max_speed = v.speed;
+        self.start = v.angles;
+        self.center = vec::mad(v.angles, v.movedir, self.distance * 0.5);
+        if v.spawnflags & SF_BRUSH_ROTATE_INSTANT != 0 {
+            self.think = PendulumThink::UseToggle;
+            v.nextthink = v.ltime + 0.1;
+        }
+        v.speed = 0.0;
+        self.usable = true;
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        match self.think {
+            PendulumThink::UseToggle => {
+                self.think = PendulumThink::None;
+                self.pendulum_use(cx);
+            }
+            PendulumThink::Swing => self.swing(cx),
+            PendulumThink::Stop => {
+                let v = cx.pev();
+                v.angles = self.start;
+                v.speed = 0.0;
+                v.avelocity = [0.0; 3];
+                self.think = PendulumThink::None;
+            }
+            PendulumThink::None => {}
+        }
+    }
+
+    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _kind: UseType, _v: f32) {
+        if self.usable {
+            self.pendulum_use(cx);
+        }
+    }
+
+    fn blocked(&mut self, _cx: &mut Cx, _other: *mut edict_t) {
+        self.time = engine().time();
+    }
+
+    fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        let me = cx.edict;
+        let v = cx.pev();
+        if v.dmg <= 0.0 || unsafe { (*other).v.takedamage } == 0.0 {
+            return;
+        }
+        let damage = (v.dmg * v.speed * 0.01).abs();
+        let center = bmodel_origin(v);
+        crate::damage::apply(other, &DamageInfo::new(me, me, damage, dmg::CRUSH));
+        let ov = unsafe { &mut (*other).v };
+        ov.velocity = vec::scale(vec::normalize(vec::sub(ov.origin, center)), damage);
+    }
+}

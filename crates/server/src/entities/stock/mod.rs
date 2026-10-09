@@ -13,6 +13,7 @@ pub mod items;
 pub mod lights;
 pub mod maprules;
 pub mod sound;
+pub mod tracktrain;
 pub mod trains;
 pub mod triggers;
 
@@ -44,6 +45,7 @@ link_entities! {
     func_wall_toggle          => FuncWallToggle,
     func_conveyor             => FuncConveyor,
     func_rotating             => FuncRotating,
+    func_pendulum             => Pendulum,
     // func_break.cpp
     func_breakable            => FuncBreakable,
     func_pushable             => FuncPushable,
@@ -59,6 +61,8 @@ link_entities! {
     // plats.cpp / pathcorner.cpp
     func_train                => FuncTrain,
     func_plat                 => FuncPlat,
+    func_tracktrain           => tracktrain::TrackTrain,
+    path_track                => tracktrain::PathTrack,
     path_corner               => PathCorner,
     // triggers.cpp
     trigger_multiple          => Trigger<K_MULTIPLE>,
@@ -82,6 +86,7 @@ link_entities! {
     info_null                 => NullEntity,
     // sound.cpp / lights.cpp
     ambient_generic           => AmbientGeneric,
+    env_sound                 => sound::EnvSound,
     light                     => Light<false>,
     light_spot                => Light<false>,
     light_environment         => Light<true>,
@@ -130,6 +135,8 @@ impl Entity for World {
     fn spawn(&mut self, _cx: &mut Cx) {
         // A new map: per-map registries (masters, env_global states) start empty.
         base::reset_registries();
+        tracktrain::reset();
+        sound::reset_rooms();
         // Style 0 is normal light; without it the whole map renders black. Styles 1-12 are the
         // SDK's animated presets (world.cpp), 63 is the testing style.
         let eng = engine();

@@ -414,3 +414,114 @@ impl Entity for AmbientGeneric {
         }
     }
 }
+
+// ---- env_sound ---------------------------------------------------------------------------------------------
+
+const SVC_ROOMTYPE: i32 = 37;
+
+/// Per-player DSP state the SDK keeps on `CBasePlayer` (`m_pentSndLast`, `m_flSndRoomtype`,
+/// `m_flSndRange`), indexed by player slot.
+#[derive(Clone, Copy, Default)]
+struct PlayerRoom {
+    last: goldsrc::ext::entities::EHandle,
+    roomtype: f32,
+    range: f32,
+}
+
+static ROOMS: goldsrc::Global<std::cell::RefCell<[PlayerRoom; 33]>> = goldsrc::Global(std::cell::RefCell::new([PlayerRoom {
+    last: goldsrc::ext::entities::EHandle::NULL,
+    roomtype: 0.0,
+    range: 0.0,
+}; 33]));
+
+/// Forget a player's room (call on spawn/disconnect so a new client starts clean).
+pub fn reset_player_room(index: i32) {
+    if let Some(r) = ROOMS.0.borrow_mut().get_mut(index as usize) {
+        *r = PlayerRoom::default();
+    }
+}
+
+/// `env_sound`: sets a client's DSP room type (`SVC_ROOMTYPE`) while it's within `radius` and in
+/// line of sight.
+#[derive(Default)]
+pub struct EnvSound {
+    radius: f32,
+    roomtype: f32,
+}
+
+impl EnvSound {
+    /// `FEnvSoundInRange`.
+    fn in_range(&self, cx: &mut Cx, p: *mut edict_t) -> Option<f32> {
+        let eng = engine();
+        let v = cx.pev();
+        let a = goldsrc::ext::entities::vec::add(v.origin, v.view_ofs);
+        let pv = unsafe { &(*p).v };
+        let b = goldsrc::ext::entities::vec::add(pv.origin, pv.view_ofs);
+        let tr = eng.trace_line(a, b, goldsrc::server::IGNORE_MONSTERS, cx.edict);
+        if (tr.fInOpen != 0 && tr.fInWater != 0) || tr.flFraction != 1.0 {
+            return None;
+        }
+        let range = goldsrc::ext::entities::vec::length(goldsrc::ext::entities::vec::sub(a, b));
+        (range <= self.radius).then_some(range)
+    }
+}
+
+impl Entity for EnvSound {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"radius" => self.radius = kv_f(value),
+            b"roomtype" => self.roomtype = kv_f(value),
+            _ => return false,
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        cx.pev().nextthink = eng.time() + eng.random_float(0.0, 0.5);
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let now = eng.time();
+        let p = goldsrc::eng!(pfnFindClientInPVS(cx.edict));
+        let fast = 'think: {
+            if p.is_null() || eng.index_of(p) == 0 || !goldsrc::ext::entities::is_player(p) {
+                break 'think false;
+            }
+            let idx = eng.index_of(p) as usize;
+            let room = ROOMS.0.borrow().get(idx).copied().unwrap_or_default();
+            if room.last.get() == cx.edict && !cx.edict.is_null() {
+                if room.roomtype != 0.0 && room.range != 0.0 {
+                    let r = self.in_range(cx, p);
+                    let mut rooms = ROOMS.0.borrow_mut();
+                    match r {
+                        Some(range) => {
+                            rooms[idx].range = range;
+                            break 'think true;
+                        }
+                        None => {
+                            rooms[idx].range = 0.0;
+                            rooms[idx].roomtype = 0.0;
+                            break 'think false;
+                        }
+                    }
+                }
+                break 'think false;
+            }
+            if let Some(range) = self.in_range(cx, p) {
+                if range < room.range || room.range == 0.0 {
+                    ROOMS.0.borrow_mut()[idx] = PlayerRoom { last: goldsrc::ext::entities::EHandle::new(cx.edict), roomtype: self.roomtype, range };
+                    goldsrc::server::MsgWriter::begin(MSG_ONE as i32, SVC_ROOMTYPE, None, p).short(self.roomtype as i32).end();
+                }
+            }
+            true
+        };
+        cx.pev().nextthink = now + if fast { 0.25 } else { 0.75 };
+    }
+}
+
+/// New map: every client's room state starts clean.
+pub fn reset_rooms() {
+    *ROOMS.0.borrow_mut() = [PlayerRoom::default(); 33];
+}
