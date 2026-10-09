@@ -164,4 +164,7 @@ pub unsafe extern "C" fn update_client_data(ent: *const edict_t, _sendweapons: c
         *d = *s as _;
     }
     cd.physinfo[n] = 0;
+
+    // Subsystem fields (stunt bits, time scale, weapon state, ...).
+    crate::player::with_player(ent.cast_mut(), |p, cx| p.fill_client_data(cx, cd));
 }

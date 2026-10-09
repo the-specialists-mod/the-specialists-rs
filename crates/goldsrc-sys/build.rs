@@ -9,7 +9,7 @@ fn main() {
         .header("wrapper.h")
         .clang_args(["common", "engine", "pm_shared", "public", "3rdparty/library_suffix/include"].map(|d| format!("-I{}", fwgs.join(d).display())))
         .clang_arg(format!("--target={target}")) // layouts differ between i686 and amd64: generate per target
-        .allowlist_type("(enginefuncs_t|DLL_FUNCTIONS|NEW_DLL_FUNCTIONS|globalvars_t|edict_t|entvars_t|KeyValueData)")
+        .allowlist_type("(enginefuncs_t|DLL_FUNCTIONS|NEW_DLL_FUNCTIONS|globalvars_t|edict_t|entvars_t|KeyValueData|TraceResult|cvar_t)")
         .allowlist_type("(cl_entity_t|cl_enginefunc_t|playermove_t|usercmd_t|entity_state_t|clientdata_t|weapon_data_t|ref_params_t|local_state_t)")
         .allowlist_var("(INTERFACE_VERSION|NEW_DLL_FUNCTIONS_VERSION|CLDLL_INTERFACE_VERSION)")
         .allowlist_var("(FL_|EF_|MOVETYPE_|SOLID_|DAMAGE_|DEAD_|IN_|MSG_|SVC_|CHAN_|ATTN_|PITCH_|kRender|ENTITY_|PM_|CONTENTS_).*")

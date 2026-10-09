@@ -31,6 +31,14 @@ fn normalize(a: Vec3) -> (Vec3, f32) {
     if l == 0.0 { (a, 0.0) } else { (scale(a, 1.0 / l), l) }
 }
 
+/// `pfnPM_Init` / `HUD_PlayerMoveInit`: called once with the engine's playermove.
+pub fn init(_pm: &mut playermove_t) {}
+
+/// Material type for footstep and impact sounds (`CHAR_TEX_*`). TS reads sound/materials.txt.
+pub fn find_texture_type(_name: &std::ffi::CStr) -> u8 {
+    b'C' // CHAR_TEX_CONCRETE
+}
+
 /// Hull sizes for `pfnGetHullBounds`/`HUD_GetHullBounds`: 0 standing, 1 ducked, 2 point.
 pub fn hull_bounds(hull: i32) -> Option<(Vec3, Vec3)> {
     match hull {

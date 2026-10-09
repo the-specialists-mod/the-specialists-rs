@@ -1,21 +1,34 @@
-//! MyMod server library (the "game DLL").
+//! The Specialists server library (the "game DLL"): installed as dlls/ts_i386.so,
+//! dlls/ts_amd64.so (FWGS 64-bit) and dlls/mp.dll.
+//!
+//! This file holds the engine entry points and routes every callback to a subsystem module.
+//! See docs/design.md §4 for the module map and hook order.
 
+// Skeleton phase: subsystem APIs exist before every caller does. Remove at integration.
+#![allow(dead_code)]
+
+mod bots;
+mod commands;
+mod damage;
 mod entities;
+mod messages;
 mod net;
+mod player;
+mod rules;
+mod stunt;
+mod weapons;
 mod world;
 
-use entities::Player;
 use goldsrc::server::{self as sv, engine};
 use goldsrc::sys::*;
-use goldsrc::util::{cstr, parse_vec3};
-use goldsrc::{Global, eng};
-use std::cell::Cell;
+use goldsrc::util::cstr;
 use std::ffi::{c_char, c_int, c_uchar, c_uint, c_void};
+use world::UseType;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn GiveFnptrsToDll(funcs: *const enginefuncs_t, globals: *mut globalvars_t) {
     unsafe { sv::init(funcs, globals) };
-    goldsrc::panic::install("mymod_server_panic.log", |m| engine().print(m));
+    goldsrc::panic::install("ts_server_panic.log", |m| engine().print(m));
 }
 
 #[unsafe(no_mangle)]
@@ -27,6 +40,16 @@ pub unsafe extern "C" fn GetEntityAPI2(table: *mut DLL_FUNCTIONS, ver: *mut c_in
         }
         *table = dll_functions();
     }
+    1
+}
+
+/// Legacy entry point (interface version passed by value). Some engines try it first.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn GetEntityAPI(table: *mut DLL_FUNCTIONS, ver: c_int) -> c_int {
+    if table.is_null() || ver != INTERFACE_VERSION as c_int {
+        return 0;
+    }
+    unsafe { *table = dll_functions() };
     1
 }
 
@@ -53,9 +76,9 @@ fn dll_functions() -> DLL_FUNCTIONS {
         pfnGameInit: Some(game_init),
         pfnSpawn: Some(spawn),
         pfnThink: Some(think),
-        pfnUse: Some(noop_ee),
-        pfnTouch: Some(noop_ee),
-        pfnBlocked: Some(noop_ee),
+        pfnUse: Some(use_),
+        pfnTouch: Some(touch),
+        pfnBlocked: Some(blocked),
         pfnKeyValue: Some(key_value),
         pfnSave: Some(save),
         pfnRestore: Some(restore),
@@ -66,16 +89,16 @@ fn dll_functions() -> DLL_FUNCTIONS {
         pfnRestoreGlobalState: Some(save_global_state),
         pfnResetGlobalState: Some(noop),
         pfnClientConnect: Some(client_connect),
-        pfnClientDisconnect: Some(noop_e),
-        pfnClientKill: Some(noop_e),
+        pfnClientDisconnect: Some(client_disconnect),
+        pfnClientKill: Some(client_kill),
         pfnClientPutInServer: Some(client_put_in_server),
         pfnClientCommand: Some(client_command),
         pfnClientUserInfoChanged: Some(client_userinfo_changed),
         pfnServerActivate: Some(server_activate),
-        pfnServerDeactivate: Some(noop),
-        pfnPlayerPreThink: Some(noop_e),
+        pfnServerDeactivate: Some(server_deactivate),
+        pfnPlayerPreThink: Some(player_pre_think),
         pfnPlayerPostThink: Some(player_post_think),
-        pfnStartFrame: Some(noop),
+        pfnStartFrame: Some(start_frame),
         pfnParmsNewLevel: Some(noop),
         pfnParmsChangeLevel: Some(noop),
         pfnGetGameDescription: Some(get_game_description),
@@ -103,29 +126,50 @@ fn dll_functions() -> DLL_FUNCTIONS {
     }
 }
 
-static MSG_HEALTH: Global<Cell<c_int>> = Global(Cell::new(0));
+/// Precache everything; called from worldspawn's spawn (the first entity of every map).
+pub(crate) fn precache_all() {
+    engine().precache_model(player::PLAYER_MODEL);
+    stunt::precache();
+    weapons::precache();
+    rules::precache();
+}
 
 unsafe extern "C" fn noop() {}
 unsafe extern "C" fn noop_e(_: *mut edict_t) {}
-unsafe extern "C" fn noop_ee(_: *mut edict_t, _: *mut edict_t) {}
 
 unsafe extern "C" fn game_init() {
-    let id = eng!(pfnRegUserMsg(shared::protocol::MSG_HEALTH.as_ptr(), shared::protocol::MSG_HEALTH_SIZE));
-    MSG_HEALTH.0.set(id);
-    engine().print("[mymod] GameInit: Rust server library loaded\n");
+    messages::register_all();
+    rules::game_init();
+    weapons::game_init();
+    stunt::game_init();
+    bots::game_init();
+    engine().print("[ts] GameInit: Rust TS server library loaded\n");
 }
 
 unsafe extern "C" fn spawn(e: *mut edict_t) -> c_int {
     world::dispatch(e, |ent, cx| ent.spawn(cx));
-    0
+    // The class may have marked itself for removal (FL_KILLME) during spawn.
+    if unsafe { (*e).v.flags } & FL_KILLME as i32 != 0 { -1 } else { 0 }
 }
 
 unsafe extern "C" fn think(e: *mut edict_t) {
     world::dispatch(e, |ent, cx| ent.think(cx));
 }
 
-/// Keyvalues from the BSP entity lump. The engine handles none of these itself, not even
-/// `classname`, so the generic entvars fields are parsed here.
+unsafe extern "C" fn touch(e: *mut edict_t, other: *mut edict_t) {
+    world::dispatch(e, |ent, cx| ent.touch(cx, other));
+}
+
+unsafe extern "C" fn use_(e: *mut edict_t, other: *mut edict_t) {
+    world::dispatch(e, |ent, cx| ent.use_(cx, other, other, UseType::Toggle, 0.0));
+}
+
+unsafe extern "C" fn blocked(e: *mut edict_t, other: *mut edict_t) {
+    world::dispatch(e, |ent, cx| ent.blocked(cx, other));
+}
+
+/// The class handler runs first; unhandled keys fall back to the generic entvars parser. The
+/// engine doesn't parse any keyvalues itself and requires `classname` to be handled.
 unsafe extern "C" fn key_value(e: *mut edict_t, kvd: *mut KeyValueData) {
     let kvd = unsafe { &mut *kvd };
     let (key, value) = unsafe { (cstr(kvd.szKeyName), cstr(kvd.szValue)) };
@@ -133,25 +177,7 @@ unsafe extern "C" fn key_value(e: *mut edict_t, kvd: *mut KeyValueData) {
         kvd.fHandled = 1;
         return;
     }
-    let eng = engine();
-    let v = unsafe { &mut (*e).v };
-    let text = value.to_str().unwrap_or("");
-    let handled = match key.to_bytes() {
-        b"classname" => { v.classname = eng.alloc_string(value); true }
-        b"model" => { v.model = eng.alloc_string(value); true }
-        b"targetname" => { v.targetname = eng.alloc_string(value); true }
-        b"target" => { v.target = eng.alloc_string(value); true }
-        b"origin" => { v.origin = parse_vec3(text); true }
-        b"angles" => { v.angles = parse_vec3(text); true }
-        b"rendercolor" => { v.rendercolor = parse_vec3(text); true }
-        b"rendermode" => { v.rendermode = text.parse().unwrap_or(0); true }
-        b"renderfx" => { v.renderfx = text.parse().unwrap_or(0); true }
-        b"renderamt" => { v.renderamt = text.parse().unwrap_or(0.0); true }
-        b"skin" => { v.skin = text.parse().unwrap_or(0); true }
-        b"spawnflags" => { v.spawnflags = text.parse().unwrap_or(0); true }
-        _ => false,
-    };
-    kvd.fHandled = handled as c_int;
+    kvd.fHandled = entities::entvars_key_value(unsafe { &mut (*e).v }, key, value) as c_int;
 }
 
 // Multiplayer only: save/restore are stubs.
@@ -169,49 +195,52 @@ unsafe extern "C" fn set_abs_box(e: *mut edict_t) {
     }
 }
 
-unsafe extern "C" fn client_connect(_: *mut edict_t, name: *const c_char, addr: *const c_char, _reject: *mut c_char) -> qboolean {
+unsafe extern "C" fn client_connect(e: *mut edict_t, name: *const c_char, addr: *const c_char, _reject: *mut c_char) -> qboolean {
     let (name, addr) = unsafe { (cstr(name), cstr(addr)) };
-    engine().print(&format!("[mymod] {} connecting from {}\n", name.to_string_lossy(), addr.to_string_lossy()));
-    1
+    rules::client_connect(e, name, addr) as qboolean
+}
+
+unsafe extern "C" fn client_disconnect(e: *mut edict_t) {
+    rules::client_disconnect(e);
+}
+
+unsafe extern "C" fn client_kill(e: *mut edict_t) {
+    rules::client_kill(e);
 }
 
 unsafe extern "C" fn client_put_in_server(e: *mut edict_t) {
-    world::create::<Player>(unsafe { &mut (*e).v });
+    world::create::<player::Player>(unsafe { &mut (*e).v });
     world::dispatch(e, |ent, cx| ent.spawn(cx));
 }
 
 unsafe extern "C" fn client_command(e: *mut edict_t) {
-    let eng = engine();
-    match eng.cmd_argv(0).to_bytes() {
-        b"hello" => {
-            let hp = unsafe { (*e).v.health };
-            eng.client_print(e, PRINT_TYPE::print_console, &format!("Hello from the Rust server! Your health is {hp}.\n"));
-        }
-        _ => {
-            let cmd = eng.cmd_argv(0).to_string_lossy();
-            eng.client_print(e, PRINT_TYPE::print_console, &format!("Unknown command: {cmd}\n"));
-        }
-    }
+    commands::client_command(e);
 }
 
-unsafe extern "C" fn client_userinfo_changed(_: *mut edict_t, _: *mut c_char) {}
+unsafe extern "C" fn client_userinfo_changed(e: *mut edict_t, _: *mut c_char) {
+    rules::userinfo_changed(e);
+}
 
 unsafe extern "C" fn server_activate(_: *mut edict_t, edict_count: c_int, client_max: c_int) {
-    engine().print(&format!("[mymod] ServerActivate: {edict_count} edicts, {client_max} max clients\n"));
+    rules::server_activate();
+    engine().print(&format!("[ts] ServerActivate: {edict_count} edicts, {client_max} max clients\n"));
+}
+
+unsafe extern "C" fn server_deactivate() {
+    rules::server_deactivate();
+}
+
+unsafe extern "C" fn player_pre_think(e: *mut edict_t) {
+    player::with_player(e, |p, cx| p.pre_think(cx));
 }
 
 unsafe extern "C" fn player_post_think(e: *mut edict_t) {
-    let hp = unsafe { (*e).v.health }.clamp(0.0, 255.0) as u8;
-    let resend = world::with(e, |p: &mut Player| {
-        let changed = p.sent_health != Some(hp);
-        p.sent_health = Some(hp);
-        changed
-    });
-    if resend == Some(true) {
-        eng!(pfnMessageBegin(MSG_ONE as c_int, MSG_HEALTH.0.get(), std::ptr::null(), e));
-        eng!(pfnWriteByte(hp as c_int));
-        eng!(pfnMessageEnd());
-    }
+    player::with_player(e, |p, cx| p.post_think(cx));
+}
+
+unsafe extern "C" fn start_frame() {
+    rules::start_frame();
+    bots::start_frame();
 }
 
 unsafe extern "C" fn get_game_description() -> *const c_char {
@@ -221,17 +250,19 @@ unsafe extern "C" fn get_game_description() -> *const c_char {
 unsafe extern "C" fn player_customization(_: *mut edict_t, _: *mut customization_t) {}
 
 unsafe extern "C" fn sys_error(msg: *const c_char) {
-    eprintln!("[mymod] Sys_Error: {}", unsafe { cstr(msg) }.to_string_lossy());
+    eprintln!("[ts] Sys_Error: {}", unsafe { cstr(msg) }.to_string_lossy());
 }
 
 unsafe extern "C" fn pm_move(pm: *mut playermove_t, _server: qboolean) {
     shared::pm::player_move(unsafe { &mut *pm });
 }
 
-unsafe extern "C" fn pm_init(_: *mut playermove_t) {}
+unsafe extern "C" fn pm_init(pm: *mut playermove_t) {
+    shared::pm::init(unsafe { &mut *pm });
+}
 
-unsafe extern "C" fn pm_find_texture_type(_: *mut c_char) -> c_char {
-    b'C' as c_char // CHAR_TEX_CONCRETE
+unsafe extern "C" fn pm_find_texture_type(name: *mut c_char) -> c_char {
+    shared::pm::find_texture_type(unsafe { cstr(name) }) as c_char
 }
 
 /// The view origin's PVS/PAS decides which entities this client may see and hear.
@@ -239,17 +270,24 @@ unsafe extern "C" fn setup_visibility(view: *mut edict_t, client: *mut edict_t, 
     let v = unsafe { &(*if view.is_null() { client } else { view }).v };
     let org = [v.origin[0] + v.view_ofs[0], v.origin[1] + v.view_ofs[1], v.origin[2] + v.view_ofs[2]];
     unsafe {
-        *pvs = eng!(pfnSetFatPVS(org.as_ptr()));
-        *pas = eng!(pfnSetFatPAS(org.as_ptr()));
+        *pvs = goldsrc::eng!(pfnSetFatPVS(org.as_ptr()));
+        *pas = goldsrc::eng!(pfnSetFatPAS(org.as_ptr()));
     }
 }
 
-unsafe extern "C" fn get_weapon_data(_: *mut edict_t, info: *mut weapon_data_t) -> c_int {
-    unsafe { std::ptr::write_bytes(info, 0, 32) };
-    1
+unsafe extern "C" fn get_weapon_data(e: *mut edict_t, info: *mut weapon_data_t) -> c_int {
+    let info = unsafe { &mut *info.cast::<[weapon_data_t; 32]>() };
+    player::with_player(e, |p, cx| weapons::get_weapon_data(p, cx, info)).unwrap_or_else(|| {
+        *info = unsafe { std::mem::zeroed() };
+        1
+    })
 }
 
-unsafe extern "C" fn cmd_start(_: *const edict_t, _: *const usercmd_t, _: c_uint) {}
+unsafe extern "C" fn cmd_start(e: *const edict_t, cmd: *const usercmd_t, seed: c_uint) {
+    let cmd = unsafe { &*cmd };
+    player::with_player(e.cast_mut(), |p, cx| weapons::cmd_start(p, cx, cmd, seed));
+}
+
 unsafe extern "C" fn cmd_end(_: *const edict_t) {}
 
 unsafe extern "C" fn connectionless_packet(_: *const netadr_s, _: *const c_char, _: *mut c_char, size: *mut c_int) -> c_int {
@@ -279,5 +317,6 @@ unsafe extern "C" fn on_free_private_data(e: *mut edict_t) {
 
 unsafe extern "C" fn game_shutdown() {}
 
-unsafe extern "C" fn should_collide(_: *mut edict_t, _: *mut edict_t) -> c_int { 1 }
-
+unsafe extern "C" fn should_collide(touched: *mut edict_t, other: *mut edict_t) -> c_int {
+    world::dispatch(touched, |ent, cx| ent.should_collide(cx, other)).unwrap_or(true) as c_int
+}

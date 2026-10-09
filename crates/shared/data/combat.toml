@@ -1,0 +1,16 @@
+# Decoded from ts_i386.so (TS 3.0) with Sparta() overrides applied.
+# Source: the-specialists-decomp docs/server/weapons.md §3, §8.3.
+armor_absorb = 0.2125   # CTSGameRules constructor default (TSGameRules+0x588c)
+silencer = { damage = 0.775, spread = 0.875, kick = 0.775 }
+headshot = 2.0
+headshot_shotgun = 1.5
+leg = 0.5
+stunt_damage_taken = 0.7
+spread_penalty = { max = 0.1, decay_per_s = 0.1 }
+semi_delay = 0.1
+burst = { shots = 3, gap = 0.03, end = 0.2 }
+pierce = { min_left = 5.0, max_step = 48.0, player_factor = 0.5, unit = 30.0 }
+grenade = { fuse = 3.0, damage = 110, r_full = 300, r_max = 1024, max_speed = 750, per_life = 2 }
+thrown = { speed = 1900, knife = 100, seal = 50, katana = 150 }
+slots = { total = 81, kevlar = 10, flag = 20, speed_min = 210, speed_max = 330 }
+attachment_price = { silencer = 900, laser = 800, flashlight = 500, scope = 1800 }

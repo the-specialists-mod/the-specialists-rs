@@ -1,8 +1,0 @@
-// Read by Steam GoldSrc.
-game "MyMod"
-startmap "crossfire"
-mpentity "info_player_deathmatch"
-gamedll "dlls\mymod.dll"
-gamedll_linux "dlls/mymod.so"
-type "multiplayer_only"
-fallback_dir "valve"

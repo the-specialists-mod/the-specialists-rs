@@ -28,14 +28,52 @@ impl Cx {
     pub fn pev(&mut self) -> &mut entvars_t {
         unsafe { &mut (*self.edict).v }
     }
+    pub fn index(&self) -> i32 {
+        engine().index_of(self.edict)
+    }
+    pub fn time(&self) -> f32 {
+        engine().time()
+    }
+    /// Schedule `think` after `delay` seconds. For MOVETYPE_PUSH entities the engine compares
+    /// `nextthink` against `ltime` instead of the global time (see entities::stock).
+    pub fn think_in(&mut self, delay: f32) {
+        let now = engine().time();
+        self.pev().nextthink = now + delay;
+    }
 }
 
+/// `USE_TYPE` from the SDK.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UseType {
+    Off = 0,
+    On = 1,
+    Set = 2,
+    Toggle = 3,
+}
+
+pub use crate::damage::DamageInfo;
+
+/// Behaviour attached to an edict. Every method has a no-op default; implement what the class
+/// needs. Methods receive a `Cx` for their own edict and must not hold borrows of other entities
+/// across engine calls (see world dispatch notes above).
 pub trait Entity: Any {
+    /// Class-specific keyvalue. Return true if handled; otherwise the generic entvars parser runs.
     fn key_value(&mut self, _cx: &mut Cx, _key: &CStr, _value: &CStr) -> bool {
         false
     }
     fn spawn(&mut self, _cx: &mut Cx) {}
     fn think(&mut self, _cx: &mut Cx) {}
+    fn touch(&mut self, _cx: &mut Cx, _other: *mut edict_t) {}
+    fn use_(&mut self, _cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {}
+    fn blocked(&mut self, _cx: &mut Cx, _other: *mut edict_t) {}
+    /// Apply damage. Return true if the entity took it.
+    fn take_damage(&mut self, _cx: &mut Cx, _dmg: &DamageInfo) -> bool {
+        false
+    }
+    /// `pfnShouldCollide` (NEW_DLL_FUNCTIONS): return false to let `other` pass through.
+    fn should_collide(&mut self, _cx: &mut Cx, _other: *mut edict_t) -> bool {
+        true
+    }
 }
 
 enum State {

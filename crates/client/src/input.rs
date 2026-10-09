@@ -92,7 +92,7 @@ macro_rules! buttons {
         /// `IN_*` bit for each button that maps directly onto `usercmd_t::buttons`.
         static BUTTON_BITS: &[(&Button, u32)] = &[$((&$ident, $bit)),*];
 
-        pub fn register_commands() {
+        fn register_commands() {
             $({
                 unsafe extern "C" fn down() { $ident.key_down() }
                 unsafe extern "C" fn up() { $ident.key_up() }
@@ -131,7 +131,19 @@ fn cvar_or(name: &CStr, default: f32) -> f32 {
     }
 }
 
-pub fn create_move(cmd: &mut usercmd_t, active: bool) {
+pub fn init() {
+    register_commands();
+}
+
+pub fn activate_mouse() {}
+pub fn deactivate_mouse() {}
+pub fn mouse_event(_mstate: i32) {}
+pub fn clear_states() {}
+pub fn accumulate() {}
+pub fn frame(_time: f64) {}
+pub fn key_event(_down: bool, _key: i32, _binding: &CStr) {}
+
+pub fn create_move(_frametime: f32, cmd: &mut usercmd_t, active: bool) {
     // Read movement keys first: `active()` clears their edge bits.
     let k = |b: &Button| b.active() as i32 as f32;
     let (fwd, back, left, right, up, down) = (k(&IN_FWD), k(&IN_BK), k(&IN_LEFT), k(&IN_RIGHT), k(&IN_UPK), k(&IN_DOWNK));

@@ -3,6 +3,9 @@ name = "shared"
 edition.workspace = true
 version.workspace = true
 
-# Plain data types only (playermove_t): no engine calls, so `cargo test -p shared` runs standalone.
+# Code that must behave identically on server and client. Plain data types only from
+# goldsrc-sys (playermove_t, usercmd_t, ...): no engine calls, so `cargo test -p shared` runs alone.
 [dependencies]
 goldsrc-sys = { path = "../goldsrc-sys" }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }

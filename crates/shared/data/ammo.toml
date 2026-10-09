@@ -1,0 +1,18 @@
+# Decoded from ts_i386.so (TS 3.0) with Sparta() overrides applied.
+# Source: the-specialists-decomp docs/server/weapons.md §3, §8.3.
+ammo = [
+  { id = 1,  name = "9 x 19mm",    price = 50,  per_buy = 30, max_carry = [210, 90, 30, 0],  pierce = 0.2,  range_unit = 80,  velocity = 330 },
+  { id = 2,  name = ".45Acp",      price = 60,  per_buy = 12, max_carry = [175, 50, 25, 0],  pierce = 0.2,  range_unit = 90,  velocity = 280 },
+  { id = 3,  name = "SHELLS",      price = 120, per_buy = 8,  max_carry = [60, 32, 16, 0],   pierce = 0.0,  range_unit = 90,  velocity = 350 },
+  { id = 4,  name = "5.56 Nato",   price = 80,  per_buy = 30, max_carry = [120, 60, 30, 0],  pierce = 0.9,  range_unit = 150, velocity = 900 },
+  { id = 5,  name = ".50AE",       price = 70,  per_buy = 10, max_carry = [70, 21, 7, 0],    pierce = 0.5,  range_unit = 90,  velocity = 480 },
+  { id = 6,  name = "7.62 x 39mm", price = 100, per_buy = 30, max_carry = [90, 60, 30, 0],   pierce = 0.7,  range_unit = 170, velocity = 790 },
+  { id = 7,  name = "5.7 x 28",    price = 120, per_buy = 20, max_carry = [160, 40, 20, 0],  pierce = 1.0,  range_unit = 100, velocity = 730 },
+  { id = 8,  name = "50BMG",       price = 500, per_buy = 5,  max_carry = [30, 10, 5, 0],    pierce = 1.0,  range_unit = 200, velocity = 1000 },
+  { id = 9,  name = "10mm AUTO",   price = 70,  per_buy = 15, max_carry = [90, 30, 15, 0],   pierce = 0.5,  range_unit = 90,  velocity = 450 },
+  { id = 10, name = ".22 LR",      price = 100, per_buy = 17, max_carry = [150, 34, 17, 0],  pierce = 0.9,  range_unit = 70,  velocity = 350 },
+  { id = 11, name = ".454 Casull", price = 150, per_buy = 5,  max_carry = [50, 15, 5, 0],    pierce = 0.75, range_unit = 20,  velocity = 400 },
+  { id = 12, name = ".32Acp",      price = 30,  per_buy = 20, max_carry = [300, 100, 40, 0], pierce = 0.0,  range_unit = 40,  velocity = 300 },
+  { id = 13, name = "7.62 x 51mm", price = 150, per_buy = 5,  max_carry = [35, 15, 5, 0],    pierce = 0.7,  range_unit = 170, velocity = 850 },
+]
+# constants shared by all ammo: max_range = 8192, radial_spread = 1.0, units_per_meter = 40

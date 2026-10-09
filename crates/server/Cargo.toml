@@ -1,10 +1,10 @@
 [package]
-name = "mymod-server"
+name = "ts-server"
 edition.workspace = true
 version.workspace = true
 
 [lib]
-name = "mymod"             # -> libmymod.so; xtask renames it to dlls/mymod_amd64.so
+name = "ts"                # -> libts.so / ts.dll; xtask installs dlls/ts_i386.so, ts_amd64.so, mp.dll
 crate-type = ["cdylib"]
 
 [dependencies]
