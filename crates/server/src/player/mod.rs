@@ -76,6 +76,9 @@ impl Entity for Player {
         self.kungfu = false;
         self.superjump = false;
 
+        // Leave any trigger_camera view and un-freeze (TS resets these on spawn).
+        pev.flags &= !(FL_FROZEN as i32);
+        e.set_view(edict, edict);
         e.set_model(edict, PLAYER_MODEL);
         e.set_size(edict, VEC_HULL_MIN, VEC_HULL_MAX);
 
@@ -93,6 +96,12 @@ impl Entity for Player {
 
 impl Player {
     pub fn pre_think(&mut self, cx: &mut Cx) {
+        // +use on stock entities (buttons, doors, pushables, chargers); rules handles ground
+        // items and power-ups. Read last frame's buttons before rules updates them.
+        let (buttons, last) = (cx.pev().button, self.ts.buttons_last);
+        if Player::is_alive(cx) {
+            crate::entities::stock::player_use(cx.edict, buttons, last);
+        }
         crate::rules::pre_think(self, cx);
         crate::stunt::pre_think(self, cx);
         crate::weapons::pre_think(self, cx);

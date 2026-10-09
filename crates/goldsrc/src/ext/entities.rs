@@ -158,10 +158,6 @@ impl Engine {
     }
 
     /// Next entity after `start` within `radius` of `org`; null when there are no more.
-    pub fn find_in_sphere(&self, start: *mut edict_t, org: Vec3, radius: f32) -> *mut edict_t {
-        let e = eng!(pfnFindEntityInSphere(start, org.as_ptr(), radius));
-        if e.is_null() || self.index_of(e) == 0 { std::ptr::null_mut() } else { e }
-    }
 
     /// First entity with `targetname == name` after `start` (null-safe).
     pub fn find_by_target_name(&self, start: *mut edict_t, name: &CStr) -> *mut edict_t {
@@ -173,9 +169,6 @@ impl Engine {
         eng!(pfnCreateEntity())
     }
 
-    pub fn set_view(&self, client: *mut edict_t, view: *mut edict_t) {
-        eng!(pfnSetView(client, view))
-    }
 
     pub fn decal_index(&self, name: &CStr) -> i32 {
         eng!(pfnDecalIndex(name.as_ptr()))
@@ -189,7 +182,8 @@ impl Engine {
         eng!(pfnModelFrames(model_index))
     }
 
-    pub fn set_cvar_string(&self, name: &CStr, value: &CStr) {
+    /// `pfnCVarSetString` with a C-string value (`set_cvar_string` in ext::rules takes `&str`).
+    pub fn set_cvar_cstr(&self, name: &CStr, value: &CStr) {
         eng!(pfnCVarSetString(name.as_ptr(), value.as_ptr()))
     }
 

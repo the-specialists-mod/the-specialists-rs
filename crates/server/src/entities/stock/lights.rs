@@ -46,7 +46,7 @@ impl<const ENV: bool> Entity for Light<ENV> {
                 let eng = engine();
                 let (r, g, b) = sky_color(kv_str(value));
                 for (name, c) in [(c"sv_skycolor_r", r), (c"sv_skycolor_g", g), (c"sv_skycolor_b", b)] {
-                    eng.set_cvar_string(name, &goldsrc::util::to_cstring(&c.to_string()));
+                    eng.set_cvar_cstr(name, &goldsrc::util::to_cstring(&c.to_string()));
                 }
             }
             b"style" => self.style = kv_i(value),
@@ -64,7 +64,7 @@ impl<const ENV: bool> Entity for Light<ENV> {
             a[0] = -a[0]; // UTIL_MakeAimVectors
             let (f, _, _) = eng.make_vectors(a);
             for (name, c) in [(c"sv_skyvec_x", f[0]), (c"sv_skyvec_y", f[1]), (c"sv_skyvec_z", f[2])] {
-                eng.set_cvar_string(name, &goldsrc::util::to_cstring(&format!("{c:.6}")));
+                eng.set_cvar_cstr(name, &goldsrc::util::to_cstring(&format!("{c:.6}")));
             }
         }
         if cx.pev().targetname == 0 {

@@ -87,7 +87,7 @@ fn dll_functions() -> DLL_FUNCTIONS {
         pfnSaveReadFields: Some(save_fields),
         pfnSaveGlobalState: Some(save_global_state),
         pfnRestoreGlobalState: Some(save_global_state),
-        pfnResetGlobalState: Some(noop),
+        pfnResetGlobalState: Some(reset_global_state),
         pfnClientConnect: Some(client_connect),
         pfnClientDisconnect: Some(client_disconnect),
         pfnClientKill: Some(client_kill),
@@ -129,12 +129,20 @@ fn dll_functions() -> DLL_FUNCTIONS {
 /// Precache everything; called from worldspawn's spawn (the first entity of every map).
 pub(crate) fn precache_all() {
     engine().precache_model(player::PLAYER_MODEL);
+    // Engine water sounds: played when anything enters water, so precache them up front.
+    for s in [c"player/pl_wade1.wav", c"player/pl_wade2.wav", c"player/pl_wade3.wav", c"player/pl_wade4.wav"] {
+        engine().precache_sound(s);
+    }
     stunt::precache();
     weapons::precache();
     rules::precache();
 }
 
 unsafe extern "C" fn noop() {}
+
+unsafe extern "C" fn reset_global_state() {
+    entities::stock::base::reset_global_state();
+}
 unsafe extern "C" fn noop_e(_: *mut edict_t) {}
 
 unsafe extern "C" fn game_init() {

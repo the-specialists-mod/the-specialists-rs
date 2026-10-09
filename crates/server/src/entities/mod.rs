@@ -76,6 +76,9 @@ pub fn fire_targets(target: &CStr, activator: *mut edict_t, caller: *mut edict_t
         if e.is_null() {
             break;
         }
+        if unsafe { (*e).v.flags } & FL_KILLME as i32 != 0 {
+            continue; // already removed this frame
+        }
         world::dispatch(e, |ent, cx| ent.use_(cx, activator, caller, kind, value));
     }
 }
