@@ -62,6 +62,7 @@ impl Target {
     pub const ALL: [Target; 4] = [Self::LINUX_I686, Self::WINDOWS_I686, Self::LINUX_X86_64, Self::WINDOWS_X86_64];
 }
 
+#[derive(Clone)]
 pub struct Root {
     pub name: &'static str,
     pub os: Os,
