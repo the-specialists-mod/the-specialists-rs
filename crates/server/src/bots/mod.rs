@@ -72,8 +72,12 @@ pub fn server_deactivate() {
     MGR.0.borrow_mut().active = false;
 }
 
+/// Connected fake clients. A dropped client's edict can keep FL_FAKECLIENT and its private data
+/// (HL25 drops every bot when the last human leaves); `pfnRunPlayerMove` on it crashes the engine,
+/// so also require a live user id.
 fn fake_clients() -> Vec<*mut edict_t> {
-    engine().clients().filter(|&e| unsafe { (*e).v.flags } & FL_FAKECLIENT as i32 != 0).collect()
+    let eng = engine();
+    eng.clients().filter(|&e| unsafe { (*e).v.flags } & FL_FAKECLIENT as i32 != 0 && eng.user_id(e) != -1).collect()
 }
 
 /// Adds one bot (also the `addbot` server command).

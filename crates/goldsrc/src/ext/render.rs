@@ -203,8 +203,14 @@ unsafe impl Send for Cvar {}
 unsafe impl Sync for Cvar {}
 impl Cvar {
     pub const NULL: Cvar = Cvar(std::ptr::null_mut());
-    /// Registers (or finds) a cvar. `name`/`value` must be `'static` (the engine keeps them).
+    /// Finds a cvar another module (or the engine) already registered, else registers it, so a
+    /// name shared by several client modules is registered once. `name`/`value` must be
+    /// `'static` (the engine keeps them).
     pub fn register(name: &'static CStr, value: &'static CStr, flags: i32) -> Cvar {
+        let existing = cl_eng!(pfnGetCvarPointer(name.as_ptr()));
+        if !existing.is_null() {
+            return Cvar(existing);
+        }
         let p = cl_eng!(pfnRegisterVariable(name.as_ptr(), value.as_ptr(), flags));
         if p.is_null() { Cvar(cl_eng!(pfnGetCvarPointer(name.as_ptr()))) } else { Cvar(p) }
     }

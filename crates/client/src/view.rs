@@ -291,8 +291,8 @@ pub fn update_client_data(cdata: *mut c_void) -> bool {
     true
 }
 
-/// `CTSGun::VKickback` client half (`0x10008230`): queue view kick, start the shake spring.
-/// Call with `runfuncs` only.
+/// `CTSGun::VKickback` client half (`0x10008230`) for a client weapon class (development
+/// command `ts_test_kick`). Prediction calls [`kick_angles`] with the shared `VKickback` result.
 pub fn kick(view_kick: f32, class: u8, silenced: bool, double_rate: bool) {
     let mut pitch = view_kick * 0.85;
     let mut yaw = pitch
@@ -312,6 +312,12 @@ pub fn kick(view_kick: f32, class: u8, silenced: bool, double_rate: bool) {
         pitch *= 2.0 / 3.0;
         yaw *= 2.0 / 3.0;
     }
+    kick_angles(pitch, yaw, silenced);
+}
+
+/// Queues one shot's view kick (`pitch` up, `yaw` right, degrees) and starts the shake spring.
+/// Call once per shot, with `runfuncs` only.
+pub fn kick_angles(pitch: f32, yaw: f32, silenced: bool) {
     let ts = state::with(|s| s.time_scale);
     let now = r::client_time() as f64;
     with(|w| {

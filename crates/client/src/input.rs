@@ -174,8 +174,16 @@ static REAL_KEY: Global<Cell<bool>> = Global(Cell::new(false));
 /// The bindings that set the gate, exactly as TS compares them.
 pub const GATED_BINDINGS: [&str; 9] = ["+attack", "+attack2", "+alt2", "+reload", "+forward", "+back", "+moveleft", "+moveright", "+jump"];
 
+/// `ts_dev_scriptinput 1` (port-only development aid): with `sv_cheats 1`, scripted `+attack`,
+/// `+jump`, … work without a physical key, for automated in-engine tests.
+static DEV_SCRIPT_INPUT: Global<Cell<Cvar>> = Global(Cell::new(Cvar::NULL));
+
 pub fn gate_open() -> bool {
-    REAL_KEY.0.get()
+    REAL_KEY.0.get() || (DEV_SCRIPT_INPUT.0.get().value() != 0.0 && cvar_ptr_value(c"sv_cheats") != 0.0)
+}
+
+fn cvar_ptr_value(name: &CStr) -> f32 {
+    Cvar::from_raw(engine().cvar_pointer(name)).value()
 }
 
 /// Pure part of `HUD_Key_Event`'s gate check (used by tests).
@@ -819,6 +827,7 @@ mod win {
 
 pub fn init() {
     CVARS.0.set(InputCvars::register());
+    DEV_SCRIPT_INPUT.0.set(Cvar(engine().register_variable(c"ts_dev_scriptinput", c"0", 0)));
     register_commands();
     let fwgs = !engine().cvar_pointer(c"host_ver").is_null();
     mouse(|m| {

@@ -64,10 +64,14 @@ pub const CASH_FOR_LOSE: i32 = 1200;
 pub const RESPAWN_NUMBER: f32 = 1.0;
 
 pub fn register() {
-    // A cvar the engine already defines (FWGS: sv_alltalk) is refused with a developer message;
-    // values set on the command line before registration are kept by the engine.
+    // Skip cvars the engine already defines (FWGS and newer engines have sv_alltalk; old HLDS
+    // leaves it to the game DLL, like TS's CVoiceGameMgr), so nothing is registered twice.
     let e = engine();
     for &(name, value, flags) in CVARS {
+        let cname = goldsrc::util::to_cstring(name);
+        if !e.cvar_ptr(&cname).is_null() {
+            continue;
+        }
         e.register_cvar(name, value, flags);
     }
 }

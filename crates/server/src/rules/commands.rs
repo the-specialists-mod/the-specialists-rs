@@ -199,8 +199,6 @@ pub fn register_server_commands() {
     e.add_server_command(c"globalslow", cmd_globalslow);
     e.add_server_command(c"restartround", cmd_restartround);
     e.add_server_command(c"weaponrestriction", cmd_weaponrestriction);
-    e.add_server_command(c"loadweapons", cmd_weapons_file);
-    e.add_server_command(c"saveweapons", cmd_weapons_file);
     // Port additions for testing dedicated servers.
     e.add_server_command(c"ts_status", cmd_status);
     e.add_server_command(c"ts_hurt", cmd_hurt);
@@ -362,11 +360,6 @@ pub fn restriction_by_id(n: i32) -> i32 {
         4 => 0x13,
         _ => 0x1f,
     }
-}
-
-/// `loadweapons`/`saveweapons` belong to the weapons package (custom weapon parameters).
-unsafe extern "C" fn cmd_weapons_file() {
-    engine().print("loadweapons/saveweapons: custom weapon parameters are not supported yet.\n");
 }
 
 #[cfg(test)]

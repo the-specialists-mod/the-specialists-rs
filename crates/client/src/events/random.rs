@@ -1,13 +1,15 @@
 //! The SDK shared random generator (`UTIL_SharedRandomLong/Float`), as compiled into TS's
 //! client.dll (`0x1001ae60` / `0x1001aea0`, seed table `0x10093168`).
 //!
-//! Private copy: the weapons package ports the same code into `shared::weapons` (the server side
-//! needs it for pellet spread); switch this module to that one once both are merged. Bullet
-//! decals only match the server if both sides are bit-identical.
-//!
-//! TS differs from the 2.3 SDK text in one place: the float version keeps `high - low` as a
-//! float (SDK: `unsigned int range`), so ranges below 1.0 work (verified in the assembly at
-//! `0x1001aec3`: `fsubs`/`fsts`, no truncation). The seed is still `seed + bits(low) + bits(high)`.
+//! This is deliberately **not** `shared::weapons::random`: TS's two binaries differ. client.dll
+//! keeps `high - low` as a float (verified in the assembly at `0x1001aec3`: `fsubs`/`fsts`, no
+//! truncation; decomp `FUN_1001aea0`), while ts_i386.so converts it to an integer
+//! (`UTIL_SharedRandomFloat` 0xebc54, as the SDK's `unsigned int range`). For the pellet angle
+//! range (-pi, pi) that gives different values for the same seed (seed 77: client `0xbfb0e2eb`,
+//! server `0xbfbb09b6`), so an original TS client also draws its own pellets slightly off the
+//! server's. Each side keeps its own binary's behaviour; `UTIL_SharedRandomLong` and float ranges
+//! with an integral width (the pellet radius, 0..1) agree. The seed is `seed + bits(low) +
+//! bits(high)` in both.
 
 const SEED_TABLE: [u32; 256] = [
     28985, 27138, 26457, 9451, 17764, 10909, 28790, 8716, 6361, 4853, 17798, 21977, 19643, 20662, 10834, 20103, 27067, 28634, 18623, 25849,
@@ -88,6 +90,18 @@ mod tests {
 
     const REF_FLOAT_1234: f32 = f32::from_bits(0x3f06_5d00); // 0.524856567
     const REF_LONG_1234: i32 = 36;
+
+    /// Same generator as the server's for integral ranges, different for (-pi, pi) (see above).
+    #[test]
+    fn agrees_with_server_where_ts_does() {
+        use shared::weapons::random as sv;
+        for seed in 0..512u32 {
+            assert_eq!(shared_random_long(seed, -5, 20), sv::shared_random_long(seed, -5, 20));
+            assert_eq!(shared_random_float(seed, 0.0, 1.0).to_bits(), sv::shared_random_float(seed, 0.0, 1.0).to_bits());
+        }
+        let pi = std::f32::consts::PI;
+        assert_ne!(shared_random_float(77, -pi, pi).to_bits(), sv::shared_random_float(77, -pi, pi).to_bits());
+    }
 
     #[test]
     fn matches_reference_pi() {

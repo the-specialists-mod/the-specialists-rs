@@ -9,62 +9,41 @@ use shared::weapons::{Event, MAX_WEAPONS, models, tables};
 use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 
-pub struct Cvars {
-    /// `realbullet`: simulated bullets (`CBulletManager`) for everyone; 2+ = per-frame steps.
-    pub realbullet: &'static cvar_t,
-    /// `ammocount`: max-carry column (0 default, 1..3 reduced).
-    pub ammocount: &'static cvar_t,
-    /// `weaponstay`: dropped weapon lifetime (clamped 5..60 s; drops of the held gun 10..120 s
-    /// at twice the value).
-    pub weaponstay: &'static cvar_t,
-    /// `damagemult`: weapon damage multiplier, only with `sv_cheats`.
-    pub damagemult: &'static cvar_t,
-    /// `customweapons`: weapon parameter file (not implemented, see docs).
-    pub customweapons: &'static cvar_t,
-    /// Not TS: `ts_weapons_debug 1` logs fires, hits, explosions, drops to the server console.
-    pub debug: &'static cvar_t,
-}
-
-static CVARS: Global<RefCell<Option<Cvars>>> = Global(RefCell::new(None));
-/// `TSGameRules+0x5870` weapon restriction mask (default 0x1f = everything allowed).
-static RESTRICTION: Global<Cell<u32>> = Global(Cell::new(0x1f));
+/// `ts_weapons_debug` (not TS): logs fires, hits, explosions, drops to the server console.
+static DEBUG: Global<Cell<Option<&'static cvar_t>>> = Global(Cell::new(None));
 static GRENADE_BUYS: Global<Cell<bool>> = Global(Cell::new(false));
 
+/// Registers the weapons package's own cvar. The TS weapon cvars (`realbullet`, `ammocount`,
+/// `weaponstay`, `damagemult`, `customweapons`) and `weaponrestriction` belong to the rules
+/// (`rules::cvars`, `rules::commands`) and are read by name; `loadweapons`/`saveweapons` are
+/// registered here.
 pub fn register_cvars() {
     let e = engine();
-    const FCVAR_SERVER: i32 = 4;
-    let c = Cvars {
-        realbullet: e.register_cvar("realbullet", "0", FCVAR_SERVER),
-        ammocount: e.register_cvar("ammocount", "0", FCVAR_SERVER),
-        weaponstay: e.register_cvar("weaponstay", "15", FCVAR_SERVER),
-        damagemult: e.register_cvar("damagemult", "0", FCVAR_SERVER),
-        customweapons: e.register_cvar("customweapons", "", FCVAR_SERVER),
-        debug: e.register_cvar("ts_weapons_debug", "0", 0),
-    };
-    *CVARS.0.borrow_mut() = Some(c);
-    e.add_server_command(c"weaponrestriction", cmd_weaponrestriction);
+    DEBUG.0.set(Some(e.register_cvar("ts_weapons_debug", "0", 0)));
     e.add_server_command(c"loadweapons", super::custom::cmd_loadweapons);
     e.add_server_command(c"saveweapons", super::custom::cmd_saveweapons);
 }
 
-/// Current cvar values.
+/// Current values of the TS weapon cvars (registered by the rules).
 pub struct CvarValues {
+    /// `realbullet`: simulated bullets (`CBulletManager`) for everyone; 2+ = per-frame steps.
     pub realbullet: f32,
+    /// `ammocount`: max-carry column (0 default, 1..3 reduced).
     pub ammocount: f32,
+    /// `weaponstay`: dropped weapon lifetime (clamped 5..60 s; drops of the held gun 10..120 s
+    /// at twice the value).
     pub weaponstay: f32,
+    /// `damagemult`: weapon damage multiplier, only with `sv_cheats`.
     pub damagemult: f32,
 }
 
 pub fn cvars() -> CvarValues {
-    let c = CVARS.0.borrow();
-    match c.as_ref() {
-        Some(c) => CvarValues {
-            realbullet: cvar_value(c.realbullet),
-            ammocount: cvar_value(c.ammocount),
-            weaponstay: cvar_value(c.weaponstay),
-            damagemult: cvar_value(c.damagemult),
-        },
-        None => CvarValues { realbullet: 0.0, ammocount: 0.0, weaponstay: 15.0, damagemult: 0.0 },
+    let e = engine();
+    CvarValues {
+        realbullet: e.cvar_float(c"realbullet"),
+        ammocount: e.cvar_float(c"ammocount"),
+        weaponstay: e.cvar_float(c"weaponstay"),
+        damagemult: e.cvar_float(c"damagemult"),
     }
 }
 
@@ -82,20 +61,22 @@ pub fn max_carry(t: u8) -> i32 {
 
 /// Logs `f()` when `ts_weapons_debug` is set.
 pub fn debug(f: impl FnOnce() -> String) {
-    let on = CVARS.0.borrow().as_ref().map(|c| cvar_value(c.debug) != 0.0).unwrap_or(false);
+    let on = DEBUG.0.get().map(|c| cvar_value(c) != 0.0).unwrap_or(false);
     if on {
         engine().print(&format!("[ts weapons] {}\n", f()));
     }
 }
 
+/// The weapon restriction mask (1 knives, 2 pistols, 4 SMGs, 8 rifles, 16 shotguns): the rules'
+/// `allowed_weapons` (`TSGameRules+0x5870`, set by `ts_mapglobals` and `weaponrestriction`, sent
+/// as `SrvSett 3`).
 pub fn restriction() -> u32 {
-    RESTRICTION.0.get()
+    crate::rules::state::with(|g| g.allowed_weapons) as u32 & 0x1f
 }
 
-/// Sets the restriction mask (`ts_mapglobals` spawnflags, `weaponrestriction`). The rules
-/// broadcast it as `SrvSett 3`.
+/// Sets the restriction mask (the rules broadcast it as `SrvSett 3` on change).
 pub fn set_restriction(mask: u32) {
-    RESTRICTION.0.set(mask & 0x1f);
+    crate::rules::state::with(|g| g.allowed_weapons = (mask & 0x1f) as i32);
 }
 
 pub fn grenade_buys() -> bool {
@@ -104,27 +85,6 @@ pub fn grenade_buys() -> bool {
 
 pub fn set_grenade_buys(v: bool) {
     GRENADE_BUYS.0.set(v);
-}
-
-/// `weaponrestriction [n]` (`cmd_weaponrestriction` 0xc58a0): no argument prints the mask, 5
-/// resets, otherwise `WeaponRestrictionByID(n) & allowed`.
-unsafe extern "C" fn cmd_weaponrestriction() {
-    let e = engine();
-    if e.cmd_argc() < 2 {
-        e.print(&format!("weapon restriction mask: 0x{:02x} (1 knives, 2 pistols, 4 SMGs, 8 rifles, 16 shotguns)\n", restriction()));
-        return;
-    }
-    let n: i32 = e.cmd_argv(1).to_str().unwrap_or("").trim().parse().unwrap_or(0);
-    let mask = match n {
-        5 => 0x1f,
-        1 => 0,
-        2 => 1,
-        3 => 3,
-        4 => 0x13,
-        _ => 0x1f,
-    };
-    set_restriction(if n == 5 { 0x1f } else { mask & restriction() });
-    e.print(&format!("weapon restriction mask: 0x{:02x}\n", restriction()));
 }
 
 /// Per-map engine handles (strings and indices are reset on every level change).
