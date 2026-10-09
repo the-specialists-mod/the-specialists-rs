@@ -227,8 +227,14 @@ impl Ctx {
                         ok = false;
                     }
                     if i.players < bots as u8 {
-                        println!("   FAIL: {} players, expected {bots} bots", i.players);
-                        ok = false;
+                        // The Xash `info` reply (old FWGS) doesn't count fake clients: use the log.
+                        let added = root.read_log(&self.repo).matches("[ts] bots: added").count();
+                        if i.game.is_empty() && added >= bots as usize {
+                            println!("   {added} bots joined (from the log; this engine's query doesn't count bots)");
+                        } else {
+                            println!("   FAIL: {} players, expected {bots} bots", i.players);
+                            ok = false;
+                        }
                     }
                 }
                 Err(e) => {

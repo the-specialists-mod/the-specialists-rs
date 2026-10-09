@@ -122,7 +122,12 @@ impl Root {
     pub fn server_command(&self, map: &str, port: u16, bots: u32) -> Command {
         let common = |c: &mut Command| {
             c.current_dir(&self.path).args(["-game", "ts", "-port", &port.to_string(), "+maxplayers", "8", "+sv_lan", "1"]);
-            c.args(["+ts_bot_quota", &bots.to_string(), "+map", map]);
+            // Game cvars don't exist yet when command-line `+cvar` runs on GoldSrc, so set them
+            // from the per-map server config instead (the engine runs it after GameInit).
+            let cfg = format!("// Written by cargo xtask server.\nexec server.cfg\nts_bot_quota {bots}\n");
+            std::fs::write(self.path.join("ts").join("xtask_server.cfg"), cfg).unwrap();
+            // FWGS applies command-line cvars after GameInit, GoldSrc reads the config: pass both.
+            c.args(["+ts_bot_quota", &bots.to_string(), "+servercfgfile", "xtask_server.cfg", "+map", map]);
         };
         match (self.engine, self.os) {
             (Engine::Fwgs, Os::Windows) => {
