@@ -2,7 +2,15 @@ use std::{env, path::PathBuf};
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let fwgs = env::var("FWGS_DIR").map(PathBuf::from).unwrap_or(manifest.join("../../../xash3d-fwgs"));
+    // FWGS_DIR, or the nearest `xash3d-fwgs` directory next to any ancestor of this crate (works
+    // from the main checkout and from git worktrees).
+    let fwgs = env::var("FWGS_DIR").map(PathBuf::from).unwrap_or_else(|_| {
+        manifest
+            .ancestors()
+            .map(|a| a.join("xash3d-fwgs"))
+            .find(|p| p.join("common/xash3d_types.h").exists())
+            .expect("FWGS headers not found: set FWGS_DIR to an xash3d-fwgs checkout")
+    });
     let target = env::var("TARGET").unwrap();
 
     let bindings = bindgen::Builder::default()
