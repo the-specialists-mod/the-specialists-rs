@@ -1,0 +1,12 @@
+[package]
+name = "mymod-server"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "mymod"             # -> libmymod.so; xtask renames it to dlls/mymod_amd64.so
+crate-type = ["cdylib"]
+
+[dependencies]
+goldsrc = { path = "../goldsrc", features = ["server"] }
+shared  = { path = "../shared" }

@@ -1,0 +1,8 @@
+[package]
+name = "shared"
+edition.workspace = true
+version.workspace = true
+
+# Plain data types only (playermove_t): no engine calls, so `cargo test -p shared` runs standalone.
+[dependencies]
+goldsrc-sys = { path = "../goldsrc-sys" }

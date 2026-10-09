@@ -1,0 +1,7 @@
+[package]
+name = "goldsrc-sys"
+edition.workspace = true
+version.workspace = true
+
+[build-dependencies]
+bindgen = "*"

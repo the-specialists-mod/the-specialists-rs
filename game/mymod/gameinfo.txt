@@ -1,0 +1,12 @@
+// Read by Xash3D FWGS. Maps, models and sounds come from the base game (valve).
+basedir         "valve"
+gamedir         "mymod"
+title           "MyMod"
+version         0.1
+type            "multiplayer_only"
+startmap        "crossfire"
+dllpath         "cl_dlls"
+gamedll         "dlls/mymod.dll"
+gamedll_linux   "dlls/mymod.so"     // FWGS on amd64 loads dlls/mymod_amd64.so
+mp_entity       "info_player_deathmatch"
+max_edicts      1200

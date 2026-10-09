@@ -1,0 +1,11 @@
+[package]
+name = "goldsrc"
+edition.workspace = true
+version.workspace = true
+
+[features]
+server = []
+client = []
+
+[dependencies]
+goldsrc-sys = { path = "../goldsrc-sys" }

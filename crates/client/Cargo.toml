@@ -1,0 +1,12 @@
+[package]
+name = "mymod-client"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+name = "client"
+crate-type = ["cdylib"]
+
+[dependencies]
+goldsrc = { path = "../goldsrc", features = ["client"] }
+shared  = { path = "../shared" }
