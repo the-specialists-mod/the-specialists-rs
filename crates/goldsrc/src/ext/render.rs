@@ -1,1 +1,337 @@
 //! Engine helpers added by the render work package. Keep additions here to avoid merge conflicts.
+//!
+//! * `ev!`/`efx!`/`tri!` call a slot of `pEventAPI`/`pEfxAPI`/`pTriAPI` (like `cl_eng!`).
+//! * Thin wrappers for the calls the view/events/effects modules use most.
+//! * `vec3`: small vector maths on `[f32; 3]` (pure, unit-tested).
+
+use crate::client::engine;
+use crate::sys::*;
+use crate::util::to_cstring;
+use std::ffi::{CStr, c_char, c_int};
+
+pub type Vec3 = [f32; 3];
+
+pub fn event_api() -> &'static event_api_s {
+    unsafe { &*engine().f.pEventAPI }
+}
+pub fn efx_api() -> &'static efx_api_s {
+    unsafe { &*engine().f.pEfxAPI }
+}
+pub fn tri_api() -> &'static triangleapi_s {
+    unsafe { &*engine().f.pTriAPI }
+}
+
+/// Calls a `pEventAPI` slot, panicking with its name if the engine left it null.
+#[macro_export]
+macro_rules! ev {
+    ($name:ident ( $($arg:expr),* $(,)? )) => {
+        unsafe { ($crate::ext::render::event_api().$name.expect(stringify!($name)))($($arg),*) }
+    };
+}
+/// Calls a `pEfxAPI` slot.
+#[macro_export]
+macro_rules! efx {
+    ($name:ident ( $($arg:expr),* $(,)? )) => {
+        unsafe { ($crate::ext::render::efx_api().$name.expect(stringify!($name)))($($arg),*) }
+    };
+}
+/// Calls a `pTriAPI` slot.
+#[macro_export]
+macro_rules! tri {
+    ($name:ident ( $($arg:expr),* $(,)? )) => {
+        unsafe { ($crate::ext::render::tri_api().$name.expect(stringify!($name)))($($arg),*) }
+    };
+}
+
+use crate::cl_eng;
+
+/// `EV_PlaySound`. `ent` 0 plays at `origin`.
+#[allow(clippy::too_many_arguments)]
+pub fn play_sound(ent: i32, origin: Vec3, chan: i32, sample: &str, vol: f32, attn: f32, flags: i32, pitch: i32) {
+    let s = to_cstring(sample);
+    let mut o = origin;
+    ev!(EV_PlaySound(ent, o.as_mut_ptr(), chan, s.as_ptr(), vol, attn, flags, pitch));
+}
+
+/// `EV_SetTraceHull` + `EV_PlayerTrace`. Call between `push_pm_states`/`pop_pm_states` when
+/// players must be solid.
+pub fn player_trace(start: Vec3, end: Vec3, hull: i32, flags: i32, ignore_pe: i32) -> pmtrace_s {
+    let (mut s, mut e) = (start, end);
+    let mut tr: pmtrace_s = unsafe { std::mem::zeroed() };
+    ev!(EV_SetTraceHull(hull));
+    ev!(EV_PlayerTrace(s.as_mut_ptr(), e.as_mut_ptr(), flags, ignore_pe, &mut tr));
+    tr
+}
+
+/// Makes the other players solid for traces (`EV_SetUpPlayerPrediction` + `EV_PushPMStates` +
+/// `EV_SetSolidPlayers`), runs `f`, and restores the pmove state.
+pub fn with_solid_players<R>(player_index0: i32, f: impl FnOnce() -> R) -> R {
+    ev!(EV_SetUpPlayerPrediction(0, 1));
+    ev!(EV_PushPMStates());
+    ev!(EV_SetSolidPlayers(player_index0));
+    let r = f();
+    ev!(EV_PopPMStates());
+    r
+}
+
+/// Texture name hit by a trace from `start` to `end` against physent `ground`.
+pub fn trace_texture(ground: i32, start: Vec3, end: Vec3) -> Option<String> {
+    let (mut s, mut e) = (start, end);
+    let p = ev!(EV_TraceTexture(ground, s.as_mut_ptr(), e.as_mut_ptr()));
+    if p.is_null() { None } else { Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()) }
+}
+
+pub fn physent(idx: i32) -> Option<&'static physent_s> {
+    let p = ev!(EV_GetPhysent(idx));
+    unsafe { p.as_ref() }
+}
+
+pub fn index_from_trace(tr: &mut pmtrace_s) -> i32 {
+    ev!(EV_IndexFromTrace(tr))
+}
+
+/// `EV_IsLocal` takes a 0-based player number; this takes the entity index.
+pub fn is_local(entindex: i32) -> bool {
+    ev!(EV_IsLocal(entindex - 1)) != 0
+}
+
+pub fn is_player(entindex: i32) -> bool {
+    entindex >= 1 && entindex <= cl_eng!(GetMaxClients())
+}
+
+pub fn weapon_animation(seq: i32, body: i32) {
+    ev!(EV_WeaponAnimation(seq, body));
+}
+
+pub fn model_index(name: &str) -> i32 {
+    let s = to_cstring(name);
+    ev!(EV_FindModelIndex(s.as_ptr()))
+}
+
+pub fn temp_model(pos: Vec3, vel: Vec3, angles: Vec3, life: f32, model: i32, soundtype: i32) -> Option<&'static mut TEMPENTITY> {
+    let p = efx!(R_TempModel(pos.as_ptr(), vel.as_ptr(), angles.as_ptr(), life, model, soundtype));
+    unsafe { p.as_mut() }
+}
+
+/// Decal texture index for a decal name such as `{shot1`.
+pub fn decal_index(name: &str) -> i32 {
+    let s = to_cstring(name);
+    let id = efx!(Draw_DecalIndexFromName(s.as_ptr()));
+    efx!(Draw_DecalIndex(id))
+}
+
+pub fn decal_shoot(texture: i32, entity: i32, model_index: i32, pos: Vec3, flags: i32) {
+    let mut p = pos;
+    efx!(R_DecalShoot(texture, entity, model_index, p.as_mut_ptr(), flags));
+}
+
+pub fn alloc_dlight(key: i32) -> Option<&'static mut dlight_s> {
+    let p = efx!(CL_AllocDlight(key));
+    unsafe { p.as_mut() }
+}
+
+pub fn spark_effect(pos: Vec3, count: i32, vmin: i32, vmax: i32) {
+    efx!(R_SparkEffect(pos.as_ptr(), count, vmin, vmax));
+}
+
+pub fn set_screen_fade(f: &mut screenfade_s) {
+    cl_eng!(pfnSetScreenFade(f));
+}
+
+pub fn hook_event(name: &'static CStr, f: unsafe extern "C" fn(*mut event_args_s)) {
+    cl_eng!(pfnHookEvent(name.as_ptr(), Some(f)));
+}
+
+pub fn precache_event(name: &'static CStr) -> u16 {
+    cl_eng!(pfnPrecacheEvent(1, name.as_ptr()))
+}
+
+/// Client-side event playback (weapon prediction). `invoker` is null on the client.
+#[allow(clippy::too_many_arguments)]
+pub fn playback_event(flags: i32, index: u16, f1: f32, f2: f32, i1: i32, i2: i32, b1: bool, b2: i32) {
+    let mut zero = [0.0f32; 3];
+    let mut zero2 = [0.0f32; 3];
+    cl_eng!(pfnPlaybackEvent(flags, std::ptr::null(), index, 0.0, zero.as_mut_ptr(), zero2.as_mut_ptr(), f1, f2, i1, i2, b1 as c_int, b2));
+}
+
+pub fn entity(idx: i32) -> Option<&'static mut cl_entity_s> {
+    let p = cl_eng!(GetEntityByIndex(idx));
+    unsafe { p.as_mut() }
+}
+pub fn local_player() -> Option<&'static mut cl_entity_s> {
+    let p = cl_eng!(GetLocalPlayer());
+    unsafe { p.as_mut() }
+}
+pub fn view_model() -> Option<&'static mut cl_entity_s> {
+    let p = cl_eng!(GetViewModel());
+    unsafe { p.as_mut() }
+}
+pub fn max_clients() -> i32 {
+    cl_eng!(GetMaxClients())
+}
+pub fn client_time() -> f32 {
+    cl_eng!(GetClientTime())
+}
+pub fn random_float(lo: f32, hi: f32) -> f32 {
+    cl_eng!(pfnRandomFloat(lo, hi))
+}
+pub fn random_long(lo: i32, hi: i32) -> i32 {
+    cl_eng!(pfnRandomLong(lo, hi))
+}
+pub fn point_contents(p: Vec3) -> i32 {
+    cl_eng!(PM_PointContents(p.as_ptr(), std::ptr::null_mut()))
+}
+
+/// A registered client cvar. The engine owns the storage, so the pointer stays valid.
+#[derive(Clone, Copy)]
+pub struct Cvar(*mut cvar_s);
+unsafe impl Send for Cvar {}
+unsafe impl Sync for Cvar {}
+impl Cvar {
+    pub const NULL: Cvar = Cvar(std::ptr::null_mut());
+    /// Registers (or finds) a cvar. `name`/`value` must be `'static` (the engine keeps them).
+    pub fn register(name: &'static CStr, value: &'static CStr, flags: i32) -> Cvar {
+        let p = cl_eng!(pfnRegisterVariable(name.as_ptr(), value.as_ptr(), flags));
+        if p.is_null() { Cvar(cl_eng!(pfnGetCvarPointer(name.as_ptr()))) } else { Cvar(p) }
+    }
+    pub fn find(name: &CStr) -> Cvar {
+        Cvar(cl_eng!(pfnGetCvarPointer(name.as_ptr())))
+    }
+    pub fn value(self) -> f32 {
+        unsafe { self.0.as_ref().map_or(0.0, |c| c.value) }
+    }
+    pub fn is_null(self) -> bool {
+        self.0.is_null()
+    }
+}
+
+/// Loads a game file through the engine filesystem (searches the game dirs and paks).
+pub fn load_file(path: &str) -> Option<Vec<u8>> {
+    let s = to_cstring(path);
+    let mut len: c_int = 0;
+    let p = cl_eng!(COM_LoadFile(s.as_ptr(), 5, &mut len));
+    if p.is_null() {
+        return None;
+    }
+    let v = unsafe { std::slice::from_raw_parts(p.cast::<u8>(), len.max(0) as usize) }.to_vec();
+    cl_eng!(COM_FreeFile(p.cast()));
+    Some(v)
+}
+
+/// `maps/<name>.bsp` while a map is loaded, empty otherwise.
+pub fn level_name() -> String {
+    let p = cl_eng!(pfnGetLevelName());
+    unsafe { crate::util::cstr(p) }.to_string_lossy().into_owned()
+}
+
+pub fn spr_load(name: &str) -> HSPRITE {
+    let s = to_cstring(name);
+    cl_eng!(pfnSPR_Load(s.as_ptr()))
+}
+pub fn spr_frames(h: HSPRITE) -> i32 {
+    cl_eng!(pfnSPR_Frames(h))
+}
+pub fn sprite_model(h: HSPRITE) -> *const model_s {
+    cl_eng!(GetSpritePointer(h))
+}
+
+/// Projects a world point; `None` when it is behind the view (z-clipped).
+pub fn world_to_screen(p: Vec3) -> Option<[f32; 2]> {
+    let mut s = [0.0f32; 3];
+    let clipped = crate::tri!(WorldToScreen(p.as_ptr(), s.as_mut_ptr()));
+    if clipped != 0 { None } else { Some([s[0], s[1]]) }
+}
+
+pub fn server_cmd(cmd: &str) {
+    let s = to_cstring(cmd);
+    cl_eng!(pfnServerCmd(s.as_ptr() as *const c_char));
+}
+
+/// Small vector helpers on `[f32; 3]`.
+pub mod vec3 {
+    use super::Vec3;
+    pub const ZERO: Vec3 = [0.0; 3];
+    pub fn add(a: Vec3, b: Vec3) -> Vec3 {
+        [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+    }
+    pub fn sub(a: Vec3, b: Vec3) -> Vec3 {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+    pub fn scale(a: Vec3, s: f32) -> Vec3 {
+        [a[0] * s, a[1] * s, a[2] * s]
+    }
+    /// `a + b * s`
+    pub fn ma(a: Vec3, s: f32, b: Vec3) -> Vec3 {
+        [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s]
+    }
+    pub fn dot(a: Vec3, b: Vec3) -> f32 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+    pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
+        [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    }
+    pub fn len(a: Vec3) -> f32 {
+        dot(a, a).sqrt()
+    }
+    pub fn len2d(a: Vec3) -> f32 {
+        (a[0] * a[0] + a[1] * a[1]).sqrt()
+    }
+    pub fn dist(a: Vec3, b: Vec3) -> f32 {
+        len(sub(a, b))
+    }
+    pub fn normalize(a: Vec3) -> Vec3 {
+        let l = len(a);
+        if l > 0.0 { scale(a, 1.0 / l) } else { a }
+    }
+    /// Quake `AngleVectors` (pitch, yaw, roll in degrees) -> (forward, right, up).
+    pub fn angle_vectors(a: Vec3) -> (Vec3, Vec3, Vec3) {
+        let (sp, cp) = a[0].to_radians().sin_cos();
+        let (sy, cy) = a[1].to_radians().sin_cos();
+        let (sr, cr) = a[2].to_radians().sin_cos();
+        let f = [cp * cy, cp * sy, -sp];
+        let r = [-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp];
+        let u = [cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp];
+        (f, r, u)
+    }
+    /// Quake `VectorAngles` (pitch is positive up, as the engine returns it).
+    pub fn vector_angles(f: Vec3) -> Vec3 {
+        if f[0] == 0.0 && f[1] == 0.0 {
+            return [if f[2] > 0.0 { 90.0 } else { 270.0 }, 0.0, 0.0];
+        }
+        let mut yaw = f[1].atan2(f[0]).to_degrees();
+        if yaw < 0.0 {
+            yaw += 360.0;
+        }
+        let mut pitch = f[2].atan2(len2d(f)).to_degrees();
+        if pitch < 0.0 {
+            pitch += 360.0;
+        }
+        [pitch, yaw, 0.0]
+    }
+    /// Normalises an angle to (-180, 180].
+    pub fn norm_angle(mut a: f32) -> f32 {
+        a %= 360.0;
+        if a > 180.0 {
+            a -= 360.0;
+        } else if a <= -180.0 {
+            a += 360.0;
+        }
+        a
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn vectors() {
+            let (f, r, u) = angle_vectors([0.0, 90.0, 0.0]);
+            assert!(dist(f, [0.0, 1.0, 0.0]) < 1e-5);
+            assert!(dist(r, [1.0, 0.0, 0.0]) < 1e-5);
+            assert!(dist(u, [0.0, 0.0, 1.0]) < 1e-5);
+            let a = vector_angles([1.0, 1.0, 0.0]);
+            assert!((a[1] - 45.0).abs() < 1e-4);
+            assert_eq!(norm_angle(350.0), -10.0);
+            assert_eq!(cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), [0.0, 0.0, 1.0]);
+        }
+    }
+}
