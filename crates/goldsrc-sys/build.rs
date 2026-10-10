@@ -22,9 +22,9 @@ fn main() {
         .allowlist_var("(INTERFACE_VERSION|NEW_DLL_FUNCTIONS_VERSION|CLDLL_INTERFACE_VERSION)")
         .allowlist_var("(FL_|EF_|MOVETYPE_|SOLID_|DAMAGE_|DEAD_|IN_|MSG_|SVC_|CHAN_|ATTN_|PITCH_|kRender|ENTITY_|PM_|CONTENTS_).*")
         .allowlist_type("ALERT_TYPE")
-        // render package: event/efx/triangle APIs (only forward-declared by cdll_int.h)
-        .header_contents("render_ext.h", "#include \"r_efx.h\"\n#include \"event_api.h\"\n#include \"event_flags.h\"\n#include \"triangleapi.h\"\n#include \"screenfade.h\"\n#include \"studio_event.h\"\n#include \"shake.h\"\n")
-        .allowlist_type("(event_args_t|event_api_t|efx_api_t|triangleapi_t|TEMPENTITY|screenfade_t|dlight_t|pmtrace_t|physent_t|mstudioevent_t|TRICULLSTYLE)")
+        // render/HUD: event/efx/triangle/demo APIs (only forward-declared by cdll_int.h)
+        .header_contents("render_ext.h", "#include \"r_efx.h\"\n#include \"event_api.h\"\n#include \"event_flags.h\"\n#include \"triangleapi.h\"\n#include \"demo_api.h\"\n#include \"screenfade.h\"\n#include \"studio_event.h\"\n#include \"shake.h\"\n")
+        .allowlist_type("(event_args_t|event_api_t|efx_api_t|triangleapi_t|demo_api_t|TEMPENTITY|screenfade_t|dlight_t|pmtrace_t|physent_t|mstudioevent_t|TRICULLSTYLE)")
         .allowlist_var("(FTENT_|TRI_|FEV_|FFADE_|TENTPRIORITY_).*")
         // studio renderer: the engine studio API and the types it passes (the model data itself is
         // parsed from bytes by ts-client, so studio.h isn't needed)

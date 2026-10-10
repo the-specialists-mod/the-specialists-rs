@@ -7,7 +7,7 @@
 use crate::client::engine;
 use crate::sys::*;
 use crate::util::to_cstring;
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, c_int};
 
 pub type Vec3 = [f32; 3];
 
@@ -34,9 +34,10 @@ pub fn efx_api() -> &'static efx_api_s {
     // SAFETY: the engine sets its API tables before `Initialize` and keeps them for the process.
     unsafe { &*engine().f.pEfxAPI }
 }
+/// The engine's triangle API table, for `tri!`. Panics if the engine has none;
+/// [`ClEngine::tri_api`](crate::client::ClEngine::tri_api) is the null-checked accessor.
 pub fn tri_api() -> &'static triangleapi_s {
-    // SAFETY: the engine sets its API tables before `Initialize` and keeps them for the process.
-    unsafe { &*engine().f.pTriAPI }
+    engine().tri_api().expect("pTriAPI")
 }
 
 /// Calls a `pEventAPI` slot, panicking with its name if the engine left it null.
@@ -332,18 +333,6 @@ pub fn spr_frames(h: HSPRITE) -> i32 {
 }
 pub fn sprite_model(h: HSPRITE) -> *const model_s {
     cl_eng!(GetSpritePointer(h))
-}
-
-/// Projects a world point; `None` when it is behind the view (z-clipped).
-pub fn world_to_screen(p: Vec3) -> Option<[f32; 2]> {
-    let mut s = [0.0f32; 3];
-    let clipped = crate::tri!(WorldToScreen(p.as_ptr(), s.as_mut_ptr()));
-    if clipped != 0 { None } else { Some([s[0], s[1]]) }
-}
-
-pub fn server_cmd(cmd: &str) {
-    let s = to_cstring(cmd);
-    cl_eng!(pfnServerCmd(s.as_ptr() as *const c_char));
 }
 
 /// Small vector helpers on `[f32; 3]`.

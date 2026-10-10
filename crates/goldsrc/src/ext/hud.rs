@@ -9,16 +9,6 @@ use crate::sys::*;
 use crate::util::{cstr, to_cstring};
 use std::ffi::{CStr, c_int};
 
-/// SDK `demo_api_s` (common/demo_api.h). bindgen only sees it as opaque (`cdll_int.h`
-/// forward-declares it and the build doesn't include `demo_api.h`), so the HUD declares it.
-#[repr(C)]
-pub struct DemoApi {
-    pub is_recording: Option<unsafe extern "C" fn() -> c_int>,
-    pub is_playingback: Option<unsafe extern "C" fn() -> c_int>,
-    pub is_time_demo: Option<unsafe extern "C" fn() -> c_int>,
-    pub write_buffer: Option<unsafe extern "C" fn(c_int, *mut u8)>,
-}
-
 /// `PM_STUDIO_BOX` trace flag for `EV_PlayerTrace` (SDK pm_defs.h: 0 normal, 1 studio ignore,
 /// 2 studio box).
 pub const PM_STUDIO_BOX: c_int = 2;
@@ -138,9 +128,13 @@ impl ClEngine {
         cl_eng!(pfnFillRGBA(x, y, w, h, rgb[0], rgb[1], rgb[2], a));
     }
 
+    /// `pfnServerCmd`: the single wrapper for it. Every engine fills the slot; if it is null the
+    /// command is dropped rather than panicking, since callers are fire-and-forget.
     pub fn server_cmd(&self, cmd: &str) {
+        let Some(f) = self.f.pfnServerCmd else { return };
         let s = to_cstring(cmd);
-        cl_eng!(pfnServerCmd(s.as_ptr()));
+        // SAFETY: engine callback from the client function table, called with a NUL-terminated string that outlives the call.
+        unsafe { f(s.as_ptr()) };
     }
     pub fn client_cmd(&self, cmd: &str) {
         let s = to_cstring(cmd);
@@ -251,18 +245,20 @@ impl ClEngine {
         // SAFETY: the engine sets `pEventAPI` (or leaves it null) before `Initialize` and keeps the table for the process.
         unsafe { self.f.pEventAPI.as_ref() }
     }
-    pub fn demo_api(&self) -> Option<&'static DemoApi> {
-        let p = self.f.pDemoAPI as *const DemoApi;
-        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
-        if p.is_null() { None } else { Some(unsafe { &*p }) }
+    /// The demo API (`IsPlayingback` etc.), if the engine provides one.
+    pub fn demo_api(&self) -> Option<&'static demo_api_s> {
+        // SAFETY: the engine sets `pDemoAPI` (or leaves it null) before `Initialize` and keeps the table for the process.
+        unsafe { self.f.pDemoAPI.as_ref() }
     }
+    /// `IsPlayingback`; false if the table or slot is null.
     pub fn demo_playing(&self) -> bool {
-        // SAFETY: engine callback from the API table above, called with valid arguments.
-        self.demo_api().and_then(|d| d.is_playingback).is_some_and(|f| unsafe { f() } != 0)
+        // SAFETY: engine callback from the demo API table, no arguments.
+        self.demo_api().and_then(|d| d.IsPlayingback).is_some_and(|f| unsafe { f() } != 0)
     }
+    /// `IsRecording`; false if the table or slot is null.
     pub fn demo_recording(&self) -> bool {
-        // SAFETY: engine callback from the API table above, called with valid arguments.
-        self.demo_api().and_then(|d| d.is_recording).is_some_and(|f| unsafe { f() } != 0)
+        // SAFETY: engine callback from the demo API table, no arguments.
+        self.demo_api().and_then(|d| d.IsRecording).is_some_and(|f| unsafe { f() } != 0)
     }
 
     /// `EV_PlayerTrace` from `start` to `end` against the world and the other players (studio
@@ -285,41 +281,33 @@ impl ClEngine {
     }
 }
 
-/// Prefix of the SDK `triangleapi_s` up to `WorldToScreen` (common/triangleapi.h).
-#[repr(C)]
-struct TriApiPrefix {
-    version: c_int,
-    render_mode: *const std::ffi::c_void,
-    begin: *const std::ffi::c_void,
-    end: *const std::ffi::c_void,
-    color4f: *const std::ffi::c_void,
-    color4ub: *const std::ffi::c_void,
-    tex_coord2f: *const std::ffi::c_void,
-    vertex3fv: *const std::ffi::c_void,
-    vertex3f: *const std::ffi::c_void,
-    brightness: *const std::ffi::c_void,
-    cull_face: *const std::ffi::c_void,
-    sprite_texture: *const std::ffi::c_void,
-    world_to_screen: Option<unsafe extern "C" fn(*const f32, *mut f32) -> c_int>,
-}
-
 impl ClEngine {
+    /// The triangle API (`WorldToScreen` etc.), if the engine provides one. Only slots of the
+    /// 2007 SDK `triangleapi_s` are called; that table is a prefix of the FWGS one bindgen
+    /// generates.
+    pub fn tri_api(&self) -> Option<&'static triangleapi_s> {
+        // SAFETY: the engine sets `pTriAPI` (or leaves it null) before `Initialize` and keeps the table for the process.
+        unsafe { self.f.pTriAPI.as_ref() }
+    }
+
+    /// Triangle API `WorldToScreen`: the single wrapper for it. Returns the normalised device
+    /// coordinates (-1..1, y up) of a world point, or `None` when it is z-clipped (behind the
+    /// view) or the engine left the table or slot null. Not bounds-checked: the laser dots
+    /// (`DrawLaserDots`) are converted to pixels without a screen check.
+    pub fn world_to_screen_ndc(&self, world: [f32; 3]) -> Option<[f32; 2]> {
+        let f = self.tri_api()?.WorldToScreen?;
+        let mut out = [0.0f32; 3];
+        // SAFETY: engine callback from the triangle API table, called with a 3-float input and a 3-float output buffer.
+        let clipped = unsafe { f(world.as_ptr(), out.as_mut_ptr()) };
+        (clipped == 0).then_some([out[0], out[1]])
+    }
+
     /// TS `WorldToScreen` (100579c0): screen pixel position of a world point, or `None` when it
     /// is behind the view or off screen.
     pub fn world_to_screen(&self, world: [f32; 3], screen: &Screen) -> Option<(i32, i32)> {
-        let api = self.f.pTriAPI as *const TriApiPrefix;
-        if api.is_null() {
-            return None;
-        }
-        // SAFETY: `pTriAPI` is the engine's triangle API table (non-null, checked above); `TriApiPrefix` mirrors its leading fields.
-        let f = unsafe { (*api).world_to_screen }?;
-        let mut out = [0.0f32; 3];
-        // SAFETY: engine callback from the API table above, called with valid arguments.
-        if unsafe { f(world.as_ptr(), out.as_mut_ptr()) } != 0 {
-            return None;
-        }
-        let x = ((1.0 + out[0]) * screen.width as f32 * 0.5) as i32;
-        let y = ((1.0 - out[1]) * screen.height as f32 * 0.5) as i32;
+        let [nx, ny] = self.world_to_screen_ndc(world)?;
+        let x = ((1.0 + nx) * screen.width as f32 * 0.5) as i32;
+        let y = ((1.0 - ny) * screen.height as f32 * 0.5) as i32;
         (0..screen.width).contains(&x).then_some(())?;
         (0..screen.height).contains(&y).then_some((x, y))
     }

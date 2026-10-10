@@ -339,7 +339,7 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 | `active_items[65]` | HUD `ActItems` handler (index = entity number) | `effects::laser::draw_others`, HUD |
 | `laser_color[65]` | HUD `PlInfo` handler (key 0, index = entity number) | lasers, HUD `DrawLaserDots` |
 | `spectator[32]` | HUD `Spectator` handler | `effects::add_entity` |
-| `laser_dots[2]` | `effects::laser::draw_local` (`WorldToScreen` −1..1) | HUD `DrawLaserDots` |
+| `laser_dots[2]` | `effects::laser::draw_local` (`ClEngine::world_to_screen_ndc`, −1..1) | HUD `DrawLaserDots` |
 | `laser_range` | `effects::laser::draw_local` (first hit distance ×0.025) | HUD `DrawCrosshair` |
 | `items_ready` | prediction (`from` active items, 0 while `m_flNextAttack > 0`) | HUD `DrawLaserDots` |
 | `third_person` | `view` | HUD |

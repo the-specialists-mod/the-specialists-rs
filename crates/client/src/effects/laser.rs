@@ -132,7 +132,7 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
             let start = v::ma(cull, side, cam.right);
             let tr = trace_world(start, v::ma(start, 8192.0, d), local - 1);
             let hit = tr.endpos;
-            let dot = r::world_to_screen(v::ma(hit, -2.0, cam.forward));
+            let dot = goldsrc::client::engine().world_to_screen_ndc(v::ma(hit, -2.0, cam.forward));
             state::with(|st| {
                 st.laser_dots[i] = dot;
                 if i == 0 {
