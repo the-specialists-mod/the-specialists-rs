@@ -197,8 +197,10 @@ How the SDK patterns map to Rust:
   `max(fuser1, 0.01)`.
 * **`UTIL_ScreenFade`.** Always sent as `TSFade` (`short dur, short hold, short flags, byte r,g,b,a`)
   with durations divided by the time scale. The stock `ScreenFade` message is never sent.
-* **`EMIT_SOUND_DYN`.** It has an extra factor `s`: pitch becomes `(s*fuser1 + 1 - s) * pitch`.
-  This is used for break sounds (s = 0.9), damage, spark and gib sounds (0.5).
+* **`EMIT_SOUND_DYN`.** It has an extra factor `s`: pitch becomes `(s*fuser1 + 1 - s) * pitch`,
+  truncated (0xe0b1e; `explode::slow_pitch`, unit tested). This is used for break sounds
+  (s = 0.9), damage, spark, gib and stunt sounds (0.5). Every port caller goes through
+  `explode::emit_sound_slow`, which also resolves `!NAME` sentences.
 * **`TSExplosion`** (0x7d01c) is in `explode::ts_explosion`:
   * A screen shake with amplitude dmg, frequency 80, duration 1, radius 2·rMax.
   * `TSFrags` to everyone: origin, `coord (int)dmg`, `0`, `0`, `byte 1`.

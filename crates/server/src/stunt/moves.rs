@@ -598,7 +598,7 @@ pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
         p.stunt.fall_velocity = fallvel - 680.0;
         let dmg = (fallvel - 680.0) * 100.0 * 0.002_252_252_3;
         if pev.health < dmg {
-            emit_sound_dyn(cx.edict, CHAN_VOICE as i32, c"common/bodysplat.wav", 1.0, ATTN_NORM, 100, 0.5);
+            emit_sound_slow(cx.edict, CHAN_VOICE, c"common/bodysplat.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
         }
         if dmg > 0.0 {
             let world = engine().entity_of_index(0);

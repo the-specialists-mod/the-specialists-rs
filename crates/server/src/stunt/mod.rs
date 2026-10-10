@@ -16,6 +16,7 @@ pub mod anim;
 mod moves;
 
 use crate::commands::Args;
+use crate::entities::stock::explode::emit_sound_slow;
 use crate::messages::{self, Msg};
 use crate::player::Player;
 use crate::world::Cx;
@@ -126,7 +127,6 @@ impl Default for StuntState {
 // ---- small helpers shared by the submodules ------------------------------------------------------
 
 pub(crate) const IN_ALT1: i32 = shared::ts::IN_ALT1 as i32;
-const CHAN_BODY_: i32 = CHAN_BODY as i32;
 const ATTN_NORM: f32 = 0.8;
 
 /// `GiveSlowMul`: the player's time scale, at least 0.01.
@@ -150,20 +150,10 @@ fn is_alive(cx: &mut Cx) -> bool {
     Player::is_alive(cx)
 }
 
-/// TS `EMIT_SOUND_DYN` (0xe0a8c): the pitch follows the emitter's time scale,
-/// `pitch * (k * fuser1 + 1 - k)`.
-pub fn emit_sound_dyn(e: *mut edict_t, channel: i32, sample: &CStr, volume: f32, attn: f32, pitch: i32, k: f32) {
-    let ts = e.v().fuser1;
-    let rest = 1.0 - k;
-    let k = if ts != 0.0 { k * ts } else { k };
-    let pitch = ((k + rest) * pitch as f32).round_ties_even() as i32;
-    engine().emit_sound(e, channel, sample, volume, attn, 0, pitch);
-}
-
-/// The stunt sounds: body channel, pitch 95..126, half time-scaled.
+/// The stunt sounds: body channel, pitch 95..126, half time-scaled (TS `EMIT_SOUND_DYN`).
 fn stunt_sound(cx: &mut Cx, sample: &CStr) {
     let pitch = engine().random_long(0, 31) + 95;
-    emit_sound_dyn(cx.edict, CHAN_BODY_, sample, 1.0, ATTN_NORM, pitch, 0.5);
+    emit_sound_slow(cx.edict, CHAN_BODY, sample, 1.0, ATTN_NORM, 0, pitch, 0.5);
 }
 
 /// `gmsgTSNextStunt`: the cooldown in tenths of a second.
