@@ -251,8 +251,8 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   package plays view animations from events.
 * The briefcase/flag (rules).
 * Breakable explosions (`entities::stock::explode::ts_explosion`, the same `TSExplosion` in TS)
-  don't create the spectacular slow-motion point or knock `WorldGun`s around; only the
-  weapons' `projectiles::explode` does (#33).
+  don't knock `WorldGun`s around; only the weapons' `projectiles::explode` does. Both create
+  the spectacular slow-motion point (`rules::scoring::do_spectacularness`).
 * `DropArmor` 0x93a3c armour packs (`CTSAmmoPack` with `armorvalue`) aren't ported. They're dead
   in TS: nothing calls `DropArmor`, so ammo packs never carry armour there either.
 * Shrapnel (`CTSShrapnel`) and the flag (`CTSFlag`), the other `CTSPhysicObject`s, aren't

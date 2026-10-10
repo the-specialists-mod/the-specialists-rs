@@ -418,9 +418,9 @@ covers:
      `0x2000000` (shotgun) / `0x4000000` (kung fu).
    * The SDK `DamageDecal` for glass (`{bproof`-style decals 0x19–0x1b, 0x23 for unbreakable glass)
      is for the weapons package to apply when it hits a `func_breakable`.
-8. **Explosions.** `stock::explode::ts_explosion` is TS's `TSExplosion`. The grenade code (weapons
-   package) should call it as well and add the two pieces that belong to other packages: knocking
-   `WorldGun` entities around, and the "spectacular" slow-motion point.
+8. **Explosions.** `stock::explode::ts_explosion` is TS's `TSExplosion`, ending with the
+   "spectacular" slow-motion point (`rules::scoring::do_spectacularness`, 0x7d969/0x7d9b0). It
+   doesn't knock `WorldGun` entities around; the grenade's `weapons::projectiles::explode` does.
 9. **`entities::fire_targets`** skips `FL_KILLME` entities, as the SDK `FireTargets` does (done).
 10. **`pfnResetGlobalState`.** Calls `stock::base::reset_global_state()` (done at integration).
 11. **Client hooks** (HUD package): `TSFrags` (glass debris and explosions), `TSFade`, `ItemPickup`,

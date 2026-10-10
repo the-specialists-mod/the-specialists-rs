@@ -124,10 +124,9 @@ fn deal(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut edict_t, d
 /// TS `TSExplosion(origin, inflictor, attacker, dmg, bits, rFull, rMax)` (0x7d01c): screen shake,
 /// a `TSFrags` explosion effect to everyone, a white flash for players caught in it, and damage
 /// with full strength inside `r_full`, linear falloff to `r_max`, and penetration through thin
-/// walls (damage minus wall thickness).
+/// walls (damage minus wall thickness), then the "spectacular" slow-motion point at the blast.
 ///
-/// Not ported here (other packages): knocking `WorldGun` entities around, and the
-/// "spectacular" slow-motion point at the end.
+/// Not ported here: knocking `WorldGun` entities around (`weapons::projectiles::explode` does).
 pub fn ts_explosion(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t, dmg: f32, bits: i32, r_full: f32, r_max: f32) {
     let eng = engine();
     let mut org = origin;
@@ -175,6 +174,10 @@ pub fn ts_explosion(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_
                 }
             }
         }
+    }
+    // 0x7d969/0x7d9b0: `DoSpectacularNess()`, then `CreateSlowMotionPoint(origin + 1z, 0.25, 1.0, 0)`.
+    if crate::rules::scoring::do_spectacularness() {
+        crate::entities::ts::create_slow_motion_point(org, 0.25, 1.0, false);
     }
 }
 
