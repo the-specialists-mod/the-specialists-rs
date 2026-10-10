@@ -93,7 +93,7 @@ How the SDK patterns map to Rust:
 | `trigger_hurt` | SDK 2.3 | Negative damage heals with TS `TakeHealth`, with no dead-player check (2.3). The per-player bitmask in `impulse` is kept. With `DMG_RADIATION` in `damagetype`, **TS** `RadiationThink` (0xe703c) lowers the geiger range of the player who can see the trigger's centre, every 0.25 s; `update_geiger_counter` (`UpdateGeigerCounter` 0xda1f0, from the player's PreThink) sends `Geiger` (range / 4) to suited players when it changes. |
 | `trigger_auto`, `trigger_relay`, `trigger_changetarget` | SDK | |
 | `trigger_camera` | SDK | `SET_VIEW`, `FL_FROZEN` for TAKECONTROL, `path_corner` moves. |
-| `multi_manager` | SDK | Includes thread clones. Fixes the keyvalue order (see §6). |
+| `multi_manager` | SDK | Includes thread clones. |
 | `func_ladder`, `func_friction` | SDK | |
 | `info_target`, `info_teleport_destination`, `info_intermission`, `info_landmark`, `info_null` | SDK | `info_null` removes itself. |
 | `env_global`, `env_message` | SDK | Global states persist across maps, like `gGlobalState`. |
@@ -379,13 +379,17 @@ covers:
 
 ## 6. Integration notes (changes needed outside this package)
 
-1. **Keyvalue order.** The SDK's `DispatchKeyValue` parses entvars fields before the class
-   `KeyValue`. `server-dll`'s `key_value` callback does it the other way round.
-   * `multi_manager` works around this itself: it treats any unknown key as a target name, so it
-     calls `entvars_key_value` first.
-   * Other classes don't care.
-   * Changing that callback to entvars-first would match the SDK (decomp doc gamerules-entities.md §8
-     says the same).
+1. **Keyvalue order (done, #39).** `server-dll`'s `key_value` calls
+   `entities::dispatch_key_value`, which follows TS `DispatchKeyValue` (0xaad4c, the SDK's):
+   * `entvars_key_value` (`EntvarsKeyvalue` 0xef9f0) runs first, over the full 86-field
+     `gEntvarsDescription` table, matched case-insensitively. Its SDK type quirks are kept: `flags`,
+     `fixangle`, `deadflag` and `light_level` are `FIELD_FLOAT` over `int` members (they store the
+     float's bits), and the edict fields (`owner`, `enemy`, ...) log "Bad field in entity!!" but
+     still count as handled.
+   * The class's `key_value` only sees the remaining keys, and only when the engine passed a
+     `szClassName`. So `multi_manager` and `game_player_equip` treat every other key as a
+     target/item without filtering, and the class `skin` branches (`func_door`,
+     `func_illusionary`) and `func_pushable`'s `size` presets are gone: they are dead in TS too.
 2. **`Activate`.** `ServerActivate` should call an `Entity::activate` hook on every entity, as
    `CBaseEntity::Activate` does in the SDK. Until then, three classes emulate it:
    * `func_train` runs `Activate` from a think 0.1 s after spawning.

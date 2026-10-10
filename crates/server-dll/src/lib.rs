@@ -162,18 +162,17 @@ unsafe extern "C" fn blocked(e: *mut edict_t, other: *mut edict_t) {
     world::dispatch(e, |ent, cx| ent.blocked(cx, other));
 }
 
-/// The class handler runs first; unhandled keys fall back to the generic entvars parser. The
-/// engine doesn't parse any keyvalues itself and requires `classname` to be handled.
+/// `DispatchKeyValue` (0xaad4c): entvars fields first, then the class (`entities::dispatch_key_value`).
+/// The engine doesn't parse any keyvalues itself and requires `classname` to be handled.
 unsafe extern "C" fn key_value(e: *mut edict_t, kvd: *mut KeyValueData) {
-    // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
+    if e.is_null() || kvd.is_null() {
+        return;
+    }
+    // SAFETY: non-null, and the engine keeps the KeyValueData valid for the duration of this call.
     let kvd = unsafe { &mut *kvd };
     // SAFETY: the engine passes null or a NUL-terminated string valid for this call.
     let (key, value) = unsafe { (cstr(kvd.szKeyName), cstr(kvd.szValue)) };
-    if world::dispatch(e, |ent, cx| ent.key_value(cx, key, value)) == Some(true) {
-        kvd.fHandled = 1;
-        return;
-    }
-    kvd.fHandled = entities::entvars_key_value(e.v(), key, value) as c_int;
+    kvd.fHandled = entities::dispatch_key_value(e, !kvd.szClassName.is_null(), key, value) as c_int;
 }
 
 // Multiplayer only: save/restore are stubs.

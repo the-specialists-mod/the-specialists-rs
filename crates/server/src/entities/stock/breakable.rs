@@ -563,24 +563,11 @@ const PUSH_SOUNDS: [&CStr; 3] = [c"debris/pushbox1.wav", c"debris/pushbox2.wav",
 
 impl<const PUSH: bool> Entity for Breakable<PUSH> {
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        if PUSH {
-            match key.to_bytes() {
-                b"size" => {
-                    let (lo, hi) = match kv_i(value) {
-                        0 => ([-8.0; 3], [8.0; 3]),
-                        2 => (vec::scale(shared::VEC_DUCK_HULL_MIN, 2.0), vec::scale(shared::VEC_DUCK_HULL_MAX, 2.0)),
-                        3 => (shared::VEC_DUCK_HULL_MIN, shared::VEC_DUCK_HULL_MAX),
-                        _ => (shared::VEC_HULL_MIN, shared::VEC_HULL_MAX),
-                    };
-                    engine().set_size(cx.edict, lo, hi);
-                    return true;
-                }
-                b"buoyancy" => {
-                    self.push.buoyancy = kv_f(value);
-                    return true;
-                }
-                _ => {}
-            }
+        // `CPushable::KeyValue` (0xc18f4) also has a `size` branch (hull presets), but `size` is an
+        // entvars field that `DispatchKeyValue` parses first, so it never runs; the model sets the size.
+        if PUSH && key == c"buoyancy" {
+            self.push.buoyancy = kv_f(value);
+            return true;
         }
         match key.to_bytes() {
             b"explosion" => self.explosion_directed = kv_str(value).eq_ignore_ascii_case("directed"),
