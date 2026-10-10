@@ -15,7 +15,7 @@ use crate::world::{Cx, DamageInfo};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use shared::protocol::hud_wire::{PTakeDam, TsFade, fade};
+use shared::protocol::hud_wire::{PTakeDam, TsFade, director, fade};
 use shared::weapons::tables;
 
 /// TS: shotgun pellets (headshot ×1.5 instead of ×2, `PTakeDam` amount ×8).
@@ -134,7 +134,7 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     }
 
     // CBasePlayer::TakeDamage
-    if !Player::is_alive(cx) || amount == 0.0 || cx.pev().takedamage == 0.0 {
+    if !Player::is_alive(cx) || amount == 0.0 {
         return false;
     }
     if attacker_is_teammate && !friendly_fire {
@@ -143,6 +143,16 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     p.ts.last_damage = amount.round() as i32;
     amount *= kevlar_scale(cx.pev().armorvalue, p.ts.last_hitgroup, dmg.bits);
     let amount = amount.round();
+    // TS tells the HLTV director after CBaseMonster::TakeDamage, even when that refused the
+    // damage (`takedamage` off); a kill's DeathNotice event therefore goes out first.
+    let tell_director = |e: *mut edict_t, inflictor: *mut edict_t| {
+        let eng = engine();
+        rules::msg::director_event(eng.index_of(e), eng.index_of(inflictor), director::FLAGS_DAMAGE);
+    };
+    if cx.pev().takedamage == 0.0 {
+        tell_director(e, dmg.inflictor);
+        return false;
+    }
 
     // CBaseMonster::TakeDamage: knockback, health, death.
     {
@@ -167,6 +177,7 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     if cx.pev().health <= 0.0 {
         rules::on_killed(p, cx, dmg);
     }
+    tell_director(e, dmg.inflictor);
     true
 }
 

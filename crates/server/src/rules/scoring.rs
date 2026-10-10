@@ -12,7 +12,7 @@ use crate::world::{Cx, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use shared::protocol::hud_wire::PwUp;
+use shared::protocol::hud_wire::{PwUp, director};
 use shared::protocol::rules::DeathMsg;
 use shared::ts::{powerup as pw, stunt};
 use shared::weapons::{WeaponKind, tables};
@@ -160,7 +160,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
     }
 
     let weapon = weapon_name(d);
-    death_notice(attacker, victim, &weapon);
+    death_notice(attacker, d.inflictor, victim, &weapon);
     log_kill(
         attacker,
         victim,
@@ -398,12 +398,15 @@ fn points_for_frag(
     points
 }
 
-/// `DeathNotice`: `DeathMsg` to all. (The HLTV `MSG_SPEC` director event is not sent.)
-fn death_notice(attacker: *mut edict_t, victim: *mut edict_t, weapon: &str) {
+/// `CHalfLifeMultiplay::DeathNotice` (0x88f7c): `DeathMsg` to all, then the HLTV director event
+/// (victim, then the inflictor or else the killer, priority 0x27).
+fn death_notice(attacker: *mut edict_t, inflictor: *mut edict_t, victim: *mut edict_t, weapon: &str) {
     let eng = engine();
     let killer = if !attacker.is_null() && attacker.v().flags & FL_CLIENT as i32 != 0 { eng.index_of(attacker) } else { 0 };
     let m = DeathMsg { killer: killer as u8, victim: eng.index_of(victim) as u8, weapon: weapon.to_owned() };
     msg::all(Msg::DeathMsg, |w| m.write(w));
+    let secondary = if inflictor.is_null() { attacker } else { inflictor };
+    msg::director_event(eng.index_of(victim), eng.index_of(secondary), director::FLAGS_DEATH);
 }
 
 #[allow(clippy::too_many_arguments)]

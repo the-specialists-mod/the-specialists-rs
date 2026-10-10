@@ -44,6 +44,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `ScorePanel` 1005ce70/1005db70 | `menus::scoreboard` |
 | `CTeamMenuPanel` 100655d0 (VGUIMenu 2) | `menus::draw_team_menu`, `team_menu_key` |
 | `CMessageWindowPanel` (MOTD, VGUIMenu 5) | `menus::draw_motd` |
+| `CHudSpectator` 10022c70 (Init), 10022fe0 (VidInit), `DirectorMessage` 10023380, `SetModes` 100234d0, `specmode` 10022c10, map camera 10022da0 | `spectator::{init, vid_init, director_event, set_modes}`; `HUD_DirectorEvent` 1001ab60 and `HUD_DirectorMessage` exports |
 
 ## 2. Message table
 
@@ -100,7 +101,7 @@ Cvars, names/defaults/flags as TS registers them (§2.1):
 
 Commands: `+/-moveup movedown left right forward back moveleft moveright lookup lookdown speed
 attack attack2 use jump klook jlook duck reload alt1 alt2 score showscores graph break`, `impulse`,
-`slot1..slot10`, `invnext`, `invprev`, `buy`, `cancelselect`, `special`, and `ts_hud_selftest`
+`slot1..slot10`, `invnext`, `invprev`, `buy`, `cancelselect`, `special`, `specmode` (HLTV only), and `ts_hud_selftest`
 (port-only development aid). Server-side commands (`lastinv`, `drop`, `firemode`, `useitems`,
 `jointeam`, `changeteam`) are forwarded to the server by the engine, as in TS.
 
@@ -187,13 +188,22 @@ state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
 * Golden Colts are never restricted (server rule) where the client's own remap would treat them as
   pistols.
 * `ts_hud_selftest [dead]` is port-only.
+* Director messages: TS exports only the old `HUD_DirectorEvent(command, primary, secondary,
+  flags)`, which current engines (FWGS, Steam GoldSrc) never call. The port also handles
+  `HUD_DirectorMessage`: `DRC_CMD_START` (1) becomes TS's `DRC_ACTIVE` reset and `DRC_CMD_EVENT`
+  (2, the same `short, short, long` layout) TS's `DRC_CAMERA`; other commands are ignored, as TS
+  ignores everything but those two.
 
 ## 8. Missing / not done
 
 * Laser dots (`DrawLaserDots` 1004e6f0) — needs the effects package's laser traces; `state`
   exports `active_items`/`laser_color` for it.
-* Spectator HUD/overview (`CHudSpectator`), voice status icons/banning UI, server browser, command
-  menu, TFC panels (dropped as allowed by §7).
+* `CHudSpectator`'s overview map and player name tags (`DrawOverview` `10024970`,
+  `ParseOverviewFile` `10023720`, `Draw` `10023080`): TS draws them only for HLTV spectators
+  (`IsSpectateOnly`). The rest of the element is in `client/src/spectator.rs`: director events,
+  `specmode`, `SetModes` (crosshair, `#Spec_Mode%d`), the director-reset map camera. The VGUI
+  spectator panel (`#Spec_TSHelp%d`) is not ported either.
+* Voice status icons/banning UI, server browser, command menu, TFC panels (dropped as allowed by §7).
 * `HUD_UpdateClientData` writes the eased FOV (`view::update_client_data`, wired at integration).
 * Death-cam / `cl_thirdpersonswitch` / observer third-person changes are only *requested*
   (`state.thirdperson_*`); the view package owns `cam_thirdperson`.

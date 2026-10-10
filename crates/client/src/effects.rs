@@ -396,7 +396,8 @@ pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
     if kind == 1 {
         let idx = e.index;
         let spectator = (1..=32).contains(&idx) && state::with(|s| s.spectator[(idx - 1) as usize]);
-        let in_eye_target = state::with(|s| s.spec_mode == 4 && s.spec_target == idx);
+        // TS hides the in-eye target with mode 5 (`g_iUser1 == 5`), its numbering for in-eye.
+        let in_eye_target = state::with(|s| s.spec_mode == shared::ts::obs::IN_EYE && s.spec_target == idx);
         let d = v::dist(e.origin, cam.origin);
         let hemisphere = d < 256.0 || v::dot(v::sub(e.origin, cam.origin), cam.forward) >= 0.0;
         let visible = hemisphere && !spectator && !in_eye_target && occlusion_visible(e, &cam);

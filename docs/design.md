@@ -180,6 +180,7 @@ still load.
 | `events` | `fire.sc`, `empty.sc`, … handlers: sounds, muzzle flash, shells, impacts, decals | rendering |
 | `prediction` | `HUD_PostRunCmd` weapon prediction, Txfer callbacks carrying `iuser4`/`fuser1`/`vuser*` | rendering |
 | `effects` | temp entities, TS particle system, BSP-lump map emitters, laser sights | rendering |
+| `spectator` | `CHudSpectator` (HLTV director events, `specmode`) and the spectator view: in-eye camera and gun, `cl_vsmoothing` | rendering |
 | `state` | values both sides read: time scale, health, dead, weapon, fov | shared |
 
 `HUD_GetStudioModelInterface` returns 0 (engine renderer) until the TS split-bone renderer is
@@ -187,10 +188,10 @@ ported.
 
 ## 7. Shared crate
 
-* `pm`: TS player movement, an exact port of the server's `pm_shared` with the TS changes (decomp `server/player-movement.md` §1). The client's copy in `client.dll` is identical, so one implementation serves both sides.
+* `pm`: TS player movement, an exact port of the server's `pm_shared` with the TS changes (decomp `server/player-movement.md` §1). The client's copy in `client.dll` is identical apart from `PM_SpectatorMove` (HLTV camera additions, see `docs/implementation/client-rendering.md`), so one implementation serves both sides.
 * `weapons`: `tables()` parses the embedded TOML once. The predicted gun state machine (fire modes, timers × `fuser1`, spread penalty, seeded pellets) goes here.
 * `protocol`: the message table and per-area payload encoders and decoders.
-* `ts`: stunt bits, power-up bits, `IN_ALT1`, the slot/speed formula.
+* `ts`: stunt bits, power-up bits, observer modes (TS numbering: in-eye is 5), `IN_ALT1`, the slot/speed formula.
 
 ## 8. Build targets and binary compatibility
 

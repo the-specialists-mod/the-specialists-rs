@@ -101,7 +101,7 @@ pub fn txfer_prediction_data(
     pcd.maxspeed = ppcd.maxspeed;
     pcd.deadflag = ppcd.deadflag;
     // Spectator: keep the server's values for spectate-only clients (SDK behaviour).
-    if goldsrc::cl_eng!(IsSpectateOnly()) != 0 {
+    if goldsrc::ext::spectator::is_spectate_only() {
         state::with(|s| {
             pcd.iuser1 = s.spec_mode;
             pcd.iuser2 = s.spec_target;

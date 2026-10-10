@@ -436,31 +436,9 @@ fn calc_intermission(p: &mut ref_params_t) {
     with(|w| finish(w, p));
 }
 
-/// Spectator modes (`V_CalcSpectatorRefdef` `0x10068f70`, simplified): in-eye copies the
-/// target's view; chase modes put the camera behind it; free look uses the engine's origin.
+/// `V_CalcSpectatorRefdef` (`0x10068f70`): see `crate::spectator::calc_refdef`.
 fn calc_spectator(p: &mut ref_params_t) {
-    let (mode, target) = state::with(|s| (s.spec_mode, s.spec_target));
-    p.vieworg = v::add(p.simorg, p.viewheight);
-    p.viewangles = p.cl_viewangles;
-    if let Some(t) = (target > 0).then(|| r::entity(target)).flatten() {
-        match mode {
-            4 | 5 => {
-                p.vieworg = v::add(t.origin, shared::VEC_VIEW);
-                p.viewangles = [t.angles[0] * -3.0, t.angles[1], 0.0];
-            }
-            1..=3 => {
-                let focus = v::add(t.origin, [0.0, 0.0, 28.0]);
-                let (f, _, _) = v::angle_vectors(p.cl_viewangles);
-                let want = v::ma(focus, -128.0, f);
-                let tr = r::player_trace(focus, want, 2, (PM_STUDIO_IGNORE | PM_WORLD_ONLY) as i32, -1);
-                p.vieworg = v::ma(tr.endpos, 4.0, tr.plane.normal);
-            }
-            _ => {}
-        }
-    }
-    if let Some(vm) = r::view_model() {
-        vm.model = std::ptr::null_mut();
-    }
+    crate::spectator::calc_refdef(p);
     with(|w| {
         w.eye = p.vieworg;
         finish(w, p)

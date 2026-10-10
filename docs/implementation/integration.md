@@ -62,14 +62,14 @@ switched off in 3.0, or an SDK constant kept for completeness:
 | Stunt helpers | `in_airborne_stunt` (damage uses the `STUNTING` mask), `block_player`, `bullet_dance` with `enable_`/`disable_bullet_dance` (corpse "bullet dance" when shot: not wired) |
 | Entity helpers | `entities::use_targets`, `stock::base::{precache_model, precache_sound}`, `is_locked_by_master`, `clear_master`, `reset_player_room`, the `SF_*`/`FCAP_*`/`FFADE_*` constants |
 | Messages | `messages::{pas, one_unreliable}` |
-| SDK constants | unused `DMG_*` bits and hitgroups in `damage.rs`, `OBS_IN_EYE`, `NearestPath` |
+| SDK constants | unused `DMG_*` bits and hitgroups in `damage.rs`, `NearestPath` |
 | Client | unused HUD cvar fields (`drawhistory_time`, `classautokill`, …), `hud::text::lookup`, `DIGITS_4`, `weapon_menu_consumed_attack`, `is_fwgs`, `effects::bytes`, the motion-blur field |
 
 ## 5. Known gaps after integration
 
 * No motion-blur ghosts or TS split-bone studio renderer (`HUD_GetStudioModelInterface` returns 0).
 * The corpse "bullet dance" isn't wired, and the death animation wait is a fixed 1.2 s.
-* No map votes, and no HLTV director messages.
+* No map votes.
 * The view climbs steeply under sustained fire. Each shot's kick is applied once, so this is
   probably TS's persistent recoil, but it hasn't been compared against TS.
 * Not tested with real keyboard and mouse, or on a Steam GoldSrc client (only FWGS clients). See

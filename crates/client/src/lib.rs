@@ -5,7 +5,8 @@
 //!
 //! Modules (docs/design.md §6):
 //! `input`, `hud`, `menus` (HUD/UI work package) and `view`, `events`, `prediction`, `effects`
-//! (rendering/prediction work package). `state` holds what both sides read.
+//! (rendering/prediction work package), `spectator` (observer camera, HLTV director). `state` holds
+//! what both sides read.
 
 // Subsystems expose API for TS features that are dead in 3.0 (round and objective modes, cash)
 // or kept for parity with the SDK; docs/implementation/integration.md lists what is unused.
@@ -18,5 +19,6 @@ pub mod hud;
 pub mod input;
 pub mod menus;
 pub mod prediction;
+pub mod spectator;
 pub mod state;
 pub mod view;

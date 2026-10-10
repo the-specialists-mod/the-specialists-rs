@@ -62,9 +62,14 @@ pub struct PlayerRules {
     pub team_name: String,
     /// Spawn protection end (`+0x71c`).
     pub protect_until: f32,
-    /// Observer: next allowed button action (`+0x760`), saved mode (`+0x76c`).
+    /// Observer: next allowed button action (`+0x760`), next `Observer_Idle` check (`+0x764`),
+    /// saved mode (`+0x76c`).
     pub obs_next_input: f32,
+    pub obs_next_idle: f32,
     pub obs_mode: i32,
+    /// `m_hObserverTarget` (`+0x75c`), a player index (0 = none). Set by `Killed` and
+    /// `Observer_FindNextPlayer`; survives a respawn like TS's `EHANDLE`.
+    pub obs_target: i32,
     /// Chat flood control (`+0x7c0`).
     pub next_say: f32,
 
@@ -78,8 +83,6 @@ pub struct PlayerRules {
     pub tk_until: f32,
     pub tk_count: u8,
     pub is_the_one: bool,
-    /// Index of the player that killed us (spectator target).
-    pub killer: i32,
 
     // ---- damage ----------------------------------------------------------------------------------
     pub last_hitgroup: i32,

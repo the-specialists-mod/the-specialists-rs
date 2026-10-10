@@ -198,6 +198,36 @@ payload!(
     HideWeapon { flags: byte }
 );
 
+payload!(
+    /// HLTV director command (engine message 50, `MSG_SPEC`: proxies only). TS writes the
+    /// pre-SDK-2.3 layout: no length byte, the command (`director::DRC_EVENT`), then the primary
+    /// and secondary entity and the event flags (priority in the low bits, `DRC_FLAG_*` above).
+    /// Senders: `CHalfLifeMultiplay::DeathNotice` (0x88f7c) and `CBasePlayer::TakeDamage` (0x8fa94).
+    DirectorEvent { command: byte, primary: short, secondary: short, flags: long }
+);
+
+/// HLTV director commands and event flags in TS's (pre-SDK-2.3) numbering. The client's
+/// `HUD_DirectorEvent` (0x1001ab60) receives the same `(command, primary, secondary, flags)`.
+pub mod director {
+    /// Director (re)started: reset the spectator HUD (`CHudSpectator::DirectorMessage` 0x10023380).
+    pub const DRC_ACTIVE: u8 = 0;
+    /// Camera change: primary/secondary target (`DirectorMessage`'s other handled command).
+    pub const DRC_CAMERA: u8 = 2;
+    /// Game event for the director to rank (deaths, damage).
+    pub const DRC_EVENT: u8 = 3;
+    /// `DeathNotice` priority: 7 | `DRC_FLAG_DRAMATIC` (0x20).
+    pub const FLAGS_DEATH: i32 = 0x27;
+    /// `TakeDamage` priority.
+    pub const FLAGS_DAMAGE: i32 = 5;
+}
+
+impl DirectorEvent {
+    /// A `DRC_EVENT` about `primary` (the victim) caused by `secondary`.
+    pub fn event(primary: i32, secondary: i32, flags: i32) -> Self {
+        Self { command: director::DRC_EVENT, primary: primary as i16, secondary: secondary as i16, flags }
+    }
+}
+
 impl TsFade {
     /// SDK `UTIL_ScreenFade` encoding: seconds → 4.12 fixed point, clamped to 16 bits.
     pub fn new(color: [u8; 3], alpha: u8, duration: f32, hold: f32, flags: i16) -> Self {
@@ -239,6 +269,14 @@ mod tests {
         TsSlowMo { factor_x100: 35.0 }.write(&mut b);
         assert_eq!(b.buf.len(), 2, "TSSlowMo is registered with size 2");
         assert_eq!(TsSlowMo::read(&mut b).factor_x100, 35.0);
+    }
+
+    #[test]
+    fn director_event_layout() {
+        let mut b = Bytes::default();
+        DirectorEvent::event(3, 7, director::FLAGS_DEATH).write(&mut b);
+        assert_eq!(b.buf, [3, 3, 0, 7, 0, 0x27, 0, 0, 0], "byte 3, short victim, short killer, long 0x27");
+        assert_eq!(DirectorEvent::read(&mut b), DirectorEvent { command: 3, primary: 3, secondary: 7, flags: 0x27 });
     }
 
     #[test]
