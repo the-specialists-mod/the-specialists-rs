@@ -171,8 +171,9 @@ win32 under Wine (listen server, `ts_arena`).
 
 ### 3.2 Not validated
 
-* A Steam GoldSrc **client**, pre- or post-anniversary. Only FWGS clients were available. Steam
-  dedicated servers (HLDS 8684 via ReHLDS, and HL25) were tested.
+* A Steam GoldSrc **client** beyond the scripted HL25 Linux run in §5: the pre-anniversary
+  client (8684), the HL25 Windows client, a real keyboard and mouse on either, and joining a
+  dedicated server from it. Steam dedicated servers (HLDS 8684 via ReHLDS, and HL25) were tested.
 * Real keyboard and mouse (all client runs are scripted), including the Steam mouse paths in
   `input.rs`.
 * Joysticks (Steam GoldSrc only: WinMM on Windows, SDL2 game controller on Linux; FWGS handles
@@ -217,3 +218,56 @@ the HUD), and the Windows client library loaded in FWGS win32.
 | `addbot` bot kicked half a second later | `ts_bot_quota` (default 0) kicked bots above the quota | `addbot` raises the quota to cover its bot |
 | Quota kicks never happen in a scripted test | `pfnServerCommand("kick ...")` is appended to the console buffer behind the rest of the running `wait` script | The listen script ends right after `ts_bot_quota 0`; xtask stops the game 10 s later |
 | `SteamAPI_Init() failed` in HLDS logs | Normal for dedicated servers (they use the game-server API) | none |
+| Steam HL25 client: the game runs, but the world is black and the "Loading… Parsing game info" dialog never goes away (issue #62) | A client without `IClientVGUI` is treated as VGUI1, and the engine then only draws the world when the client's VGUI1 viewport calls `VGui_ViewportPaintBackground` (TS's does). The port has no VGUI1 viewport, so `V_CalcRefdef` and `HUD_Redraw` were never called and the screen kept the dialog's last frame | `client-dll` exports `ClientFactory`/`CreateInterface` and an `IClientVGUI` with `UseVGUI1() == false` (`implementation/client-hud.md` §7) |
+| `PF_MessageEnd_I: Unknown User Msg 114` ×3 on a Steam listen server (`developer 1`) | Message 114 is `SrvSett`. The first `CTSGameRules::Think` broadcasts keys 0–2 (`realbullet`, `usecash`, `ammocount`) before any client has received the user-message table, and the engine drops a message it hasn't registered with a client yet | Harmless: each client gets all four `SrvSett` values in `InitHUD` |
+
+## 5. Steam Half-Life client (HL25, issue #23)
+
+The Steam client isn't one of xtask's roots: it needs a logged-in Steam, and only one copy can run
+at a time. This is the manual setup used for issue #62, on the Linux 25th-anniversary client
+(32-bit `hl_linux`, engine build 10211, app build 15961492).
+
+1. Steam running and logged in, Half-Life (app 70) installed at
+   `~/.local/share/Steam/steamapps/common/Half-Life`.
+2. Assemble `Half-Life/ts` the way `cargo xtask install` does: symlink every entry of the TS
+   content directory (`../ts`: maps, models, sound, wads, `resource`, ...) into it, copy the files
+   from `game/ts` over the links, and install the i686 Linux build:
+
+   ```sh
+   cargo build -p ts-client-dll -p ts-server-dll --target i686-unknown-linux-gnu
+   T=target/i686-unknown-linux-gnu/debug HL=~/.local/share/Steam/steamapps/common/Half-Life
+   cp $T/libclient.so $HL/ts/cl_dlls/client.so
+   cp $T/libts.so $HL/ts/dlls/ts_i386.so && cp $T/libts.so $HL/ts/dlls/ts.so
+   ```
+
+3. Write a cfg in `Half-Life/ts` (the `xtask play` script works as is, ending in `quit`):
+   `developer 1`, `sv_lan 1`, `maxplayers 8`, `lservercfgfile ""`, `sv_cheats 1`,
+   `ts_dev_scriptinput 1`, `map ts_dojo`, then `w10`/`w100` waits, commands, `screenshot`, `quit`.
+4. Launch through the Steam runtime, without `steam -applaunch`:
+
+   ```sh
+   cd ~/.local/share/Steam/steamapps/common/Half-Life
+   SteamAppId=70 SteamGameId=70 setsid ~/.local/share/Steam/ubuntu12_32/steam-runtime/run.sh \
+     ./hl.sh -game ts -windowed -width 1280 -height 800 -condebug +exec <cfg> &
+   ```
+
+   The console goes to `Half-Life/qconsole.log`, screenshots to `Half-Life/ts/HalfLifeNN.tga`.
+   Make sure the game exits (`quit`, or `pkill -x hl_linux`). It renders even while the desktop is
+   locked.
+5. Compare with stock Half-Life launched the same way (`-game valve`, `map crossfire`) to tell the
+   port's problems from the setup's.
+
+For debugging, `hl.sh` runs the game under gdb when `DEBUGGER=gdb` is set, and passes
+`DEBUGGER_ARGS` through (`-batch -x <script>` with breakpoints and `run`). `hw.so` ships with its
+symbols and DWARF, so breakpoints on engine functions (`VGui_ViewportPaintBackground`,
+`CBaseUI::ActivateGameUI`) and `print cls.state` work.
+
+**Result (issue #62 fixed):** the scripted `xtask play` scenes all pass on the Steam client
+(listen server, `maxplayers 8`): join and buy, spawn, slow-motion power-up, grenade, kill, kick,
+death and respawn, and four bots fighting. The world, HUD, buy menu, MOTD, view model and the
+slow-motion indicator draw; the console and the game menu open over the game and give the mouse back.
+The listen server did not start paused. Expected log noise: `DemoPlayer::Init: couldn't get
+engine interface`, `System::AddModule: couldn't initialize module (null)`, `failed to locate
+sequence file ts_dojo`, `runtime sample conversion` for three TS player sounds, and
+`Unknown User Msg 114` (§4). The `ts_dojo` sky is white because the map's `construct_*` sky
+images are white.

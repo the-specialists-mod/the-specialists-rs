@@ -14,6 +14,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod tempents;
+mod vgui;
 
 use goldsrc::client::{self as cl, engine};
 use goldsrc::sys::*;

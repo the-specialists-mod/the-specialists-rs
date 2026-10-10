@@ -15,6 +15,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `crates/client/src/voice.rs` | `CVoiceStatus`/`CVoiceBanMgr`: speaker state, head icons, speaker labels, talk icon, scoreboard voice icons and squelch mode, `voice_ban.dt`, `VModEnable`/`vban` |
 | `crates/client/src/joystick.rs` | the SDK joystick code TS ships (`IN_JoyMove`, `IN_Commands`, `Joy_AdvancedUpdate_f`), Steam GoldSrc only |
 | `crates/client/src/state.rs` | fields added for other packages (see Integration) |
+| `crates/client-dll/src/vgui.rs` | `ClientFactory`/`CreateInterface` exports and the `IClientVGUI` object that makes Steam GoldSrc draw the world (see Deviations) |
 | `crates/goldsrc/src/ext/hud.rs` | engine helpers: sprites, text, cvars, player info, `EV_PlayerTrace`, demo API, `EV_PlaySound`; `ClEngine::event_api`/`tri_api`/`demo_api` (null-checked bindgen `event_api_s`/`triangleapi_s`/`demo_api_s`); `world_to_screen_ndc`, the one `WorldToScreen` wrapper (`None` if clipped or the slot is null; the laser dots use it), and TS's pixel `WorldToScreen` on top of it; `server_cmd`, the one `pfnServerCmd` wrapper (no-op if the slot is null); and `local_view_height`, the one `EV_LocalPlayerViewheight` wrapper (standing offset 0 0 28 if the slot is null; the events' gun position uses it too) |
 | `crates/goldsrc/src/ext/voice.rs` | `GetPlayerUniqueID`, `pfnServerCmdUnreliable`, level check, the static head-icon entities for `CL_CreateVisibleEntity` (and the server's `Voice_SetClientListening`) |
 | `crates/goldsrc/src/joystick.rs` | joystick device access: WinMM on Windows, SDL2 game controller (run-time lookup) elsewhere; `CheckParm` |
@@ -270,6 +271,21 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
 * Clicking outside any buy-menu row does nothing (TS treats it as key 1 on the current page).
 * Team select, MOTD and scoreboard are immediate-mode replacements for the VGUI1 panels (same
   commands and data, different look). Escape closes the buy/team menu, Enter/Space/Escape the MOTD.
+* **No VGUI1 viewport; the client presents itself as a VGUI2 client instead** (issue #62). TS is
+  a VGUI1 client: its viewport panel's `paintBackground` (`0x1005b3c0`) calls
+  `VGui_ViewportPaintBackground`, and that engine call is what draws the 3D view and calls
+  `HUD_Redraw` on Steam GoldSrc. Without an `IClientVGUI` the Steam engine (`VGui_Paint` in
+  `hw.so`) treats the client as VGUI1 and, while the game UI is hidden, paints only the VGUI1
+  root panel, expecting the client's viewport to do the rest. The port has no VGUI1 panels (C++
+  ABI), so on the Steam client the world was never drawn: a black screen with the last frame of
+  the "Loading… Parsing game info" dialog left on it, although the game ran. `client-dll`
+  therefore exports `ClientFactory` and `CreateInterface` and answers `VClientVGUI001` with an
+  `IClientVGUI` whose `UseVGUI1()` is false (`client-dll/src/vgui.rs`, a hand-laid C++ vtable:
+  Itanium on Linux, MSVC `thiscall` on Win32). The engine then paints the viewport background
+  itself every frame, as for Counter-Strike's VGUI2 client. In that mode the engine stops sending
+  `IN_DeactivateMouse`/`IN_ActivateMouse` when the game UI opens and closes, so `HideClientUI`
+  (from `CBaseUI::ActivateGameUI`) and `ActivateClientUI` (from `CBaseUI::HideGameUI`) forward
+  to them. FWGS calls neither export and draws the world itself.
 * Golden Colts are never restricted (server rule) where the client's own remap would treat them as
   pistols.
 * `ts_hud_selftest [dead]` is port-only.
@@ -328,6 +344,11 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
 * Not tested in engine: physical keys/mouse (no input device in the automated run: the gate,
   mouse look, clicks and the virtual cursor are untested live), Steam GoldSrc mouse paths
   (Windows cursor / SDL2), team menu, MOTD, ShowMenu, death cam, effects queue consumers.
+* Steam Half-Life 25th anniversary client (Linux, build 10211, `docs/validation.md` §5): the
+  scripted `xtask play` scenes draw the world, HUD, buy menu, MOTD, view model, slow-motion indicator
+  and bot fights. Under `gdb`, opening the console (`CBaseUI::ActivateGameUI`) reaches
+  `input::deactivate_mouse` through `HideClientUI`, and the post-load `CBaseUI::HideGameUI` reaches
+  `input::activate_mouse`, matching the calls the engine made in VGUI1 mode.
 
 ## 10. Integration notes
 
