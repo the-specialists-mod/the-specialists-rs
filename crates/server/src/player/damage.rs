@@ -3,9 +3,10 @@
 //! `CBasePlayer::TraceAttack` (0x901cc) and `CBasePlayer::TakeDamage` (0x8fa94).
 //!
 //! `damage::apply` has a single entry point, so the TraceAttack part (spawn protection, stunt and
-//! dodge ×0.7, hitgroup multipliers, `PTakeDam`, hit sounds) runs for traced damage: a hitgroup
-//! other than GENERIC, or `DMG_BULLET`. The TakeDamage part (team check, kevlar, health) runs for
-//! everything.
+//! dodge ×0.7, team check, hitgroup multipliers, `PTakeDam`, hit sounds) runs only for damage the
+//! caller marked `DamageInfo::traced`, i.e. what TS routes through `TraceAttack` (bullets, melee,
+//! explosions even through walls, thrown and falling objects). The TakeDamage part (team check,
+//! kevlar, health) runs for everything.
 
 use super::Player;
 use crate::damage::{bits, hitgroup};
@@ -126,8 +127,7 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     let attacker_is_teammate = !dmg.attacker.is_null() && dmg.attacker != e && rules::teams::same_team(dmg.attacker, e);
     let friendly_fire = rules::cvars::on(c"mp_friendlyfire");
 
-    let traced = dmg.hitgroup != hitgroup::GENERIC || dmg.bits & bits::BULLET != 0;
-    if traced {
+    if dmg.traced {
         if now < p.ts.protect_until {
             return false;
         }

@@ -53,7 +53,7 @@ pub fn bullet_damage(shooter: *mut edict_t, tr: &TraceResult, dmg: f32, dir: Vec
     if hit.is_null() || dmg <= 0.0 {
         return;
     }
-    let mut info = DamageInfo::new(shooter, shooter, dmg, bits);
+    let mut info = DamageInfo::new(shooter, shooter, dmg, bits).traced();
     info.hitgroup = tr.iHitgroup;
     info.dir = dir;
     info.pos = tr.vecEndPos;

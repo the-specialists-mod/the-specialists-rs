@@ -653,7 +653,9 @@ mod beam {
         let me = cx.edict;
         let v = cx.pev();
         if tr.flFraction != 1.0 && !tr.pHit.is_null() {
-            let mut info = DamageInfo::new(me, me, v.dmg * (now - v.dmgtime), DMG_ENERGYBEAM);
+            // `pHit->TraceAttack(pev, dmg, dir, tr, DMG_ENERGYBEAM)` (0xba2fb).
+            let mut info = DamageInfo::new(me, me, v.dmg * (now - v.dmgtime), DMG_ENERGYBEAM).traced();
+            info.hitgroup = tr.iHitgroup;
             info.dir = vec::normalize(vec::sub(tr.vecEndPos, v.origin));
             info.pos = tr.vecEndPos;
             let decals = v.spawnflags & SF_BEAM_DECALS != 0;

@@ -127,17 +127,10 @@ fn center(e: *mut edict_t) -> Vec3 {
     vec::mid(v.absmin, v.absmax)
 }
 
-fn deal(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut edict_t, dmg: f32, bits: i32, dir: Vec3, pos: Vec3) {
-    let mut info = DamageInfo::new(inflictor, attacker, dmg, bits);
-    info.dir = dir;
-    info.pos = pos;
-    damage::apply(victim, &info);
-}
-
 /// `ClearMultiDamage`, `victim->TraceAttack(attacker, dmg, dir, &tr, bits)`,
 /// `ApplyMultiDamage(inflictor, attacker)`: the impact point and hitgroup come from `tr`.
 fn trace_attack(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut edict_t, dmg: f32, bits: i32, dir: Vec3, tr: &TraceResult) {
-    let mut info = DamageInfo::new(inflictor, attacker, dmg, bits);
+    let mut info = DamageInfo::new(inflictor, attacker, dmg, bits).traced();
     info.dir = dir;
     info.pos = tr.vecEndPos;
     info.hitgroup = tr.iHitgroup;
@@ -311,12 +304,12 @@ pub fn radius_damage(src: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t,
             }
             let adjusted = (dmg - vec::length(vec::sub(src, tr.vecEndPos)) * falloff).max(0.0);
             if tr.flFraction != 1.0 {
-                // TraceAttack path: direction and impact point are known.
+                // TraceAttack path (0xb3052): direction, impact point and hitgroup are known.
                 let dir = vec::normalize(vec::sub(tr.vecEndPos, src));
-                deal(e, inflictor, attacker, adjusted, bits, dir, tr.vecEndPos);
+                trace_attack(e, inflictor, attacker, adjusted, bits, dir, &tr);
             } else {
-                // Plain TakeDamage.
-                deal(e, inflictor, attacker, adjusted, bits, [0.0; 3], [0.0; 3]);
+                // Plain TakeDamage (0xb3090).
+                damage::apply(e, &DamageInfo::new(inflictor, attacker, adjusted, bits));
             }
         }
     }

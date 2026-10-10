@@ -204,7 +204,7 @@ impl Entity for WorldGun {
             let s = spread::length(pev.velocity) * slots;
             let target = tr.pHit.v();
             if target.takedamage != 0.0 && target.health <= s {
-                let mut d = DamageInfo::new(me, self.thrower.or(me), s * 0.001, 0x1080);
+                let mut d = DamageInfo::new(me, self.thrower.or(me), s * 0.001, 0x1080).traced();
                 d.dir = pev.velocity;
                 d.pos = tr.vecEndPos;
                 damage::apply(tr.pHit, &d);

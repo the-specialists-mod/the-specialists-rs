@@ -619,7 +619,9 @@ fn fire_bullet(me: *mut edict_t, src: Vec3, forward: Vec3, spread: Vec3, right: 
     let hit = if tr.pHit.is_null() { eng.entity_of_index(0) } else { tr.pHit };
     if damage != 0 {
         let gib = if damage > 16 { bits::ALWAYSGIB } else { bits::NEVERGIB };
-        let mut info = DamageInfo::new(me, attacker, damage as f32, bits::BULLET | gib);
+        // FireBullets: `TraceAttack(attacker, dmg, dir, &tr, bits)`, so the hitgroup counts.
+        let mut info = DamageInfo::new(me, attacker, damage as f32, bits::BULLET | gib).traced();
+        info.hitgroup = tr.iHitgroup;
         info.dir = dir;
         info.pos = tr.vecEndPos;
         crate::damage::apply(hit, &info);

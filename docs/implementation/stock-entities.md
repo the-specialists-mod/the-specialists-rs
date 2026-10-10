@@ -223,7 +223,9 @@ How the SDK patterns map to Rust:
   * In line of sight (fraction 1 or the trace hits the target) the damage goes through
     `TraceAttack` with that trace (impact point and hitgroup). Otherwise a trace back from the
     target, ignoring it, measures the obstacle from the forward trace's end (the blast point if it
-    started solid); only `d − thickness` gets through, with the back trace as the impact. Zero
+    started solid); only `d − thickness` gets through, with the back trace as the impact. That
+    is still `TraceAttack` (0x7d635), so the damage is marked traced even though the back trace
+    never reports a hitgroup: players get spawn protection, the stunt ×0.7 and `PTakeDam`. Zero
     damage is still dealt, as in TS.
   * Every `WorldGun` in the sphere (damaged or not) is put back into flight
     (`weapons::worldgun::blast`, 0x7d678): `UTIL_SetOrigin`, zero size, `BounceTouch`/`Fall` in
@@ -464,8 +466,11 @@ covers:
    `SET_VIEW(self, self)` and clear `FL_FROZEN`. The player package must do this too, or a camera
    active when the player dies keeps the view.
 7. **Damage.**
-   * `take_damage` treats a non-zero `DamageInfo::pos` or `dir` as the SDK `TraceAttack` path.
-     Weapons should fill both for bullets.
+   * `take_damage` runs the SDK `TraceAttack` part (breakable hit effects, the door break logic)
+     only for damage marked `DamageInfo::traced` (`.traced()`); every caller TS routes through
+     `TraceAttack` sets it (see the field's doc comment for the list), and direct `TakeDamage`
+     callers (crushers, `trigger_hurt`, breakable touch, ...) leave it false. `RadiusDamage`
+     (env_explosion) is traced, with the trace's hitgroup, only when its trace hit something.
    * Doors only break from `TraceAttack`-style damage carrying blast (`0x40`) or the TS bits
      `0x2000000` (shotgun) / `0x4000000` (kung fu).
    * The SDK `DamageDecal` for glass (`{bproof`-style decals 0x19–0x1b, 0x23 for unbreakable glass)

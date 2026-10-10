@@ -197,7 +197,7 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
             emit(victim, CHAN_BODY, c"player/kungfuhit.wav", 1.0, 0.8, 95 + e.random_long(0, 31));
         }
     }
-    let mut info = DamageInfo::new(attacker, attacker, hit.damage, hit.bits);
+    let mut info = DamageInfo::new(attacker, attacker, hit.damage, hit.bits).traced();
     info.hitgroup = tr.iHitgroup;
     info.dir = fwd;
     info.pos = tr.vecEndPos;
@@ -294,7 +294,7 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     }
     p.inv.sv.lunge_victim = victim;
     let pev = cx.pev();
-    let mut info = DamageInfo::new(me, me, dmg, bits);
+    let mut info = DamageInfo::new(me, me, dmg, bits).traced();
     info.hitgroup = tr.iHitgroup;
     info.dir = spread::normalize(spread::sub(v.origin, pev.origin));
     info.pos = tr.vecEndPos;

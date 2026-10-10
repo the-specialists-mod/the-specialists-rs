@@ -323,7 +323,7 @@ fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, k: f32, bits: i32, an
     let target = tr.pHit.v();
     let dmg = s * k;
     if target.takedamage != 0.0 && target.health <= dmg {
-        let mut info = DamageInfo::new(me, attacker, dmg, bits);
+        let mut info = DamageInfo::new(me, attacker, dmg, bits).traced();
         info.dir = spread::scale(dir, 64.0);
         info.pos = tr.vecEndPos;
         damage::apply(tr.pHit, &info);
@@ -501,7 +501,7 @@ impl Knife {
             let gt = e.globals();
             let pev = cx.pev();
             let attacker = self.owner.unwrap_or(me);
-            let mut info = DamageInfo::new(me, attacker, self.damage(), 0x0800_1000);
+            let mut info = DamageInfo::new(me, attacker, self.damage(), 0x0800_1000).traced();
             info.hitgroup = gt.trace_hitgroup;
             info.dir = spread::normalize(pev.velocity);
             info.pos = gt.trace_endpos;
