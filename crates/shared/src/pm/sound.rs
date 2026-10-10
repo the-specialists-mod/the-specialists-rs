@@ -43,7 +43,7 @@ impl Pm<'_> {
             return;
         }
         let mut irand = self.random_long(0, 1) + self.p.iStepLeft * 2;
-        if self.p.iuser4 & (crate::ts::stunt::RECOVER | crate::ts::stunt::HAS_KEVLAR) != 0 {
+        if self.p.iuser4 & (crate::ts::stunt::RECOVER | crate::ts::stunt::STEALTH_SHOES) != 0 {
             return;
         }
         let hvel = [self.p.velocity[0], self.p.velocity[1], 0.0];

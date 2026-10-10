@@ -26,7 +26,7 @@ use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 #[allow(unused_imports)]
 pub use assets::{cvars, dmgreport, restriction, set_restriction};
 pub use inventory::Drop;
-pub use projectiles::{SlowPhysics, thrower_time_scale};
+pub use projectiles::{SlowPhysics, bounce_ground_damping, give_slow_mul, thrower_time_scale};
 
 /// Free inventory slots at spawn (`TSInit`: `pl+0x548 = 81`).
 pub const SLOTS: i32 = shared::ts::SLOTS_TOTAL;
@@ -156,6 +156,7 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     // TSInit: kung-fu power 100, recoil penalty 0, fresh timers; the inventory itself was cleared
     // at death (see on_killed) so weapons the rules gave in their on_spawn are kept.
     p.inv.gun.reset_for_spawn();
+    inventory::reset_items(p);
     p.inv.gun.mode_memory = [0; MAX_WEAPONS];
     let sv = &mut p.inv.sv;
     sv.grenades_bought = 0;
@@ -357,6 +358,12 @@ pub fn arm_kick(p: &mut Player, cx: &mut Cx, cost: f32, damage: f32) {
 /// `free_slots` (the CTB case, `CBasePlayer::TakeFlag` 0x93830 / `DropFlag` 0x9334c).
 pub fn sync_speed(p: &mut Player, cx: &mut Cx) {
     inventory::sync_speed(p, cx);
+}
+
+/// `CBasePlayer::TakeArmor(n)` (0x93da4): kevlar weighs [`inventory::KEVLAR_SLOTS`] of the
+/// shared free slots; `n < 0` takes it off. False when there's no room for the vest.
+pub fn take_armor(p: &mut Player, cx: &mut Cx, n: i32) -> bool {
+    inventory::take_armor(p, cx, n)
 }
 
 /// Drops a weapon like the `drop` command / a disarm (rules: flag/briefcase handling stays theirs).

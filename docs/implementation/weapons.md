@@ -216,8 +216,26 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 * Spawn protection (`pl+0x71c`) isn't checked before a disarm (rules field).
 * `ThrowWeapon`'s velocity is garbled in the decompile: alive drops fly at 250 u/s (+125 up)
   plus the player's velocity, corpses drop at 60..160 u/s in a random direction.
-* `WorldGun`s and stuck knives get ground friction (x0.5 per 0.1 s): FWGS doesn't slow a
-  sliding `MOVETYPE_BOUNCE` entity, so they would slide forever.
+* **`WorldGun` ground friction is TS's, with no port extra** (issue #64). `BounceTouch`
+  (0xa0b0c) keeps 0.3 of the vertical speed, then on the ground scales velocity and spin by 0.9
+  while the horizontal speed is above `40 * GiveSlowMul()` and by 0.7 at or below it
+  (`projectiles::bounce_ground_damping`, shared with the CTB case). Its 3× (landing in `Fall`),
+  18× (drop sound) and 40× thresholds use `GiveSlowMul` = `FixedSlowAmt(fuser1)` =
+  `max(fuser1, 0.01)` (`projectiles::give_slow_mul`). The drop sound plays on every fast floor
+  hit, not only the first: TS's gate byte (+0xc8) is set by `Spawn` and set again by the touch.
+  The port used to add ×0.5 per 0.1 s in `think`, on the theory that FWGS doesn't slow a sliding
+  `MOVETYPE_BOUNCE` entity. That's true, but no GoldSrc engine does: FWGS
+  (`engine/server/sv_phys.c` `SV_Physics_Toss`), ReHLDS (`rehlds/engine/sv_phys.cpp`
+  `SV_Physics_Bounce`, which HLDS runs for `MOVETYPE_BOUNCE`) and so HLDS apply no linear ground
+  friction. Each frame they add gravity, push the entity, call `Touch` on the impact (inside
+  `SV_PushEntity`, before the clip), clip the velocity with backoff `2 - friction` (which only
+  changes the component into the floor), zero `velocity[2]` and set `FL_ONGROUND`, and stop it
+  outright below 30 u/s (`|v|² < 900`). A sliding gun is pushed into the floor by gravity every
+  frame, so the game's damping runs every frame. The workaround made up for the missing ×0.9
+  branch, and it is removed. (FWGS also applies `friction` to the angular velocity in
+  `SV_AngularMove`; HLDS doesn't. That only affects the spin.) Like TS, the slide length depends
+  on the server frame rate.
+* Stuck knives keep a port-only ground friction (x0.5 per 0.1 s in `Knife::think`).
 * Stuck blades are `SOLID_TRIGGER` instead of `SOLID_NOT` (from before `Use` existed;
   harmless).
 * **`SlowPhysics` keeps an explicit "saved" flag.** TS treats "saved velocity == 0" as "nothing
@@ -313,8 +331,14 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 * Armour absorb: read `shared::weapons::tables().combat.armor_absorb` (a weapons file may
   change it).
 * `Player::slots_used` and `maxspeed` are written by weapons only when the slot count changes.
-* Kevlar from the loadout (`tki 16`) sets `armorvalue = 100` and uses 10 slots
-  (`SvState::items & 0x10`).
+* Kevlar: every armour source (loadout `tki 16`, the armour power-up, `item_battery`,
+  `func_recharge`) goes through `weapons::take_armor` (`TakeArmor` 0x93da4). The first vest needs
+  10 of the shared `free_slots` (`pl+0x548`, the same count weapons and the CTB case use) and sets
+  `SvState::items & 0x10`; `take_armor(-1)` takes it off and gives the slots back. Death
+  (`on_killed`/`strip_all`) resets `free_slots` and `items` together, and spawn
+  (`inventory::reset_items`, TSInit's `pl+0x718 = 0`) returns a vest's slots if one is still
+  worn. Stealth shoes are `items & 0x20` plus `iuser4` bit 0x200 (`stunt::STEALTH_SHOES`, which
+  the decomp docs call `HAS_KEVLAR`).
 
 **Damage package**: `DamageInfo.hitgroup` = trace hitgroup, `weapon` = TS id, bits as listed in
 §3 (0x2000000 = shotgun headshot x1.5, 0x8000000 = thrown blade, 0x4000000 = close combat).

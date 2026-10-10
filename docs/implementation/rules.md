@@ -69,7 +69,7 @@ are Ghidra addresses.
 | `UpdatePowerUpState` 0x95748 | `powerup::update_state` | self 0.6 / others 0.35 (slow-mo), 0.8 / 0.225 (slow pause, bullet time); expiry; dead players drop held/active power-ups (DM/TDM). |
 | `SlowMotionFlow` 0x96bb0 / `DeactivateSlowMotionFlow` 0x96a9c | `powerup::{slow_flow, deactivate_flow}` | every 0.5 s eye→eye traces; the stronger slow wins; grenades/moving knives/WorldGuns in sight (max 32). |
 | `GoSlow`/`InSlow` 0x929d0/0x9298c, `InterpolateSlowMotion` 0x9910c | `powerup::{go_slow_self, go_slow, in_slow, interpolate}` | fuser1 eases toward `Player::slow_target` at 7/s, snaps within 0.05 (unit tested). |
-| `TakeArmor` 0x93da4 | `powerup::take_armor` | kevlar costs 10 slots once; cap 100; speed from free slots. |
+| `TakeArmor` 0x93da4 | `weapons::take_armor` | kevlar costs 10 of the shared free slots once; cap 100; speed from free slots; `-1` takes it off. |
 | `CBasePlayer::TraceAttack` 0x901cc | `player::damage::take_damage` (the part for `DamageInfo::traced`) | spawn protection, stunt ×0.7 (`iuser4 & 0x10c10`), dodge ×0.7 (`PlayerRules::dodge_until`), friendly fire, head ×2 / ×1.5 shotgun (`0x2000000`), legs ×0.5, PTakeDam (0.3 s throttle, ×8 shotgun, +128 kevlar, truncated at 0x904b7), head/kevlar/body hit sounds, pain sounds, corpse push. |
 | `CBasePlayer::TakeDamage` 0x8fa94 | `player::damage::take_damage` | kevlar `dmg -= dmg×min(armor_absorb,1)` on hitgroups 2–5 unless `ARMOR_EXEMPT`; armour never depleted; `last_damage` and the kevlar-scaled damage truncated to int (0x8fbd0, 0x8fc5f); knockback ×5; TSFade (150,10,10); death → `rules::on_killed`; then, even when `takedamage` refused it, `m_bitsDamageType |= bits` and each time-based type taken restarts its countdown (`TimeBasedDamage::on_damage`). Unit tested. |
 | `CBasePlayer::WaterMove` 0xd905c | `player::water::water_move` | skipped for noclip or health < 0. Head under (`waterlevel` 3): drown recovery stops; once `air_finished` (12 s) passes, `DMG_DROWN` from the world every second, 3, 4, then 5 per hit (`pev->dmg` starts at 2), added (truncated) to the drowned total (+0x9a8). Head out (also on dry land): `pl_wade1` if the air ran out, `pl_wade2` after more than 3 s under, air refilled, `dmg = 2`, and while drowned health is owed `DMG_DROWNRECOVER` is set and its countdown restarted. In water: `pl_swim1..4` (1/32 per frame, likelier with less air; `CHAN_BODY` 0.8), lava `10 × waterlevel` `DMG_BURN` and slime `4 × waterlevel` `DMG_ACID` every frame (SDK `dmgtime` quirks), `FL_INWATER` kept. Real time, no slow-motion scaling; sounds use the time-scaled `EMIT_SOUND_DYN` pitch (k 0.5). Unit tested. |
@@ -250,7 +250,8 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
   `DMG_THROWN` for thrown knives.
 * Register no cvars that are in `rules::cvars::CVARS` (`realbullet`, `ammocount`, `damagemult`,
   `customweapons`, `weaponstay`): read them by name.
-* `Player::slots_used` drives `TSSpace` and the kevlar/flag slot costs (rules adds/removes 10/20).
+* `Player::slots_used` drives `TSSpace`; the kevlar/flag slot costs (10/20) go through the weapons'
+  `free_slots` (`weapons::take_armor`, `weapons::sync_speed`).
 * Dropped guns should use classname `WorldGun` and `pev->owner` = dropper for the glow shell and
   slow-motion propagation.
 

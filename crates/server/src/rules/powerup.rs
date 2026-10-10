@@ -261,7 +261,7 @@ pub fn use_powerup(p: &mut Player, cx: &mut Cx) -> bool {
 pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32) -> bool {
     let e = cx.edict;
     if bits & pw::ARMOR != 0 {
-        take_armor(p, cx, 100);
+        crate::weapons::take_armor(p, cx, 100);
     } else if bits & pw::KUNGFU != 0 {
         if !p.kungfu {
             p.kungfu = true;
@@ -292,34 +292,6 @@ pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32) -> bool {
         p.ts.held_secs = secs;
     }
     engine().emit_sound(e, CHAN_ITEM as i32, c"items/gunpickup2.wav", 1.0, 0.8, 0, 100);
-    true
-}
-
-/// `CBasePlayer::TakeArmor(n)`: the kevlar item costs 10 slots the first time; armour caps at 100.
-pub fn take_armor(p: &mut Player, cx: &mut Cx, n: i32) -> bool {
-    if n < 0 {
-        if p.ts.kevlar {
-            p.slots_used -= 10;
-            p.ts.kevlar = false;
-            cx.pev().armorvalue = 0.0;
-        }
-    } else {
-        if !p.ts.kevlar {
-            if shared::ts::SLOTS_TOTAL - p.slots_used < 10 {
-                return false;
-            }
-            p.slots_used += 10;
-            p.ts.kevlar = true;
-            engine().emit_sound(cx.edict, CHAN_ITEM as i32, c"weapons/items.wav", 1.0, 0.8, 0, 100);
-        }
-        let v = cx.pev();
-        v.armorvalue = (v.armorvalue + n as f32).min(100.0);
-    }
-    if !p.ts.is_the_one {
-        let speed = shared::ts::speed_for_free_slots(shared::ts::SLOTS_TOTAL - p.slots_used);
-        cx.pev().maxspeed = speed;
-        engine().set_client_maxspeed(cx.edict, speed);
-    }
     true
 }
 
