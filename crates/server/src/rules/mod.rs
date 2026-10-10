@@ -232,6 +232,11 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     lifecycle::on_spawn(p, cx)
 }
 
+/// Button edges and `PlayerThink`; true while the game is over (PreThink stops there).
+pub fn player_think(p: &mut Player, cx: &mut Cx) -> bool {
+    lifecycle::player_think(p, cx)
+}
+
 pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     lifecycle::pre_think(p, cx)
 }

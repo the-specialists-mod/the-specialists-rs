@@ -85,6 +85,8 @@ pub struct GameRules {
     pub game_over: bool,
     pub intermission_start: f32,
     pub intermission_end: f32,
+    /// `m_iEndIntermissionButtonHit` (`+8`): a player pressed a button during intermission.
+    pub end_intermission_button_hit: bool,
     pub last_frags_left: i32,
     pub last_time_left: i32,
 }

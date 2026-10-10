@@ -116,7 +116,7 @@ Fields several subsystems read live on `Player` itself: `slow_target`, `active_p
 Hook order, fixed in `player/mod.rs`:
 
 * **spawn:** base player setup, then `rules::on_spawn` (spawn point, loadout), `weapons::on_spawn`, `stunt::on_spawn`, `drive::on_spawn`, `hud::reset`.
-* **pre_think:** `drive::pre_think` (train speed control), then `rules`, `stunt`, `weapons`.
+* **pre_think:** as in TS `PreThink` (0x908cc), `rules::player_think` first (button edges, `PlayerThink`); during intermission PreThink stops there. Otherwise `drive::pre_think` (train speed control), then `rules`, `stunt`, `weapons`.
 * **post_think:** as in TS `PostThink` (0x91610), during intermission or while dead only the weapon timers run down (plus `rules` and `hud::update`); otherwise `drive::post_think` (tank firing / letting go), `weapons` (item post frame, skipped while a tank is in use; once the gun is ready it first runs `player::player_use`, TS's single `PlayerUse` for every usable entity: stock, TS items, dropped guns), `stunt`, `rules`, then `hud::update` (sends changed HUD values, including `Train` and `HideWeapon`).
 * **fill_client_data:** `stunt`, `weapons`, `rules`.
 * **take_damage:** `player::damage::take_damage`, which on death calls `rules::on_killed`. That in turn calls `weapons::on_killed`. Self-inflicted damage from inside the player's own callbacks (fall, drowning, slime/lava, poison) calls `take_damage` directly, since `damage::apply` can't reach the dispatched entity.

@@ -212,15 +212,36 @@ pub fn give_cash(p: &mut Player, n: i32) {
 
 // ---- think --------------------------------------------------------------------------------------
 
-/// The rules part of `CBasePlayer::PreThink` (0x908cc).
-pub fn pre_think(p: &mut Player, cx: &mut Cx) {
-    let now = cx.time();
+/// Buttons that end the intermission once `mp_chattime` is up (`PlayerThink`'s mask 0x827).
+const END_INTERMISSION_BUTTONS: i32 = (IN_ATTACK | IN_JUMP | IN_DUCK | IN_USE | IN_ATTACK2) as i32;
+
+/// The head of `CBasePlayer::PreThink` (0x908cc): the button edges, then
+/// `g_pGameRules->PlayerThink` (`CHalfLifeMultiplay::PlayerThink` 0xcfb60). Returns true while
+/// the game is over: PreThink returns right here then, so the rest of the player's PreThink
+/// (water, time-based damage, stunts, weapon timers, trains, …) doesn't run in intermission.
+pub fn player_think(p: &mut Player, cx: &mut Cx) -> bool {
     let buttons = cx.pev().button;
     p.ts.buttons_pressed = buttons & (p.ts.buttons_last ^ buttons);
     p.ts.buttons_last = buttons;
-    if state::with(|g| g.game_over) {
-        return;
+    if !state::with(|g| g.game_over) {
+        return false;
     }
+    // `m_afButtonPressed` is against `m_afButtonLast`, which PostThink stops updating at
+    // intermission (the stunt package's copy, see `stunt::post_think`).
+    let pressed = buttons & (p.stunt.button_last ^ buttons);
+    if pressed & END_INTERMISSION_BUTTONS != 0 {
+        state::with(|g| g.end_intermission_button_hit = true);
+    }
+    p.ts.buttons_pressed = 0;
+    p.stunt.button_pressed = 0;
+    p.stunt.button_released = 0;
+    cx.pev().button = 0;
+    true
+}
+
+/// The rules part of `CBasePlayer::PreThink` (0x908cc) after `player_think`.
+pub fn pre_think(p: &mut Player, cx: &mut Cx) {
+    let now = cx.time();
 
     // PreThink order: WaterMove, UpdateClientData (InitHUD), CheckTimeBasedDamage, CheckSuitUpdate.
     crate::player::water::water_move(p, cx);

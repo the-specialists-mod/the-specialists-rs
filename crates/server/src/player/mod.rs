@@ -104,10 +104,17 @@ impl Entity for Player {
 }
 
 impl Player {
+    /// `CBasePlayer::PreThink` (0x908cc). During intermission TS stops after the button edges
+    /// and `PlayerThink`, before `ItemPreFrame`, `WaterMove`, `CheckTimeBasedDamage`, the
+    /// stunt/weapon timers and the train controls, so only `rules::player_think` runs then.
     pub fn pre_think(&mut self, cx: &mut Cx) {
         // Read last frame's buttons before rules updates them. +use on objects (`player_use`)
         // runs from the weapons' PostThink, inside `ItemPostFrame` as in TS.
         let (buttons, last) = (cx.pev().button, self.ts.buttons_last);
+        // TS returns after the button edges and `PlayerThink` when the game is over.
+        if crate::rules::player_think(self, cx) {
+            return;
+        }
         crate::entities::stock::drive::pre_think(self, cx, buttons & !last);
         crate::rules::pre_think(self, cx);
         crate::stunt::pre_think(self, cx);

@@ -239,7 +239,7 @@ The classes are the SDK's. TS changes nothing in them, but the TS data around th
 
 * **Trains.** +use while standing on a `func_tracktrain`, inside its control volume
   (`OnControls`: the train's box plus 72 units up, or the `func_traincontrols` box), takes the
-  controls (`PlayerUse` 0xd9848, `plats/train_use1.wav`). `PreThink` (0x908cc) keeps `FL_ONTRAIN`
+  controls (`PlayerUse` 0xd9848, `plats/train_use1.wav`). `PreThink` (0x908cc; not during intermission) keeps `FL_ONTRAIN`
   set (player movement then ignores input), turns +forward / +back presses into
   `Use(USE_SET, ±1)` speed steps, and lets go when the player jumps, strafes, leaves the ground or
   the train gets `SF_TRACKTRAIN_NOCONTROL`. +use again lets go.
