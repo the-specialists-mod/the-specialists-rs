@@ -1180,7 +1180,6 @@ mod tests {
         assert_eq!(smooth_model_z(10.0, 0.0, 1.0), 0.0, "no overshoot");
     }
 
-
     #[test]
     fn idle_sway() {
         let mut a = [0.0; 3];

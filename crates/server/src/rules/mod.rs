@@ -24,8 +24,8 @@ pub mod scoring;
 pub mod spawnpoint;
 pub mod state;
 pub mod teams;
-pub mod votes;
 pub mod voice;
+pub mod votes;
 
 use crate::commands::Args;
 use crate::player::Player;
@@ -59,8 +59,7 @@ pub struct PlayerRules {
     pub observer_at: f32,
     /// Delayed suicide (`kill`, +1 s, `+0x84c`).
     pub suicide_at: f32,
-    /// Time of death (death animation wait) and fall speed while airborne (`+0x828`).
-    pub died_at: f32,
+    /// Fall speed while airborne (`+0x828`).
     pub fall_velocity: f32,
     /// Last model accepted (HLDM model check) and the team name (`m_szTeamName`).
     pub team_name: String,

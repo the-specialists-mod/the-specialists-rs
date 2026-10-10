@@ -421,8 +421,7 @@ covers:
 8. **Explosions.** `stock::explode::ts_explosion` is TS's `TSExplosion`. The grenade code (weapons
    package) should call it as well and add the two pieces that belong to other packages: knocking
    `WorldGun` entities around, and the "spectacular" slow-motion point.
-9. **`entities::fire_targets`** doesn't skip `FL_KILLME` entities. The SDK `FireTargets` does. This
-   is a small fix in `entities/mod.rs`.
+9. **`entities::fire_targets`** skips `FL_KILLME` entities, as the SDK `FireTargets` does (done).
 10. **`pfnResetGlobalState`.** Calls `stock::base::reset_global_state()` (done at integration).
 11. **Client hooks** (HUD package): `TSFrags` (glass debris and explosions), `TSFade`, `ItemPickup`,
     and the `events/train.sc` handler. (`Train` is drawn by the client HUD, see §3.5.)

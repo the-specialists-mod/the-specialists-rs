@@ -806,7 +806,6 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         v.angles[0] = 0.0;
         v.angles[2] = 0.0;
     }
-    p.ts.died_at = now;
 }
 
 /// `CBasePlayer::PlayerDeathThink` (0x8eaec): settle, play out the death animation, then become
