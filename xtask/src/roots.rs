@@ -74,7 +74,7 @@ fn home() -> PathBuf {
     PathBuf::from(env::var("HOME").unwrap())
 }
 
-fn wineprefix() -> PathBuf {
+pub fn wineprefix() -> PathBuf {
     env::var_os("WINEPREFIX").map(PathBuf::from).unwrap_or_else(|| home().join("games/wineprefix"))
 }
 

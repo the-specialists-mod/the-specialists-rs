@@ -4,7 +4,8 @@
 //! `ts_bot_quota N` keeps N fake clients on the server once a map is active. Each one goes
 //! through ClientConnect and ClientPutInServer like a real client and is driven every frame
 //! with `pfnRunPlayerMove`: wander, turn away from walls, walk to items, aim and fire at visible
-//! enemies, and respawn when dead. Robust beats smart.
+//! enemies, and respawn when dead. Robust beats smart. `ts_bot_stop 1` freezes them in place
+//! (no movement, no fire) for scripted tests.
 //!
 //! TS clears the loadout at death and real clients resend it from the buy menu; bots instead get
 //! a random loadout (a main gun and a sidearm, with spare magazines) every time they spawn.
@@ -80,7 +81,17 @@ fn fake_clients() -> Vec<*mut edict_t> {
     eng.clients().filter(|&e| unsafe { (*e).v.flags } & FL_FAKECLIENT as i32 != 0 && eng.user_id(e) != -1).collect()
 }
 
-/// Adds one bot (also the `addbot` server command).
+/// The `addbot` server command: one more bot, with `ts_bot_quota` raised to cover it. Otherwise
+/// the quota (default 0) kicks the new bot half a second later.
+pub fn add_bot_command() {
+    let want = fake_clients().len() + 1;
+    if (cvars::f(c"ts_bot_quota").max(0.0) as usize) < want {
+        engine().set_cvar_float(c"ts_bot_quota", want as f32);
+    }
+    add_bot();
+}
+
+/// Adds one bot.
 pub fn add_bot() {
     let eng = engine();
     let n = {
@@ -132,13 +143,18 @@ pub fn start_frame() {
     }
 
     let msec = (eng.globals().frametime * 1000.0).round().clamp(1.0, 100.0) as u8;
+    let stop = cvars::f(c"ts_bot_stop") != 0.0;
     for e in fake_clients() {
         // Bots created by another mod or a previous map have no Rust bot: adopt them.
         if world::with::<Player, bool>(e, |p| p.bot.is_some()) == Some(false) {
             world::with::<Player, ()>(e, |p| p.bot = Some(Bot::default()));
         }
         let cmd = with_player(e, |p, cx| think(p, cx)).flatten();
-        if let Some(c) = cmd {
+        if let Some(mut c) = cmd {
+            // `ts_bot_stop 1`: no movement or buttons; dead and observing bots still respawn.
+            if stop && unsafe { (*e).v.deadflag } == DEAD_NO as i32 && unsafe { (*e).v.iuser1 } == 0 {
+                (c.forward, c.side, c.buttons) = (0.0, 0.0, 0);
+            }
             eng.run_player_move(e, c.angles, c.forward, c.side, 0.0, c.buttons, 0, msec);
         }
     }

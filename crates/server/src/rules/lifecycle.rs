@@ -64,6 +64,7 @@ pub fn client_disconnect(e: *mut edict_t) {
             state::with(|g| g.the_one_exists = false);
         }
         p.joined = false;
+        p.bot = None;
         p.ts = PlayerRules::default();
         p.cash = 0;
         p.frags = 0;
@@ -75,6 +76,11 @@ pub fn client_disconnect(e: *mut edict_t) {
         other(o, |q| q.ts.slowed &= !(1u64 << idx.clamp(0, 63)));
     }
     state::with(|g| g.check_deads_at = engine().time() + 1.0);
+    // The engines leave FL_CLIENT/FL_FAKECLIENT on a dropped client's edict, and FWGS still maps
+    // it to the freed slot: pfnGetPlayerUserId returns the old id, and pfnSetClientMaxspeed then
+    // dereferences the slot's NULL edict (the "kick a bot" crash). Clearing the flags takes the
+    // edict out of players(), is_player() and the bot list until a client connects to the slot.
+    unsafe { (*e).v.flags &= !((FL_CLIENT | FL_FAKECLIENT) as i32) };
 }
 
 /// `ClientKill`: suicide one second later (handled in `pre_think`), not while observing.
@@ -652,6 +658,10 @@ pub fn stop_observer(p: &mut Player, cx: &mut Cx) {
     p.joined = true;
     p.spawn(cx);
     cx.pev().nextthink = -1.0;
+    if engine().cvar_float(c"developer") != 0.0 {
+        let owned: Vec<usize> = (1..p.inv.gun.status.len()).filter(|&i| p.inv.gun.status[i].owned).collect();
+        engine().print(&format!("[ts] {} spawned (#{idx}) with {owned:?}\n", netname(cx.edict)));
+    }
 }
 
 // ---- death --------------------------------------------------------------------------------------

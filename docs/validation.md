@@ -50,6 +50,8 @@ cargo xtask roots                       # which roots exist
 cargo xtask install all                 # assemble <root>/ts and install libraries
 cargo xtask server rehlds-linux --map ts_awaken --bots 4 --seconds 60
 cargo xtask test                        # install + server check on every root
+cargo xtask listen                      # listen server on fwgs and fwgs-win: join flow + bots
+cargo xtask dojo                        # gameplay on ts_dojo (fwgs, fwgs-win; ~4 min each)
 ```
 
 A server check passes when all of these hold:
@@ -63,6 +65,46 @@ Client checks run the FWGS client with an autotest cfg (`wait` chains, commands,
 `quit`) and inspect the screenshots. FWGS joins GoldSrc-protocol servers with
 `connect host:port gs`. That covers the full chain: the Rust client on FWGS, connected to the
 Rust server on ReHLDS or HLDS.
+
+The listen check (`cargo xtask listen [<fwgs-root>...] [--map M]`) plays the join flow on a
+listen server, on the native and the win32 FWGS builds. The steps are:
+
+1. Join. The buy menu opens with a random first loadout.
+2. Reset the loadout, then pick an AK47 with a scope and confirm, using `slotN` as the number keys do.
+3. Click `+attack` once the respawn wait has passed.
+4. Run `addbot` twice and check that the quota follows.
+5. Kick a bot.
+6. Raise `ts_bot_quota` to 3, then drop it to 0.
+
+It passes when the host spawns with the bought AK47, the bots come and go, and nothing crashes.
+Screenshots go to `target/listen-<root>-N.png`. Scripted `+attack` gets past the client's
+anti-script gate through `ts_dev_scriptinput 1` (with `sv_cheats 1`). The script can't close
+the MOTD, which needs a real Enter key or click, so the MOTD stays on screen.
+
+The gameplay check (`cargo xtask dojo [<fwgs-root>...]`) plays these scenes on `ts_dojo` and
+reads the results from `ts_status` dumps, kill notices and developer log lines:
+
+| Scene | How | Passes when |
+|---|---|---|
+| Spawn | Buy an AK47, then click | `[ts] <host> spawned (#1)` |
+| Power-up | Stand on the slow-motion `ts_powerup` (`0 -672 48`, pwuptype 1) with a stopped bot in view, then double-tap `+use` | Held `0x1` after the pickup. After the double tap, active `0x1`, host time scale 0.6, bot 0.35 |
+| Grenade | `ts_give 24`, `weapon_24`, aim at the 1-HP pillar `*15` and throw (`+attack`, release) | `func_breakable ... broken by <host> (grenade, ...)` |
+| Kill | Teleport the stopped bot in front of the host, aim and fire the AK47 | `<host> killed Bot ...` and the host has a frag |
+| Death and respawn | `ts_hurt 1 500 2 2`, click through the death cam, click again after the wait | Host is dead with a death, then a second spawn line and alive |
+| Bots | Host suicides and stays observer; `ts_bot_stop 0`, `ts_bot_quota 4`, a minute of play | Four bots. Within one life, each bot (all but at most one) moves over 64 units between dumps 10 s apart. At least 2 `Bot ... killed Bot ...` lines |
+
+Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`):
+
+* `ts_tp <player#> <x> <y> <z> [yaw] [pitch]` teleports a player, drops them to the floor and
+  can set their view.
+* `ts_face <player#> <target#>` or `ts_face <player#> <x> <y> <z>` aims a player's view.
+* `ts_bot_stop 1` makes bots stand still and hold fire. They still respawn.
+* `ts_status`, `ts_hurt`, `ts_givepowerup`, `ts_give` (existing).
+* With `developer` on, each broken `func_breakable` is logged with its attacker, inflictor class
+  and damage bits.
+
+Scripts use `w10`/`w100` wait aliases. Plain `wait` chains overflow FWGS's 32 KB command buffer
+(`Cbuf_InsertTextToBuffer: overflow`), and the engine then skips the whole cfg.
 
 ## 3. Results
 
@@ -140,4 +182,7 @@ the HUD), and the Windows client library loaded in FWGS win32.
 | Release `mp.dll` never loads on HL25 Windows (crash in `swds.dll` right after `LoadLibrary`); the debug build works | The Steam engine reads the DLL's export names from the file: it finds the section *named* `.rdata` and translates the export RVAs with it (MSVC puts exports there). MinGW emits `.edata`, so the engine walks garbage. The debug build only survived because the garbage happened to be readable memory. | xtask renames `.rdata` to `.rodata` and `.edata` to `.rdata` in every Windows DLL it installs or packages (`msvc_style_export_section`). |
 | Bots never join on GoldSrc; fine on FWGS | Command-line `+cvar` runs before GameInit registers the game's cvars | xtask writes the quota into `xtask_server.cfg` and passes `+servercfgfile`. |
 | HL25 crashes after the last human leaves | HL25 drops every bot then; driving a dropped bot with `pfnRunPlayerMove` crashes `SV_RunCmd` | Bots are driven only while they have a live user id. |
+| Crash in `pfnSetClientMaxspeed` (FWGS) after a bot is kicked; the Windows dialog shows `Host_Shutdown (xash.dll)` under `mp.dll` frames | A dropped client keeps `FL_CLIENT`/`FL_FAKECLIENT`, and FWGS still maps its edict to the freed slot: `pfnGetPlayerUserId` returns the old id, and `pfnSetClientMaxspeed` dereferences the slot's NULL edict when the bot respawns | `ClientDisconnect` clears both flags, so dropped players drop out of `players()`, `is_player()` and the bot list |
+| `addbot` bot kicked half a second later | `ts_bot_quota` (default 0) kicked bots above the quota | `addbot` raises the quota to cover its bot |
+| Quota kicks never happen in a scripted test | `pfnServerCommand("kick ...")` is appended to the console buffer behind the rest of the running `wait` script | The listen script ends right after `ts_bot_quota 0`; xtask stops the game 10 s later |
 | `SteamAPI_Init() failed` in HLDS logs | Normal for dedicated servers (they use the game-server API) | none |

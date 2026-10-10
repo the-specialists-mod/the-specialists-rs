@@ -182,6 +182,30 @@ pub fn gate_open() -> bool {
     REAL_KEY.0.get() || (DEV_SCRIPT_INPUT.0.get().value() != 0.0 && cvar_ptr_value(c"sv_cheats") != 0.0)
 }
 
+/// TS `FUN_10023450`: gated `+forward`/`+back`/`+moveleft`/`+moveright`/`+attack`/`+attack2`/
+/// `+jump` presses and `+duck` share one 0.2 s timer. When the timer has run out it restarts, and
+/// a press with bit 0 set (`+attack` only) sends `respawn`. The server ignores it unless the
+/// player is an observer whose respawn wait is over, so this is how a click spawns you in.
+static NEXT_KEY_TAP: Global<Cell<f32>> = Global(Cell::new(0.0));
+
+fn key_tap(bits: u8) {
+    let now = engine().client_time();
+    if let Some(send) = key_tap_step(&NEXT_KEY_TAP.0, now, bits) {
+        if send {
+            engine().server_cmd("respawn");
+        }
+    }
+}
+
+/// Pure part of `key_tap`: `None` while the timer runs, else whether to send `respawn`.
+fn key_tap_step(next: &Cell<f32>, now: f32, bits: u8) -> Option<bool> {
+    if next.get() > now {
+        return None;
+    }
+    next.set(now + 0.2);
+    Some(bits & 1 != 0)
+}
+
 fn cvar_ptr_value(name: &CStr) -> f32 {
     Cvar::from_raw(engine().cvar_pointer(name)).value()
 }
@@ -359,13 +383,33 @@ fn register_commands() {
     cmd!(c"+right", IN_RIGHTB.key_down());
     cmd!(c"-right", IN_RIGHTB.key_up());
     // Gated movement.
-    cmd!(c"+forward", if gate_open() { IN_FWD.key_down() });
+    cmd!(c"+forward", {
+        if gate_open() {
+            IN_FWD.key_down();
+            key_tap(0x08);
+        }
+    });
     cmd!(c"-forward", IN_FWD.key_up());
-    cmd!(c"+back", if gate_open() { IN_BK.key_down() });
+    cmd!(c"+back", {
+        if gate_open() {
+            IN_BK.key_down();
+            key_tap(0x10);
+        }
+    });
     cmd!(c"-back", IN_BK.key_up());
-    cmd!(c"+moveleft", if gate_open() { IN_MOVELEFTB.key_down() });
+    cmd!(c"+moveleft", {
+        if gate_open() {
+            IN_MOVELEFTB.key_down();
+            key_tap(0);
+        }
+    });
     cmd!(c"-moveleft", IN_MOVELEFTB.key_up());
-    cmd!(c"+moveright", if gate_open() { IN_MOVERIGHTB.key_down() });
+    cmd!(c"+moveright", {
+        if gate_open() {
+            IN_MOVERIGHTB.key_down();
+            key_tap(0);
+        }
+    });
     cmd!(c"-moveright", IN_MOVERIGHTB.key_up());
     cmd!(c"+lookup", IN_LOOKUP.key_down());
     cmd!(c"-lookup", IN_LOOKUP.key_up());
@@ -373,7 +417,12 @@ fn register_commands() {
     cmd!(c"-lookdown", IN_LOOKDOWN.key_up());
     cmd!(c"+speed", IN_SPEED.key_down());
     cmd!(c"-speed", IN_SPEED.key_up());
-    cmd!(c"+attack", if gate_open() { IN_ATK.key_down() });
+    cmd!(c"+attack", {
+        if gate_open() {
+            IN_ATK.key_down();
+            key_tap(0x01);
+        }
+    });
     cmd!(c"-attack", IN_ATK.key_up());
     // +attack2 / +alt2 drive one of two kbuttons depending on cl_attackswitch. TS's +attack2 also
     // runs `special` (`_special` to the server through the viewport).
@@ -381,6 +430,7 @@ fn register_commands() {
         if gate_open() {
             if attack_switched() { IN_ALT2B.key_down() } else { IN_ATK2.key_down() }
             engine().server_cmd("_special");
+            key_tap(0);
         }
     });
     cmd!(c"-attack2", {
@@ -389,7 +439,12 @@ fn register_commands() {
     });
     cmd!(c"+use", IN_USEK.key_down());
     cmd!(c"-use", IN_USEK.key_up());
-    cmd!(c"+jump", if gate_open() { IN_JMP.key_down() });
+    cmd!(c"+jump", {
+        if gate_open() {
+            IN_JMP.key_down();
+            key_tap(0x02);
+        }
+    });
     cmd!(c"-jump", IN_JMP.key_up());
     cmd!(c"impulse", {
         let n: i32 = engine().cmd_argv(1).to_str().ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
@@ -399,7 +454,10 @@ fn register_commands() {
     cmd!(c"-klook", IN_KLOOK.key_up());
     cmd!(c"+jlook", IN_JLOOK.key_down());
     cmd!(c"-jlook", IN_JLOOK.key_up());
-    cmd!(c"+duck", IN_DCK.key_down());
+    cmd!(c"+duck", {
+        IN_DCK.key_down();
+        key_tap(0x04);
+    });
     cmd!(c"-duck", IN_DCK.key_up());
     cmd!(c"+reload", if gate_open() { IN_RELOD.key_down() });
     cmd!(c"-reload", IN_RELOD.key_up());
@@ -1007,6 +1065,16 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_tap_sends_respawn_on_attack_only_and_throttles() {
+        let next = Cell::new(0.0);
+        assert_eq!(key_tap_step(&next, 1.0, 0x01), Some(true)); // +attack: respawn
+        assert_eq!(key_tap_step(&next, 1.1, 0x01), None); // within 0.2 s
+        assert_eq!(key_tap_step(&next, 1.25, 0x08), Some(false)); // +forward restarts the timer
+        assert_eq!(key_tap_step(&next, 1.35, 0x01), None); // ...which also holds back +attack
+        assert_eq!(key_tap_step(&next, 1.5, 0x01), Some(true));
+    }
 
     #[test]
     fn gated_bindings_match_ts() {

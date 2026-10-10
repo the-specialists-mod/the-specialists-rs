@@ -353,6 +353,19 @@ impl<const PUSH: bool> Breakable<PUSH> {
             self.damage_sound(cx);
             true
         } else {
+            let eng = engine();
+            if eng.cvar_float(c"developer") != 0.0 {
+                let name = |e: *mut edict_t, f: fn(&entvars_t) -> string_t| {
+                    if e.is_null() { "world".to_owned() } else { eng.string(f(unsafe { &(*e).v })).to_string_lossy().into_owned() }
+                };
+                eng.print(&format!(
+                    "[ts] func_breakable #{} broken by {} ({}, damage bits {:#x})\n",
+                    eng.index_of(cx.edict),
+                    name(info.attacker, |v| v.netname),
+                    name(info.inflictor, |v| v.classname),
+                    info.bits
+                ));
+            }
             self.die(cx, info.attacker);
             false
         }
@@ -369,6 +382,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         if !attacker.is_null() {
             cx.pev().fuser1 = unsafe { (*attacker).v.fuser1 };
         }
+
         play_break_sound(me, self.material, (health as i32).abs() as f32 * 0.01, 0.9);
         let (_, mult, flags) = break_sounds(self.material);
 

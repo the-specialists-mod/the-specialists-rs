@@ -9,7 +9,7 @@ const SERVER: i32 = 0x4; // FCVAR_SERVER
 const UNLOGGED: i32 = 0x100; // FCVAR_UNLOGGED
 
 /// (name, default, flags), in TS registration order. All of these are registered by TS's
-/// `GameDLLInit` except the voice pair (`CVoiceGameMgr::Init`) and `ts_bot_quota` (this port).
+/// `GameDLLInit` except the voice pair (`CVoiceGameMgr::Init`) and `ts_bot_quota`/`ts_bot_stop` (this port).
 pub const CVARS: &[(&str, &str, i32)] = &[
     ("displaysoundlist", "0", 0),
     ("mp_fragsleft", "0", SERVER | UNLOGGED),
@@ -53,6 +53,8 @@ pub const CVARS: &[(&str, &str, i32)] = &[
     ("sv_alltalk", "0", 0),
     // Port addition: fake clients for unattended server tests (bots/mod.rs).
     ("ts_bot_quota", "0", 0),
+    // Port addition: 1 = bots stand still and hold fire (they still respawn), for scripted tests.
+    ("ts_bot_stop", "0", 0),
 ];
 
 /// TS defines these `cvar_t`s but never registers them, so they're constants (architecture.md

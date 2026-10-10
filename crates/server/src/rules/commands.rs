@@ -203,6 +203,72 @@ pub fn register_server_commands() {
     e.add_server_command(c"ts_status", cmd_status);
     e.add_server_command(c"ts_hurt", cmd_hurt);
     e.add_server_command(c"ts_givepowerup", cmd_givepowerup);
+    e.add_server_command(c"ts_tp", cmd_tp);
+    e.add_server_command(c"ts_face", cmd_face);
+}
+
+/// Points a player's view (and body) at `angles`; `fixangle` makes the client take them.
+fn set_view_angles(p: *mut edict_t, angles: [f32; 3]) {
+    let v = unsafe { &mut (*p).v };
+    v.v_angle = angles;
+    v.angles = angles;
+    v.fixangle = 1;
+}
+
+fn arg_f32(i: i32) -> f32 {
+    engine().cmd_argv(i).to_string_lossy().trim().parse().unwrap_or(0.0)
+}
+
+/// `ts_tp <player#> <x> <y> <z> [yaw] [pitch]` (sv_cheats): teleports a player, drops them to the
+/// floor and optionally sets the view. Lets scripted tests reach map features.
+unsafe extern "C" fn cmd_tp() {
+    let e = engine();
+    if !cvars::cheats() || e.cmd_argc() < 5 {
+        e.print("usage (sv_cheats 1): ts_tp <player#> <x> <y> <z> [yaw] [pitch]\n");
+        return;
+    }
+    let p = e.client(arg_f32(1) as i32);
+    if p.is_null() {
+        return;
+    }
+    unsafe { (*p).v.velocity = [0.0; 3] };
+    e.set_origin(p, [arg_f32(2), arg_f32(3), arg_f32(4)]);
+    e.drop_to_floor(p);
+    if e.cmd_argc() > 5 {
+        let pitch = if e.cmd_argc() > 6 { arg_f32(6) } else { 0.0 };
+        set_view_angles(p, [pitch, arg_f32(5), 0.0]);
+    }
+    let o = unsafe { (*p).v.origin };
+    e.print(&format!("[ts] ts_tp: #{} at ({:.0} {:.0} {:.0})\n", e.index_of(p), o[0], o[1], o[2]));
+}
+
+/// `ts_face <player#> <target#>` or `ts_face <player#> <x> <y> <z>` (sv_cheats): aims a player's
+/// view at another player's chest or at a point.
+unsafe extern "C" fn cmd_face() {
+    let e = engine();
+    if !cvars::cheats() || (e.cmd_argc() != 3 && e.cmd_argc() != 5) {
+        e.print("usage (sv_cheats 1): ts_face <player#> <target#> | <player#> <x> <y> <z>\n");
+        return;
+    }
+    let p = e.client(arg_f32(1) as i32);
+    if p.is_null() {
+        return;
+    }
+    let target = if e.cmd_argc() == 3 {
+        let t = e.client(arg_f32(2) as i32);
+        if t.is_null() {
+            return;
+        }
+        let tv = unsafe { &(*t).v };
+        [tv.origin[0], tv.origin[1], tv.origin[2] + tv.view_ofs[2] * 0.5]
+    } else {
+        [arg_f32(2), arg_f32(3), arg_f32(4)]
+    };
+    let v = unsafe { &(*p).v };
+    let eye = [v.origin[0] + v.view_ofs[0], v.origin[1] + v.view_ofs[1], v.origin[2] + v.view_ofs[2]];
+    let a = e.vec_to_angles([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
+    // VecToAngles pitch is up-positive; view angles look down with positive pitch.
+    set_view_angles(p, [-a[0], a[1], 0.0]);
 }
 
 /// `ts_status`: one line per player (state, health, frags, power-ups, time scale).
@@ -280,7 +346,7 @@ unsafe extern "C" fn cmd_givepowerup() {
 
 /// TS prints "Bots only in listen servers." here; the port adds a bot (bots/mod.rs).
 unsafe extern "C" fn cmd_addbot() {
-    crate::bots::add_bot();
+    crate::bots::add_bot_command();
 }
 
 /// `globalslow [percent]` (0xc5580).
