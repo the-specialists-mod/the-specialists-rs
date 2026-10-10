@@ -50,7 +50,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | local-player translucency, `Approach` | start of `0x10067890`, `0x10057e90` | `view::local_amt_step` (crosshair flag from the HUD's `DrawCrosshairID`) | done, unit-tested |
 | `cl_vsmoothing` origin ring (SDK `ViewInterp`) | step 14 of `0x10067890` | `view::Ring` | done, unit-tested |
 | `V_CalcBob` / `V_SmoothBobZ` | `0x10066e70` / `0x10066de0` | `view::calc_bob` | done (cl_bob levels 0..4) |
-| `V_SmoothStairs` + view-height smoothing | `0x100677d0` | in `calc_normal` | done |
+| `V_SmoothStairs` + view-height smoothing | `0x100677d0` | `view::Stairs` (called from `calc_normal`, and again for the body cam) | done, unit-tested; behaviour as TS, see "Stair smoothing" below |
 | `V_CalcViewRoll` / `V_CalcRoll` | `0x100675b0` / `0x100671f0` | `view::calc_view_roll` | done |
 | `V_ApplyKick` | `0x10057ed0` | in `calc_normal` (step into `cl_viewangles`) | done, verified in game |
 | `ViewShake::Start` / `Update` | `0x10057fa0` / `0x10058000` | `view::Shake` | done, unit-tested |
@@ -112,6 +112,52 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `HUD_TxferPredictionData` | `0x1001bb00` | `prediction::txfer_prediction_data` | done |
 | `HUD_PostRunCmd` / `HUD_WeaponsPostThink` | `0x100045b0` / `0x10003830` | `prediction::post_run_cmd`, `prediction::gun` | structure + stopgap predictor |
 
+### Stair smoothing (`V_SmoothStairs`, `0x100677d0`)
+
+Read from the assembly (the decompile agrees). The input is the eye z: `V_CalcNormalRefdef` sets
+`vieworg = simorg`, adds the smoothed view height to z (`vh += (viewheight.z − vh)·min(15·ft, 1)`)
+and calls `V_SmoothStairs(pparams)` (`0x10067a46`). With `k = min(15·ft, 1)` (constants
+`0x1007a890` = 15.0, `0x10079e58` = 1.0) and statics `smoothZ` (`0x10191d84`), `offset`
+(`0x10191d88`) and the previous `onground` (`0x100972ac`):
+
+```c
+if (!onground) {
+    if (prev_onground) offset = z - smoothZ;   // fld [ecx+8]; fsub [0x10191d84]
+    smoothZ = z;
+} else {
+    offset = 0;
+    smoothZ += (z - smoothZ) * k;
+}
+z = smoothZ + offset;
+offset *= 1 - k;
+prev_onground = onground;
+```
+
+* **Step up / step down on the ground:** the eye eases toward its new height at rate 15, both
+  ways. There is no snap distance (the port used to snap past 32 units; TS doesn't), so
+  teleports and respawns also ease, over roughly 0.3 s.
+* **Leaving the ground** (jumping, or walking off a ledge): the offset is `z − smoothZ`, the
+  current lag with TS's sign. The SDK's `V_CalcNormalRefdef` (`cl_dll/view.cpp`, "smooth out
+  stair step ups") only smooths rising z on the ground without `pparams->smoothing`: `oldz` climbs
+  at 150 units/s, at most 18 below `simorg.z`, and resets to `simorg.z` otherwise, so it never
+  smooths a step down and doesn't touch the view in the air.
+  An offset that kept the view continuous would be `smoothZ − z`; TS's doubles the jump instead:
+  jumping while the eye still lags below after a step up throws the view the same distance *above*
+  the eye for a frame, then the offset decays at rate 15. Leaving the ground while lagging above
+  dips it below. With no lag (flat ground, or after the eye has caught up) nothing happens, which
+  is why it's hard to notice in play. The assembly is unambiguous, so the port copies it.
+* **Landing:** the offset is zeroed and `smoothZ` eases on from the last air z, so landings are
+  continuous.
+* **Initial state:** the statics start at 0, 0 and -1 (`.data` at `0x100972ac` is `ffffffff`).
+  The first frame after the library loads counts as "was on the ground", and the first spawn
+  eases up from z 0. The state is never reset on map change, as in TS.
+* **Body cam** (`back == 0` after smoothing, e.g. `cl_camtype 3; cam_back 0`): TS calls
+  `V_SmoothStairs` again on the camera origin (`0x10068313`), on the same state. On the ground the
+  smoothed z is pulled toward both the eye and the camera every frame, so the body cam settles
+  between the two, nearer the camera, and closer to it the lower the frame rate (exactly on it at
+  `15·ft ≥ 1`). In the air the second call reuses the offset and decays it a second time. The
+  port makes the same two calls.
+
 ## Event parameters (as handled)
 
 All events arrive with `FEV_NOTHOST`; the shooter's copy comes from local prediction. Where R§4.2
@@ -153,9 +199,6 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 * **Third-person model z smoothing** starts from the model's current z when third person is
   entered. TS keeps a static that is only updated in third person, so its model slides in from
   wherever it was the last time (z 0 the first time).
-* **Body cam** (`back == 0` after smoothing, e.g. `cl_camtype 3; cam_back 0`): TS runs
-  `V_SmoothStairs` a second time on the camera origin, which also advances the stair state. The
-  port adds this frame's stair offset instead, so the stair smoothing isn't stepped twice.
 * The third-person collision trace is world-only (`PM_WORLD_ONLY`) from the model origin; TS uses
   `PM_TraceLine` against the pmove physents.
 * **Particle numbers** in `effects::fx` are read from the TS client's disassembly (the decompile

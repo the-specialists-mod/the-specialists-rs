@@ -42,18 +42,13 @@ struct View {
     bob_pitch: f32,
     // smoothing
     vh: f32,
-    smooth_z: f32,
-    step_ofs: f32,
-    on_ground: bool,
+    stairs: Stairs,
     roll: f32,
     // kick (`0x10191d10` target, `0x101914f8` current) and the view-shake spring
     kick_target: [f32; 2],
     kick_cur: [f32; 2],
     last_shot: f64,
     shake: Shake,
-    /// Z the stair smoothing added to the eye this frame (TS runs `V_SmoothStairs` again on the
-    /// body cam).
-    stair_dz: f32,
     // `V_DriftPitch` state (SDK `pd`, `0x10191460..0x10191470`)
     drift: Drift,
     /// Local player `renderamt` being eased (`0x10097214`); 255 = opaque.
@@ -207,6 +202,46 @@ impl Drift {
             }
             *pitch -= step;
         }
+    }
+}
+
+/// `V_SmoothStairs` (`0x100677d0`) state: the smoothed eye z (`0x10191d84`), the offset carried
+/// off the ground (`0x10191d88`) and last call's `onground` (`0x100972ac`). The statics start as
+/// 0, 0 and -1, so the first call counts as "was on the ground".
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Stairs {
+    smooth_z: f32,
+    ofs: f32,
+    was_on_ground: bool,
+}
+
+impl Default for Stairs {
+    fn default() -> Self {
+        Stairs { smooth_z: 0.0, ofs: 0.0, was_on_ground: true }
+    }
+}
+
+impl Stairs {
+    /// `V_SmoothStairs` (`0x100677d0`), on the eye z (`vieworg.z`, view height already added).
+    /// On the ground the smoothed z follows at `min(15·ft, 1)` and the offset is zeroed; in the
+    /// air it is the eye z, plus an offset set on the frame the ground is left to
+    /// `z − smoothed z` (that sign is TS's, from the assembly: `fld [z]; fsub [0x10191d84]`) and
+    /// decayed at the same rate after each use. No snap: TS has none.
+    fn smooth(&mut self, z: f32, on_ground: bool, ft: f32) -> f32 {
+        let k = (15.0 * ft).min(1.0);
+        if on_ground {
+            self.ofs = 0.0;
+            self.smooth_z += (z - self.smooth_z) * k;
+        } else {
+            if self.was_on_ground {
+                self.ofs = z - self.smooth_z;
+            }
+            self.smooth_z = z;
+        }
+        let out = self.smooth_z + self.ofs;
+        self.ofs *= 1.0 - k;
+        self.was_on_ground = on_ground;
+        out
     }
 }
 
@@ -740,7 +775,6 @@ fn calc_normal(p: &mut ref_params_t) {
         if !w.initialised {
             w.initialised = true;
             w.vh = p.viewheight[2];
-            w.smooth_z = p.simorg[2];
         }
         // Death forces third person (TS: `TSHealth` 0); leaving death returns.
         w.forced_dead = dead;
@@ -769,27 +803,14 @@ fn calc_normal(p: &mut ref_params_t) {
         (ofs, bob_step, step, sh)
     });
 
-    // vieworg = simorg + smoothed view height, plus stair smoothing. During a stunt the server
-    // sends `view_ofs` 0 (`NO_VIEW`), so the eye eases down to the hull centre like TS's.
+    // vieworg = simorg with the smoothed view height on z (only z), then stair smoothing of that
+    // eye z (`0x100679ee..0x10067a46`). During a stunt the server sends `view_ofs` 0 (`NO_VIEW`), so the eye
+    // eases down to the hull centre like TS's.
+    let on_ground = p.onground != 0;
     with(|w| {
         w.vh += (p.viewheight[2] - w.vh) * (15.0 * ft).min(1.0);
-        let on = p.onground != 0;
-        if on {
-            w.smooth_z += (p.simorg[2] - w.smooth_z) * (15.0 * ft).min(1.0);
-            if (p.simorg[2] - w.smooth_z).abs() > 32.0 {
-                w.smooth_z = p.simorg[2];
-            }
-        } else {
-            if w.on_ground {
-                w.step_ofs = w.smooth_z - p.simorg[2];
-            }
-            w.smooth_z = p.simorg[2];
-        }
-        w.on_ground = on;
-        let z = if on { w.smooth_z } else { p.simorg[2] + w.step_ofs };
-        w.step_ofs -= w.step_ofs * (15.0 * ft).min(1.0);
-        w.stair_dz = z - p.simorg[2];
-        p.vieworg = [p.simorg[0] + p.viewheight[0], p.simorg[1] + p.viewheight[1], z + w.vh];
+        let z = w.stairs.smooth(p.simorg[2] + w.vh, on_ground, ft);
+        p.vieworg = [p.simorg[0], p.simorg[1], z];
     });
 
     // Recoil and shake written back into the engine's view angles (FWGS copies cl_viewangles
@@ -847,8 +868,10 @@ fn calc_normal(p: &mut ref_params_t) {
         let (cf, cr2, cu2) = v::angle_vectors(cam_angles);
         if back == 0.0 {
             let org = body_cam(v::add(ent_org, p.viewheight), state.ducked, cam_angles[0], cf, cu2);
-            // TS runs `V_SmoothStairs` on the body cam too; reuse this frame's stair offset.
-            p.vieworg = v::add(org, [0.0, 0.0, with(|w| w.stair_dz)]);
+            // TS runs `V_SmoothStairs` a second time this frame, on the body cam (`0x10068313`),
+            // advancing the same state: see the client-rendering doc.
+            let z = with(|w| w.stairs.smooth(org[2], on_ground, ft));
+            p.vieworg = [org[0], org[1], z];
         } else {
             let want = v::add(v::add(v::ma(p.vieworg, back, cf), v::scale(cu2, up_ofs)), v::scale(cr2, right_ofs));
             let mut start = v::add(ent_org, [0.0, 0.0, up_ofs + 28.0]);
@@ -1106,6 +1129,56 @@ mod tests {
         blocked.blocked = true;
         d.update(&blocked, &mut pitch);
         assert_eq!(d.pitchvel, 0.0);
+    }
+
+    #[test]
+    fn stair_smoothing_on_ground() {
+        let mut s = Stairs { smooth_z: 64.0, ..Stairs::default() };
+        // Step up 18 units: the eye eases up at 15·ft per frame.
+        let z = s.smooth(82.0, true, 0.01);
+        assert!((z - (64.0 + 18.0 * 0.15)).abs() < 1e-4, "{z}");
+        for _ in 0..200 {
+            s.smooth(82.0, true, 0.01);
+        }
+        assert!((s.smooth(82.0, true, 0.01) - 82.0).abs() < 1e-3);
+        // Step down and big jumps ease the same way: there is no snap.
+        let z = s.smooth(-100.0, true, 0.01);
+        assert!((z - (82.0 - 182.0 * 0.15)).abs() < 1e-3, "{z}");
+        // Slow frames (15·ft ≥ 1) follow exactly.
+        assert_eq!(s.smooth(10.0, true, 0.1), 10.0);
+        assert_eq!(s.ofs, 0.0);
+    }
+
+    #[test]
+    fn stair_smoothing_leaving_ground() {
+        // Lagging 10 below the eye (walking up stairs), then leaving the ground: TS's offset is
+        // `z − smoothed`, so the view jumps 10 *above* the eye, then decays at rate 15.
+        let mut s = Stairs { smooth_z: 90.0, ..Stairs::default() };
+        let z = s.smooth(100.0, false, 0.01);
+        assert_eq!(z, 110.0);
+        assert_eq!(s.smooth_z, 100.0, "the air tracks the eye");
+        assert!((s.ofs - 8.5).abs() < 1e-5);
+        let z = s.smooth(101.0, false, 0.01);
+        assert!((z - 109.5).abs() < 1e-4, "only the first air frame sets the offset: {z}");
+        // Lagging above (stepping down) dips the view below the eye instead.
+        let mut s = Stairs { smooth_z: 110.0, ..Stairs::default() };
+        assert_eq!(s.smooth(100.0, false, 0.01), 90.0);
+        // Landing drops the offset and eases on from the last air z.
+        let z = s.smooth(80.0, true, 0.01);
+        assert!((z - (100.0 - 20.0 * 0.15)).abs() < 1e-4 && s.ofs == 0.0, "{z}");
+        // Leaving flat ground with no lag adds nothing.
+        let mut s = Stairs { smooth_z: 50.0, ..Stairs::default() };
+        assert_eq!(s.smooth(50.0, false, 0.01), 50.0);
+    }
+
+    #[test]
+    fn stair_smoothing_initial_state() {
+        // TS's statics: smoothed z 0 and "was on the ground", so a first frame in the air carries
+        // the whole eye z as the offset, and a first frame on the ground eases up from z 0.
+        let mut s = Stairs::default();
+        assert_eq!(s.smooth(40.0, false, 0.01), 80.0);
+        let mut s = Stairs::default();
+        assert!((s.smooth(40.0, true, 0.01) - 6.0).abs() < 1e-5);
     }
 
     #[test]
