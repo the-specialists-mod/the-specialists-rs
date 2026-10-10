@@ -96,7 +96,8 @@ addresses of `ts_i386.so`.
   cleared here (see on_killed) so weapons the rules give in their `on_spawn` survive.
 * `pre_think`: pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
   melee windows), `BlockPlayer` expiry, the delayed melee hit.
-* `post_think`: `ItemPostFrame` while alive and not on a tank: once the gun is ready
+* `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
+  tank (dead or game over, `PostThink` skips to the timer tail): once the gun is ready
   (`Gun::post_frame_ready`), `ImpulseCommands`' `PlayerUse` (`player::player_use`) and then the
   weapon frame (`Gun::weapon_post_frame`), seed reroll (`RandomLong(0, 32000)`, as TS), timer
   decrement by `frametime * fuser1 * (DFR ? 1.5 : 1)`, speed, messages.

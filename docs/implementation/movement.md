@@ -70,7 +70,7 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 | `CheckForBreakables` | 0x9bd9c | `check_for_breakables` |
 | `CBasePlayer::Jump` / `Duck` | 0x92864 / 0x927fc | `moves::jump`, `moves::duck` |
 | `CBasePlayer::PreThink` (stunt parts) | 0x908cc | `stunt::pre_think`: button edges, `framerate = slowmul`, last-ground time, close-combat/block timers, `Play`, `UpdateTimers`, `NO_VIEW` bit, `BlockPlayer` expiry, breakables, `Jump()`/`Duck()`, `m_flFallVelocity`, `UpdatePlayerState` + `TSState` |
-| `CBasePlayer::PostThink` (stunt parts) | 0x91610 | `stunt::post_think`: frozen angles, fall damage, gravity reset, super-jump landing, `Animate(1/6)`, `StudioFrameAdvance`, `m_afButtonLast` |
+| `CBasePlayer::PostThink` (stunt parts) | 0x91610 | `stunt::post_think`: frozen angles, fall damage, gravity reset, super-jump landing, `Animate(1/6)`, `StudioFrameAdvance`, `m_afButtonLast`; only while alive and not in intermission (`Player::post_think` skips it otherwise, as TS does) |
 | `CBasePlayer::BlockPlayer` | 0x95b58 | `stunt::block_player` |
 | `UpdatePlayerState` | 0x92a08 | in `stunt::pre_think` |
 | `GetDirection` | 0x6b008 | `stunt::get_direction` |

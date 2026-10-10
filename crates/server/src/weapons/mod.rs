@@ -227,17 +227,22 @@ pub fn use_by_player(ent: &mut dyn std::any::Any, icx: &mut Cx, p: &mut Player, 
     true
 }
 
-pub fn post_think(p: &mut Player, cx: &mut Cx) {
+/// The weapon parts of `CBasePlayer::PostThink` (0x91610). `active` is false during intermission
+/// and while dead: PostThink then skips `ItemPostFrame` and the `m_afButtonLast` update and only
+/// runs the timers down.
+pub fn post_think(p: &mut Player, cx: &mut Cx, active: bool) {
     // `CBasePlayer::ItemPostFrame` (0xdc4d0) does nothing while a tank is in use. Otherwise, once
     // the gun is ready, `ImpulseCommands` runs `PlayerUse` (0xd9848) and then the weapon frame.
-    if Player::is_alive(cx) && !p.drive.tank.is_valid() && p.inv.gun.post_frame_ready(cx.pev().button as u32) {
-        let (buttons, last) = (cx.pev().button, p.inv.sv.last_buttons as i32);
-        crate::player::player_use::player_use(p, cx, buttons & !last, last & !buttons);
-        host::with_host(p, cx, |gun, h| gun.weapon_post_frame(h));
-        p.inv.sv.seed = engine().random_long(0, 32000) as u32;
+    if active {
+        if !p.drive.tank.is_valid() && p.inv.gun.post_frame_ready(cx.pev().button as u32) {
+            let (buttons, last) = (cx.pev().button, p.inv.sv.last_buttons as i32);
+            crate::player::player_use::player_use(p, cx, buttons & !last, last & !buttons);
+            host::with_host(p, cx, |gun, h| gun.weapon_post_frame(h));
+            p.inv.sv.seed = engine().random_long(0, 32000) as u32;
+        }
+        p.inv.sv.last_buttons = cx.pev().button as u32;
     }
     let pev = cx.pev();
-    p.inv.sv.last_buttons = pev.button as u32;
     let dt = Gun::timer_dt(engine().globals().frametime, pev.fuser1.max(0.0), p.active_powerup);
     p.inv.gun.decrement_timers(dt);
     inventory::sync_speed(p, cx);
