@@ -128,6 +128,10 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 
 - **GoldSrc runs command-line `+cvar` before `GameInit` registers the game's cvars.** Set game
   cvars from a cfg via `+servercfgfile` (xtask does).
+- **The game queues `exec <servercfgfile>` (`lservercfgfile` on a listen server) on every map**,
+  as TS's `CHalfLifeMultiplay` constructor does. The command waits behind a running `wait` script,
+  and TS's shipped `listenserver.cfg` adds four bots and sets `sv_cheats 0`, so xtask's listen-server
+  scripts set `lservercfgfile ""`.
 - **Stock HLDS strips `_i386` and loads `dlls/ts.so`**, so xtask installs both names.
 - **Windows DLLs need MSVC-style export sections.** Steam's engine finds exports through the
   section named `.rdata`, so xtask renames MinGW's `.edata`. Use `cargo xtask install`/`dist`, not

@@ -498,10 +498,12 @@ fn shot(tag: &str) -> String {
 }
 
 /// Script prologue: cheats for the dev commands, scripted input past the client's anti-script
-/// gate (`ts_dev_scriptinput 1`), faster game time, then the map.
+/// gate (`ts_dev_scriptinput 1`), faster game time, then the map. `lservercfgfile ""` stops the
+/// game from queueing the root's `listenserver.cfg` on every map (TS's `CHalfLifeMultiplay`
+/// constructor does, and TS's shipped file adds four bots and turns `sv_cheats` off).
 fn script_start(map: &str) -> String {
     format!(
-        "// Written by cargo xtask.\nalias w10 \"{}\"\nalias w100 \"{}\"\nfps_max 100\nsys_timescale {TIMESCALE}\nsv_cheats 1\nts_dev_scriptinput 1\nmaxplayers 8\nmap {map}\n",
+        "// Written by cargo xtask.\nalias w10 \"{}\"\nalias w100 \"{}\"\nfps_max 100\nsys_timescale {TIMESCALE}\nsv_cheats 1\nts_dev_scriptinput 1\nmaxplayers 8\nlservercfgfile \"\"\nmap {map}\n",
         "wait;".repeat(10),
         "w10;".repeat(10)
     )
