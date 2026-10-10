@@ -729,7 +729,7 @@ pub fn init() {
     CVARS.0.set(InputCvars::register());
     DEV_SCRIPT_INPUT.0.set(Cvar::register(c"ts_dev_scriptinput", c"0", 0));
     register_commands();
-    let fwgs = !engine().cvar_pointer(c"host_ver").is_null();
+    let fwgs = !Cvar::find(c"host_ver").is_null();
     mouse(|m| {
         m.is_fwgs = fwgs;
         // SDK IN_StartupMouse: `-nomouse` disables the mouse entirely.
@@ -939,6 +939,40 @@ mod tests {
         assert_eq!(key_tap_step(&next, 1.25, 0x08), Some(false)); // +forward restarts the timer
         assert_eq!(key_tap_step(&next, 1.35, 0x01), None); // ...which also holds back +attack
         assert_eq!(key_tap_step(&next, 1.5, 0x01), Some(true));
+    }
+
+    /// TS registers each client cvar once (`goldsrc::client::Cvar`'s registration rule); a second
+    /// `pfnRegisterVariable` for a name resets it on FWGS and is refused on GoldSrc. Scans the
+    /// crate's sources for `Cvar::register(c"…"` and the `cvars!` table above.
+    #[test]
+    fn each_cvar_is_registered_once() {
+        fn names_after(text: &str, marker: &str, out: &mut Vec<String>) {
+            for (i, _) in text.match_indices(marker) {
+                let rest = &text[i + marker.len()..];
+                out.push(rest[..rest.find('"').unwrap()].to_string());
+            }
+        }
+        fn scan(dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    scan(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    names_after(&text, concat!("Cvar::register", "(c\""), out);
+                    if path.ends_with("input.rs") {
+                        let table = &text[text.find(concat!("cvars", "! {")).unwrap()..];
+                        names_after(&table[..table.find("\n}").unwrap()], concat!("= ", "c\""), out);
+                    }
+                }
+            }
+        }
+        let mut names = Vec::new();
+        scan(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut names);
+        assert!(names.len() > 80, "scan found only {} registrations", names.len());
+        names.sort();
+        let dups: Vec<_> = names.windows(2).filter(|w| w[0] == w[1]).map(|w| w[0].clone()).collect();
+        assert!(dups.is_empty(), "cvars registered more than once: {dups:?}");
     }
 
     #[test]

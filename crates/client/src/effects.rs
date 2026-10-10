@@ -18,8 +18,8 @@ use crate::events::ClientBullet;
 use crate::{state, view};
 use emitters::MapFx;
 use goldsrc::Global;
-use goldsrc::client::engine;
-use goldsrc::ext::render::{self as r, Cvar, Vec3, vec3 as v};
+use goldsrc::client::{Cvar, engine};
+use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use psys::{Camera, PSys};
 use shared::protocol::effects as msg;
@@ -164,15 +164,20 @@ pub fn impact(pos: Vec3, normal: Vec3, tex: u8, bullet_type: i32) {
     });
 }
 
+/// The effects cvars: `cl_fx`, `cl_gore`, `cl_laser*`, `cl_shadow` and `cl_motionblur` are
+/// `InitInput`'s, so this shares those handles rather than registering the names again (see
+/// [`Cvar`]); `r_paintball` and `gl_fog` are registered here, as `CHud::Init` (10020170) does,
+/// since no other module reads them. Runs after `input::init`.
 pub fn init() {
+    let i = crate::input::cvars();
     *CVARS.0.borrow_mut() = Some(Cvars {
-        fx: Cvar::register(c"cl_fx", c"1", r::FCVAR_ARCHIVE),
-        gore: Cvar::register(c"cl_gore", c"2", r::FCVAR_ARCHIVE),
-        laser: Cvar::register(c"cl_laser", c"0", r::FCVAR_ARCHIVE),
-        lasercolor: Cvar::register(c"cl_lasercolor", c"0", r::FCVAR_ARCHIVE),
-        shadow: Cvar::register(c"cl_shadow", c"2", r::FCVAR_ARCHIVE),
-        motionblur: Cvar::register(c"cl_motionblur", c"1", r::FCVAR_ARCHIVE),
-        paintball: Cvar::register(c"r_paintball", c"0", 0),
+        fx: i.cl_fx,
+        gore: i.cl_gore,
+        laser: i.cl_laser,
+        lasercolor: i.cl_lasercolor,
+        shadow: i.cl_shadow,
+        motionblur: i.cl_motionblur,
+        paintball: Cvar::register(c"r_paintball", c"0", r::FCVAR_ARCHIVE),
         gl_fog: Cvar::register(c"gl_fog", c"0", r::FCVAR_ARCHIVE),
     });
     let e = goldsrc::client::engine();

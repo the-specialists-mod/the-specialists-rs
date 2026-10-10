@@ -16,8 +16,8 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `crates/client/src/joystick.rs` | the SDK joystick code TS ships (`IN_JoyMove`, `IN_Commands`, `Joy_AdvancedUpdate_f`), Steam GoldSrc only |
 | `crates/client/src/state.rs` | fields added for other packages (see Integration) |
 | `crates/client-dll/src/vgui.rs` | `ClientFactory`/`CreateInterface` exports and the `IClientVGUI` object that makes Steam GoldSrc draw the world (see Deviations) |
-| `crates/goldsrc/src/ext/hud.rs` | engine helpers: sprites (`spr_load`, the one `SPR_Load` wrapper), text, cvars, player info, `max_clients`/`client_time` (the one `GetMaxClients`/`GetClientTime` wrappers), demo API; client entities: `entity`/`local_player` (shared `&cl_entity_t`) and `with_entity_mut`/`with_local_player_mut` (a `&mut` scoped to a closure), the one `GetEntityByIndex`/`GetLocalPlayer` wrappers, with the aliasing rules in the module docs; `crosshair_trace` (TS `DrawCrosshairID` trace, built on `render::with_solid_players`/`player_trace`; `None` if the event API is null); `ev_play_sound`, the one `EV_PlaySound` wrapper (no-op if the slot is null); `ClEngine::event_api`/`efx_api`/`tri_api`/`demo_api` (null-checked bindgen `event_api_s`/`efx_api_s`/`triangleapi_s`/`demo_api_s`); `world_to_screen_ndc`, the one `WorldToScreen` wrapper (`None` if clipped or the slot is null; the laser dots use it), and TS's pixel `WorldToScreen` on top of it; `server_cmd`, the one `pfnServerCmd` wrapper (no-op if the slot is null); and `local_view_height`, the one `EV_LocalPlayerViewheight` wrapper (standing offset 0 0 28 if the slot is null; the events' gun position uses it too) |
-| `crates/goldsrc/src/ext/voice.rs` | `GetPlayerUniqueID`, `pfnServerCmdUnreliable`, level check, the static head-icon entities for `CL_CreateVisibleEntity` (and the server's `Voice_SetClientListening`) |
+| `crates/goldsrc/src/ext/hud.rs` | engine helpers: sprites (`spr_load`, the one `SPR_Load` wrapper), text (`screen`, `draw_console_string` and `fill`, the one `pfnGetScreenInfo`/`pfnDrawConsoleString`/`pfnFillRGBA` wrappers), cvar strings, player info, `max_clients`/`client_time` (the one `GetMaxClients`/`GetClientTime` wrappers), demo API; client entities: `entity`/`local_player` (shared `&cl_entity_t`) and `with_entity_mut`/`with_local_player_mut` (a `&mut` scoped to a closure), the one `GetEntityByIndex`/`GetLocalPlayer` wrappers, with the aliasing rules in the module docs; `crosshair_trace` (TS `DrawCrosshairID` trace, built on `render::with_solid_players`/`player_trace`; `None` if the event API is null); `ev_play_sound`, the one `EV_PlaySound` wrapper (no-op if the slot is null); `ClEngine::event_api`/`efx_api`/`tri_api`/`demo_api` (null-checked bindgen `event_api_s`/`efx_api_s`/`triangleapi_s`/`demo_api_s`); `world_to_screen_ndc`, the one `WorldToScreen` wrapper (`None` if clipped or the slot is null; the laser dots use it), and TS's pixel `WorldToScreen` on top of it; `server_cmd`, the one `pfnServerCmd` wrapper (no-op if the slot is null); and `local_view_height`, the one `EV_LocalPlayerViewheight` wrapper (standing offset 0 0 28 if the slot is null; the events' gun position uses it too) |
+| `crates/goldsrc/src/ext/voice.rs` | `GetPlayerUniqueID`, `pfnServerCmdUnreliable`, the static head-icon entities for `CL_CreateVisibleEntity` (and the server's `Voice_SetClientListening`) |
 | `crates/goldsrc/src/joystick.rs` | joystick device access: WinMM on Windows, SDL2 game controller (run-time lookup) elsewhere; `CheckParm` |
 | `crates/shared/src/protocol/hud.rs` | `Reader`/`Writer` and decode/encode for all HUD payloads |
 
@@ -116,8 +116,20 @@ Cvars, names/defaults/flags as TS registers them (§2.1):
 * HUD: `hud_drawhistory_time hud_fastswitch hud_deathnotice_time
   hud_classautokill hud_takesshots zoom_sensitivity_ratio default_fov hud_capturemouse
   hud_saytext_time hud_centerid cl_drawnames`.
-* Not registered here (other packages): `cl_bob…`/`cl_slowfade` (V_Init), `cam_*` (CAM_Init),
-  `r_paintball`, `gl_fog*`.
+* Not registered here (other packages): `cl_bob…`/`cl_slowfade`/`v_center*` (`view::init`, V_Init),
+  `r_paintball` and `gl_fog` (`effects::init`; TS registers them in CHud::Init, both archived).
+  Not registered at all: `cam_command cam_snapto cam_ideal* cam_contain c_*` (CAM_Init),
+  `gl_fog_start/end/red/green/blue`, `scr_ofs*`, `bitmapfonts`.
+
+Each cvar is registered once, with `goldsrc::client::Cvar::register` (a plain
+`pfnRegisterVariable`, as TS does), where TS registers it. Other modules share that handle:
+`view` and `effects` take the `InitInput` cvars from `input::cvars()` and `default_fov` from
+`hud::cvars()`, so `init` order matters (input, hud, then view and effects). A second registration
+is not harmless: FWGS's `Cvar_Get` resets an existing cvar to the new default and ORs in the new
+flags, and GoldSrc's `Cvar_RegisterVariable` (ReHLDS) refuses it ("already defined"). A unit test
+(`input::tests::each_cvar_is_registered_once`) scans the sources for repeats. Cvars registered by
+the engine or another module that this code only reads (`host_ver`, `sv_cheats`,
+`r_drawentities`) use `Cvar::find` (`pfnGetCvarPointer`).
 
 Commands: `+/-moveup movedown left right forward back moveleft moveright lookup lookdown speed
 attack attack2 use jump klook jlook duck reload alt1 alt2 score showscores graph break`, `impulse`,

@@ -35,13 +35,6 @@ mod client {
             let s = to_cstring(cmd);
             cl_eng!(pfnServerCmdUnreliable(s.as_ptr().cast_mut()));
         }
-
-        /// False while no map is loaded (`pfnGetLevelName` returns "").
-        pub fn in_level(&self) -> bool {
-            let p = cl_eng!(pfnGetLevelName());
-            // SAFETY: the engine returns null or a NUL-terminated string it owns; only its first byte is read.
-            !p.is_null() && unsafe { *p } != 0
-        }
     }
 
     /// One sprite entity for the engine's visible list (the voice icon over a talking player).
@@ -77,7 +70,7 @@ mod client {
         if slot >= 32 || s.sprite == 0 {
             return;
         }
-        let model = cl_eng!(GetSpritePointer(s.sprite));
+        let model = crate::ext::render::sprite_model(s.sprite);
         if model.is_null() {
             return;
         }

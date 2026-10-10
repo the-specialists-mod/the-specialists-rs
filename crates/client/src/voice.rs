@@ -263,7 +263,7 @@ pub fn vban_command(mask: u32) -> String {
 /// `force`), `vban` when the local ban mask differs from the server's (or `force`).
 pub fn update_server_state(force: bool) {
     let e = engine();
-    if !e.in_level() {
+    if goldsrc::ext::render::level_name().is_empty() {
         if debug() {
             e.print("CVoiceStatus::UpdateServerState: pLevelName[0]==0\n");
         }

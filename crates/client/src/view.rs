@@ -8,8 +8,8 @@
 use crate::effects::psys::Camera;
 use crate::{effects, state};
 use goldsrc::Global;
-use goldsrc::client::engine;
-use goldsrc::ext::render::{self as r, Cvar, Vec3, vec3 as v};
+use goldsrc::client::{Cvar, engine};
+use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use shared::ts::stunt;
 use std::cell::RefCell;
@@ -317,21 +317,25 @@ fn cv(f: impl FnOnce(&Cvars) -> Cvar) -> f32 {
     CVARS.0.borrow().as_ref().map_or(0.0, |c| f(c).value())
 }
 
+/// `V_Init`: registers the view cvars TS registers there; the camera, third-person and
+/// smoothing cvars are `InitInput`'s and `default_fov` is `CHud::Init`'s, so this shares those
+/// handles rather than registering the names again (see [`Cvar`]). Runs after `input::init` and
+/// `hud::init`.
 pub fn init() {
-    let a = r::FCVAR_ARCHIVE;
+    let (i, h) = (crate::input::cvars(), crate::hud::cvars());
     *CVARS.0.borrow_mut() = Some(Cvars {
-        bob: Cvar::register(c"cl_bob", c"4.0", a),
+        bob: Cvar::register(c"cl_bob", c"4.0", r::FCVAR_ARCHIVE),
         waterdist: Cvar::register(c"cl_waterdist", c"4", 0),
         slowfade: Cvar::register(c"cl_slowfade", c"1", 0),
-        camtype: Cvar::register(c"cl_camtype", c"0", a),
-        cam_back: Cvar::register(c"cam_back", c"90", a),
-        cam_right: Cvar::register(c"cam_right", c"0", a),
-        cam_up: Cvar::register(c"cam_up", c"12", a),
-        thirdperson: Cvar::register(c"cl_thirdperson", c"0", a),
-        thirdpersonswitch: Cvar::register(c"cl_thirdpersonswitch", c"0", a),
-        default_fov: Cvar::register(c"default_fov", c"90", a),
-        thirdtransparency: Cvar::register(c"cl_thirdtransparency", c"1", a),
-        vsmoothing: Cvar::register(c"cl_vsmoothing", c"0.05", a),
+        camtype: i.cl_camtype,
+        cam_back: i.cam_back,
+        cam_right: i.cam_right,
+        cam_up: i.cam_up,
+        thirdperson: i.cl_thirdperson,
+        thirdpersonswitch: i.cl_thirdpersonswitch,
+        default_fov: h.default_fov,
+        thirdtransparency: i.cl_thirdtransparency,
+        vsmoothing: i.cl_vsmoothing,
         centermove: Cvar::register(c"v_centermove", c"0.15", 0),
         centerspeed: Cvar::register(c"v_centerspeed", c"500", 0),
     });

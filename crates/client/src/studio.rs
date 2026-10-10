@@ -23,9 +23,10 @@ pub mod model;
 
 use crate::{state, view};
 use goldsrc::Global;
-use goldsrc::client::engine;
-use goldsrc::ext::render::{self as r, Cvar};
+use goldsrc::client::{Cvar, engine};
+use goldsrc::ext::render as r;
 use goldsrc::ext::studio::{self as es, Ent, Header, Lighting, Mat34, Model, PlayerInfo};
+use goldsrc::ext::tri;
 use goldsrc::sys::*;
 use math::*;
 use model::{Anim, Bytes, SeqDesc, Studio};
@@ -984,14 +985,14 @@ impl Renderer {
             self.render_final();
             let hw = es::is_hardware();
             if !hw {
-                es::tri_render_mode(kRenderTransAdd as i32);
+                tri::render_mode(kRenderTransAdd as i32);
             }
             es::set_force_face_flags(es::NF_CHROME);
             es::chrome_sprite_texture();
             self.ent().curstate.renderfx = kRenderFxGlowShell as i32;
             self.render_final();
             if !hw {
-                es::tri_render_mode(kRenderNormal as i32);
+                tri::render_mode(kRenderNormal as i32);
             }
         } else {
             self.render_final();
@@ -1031,9 +1032,9 @@ impl Renderer {
             }
         }
         if de == 4.0 {
-            es::tri_render_mode(kRenderTransAdd as i32);
+            tri::render_mode(kRenderTransAdd as i32);
             es::draw_hulls();
-            es::tri_render_mode(kRenderNormal as i32);
+            tri::render_mode(kRenderNormal as i32);
         }
         if de == 5.0 {
             es::draw_abs_bbox();

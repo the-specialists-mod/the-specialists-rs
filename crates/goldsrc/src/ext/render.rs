@@ -1,7 +1,8 @@
 //! Engine helpers added by the render work package. Keep additions here to avoid merge conflicts.
 //!
 //! * `ev!`/`efx!`/`tri!` call a slot of `pEventAPI`/`pEfxAPI`/`pTriAPI` (like `cl_eng!`).
-//! * Thin wrappers for the calls the view/events/effects modules use most.
+//! * Thin wrappers for the calls the view/events/effects modules use most. Cvars are
+//!   [`crate::client::Cvar`].
 //! * `vec3`: small vector maths on `[f32; 3]` (pure, unit-tested).
 
 use crate::client::engine;
@@ -255,38 +256,6 @@ pub fn refdef_forwardmove(p: &ref_params_t) -> f32 {
     unsafe { p.cmd.as_ref() }.map_or(0.0, |c| c.forwardmove)
 }
 
-/// A registered client cvar. The engine owns the storage, so the pointer stays valid.
-#[derive(Clone, Copy)]
-pub struct Cvar(*mut cvar_s);
-// SAFETY: the cvar_t is engine-owned for the process and only read on the client thread.
-unsafe impl Send for Cvar {}
-// SAFETY: as above.
-unsafe impl Sync for Cvar {}
-impl Cvar {
-    pub const NULL: Cvar = Cvar(std::ptr::null_mut());
-    /// Finds a cvar another module (or the engine) already registered, else registers it, so a
-    /// name shared by several client modules is registered once. `name`/`value` must be
-    /// `'static` (the engine keeps them).
-    pub fn register(name: &'static CStr, value: &'static CStr, flags: i32) -> Cvar {
-        let existing = cl_eng!(pfnGetCvarPointer(name.as_ptr()));
-        if !existing.is_null() {
-            return Cvar(existing);
-        }
-        let p = cl_eng!(pfnRegisterVariable(name.as_ptr(), value.as_ptr(), flags));
-        if p.is_null() { Cvar(cl_eng!(pfnGetCvarPointer(name.as_ptr()))) } else { Cvar(p) }
-    }
-    pub fn find(name: &CStr) -> Cvar {
-        Cvar(cl_eng!(pfnGetCvarPointer(name.as_ptr())))
-    }
-    pub fn value(self) -> f32 {
-        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
-        unsafe { self.0.as_ref().map_or(0.0, |c| c.value) }
-    }
-    pub fn is_null(self) -> bool {
-        self.0.is_null()
-    }
-}
-
 /// Loads a game file through the engine filesystem (searches the game dirs and paks).
 pub fn load_file(path: &str) -> Option<Vec<u8>> {
     let s = to_cstring(path);
@@ -301,7 +270,8 @@ pub fn load_file(path: &str) -> Option<Vec<u8>> {
     Some(v)
 }
 
-/// `maps/<name>.bsp` while a map is loaded, empty otherwise.
+/// `pfnGetLevelName`: the single wrapper for it. `maps/<name>.bsp` while a map is loaded, empty
+/// otherwise.
 pub fn level_name() -> String {
     let p = cl_eng!(pfnGetLevelName());
     // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
@@ -311,6 +281,9 @@ pub fn level_name() -> String {
 pub fn spr_frames(h: HSPRITE) -> i32 {
     cl_eng!(pfnSPR_Frames(h))
 }
+/// `GetSpritePointer`: the single wrapper for it. The sprite's model, for TriAPI
+/// [`sprite_texture`](crate::ext::tri::sprite_texture) and visible entities; null if `h` is not
+/// loaded.
 pub fn sprite_model(h: HSPRITE) -> *const model_s {
     cl_eng!(GetSpritePointer(h))
 }

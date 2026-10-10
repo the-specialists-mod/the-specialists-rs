@@ -487,12 +487,8 @@ pub fn client_events() {
 pub fn chrome_sprite_texture() {
     let chrome = api().chrome;
     if !chrome.is_null() {
-        crate::tri!(SpriteTexture(chrome, 0));
+        crate::ext::tri::sprite_texture(chrome, 0);
     }
-}
-/// TriAPI `RenderMode`.
-pub fn tri_render_mode(mode: i32) {
-    crate::tri!(RenderMode(mode));
 }
 
 // ---- custom temp entities -------------------------------------------------------------------------

@@ -80,22 +80,6 @@ impl ClEngine {
         a
     }
 
-    pub fn screen_size(&self) -> (i32, i32) {
-        let mut info = SCREENINFO { iSize: size_of::<SCREENINFO>() as i32, ..Default::default() };
-        cl_eng!(pfnGetScreenInfo(&mut info));
-        (info.iWidth, info.iHeight)
-    }
-
-    pub fn draw_string(&self, x: i32, y: i32, rgb: [f32; 3], text: &str) {
-        let s = to_cstring(text);
-        cl_eng!(pfnDrawSetTextColor(rgb[0], rgb[1], rgb[2]));
-        cl_eng!(pfnDrawConsoleString(x, y, s.as_ptr().cast_mut()));
-    }
-
-    pub fn fill_rgba(&self, x: i32, y: i32, w: i32, h: i32, rgba: [i32; 4]) {
-        cl_eng!(pfnFillRGBA(x, y, w, h, rgba[0], rgba[1], rgba[2], rgba[3]));
-    }
-
     pub fn cmd_argv(&self, i: i32) -> &'static CStr {
         let p = cl_eng!(Cmd_Argv(i));
         // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
@@ -129,18 +113,34 @@ unsafe extern "C" fn user_msg_trampoline(name: *const c_char, size: c_int, buf: 
     1
 }
 
-/// A cvar registered with or found in the engine. The engine owns the `cvar_t` for the rest of
-/// the process, so the handle is `Copy`; a null handle reads as 0.
+/// A cvar registered with or found in the engine: the one cvar handle type, and the one
+/// `pfnRegisterVariable` / `pfnGetCvarPointer` wrapper. The engine owns the `cvar_t` for the rest
+/// of the process, so the handle is `Copy`; a null handle reads as 0.
+///
+/// Registration rule: as TS (and the SDK's `CVAR_CREATE`), each cvar is registered once, with
+/// [`Cvar::register`], where TS registers it (decomp architecture-hud.md §2.1); every other
+/// reader shares that handle or looks it up with [`Cvar::find`]. Registering a name twice is not
+/// harmless: FWGS's `Cvar_Get` returns the existing cvar but resets it to the new default and ORs
+/// in the new flags, and GoldSrc's `Cvar_RegisterVariable` (as in ReHLDS) refuses it ("already
+/// defined").
 #[derive(Clone, Copy)]
 pub struct Cvar(*mut cvar_s);
+// SAFETY: the cvar_t is engine-owned for the process and only touched on the client thread.
+unsafe impl Send for Cvar {}
+// SAFETY: as above.
+unsafe impl Sync for Cvar {}
 
 impl Cvar {
     pub const NULL: Cvar = Cvar(std::ptr::null_mut());
 
+    /// `pfnRegisterVariable`, as TS calls it. Call once per name (see the type docs). The engine
+    /// keeps `name` and `value`, so they must be `'static`.
     pub fn register(name: &'static CStr, value: &'static CStr, flags: i32) -> Cvar {
         Cvar(cl_eng!(pfnRegisterVariable(name.as_ptr(), value.as_ptr(), flags)))
     }
 
+    /// `pfnGetCvarPointer`: a cvar registered elsewhere (another module or the engine), or a
+    /// null handle.
     pub fn find(name: &CStr) -> Cvar {
         Cvar(cl_eng!(pfnGetCvarPointer(name.as_ptr())))
     }
@@ -151,7 +151,7 @@ impl Cvar {
 
     pub fn value(self) -> f32 {
         // SAFETY: non-null cvar pointers come from the engine and live for the process.
-        if self.0.is_null() { 0.0 } else { unsafe { (*self.0).value } }
+        unsafe { self.0.as_ref() }.map_or(0.0, |c| c.value)
     }
 }
 

@@ -123,6 +123,7 @@ impl ClEngine {
             .collect()
     }
 
+    /// `pfnGetScreenInfo`: the single wrapper for it.
     pub fn screen(&self) -> Screen {
         let mut info = SCREENINFO { iSize: size_of::<SCREENINFO>() as i32, ..Default::default() };
         cl_eng!(pfnGetScreenInfo(&mut info));
@@ -134,7 +135,8 @@ impl ClEngine {
         cl_eng!(pfnDrawCharacter(x, y, ch as c_int, rgb[0], rgb[1], rgb[2]))
     }
 
-    /// Console font string with an explicit colour; returns the x after the text.
+    /// `pfnDrawSetTextColor` + `pfnDrawConsoleString`: the single wrapper for them. Console font
+    /// string with an explicit colour; returns the x after the text.
     pub fn draw_console_string(&self, x: i32, y: i32, rgb: [f32; 3], text: &str) -> i32 {
         let s = to_cstring(text);
         cl_eng!(pfnDrawSetTextColor(rgb[0], rgb[1], rgb[2]));
@@ -148,6 +150,7 @@ impl ClEngine {
         (w, h)
     }
 
+    /// `pfnFillRGBA`: the single wrapper for it.
     pub fn fill(&self, x: i32, y: i32, w: i32, h: i32, rgb: [i32; 3], a: i32) {
         cl_eng!(pfnFillRGBA(x, y, w, h, rgb[0], rgb[1], rgb[2], a));
     }
@@ -169,13 +172,6 @@ impl ClEngine {
         cl_eng!(pfnCenterPrint(s.as_ptr()));
     }
 
-    /// `pfnRegisterVariable`; the engine keeps both strings.
-    pub fn register_variable(&self, name: &'static CStr, value: &'static CStr, flags: i32) -> *mut cvar_s {
-        cl_eng!(pfnRegisterVariable(name.as_ptr(), value.as_ptr(), flags))
-    }
-    pub fn cvar_pointer(&self, name: &CStr) -> *mut cvar_s {
-        cl_eng!(pfnGetCvarPointer(name.as_ptr()))
-    }
     pub fn cvar_string(&self, name: &CStr) -> String {
         let p = cl_eng!(pfnGetCvarString(name.as_ptr()));
         // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.

@@ -374,7 +374,7 @@ fn smooth(p: &mut ref_params_t, mode: i32, target: i32) {
         obs::LOCKED_VIEW | obs::IN_EYE => (true, true),
         _ => (false, false),
     };
-    let amount = r::Cvar::find(c"cl_vsmoothing").value();
+    let amount = crate::input::cvars().cl_vsmoothing.value();
     let time = p.time;
     with(|s| {
         if v::len(v::sub(p.viewangles, s.last_angles)) != 0.0 {
