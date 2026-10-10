@@ -135,6 +135,7 @@ pub fn precache() {
     e.server_command("exec game.cfg\n");
     e.server_execute();
     state::with(|g| g.install());
+    exec_server_config();
     crate::entities::ts::precache();
     voice::precache();
     for s in [c"items/gunpickup2.wav", c"items/9mmclip1.wav", c"items/weapondrop1.wav", c"weapons/items.wav", c"common/bodysplat.wav"] {
@@ -154,6 +155,25 @@ pub fn precache() {
     ] {
         e.precache_sound(s);
     }
+}
+
+/// The tail of the `CHalfLifeMultiplay` constructor (0xcedd0): queue `exec <servercfgfile>` on a
+/// dedicated server (`lservercfgfile` on a listen server) on every map. It isn't executed here,
+/// so it runs once the map has loaded and overrides what `CWorld::Precache` forced
+/// (`sv_gravity`, `mp_defaultteam`, ...). `InstallGameRules` builds the multiplayer rules only
+/// when `deathmatch` is set.
+fn exec_server_config() {
+    let e = engine();
+    if e.globals().deathmatch == 0.0 {
+        return;
+    }
+    let (var, what) = if e.is_dedicated() { (c"servercfgfile", "dedicated") } else { (c"lservercfgfile", "listen") };
+    let file = e.cvar_string(var).to_string_lossy().into_owned();
+    if file.is_empty() {
+        return;
+    }
+    e.alert(ALERT_TYPE::at_console, &format!("Executing {what} server config file\n"));
+    e.server_command(&format!("exec {file}\n"));
 }
 
 pub fn server_activate() {
@@ -180,19 +200,15 @@ pub fn game_description() -> &'static CStr {
     }
 }
 
-/// worldspawn keyvalues the rules care about (`gamemode`, `mapteams`, `teammodels`,
-/// `defaultteam`). Return true if handled.
+/// worldspawn keyvalues the rules care about (`gamemode`, `mapteams`, `teammodels`). Return true
+/// if handled. `defaultteam` is a worldspawn spawnflag that `CWorld::Precache` turns into
+/// `mp_defaultteam` (entities::stock `World`).
 pub fn world_key_value(key: &CStr, value: &CStr) -> bool {
     let v = value.to_str().unwrap_or("").trim().to_owned();
     match key.to_bytes() {
         b"gamemode" => state::with(|g| g.forced_gamemode = v.parse().unwrap_or(0)),
         b"mapteams" => state::with(|g| g.map_teams = v),
         b"teammodels" => state::with(|g| g.map_team_models = v),
-        b"defaultteam" => {
-            if v.parse::<i32>().unwrap_or(0) != 0 {
-                engine().set_cvar_float(c"mp_defaultteam", 1.0);
-            }
-        }
         _ => return false,
     }
     true

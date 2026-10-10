@@ -71,6 +71,14 @@ impl Engine {
         unsafe { (*self.globals).force_retouch += 1.0 };
     }
 
+    /// Sets `gpGlobals->cdAudioTrack` (worldspawn `sounds`); the engine sends it to connecting
+    /// clients as the CD track to loop.
+    pub fn set_cd_audio_track(&self, track: i32) {
+        // SAFETY: as in `force_retouch`: the globals outlive the server and only the game thread
+        // writes them.
+        unsafe { (*self.globals).cdAudioTrack = track };
+    }
+
     pub fn time(&self) -> f32 {
         self.globals().time
     }

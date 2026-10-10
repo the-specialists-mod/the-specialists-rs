@@ -69,7 +69,7 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 |---|---|
 | `GameInit` | `messages::register_all`, then `rules`, `weapons`, `stunt`, `bots` `game_init` (cvars, server commands) |
 | `Spawn`/`Think`/`Touch`/`Use`/`Blocked`/`KeyValue` | the edict's `Entity` (world dispatch). Keyvalues go to `entities::entvars_key_value` first and only the rest reach the class, as TS `DispatchKeyValue` does. |
-| worldspawn spawn | `precache_all()`: player model, then `stunt`, `weapons`, `rules` `precache` |
+| worldspawn spawn | `CWorld::Precache` order: force `sv_gravity`/`sv_stepsize`, then `precache_all()` (player model, then `stunt`, `weapons`, `rules` `precache`, which installs the rules and queues the server config), then `sv_zmax`, chapter title, `v_dark`, `mp_defaultteam` |
 | `ClientConnect`/`Disconnect`/`Kill`/`UserInfoChanged` | `rules` |
 | `ClientPutInServer` | creates the `Player` entity and spawns it |
 | `ClientCommand` | `commands::client_command`: weapons, stunt, rules, bots, in that order |

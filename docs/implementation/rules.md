@@ -34,7 +34,7 @@ are Ghidra addresses.
 | TS (address) | Rust | Notes |
 |---|---|---|
 | `DecideGamePlay` 0x767ac | `state::decide_gameplay` | worldspawn `gamemode` 1–4 wins over cvars; The One > LMS > `mp_teamplay`. Unit tested. |
-| `InstallGameRules` 0xc6050, `CTSGameRules::Init` 0x77d6c, Teamplay ctor 0xe…, `InitTeams`/`SetTeamList`/`SetTeamModelList` | `rules::precache` → `GameRules::install` | `exec game.cfg` + `ServerExecute` first, like TS. The One renames team 0 "The ONE" and skips the first listed name (TS quirk kept). |
+| `InstallGameRules` 0xc6050, `CTSGameRules::Init` 0x77d6c, Teamplay ctor 0xe…, `InitTeams`/`SetTeamList`/`SetTeamModelList` | `rules::precache` → `GameRules::install` | `exec game.cfg` + `ServerExecute` first, like TS. Then, as the `CHalfLifeMultiplay` ctor (0xcedd0) does, queues `exec <servercfgfile>` (`lservercfgfile` on a listen server) without executing it, so the server config runs after every map load and overrides what `CWorld::Precache` forced (`sv_gravity 800`, `mp_defaultteam`). This also resets a quota raised by `addbot` to the config's `ts_bot_quota` on a map change. The One renames team 0 "The ONE" and skips the first listed name (TS quirk kept). |
 | `GameDLLInit` 0xc5aa0 | `rules::game_init` | cvars + 7 TS server commands (+3 test commands). |
 | `ClientConnect` 0xacce8 | `lifecycle::client_connect` | `ts_playeramount` connect hook, accepts. |
 | `ClientDisconnect` 0xacd4c, `ClientDisconnected` 0xcf960, `TSPlayerDisconnect` | `lifecycle::client_disconnect` | "- %s has left the game", `game_playerleave`, log, strip weapons, drop flag, end slow flow. |
