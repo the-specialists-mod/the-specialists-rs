@@ -458,19 +458,22 @@ fn draw_wire_panel(dc: &Dc, h: &Hud) {
     }
 }
 
-/// `DrawCrosshair` (1004e9f0) + divestep helper (1004ef50).
+/// The scoped flag `DrawCrosshair` sets (`0x1018a704`): FOV below 40, cleared in third person, so
+/// the third-person crosshair keeps its lines, divesteps and unraised laser number while zoomed.
+fn crosshair_scoped(fov: f32, third_person: bool) -> bool {
+    (fov as i32) < 40 && !third_person
+}
+
+/// `DrawCrosshair` (1004e9f0) + divestep helper (1004ef50). Everything is drawn around
+/// [`crosshair_centre`]: the screen centre, or the projected view-trace end in third person.
 fn draw_crosshair(dc: &Dc, h: &Hud) {
     if realhud() {
         return;
     }
     let e = engine();
-    let scoped = (crate::state::with(|s| s.fov) as i32) < 40;
-    let (cx, cy) = (dc.w() / 2, dc.h() / 2);
-    let mut divesteps = !scoped;
-    if crate::view::is_third_person() {
-        divesteps = true;
-    }
-    if divesteps {
+    let scoped = crosshair_scoped(crate::state::with(|s| s.fov), crate::view::is_third_person());
+    let (cx, cy) = crosshair_centre(dc);
+    if !scoped {
         draw_divesteps(dc, h, cx, cy);
     }
     if matches!(h.weapon, 0 | 24 | 25 | 34 | 35) {
@@ -508,8 +511,7 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
     // ×0.7 with a player under it, else ×0.5; 8 px higher while scoped (1004ee02).
     if active & 2 != 0 {
         let k = if id_team.is_some() { 0.7 } else { 0.5 };
-        let scoped_first_person = scoped && !crate::view::is_third_person();
-        let y = cy - if scoped_first_person { 8 } else { 0 } - dc.g.screen.char_height / 2;
+        let y = cy - if scoped { 8 } else { 0 } - dc.g.screen.char_height / 2;
         let range = crate::state::with(|s| s.laser_range);
         dc.number(cx + 28, y, num::DRAW_ZERO, range, rgb.map(|c| (c as f32 * k) as i32));
     }
@@ -572,6 +574,15 @@ mod tests {
     fn give(h: &mut Hud, id: i32) {
         let (r, b) = grid_pos(id).unwrap();
         h.grid[r][b] = Slot { id, clip: 5 };
+    }
+
+    #[test]
+    fn crosshair_scoped_flag() {
+        assert!(crosshair_scoped(20.0, false));
+        assert!(!crosshair_scoped(40.0, false), "40 is not scoped");
+        assert!(crosshair_scoped(39.9, false), "the FOV is truncated, as TS's int");
+        assert!(!crosshair_scoped(20.0, true), "third person clears it");
+        assert!(!crosshair_scoped(90.0, false));
     }
 
     #[test]

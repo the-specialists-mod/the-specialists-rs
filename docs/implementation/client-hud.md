@@ -206,6 +206,12 @@ text, teammate markers, crosshair ID, status panel, power-up, objective markers)
 `wires/*`, `compass/uparrow/downarrow/cursor`. The crosshair gap is `22 (12 with the laser on) +
 state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
 
+`DrawCrosshair` (1004e9f0) centres everything (lines, sprites, divesteps, laser-range number) on
+`(cx, cy)`: the screen centre in first person; in third person the projection of the view
+trace's end (`crosshair_centre`, as `DrawLaserDots`), or (−1, −1) when it projects behind the
+view, which TS draws at as well. Its scoped flag (`0x1018a704`, FOV below 40) is cleared in
+third person (`crosshair_scoped`), so a zoomed third-person crosshair keeps its lines.
+
 Divesteps (1004ef50, drawn when not scoped or in third person; checked against the TS binary):
 the three sprites at `(cx − 40, cy − 40)`. Sprite i is red (195, 45, 45) when `81 − free slots`
 ≥ 42 / 52 / 62; the threshold helpers (1004eec0/1004eef0/1004ef20) compute
@@ -295,8 +301,6 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
 * `HUD_UpdateClientData` writes the eased FOV (`view::update_client_data`, wired at integration).
 * Death-cam / `cl_thirdpersonswitch` / observer third-person changes are only *requested*
   (`state.thirdperson_*`); the view package owns `cam_thirdperson`.
-* The crosshair and its laser-range number stay at the screen centre in third person; TS centres
-  them on the projected view-trace end, as `DrawLaserDots` here does. (#40)
 
 ## 9. Tests and results
 
