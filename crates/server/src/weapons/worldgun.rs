@@ -28,6 +28,8 @@ pub struct WorldGun {
     pub original_owner: Option<*mut edict_t>,
     /// The player who dropped it (glow shell for them, `+0xd0`).
     pub dropper: Option<*mut edict_t>,
+    /// Who threw it, credited for its flying impact (port deviation, issue #1).
+    thrower: projectiles::Thrower,
     expire: f32,
     first_bounce: bool,
     pickup_after: f32,
@@ -53,6 +55,7 @@ pub fn create(
         w.id = id;
         w.status = status;
         w.original_owner = (!original_owner.is_null()).then_some(original_owner);
+        w.thrower = projectiles::Thrower::new(owner);
         let e = engine();
         let pev = cx.pev();
         pev.origin = origin;
@@ -191,7 +194,8 @@ impl Entity for WorldGun {
             self.land(cx);
             return;
         }
-        // falling guns hurt what they hit (breakables)
+        // Falling guns hurt what they hit (breakables). The attacker is the thrower (port
+        // deviation, issue #1; TS `CTSWorldGun::Fall` 0xa0d84 passes the gun).
         let pev = cx.pev();
         let end = spread::ma(pev.origin, 0.1, pev.velocity);
         let tr = e.trace_line(pev.origin, end, DONT_IGNORE_MONSTERS, me);
@@ -200,7 +204,7 @@ impl Entity for WorldGun {
             let s = spread::length(pev.velocity) * slots;
             let target = tr.pHit.v();
             if target.takedamage != 0.0 && target.health <= s {
-                let mut d = DamageInfo::new(me, me, s * 0.001, 0x1080);
+                let mut d = DamageInfo::new(me, self.thrower.or(me), s * 0.001, 0x1080);
                 d.dir = pev.velocity;
                 d.pos = tr.vecEndPos;
                 damage::apply(tr.pHit, &d);

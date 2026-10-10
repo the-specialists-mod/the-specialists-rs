@@ -9,6 +9,7 @@ use crate::entities::{self, link_entities};
 use crate::player::Player;
 use crate::world::{self, Cx, Entity};
 use goldsrc::edict::EdictPtr;
+use goldsrc::ext::entities::is_player;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
@@ -137,6 +138,7 @@ pub fn report_damage(text: impl FnOnce() -> String) {
 #[derive(Default)]
 pub struct Grenade {
     owner: Option<*mut edict_t>,
+    thrower: Thrower,
     fuse: f32,
     elapsed: f32,
     phys: SlowPhysics,
@@ -147,6 +149,7 @@ pub struct Grenade {
 pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: bool, time_scale: f32) {
     spawn_entity::<Grenade>(c"m61_grenade", |g, cx| {
         g.owner = Some(owner);
+        g.thrower = Thrower::new(owner);
         g.fuse = 3.0;
         let pev = cx.pev();
         pev.origin = origin;
@@ -194,7 +197,7 @@ impl Entity for Grenade {
         if self.elapsed < self.fuse {
             // The fuse runs in the grenade's own time (`GiveSlowMul`).
             self.elapsed += 0.1 * cx.pev().fuser1.max(0.01);
-            impact_damage(me, 0.1, 0x1080, true);
+            impact_damage(me, self.thrower.or(me), 0.1, 0x1080, true);
             self.phys.update(cx.pev());
             return;
         }
@@ -255,10 +258,54 @@ impl Grenade {
     }
 }
 
+/// Port deviation (issue #1): the player a projectile's flying impact is credited to. TS passes
+/// the projectile itself as the attacker (`CM61Grenade::WaitThink` 0x7cacc, `CTSKnife::WaitThink`
+/// 0x7ea30, `CTSWorldGun::Fall` 0xa0d84), so a breakable broken in flight isn't the thrower's.
+/// The port credits the thrower while it is still the same connected player: the slot must still
+/// be a client (`FL_CLIENT`, cleared on disconnect) with the user id it had at the throw (a
+/// reconnecting client reuses the edict with a new id). Otherwise [`Thrower::get`] is null and
+/// the projectile keeps the credit, as in TS.
+#[derive(Clone, Copy, Debug)]
+pub struct Thrower {
+    e: *mut edict_t,
+    user_id: i32,
+}
+
+impl Default for Thrower {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl Thrower {
+    pub const NONE: Thrower = Thrower { e: std::ptr::null_mut(), user_id: -1 };
+
+    /// Remembers `e` if it's a connected player.
+    pub fn new(e: *mut edict_t) -> Self {
+        if !is_player(e) {
+            return Self::NONE;
+        }
+        Thrower { e, user_id: engine().user_id(e) }
+    }
+
+    /// The thrower, or null if it left (or its slot now holds someone else).
+    pub fn get(&self) -> *mut edict_t {
+        let same = self.user_id != -1 && is_player(self.e) && engine().user_id(self.e) == self.user_id;
+        if same { self.e } else { std::ptr::null_mut() }
+    }
+
+    /// The attacker for a flying impact of `projectile`: the thrower, else the projectile.
+    pub fn or(&self, projectile: *mut edict_t) -> *mut edict_t {
+        let e = self.get();
+        if e.is_null() { projectile } else { e }
+    }
+}
+
 /// The "flying impact" of grenades, knives and world guns: if the projectile is fast, the
 /// entity 64 u ahead takes `speed * k` when that is at least its health (breaks glass, doesn't
-/// chip players). `skip_players` for knives.
-fn impact_damage(me: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
+/// chip players). Not players for knives (`any_entity` false). `attacker` is
+/// [`Thrower::or`] (port deviation, issue #1; TS: the projectile).
+fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
     let e = engine();
     let v = me.v();
     let s = speed(v);
@@ -276,7 +323,7 @@ fn impact_damage(me: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
     let target = tr.pHit.v();
     let dmg = s * k;
     if target.takedamage != 0.0 && target.health <= dmg {
-        let mut info = DamageInfo::new(me, me, dmg, bits);
+        let mut info = DamageInfo::new(me, attacker, dmg, bits);
         info.dir = spread::scale(dir, 64.0);
         info.pos = tr.vecEndPos;
         damage::apply(tr.pHit, &info);
@@ -290,6 +337,7 @@ fn impact_damage(me: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
 #[derive(Default)]
 pub struct Knife {
     owner: Option<*mut edict_t>,
+    thrower: Thrower,
     btype: i32,
     expire: f32,
     flying: bool,
@@ -312,6 +360,7 @@ pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
     let src = tr.vecEndPos;
     spawn_entity::<Knife>(c"knife", |k, cx| {
         k.owner = Some(owner);
+        k.thrower = Thrower::new(owner);
         k.btype = btype;
         let pev = cx.pev();
         pev.origin = src;
@@ -401,7 +450,7 @@ impl Entity for Knife {
             return;
         }
         if !self.stuck {
-            impact_damage(cx.edict, 0.1, 0x0800_1000, false);
+            impact_damage(cx.edict, self.thrower.or(cx.edict), 0.1, 0x0800_1000, false);
         } else {
             let pev = cx.pev();
             if pev.flags & FL_ONGROUND as i32 != 0 {

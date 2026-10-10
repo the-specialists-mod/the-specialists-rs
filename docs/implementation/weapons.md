@@ -154,7 +154,8 @@ addresses of `ts_i386.so`.
   power-up. Bits 0x4001080, disarm + knockback (`v.vel += |a.vel|*dir`, `z = 235` above 30).
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
-  `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target.
+  `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target,
+  credited to the thrower (deviation, §5).
 * Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`rules::scoring::do_spectacularness`; `spectacularness`
   clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a
   `ts_slowmotionpoint` at the blast (amount 0.25, 1 s, no bullet time).
@@ -228,13 +229,17 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 * `dmgreport` is registered as a cvar (port addition, default 0). TS reads it with
   `CVarGetFloat` but never registers it, so TS output needs the cvar created elsewhere.
 * `WorldGun` `WaitTouch` doesn't check the 0.5 s pickup delay (as TS: only `Use` does).
-* **The flying impact credits the projectile, as in TS** (`impact_damage`: inflictor and
-  attacker are both the grenade, knife or gun). TS passes `this->pev` as the TraceAttack attacker
-  and as both `ApplyMultiDamage` arguments in `CM61Grenade::WaitThink` (0x7cacc; see the
-  disassembly at 0x7ce3c/0x7ce46), `CTSKnife::WaitThink` (0x7ea30) and `CTSWorldGun::Fall`
-  (0xa0d84), not `pev->owner`. So a breakable broken, or a player killed, by a flying projectile
-  isn't credited to the thrower (issue #1). Only the explosion (`TSExplosion(..., owner)`) and a
-  thrown blade's direct hit on a player (`BounceTouch`) credit the thrower.
+* **Deviation: the flying impact credits the thrower** (issue #1). TS passes `this->pev` as the
+  TraceAttack attacker and as both `ApplyMultiDamage` arguments in `CM61Grenade::WaitThink`
+  (0x7cacc; see the disassembly at 0x7ce3c/0x7ce46), `CTSKnife::WaitThink` (0x7ea30) and
+  `CTSWorldGun::Fall` (0xa0d84), not `pev->owner`, so in TS a breakable broken, or a player
+  killed, by a flying projectile isn't credited to the thrower. The port keeps the projectile as
+  the inflictor but makes the thrower the attacker (`projectiles::Thrower`, used by
+  `impact_damage` and the `WorldGun` fall damage): breakables take the thrower's time scale and
+  name it in the `broken by` log, kills are the thrower's, and the team / friendly-fire checks see
+  the thrower. The thrower is checked at impact time: it must still be a connected client
+  (`FL_CLIENT`) with the user id it had at the throw, so a player who left, or a new client in the
+  same slot, is never credited; then the projectile is the attacker, as in TS.
 * The bullet manager runs on a hidden `ts_bulletmanager` entity (TS: `CTSGameRules::Think`);
   bullets are also dropped after 16384 u without a hit.
 * The kick for bots goes to `punchangle` (TS `pev+0x68`), humans get it client-side.
