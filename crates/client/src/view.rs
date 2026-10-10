@@ -24,6 +24,10 @@ struct Cvars {
     thirdperson: Cvar,
     thirdpersonswitch: Cvar,
     default_fov: Cvar,
+    thirdtransparency: Cvar,
+    vsmoothing: Cvar,
+    centermove: Cvar,
+    centerspeed: Cvar,
 }
 
 #[derive(Default)]
@@ -47,13 +51,27 @@ struct View {
     kick_cur: [f32; 2],
     last_shot: f64,
     shake: Shake,
+    /// Z the stair smoothing added to the eye this frame (TS runs `V_SmoothStairs` again on the
+    /// body cam).
+    stair_dz: f32,
+    // `V_DriftPitch` state (SDK `pd`, `0x10191460..0x10191470`)
+    drift: Drift,
+    /// Local player `renderamt` being eased (`0x10097214`); 255 = opaque.
+    local_amt: f32,
+    // `cl_vsmoothing` origin ring (SDK `ViewInterp`, `0x10191508`) and the last recorded simorg
+    org_ring: Ring,
+    last_simorg: Vec3,
     // third person
     third: bool,
     /// Third-person state saved by a HUD "leave" request (observer mode), restored on "restore".
     saved_third: Option<bool>,
     forced_dead: bool,
-    cam_back: f32,
-    cam_up: f32,
+    /// Eased additions to the camera's up (`0x10191da4`) and back (`0x10191da8`) offsets.
+    cam_up_ofs: f32,
+    cam_back_ofs: f32,
+    /// Smoothed z of the local player model in third person (`0x10191d94`); `None` while in
+    /// first person.
+    model_z: Option<f32>,
     last_thirdperson_cvar: f32,
     last_weapon: i32,
     // TSFade
@@ -116,12 +134,140 @@ impl Shake {
     }
 }
 
+/// `V_DriftPitch` / `V_StartPitchDrift` / `V_StopPitchDrift` state (SDK `pitchdrift_t`).
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+struct Drift {
+    pitchvel: f32,
+    nodrift: bool,
+    driftmove: f32,
+    laststop: f32,
+}
+
+/// What `V_DriftPitch` reads from `ref_params_t`, the cvars and the engine.
+#[derive(Clone, Copy, Debug, Default)]
+struct DriftInput {
+    /// Noclip, in the air, demo playback or spectating: no drift.
+    blocked: bool,
+    forwardmove: f32,
+    forwardspeed: f32,
+    centermove: f32,
+    centerspeed: f32,
+    frametime: f32,
+    idealpitch: f32,
+    now: f32,
+}
+
+impl Drift {
+    /// `V_StopPitchDrift` (`0x100672f0`).
+    fn stop(&mut self, now: f32) {
+        self.laststop = now;
+        self.nodrift = true;
+        self.pitchvel = 0.0;
+    }
+
+    /// `V_DriftPitch` (`0x10067320`, SDK): eases `pitch` toward the ideal pitch once the player
+    /// has walked forward for `v_centermove` seconds without looking around.
+    fn update(&mut self, i: &DriftInput, pitch: &mut f32) {
+        if i.blocked {
+            self.driftmove = 0.0;
+            self.pitchvel = 0.0;
+            return;
+        }
+        if self.nodrift {
+            if i.forwardmove.abs() < i.forwardspeed {
+                self.driftmove = 0.0;
+            } else {
+                self.driftmove += i.frametime;
+            }
+            // `V_StartPitchDrift`, inlined: blocked while something stopped it this frame.
+            if self.driftmove > i.centermove && i.now != self.laststop {
+                self.pitchvel = i.centerspeed;
+                self.nodrift = false;
+                self.driftmove = 0.0;
+            }
+            return;
+        }
+        let delta = i.idealpitch - *pitch;
+        if delta == 0.0 {
+            self.pitchvel = 0.0;
+            return;
+        }
+        let mut step = self.pitchvel * i.frametime;
+        self.pitchvel += i.centerspeed * i.frametime;
+        if delta > 0.0 {
+            if delta < step {
+                self.pitchvel = 0.0;
+                step = delta;
+            }
+            *pitch += step;
+        } else {
+            if -delta < step {
+                self.pitchvel = 0.0;
+                step = -delta;
+            }
+            *pitch -= step;
+        }
+    }
+}
+
+const RING: u32 = 64;
+const RING_MASK: u32 = RING - 1;
+
+/// A 64-entry history of positions and their times: the SDK `ViewInterp` origin ring TS keeps
+/// for `cl_vsmoothing`.
+#[derive(Clone, Copy)]
+struct Ring {
+    pos: [Vec3; RING as usize],
+    time: [f32; RING as usize],
+    cur: u32,
+}
+
+impl Default for Ring {
+    fn default() -> Self {
+        Ring { pos: [v::ZERO; RING as usize], time: [0.0; RING as usize], cur: 0 }
+    }
+}
+
+impl Ring {
+    fn push(&mut self, pos: Vec3, time: f32) {
+        let i = (self.cur & RING_MASK) as usize;
+        self.pos[i] = pos;
+        self.time[i] = time;
+        self.cur = self.cur.wrapping_add(1);
+    }
+
+    /// The position at time `t`, interpolated between the newest sample at or before `t` and the
+    /// one after it, with the length of that segment (`V_CalcNormalRefdef` step 14). `None` when
+    /// the history doesn't reach back to `t` or the samples share a time.
+    fn sample(&self, t: f32) -> Option<(Vec3, f32)> {
+        let mut idx = self.cur.wrapping_sub(2);
+        for _ in 1..RING_MASK {
+            let a = (idx & RING_MASK) as usize;
+            if self.time[a] <= t {
+                if self.time[a] == 0.0 {
+                    return None;
+                }
+                let b = (idx.wrapping_add(1) & RING_MASK) as usize;
+                let dt = self.time[b] - self.time[a];
+                if dt <= 0.0 {
+                    return None;
+                }
+                let frac = ((t - self.time[a]) / dt).min(1.0);
+                let delta = v::sub(self.pos[b], self.pos[a]);
+                return Some((v::ma(self.pos[a], frac, delta), v::len(delta)));
+            }
+            idx = idx.wrapping_sub(1);
+        }
+        None
+    }
+}
+
 static VIEW: Global<RefCell<Option<View>>> = Global(RefCell::new(None));
 static CVARS: Global<RefCell<Option<Cvars>>> = Global(RefCell::new(None));
 
 fn with<R>(f: impl FnOnce(&mut View) -> R) -> R {
     let mut g = VIEW.0.borrow_mut();
-    f(g.get_or_insert_with(View::default))
+    f(g.get_or_insert_with(|| View { local_amt: 255.0, ..View::default() }))
 }
 
 fn cv(f: impl FnOnce(&Cvars) -> Cvar) -> f32 {
@@ -141,11 +287,13 @@ pub fn init() {
         thirdperson: Cvar::register(c"cl_thirdperson", c"0", a),
         thirdpersonswitch: Cvar::register(c"cl_thirdpersonswitch", c"0", a),
         default_fov: Cvar::register(c"default_fov", c"90", a),
+        thirdtransparency: Cvar::register(c"cl_thirdtransparency", c"1", a),
+        vsmoothing: Cvar::register(c"cl_vsmoothing", c"0.05", a),
+        centermove: Cvar::register(c"v_centermove", c"0.15", 0),
+        centerspeed: Cvar::register(c"v_centerspeed", c"500", 0),
     });
     Cvar::register(c"cl_bobcycle", c"0.8", 0);
     Cvar::register(c"cl_bobup", c"0.5", 0);
-    Cvar::register(c"cl_thirdtransparency", c"1", a);
-    Cvar::register(c"cl_vsmoothing", c"0.05", a);
     let e = goldsrc::client::engine();
     e.add_command(c"thirdperson", cmd_thirdperson);
     e.add_command(c"firstperson", cmd_firstperson);
@@ -167,8 +315,8 @@ extern "C" fn cmd_test_angles() {
 extern "C" fn cmd_test_view() {
     let s = with(|w| {
         format!(
-            "third {} dead {} cam_back {:.1} cam_up {:.1} origin {:?} eye {:?} angles {:?}\n",
-            w.third, w.forced_dead, w.cam_back, w.cam_up, w.cam.origin, w.eye, w.cam.angles
+            "third {} dead {} cam_back {:.1} cam_up {:.1} model_z {:?} amt {:.0} origin {:?} eye {:?} angles {:?}\n",
+            w.third, w.forced_dead, w.cam_back_ofs, w.cam_up_ofs, w.model_z, w.local_amt, w.cam.origin, w.eye, w.cam.angles
         )
     });
     let ts = state::with(|st| format!("ts {:.3}/{:.3} fov {:.1}/{:.1}\n", st.time_scale, st.time_scale_target, st.fov, st.fov_target));
@@ -427,13 +575,55 @@ fn finish(w: &mut View, p: &mut ref_params_t) {
     w.hardware = p.hardware != 0;
 }
 
+/// `V_StopPitchDrift` (`0x100672f0`): TS input calls it while the mouse or the look keys move
+/// the view (`CL_AdjustAngles` 0x10026330, `IN_MouseMove` 0x100274d0).
+pub fn stop_pitch_drift() {
+    let now = r::client_time();
+    with(|w| w.drift.stop(now));
+}
+
+/// `V_AddIdle` (`0x10067550`): idle sway with TS's fixed (unregistered) `v_i*` values: roll
+/// cycle 0.5 level 0.1, pitch cycle 1 level 0.3, yaw cycle 2 level 0.3.
+fn add_idle(angles: &mut Vec3, time: f32, scale: f32) {
+    angles[2] += scale * (time * 0.5).sin() * 0.1;
+    angles[0] += scale * time.sin() * 0.3;
+    angles[1] += scale * (time * 2.0).sin() * 0.3;
+}
+
+/// `V_CalcIntermissionRefdef` (`0x100676e0`): the view sways with idle scale 1.
 fn calc_intermission(p: &mut ref_params_t) {
     p.vieworg = p.simorg;
     p.viewangles = p.cl_viewangles;
     if let Some(vm) = r::view_model() {
         vm.model = std::ptr::null_mut();
     }
+    add_idle(&mut p.viewangles, p.time, 1.0);
     with(|w| finish(w, p));
+}
+
+/// What `V_GetPlayerEye` (`0x10068e20`) needs from a player entity.
+#[derive(Clone, Copy, Debug, Default)]
+struct EyeSource {
+    origin: Vec3,
+    angles: Vec3,
+    solid: i32,
+    iuser4: i32,
+    usehull: i32,
+}
+
+/// `V_GetPlayerEye` (`0x10068e20`): a player's eye position and view angles from its entity.
+/// Dead (not solid): 8 below the origin, rolled 80. During a stunt (`NO_VIEW`, the server's
+/// `view_ofs` is 0) the eye is the origin; otherwise 16 (duck hull) or 28 above it.
+fn player_eye(e: &EyeSource) -> (Vec3, Vec3) {
+    let mut org = e.origin;
+    let mut ang = [e.angles[0] * -3.1415927, e.angles[1], e.angles[2]];
+    if e.solid == 0 {
+        ang[2] = 80.0;
+        org[2] -= 8.0;
+    } else if e.iuser4 & stunt::NO_VIEW == 0 {
+        org[2] += if e.usehull == 1 { 16.0 } else { 28.0 };
+    }
+    (org, ang)
 }
 
 /// Spectator modes (`V_CalcSpectatorRefdef` `0x10068f70`, simplified): in-eye copies the
@@ -444,9 +634,15 @@ fn calc_spectator(p: &mut ref_params_t) {
     p.viewangles = p.cl_viewangles;
     if let Some(t) = (target > 0).then(|| r::entity(target)).flatten() {
         match mode {
-            4 | 5 => {
-                p.vieworg = v::add(t.origin, shared::VEC_VIEW);
-                p.viewangles = [t.angles[0] * -3.0, t.angles[1], 0.0];
+            4 | 5 if t.player != 0 => {
+                let src = EyeSource {
+                    origin: t.origin,
+                    angles: t.angles,
+                    solid: t.curstate.solid as i32,
+                    iuser4: t.curstate.iuser4,
+                    usehull: t.curstate.usehull,
+                };
+                (p.vieworg, p.viewangles) = player_eye(&src);
             }
             1..=3 => {
                 let focus = v::add(t.origin, [0.0, 0.0, 28.0]);
@@ -467,6 +663,88 @@ fn calc_spectator(p: &mut ref_params_t) {
     });
 }
 
+/// `FUN_10057e90`: moves `cur` toward `target` by at most `step`.
+fn approach(target: f32, cur: f32, step: f32) -> f32 {
+    let d = target - cur;
+    if d > step {
+        cur + step
+    } else if d < -step {
+        cur - step
+    } else {
+        target
+    }
+}
+
+/// Local player translucency (start of `V_CalcNormalRefdef`): `renderamt` eases toward 100 while
+/// the crosshair is on a player and `cl_thirdtransparency` is set, else back to 255; 50 per frame
+/// fading out, 5 per frame fading in (50 when the frame has no time). Returns the new amount.
+fn local_amt_step(cur: f32, on_player: bool, enabled: bool, frame_has_time: bool) -> f32 {
+    let target = if on_player && enabled { 100.0 } else { 255.0 };
+    let step = if cur < target && frame_has_time { 5.0 } else { 50.0 };
+    approach(target, cur, step)
+}
+
+/// Third-person camera offsets (back, right, up) from `cl_camtype`, clamped (§7.4).
+fn cam_base(camtype: i32, cam_back: f32, cam_right: f32, cam_up: f32) -> (f32, f32, f32) {
+    let (back, right, up) = match camtype {
+        1 => (-48.0, -16.0, 12.0),
+        2 => (-90.0, 0.0, 12.0),
+        3 => (-cam_back, cam_right, cam_up),
+        _ => (-48.0, 16.0, 12.0),
+    };
+    (back.clamp(-128.0, 24.0), right.clamp(-24.0, 24.0), up.clamp(-24.0, 24.0))
+}
+
+/// What the third-person offset smoothing reads.
+#[derive(Clone, Copy, Debug)]
+struct CamState {
+    /// Ducked view (0 < view height < 28).
+    ducked: bool,
+    alive: bool,
+    /// `iuser4 & 0x130c30`: dive, prone, flips, wall moves or super-jump glide.
+    stunt: bool,
+    ft: f32,
+}
+
+/// The smoothing half of the third-person block of `V_CalcNormalRefdef` (`0x10068139..0x1006823e`):
+/// eases the extra up offset toward `32 - up` while ducked, and the extra back offset toward
+/// -180 (dead) or -92 (stunt), both at `ft * 5` (unclamped). Returns the offsets to use.
+fn cam_smooth(up_ofs: &mut f32, back_ofs: &mut f32, back: f32, up: f32, s: CamState) -> (f32, f32) {
+    let up_target = if s.ducked && up < 32.0 { 32.0 - up } else { 0.0 };
+    *up_ofs += (up_target - *up_ofs) * s.ft * 5.0;
+    let back_target = if !s.alive {
+        -180.0 - back
+    } else if s.stunt && back > -128.0 {
+        -92.0 - back
+    } else {
+        0.0
+    };
+    *back_ofs += (back_target - *back_ofs) * s.ft * 5.0;
+    (back + *back_ofs, if s.alive { up + *up_ofs } else { up })
+}
+
+/// Body cam (`back == 0`, `0x10068255`): at the eye of the model, pushed forward and up as the
+/// camera pitches down (`s = max(sin pitch, 0)`), and further forward while ducked.
+fn body_cam(eye: Vec3, ducked: bool, pitch: f32, fwd: Vec3, up: Vec3) -> Vec3 {
+    let s = pitch.to_radians().sin().max(0.0);
+    let mut org = v::add(eye, [0.0, 0.0, if ducked { 8.0 } else { 1.0 }]);
+    if ducked {
+        org = v::ma(org, (1.0 - s) * 8.0, fwd);
+    }
+    v::add(org, v::add(v::scale(fwd, s * 4.0), v::scale(up, s * 18.0)))
+}
+
+/// Third-person model z smoothing (`0x10068480`): `cur` follows `z` at rate 16 without
+/// overshooting.
+fn smooth_model_z(cur: f32, z: f32, ft: f32) -> f32 {
+    let d = cur - z;
+    let mut step = d * ft * 16.0;
+    if step.abs() > d.abs() {
+        step = d;
+    }
+    cur - step
+}
+
 fn calc_normal(p: &mut ref_params_t) {
     let ts = state::with(|s| s.time_scale).clamp(0.01, 1.0);
     let dead = p.health <= 0;
@@ -477,6 +755,39 @@ fn calc_normal(p: &mut ref_params_t) {
     let (camtype, cb, cr, cu) = (cv(|c| c.camtype) as i32, cv(|c| c.cam_back), cv(|c| c.cam_right), cv(|c| c.cam_up));
     let fov = state::with(|s| s.fov);
     let ft = p.frametime;
+
+    // `V_DriftPitch` (step 1).
+    let drift = DriftInput {
+        blocked: r::is_no_clipping() || p.onground == 0 || p.demoplayback != 0 || p.spectator != 0,
+        forwardmove: r::refdef_forwardmove(p),
+        forwardspeed: crate::input::cvars().cl_forwardspeed.value(),
+        centermove: cv(|c| c.centermove),
+        centerspeed: cv(|c| c.centerspeed),
+        frametime: ft,
+        idealpitch: p.idealpitch,
+        now: r::client_time(),
+    };
+    with(|w| w.drift.update(&drift, &mut p.cl_viewangles[0]));
+
+    // Local player translucency (step 2): `TS_IsLocalDead` (0x1004c250) is false while alive or
+    // in a demo. The local model is only drawn in third person, so that's where it shows.
+    let e = goldsrc::client::engine();
+    let translucent = !state::with(|s| s.dead) || e.demo_playing() || e.demo_recording();
+    let on_player = crate::hud::with(|h| h.crosshair_id.is_some());
+    let transparency = cv(|c| c.thirdtransparency) as i32 != 0;
+    if let Some(ent) = r::local_player() {
+        if translucent {
+            let amt = with(|w| {
+                w.local_amt = local_amt_step(w.local_amt, on_player, transparency, ft != 0.0);
+                w.local_amt
+            });
+            ent.curstate.rendermode = kRenderTransColor as i32;
+            ent.curstate.renderamt = amt as i32;
+        } else {
+            ent.curstate.rendermode = kRenderNormal as i32;
+            ent.curstate.renderamt = 255;
+        }
+    }
 
     let third = with(|w| {
         if !w.initialised {
@@ -511,7 +822,8 @@ fn calc_normal(p: &mut ref_params_t) {
         (ofs, bob_step, step, sh)
     });
 
-    // vieworg = simorg + smoothed view height, plus stair smoothing.
+    // vieworg = simorg + smoothed view height, plus stair smoothing. During a stunt the server
+    // sends `view_ofs` 0 (`NO_VIEW`), so the eye eases down to the hull centre like TS's.
     with(|w| {
         w.vh += (p.viewheight[2] - w.vh) * (15.0 * ft).min(1.0);
         let on = p.onground != 0;
@@ -529,6 +841,7 @@ fn calc_normal(p: &mut ref_params_t) {
         w.on_ground = on;
         let z = if on { w.smooth_z } else { p.simorg[2] + w.step_ofs };
         w.step_ofs -= w.step_ofs * (15.0 * ft).min(1.0);
+        w.stair_dz = z - p.simorg[2];
         p.vieworg = [p.simorg[0] + p.viewheight[0], p.simorg[1] + p.viewheight[1], z + w.vh];
     });
 
@@ -569,56 +882,59 @@ fn calc_normal(p: &mut ref_params_t) {
     p.vieworg[2] += water_ofs;
 
     with(|w| calc_view_roll(w, p, iuser4));
-    let eye = p.vieworg;
+    // `V_AddIdle` would follow, scaled by the HUD's concussion level. Only the TFC `Concuss`
+    // message sets that and TS never sends it, so the scale is always 0 here.
+    let mut eye = p.vieworg;
     let (fwd, right, up) = v::angle_vectors(p.viewangles);
     (p.forward, p.right, p.up) = (fwd, right, up);
 
     // Third-person camera (§7.4).
     if third {
-        let (mut back, mut rt, mut upo) = match camtype {
-            1 => (-48.0, -16.0, 12.0),
-            2 => (-90.0, 0.0, 12.0),
-            3 => (-cb, cr, cu),
-            _ => (-48.0, 16.0, 12.0),
-        };
-        back = back.clamp(-128.0, 24.0);
-        rt = rt.clamp(-24.0, 24.0);
-        upo = upo.clamp(-24.0, 24.0);
-        let back_target = if dead {
-            -180.0
-        } else if iuser4 & 0x130c30 != 0 {
-            -92.0
-        } else {
-            back
-        };
-        let up_target = if p.viewheight[2] > 0.0 && p.viewheight[2] < 28.0 { 32.0 } else { upo };
-        let (b, u) = with(|w| {
-            if w.cam_back == 0.0 {
-                w.cam_back = back_target;
-                w.cam_up = up_target;
-            }
-            w.cam_back += (back_target - w.cam_back) * (ft * 5.0).min(1.0);
-            w.cam_up += (up_target - w.cam_up) * (ft * 5.0).min(1.0);
-            (w.cam_back, w.cam_up)
-        });
+        let ent = r::local_player();
+        let ent_org = ent.as_ref().map_or(p.simorg, |e| e.origin);
+        let vh = p.viewheight[2];
+        let state = CamState { ducked: vh < 28.0 && vh != 0.0, alive: !dead, stunt: iuser4 & 0x130c30 != 0, ft };
+        let (back, right_ofs, up_ofs) = cam_base(camtype, cb, cr, cu);
+        let (back, up_ofs) = with(|w| cam_smooth(&mut w.cam_up_ofs, &mut w.cam_back_ofs, back, up_ofs, state));
         let cam_angles = [p.cl_viewangles[0], p.cl_viewangles[1], 0.0];
-        let (cf, cr2, _) = v::angle_vectors(cam_angles);
-        let pivot = v::add(p.simorg, [0.0, 0.0, u + 28.0 - 28.0 + p.viewheight[2].min(28.0)]);
-        let want = v::ma(v::ma(pivot, b, cf), rt, cr2);
-        let tr = r::player_trace(pivot, want, 2, (PM_STUDIO_IGNORE | PM_WORLD_ONLY) as i32, -1);
-        p.vieworg = if tr.fraction < 1.0 { v::add(v::ma(tr.endpos, 4.0, tr.plane.normal), [0.0, 0.0, 1.0]) } else { want };
+        let (cf, cr2, cu2) = v::angle_vectors(cam_angles);
+        if back == 0.0 {
+            let org = body_cam(v::add(ent_org, p.viewheight), state.ducked, cam_angles[0], cf, cu2);
+            // TS runs `V_SmoothStairs` on the body cam too; reuse this frame's stair offset.
+            p.vieworg = v::add(org, [0.0, 0.0, with(|w| w.stair_dz)]);
+        } else {
+            let want = v::add(v::add(v::ma(p.vieworg, back, cf), v::scale(cu2, up_ofs)), v::scale(cr2, right_ofs));
+            let mut start = v::add(ent_org, [0.0, 0.0, up_ofs + 28.0]);
+            if r::point_contents(start) == CONTENTS_SOLID {
+                start = ent_org;
+            }
+            let tr = r::player_trace(start, want, 2, (PM_STUDIO_IGNORE | PM_WORLD_ONLY) as i32, -1);
+            p.vieworg = if tr.fraction != 1.0 { v::add(v::ma(tr.endpos, 4.0, tr.plane.normal), [0.0, 0.0, 1.0]) } else { want };
+        }
         p.viewangles = cam_angles;
-        if let Some(e) = r::local_player() {
+        if let Some(e) = ent {
+            // The model's z eases at rate 16 (TS `0x10191d94`) so stair steps and landings don't
+            // jerk the body in front of the camera.
+            let z = with(|w| {
+                let z = smooth_model_z(w.model_z.unwrap_or(e.origin[2]), e.origin[2], ft);
+                w.model_z = Some(z);
+                z
+            });
+            e.origin[2] = z;
+            eye = v::add(e.origin, p.viewheight);
             let pitch = -v::norm_angle(cam_angles[0]) / 3.0;
             e.angles[0] = pitch;
             e.curstate.angles[0] = pitch;
             e.prevstate.angles[0] = pitch;
             e.latched.prevangles[0] = pitch;
         }
+    } else {
+        with(|w| w.model_z = None);
     }
 
     // View model (`V_CalcGunAngle` + TS bob offset and fov push).
-    if let Some(vm) = r::view_model() {
+    let mut vm_ent = r::view_model();
+    if let Some(vm) = vm_ent.as_deref_mut() {
         let base_angles = p.cl_viewangles;
         vm.angles = [-base_angles[0] + p.crosshairangle[0] * 0.25, base_angles[1] + p.crosshairangle[1], base_angles[2]];
         let mut org = v::add(v::add(p.simorg, p.viewheight), [0.0, 0.0, water_ofs]);
@@ -646,6 +962,30 @@ fn calc_normal(p: &mut ref_params_t) {
     // Punch (the server never sets it in TS, but keep the SDK add).
     if !third {
         p.viewangles = v::add(p.viewangles, p.punchangle);
+    }
+
+    // `cl_vsmoothing` (step 14, SDK `ViewInterp`): in multiplayer with the server's `pushmsec`
+    // smoothing request, the view lags `cl_vsmoothing` seconds behind along the recorded simorg
+    // path, so lifts and trains don't jitter. Jumps of 64 units or more are not smoothed.
+    let vsmoothing = cv(|c| c.vsmoothing);
+    let smooth = vsmoothing != 0.0 && p.smoothing != 0 && p.maxclients > 1;
+    if smooth && vsmoothing < 0.0 {
+        e.cvar_set(c"cl_vsmoothing", 0.0);
+    }
+    let sample = with(|w| {
+        if v::len(v::sub(p.simorg, w.last_simorg)) != 0.0 {
+            w.org_ring.push(p.simorg, p.time);
+            w.last_simorg = p.simorg;
+        }
+        if smooth { w.org_ring.sample(p.time - vsmoothing) } else { None }
+    });
+    if let Some((org, _)) = sample.filter(|&(_, seg)| seg < 64.0) {
+        let d = v::sub(org, p.simorg);
+        p.simorg = v::add(p.simorg, d);
+        p.vieworg = v::add(p.vieworg, d);
+        if let Some(vm) = vm_ent {
+            vm.origin = v::add(vm.origin, d);
+        }
     }
 
     with(|w| {
@@ -770,6 +1110,148 @@ mod tests {
         let mid = fade_color(0.5, true, Some((10.0, f)), 10.25);
         assert_eq!(mid[0], 127);
         assert_eq!(fade_color(1.0, true, Some((10.0, f)), 13.0), [0; 4]);
+    }
+
+    fn drift_input(forwardmove: f32, now: f32) -> DriftInput {
+        DriftInput {
+            forwardmove,
+            forwardspeed: 400.0,
+            centermove: 0.15,
+            centerspeed: 500.0,
+            frametime: 0.05,
+            idealpitch: 0.0,
+            now,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pitch_drift() {
+        // Not stopped yet: drifts toward the ideal pitch, accelerating, without overshoot.
+        let mut d = Drift::default();
+        let mut pitch = 10.0;
+        d.update(&drift_input(0.0, 1.0), &mut pitch);
+        assert_eq!(pitch, 10.0, "first step has no velocity");
+        for _ in 0..20 {
+            d.update(&drift_input(0.0, 1.0), &mut pitch);
+        }
+        assert_eq!(pitch, 0.0);
+        // Stopped (mouse look): only restarts after walking forward for v_centermove seconds, and
+        // not in the frame something stopped it.
+        let mut d = Drift::default();
+        d.stop(2.0);
+        let mut pitch = -20.0;
+        for _ in 0..10 {
+            d.update(&drift_input(400.0, 2.0), &mut pitch);
+        }
+        assert!(d.nodrift && pitch == -20.0, "stopped this frame");
+        d.update(&drift_input(0.0, 2.1), &mut pitch);
+        assert_eq!(d.driftmove, 0.0, "standing still resets the walk timer");
+        for _ in 0..3 {
+            d.update(&drift_input(400.0, 2.1), &mut pitch);
+        }
+        assert!(d.nodrift, "0.15 s not reached yet");
+        d.update(&drift_input(400.0, 2.1), &mut pitch);
+        assert!(!d.nodrift && d.pitchvel == 500.0);
+        d.update(&drift_input(400.0, 2.1), &mut pitch);
+        assert!(pitch > -20.0);
+        let mut blocked = drift_input(400.0, 2.1);
+        blocked.blocked = true;
+        d.update(&blocked, &mut pitch);
+        assert_eq!(d.pitchvel, 0.0);
+    }
+
+    #[test]
+    fn origin_ring() {
+        let mut r = Ring::default();
+        assert!(r.sample(1.0).is_none());
+        r.push([0.0; 3], 1.0);
+        r.push([10.0, 0.0, 0.0], 1.1);
+        r.push([20.0, 0.0, 0.0], 1.2);
+        let (p, seg) = r.sample(1.05).unwrap();
+        assert!((p[0] - 5.0).abs() < 1e-3 && seg == 10.0);
+        // Newer than the newest pair's start: lerps the last segment, clamped at its end.
+        let (p, _) = r.sample(1.15).unwrap();
+        assert!((p[0] - 15.0).abs() < 1e-3);
+        assert!(r.sample(0.5).is_none(), "history doesn't reach back that far");
+        for i in 0..200 {
+            r.push([i as f32, 0.0, 0.0], 2.0 + i as f32 * 0.01);
+        }
+        let (p, _) = r.sample(2.0 + 190.5 * 0.01).unwrap();
+        assert!((p[0] - 190.5).abs() < 1e-2, "{p:?}");
+    }
+
+    #[test]
+    fn local_translucency() {
+        let mut a = 255.0;
+        for _ in 0..3 {
+            a = local_amt_step(a, true, true, true);
+        }
+        assert_eq!(a, 105.0, "50 per frame fading out");
+        a = local_amt_step(a, true, true, true);
+        assert_eq!(a, 100.0);
+        assert_eq!(local_amt_step(a, true, false, true), 105.0, "cl_thirdtransparency 0 fades back in");
+        assert_eq!(local_amt_step(a, false, true, true), 105.0, "5 per frame fading in");
+        assert_eq!(local_amt_step(a, false, true, false), 150.0, "50 when the frame has no time");
+    }
+
+    #[test]
+    fn third_person_offsets() {
+        assert_eq!(cam_base(0, 0.0, 0.0, 0.0), (-48.0, 16.0, 12.0));
+        assert_eq!(cam_base(3, 500.0, -50.0, 50.0), (-128.0, -24.0, 24.0));
+        assert_eq!(cam_base(3, -50.0, 0.0, 0.0).0, 24.0);
+        let s = CamState { ducked: false, alive: true, stunt: false, ft: 0.01 };
+        let (mut u, mut b) = (0.0, 0.0);
+        assert_eq!(cam_smooth(&mut u, &mut b, -48.0, 12.0, s), (-48.0, 12.0));
+        // Stunt pulls the camera back to -92, ducking raises it to 32; dead goes to -180.
+        let stunt = CamState { ducked: true, stunt: true, ..s };
+        for _ in 0..2000 {
+            cam_smooth(&mut u, &mut b, -48.0, 12.0, stunt);
+        }
+        let (back, up) = cam_smooth(&mut u, &mut b, -48.0, 12.0, stunt);
+        assert!((back + 92.0).abs() < 1e-3 && (up - 32.0).abs() < 1e-3, "{back} {up}");
+        let dead = CamState { alive: false, ..s };
+        for _ in 0..2000 {
+            cam_smooth(&mut u, &mut b, -48.0, 12.0, dead);
+        }
+        let (back, up) = cam_smooth(&mut u, &mut b, -48.0, 12.0, dead);
+        assert!((back + 180.0).abs() < 1e-3 && up == 12.0, "dead ignores the up offset: {back} {up}");
+        // No stunt pull-back when the camera is already at the -128 limit.
+        let (mut u, mut b) = (0.0, 0.0);
+        assert_eq!(cam_smooth(&mut u, &mut b, -128.0, 12.0, CamState { stunt: true, ..s }).0, -128.0);
+    }
+
+    #[test]
+    fn body_cam_and_model_z() {
+        let (fwd, up) = ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        assert_eq!(body_cam([0.0; 3], false, 0.0, fwd, up), [0.0, 0.0, 1.0]);
+        assert_eq!(body_cam([0.0; 3], true, 0.0, fwd, up), [8.0, 0.0, 8.0]);
+        let down = body_cam([0.0; 3], false, 90.0, fwd, up);
+        assert!((down[0] - 4.0).abs() < 1e-4 && (down[2] - 19.0).abs() < 1e-4, "{down:?}");
+        assert_eq!(body_cam([0.0; 3], false, -45.0, fwd, up), [0.0, 0.0, 1.0], "looking up adds nothing");
+        assert_eq!(smooth_model_z(10.0, 0.0, 0.01), 10.0 - 1.6);
+        assert_eq!(smooth_model_z(10.0, 0.0, 1.0), 0.0, "no overshoot");
+    }
+
+    #[test]
+    fn spectator_eye() {
+        let e = EyeSource { origin: [0.0, 0.0, 100.0], angles: [10.0, 90.0, 0.0], solid: 3, iuser4: 0, usehull: 0 };
+        let (o, a) = player_eye(&e);
+        assert_eq!(o[2], 128.0);
+        assert!((a[0] + 31.415927).abs() < 1e-4 && a[1] == 90.0);
+        assert_eq!(player_eye(&EyeSource { usehull: 1, ..e }).0[2], 116.0);
+        assert_eq!(player_eye(&EyeSource { iuser4: stunt::NO_VIEW, ..e }).0[2], 100.0, "NO_VIEW: eye at the origin");
+        let (o, a) = player_eye(&EyeSource { solid: 0, ..e });
+        assert_eq!((o[2], a[2]), (92.0, 80.0));
+    }
+
+    #[test]
+    fn idle_sway() {
+        let mut a = [0.0; 3];
+        add_idle(&mut a, 1.0, 0.0);
+        assert_eq!(a, [0.0; 3]);
+        add_idle(&mut a, std::f32::consts::FRAC_PI_2, 1.0);
+        assert!((a[0] - 0.3).abs() < 1e-6 && a[1].abs() < 1e-6 && (a[2] - 0.1 * (std::f32::consts::FRAC_PI_4).sin()).abs() < 1e-6);
     }
 
     #[test]

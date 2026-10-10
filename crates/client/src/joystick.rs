@@ -80,6 +80,7 @@ pub struct MoveParams {
     pub strafe: bool,
     pub advanced: bool,
     pub lookstrafe: bool,
+    pub lookspring: bool,
     pub m_pitch: f32,
     pub wwhack2: bool,
     pub forward_threshold: f32,
@@ -97,9 +98,10 @@ pub struct MoveParams {
 }
 
 /// `IN_JoyMove` (10027e40) on one reading: adds to `forward`/`side` and turns `view` (pitch,
-/// yaw, roll). TS clamps pitch to ±89 at the end. `V_StopPitchDrift` calls are dropped: the port
-/// has no pitch drift.
-pub fn apply_axes(raw: &[u32; MAX_AXES], map: &AxisMap, p: &MoveParams, view: &mut [f32; 3], forward: &mut f32, side: &mut f32) {
+/// yaw, roll). TS clamps pitch to ±89 at the end. Returns whether to call `V_StopPitchDrift`: a
+/// look axis past its threshold stops the drift, and so does a quiet one without `lookspring`.
+pub fn apply_axes(raw: &[u32; MAX_AXES], map: &AxisMap, p: &MoveParams, view: &mut [f32; 3], forward: &mut f32, side: &mut f32) -> bool {
+    let mut stop_drift = false;
     let speed = if p.speed_key { p.movespeedkey } else { 1.0 };
     let aspeed = speed * p.frametime;
     for (i, &value) in raw.iter().enumerate() {
@@ -122,15 +124,26 @@ pub fn apply_axes(raw: &[u32; MAX_AXES], map: &AxisMap, p: &MoveParams, view: &m
                         } else {
                             view[0] += d;
                         }
+                        stop_drift = true;
+                    } else if !p.lookspring {
+                        stop_drift = true;
                     }
                 } else if v.abs() > p.forward_threshold {
                     *forward += v * p.forward_sensitivity * speed * p.forwardspeed;
                 }
             }
             Axis::Look => {
-                if p.jlook && v.abs() > p.pitch_threshold {
-                    view[0] +=
-                        if relative { v * p.pitch_sensitivity * speed * 180.0 } else { v * p.pitch_sensitivity * aspeed * p.pitchspeed };
+                if p.jlook {
+                    if v.abs() > p.pitch_threshold {
+                        view[0] += if relative {
+                            v * p.pitch_sensitivity * speed * 180.0
+                        } else {
+                            v * p.pitch_sensitivity * aspeed * p.pitchspeed
+                        };
+                        stop_drift = true;
+                    } else if !p.lookspring {
+                        stop_drift = true;
+                    }
                 }
             }
             Axis::Side => {
@@ -152,6 +165,7 @@ pub fn apply_axes(raw: &[u32; MAX_AXES], map: &AxisMap, p: &MoveParams, view: &m
         }
     }
     view[0] = view[0].clamp(-89.0, 89.0);
+    stop_drift
 }
 
 /// `IN_Commands` button edges: buttons 0-3 are `K_JOY1`+i, the rest `K_AUX1`+i (the SDK's
@@ -326,6 +340,7 @@ pub fn joy_move(frametime: f32, view: &mut [f32; 3], forward: &mut f32, side: &m
         strafe: input::IN_STRAFE.held(),
         advanced: c.joyadvanced.value() != 0.0,
         lookstrafe: c.lookstrafe.value() != 0.0,
+        lookspring: c.lookspring.value() != 0.0,
         m_pitch: c.m_pitch.value(),
         wwhack2: c.joywwhack2.value() != 0.0,
         forward_threshold: c.joyforwardthreshold.value(),
@@ -341,7 +356,9 @@ pub fn joy_move(frametime: f32, view: &mut [f32; 3], forward: &mut f32, side: &m
         pitchspeed: c.cl_pitchspeed.value(),
         yawspeed: c.cl_yawspeed.value(),
     };
-    apply_axes(&r.axes, &map, &p, view, forward, side);
+    if apply_axes(&r.axes, &map, &p, view, forward, side) {
+        crate::view::stop_pitch_drift();
+    }
 }
 
 #[cfg(test)]

@@ -249,8 +249,7 @@ state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
 * `voice_ban.dt` is written whenever a mute changes (the SDK writes it when the library unloads).
   TS reads `scripts/voicemodel.txt` but never uses the height, so the port doesn't read it.
 * Joystick on Linux uses an SDL2 game controller (TS only has the Windows WinMM code). The SDL
-  rescan uses the client clock (`GetAbsoluteTime` isn't in the 2007 engine table). `V_StopPitchDrift`
-  calls in `IN_JoyMove` are dropped (the port has no pitch drift). A failed device read releases
+  rescan uses the client clock (`GetAbsoluteTime` isn't in the 2007 engine table). A failed device read releases
   the joystick buttons (TS's zeroed `JOYINFOEX` reads as POV "up"; the port treats it as centred).
 
 ## 8. Missing / not done

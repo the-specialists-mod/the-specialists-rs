@@ -258,6 +258,16 @@ pub fn random_long(lo: i32, hi: i32) -> i32 {
 pub fn point_contents(p: Vec3) -> i32 {
     cl_eng!(PM_PointContents(p.as_ptr(), std::ptr::null_mut()))
 }
+/// `IsNoClipping`: the local player is in noclip.
+pub fn is_no_clipping() -> bool {
+    cl_eng!(IsNoClipping()) != 0
+}
+/// `pparams->cmd->forwardmove` (0 when the engine passes no command).
+pub fn refdef_forwardmove(p: &ref_params_t) -> f32 {
+    // SAFETY: the engine passes null or a pointer to its current usercmd, valid for the
+    // V_CalcRefdef call `p` belongs to.
+    unsafe { p.cmd.as_ref() }.map_or(0.0, |c| c.forwardmove)
+}
 
 /// A registered client cvar. The engine owns the storage, so the pointer stays valid.
 #[derive(Clone, Copy)]
