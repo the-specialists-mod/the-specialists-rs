@@ -195,7 +195,8 @@ How the SDK patterns map to Rust:
 
 * **`UTIL_ScreenShake`** (0xec978). Only players on the ground shake. The fixed-point duration
   and frequency (`FixedUnsigned16`) are divided by `GiveSlowMul()` = `max(fuser1, 0.01)` and
-  truncated, without clamping again.
+  truncated, without clamping again (the x87 control word is set to truncate at 0xecad3 and
+  0xecb11). `explode::screen_shake` is the only copy; `stunt::screen_shake` re-exports it.
 * **`UTIL_ScreenFade`** (0xecdec). Always sent as `TSFade` (`short dur, short hold, short flags,
   byte r,g,b,a`) to net clients, with the fixed-point durations divided by the time scale the same
   way. The stock `ScreenFade` message is never sent.

@@ -214,39 +214,8 @@ fn normalized(v: Vec3) -> Vec3 {
     }
 }
 
-/// `FixedUnsigned16`.
-fn fixed_u16(value: f32, scale: f32) -> i32 {
-    ((value * scale) as i32).clamp(0, 0xffff)
-}
-
-/// TS `UTIL_ScreenShake` (0xec978): SDK shake to grounded players within `radius`, with the
-/// duration and frequency divided by each receiver's time scale.
-pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32, radius: f32) {
-    let e = engine();
-    let dur = fixed_u16(duration, 4096.0);
-    let freq = fixed_u16(frequency, 256.0);
-    for i in 1..=e.max_clients() {
-        let pl = e.player(i);
-        if pl.is_null() {
-            continue;
-        }
-        let v = pl.v();
-        if v.flags & FL_ONGROUND as i32 == 0 {
-            continue;
-        }
-        let d = [center[0] - v.origin[0], center[1] - v.origin[1], center[2] - v.origin[2]];
-        let local = if radius <= 0.0 || (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() < radius { amplitude } else { 0.0 };
-        if local == 0.0 {
-            continue;
-        }
-        let slow = v.fuser1.max(0.01);
-        messages::one(Msg::ScreenShake, pl)
-            .short(fixed_u16(local, 4096.0) & 0xffff)
-            .short(((dur & 0xffff) as f32 / slow).round_ties_even() as i32)
-            .short(((freq & 0xffff) as f32 / slow).round_ties_even() as i32)
-            .end();
-    }
-}
+/// TS `UTIL_ScreenShake` (0xec978); one helper shared with the stock entities and `TSExplosion`.
+pub use crate::entities::stock::explode::screen_shake;
 
 // ---- API for other packages -------------------------------------------------------------------------
 

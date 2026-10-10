@@ -152,6 +152,40 @@ pub fn falloff_damage(dmg: f32, dist: f32, r_full: f32, r_max: f32) -> f32 {
     d
 }
 
+#[cfg(test)]
+mod explosion_tests {
+    use super::*;
+
+    #[test]
+    fn explosion_falloff() {
+        // The grenade: 110 full inside 300, linear to 0 at 1024.
+        assert_eq!(falloff_damage(110.0, 0.0, 300.0, 1024.0), 110.0);
+        assert_eq!(falloff_damage(110.0, 300.0, 300.0, 1024.0), 110.0);
+        assert!((falloff_damage(110.0, 662.0, 300.0, 1024.0) - 55.0).abs() < 1e-4);
+        assert_eq!(falloff_damage(110.0, 1024.0, 300.0, 1024.0), 0.0);
+        // Centres can lie outside the sphere: clamped at 0.
+        assert_eq!(falloff_damage(110.0, 1100.0, 300.0, 1024.0), 0.0);
+        // A breakable with impulse 40: r_full 40, r_max 100.
+        assert!((falloff_damage(40.0, 70.0, 40.0, 100.0) - 20.0).abs() < 1e-4);
+        // No guard for r_max == r_full: full inside, nothing outside.
+        assert_eq!(falloff_damage(50.0, 10.0, 64.0, 64.0), 50.0);
+        assert_eq!(falloff_damage(50.0, 65.0, 64.0, 64.0), 0.0);
+    }
+
+    #[test]
+    fn slow_motion_divides_the_fixed_point_value() {
+        // `UTIL_ScreenShake`: 1 s → 4096, at a quarter time scale 16384.
+        assert_eq!(slowed(fixed_u16(1.0, 4096.0), 0.25), 16384);
+        // Truncated after the division, not before.
+        assert_eq!(slowed(fixed_u16(0.1, 4096.0), 0.3), 1363);
+        // The super-jump landing shake (0.3 s) at a 0.35 time scale: 1228 / 0.35 = 3508.57.
+        assert_eq!(slowed(fixed_u16(0.3, 4096.0), 0.35), 3508);
+        // No clamp after the division: `WriteShort` keeps the low 16 bits.
+        assert_eq!(slowed(fixed_u16(1.0, 4096.0), 0.01), 409_600);
+        assert_eq!(fixed_u16(20.0, 4096.0), 0xffff);
+    }
+}
+
 /// TS `TSExplosion(origin, inflictor, attacker, dmg, bits, rFull, rMax)` (0x7d01c), called by the
 /// M61 grenade (`CM61Grenade::WaitThink` 0x7cacc) and exploding breakables (`CBreakable::Die`
 /// 0x752e0). With the blast point `origin + 1z`:
@@ -277,35 +311,5 @@ pub fn radius_damage(src: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t,
                 deal(e, inflictor, attacker, adjusted, bits, [0.0; 3], [0.0; 3]);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explosion_falloff() {
-        // The grenade: 110 full inside 300, linear to 0 at 1024.
-        assert_eq!(falloff_damage(110.0, 0.0, 300.0, 1024.0), 110.0);
-        assert_eq!(falloff_damage(110.0, 300.0, 300.0, 1024.0), 110.0);
-        assert!((falloff_damage(110.0, 662.0, 300.0, 1024.0) - 55.0).abs() < 1e-4);
-        assert_eq!(falloff_damage(110.0, 1024.0, 300.0, 1024.0), 0.0);
-        // Centres can lie outside the sphere: clamped at 0.
-        assert_eq!(falloff_damage(110.0, 1100.0, 300.0, 1024.0), 0.0);
-        // A breakable with impulse 40: r_full 40, r_max 100.
-        assert!((falloff_damage(40.0, 70.0, 40.0, 100.0) - 20.0).abs() < 1e-4);
-        // No guard for r_max == r_full: full inside, nothing outside.
-        assert_eq!(falloff_damage(50.0, 10.0, 64.0, 64.0), 50.0);
-        assert_eq!(falloff_damage(50.0, 65.0, 64.0, 64.0), 0.0);
-    }
-
-    #[test]
-    fn slow_motion_divides_the_fixed_point_value() {
-        // `UTIL_ScreenShake`: 1 s → 4096, at a quarter time scale 16384.
-        assert_eq!(slowed(fixed_u16(1.0, 4096.0), 0.25), 16384);
-        // Truncated after the division, not before.
-        assert_eq!(slowed(fixed_u16(0.1, 4096.0), 0.3), 1363);
-        assert_eq!(fixed_u16(20.0, 4096.0), 0xffff);
     }
 }
