@@ -113,10 +113,12 @@ pub fn init() {
 }
 
 /// `CHudSpectator::VidInit` (`0x10022fe0`). TS also loads the overview sprites (iplayer*,
-/// tile, camera, laserbeam); without the overview only the crosshair is used.
+/// tile, camera, laserbeam); without the overview only the crosshair is used. It also zeroes the
+/// observer input timer (`+0xc94`), which the port keeps in `input`.
 pub fn vid_init() {
     let h = engine().spr_load("sprites/crosshairs.spr");
     with(|s| s.crosshair = h);
+    crate::input::reset_key_tap();
 }
 
 /// `specmode <n>` (`0x10022c10`): HLTV spectators pick a camera mode (and turn the inset off).

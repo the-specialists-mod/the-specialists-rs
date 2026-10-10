@@ -189,6 +189,13 @@ pub fn gate_open() -> bool {
 /// player is an observer whose respawn wait is over, so this is how a click spawns you in.
 static NEXT_KEY_TAP: Global<Cell<f32>> = Global(Cell::new(0.0));
 
+/// TS keeps the timer in `CHudSpectator` (`+0xc94`), which `Init` and `VidInit` zero. The client
+/// clock restarts with each map, so a timer left from the previous map would block every click
+/// (and so spawning) until the new map's clock caught up with the old one.
+pub fn reset_key_tap() {
+    NEXT_KEY_TAP.0.set(0.0);
+}
+
 fn key_tap(bits: u8) {
     let now = engine().client_time();
     if key_tap_step(&NEXT_KEY_TAP.0, now, bits) == Some(true) {
@@ -799,6 +806,8 @@ fn adjust_angles(frametime: f32, view: &mut [f32; 3]) {
 static LIVE_ANGLES: Global<Cell<[f32; 3]>> = Global(Cell::new([0.0; 3]));
 /// View angles held while a menu owns the mouse.
 static MENU_ANGLES: Global<Cell<Option<[f32; 3]>>> = Global(Cell::new(None));
+/// The angles `create_move` last gave the engine, to tell a server `svc_setangle` apart.
+static LAST_SET_ANGLES: Global<Cell<Option<[f32; 3]>>> = Global(Cell::new(None));
 
 /// `CL_ButtonBits`: kbuttons to `usercmd_t::buttons`, with TS's bit map (§5.1). Clears the
 /// pressed/released edges like the SDK.
@@ -844,7 +853,7 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
 
     // A menu that owns the mouse keeps the view still and moves the virtual cursor instead.
     if crate::menus::wants_cursor() {
-        let held = MENU_ANGLES.0.get().unwrap_or(view);
+        let held = menu_hold(MENU_ANGLES.0.get(), LAST_SET_ANGLES.0.get(), view);
         MENU_ANGLES.0.set(Some(held));
         view = held;
     } else {
@@ -924,7 +933,19 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
         view = a;
     }
     e.set_view_angles(view);
+    LAST_SET_ANGLES.0.set(Some(view));
     cmd.viewangles = view;
+}
+
+/// The view angles to hold while a menu owns the mouse. The hold is against the player's own
+/// turning (keys, joystick); angles the engine set since the last `CL_CreateMove` came from the
+/// server (`svc_setangle`: spawn, teleport, `ts_face`) and replace the held ones. TS has no hold:
+/// its VGUI menus only stop the mouse, so the server's angles always apply.
+fn menu_hold(held: Option<[f32; 3]>, last_set: Option<[f32; 3]>, engine: [f32; 3]) -> [f32; 3] {
+    match held {
+        Some(h) if last_set == Some(engine) => h,
+        _ => engine,
+    }
 }
 
 #[cfg(test)]
@@ -939,6 +960,24 @@ mod tests {
         assert_eq!(key_tap_step(&next, 1.25, 0x08), Some(false)); // +forward restarts the timer
         assert_eq!(key_tap_step(&next, 1.35, 0x01), None); // ...which also holds back +attack
         assert_eq!(key_tap_step(&next, 1.5, 0x01), Some(true));
+    }
+
+    #[test]
+    fn key_tap_timer_reset_on_map_change() {
+        // Last click at 127 s on the old map; the new map's clock starts lower.
+        assert_eq!(key_tap_step(&NEXT_KEY_TAP.0, 127.0, 0x01), Some(true));
+        assert_eq!(key_tap_step(&NEXT_KEY_TAP.0, 73.0, 0x01), None, "the old map's timer blocks the click");
+        reset_key_tap(); // spectator::vid_init
+        assert_eq!(key_tap_step(&NEXT_KEY_TAP.0, 73.0, 0x01), Some(true));
+    }
+
+    #[test]
+    fn menu_hold_takes_server_angles() {
+        let (a, b) = ([0.0, 10.0, 0.0], [5.0, 90.0, 0.0]);
+        assert_eq!(menu_hold(None, Some(a), a), a, "a menu that just opened holds the current view");
+        assert_eq!(menu_hold(Some(a), Some(a), a), a, "nothing changed: keep holding");
+        assert_eq!(menu_hold(Some(a), Some(a), b), b, "svc_setangle while the menu is open wins");
+        assert_eq!(menu_hold(Some(a), None, b), b);
     }
 
     #[test]

@@ -60,7 +60,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `IN_StartupJoystick` 10027960, `IN_ReadJoystick` 10027de0 | `goldsrc::joystick::startup`/`read` |
 | `Joy_AdvancedUpdate_f` 10027b00, `IN_Commands` 10027ca0, `IN_JoyMove` 10027e40 | `joystick::axis_map`/`joy_advanced_update`, `joystick::commands`, `joystick::joy_move`/`apply_axes` |
 | `CMessageWindowPanel` (MOTD, VGUIMenu 5) | `menus::draw_motd` |
-| `CHudSpectator` 10022c70 (Init), 10022fe0 (VidInit), `DirectorMessage` 10023380, `SetModes` 100234d0, `specmode` 10022c10, map camera 10022da0 | `spectator::{init, vid_init, director_event, set_modes}`; `HUD_DirectorEvent` 1001ab60 and `HUD_DirectorMessage` exports |
+| `CHudSpectator` 10022c70 (Init), 10022fe0 (VidInit), `DirectorMessage` 10023380, `SetModes` 100234d0, `specmode` 10022c10, map camera 10022da0 | `spectator::{init, vid_init, director_event, set_modes}`; `HUD_DirectorEvent` 1001ab60 and `HUD_DirectorMessage` exports. `VidInit` also zeroes the 0.2 s click timer (`+0xc94`, `input::reset_key_tap`): the client clock restarts with each map, and a timer left from the old map blocked click-to-spawn after a `changelevel` |
 
 ## 2. Message table
 
@@ -97,7 +97,7 @@ payloads are logged and ignored.
 | ClipInfo / WStatus / ActItems / NextStunt / Wires / KFuPower / CustomWP | §3.3 | grid, active items, stunt cooldown, wires, kung-fu power, custom weapon params |
 | ScoreInfo / TeamInfo / TeamScore / TeamNames | stock | scoreboard data |
 | DeathMsg | B, B, Str | kill feed + TS console line |
-| SayText / TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2 (Spectator: observer flag, buy menu on entering) |
+| SayText / TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2 (Spectator: observer flag; entering leaves third person and opens the buy menu, leaving re-applies `cl_thirdperson` like TS `10065250`, so the death cam doesn't outlive the respawn) |
 | Train | B notch | `CHudTrain`: `sprites/%d_train.spr` frame `notch - 1` in (255,160,0), x = w/3 + sprite w/4, y = h - sprite h - font height; hidden at 0 |
 | HideWeapon | B bits | `hide_hud`; HIDEHUD_ALL (4) hides the train element. TS only resets the engine crosshair, which it doesn't use |
 | CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Geiger, Health, Battery, Damage, GameTitle, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
@@ -162,7 +162,10 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   mouse buttons entirely).
 * Menus that show a cursor (buy, team, MOTD, the scoreboard in voice squelch mode) receive the
   mouse deltas as a virtual cursor (drawn with `sprites/cursor.spr`) while the view is held still;
-  clicks go to the menu.
+  clicks go to the menu. The hold is only against the player's own turning: angles the server
+  sets meanwhile (`svc_setangle` on spawn, teleports, `ts_face`) replace the held ones, as in TS,
+  whose menus only stop the mouse. (Holding them too left the Steam client facing the old way,
+  and shooting there, after a spawn or teleport with the MOTD open.)
 * **Joystick.** FWGS reads joysticks and gamepads itself and sends movement through
   `IN_ClientMoveEvent`, so the client's joystick code only runs on Steam GoldSrc. It is TS's copy
   of the classic SDK code: `IN_StartupJoystick` at init (skipped with `-nojoy`), the axis map from
