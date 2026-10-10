@@ -203,6 +203,13 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     let c = &from.client;
     let dead = c.deadflag != 0 || c.health <= 0.0;
     let (mut gun, powerups) = gun_from(from);
+    // HUD_PostRunCmd (0x10003830) keeps the active items for DrawLaserDots, cleared while the
+    // next attack is pending (TS `0x1018a628`).
+    let ready = if c.m_flNextAttack > 0.0 { 0 } else { gun.slot().map_or(0, |s| s.active as i32) };
+    state::with(|st| {
+        st.items_ready = ready;
+        st.local_velocity = c.velocity;
+    });
 
     // Weapon switches come from the server (`weapon_<n>`); show the draw animation when the
     // networked weapon changes (Deploy / HolsterWeapon view animation).

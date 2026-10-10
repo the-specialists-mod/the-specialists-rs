@@ -38,7 +38,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CHudTSStatus::Draw` 10049ea0 and `DrawRoundTimer` 1004a130, `DrawPowerup` 1004a2e0, `DrawStatusPanel` 1004a3e0, `DrawTeammateMarkers` 1004ab40, `DrawCrosshairID` 1004acc0, `DrawTSMessages` 1004af40, `DrawObjectiveText` 1004b0e0, `DrawObjectiveMarkers` 10049fc0 | `hud::status::*` |
 | `CHudTSWeapons` handlers 1004f6f0..1004fb50 | `Hud::apply` (weapon arms) |
 | `CHudTSWeapons::Reset` 1004cd60, `Think` 1004ce10 | `Hud::reset_weapons`; `hud::think`, `weapons::think_sounds`, `hud::weapon_menu_buttons` |
-| `Draw` 1004d3f0, `DrawWirePanel` 1004d550, `DrawKungFuBar` 1004d5f0, `DrawKungFuLabel` 1004d700, `DrawWeaponInfo` 1004d7e0, `DrawWeaponList` 1004e030, `DrawCrosshair` 1004e9f0 + 1004ef50 | `hud::weapons::*` |
+| `Draw` 1004d3f0, `DrawWirePanel` 1004d550, `DrawKungFuBar` 1004d5f0, `DrawKungFuLabel` 1004d700, `DrawWeaponInfo` 1004d7e0, `DrawWeaponList` 1004e030, `DrawLaserDots` 1004e6f0, `DrawCrosshair` 1004e9f0 + 1004ef50 | `hud::weapons::*` |
 | `SelectSlot` 1004f220, `SelectNextPrev` 1004f500, `CmdBuy` 1004fda0 | `hud::select_slot` → `weapons::select_slot`; `weapons::select_next_prev`; `hud::cmd_buy` |
 | `DrawHudNumberTS` 1004c290, `DrawHudString` 10021ce0, `DrawHudStringLen` 10021ca0 | `draw::draw_number`/`number_cells`, `text::draw_string`, `text::string_len` |
 | `LocaliseTextString` 100348d0, `LookupString` 100349c0 | `text::localise`, `text::lookup` |
@@ -197,14 +197,39 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
 
 ## 5. HUD draw pass (TS order)
 
-HudText → death notices (`nohud` gate) → weapons element (equipment/slot menu, kung-fu label or
-weapon info, crosshair or wire panel) → status element (round timer, TS messages, objective
+HudText → death notices (`nohud` gate) → weapons element (laser dots, drawn even with `nohud`;
+equipment/slot menu, kung-fu label or weapon info, crosshair or wire panel) → status element (round timer, TS messages, objective
 text, teammate markers, crosshair ID, status panel, power-up, objective markers) → say text →
 `CHudMenu` → (menus module) buy menu, team menu, MOTD, scoreboard, cursor. Colours from
 `hud_r/g/b`, halved where TS halves them, red (195,45,45). Sprites: hud.txt `number_0..9`,
 `d_*`; `sprites/player/*.spr`, `sprites/weapons/*.spr`, `cross_e/cross2/cross_t`, `divestep*`,
 `wires/*`, `compass/uparrow/downarrow/cursor`. The crosshair gap is `22 (12 with the laser on) +
 state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
+
+Divesteps (1004ef50, drawn when not scoped or in third person; checked against the TS binary):
+the three sprites at `(cx − 40, cy − 40)`. Sprite i is red (195, 45, 45) when `81 − free slots`
+≥ 42 / 52 / 62; the threshold helpers (1004eec0/1004eef0/1004ef20) compute
+`81 − slots − f()` with `f` (1004eeb0) a stub returning 0, so the decompile's
+`HUD_GetUserEntity` term is that 0. Otherwise the sprite has the base colour (red while
+`NextStunt ≥ 0.01`, else the HUD colour) ×1 for the band the pitch is in (< −10°, −10..10°,
+> 10°) and ×0.5 for the other two. The pitch dot (2×2, alpha 100, base colour) is at
+`(cx − 32·cos a, cy + 32·sin a)`, `a = clamp(3·pitch, ±90°)`.
+
+Laser HUD (read from the TS binary, since the decompile hides the `__ftol` arguments):
+* `DrawLaserDots` (1004e6f0): 2×2 fills, alpha 255, in the local player's `PlInfo` laser colour.
+  When `state.items_ready` (TS `0x1018a628`: the `from` state's switched-on items, 0 while
+  `m_flNextAttack > 0`, set in `HUD_PostRunCmd`) is non-zero and `cl_laser < 1`, the dot is
+  pinned to the crosshair centre at `(cx−1+jx, cy−1+jy)`; akimbo dots at `(cx+3+jx, cy−1+jy)` and
+  `(cx−5+jy, cy−1+jx)`, with `j = RandomLong(−10, 10) / 10` (±1 only at ±10). Otherwise each dot
+  is at its projected hit point − (1, 1). No dot when the hit point projects behind the view.
+* The traces (`effects::laser::draw_local`, `DrawLocalLaser` 0x1003bb00) start at the cull origin
+  (±4 units along `v_right` per akimbo gun) along the beam direction; the projected point is the
+  hit − `2·v_forward`, and `state.laser_range` = first hit distance × 0.025 (`0x1003d15f`).
+* `DrawCrosshair` with the laser on draws `laser_range` (`DrawHudNumberTS` flag 1) at
+  `(cx + 28, cy − fontHeight/2 − (8 when scoped in first person))`, in the crosshair colour ×0.7
+  when the crosshair is on a player, ×0.5 otherwise (`0x1004ee02`).
+* `DrawWeaponInfo` ends with `sprintf("%ix", 80 / m_iFOV)` at (24, 24) in the HUD colour when the
+  FOV is below 40 (`0x1004dfbe`: `mov eax, 80; idiv fov`).
 
 ## 6. Buy menu
 
@@ -261,8 +286,6 @@ state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
 
 ## 8. Missing / not done
 
-* Laser dots (`DrawLaserDots` 1004e6f0) — needs the effects package's laser traces; `state`
-  exports `active_items`/`laser_color` for it.
 * `CHudSpectator`'s overview map and player name tags (`DrawOverview` `10024970`,
   `ParseOverviewFile` `10023720`, `Draw` `10023080`): TS draws them only for HLTV spectators
   (`IsSpectateOnly`). The rest of the element is in `client/src/spectator.rs`: director events,
@@ -272,10 +295,8 @@ state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
 * `HUD_UpdateClientData` writes the eased FOV (`view::update_client_data`, wired at integration).
 * Death-cam / `cl_thirdpersonswitch` / observer third-person changes are only *requested*
   (`state.thirdperson_*`); the view package owns `cam_thirdperson`.
-* The fov-under-40 `%ix` label in `DrawWeaponInfo` (argument unknown) and the laser-on number next
-  to the crosshair are not drawn.
-* Divestep sprite availability thresholds (used slots < 42/52/62) are inferred from a garbled
-  decompile.
+* The crosshair and its laser-range number stay at the screen centre in third person; TS centres
+  them on the projected view-trace end, as `DrawLaserDots` here does. (#40)
 
 ## 9. Tests and results
 

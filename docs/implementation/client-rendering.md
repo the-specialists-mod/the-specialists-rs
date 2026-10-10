@@ -54,7 +54,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `V_CalcViewRoll` / `V_CalcRoll` | `0x100675b0` / `0x100671f0` | `view::calc_view_roll` | done |
 | `V_ApplyKick` | `0x10057ed0` | in `calc_normal` (step into `cl_viewangles`) | done, verified in game |
 | `ViewShake::Start` / `Update` | `0x10057fa0` / `0x10058000` | `view::Shake` | done, unit-tested |
-| `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` | done |
+| `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` (prediction: `view::kick_angles`) | done, constants checked against the decomp |
 | screen fade + `TSFade` | end of `0x10069b90`, `0x1004c1e0` | `view::write_screen_fade`, `view::fade_color`, `view::on_tsfade` | done, verified in game |
 | `V_SetFog` | `0x10056c20` | `effects::fog_begin` (TriAPI `Fog`) | done, only with `gl_fog` != 0 |
 | `CAM_Think` / `CL_IsThirdPerson` / camera offset | `0x10024c80` / `0x1004fec0` / §7.4 | `view::cam_think` (no-op), `view::is_third_person`, third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`) | done; camera verified in game before the offset smoothing was rewritten to TS's form, body cam and model z smoothing not yet |
@@ -75,14 +75,15 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `EV_TS_Empty`, `Pump`, `Reload`, `Draw`, `Grenade`, `Knife`, `Katana`, `CloseCombat`, `ColdCock` | §4.1 | `events::misc::*` | done |
 | `TS_MeleeMaterialSound` | `0x10045df0` | `misc::melee_material_sound` | done |
 | particle system `g_PSys` (`PSys_*`, `Particle_*`, `Quad_*`) | §5.2-5.4 | `effects::psys` | done (see deviations) |
-| `PSys_PushRadial` / `PushAlongLine` | `0x100524c0` / `0x10052720` | `PSys::push_radial` / `push_along_line` | simplified |
+| `PSys_PushRadial` / `PushAlongLine` / `BlastPush` | `0x100524c0` / `0x10052720` / `0x10052c80` | `PSys::push_radial` / `push_along_line` / `blast_push` | done (from the disassembly) |
 | `CTS_CL_Emitter::Frame`, `LoadMap`, `LoadEntityLump`, `ProcessEnts`, keyvalue parsers | §5.1-5.3 | `effects::frame`, `effects::emitters` | done, unit-tested, verified in game (ts_frigid snow) |
 | wind (`MsgFunc_TSPSys`, `CosineLerp`) | `0x1004bfd0`, `0x10050760` | `effects::on_tspsys`, `psys::Wind` | done, unit-tested |
-| `TS_MuzzleFlash`, `TS_MuzzleDlight`, `TS_GunSmoke`, pellet spray, `TS_Sparks`, `TS_Scintille`, smoke/debris | §4.4-4.5 | `effects::fx::*` | done (numbers approximated) |
+| `TS_MuzzleFlash`, `TS_MuzzleDlight`, `TS_GunSmoke`, `TS_SpriteDebris` (debris and the muzzle pellet spray), `TS_Sparks`, `TS_Scintille`, `TS_ImpactSmoke`, `TS_SmallPuff`, surface mark `0x10046a70` | §4.4-4.5 | `effects::fx::*` | done (numbers from the disassembly) |
+| `FX_ApplyCvar` / `FX_AdaptQuality` (`cl_fx`) | `0x10057d50` / `0x10057a70` | `effects::apply_quality`, `psys::FxTuning` | done |
 | `TS_ImpactParticles` | `0x10048f60` | `fx::impact` | done |
 | `TS_BloodImpact` (`PTakeDam`) | `0x10048840`, `0x1004bcd0` | `fx::blood`, `effects::on_ptakedam` | done |
 | `TS_GlassShatter`, `TS_Explosion` (`TSFrags`) | `0x10047cb0`, `0x100481b0`, `0x1004bd50` | `fx::glass`, `fx::explosion`, `effects::on_tsfrags` | done, verified in game |
-| client bullets | `0x10035c20`, `0x10035010`, `0x10035d40` | `fire::ClientBullet`, `fire::client_bullets_frame`, `fx::bullet_trail` | simple version (streak + impact) |
+| client bullets | `0x10035c20`, `0x10035010`, `0x10035d40` | `fire::ClientBullet`, `fire::client_bullets_frame`, `fx::bullet_trail` | simple version (impact; trail quads with `cl_wavedetail` > 0, as TS) |
 | `GetBulletVelocityMult` | `0x10055b30` | `fire::bullet_velocity_mult` | done, unit-tested |
 | `HUD_AddEntity` (hemisphere, spectator, anti-peek, item fades) | `0x100447f0` | `effects::add_entity`, `occlusion_visible` | done |
 | `HUD_CreateEntities` | `0x1001bce0` | `effects::create_entities` | client bullets, then motion-blur ghosts |
@@ -103,6 +104,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `HUD_StudioEvent` | `0x10044b50` | `effects::studio_event` | done (5002, 5004) |
 | `DrawLocalLaser` / `DrawOtherLasers` / flashlights | `0x1003bb00` / `0x1003d600` / `0x1003b250` / `0x1003b750` | `effects::laser` | done (untested: needs server state) |
 | `DrawPlayerShadows` | `0x10055760` | `laser::draw_shadows` | done, verified in game |
+| `DrawScopeOverlay` | `0x10054510` | `effects::scope` | done (not yet checked in engine) |
 | `FX_ApplyCvar` / `FX_AdaptQuality` | `0x10057d50` / `0x10057a70` | `effects::apply_quality` | done |
 | view-model framerate x time scale | `StudioDrawModel` `0x10031ae0` | `view::view_model_framerate` (writes `curstate.framerate` once per frame in `V_CalcRefdef`, not in the renderer) | written, untested |
 | `HUD_TxferLocalOverrides` | `0x1001b900` | `prediction::txfer_local_overrides` | done |
@@ -145,11 +147,6 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 * **Idle sway** (`V_AddIdle`) runs in the intermission view only. In the normal view TS scales it
   by `m_iConcussionEffect`, which only the TFC `Concuss` message sets; TS never sends it and the
   port doesn't hook it, so the scale is 0 and the call is left out.
-* **`cl_vsmoothing` angle ring.** TS records `cl_viewangles` in a second ring and replays it only
-  while its client-side pmove spectator camera sets flag bit 2 (`0x101914ec`, written in
-  `PM_PlayerMove` `0x1002c790` for chase modes). The port's spectator view doesn't run that
-  camera, so the angle ring isn't ported; the origin ring is, with the SDK condition (server
-  `pushmsec` smoothing and `maxclients > 1`).
 * **Local-player translucency** steps use `ref_params_t::frametime != 0` where TS tests
   `gHUD.m_flTimeDelta` (only the frame-with-no-time case differs). The crosshair-on-player flag
   is the HUD's `crosshair_id` from the previous HUD draw, as in TS (`0x1018a60c`).
@@ -161,17 +158,44 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   port adds this frame's stair offset instead, so the stair smoothing isn't stepped twice.
 * The third-person collision trace is world-only (`PM_WORLD_ONLY`) from the model origin; TS uses
   `PM_TraceLine` against the pmove physents.
-* **Particle numbers.** The doc gives sprites, counts, triggers and formulas; per-effect sizes,
-  speeds and lifetimes in `effects::fx` are approximations tuned by eye. The `TS_GunSmoke` count
-  argument (45-55) is treated as an intensity (one puff per 10).
-* Particles: unsorted like TS, oldest replaced at the cap, react (player push) formula inferred,
-  collision is world-only (`PM_WORLD_ONLY`), and particles that spawn inside a brush (emitters right
-  under a sky) don't count as hits.
+* **Particle numbers** in `effects::fx` are read from the TS client's disassembly (the decompile
+  hides float arguments behind `__ftol`), including every call site's arguments, the `cl_fx`
+  tuning globals (`0x1018ca40..0x1018ca60`) and the cooldown slots. Notable corrections: the
+  `TS_GunSmoke` "45-55" argument is the animation frame rate (always 5 puffs); the muzzle flash
+  spreads `max(3, 9·fxmul)` sprites over `info+0x354` with base radius `info+0x358`, and silenced
+  shots draw a dim flash that fades out by 512 units; the shotgun's muzzle spray is
+  `TS_SpriteDebris`; glass is always 81 shards on a 9×9 grid; the explosion has no sparks, 24/48
+  fireball/smoke particles × the quality scale, and uses the muzzle light. Smoke-like particles
+  (life 0, no fade) live for one run of their animation, as in TS. Still to compare visually: the
+  sprite frame counts (they set those lifetimes) and the quad width of stretched particles (TS
+  scales it by the unnormalised view cross product; the port keeps `radius`).
+* Stretch lengths use TS's speed (units per 0.1 s): `stretchspeed` is a TS-unit factor in both
+  the map templates and the effects.
+* TSFrags type 2 passes an uninitialised direction to its scintille/sparks in TS (`0x1004be0c`);
+  the port uses the message's direction. No server sends type 2.
+* The explosion sound uses the port's fire pitch curve (see the first bullet), not TS's 400.
+* `EV_TS_Pump`'s smoke wisp direction is unclear in the decompile; `v_right` is used, as in the
+  silenced shot's second smoke call.
+* `PointVisible` traces from the cull origin with `PM_GLASS_IGNORE`, ignoring no entity; TS passes
+  the local player's entity index as the physent to ignore.
+* Particles: unsorted like TS, oldest replaced at the cap, collision is world-only
+  (`PM_WORLD_ONLY`), and particles that spawn inside a brush (emitters right under a sky) don't
+  count as hits. `Particle_Think` follows the disassembly: the random drift steers an accumulator
+  (`+0x68`) by at most `randomdelta` (3D length) and adds it times the think interval; react moves
+  the particle's *origin* sideways by `(128 − d)·|v|·dot/128·T·react` for every solid player within
+  128 units (local: predicted velocity, others: velocity between their last two updates); wind is
+  ×10 (TS units), physics-gated and skips resting particles; the gust segments chain through
+  `SharedRandomFloat/Long` as in TS. Think distances halve when zoomed (FOV < 40).
 * `weapons/sshell.wav` (TS shotgun-shell bounce) isn't shipped with TS 3.0; `sshell1/2.wav` are used.
 * Fog goes through TriAPI `Fog` (FWGS) instead of raw OpenGL; colours are converted from 0..1 to
   0..255.
-* Shadows/laser beams are TriAPI quads (TS: the same with TriAPI, plus a direct-GL scope overlay).
-  The scope overlay (`DrawScopeOverlay`) is not drawn here (HUD package or later).
+* Shadows, laser beams and the scope overlay are TriAPI quads, as in TS. The scope overlay
+  (`DrawScopeOverlay` `0x10054510`, `effects/scope.rs`) is TriAPI too, not direct GL: after the
+  particles, in first person, alive and not observing, with the eased FOV below 40 and the hardware
+  renderer, `sprites/quarterscope.spr` frame 0 is drawn four times (render mode TransTexture, no
+  culling, white) as mirrored quads of half-size `max(fov·0.1, 1)·0.5` around `v_origin +
+  v_forward·10`. The decomp doc's "frame 2" is the sprite-cache render-mode argument; the call
+  passes frame 0 (`0x1005457e`) and the sprite has one frame.
 * **Observer modes use TS's numbering: in-eye is 5, not the SDK's 4** (`shared::ts::obs`). The
   server's `Observer_SetMode`/`Observer_HandleButtons` only ever set 1, 2, 3 and 5,
   `PM_SpectatorMove` places mode 5 at the target, and `HUD_AddEntity` (`0x100447f0`), the draw and
@@ -211,8 +235,8 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 * **Ghost torso.** `StudioDrawGhostPlayer` writes the stored gait yaw into the ghost entity's
   angles, so from the second frame on the torso controllers read 0 offset: the twist only shows on
   the ghost's first frame. That's TS's behaviour, kept.
-* **Spectator hide.** `StudioDrawPlayer` hides the player spectated with `g_iUser1 == 5` as TS
-  does; the port's in-eye mode is 4, which `HUD_AddEntity` already handles (R§2 open question).
+* **Spectator hide.** `StudioDrawPlayer` hides the player spectated with `g_iUser1 == 5` (in-eye,
+  `shared::ts::obs`) as TS does.
 * **Motion blur.** `MotionBlur_Reset` has no caller in the TS image; the port resets the trails on
   `HUD_VidInit`. `TSMBlur` for entity index 32 is ignored (TS's 32-entry table would overflow).
 * **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
@@ -226,8 +250,7 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 * **Weapon prediction** is a stopgap (below). Shotgun reload phases, kung fu, grenades, melee
   blocking and akimbo linked shots are not predicted (the server plays those; the shooter only
   sees them once prediction moves to `shared::weapons`).
-* Whizz volume formula approximated; particle `termvelocity` unused (TS doesn't read it either).
-* Scope overlay. The `cl_vsmoothing` angle ring (see deviations).
+* Particle `termvelocity` unused (TS doesn't read it either).
 
 ## Integration notes
 
@@ -265,10 +288,12 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 | `fov` (existing) | `view::frame` (eased) | HUD (sensitivity, scope), `view` |
 | `bullet_time` | render (`TSBTime`) | client bullets |
 | `powerups`, `attachments`, `active_items`, `firemode`, `clip`, `reserve_ammo` | prediction (from clientdata) | HUD may read; lasers |
-| `player_items[32]` | HUD `ActItems` handler (index entindex-1) | `effects::laser::draw_others` |
-| `laser_color[32]` | HUD `PlInfo` handler (key 0) | lasers |
+| `active_items[65]` | HUD `ActItems` handler (index = entity number) | `effects::laser::draw_others`, HUD |
+| `laser_color[65]` | HUD `PlInfo` handler (key 0, index = entity number) | lasers, HUD `DrawLaserDots` |
 | `spectator[32]` | HUD `Spectator` handler | `effects::add_entity` |
-| `laser_dots[2]` | `effects::laser::draw_local` (screen x,y) | HUD `DrawLaserDots` |
+| `laser_dots[2]` | `effects::laser::draw_local` (`WorldToScreen` −1..1) | HUD `DrawLaserDots` |
+| `laser_range` | `effects::laser::draw_local` (first hit distance ×0.025) | HUD `DrawCrosshair` |
+| `items_ready` | prediction (`from` active items, 0 while `m_flNextAttack > 0`) | HUD `DrawLaserDots` |
 | `third_person` | `view` | HUD |
 | `spec_mode`/`spec_target`/`spec_flags` | `prediction::process_player_state` (g_iUser1..3) | view, events, HUD |
 | `dead`, `weapon` (existing) | HUD | view (`cl_thirdpersonswitch`), lasers |

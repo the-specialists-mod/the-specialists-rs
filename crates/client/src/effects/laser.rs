@@ -28,6 +28,7 @@ pub struct Sprites {
     pub dot: HSPRITE,
     pub flash: HSPRITE,
     pub shadow: HSPRITE,
+    pub scope: HSPRITE,
 }
 
 impl Sprites {
@@ -38,11 +39,12 @@ impl Sprites {
             dot: r::spr_load("sprites/laserdot.spr"),
             flash: r::spr_load("sprites/flash.spr"),
             shadow: r::spr_load("sprites/ombra.spr"),
+            scope: r::spr_load(super::scope::SPRITE),
         }
     }
 }
 
-fn set_sprite(h: HSPRITE, frame: i32) -> bool {
+pub(super) fn set_sprite(h: HSPRITE, frame: i32) -> bool {
     if h == 0 {
         return false;
     }
@@ -86,7 +88,30 @@ fn trace_world(a: Vec3, b: Vec3, ignore_player: i32) -> pmtrace_s {
     r::with_solid_players(ignore_player, || r::player_trace(a, b, 2, PM_STUDIO_BOX as i32, -1))
 }
 
+/// `GetCullOrigin` (`0x10057270`): the eye in third person, otherwise the view origin.
+fn cull_origin(cam: &Camera) -> Vec3 {
+    if crate::view::is_third_person() { crate::view::eye() } else { cam.origin }
+}
+
+/// The local laser beams' directions (`DrawLocalLaser` `0x1003bb00`): view-model attachment
+/// 0 → 1 (2 → 3 for the akimbo second gun) unless there is no view model or `cl_laser` is 1, then
+/// the view forward. TS jitters x and y only, by one random pair per frame (swapped for the second
+/// gun), without renormalising; a degenerate attachment pair gives (0, 0, 1).
+fn beam_dirs(vm: Option<&cl_entity_s>, cam: &Camera, cl_laser: f32, jitter: [f32; 2]) -> [(Option<Vec3>, Vec3); 2] {
+    let Some(vm) = vm.filter(|_| cl_laser != 1.0) else { return [(None, cam.forward); 2] };
+    let dir = |a: usize, j: [f32; 2]| {
+        let d = v::sub(vm.attachment[a + 1], vm.attachment[a]);
+        let d = if v::len(d) == 0.0 { [0.0, 0.0, 1.0] } else { v::normalize(d) };
+        (Some(vm.attachment[a]), [d[0] + j[0] * 0.003, d[1] + j[1] * 0.003, d[2]])
+    };
+    [dir(0, jitter), dir(2, [jitter[1], jitter[0]])]
+}
+
 /// `DrawLocalLaser` (`0x1003bb00`) and the local flashlight (`0x1003b250`).
+///
+/// The laser is traced from the cull origin (offset 4 units right/left per gun with akimbo), not
+/// from the view model. The hit point minus `2·v_forward` is projected for the HUD dot, and the
+/// first gun's range from the cull origin ×0.025 is the number the crosshair shows.
 pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32) {
     let (items, dead, ts) = state::with(|st| (st.local_items, st.dead, st.time_scale));
     state::with(|st| st.laser_dots = [None, None]);
@@ -96,35 +121,33 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
     let local = r::local_player().map_or(0, |e| e.index);
     let vm = crate::events::first_person_view_model();
     let akimbo = items & ITEM_AKIMBO != 0;
-    let beams: Vec<(Vec3, Vec3)> = match &vm {
-        Some(vm) if cl_laser != 1.0 && !crate::view::is_third_person() => {
-            let mut out = vec![(vm.attachment[0], v::normalize(v::sub(vm.attachment[1], vm.attachment[0])))];
-            if akimbo {
-                out.push((vm.attachment[2], v::normalize(v::sub(vm.attachment[3], vm.attachment[2]))));
-            }
-            out.into_iter()
-                .map(|(o, d)| {
-                    let j = [r::random_float(-0.003, 0.003), r::random_float(-0.003, 0.003), r::random_float(-0.003, 0.003)];
-                    (o, v::normalize(v::add(if v::len(d) > 0.5 { d } else { cam.forward }, j)))
-                })
-                .collect()
-        }
-        _ => vec![(cam.origin, cam.forward)],
-    };
     if items & ITEM_LASER != 0 {
         let rgb = laser_color(color);
-        for (i, (o, d)) in beams.iter().enumerate().take(2) {
-            let tr = trace_world(*o, v::ma(*o, 8192.0, *d), local - 1);
+        let jitter = [r::random_float(-1.0, 1.0), r::random_float(-1.0, 1.0)];
+        let beams = beam_dirs(vm.as_deref(), cam, cl_laser, jitter);
+        let cull = cull_origin(cam);
+        let guns: &[(usize, f32)] = if akimbo { &[(0, 4.0), (1, -4.0)] } else { &[(0, 0.0)] };
+        for &(i, side) in guns {
+            let (beam_origin, d) = beams[i];
+            let start = v::ma(cull, side, cam.right);
+            let tr = trace_world(start, v::ma(start, 8192.0, d), local - 1);
             let hit = tr.endpos;
-            let dot = r::world_to_screen(hit);
-            state::with(|st| st.laser_dots[i] = dot);
+            let dot = r::world_to_screen(v::ma(hit, -2.0, cam.forward));
+            state::with(|st| {
+                st.laser_dots[i] = dot;
+                if i == 0 {
+                    st.laser_range = (v::dist(hit, cull) * 0.025) as i32;
+                }
+            });
             let frames = r::spr_frames(s.beam_anim).max(1);
             let frame = ((now * 20.0 * ts as f64) as i32).rem_euclid(frames);
-            if *o != cam.origin && set_sprite(s.beam_anim, frame) {
+            if let Some(o) = beam_origin
+                && set_sprite(s.beam_anim, frame)
+            {
                 tri!(RenderMode(kRenderTransAdd as i32));
                 tri!(CullFace(TRICULLSTYLE_TRI_NONE));
-                let end = v::ma(*o, v::dist(*o, hit).min(96.0), *d);
-                beam_quad(cam, *o, end, 0.6, rgb, 0.6);
+                let end = v::ma(o, v::dist(o, hit).min(96.0), v::normalize(d));
+                beam_quad(cam, o, end, 0.6, rgb, 0.6);
             }
         }
     }
@@ -177,7 +200,7 @@ pub fn draw_others(s: &Sprites, cam: &Camera, visible: &[bool; 33]) {
         }
         let tr = trace_world(a0, v::ma(a0, 8192.0, dir), idx - 1);
         if it & ITEM_LASER != 0 {
-            let rgb = laser_color(colors[(idx - 1) as usize] as i32);
+            let rgb = laser_color(colors.get(idx as usize).copied().unwrap_or(0) as i32);
             if set_sprite(s.dot, 0) {
                 tri!(RenderMode(kRenderTransAdd as i32));
                 tri!(CullFace(TRICULLSTYLE_TRI_NONE));

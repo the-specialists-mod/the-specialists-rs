@@ -201,13 +201,12 @@ pub fn think_sounds(_dt: f32) {
 // ---------------------------------------------------------------------------------------------
 // Drawing
 
-/// `CHudTSWeapons::Draw` (1004d3f0) minus the laser dots (effects package) and the buy menu
-/// (drawn by `menus`).
+/// `CHudTSWeapons::Draw` (1004d3f0) minus the buy menu (drawn by `menus`).
 pub fn draw(dc: &Dc, nohud: bool) {
-    if nohud {
-        return;
-    }
-    if super::dead_or_observer() {
+    let hidden = super::dead_or_observer();
+    let items = super::with(|h| items_flags(h, nohud, hidden));
+    draw_laser_dots(dc, items);
+    if nohud || hidden {
         return;
     }
     let buy_open = crate::menus::buy_open();
@@ -228,6 +227,65 @@ pub fn draw(dc: &Dc, nohud: bool) {
             draw_crosshair(dc, h);
         }
     });
+}
+
+/// `CHudTSWeapons+0x14` as `Draw` sets it: the local player's `ActItems` bits while a weapon is
+/// held and the HUD draws it (with `nohud`, whenever a weapon is held), otherwise 0. TS sets it
+/// after drawing the dots, so its dots use last frame's value; this uses the current one.
+fn items_flags(h: &Hud, nohud: bool, hidden: bool) -> i32 {
+    if h.weapon == 0 || (!nohud && hidden) {
+        return 0;
+    }
+    crate::state::with(|s| s.active_items.get(engine().local_player().map_or(0, |p| p.index as usize)).copied().unwrap_or(0)) as i32
+}
+
+/// The crosshair centre: the screen centre, or in third person the projection of the view
+/// trace's end (`DrawCrosshairID` 1004acc0 stores it at `+0x38`), (−1, −1) when off screen.
+fn crosshair_centre(dc: &Dc) -> (i32, i32) {
+    if !crate::view::is_third_person() {
+        return (dc.w() / 2, dc.h() / 2);
+    }
+    let e = engine();
+    let Some(me) = e.local_player() else { return (-1, -1) };
+    let start = crate::view::eye();
+    let end = goldsrc::ext::render::vec3::ma(start, 8192.0, crate::view::camera().forward);
+    e.player_trace(start, end, me.index).and_then(|(_, hit, _)| e.world_to_screen(hit, &dc.g.screen)).unwrap_or((-1, -1))
+}
+
+/// `DrawLaserDots` (1004e6f0): 2×2 dots in the local laser colour (`PlInfo`). While the gun may
+/// fire (`state.items_ready`) and `cl_laser` is below 1, the dot sits on the crosshair (akimbo:
+/// 4 px right and left of it) with a rare ±1 px jitter; otherwise it is drawn where the trace
+/// hit (`state.laser_dots`). A dot whose hit point is off screen is not drawn.
+fn draw_laser_dots(dc: &Dc, items: i32) {
+    use goldsrc::ext::render::random_long;
+    let local = engine().local_player().map_or(0, |p| p.index as usize);
+    let (dots, ready, color) = crate::state::with(|s| (s.laser_dots, s.items_ready, s.laser_color.get(local).copied().unwrap_or(0)));
+    let rgb = crate::effects::laser_color(color as i32).map(|c| (c * 255.0).round() as i32);
+    // C integer division: ±1 only for ±10.
+    let (jx, jy) = (random_long(-10, 10) / 10, random_long(-10, 10) / 10);
+    let centre = crosshair_centre(dc);
+    let centred = ready != 0 && input::cvars().cl_laser.value() < 1.0;
+    for (x, y) in laser_dot_positions(items, centred, centre, (jx, jy), dots, (dc.w(), dc.h())) {
+        dc.fill(x, y, 2, 2, rgb, 255);
+    }
+}
+
+/// Top-left corners of the `DrawLaserDots` fills (pure, for tests). `dots` are `WorldToScreen`
+/// coordinates; `centred` pins them to `centre` (plus `jitter`, swapped for the second gun).
+fn laser_dot_positions(
+    items: i32,
+    centred: bool,
+    (cx, cy): (i32, i32),
+    (jx, jy): (i32, i32),
+    dots: [Option<[f32; 2]>; 2],
+    (w, h): (i32, i32),
+) -> Vec<(i32, i32)> {
+    if items & 2 == 0 {
+        return Vec::new();
+    }
+    let to_px = |d: [f32; 2]| (((1.0 + d[0]) * w as f32 * 0.5) as i32, ((1.0 - d[1]) * h as f32 * 0.5) as i32);
+    let pinned: &[(i32, i32)] = if items & 0x40 == 0 { &[(cx + jx, cy + jy)] } else { &[(cx + 4 + jx, cy + jy), (cx - 4 + jy, cy + jx)] };
+    pinned.iter().zip(dots).filter_map(|(&p, d)| d.map(|d| if centred { p } else { to_px(d) })).map(|(x, y)| (x - 1, y - 1)).collect()
 }
 
 fn realhud() -> bool {
@@ -316,6 +374,11 @@ fn draw_weapon_info(dc: &Dc, h: &Hud) {
     y -= row;
     dc.fill(x, y, 128, row - 1, dc.hud, 35);
     dc.string(x + 2, y, &info.name, dc.hud);
+    // Zoom factor while scoped: `sprintf("%ix", 80 / m_iFOV)` at (24, 24) (1004dfbe).
+    let fov = crate::state::with(|s| s.fov) as i32;
+    if (1..40).contains(&fov) {
+        dc.string(24, 24, &format!("{}x", 80 / fov), dc.hud);
+    }
 }
 
 /// `DrawWeaponList` (1004e030): the slot menu (header row per bucket, weapon sprites, name and
@@ -441,22 +504,64 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
             }
         }
     }
+    // Laser on: its range (`state.laser_range`) right of the crosshair, in the crosshair colour
+    // ×0.7 with a player under it, else ×0.5; 8 px higher while scoped (1004ee02).
+    if active & 2 != 0 {
+        let k = if id_team.is_some() { 0.7 } else { 0.5 };
+        let scoped_first_person = scoped && !crate::view::is_third_person();
+        let y = cy - if scoped_first_person { 8 } else { 0 } - dc.g.screen.char_height / 2;
+        let range = crate::state::with(|s| s.laser_range);
+        dc.number(cx + 28, y, num::DRAW_ZERO, range, rgb.map(|c| (c as f32 * k) as i32));
+    }
 }
 
-/// Divestep sprites around the crosshair: top/centre/bottom stunt indicators, red while the
-/// stunt cooldown (`NextStunt`) runs or the load is too heavy (used slots ≥ 42/52/62), plus a
-/// pitch dot.
+/// Divestep sprites around the crosshair (1004ef50): top/centre/bottom dive indicators plus a
+/// pitch dot. See [`divestep_layout`].
 fn draw_divesteps(dc: &Dc, h: &Hud, cx: i32, cy: i32) {
-    let cooldown = h.next_stunt >= 0.01;
-    let used = 81 - h.slots as i32;
-    for (i, limit) in [42, 52, 62].into_iter().enumerate() {
-        let ok = !cooldown && used < limit;
-        dc.spr(dc.g.ts.divestep[i], cx - 40, cy - 40, if ok { dc.hud } else { RED });
+    let (sprites, (dx, dy), dot) = divestep_layout(h.next_stunt >= 0.01, h.slots, engine().view_angles()[0], dc.hud, (cx, cy));
+    for (i, rgb) in sprites.into_iter().enumerate() {
+        dc.spr(dc.g.ts.divestep[i], cx - 40, cy - 40, rgb);
     }
-    let pitch = engine().view_angles()[0];
+    dc.fill(dx, dy, 2, 2, dot, 100);
+}
+
+/// Colours of the three divestep sprites, and the pitch dot's position and colour (pure, from the
+/// TS binary at 1004ef50 and the threshold helpers 1004eec0/1004eef0/1004ef20).
+///
+/// Sprite `i` is red when the load is too heavy for that dive (`81 − free slots` ≥ 42, 52, 62).
+/// Otherwise it has the base colour (red while the stunt cooldown runs, else the HUD colour), at
+/// full strength for the band the view pitch points at (< −10°, −10..10°, > 10°) and halved for
+/// the other two. The dot sits 32 px from the centre at angle `clamp(3·pitch, ±90°)`, on the left:
+/// `(cx − 32·cos a, cy + 32·sin a)`, in the base colour.
+fn divestep_layout(
+    cooldown: bool,
+    free_slots: u8,
+    pitch: f32,
+    hud: [i32; 3],
+    (cx, cy): (i32, i32),
+) -> ([[i32; 3]; 3], (i32, i32), [i32; 3]) {
+    let base = if cooldown { RED } else { hud };
+    let used = 81 - free_slots as i32;
+    let band = if pitch < -10.0 {
+        0
+    } else if pitch > 10.0 {
+        2
+    } else {
+        1
+    };
+    let limits = [42, 52, 62];
+    let sprites = [0, 1, 2].map(|i| {
+        if used >= limits[i] {
+            RED
+        } else if i == band {
+            base
+        } else {
+            half(base)
+        }
+    });
     let a = (pitch * 3.0).clamp(-90.0, 90.0).to_radians();
-    let rgb = if cooldown { RED } else { dc.hud };
-    dc.fill(cx + (a.cos() * 36.0) as i32, cy + (a.sin() * 36.0) as i32, 2, 2, rgb, 100);
+    let dot = ((cx as f32 - a.cos() * 32.0) as i32, (a.sin() * 32.0 + cy as f32) as i32);
+    (sprites, dot, base)
 }
 
 #[cfg(test)]
@@ -467,6 +572,33 @@ mod tests {
     fn give(h: &mut Hud, id: i32) {
         let (r, b) = grid_pos(id).unwrap();
         h.grid[r][b] = Slot { id, clip: 5 };
+    }
+
+    #[test]
+    fn divesteps_follow_ts_binary() {
+        let hud = [100, 200, 60];
+        let c = (320, 240);
+        // Level view, light load: centre band full, the others halved; dot 32 px left.
+        let (s, dot, base) = divestep_layout(false, 70, 0.0, hud, c);
+        assert_eq!(s, [half(hud), hud, half(hud)]);
+        assert_eq!((dot, base), ((288, 240), hud));
+        // Looking down 30° (clamped to 90°): bottom band, dot straight below.
+        let (s, dot, _) = divestep_layout(false, 70, 30.0, hud, c);
+        assert_eq!((s[2], dot), (hud, (320, 272)));
+        // 81 - 25 = 56 used: top and centre dives too heavy; cooldown turns the rest red.
+        let (s, _, base) = divestep_layout(true, 25, -20.0, hud, c);
+        assert_eq!((s, base), ([RED, RED, half(RED)], RED));
+    }
+
+    #[test]
+    fn laser_dots_follow_ts_layout() {
+        let dots = [Some([0.5, 0.5]), Some([-0.5, 0.0])];
+        let (c, j, sz) = ((320, 240), (1, 0), (640, 480));
+        assert_eq!(laser_dot_positions(0, true, c, j, dots, sz), [], "laser off");
+        assert_eq!(laser_dot_positions(2, true, c, j, dots, sz), [(320, 239)], "pinned to the crosshair, jitter x");
+        assert_eq!(laser_dot_positions(2, false, c, j, dots, sz), [(479, 119)], "at the projected hit");
+        assert_eq!(laser_dot_positions(0x42, true, c, j, dots, sz), [(324, 239), (315, 240)], "akimbo: +3/-5 px, jitter swapped");
+        assert_eq!(laser_dot_positions(0x42, true, c, j, [None, dots[1]], sz), [(315, 240)], "off-screen hit: no dot");
     }
 
     #[test]

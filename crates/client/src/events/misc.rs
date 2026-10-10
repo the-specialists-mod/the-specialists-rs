@@ -43,9 +43,14 @@ pub fn pump(a: &Args) {
                 let vel = v::ma(v::ma(v::ma(a.velocity, r::random_float(100.0, 130.0), right), r::random_float(40.0, 80.0), up), 30.0, fwd);
                 eject_shell(vm.attachment[0], vel, a.angles, r::model_index(&format!("models/{shell}.mdl")), 2);
             }
+            // One forced wisp: radius 1, frame rate 20-40, speed 4, back along the barrel by the
+            // muzzle offset (`info+0x34c`). The direction argument is unclear in the decompile;
+            // `right` is used, as in the silenced shot's second smoke call.
             let now = effects::now();
-            let at = vm.attachment[0];
-            effects::with_psys(|ps| effects::fx::gun_smoke(ps, now, at, fwd, 10));
+            let ofs = tables().asset(id as u8).map_or(0, |s| s.fx[0]) as f32;
+            let at = v::ma(vm.attachment[0], -ofs, fwd);
+            let vel = a.velocity;
+            effects::with_psys(|ps| effects::fx::gun_smoke(ps, now, 1.0, r::random_long(20, 40), at, vel, right, 4.0, true));
         }
     }
     if let Some(asset) = tables().asset(id as u8).filter(|s| !s.sound2.is_empty()) {
@@ -157,9 +162,20 @@ fn hard(tex: u8) -> bool {
     !matches!(tex, b'F' | b'S' | b'D' | b'W')
 }
 
-fn puff(pos: Vec3, n: Vec3) {
+/// Melee hit puff: `TS_SmallPuff(pos, n, sprite, 5, 12, 30)`, wood smoke on dirt and wood.
+fn puff(pos: Vec3, n: Vec3, tex: u8) {
     let now = effects::now();
-    effects::with_psys(|ps| effects::fx::impact_smoke(ps, now, pos, n, "sprites/gun_smoke_add.spr", 0.3, 1));
+    let sprite = if matches!(tex, b'D' | b'W') { "sprites/wood_smoke_add.spr" } else { "sprites/gun_smoke_add.spr" };
+    effects::with_psys(|ps| effects::fx::small_puff(ps, now, pos, n, sprite, kRenderTransAdd as i32, 12.0, 30.0));
+}
+
+/// Metal hit: `TS_Scintille(size)` and `TS_Sparks(7, 1.15, 25)`.
+fn metal_hit(pos: Vec3, n: Vec3, size: f32) {
+    let now = effects::now();
+    effects::with_psys(|ps| {
+        effects::fx::scintille_metal(ps, now, pos, n, size);
+        effects::fx::sparks(ps, now, pos, n, 7, 1.15, 25.0);
+    });
 }
 
 /// `EV_TS_Knife` (`0x10043c90`): trace 35 ahead; metal sparks + `knife_hit` on hard surfaces,
@@ -171,11 +187,7 @@ pub fn knife(a: &Args) {
     }
     match melee_trace(a, 35.0) {
         Some((pos, n, tex)) if hard(tex) => {
-            let now = effects::now();
-            effects::with_psys(|ps| {
-                effects::fx::scintille(ps, now, pos, 3.0);
-                effects::fx::sparks(ps, now, pos, n, 6, 0.8, 200.0);
-            });
+            metal_hit(pos, n, 6.0);
             sound(a, CHAN_WEAPON, "weapons/knife/knife_hit.wav", 1.0);
         }
         Some((pos, _, tex)) => {
@@ -198,8 +210,7 @@ pub fn katana(a: &Args) {
     match melee_trace(a, reach) {
         Some((pos, nrm, tex)) => {
             if hard(tex) {
-                let now = effects::now();
-                effects::with_psys(|ps| effects::fx::sparks(ps, now, pos, nrm, 8, 1.0, 250.0));
+                metal_hit(pos, nrm, 12.0);
             }
             sound(a, CHAN_WEAPON, &format!("weapons/katana/hit{n}.wav"), 1.0);
         }
@@ -219,7 +230,7 @@ pub fn close_combat(a: &Args) {
     if let Some((pos, n, tex)) = melee_trace(a, 48.0) {
         melee_material_sound(tex, pos);
         if tex != b'F' {
-            puff(pos, n);
+            puff(pos, n, tex);
         }
     }
     sound(a, CHAN_WEAPON, "player/closecombat.wav", 1.0);
@@ -233,7 +244,7 @@ pub fn coldcock(a: &Args) {
     if let Some((pos, n, tex)) = melee_trace(a, 30.0) {
         melee_material_sound(tex, pos);
         if tex != b'F' {
-            puff(pos, n);
+            puff(pos, n, tex);
         }
     }
     sound(a, CHAN_WEAPON, "player/closecombat.wav", 0.8);
