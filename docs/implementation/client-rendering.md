@@ -7,7 +7,7 @@ decomp `docs/client/rendering-effects-prediction.md` (cited as **R§n**), `docs/
 
 | File | Contents |
 |---|---|
-| `crates/client/src/view.rs` | `V_CalcRefdef`, bob, stair smoothing, stunt roll, recoil + view shake, third-person camera, FOV and time-scale easing, slow-mo tint + `TSFade` |
+| `crates/client/src/view.rs` | `V_CalcRefdef`, pitch drift, local-player translucency, bob, stair smoothing, stunt roll, recoil + view shake, idle sway, third-person camera (body cam, model z smoothing), `cl_vsmoothing`, FOV and time-scale easing, slow-mo tint + `TSFade` |
 | `crates/client/src/events.rs`, `events/{fire,impact,misc,info,random}.rs` | the 11 event hooks and handlers, bullets, shells, decals, texture sounds, client weapon info (classes, anim sets), shared random |
 | `crates/client/src/effects.rs`, `effects/{psys,fx,emitters,laser,tempents}.rs` | sprite particle system, weapon/impact effects, BSP-lump emitters, wind, lasers/flashlights/shadows, `HUD_AddEntity`, `HUD_TempEntUpdate`, effect messages |
 | `crates/client/src/prediction.rs`, `prediction/gun.rs` | Txfer callbacks, `HUD_PostRunCmd`, stopgap local gun predictor |
@@ -35,7 +35,12 @@ includes `r_efx.h`, `event_api.h`, `event_flags.h`, `triangleapi.h`, `screenfade
 | `V_CalcRefdef` | `0x10069b90` | `view::calc_refdef` | done |
 | `V_CalcNormalRefdef` | `0x10067890` | `view::calc_normal` | done (see deviations) |
 | `V_CalcSpectatorRefdef` | `0x10068f70` | `view::calc_spectator` | simplified (in-eye, chase, free) |
-| `V_CalcIntermissionRefdef` | `0x100676e0` | `view::calc_intermission` | done (no idle sway) |
+| `V_GetPlayerEye` | `0x10068e20` | `view::player_eye` (in-eye spectating) | done, unit-tested (dead, `NO_VIEW`, duck hull) |
+| `V_CalcIntermissionRefdef` | `0x100676e0` | `view::calc_intermission` | done |
+| `V_DriftPitch` / `V_StopPitchDrift` | `0x10067320` / `0x100672f0` | `view::Drift`, `view::stop_pitch_drift` (called from `input` like `CL_AdjustAngles` `0x10026330` and `IN_MouseMove` `0x100274d0`) | done, unit-tested |
+| `V_AddIdle` | `0x10067550` | `view::add_idle` | done (intermission only, see deviations) |
+| local-player translucency, `Approach` | start of `0x10067890`, `0x10057e90` | `view::local_amt_step` (crosshair flag from the HUD's `DrawCrosshairID`) | done, unit-tested |
+| `cl_vsmoothing` origin ring (SDK `ViewInterp`) | step 14 of `0x10067890` | `view::Ring` | done, unit-tested |
 | `V_CalcBob` / `V_SmoothBobZ` | `0x10066e70` / `0x10066de0` | `view::calc_bob` | done (cl_bob levels 0..4) |
 | `V_SmoothStairs` + view-height smoothing | `0x100677d0` | in `calc_normal` | done |
 | `V_CalcViewRoll` / `V_CalcRoll` | `0x100675b0` / `0x100671f0` | `view::calc_view_roll` | done |
@@ -44,7 +49,7 @@ includes `r_efx.h`, `event_api.h`, `event_flags.h`, `triangleapi.h`, `screenfade
 | `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` | done |
 | screen fade + `TSFade` | end of `0x10069b90`, `0x1004c1e0` | `view::write_screen_fade`, `view::fade_color`, `view::on_tsfade` | done, verified in game |
 | `V_SetFog` | `0x10056c20` | `effects::fog_begin` (TriAPI `Fog`) | done, only with `gl_fog` != 0 |
-| `CAM_Think` / `CL_IsThirdPerson` / camera offset | `0x10024c80` / `0x1004fec0` / §7.4 | `view::cam_think` (no-op), `view::is_third_person`, third-person block of `calc_normal` | done, verified in game |
+| `CAM_Think` / `CL_IsThirdPerson` / camera offset | `0x10024c80` / `0x1004fec0` / §7.4 | `view::cam_think` (no-op), `view::is_third_person`, third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`) | done; camera verified in game before the offset smoothing was rewritten to TS's form, body cam and model z smoothing not yet |
 | `HookEvents` | `0x10003240` | `events::init` | all 11 |
 | `EV_TS_Fire` / `FireLinked` | `0x1003de40` / `0x1003de10` | `events::fire::{fire, fire_linked}` | done |
 | `EV_TS_FireStandard` | `0x1003dfa0` | `fire::fire_standard` | done |
@@ -116,10 +121,25 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 * **Bob pitch** is added to `cl_viewangles` as a per-frame *delta* (`0.1 * (bob - previous bob)`),
   like the kick and shake steps; TS adds a value it zeroes every frame, which the engine copy-back
   would accumulate. The net view is the same, without drift.
-* `V_DriftPitch`, `V_AddIdle` (idle sway; `v_i*` are 0 in TS anyway) and the `cl_vsmoothing`
-  origin/angle rings are not ported. Local-player translucency (`cl_thirdtransparency`, crosshair
-  on a player) is not ported; the cvar is registered.
-* Third-person model z smoothing (rate 16) and the `back == 0` body-cam are not ported.
+* **Idle sway** (`V_AddIdle`) runs in the intermission view only. In the normal view TS scales it
+  by `m_iConcussionEffect`, which only the TFC `Concuss` message sets; TS never sends it and the
+  port doesn't hook it, so the scale is 0 and the call is left out.
+* **`cl_vsmoothing` angle ring.** TS records `cl_viewangles` in a second ring and replays it only
+  while its client-side pmove spectator camera sets flag bit 2 (`0x101914ec`, written in
+  `PM_PlayerMove` `0x1002c790` for chase modes). The port's spectator view doesn't run that
+  camera, so the angle ring isn't ported; the origin ring is, with the SDK condition (server
+  `pushmsec` smoothing and `maxclients > 1`).
+* **Local-player translucency** steps use `ref_params_t::frametime != 0` where TS tests
+  `gHUD.m_flTimeDelta` (only the frame-with-no-time case differs). The crosshair-on-player flag
+  is the HUD's `crosshair_id` from the previous HUD draw, as in TS (`0x1018a60c`).
+* **Third-person model z smoothing** starts from the model's current z when third person is
+  entered. TS keeps a static that is only updated in third person, so its model slides in from
+  wherever it was the last time (z 0 the first time).
+* **Body cam** (`back == 0` after smoothing, e.g. `cl_camtype 3; cam_back 0`): TS runs
+  `V_SmoothStairs` a second time on the camera origin, which also advances the stair state. The
+  port adds this frame's stair offset instead, so the stair smoothing isn't stepped twice.
+* The third-person collision trace is world-only (`PM_WORLD_ONLY`) from the model origin; TS uses
+  `PM_TraceLine` against the pmove physents.
 * **Particle numbers.** The doc gives sprites, counts, triggers and formulas; per-effect sizes,
   speeds and lifetimes in `effects::fx` are approximations tuned by eye. The `TS_GunSmoke` count
   argument (45-55) is treated as an intensity (one puff per 10).
@@ -131,8 +151,8 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   0..255.
 * Shadows/laser beams are TriAPI quads (TS: the same with TriAPI, plus a direct-GL scope overlay).
   The scope overlay (`DrawScopeOverlay`) is not drawn here (HUD package or later).
-* The spectator refdef is a simplified version (in-eye: target origin + view, chase: 128 units
-  behind with a world trace).
+* The spectator refdef is a simplified version (in-eye: the target's eye from `V_GetPlayerEye`,
+  chase: 128 units behind with a world trace).
 * `HUD_AddEntity`'s in-eye hiding uses spectator mode 4 (SDK `OBS_IN_EYE`); the doc notes TS may use 5.
 
 * **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
@@ -151,7 +171,7 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   blocking and akimbo linked shots are not predicted (the server plays those; the shooter only
   sees them once prediction moves to `shared::weapons`).
 * Whizz volume formula approximated; particle `termvelocity` unused (TS doesn't read it either).
-* Scope overlay, player translucency, view-angle smoothing, idle sway (see deviations).
+* Scope overlay. The `cl_vsmoothing` angle ring (see deviations).
 
 ## Integration notes
 

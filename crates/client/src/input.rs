@@ -770,6 +770,7 @@ fn adjust_angles(frametime: f32, view: &mut [f32; 3]) {
         view[YAW] = view[YAW].rem_euclid(360.0);
     }
     if IN_KLOOK.held() {
+        crate::view::stop_pitch_drift();
         view[PITCH] -= speed * pitchspeed * IN_FWD.key_state();
         view[PITCH] += speed * pitchspeed * IN_BK.key_state();
     }
@@ -777,6 +778,9 @@ fn adjust_angles(frametime: f32, view: &mut [f32; 3]) {
     let down = IN_LOOKDOWN.key_state();
     view[PITCH] -= speed * pitchspeed * up;
     view[PITCH] += speed * pitchspeed * down;
+    if up != 0.0 || down != 0.0 {
+        crate::view::stop_pitch_drift();
+    }
     view[PITCH] = view[PITCH].clamp(-89.0, 89.0);
     view[ROLL] = view[ROLL].clamp(-50.0, 50.0);
 }
@@ -864,7 +868,11 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
         cmd.forwardmove += mv[0] * c.cl_forwardspeed.value();
         cmd.sidemove += mv[1] * c.cl_sidespeed.value();
 
-        // IN_Move: mouse look.
+        // IN_Move: mouse look. TS's `IN_MouseMove` (100274d0) stops the pitch drift first, every
+        // frame, so the view never drifts while the mouse is active.
+        if mouse(|m| m.active) {
+            crate::view::stop_pitch_drift();
+        }
         let raw = take_mouse_delta();
         if !hud::intermission() {
             apply_mouse(raw, &mut view);
