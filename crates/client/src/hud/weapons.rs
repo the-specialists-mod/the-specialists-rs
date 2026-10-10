@@ -49,10 +49,10 @@ pub fn select_slot(h: &mut Hud, n: i32, fastswitch: bool) -> Option<String> {
                 Some(r) => h.menu_row = r,
                 None => {
                     h.menu_row = 1;
-                    if slot_id(h, 1, n) == -1 {
-                        if let Some(r) = (2..=last).find(|&r| slot_id(h, r, n) != -1) {
-                            h.menu_row = r;
-                        }
+                    if slot_id(h, 1, n) == -1
+                        && let Some(r) = (2..=last).find(|&r| slot_id(h, r, n) != -1)
+                    {
+                        h.menu_row = r;
                     }
                 }
             }
@@ -409,17 +409,19 @@ fn draw_weapon_list(dc: &Dc, h: &Hud, closed: bool) {
                 continue;
             }
             let id = slot.id;
-            if !closed && row as i32 == h.menu_row && bucket == h.menu_bucket {
-                if let Some(info) = t.weapon(id as u8) {
-                    dc.string(x + 128, y, &info.name, dc.hud);
-                    let ammo = match id {
-                        24 | 25 | 35 => Some(format!("{}", slot.clip)),
-                        0 | 29 | 34 => None,
-                        _ => Some(format!("{}/{}", slot.clip, h.reserve[info.ammo as usize & 15])),
-                    };
-                    if let Some(a) = ammo {
-                        dc.string(x + 128, y + 16, &a, half(dc.hud));
-                    }
+            if !closed
+                && row as i32 == h.menu_row
+                && bucket == h.menu_bucket
+                && let Some(info) = t.weapon(id as u8)
+            {
+                dc.string(x + 128, y, &info.name, dc.hud);
+                let ammo = match id {
+                    24 | 25 | 35 => Some(format!("{}", slot.clip)),
+                    0 | 29 | 34 => None,
+                    _ => Some(format!("{}/{}", slot.clip, h.reserve[info.ammo as usize & 15])),
+                };
+                if let Some(a) = ammo {
+                    dc.string(x + 128, y + 16, &a, half(dc.hud));
                 }
             }
             let rgb = if slot.clip < 1 && id != 0 { RED } else { dc.hud };
@@ -427,15 +429,15 @@ fn draw_weapon_list(dc: &Dc, h: &Hud, closed: bool) {
                 dc.spr(spr, x, y, if !closed && row as i32 == h.menu_row && bucket == h.menu_bucket { rgb } else { half(rgb) });
             }
             // Clip bar: 5 px wide at x+123, 44 px tall.
-            if !matches!(id, 0 | 29 | 34) {
-                if let Some(info) = t.weapon(id as u8) {
-                    let max = if info.stack { info.pellets } else { info.clip };
-                    if max > 0 {
-                        let filled = (slot.clip.max(0) * 44 / max).clamp(0, 44);
-                        dc.fill(x + 0x7b, y + 46 - filled, 5, filled, dc.hud, 100);
-                        if slot.clip < max {
-                            dc.fill(x + 0x7b, y + 2, 5, 44 - filled, RED, 50);
-                        }
+            if !matches!(id, 0 | 29 | 34)
+                && let Some(info) = t.weapon(id as u8)
+            {
+                let max = if info.stack { info.pellets } else { info.clip };
+                if max > 0 {
+                    let filled = (slot.clip.max(0) * 44 / max).clamp(0, 44);
+                    dc.fill(x + 0x7b, y + 46 - filled, 5, filled, dc.hud, 100);
+                    if slot.clip < max {
+                        dc.fill(x + 0x7b, y + 2, 5, 44 - filled, RED, 50);
                     }
                 }
             }

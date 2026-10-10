@@ -90,15 +90,14 @@ pub fn reload(a: &Args) {
                 36 => Some(("models/556_shell.mdl", 1, 1)),
                 _ => None,
             };
-            if let Some((model, n, snd)) = dump {
-                if a.is_local() || effects::player_visible(a.entindex) {
-                    let m = r::model_index(model);
-                    let pos = r::entity(a.entindex).map_or(a.origin, |e| e.attachment[0]);
-                    for _ in 0..n {
-                        let vel =
-                            v::add(a.velocity, [r::random_float(-30.0, 30.0), r::random_float(-30.0, 30.0), -r::random_float(0.0, 30.0)]);
-                        eject_shell(pos, vel, a.angles, m, snd);
-                    }
+            if let Some((model, n, snd)) = dump
+                && (a.is_local() || effects::player_visible(a.entindex))
+            {
+                let m = r::model_index(model);
+                let pos = r::entity(a.entindex).map_or(a.origin, |e| e.attachment[0]);
+                for _ in 0..n {
+                    let vel = v::add(a.velocity, [r::random_float(-30.0, 30.0), r::random_float(-30.0, 30.0), -r::random_float(0.0, 30.0)]);
+                    eject_shell(pos, vel, a.angles, m, snd);
                 }
             }
         }

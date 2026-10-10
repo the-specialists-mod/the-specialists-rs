@@ -191,10 +191,8 @@ static NEXT_KEY_TAP: Global<Cell<f32>> = Global(Cell::new(0.0));
 
 fn key_tap(bits: u8) {
     let now = engine().client_time();
-    if let Some(send) = key_tap_step(&NEXT_KEY_TAP.0, now, bits) {
-        if send {
-            engine().server_cmd("respawn");
-        }
+    if key_tap_step(&NEXT_KEY_TAP.0, now, bits) == Some(true) {
+        engine().server_cmd("respawn");
     }
 }
 
@@ -920,10 +918,10 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
     } else {
         LIVE_ANGLES.0.set(view);
     }
-    if crate::menus::wants_cursor() {
-        if let Some(a) = MENU_ANGLES.0.get() {
-            view = a;
-        }
+    if crate::menus::wants_cursor()
+        && let Some(a) = MENU_ANGLES.0.get()
+    {
+        view = a;
     }
     e.set_view_angles(view);
     cmd.viewangles = view;

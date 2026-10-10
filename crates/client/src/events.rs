@@ -19,8 +19,11 @@ use std::ffi::CStr;
 
 pub use fire::{ClientBullet, client_bullets_frame};
 
+/// An event script name and its handler.
+pub type EventEntry = (&'static CStr, fn(&event_args_s));
+
 /// Events in TS's precache order (`CTSGun::Precache`), with their handlers.
-pub const EVENTS: [(&CStr, fn(&event_args_s)); 11] = [
+pub const EVENTS: [EventEntry; 11] = [
     (c"events/fire.sc", ev_fire),
     (c"events/coldcock.sc", ev_coldcock),
     (c"events/empty.sc", ev_empty),
@@ -141,16 +144,6 @@ handler!(ev_katana => misc::katana);
 handler!(ev_draw => misc::draw);
 handler!(ev_grenade => misc::grenade);
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn event_names_fit() {
-        for (n, _) in super::EVENTS {
-            assert!(n.to_bytes().starts_with(b"events/") && n.to_bytes().ends_with(b".sc"));
-        }
-    }
-}
-
 // ---- developer test commands (exercise the handlers without a server sending events) ---------
 
 /// `ts_test_fire <weapon id> [attachments] [seed]`: runs the fire handler as if the local player
@@ -200,4 +193,14 @@ pub fn register_test_commands() {
     let e = goldsrc::client::engine();
     e.add_command(c"ts_test_fire", cmd_test_fire);
     e.add_command(c"ts_test_event", cmd_test_event);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn event_names_fit() {
+        for (n, _) in super::EVENTS {
+            assert!(n.to_bytes().starts_with(b"events/") && n.to_bytes().ends_with(b".sc"));
+        }
+    }
 }

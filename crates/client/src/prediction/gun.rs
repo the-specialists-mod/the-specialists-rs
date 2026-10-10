@@ -286,8 +286,7 @@ mod tests {
     /// Server pack -> client unpack keeps what the predictor needs.
     #[test]
     fn networked_round_trip() {
-        let mut server = Gun::default();
-        server.current = id::AK47;
+        let mut server = Gun { current: id::AK47, ..Default::default() };
         let s = &mut server.status[id::AK47 as usize];
         s.owned = true;
         s.clip = 21;

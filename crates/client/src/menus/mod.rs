@@ -505,10 +505,10 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
                 continue;
             }
             let mut ids = vec![e.id];
-            if e.akimbo {
-                if let Some(a) = t.weapon(e.id as u8).map(|w| w.akimbo).filter(|&a| a >= 0) {
-                    ids = vec![a];
-                }
+            if e.akimbo
+                && let Some(a) = t.weapon(e.id as u8).map(|w| w.akimbo).filter(|&a| a >= 0)
+            {
+                ids = vec![a];
             }
             for id in ids {
                 let Some(w) = t.weapon(id as u8) else { continue };

@@ -449,10 +449,8 @@ pub fn frame(frametime: f64) {
             w.saved_third = Some(w.third);
             w.third = false;
         }
-        if restore {
-            if let Some(t) = w.saved_third.take() {
-                w.third = t;
-            }
+        if restore && let Some(t) = w.saved_third.take() {
+            w.third = t;
         }
     });
     // Automatic camera switches: cl_thirdperson on change, cl_thirdpersonswitch on weapon change.
@@ -1027,26 +1025,27 @@ fn cl_calc_shake(p: &mut ref_params_t) {
 /// Slow-motion tint + `TSFade` blend (end of `V_CalcRefdef`).
 pub fn fade_color(ts: f32, slowfade: bool, fade: Option<(f32, state_fade::Fade)>, t: f32) -> [u8; 4] {
     let tint = if slowfade && ts < 1.0 { [0.0, 100.0, 125.0, (1.0 - ts) * 50.0] } else { [0.0; 4] };
-    if let Some((start, f)) = fade {
-        if start < t && t < start + f.duration {
-            let half = ((f.duration - f.hold) / 2.0).max(1e-3);
-            let e = t - start;
-            let k = if e < half {
-                e / half
-            } else if e < half + f.hold {
-                1.0
-            } else {
-                ((f.duration - e) / half).max(0.0)
-            }
-            .clamp(0.0, 1.0);
-            let c = f.rgba.map(|x| x as f32);
-            return [
-                (c[0] * k) as u8, // red has no tint
-                (c[1] * k + tint[1] * (1.0 - k)) as u8,
-                (c[2] * k + tint[2] * (1.0 - k)) as u8,
-                (c[3] * k + tint[3] * (1.0 - k)) as u8,
-            ];
+    if let Some((start, f)) = fade
+        && start < t
+        && t < start + f.duration
+    {
+        let half = ((f.duration - f.hold) / 2.0).max(1e-3);
+        let e = t - start;
+        let k = if e < half {
+            e / half
+        } else if e < half + f.hold {
+            1.0
+        } else {
+            ((f.duration - e) / half).max(0.0)
         }
+        .clamp(0.0, 1.0);
+        let c = f.rgba.map(|x| x as f32);
+        return [
+            (c[0] * k) as u8, // red has no tint
+            (c[1] * k + tint[1] * (1.0 - k)) as u8,
+            (c[2] * k + tint[2] * (1.0 - k)) as u8,
+            (c[3] * k + tint[3] * (1.0 - k)) as u8,
+        ];
     }
     tint.map(|x| x as u8)
 }
@@ -1322,11 +1321,7 @@ mod tests {
 
     #[test]
     fn shake_settles() {
-        let mut s = Shake::default();
-        s.target = [1.0, -1.0, 0.0];
-        s.time_left = 0.1;
-        s.freq = 35.0;
-        s.flip = 1.0 / 35.0;
+        let mut s = Shake { target: [1.0, -1.0, 0.0], time_left: 0.1, freq: 35.0, flip: 1.0 / 35.0, ..Default::default() };
         let mut total = v::ZERO;
         for _ in 0..400 {
             total = v::add(total, s.update(0.01));

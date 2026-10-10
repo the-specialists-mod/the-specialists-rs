@@ -150,7 +150,7 @@ fn crosshair_trace() -> Option<(i32, u8, String)> {
     let end = [start[0] + f[0] * 8192.0, start[1] + f[1] * 8192.0, start[2] + f[2] * 8192.0];
     let (_, _, idx) = e.player_trace(start, end, me.index)?;
     let ent = e.entity(idx)?;
-    if ent.player == 0 || idx < 1 || idx > 64 {
+    if ent.player == 0 || !(1..=64).contains(&idx) {
         return None;
     }
     let name = e.player_info(idx).name;
@@ -198,13 +198,13 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
     }
     // Team bar (teamplay).
     y -= 0x14;
-    if h.gamemode != 0 {
-        if let Some(me) = e.local_player() {
-            let p = &h.players[me.index as usize];
-            let c = TEAM_COLORS[(p.team.max(0) as usize).min(TEAM_COLORS.len() - 1)];
-            dc.fill(8, y, 0x7f, 0x13, c, 0x23);
-            dc.string(10, y, &p.teamname, c);
-        }
+    if h.gamemode != 0
+        && let Some(me) = e.local_player()
+    {
+        let p = &h.players[me.index as usize];
+        let c = TEAM_COLORS[(p.team.max(0) as usize).min(TEAM_COLORS.len() - 1)];
+        dc.fill(8, y, 0x7f, 0x13, c, 0x23);
+        dc.string(10, y, &p.teamname, c);
     }
     // Free slots and credits.
     let mut y = ht - 0x1c;

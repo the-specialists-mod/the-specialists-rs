@@ -247,10 +247,10 @@ fn fire_standard(a: &Args) {
     }
     if a.is_local() && !view::is_third_person() {
         view_model_effects(a, &s, 0, false, pellets);
-    } else if let Some(att) = player_attachment(a.entindex, if matches!(info::class(s.id), 6 | 7) { 3 } else { 0 }) {
-        if a.is_local() || effects::player_visible(a.entindex) {
-            world_effects(a, &s, att, v::ma(att, -s.muzzle_ofs(), s.fwd), false, pellets);
-        }
+    } else if let Some(att) = player_attachment(a.entindex, if matches!(info::class(s.id), 6 | 7) { 3 } else { 0 })
+        && (a.is_local() || effects::player_visible(a.entindex))
+    {
+        world_effects(a, &s, att, v::ma(att, -s.muzzle_ofs(), s.fwd), false, pellets);
     }
     fire_sound(a, s.id, s.silenced);
     bullets_for(a, &s, a.gun_position(), a.b2, a.f1, a.f2);
@@ -269,10 +269,10 @@ fn fire_pump(a: &Args) {
     let shell = if a.b1 != 0 { Shot { shell: 0, ..s } } else { s };
     if a.is_local() && !view::is_third_person() {
         view_model_effects(a, &shell, 0, true, pellets);
-    } else if let Some(att) = player_attachment(a.entindex, 3) {
-        if a.is_local() || effects::player_visible(a.entindex) {
-            world_effects(a, &shell, att, v::ma(att, -shell.muzzle_ofs(), shell.fwd), true, pellets);
-        }
+    } else if let Some(att) = player_attachment(a.entindex, 3)
+        && (a.is_local() || effects::player_visible(a.entindex))
+    {
+        world_effects(a, &shell, att, v::ma(att, -shell.muzzle_ofs(), shell.fwd), true, pellets);
     }
     fire_sound(a, shell.id, false);
     bullets_for(a, &shell, a.gun_position(), a.b2, a.f1, a.f2);
@@ -305,10 +305,10 @@ fn fire_akimbo(a: &Args, linked: bool) {
     for &h in hands {
         if a.is_local() && !view::is_third_person() {
             view_model_effects(a, &s, h, false, pellets);
-        } else if let Some(att) = player_attachment(a.entindex, h) {
-            if a.is_local() || effects::player_visible(a.entindex) {
-                world_effects(a, &s, att, v::ma(att, -s.muzzle_ofs(), s.fwd), false, pellets);
-            }
+        } else if let Some(att) = player_attachment(a.entindex, h)
+            && (a.is_local() || effects::player_visible(a.entindex))
+        {
+            world_effects(a, &s, att, v::ma(att, -s.muzzle_ofs(), s.fwd), false, pellets);
         }
     }
     fire_sound(a, s.id, s.silenced);

@@ -162,13 +162,13 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
             dl.color.b = 255;
             dl.die = r::client_time() + 0.1;
         }
-        if let Some(vm) = &vm {
-            if set_sprite(s.flash, 0) {
-                tri::render_mode(kRenderTransAdd as i32);
-                sprite_quad(cam, vm.attachment[0], 2.0, [1.0, 1.0, 1.0], 0.5);
-                if akimbo {
-                    sprite_quad(cam, vm.attachment[2], 2.0, [1.0, 1.0, 1.0], 0.5);
-                }
+        if let Some(vm) = &vm
+            && set_sprite(s.flash, 0)
+        {
+            tri::render_mode(kRenderTransAdd as i32);
+            sprite_quad(cam, vm.attachment[0], 2.0, [1.0, 1.0, 1.0], 0.5);
+            if akimbo {
+                sprite_quad(cam, vm.attachment[2], 2.0, [1.0, 1.0, 1.0], 0.5);
             }
         }
     }

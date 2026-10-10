@@ -156,8 +156,7 @@ mod tests {
 
     #[test]
     fn rows_sorted_and_grouped() {
-        let mut h = Hud::default();
-        h.gamemode = 1;
+        let mut h = Hud { gamemode: 1, ..Default::default() };
         for (i, (f, d, t)) in [(1, (5, 1, "A")), (2, (9, 0, "B")), (3, (5, 0, "A")), (4, (0, 0, ""))] {
             h.players[i].frags = f;
             h.players[i].deaths = d;

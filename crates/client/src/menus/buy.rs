@@ -449,10 +449,11 @@ impl BuyMenu {
             return false;
         }
         let (mut att, mut full) = (att, full);
-        if let Some(w) = info {
-            if w.akimbo == -1 && !w.stack {
-                full = false;
-            }
+        if let Some(w) = info
+            && w.akimbo == -1
+            && !w.stack
+        {
+            full = false;
         }
         if cost(id, att, full, item) + self.current.total > CASH {
             return false;
@@ -921,8 +922,7 @@ mod tests {
     fn page_machine() {
         let r = rules();
         let mut rng = FixedRng(vec![], 0);
-        let mut m = BuyMenu::default();
-        m.random_first = false;
+        let mut m = BuyMenu { random_first: false, ..Default::default() };
         m.open(&r, &mut rng);
         assert!(m.active);
         m.handle_key(page::MAIN, 2, &r, &mut rng);

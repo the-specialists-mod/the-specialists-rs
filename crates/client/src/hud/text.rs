@@ -36,12 +36,12 @@ pub fn localise_with(t: &dyn Titles, msg: &str) -> String {
                 j += 1;
             }
             let word: String = chars[i + 1..j].iter().collect();
-            if !word.is_empty() {
-                if let Some(text) = t.get(&word) {
-                    out.push_str(&text);
-                    i = j;
-                    continue;
-                }
+            if !word.is_empty()
+                && let Some(text) = t.get(&word)
+            {
+                out.push_str(&text);
+                i = j;
+                continue;
             }
         }
         out.push(chars[i]);

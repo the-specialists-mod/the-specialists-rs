@@ -534,10 +534,10 @@ impl Hud {
                 self.reserve[t] = v.reserve as i32;
                 self.firemode = v.mode;
                 self.attachments = v.attachments as u32;
-                if self.weapon >= 1 {
-                    if let Some((r, b)) = grid_pos(self.weapon) {
-                        self.grid[r][b] = Slot { id: self.weapon, clip: self.clip };
-                    }
+                if self.weapon >= 1
+                    && let Some((r, b)) = grid_pos(self.weapon)
+                {
+                    self.grid[r][b] = Slot { id: self.weapon, clip: self.clip };
                 }
                 // cl_thirdpersonswitch 1: third person with kung fu, first person with a gun.
                 if ctx.thirdperson_switch {
@@ -549,10 +549,10 @@ impl Hud {
             }
             Msg::ClipInfo => {
                 self.clip = dec!(p::ClipInfo).clip as i32;
-                if self.weapon != 0 {
-                    if let Some((r, b)) = grid_pos(self.weapon) {
-                        self.grid[r][b].clip = self.clip;
-                    }
+                if self.weapon != 0
+                    && let Some((r, b)) = grid_pos(self.weapon)
+                {
+                    self.grid[r][b].clip = self.clip;
                 }
             }
             Msg::WStatus => {

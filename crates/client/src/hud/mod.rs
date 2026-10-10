@@ -250,16 +250,16 @@ fn on_message(m: Msg, buf: &[u8]) {
     for f in fx {
         apply_effect(f);
     }
-    if m == Msg::DeathMsg {
-        if let Some(d) = shared::protocol::hud::DeathMsg::decode(buf) {
-            let name = |i: u8| if i > 0 { e.player_info(i as i32).name } else { String::new() };
-            let (k, v) = (name(d.killer), name(d.victim));
-            let teamkill = d.killer != d.victim
-                && with(|h| {
-                    h.gamemode != 0 && h.players.get(d.killer as usize).map(|p| p.team) == h.players.get(d.victim as usize).map(|p| p.team)
-                });
-            e.print(&notice::death_console_line(&k, &v, &d.weapon, d.killer == d.victim || d.killer == 0, teamkill));
-        }
+    if m == Msg::DeathMsg
+        && let Some(d) = shared::protocol::hud::DeathMsg::decode(buf)
+    {
+        let name = |i: u8| if i > 0 { e.player_info(i as i32).name } else { String::new() };
+        let (k, v) = (name(d.killer), name(d.victim));
+        let teamkill = d.killer != d.victim
+            && with(|h| {
+                h.gamemode != 0 && h.players.get(d.killer as usize).map(|p| p.team) == h.players.get(d.victim as usize).map(|p| p.team)
+            });
+        e.print(&notice::death_console_line(&k, &v, &d.weapon, d.killer == d.victim || d.killer == 0, teamkill));
     }
 }
 
@@ -589,11 +589,11 @@ pub fn weapon_menu_consumed_attack() -> bool {
 /// `slot1..10` → `TSWeapons::SelectSlot` (1004f220).
 pub fn select_slot(n: i32) {
     // An open CHudMenu takes the key first.
-    if (1..=10).contains(&n) {
-        if let Some(cmd) = with(|h| h.menu_select(n)) {
-            engine().server_cmd(cmd.trim_end());
-            return;
-        }
+    if (1..=10).contains(&n)
+        && let Some(cmd) = with(|h| h.menu_select(n))
+    {
+        engine().server_cmd(cmd.trim_end());
+        return;
     }
     if crate::menus::buy_open() {
         crate::menus::buy_key(n);

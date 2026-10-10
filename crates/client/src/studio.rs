@@ -370,10 +370,10 @@ impl Renderer {
             let e = self.ent();
             (e.index, e.attachment)
         };
-        if index > 0 {
-            if let Some(g) = r::entity(index) {
-                g.attachment = attachment;
-            }
+        if index > 0
+            && let Some(g) = r::entity(index)
+        {
+            g.attachment = attachment;
         }
     }
 
@@ -390,13 +390,13 @@ impl Renderer {
     /// The `p_` weapon model, merged onto the player's cached bones.
     fn draw_weapon(&mut self, weaponmodel: i32, lighting: &mut Lighting) {
         let save = *self.ent();
-        if let Some(wm) = es::model_by_index(weaponmodel) {
-            if self.set_header(wm) {
-                self.merge_bones(wm);
-                es::setup_lighting(lighting);
-                self.render();
-                self.calc_attachments();
-            }
+        if let Some(wm) = es::model_by_index(weaponmodel)
+            && self.set_header(wm)
+        {
+            self.merge_bones(wm);
+            es::setup_lighting(lighting);
+            self.render();
+            self.calc_attachments();
         }
         *self.ent() = save;
     }
@@ -661,6 +661,7 @@ impl Renderer {
     // ---- transforms and bones -------------------------------------------------------------------
 
     /// `StudioSetUpTransform` (`0x10030970`).
+    #[allow(clippy::needless_range_loop)] // per-component and per-column loops, as in the SDK
     fn set_up_transform(&mut self, trivial_accept: bool) {
         let e = self.ent();
         let mut modelpos = e.origin;
@@ -855,19 +856,19 @@ impl Renderer {
         }
 
         // The legs: gait-sequence bones up to the torso split.
-        if let Some(info) = self.pinfo.as_mut() {
-            if info.gaitsequence >= m.numseq() {
-                info.gaitsequence = 0;
-            }
+        if let Some(info) = self.pinfo.as_mut()
+            && info.gaitsequence >= m.numseq()
+        {
+            info.gaitsequence = 0;
         }
         let gait = self.pinfo.filter(|i| i.gaitsequence != 0);
-        if let Some(info) = gait {
-            if let Some(gseq) = m.seq(info.gaitsequence) {
-                let mut legs = Pose::default();
-                let anim = self.get_anim(model, &gseq);
-                self.calc_rotations(&mut legs, &gseq, anim, info.gaitframe);
-                split_torso(&m, &mut pose, &legs);
-            }
+        if let Some(info) = gait
+            && let Some(gseq) = m.seq(info.gaitsequence)
+        {
+            let mut legs = Pose::default();
+            let anim = self.get_anim(model, &gseq);
+            self.calc_rotations(&mut legs, &gseq, anim, info.gaitframe);
+            split_torso(&m, &mut pose, &legs);
         }
 
         self.write_bones(&m, &pose, |_| None);
@@ -888,8 +889,8 @@ impl Renderer {
                 lights[i] = l;
             } else {
                 let mut bm = quaternion_matrix(pose.q[i]);
-                for j in 0..3 {
-                    bm[j][3] = pose.pos[i][j];
+                for (row, p) in bm.iter_mut().zip(pose.pos[i]) {
+                    row[3] = p;
                 }
                 let parent = m.bone(i).parent;
                 match usize::try_from(parent).ok().filter(|&p| p < i) {
@@ -1123,15 +1124,15 @@ fn sample_pose(m: &Studio, pose: &mut Pose, seq: &SeqDesc, anim: Anim, f: f32, a
         }
     }
 
-    if let Ok(mb) = usize::try_from(seq.motionbone) {
-        if mb < MAX_BONES {
-            for (axis, bit) in [model::STUDIO_X, model::STUDIO_Y, model::STUDIO_Z].into_iter().enumerate() {
-                if seq.motiontype & bit != 0 {
-                    pose.pos[mb][axis] = 0.0;
-                }
+    if let Ok(mb) = usize::try_from(seq.motionbone)
+        && mb < MAX_BONES
+    {
+        for (axis, bit) in [model::STUDIO_X, model::STUDIO_Y, model::STUDIO_Z].into_iter().enumerate() {
+            if seq.motiontype & bit != 0 {
+                pose.pos[mb][axis] = 0.0;
             }
-            // (The SDK's STUDIO_LX/LY/LZ terms are multiplied by 0.)
         }
+        // (The SDK's STUDIO_LX/LY/LZ terms are multiplied by 0.)
     }
 }
 

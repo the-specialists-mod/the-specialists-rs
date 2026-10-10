@@ -409,7 +409,7 @@ mod tests {
         apply_axes(&raw, &map, &p, &mut view, &mut fwd, &mut side);
         assert!((fwd - 400.0).abs() < 0.1, "forward: -1 × -1 × 400 = {fwd}");
         let v = 32767.0 / 32768.0;
-        assert!((view[1] - v * -1.0 * 0.1 * 210.0).abs() < 1e-3, "yaw turns right: {}", view[1]);
+        assert!((view[1] - -v * 0.1 * 210.0).abs() < 1e-3, "yaw turns right: {}", view[1]);
         assert_eq!(side, 0.0);
         // Centred within the dead zone: nothing.
         let (mut view, mut fwd, mut side) = ([0.0f32; 3], 0.0, 0.0);
