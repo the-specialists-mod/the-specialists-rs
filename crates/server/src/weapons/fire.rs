@@ -1,8 +1,9 @@
 //! Hitscan firing: `CBasePlayer::ShootBulletsPlayer` 0x6f69c and `UTIL_TraceLine_Expanded`.
 
-use super::{assets, bullets};
+use super::{assets, bullets, projectiles};
 use crate::damage::{self, DamageInfo};
 use goldsrc::edict::EdictPtr;
+use goldsrc::ext::entities::{MsgWriterExt, te, te_begin};
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
@@ -105,11 +106,13 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
             let dist = spread::length(spread::sub(src, tr.vecEndPos));
             let amount = range_multiplier(spread::range_index(dist, unit)) * shot.damage;
             bullet_damage(shooter, &tr, amount * adjust, dir, bits, shot.weapon);
+            projectiles::report_damage(|| format!("damage:{:.6}\n", amount * adjust));
             left = amount * pierce;
             if e.is_player_edict(tr.pHit) {
                 left *= 0.5;
             }
         }
+        bubble_trail(src, tr.vecEndPos, (spread::MAX_RANGE * tr.flFraction / 64.0).round_ties_even() as i32);
         last = Some((tr, dir));
     }
     if real || shot.btype == 1 || shot.btype == 2 || left <= 5.0 {
@@ -131,6 +134,47 @@ fn pierce_shot(shooter: *mut edict_t, src: Vec3, dir: Vec3, dmg: f32, weapon: u8
     if tr.flFraction != 1.0 {
         let dist = spread::length(spread::sub(src, tr.vecEndPos));
         let idx = (dist * 0.003_333_333_4 * 10.0).round_ties_even() as i32;
-        bullet_damage(shooter, &tr, range_multiplier(idx) * dmg, dir, DMG_BULLET_TS, weapon);
+        let amount = range_multiplier(idx) * dmg;
+        bullet_damage(shooter, &tr, amount, dir, DMG_BULLET_TS, weapon);
+        projectiles::report_damage(|| format!("damage(piercing):{amount:.6}\n"));
     }
+    bubble_trail(src, tr.vecEndPos, (tr.flFraction * 4096.0 / 64.0).round_ties_even() as i32);
+}
+
+/// `UTIL_WaterLevel` 0xee73c: the water surface height above `pos` between `minz` and `maxz`
+/// (bisected to within 1 unit): `minz` if `pos` at `minz` is dry, `maxz` if still under water there.
+fn water_level(pos: Vec3, mut minz: f32, mut maxz: f32) -> f32 {
+    let e = engine();
+    let at = |z: f32| e.point_contents([pos[0], pos[1], z]) == CONTENTS_WATER;
+    if !at(minz) {
+        return minz;
+    }
+    if at(maxz) {
+        return maxz;
+    }
+    let mut z = maxz;
+    while maxz - minz > 1.0 {
+        z = minz + (maxz - minz) * 0.5;
+        if at(z) {
+            minz = z;
+        } else {
+            maxz = z;
+        }
+    }
+    z
+}
+
+/// `UTIL_BubbleTrail` 0xee93c: a `TE_BUBBLETRAIL` along a bullet's path when either end is at
+/// least 8 units under water. `count` is capped at 255.
+fn bubble_trail(from: Vec3, to: Vec3, count: i32) {
+    let mut height = water_level(from, from[2], from[2] + 256.0) - from[2];
+    if height < 8.0 {
+        let h = water_level(to, to[2], to[2] + 256.0) - to[2];
+        if h < 8.0 {
+            return;
+        }
+        height = h + to[2] - from[2];
+    }
+    let model = assets::bubbles_model();
+    te_begin(MSG_BROADCAST, None, te::BUBBLETRAIL).vec3(from).vec3(to).coord(height).short(model).byte(count.min(255)).coord(8.0).end();
 }

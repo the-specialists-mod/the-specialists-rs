@@ -24,7 +24,7 @@ use goldsrc::sys::{clientdata_t, edict_t, usercmd_t, weapon_data_t};
 use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 
 #[allow(unused_imports)]
-pub use assets::{cvars, restriction, set_restriction};
+pub use assets::{cvars, dmgreport, restriction, set_restriction};
 pub use inventory::Drop;
 
 /// Free inventory slots at spawn (`TSInit`: `pl+0x548 = 81`).
@@ -204,6 +204,85 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     }
     // The delayed melee hit lands from the stunt hook (`CheckForBreakables`), which calls
     // `pending_melee_hit`.
+    if alive {
+        player_use(p, cx);
+    }
+}
+
+/// `CBasePlayer::PlayerUse` 0xd9848 for dropped guns and thrown blades. Both have
+/// `ObjectCaps() == FCAP_CONTINUOUS_USE`, so they get `Use` on every frame +use is held. The
+/// target is the usable entity within 64 units of the player that is closest to the view
+/// direction (dot > 0.7 to its box). A `WorldGun` can't be used through walls
+/// (`CanUsedTroughWalls` 0xa340c is 0); a knife can.
+fn player_use(p: &mut Player, cx: &mut Cx) {
+    use goldsrc::server::IGNORE_MONSTERS;
+    use goldsrc::sys::{CHAN_ITEM, IN_USE};
+    use shared::weapons::spread;
+    let e = engine();
+    let (origin, eye, angles, held) = {
+        let v = cx.pev();
+        (v.origin, spread::add(v.origin, v.view_ofs), v.v_angle, v.button & IN_USE as i32 != 0)
+    };
+    if !held {
+        return;
+    }
+    let (fwd, _, _) = spread::angle_vectors(angles);
+    let mut best = std::ptr::null_mut();
+    let mut best_dot = 0.7;
+    let mut it = std::ptr::null_mut();
+    loop {
+        it = e.find_in_sphere(it, origin, 64.0);
+        if it.is_null() {
+            break;
+        }
+        let v = it.v();
+        if !matches!(e.string(v.classname).to_bytes(), b"WorldGun" | b"knife") {
+            continue;
+        }
+        let half = spread::scale(v.size, 0.5);
+        let los = clamp_to_box(spread::sub(spread::add(v.absmin, half), eye), half);
+        let d = spread::dot(los, fwd);
+        if d > best_dot {
+            best_dot = d;
+            best = it;
+        }
+    }
+    if best.is_null() {
+        return;
+    }
+    let (is_gun, target) = {
+        let v = best.v();
+        (e.string(v.classname).to_bytes() == b"WorldGun", spread::scale(spread::add(v.absmin, v.absmax), 0.5))
+    };
+    if is_gun && e.trace_line(eye, target, IGNORE_MONSTERS, cx.edict).flFraction < 1.0 {
+        return;
+    }
+    if p.inv.sv.pressed & IN_USE != 0 {
+        host::emit(cx.edict, CHAN_ITEM, c"common/wpn_select.wav", 0.4, 0.8, 100);
+    }
+    crate::world::dispatch(best, |ent, icx| {
+        let any = ent as &mut dyn std::any::Any;
+        if let Some(w) = any.downcast_mut::<worldgun::WorldGun>() {
+            w.use_by(icx, p, cx);
+        } else if let Some(k) = any.downcast_mut::<projectiles::Knife>() {
+            k.use_by(icx, p, cx);
+        }
+    });
+}
+
+/// SDK `UTIL_ClampVectorToBox`: the part of `v` outside a box of half-size `half`, normalised.
+fn clamp_to_box(v: shared::weapons::spread::Vec3, half: shared::weapons::spread::Vec3) -> shared::weapons::spread::Vec3 {
+    let mut out = v;
+    for k in 0..3 {
+        out[k] = if v[k] > half[k] {
+            v[k] - half[k]
+        } else if v[k] < -half[k] {
+            v[k] + half[k]
+        } else {
+            0.0
+        };
+    }
+    shared::weapons::spread::normalize(out)
 }
 
 pub fn post_think(p: &mut Player, cx: &mut Cx) {

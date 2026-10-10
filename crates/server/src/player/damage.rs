@@ -131,6 +131,12 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
                 }
             }
         }
+        // TraceAttack's `dmgreport` cheat log (any non-zero value).
+        if crate::weapons::dmgreport() != 0.0 && !dmg.attacker.is_null() {
+            let (by, to) = (eng.string(dmg.attacker.v().netname), eng.string(cx.pev().netname));
+            let line = format!("{} damaged {} ({amount:.6} hp)\n", by.to_string_lossy(), to.to_string_lossy());
+            eng.alert(ALERT_TYPE::at_console, &line);
+        }
     }
 
     // CBasePlayer::TakeDamage

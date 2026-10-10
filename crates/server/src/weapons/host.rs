@@ -18,6 +18,8 @@ pub struct ServerHost<'a> {
     pub sv: &'a mut SvState,
     pub powerups: u16,
     pub kungfu: bool,
+    /// The time scale thrown grenades and blades start with (`projectiles::thrower_time_scale`).
+    pub throw_scale: f32,
     /// `CTSAnimation::Animate` ids requested during the call; played (in order) once the gun is
     /// released, because the animation state lives in `Player::stunt`.
     anims: Vec<i32>,
@@ -28,11 +30,20 @@ pub struct ServerHost<'a> {
 /// Runs `f` with the player's gun and a host for it, then applies the third-person animation
 /// requests (`set_anim_ext`, `Animate`) to the movement package's state.
 pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut ServerHost) -> R) -> R {
+    let throw_scale = projectiles::thrower_time_scale(p, cx.pev());
     let (r, anims, ext_changed) = {
         let Player { inv, active_powerup, kungfu, .. } = p;
         let Inventory { gun, sv } = inv;
         sv.atk_block = gun.block_kungfu;
-        let mut h = ServerHost { edict: cx.edict, sv, powerups: *active_powerup, kungfu: *kungfu, anims: Vec::new(), ext_changed: false };
+        let mut h = ServerHost {
+            edict: cx.edict,
+            sv,
+            powerups: *active_powerup,
+            kungfu: *kungfu,
+            throw_scale,
+            anims: Vec::new(),
+            ext_changed: false,
+        };
         let r = f(gun, &mut h);
         (r, h.anims, h.ext_changed)
     };
@@ -224,10 +235,10 @@ impl GunHost for ServerHost<'_> {
     }
     fn throw_grenade(&mut self, origin: Vec3, velocity: Vec3, roll: bool) {
         assets::debug(|| format!("throw grenade roll={roll} vel={velocity:?}"));
-        projectiles::create_grenade(self.edict, origin, velocity, roll);
+        projectiles::create_grenade(self.edict, origin, velocity, roll, self.throw_scale);
     }
     fn throw_blade(&mut self, btype: i32) {
-        projectiles::throw_blade(self.edict, btype);
+        projectiles::throw_blade(self.edict, btype, self.throw_scale);
     }
     fn slots_changed(&mut self, delta_free: i32) {
         self.sv.free_slots += delta_free;

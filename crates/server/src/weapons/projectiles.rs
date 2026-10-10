@@ -1,12 +1,13 @@
 //! Projectiles: the M61 grenade (`CM61Grenade` 0x7c850.., `CTSGrenade::BounceTouch`), the
-//! explosion (`TSExplosion` 0x7d01c), and thrown knives / katanas (`CTSKnife` 0x7d9c0..).
+//! explosion (`TSExplosion` 0x7d01c), and thrown knives / katanas (`CTSKnife` 0x7d9c0..), plus
+//! the slow-motion physics they share with `WorldGun`s (`CTSPhysicObject` 0x7ba54..).
 
 use super::host::emit;
-use super::{inventory, melee};
+use super::{assets, inventory, melee};
 use crate::damage::{self, DamageInfo};
 use crate::entities::{self, link_entities};
 use crate::messages::{self, Msg};
-use crate::player;
+use crate::player::Player;
 use crate::world::{self, Cx, Entity};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
@@ -41,6 +42,95 @@ fn speed(v: &entvars_t) -> f32 {
     spread::length(v.velocity)
 }
 
+// ---- slow motion ----------------------------------------------------------------------------
+
+/// The time scale a thrower hands to its projectile (`CreateGrenade` 0x7c874, `CreateKnife`
+/// 0x7d9e4, `CTSWorldGun::CreateWeapon` 0xa07ec): `GoSlow(pl+0x180)` when the thrower is a
+/// slow-motion activator (its "others" amount), else `GoSlow(GiveSlowMul())` (`max(fuser1, 0.01)`).
+pub fn thrower_time_scale(p: &Player, pev: &entvars_t) -> f32 {
+    if p.ts.slow_others != 0.0 { p.ts.slow_others } else { pev.fuser1.max(0.01) }
+}
+
+/// `CTSPhysicObject` (0x7ba54..0x7bd98). The engine's physics ignores `fuser1`, so a slowed
+/// projectile scales its own motion. While `fuser1 != 1`, the pre-slow velocity, angular velocity
+/// and gravity are saved, and the live values become `velocity * s`, `avelocity * s` and
+/// `gravity * s²`. When `s` changes they're re-derived from the saved values, and when the slow
+/// ends the saved values come back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlowPhysics {
+    velocity: Vec3,
+    avelocity: Vec3,
+    gravity: f32,
+    /// TS uses "saved velocity != 0" as this flag (see `docs/implementation/weapons.md`).
+    saved: bool,
+    /// The scale the live values were derived with (`+0x20`).
+    last: f32,
+}
+
+impl Default for SlowPhysics {
+    /// `CTSPhysicObject::Spawn` 0x7ba54.
+    fn default() -> Self {
+        SlowPhysics { velocity: [0.0; 3], avelocity: [0.0; 3], gravity: 0.0, saved: false, last: 1.0 }
+    }
+}
+
+impl SlowPhysics {
+    /// `CTSPhysicObject::WaitThink` 0x7bd98: `InSlow()` (`fuser1 != 1`) ? `SavePhysics` :
+    /// `RestorePhysycs`.
+    pub fn update(&mut self, pev: &mut entvars_t) {
+        if pev.fuser1 != 1.0 {
+            self.save(pev);
+        } else {
+            self.restore(pev);
+        }
+    }
+
+    /// `CTSPhysicObject::SavePhysics` 0x7bac0.
+    fn save(&mut self, pev: &mut entvars_t) {
+        let s = pev.fuser1;
+        if self.saved {
+            if self.last != s {
+                pev.velocity = spread::scale(self.velocity, s);
+                pev.avelocity = spread::scale(self.avelocity, s);
+                pev.gravity = self.gravity * s * s;
+                self.last = s;
+            }
+            return;
+        }
+        self.velocity = pev.velocity;
+        self.avelocity = pev.avelocity;
+        self.gravity = pev.gravity;
+        self.saved = true;
+        pev.velocity = spread::scale(pev.velocity, s);
+        pev.avelocity = spread::scale(pev.avelocity, s);
+        pev.gravity *= s * s;
+        self.last = s;
+    }
+
+    /// `CTSPhysicObject::RestorePhysycs` 0x7bcd4: back to the saved (pre-slow) motion.
+    fn restore(&mut self, pev: &mut entvars_t) {
+        if !self.saved {
+            return;
+        }
+        pev.velocity = self.velocity;
+        pev.avelocity = self.avelocity;
+        pev.gravity = self.gravity;
+        *self = SlowPhysics { last: 0.0, ..SlowPhysics::default() };
+    }
+}
+
+// ---- dmgreport ------------------------------------------------------------------------------
+
+/// The `dmgreport > 1` cheat lines (`UTIL_ClientPrintAll(HUD_PRINTTALK, ...)`): bullet damage in
+/// `ShootBulletsPlayer`/`CBulletManager::UpdateBullet` and the thrown-blade damage in
+/// `CTSKnife::BounceTouch`.
+pub fn report_damage(text: impl FnOnce() -> String) {
+    const HUD_PRINTTALK: u8 = 3;
+    if assets::dmgreport() > 1.0 {
+        crate::rules::msg::text_all(HUD_PRINTTALK, &text());
+    }
+}
+
 // ---- grenade --------------------------------------------------------------------------------
 
 /// `CM61Grenade` (`w_m61.mdl`, BOUNCE, gravity 0.75, friction 0.8). The 3 s fuse runs in the
@@ -50,11 +140,12 @@ pub struct Grenade {
     owner: Option<*mut edict_t>,
     fuse: f32,
     elapsed: f32,
+    phys: SlowPhysics,
 }
 
 /// `CM61Grenade::CreateGrenade(player, 3.0, origin, velocity)`, plus the throw/roll spin.
-pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: bool) {
-    let slow = owner.v().fuser1;
+/// `time_scale` comes from [`thrower_time_scale`].
+pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: bool, time_scale: f32) {
     spawn_entity::<Grenade>(c"m61_grenade", |g, cx| {
         g.owner = Some(owner);
         g.fuse = 3.0;
@@ -62,7 +153,7 @@ pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: b
         pev.origin = origin;
         pev.velocity = velocity;
         pev.owner = owner;
-        pev.fuser1 = if slow > 0.0 { slow } else { 1.0 };
+        pev.fuser1 = time_scale;
         if roll {
             pev.friction = 0.4;
             pev.avelocity = [-100.0, 600.0, 0.0];
@@ -102,9 +193,10 @@ impl Entity for Grenade {
         let me = cx.edict;
         cx.pev().nextthink = e.time() + 0.1;
         if self.elapsed < self.fuse {
-            let pev = cx.pev();
-            self.elapsed += 0.1 * if pev.fuser1 > 0.0 { pev.fuser1 } else { 1.0 };
+            // The fuse runs in the grenade's own time (`GiveSlowMul`).
+            self.elapsed += 0.1 * cx.pev().fuser1.max(0.01);
             impact_damage(me, 0.1, 0x1080, true);
+            self.phys.update(cx.pev());
             return;
         }
         let pev = cx.pev();
@@ -276,6 +368,19 @@ pub fn explode(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t, dm
             }
         }
     }
+    // The "spectacular" slow-motion point at the blast: 0.25 for 1 s, no bullet time.
+    if do_spectacularness() {
+        crate::entities::ts::create_slow_motion_point(org, 0.25, 1.0, false);
+    }
+}
+
+/// `DoSpectacularNess` 0x76b48. `spectacularness` is clamped to 0..100 and rounded. 0 never
+/// fires; otherwise it fires when `RandomLong(0, 100) <= spectacularness`.
+fn do_spectacularness() -> bool {
+    let e = engine();
+    let roll = e.random_long(0, 100);
+    let pct = e.cvar_float(c"spectacularness").clamp(0.0, 100.0).round_ties_even() as i32;
+    pct != 0 && roll <= pct
 }
 
 fn hit(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut edict_t, d: f32, bits: i32, dir: Vec3, pos: Vec3) {
@@ -303,10 +408,12 @@ pub struct Knife {
     flying: bool,
     needs_kungfu: bool,
     stuck: bool,
+    phys: SlowPhysics,
 }
 
 /// `KnifeFire`/`KatanaThrow` throw: from the eyes + 32 forward + 1 right (traced), 1900 u/s.
-pub fn throw_blade(owner: *mut edict_t, btype: i32) {
+/// `time_scale` comes from [`thrower_time_scale`].
+pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
     let e = engine();
     let v = owner.v();
     let (fwd, right, _) = spread::angle_vectors(v.v_angle);
@@ -326,6 +433,7 @@ pub fn throw_blade(owner: *mut edict_t, btype: i32) {
         ang[2] = 90.0;
         pev.angles = ang;
         pev.avelocity = [if btype == 8 { -700.0 } else { -1300.0 }, 0.0, 0.0];
+        pev.fuser1 = time_scale;
     });
 }
 
@@ -379,7 +487,6 @@ impl Entity for Knife {
             _ => (c"models/w_sealknife.mdl", 0.3),
         };
         e.set_model(edict, model);
-        let owner_slow = self.owner.map(|o| o.v().fuser1).unwrap_or(1.0);
         let pev = cx.pev();
         pev.classname = e.alloc_string(c"knife");
         pev.gravity = gravity;
@@ -387,7 +494,9 @@ impl Entity for Knife {
         pev.movetype = MOVETYPE_BOUNCE as i32;
         pev.solid = SOLID_BBOX as i32;
         pev.owner = self.owner.unwrap_or(std::ptr::null_mut());
-        pev.fuser1 = if owner_slow > 0.0 { owner_slow } else { 1.0 };
+        if pev.fuser1 <= 0.0 {
+            pev.fuser1 = 1.0;
+        }
         pev.iuser4 = 1;
         e.set_size(edict, [0.0; 3], [0.0; 3]);
         e.set_origin(edict, origin);
@@ -412,6 +521,11 @@ impl Entity for Knife {
                 pev.velocity = spread::scale(pev.velocity, 0.5);
                 pev.avelocity = spread::scale(pev.avelocity, 0.5);
             }
+        }
+        // A blade stuck in a wall (MOVETYPE_FLY) stays put.
+        let pev = cx.pev();
+        if pev.movetype != MOVETYPE_FLY as i32 {
+            self.phys.update(pev);
         }
     }
 
@@ -444,6 +558,8 @@ impl Knife {
         if speed(cx.pev()) < 700.0 {
             self.flying = false;
         }
+        let dmg = self.damage();
+        report_damage(|| format!("(debug){dmg:.6}\n"));
         self.needs_kungfu = false;
         if ov.takedamage != 0.0 && e.is_player_edict(other) {
             let gt = e.globals();
@@ -507,45 +623,103 @@ impl Knife {
         self.settle(cx);
     }
 
-    /// Pickup: TS `CTSKnife::Use`; here on touch while holding +use (TS players pick knives up
-    /// with +use). A thrown katana stuck in a wall needs the kung-fu power-up.
-    fn wait_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+    /// `CTSKnife::WaitTouch` 0x7dce8: a blade lying on the ground slows down on every touch.
+    /// Picking it up is `Use` (+use, see [`Knife::use_by`]).
+    fn wait_touch(&mut self, cx: &mut Cx, _other: *mut edict_t) {
+        let pev = cx.pev();
+        if pev.flags & FL_ONGROUND as i32 != 0 {
+            pev.velocity = spread::scale(pev.velocity, 0.5);
+            if speed(pev) < 32.0 {
+                pev.angles[0] = 0.0;
+                pev.angles[2] = 0.0;
+                pev.velocity = [0.0; 3];
+                pev.avelocity = [0.0; 3];
+            }
+        }
+    }
+
+    /// `CTSKnife::Use` 0x7dda4, from the player's +use (`weapons::player_use`, the player is the
+    /// one being dispatched). A katana that hit something other than a player needs the kung-fu
+    /// power-up. An expired blade is just removed.
+    pub fn use_by(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
         let e = engine();
-        if !e.is_player_edict(other) {
-            let pev = cx.pev();
-            if pev.flags & FL_ONGROUND as i32 != 0 {
-                pev.velocity = spread::scale(pev.velocity, 0.5);
-                if speed(pev) < 32.0 {
-                    pev.velocity = [0.0; 3];
-                    pev.avelocity = [0.0; 3];
-                }
-            }
+        if self.flying || !Player::is_alive(pcx) || pcx.pev().effects & EF_NODRAW as i32 != 0 {
             return;
         }
-        let ov = other.v();
-        if self.flying || ov.button & IN_USE as i32 == 0 || ov.effects & EF_NODRAW as i32 != 0 {
+        if self.needs_kungfu && !p.kungfu {
             return;
         }
-        if ov.deadflag != DEAD_NO as i32 || ov.health <= 0.0 {
-            return;
-        }
-        let needs = self.needs_kungfu;
-        let id = self.weapon_id();
-        let expired = e.time() >= self.expire;
-        let took = player::with_player(other, |p, pcx| {
-            if needs && !p.kungfu {
-                return false;
-            }
-            if expired {
-                return true;
-            }
-            let ok = inventory::pick_up_weapon(p, pcx, id, None, 0, false, false);
+        let now = e.time();
+        let mut took = true;
+        if now < self.expire {
+            took = inventory::pick_up_weapon(p, pcx, self.weapon_id(), None, 0, false, false);
             inventory::sync_speed(p, pcx);
-            ok
-        })
-        .unwrap_or(false);
+        }
         if took {
+            self.expire = now;
             entities::remove(cx.edict);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flying() -> entvars_t {
+        entvars_t { velocity: [1000.0, 0.0, 200.0], avelocity: [-1300.0, 0.0, 0.0], gravity: 0.75, fuser1: 1.0, ..Default::default() }
+    }
+
+    #[test]
+    fn unslowed_projectile_is_untouched() {
+        let mut v = flying();
+        let mut ph = SlowPhysics::default();
+        ph.update(&mut v);
+        let f = flying();
+        assert_eq!((v.velocity, v.avelocity, v.gravity), (f.velocity, f.avelocity, f.gravity));
+        assert_eq!(ph, SlowPhysics::default());
+    }
+
+    #[test]
+    fn slow_scales_velocity_and_gravity_squared_then_restores() {
+        let mut v = flying();
+        let mut ph = SlowPhysics::default();
+        v.fuser1 = 0.5;
+        ph.update(&mut v);
+        assert_eq!(v.velocity, [500.0, 0.0, 100.0]);
+        assert_eq!(v.avelocity, [-650.0, 0.0, 0.0]);
+        assert_eq!(v.gravity, 0.75 * 0.25);
+        // Same scale: the engine's motion is left alone.
+        v.velocity = [480.0, 0.0, 90.0];
+        ph.update(&mut v);
+        assert_eq!(v.velocity, [480.0, 0.0, 90.0]);
+        // New scale: re-derived from the pre-slow values.
+        v.fuser1 = 0.25;
+        ph.update(&mut v);
+        assert_eq!(v.velocity, [250.0, 0.0, 50.0]);
+        assert_eq!(v.gravity, 0.75 * 0.0625);
+        // Back to normal time: the pre-slow motion returns.
+        v.fuser1 = 1.0;
+        ph.update(&mut v);
+        assert_eq!(v.velocity, flying().velocity);
+        assert_eq!(v.avelocity, flying().avelocity);
+        assert_eq!(v.gravity, 0.75);
+        // Slowing again saves afresh (the restore leaves `last` at 0).
+        v.fuser1 = 0.5;
+        ph.update(&mut v);
+        assert_eq!(v.velocity, [500.0, 0.0, 100.0]);
+    }
+
+    #[test]
+    fn resting_object_gravity_does_not_compound() {
+        let mut v = entvars_t { gravity: 0.75, fuser1: 0.5, ..Default::default() };
+        let mut ph = SlowPhysics::default();
+        for _ in 0..5 {
+            ph.update(&mut v);
+        }
+        assert_eq!(v.gravity, 0.75 * 0.25);
+        v.fuser1 = 1.0;
+        ph.update(&mut v);
+        assert_eq!(v.gravity, 0.75);
     }
 }

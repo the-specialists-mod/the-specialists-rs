@@ -6,8 +6,9 @@
 //! frame while bullets are in flight (so hits on any player, including the one whose hooks
 //! fired the bullet, dispatch normally).
 
-use super::{assets, fire};
+use super::{assets, fire, projectiles};
 use crate::entities::{self, link_entities};
+use crate::player::Player;
 use crate::world::{Cx, Entity};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
@@ -143,8 +144,12 @@ fn update(b: &mut Bullet, now: f32) -> bool {
     if dt < 0.001 {
         dt = e.globals().frametime;
     }
-    // Bullet time (pl+0x175) belongs to the movement package; treated as off.
-    let mult = spread::bullet_velocity_mult(owner.fuser1.max(0.0), false);
+    // The shooter's slow-motion "others" amount (pl+0x180) if it's an activator, else its
+    // GiveSlowMul; bullet time is pl+0x175.
+    let fuser1 = owner.fuser1;
+    let (slow, btime) = crate::world::with::<Player, _>(b.owner, |p| (p.ts.slow_others, p.ts.btime)).unwrap_or((0.0, false));
+    let slowmul = if slow != 0.0 { slow } else { fuser1.max(0.01) };
+    let mult = spread::bullet_velocity_mult(slowmul, btime);
     let step = spread::scale(b.dir, velocity * spread::UNITS_PER_METER * dt * mult);
     let end = spread::add(b.pos, step);
     let tr = fire::trace_expanded(b.pos, end, b.owner);
@@ -165,6 +170,7 @@ fn update(b: &mut Bullet, now: f32) -> bool {
     };
     let bits = if b.btype == 1 { fire::DMG_SHOTGUN_TS } else { fire::DMG_BULLET_TS };
     fire::bullet_damage(b.owner, &tr, amount * adjust, b.dir, bits, b.weapon);
+    projectiles::report_damage(|| format!("damage:{:.6}\n", amount * adjust));
     let mut left = amount * ammo.map(|a| a.pierce).unwrap_or(0.0);
     if e.is_player_edict(tr.pHit) {
         left *= 0.5;
