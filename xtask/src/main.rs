@@ -732,7 +732,9 @@ impl Ctx {
         // 5. the host shoots the stopped bot
         cfg += &format!("weapon_13\n{}ts_tp 2 0 -1200 60 270 0\n{}", secs(1.5), secs(0.5));
         cfg += "echo XTASK: shoot\n+attack\n";
-        for _ in 0..15 {
+        // 5 s: recoil climbs and each hit knocks the bot back a little, so 3 s sometimes left it
+        // alive on fwgs-win.
+        for _ in 0..25 {
             cfg += &format!("ts_face 1 2\n{}", secs(0.2));
         }
         cfg += "-attack\n";
