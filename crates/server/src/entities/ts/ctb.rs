@@ -6,7 +6,7 @@ use crate::entities::stock::explode::emit_sound_slow;
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::rules::{self, msg, state, teams};
-use crate::weapons::SlowPhysics;
+use crate::weapons::{SlowPhysics, bounce_ground_damping, give_slow_mul};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
@@ -208,11 +208,6 @@ pub struct Flag {
     phys: SlowPhysics,
 }
 
-/// `GiveSlowMul` (`CBaseEntity` 0xac5b4 → `FixedSlowAmt` 0x990bc): the time scale, at least 0.01.
-fn give_slow_mul(fuser1: f32) -> f32 {
-    if fuser1 < 0.01 { 0.01 } else { fuser1 }
-}
-
 /// `DropFlag` 0x9334c, alive: thrown along `v_angle` at `(90 - pitch) * 2`, so looking down
 /// barely tosses the case and looking up throws it far.
 fn aimed_throw_speed(pitch: f32) -> f32 {
@@ -227,12 +222,6 @@ fn throw(eye: Vec3, forward: Vec3, player_velocity: Vec3, speed: f32) -> (Vec3, 
     let mut velocity = spread::ma(spread::scale(player_velocity, 0.9), speed, forward);
     velocity[2] += speed * 0.33;
     (origin, velocity)
-}
-
-/// `BounceTouch` 0x9dbbc on the ground: the velocity and spin are scaled by 0.9 while the
-/// horizontal speed is above `40 * slow`, and by 0.7 at or below it.
-fn ground_damping(horizontal_speed: f32, slow: f32) -> f32 {
-    if horizontal_speed > slow * 40.0 { 0.9 } else { 0.7 }
 }
 
 /// `Fall` 0x9df10: a flying case hits a non-player entity whose health is at most
@@ -326,7 +315,7 @@ impl Flag {
 
     /// `CTSFlag::BounceTouch` (0x9dbbc): every touch while flying keeps 0.3 of the vertical
     /// speed. In the air, a fast hit on a floor (normal z > 0.98) plays the drop sound; on the
-    /// ground the case is slowed ([`ground_damping`]) and its roll levelled.
+    /// ground the case is slowed ([`bounce_ground_damping`]) and its roll levelled.
     fn bounce_touch(&mut self, cx: &mut Cx) {
         let e = engine();
         let me = cx.edict;
@@ -339,7 +328,7 @@ impl Flag {
                 emit_sound_slow(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, ATTN_NORM, 0, pitch, 0.5);
             }
         } else {
-            let k = ground_damping(v.velocity[0].hypot(v.velocity[1]), slow);
+            let k = bounce_ground_damping(v.velocity[0].hypot(v.velocity[1]), slow);
             v.velocity = spread::scale(v.velocity, k);
             v.avelocity = spread::scale(v.avelocity, k);
             v.angles[2] = 0.0;
@@ -700,22 +689,6 @@ mod tests {
         let (origin, velocity) = throw([0.0; 3], forward, [0.0, 0.0, -50.0], 60.0);
         assert!(close(origin, spread::scale(forward, 16.0)), "{origin:?}");
         assert!(close(velocity, [0.0, 30.0, -45.0 - 51.961 + 19.8]), "{velocity:?}");
-    }
-
-    #[test]
-    fn ground_bounce_damps_slow_cases_more() {
-        assert_eq!(ground_damping(41.0, 1.0), 0.9);
-        assert_eq!(ground_damping(40.0, 1.0), 0.7);
-        // slowed: the threshold scales with the time scale
-        assert_eq!(ground_damping(21.0, 0.5), 0.9);
-        assert_eq!(ground_damping(19.0, 0.5), 0.7);
-    }
-
-    #[test]
-    fn slow_mul_has_a_floor() {
-        assert_eq!(give_slow_mul(1.0), 1.0);
-        assert_eq!(give_slow_mul(0.2), 0.2);
-        assert_eq!(give_slow_mul(0.0), 0.01);
     }
 
     #[test]

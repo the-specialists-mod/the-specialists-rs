@@ -2,7 +2,7 @@
 //! ammo (`CTSAmmoPack`, link `TSAmmoPack`, classname `AmmoPack`).
 
 use super::host::emit;
-use super::projectiles::{self, SlowPhysics};
+use super::projectiles::{self, SlowPhysics, bounce_ground_damping, give_slow_mul};
 use super::{assets, inventory};
 use crate::damage::{self, DamageInfo};
 use crate::entities::{self, link_entities};
@@ -31,7 +31,6 @@ pub struct WorldGun {
     /// Who threw it, credited for its flying impact (port deviation, issue #1).
     thrower: projectiles::Thrower,
     expire: f32,
-    first_bounce: bool,
     pickup_after: f32,
     taken: bool,
     on_ground: bool,
@@ -161,12 +160,13 @@ impl Entity for WorldGun {
         let pev = cx.pev();
         pev.nextthink = e.time() + 0.1;
         pev.iuser4 = 2;
-        self.first_bounce = true;
         self.pickup_after = e.time() + 0.5;
         self.taken = false;
     }
 
-    /// `Fall` until it lands, then `WaitThink`.
+    /// `Fall` (0xa0d84) until it lands, then `WaitThink`. TS adds no friction here: a sliding
+    /// gun is slowed only by `BounceTouch`'s ground damping, which the engine runs on every frame
+    /// it scrapes the floor.
     fn think(&mut self, cx: &mut Cx) {
         let e = engine();
         let me = cx.edict;
@@ -180,13 +180,7 @@ impl Entity for WorldGun {
             return;
         }
         let pev = cx.pev();
-        if pev.flags & FL_ONGROUND as i32 != 0 {
-            // Ground friction: FWGS doesn't slow a sliding MOVETYPE_BOUNCE entity on flat ground.
-            pev.velocity = spread::scale(pev.velocity, 0.5);
-            pev.avelocity = spread::scale(pev.avelocity, 0.5);
-        }
-        let slow = if pev.fuser1 > 0.0 { pev.fuser1 } else { 1.0 };
-        if pev.flags & FL_ONGROUND as i32 != 0 && spread::length(pev.velocity) < slow * 3.0 {
+        if pev.flags & FL_ONGROUND as i32 != 0 && spread::length(pev.velocity) < give_slow_mul(pev.fuser1) * 3.0 {
             emit(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, 0.8, 100);
             let pev = cx.pev();
             pev.angles[0] = 0.0;
@@ -222,23 +216,23 @@ impl Entity for WorldGun {
             }
             return;
         }
-        // BounceTouch
+        // BounceTouch (0xa0b0c): keep 0.3 of the vertical speed. In the air, a fast hit on a
+        // floor plays the drop sound. TS gates that on a byte (+0xc8) that Spawn sets and the
+        // touch sets again (never clears), so it plays on every such bounce, not just the first.
+        // On the ground, damp velocity and spin and level the roll.
         let e = engine();
         let me = cx.edict;
         let pev = cx.pev();
-        pev.velocity[2] *= 0.3;
-        let slow = if pev.fuser1 > 0.0 { pev.fuser1 } else { 1.0 };
+        pev.velocity[2] = (pev.velocity[2] as f64 * 0.3) as f32;
+        let slow = give_slow_mul(pev.fuser1);
         if pev.flags & FL_ONGROUND as i32 == 0 {
-            if spread::length(pev.velocity) > slow * 18.0 && self.first_bounce && e.globals().trace_plane_normal[2] > 0.98 {
-                self.first_bounce = false;
+            if spread::length(pev.velocity) > slow * 18.0 && e.globals().trace_plane_normal[2] as f64 > 0.98 {
                 emit(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, 0.8, 100 + e.random_long(0, 10));
             }
         } else {
-            let h = (pev.velocity[0] * pev.velocity[0] + pev.velocity[1] * pev.velocity[1]).sqrt();
-            if h <= slow * 40.0 {
-                pev.velocity = spread::scale(pev.velocity, 0.7);
-                pev.avelocity = spread::scale(pev.avelocity, 0.7);
-            }
+            let k = bounce_ground_damping(pev.velocity[0].hypot(pev.velocity[1]), slow);
+            pev.velocity = spread::scale(pev.velocity, k);
+            pev.avelocity = spread::scale(pev.avelocity, k);
             pev.angles[2] = 0.0;
         }
         // A gun still in the air is picked up with +use (`Use`, see `use_by`), not by touch.

@@ -48,7 +48,22 @@ fn speed(v: &entvars_t) -> f32 {
 /// 0x7d9e4, `CTSWorldGun::CreateWeapon` 0xa07ec): `GoSlow(pl+0x180)` when the thrower is a
 /// slow-motion activator (its "others" amount), else `GoSlow(GiveSlowMul())` (`max(fuser1, 0.01)`).
 pub fn thrower_time_scale(p: &Player, pev: &entvars_t) -> f32 {
-    if p.ts.slow_others != 0.0 { p.ts.slow_others } else { pev.fuser1.max(0.01) }
+    if p.ts.slow_others != 0.0 { p.ts.slow_others } else { give_slow_mul(pev.fuser1) }
+}
+
+/// `CBaseEntity::GiveSlowMul` (0xac5b4) → `FixedSlowAmt` (0x990bc): the entity's time scale
+/// `fuser1`, at least 0.01 (a NaN gives 0.01 too, as the x87 compare does).
+pub fn give_slow_mul(fuser1: f32) -> f32 {
+    fuser1.max(0.01)
+}
+
+/// The ground branch of `CTSFlag::BounceTouch` (0x9dbbc) and `CTSWorldGun::BounceTouch`
+/// (0xa0b0c): velocity and spin are scaled by 0.9 while the horizontal speed is above
+/// `40 * slow`, and by 0.7 at or below it (floats at objdump 0xf7f44 / 0xf7f50).
+/// The engine runs the touch on every frame a sliding entity scrapes the floor, so this is the
+/// only ground friction a `MOVETYPE_BOUNCE` entity gets (see docs/implementation/weapons.md).
+pub fn bounce_ground_damping(horizontal_speed: f32, slow: f32) -> f32 {
+    if horizontal_speed > slow * 40.0 { 0.9 } else { 0.7 }
 }
 
 /// `CTSPhysicObject` (0x7ba54..0x7bd98). The engine's physics ignores `fuser1`, so a slowed
@@ -601,6 +616,26 @@ impl Knife {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ground_bounce_damps_slow_objects_more() {
+        assert_eq!(bounce_ground_damping(41.0, 1.0), 0.9);
+        assert_eq!(bounce_ground_damping(40.0, 1.0), 0.7);
+        // slowed: the threshold scales with the time scale
+        assert_eq!(bounce_ground_damping(21.0, 0.5), 0.9);
+        assert_eq!(bounce_ground_damping(19.0, 0.5), 0.7);
+        // frozen (fuser1 0 -> 0.01): 0.5 u/s is already "fast"
+        assert_eq!(bounce_ground_damping(0.5, give_slow_mul(0.0)), 0.9);
+    }
+
+    #[test]
+    fn slow_mul_has_a_floor() {
+        assert_eq!(give_slow_mul(1.0), 1.0);
+        assert_eq!(give_slow_mul(0.2), 0.2);
+        assert_eq!(give_slow_mul(0.0), 0.01);
+        assert_eq!(give_slow_mul(-1.0), 0.01);
+        assert_eq!(give_slow_mul(f32::NAN), 0.01);
+    }
 
     fn flying() -> entvars_t {
         entvars_t { velocity: [1000.0, 0.0, 200.0], avelocity: [-1300.0, 0.0, 0.0], gravity: 0.75, fuser1: 1.0, ..Default::default() }

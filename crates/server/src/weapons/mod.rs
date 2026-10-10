@@ -26,7 +26,7 @@ use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 #[allow(unused_imports)]
 pub use assets::{cvars, dmgreport, restriction, set_restriction};
 pub use inventory::Drop;
-pub use projectiles::{SlowPhysics, thrower_time_scale};
+pub use projectiles::{SlowPhysics, bounce_ground_damping, give_slow_mul, thrower_time_scale};
 
 /// Free inventory slots at spawn (`TSInit`: `pl+0x548 = 81`).
 pub const SLOTS: i32 = shared::ts::SLOTS_TOTAL;
