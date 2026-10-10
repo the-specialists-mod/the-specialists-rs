@@ -69,7 +69,7 @@ switched off in 3.0, or an SDK constant kept for completeness:
 
 * No motion-blur ghosts or TS split-bone studio renderer (`HUD_GetStudioModelInterface` returns 0).
 * The corpse "bullet dance" isn't wired, and the death animation wait is a fixed 1.2 s.
-* No map votes, and no HLTV director messages.
+* No HLTV director messages.
 * The view climbs steeply under sustained fire. Each shot's kick is applied once, so this is
   probably TS's persistent recoil, but it hasn't been compared against TS.
 * Not tested with real keyboard and mouse, or on a Steam GoldSrc client (only FWGS clients). See

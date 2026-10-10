@@ -5,7 +5,7 @@ use super::lifecycle::start_observer;
 use super::msg::{self, ts_message_all};
 use super::powerup::{entity_in_slow, go_slow};
 use super::state::{self, Mode};
-use super::{alive, cvars, other, scoring, teams};
+use super::{alive, cvars, other, scoring, teams, votes};
 use crate::messages::{self, Msg};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::rules::SVC_INTERMISSION;
@@ -22,6 +22,10 @@ pub fn think() {
         return;
     }
     ts_think(now);
+    // CHalfLifeMultiplay::Think: a passed map vote ends the map now.
+    if votes::vote_passed() {
+        go_to_intermission();
+    }
 }
 
 /// Returns true while the game is over (intermission).
@@ -116,7 +120,8 @@ pub fn go_to_intermission() {
     engine().print("[ts] intermission\n");
 }
 
-/// `ChangeLevel`: next map from `mapcyclefile` (after the current one), else the same map.
+/// `ChangeLevel` (0xd0784): the map a vote chose, else the next map from `mapcyclefile`
+/// (after the current one), else the same map.
 fn change_level() {
     let eng = engine();
     let current = eng.string(eng.globals().mapname).to_string_lossy().into_owned();
@@ -130,7 +135,12 @@ fn change_level() {
             String::from_utf8_lossy(&d).lines().filter_map(|l| l.split("//").next()?.split_whitespace().next().map(str::to_owned)).collect()
         })
         .unwrap_or_default();
-    let next = next_map(&maps, &current, |m| eng.is_map_valid(m));
+    let mut next = next_map(&maps, &current, |m| eng.is_map_valid(m));
+    // A passed map vote wins over the cycle (an invalid one falls back to the current map).
+    if let Some(voted) = state::with(|g| g.votes.override_map().map(str::to_owned)) {
+        next = if eng.is_map_valid(&voted) { voted } else { current.clone() };
+    }
+    state::with(|g| g.votes.chosen.clear());
     eng.print(&format!("[ts] changing level to {next}\n"));
     eng.change_level(&next);
 }
@@ -181,6 +191,8 @@ fn ts_think(now: f32) {
             }
         }
     }
+
+    votes::check_votes(now);
 
     // SrvSett broadcasts when the cvars change.
     let values = [cvars::f(c"realbullet").round() as i32, cvars::on(c"usecash") as i32, cvars::f(c"ammocount").round() as i32];

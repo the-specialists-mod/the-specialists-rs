@@ -11,6 +11,7 @@
 //! * `powerup`: held/active power-ups, slow-motion flow and easing.
 //! * `frame`: `StartFrame` (`CHalfLifeMultiplay::Think` + `CTSGameRules::Think`).
 //! * `teams`: teamplay assignment and messages.
+//! * `votes`: chat map votes (`vote map/stats/reset`, `CheckVotes`).
 
 pub mod commands;
 pub mod cvars;
@@ -22,6 +23,7 @@ pub mod scoring;
 pub mod spawnpoint;
 pub mod state;
 pub mod teams;
+pub mod votes;
 
 use crate::commands::Args;
 use crate::player::Player;

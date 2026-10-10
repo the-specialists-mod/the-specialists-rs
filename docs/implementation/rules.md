@@ -70,6 +70,7 @@ are Ghidra addresses.
 | `CBasePlayer::TakeDamage` 0x8fa94 | `player::damage::take_damage` | kevlar `dmg -= dmg×min(armor_absorb,1)` on hitgroups 2–5 unless `ARMOR_EXEMPT`; armour never depleted; rounded; knockback ×5; TSFade (150,10,10); death → `rules::on_killed`. Unit tested. |
 | `CBasePlayer::UpdateClientData` 0x91d00 | `player::hud::update` | every 0.1 s on change: TSHealth, TSArmor, TSState, TSCash, TSSpace, PwUp, TSSlowMo, TSBTime, TSPAward (ALL). |
 | `Host_Say` 0xad02c | `commands::host_say` / `format_say` | `\x02name: `, `(TEAM)`, `%a`/`%h`, 0.5 s flood gate, LMS dead chat rule, `timeleft`, log. Unit tested. |
+| `PlayerVote` 0x7a1c8, `CheckVotes` 0x7a5c4, `CalcMiniminVotants` 0x7a1b0 | `votes::{player_vote, check_votes, min_votes}`, `Votes` in `GameRules` | `vote map <name>` (current/invalid map refused, "%s vote for map %s" to all), `vote stats` (last tally, "(n/need) votes for map"), `vote reset`; handled votes aren't broadcast. Every 10 s every player is counted and votes are grouped by map; the leader passes at `max(1, players/2)`. A passed vote sends `multiplay_think` to intermission and `change_level` loads the voted map. A joiner's vote is cleared in TS InitHUD. Unit tested. |
 | `cmd_globalslow` 0xc5580, `cmd_restartround` 0xc5748, `cmd_weaponrestriction` 0xc58a0 | `commands::cmd_*` | clamps unit tested. |
 | `AddToFullPack` 0xaf180 | `net::add_to_full_pack` | `iuser4` for all entities, `playerclass` for non-players, glow shell on the viewer's own `WorldGun`/`knife`, `FL_SPECTATOR` culling, EFLAG_SLERP for `FL_FLY`. |
 
@@ -158,7 +159,9 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * `addbot`/`addcustombot` add a fake client; `ts_bot_quota` is new (dedicated-server testing).
 * The HLTV `MSG_SPEC` director event (svc 50) in `DeathNotice`/`TakeDamage` is not sent.
 * `GetGameDescription` returns `rules::game_description()` (wired at integration).
-* Map votes (`vote map/stats/reset`, `CheckVotes`) are not implemented: "vote …" is plain chat.
+* Map votes: `CheckVotes` also tallies slow-match / teamplay / friendly-fire toggle votes, but
+  nothing in TS ever sets them (and the slow-match one writes the non-existent `mp_slowmatch`), so
+  only map votes are ported.
 * `PlayerIsCheating` / forced `cl_lw 1` is not implemented.
 * Spawn points: the `IsTriggered` master check is skipped (stock spawn points store no master).
 * The death animation wait is a fixed 1.2 s (no sequence-finished flag); the death/flinch
@@ -185,7 +188,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 * `cargo test`: payload encoders (sizes match registration), `decide_gameplay`, team lists,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
-  clamps, weapon restriction, mapcycle, power-up bodies/respawn clamps, HL remaps.
+  clamps, weapon restriction, mapcycle, map vote parsing/tally, power-up bodies/respawn clamps, HL remaps.
 * Builds: `cargo build -p ts-server -p ts-client` (x86_64), `--target i686-unknown-linux-gnu`,
   `--target i686-pc-windows-gnu`.
 * In-engine (FWGS root `~/games/xash_rules`):

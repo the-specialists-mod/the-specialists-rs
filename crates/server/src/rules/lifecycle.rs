@@ -438,6 +438,8 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     p.ts.tk_until = 0.0;
     p.ts.tk_count = 0;
     set_respawn_time(p, cx, cvars::respawn_time());
+    let idx = cx.index() as usize;
+    state::with(|g| g.votes.reset(idx));
 }
 
 /// `SetPlayerRespawnTime` (0x75ff4).
