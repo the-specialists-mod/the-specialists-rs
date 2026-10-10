@@ -11,6 +11,10 @@ decomp `docs/client/rendering-effects-prediction.md` (cited as **R§n**), `docs/
 | `crates/client/src/events.rs`, `events/{fire,impact,misc,info,random}.rs` | the 11 event hooks and handlers, bullets, shells, decals, texture sounds, client weapon info (classes, anim sets), shared random |
 | `crates/client/src/effects.rs`, `effects/{psys,fx,emitters,laser,tempents}.rs` | sprite particle system, weapon/impact effects, BSP-lump emitters, wind, lasers/flashlights/shadows, `HUD_AddEntity`, `HUD_TempEntUpdate`, effect messages |
 | `crates/client/src/prediction.rs`, `prediction/gun.rs` | Txfer callbacks, `HUD_PostRunCmd`, stopgap local gun predictor |
+| `crates/client/src/studio.rs`, `studio/{model,math}.rs` | the TS studio model renderer (R§2): split torso/legs bones, gait, corpses, motion-blur ghosts; `.mdl` parsing from bytes; quaternion/matrix maths |
+| `crates/client/src/effects/mblur.rs` | motion-blur ghost trails (`MotionBlur_*`, R§7.6) |
+| `crates/goldsrc/src/ext/studio.rs` | safe wrappers over `engine_studio_api_t` (handles, bone matrices by value, header as bytes) and `CL_TempEntAllocCustom` with callback trampolines |
+| `crates/client-dll/src/lib.rs` | `HUD_GetStudioModelInterface` and the two `r_studio_interface_t` callbacks |
 | `crates/client/src/state.rs` | fields **added** (see "Integration") |
 | `crates/goldsrc/src/ext/render.rs` | `ev!`/`efx!`/`tri!` macros, engine wrappers, `Cvar`, `vec3` maths |
 | `crates/shared/src/protocol/effects.rs` | `TSFade`, `TSPSys` (wind), `PTakeDam`, `TSFrags`, `TSMBlur`, `TSSlowMo`, `TSBTime` payloads: `decode` + `encode(&mut impl Sink)` |
@@ -23,7 +27,12 @@ allowlisting alone produced opaque types. Besides the allowlist lines
 (`event_args_t|event_api_t|efx_api_t|triangleapi_t|TEMPENTITY|screenfade_t|dlight_t|pmtrace_t|physent_t|mstudioevent_t|TRICULLSTYLE`
 and `FTENT_|TRI_|FEV_|FFADE_|TENTPRIORITY_`), one `.header_contents("render_ext.h", ...)` line
 includes `r_efx.h`, `event_api.h`, `event_flags.h`, `triangleapi.h`, `screenfade.h`,
-`studio_event.h`, `shake.h`. `wrapper.h` is untouched. Float/flag macros bindgen can't export
+`studio_event.h`, `shake.h`. `wrapper.h` is untouched. The studio renderer adds a second
+`.header_contents("studio_ext.h", ...)` (`com_model.h`, `r_studioint.h`) with
+`engine_studio_api_t|r_studio_interface_t|player_info_t|alight_t|cache_user_t` and
+`STUDIO_INTERFACE_VERSION|STUDIO_RENDER|STUDIO_EVENTS`; `glpoly2_s` is made opaque (a flexible
+array member that would otherwise generate warning-producing helpers). `studio.h` isn't bound: the
+renderer reads the model from bytes. Float/flag macros bindgen can't export
 (`ATTN_NORM`, `FCVAR_ARCHIVE`) and `client_data_t` are defined in `ext/render.rs`.
 
 ## What is implemented (TS function -> Rust)
@@ -72,13 +81,26 @@ includes `r_efx.h`, `event_api.h`, `event_flags.h`, `triangleapi.h`, `screenfade
 | client bullets | `0x10035c20`, `0x10035010`, `0x10035d40` | `fire::ClientBullet`, `fire::client_bullets_frame`, `fx::bullet_trail` | simple version (streak + impact) |
 | `GetBulletVelocityMult` | `0x10055b30` | `fire::bullet_velocity_mult` | done, unit-tested |
 | `HUD_AddEntity` (hemisphere, spectator, anti-peek, item fades) | `0x100447f0` | `effects::add_entity`, `occlusion_visible` | done |
-| `HUD_CreateEntities` | `0x1001bce0` | `effects::create_entities` | client bullets only (no ghosts) |
+| `HUD_CreateEntities` | `0x1001bce0` | `effects::create_entities` | client bullets, then motion-blur ghosts |
+| `HUD_GetStudioModelInterface` | `0x1001f3f0` | `client-dll` + `goldsrc::ext::studio::init` + `studio::init` | done (version 1, 43-slot table copy) |
+| `R_StudioDrawModel` / `R_StudioDrawPlayer` | `0x1001f3d0` / `0x1001f3b0` | `studio::draw_model` / `draw_player` | done |
+| `StudioDrawModel` (renderfx 17: corpse / ghost) | `0x10031ae0` | `Renderer::draw_model`, `draw_corpse`, `draw_ghost` | done |
+| `StudioDrawPlayer` | `0x10032540` | `Renderer::draw_player` | done (SDK flow, `renderamt = 255`, in-eye hide) |
+| TS `StudioDrawDeadPlayer` / `StudioDrawGhostPlayer` | `0x10033540` / `0x100337f0` | `draw_dead_player` / `draw_ghost_player` | done |
+| `StudioSetupBones` (split at `Bip01 Dorso`/`Bip01 Spine`, torso yaw fix) | `0x10031080` | `Renderer::setup_bones`, `split_torso` | done, unit-tested |
+| `StudioEstimateGait` (2-D, x0.75 below 180 u/s) / `StudioProcessGait` (gaitframe x framerate) | `0x10031fa0` / `0x10032250` | `estimate_gait` / `process_gait`, `turn_torso` | done |
+| `StudioSetUpTransform`, `EstimateInterpolant`, `EstimateFrame`, `FxTransform`, `GetAnim`, `PlayerBlend` | `0x10030970`, `0x10030c40`, `0x10030f80`, `0x10030e60`, `0x100307e0`, `0x10030890` | `Renderer::*` | done (SDK) |
+| `StudioCalcRotations`, `CalcBoneAdj`, `CalcBoneQuaterion`, `CalcBonePosition`, `SlerpBones` | `0x10030ca0`, `0x10030140`, `0x10030380`, `0x10030550`, `0x100306a0` | `sample_pose`, `bone_adj`, `model::Anim`, `slerp_bones` | done, unit-tested |
+| `StudioSaveBones` / `StudioMergeBones` / `StudioCalcAttachments` | `0x100317b0` / `0x10031890` / `0x10034560` | `save_bones` / `merge_bones` / `calc_attachments` | done |
+| `StudioRenderModel` (glow shell) / `RenderFinal_Hardware` / `_Software` | `0x100345f0` / `0x10034750` / `0x10034690` | `render` / `render_final` | done |
+| `AngleQuaternion`, `QuaternionSlerp`, `QuaternionMatrix`, `MatrixAngles`, TS `QuaternionAngles`, `AngleMatrix`, `ConcatTransforms`, `VectorTransform` | `0x1002fbd0`, `0x1002fc70`, `0x1002fdf0`, `0x1002fef0`, `0x1002ffe0`, `0x1002f920`, `0x1002fa90`, `0x1002fa30` | `studio::math` | done, unit-tested |
+| `MotionBlur_Reset` / `_Add` / `_Update` / ghost callback | `0x10029660` / `0x10029680` / `0x10029780` / `0x10029710` | `effects::mblur` (`reset`, `add`, `due` + `spawn_ghost`, `ghost_think`) | done, unit-tested |
 | `HUD_TempEntUpdate` | `0x1001bd00`, `0x100569a0` | `effects::tempents::update` | done (SDK loop, ts-scaled, TS shell sounds) |
 | `HUD_StudioEvent` | `0x10044b50` | `effects::studio_event` | done (5002, 5004) |
 | `DrawLocalLaser` / `DrawOtherLasers` / flashlights | `0x1003bb00` / `0x1003d600` / `0x1003b250` / `0x1003b750` | `effects::laser` | done (untested: needs server state) |
 | `DrawPlayerShadows` | `0x10055760` | `laser::draw_shadows` | done, verified in game |
 | `FX_ApplyCvar` / `FX_AdaptQuality` | `0x10057d50` / `0x10057a70` | `effects::apply_quality` | done |
-| view-model framerate x time scale | `StudioDrawModel` `0x10031ae0` | `view::view_model_framerate` (writes `curstate.framerate`) | written, untested (no view model in this branch) |
+| view-model framerate x time scale | `StudioDrawModel` `0x10031ae0` | `view::view_model_framerate` (writes `curstate.framerate` once per frame in `V_CalcRefdef`, not in the renderer) | written, untested |
 | `HUD_TxferLocalOverrides` | `0x1001b900` | `prediction::txfer_local_overrides` | done |
 | `HUD_ProcessPlayerState` | `0x1001b950` | `prediction::process_player_state` | done |
 | `HUD_TxferPredictionData` | `0x1001bb00` | `prediction::txfer_prediction_data` | done |
@@ -135,6 +157,32 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   behind with a world trace).
 * `HUD_AddEntity`'s in-eye hiding uses spectator mode 4 (SDK `OBS_IN_EYE`); the doc notes TS may use 5.
 
+* **Studio renderer safety checks.** The renderer parses the model from the bytes the engine
+  loaded (`studio::model`, bounds-checked), so a corrupt model draws a bind pose instead of reading
+  out of bounds. Where TS would index past a table it clamps or skips: gait sequences out of range
+  are treated as 0 (TS dropped the SDK's check in `StudioProcessGait`), more than 4 attachments
+  are ignored (TS prints "Too many attachments" and calls `exit(-1)`), a bone whose parent isn't
+  an earlier bone is treated as a root, `PlayerInfo` is only asked for valid player numbers, and a
+  missing sequence-group file reads as the bind pose. `player_info_t` is copied in and written
+  back where TS keeps the engine pointer (same result; the engine doesn't touch it mid-draw), and
+  `StudioDrawPlayer`'s engine state is a copy with `renderamt`/`gaitsequence` written back.
+* **View-model framerate.** TS latches the slowed view-model framerate inside `StudioDrawModel`;
+  the port keeps doing it in `view` (once per frame, before the draw). Same value.
+* **Torso yaw fix (decomp correction).** R§2.3 reads the asm as `a3[2] = a3[0] + d`. The x87
+  stores are to `a3[0]`: `a3[0] += a1[2] - a2[2]` (Ghidra's C agrees). That turns the split bone
+  about its own x axis (the Biped spine's long axis) by the yaw between the upper-body and gait
+  roots, which is the intended correction, so no typo is involved.
+* **Gait x0.75.** The condition R§2.3 marks as inferred is, from the asm, "estimated 2-D speed
+  below 180 units/s" (the value left on the x87 stack is `movement / dt`). TS always uses gait
+  estimation (`m_fGaitEstimation = 1`), so the velocity variant (where the compared value is the
+  movement itself) is ported but unused.
+* **Ghost torso.** `StudioDrawGhostPlayer` writes the stored gait yaw into the ghost entity's
+  angles, so from the second frame on the torso controllers read 0 offset: the twist only shows on
+  the ghost's first frame. That's TS's behaviour, kept.
+* **Spectator hide.** `StudioDrawPlayer` hides the player spectated with `g_iUser1 == 5` as TS
+  does; the port's in-eye mode is 4, which `HUD_AddEntity` already handles (R§2 open question).
+* **Motion blur.** `MotionBlur_Reset` has no caller in the TS image; the port resets the trails on
+  `HUD_VidInit`. `TSMBlur` for entity index 32 is ignored (TS's 32-entry table would overflow).
 * **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
   the evicted shell's `die`. The port tags each shell with a sequence number in
   `curstate.iuser2` (`effects::track_shell`), and the temp-entity loop (`client-dll/src/tempents.rs`)
@@ -143,10 +191,6 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 
 ## Missing pieces
 
-* **Motion-blur ghosts** (`MotionBlur_*`, `TSMBlur`): need the TS studio renderer (renderfx 17 with
-  `rendercolor.b = 1`). `TSMBlur` is decoded and recorded only.
-* **TS studio renderer** (split bone `Bip01 Dorso`, gait x framerate, corpse/ghost draws):
-  `HUD_GetStudioModelInterface` still returns 0.
 * **Weapon prediction** is a stopgap (below). Shotgun reload phases, kung fu, grenades, melee
   blocking and akimbo linked shots are not predicted (the server plays those; the shooter only
   sees them once prediction moves to `shared::weapons`).
@@ -214,7 +258,7 @@ hook for a name (`hud::init` runs first), so if the HUD hooks one of these it mu
 
 Registered by the client for scripted tests (no server support needed): `ts_test_fire <id> [att]
 [seed]`, `ts_test_event <name> <i1> <i2> <f1>`, `ts_test_fx slowmo <s>|bullettime <0|1>|blood|glass|
-explosion|sparks|wind <speed>|stats`, `ts_test_fade r g b a dur hold`, `ts_test_kick <kick>
+explosion|sparks|wind <speed>|mblur [ent] [level]|stats`, `ts_test_fade r g b a dur hold`, `ts_test_kick <kick>
 <class>`, `ts_test_view`, `ts_test_angles <pitch> <yaw>`.
 
 ## Test results
@@ -236,6 +280,14 @@ explosion|sparks|wind <speed>|stats`, `ts_test_fade r g b a dur hold`, `ts_test_
     emitter boxes and falls (seen in first and third person). Ground collision is inferred from the
     live-particle count only, and the `gl_fog 1` screenshot shows at most a faint haze (TS's fog
     starts at 2048 units on this map), so fog is not confirmed.
+* **Studio renderer and ghosts** (issues #2, #3): unit-tested only (model parsing and the RLE
+  animation walk, the maths, the torso split, pose sampling with controllers, ghost trail
+  scheduling and fade). Not yet run in an engine: check with `cargo xtask play` / `client` that
+  every model still draws (world models, view model, players with `p_` weapons, items), that a
+  running player aims the torso while the legs follow the movement, corpses, and the ghosts behind
+  players during slow motion. Ghosts without a server: `cl_motionblur 2`, third person,
+  `ts_test_fx slowmo 0.3`, then `ts_test_fx mblur` (the local player: 10 ghosts at `cl_fx 1`, 15 at `cl_fx 2`); the
+  server sends `TSMBlur` on power-up use, stunts and kills.
 * **Not tested in engine:** anything that needs the server to send TS state or events (this
   branch's server doesn't yet): other players' fire events, lasers/flashlights, `PTakeDam` from real
   hits, wind from `ts_wind`, local prediction firing (the server doesn't set `m_iId` 16 /

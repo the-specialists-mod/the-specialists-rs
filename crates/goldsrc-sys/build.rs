@@ -26,6 +26,12 @@ fn main() {
         .header_contents("render_ext.h", "#include \"r_efx.h\"\n#include \"event_api.h\"\n#include \"event_flags.h\"\n#include \"triangleapi.h\"\n#include \"screenfade.h\"\n#include \"studio_event.h\"\n#include \"shake.h\"\n")
         .allowlist_type("(event_args_t|event_api_t|efx_api_t|triangleapi_t|TEMPENTITY|screenfade_t|dlight_t|pmtrace_t|physent_t|mstudioevent_t|TRICULLSTYLE)")
         .allowlist_var("(FTENT_|TRI_|FEV_|FFADE_|TENTPRIORITY_).*")
+        // studio renderer: the engine studio API and the types it passes (the model data itself is
+        // parsed from bytes by ts-client, so studio.h isn't needed)
+        .header_contents("studio_ext.h", "#include \"com_model.h\"\n#include \"r_studioint.h\"\n")
+        .allowlist_type("(engine_studio_api_t|r_studio_interface_t|player_info_t|alight_t|cache_user_t)")
+        .allowlist_var("(STUDIO_INTERFACE_VERSION|STUDIO_RENDER|STUDIO_EVENTS)")
+        .opaque_type("glpoly2_s") // a flexible array member; only reached through pointers
         .rustified_enum("(ALERT_TYPE|PRINT_TYPE)")
         .derive_default(true)
         .generate()

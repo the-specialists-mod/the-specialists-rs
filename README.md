@@ -21,8 +21,8 @@ on Linux and Windows.
 | Game rules | DM, team DM, LMS, The One. Spawn selection, scoring and awards, power-ups (slow motion, slow pause, double fire rate, infinite clip, kung fu, health, armour, super jump), slow-motion propagation, chat, MOTD, the TS cvars, bots. |
 | Map entities | 72 stock classnames with TS's changes (respawning breakables and doors, …) plus the TS entities. All 97 shipped maps load, and 88.8 % of map entities have a class. |
 | Client HUD and UI | Every server message hooked. TS HUD in draw order, the loadout/buy menu, scoreboard, team select, MOTD, `ShowMenu`. TS input with `+alt1`/`+alt2`, the anti-script gate, and mouse look for FWGS and Steam GoldSrc. |
-| Client view and effects | TS view (bob, client-side recoil, third person, slow-mo tint and fades), all 11 weapon events, the TS particle system and map emitters, lasers, flashlights, shadows. |
-| Not yet | The TS split-bone studio renderer and motion-blur ghosts, map votes, HLTV director messages. Testing with a Steam GoldSrc client and real input (see [validation](docs/validation.md#32-not-validated)). |
+| Client view and effects | TS view (bob, client-side recoil, third person, slow-mo tint and fades), all 11 weapon events, the TS particle system and map emitters, lasers, flashlights, shadows, the TS studio renderer (split torso/legs bones) and motion-blur ghosts. |
+| Not yet | Map votes, HLTV director messages. Testing with a Steam GoldSrc client and real input (see [validation](docs/validation.md#32-not-validated)). |
 
 Per-subsystem details, decomp mappings and gaps: [docs/implementation/](docs/implementation/).
 

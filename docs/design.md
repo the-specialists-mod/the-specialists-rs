@@ -179,11 +179,13 @@ still load.
 | `view` | `V_CalcRefdef`: bob, punch, client-side recoil through `cl_viewangles`, slow-motion tint and `TSFade` | rendering |
 | `events` | `fire.sc`, `empty.sc`, … handlers: sounds, muzzle flash, shells, impacts, decals | rendering |
 | `prediction` | `HUD_PostRunCmd` weapon prediction, Txfer callbacks carrying `iuser4`/`fuser1`/`vuser*` | rendering |
-| `effects` | temp entities, TS particle system, BSP-lump map emitters, laser sights | rendering |
+| `effects` | temp entities, TS particle system, BSP-lump map emitters, laser sights, motion-blur ghosts | rendering |
+| `studio` | the TS studio model renderer (`HUD_GetStudioModelInterface`): split torso/legs bones, gait, corpses, ghosts | rendering |
 | `state` | values both sides read: time scale, health, dead, weapon, fov | shared |
 
-`HUD_GetStudioModelInterface` returns 0 (engine renderer) until the TS split-bone renderer is
-ported.
+`HUD_GetStudioModelInterface` installs the TS studio renderer (`studio`), so every studio model
+is drawn by the client: the SDK `CStudioModelRenderer` with TS's split torso/legs bones, gait and
+renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::studio`.
 
 ## 7. Shared crate
 

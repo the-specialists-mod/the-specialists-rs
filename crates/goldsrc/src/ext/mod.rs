@@ -9,4 +9,6 @@ pub mod movement;
 pub mod render;
 #[cfg(feature = "server")]
 pub mod rules;
+#[cfg(feature = "client")]
+pub mod studio;
 pub mod weapons;
