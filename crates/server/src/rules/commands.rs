@@ -61,7 +61,9 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
             p.ts.init_hud = true;
         }
         "lasclr" => {}
-        "menuselect" | "vban" | "vmodenable" => {}
+        // CHalfLifeMultiplay::ClientCommand (0xceee8): the voice manager first, then menuselect.
+        "vban" | "vmodenable" if super::voice::client_command(cx.edict, cmd, args) => {}
+        "menuselect" => {}
         c if c.starts_with("lasclr_") => {
             let n: i32 = c["lasclr_".len()..].parse().unwrap_or(0);
             let idx = cx.index();

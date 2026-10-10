@@ -11,6 +11,7 @@
 //! * `powerup`: held/active power-ups, slow-motion flow and easing.
 //! * `frame`: `StartFrame` (`CHalfLifeMultiplay::Think` + `CTSGameRules::Think`).
 //! * `teams`: teamplay assignment and messages.
+//! * `voice`: `CVoiceGameMgr` (who hears whom, `vban`, `VoiceMask`/`ReqState`).
 
 pub mod commands;
 pub mod cvars;
@@ -22,6 +23,7 @@ pub mod scoring;
 pub mod spawnpoint;
 pub mod state;
 pub mod teams;
+pub mod voice;
 
 use crate::commands::Args;
 use crate::player::Player;
@@ -118,6 +120,7 @@ pub struct PlayerRules {
 
 pub fn game_init() {
     cvars::register();
+    voice::register_messages();
     commands::register_server_commands();
 }
 
@@ -129,6 +132,7 @@ pub fn precache() {
     e.server_execute();
     state::with(|g| g.install());
     crate::entities::ts::precache();
+    voice::precache();
     for s in [c"items/gunpickup2.wav", c"items/9mmclip1.wav", c"items/weapondrop1.wav", c"weapons/items.wav", c"common/bodysplat.wav"] {
         e.precache_sound(s);
     }

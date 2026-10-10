@@ -92,7 +92,7 @@ impl Button {
     }
 
     /// Down at any point since the last `CL_ButtonBits` reset.
-    fn held(&self) -> bool {
+    pub(crate) fn held(&self) -> bool {
         self.get().state & 3 != 0
     }
 
@@ -654,6 +654,10 @@ pub fn deactivate_mouse() {
 /// clicks go to the open menu while it shows the cursor (TS routes them to `CTSBuyMenu`).
 pub fn mouse_event(mstate: i32) {
     let old = mouse(|m| std::mem::replace(&mut m.old_buttons, mstate));
+    // A press on the scoreboard enters voice squelch mode instead of firing.
+    if mstate & !old != 0 && crate::menus::scoreboard_press() {
+        return;
+    }
     if crate::menus::wants_cursor() {
         let (x, y) = cursor();
         crate::menus::mouse_buttons(mstate, old, x, y);
@@ -735,9 +739,17 @@ pub fn init() {
         #[cfg(windows)]
         goldsrc::platform::win::startup(&mut m.win);
     });
+    crate::joystick::init(fwgs);
     // TS removed +mlook: mouse look is always on. Report it to the engine through in_mlook.
     IN_MLOOK.get().state = 1;
     engine().print(if fwgs { "[ts] input: FWGS mouse (IN_ClientLookEvent)\n" } else { "[ts] input: client-side mouse (GoldSrc)\n" });
+}
+
+/// `IN_Commands` (10027ca0), from `HUD_UpdateClientData`: joystick buttons (Steam GoldSrc only).
+pub fn commands() {
+    if !is_fwgs() {
+        crate::joystick::commands();
+    }
 }
 
 /// `HUD_Frame`: TS clears the anti-script gate here (after the frame's commands ran), and the HUD
@@ -864,10 +876,13 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
         cmd.forwardmove += mv[0] * c.cl_forwardspeed.value();
         cmd.sidemove += mv[1] * c.cl_sidespeed.value();
 
-        // IN_Move: mouse look.
+        // IN_Move: mouse look, then the joystick (Steam GoldSrc; FWGS sent it above).
         let raw = take_mouse_delta();
         if !hud::intermission() {
             apply_mouse(raw, &mut view);
+        }
+        if !is_fwgs() {
+            crate::joystick::joy_move(frametime, &mut view, &mut cmd.forwardmove, &mut cmd.sidemove);
         }
     } else {
         let _ = take_mouse_delta();
@@ -884,7 +899,10 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
         IN_ATK2.release();
     }
     bits &= !consumed;
-    // Voice squelch mode would clear IN_ATTACK here; there is no squelch UI in the port.
+    // The scoreboard's squelch mode takes the mouse: no +attack (`CL_CreateMove` 10026570).
+    if crate::voice::in_squelch_mode() {
+        bits &= !IN_ATTACK;
+    }
     cmd.buttons = bits as u16;
 
     // Frozen angles while dead (TS: g_iAlive == 0 keeps the last live angles).

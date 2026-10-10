@@ -17,6 +17,8 @@ pub fn think() {
     if !state::with(|g| g.installed) {
         return;
     }
+    // CHalfLifeMultiplay::Think starts with CVoiceGameMgr::Update, even during intermission.
+    super::voice::update(engine().globals().frametime as f64);
     let now = engine().time();
     if multiplay_think(now) {
         return;

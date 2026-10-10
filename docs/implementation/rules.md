@@ -20,6 +20,7 @@ are Ghidra addresses.
 | `rules/teams.rs` | teamplay assignment, `ChangePlayerTeam`, TeamInfo/TeamNames/TeamScore. |
 | `rules/commands.rs` | client commands owned by the rules, `Host_Say`, server commands. |
 | `rules/msg.rs` | `Wire` adapter over `MsgWriter`; `TSHudMessageOne/All`, `ClientPrint`, `SayText`, log. |
+| `rules/voice.rs` | `CVoiceGameMgr` + `CMultiplayGameMgrHelper`: who hears whom, `vban`/`VModEnable`, `VoiceMask`/`ReqState`. |
 | `player/damage.rs` | `TraceAttack` + `TakeDamage`. |
 | `player/hud.rs` | `UpdateClientData` HUD shadow copies. |
 | `entities/ts/*` | TS map entities (§4). |
@@ -71,6 +72,8 @@ are Ghidra addresses.
 | `CBasePlayer::UpdateClientData` 0x91d00 | `player::hud::update` | every 0.1 s on change: TSHealth, TSArmor, TSState, TSCash, TSSpace, PwUp, TSSlowMo, TSBTime, TSPAward (ALL). |
 | `Host_Say` 0xad02c | `commands::host_say` / `format_say` | `\x02name: `, `(TEAM)`, `%a`/`%h`, 0.5 s flood gate, LMS dead chat rule, `timeleft`, log. Unit tested. |
 | `cmd_globalslow` 0xc5580, `cmd_restartround` 0xc5748, `cmd_weaponrestriction` 0xc58a0 | `commands::cmd_*` | clamps unit tested. |
+| `CVoiceGameMgr::Init` 0xf7438, `Update` 0xf750c, `ClientConnected` 0xf7548 (via `CHalfLifeMultiplay::ClientConnected` 0xcf59c), `ClientCommand` 0xf770c (via `CHalfLifeMultiplay::ClientCommand` 0xceee8), `UpdateMasks` 0xf79bc | `voice::{register_messages, precache, update, client_connected, client_command, update_masks}` | Every 0.3 s (from the start of the Multiplay `Think`, intermission included) and after each `vban`/`VModEnable`: `ReqState` to clients that haven't answered `VModEnable`; for clients with voice enabled, the audible mask = players the rules allow (`sv_alltalk` ignores the rules); `VoiceMask` (`L audible, L banned`) when either mask changed; then `Voice_SetClientListening(client, other, audible && !banned)` for every pair. Steam HLDS starts every stream closed, so without this nobody hears anybody there. `vban <hex>` takes one mask (32 players); `VModEnable <n>`. |
+| `CMultiplayGameMgrHelper::CanPlayerHearPlayer` 0xd0ed0 | `voice::can_player_hear_player` | teamplay: teammates only; round modes 2/3 or LMS: a talker who is dead for the rest of the round (`respawn_at` −1) is heard only by listeners in the same state. |
 | `AddToFullPack` 0xaf180 | `net::add_to_full_pack` | `iuser4` for all entities, `playerclass` for non-players, glow shell on the viewer's own `WorldGun`/`knife`, `FL_SPECTATOR` culling, EFLAG_SLERP for `FL_FLY`. |
 
 ## 3. Cvars
@@ -97,7 +100,7 @@ Server commands: `globalslow`, `restartround`, `weaponrestriction`, `addbot`/`ad
 
 Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `powerup <n>` (cheat),
 `cashala` (cheat), `fov`, `changeteam` (VGUIMenu 2), `jointeam <n>`, `motd`, `fullupdate`,
-`lasclr_<n>` (PlInfo), `menuselect`, `vban`, `VModEnable`, `cutwire_<n>` (no-op).
+`lasclr_<n>` (PlInfo), `menuselect`, `vban`, `VModEnable` (voice manager, §2), `cutwire_<n>` (no-op).
 
 ## 4. Map entities (`entities/ts`)
 
@@ -152,6 +155,8 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | TSPSys | ALL | `B 3, L seed, L yaw, Co strength` | ts_wind |
 | VGUIMenu | ONE | `B 2` | changeteam |
 | PlInfo | ALL | `B ent, B 0, B colour` | lasclr_N |
+| VoiceMask | ONE | `L audible, L banned` | voice `UpdateMasks` on change |
+| ReqState | ONE | – | voice `UpdateMasks` until the client answers `VModEnable` |
 
 ## 6. Deviations from TS 3.0
 
@@ -170,6 +175,12 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * Round modes 2/3, objectives, buy zones, cash-based buying stay off (dead in 3.0); `TeamWin`
   exists only as the score/win giver path.
 * `jointeam` (voluntary, not The One) puts the player in observer with a 5 s respawn.
+* `VoiceMask`/`ReqState` are registered once in `GameInit` after the TS table (TS registers them
+  in the `CHalfLifeMultiplay` constructor, before `LinkUserMessages`), so their message numbers
+  differ; clients look messages up by name, so this doesn't affect compatibility.
+* When a `vban`/`VModEnable` arrives, the sender's own `Player` is checked out for the command,
+  so the immediate mask update treats that player as in-round for the LMS dead-talk rule; the
+  next 0.3 s update corrects it.
 
 ## 7. Missing / partial
 
