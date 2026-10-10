@@ -28,6 +28,7 @@ pub struct Sprites {
     pub dot: HSPRITE,
     pub flash: HSPRITE,
     pub shadow: HSPRITE,
+    pub scope: HSPRITE,
 }
 
 impl Sprites {
@@ -38,11 +39,12 @@ impl Sprites {
             dot: r::spr_load("sprites/laserdot.spr"),
             flash: r::spr_load("sprites/flash.spr"),
             shadow: r::spr_load("sprites/ombra.spr"),
+            scope: r::spr_load(super::scope::SPRITE),
         }
     }
 }
 
-fn set_sprite(h: HSPRITE, frame: i32) -> bool {
+pub(super) fn set_sprite(h: HSPRITE, frame: i32) -> bool {
     if h == 0 {
         return false;
     }

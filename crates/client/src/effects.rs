@@ -10,6 +10,7 @@ pub mod emitters;
 pub mod fx;
 mod laser;
 pub mod psys;
+mod scope;
 
 use crate::events::ClientBullet;
 use crate::{state, view};
@@ -485,6 +486,7 @@ pub fn draw_transparent() {
     let now = now();
     laser::draw_local(&sprites, &cam, now, laser_mode, color);
     laser::draw_others(&sprites, &cam, &visible);
+    let scope_sprite = sprites.scope;
     with(|fx| fx.sprites = Some(sprites));
 
     // Players for particle reaction.
@@ -509,8 +511,11 @@ pub fn draw_transparent() {
             fx.map.spawn_one(&mut fx.psys, tmpl, pos, t);
         }
         fx.psys.draw(t, dt, &cam);
-        fx.visible = [false; 33];
     });
+    if cam_hardware() {
+        scope::draw(scope_sprite, &cam, third);
+    }
+    with(|fx| fx.visible = [false; 33]);
     fog_end();
 }
 

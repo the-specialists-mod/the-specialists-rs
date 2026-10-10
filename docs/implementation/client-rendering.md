@@ -129,8 +129,13 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 * `weapons/sshell.wav` (TS shotgun-shell bounce) isn't shipped with TS 3.0; `sshell1/2.wav` are used.
 * Fog goes through TriAPI `Fog` (FWGS) instead of raw OpenGL; colours are converted from 0..1 to
   0..255.
-* Shadows/laser beams are TriAPI quads (TS: the same with TriAPI, plus a direct-GL scope overlay).
-  The scope overlay (`DrawScopeOverlay`) is not drawn here (HUD package or later).
+* Shadows, laser beams and the scope overlay are TriAPI quads, as in TS. The scope overlay
+  (`DrawScopeOverlay` `0x10054510`, `effects/scope.rs`) is TriAPI too, not direct GL: after the
+  particles, in first person, alive and not observing, with the eased FOV below 40 and the hardware
+  renderer, `sprites/quarterscope.spr` frame 0 is drawn four times (render mode TransTexture, no
+  culling, white) as mirrored quads of half-size `max(fov·0.1, 1)·0.5` around `v_origin +
+  v_forward·10`. The decomp doc's "frame 2" is the sprite-cache render-mode argument; the call
+  passes frame 0 (`0x1005457e`) and the sprite has one frame.
 * The spectator refdef is a simplified version (in-eye: target origin + view, chase: 128 units
   behind with a world trace).
 * `HUD_AddEntity`'s in-eye hiding uses spectator mode 4 (SDK `OBS_IN_EYE`); the doc notes TS may use 5.
@@ -151,7 +156,7 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   blocking and akimbo linked shots are not predicted (the server plays those; the shooter only
   sees them once prediction moves to `shared::weapons`).
 * Whizz volume formula approximated; particle `termvelocity` unused (TS doesn't read it either).
-* Scope overlay, player translucency, view-angle smoothing, idle sway (see deviations).
+* Player translucency, view-angle smoothing, idle sway (see deviations).
 
 ## Integration notes
 
