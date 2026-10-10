@@ -589,15 +589,41 @@ fn calc_view_roll(w: &mut View, p: &mut ref_params_t, iuser4: i32) {
     p.viewangles[2] += w.roll * if p.onground != 0 { 1.0 } else { 0.25 } + strafe;
 }
 
+/// Which view `V_CalcRefdef` computes this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefdefPath {
+    Intermission,
+    Spectator,
+    Normal,
+    /// Paused outside intermission and spectating: no view is computed, so the engine keeps last
+    /// frame's `vieworg`/`viewangles` and the bob, kick, shake and stair state don't advance.
+    None,
+}
+
+/// The dispatch at the top of `V_CalcRefdef` (`0x10069b90`): `V_CalcNormalRefdef` only runs while
+/// `pparams->paused == 0`; the intermission and spectator views run regardless.
+fn refdef_path(intermission: bool, spectating: bool, paused: bool) -> RefdefPath {
+    if intermission {
+        RefdefPath::Intermission
+    } else if spectating {
+        RefdefPath::Spectator
+    } else if paused {
+        RefdefPath::None
+    } else {
+        RefdefPath::Normal
+    }
+}
+
 /// `V_CalcRefdef` (`0x10069b90`).
 pub fn calc_refdef(p: &mut ref_params_t) {
-    if p.intermission != 0 {
-        calc_intermission(p);
-    } else if p.spectator != 0 || state::with(|s| s.spec_mode) != 0 {
-        calc_spectator(p);
-    } else {
-        calc_normal(p);
+    let spectating = p.spectator != 0 || state::with(|s| s.spec_mode) != 0;
+    match refdef_path(p.intermission != 0, spectating, p.paused != 0) {
+        RefdefPath::Intermission => calc_intermission(p),
+        RefdefPath::Spectator => calc_spectator(p),
+        RefdefPath::Normal => calc_normal(p),
+        RefdefPath::None => {}
     }
+    // The screen fade and fog are written every frame, paused or not.
     write_screen_fade(p.time);
     effects::fog_begin();
     p.nextView = 0;
@@ -1129,6 +1155,14 @@ mod tests {
         blocked.blocked = true;
         d.update(&blocked, &mut pitch);
         assert_eq!(d.pitchvel, 0.0);
+    }
+
+    #[test]
+    fn refdef_dispatch() {
+        assert_eq!(refdef_path(false, false, false), RefdefPath::Normal);
+        assert_eq!(refdef_path(false, false, true), RefdefPath::None, "paused: no normal view");
+        assert_eq!(refdef_path(false, true, true), RefdefPath::Spectator, "spectating ignores pause");
+        assert_eq!(refdef_path(true, true, true), RefdefPath::Intermission, "intermission first");
     }
 
     #[test]

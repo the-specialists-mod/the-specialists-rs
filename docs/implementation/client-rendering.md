@@ -41,7 +41,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 |---|---|---|---|
 | `InterpolateSlowMotion` | `0x10055ae0` | `view::ease_time_scale` (called in `view::frame`) | done, unit-tested |
 | `CHud::Think` FOV easing | `0x10049760` | `view::ease_fov` | done, unit-tested |
-| `V_CalcRefdef` | `0x10069b90` | `view::calc_refdef` | done |
+| `V_CalcRefdef` | `0x10069b90` | `view::calc_refdef` (dispatch in `view::refdef_path`) | done, dispatch unit-tested; while paused (outside intermission and spectating) no view is computed, as in TS, so the engine keeps last frame's view and the bob, kick, shake and stair state hold |
 | `V_CalcNormalRefdef` | `0x10067890` | `view::calc_normal` | done (see deviations) |
 | `V_CalcSpectatorRefdef` | `0x10068f70` | `view::calc_spectator` → `spectator::calc_refdef` | done: chase/roaming use `simorg` + mouse angles, in-eye (mode 5) `V_GetInEyePos` `0x10068e20` and the target's gun as view model, `cl_vsmoothing` rings; no HLTV inset view |
 | `V_CalcIntermissionRefdef` | `0x100676e0` | `view::calc_intermission` | done |
