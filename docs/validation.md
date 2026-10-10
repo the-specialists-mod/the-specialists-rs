@@ -171,9 +171,10 @@ win32 under Wine (listen server, `ts_arena`).
 
 ### 3.2 Not validated
 
-* A Steam GoldSrc **client** beyond the scripted HL25 Linux run in §5: the pre-anniversary
-  client (8684), the HL25 Windows client, a real keyboard and mouse on either, and joining a
-  dedicated server from it. Steam dedicated servers (HLDS 8684 via ReHLDS, and HL25) were tested.
+* A Steam GoldSrc **client** beyond the scripted HL25 Linux runs in §5 (listen server, and
+  joining HL25 and ReHLDS Linux dedicated servers): the pre-anniversary client (8684), the HL25
+  Windows client, a real keyboard and mouse on either, the in-game menu opened with a real Esc
+  key, and muting a second human in the GameUI player list.
 * Real keyboard and mouse (all client runs are scripted), including the Steam mouse paths in
   `input.rs`.
 * Joysticks (Steam GoldSrc only: WinMM on Windows, SDL2 game controller on Linux; FWGS handles
@@ -219,6 +220,12 @@ the HUD), and the Windows client library loaded in FWGS win32.
 | Quota kicks never happen in a scripted test | `pfnServerCommand("kick ...")` is appended to the console buffer behind the rest of the running `wait` script | The listen script ends right after `ts_bot_quota 0`; xtask stops the game 10 s later |
 | `SteamAPI_Init() failed` in HLDS logs | Normal for dedicated servers (they use the game-server API) | none |
 | Steam HL25 client: the game runs, but the world is black and the "Loading… Parsing game info" dialog never goes away (issue #62) | A client without `IClientVGUI` is treated as VGUI1, and the engine then only draws the world when the client's VGUI1 viewport calls `VGui_ViewportPaintBackground` (TS's does). The port has no VGUI1 viewport, so `V_CalcRefdef` and `HUD_Redraw` were never called and the screen kept the dialog's last frame | `client-dll` exports `ClientFactory`/`CreateInterface` and an `IClientVGUI` with `UseVGUI1() == false` (`implementation/client-hud.md` §7) |
+| Steam HL25 client: `ts_tp`/`ts_face` (and spawn angles) ignored, so scripted shots miss; `ts_test_view` shows the yaw stuck | While a menu owns the cursor (the MOTD stays open in scripts) `CL_CreateMove` held the view angles, overwriting the server's `svc_setangle`. Not seen on FWGS | Only the player's own turning is held; angles the engine changed since the last `CL_CreateMove` replace the held ones (`input::menu_hold`) |
+| Steam client on a dedicated server: after `changelevel` the player stays an observer, clicks do nothing | The 0.2 s click timer (`respawn` on `+attack`) is in client time, which restarts with the map, so the old map's timer blocked every click | `spectator::vid_init` zeroes it, as TS's `CHudSpectator::VidInit` does |
+| Third person after every death and respawn | Entering observer mode saved the death cam's third person and leaving restored it | Leaving re-applies `cl_thirdperson` (TS `Spectator` handler `10065250`) |
+| `rcon changelevel` from the Steam client changes the map twice; the client then stalls on "Retrying" (`Skipping reconnect ..., no pvPrivateData` in the server log) | The HL25 client sometimes sends an `rcon` twice (seen for `ts_bot_quota` and `changelevel`) | Drive the dedicated server's console through its stdin (§5), not `rcon` |
+| `addbot` on `maxplayers 1` prints `[ts] bots: no free client slot` every 0.5 s | `addbot` raised the quota before trying, and the quota retried with a message each time | The quota is only raised when the bot was added; a failed add is reported once per streak |
+| Steam client can't join an FWGS dedicated server (`Retrying 127.0.0.1:...`, nothing in the server log) | FWGS servers speak protocol 49 only; the Steam client is protocol 48 | none (engine limitation) |
 | `PF_MessageEnd_I: Unknown User Msg 114` ×3 on a Steam listen server (`developer 1`) | Message 114 is `SrvSett`. The first `CTSGameRules::Think` broadcasts keys 0–2 (`realbullet`, `usecash`, `ammocount`) before any client has received the user-message table, and the engine drops a message it hasn't registered with a client yet | Harmless: each client gets all four `SrvSett` values in `InitHUD` |
 
 ## 5. Steam Half-Life client (HL25, issue #23)
@@ -271,3 +278,83 @@ engine interface`, `System::AddModule: couldn't initialize module (null)`, `fail
 sequence file ts_dojo`, `runtime sample conversion` for three TS player sounds, and
 `Unknown User Msg 114` (§4). The `ts_dojo` sky is white because the map's `construct_*` sky
 images are white.
+
+### 5.1 Steam client on dedicated servers, `maxplayers 1`, GameUI
+
+**Dedicated server.** Start the server by hand with the dev aids on, and drive its console through
+stdin so the client script can send server commands at the right moment (`rcon` from the HL25
+client is sometimes sent twice, which turns one `changelevel` into two and strands the client):
+
+```sh
+cd ~/games/hlds25_linux          # or ~/games/hlds_linux (ReHLDS)
+cat > ts/t23_server.cfg <<'CFG'
+exec server.cfg
+sv_cheats 1
+ts_bot_quota 0
+ts_bot_stop 1
+developer 1
+CFG
+mkfifo /tmp/srv.fifo; sleep 100000 > /tmp/srv.fifo &   # keep a writer open
+LD_LIBRARY_PATH=$PWD ./hlds_linux -condebug -game ts -port 27115 +maxplayers 8 +sv_lan 1 \
+  +servercfgfile t23_server.cfg +map ts_dojo < /tmp/srv.fifo
+```
+
+The client cfg (`sv_cheats 1` and `ts_dev_scriptinput 1` on the client too, `fps_max 100`, the
+`w10`/`w100` aliases) runs `connect 127.0.0.1:27115` and marks server commands with
+`echo SRVCMD <command>`; a shell loop follows `qconsole.log` and writes each one to the fifo:
+
+```sh
+tail -F qconsole.log | grep --line-buffered SRVCMD | while read -r _ cmd; do echo "$cmd" > /tmp/srv.fifo; done
+```
+
+The script: wait 15 s, buy an AK47 with the `xtask play` key sequence and click to spawn
+(`ts_status`); `ts_bot_quota 1`; `say` and `say_team`; `+showscores`; `ts_tp 1 0 -1344 60 90 0`,
+`ts_tp 2 0 -1200 60 270 0`, then `+attack` with `ts_face 1 2` every 0.2 s for 5 s;
+`ts_hurt 1 500`, click through the death cam and click to respawn; `changelevel ts_awaken`, wait
+30 s, buy, click, `ts_status`, `+showscores`; `ts_test_view` after aiming and after each spawn.
+A second run with `mp_teamplay 1` (set, then `changelevel` so the rules reinstall) checks the team
+menu: auto-assigned team, `changeteam`, `slot2`.
+
+| Check | `hlds25-linux` (10211) | `rehlds-linux` | `fwgs` |
+|---|---|---|---|
+| Join, MOTD, buy menu, click to spawn | pass | pass | can't join: FWGS servers only speak protocol 49 (§4) |
+| Chat (`say`, `say_team`) in the client and the server log | pass | pass | – |
+| Scoreboard (names, scores, ping, voice column) | pass | pass | – |
+| Shoot a bot dead (kill notice, frag, cash) | pass, after the menu-angles fix | pass | – |
+| Death cam, respawn, first person again | pass, after the third-person fix | pass | – |
+| `changelevel` to `ts_awaken`: reconnect, buy menu ("Use Last Config"), spawn | pass, after the click-timer fix | pass | – |
+| Team menu, `changeteam` (`mp_teamplay 1`) | pass | not run | – |
+| Logs | expected noise only (below) | expected noise only | – |
+
+Client log noise, all also present with stock Half-Life or explained in §4: `DemoPlayer::Init`,
+`System::AddModule`, three `runtime sample conversion` warnings, and `.so: cannot open shared
+object file` at exit. Server log: `couldn't exec maps/<map>_load.cfg`, `Cvar_Set: variable
+room_type not found` and the Steam API lines. No voice errors (voice itself was not exercised).
+The HUD's additive sprites vanish over the white `ts_dojo` sky (expected).
+
+**`maxplayers 1` listen server** (`maxplayers 1`, `map ts_dojo`): join, buy, spawn, walk, fire,
+`ts_hurt` death and respawn all work; the rules are deathmatch, as in TS. `addbot` reports `no
+free client slot` once. The game does not pause while the game menu or the console is open:
+server time keeps running. Stock Half-Life (`-game valve`, `map crossfire`, `maxplayers 1`) with
+the menu opened the same way doesn't pause either, so this is the engine's behaviour.
+
+**GameUI player list.** Nothing on the console opens it, so the run used gdb (`DEBUGGER=gdb
+DEBUGGER_ARGS="-batch -x <script>" ./hl.sh ...`; `gameui.so` has symbols): a breakpoint on the
+client's `ts_test_view` command runs
+
+```
+set language c++
+call ((CBaseUI*)&g_BaseUI)->ActivateGameUI()
+call ((CTaskbar*)g_pTaskbar)->OnOpenPlayerListDialog()
+```
+
+The dialog lists the players, with an empty Properties column and **Mute in-game voice**
+disabled. `g_pGameClientExports` is NULL: `CGameUI::Initialize` asks the client factory for
+`GameClientExports001`, the port returns NULL (as TS 3.0 does, it has no such interface), and
+every use in `CPlayerListDialog` checks for NULL. So the GameUI list can't mute anyone; muting
+works through the scoreboard's squelch mode, as in TS. The TS menu background (`resource/
+BackgroundLayout.txt`) draws over the world while the menu is up.
+
+**Listen server again:** the `xtask play` script (`~/games/xash/ts/xtask_play.cfg`, `quit`
+appended) on the final build: kill, power-up (host 0.6, bot 0.35), death and respawn, and twelve
+bot-on-bot kills.
