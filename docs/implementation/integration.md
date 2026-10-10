@@ -75,5 +75,5 @@ switched off in 3.0, or an SDK constant kept for completeness:
   silenced, ×2/3 with double fire rate). Nothing pulls it back (`TSKickAlign` is unused), so the
   steep climb under sustained fire is TS behaviour. A side-by-side check of the feel is still
   open.
-* Not tested with real keyboard and mouse, or on a Steam GoldSrc client (only FWGS clients). See
-  `docs/validation.md`.
+* Not tested with real keyboard and mouse. The only Steam GoldSrc client run so far is the
+  scripted HL25 Linux listen server (`docs/validation.md` §5).

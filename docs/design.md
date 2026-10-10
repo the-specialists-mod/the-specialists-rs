@@ -175,7 +175,10 @@ still load.
 
 `client-dll/src/lib.rs` exports the individual entry points (`Initialize`, `HUD_*`, `IN_*`,
 `CL_CreateMove`, `V_CalcRefdef`, `KB_Find`, …), converts the engine's pointers, and delegates to
-`ts-client`. It also holds `tempents.rs`, the SDK temp-entity loop over the engine's linked list.
+`ts-client`. It also holds `tempents.rs`, the SDK temp-entity loop over the engine's linked list,
+and `vgui.rs`: the `ClientFactory`/`CreateInterface` exports and an `IClientVGUI` object
+(`UseVGUI1() == false`). Steam GoldSrc needs it to draw the world, because the port has no VGUI1
+viewport to call `VGui_ViewportPaintBackground` as TS's does (issue #62); FWGS ignores it.
 
 | Module | Contents | Package |
 |---|---|---|

@@ -397,5 +397,7 @@ explosion|sparks|wind <speed>|mblur [ent] [level]|stats`, `ts_test_fade r g b a 
   branch's server doesn't yet): other players' fire events, lasers/flashlights, `PTakeDam` from real
   hits, wind from `ts_wind`, local prediction firing (the server doesn't set `m_iId` 16 /
   `vuser*` yet), view-model muzzle flashes and shells (no view model is set by the server yet),
-  dead camera, spectator views. Steam GoldSrc has not been tried (the `cl_viewangles` write-back
-  for recoil is confirmed on FWGS only, R§6).
+  dead camera, spectator views. On Steam GoldSrc only the scripted HL25 Linux run has been done
+  (`docs/validation.md` §5): the view, view model and studio models draw once the client exposes
+  `IClientVGUI` (issue #62, `client-hud.md` §7); the `cl_viewangles` write-back for recoil is
+  confirmed on FWGS only (R§6).
