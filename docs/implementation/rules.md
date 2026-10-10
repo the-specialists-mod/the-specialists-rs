@@ -58,7 +58,7 @@ are Ghidra addresses.
 | `CTSGameRules::Think` 0x77204 | `frame::ts_think` | global slow expiry/apply, CheckDeads, auto power-ups, The One every 10 s, LMS restart/checks, SrvSett 0–2 on change. |
 | `CHalfLifeMultiplay::Think` 0xcf038 | `frame::multiplay_think` | `mp_timelimit`, `mp_fraglimit` (team frags; CTB team captures), `mp_fragsleft`/`mp_timeleft`, intermission (`SVC_INTERMISSION`), `mp_chattime` clamped 10..120, then `changelevel` to the next `mapcyclefile` map. |
 | `PutPowerUp` 0x9797c, `GetRandomPosition` 0x974f4, `GetRandomPowerup` 0x97894 | `frame::{put_powerup, random_position}`, `GameRules::random_powerup` | 20 s after success, 1 s after failure; only on maps without their own `ts_powerup` (spawner byte). |
-| `CheckDeads` 0x79c00, `RestartRound` 0x77920, `ResetRestartRound` | `frame::{check_deads, restart_round, reset_restart_round}` | LMS: last man +10 frags, "%d men standing!", "Round over", RoundTime; restart: round time, forced observer, respawn in 3 s, map items back. |
+| `CheckDeads` 0x79c00, `RestartRound` 0x77920, `ResetRestartRound` | `frame::{check_deads, restart_round, reset_restart_round}` | LMS: last man +10 frags, "%d men standing!", "Round over", RoundTime; restart: round time, refunds (`frame::round_refund`: owned weapons' cost + attachments, and `price × rounds / per_buy` for ammo types above one purchase, into `GiveCash`; unit tested), forced observer, respawn in 3 s, map items back. |
 | `SetGlobalSlowMotion` 0x7961c, `GlobalSlowMotion2` 0x79720 | `frame::{set_global_slow, global_slow2}` | every 0.5 s, players and grenade/knife/WorldGun. |
 | `PlayerAddPowerUp` 0x97bc8 | `powerup::add_powerup` | armour, kung fu, super jump (`mj`), health 150 + decay, grenade (`weapons::give_weapon(24)`), infinite clip (`weapons::multiply_clip`), stored types. |
 | `UsePowerUp` 0x95980, `TSUse` 0x956e0 | `powerup::use_powerup`, +use double tap in `pre_think`, `usepowerup` command | PwUpTime, TSMBlur 1/2; refused while slow-mo is blocked. |
@@ -176,7 +176,6 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 ## 7. Missing / partial
 
-* Refunds on LMS round restart (needs the weapons inventory API).
 * `ts_groundweapon` buyable/team checks (cash mode is off in 3.0).
 * Observer camera beyond the basics (in-eye, map modes are only mode numbers).
 * `loadweapons`/`saveweapons`, `CustomWP`.
@@ -188,7 +187,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 * `cargo test`: payload encoders (sizes match registration), `decide_gameplay`, team lists,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
-  clamps, weapon restriction, mapcycle, map vote parsing/tally, power-up bodies/respawn clamps, HL remaps.
+  clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, power-up bodies/respawn clamps, HL remaps.
 * Builds: `cargo build -p ts-server -p ts-client` (x86_64), `--target i686-unknown-linux-gnu`,
   `--target i686-pc-windows-gnu`.
 * In-engine (FWGS root `~/games/xash_rules`):
