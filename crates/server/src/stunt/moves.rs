@@ -401,7 +401,7 @@ fn handle_wheel(p: &mut Player, cx: &mut Cx) {
         cx.pev().iuser4 |= PRONE;
         set_view(cx, 0.0);
         let d0 = p.stunt.dir;
-        p.stunt.dir = [d0[0] * -1.0, d0[1] * -1.0, d0[2] * -1.0];
+        p.stunt.dir = [-d0[0], -d0[1], -d0[2]];
         let d = get_direction(p.stunt.dir, cx.pev().v_angle, 0.6, 0.3);
         p.stunt.dir_not_forward = d != 2;
         p.stunt.anim.last_dir = d;

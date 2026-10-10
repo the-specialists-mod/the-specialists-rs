@@ -294,10 +294,8 @@ impl WorldGun {
         }
         let id = self.id;
         let ok = inventory::pick_up_weapon(p, pcx, id, Some(&self.status), 0, id != shared::weapons::id::BRIEFCASE, false);
-        if ok {
-            if let Some(o) = self.original_owner {
-                p.inv.sv.owners[id as usize] = o;
-            }
+        if ok && let Some(o) = self.original_owner {
+            p.inv.sv.owners[id as usize] = o;
         }
         inventory::sync_speed(p, pcx);
         if ok {

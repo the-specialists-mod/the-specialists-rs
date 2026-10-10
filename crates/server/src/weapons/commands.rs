@@ -109,10 +109,10 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
         }
         "tka" => {
             for i in 1..args.argc() {
-                if let Some((t, n)) = scan_pair(args.str(i)) {
-                    if (0..MAX_AMMO as i32).contains(&t) {
-                        p.inv.sv.armament_ammo[t as usize] = n;
-                    }
+                if let Some((t, n)) = scan_pair(args.str(i))
+                    && (0..MAX_AMMO as i32).contains(&t)
+                {
+                    p.inv.sv.armament_ammo[t as usize] = n;
                 }
             }
             true
@@ -147,12 +147,12 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
                 return true;
             }
             for i in 1..args.argc() {
-                if let Some((id, att)) = scan_pair(args.str(i)) {
-                    if (1..38).contains(&id) {
-                        super::give_weapon(p, cx, id as u8, att as u8);
-                        if let Some(w) = info(id as u8) {
-                            super::give_ammo(p, cx, w.ammo, 999);
-                        }
+                if let Some((id, att)) = scan_pair(args.str(i))
+                    && (1..38).contains(&id)
+                {
+                    super::give_weapon(p, cx, id as u8, att as u8);
+                    if let Some(w) = info(id as u8) {
+                        super::give_ammo(p, cx, w.ammo, 999);
                     }
                 }
             }

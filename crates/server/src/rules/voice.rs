@@ -222,7 +222,7 @@ mod tests {
     fn rules_mask_respects_presence_alltalk_and_rules() {
         let present = [true, true, false, true];
         // Player 0 hears only even talkers by the rules.
-        let even = |_: usize, t: usize| t % 2 == 0;
+        let even = |_: usize, t: usize| t.is_multiple_of(2);
         assert_eq!(rules_mask(0, &present, false, &even), 0b0001);
         assert_eq!(rules_mask(0, &present, true, &even), 0b1011, "sv_alltalk ignores the rules, not presence");
     }

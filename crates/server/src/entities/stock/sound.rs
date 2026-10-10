@@ -515,12 +515,12 @@ impl Entity for EnvSound {
                 }
                 break 'think false;
             }
-            if let Some(range) = self.in_range(cx, p) {
-                if range < room.range || room.range == 0.0 {
-                    ROOMS.0.borrow_mut()[idx] =
-                        PlayerRoom { last: goldsrc::ext::entities::EHandle::new(cx.edict), roomtype: self.roomtype, range };
-                    goldsrc::server::MsgWriter::begin(MSG_ONE as i32, SVC_ROOMTYPE, None, p).short(self.roomtype as i32).end();
-                }
+            if let Some(range) = self.in_range(cx, p)
+                && (range < room.range || room.range == 0.0)
+            {
+                ROOMS.0.borrow_mut()[idx] =
+                    PlayerRoom { last: goldsrc::ext::entities::EHandle::new(cx.edict), roomtype: self.roomtype, range };
+                goldsrc::server::MsgWriter::begin(MSG_ONE as i32, SVC_ROOMTYPE, None, p).short(self.roomtype as i32).end();
             }
             true
         };

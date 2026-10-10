@@ -209,8 +209,8 @@ impl GameRules {
                 ..Default::default()
             })
             .collect();
-        for i in 0..4 {
-            self.set_team_models(i, DEFAULT_MODELS[i]);
+        for (i, models) in DEFAULT_MODELS.into_iter().enumerate() {
+            self.set_team_models(i, models);
         }
     }
 

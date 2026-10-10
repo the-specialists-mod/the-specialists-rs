@@ -265,6 +265,7 @@ pub fn emit_ambient(e: *mut edict_t, origin: [f32; 3], sample: &CStr, vol: f32, 
 /// (`CHalfLifeMultiplay::IsMultiplayer`, 0xcf330). Suit sentences (the battery's `!HEV_xP`, the
 /// damage reports) are therefore never queued, so the suit queue and `CheckSuitUpdate` aren't
 /// ported.
+#[allow(clippy::needless_return)] // keeps TS's suit-bit early return ahead of the IsMultiplayer() one
 pub fn set_suit_update(player: *mut edict_t, _name: &CStr, _group: bool, _no_repeat: i32) {
     if player.is_null() || player.v().weapons >= 0 {
         return;

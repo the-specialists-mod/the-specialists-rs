@@ -199,12 +199,12 @@ impl GroundWeapon {
         rules::lifecycle::give_cash(p, -cost);
         // TS tops up only an empty reserve, checked after the pickup (0xa2328: `reserve[ammo] < 1`).
         let extra = self.extra_clip.max(0);
-        if extra != 0 {
-            if let Some(w) = tables().weapon(self.id as u8) {
-                let empty = p.inv.gun.reserve.get(w.ammo as usize).is_some_and(|&r| r < 1);
-                if w.ammo != 0 && empty && crate::weapons::give_ammo(p, pcx, w.ammo, extra * w.clip.max(1)) > 0 {
-                    engine().emit_sound(pcx.edict, CHAN_ITEM as i32, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100);
-                }
+        if extra != 0
+            && let Some(w) = tables().weapon(self.id as u8)
+        {
+            let empty = p.inv.gun.reserve.get(w.ammo as usize).is_some_and(|&r| r < 1);
+            if w.ammo != 0 && empty && crate::weapons::give_ammo(p, pcx, w.ammo, extra * w.clip.max(1)) > 0 {
+                engine().emit_sound(pcx.edict, CHAN_ITEM as i32, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100);
             }
         }
         true
@@ -323,10 +323,10 @@ impl Entity for GroundAmmo {
             // HL ammo: half the max carry of each ammo type the class uses.
             let count = cvars_ammocount();
             for &id in ids {
-                if let Some(w) = tables().weapon(id as u8) {
-                    if let Some(a) = tables().ammo(w.ammo) {
-                        self.rounds[w.ammo as usize % 16] = a.max_carry[count] / 2;
-                    }
+                if let Some(w) = tables().weapon(id as u8)
+                    && let Some(a) = tables().ammo(w.ammo)
+                {
+                    self.rounds[w.ammo as usize % 16] = a.max_carry[count] / 2;
                 }
             }
         }

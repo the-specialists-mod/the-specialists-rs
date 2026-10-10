@@ -147,9 +147,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
             stopped_fury = true;
             killed_specialist = p.ts.spree > 8;
         }
-        if k.spree != 255 {
-            k.spree += 1;
-        }
+        k.spree = k.spree.saturating_add(1);
         match k.spree {
             3 => is_killer = true,
             6 => is_demolition = true,

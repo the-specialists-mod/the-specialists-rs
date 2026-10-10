@@ -164,7 +164,7 @@ pub fn start_frame() {
         if world::with::<Player, bool>(e, |p| p.bot.is_some()) == Some(false) {
             world::with::<Player, ()>(e, |p| p.bot = Some(Bot::default()));
         }
-        let cmd = with_player(e, |p, cx| think(p, cx)).flatten();
+        let cmd = with_player(e, think).flatten();
         if let Some(mut c) = cmd {
             // `ts_bot_stop 1`: no movement or buttons; dead and observing bots still respawn.
             if stop && e.v().deadflag == DEAD_NO as i32 && e.v().iuser1 == 0 {

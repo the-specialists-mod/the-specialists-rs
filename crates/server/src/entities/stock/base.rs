@@ -470,10 +470,10 @@ pub fn is_master_triggered(master: string_t, _activator: *mut edict_t) -> bool {
         return true;
     }
     let e = engine().find_by_target_name(std::ptr::null_mut(), s(master));
-    if !e.is_null() {
-        if let Some(t) = master_triggered(e) {
-            return t;
-        }
+    if !e.is_null()
+        && let Some(t) = master_triggered(e)
+    {
+        return t;
     }
     engine().alert(ALERT_TYPE::at_console, "Master was null or not a master!\n");
     true

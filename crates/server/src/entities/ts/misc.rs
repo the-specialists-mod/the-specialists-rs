@@ -167,9 +167,8 @@ pub static PARTICLES: goldsrc::Global<std::cell::Cell<u32>> = goldsrc::Global(st
 
 impl Entity for Particle {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        match key.to_bytes() {
-            b"soundonemit" => self.sound = Some(value.to_string_lossy().into_owned()),
-            _ => {}
+        if key.to_bytes() == b"soundonemit" {
+            self.sound = Some(value.to_string_lossy().into_owned());
         }
         true
     }

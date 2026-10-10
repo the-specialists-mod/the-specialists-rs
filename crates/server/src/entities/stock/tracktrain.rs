@@ -429,7 +429,7 @@ impl TrackTrain {
 
     fn stop_sound(&mut self, cx: &mut Cx) {
         if self.sound_playing && cx.pev().noise != 0 {
-            let encode = ((self.sounds & 7) << 12) as i32;
+            let encode = (self.sounds & 7) << 12;
             engine().playback_event(
                 FEV_RELIABLE | FEV_UPDATE,
                 cx.edict,

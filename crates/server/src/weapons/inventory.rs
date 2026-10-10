@@ -50,10 +50,10 @@ pub fn pick_up_weapon(p: &mut Player, cx: &mut Cx, id: u8, from: Option<&Status>
         return false; // the pair only comes from two singles
     }
     let mut cost = w.slots as f32;
-    if w.stack {
-        if let Some(s) = from {
-            cost *= s.clip as f32;
-        }
+    if w.stack
+        && let Some(s) = from
+    {
+        cost *= s.clip as f32;
     }
     let after = (p.inv.sv.free_slots as f32 - cost).round_ties_even() as i32;
     if after < 0 {

@@ -364,6 +364,7 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
     let mut cc_gait = false;
     if !is_in_close_combat(cur) {
         let stunt_ids = |id: i32| matches!(id, 4 | 0x28 | 0x2f | 0x30 | 0x31 | 0x37 | 0x38 | 0x36 | 0x32);
+        #[allow(clippy::collapsible_match)] // one arm per TS switch case, each shaped like its siblings
         match cur {
             3 => {
                 if alive && !matches!(id, 4 | 0x39 | 0x2a | 0x2b | 0x29 | 0 | 8 | 9) && !ladder {
@@ -586,7 +587,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
             };
             set_anim(p, cx, &name, 0x14, 0);
         }
-        0x2e | 0x2f | 0x30 | 0x31 | 0x32 => {
+        0x2e..=0x32 => {
             let d = get_direction(p.stunt.dir, cx.pev().v_angle, 0.6, 0.3) as usize;
             let (name, hold) = match *id {
                 0x2e => (DIVE_END[d], true),

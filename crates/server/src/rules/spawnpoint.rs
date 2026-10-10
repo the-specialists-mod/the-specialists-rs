@@ -35,10 +35,10 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
         ("info_player_deathmatch".to_owned(), None)
     };
     let mut class_c = to_cstring(&class);
-    if let Some(f) = fallback {
-        if eng.find_by_string(std::ptr::null_mut(), c"classname", &class_c).is_null() {
-            class_c = to_cstring(&f);
-        }
+    if let Some(f) = fallback
+        && eng.find_by_string(std::ptr::null_mut(), c"classname", &class_c).is_null()
+    {
+        class_c = to_cstring(&f);
     }
 
     let players = super::players();

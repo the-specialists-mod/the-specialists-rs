@@ -162,8 +162,7 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
             continue;
         }
         let o = eng.client(i);
-        let keep =
-            !o.is_null() && other(o, |q| if q.ts.slow_self == 0.0 || q.ts.slow_others != mine { true } else { false }).unwrap_or(false);
+        let keep = !o.is_null() && other(o, |q| q.ts.slow_self == 0.0 || q.ts.slow_others != mine).unwrap_or(false);
         if keep {
             go_slow(o, mine, btime);
         } else {
