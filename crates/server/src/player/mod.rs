@@ -4,6 +4,7 @@
 
 pub mod damage;
 pub mod hud;
+pub mod water;
 
 use crate::entities::link_entities;
 use crate::world::{Cx, DamageInfo, Entity};
@@ -24,6 +25,8 @@ pub struct Player {
     pub inv: crate::weapons::Inventory,
     pub ts: crate::rules::PlayerRules,
     pub hud: hud::HudCache,
+    /// Damage types taken, time-based damage and drown recovery (`water.rs`).
+    pub tbd: water::TimeBasedDamage,
     /// Train and tank driving (stock entities package).
     pub drive: crate::entities::stock::drive::DriveState,
     pub bot: Option<crate::bots::Bot>,
@@ -77,6 +80,8 @@ impl Entity for Player {
         self.active_powerup = 0;
         self.kungfu = false;
         self.superjump = false;
+        // TS Spawn clears m_bitsDamageType only; the drown counters carry over.
+        self.tbd.bits = 0;
 
         // Leave any trigger_camera view and un-freeze (TS resets these on spawn).
         pev.flags &= !(FL_FROZEN as i32);

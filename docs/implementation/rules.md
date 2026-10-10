@@ -1,7 +1,7 @@
 # Rules package: game rules, player lifecycle, TS entities, HUD sync, bots
 
-Owner files: `crates/server/src/rules/**`, `entities/ts/**`, `player/damage.rs`, `player/hud.rs`,
-`bots/**`, `net.rs`, `crates/goldsrc/src/ext/rules.rs`, `crates/shared/src/protocol/{rules,hud}.rs`.
+Owner files: `crates/server/src/rules/**`, `entities/ts/**`, `player/damage.rs`, `player/water.rs`,
+`player/hud.rs`, `bots/**`, `net.rs`, `crates/goldsrc/src/ext/rules.rs`, `crates/shared/src/protocol/{rules,hud}.rs`.
 Source of truth: the decomp (`docs/server/gamerules-entities.md`, `architecture.md` §2–§5, §7,
 `player-movement.md` §5–§7, `weapons.md` §5.9, `client/architecture-hud.md` §3). Addresses below
 are Ghidra addresses.
@@ -22,6 +22,7 @@ are Ghidra addresses.
 | `rules/msg.rs` | `Wire` adapter over `MsgWriter`; `TSHudMessageOne/All`, `ClientPrint`, `SayText`, log. |
 | `rules/voice.rs` | `CVoiceGameMgr` + `CMultiplayGameMgrHelper`: who hears whom, `vban`/`VModEnable`, `VoiceMask`/`ReqState`. |
 | `player/damage.rs` | `TraceAttack` + `TakeDamage`. |
+| `player/water.rs` | `WaterMove`, `CheckTimeBasedDamage` and the `m_bitsDamageType` / time-based bookkeeping (`TimeBasedDamage`, `Player::tbd`). |
 | `player/hud.rs` | `UpdateClientData` HUD shadow copies. |
 | `entities/ts/*` | TS map entities (§4). |
 | `bots/mod.rs` | fake clients. |
@@ -49,7 +50,7 @@ are Ghidra addresses.
 | `StartObserver` 0x99634 / `StopObserver` 0x99a14 | `lifecycle::{start_observer, stop_observer}` | TSCash resend, TE_KILLPLAYERATTACHMENTS, ActItems 0, SetFOV 0, `EF_NODRAW`, deadflag 3, TeamInfo, `Spectator 1`, starts in the saved mode (chase free the first time); stop saves the mode. |
 | `Observer_SetMode` 0x99e44 / `Observer_FindNextPlayer` 0x99b0c / `Observer_HandleButtons` 0x99d34 / `Observer_Idle` 0x99ca4 | `lifecycle::{observer_set_mode, observer_find_next_player, observer_handle_buttons, observer_idle}` | TS observer modes (`shared::ts::obs`): 1 chase locked, 2 chase free, 3 roaming (maxspeed 420), **5 in-eye**; there are no map modes and 4 is HLTV-only. Jump cycles 3 → 2 → 1 → 5 → 3, forward/back pick the next/previous target (not while roaming), 0.2 s apart. The target (`m_hObserverTarget`, `PlayerRules::obs_target`) is the killer (last inflictor if a player), kept across lives; the next one is a living, visible, non-observing player, only teammates in LMS while a respawn is pending. Twice a second a dead or observing target is replaced. No target → roaming. The camera position is `PM_SpectatorMove`'s. |
 | `respawn` client command (ClientCommand) | `lifecycle::respawn_command` | only while observing and after `respawn_at`; "You have to wait until the next round." |
-| `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | button edges, InitHUD, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text, death think, +use, spawn protection end, delayed suicide. |
+| `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | button edges, `WaterMove`, InitHUD, `CheckTimeBasedDamage`, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text, death think, +use, spawn protection end, delayed suicide. |
 | `CBasePlayer::Killed` 0x8ed5c | `lifecycle::killed` | TSMBlur (random), respawn time, headshot victim slow 0.33, `iuser4 = DEAD_LOCK`, `weapons::on_killed`, drop flag, PlayerKilled, knockback (min(dmg×5, 500)), hop when fast/hard hit, TSHealth 0, ActItems 0, SetFOV 0, gib. |
 | `PlayerDeathThink` | `lifecycle::death_think` | settle; while dying, advance the death sequence (`studio_frame_advance`, at the slow-motion `framerate`) until it finishes; then corpse (`deadcorpse`, 10 s) + observer after 3 s or any button. |
 | `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | points (stock/kung fu/knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`spectacularness`%), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, log lines with TS suffixes, `game_playerdie`/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
@@ -69,7 +70,9 @@ are Ghidra addresses.
 | `GoSlow`/`InSlow` 0x929d0/0x9298c, `InterpolateSlowMotion` 0x9910c | `powerup::{go_slow_self, go_slow, in_slow, interpolate}` | fuser1 eases toward `Player::slow_target` at 7/s, snaps within 0.05 (unit tested). |
 | `TakeArmor` 0x93da4 | `powerup::take_armor` | kevlar costs 10 slots once; cap 100; speed from free slots. |
 | `CBasePlayer::TraceAttack` 0x901cc | `player::damage::take_damage` (traced part) | spawn protection, stunt ×0.7 (`iuser4 & 0x10c10`), dodge ×0.7 (`PlayerRules::dodge_until`), friendly fire, head ×2 / ×1.5 shotgun (`0x2000000`), legs ×0.5, PTakeDam (0.3 s throttle, ×8 shotgun, +128 kevlar), head/kevlar/body hit sounds, pain sounds, corpse push. |
-| `CBasePlayer::TakeDamage` 0x8fa94 | `player::damage::take_damage` | kevlar `dmg -= dmg×min(armor_absorb,1)` on hitgroups 2–5 unless `ARMOR_EXEMPT`; armour never depleted; rounded; knockback ×5; TSFade (150,10,10); death → `rules::on_killed`. Unit tested. |
+| `CBasePlayer::TakeDamage` 0x8fa94 | `player::damage::take_damage` | kevlar `dmg -= dmg×min(armor_absorb,1)` on hitgroups 2–5 unless `ARMOR_EXEMPT`; armour never depleted; rounded; knockback ×5; TSFade (150,10,10); death → `rules::on_killed`; then, even when `takedamage` refused it, `m_bitsDamageType |= bits` and each time-based type taken restarts its countdown (`TimeBasedDamage::on_damage`). Unit tested. |
+| `CBasePlayer::WaterMove` 0xd905c | `player::water::water_move` | skipped for noclip or health < 0. Head under (`waterlevel` 3): drown recovery stops; once `air_finished` (12 s) passes, `DMG_DROWN` from the world every second, 3, 4, then 5 per hit (`pev->dmg` starts at 2), added (truncated) to the drowned total (+0x9a8). Head out (also on dry land): `pl_wade1` if the air ran out, `pl_wade2` after more than 3 s under, air refilled, `dmg = 2`, and while drowned health is owed `DMG_DROWNRECOVER` is set and its countdown restarted. In water: `pl_swim1..4` (1/32 per frame, likelier with less air; `CHAN_BODY` 0.8), lava `10 × waterlevel` `DMG_BURN` and slime `4 × waterlevel` `DMG_ACID` every frame (SDK `dmgtime` quirks), `FL_INWATER` kept. Real time, no slow-motion scaling; sounds use the time-scaled `EMIT_SOUND_DYN` pitch (k 0.5). Unit tested. |
+| `CBasePlayer::CheckTimeBasedDamage` 0xda00c | `player::water::check_time_based_damage`, `TimeBasedDamage::tick` | every 2 whole seconds (truncated `abs(time - m_tbdPrev)`), for each of the 8 time-based bits: poison deals 2 (`DMG_GENERIC`, self-inflicted) for 6 ticks (start + 5); drown recovery gives back `min(owed, 10)` through TS `TakeHealth` (no cap, refused above max health, starts the decay when it overheals), 4 ticks but restarted every frame the head is out; the other types only count down 2 ticks. Antidotes (+0x834) cure nerve gas/poison, but `item_antidote` isn't ported so the count stays 0. Unit tested. |
 | `CBasePlayer::UpdateClientData` 0x91d00 | `player::hud::update` | every 0.1 s on change: TSHealth, TSArmor, TSState, TSCash, TSSpace, PwUp, TSSlowMo, TSBTime, TSPAward (ALL). |
 | `Host_Say` 0xad02c | `commands::host_say` / `format_say` | `\x02name: `, `(TEAM)`, `%a`/`%h`, 0.5 s flood gate, LMS dead chat rule, `timeleft`, log. Unit tested. |
 | `PlayerVote` 0x7a1c8, `CheckVotes` 0x7a5c4, `CalcMiniminVotants` 0x7a1b0 | `votes::{player_vote, check_votes, min_votes}`, `Votes` in `GameRules` | `vote map <name>` (current/invalid map refused, "%s vote for map %s" to all), `vote stats` (last tally, "(n/need) votes for map"), `vote reset`; handled votes aren't broadcast. Every 10 s every player is counted and votes are grouped by map; the leader passes at `max(1, players/2)`. A passed vote sends `multiplay_think` to intermission and `change_level` loads the voted map. A joiner's vote is cleared in TS InitHUD. Unit tested. |
@@ -195,6 +198,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 ## 7. Missing / partial
 
+* `item_antidote` (0xcb968): `TimeBasedDamage::antidotes` exists but nothing adds to it.
 * `loadweapons`/`saveweapons`, `CustomWP`.
 * Untested in-engine: CTB (no test map with briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client.
@@ -203,7 +207,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 * `cargo test`: payload encoders (sizes match registration), `decide_gameplay`, team lists,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
-  clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, power-up bodies/respawn clamps, HL remaps, the HLTV
+  clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, power-up bodies/respawn clamps, HL remaps, drowning/time-based damage (`player::water::tests`: drown ramp, wade sounds, 2 s tick gate, poison ticks and restart, antidote, drown recovery 10/10/2 and its stop underwater), the HLTV
   director event layout (`hud_wire::director_event_layout`), in-eye spectator movement at mode 5
   (`pm::tests::in_eye_spectator_is_mode_5`).
 * Not yet run in-engine: the TS observer mode cycle (jump: roaming → chase free → chase locked →
