@@ -228,6 +228,13 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 * `dmgreport` is registered as a cvar (port addition, default 0). TS reads it with
   `CVarGetFloat` but never registers it, so TS output needs the cvar created elsewhere.
 * `WorldGun` `WaitTouch` doesn't check the 0.5 s pickup delay (as TS: only `Use` does).
+* **The flying impact credits the projectile, as in TS** (`impact_damage`: inflictor and
+  attacker are both the grenade, knife or gun). TS passes `this->pev` as the TraceAttack attacker
+  and as both `ApplyMultiDamage` arguments in `CM61Grenade::WaitThink` (0x7cacc; see the
+  disassembly at 0x7ce3c/0x7ce46), `CTSKnife::WaitThink` (0x7ea30) and `CTSWorldGun::Fall`
+  (0xa0d84), not `pev->owner`. So a breakable broken, or a player killed, by a flying projectile
+  isn't credited to the thrower (issue #1). Only the explosion (`TSExplosion(..., owner)`) and a
+  thrown blade's direct hit on a player (`BounceTouch`) credit the thrower.
 * The bullet manager runs on a hidden `ts_bulletmanager` entity (TS: `CTSGameRules::Think`);
   bullets are also dropped after 16384 u without a hit.
 * The kick for bots goes to `punchangle` (TS `pev+0x68`), humans get it client-side.
