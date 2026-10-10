@@ -110,7 +110,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | Class | Status |
 |---|---|
 | `ts_powerup`, `item_longjump` | Full: keys `pwuptype`/`pwupduration`/`pwupmult`, random set from spawnflags, bodies/durations, fall → ground (bbox ±16×64), pickup rules (single slot, +use swap, instant set 0x1e6), message/target, respawn clamps (<1 → 60, ≤10 → 10, ≤180), hidden with `nopowerup 1`. Temporary ones (auto spawner, drops) live 60 s and fade over the last 30 s. A map power-up disables the automatic spawner; `item_longjump` re-enables it (TS). |
-| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (× clip size via `give_ammo`), respawn (<1 → 60, 1 → 1, ≤180), message/target. `buyable`/`attackerteam` (`GetWeapon` 0xa2328) are ported behind `state::cash_based()`, which is false as in TS: the team check (round modes, `attackerteam` ≠ -1), the price (`ground::buy_price`: cost + spawnflag attachments + ammo price × `wextraclip`; unit tested), "You don't have enough money…", and the charge after the pickup. Unknown/briefcase ids are removed. |
+| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (× clip size via `give_ammo`, only when the reserve for that ammo type is empty after the pickup, as in `GetWeapon` 0xa2328), respawn (<1 → 60, 1 → 1, ≤180), message/target. `buyable`/`attackerteam` (`GetWeapon` 0xa2328) are ported behind `state::cash_based()`, which is false as in TS: the team check (round modes, `attackerteam` ≠ -1), the price (`ground::buy_price`: cost + spawnflag attachments + ammo price × `wextraclip`; unit tested), "You don't have enough money…", and the charge after the pickup. Unknown/briefcase ids are removed. |
 | `ts_groundammo` + `ammo_9mmAR/buckshot/crossbow/gaussclip/rpgclip` | Full: `magsN` = N × per-buy rounds, HL ones give half max carry of their class's ammo types; picked up on touch via `weapons::give_ammo`. |
 | `ts_model` | Full. |
 | `ts_mapglobals` | Full: weapon mask (SrvSett 3), round timer flag, super jump map flag. |
@@ -175,7 +175,8 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
   would never finish. The death/flinch sequences are left to the stunt package (`CTSAnimation`).
 * `+use` on ground weapons uses a simplified `PlayerUse`: the best item within 64 units in a 60°
   cone in front of the eyes.
-* `wextraclip` gives `extra × clip` rounds (TS passes the raw number to `AddAmmo`).
+* `wextraclip` gives `extra × clip` rounds (TS passes the raw number to `AddAmmo`). Like TS, it
+  is only given when the reserve is empty after the pickup.
 * `ts_mapglobals` masks the weapon set to 5 bits (TS XORs the whole spawnflags).
 * Round modes 2/3, objectives, buy zones, cash-based buying stay off (dead in 3.0); `TeamWin`
   exists only as the score/win giver path.
