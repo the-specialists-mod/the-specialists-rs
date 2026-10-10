@@ -206,6 +206,19 @@ pub struct Flag {
 }
 
 impl Flag {
+    /// `CTSFlag::RespawnFlag` (0x9de58), when a dropped case's time is up: the home zone drops
+    /// a new case 1 s later (`FlagFall`, which sends `TSFlag` 0), and the owning team's name is
+    /// announced. A case any team may capture (team -1) returns silently, as TS only names
+    /// teams 0..3.
+    fn respawn_flag(&mut self, cx: &mut Cx) {
+        if let Ok(team) = usize::try_from(self.team)
+            && let Some(name) = state::with(|g| g.teams.get(team).map(|t| t.name.clone()))
+        {
+            msg::ts_message_all([0, 255, 0], 4, 30, &format!("{name} briefcase returned"));
+        }
+        self.go_home(cx, 1.0);
+    }
+
     /// Removes the case; its `ts_briefcase` drops a new one (`FlagFall`) after `delay`.
     fn go_home(&mut self, cx: &mut Cx, delay: f32) {
         if let Some(home) = self.home {
@@ -241,9 +254,7 @@ impl Entity for Flag {
     fn think(&mut self, cx: &mut Cx) {
         cx.think_in(0.5);
         if self.holder.is_none() && self.return_at != 0.0 && cx.time() > self.return_at {
-            msg::ts_message_all([0, 255, 0], 8, 30, &format!("{} briefcase returned", self.contents));
-            send_flag(0, self.id, self.team, 0);
-            self.go_home(cx, 0.25);
+            self.respawn_flag(cx);
         }
     }
 
