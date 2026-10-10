@@ -164,7 +164,8 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     sv.last_buttons = 0;
     sv.reset_net();
     cx.pev().fov = 0.0;
-    // CHalfLifeMultiplay::PlayerSpawn: the gun deploys (kung fu), then BuyArmament.
+    // CHalfLifeMultiplay::PlayerSpawn: the gun deploys (kung fu), then BuyArmament unless the map
+    // has a game_player_equip.
     host::with_host(p, cx, |gun, h| {
         let cur = gun.current;
         gun.current = 0;
@@ -175,7 +176,10 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
             gun.holster_weapon(h);
         }
     });
-    inventory::buy_armament(p, cx);
+    // A map's game_player_equip replaces the loadout (rules/stock-entity hook).
+    if !crate::entities::stock::maprules::equip_on_spawn(cx.edict) {
+        inventory::buy_armament(p, cx);
+    }
     inventory::sync_speed(p, cx);
     net::send_kfu_power(cx.edict, p.inv.gun.melee_bar);
     if !p.inv.sv.custom_informed && cx.edict.v().flags & goldsrc::sys::FL_FAKECLIENT as i32 == 0 {

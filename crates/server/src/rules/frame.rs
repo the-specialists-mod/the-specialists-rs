@@ -1,17 +1,18 @@
 //! `StartFrame` → `CHalfLifeMultiplay::Think` (0xcf038, time/frag limits, intermission) and
 //! `CTSGameRules::Think` (0x77204: global slow, auto power-ups, The One, LMS rounds, SrvSett).
 
-use super::lifecycle::start_observer;
+use super::lifecycle::{give_cash, start_observer};
 use super::msg::{self, ts_message_all};
 use super::powerup::{entity_in_slow, go_slow};
 use super::state::{self, Mode};
-use super::{alive, cvars, other, scoring, teams};
+use super::{alive, cvars, other, scoring, teams, votes};
 use crate::messages::{self, Msg};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::rules::SVC_INTERMISSION;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
 use shared::protocol::rules::{RoundTime, SrvSett};
+use shared::weapons::{Gun, att, id, tables};
 
 pub fn think() {
     if !state::with(|g| g.installed) {
@@ -22,6 +23,10 @@ pub fn think() {
         return;
     }
     ts_think(now);
+    // CHalfLifeMultiplay::Think: a passed map vote ends the map now.
+    if votes::vote_passed() {
+        go_to_intermission();
+    }
 }
 
 /// Returns true while the game is over (intermission).
@@ -116,7 +121,8 @@ pub fn go_to_intermission() {
     engine().print("[ts] intermission\n");
 }
 
-/// `ChangeLevel`: next map from `mapcyclefile` (after the current one), else the same map.
+/// `ChangeLevel` (0xd0784): the map a vote chose, else the next map from `mapcyclefile`
+/// (after the current one), else the same map.
 fn change_level() {
     let eng = engine();
     let current = eng.string(eng.globals().mapname).to_string_lossy().into_owned();
@@ -130,7 +136,12 @@ fn change_level() {
             String::from_utf8_lossy(&d).lines().filter_map(|l| l.split("//").next()?.split_whitespace().next().map(str::to_owned)).collect()
         })
         .unwrap_or_default();
-    let next = next_map(&maps, &current, |m| eng.is_map_valid(m));
+    let mut next = next_map(&maps, &current, |m| eng.is_map_valid(m));
+    // A passed map vote wins over the cycle (an invalid one falls back to the current map).
+    if let Some(voted) = state::with(|g| g.votes.override_map().map(str::to_owned)) {
+        next = if eng.is_map_valid(&voted) { voted } else { current.clone() };
+    }
+    state::with(|g| g.votes.chosen.clear());
     eng.print(&format!("[ts] changing level to {next}\n"));
     eng.change_level(&next);
 }
@@ -181,6 +192,8 @@ fn ts_think(now: f32) {
             }
         }
     }
+
+    votes::check_votes(now);
 
     // SrvSett broadcasts when the cvars change.
     let values = [cvars::f(c"realbullet").round() as i32, cvars::on(c"usecash") as i32, cvars::f(c"ammocount").round() as i32];
@@ -377,8 +390,8 @@ fn check_deads(now: f32) {
     }
 }
 
-/// `RestartRound` (0x77920) for LMS: new round time, everyone back to observer with a forced
-/// respawn in 3 s, map items respawned.
+/// `RestartRound` (0x77920) for LMS: new round time, refunds, everyone back to observer with a
+/// forced respawn in 3 s, map items respawned.
 pub fn restart_round(now: f32) {
     let rt = cvars::round_time();
     let timer = state::with(|g| {
@@ -399,6 +412,7 @@ pub fn restart_round(now: f32) {
             p.ts.held_secs = 0;
             p.active_powerup = 0;
             p.ts.held = 0;
+            give_cash(p, round_refund(&p.inv.gun));
             if cx.pev().iuser1 == 0 {
                 let (o, a) = (cx.pev().origin, cx.pev().v_angle);
                 start_observer(p, cx, o, a);
@@ -407,6 +421,34 @@ pub fn restart_round(now: f32) {
     }
     teams::recount();
     crate::entities::ts::respawn_entities();
+}
+
+/// `RestartRound`'s refund of what a player carries: the price of every owned weapon (not kung fu
+/// or the briefcase) with its attachments, plus, for each ammo type holding more than one
+/// purchase, `price × rounds / per_buy` (all the rounds, as in TS).
+pub fn round_refund(gun: &Gun) -> i32 {
+    let t = tables();
+    let prices = &t.combat.attachment_price;
+    let mut total = 0;
+    for (wid, st) in gun.status.iter().enumerate().skip(1) {
+        if !st.owned || wid == id::BRIEFCASE as usize {
+            continue;
+        }
+        total += t.weapon(wid as u8).map_or(0, |w| w.cost);
+        for (bit, price) in
+            [(att::SILENCER, prices.silencer), (att::LASER, prices.laser), (att::FLASHLIGHT, prices.flashlight), (att::SCOPE, prices.scope)]
+        {
+            if st.items & bit != 0 {
+                total += price;
+            }
+        }
+    }
+    for (ty, &rounds) in gun.reserve.iter().enumerate() {
+        if let Some(a) = t.ammo(ty as u8).filter(|a| a.per_buy > 0 && rounds > a.per_buy) {
+            total += a.price * rounds / a.per_buy;
+        }
+    }
+    total
 }
 
 /// `restartround` server command → `ResetRestartRound(2)`: LMS zeroes scores and restarts in 1 s.
@@ -468,5 +510,30 @@ mod tests {
         assert_eq!(next_map(&c, "other", |_| true), "ts_a");
         assert_eq!(next_map(&c, "ts_a", |m| m != "ts_b"), "ts_c");
         assert_eq!(next_map(&[], "ts_x", |_| true), "ts_x");
+    }
+
+    #[test]
+    fn refund() {
+        use super::round_refund;
+        use shared::weapons::{att, gun::Gun, id, tables};
+        let t = tables();
+        let mut g = Gun::default();
+        assert_eq!(round_refund(&g), 0);
+        // Kung fu and the briefcase are free.
+        g.status[id::KUNGFU as usize].owned = true;
+        g.status[id::BRIEFCASE as usize].owned = true;
+        assert_eq!(round_refund(&g), 0);
+        let m4 = id::M4 as usize;
+        g.status[m4].owned = true;
+        g.status[m4].items = att::SILENCER | att::SCOPE;
+        let gun_value = t.weapon(id::M4).unwrap().cost + 900 + 1800;
+        assert_eq!(round_refund(&g), gun_value);
+        // One purchase of ammo or less isn't refunded; more refunds every round.
+        let ammo = t.weapon(id::M4).unwrap().ammo;
+        let a = t.ammo(ammo).unwrap();
+        g.reserve[ammo as usize] = a.per_buy;
+        assert_eq!(round_refund(&g), gun_value);
+        g.reserve[ammo as usize] = a.per_buy * 3;
+        assert_eq!(round_refund(&g), gun_value + a.price * 3);
     }
 }

@@ -39,7 +39,7 @@ are Ghidra addresses.
 | `ClientKill` 0xacec8 | `lifecycle::client_kill` + `pre_think` | suicide 1 s later, not while observing. |
 | `ClientPutInServer` 0xacf44 | first `on_spawn` | cash = `initial_cash` "1200", `EF_NOINTERP` (`server-dll` creates the Player and spawns it). |
 | `ClientUserInfoChanged` 0xae638 + 0x8b244 | `lifecycle::userinfo_changed` | name change (% → space) broadcast/log; HLDM models refused. |
-| `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team, spawn spot. |
+| `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team, spawn spot. A map's `game_player_equip`s replace the loadout (`stock::maprules::equip_on_spawn` from `weapons::on_spawn`). |
 | `UpdateClientData` init block 0x91d00 | `lifecycle::init_hud` | `ResetHUD` every spawn; first time `InitHUD`, rules InitHUD, TS InitHUD, `game_playerjoin`; `game_playerspawn`; RoundTime; super jump PwUp. |
 | `CHalfLifeMultiplay::InitHUD` 0xcf618 / Teamplay 0xe45d8 | `lifecycle::rules_init_hud`, `teams::init_hud` | join TextMsg, log, `GameMode`, own ScoreInfo, MOTD, everyone's ScoreInfo; teamplay: TeamNames, assignment SayText, TeamInfo. |
 | `SendMOTDToClient` 0xd0ae4 | `lifecycle::send_motd` | `ServerName` = hostname, `motdfile` (default `motd.txt`) in ≤60-char chunks, ≤0x600 bytes. |
@@ -58,7 +58,7 @@ are Ghidra addresses.
 | `CTSGameRules::Think` 0x77204 | `frame::ts_think` | global slow expiry/apply, CheckDeads, auto power-ups, The One every 10 s, LMS restart/checks, SrvSett 0–2 on change. |
 | `CHalfLifeMultiplay::Think` 0xcf038 | `frame::multiplay_think` | `mp_timelimit`, `mp_fraglimit` (team frags; CTB team captures), `mp_fragsleft`/`mp_timeleft`, intermission (`SVC_INTERMISSION`), `mp_chattime` clamped 10..120, then `changelevel` to the next `mapcyclefile` map. |
 | `PutPowerUp` 0x9797c, `GetRandomPosition` 0x974f4, `GetRandomPowerup` 0x97894 | `frame::{put_powerup, random_position}`, `GameRules::random_powerup` | 20 s after success, 1 s after failure; only on maps without their own `ts_powerup` (spawner byte). |
-| `CheckDeads` 0x79c00, `RestartRound` 0x77920, `ResetRestartRound` | `frame::{check_deads, restart_round, reset_restart_round}` | LMS: last man +10 frags, "%d men standing!", "Round over", RoundTime; restart: round time, forced observer, respawn in 3 s, map items back. |
+| `CheckDeads` 0x79c00, `RestartRound` 0x77920, `ResetRestartRound` | `frame::{check_deads, restart_round, reset_restart_round}` | LMS: last man +10 frags, "%d men standing!", "Round over", RoundTime; restart: round time, refunds (`frame::round_refund`: owned weapons' cost + attachments, and `price × rounds / per_buy` for ammo types above one purchase, into `GiveCash`; unit tested), forced observer, respawn in 3 s, map items back. |
 | `SetGlobalSlowMotion` 0x7961c, `GlobalSlowMotion2` 0x79720 | `frame::{set_global_slow, global_slow2}` | every 0.5 s, players and grenade/knife/WorldGun. |
 | `PlayerAddPowerUp` 0x97bc8 | `powerup::add_powerup` | armour, kung fu, super jump (`mj`), health 150 + decay, grenade (`weapons::give_weapon(24)`), infinite clip (`weapons::multiply_clip`), stored types. |
 | `UsePowerUp` 0x95980, `TSUse` 0x956e0 | `powerup::use_powerup`, +use double tap in `pre_think`, `usepowerup` command | PwUpTime, TSMBlur 1/2; refused while slow-mo is blocked. |
@@ -70,6 +70,7 @@ are Ghidra addresses.
 | `CBasePlayer::TakeDamage` 0x8fa94 | `player::damage::take_damage` | kevlar `dmg -= dmg×min(armor_absorb,1)` on hitgroups 2–5 unless `ARMOR_EXEMPT`; armour never depleted; rounded; knockback ×5; TSFade (150,10,10); death → `rules::on_killed`. Unit tested. |
 | `CBasePlayer::UpdateClientData` 0x91d00 | `player::hud::update` | every 0.1 s on change: TSHealth, TSArmor, TSState, TSCash, TSSpace, PwUp, TSSlowMo, TSBTime, TSPAward (ALL). |
 | `Host_Say` 0xad02c | `commands::host_say` / `format_say` | `\x02name: `, `(TEAM)`, `%a`/`%h`, 0.5 s flood gate, LMS dead chat rule, `timeleft`, log. Unit tested. |
+| `PlayerVote` 0x7a1c8, `CheckVotes` 0x7a5c4, `CalcMiniminVotants` 0x7a1b0 | `votes::{player_vote, check_votes, min_votes}`, `Votes` in `GameRules` | `vote map <name>` (current/invalid map refused, "%s vote for map %s" to all), `vote stats` (last tally, "(n/need) votes for map"), `vote reset`; handled votes aren't broadcast. Every 10 s every player is counted and votes are grouped by map; the leader passes at `max(1, players/2)`. A passed vote sends `multiplay_think` to intermission and `change_level` loads the voted map. A joiner's vote is cleared in TS InitHUD. Unit tested. |
 | `cmd_globalslow` 0xc5580, `cmd_restartround` 0xc5748, `cmd_weaponrestriction` 0xc58a0 | `commands::cmd_*` | clamps unit tested. |
 | `AddToFullPack` 0xaf180 | `net::add_to_full_pack` | `iuser4` for all entities, `playerclass` for non-players, glow shell on the viewer's own `WorldGun`/`knife`, `FL_SPECTATOR` culling, EFLAG_SLERP for `FL_FLY`. |
 
@@ -104,7 +105,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | Class | Status |
 |---|---|
 | `ts_powerup`, `item_longjump` | Full: keys `pwuptype`/`pwupduration`/`pwupmult`, random set from spawnflags, bodies/durations, fall → ground (bbox ±16×64), pickup rules (single slot, +use swap, instant set 0x1e6), message/target, respawn clamps (<1 → 60, ≤10 → 10, ≤180), hidden with `nopowerup 1`. Temporary ones (auto spawner, drops) live 60 s and fade over the last 30 s. A map power-up disables the automatic spawner; `item_longjump` re-enables it (TS). |
-| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (× clip size via `give_ammo`), respawn (<1 → 60, 1 → 1, ≤180), message/target. Unknown/briefcase ids are removed. |
+| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (× clip size via `give_ammo`), respawn (<1 → 60, 1 → 1, ≤180), message/target. `buyable`/`attackerteam` (`GetWeapon` 0xa2328) are ported behind `state::cash_based()`, which is false as in TS: the team check (round modes, `attackerteam` ≠ -1), the price (`ground::buy_price`: cost + spawnflag attachments + ammo price × `wextraclip`; unit tested), "You don't have enough money…", and the charge after the pickup. Unknown/briefcase ids are removed. |
 | `ts_groundammo` + `ammo_9mmAR/buckshot/crossbow/gaussclip/rpgclip` | Full: `magsN` = N × per-buy rounds, HL ones give half max carry of their class's ammo types; picked up on touch via `weapons::give_ammo`. |
 | `ts_model` | Full. |
 | `ts_mapglobals` | Full: weapon mask (SrvSett 3), round timer flag, super jump map flag. |
@@ -158,7 +159,9 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * `addbot`/`addcustombot` add a fake client; `ts_bot_quota` is new (dedicated-server testing).
 * The HLTV `MSG_SPEC` director event (svc 50) in `DeathNotice`/`TakeDamage` is not sent.
 * `GetGameDescription` returns `rules::game_description()` (wired at integration).
-* Map votes (`vote map/stats/reset`, `CheckVotes`) are not implemented: "vote …" is plain chat.
+* Map votes: `CheckVotes` also tallies slow-match / teamplay / friendly-fire toggle votes, but
+  nothing in TS ever sets them (and the slow-match one writes the non-existent `mp_slowmatch`), so
+  only map votes are ported.
 * `PlayerIsCheating` / forced `cl_lw 1` is not implemented.
 * Spawn points: the `IsTriggered` master check is skipped (stock spawn points store no master).
 * A death sequence without studio data (frame rate 0) ends the dying state at once; in TS it
@@ -170,14 +173,15 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * Round modes 2/3, objectives, buy zones, cash-based buying stay off (dead in 3.0); `TeamWin`
   exists only as the score/win giver path.
 * `jointeam` (voluntary, not The One) puts the player in observer with a 5 s respawn.
+* `PlayerSpawn` with a `game_player_equip`: TS gives no `weapon_tsgun` (no gun at all unless
+  the equip lists it) and doesn't copy the stored cash; the port's TS gun is part of the player,
+  so the kung fu gun is kept. The equip touches run right after the player's spawn instead of
+  inside it.
 
 ## 7. Missing / partial
 
-* Refunds on LMS round restart (needs the weapons inventory API).
-* `ts_groundweapon` buyable/team checks (cash mode is off in 3.0).
 * Observer camera beyond the basics (in-eye, map modes are only mode numbers).
 * `loadweapons`/`saveweapons`, `CustomWP`.
-* The `game_player_equip` override in `PlayerSpawn` (stock entity package).
 * Untested in-engine: CTB (no test map with briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client.
 
@@ -185,7 +189,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 * `cargo test`: payload encoders (sizes match registration), `decide_gameplay`, team lists,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
-  clamps, weapon restriction, mapcycle, power-up bodies/respawn clamps, HL remaps.
+  clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, power-up bodies/respawn clamps, HL remaps.
 * Builds: `cargo build -p ts-server -p ts-client` (x86_64), `--target i686-unknown-linux-gnu`,
   `--target i686-pc-windows-gnu`.
 * In-engine (FWGS root `~/games/xash_rules`):

@@ -4,7 +4,7 @@
 use super::lifecycle::{give_cash, respawn_command, send_motd};
 use super::msg;
 use super::powerup::{add_powerup, use_powerup};
-use super::{alive, cvars, frame, netname, other, state, teams};
+use super::{alive, cvars, frame, netname, other, state, teams, votes};
 use crate::commands::Args;
 use crate::messages::Msg;
 use crate::player::Player;
@@ -137,7 +137,7 @@ pub fn format_say(name: &str, team: bool, text: &str, armor: f32, health: f32) -
     out
 }
 
-/// `Host_Say` (0xad02c).
+/// `Host_Say` (0xad02c). `vote …` lines go to `PlayerVote` first.
 fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
     let now = cx.time();
     if now < p.ts.next_say || args.argc() < 2 {
@@ -163,6 +163,8 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
     if text.starts_with("timeleft") {
         let left = cvars::f(c"mp_timeleft").round() as i32;
         msg::text_one(e, hud_dest::TALK, &format!("Time left: {}:{:02}\n", left / 60, left % 60));
+    } else if text.starts_with("vote") && votes::player_vote(e, idx, &text[4..]) {
+        // A handled vote isn't broadcast as chat.
     } else {
         let lms = state::lms();
         let me_alive = alive(cx.pev());

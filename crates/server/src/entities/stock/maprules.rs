@@ -1,8 +1,13 @@
-//! `game_text` (SDK maprules.cpp; same in TS): a `TE_TEXTMESSAGE` HUD message to the activator
-//! or (spawnflag 1) every player, gated by an optional `master`.
+//! SDK maprules.cpp entities, same in TS:
+//! * `game_text`: a `TE_TEXTMESSAGE` HUD message to the activator or (spawnflag 1) every player,
+//!   gated by an optional `master`.
+//! * `game_player_equip` (`CGamePlayerEquip` 0xcd494..0xcd718): gives its listed items to a
+//!   player on use, or on touch (which only `PlayerSpawn` does). A map that has one replaces the
+//!   TS spawn loadout (`CHalfLifeMultiplay::PlayerSpawn` 0x890ac, see [`equip_on_spawn`]).
 
 use super::base::*;
-use crate::world::{Cx, Entity, UseType};
+use super::items::SF_NORESPAWN;
+use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{HudTextParms, is_player, te_text_message};
 use goldsrc::server::engine;
@@ -82,8 +87,144 @@ impl Entity for GameText {
     }
 }
 
+pub const SF_PLAYEREQUIP_USEONLY: i32 = 1;
+/// `MAX_EQUIP`.
+const MAX_EQUIP: usize = 32;
+
+#[derive(Default)]
+pub struct GamePlayerEquip {
+    master: string_t,
+    /// Item classname and how many to give (at least 1).
+    items: Vec<(string_t, i32)>,
+}
+
+/// `UTIL_StripToken`: a repeated key is written `name#n`; the item is the part before `#`.
+pub fn strip_token(key: &str) -> &str {
+    key.split('#').next().unwrap_or("")
+}
+
+impl GamePlayerEquip {
+    /// `CGamePlayerEquip::EquipPlayer`.
+    fn equip(&self, player: *mut edict_t) {
+        if !is_player(player) {
+            return;
+        }
+        for &(item, count) in &self.items {
+            for _ in 0..count {
+                give_named_item(player, s(item));
+            }
+        }
+    }
+}
+
+impl Entity for GamePlayerEquip {
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key == c"master" {
+            self.master = alloc(value);
+            return true;
+        }
+        // The SDK parses entvars keys before the class sees them; every other key is an item.
+        if crate::entities::entvars_key_value(cx.pev(), key, value) {
+            return true;
+        }
+        if self.items.len() >= MAX_EQUIP {
+            return false;
+        }
+        let name: String = strip_token(&key.to_string_lossy()).chars().take(127).collect();
+        let item = engine().alloc_string(&goldsrc::util::to_cstring(&name));
+        self.items.push((item, kv_i(value).max(1)));
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        // CRulePointEntity::Spawn
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_NONE as i32;
+        v.effects = EF_NODRAW as i32;
+        v.frame = 0.0;
+        v.model = 0;
+    }
+
+    /// `CGamePlayerEquip::Touch` (0xcd570): master check, and not with `USEONLY`.
+    fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if self.master != 0 && !is_master_triggered(self.master, other) {
+            return;
+        }
+        if cx.pev().spawnflags & SF_PLAYEREQUIP_USEONLY != 0 {
+            return;
+        }
+        self.equip(other);
+    }
+
+    /// `CGamePlayerEquip::Use` (0xcd718): no master check.
+    fn use_(&mut self, _cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        self.equip(activator);
+    }
+}
+
+/// `CBasePlayer::GiveNamedItem` (0xdb524): create the item at the player's feet (never
+/// respawning), spawn it and let it touch the player.
+pub fn give_named_item(player: *mut edict_t, class: &CStr) {
+    // Port: the TS gun isn't an entity, every player always has it.
+    if class == c"weapon_tsgun" {
+        return;
+    }
+    let eng = engine();
+    let e = eng.create_named_entity(class);
+    if e.is_null() || !e.has_private_data() {
+        if !e.is_null() {
+            eng.remove_entity(e);
+        }
+        eng.alert(ALERT_TYPE::at_console, "NULL Ent in GiveNamedItem!\n");
+        return;
+    }
+    let origin = player.v().origin;
+    let v = e.v();
+    v.origin = origin;
+    v.spawnflags |= SF_NORESPAWN;
+    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    if !e.is_free() && e.v().flags & FL_KILLME as i32 == 0 {
+        world::dispatch(e, |ent, cx| ent.touch(cx, player));
+    }
+}
+
+/// `CHalfLifeMultiplay::PlayerSpawn` (0x890ac): when the map has `game_player_equip`s, each one
+/// touches the spawning player instead of the TS loadout being bought. Returns false when there
+/// are none. The touches run once the player's own spawn dispatch has returned, so the items can
+/// reach the `Player` (TS runs them inside `PlayerSpawn`).
+pub fn equip_on_spawn(player: *mut edict_t) -> bool {
+    let eng = engine();
+    let mut equips = Vec::new();
+    let mut it = std::ptr::null_mut();
+    loop {
+        it = eng.find_by_string(it, c"classname", c"game_player_equip");
+        if it.is_null() {
+            break;
+        }
+        equips.push(it);
+    }
+    if equips.is_empty() {
+        return false;
+    }
+    world::defer(player, move || {
+        for e in equips {
+            if !e.is_free() {
+                world::dispatch(e, |ent, cx| ent.touch(cx, player));
+            }
+        }
+    });
+    true
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn equip_keys() {
+        assert_eq!(super::strip_token("weapon_shotgun#2"), "weapon_shotgun");
+        assert_eq!(super::strip_token("item_battery"), "item_battery");
+    }
+
     #[test]
     fn colors() {
         assert_eq!(super::int_array4("255 128 0"), [255, 128, 0, 0]);

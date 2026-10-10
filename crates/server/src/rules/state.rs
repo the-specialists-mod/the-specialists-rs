@@ -78,6 +78,8 @@ pub struct GameRules {
     pub the_one_others: i32,
     pub check_deads_at: f32,
     pub last_srvsett: [i32; 4],
+    /// Chat map votes (`+0x684..+0x1864`).
+    pub votes: super::votes::Votes,
 
     // CHalfLifeMultiplay
     pub game_over: bool,
@@ -111,6 +113,12 @@ pub fn the_one_mode() -> bool {
 
 pub fn lms() -> bool {
     with(|g| g.lms)
+}
+
+/// `CashBased()` (0x76abc): hard-wired off in TS 3.0, so nothing is ever charged. The cash code
+/// paths are ported behind it.
+pub fn cash_based() -> bool {
+    false
 }
 
 /// `DecideGamePlay` (0x767ac): returns (teamplay, lms, the_one).
@@ -174,6 +182,7 @@ impl GameRules {
         self.allowed_weapons = 0x1f;
         self.base_weapons = 0x1f;
         self.next_the_one_check = now + 10.0;
+        self.votes.next_check = now + 10.0;
         self.last_srvsett = [-1; 4];
         self.last_frags_left = -1;
         self.last_time_left = -1;

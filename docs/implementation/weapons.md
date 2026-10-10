@@ -85,9 +85,9 @@ addresses of `ts_i386.so`.
 * `precache`: the 11 events, every v_/p_/p_sil/w_ model, shells, fire sounds, the server-side
   weapon sounds, `w_m61`/`w_knife`/`w_sealknife`/`w_katana`/`ammopack`; applies `customweapons`.
 * `on_spawn`: TSInit (bar 100, penalty 0, timers), deploy (kung fu unless rules already gave a
-  weapon), `BuyArmament` from the `tkw`/`tki`/`tka` lists, speed, `KFuPower`, `CustomWP` once
-  per client. The inventory itself is **not** cleared here (see on_killed) so weapons the
-  rules give in their `on_spawn` survive.
+  weapon), `BuyArmament` from the `tkw`/`tki`/`tka` lists (or the map's `game_player_equip`s
+  instead), speed, `KFuPower`, `CustomWP` once per client. The inventory itself is **not**
+  cleared here (see on_killed) so weapons the rules give in their `on_spawn` survive.
 * `pre_think`: pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
   melee windows), `BlockPlayer` expiry, the delayed melee hit.
 * `post_think`: `ItemPostFrame` while alive, seed reroll (`RandomLong(0, 32000)`, as TS), timer
@@ -207,7 +207,7 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   package plays view animations from events.
 * `dmgreport` cheat output, `UTIL_BubbleTrail` underwater, slow-motion points from explosions
   (`spectacularness`), `CTSPhysicObject` slow-motion physics scaling of projectiles (only the
-  grenade fuse uses the thrower's time scale), the briefcase/flag (rules) and `game_player_equip`.
+  grenade fuse uses the thrower's time scale) and the briefcase/flag (rules).
 * `GetBulletVelocityMult`'s bullet-time flag (`pl+0x175`) is treated as off (movement package).
 * No server `+use` dispatch to `WorldGun`/knife `Use` (touch + IN_USE instead).
 * Ammo pack contents are given back regardless of owned weapons (TS checks per type, decompile
