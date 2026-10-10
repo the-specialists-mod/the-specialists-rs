@@ -65,11 +65,10 @@ switched off in 3.0, or an SDK constant kept for completeness:
 | Entity helpers | `entities::use_targets`, `stock::base::{precache_model, precache_sound}`, `is_locked_by_master`, `clear_master`, `reset_player_room`, the `SF_*`/`FCAP_*`/`FFADE_*` constants |
 | Messages | `messages::{pas, one_unreliable}` |
 | SDK constants | unused `DMG_*` bits and hitgroups in `damage.rs`, `NearestPath` |
-| Client | unused HUD cvar fields (`drawhistory_time`, `classautokill`, …), `hud::text::lookup`, `DIGITS_4`, `weapon_menu_consumed_attack`, `is_fwgs`, `effects::bytes`, the motion-blur field |
+| Client | unused HUD cvar fields (`drawhistory_time`, `classautokill`, …), `hud::text::lookup`, `DIGITS_4`, `weapon_menu_consumed_attack`, `is_fwgs`, `effects::bytes`, `state::TsEffect::MotionBlur` (the HUD forwards `TSMBlur` raw) |
 
 ## 5. Known gaps after integration
 
-* No motion-blur ghosts or TS split-bone studio renderer (`HUD_GetStudioModelInterface` returns 0).
 * The view climbs steeply under sustained fire. Each shot's kick is applied once, so this is
   probably TS's persistent recoil, but it hasn't been compared against TS.
 * Not tested with real keyboard and mouse, or on a Steam GoldSrc client (only FWGS clients). See

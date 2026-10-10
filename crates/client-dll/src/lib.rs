@@ -317,10 +317,56 @@ pub unsafe extern "C" fn HUD_GetUserEntity(_index: c_int) -> *mut c_void {
     std::ptr::null_mut()
 }
 
-/// 0 = use the engine's studio renderer (until the TS split-bone renderer is ported).
+/// The TS studio renderer's interface (`0x10093700`): `{1, R_StudioDrawModel, R_StudioDrawPlayer}`.
+static STUDIO_INTERFACE: r_studio_interface_s = r_studio_interface_s {
+    version: STUDIO_INTERFACE_VERSION as c_int,
+    StudioDrawModel: Some(studio_draw_model),
+    StudioDrawPlayer: Some(studio_draw_player),
+};
+
+/// `R_StudioDrawModel` (`0x1001f3d0`).
+unsafe extern "C" fn studio_draw_model(flags: c_int) -> c_int {
+    ts_client::studio::draw_model(flags) as c_int
+}
+
+/// `R_StudioDrawPlayer` (`0x1001f3b0`).
+unsafe extern "C" fn studio_draw_player(flags: c_int, pplayer: *mut entity_state_s) -> c_int {
+    if pplayer.is_null() {
+        return 0;
+    }
+    // The renderer works on a copy (the engine's state could be the current entity's curstate,
+    // which the renderer also writes) and writes back the two fields it changes.
+    // SAFETY: the engine passes a valid player state for the duration of this call (null-checked).
+    let mut st = unsafe { *pplayer };
+    let r = ts_client::studio::draw_player(flags, &mut st);
+    // SAFETY: as above; plain field writes, no reference kept.
+    unsafe {
+        (*pplayer).renderamt = st.renderamt;
+        (*pplayer).gaitsequence = st.gaitsequence;
+    }
+    r as c_int
+}
+
+/// `HUD_GetStudioModelInterface` (`0x1001f3f0`): version 1 only; keeps the engine's studio API and
+/// installs the TS renderer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn HUD_GetStudioModelInterface(_version: c_int, _ppinterface: *mut c_void, _pstudio: *mut c_void) -> c_int {
-    0
+pub unsafe extern "C" fn HUD_GetStudioModelInterface(
+    version: c_int,
+    ppinterface: *mut *mut r_studio_interface_s,
+    pstudio: *mut engine_studio_api_s,
+) -> c_int {
+    if version != STUDIO_INTERFACE_VERSION as c_int || ppinterface.is_null() {
+        return 0;
+    }
+    // SAFETY: the engine passes its studio API table (or null, rejected by `init`).
+    if !unsafe { goldsrc::ext::studio::init(pstudio) } {
+        return 0;
+    }
+    // SAFETY: `ppinterface` is the engine's out-pointer (null-checked). The engine only reads the
+    // interface, which is a static that lives for the process.
+    unsafe { *ppinterface = (&raw const STUDIO_INTERFACE).cast_mut() };
+    ts_client::studio::init();
+    1
 }
 
 #[unsafe(no_mangle)]

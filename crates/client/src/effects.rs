@@ -9,6 +9,7 @@
 pub mod emitters;
 pub mod fx;
 mod laser;
+pub mod mblur;
 pub mod psys;
 
 use crate::events::ClientBullet;
@@ -35,7 +36,7 @@ struct Fx {
     frametime: f32,
     sprites: Option<laser::Sprites>,
     quality: Quality,
-    blur: [u8; 33],
+    blur: mblur::MotionBlur,
     draws: u64,
 }
 
@@ -84,7 +85,7 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         frametime: 0.0,
         sprites: None,
         quality: Quality::default(),
-        blur: [0; 33],
+        blur: mblur::MotionBlur::default(),
         draws: 0,
     });
     f(fx)
@@ -174,8 +175,10 @@ pub fn init() {
     e.add_command(c"ts_test_fx", cmd_test_fx);
 }
 
-/// `ts_test_fx slowmo <scale> | blood | glass | explosion | sparks | wind <speed> | bullettime <0|1>`:
-/// feeds the message handlers locally (developer test; the server package sends the real ones).
+/// `ts_test_fx slowmo <scale> | blood | glass | explosion | sparks | wind <speed> | bullettime <0|1>
+/// | mblur [entindex] [level]`: feeds the message handlers locally (developer test; the server
+/// package sends the real ones). `mblur` defaults to the local player at level 2 (its ghosts show
+/// in third person with `cl_motionblur 2`, and only while slowed).
 extern "C" fn cmd_test_fx() {
     let e = goldsrc::client::engine();
     let what = e.cmd_argv(1).to_string_lossy().into_owned();
@@ -235,7 +238,13 @@ extern "C" fn cmd_test_fx() {
             msg::TsWind { seed: 1234, yaw: 30, speed: num }.encode(&mut b);
             on_tspsys(&b);
         }
-        _ => e.print("ts_test_fx slowmo <s>|bullettime <0|1>|blood|glass|explosion|sparks|wind <speed>\n"),
+        "mblur" => {
+            let ent = if num >= 1.0 { num as u8 } else { p.index as u8 };
+            let level = e.cmd_argv(3).to_str().unwrap_or("").parse::<u8>().unwrap_or(2);
+            msg::TsMBlur { entindex: ent, level }.encode(&mut b);
+            on_tsmblur(&b);
+        }
+        _ => e.print("ts_test_fx slowmo <s>|bullettime <0|1>|blood|glass|explosion|sparks|wind <speed>|mblur [ent] [level]\n"),
     }
 }
 
@@ -246,6 +255,7 @@ pub fn vid_init() {
         fx.level.clear();
         fx.bullets.clear();
         fx.shell_seq = 0;
+        fx.blur.reset();
     });
 }
 
@@ -288,16 +298,12 @@ pub fn on_tsfrags(b: &[u8]) {
     });
 }
 
-/// `TSMBlur` (`0x1004bf90` -> `MotionBlur_Add`). Recorded only: the ghosts need the TS studio
-/// renderer (renderfx 17 with `rendercolor.b = 1`), which isn't ported.
+/// `TSMBlur` (`0x1004bf90` -> `MotionBlur_Add` `0x10029680`): start or lengthen a ghost trail.
 pub fn on_tsmblur(b: &[u8]) {
     if let Some(m) = msg::TsMBlur::decode(b) {
-        let lvl = (m.level as f32).min(cvar(|c| c.fx)) as u8;
-        with(|fx| {
-            if let Some(e) = fx.blur.get_mut(m.entindex as usize) {
-                *e = e.saturating_add(lvl.max(1));
-            }
-        });
+        let (blur, fxq) = (cvar(|c| c.motionblur), cvar(|c| c.fx));
+        let now = r::client_time() as f64;
+        with(|fx| fx.blur.add(m.entindex as usize, m.level, blur, fxq, now));
     }
 }
 
@@ -451,8 +457,8 @@ fn occlusion_visible(e: &cl_entity_t, cam: &Camera) -> bool {
     false
 }
 
-/// `HUD_CreateEntities` (`0x1001bce0`): client bullets. Motion-blur ghosts (`MotionBlur_Update`)
-/// need the TS studio renderer and are not created.
+/// `HUD_CreateEntities` (`0x1001bce0`): client bullets, then the motion-blur ghosts
+/// (`MotionBlur_Update` `0x10029780`).
 pub fn create_entities() {
     let mut bullets = with(|fx| std::mem::take(&mut fx.bullets));
     if !bullets.is_empty() {
@@ -464,6 +470,13 @@ pub fn create_entities() {
         b.append(&mut fx.bullets);
         fx.bullets = b;
     });
+
+    let (blur, ts, now) = (cvar(|c| c.motionblur), state::with(|s| s.time_scale), r::client_time() as f64);
+    for ent in with(|fx| fx.blur.due(blur, ts, now)) {
+        if mblur::spawn_ghost(ent) {
+            with(|fx| fx.blur.spawned(ent));
+        }
+    }
 }
 
 pub fn draw_normal() {}

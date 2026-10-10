@@ -175,6 +175,11 @@ win32 under Wine (listen server, `ts_arena`).
   server opens the streams (`Voice_SetClientListening`).
 * Native Windows (only Wine).
 * Long sessions, many players, and real network latency.
+* The TS studio renderer and motion-blur ghosts (issues #2, #3) after they landed: unit tests
+  only so far. Since the client now draws every studio model, the first `cargo xtask play` /
+  `client` run should check that world models, the view model, players and their `p_` weapons
+  still render, then the torso/legs split, corpses and ghosts (steps in
+  `implementation/client-rendering.md`, "Test results").
 
 ### 3.3 Skeleton milestone (before the gameplay packages)
 

@@ -12,4 +12,6 @@ pub mod rules;
 pub mod voice;
 #[cfg(feature = "client")]
 pub mod spectator;
+#[cfg(feature = "client")]
+pub mod studio;
 pub mod weapons;
