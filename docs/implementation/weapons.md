@@ -166,7 +166,15 @@ addresses of `ts_i386.so`.
 * Slots: 81 free at spawn, speed `round(210 + free*120/81)` (330 with nothing carried).
 * Disarm threshold: katana 30, knives 25, weapons with < 21 slots 20, else `min(slots, 50)`.
 * Dropped guns live `clamp(weaponstay, 5, 60)` s; `drop`/disarm drops `clamp(2*weaponstay, 10,
-  120)` s and glow for the dropper.
+  120)` s and glow for the dropper (`WorldGun` +0xc4 / +0xd0, `DropWeapon` 0x94ed9, 0x94fad,
+  0x95265): both halves of a split akimbo pair, never the CTB briefcase.
+* A thrown blade keeps its thrower only in the private +0x8c (`CreateKnife` 0x7d9e4); its
+  `pev->owner` stays null. The engine collides it with the thrower, and `BounceTouch` returns
+  at once for them, so it bounces off without hurting them. The thrower is not sent as
+  `entity_state.owner`.
+* `AddToFullPack` (0xaf180) glow shell (`rendermode 0, renderamt 2, renderfx 19, colour
+  100,100,100`): a `WorldGun` whose dropper (+0xd0) is the viewer, or a `knife` whose thrower
+  (+0x8c) is (`weapons::glow_for_host`). Guns dropped on death or by `drop_<id>` have no dropper.
 
 ## 4. Wire format
 
@@ -255,9 +263,6 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   shrinks by `s²` each time) and is never restored. The port saves once and restores the saved
   values. Kept as TS: the restore puts back the *pre-slow* velocity, so a slowed grenade or
   knife lying on the ground jumps off with its throw velocity when the slow ends.
-* Thrown blades set `pev->owner` to the thrower (TS's `CreateKnife` 0x7d9e4 only keeps it in
-  the private +0x8c). The engine therefore doesn't collide a blade with its thrower, and
-  `net.rs` keys the thrower's glow shell off `pev->owner` (TS's `AddToFullPack` reads +0x8c).
 * `UTIL_BubbleTrail` is not sent for simulated bullets (`realbullet` / slow motion): TS sends it
   with the stale static trace result of the previous hitscan shot.
 * `dmgreport` is registered as a cvar (port addition, default 0). TS reads it with

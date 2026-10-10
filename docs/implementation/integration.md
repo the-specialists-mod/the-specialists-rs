@@ -60,7 +60,7 @@ switched off in 3.0, or an SDK constant kept for completeness:
 | Group | Items |
 |---|---|
 | Round and objective modes (dead in TS 3.0) | `rules::state::Mode::{RoundTdm, Objective}`, `send_award`, `CASH_FOR_WIN`/`CASH_FOR_LOSE`, `PlayerRules::cash`, `stock::breakable::respawn_all`, `weapons::assets::{set_round_mode_items, set_grenade_buys}` |
-| Weapons API for later features | `weapons::{drop_weapon, set_restriction}`, `glows_for`/`knife_glows_for`/`glow_for_host` (`AddToFullPack` uses its own check), `Gun::{current, anim_extension}`, `shared_random_long` |
+| Weapons API for later features | `weapons::{drop_weapon, set_restriction}`, `glows_for`/`knife_glows_for`/`glow_for_host` (used by `AddToFullPack`), `Gun::{current, anim_extension}`, `shared_random_long` |
 | Stunt helpers | `in_airborne_stunt` (damage uses the `STUNTING` mask), `block_player` |
 | Entity helpers | `entities::use_targets`, `stock::base::{precache_model, precache_sound}`, `is_locked_by_master`, `clear_master`, `reset_player_room`, the `SF_*`/`FCAP_*`/`FFADE_*` constants |
 | Messages | `messages::{pas, one_unreliable}` |

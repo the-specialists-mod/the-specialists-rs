@@ -80,7 +80,7 @@ are Ghidra addresses.
 | `cmd_globalslow` 0xc5580, `cmd_restartround` 0xc5748, `cmd_weaponrestriction` 0xc58a0 | `commands::cmd_*` | clamps unit tested. |
 | `CVoiceGameMgr::Init` 0xf7438, `Update` 0xf750c, `ClientConnected` 0xf7548 (via `CHalfLifeMultiplay::ClientConnected` 0xcf59c), `ClientCommand` 0xf770c (via `CHalfLifeMultiplay::ClientCommand` 0xceee8), `UpdateMasks` 0xf79bc | `voice::{register_messages, precache, update, client_connected, client_command, update_masks}` | Every 0.3 s (from the start of the Multiplay `Think`, intermission included) and after each `vban`/`VModEnable`: `ReqState` to clients that haven't answered `VModEnable`; for clients with voice enabled, the audible mask = players the rules allow (`sv_alltalk` ignores the rules); `VoiceMask` (`L audible, L banned`) when either mask changed; then `Voice_SetClientListening(client, other, audible && !banned)` for every pair. Steam HLDS starts every stream closed, so without this nobody hears anybody there. `vban <hex>` takes one mask (32 players); `VModEnable <n>`. |
 | `CMultiplayGameMgrHelper::CanPlayerHearPlayer` 0xd0ed0 | `voice::can_player_hear_player` | teamplay: teammates only; round modes 2/3 or LMS: a talker who is dead for the rest of the round (`respawn_at` −1) is heard only by listeners in the same state. |
-| `AddToFullPack` 0xaf180 | `net::add_to_full_pack` | `iuser4` for all entities, `playerclass` for non-players, glow shell on the viewer's own `WorldGun`/`knife`, `FL_SPECTATOR` culling, EFLAG_SLERP for `FL_FLY`. |
+| `AddToFullPack` 0xaf180 | `net::add_to_full_pack` | `iuser4` for all entities, `playerclass` for non-players, glow shell on the viewer's own `WorldGun`/`knife` (`weapons::glow_for_host`: the private dropper +0xd0 / thrower +0x8c, not `pev->owner`), `FL_SPECTATOR` culling, EFLAG_SLERP for `FL_FLY`. |
 
 ## 3. Cvars
 
@@ -254,8 +254,8 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
   `customweapons`, `weaponstay`): read them by name.
 * `Player::slots_used` drives `TSSpace`; the kevlar/flag slot costs (10/20) go through the weapons'
   `free_slots` (`weapons::take_armor`, `weapons::sync_speed`).
-* Dropped guns should use classname `WorldGun` and `pev->owner` = dropper for the glow shell and
-  slow-motion propagation.
+* Dropped guns use classname `WorldGun` and `pev->owner` = thrower (`CreateWeapon`); the glow
+  shell reads the private dropper (`WorldGun::dropper`, TS +0xd0) through `weapons::glow_for_host`.
 
 **Stunt / movement package**
 * `Player::slow_target` is written by the rules; `pev->fuser1` is eased in `rules::pre_think`

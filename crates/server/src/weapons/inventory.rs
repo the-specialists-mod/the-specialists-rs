@@ -173,6 +173,10 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
             let sw = info(single).map(|i| i.slots).unwrap_or(0);
             for side in [4.0, -4.0] {
                 thrown = throw_weapon(p, cx, single, s, Some([0.0, side, 0.0]));
+                // 0x94ed9 / 0x94fad: each half of the pair gets the lifetime and the dropper.
+                if !matches!(which, Drop::Id(_)) && !thrown.is_null() {
+                    worldgun::set_drop_lifetime(thrown, cx.edict);
+                }
                 p.inv.sv.free_slots += sw;
             }
             with_host(p, cx, |gun, h| {
@@ -216,7 +220,9 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
     }
     emit(cx.edict, CHAN_ITEM, c"weapons/weapondrop.wav", 1.0, 0.8, 100);
     assets::debug(|| format!("dropped {target} ({which:?}), free slots {}", p.inv.sv.free_slots));
-    if matches!(which, Drop::Current | Drop::Disarm(_)) && !thrown.is_null() {
+    // 0x95265: `drop`/disarm (id < 0) gives the last gun thrown the longer lifetime and the
+    // dropper's glow (`WorldGun` +0xc4 / +0xd0), except the CTB briefcase.
+    if matches!(which, Drop::Current | Drop::Disarm(_)) && target != id::BRIEFCASE && !thrown.is_null() {
         worldgun::set_drop_lifetime(thrown, cx.edict);
     }
     sync_speed(p, cx);

@@ -351,6 +351,8 @@ fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, k: f32, bits: i32, an
 /// on touch while flying, then sticks in walls or lies around as a pickup for 10 s (+use).
 #[derive(Default)]
 pub struct Knife {
+    /// The thrower (`CTSKnife+0x8c`, set by `CreateKnife` 0x7d9e4). TS never sets the blade's
+    /// `pev->owner`.
     owner: Option<*mut edict_t>,
     thrower: Thrower,
     btype: i32,
@@ -388,7 +390,8 @@ pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
     });
 }
 
-/// A thrown knife glows for its thrower.
+/// A thrown knife glows for its thrower (`AddToFullPack` 0xaf180 compares the knife's +0x8c with
+/// the host).
 pub fn knife_glows_for(ent: *mut edict_t, host: *mut edict_t) -> bool {
     world::with::<Knife, _>(ent, |k| k.owner == Some(host)).unwrap_or(false)
 }
@@ -476,7 +479,8 @@ impl Entity for Knife {
         pev.friction = 0.8;
         pev.movetype = MOVETYPE_BOUNCE as i32;
         pev.solid = SOLID_BBOX as i32;
-        pev.owner = self.owner.unwrap_or(std::ptr::null_mut());
+        // No `pev->owner`: TS keeps the thrower only in the private +0x8c (`self.owner`), so the
+        // engine collides the blade with its thrower and `bounce_touch` lets it bounce off.
         if pev.fuser1 <= 0.0 {
             pev.fuser1 = 1.0;
         }
@@ -522,7 +526,8 @@ impl Entity for Knife {
 }
 
 impl Knife {
-    /// `CTSKnife::BounceTouch` 0x7decc.
+    /// `CTSKnife::BounceTouch` 0x7decc. The thrower (+0x8c) is ignored: the engine bounces the
+    /// blade off them (it has no `pev->owner` to skip them) and they take no damage.
     fn bounce_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let e = engine();
         let me = cx.edict;

@@ -81,15 +81,13 @@ pub fn add_to_full_pack(
     }
     // TS: the stunt/state bits go out for every entity (delta.lst has iuser4 on both).
     state.iuser4 = v.iuser4;
-    // TS: the viewer's own dropped guns and thrown knives get a grey glow shell.
-    if !host.is_null() && v.owner == host {
-        let cls = engine().string(v.classname).to_bytes();
-        if cls == b"WorldGun" || cls == b"knife" {
-            state.rendermode = 0;
-            state.renderamt = 2;
-            state.renderfx = kRenderFxGlowShell as i32;
-            state.rendercolor = color24 { r: 100, g: 100, b: 100 };
-        }
+    // TS: the viewer's own dropped guns and thrown knives get a grey glow shell. TS reads the
+    // private dropper (`WorldGun` +0xd0) and thrower (`knife` +0x8c), not `pev->owner`.
+    if !host.is_null() && crate::weapons::glow_for_host(ent, host) {
+        state.rendermode = 0;
+        state.renderamt = 2;
+        state.renderfx = kRenderFxGlowShell as i32;
+        state.rendercolor = color24 { r: 100, g: 100, b: 100 };
     }
 
     if player != 0 {
