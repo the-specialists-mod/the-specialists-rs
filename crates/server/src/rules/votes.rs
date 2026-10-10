@@ -96,10 +96,10 @@ impl Votes {
             }
         }
         self.voters = players;
-        if let Some((slot, n)) = best {
-            if n >= min_votes(players) {
-                self.chosen = self.tallies[slot].0.clone();
-            }
+        if let Some((slot, n)) = best
+            && n >= min_votes(players)
+        {
+            self.chosen = self.tallies[slot].0.clone();
         }
     }
 
