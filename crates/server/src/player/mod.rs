@@ -4,6 +4,7 @@
 
 pub mod damage;
 pub mod hud;
+pub mod player_use;
 pub mod water;
 
 use crate::entities::link_entities;
@@ -104,13 +105,9 @@ impl Entity for Player {
 
 impl Player {
     pub fn pre_think(&mut self, cx: &mut Cx) {
-        // +use on stock entities (buttons, doors, pushables, chargers, train and tank controls);
-        // rules handles ground items and power-ups. Read last frame's buttons before rules
-        // updates them. TS skips PlayerUse entirely while a tank is in use (ItemPostFrame 0xdc4d0).
+        // Read last frame's buttons before rules updates them. +use on objects (`player_use`)
+        // runs from the weapons' PostThink, inside `ItemPostFrame` as in TS.
         let (buttons, last) = (cx.pev().button, self.ts.buttons_last);
-        if Player::is_alive(cx) && !self.drive.tank.is_valid() {
-            crate::entities::stock::player_use(self, cx, buttons, last);
-        }
         crate::entities::stock::drive::pre_think(self, cx, buttons & !last);
         crate::rules::pre_think(self, cx);
         crate::stunt::pre_think(self, cx);

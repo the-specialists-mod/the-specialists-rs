@@ -259,13 +259,13 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         p.ts.fall_velocity = -cx.pev().velocity[2];
     }
 
-    // +use: double tap activates the held power-up (`TSUse`), single press uses ground items.
+    // +use: double tap activates the held power-up (`TSUse`). Using objects (ground weapons
+    // included) is `player::player_use`, from the weapons' PostThink.
     if p.ts.buttons_pressed & IN_USE as i32 != 0 {
         if now <= p.ts.use_tap_until {
             powerup::use_powerup(p, cx);
         }
         p.ts.use_tap_until = now + 0.3;
-        player_use(p, cx);
     }
 
     // End of spawn protection.
@@ -852,44 +852,6 @@ fn death_think(p: &mut Player, cx: &mut Cx, now: f32) {
         let (org, ang) = (v.origin, v.v_angle);
         crate::entities::ts::create_dead_corpse(cx.edict, 10.0);
         start_observer(p, cx, org, ang);
-    }
-}
-
-// ---- +use ----------------------------------------------------------------------------------------
-
-/// SDK `PlayerUse` reduced to what TS maps need: the closest usable TS item (ground weapons)
-/// within 64 units in front of the player gets `Use`.
-fn player_use(p: &mut Player, cx: &mut Cx) {
-    let eng = engine();
-    let (eye, angles) = {
-        let v = cx.pev();
-        (super::eye(v), v.v_angle)
-    };
-    let (fwd, _, _) = eng.angle_vectors(angles);
-    let mut best = std::ptr::null_mut();
-    let mut best_dot = 0.5f32;
-    let mut it = std::ptr::null_mut();
-    loop {
-        it = eng.find_in_sphere(it, eye, 64.0);
-        if it.is_null() {
-            break;
-        }
-        let v = it.v();
-        let cls = eng.string(v.classname);
-        if !crate::entities::ts::is_usable(cls) || v.effects & EF_NODRAW as i32 != 0 {
-            continue;
-        }
-        let c = [(v.absmin[0] + v.absmax[0]) * 0.5, (v.absmin[1] + v.absmax[1]) * 0.5, (v.absmin[2] + v.absmax[2]) * 0.5];
-        let d = [c[0] - eye[0], c[1] - eye[1], c[2] - eye[2]];
-        let l = super::len3(d).max(0.001);
-        let dot = (d[0] * fwd[0] + d[1] * fwd[1] + d[2] * fwd[2]) / l;
-        if dot > best_dot {
-            best_dot = dot;
-            best = it;
-        }
-    }
-    if !best.is_null() {
-        crate::entities::ts::player_use_item(best, p, cx);
     }
 }
 

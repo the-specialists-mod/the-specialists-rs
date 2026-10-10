@@ -12,7 +12,7 @@ are Ghidra addresses.
 |---|---|
 | `rules/state.rs` | `GameRules` singleton: `g_pGameRules` (DM/Teamplay) and `CTSGameRules TSGameRules` folded into one struct (`Mode`, `lms`, `the_one`, teams, spawner, round, global slow, map flags). `decide_gameplay`, team lists, `random_powerup`. Accessed with `state::with(|g| …)` (short borrows, no re-entrant calls inside). |
 | `rules/cvars.rs` | TS cvar table and registration, clamped helpers (`respawn_time`, `round_time`). |
-| `rules/lifecycle.rs` | connect / disconnect / kill / userinfo, `TSInit` + spawn, InitHUD (both rules objects), observer, `respawn`, `Killed`, `PlayerDeathThink`, fall damage, `+use`. |
+| `rules/lifecycle.rs` | connect / disconnect / kill / userinfo, `TSInit` + spawn, InitHUD (both rules objects), observer, `respawn`, `Killed`, `PlayerDeathThink`, fall damage, the `+use` double tap (`TSUse`; using objects is `player::player_use`). |
 | `rules/scoring.rs` | `PlayerKilled`, `TSGetPointsForFrag`, `DeathNotice`, The One handover. |
 | `rules/spawnpoint.rs` | `EntSelectSpawnPoint` + `TSSelectSpawnSpot` + `GetPlayerSpawnSpot`. |
 | `rules/powerup.rs` | held/active power-ups, `SlowMotionFlow`, `GoSlow`, `InterpolateSlowMotion`, `TakeArmor`. |
@@ -50,7 +50,7 @@ are Ghidra addresses.
 | `StartObserver` 0x99634 / `StopObserver` 0x99a14 | `lifecycle::{start_observer, stop_observer}` | TSCash resend, TE_KILLPLAYERATTACHMENTS, ActItems 0, SetFOV 0, `EF_NODRAW`, deadflag 3, TeamInfo, `Spectator 1`, starts in the saved mode (chase free the first time); stop saves the mode. |
 | `Observer_SetMode` 0x99e44 / `Observer_FindNextPlayer` 0x99b0c / `Observer_HandleButtons` 0x99d34 / `Observer_Idle` 0x99ca4 | `lifecycle::{observer_set_mode, observer_find_next_player, observer_handle_buttons, observer_idle}` | TS observer modes (`shared::ts::obs`): 1 chase locked, 2 chase free, 3 roaming (maxspeed 420), **5 in-eye**; there are no map modes and 4 is HLTV-only. Jump cycles 3 → 2 → 1 → 5 → 3, forward/back pick the next/previous target (not while roaming), 0.2 s apart. The target (`m_hObserverTarget`, `PlayerRules::obs_target`) is the killer (last inflictor if a player), kept across lives; the next one is a living, visible, non-observing player, only teammates in LMS while a respawn is pending. Twice a second a dead or observing target is replaced. No target → roaming. The camera position is `PM_SpectatorMove`'s. |
 | `respawn` client command (ClientCommand) | `lifecycle::respawn_command` | only while observing and after `respawn_at`; "You have to wait until the next round." |
-| `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | button edges, `WaterMove`, InitHUD, `CheckTimeBasedDamage`, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text (once a second while the respawn time is ahead; "Press Fire To Play!" only in the last half second, not repeated), death think, +use, spawn protection end, delayed suicide. |
+| `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | button edges, `WaterMove`, InitHUD, `CheckTimeBasedDamage`, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text (once a second while the respawn time is ahead; "Press Fire To Play!" only in the last half second, not repeated), death think, +use double tap, spawn protection end, delayed suicide. |
 | `CBasePlayer::Killed` 0x8ed5c | `lifecycle::killed` | TSMBlur (random), respawn time, headshot victim slow 0.33, `iuser4 = DEAD_LOCK`, `weapons::on_killed`, drop flag, PlayerKilled, knockback (min(dmg×5, 500)), hop when fast/hard hit, TSHealth 0, ActItems 0, SetFOV 0, gib. |
 | `PlayerDeathThink` | `lifecycle::death_think` | settle; while dying, advance the death sequence (`studio_frame_advance`, at the slow-motion `framerate`) until it finishes; then corpse (`deadcorpse`, 10 s) + observer after 3 s or any button. |
 | `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | points (stock/kung fu/knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`DoSpectacularNess` 0x76b48 = `scoring::do_spectacularness`, shared with explosions: `spectacularness` clamped 0..100 and rounded, 0 never fires), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, log lines with TS suffixes, `game_playerdie`/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
@@ -113,7 +113,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | Class | Status |
 |---|---|
 | `ts_powerup`, `item_longjump` | Full: keys `pwuptype`/`pwupduration`/`pwupmult`, random set from spawnflags, bodies/durations, fall → ground (bbox ±16×64), pickup rules (single slot, +use swap, instant set 0x1e6), message/target, respawn clamps (<1 → 60, ≤10 → 10, ≤180), hidden with `nopowerup 1`. Temporary ones (auto spawner, drops) live 60 s and fade over the last 30 s. A map power-up disables the automatic spawner; `item_longjump` re-enables it (TS). |
-| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (× clip size via `give_ammo`), respawn (<1 → 60, 1 → 1, ≤180), message/target. `buyable`/`attackerteam` (`GetWeapon` 0xa2328) are ported behind `state::cash_based()`, which is false as in TS: the team check (round modes, `attackerteam` ≠ -1), the price (`ground::buy_price`: cost + spawnflag attachments + ammo price × `wextraclip`; unit tested), "You don't have enough money…", and the charge after the pickup. Unknown/briefcase ids are removed. |
+| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (× clip size via `give_ammo`, only when the reserve for that ammo type is empty after the pickup, as in `GetWeapon` 0xa2328), respawn (<1 → 60, 1 → 1, ≤180), message/target. `buyable`/`attackerteam` (`GetWeapon` 0xa2328) are ported behind `state::cash_based()`, which is false as in TS: the team check (round modes, `attackerteam` ≠ -1), the price (`ground::buy_price`: cost + spawnflag attachments + ammo price × `wextraclip`; unit tested), "You don't have enough money…", and the charge after the pickup. Unknown/briefcase ids are removed. |
 | `ts_groundammo` + `ammo_9mmAR/buckshot/crossbow/gaussclip/rpgclip` | Full: `magsN` = N × per-buy rounds, HL ones give half max carry of their class's ammo types; picked up on touch via `weapons::give_ammo`. |
 | `ts_model` | Full. |
 | `ts_mapglobals` | Full: weapon mask (SrvSett 3), round timer flag, super jump map flag. |
@@ -176,9 +176,16 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * Spawn points: the `IsTriggered` master check is skipped (stock spawn points store no master).
 * A death sequence without studio data (frame rate 0) ends the dying state at once; in TS it
   would never finish. The death/flinch sequences are left to the stunt package (`CTSAnimation`).
-* `+use` on ground weapons uses a simplified `PlayerUse`: the best item within 64 units in a 60°
-  cone in front of the eyes.
-* `wextraclip` gives `extra × clip` rounds (TS passes the raw number to `AddAmmo`).
+* `+use` on TS items goes through the one `PlayerUse` (`player::player_use`, see
+  stock-entities.md §3.7): ground weapons and ammo, dropped guns, knives, grenades, the
+  CTB case and the hidden objectives all compete as `FCAP_CONTINUOUS_USE` users, as in TS, so a
+  taken (hidden) ground weapon or a ground ammo box (empty `Use`) can still win the search. The
+  CTB case (`ts_flag`) has no `Use` in the port: TS's `CTSFlag::Use` (0x9e5dc) takes the case
+  (`PlayerTakeFlag`), here only touching it does.
+* Bots (port-only) look down at an item before pressing +use, since `PlayerUse`'s 0.7 view cone
+  doesn't reach a weapon on the floor at eye level.
+* `wextraclip` gives `extra × clip` rounds (TS passes the raw number to `AddAmmo`). Like TS, it
+  is only given when the reserve is empty after the pickup.
 * `ts_mapglobals` masks the weapon set to 5 bits (TS XORs the whole spawnflags).
 * Round modes 2/3, objectives, buy zones, cash-based buying stay off (dead in 3.0); `TeamWin`
   exists only as the score/win giver path.

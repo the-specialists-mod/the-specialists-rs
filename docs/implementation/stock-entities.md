@@ -12,7 +12,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 
 | File | Contents |
 |---|---|
-| `mod.rs` | The `link_entities!` table (one export per classname), `worldspawn` (light styles 0–12 and 63, per-map resets), spawn points, `object_caps`, `player_use` |
+| `mod.rs` | The `link_entities!` table (one export per classname), `worldspawn` (light styles 0–12 and 63, per-map resets), spawn points, `object_caps` (the +use search itself is `player::player_use`) |
 | `base.rs` | `CBaseDelay` (`Delay`, `sub_use_targets`, the `DelayedUse` entity), `CBaseToggle` (`Toggle<T>`, `linear_move` / `angular_move` on `ltime`), master registry (`is_master_triggered`), `env_global` state table, keyvalue / precache helpers, `create_entity`, `precache_other`, `set_movedir`, axis helpers |
 | `explode.rs` | TS `TSExplosion`, SDK `RadiusDamage`, TS `UTIL_ScreenShake` / `UTIL_ScreenFade` (`TSFade`), sparks, ricochet, TS slow-motion pitch `emit_sound_slow` |
 | `breakable.rs` | `func_breakable`, `func_pushable`, material tables, `respawn_all` |
@@ -244,8 +244,8 @@ Port notes:
 * The player's half of `StartControl` / `StopControl` (holster or deploy, `HideWeapon` bits) runs
   through `world::defer` once the player object is back in its slot, because +use and `PostThink`
   reach the tank from inside the player's own dispatch. It runs in the same server frame.
-* `PlayerUse` runs from `PreThink` in the port (TS: `PostThink` → `ItemPostFrame` →
-  `ImpulseCommands`), as it already did for buttons and doors.
+* `PlayerUse` is `player::player_use`, run as in TS from `PostThink` → `ItemPostFrame` →
+  `ImpulseCommands` (`weapons::post_think`, once the gun's `m_flNextAttack` has run out).
 * `CFuncTankLaser::Activate` (find the laser, turn it off; no laser removes the tank) runs from the
   tank's first think instead of `ServerActivate`.
 * A tank whose controller disconnects lets go on its next think (port addition; the SDK keeps a
@@ -281,6 +281,27 @@ Port notes:
   sites.
 * **Deviation.** `USENTENCEG_Pick` on a group of more than 32 sentences reads past its 32-entry LRU
   array into the next group's record in TS; the port only uses the 32 LRU entries.
+
+### 3.7 +use (`CBasePlayer::PlayerUse` 0xd9848, `player/player_use.rs`)
+
+TS keeps the SDK function, with one addition, and calls it from `ImpulseCommands` (0xdb780), which
+`ItemPostFrame` (0xdc4d0) runs only with no tank in use and the gun ready (`m_flNextAttack` run
+out, no weapon, or +cancel during a reload). So no +use right after firing or while reloading.
+
+* One search for every package: stock classes (`stock::object_caps`) and the TS entities
+  (`entities::ts::object_caps`: ground weapons and ammo, `WorldGun`, `knife`, `grenade`,
+  `ts_flag`, the hidden objectives; all continuous users). Within 64 units of the origin, caps
+  & 0x38, `UTIL_ClampVectorToBox` (0xee5d8) of the eye → `VecBModelOrigin` vector against half
+  the size, highest dot with the view above 0.7.
+* **TS addition:** if the winner's `CanUsedTroughWalls` (vtable slot 3) is false (ground weapons
+  and ammo, dropped guns, the CTB case), a trace from the eyes to its `Center()`
+  (`IGNORE_MONSTERS`, skipping the object) must be clear, or nothing happens. Stock classes keep
+  the base `CanUsedTroughWalls` (true), so buttons still work through walls as in TS.
+* A press plays `common/wpn_select.wav` (`CHAN_ITEM`, 0.4, `ATTN_NORM`) whenever an object is
+  found. There is no deny sound.
+* `USE_SET` value 1 for held + continuous or pressed + impulse/on-off (continuous also sets
+  `PFLAG_USING`, `DriveState::using`, which nothing reads); a release sends on/off users
+  `USE_SET` value 0. No stock class in the port has `FCAP_ONOFF_USE`.
 
 ## 4. Coverage (97 shipped maps)
 
@@ -397,11 +418,11 @@ covers:
    * `env_beam` runs `BeamUpdateVars` 0.05 s after spawning.
 3. **+use.** The `Entity` trait has no `ObjectCaps`.
    * `stock::object_caps(e)` returns the stock classes' use caps.
-   * `stock::player_use(player, cx, buttons, old_buttons)` implements `CBasePlayer::PlayerUse` for
-     them: a press first takes or leaves train controls (`drive::player_use`), otherwise it finds
-     the closest usable entity within 64 units in the view cone, impulse or continuous.
-   * The player package should call it from PreThink, and fold in TS's own +use targets: power-ups
-     and ground weapons, `CanUsedTroughWalls`.
+   * `player::player_use(player, cx, pressed, released)` implements `CBasePlayer::PlayerUse`
+     (0xd9848) for every class (stock caps, else `entities::ts::object_caps`); see §3.7. A press
+     first takes or leaves train controls (`drive::player_use`). The weapons' PostThink calls it.
+   * TS entities get `Use` through `weapons::use_by_player` / `entities::ts::use_by_player`,
+     because the player is being dispatched; stock ones through `Entity::use_`.
 4. **Round restart.** `CTSGameRules::RespawnEntities` should call
    `stock::breakable::respawn_all(false)`. This covers breakables, breakable pushables and
    breakable doors.

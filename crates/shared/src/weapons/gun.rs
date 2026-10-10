@@ -447,18 +447,25 @@ impl Gun {
     /// `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4.
     /// Returns true if the weapon frame ran (the server then rerolls the seed).
     pub fn item_post_frame(&mut self, host: &mut impl GunHost) -> bool {
-        let buttons = host.buttons();
-        let run = self.next_attack <= 0.0
-            || !self.has_slot()
-            || (buttons & IN_CANCEL != 0 && self.status[self.current as usize].in_reload == 1 && self.info().stock != 0);
-        if !run {
+        if !self.post_frame_ready(host.buttons()) {
             return false;
         }
         self.weapon_post_frame(host);
         true
     }
 
-    fn weapon_post_frame(&mut self, host: &mut impl GunHost) {
+    /// The gate of `CBasePlayer::ItemPostFrame` 0xdc4d0 (the tank check aside): `m_flNextAttack`
+    /// has run out, there's no weapon, or +cancel interrupts a reload. TS runs `ImpulseCommands`
+    /// (and with it `PlayerUse`) and then the weapon frame only when this holds.
+    pub fn post_frame_ready(&self, buttons: u32) -> bool {
+        self.next_attack <= 0.0
+            || !self.has_slot()
+            || (buttons & IN_CANCEL != 0 && self.status[self.current as usize].in_reload == 1 && self.info().stock != 0)
+    }
+
+    /// `CBasePlayerWeapon::ItemPostFrame` 0xa03d4: the weapon frame, once
+    /// [`post_frame_ready`](Self::post_frame_ready) passed.
+    pub fn weapon_post_frame(&mut self, host: &mut impl GunHost) {
         let buttons = host.buttons();
         if !self.has_slot() {
             if buttons & IN_ATTACK2 != 0 && self.next_secondary <= 0.0 {

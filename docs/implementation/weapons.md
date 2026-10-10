@@ -66,7 +66,8 @@ addresses of `ts_i386.so`.
 | `CreateGrenade` 0x7c874 / `CreateKnife` 0x7d9e4 / `CreateWeapon` 0xa07ec (`GoSlow` of the thrower's amount) | `projectiles::thrower_time_scale` |
 | `CTSKnife` 0x7d9c0.. | `projectiles::Knife` (link + classname `knife`; `Use` 0x7dda4 = `Knife::use_by`) |
 | `CTSWorldGun` 0xa07c8.. | `worldgun::WorldGun` (link `TSWorldGun`, classname `WorldGun`; `Use` 0xa1158 = `WorldGun::use_by`) |
-| `CBasePlayer::PlayerUse` 0xd9848 (weapon entities) | `weapons::player_use` (from `pre_think`) |
+| `CBasePlayer::PlayerUse` 0xd9848 | `player::player_use` (all classes; from `post_think`), with `weapons::use_by_player` for the weapon entities |
+| `CM61Grenade::Use` 0x7ce64 | `Grenade::use_by` (kicks a grenade resting on the ground) |
 | `UTIL_BubbleTrail` 0xee93c / `UTIL_WaterLevel` 0xee73c | `fire::bubble_trail` / `fire::water_level` |
 | `CTSAmmoPack` 0xa1310.. / `CBasePlayer::DropAmmo` 0x946f0 | `worldgun::AmmoPack` (link `TSAmmoPack`, classname `AmmoPack`) / `worldgun::drop_ammo` |
 | `CBasePlayer::PickUpWeapon` 0x9314c | `inventory::pick_up_weapon` |
@@ -94,9 +95,10 @@ addresses of `ts_i386.so`.
   instead), speed, `KFuPower`, `CustomWP` once per client. The inventory itself is **not**
   cleared here (see on_killed) so weapons the rules give in their `on_spawn` survive.
 * `pre_think`: pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
-  melee windows), `BlockPlayer` expiry, the delayed melee hit, and (alive, +use held) `Use` on
-  the dropped gun or thrown blade in front of the player.
-* `post_think`: `ItemPostFrame` while alive, seed reroll (`RandomLong(0, 32000)`, as TS), timer
+  melee windows), `BlockPlayer` expiry, the delayed melee hit.
+* `post_think`: `ItemPostFrame` while alive and not on a tank: once the gun is ready
+  (`Gun::post_frame_ready`), `ImpulseCommands`' `PlayerUse` (`player::player_use`) and then the
+  weapon frame (`Gun::weapon_post_frame`), seed reroll (`RandomLong(0, 32000)`, as TS), timer
   decrement by `frametime * fuser1 * (DFR ? 1.5 : 1)`, speed, messages.
 * `on_killed`: holster, ammo pack, drop every weapon as `WorldGun`, clear inventory, slots,
   kevlar flag, loadout (TS `ResetArmament`), `ActItems 0`, `CurWeapon 0,0,0`.
@@ -213,11 +215,8 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   plus the player's velocity, corpses drop at 60..160 u/s in a random direction.
 * `WorldGun`s and stuck knives get ground friction (x0.5 per 0.1 s): FWGS doesn't slow a
   sliding `MOVETYPE_BOUNCE` entity, so they would slide forever.
-* **+use on weapons** (`weapons::player_use`) searches only `WorldGun`s and thrown knives. TS's
-  `PlayerUse` picks the single best usable entity of any class; here buttons, doors and ground
-  weapons have their own searches (`entities::stock::player_use`, `rules::lifecycle`), so one
-  +use can reach both a gun and, say, a button in front of the player. Stuck blades are
-  `SOLID_TRIGGER` instead of `SOLID_NOT` (from before `Use` existed; harmless).
+* Stuck blades are `SOLID_TRIGGER` instead of `SOLID_NOT` (from before `Use` existed;
+  harmless).
 * **`SlowPhysics` keeps an explicit "saved" flag.** TS treats "saved velocity == 0" as "nothing
   saved". With that sentinel, a resting slowed object saves again on every think (its gravity
   shrinks by `s²` each time) and is never restored. The port saves once and restores the saved
@@ -272,8 +271,8 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   restore, no gravity compounding at rest), ammo pack contents (`take_ammo`).
 * **Not yet tested in engine**: slowed projectiles (power-up slow motion / `globalslow` with a
   grenade, thrown knife and dropped gun in sight), bullet-time simulated bullets (slow pause),
-  bubble trails under water, `dmgreport 2` with `sv_cheats 1`, +use on a flying/landed gun and on
-  a stuck knife/katana, the explosion slow-motion point (`spectacularness 100`).
+  bubble trails under water, `dmgreport 2` with `sv_cheats 1`, +use on a flying/landed gun, on a
+  grenade resting on the ground (the kick) and on a stuck knife/katana, the explosion slow-motion point (`spectacularness 100`).
 * Builds: `cargo build -p ts-server -p ts-client` (x86_64), `--target i686-unknown-linux-gnu`,
   `--target i686-pc-windows-gnu`: OK (only the pre-existing stdcall linker note).
 * In engine (FWGS, `~/games/xash_weapons`, `ts_bay107`): dedicated server on port 27210 PASS

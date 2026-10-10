@@ -197,10 +197,12 @@ impl GroundWeapon {
             return false;
         }
         rules::lifecycle::give_cash(p, -cost);
+        // TS tops up only an empty reserve, checked after the pickup (0xa2328: `reserve[ammo] < 1`).
         let extra = self.extra_clip.max(0);
         if extra != 0 {
             if let Some(w) = tables().weapon(self.id as u8) {
-                if w.ammo != 0 && crate::weapons::give_ammo(p, pcx, w.ammo, extra * w.clip.max(1)) > 0 {
+                let empty = p.inv.gun.reserve.get(w.ammo as usize).is_some_and(|&r| r < 1);
+                if w.ammo != 0 && empty && crate::weapons::give_ammo(p, pcx, w.ammo, extra * w.clip.max(1)) > 0 {
                     engine().emit_sound(pcx.edict, CHAN_ITEM as i32, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100);
                 }
             }
