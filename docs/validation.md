@@ -181,6 +181,14 @@ win32 under Wine (listen server, `ts_arena`).
   still render, then the torso/legs split, corpses and ghosts (steps in
   `implementation/client-rendering.md`, "Test results").
 
+* Drowning, slime and time-based damage (issue #38): unit tests only. In-engine: stay under
+  water deep enough to submerge (candidates with `!` water textures: `ts_bikini`, `ts_mathar`,
+  `ts_greenhouse`; depth not checked) for over 12 s and expect 3, 4, then 5 damage per second, a
+  `pl_wade1` gasp on surfacing and 10 health back every 2 s. `SS_HQ_f3` has a slime
+  `func_water` (skin -4, 4 × waterlevel per frame). No map in `~/dev/hl/ts/ts/maps` has lava or
+  a poison `trigger_hurt` (`ts_gpc` has a nerve-gas one, which only counts down), so poison
+  needs a test map.
+
 ### 3.3 Skeleton milestone (before the gameplay packages)
 
 The server library loaded on all six roots. The FWGS client joined ReHLDS (`TSHealth` shown in

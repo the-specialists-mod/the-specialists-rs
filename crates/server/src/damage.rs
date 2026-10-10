@@ -19,6 +19,15 @@ pub mod bits {
     pub const DROWN: i32 = 1 << 14;
     pub const NEVERGIB: i32 = 1 << 12;
     pub const ALWAYSGIB: i32 = 1 << 13;
+    /// First of the eight time-based types (`player::water::TimeBasedDamage`): paralyze, nerve
+    /// gas, poison, radiation, drown recover, acid, slow burn, slow freeze.
+    pub const PARALYZE: i32 = 1 << 15;
+    pub const POISON: i32 = 1 << 17;
+    pub const DROWNRECOVER: i32 = 1 << 19;
+    pub const ACID: i32 = 1 << 20;
+    /// `DMG_TIMEBASED` (`~0x3fff`): the mask `CheckTimeBasedDamage` (0xda00c) gates on. It also
+    /// covers `DROWN` and every bit above the eight time-based ones.
+    pub const TIMEBASED: i32 = !0x3fff;
     /// TS: thrown knife/katana (part of the armour-exempt mask 0x80040e4, weapons.md §5.9).
     pub const THROWN: i32 = 0x0800_0000;
     /// Damage types kevlar never absorbs.

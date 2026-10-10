@@ -104,6 +104,7 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | `inv` | `weapons::Inventory` | weapons package |
 | `ts` | `rules::PlayerRules` | rules package |
 | `hud` | `player::hud::HudCache` | rules package |
+| `tbd` | `player::water::TimeBasedDamage` | rules package (damage types taken, time-based damage, drown recovery) |
 | `bot` | `Option<bots::Bot>` | rules package |
 | `drive` | `entities::stock::drive::DriveState` | stock entities (train/tank driving) |
 
@@ -118,13 +119,13 @@ Hook order, fixed in `player/mod.rs`:
 * **pre_think:** `stock::player_use` (+use on stock entities, train/tank controls; skipped while a tank is in use), `drive::pre_think` (train speed control), then `rules`, `stunt`, `weapons`.
 * **post_think:** `drive::post_think` (tank firing / letting go), `weapons` (item post frame, skipped while a tank is in use), `stunt`, `rules`, then `hud::update` (sends changed HUD values, including `Train` and `HideWeapon`).
 * **fill_client_data:** `stunt`, `weapons`, `rules`.
-* **take_damage:** `player::damage::take_damage`, which on death calls `rules::on_killed`. That in turn calls `weapons::on_killed`.
+* **take_damage:** `player::damage::take_damage`, which on death calls `rules::on_killed`. That in turn calls `weapons::on_killed`. Self-inflicted damage from inside the player's own callbacks (fall, drowning, slime/lava, poison) calls `take_damage` directly, since `damage::apply` can't reach the dispatched entity.
 
 ### 4.4 Subsystems and their APIs
 
 * **`stunt`**: `CTSStunt`/`CTSAnimation`. It sets `iuser4` bits and impulses, and picks `sequence`/`gaitsequence`. The physics they trigger runs in `shared::pm`.
 * **`weapons`**: the per-player TS gun (one container, 38 weapon records), firing, hit resolution, penetration, `CBulletManager`, grenades, knives, kung fu. API for other subsystems: `give_weapon`, `give_ammo`, `strip_all`, `multiply_clip`.
-* **`rules`**: game modes, spawn selection, scoring and awards, death and respawn, power-ups (held slot, activation), slow-motion propagation, chat (`say`), cvars, TS map entities (`entities/ts`), HUD sync (`player/hud.rs`), player damage (`player/damage.rs`).
+* **`rules`**: game modes, spawn selection, scoring and awards, death and respawn, power-ups (held slot, activation), slow-motion propagation, chat (`say`), cvars, TS map entities (`entities/ts`), HUD sync (`player/hud.rs`), player damage (`player/damage.rs`), drowning and time-based damage (`player/water.rs`).
 * **`bots`**: fake clients driven by `pfnRunPlayerMove`. They let a dedicated server be exercised without a human. Controlled by the `ts_bot_quota` cvar.
 
 ### 4.5 Damage

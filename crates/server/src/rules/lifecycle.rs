@@ -222,9 +222,12 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         return;
     }
 
+    // PreThink order: WaterMove, UpdateClientData (InitHUD), CheckTimeBasedDamage, CheckSuitUpdate.
+    crate::player::water::water_move(p, cx);
     if p.ts.init_hud {
         init_hud(p, cx);
     }
+    crate::player::water::check_time_based_damage(p, cx);
 
     // CheckSuitUpdate (0xda2d0): the geiger counter (suit sentences never play in multiplayer).
     crate::entities::stock::triggers::update_geiger_counter(cx.edict);

@@ -173,6 +173,7 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
         rules::msg::director_event(eng.index_of(e), eng.index_of(inflictor), director::FLAGS_DAMAGE);
     };
     if cx.pev().takedamage == 0.0 {
+        p.tbd.on_damage(dmg.bits);
         tell_director(e, dmg.inflictor);
         return false;
     }
@@ -200,6 +201,8 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     if cx.pev().health <= 0.0 {
         rules::on_killed(p, cx, dmg);
     }
+    // Time-based damage bookkeeping (`player::water`), after the damage either way.
+    p.tbd.on_damage(dmg.bits);
     tell_director(e, dmg.inflictor);
     true
 }
