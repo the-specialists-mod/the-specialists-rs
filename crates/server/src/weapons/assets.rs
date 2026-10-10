@@ -11,15 +11,22 @@ use std::ffi::CStr;
 
 /// `ts_weapons_debug` (not TS): logs fires, hits, explosions, drops to the server console.
 static DEBUG: Global<Cell<Option<&'static cvar_t>>> = Global(Cell::new(None));
+static DMGREPORT: Global<Cell<Option<&'static cvar_t>>> = Global(Cell::new(None));
 static GRENADE_BUYS: Global<Cell<bool>> = Global(Cell::new(false));
+/// `g_sModelIndexBubbles` (`sprites/bubble.spr`, precached by TS's `W_Precache`).
+static BUBBLES: Global<Cell<i32>> = Global(Cell::new(0));
 
-/// Registers the weapons package's own cvar. The TS weapon cvars (`realbullet`, `ammocount`,
+/// Registers the weapons package's own cvars. The TS weapon cvars (`realbullet`, `ammocount`,
 /// `weaponstay`, `damagemult`, `customweapons`) and `weaponrestriction` belong to the rules
 /// (`rules::cvars`, `rules::commands`) and are read by name; `loadweapons`/`saveweapons` are
 /// registered here.
 pub fn register_cvars() {
     let e = engine();
     DEBUG.0.set(Some(e.register_cvar("ts_weapons_debug", "0", 0)));
+    // Port addition: TS reads `dmgreport` (5 sites) but never registers it, so there it's 0
+    // unless something else creates the cvar. Registered here (default 0, same behaviour) so the
+    // cheat output can be switched on.
+    DMGREPORT.0.set(Some(e.register_cvar("dmgreport", "0", 0)));
     e.add_server_command(c"loadweapons", super::custom::cmd_loadweapons);
     e.add_server_command(c"saveweapons", super::custom::cmd_saveweapons);
 }
@@ -57,6 +64,21 @@ pub fn damage_adjust() -> f32 {
 pub fn max_carry(t: u8) -> i32 {
     let col = (cvars().ammocount as i32).clamp(0, 3) as usize;
     tables().ammo(t).map(|a| a.max_carry[col]).unwrap_or(0)
+}
+
+/// `dmgreport`, read only with weapon cheats on (`g_flWeaponCheat`, i.e. `sv_cheats`), else 0.
+/// Values above 1 print bullet and thrown-blade damage to everyone. Any non-zero value logs
+/// player damage to the server console.
+pub fn dmgreport() -> f32 {
+    if engine().cvar_float(c"sv_cheats") == 0.0 {
+        return 0.0;
+    }
+    DMGREPORT.0.get().map(cvar_value).unwrap_or(0.0)
+}
+
+/// `g_sModelIndexBubbles` for `UTIL_BubbleTrail`.
+pub fn bubbles_model() -> i32 {
+    BUBBLES.0.get()
 }
 
 /// Logs `f()` when `ts_weapons_debug` is set.
@@ -122,6 +144,8 @@ const SOUNDS: &[&CStr] = &[
     c"weapons/katana/hit.wav",
     c"weapons/katana/hit1.wav",
     c"items/gunpickup2.wav",
+    // +use on a dropped weapon (`PlayerUse`; TS precaches it in `ClientPrecache`).
+    c"common/wpn_select.wav",
     c"items/9mmclip1.wav",
     c"items/weapondrop1.wav",
     c"weapons/items.wav",
@@ -174,6 +198,7 @@ pub fn precache() {
     for m in MODELS {
         e.precache_model(m);
     }
+    BUBBLES.0.set(e.precache_model(c"sprites/bubble.spr"));
     let mut a = Assets {
         events,
         v_model: [0; MAX_WEAPONS],

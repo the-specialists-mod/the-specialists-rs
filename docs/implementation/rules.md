@@ -89,7 +89,8 @@ Registered in TS order with TS defaults and flags (0x4 = FCVAR_SERVER, 0x100 = U
 and the port's `ts_bot_quota 0`.
 
 TS never registers `initial_cash`, `cashforwin`, `cashforlose`, `respawnnumber`, `dmgreport`;
-they are constants (`cvars::INITIAL_CASH` 1200 etc., respawnnumber 1).
+they are constants (`cvars::INITIAL_CASH` 1200 etc., respawnnumber 1). The weapons package
+registers `dmgreport` (default 0, port addition) so its cheat output can be switched on.
 
 Server commands: `globalslow`, `restartround`, `weaponrestriction`, `addbot`/`addcustombot`
 (TS: "Bots only in listen servers."; here they add a bot), `loadweapons`/`saveweapons` (print

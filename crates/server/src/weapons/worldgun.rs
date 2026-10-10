@@ -2,10 +2,11 @@
 //! ammo (`CTSAmmoPack`, link `TSAmmoPack`, classname `AmmoPack`).
 
 use super::host::emit;
+use super::projectiles::{self, SlowPhysics};
 use super::{assets, inventory};
 use crate::damage::{self, DamageInfo};
 use crate::entities::{self, link_entities};
-use crate::player;
+use crate::player::{self, Player};
 use crate::world::{Cx, Entity};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
@@ -32,12 +33,23 @@ pub struct WorldGun {
     pickup_after: f32,
     taken: bool,
     on_ground: bool,
+    phys: SlowPhysics,
 }
 
-/// `CTSWorldGun::CreateWeapon(player, id, status)` + placement; returns the edict.
-pub fn create(owner: *mut edict_t, id: u8, status: Status, origin: Vec3, velocity: Vec3, original_owner: *mut edict_t) -> *mut edict_t {
-    let slow = if owner.is_null() { 1.0 } else { owner.v().fuser1 };
-    super::projectiles::spawn_entity::<WorldGun>(c"TSWorldGun", |w, cx| {
+/// `CTSWorldGun::CreateWeapon(player, id, status)` + placement; returns the edict. `time_scale`
+/// is the thrower's ([`projectiles::thrower_time_scale`]); without a thrower it's 1.
+#[allow(clippy::too_many_arguments)]
+pub fn create(
+    owner: *mut edict_t,
+    id: u8,
+    status: Status,
+    origin: Vec3,
+    velocity: Vec3,
+    original_owner: *mut edict_t,
+    time_scale: f32,
+) -> *mut edict_t {
+    let slow = if owner.is_null() { 1.0 } else { time_scale };
+    projectiles::spawn_entity::<WorldGun>(c"TSWorldGun", |w, cx| {
         w.id = id;
         w.status = status;
         w.original_owner = (!original_owner.is_null()).then_some(original_owner);
@@ -46,7 +58,7 @@ pub fn create(owner: *mut edict_t, id: u8, status: Status, origin: Vec3, velocit
         pev.origin = origin;
         pev.velocity = velocity;
         pev.owner = owner;
-        pev.fuser1 = if slow > 0.0 { slow } else { 1.0 };
+        pev.fuser1 = slow;
         pev.angles = [0.0; 3];
         pev.avelocity = [0.0, e.random_long(-300, 300) as f32, e.random_long(-300, 300) as f32];
         if id == shared::weapons::id::BRIEFCASE {
@@ -140,11 +152,12 @@ impl Entity for WorldGun {
                 damage::apply(tr.pHit, &d);
             }
         }
+        self.phys.update(cx.pev());
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         if self.on_ground {
-            // WaitTouch: +use (the briefcase on plain touch)
+            // WaitTouch 0xa1250: +use (the briefcase on plain touch)
             let use_held = other.v().button & IN_USE as i32 != 0;
             if self.id == id::BRIEFCASE || use_held {
                 self.get_weapon(cx, other);
@@ -170,10 +183,7 @@ impl Entity for WorldGun {
             }
             pev.angles[2] = 0.0;
         }
-        // Players can also grab it while it's still sliding.
-        if e.is_player_edict(other) && other.v().button & IN_USE as i32 != 0 {
-            self.get_weapon(cx, other);
-        }
+        // A gun still in the air is picked up with +use (`Use`, see `use_by`), not by touch.
     }
 
     fn should_collide(&mut self, _cx: &mut Cx, other: *mut edict_t) -> bool {
@@ -200,32 +210,39 @@ impl WorldGun {
         e.set_size(me, [-4.0, -4.0, 0.0], [4.0, 4.0, 4.0]);
     }
 
-    /// `CTSWorldGun::GetWeapon` 0xa1198.
+    /// `CTSWorldGun::GetWeapon` 0xa1198 for a touching player.
     fn get_weapon(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        let e = engine();
-        if self.taken || e.time() < self.pickup_after || !e.is_player_edict(other) {
+        if !engine().is_player_edict(other) {
             return;
         }
-        let ov = other.v();
-        if ov.deadflag != DEAD_NO as i32 || ov.health <= 0.0 || ov.effects & EF_NODRAW as i32 != 0 {
+        player::with_player(other, |p, pcx| self.give_to(cx, p, pcx));
+    }
+
+    /// `CTSWorldGun::Use` 0xa1158, from the player's +use (`weapons::player_use`, the player is
+    /// the one being dispatched): works while the gun is still flying, once 0.5 s have passed.
+    pub fn use_by(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
+        if self.pickup_after < engine().time() {
+            self.give_to(cx, p, pcx);
+        }
+    }
+
+    /// `CTSWorldGun::GetWeapon` 0xa1198.
+    fn give_to(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
+        if self.taken || !Player::is_alive(pcx) || pcx.pev().effects & EF_NODRAW as i32 != 0 {
             return;
         }
         if cx.pev().effects & EF_NODRAW as i32 != 0 {
             return;
         }
-        let (id, status, orig) = (self.id, self.status, self.original_owner);
-        let took = player::with_player(other, |p, pcx| {
-            let ok = inventory::pick_up_weapon(p, pcx, id, Some(&status), 0, id != shared::weapons::id::BRIEFCASE, false);
-            if ok {
-                if let Some(o) = orig {
-                    p.inv.sv.owners[id as usize] = o;
-                }
+        let id = self.id;
+        let ok = inventory::pick_up_weapon(p, pcx, id, Some(&self.status), 0, id != shared::weapons::id::BRIEFCASE, false);
+        if ok {
+            if let Some(o) = self.original_owner {
+                p.inv.sv.owners[id as usize] = o;
             }
-            inventory::sync_speed(p, pcx);
-            ok
-        })
-        .unwrap_or(false);
-        if took {
+        }
+        inventory::sync_speed(p, pcx);
+        if ok {
             self.taken = true;
             entities::remove(cx.edict);
         }
@@ -309,20 +326,58 @@ impl Entity for AmmoPack {
         if ov.deadflag != DEAD_NO as i32 || ov.health <= 0.0 {
             return;
         }
-        let reserve = self.reserve;
-        let took = player::with_player(other, |p, _| {
-            let mut any = false;
-            for (t, &n) in reserve.iter().enumerate() {
-                if n > 0 && p.inv.gun.add_ammo(t as u8, n, assets::max_carry(t as u8)) {
-                    any = true;
-                }
-            }
-            any
-        })
-        .unwrap_or(false);
+        let reserve = &mut self.reserve;
+        let took = player::with_player(other, |p, _| take_ammo(reserve, |t, n| p.inv.gun.add_ammo(t, n, assets::max_carry(t))));
+        let Some(took) = took else {
+            return;
+        };
         if took {
             emit(other, CHAN_ITEM, c"items/9mmclip1.wav", 1.0, 0.8, 100);
-            entities::remove(cx.edict);
         }
+        // TS removes the pack on the first touch whether or not anything fitted (the armour a
+        // `DropArmor` pack carries is the only thing that keeps it; not ported).
+        entities::remove(cx.edict);
+    }
+}
+
+/// The ammo half of `CTSAmmoPack::WaitTouch` 0xa16c0: every type the pack holds goes through
+/// `CTSGun::AddAmmo` 0x808ac, which takes the whole amount (clamped to the max carry) if the
+/// player is below the max carry for that type. TS doesn't check for a weapon that uses it.
+/// Taken types are emptied from the pack. Returns true if anything was taken.
+fn take_ammo(pack: &mut [i32; MAX_AMMO], mut add_ammo: impl FnMut(u8, i32) -> bool) -> bool {
+    let mut any = false;
+    for (t, n) in pack.iter_mut().enumerate() {
+        if *n != 0 && add_ammo(t as u8, *n) {
+            *n = 0;
+            any = true;
+        }
+    }
+    any
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::weapons::Gun;
+
+    #[test]
+    fn ammo_pack_takes_every_type_below_max_carry() {
+        let mut gun = Gun::default();
+        gun.reserve[1] = 200;
+        gun.reserve[3] = 210;
+        let mut pack = [0; MAX_AMMO];
+        pack[1] = 60;
+        pack[3] = 30;
+        pack[4] = 5;
+        assert!(take_ammo(&mut pack, |t, n| gun.add_ammo(t, n, 210)));
+        // below the max carry: everything, clamped
+        assert_eq!(gun.reserve[1], 210);
+        assert_eq!(pack[1], 0);
+        // no weapon for type 4 needed
+        assert_eq!(gun.reserve[4], 5);
+        // at the max carry: stays in the pack
+        assert_eq!(gun.reserve[3], 210);
+        assert_eq!(pack[3], 30);
+        assert!(!take_ammo(&mut pack, |t, n| gun.add_ammo(t, n, 210)));
     }
 }

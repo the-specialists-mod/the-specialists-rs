@@ -61,9 +61,13 @@ addresses of `ts_i386.so`.
 | `VictimKungfuHold/KnifeHold/KatanaHold` 0x76f50/0x76de4/0x76c8c | `melee::hold` |
 | `CTSStunt::CheckForBreakables` (melee-window part) | `melee::pending_hit` |
 | `CM61Grenade` 0x7c850.. + `CTSGrenade::BounceTouch` 0x7be28 | `projectiles::Grenade` (link `m61_grenade`, classname `grenade`) |
-| `TSExplosion` 0x7d01c | `projectiles::explode` (+ `screen_shake`, `screen_fade` via `TSFade`, `TSFrags` type 1) |
-| `CTSKnife` 0x7d9c0.. | `projectiles::Knife` (link + classname `knife`) |
-| `CTSWorldGun` 0xa07c8.. | `worldgun::WorldGun` (link `TSWorldGun`, classname `WorldGun`) |
+| `TSExplosion` 0x7d01c, `DoSpectacularNess` 0x76b48 | `projectiles::explode` (+ `screen_shake`, `screen_fade` via `TSFade`, `TSFrags` type 1, the 0.25/1 s slow-motion point) |
+| `CTSPhysicObject` 0x7ba54.. (`Spawn`, `SavePhysics`, `RestorePhysycs`, `WaitThink`) | `projectiles::SlowPhysics` (grenade, knife and `WorldGun` thinks) |
+| `CreateGrenade` 0x7c874 / `CreateKnife` 0x7d9e4 / `CreateWeapon` 0xa07ec (`GoSlow` of the thrower's amount) | `projectiles::thrower_time_scale` |
+| `CTSKnife` 0x7d9c0.. | `projectiles::Knife` (link + classname `knife`; `Use` 0x7dda4 = `Knife::use_by`) |
+| `CTSWorldGun` 0xa07c8.. | `worldgun::WorldGun` (link `TSWorldGun`, classname `WorldGun`; `Use` 0xa1158 = `WorldGun::use_by`) |
+| `CBasePlayer::PlayerUse` 0xd9848 (weapon entities) | `weapons::player_use` (from `pre_think`) |
+| `UTIL_BubbleTrail` 0xee93c / `UTIL_WaterLevel` 0xee73c | `fire::bubble_trail` / `fire::water_level` |
 | `CTSAmmoPack` 0xa1310.. / `CBasePlayer::DropAmmo` 0x946f0 | `worldgun::AmmoPack` (link `TSAmmoPack`, classname `AmmoPack`) / `worldgun::drop_ammo` |
 | `CBasePlayer::PickUpWeapon` 0x9314c | `inventory::pick_up_weapon` |
 | `CBasePlayer::DropWeapon` 0x94900 / `ThrowWeapon` 0x9529c | `inventory::drop_weapon` (`Drop::{Current, Id, Disarm}`) / `throw_weapon` |
@@ -80,16 +84,18 @@ addresses of `ts_i386.so`.
 ### Hooks
 
 * `game_init`: cvars `realbullet` 0, `ammocount` 0, `weaponstay` 15, `damagemult` 0,
-  `customweapons` "", `ts_weapons_debug` 0 (not TS); server commands `weaponrestriction`,
-  `loadweapons`, `saveweapons`.
+  `customweapons` "", `ts_weapons_debug` 0 (not TS), `dmgreport` 0 (TS reads it but never
+  registers it); server commands `weaponrestriction`, `loadweapons`, `saveweapons`.
 * `precache`: the 11 events, every v_/p_/p_sil/w_ model, shells, fire sounds, the server-side
-  weapon sounds, `w_m61`/`w_knife`/`w_sealknife`/`w_katana`/`ammopack`; applies `customweapons`.
+  weapon sounds, `w_m61`/`w_knife`/`w_sealknife`/`w_katana`/`ammopack`, `sprites/bubble.spr`
+  (`g_sModelIndexBubbles`), `common/wpn_select.wav`; applies `customweapons`.
 * `on_spawn`: TSInit (bar 100, penalty 0, timers), deploy (kung fu unless rules already gave a
   weapon), `BuyArmament` from the `tkw`/`tki`/`tka` lists (or the map's `game_player_equip`s
   instead), speed, `KFuPower`, `CustomWP` once per client. The inventory itself is **not**
   cleared here (see on_killed) so weapons the rules give in their `on_spawn` survive.
 * `pre_think`: pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
-  melee windows), `BlockPlayer` expiry, the delayed melee hit.
+  melee windows), `BlockPlayer` expiry, the delayed melee hit, and (alive, +use held) `Use` on
+  the dropped gun or thrown blade in front of the player.
 * `post_think`: `ItemPostFrame` while alive, seed reroll (`RandomLong(0, 32000)`, as TS), timer
   decrement by `frametime * fuser1 * (DFR ? 1.5 : 1)`, speed, messages.
 * `on_killed`: holster, ammo pack, drop every weapon as `WorldGun`, clear inventory, slots,
@@ -118,7 +124,20 @@ addresses of `ts_i386.so`.
   `btype` not 1/2 and `left > 5`: step `min(2*left, 48)` (simulated bullets: `min(left, 48)`),
   then one 4096 u trace with a 30-unit range index.
 * Simulated bullets: when `realbullet != 0` or the shooter's `fuser1 < 0.99`; step every
-  `0.1/(realbullet+1)` s (every frame for >= 2) at `velocity_mps * 40 * dt * mult`.
+  `0.1/(realbullet+1)` s (every frame for >= 2) at `velocity_mps * 40 * dt * mult`, with
+  `mult = GetBulletVelocityMult(s, bt)`: `s` is the shooter's slow-motion "others" amount
+  (`pl+0x180`) while it's an activator, else `max(fuser1, 0.01)`; `bt` is the bullet-time flag
+  (`pl+0x175`, `PlayerRules::btime`: slow pause, `ts_slowmotion` flag 4).
+* Bubble trails: every hitscan pellet sends `TE_BUBBLETRAIL` (src -> end, `round(8192 *
+  fraction / 64)` bubbles, the pierce shot `round(4096 * fraction / 64)`) when either end is at
+  least 8 u under water.
+* Slow motion of projectiles: grenades, knives (not while stuck in a wall) and falling
+  `WorldGun`s start at the thrower's scale (`pl+0x180` if it's an activator, else
+  `max(fuser1, 0.01)`) and run `SlowPhysics` every 0.1 s think: `velocity * s`, `avelocity * s`,
+  `gravity * s²` from the saved pre-slow values, restored when `fuser1` returns to 1.
+* `dmgreport` (only with `sv_cheats`): `> 1` prints `damage:%f`, `damage(piercing):%f` (bullets)
+  and `(debug)%f` (thrown blades) to everyone as `HUD_PRINTTALK`; any non-zero value logs
+  `<attacker> damaged <victim> (%f hp)` to the console from the player's TraceAttack.
 * Melee: stock 35 u ahead hull 3, rate 0.725 (1.0875 stunting), damage `info.stock`
   (x2/3 stunting), bits 0x4001080. Knife slash 35 u, `damage * meleemult` (x2/3 stunting), bits
   0x1004, rate x1.5 stunting. Katana: reach 15-17 u, 50 (35 stunting, 55 backward) x meleemult,
@@ -131,8 +150,14 @@ addresses of `ts_i386.so`.
   `clamp(speed*0.1,15,30)` (0.75 s); stunting 15 (0.55 s). x meleemult, x2 with the kung-fu
   power-up. Bits 0x4001080, disarm + knockback (`v.vel += |a.vel|*dir`, `z = 235` above 30).
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
-  feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `fuser1` time; `TSExplosion(110, 0x1040,
-  300, 1024)`; flying impact `speed*0.1` if it would kill the target.
+  feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
+  `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target.
+* Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`spectacularness`
+  clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a
+  `ts_slowmotionpoint` at the blast (amount 0.25, 1 s, no bullet time).
+* Ammo pack touch (alive player): every type goes through `AddAmmo` (whole amount clamped to the
+  max carry, if the reserve is below it; no weapon needed), then the pack is removed whether or
+  not anything fitted.
 * Slots: 81 free at spawn, speed `round(210 + free*120/81)` (330 with nothing carried).
 * Disarm threshold: katana 30, knives 25, weapons with < 21 slots 20, else `min(slots, 50)`.
 * Dropped guns live `clamp(weaponstay, 5, 60)` s; `drop`/disarm drops `clamp(2*weaponstay, 10,
@@ -188,9 +213,28 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   plus the player's velocity, corpses drop at 60..160 u/s in a random direction.
 * `WorldGun`s and stuck knives get ground friction (x0.5 per 0.1 s): FWGS doesn't slow a
   sliding `MOVETYPE_BOUNCE` entity, so they would slide forever.
-* Thrown knives / stuck katanas are picked up on touch with **+use** held (TS: `Use`, which needs
-  the player's `+use` search; that isn't implemented in the player code yet). Stuck blades are
-  `SOLID_TRIGGER` instead of `SOLID_NOT` for that.
+* **+use on weapons** (`weapons::player_use`) searches only `WorldGun`s and thrown knives. TS's
+  `PlayerUse` picks the single best usable entity of any class; here buttons, doors and ground
+  weapons have their own searches (`entities::stock::player_use`, `rules::lifecycle`), so one
+  +use can reach both a gun and, say, a button in front of the player. Stuck blades are
+  `SOLID_TRIGGER` instead of `SOLID_NOT` (from before `Use` existed; harmless).
+* **`SlowPhysics` keeps an explicit "saved" flag.** TS treats "saved velocity == 0" as "nothing
+  saved". With that sentinel, a resting slowed object saves again on every think (its gravity
+  shrinks by `s²` each time) and is never restored. The port saves once and restores the saved
+  values. Kept as TS: the restore puts back the *pre-slow* velocity, so a slowed grenade or
+  knife lying on the ground jumps off with its throw velocity when the slow ends.
+* `UTIL_BubbleTrail` is not sent for simulated bullets (`realbullet` / slow motion): TS sends it
+  with the stale static trace result of the previous hitscan shot.
+* `dmgreport` is registered as a cvar (port addition, default 0). TS reads it with
+  `CVarGetFloat` but never registers it, so TS output needs the cvar created elsewhere.
+* `WorldGun` `WaitTouch` doesn't check the 0.5 s pickup delay (as TS: only `Use` does).
+* **The flying impact credits the projectile, as in TS** (`impact_damage`: inflictor and
+  attacker are both the grenade, knife or gun). TS passes `this->pev` as the TraceAttack attacker
+  and as both `ApplyMultiDamage` arguments in `CM61Grenade::WaitThink` (0x7cacc; see the
+  disassembly at 0x7ce3c/0x7ce46), `CTSKnife::WaitThink` (0x7ea30) and `CTSWorldGun::Fall`
+  (0xa0d84), not `pev->owner`. So a breakable broken, or a player killed, by a flying projectile
+  isn't credited to the thrower (issue #1). Only the explosion (`TSExplosion(..., owner)`) and a
+  thrown blade's direct hit on a player (`BounceTouch`) credit the thrower.
 * The bullet manager runs on a hidden `ts_bulletmanager` entity (TS: `CTSGameRules::Think`);
   bullets are also dropped after 16384 u without a hit.
 * The kick for bots goes to `punchangle` (TS `pev+0x68`), humans get it client-side.
@@ -205,13 +249,14 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 
 * `SVC_WEAPONANIM` is sent only to clients that don't predict weapons (TS behaviour); the client
   package plays view animations from events.
-* `dmgreport` cheat output, `UTIL_BubbleTrail` underwater, slow-motion points from explosions
-  (`spectacularness`), `CTSPhysicObject` slow-motion physics scaling of projectiles (only the
-  grenade fuse uses the thrower's time scale) and the briefcase/flag (rules).
-* `GetBulletVelocityMult`'s bullet-time flag (`pl+0x175`) is treated as off (movement package).
-* No server `+use` dispatch to `WorldGun`/knife `Use` (touch + IN_USE instead).
-* Ammo pack contents are given back regardless of owned weapons (TS checks per type, decompile
-  incomplete).
+* The briefcase/flag (rules).
+* Breakable explosions (`entities::stock::explode::ts_explosion`, the same `TSExplosion` in TS)
+  don't create the spectacular slow-motion point or knock `WorldGun`s around; only the
+  weapons' `projectiles::explode` does (#33).
+* `DropArmor` 0x93a3c armour packs (`CTSAmmoPack` with `armorvalue`) aren't ported. They're dead
+  in TS: nothing calls `DropArmor`, so ammo packs never carry armour there either.
+* Shrapnel (`CTSShrapnel`) and the flag (`CTSFlag`), the other `CTSPhysicObject`s, aren't
+  ported. Nothing in the decomp calls `CTSShrapnel::Create` 0x7bf9c directly.
 
 ## 7. Tests
 
@@ -223,7 +268,12 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   hidden view model), grip toggle, grenade pull/throw/slots, throw math, knife stacks, kung-fu
   punch + block + bar regen, Infinite Clip, priority switching, pickup limits, mode memory,
   message layouts, `CustomWP` round trip, clientdata/weapon_data packing.
-* `cargo test -p ts-server`: command argument parsing (`%i_%i`).
+* `cargo test -p ts-server`: command argument parsing (`%i_%i`), `SlowPhysics` (scale, rescale,
+  restore, no gravity compounding at rest), ammo pack contents (`take_ammo`).
+* **Not yet tested in engine**: slowed projectiles (power-up slow motion / `globalslow` with a
+  grenade, thrown knife and dropped gun in sight), bullet-time simulated bullets (slow pause),
+  bubble trails under water, `dmgreport 2` with `sv_cheats 1`, +use on a flying/landed gun and on
+  a stuck knife/katana, the explosion slow-motion point (`spectacularness 100`).
 * Builds: `cargo build -p ts-server -p ts-client` (x86_64), `--target i686-unknown-linux-gnu`,
   `--target i686-pc-windows-gnu`: OK (only the pre-existing stdcall linker note).
 * In engine (FWGS, `~/games/xash_weapons`, `ts_bay107`): dedicated server on port 27210 PASS

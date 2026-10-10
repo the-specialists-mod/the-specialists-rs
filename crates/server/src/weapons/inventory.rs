@@ -101,7 +101,8 @@ fn throw_weapon(p: &mut Player, cx: &mut Cx, id: u8, status: Status, pos_offset:
     let mut vel = spread::ma(pev.velocity, speed, f);
     vel[2] += speed * 0.5;
     let owner = p.inv.sv.owners[id as usize];
-    worldgun::create(cx.edict, id, status, origin, vel, owner)
+    let time_scale = super::projectiles::thrower_time_scale(p, cx.pev());
+    worldgun::create(cx.edict, id, status, origin, vel, owner, time_scale)
 }
 
 /// `CBasePlayer::DropWeapon(id | -1 current | -2 disarm, dmg)`.
