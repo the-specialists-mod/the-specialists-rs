@@ -95,7 +95,7 @@ addresses of `ts_i386.so`.
   weapon), `BuyArmament` from the `tkw`/`tki`/`tka` lists (or the map's `game_player_equip`s
   instead), speed, `KFuPower`, `CustomWP` once per client. The inventory itself is **not**
   cleared here (see on_killed) so weapons the rules give in their `on_spawn` survive.
-* `pre_think`: pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
+* `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
   melee windows), `BlockPlayer` expiry, the delayed melee hit.
 * `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
   tank (dead or game over, `PostThink` skips to the timer tail): once the gun is ready

@@ -41,9 +41,12 @@ fn multiplay_think(now: f32) -> bool {
         } else if chat > 120.0 {
             eng.set_cvar_string(c"mp_chattime", "120");
         }
-        let end = state::with(|g| g.intermission_start) + cvars::f(c"mp_chattime").clamp(10.0, 120.0);
+        let start = state::with(|g| g.intermission_start);
+        let end = start + cvars::f(c"mp_chattime").clamp(10.0, 120.0);
+        // After the chat time the level changes once someone presses a button
+        // (`PlayerThink`), or at the latest 120 s into the intermission.
         let changed = state::with(|g| {
-            if g.intermission_end == 0.0 && now > end {
+            if g.intermission_end == 0.0 && now > end && (g.end_intermission_button_hit || now > start + 120.0) {
                 g.intermission_end = now;
                 true
             } else {
