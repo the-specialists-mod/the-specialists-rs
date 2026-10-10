@@ -427,6 +427,38 @@ impl Knife {
     }
 }
 
+/// `CTSKnife::WaitTouch` 0x7dce8 on the blade's entvars: on the ground, the velocity halves
+/// (0.5 at objdump 0xf71e4), and below 32 u/s (0xf6dac) the blade stops and lies flat (pitch and
+/// roll 0). The spin is left alone: the engine clears `avelocity` once the blade is at rest.
+/// The engine calls this touch on every frame a sliding blade is pushed into the floor, so it is
+/// the blade's only ground friction (see docs/implementation/weapons.md).
+fn ground_slide(pev: &mut entvars_t) {
+    if pev.flags & FL_ONGROUND as i32 == 0 {
+        return;
+    }
+    pev.velocity = spread::scale(pev.velocity, 0.5);
+    if speed(pev) < 32.0 {
+        pev.angles[0] = 0.0;
+        pev.angles[2] = 0.0;
+        pev.velocity = [0.0; 3];
+    }
+}
+
+/// `CTSKnife::BounceTouch` 0x7decc, world hit: a blade at 100 u/s or more glances off when it
+/// meets the surface at a shallow angle (`-normal·dir < 0.4`) and the surface isn't a floor
+/// (`normal.z <= 0.98`); otherwise it sticks. The thresholds are doubles (0.4, 0.98) compared
+/// on the x87 stack.
+fn glances_off(speed: f32, dir: Vec3, normal: Vec3) -> bool {
+    let into = -(normal[0] as f64 * dir[0] as f64 + normal[1] as f64 * dir[1] as f64 + normal[2] as f64 * dir[2] as f64);
+    speed >= 100.0 && into < 0.4 && normal[2] as f64 <= 0.98
+}
+
+/// The pitch of a blade's world hit: `100 + RANDOM_FLOAT(..)`, truncated (`fistp` with the
+/// rounding control set to chop).
+fn hit_pitch(random: f32) -> i32 {
+    (100.0 + random as f64) as i32
+}
+
 impl Entity for Knife {
     fn spawn(&mut self, cx: &mut Cx) {
         let e = engine();
@@ -464,15 +496,11 @@ impl Entity for Knife {
             entities::remove(cx.edict);
             return;
         }
-        if !self.stuck {
-            impact_damage(cx.edict, self.thrower.or(cx.edict), 0.1, 0x0800_1000, false);
-        } else {
-            let pev = cx.pev();
-            if pev.flags & FL_ONGROUND as i32 != 0 {
-                pev.velocity = spread::scale(pev.velocity, 0.5);
-                pev.avelocity = spread::scale(pev.avelocity, 0.5);
-            }
-        }
+        // `CTSKnife::WaitThink` 0x7ea30 is the think in every state (flying, lying, stuck), so the
+        // flying impact runs for a blade that bounced off a player or slides along the floor
+        // too. It has no ground friction: that is `WaitTouch`, which the engine runs on every
+        // frame a sliding blade is pushed into the floor (see `ground_slide`).
+        impact_damage(cx.edict, self.thrower.or(cx.edict), 0.1, 0x0800_1000, false);
         // A blade stuck in a wall (MOVETYPE_FLY) stays put.
         let pev = cx.pev();
         if pev.movetype != MOVETYPE_FLY as i32 {
@@ -541,17 +569,17 @@ impl Knife {
             let pev = cx.pev();
             let s = speed(pev);
             let dir = spread::normalize(pev.velocity);
-            if s >= 100.0 && -spread::dot(normal, dir) < 0.4 && normal[2] <= 0.98 {
-                // glancing hit: bounce on
+            if glances_off(s, dir, normal) {
                 if e.point_contents(pev.origin) != CONTENTS_WATER {
                     melee::sparks(pev.origin);
                 }
-                emit(me, CHAN_BODY, c"weapons/knife/knife_hit.wav", 1.0, 0.8, 100 + e.random_long(0, 10));
+                emit(me, CHAN_BODY, c"weapons/knife/knife_hit.wav", 1.0, 0.8, hit_pitch(e.random_float(0.0, 10.0)));
                 let pev = cx.pev();
                 pev.velocity = spread::scale(pev.velocity, 0.5);
                 return;
             }
-            // stick in the wall
+            // Stick in the wall, 6 u back along the flight path. TS leaves it `SOLID_NOT`; +use
+            // still finds it (`FindEntityInSphere` and the abs box don't depend on `solid`).
             let back = spread::scale(dir, 6.0);
             let org = spread::sub(pev.origin, back);
             e.set_origin(me, org);
@@ -563,8 +591,11 @@ impl Knife {
             pev.movetype = MOVETYPE_FLY as i32;
             pev.velocity = [0.0; 3];
             pev.avelocity = [0.0; 3];
-            pev.solid = SOLID_TRIGGER as i32;
-            e.set_origin(me, org);
+            if s < 100.0 {
+                // A slow blade sticks too, with an extra hit sound on the same channel; the
+                // `settle` sound below replaces it (0x7e4aa).
+                emit(me, CHAN_BODY, c"weapons/knife/knife_hit.wav", 1.0, 0.8, hit_pitch(e.random_float(-10.0, 0.0)));
+            }
         } else if cls == b"knife" {
             return;
         } else {
@@ -574,19 +605,10 @@ impl Knife {
         self.settle(cx);
     }
 
-    /// `CTSKnife::WaitTouch` 0x7dce8: a blade lying on the ground slows down on every touch.
-    /// Picking it up is `Use` (+use, see [`Knife::use_by`]).
+    /// `CTSKnife::WaitTouch` 0x7dce8: a blade lying on the ground slows down on every touch
+    /// ([`ground_slide`]). Picking it up is `Use` (+use, see [`Knife::use_by`]).
     fn wait_touch(&mut self, cx: &mut Cx, _other: *mut edict_t) {
-        let pev = cx.pev();
-        if pev.flags & FL_ONGROUND as i32 != 0 {
-            pev.velocity = spread::scale(pev.velocity, 0.5);
-            if speed(pev) < 32.0 {
-                pev.angles[0] = 0.0;
-                pev.angles[2] = 0.0;
-                pev.velocity = [0.0; 3];
-                pev.avelocity = [0.0; 3];
-            }
-        }
+        ground_slide(cx.pev());
     }
 
     /// `CTSKnife::Use` 0x7dda4, from the player's +use (`player::player_use`, the player is the
@@ -635,6 +657,65 @@ mod tests {
         assert_eq!(give_slow_mul(0.0), 0.01);
         assert_eq!(give_slow_mul(-1.0), 0.01);
         assert_eq!(give_slow_mul(f32::NAN), 0.01);
+    }
+
+    fn sliding(velocity: Vec3) -> entvars_t {
+        entvars_t { velocity, avelocity: [-1300.0, 0.0, 0.0], angles: [30.0, 45.0, 90.0], flags: FL_ONGROUND as i32, ..Default::default() }
+    }
+
+    #[test]
+    fn blade_on_the_ground_halves_per_touch_then_lies_flat() {
+        let mut v = sliding([200.0, 0.0, 0.0]);
+        ground_slide(&mut v);
+        assert_eq!(v.velocity, [100.0, 0.0, 0.0]);
+        assert_eq!(v.angles, [30.0, 45.0, 90.0]);
+        ground_slide(&mut v);
+        assert_eq!(v.velocity, [50.0, 0.0, 0.0]);
+        // 25 u/s: stops and lies flat; the spin is the engine's to clear
+        ground_slide(&mut v);
+        assert_eq!(v.velocity, [0.0; 3]);
+        assert_eq!(v.angles, [0.0, 45.0, 0.0]);
+        assert_eq!(v.avelocity, [-1300.0, 0.0, 0.0]);
+        // exactly 64 -> 32 is not below 32
+        let mut v = sliding([64.0, 0.0, 0.0]);
+        ground_slide(&mut v);
+        assert_eq!(v.velocity, [32.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn blade_in_the_air_is_not_slowed_by_touches() {
+        let mut v = sliding([200.0, 0.0, -50.0]);
+        v.flags = 0;
+        ground_slide(&mut v);
+        assert_eq!(v.velocity, [200.0, 0.0, -50.0]);
+        assert_eq!(v.angles, [30.0, 45.0, 90.0]);
+    }
+
+    #[test]
+    fn fast_shallow_wall_hits_glance_off() {
+        let wall = [-1.0, 0.0, 0.0];
+        let shallow = spread::normalize([1.0, 3.0, 0.0]); // -n·d ≈ 0.32
+        let steep = spread::normalize([1.0, 1.0, 0.0]); // -n·d ≈ 0.71
+        assert!(glances_off(100.0, shallow, wall));
+        assert!(!glances_off(99.9, shallow, wall));
+        assert!(!glances_off(1900.0, steep, wall));
+        // floors (normal.z > 0.98) always stick, however shallow
+        let floor = [0.0, 0.0, 1.0];
+        assert!(!glances_off(1900.0, spread::normalize([10.0, 0.0, -1.0]), floor));
+        // 0.98 is a double: a float normal.z of 0.98f (0.98000001907) is above it
+        let ramp = [(1.0f32 - 0.98 * 0.98).sqrt(), 0.0, 0.98];
+        assert!(!glances_off(1900.0, [0.0, 1.0, 0.0], ramp));
+        let ramp = [0.2, 0.0, 0.979];
+        assert!(glances_off(1900.0, [0.0, 1.0, 0.0], ramp));
+    }
+
+    #[test]
+    fn hit_pitch_truncates() {
+        assert_eq!(hit_pitch(0.0), 100);
+        assert_eq!(hit_pitch(9.99), 109);
+        assert_eq!(hit_pitch(10.0), 110);
+        assert_eq!(hit_pitch(-0.5), 99);
+        assert_eq!(hit_pitch(-10.0), 90);
     }
 
     fn flying() -> entvars_t {

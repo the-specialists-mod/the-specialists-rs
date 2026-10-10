@@ -235,14 +235,29 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   branch, and it is removed. (FWGS also applies `friction` to the angular velocity in
   `SV_AngularMove`; HLDS doesn't. That only affects the spin.) Like TS, the slide length depends
   on the server frame rate.
-* Stuck knives keep a port-only ground friction (x0.5 per 0.1 s in `Knife::think`).
-* Stuck blades are `SOLID_TRIGGER` instead of `SOLID_NOT` (from before `Use` existed;
-  harmless).
+* **Thrown blades have TS's ground friction, with no port extra** (issue #66). The only
+  slowing on the ground is `CTSKnife::WaitTouch` (0x7dce8, `projectiles::ground_slide`): with
+  `FL_ONGROUND`, velocity ×0.5, and below 32 u/s pitch and roll go to 0 and the blade stops
+  (TS doesn't touch the spin; the engine clears `avelocity` at rest). As for the `WorldGun`
+  above, the engine runs that touch on every frame a sliding `MOVETYPE_BOUNCE` / `SOLID_BBOX`
+  blade is pushed into the floor, so a port-only ×0.5 per 0.1 s in `Knife::think` was removed.
+  `CTSKnife::WaitThink` (0x7ea30) is the think in every state: the flying impact (> 64 u/s,
+  `speed * 0.1` to a non-player 64 u ahead) also runs for a blade that bounced off a player or
+  slides along the floor, and a blade stuck in a wall (`MOVETYPE_FLY`) skips the slow-motion
+  physics. A blade stuck in a wall is `SOLID_NOT`, as in TS (+use finds it through
+  `FindEntityInSphere`, which ignores `solid`; the port used to make it `SOLID_TRIGGER`, so a
+  player walking through it ran `WaitTouch`). World hits use TS's sounds: a glancing hit
+  (≥ 100 u/s, `-normal·dir < 0.4`, `normal.z <= 0.98`) plays `knife_hit` at
+  `100 + RANDOM_FLOAT(0, 10)` truncated, and a blade under 100 u/s plays an extra
+  `100 + RANDOM_FLOAT(-10, 0)` hit before the pitch-100 one on the same channel.
 * **`SlowPhysics` keeps an explicit "saved" flag.** TS treats "saved velocity == 0" as "nothing
   saved". With that sentinel, a resting slowed object saves again on every think (its gravity
   shrinks by `s²` each time) and is never restored. The port saves once and restores the saved
   values. Kept as TS: the restore puts back the *pre-slow* velocity, so a slowed grenade or
   knife lying on the ground jumps off with its throw velocity when the slow ends.
+* Thrown blades set `pev->owner` to the thrower (TS's `CreateKnife` 0x7d9e4 only keeps it in
+  the private +0x8c). The engine therefore doesn't collide a blade with its thrower, and
+  `net.rs` keys the thrower's glow shell off `pev->owner` (TS's `AddToFullPack` reads +0x8c).
 * `UTIL_BubbleTrail` is not sent for simulated bullets (`realbullet` / slow motion): TS sends it
   with the stale static trace result of the previous hitscan shot.
 * `dmgreport` is registered as a cvar (port addition, default 0). TS reads it with
@@ -291,13 +306,17 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   message layouts, `CustomWP` round trip, clientdata/weapon_data packing.
 * `cargo test -p ts-server`: command argument parsing (`%i_%i`), `SlowPhysics` (scale, rescale,
   restore, no gravity compounding at rest), ammo pack contents (`take_ammo`), the explosion's
-  `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and damage falloff (`falloff_damage`).
+  `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and damage falloff (`falloff_damage`),
+  the thrown blade's ground slide (`ground_slide`), glance-or-stick test (`glances_off`) and
+  hit pitch (`hit_pitch`).
 * **Not yet tested in engine**: slowed projectiles (power-up slow motion / `globalslow` with a
   grenade, thrown knife and dropped gun in sight), bullet-time simulated bullets (slow pause),
   bubble trails under water, `dmgreport 2` with `sv_cheats 1`, +use on a flying/landed gun, on a
   grenade resting on the ground (the kick) and on a stuck knife/katana, the explosion slow-motion point (`spectacularness 100`),
   a grenade (or an exploding breakable) next to a dropped gun: it flies off, lighter guns
-  further, and a landed gun hops.
+  further, and a landed gun hops. The slide of a thrown blade on the floor without the old
+  think friction (issue #66): `WaitTouch` halves it every frame, so it should still stop within
+  a few frames of landing.
 * Builds: `cargo build -p ts-server -p ts-client` (x86_64), `--target i686-unknown-linux-gnu`,
   `--target i686-pc-windows-gnu`: OK (only the pre-existing stdcall linker note).
 * In engine (FWGS, `~/games/xash_weapons`, `ts_bay107`): dedicated server on port 27210 PASS
