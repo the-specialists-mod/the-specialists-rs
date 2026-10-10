@@ -19,6 +19,11 @@ pub fn model_by_index(index: i32) -> *mut model_s {
     cl_eng!(pfnGetModelByIndex(index))
 }
 
+/// `V_CalcShake`: advances the current screen shake (`svc_shake`) for this frame.
+pub fn calc_shake() {
+    cl_eng!(V_CalcShake())
+}
+
 /// `V_ApplyShake`: adds the current screen shake to a view origin and angles.
 pub fn apply_shake(origin: &mut [f32; 3], angles: &mut [f32; 3], factor: f32) {
     cl_eng!(V_ApplyShake(origin.as_mut_ptr(), angles.as_mut_ptr(), factor))

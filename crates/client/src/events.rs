@@ -79,9 +79,7 @@ impl Args {
     /// `EV_GetGunPosition`: origin + view offset (TS duck view 16).
     pub fn gun_position(&self) -> Vec3 {
         let ofs = if self.is_local() {
-            let mut vh = [0.0f32; 3];
-            goldsrc::ev!(EV_LocalPlayerViewheight(vh.as_mut_ptr()));
-            vh
+            r::local_player_viewheight()
         } else if self.ducking {
             shared::VEC_DUCK_VIEW
         } else {

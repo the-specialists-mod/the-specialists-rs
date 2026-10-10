@@ -7,8 +7,8 @@
 
 use super::psys::Camera;
 use goldsrc::ext::render::{Vec3, vec3 as v};
+use goldsrc::ext::tri;
 use goldsrc::sys::*;
-use goldsrc::tri;
 
 pub const SPRITE: &str = "sprites/quarterscope.spr";
 
@@ -40,18 +40,18 @@ pub fn draw(sprite: HSPRITE, cam: &Camera, third_person: bool) {
     if third_person || fov >= 40 || crate::hud::dead_or_observer() || !super::laser::set_sprite(sprite, 0) {
         return;
     }
-    tri!(RenderMode(kRenderTransTexture as i32));
-    tri!(CullFace(TRICULLSTYLE_TRI_NONE));
-    tri!(Begin(TRI_QUADS as i32));
-    tri!(Color4f(1.0, 1.0, 1.0, 1.0));
+    tri::render_mode(kRenderTransTexture as i32);
+    tri::cull_face(TRICULLSTYLE_TRI_NONE);
+    tri::begin(TRI_QUADS as i32);
+    tri::color4f(1.0, 1.0, 1.0, 1.0);
     for q in quads(cam, fov) {
         for (uv, p) in q {
-            tri!(TexCoord2f(uv[0], uv[1]));
-            tri!(Vertex3fv(p.as_ptr()));
+            tri::tex_coord2f(uv[0], uv[1]);
+            tri::vertex3fv(&p);
         }
     }
-    tri!(End());
-    tri!(RenderMode(kRenderNormal as i32));
+    tri::end();
+    tri::render_mode(kRenderNormal as i32);
 }
 
 #[cfg(test)]

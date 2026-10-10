@@ -141,7 +141,7 @@ impl Entity for World {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"skyname" => {
-                goldsrc::eng!(pfnCVarSetString(c"sv_skyname".as_ptr(), value.as_ptr()));
+                engine().set_cvar_cstr(c"sv_skyname", value);
                 true
             }
             _ => crate::rules::world_key_value(key, value),

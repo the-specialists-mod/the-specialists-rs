@@ -46,6 +46,7 @@ Packages used on Arch: `rustup cmake lib32-glibc lib32-gcc-libs mingw-w64-gcc wi
 ## 2. Running the checks
 
 ```sh
+cargo xtask lint                        # no engine-call macros in game crates; SAFETY comments on every target
 cargo xtask roots                       # which roots exist
 cargo xtask install all                 # assemble <root>/ts and install libraries
 cargo xtask server rehlds-linux --map ts_awaken --bots 4 --seconds 60

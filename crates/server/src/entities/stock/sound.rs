@@ -490,7 +490,7 @@ impl Entity for EnvSound {
     fn think(&mut self, cx: &mut Cx) {
         let eng = engine();
         let now = eng.time();
-        let p = goldsrc::eng!(pfnFindClientInPVS(cx.edict));
+        let p = eng.find_client_in_pvs(cx.edict);
         let fast = 'think: {
             if p.is_null() || eng.index_of(p) == 0 || !goldsrc::ext::entities::is_player(p) {
                 break 'think false;

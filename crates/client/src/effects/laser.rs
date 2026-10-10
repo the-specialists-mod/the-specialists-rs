@@ -6,8 +6,8 @@
 use super::psys::Camera;
 use crate::state;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
+use goldsrc::ext::tri;
 use goldsrc::sys::*;
-use goldsrc::tri;
 
 pub const ITEM_LASER: i32 = 2;
 pub const ITEM_FLASHLIGHT: i32 = 4;
@@ -49,7 +49,7 @@ pub(super) fn set_sprite(h: HSPRITE, frame: i32) -> bool {
         return false;
     }
     let m = r::sprite_model(h);
-    !m.is_null() && tri!(SpriteTexture(m as *mut model_s, frame)) != 0
+    !m.is_null() && tri::sprite_texture(m, frame)
 }
 
 /// A camera-facing strip from `a` to `b`.
@@ -58,30 +58,30 @@ fn beam_quad(cam: &Camera, a: Vec3, b: Vec3, width: f32, rgb: Vec3, alpha: f32) 
     let mid = v::scale(v::add(a, b), 0.5);
     let side = v::normalize(v::cross(dir, v::sub(cam.origin, mid)));
     let w = v::scale(side, width * 0.5);
-    tri!(Begin(TRI_QUADS as i32));
-    tri!(Color4f(rgb[0], rgb[1], rgb[2], alpha));
+    tri::begin(TRI_QUADS as i32);
+    tri::color4f(rgb[0], rgb[1], rgb[2], alpha);
     for (uv, p) in [([0.0, 0.0], v::sub(a, w)), ([1.0, 0.0], v::sub(b, w)), ([1.0, 1.0], v::add(b, w)), ([0.0, 1.0], v::add(a, w))] {
-        tri!(TexCoord2f(uv[0], uv[1]));
-        tri!(Vertex3fv(p.as_ptr()));
+        tri::tex_coord2f(uv[0], uv[1]);
+        tri::vertex3fv(&p);
     }
-    tri!(End());
+    tri::end();
 }
 
 fn sprite_quad(cam: &Camera, org: Vec3, size: f32, rgb: Vec3, alpha: f32) {
     let r_ = v::scale(cam.right, size);
     let u_ = v::scale(cam.up, size);
-    tri!(Begin(TRI_QUADS as i32));
-    tri!(Color4f(rgb[0], rgb[1], rgb[2], alpha));
+    tri::begin(TRI_QUADS as i32);
+    tri::color4f(rgb[0], rgb[1], rgb[2], alpha);
     for (uv, p) in [
         ([0.0, 0.0], v::add(v::sub(org, r_), u_)),
         ([1.0, 0.0], v::add(v::add(org, r_), u_)),
         ([1.0, 1.0], v::sub(v::add(org, r_), u_)),
         ([0.0, 1.0], v::sub(v::sub(org, r_), u_)),
     ] {
-        tri!(TexCoord2f(uv[0], uv[1]));
-        tri!(Vertex3fv(p.as_ptr()));
+        tri::tex_coord2f(uv[0], uv[1]);
+        tri::vertex3fv(&p);
     }
-    tri!(End());
+    tri::end();
 }
 
 fn trace_world(a: Vec3, b: Vec3, ignore_player: i32) -> pmtrace_s {
@@ -144,8 +144,8 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
             if let Some(o) = beam_origin
                 && set_sprite(s.beam_anim, frame)
             {
-                tri!(RenderMode(kRenderTransAdd as i32));
-                tri!(CullFace(TRICULLSTYLE_TRI_NONE));
+                tri::render_mode(kRenderTransAdd as i32);
+                tri::cull_face(TRICULLSTYLE_TRI_NONE);
                 let end = v::ma(o, v::dist(o, hit).min(96.0), v::normalize(d));
                 beam_quad(cam, o, end, 0.6, rgb, 0.6);
             }
@@ -164,7 +164,7 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
         }
         if let Some(vm) = &vm {
             if set_sprite(s.flash, 0) {
-                tri!(RenderMode(kRenderTransAdd as i32));
+                tri::render_mode(kRenderTransAdd as i32);
                 sprite_quad(cam, vm.attachment[0], 2.0, [1.0, 1.0, 1.0], 0.5);
                 if akimbo {
                     sprite_quad(cam, vm.attachment[2], 2.0, [1.0, 1.0, 1.0], 0.5);
@@ -172,7 +172,7 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
             }
         }
     }
-    tri!(RenderMode(kRenderNormal as i32));
+    tri::render_mode(kRenderNormal as i32);
 }
 
 /// `DrawOtherLasers` (`0x1003d600`) / `DrawOtherFlashlights` (`0x1003b750`).
@@ -202,8 +202,8 @@ pub fn draw_others(s: &Sprites, cam: &Camera, visible: &[bool; 33]) {
         if it & ITEM_LASER != 0 {
             let rgb = laser_color(colors.get(idx as usize).copied().unwrap_or(0) as i32);
             if set_sprite(s.dot, 0) {
-                tri!(RenderMode(kRenderTransAdd as i32));
-                tri!(CullFace(TRICULLSTYLE_TRI_NONE));
+                tri::render_mode(kRenderTransAdd as i32);
+                tri::cull_face(TRICULLSTYLE_TRI_NONE);
                 sprite_quad(cam, v::ma(tr.endpos, -1.0, dir), 4.0, rgb, 1.0);
             }
             if set_sprite(s.beam, 0) {
@@ -222,7 +222,7 @@ pub fn draw_others(s: &Sprites, cam: &Camera, visible: &[bool; 33]) {
             }
         }
     }
-    tri!(RenderMode(kRenderNormal as i32));
+    tri::render_mode(kRenderNormal as i32);
 }
 
 /// `DrawPlayerShadows` (`0x10055760`): `ombra.spr` quad on the floor below visible players.
@@ -231,8 +231,8 @@ pub fn draw_shadows(s: &Sprites, cam: &Camera, visible: &[bool; 33], cl_shadow: 
         return;
     }
     let local = r::local_player().map_or(0, |e| e.index);
-    tri!(RenderMode(kRenderTransAlpha as i32));
-    tri!(CullFace(TRICULLSTYLE_TRI_NONE));
+    tri::render_mode(kRenderTransAlpha as i32);
+    tri::cull_face(TRICULLSTYLE_TRI_NONE);
     for idx in 1..=r::max_clients().min(32) {
         let is_local = idx == local;
         if is_local {
@@ -260,18 +260,18 @@ pub fn draw_shadows(s: &Sprites, cam: &Camera, visible: &[bool; 33], cl_shadow: 
         let c = v::ma(tr.endpos, 0.5, n);
         let (a, b) = (v::scale(tangent, 24.0), v::scale(bit, 24.0));
         let _ = cam;
-        tri!(Begin(TRI_QUADS as i32));
-        tri!(Color4f(1.0, 1.0, 1.0, alpha));
+        tri::begin(TRI_QUADS as i32);
+        tri::color4f(1.0, 1.0, 1.0, alpha);
         for (uv, p) in [
             ([0.0, 0.0], v::sub(v::sub(c, a), b)),
             ([1.0, 0.0], v::sub(v::add(c, a), b)),
             ([1.0, 1.0], v::add(v::add(c, a), b)),
             ([0.0, 1.0], v::add(v::sub(c, a), b)),
         ] {
-            tri!(TexCoord2f(uv[0], uv[1]));
-            tri!(Vertex3fv(p.as_ptr()));
+            tri::tex_coord2f(uv[0], uv[1]);
+            tri::vertex3fv(&p);
         }
-        tri!(End());
+        tri::end();
     }
-    tri!(RenderMode(kRenderNormal as i32));
+    tri::render_mode(kRenderNormal as i32);
 }

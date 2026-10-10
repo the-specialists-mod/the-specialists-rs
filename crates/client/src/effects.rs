@@ -610,15 +610,14 @@ pub fn fog_begin() {
     let on = cvar(|c| c.gl_fog) != 0.0;
     if let (Some(f), true) = (fog, on) {
         // ts_fog colours are 0..1 (TS feeds glFogfv); TriAPI Fog takes 0..255.
-        let mut c = f.color.map(|x| if x <= 1.0 { x * 255.0 } else { x });
-        goldsrc::tri!(Fog(c.as_mut_ptr(), f.near, f.far, 1));
+        let c = f.color.map(|x| if x <= 1.0 { x * 255.0 } else { x });
+        goldsrc::ext::tri::fog(c, f.near, f.far, true);
     }
 }
 
 fn fog_end() {
     if with(|fx| fx.fog.is_some()) && cvar(|c| c.gl_fog) != 0.0 {
-        let mut c = [0.0f32; 3];
-        goldsrc::tri!(Fog(c.as_mut_ptr(), 0.0, 0.0, 0));
+        goldsrc::ext::tri::fog([0.0; 3], 0.0, 0.0, false);
     }
 }
 

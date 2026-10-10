@@ -41,10 +41,10 @@ fn with<R>(f: impl FnOnce(&mut Menus) -> R) -> R {
 struct EngineRng;
 impl Rng for EngineRng {
     fn long(&mut self, lo: i32, hi: i32) -> i32 {
-        goldsrc::cl_eng!(pfnRandomLong(lo, hi))
+        goldsrc::ext::render::random_long(lo, hi)
     }
     fn float(&mut self, lo: f32, hi: f32) -> f32 {
-        goldsrc::cl_eng!(pfnRandomFloat(lo, hi))
+        goldsrc::ext::render::random_float(lo, hi)
     }
 }
 
