@@ -32,7 +32,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `blood.rs` | `UTIL_ShouldShowBlood`, `UTIL_BloodStream`, `UTIL_BloodDrips`, `UTIL_BloodDecalTrace`, `UTIL_RandomBloodVector`, the world blood/gib precaches, `env_blood` |
 | `xen.rs` | `xen_plantlight`, `xen_hair`, `xen_tree` (+ `xen_ttrigger`), `xen_spore_small/medium/large` (+ `xen_hull`) |
 | `monsters.rs` | `monster_hevsuit_dead` (with the `CBaseMonster` corpse code: fall, `DeadTakeDamage`, gibbing, fade) |
-| `items.rs` | `item_healthkit`, `item_battery`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins |
+| `items.rs` | `item_healthkit`, `item_battery`, `item_antidote`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins |
 | `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`), `game_score` (+ `AddPoints` / `AddPointsToTeam`) |
 
 How the SDK patterns map to Rust:
@@ -112,7 +112,7 @@ How the SDK patterns map to Rust:
 | `game_score` | SDK maprules.cpp | `points` to the activating player (`AddPoints`, `ScoreInfo` to all), or with spawnflag 2 to each of their teammates; without spawnflag 1 a score isn't taken below 0. `master` gates it. |
 | `monster_hevsuit_dead` | SDK `CDeadHEV` | `models/player.mdl`, body 1, sequence from `pose` (0–3: `deadback`, `deadsitting`, `deadstomach`, `deadtable`; a missing sequence logs "Dead hevsuit with bad pose" and gets `EF_BRIGHTFIELD`). Falls (`MOVETYPE_TOSS`) and takes its sequence box on landing. Crush/fall/blast/sonic/club damage wears it down (10 %) and gibs it when a hit reaches its health: head gib + 4 human gibs with blood, `common/bodysplat.wav`; with `violence_hgibs 0` it fades out instead. |
 | `xen_plantlight`, `xen_hair`, `xen_tree`, `xen_ttrigger`, `xen_spore_small`, `xen_spore_medium`, `xen_spore_large`, `xen_hull` | SDK xen.cpp | Studio animation through `animating.rs`. The light plant ducks on player touch (glow sprite attached to attachment 1 goes `EF_NODRAW`, targets fired off) and rises 5 s later (targets on). The tree swings at anything touching its 48×48×128 trigger 64 units ahead or shooting it, and its `TREE_AE_ATTACK` model event deals 25 crush/slash, punch 15 and a 100 u/s shove. Large spores add five invisible `xen_hull` leg boxes. |
-| `item_healthkit`, `item_battery` | **TS** pickup rules | See §3.3. |
+| `item_healthkit`, `item_battery`, `item_antidote` | **TS** pickup rules | See §3.3. |
 | `func_healthcharger`, `func_recharge` | **TS** `CWallHealth` / `CRecharge` | One-shot: the first use refills fully, then the charger recharges after 60 s (health) or 30 s (armour). |
 | `game_text` | SDK maprules.cpp | `TE_TEXTMESSAGE` per client, master check. |
 | `game_player_equip` | SDK maprules.cpp (same in TS 0xcd494) | Unknown keys are items (`name#n` stripped, count ≥ 1, max 32), given through `GiveNamedItem` (item spawned at the player's feet with `SF_NORESPAWN`, then touched). Touch (master, not `USEONLY`) / use (no master). TS `PlayerSpawn` touches every one on spawn instead of buying the loadout (`maprules::equip_on_spawn`, called from `weapons::on_spawn`; deferred until the player's spawn dispatch returns). `weapon_tsgun` is a no-op: the TS gun is built into every player. |
@@ -188,6 +188,11 @@ How the SDK patterns map to Rust:
   armour, but the battery is still used up. Armour is capped at 100 and speed is recomputed from
   the free slots. It then queues the `!HEV_<n>P` charge report with `SetSuitUpdate`, which TS
   drops in multiplayer (§3.5), so no sentence plays.
+* **Antidote** (`CItemAntidote`, 0xcb1c0). `models/w_antidote.mdl` (only the model is precached).
+  Touching it always succeeds, with no pickup message or sound: it queues `!HEV_DET4` (dropped
+  in multiplayer, §3.5) and adds one to the player's antidote count (+0x834,
+  `TimeBasedDamage::antidotes`), which cures nerve gas or poison (`CheckTimeBasedDamage`). The
+  count is never reset, so it survives death. None of the 97 shipped maps place one.
 * **Chargers.** The health charger refills to max in one use. The HEV charger calls
   `TakeArmor(100)` in one use. They recharge after 60 s and 30 s.
 * **Items** respawn after 30 s unless `SF_NORESPAWN` (1 << 30) is set, with the `suitchargeok1`

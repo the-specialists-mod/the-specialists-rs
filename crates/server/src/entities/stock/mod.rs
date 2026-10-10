@@ -36,7 +36,7 @@ use buttons::{Button, ButtonTarget, MultiSource};
 use doors::Door;
 use effects::*;
 use goldsrc::edict::EdictPtr;
-use items::{ArmorCharger, Battery, HealthCharger, HealthKit};
+use items::{Antidote, ArmorCharger, Battery, HealthCharger, HealthKit};
 use lights::Light;
 use maprules::{GamePlayerEquip, GameText};
 use sound::AmbientGeneric;
@@ -126,6 +126,7 @@ link_entities! {
     // items.cpp / healthkit.cpp / maprules.cpp
     item_healthkit            => HealthKit,
     item_battery              => Battery,
+    item_antidote             => Antidote,
     game_text                 => GameText,
     game_player_equip         => GamePlayerEquip,
     func_healthcharger        => HealthCharger,

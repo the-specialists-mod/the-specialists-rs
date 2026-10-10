@@ -1,12 +1,13 @@
-//! `item_healthkit`, `item_battery` (SDK items.cpp / healthkit.cpp with TS's player rules) and
-//! the player health/armour helpers they need.
+//! `item_healthkit`, `item_battery`, `item_antidote` (SDK items.cpp / healthkit.cpp with TS's
+//! player rules) and the player health/armour helpers they need.
 //!
 //! TS: a healthkit gives a fixed 50 health through `CBasePlayer::TakeHealth`, which only refuses
 //! when the player is above `max_health` and doesn't cap (the player's PreThink decays health
 //! above max by 1/s: rules package). A battery calls `TakeArmor(50)`: the first kevlar costs 10
 //! free inventory slots (no kevlar if there's no room, but the battery is still used up), armour
-//! is capped at 100 and the move speed is recomputed. Items respawn after 30 s unless
-//! spawnflag `SF_NORESPAWN` (1 << 30) is set.
+//! is capped at 100 and the move speed is recomputed. An antidote adds one to the player's
+//! antidote count, which cures nerve gas or poison (`player::water`). Items respawn after 30 s
+//! unless spawnflag `SF_NORESPAWN` (1 << 30) is set.
 
 use super::base::*;
 use crate::entities::remove;
@@ -74,9 +75,10 @@ pub fn player_take_armor(p: *mut edict_t, amount: f32) -> bool {
 enum Kind {
     HealthKit,
     Battery,
+    Antidote,
 }
 
-/// `CItem` subclasses: `KIND` 0 = healthkit, 1 = battery.
+/// `CItem` subclasses: `KIND` 0 = healthkit, 1 = battery, 2 = antidote.
 #[derive(Default)]
 pub struct Item<const KIND: u8> {
     respawning: bool,
@@ -85,13 +87,18 @@ pub struct Item<const KIND: u8> {
 
 impl<const KIND: u8> Item<KIND> {
     fn kind() -> Kind {
-        if KIND == 0 { Kind::HealthKit } else { Kind::Battery }
+        match KIND {
+            0 => Kind::HealthKit,
+            1 => Kind::Battery,
+            _ => Kind::Antidote,
+        }
     }
 
     fn model() -> &'static CStr {
         match Self::kind() {
             Kind::HealthKit => c"models/w_medkit.mdl",
             Kind::Battery => c"models/w_battery.mdl",
+            Kind::Antidote => c"models/w_antidote.mdl",
         }
     }
 
@@ -125,6 +132,15 @@ impl<const KIND: u8> Item<KIND> {
                 }
                 let name = std::ffi::CString::new(format!("!HEV_{pct}P")).unwrap_or_default();
                 super::sentences::set_suit_update(p, &name, false, 30);
+            }
+            Kind::Antidote => {
+                // `CItemAntidote::MyTouch` (0xcb968): no pickup message or sound, always taken.
+                super::sentences::set_suit_update(p, c"!HEV_DET4", false, 60);
+                // `m_rgItems[ITEM_ANTIDOTE]++` (+0x834). The player can be taken out further up
+                // the stack (a trigger touched from its own think), so wait until it is back.
+                crate::world::defer(p, move || {
+                    crate::player::with_player(p, |pl, _| pl.tbd.antidotes += 1);
+                });
             }
         }
         true
@@ -162,6 +178,8 @@ impl<const KIND: u8> Entity for Item<KIND> {
                 eng.precache_sound(c"weapons/items.wav");
                 eng.precache_sound(c"items/gunpickup2.wav")
             }
+            // `CItemAntidote::Precache` (0xcb940) only precaches the model.
+            Kind::Antidote => 0,
         };
         eng.precache_sound(c"items/suitchargeok1.wav");
         eng.set_model(cx.edict, Self::model());
@@ -211,6 +229,8 @@ impl<const KIND: u8> Entity for Item<KIND> {
 
 pub type HealthKit = Item<0>;
 pub type Battery = Item<1>;
+/// `item_antidote` (`CItemAntidote`, 0xcb1c0; Spawn 0xcb8f8).
+pub type Antidote = Item<2>;
 
 // ---- func_healthcharger / func_recharge ---------------------------------------------------------------
 

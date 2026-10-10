@@ -45,8 +45,8 @@ pub struct TimeBasedDamage {
     /// `m_idrowndmg` (+0x9a8) and `m_idrownrestored` (+0x9ac).
     pub drowned: i32,
     pub restored: i32,
-    /// `m_rgItems[ITEM_ANTIDOTE]` (+0x834). Only `item_antidote` adds to it, and that entity
-    /// isn't ported, so this stays 0.
+    /// `m_rgItems[ITEM_ANTIDOTE]` (+0x834). Only `item_antidote` adds to it; like TS, nothing
+    /// resets it on death or respawn.
     pub antidotes: i32,
 }
 
