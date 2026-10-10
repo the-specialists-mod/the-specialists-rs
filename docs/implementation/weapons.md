@@ -152,7 +152,7 @@ addresses of `ts_i386.so`.
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
   `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target.
-* Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`spectacularness`
+* Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`rules::scoring::do_spectacularness`; `spectacularness`
   clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a
   `ts_slowmotionpoint` at the blast (amount 0.25, 1 s, no bullet time).
 * Ammo pack touch (alive player): every type goes through `AddAmmo` (whole amount clamped to the

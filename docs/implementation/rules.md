@@ -52,7 +52,7 @@ are Ghidra addresses.
 | `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | button edges, InitHUD, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text, death think, +use, spawn protection end, delayed suicide. |
 | `CBasePlayer::Killed` 0x8ed5c | `lifecycle::killed` | TSMBlur (random), respawn time, headshot victim slow 0.33, `iuser4 = DEAD_LOCK`, `weapons::on_killed`, drop flag, PlayerKilled, knockback (min(dmg×5, 500)), hop when fast/hard hit, TSHealth 0, ActItems 0, SetFOV 0, gib. |
 | `PlayerDeathThink` | `lifecycle::death_think` | settle; while dying, advance the death sequence (`studio_frame_advance`, at the slow-motion `framerate`) until it finishes; then corpse (`deadcorpse`, 10 s) + observer after 3 s or any button. |
-| `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | points (stock/kung fu/knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`spectacularness`%), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, log lines with TS suffixes, `game_playerdie`/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
+| `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | points (stock/kung fu/knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`DoSpectacularNess` 0x76b48 = `scoring::do_spectacularness`, shared with explosions: `spectacularness` clamped 0..100 and rounded, 0 never fires), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, log lines with TS suffixes, `game_playerdie`/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
 | `TSGetPointsForFrag` 0x89140 | `scoring::points_for_frag` | `#TS_KungFu`, `Throwing`, `#TS_StStl`, `#TS_SlStl`, `#TS_Stl`. |
 | `DeathNotice` 0x88f7c | `scoring::death_notice` | `DeathMsg`; weapon name rules (strip prefixes, Throwing Knife, Shrapnel, M61 Grenade, Kung Fu); HLTV director event (victim, inflictor or killer, 0x27). |
 | `TheOneIsDead` 0x7b258, `SetPlayerTheOne` 0x7b078, `SelectRandomTheOne` 0x7af28 | `scoring::{the_one_is_dead, set_the_one_other, apply_the_one, announce_the_one}`, `frame::the_one_check` | hp 150, kung fu, super jump, speed 330, stored slow pause 3 s, award 10, "%s is The One!" (100,150,255), team split. |
@@ -203,7 +203,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 * `cargo test`: payload encoders (sizes match registration), `decide_gameplay`, team lists,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
-  clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, power-up bodies/respawn clamps, HL remaps, the HLTV
+  clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, `DoSpectacularNess` rounding/clamping, power-up bodies/respawn clamps, HL remaps, the HLTV
   director event layout (`hud_wire::director_event_layout`), in-eye spectator movement at mode 5
   (`pm::tests::in_eye_spectator_is_mode_5`).
 * Not yet run in-engine: the TS observer mode cycle (jump: roaming → chase free → chase locked →

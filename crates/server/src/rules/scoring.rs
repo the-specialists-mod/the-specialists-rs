@@ -193,7 +193,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
     } else if let Some(mut k) = killer {
         let kname = netname(k.e);
         let kv = k.e.v();
-        if (kv.iuser4 & STUNTING != 0 || close || points > 2) && spectacular() {
+        if (kv.iuser4 & STUNTING != 0 || close || points > 2) && do_spectacularness() {
             crate::entities::ts::create_slow_motion_point(cx.pev().origin, 0.25, 1.0, false);
         }
         let mut health_delta: Option<f32> = None; // (+hp, cap 150) for awards
@@ -327,9 +327,18 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
     state::with(|g| g.check_deads_at = now + 1.0);
 }
 
-/// `DoSpectacularNess`: `RandomLong(0,100) <= spectacularness`.
-fn spectacular() -> bool {
-    engine().random_long(0, 100) as f32 <= cvars::f(c"spectacularness")
+/// `DoSpectacularNess` (0x76b48): whether a frag or an explosion creates the "spectacular"
+/// slow-motion point. The roll is drawn first, as in TS, so the random stream is the same.
+pub fn do_spectacularness() -> bool {
+    let roll = engine().random_long(0, 100);
+    spectacular_roll(roll, cvars::f(c"spectacularness"))
+}
+
+/// The `DoSpectacularNess` test: `spectacularness` is clamped to 0..100 and rounded (x87
+/// `fistp`, ties to even). 0 never fires; otherwise it fires when `roll <= spectacularness`.
+fn spectacular_roll(roll: i32, spectacularness: f32) -> bool {
+    let pct = spectacularness.clamp(0.0, 100.0).round_ties_even() as i32;
+    pct != 0 && roll <= pct
 }
 
 /// `TSGetPointsForFrag` (0x89140).
@@ -540,5 +549,28 @@ pub fn broadcast_score(e: *mut edict_t) {
     let idx = engine().index_of(e);
     if let Some(s) = other(e, |p| score_info_of(p, e.v(), idx)) {
         msg::all(Msg::ScoreInfo, |w| s.write(w));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spectacular_roll;
+
+    #[test]
+    fn spectacularness_zero_never_fires() {
+        for v in [0.0, 0.4, 0.5, -3.0] {
+            assert!((0..=100).all(|roll| !spectacular_roll(roll, v)), "spectacularness {v}");
+        }
+    }
+
+    #[test]
+    fn spectacularness_rounds_and_clamps() {
+        // 0.6 rounds to 1: rolls 0 and 1 fire.
+        assert!(spectacular_roll(1, 0.6) && !spectacular_roll(2, 0.6));
+        // 2.5 rounds to 2 (ties to even), 3.5 to 4.
+        assert!(spectacular_roll(2, 2.5) && !spectacular_roll(3, 2.5));
+        assert!(spectacular_roll(4, 3.5) && !spectacular_roll(5, 3.5));
+        // Above 100 behaves as 100: every roll fires.
+        assert!((0..=100).all(|roll| spectacular_roll(roll, 250.0)));
     }
 }

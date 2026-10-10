@@ -369,18 +369,9 @@ pub fn explode(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t, dm
         }
     }
     // The "spectacular" slow-motion point at the blast: 0.25 for 1 s, no bullet time.
-    if do_spectacularness() {
+    if crate::rules::scoring::do_spectacularness() {
         crate::entities::ts::create_slow_motion_point(org, 0.25, 1.0, false);
     }
-}
-
-/// `DoSpectacularNess` 0x76b48. `spectacularness` is clamped to 0..100 and rounded. 0 never
-/// fires; otherwise it fires when `RandomLong(0, 100) <= spectacularness`.
-fn do_spectacularness() -> bool {
-    let e = engine();
-    let roll = e.random_long(0, 100);
-    let pct = e.cvar_float(c"spectacularness").clamp(0.0, 100.0).round_ties_even() as i32;
-    pct != 0 && roll <= pct
 }
 
 fn hit(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut edict_t, d: f32, bits: i32, dir: Vec3, pos: Vec3) {
