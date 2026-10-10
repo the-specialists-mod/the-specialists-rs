@@ -55,6 +55,12 @@ pub fn ptakedam_amount(dmg: f32, dmg_bits: i32, kevlar: bool) -> u8 {
     (if kevlar { a + 128.0 } else { a }).round().clamp(0.0, 255.0) as u8
 }
 
+/// `CBasePlayer::TakeDamage` (0x8fa94): a hit arms the bullet dance when it does at most 80
+/// damage, the victim's horizontal speed is under 80 u/s, and it isn't in the legs.
+pub fn arms_bullet_dance(group: i32, speed2d: f32, dmg: f32) -> bool {
+    !matches!(group, hitgroup::LEFTLEG | hitgroup::RIGHTLEG) && speed2d < 80.0 && dmg <= 80.0
+}
+
 pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     let eng = engine();
     let now = cx.time();
@@ -89,6 +95,8 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
             && is_alive
             && (hitgroup::CHEST..=hitgroup::RIGHTARM).contains(&dmg.hitgroup);
         if !is_alive {
+            // A body still in its death animation twitches when shot.
+            crate::stunt::anim::bullet_dance(p, cx);
             let v = cx.pev();
             if v.flags & FL_ONGROUND as i32 == 0 {
                 for i in 0..3 {
@@ -137,6 +145,15 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     if !Player::is_alive(cx) || amount == 0.0 || cx.pev().takedamage == 0.0 {
         return false;
     }
+    // Arm the bullet dance (`normal_die*` death poses, and twitching if the body is shot while
+    // it falls) for a light hit on a slow body, unless the hit is in the legs. TS decides this
+    // before the team check, on the damage after the TraceAttack multipliers.
+    let v = cx.pev().velocity;
+    if arms_bullet_dance(p.ts.last_hitgroup, (v[0] * v[0] + v[1] * v[1]).sqrt(), amount) {
+        crate::stunt::anim::enable_bullet_dance(p);
+    } else {
+        crate::stunt::anim::disable_bullet_dance(p);
+    }
     if attacker_is_teammate && !friendly_fire {
         return false; // FPlayerCanTakeDamage
     }
@@ -181,6 +198,16 @@ mod tests {
         assert_eq!(hitgroup_scale(hitgroup::HEAD, bits::CLUB), 1.0, "melee isn't a headshot");
         assert_eq!(hitgroup_scale(hitgroup::LEFTLEG, bits::BULLET), 0.5);
         assert_eq!(hitgroup_scale(hitgroup::CHEST, bits::BULLET), 1.0);
+    }
+
+    #[test]
+    fn bullet_dance_arming() {
+        assert!(arms_bullet_dance(hitgroup::CHEST, 0.0, 80.0));
+        assert!(!arms_bullet_dance(hitgroup::CHEST, 0.0, 80.5), "heavy hit");
+        assert!(!arms_bullet_dance(hitgroup::CHEST, 80.0, 10.0), "moving body");
+        assert!(!arms_bullet_dance(hitgroup::LEFTLEG, 0.0, 10.0), "leg hit");
+        assert!(!arms_bullet_dance(hitgroup::RIGHTLEG, 0.0, 10.0), "leg hit");
+        assert!(arms_bullet_dance(hitgroup::HEAD, 79.9, 10.0));
     }
 
     #[test]

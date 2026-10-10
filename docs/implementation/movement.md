@@ -201,8 +201,10 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 * **rules** must: ease `pev->fuser1` toward `Player::slow_target` (stunts, animation and PM run
   on it); set `pev->iuser4 = DEAD_LOCK` (0x2) in `Killed` (TS sets `iuser4 = 2`, clearing every
   stunt bit) and call `stunt::animate(p, cx, 7)` after setting `p.stunt.anim.last_damage`,
-  `last_hitgroup`, `attack_dir`; call `stunt::anim::enable_bullet_dance` / `bullet_dance` for
-  dead bodies if wanted; set `p.stunt.the_one`; set `Player::superjump` (the physinfo `mj` key is
+  `last_hitgroup`, `attack_dir`; arm the bullet dance in `TakeDamage`
+  (`stunt::anim::enable_`/`disable_bullet_dance`) and call `stunt::anim::bullet_dance` when a
+  dead body is shot (both wired in `player/damage.rs`); while dying, run
+  `stunt::anim::studio_frame_advance` until `anim.seq_finished` (`death_think`); set `p.stunt.the_one`; set `Player::superjump` (the physinfo `mj` key is
   synced from it every PreThink); apply ×0.7 to damage while `stunt::in_airborne_stunt(cx)` and to
   bullets while `cx.time() < p.stunt.dodge_until`; count kills during `in_airborne_stunt` (or
   damage bit `0x4000000`) as spectacular.

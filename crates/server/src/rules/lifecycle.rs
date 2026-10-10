@@ -752,8 +752,8 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     p.ts.died_at = now;
 }
 
-/// `CBasePlayer::PlayerDeathThink` (0x6b...): settle, then become an observer after 3 s or on any
-/// button, leaving a corpse.
+/// `CBasePlayer::PlayerDeathThink` (0x8eaec): settle, play out the death animation, then become
+/// an observer after 3 s or on any button, leaving a corpse.
 fn death_think(p: &mut Player, cx: &mut Cx, now: f32) {
     {
         let v = cx.pev();
@@ -769,8 +769,12 @@ fn death_think(p: &mut Player, cx: &mut Cx, now: f32) {
             }
         }
     }
-    // The death animation plays for about a second (no sequence-finished flag here).
-    if cx.pev().deadflag == DEAD_DYING as i32 && now < p.ts.died_at + 1.2 && cx.pev().modelindex != 0 {
+    // Stay dying until the death animation finishes, advancing it at the animation rate
+    // (`framerate` is the player's time scale, so slow motion stretches it). Port addition: a
+    // sequence without studio data (frame rate 0) would never finish, so it ends at once.
+    let anim = &p.stunt.anim;
+    if cx.pev().modelindex != 0 && !anim.seq_finished && anim.frame_rate > 0.0 && cx.pev().deadflag == DEAD_DYING as i32 {
+        crate::stunt::anim::studio_frame_advance(p, cx);
         return;
     }
     let v = cx.pev();

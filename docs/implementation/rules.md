@@ -49,7 +49,7 @@ are Ghidra addresses.
 | `respawn` client command (ClientCommand) | `lifecycle::respawn_command` | only while observing and after `respawn_at`; "You have to wait until the next round." |
 | `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | button edges, InitHUD, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text, death think, +use, spawn protection end, delayed suicide. |
 | `CBasePlayer::Killed` 0x8ed5c | `lifecycle::killed` | TSMBlur (random), respawn time, headshot victim slow 0.33, `iuser4 = DEAD_LOCK`, `weapons::on_killed`, drop flag, PlayerKilled, knockback (min(dmg×5, 500)), hop when fast/hard hit, TSHealth 0, ActItems 0, SetFOV 0, gib. |
-| `PlayerDeathThink` | `lifecycle::death_think` | settle, then corpse (`deadcorpse`, 10 s) + observer after 3 s or any button. |
+| `PlayerDeathThink` | `lifecycle::death_think` | settle; while dying, advance the death sequence (`studio_frame_advance`, at the slow-motion `framerate`) until it finishes; then corpse (`deadcorpse`, 10 s) + observer after 3 s or any button. |
 | `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | points (stock/kung fu/knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`spectacularness`%), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, log lines with TS suffixes, `game_playerdie`/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
 | `TSGetPointsForFrag` 0x89140 | `scoring::points_for_frag` | `#TS_KungFu`, `Throwing`, `#TS_StStl`, `#TS_SlStl`, `#TS_Stl`. |
 | `DeathNotice` 0x88f7c | `scoring::death_notice` | `DeathMsg`; weapon name rules (strip prefixes, Throwing Knife, Shrapnel, M61 Grenade, Kung Fu). |
@@ -161,8 +161,8 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * Map votes (`vote map/stats/reset`, `CheckVotes`) are not implemented: "vote …" is plain chat.
 * `PlayerIsCheating` / forced `cl_lw 1` is not implemented.
 * Spawn points: the `IsTriggered` master check is skipped (stock spawn points store no master).
-* The death animation wait is a fixed 1.2 s (no sequence-finished flag); the death/flinch
-  sequences are left to the stunt package (`CTSAnimation`).
+* A death sequence without studio data (frame rate 0) ends the dying state at once; in TS it
+  would never finish. The death/flinch sequences are left to the stunt package (`CTSAnimation`).
 * `+use` on ground weapons uses a simplified `PlayerUse`: the best item within 64 units in a 60°
   cone in front of the eyes.
 * `wextraclip` gives `extra × clip` rounds (TS passes the raw number to `AddAmmo`).

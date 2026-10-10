@@ -4,8 +4,9 @@
 //! the studio header (`goldsrc::ext::movement`).
 //!
 //! The animation `framerate` is the player's time scale (set every PreThink), and
-//! `studio_frame_advance` (SDK `CBaseAnimating::StudioFrameAdvance`) runs in PostThink to keep
-//! `m_fSequenceFinished`, which stunts use to end recoveries early.
+//! `studio_frame_advance` (SDK `CBaseAnimating::StudioFrameAdvance`) runs in PostThink, and in
+//! `PlayerDeathThink` while dying, to keep `m_fSequenceFinished`: stunts use it to end recoveries
+//! early, and the death think to end the dying state.
 
 use super::*;
 use goldsrc::ext::movement::{self as studio, STUDIO_LOOPING};
@@ -183,6 +184,7 @@ pub fn update_timers(p: &mut Player, cx: &mut Cx) {
     a.hold = if a.hold >= -0.001 { (a.hold - dt).max(0.0) } else { (dt + a.hold).min(0.0) };
 }
 
+/// `CTSAnimation::EnableBulletDance` (0x6d314), from `CBasePlayer::TakeDamage`.
 pub fn enable_bullet_dance(p: &mut Player) {
     let a = &mut p.stunt.anim;
     a.bullet_dance = true;
@@ -190,6 +192,7 @@ pub fn enable_bullet_dance(p: &mut Player) {
     a.dance_time = 3.0;
 }
 
+/// `CTSAnimation::DisableBulletDance` (0x6d2f0), from `CBasePlayer::TakeDamage`.
 pub fn disable_bullet_dance(p: &mut Player) {
     let a = &mut p.stunt.anim;
     a.bullet_dance = false;
@@ -198,6 +201,8 @@ pub fn disable_bullet_dance(p: &mut Player) {
 }
 
 /// `CTSAnimation::BulletDance` (0x6d338): a dead body jerks through the death poses when shot.
+/// Called from `CBasePlayer::TraceAttack` on a dead player; it only acts while the death animation
+/// is still playing (`m_fSequenceFinished` clear), and each new pose restarts that animation.
 pub fn bullet_dance(p: &mut Player, cx: &mut Cx) {
     let a = &p.stunt.anim;
     if !a.bullet_dance || a.dance_time < 0.01 || a.dance_next > 0.0 || a.seq_finished {

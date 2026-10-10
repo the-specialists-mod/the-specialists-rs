@@ -14,6 +14,8 @@ were joined, what was decided along the way, and what is still open.
 | Fall damage | Applied once, in the stunt PostThink, together with the landing logic. The rules copy was removed. | `server/src/stunt/moves.rs` |
 | Death | `rules::killed` sets `DEAD_LOCK`, fills the stunt animation inputs (last damage, hitgroup, attack direction) and plays `CTSAnimation` 7. | `server/src/rules/lifecycle.rs` |
 | Bullet dodge | Damage reads `p.stunt.dodge_until` (stunt sets it). | `server/src/player/damage.rs` |
+| Bullet dance | Damage arms it (`stunt::anim::enable_`/`disable_bullet_dance`) on every hit to a living player and calls `stunt::anim::bullet_dance` when a dead one is shot. | `server/src/player/damage.rs` |
+| Death animation | `death_think` keeps the player dying until `p.stunt.anim.seq_finished`, advancing the sequence with `stunt::anim::studio_frame_advance`. | `server/src/rules/lifecycle.rs` |
 | Weapons → animation | Deploy and holster set the anim extension. Fire, reload, draw, grenade and melee call `stunt::animate`. | `server/src/weapons/` |
 | Melee | One delayed-hit window (the gun's). Stunt hands open-window hits to weapons, which handles blocks, disarm and friendly fire. The super-jump roll landing sets the 0.75 s attack delay. | `server/src/weapons/`, `stunt/` |
 | Kill scoring | A kill made during the killer's own weapon frame (the killer's object is taken out of the slab) used to score nothing. `world::defer` now queues the work until the object is back. | `server/src/world.rs`, `rules/scoring.rs` |
@@ -59,7 +61,7 @@ switched off in 3.0, or an SDK constant kept for completeness:
 |---|---|
 | Round and objective modes (dead in TS 3.0) | `rules::state::Mode::{RoundTdm, Objective}`, `send_award`, `CASH_FOR_WIN`/`CASH_FOR_LOSE`, `PlayerRules::cash`, `stock::breakable::respawn_all`, `weapons::assets::{set_round_mode_items, set_grenade_buys}` |
 | Weapons API for later features | `weapons::{drop_weapon, set_restriction}`, `glows_for`/`knife_glows_for`/`glow_for_host` (`AddToFullPack` uses its own check), `Gun::{current, anim_extension}`, `shared_random_long` |
-| Stunt helpers | `in_airborne_stunt` (damage uses the `STUNTING` mask), `block_player`, `bullet_dance` with `enable_`/`disable_bullet_dance` (corpse "bullet dance" when shot: not wired) |
+| Stunt helpers | `in_airborne_stunt` (damage uses the `STUNTING` mask), `block_player` |
 | Entity helpers | `entities::use_targets`, `stock::base::{precache_model, precache_sound}`, `is_locked_by_master`, `clear_master`, `reset_player_room`, the `SF_*`/`FCAP_*`/`FFADE_*` constants |
 | Messages | `messages::{pas, one_unreliable}` |
 | SDK constants | unused `DMG_*` bits and hitgroups in `damage.rs`, `OBS_IN_EYE`, `NearestPath` |
@@ -68,7 +70,6 @@ switched off in 3.0, or an SDK constant kept for completeness:
 ## 5. Known gaps after integration
 
 * No motion-blur ghosts or TS split-bone studio renderer (`HUD_GetStudioModelInterface` returns 0).
-* The corpse "bullet dance" isn't wired, and the death animation wait is a fixed 1.2 s.
 * No map votes, and no HLTV director messages.
 * The view climbs steeply under sustained fire. Each shot's kick is applied once, so this is
   probably TS's persistent recoil, but it hasn't been compared against TS.
