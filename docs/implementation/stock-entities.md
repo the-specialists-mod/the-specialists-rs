@@ -193,18 +193,35 @@ How the SDK patterns map to Rust:
 
 ### 3.4 Effects
 
-* **`UTIL_ScreenShake`.** Only players on the ground shake. Duration and frequency are divided by
-  `max(fuser1, 0.01)`.
-* **`UTIL_ScreenFade`.** Always sent as `TSFade` (`short dur, short hold, short flags, byte r,g,b,a`)
-  with durations divided by the time scale. The stock `ScreenFade` message is never sent.
+* **`UTIL_ScreenShake`** (0xec978). Only players on the ground shake. The fixed-point duration
+  and frequency (`FixedUnsigned16`) are divided by `GiveSlowMul()` = `max(fuser1, 0.01)` and
+  truncated, without clamping again.
+* **`UTIL_ScreenFade`** (0xecdec). Always sent as `TSFade` (`short dur, short hold, short flags,
+  byte r,g,b,a`) to net clients, with the fixed-point durations divided by the time scale the same
+  way. The stock `ScreenFade` message is never sent.
 * **`EMIT_SOUND_DYN`.** It has an extra factor `s`: pitch becomes `(s*fuser1 + 1 - s) * pitch`.
   This is used for break sounds (s = 0.9), damage, spark and gib sounds (0.5).
-* **`TSExplosion`** (0x7d01c) is in `explode::ts_explosion`:
+* **`TSExplosion`** (0x7d01c) is in `explode::ts_explosion`, the only port of it: the M61 grenade
+  and exploding breakables both call it. With the blast point `origin + 1z`:
   * A screen shake with amplitude dmg, frequency 80, duration 1, radius 2·rMax.
-  * `TSFrags` to everyone: origin, `coord (int)dmg`, `0`, `0`, `byte 1`.
-  * A white `TSFade` for players caught in it.
-  * Full damage inside rFull, linear falloff to rMax.
-  * Wall penetration: damage minus the wall thickness.
+  * `TSFrags` to everyone: origin, `coord (int)dmg` (truncated: GCC sets the x87 control word to
+    truncate, Ghidra's `ROUND` notwithstanding), `0`, `0`, `byte 1`.
+  * For each entity in the rMax sphere except the inflictor that takes damage and isn't
+    `DEAD_DEAD`: a white `TSFade` (222, 227, 189, 0.1 s, hold 0.05, alpha 75) if it's a living
+    player, then `falloff_damage` by the distance to `Center() + 1z`: full inside rFull, linear to
+    0 at rMax, never below 0. No `rMax == rFull` guard (no caller passes it).
+  * In line of sight (fraction 1 or the trace hits the target) the damage goes through
+    `TraceAttack` with that trace (impact point and hitgroup). Otherwise a trace back from the
+    target, ignoring it, measures the obstacle from the forward trace's end (the blast point if it
+    started solid); only `d − thickness` gets through, with the back trace as the impact. Zero
+    damage is still dealt, as in TS.
+  * Every `WorldGun` in the sphere (damaged or not) is put back into flight
+    (`weapons::worldgun::blast`, 0x7d678): `UTIL_SetOrigin`, zero size, `BounceTouch`/`Fall` in
+    0.1 s, `MOVETYPE_BOUNCE`, `SOLID_BBOX`, gravity 0.7, friction 0.8, velocity
+    `normalize(gun − p) · (rMax − |gun − p|) / slots · 10` with `p` 50 u above the blast point and
+    `slots` the weapon's inventory weight (`get_weapon_info` byte `+0xd0`); a gun on the ground
+    loses `FL_ONGROUND` and gets `v.z = |v.z| + 50`; `avelocity` y and z are `RandomLong(-300, 300)`.
+  * Then the "spectacular" slow-motion point (0.25 for 1 s) at the blast point.
 
 ### 3.5 Train and tank driving (decomp `CBasePlayer.c`, `CFuncTank*.c`, `CFuncTrainControls.c`)
 
@@ -443,9 +460,9 @@ covers:
      `0x2000000` (shotgun) / `0x4000000` (kung fu).
    * The SDK `DamageDecal` for glass (`{bproof`-style decals 0x19–0x1b, 0x23 for unbreakable glass)
      is for the weapons package to apply when it hits a `func_breakable`.
-8. **Explosions.** `stock::explode::ts_explosion` is TS's `TSExplosion`, ending with the
-   "spectacular" slow-motion point (`rules::scoring::do_spectacularness`, 0x7d969/0x7d9b0). It
-   doesn't knock `WorldGun` entities around; the grenade's `weapons::projectiles::explode` does.
+8. **Explosions.** `stock::explode::ts_explosion` is TS's `TSExplosion` for both the grenade and
+   breakables (§3.4), including the `WorldGun` knock-back and the "spectacular" slow-motion point
+   (`rules::scoring::do_spectacularness`, 0x7d969/0x7d9b0).
 9. **`entities::fire_targets`** skips `FL_KILLME` entities, as the SDK `FireTargets` does (done).
 10. **`pfnResetGlobalState`.** Calls `stock::base::reset_global_state()` (done at integration).
 11. **Client hooks** (HUD package): `TSFrags` (glass debris and explosions), `TSFade`, `ItemPickup`,

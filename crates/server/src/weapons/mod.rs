@@ -13,7 +13,7 @@ mod inventory;
 mod melee;
 mod net;
 mod projectiles;
-mod worldgun;
+pub mod worldgun;
 
 use crate::commands::Args;
 use crate::player::Player;
