@@ -234,6 +234,7 @@ impl Engine {
         eng!(pfnEmitSound(e, channel, sample.as_ptr(), volume, attn, flags, pitch))
     }
 
+    #[allow(clippy::too_many_arguments)] // mirrors pfnEmitAmbientSound
     pub fn emit_ambient_sound(&self, e: *mut edict_t, pos: [f32; 3], sample: &CStr, volume: f32, attn: f32, flags: i32, pitch: i32) {
         let mut pos = pos;
         eng!(pfnEmitAmbientSound(e, pos.as_mut_ptr(), sample.as_ptr(), volume, attn, flags, pitch))

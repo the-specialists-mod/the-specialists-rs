@@ -182,10 +182,10 @@ pub fn extradata(m: Model) -> Option<Header> {
     // studiomdl writes the texture pixels last, and engines may drop them from the cached copy
     // (FWGS does with XASH_LOW_MEMORY, and updates `length`). The renderer never reads them, so
     // the slice stops there whatever `length` says.
-    if let (Some(1..), Some(t)) = (numtextures, texdata) {
-        if (STUDIOHDR_SIZE..len).contains(&t) {
-            len = t;
-        }
+    if let (Some(1..), Some(t)) = (numtextures, texdata)
+        && (STUDIOHDR_SIZE..len).contains(&t)
+    {
+        len = t;
     }
     (len >= STUDIOHDR_SIZE).then_some(Header { ptr: p, len })
 }

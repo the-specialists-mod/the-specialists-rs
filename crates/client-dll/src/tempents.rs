@@ -233,15 +233,16 @@ pub unsafe fn update(
                 }
             }
 
-            if p.flags & FTENT_FLICKER as i32 != 0 && tf == p.entity.curstate.effects {
-                if let Some(dl) = r::alloc_dlight(0) {
-                    dl.origin = p.entity.origin;
-                    dl.radius = 60.0;
-                    dl.color.r = 255;
-                    dl.color.g = 120;
-                    dl.color.b = 0;
-                    dl.die = ct + 0.01;
-                }
+            if p.flags & FTENT_FLICKER as i32 != 0
+                && tf == p.entity.curstate.effects
+                && let Some(dl) = r::alloc_dlight(0)
+            {
+                dl.origin = p.entity.origin;
+                dl.radius = 60.0;
+                dl.color.r = 255;
+                dl.color.g = 120;
+                dl.color.b = 0;
+                dl.die = ct + 0.01;
             }
             if p.flags & FTENT_SMOKETRAIL as i32 != 0 {
                 let (mut a, mut b) = (p.entity.prevstate.origin, p.entity.origin);
@@ -252,10 +253,10 @@ pub unsafe fn update(
             } else if p.flags & FTENT_SLOWGRAVITY as i32 != 0 {
                 p.entity.baseline.origin[2] += gravity_slow;
             }
-            if p.flags & FTENT_CLIENTCUSTOM as i32 != 0 {
-                if let Some(cb) = p.callback {
-                    cb(t, ft, ct);
-                }
+            if p.flags & FTENT_CLIENTCUSTOM as i32 != 0
+                && let Some(cb) = p.callback
+            {
+                cb(t, ft, ct);
             }
             if p.flags & FTENT_NOMODEL as i32 == 0 && add_visible(&mut p.entity) == 0 && p.flags & FTENT_PERSIST as i32 == 0 {
                 p.die = ct;

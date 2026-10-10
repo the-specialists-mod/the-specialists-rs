@@ -114,10 +114,10 @@ impl PlayerMoveExt for playermove_t {
             if data.is_null() {
                 return None;
             }
-            if len <= 0 {
-                if let Some(size) = self.COM_FileSize {
-                    len = size(path.as_ptr());
-                }
+            if len <= 0
+                && let Some(size) = self.COM_FileSize
+            {
+                len = size(path.as_ptr());
             }
             let bytes = std::slice::from_raw_parts(data.cast::<u8>(), len.max(0) as usize).to_vec();
             free(data.cast());
@@ -180,11 +180,11 @@ impl PlayerMoveExt for playermove_t {
 
     fn moveent_model_bounds(&self, i: usize) -> ([f32; 3], [f32; 3]) {
         let (mut mins, mut maxs) = ([0.0f32; 3], [0.0f32; 3]);
-        if let (Some(pe), Some(f)) = (self.moveents.get(i), self.PM_GetModelBounds) {
-            if !pe.model.is_null() {
-                // SAFETY: engine callback on the engine's own model pointer.
-                unsafe { f(pe.model, mins.as_mut_ptr(), maxs.as_mut_ptr()) };
-            }
+        if let (Some(pe), Some(f)) = (self.moveents.get(i), self.PM_GetModelBounds)
+            && !pe.model.is_null()
+        {
+            // SAFETY: engine callback on the engine's own model pointer.
+            unsafe { f(pe.model, mins.as_mut_ptr(), maxs.as_mut_ptr()) };
         }
         (mins, maxs)
     }
