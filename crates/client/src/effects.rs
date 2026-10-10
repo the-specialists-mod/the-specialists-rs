@@ -10,6 +10,7 @@ pub mod emitters;
 pub mod fx;
 mod laser;
 pub mod psys;
+pub use laser::laser_color;
 mod scope;
 
 use crate::events::ClientBullet;

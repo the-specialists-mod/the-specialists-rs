@@ -77,6 +77,7 @@ includes `r_efx.h`, `event_api.h`, `event_flags.h`, `triangleapi.h`, `screenfade
 | `HUD_StudioEvent` | `0x10044b50` | `effects::studio_event` | done (5002, 5004) |
 | `DrawLocalLaser` / `DrawOtherLasers` / flashlights | `0x1003bb00` / `0x1003d600` / `0x1003b250` / `0x1003b750` | `effects::laser` | done (untested: needs server state) |
 | `DrawPlayerShadows` | `0x10055760` | `laser::draw_shadows` | done, verified in game |
+| `DrawScopeOverlay` | `0x10054510` | `effects::scope` | done (not yet checked in engine) |
 | `FX_ApplyCvar` / `FX_AdaptQuality` | `0x10057d50` / `0x10057a70` | `effects::apply_quality` | done |
 | view-model framerate x time scale | `StudioDrawModel` `0x10031ae0` | `view::view_model_framerate` (writes `curstate.framerate`) | written, untested (no view model in this branch) |
 | `HUD_TxferLocalOverrides` | `0x1001b900` | `prediction::txfer_local_overrides` | done |
@@ -194,10 +195,12 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 | `fov` (existing) | `view::frame` (eased) | HUD (sensitivity, scope), `view` |
 | `bullet_time` | render (`TSBTime`) | client bullets |
 | `powerups`, `attachments`, `active_items`, `firemode`, `clip`, `reserve_ammo` | prediction (from clientdata) | HUD may read; lasers |
-| `player_items[32]` | HUD `ActItems` handler (index entindex-1) | `effects::laser::draw_others` |
-| `laser_color[32]` | HUD `PlInfo` handler (key 0) | lasers |
+| `active_items[65]` | HUD `ActItems` handler (index = entity number) | `effects::laser::draw_others`, HUD |
+| `laser_color[65]` | HUD `PlInfo` handler (key 0, index = entity number) | lasers, HUD `DrawLaserDots` |
 | `spectator[32]` | HUD `Spectator` handler | `effects::add_entity` |
-| `laser_dots[2]` | `effects::laser::draw_local` (screen x,y) | HUD `DrawLaserDots` |
+| `laser_dots[2]` | `effects::laser::draw_local` (`WorldToScreen` −1..1) | HUD `DrawLaserDots` |
+| `laser_range` | `effects::laser::draw_local` (first hit distance ×0.025) | HUD `DrawCrosshair` |
+| `items_ready` | prediction (`from` active items, 0 while `m_flNextAttack > 0`) | HUD `DrawLaserDots` |
 | `third_person` | `view` | HUD |
 | `spec_mode`/`spec_target`/`spec_flags` | `prediction::process_player_state` (g_iUser1..3) | view, events, HUD |
 | `dead`, `weapon` (existing) | HUD | view (`cl_thirdpersonswitch`), lasers |

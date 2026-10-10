@@ -201,13 +201,12 @@ pub fn think_sounds(_dt: f32) {
 // ---------------------------------------------------------------------------------------------
 // Drawing
 
-/// `CHudTSWeapons::Draw` (1004d3f0) minus the laser dots (effects package) and the buy menu
-/// (drawn by `menus`).
+/// `CHudTSWeapons::Draw` (1004d3f0) minus the buy menu (drawn by `menus`).
 pub fn draw(dc: &Dc, nohud: bool) {
-    if nohud {
-        return;
-    }
-    if super::dead_or_observer() {
+    let hidden = super::dead_or_observer();
+    let items = super::with(|h| items_flags(h, nohud, hidden));
+    draw_laser_dots(dc, items);
+    if nohud || hidden {
         return;
     }
     let buy_open = crate::menus::buy_open();
@@ -228,6 +227,65 @@ pub fn draw(dc: &Dc, nohud: bool) {
             draw_crosshair(dc, h);
         }
     });
+}
+
+/// `CHudTSWeapons+0x14` as `Draw` sets it: the local player's `ActItems` bits while a weapon is
+/// held and the HUD draws it (with `nohud`, whenever a weapon is held), otherwise 0. TS sets it
+/// after drawing the dots, so its dots use last frame's value; this uses the current one.
+fn items_flags(h: &Hud, nohud: bool, hidden: bool) -> i32 {
+    if h.weapon == 0 || (!nohud && hidden) {
+        return 0;
+    }
+    crate::state::with(|s| s.active_items.get(engine().local_player().map_or(0, |p| p.index as usize)).copied().unwrap_or(0)) as i32
+}
+
+/// The crosshair centre: the screen centre, or in third person the projection of the view
+/// trace's end (`DrawCrosshairID` 1004acc0 stores it at `+0x38`), (−1, −1) when off screen.
+fn crosshair_centre(dc: &Dc) -> (i32, i32) {
+    if !crate::view::is_third_person() {
+        return (dc.w() / 2, dc.h() / 2);
+    }
+    let e = engine();
+    let Some(me) = e.local_player() else { return (-1, -1) };
+    let start = crate::view::eye();
+    let end = goldsrc::ext::render::vec3::ma(start, 8192.0, crate::view::camera().forward);
+    e.player_trace(start, end, me.index).and_then(|(_, hit, _)| e.world_to_screen(hit, &dc.g.screen)).unwrap_or((-1, -1))
+}
+
+/// `DrawLaserDots` (1004e6f0): 2×2 dots in the local laser colour (`PlInfo`). While the gun may
+/// fire (`state.items_ready`) and `cl_laser` is below 1, the dot sits on the crosshair (akimbo:
+/// 4 px right and left of it) with a rare ±1 px jitter; otherwise it is drawn where the trace
+/// hit (`state.laser_dots`). A dot whose hit point is off screen is not drawn.
+fn draw_laser_dots(dc: &Dc, items: i32) {
+    use goldsrc::ext::render::random_long;
+    let local = engine().local_player().map_or(0, |p| p.index as usize);
+    let (dots, ready, color) = crate::state::with(|s| (s.laser_dots, s.items_ready, s.laser_color.get(local).copied().unwrap_or(0)));
+    let rgb = crate::effects::laser_color(color as i32).map(|c| (c * 255.0).round() as i32);
+    // C integer division: ±1 only for ±10.
+    let (jx, jy) = (random_long(-10, 10) / 10, random_long(-10, 10) / 10);
+    let centre = crosshair_centre(dc);
+    let centred = ready != 0 && input::cvars().cl_laser.value() < 1.0;
+    for (x, y) in laser_dot_positions(items, centred, centre, (jx, jy), dots, (dc.w(), dc.h())) {
+        dc.fill(x, y, 2, 2, rgb, 255);
+    }
+}
+
+/// Top-left corners of the `DrawLaserDots` fills (pure, for tests). `dots` are `WorldToScreen`
+/// coordinates; `centred` pins them to `centre` (plus `jitter`, swapped for the second gun).
+fn laser_dot_positions(
+    items: i32,
+    centred: bool,
+    (cx, cy): (i32, i32),
+    (jx, jy): (i32, i32),
+    dots: [Option<[f32; 2]>; 2],
+    (w, h): (i32, i32),
+) -> Vec<(i32, i32)> {
+    if items & 2 == 0 {
+        return Vec::new();
+    }
+    let to_px = |d: [f32; 2]| (((1.0 + d[0]) * w as f32 * 0.5) as i32, ((1.0 - d[1]) * h as f32 * 0.5) as i32);
+    let pinned: &[(i32, i32)] = if items & 0x40 == 0 { &[(cx + jx, cy + jy)] } else { &[(cx + 4 + jx, cy + jy), (cx - 4 + jy, cy + jx)] };
+    pinned.iter().zip(dots).filter_map(|(&p, d)| d.map(|d| if centred { p } else { to_px(d) })).map(|(x, y)| (x - 1, y - 1)).collect()
 }
 
 fn realhud() -> bool {
@@ -316,6 +374,11 @@ fn draw_weapon_info(dc: &Dc, h: &Hud) {
     y -= row;
     dc.fill(x, y, 128, row - 1, dc.hud, 35);
     dc.string(x + 2, y, &info.name, dc.hud);
+    // Zoom factor while scoped: `sprintf("%ix", 80 / m_iFOV)` at (24, 24) (1004dfbe).
+    let fov = crate::state::with(|s| s.fov) as i32;
+    if (1..40).contains(&fov) {
+        dc.string(24, 24, &format!("{}x", 80 / fov), dc.hud);
+    }
 }
 
 /// `DrawWeaponList` (1004e030): the slot menu (header row per bucket, weapon sprites, name and
@@ -441,6 +504,15 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
             }
         }
     }
+    // Laser on: its range (`state.laser_range`) right of the crosshair, in the crosshair colour
+    // ×0.7 with a player under it, else ×0.5; 8 px higher while scoped (1004ee02).
+    if active & 2 != 0 {
+        let k = if id_team.is_some() { 0.7 } else { 0.5 };
+        let scoped_first_person = scoped && !crate::view::is_third_person();
+        let y = cy - if scoped_first_person { 8 } else { 0 } - dc.g.screen.char_height / 2;
+        let range = crate::state::with(|s| s.laser_range);
+        dc.number(cx + 28, y, num::DRAW_ZERO, range, rgb.map(|c| (c as f32 * k) as i32));
+    }
 }
 
 /// Divestep sprites around the crosshair: top/centre/bottom stunt indicators, red while the
@@ -467,6 +539,17 @@ mod tests {
     fn give(h: &mut Hud, id: i32) {
         let (r, b) = grid_pos(id).unwrap();
         h.grid[r][b] = Slot { id, clip: 5 };
+    }
+
+    #[test]
+    fn laser_dots_follow_ts_layout() {
+        let dots = [Some([0.5, 0.5]), Some([-0.5, 0.0])];
+        let (c, j, sz) = ((320, 240), (1, 0), (640, 480));
+        assert_eq!(laser_dot_positions(0, true, c, j, dots, sz), [], "laser off");
+        assert_eq!(laser_dot_positions(2, true, c, j, dots, sz), [(320, 239)], "pinned to the crosshair, jitter x");
+        assert_eq!(laser_dot_positions(2, false, c, j, dots, sz), [(479, 119)], "at the projected hit");
+        assert_eq!(laser_dot_positions(0x42, true, c, j, dots, sz), [(324, 239), (315, 240)], "akimbo: +3/-5 px, jitter swapped");
+        assert_eq!(laser_dot_positions(0x42, true, c, j, [None, dots[1]], sz), [(315, 240)], "off-screen hit: no dot");
     }
 
     #[test]

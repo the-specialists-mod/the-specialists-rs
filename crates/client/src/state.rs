@@ -62,9 +62,15 @@ pub struct Shared {
     pub predicted_weapon: Option<i32>,
     /// `Spectator` flag per player (index = entindex - 1): not drawn when set. Filled by the HUD.
     pub spectator: [bool; 32],
-    /// Screen positions of the local laser dot(s) this frame (second = akimbo), for the HUD's
-    /// `DrawLaserDots`. Written by effects in the transparent pass.
+    /// Local laser dot(s) this frame (second = akimbo) as TriAPI `WorldToScreen` output (−1..1,
+    /// y up), for the HUD's `DrawLaserDots`. Written by effects in the transparent pass.
     pub laser_dots: [Option<[f32; 2]>; 2],
+    /// Laser range shown next to the crosshair (TS `0x100d0cb8`): distance to the first dot ×0.025.
+    pub laser_range: i32,
+    /// Active attachment bits while the gun may fire (TS `0x1018a628`: `from` weapon state's
+    /// switched-on items, 0 while `m_flNextAttack > 0`). Written by prediction, read by
+    /// `DrawLaserDots` to pin the dot to the crosshair.
+    pub items_ready: i32,
     /// Third-person camera active (render writes; HUD may read for the crosshair).
     pub third_person: bool,
     /// Spectator globals from `HUD_ProcessPlayerState` (g_iUser1/2/3): mode, target, flags.
