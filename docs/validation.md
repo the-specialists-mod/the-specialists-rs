@@ -172,9 +172,9 @@ win32 under Wine (listen server, `ts_arena`).
 ### 3.2 Not validated
 
 * A Steam GoldSrc **client** beyond the scripted HL25 Linux runs in §5 (listen server, and
-  joining HL25 and ReHLDS Linux dedicated servers): the pre-anniversary client (8684), the HL25
-  Windows client, a real keyboard and mouse on either, the in-game menu opened with a real Esc
-  key, and muting a second human in the GameUI player list.
+  joining HL25 and ReHLDS Linux dedicated servers): the HL25 Windows client (#25), a real keyboard and mouse on either, the in-game menu opened with a real Esc
+  key, and muting a second human in the GameUI player list. The pre-anniversary
+  client (8684) is out of scope.
 * Real keyboard and mouse (all client runs are scripted), including the Steam mouse paths in
   `input.rs`.
 * Joysticks (Steam GoldSrc only: WinMM on Windows, SDL2 game controller on Linux; FWGS handles

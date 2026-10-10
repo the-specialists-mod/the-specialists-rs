@@ -17,7 +17,7 @@ design (`docs/rust.md` in the parent workspace) still applies.
 | Behave like TS 3.0 | Port logic and constants from the decomp, including the TS changes to player movement. Deviations are listed in §10. |
 | **Wire-compatible with TS 3.0** | Same user messages (names, sizes, registration order, payloads), same events, same `delta.lst`, same `clientdata`/`weapon_data` field usage (§2). An original TS client can join this server; this client can join an original TS server. |
 | Linux and Windows | Four targets: `i686-unknown-linux-gnu`, `i686-pc-windows-gnu`, `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-gnu` (§8). |
-| Engines | Xash3D FWGS (development, native 64-bit), ReHLDS on pre-anniversary HLDS, and stock Valve HLDS post-anniversary (HL25). Steam GoldSrc clients, pre- and post-anniversary. |
+| Engines | Xash3D FWGS (development, native 64-bit), ReHLDS on pre-anniversary HLDS, and stock Valve HLDS post-anniversary (HL25). Steam GoldSrc clients, post-anniversary (HL25); the pre-anniversary client is out of scope. |
 | Validated against real content | `cargo xtask` installs into each engine root with the local TS 3.0 content and runs dedicated servers with bots (§9). |
 
 ## 2. Wire compatibility contract
