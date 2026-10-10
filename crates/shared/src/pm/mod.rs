@@ -230,7 +230,7 @@ impl Pm<'_> {
     }
 
     pub(crate) fn play_sound(&self, channel: u32, sample: &CStr, volume: f32, attn: f32) {
-        self.p.play_sound(channel as i32, sample, volume, attn, 0, PITCH_NORM as i32);
+        self.p.play_sound(channel as i32, sample, volume, attn, 0, PITCH_NORM);
     }
 
     pub(crate) fn random_long(&self, lo: i32, hi: i32) -> i32 {
@@ -680,9 +680,7 @@ impl Pm<'_> {
         if accelspeed > addspeed {
             accelspeed = addspeed;
         }
-        for i in 0..3 {
-            self.p.velocity[i] += accelspeed * wishdir[i];
-        }
+        self.p.velocity = ma(self.p.velocity, accelspeed, wishdir);
     }
 
     fn air_accelerate(&mut self, wishdir: Vec3, wishspeed: f32, accel: f32) {
@@ -699,9 +697,7 @@ impl Pm<'_> {
         if accelspeed > addspeed {
             accelspeed = addspeed;
         }
-        for i in 0..3 {
-            self.p.velocity[i] += accelspeed * wishdir[i];
-        }
+        self.p.velocity = ma(self.p.velocity, accelspeed, wishdir);
     }
 
     /// `PM_Friction` (0xfde08): SDK edge friction, TS extra factor 0.75.
@@ -919,9 +915,7 @@ impl Pm<'_> {
             if accelspeed > addspeed {
                 accelspeed = addspeed;
             }
-            for i in 0..3 {
-                self.p.velocity[i] += accelspeed * wishvel[i];
-            }
+            self.p.velocity = ma(self.p.velocity, accelspeed, wishvel);
         }
 
         let dest = ma(self.p.origin, self.p.frametime, self.p.velocity);
@@ -1151,9 +1145,7 @@ impl Pm<'_> {
             if accelspeed > addspeed {
                 accelspeed = addspeed;
             }
-            for i in 0..3 {
-                self.p.velocity[i] += accelspeed * wishdir[i];
-            }
+            self.p.velocity = ma(self.p.velocity, accelspeed, wishdir);
             self.p.origin = ma(self.p.origin, self.p.frametime, self.p.velocity);
             return;
         }
@@ -1356,9 +1348,7 @@ impl Pm<'_> {
     fn unduck(&mut self) {
         let mut new_origin = self.p.origin;
         if self.p.onground != -1 {
-            for i in 0..3 {
-                new_origin[i] += self.p.player_mins[1][i] - self.p.player_mins[0][i];
-            }
+            new_origin = add(new_origin, sub(self.p.player_mins[1], self.p.player_mins[0]));
         }
         let trace = self.trace(new_origin, new_origin);
         if trace.startsolid == 0 {

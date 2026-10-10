@@ -129,9 +129,7 @@ impl Pm<'_> {
     fn ts_stand_up(&mut self) {
         let mut new_origin = self.p.origin;
         if self.p.onground != -1 {
-            for i in 0..3 {
-                new_origin[i] += self.p.player_mins[1][i] - self.p.player_mins[0][i];
-            }
+            new_origin = add(new_origin, sub(self.p.player_mins[1], self.p.player_mins[0]));
         }
         let trace = self.trace(new_origin, new_origin);
         if self.p.cmd.buttons & IN_DUCK as u16 != 0 {
