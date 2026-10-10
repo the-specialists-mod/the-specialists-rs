@@ -24,6 +24,8 @@ pub struct Player {
     pub inv: crate::weapons::Inventory,
     pub ts: crate::rules::PlayerRules,
     pub hud: hud::HudCache,
+    /// Train and tank driving (stock entities package).
+    pub drive: crate::entities::stock::drive::DriveState,
     pub bot: Option<crate::bots::Bot>,
 
     // ---- shared fields -------------------------------------------------------------------------
@@ -86,6 +88,7 @@ impl Entity for Player {
         crate::rules::on_spawn(self, cx);
         crate::weapons::on_spawn(self, cx);
         crate::stunt::on_spawn(self, cx);
+        crate::entities::stock::drive::on_spawn(self, cx);
         hud::reset(self);
     }
 
@@ -96,18 +99,21 @@ impl Entity for Player {
 
 impl Player {
     pub fn pre_think(&mut self, cx: &mut Cx) {
-        // +use on stock entities (buttons, doors, pushables, chargers); rules handles ground
-        // items and power-ups. Read last frame's buttons before rules updates them.
+        // +use on stock entities (buttons, doors, pushables, chargers, train and tank controls);
+        // rules handles ground items and power-ups. Read last frame's buttons before rules
+        // updates them. TS skips PlayerUse entirely while a tank is in use (ItemPostFrame 0xdc4d0).
         let (buttons, last) = (cx.pev().button, self.ts.buttons_last);
-        if Player::is_alive(cx) {
-            crate::entities::stock::player_use(cx.edict, buttons, last);
+        if Player::is_alive(cx) && !self.drive.tank.is_valid() {
+            crate::entities::stock::player_use(self, cx, buttons, last);
         }
+        crate::entities::stock::drive::pre_think(self, cx, buttons & !last);
         crate::rules::pre_think(self, cx);
         crate::stunt::pre_think(self, cx);
         crate::weapons::pre_think(self, cx);
     }
 
     pub fn post_think(&mut self, cx: &mut Cx) {
+        crate::entities::stock::drive::post_think(self, cx);
         crate::weapons::post_think(self, cx);
         crate::stunt::post_think(self, cx);
         crate::rules::post_think(self, cx);

@@ -28,6 +28,8 @@ pub struct Gfx {
     pub screen: Screen,
     pub sprites: HudSprites,
     pub ts: TsSprites,
+    /// `CHudTrain::m_hSprite`: `sprites/%d_train.spr` (the stock Half-Life sprite).
+    pub train: goldsrc::sys::HSPRITE,
     pub loaded: bool,
 }
 
@@ -418,10 +420,12 @@ pub fn vid_init() {
     let first = gfx(|g| !g.loaded);
     let sprites = HudSprites::load(s.width);
     let ts = TsSprites::load();
+    let train = e.spr_load(&format!("sprites/{}_train.spr", if s.width < 640 { 320 } else { 640 }));
     gfx(|g| {
         g.screen = s;
         g.sprites = sprites;
         g.ts = ts;
+        g.train = train;
         g.loaded = true;
     });
     crate::state::with(|st| {
@@ -718,9 +722,10 @@ pub fn redraw(time: f32, intermission: bool) {
     let dc = Dc { g, now: time, hud: input::hud_rgb() };
     let nohud = input::cvars().nohud.value() != 0.0;
 
-    // TS element order (§4.1): CHudMessage, death notices, CHudTSWeapons, CHudTSStatus,
-    // say text, CHudMenu. Centre text (TextMsg HUD_PRINTCENTER) is engine-drawn in TS; drawn
-    // with the HudText pass here.
+    // TS element order (§4.1): CHudTrain, CHudMessage, death notices, CHudTSWeapons,
+    // CHudTSStatus, say text, CHudMenu. Centre text (TextMsg HUD_PRINTCENTER) is engine-drawn in
+    // TS; drawn with the HudText pass here.
+    draw_train(&dc);
     notice::draw_hud_text(&dc);
     if !nohud {
         notice::draw_death_notices(&dc);
@@ -729,6 +734,22 @@ pub fn redraw(time: f32, intermission: bool) {
     status::draw(&dc, nohud);
     notice::draw_say_text(&dc);
     notice::draw_menu(&dc);
+}
+
+/// `CHudTrain::Draw` (10034d40): the speed notch frame of the train sprite, yellowish, a third of
+/// the way across and just above the bottom text line. Hidden at notch 0 (`HUD_ACTIVE` off) and,
+/// like every element in `CHud::Redraw`, under `HIDEHUD_ALL`.
+fn draw_train(dc: &Dc) {
+    let (pos, hide) = with(|h| (h.train_pos, h.hide_hud));
+    let spr = dc.g.train;
+    if pos == 0 || hide & 4 != 0 || spr == 0 {
+        return;
+    }
+    let e = engine();
+    e.spr_set(spr, [255, 160, 0]);
+    let y = dc.h() - e.spr_height(spr, 0) - dc.g.screen.char_height;
+    let x = dc.w() / 3 + e.spr_width(spr, 0) / 4;
+    e.spr_draw_additive(pos as i32 - 1, x, y, None);
 }
 
 #[cfg(test)]

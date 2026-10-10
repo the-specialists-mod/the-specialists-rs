@@ -207,7 +207,8 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
 }
 
 pub fn post_think(p: &mut Player, cx: &mut Cx) {
-    if Player::is_alive(cx) {
+    // `CBasePlayer::ItemPostFrame` (0xdc4d0) does nothing while a tank is in use.
+    if Player::is_alive(cx) && !p.drive.tank.is_valid() {
         let ran = host::with_host(p, cx, |gun, h| gun.item_post_frame(h));
         if ran {
             p.inv.sv.seed = engine().random_long(0, 32000) as u32;
@@ -219,6 +220,17 @@ pub fn post_think(p: &mut Player, cx: &mut Cx) {
     p.inv.gun.decrement_timers(dt);
     inventory::sync_speed(p, cx);
     net::update_client(p, cx);
+}
+
+/// `CFuncTank::StartControl` (0xc2a24): `m_pActiveItem->Holster()` (`CTSGun::Holster` 0x85674,
+/// back to kung fu).
+pub fn holster_for_tank(p: &mut Player, cx: &mut Cx) {
+    host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
+}
+
+/// `CFuncTank::StopControl` (0xc2b1c): `m_pActiveItem->Deploy()` (`CTSGun::Deploy` 0x81030).
+pub fn deploy_after_tank(p: &mut Player, cx: &mut Cx) {
+    host::with_host(p, cx, |gun, h| gun.deploy(h));
 }
 
 pub fn on_killed(p: &mut Player, cx: &mut Cx) {

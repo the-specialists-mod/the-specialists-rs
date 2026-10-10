@@ -89,6 +89,7 @@ pub fn update(p: &mut Player, cx: &mut Cx) {
         p.hud.btime = Some(p.ts.btime);
         msg::one(Msg::TsBTime, e, |w| TsBTime { on: p.ts.btime as u8 }.write(w));
     }
+    crate::entities::stock::drive::update_client(p, cx);
     if p.hud.award != Some(p.ts.award) {
         p.hud.award = Some(p.ts.award);
         let m = TsPAward { entindex: cx.index() as u8, award: p.ts.award };

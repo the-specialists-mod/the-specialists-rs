@@ -197,6 +197,11 @@ payload!(
     /// `HideWeapon` (ONE).
     HideWeapon { flags: byte }
 );
+payload!(
+    /// `Train` (ONE): `m_iTrain & 0xF`, the train speed notch (0 off, 1 neutral, 2-4 forward,
+    /// 5 back). Sent by `CBasePlayer::UpdateClientData` (0x91d00) while `TRAIN_NEW` is set.
+    Train { pos: byte }
+);
 
 impl TsFade {
     /// SDK `UTIL_ScreenFade` encoding: seconds → 4.12 fixed point, clamped to 16 bits.

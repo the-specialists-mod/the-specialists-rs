@@ -20,11 +20,13 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `buttons.rs` | `func_button`, `func_rot_button`, `button_target`, `multisource`, lock sounds, `DoSpark` |
 | `bmodels.rs` | `func_wall`, `func_illusionary`, `func_wall_toggle`, `func_conveyor`, `func_rotating`, `func_pendulum` |
 | `trains.rs` | `func_train`, `path_corner`, `func_plat` (with its trigger) |
-| `tracktrain.rs` | `func_tracktrain`, `path_track` |
+| `tracktrain.rs` | `func_tracktrain`, `func_traincontrols`, `path_track`, `TrainSpeed` |
+| `tank.rs` | `func_tank`, `func_tanklaser`, `func_tankrocket`, `func_tankmortar`, `func_tankcontrols` |
+| `drive.rs` | The player's side of train and tank driving: `m_iTrain`, `PFLAG_ONTRAIN`, `m_pTank`, `m_iHideHUD`, and the `PreThink` / `PostThink` / `PlayerUse` / `UpdateClientData` code that uses them (`Player::drive`) |
 | `triggers.rs` | `trigger_multiple/once/hurt/teleport/push/gravity/auto/relay/changetarget/camera`, `multi_manager`, `func_ladder`, `func_friction`, point entities (`info_target`, `info_teleport_destination`, `info_intermission`, `info_landmark`, `info_null`), `env_global`, `env_message` |
 | `sound.rs` | `ambient_generic` (with the full dynpitchvol / LFO code and the 27 presets), `env_sound` |
 | `lights.rs` | `light`, `light_spot`, `light_environment` |
-| `effects.rs` | `env_sprite`, `env_glow`, `env_shake`, `env_fade`, `env_explosion` (+ `spark_shower`), `env_render`, `env_beam`, `env_laser`, `env_shooter`, `gibshooter` (+ `gib`), `env_spark` / `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite`, `cycler` |
+| `effects.rs` | `env_sprite` (+ `CSprite::AnimateAndDie`), `env_glow`, `env_shake`, `env_fade`, `env_explosion` (+ `spark_shower`, `ExplosionCreate`), `env_render`, `env_beam`, `env_laser`, `env_shooter`, `gibshooter` (+ `gib`), `env_spark` / `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite`, `cycler` |
 | `items.rs` | `item_healthkit`, `item_battery`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins |
 | `maprules.rs` | `game_text` |
 
@@ -78,7 +80,10 @@ How the SDK patterns map to Rust:
 | `button_target`, `multisource` | SDK | |
 | `func_train`, `path_corner` | SDK plats.cpp | `Activate` is emulated (see §6). |
 | `func_plat` | **TS** `CFuncPlat` | Adds the TS keys `targettop` and `targetbot`, which fire when the plat reaches the top or bottom. Spawns its own trigger volume. |
-| `func_tracktrain`, `path_track` | SDK | Includes branches, alternate paths, banking, dead ends, and the `events/train.sc` pitch updates. Player driving is not ported. |
+| `func_tracktrain`, `path_track` | SDK | Includes branches, alternate paths, banking, dead ends, and the `events/train.sc` pitch updates. Players drive it (see §3.5). |
+| `func_traincontrols` | SDK `CFuncTrainControls` | Hands its box to the named train as the control volume (`SetControls`), then removes itself. |
+| `func_tank`, `func_tanklaser`, `func_tankrocket`, `func_tankmortar` | SDK func_tank.cpp + **TS** | Automatic (tracks a player in its PVS) and player-controlled tanks. See §3.5 for what TS changes. |
+| `func_tankcontrols` | SDK | +use passes on to the first `func_tank*` named by `target` (found 0.3 s after spawn). |
 | `trigger_multiple`, `trigger_once`, `trigger_teleport`, `trigger_push`, `trigger_gravity` | SDK triggers.cpp | `UTIL_ShowMessage` → `HudText`. |
 | `trigger_hurt` | SDK 2.3 | Negative damage heals with TS `TakeHealth`, with no dead-player check (2.3). The per-player bitmask in `impulse` is kept. `RadiationThink` is not ported (it only drives the HEV geiger counter). |
 | `trigger_auto`, `trigger_relay`, `trigger_changetarget` | SDK | |
@@ -189,6 +194,58 @@ How the SDK patterns map to Rust:
   * Full damage inside rFull, linear falloff to rMax.
   * Wall penetration: damage minus the wall thickness.
 
+### 3.5 Train and tank driving (decomp `CBasePlayer.c`, `CFuncTank*.c`, `CFuncTrainControls.c`)
+
+The classes are the SDK's. TS changes nothing in them, but the TS data around them matters:
+
+* **Trains.** +use while standing on a `func_tracktrain`, inside its control volume
+  (`OnControls`: the train's box plus 72 units up, or the `func_traincontrols` box), takes the
+  controls (`PlayerUse` 0xd9848, `plats/train_use1.wav`). `PreThink` (0x908cc) keeps `FL_ONTRAIN`
+  set (player movement then ignores input), turns +forward / +back presses into
+  `Use(USE_SET, ±1)` speed steps, and lets go when the player jumps, strafes, leaves the ground or
+  the train gets `SF_TRACKTRAIN_NOCONTROL`. +use again lets go.
+* **Train HUD.** `m_iTrain` holds the notch (`TrainSpeed` 0xd8660: 1 stopped, 2/3/4 forward by
+  thirds of the top speed, 5 back) plus `TRAIN_NEW`; `UpdateClientData` (0x91d00) sends `Train`
+  (byte `m_iTrain & 0xF`) and clears `TRAIN_NEW`. The TS client hooks `Train` with the stock
+  `CHudTrain` (10034ce0..10034df0), which draws `sprites/%d_train.spr` from the `valve`
+  directory; the port's client does the same.
+* **Tanks.** +use on a `func_tankcontrols` gives the player a `CANCONTROL` tank (`m_pTank`).
+  `StartControl` holsters the TS gun (`CTSGun::Holster` → kung fu), clears the weapon and view
+  models and sets `HIDEHUD_WEAPONS` (sent as `HideWeapon`). Each `PostThink` (0x91610) fires the
+  tank with +attack while the player stays within 30 units of where they pressed +use and has no
+  weapon model; otherwise the player lets go and the gun is redeployed (which, since the holster
+  switched to kung fu, leaves the player on kung fu). `ItemPostFrame` (0xdc4d0) and so
+  `PlayerUse` don't run while a tank is in use. `Killed` and `StartObserver` let go of the tank.
+* **No monster bullet damage.** TS's `CHalfLifeMultiplay::RefreshSkillData` (0xcef78) sets only
+  the multiplayer player damages, and `CGameRules::RefreshSkillData` reads only `skill`, so
+  `gSkillData.monDmg9MM/MP5/12MM` stay 0. A `func_tank` without `bullet_damage` hits for 0; with it,
+  `FireBullets` deals that much (`DMG_BULLET`, plus `ALWAYSGIB` above 16, else `NEVERGIB`).
+* **`func_tankrocket`** creates `rpg_rocket`, which TS doesn't link, so it fires no rockets; only
+  its sprites and targets fire.
+* **`func_tankmortar`** explodes `ExplosionCreate(iMagnitude)` (`env_explosion` with damage) where a
+  spread trace from the barrel hits.
+* **`func_tanklaser`** fires its `laserentity` `env_laser` from the barrel (a full second of the
+  laser's `dmg` per shot) and turns it off again when it stops firing.
+
+Port notes:
+
+* The player's half of `StartControl` / `StopControl` (holster or deploy, `HideWeapon` bits) runs
+  through `world::defer` once the player object is back in its slot, because +use and `PostThink`
+  reach the tank from inside the player's own dispatch. It runs in the same server frame.
+* `PlayerUse` runs from `PreThink` in the port (TS: `PostThink` → `ItemPostFrame` →
+  `ImpulseCommands`), as it already did for buttons and doors.
+* `CFuncTankLaser::Activate` (find the laser, turn it off; no laser removes the tank) runs from the
+  tank's first think instead of `ServerActivate`.
+* A tank whose controller disconnects lets go on its next think (port addition; the SDK keeps a
+  dangling pointer).
+* `FireBullets` for tanks sends a tracer for every shot and a `{shot1..5}` decal on brush
+  entities and the world. It doesn't play texture impact sounds (`TEXTURETYPE_PlaySound`) or
+  bubble trails under water.
+* `firespread 5` reads past TS's 5-entry `gTankSpread` (the SDK resets only values above 5); the
+  port uses no spread for it.
+* The train HUD is cleared on spawn (TS leaves the last notch shown after dying on a train).
+* `m_iWeaponVolume` (AI hearing) isn't kept.
+
 ## 4. Coverage (97 shipped maps)
 
 These numbers come from running `census.py` (§8) over `ts/maps/*.bsp` with the list of linked classnames.
@@ -197,15 +254,17 @@ These numbers come from running `census.py` (§8) over `ts/maps/*.bsp` with the 
 | | Classes | Entities |
 |---|---|---|
 | All classnames in the maps | 187 | 28,504 |
-| Handled by this package | 67 | 25,320 (88.8 %) |
+| Handled by this package | 72 | 25,333 (88.9 %) |
 | TS / weapon / ammo / team-spawn classes (other packages) | 70 | 2,948 |
-| Still unhandled, stock or foreign | 50 | 236 |
+| Still unhandled, stock or foreign | 45 | 223 |
 
 Every priority-1 and priority-2 stock class from design.md §5 is handled. The extras in this package
 are:
 
 * `func_plat` (3 maps)
-* `func_tracktrain` and `path_track` (4 maps, 161 entities)
+* `func_tracktrain` and `path_track` (4 maps, 161 entities), `func_traincontrols` (1)
+* `func_tank` (1), `func_tanklaser` (1), `func_tankmortar` (4), `func_tankcontrols` (6), and
+  `func_tankrocket` (unused by the shipped maps)
 * `func_pendulum`
 * `env_sound`, `env_global`, `env_message`, `env_laser`
 * `func_healthcharger`, `func_recharge`
@@ -213,9 +272,6 @@ are:
 
 **Still unhandled.** TS links these but this port doesn't yet:
 
-* `func_tank`, `func_tankmortar`, `func_tanklaser` and `func_tankcontrols` (5 entities in total;
-  they need player control).
-* `func_traincontrols` (1).
 * `env_blood` (8, one map).
 * `game_score` (1).
 * `monster_hevsuit_dead` (1).
@@ -267,6 +323,10 @@ covers:
     * `trigger_hurt` with 10000 damage kills the player.
   * **ts_antrodome:** the four fish `func_tracktrain`s move along their `path_track` loops.
 * **Not verified in-engine:**
+  * train driving (ahl_monorail) and the train HUD; `func_tank` (ts_frigid), `func_tankmortar`
+    (crossfire, SS_HQ_f3) and `func_tanklaser` (rats3) under player control. Unit tests cover
+    `TrainSpeed`, the `Train` / `HideWeapon` wire layouts, barrel angle correction and the spread
+    table.
   * real player touch and +use (there are no bots on this branch, and the `player_use` helper isn't
     wired up yet)
   * pushables
@@ -295,9 +355,9 @@ covers:
    * `env_beam` runs `BeamUpdateVars` 0.05 s after spawning.
 3. **+use.** The `Entity` trait has no `ObjectCaps`.
    * `stock::object_caps(e)` returns the stock classes' use caps.
-   * `stock::player_use(player, buttons, old_buttons)` implements `CBasePlayer::PlayerUse` for
-     them: it finds the closest usable entity within 64 units in the view cone, impulse or
-     continuous.
+   * `stock::player_use(player, cx, buttons, old_buttons)` implements `CBasePlayer::PlayerUse` for
+     them: a press first takes or leaves train controls (`drive::player_use`), otherwise it finds
+     the closest usable entity within 64 units in the view cone, impulse or continuous.
    * The player package should call it from PreThink, and fold in TS's own +use targets: power-ups
      and ground weapons, `CanUsedTroughWalls`.
 4. **Round restart.** `CTSGameRules::RespawnEntities` should call
@@ -327,7 +387,7 @@ covers:
    is a small fix in `entities/mod.rs`.
 10. **`pfnResetGlobalState`.** Calls `stock::base::reset_global_state()` (done at integration).
 11. **Client hooks** (HUD package): `TSFrags` (glass debris and explosions), `TSFade`, `ItemPickup`,
-    and the `events/train.sc` handler.
+    and the `events/train.sc` handler. (`Train` is drawn by the client HUD, see §3.5.)
 12. **Precache** (player package): `player/pl_wade1.wav`, `pl_wade2.wav` and the other SDK
     `ClientPrecache` sounds. The engine plays them for any entity entering water.
 13. **`env_sound`.** Call `stock::sound::reset_player_room(index)` when a client connects, so a new
@@ -337,7 +397,6 @@ covers:
 
 * Sentences (`!NAME` ambient sounds, door/button lock sentences, the battery's HEV sentence). There
   is no sentences.txt loader.
-* Train driving (`func_traincontrols`, the player's train HUD) and `func_tank*`.
 * `cycler` server-side studio animation: only `animtime`/`framerate`/`sequence` are driven.
 * `trigger_hurt` `RadiationThink` (HEV geiger), human-gib blood decals, `env_sprite` attachments
   (`aiment`).

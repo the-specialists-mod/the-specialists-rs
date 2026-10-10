@@ -156,6 +156,13 @@ impl Engine {
         if name.is_empty() { std::ptr::null_mut() } else { self.find_by_string(start, c"targetname", name) }
     }
 
+    /// `FIND_CLIENT_IN_PVS`: a client whose PVS contains `e` (the engine rotates through them on
+    /// successive calls), or null. The engine returns the world edict when there is none.
+    pub fn find_client_in_pvs(&self, e: *mut edict_t) -> *mut edict_t {
+        let c = eng!(pfnFindClientInPVS(e));
+        if c.is_null() || self.index_of(c) == 0 { std::ptr::null_mut() } else { c }
+    }
+
     /// `CREATE_ENTITY()`: a fresh edict with no private data and no classname.
     pub fn create_entity(&self) -> *mut edict_t {
         eng!(pfnCreateEntity())

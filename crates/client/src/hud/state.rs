@@ -195,6 +195,10 @@ pub struct Hud {
     pub menu: TextMenu,
     pub crosshair_id: Option<(i32, u8)>,
     pub intermission: bool,
+    /// `CHudTrain::m_iPos` (`Train`): speed notch + 1 of the train being driven, 0 = hidden.
+    pub train_pos: u8,
+    /// `gHUD.m_iHideHUDDisplay` (`HideWeapon`): HIDEHUD_WEAPONS 1 (tank in use), HIDEHUD_ALL 4.
+    pub hide_hud: u8,
 }
 
 impl Default for Hud {
@@ -264,6 +268,8 @@ impl Default for Hud {
             menu: TextMenu::default(),
             crosshair_id: None,
             intermission: false,
+            train_pos: 0,
+            hide_hud: 0,
         };
         h.reset_weapons();
         h
@@ -315,6 +321,8 @@ impl Hud {
     pub fn reset(&mut self) {
         self.reset_status();
         self.reset_weapons();
+        // CHudAmmo::Reset clears m_iHideHUDDisplay; CHudTrain has no Reset.
+        self.hide_hud = 0;
         self.menu = TextMenu::default();
     }
 
@@ -723,6 +731,11 @@ impl Hud {
                 self.hud_text = v.text;
                 self.hud_text_expire = now + 5.0;
             }
+            // CHudTrain::MsgFunc_Train (10034df0).
+            Msg::Train => self.train_pos = dec!(p::Train).pos,
+            // CHudAmmo::MsgFunc_HideWeapon (1001a110). TS only resets the engine crosshair,
+            // which it doesn't use; the port keeps the bits for HIDEHUD_ALL.
+            Msg::HideWeapon => self.hide_hud = dec!(p::HideWeapon).flags,
             Msg::ShowMenu => {
                 let v = dec!(p::ShowMenu);
                 if v.slots == 0 {
@@ -743,13 +756,11 @@ impl Hud {
             | Msg::AmmoPickup
             | Msg::WeapPickup
             | Msg::ItemPickup
-            | Msg::HideWeapon
             | Msg::AmmoX
             | Msg::Geiger
             | Msg::Health
             | Msg::Battery
             | Msg::Damage
-            | Msg::Train
             | Msg::GameTitle
             | Msg::SelAmmo => {}
             // Engine-handled; never hooked.
