@@ -59,6 +59,9 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | screen fade + `TSFade` | end of `0x10069b90`, `0x1004c1e0` | `view::write_screen_fade`, `view::fade_color`, `view::on_tsfade` | done, verified in game |
 | `V_SetFog` | `0x10056c20` | `effects::fog_begin` / `fog_params` (TriAPI `Fog`), `fog_end` | done, unit-tested: single player with `gl_fog 2` uses `gl_fog_red/green/blue` and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` != 0 |
 | `CAM_Init` / `CAM_Think` / `MoveToward` / `CL_IsThirdPerson` / camera offset | `0x10025370` / `0x10024c80` / `0x10024ba0` / `0x1004fec0` / §7.4 | `view::cam_init` (from `input::init`, as `InitInput` calls it), `view::cam_think` (`cam_command`, `cam_ofs` from `cam_snapto`/`cam_ideal*`, `move_toward`, unit-tested), `view::is_third_person`, third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`) | done; camera verified in game before the offset smoothing was rewritten to TS's form, body cam and model z smoothing not yet |
+| camera controls: `+/-campitchup`, `+/-campitchdown`, `+/-camyawleft`, `+/-camyawright`, `+/-camin`, `+/-camout` (kbuttons `0x100df338`/`370`/`2e8`/`348`/`380`/`328`), `+/-cammousemove`, `+/-camdistance`, `snapto`; `CAM_Think`'s adjustment block | `0x10025260..0x10025310`, `0x100255d0`/`0x10025670`, `0x10025680`/`0x10025700`, `0x10025340`; `0x10024cdc..0x1002515d` | `camera::register_commands` (from `view::cam_init`, in `CAM_Init`'s order), `camera::adjust_ideal` (`key_step`: ±2.5° pitch/yaw, ±1 distance, `+camin` under 30 resets to 0/0/30, unbounded; `mouse_step`: half a degree, or one unit of distance in `+camdistance`, per two pixels of cursor offset, bounded by `c_min/max*`; both unit-tested). While a mouse mode holds the mouse (`iMouseInUse` `0x100df394`), `input` skips mouse look (`IN_Move` `0x100282e0`), `IN_Accumulate` (`0x100278b0`) and the mouse buttons (`IN_MouseEvent` `0x100273d0`) | done (see deviations); not exercised in game |
+| `thirdperson` toggle | `0x1004fe00` | `view::toggle_third_person` (also `cam_command 1` and the HUD's death cam, `cl_thirdpersonswitch` and observer switches): during demo playback switches only when `cam_thirdperson` differs from the recorded state; otherwise refused for an observer in first person; flips `cam_thirdperson`, seeds `cam_ofs` = (view pitch, view yaw, 30) when switching on, sets `cam_command` 0, and while recording writes demo record type 2 | done; not exercised in game |
+| `Demo_WriteBuffer` / `Demo_ReadBuffer` | `0x1001b860` / `0x1001b8c0` | `demo::write_buffer` (`ClEngine::demo_write_buffer`), `demo::read_buffer` (from the `Demo_ReadBuffer` export): `int` type + data; type 2 is the recorded `cam_thirdperson`, unknown types print TS's "Unknown demo buffer type, skipping." | type 2 only (see deviations) |
 | `HookEvents` | `0x10003240` | `events::init` | all 11 |
 | `EV_TS_Fire` / `FireLinked` | `0x1003de40` / `0x1003de10` | `events::fire::{fire, fire_linked}` | done |
 | `EV_TS_FireStandard` | `0x1003dfa0` | `fire::fire_standard` | done |
@@ -208,11 +211,26 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   `cam_ofs`'s pitch and yaw (`CAM_Think`), which follows the view angles plus
   `cam_idealpitch`/`cam_idealyaw`: eased a quarter of the way per frame by `MoveToward`, or snapped
   with `cam_snapto 1`. The view itself still looks along `cl_viewangles` with roll 0, as before
-  (not re-checked against TS, which leaves `pparams->viewangles` alone in this block). TS's
-  `CAM_Think` mouse and key adjustments (`+campitchup/down`, `+camyawleft/right`, `+camin/out`,
-  `+cammousemove`, `+camdistance`, `snapto`, bounded by `c_min/max*`) are not ported, because
-  those commands aren't registered; `cam_ofs` is seeded with the view angles when third person
-  starts, as TS's `thirdperson` toggle does.
+  (not re-checked against TS, which leaves `pparams->viewangles` alone in this block). `cam_ofs`
+  is also seeded lazily (view angles, distance 30) when third person starts by a path that doesn't
+  go through the `thirdperson` toggle (the `cl_thirdperson` cvar, the death cam's `forced_dead`),
+  and is dropped in first person; TS keeps the stale value, which nothing reads in first person.
+* **Camera mouse modes read the mouse motion, not the Win32 cursor.** TS's `CAM_Think` reads
+  `GetCursorPos`, takes the offset from `GetWindowCenterX/Y` and re-centres with `SetCursorPos`,
+  while `iMouseInUse` keeps `IN_MouseMove`/`IN_Accumulate` off the cursor. The port takes the
+  pending raw mouse counts from `input` instead (`input::take_cursor_offset`), which on the Windows
+  Steam path without `m_rawinput` is that same `GetCursorPos`/`SetCursorPos` re-centring, and on
+  FWGS (`IN_ClientLookEvent`) and SDL relative mouse the equivalent motion. Fractional counts
+  (FWGS) carry over to the next frame. Two TS quirks differ: TS's `cam_mouse` reading after
+  `-cammousemove` with `+camdistance` still held stays stale and keeps moving the distance, as in
+  the port, but TS's re-centre then also throws away motion meant for mouse look; the port leaves
+  that motion to mouse look. The sensitivity-scaled `cam_old_mouse_x/y` TS stores are never read
+  and are left out.
+* **`snapto` and `CAM_Think` write `cvar->value` directly** (`Cvar::set_value`), as TS does, so
+  `cam_snapto`/`cam_ideal*` printed at the console can show a stale string, as in TS.
+* **Demo record types 0 and 1** (TS `0x10003bf9`/`0x10020a11` write them, `Demo_ReadBuffer`
+  stores them in `0x100d6074`/`0x100d6078`, read at `0x10020a25` and `0x1003df6c`) are recognised
+  by `demo::read_buffer` but not written or used; only type 2 (`thirdperson`) is ported.
 * The third-person collision trace is world-only (`PM_WORLD_ONLY`) from the model origin; TS uses
   `PM_TraceLine` against the pmove physents.
 * **Particle numbers** in `effects::fx` are read from the TS client's disassembly (the decompile

@@ -35,7 +35,7 @@ pub struct KButton {
 pub struct Button(EngineCell<KButton>);
 
 impl Button {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Button(EngineCell::new(KButton { down: [0; 2], state: 0 }))
     }
 
@@ -50,7 +50,7 @@ impl Button {
     }
 
     /// SDK `KeyDown`.
-    fn key_down(&self) {
+    pub(crate) fn key_down(&self) {
         let b = self.get();
         let k = Self::key_arg();
         if k == b.down[0] || k == b.down[1] {
@@ -69,7 +69,7 @@ impl Button {
     }
 
     /// SDK `KeyUp`.
-    fn key_up(&self) {
+    pub(crate) fn key_up(&self) {
         let b = self.get();
         let k = Self::key_arg();
         if k == -1 {
@@ -97,7 +97,7 @@ impl Button {
     }
 
     /// SDK `CL_KeyState`: fraction of the frame the key was down (0, 0.25, 0.5, 0.75 or 1).
-    fn key_state(&self) -> f32 {
+    pub(crate) fn key_state(&self) -> f32 {
         let b = self.get();
         let (impulse_down, impulse_up, down) = (b.state & 2 != 0, b.state & 4 != 0, b.state & 1 != 0);
         let val = match (impulse_down, impulse_up, down) {
@@ -616,6 +616,14 @@ fn take_mouse_delta() -> [f32; 2] {
     d
 }
 
+/// The mouse motion since the last read, in raw counts (cursor pixels with the Windows cursor),
+/// for the camera's mouse modes. TS's `CAM_Think` reads the Win32 cursor's offset from the window
+/// centre and re-centres it; with mouse look stood down (`camera::mouse_in_use`), the motion
+/// pending here is that offset on every back end.
+pub(crate) fn take_cursor_offset() -> [f32; 2] {
+    take_mouse_delta()
+}
+
 /// FWGS `IN_ClientLookEvent` (exported by the dll crate): relative mouse look (degrees, already
 /// scaled by m_yaw/m_pitch).
 pub fn look_event(relyaw: f32, relpitch: f32) {
@@ -658,6 +666,10 @@ pub fn deactivate_mouse() {
 /// SDK `IN_MouseEvent`: forward button edges to the engine as K_MOUSE1.. keys, except that
 /// clicks go to the open menu while it shows the cursor (TS routes them to `CTSBuyMenu`).
 pub fn mouse_event(mstate: i32) {
+    // TS's `IN_MouseEvent` (100273d0) ignores the buttons while the camera holds the mouse.
+    if crate::camera::mouse_in_use() {
+        return;
+    }
     let old = mouse(|m| std::mem::replace(&mut m.old_buttons, mstate));
     // A press on the scoreboard enters voice squelch mode instead of firing.
     if mstate & !old != 0 && crate::menus::scoreboard_press() {
@@ -688,7 +700,8 @@ pub fn clear_states() {
 /// SDK `IN_Accumulate`: collect motion between frames (Steam GoldSrc only).
 pub fn accumulate() {
     let (fwgs, active) = mouse(|m| (m.is_fwgs, m.active));
-    if fwgs || !active {
+    // TS's `IN_Accumulate` (100278b0) also stands down while the camera holds the mouse.
+    if fwgs || !active || crate::camera::mouse_in_use() {
         return;
     }
     let d = native::delta();
@@ -889,20 +902,24 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
         cmd.forwardmove += mv[0] * c.cl_forwardspeed.value();
         cmd.sidemove += mv[1] * c.cl_sidespeed.value();
 
-        // IN_Move: mouse look, then the joystick (Steam GoldSrc; FWGS sent it above). TS's
-        // `IN_MouseMove` (100274d0) stops the pitch drift first, every frame, so the view never drifts
-        // while the mouse is active.
-        if mouse(|m| m.active) {
-            crate::view::stop_pitch_drift();
-        }
-        let raw = take_mouse_delta();
-        if !hud::intermission() {
-            apply_mouse(raw, &mut view);
+        // IN_Move (100282e0): mouse look, then the joystick (Steam GoldSrc; FWGS sent it above).
+        // TS's `IN_MouseMove` (100274d0) stops the pitch drift first, every frame, so the view never
+        // drifts while the mouse is active. IN_Move skips the mouse entirely while
+        // `+cammousemove`/`+camdistance` hold it (`iMouseInUse` 0x100df394): the motion is left
+        // for `CAM_Think` to move the third-person camera with.
+        if !crate::camera::mouse_in_use() {
+            if mouse(|m| m.active) {
+                crate::view::stop_pitch_drift();
+            }
+            let raw = take_mouse_delta();
+            if !hud::intermission() {
+                apply_mouse(raw, &mut view);
+            }
         }
         if !is_fwgs() {
             crate::joystick::joy_move(frametime, &mut view, &mut cmd.forwardmove, &mut cmd.sidemove);
         }
-    } else {
+    } else if !crate::camera::mouse_in_use() {
         let _ = take_mouse_delta();
     }
 

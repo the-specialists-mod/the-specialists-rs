@@ -4,8 +4,9 @@
 //! pointers; this one has no `unsafe` code (see AGENTS.md).
 //!
 //! Modules (docs/design.md §6):
-//! `input`, `hud`, `menus` (HUD/UI work package) and `view`, `events`, `prediction`, `effects`
-//! (rendering/prediction work package), `spectator` (observer camera, HLTV director), `studio` (the
+//! `input`, `hud`, `menus` (HUD/UI work package) and `view`, `camera` (third-person camera
+//! controls), `events`, `prediction`, `effects` (rendering/prediction work package), `demo` (client
+//! data in demos), `spectator` (observer camera, HLTV director), `studio` (the
 //! TS studio model renderer). `state` holds what both sides read. `voice` is the voice status and
 //! voice ban UI (`CVoiceStatus`).
 
@@ -14,6 +15,8 @@
 #![allow(dead_code)]
 #![deny(unsafe_code)]
 
+pub mod camera;
+pub mod demo;
 pub mod effects;
 pub mod events;
 pub mod hud;

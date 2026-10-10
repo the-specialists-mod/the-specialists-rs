@@ -153,6 +153,17 @@ impl Cvar {
         // SAFETY: non-null cvar pointers come from the engine and live for the process.
         unsafe { self.0.as_ref() }.map_or(0.0, |c| c.value)
     }
+
+    /// Writes `cvar->value` directly, as the SDK's and TS's camera code does (`snapto`,
+    /// `CAM_Think`'s `cam_ideal*` updates): the string is left alone and the engine isn't told.
+    /// Use `Cvar_SetValue` (`ClEngine::cvar_set`) for a normal change. No-op on a null handle.
+    pub fn set_value(self, v: f32) {
+        // SAFETY: non-null cvar pointers come from the engine and live for the process; the client
+        // runs on one thread and holds no other reference to the cvar across this write.
+        if let Some(c) = unsafe { self.0.as_mut() } {
+            c.value = v;
+        }
+    }
 }
 
 /// Storage the engine also reads and writes through a pointer we hand it, such as the
