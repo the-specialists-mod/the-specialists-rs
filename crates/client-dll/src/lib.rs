@@ -256,7 +256,14 @@ pub unsafe extern "C" fn HUD_TxferPredictionData(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn Demo_ReadBuffer(_size: c_int, _buf: *mut u8) {}
+pub unsafe extern "C" fn Demo_ReadBuffer(size: c_int, buf: *mut u8) {
+    if buf.is_null() || size <= 0 {
+        return;
+    }
+    // SAFETY: during playback the engine passes the `size`-byte record it read from the demo.
+    let b = unsafe { std::slice::from_raw_parts(buf, size as usize) };
+    ts_client::demo::read_buffer(b);
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_ConnectionlessPacket(

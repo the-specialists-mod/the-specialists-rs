@@ -306,6 +306,16 @@ impl ClEngine {
         // SAFETY: engine callback from the demo API table, no arguments.
         self.demo_api().and_then(|d| d.IsRecording).is_some_and(|f| unsafe { f() } != 0)
     }
+    /// `WriteBuffer`: appends client data to the demo being recorded (the engine hands it back to
+    /// `Demo_ReadBuffer` on playback). No-op if the table or slot is null.
+    pub fn demo_write_buffer(&self, buf: &[u8]) {
+        if let Some(f) = self.demo_api().and_then(|d| d.WriteBuffer) {
+            let mut copy = buf.to_vec();
+            // SAFETY: engine callback from the demo API table; it reads `size` bytes from the
+            // buffer, which is a live local copy for the call.
+            unsafe { f(copy.len() as c_int, copy.as_mut_ptr()) };
+        }
+    }
 
     /// The effects API (`R_TempModel`, `CL_AllocDlight` etc.), if the engine provides one. Only
     /// slots of the 2007 SDK `efx_api_s` are called; that table is a prefix of the FWGS one

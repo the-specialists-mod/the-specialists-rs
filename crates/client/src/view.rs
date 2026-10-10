@@ -319,29 +319,41 @@ struct CamCvars {
     idealyaw: Cvar,
     idealpitch: Cvar,
     idealdist: Cvar,
+    maxpitch: Cvar,
+    minpitch: Cvar,
+    maxyaw: Cvar,
+    minyaw: Cvar,
+    maxdistance: Cvar,
+    mindistance: Cvar,
 }
 
 /// `CAM_Init` (`0x10025370`, called from `InitInput`, so [`crate::input::init`] calls this):
-/// registers the SDK camera cvars with TS's defaults (`cam_idealdist` 100, the SDK's 64). TS
-/// reads `cam_command`, `cam_snapto` and `cam_ideal*` in `CAM_Think`; `c_min/max*` only bound
-/// the `+campitch*`/`+camyaw*`/`+camin`/`+camout`/`+cammousemove`/`+camdistance` adjustments,
-/// which the port doesn't register; `cam_contain` is never read (TS's `CAM_Think` has no contain
-/// block).
+/// registers TS's camera commands ([`crate::camera::register_commands`], with `thirdperson` and
+/// `firstperson`), then the SDK camera cvars with TS's defaults (`cam_idealdist` 100, the SDK's
+/// 64). `CAM_Think` reads `cam_command`, `cam_snapto` and `cam_ideal*`; `c_min/max*` bound the
+/// `+cammousemove`/`+camdistance` adjustments; `cam_contain` is never read (TS's `CAM_Think` has
+/// no contain block).
 pub fn cam_init() {
-    CAM.0.set(Some(CamCvars {
-        command: Cvar::register(c"cam_command", c"0", 0),
-        snapto: Cvar::register(c"cam_snapto", c"0", 0),
-        idealyaw: Cvar::register(c"cam_idealyaw", c"0", 0),
-        idealpitch: Cvar::register(c"cam_idealpitch", c"0", 0),
-        idealdist: Cvar::register(c"cam_idealdist", c"100", 0),
-    }));
+    crate::camera::register_commands(cmd_thirdperson, cmd_firstperson);
+    let command = Cvar::register(c"cam_command", c"0", 0);
+    let snapto = Cvar::register(c"cam_snapto", c"0", 0);
+    let idealyaw = Cvar::register(c"cam_idealyaw", c"0", 0);
+    let idealpitch = Cvar::register(c"cam_idealpitch", c"0", 0);
+    let idealdist = Cvar::register(c"cam_idealdist", c"100", 0);
     Cvar::register(c"cam_contain", c"0", 0);
-    Cvar::register(c"c_maxpitch", c"90.0", 0);
-    Cvar::register(c"c_minpitch", c"0.0", 0);
-    Cvar::register(c"c_maxyaw", c"135.0", 0);
-    Cvar::register(c"c_minyaw", c"-135.0", 0);
-    Cvar::register(c"c_maxdistance", c"200.0", 0);
-    Cvar::register(c"c_mindistance", c"30.0", 0);
+    CAM.0.set(Some(CamCvars {
+        command,
+        snapto,
+        idealyaw,
+        idealpitch,
+        idealdist,
+        maxpitch: Cvar::register(c"c_maxpitch", c"90.0", 0),
+        minpitch: Cvar::register(c"c_minpitch", c"0.0", 0),
+        maxyaw: Cvar::register(c"c_maxyaw", c"135.0", 0),
+        minyaw: Cvar::register(c"c_minyaw", c"-135.0", 0),
+        maxdistance: Cvar::register(c"c_maxdistance", c"200.0", 0),
+        mindistance: Cvar::register(c"c_mindistance", c"30.0", 0),
+    }));
 }
 
 fn with<R>(f: impl FnOnce(&mut View) -> R) -> R {
@@ -383,8 +395,6 @@ pub fn init() {
     Cvar::register(c"scr_ofsy", c"0", 0);
     Cvar::register(c"scr_ofsz", c"0", 0);
     let e = goldsrc::client::engine();
-    e.add_command(c"thirdperson", cmd_thirdperson);
-    e.add_command(c"firstperson", cmd_firstperson);
     e.add_command(c"ts_test_fade", cmd_test_fade);
     e.add_command(c"ts_test_kick", cmd_test_kick);
     e.add_command(c"ts_test_view", cmd_test_view);
@@ -434,12 +444,51 @@ extern "C" fn cmd_test_kick() {
     kick(if n(1) == 0.0 { 5.5 } else { n(1) }, n(2) as u8, false, false);
 }
 
-/// `thirdperson`. TS's (`0x1004fe00`) and `firstperson` (`CAM_ToFirstPerson` `0x10025320`)
-/// both end by setting `cam_command` back to 0.
 extern "C" fn cmd_thirdperson() {
-    with(|w| w.third = true);
-    engine().cvar_set(c"cam_command", 0.0);
+    toggle_third_person();
 }
+
+/// TS's `thirdperson` (`0x1004fe00`, replacing the SDK's `CAM_ToThirdPerson`): a toggle, also
+/// run by `cam_command 1` and by the HUD's camera switches (death cam, `cl_thirdpersonswitch`,
+/// observer changes).
+/// * During demo playback it only switches when `cam_thirdperson` differs from the state the demo
+///   last recorded ([`crate::demo::recorded_thirdperson`]), so replayed switches follow the
+///   recording.
+/// * Otherwise an observer can leave third person but not enter it.
+///
+/// Switching on seeds `cam_ofs` with the view pitch and yaw at distance 30. Every switch sets
+/// `cam_command` back to 0 and, while recording, writes the new state to the demo (type 2).
+pub fn toggle_third_person() {
+    let e = engine();
+    let third = with(|w| w.third);
+    if e.demo_playing() {
+        if third as i32 == crate::demo::recorded_thirdperson() {
+            return;
+        }
+    } else if crate::hud::observer() && !third {
+        return;
+    }
+    let view = e.view_angles();
+    let third = !third;
+    with(|w| {
+        w.third = third;
+        if third {
+            w.cam_ofs = Some([view[0], view[1], 30.0]);
+        }
+    });
+    e.cvar_set(c"cam_command", 0.0);
+    if e.demo_recording() {
+        crate::demo::write_buffer(crate::demo::THIRDPERSON, &(third as i32).to_le_bytes());
+    }
+}
+
+/// `cam_thirdperson` (`0x100df390`): the `thirdperson` toggle's state, without the port's
+/// death-cam override (see [`is_third_person`]).
+pub fn cam_thirdperson() -> bool {
+    with(|w| w.third)
+}
+
+/// `firstperson` (`CAM_ToFirstPerson` `0x10025320`): clears `cam_thirdperson` and `cam_command`.
 extern "C" fn cmd_firstperson() {
     with(|w| w.third = false);
     engine().cvar_set(c"cam_command", 0.0);
@@ -492,18 +541,17 @@ pub fn frame(frametime: f64) {
         (std::mem::take(&mut s.thirdperson_toggles), std::mem::take(&mut s.thirdperson_leave), std::mem::take(&mut s.thirdperson_restore))
     });
     // Automatic camera switches: cl_thirdperson on change, cl_thirdpersonswitch on weapon change.
+    // Each goes through TS's toggle (`0x1004fe00`), with its observer and demo checks.
     let tp = cv(|c| c.thirdperson);
-    with(|w| {
-        if toggles % 2 == 1 {
-            w.third = !w.third;
-        }
-        if leave {
-            w.third = false;
-        }
-        if restore {
-            w.third = third_after_observer(w.third, tp);
-        }
-    });
+    for _ in 0..toggles {
+        toggle_third_person();
+    }
+    if leave && cam_thirdperson() {
+        toggle_third_person();
+    }
+    if restore && third_after_observer(cam_thirdperson(), tp) != cam_thirdperson() {
+        toggle_third_person();
+    }
     let sw = cv(|c| c.thirdpersonswitch);
     let weapon = state::with(|s| s.weapon);
     with(|w| {
@@ -535,15 +583,16 @@ fn third_after_observer(third: bool, cl_thirdperson: f32) -> bool {
 }
 
 /// `CAM_Think` (`0x10024c80`), every frame from the engine: `cam_command` 1 runs `thirdperson`
-/// and 2 `firstperson` (both reset it to 0); then, in third person, `cam_ofs` follows the view
-/// angles plus `cam_idealpitch`/`cam_idealyaw` (snapped with `cam_snapto`, else eased by
-/// `MoveToward`) and takes `cam_idealdist`. [`calc_normal`] places the camera along `cam_ofs`'s
-/// pitch and yaw (`CL_CameraOffset`); TS ignores the distance there. TS's mouse and key camera
-/// controls in between are left out (see [`cam_init`]).
+/// (a toggle) and 2 `firstperson` (both reset it to 0); then, in third person, the camera
+/// controls adjust `cam_idealpitch`/`cam_idealyaw`/`cam_idealdist`
+/// ([`crate::camera::adjust_ideal`], written straight to the cvar values as TS does), and
+/// `cam_ofs` follows the view angles plus the ideal angles (snapped with `cam_snapto`, else eased
+/// by `MoveToward`) and takes `cam_idealdist`. [`calc_normal`] places the camera along
+/// `cam_ofs`'s pitch and yaw (`CL_CameraOffset`); TS ignores the distance there.
 pub fn cam_think() {
     let Some(c) = CAM.0.get() else { return };
     match c.command.value() as i32 {
-        1 => cmd_thirdperson(),
+        1 => toggle_third_person(),
         2 => cmd_firstperson(),
         _ => {}
     }
@@ -551,8 +600,16 @@ pub fn cam_think() {
         with(|w| w.cam_ofs = None);
         return;
     }
+    let lim = crate::camera::Limits {
+        pitch: (c.minpitch.value(), c.maxpitch.value()),
+        yaw: (c.minyaw.value(), c.maxyaw.value()),
+        dist: (c.mindistance.value(), c.maxdistance.value()),
+    };
+    let ideal = crate::camera::adjust_ideal([c.idealpitch.value(), c.idealyaw.value(), c.idealdist.value()], lim);
+    c.idealpitch.set_value(ideal[0]);
+    c.idealyaw.set_value(ideal[1]);
+    c.idealdist.set_value(ideal[2]);
     let view = engine().view_angles();
-    let ideal = [c.idealpitch.value(), c.idealyaw.value(), c.idealdist.value()];
     let snapto = c.snapto.value() != 0.0;
     with(|w| {
         let cur = w.cam_ofs.unwrap_or([view[0], view[1], 30.0]);

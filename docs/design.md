@@ -188,6 +188,8 @@ viewport to call `VGui_ViewportPaintBackground` as TS's does (issue #62); FWGS i
 | `voice` | `CVoiceStatus`: talking players' head icons and labels, the talk icon, scoreboard voice icons and squelch-mode muting, `voice_ban.dt`, `VModEnable`/`vban` | HUD/UI |
 | `joystick` | the SDK joystick code TS ships (`IN_JoyMove`, `IN_Commands`), Steam GoldSrc only; devices are read by `goldsrc::joystick` (WinMM / SDL2) | HUD/UI |
 | `view` | `V_CalcRefdef`: bob, punch, client-side recoil through `cl_viewangles`, slow-motion tint and `TSFade` | rendering |
+| `camera` | third-person camera controls (`CAM_Init`'s `+cam*` commands, `snapto`, the `CAM_Think` mouse and key adjustments); `view` owns `cam_thirdperson` and the `thirdperson` toggle | rendering |
+| `demo` | client data in demos (`Demo_WriteBuffer` / `Demo_ReadBuffer`): the recorded `thirdperson` state | rendering |
 | `events` | `fire.sc`, `empty.sc`, … handlers: sounds, muzzle flash, shells, impacts, decals | rendering |
 | `prediction` | `HUD_PostRunCmd` weapon prediction, Txfer callbacks carrying `iuser4`/`fuser1`/`vuser*` | rendering |
 | `effects` | temp entities, TS particle system, BSP-lump map emitters, laser sights, motion-blur ghosts | rendering |

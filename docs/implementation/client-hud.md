@@ -31,7 +31,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `+attack2` 10025f40 / `+alt2` 10026110 (`cl_attackswitch`) | `input::attack_switched` + the two command bodies |
 | `HUD_Key_Event` 10025a80 gate, `HUD_Frame` gate clear | `input::key_event`, `input::frame` |
 | `KB_Find` 10025880 | `input::find` |
-| `IN_MouseMove` 100274d0 / `IN_MouseEvent` 100273d0 / `IN_Accumulate` | `input::apply_mouse`, `mouse_event`, `accumulate` (+ `native`, `win`, `sdl`) |
+| `IN_MouseMove` 100274d0 / `IN_MouseEvent` 100273d0 / `IN_Accumulate` 100278b0 | `input::apply_mouse`, `mouse_event`, `accumulate` (+ `native`, `win`, `sdl`); all three stand down while `camera::mouse_in_use` (`iMouseInUse` 0x100df394), leaving the motion to `CAM_Think` (`input::take_cursor_offset`) |
 | `TS_ApproachTimescale` 10055ae0 | `hud::approach_timescale` (called from `HUD_Frame`) |
 | `CHud::Think` 10049760, `UTIL_ApproachFOV` 10049620, `SetFOV` 10049570 | `hud::think_fov`, `Msg::SetFov` handler |
 | `CHudTSStatus` handlers 1004b730..1004c1e0 | `Hud::apply` (status arms) |
@@ -123,8 +123,9 @@ Cvars, names/defaults/flags as TS registers them (§2.1):
     `cam_command cam_snapto cam_idealyaw cam_idealpitch` 0, `cam_idealdist` 100, `cam_contain` 0,
     `c_maxpitch/c_minpitch` 90.0/0.0, `c_maxyaw/c_minyaw` 135.0/-135.0,
     `c_maxdistance/c_mindistance` 200.0/30.0, all flags 0. `CAM_Think` reads `cam_command`,
-    `cam_snapto` and `cam_ideal*` (client-rendering.md); `c_*` only bound the camera key/mouse
-    commands, which aren't ported; `cam_contain` is never read.
+    `cam_snapto` and `cam_ideal*` (client-rendering.md); `c_*` bound the `+cammousemove`/
+    `+camdistance` adjustments (`camera`); `cam_contain` is never read. `CAM_Init` also registers
+    the camera commands (`camera::register_commands`), `thirdperson` and `firstperson`.
   * CHud::Init cvars that `effects` reads (`effects::init`): `r_paintball` and `gl_fog` (0,
     archived), `gl_fog_start` 0, `gl_fog_end` 2048, `gl_fog_red/green/blue` .5 (flags 0; the
     `gl_fog 2` user fog).
@@ -369,7 +370,8 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
 * Server browser, command menu, TFC panels (dropped as allowed by §7).
 * `HUD_UpdateClientData` writes the eased FOV (`view::update_client_data`, wired at integration).
 * Death-cam / `cl_thirdpersonswitch` / observer third-person changes are only *requested*
-  (`state.thirdperson_*`); the view package owns `cam_thirdperson`.
+  (`state.thirdperson_*`); the view package owns `cam_thirdperson` and runs each request through
+  TS's `thirdperson` toggle (`view::toggle_third_person`, with its observer and demo checks).
 
 ## 9. Tests and results
 
