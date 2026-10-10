@@ -68,9 +68,11 @@ struct Manager {
     start_at: f32,
     next_add: f32,
     added: u32,
+    /// The last add found the server full (the quota then retries quietly).
+    full: bool,
 }
 
-static MGR: Global<RefCell<Manager>> = Global(RefCell::new(Manager { active: false, start_at: 0.0, next_add: 0.0, added: 0 }));
+static MGR: Global<RefCell<Manager>> = Global(RefCell::new(Manager { active: false, start_at: 0.0, next_add: 0.0, added: 0, full: false }));
 
 pub fn game_init() {
     // `ts_bot_quota` is registered with the rules cvars.
@@ -97,30 +99,35 @@ fn fake_clients() -> Vec<*mut edict_t> {
 }
 
 /// The `addbot` server command: one more bot, with `ts_bot_quota` raised to cover it. Otherwise
-/// the quota (default 0) kicks the new bot half a second later.
+/// the quota (default 0) kicks the new bot half a second later. A full server (`maxplayers 1`)
+/// leaves the quota alone, so it doesn't keep retrying.
 pub fn add_bot_command() {
     let want = fake_clients().len() + 1;
-    if (cvars::f(c"ts_bot_quota").max(0.0) as usize) < want {
+    MGR.0.borrow_mut().full = false; // an explicit addbot always reports a full server
+    if add_bot() && (cvars::f(c"ts_bot_quota").max(0.0) as usize) < want {
         engine().set_cvar_float(c"ts_bot_quota", want as f32);
     }
-    add_bot();
 }
 
-/// Adds one bot.
-pub fn add_bot() {
+/// Adds one bot. False when the server has no free client slot (reported once per streak of
+/// failed adds: the quota retries every half second).
+pub fn add_bot() -> bool {
     let eng = engine();
-    let n = {
-        let mut m = MGR.0.borrow_mut();
-        m.added += 1;
-        m.added
-    };
+    let n = MGR.0.borrow().added + 1;
     let base = NAMES[(n as usize - 1) % NAMES.len()];
     let name = if n as usize > NAMES.len() { format!("{base} {}", n) } else { base.to_owned() };
     let cname = to_cstring(&name);
     let e = eng.create_fake_client(&cname);
     if e.is_null() {
-        eng.print("[ts] bots: no free client slot\n");
-        return;
+        if !std::mem::replace(&mut MGR.0.borrow_mut().full, true) {
+            eng.print("[ts] bots: no free client slot\n");
+        }
+        return false;
+    }
+    {
+        let mut m = MGR.0.borrow_mut();
+        m.added = n;
+        m.full = false;
     }
     // A fake client gets no connect/put-in-server from the engine: do what a real client gets.
     rules::client_connect(e, &cname, c"127.0.0.1");
@@ -132,6 +139,7 @@ pub fn add_bot() {
     world::dispatch(e, |ent, cx| ent.spawn(cx));
     rules::userinfo_changed(e);
     eng.print(&format!("[ts] bots: added \"{name}\" (#{})\n", eng.index_of(e)));
+    true
 }
 
 /// Called every server frame: keeps the quota and drives each bot with `pfnRunPlayerMove`.

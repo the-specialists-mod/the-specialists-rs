@@ -169,6 +169,8 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 ## 6. Deviations from TS 3.0
 
 * `addbot`/`addcustombot` add a fake client; `ts_bot_quota` is new (dedicated-server testing).
+  On a full server (e.g. `maxplayers 1`) `addbot` says `no free client slot` once and leaves
+  the quota alone; a quota above the free slots retries quietly every 0.5 s.
 * `GetGameDescription` returns `rules::game_description()` (wired at integration).
 * Map votes: `CheckVotes` also tallies slow-match / teamplay / friendly-fire toggle votes, but
   nothing in TS ever sets them (and the slow-match one writes the non-existent `mp_slowmatch`), so

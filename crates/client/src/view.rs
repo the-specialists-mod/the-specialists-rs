@@ -61,8 +61,6 @@ struct View {
     last_simorg: Vec3,
     // third person
     third: bool,
-    /// Third-person state saved by a HUD "leave" request (observer mode), restored on "restore".
-    saved_third: Option<bool>,
     forced_dead: bool,
     /// Eased additions to the camera's up (`0x10191da4`) and back (`0x10191da8`) offsets.
     cam_up_ofs: f32,
@@ -446,20 +444,19 @@ pub fn frame(frametime: f64) {
     let (toggles, leave, restore) = state::with(|s| {
         (std::mem::take(&mut s.thirdperson_toggles), std::mem::take(&mut s.thirdperson_leave), std::mem::take(&mut s.thirdperson_restore))
     });
+    // Automatic camera switches: cl_thirdperson on change, cl_thirdpersonswitch on weapon change.
+    let tp = cv(|c| c.thirdperson);
     with(|w| {
         if toggles % 2 == 1 {
             w.third = !w.third;
         }
         if leave {
-            w.saved_third = Some(w.third);
             w.third = false;
         }
-        if restore && let Some(t) = w.saved_third.take() {
-            w.third = t;
+        if restore {
+            w.third = third_after_observer(w.third, tp);
         }
     });
-    // Automatic camera switches: cl_thirdperson on change, cl_thirdpersonswitch on weapon change.
-    let tp = cv(|c| c.thirdperson);
     let sw = cv(|c| c.thirdpersonswitch);
     let weapon = state::with(|s| s.weapon);
     with(|w| {
@@ -475,6 +472,19 @@ pub fn frame(frametime: f64) {
         }
     });
     effects::frame(time, ft);
+}
+
+/// Leaving observer mode (`Spectator` handler `10065250`): TS re-applies `cl_thirdperson` (1 →
+/// third person, 0 → first person, other values keep the camera). The death cam that was on
+/// before the observer mode doesn't come back.
+fn third_after_observer(third: bool, cl_thirdperson: f32) -> bool {
+    if cl_thirdperson == 1.0 {
+        true
+    } else if cl_thirdperson == 0.0 {
+        false
+    } else {
+        third
+    }
 }
 
 pub fn cam_think() {}
@@ -1076,6 +1086,14 @@ fn write_screen_fade(_time: f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn leaving_observer_reapplies_cl_thirdperson() {
+        use super::third_after_observer as f;
+        assert!(!f(true, 0.0), "the death cam doesn't survive the respawn");
+        assert!(f(false, 1.0));
+        assert!(f(true, 2.0) && !f(false, 2.0), "other values keep the camera");
+    }
+
     use super::*;
 
     #[test]
