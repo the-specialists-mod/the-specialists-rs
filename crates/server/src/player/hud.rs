@@ -41,6 +41,18 @@ pub fn stance(v: &entvars_t) -> u8 {
     }
 }
 
+/// `TSHealth` byte: `UpdateClientData` (0x91d00) sends `(int)max(health, 0)`, truncated toward
+/// zero by the `fistp` with the rounding mode forced to chop (0x91fd2), and `WRITE_BYTE` keeps
+/// the low 8 bits, so there is no cap at 255.
+fn health_byte(health: f32) -> u8 {
+    health.max(0.0) as i32 as u8
+}
+
+/// `TSArmor` byte: `(int)armorvalue`, truncated (0x9206e / 0x920c0), no clamp either side.
+fn armor_byte(armor: f32) -> u8 {
+    armor as i32 as u8
+}
+
 pub fn update(p: &mut Player, cx: &mut Cx) {
     let now = cx.time();
     if p.hud.next_update > now && p.hud.next_update - now <= 0.1 {
@@ -50,7 +62,7 @@ pub fn update(p: &mut Player, cx: &mut Cx) {
     let e = cx.edict;
     let (health, armor, state) = {
         let v = cx.pev();
-        (v.health.max(0.0).round().min(255.0) as u8, v.armorvalue.max(0.0).round().min(255.0) as u8, stance(v))
+        (health_byte(v.health), armor_byte(v.armorvalue), stance(v))
     };
     if p.hud.health != Some(health) {
         p.hud.health = Some(health);
@@ -94,5 +106,22 @@ pub fn update(p: &mut Player, cx: &mut Cx) {
         p.hud.award = Some(p.ts.award);
         let m = TsPAward { entindex: cx.index() as u8, award: p.ts.award };
         msg::all(Msg::TsPAward, |w| m.write(w));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{armor_byte, health_byte};
+
+    #[test]
+    fn health_and_armor_bytes_truncate_like_ts() {
+        // The One's regen leaves fractional health; TS shows the floor, not the rounded value.
+        assert_eq!(health_byte(99.84), 99);
+        assert_eq!(health_byte(0.9), 0);
+        assert_eq!(health_byte(-12.0), 0);
+        // WRITE_BYTE of an int keeps the low byte: no cap at 255.
+        assert_eq!(health_byte(300.0), 44);
+        assert_eq!(armor_byte(49.99), 49);
+        assert_eq!(armor_byte(256.0), 0);
     }
 }

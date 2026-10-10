@@ -681,7 +681,7 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
         return;
     }
     let dmg = if is_alive(cx) { speed * 0.1 } else { speed };
-    let mut info = DamageInfo::new(cx.edict, cx.edict, dmg, bits::CLUB | bits::NEVERGIB);
+    let mut info = DamageInfo::new(cx.edict, cx.edict, dmg, bits::CLUB | bits::NEVERGIB).traced();
     info.hitgroup = tr.iHitgroup;
     info.pos = tr.vecEndPos;
     crate::damage::apply(victim, &info);

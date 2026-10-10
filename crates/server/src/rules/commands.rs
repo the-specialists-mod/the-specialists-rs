@@ -358,7 +358,7 @@ extern "C" fn cmd_hurt() {
     }
     let attacker = if e.cmd_argc() > 4 { e.client(arg(4) as i32) } else { e.entity_of_index(0) };
     let attacker = if attacker.is_null() { e.entity_of_index(0) } else { attacker };
-    let mut info = crate::damage::DamageInfo::new(attacker, attacker, arg(2), crate::damage::bits::BULLET);
+    let mut info = crate::damage::DamageInfo::new(attacker, attacker, arg(2), crate::damage::bits::BULLET).traced();
     info.hitgroup = if e.cmd_argc() > 3 { arg(3) as i32 } else { crate::damage::hitgroup::CHEST };
     info.pos = victim.v().origin;
     info.dir = [1.0, 0.0, 0.0];

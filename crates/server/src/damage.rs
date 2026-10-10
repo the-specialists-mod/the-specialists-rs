@@ -60,11 +60,30 @@ pub struct DamageInfo {
     pub pos: [f32; 3],
     /// TS weapon id that did it, or -1.
     pub weapon: i32,
+    /// Dealt through the victim's `TraceAttack` (vtable +0x54) then `ApplyMultiDamage`, rather
+    /// than a direct `TakeDamage` (+0x58). `damage::apply` is a single entry point, so this is how
+    /// a victim knows to run its TraceAttack step (players: spawn protection, stunt ×0.7, team
+    /// check, hitgroup, `PTakeDam`; breakables and doors: their hit effects). Set it with
+    /// `DamageInfo::traced()` in every caller that TS routes through TraceAttack: bullets
+    /// (`CBulletManager::UpdateBullet`, `ShootBulletsPlayer`, `FireBullets`), melee
+    /// (`KnifeFire`, `KatanaFire`, `CloseCombatAttack`, `ColdCockAttack`,
+    /// `CTSStunt::CheckForBreakables`), `TSExplosion` (also when occluded), thrown/falling
+    /// objects (`CTSKnife::BounceTouch`/`WaitThink`, `CM61Grenade::WaitThink`,
+    /// `CTSWorldGun::Fall`), `CBeam::BeamDamage` and `RadiusDamage` when its trace hit something.
+    /// Crushers, `trigger_hurt`, falling, drowning, time-based damage, telefrags, team changes,
+    /// breakable touch and Xen trees call `TakeDamage` directly and leave it false.
+    pub traced: bool,
 }
 
 impl DamageInfo {
     pub fn new(inflictor: *mut edict_t, attacker: *mut edict_t, damage: f32, bits: i32) -> Self {
-        Self { inflictor, attacker, damage, bits, hitgroup: hitgroup::GENERIC, dir: [0.0; 3], pos: [0.0; 3], weapon: -1 }
+        Self { inflictor, attacker, damage, bits, hitgroup: hitgroup::GENERIC, dir: [0.0; 3], pos: [0.0; 3], weapon: -1, traced: false }
+    }
+
+    /// The same damage, dealt through `TraceAttack` (sets the `traced` field).
+    pub fn traced(mut self) -> Self {
+        self.traced = true;
+        self
     }
 }
 
@@ -78,4 +97,20 @@ pub fn apply(victim: *mut edict_t, info: &DamageInfo) -> bool {
         return false;
     }
     world::dispatch(victim, |e, cx| e.take_damage(cx, info)).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn traced_is_explicit() {
+        let null = std::ptr::null_mut();
+        let direct = DamageInfo::new(null, null, 10.0, bits::BULLET);
+        assert!(!direct.traced, "bits and hitgroup don't imply a TraceAttack");
+        let traced = DamageInfo::new(null, null, 10.0, bits::BLAST).traced();
+        assert!(traced.traced, "an occluded blast keeps hitgroup GENERIC but is still traced");
+        assert_eq!(traced.hitgroup, hitgroup::GENERIC);
+        assert_eq!((traced.damage, traced.bits, traced.weapon), (10.0, bits::BLAST, -1));
+    }
 }

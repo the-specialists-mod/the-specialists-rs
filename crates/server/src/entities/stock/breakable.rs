@@ -660,7 +660,7 @@ impl<const PUSH: bool> Entity for Breakable<PUSH> {
         if PUSH && !Self::breakable_flag(cx) {
             return true;
         }
-        if !vec::is_zero(info.pos) || !vec::is_zero(info.dir) {
+        if info.traced {
             self.trace_attack(cx, info);
         }
         self.take_damage_impl(cx, info)
