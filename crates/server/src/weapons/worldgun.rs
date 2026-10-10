@@ -28,6 +28,8 @@ pub struct WorldGun {
     pub original_owner: Option<*mut edict_t>,
     /// The player who dropped it (glow shell for them, `+0xd0`).
     pub dropper: Option<*mut edict_t>,
+    /// Who threw it, credited for its flying impact (port deviation, issue #1).
+    thrower: projectiles::Thrower,
     expire: f32,
     first_bounce: bool,
     pickup_after: f32,
@@ -53,6 +55,7 @@ pub fn create(
         w.id = id;
         w.status = status;
         w.original_owner = (!original_owner.is_null()).then_some(original_owner);
+        w.thrower = projectiles::Thrower::new(owner);
         let e = engine();
         let pev = cx.pev();
         pev.origin = origin;
@@ -83,6 +86,60 @@ pub fn set_drop_lifetime(gun: *mut edict_t, dropper: *mut edict_t) {
 /// The dropper sees its own dropped gun glow (see `weapons::glow_for_host`).
 pub fn glows_for(ent: *mut edict_t, host: *mut edict_t) -> bool {
     crate::world::with::<WorldGun, _>(ent, |w| w.dropper == Some(host)).unwrap_or(false)
+}
+
+/// The `WorldGun` branch of `TSExplosion` (0x7d678..0x7d93d): the gun is put back into flight
+/// (`UTIL_SetOrigin`, zero size, touch `CTSWorldGun::BounceTouch`, think `CTSWorldGun::Fall` in
+/// 0.1 s, `MOVETYPE_BOUNCE`, `SOLID_BBOX`, gravity 0.7, friction 0.8), thrown by
+/// [`blast_velocity`], hopped off the ground if it rests there ([`ground_hop`]), and spun at
+/// random. `from` is the blast point + 50z.
+pub fn blast(gun: *mut edict_t, from: Vec3, r_max: f32) {
+    // The touch/think switch: the port's `WorldGun` runs `Fall`/`BounceTouch` while it isn't on
+    // the ground.
+    let Some(id) = crate::world::with::<WorldGun, _>(gun, |w| {
+        w.on_ground = false;
+        w.id
+    }) else {
+        return;
+    };
+    let e = engine();
+    let origin = gun.v().origin;
+    e.set_origin(gun, origin);
+    e.set_size(gun, [0.0; 3], [0.0; 3]);
+    let now = e.time();
+    // 0x7d85c: `get_weapon_info(this+0x88)`, byte `+0xd0` (the inventory weight).
+    let slots = info(id).map_or(0, |w| w.slots) as u8;
+    let pev = gun.v();
+    pev.nextthink = now + 0.1;
+    pev.movetype = MOVETYPE_BOUNCE as i32;
+    pev.solid = SOLID_BBOX as i32;
+    pev.gravity = 0.7;
+    pev.friction = 0.8;
+    pev.velocity = blast_velocity(pev.origin, from, r_max, slots);
+    if pev.flags & FL_ONGROUND as i32 != 0 {
+        pev.flags &= !(FL_ONGROUND as i32);
+        pev.velocity[2] = ground_hop(pev.velocity[2]);
+    }
+    pev.avelocity[1] = e.random_long(-300, 300) as f32;
+    pev.avelocity[2] = e.random_long(-300, 300) as f32;
+}
+
+/// `TSExplosion`'s knock-back for a `WorldGun` at `gun` (0x7d743..0x7d8b6):
+/// `normalize(gun − from) · (r_max − |gun − from|) / slots · 10`, so heavier guns fly less. Past
+/// `r_max` the speed goes negative (towards the blast). A weightless id gives an infinite
+/// velocity, as TS's x87 division does; the engine clamps it to `sv_maxvelocity`.
+pub fn blast_velocity(gun: Vec3, from: Vec3, r_max: f32, slots: u8) -> Vec3 {
+    let away = spread::sub(gun, from);
+    let dist = spread::length(away);
+    let dir = if dist == 0.0 { [0.0, 0.0, 1.0] } else { spread::scale(away, 1.0 / dist) };
+    let push = spread::scale(dir, r_max - dist);
+    let w = slots as f32;
+    [push[0] / w * 10.0, push[1] / w * 10.0, push[2] / w * 10.0]
+}
+
+/// 0x7d8cf: a gun resting on the ground (`FL_ONGROUND`) hops up: `|v.z| + 50`.
+pub fn ground_hop(vz: f32) -> f32 {
+    vz.abs() + 50.0
 }
 
 impl Entity for WorldGun {
@@ -137,7 +194,8 @@ impl Entity for WorldGun {
             self.land(cx);
             return;
         }
-        // falling guns hurt what they hit (breakables)
+        // Falling guns hurt what they hit (breakables). The attacker is the thrower (port
+        // deviation, issue #1; TS `CTSWorldGun::Fall` 0xa0d84 passes the gun).
         let pev = cx.pev();
         let end = spread::ma(pev.origin, 0.1, pev.velocity);
         let tr = e.trace_line(pev.origin, end, DONT_IGNORE_MONSTERS, me);
@@ -146,7 +204,7 @@ impl Entity for WorldGun {
             let s = spread::length(pev.velocity) * slots;
             let target = tr.pHit.v();
             if target.takedamage != 0.0 && target.health <= s {
-                let mut d = DamageInfo::new(me, me, s * 0.001, 0x1080);
+                let mut d = DamageInfo::new(me, self.thrower.or(me), s * 0.001, 0x1080);
                 d.dir = pev.velocity;
                 d.pos = tr.vecEndPos;
                 damage::apply(tr.pHit, &d);
@@ -359,6 +417,41 @@ fn take_ammo(pack: &mut [i32; MAX_AMMO], mut add_ammo: impl FnMut(u8, i32) -> bo
 mod tests {
     use super::*;
     use shared::weapons::Gun;
+
+    fn close(a: Vec3, b: Vec3) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-3)
+    }
+
+    #[test]
+    fn blast_velocity_pushes_away_scaled_by_weight() {
+        // 100 u straight above the push point, grenade r_max 1024, a 10-slot pistol.
+        let v = blast_velocity([0.0, 0.0, 151.0], [0.0, 0.0, 51.0], 1024.0, 10);
+        assert!(close(v, [0.0, 0.0, 924.0]), "{v:?}");
+        // Sideways, a 40-slot shotgun: a quarter of the speed.
+        let v = blast_velocity([300.0, 0.0, 51.0], [0.0, 0.0, 51.0], 1024.0, 40);
+        assert!(close(v, [181.0, 0.0, 0.0]), "{v:?}");
+        // Diagonal: the direction is normalised, the magnitude is (r_max - dist) / slots * 10.
+        let v = blast_velocity([30.0, 40.0, 0.0], [0.0; 3], 1024.0, 20);
+        assert!(close(v, [292.2, 389.6, 0.0]), "{v:?}");
+    }
+
+    #[test]
+    fn blast_velocity_edge_cases() {
+        // On the push point: straight up at full strength.
+        assert!(close(blast_velocity([5.0; 3], [5.0; 3], 1024.0, 10), [0.0, 0.0, 1024.0]));
+        // Beyond r_max (the sphere test is against the gun's box and the blast point, not the
+        // push point 50 u higher): pulled back towards the blast.
+        assert!(close(blast_velocity([0.0, 0.0, 1100.0], [0.0; 3], 1024.0, 10), [0.0, 0.0, -76.0]));
+        // No weight: infinite, as in TS.
+        assert!(blast_velocity([0.0, 0.0, 10.0], [0.0; 3], 1024.0, 0)[2].is_infinite());
+    }
+
+    #[test]
+    fn grounded_gun_hops() {
+        assert_eq!(ground_hop(-120.0), 170.0);
+        assert_eq!(ground_hop(30.0), 80.0);
+        assert_eq!(ground_hop(0.0), 50.0);
+    }
 
     #[test]
     fn ammo_pack_takes_every_type_below_max_carry() {

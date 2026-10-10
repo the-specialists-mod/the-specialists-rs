@@ -61,7 +61,8 @@ addresses of `ts_i386.so`.
 | `VictimKungfuHold/KnifeHold/KatanaHold` 0x76f50/0x76de4/0x76c8c | `melee::hold` |
 | `CTSStunt::CheckForBreakables` (melee-window part) | `melee::pending_hit` |
 | `CM61Grenade` 0x7c850.. + `CTSGrenade::BounceTouch` 0x7be28 | `projectiles::Grenade` (link `m61_grenade`, classname `grenade`) |
-| `TSExplosion` 0x7d01c, `DoSpectacularNess` 0x76b48 | `projectiles::explode` (+ `screen_shake`, `screen_fade` via `TSFade`, `TSFrags` type 1, the 0.25/1 s slow-motion point) |
+| `TSExplosion` 0x7d01c, `DoSpectacularNess` 0x76b48 | `entities::stock::explode::ts_explosion`, shared with breakables (stock-entities.md §3.4) |
+| `TSExplosion`'s `WorldGun` branch 0x7d678 | `worldgun::blast` (`blast_velocity`, `ground_hop`) |
 | `CTSPhysicObject` 0x7ba54.. (`Spawn`, `SavePhysics`, `RestorePhysycs`, `WaitThink`) | `projectiles::SlowPhysics` (grenade, knife and `WorldGun` thinks) |
 | `CreateGrenade` 0x7c874 / `CreateKnife` 0x7d9e4 / `CreateWeapon` 0xa07ec (`GoSlow` of the thrower's amount) | `projectiles::thrower_time_scale` |
 | `CTSKnife` 0x7d9c0.. | `projectiles::Knife` (link + classname `knife`; `Use` 0x7dda4 = `Knife::use_by`) |
@@ -153,7 +154,8 @@ addresses of `ts_i386.so`.
   power-up. Bits 0x4001080, disarm + knockback (`v.vel += |a.vel|*dir`, `z = 235` above 30).
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
-  `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target.
+  `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target,
+  credited to the thrower (deviation, §5).
 * Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`rules::scoring::do_spectacularness`; `spectacularness`
   clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a
   `ts_slowmotionpoint` at the blast (amount 0.25, 1 s, no bullet time).
@@ -227,13 +229,17 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 * `dmgreport` is registered as a cvar (port addition, default 0). TS reads it with
   `CVarGetFloat` but never registers it, so TS output needs the cvar created elsewhere.
 * `WorldGun` `WaitTouch` doesn't check the 0.5 s pickup delay (as TS: only `Use` does).
-* **The flying impact credits the projectile, as in TS** (`impact_damage`: inflictor and
-  attacker are both the grenade, knife or gun). TS passes `this->pev` as the TraceAttack attacker
-  and as both `ApplyMultiDamage` arguments in `CM61Grenade::WaitThink` (0x7cacc; see the
-  disassembly at 0x7ce3c/0x7ce46), `CTSKnife::WaitThink` (0x7ea30) and `CTSWorldGun::Fall`
-  (0xa0d84), not `pev->owner`. So a breakable broken, or a player killed, by a flying projectile
-  isn't credited to the thrower (issue #1). Only the explosion (`TSExplosion(..., owner)`) and a
-  thrown blade's direct hit on a player (`BounceTouch`) credit the thrower.
+* **Deviation: the flying impact credits the thrower** (issue #1). TS passes `this->pev` as the
+  TraceAttack attacker and as both `ApplyMultiDamage` arguments in `CM61Grenade::WaitThink`
+  (0x7cacc; see the disassembly at 0x7ce3c/0x7ce46), `CTSKnife::WaitThink` (0x7ea30) and
+  `CTSWorldGun::Fall` (0xa0d84), not `pev->owner`, so in TS a breakable broken, or a player
+  killed, by a flying projectile isn't credited to the thrower. The port keeps the projectile as
+  the inflictor but makes the thrower the attacker (`projectiles::Thrower`, used by
+  `impact_damage` and the `WorldGun` fall damage): breakables take the thrower's time scale and
+  name it in the `broken by` log, kills are the thrower's, and the team / friendly-fire checks see
+  the thrower. The thrower is checked at impact time: it must still be a connected client
+  (`FL_CLIENT`) with the user id it had at the throw, so a player who left, or a new client in the
+  same slot, is never credited; then the projectile is the attacker, as in TS.
 * The bullet manager runs on a hidden `ts_bulletmanager` entity (TS: `CTSGameRules::Think`);
   bullets are also dropped after 16384 u without a hit.
 * The kick for bots goes to `punchangle` (TS `pev+0x68`), humans get it client-side.
@@ -249,9 +255,6 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 * `SVC_WEAPONANIM` is sent only to clients that don't predict weapons (TS behaviour); the client
   package plays view animations from events.
 * The briefcase/flag (rules).
-* Breakable explosions (`entities::stock::explode::ts_explosion`, the same `TSExplosion` in TS)
-  don't knock `WorldGun`s around; only the weapons' `projectiles::explode` does. Both create
-  the spectacular slow-motion point (`rules::scoring::do_spectacularness`).
 * `DropArmor` 0x93a3c armour packs (`CTSAmmoPack` with `armorvalue`) aren't ported. They're dead
   in TS: nothing calls `DropArmor`, so ammo packs never carry armour there either.
 * Shrapnel (`CTSShrapnel`) and the flag (`CTSFlag`), the other `CTSPhysicObject`s, aren't
@@ -268,11 +271,14 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
   punch + block + bar regen, Infinite Clip, priority switching, pickup limits, mode memory,
   message layouts, `CustomWP` round trip, clientdata/weapon_data packing.
 * `cargo test -p ts-server`: command argument parsing (`%i_%i`), `SlowPhysics` (scale, rescale,
-  restore, no gravity compounding at rest), ammo pack contents (`take_ammo`).
+  restore, no gravity compounding at rest), ammo pack contents (`take_ammo`), the explosion's
+  `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and damage falloff (`falloff_damage`).
 * **Not yet tested in engine**: slowed projectiles (power-up slow motion / `globalslow` with a
   grenade, thrown knife and dropped gun in sight), bullet-time simulated bullets (slow pause),
   bubble trails under water, `dmgreport 2` with `sv_cheats 1`, +use on a flying/landed gun, on a
-  grenade resting on the ground (the kick) and on a stuck knife/katana, the explosion slow-motion point (`spectacularness 100`).
+  grenade resting on the ground (the kick) and on a stuck knife/katana, the explosion slow-motion point (`spectacularness 100`),
+  a grenade (or an exploding breakable) next to a dropped gun: it flies off, lighter guns
+  further, and a landed gun hops.
 * Builds: `cargo build -p ts-server -p ts-client` (x86_64), `--target i686-unknown-linux-gnu`,
   `--target i686-pc-windows-gnu`: OK (only the pre-existing stdcall linker note).
 * In engine (FWGS, `~/games/xash_weapons`, `ts_bay107`): dedicated server on port 27210 PASS

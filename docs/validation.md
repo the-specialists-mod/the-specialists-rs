@@ -79,7 +79,7 @@ results from `ts_status` dumps, kill notices and developer log lines:
 | Join | The buy menu opens with a random first loadout: reset it, pick an AK47 with a scope and confirm (`slotN`, as the number keys do), click `+attack` after the respawn wait | `[ts] <host> spawned (#1) with [13]` |
 | `addbot` | `ts_bot_stop 1` (the bot stands still and holds fire), `addbot` | The quota reads 1 (so the quota doesn't kick the new bot) |
 | Power-up | Stand on the slow-motion `ts_powerup` (`0 -672 48`, pwuptype 1) with the bot in view, double-tap `+use` | Held `0x1` after the pickup. Then active `0x1`, host time scale 0.6, bot 0.35 |
-| Grenade | `ts_give 24`, `weapon_24`, aim at the 1-HP pillar `*15`, throw (`+attack`, release), move away | `func_breakable ... broken by <host> (grenade, ...)` |
+| Grenade | `ts_give 24`, `weapon_24`, aim at the 1-HP pillar `*15`, throw (`+attack`, release), move away | `func_breakable ... broken by <host> (grenade, ...)`: the explosion (bits `0x1040`) or the grenade still in flight (`0x1080`), which credits the thrower too (issue #1) |
 | Kill | Put the bot in front of the host, aim and fire the AK47 | `<host> killed Bot ...` and a frag |
 | Kick | `kick` the bot the host just killed | No crash (a dropped bot used to crash the engine on its "respawn"), and the quota adds a replacement |
 | Death and respawn | `ts_hurt 1 500`, click through the death cam, click after the wait | Dead with a death, then a second spawn line and alive |

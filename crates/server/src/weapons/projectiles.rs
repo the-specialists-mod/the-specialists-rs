@@ -1,15 +1,15 @@
-//! Projectiles: the M61 grenade (`CM61Grenade` 0x7c850.., `CTSGrenade::BounceTouch`), the
-//! explosion (`TSExplosion` 0x7d01c), and thrown knives / katanas (`CTSKnife` 0x7d9c0..), plus
+//! Projectiles: the M61 grenade (`CM61Grenade` 0x7c850.., `CTSGrenade::BounceTouch`; its
+//! explosion is `entities::stock::explode::ts_explosion`), thrown knives / katanas (`CTSKnife` 0x7d9c0..), plus
 //! the slow-motion physics they share with `WorldGun`s (`CTSPhysicObject` 0x7ba54..).
 
 use super::host::emit;
 use super::{assets, inventory, melee};
 use crate::damage::{self, DamageInfo};
 use crate::entities::{self, link_entities};
-use crate::messages::{self, Msg};
 use crate::player::Player;
 use crate::world::{self, Cx, Entity};
 use goldsrc::edict::EdictPtr;
+use goldsrc::ext::entities::is_player;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
@@ -138,6 +138,7 @@ pub fn report_damage(text: impl FnOnce() -> String) {
 #[derive(Default)]
 pub struct Grenade {
     owner: Option<*mut edict_t>,
+    thrower: Thrower,
     fuse: f32,
     elapsed: f32,
     phys: SlowPhysics,
@@ -148,6 +149,7 @@ pub struct Grenade {
 pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: bool, time_scale: f32) {
     spawn_entity::<Grenade>(c"m61_grenade", |g, cx| {
         g.owner = Some(owner);
+        g.thrower = Thrower::new(owner);
         g.fuse = 3.0;
         let pev = cx.pev();
         pev.origin = origin;
@@ -195,7 +197,7 @@ impl Entity for Grenade {
         if self.elapsed < self.fuse {
             // The fuse runs in the grenade's own time (`GiveSlowMul`).
             self.elapsed += 0.1 * cx.pev().fuser1.max(0.01);
-            impact_damage(me, 0.1, 0x1080, true);
+            impact_damage(me, self.thrower.or(me), 0.1, 0x1080, true);
             self.phys.update(cx.pev());
             return;
         }
@@ -203,7 +205,8 @@ impl Entity for Grenade {
         let origin = pev.origin;
         let attacker = self.owner.unwrap_or(std::ptr::null_mut());
         if e.point_contents(origin) != CONTENTS_SKY {
-            explode(origin, me, attacker, 110.0, 0x1040, 300.0, 1024.0);
+            // 0x7cacc: `TSExplosion(origin, pev, owner, 110, DMG_BLAST | DMG_NEVERGIB, 300, 1024)`.
+            crate::entities::stock::explode::ts_explosion(origin, me, attacker, 110.0, 0x1040, 300.0, 1024.0);
         }
         entities::remove(me);
     }
@@ -255,10 +258,54 @@ impl Grenade {
     }
 }
 
+/// Port deviation (issue #1): the player a projectile's flying impact is credited to. TS passes
+/// the projectile itself as the attacker (`CM61Grenade::WaitThink` 0x7cacc, `CTSKnife::WaitThink`
+/// 0x7ea30, `CTSWorldGun::Fall` 0xa0d84), so a breakable broken in flight isn't the thrower's.
+/// The port credits the thrower while it is still the same connected player: the slot must still
+/// be a client (`FL_CLIENT`, cleared on disconnect) with the user id it had at the throw (a
+/// reconnecting client reuses the edict with a new id). Otherwise [`Thrower::get`] is null and
+/// the projectile keeps the credit, as in TS.
+#[derive(Clone, Copy, Debug)]
+pub struct Thrower {
+    e: *mut edict_t,
+    user_id: i32,
+}
+
+impl Default for Thrower {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl Thrower {
+    pub const NONE: Thrower = Thrower { e: std::ptr::null_mut(), user_id: -1 };
+
+    /// Remembers `e` if it's a connected player.
+    pub fn new(e: *mut edict_t) -> Self {
+        if !is_player(e) {
+            return Self::NONE;
+        }
+        Thrower { e, user_id: engine().user_id(e) }
+    }
+
+    /// The thrower, or null if it left (or its slot now holds someone else).
+    pub fn get(&self) -> *mut edict_t {
+        let same = self.user_id != -1 && is_player(self.e) && engine().user_id(self.e) == self.user_id;
+        if same { self.e } else { std::ptr::null_mut() }
+    }
+
+    /// The attacker for a flying impact of `projectile`: the thrower, else the projectile.
+    pub fn or(&self, projectile: *mut edict_t) -> *mut edict_t {
+        let e = self.get();
+        if e.is_null() { projectile } else { e }
+    }
+}
+
 /// The "flying impact" of grenades, knives and world guns: if the projectile is fast, the
 /// entity 64 u ahead takes `speed * k` when that is at least its health (breaks glass, doesn't
-/// chip players). `skip_players` for knives.
-fn impact_damage(me: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
+/// chip players). Not players for knives (`any_entity` false). `attacker` is
+/// [`Thrower::or`] (port deviation, issue #1; TS: the projectile).
+fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
     let e = engine();
     let v = me.v();
     let s = speed(v);
@@ -276,136 +323,11 @@ fn impact_damage(me: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
     let target = tr.pHit.v();
     let dmg = s * k;
     if target.takedamage != 0.0 && target.health <= dmg {
-        let mut info = DamageInfo::new(me, me, dmg, bits);
+        let mut info = DamageInfo::new(me, attacker, dmg, bits);
         info.dir = spread::scale(dir, 64.0);
         info.pos = tr.vecEndPos;
         damage::apply(tr.pHit, &info);
     }
-}
-
-// ---- explosion ------------------------------------------------------------------------------
-
-/// `UTIL_ScreenShake`: every player on the ground within `radius` (SDK falloff disabled).
-pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32, radius: f32) {
-    let e = engine();
-    let fixed = |v: f32, scale: f32| ((v * scale) as i32).clamp(0, 0xffff);
-    for i in 1..=e.max_clients() {
-        let p = e.player(i);
-        if p.is_null() {
-            continue;
-        }
-        let v = p.v();
-        if v.flags & FL_ONGROUND as i32 == 0 {
-            continue;
-        }
-        if radius > 0.0 && spread::length(spread::sub(center, v.origin)) >= radius {
-            continue;
-        }
-        if v.flags & FL_FAKECLIENT as i32 != 0 {
-            continue;
-        }
-        messages::one(Msg::ScreenShake, p)
-            .short(fixed(amplitude, 4096.0))
-            .short(fixed(duration, 4096.0))
-            .short(fixed(frequency, 256.0))
-            .end();
-    }
-}
-
-/// `UTIL_ScreenFade` through TS's `TSFade` message (4.12 fixed-point times).
-pub fn screen_fade(p: *mut edict_t, color: [u8; 3], fade: f32, hold: f32, alpha: u8, flags: i32) {
-    if p.v().flags & FL_FAKECLIENT as i32 != 0 {
-        return;
-    }
-    let fixed = |v: f32| ((v * 4096.0) as i32).clamp(0, 0xffff);
-    messages::one(Msg::TsFade, p)
-        .short(fixed(fade))
-        .short(fixed(hold))
-        .short(flags)
-        .byte(color[0] as i32)
-        .byte(color[1] as i32)
-        .byte(color[2] as i32)
-        .byte(alpha as i32)
-        .end();
-}
-
-fn center(v: &entvars_t) -> Vec3 {
-    spread::scale(spread::add(v.absmin, v.absmax), 0.5)
-}
-
-/// `TSExplosion(origin, inflictor, attacker, dmg, bits, r_full, r_max)`: full damage inside
-/// `r_full`, linear to 0 at `r_max`; occluded targets lose the obstacle's thickness.
-pub fn explode(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t, dmg: f32, bits: i32, r_full: f32, r_max: f32) {
-    let e = engine();
-    let mut org = origin;
-    org[2] += 1.0;
-    screen_shake(org, dmg, 80.0, 1.0, r_max + r_max);
-    messages::all(Msg::TsFrags).coord(org[0]).coord(org[1]).coord(org[2]).coord(dmg.round_ties_even()).coord(0.0).coord(0.0).byte(1).end();
-    let falloff = dmg / (r_max - r_full);
-    let mut ent = std::ptr::null_mut();
-    loop {
-        ent = e.find_in_sphere(ent, org, r_max);
-        if ent.is_null() {
-            break;
-        }
-        if ent == inflictor {
-            continue;
-        }
-        let v = ent.v();
-        let classname = e.string(v.classname);
-        if classname.to_bytes() == b"WorldGun" {
-            // knocked around by the blast
-            let away = spread::normalize(spread::sub(v.origin, org));
-            v.velocity = spread::ma(v.velocity, 300.0, away);
-            v.velocity[2] += 150.0;
-            continue;
-        }
-        if v.takedamage == 0.0 || v.deadflag == DEAD_DEAD as i32 {
-            continue;
-        }
-        super::assets::debug(|| format!("explosion reaches {} #{}", e.string(v.classname).to_string_lossy(), e.index_of(ent)));
-        let is_player = e.is_player_edict(ent);
-        if is_player && v.deadflag == DEAD_NO as i32 && v.health > 0.0 {
-            screen_fade(ent, [222, 227, 189], 0.1, 0.05, 75, 0);
-        }
-        let target = center(v);
-        let tr = e.trace_line(org, target, DONT_IGNORE_MONSTERS, inflictor);
-        let dist = spread::length(spread::sub(org, target));
-        let mut d = dmg;
-        if dist > r_full {
-            d = (dmg - (dist - r_full) * falloff).max(0.0);
-        }
-        let dir = spread::normalize(spread::sub(target, org));
-        if tr.flFraction == 1.0 || tr.pHit == ent {
-            hit(ent, inflictor, attacker, d, bits, dir, target);
-        } else {
-            let first = if tr.fStartSolid != 0 { org } else { tr.vecEndPos };
-            let back = e.trace_line(target, org, DONT_IGNORE_MONSTERS, ent);
-            if back.flFraction != 1.0 {
-                let thickness = spread::length(spread::sub(back.vecEndPos, first));
-                if thickness < d {
-                    hit(ent, inflictor, attacker, d - thickness, bits, dir, target);
-                }
-            }
-        }
-    }
-    // The "spectacular" slow-motion point at the blast: 0.25 for 1 s, no bullet time.
-    if crate::rules::scoring::do_spectacularness() {
-        crate::entities::ts::create_slow_motion_point(org, 0.25, 1.0, false);
-    }
-}
-
-fn hit(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut edict_t, d: f32, bits: i32, dir: Vec3, pos: Vec3) {
-    if d <= 0.0 {
-        return;
-    }
-    let attacker = if attacker.is_null() { inflictor } else { attacker };
-    let mut info = DamageInfo::new(inflictor, attacker, d, bits);
-    info.dir = dir;
-    info.pos = pos;
-    info.weapon = id::M61 as i32;
-    let ok = damage::apply(victim, &info);
-    super::assets::debug(|| format!("explosion damage {d:.1} applied={ok} health={}", victim.v().health));
 }
 
 // ---- thrown knives --------------------------------------------------------------------------
@@ -415,6 +337,7 @@ fn hit(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut edict_t, d:
 #[derive(Default)]
 pub struct Knife {
     owner: Option<*mut edict_t>,
+    thrower: Thrower,
     btype: i32,
     expire: f32,
     flying: bool,
@@ -437,6 +360,7 @@ pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
     let src = tr.vecEndPos;
     spawn_entity::<Knife>(c"knife", |k, cx| {
         k.owner = Some(owner);
+        k.thrower = Thrower::new(owner);
         k.btype = btype;
         let pev = cx.pev();
         pev.origin = src;
@@ -526,7 +450,7 @@ impl Entity for Knife {
             return;
         }
         if !self.stuck {
-            impact_damage(cx.edict, 0.1, 0x0800_1000, false);
+            impact_damage(cx.edict, self.thrower.or(cx.edict), 0.1, 0x0800_1000, false);
         } else {
             let pev = cx.pev();
             if pev.flags & FL_ONGROUND as i32 != 0 {
