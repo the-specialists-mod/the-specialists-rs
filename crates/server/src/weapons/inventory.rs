@@ -133,7 +133,11 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
         _ => cur,
     };
     if !(1..=37).contains(&target) {
-        // the briefcase/flag belongs to the rules
+        // `DropWeapon` 0x94a87: with no gun to drop, `drop` throws the CTB case (`DropFlag(false)`);
+        // a disarm never does.
+        if !disarm {
+            crate::entities::ts::drop_flag(p, cx, false);
+        }
         return;
     }
     if !p.inv.gun.status[target as usize].owned {

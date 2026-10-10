@@ -121,7 +121,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | `ts_wind` | Full: `TSPSys` type 3. |
 | `ts_fog`, `ts_emitter`, `ts_particle` | Validated (emitter rates, 512 particles, `soundonemit` precached) and removed: the client reads the BSP lump. |
 | `ts_trigger`, `ts_dmhill`, `ts_timer`, `ts_customtarget`, `ts_playeramount`, `ts_slowmotion`, `ts_slowmotionpoint` | Full per §5 (TS quirks kept: `ts_trigger` team defaults to index 0 and always prints its message; `ts_timer` flag 2 ignored). |
-| `ts_briefcase`, `ts_flag`, `ts_scoregiver`, `ts_wingiver` | CTB: case at home 1 s after spawn, take by touch or +use (20 slots; not while hidden), drop on death/observer, 20 s return (`RespawnFlag` 0x9de58: "<owning team> briefcase returned", none for a case any team may take; new case at home 1 s later), owner return +5 (only with 2+ players, "returned the briefcase! 5 #TS_Frg"; new case at home 1 s later), capture +10 and team score, TSFlag/TSHVoice/TeamScore. Score/win givers: team score, "%s Score!/Win!", TSHVoice, TeamScore (scoregiver flag 1 restarts the round). |
+| `ts_briefcase`, `ts_flag`, `ts_scoregiver`, `ts_wingiver` | CTB: case falls at home 1 s after spawn (`FlagFall` 0x8da00, TSFlag 0); a flying case (`Fall` 0x9df10 every 0.1 s: landing sound, impact damage `|v|·30·0.001` through TraceAttack on non-players with health ≤ `|v|·30`; `BounceTouch` 0x9dbbc) is taken only with +use, a landed one (32×32×48 trigger) also by touch. Taking (`TakeFlag` 0x93830): 20 free slots and speed, `items/gunpickup2.wav`, TSFlag 1, "%s picked up a briefcase containing %s!" unless the taker was the case's last holder, `aquired_briefcase` log with contents; a case taken from home closes its zone for captures until it is back. Thrown (`DropFlag` 0x9334c) on death/observer/disconnect, or with `drop` and no gun in hand (`DropWeapon` 0x94a87): from eye + forward·16, along `v_angle` at (90 − pitch)·2 while alive, random (pitch ±60, yaw ±180, speed 60..160) when dead, plus 0.9 × player velocity and speed·0.33 up, passing through the thrower until it lands; `dropped_briefcase` log, TSFlag 2. 20 s return (`RespawnFlag` 0x9de58: "<owning team> briefcase returned", none for a case any team may take; new case at home 1 s later), owner return +5 (only with 2+ players, "returned the briefcase! 5 #TS_Frg"; new case at home 1 s later), capture +10 and team score (`captured_briefcase` log), TSHVoice/TeamScore; owner return and capture send no TSFlag 0 until the case reappears. Flag logs repeat the user id in the team slot (`"name<uid><auth><uid>"`), as TS does. Score/win givers: team score, "%s Score!/Win!", TSHVoice, TeamScore (scoregiver flag 1 restarts the round). |
 | `deadcorpse` | Created by the death think (player model, `kRenderFxDeadPlayer`, index in `renderamt` and `rendercolor.x`), removed after 10 s. |
 | `info_player_team1..4`, `info_player_teamspawn` | Inert points (team spawns are found by classname). TS doesn't export `info_player_teamspawn`; kept inert. |
 | `ts_objective_manager`, `ts_objective_ptr`, `ts_bomb`, `ts_hack`, `ts_teamescape`, `ts_sellzone` | Stubs: hidden, non-solid (dead in 3.0). |
@@ -184,7 +184,9 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * The CTB case: TS destroys the `ts_flag` when it's taken and keeps its data on the player; the
   port keeps the entity, hidden and following the carrier, so `player_use` leaves a carried case
   out of the search. Touch (`WaitTouch` 0x9e604) and +use (`Use` 0x9e5dc) both run
-  `Flag::player_take_flag` (`PlayerTakeFlag` 0x9e330).
+  `Flag::player_take_flag` (`PlayerTakeFlag` 0x9e330). A thrown case re-runs `Spawn` on that
+  entity instead of `CreateFlag`, and its origin goes through `SET_ORIGIN` (TS assigns
+  `pev->origin`).
 * Bots (port-only) look down at an item before pressing +use, since `PlayerUse`'s 0.7 view cone
   doesn't reach a weapon on the floor at eye level.
 * `wextraclip` gives `extra × clip` rounds (TS passes the raw number to `AddAmmo`). Like TS, it
@@ -209,7 +211,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 ## 7. Missing / partial
 
 * `loadweapons`/`saveweapons`, `CustomWP`.
-* Untested in-engine: CTB (no test map with briefcases), `ts_dmhill`, `ts_slowmotion`,
+* Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client,
   `item_antidote` (no shipped map places one).
 
