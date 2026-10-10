@@ -317,14 +317,21 @@ impl ClEngine {
 
     /// `EV_PlayerTrace` from `start` to `end` against the world and the other players (studio
     /// boxes, hull 2), as TS's crosshair ID does (`DrawCrosshairID` 1004acc0). Returns
-    /// (fraction, endpos, hit entity index or 0), or `None` if the engine has no event API.
+    /// (fraction, endpos, `EV_IndexFromTrace`), or `None` if the engine has no event API.
     /// Built on [`render::with_solid_players`] and [`render::player_trace`], the single
     /// wrappers for those calls.
+    ///
+    /// As TS, `ignore_pe` is the local player's entity index and `EV_IndexFromTrace` is called
+    /// whether or not the trace hit. `ignore_pe` is an index into the physent list (world, then
+    /// the frame's solid non-player entities, then the other players), so this skips whatever
+    /// sits at that slot, not the local player, who `EV_SetSolidPlayers` already leaves out. A
+    /// miss leaves `tr.ent` at -1, for which FWGS returns -1 (no entity). See
+    /// docs/implementation/client-hud.md §5.
     pub fn crosshair_trace(&self, start: [f32; 3], end: [f32; 3], local_index: i32) -> Option<(f32, [f32; 3], i32)> {
         self.event_api()?;
         Some(render::with_solid_players(local_index - 1, || {
-            let mut tr = render::player_trace(start, end, 2, PM_STUDIO_BOX, -1);
-            let ent = if tr.fraction < 1.0 { render::index_from_trace(&mut tr) } else { 0 };
+            let mut tr = render::player_trace(start, end, 2, PM_STUDIO_BOX, local_index);
+            let ent = render::index_from_trace(&mut tr);
             (tr.fraction, tr.endpos, ent)
         }))
     }

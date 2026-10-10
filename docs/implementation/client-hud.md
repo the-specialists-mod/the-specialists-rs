@@ -225,6 +225,31 @@ trace's end (`crosshair_centre`, as `DrawLaserDots`), or (−1, −1) when it pr
 view, which TS draws at as well. Its scoped flag (`0x1018a704`, FOV below 40) is cleared in
 third person (`crosshair_scoped`), so a zoomed third-person crosshair keeps its lines.
 
+Crosshair ID trace (`DrawCrosshairID` 1004acc0, read from the TS binary; `ClEngine::crosshair_trace`,
+which `crosshair_centre` shares): `EV_SetSolidPlayers(local − 1)`, `EV_SetTraceHull(2)`,
+`EV_PlayerTrace(start, end, PM_STUDIO_BOX, ignore_pe = local, &tr)` with `local` the local
+player's entity index (`push [0x1018a53c]` at `0x1004ada3`), then `EV_IndexFromTrace(&tr)` and
+`GetEntityByIndex` on the result whether or not the trace hit; a name is shown if that entity is
+non-null and a player. The port does the same (issue #61). `ignore_pe` is not an entity index:
+FWGS (`PM_PlayerTraceExt`, `pm_trace.c`) and the shared GoldSrc pmove code (ReHLDS
+`_PM_PlayerTrace`) skip `physents[ignore_pe]`. The client's physent list is the world (slot 0),
+then the solid non-player entities in this frame's packet entities (`CL_AddLinksToPmove`: brush
+models with clip hulls and studio models, so only what the server sent, i.e. roughly the PVS),
+then the other players that `EV_SetSolidPlayers` appends (the local player is already left out).
+So TS's value skips one unrelated physent:
+* when at least `local` such entities are in the frame (doors, breakables, walls): one of them, so
+  a player behind that one entity can be identified through it, and in third person the crosshair
+  projects through it;
+* otherwise one of the other players (the `local − count`-th solid one in slot order), who then
+  can't be identified until more entities come into the frame. A listen-server host (index 1) only
+  hits this with no solid entity in the frame; high slots on a full server hit it more often.
+
+Both are what TS players saw, so the port keeps them rather than recording a deviation (the
+issue's alternative, `ignore_pe` −1, would differ from TS on every map). If the second case turns
+out to matter in play, passing −1 again is a one-line change in `crosshair_trace`. On a miss
+`tr.ent` stays −1; FWGS's `EV_IndexFromTrace` returns −1 and `GetEntityByIndex(−1)` null, so
+nothing is shown, as before.
+
 Divesteps (1004ef50, drawn when not scoped or in third person; checked against the TS binary):
 the three sprites at `(cx − 40, cy − 40)`. Sprite i is red (195, 45, 45) when `81 − free slots`
 ≥ 42 / 52 / 62; the threshold helpers (1004eec0/1004eef0/1004ef20) compute
