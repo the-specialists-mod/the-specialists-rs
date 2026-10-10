@@ -11,7 +11,7 @@ mod scoreboard;
 use crate::hud::{self, Dc, draw::half, text::localise};
 use buy::{Action, BuyMenu, Rng, Rules, page};
 use goldsrc::Global;
-use goldsrc::client::engine;
+use goldsrc::client::{Cvar, engine};
 use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 
@@ -54,6 +54,9 @@ fn rules() -> Rules {
 }
 
 pub fn init() {
+    // `Scheme_Init` (1005c2a0), right after CHud::Init. TS's VGUI scheme manager reads it to pick
+    // bitmap fonts; the port draws its menus without VGUI, so it's registered only.
+    Cvar::register(c"bitmapfonts", c"1", 0);
     // `FUN_10036480`: <gamedir>/tsbuylist.tsa (nine saved configs), created if missing.
     let path = format!("{}/tsbuylist.tsa", engine().game_directory());
     let saved = std::fs::read(&path).map(|b| buy::parse_buylist(&b)).unwrap_or_default();

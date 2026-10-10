@@ -736,6 +736,8 @@ pub fn init() {
     CVARS.0.set(InputCvars::register());
     DEV_SCRIPT_INPUT.0.set(Cvar::register(c"ts_dev_scriptinput", c"0", 0));
     register_commands();
+    // `InitInput` (10026b30) ends with CAM_Init, IN_Init and V_Init.
+    crate::view::cam_init();
     let fwgs = !Cvar::find(c"host_ver").is_null();
     mouse(|m| {
         m.is_fwgs = fwgs;
@@ -994,6 +996,33 @@ mod tests {
         names.sort();
         let dups: Vec<_> = names.windows(2).filter(|w| w[0] == w[1]).map(|w| w[0].clone()).collect();
         assert!(dups.is_empty(), "cvars registered more than once: {dups:?}");
+        // TS's CAM_Init, CHud::Init fog, V_Init and Scheme_Init cvars (#65).
+        for name in [
+            "cam_command",
+            "cam_snapto",
+            "cam_idealyaw",
+            "cam_idealpitch",
+            "cam_idealdist",
+            "cam_contain",
+            "c_maxpitch",
+            "c_minpitch",
+            "c_maxyaw",
+            "c_minyaw",
+            "c_maxdistance",
+            "c_mindistance",
+            "gl_fog",
+            "gl_fog_start",
+            "gl_fog_end",
+            "gl_fog_red",
+            "gl_fog_green",
+            "gl_fog_blue",
+            "scr_ofsx",
+            "scr_ofsy",
+            "scr_ofsz",
+            "bitmapfonts",
+        ] {
+            assert!(names.binary_search(&name.to_string()).is_ok(), "{name} is not registered");
+        }
     }
 
     #[test]

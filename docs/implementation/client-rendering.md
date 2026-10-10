@@ -57,8 +57,8 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `ViewShake::Start` / `Update` | `0x10057fa0` / `0x10058000` | `view::Shake` | done, unit-tested |
 | `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` (prediction: `view::kick_angles`) | done, constants checked against the decomp |
 | screen fade + `TSFade` | end of `0x10069b90`, `0x1004c1e0` | `view::write_screen_fade`, `view::fade_color`, `view::on_tsfade` | done, verified in game |
-| `V_SetFog` | `0x10056c20` | `effects::fog_begin` (TriAPI `Fog`) | done, only with `gl_fog` != 0 |
-| `CAM_Think` / `CL_IsThirdPerson` / camera offset | `0x10024c80` / `0x1004fec0` / §7.4 | `view::cam_think` (no-op), `view::is_third_person`, third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`) | done; camera verified in game before the offset smoothing was rewritten to TS's form, body cam and model z smoothing not yet |
+| `V_SetFog` | `0x10056c20` | `effects::fog_begin` / `fog_params` (TriAPI `Fog`), `fog_end` | done, unit-tested: single player with `gl_fog 2` uses `gl_fog_red/green/blue` and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` != 0 |
+| `CAM_Init` / `CAM_Think` / `MoveToward` / `CL_IsThirdPerson` / camera offset | `0x10025370` / `0x10024c80` / `0x10024ba0` / `0x1004fec0` / §7.4 | `view::cam_init` (from `input::init`, as `InitInput` calls it), `view::cam_think` (`cam_command`, `cam_ofs` from `cam_snapto`/`cam_ideal*`, `move_toward`, unit-tested), `view::is_third_person`, third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`) | done; camera verified in game before the offset smoothing was rewritten to TS's form, body cam and model z smoothing not yet |
 | `HookEvents` | `0x10003240` | `events::init` | all 11 |
 | `EV_TS_Fire` / `FireLinked` | `0x1003de40` / `0x1003de10` | `events::fire::{fire, fire_linked}` | done |
 | `EV_TS_FireStandard` | `0x1003dfa0` | `fire::fire_standard` | done |
@@ -204,6 +204,15 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 * **Third-person model z smoothing** starts from the model's current z when third person is
   entered. TS keeps a static that is only updated in third person, so its model slides in from
   wherever it was the last time (z 0 the first time).
+* **Third-person camera direction.** As in TS (`0x10067f53`), the camera is placed along
+  `cam_ofs`'s pitch and yaw (`CAM_Think`), which follows the view angles plus
+  `cam_idealpitch`/`cam_idealyaw`: eased a quarter of the way per frame by `MoveToward`, or snapped
+  with `cam_snapto 1`. The view itself still looks along `cl_viewangles` with roll 0, as before
+  (not re-checked against TS, which leaves `pparams->viewangles` alone in this block). TS's
+  `CAM_Think` mouse and key adjustments (`+campitchup/down`, `+camyawleft/right`, `+camin/out`,
+  `+cammousemove`, `+camdistance`, `snapto`, bounded by `c_min/max*`) are not ported, because
+  those commands aren't registered; `cam_ofs` is seeded with the view angles when third person
+  starts, as TS's `thirdperson` toggle does.
 * The third-person collision trace is world-only (`PM_WORLD_ONLY`) from the model origin; TS uses
   `PM_TraceLine` against the pmove physents.
 * **Particle numbers** in `effects::fx` are read from the TS client's disassembly (the decompile
@@ -235,8 +244,20 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   ×10 (TS units), physics-gated and skips resting particles; the gust segments chain through
   `SharedRandomFloat/Long` as in TS. Think distances halve when zoomed (FOV < 40).
 * `weapons/sshell.wav` (TS shotgun-shell bounce) isn't shipped with TS 3.0; `sshell1/2.wav` are used.
-* Fog goes through TriAPI `Fog` (FWGS) instead of raw OpenGL; colours are converted from 0..1 to
-  0..255.
+* Fog goes through TriAPI `Fog` (FWGS) instead of raw OpenGL (both linear); colours are
+  converted from 0..1 to 0..255. TS sets `GL_FOG` itself and turns it off at the end of the
+  transparent pass whatever was drawn; the port turns it off only in frames it turned it on, so
+  it leaves engine fog alone. TS's map-fog branch also requires the hardware renderer; FWGS's
+  software TriAPI `Fog` does nothing anyway. FWGS's `TriFog` also returns early while the
+  engine's own fog is active (`RI.fogEnabled`, e.g. under water) or `gl_fog` is 0, and turns fog
+  off when end <= start.
+* **`gl_fog` is an engine cvar on FWGS.** `ref_gl` registers `gl_fog` ("1", `FCVAR_GLCONFIG`)
+  and gates its own fog and `TriFog` on it. The client registers it again, as TS's `CHud::Init`
+  does, so on FWGS the client's default 0 overwrites the engine's 1 (`Cvar_Get` resets an
+  existing cvar) and `gl_fog` gains `FCVAR_ARCHIVE`; the original TS client does the same there.
+  Whether Steam GoldSrc / HL25 `hw.dll` also owns `gl_fog` hasn't been checked (no client engine
+  here to read). `gl_fog_start/end/red/green/blue`, `cam_*`, `c_*`, `scr_ofs*` and
+  `bitmapfonts` are not engine cvars in FWGS; they are client-dll cvars in the SDK.
 * Shadows, laser beams and the scope overlay are TriAPI quads, as in TS. The scope overlay
   (`DrawScopeOverlay` `0x10054510`, `effects/scope.rs`) is TriAPI too, not direct GL: after the
   particles, in first person, alive and not observing, with the eased FOV below 40 and the hardware
