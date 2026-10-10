@@ -17,7 +17,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `explode.rs` | TS `TSExplosion`, SDK `RadiusDamage`, TS `UTIL_ScreenShake` / `UTIL_ScreenFade` (`TSFade`), sparks, ricochet, TS slow-motion pitch `emit_sound_slow` |
 | `breakable.rs` | `func_breakable`, `func_pushable`, material tables, `respawn_all` |
 | `doors.rs` | `func_door`, `func_door_rotating`, `func_water` |
-| `buttons.rs` | `func_button`, `func_rot_button`, `button_target`, `multisource`, lock sounds, `DoSpark` |
+| `buttons.rs` | `func_button`, `func_rot_button`, `button_target`, `multisource`, lock sounds and sentences (`PlayLockSounds`), `DoSpark` |
 | `bmodels.rs` | `func_wall`, `func_illusionary`, `func_wall_toggle`, `func_conveyor`, `func_rotating`, `func_pendulum` |
 | `trains.rs` | `func_train`, `path_corner`, `func_plat` (with its trigger) |
 | `tracktrain.rs` | `func_tracktrain`, `func_traincontrols`, `path_track`, `TrainSpeed` |
@@ -25,10 +25,15 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `drive.rs` | The player's side of train and tank driving: `m_iTrain`, `PFLAG_ONTRAIN`, `m_pTank`, `m_iHideHUD`, and the `PreThink` / `PostThink` / `PlayerUse` / `UpdateClientData` code that uses them (`Player::drive`) |
 | `triggers.rs` | `trigger_multiple/once/hurt/teleport/push/gravity/auto/relay/changetarget/camera`, `multi_manager`, `func_ladder`, `func_friction`, point entities (`info_target`, `info_teleport_destination`, `info_intermission`, `info_landmark`, `info_null`), `env_global`, `env_message` |
 | `sound.rs` | `ambient_generic` (with the full dynpitchvol / LFO code and the 27 presets), `env_sound` |
+| `sentences.rs` | `SENTENCEG_*`: the sentences.txt loader, `!NAME` lookup, sequential and random group picks, `UTIL_EmitAmbientSound`, the (multiplayer no-op) `SetSuitUpdate` |
 | `lights.rs` | `light`, `light_spot`, `light_environment` |
-| `effects.rs` | `env_sprite` (+ `CSprite::AnimateAndDie`), `env_glow`, `env_shake`, `env_fade`, `env_explosion` (+ `spark_shower`, `ExplosionCreate`), `env_render`, `env_beam`, `env_laser`, `env_shooter`, `gibshooter` (+ `gib`), `env_spark` / `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite`, `cycler` |
+| `effects.rs` | `env_sprite` (+ `CSprite::AnimateAndDie`, `SetAttachment`, `SetTransparency`), `env_glow`, `env_shake`, `env_fade`, `env_explosion` (+ `spark_shower`, `ExplosionCreate`), `env_render`, `env_beam`, `env_laser`, `env_shooter`, `gibshooter` (+ `gib`, `SpawnHeadGib`, `SpawnRandomGibs`), `env_spark` / `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite`, `cycler` |
+| `animating.rs` | `CBaseAnimating` / `CActAnimating` for stock model entities: `ResetSequenceInfo`, `StudioFrameAdvance`, `DispatchAnimEvents`, `SetActivity` / `LookupActivity`, `InitBoneControllers`, `SetSequenceBox` |
+| `blood.rs` | `UTIL_ShouldShowBlood`, `UTIL_BloodStream`, `UTIL_BloodDrips`, `UTIL_BloodDecalTrace`, `UTIL_RandomBloodVector`, the world blood/gib precaches, `env_blood` |
+| `xen.rs` | `xen_plantlight`, `xen_hair`, `xen_tree` (+ `xen_ttrigger`), `xen_spore_small/medium/large` (+ `xen_hull`) |
+| `monsters.rs` | `monster_hevsuit_dead` (with the `CBaseMonster` corpse code: fall, `DeadTakeDamage`, gibbing, fade) |
 | `items.rs` | `item_healthkit`, `item_battery`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins |
-| `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`) |
+| `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`), `game_score` (+ `AddPoints` / `AddPointsToTeam`) |
 
 How the SDK patterns map to Rust:
 
@@ -75,8 +80,8 @@ How the SDK patterns map to Rust:
 | `func_pendulum` | SDK | The INSTANT flag thinks on `ltime` (the SDK compares global time against `ltime`). |
 | `func_breakable` | **TS** `CBreakable` | See §3.1. |
 | `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use. A breakable pushable uses the TS breakable code. |
-| `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sentences aren't played. |
-| `func_button`, `func_rot_button` | SDK buttons.cpp | Spark sounds use TS slow-motion pitch. Shootable buttons (health > 0) work through `take_damage`. |
+| `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sounds and sentences as in §3.5. |
+| `func_button`, `func_rot_button` | SDK buttons.cpp | Spark sounds use TS slow-motion pitch. Shootable buttons (health > 0) work through `take_damage`. Lock sounds and sentences as in §3.5. |
 | `button_target`, `multisource` | SDK | |
 | `func_train`, `path_corner` | SDK plats.cpp | `Activate` is emulated (see §6). |
 | `func_plat` | **TS** `CFuncPlat` | Adds the TS keys `targettop` and `targetbot`, which fire when the plat reaches the top or bottom. Spawns its own trigger volume. |
@@ -85,24 +90,28 @@ How the SDK patterns map to Rust:
 | `func_tank`, `func_tanklaser`, `func_tankrocket`, `func_tankmortar` | SDK func_tank.cpp + **TS** | Automatic (tracks a player in its PVS) and player-controlled tanks. See §3.5 for what TS changes. |
 | `func_tankcontrols` | SDK | +use passes on to the first `func_tank*` named by `target` (found 0.3 s after spawn). |
 | `trigger_multiple`, `trigger_once`, `trigger_teleport`, `trigger_push`, `trigger_gravity` | SDK triggers.cpp | `UTIL_ShowMessage` → `HudText`. |
-| `trigger_hurt` | SDK 2.3 | Negative damage heals with TS `TakeHealth`, with no dead-player check (2.3). The per-player bitmask in `impulse` is kept. `RadiationThink` is not ported (it only drives the HEV geiger counter). |
+| `trigger_hurt` | SDK 2.3 | Negative damage heals with TS `TakeHealth`, with no dead-player check (2.3). The per-player bitmask in `impulse` is kept. With `DMG_RADIATION` in `damagetype`, **TS** `RadiationThink` (0xe703c) lowers the geiger range of the player who can see the trigger's centre, every 0.25 s; `update_geiger_counter` (`UpdateGeigerCounter` 0xda1f0, from the player's PreThink) sends `Geiger` (range / 4) to suited players when it changes. |
 | `trigger_auto`, `trigger_relay`, `trigger_changetarget` | SDK | |
 | `trigger_camera` | SDK | `SET_VIEW`, `FL_FROZEN` for TAKECONTROL, `path_corner` moves. |
 | `multi_manager` | SDK | Includes thread clones. Fixes the keyvalue order (see §6). |
 | `func_ladder`, `func_friction` | SDK | |
 | `info_target`, `info_teleport_destination`, `info_intermission`, `info_landmark`, `info_null` | SDK | `info_null` removes itself. |
 | `env_global`, `env_message` | SDK | Global states persist across maps, like `gGlobalState`. |
-| `ambient_generic` | SDK sound.cpp | The TS preset table is byte-identical. `!SENTENCE` sounds are not played. |
+| `ambient_generic` | SDK sound.cpp | The TS preset table is byte-identical. `!NAME` sentences aren't precached and are sent as `!<index>` (§3.5). |
 | `env_sound` | SDK | Per-player room state lives in a side table in `sound.rs`. |
 | `light`, `light_spot`, `light_environment` | SDK lights.cpp | Lights without a targetname are removed. Switchable styles are 32 and up. `light_environment` sets `sv_skycolor_*` and `sv_skyvec_*`. |
-| `env_sprite`, `env_glow`, `env_render`, `env_spark`, `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite` | SDK effects.cpp / world.cpp / h_cycler.cpp | |
+| `env_sprite`, `env_glow`, `env_render`, `env_spark`, `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite` | SDK effects.cpp / world.cpp / h_cycler.cpp | A sprite with an `aiment` follows that entity's attachment `body` (`MOVETYPE_FOLLOW`, skin = entity index), as `CSprite::Precache` / `SetAttachment` do; maps can't set `aiment`, so this is for code-created sprites (the `xen_plantlight` glow). `cycler_sprite` is +usable (TS impulse cap). |
 | `env_shake` | SDK + **TS** shake | Duration and frequency are divided by each player's time scale (`fuser1`). |
 | `env_fade` | **TS** `CFade` | Sent as `TSFade` with durations divided by the time scale. TS spawns it as a brush. New spawnflag 8 fades only the clients inside the brush. |
 | `env_explosion`, `spark_shower` | SDK explode.cpp | TS doesn't route these through `TSExplosion`. Uses SDK `RadiusDamage`, scorch decals, fireball and smoke temp entities. |
 | `env_beam` | SDK `CLightning` | Server-side beams work as `FL_CUSTOMENTITY` beam entities: `BeamUpdateVars` runs on the first think. Strike beams use temp entities. Damage and decals are included. |
 | `env_laser` | SDK `CLaser` | Includes the end sprite and damage. |
-| `env_shooter`, `gibshooter`, `gib` | SDK | Gib bounce sounds use TS slow-motion pitch. Blood decals from human gibs are not ported. |
-| `cycler` | SDK, simplified | The client animates from `animtime`/`framerate`. Server studio bookkeeping isn't ported. |
+| `env_shooter`, `gibshooter`, `gib` | SDK | Gib bounce sounds use TS slow-motion pitch. `gibshooter` gibs bleed red: up to 5 blood decals, one per airborne bounce (`BounceGibTouch` 0xb1ebc, `violence_hblood`); `env_shooter` gibs don't bleed. |
+| `cycler` | SDK h_cycler.cpp | Server-side studio animation (`CCycler::Think` 0xc778c): bone controllers zeroed, `frame` advanced, one-shot sequences restart. +use toggles the animation. Damage steps to the next sequence (wrapping to 0) while animating, or one 0.1 s frame step while paused. |
+| `env_blood` | SDK effects.cpp `CBlood` | `color` 1 = yellow, else red; `amount`. Drips (`TE_BLOODSPRITE`, amount doubled for multiplayer) or, with spawnflag 2, a stream (red becomes colour 70). Spawnflags 1 random direction, 4 at the activator's (or player 1's) eyes, 8 blood decal along the direction. |
+| `game_score` | SDK maprules.cpp | `points` to the activating player (`AddPoints`, `ScoreInfo` to all), or with spawnflag 2 to each of their teammates; without spawnflag 1 a score isn't taken below 0. `master` gates it. |
+| `monster_hevsuit_dead` | SDK `CDeadHEV` | `models/player.mdl`, body 1, sequence from `pose` (0–3: `deadback`, `deadsitting`, `deadstomach`, `deadtable`; a missing sequence logs "Dead hevsuit with bad pose" and gets `EF_BRIGHTFIELD`). Falls (`MOVETYPE_TOSS`) and takes its sequence box on landing. Crush/fall/blast/sonic/club damage wears it down (10 %) and gibs it when a hit reaches its health: head gib + 4 human gibs with blood, `common/bodysplat.wav`; with `violence_hgibs 0` it fades out instead. |
+| `xen_plantlight`, `xen_hair`, `xen_tree`, `xen_ttrigger`, `xen_spore_small`, `xen_spore_medium`, `xen_spore_large`, `xen_hull` | SDK xen.cpp | Studio animation through `animating.rs`. The light plant ducks on player touch (glow sprite attached to attachment 1 goes `EF_NODRAW`, targets fired off) and rises 5 s later (targets on). The tree swings at anything touching its 48×48×128 trigger 64 units ahead or shooting it, and its `TREE_AE_ATTACK` model event deals 25 crush/slash, punch 15 and a 100 u/s shove. Large spores add five invisible `xen_hull` leg boxes. |
 | `item_healthkit`, `item_battery` | **TS** pickup rules | See §3.3. |
 | `func_healthcharger`, `func_recharge` | **TS** `CWallHealth` / `CRecharge` | One-shot: the first use refills fully, then the charger recharges after 60 s (health) or 30 s (armour). |
 | `game_text` | SDK maprules.cpp | `TE_TEXTMESSAGE` per client, master check. |
@@ -172,9 +181,11 @@ How the SDK patterns map to Rust:
 * **Healthkit.** It gives a fixed 50 health through TS `CBasePlayer::TakeHealth`, which refuses only
   when health > max and has no cap. A kit at 100 HP gives 150. The decay back to 100 at 1/s is in
   the player's PreThink (rules package).
-* **Battery.** It calls `TakeArmor(50)`. The first kevlar takes 10 free inventory slots: without
-  them there's no armour, but the battery is still used up. Armour is capped at 100 and speed is
-  recomputed from the free slots.
+* **Battery.** It refuses players without the HEV suit bit (`weapons` bit 31, set on spawn). It
+  calls `TakeArmor(50)`. The first kevlar takes 10 free inventory slots: without them there's no
+  armour, but the battery is still used up. Armour is capped at 100 and speed is recomputed from
+  the free slots. It then queues the `!HEV_<n>P` charge report with `SetSuitUpdate`, which TS
+  drops in multiplayer (§3.5), so no sentence plays.
 * **Chargers.** The health charger refills to max in one use. The HEV charger calls
   `TakeArmor(100)` in one use. They recharge after 60 s and 30 s.
 * **Items** respawn after 30 s unless `SF_NORESPAWN` (1 << 30) is set, with the `suitchargeok1`
@@ -247,6 +258,30 @@ Port notes:
 * The train HUD is cleared on spawn (TS leaves the last notch shown after dying on a train).
 * `m_iWeaponVolume` (AI hearing) isn't kept.
 
+### 3.6 Sentences (decomp `SENTENCEG_*` 0xe00c8–0xe0d64, `PlayLockSounds` 0xb4f50)
+
+* **Loading.** `CWorld::Precache` calls `SENTENCEG_Init`, which reads `sound/sentences.txt` once
+  per process (a missing file is retried on the next map, as in TS). Every `NAME words` line is a
+  sentence numbered by its position in the file; the client numbers the same file, so the server
+  sends `!<index>`. Names ending in digits form groups (`NA0`, `NA1` → `NA`). Limits are TS's:
+  1536 sentences, 200 groups, a warning for names of 16+ letters, lines read 510 bytes at a time
+  (`memfgets`).
+* **Playing.** TS's `EMIT_SOUND_DYN` and `UTIL_EmitAmbientSound` turn `!NAME` into `!<index>`
+  (case-insensitive); an unknown name logs "Unable to find … in sentences.txt" (`at_aiconsole`)
+  and isn't played. In this port that's `base::emit`, `explode::emit_sound_slow` and
+  `sentences::emit_ambient`, so map-provided sounds starting with `!` work wherever those are used.
+* **Lock sentences.** `locked_sentence` 1–9 maps to the groups `NA ND NF NFIRE NCHEM NRAD NCON NH NG`
+  and `unlocked_sentence` 1–8 to `EA ED EF EFIRE ECHEM ERAD ECON EH` (doors and buttons share the
+  table). `PlayLockSounds` plays the group in order (`SENTENCEG_PlaySequentialSz`, volume 0.85,
+  `CHAN_VOICE`) at most every 6 s and stops after the last sentence; when the lock sound plays at the
+  same time it drops to volume 0.25. Lock sounds now use TS's slow-motion pitch factor (0.5).
+* **Suit sentences.** `CBasePlayer::SetSuitUpdate` (0xda410) returns early because TS's rules are
+  always multiplayer (`CHalfLifeMultiplay::IsMultiplayer` returns 1), so the HEV queue and
+  `CheckSuitUpdate`'s sentence half aren't ported; `sentences::set_suit_update` keeps the call
+  sites.
+* **Deviation.** `USENTENCEG_Pick` on a group of more than 32 sentences reads past its 32-entry LRU
+  array into the next group's record in TS; the port only uses the 32 LRU entries.
+
 ## 4. Coverage (97 shipped maps)
 
 These numbers come from running `census.py` (§8) over `ts/maps/*.bsp` with the list of linked classnames.
@@ -270,13 +305,11 @@ are:
 * `env_sound`, `env_global`, `env_message`, `env_laser`
 * `func_healthcharger`, `func_recharge`
 * `trigger_gravity`, `func_friction`, `gibshooter`, `env_spark`, `cycler`
+* `env_blood` (8 entities, one map), `game_score` (1), `monster_hevsuit_dead` (1), `xen_*` (11)
 
 **Still unhandled.** TS links these but this port doesn't yet:
 
-* `env_blood` (8, one map).
-* `game_score` (1).
-* `monster_hevsuit_dead` (1).
-* `xen_*` decoration (11).
+* None: every stock class TS links is now handled.
 
 TS doesn't link the rest either, so on the original server they also log "No spawn function". That
 covers:
@@ -337,6 +370,10 @@ covers:
   * `env_sound`
   * respawn with a client inside the box
   * `game_text` on screen
+  * Everything from #20 and #22 (unit tests only so far): sentences (`!NAME` ambients, door/button
+    lock sentences), `cycler` animation, the geiger counter near radiation `trigger_hurt`s, gib
+    blood decals, the `xen_plantlight` glow attachment, `env_blood`, `game_score`,
+    `monster_hevsuit_dead` gibbing and the `xen_*` animations and tree attack.
   * The client printed `No pfn TSFrags`, `TSFade` and `ItemPickup`. The HUD package hasn't hooked
     those messages yet; the server side is sending them as intended.
 
@@ -369,8 +406,8 @@ covers:
    * Kevlar: `items::player_take_armor` is a stand-in for TS `TakeArmor`. It uses the networked
      `HAS_KEVLAR` stunt bit and `Player::slots_used`. The weapons/rules package should own the real
      function, plus `DropArmor`.
-   * The HEV suit bit (`pev->weapons & 1<<31`) isn't set by `Player::spawn`. Battery and charger
-     therefore skip TS's suit check.
+   * The HEV suit bit (`pev->weapons & 1<<31`) is set on spawn (rules package). The battery and
+     the HEV charger refuse players without it, as in TS.
 6. **`trigger_camera` on death or respawn.** TS `CBasePlayer::Killed` and `Spawn` call
    `SET_VIEW(self, self)` and clear `FL_FROZEN`. The player package must do this too, or a camera
    active when the player dies keeps the view.
@@ -393,15 +430,25 @@ covers:
     `ClientPrecache` sounds. The engine plays them for any entity entering water.
 13. **`env_sound`.** Call `stock::sound::reset_player_room(index)` when a client connects, so a new
     client in a reused slot starts with the right DSP state.
+14. **Geiger counter.** `rules::lifecycle` calls `stock::triggers::geiger_spawn` on spawn and
+    `update_geiger_counter` from PreThink (TS `CheckSuitUpdate`), done in #22.
 
 ## 7. What's missing or simplified
 
-* Sentences (`!NAME` ambient sounds, door/button lock sentences, the battery's HEV sentence). There
-  is no sentences.txt loader.
-* `cycler` server-side studio animation: only `animtime`/`framerate`/`sequence` are driven.
-* `trigger_hurt` `RadiationThink` (HEV geiger), human-gib blood decals, `env_sprite` attachments
-  (`aiment`).
-* `env_blood`, `game_score`, `monster_hevsuit_dead` and `xen_*` (see §4).
+* Monster AI sounds (`CSoundEnt::InsertSound` from landed gibs) aren't ported: TS has no monsters to
+  hear them.
+
+### 7.1 Deviations in the #22 classes
+
+* **`game_score` score message.** `add_points` changes `frags` directly and broadcasts `ScoreInfo`
+  through the player object; when the scoring player is the entity currently being dispatched
+  (a `game_score` fired from that player's own +use), the message waits for the next score update.
+* **Precache location.** TS precaches the blood sprites in `W_Precache` and the gib models in
+  `CWorld::Precache`; the port does both from worldspawn (`blood::precache_world`). German gibs
+  (`sv_language 1`) aren't supported.
+* **`cycler` spawn** skips `ChangeYaw(360)`, a no-op because `ideal_yaw` was just set to the yaw.
+* **`monster_hevsuit_dead`** keeps only the corpse half of `CBaseMonster` (TS has no live monsters):
+  `g_vecAttackDir` is computed per hit and passed to the gib spawner instead of being a global.
 
 ## 8. Census script
 
@@ -425,4 +472,5 @@ for c, n in maps.most_common():
 ```
 
 To get the implemented list, use
-`grep -hoP '^\s+\K[a-z_0-9A-Z]+(?=\s+=> )' crates/server/src/entities/stock/mod.rs`.
+`grep -hoP '^\s+\K[a-z_0-9A-Z]+(?=\s+=> )' crates/server/src/entities/stock/*.rs` (classes added for
+#22 are linked from their own files: `xen.rs`, `monsters.rs`, `blood.rs`, `maprules.rs`).

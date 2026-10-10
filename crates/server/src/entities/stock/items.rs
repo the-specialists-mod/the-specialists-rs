@@ -116,13 +116,22 @@ impl<const KIND: u8> Item<KIND> {
                 emit(p, CHAN_ITEM, c"items/smallmedkit1.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
             }
             Kind::Battery => {
-                if p.v().armorvalue >= 100.0 {
+                // `CItemBattery::MyTouch` (0xcb74c): needs the HEV suit bit (weapons bit 31).
+                let v = p.v();
+                if v.armorvalue >= 100.0 || v.weapons >= 0 {
                     return false;
                 }
                 // TS ignores TakeArmor's result: the battery is used up either way.
                 player_take_armor(p, 50.0);
                 emit(p, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
                 messages::one(Msg::ItemPickup, p).string(cls).end();
+                // The suit's charge report, "!HEV_<n>P" (n = armour / 5 - 1).
+                let mut pct = ((p.v().armorvalue * 100.0 * 0.01 + 0.5) as i32) / 5;
+                if pct > 0 {
+                    pct -= 1;
+                }
+                let name = std::ffi::CString::new(format!("!HEV_{pct}P")).unwrap_or_default();
+                super::sentences::set_suit_update(p, &name, false, 30);
             }
         }
         true
@@ -297,13 +306,15 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         if !self.full {
             cx.pev().frame = 1.0;
             self.off(cx);
+        }
+        // `CRecharge::Use` (0xc6fd0) also refuses players without the HEV suit bit.
+        if !self.full || (ARMOR && activator.v().weapons >= 0) {
             if self.sound_time <= now {
                 self.sound_time = now + 0.62;
                 emit(cx.edict, CHAN_ITEM, deny, vol, ATTN_NORM, 0, PITCH_NORM as i32);
             }
             return;
         }
-        // (TS also refuses players without the HEV suit bit; this port's players don't carry it.)
         self.recharge_at = None;
         think_ltime(cx, 0.25);
         if self.next_charge >= now {

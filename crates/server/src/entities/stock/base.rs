@@ -78,10 +78,21 @@ pub fn set_own_model(cx: &mut Cx) {
 }
 
 /// `EMIT_SOUND_DYN`.
+/// `!NAME` sentences are resolved through sentences.txt (TS `EMIT_SOUND_DYN`, 0xe0a8c).
 pub fn emit(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn: f32, flags: i32, pitch: i32) {
-    if !sample.is_empty() {
-        engine().emit_sound(e, chan as i32, sample, vol, attn, flags, pitch);
+    if sample.is_empty() {
+        return;
     }
+    if let Some(sample) = super::sentences::resolve(sample) {
+        engine().emit_sound(e, chan as i32, &sample, vol, attn, flags, pitch);
+    } else {
+        unknown_sentence(sample);
+    }
+}
+
+/// TS `EMIT_SOUND_DYN`'s message for a `!NAME` that isn't in sentences.txt.
+pub fn unknown_sentence(sample: &CStr) {
+    engine().alert(ALERT_TYPE::at_aiconsole, &format!("Unable to find {} in sentences.txt\n", sample.to_string_lossy()));
 }
 
 /// `pev->nextthink = pev->ltime + delay` (MOVETYPE_PUSH entities think on local time).

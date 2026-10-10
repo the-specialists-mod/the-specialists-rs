@@ -4,7 +4,9 @@
 //! `env_explosion` (+ `spark_shower`), `env_render`, `env_beam`, `env_laser`, `env_shooter`,
 //! `gibshooter` (+ `gib`), `env_spark`, `env_bubbles`, `infodecal`, `cycler_sprite`, `cycler`.
 
+use super::animating::{Animating, init_bone_controllers};
 use super::base::*;
+use super::blood::{BLOOD_COLOR_RED, DONT_BLEED, blood_decal_trace};
 use super::breakable::{mat, material_sound_list, material_sound_precache};
 use super::buttons::{do_spark, precache_sparks};
 use super::explode::{emit_sound_slow, radius_damage, screen_fade, screen_fade_all, screen_shake, sparks};
@@ -101,6 +103,30 @@ impl Sprite {
     }
 }
 
+/// `CSprite::SetAttachment` (0xbec08): attach sprite `e` to `owner`'s model attachment
+/// `attachment` (1-based on the client).
+pub fn sprite_set_attachment(e: *mut edict_t, owner: *mut edict_t, attachment: i32) {
+    if owner.is_null() || e.is_null() {
+        return;
+    }
+    let index = engine().index_of(owner);
+    let v = e.v();
+    v.skin = index;
+    v.body = attachment;
+    v.aiment = owner;
+    v.movetype = MOVETYPE_FOLLOW as i32;
+}
+
+/// `CSprite::SetTransparency` (0xbec74): render mode, colour and amount (int parameters, so
+/// callers passing floats truncate them).
+pub fn sprite_set_transparency(e: *mut edict_t, mode: i32, color: Vec3, amount: f32, fx: i32) {
+    let v = e.v();
+    v.rendermode = mode;
+    v.rendercolor = color.map(|c| c as i32 as f32);
+    v.renderamt = amount as i32 as f32;
+    v.renderfx = fx;
+}
+
 impl Entity for Sprite {
     fn spawn(&mut self, cx: &mut Cx) {
         let v = cx.pev();
@@ -108,10 +134,15 @@ impl Entity for Sprite {
         v.movetype = MOVETYPE_NONE as i32;
         v.effects = 0;
         v.frame = 0.0;
+        // CSprite::Precache (0xbbc10): a sprite with an `aiment` follows that entity's attachment
+        // `body` (the client reads skin = entity index, body = attachment).
         precache_model_s(v.model);
         if v.aiment.is_null() {
             v.skin = 0;
             v.body = 0;
+        } else {
+            v.skin = engine().index_of(v.aiment);
+            v.movetype = MOVETYPE_FOLLOW as i32;
         }
         set_own_model(cx);
         let v = cx.pev();
@@ -1203,12 +1234,13 @@ impl<const ENV: bool> GibShooter<ENV> {
         world::create::<Gib>(e.v());
         let model: &CStr = if ENV { s(cx.pev().model) } else { c"models/hgibs.mdl" };
         let material = if ENV { self.material } else { mat::NONE };
-        let bleeds = !ENV;
+        // CGibShooter::CreateGib: red; CEnvShooter::CreateGib: DONT_BLEED.
+        let blood_color = if ENV { DONT_BLEED } else { BLOOD_COLOR_RED };
         world::dispatch(e, |ent, gcx| {
             if let Some(g) = (ent as &mut dyn std::any::Any).downcast_mut::<Gib>() {
                 g.spawn_gib(gcx, model);
                 g.material = material;
-                g.bleeds = bleeds;
+                g.blood_color = blood_color;
             }
         });
         let v = cx.pev();
@@ -1350,11 +1382,120 @@ enum GibState {
 pub struct Gib {
     life_time: f32,
     material: i32,
-    bleeds: bool,
+    /// `m_bloodColor`: 0 until set, as in TS's zeroed private data.
+    blood_color: i32,
+    /// `m_cBloodDecals`: blood decals left (one per bounce).
+    blood_decals: i32,
     state: GibState,
 }
 
 impl Gib {
+    /// A new `gib` entity spawned with `model` (`GetClassPtr<CGib>` + `CGib::Spawn`).
+    fn create(model: &CStr) -> *mut edict_t {
+        let e = engine().create_entity();
+        if e.is_null() {
+            return e;
+        }
+        world::create::<Gib>(e.v());
+        world::dispatch(e, |ent, gcx| {
+            if let Some(g) = (ent as &mut dyn std::any::Any).downcast_mut::<Gib>() {
+                g.spawn_gib(gcx, model);
+            }
+        });
+        e
+    }
+
+    /// `CGib::LimitVelocity` (0xb089c): at most 1500 units/s.
+    fn limit_velocity(e: *mut edict_t) {
+        let v = e.v();
+        if vec::length(v.velocity) > 1500.0 {
+            v.velocity = vec::scale(vec::normalize(v.velocity), 1500.0);
+        }
+    }
+
+    /// The victim-health speed factor shared by the gib spawners.
+    fn health_scale(victim: &entvars_t) -> f32 {
+        if victim.health > -50.0 {
+            0.7
+        } else if victim.health > -200.0 {
+            2.0
+        } else {
+            4.0
+        }
+    }
+
+    /// `CGib::SpawnHeadGib` (0xb0ce8): the skull, thrown up (5 % of the time at a player who can
+    /// see it). `blood_color` is the victim's `BloodColor()`.
+    pub fn spawn_head_gib(victim: *mut edict_t, blood_color: i32) {
+        let eng = engine();
+        let e = Self::create(c"models/hgibs.mdl");
+        if e.is_null() {
+            return;
+        }
+        e.v().body = 0;
+        if !victim.is_null() {
+            let vv = victim.v();
+            e.v().origin = vec::add(vv.origin, vv.view_ofs);
+            let player = eng.find_client_in_pvs(e);
+            if eng.random_long(0, 100) <= 5 && !player.is_null() {
+                let eye = vec::add(player.v().origin, player.v().view_ofs);
+                let gv = e.v();
+                gv.velocity = vec::scale(vec::normalize(vec::sub(eye, gv.origin)), 300.0);
+                gv.velocity[2] += 100.0;
+            } else {
+                let x = eng.random_float(-100.0, 100.0);
+                let y = eng.random_float(-100.0, 100.0);
+                let z = eng.random_float(200.0, 300.0);
+                e.v().velocity = [x, y, z];
+            }
+            let gv = e.v();
+            gv.avelocity[0] = eng.random_float(100.0, 200.0);
+            gv.avelocity[1] = eng.random_float(100.0, 300.0);
+            world::with::<Gib, _>(e, |g| g.blood_color = blood_color);
+            let k = Self::health_scale(victim.v());
+            e.v().velocity = vec::scale(e.v().velocity, k);
+        }
+        Self::limit_velocity(e);
+    }
+
+    /// `CGib::SpawnRandomGibs` (0xb1060): `count` human (`hgibs.mdl` bodies 1..5) or alien
+    /// (`agibs.mdl` bodies 0..3) gibs from inside the victim's box, flying against `attack_dir`
+    /// (`g_vecAttackDir`).
+    pub fn spawn_random_gibs(victim: *mut edict_t, count: i32, human: bool, blood_color: i32, attack_dir: Vec3) {
+        let eng = engine();
+        for _ in 0..count {
+            let (model, lo, hi) = if human { (c"models/hgibs.mdl", 1, 5) } else { (c"models/agibs.mdl", 0, 3) };
+            let e = Self::create(model);
+            if e.is_null() {
+                return;
+            }
+            e.v().body = eng.random_long(lo, hi);
+            if !victim.is_null() {
+                let (absmin, size) = (victim.v().absmin, victim.v().size);
+                let x = absmin[0] + size[0] * eng.random_float(0.0, 1.0);
+                let y = absmin[1] + size[1] * eng.random_float(0.0, 1.0);
+                let z = absmin[2] + size[2] * eng.random_float(0.0, 1.0) + 1.0;
+                let mut vel = vec::scale(attack_dir, -1.0);
+                vel[0] += eng.random_float(-0.25, 0.25);
+                vel[1] += eng.random_float(-0.25, 0.25);
+                vel[2] += eng.random_float(-0.25, 0.25);
+                vel = vec::scale(vel, eng.random_float(300.0, 400.0));
+                let ax = eng.random_float(100.0, 200.0);
+                let ay = eng.random_float(100.0, 300.0);
+                let k = Self::health_scale(victim.v());
+                let gv = e.v();
+                gv.origin = [x, y, z];
+                gv.avelocity[0] = ax;
+                gv.avelocity[1] = ay;
+                gv.velocity = vec::scale(vel, k);
+                gv.solid = SOLID_BBOX as i32;
+                world::with::<Gib, _>(e, |g| g.blood_color = blood_color);
+                eng.set_size(e, [0.0; 3], [0.0; 3]);
+            }
+            Self::limit_velocity(e);
+        }
+    }
+
     fn spawn_gib(&mut self, cx: &mut Cx, model: &CStr) {
         let eng = engine();
         let v = cx.pev();
@@ -1371,6 +1512,7 @@ impl Gib {
         self.life_time = 25.0;
         self.state = GibState::WaitTillLand;
         self.material = mat::NONE;
+        self.blood_decals = 5;
     }
 }
 
@@ -1425,13 +1567,21 @@ impl Entity for Gib {
             v.angles[2] = 0.0;
             v.avelocity[0] = 0.0;
             v.avelocity[2] = 0.0;
-        } else if self.material != mat::NONE && eng.random_long(0, 2) == 0 {
-            // (blood decals for human gibs are left to the client/weapons package)
-            let vol = 0.8 * (v.velocity[2].abs() / 450.0).min(1.0);
-            let list = material_sound_list(self.material);
-            if !list.is_empty() {
-                let i = eng.random_long(0, list.len() as i32 - 1) as usize;
-                emit_sound_slow(cx.edict, CHAN_BODY, list[i], vol, 1.0, 0, 100, 0.5);
+        } else {
+            // CGib::BounceGibTouch (0xb1ebc): a blood decal under the gib for its first bounces.
+            if self.blood_decals > 0 && self.blood_color != DONT_BLEED {
+                let spot = vec::add(v.origin, [0.0, 0.0, 8.0]);
+                let tr = eng.trace_line(spot, vec::add(spot, [0.0, 0.0, -24.0]), IGNORE_MONSTERS, cx.edict);
+                blood_decal_trace(&tr, self.blood_color);
+                self.blood_decals -= 1;
+            }
+            if self.material != mat::NONE && eng.random_long(0, 2) == 0 {
+                let vol = 0.8 * (cx.pev().velocity[2].abs() / 450.0).min(1.0);
+                let list = material_sound_list(self.material);
+                if !list.is_empty() {
+                    let i = eng.random_long(0, list.len() as i32 - 1) as usize;
+                    emit_sound_slow(cx.edict, CHAN_BODY, list[i], vol, 1.0, 0, 100, 0.5);
+                }
             }
         }
     }
@@ -1698,11 +1848,12 @@ impl Entity for CyclerSprite {
     }
 }
 
-/// `cycler` (CGenericCycler): a studio model playing its sequence. Server-side studio
-/// bookkeeping (`ResetSequenceInfo`, `StudioFrameAdvance`) isn't ported: the client animates
-/// from `animtime`/`framerate`; damage advances the sequence number.
+/// `cycler` (`CGenericCycler::Spawn` 0xc86ac → `CCycler::GenericCyclerSpawn` 0xc75d4): a studio
+/// model cycling its sequence. +use toggles the animation; damage steps to the next sequence
+/// while animating, or advances one 0.1 s frame step while paused.
 #[derive(Default)]
 pub struct Cycler {
+    anim: Animating,
     animate: bool,
 }
 
@@ -1720,7 +1871,8 @@ impl Entity for Cycler {
         v.classname = eng.alloc_string(c"cycler");
         precache_model_s(v.model);
         set_own_model(cx);
-        let now = eng.time();
+        // CCycler::Spawn (0xc7694)
+        init_bone_controllers(cx.edict);
         let v = cx.pev();
         v.solid = SOLID_SLIDEBOX as i32;
         v.movetype = MOVETYPE_NONE as i32;
@@ -1729,30 +1881,65 @@ impl Entity for Cycler {
         v.health = 80000.0;
         v.yaw_speed = 5.0;
         v.ideal_yaw = v.angles[1];
-        v.animtime = now;
-        v.nextthink = now + 1.0;
+        // (ChangeYaw(360) is a no-op: ideal_yaw was just set to the current yaw.)
+        self.anim.frame_rate = 75.0;
+        self.anim.ground_speed = 0.0;
+        v.nextthink += 1.0;
+        self.anim.reset_sequence_info(cx.edict);
+        let v = cx.pev();
         if v.sequence != 0 || v.frame != 0.0 {
             self.animate = false;
             v.framerate = 0.0;
         } else {
             self.animate = true;
-            v.framerate = 1.0;
         }
         eng.set_size(cx.edict, [-16.0, -16.0, 0.0], [16.0, 16.0, 72.0]);
     }
 
+    /// `CCycler::Think` (0xc778c).
+    fn think(&mut self, cx: &mut Cx) {
+        let now = engine().time();
+        cx.pev().nextthink = now + 0.1;
+        if self.animate {
+            self.anim.frame_advance(cx.edict, 0.0);
+        }
+        if self.anim.finished && !self.anim.loops {
+            // A one-shot sequence restarts from frame 0.
+            let v = cx.pev();
+            v.animtime = now;
+            v.framerate = 1.0;
+            self.anim.finished = false;
+            self.anim.last_event_check = now;
+            v.frame = 0.0;
+            if !self.animate {
+                v.framerate = 0.0;
+            }
+        }
+    }
+
+    /// `CCycler::Use` (0xc7834).
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
         self.animate = !self.animate;
         cx.pev().framerate = if self.animate { 1.0 } else { 0.0 };
     }
 
+    /// `CCycler::TakeDamage` (0xc7870).
     fn take_damage(&mut self, cx: &mut Cx, _info: &DamageInfo) -> bool {
         if self.animate {
-            let now = engine().time();
+            cx.pev().sequence += 1;
+            self.anim.reset_sequence_info(cx.edict);
+            if self.anim.frame_rate == 0.0 {
+                // Past the last sequence: back to the first.
+                cx.pev().sequence = 0;
+                self.anim.reset_sequence_info(cx.edict);
+            }
+            cx.pev().frame = 0.0;
+        } else {
+            cx.pev().framerate = 1.0;
+            self.anim.frame_advance(cx.edict, 0.1);
             let v = cx.pev();
-            v.sequence += 1;
-            v.frame = 0.0;
-            v.animtime = now;
+            v.framerate = 0.0;
+            engine().alert(ALERT_TYPE::at_console, &format!("sequence: {}, frame {:.0}\n", v.sequence, v.frame));
         }
         false
     }

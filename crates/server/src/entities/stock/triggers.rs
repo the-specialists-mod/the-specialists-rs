@@ -7,10 +7,12 @@ use super::base::*;
 use crate::entities::{entvars_key_value, fire_targets, remove};
 use crate::messages::{self, Msg};
 use crate::world::{self, Cx, Entity, UseType};
+use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, is_player, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use std::cell::RefCell;
 use std::ffi::CStr;
 
 pub const SF_TRIGGER_ALLOWMONSTERS: i32 = 1;
@@ -56,6 +58,61 @@ fn toggle_use(cx: &mut Cx) {
     }
     let org = cx.pev().origin;
     eng.set_origin(cx.edict, org);
+}
+
+/// `DMG_RADIATION`: trigger_hurt with this type also drives the geiger counter.
+pub const DMG_RADIATION: i32 = 1 << 18;
+
+/// The `CBasePlayer` geiger members (`m_flgeigerRange` +0x984, `m_flgeigerDelay` +0x988,
+/// `m_igeigerRangePrev` +0x98c), per client slot.
+#[derive(Clone, Copy)]
+struct Geiger {
+    range: f32,
+    next: f32,
+    last: i32,
+}
+
+const GEIGER_IDLE: Geiger = Geiger { range: 1000.0, next: 0.0, last: 1000 };
+static GEIGER: Global<RefCell<[Geiger; 33]>> = Global(RefCell::new([GEIGER_IDLE; 33]));
+
+/// Geiger state for a (re)spawned player: `CBasePlayer::Precache` (0xda90c) resets the range,
+/// `Spawn` (0x8f568) delays the first update by 2 s.
+pub fn geiger_spawn(player: *mut edict_t) {
+    let eng = engine();
+    let now = eng.time();
+    if let Some(g) = GEIGER.0.borrow_mut().get_mut(eng.index_of(player) as usize) {
+        *g = Geiger { next: now + 2.0, ..GEIGER_IDLE };
+    }
+}
+
+/// `CBasePlayer::UpdateGeigerCounter` (0xda1f0), run from `CheckSuitUpdate` in PreThink for
+/// players with the HEV suit bit: every 0.25 s sends `Geiger` (range / 4) when it changed, then
+/// lets the range decay back to 1000 (one chance in four), so it only stays low while a
+/// radiation trigger keeps lowering it.
+pub fn update_geiger_counter(player: *mut edict_t) {
+    if player.is_null() || player.v().weapons >= 0 {
+        return;
+    }
+    let eng = engine();
+    let now = eng.time();
+    let send = {
+        let mut table = GEIGER.0.borrow_mut();
+        let Some(g) = table.get_mut(eng.index_of(player) as usize) else { return };
+        if g.next > now {
+            return;
+        }
+        g.next = now + 0.25;
+        let value = ((g.range * 0.25) as i32 as i16) as u8 as i32;
+        let changed = value != g.last;
+        g.last = value;
+        if eng.random_long(0, 3) == 0 {
+            g.range = 1000.0;
+        }
+        changed.then_some(value)
+    };
+    if let Some(value) = send {
+        messages::one(Msg::Geiger, player).byte(value).end();
+    }
 }
 
 /// `UTIL_ShowMessage`: `HudText` to one player.
@@ -136,6 +193,31 @@ impl<const KIND: u8> Trigger<KIND> {
 
     fn sub_remove(&mut self, cx: &mut Cx) {
         remove(cx.edict);
+    }
+
+    /// `CTriggerHurt::RadiationThink` (0xe703c): the nearest player who can see the trigger's
+    /// centre gets their geiger range lowered to the distance (read by `update_geiger_counter`).
+    fn radiation_think(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        // The PVS test runs from the box centre: move origin there (and zero view_ofs) for it.
+        let v = cx.pev();
+        let (origin, view_ofs) = (v.origin, v.view_ofs);
+        let center = vec::mid(v.absmin, v.absmax);
+        v.origin = center;
+        v.view_ofs = [0.0; 3];
+        let player = eng.find_client_in_pvs(cx.edict);
+        let v = cx.pev();
+        v.origin = origin;
+        v.view_ofs = view_ofs;
+        if !player.is_null() {
+            let pv = player.v();
+            let range = vec::length(vec::sub(center, vec::mid(pv.absmin, pv.absmax)));
+            let i = eng.index_of(player) as usize;
+            if let Some(g) = GEIGER.0.borrow_mut().get_mut(i) {
+                g.range = g.range.min(range);
+            }
+        }
+        cx.pev().nextthink = eng.time() + 0.25;
     }
 
     /// `CBaseTrigger::HurtTouch` (SDK 2.3 multiplayer path; negative damage heals).
@@ -296,7 +378,10 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
                 init_trigger(cx);
                 self.t.touch = Some(Self::hurt_touch);
                 self.toggle_usable = cx.pev().targetname != 0;
-                // DMG_RADIATION's RadiationThink only drives the HEV geiger counter: not ported.
+                if self.damage_inflict & DMG_RADIATION != 0 {
+                    self.t.think = Some(Self::radiation_think);
+                    cx.pev().nextthink = eng.time() + eng.random_float(0.0, 0.5);
+                }
                 if cx.pev().spawnflags & SF_TRIGGER_HURT_START_OFF != 0 {
                     cx.pev().solid = SOLID_NOT as i32;
                 }

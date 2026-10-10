@@ -2,7 +2,9 @@
 //! priority, docs/implementation/stock-entities.md for what's ported and the TS deviations).
 //! Owner: stock-entities work package.
 
+pub mod animating;
 pub mod base;
+pub mod blood;
 pub mod bmodels;
 pub mod breakable;
 pub mod buttons;
@@ -13,11 +15,14 @@ pub mod explode;
 pub mod items;
 pub mod lights;
 pub mod maprules;
+pub mod monsters;
+pub mod sentences;
 pub mod sound;
 pub mod tank;
 pub mod tracktrain;
 pub mod trains;
 pub mod triggers;
+pub mod xen;
 
 use super::link_entities;
 use crate::world::{Cx, Entity};
@@ -148,6 +153,9 @@ impl Entity for World {
         base::reset_registries();
         tracktrain::reset();
         sound::reset_rooms();
+        // CWorld::Precache (0xf449c): sentences.txt, once per process.
+        sentences::init();
+        blood::precache_world();
         // Style 0 is normal light; without it the whole map renders black. Styles 1-12 are the
         // SDK's animated presets (world.cpp), 63 is the testing style.
         let eng = engine();
@@ -220,6 +228,8 @@ pub fn object_caps(e: *mut edict_t) -> i32 {
         // CFuncTankControls::ObjectCaps (0xc4bc8); trains are driven through `drive`.
         b"func_tankcontrols" => FCAP_IMPULSE_USE,
         b"func_tracktrain" => FCAP_DIRECTIONAL_USE,
+        // CCycler::ObjectCaps (0xc8654) / CCyclerSprite::ObjectCaps (0xc87b0): TS's impulse bit.
+        b"cycler" | b"cycler_sprite" => FCAP_IMPULSE_USE,
         _ => 0,
     }
 }

@@ -4,6 +4,8 @@
 //! * `game_player_equip` (`CGamePlayerEquip` 0xcd494..0xcd718): gives its listed items to a
 //!   player on use, or on touch (which only `PlayerSpawn` does). A map that has one replaces the
 //!   TS spawn loadout (`CHalfLifeMultiplay::PlayerSpawn` 0x890ac, see [`equip_on_spawn`]).
+//! * `game_score` (`CGameScore` 0xcc4d8..0xcc568): points for the activating player or their
+//!   teammates, gated by an optional `master`.
 
 use super::base::*;
 use super::items::SF_NORESPAWN;
@@ -217,8 +219,101 @@ pub fn equip_on_spawn(player: *mut edict_t) -> bool {
     true
 }
 
+pub const SF_SCORE_NEGATIVE: i32 = 1;
+pub const SF_SCORE_TEAM: i32 = 2;
+
+/// `game_score` (`CGameScore`, 0xcc4d8..0xcc568): `points` (`frags`) to the activator, or with
+/// spawnflag 2 to every teammate of the activator (not the activator). Without spawnflag 1 the
+/// points can't take a score below zero.
+#[derive(Default)]
+pub struct GameScore {
+    master: string_t,
+}
+
+impl Entity for GameScore {
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"points" => cx.pev().frags = kv_i(value) as f32,
+            // CRuleEntity::KeyValue (0xcc380)
+            b"master" => self.master = alloc(value),
+            _ => return false,
+        }
+        true
+    }
+
+    /// `CRulePointEntity::Spawn` (0xcc42c).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_NONE as i32;
+        v.effects = EF_NODRAW as i32;
+        v.frame = 0.0;
+        v.model = 0;
+    }
+
+    /// `CGameScore::Use` (0xcc568).
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        // CRuleEntity::CanFireForActivator (0xcc3e4)
+        if self.master != 0 && !is_master_triggered(self.master, activator) {
+            return;
+        }
+        if !is_player(activator) {
+            return;
+        }
+        let v = cx.pev();
+        let (points, allow_negative) = (v.frags as i32, v.spawnflags & SF_SCORE_NEGATIVE != 0);
+        if v.spawnflags & SF_SCORE_TEAM != 0 {
+            add_points_to_team(activator, points, allow_negative);
+        } else {
+            add_points(activator, points, allow_negative);
+        }
+    }
+}
+
+/// `CBasePlayer::AddPoints` (0xd9e18): frags plus `ScoreInfo` to everyone.
+pub fn add_points(player: *mut edict_t, points: i32, allow_negative: bool) {
+    let v = player.v();
+    let Some(points) = clamp_points(v.frags, points, allow_negative) else { return };
+    v.frags += points as f32;
+    // (When the player itself is mid-dispatch the message waits for the next score update.)
+    crate::rules::scoring::broadcast_score(player);
+}
+
+/// `AddPoints`' floor: without `allow_negative` a score can't be taken below zero (and an
+/// already negative one isn't lowered further).
+fn clamp_points(frags: f32, points: i32, allow_negative: bool) -> Option<i32> {
+    if points < 0 && !allow_negative {
+        if frags < 0.0 {
+            return None;
+        }
+        if frags < -points as f32 {
+            return Some((-frags) as i32);
+        }
+    }
+    Some(points)
+}
+
+/// `CBasePlayer::AddPointsToTeam` (0xd9f68): `AddPoints` for every other player on the same team.
+pub fn add_points_to_team(player: *mut edict_t, points: i32, allow_negative: bool) {
+    for other in crate::rules::players() {
+        if other != player && crate::rules::teams::same_team(player, other) {
+            add_points(other, points, allow_negative);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn score_floor() {
+        use super::clamp_points;
+        assert_eq!(clamp_points(5.0, 3, false), Some(3));
+        assert_eq!(clamp_points(5.0, -3, false), Some(-3));
+        assert_eq!(clamp_points(2.0, -3, false), Some(-2));
+        assert_eq!(clamp_points(-1.0, -3, false), None);
+        assert_eq!(clamp_points(2.0, -3, true), Some(-3));
+    }
+
     #[test]
     fn equip_keys() {
         assert_eq!(super::strip_token("weapon_shotgun#2"), "weapon_shotgun");

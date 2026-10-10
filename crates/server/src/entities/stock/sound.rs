@@ -1,5 +1,5 @@
 //! `ambient_generic` (SDK sound.cpp; byte-identical in TS including the preset table).
-//! Sentence names (`!NAME`) are not played: sentences.txt groups aren't loaded by this port.
+//! Sentence names (`!NAME`) aren't precached and go out as `!<index>` (`UTIL_EmitAmbientSound`).
 
 use super::base::*;
 use crate::world::{Cx, Entity, UseType};
@@ -123,7 +123,7 @@ impl AmbientGeneric {
     fn emit(&self, cx: &mut Cx, vol: f32, attn: f32, flags: i32, pitch: i32) {
         if let Some(s) = self.sample {
             let org = cx.pev().origin;
-            engine().emit_ambient_sound(cx.edict, org, s, vol, attn, flags, pitch);
+            super::sentences::emit_ambient(cx.edict, org, s, vol, attn, flags, pitch);
         }
     }
 
@@ -345,9 +345,11 @@ impl Entity for AmbientGeneric {
 
         // Precache
         let name = kv_str(msg);
-        if name.len() > 1 && !name.starts_with('!') {
+        if name.len() > 1 {
             let n = intern(name);
-            eng.precache_sound(n);
+            if !name.starts_with('!') {
+                eng.precache_sound(n);
+            }
             self.sample = Some(n);
         }
         self.init_modulation(cx);
