@@ -290,9 +290,9 @@ These numbers come from running `census.py` (§8) over `ts/maps/*.bsp` with the 
 | | Classes | Entities |
 |---|---|---|
 | All classnames in the maps | 187 | 28,504 |
-| Handled by this package | 72 | 25,333 (88.9 %) |
+| Handled by this package | 82 | 25,355 (89.0 %) |
 | TS / weapon / ammo / team-spawn classes (other packages) | 70 | 2,948 |
-| Still unhandled, stock or foreign | 45 | 223 |
+| Still unhandled, stock or foreign | 35 | 201 |
 
 Every priority-1 and priority-2 stock class from design.md §5 is handled. The extras in this package
 are:
@@ -305,7 +305,7 @@ are:
 * `env_sound`, `env_global`, `env_message`, `env_laser`
 * `func_healthcharger`, `func_recharge`
 * `trigger_gravity`, `func_friction`, `gibshooter`, `env_spark`, `cycler`
-* `env_blood` (8 entities, one map), `game_score` (1), `monster_hevsuit_dead` (1), `xen_*` (11)
+* `env_blood` (8 entities, one map), `game_score` (1), `monster_hevsuit_dead` (1), `xen_*` (12, including `xen_hull`)
 
 **Still unhandled.** TS links these but this port doesn't yet:
 
