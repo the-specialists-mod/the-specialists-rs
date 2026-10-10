@@ -11,6 +11,11 @@ use goldsrc::client::engine;
 /// TS team colours (`0x10096974`, RGB per team number).
 const TEAM_COLORS: [[i32; 3]; 5] = [[150, 175, 255], [100, 150, 255], [255, 100, 100], [255, 255, 100], [100, 255, 100]];
 
+/// The voice helper's lookup (`GetPlayerTextColor` 1001fcd0): negative teams are 0, then modulo.
+pub fn team_color(team: i32) -> [i32; 3] {
+    TEAM_COLORS[team.max(0) as usize % TEAM_COLORS.len()]
+}
+
 pub fn draw(dc: &Dc, nohud: bool) {
     if nohud {
         return;

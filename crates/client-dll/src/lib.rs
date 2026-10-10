@@ -18,7 +18,7 @@ mod tempents;
 use goldsrc::client::{self as cl, engine};
 use goldsrc::sys::*;
 use std::ffi::{c_char, c_int, c_void};
-use ts_client::{effects, events, hud, input, menus, prediction, view};
+use ts_client::{effects, events, hud, input, menus, prediction, view, voice};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Initialize(funcs: *mut cl_enginefunc_t, version: c_int) -> c_int {
@@ -36,6 +36,7 @@ pub unsafe extern "C" fn HUD_Init() {
     input::init();
     hud::init();
     menus::init();
+    voice::init();
     events::init();
     view::init();
     effects::init();
@@ -45,6 +46,7 @@ pub unsafe extern "C" fn HUD_Init() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_VidInit() -> c_int {
     hud::vid_init();
+    voice::vid_init();
     effects::vid_init();
     1
 }
@@ -52,6 +54,7 @@ pub unsafe extern "C" fn HUD_VidInit() -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_Redraw(time: f32, intermission: c_int) -> c_int {
     hud::redraw(time, intermission != 0);
+    voice::redraw();
     menus::redraw(time);
     1
 }
@@ -60,6 +63,8 @@ pub unsafe extern "C" fn HUD_Redraw(time: f32, intermission: c_int) -> c_int {
 pub unsafe extern "C" fn HUD_UpdateClientData(cdata: *mut c_void, _time: f32) -> c_int {
     // SAFETY: the engine passes its client_data_t (layout mirrored by render::ClientData) or null.
     let Some(cd) = (unsafe { cdata.cast::<goldsrc::ext::render::ClientData>().as_mut() }) else { return 0 };
+    // SDK order: IN_Commands (joystick buttons) first.
+    input::commands();
     // Returning 1 tells the engine client_data_t changed (the eased zoom FOV).
     view::update_client_data(cd) as c_int
 }
@@ -184,6 +189,7 @@ pub unsafe extern "C" fn HUD_AddEntity(kind: c_int, ent: *mut cl_entity_t, _mode
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_CreateEntities() {
     effects::create_entities();
+    voice::create_entities();
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_DrawNormalTriangles() {
@@ -260,6 +266,8 @@ pub unsafe extern "C" fn HUD_ConnectionlessPacket(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_Frame(time: f64) {
+    // TS order: server browser, CVoiceStatus::Frame, emitters, slow motion, then the key gate.
+    voice::frame(time);
     input::frame(time);
     view::frame(time);
 }
@@ -311,7 +319,9 @@ pub unsafe extern "C" fn HUD_GetStudioModelInterface(_version: c_int, _ppinterfa
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn HUD_VoiceStatus(_entindex: c_int, _talking: c_int) {}
+pub unsafe extern "C" fn HUD_VoiceStatus(entindex: c_int, talking: c_int) {
+    voice::update_speaker_status(entindex, talking != 0);
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_DirectorMessage(_size: c_int, _buf: *mut c_void) {}

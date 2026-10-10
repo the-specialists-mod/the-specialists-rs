@@ -36,9 +36,11 @@ const HLDM_MODELS: [&str; 9] = ["barney", "gina", "gman", "helmet", "hgrunt", "r
 
 // ---- connection ----------------------------------------------------------------------------------
 
-/// `ClientConnect`: notify `ts_playeramount`, then accept.
-pub fn client_connect(_e: *mut edict_t, _name: &CStr, _addr: &CStr) -> bool {
+/// `ClientConnect`: notify `ts_playeramount`, `CHalfLifeMultiplay::ClientConnected` (0xcf59c:
+/// the voice manager), then accept.
+pub fn client_connect(e: *mut edict_t, _name: &CStr, _addr: &CStr) -> bool {
     crate::entities::ts::player_amount_changed(true);
+    super::voice::client_connected(e);
     true
 }
 

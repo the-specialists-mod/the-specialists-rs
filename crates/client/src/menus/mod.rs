@@ -26,6 +26,8 @@ struct Menus {
     motd_ok: (i32, i32, i32, i32),
     scores: bool,
     path: String,
+    /// Scoreboard player rows from the last draw: (x, y, w, h, player index).
+    score_rows: Vec<(i32, i32, i32, i32, i32)>,
 }
 
 static MENUS: Global<RefCell<Option<Menus>>> = Global(RefCell::new(None));
@@ -178,6 +180,28 @@ pub fn open_motd() {
 
 pub fn show_scores(on: bool) {
     with(|m| m.scores = on);
+    if !on {
+        // `HideScoreBoard` (10063760) ends squelch mode.
+        crate::voice::stop_squelch_mode();
+    }
+}
+
+/// A mouse press while the scoreboard is up and has no cursor (`ScorePanel::mousePressed`
+/// 1005e660): the first press enters squelch mode, which shows the cursor. Returns true if the
+/// press was taken (it doesn't reach the engine as a key).
+pub fn scoreboard_press() -> bool {
+    if !scores_visible() || wants_cursor() || hud::intermission() {
+        return false;
+    }
+    crate::voice::start_squelch_mode();
+    crate::input::center_cursor();
+    true
+}
+
+/// The scoreboard player row under the cursor that can be muted (`MouseOverCell` 1005e870: only
+/// players the server lets us hear).
+fn squelch_row(m: &Menus, x: i32, y: i32) -> Option<(i32, i32, i32, i32, i32)> {
+    m.score_rows.iter().copied().find(|r| hit((r.0, r.1, r.2, r.3), x, y) && crate::voice::is_player_audible(r.4))
 }
 
 pub fn scores_visible() -> bool {
@@ -200,7 +224,12 @@ pub fn intermission(on: bool) {
 
 /// A menu owns the mouse (virtual cursor, clicks).
 pub fn wants_cursor() -> bool {
-    with(|m| m.buy.active || m.team_open || m.motd_open)
+    with(|m| m.buy.active || m.team_open || m.motd_open) || squelching()
+}
+
+/// Squelch mode with the scoreboard showing: the scoreboard owns the cursor.
+fn squelching() -> bool {
+    crate::voice::in_squelch_mode() && scores_visible()
 }
 
 const K_ENTER: i32 = 13;
@@ -232,6 +261,17 @@ pub fn key_event(down: bool, key: i32, _binding: &CStr) -> bool {
 /// Mouse buttons while a menu has the cursor (`CTSBuyMenu::MouseEvent` 10038360): left release
 /// selects the row under the cursor, right release is key 10 (back).
 pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
+    let pressed = state & !old;
+    if squelching() && !with(|m| m.buy.active || m.team_open || m.motd_open) {
+        // `ScorePanel::mousePressed`: any button toggles the highlighted player's mute.
+        if pressed != 0
+            && !hud::intermission()
+            && let Some(r) = with(|m| squelch_row(m, x, y))
+        {
+            crate::voice::scoreboard_toggle(r.4);
+        }
+        return;
+    }
     let released = old & !state;
     if released & 1 != 0 {
         click(x, y);
@@ -579,7 +619,18 @@ pub fn redraw(time: f32) {
             }
         });
         if scores_visible() {
-            scoreboard::draw(dc);
+            let hover = if squelching() {
+                let (cx, cy) = crate::input::cursor();
+                with(|m| squelch_row(m, cx, cy)).map(|r| r.4)
+            } else {
+                None
+            };
+            let rows = scoreboard::draw(dc, hover);
+            with(|m| m.score_rows = rows);
+        } else {
+            with(|m| m.score_rows.clear());
+            // Squelch mode ends with the scoreboard (also when intermission hid it).
+            crate::voice::stop_squelch_mode();
         }
         if wants_cursor() {
             let (cx, cy) = crate::input::cursor();

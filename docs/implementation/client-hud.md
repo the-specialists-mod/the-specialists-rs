@@ -12,8 +12,12 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `crates/client/src/hud/{status,weapons,notice}.rs` | `CHudTSStatus`, `CHudTSWeapons`, SDK elements (HudText, death notices, say text, `CHudMenu`) |
 | `crates/client/src/hud/{draw,text}.rs` | hud.txt sprites, `DrawHudNumberTS`, `DrawHudString`, titles.txt localisation, mini printf |
 | `crates/client/src/menus/{mod,buy,scoreboard}.rs` | buy menu (`CTSBuyMenu`), scoreboard, team select, MOTD, mouse routing |
+| `crates/client/src/voice.rs` | `CVoiceStatus`/`CVoiceBanMgr`: speaker state, head icons, speaker labels, talk icon, scoreboard voice icons and squelch mode, `voice_ban.dt`, `VModEnable`/`vban` |
+| `crates/client/src/joystick.rs` | the SDK joystick code TS ships (`IN_JoyMove`, `IN_Commands`, `Joy_AdvancedUpdate_f`), Steam GoldSrc only |
 | `crates/client/src/state.rs` | fields added for other packages (see Integration) |
 | `crates/goldsrc/src/ext/hud.rs` | engine helpers: sprites, text, cvars, player info, `EV_PlayerTrace`, `WorldToScreen`, demo API, `EV_PlaySound` |
+| `crates/goldsrc/src/ext/voice.rs` | `GetPlayerUniqueID`, `pfnServerCmdUnreliable`, level check, the static head-icon entities for `CL_CreateVisibleEntity` (and the server's `Voice_SetClientListening`) |
+| `crates/goldsrc/src/joystick.rs` | joystick device access: WinMM on Windows, SDL2 game controller (run-time lookup) elsewhere; `CheckParm` |
 | `crates/shared/src/protocol/hud.rs` | `Reader`/`Writer` and decode/encode for all HUD payloads |
 
 ## 1. TS function → Rust
@@ -43,14 +47,26 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CTSBuyMenu::MouseEvent` 10038360 | `menus::mouse_buttons` / `click` |
 | `ScorePanel` 1005ce70/1005db70 | `menus::scoreboard` |
 | `CTeamMenuPanel` 100655d0 (VGUIMenu 2) | `menus::draw_team_menu`, `team_menu_key` |
+| `CVoiceStatus::Init` 100178c0 / `VidInit` 10017af0 / `Frame` 10017ea0 | `voice::init`, `vid_init`, `frame` |
+| `CVoiceStatus::CreateEntities` 10017f30 (`HUD_CreateEntities`) | `voice::create_entities` |
+| `UpdateSpeakerStatus` 100180c0 (`HUD_VoiceStatus` 1001ab40) | `voice::update_speaker_status` |
+| `UpdateServerState` 10018360, `HandleVoiceMaskMsg` 10018780, `HandleReqStateMsg` 10018830 | `voice::update_server_state`, `msg_voice_mask`, `msg_req_state` |
+| `RepositionLabels` 10018900, `UpdateBanButton` 100185f0 | `voice::redraw`/`label_rects`, `voice::speaker_icon`/`draw_speaker` (scoreboard voice column) |
+| `Start/StopSquelchMode` 10018870/10018890, `IsInSquelchMode` 100188b0, `IsPlayerBlocked` 10018c80, `IsPlayerAudible` 10018cc0, `SetPlayerBlockedState` 10018cf0 | `voice::start_squelch_mode` … `voice::toggle_block` |
+| `ScorePanel::mousePressed` 1005e660, `MouseOverCell` 1005e870, `HideScoreBoard` 10063760 | `menus::scoreboard_press`, `menus::mouse_buttons`/`squelch_row`, `menus::show_scores(false)` |
+| `CVoiceBanMgr` (`voice_ban.dt`), `voice_showbanned` 10017660 | `voice::BanList`, `voice::show_banned` |
+| `SayTextPrint` 1002ed00 (muted players' chat dropped) | `hud::on_message` (SayText) |
+| `IN_StartupJoystick` 10027960, `IN_ReadJoystick` 10027de0 | `goldsrc::joystick::startup`/`read` |
+| `Joy_AdvancedUpdate_f` 10027b00, `IN_Commands` 10027ca0, `IN_JoyMove` 10027e40 | `joystick::axis_map`/`joy_advanced_update`, `joystick::commands`, `joystick::joy_move`/`apply_axes` |
 | `CMessageWindowPanel` (MOTD, VGUIMenu 5) | `menus::draw_motd` |
 
 ## 2. Message table
 
 Every message in `shared::protocol::MESSAGES` is hooked except `ScreenShake` and `ScreenFade`:
 FWGS (and GoldSrc) parse those two in the engine before client hooks are consulted, and TS
-doesn't hook them either. `VoiceMask`, `ReqState` (answers `VModEnable` + `vban`) and `Logo` are
-also hooked. Malformed payloads are logged and ignored.
+doesn't hook them either. `Logo` is also hooked (ignored), and the voice module hooks `VoiceMask`
+(audible and server-side ban masks) and `ReqState` (answers `VModEnable` + `vban`). Malformed
+payloads are logged and ignored.
 
 | Message | Read order | Effect |
 |---|---|---|
@@ -94,7 +110,8 @@ Cvars, names/defaults/flags as TS registers them (§2.1):
   cl_solidcross cl_thirdperson cl_attackswitch cl_thirdtransparency cl_motionblur cl_gore
   cl_showequipment m_filter sensitivity m_accel m_accelexp m_accelmax joystick joyname joyadv*
   joy*threshold joy*sensitivity joywwhack1/2`.
-* HUD: `voice_modenable voice_clientdebug hud_drawhistory_time hud_fastswitch hud_deathnotice_time
+* Voice (`CVoiceStatus::Init`): `voice_modenable voice_clientdebug`.
+* HUD: `hud_drawhistory_time hud_fastswitch hud_deathnotice_time
   hud_classautokill hud_takesshots zoom_sensitivity_ratio default_fov hud_capturemouse
   hud_saytext_time hud_centerid cl_drawnames`.
 * Not registered here (other packages): `cl_bob…`/`cl_slowfade` (V_Init), `cam_*` (CAM_Init),
@@ -102,13 +119,14 @@ Cvars, names/defaults/flags as TS registers them (§2.1):
 
 Commands: `+/-moveup movedown left right forward back moveleft moveright lookup lookdown speed
 attack attack2 use jump klook jlook duck reload alt1 alt2 score showscores graph break`, `impulse`,
-`slot1..slot10`, `invnext`, `invprev`, `buy`, `cancelselect`, `special`, and `ts_hud_selftest`
-(port-only development aid). Server-side commands (`lastinv`, `drop`, `firemode`, `useitems`,
+`slot1..slot10`, `invnext`, `invprev`, `buy`, `cancelselect`, `special`, `voice_showbanned`,
+`joyadvancedupdate`, and `ts_hud_selftest` (port-only development aid). Server-side commands (`lastinv`, `drop`, `firemode`, `useitems`,
 `jointeam`, `changeteam`) are forwarded to the server by the engine, as in TS.
 
 Client → server commands sent: `weapon_<n>`, `weapon_0`, `drop_<n>`, `cutwire_<n>`,
 `lasclr_<n>`, `usepowerup`, `rst_cfg` + `tkw …` + `tki …` + `tka …`, `chgteam <n>`,
-`jointeam <n>`, `_special`, `menuselect <n>`, `VModEnable`/`vban`.
+`jointeam <n>`, `_special`, `menuselect <n>`, `VModEnable <0|1>` and `vban <hex mask>` (voice; the
+mask goes unreliably, at most once a second unless the server asks with `ReqState`).
 
 ## 4. Input
 
@@ -139,8 +157,41 @@ Client → server commands sent: `weapon_<n>`, `weapon_0`, `drop_<n>`, `cutwire_
   `dlopen(RTLD_NOLOAD)`/`dlsym` in the engine's already-loaded libSDL2 (no link dependency).
   `IN_MouseEvent` forwards button edges as `K_MOUSE1+i` key events (the previous stub dropped
   mouse buttons entirely).
-* Menus that show a cursor (buy, team, MOTD) receive the mouse deltas as a virtual cursor (drawn
-  with `sprites/cursor.spr`) while the view is held still; clicks go to the menu.
+* Menus that show a cursor (buy, team, MOTD, the scoreboard in voice squelch mode) receive the
+  mouse deltas as a virtual cursor (drawn with `sprites/cursor.spr`) while the view is held still;
+  clicks go to the menu.
+* **Joystick.** FWGS reads joysticks and gamepads itself and sends movement through
+  `IN_ClientMoveEvent`, so the client's joystick code only runs on Steam GoldSrc. It is TS's copy
+  of the classic SDK code: `IN_StartupJoystick` at init (skipped with `-nojoy`), the axis map from
+  `joyadvanced`/`joyadvaxis*` (`joyadvancedupdate`, also run on first use), `IN_JoyMove` after the
+  mouse in `CL_CreateMove` (thresholds, sensitivities, `+jlook`/`+strafe`/`lookstrafe`/`+speed`,
+  relative axes, `joywwhack1/2`, pitch clamp ±89; active only with `joystick 1`), and
+  `IN_Commands` from `HUD_UpdateClientData` (buttons 0-3 → `K_JOY1..4`, higher → `K_AUX1+i`, POV →
+  `K_AUX29..32`). The device is read in `goldsrc::joystick`: WinMM (`joyGetPosEx`) on Windows as
+  TS does, and on Linux the first SDL2 game controller (left stick X/Y, right stick Z/R, 21
+  buttons, no POV), looked up at run time in the engine's SDL2 like the mouse, rescanned at most
+  once a second for hot-plugging as the SDL-era SDK does.
+
+## 4b. Voice
+
+* **Server side** (`server/src/rules/voice.rs`, `CVoiceGameMgr`): see rules.md. It is required on
+  Steam HLDS, which starts every client unable to hear anyone; FWGS defaults to all-hear.
+* `HUD_VoiceStatus` updates who is talking: -1 the local player (talking turns `voice_modenable`
+  on), -2 the server's acknowledgement, else a player (TS's check is `< 32`, so player 32 is never
+  shown). Talking players get `sprites/voiceicon.spr` (scale 0.5, additive) 45 units above their
+  origin when in the PVS and drawn (the local player only in third person), and a name label on the
+  right half of the screen (up to 7, stacked down from mid-screen, team-coloured background,
+  hidden while the scoreboard shows). The local talk icon sits at screen height − 3 font heights − 6.
+* `VoiceMask` gives the audible (game rules) and server ban masks; `ReqState` makes the client
+  resend `VModEnable` and `vban`. Every second the client sends `vban` if its ban mask for the
+  connected players differs from what the server last reported.
+* Scoreboard: a voice column shows, for players the rules let you hear, banned / talking
+  (blinking every 0.3 s) / never spoken / not talking. With the scoreboard up, a mouse press enters
+  squelch mode (cursor, no `+attack`); a press on an audible player's row toggles their mute, saves
+  `<gamedir>/voice_ban.dt` (SDK format: version 1, then 16-byte unique ids) and prints
+  `** #Muted #No_longer_hear_that_player` / `** #Unmuted` (titles.txt, `%s` = name) in the chat.
+  Hiding the scoreboard ends squelch mode. Chat (`SayText`) from muted players is dropped.
+  `voice_showbanned` lists the bans.
 
 ## 5. HUD draw pass (TS order)
 
@@ -189,18 +240,28 @@ state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
 * Golden Colts are never restricted (server rule) where the client's own remap would treat them as
   pistols.
 * `ts_hud_selftest [dead]` is port-only.
+* Voice UI: TS drew the speaker labels, talk icon and scoreboard icons as VGUI1 panels with
+  `gfx/vgui/*.tga` images, which the engine API can't draw. The port draws them in immediate mode:
+  labels with the console font, `sprites/voiceicon.spr` as the local talk icon (green-tinted for
+  the debug "server acked" icon), and a 16 px speaker glyph made of fills for the label and
+  scoreboard icons (banned: red with a cross). Squelch mode centres the virtual cursor. The first
+  scoreboard press (entering squelch mode) isn't passed to the engine as a key.
+* `voice_ban.dt` is written whenever a mute changes (the SDK writes it when the library unloads).
+  TS reads `scripts/voicemodel.txt` but never uses the height, so the port doesn't read it.
+* Joystick on Linux uses an SDL2 game controller (TS only has the Windows WinMM code). The SDL
+  rescan uses the client clock (`GetAbsoluteTime` isn't in the 2007 engine table). `V_StopPitchDrift`
+  calls in `IN_JoyMove` are dropped (the port has no pitch drift). A failed device read releases
+  the joystick buttons (TS's zeroed `JOYINFOEX` reads as POV "up"; the port treats it as centred).
 
 ## 8. Missing / not done
 
 * Laser dots (`DrawLaserDots` 1004e6f0) — needs the effects package's laser traces; `state`
   exports `active_items`/`laser_color` for it.
-* Spectator HUD/overview (`CHudSpectator`), voice status icons/banning UI, server browser, command
-  menu, TFC panels (dropped as allowed by §7).
+* Spectator HUD/overview (`CHudSpectator`), server browser, command menu, TFC panels (dropped as
+  allowed by §7).
 * `HUD_UpdateClientData` writes the eased FOV (`view::update_client_data`, wired at integration).
 * Death-cam / `cl_thirdpersonswitch` / observer third-person changes are only *requested*
   (`state.thirdperson_*`); the view package owns `cam_thirdperson`.
-* Joystick input (TS has the SDK joystick code) is not ported; FWGS joystick/touch movement
-  arrives through `IN_ClientMoveEvent`.
 * The fov-under-40 `%ix` label in `DrawWeaponInfo` (argument unknown) and the laser-on number next
   to the crosshair are not drawn.
 * Divestep sprite availability thresholds (used slots < 42/52/62) are inferred from a garbled

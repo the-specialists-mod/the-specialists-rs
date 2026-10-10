@@ -17,7 +17,7 @@ pub mod sdl {
     }
 
     #[cfg(not(windows))]
-    fn lookup(name: &CStr) -> *mut c_void {
+    pub(crate) fn lookup(name: &CStr) -> *mut c_void {
         unsafe extern "C" {
             fn dlopen(file: *const std::ffi::c_char, mode: c_int) -> *mut c_void;
             fn dlsym(handle: *mut c_void, name: *const std::ffi::c_char) -> *mut c_void;
@@ -41,7 +41,7 @@ pub mod sdl {
     }
 
     #[cfg(windows)]
-    fn lookup(name: &CStr) -> *mut c_void {
+    pub(crate) fn lookup(name: &CStr) -> *mut c_void {
         let h = unsafe { super::win::GetModuleHandleA(c"SDL2.dll".as_ptr()) };
         if h.is_null() { std::ptr::null_mut() } else { unsafe { super::win::GetProcAddress(h, name.as_ptr()) } }
     }

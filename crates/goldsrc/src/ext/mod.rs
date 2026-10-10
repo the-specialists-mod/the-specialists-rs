@@ -9,4 +9,5 @@ pub mod movement;
 pub mod render;
 #[cfg(feature = "server")]
 pub mod rules;
+pub mod voice;
 pub mod weapons;

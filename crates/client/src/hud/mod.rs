@@ -45,8 +45,6 @@ pub struct HudCvars {
     pub capturemouse: Cvar,
     pub saytext_time: Cvar,
     pub centerid: Cvar,
-    pub voice_modenable: Cvar,
-    pub voice_clientdebug: Cvar,
     pub drawnames: Cvar,
 }
 
@@ -191,7 +189,26 @@ fn third_person() -> bool {
     crate::view::is_third_person()
 }
 
+/// Feed a locally built `TextMsg` through the normal handler (`CHudTextMessage::MsgFunc_TextMsg`
+/// with no message, as the scoreboard's mute notices do).
+pub fn print_text_message(dest: u8, text: &str) {
+    let t = shared::protocol::hud::TextMsg { dest, strings: vec![text.to_owned()] };
+    on_message(Msg::TextMsg, &t.encode());
+}
+
+/// TS team colour by team number (`GetPlayerTextColor` 1001fcd0: `iTeamColors[team % count]`).
+pub fn team_color(team: i32) -> [i32; 3] {
+    status::team_color(team)
+}
+
 fn on_message(m: Msg, buf: &[u8]) {
+    // `SayTextPrint` (1002ed00) drops chat from players the local player muted.
+    if m == Msg::SayText
+        && let Some(t) = shared::protocol::hud::SayText::decode(buf)
+        && crate::voice::is_player_blocked(t.client as i32)
+    {
+        return;
+    }
     // Effect messages: the render modules own their effect state and parse the raw payload.
     // The engine keeps a single hook per message, so the HUD hook forwards to them.
     match m {
@@ -295,16 +312,6 @@ fn apply_effect(f: Effect) {
     }
 }
 
-/// Voice manager messages (registered by the server's `CVoiceGameMgr`, not in the TS table).
-fn msg_voice_mask(_buf: &[u8]) {}
-
-/// `ReqState`: the server asks for the voice state; the SDK answers `VModEnable` and `vban`.
-fn msg_req_state(_buf: &[u8]) {
-    let e = engine();
-    e.server_cmd(&format!("VModEnable {}", cvars().voice_modenable.value() as i32));
-    e.server_cmd("vban 0 0 0 0");
-}
-
 /// `Logo` (impulse 99): the animated logo; TS never ships `sprites/%d_logo.spr`, so ignore.
 fn msg_logo(_buf: &[u8]) {}
 
@@ -313,8 +320,6 @@ fn msg_logo(_buf: &[u8]) {}
 
 fn register_cvars() -> HudCvars {
     HudCvars {
-        voice_modenable: Cvar::register(c"voice_modenable", c"1", 1),
-        voice_clientdebug: Cvar::register(c"voice_clientdebug", c"0", 0),
         drawhistory_time: Cvar::register(c"hud_drawhistory_time", c"5", 0),
         fastswitch: Cvar::register(c"hud_fastswitch", c"0", 1),
         deathnotice_time: Cvar::register(c"hud_deathnotice_time", c"6", 0),
@@ -407,8 +412,6 @@ pub fn init() {
         }
         e.hook_user_msg(name, hook_for(*m));
     }
-    e.hook_user_msg(c"VoiceMask", msg_voice_mask);
-    e.hook_user_msg(c"ReqState", msg_req_state);
     e.hook_user_msg(c"Logo", msg_logo);
     register_commands();
     with(|h| *h = Hud::default());

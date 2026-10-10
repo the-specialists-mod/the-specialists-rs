@@ -168,6 +168,11 @@ win32 under Wine (listen server, `ts_arena`).
   dedicated servers (HLDS 8684 via ReHLDS, and HL25) were tested.
 * Real keyboard and mouse (all client runs are scripted), including the Steam mouse paths in
   `input.rs`.
+* Joysticks (Steam GoldSrc only: WinMM on Windows, SDL2 game controller on Linux; FWGS handles
+  them in the engine).
+* Voice chat with real microphones: head icons, speaker labels, the talk icon, scoreboard voice
+  icons, squelch-mode muting and `voice_ban.dt`, and that Steam HLDS relays voice now that the
+  server opens the streams (`Voice_SetClientListening`).
 * Native Windows (only Wine).
 * Long sessions, many players, and real network latency.
 

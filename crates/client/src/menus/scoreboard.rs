@@ -78,7 +78,11 @@ pub fn build_rows(h: &Hud, names: &dyn Fn(i32) -> Option<(String, i32, bool)>) -
     rows
 }
 
-pub fn draw(dc: &Dc) {
+/// Draws the scoreboard and returns the player rows (x, y, w, h, player index) for squelch-mode
+/// clicks. `hover` is the player row under the squelch cursor (highlighted like TS's
+/// `m_iHighlightRow`).
+pub fn draw(dc: &Dc, hover: Option<i32>) -> Vec<(i32, i32, i32, i32, i32)> {
+    let mut hits = Vec::new();
     let e = engine();
     let max = e.max_clients().min(64);
     let names = |i: i32| {
@@ -121,12 +125,18 @@ pub fn draw(dc: &Dc) {
             Row::Spectators => {
                 e.draw_console_string(x + 8, y, [0.7, 0.7, 0.7], &localise("#Spectators"));
             }
-            Row::Player { name, frags, deaths, ping, status, local, .. } => {
+            Row::Player { index, name, frags, deaths, ping, status, local } => {
                 if local {
                     dc.fill(x + 4, y, w - 8, lh, dc.hud, 40);
                 }
+                if hover == Some(index) {
+                    dc.fill(x + 4, y, w - 8, lh, [255, 255, 255], 60);
+                }
+                hits.push((x + 4, y, w - 8, lh, index));
+                // Voice column (`UpdateSpeakerImage` 100185d0 / `UpdateBanButton` 100185f0).
+                crate::voice::draw_speaker(dc, x + 6, y, crate::voice::speaker_icon(index));
                 let c = if local { white } else { [0.85, 0.85, 0.85] };
-                e.draw_console_string(x + 16, y, c, &name);
+                e.draw_console_string(x + 24, y, c, &name);
                 if !status.is_empty() {
                     e.draw_console_string(cs, y, [1.0, 0.8, 0.2], status);
                 }
@@ -137,6 +147,7 @@ pub fn draw(dc: &Dc) {
         }
         y += lh;
     }
+    hits
 }
 
 #[cfg(test)]
