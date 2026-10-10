@@ -12,6 +12,7 @@ pub mod explode;
 pub mod items;
 pub mod lights;
 pub mod maprules;
+pub mod sentences;
 pub mod sound;
 pub mod tracktrain;
 pub mod trains;
@@ -138,6 +139,8 @@ impl Entity for World {
         base::reset_registries();
         tracktrain::reset();
         sound::reset_rooms();
+        // CWorld::Precache (0xf449c): sentences.txt, once per process.
+        sentences::init();
         // Style 0 is normal light; without it the whole map renders black. Styles 1-12 are the
         // SDK's animated presets (world.cpp), 63 is the testing style.
         let eng = engine();

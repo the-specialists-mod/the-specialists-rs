@@ -11,16 +11,21 @@ use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use std::ffi::CStr;
 
-/// TS's `EMIT_SOUND_DYN` with its extra slow-motion factor `s`: when the entity's `fuser1`
-/// (time scale) is non-zero, pitch becomes `(s * fuser1 + 1 - s) * pitch`.
+/// TS's `EMIT_SOUND_DYN` (0xe0a8c) with its extra slow-motion factor `s`: when the entity's
+/// `fuser1` (time scale) is non-zero, pitch becomes `(s * fuser1 + 1 - s) * pitch`. `!NAME`
+/// sentences are looked up in sentences.txt.
 #[allow(clippy::too_many_arguments)]
 pub fn emit_sound_slow(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn: f32, flags: i32, pitch: i32, s: f32) {
     if sample.is_empty() || e.is_null() {
         return;
     }
+    let Some(sample) = super::sentences::resolve(sample) else {
+        super::base::unknown_sentence(sample);
+        return;
+    };
     let ts = e.v().fuser1;
     let pitch = if ts != 0.0 { ((s * ts + 1.0 - s) * pitch as f32) as i32 } else { pitch };
-    engine().emit_sound(e, chan as i32, sample, vol, attn, flags, pitch);
+    engine().emit_sound(e, chan as i32, &sample, vol, attn, flags, pitch);
 }
 
 /// `GiveSlowMul` / `FixedSlowAmt`: the player's time scale, at least 0.01.

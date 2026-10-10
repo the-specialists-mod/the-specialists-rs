@@ -17,12 +17,13 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `explode.rs` | TS `TSExplosion`, SDK `RadiusDamage`, TS `UTIL_ScreenShake` / `UTIL_ScreenFade` (`TSFade`), sparks, ricochet, TS slow-motion pitch `emit_sound_slow` |
 | `breakable.rs` | `func_breakable`, `func_pushable`, material tables, `respawn_all` |
 | `doors.rs` | `func_door`, `func_door_rotating`, `func_water` |
-| `buttons.rs` | `func_button`, `func_rot_button`, `button_target`, `multisource`, lock sounds, `DoSpark` |
+| `buttons.rs` | `func_button`, `func_rot_button`, `button_target`, `multisource`, lock sounds and sentences (`PlayLockSounds`), `DoSpark` |
 | `bmodels.rs` | `func_wall`, `func_illusionary`, `func_wall_toggle`, `func_conveyor`, `func_rotating`, `func_pendulum` |
 | `trains.rs` | `func_train`, `path_corner`, `func_plat` (with its trigger) |
 | `tracktrain.rs` | `func_tracktrain`, `path_track` |
 | `triggers.rs` | `trigger_multiple/once/hurt/teleport/push/gravity/auto/relay/changetarget/camera`, `multi_manager`, `func_ladder`, `func_friction`, point entities (`info_target`, `info_teleport_destination`, `info_intermission`, `info_landmark`, `info_null`), `env_global`, `env_message` |
 | `sound.rs` | `ambient_generic` (with the full dynpitchvol / LFO code and the 27 presets), `env_sound` |
+| `sentences.rs` | `SENTENCEG_*`: the sentences.txt loader, `!NAME` lookup, sequential and random group picks, `UTIL_EmitAmbientSound`, the (multiplayer no-op) `SetSuitUpdate` |
 | `lights.rs` | `light`, `light_spot`, `light_environment` |
 | `effects.rs` | `env_sprite`, `env_glow`, `env_shake`, `env_fade`, `env_explosion` (+ `spark_shower`), `env_render`, `env_beam`, `env_laser`, `env_shooter`, `gibshooter` (+ `gib`), `env_spark` / `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite`, `cycler` |
 | `items.rs` | `item_healthkit`, `item_battery`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins |
@@ -73,8 +74,8 @@ How the SDK patterns map to Rust:
 | `func_pendulum` | SDK | The INSTANT flag thinks on `ltime` (the SDK compares global time against `ltime`). |
 | `func_breakable` | **TS** `CBreakable` | See §3.1. |
 | `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use. A breakable pushable uses the TS breakable code. |
-| `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sentences aren't played. |
-| `func_button`, `func_rot_button` | SDK buttons.cpp | Spark sounds use TS slow-motion pitch. Shootable buttons (health > 0) work through `take_damage`. |
+| `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sounds and sentences as in §3.5. |
+| `func_button`, `func_rot_button` | SDK buttons.cpp | Spark sounds use TS slow-motion pitch. Shootable buttons (health > 0) work through `take_damage`. Lock sounds and sentences as in §3.5. |
 | `button_target`, `multisource` | SDK | |
 | `func_train`, `path_corner` | SDK plats.cpp | `Activate` is emulated (see §6). |
 | `func_plat` | **TS** `CFuncPlat` | Adds the TS keys `targettop` and `targetbot`, which fire when the plat reaches the top or bottom. Spawns its own trigger volume. |
@@ -87,7 +88,7 @@ How the SDK patterns map to Rust:
 | `func_ladder`, `func_friction` | SDK | |
 | `info_target`, `info_teleport_destination`, `info_intermission`, `info_landmark`, `info_null` | SDK | `info_null` removes itself. |
 | `env_global`, `env_message` | SDK | Global states persist across maps, like `gGlobalState`. |
-| `ambient_generic` | SDK sound.cpp | The TS preset table is byte-identical. `!SENTENCE` sounds are not played. |
+| `ambient_generic` | SDK sound.cpp | The TS preset table is byte-identical. `!NAME` sentences aren't precached and are sent as `!<index>` (§3.5). |
 | `env_sound` | SDK | Per-player room state lives in a side table in `sound.rs`. |
 | `light`, `light_spot`, `light_environment` | SDK lights.cpp | Lights without a targetname are removed. Switchable styles are 32 and up. `light_environment` sets `sv_skycolor_*` and `sv_skyvec_*`. |
 | `env_sprite`, `env_glow`, `env_render`, `env_spark`, `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite` | SDK effects.cpp / world.cpp / h_cycler.cpp | |
@@ -166,9 +167,11 @@ How the SDK patterns map to Rust:
 * **Healthkit.** It gives a fixed 50 health through TS `CBasePlayer::TakeHealth`, which refuses only
   when health > max and has no cap. A kit at 100 HP gives 150. The decay back to 100 at 1/s is in
   the player's PreThink (rules package).
-* **Battery.** It calls `TakeArmor(50)`. The first kevlar takes 10 free inventory slots: without
-  them there's no armour, but the battery is still used up. Armour is capped at 100 and speed is
-  recomputed from the free slots.
+* **Battery.** It refuses players without the HEV suit bit (`weapons` bit 31, set on spawn). It
+  calls `TakeArmor(50)`. The first kevlar takes 10 free inventory slots: without them there's no
+  armour, but the battery is still used up. Armour is capped at 100 and speed is recomputed from
+  the free slots. It then queues the `!HEV_<n>P` charge report with `SetSuitUpdate`, which TS
+  drops in multiplayer (§3.5), so no sentence plays.
 * **Chargers.** The health charger refills to max in one use. The HEV charger calls
   `TakeArmor(100)` in one use. They recharge after 60 s and 30 s.
 * **Items** respawn after 30 s unless `SF_NORESPAWN` (1 << 30) is set, with the `suitchargeok1`
@@ -188,6 +191,30 @@ How the SDK patterns map to Rust:
   * A white `TSFade` for players caught in it.
   * Full damage inside rFull, linear falloff to rMax.
   * Wall penetration: damage minus the wall thickness.
+
+### 3.5 Sentences (decomp `SENTENCEG_*` 0xe00c8–0xe0d64, `PlayLockSounds` 0xb4f50)
+
+* **Loading.** `CWorld::Precache` calls `SENTENCEG_Init`, which reads `sound/sentences.txt` once
+  per process (a missing file is retried on the next map, as in TS). Every `NAME words` line is a
+  sentence numbered by its position in the file; the client numbers the same file, so the server
+  sends `!<index>`. Names ending in digits form groups (`NA0`, `NA1` → `NA`). Limits are TS's:
+  1536 sentences, 200 groups, a warning for names of 16+ letters, lines read 510 bytes at a time
+  (`memfgets`).
+* **Playing.** TS's `EMIT_SOUND_DYN` and `UTIL_EmitAmbientSound` turn `!NAME` into `!<index>`
+  (case-insensitive); an unknown name logs "Unable to find … in sentences.txt" (`at_aiconsole`)
+  and isn't played. In this port that's `base::emit`, `explode::emit_sound_slow` and
+  `sentences::emit_ambient`, so map-provided sounds starting with `!` work wherever those are used.
+* **Lock sentences.** `locked_sentence` 1–9 maps to the groups `NA ND NF NFIRE NCHEM NRAD NCON NH NG`
+  and `unlocked_sentence` 1–8 to `EA ED EF EFIRE ECHEM ERAD ECON EH` (doors and buttons share the
+  table). `PlayLockSounds` plays the group in order (`SENTENCEG_PlaySequentialSz`, volume 0.85,
+  `CHAN_VOICE`) at most every 6 s and stops after the last sentence; when the lock sound plays at the
+  same time it drops to volume 0.25. Lock sounds now use TS's slow-motion pitch factor (0.5).
+* **Suit sentences.** `CBasePlayer::SetSuitUpdate` (0xda410) returns early because TS's rules are
+  always multiplayer (`CHalfLifeMultiplay::IsMultiplayer` returns 1), so the HEV queue and
+  `CheckSuitUpdate`'s sentence half aren't ported; `sentences::set_suit_update` keeps the call
+  sites.
+* **Deviation.** `USENTENCEG_Pick` on a group of more than 32 sentences reads past its 32-entry LRU
+  array into the next group's record in TS; the port only uses the 32 LRU entries.
 
 ## 4. Coverage (97 shipped maps)
 
@@ -308,8 +335,8 @@ covers:
    * Kevlar: `items::player_take_armor` is a stand-in for TS `TakeArmor`. It uses the networked
      `HAS_KEVLAR` stunt bit and `Player::slots_used`. The weapons/rules package should own the real
      function, plus `DropArmor`.
-   * The HEV suit bit (`pev->weapons & 1<<31`) isn't set by `Player::spawn`. Battery and charger
-     therefore skip TS's suit check.
+   * The HEV suit bit (`pev->weapons & 1<<31`) is set on spawn (rules package). The battery and
+     the HEV charger refuse players without it, as in TS.
 6. **`trigger_camera` on death or respawn.** TS `CBasePlayer::Killed` and `Spawn` call
    `SET_VIEW(self, self)` and clear `FL_FROZEN`. The player package must do this too, or a camera
    active when the player dies keeps the view.
@@ -335,8 +362,6 @@ covers:
 
 ## 7. What's missing or simplified
 
-* Sentences (`!NAME` ambient sounds, door/button lock sentences, the battery's HEV sentence). There
-  is no sentences.txt loader.
 * Train driving (`func_traincontrols`, the player's train HUD) and `func_tank*`.
 * `cycler` server-side studio animation: only `animtime`/`framerate`/`sequence` are driven.
 * `trigger_hurt` `RadiationThink` (HEV geiger), human-gib blood decals, `env_sprite` attachments

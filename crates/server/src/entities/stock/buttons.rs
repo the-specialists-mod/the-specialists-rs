@@ -1,8 +1,6 @@
 //! `func_button`, `func_rot_button`, `button_target`, `multisource` (SDK buttons.cpp; identical in
-//! TS apart from TS's slow-motion pitch on spark sounds).
-//!
-//! Lock sentences (`locked_sentence` / `unlocked_sentence`) need the sentence groups from
-//! sentences.txt; they're parsed but not played (TS maps don't rely on them).
+//! TS apart from TS's slow-motion pitch on spark sounds), and the lock sounds and sentences doors
+//! share (`PlayLockSounds`, 0xb4f50).
 
 use super::base::*;
 use super::explode::{emit_sound_slow, sparks};
@@ -43,16 +41,60 @@ pub fn button_sound(n: i32) -> &'static CStr {
 pub const DOOR_SOUNDWAIT: f32 = 3.0;
 pub const BUTTON_SOUNDWAIT: f32 = 0.5;
 
-/// SDK `locksound_t` (sounds only).
+/// Seconds between lock sentences (`DOOR_SENTENCEWAIT`).
+pub const DOOR_SENTENCEWAIT: f32 = 6.0;
+
+/// The `locked_sentence` keyvalue's sentence group (`CBaseDoor::Precache`,
+/// `CBaseButton::Precache`; the same table in both).
+pub fn locked_sentence(n: i32) -> Option<&'static CStr> {
+    Some(match n {
+        1 => c"NA",    // access denied
+        2 => c"ND",    // security lockout
+        3 => c"NF",    // blast door
+        4 => c"NFIRE", // fire door
+        5 => c"NCHEM", // chemical door
+        6 => c"NRAD",  // radiation door
+        7 => c"NCON",  // gen containment
+        8 => c"NH",    // maintenance door
+        9 => c"NG",    // broken door
+        _ => return None,
+    })
+}
+
+/// The `unlocked_sentence` keyvalue's sentence group.
+pub fn unlocked_sentence(n: i32) -> Option<&'static CStr> {
+    Some(match n {
+        1 => c"EA",    // access granted
+        2 => c"ED",    // security door
+        3 => c"EF",    // blast door
+        4 => c"EFIRE", // fire door
+        5 => c"ECHEM", // chemical door
+        6 => c"ERAD",  // radiation door
+        7 => c"ECON",  // gen containment
+        8 => c"EH",    // maintenance area
+        _ => return None,
+    })
+}
+
+/// SDK `locksound_t`, plus the keyvalue numbers it's built from.
 #[derive(Default)]
 pub struct LockSounds {
     pub locked_n: i32,
     pub unlocked_n: i32,
-    pub locked_sentence: i32,
-    pub unlocked_sentence: i32,
+    pub locked_sentence_n: i32,
+    pub unlocked_sentence_n: i32,
     pub locked: Option<&'static CStr>,
     pub unlocked: Option<&'static CStr>,
+    pub locked_sentence: Option<&'static CStr>,
+    pub unlocked_sentence: Option<&'static CStr>,
+    /// `iLockedSentence` / `iUnlockedSentence`: the next ordinal to play from the group.
+    pub i_locked: i32,
+    pub i_unlocked: i32,
     pub wait_sound: f32,
+    pub wait_sentence: f32,
+    /// `bEOFLocked` / `bEOFUnlocked`: the group has been played to its last sentence.
+    pub eof_locked: bool,
+    pub eof_unlocked: bool,
 }
 
 impl LockSounds {
@@ -60,8 +102,9 @@ impl LockSounds {
         match key.to_bytes() {
             b"locked_sound" => self.locked_n = kv_f(value) as i32,
             b"unlocked_sound" => self.unlocked_n = kv_f(value) as i32,
-            b"locked_sentence" => self.locked_sentence = kv_f(value) as i32,
-            b"unlocked_sentence" => self.unlocked_sentence = kv_f(value) as i32,
+            // `m_bLockedSentence` / `m_bUnlockedSentence` are BYTE members.
+            b"locked_sentence" => self.locked_sentence_n = (kv_f(value) as i32) as u8 as i32,
+            b"unlocked_sentence" => self.unlocked_sentence_n = (kv_f(value) as i32) as u8 as i32,
             _ => return false,
         }
         true
@@ -78,17 +121,38 @@ impl LockSounds {
             engine().precache_sound(s);
             self.unlocked = Some(s);
         }
+        self.locked_sentence = locked_sentence(self.locked_sentence_n);
+        self.unlocked_sentence = unlocked_sentence(self.unlocked_sentence_n);
     }
 
-    /// `PlayLockSounds(pev, pls, flocked, fbutton)` without sentences.
+    /// `PlayLockSounds(pev, pls, flocked, fbutton)` (0xb4f50): the lock sound every 3 s (0.5 s
+    /// for buttons), and the group's sentences in order every 6 s until the last one has played.
     pub fn play(&mut self, e: *mut edict_t, locked: bool, button: bool) {
         let now = engine().time();
-        let snd = if locked { self.locked } else { self.unlocked };
-        if let Some(s) = snd {
-            if now > self.wait_sound {
-                emit(e, CHAN_ITEM, s, 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
-                self.wait_sound = now + if button { BUTTON_SOUNDWAIT } else { DOOR_SOUNDWAIT };
+        let sound_wait = if button { BUTTON_SOUNDWAIT } else { DOOR_SOUNDWAIT };
+        let (sound, sentence, eof) = if locked {
+            (self.locked, self.locked_sentence, self.eof_locked)
+        } else {
+            (self.unlocked, self.unlocked_sentence, self.eof_unlocked)
+        };
+        let play_sound = sound.is_some() && now > self.wait_sound;
+        let play_sentence = sentence.is_some() && !eof && now > self.wait_sentence;
+        // Both at once: the sound is played quieter.
+        let vol = if play_sound && play_sentence { 0.25 } else { 1.0 };
+        if let (true, Some(snd)) = (play_sound, sound) {
+            emit_sound_slow(e, CHAN_ITEM, snd, vol, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
+            self.wait_sound = now + sound_wait;
+        }
+        if let (true, Some(group)) = (play_sentence, sentence) {
+            let prev = if locked { self.i_locked } else { self.i_unlocked };
+            let next = super::sentences::play_sequential(e, group, 0.85, ATTN_NORM, 0, PITCH_NORM as i32, prev, false);
+            // The ordinal stops advancing once the last sentence has played.
+            if locked {
+                (self.i_locked, self.i_unlocked, self.eof_locked) = (next, 0, prev == next);
+            } else {
+                (self.i_unlocked, self.i_locked, self.eof_unlocked) = (next, 0, prev == next);
             }
+            self.wait_sentence = now + DOOR_SENTENCEWAIT;
         }
     }
 }
