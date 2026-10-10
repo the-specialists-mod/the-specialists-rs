@@ -25,9 +25,10 @@ pub struct ClientData {
     pub fov: f32,
 }
 
+/// The engine's event API table, for `ev!`. Panics if the engine has none;
+/// [`ClEngine::event_api`](crate::client::ClEngine::event_api) is the null-checked accessor.
 pub fn event_api() -> &'static event_api_s {
-    // SAFETY: the engine sets its API tables before `Initialize` and keeps them for the process.
-    unsafe { &*engine().f.pEventAPI }
+    engine().event_api().expect("pEventAPI")
 }
 pub fn efx_api() -> &'static efx_api_s {
     // SAFETY: the engine sets its API tables before `Initialize` and keeps them for the process.
@@ -115,14 +116,6 @@ pub fn trace_texture(ground: i32, start: Vec3, end: Vec3) -> Option<String> {
     let p = ev!(EV_TraceTexture(ground, s.as_mut_ptr(), e.as_mut_ptr()));
     // SAFETY: `EV_TraceTexture` returns null or a NUL-terminated texture name the engine owns; copied at once.
     if p.is_null() { None } else { Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()) }
-}
-
-/// `EV_LocalPlayerViewheight`: the local player's view offset (zero if the engine leaves it
-/// untouched).
-pub fn local_player_viewheight() -> Vec3 {
-    let mut vh = [0.0f32; 3];
-    ev!(EV_LocalPlayerViewheight(vh.as_mut_ptr()));
-    vh
 }
 
 pub fn physent(idx: i32) -> Option<&'static physent_s> {

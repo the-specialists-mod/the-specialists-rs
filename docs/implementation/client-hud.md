@@ -15,7 +15,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `crates/client/src/voice.rs` | `CVoiceStatus`/`CVoiceBanMgr`: speaker state, head icons, speaker labels, talk icon, scoreboard voice icons and squelch mode, `voice_ban.dt`, `VModEnable`/`vban` |
 | `crates/client/src/joystick.rs` | the SDK joystick code TS ships (`IN_JoyMove`, `IN_Commands`, `Joy_AdvancedUpdate_f`), Steam GoldSrc only |
 | `crates/client/src/state.rs` | fields added for other packages (see Integration) |
-| `crates/goldsrc/src/ext/hud.rs` | engine helpers: sprites, text, cvars, player info, `EV_PlayerTrace`, `WorldToScreen`, demo API, `EV_PlaySound` |
+| `crates/goldsrc/src/ext/hud.rs` | engine helpers: sprites, text, cvars, player info, `EV_PlayerTrace`, `WorldToScreen`, demo API, `EV_PlaySound`; `ClEngine::event_api` (null-checked bindgen `event_api_s`) and `local_view_height`, the one `EV_LocalPlayerViewheight` wrapper (standing offset 0 0 28 if the slot is null; the events' gun position uses it too) |
 | `crates/goldsrc/src/ext/voice.rs` | `GetPlayerUniqueID`, `pfnServerCmdUnreliable`, level check, the static head-icon entities for `CL_CreateVisibleEntity` (and the server's `Voice_SetClientListening`) |
 | `crates/goldsrc/src/joystick.rs` | joystick device access: WinMM on Windows, SDL2 game controller (run-time lookup) elsewhere; `CheckParm` |
 | `crates/shared/src/protocol/hud.rs` | `Reader`/`Writer` and decode/encode for all HUD payloads |

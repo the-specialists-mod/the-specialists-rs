@@ -7,31 +7,10 @@ use crate::cl_eng;
 use crate::client::ClEngine;
 use crate::sys::*;
 use crate::util::{cstr, to_cstring};
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, c_int};
 
-/// Prefix of the SDK `event_api_s` (common/event_api.h). bindgen only sees it as opaque, and the
-/// layout has been frozen since 1999, so the HUD declares the slots it needs.
-#[repr(C)]
-pub struct EventApi {
-    pub version: c_int,
-    pub ev_play_sound: Option<unsafe extern "C" fn(c_int, *mut f32, c_int, *const c_char, f32, f32, c_int, c_int)>,
-    pub ev_stop_sound: Option<unsafe extern "C" fn(c_int, c_int, *const c_char)>,
-    pub ev_find_model_index: Option<unsafe extern "C" fn(*const c_char) -> c_int>,
-    pub ev_is_local: Option<unsafe extern "C" fn(c_int) -> c_int>,
-    pub ev_local_player_ducking: Option<unsafe extern "C" fn() -> c_int>,
-    pub ev_local_player_viewheight: Option<unsafe extern "C" fn(*mut f32)>,
-    pub ev_local_player_bounds: Option<unsafe extern "C" fn(c_int, *mut f32, *mut f32)>,
-    pub ev_index_from_trace: Option<unsafe extern "C" fn(*mut pmtrace_s) -> c_int>,
-    pub ev_get_physent: Option<unsafe extern "C" fn(c_int) -> *mut physent_s>,
-    pub ev_set_up_player_prediction: Option<unsafe extern "C" fn(c_int, c_int)>,
-    pub ev_push_pm_states: Option<unsafe extern "C" fn()>,
-    pub ev_pop_pm_states: Option<unsafe extern "C" fn()>,
-    pub ev_set_solid_players: Option<unsafe extern "C" fn(c_int)>,
-    pub ev_set_trace_hull: Option<unsafe extern "C" fn(c_int)>,
-    pub ev_player_trace: Option<unsafe extern "C" fn(*mut f32, *mut f32, c_int, c_int, *mut pmtrace_s)>,
-}
-
-/// SDK `demo_api_s`.
+/// SDK `demo_api_s` (common/demo_api.h). bindgen only sees it as opaque (`cdll_int.h`
+/// forward-declares it and the build doesn't include `demo_api.h`), so the HUD declares it.
 #[repr(C)]
 pub struct DemoApi {
     pub is_recording: Option<unsafe extern "C" fn() -> c_int>,
@@ -253,21 +232,24 @@ impl ClEngine {
         unsafe { cstr(p) }.to_string_lossy().into_owned()
     }
 
-    /// `EV_LocalPlayerViewheight`.
+    /// `EV_LocalPlayerViewheight`: the local player's view offset. The single wrapper for it,
+    /// used by the crosshair ID and by the events' `EV_GetGunPosition`. Every engine fills the
+    /// slot; if the table or slot is null this returns the standing view offset (0, 0, 28)
+    /// instead of panicking, since both callers only need a plausible eye position.
     pub fn local_view_height(&self) -> [f32; 3] {
         let mut v = [0.0, 0.0, 28.0];
-        if let Some(f) = self.event_api().and_then(|a| a.ev_local_player_viewheight) {
-            // SAFETY: engine callback from the API table above, called with valid arguments.
+        if let Some(f) = self.event_api().and_then(|a| a.EV_LocalPlayerViewheight) {
+            // SAFETY: engine callback from the event API table, called with a valid 3-float buffer.
             unsafe { f(v.as_mut_ptr()) };
         }
         v
     }
 
-    /// The event API (`EV_PlayerTrace` etc.), if the engine provides one.
-    pub fn event_api(&self) -> Option<&'static EventApi> {
-        let p = self.f.pEventAPI as *const EventApi;
-        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
-        if p.is_null() { None } else { Some(unsafe { &*p }) }
+    /// The event API (`EV_PlayerTrace` etc.), if the engine provides one. Only slots of the 2007
+    /// SDK `event_api_s` are called; that table is a prefix of the FWGS one bindgen generates.
+    pub fn event_api(&self) -> Option<&'static event_api_s> {
+        // SAFETY: the engine sets `pEventAPI` (or leaves it null) before `Initialize` and keeps the table for the process.
+        unsafe { self.f.pEventAPI.as_ref() }
     }
     pub fn demo_api(&self) -> Option<&'static DemoApi> {
         let p = self.f.pDemoAPI as *const DemoApi;
@@ -291,13 +273,13 @@ impl ClEngine {
         let (mut s, mut e) = (start, end);
         // SAFETY: engine API callbacks called with valid local buffers.
         unsafe {
-            (api.ev_push_pm_states?)();
-            (api.ev_set_up_player_prediction?)(0, 1);
-            (api.ev_set_solid_players?)(local_index - 1);
-            (api.ev_set_trace_hull?)(2);
-            (api.ev_player_trace?)(s.as_mut_ptr(), e.as_mut_ptr(), PM_STUDIO_BOX, -1, &mut tr);
-            let ent = if tr.fraction < 1.0 { (api.ev_index_from_trace?)(&mut tr) } else { 0 };
-            (api.ev_pop_pm_states?)();
+            (api.EV_PushPMStates?)();
+            (api.EV_SetUpPlayerPrediction?)(0, 1);
+            (api.EV_SetSolidPlayers?)(local_index - 1);
+            (api.EV_SetTraceHull?)(2);
+            (api.EV_PlayerTrace?)(s.as_mut_ptr(), e.as_mut_ptr(), PM_STUDIO_BOX, -1, &mut tr);
+            let ent = if tr.fraction < 1.0 { (api.EV_IndexFromTrace?)(&mut tr) } else { 0 };
+            (api.EV_PopPMStates?)();
             Some((tr.fraction, tr.endpos, ent))
         }
     }
@@ -350,7 +332,7 @@ impl ClEngine {
     /// `EV_PlaySound(ent, origin, channel, sample, volume, attenuation, flags, pitch)`.
     #[allow(clippy::too_many_arguments)]
     pub fn ev_play_sound(&self, ent: i32, origin: [f32; 3], channel: i32, sample: &CStr, volume: f32, attn: f32, flags: i32, pitch: i32) {
-        let Some(f) = self.event_api().and_then(|a| a.ev_play_sound) else { return };
+        let Some(f) = self.event_api().and_then(|a| a.EV_PlaySound) else { return };
         let mut o = origin;
         // SAFETY: engine callback from the API table above, called with valid arguments.
         unsafe { f(ent, o.as_mut_ptr(), channel, sample.as_ptr(), volume, attn, flags, pitch) };
