@@ -12,7 +12,7 @@ use goldsrc::client::{Cvar, engine};
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use shared::ts::stunt;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 struct Cvars {
     bob: Cvar,
@@ -68,6 +68,10 @@ struct View {
     /// Smoothed z of the local player model in third person (`0x10191d94`); `None` while in
     /// first person.
     model_z: Option<f32>,
+    /// `cam_ofs` (`0x100df318`): the camera's (pitch, yaw, distance) from [`cam_think`]. `None`
+    /// while in first person; TS's `thirdperson` toggle (`0x1004fe00`) seeds it with the view
+    /// angles and distance 30, which [`cam_think`] does when third person starts.
+    cam_ofs: Option<Vec3>,
     last_thirdperson_cvar: f32,
     last_weapon: i32,
     // TSFade
@@ -305,6 +309,40 @@ impl Ring {
 
 static VIEW: Global<RefCell<Option<View>>> = Global(RefCell::new(None));
 static CVARS: Global<RefCell<Option<Cvars>>> = Global(RefCell::new(None));
+static CAM: Global<Cell<Option<CamCvars>>> = Global(Cell::new(None));
+
+/// The `CAM_Init` cvars [`cam_think`] reads.
+#[derive(Clone, Copy)]
+struct CamCvars {
+    command: Cvar,
+    snapto: Cvar,
+    idealyaw: Cvar,
+    idealpitch: Cvar,
+    idealdist: Cvar,
+}
+
+/// `CAM_Init` (`0x10025370`, called from `InitInput`, so [`crate::input::init`] calls this):
+/// registers the SDK camera cvars with TS's defaults (`cam_idealdist` 100, the SDK's 64). TS
+/// reads `cam_command`, `cam_snapto` and `cam_ideal*` in `CAM_Think`; `c_min/max*` only bound
+/// the `+campitch*`/`+camyaw*`/`+camin`/`+camout`/`+cammousemove`/`+camdistance` adjustments,
+/// which the port doesn't register; `cam_contain` is never read (TS's `CAM_Think` has no contain
+/// block).
+pub fn cam_init() {
+    CAM.0.set(Some(CamCvars {
+        command: Cvar::register(c"cam_command", c"0", 0),
+        snapto: Cvar::register(c"cam_snapto", c"0", 0),
+        idealyaw: Cvar::register(c"cam_idealyaw", c"0", 0),
+        idealpitch: Cvar::register(c"cam_idealpitch", c"0", 0),
+        idealdist: Cvar::register(c"cam_idealdist", c"100", 0),
+    }));
+    Cvar::register(c"cam_contain", c"0", 0);
+    Cvar::register(c"c_maxpitch", c"90.0", 0);
+    Cvar::register(c"c_minpitch", c"0.0", 0);
+    Cvar::register(c"c_maxyaw", c"135.0", 0);
+    Cvar::register(c"c_minyaw", c"-135.0", 0);
+    Cvar::register(c"c_maxdistance", c"200.0", 0);
+    Cvar::register(c"c_mindistance", c"30.0", 0);
+}
 
 fn with<R>(f: impl FnOnce(&mut View) -> R) -> R {
     let mut g = VIEW.0.borrow_mut();
@@ -339,6 +377,11 @@ pub fn init() {
     });
     Cvar::register(c"cl_bobcycle", c"0.8", 0);
     Cvar::register(c"cl_bobup", c"0.5", 0);
+    // TS's V_Init (`0x10069e90`) registers these but never reads them: the SDK's
+    // `V_CalcNormalRefdef` adds them to the view origin, TS's doesn't.
+    Cvar::register(c"scr_ofsx", c"0", 0);
+    Cvar::register(c"scr_ofsy", c"0", 0);
+    Cvar::register(c"scr_ofsz", c"0", 0);
     let e = goldsrc::client::engine();
     e.add_command(c"thirdperson", cmd_thirdperson);
     e.add_command(c"firstperson", cmd_firstperson);
@@ -391,11 +434,15 @@ extern "C" fn cmd_test_kick() {
     kick(if n(1) == 0.0 { 5.5 } else { n(1) }, n(2) as u8, false, false);
 }
 
+/// `thirdperson`. TS's (`0x1004fe00`) and `firstperson` (`CAM_ToFirstPerson` `0x10025320`)
+/// both end by setting `cam_command` back to 0.
 extern "C" fn cmd_thirdperson() {
     with(|w| w.third = true);
+    engine().cvar_set(c"cam_command", 0.0);
 }
 extern "C" fn cmd_firstperson() {
     with(|w| w.third = false);
+    engine().cvar_set(c"cam_command", 0.0);
 }
 
 /// `TSFade` (`0x1004c1e0`): stored with start = now; applied every frame in `calc_refdef`.
@@ -487,7 +534,69 @@ fn third_after_observer(third: bool, cl_thirdperson: f32) -> bool {
     }
 }
 
-pub fn cam_think() {}
+/// `CAM_Think` (`0x10024c80`), every frame from the engine: `cam_command` 1 runs `thirdperson`
+/// and 2 `firstperson` (both reset it to 0); then, in third person, `cam_ofs` follows the view
+/// angles plus `cam_idealpitch`/`cam_idealyaw` (snapped with `cam_snapto`, else eased by
+/// `MoveToward`) and takes `cam_idealdist`. [`calc_normal`] places the camera along `cam_ofs`'s
+/// pitch and yaw (`CL_CameraOffset`); TS ignores the distance there. TS's mouse and key camera
+/// controls in between are left out (see [`cam_init`]).
+pub fn cam_think() {
+    let Some(c) = CAM.0.get() else { return };
+    match c.command.value() as i32 {
+        1 => cmd_thirdperson(),
+        2 => cmd_firstperson(),
+        _ => {}
+    }
+    if !is_third_person() {
+        with(|w| w.cam_ofs = None);
+        return;
+    }
+    let view = engine().view_angles();
+    let ideal = [c.idealpitch.value(), c.idealyaw.value(), c.idealdist.value()];
+    let snapto = c.snapto.value() != 0.0;
+    with(|w| {
+        let cur = w.cam_ofs.unwrap_or([view[0], view[1], 30.0]);
+        w.cam_ofs = Some(cam_ofs_step(cur, view, ideal, snapto));
+    });
+}
+
+/// The `cam_ofs` update at the end of `CAM_Think` (`0x10025160..0x10025247`). `ideal` is
+/// (`cam_idealpitch`, `cam_idealyaw`, `cam_idealdist`). Unlike the SDK, TS doesn't ease the
+/// distance.
+fn cam_ofs_step(cur: Vec3, view: Vec3, ideal: Vec3, snapto: bool) -> Vec3 {
+    if snapto {
+        return [view[0] + ideal[0], view[1] + ideal[1], ideal[2]];
+    }
+    let yaw = if cur[1] - view[1] != ideal[1] { move_toward(cur[1], view[1] + ideal[1]) } else { cur[1] };
+    let pitch = if cur[0] - view[0] != ideal[0] { move_toward(cur[0], view[0] + ideal[0]) } else { cur[0] };
+    [pitch, yaw, ideal[2]]
+}
+
+/// `MoveToward` (`0x10024ba0`, SDK `in_camera.cpp`): a quarter of the way to `goal` (the short
+/// way round), snapping within 1 degree, then wrapped into [0, 360). The SDK's `maxspeed`
+/// argument (2.5) is unused there too.
+fn move_toward(mut cur: f32, goal: f32) -> f32 {
+    if cur != goal {
+        // `abs((int)(cur - goal)) > 180.0`: the difference is truncated first.
+        if ((cur - goal) as i32).unsigned_abs() as f32 > 180.0 {
+            cur += if cur < goal { 360.0 } else { -360.0 };
+        }
+        cur = if cur < goal {
+            if cur < goal - 1.0 { cur + (goal - cur) * 0.25 } else { goal }
+        } else if cur > goal + 1.0 {
+            cur - (cur - goal) * 0.25
+        } else {
+            goal
+        };
+    }
+    if cur < 0.0 {
+        cur + 360.0
+    } else if cur >= 360.0 {
+        cur - 360.0
+    } else {
+        cur
+    }
+}
 
 pub fn is_third_person() -> bool {
     with(|w| w.third || w.forced_dead)
@@ -904,7 +1013,10 @@ fn calc_normal(p: &mut ref_params_t) {
         let state = CamState { ducked: vh < 28.0 && vh != 0.0, alive: !dead, stunt: iuser4 & 0x130c30 != 0, ft };
         let (back, right_ofs, up_ofs) = cam_base(camtype, cb, cr, cu);
         let (back, up_ofs) = with(|w| cam_smooth(&mut w.cam_up_ofs, &mut w.cam_back_ofs, back, up_ofs, state));
-        let cam_angles = [p.cl_viewangles[0], p.cl_viewangles[1], 0.0];
+        let view_angles = [p.cl_viewangles[0], p.cl_viewangles[1], 0.0];
+        // TS (`0x10067f53`) orbits the camera along `CL_CameraOffset`'s pitch and yaw, roll 0;
+        // `cam_think` keeps that following the view.
+        let cam_angles = with(|w| w.cam_ofs).map_or(view_angles, |o| [o[0], o[1], 0.0]);
         let (cf, cr2, cu2) = v::angle_vectors(cam_angles);
         if back == 0.0 {
             let org = body_cam(v::add(ent_org, p.viewheight), state.ducked, cam_angles[0], cf, cu2);
@@ -921,7 +1033,7 @@ fn calc_normal(p: &mut ref_params_t) {
             let tr = r::player_trace(start, want, 2, (PM_STUDIO_IGNORE | PM_WORLD_ONLY) as i32, -1);
             p.vieworg = if tr.fraction != 1.0 { v::add(v::ma(tr.endpos, 4.0, tr.plane.normal), [0.0, 0.0, 1.0]) } else { want };
         }
-        p.viewangles = cam_angles;
+        p.viewangles = view_angles;
         engine().with_local_player_mut(|e| {
             // The model's z eases at rate 16 (TS `0x10191d94`) so stair steps and landings don't
             // jerk the body in front of the camera.
@@ -932,7 +1044,7 @@ fn calc_normal(p: &mut ref_params_t) {
             });
             e.origin[2] = z;
             eye = v::add(e.origin, p.viewheight);
-            let pitch = -v::norm_angle(cam_angles[0]) / 3.0;
+            let pitch = -v::norm_angle(view_angles[0]) / 3.0;
             e.angles[0] = pitch;
             e.curstate.angles[0] = pitch;
             e.prevstate.angles[0] = pitch;
@@ -1095,6 +1207,30 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn move_toward_matches_sdk() {
+        assert_eq!(move_toward(10.0, 10.0), 10.0);
+        assert_eq!(move_toward(0.0, 40.0), 10.0, "a quarter of the way");
+        assert_eq!(move_toward(39.5, 40.0), 40.0, "snaps within 1 degree");
+        assert_eq!(move_toward(80.0, 40.0), 70.0);
+        // The short way round, then wrapped into [0, 360).
+        assert_eq!(move_toward(350.0, 10.0), 355.0);
+        assert_eq!(move_toward(10.0, 350.0), 5.0);
+        assert_eq!(move_toward(270.0, -90.0), 270.0, "the same angle settles");
+        assert_eq!(move_toward(-30.0, -30.0), 330.0);
+    }
+
+    #[test]
+    fn cam_ofs_follows_view() {
+        let view = [20.0, 100.0, 0.0];
+        // Snapped: view + ideal, distance from cam_idealdist.
+        assert_eq!(cam_ofs_step([0.0, 0.0, 30.0], view, [5.0, 90.0, 100.0], true), [25.0, 190.0, 100.0]);
+        // Eased: each axis a quarter of the way; the distance isn't eased.
+        assert_eq!(cam_ofs_step([0.0, 60.0, 30.0], view, [0.0, 0.0, 100.0], false), [5.0, 70.0, 100.0]);
+        // Already at view + ideal: unchanged (not even wrapped).
+        assert_eq!(cam_ofs_step([-10.0, 100.0, 30.0], [-10.0, 100.0, 0.0], [0.0; 3], false), [-10.0, 100.0, 0.0]);
+    }
 
     #[test]
     fn time_scale_easing() {

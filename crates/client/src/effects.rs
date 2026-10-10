@@ -30,6 +30,8 @@ struct Fx {
     map: MapFx,
     level: String,
     fog: Option<emitters::Fog>,
+    /// [`fog_begin`] turned fog on this frame, so [`fog_end`] turns it off.
+    fog_on: bool,
     bullets: Vec<ClientBullet>,
     visible: [bool; 33],
     /// Sequence number of the newest tracked shell (see [`track_shell`]).
@@ -52,6 +54,10 @@ struct Cvars {
     motionblur: Cvar,
     paintball: Cvar,
     gl_fog: Cvar,
+    /// `gl_fog_start`, `gl_fog_end`: the `gl_fog 2` user fog's linear range.
+    fog_range: [Cvar; 2],
+    /// `gl_fog_red`, `gl_fog_green`, `gl_fog_blue`: its colour, 0..1.
+    fog_color: [Cvar; 3],
 }
 
 /// `cl_fx` quality (`FX_ApplyCvar` `0x10057d50`, `FX_AdaptQuality` `0x10057a70`).
@@ -81,6 +87,7 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         map: MapFx::default(),
         level: String::new(),
         fog: None,
+        fog_on: false,
         bullets: Vec::new(),
         visible: [false; 33],
         shell_seq: 0,
@@ -166,8 +173,8 @@ pub fn impact(pos: Vec3, normal: Vec3, tex: u8, bullet_type: i32) {
 
 /// The effects cvars: `cl_fx`, `cl_gore`, `cl_laser*`, `cl_shadow` and `cl_motionblur` are
 /// `InitInput`'s, so this shares those handles rather than registering the names again (see
-/// [`Cvar`]); `r_paintball` and `gl_fog` are registered here, as `CHud::Init` (10020170) does,
-/// since no other module reads them. Runs after `input::init`.
+/// [`Cvar`]); `r_paintball`, `gl_fog` and `gl_fog_start/end/red/green/blue` are registered here,
+/// as `CHud::Init` (10020170) does, since no other module reads them. Runs after `input::init`.
 pub fn init() {
     let i = crate::input::cvars();
     *CVARS.0.borrow_mut() = Some(Cvars {
@@ -179,6 +186,12 @@ pub fn init() {
         motionblur: i.cl_motionblur,
         paintball: Cvar::register(c"r_paintball", c"0", r::FCVAR_ARCHIVE),
         gl_fog: Cvar::register(c"gl_fog", c"0", r::FCVAR_ARCHIVE),
+        fog_range: [Cvar::register(c"gl_fog_start", c"0", 0), Cvar::register(c"gl_fog_end", c"2048", 0)],
+        fog_color: [
+            Cvar::register(c"gl_fog_red", c".5", 0),
+            Cvar::register(c"gl_fog_green", c".5", 0),
+            Cvar::register(c"gl_fog_blue", c".5", 0),
+        ],
     });
     let e = goldsrc::client::engine();
     e.add_command(c"ts_test_fx", cmd_test_fx);
@@ -609,20 +622,37 @@ fn cam_hardware() -> bool {
     view::hardware()
 }
 
-/// Fog from the map's `ts_fog` (`V_SetFog` `0x10056c20`), through TriAPI instead of raw OpenGL.
-/// Only with `gl_fog` set, as in TS (default 0).
+/// `V_SetFog` (`0x10056c20`), through TriAPI instead of raw OpenGL (linear fog either way).
 pub fn fog_begin() {
-    let fog = with(|fx| fx.fog);
-    let on = cvar(|c| c.gl_fog) != 0.0;
-    if let (Some(f), true) = (fog, on) {
-        // ts_fog colours are 0..1 (TS feeds glFogfv); TriAPI Fog takes 0..255.
-        let c = f.color.map(|x| if x <= 1.0 { x * 255.0 } else { x });
-        goldsrc::ext::tri::fog(c, f.near, f.far, true);
+    let user = CVARS
+        .0
+        .borrow()
+        .as_ref()
+        .map_or(([0.0; 3], 0.0, 0.0), |c| (c.fog_color.map(|v| v.value()), c.fog_range[0].value(), c.fog_range[1].value()));
+    let single = engine().max_clients() == 1;
+    if let Some((color, start, end)) = fog_params(single, cvar(|c| c.gl_fog), with(|fx| fx.fog), user) {
+        goldsrc::ext::tri::fog(color, start, end, true);
+        with(|fx| fx.fog_on = true);
     }
 }
 
+/// `V_SetFog`'s choice: in single player with `gl_fog 2` the user's `gl_fog_red/green/blue`
+/// (`user.0`) and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` is on.
+/// Returns (colour 0..255 for TriAPI, start, end). Both colour sources are 0..1, as TS feeds
+/// them to `glFogfv`; a `ts_fog` colour above 1 is taken as already 0..255.
+fn fog_params(single: bool, gl_fog: f32, map: Option<emitters::Fog>, user: (Vec3, f32, f32)) -> Option<(Vec3, f32, f32)> {
+    if single && gl_fog == 2.0 {
+        Some((user.0.map(|x| x * 255.0), user.1, user.2))
+    } else if gl_fog != 0.0 {
+        map.map(|f| (f.color.map(|x| if x <= 1.0 { x * 255.0 } else { x }), f.near, f.far))
+    } else {
+        None
+    }
+}
+
+/// TS disables `GL_FOG` at the end of the transparent pass (`0x10056e5e`).
 fn fog_end() {
-    if with(|fx| fx.fog.is_some()) && cvar(|c| c.gl_fog) != 0.0 {
+    if with(|fx| std::mem::take(&mut fx.fog_on)) {
         goldsrc::ext::tri::fog([0.0; 3], 0.0, 0.0, false);
     }
 }
@@ -634,5 +664,22 @@ pub fn studio_event(ev: &mstudioevent_s, ent: &cl_entity_t) {
         5002 => r::spark_effect(ent.attachment[0], opts.trim().parse().unwrap_or(0), -100, 100),
         5004 => engine().ev_play_sound(ent.index, ent.attachment[0], CHAN_BODY as i32, &opts, 1.0, 0.8, 0, crate::events::slow_pitch()),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fog_sources() {
+        let map = Some(emitters::Fog { near: 100.0, far: 900.0, color: [0.2, 0.4, 1.0] });
+        let user = ([0.5, 0.5, 0.5], 0.0, 2048.0);
+        assert_eq!(fog_params(true, 0.0, map, user), None, "gl_fog 0: no fog");
+        assert_eq!(fog_params(true, 1.0, map, user), Some(([51.0, 102.0, 255.0], 100.0, 900.0)));
+        assert_eq!(fog_params(true, 2.0, map, user), Some(([127.5; 3], 0.0, 2048.0)), "gl_fog 2 in single player: the user's");
+        assert_eq!(fog_params(true, 2.0, None, user), Some(([127.5; 3], 0.0, 2048.0)), "...even without ts_fog");
+        assert_eq!(fog_params(false, 2.0, map, user), Some(([51.0, 102.0, 255.0], 100.0, 900.0)), "multiplayer: the map's");
+        assert_eq!(fog_params(false, 2.0, None, user), None);
     }
 }

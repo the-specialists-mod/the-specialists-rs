@@ -116,10 +116,22 @@ Cvars, names/defaults/flags as TS registers them (§2.1):
 * HUD: `hud_drawhistory_time hud_fastswitch hud_deathnotice_time
   hud_classautokill hud_takesshots zoom_sensitivity_ratio default_fov hud_capturemouse
   hud_saytext_time hud_centerid cl_drawnames`.
-* Not registered here (other packages): `cl_bob…`/`cl_slowfade`/`v_center*` (`view::init`, V_Init),
-  `r_paintball` and `gl_fog` (`effects::init`; TS registers them in CHud::Init, both archived).
-  Not registered at all: `cam_command cam_snapto cam_ideal* cam_contain c_*` (CAM_Init),
-  `gl_fog_start/end/red/green/blue`, `scr_ofs*`, `bitmapfonts`.
+* Not registered here (other packages):
+  * V_Init (`view::init`): `cl_bob…`, `cl_slowfade`, `v_center*`, and `scr_ofsx/y/z` (0, never
+    read by TS; the SDK adds them to the view origin).
+  * CAM_Init (`view::cam_init`, called from `input::init` as `InitInput` calls it):
+    `cam_command cam_snapto cam_idealyaw cam_idealpitch` 0, `cam_idealdist` 100, `cam_contain` 0,
+    `c_maxpitch/c_minpitch` 90.0/0.0, `c_maxyaw/c_minyaw` 135.0/-135.0,
+    `c_maxdistance/c_mindistance` 200.0/30.0, all flags 0. `CAM_Think` reads `cam_command`,
+    `cam_snapto` and `cam_ideal*` (client-rendering.md); `c_*` only bound the camera key/mouse
+    commands, which aren't ported; `cam_contain` is never read.
+  * CHud::Init cvars that `effects` reads (`effects::init`): `r_paintball` and `gl_fog` (0,
+    archived), `gl_fog_start` 0, `gl_fog_end` 2048, `gl_fog_red/green/blue` .5 (flags 0; the
+    `gl_fog 2` user fog).
+  * Scheme_Init (`menus::init`, right after the HUD): `bitmapfonts` 1, flags 0. TS's VGUI scheme
+    manager reads it; the port's menus don't use VGUI, so it's only registered.
+* Engine-owned names: FWGS's `ref_gl` registers `gl_fog` itself (client-rendering.md,
+  Deviations); none of the other names above are engine cvars in FWGS.
 
 Each cvar is registered once, with `goldsrc::client::Cvar::register` (a plain
 `pfnRegisterVariable`, as TS does), where TS registers it. Other modules share that handle:
@@ -127,7 +139,8 @@ Each cvar is registered once, with `goldsrc::client::Cvar::register` (a plain
 `hud::cvars()`, so `init` order matters (input, hud, then view and effects). A second registration
 is not harmless: FWGS's `Cvar_Get` resets an existing cvar to the new default and ORs in the new
 flags, and GoldSrc's `Cvar_RegisterVariable` (ReHLDS) refuses it ("already defined"). A unit test
-(`input::tests::each_cvar_is_registered_once`) scans the sources for repeats. Cvars registered by
+(`input::tests::each_cvar_is_registered_once`) scans the sources for repeats and for the
+CAM_Init, fog, `scr_ofs*` and `bitmapfonts` names. Cvars registered by
 the engine or another module that this code only reads (`host_ver`, `sv_cheats`,
 `r_drawentities`) use `Cvar::find` (`pfnGetCvarPointer`).
 
