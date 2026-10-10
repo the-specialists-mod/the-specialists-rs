@@ -120,7 +120,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | `ts_wind` | Full: `TSPSys` type 3. |
 | `ts_fog`, `ts_emitter`, `ts_particle` | Validated (emitter rates, 512 particles, `soundonemit` precached) and removed: the client reads the BSP lump. |
 | `ts_trigger`, `ts_dmhill`, `ts_timer`, `ts_customtarget`, `ts_playeramount`, `ts_slowmotion`, `ts_slowmotionpoint` | Full per §5 (TS quirks kept: `ts_trigger` team defaults to index 0 and always prints its message; `ts_timer` flag 2 ignored). |
-| `ts_briefcase`, `ts_flag`, `ts_scoregiver`, `ts_wingiver` | CTB: case at home 1 s after spawn, take (20 slots), drop on death/observer, 20 s return, owner return +5, capture +10 and team score, TSFlag/TSHVoice/TeamScore. Score/win givers: team score, "%s Score!/Win!", TSHVoice, TeamScore (scoregiver flag 1 restarts the round). |
+| `ts_briefcase`, `ts_flag`, `ts_scoregiver`, `ts_wingiver` | CTB: case at home 1 s after spawn, take by touch or +use (20 slots; not while hidden), drop on death/observer, 20 s return, owner return +5 (only with 2+ players, "returned the briefcase! 5 #TS_Frg"; new case at home 1 s later), capture +10 and team score, TSFlag/TSHVoice/TeamScore. Score/win givers: team score, "%s Score!/Win!", TSHVoice, TeamScore (scoregiver flag 1 restarts the round). |
 | `deadcorpse` | Created by the death think (player model, `kRenderFxDeadPlayer`, index in `renderamt` and `rendercolor.x`), removed after 10 s. |
 | `info_player_team1..4`, `info_player_teamspawn` | Inert points (team spawns are found by classname). TS doesn't export `info_player_teamspawn`; kept inert. |
 | `ts_objective_manager`, `ts_objective_ptr`, `ts_bomb`, `ts_hack`, `ts_teamescape`, `ts_sellzone` | Stubs: hidden, non-solid (dead in 3.0). |
@@ -179,9 +179,11 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * `+use` on TS items goes through the one `PlayerUse` (`player::player_use`, see
   stock-entities.md §3.7): ground weapons and ammo, dropped guns, knives, grenades, the
   CTB case and the hidden objectives all compete as `FCAP_CONTINUOUS_USE` users, as in TS, so a
-  taken (hidden) ground weapon or a ground ammo box (empty `Use`) can still win the search. The
-  CTB case (`ts_flag`) has no `Use` in the port: TS's `CTSFlag::Use` (0x9e5dc) takes the case
-  (`PlayerTakeFlag`), here only touching it does.
+  taken (hidden) ground weapon or a ground ammo box (empty `Use`) can still win the search.
+* The CTB case: TS destroys the `ts_flag` when it's taken and keeps its data on the player; the
+  port keeps the entity, hidden and following the carrier, so `player_use` leaves a carried case
+  out of the search. Touch (`WaitTouch` 0x9e604) and +use (`Use` 0x9e5dc) both run
+  `Flag::player_take_flag` (`PlayerTakeFlag` 0x9e330).
 * Bots (port-only) look down at an item before pressing +use, since `PlayerUse`'s 0.7 view cone
   doesn't reach a weapon on the floor at eye level.
 * `wextraclip` gives `extra × clip` rounds (TS passes the raw number to `AddAmmo`). Like TS, it

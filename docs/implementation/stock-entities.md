@@ -290,7 +290,7 @@ out, no weapon, or +cancel during a reload). So no +use right after firing or wh
 
 * One search for every package: stock classes (`stock::object_caps`) and the TS entities
   (`entities::ts::object_caps`: ground weapons and ammo, `WorldGun`, `knife`, `grenade`,
-  `ts_flag`, the hidden objectives; all continuous users). Within 64 units of the origin, caps
+  `ts_flag` (not while carried), the hidden objectives; all continuous users). Within 64 units of the origin, caps
   & 0x38, `UTIL_ClampVectorToBox` (0xee5d8) of the eye → `VecBModelOrigin` vector against half
   the size, highest dot with the view above 0.7.
 * **TS addition:** if the winner's `CanUsedTroughWalls` (vtable slot 3) is false (ground weapons

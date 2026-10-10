@@ -165,12 +165,17 @@ pub fn can_use_through_walls(class: &CStr) -> bool {
         || ground::hl_ammo_weapons(class).is_some())
 }
 
-/// The `Use` of a ground weapon (`CTSGroundWeapon::Use` 0xa230c → `GetWeapon`) when a player's
-/// +use picks it; the player is being dispatched, so it is passed directly. False if `ent` isn't
-/// a ground weapon.
+/// The `Use` of a ground weapon (`CTSGroundWeapon::Use` 0xa230c → `GetWeapon`) or the CTB case
+/// (`CTSFlag::Use` 0x9e5dc → `PlayerTakeFlag`) when a player's +use picks it; the player is being
+/// dispatched, so it is passed directly. False if `ent` is neither.
 pub fn use_by_player(ent: &mut dyn std::any::Any, icx: &mut Cx, p: &mut Player, cx: &mut Cx) -> bool {
-    let Some(g) = ent.downcast_mut::<ground::GroundWeapon>() else { return false };
-    g.player_use(icx, p, cx);
+    if let Some(g) = ent.downcast_mut::<ground::GroundWeapon>() {
+        g.player_use(icx, p, cx);
+    } else if let Some(f) = ent.downcast_mut::<ctb::Flag>() {
+        f.use_by_player(icx, p, cx);
+    } else {
+        return false;
+    }
     true
 }
 
