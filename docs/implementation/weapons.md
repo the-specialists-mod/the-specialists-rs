@@ -253,10 +253,10 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 * Breakable explosions (`entities::stock::explode::ts_explosion`, the same `TSExplosion` in TS)
   don't create the spectacular slow-motion point or knock `WorldGun`s around; only the
   weapons' `projectiles::explode` does.
-* `DropArmor` armour packs (`CTSAmmoPack` with `armorvalue`) aren't ported, so ammo packs never
-  carry armour.
+* `DropArmor` 0x93a3c armour packs (`CTSAmmoPack` with `armorvalue`) aren't ported. They're dead
+  in TS: nothing calls `DropArmor`, so ammo packs never carry armour there either.
 * Shrapnel (`CTSShrapnel`) and the flag (`CTSFlag`), the other `CTSPhysicObject`s, aren't
-  ported.
+  ported. Nothing in the decomp calls `CTSShrapnel::Create` 0x7bf9c directly.
 
 ## 7. Tests
 
