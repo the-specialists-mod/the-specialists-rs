@@ -163,6 +163,8 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
     p.ts.next_say = now + 0.5;
 
     if text.starts_with("timeleft") {
+        // Not broadcast: in TS both exits of this branch jump to 0xad4dc, which clears the
+        // broadcast flag, the same as a handled vote.
         let left = cvars::f(c"mp_timeleft").round() as i32;
         msg::text_one(e, hud_dest::TALK, &format!("Time left: {}:{:02}\n", left / 60, left % 60));
     } else if text.starts_with("vote") && votes::player_vote(e, idx, &text[4..]) {
