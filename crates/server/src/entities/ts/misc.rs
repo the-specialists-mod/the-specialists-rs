@@ -141,7 +141,6 @@ impl Entity for Emitter {
             b"epshigh" => self.eps[1] = v,
             b"ppelow" => self.ppe[0] = v,
             b"ppehigh" => self.ppe[1] = v,
-            b"origin" | b"classname" | b"targetname" | b"angles" => return false,
             _ => {}
         }
         true
@@ -170,7 +169,6 @@ impl Entity for Particle {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"soundonemit" => self.sound = Some(value.to_string_lossy().into_owned()),
-            b"origin" | b"classname" | b"targetname" | b"angles" => return false,
             _ => {}
         }
         true
@@ -255,9 +253,9 @@ impl Entity for TeamSpawn {}
 pub struct Stub;
 
 impl Entity for Stub {
-    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, _value: &CStr) -> bool {
-        // Accept every class-specific key so the generic parser doesn't complain.
-        !matches!(key.to_bytes(), b"classname" | b"model" | b"origin" | b"angles" | b"targetname" | b"target" | b"message" | b"spawnflags")
+    fn key_value(&mut self, _cx: &mut Cx, _key: &CStr, _value: &CStr) -> bool {
+        // Entvars keys were parsed before this; accept every class-specific key.
+        true
     }
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();

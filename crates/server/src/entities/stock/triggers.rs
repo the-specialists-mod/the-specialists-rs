@@ -4,7 +4,7 @@
 //! `multi_manager`, `func_ladder`, `func_friction`.
 
 use super::base::*;
-use crate::entities::{entvars_key_value, fire_targets, remove};
+use crate::entities::{fire_targets, remove};
 use crate::messages::{self, Msg};
 use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::Global;
@@ -683,12 +683,8 @@ impl MultiManager {
 }
 
 impl Entity for MultiManager {
-    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        // The SDK parses entvars before the class keyvalue; here the class runs first, so let the
-        // generic fields through or they'd become targets.
-        if entvars_key_value(cx.pev(), key, value) {
-            return true;
-        }
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        // Every key that isn't an entvars field (those never get here) or `wait` is a target.
         if key == c"wait" {
             self.wait = kv_f(value);
             return true;

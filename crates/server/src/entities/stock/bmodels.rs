@@ -41,18 +41,13 @@ impl Entity for FuncWall {
     }
 }
 
-/// `func_illusionary`: non-solid; `skin` can give it contents (e.g. water).
+/// `func_illusionary`: non-solid; `skin` can give it contents (e.g. water). `CFuncIllusionary::KeyValue`
+/// (0xa54b0) also parses `skin`, but `DispatchKeyValue` sets the entvars field first, so that branch
+/// never runs.
 #[derive(Default)]
 pub struct FuncIllusionary;
 
 impl Entity for FuncIllusionary {
-    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        if key == c"skin" {
-            cx.pev().skin = kv_f(value) as i32;
-            return true;
-        }
-        false
-    }
     fn spawn(&mut self, cx: &mut Cx) {
         let v = cx.pev();
         v.angles = [0.0; 3];

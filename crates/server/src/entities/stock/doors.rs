@@ -455,9 +455,10 @@ impl Door {
 }
 
 impl Entity for Door {
+    /// `CBaseDoor::KeyValue` (0xb51a0). Its `skin` branch is unreachable: `DispatchKeyValue` sets
+    /// the entvars field first.
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
-            b"skin" => cx.pev().skin = kv_f(value) as i32,
             b"movesnd" => self.move_snd = kv_f(value) as i32,
             b"stopsnd" => self.stop_snd = kv_f(value) as i32,
             b"healthvalue" => self.health_value = kv_f(value) as i32,

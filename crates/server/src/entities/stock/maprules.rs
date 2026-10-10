@@ -120,15 +120,12 @@ impl GamePlayerEquip {
 }
 
 impl Entity for GamePlayerEquip {
-    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key == c"master" {
             self.master = alloc(value);
             return true;
         }
-        // The SDK parses entvars keys before the class sees them; every other key is an item.
-        if crate::entities::entvars_key_value(cx.pev(), key, value) {
-            return true;
-        }
+        // Entvars keys never get here, so every other key is an item.
         if self.items.len() >= MAX_EQUIP {
             return false;
         }
