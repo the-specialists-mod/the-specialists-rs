@@ -74,7 +74,7 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 | `CBasePlayer::BlockPlayer` | 0x95b58 | `stunt::block_player` |
 | `UpdatePlayerState` | 0x92a08 | in `stunt::pre_think` |
 | `GetDirection` | 0x6b008 | `stunt::get_direction` |
-| `EMIT_SOUND_DYN` (TS: pitch × time scale) | 0xe0a8c | `stunt::emit_sound_dyn` |
+| `EMIT_SOUND_DYN` (TS: pitch × time scale) | 0xe0a8c | `entities::stock::explode::emit_sound_slow` |
 | `UTIL_ScreenShake` (TS: ÷ receiver time scale) | 0xec978 | `stunt::screen_shake` |
 
 ### Animation (`stunt/anim.rs`)
@@ -224,6 +224,6 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
   down to the hull centre at rate 15; the third-person camera pulls back to -92 for the stunt
   bits `0x130c30`. `NO_VIEW` itself is read only by `V_GetPlayerEye` (`0x10068e20`, in-eye
   spectating: the eye stays at the target's origin instead of +28/+16).
-* `stunt::emit_sound_dyn` and `stunt::screen_shake` are the TS slow-motion-aware versions of
-  `EMIT_SOUND_DYN` and `UTIL_ScreenShake`; other packages can reuse them.
+* `stunt::screen_shake` is the TS slow-motion-aware `UTIL_ScreenShake`; the stunt sounds use
+  the shared `explode::emit_sound_slow` (TS `EMIT_SOUND_DYN`).
 * `stunt::precache` precaches the stunt sounds and every PM footstep/wade/ladder sound.

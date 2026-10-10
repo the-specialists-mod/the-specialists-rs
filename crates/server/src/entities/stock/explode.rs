@@ -23,9 +23,17 @@ pub fn emit_sound_slow(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn
         super::base::unknown_sentence(sample);
         return;
     };
-    let ts = e.v().fuser1;
-    let pitch = if ts != 0.0 { ((s * ts + 1.0 - s) * pitch as f32) as i32 } else { pitch };
+    let pitch = slow_pitch(pitch, e.v().fuser1, s);
     engine().emit_sound(e, chan as i32, &sample, vol, attn, flags, pitch);
+}
+
+/// `EMIT_SOUND_DYN`'s pitch (0xe0aa7): the factor `(1 - s) + s * fuser1` (`s` alone when
+/// `fuser1` is 0) is stored as a float, then multiplied by the pitch on the x87 stack and
+/// truncated (0xe0b1e). `f64` holds both steps exactly enough to match.
+pub fn slow_pitch(pitch: i32, time_scale: f32, s: f32) -> i32 {
+    let k = if time_scale != 0.0 { s as f64 * time_scale as f64 } else { s as f64 };
+    let factor = ((1.0 - s as f64) + k) as f32;
+    (factor as f64 * pitch as f64) as i32
 }
 
 /// `GiveSlowMul` / `FixedSlowAmt`: the player's time scale, at least 0.01.
@@ -219,5 +227,19 @@ pub fn radius_damage(src: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t,
                 deal(e, inflictor, attacker, adjusted, bits, [0.0; 3], [0.0; 3]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slow_pitch;
+
+    #[test]
+    fn slow_pitch_truncates() {
+        assert_eq!(slow_pitch(100, 0.0, 0.5), 100, "no time scale");
+        assert_eq!(slow_pitch(100, 1.0, 0.5), 100);
+        assert_eq!(slow_pitch(100, 0.5, 0.5), 75);
+        assert_eq!(slow_pitch(101, 0.5, 0.5), 75, "75.75 truncates");
+        assert_eq!(slow_pitch(126, 0.25, 0.5), 78, "78.75 truncates");
     }
 }

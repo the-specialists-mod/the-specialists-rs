@@ -41,18 +41,75 @@ pub fn hitgroup_scale(group: i32, dmg_bits: i32) -> f32 {
 /// Kevlar: on chest/stomach/arms, for damage types it covers, `dmg -= dmg * min(absorb, 1)`.
 /// Armour is never depleted.
 pub fn kevlar_scale(armor: f32, group: i32, dmg_bits: i32) -> f32 {
+    1.0 - kevlar_absorb(armor, group, dmg_bits)
+}
+
+/// The fraction kevlar absorbs, `min(absorb, 1)`, or 0 where it doesn't apply.
+fn kevlar_absorb(armor: f32, group: i32, dmg_bits: i32) -> f32 {
     if armor != 0.0 && dmg_bits & bits::ARMOR_EXEMPT == 0 && (hitgroup::CHEST..=hitgroup::RIGHTARM).contains(&group) {
-        1.0 - tables().combat.armor_absorb.min(1.0)
+        tables().combat.armor_absorb.min(1.0)
     } else {
-        1.0
+        0.0
     }
 }
 
 /// `PTakeDam` amount byte: half the damage (×8 for shotgun pellets), capped at 127, +128 on kevlar.
+/// TraceAttack truncates it (`fistp` under a round-toward-zero control word at 0x904b7), as does
+/// `as u8`.
 pub fn ptakedam_amount(dmg: f32, dmg_bits: i32, kevlar: bool) -> u8 {
     let d = if dmg_bits & DMG_SHOTGUN != 0 { dmg * 8.0 } else { dmg };
     let a = (d * 0.5).min(127.0);
-    (if kevlar { a + 128.0 } else { a }).round().clamp(0.0, 255.0) as u8
+    (if kevlar { a + 128.0 } else { a }) as u8
+}
+
+/// Damage that reaches `CBaseMonster::TakeDamage` after kevlar: `CBasePlayer::TakeDamage`
+/// computes `dmg - min(absorb, 1) * dmg` on the x87 stack (0x8fc38), stores it as a float, then
+/// truncates it to an int (0x8fc5f) and passes it back as a float. The product of two floats is
+/// exact in `f64`, so only the subtraction can round differently from the 80-bit original.
+pub fn after_kevlar(amount: f32, armor: f32, group: i32, dmg_bits: i32) -> f32 {
+    let absorbed = kevlar_absorb(armor, group, dmg_bits);
+    let d = amount as f64;
+    ((d - absorbed as f64 * d) as f32).trunc()
+}
+
+/// `CBasePlayer::TakeHealth` (0xd8760) on the entvars: refused with `takedamage` off or health
+/// already above max; otherwise added with no cap. Returns `None` when refused, else whether the
+/// player is now over max (TS then sets the 1/s decay timer, `+0x73c`, to time + 1).
+fn add_health(v: &mut entvars_t, amount: f32) -> Option<bool> {
+    if v.takedamage == 0.0 || v.health > v.max_health {
+        return None;
+    }
+    v.health += amount;
+    Some(v.health > v.max_health)
+}
+
+/// `CBasePlayer::TakeHealth` (0xd8760) for code that holds the player.
+pub fn take_health(p: &mut Player, cx: &mut Cx, amount: f32) -> bool {
+    let now = cx.time();
+    let Some(over) = add_health(cx.pev(), amount) else {
+        return false;
+    };
+    if over {
+        p.ts.health_timer = now + 1.0;
+    }
+    true
+}
+
+/// `CBasePlayer::TakeHealth` (0xd8760) for entities healing a player edict (healthkits, chargers,
+/// doors, negative `trigger_hurt`). The health changes at once; when the player is taken out
+/// further up the stack (its own `+use` opening a healing door), the decay timer is set as soon
+/// as it is back.
+pub fn take_health_edict(e: *mut edict_t, amount: f32) -> bool {
+    let timer = engine().time() + 1.0;
+    let Some(over) = add_health(e.v(), amount) else {
+        return false;
+    };
+    if over {
+        crate::world::defer(e, move || {
+            super::with_player(e, |p, _| p.ts.health_timer = timer);
+        });
+    }
+    true
 }
 
 /// `CBasePlayer::TakeDamage` (0x8fa94): a hit arms the bullet dance when it does at most 80
@@ -163,9 +220,9 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     if attacker_is_teammate && !friendly_fire {
         return false; // FPlayerCanTakeDamage
     }
-    p.ts.last_damage = amount.round() as i32;
-    amount *= kevlar_scale(cx.pev().armorvalue, p.ts.last_hitgroup, dmg.bits);
-    let amount = amount.round();
+    // Truncated, like the kevlar-scaled damage below (0x8fbd0).
+    p.ts.last_damage = amount as i32;
+    let amount = after_kevlar(amount, cx.pev().armorvalue, p.ts.last_hitgroup, dmg.bits);
     // TS tells the HLTV director after CBaseMonster::TakeDamage, even when that refused the
     // damage (`takedamage` off); a kill's DeathNotice event therefore goes out first.
     let tell_director = |e: *mut edict_t, inflictor: *mut edict_t| {
@@ -247,5 +304,31 @@ mod tests {
         assert_eq!(ptakedam_amount(30.0, bits::BULLET, true), 143);
         assert_eq!(ptakedam_amount(500.0, bits::BULLET, false), 127);
         assert_eq!(ptakedam_amount(10.0, bits::BULLET | DMG_SHOTGUN, false), 40);
+        assert_eq!(ptakedam_amount(31.0, bits::BULLET, false), 15, "15.5 truncates");
+        assert_eq!(ptakedam_amount(23.6, bits::BULLET, true), 139, "139.8 truncates");
+    }
+
+    #[test]
+    fn take_health_rules() {
+        let mut v = entvars_t { takedamage: 2.0, health: 90.0, max_health: 100.0, ..Default::default() };
+        assert_eq!(add_health(&mut v, 50.0), Some(true), "no cap, overheal starts the decay");
+        assert_eq!(v.health, 140.0);
+        assert_eq!(add_health(&mut v, 10.0), None, "already above max");
+        v.health = 100.0;
+        assert_eq!(add_health(&mut v, 0.0), Some(false), "at max is still allowed");
+        v.health = 50.0;
+        assert_eq!(add_health(&mut v, 10.0), Some(false));
+        assert_eq!(v.health, 60.0);
+        v.takedamage = 0.0;
+        assert_eq!(add_health(&mut v, 10.0), None, "takedamage off");
+        assert_eq!(v.health, 60.0);
+    }
+
+    #[test]
+    fn kevlar_damage_truncates() {
+        // 30 × (1 − 0.2125) = 23.625: TS does 23.
+        assert_eq!(after_kevlar(30.0, 100.0, hitgroup::CHEST, bits::BULLET), 23.0);
+        assert_eq!(after_kevlar(30.9, 0.0, hitgroup::CHEST, bits::BULLET), 30.0, "no armour still truncates");
+        assert_eq!(after_kevlar(0.5, 0.0, hitgroup::HEAD, bits::BULLET), 0.0);
     }
 }

@@ -45,8 +45,8 @@ pub struct TimeBasedDamage {
     /// `m_idrowndmg` (+0x9a8) and `m_idrownrestored` (+0x9ac).
     pub drowned: i32,
     pub restored: i32,
-    /// `m_rgItems[ITEM_ANTIDOTE]` (+0x834). Only `item_antidote` adds to it, and that entity
-    /// isn't ported, so this stays 0.
+    /// `m_rgItems[ITEM_ANTIDOTE]` (+0x834). Only `item_antidote` adds to it; like TS, nothing
+    /// resets it on death or respawn.
     pub antidotes: i32,
 }
 
@@ -253,23 +253,8 @@ pub fn check_time_based_damage(p: &mut Player, cx: &mut Cx) {
         super::damage::take_damage(p, cx, &DamageInfo::new(e, e, POISON_DAMAGE, bits::GENERIC));
     }
     if tick.heal > 0 {
-        take_health(p, cx, tick.heal as f32);
+        super::damage::take_health(p, cx, tick.heal as f32);
     }
-}
-
-/// `CBasePlayer::TakeHealth` (0xd8760): refused with `takedamage` off or health already above
-/// max; otherwise no cap, and going over max starts the 1/s decay (`+0x73c`).
-fn take_health(p: &mut Player, cx: &mut Cx, amount: f32) -> bool {
-    let now = cx.time();
-    let v = cx.pev();
-    if v.takedamage == 0.0 || v.health > v.max_health {
-        return false;
-    }
-    v.health += amount;
-    if v.health > v.max_health {
-        p.ts.health_timer = now + 1.0;
-    }
-    true
 }
 
 #[cfg(test)]
