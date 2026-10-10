@@ -92,8 +92,6 @@ pub struct PlayerRules {
     pub last_damage: i32,
     /// `PTakeDam` throttle (`+0x750`).
     pub next_ptakedam: f32,
-    /// Kevlar item owned (`+0x718 & 0x10`; costs 10 slots).
-    pub kevlar: bool,
     /// Bullet dodge window end (`+0x524`, set by the stunt package through `dodge_until`).
     pub dodge_until: f32,
 

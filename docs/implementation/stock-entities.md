@@ -457,9 +457,10 @@ covers:
    breakable doors.
 5. **Player state the SDK keeps on `CBasePlayer`.**
    * The health decay above `max_health` (PreThink, `+0x73c`) belongs to the rules package.
-   * Kevlar: `items::player_take_armor` is a stand-in for TS `TakeArmor`. It uses the networked
-     `HAS_KEVLAR` stunt bit and `Player::slots_used`. The weapons/rules package should own the real
-     function, plus `DropArmor`.
+   * Kevlar: `items::player_take_armor` calls the one `TakeArmor` port, `weapons::take_armor`
+     (vest in `SvState::items & 0x10`, its 10 slots taken from the shared `free_slots`). The HEV
+     charger is used from the player's own `PlayerUse`, so the call is deferred until the player
+     is back in its slot (same frame). `DropArmor` (0x93a3c) has no callers in TS and isn't ported.
    * The HEV suit bit (`pev->weapons & 1<<31`) is set on spawn (rules package). The battery and
      the HEV charger refuse players without it, as in TS.
 6. **`trigger_camera` on death or respawn.** TS `CBasePlayer::Killed` and `Spawn` call

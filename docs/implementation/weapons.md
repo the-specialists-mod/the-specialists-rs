@@ -313,8 +313,14 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 * Armour absorb: read `shared::weapons::tables().combat.armor_absorb` (a weapons file may
   change it).
 * `Player::slots_used` and `maxspeed` are written by weapons only when the slot count changes.
-* Kevlar from the loadout (`tki 16`) sets `armorvalue = 100` and uses 10 slots
-  (`SvState::items & 0x10`).
+* Kevlar: every armour source (loadout `tki 16`, the armour power-up, `item_battery`,
+  `func_recharge`) goes through `weapons::take_armor` (`TakeArmor` 0x93da4). The first vest needs
+  10 of the shared `free_slots` (`pl+0x548`, the same count weapons and the CTB case use) and sets
+  `SvState::items & 0x10`; `take_armor(-1)` takes it off and gives the slots back. Death
+  (`on_killed`/`strip_all`) resets `free_slots` and `items` together, and spawn
+  (`inventory::reset_items`, TSInit's `pl+0x718 = 0`) returns a vest's slots if one is still
+  worn. Stealth shoes are `items & 0x20` plus `iuser4` bit 0x200 (`stunt::STEALTH_SHOES`, which
+  the decomp docs call `HAS_KEVLAR`).
 
 **Damage package**: `DamageInfo.hitgroup` = trace hitgroup, `weapon` = TS id, bits as listed in
 §3 (0x2000000 = shotgun headshot x1.5, 0x8000000 = thrown blade, 0x4000000 = close combat).

@@ -14,7 +14,9 @@ pub mod stunt {
     pub const DIVE_LOW: i32 = 0x80;
     pub const DIVE_MED: i32 = 0x100;
     pub const DIVE_IMPULSE_MASK: i32 = 0x1c0;
-    pub const HAS_KEVLAR: i32 = 0x200;
+    /// Stealth shoes (`AddItem` item 0x20, 0x9440c): silent footsteps. The decomp docs call this
+    /// `HAS_KEVLAR`, but only the shoes set it; kevlar lives in the loadout items (`pl+0x718`).
+    pub const STEALTH_SHOES: i32 = 0x200;
     pub const FLIP_HIGH: i32 = 0x400;
     pub const FLIP_LOW: i32 = 0x800;
     pub const WALLJUMP_IMPULSE: i32 = 0x1000;

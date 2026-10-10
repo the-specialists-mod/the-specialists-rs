@@ -41,34 +41,22 @@ pub fn take_health(e: *mut edict_t, amount: f32) -> bool {
     true
 }
 
-/// Stand-in for TS `CBasePlayer::TakeArmor(amount)` (0x93da4). Kevlar ownership is kept in the
-/// networked stunt bit `HAS_KEVLAR`; slots in `Player::slots_used`.
+/// TS `CBasePlayer::TakeArmor(amount)` (0x93da4, `weapons::take_armor`) for an edict. An HEV
+/// charger is used from the player's own `PlayerUse`, so the player is taken out for a dispatch
+/// further up the stack; the armour then lands as soon as that returns (same frame) and this
+/// reports success, which both callers ignore anyway, as TS does.
 pub fn player_take_armor(p: *mut edict_t, amount: f32) -> bool {
     if !is_player(p) {
         return false;
     }
-    let iuser4 = p.v().iuser4;
-    if iuser4 & shared::ts::stunt::HAS_KEVLAR == 0 {
-        let ok = crate::player::with_player(p, |pl, _| {
-            if shared::ts::SLOTS_TOTAL - pl.slots_used < 10 {
-                return false;
-            }
-            pl.slots_used += 10;
-            true
-        })
-        .unwrap_or(true);
-        if !ok {
-            return false;
-        }
-        (p.v().iuser4 |= shared::ts::stunt::HAS_KEVLAR);
-        emit(p, CHAN_ITEM, c"weapons/items.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+    let n = amount as i32;
+    if crate::world::is_taken_out(p) {
+        crate::world::defer(p, move || {
+            crate::player::with_player(p, |pl, cx| crate::weapons::take_armor(pl, cx, n));
+        });
+        return true;
     }
-    let v = p.v();
-    v.armorvalue = (v.armorvalue + amount).min(100.0);
-    if let Some(used) = crate::player::with_player(p, |pl, _| pl.slots_used) {
-        engine().set_client_maxspeed(p, shared::ts::speed_for_free_slots(shared::ts::SLOTS_TOTAL - used));
-    }
-    true
+    crate::player::with_player(p, |pl, cx| crate::weapons::take_armor(pl, cx, n)).unwrap_or(false)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -222,20 +222,70 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
     sync_speed(p, cx);
 }
 
-/// `CBasePlayer::TakeArmor(100)`: kevlar costs 10 slots once.
-fn take_armor(p: &mut Player, cx: &mut Cx) -> bool {
-    if p.inv.sv.items & att::KEVLAR == 0 {
-        if p.inv.sv.free_slots < 10 {
-            return false;
+/// Inventory weight of the kevlar vest (`TakeArmor` 0x93da4).
+pub const KEVLAR_SLOTS: i32 = 10;
+
+/// What `CBasePlayer::TakeArmor(n)` (0x93da4) does to the free slots (`pl+0x548`), the loadout
+/// items (`pl+0x718`) and `armorvalue`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ArmorChange {
+    free_slots: i32,
+    items: u32,
+    armor: f32,
+    /// The vest went on (TS plays `weapons/items.wav`).
+    put_on: bool,
+}
+
+/// The pure part of `TakeArmor(n)`. `n < 0` takes the vest off: its slots come back and the
+/// armour goes to 0 (no-op without one). Otherwise the first vest needs [`KEVLAR_SLOTS`] free
+/// (`None`: refused, nothing changes), then the armour goes up by `n`, capped at 100.
+fn armor_change(free_slots: i32, items: u32, armor: f32, n: i32) -> Option<ArmorChange> {
+    let mut c = ArmorChange { free_slots, items, armor, put_on: false };
+    if n < 0 {
+        if items & att::KEVLAR != 0 {
+            c.free_slots += KEVLAR_SLOTS;
+            c.items &= !att::KEVLAR;
+            c.armor = 0.0;
         }
-        p.inv.sv.free_slots -= 10;
-        p.inv.sv.items |= att::KEVLAR;
+        return Some(c);
+    }
+    if items & att::KEVLAR == 0 {
+        if free_slots < KEVLAR_SLOTS {
+            return None;
+        }
+        c.free_slots -= KEVLAR_SLOTS;
+        c.items |= att::KEVLAR;
+        c.put_on = true;
+    }
+    c.armor = (n as f32 + armor).min(100.0);
+    Some(c)
+}
+
+/// `CBasePlayer::TakeArmor(n)` (0x93da4): the one armour path (buy menu, armour power-up,
+/// battery, HEV charger). The vest's weight shares the free-slot count with weapons and the CTB
+/// case, so pickups and the speed see it; `n < 0` takes it off and gives the slots back.
+/// False when there's no room for the vest.
+pub fn take_armor(p: &mut Player, cx: &mut Cx, n: i32) -> bool {
+    let Some(c) = armor_change(p.inv.sv.free_slots, p.inv.sv.items, cx.pev().armorvalue, n) else {
+        return false;
+    };
+    p.inv.sv.free_slots = c.free_slots;
+    p.inv.sv.items = c.items;
+    cx.pev().armorvalue = c.armor;
+    if c.put_on {
         emit(cx.edict, CHAN_ITEM, c"weapons/items.wav", 1.0, 0.8, 100);
     }
-    let pev = cx.pev();
-    pev.armorvalue = (pev.armorvalue + 100.0).min(100.0);
     sync_speed(p, cx);
     true
+}
+
+/// The loadout part of `TSInit` (0x92a4c): `pl+0x718 = 0`. `Player::spawn` has already zeroed
+/// `armorvalue`, so a vest still worn (a spawn that didn't go through death) gives its slots back.
+pub fn reset_items(p: &mut Player) {
+    if p.inv.sv.items & att::KEVLAR != 0 {
+        p.inv.sv.free_slots += KEVLAR_SLOTS;
+    }
+    p.inv.sv.items = 0;
 }
 
 /// `CBasePlayer::AddItem(bits)` (`tki`): 0x10 kevlar, 0x20 stealth shoes, else attachments for
@@ -243,7 +293,7 @@ fn take_armor(p: &mut Player, cx: &mut Cx) -> bool {
 fn add_item(p: &mut Player, cx: &mut Cx, bits: u32) {
     if bits & att::KEVLAR != 0 {
         if cx.pev().armorvalue < 100.0 {
-            take_armor(p, cx);
+            take_armor(p, cx, 100);
         }
         return;
     }
@@ -253,10 +303,10 @@ fn add_item(p: &mut Player, cx: &mut Cx, bits: u32) {
             return;
         }
         let pev = cx.pev();
-        if pev.iuser4 & 0x200 != 0 {
+        if pev.iuser4 & shared::ts::stunt::STEALTH_SHOES != 0 {
             return;
         }
-        pev.iuser4 |= 0x200;
+        pev.iuser4 |= shared::ts::stunt::STEALTH_SHOES;
         p.inv.sv.items |= att::STEALTH_SHOES;
         emit(cx.edict, CHAN_ITEM, c"weapons/items.wav", 1.0, 0.8, 100);
         return;
@@ -360,4 +410,35 @@ pub fn on_killed(p: &mut Player, cx: &mut Cx) {
     p.inv.sv.sent_act_items = Some(0);
     net::send_cur_weapon_reset(cx.edict);
     sync_speed(p, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_vest_costs_ten_slots() {
+        let c = armor_change(SLOTS, 0, 0.0, 100).unwrap();
+        assert_eq!(c, ArmorChange { free_slots: SLOTS - 10, items: att::KEVLAR, armor: 100.0, put_on: true });
+        // A second vest only tops the armour up.
+        let c = armor_change(c.free_slots, c.items | att::STEALTH_SHOES, 30.0, 50).unwrap();
+        assert_eq!(c, ArmorChange { free_slots: SLOTS - 10, items: att::KEVLAR | att::STEALTH_SHOES, armor: 80.0, put_on: false });
+    }
+
+    #[test]
+    fn no_room_for_the_vest() {
+        assert_eq!(armor_change(9, 0, 0.0, 50), None);
+        assert_eq!(armor_change(10, 0, 0.0, 50).map(|c| c.free_slots), Some(0));
+        // Already wearing one: no slots needed.
+        assert_eq!(armor_change(0, att::KEVLAR, 20.0, 50).map(|c| c.armor), Some(70.0));
+    }
+
+    #[test]
+    fn taking_the_vest_off_returns_its_slots() {
+        let c = armor_change(SLOTS - 30, att::KEVLAR | att::STEALTH_SHOES, 64.0, -1).unwrap();
+        assert_eq!(c, ArmorChange { free_slots: SLOTS - 20, items: att::STEALTH_SHOES, armor: 0.0, put_on: false });
+        // Without a vest nothing changes (armour included).
+        let c = armor_change(SLOTS, 0, 5.0, -1).unwrap();
+        assert_eq!((c.free_slots, c.items, c.armor), (SLOTS, 0, 5.0));
+    }
 }
