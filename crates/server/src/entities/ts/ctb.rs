@@ -1,17 +1,20 @@
 //! Capture the briefcase (gamerules-entities.md §3.4): `ts_briefcase` (home + capture zone),
 //! `ts_flag` (the carried case), and `ts_scoregiver`/`ts_wingiver` (team score / win, §3.3).
 
+use crate::damage::{self, DamageInfo};
 use crate::entities::stock::explode::emit_sound_slow;
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::rules::{self, msg, state, teams};
+use crate::weapons::SlowPhysics;
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::ATTN_NORM;
-use goldsrc::server::engine;
+use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use shared::protocol::rules::{ScoreInfo, TsFlag, TsHVoice};
+use shared::weapons::spread::{self, Vec3};
 use std::cell::Cell;
 use std::ffi::CStr;
 
@@ -20,14 +23,14 @@ const FLAG_SLOTS: i32 = 20;
 
 static NEXT_FLAG_ID: Global<Cell<i32>> = Global(Cell::new(0));
 
-/// Glow colour per owner team.
+/// Glow colour per owner team (`CTSFlag::Spawn` 0x9d978).
 fn team_color(team: i32) -> [f32; 3] {
     match team {
         0 => [125.0, 165.0, 210.0],
         1 => [200.0, 90.0, 70.0],
         2 => [225.0, 205.0, 45.0],
-        3 => [145.0, 215.0, 140.0],
-        _ => [255.0, 255.0, 255.0],
+        // TS's last branch, which also covers a case any team may take (-1).
+        _ => [145.0, 215.0, 140.0],
     }
 }
 
@@ -50,16 +53,6 @@ fn score_info_of(e: *mut edict_t, p: &Player) {
     let idx = engine().index_of(e);
     let s = ScoreInfo { idx: idx as u8, frags: e.v().frags as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 };
     msg::all(Msg::ScoreInfo, |w| s.write(w));
-}
-
-/// The slot half of `CBasePlayer::TakeFlag`: the case needs 20 free slots and one case at most.
-fn take_flag(p: &mut Player, flag: *mut edict_t) -> bool {
-    if p.ts.flag.is_some() || shared::ts::SLOTS_TOTAL - p.slots_used < FLAG_SLOTS {
-        return false;
-    }
-    p.slots_used += FLAG_SLOTS;
-    p.ts.flag = Some(flag);
-    true
 }
 
 // ---- ts_briefcase ----------------------------------------------------------------------------------
@@ -155,11 +148,7 @@ impl Entity for Briefcase {
 fn capture(cx: &mut Cx, player: *mut edict_t) {
     let eng = engine();
     let name = rules::netname(player);
-    msg::log(&format!(
-        "\"{name}<{}><{}><>\" triggered \"captured_briefcase\"\n",
-        eng.user_id(player),
-        eng.auth_id(player).to_string_lossy()
-    ));
+    log_flag(player, "captured_briefcase", &carried_contents(player));
     crate::player::with_player(player, |p, pcx| drop_flag(p, pcx, true));
     let (target, message) = (cx.pev().target, cx.pev().message);
     if target != 0 {
@@ -194,6 +183,9 @@ fn capture(cx: &mut Cx, player: *mut edict_t) {
 
 // ---- ts_flag -------------------------------------------------------------------------------------
 
+/// `CTSFlag`. TS destroys the case when a player takes it and creates a new one (`CreateFlag`
+/// 0x9d874) when it is dropped; the port keeps one entity per case and hides it on the carrier
+/// (`MOVETYPE_FOLLOW`) instead, re-running `Spawn` when it is thrown.
 #[derive(Default)]
 pub struct Flag {
     pub id: i32,
@@ -201,8 +193,65 @@ pub struct Flag {
     pub contents: String,
     pub home: Option<*mut edict_t>,
     pub holder: Option<*mut edict_t>,
-    /// Dropped: return home at this time.
+    /// `s_flag_status+0x10`: entity index of the last player to take this case. It travels with
+    /// the case through drops and resets when the home zone drops a new one, so retaking your
+    /// own drop isn't announced again.
+    last_holder: i32,
+    /// `+0x8c` set: a player threw this case (`DropFlag`), rather than the home zone dropping it
+    /// (`FlagFall`). Only a thrown case can be returned by its own team.
+    dropped: bool,
+    /// `+0x88`: return home after this time (0 = never, the case at home).
     return_at: f32,
+    /// `OnGround` (0x9e21c) has run: touch `WaitTouch`, think `WaitThink`. Before it the case is
+    /// flying: touch `BounceTouch`, think `Fall`.
+    on_ground: bool,
+    phys: SlowPhysics,
+}
+
+/// `GiveSlowMul` (`CBaseEntity` 0xac5b4 → `FixedSlowAmt` 0x990bc): the time scale, at least 0.01.
+fn give_slow_mul(fuser1: f32) -> f32 {
+    if fuser1 < 0.01 { 0.01 } else { fuser1 }
+}
+
+/// `DropFlag` 0x9334c, alive: thrown along `v_angle` at `(90 - pitch) * 2`, so looking down
+/// barely tosses the case and looking up throws it far.
+fn aimed_throw_speed(pitch: f32) -> f32 {
+    (90.0 - pitch) + (90.0 - pitch)
+}
+
+/// `DropFlag` 0x9334c: the case starts 16 u in front of the eyes and flies at 0.9 of the
+/// player's velocity plus `speed` along `forward` plus `speed * 0.33` up. Returns
+/// (origin, velocity).
+fn throw(eye: Vec3, forward: Vec3, player_velocity: Vec3, speed: f32) -> (Vec3, Vec3) {
+    let origin = spread::ma(eye, 16.0, forward);
+    let mut velocity = spread::ma(spread::scale(player_velocity, 0.9), speed, forward);
+    velocity[2] += speed * 0.33;
+    (origin, velocity)
+}
+
+/// `BounceTouch` 0x9dbbc on the ground: the velocity and spin are scaled by 0.9 while the
+/// horizontal speed is above `40 * slow`, and by 0.7 at or below it.
+fn ground_damping(horizontal_speed: f32, slow: f32) -> f32 {
+    if horizontal_speed > slow * 40.0 { 0.9 } else { 0.7 }
+}
+
+/// `Fall` 0x9df10: a flying case hits a non-player entity whose health is at most
+/// `|v| * 30`, for `|v| * 30 * 0.001` damage. Returns (health threshold, damage).
+fn impact(speed: f32) -> (f32, f32) {
+    let threshold = speed * 30.0;
+    (threshold, (threshold as f64 * 0.001f32 as f64) as f32)
+}
+
+/// The `"name<uid><authid><uid>"` log lines of `TakeFlag` 0x93830 (`aquired_briefcase`),
+/// `DropFlag` 0x9334c (`dropped_briefcase`) and `CaptureTouch` 0x8db9c (`captured_briefcase`).
+/// TS passes the user id where other lines put the team, so it appears twice.
+fn flag_log_line(name: &str, user_id: i32, auth: &str, event: &str, contents: &str) -> String {
+    format!("\"{name}<{user_id}><{auth}><{user_id}>\" triggered \"{event}\" (contents \"{contents}\")\n")
+}
+
+fn log_flag(e: *mut edict_t, event: &str, contents: &str) {
+    let eng = engine();
+    msg::log(&flag_log_line(&rules::netname(e), eng.user_id(e), &eng.auth_id(e).to_string_lossy(), event, contents));
 }
 
 impl Flag {
@@ -230,37 +279,158 @@ impl Flag {
         }
         crate::entities::remove(cx.edict);
     }
+
+    /// `CTSFlag::Fall` (0x9df10), every 0.1 s while flying: lands when it rests on the ground
+    /// and is slower than `3 * slow` (sound, level pitch and roll, `OnGround`), returns home when
+    /// its 20 s are up, and otherwise hurts what is 0.1 s ahead of it, then runs the slow-motion
+    /// physics (`CTSPhysicObject::WaitThink`).
+    fn fall(&mut self, cx: &mut Cx) {
+        let me = cx.edict;
+        let v = cx.pev();
+        if v.flags & FL_ONGROUND as i32 != 0 && spread::length(v.velocity) < give_slow_mul(v.fuser1) * 3.0 {
+            emit_sound_slow(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
+            let v = cx.pev();
+            v.angles[0] = 0.0;
+            v.angles[2] = 0.0;
+            self.land(cx);
+        }
+        if self.return_at != 0.0 && cx.time() > self.return_at {
+            self.respawn_flag(cx);
+            return;
+        }
+        self.hit_ahead(cx);
+        self.phys.update(cx.pev());
+    }
+
+    /// The impact half of `Fall` (0x9e0a6..0x9e196): `TraceAttack(pev, |v|·30·0.001, v, tr,
+    /// DMG_CLUB | DMG_NEVERGIB)` then `ApplyMultiDamage(pev, pev)` on a non-player hit whose
+    /// health is at most `|v|·30`, so a thrown case breaks glass. The case itself is the
+    /// attacker, as in TS.
+    fn hit_ahead(&mut self, cx: &mut Cx) {
+        let e = engine();
+        let me = cx.edict;
+        let (origin, velocity) = (cx.pev().origin, cx.pev().velocity);
+        let tr = e.trace_line(origin, spread::ma(origin, 0.1, velocity), DONT_IGNORE_MONSTERS, me);
+        // A null hit is the world in TS, which takes no damage.
+        if tr.flFraction >= 1.0 || tr.pHit.is_null() || rules::is_player(tr.pHit) {
+            return;
+        }
+        let (threshold, dmg) = impact(spread::length(velocity));
+        if tr.pHit.v().health <= threshold {
+            let mut d = DamageInfo::new(me, me, dmg, damage::bits::CLUB | damage::bits::NEVERGIB).traced();
+            d.dir = velocity;
+            d.pos = tr.vecEndPos;
+            damage::apply(tr.pHit, &d);
+        }
+    }
+
+    /// `CTSFlag::BounceTouch` (0x9dbbc): every touch while flying keeps 0.3 of the vertical
+    /// speed. In the air, a fast hit on a floor (normal z > 0.98) plays the drop sound; on the
+    /// ground the case is slowed ([`ground_damping`]) and its roll levelled.
+    fn bounce_touch(&mut self, cx: &mut Cx) {
+        let e = engine();
+        let me = cx.edict;
+        let v = cx.pev();
+        v.velocity[2] = (v.velocity[2] as f64 * 0.3) as f32;
+        let slow = give_slow_mul(v.fuser1);
+        if v.flags & FL_ONGROUND as i32 == 0 {
+            if spread::length(v.velocity) > slow * 18.0 && e.globals().trace_plane_normal[2] as f64 > 0.98 {
+                let pitch = 100 + e.random_long(0, 10);
+                emit_sound_slow(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, ATTN_NORM, 0, pitch, 0.5);
+            }
+        } else {
+            let k = ground_damping(v.velocity[0].hypot(v.velocity[1]), slow);
+            v.velocity = spread::scale(v.velocity, k);
+            v.avelocity = spread::scale(v.avelocity, k);
+            v.angles[2] = 0.0;
+        }
+    }
+
+    /// `CTSFlag::OnGround` (0x9e21c): a 32×32×48 trigger the thrower can touch again.
+    fn land(&mut self, cx: &mut Cx) {
+        let e = engine();
+        let me = cx.edict;
+        self.on_ground = true;
+        let v = cx.pev();
+        v.owner = std::ptr::null_mut();
+        v.solid = SOLID_TRIGGER as i32;
+        let origin = v.origin;
+        e.set_origin(me, origin);
+        e.set_size(me, [-16.0, -16.0, 0.0], [16.0, 16.0, 48.0]);
+    }
+
+    /// The `CreateFlag` + `Spawn` half of `DropFlag(false)` (0x9334c) on the carried case: it
+    /// flies again from `origin` at `velocity`, spinning at random, in the thrower's time scale,
+    /// passing through the thrower until it lands, and returns home after 20 s.
+    fn thrown(&mut self, cx: &mut Cx, thrower: *mut edict_t, time_scale: f32, origin: Vec3, velocity: Vec3) {
+        let e = engine();
+        self.holder = None;
+        self.spawn(cx);
+        self.dropped = true;
+        let v = cx.pev();
+        v.effects &= !(EF_NODRAW as i32);
+        v.aiment = std::ptr::null_mut();
+        v.owner = thrower;
+        v.fuser1 = time_scale;
+        v.angles = [0.0; 3];
+        v.avelocity = [0.0, e.random_long(-300, 300) as f32, e.random_long(-300, 300) as f32];
+        v.velocity = velocity;
+        e.set_origin(cx.edict, origin);
+    }
 }
 
 impl Entity for Flag {
+    /// `CTSFlag::Spawn` (0x9d978): a flying, zero-size `SOLID_BBOX` case with the team's glow,
+    /// due home in 20 s (`FlagFall` clears that for a case at home).
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let e = cx.edict;
-        cx.pev().classname = eng.alloc_string(c"ts_flag");
+        self.phys = SlowPhysics::default();
         eng.set_model(e, MODEL);
         let v = cx.pev();
         v.movetype = MOVETYPE_BOUNCE as i32;
-        v.solid = SOLID_TRIGGER as i32;
+        v.solid = SOLID_BBOX as i32;
         v.gravity = 0.7;
         v.friction = 0.8;
-        v.renderfx = kRenderFxGlowShell as i32;
-        v.renderamt = 5.0;
+        v.classname = eng.alloc_string(c"ts_flag");
         let org = v.origin;
-        eng.set_size(e, [-8.0, -8.0, 0.0], [8.0, 8.0, 16.0]);
         eng.set_origin(e, org);
-        cx.think_in(0.5);
+        eng.set_size(e, [0.0; 3], [0.0; 3]);
+        self.return_at = eng.time() + 20.0;
+        self.dropped = false;
+        self.on_ground = false;
+        cx.think_in(0.1);
+        let v = cx.pev();
+        v.iuser4 = 2;
+        v.renderamt = 5.0;
+        v.renderfx = kRenderFxGlowShell as i32;
+        v.rendercolor = team_color(self.team);
     }
 
+    /// `Fall` while flying, `CTSFlag::WaitThink` (0x9e1b8) once landed; both every 0.1 s.
     fn think(&mut self, cx: &mut Cx) {
-        cx.think_in(0.5);
-        if self.holder.is_none() && self.return_at != 0.0 && cx.time() > self.return_at {
+        cx.think_in(0.1);
+        if self.holder.is_some() {
+            return;
+        }
+        if !self.on_ground {
+            self.fall(cx);
+        } else if self.return_at != 0.0 && self.return_at < cx.time() {
             self.respawn_flag(cx);
         }
     }
 
-    /// `CTSFlag::WaitTouch` (0x9e604).
+    /// `BounceTouch` while flying (a flying case is only taken with +use), `CTSFlag::WaitTouch`
+    /// (0x9e604) once landed.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        self.player_take_flag(cx, other, None);
+        if self.holder.is_some() {
+            return;
+        }
+        if self.on_ground {
+            self.player_take_flag(cx, other, None);
+        } else {
+            self.bounce_touch(cx);
+        }
     }
 }
 
@@ -268,12 +438,13 @@ impl Flag {
     /// `CTSFlag::Use` (0x9e5dc) when a player's +use picks the case (`player::player_use`). The
     /// player is being dispatched, so its object is passed in.
     pub fn use_by_player(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
-        self.player_take_flag(cx, pcx.edict, Some(p));
+        let other = pcx.edict;
+        self.player_take_flag(cx, other, Some((p, pcx)));
     }
 
     /// `CTSFlag::PlayerTakeFlag` (0x9e330), shared by the touch and +use. `p` is the player's
     /// object when the caller already holds it; otherwise it is looked up.
-    fn player_take_flag(&mut self, cx: &mut Cx, other: *mut edict_t, mut p: Option<&mut Player>) {
+    fn player_take_flag(&mut self, cx: &mut Cx, other: *mut edict_t, p: Option<(&mut Player, &mut Cx)>) {
         // A live, visible player (TS: `pev->effects` sign bit, EF_NODRAW, e.g. observers).
         if self.holder.is_some() || !rules::is_player(other) || !rules::alive(other.v()) || other.v().effects & EF_NODRAW as i32 != 0 {
             return;
@@ -282,11 +453,17 @@ impl Flag {
         if self.team == -1 || team != self.team {
             let me = cx.edict;
             let took = match p {
-                Some(p) => take_flag(p, me),
-                None => crate::player::with_player(other, |p, _| take_flag(p, me)).unwrap_or(false),
+                Some((p, pcx)) => self.take_by(me, p, pcx),
+                None => crate::player::with_player(other, |p, pcx| self.take_by(me, p, pcx)).unwrap_or(false),
             };
             if !took {
                 return;
+            }
+            // A case taken from home closes its zone for captures until it is back (`FlagFall`).
+            if !self.dropped
+                && let Some(home) = self.home
+            {
+                crate::world::with::<Briefcase, _>(home, |b| b.active = false);
             }
             self.holder = Some(other);
             self.return_at = 0.0;
@@ -295,19 +472,12 @@ impl Flag {
             v.solid = SOLID_NOT as i32;
             v.movetype = MOVETYPE_FOLLOW as i32;
             v.aiment = other;
-            let name = rules::netname(other);
-            msg::ts_message_all([0, 255, 0], 8, 30, &format!("{name} picked up a briefcase containing {}!", self.contents));
-            send_flag(1, self.id, self.team, engine().index_of(other));
-            let eng = engine();
-            msg::log(&format!(
-                "\"{name}<{}><{}><>\" triggered \"aquired_briefcase\"\n",
-                eng.user_id(other),
-                eng.auth_id(other).to_string_lossy()
-            ));
-        } else if self.return_at != 0.0 {
-            // The owning team returns its dropped case; the bonus needs a second player.
+        } else if self.dropped && self.home.is_some() {
+            // The owning team returns its thrown case; the bonus needs a second player. No
+            // `TSFlag` here: the home zone's `FlagFall` sends state 0 when the case reappears.
             emit_sound_slow(other, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
             if rules::players().len() > 1 {
+                let mut p = p.map(|(p, _)| p);
                 rules::add_frags(other, p.as_deref_mut(), 5.0);
                 msg::ts_message_all([0, 255, 0], 4, 30, &format!("{} returned the briefcase! 5 #TS_Frg", rules::netname(other)));
                 match p {
@@ -315,13 +485,37 @@ impl Flag {
                     None => score_info(other),
                 }
             }
-            send_flag(0, self.id, self.team, 0);
             // FlagFall at home 1 s later (0x9e330).
             self.go_home(cx, 1.0);
         }
     }
+
+    /// `CBasePlayer::TakeFlag` (0x93830): the case needs 20 free slots and one case at most. It
+    /// slows the carrier, plays the pickup sound, sends `TSFlag` 1, announces the pickup unless
+    /// the taker was the case's last holder, and logs it.
+    fn take_by(&mut self, me: *mut edict_t, p: &mut Player, pcx: &mut Cx) -> bool {
+        if p.inv.sv.free_slots < FLAG_SLOTS || p.ts.flag.is_some() {
+            return false;
+        }
+        p.ts.flag = Some(me);
+        p.inv.sv.free_slots -= FLAG_SLOTS;
+        crate::weapons::sync_speed(p, pcx);
+        let e = pcx.edict;
+        emit_sound_slow(e, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
+        let idx = engine().index_of(e);
+        send_flag(1, self.id, self.team, idx);
+        if idx != self.last_holder {
+            let name = rules::netname(e);
+            msg::ts_message_all([0, 255, 0], 4, 30, &format!("{name} picked up a briefcase containing {}!", self.contents));
+        }
+        self.last_holder = idx;
+        log_flag(e, "aquired_briefcase", &self.contents);
+        true
+    }
 }
 
+/// `CTSBriefcase::FlagFall` (0x8da00): a new case (`CreateFlag` without a player: no owner, time
+/// scale 1, no return time) falls from the centre of its zone.
 fn create_flag(origin: [f32; 3], id: i32, team: i32, contents: &str, home: *mut edict_t) {
     let eng = engine();
     let e = eng.create_named_entity(c"ts_flag");
@@ -331,14 +525,16 @@ fn create_flag(origin: [f32; 3], id: i32, team: i32, contents: &str, home: *mut 
     (e.v().origin = origin);
     let contents = contents.to_owned();
     crate::world::dispatch(e, |ent, cx| {
-        if let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<Flag>() {
-            f.id = id;
-            f.team = team;
-            f.contents = contents;
-            f.home = Some(home);
-        }
-        ent.spawn(cx);
-        cx.pev().rendercolor = team_color(team);
+        let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<Flag>() else { return };
+        f.id = id;
+        f.team = team;
+        f.contents = contents;
+        f.home = Some(home);
+        f.spawn(cx);
+        f.return_at = 0.0;
+        let v = cx.pev();
+        v.owner = std::ptr::null_mut();
+        v.fuser1 = 1.0;
     });
 }
 
@@ -347,32 +543,50 @@ pub fn has_flag(e: *mut edict_t) -> bool {
     rules::other(e, |p| p.ts.flag.is_some()).unwrap_or(false)
 }
 
-/// `CBasePlayer::DropFlag(captured)`: a captured case is removed (home recreates it); otherwise
-/// it drops at the player's feet and returns home after 20 s.
+/// What the case `e` carries holds, for the capture log.
+fn carried_contents(e: *mut edict_t) -> String {
+    let flag = rules::other(e, |p| p.ts.flag).flatten();
+    flag.and_then(|f| crate::world::with::<Flag, _>(f, |f| f.contents.clone())).unwrap_or_default()
+}
+
+/// `CBasePlayer::DropFlag(captured)` (0x9334c). Either way the carrier gets its 20 slots back.
+/// A captured case is removed; the capture already scheduled its home's `FlagFall`, which sends
+/// `TSFlag` 0, so nothing is sent here. Otherwise the case is thrown from the eyes: along
+/// `v_angle` at [`aimed_throw_speed`] while alive, or in a random direction (pitch −60..60, yaw
+/// −180..180) at 60..160 when dead ([`throw`]), then logged and announced with `TSFlag` 2.
 pub fn drop_flag(p: &mut Player, cx: &mut Cx, captured: bool) {
     let Some(flag) = p.ts.flag.take() else { return };
-    p.slots_used = (p.slots_used - FLAG_SLOTS).max(0);
-    let (org, vel) = (cx.pev().origin, cx.pev().velocity);
+    p.inv.sv.free_slots += FLAG_SLOTS;
+    crate::weapons::sync_speed(p, cx);
+    if captured {
+        crate::world::dispatch(flag, |ent, fcx| {
+            if let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<Flag>() {
+                f.holder = None;
+                f.go_home(fcx, 0.25);
+            }
+        });
+        return;
+    }
+    let e = engine();
+    let (angles, speed) = if rules::alive(cx.pev()) {
+        let a = cx.pev().v_angle;
+        (a, aimed_throw_speed(a[0]))
+    } else {
+        let pitch = e.random_long(-60, 60) as f32;
+        let yaw = e.random_long(-180, 180) as f32;
+        ([pitch, yaw, 0.0], e.random_long(60, 160) as f32)
+    };
+    let (forward, _, _) = spread::angle_vectors(angles);
+    let v = cx.pev();
+    let (origin, velocity) = throw(spread::add(v.origin, v.view_ofs), forward, v.velocity, speed);
+    let time_scale = crate::weapons::thrower_time_scale(p, cx.pev());
+    let thrower = cx.edict;
     let holder = cx.index();
-    let name = rules::netname(cx.edict);
     crate::world::dispatch(flag, |ent, fcx| {
         let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<Flag>() else { return };
-        f.holder = None;
-        if captured {
-            send_flag(0, f.id, f.team, 0);
-            f.go_home(fcx, 0.25);
-            return;
-        }
-        f.return_at = engine().time() + 20.0;
-        let v = fcx.pev();
-        v.aiment = std::ptr::null_mut();
-        v.movetype = MOVETYPE_BOUNCE as i32;
-        v.solid = SOLID_TRIGGER as i32;
-        v.effects &= !(EF_NODRAW as i32);
-        v.velocity = vel;
-        engine().set_origin(fcx.edict, org);
+        f.thrown(fcx, thrower, time_scale, origin, velocity);
+        log_flag(thrower, "dropped_briefcase", &f.contents);
         send_flag(2, f.id, f.team, holder);
-        msg::log(&format!("\"{name}\" triggered \"dropped_briefcase\"\n"));
     });
 }
 
@@ -457,4 +671,72 @@ fn team_win(team: i32, is_score: bool) {
         msg::one(Msg::TsHVoice, o, |w| TsHVoice { lost }.write(w));
     }
     teams::send_team_scores();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: Vec3, b: Vec3) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-3)
+    }
+
+    #[test]
+    fn aimed_throw_speed_follows_pitch() {
+        assert_eq!(aimed_throw_speed(0.0), 180.0);
+        // looking down tosses it at the feet, looking up throws it far
+        assert_eq!(aimed_throw_speed(89.0), 2.0);
+        assert_eq!(aimed_throw_speed(-45.0), 270.0);
+    }
+
+    #[test]
+    fn throw_starts_in_front_of_the_eyes_with_lift() {
+        let (origin, velocity) = throw([0.0, 0.0, 28.0], [1.0, 0.0, 0.0], [100.0, 0.0, 0.0], 180.0);
+        assert!(close(origin, [16.0, 0.0, 28.0]), "{origin:?}");
+        // 0.9 of the player's velocity + 180 forward + 180 * 0.33 up
+        assert!(close(velocity, [270.0, 0.0, 59.4]), "{velocity:?}");
+        // a dead thrower: random angles, here straight down at the slowest speed
+        let (forward, _, _) = spread::angle_vectors([60.0, 90.0, 0.0]);
+        let (origin, velocity) = throw([0.0; 3], forward, [0.0, 0.0, -50.0], 60.0);
+        assert!(close(origin, spread::scale(forward, 16.0)), "{origin:?}");
+        assert!(close(velocity, [0.0, 30.0, -45.0 - 51.961 + 19.8]), "{velocity:?}");
+    }
+
+    #[test]
+    fn ground_bounce_damps_slow_cases_more() {
+        assert_eq!(ground_damping(41.0, 1.0), 0.9);
+        assert_eq!(ground_damping(40.0, 1.0), 0.7);
+        // slowed: the threshold scales with the time scale
+        assert_eq!(ground_damping(21.0, 0.5), 0.9);
+        assert_eq!(ground_damping(19.0, 0.5), 0.7);
+    }
+
+    #[test]
+    fn slow_mul_has_a_floor() {
+        assert_eq!(give_slow_mul(1.0), 1.0);
+        assert_eq!(give_slow_mul(0.2), 0.2);
+        assert_eq!(give_slow_mul(0.0), 0.01);
+    }
+
+    #[test]
+    fn impact_scales_with_speed() {
+        let (threshold, dmg) = impact(500.0);
+        assert_eq!(threshold, 15000.0);
+        assert!((dmg - 15.0).abs() < 1e-4, "{dmg}");
+    }
+
+    #[test]
+    fn log_lines_repeat_the_user_id() {
+        assert_eq!(
+            flag_log_line("Neo", 7, "STEAM_0:1:2", "aquired_briefcase", "two elephants"),
+            "\"Neo<7><STEAM_0:1:2><7>\" triggered \"aquired_briefcase\" (contents \"two elephants\")\n"
+        );
+    }
+
+    #[test]
+    fn unknown_teams_glow_green() {
+        assert_eq!(team_color(-1), [145.0, 215.0, 140.0]);
+        assert_eq!(team_color(3), [145.0, 215.0, 140.0]);
+        assert_eq!(team_color(1), [200.0, 90.0, 70.0]);
+    }
 }

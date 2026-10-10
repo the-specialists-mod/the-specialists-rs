@@ -26,6 +26,7 @@ use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 #[allow(unused_imports)]
 pub use assets::{cvars, dmgreport, restriction, set_restriction};
 pub use inventory::Drop;
+pub use projectiles::{SlowPhysics, thrower_time_scale};
 
 /// Free inventory slots at spawn (`TSInit`: `pl+0x548 = 81`).
 pub const SLOTS: i32 = shared::ts::SLOTS_TOTAL;
@@ -350,6 +351,12 @@ pub fn arm_kick(p: &mut Player, cx: &mut Cx, cost: f32, damage: f32) {
     g.melee_damage = damage;
     g.melee_source = 0;
     g.block_kungfu = 0.0;
+}
+
+/// `GetSpeedBySlots` + `SetPlayerSpeed` after something outside the weapons changed
+/// `free_slots` (the CTB case, `CBasePlayer::TakeFlag` 0x93830 / `DropFlag` 0x9334c).
+pub fn sync_speed(p: &mut Player, cx: &mut Cx) {
+    inventory::sync_speed(p, cx);
 }
 
 /// Drops a weapon like the `drop` command / a disarm (rules: flag/briefcase handling stays theirs).
