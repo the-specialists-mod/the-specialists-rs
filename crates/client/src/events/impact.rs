@@ -98,7 +98,7 @@ pub fn texture_sound(dmg: f32, tr: &mut pmtrace_s, src: Vec3, end: Vec3, bullet_
     if tex == b'F' {
         return tex;
     }
-    effects::impact(tr.endpos, tr.plane.normal, tex, bullet_type == 1);
+    effects::impact(tr.endpos, tr.plane.normal, tex, bullet_type);
     let (sounds, vol) = material_sounds(tex);
     if dmg > 33.0 && !sounds.is_empty() {
         let s = sounds[r::random_long(0, sounds.len() as i32 - 1) as usize];

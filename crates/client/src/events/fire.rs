@@ -4,6 +4,7 @@
 use super::impact::{self, AMMO_ATTENUATION, MAX_RANGE, SPREAD_RADIUS};
 use super::random::shared_random_float;
 use super::{Args, fire_pitch, first_person_view_model, info, slow_pitch, time_scale};
+use crate::effects::psys::heron_height;
 use crate::{effects, state, view};
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
@@ -96,9 +97,55 @@ impl Shot {
     fn muzzle_ofs(&self) -> f32 {
         tables().asset(self.id as u8).map_or(0, |s| s.fx[0]) as f32
     }
-    fn flash(&self) -> (i32, f32) {
-        tables().asset(self.id as u8).map_or((0, 0.0), |s| (s.fx[3], s.fx[2] as f32))
+    /// Weapon info the muzzle flash reads: `fx` = (`+0x34c`, `+0x350`, `+0x354`, `+0x358`).
+    fn flash(&self) -> effects::fx::FlashInfo {
+        let fx = tables().asset(self.id as u8).map_or([0; 4], |s| s.fx);
+        let damage = tables().weapon(self.id as u8).map_or(0.0, |w| w.damage);
+        effects::fx::FlashInfo { kind: fx[1], length: fx[2] as f32, radius: fx[3], damage }
     }
+}
+
+/// Muzzle flash, gun smoke and the shotgun's pellet spray at `muzzle` (the view model's
+/// attachment in first person, the player's in third), as `EV_TS_FireStandard`/`FireAkimbo`
+/// (`pump` false) and `EV_TS_FirePump` (`pump` true) call them. The smoke and flash carry the
+/// shooter's velocity.
+fn gun_fx(a: &Args, s: &Shot, muzzle: Vec3, third: bool, pump: bool, pellets: i32) {
+    let now = effects::now();
+    let (fwd, vel, info) = (s.fwd, a.velocity, s.flash());
+    effects::with_psys(|ps| {
+        use effects::fx;
+        if pump {
+            fx::muzzle_flash(ps, now, muzzle, vel, fwd, &info, 9, false, 0.0, third);
+            fx::gun_smoke(ps, now, if third { 24.0 } else { 16.0 }, r::random_long(5, 10), muzzle, vel, fwd, 24.0, false);
+        } else if !s.silenced {
+            fx::muzzle_flash(ps, now, muzzle, vel, fwd, &info, 9, false, 0.0, third);
+            let rate = if s.id == 33 { r::random_long(5, 10) } else { r::random_long(45, 55) };
+            fx::gun_smoke(ps, now, 16.0, rate, muzzle, vel, fwd, 24.0, false);
+        } else {
+            fx::muzzle_flash(ps, now, muzzle, vel, fwd, &info, 9, true, 8.0, third);
+            fx::gun_smoke(ps, now, 8.0, r::random_long(50, 60), muzzle, vel, fwd, 24.0, false);
+            let at = v::ma(muzzle, s.muzzle_ofs(), fwd);
+            fx::gun_smoke(ps, now, 1.0, r::random_long(50, 80), at, vel, s.right, 4.0, true);
+        }
+        if pump || pellets > 1 {
+            let n = v::scale(fwd, 3.0);
+            fx::sprite_debris(
+                ps,
+                now,
+                muzzle,
+                n,
+                "sprites/shotgun_pellets.spr",
+                kRenderTransAdd as i32,
+                pellets,
+                0.5,
+                7,
+                0.0,
+                0.0,
+                true,
+                false,
+            );
+        }
+    });
 }
 
 /// `EV_TS_EjectShell` (`0x10056890`): `R_TempModel` with TS's own shell sound type in
@@ -125,45 +172,21 @@ fn player_attachment(entindex: i32, n: usize) -> Option<Vec3> {
     r::entity(entindex).map(|e| e.attachment[n])
 }
 
-/// Muzzle/smoke/shell effects at a world position (third person and other players). `fade` is
-/// 1 near the viewer and 0 by 512 units.
-fn world_effects(a: &Args, s: &Shot, muzzle: Vec3, shell_from: Vec3, pellets: i32) {
-    let now = effects::now();
-    let fade = 1.0 - (v::dist(muzzle, view::origin()) / 512.0).min(1.0);
-    effects::with_psys(|ps| {
-        if !s.silenced {
-            let (count, size) = s.flash();
-            effects::fx::muzzle_flash(ps, now, muzzle, s.fwd, count, size, fade);
-        }
-        effects::fx::gun_smoke(ps, now, muzzle, s.fwd, if s.id == 33 { r::random_long(5, 10) } else { r::random_long(45, 55) });
-        if pellets > 1 {
-            effects::fx::pellet_spray(ps, now, muzzle, s.fwd, pellets);
-        }
-    });
+/// Effects at a world position (third person and other players), plus the shell.
+fn world_effects(a: &Args, s: &Shot, muzzle: Vec3, shell_from: Vec3, pump: bool, pellets: i32) {
+    gun_fx(a, s, muzzle, true, pump, pellets);
     eject_shell(shell_from, s.shell_velocity(a), a.angles, s.shell, s.shell_snd);
 }
 
-/// First-person effects at the view model's attachment `att`.
-fn view_model_effects(a: &Args, s: &Shot, att: usize, pellets: i32) {
+/// First-person effects at the view model's attachment `att`, plus the shell.
+fn view_model_effects(a: &Args, s: &Shot, att: usize, pump: bool, pellets: i32) {
     let Some(vm) = first_person_view_model() else {
         // No view model (scoped): shell from the view origin.
         eject_shell(view::origin(), s.shell_velocity(a), a.angles, s.shell, s.shell_snd);
         return;
     };
     let muzzle = vm.attachment[att];
-    let now = effects::now();
-    effects::with_psys(|ps| {
-        if !s.silenced {
-            let (count, size) = s.flash();
-            effects::fx::muzzle_flash(ps, now, muzzle, s.fwd, count, size, 1.0);
-            effects::fx::gun_smoke(ps, now, muzzle, s.fwd, if s.id == 33 { r::random_long(5, 10) } else { r::random_long(45, 55) });
-        } else {
-            effects::fx::gun_smoke(ps, now, muzzle, s.fwd, r::random_long(50, 60));
-        }
-        if pellets > 1 {
-            effects::fx::pellet_spray(ps, now, v::ma(muzzle, 3.0, s.fwd), s.fwd, pellets);
-        }
-    });
+    gun_fx(a, s, muzzle, false, pump, pellets);
     let shell_from = v::ma(muzzle, -s.muzzle_ofs(), s.fwd);
     eject_shell(shell_from, s.shell_velocity(a), a.angles, s.shell, s.shell_snd);
 }
@@ -174,7 +197,7 @@ fn muzzle_light(a: &Args, s: &Shot) {
     }
     let pos = v::ma(v::ma(a.origin, 16.0, s.fwd), 32.0, s.up);
     let now = effects::now();
-    effects::with_psys(|ps| effects::fx::muzzle_dlight(ps, now, pos, time_scale()));
+    effects::with_psys(|ps| effects::fx::muzzle_dlight(ps, now, pos));
 }
 
 /// The weapon fire sound (`0x1003de90`).
@@ -222,10 +245,10 @@ fn fire_standard(a: &Args) {
         r::weapon_animation(seq as i32, weapon_body(s.id, a.i2));
     }
     if a.is_local() && !view::is_third_person() {
-        view_model_effects(a, &s, 0, pellets);
+        view_model_effects(a, &s, 0, false, pellets);
     } else if let Some(att) = player_attachment(a.entindex, if matches!(info::class(s.id), 6 | 7) { 3 } else { 0 }) {
         if a.is_local() || effects::player_visible(a.entindex) {
-            world_effects(a, &s, att, v::ma(att, -s.muzzle_ofs(), s.fwd), pellets);
+            world_effects(a, &s, att, v::ma(att, -s.muzzle_ofs(), s.fwd), false, pellets);
         }
     }
     fire_sound(a, s.id, s.silenced);
@@ -244,10 +267,10 @@ fn fire_pump(a: &Args) {
     }
     let shell = if a.b1 != 0 { Shot { shell: 0, ..s } } else { s };
     if a.is_local() && !view::is_third_person() {
-        view_model_effects(a, &shell, 0, pellets);
+        view_model_effects(a, &shell, 0, true, pellets);
     } else if let Some(att) = player_attachment(a.entindex, 3) {
         if a.is_local() || effects::player_visible(a.entindex) {
-            world_effects(a, &shell, att, v::ma(att, -shell.muzzle_ofs(), shell.fwd), pellets);
+            world_effects(a, &shell, att, v::ma(att, -shell.muzzle_ofs(), shell.fwd), true, pellets);
         }
     }
     fire_sound(a, shell.id, false);
@@ -280,10 +303,10 @@ fn fire_akimbo(a: &Args, linked: bool) {
     }
     for &h in hands {
         if a.is_local() && !view::is_third_person() {
-            view_model_effects(a, &s, h, pellets);
+            view_model_effects(a, &s, h, false, pellets);
         } else if let Some(att) = player_attachment(a.entindex, h) {
             if a.is_local() || effects::player_visible(a.entindex) {
-                world_effects(a, &s, att, v::ma(att, -s.muzzle_ofs(), s.fwd), pellets);
+                world_effects(a, &s, att, v::ma(att, -s.muzzle_ofs(), s.fwd), false, pellets);
             }
         }
     }
@@ -323,27 +346,28 @@ pub fn pellet_dir(dir: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], seed: i32,
     v::add(v::add(dir, v::scale(right, x * spread[0])), v::scale(up, y * spread[1]))
 }
 
-/// Whizz-by sound for other players' shots passing near the view (`< 75` units).
-fn whizz(b: &Bullets) {
+/// Whizz-by sound (`EV_TS_FireBullets` `0x100453b5`): another player's shot whose line (to the
+/// end of a 4096-unit trace, longer than 200 units) passes within 75 units of the view, measured
+/// with TS's distance ([`heron_height`]), and only while the view is inside the sphere
+/// `|mid − view| < |mid − end| − 100`. Volume `min(1, 2/(h + 0.1))`, channels 503/504 alternating.
+fn whizz(b: &Bullets, end: Vec3) {
     if r::is_local(b.shooter) {
         return;
     }
-    let end = v::ma(b.src, 4096.0, b.dir);
-    let tr = r::player_trace(b.src, end, 2, PM_STUDIO_BOX as i32, -1);
-    let line = v::sub(tr.endpos, b.src);
-    let len = v::len(line);
-    let eye = view::origin();
-    if len <= 200.0 || v::dist(tr.endpos, eye) >= len - 100.0 {
+    let len = v::dist(b.src, end);
+    if len <= 200.0 {
         return;
     }
-    let to_eye = v::sub(eye, b.src);
-    let t = (v::dot(to_eye, line) / (len * len)).clamp(0.0, 1.0);
-    let h = v::dist(eye, v::ma(b.src, t, line));
+    let eye = view::origin();
+    let mid = v::scale(v::add(b.src, end), 0.5);
+    if v::dist(mid, eye) >= v::dist(mid, end) - 100.0 {
+        return;
+    }
+    let h = heron_height(v::dist(eye, b.src), v::dist(eye, end), len);
     if h < 75.0 {
         let chan = effects::next_whizz_channel();
         let snd = format!("weapons/whizz{}.wav", r::random_long(1, 5));
-        let vol = (2.0 / (h * 0.1 + 0.1)).min(1.0);
-        r::play_sound(-1, eye, chan, &snd, vol, 0.8, 0, slow_pitch());
+        r::play_sound(-1, eye, chan, &snd, (2.0 / (h + 0.1)).min(1.0), 0.8, 0, slow_pitch());
     }
 }
 
@@ -367,11 +391,14 @@ pub fn fire_bullets(b: &Bullets) {
         return;
     }
 
-    whizz(b);
-    let push = if b.bullet_type == 1 { b.dmg * 8.0 } else { b.dmg };
+    let end = r::player_trace(b.src, v::ma(b.src, 4096.0, b.dir), 2, PM_STUDIO_BOX as i32, -1).endpos;
+    whizz(b, end);
+    // Particle push: ×8 for buckshot (ammo 3), with a swirl for ammo 5, 8 and 13.
+    let push = if b.ammo == 3 { b.dmg * 8.0 } else { b.dmg };
+    let swirl = matches!(b.ammo, 5 | 8 | 13);
     effects::with_psys(|ps| {
         ps.push_radial(b.src, 512.0, push);
-        ps.push_along_line(b.src, v::ma(b.src, 4096.0, b.dir), push);
+        ps.push_along_line(b.src, end, push, swirl);
     });
 
     let mut remaining = 0.0f32;
@@ -434,6 +461,9 @@ pub struct ClientBullet {
     pub ammo: i32,
     pub speed: f32,
     pub travelled: f32,
+    /// Where the last trail segment ended, and when the next may start.
+    pub trail: Vec3,
+    pub next_trail: f64,
 }
 
 impl ClientBullet {
@@ -448,6 +478,8 @@ impl ClientBullet {
             ammo,
             speed: velocity_mps * 40.0,
             travelled: 0.0,
+            trail: src,
+            next_trail: 0.0,
         }
     }
 }
@@ -466,6 +498,8 @@ pub fn client_bullets_frame(bullets: &mut Vec<ClientBullet>, frametime: f32) {
     let bt = state::with(|s| s.bullet_time);
     let mult = bullet_velocity_mult(ts, bt);
     let now = effects::now();
+    let trails = crate::input::cvars().cl_wavedetail.value() > 0.0;
+    let eye = view::origin();
     bullets.retain_mut(|b| {
         let step = b.speed * frametime * mult;
         let next = v::ma(b.pos, step, b.dir);
@@ -480,7 +514,17 @@ pub fn client_bullets_frame(bullets: &mut Vec<ClientBullet>, frametime: f32) {
             }
         });
         let to = hit.unwrap_or(next);
-        effects::with_psys(|ps| effects::fx::bullet_trail(ps, now, b.pos, to));
+        // Trail (`ClientBullets_Update` 0x10035ace): with `cl_wavedetail` > 0, at most every
+        // 0.01/ts s, `max(1 − ts², 0.15)` wide, faded only right at the view.
+        if trails && now >= b.next_trail {
+            b.next_trail = now + (0.01 / ts.max(0.01)) as f64;
+            let d2 = v::dot(v::sub(to, eye), v::sub(to, eye));
+            let alpha = if d2 < 10.0 { d2 * 0.1 } else { 1.0 };
+            let w = (1.0 - ts * ts).max(0.15);
+            let from = b.trail;
+            effects::with_psys(|ps| effects::fx::bullet_trail(ps, now, to, from, w, alpha));
+            b.trail = to;
+        }
         b.travelled += v::dist(b.pos, to);
         b.pos = to;
         hit.is_none() && b.travelled < MAX_RANGE

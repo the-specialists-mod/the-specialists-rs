@@ -41,7 +41,7 @@ includes `r_efx.h`, `event_api.h`, `event_flags.h`, `triangleapi.h`, `screenfade
 | `V_CalcViewRoll` / `V_CalcRoll` | `0x100675b0` / `0x100671f0` | `view::calc_view_roll` | done |
 | `V_ApplyKick` | `0x10057ed0` | in `calc_normal` (step into `cl_viewangles`) | done, verified in game |
 | `ViewShake::Start` / `Update` | `0x10057fa0` / `0x10058000` | `view::Shake` | done, unit-tested |
-| `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` | done |
+| `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` (prediction: `view::kick_angles`) | done, constants checked against the decomp |
 | screen fade + `TSFade` | end of `0x10069b90`, `0x1004c1e0` | `view::write_screen_fade`, `view::fade_color`, `view::on_tsfade` | done, verified in game |
 | `V_SetFog` | `0x10056c20` | `effects::fog_begin` (TriAPI `Fog`) | done, only with `gl_fog` != 0 |
 | `CAM_Think` / `CL_IsThirdPerson` / camera offset | `0x10024c80` / `0x1004fec0` / §7.4 | `view::cam_think` (no-op), `view::is_third_person`, third-person block of `calc_normal` | done, verified in game |
@@ -62,14 +62,15 @@ includes `r_efx.h`, `event_api.h`, `event_flags.h`, `triangleapi.h`, `screenfade
 | `EV_TS_Empty`, `Pump`, `Reload`, `Draw`, `Grenade`, `Knife`, `Katana`, `CloseCombat`, `ColdCock` | §4.1 | `events::misc::*` | done |
 | `TS_MeleeMaterialSound` | `0x10045df0` | `misc::melee_material_sound` | done |
 | particle system `g_PSys` (`PSys_*`, `Particle_*`, `Quad_*`) | §5.2-5.4 | `effects::psys` | done (see deviations) |
-| `PSys_PushRadial` / `PushAlongLine` | `0x100524c0` / `0x10052720` | `PSys::push_radial` / `push_along_line` | simplified |
+| `PSys_PushRadial` / `PushAlongLine` / `BlastPush` | `0x100524c0` / `0x10052720` / `0x10052c80` | `PSys::push_radial` / `push_along_line` / `blast_push` | done (from the disassembly) |
 | `CTS_CL_Emitter::Frame`, `LoadMap`, `LoadEntityLump`, `ProcessEnts`, keyvalue parsers | §5.1-5.3 | `effects::frame`, `effects::emitters` | done, unit-tested, verified in game (ts_frigid snow) |
 | wind (`MsgFunc_TSPSys`, `CosineLerp`) | `0x1004bfd0`, `0x10050760` | `effects::on_tspsys`, `psys::Wind` | done, unit-tested |
-| `TS_MuzzleFlash`, `TS_MuzzleDlight`, `TS_GunSmoke`, pellet spray, `TS_Sparks`, `TS_Scintille`, smoke/debris | §4.4-4.5 | `effects::fx::*` | done (numbers approximated) |
+| `TS_MuzzleFlash`, `TS_MuzzleDlight`, `TS_GunSmoke`, `TS_SpriteDebris` (debris and the muzzle pellet spray), `TS_Sparks`, `TS_Scintille`, `TS_ImpactSmoke`, `TS_SmallPuff`, surface mark `0x10046a70` | §4.4-4.5 | `effects::fx::*` | done (numbers from the disassembly) |
+| `FX_ApplyCvar` / `FX_AdaptQuality` (`cl_fx`) | `0x10057d50` / `0x10057a70` | `effects::apply_quality`, `psys::FxTuning` | done |
 | `TS_ImpactParticles` | `0x10048f60` | `fx::impact` | done |
 | `TS_BloodImpact` (`PTakeDam`) | `0x10048840`, `0x1004bcd0` | `fx::blood`, `effects::on_ptakedam` | done |
 | `TS_GlassShatter`, `TS_Explosion` (`TSFrags`) | `0x10047cb0`, `0x100481b0`, `0x1004bd50` | `fx::glass`, `fx::explosion`, `effects::on_tsfrags` | done, verified in game |
-| client bullets | `0x10035c20`, `0x10035010`, `0x10035d40` | `fire::ClientBullet`, `fire::client_bullets_frame`, `fx::bullet_trail` | simple version (streak + impact) |
+| client bullets | `0x10035c20`, `0x10035010`, `0x10035d40` | `fire::ClientBullet`, `fire::client_bullets_frame`, `fx::bullet_trail` | simple version (impact; trail quads with `cl_wavedetail` > 0, as TS) |
 | `GetBulletVelocityMult` | `0x10055b30` | `fire::bullet_velocity_mult` | done, unit-tested |
 | `HUD_AddEntity` (hemisphere, spectator, anti-peek, item fades) | `0x100447f0` | `effects::add_entity`, `occlusion_visible` | done |
 | `HUD_CreateEntities` | `0x1001bce0` | `effects::create_entities` | client bullets only (no ghosts) |
@@ -121,12 +122,34 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   origin/angle rings are not ported. Local-player translucency (`cl_thirdtransparency`, crosshair
   on a player) is not ported; the cvar is registered.
 * Third-person model z smoothing (rate 16) and the `back == 0` body-cam are not ported.
-* **Particle numbers.** The doc gives sprites, counts, triggers and formulas; per-effect sizes,
-  speeds and lifetimes in `effects::fx` are approximations tuned by eye. The `TS_GunSmoke` count
-  argument (45-55) is treated as an intensity (one puff per 10).
-* Particles: unsorted like TS, oldest replaced at the cap, react (player push) formula inferred,
-  collision is world-only (`PM_WORLD_ONLY`), and particles that spawn inside a brush (emitters right
-  under a sky) don't count as hits.
+* **Particle numbers** in `effects::fx` are read from the TS client's disassembly (the decompile
+  hides float arguments behind `__ftol`), including every call site's arguments, the `cl_fx`
+  tuning globals (`0x1018ca40..0x1018ca60`) and the cooldown slots. Notable corrections: the
+  `TS_GunSmoke` "45-55" argument is the animation frame rate (always 5 puffs); the muzzle flash
+  spreads `max(3, 9·fxmul)` sprites over `info+0x354` with base radius `info+0x358`, and silenced
+  shots draw a dim flash that fades out by 512 units; the shotgun's muzzle spray is
+  `TS_SpriteDebris`; glass is always 81 shards on a 9×9 grid; the explosion has no sparks, 24/48
+  fireball/smoke particles × the quality scale, and uses the muzzle light. Smoke-like particles
+  (life 0, no fade) live for one run of their animation, as in TS. Still to compare visually: the
+  sprite frame counts (they set those lifetimes) and the quad width of stretched particles (TS
+  scales it by the unnormalised view cross product; the port keeps `radius`).
+* Stretch lengths use TS's speed (units per 0.1 s): `stretchspeed` is a TS-unit factor in both
+  the map templates and the effects.
+* TSFrags type 2 passes an uninitialised direction to its scintille/sparks in TS (`0x1004be0c`);
+  the port uses the message's direction. No server sends type 2.
+* The explosion sound uses the port's fire pitch curve (see the first bullet), not TS's 400.
+* `EV_TS_Pump`'s smoke wisp direction is unclear in the decompile; `v_right` is used, as in the
+  silenced shot's second smoke call.
+* `PointVisible` traces from the cull origin with `PM_GLASS_IGNORE`, ignoring no entity; TS passes
+  the local player's entity index as the physent to ignore.
+* Particles: unsorted like TS, oldest replaced at the cap, collision is world-only
+  (`PM_WORLD_ONLY`), and particles that spawn inside a brush (emitters right under a sky) don't
+  count as hits. `Particle_Think` follows the disassembly: the random drift steers an accumulator
+  (`+0x68`) by at most `randomdelta` (3D length) and adds it times the think interval; react moves
+  the particle's *origin* sideways by `(128 − d)·|v|·dot/128·T·react` for every solid player within
+  128 units (local: predicted velocity, others: velocity between their last two updates); wind is
+  ×10 (TS units), physics-gated and skips resting particles; the gust segments chain through
+  `SharedRandomFloat/Long` as in TS. Think distances halve when zoomed (FOV < 40).
 * `weapons/sshell.wav` (TS shotgun-shell bounce) isn't shipped with TS 3.0; `sshell1/2.wav` are used.
 * Fog goes through TriAPI `Fog` (FWGS) instead of raw OpenGL; colours are converted from 0..1 to
   0..255.
@@ -156,7 +179,7 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 * **Weapon prediction** is a stopgap (below). Shotgun reload phases, kung fu, grenades, melee
   blocking and akimbo linked shots are not predicted (the server plays those; the shooter only
   sees them once prediction moves to `shared::weapons`).
-* Whizz volume formula approximated; particle `termvelocity` unused (TS doesn't read it either).
+* Particle `termvelocity` unused (TS doesn't read it either).
 * Player translucency, view-angle smoothing, idle sway (see deviations).
 
 ## Integration notes

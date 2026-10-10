@@ -18,6 +18,10 @@ pub const ORIENT_ROLL: u8 = 1;
 pub const ORIENT_FREE: u8 = 2;
 pub const ORIENT_AXIS: u8 = 3;
 
+/// `oncollide` for blood (`TS_BloodImpact`'s callback `0x10048710`): queue a decal at the hit
+/// ([`PSys::blood_hits`]) and kill the particle.
+pub const ONCOLLIDE_BLOOD: u8 = 4;
+
 #[derive(Clone, Debug)]
 pub struct Particle {
     pub kind: u8,
@@ -52,9 +56,14 @@ pub struct Particle {
     pub orient: u8,
     pub followaxis: Vec3,
     pub stretch: f32,
+    /// Explicit corners (TS type 4, drawn by `Quad_Emit`): the bullet trail.
+    pub corners: Option<[Vec3; 4]>,
+    /// World collision (TS: type 3 with `collide` set).
     pub collide: bool,
-    /// 0 bounce, 1 kill, 2 kill + spawn target, 3 spawn target + bounce.
+    /// 0 bounce, 1 kill, 2 kill + spawn target, 3 spawn target + bounce, [`ONCOLLIDE_BLOOD`].
     pub oncollide: u8,
+    /// Random-drift accumulator (`+0x68`), units per second.
+    pub drift: Vec3,
     pub target: Option<u16>,
     pub resting: bool,
     pub(crate) next_think: f64,
@@ -93,8 +102,10 @@ impl Default for Particle {
             orient: ORIENT_BILLBOARD,
             followaxis: [0.0, 0.0, 1.0],
             stretch: 0.0,
+            corners: None,
             collide: false,
             oncollide: 0,
+            drift: v::ZERO,
             target: None,
             resting: false,
             next_think: 0.0,
@@ -116,8 +127,6 @@ pub struct Wind {
     pub seed: i32,
     pub yaw: f32,
     pub base: f32,
-    start: f64,
-    seg: u32,
     seg_start: f64,
     seg_len: f32,
     from: f32,
@@ -125,42 +134,64 @@ pub struct Wind {
 }
 
 impl Wind {
+    /// New seed, direction and base speed from `TSPSys`; the current gust speed carries over and
+    /// the next think starts a new segment.
     pub fn set(&mut self, seed: i32, yaw: i32, speed: f32, now: f64) {
         let cur = self.speed(now);
-        *self = Wind { seed, yaw: yaw as f32, base: speed, start: now, seg: 0, seg_start: now, seg_len: 0.0, from: cur, to: cur };
-        self.next_segment(now);
-    }
-    fn next_segment(&mut self, now: f64) {
-        let s = (self.seed as u32).wrapping_add(self.seg * 2);
-        self.seg_len = crate::events::random::shared_random_float(s, 0.001, 1.0);
-        self.from = self.to;
-        self.to = crate::events::random::shared_random_float(s.wrapping_add(1), 0.0, self.base.max(0.0));
-        self.seg_start = now;
-        self.seg = self.seg.wrapping_add(1);
+        *self = Wind { seed, yaw: yaw as f32, base: speed, seg_start: now, seg_len: 0.0, from: cur, to: cur };
     }
     /// Cosine-interpolated gust speed (`CosineLerp` `0x10050760`).
     pub fn speed(&self, now: f64) -> f32 {
         if self.seg_len <= 0.0 {
-            return 0.0;
+            return self.to;
         }
         let t = (((now - self.seg_start) / self.seg_len as f64) as f32).clamp(0.0, 1.0);
         let k = (1.0 - (t * std::f32::consts::PI).cos()) * 0.5;
         self.from + (self.to - self.from) * k
     }
+    /// `Particle_Think`'s segment step (`0x10051a72`): once a segment ends, the next starts now
+    /// with target speed `SharedRF(seed, 0, base)` and length `SharedRF(seed, 0.001, 1)` from the
+    /// same seed, then the seed becomes `SharedRL(seed, 0, 30000)`.
     pub fn advance(&mut self, now: f64) {
-        let mut guard = 0;
-        while self.seg_len > 0.0 && now - self.seg_start >= self.seg_len as f64 && guard < 64 {
-            let end = self.seg_start + self.seg_len as f64;
-            self.next_segment(end);
-            guard += 1;
+        use crate::events::random::{shared_random_float, shared_random_long};
+        if now <= self.seg_start + self.seg_len as f64 {
+            return;
         }
-        if guard == 64 {
-            self.seg_start = now;
-        }
+        let s = self.seed as u32;
+        self.from = self.to;
+        self.to = shared_random_float(s, 0.0, self.base.max(0.0));
+        self.seg_start = now;
+        self.seg_len = shared_random_float(s, 0.001, 1.0);
+        self.seed = shared_random_long(s, 0, 30000);
     }
     pub fn velocity(&self, now: f64) -> Vec3 {
         let (s, c) = self.yaw.to_radians().sin_cos();
         v::scale([c, s, 0.0], self.speed(now))
+    }
+}
+
+/// Effect tuning that `cl_fx` sets (`FX_ApplyCvar` `0x10057d50`, `FX_AdaptQuality` `0x10057a70`).
+#[derive(Clone, Copy, Debug)]
+pub struct FxTuning {
+    /// `0x1018ca50`: particle count multiplier (1.5 for `cl_fx` 1/2, 0.7 for 0, `max(2q, 0.1)` adaptive).
+    pub mult: f32,
+    /// `0x1018ca44`: effect cooldown interval (0.05, 0.2 for `cl_fx` 0, `min(0.05/q, 0.3)` adaptive).
+    pub interval: f32,
+    /// `0x1018ca48`: puff cooldown interval (0.05, 0.3 for `cl_fx` 0, as `interval` adaptive).
+    pub puff_interval: f32,
+    /// `0x1018ca58`: muzzle dynamic lights allowed (q ≥ 0.3).
+    pub dlights: bool,
+    /// `0x1018ca54`: shell life (30, 5 for `cl_fx` 0, `max(30q, 2)` adaptive).
+    pub shell_life: f32,
+    /// `0x1018ca40`: explosion particle scale (1, 0.35 for `cl_fx` 0, `max(q, 0.25)` adaptive).
+    pub scale: f32,
+    /// `cl_fx` is not 0 (`TS_GunSmoke` reads the cvar).
+    pub smoke: bool,
+}
+
+impl Default for FxTuning {
+    fn default() -> Self {
+        FxTuning { mult: 1.5, interval: 0.05, puff_interval: 0.05, dlights: true, shell_life: 30.0, scale: 1.0, smoke: true }
     }
 }
 
@@ -172,8 +203,16 @@ pub struct PSys {
     pub wind: Wind,
     /// Template spawns requested by collisions (`oncollide` 2/3): (template, position).
     pub spawn_requests: Vec<(u16, Vec3)>,
+    /// Blood particles that hit the world this frame ([`ONCOLLIDE_BLOOD`]), for decals.
+    pub blood_hits: Vec<Vec3>,
     pub physics: bool,
     pub divisor: f32,
+    pub tuning: FxTuning,
+    /// View of the last transparent pass (effects cull against it).
+    pub cam: Camera,
+    /// `GetCullOrigin` (`0x10057270`) of the last pass: the eye in third person, else the view origin.
+    pub cull_origin: Vec3,
+    pub time_scale: f32,
 }
 
 impl Default for PSys {
@@ -185,8 +224,13 @@ impl Default for PSys {
             cooldown: [0.0; 128],
             wind: Wind::default(),
             spawn_requests: Vec::new(),
+            blood_hits: Vec::new(),
             physics: true,
             divisor: 1.0,
+            tuning: FxTuning::default(),
+            cam: Camera::default(),
+            cull_origin: v::ZERO,
+            time_scale: 1.0,
         }
     }
 }
@@ -258,11 +302,13 @@ impl PSys {
         true
     }
 
+    /// `PSys_Add` (`0x10050b60`): drag is at least 0.1.
     pub fn add(&mut self, mut p: Particle, now: f64) {
         if self.parts.len() >= self.max {
             // Oldest-first replacement keeps steady effects (rain) from starving new ones.
             self.parts.remove(0);
         }
+        p.drag = p.drag.max(0.1);
         p.spawn = now;
         p.prev = p.origin;
         p.next_think = now;
@@ -270,7 +316,32 @@ impl PSys {
         self.parts.push(p);
     }
 
-    /// Pushes particles near `org` away from it (`PSys_PushRadial` `0x100524c0`).
+    /// `SlowTime`: `x / max(ts, 0.01)` (cooldowns and light lifetimes stretch in slow motion).
+    pub fn slow(&self, x: f32) -> f32 {
+        x / self.time_scale.max(0.01)
+    }
+
+    /// `InViewCone` (`0x100570b0`) and `PointVisible` (`0x100572a0`, a point-hull trace from the
+    /// cull origin that must not hit anything), the culls most effects start with.
+    pub fn visible(&self, pos: Vec3) -> bool {
+        in_view_cone(&self.cam, pos) && r::player_trace(self.cull_origin, pos, 2, PM_GLASS_IGNORE as i32, -1).fraction >= 1.0
+    }
+
+    /// The velocity, resting and spin kick the line pushes give (`0x10052720`, `0x10052c80`).
+    fn kick(p: &mut Particle, dv: Vec3) {
+        p.vel = v::add(p.vel, dv);
+        if p.resting {
+            p.vel[2] = p.vel[2].abs() + 20.0;
+            p.resting = false;
+        }
+        if p.orient == ORIENT_ROLL {
+            p.avel[2] += r::random_float(-900.0, 900.0);
+        }
+    }
+
+    /// `PSys_PushRadial(org, NULL, radius, strength)` (`0x100524c0`): reacting particles within
+    /// `radius` get `strength·(radius − d)/radius` (TS units, ×10 here) away from `org`, without
+    /// the react factor. Resting ones hop.
     pub fn push_radial(&mut self, org: Vec3, radius: f32, strength: f32) {
         if !self.physics {
             return;
@@ -278,30 +349,70 @@ impl PSys {
         for p in self.parts.iter_mut().filter(|p| p.react > 0.0) {
             let d = v::sub(p.origin, org);
             let dist = v::len(d);
-            if dist < radius && dist > 0.01 {
-                let k = (1.0 - dist / radius) * strength * p.react;
-                p.vel = v::ma(p.vel, k / dist, d);
+            if dist > radius || radius <= 0.0 {
+                continue;
+            }
+            let f = (radius - dist) / radius;
+            let n = if dist > 0.0 { v::scale(d, 1.0 / dist) } else { v::ZERO };
+            p.vel = v::ma(p.vel, strength * f * 10.0, n);
+            if p.resting {
+                if p.vel[2] < 0.0 {
+                    p.vel[2] = p.vel[2].abs() * f * 0.5;
+                }
+                p.vel[2] += f * 100.0;
                 p.resting = false;
+            }
+            if p.orient == ORIENT_ROLL {
+                p.avel[2] += r::random_float(-900.0, 900.0) * f;
             }
         }
     }
 
-    /// Pushes reacting particles away from a bullet line (`PSys_PushAlongLine` `0x10052720`).
-    pub fn push_along_line(&mut self, a: Vec3, b: Vec3, strength: f32) {
+    /// `PSys_PushAlongLine(a, b, radius, swirl)` (`0x10052720`): reacting particles within
+    /// `radius` of the bullet line (TS's distance, see [`heron_height`]) and inside the sphere
+    /// `|mid − p| < |mid − b| − 100` are pushed *along* the bullet by `(radius − h)·react`, plus a
+    /// sideways swirl for some ammo.
+    pub fn push_along_line(&mut self, a: Vec3, b: Vec3, radius: f32, swirl: bool) {
         if !self.physics {
             return;
         }
         let ab = v::sub(b, a);
-        let l2 = v::dot(ab, ab).max(1e-3);
+        let len = v::len(ab);
+        if len <= 0.0 {
+            return;
+        }
+        let dir = v::scale(ab, 1.0 / len);
+        let mid = v::scale(v::add(a, b), 0.5);
+        let reach = v::dist(mid, b) - 100.0;
         for p in self.parts.iter_mut().filter(|p| p.react > 0.0) {
-            let t = (v::dot(v::sub(p.origin, a), ab) / l2).clamp(0.0, 1.0);
-            let c = v::ma(a, t, ab);
-            let d = v::sub(p.origin, c);
-            let dist = v::len(d);
-            if dist < 48.0 && dist > 0.01 {
-                let k = (1.0 - dist / 48.0) * strength * p.react * 4.0;
-                p.vel = v::ma(p.vel, k / dist, d);
-                p.resting = false;
+            if v::dist(mid, p.origin) >= reach {
+                continue;
+            }
+            let h = heron_height(v::dist(p.origin, a), v::dist(p.origin, b), len);
+            if h >= radius {
+                continue;
+            }
+            let k = (radius - h) * p.react * 10.0;
+            let mut dv = v::scale(dir, k);
+            if swirl {
+                dv = v::ma(dv, k, v::cross(dir, v::normalize(v::sub(p.origin, a))));
+            }
+            Self::kick(p, dv);
+        }
+    }
+
+    /// `PSys_BlastPush(org, dir, radius, fwd)` (`0x10052c80`, the muzzle blast): reacting
+    /// particles within `radius` of `org + dir̂·fwd` get `(radius − |dir|)/4` (TS units; the same
+    /// for every particle, as in TS) away from `org`.
+    pub fn blast_push(&mut self, org: Vec3, dir: Vec3, radius: f32, fwd: f32) {
+        if !self.physics {
+            return;
+        }
+        let c = v::ma(org, fwd, v::normalize(dir));
+        let k = (radius - v::len(dir)) * 0.25 * 10.0;
+        for p in self.parts.iter_mut().filter(|p| p.react > 0.0) {
+            if v::dist(c, p.origin) <= radius {
+                Self::kick(p, v::scale(v::normalize(v::sub(p.origin, org)), k));
             }
         }
     }
@@ -312,7 +423,10 @@ impl PSys {
         let wind = self.wind.velocity(now);
         let think_iv = (self.divisor / 30.0).max(dt);
         let physics = self.physics;
+        // Zoomed in, the think distances double (`gHUD.m_iFOV < 40`).
+        let zoom_scale = if (cam.fov as i32) < 40 { 0.5 } else { 1.0 };
         let mut requests = Vec::new();
+        let mut blood_hits = Vec::new();
         self.parts.retain_mut(|p| {
             // 1. death
             let anim_done = p.framerate <= 0.0;
@@ -339,33 +453,43 @@ impl PSys {
                 p.origin = v::ma(p.origin, dt, p.vel);
             }
             p.angles = v::ma(p.angles, dt, p.avel);
-            // 4. think
+            // 4. think (`Particle_Think` 0x10051270)
             if now >= p.next_think {
                 p.next_think = now + think_iv as f64;
-                let near = v::dist(p.origin, cam.origin) < 512.0;
-                if p.randomdelta > 0.0 && near {
-                    for i in 0..3 {
-                        let t = r::random_float(p.randvel_lo[i], p.randvel_hi[i]);
-                        p.vel[i] += (t - p.vel[i]).clamp(-p.randomdelta, p.randomdelta);
-                    }
+                let near = v::dist(p.origin, cam.origin) * zoom_scale < 512.0;
+                // Random drift: steer an accumulator toward a fresh random target by at most
+                // `randomdelta` (3D length), then add it to the velocity.
+                if p.randomdelta != 0.0 && near {
+                    let t = [0, 1, 2].map(|i| r::random_float(p.randvel_lo[i], p.randvel_hi[i]));
+                    let step = v::sub(t, p.drift);
+                    let len = v::len(step);
+                    let step = if len > p.randomdelta.abs() { v::scale(step, p.randomdelta.abs() / len) } else { step };
+                    p.drift = v::add(p.drift, step);
+                    p.vel = v::ma(p.vel, think_iv, p.drift);
                 }
-                if physics && p.react > 0.0 && near {
+                // React: players within 128 units push the particle's *origin* sideways, by how
+                // far it lies along their horizontal motion (`dot` < 0 pulls it in behind them).
+                if physics && p.react != 0.0 && !p.resting && near {
                     for (porg, pvel) in players {
                         let d = v::sub(p.origin, *porg);
                         let dist = v::len(d);
-                        if dist < 128.0 && dist > 0.01 {
-                            let k = (1.0 - dist / 128.0) * v::len2d(*pvel) * p.react * think_iv;
-                            p.vel = v::ma(p.vel, k / dist, d);
-                            p.resting = false;
+                        let speed = v::len2d(*pvel);
+                        if dist > 128.0 || dist <= 0.0 || speed <= 0.0 {
+                            continue;
                         }
+                        let (dn, vd) = (v::scale(d, 1.0 / dist), [pvel[0] / speed, pvel[1] / speed]);
+                        let dot = dn[0] * vd[0] + dn[1] * vd[1];
+                        let k = (128.0 - dist) * speed * dot / 128.0 * think_iv * p.react;
+                        p.origin[0] += dn[0] * k;
+                        p.origin[1] += dn[1] * k;
                     }
                 }
-                if p.wind != 0.0 {
-                    p.vel = v::ma(p.vel, think_iv * p.wind, wind);
-                    p.resting = false;
+                // Wind (TS units per 0.1 s, so ×10 here).
+                if physics && p.wind != 0.0 && !p.resting {
+                    p.vel = v::ma(p.vel, think_iv * p.wind * 10.0, wind);
                 }
             }
-            // 5. collision (map particles; world only)
+            // 5. collision (TS type-3 particles with `collide`; world only)
             if p.collide && !p.resting && now >= p.next_trace {
                 let dist = v::dist(p.origin, cam.origin);
                 let mut iv = (dist * (cam.fov / 90.0) / 8192.0).max(0.016);
@@ -398,6 +522,10 @@ impl PSys {
                                 requests.push((t, p.origin));
                             }
                         }
+                        ONCOLLIDE_BLOOD => {
+                            blood_hits.push(tr.endpos);
+                            return false;
+                        }
                         _ => {}
                     }
                 }
@@ -418,6 +546,7 @@ impl PSys {
             }
         }
         self.spawn_requests.extend(requests);
+        self.blood_hits.extend(blood_hits);
     }
 
     /// Drawing half: unsorted TriAPI quads (`Quad_Build`/`Quad_Emit`).
@@ -464,6 +593,14 @@ pub fn in_view_cone(cam: &Camera, org: Vec3) -> bool {
     k < 0.9 * (cam.fov.max(10.0) / 90.0).max(1.0)
 }
 
+/// TS's point-to-line distance (`PSys_PushAlongLine` 0x10052720 and the whizz in
+/// `EV_TS_FireBullets`): Heron's formula with `s − len` where `s − b` belongs, i.e.
+/// `2·sqrt(s(s − a))·(s − len)/len` for distances `a`, `b` to the ends of a `len` long line.
+pub fn heron_height(a: f32, b: f32, len: f32) -> f32 {
+    let s = (a + b + len) * 0.5;
+    2.0 * (s * (s - a)).max(0.0).sqrt() * (s - len) / len
+}
+
 /// The four corners (uv (0,0) (1,0) (1,1) (0,1)) for `p`.
 pub fn build_quad(p: &Particle, cam: &Camera) -> [Vec3; 4] {
     let (right, up) = match p.orient {
@@ -483,10 +620,14 @@ pub fn build_quad(p: &Particle, cam: &Camera) -> [Vec3; 4] {
         }
         _ => (cam.right, cam.up),
     };
+    if let Some(c) = p.corners {
+        return c;
+    }
     let stretchable = p.orient <= ORIENT_ROLL;
-    let speed = v::len(p.vel);
+    // `stretchspeed` multiplies TS's speed (units per 0.1 s).
+    let speed = v::len(p.vel) * 0.1;
     if stretchable && p.stretch > 0.01 && speed * p.stretch > 2.0 * p.radius {
-        let dir = v::scale(p.vel, 1.0 / speed);
+        let dir = v::normalize(p.vel);
         let half = speed * p.stretch * 0.5;
         let w = v::scale(v::cross(v::sub(cam.origin, p.origin), dir), p.radius / v::len(v::sub(cam.origin, p.origin)).max(1.0));
         let a = v::ma(p.origin, -half, dir);

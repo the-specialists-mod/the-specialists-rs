@@ -59,12 +59,13 @@ struct Quality {
     samples: [f32; 20],
     n: usize,
     next: f64,
+    next_adapt: f64,
     applied: f32,
 }
 
 impl Default for Quality {
     fn default() -> Self {
-        Quality { q: 1.0, samples: [0.0; 20], n: 0, next: 0.0, applied: -1.0 }
+        Quality { q: 1.0, samples: [0.0; 20], n: 0, next: 0.0, next_adapt: 0.0, applied: -1.0 }
     }
 }
 
@@ -114,9 +115,9 @@ pub fn paintball() -> bool {
     cvar(|c| c.paintball) != 0.0
 }
 
-/// Shell life `max(2, 30 q)`.
+/// Shell life (`0x1018ca54`: 30, 5 with `cl_fx 0`, `max(30q, 2)` adaptive).
 pub fn shell_life() -> f32 {
-    with(|fx| (30.0 * fx.quality.q).max(2.0))
+    with(|fx| fx.psys.tuning.shell_life)
 }
 
 /// TS keeps at most 64 shells: when a new one arrives, the oldest is killed (TS kept a ring of
@@ -138,8 +139,9 @@ pub fn shell_expired(seq: i32) -> bool {
 /// Whizz sounds alternate between channels 503 and 504.
 pub fn next_whizz_channel() -> i32 {
     with(|fx| {
+        let chan = 503 + (fx.whizz & 1) as i32;
         fx.whizz = fx.whizz.wrapping_add(1);
-        503 + (fx.whizz & 1) as i32
+        chan
     })
 }
 
@@ -152,12 +154,11 @@ pub fn add_client_bullet(b: ClientBullet) {
     });
 }
 
-/// Impact particles at a bullet hit (`TS_ImpactParticles`).
-pub fn impact(pos: Vec3, normal: Vec3, tex: u8, pellets: bool) {
-    let cam = view::origin();
+/// Impact particles at a bullet hit (`TS_ImpactParticles`); `bullet_type` 1 buckshot, 2 exit.
+pub fn impact(pos: Vec3, normal: Vec3, tex: u8, bullet_type: i32) {
     with(|fx| {
         let t = fx.time;
-        fx::impact(&mut fx.psys, t, cam, pos, normal, tex, pellets)
+        fx::impact(&mut fx.psys, t, pos, normal, tex, bullet_type)
     });
 }
 
@@ -276,15 +277,18 @@ pub fn on_ptakedam(b: &[u8]) {
 /// `TSFrags` (`0x1004bd50`).
 pub fn on_tsfrags(b: &[u8]) {
     let Some(f) = msg::TsFrags::decode(b) else { return };
-    let ts = state::with(|s| s.time_scale);
     with(|fx| {
         let t = fx.time;
         match f {
-            msg::TsFrags::Glass { origin, size, dir, force, .. } => fx::glass(&mut fx.psys, t, origin, size, dir, force),
-            msg::TsFrags::Explosion { origin, radius } => fx::explosion(&mut fx.psys, t, origin, radius, ts),
+            msg::TsFrags::Glass { origin, size, hit, dir, dmg_bits, force } => {
+                fx::glass(&mut fx.psys, t, origin, size, dir, hit, dmg_bits, force)
+            }
+            // TS passes the radius coord truncated to an int.
+            msg::TsFrags::Explosion { origin, radius } => fx::explosion(&mut fx.psys, t, origin, radius.trunc()),
+            // TS passes an uninitialised direction here (0x1004be0c); the message's is used.
             msg::TsFrags::Sparks { origin, dir } => {
-                fx::scintille(&mut fx.psys, t, origin, 6.0);
-                fx::sparks(&mut fx.psys, t, origin, dir, 12, 1.0, 300.0);
+                fx::scintille_metal(&mut fx.psys, t, origin, dir, 9.0);
+                fx::sparks(&mut fx.psys, t, origin, dir, 7, 1.15, 25.0);
             }
         }
     });
@@ -343,7 +347,11 @@ pub fn frame(time: f64, frametime: f32) {
     let fxq = cvar(|c| c.fx);
     let ts = state::with(|s| s.time_scale);
     let cam = view::camera();
+    let cull_origin = if view::is_third_person() { view::eye() } else { cam.origin };
     with(|fx| {
+        fx.psys.cam = cam;
+        fx.psys.cull_origin = cull_origin;
+        fx.psys.time_scale = ts;
         apply_quality(fx, fxq, frametime);
         let t = fx.time;
         fx.map.emit(&mut fx.psys, &cam, t, ts);
@@ -353,43 +361,67 @@ pub fn frame(time: f64, frametime: f32) {
 fn apply_quality(fx: &mut Fx, cl_fx: f32, frametime: f32) {
     let q = &mut fx.quality;
     if cl_fx != q.applied {
+        // FX_ApplyCvar (0x10057d50): cl_fx 1 and 2 start at full quality, anything else is low.
         q.applied = cl_fx;
-        fx.psys.max = if cl_fx <= 0.0 { 2048 } else { 4096 };
-        match cl_fx as i32 {
-            0 => {
-                q.q = 0.0;
-                fx.psys.divisor = 8.0;
-                fx.psys.physics = false;
-            }
-            2.. => {
-                q.q = 1.0;
-                fx.psys.divisor = 1.0;
-                fx.psys.physics = true;
-            }
-            _ => {}
-        }
+        let full = cl_fx == 1.0 || cl_fx == 2.0;
+        let ps = &mut fx.psys;
+        ps.max = if full { 4096 } else { 2048 };
+        ps.divisor = if full { 1.0 } else { 8.0 };
+        ps.physics = full;
+        ps.tuning = if full {
+            psys::FxTuning::default()
+        } else {
+            psys::FxTuning { mult: 0.7, interval: 0.2, puff_interval: 0.3, dlights: false, shell_life: 5.0, scale: 0.35, smoke: true }
+        };
+        q.samples = [0.0; 20];
+        q.n = 0;
+        q.next = 0.0;
+        q.next_adapt = 0.0;
     }
-    if cl_fx as i32 != 1 {
+    fx.psys.tuning.smoke = cl_fx != 0.0;
+    if cl_fx != 1.0 {
         return;
     }
-    q.samples[q.n % 20] = frametime;
-    q.n += 1;
-    if fx.time >= q.next {
-        q.next = fx.time + 0.1;
-        let cnt = q.n.min(20).max(1);
-        let avg10 = q.samples[..cnt].iter().sum::<f32>() / cnt as f32 * 100.0;
-        q.q = 1.0 - (avg10.clamp(1.11, 3.33) - 1.11) / 2.22;
-        fx.psys.divisor = if q.q > 0.75 {
-            1.0
-        } else if q.q > 0.5 {
-            2.0
-        } else if q.q > 0.25 {
-            4.0
-        } else {
-            6.0
-        };
-        fx.psys.physics = q.q > 0.374;
+    // FX_AdaptQuality (0x10057a70): sample the frame time every 0.1 s into a ring of 20; every
+    // second derive the quality from the ring's mean (in 1/100 s, 1.11..3.33 maps to 1..0).
+    if fx.time < q.next {
+        return;
     }
+    q.next = fx.time + 0.1;
+    q.samples[q.n % 20] = frametime * 100.0;
+    q.n += 1;
+    if fx.time < q.next_adapt {
+        return;
+    }
+    q.next_adapt = fx.time + 1.0;
+    let avg = q.samples.iter().sum::<f32>() * 0.05;
+    q.q = 1.0 - (avg.clamp(1.11, 3.33) - 1.11) * 0.450_450_45;
+    if q.q == 0.0 {
+        return;
+    }
+    let qq = q.q;
+    let ps = &mut fx.psys;
+    let interval = (0.05 / qq).min(0.3);
+    let smoke = ps.tuning.smoke;
+    ps.tuning = psys::FxTuning {
+        mult: (qq * 2.0).max(0.1),
+        interval,
+        puff_interval: interval,
+        dlights: qq >= 0.3,
+        shell_life: (qq * 30.0).max(2.0),
+        scale: qq.max(0.25),
+        smoke,
+    };
+    ps.divisor = if qq < 0.374 {
+        6.0
+    } else if qq < 0.599 {
+        4.0
+    } else if qq < 0.749 {
+        2.0
+    } else {
+        1.0
+    };
+    ps.physics = qq > 0.374;
 }
 
 /// `HUD_AddEntity` (`0x100447f0`).
@@ -490,22 +522,15 @@ pub fn draw_transparent() {
     let scope_sprite = sprites.scope;
     with(|fx| fx.sprites = Some(sprites));
 
-    // Players for particle reaction.
-    let mut players = Vec::new();
-    for i in 1..=r::max_clients().min(32) {
-        if visible[i as usize] {
-            if let Some(e) = r::entity(i) {
-                players.push((e.origin, e.curstate.velocity));
-            }
-        }
-    }
-    let (dt, requests) = with(|fx| {
+    let players = react_players();
+    let (dt, requests, blood_hits) = with(|fx| {
         let dt = fx.frametime * ts;
         fx.draws += 1;
         let t = fx.time;
         fx.psys.update(t, dt, &cam, &players);
-        (dt, std::mem::take(&mut fx.psys.spawn_requests))
+        (dt, std::mem::take(&mut fx.psys.spawn_requests), std::mem::take(&mut fx.psys.blood_hits))
     });
+    blood_decals(&blood_hits);
     with(|fx| {
         let t = fx.time;
         for (tmpl, pos) in requests {
@@ -518,6 +543,46 @@ pub fn draw_transparent() {
     }
     with(|fx| fx.visible = [false; 33]);
     fog_end();
+}
+
+/// Players that push reacting particles (`Particle_Think` 0x10051270): every solid player, with
+/// the local player's predicted velocity (`simvel`) and the others' velocity between their last
+/// two updates.
+fn react_players() -> Vec<(Vec3, Vec3)> {
+    let local = r::local_player().map_or(0, |e| e.index);
+    let local_vel = state::with(|s| s.local_velocity);
+    let mut players = Vec::new();
+    for i in 1..=r::max_clients().min(32) {
+        let Some(e) = r::entity(i) else { continue };
+        if e.player == 0 || e.curstate.solid == 0 {
+            continue;
+        }
+        let vel = if i == local {
+            local_vel
+        } else {
+            let dt = e.curstate.msg_time - e.prevstate.msg_time;
+            if dt > 0.0 { v::scale(v::sub(e.curstate.origin, e.prevstate.origin), 1.0 / dt) } else { v::ZERO }
+        };
+        players.push((e.origin, vel));
+    }
+    players
+}
+
+/// `TS_BloodImpact`'s collision callback (`0x10048710`): a `{blood1..8}` decal where a drop hit
+/// (with `r_decals`), and `player/splat.wav` one time in ten.
+fn blood_decals(hits: &[Vec3]) {
+    for &pos in hits {
+        let name = format!("{{blood{}", r::random_long(1, 8));
+        if goldsrc::client::engine().cvar_float(c"r_decals") != 0.0 {
+            let idx = r::decal_index(&name);
+            if idx != 0 {
+                r::decal_shoot(idx, 0, 0, pos, 0);
+            }
+        }
+        if r::random_long(0, 100) > 90 {
+            r::play_sound(-1, pos, CHAN_AUTO as i32, "player/splat.wav", 1.0, 0.99, 0, crate::events::slow_pitch());
+        }
+    }
 }
 
 fn cam_hardware() -> bool {

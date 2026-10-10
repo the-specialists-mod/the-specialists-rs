@@ -71,6 +71,8 @@ pub struct Shared {
     /// switched-on items, 0 while `m_flNextAttack > 0`). Written by prediction, read by
     /// `DrawLaserDots` to pin the dot to the crosshair.
     pub items_ready: i32,
+    /// Predicted local velocity (`from.client.velocity`, TS's `simvel`), for particle react.
+    pub local_velocity: [f32; 3],
     /// Third-person camera active (render writes; HUD may read for the crosshair).
     pub third_person: bool,
     /// Spectator globals from `HUD_ProcessPlayerState` (g_iUser1/2/3): mode, target, flags.

@@ -141,13 +141,13 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
             });
             let frames = r::spr_frames(s.beam_anim).max(1);
             let frame = ((now * 20.0 * ts as f64) as i32).rem_euclid(frames);
-            if let Some(o) = beam_origin {
-                if set_sprite(s.beam_anim, frame) {
-                    tri!(RenderMode(kRenderTransAdd as i32));
-                    tri!(CullFace(TRICULLSTYLE_TRI_NONE));
-                    let end = v::ma(o, v::dist(o, hit).min(96.0), v::normalize(d));
-                    beam_quad(cam, o, end, 0.6, rgb, 0.6);
-                }
+            if let Some(o) = beam_origin
+                && set_sprite(s.beam_anim, frame)
+            {
+                tri!(RenderMode(kRenderTransAdd as i32));
+                tri!(CullFace(TRICULLSTYLE_TRI_NONE));
+                let end = v::ma(o, v::dist(o, hit).min(96.0), v::normalize(d));
+                beam_quad(cam, o, end, 0.6, rgb, 0.6);
             }
         }
     }

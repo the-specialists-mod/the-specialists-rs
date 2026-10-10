@@ -70,7 +70,11 @@ switched off in 3.0, or an SDK constant kept for completeness:
 * No motion-blur ghosts or TS split-bone studio renderer (`HUD_GetStudioModelInterface` returns 0).
 * The corpse "bullet dance" isn't wired, and the death animation wait is a fixed 1.2 s.
 * No map votes, and no HLTV director messages.
-* The view climbs steeply under sustained fire. Each shot's kick is applied once, so this is
-  probably TS's persistent recoil, but it hasn't been compared against TS.
+* Recoil was checked against the decomp: the client `VKickback` (`0x10008230`), `V_ApplyKick`
+  (`0x10057ed0`) and `ViewShake` (`0x10057fa0`/`0x10058000`) match the port's constants, and
+  each shot permanently raises the view by `view_kick·0.85` (yaw by weapon class; ×0.775
+  silenced, ×2/3 with double fire rate). Nothing pulls it back (`TSKickAlign` is unused), so the
+  steep climb under sustained fire is TS behaviour. A side-by-side check of the feel is still
+  open.
 * Not tested with real keyboard and mouse, or on a Steam GoldSrc client (only FWGS clients). See
   `docs/validation.md`.

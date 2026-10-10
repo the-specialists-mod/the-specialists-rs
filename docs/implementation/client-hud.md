@@ -151,6 +151,15 @@ text, teammate markers, crosshair ID, status panel, power-up, objective markers)
 `wires/*`, `compass/uparrow/downarrow/cursor`. The crosshair gap is `22 (12 with the laser on) +
 state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
 
+Divesteps (1004ef50, drawn when not scoped or in third person; checked against the TS binary):
+the three sprites at `(cx − 40, cy − 40)`. Sprite i is red (195, 45, 45) when `81 − free slots`
+≥ 42 / 52 / 62; the threshold helpers (1004eec0/1004eef0/1004ef20) compute
+`81 − slots − f()` with `f` (1004eeb0) a stub returning 0, so the decompile's
+`HUD_GetUserEntity` term is that 0. Otherwise the sprite has the base colour (red while
+`NextStunt ≥ 0.01`, else the HUD colour) ×1 for the band the pitch is in (< −10°, −10..10°,
+> 10°) and ×0.5 for the other two. The pitch dot (2×2, alpha 100, base colour) is at
+`(cx − 32·cos a, cy + 32·sin a)`, `a = clamp(3·pitch, ±90°)`.
+
 Laser HUD (read from the TS binary, since the decompile hides the `__ftol` arguments):
 * `DrawLaserDots` (1004e6f0): 2×2 fills, alpha 255, in the local player's `PlInfo` laser colour.
   When `state.items_ready` (TS `0x1018a628`: the `from` state's switched-on items, 0 while
@@ -215,8 +224,6 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   arrives through `IN_ClientMoveEvent`.
 * The crosshair and its laser-range number stay at the screen centre in third person; TS centres
   them on the projected view-trace end, as `DrawLaserDots` here does.
-* Divestep sprite availability thresholds (used slots < 42/52/62) are inferred from a garbled
-  decompile.
 
 ## 9. Tests and results
 

@@ -515,20 +515,53 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
     }
 }
 
-/// Divestep sprites around the crosshair: top/centre/bottom stunt indicators, red while the
-/// stunt cooldown (`NextStunt`) runs or the load is too heavy (used slots ≥ 42/52/62), plus a
-/// pitch dot.
+/// Divestep sprites around the crosshair (1004ef50): top/centre/bottom dive indicators plus a
+/// pitch dot. See [`divestep_layout`].
 fn draw_divesteps(dc: &Dc, h: &Hud, cx: i32, cy: i32) {
-    let cooldown = h.next_stunt >= 0.01;
-    let used = 81 - h.slots as i32;
-    for (i, limit) in [42, 52, 62].into_iter().enumerate() {
-        let ok = !cooldown && used < limit;
-        dc.spr(dc.g.ts.divestep[i], cx - 40, cy - 40, if ok { dc.hud } else { RED });
+    let (sprites, (dx, dy), dot) = divestep_layout(h.next_stunt >= 0.01, h.slots, engine().view_angles()[0], dc.hud, (cx, cy));
+    for (i, rgb) in sprites.into_iter().enumerate() {
+        dc.spr(dc.g.ts.divestep[i], cx - 40, cy - 40, rgb);
     }
-    let pitch = engine().view_angles()[0];
+    dc.fill(dx, dy, 2, 2, dot, 100);
+}
+
+/// Colours of the three divestep sprites, and the pitch dot's position and colour (pure, from the
+/// TS binary at 1004ef50 and the threshold helpers 1004eec0/1004eef0/1004ef20).
+///
+/// Sprite `i` is red when the load is too heavy for that dive (`81 − free slots` ≥ 42, 52, 62).
+/// Otherwise it has the base colour (red while the stunt cooldown runs, else the HUD colour), at
+/// full strength for the band the view pitch points at (< −10°, −10..10°, > 10°) and halved for
+/// the other two. The dot sits 32 px from the centre at angle `clamp(3·pitch, ±90°)`, on the left:
+/// `(cx − 32·cos a, cy + 32·sin a)`, in the base colour.
+fn divestep_layout(
+    cooldown: bool,
+    free_slots: u8,
+    pitch: f32,
+    hud: [i32; 3],
+    (cx, cy): (i32, i32),
+) -> ([[i32; 3]; 3], (i32, i32), [i32; 3]) {
+    let base = if cooldown { RED } else { hud };
+    let used = 81 - free_slots as i32;
+    let band = if pitch < -10.0 {
+        0
+    } else if pitch > 10.0 {
+        2
+    } else {
+        1
+    };
+    let limits = [42, 52, 62];
+    let sprites = [0, 1, 2].map(|i| {
+        if used >= limits[i] {
+            RED
+        } else if i == band {
+            base
+        } else {
+            half(base)
+        }
+    });
     let a = (pitch * 3.0).clamp(-90.0, 90.0).to_radians();
-    let rgb = if cooldown { RED } else { dc.hud };
-    dc.fill(cx + (a.cos() * 36.0) as i32, cy + (a.sin() * 36.0) as i32, 2, 2, rgb, 100);
+    let dot = ((cx as f32 - a.cos() * 32.0) as i32, (a.sin() * 32.0 + cy as f32) as i32);
+    (sprites, dot, base)
 }
 
 #[cfg(test)]
@@ -539,6 +572,22 @@ mod tests {
     fn give(h: &mut Hud, id: i32) {
         let (r, b) = grid_pos(id).unwrap();
         h.grid[r][b] = Slot { id, clip: 5 };
+    }
+
+    #[test]
+    fn divesteps_follow_ts_binary() {
+        let hud = [100, 200, 60];
+        let c = (320, 240);
+        // Level view, light load: centre band full, the others halved; dot 32 px left.
+        let (s, dot, base) = divestep_layout(false, 70, 0.0, hud, c);
+        assert_eq!(s, [half(hud), hud, half(hud)]);
+        assert_eq!((dot, base), ((288, 240), hud));
+        // Looking down 30° (clamped to 90°): bottom band, dot straight below.
+        let (s, dot, _) = divestep_layout(false, 70, 30.0, hud, c);
+        assert_eq!((s[2], dot), (hud, (320, 272)));
+        // 81 - 25 = 56 used: top and centre dives too heavy; cooldown turns the rest red.
+        let (s, _, base) = divestep_layout(true, 25, -20.0, hud, c);
+        assert_eq!((s, base), ([RED, RED, half(RED)], RED));
     }
 
     #[test]
