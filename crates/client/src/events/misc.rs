@@ -5,6 +5,7 @@ use super::fire::{eject_shell, weapon_body};
 use super::impact::texture_type;
 use super::{Args, first_person_view_model, info, slow_pitch};
 use crate::{effects, state, view};
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use shared::weapons::tables;
@@ -22,7 +23,7 @@ fn in_eye(a: &Args) -> bool {
 }
 
 fn sound(a: &Args, chan: u32, sample: &str, vol: f32) {
-    r::play_sound(a.entindex, a.origin, chan as i32, sample, vol, r::ATTN_NORM, 0, slow_pitch());
+    engine().ev_play_sound(a.entindex, a.origin, chan as i32, sample, vol, r::ATTN_NORM, 0, slow_pitch());
 }
 
 /// `EV_TS_Empty` (`0x100424e0`).
@@ -94,7 +95,7 @@ pub fn reload(a: &Args) {
                 && (a.is_local() || effects::player_visible(a.entindex))
             {
                 let m = r::model_index(model);
-                let pos = r::entity(a.entindex).map_or(a.origin, |e| e.attachment[0]);
+                let pos = engine().entity(a.entindex).map_or(a.origin, |e| e.attachment[0]);
                 for _ in 0..n {
                     let vel = v::add(a.velocity, [r::random_float(-30.0, 30.0), r::random_float(-30.0, 30.0), -r::random_float(0.0, 30.0)]);
                     eject_shell(pos, vel, a.angles, m, snd);
@@ -135,7 +136,7 @@ fn melee_material_sound(tex: u8, pos: Vec3) {
         _ => &["player/pl_step1.wav", "player/pl_step2.wav"],
     };
     if let Some(s) = list.get(r::random_long(0, list.len() as i32 - 1).max(0) as usize) {
-        r::play_sound(0, pos, CHAN_STATIC as i32, s, 0.9, r::ATTN_NORM, 0, slow_pitch());
+        engine().ev_play_sound(0, pos, CHAN_STATIC as i32, s, 0.9, r::ATTN_NORM, 0, slow_pitch());
     }
 }
 

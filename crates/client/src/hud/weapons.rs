@@ -172,7 +172,7 @@ pub fn think_sounds(_dt: f32) {
     let Some(me) = e.local_player() else { return };
     let (ts, power) = (crate::state::with(|s| s.time_scale), super::with(|h| h.kfu_power));
     let origin = me.curstate.origin;
-    let run = |cell: &Cell<(i32, f32)>, active: bool, start_vol: f32, fade: f32, ch: i32, sample: &std::ffi::CStr| {
+    let run = |cell: &Cell<(i32, f32)>, active: bool, start_vol: f32, fade: f32, ch: i32, sample: &str| {
         let (mut st, mut vol) = cell.get();
         if !active {
             if st == 2 {
@@ -194,8 +194,8 @@ pub fn think_sounds(_dt: f32) {
         }
         cell.set((st, vol));
     };
-    run(&HEART.0, ts < 1.0, 1.0, 0.01, 501, c"player/heartbeat1.wav");
-    run(&BREATH.0, power < 50.0, 0.7, 0.005, 502, c"player/breathe2.wav");
+    run(&HEART.0, ts < 1.0, 1.0, 0.01, 501, "player/heartbeat1.wav");
+    run(&BREATH.0, power < 50.0, 0.7, 0.005, 502, "player/breathe2.wav");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -249,7 +249,7 @@ fn crosshair_centre(dc: &Dc) -> (i32, i32) {
     let Some(me) = e.local_player() else { return (-1, -1) };
     let start = crate::view::eye();
     let end = goldsrc::ext::render::vec3::ma(start, 8192.0, crate::view::camera().forward);
-    e.player_trace(start, end, me.index).and_then(|(_, hit, _)| e.world_to_screen(hit, &dc.g.screen)).unwrap_or((-1, -1))
+    e.crosshair_trace(start, end, me.index).and_then(|(_, hit, _)| e.world_to_screen(hit, &dc.g.screen)).unwrap_or((-1, -1))
 }
 
 /// `DrawLaserDots` (1004e6f0): 2×2 dots in the local laser colour (`PlInfo`). While the gun may

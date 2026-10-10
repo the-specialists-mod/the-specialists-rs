@@ -5,6 +5,7 @@
 //! `color -= dt*fadespeed*100`, gravity 1.0 = 800 u/s^2. Velocities are stored in units per
 //! second here (TS keeps units per 0.1 s; templates are converted on spawn).
 
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::ext::tri;
 use goldsrc::sys::*;
@@ -278,7 +279,7 @@ impl PSys {
         if let Some(i) = self.sprites.iter().position(|s| s.name.eq_ignore_ascii_case(name)) {
             return (self.sprites[i].h != 0).then_some(i as u16);
         }
-        let h = r::spr_load(name);
+        let h = engine().spr_load(name);
         let (model, frames) = if h != 0 { (r::sprite_model(h), r::spr_frames(h).max(1)) } else { (std::ptr::null(), 1) };
         if h == 0 || model.is_null() {
             goldsrc::client::engine().print(&format!("WARNING! cannot found {name}\n"));

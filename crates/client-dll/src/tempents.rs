@@ -4,6 +4,7 @@
 //! `frametime *= g_flTimeScale` (temp entities slow down in slow motion) and the TS shell sound
 //! (`TempEnt_PlayShellSound` `0x100569a0`) on the first bounce.
 
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, vec3 as v};
 use goldsrc::sys::*;
 use goldsrc::{efx, ev};
@@ -30,7 +31,7 @@ fn shell_sound(t: &mut TEMPENTITY) {
     };
     t.entity.curstate.iuser1 = 0;
     let pitch = (ts_client::events::slow_pitch() as f32 * r::random_float(0.9, 1.3)) as i32;
-    r::play_sound(-1, t.entity.origin, CHAN_AUTO as i32, sample, r::random_float(0.1, 0.3), 1.9, 0, pitch);
+    engine().ev_play_sound(-1, t.entity.origin, CHAN_AUTO as i32, sample, r::random_float(0.1, 0.3), 1.9, 0, pitch);
 }
 
 /// # Safety
@@ -126,7 +127,7 @@ pub unsafe fn update(
                     }
                 }
             } else if p.flags & FTENT_PLYRATTACHMENT as i32 != 0 {
-                if let Some(c) = r::entity(p.clientIndex as i32) {
+                if let Some(c) = engine().entity(p.clientIndex as i32) {
                     p.entity.origin = v::add(c.origin, p.tentOffset);
                 }
             } else if p.flags & FTENT_SINEWAVE as i32 != 0 {

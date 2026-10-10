@@ -115,7 +115,7 @@ pub fn init() {
 /// `CHudSpectator::VidInit` (`0x10022fe0`). TS also loads the overview sprites (iplayer*,
 /// tile, camera, laserbeam); without the overview only the crosshair is used.
 pub fn vid_init() {
-    let h = r::spr_load("sprites/crosshairs.spr");
+    let h = engine().spr_load("sprites/crosshairs.spr");
     with(|s| s.crosshair = h);
 }
 
@@ -181,8 +181,8 @@ fn set_modes_in(s: &mut Spectator, st: &mut state::Shared, mode: i32, pip: i32, 
 
 /// A director target must be another, present player (`0x100236d0`).
 fn valid_player(idx: i32) -> bool {
-    let local = r::local_player().map_or(0, |p| p.index);
-    idx > 0 && idx != local && r::entity(idx).is_some_and(|e| e.player != 0 && !e.model.is_null())
+    let local = engine().local_player().map_or(0, |p| p.index);
+    idx > 0 && idx != local && engine().entity(idx).is_some_and(|e| e.player != 0 && !e.model.is_null())
 }
 
 pub fn set_modes(mode: i32, pip: i32) {
@@ -348,7 +348,7 @@ pub fn calc_refdef(p: &mut ref_params_t) {
     if mode == obs::IN_EYE {
         in_eye_position(target, &mut p.vieworg, &mut p.viewangles);
     }
-    let weaponmodel = (target != 0).then(|| r::entity(target)).flatten().map(|t| t.curstate.weaponmodel);
+    let weaponmodel = (target != 0).then(|| engine().entity(target)).flatten().map(|t| t.curstate.weaponmodel);
     match weaponmodel {
         Some(wm) if mode == obs::IN_EYE => in_eye_gun(p, target, wm),
         _ => {
@@ -367,7 +367,7 @@ pub fn calc_refdef(p: &mut ref_params_t) {
 /// `PM_SpectatorMove` flags what to smooth when it follows a target: origins in chase locked,
 /// both in the locked view and in-eye (where the in-eye position replaces them afterwards).
 fn smooth(p: &mut ref_params_t, mode: i32, target: i32) {
-    let following = target != 0 && r::entity(target).is_some_and(|e| e.player != 0);
+    let following = target != 0 && engine().entity(target).is_some_and(|e| e.player != 0);
     let (smooth_angles, smooth_origin) = match mode {
         _ if !following => (false, false),
         obs::CHASE_LOCKED => (false, true),
@@ -433,7 +433,7 @@ fn interpolate_angles(a: Vec3, b: Vec3, frac: f32) -> Vec3 {
 /// standing, none while `NO_VIEW` stunts are on) and its angles with the model pitch undone. TS
 /// scales the pitch by -π where the SDK uses -3. A dead target (not solid) rolls 80° and drops 8.
 fn in_eye_position(target: i32, org: &mut Vec3, ang: &mut Vec3) {
-    let Some(e) = r::entity(target).filter(|e| e.player != 0) else { return };
+    let Some(e) = engine().entity(target).filter(|e| e.player != 0) else { return };
     *org = e.origin;
     *ang = e.angles;
     ang[0] *= -std::f32::consts::PI;

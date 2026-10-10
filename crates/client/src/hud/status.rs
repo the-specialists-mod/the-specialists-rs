@@ -148,7 +148,7 @@ fn crosshair_trace() -> Option<(i32, u8, String)> {
     let start = [me.origin[0] + vh[0], me.origin[1] + vh[1], me.origin[2] + vh[2]];
     let (f, _, _) = e.angle_vectors(e.view_angles());
     let end = [start[0] + f[0] * 8192.0, start[1] + f[1] * 8192.0, start[2] + f[2] * 8192.0];
-    let (_, _, idx) = e.player_trace(start, end, me.index)?;
+    let (_, _, idx) = e.crosshair_trace(start, end, me.index)?;
     let ent = e.entity(idx)?;
     if ent.player == 0 || !(1..=64).contains(&idx) {
         return None;

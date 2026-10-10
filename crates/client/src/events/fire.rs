@@ -6,6 +6,7 @@ use super::random::shared_random_float;
 use super::{Args, fire_pitch, first_person_view_model, info, slow_pitch, time_scale};
 use crate::effects::psys::heron_height;
 use crate::{effects, state, view};
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use shared::weapons::tables;
@@ -170,7 +171,7 @@ pub fn eject_shell(origin: Vec3, vel: Vec3, angles: Vec3, model: i32, snd: i32) 
 }
 
 fn player_attachment(entindex: i32, n: usize) -> Option<Vec3> {
-    r::entity(entindex).map(|e| e.attachment[n])
+    engine().entity(entindex).map(|e| e.attachment[n])
 }
 
 /// Effects at a world position (third person and other players), plus the shell.
@@ -214,7 +215,7 @@ fn fire_sound(a: &Args, id: i32, silenced: bool) {
     if sample.is_empty() {
         return;
     }
-    r::play_sound(a.entindex, a.origin, CHAN_WEAPON as i32, &format!("weapons/{sample}"), vol, attn, 0, fire_pitch());
+    engine().ev_play_sound(a.entindex, a.origin, CHAN_WEAPON as i32, &format!("weapons/{sample}"), vol, attn, 0, fire_pitch());
 }
 
 fn bullets_for(a: &Args, s: &Shot, src: Vec3, seed: i32, f1: f32, f2: f32) {
@@ -368,7 +369,7 @@ fn whizz(b: &Bullets, end: Vec3) {
     if h < 75.0 {
         let chan = effects::next_whizz_channel();
         let snd = format!("weapons/whizz{}.wav", r::random_long(1, 5));
-        r::play_sound(-1, eye, chan, &snd, (2.0 / (h + 0.1)).min(1.0), 0.8, 0, slow_pitch());
+        engine().ev_play_sound(-1, eye, chan, &snd, (2.0 / (h + 0.1)).min(1.0), 0.8, 0, slow_pitch());
     }
 }
 

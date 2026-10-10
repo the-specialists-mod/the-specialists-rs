@@ -8,6 +8,7 @@
 use crate::effects::psys::Camera;
 use crate::{effects, state};
 use goldsrc::Global;
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Cvar, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use shared::ts::stunt;
@@ -398,7 +399,7 @@ extern "C" fn cmd_firstperson() {
 /// `TSFade` (`0x1004c1e0`): stored with start = now; applied every frame in `calc_refdef`.
 pub fn on_tsfade(b: &[u8]) {
     if let Some(f) = shared::protocol::effects::TsFade::decode(b) {
-        let now = r::client_time();
+        let now = engine().client_time();
         with(|w| w.fade = Some((now, state_fade::Fade { duration: f.duration, hold: f.hold, rgba: f.rgba })));
     }
 }
@@ -423,7 +424,7 @@ pub fn ease_fov(cur: f32, target: f32, ft: f32) -> f32 {
 /// SDK's `HUD_Frame(double time)` does), not an absolute time.
 pub fn frame(frametime: f64) {
     let ft = (frametime as f32).clamp(0.0, 0.25);
-    let time = r::client_time() as f64;
+    let time = engine().client_time() as f64;
     with(|w| {
         w.last_frame = time;
         w.frametime = ft;
@@ -529,7 +530,7 @@ pub fn kick(view_kick: f32, class: u8, silenced: bool, double_rate: bool) {
 /// Call once per shot, with `runfuncs` only.
 pub fn kick_angles(pitch: f32, yaw: f32, silenced: bool) {
     let ts = state::with(|s| s.time_scale);
-    let now = r::client_time() as f64;
+    let now = engine().client_time() as f64;
     with(|w| {
         w.kick_target[0] -= pitch;
         w.kick_target[1] += yaw;
@@ -644,7 +645,7 @@ fn finish(w: &mut View, p: &mut ref_params_t) {
 /// `V_StopPitchDrift` (`0x100672f0`): TS input calls it while the mouse or the look keys move
 /// the view (`CL_AdjustAngles` 0x10026330, `IN_MouseMove` 0x100274d0).
 pub fn stop_pitch_drift() {
-    let now = r::client_time();
+    let now = engine().client_time();
     with(|w| w.drift.stop(now));
 }
 
@@ -761,8 +762,7 @@ fn smooth_model_z(cur: f32, z: f32, ft: f32) -> f32 {
 fn calc_normal(p: &mut ref_params_t) {
     let ts = state::with(|s| s.time_scale).clamp(0.01, 1.0);
     let dead = p.health <= 0;
-    let local = r::local_player();
-    let iuser4 = local.as_ref().map_or(0, |e| e.curstate.iuser4);
+    let iuser4 = engine().local_player().map_or(0, |e| e.curstate.iuser4);
     let bob_level = cv(|c| c.bob);
     let waterdist = cv(|c| c.waterdist);
     let (camtype, cb, cr, cu) = (cv(|c| c.camtype) as i32, cv(|c| c.cam_back), cv(|c| c.cam_right), cv(|c| c.cam_up));
@@ -778,7 +778,7 @@ fn calc_normal(p: &mut ref_params_t) {
         centerspeed: cv(|c| c.centerspeed),
         frametime: ft,
         idealpitch: p.idealpitch,
-        now: r::client_time(),
+        now: engine().client_time(),
     };
     with(|w| w.drift.update(&drift, &mut p.cl_viewangles[0]));
 
@@ -788,7 +788,7 @@ fn calc_normal(p: &mut ref_params_t) {
     let translucent = !state::with(|s| s.dead) || e.demo_playing() || e.demo_recording();
     let on_player = crate::hud::with(|h| h.crosshair_id.is_some());
     let transparency = cv(|c| c.thirdtransparency) as i32 != 0;
-    if let Some(ent) = r::local_player() {
+    engine().with_local_player_mut(|ent| {
         if translucent {
             let amt = with(|w| {
                 w.local_amt = local_amt_step(w.local_amt, on_player, transparency, ft != 0.0);
@@ -800,7 +800,7 @@ fn calc_normal(p: &mut ref_params_t) {
             ent.curstate.rendermode = kRenderNormal as i32;
             ent.curstate.renderamt = 255;
         }
-    }
+    });
 
     let third = with(|w| {
         // Death forces third person (TS: `TSHealth` 0); leaving death returns.
@@ -885,8 +885,7 @@ fn calc_normal(p: &mut ref_params_t) {
 
     // Third-person camera (§7.4).
     if third {
-        let ent = r::local_player();
-        let ent_org = ent.as_ref().map_or(p.simorg, |e| e.origin);
+        let ent_org = engine().local_player().map_or(p.simorg, |e| e.origin);
         let vh = p.viewheight[2];
         let state = CamState { ducked: vh < 28.0 && vh != 0.0, alive: !dead, stunt: iuser4 & 0x130c30 != 0, ft };
         let (back, right_ofs, up_ofs) = cam_base(camtype, cb, cr, cu);
@@ -909,7 +908,7 @@ fn calc_normal(p: &mut ref_params_t) {
             p.vieworg = if tr.fraction != 1.0 { v::add(v::ma(tr.endpos, 4.0, tr.plane.normal), [0.0, 0.0, 1.0]) } else { want };
         }
         p.viewangles = cam_angles;
-        if let Some(e) = ent {
+        engine().with_local_player_mut(|e| {
             // The model's z eases at rate 16 (TS `0x10191d94`) so stair steps and landings don't
             // jerk the body in front of the camera.
             let z = with(|w| {
@@ -924,7 +923,7 @@ fn calc_normal(p: &mut ref_params_t) {
             e.curstate.angles[0] = pitch;
             e.prevstate.angles[0] = pitch;
             e.latched.prevangles[0] = pitch;
-        }
+        });
     } else {
         with(|w| w.model_z = None);
     }
@@ -1054,7 +1053,7 @@ pub fn fade_color(ts: f32, slowfade: bool, fade: Option<(f32, state_fade::Fade)>
 fn write_screen_fade(_time: f32) {
     let ts = state::with(|s| s.time_scale);
     let slowfade = cv(|c| c.slowfade) != 0.0;
-    let t = r::client_time();
+    let t = engine().client_time();
     let fade = with(|w| w.fade);
     let c = fade_color(ts, slowfade, fade, t);
     let mut sf = screenfade_s {

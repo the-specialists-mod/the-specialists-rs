@@ -18,6 +18,7 @@ use crate::events::ClientBullet;
 use crate::{state, view};
 use emitters::MapFx;
 use goldsrc::Global;
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Cvar, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use psys::{Camera, PSys};
@@ -186,7 +187,7 @@ extern "C" fn cmd_test_fx() {
     let e = goldsrc::client::engine();
     let what = e.cmd_argv(1).to_string_lossy().into_owned();
     let num = e.cmd_argv(2).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
-    let Some(p) = r::local_player() else { return };
+    let Some(p) = engine().local_player() else { return };
     let (f, _, _) = v::angle_vectors(e.view_angles());
     let at = v::ma(v::add(p.origin, [0.0, 0.0, 16.0]), 96.0, f);
     let mut b = Vec::new();
@@ -308,7 +309,7 @@ pub fn on_tsfrags(b: &[u8]) {
 pub fn on_tsmblur(b: &[u8]) {
     if let Some(m) = msg::TsMBlur::decode(b) {
         let (blur, fxq) = (cvar(|c| c.motionblur), cvar(|c| c.fx));
-        let now = r::client_time() as f64;
+        let now = engine().client_time() as f64;
         with(|fx| fx.blur.add(m.entindex as usize, m.level, blur, fxq, now));
     }
 }
@@ -505,7 +506,7 @@ pub fn create_entities() {
         fx.bullets = b;
     });
 
-    let (blur, ts, now) = (cvar(|c| c.motionblur), state::with(|s| s.time_scale), r::client_time() as f64);
+    let (blur, ts, now) = (cvar(|c| c.motionblur), state::with(|s| s.time_scale), engine().client_time() as f64);
     for ent in with(|fx| fx.blur.due(blur, ts, now)) {
         if mblur::spawn_ghost(ent) {
             with(|fx| fx.blur.spawned(ent));
@@ -563,11 +564,11 @@ pub fn draw_transparent() {
 /// the local player's predicted velocity (`simvel`) and the others' velocity between their last
 /// two updates.
 fn react_players() -> Vec<(Vec3, Vec3)> {
-    let local = r::local_player().map_or(0, |e| e.index);
+    let local = engine().local_player().map_or(0, |e| e.index);
     let local_vel = state::with(|s| s.local_velocity);
     let mut players = Vec::new();
-    for i in 1..=r::max_clients().min(32) {
-        let Some(e) = r::entity(i) else { continue };
+    for i in 1..=engine().max_clients().min(32) {
+        let Some(e) = engine().entity(i) else { continue };
         if e.player == 0 || e.curstate.solid == 0 {
             continue;
         }
@@ -594,7 +595,7 @@ fn blood_decals(hits: &[Vec3]) {
             }
         }
         if r::random_long(0, 100) > 90 {
-            r::play_sound(-1, pos, CHAN_AUTO as i32, "player/splat.wav", 1.0, 0.99, 0, crate::events::slow_pitch());
+            engine().ev_play_sound(-1, pos, CHAN_AUTO as i32, "player/splat.wav", 1.0, 0.99, 0, crate::events::slow_pitch());
         }
     }
 }
@@ -626,7 +627,7 @@ pub fn studio_event(ev: &mstudioevent_s, ent: &cl_entity_t) {
     let opts = goldsrc::util::c_array_str(&ev.options);
     match ev.event {
         5002 => r::spark_effect(ent.attachment[0], opts.trim().parse().unwrap_or(0), -100, 100),
-        5004 => r::play_sound(ent.index, ent.attachment[0], CHAN_BODY as i32, &opts, 1.0, 0.8, 0, crate::events::slow_pitch()),
+        5004 => engine().ev_play_sound(ent.index, ent.attachment[0], CHAN_BODY as i32, &opts, 1.0, 0.8, 0, crate::events::slow_pitch()),
         _ => {}
     }
 }

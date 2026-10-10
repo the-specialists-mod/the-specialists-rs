@@ -13,6 +13,7 @@ mod misc;
 pub mod random;
 
 use crate::state;
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -151,7 +152,7 @@ handler!(ev_grenade => misc::grenade);
 extern "C" fn cmd_test_fire() {
     let e = goldsrc::client::engine();
     let arg = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<i32>().unwrap_or(0);
-    let Some(p) = r::local_player() else { return };
+    let Some(p) = engine().local_player() else { return };
     let mut a = Args { entindex: p.index, origin: p.origin, angles: e.view_angles(), velocity: v::ZERO, ..Default::default() };
     a.i1 = if arg(1) == 0 { 13 } else { arg(1) };
     a.i2 = arg(2);
@@ -167,7 +168,7 @@ extern "C" fn cmd_test_event() {
     let e = goldsrc::client::engine();
     let name = e.cmd_argv(1).to_string_lossy().into_owned();
     let arg = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
-    let Some(p) = r::local_player() else { return };
+    let Some(p) = engine().local_player() else { return };
     let a = Args {
         entindex: p.index,
         origin: p.origin,

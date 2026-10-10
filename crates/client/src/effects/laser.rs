@@ -5,6 +5,7 @@
 
 use super::psys::Camera;
 use crate::state;
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::ext::tri;
 use goldsrc::sys::*;
@@ -34,12 +35,12 @@ pub struct Sprites {
 impl Sprites {
     pub fn load() -> Sprites {
         Sprites {
-            beam_anim: r::spr_load("sprites/laserbeamanim.spr"),
-            beam: r::spr_load("sprites/laserbeam.spr"),
-            dot: r::spr_load("sprites/laserdot.spr"),
-            flash: r::spr_load("sprites/flash.spr"),
-            shadow: r::spr_load("sprites/ombra.spr"),
-            scope: r::spr_load(super::scope::SPRITE),
+            beam_anim: engine().spr_load("sprites/laserbeamanim.spr"),
+            beam: engine().spr_load("sprites/laserbeam.spr"),
+            dot: engine().spr_load("sprites/laserdot.spr"),
+            flash: engine().spr_load("sprites/flash.spr"),
+            shadow: engine().spr_load("sprites/ombra.spr"),
+            scope: engine().spr_load(super::scope::SPRITE),
         }
     }
 }
@@ -118,7 +119,7 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
     if dead || items & (ITEM_LASER | ITEM_FLASHLIGHT) == 0 {
         return;
     }
-    let local = r::local_player().map_or(0, |e| e.index);
+    let local = engine().local_player().map_or(0, |e| e.index);
     let vm = crate::events::first_person_view_model();
     let akimbo = items & ITEM_AKIMBO != 0;
     if items & ITEM_LASER != 0 {
@@ -160,7 +161,7 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
             dl.color.r = 255;
             dl.color.g = 255;
             dl.color.b = 255;
-            dl.die = r::client_time() + 0.1;
+            dl.die = engine().client_time() + 0.1;
         }
         if let Some(vm) = &vm
             && set_sprite(s.flash, 0)
@@ -177,8 +178,8 @@ pub fn draw_local(s: &Sprites, cam: &Camera, now: f64, cl_laser: f32, color: i32
 
 /// `DrawOtherLasers` (`0x1003d600`) / `DrawOtherFlashlights` (`0x1003b750`).
 pub fn draw_others(s: &Sprites, cam: &Camera, visible: &[bool; 33]) {
-    let local = r::local_player().map_or(0, |e| e.index);
-    let max = r::max_clients().min(32);
+    let local = engine().local_player().map_or(0, |e| e.index);
+    let max = engine().max_clients().min(32);
     let (items, colors) = state::with(|st| (st.active_items.clone(), st.laser_color.clone()));
     for idx in 1..=max {
         if idx == local || !visible[idx as usize] {
@@ -188,8 +189,8 @@ pub fn draw_others(s: &Sprites, cam: &Camera, visible: &[bool; 33]) {
         if it & (ITEM_LASER | ITEM_FLASHLIGHT) == 0 {
             continue;
         }
-        let Some(e) = r::entity(idx) else { continue };
-        if e.curstate.messagenum != r::local_player().map_or(0, |l| l.curstate.messagenum) {
+        let Some(e) = engine().entity(idx) else { continue };
+        if e.curstate.messagenum != engine().local_player().map_or(0, |l| l.curstate.messagenum) {
             continue; // not in this packet
         }
         let a0 = e.attachment[0];
@@ -218,7 +219,7 @@ pub fn draw_others(s: &Sprites, cam: &Camera, visible: &[bool; 33]) {
                 dl.color.r = 255;
                 dl.color.g = 255;
                 dl.color.b = 255;
-                dl.die = r::client_time() + 0.1;
+                dl.die = engine().client_time() + 0.1;
             }
         }
     }
@@ -230,10 +231,10 @@ pub fn draw_shadows(s: &Sprites, cam: &Camera, visible: &[bool; 33], cl_shadow: 
     if cl_shadow <= 0.0 || !set_sprite(s.shadow, 0) {
         return;
     }
-    let local = r::local_player().map_or(0, |e| e.index);
+    let local = engine().local_player().map_or(0, |e| e.index);
     tri::render_mode(kRenderTransAlpha as i32);
     tri::cull_face(TRICULLSTYLE_TRI_NONE);
-    for idx in 1..=r::max_clients().min(32) {
+    for idx in 1..=engine().max_clients().min(32) {
         let is_local = idx == local;
         if is_local {
             let dead = state::with(|st| st.dead);
@@ -243,7 +244,7 @@ pub fn draw_shadows(s: &Sprites, cam: &Camera, visible: &[bool; 33], cl_shadow: 
         } else if !visible[idx as usize] {
             continue;
         }
-        let Some(e) = r::entity(idx) else { continue };
+        let Some(e) = engine().entity(idx) else { continue };
         if e.model.is_null() {
             continue;
         }

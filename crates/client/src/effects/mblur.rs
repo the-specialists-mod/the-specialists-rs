@@ -4,7 +4,7 @@
 //! temp entities with renderfx 17 and `rendercolor = (player, 0, 1)`, which the TS studio renderer
 //! draws as `StudioDrawGhostPlayer` (`crate::studio`).
 
-use goldsrc::ext::render as r;
+use goldsrc::client::engine;
 use goldsrc::ext::studio::{self as es, Model};
 use goldsrc::sys::*;
 
@@ -96,7 +96,7 @@ pub fn spawn_ghost(ent: usize) -> bool {
     if idx < 1 {
         return false;
     }
-    let Some(e) = r::entity(idx) else { return false };
+    let Some(e) = engine().entity(idx) else { return false };
     let Some(model) = Model::from_ptr(e.model) else { return false };
     let (origin, angles) = (e.origin, e.angles);
     let Some(t) = es::alloc_custom_tempent(origin, model, false, ghost_think) else { return false };

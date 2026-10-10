@@ -30,9 +30,10 @@ pub struct ClientData {
 pub fn event_api() -> &'static event_api_s {
     engine().event_api().expect("pEventAPI")
 }
+/// The engine's effects API table, for `efx!`. Panics if the engine has none;
+/// [`ClEngine::efx_api`](crate::client::ClEngine::efx_api) is the null-checked accessor.
 pub fn efx_api() -> &'static efx_api_s {
-    // SAFETY: the engine sets its API tables before `Initialize` and keeps them for the process.
-    unsafe { &*engine().f.pEfxAPI }
+    engine().efx_api().expect("pEfxAPI")
 }
 /// The engine's triangle API table, for `tri!`. Panics if the engine has none;
 /// [`ClEngine::tri_api`](crate::client::ClEngine::tri_api) is the null-checked accessor.
@@ -53,7 +54,7 @@ macro_rules! ev {
         unsafe { ($crate::ext::render::event_api().$name.expect(stringify!($name)))($($arg),*) }
     };
 }
-/// Calls a `pEfxAPI` slot.
+/// Calls a `pEfxAPI` slot, panicking with its name if the engine left it (or the table) null.
 #[macro_export]
 macro_rules! efx {
     ($name:ident ( $($arg:expr),* $(,)? )) => {
@@ -82,16 +83,8 @@ macro_rules! tri {
 
 use crate::cl_eng;
 
-/// `EV_PlaySound`. `ent` 0 plays at `origin`.
-#[allow(clippy::too_many_arguments)]
-pub fn play_sound(ent: i32, origin: Vec3, chan: i32, sample: &str, vol: f32, attn: f32, flags: i32, pitch: i32) {
-    let s = to_cstring(sample);
-    let mut o = origin;
-    ev!(EV_PlaySound(ent, o.as_mut_ptr(), chan, s.as_ptr(), vol, attn, flags, pitch));
-}
-
-/// `EV_SetTraceHull` + `EV_PlayerTrace`. Call between `push_pm_states`/`pop_pm_states` when
-/// players must be solid.
+/// `EV_SetTraceHull` + `EV_PlayerTrace`: the single wrapper for them. Call inside
+/// [`with_solid_players`] when players must be solid.
 pub fn player_trace(start: Vec3, end: Vec3, hull: i32, flags: i32, ignore_pe: i32) -> pmtrace_s {
     let (mut s, mut e) = (start, end);
     let mut tr = pmtrace_s::default();
@@ -101,7 +94,14 @@ pub fn player_trace(start: Vec3, end: Vec3, hull: i32, flags: i32, ignore_pe: i3
 }
 
 /// Makes the other players solid for traces (`EV_SetUpPlayerPrediction` + `EV_PushPMStates` +
-/// `EV_SetSolidPlayers`), runs `f`, and restores the pmove state.
+/// `EV_SetSolidPlayers`), runs `f`, and restores the pmove state (`EV_PopPMStates`). The single
+/// wrapper for that sequence; `player_index0` is the 0-based player left out (-1 for none).
+///
+/// The order is the SDK's (`ev_hldm.cpp` `EV_HLDM_FireBullets`) and that of TS's events. TS's
+/// HUD (`DrawCrosshairID` 1004acc0) pushes before setting up prediction. The two calls are
+/// independent (prediction fills the engine's predicted-player list, the push saves the physent
+/// counts), so [`ClEngine::crosshair_trace`](crate::client::ClEngine::crosshair_trace) uses this
+/// order too.
 pub fn with_solid_players<R>(player_index0: i32, f: impl FnOnce() -> R) -> R {
     ev!(EV_SetUpPlayerPrediction(0, 1));
     ev!(EV_PushPMStates());
@@ -135,7 +135,7 @@ pub fn is_local(entindex: i32) -> bool {
 }
 
 pub fn is_player(entindex: i32) -> bool {
-    entindex >= 1 && entindex <= cl_eng!(GetMaxClients())
+    entindex >= 1 && entindex <= engine().max_clients()
 }
 
 pub fn weapon_animation(seq: i32, body: i32) {
@@ -230,26 +230,10 @@ pub fn playback_event(flags: i32, index: u16, f1: f32, f2: f32, i1: i32, i2: i32
     cl_eng!(pfnPlaybackEvent(flags, std::ptr::null(), index, 0.0, zero.as_mut_ptr(), zero2.as_mut_ptr(), f1, f2, i1, i2, b1 as c_int, b2));
 }
 
-pub fn entity(idx: i32) -> Option<&'static mut cl_entity_s> {
-    let p = cl_eng!(GetEntityByIndex(idx));
-    // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
-    unsafe { p.as_mut() }
-}
-pub fn local_player() -> Option<&'static mut cl_entity_s> {
-    let p = cl_eng!(GetLocalPlayer());
-    // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
-    unsafe { p.as_mut() }
-}
 pub fn view_model() -> Option<&'static mut cl_entity_s> {
     let p = cl_eng!(GetViewModel());
     // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
     unsafe { p.as_mut() }
-}
-pub fn max_clients() -> i32 {
-    cl_eng!(GetMaxClients())
-}
-pub fn client_time() -> f32 {
-    cl_eng!(GetClientTime())
 }
 pub fn random_float(lo: f32, hi: f32) -> f32 {
     cl_eng!(pfnRandomFloat(lo, hi))
@@ -324,10 +308,6 @@ pub fn level_name() -> String {
     unsafe { crate::util::cstr(p) }.to_string_lossy().into_owned()
 }
 
-pub fn spr_load(name: &str) -> HSPRITE {
-    let s = to_cstring(name);
-    cl_eng!(pfnSPR_Load(s.as_ptr()))
-}
 pub fn spr_frames(h: HSPRITE) -> i32 {
     cl_eng!(pfnSPR_Frames(h))
 }

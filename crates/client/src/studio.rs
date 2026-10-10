@@ -23,6 +23,7 @@ pub mod model;
 
 use crate::{state, view};
 use goldsrc::Global;
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Cvar};
 use goldsrc::ext::studio::{self as es, Ent, Header, Lighting, Mat34, Model, PlayerInfo};
 use goldsrc::sys::*;
@@ -273,7 +274,7 @@ impl Renderer {
     fn draw_corpse(&mut self, flags: i32) -> bool {
         let e = self.ent();
         let who = e.curstate.rendercolor.r as i32;
-        if who == 0 || who > r::max_clients() {
+        if who == 0 || who > engine().max_clients() {
             return false;
         }
         let Some(mut dead) = es::player_state(who - 1) else { return false };
@@ -297,14 +298,14 @@ impl Renderer {
     fn draw_ghost(&mut self, flags: i32) -> bool {
         let e = self.ent();
         let owner = e.curstate.rendercolor.r as i32;
-        if r::local_player().is_some_and(|p| p.index == owner) && (!view::is_third_person() || (self.motionblur.value() as i32) < 2) {
+        if engine().local_player().is_some_and(|p| p.index == owner) && (!view::is_third_person() || (self.motionblur.value() as i32) < 2) {
             return false;
         }
         if time_scale() > 0.99 {
             return false;
         }
         // (TS asks the engine for any number; not every engine range-checks PlayerInfo.)
-        if !(1..=r::max_clients()).contains(&e.curstate.number) {
+        if !(1..=engine().max_clients()).contains(&e.curstate.number) {
             return false;
         }
         let Some(mut info) = es::player_info(e.curstate.number - 1) else { return false };
@@ -326,7 +327,7 @@ impl Renderer {
     /// The common start of the three player draws: player index, spectator hide, player model.
     fn player_model(&mut self, number: i32) -> Option<Model> {
         self.player_index = number - 1;
-        if self.player_index < 0 || self.player_index >= r::max_clients() {
+        if self.player_index < 0 || self.player_index >= engine().max_clients() {
             return None;
         }
         // Hidden while spectating this player in eye mode. TS tests g_iUser1 == 5 here (the SDK's
@@ -370,10 +371,8 @@ impl Renderer {
             let e = self.ent();
             (e.index, e.attachment)
         };
-        if index > 0
-            && let Some(g) = r::entity(index)
-        {
-            g.attachment = attachment;
+        if index > 0 {
+            engine().with_entity_mut(index, |g| g.attachment = attachment);
         }
     }
 

@@ -3,6 +3,7 @@
 //! them locally. Parsing is pure (unit-tested); emission talks to the particle system.
 
 use super::psys::{self, Camera, PSys, Particle};
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 
 /// Splits a BSP entity lump into keyvalue blocks (`COM_ParseFile` rules: quoted strings,
@@ -375,7 +376,7 @@ impl MapFx {
             }
             if !tmpl.soundonemit.is_empty() {
                 let pitch = crate::events::slow_pitch();
-                r::play_sound(0, last, goldsrc::sys::CHAN_STATIC as i32, &tmpl.soundonemit, 1.0, r::ATTN_NORM, 0, pitch);
+                engine().ev_play_sound(0, last, goldsrc::sys::CHAN_STATIC as i32, &tmpl.soundonemit, 1.0, r::ATTN_NORM, 0, pitch);
             }
             if em.spawnflags & 1 != 0 {
                 em.dead = true;

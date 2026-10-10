@@ -2,6 +2,7 @@
 
 use super::{fire_pitch, slow_pitch};
 use crate::effects;
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3};
 use goldsrc::sys::*;
 
@@ -70,7 +71,7 @@ pub fn material_sounds(tex: u8) -> (&'static [&'static str], f32) {
 /// Material character of what `tr` hit: `F` for players, else the texture's type.
 pub fn texture_type(tr: &mut pmtrace_s, src: Vec3, end: Vec3) -> u8 {
     let ent = r::index_from_trace(tr);
-    if ent > 0 && ent <= r::max_clients() {
+    if ent > 0 && ent <= engine().max_clients() {
         return b'F';
     }
     match r::trace_texture(tr.ent, src, end) {
@@ -93,7 +94,7 @@ pub fn texture_sound(dmg: f32, tr: &mut pmtrace_s, src: Vec3, end: Vec3, bullet_
     let tex = texture_type(tr, src, end);
     if tex != b'F' && r::random_long(0, 0x7fff) < 0x3fff {
         let snd = format!("debris/ric{}.wav", r::random_long(1, 5));
-        r::play_sound(-1, tr.endpos, CHAN_AUTO as i32, &snd, 1.0, 0.99, 0, fire_pitch());
+        engine().ev_play_sound(-1, tr.endpos, CHAN_AUTO as i32, &snd, 1.0, 0.99, 0, fire_pitch());
     }
     if tex == b'F' {
         return tex;
@@ -102,7 +103,7 @@ pub fn texture_sound(dmg: f32, tr: &mut pmtrace_s, src: Vec3, end: Vec3, bullet_
     let (sounds, vol) = material_sounds(tex);
     if dmg > 33.0 && !sounds.is_empty() {
         let s = sounds[r::random_long(0, sounds.len() as i32 - 1) as usize];
-        r::play_sound(0, tr.endpos, CHAN_STATIC as i32, s, vol, r::ATTN_NORM, 0, slow_pitch());
+        engine().ev_play_sound(0, tr.endpos, CHAN_STATIC as i32, s, vol, r::ATTN_NORM, 0, slow_pitch());
     }
     tex
 }

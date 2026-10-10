@@ -2,9 +2,32 @@
 //!
 //! Only slots present in the 2007 `cl_enginefunc_t` that TS 3.0 was built against are used, so
 //! these work on old Steam GoldSrc, HL25 and FWGS alike.
+//!
+//! Each engine call has one wrapper, either here or in [`render`]; the `ClEngine` table
+//! accessors (`event_api`, `efx_api`, `tri_api`, `demo_api`) are the null-checked ones, and
+//! the `ev!`/`efx!`/`tri!` macros go through them.
+//!
+//! # Client entities
+//! Game code reaches a `cl_entity_t` by index only through [`ClEngine::entity`] and
+//! [`ClEngine::local_player`], which hand out shared `&'static` references, and
+//! [`ClEngine::with_entity_mut`] / [`ClEngine::with_local_player_mut`], which lend a `&mut`
+//! for the length of a closure. The engine owns the entity array for the process (slots are
+//! reused, never unmapped) and rewrites entries each frame from the network, all on the client
+//! thread. So, as with edicts (`edict.rs`):
+//! * read what you need and drop the shared reference within the callback; don't keep it
+//!   across frames, since the slot may have been reused for another entity;
+//! * never hold a shared reference to an entity across a `with_*_mut` call (or a call that
+//!   makes the engine rewrite entities, such as `EV_SetUpPlayerPrediction`, which recomputes
+//!   other players' origins); copy the fields out first;
+//! * don't nest `with_*_mut` calls for the same entity.
+//!
+//! Engine callbacks that pass an entity to modify (`HUD_AddEntity`, the studio and temp-entity
+//! callbacks) and [`render::view_model`] hand out their own mutable views; the same rules
+//! apply between those and the accessors here.
 
 use crate::cl_eng;
 use crate::client::ClEngine;
+use crate::ext::render;
 use crate::sys::*;
 use crate::util::{cstr, to_cstring};
 use std::ffi::{CStr, c_int};
@@ -51,6 +74,7 @@ pub struct PlayerInfo {
 }
 
 impl ClEngine {
+    /// `pfnSPR_Load`: the single wrapper for it.
     pub fn spr_load(&self, name: &str) -> HSPRITE {
         let s = to_cstring(name);
         cl_eng!(pfnSPR_Load(s.as_ptr()))
@@ -189,19 +213,45 @@ impl ClEngine {
         }
     }
 
+    /// `GetLocalPlayer`: the single wrapper for it (the accessors below go through it).
+    fn local_player_ptr(&self) -> *mut cl_entity_t {
+        cl_eng!(GetLocalPlayer())
+    }
+    /// `GetEntityByIndex`: the single wrapper for it (the accessors below go through it).
+    fn entity_ptr(&self, index: i32) -> *mut cl_entity_t {
+        cl_eng!(GetEntityByIndex(index))
+    }
+    /// The local player's entity: a shared, read-only view. See the module docs.
     pub fn local_player(&self) -> Option<&'static cl_entity_t> {
-        let p = cl_eng!(GetLocalPlayer());
-        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
-        if p.is_null() { None } else { Some(unsafe { &*p }) }
+        // SAFETY: null or an entry of the engine's entity array, which lives for the process;
+        // read-only and short-lived per the module contract.
+        unsafe { self.local_player_ptr().as_ref() }
     }
+    /// Entity `index`: a shared, read-only view. See the module docs.
     pub fn entity(&self, index: i32) -> Option<&'static cl_entity_t> {
-        let p = cl_eng!(GetEntityByIndex(index));
-        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
-        if p.is_null() { None } else { Some(unsafe { &*p }) }
+        // SAFETY: as in `local_player`.
+        unsafe { self.entity_ptr(index).as_ref() }
     }
+    /// Runs `f` on the local player's entity with a mutable view scoped to the call (the SDK's
+    /// `V_CalcRefdef` edits it: render mode, model origin/angles). `None` if there is none. No
+    /// reference from [`local_player`](Self::local_player)/[`entity`](Self::entity) may be
+    /// held across the call.
+    pub fn with_local_player_mut<R>(&self, f: impl FnOnce(&mut cl_entity_t) -> R) -> Option<R> {
+        // SAFETY: as in `local_player`; the exclusive borrow ends with `f`, and the module
+        // contract forbids holding another view of the entry across it.
+        unsafe { self.local_player_ptr().as_mut() }.map(f)
+    }
+    /// Runs `f` on entity `index` with a mutable view scoped to the call. `None` if there is
+    /// none. Same rule as [`with_local_player_mut`](Self::with_local_player_mut).
+    pub fn with_entity_mut<R>(&self, index: i32, f: impl FnOnce(&mut cl_entity_t) -> R) -> Option<R> {
+        // SAFETY: as in `with_local_player_mut`.
+        unsafe { self.entity_ptr(index).as_mut() }.map(f)
+    }
+    /// `GetMaxClients`: the single wrapper for it.
     pub fn max_clients(&self) -> i32 {
         cl_eng!(GetMaxClients())
     }
+    /// `GetClientTime`: the single wrapper for it.
     pub fn client_time(&self) -> f32 {
         cl_eng!(GetClientTime())
     }
@@ -261,23 +311,26 @@ impl ClEngine {
         self.demo_api().and_then(|d| d.IsRecording).is_some_and(|f| unsafe { f() } != 0)
     }
 
+    /// The effects API (`R_TempModel`, `CL_AllocDlight` etc.), if the engine provides one. Only
+    /// slots of the 2007 SDK `efx_api_s` are called; that table is a prefix of the FWGS one
+    /// bindgen generates.
+    pub fn efx_api(&self) -> Option<&'static efx_api_s> {
+        // SAFETY: the engine sets `pEfxAPI` (or leaves it null) before `Initialize` and keeps the table for the process.
+        unsafe { self.f.pEfxAPI.as_ref() }
+    }
+
     /// `EV_PlayerTrace` from `start` to `end` against the world and the other players (studio
-    /// boxes), as TS's crosshair ID does. Returns (fraction, endpos, hit entity index or 0).
-    pub fn player_trace(&self, start: [f32; 3], end: [f32; 3], local_index: i32) -> Option<(f32, [f32; 3], i32)> {
-        let api = self.event_api()?;
-        let mut tr = pmtrace_s::default();
-        let (mut s, mut e) = (start, end);
-        // SAFETY: engine API callbacks called with valid local buffers.
-        unsafe {
-            (api.EV_PushPMStates?)();
-            (api.EV_SetUpPlayerPrediction?)(0, 1);
-            (api.EV_SetSolidPlayers?)(local_index - 1);
-            (api.EV_SetTraceHull?)(2);
-            (api.EV_PlayerTrace?)(s.as_mut_ptr(), e.as_mut_ptr(), PM_STUDIO_BOX, -1, &mut tr);
-            let ent = if tr.fraction < 1.0 { (api.EV_IndexFromTrace?)(&mut tr) } else { 0 };
-            (api.EV_PopPMStates?)();
-            Some((tr.fraction, tr.endpos, ent))
-        }
+    /// boxes, hull 2), as TS's crosshair ID does (`DrawCrosshairID` 1004acc0). Returns
+    /// (fraction, endpos, hit entity index or 0), or `None` if the engine has no event API.
+    /// Built on [`render::with_solid_players`] and [`render::player_trace`], the single
+    /// wrappers for those calls.
+    pub fn crosshair_trace(&self, start: [f32; 3], end: [f32; 3], local_index: i32) -> Option<(f32, [f32; 3], i32)> {
+        self.event_api()?;
+        Some(render::with_solid_players(local_index - 1, || {
+            let mut tr = render::player_trace(start, end, 2, PM_STUDIO_BOX, -1);
+            let ent = if tr.fraction < 1.0 { render::index_from_trace(&mut tr) } else { 0 };
+            (tr.fraction, tr.endpos, ent)
+        }))
     }
 }
 
@@ -317,13 +370,17 @@ impl ClEngine {
 pub const SND_CHANGE_VOL: i32 = 1 << 6;
 
 impl ClEngine {
-    /// `EV_PlaySound(ent, origin, channel, sample, volume, attenuation, flags, pitch)`.
+    /// `EV_PlaySound(ent, origin, channel, sample, volume, attenuation, flags, pitch)`: the
+    /// single wrapper for it. `ent` 0 plays at `origin`, -1 is a positional sound with no
+    /// entity. Every engine fills the slot; if the table or slot is null the sound is dropped
+    /// rather than panicking, since callers are fire-and-forget.
     #[allow(clippy::too_many_arguments)]
-    pub fn ev_play_sound(&self, ent: i32, origin: [f32; 3], channel: i32, sample: &CStr, volume: f32, attn: f32, flags: i32, pitch: i32) {
+    pub fn ev_play_sound(&self, ent: i32, origin: [f32; 3], channel: i32, sample: &str, volume: f32, attn: f32, flags: i32, pitch: i32) {
         let Some(f) = self.event_api().and_then(|a| a.EV_PlaySound) else { return };
+        let s = to_cstring(sample);
         let mut o = origin;
-        // SAFETY: engine callback from the API table above, called with valid arguments.
-        unsafe { f(ent, o.as_mut_ptr(), channel, sample.as_ptr(), volume, attn, flags, pitch) };
+        // SAFETY: engine callback from the event API table, called with a 3-float origin and a NUL-terminated sample that outlive the call.
+        unsafe { f(ent, o.as_mut_ptr(), channel, s.as_ptr(), volume, attn, flags, pitch) };
     }
 }
 

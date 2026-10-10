@@ -7,6 +7,7 @@
 //! floor of 0.1.
 
 use super::psys::{self, PSys, Particle};
+use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 
@@ -139,7 +140,7 @@ pub fn muzzle_dlight(ps: &mut PSys, now: f64, org: Vec3) {
         dl.color.r = 240;
         dl.color.g = 221;
         dl.color.b = 172;
-        dl.die = r::client_time() + ps.slow(0.06);
+        dl.die = engine().client_time() + ps.slow(0.06);
         dl.decay = 0.0;
     }
 }
@@ -624,7 +625,7 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec
 pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
     const SOUNDS: [&str; 5] = ["explo/explode.wav", "explo/explode1.wav", "explo/explode2.wav", "explo/explode3.wav", "explo/explode4.wav"];
     let snd = SOUNDS[rl(0, 4).clamp(0, 4) as usize];
-    r::play_sound(0, org, CHAN_STATIC as i32, snd, rf(0.92, 1.0), 0.2, 0, crate::events::fire_pitch());
+    engine().ev_play_sound(0, org, CHAN_STATIC as i32, snd, rf(0.92, 1.0), 0.2, 0, crate::events::fire_pitch());
     ps.push_radial(org, 512.0, radius * 10.0);
     let scale = ps.tuning.scale;
     let cloud = |ps: &mut PSys, sprite: &str, count: f32, size: f32, rise: f32, speed: f32, fr: (i32, i32)| {

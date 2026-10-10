@@ -5,7 +5,7 @@
 mod gun;
 
 use crate::state;
-use goldsrc::ext::render as r;
+use goldsrc::client::engine;
 use goldsrc::sys::*;
 
 pub use gun::alt_grip;
@@ -64,7 +64,7 @@ pub fn process_player_state(dst: &mut entity_state_t, src: &entity_state_t) {
     dst.team = src.team;
     dst.colormap = src.colormap;
     dst.iuser4 = src.iuser4;
-    if r::local_player().is_some_and(|p| p.index == dst.number) {
+    if engine().local_player().is_some_and(|p| p.index == dst.number) {
         state::with(|s| {
             s.spec_mode = src.iuser1;
             s.spec_target = src.iuser2;
