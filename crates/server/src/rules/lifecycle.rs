@@ -592,21 +592,22 @@ fn observer_find_next_player(p: &mut Player, cx: &mut Cx, reverse: bool) {
     }
 }
 
-/// Observer part of `PreThink`: respawn countdown text, `Observer_HandleButtons`, `Observer_Idle`.
+/// Observer part of `CBasePlayer::PreThink` (0x908cc): respawn countdown text,
+/// `Observer_HandleButtons`, `Observer_Idle`.
+///
+/// The countdown runs only while the respawn time is ahead. "Press Fire To Play!" (30 s hold) is
+/// sent by the tick that lands in its last half second, and isn't repeated after that.
 fn observer_think(p: &mut Player, cx: &mut Cx, now: f32) {
     let e = cx.edict;
     if p.respawn_at > 0.0 && now < p.respawn_at && p.ts.next_hud_msg < now {
         p.ts.next_hud_msg = now + 1.0;
-        let left = (p.respawn_at - now).round() as i32;
+        // x87 `fistp` rounding, ties to even.
+        let left = (p.respawn_at - now).round_ties_even() as i32;
         if left < 1 {
             ts_message_one(e, [0, 0, 0], 16, 30, "Press Fire To Play!");
         } else {
-            ts_message_one(e, [0, 0, 0], 16, 20, &format!("{}", (p.respawn_at - now).min(30.0).round() as i32));
+            ts_message_one(e, [0, 0, 0], 16, 20, &format!("{}", (p.respawn_at - now).min(30.0).round_ties_even() as i32));
         }
-    }
-    if p.respawn_at > 0.0 && now >= p.respawn_at && p.ts.next_hud_msg < now {
-        p.ts.next_hud_msg = now + 1.0;
-        ts_message_one(e, [0, 0, 0], 16, 30, "Press Fire To Play!");
     }
     if p.ts.join_deadline != 0.0 {
         if now <= p.ts.join_deadline {
