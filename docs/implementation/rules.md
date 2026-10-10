@@ -46,14 +46,15 @@ are Ghidra addresses.
 | `SendMOTDToClient` 0xd0ae4 | `lifecycle::send_motd` | `ServerName` = hostname, `motdfile` (default `motd.txt`) in ≤60-char chunks, ≤0x600 bytes. |
 | `CTSGameRules::InitHUD` 0x79134 | `lifecycle::ts_init_hud` | cheat notices, `SrvSett` 0–3, RoundTime, `Spectator` of everyone, **joiner starts as observer** with `respawntime` (5..30 s). |
 | `SetPlayerRespawnTime` 0x75ff4 | `lifecycle::set_respawn_time` | LMS respawn budget (`respawnnumber` → 1), join deadline; award 1 / 11. |
-| `StartObserver` 0x99634 / `StopObserver` 0x99a14 / `Observer_*` | `lifecycle::{start_observer, stop_observer, observer_think}` | TSCash resend, TE_KILLPLAYERATTACHMENTS, ActItems 0, SetFOV 0, `EF_NODRAW`, deadflag 3, TeamInfo, `Spectator 1`; chase modes fall back to roaming; jump cycles modes, forward/back cycle targets. |
+| `StartObserver` 0x99634 / `StopObserver` 0x99a14 | `lifecycle::{start_observer, stop_observer}` | TSCash resend, TE_KILLPLAYERATTACHMENTS, ActItems 0, SetFOV 0, `EF_NODRAW`, deadflag 3, TeamInfo, `Spectator 1`, starts in the saved mode (chase free the first time); stop saves the mode. |
+| `Observer_SetMode` 0x99e44 / `Observer_FindNextPlayer` 0x99b0c / `Observer_HandleButtons` 0x99d34 / `Observer_Idle` 0x99ca4 | `lifecycle::{observer_set_mode, observer_find_next_player, observer_handle_buttons, observer_idle}` | TS observer modes (`shared::ts::obs`): 1 chase locked, 2 chase free, 3 roaming (maxspeed 420), **5 in-eye**; there are no map modes and 4 is HLTV-only. Jump cycles 3 → 2 → 1 → 5 → 3, forward/back pick the next/previous target (not while roaming), 0.2 s apart. The target (`m_hObserverTarget`, `PlayerRules::obs_target`) is the killer (last inflictor if a player), kept across lives; the next one is a living, visible, non-observing player, only teammates in LMS while a respawn is pending. Twice a second a dead or observing target is replaced. No target → roaming. The camera position is `PM_SpectatorMove`'s. |
 | `respawn` client command (ClientCommand) | `lifecycle::respawn_command` | only while observing and after `respawn_at`; "You have to wait until the next round." |
 | `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | button edges, InitHUD, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text, death think, +use, spawn protection end, delayed suicide. |
 | `CBasePlayer::Killed` 0x8ed5c | `lifecycle::killed` | TSMBlur (random), respawn time, headshot victim slow 0.33, `iuser4 = DEAD_LOCK`, `weapons::on_killed`, drop flag, PlayerKilled, knockback (min(dmg×5, 500)), hop when fast/hard hit, TSHealth 0, ActItems 0, SetFOV 0, gib. |
 | `PlayerDeathThink` | `lifecycle::death_think` | settle; while dying, advance the death sequence (`studio_frame_advance`, at the slow-motion `framerate`) until it finishes; then corpse (`deadcorpse`, 10 s) + observer after 3 s or any button. |
 | `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | points (stock/kung fu/knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`spectacularness`%), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, log lines with TS suffixes, `game_playerdie`/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
 | `TSGetPointsForFrag` 0x89140 | `scoring::points_for_frag` | `#TS_KungFu`, `Throwing`, `#TS_StStl`, `#TS_SlStl`, `#TS_Stl`. |
-| `DeathNotice` 0x88f7c | `scoring::death_notice` | `DeathMsg`; weapon name rules (strip prefixes, Throwing Knife, Shrapnel, M61 Grenade, Kung Fu). |
+| `DeathNotice` 0x88f7c | `scoring::death_notice` | `DeathMsg`; weapon name rules (strip prefixes, Throwing Knife, Shrapnel, M61 Grenade, Kung Fu); HLTV director event (victim, inflictor or killer, 0x27). |
 | `TheOneIsDead` 0x7b258, `SetPlayerTheOne` 0x7b078, `SelectRandomTheOne` 0x7af28 | `scoring::{the_one_is_dead, set_the_one_other, apply_the_one, announce_the_one}`, `frame::the_one_check` | hp 150, kung fu, super jump, speed 330, stored slow pause 3 s, award 10, "%s is The One!" (100,150,255), team split. |
 | `EntSelectSpawnPoint` 0x76128 / `TSSelectSpawnSpot` 0x76244 | `spawnpoint::{select, spot_score, place}` | up to 32 spots scored by enemy/teammate visibility and nearest player; telefrag (300, ALWAYSGIB) within 128 when the best score < 128; fires the spot's target. Unit tested. |
 | `CTSGameRules::Think` 0x77204 | `frame::ts_think` | global slow expiry/apply, CheckDeads, auto power-ups, The One every 10 s, LMS restart/checks, SrvSett 0–2 on change. |
@@ -159,11 +160,11 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | PlInfo | ALL | `B ent, B 0, B colour` | lasclr_N |
 | VoiceMask | ONE | `L audible, L banned` | voice `UpdateMasks` on change |
 | ReqState | ONE | – | voice `UpdateMasks` until the client answers `VModEnable` |
+| engine msg 50 (`SVC_HLTV`) | SPEC | `B 3 (DRC_EVENT), S primary, S secondary, L flags` | `DeathNotice` (victim, inflictor or killer, `0x27`), player `TakeDamage` (self, inflictor, `5`; after the damage, also when `takedamage` is off). TS's old director layout (no length byte, not the SDK's `svc_director` 51); only HLTV proxies receive `MSG_SPEC`. `msg::director_event`, payload `hud_wire::DirectorEvent`. |
 
 ## 6. Deviations from TS 3.0
 
 * `addbot`/`addcustombot` add a fake client; `ts_bot_quota` is new (dedicated-server testing).
-* The HLTV `MSG_SPEC` director event (svc 50) in `DeathNotice`/`TakeDamage` is not sent.
 * `GetGameDescription` returns `rules::game_description()` (wired at integration).
 * Map votes: `CheckVotes` also tallies slow-match / teamplay / friendly-fire toggle votes, but
   nothing in TS ever sets them (and the slow-match one writes the non-existent `mp_slowmatch`), so
@@ -189,10 +190,11 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * When a `vban`/`VModEnable` arrives, the sender's own `Player` is checked out for the command,
   so the immediate mask update treats that player as in-round for the LMS dead-talk rule; the
   next 0.3 s update corrects it.
+* A suicide doesn't make the player its own spectator target (TS sets `m_hObserverTarget` to
+  the dead player and `Observer_Idle` replaces it within 0.5 s).
 
 ## 7. Missing / partial
 
-* Observer camera beyond the basics (in-eye, map modes are only mode numbers).
 * `loadweapons`/`saveweapons`, `CustomWP`.
 * Untested in-engine: CTB (no test map with briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client.
@@ -201,7 +203,12 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 * `cargo test`: payload encoders (sizes match registration), `decide_gameplay`, team lists,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
-  clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, power-up bodies/respawn clamps, HL remaps.
+  clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, power-up bodies/respawn clamps, HL remaps, the HLTV
+  director event layout (`hud_wire::director_event_layout`), in-eye spectator movement at mode 5
+  (`pm::tests::in_eye_spectator_is_mode_5`).
+* Not yet run in-engine: the TS observer mode cycle (jump: roaming → chase free → chase locked →
+  in-eye) and target stepping, and the director messages (they need an HLTV proxy on a Steam
+  server to be seen at all).
 * Builds: `cargo build -p ts-server -p ts-client` (x86_64), `--target i686-unknown-linux-gnu`,
   `--target i686-pc-windows-gnu`.
 * In-engine (FWGS root `~/games/xash_rules`):

@@ -45,6 +45,24 @@ pub mod powerup {
     pub const STORED: u16 = SLOWMO | SLOWPAUSE | DOUBLE_FIRERATE;
 }
 
+/// Observer modes (`pev->iuser1`, client `g_iUser1`). TS 3.0 uses the pre-HLTV-rewrite SDK
+/// numbering, not the SDK 2.3 `OBS_*` values: in-eye is **5**, and there are no map modes.
+/// Evidence: `Observer_HandleButtons` (0x99d34) cycles 3 → 2 → 1 → 5 → 3, `Observer_SetMode`
+/// (0x99e44) accepts only 1, 2, 3 and 5, `PM_SpectatorMove` (0xfef3c) puts mode 5 at the
+/// target's origin with its angles, and the client's `V_CalcSpectatorRefdef` (0x10068f70),
+/// `HUD_AddEntity` (0x100447f0) and `StudioDrawPlayer` treat 5 as in-eye.
+pub mod obs {
+    pub const NONE: i32 = 0;
+    pub const CHASE_LOCKED: i32 = 1;
+    pub const CHASE_FREE: i32 = 2;
+    pub const ROAMING: i32 = 3;
+    /// Director-driven view of HLTV spectators: the client's `specmode 2` (`CHudSpectator::SetMode`
+    /// 0x100234d0) and director camera events set it, and `PM_SpectatorMove` looks for the
+    /// secondary target in `iuser3`. The server never sets it for players.
+    pub const LOCKED_VIEW: i32 = 4;
+    pub const IN_EYE: i32 = 5;
+}
+
 /// `usercmd_t::buttons`: TS's stunt key is `+alt1`. `+alt2` sends 0x40 (SDK `IN_CANCEL`), reused
 /// by TS for its secondary action.
 pub const IN_ALT1: u16 = goldsrc_sys::IN_ALT1 as u16;

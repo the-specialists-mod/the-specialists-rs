@@ -18,7 +18,7 @@ mod tempents;
 use goldsrc::client::{self as cl, engine};
 use goldsrc::sys::*;
 use std::ffi::{c_char, c_int, c_void};
-use ts_client::{effects, events, hud, input, menus, prediction, view, voice};
+use ts_client::{effects, events, hud, input, menus, prediction, spectator, view, voice};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Initialize(funcs: *mut cl_enginefunc_t, version: c_int) -> c_int {
@@ -40,6 +40,7 @@ pub unsafe extern "C" fn HUD_Init() {
     events::init();
     view::init();
     effects::init();
+    spectator::init();
     engine().print("[ts] client: Rust TS client library initialized\n");
 }
 
@@ -48,6 +49,7 @@ pub unsafe extern "C" fn HUD_VidInit() -> c_int {
     hud::vid_init();
     voice::vid_init();
     effects::vid_init();
+    spectator::vid_init();
     1
 }
 
@@ -80,7 +82,10 @@ pub unsafe extern "C" fn HUD_Shutdown() {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_PlayerMove(pm: *mut playermove_t, _server: c_int) {
     // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    shared::pm::player_move(unsafe { &mut *pm });
+    let pm = unsafe { &mut *pm };
+    if !spectator::pin_camera(pm) {
+        shared::pm::player_move(pm);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -323,8 +328,22 @@ pub unsafe extern "C" fn HUD_VoiceStatus(entindex: c_int, talking: c_int) {
     voice::update_speaker_status(entindex, talking != 0);
 }
 
+/// SDK 2.3+ engines pass the `svc_director` payload here.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn HUD_DirectorMessage(_size: c_int, _buf: *mut c_void) {}
+pub unsafe extern "C" fn HUD_DirectorMessage(size: c_int, buf: *mut c_void) {
+    if buf.is_null() || size <= 0 {
+        return;
+    }
+    // SAFETY: the engine passes a buffer of `size` bytes (null-checked above), valid for this call.
+    let bytes = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), size as usize) };
+    spectator::director_message(bytes);
+}
+
+/// TS's export (`0x1001ab60`), the pre-SDK-2.3 director interface. Current engines don't call it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn HUD_DirectorEvent(command: u8, first: u32, second: u32, flags: u32) {
+    spectator::director_event(command, first as i32, second as i32, flags as i32);
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_ChatInputPosition(_x: *mut c_int, _y: *mut c_int) {}

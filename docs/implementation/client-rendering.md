@@ -34,8 +34,7 @@ includes `r_efx.h`, `event_api.h`, `event_flags.h`, `triangleapi.h`, `screenfade
 | `CHud::Think` FOV easing | `0x10049760` | `view::ease_fov` | done, unit-tested |
 | `V_CalcRefdef` | `0x10069b90` | `view::calc_refdef` | done |
 | `V_CalcNormalRefdef` | `0x10067890` | `view::calc_normal` | done (see deviations) |
-| `V_CalcSpectatorRefdef` | `0x10068f70` | `view::calc_spectator` | simplified (in-eye, chase, free) |
-| `V_GetPlayerEye` | `0x10068e20` | `view::player_eye` (in-eye spectating) | done, unit-tested (dead, `NO_VIEW`, duck hull) |
+| `V_CalcSpectatorRefdef` | `0x10068f70` | `view::calc_spectator` → `spectator::calc_refdef` | done: chase/roaming use `simorg` + mouse angles, in-eye (mode 5) `V_GetInEyePos` `0x10068e20` and the target's gun as view model, `cl_vsmoothing` rings; no HLTV inset view |
 | `V_CalcIntermissionRefdef` | `0x100676e0` | `view::calc_intermission` | done |
 | `V_DriftPitch` / `V_StopPitchDrift` | `0x10067320` / `0x100672f0` | `view::Drift`, `view::stop_pitch_drift` (called from `input` like `CL_AdjustAngles` `0x10026330` and `IN_MouseMove` `0x100274d0`) | done, unit-tested |
 | `V_AddIdle` | `0x10067550` | `view::add_idle` | done (intermission only, see deviations) |
@@ -151,9 +150,22 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   0..255.
 * Shadows/laser beams are TriAPI quads (TS: the same with TriAPI, plus a direct-GL scope overlay).
   The scope overlay (`DrawScopeOverlay`) is not drawn here (HUD package or later).
-* The spectator refdef is a simplified version (in-eye: the target's eye from `V_GetPlayerEye`,
-  chase: 128 units behind with a world trace).
-* `HUD_AddEntity`'s in-eye hiding uses spectator mode 4 (SDK `OBS_IN_EYE`); the doc notes TS may use 5.
+* **Observer modes use TS's numbering: in-eye is 5, not the SDK's 4** (`shared::ts::obs`). The
+  server's `Observer_SetMode`/`Observer_HandleButtons` only ever set 1, 2, 3 and 5,
+  `PM_SpectatorMove` places mode 5 at the target, and `HUD_AddEntity` (`0x100447f0`), the draw and
+  grenade events (`0x1001c5c0`) and `V_CalcSpectatorRefdef` test `g_iUser1 == 5`. Mode 4 is the
+  HLTV director's locked view.
+* Spectator refdef: TS computes chase positions there too, but only into globals the function
+  overwrites at its end; the camera is `simorg` (where `PM_SpectatorMove` put it) with the mouse
+  angles, and the port does just that. TS's client-side `PM_SpectatorMove` (`0x1002c790`) differs
+  from the server's: it raises the `cl_vsmoothing` flags per mode, keeps the last view when the
+  target leaves the PVS, and runs the HLTV locked view. The port runs the shared movement on both
+  sides; the smoothing flags are derived from the mode in `spectator::smooth` (origins in chase
+  locked, both in in-eye and the locked view, while the target entity exists), and only the
+  director-reset camera pin is ported (`spectator::pin_camera`).
+* In-eye gun: TS adds its bob and gun-offset globals, which hold whatever `V_CalcNormalRefdef`
+  last left; the port uses no bob or offset. TS's `V_GetInEyePos` scales the pitch by -π (the SDK
+  uses -3); kept.
 
 * **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
   the evicted shell's `die`. The port tags each shell with a sequence number in

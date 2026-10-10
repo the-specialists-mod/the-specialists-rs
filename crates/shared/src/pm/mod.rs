@@ -25,6 +25,8 @@ mod tests;
 pub use math::Vec3;
 use math::*;
 
+// Spectator modes (`iuser1`) in TS's numbering.
+use crate::ts::obs::{CHASE_LOCKED as OBS_CHASE_LOCKED, IN_EYE as OBS_IN_EYE, LOCKED_VIEW as OBS_LOCKED_VIEW, ROAMING as OBS_ROAMING};
 use crate::{VEC_DUCK_HULL_MAX, VEC_DUCK_HULL_MIN, VEC_HULL_MAX, VEC_HULL_MIN};
 use goldsrc::pmove::PlayerMoveExt;
 use goldsrc_sys::*;
@@ -55,11 +57,6 @@ const STUCK_MOVEUP: i32 = 1;
 const WJ_HEIGHT: f32 = 8.0;
 const ATTN_NORM: f32 = 0.8;
 const PITCH_NORM: i32 = 100;
-/// Spectator modes (`iuser1`).
-const OBS_CHASE_LOCKED: i32 = 1;
-const OBS_ROAMING: i32 = 3;
-const OBS_IN_EYE: i32 = 4;
-const OBS_MAP_FREE: i32 = 5;
 
 const FL_ONGROUND_: i32 = FL_ONGROUND as i32;
 const FL_DUCKING_: i32 = FL_DUCKING as i32;
@@ -1165,12 +1162,14 @@ impl Pm<'_> {
         let Some(target) = (0..n).find(|&i| self.p.physents[i].info == self.p.iuser2) else { return };
         let pe = &self.p.physents[target];
         let mode = self.p.iuser1;
+        // TS leaves the angles uninitialised for the HLTV-only locked view (4); the target's
+        // angles are a sane stand-in.
         let angles = match mode {
             OBS_CHASE_LOCKED => [10.0 - pe.angles[0], pe.angles[1], pe.angles[2]],
-            OBS_MAP_FREE | OBS_IN_EYE => pe.angles,
+            OBS_IN_EYE | OBS_LOCKED_VIEW => pe.angles,
             _ => self.p.angles,
         };
-        let origin = if mode == OBS_MAP_FREE { pe.origin } else { self.chase_origin(angles, target) };
+        let origin = if mode == OBS_IN_EYE { pe.origin } else { self.chase_origin(angles, target) };
         self.p.origin = origin;
         self.p.angles = angles;
         self.p.velocity = ZERO;

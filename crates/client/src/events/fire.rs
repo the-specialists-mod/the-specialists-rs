@@ -47,10 +47,11 @@ pub fn weapon_body(id: i32, items: i32) -> i32 {
     body
 }
 
-/// Current view-model sequence set (`GetActiveAnimSet` `0x1003df60`).
+/// Current view-model sequence set (`GetActiveAnimSet` `0x1003df60`): the alternative grip set,
+/// except while spectating in-eye (the view model is someone else's gun then).
 fn anim_set(id: i32) -> &'static [i16; 29] {
     static EMPTY: [i16; 29] = [0; 29];
-    let alt = crate::prediction::alt_grip();
+    let alt = crate::prediction::alt_grip() && !crate::spectator::in_eye();
     info::info(id).map_or(&EMPTY, |i| i.set(alt))
 }
 

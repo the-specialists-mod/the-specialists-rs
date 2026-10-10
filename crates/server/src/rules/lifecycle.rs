@@ -17,15 +17,8 @@ use shared::protocol::hud_wire::TsPAward;
 use shared::protocol::hud_wire::{ActItems, SetFov, Spectator, TsFade, TsHealth, TsMBlur, fade};
 use shared::protocol::rules::{GameMode, Motd, ScoreInfo, ServerName, SrvSett, hud_dest};
 use shared::protocol::rules::{RoundTime, TeamInfo};
-use shared::ts::{powerup as pw, stunt};
+use shared::ts::{obs, powerup as pw, stunt};
 use std::ffi::CStr;
-
-/// Observer modes (SDK `OBS_*`).
-pub const OBS_CHASE_LOCKED: i32 = 1;
-pub const OBS_CHASE_FREE: i32 = 2;
-pub const OBS_ROAMING: i32 = 3;
-pub const OBS_IN_EYE: i32 = 4;
-pub const OBS_MAP_FREE: i32 = 5;
 
 const SVC_TEMPENTITY: i32 = 23;
 const TE_KILLPLAYERATTACHMENTS: i32 = 125;
@@ -147,6 +140,7 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
         put_in_server: old.put_in_server,
         game_hud_initialized: old.game_hud_initialized,
         obs_mode: old.obs_mode,
+        obs_target: old.obs_target,
         tk_until: old.tk_until,
         tk_count: old.tk_count,
         next_say: old.next_say,
@@ -510,47 +504,95 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     let team = teams::team_name_of(e);
     msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team }.write(w));
     engine().set_origin(e, origin);
-    let mode = if p.ts.obs_mode == 0 { OBS_CHASE_FREE } else { p.ts.obs_mode };
+    p.ts.obs_next_idle = 0.0;
+    let mode = if p.ts.obs_mode == 0 { obs::CHASE_FREE } else { p.ts.obs_mode };
     observer_set_mode(p, cx, mode);
     msg::all(Msg::Spectator, |w| Spectator { entindex: idx as u8, observer: 1 }.write(w));
 }
 
-/// `Observer_SetMode`: chase modes need a living target; fall back to roaming.
+/// `CBasePlayer::Observer_SetMode` (0x99e44). Only TS's modes 1, 2, 3 and 5 are accepted; the
+/// chase and in-eye modes need a target (`m_hObserverTarget`) and fall back to roaming.
 fn observer_set_mode(p: &mut Player, cx: &mut Cx, mode: i32) {
-    let mut target = cx.pev().iuser2;
-    if !valid_obs_target(target, cx.index()) {
-        target = if valid_obs_target(p.ts.killer, cx.index()) { p.ts.killer } else { next_obs_target(cx.index(), 0, true) };
+    if mode == cx.pev().iuser1 {
+        return;
+    }
+    {
+        let v = cx.pev();
+        v.view_ofs = [0.0; 3];
+        v.viewmodel = 0;
+    }
+    if mode == obs::ROAMING {
+        let v = cx.pev();
+        v.iuser1 = obs::ROAMING;
+        v.iuser2 = 0;
+        engine().set_client_maxspeed(cx.edict, 420.0);
+        return;
+    }
+    if !matches!(mode, obs::CHASE_LOCKED | obs::CHASE_FREE | obs::IN_EYE) {
+        return;
+    }
+    if !obs_handle_valid(p.ts.obs_target) {
+        observer_find_next_player(p, cx, false);
+    }
+    if !obs_handle_valid(p.ts.obs_target) {
+        observer_set_mode(p, cx, obs::ROAMING);
+        return;
     }
     let v = cx.pev();
-    if target == 0 && mode != OBS_ROAMING && mode != OBS_MAP_FREE {
-        v.iuser1 = OBS_ROAMING;
-        v.iuser2 = 0;
-    } else {
-        v.iuser1 = mode;
-        v.iuser2 = target;
-    }
+    v.iuser1 = mode;
+    v.iuser2 = p.ts.obs_target;
 }
 
-fn valid_obs_target(idx: i32, me: i32) -> bool {
-    if idx <= 0 || idx == me {
-        return false;
-    }
-    let e = engine().client(idx);
-    !e.is_null() && super::is_player(e) && (alive(e.v()) && e.v().iuser1 == 0)
+/// `m_hObserverTarget` is an `EHANDLE` in TS: it goes null when the player leaves.
+fn obs_handle_valid(idx: i32) -> bool {
+    idx > 0 && super::is_player(engine().client(idx))
 }
 
-fn next_obs_target(me: i32, from: i32, forward: bool) -> i32 {
-    let n = engine().max_clients();
-    for k in 1..=n {
-        let i = if forward { (from + k - 1).rem_euclid(n) + 1 } else { (from - k - 1).rem_euclid(n) + 1 };
-        if valid_obs_target(i, me) {
-            return i;
+/// `CBasePlayer::Observer_FindNextPlayer` (0x99b0c): steps from the current target (or from us)
+/// to the next living, visible, non-observing player, wrapping around. In LMS (and the
+/// unreachable round modes) an observer still waiting to respawn may only watch teammates.
+fn observer_find_next_player(p: &mut Player, cx: &mut Cx, reverse: bool) {
+    let eng = engine();
+    let me = cx.index();
+    let start = if obs_handle_valid(p.ts.obs_target) { p.ts.obs_target } else { me };
+    p.ts.obs_target = 0;
+    let n = eng.max_clients();
+    let teammates_only = p.respawn_at >= 0.0 && state::with(|g| g.lms || matches!(g.mode, state::Mode::RoundTdm | state::Mode::Objective));
+    let mut i = start;
+    loop {
+        i += if reverse { -1 } else { 1 };
+        if i > n {
+            i = 1;
+        }
+        if i < 1 {
+            i = n;
+        }
+        let o = eng.client(i);
+        if i != me
+            && super::is_player(o)
+            && {
+                let v = o.v();
+                v.iuser1 == 0 && v.effects & EF_NODRAW as i32 == 0 && alive(v)
+            }
+            && (!teammates_only || teams::same_team(cx.edict, o))
+        {
+            p.ts.obs_target = i;
+            break;
+        }
+        if i == start {
+            break;
         }
     }
-    0
+    if p.ts.obs_target == 0 {
+        observer_set_mode(p, cx, obs::ROAMING);
+    } else {
+        cx.pev().iuser2 = p.ts.obs_target;
+        let org = eng.client(p.ts.obs_target).v().origin;
+        eng.set_origin(cx.edict, org);
+    }
 }
 
-/// Observer part of `PreThink`: countdown text, chase target follow, `Observer_HandleButtons`.
+/// Observer part of `PreThink`: respawn countdown text, `Observer_HandleButtons`, `Observer_Idle`.
 fn observer_think(p: &mut Player, cx: &mut Cx, now: f32) {
     let e = cx.edict;
     if p.respawn_at > 0.0 && now < p.respawn_at && p.ts.next_hud_msg < now {
@@ -582,46 +624,50 @@ fn observer_think(p: &mut Player, cx: &mut Cx, now: f32) {
         }
     }
 
-    // Observer_HandleButtons
-    let buttons = cx.pev().button;
-    if p.ts.obs_next_input <= now {
-        let me = cx.index();
-        if buttons & IN_JUMP as i32 != 0 {
-            let mode = match cx.pev().iuser1 {
-                OBS_ROAMING => OBS_CHASE_FREE,
-                OBS_CHASE_FREE => OBS_CHASE_LOCKED,
-                OBS_CHASE_LOCKED => OBS_MAP_FREE,
-                _ => OBS_ROAMING,
-            };
-            observer_set_mode(p, cx, mode);
-            p.ts.obs_next_input = now + 0.2;
-        }
-        let mode = cx.pev().iuser1;
-        if mode != OBS_ROAMING {
-            if buttons & IN_FORWARD as i32 != 0 {
-                let t = next_obs_target(me, cx.pev().iuser2, true);
-                cx.pev().iuser2 = t;
-                p.ts.obs_next_input = now + 0.2;
-            }
-            if buttons & IN_BACK as i32 != 0 {
-                let t = next_obs_target(me, cx.pev().iuser2, false);
-                cx.pev().iuser2 = t;
-                p.ts.obs_next_input = now + 0.2;
-            }
-        }
+    observer_handle_buttons(p, cx, now);
+    observer_idle(p, cx, now);
+}
+
+/// `CBasePlayer::Observer_HandleButtons` (0x99d34): jump cycles roaming → chase free → chase
+/// locked → in-eye → roaming; forward/back pick the next/previous target. 0.2 s between actions.
+fn observer_handle_buttons(p: &mut Player, cx: &mut Cx, now: f32) {
+    if p.ts.obs_next_input > now {
+        return;
     }
-    // Observer_Idle: follow the target (engine-side camera uses iuser2; keep the origin close
-    // so PVS/PAS are right).
-    let (mode, target) = (cx.pev().iuser1, cx.pev().iuser2);
-    if mode != OBS_ROAMING && mode != OBS_MAP_FREE {
-        if !valid_obs_target(target, cx.index()) {
-            observer_set_mode(p, cx, mode);
-        }
-        let t = engine().client(cx.pev().iuser2);
-        if !t.is_null() {
-            let org = t.v().origin;
-            engine().set_origin(e, org);
-        }
+    let buttons = cx.pev().button;
+    if buttons & IN_JUMP as i32 != 0 {
+        let mode = match cx.pev().iuser1 {
+            obs::ROAMING => obs::CHASE_FREE,
+            obs::CHASE_FREE => obs::CHASE_LOCKED,
+            obs::CHASE_LOCKED => obs::IN_EYE,
+            _ => obs::ROAMING,
+        };
+        observer_set_mode(p, cx, mode);
+        p.ts.obs_next_input = now + 0.2;
+    }
+    if buttons & IN_FORWARD as i32 != 0 && cx.pev().iuser1 != obs::ROAMING {
+        observer_find_next_player(p, cx, false);
+        p.ts.obs_next_input = now + 0.2;
+    }
+    if buttons & IN_BACK as i32 != 0 && cx.pev().iuser1 != obs::ROAMING {
+        observer_find_next_player(p, cx, true);
+        p.ts.obs_next_input = now + 0.2;
+    }
+}
+
+/// `CBasePlayer::Observer_Idle` (0x99ca4): twice a second, move on when the target died or
+/// became an observer. The camera itself follows `iuser2` in `PM_SpectatorMove`.
+fn observer_idle(p: &mut Player, cx: &mut Cx, now: f32) {
+    if p.ts.obs_next_idle > now {
+        return;
+    }
+    p.ts.obs_next_idle = now + 0.5;
+    if cx.pev().iuser1 == obs::ROAMING || p.ts.obs_target == 0 {
+        return;
+    }
+    let t = engine().client(p.ts.obs_target);
+    if !obs_handle_valid(p.ts.obs_target) || !alive(t.v()) || t.v().iuser1 != 0 {
+        observer_find_next_player(p, cx, false);
     }
 }
 
@@ -700,13 +746,14 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     crate::entities::stock::drive::release_tank(p, cx);
     p.ts.respawns_used = p.ts.respawns_used.saturating_add(1);
     p.ts.suicide_at = 0.0;
-    if super::is_player(attacker) && attacker != e {
-        let k = eng.index_of(attacker);
+    // The spectator target is the last inflictor when it's a player (TS: `g_pevLastInflictor`);
+    // otherwise only iuser2 is cleared and `m_hObserverTarget` keeps its old value.
+    if super::is_player(dmg.inflictor) && dmg.inflictor != e {
+        let k = eng.index_of(dmg.inflictor);
         cx.pev().iuser2 = k;
-        p.ts.killer = k;
+        p.ts.obs_target = k;
     } else {
         cx.pev().iuser2 = 0;
-        p.ts.killer = 0;
     }
     set_respawn_time(p, cx, cvars::respawn_time());
 

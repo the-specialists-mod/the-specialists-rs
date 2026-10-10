@@ -2,10 +2,11 @@
 //! helpers (`TSHudMessageOne/All`, `ClientPrint`, `SayText`).
 
 use crate::messages::{self, Msg};
+use goldsrc::ext::rules::SVC_HLTV;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
 use goldsrc::util::to_cstring;
-use shared::protocol::hud_wire::Wire;
+use shared::protocol::hud_wire::{DirectorEvent, Wire};
 use shared::protocol::rules::{SayText, TextMsg, TsMessage};
 
 /// `Wire` over an open `MsgWriter`.
@@ -62,6 +63,13 @@ pub fn all(m: Msg, f: impl FnOnce(&mut Out)) {
 
 pub fn pvs(m: Msg, origin: [f32; 3], f: impl FnOnce(&mut Out)) {
     send(messages::pvs(m, origin), f)
+}
+
+/// HLTV director event to spectator proxies: `MESSAGE_BEGIN(MSG_SPEC, 0x32)` with TS's old
+/// `DRC_EVENT` layout. Normal clients never receive `MSG_SPEC` messages.
+pub fn director_event(primary: i32, secondary: i32, flags: i32) {
+    let m = DirectorEvent::event(primary, secondary, flags);
+    send(MsgWriter::begin(MSG_SPEC as i32, SVC_HLTV, None, std::ptr::null_mut()), |w| m.write(w));
 }
 
 /// Truncates like TS's `char[128]` buffers.

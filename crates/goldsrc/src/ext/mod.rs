@@ -10,4 +10,6 @@ pub mod render;
 #[cfg(feature = "server")]
 pub mod rules;
 pub mod voice;
+#[cfg(feature = "client")]
+pub mod spectator;
 pub mod weapons;

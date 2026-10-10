@@ -601,62 +601,9 @@ fn calc_intermission(p: &mut ref_params_t) {
     with(|w| finish(w, p));
 }
 
-/// What `V_GetPlayerEye` (`0x10068e20`) needs from a player entity.
-#[derive(Clone, Copy, Debug, Default)]
-struct EyeSource {
-    origin: Vec3,
-    angles: Vec3,
-    solid: i32,
-    iuser4: i32,
-    usehull: i32,
-}
-
-/// `V_GetPlayerEye` (`0x10068e20`): a player's eye position and view angles from its entity.
-/// Dead (not solid): 8 below the origin, rolled 80. During a stunt (`NO_VIEW`, the server's
-/// `view_ofs` is 0) the eye is the origin; otherwise 16 (duck hull) or 28 above it.
-fn player_eye(e: &EyeSource) -> (Vec3, Vec3) {
-    let mut org = e.origin;
-    let mut ang = [e.angles[0] * -3.1415927, e.angles[1], e.angles[2]];
-    if e.solid == 0 {
-        ang[2] = 80.0;
-        org[2] -= 8.0;
-    } else if e.iuser4 & stunt::NO_VIEW == 0 {
-        org[2] += if e.usehull == 1 { 16.0 } else { 28.0 };
-    }
-    (org, ang)
-}
-
-/// Spectator modes (`V_CalcSpectatorRefdef` `0x10068f70`, simplified): in-eye copies the
-/// target's view; chase modes put the camera behind it; free look uses the engine's origin.
+/// `V_CalcSpectatorRefdef` (`0x10068f70`): see `crate::spectator::calc_refdef`.
 fn calc_spectator(p: &mut ref_params_t) {
-    let (mode, target) = state::with(|s| (s.spec_mode, s.spec_target));
-    p.vieworg = v::add(p.simorg, p.viewheight);
-    p.viewangles = p.cl_viewangles;
-    if let Some(t) = (target > 0).then(|| r::entity(target)).flatten() {
-        match mode {
-            4 | 5 if t.player != 0 => {
-                let src = EyeSource {
-                    origin: t.origin,
-                    angles: t.angles,
-                    solid: t.curstate.solid as i32,
-                    iuser4: t.curstate.iuser4,
-                    usehull: t.curstate.usehull,
-                };
-                (p.vieworg, p.viewangles) = player_eye(&src);
-            }
-            1..=3 => {
-                let focus = v::add(t.origin, [0.0, 0.0, 28.0]);
-                let (f, _, _) = v::angle_vectors(p.cl_viewangles);
-                let want = v::ma(focus, -128.0, f);
-                let tr = r::player_trace(focus, want, 2, (PM_STUDIO_IGNORE | PM_WORLD_ONLY) as i32, -1);
-                p.vieworg = v::ma(tr.endpos, 4.0, tr.plane.normal);
-            }
-            _ => {}
-        }
-    }
-    if let Some(vm) = r::view_model() {
-        vm.model = std::ptr::null_mut();
-    }
+    crate::spectator::calc_refdef(p);
     with(|w| {
         w.eye = p.vieworg;
         finish(w, p)
@@ -1233,17 +1180,6 @@ mod tests {
         assert_eq!(smooth_model_z(10.0, 0.0, 1.0), 0.0, "no overshoot");
     }
 
-    #[test]
-    fn spectator_eye() {
-        let e = EyeSource { origin: [0.0, 0.0, 100.0], angles: [10.0, 90.0, 0.0], solid: 3, iuser4: 0, usehull: 0 };
-        let (o, a) = player_eye(&e);
-        assert_eq!(o[2], 128.0);
-        assert!((a[0] + 31.415927).abs() < 1e-4 && a[1] == 90.0);
-        assert_eq!(player_eye(&EyeSource { usehull: 1, ..e }).0[2], 116.0);
-        assert_eq!(player_eye(&EyeSource { iuser4: stunt::NO_VIEW, ..e }).0[2], 100.0, "NO_VIEW: eye at the origin");
-        let (o, a) = player_eye(&EyeSource { solid: 0, ..e });
-        assert_eq!((o[2], a[2]), (92.0, 80.0));
-    }
 
     #[test]
     fn idle_sway() {

@@ -9,14 +9,16 @@ use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use shared::weapons::tables;
 
+/// `GetActiveAnimSet` (`0x1003df60`), as in `fire::anim_set`.
 fn set(id: i32) -> [i16; 29] {
-    let alt = crate::prediction::alt_grip();
+    let alt = crate::prediction::alt_grip() && !crate::spectator::in_eye();
     info::info(id).map_or([0; 29], |i| *i.set(alt))
 }
 
-/// The local player, or the player we spectate in-eye (draw/grenade anims only play there).
+/// The player we spectate in-eye (`0x1001c5c0`: `g_iUser1 == 5 && g_iUser2 == entindex`); draw and
+/// grenade anims only play for the local player or this one.
 fn in_eye(a: &Args) -> bool {
-    state::with(|s| s.spec_mode == 4 || s.spec_mode == 5) && state::with(|s| s.spec_target) == a.entindex
+    state::with(|s| s.spec_mode == shared::ts::obs::IN_EYE && s.spec_target == a.entindex)
 }
 
 fn sound(a: &Args, chan: u32, sample: &str, vol: f32) {

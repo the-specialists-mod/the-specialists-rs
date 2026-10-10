@@ -484,3 +484,24 @@ fn hull_bounds_match_sdk() {
     assert_eq!(hull_bounds(1), Some(([-16.0, -16.0, -18.0], [16.0, 16.0, 18.0])));
     assert_eq!(hull_bounds(3), None);
 }
+
+#[test]
+fn in_eye_spectator_is_mode_5() {
+    let mut f = Fixture::standing();
+    f.p.movevars = &mut *f.mv;
+    CURRENT.with(|c| c.set(&*f.p));
+    f.p.numphysent = 2;
+    f.p.physents[1].info = 2;
+    f.p.physents[1].origin = [50.0, 60.0, 70.0];
+    f.p.physents[1].angles = [4.0, 90.0, 0.0];
+    f.p.iuser1 = crate::ts::obs::IN_EYE;
+    f.p.iuser2 = 2;
+    player_move(&mut f.p);
+    assert_eq!(f.p.origin, [50.0, 60.0, 70.0], "in-eye sits at the target's origin");
+    assert_eq!(f.p.angles, [4.0, 90.0, 0.0]);
+
+    f.p.iuser1 = crate::ts::obs::CHASE_LOCKED;
+    player_move(&mut f.p);
+    assert_eq!(f.p.angles, [6.0, 90.0, 0.0], "locked chase pitches to 10 - pitch");
+    assert!(f.p.origin[1] < 60.0, "locked chase sits behind the target");
+}
