@@ -72,6 +72,46 @@ pub fn after_kevlar(amount: f32, armor: f32, group: i32, dmg_bits: i32) -> f32 {
     ((d - absorbed as f64 * d) as f32).trunc()
 }
 
+/// `CBasePlayer::TakeHealth` (0xd8760) on the entvars: refused with `takedamage` off or health
+/// already above max; otherwise added with no cap. Returns `None` when refused, else whether the
+/// player is now over max (TS then sets the 1/s decay timer, `+0x73c`, to time + 1).
+fn add_health(v: &mut entvars_t, amount: f32) -> Option<bool> {
+    if v.takedamage == 0.0 || v.health > v.max_health {
+        return None;
+    }
+    v.health += amount;
+    Some(v.health > v.max_health)
+}
+
+/// `CBasePlayer::TakeHealth` (0xd8760) for code that holds the player.
+pub fn take_health(p: &mut Player, cx: &mut Cx, amount: f32) -> bool {
+    let now = cx.time();
+    let Some(over) = add_health(cx.pev(), amount) else {
+        return false;
+    };
+    if over {
+        p.ts.health_timer = now + 1.0;
+    }
+    true
+}
+
+/// `CBasePlayer::TakeHealth` (0xd8760) for entities healing a player edict (healthkits, chargers,
+/// doors, negative `trigger_hurt`). The health changes at once; when the player is taken out
+/// further up the stack (its own `+use` opening a healing door), the decay timer is set as soon
+/// as it is back.
+pub fn take_health_edict(e: *mut edict_t, amount: f32) -> bool {
+    let timer = engine().time() + 1.0;
+    let Some(over) = add_health(e.v(), amount) else {
+        return false;
+    };
+    if over {
+        crate::world::defer(e, move || {
+            super::with_player(e, |p, _| p.ts.health_timer = timer);
+        });
+    }
+    true
+}
+
 /// `CBasePlayer::TakeDamage` (0x8fa94): a hit arms the bullet dance when it does at most 80
 /// damage, the victim's horizontal speed is under 80 u/s, and it isn't in the legs.
 pub fn arms_bullet_dance(group: i32, speed2d: f32, dmg: f32) -> bool {
@@ -266,6 +306,22 @@ mod tests {
         assert_eq!(ptakedam_amount(10.0, bits::BULLET | DMG_SHOTGUN, false), 40);
         assert_eq!(ptakedam_amount(31.0, bits::BULLET, false), 15, "15.5 truncates");
         assert_eq!(ptakedam_amount(23.6, bits::BULLET, true), 139, "139.8 truncates");
+    }
+
+    #[test]
+    fn take_health_rules() {
+        let mut v = entvars_t { takedamage: 2.0, health: 90.0, max_health: 100.0, ..Default::default() };
+        assert_eq!(add_health(&mut v, 50.0), Some(true), "no cap, overheal starts the decay");
+        assert_eq!(v.health, 140.0);
+        assert_eq!(add_health(&mut v, 10.0), None, "already above max");
+        v.health = 100.0;
+        assert_eq!(add_health(&mut v, 0.0), Some(false), "at max is still allowed");
+        v.health = 50.0;
+        assert_eq!(add_health(&mut v, 10.0), Some(false));
+        assert_eq!(v.health, 60.0);
+        v.takedamage = 0.0;
+        assert_eq!(add_health(&mut v, 10.0), None, "takedamage off");
+        assert_eq!(v.health, 60.0);
     }
 
     #[test]

@@ -179,8 +179,10 @@ How the SDK patterns map to Rust:
 ### 3.3 Items and chargers
 
 * **Healthkit.** It gives a fixed 50 health through TS `CBasePlayer::TakeHealth`, which refuses only
-  when health > max and has no cap. A kit at 100 HP gives 150. The decay back to 100 at 1/s is in
-  the player's PreThink (rules package).
+  when health > max and has no cap. A kit at 100 HP gives 150. Overhealing starts the decay timer
+  (`+0x73c` = time + 1), and the player's PreThink (rules package) then takes 1/s back to 100.
+  Every player heal (kits, chargers, door heals, negative `trigger_hurt`, drown recovery) goes
+  through `player::damage::take_health`/`take_health_edict`.
 * **Battery.** It refuses players without the HEV suit bit (`weapons` bit 31, set on spawn). It
   calls `TakeArmor(50)`. The first kevlar takes 10 free inventory slots: without them there's no
   armour, but the battery is still used up. Armour is capped at 100 and speed is recomputed from

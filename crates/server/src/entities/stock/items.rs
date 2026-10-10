@@ -21,17 +21,10 @@ use std::ffi::CStr;
 pub const SF_NORESPAWN: i32 = 1 << 30;
 const ITEM_RESPAWN_TIME: f32 = 30.0;
 
-/// TS `CBasePlayer::TakeHealth`: fails only with takedamage off or health above max; no cap.
+/// TS `CBasePlayer::TakeHealth` (0xd8760, `player::damage::take_health_edict`): fails only with
+/// takedamage off or health above max; no cap; overhealing starts the 1/s decay.
 pub fn player_take_health(p: *mut edict_t, amount: f32) -> bool {
-    if !is_player(p) {
-        return false;
-    }
-    let v = p.v();
-    if v.takedamage == 0.0 || v.health > v.max_health {
-        return false;
-    }
-    v.health += amount;
-    true
+    is_player(p) && crate::player::damage::take_health_edict(p, amount)
 }
 
 /// `pOther->TakeHealth(amount)` for any entity (SDK `CBaseEntity::TakeHealth` caps at max).
