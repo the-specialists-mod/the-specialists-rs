@@ -1,4 +1,6 @@
 //! `HUD_TempEntUpdate` (`0x1001bd00`): the SDK `entity.cpp` loop with TS's two changes:
+//! (it lives in the dll crate because it walks the engine's temp-entity linked list and calls the
+//! engine's per-entity callbacks through raw pointers)
 //! `frametime *= g_flTimeScale` (temp entities slow down in slow motion) and the TS shell sound
 //! (`TempEnt_PlayShellSound` `0x100569a0`) on the first bounce.
 
@@ -27,15 +29,24 @@ fn shell_sound(t: &mut TEMPENTITY) {
         _ => return,
     };
     t.entity.curstate.iuser1 = 0;
-    let pitch = (crate::events::slow_pitch() as f32 * r::random_float(0.9, 1.3)) as i32;
+    let pitch = (ts_client::events::slow_pitch() as f32 * r::random_float(0.9, 1.3)) as i32;
     r::play_sound(-1, t.entity.origin, CHAN_AUTO as i32, sample, r::random_float(0.1, 0.3), 1.9, 0, pitch);
 }
 
 /// # Safety
 /// Pointers come from the engine's `HUD_TempEntUpdate` call.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn update(frametime: f64, client_time: f64, cl_gravity: f64, free: *mut *mut TEMPENTITY, active: *mut *mut TEMPENTITY, add_visible: AddVisible,
-                     play_sound: PlaySound, time_scale: f32) {
+pub unsafe fn update(
+    frametime: f64,
+    client_time: f64,
+    cl_gravity: f64,
+    free: *mut *mut TEMPENTITY,
+    active: *mut *mut TEMPENTITY,
+    add_visible: AddVisible,
+    play_sound: PlaySound,
+    time_scale: f32,
+) {
+    // SAFETY: the engine passes its temp-entity list heads and the two callbacks; this follows the SDK `entity.cpp` loop and only touches entities on those lists, which the engine keeps alive during the call.
     unsafe {
         if active.is_null() || (*active).is_null() {
             return;
@@ -95,6 +106,11 @@ pub unsafe fn update(frametime: f64, client_time: f64, cl_gravity: f64, free: *m
                 continue;
             }
             prev = t;
+            // TS keeps the newest 64 shells (ts_client::effects::track_shell).
+            if ts_client::effects::shell_expired(p.entity.curstate.iuser2) {
+                p.entity.curstate.iuser2 = 0;
+                p.die = ct;
+            }
             p.entity.prevstate.origin = p.entity.origin;
             let vel = p.entity.baseline.origin;
 

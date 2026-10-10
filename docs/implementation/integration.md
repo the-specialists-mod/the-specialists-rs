@@ -24,7 +24,7 @@ were joined, what was decided along the way, and what is still open.
 | Spawn | Clears `FL_FROZEN` and resets the view (`trigger_camera`). | `server/src/player/mod.rs` |
 | Cvars and commands | One owner each. Rules owns the shared weapon cvars (`realbullet`, `ammocount`, `weaponstay`, `damagemult`, `customweapons`) and `weaponrestriction`; weapons reads them by name and owns `loadweapons`/`saveweapons`. The two restriction masks are one. Cvars the engine already has (`sv_alltalk`) aren't re-registered. | `rules/cvars.rs`, `weapons/` |
 | Bots | A random loadout every spawn, reloading, weapon switching, aim gating, and chasing the nearest enemy. Only bots with a live user id are driven, because HL25 drops all bots when the last human leaves and `pfnRunPlayerMove` on a dropped edict crashes the engine. | `server/src/bots/` |
-| Misc | `pfnResetGlobalState` resets `env_global`. `fire_targets` skips entities removed this frame. Water sounds are precached. `GetGameDescription` returns the per-mode TS string. `_special` is accepted silently. | `server/src/lib.rs`, `entities/mod.rs`, `commands.rs` |
+| Misc | `pfnResetGlobalState` resets `env_global`. `fire_targets` skips entities removed this frame. Water sounds are precached. `GetGameDescription` returns the per-mode TS string. `_special` is accepted silently. | `server-dll/src/lib.rs`, `entities/mod.rs`, `commands.rs` |
 
 ## 2. Decisions
 

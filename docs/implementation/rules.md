@@ -37,7 +37,7 @@ are Ghidra addresses.
 | `ClientConnect` 0xacce8 | `lifecycle::client_connect` | `ts_playeramount` connect hook, accepts. |
 | `ClientDisconnect` 0xacd4c, `ClientDisconnected` 0xcf960, `TSPlayerDisconnect` | `lifecycle::client_disconnect` | "- %s has left the game", `game_playerleave`, log, strip weapons, drop flag, end slow flow. |
 | `ClientKill` 0xacec8 | `lifecycle::client_kill` + `pre_think` | suicide 1 s later, not while observing. |
-| `ClientPutInServer` 0xacf44 | first `on_spawn` | cash = `initial_cash` "1200", `EF_NOINTERP` (lib.rs creates the Player and spawns it). |
+| `ClientPutInServer` 0xacf44 | first `on_spawn` | cash = `initial_cash` "1200", `EF_NOINTERP` (`server-dll` creates the Player and spawns it). |
 | `ClientUserInfoChanged` 0xae638 + 0x8b244 | `lifecycle::userinfo_changed` | name change (% → space) broadcast/log; HLDM models refused. |
 | `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team, spawn spot. |
 | `UpdateClientData` init block 0x91d00 | `lifecycle::init_hud` | `ResetHUD` every spawn; first time `InitHUD`, rules InitHUD, TS InitHUD, `game_playerjoin`; `game_playerspawn`; RoundTime; super jump PwUp. |
@@ -157,8 +157,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 * `addbot`/`addcustombot` add a fake client; `ts_bot_quota` is new (dedicated-server testing).
 * The HLTV `MSG_SPEC` director event (svc 50) in `DeathNotice`/`TakeDamage` is not sent.
-* `GetGameDescription` text is available as `rules::game_description()` but lib.rs (not owned
-  here) still returns `shared::GAME_NAME`.
+* `GetGameDescription` returns `rules::game_description()` (wired at integration).
 * Map votes (`vote map/stats/reset`, `CheckVotes`) are not implemented: "vote …" is plain chat.
 * `PlayerIsCheating` / forced `cl_lw 1` is not implemented.
 * Spawn points: the `IsTriggered` master check is skipped (stock spawn points store no master).
@@ -232,5 +231,5 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * Players join as observers: on `+attack` while observing, send the `respawn` command (TS client
   behaviour). `usepowerup` activates the held power-up (+use double tap works server-side too).
 
-**lib.rs (shared skeleton)**
-* `GetGameDescription` could return `rules::game_description()`.
+**Server entry points (`server-dll/src/lib.rs`)**
+* `GetGameDescription` returns `rules::game_description()` (done at integration).

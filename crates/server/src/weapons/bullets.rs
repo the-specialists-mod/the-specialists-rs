@@ -10,6 +10,7 @@ use super::{assets, fire};
 use crate::entities::{self, link_entities};
 use crate::world::{Cx, Entity};
 use goldsrc::Global;
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -132,10 +133,10 @@ fn run() {
 /// `CBulletManager::UpdateBullet` 0x6ef5c. Returns false when the bullet is destroyed.
 fn update(b: &mut Bullet, now: f32) -> bool {
     let e = engine();
-    if b.owner.is_null() || unsafe { (*b.owner).free != 0 } {
+    if b.owner.is_null() || b.owner.is_free() {
         return false;
     }
-    let owner = unsafe { &(*b.owner).v };
+    let owner = b.owner.v();
     let ammo = tables().ammo(b.ammo);
     let velocity = ammo.map(|a| a.velocity).unwrap_or(330.0);
     let mut dt = b.next_update - now;

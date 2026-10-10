@@ -10,7 +10,6 @@ pub mod emitters;
 pub mod fx;
 mod laser;
 pub mod psys;
-mod tempents;
 
 use crate::events::ClientBullet;
 use crate::{state, view};
@@ -21,7 +20,6 @@ use goldsrc::sys::*;
 use psys::{Camera, PSys};
 use shared::protocol::effects as msg;
 use std::cell::RefCell;
-use std::ffi::{c_char, c_int, c_void};
 
 struct Fx {
     psys: PSys,
@@ -30,8 +28,8 @@ struct Fx {
     fog: Option<emitters::Fog>,
     bullets: Vec<ClientBullet>,
     visible: [bool; 33],
-    shells: [usize; 64],
-    shell_next: usize,
+    /// Sequence number of the newest tracked shell (see [`track_shell`]).
+    shell_seq: i32,
     whizz: u32,
     time: f64,
     frametime: f32,
@@ -80,8 +78,7 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         fog: None,
         bullets: Vec::new(),
         visible: [false; 33],
-        shells: [0; 64],
-        shell_next: 0,
+        shell_seq: 0,
         whizz: 0,
         time: 0.0,
         frametime: 0.0,
@@ -120,16 +117,20 @@ pub fn shell_life() -> f32 {
     with(|fx| (30.0 * fx.quality.q).max(2.0))
 }
 
-/// Keeps a ring of 64 shells; the oldest is killed when a new one arrives (TS sets its `die`).
+/// TS keeps at most 64 shells: when a new one arrives, the oldest is killed (TS kept a ring of
+/// pointers and set the old shell's `die`). Here each shell gets a sequence number in
+/// `curstate.iuser2`, and the temp-entity update kills shells that fell out of the last 64.
 pub fn track_shell(t: &mut TEMPENTITY) {
-    let old = with(|fx| {
-        let slot = fx.shell_next;
-        fx.shell_next = (slot + 1) % 64;
-        std::mem::replace(&mut fx.shells[slot], t as *mut TEMPENTITY as usize)
+    let seq = with(|fx| {
+        fx.shell_seq += 1;
+        fx.shell_seq
     });
-    if old != 0 && old != t as *mut TEMPENTITY as usize {
-        unsafe { (*(old as *mut TEMPENTITY)).die = 0.0 };
-    }
+    t.entity.curstate.iuser2 = seq;
+}
+
+/// True if the shell with sequence number `seq` (from [`track_shell`]) is older than the newest 64.
+pub fn shell_expired(seq: i32) -> bool {
+    seq > 0 && with(|fx| fx.shell_seq - seq >= 64)
 }
 
 /// Whizz sounds alternate between channels 503 and 504.
@@ -175,7 +176,7 @@ pub fn init() {
 
 /// `ts_test_fx slowmo <scale> | blood | glass | explosion | sparks | wind <speed> | bullettime <0|1>`:
 /// feeds the message handlers locally (developer test; the server package sends the real ones).
-unsafe extern "C" fn cmd_test_fx() {
+extern "C" fn cmd_test_fx() {
     let e = goldsrc::client::engine();
     let what = e.cmd_argv(1).to_string_lossy().into_owned();
     let num = e.cmd_argv(2).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
@@ -187,9 +188,25 @@ unsafe extern "C" fn cmd_test_fx() {
         "stats" => {
             let line = with(|fx| {
                 let live = fx.map.emitters.iter().filter(|e| !e.dead).count();
-                let first = fx.map.emitters.first().map(|e| format!("{:?} next {:.2} tmpl {:?}", e.origin, e.next_emit, e.template)).unwrap_or_default();
-                format!("draws {} ft {:.4} particles {} / max {} div {} emitters {} live {} first {} time {:.2} wind {:.1}\n", fx.draws, fx.frametime, fx.psys.count(), fx.psys.max, fx.psys.divisor,
-                        fx.map.emitters.len(), live, first, fx.time, fx.psys.wind.speed(fx.time))
+                let first = fx
+                    .map
+                    .emitters
+                    .first()
+                    .map(|e| format!("{:?} next {:.2} tmpl {:?}", e.origin, e.next_emit, e.template))
+                    .unwrap_or_default();
+                format!(
+                    "draws {} ft {:.4} particles {} / max {} div {} emitters {} live {} first {} time {:.2} wind {:.1}\n",
+                    fx.draws,
+                    fx.frametime,
+                    fx.psys.count(),
+                    fx.psys.max,
+                    fx.psys.divisor,
+                    fx.map.emitters.len(),
+                    live,
+                    first,
+                    fx.time,
+                    fx.psys.wind.speed(fx.time)
+                )
             });
             e.print(&line);
             let cam = view::camera();
@@ -228,15 +245,11 @@ pub fn vid_init() {
         fx.sprites = None;
         fx.level.clear();
         fx.bullets.clear();
-        fx.shells = [0; 64];
+        fx.shell_seq = 0;
     });
 }
 
 // ---- messages ------------------------------------------------------------------------------
-
-unsafe fn bytes<'a>(buf: *mut c_void, size: c_int) -> &'a [u8] {
-    if buf.is_null() || size <= 0 { &[] } else { unsafe { std::slice::from_raw_parts(buf.cast(), size as usize) } }
-}
 
 /// `TSPSys` (`0x1004bfd0`): subtype 3 = wind.
 pub fn on_tspsys(b: &[u8]) {
@@ -378,8 +391,7 @@ fn apply_quality(fx: &mut Fx, cl_fx: f32, frametime: f32) {
 }
 
 /// `HUD_AddEntity` (`0x100447f0`).
-pub fn add_entity(kind: i32, ent: *mut cl_entity_t, _model: *const c_char) -> bool {
-    let Some(e) = (unsafe { ent.as_mut() }) else { return true };
+pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
     let cam = view::camera();
     if kind == 1 {
         let idx = e.index;
@@ -526,26 +538,11 @@ fn fog_end() {
 }
 
 /// `HUD_StudioEvent` (`0x10044b50`): only 5002 (sparks) and 5004 (sound) remain.
-pub fn studio_event(event: *const c_void, ent: *const cl_entity_t) {
-    let (Some(ev), Some(ent)) = (unsafe { event.cast::<mstudioevent_s>().as_ref() }, unsafe { ent.as_ref() }) else { return };
-    let opts = unsafe { std::ffi::CStr::from_ptr(ev.options.as_ptr()) }.to_string_lossy();
+pub fn studio_event(ev: &mstudioevent_s, ent: &cl_entity_t) {
+    let opts = goldsrc::util::c_array_str(&ev.options);
     match ev.event {
         5002 => r::spark_effect(ent.attachment[0], opts.trim().parse().unwrap_or(0), -100, 100),
         5004 => r::play_sound(ent.index, ent.attachment[0], CHAN_BODY as i32, &opts, 1.0, 0.8, 0, crate::events::slow_pitch()),
         _ => {}
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn temp_ent_update(frametime: f64, client_time: f64, gravity: f64, free: *mut *mut c_void, active: *mut *mut c_void, add_visible: *mut c_void,
-                       play_sound: *mut c_void) {
-    if add_visible.is_null() || play_sound.is_null() {
-        return;
-    }
-    let ts = state::with(|s| s.time_scale);
-    unsafe {
-        let add: tempents::AddVisible = std::mem::transmute(add_visible);
-        let snd: tempents::PlaySound = std::mem::transmute(play_sound);
-        tempents::update(frametime, client_time, gravity, free.cast(), active.cast(), add, snd, ts);
     }
 }

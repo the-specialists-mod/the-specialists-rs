@@ -44,11 +44,14 @@ the original.
 ```
 crates/
   goldsrc-sys/   bindgen output from the FWGS headers (per target)
-  goldsrc/       engine wrappers: server (traces, sounds, events, MsgWriter, cvars, bots), client
+  goldsrc/       safe engine wrappers: server (traces, sounds, events, MsgWriter, cvars, bots),
+                 client, edicts (edict.rs), player-move callbacks (pmove.rs), native mouse (platform.rs)
   shared/        runs on both sides: pm (movement), weapons (tables + predicted logic), protocol, ts
     data/        weapons.toml, ammo.toml, combat.toml, assets.toml (decoded from the decomp)
-  server/        cdylib -> dlls/ts_i386.so, ts_amd64.so, mp.dll
-  client/        cdylib -> cl_dlls/client.so, client_amd64.so, client.dll
+  server/        ts-server: server game logic (rlib, no unsafe)
+  server-dll/    ts-server-dll: cdylib -> dlls/ts_i386.so, ts_amd64.so, mp.dll (exports, callbacks)
+  client/        ts-client: client game logic (rlib, no unsafe)
+  client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll
 xtask/           build, dist, install, server tests
 game/ts/         liblist.gam, gameinfo.txt, delta.lst (installed over the TS content)
 docs/            design.md (this), implementation/*.md (per subsystem), validation.md
@@ -58,8 +61,9 @@ docs/            design.md (this), implementation/*.md (per subsystem), validati
 
 ### 4.1 Entry points and dispatch
 
-`server/src/lib.rs` exports `GiveFnptrsToDll`, `GetEntityAPI`, `GetEntityAPI2`,
-`GetNewDLLFunctions`, and fills every `DLL_FUNCTIONS` slot. Each callback is routed to a module:
+`server-dll/src/lib.rs` exports `GiveFnptrsToDll`, `GetEntityAPI`, `GetEntityAPI2`,
+`GetNewDLLFunctions`, and fills every `DLL_FUNCTIONS` slot. Each callback converts the engine's
+raw pointers and is routed to a module of `ts-server` (§4.8 explains the split):
 
 | Callback | Goes to |
 |---|---|
@@ -84,7 +88,9 @@ docs/            design.md (this), implementation/*.md (per subsystem), validati
   *yourself* can't be dispatched; handle it with the `&mut self` you hold.
 * `Entity` trait methods: `key_value`, `spawn`, `think`, `touch`, `use_`, `blocked`,
   `take_damage`, `should_collide`. All have no-op defaults.
-* `entities::link_entities!` exports one C symbol per classname. `fire_targets`/`use_targets`
+* `entities::link_entities!` exports one C symbol per classname (through
+  `goldsrc::export_entity_class!`, so the export lands in the server library even though it's
+  declared in `ts-server`). `fire_targets`/`use_targets`
   implement SDK `FireTargets`; `entities::remove` is the deferred `UTIL_Remove` (`FL_KILLME`).
 * Stock Half-Life classes live in `entities/stock/`, TS classes in `entities/ts/`.
 
@@ -138,6 +144,14 @@ Every entity has a time scale in `pev->fuser1` (1.0 = normal):
 * The server eases each player's `fuser1` toward `Player::slow_target` at about 7/s, snapping within 0.05.
 * Sources of slow motion: power-ups (0.35 / 0.225 for others in line of sight), global slow, slow-motion points.
 
+### 4.8 The `unsafe` boundary
+
+The game crates (`ts-server`, `ts-client`, `shared`) are `#![deny(unsafe_code)]`. All `unsafe`
+code is in `goldsrc` (safe wrappers over the engine tables, edicts, player-move callbacks, client
+hooks, native mouse) and the two `*-dll` crates (exports and callbacks, which convert raw
+pointers to references). Game code keeps `*mut edict_t` as an entity handle and reads it through
+`goldsrc::edict::EdictPtr` (`e.v()`). The rules for working with this are in `AGENTS.md`.
+
 ## 5. Map entities
 
 Census of the 97 shipped maps: how many maps use each class. Implement in this order.
@@ -153,8 +167,9 @@ still load.
 
 ## 6. Client architecture
 
-`client/src/lib.rs` exports the individual entry points (`Initialize`, `HUD_*`, `IN_*`,
-`CL_CreateMove`, `V_CalcRefdef`, `KB_Find`, …) and delegates:
+`client-dll/src/lib.rs` exports the individual entry points (`Initialize`, `HUD_*`, `IN_*`,
+`CL_CreateMove`, `V_CalcRefdef`, `KB_Find`, …), converts the engine's pointers, and delegates to
+`ts-client`. It also holds `tempents.rs`, the SDK temp-entity loop over the engine's linked list.
 
 | Module | Contents | Package |
 |---|---|---|

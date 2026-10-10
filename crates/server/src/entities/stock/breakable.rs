@@ -19,6 +19,7 @@ use crate::damage::bits as dmg;
 use crate::entities::{fire_targets, remove};
 use crate::messages::{self, Msg};
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, MsgWriterExt, Vec3, is_player, te, te_break_model, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -53,10 +54,28 @@ pub mod mat {
 
 /// `CBreakable::pSpawnObjects` (identical in TS).
 const SPAWN_OBJECTS: [&CStr; 22] = [
-    c"", c"item_battery", c"item_healthkit", c"weapon_9mmhandgun", c"ammo_9mmclip", c"weapon_9mmAR", c"ammo_9mmAR",
-    c"ammo_ARgrenades", c"weapon_shotgun", c"ammo_buckshot", c"weapon_crossbow", c"ammo_crossbow", c"weapon_357",
-    c"ammo_357", c"weapon_rpg", c"ammo_rpgclip", c"ammo_gaussclip", c"weapon_handgrenade", c"weapon_tripmine",
-    c"weapon_satchel", c"weapon_snark", c"weapon_hornetgun",
+    c"",
+    c"item_battery",
+    c"item_healthkit",
+    c"weapon_9mmhandgun",
+    c"ammo_9mmclip",
+    c"weapon_9mmAR",
+    c"ammo_9mmAR",
+    c"ammo_ARgrenades",
+    c"weapon_shotgun",
+    c"ammo_buckshot",
+    c"weapon_crossbow",
+    c"ammo_crossbow",
+    c"weapon_357",
+    c"ammo_357",
+    c"weapon_rpg",
+    c"ammo_rpgclip",
+    c"ammo_gaussclip",
+    c"weapon_handgrenade",
+    c"weapon_tripmine",
+    c"weapon_satchel",
+    c"weapon_snark",
+    c"weapon_hornetgun",
 ];
 
 /// `MaterialSoundList`: bullet-impact sounds per material.
@@ -66,7 +85,11 @@ pub fn material_sound_list(m: i32) -> &'static [&'static CStr] {
         mat::WOOD => &[c"debris/wood1.wav", c"debris/wood2.wav", c"debris/wood3.wav"],
         mat::METAL => &[c"debris/metal1.wav", c"debris/metal2.wav", c"debris/metal3.wav"],
         mat::FLESH => &[
-            c"debris/flesh1.wav", c"debris/flesh2.wav", c"debris/flesh3.wav", c"debris/flesh5.wav", c"debris/flesh6.wav",
+            c"debris/flesh1.wav",
+            c"debris/flesh2.wav",
+            c"debris/flesh3.wav",
+            c"debris/flesh5.wav",
+            c"debris/flesh6.wav",
             c"debris/flesh7.wav",
         ],
         mat::CINDER | mat::ROCKS => &[c"debris/concrete1.wav", c"debris/concrete2.wav", c"debris/concrete3.wav"],
@@ -136,15 +159,7 @@ pub fn play_break_sound(e: *mut edict_t, m: i32, extra_vol: f32, s: f32) {
 /// `TSCreateDebris`: the glass debris effect (`TSFrags`, MSG_PVS).
 #[allow(clippy::too_many_arguments)]
 pub fn send_glass_debris(center: Vec3, size: Vec3, hit_pos: Vec3, hit_dir: Vec3, bits: i32, magnitude: f32) {
-    messages::pvs(Msg::TsFrags, center)
-        .vec3(center)
-        .vec3(size)
-        .byte(0)
-        .vec3(hit_pos)
-        .vec3(hit_dir)
-        .long(bits)
-        .coord(magnitude)
-        .end();
+    messages::pvs(Msg::TsFrags, center).vec3(center).vec3(size).byte(0).vec3(hit_pos).vec3(hit_dir).long(bits).coord(magnitude).end();
 }
 
 #[derive(Default)]
@@ -260,7 +275,11 @@ impl<const PUSH: bool> Breakable<PUSH> {
             mat::WOOD => &[c"debris/wood1.wav", c"debris/wood2.wav", c"debris/wood3.wav"],
             mat::METAL => &[c"debris/metal1.wav", c"debris/metal3.wav"],
             mat::FLESH => &[
-                c"debris/flesh1.wav", c"debris/flesh2.wav", c"debris/flesh3.wav", c"debris/flesh5.wav", c"debris/flesh6.wav",
+                c"debris/flesh1.wav",
+                c"debris/flesh2.wav",
+                c"debris/flesh3.wav",
+                c"debris/flesh5.wav",
+                c"debris/flesh6.wav",
                 c"debris/flesh7.wav",
             ],
             mat::CINDER | mat::ROCKS => &[c"debris/concrete1.wav", c"debris/concrete2.wav", c"debris/concrete3.wav"],
@@ -276,7 +295,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         if !is_player(other) || !self.is_breakable() {
             return;
         }
-        let ov = unsafe { &(*other).v };
+        let ov = other.v();
         let (ovel, oabsmin_z) = (ov.velocity, ov.absmin[2]);
         let sf = cx.pev().spawnflags;
         if sf & SF_BREAK_TOUCH != 0 {
@@ -310,7 +329,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         let eng = engine();
         self.hit_pos = info.pos;
         self.hit_dir = if vec::is_zero(info.dir) {
-            let av = if info.attacker.is_null() { [0.0; 3] } else { unsafe { (*info.attacker).v.velocity } };
+            let av = if info.attacker.is_null() { [0.0; 3] } else { info.attacker.v().velocity };
             if vec::is_zero(av) { [0.0; 3] } else { vec::normalize(av) }
         } else {
             vec::normalize(info.dir)
@@ -356,7 +375,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
             let eng = engine();
             if eng.cvar_float(c"developer") != 0.0 {
                 let name = |e: *mut edict_t, f: fn(&entvars_t) -> string_t| {
-                    if e.is_null() { "world".to_owned() } else { eng.string(f(unsafe { &(*e).v })).to_string_lossy().into_owned() }
+                    if e.is_null() { "world".to_owned() } else { eng.string(f(e.v())).to_string_lossy().into_owned() }
                 };
                 eng.print(&format!(
                     "[ts] func_breakable #{} broken by {} ({}, damage bits {:#x})\n",
@@ -380,7 +399,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         }
         let health = cx.pev().health;
         if !attacker.is_null() {
-            cx.pev().fuser1 = unsafe { (*attacker).v.fuser1 };
+            cx.pev().fuser1 = attacker.v().fuser1;
         }
 
         play_break_sound(me, self.material, (health as i32).abs() as f32 * 0.01, 0.9);
@@ -400,7 +419,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         let (absmin, mut absmax) = (v.absmin, v.absmax);
         absmax[2] += 8.0;
         for e in eng.entities_in_box(absmin, absmax, FL_ONGROUND as i32, 256) {
-            let ov = unsafe { &mut (*e).v };
+            let ov = e.v();
             ov.flags &= !(FL_ONGROUND as i32);
             ov.groundentity = std::ptr::null_mut();
         }
@@ -481,7 +500,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
 
     fn push_move(&mut self, cx: &mut Cx, other: *mut edict_t, push: bool) {
         let me = cx.edict;
-        let tv = unsafe { &mut (*other).v };
+        let tv = other.v();
         let v = cx.pev();
         if tv.flags & FL_ONGROUND as i32 != 0 && tv.groundentity == me {
             if v.waterlevel > 0 {
@@ -525,7 +544,15 @@ impl<const PUSH: bool> Breakable<PUSH> {
                     self.push.last_sound = engine().random_long(0, 2) as usize;
                     emit(me, CHAN_WEAPON, PUSH_SOUNDS[self.push.last_sound], 0.5, ATTN_NORM, 0, PITCH_NORM as i32);
                 } else {
-                    engine().emit_sound(me, CHAN_WEAPON as i32, PUSH_SOUNDS[self.push.last_sound], 0.0, 0.0, goldsrc::ext::entities::snd::STOP, PITCH_NORM as i32);
+                    engine().emit_sound(
+                        me,
+                        CHAN_WEAPON as i32,
+                        PUSH_SOUNDS[self.push.last_sound],
+                        0.0,
+                        0.0,
+                        goldsrc::ext::entities::snd::STOP,
+                        PITCH_NORM as i32,
+                    );
                 }
             }
         }
@@ -634,7 +661,7 @@ impl<const PUSH: bool> Entity for Breakable<PUSH> {
                 }
                 return;
             }
-            if !vec::is_zero(unsafe { (*activator).v.velocity }) {
+            if !vec::is_zero(activator.v().velocity) {
                 self.push_move(cx, activator, false);
             }
             return;
@@ -661,11 +688,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         }
         let v = cx.pev();
         let mid = vec::mid(v.absmin, v.absmax);
-        let from = [activator, caller]
-            .into_iter()
-            .find(|e| !e.is_null())
-            .map(|e| unsafe { vec::mid((*e).v.absmin, (*e).v.absmax) })
-            .unwrap_or(mid);
+        let from = [activator, caller].into_iter().find(|e| !e.is_null()).map(|e| vec::mid(e.v().absmin, e.v().absmax)).unwrap_or(mid);
         self.hit_pos = mid;
         let d = vec::sub(mid, from);
         self.hit_dir = vec::normalize(d);
@@ -682,7 +705,7 @@ pub fn respawn_all(force: bool) {
     let eng = engine();
     for i in 1..eng.max_entities() {
         let e = eng.entity_of_index(i);
-        if e.is_null() || unsafe { (*e).free != 0 || (*e).pvPrivateData.is_null() } {
+        if e.is_null() || e.is_free() || !e.has_private_data() {
             continue;
         }
         world::dispatch(e, |ent, cx| {

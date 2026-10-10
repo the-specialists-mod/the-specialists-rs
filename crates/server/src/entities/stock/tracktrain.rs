@@ -9,6 +9,7 @@ use super::base::*;
 use crate::entities::fire_targets;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
 use goldsrc::Global;
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -44,15 +45,15 @@ pub fn reset() {
 }
 
 fn is_path(e: *mut edict_t) -> bool {
-    !e.is_null() && s(unsafe { (*e).v.classname }) == c"path_track"
+    !e.is_null() && s(e.v().classname) == c"path_track"
 }
 
 fn sf(e: *mut edict_t) -> i32 {
-    unsafe { (*e).v.spawnflags }
+    e.v().spawnflags
 }
 
 fn origin(e: *mut edict_t) -> Vec3 {
-    unsafe { (*e).v.origin }
+    e.v().origin
 }
 
 fn data(e: *mut edict_t) -> (EHandle, EHandle, EHandle) {
@@ -64,7 +65,7 @@ fn set_previous(e: *mut edict_t, prev: *mut edict_t) {
     if prev.is_null() {
         return;
     }
-    let prev_name = s(unsafe { (*prev).v.targetname });
+    let prev_name = s(prev.v().targetname);
     world::with::<PathTrack, _>(e, |p| {
         if prev_name != s(p.alt_name) {
             p.prev = EHandle::new(prev);
@@ -85,7 +86,7 @@ fn link_all() {
         if e.is_null() {
             break;
         }
-        let v = unsafe { &(*e).v };
+        let v = e.v();
         if v.targetname == 0 {
             continue;
         }
@@ -343,7 +344,20 @@ impl TrackTrain {
     fn stop_sound(&mut self, cx: &mut Cx) {
         if self.sound_playing && cx.pev().noise != 0 {
             let encode = ((self.sounds & 7) << 12) as i32;
-            engine().playback_event(FEV_RELIABLE | FEV_UPDATE, cx.edict, self.adjust_pitch_event, 0.0, [0.0; 3], [0.0; 3], 0.0, 0.0, encode, 0, true, false);
+            engine().playback_event(
+                FEV_RELIABLE | FEV_UPDATE,
+                cx.edict,
+                self.adjust_pitch_event,
+                0.0,
+                [0.0; 3],
+                [0.0; 3],
+                0.0,
+                0.0,
+                encode,
+                0,
+                true,
+                false,
+            );
             emit(cx.edict, CHAN_ITEM, c"plats/ttrain_brake1.wav", self.volume, ATTN_NORM, 0, 100);
         }
         self.sound_playing = false;
@@ -363,7 +377,20 @@ impl TrackTrain {
             let us_sound = (self.sounds & 7) << 12;
             let us_pitch = (((pitch / 10.0) as i32) & 0x3f) << 6;
             let us_volume = ((self.volume * 40.0) as i32) & 0x3f;
-            engine().playback_event(FEV_RELIABLE | FEV_UPDATE, cx.edict, self.adjust_pitch_event, 0.0, [0.0; 3], [0.0; 3], 0.0, 0.0, us_sound | us_pitch | us_volume, 0, false, false);
+            engine().playback_event(
+                FEV_RELIABLE | FEV_UPDATE,
+                cx.edict,
+                self.adjust_pitch_event,
+                0.0,
+                [0.0; 3],
+                [0.0; 3],
+                0.0,
+                0.0,
+                us_sound | us_pitch | us_volume,
+                0,
+                false,
+                false,
+            );
         }
     }
 
@@ -416,7 +443,7 @@ impl TrackTrain {
             if pnext != path {
                 let fire = if cx.pev().speed >= 0.0 { pnext } else { path };
                 self.path = EHandle::new(pnext);
-                let fv = unsafe { &mut (*fire).v };
+                let fv = fire.v();
                 if fv.message != 0 {
                     let me = cx.edict;
                     fire_targets(s(fv.message), me, me, UseType::Toggle, 0.0);
@@ -470,7 +497,7 @@ impl TrackTrain {
         v.velocity = [0.0; 3];
         v.avelocity = [0.0; 3];
         if !track.is_null() {
-            let net = unsafe { (*track).v.netname };
+            let net = track.v().netname;
             if net != 0 {
                 let me = cx.edict;
                 fire_targets(s(net), me, me, UseType::Toggle, 0.0);
@@ -522,7 +549,7 @@ impl TrackTrain {
             if e.is_null() {
                 break;
             }
-            let ev = unsafe { &(*e).v };
+            let ev = e.v();
             if ev.flags & (FL_CLIENT | FL_MONSTER) as i32 == 0 && is_path(e) {
                 let d = vec::length(vec::sub(org, ev.origin));
                 if d < closest {
@@ -654,7 +681,7 @@ impl Entity for TrackTrain {
 
     fn blocked(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let me = cx.edict;
-        let ov = unsafe { &mut (*other).v };
+        let ov = other.v();
         let v = cx.pev();
         if ov.flags & FL_ONGROUND as i32 != 0 && ov.groundentity == me {
             let d = v.speed.abs().min(50.0);

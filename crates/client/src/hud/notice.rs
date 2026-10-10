@@ -28,7 +28,7 @@ pub fn draw_hud_text(dc: &Dc) {
     let key = text.trim_start_matches('#');
     let (body, x, y, rgb, hold) = match e.text_message(key) {
         Some(m) if !m.pMessage.is_null() => {
-            let s: String = unsafe { std::ffi::CStr::from_ptr(m.pMessage) }.to_bytes().iter().map(|&b| b as char).collect();
+            let s: String = m.message().to_bytes().iter().map(|&b| b as char).collect();
             (s, m.x, m.y, [m.r1 as i32, m.g1 as i32, m.b1 as i32], m.holdtime + m.fadein + m.fadeout)
         }
         _ => (localise(&text), -1.0, 0.35, [255, 255, 255], 5.0),
@@ -60,7 +60,9 @@ pub fn draw_death_notices(dc: &Dc) {
         let y = 32 + 2 + lh * i as i32;
         let victim = if d.victim > 0 { e.player_info(d.victim).name } else { String::new() };
         let killer = if d.killer > 0 { e.player_info(d.killer).name } else { String::new() };
-        let (vteam, kteam) = super::with(|h| (h.players.get(d.victim as usize).map_or(0, |p| p.team), h.players.get(d.killer as usize).map_or(0, |p| p.team)));
+        let (vteam, kteam) = super::with(|h| {
+            (h.players.get(d.victim as usize).map_or(0, |p| p.team), h.players.get(d.killer as usize).map_or(0, |p| p.team))
+        });
         let s = &dc.g.sprites;
         let spr = s.index(&format!("d_{}", d.weapon)).or_else(|| s.index("d_skull"));
         let sw = spr.map_or_else(|| e.console_string_size(&d.weapon).0 + 8, |i| s.rects[i].right - s.rects[i].left);

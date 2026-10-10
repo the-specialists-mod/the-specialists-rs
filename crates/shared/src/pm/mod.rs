@@ -17,13 +17,16 @@ mod sound;
 pub mod textures;
 pub mod ts;
 
+// The tests stand in for the engine with `extern "C"` callbacks that read raw pointers.
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests;
 
 pub use math::Vec3;
 use math::*;
 
 use crate::{VEC_DUCK_HULL_MAX, VEC_DUCK_HULL_MIN, VEC_HULL_MAX, VEC_HULL_MIN};
+use goldsrc::pmove::PlayerMoveExt;
 use goldsrc_sys::*;
 use std::ffi::{CStr, c_char};
 use std::sync::LazyLock;
@@ -35,7 +38,6 @@ const MAX_CLIP_PLANES: usize = 5;
 const STOP_EPSILON: f32 = 0.1;
 const MAX_PHYSENTS: i32 = 600;
 const MAX_CLIENTS: usize = 32;
-const PM_NORMAL: i32 = 0;
 const PM_DEAD_VIEWHEIGHT: f32 = -8.0;
 /// TS view heights: standing 28, ducked 16 (SDK 12).
 pub const VIEW_STAND: f32 = 28.0;
@@ -53,8 +55,6 @@ const STUCK_MOVEUP: i32 = 1;
 const WJ_HEIGHT: f32 = 8.0;
 const ATTN_NORM: f32 = 0.8;
 const PITCH_NORM: i32 = 100;
-/// `modtype_t::mod_brush`.
-const MOD_BRUSH: i32 = 0;
 /// Spectator modes (`iuser1`).
 const OBS_CHASE_LOCKED: i32 = 1;
 const OBS_ROAMING: i32 = 3;
@@ -163,25 +163,9 @@ pub fn init(pm: &mut playermove_t) {
     if textures::is_loaded() {
         return;
     }
-    let path = c"sound/materials.txt";
-    let (Some(load), Some(free)) = (pm.COM_LoadFile, pm.COM_FreeFile) else { return };
-    let mut len: i32 = 0;
-    let data = unsafe { load(path.as_ptr(), 5, &mut len) };
-    if data.is_null() {
-        return;
-    }
-    if len <= 0 {
-        if let Some(size) = pm.COM_FileSize {
-            len = unsafe { size(path.as_ptr()) };
-        }
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len.max(0) as usize) };
-    let n = textures::load(bytes);
-    unsafe { free(data.cast()) };
-    if let Some(print) = pm.Con_DPrintf {
-        let msg = std::ffi::CString::new(format!("PM_Init: {n} material types from sound/materials.txt\n")).unwrap_or_default();
-        unsafe { print(c"%s".as_ptr(), msg.as_ptr()) };
-    }
+    let Some(bytes) = pm.load_file(c"sound/materials.txt") else { return };
+    let n = textures::load(&bytes);
+    pm.dprint(&format!("PM_Init: {n} material types from sound/materials.txt\n"));
 }
 
 /// Material type for footstep and impact sounds (`CHAR_TEX_*`), from TS's sound/materials.txt.
@@ -232,55 +216,35 @@ impl Pm<'_> {
     // ---- engine callbacks ------------------------------------------------------------------------
 
     fn mv(&self) -> &movevars_s {
-        unsafe { &*self.p.movevars }
+        self.p.movevars()
     }
 
     pub(crate) fn trace(&self, start: Vec3, end: Vec3) -> pmtrace_t {
-        let (mut s, mut e) = (start, end);
-        let f = self.p.PM_PlayerTrace.expect("PM_PlayerTrace");
-        unsafe { f(s.as_mut_ptr(), e.as_mut_ptr(), PM_NORMAL, -1) }
+        self.p.player_trace(start, end)
     }
 
     pub(crate) fn point_contents(&self, p: Vec3, truecont: Option<&mut i32>) -> i32 {
-        let mut p = p;
-        let f = self.p.PM_PointContents.expect("PM_PointContents");
-        let tc = truecont.map_or(std::ptr::null_mut(), |r| r as *mut i32);
-        unsafe { f(p.as_mut_ptr(), tc) }
+        self.p.point_contents(p, truecont)
     }
 
+    /// Without the engine callback, the spot counts as free.
     pub(crate) fn test_player_position(&self, pos: Vec3, tr: Option<&mut pmtrace_t>) -> i32 {
-        let mut pos = pos;
-        let Some(f) = self.p.PM_TestPlayerPosition else {
-            // Without the callback, treat the spot as free.
-            return -1;
-        };
-        let t = tr.map_or(std::ptr::null_mut(), |r| r as *mut pmtrace_t);
-        unsafe { f(pos.as_mut_ptr(), t) }
+        self.p.test_player_position(pos, tr)
     }
 
     pub(crate) fn play_sound(&self, channel: u32, sample: &CStr, volume: f32, attn: f32) {
-        if let Some(f) = self.p.PM_PlaySound {
-            unsafe { f(channel as i32, sample.as_ptr(), volume, attn, 0, PITCH_NORM) }
-        }
+        self.p.play_sound(channel as i32, sample, volume, attn, 0, PITCH_NORM as i32);
     }
 
     pub(crate) fn random_long(&self, lo: i32, hi: i32) -> i32 {
-        match self.p.RandomLong {
-            Some(f) => unsafe { f(lo, hi) },
-            None => lo,
-        }
+        self.p.random_long(lo, hi)
     }
 
     /// `atoi(PM_Info_ValueForKey(physinfo, key))`.
     pub(crate) fn info_int(&self, key: &CStr) -> i32 {
-        let Some(f) = self.p.PM_Info_ValueForKey else { return 0 };
-        let v = unsafe { f(self.p.physinfo.as_ptr(), key.as_ptr()) };
-        if v.is_null() {
-            return 0;
-        }
-        let s = unsafe { CStr::from_ptr(v) }.to_bytes();
+        let v = self.p.physinfo_value(key);
         // atoi: optional whitespace, sign, digits.
-        let s = std::str::from_utf8(s).unwrap_or("").trim_start();
+        let s = v.trim_start();
         let end = s.char_indices().find(|&(i, c)| !(c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+')))).map_or(s.len(), |(i, _)| i);
         s[..end].parse().unwrap_or(0)
     }
@@ -759,11 +723,7 @@ impl Pm<'_> {
             let start = [self.p.origin[0] + vel[0] / speed * 16.0, self.p.origin[1] + vel[1] / speed * 16.0, start_z];
             let stop = [start[0], start[1], start_z - 34.0];
             let trace = self.trace(start, stop);
-            let friction = if trace.fraction == 1.0 {
-                self.mv().friction * self.mv().edgefriction
-            } else {
-                self.mv().friction
-            };
+            let friction = if trace.fraction == 1.0 { self.mv().friction * self.mv().edgefriction } else { self.mv().friction };
             let control = if speed < self.mv().stopspeed { self.mv().stopspeed } else { speed };
             drop += control * friction * self.p.friction * 0.75 * self.p.frametime;
         }
@@ -781,11 +741,7 @@ impl Pm<'_> {
         self.p.right[2] = 0.0;
         normalize(&mut self.p.forward);
         normalize(&mut self.p.right);
-        let wishvel = [
-            self.p.forward[0] * fmove + self.p.right[0] * smove,
-            self.p.forward[1] * fmove + self.p.right[1] * smove,
-            0.0,
-        ];
+        let wishvel = [self.p.forward[0] * fmove + self.p.right[0] * smove, self.p.forward[1] * fmove + self.p.right[1] * smove, 0.0];
         let mut wishdir = wishvel;
         let mut wishspeed = normalize(&mut wishdir);
         if wishspeed > self.p.maxspeed {
@@ -863,7 +819,8 @@ impl Pm<'_> {
             // The SDK copies the result into pmove->up (sic).
             self.p.up = self.p.origin;
             let downdist = (down[0] - original[0]) * (down[0] - original[0]) + (down[1] - original[1]) * (down[1] - original[1]);
-            let updist = (self.p.up[0] - original[0]) * (self.p.up[0] - original[0]) + (self.p.up[1] - original[1]) * (self.p.up[1] - original[1]);
+            let updist =
+                (self.p.up[0] - original[0]) * (self.p.up[0] - original[0]) + (self.p.up[1] - original[1]) * (self.p.up[1] - original[1]);
             downdist > updist
         };
         if usedown {
@@ -893,11 +850,8 @@ impl Pm<'_> {
     pub(crate) fn check_water(&mut self) -> bool {
         let hull = self.p.usehull;
         let (mins, maxs) = (self.hull_min(hull), self.hull_max(hull));
-        let mut point = [
-            self.p.origin[0] + (mins[0] + maxs[0]) * 0.5,
-            self.p.origin[1] + (mins[1] + maxs[1]) * 0.5,
-            self.p.origin[2] + mins[2] + 1.0,
-        ];
+        let mut point =
+            [self.p.origin[0] + (mins[0] + maxs[0]) * 0.5, self.p.origin[1] + (mins[1] + maxs[1]) * 0.5, self.p.origin[2] + mins[2] + 1.0];
         self.p.waterlevel = 0;
         self.p.watertype = CONTENTS_EMPTY;
         let is_liquid = |c: i32| c <= CONTENTS_WATER && c > CONTENTS_TRANSLUCENT;
@@ -916,7 +870,8 @@ impl Pm<'_> {
                 }
             }
             if (CONTENTS_CURRENT_DOWN..=CONTENTS_CURRENT_0).contains(&truecont) {
-                const CURRENT: [Vec3; 6] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]];
+                const CURRENT: [Vec3; 6] =
+                    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]];
                 let dir = CURRENT[(CONTENTS_CURRENT_0 - truecont) as usize];
                 self.p.basevelocity = ma(self.p.basevelocity, 50.0 * self.p.waterlevel as f32, dir);
             }
@@ -1113,7 +1068,7 @@ impl Pm<'_> {
         }
 
         let idx = if sv != 0 { 0 } else { 1 };
-        let ftime = self.p.Sys_FloatTime.map_or(0.0, |f| unsafe { f() }) as f32;
+        let ftime = self.p.float_time() as f32;
         if let Some(slot) = STUCK_CHECK_TIME.get(pi as usize) {
             if f32::from_bits(slot[idx].load(Relaxed)) >= ftime - PM_CHECKSTUCK_MINTIME {
                 return true;
@@ -1121,9 +1076,7 @@ impl Pm<'_> {
             slot[idx].store(ftime.to_bits(), Relaxed);
         }
 
-        if let Some(f) = self.p.PM_StuckTouch {
-            unsafe { f(hitent, &mut traceresult) };
-        }
+        self.p.stuck_touch(hitent, &mut traceresult);
 
         let (i, offset) = self.get_random_stuck_offsets(pi, sv);
         let test = add(base, offset);
@@ -1228,15 +1181,10 @@ impl Pm<'_> {
     fn chase_origin(&self, angles: Vec3, target: usize) -> Vec3 {
         let (forward, _, _) = angle_vectors(angles);
         let pe = &self.p.physents[target];
-        let mut start = [pe.origin[0], pe.origin[1], pe.origin[2] + 35.0];
+        let start = [pe.origin[0], pe.origin[1], pe.origin[2] + 35.0];
         let back = ma(ZERO, 90.0, forward);
-        let mut end = sub(start, back);
-        let Some(f) = self.p.PM_TraceLine else { return end };
-        let tr = unsafe { f(start.as_mut_ptr(), end.as_mut_ptr(), 0, 2, target as i32) };
-        if tr.is_null() {
-            return end;
-        }
-        let tr = unsafe { &*tr };
+        let end = sub(start, back);
+        let Some(tr) = self.p.trace_line(start, end, 0, 2, target as i32) else { return end };
         ma(tr.endpos, 4.0, tr.plane.normal)
     }
 
@@ -1321,28 +1269,13 @@ impl Pm<'_> {
     fn ladder(&mut self) -> Option<usize> {
         let n = self.p.nummoveent.clamp(0, 64) as usize;
         for i in 0..n {
-            let pe: *mut physent_t = &mut self.p.moveents[i];
-            let (model, skin) = unsafe { ((*pe).model, (*pe).skin) };
-            if model.is_null() || skin != CONTENTS_LADDER {
+            if self.p.moveents[i].skin != CONTENTS_LADDER {
                 continue;
             }
-            let Some(model_type) = self.p.PM_GetModelType else { continue };
-            if unsafe { model_type(model) } != MOD_BRUSH {
-                continue;
+            match self.p.moveent_hull_contents(i, self.p.origin) {
+                Some(c) if c != CONTENTS_EMPTY => return Some(i),
+                _ => continue,
             }
-            let (Some(hull_for_bsp), Some(hull_contents)) = (self.p.PM_HullForBsp, self.p.PM_HullPointContents) else { continue };
-            let mut test = [0.0f32; 3];
-            let hull = unsafe { hull_for_bsp(pe, test.as_mut_ptr()) };
-            if hull.is_null() {
-                continue;
-            }
-            // hull_t { clipnodes*, planes*, int firstclipnode, ... }
-            let num = unsafe { *hull.cast::<u8>().add(2 * size_of::<*const ()>()).cast::<i32>() };
-            let mut test = sub(self.p.origin, test);
-            if unsafe { hull_contents(hull.cast(), num, test.as_mut_ptr()) } == CONTENTS_EMPTY {
-                continue;
-            }
-            return Some(i);
         }
         None
     }
@@ -1352,12 +1285,8 @@ impl Pm<'_> {
         if self.p.movetype == MT_NOCLIP {
             return;
         }
-        let pe: *mut physent_t = &mut self.p.moveents[ladder];
-        let (mut modelmins, mut modelmaxs) = ([0.0f32; 3], [0.0f32; 3]);
-        if let Some(f) = self.p.PM_GetModelBounds {
-            unsafe { f((*pe).model, modelmins.as_mut_ptr(), modelmaxs.as_mut_ptr()) };
-        }
-        let mut ladder_center = scale(add(modelmins, modelmaxs), 0.5);
+        let (modelmins, modelmaxs) = self.p.moveent_model_bounds(ladder);
+        let ladder_center = scale(add(modelmins, modelmaxs), 0.5);
         self.p.movetype = MT_FLY;
 
         let mut floor = self.p.origin;
@@ -1365,11 +1294,7 @@ impl Pm<'_> {
         let on_floor = self.point_contents(floor, None) == CONTENTS_SOLID;
 
         self.p.gravity = 0.0;
-        let mut trace: trace_t = unsafe { std::mem::zeroed() };
-        let mut origin = self.p.origin;
-        if let Some(f) = self.p.PM_TraceModel {
-            unsafe { f(pe, origin.as_mut_ptr(), ladder_center.as_mut_ptr(), &mut trace) };
-        }
+        let trace = self.p.moveent_trace_model(ladder, self.p.origin, ladder_center).unwrap_or_default();
         if trace.fraction == 1.0 {
             return;
         }
@@ -1619,13 +1544,8 @@ impl Pm<'_> {
         let end = [start[0], start[1], start[2] - 64.0];
         self.p.sztexturename[0] = 0;
         self.p.chtexturetype = textures::CHAR_TEX_CONCRETE as c_char;
-        let Some(f) = self.p.PM_TraceTexture else { return };
-        let (mut s, mut e) = (start, end);
-        let name = unsafe { f(self.p.onground, s.as_mut_ptr(), e.as_mut_ptr()) };
-        if name.is_null() {
-            return;
-        }
-        let mut name = unsafe { CStr::from_ptr(name) }.to_bytes();
+        let Some(name) = self.p.trace_texture(self.p.onground, start, end) else { return };
+        let mut name = name.as_slice();
         if matches!(name.first(), Some(b'-' | b'+')) {
             name = name.get(2..).unwrap_or(&[]);
         }

@@ -18,6 +18,7 @@ mod worldgun;
 use crate::commands::Args;
 use crate::player::Player;
 use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::{clientdata_t, edict_t, usercmd_t, weapon_data_t};
 use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
@@ -177,7 +178,7 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     inventory::buy_armament(p, cx);
     inventory::sync_speed(p, cx);
     net::send_kfu_power(cx.edict, p.inv.gun.melee_bar);
-    if !p.inv.sv.custom_informed && unsafe { (*cx.edict).v.flags } & goldsrc::sys::FL_FAKECLIENT as i32 == 0 {
+    if !p.inv.sv.custom_informed && cx.edict.v().flags & goldsrc::sys::FL_FAKECLIENT as i32 == 0 {
         p.inv.sv.custom_informed = true;
         custom::inform(Some(cx.edict));
     }
@@ -234,7 +235,7 @@ pub fn fill_client_data(p: &mut Player, cx: &mut Cx, cd: &mut clientdata_t) {
 
 /// `pfnGetWeaponData`: fill up to 32 `weapon_data_t`. Return 1.
 pub fn get_weapon_data(p: &mut Player, cx: &mut Cx, info: &mut [weapon_data_t; 32]) -> i32 {
-    *info = unsafe { std::mem::zeroed() };
+    *info = [weapon_data_t::default(); 32];
     net::get_weapon_data(p, cx, info);
     1
 }

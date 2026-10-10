@@ -51,17 +51,29 @@ impl Pm<'_> {
             return;
         }
         let sample = match step {
-            STEP_METAL => [c"player/pl_metal1.wav", c"player/pl_metal3.wav", c"player/pl_metal2.wav", c"player/pl_metal4.wav"].get(irand as usize).copied(),
-            STEP_DIRT => [c"player/pl_dirt1.wav", c"player/pl_dirt3.wav", c"player/pl_dirt2.wav", c"player/pl_dirt4.wav"].get(irand as usize).copied(),
-            STEP_VENT => [c"player/pl_duct1.wav", c"player/pl_duct3.wav", c"player/pl_duct2.wav", c"player/pl_duct4.wav"].get(irand as usize).copied(),
-            STEP_GRATE => [c"player/pl_grate1.wav", c"player/pl_grate3.wav", c"player/pl_grate2.wav", c"player/pl_grate4.wav"].get(irand as usize).copied(),
+            STEP_METAL => [c"player/pl_metal1.wav", c"player/pl_metal3.wav", c"player/pl_metal2.wav", c"player/pl_metal4.wav"]
+                .get(irand as usize)
+                .copied(),
+            STEP_DIRT => [c"player/pl_dirt1.wav", c"player/pl_dirt3.wav", c"player/pl_dirt2.wav", c"player/pl_dirt4.wav"]
+                .get(irand as usize)
+                .copied(),
+            STEP_VENT => [c"player/pl_duct1.wav", c"player/pl_duct3.wav", c"player/pl_duct2.wav", c"player/pl_duct4.wav"]
+                .get(irand as usize)
+                .copied(),
+            STEP_GRATE => [c"player/pl_grate1.wav", c"player/pl_grate3.wav", c"player/pl_grate2.wav", c"player/pl_grate4.wav"]
+                .get(irand as usize)
+                .copied(),
             STEP_TILE => {
                 if self.random_long(0, 4) == 0 {
                     irand = 4;
                 }
-                [c"player/pl_tile1.wav", c"player/pl_tile3.wav", c"player/pl_tile2.wav", c"player/pl_tile4.wav", c"player/pl_tile5.wav"].get(irand as usize).copied()
+                [c"player/pl_tile1.wav", c"player/pl_tile3.wav", c"player/pl_tile2.wav", c"player/pl_tile4.wav", c"player/pl_tile5.wav"]
+                    .get(irand as usize)
+                    .copied()
             }
-            STEP_SLOSH => [c"player/pl_slosh1.wav", c"player/pl_slosh3.wav", c"player/pl_slosh2.wav", c"player/pl_slosh4.wav"].get(irand as usize).copied(),
+            STEP_SLOSH => [c"player/pl_slosh1.wav", c"player/pl_slosh3.wav", c"player/pl_slosh2.wav", c"player/pl_slosh4.wav"]
+                .get(irand as usize)
+                .copied(),
             STEP_WADE => {
                 let skip = SKIP_STEP.load(Relaxed);
                 if skip == 0 {
@@ -69,10 +81,16 @@ impl Pm<'_> {
                     return;
                 }
                 SKIP_STEP.store(if skip + 1 == 4 { 0 } else { skip + 1 }, Relaxed);
-                [c"player/pl_wade1.wav", c"player/pl_wade2.wav", c"player/pl_wade3.wav", c"player/pl_wade4.wav"].get(irand as usize).copied()
+                [c"player/pl_wade1.wav", c"player/pl_wade2.wav", c"player/pl_wade3.wav", c"player/pl_wade4.wav"]
+                    .get(irand as usize)
+                    .copied()
             }
-            STEP_LADDER => [c"player/pl_ladder1.wav", c"player/pl_ladder3.wav", c"player/pl_ladder2.wav", c"player/pl_ladder4.wav"].get(irand as usize).copied(),
-            _ => [c"player/pl_step1.wav", c"player/pl_step3.wav", c"player/pl_step2.wav", c"player/pl_step4.wav"].get(irand as usize).copied(),
+            STEP_LADDER => [c"player/pl_ladder1.wav", c"player/pl_ladder3.wav", c"player/pl_ladder2.wav", c"player/pl_ladder4.wav"]
+                .get(irand as usize)
+                .copied(),
+            _ => [c"player/pl_step1.wav", c"player/pl_step3.wav", c"player/pl_step2.wav", c"player/pl_step4.wav"]
+                .get(irand as usize)
+                .copied(),
         };
         if let Some(s) = sample {
             self.play_sound(CHAN_BODY, s, fvol, STEP_ATTN);
@@ -89,12 +107,10 @@ impl Pm<'_> {
         self.categorize_texture_type();
         let speed = super::length(self.p.velocity);
         let ladder = self.p.movetype == MOVETYPE_FLY as i32;
-        let (velwalk, velrun, flduck) = if self.p.flags & goldsrc_sys::FL_DUCKING as i32 != 0 || ladder {
-            (60.0f32, 80.0f32, 100.0f32)
-        } else {
-            (120.0, 210.0, 0.0)
-        };
-        if !((self.p.onground != -1 || ladder) && super::length(self.p.velocity) > 0.0 && (speed >= velwalk || self.p.flTimeStepSound == 0)) {
+        let (velwalk, velrun, flduck) =
+            if self.p.flags & goldsrc_sys::FL_DUCKING as i32 != 0 || ladder { (60.0f32, 80.0f32, 100.0f32) } else { (120.0, 210.0, 0.0) };
+        if !((self.p.onground != -1 || ladder) && super::length(self.p.velocity) > 0.0 && (speed >= velwalk || self.p.flTimeStepSound == 0))
+        {
             return;
         }
         let walking = speed < velrun;
@@ -121,13 +137,25 @@ impl Pm<'_> {
             step = map_texture_type_step_type(t);
             fvol = match t {
                 b'D' => {
-                    if walking { 0.25 } else { 0.55 }
+                    if walking {
+                        0.25
+                    } else {
+                        0.55
+                    }
                 }
                 b'V' => {
-                    if walking { 0.4 } else { 0.7 }
+                    if walking {
+                        0.4
+                    } else {
+                        0.7
+                    }
                 }
                 _ => {
-                    if walking { 0.2 } else { 0.5 }
+                    if walking {
+                        0.2
+                    } else {
+                        0.5
+                    }
                 }
             };
             self.p.flTimeStepSound = if walking { 400 } else { 300 };

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{env, fs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +75,18 @@ fn home() -> PathBuf {
     PathBuf::from(env::var("HOME").unwrap())
 }
 
+static PARALLEL: AtomicBool = AtomicBool::new(false);
+
+/// Checks are running on several roots at once (see `Root::cleanup`).
+pub fn set_parallel(on: bool) {
+    PARALLEL.store(on, Ordering::Relaxed);
+}
+
+/// Stops every Wine process in the shared prefix.
+pub fn wine_cleanup() {
+    let _ = Command::new("wineserver").env("WINEPREFIX", wineprefix()).arg("-k").status();
+}
+
 pub fn wineprefix() -> PathBuf {
     env::var_os("WINEPREFIX").map(PathBuf::from).unwrap_or_else(|| home().join("games/wineprefix"))
 }
@@ -96,12 +109,14 @@ impl Root {
     }
 
     pub fn exists(&self) -> bool {
-        self.path.join(match (self.engine, self.os) {
-            (Engine::Fwgs, Os::Linux) => "xash",
-            (Engine::Fwgs, Os::Windows) => "xash3d.exe",
-            (_, Os::Linux) => "hlds_linux",
-            (_, Os::Windows) => "hlds.exe",
-        }).exists()
+        self.path
+            .join(match (self.engine, self.os) {
+                (Engine::Fwgs, Os::Linux) => "xash",
+                (Engine::Fwgs, Os::Windows) => "xash3d.exe",
+                (_, Os::Linux) => "hlds_linux",
+                (_, Os::Windows) => "hlds.exe",
+            })
+            .exists()
     }
 
     pub fn target(&self) -> Target {
@@ -161,10 +176,12 @@ impl Root {
         }
     }
 
-    /// Windows servers run under Wine: make sure nothing is left behind.
+    /// Windows servers run under Wine: make sure nothing is left behind. While checks run in
+    /// parallel this waits for [`wine_cleanup`] at the end (`wineserver -k` would kill the other
+    /// roots' Wine processes too).
     pub fn cleanup(&self) {
-        if self.os == Os::Windows {
-            let _ = Command::new("wineserver").env("WINEPREFIX", wineprefix()).arg("-k").status();
+        if self.os == Os::Windows && !PARALLEL.load(Ordering::Relaxed) {
+            wine_cleanup();
         }
     }
 

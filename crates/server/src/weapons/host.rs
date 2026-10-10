@@ -4,6 +4,7 @@
 use super::{Inventory, SvState, assets, fire, melee, net, projectiles};
 use crate::player::Player;
 use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -59,7 +60,7 @@ fn idle_override(id: u8) -> &'static str {
 
 impl ServerHost<'_> {
     fn pev(&self) -> &mut entvars_t {
-        unsafe { &mut (*self.edict).v }
+        self.edict.v()
     }
 }
 
@@ -165,7 +166,9 @@ impl GunHost for ServerHost<'_> {
     }
 
     fn event(&mut self, ev: Event, args: EventArgs) {
-        assets::debug(|| format!("event {:?} f1={} f2={} i1={} i2={} b1={} b2={}", ev, args.f1, args.f2, args.i1, args.i2, args.b1, args.b2));
+        assets::debug(|| {
+            format!("event {:?} f1={} f2={} i1={} i2={} b1={} b2={}", ev, args.f1, args.f2, args.i1, args.i2, args.b1, args.b2)
+        });
         playback(self.edict, ev, args);
     }
     fn weapon_anim(&mut self, anim: i32, skip_local: bool, body: i32) {

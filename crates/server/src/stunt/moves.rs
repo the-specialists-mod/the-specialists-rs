@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::damage::{DamageInfo, bits};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, HEAD_HULL, IGNORE_MONSTERS};
 
 /// `CanDiveHigh/Medium/Low` (0x9a494...): used slots (`81 - TSSpace`) must be below 42/52/62
@@ -567,9 +568,10 @@ pub(super) fn jump(p: &mut Player, cx: &mut Cx) {
     if pressed && pev.flags & FL_ONGROUND as i32 != 0 && !pev.groundentity.is_null() {
         anim::animate(p, cx, 4);
         let pev = cx.pev();
-        let ground = unsafe { &(*pev.groundentity).v };
+        let ground = pev.groundentity.v();
         if ground.flags & FL_CONVEYOR as i32 != 0 {
-            pev.velocity = [pev.velocity[0] + pev.basevelocity[0], pev.velocity[1] + pev.basevelocity[1], pev.velocity[2] + pev.basevelocity[2]];
+            pev.velocity =
+                [pev.velocity[0] + pev.basevelocity[0], pev.velocity[1] + pev.basevelocity[1], pev.velocity[2] + pev.basevelocity[2]];
         }
     }
 }
@@ -668,10 +670,10 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
         return;
     }
     let victim = if tr.pHit.is_null() { engine().entity_of_index(0) } else { tr.pHit };
-    if victim.is_null() || unsafe { (*victim).pvPrivateData.is_null() } || is_player(victim) {
+    if victim.is_null() || !victim.has_private_data() || is_player(victim) {
         return;
     }
-    let vv = unsafe { &mut (*victim).v };
+    let vv = victim.v();
     if vv.takedamage == 0.0 || vv.flags & FL_WORLDBRUSH as i32 != 0 || vv.effects & EF_NODRAW as i32 != 0 {
         return;
     }
@@ -685,4 +687,3 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
     crate::damage::apply(victim, &info);
     p.inv.sv.lunge_victim = victim;
 }
-

@@ -2,14 +2,15 @@
 //! TS versions: `AddToFullPack` (0xaf180), `CreateBaseline` (0xaf81c, stock),
 //! `UpdateClientData` (0xb0294); decomp server/architecture.md §7. Owner: rules work package.
 
-use goldsrc::eng;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::c_int;
 
 /// `pfnAddToFullPack`: decide whether `ent` is sent to `host` this frame, and fill `state`.
-pub unsafe extern "C" fn add_to_full_pack(
-    state: *mut entity_state_t,
+/// `pset` is the engine's PVS buffer, passed back to it untouched.
+pub fn add_to_full_pack(
+    state: &mut entity_state_t,
     e: c_int,
     ent: *mut edict_t,
     host: *mut edict_t,
@@ -17,7 +18,7 @@ pub unsafe extern "C" fn add_to_full_pack(
     player: c_int,
     pset: *mut u8,
 ) -> c_int {
-    let (state, v) = unsafe { (&mut *state, &(*ent).v) };
+    let v = ent.v();
 
     if v.effects & EF_NODRAW as i32 != 0 && ent != host {
         return 0;
@@ -30,7 +31,7 @@ pub unsafe extern "C" fn add_to_full_pack(
         return 0;
     }
     // The engine already culled by PVS for players; check everything else here.
-    if ent != host && eng!(pfnCheckVisibility(ent, pset)) == 0 {
+    if ent != host && !engine().check_visibility(ent, pset) {
         return 0;
     }
     // Don't send to the local client an entity it predicts itself.
@@ -108,16 +109,16 @@ pub unsafe extern "C" fn add_to_full_pack(
 }
 
 /// `pfnCreateBaseline`: the reference state that deltas are encoded against.
-pub unsafe extern "C" fn create_baseline(
+pub fn create_baseline(
     player: c_int,
     eindex: c_int,
-    baseline: *mut entity_state_t,
+    b: &mut entity_state_t,
     entity: *mut edict_t,
     playermodelindex: c_int,
-    player_mins: *mut f32,
-    player_maxs: *mut f32,
+    player_mins: [f32; 3],
+    player_maxs: [f32; 3],
 ) {
-    let (b, v) = unsafe { (&mut *baseline, &(*entity).v) };
+    let v = entity.v();
     b.origin = v.origin;
     b.angles = v.angles;
     b.frame = v.frame;
@@ -128,10 +129,8 @@ pub unsafe extern "C" fn create_baseline(
     b.renderfx = v.renderfx as u8 as i32;
 
     if player != 0 {
-        unsafe {
-            b.mins = *player_mins.cast::<[f32; 3]>();
-            b.maxs = *player_maxs.cast::<[f32; 3]>();
-        }
+        b.mins = player_mins;
+        b.maxs = player_maxs;
         b.colormap = eindex;
         b.modelindex = playermodelindex;
         b.friction = 1.0;
@@ -154,11 +153,11 @@ pub unsafe extern "C" fn create_baseline(
 }
 
 /// `pfnUpdateClientData`: the local player's state, which client prediction starts from.
-pub unsafe extern "C" fn update_client_data(ent: *const edict_t, _sendweapons: c_int, cd: *mut clientdata_t) {
-    if ent.is_null() || unsafe { (*ent).pvPrivateData.is_null() } {
+pub fn update_client_data(ent: *const edict_t, cd: &mut clientdata_t) {
+    if ent.is_null() || !ent.has_private_data() {
         return;
     }
-    let (cd, v) = unsafe { (&mut *cd, &(*ent).v) };
+    let v = ent.v();
     cd.flags = v.flags;
     cd.health = v.health;
     cd.viewmodel = 0;
@@ -182,8 +181,7 @@ pub unsafe extern "C" fn update_client_data(ent: *const edict_t, _sendweapons: c
     cd.iuser1 = v.iuser1;
     cd.iuser2 = v.iuser2;
 
-    let info = eng!(pfnGetPhysicsInfoString(ent));
-    let info = unsafe { goldsrc::util::cstr(info) }.to_bytes();
+    let info = engine().physics_info(ent).to_bytes();
     let n = info.len().min(cd.physinfo.len() - 1);
     for (d, s) in cd.physinfo.iter_mut().zip(&info[..n]) {
         *d = *s as _;

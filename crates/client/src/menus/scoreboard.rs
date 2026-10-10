@@ -30,7 +30,8 @@ pub enum Row {
 
 /// Sort and group players like the TS panel: by team (teamplay), frags desc, deaths asc.
 pub fn build_rows(h: &Hud, names: &dyn Fn(i32) -> Option<(String, i32, bool)>) -> Vec<Row> {
-    let mut players: Vec<(i32, String, i32, bool)> = (1..=64).filter_map(|i| names(i).map(|(n, ping, local)| (i, n, ping, local))).collect();
+    let mut players: Vec<(i32, String, i32, bool)> =
+        (1..=64).filter_map(|i| names(i).map(|(n, ping, local)| (i, n, ping, local))).collect();
     players.sort_by(|a, b| {
         let (pa, pb) = (&h.players[a.0 as usize], &h.players[b.0 as usize]);
         pb.frags.cmp(&pa.frags).then(pa.deaths.cmp(&pb.deaths)).then(a.0.cmp(&b.0))
@@ -53,14 +54,18 @@ pub fn build_rows(h: &Hud, names: &dyn Fn(i32) -> Option<(String, i32, bool)>) -
         }
         teams.sort_by(|a, b| b.frags.cmp(&a.frags).then(a.deaths.cmp(&b.deaths)));
         for t in teams {
-            let members: Vec<_> = players.iter().filter(|p| !h.players[p.0 as usize].observer && h.players[p.0 as usize].teamname.eq_ignore_ascii_case(&t.name)).collect();
+            let members: Vec<_> = players
+                .iter()
+                .filter(|p| !h.players[p.0 as usize].observer && h.players[p.0 as usize].teamname.eq_ignore_ascii_case(&t.name))
+                .collect();
             if members.is_empty() {
                 continue;
             }
             rows.push(Row::Team { name: t.name.clone(), frags: t.frags, deaths: t.deaths, players: members.len() });
             rows.extend(members.into_iter().map(mk));
         }
-        let unassigned: Vec<_> = players.iter().filter(|p| !h.players[p.0 as usize].observer && h.players[p.0 as usize].teamname.is_empty()).collect();
+        let unassigned: Vec<_> =
+            players.iter().filter(|p| !h.players[p.0 as usize].observer && h.players[p.0 as usize].teamname.is_empty()).collect();
         rows.extend(unassigned.into_iter().map(mk));
         if !spectators.is_empty() {
             rows.push(Row::Spectators);

@@ -26,12 +26,15 @@ pub struct ClientData {
 }
 
 pub fn event_api() -> &'static event_api_s {
+    // SAFETY: the engine sets its API tables before `Initialize` and keeps them for the process.
     unsafe { &*engine().f.pEventAPI }
 }
 pub fn efx_api() -> &'static efx_api_s {
+    // SAFETY: the engine sets its API tables before `Initialize` and keeps them for the process.
     unsafe { &*engine().f.pEfxAPI }
 }
 pub fn tri_api() -> &'static triangleapi_s {
+    // SAFETY: the engine sets its API tables before `Initialize` and keeps them for the process.
     unsafe { &*engine().f.pTriAPI }
 }
 
@@ -39,6 +42,12 @@ pub fn tri_api() -> &'static triangleapi_s {
 #[macro_export]
 macro_rules! ev {
     ($name:ident ( $($arg:expr),* $(,)? )) => {
+        // SAFETY: the engine fills its function tables before the first callback and keeps them
+
+        // for the process; slots are called with the argument types bindgen generated from the
+
+        // engine headers, and callers pass valid pointers for those arguments.
+
         unsafe { ($crate::ext::render::event_api().$name.expect(stringify!($name)))($($arg),*) }
     };
 }
@@ -46,6 +55,12 @@ macro_rules! ev {
 #[macro_export]
 macro_rules! efx {
     ($name:ident ( $($arg:expr),* $(,)? )) => {
+        // SAFETY: the engine fills its function tables before the first callback and keeps them
+
+        // for the process; slots are called with the argument types bindgen generated from the
+
+        // engine headers, and callers pass valid pointers for those arguments.
+
         unsafe { ($crate::ext::render::efx_api().$name.expect(stringify!($name)))($($arg),*) }
     };
 }
@@ -53,6 +68,12 @@ macro_rules! efx {
 #[macro_export]
 macro_rules! tri {
     ($name:ident ( $($arg:expr),* $(,)? )) => {
+        // SAFETY: the engine fills its function tables before the first callback and keeps them
+
+        // for the process; slots are called with the argument types bindgen generated from the
+
+        // engine headers, and callers pass valid pointers for those arguments.
+
         unsafe { ($crate::ext::render::tri_api().$name.expect(stringify!($name)))($($arg),*) }
     };
 }
@@ -71,7 +92,7 @@ pub fn play_sound(ent: i32, origin: Vec3, chan: i32, sample: &str, vol: f32, att
 /// players must be solid.
 pub fn player_trace(start: Vec3, end: Vec3, hull: i32, flags: i32, ignore_pe: i32) -> pmtrace_s {
     let (mut s, mut e) = (start, end);
-    let mut tr: pmtrace_s = unsafe { std::mem::zeroed() };
+    let mut tr = pmtrace_s::default();
     ev!(EV_SetTraceHull(hull));
     ev!(EV_PlayerTrace(s.as_mut_ptr(), e.as_mut_ptr(), flags, ignore_pe, &mut tr));
     tr
@@ -92,11 +113,13 @@ pub fn with_solid_players<R>(player_index0: i32, f: impl FnOnce() -> R) -> R {
 pub fn trace_texture(ground: i32, start: Vec3, end: Vec3) -> Option<String> {
     let (mut s, mut e) = (start, end);
     let p = ev!(EV_TraceTexture(ground, s.as_mut_ptr(), e.as_mut_ptr()));
+    // SAFETY: `EV_TraceTexture` returns null or a NUL-terminated texture name the engine owns; copied at once.
     if p.is_null() { None } else { Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()) }
 }
 
 pub fn physent(idx: i32) -> Option<&'static physent_s> {
     let p = ev!(EV_GetPhysent(idx));
+    // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
     unsafe { p.as_ref() }
 }
 
@@ -124,6 +147,7 @@ pub fn model_index(name: &str) -> i32 {
 
 pub fn temp_model(pos: Vec3, vel: Vec3, angles: Vec3, life: f32, model: i32, soundtype: i32) -> Option<&'static mut TEMPENTITY> {
     let p = efx!(R_TempModel(pos.as_ptr(), vel.as_ptr(), angles.as_ptr(), life, model, soundtype));
+    // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
     unsafe { p.as_mut() }
 }
 
@@ -141,6 +165,7 @@ pub fn decal_shoot(texture: i32, entity: i32, model_index: i32, pos: Vec3, flags
 
 pub fn alloc_dlight(key: i32) -> Option<&'static mut dlight_s> {
     let p = efx!(CL_AllocDlight(key));
+    // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
     unsafe { p.as_mut() }
 }
 
@@ -152,9 +177,44 @@ pub fn set_screen_fade(f: &mut screenfade_s) {
     cl_eng!(pfnSetScreenFade(f));
 }
 
-pub fn hook_event(name: &'static CStr, f: unsafe extern "C" fn(*mut event_args_s)) {
-    cl_eng!(pfnHookEvent(name.as_ptr(), Some(f)));
+/// Hooks a client event (`pfnHookEvent`). Events don't pass their name to the hook, so each
+/// hooked event gets its own trampoline slot (up to [`MAX_EVENT_HOOKS`]).
+pub fn hook_event(name: &'static CStr, f: fn(&event_args_s)) {
+    let slot = {
+        let mut hooks = EVENT_HOOKS.0.borrow_mut();
+        match hooks.iter().position(|(n, _)| *n == name) {
+            Some(i) => {
+                hooks[i].1 = f;
+                i
+            }
+            None => {
+                assert!(hooks.len() < MAX_EVENT_HOOKS, "too many event hooks");
+                hooks.push((name, f));
+                hooks.len() - 1
+            }
+        }
+    };
+    cl_eng!(pfnHookEvent(name.as_ptr(), Some(EVENT_TRAMPOLINES[slot])));
 }
+
+pub const MAX_EVENT_HOOKS: usize = 32;
+type EventHook = (&'static CStr, fn(&event_args_s));
+static EVENT_HOOKS: crate::Global<std::cell::RefCell<Vec<EventHook>>> = crate::Global(std::cell::RefCell::new(Vec::new()));
+
+unsafe extern "C" fn event_trampoline<const N: usize>(args: *mut event_args_s) {
+    // SAFETY: the engine passes the event's arguments (or null).
+    let Some(args) = (unsafe { args.as_ref() }) else { return };
+    let f = EVENT_HOOKS.0.borrow().get(N).map(|h| h.1);
+    if let Some(f) = f {
+        f(args);
+    }
+}
+
+macro_rules! trampolines {
+    ($($n:literal)*) => { [$(event_trampoline::<$n> as unsafe extern "C" fn(*mut event_args_s)),*] };
+}
+static EVENT_TRAMPOLINES: [unsafe extern "C" fn(*mut event_args_s); MAX_EVENT_HOOKS] =
+    trampolines!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31);
 
 pub fn precache_event(name: &'static CStr) -> u16 {
     cl_eng!(pfnPrecacheEvent(1, name.as_ptr()))
@@ -170,14 +230,17 @@ pub fn playback_event(flags: i32, index: u16, f1: f32, f2: f32, i1: i32, i2: i32
 
 pub fn entity(idx: i32) -> Option<&'static mut cl_entity_s> {
     let p = cl_eng!(GetEntityByIndex(idx));
+    // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
     unsafe { p.as_mut() }
 }
 pub fn local_player() -> Option<&'static mut cl_entity_s> {
     let p = cl_eng!(GetLocalPlayer());
+    // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
     unsafe { p.as_mut() }
 }
 pub fn view_model() -> Option<&'static mut cl_entity_s> {
     let p = cl_eng!(GetViewModel());
+    // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
     unsafe { p.as_mut() }
 }
 pub fn max_clients() -> i32 {
@@ -199,7 +262,9 @@ pub fn point_contents(p: Vec3) -> i32 {
 /// A registered client cvar. The engine owns the storage, so the pointer stays valid.
 #[derive(Clone, Copy)]
 pub struct Cvar(*mut cvar_s);
+// SAFETY: the cvar_t is engine-owned for the process and only read on the client thread.
 unsafe impl Send for Cvar {}
+// SAFETY: as above.
 unsafe impl Sync for Cvar {}
 impl Cvar {
     pub const NULL: Cvar = Cvar(std::ptr::null_mut());
@@ -218,6 +283,7 @@ impl Cvar {
         Cvar(cl_eng!(pfnGetCvarPointer(name.as_ptr())))
     }
     pub fn value(self) -> f32 {
+        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
         unsafe { self.0.as_ref().map_or(0.0, |c| c.value) }
     }
     pub fn is_null(self) -> bool {
@@ -233,6 +299,7 @@ pub fn load_file(path: &str) -> Option<Vec<u8>> {
     if p.is_null() {
         return None;
     }
+    // SAFETY: the engine returned `len` bytes at non-null `p` (checked above); they're copied before the file is freed.
     let v = unsafe { std::slice::from_raw_parts(p.cast::<u8>(), len.max(0) as usize) }.to_vec();
     cl_eng!(COM_FreeFile(p.cast()));
     Some(v)
@@ -241,6 +308,7 @@ pub fn load_file(path: &str) -> Option<Vec<u8>> {
 /// `maps/<name>.bsp` while a map is loaded, empty otherwise.
 pub fn level_name() -> String {
     let p = cl_eng!(pfnGetLevelName());
+    // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
     unsafe { crate::util::cstr(p) }.to_string_lossy().into_owned()
 }
 

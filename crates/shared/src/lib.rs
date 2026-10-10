@@ -5,6 +5,9 @@
 //! registration order and payloads, events, and the `delta.lst` field usage follow the TS 3.0
 //! binaries as documented in the-specialists-decomp.
 
+// No `unsafe` here: engine callbacks go through goldsrc (see AGENTS.md).
+#![deny(unsafe_code)]
+
 pub mod pm;
 pub mod protocol;
 pub mod ts;

@@ -88,7 +88,8 @@ pub fn reload(a: &Args) {
                     let m = r::model_index(model);
                     let pos = r::entity(a.entindex).map_or(a.origin, |e| e.attachment[0]);
                     for _ in 0..n {
-                        let vel = v::add(a.velocity, [r::random_float(-30.0, 30.0), r::random_float(-30.0, 30.0), -r::random_float(0.0, 30.0)]);
+                        let vel =
+                            v::add(a.velocity, [r::random_float(-30.0, 30.0), r::random_float(-30.0, 30.0), -r::random_float(0.0, 30.0)]);
                         eject_shell(pos, vel, a.angles, m, snd);
                     }
                 }

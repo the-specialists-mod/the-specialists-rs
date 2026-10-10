@@ -194,8 +194,7 @@ state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
   exports `active_items`/`laser_color` for it.
 * Spectator HUD/overview (`CHudSpectator`), voice status icons/banning UI, server browser, command
   menu, TFC panels (dropped as allowed by §7).
-* `HUD_UpdateClientData` isn't routed to the HUD by `lib.rs` (it returns 0); the FOV is published in
-  `state.fov` instead of `cdata->fov`.
+* `HUD_UpdateClientData` writes the eased FOV (`view::update_client_data`, wired at integration).
 * Death-cam / `cl_thirdpersonswitch` / observer third-person changes are only *requested*
   (`state.thirdperson_*`); the view package owns `cam_thirdperson`.
 * Joystick input (TS has the SDK joystick code) is not ported; FWGS joystick/touch movement
@@ -240,7 +239,8 @@ state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
   `thirdperson_toggles`/`thirdperson_leave`/`thirdperson_restore` (view consumes), `menu_open`.
   The HUD writes `health`, `dead`, `weapon`, `fov` (smoothed zoom FOV, default `default_fov`),
   `time_scale_target` (TSSlowMo) and eases `time_scale` in `HUD_Frame` (TS does it there).
-* `lib.rs` is untouched; the FWGS look/move exports live in `input.rs`.
+* The FWGS `IN_ClientLookEvent`/`IN_ClientMoveEvent` exports are in `client-dll` and call
+  `input::look_event`/`move_event`.
 * The server should send `SrvSett 3` (restriction) and `GameMode` in `InitHUD` like TS, and
   implement `rst_cfg`/`tkw`/`tki`/`tka`, `weapon_<n>`, `drop_<n>`, `lasclr_<n>`, `usepowerup`.
 * `shared::protocol::hud` encoders produce the exact TS byte layouts; the server's HUD sync can

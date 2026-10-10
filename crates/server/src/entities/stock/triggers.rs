@@ -7,6 +7,7 @@ use super::base::*;
 use crate::entities::{entvars_key_value, fire_targets, remove};
 use crate::messages::{self, Msg};
 use crate::world::{self, Cx, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, is_player, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -49,7 +50,7 @@ fn toggle_use(cx: &mut Cx) {
     let v = cx.pev();
     if v.solid == SOLID_NOT as i32 {
         v.solid = SOLID_TRIGGER as i32;
-        unsafe { (*eng.globals).force_retouch += 1.0 };
+        eng.force_retouch();
     } else {
         v.solid = SOLID_NOT as i32;
     }
@@ -90,7 +91,7 @@ impl<const KIND: u8> Mover for Trigger<KIND> {
 
 impl<const KIND: u8> Trigger<KIND> {
     fn multi_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        let ov = unsafe { &(*other).v };
+        let ov = other.v();
         let sf = cx.pev().spawnflags;
         if (ov.flags & FL_CLIENT as i32 != 0 && sf & SF_TRIGGER_NOCLIENTS == 0)
             || (ov.flags & FL_MONSTER as i32 != 0 && sf & SF_TRIGGER_ALLOWMONSTERS != 0)
@@ -141,7 +142,7 @@ impl<const KIND: u8> Trigger<KIND> {
     fn hurt_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let eng = engine();
         let now = eng.time();
-        let ov = unsafe { &(*other).v };
+        let ov = other.v();
         if ov.takedamage == 0.0 {
             return;
         }
@@ -195,7 +196,7 @@ impl<const KIND: u8> Trigger<KIND> {
 
     fn teleport_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let eng = engine();
-        let ov = unsafe { &mut (*other).v };
+        let ov = other.v();
         if ov.flags & (FL_CLIENT | FL_MONSTER) as i32 == 0 {
             return;
         }
@@ -214,7 +215,7 @@ impl<const KIND: u8> Trigger<KIND> {
         if target.is_null() {
             return;
         }
-        let tv = unsafe { &(*target).v };
+        let tv = target.v();
         let mut tmp = tv.origin;
         if player {
             tmp[2] -= ov.mins[2];
@@ -222,7 +223,7 @@ impl<const KIND: u8> Trigger<KIND> {
         tmp[2] += 1.0;
         ov.flags &= !(FL_ONGROUND as i32);
         eng.set_origin(other, tmp);
-        let ov = unsafe { &mut (*other).v };
+        let ov = other.v();
         ov.angles = tv.angles;
         if player {
             ov.v_angle = tv.angles;
@@ -233,7 +234,7 @@ impl<const KIND: u8> Trigger<KIND> {
     }
 
     fn push_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        let ov = unsafe { &mut (*other).v };
+        let ov = other.v();
         if [MOVETYPE_NONE, MOVETYPE_PUSH, MOVETYPE_NOCLIP, MOVETYPE_FOLLOW].contains(&(ov.movetype as u32)) {
             return;
         }
@@ -263,7 +264,7 @@ impl<const KIND: u8> Trigger<KIND> {
             return;
         }
         let g = cx.pev().gravity;
-        unsafe { (*other).v.gravity = g };
+        (other.v().gravity = g);
     }
 }
 
@@ -401,7 +402,7 @@ impl Entity for FrictionModifier {
     }
 
     fn touch(&mut self, _cx: &mut Cx, other: *mut edict_t) {
-        let ov = unsafe { &mut (*other).v };
+        let ov = other.v();
         if ov.movetype != MOVETYPE_BOUNCEMISSILE as i32 && ov.movetype != MOVETYPE_BOUNCE as i32 {
             ov.friction = self.friction;
         }
@@ -508,7 +509,7 @@ impl Entity for ChangeTarget {
         let target = s(cx.pev().target);
         let e = engine().find_by_target_name(std::ptr::null_mut(), target);
         if !e.is_null() {
-            unsafe { (*e).v.target = self.new_target };
+            (e.v().target = self.new_target);
         }
     }
 }
@@ -550,12 +551,12 @@ impl MultiManager {
             if e.is_null() {
                 return;
             }
-            world::create::<MultiManager>(unsafe { &mut (*e).v });
-            unsafe {
+            world::create::<MultiManager>(e.v());
+            {
                 let mut copy = *cx.pev();
                 copy.pContainingEntity = e;
                 copy.spawnflags |= SF_MULTIMAN_CLONE;
-                (*e).v = copy;
+                *e.v() = copy;
             }
             let targets = self.targets.clone();
             world::with::<MultiManager, _>(e, |m| m.targets = targets);
@@ -672,7 +673,7 @@ pub struct TriggerCamera {
 /// `EnableControl(on)` on a player: FL_FROZEN.
 pub fn enable_control(p: *mut edict_t, on: bool) {
     if is_player(p) {
-        let v = unsafe { &mut (*p).v };
+        let v = p.v();
         if on {
             v.flags &= !(FL_FROZEN as i32);
         } else {
@@ -687,7 +688,7 @@ fn path_delay(e: *mut edict_t) -> f32 {
 }
 
 fn next_target(e: *mut edict_t) -> *mut edict_t {
-    let t = unsafe { (*e).v.target };
+    let t = e.v().target;
     if t == 0 { std::ptr::null_mut() } else { engine().find_by_target_name(std::ptr::null_mut(), s(t)) }
 }
 
@@ -713,7 +714,7 @@ impl TriggerCamera {
         }
         let target = self.target.get();
         if target.is_null() || self.return_time < now {
-            let pv = unsafe { &(*player).v };
+            let pv = player.v();
             if pv.deadflag == DEAD_NO as i32 && pv.health > 0.0 {
                 eng.set_view(player, player);
                 enable_control(player, true);
@@ -726,7 +727,7 @@ impl TriggerCamera {
             return;
         }
         let v = cx.pev();
-        let mut goal = eng.vec_to_angles(vec::sub(unsafe { (*target).v.origin }, v.origin));
+        let mut goal = eng.vec_to_angles(vec::sub(target.v().origin, v.origin));
         goal[0] = -goal[0];
         if v.angles[1] > 360.0 {
             v.angles[1] -= 360.0;
@@ -764,7 +765,7 @@ impl TriggerCamera {
         let v = cx.pev();
         self.move_distance -= v.speed * ft;
         if self.move_distance <= 0.0 {
-            let pv = unsafe { &mut (*path).v };
+            let pv = path.v();
             if pv.message != 0 {
                 let me = cx.edict;
                 fire_targets(s(pv.message), me, me, UseType::Toggle, 0.0);
@@ -778,7 +779,7 @@ impl TriggerCamera {
             if next.is_null() {
                 v.velocity = [0.0; 3];
             } else {
-                let nv = unsafe { &(*next).v };
+                let nv = next.v();
                 if nv.speed != 0.0 {
                     self.target_speed = nv.speed;
                 }
@@ -860,17 +861,18 @@ impl Entity for TriggerCamera {
         if sf & SF_CAMERA_PLAYER_TAKECONTROL != 0 {
             enable_control(activator, false);
         }
-        let path = if self.path_name != 0 { eng.find_by_target_name(std::ptr::null_mut(), s(self.path_name)) } else { std::ptr::null_mut() };
+        let path =
+            if self.path_name != 0 { eng.find_by_target_name(std::ptr::null_mut(), s(self.path_name)) } else { std::ptr::null_mut() };
         self.path = EHandle::new(path);
         self.stop_time = now;
         if !path.is_null() {
-            let ps = unsafe { (*path).v.speed };
+            let ps = path.v().speed;
             if ps != 0.0 {
                 self.target_speed = ps;
             }
             self.stop_time += path_delay(path);
         }
-        let av = unsafe { &(*activator).v };
+        let av = activator.v();
         let (aorg, aofs, aang, avel, amodel) = (av.origin, av.view_ofs, av.angles, av.velocity, av.model);
         if sf & SF_CAMERA_PLAYER_POSITION != 0 {
             eng.set_origin(cx.edict, vec::add(aorg, aofs));

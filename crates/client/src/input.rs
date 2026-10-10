@@ -17,9 +17,10 @@
 
 use crate::hud;
 use goldsrc::Global;
+use goldsrc::client::EngineCell;
 use goldsrc::client::engine;
 use goldsrc::sys::*;
-use std::cell::{Cell, UnsafeCell};
+use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_int, c_void};
 
 /// SDK `kbutton_t`: the engine reads `state` through `KB_Find`.
@@ -30,17 +31,17 @@ pub struct KButton {
     state: c_int,
 }
 
-pub struct Button(Global<UnsafeCell<KButton>>);
+/// A `kbutton_t`. `KB_Find` hands the engine a pointer to it, so it lives in an [`EngineCell`].
+pub struct Button(EngineCell<KButton>);
 
 impl Button {
     const fn new() -> Self {
-        Button(Global(UnsafeCell::new(KButton { down: [0; 2], state: 0 })))
+        Button(EngineCell::new(KButton { down: [0; 2], state: 0 }))
     }
 
     #[allow(clippy::mut_from_ref)]
     fn get(&self) -> &mut KButton {
-        // Engine callbacks are single-threaded and never re-enter while this borrow is alive.
-        unsafe { &mut *self.0.0.get() }
+        self.0.get()
     }
 
     fn key_arg() -> c_int {
@@ -119,7 +120,7 @@ impl Button {
     }
 
     fn ptr(&self) -> *mut c_void {
-        self.0.0.get().cast()
+        self.0.as_ptr().cast()
     }
 }
 
@@ -207,7 +208,7 @@ fn key_tap_step(next: &Cell<f32>, now: f32, bits: u8) -> Option<bool> {
 }
 
 fn cvar_ptr_value(name: &CStr) -> f32 {
-    Cvar::from_raw(engine().cvar_pointer(name)).value()
+    Cvar::find(name).value()
 }
 
 /// Pure part of `HUD_Key_Event`'s gate check (used by tests).
@@ -219,18 +220,7 @@ pub fn binding_is_gated(binding: &str) -> bool {
 // Cvars
 
 /// Cvar handle (`cvar_t*` owned by the engine).
-#[derive(Clone, Copy)]
-pub struct Cvar(*mut cvar_s);
-
-impl Cvar {
-    pub const NULL: Cvar = Cvar(std::ptr::null_mut());
-    pub fn from_raw(p: *mut cvar_s) -> Cvar {
-        Cvar(p)
-    }
-    pub fn value(self) -> f32 {
-        if self.0.is_null() { 0.0 } else { unsafe { (*self.0).value } }
-    }
-}
+pub use goldsrc::client::Cvar;
 
 macro_rules! cvars {
     ($($field:ident = $name:literal, $default:literal, $flags:expr;)*) => {
@@ -239,8 +229,7 @@ macro_rules! cvars {
         impl InputCvars {
             const fn null() -> Self { InputCvars { $($field: Cvar::NULL,)* } }
             fn register() -> Self {
-                let e = engine();
-                InputCvars { $($field: Cvar(e.register_variable($name, $default, $flags)),)* }
+                InputCvars { $($field: Cvar::register($name, $default, $flags),)* }
             }
         }
     };
@@ -365,7 +354,7 @@ pub fn weapon_kind(id: i32) -> i32 {
 
 macro_rules! cmd {
     ($name:literal, $body:expr) => {{
-        unsafe extern "C" fn f() {
+        extern "C" fn f() {
             $body
         }
         engine().add_command($name, f);
@@ -428,7 +417,11 @@ fn register_commands() {
     // runs `special` (`_special` to the server through the viewport).
     cmd!(c"+attack2", {
         if gate_open() {
-            if attack_switched() { IN_ALT2B.key_down() } else { IN_ATK2.key_down() }
+            if attack_switched() {
+                IN_ALT2B.key_down()
+            } else {
+                IN_ATK2.key_down()
+            }
             engine().server_cmd("_special");
             key_tap(0);
         }
@@ -459,7 +452,12 @@ fn register_commands() {
         key_tap(0x04);
     });
     cmd!(c"-duck", IN_DCK.key_up());
-    cmd!(c"+reload", if gate_open() { IN_RELOD.key_down() });
+    cmd!(
+        c"+reload",
+        if gate_open() {
+            IN_RELOD.key_down()
+        }
+    );
     cmd!(c"-reload", IN_RELOD.key_up());
     cmd!(c"+alt1", IN_ALT1B.key_down());
     cmd!(c"-alt1", IN_ALT1B.key_up());
@@ -512,14 +510,14 @@ struct Mouse {
     /// Virtual cursor (TS `0x1018d17c/180`), used while a menu shows the cursor.
     cursor: [f32; 2],
     #[cfg(windows)]
-    win: win::State,
+    win: goldsrc::platform::win::State,
 }
 
-static MOUSE: Global<UnsafeCell<Option<Mouse>>> = Global(UnsafeCell::new(None));
+static MOUSE: Global<RefCell<Option<Mouse>>> = Global(RefCell::new(None));
 
+/// The closure must not call back into this module (it would hit the `RefCell` borrow).
 fn mouse<R>(f: impl FnOnce(&mut Mouse) -> R) -> R {
-    // Single-threaded engine callbacks; the closure never calls back into this module.
-    let m = unsafe { &mut *MOUSE.0.get() };
+    let mut m = MOUSE.0.borrow_mut();
     f(m.get_or_insert_with(Mouse::default))
 }
 
@@ -613,18 +611,17 @@ fn take_mouse_delta() -> [f32; 2] {
     d
 }
 
-/// FWGS extension export: relative mouse look (degrees, already scaled by m_yaw/m_pitch).
-#[unsafe(no_mangle)]
-pub extern "C" fn IN_ClientLookEvent(relyaw: f32, relpitch: f32) {
+/// FWGS `IN_ClientLookEvent` (exported by the dll crate): relative mouse look (degrees, already
+/// scaled by m_yaw/m_pitch).
+pub fn look_event(relyaw: f32, relpitch: f32) {
     mouse(|m| {
         m.accum[0] += relyaw;
         m.accum[1] += relpitch;
     });
 }
 
-/// FWGS extension export: joystick/touch movement (-1..1).
-#[unsafe(no_mangle)]
-pub extern "C" fn IN_ClientMoveEvent(forwardmove: f32, sidemove: f32) {
+/// FWGS `IN_ClientMoveEvent` (exported by the dll crate): joystick/touch movement (-1..1).
+pub fn move_event(forwardmove: f32, sidemove: f32) {
     mouse(|m| {
         m.move_accum[0] += forwardmove;
         m.move_accum[1] += sidemove;
@@ -698,185 +695,28 @@ mod native {
 
     #[cfg(windows)]
     pub fn activate(m: &mut Mouse) {
-        super::win::activate(&mut m.win);
+        goldsrc::platform::win::activate(&mut m.win);
     }
     #[cfg(windows)]
     pub fn deactivate(m: &mut Mouse) {
-        super::win::deactivate(&mut m.win);
+        goldsrc::platform::win::deactivate(&mut m.win);
     }
     #[cfg(windows)]
     pub fn delta() -> [f32; 2] {
-        super::win::delta()
+        goldsrc::platform::win::delta()
     }
 
     #[cfg(not(windows))]
     pub fn activate(_m: &mut Mouse) {
-        super::sdl::set_relative(true);
+        goldsrc::platform::sdl::set_relative(true);
     }
     #[cfg(not(windows))]
     pub fn deactivate(_m: &mut Mouse) {
-        super::sdl::set_relative(false);
+        goldsrc::platform::sdl::set_relative(false);
     }
     #[cfg(not(windows))]
     pub fn delta() -> [f32; 2] {
-        super::sdl::relative_delta()
-    }
-}
-
-/// SDL2 entry points from the SDL2 library the engine already loaded (looked up at run time).
-mod sdl {
-    use std::ffi::{CStr, c_int, c_void};
-    use std::sync::OnceLock;
-
-    type GetRelativeMouseState = unsafe extern "C" fn(*mut c_int, *mut c_int) -> u32;
-    type SetRelativeMouseMode = unsafe extern "C" fn(c_int) -> c_int;
-
-    struct Sdl {
-        get_relative: Option<GetRelativeMouseState>,
-        set_relative: Option<SetRelativeMouseMode>,
-    }
-
-    #[cfg(not(windows))]
-    fn lookup(name: &CStr) -> *mut c_void {
-        unsafe extern "C" {
-            fn dlopen(file: *const std::ffi::c_char, mode: c_int) -> *mut c_void;
-            fn dlsym(handle: *mut c_void, name: *const std::ffi::c_char) -> *mut c_void;
-        }
-        const RTLD_NOW: c_int = 2;
-        const RTLD_NOLOAD: c_int = 4;
-        unsafe {
-            for lib in [c"libSDL2-2.0.so.0", c"libSDL2.so"] {
-                let h = dlopen(lib.as_ptr(), RTLD_NOW | RTLD_NOLOAD);
-                if !h.is_null() {
-                    let p = dlsym(h, name.as_ptr());
-                    if !p.is_null() {
-                        return p;
-                    }
-                }
-            }
-            // RTLD_DEFAULT: anything already in the global namespace.
-            dlsym(std::ptr::null_mut(), name.as_ptr())
-        }
-    }
-
-    #[cfg(windows)]
-    fn lookup(name: &CStr) -> *mut c_void {
-        let h = unsafe { super::win::GetModuleHandleA(c"SDL2.dll".as_ptr()) };
-        if h.is_null() { std::ptr::null_mut() } else { unsafe { super::win::GetProcAddress(h, name.as_ptr()) } }
-    }
-
-    fn sdl() -> &'static Sdl {
-        static S: OnceLock<Sdl> = OnceLock::new();
-        S.get_or_init(|| {
-            let g = lookup(c"SDL_GetRelativeMouseState");
-            let s = lookup(c"SDL_SetRelativeMouseMode");
-            Sdl {
-                get_relative: (!g.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, GetRelativeMouseState>(g) }),
-                set_relative: (!s.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, SetRelativeMouseMode>(s) }),
-            }
-        })
-    }
-
-    pub fn available() -> bool {
-        sdl().get_relative.is_some()
-    }
-
-    pub fn relative_delta() -> [f32; 2] {
-        let Some(f) = sdl().get_relative else { return [0.0; 2] };
-        let (mut x, mut y) = (0, 0);
-        unsafe { f(&mut x, &mut y) };
-        [x as f32, y as f32]
-    }
-
-    pub fn set_relative(on: bool) {
-        if let Some(f) = sdl().set_relative {
-            unsafe { f(on as c_int) };
-        }
-    }
-}
-
-/// Windows cursor re-centering (SDK inputw32.cpp, no mouse thread).
-#[cfg(windows)]
-mod win {
-    use goldsrc::client::engine;
-    use std::ffi::{c_char, c_int, c_void};
-
-    #[repr(C)]
-    #[derive(Default, Clone, Copy)]
-    pub struct Point {
-        x: i32,
-        y: i32,
-    }
-
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn GetCursorPos(p: *mut Point) -> c_int;
-        fn SetCursorPos(x: c_int, y: c_int) -> c_int;
-        fn SystemParametersInfoA(action: u32, param: u32, pv: *mut c_void, winini: u32) -> c_int;
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        pub fn GetModuleHandleA(name: *const c_char) -> *mut c_void;
-        pub fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
-    }
-
-    const SPI_GETMOUSE: u32 = 3;
-    const SPI_SETMOUSE: u32 = 4;
-
-    #[derive(Default)]
-    pub struct State {
-        params_valid: bool,
-        original: [c_int; 3],
-        restore: bool,
-    }
-
-    pub fn startup(s: &mut State) {
-        s.params_valid = unsafe { SystemParametersInfoA(SPI_GETMOUSE, 0, s.original.as_mut_ptr().cast(), 0) } != 0;
-    }
-
-    fn raw_input() -> bool {
-        engine().cvar_float(c"m_rawinput") != 0.0 && super::sdl::available()
-    }
-
-    fn center() -> (i32, i32) {
-        let f = &engine().f;
-        match (f.GetWindowCenterX, f.GetWindowCenterY) {
-            (Some(x), Some(y)) => unsafe { (x(), y()) },
-            _ => (0, 0),
-        }
-    }
-
-    pub fn activate(s: &mut State) {
-        if s.params_valid {
-            // SDK newmouseparms {0, 0, 1}: no Windows acceleration while playing.
-            let mut p: [c_int; 3] = [0, 0, 1];
-            s.restore = unsafe { SystemParametersInfoA(SPI_SETMOUSE, 0, p.as_mut_ptr().cast(), 0) } != 0;
-        }
-    }
-
-    pub fn deactivate(s: &mut State) {
-        if s.restore {
-            unsafe { SystemParametersInfoA(SPI_SETMOUSE, 0, s.original.as_mut_ptr().cast(), 0) };
-            s.restore = false;
-        }
-    }
-
-    /// Cursor offset from the window centre, then re-centre (or SDL relative motion under
-    /// `m_rawinput 1`, as the post-anniversary SDK does).
-    pub fn delta() -> [f32; 2] {
-        if raw_input() {
-            return super::sdl::relative_delta();
-        }
-        let mut p = Point::default();
-        if unsafe { GetCursorPos(&mut p) } == 0 {
-            return [0.0; 2];
-        }
-        let (cx, cy) = center();
-        let d = [(p.x - cx) as f32, (p.y - cy) as f32];
-        if d != [0.0; 2] {
-            unsafe { SetCursorPos(cx, cy) };
-        }
-        d
+        goldsrc::platform::sdl::relative_delta()
     }
 }
 
@@ -885,7 +725,7 @@ mod win {
 
 pub fn init() {
     CVARS.0.set(InputCvars::register());
-    DEV_SCRIPT_INPUT.0.set(Cvar(engine().register_variable(c"ts_dev_scriptinput", c"0", 0)));
+    DEV_SCRIPT_INPUT.0.set(Cvar::register(c"ts_dev_scriptinput", c"0", 0));
     register_commands();
     let fwgs = !engine().cvar_pointer(c"host_ver").is_null();
     mouse(|m| {
@@ -893,7 +733,7 @@ pub fn init() {
         // SDK IN_StartupMouse: `-nomouse` disables the mouse entirely.
         m.initialized = true;
         #[cfg(windows)]
-        win::startup(&mut m.win);
+        goldsrc::platform::win::startup(&mut m.win);
     });
     // TS removed +mlook: mouse look is always on. Report it to the engine through in_mlook.
     IN_MLOOK.get().state = 1;

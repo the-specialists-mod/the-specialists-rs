@@ -4,6 +4,7 @@
 use super::base::*;
 use crate::damage::bits as dmg;
 use crate::world::{Cx, DamageInfo, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_IDLE, ATTN_NORM, ATTN_STATIC, snd, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -191,7 +192,15 @@ impl FuncRotating {
         if pitch == PITCH_NORM as i32 {
             pitch = PITCH_NORM as i32 - 1;
         }
-        engine().emit_sound(cx.edict, CHAN_STATIC as i32, Self::noise(cx), vol, self.attenuation, snd::CHANGE_PITCH | snd::CHANGE_VOL, pitch);
+        engine().emit_sound(
+            cx.edict,
+            CHAN_STATIC as i32,
+            Self::noise(cx),
+            vol,
+            self.attenuation,
+            snd::CHANGE_PITCH | snd::CHANGE_VOL,
+            pitch,
+        );
     }
 
     fn spin_up(&mut self, cx: &mut Cx) {
@@ -201,7 +210,15 @@ impl FuncRotating {
         let (av, md, sp) = (v.avelocity, v.movedir, v.speed);
         if (0..3).all(|i| av[i].abs() >= (md[i] * sp).abs()) {
             v.avelocity = vec::scale(md, sp);
-            engine().emit_sound(cx.edict, CHAN_STATIC as i32, Self::noise(cx), self.volume, self.attenuation, snd::CHANGE_PITCH | snd::CHANGE_VOL, FANPITCHMAX as i32);
+            engine().emit_sound(
+                cx.edict,
+                CHAN_STATIC as i32,
+                Self::noise(cx),
+                self.volume,
+                self.attenuation,
+                snd::CHANGE_PITCH | snd::CHANGE_VOL,
+                FANPITCHMAX as i32,
+            );
             self.think = Some(Self::rotate);
             self.rotate(cx);
         } else {
@@ -365,7 +382,7 @@ impl Entity for FuncRotating {
         if !self.hurt {
             return;
         }
-        let ov = unsafe { &(*other).v };
+        let ov = other.v();
         if ov.takedamage == 0.0 {
             return;
         }
@@ -374,7 +391,7 @@ impl Entity for FuncRotating {
         v.dmg = vec::length(v.avelocity) / 10.0;
         let (d, center) = (v.dmg, bmodel_origin(v));
         crate::damage::apply(other, &DamageInfo::new(me, me, d, dmg::CRUSH));
-        let ov = unsafe { &mut (*other).v };
+        let ov = other.v();
         ov.velocity = vec::scale(vec::normalize(vec::sub(ov.origin, center)), d);
     }
 
@@ -537,13 +554,13 @@ impl Entity for Pendulum {
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let me = cx.edict;
         let v = cx.pev();
-        if v.dmg <= 0.0 || unsafe { (*other).v.takedamage } == 0.0 {
+        if v.dmg <= 0.0 || other.v().takedamage == 0.0 {
             return;
         }
         let damage = (v.dmg * v.speed * 0.01).abs();
         let center = bmodel_origin(v);
         crate::damage::apply(other, &DamageInfo::new(me, me, damage, dmg::CRUSH));
-        let ov = unsafe { &mut (*other).v };
+        let ov = other.v();
         ov.velocity = vec::scale(vec::normalize(vec::sub(ov.origin, center)), damage);
     }
 }

@@ -1,5 +1,6 @@
 //! Engine helpers added by the rules work package. Keep additions here to avoid merge conflicts.
 
+use crate::edict::EdictPtr;
 use crate::eng;
 use crate::server::Engine;
 use crate::sys::*;
@@ -20,6 +21,7 @@ impl Engine {
         if p.is_null() {
             return None;
         }
+        // SAFETY: the engine returned `len` bytes at non-null `p` (checked above); they're copied before the file is freed.
         let out = unsafe { std::slice::from_raw_parts(p as *const u8, len.max(0) as usize) }.to_vec();
         eng!(pfnFreeFile(p.cast()));
         Some(out)
@@ -54,6 +56,7 @@ impl Engine {
 
     pub fn auth_id(&self, e: *mut edict_t) -> &'static CStr {
         let p = eng!(pfnGetPlayerAuthId(e));
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
         unsafe { cstr(p) }
     }
 
@@ -79,7 +82,7 @@ impl Engine {
     /// Edict of a living, connected client slot `i`, or null.
     pub fn client(&self, i: i32) -> *mut edict_t {
         let e = self.player(i);
-        if e.is_null() || unsafe { (*e).v.flags } & FL_CLIENT as i32 == 0 { std::ptr::null_mut() } else { e }
+        if e.is_null() || e.v().flags & FL_CLIENT as i32 == 0 { std::ptr::null_mut() } else { e }
     }
 
     /// Iterator over connected client edicts (slots 1..=maxClients).
@@ -94,6 +97,16 @@ impl Engine {
     /// Server console command buffer flush (`pfnServerExecute`).
     pub fn server_execute(&self) {
         eng!(pfnServerExecute())
+    }
+
+    /// `Cvar_DirectSet` on the named cvar, if it exists (bypasses the `FCVAR_SPONLY`-style
+    /// checks `pfnCvar_SetString` applies).
+    pub fn cvar_direct_set_by_name(&self, name: &CStr, value: &str) {
+        let c = self.cvar_ptr(name);
+        if !c.is_null() {
+            let v = to_cstring(value);
+            eng!(pfnCvar_DirectSet(c, v.as_ptr()))
+        }
     }
 
     pub fn cvar_ptr(&self, name: &CStr) -> *mut cvar_t {

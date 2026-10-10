@@ -445,7 +445,11 @@ impl Hud {
             }
             Msg::PTakeDam => {
                 let v = dec!(p::PTakeDam);
-                fx.push(Effect::Fx(crate::state::TsEffect::PlayerHit { pos: [v.px, v.py, v.pz], dir: [v.dx, v.dy, v.dz], amount: v.amount }));
+                fx.push(Effect::Fx(crate::state::TsEffect::PlayerHit {
+                    pos: [v.px, v.py, v.pz],
+                    dir: [v.dx, v.dy, v.dz],
+                    amount: v.amount,
+                }));
             }
             Msg::TsSlowMo => {
                 let v = dec!(p::TsSlowMo);
@@ -488,7 +492,8 @@ impl Hud {
             Msg::TsFlag => {
                 let v = dec!(p::TsFlag);
                 if (1..16).contains(&v.idx) {
-                    self.flags[v.idx as usize] = FlagState { state: v.state, carrier: if v.state == 1 { v.carrier } else { 0 }, team: v.team };
+                    self.flags[v.idx as usize] =
+                        FlagState { state: v.state, carrier: if v.state == 1 { v.carrier } else { 0 }, team: v.team };
                 }
                 self.flag_count = 16;
             }
@@ -666,7 +671,12 @@ impl Hud {
                 if self.deaths.len() >= 4 {
                     self.deaths.remove(0);
                 }
-                self.deaths.push(DeathNotice { killer: v.killer as i32, victim: v.victim as i32, weapon: v.weapon, expire: now + ctx.deathnotice_time });
+                self.deaths.push(DeathNotice {
+                    killer: v.killer as i32,
+                    victim: v.victim as i32,
+                    weapon: v.weapon,
+                    expire: now + ctx.deathnotice_time,
+                });
             }
             Msg::SayText => {
                 let v = dec!(p::SayText);
@@ -728,7 +738,20 @@ impl Hud {
                 }
             }
             // Stock/TFC bookkeeping messages TS keeps hooked; their elements draw nothing.
-            Msg::CurWeapon | Msg::WeaponList | Msg::AmmoPickup | Msg::WeapPickup | Msg::ItemPickup | Msg::HideWeapon | Msg::AmmoX | Msg::Geiger | Msg::Health | Msg::Battery | Msg::Damage | Msg::Train | Msg::GameTitle | Msg::SelAmmo => {}
+            Msg::CurWeapon
+            | Msg::WeaponList
+            | Msg::AmmoPickup
+            | Msg::WeapPickup
+            | Msg::ItemPickup
+            | Msg::HideWeapon
+            | Msg::AmmoX
+            | Msg::Geiger
+            | Msg::Health
+            | Msg::Battery
+            | Msg::Damage
+            | Msg::Train
+            | Msg::GameTitle
+            | Msg::SelAmmo => {}
             // Engine-handled; never hooked.
             Msg::ScreenShake | Msg::ScreenFade => {}
         }
@@ -776,7 +799,8 @@ impl Hud {
 mod tests {
     use super::*;
     use shared::protocol::hud::{
-        KFuPower, Motd, PwUp, PwUpTime, ScoreInfo, ShowMenu, ShowObj, Spectator, TeamInfo, TextMsg, TsCash, TsHealth, TsMessage, TsPAward, TsSpace, TsState, WStatus, WeaponInfo,
+        KFuPower, Motd, PwUp, PwUpTime, ScoreInfo, ShowMenu, ShowObj, Spectator, TeamInfo, TextMsg, TsCash, TsHealth, TsMessage, TsPAward,
+        TsSpace, TsState, WStatus, WeaponInfo,
     };
 
     struct NoTitles;

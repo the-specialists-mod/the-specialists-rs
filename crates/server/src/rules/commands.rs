@@ -9,6 +9,7 @@ use crate::commands::Args;
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::protocol::hud_wire::PwUp;
@@ -174,7 +175,7 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
                 continue;
             }
             // LMS: players out for the round only talk to each other.
-            let (o_alive, o_respawn) = (alive(unsafe { &(*o).v }), other(o, |q| q.respawn_at).unwrap_or(0.0));
+            let (o_alive, o_respawn) = (alive(o.v()), other(o, |q| q.respawn_at).unwrap_or(0.0));
             if !lms || me_alive || my_respawn >= 0.0 || (!o_alive && o_respawn < 0.0) {
                 msg::say_one(o, idx, &line);
             }
@@ -205,11 +206,34 @@ pub fn register_server_commands() {
     e.add_server_command(c"ts_givepowerup", cmd_givepowerup);
     e.add_server_command(c"ts_tp", cmd_tp);
     e.add_server_command(c"ts_face", cmd_face);
+    e.add_server_command(c"ts_dev_touch", cmd_dev_touch);
+}
+
+/// `ts_dev_touch <file>` (sv_cheats): creates an empty file in the game directory. Scripted
+/// tests end with it so `cargo xtask` sees the script finish at once; the engine log can sit in a
+/// write buffer until exit (FWGS under Wine). Only plain file names are accepted.
+extern "C" fn cmd_dev_touch() {
+    use goldsrc::ext::weapons::WeaponsEngine;
+    let e = engine();
+    if !cvars::cheats() || e.cmd_argc() < 2 {
+        e.print("usage (sv_cheats 1): ts_dev_touch <file>\n");
+        return;
+    }
+    let name = e.cmd_argv(1).to_string_lossy().into_owned();
+    if name.is_empty() || name.starts_with('.') || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c)) {
+        e.print("ts_dev_touch: plain file names only\n");
+        return;
+    }
+    // The engines run with the game root as the working directory; the game dir may be relative.
+    let path = std::path::Path::new(&e.game_dir()).join(&name);
+    if let Err(err) = std::fs::write(&path, b"") {
+        e.print(&format!("ts_dev_touch: {}: {err}\n", path.display()));
+    }
 }
 
 /// Points a player's view (and body) at `angles`; `fixangle` makes the client take them.
 fn set_view_angles(p: *mut edict_t, angles: [f32; 3]) {
-    let v = unsafe { &mut (*p).v };
+    let v = p.v();
     v.v_angle = angles;
     v.angles = angles;
     v.fixangle = 1;
@@ -221,7 +245,7 @@ fn arg_f32(i: i32) -> f32 {
 
 /// `ts_tp <player#> <x> <y> <z> [yaw] [pitch]` (sv_cheats): teleports a player, drops them to the
 /// floor and optionally sets the view. Lets scripted tests reach map features.
-unsafe extern "C" fn cmd_tp() {
+extern "C" fn cmd_tp() {
     let e = engine();
     if !cvars::cheats() || e.cmd_argc() < 5 {
         e.print("usage (sv_cheats 1): ts_tp <player#> <x> <y> <z> [yaw] [pitch]\n");
@@ -231,20 +255,20 @@ unsafe extern "C" fn cmd_tp() {
     if p.is_null() {
         return;
     }
-    unsafe { (*p).v.velocity = [0.0; 3] };
+    (p.v().velocity = [0.0; 3]);
     e.set_origin(p, [arg_f32(2), arg_f32(3), arg_f32(4)]);
     e.drop_to_floor(p);
     if e.cmd_argc() > 5 {
         let pitch = if e.cmd_argc() > 6 { arg_f32(6) } else { 0.0 };
         set_view_angles(p, [pitch, arg_f32(5), 0.0]);
     }
-    let o = unsafe { (*p).v.origin };
+    let o = p.v().origin;
     e.print(&format!("[ts] ts_tp: #{} at ({:.0} {:.0} {:.0})\n", e.index_of(p), o[0], o[1], o[2]));
 }
 
 /// `ts_face <player#> <target#>` or `ts_face <player#> <x> <y> <z>` (sv_cheats): aims a player's
 /// view at another player's chest or at a point.
-unsafe extern "C" fn cmd_face() {
+extern "C" fn cmd_face() {
     let e = engine();
     if !cvars::cheats() || (e.cmd_argc() != 3 && e.cmd_argc() != 5) {
         e.print("usage (sv_cheats 1): ts_face <player#> <target#> | <player#> <x> <y> <z>\n");
@@ -259,12 +283,12 @@ unsafe extern "C" fn cmd_face() {
         if t.is_null() {
             return;
         }
-        let tv = unsafe { &(*t).v };
+        let tv = t.v();
         [tv.origin[0], tv.origin[1], tv.origin[2] + tv.view_ofs[2] * 0.5]
     } else {
         [arg_f32(2), arg_f32(3), arg_f32(4)]
     };
-    let v = unsafe { &(*p).v };
+    let v = p.v();
     let eye = [v.origin[0] + v.view_ofs[0], v.origin[1] + v.view_ofs[1], v.origin[2] + v.view_ofs[2]];
     let a = e.vec_to_angles([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
     // VecToAngles pitch is up-positive; view angles look down with positive pitch.
@@ -272,18 +296,24 @@ unsafe extern "C" fn cmd_face() {
 }
 
 /// `ts_status`: one line per player (state, health, frags, power-ups, time scale).
-unsafe extern "C" fn cmd_status() {
+extern "C" fn cmd_status() {
     let e = engine();
     let (mode, teamplay, lms, the_one) = state::mode();
     e.print(&format!("[ts] status: {mode:?} teamplay={teamplay} lms={lms} theone={the_one} time={:.1}\n", e.time()));
     for p in super::players() {
-        let v = unsafe { &(*p).v };
+        let v = p.v();
         let line = other(p, |q| {
             format!(
                 "[ts]  #{} {:<16} {} hp={} ar={} frags={} deaths={} cash={} team='{}' held={:#x}/{}s active={:#x} slow={:.2}->{:.2} award={} spree={} org=({:.0} {:.0} {:.0})\n",
                 e.index_of(p),
                 netname(p),
-                if v.iuser1 != 0 { "observer" } else if alive(v) { "alive" } else { "dead" },
+                if v.iuser1 != 0 {
+                    "observer"
+                } else if alive(v) {
+                    "alive"
+                } else {
+                    "dead"
+                },
                 v.health,
                 v.armorvalue,
                 v.frags,
@@ -309,7 +339,7 @@ unsafe extern "C" fn cmd_status() {
 }
 
 /// `ts_hurt <player#> <damage> [hitgroup] [attacker#]`: bullet damage, for testing.
-unsafe extern "C" fn cmd_hurt() {
+extern "C" fn cmd_hurt() {
     let e = engine();
     if e.cmd_argc() < 3 {
         e.print("usage: ts_hurt <player#> <damage> [hitgroup] [attacker#]\n");
@@ -324,14 +354,14 @@ unsafe extern "C" fn cmd_hurt() {
     let attacker = if attacker.is_null() { e.entity_of_index(0) } else { attacker };
     let mut info = crate::damage::DamageInfo::new(attacker, attacker, arg(2), crate::damage::bits::BULLET);
     info.hitgroup = if e.cmd_argc() > 3 { arg(3) as i32 } else { crate::damage::hitgroup::CHEST };
-    info.pos = unsafe { (*victim).v.origin };
+    info.pos = victim.v().origin;
     info.dir = [1.0, 0.0, 0.0];
     let took = crate::damage::apply(victim, &info);
-    e.print(&format!("[ts] ts_hurt: applied={took} health={}\n", unsafe { (*victim).v.health }));
+    e.print(&format!("[ts] ts_hurt: applied={took} health={}\n", victim.v().health));
 }
 
 /// `ts_givepowerup <player#> <bits>`: applies a power-up pickup, for testing.
-unsafe extern "C" fn cmd_givepowerup() {
+extern "C" fn cmd_givepowerup() {
     let e = engine();
     if e.cmd_argc() < 3 {
         return;
@@ -345,12 +375,12 @@ unsafe extern "C" fn cmd_givepowerup() {
 }
 
 /// TS prints "Bots only in listen servers." here; the port adds a bot (bots/mod.rs).
-unsafe extern "C" fn cmd_addbot() {
+extern "C" fn cmd_addbot() {
     crate::bots::add_bot_command();
 }
 
 /// `globalslow [percent]` (0xc5580).
-unsafe extern "C" fn cmd_globalslow() {
+extern "C" fn cmd_globalslow() {
     let e = engine();
     let cur = state::with(|g| if g.global_slow.active { g.global_slow.amount } else { 0.0 });
     if e.cmd_argc() < 2 {
@@ -384,23 +414,19 @@ pub fn globalslow_amount(pct: f32) -> f32 {
     a
 }
 
-unsafe extern "C" fn cmd_restartround() {
+extern "C" fn cmd_restartround() {
     frame::reset_restart_round();
 }
 
 /// `weaponrestriction [n]`: 1 none, 2 knives, 3 knives+pistols, 4 knives+pistols+shotguns,
 /// 5 reset, other everything; masked by the map's base set and broadcast as SrvSett 3.
-unsafe extern "C" fn cmd_weaponrestriction() {
+extern "C" fn cmd_weaponrestriction() {
     let e = engine();
     if e.cmd_argc() >= 2 {
         let n: i32 = e.cmd_argv(1).to_string_lossy().trim().parse().unwrap_or(0);
         let (old, new) = state::with(|g| {
             let old = g.allowed_weapons;
-            g.allowed_weapons = if n == 5 {
-                0x1f
-            } else {
-                restriction_by_id(n) & g.base_weapons
-            };
+            g.allowed_weapons = if n == 5 { 0x1f } else { restriction_by_id(n) & g.base_weapons };
             (old, g.allowed_weapons)
         });
         if old != new {

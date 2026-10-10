@@ -1,5 +1,6 @@
 //! Server-side engine handle (`enginefuncs_t` + `globalvars_t`) and helpers.
 
+use crate::edict::EdictPtr;
 use crate::sys::*;
 use crate::util::{cstr, to_cstring};
 use std::ffi::{CStr, c_int};
@@ -9,8 +10,10 @@ pub struct Engine {
     pub f: enginefuncs_t,
     pub globals: *mut globalvars_t,
 }
-// The engine runs every game-DLL callback on one thread.
+// SAFETY: the table and globals pointer are engine-owned for the process, and the engine runs
+// every game-DLL callback on one thread.
 unsafe impl Send for Engine {}
+// SAFETY: as above.
 unsafe impl Sync for Engine {}
 
 static ENGINE: OnceLock<Engine> = OnceLock::new();
@@ -20,6 +23,7 @@ static ENGINE: OnceLock<Engine> = OnceLock::new();
 /// # Safety
 /// `funcs` must point to a valid engine function table.
 pub unsafe fn init(funcs: *const enginefuncs_t, globals: *mut globalvars_t) {
+    // SAFETY: `funcs` points at the engine's function table for the duration of this call; it's copied once.
     let _ = ENGINE.set(Engine { f: unsafe { *funcs }, globals });
 }
 
@@ -31,13 +35,40 @@ pub fn engine() -> &'static Engine {
 #[macro_export]
 macro_rules! eng {
     ($name:ident ( $($arg:expr),* $(,)? )) => {
+        // SAFETY: the engine fills its function tables before the first callback and keeps them
+
+        // for the process; slots are called with the argument types bindgen generated from the
+
+        // engine headers, and callers pass valid pointers for those arguments.
+
         unsafe { ($crate::server::engine().f.$name.expect(stringify!($name)))($($arg),*) }
     };
 }
 
 impl Engine {
     pub fn globals(&self) -> &globalvars_t {
+        // SAFETY: `globals` points at the engine's globalvars_t, which lives for the process.
         unsafe { &*self.globals }
+    }
+
+    /// `pfnCheckVisibility`: is `e` in the PVS `set` passed to `AddToFullPack`?
+    pub fn check_visibility(&self, e: *const edict_t, set: *mut u8) -> bool {
+        eng!(pfnCheckVisibility(e, set)) != 0
+    }
+
+    /// The client's physics info string (`pfnGetPhysicsInfoString`).
+    pub fn physics_info(&self, e: *const edict_t) -> &'static CStr {
+        let p = eng!(pfnGetPhysicsInfoString(e));
+        // SAFETY: the engine returns null or a NUL-terminated buffer owned by the client slot.
+        unsafe { cstr(p) }
+    }
+
+    /// Makes the engine re-run touches for every entity next frame (`gpGlobals->force_retouch++`),
+    /// e.g. after a trigger turns solid.
+    pub fn force_retouch(&self) {
+        // SAFETY: the engine's globals live for the whole server and are only touched from the
+        // game thread.
+        unsafe { (*self.globals).force_retouch += 1.0 };
     }
 
     pub fn time(&self) -> f32 {
@@ -63,6 +94,7 @@ impl Engine {
     /// Engine string pool lookup. `string_t` is an offset into the engine's pool.
     pub fn string(&self, s: string_t) -> &'static CStr {
         let p = eng!(pfnSzFromIndex(s));
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
         unsafe { cstr(p) }
     }
 
@@ -110,6 +142,7 @@ impl Engine {
 
     pub fn cmd_argv(&self, i: c_int) -> &'static CStr {
         let p = eng!(pfnCmd_Argv(i));
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
         unsafe { cstr(p) }
     }
 }
@@ -165,6 +198,7 @@ impl Engine {
     /// Texture name hit by a trace against `ent` (usually the world), for material sounds.
     pub fn trace_texture(&self, ent: *mut edict_t, start: [f32; 3], end: [f32; 3]) -> &'static CStr {
         let p = eng!(pfnTraceTexture(ent, start.as_ptr(), end.as_ptr()));
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
         unsafe { cstr(p) }
     }
 
@@ -198,8 +232,21 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn playback_event(&self, flags: i32, invoker: *const edict_t, index: u16, delay: f32, origin: [f32; 3], angles: [f32; 3],
-                          f1: f32, f2: f32, i1: i32, i2: i32, b1: bool, b2: bool) {
+    pub fn playback_event(
+        &self,
+        flags: i32,
+        invoker: *const edict_t,
+        index: u16,
+        delay: f32,
+        origin: [f32; 3],
+        angles: [f32; 3],
+        f1: f32,
+        f2: f32,
+        i1: i32,
+        i2: i32,
+        b1: bool,
+        b2: bool,
+    ) {
         let (mut o, mut a) = (origin, angles);
         eng!(pfnPlaybackEvent(flags, invoker, index, delay, o.as_mut_ptr(), a.as_mut_ptr(), f1, f2, i1, i2, b1 as c_int, b2 as c_int))
     }
@@ -222,7 +269,7 @@ impl Engine {
     /// Edict of player `i` (1..=maxClients), or null if the slot is free.
     pub fn player(&self, i: i32) -> *mut edict_t {
         let e = self.entity_of_index(i);
-        if e.is_null() || unsafe { (*e).free != 0 || (*e).pvPrivateData.is_null() } { std::ptr::null_mut() } else { e }
+        if e.is_null() || e.is_free() || !e.has_private_data() { std::ptr::null_mut() } else { e }
     }
 
     pub fn drop_to_floor(&self, e: *mut edict_t) -> i32 {
@@ -266,6 +313,7 @@ impl Engine {
     pub fn info_key(&self, e: *mut edict_t, key: &CStr) -> &'static CStr {
         let buf = eng!(pfnGetInfoKeyBuffer(e));
         let v = eng!(pfnInfoKeyValue(buf, key.as_ptr()));
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
         unsafe { cstr(v) }
     }
 
@@ -298,6 +346,7 @@ impl Engine {
 
     pub fn cmd_args(&self) -> &'static CStr {
         let p = eng!(pfnCmd_Args());
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
         unsafe { cstr(p) }
     }
 
@@ -322,6 +371,7 @@ impl Engine {
 
     pub fn cvar_string(&self, name: &CStr) -> &'static CStr {
         let p = eng!(pfnCVarGetString(name.as_ptr()));
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
         unsafe { cstr(p) }
     }
 
@@ -329,7 +379,9 @@ impl Engine {
         eng!(pfnCVarSetFloat(name.as_ptr(), v))
     }
 
-    pub fn add_server_command(&self, name: &'static CStr, f: unsafe extern "C" fn()) {
+    /// Registers a server console command. `f` is a safe `extern "C" fn()`; it reads its
+    /// arguments through [`Engine::cmd_argc`]/[`Engine::cmd_argv`].
+    pub fn add_server_command(&self, name: &'static CStr, f: extern "C" fn()) {
         eng!(pfnAddServerCommand(name.as_ptr(), Some(f)))
     }
 
@@ -341,6 +393,7 @@ impl Engine {
 /// Reads a registered cvar's current value.
 pub fn cvar_value(c: &cvar_t) -> f32 {
     // The engine updates `value` in place; read it volatilely so the compiler doesn't cache it.
+    // SAFETY: `c` is a live reference; the volatile read only stops the compiler caching a value the engine changes.
     unsafe { std::ptr::read_volatile(&c.value) }
 }
 

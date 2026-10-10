@@ -63,11 +63,7 @@ pub fn angle_vectors(angles: Vec3) -> (Vec3, Vec3, Vec3) {
     let (sp, cp) = ((angles[0] * DEG2RAD).sin(), (angles[0] * DEG2RAD).cos());
     let (sr, cr) = ((angles[2] * DEG2RAD).sin(), (angles[2] * DEG2RAD).cos());
     let forward = [cp * cy, cp * sy, -sp];
-    let right = [
-        -1.0 * sr * sp * cy + -1.0 * cr * -sy,
-        -1.0 * sr * sp * sy + -1.0 * cr * cy,
-        -1.0 * sr * cp,
-    ];
+    let right = [-1.0 * sr * sp * cy + -1.0 * cr * -sy, -1.0 * sr * sp * sy + -1.0 * cr * cy, -1.0 * sr * cp];
     let up = [cr * sp * cy + -sr * -sy, cr * sp * sy + -sr * cy, cr * cp];
     (forward, right, up)
 }

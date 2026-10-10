@@ -6,6 +6,7 @@
 //! * Temp entities (`SVC_TEMPENTITY`): `te` constants plus writers for the ones several classes use.
 //! * A few engine calls the base wrapper doesn't cover (`set_view`, `static_decal`, ...).
 
+use crate::edict::EdictPtr;
 use crate::eng;
 use crate::server::{Engine, MsgWriter};
 use crate::sys::*;
@@ -87,7 +88,7 @@ impl EHandle {
     pub const NULL: EHandle = EHandle { e: std::ptr::null_mut(), serial: 0 };
 
     pub fn new(e: *mut edict_t) -> Self {
-        if e.is_null() { Self::NULL } else { EHandle { e, serial: unsafe { (*e).serialnumber } } }
+        if e.is_null() { Self::NULL } else { EHandle { e, serial: e.serial_number() } }
     }
 
     /// The edict, or null if it was freed (or reused for something else).
@@ -95,7 +96,7 @@ impl EHandle {
         if self.e.is_null() {
             return std::ptr::null_mut();
         }
-        let ok = unsafe { (*self.e).free == 0 && (*self.e).serialnumber == self.serial && !(*self.e).pvPrivateData.is_null() };
+        let ok = !self.e.is_free() && self.e.serial_number() == self.serial && self.e.has_private_data();
         if ok { self.e } else { std::ptr::null_mut() }
     }
 
@@ -106,23 +107,14 @@ impl EHandle {
 
 // ---- edict helpers ----------------------------------------------------------------------------------
 
-/// `&mut entvars_t` of an edict. The caller must not hold it across engine calls that free `e`.
-///
-/// # Safety
-/// `e` must be a valid, non-null edict.
-#[allow(clippy::mut_from_ref)]
-pub unsafe fn vars<'a>(e: *mut edict_t) -> &'a mut entvars_t {
-    unsafe { &mut (*e).v }
-}
-
 /// True for a usable edict (non-null, not free).
 pub fn is_live(e: *const edict_t) -> bool {
-    !e.is_null() && unsafe { (*e).free == 0 }
+    !e.is_null() && !e.is_free()
 }
 
 /// True if the edict is a connected client (player slot with FL_CLIENT).
 pub fn is_player(e: *const edict_t) -> bool {
-    is_live(e) && unsafe { (*e).v.flags } & FL_CLIENT as i32 != 0
+    is_live(e) && e.v().flags & FL_CLIENT as i32 != 0
 }
 
 impl Engine {
@@ -139,10 +131,10 @@ impl Engine {
             if e.is_null() {
                 continue;
             }
-            let v = unsafe { &(*e).v };
-            if unsafe { (*e).free != 0 || (*e).pvPrivateData.is_null() } {
+            if e.is_free() || !e.has_private_data() {
                 continue;
             }
+            let v = e.v();
             if flag_mask != 0 && v.flags & flag_mask == 0 {
                 continue;
             }
@@ -168,7 +160,6 @@ impl Engine {
     pub fn create_entity(&self) -> *mut edict_t {
         eng!(pfnCreateEntity())
     }
-
 
     pub fn decal_index(&self, name: &CStr) -> i32 {
         eng!(pfnDecalIndex(name.as_ptr()))

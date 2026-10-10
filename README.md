@@ -76,6 +76,7 @@ Setting up the roots (steamcmd, ReHLDS, Wine) and the latest results: [docs/vali
 
 | Doc | Contents |
 |---|---|
+| [AGENTS.md](AGENTS.md) | Working in this repo (people and coding agents): crate layout, the `unsafe` boundary, build and test commands, conventions, pitfalls |
 | [docs/design.md](docs/design.md) | Goals, the wire-compatibility contract, architecture (server, client, shared), module ownership, build targets, deviations from TS |
 | [docs/validation.md](docs/validation.md) | Engine roots and how to set them up, test commands, results, setup pitfalls |
 | [docs/implementation/movement.md](docs/implementation/movement.md) | Player movement and stunts |

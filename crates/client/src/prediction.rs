@@ -75,8 +75,14 @@ pub fn process_player_state(dst: &mut entity_state_t, src: &entity_state_t) {
 
 /// `HUD_TxferPredictionData` (`0x1001bb00`): carries predicted-only fields across a new server
 /// frame. `fuser1` needs no copy (pmove reads it from clientdata every command, never writes it).
-pub fn txfer_prediction_data(ps: &mut entity_state_t, pps: &entity_state_t, pcd: &mut clientdata_t, ppcd: &clientdata_t, wd: &mut [weapon_data_t; 32],
-                             pwd: &[weapon_data_t; 32]) {
+pub fn txfer_prediction_data(
+    ps: &mut entity_state_t,
+    pps: &entity_state_t,
+    pcd: &mut clientdata_t,
+    ppcd: &clientdata_t,
+    wd: &mut [weapon_data_t; 32],
+    pwd: &[weapon_data_t; 32],
+) {
     ps.oldbuttons = pps.oldbuttons;
     ps.flFallVelocity = pps.flFallVelocity;
     ps.iStepLeft = pps.iStepLeft;

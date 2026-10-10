@@ -3,6 +3,7 @@
 
 use super::base::*;
 use crate::world::{Cx, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{HudTextParms, is_player, te_text_message};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -69,11 +70,11 @@ impl Entity for GameText {
             let eng = engine();
             for i in 1..=eng.max_clients() {
                 let p = eng.player(i);
-                if is_player(p) && unsafe { (*p).v.flags } & FL_FAKECLIENT as i32 == 0 {
+                if is_player(p) && p.v().flags & FL_FAKECLIENT as i32 == 0 {
                     te_text_message(p, &self.parms, msg);
                 }
             }
-        } else if is_player(activator) && unsafe { (*activator).v.flags } & FL_FAKECLIENT as i32 == 0 {
+        } else if is_player(activator) && activator.v().flags & FL_FAKECLIENT as i32 == 0 {
             te_text_message(activator, &self.parms, msg);
         }
         let me = cx.edict;

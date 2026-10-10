@@ -9,6 +9,7 @@ use crate::damage::{DamageInfo, bits, hitgroup};
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::world::{Cx, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::protocol::hud_wire::PwUp;
@@ -29,12 +30,12 @@ fn classname(e: *mut edict_t) -> String {
     if e.is_null() {
         return String::new();
     }
-    engine().string(unsafe { (*e).v.classname }).to_string_lossy().into_owned()
+    engine().string(e.v().classname).to_string_lossy().into_owned()
 }
 
 /// Weapon name for `DeathMsg` and logs (gamerules-entities.md §2.3).
 pub fn weapon_name(d: &DamageInfo) -> String {
-    let attacker_client = !d.attacker.is_null() && unsafe { (*d.attacker).v.flags } & FL_CLIENT as i32 != 0;
+    let attacker_client = !d.attacker.is_null() && d.attacker.v().flags & FL_CLIENT as i32 != 0;
     let mut name = if attacker_client {
         if d.inflictor == d.attacker || d.inflictor.is_null() {
             if d.weapon == 0 || (d.weapon < 0 && is_close_combat(d)) {
@@ -48,7 +49,7 @@ pub fn weapon_name(d: &DamageInfo) -> String {
             classname(d.inflictor)
         }
     } else if !d.inflictor.is_null() {
-        let v = unsafe { &(*d.inflictor).v };
+        let v = d.inflictor.v();
         let n = engine().string(v.netname).to_string_lossy().into_owned();
         if n.is_empty() { classname(d.inflictor) } else { n }
     } else {
@@ -160,7 +161,21 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
 
     let weapon = weapon_name(d);
     death_notice(attacker, victim, &weapon);
-    log_kill(attacker, victim, &weapon, suicide, sliding, diving, double_kill, killed_specialist, stopped_fury.then_some(&vname), is_killer, is_demolition, is_specialist, is_unstoppable);
+    log_kill(
+        attacker,
+        victim,
+        &weapon,
+        suicide,
+        sliding,
+        diving,
+        double_kill,
+        killed_specialist,
+        stopped_fury.then_some(&vname),
+        is_killer,
+        is_demolition,
+        is_specialist,
+        is_unstoppable,
+    );
 
     p.deaths += 1;
     crate::entities::fire_targets(c"game_playerdie", victim, victim, UseType::Toggle, 0.0);
@@ -177,7 +192,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
         super::add_frags(victim, Some(p), -1.0);
     } else if let Some(mut k) = killer {
         let kname = netname(k.e);
-        let kv = unsafe { &(*k.e).v };
+        let kv = k.e.v();
         if (kv.iuser4 & STUNTING != 0 || close || points > 2) && spectacular() {
             crate::entities::ts::create_slow_motion_point(cx.pev().origin, 0.25, 1.0, false);
         }
@@ -235,7 +250,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
                 let r = eng.random_long(1, 16);
                 ts_message_all(GREEN, 1, hold, &format!("{kname} #TS_KillSpree{r} {n} #TS_ConsKills"));
             }
-            let kvm = unsafe { &mut (*k.e).v };
+            let kvm = k.e.v();
             if give_specialist {
                 kvm.health = kvm.health.max(150.0);
                 eng.set_physics_key(k.e, c"mj", c"1");
@@ -305,7 +320,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
     msg::all(Msg::ScoreInfo, |w| si.write(w));
     if killer_is_player {
         let kidx = eng.index_of(attacker);
-        if let Some(s) = other(attacker, |k| score_info_of(k, unsafe { &(*attacker).v }, kidx)) {
+        if let Some(s) = other(attacker, |k| score_info_of(k, attacker.v(), kidx)) {
             msg::all(Msg::ScoreInfo, |w| s.write(w));
         }
     }
@@ -349,7 +364,7 @@ fn points_for_frag(
         desc = "Throwing".to_owned();
         points = 2;
     }
-    let av = unsafe { &(*attacker).v };
+    let av = attacker.v();
     let speed = super::len3(av.velocity);
     if av.iuser4 & STUNTING != 0 && speed > 80.0 {
         if !close {
@@ -386,7 +401,7 @@ fn points_for_frag(
 /// `DeathNotice`: `DeathMsg` to all. (The HLTV `MSG_SPEC` director event is not sent.)
 fn death_notice(attacker: *mut edict_t, victim: *mut edict_t, weapon: &str) {
     let eng = engine();
-    let killer = if !attacker.is_null() && unsafe { (*attacker).v.flags } & FL_CLIENT as i32 != 0 { eng.index_of(attacker) } else { 0 };
+    let killer = if !attacker.is_null() && attacker.v().flags & FL_CLIENT as i32 != 0 { eng.index_of(attacker) } else { 0 };
     let m = DeathMsg { killer: killer as u8, victim: eng.index_of(victim) as u8, weapon: weapon.to_owned() };
     msg::all(Msg::DeathMsg, |w| m.write(w));
 }
@@ -414,7 +429,7 @@ fn log_kill(
         msg::log(&format!("{} committed suicide with \"{w}\"\n", id(victim)));
         return;
     }
-    if unsafe { (*attacker).v.flags } & FL_CLIENT as i32 == 0 {
+    if attacker.v().flags & FL_CLIENT as i32 == 0 {
         msg::log(&format!("{} committed suicide with \"{w}\" (world)\n", id(victim)));
         return;
     }
@@ -452,7 +467,11 @@ fn team_kill_punish(killer: *mut edict_t, victim: *mut edict_t) {
         msg::text_all(shared::protocol::rules::hud_dest::TALK, &format!("{name} kicked for teamkilling\n"));
     } else {
         let m = ban.round() as i32;
-        msg::text_one(victim, shared::protocol::rules::hud_dest::CONSOLE, &format!("You have been banned for teamkilling ({m} minutes)...\n"));
+        msg::text_one(
+            victim,
+            shared::protocol::rules::hud_dest::CONSOLE,
+            &format!("You have been banned for teamkilling ({m} minutes)...\n"),
+        );
         eng.server_command(&format!("banid {m} #{uid} kick\n"));
         msg::text_all(shared::protocol::rules::hud_dest::TALK, &format!("{name} banned for teamkilling ({m} minutes)\n"));
     }
@@ -471,7 +490,7 @@ fn the_one_is_dead(p: &mut Player, cx: &mut Cx, killer: Option<*mut edict_t>) {
 
 /// `SetPlayerTheOne` (0x7b078) on another (not dispatched) player.
 pub fn set_the_one_other(e: *mut edict_t) {
-    let v = unsafe { &mut (*e).v };
+    let v = e.v();
     if !super::alive(v) || v.iuser1 != 0 {
         return;
     }
@@ -502,7 +521,7 @@ pub fn apply_the_one(p: &mut Player) {
 /// team switch to team 0.
 pub fn announce_the_one(e: *mut edict_t) {
     let eng = engine();
-    let v = unsafe { &mut (*e).v };
+    let v = e.v();
     v.health = v.health.max(150.0);
     v.maxspeed = 330.0;
     eng.set_client_maxspeed(e, 330.0);
@@ -516,7 +535,7 @@ pub fn announce_the_one(e: *mut edict_t) {
 /// ScoreInfo for any player edict (dispatched or not is handled by the caller).
 pub fn broadcast_score(e: *mut edict_t) {
     let idx = engine().index_of(e);
-    if let Some(s) = other(e, |p| score_info_of(p, unsafe { &(*e).v }, idx)) {
+    if let Some(s) = other(e, |p| score_info_of(p, e.v(), idx)) {
         msg::all(Msg::ScoreInfo, |w| s.write(w));
     }
 }

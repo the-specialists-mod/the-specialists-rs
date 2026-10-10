@@ -19,6 +19,7 @@ impl<'a> MsgReader<'a> {
         if buf.is_null() || size <= 0 {
             return Self::new(&[]);
         }
+        // SAFETY: the caller guarantees `size` readable bytes at `buf` (see `# Safety`); null/empty is handled above.
         Self::new(unsafe { std::slice::from_raw_parts(buf.cast(), size as usize) })
     }
 

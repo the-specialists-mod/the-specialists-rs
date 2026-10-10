@@ -6,6 +6,7 @@ use crate::player::Player;
 use crate::rules::{self, msg, state, teams};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::Global;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::protocol::rules::{ScoreInfo, TsFlag, TsHVoice};
@@ -40,7 +41,9 @@ fn team_index_of(e: *mut edict_t) -> i32 {
 
 fn score_info(e: *mut edict_t) {
     let idx = engine().index_of(e);
-    if let Some(s) = rules::other(e, |p| ScoreInfo { idx: idx as u8, frags: unsafe { (*e).v.frags } as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 }) {
+    if let Some(s) =
+        rules::other(e, |p| ScoreInfo { idx: idx as u8, frags: e.v().frags as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 })
+    {
         msg::all(Msg::ScoreInfo, |w| s.write(w));
     }
 }
@@ -124,7 +127,7 @@ impl Entity for Briefcase {
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.active || !rules::is_player(other) || !rules::alive(unsafe { &(*other).v }) || !has_flag(other) {
+        if !self.active || !rules::is_player(other) || !rules::alive(other.v()) || !has_flag(other) {
             return;
         }
         if self.owner_team != -1 && self.owner_team != team_index_of(other) {
@@ -138,7 +141,11 @@ impl Entity for Briefcase {
 fn capture(cx: &mut Cx, player: *mut edict_t) {
     let eng = engine();
     let name = rules::netname(player);
-    msg::log(&format!("\"{name}<{}><{}><>\" triggered \"captured_briefcase\"\n", eng.user_id(player), eng.auth_id(player).to_string_lossy()));
+    msg::log(&format!(
+        "\"{name}<{}><{}><>\" triggered \"captured_briefcase\"\n",
+        eng.user_id(player),
+        eng.auth_id(player).to_string_lossy()
+    ));
     crate::player::with_player(player, |p, pcx| drop_flag(p, pcx, true));
     let (target, message) = (cx.pev().target, cx.pev().message);
     if target != 0 {
@@ -226,7 +233,7 @@ impl Entity for Flag {
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if self.holder.is_some() || !rules::is_player(other) || !rules::alive(unsafe { &(*other).v }) {
+        if self.holder.is_some() || !rules::is_player(other) || !rules::alive(other.v()) {
             return;
         }
         let team = team_index_of(other);
@@ -256,7 +263,11 @@ impl Entity for Flag {
             msg::ts_message_all([0, 255, 0], 8, 30, &format!("{name} picked up a briefcase containing {}!", self.contents));
             send_flag(1, self.id, self.team, engine().index_of(other));
             let eng = engine();
-            msg::log(&format!("\"{name}<{}><{}><>\" triggered \"aquired_briefcase\"\n", eng.user_id(other), eng.auth_id(other).to_string_lossy()));
+            msg::log(&format!(
+                "\"{name}<{}><{}><>\" triggered \"aquired_briefcase\"\n",
+                eng.user_id(other),
+                eng.auth_id(other).to_string_lossy()
+            ));
         } else if self.return_at != 0.0 {
             // The owning team returns its dropped case.
             rules::add_frags(other, None, 5.0);
@@ -274,7 +285,7 @@ fn create_flag(origin: [f32; 3], id: i32, team: i32, contents: &str, home: *mut 
     if e.is_null() {
         return;
     }
-    unsafe { (*e).v.origin = origin };
+    (e.v().origin = origin);
     let contents = contents.to_owned();
     crate::world::dispatch(e, |ent, cx| {
         if let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<Flag>() {

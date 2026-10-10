@@ -10,10 +10,11 @@ use crate::damage::{DamageInfo, hitgroup};
 use crate::messages::{self, Msg};
 use crate::player::Player;
 use crate::world::{Cx, Entity};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
-use shared::protocol::hud_wire::{ActItems, SetFov, Spectator, TsFade, TsHealth, TsMBlur, fade};
 use shared::protocol::hud_wire::TsPAward;
+use shared::protocol::hud_wire::{ActItems, SetFov, Spectator, TsFade, TsHealth, TsMBlur, fade};
 use shared::protocol::rules::{GameMode, Motd, ScoreInfo, ServerName, SrvSett, hud_dest};
 use shared::protocol::rules::{RoundTime, TeamInfo};
 use shared::ts::{powerup as pw, stunt};
@@ -49,7 +50,7 @@ pub fn client_disconnect(e: *mut edict_t) {
     if !game_over {
         let name = netname(e);
         msg::say_all(idx, &format!("- {name} has left the game\n"));
-        let v = unsafe { &mut (*e).v };
+        let v = e.v();
         v.takedamage = DAMAGE_NO as f32;
         v.solid = SOLID_NOT as i32;
         engine().set_origin(e, v.origin);
@@ -80,7 +81,7 @@ pub fn client_disconnect(e: *mut edict_t) {
     // it to the freed slot: pfnGetPlayerUserId returns the old id, and pfnSetClientMaxspeed then
     // dereferences the slot's NULL edict (the "kick a bot" crash). Clearing the flags takes the
     // edict out of players(), is_player() and the bot list until a client connects to the slot.
-    unsafe { (*e).v.flags &= !((FL_CLIENT | FL_FAKECLIENT) as i32) };
+    (e.v().flags &= !((FL_CLIENT | FL_FAKECLIENT) as i32));
 }
 
 /// `ClientKill`: suicide one second later (handled in `pre_think`), not while observing.
@@ -96,7 +97,7 @@ pub fn client_kill(e: *mut edict_t) {
 /// `ClientUserInfoChanged`: name changes (`%` sanitised, announced, logged) and the HLDM model
 /// check (`CHalfLifeMultiplay::ClientUserInfoChanged`).
 pub fn userinfo_changed(e: *mut edict_t) {
-    if e.is_null() || unsafe { (*e).pvPrivateData.is_null() } {
+    if e.is_null() || !e.has_private_data() {
         return;
     }
     let eng = engine();
@@ -362,7 +363,7 @@ fn rules_init_hud(p: &mut Player, cx: &mut Cx) {
         if o.is_null() || !super::is_player(o) {
             continue;
         }
-        let s = if o == e { score_info_of(p, cx.pev(), i) } else { other(o, |q| score_info_of(q, unsafe { &(*o).v }, i)).unwrap_or_default() };
+        let s = if o == e { score_info_of(p, cx.pev(), i) } else { other(o, |q| score_info_of(q, o.v(), i)).unwrap_or_default() };
         msg::one(Msg::ScoreInfo, e, |w| s.write(w));
     }
     if teamplay {
@@ -410,12 +411,7 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
         }
     }
     let (rb, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0].max(0), g.allowed_weapons, g.round_end, g.round_timer));
-    let sets = [
-        (0u8, rb),
-        (1, cvars::on(c"usecash") as i32),
-        (2, cvars::f(c"ammocount").round() as i32),
-        (3, mask),
-    ];
+    let sets = [(0u8, rb), (1, cvars::on(c"usecash") as i32), (2, cvars::f(c"ammocount").round() as i32), (3, mask)];
     for (key, value) in sets {
         let s = SrvSett { key, value: value as i16 };
         msg::one(Msg::SrvSett, e, |w| s.write(w));
@@ -430,7 +426,7 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
         if o.is_null() || !super::is_player(o) {
             continue;
         }
-        let s = Spectator { entindex: i as u8, observer: (unsafe { (*o).v.iuser1 } != 0) as u8 };
+        let s = Spectator { entindex: i as u8, observer: (o.v().iuser1 != 0) as u8 };
         msg::one(Msg::Spectator, e, |w| s.write(w));
     }
     let (org, ang) = {
@@ -477,7 +473,10 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     }
     p.ts.slow_display = 1.0;
     p.slow_target = 1.0;
-    MsgWriter::begin(MSG_PAS as i32, SVC_TEMPENTITY, Some(origin), std::ptr::null_mut()).byte(TE_KILLPLAYERATTACHMENTS).byte(idx & 0xff).end();
+    MsgWriter::begin(MSG_PAS as i32, SVC_TEMPENTITY, Some(origin), std::ptr::null_mut())
+        .byte(TE_KILLPLAYERATTACHMENTS)
+        .byte(idx & 0xff)
+        .end();
     crate::weapons::strip_all(p, cx);
     crate::entities::ts::drop_flag(p, cx, false);
     msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
@@ -528,7 +527,7 @@ fn valid_obs_target(idx: i32, me: i32) -> bool {
         return false;
     }
     let e = engine().client(idx);
-    !e.is_null() && super::is_player(e) && unsafe { alive(&(*e).v) && (*e).v.iuser1 == 0 }
+    !e.is_null() && super::is_player(e) && (alive(e.v()) && e.v().iuser1 == 0)
 }
 
 fn next_obs_target(me: i32, from: i32, forward: bool) -> i32 {
@@ -611,7 +610,7 @@ fn observer_think(p: &mut Player, cx: &mut Cx, now: f32) {
         }
         let t = engine().client(cx.pev().iuser2);
         if !t.is_null() {
-            let org = unsafe { (*t).v.origin };
+            let org = t.v().origin;
             engine().set_origin(e, org);
         }
     }
@@ -677,7 +676,7 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     // Motion blur trails on the killer (50 %, 80 % for melee) and off on the victim (50 %).
     let attacker = dmg.attacker;
     if !attacker.is_null() && eng.random_long(0, 100) <= if close_combat { 0x4f } else { 0x31 } {
-        let org = unsafe { (*attacker).v.origin };
+        let org = attacker.v().origin;
         let b = TsMBlur { entindex: eng.index_of(attacker) as u8, mode: 1 };
         msg::pvs(Msg::TsMBlur, org, |w| b.write(w));
     }
@@ -811,7 +810,7 @@ fn player_use(p: &mut Player, cx: &mut Cx) {
         if it.is_null() {
             break;
         }
-        let v = unsafe { &(*it).v };
+        let v = it.v();
         let cls = eng.string(v.classname);
         if !crate::entities::ts::is_usable(cls) || v.effects & EF_NODRAW as i32 != 0 {
             continue;

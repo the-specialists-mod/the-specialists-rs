@@ -42,7 +42,6 @@ pub struct Shared {
     pub weapon: i32,
     pub fov: f32,
 
-
     // ---- added by the render package -------------------------------------------------------
     /// Zoom target from `SetFOV` (0 = default_fov). Written by the HUD `SetFOV` handler; the
     /// render package eases `fov` toward it every frame (TS `CHud::Think`, animated zoom).

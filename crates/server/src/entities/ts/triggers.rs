@@ -5,6 +5,7 @@
 use crate::messages::Msg;
 use crate::rules::{self, msg, state, teams};
 use crate::world::{Cx, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::{IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use goldsrc::util::to_cstring;
@@ -105,7 +106,7 @@ impl Entity for Trigger {
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let now = cx.time();
-        if now < self.ready_at || !rules::is_player(other) || !rules::alive(unsafe { &(*other).v }) {
+        if now < self.ready_at || !rules::is_player(other) || !rules::alive(other.v()) {
             return;
         }
         let team_ok = self.team == -1 || state::with(|g| g.team_index(&teams::team_name_of(other))) == self.team;
@@ -160,7 +161,7 @@ impl Entity for DmHill {
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let now = cx.time();
         let step = self.next_check.max(0.5);
-        if !self.enabled || now < self.blocked_until || !rules::is_player(other) || !rules::alive(unsafe { &(*other).v }) {
+        if !self.enabled || now < self.blocked_until || !rules::is_player(other) || !rules::alive(other.v()) {
             return;
         }
         let Some(king) = self.king else {
@@ -215,7 +216,13 @@ impl Entity for DmHill {
 
 fn send_score(e: *mut edict_t) {
     let idx = engine().index_of(e);
-    let s = rules::other(e, |p| ScoreInfo { idx: idx as u8, frags: unsafe { (*e).v.frags } as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 });
+    let s = rules::other(e, |p| ScoreInfo {
+        idx: idx as u8,
+        frags: e.v().frags as i16,
+        deaths: p.deaths as i16,
+        class: 0,
+        team: p.team as i16,
+    });
     if let Some(s) = s {
         msg::all(Msg::ScoreInfo, |w| s.write(w));
     }
@@ -460,7 +467,7 @@ impl SlowMotion {
         let c = [(v.absmin[0] + v.absmax[0]) * 0.5, (v.absmin[1] + v.absmax[1]) * 0.5, (v.absmin[2] + v.absmax[2]) * 0.5];
         let r = self.radius;
         self.slowed.retain(|&e| {
-            let inside = rules::dist(unsafe { (*e).v.origin }, c) <= r;
+            let inside = rules::dist(e.v().origin, c) <= r;
             if !inside {
                 rules::powerup::go_slow(e, 1.0, false);
             }
@@ -576,7 +583,7 @@ impl Entity for SlowMotionPoint {
             if rules::powerup::entity_in_slow(p) {
                 continue;
             }
-            let tr = eng.trace_line(org, rules::eye(unsafe { &(*p).v }), IGNORE_MONSTERS, std::ptr::null_mut());
+            let tr = eng.trace_line(org, rules::eye(p.v()), IGNORE_MONSTERS, std::ptr::null_mut());
             if tr.flFraction >= 1.0 {
                 rules::powerup::go_slow(p, self.amount, self.btime);
                 if !self.slowed.contains(&p) {
@@ -594,7 +601,7 @@ pub fn create_slow_motion_point(origin: [f32; 3], amount: f32, duration: f32, bt
     if e.is_null() {
         return;
     }
-    unsafe { (*e).v.origin = origin };
+    (e.v().origin = origin);
     let now = eng.time();
     crate::world::dispatch(e, |ent, cx| {
         ent.spawn(cx);

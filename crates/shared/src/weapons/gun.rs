@@ -124,9 +124,14 @@ pub struct MeleeHit {
 pub enum MeleeResult {
     Miss,
     /// The victim blocked (`Victim*Hold`). The attacker gets these values.
-    Blocked { next_attack: f32, bar_cost: f32 },
+    Blocked {
+        next_attack: f32,
+        bar_cost: f32,
+    },
     /// Something alive was hit; `player` if it was a player.
-    Hit { player: bool },
+    Hit {
+        player: bool,
+    },
 }
 
 /// Sounds the server emits itself (the client plays everything else from events).
@@ -1120,11 +1125,8 @@ impl Gun {
         let stunting = host.iuser4() & STUNTING_MELEE != 0;
         let speed = Self::speed(host);
         let (fwd, _, _) = spread::angle_vectors(host.v_angle());
-        let backward = if speed <= 100.0 {
-            host.buttons() & IN_BACK != 0
-        } else {
-            spread::dot(fwd, spread::normalize(host.velocity())) <= -0.5
-        };
+        let backward =
+            if speed <= 100.0 { host.buttons() & IN_BACK != 0 } else { spread::dot(fwd, spread::normalize(host.velocity())) <= -0.5 };
         // (reach / view anim index, damage, delay, player anim, block after)
         let (reach, mut dmg, delay, panim, block): (i32, f32, f32, i32, bool) = if stunting {
             (0x11, 35.0, 1.0, -1, false)

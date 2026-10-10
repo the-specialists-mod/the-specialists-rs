@@ -1,0 +1,15 @@
+[package]
+name = "ts-server-dll"
+edition.workspace = true
+version.workspace = true
+
+# The engine-facing half of the server library: every exported symbol and engine callback, and
+# the only place (with goldsrc) where `unsafe` is allowed. Game logic lives in `ts-server`.
+[lib]
+name = "ts"                # -> libts.so / ts.dll; xtask installs dlls/ts_i386.so, ts_amd64.so, mp.dll
+crate-type = ["cdylib"]
+
+[dependencies]
+goldsrc   = { path = "../goldsrc", features = ["server"] }
+shared    = { path = "../shared" }
+ts-server = { path = "../server" }

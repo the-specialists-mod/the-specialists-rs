@@ -3,6 +3,7 @@
 
 use super::base::*;
 use crate::world::{Cx, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_IDLE, ATTN_NORM, ATTN_STATIC, snd};
 use goldsrc::server::{engine, intern};
 use goldsrc::sys::*;
@@ -370,7 +371,13 @@ impl Entity for AmbientGeneric {
             return;
         }
         if kind == UseType::Set && self.active {
-            let fraction = if value > 1.0 { 1.0 } else if value < 0.0 { 0.01 } else { value };
+            let fraction = if value > 1.0 {
+                1.0
+            } else if value < 0.0 {
+                0.01
+            } else {
+                value
+            };
             self.dpv.pitch = (fraction * 255.0) as i32;
             let p = self.dpv.pitch;
             self.emit(cx, 0.0, 0.0, snd::CHANGE_PITCH, p);
@@ -428,11 +435,8 @@ struct PlayerRoom {
     range: f32,
 }
 
-static ROOMS: goldsrc::Global<std::cell::RefCell<[PlayerRoom; 33]>> = goldsrc::Global(std::cell::RefCell::new([PlayerRoom {
-    last: goldsrc::ext::entities::EHandle::NULL,
-    roomtype: 0.0,
-    range: 0.0,
-}; 33]));
+static ROOMS: goldsrc::Global<std::cell::RefCell<[PlayerRoom; 33]>> =
+    goldsrc::Global(std::cell::RefCell::new([PlayerRoom { last: goldsrc::ext::entities::EHandle::NULL, roomtype: 0.0, range: 0.0 }; 33]));
 
 /// Forget a player's room (call on spawn/disconnect so a new client starts clean).
 pub fn reset_player_room(index: i32) {
@@ -455,7 +459,7 @@ impl EnvSound {
         let eng = engine();
         let v = cx.pev();
         let a = goldsrc::ext::entities::vec::add(v.origin, v.view_ofs);
-        let pv = unsafe { &(*p).v };
+        let pv = p.v();
         let b = goldsrc::ext::entities::vec::add(pv.origin, pv.view_ofs);
         let tr = eng.trace_line(a, b, goldsrc::server::IGNORE_MONSTERS, cx.edict);
         if (tr.fInOpen != 0 && tr.fInWater != 0) || tr.flFraction != 1.0 {
@@ -511,7 +515,8 @@ impl Entity for EnvSound {
             }
             if let Some(range) = self.in_range(cx, p) {
                 if range < room.range || room.range == 0.0 {
-                    ROOMS.0.borrow_mut()[idx] = PlayerRoom { last: goldsrc::ext::entities::EHandle::new(cx.edict), roomtype: self.roomtype, range };
+                    ROOMS.0.borrow_mut()[idx] =
+                        PlayerRoom { last: goldsrc::ext::entities::EHandle::new(cx.edict), roomtype: self.roomtype, range };
                     goldsrc::server::MsgWriter::begin(MSG_ONE as i32, SVC_ROOMTYPE, None, p).short(self.roomtype as i32).end();
                 }
             }

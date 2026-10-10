@@ -5,6 +5,7 @@ pub mod stock;
 pub mod ts;
 
 use crate::world::{self, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use goldsrc::util::parse_vec3;
@@ -13,10 +14,7 @@ use std::ffi::CStr;
 /// Exports `$class(entvars_t*)` for each classname, creating a `$ty` on the edict.
 macro_rules! link_entities {
     ($($class:ident => $ty:ty),* $(,)?) => {$(
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $class(pev: *mut goldsrc::sys::entvars_t) {
-            $crate::world::create::<$ty>(pev);
-        }
+        goldsrc::export_entity_class!($class, $crate::world::create::<$ty>);
     )*};
 }
 pub(crate) use link_entities;
@@ -76,7 +74,7 @@ pub fn fire_targets(target: &CStr, activator: *mut edict_t, caller: *mut edict_t
         if e.is_null() {
             break;
         }
-        if unsafe { (*e).v.flags } & FL_KILLME as i32 != 0 {
+        if e.v().flags & FL_KILLME as i32 != 0 {
             continue; // already removed this frame
         }
         world::dispatch(e, |ent, cx| ent.use_(cx, activator, caller, kind, value));
@@ -96,7 +94,7 @@ pub fn remove(e: *mut edict_t) {
     if e.is_null() {
         return;
     }
-    let v = unsafe { &mut (*e).v };
+    let v = e.v();
     v.flags |= FL_KILLME as i32;
     v.targetname = 0;
 }

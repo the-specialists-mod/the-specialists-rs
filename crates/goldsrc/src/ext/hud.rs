@@ -116,10 +116,13 @@ impl ClEngine {
         if p.is_null() || n <= 0 {
             return Vec::new();
         }
+        // SAFETY: the engine returned `n` (> 0) sprite entries at non-null `p`, valid until the next `SPR_GetList`; copied below.
         let list = unsafe { std::slice::from_raw_parts(p, n as usize) };
         list.iter()
             .map(|e| SpriteEntry {
+                // SAFETY: the sprite list entries hold NUL-terminated names (engine-filled char arrays).
                 name: unsafe { cstr(e.szName.as_ptr()) }.to_string_lossy().into_owned(),
+                // SAFETY: the sprite list entries hold NUL-terminated names (engine-filled char arrays).
                 sprite: unsafe { cstr(e.szSprite.as_ptr()) }.to_string_lossy().into_owned(),
                 res: e.iRes,
                 rc: e.rc,
@@ -178,6 +181,7 @@ impl ClEngine {
     }
     pub fn cvar_string(&self, name: &CStr) -> String {
         let p = cl_eng!(pfnGetCvarString(name.as_ptr()));
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
         unsafe { cstr(p) }.to_string_lossy().into_owned()
     }
     pub fn cvar_set(&self, name: &CStr, value: f32) {
@@ -188,21 +192,24 @@ impl ClEngine {
     }
 
     /// `pfnTextMessageGet` (titles.txt): the message, if the key exists.
-    pub fn text_message(&self, name: &str) -> Option<&'static client_textmessage_t> {
+    pub fn text_message(&self, name: &str) -> Option<TextMessage> {
         let s = to_cstring(name);
         let p = cl_eng!(pfnTextMessageGet(s.as_ptr()));
-        if p.is_null() { None } else { Some(unsafe { &*p }) }
+        // SAFETY: the engine's titles.txt entries live for the process.
+        if p.is_null() { None } else { Some(TextMessage(unsafe { &*p })) }
     }
 
     pub fn player_info(&self, index: i32) -> PlayerInfo {
-        let mut info: hud_player_info_t = unsafe { std::mem::zeroed() };
+        let mut info = hud_player_info_t::default();
         cl_eng!(pfnGetPlayerInfo(index, &mut info));
         PlayerInfo {
+            // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
             name: unsafe { cstr(info.name) }.to_string_lossy().into_owned(),
             ping: info.ping as i32,
             packetloss: info.packetloss as i32,
             this_player: info.thisplayer != 0,
             spectator: info.spectator != 0,
+            // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
             model: unsafe { cstr(info.model) }.to_string_lossy().into_owned(),
             topcolor: info.topcolor as i32,
             bottomcolor: info.bottomcolor as i32,
@@ -211,10 +218,12 @@ impl ClEngine {
 
     pub fn local_player(&self) -> Option<&'static cl_entity_t> {
         let p = cl_eng!(GetLocalPlayer());
+        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
         if p.is_null() { None } else { Some(unsafe { &*p }) }
     }
     pub fn entity(&self, index: i32) -> Option<&'static cl_entity_t> {
         let p = cl_eng!(GetEntityByIndex(index));
+        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
         if p.is_null() { None } else { Some(unsafe { &*p }) }
     }
     pub fn max_clients(&self) -> i32 {
@@ -240,6 +249,7 @@ impl ClEngine {
     }
     pub fn game_directory(&self) -> String {
         let p = cl_eng!(pfnGetGameDirectory());
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
         unsafe { cstr(p) }.to_string_lossy().into_owned()
     }
 
@@ -247,6 +257,7 @@ impl ClEngine {
     pub fn local_view_height(&self) -> [f32; 3] {
         let mut v = [0.0, 0.0, 28.0];
         if let Some(f) = self.event_api().and_then(|a| a.ev_local_player_viewheight) {
+            // SAFETY: engine callback from the API table above, called with valid arguments.
             unsafe { f(v.as_mut_ptr()) };
         }
         v
@@ -255,16 +266,20 @@ impl ClEngine {
     /// The event API (`EV_PlayerTrace` etc.), if the engine provides one.
     pub fn event_api(&self) -> Option<&'static EventApi> {
         let p = self.f.pEventAPI as *const EventApi;
+        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
         if p.is_null() { None } else { Some(unsafe { &*p }) }
     }
     pub fn demo_api(&self) -> Option<&'static DemoApi> {
         let p = self.f.pDemoAPI as *const DemoApi;
+        // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
         if p.is_null() { None } else { Some(unsafe { &*p }) }
     }
     pub fn demo_playing(&self) -> bool {
+        // SAFETY: engine callback from the API table above, called with valid arguments.
         self.demo_api().and_then(|d| d.is_playingback).is_some_and(|f| unsafe { f() } != 0)
     }
     pub fn demo_recording(&self) -> bool {
+        // SAFETY: engine callback from the API table above, called with valid arguments.
         self.demo_api().and_then(|d| d.is_recording).is_some_and(|f| unsafe { f() } != 0)
     }
 
@@ -272,8 +287,9 @@ impl ClEngine {
     /// boxes), as TS's crosshair ID does. Returns (fraction, endpos, hit entity index or 0).
     pub fn player_trace(&self, start: [f32; 3], end: [f32; 3], local_index: i32) -> Option<(f32, [f32; 3], i32)> {
         let api = self.event_api()?;
-        let mut tr: pmtrace_s = unsafe { std::mem::zeroed() };
+        let mut tr = pmtrace_s::default();
         let (mut s, mut e) = (start, end);
+        // SAFETY: engine API callbacks called with valid local buffers.
         unsafe {
             (api.ev_push_pm_states?)();
             (api.ev_set_up_player_prediction?)(0, 1);
@@ -313,8 +329,10 @@ impl ClEngine {
         if api.is_null() {
             return None;
         }
+        // SAFETY: `pTriAPI` is the engine's triangle API table (non-null, checked above); `TriApiPrefix` mirrors its leading fields.
         let f = unsafe { (*api).world_to_screen }?;
         let mut out = [0.0f32; 3];
+        // SAFETY: engine callback from the API table above, called with valid arguments.
         if unsafe { f(world.as_ptr(), out.as_mut_ptr()) } != 0 {
             return None;
         }
@@ -334,6 +352,27 @@ impl ClEngine {
     pub fn ev_play_sound(&self, ent: i32, origin: [f32; 3], channel: i32, sample: &CStr, volume: f32, attn: f32, flags: i32, pitch: i32) {
         let Some(f) = self.event_api().and_then(|a| a.ev_play_sound) else { return };
         let mut o = origin;
+        // SAFETY: engine callback from the API table above, called with valid arguments.
         unsafe { f(ent, o.as_mut_ptr(), channel, sample.as_ptr(), volume, attn, flags, pitch) };
+    }
+}
+
+/// A `titles.txt` entry from `ClEngine::text_message`. Derefs to the engine struct; the text
+/// is read through [`TextMessage::message`].
+#[derive(Clone, Copy)]
+pub struct TextMessage(&'static client_textmessage_t);
+
+impl std::ops::Deref for TextMessage {
+    type Target = client_textmessage_t;
+    fn deref(&self) -> &client_textmessage_t {
+        self.0
+    }
+}
+
+impl TextMessage {
+    /// The message text (empty if the engine left it null).
+    pub fn message(&self) -> &'static CStr {
+        // SAFETY: the engine fills pMessage with a NUL-terminated string that lives with the entry.
+        unsafe { crate::util::cstr(self.0.pMessage) }
     }
 }

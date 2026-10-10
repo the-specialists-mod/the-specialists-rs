@@ -8,6 +8,7 @@ use super::{alive, eye, other, state};
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::{IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use shared::protocol::hud_wire::{PwUp, PwUpTime, TsMBlur};
@@ -38,14 +39,14 @@ pub fn go_slow(e: *mut edict_t, amount: f32, btime: bool) {
     if e.is_null() {
         return;
     }
-    let observer = unsafe { (*e).v.iuser1 } != 0;
+    let observer = e.v().iuser1 != 0;
     let done = other(e, |p| {
         p.slow_target = if observer { 1.0 } else { amount };
         p.ts.slow_display = amount;
         p.ts.btime = btime;
     });
     if done.is_none() && !super::is_player(e) {
-        unsafe { (*e).v.fuser1 = amount };
+        (e.v().fuser1 = amount);
     }
 }
 
@@ -56,7 +57,7 @@ pub fn in_slow(p: &Player) -> bool {
 
 /// `InSlow` for any entity.
 pub fn entity_in_slow(e: *mut edict_t) -> bool {
-    other(e, |p| in_slow(p)).unwrap_or_else(|| unsafe { (*e).v.fuser1 } != 1.0)
+    other(e, |p| in_slow(p)).unwrap_or_else(|| e.v().fuser1 != 1.0)
 }
 
 /// `UpdatePowerUpState`: activator amounts, expiry, dropping on death.
@@ -139,7 +140,7 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
         if oself != 0.0 && oothers == mine {
             continue;
         }
-        let tr = eng.trace_line(my_eye, eye(unsafe { &(*o).v }), IGNORE_MONSTERS, me);
+        let tr = eng.trace_line(my_eye, eye(o.v()), IGNORE_MONSTERS, me);
         if tr.flFraction >= 1.0 {
             if oself == 0.0 || mine <= oothers {
                 p.ts.slowed |= 1 << i;
@@ -161,15 +162,8 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
             continue;
         }
         let o = eng.client(i);
-        let keep = !o.is_null()
-            && other(o, |q| {
-                if q.ts.slow_self == 0.0 || q.ts.slow_others != mine {
-                    true
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
+        let keep =
+            !o.is_null() && other(o, |q| if q.ts.slow_self == 0.0 || q.ts.slow_others != mine { true } else { false }).unwrap_or(false);
         if keep {
             go_slow(o, mine, btime);
         } else {
@@ -187,7 +181,7 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
             if it.is_null() {
                 break;
             }
-            let v = unsafe { &(*it).v };
+            let v = it.v();
             if class != c"grenade" && v.velocity == [0.0; 3] {
                 continue;
             }
@@ -229,7 +223,7 @@ pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
     }
     for e in std::mem::take(&mut p.ts.slowed_ents) {
         // The entity may be gone; only touch edicts that are still in use.
-        if unsafe { (*e).free } == 0 {
+        if !e.is_free() {
             go_slow(e, 1.0, false);
         }
     }

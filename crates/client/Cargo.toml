@@ -3,9 +3,9 @@ name = "ts-client"
 edition.workspace = true
 version.workspace = true
 
+# Game logic, free of `unsafe` (`#![deny(unsafe_code)]`). The exported library is `ts-client-dll`.
 [lib]
-name = "client"
-crate-type = ["cdylib"]
+name = "ts_client"
 
 [dependencies]
 goldsrc = { path = "../goldsrc", features = ["client"] }

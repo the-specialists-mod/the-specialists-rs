@@ -12,6 +12,7 @@ use super::base::*;
 use crate::entities::remove;
 use crate::messages::{self, Msg};
 use crate::world::{Cx, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, is_player};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -25,7 +26,7 @@ pub fn player_take_health(p: *mut edict_t, amount: f32) -> bool {
     if !is_player(p) {
         return false;
     }
-    let v = unsafe { &mut (*p).v };
+    let v = p.v();
     if v.takedamage == 0.0 || v.health > v.max_health {
         return false;
     }
@@ -38,7 +39,7 @@ pub fn take_health(e: *mut edict_t, amount: f32) -> bool {
     if is_player(e) {
         return player_take_health(e, amount);
     }
-    let v = unsafe { &mut (*e).v };
+    let v = e.v();
     if v.takedamage == 0.0 || v.health >= v.max_health {
         return false;
     }
@@ -52,7 +53,7 @@ pub fn player_take_armor(p: *mut edict_t, amount: f32) -> bool {
     if !is_player(p) {
         return false;
     }
-    let iuser4 = unsafe { (*p).v.iuser4 };
+    let iuser4 = p.v().iuser4;
     if iuser4 & shared::ts::stunt::HAS_KEVLAR == 0 {
         let ok = crate::player::with_player(p, |pl, _| {
             if shared::ts::SLOTS_TOTAL - pl.slots_used < 10 {
@@ -65,10 +66,10 @@ pub fn player_take_armor(p: *mut edict_t, amount: f32) -> bool {
         if !ok {
             return false;
         }
-        unsafe { (*p).v.iuser4 |= shared::ts::stunt::HAS_KEVLAR };
+        (p.v().iuser4 |= shared::ts::stunt::HAS_KEVLAR);
         emit(p, CHAN_ITEM, c"weapons/items.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
     }
-    let v = unsafe { &mut (*p).v };
+    let v = p.v();
     v.armorvalue = (v.armorvalue + amount).min(100.0);
     if let Some(used) = crate::player::with_player(p, |pl, _| pl.slots_used) {
         engine().set_client_maxspeed(p, shared::ts::speed_for_free_slots(shared::ts::SLOTS_TOTAL - used));
@@ -102,7 +103,7 @@ impl<const KIND: u8> Item<KIND> {
     }
 
     fn my_touch(&mut self, cx: &mut Cx, p: *mut edict_t) -> bool {
-        if unsafe { (*p).v.deadflag } != DEAD_NO as i32 {
+        if p.v().deadflag != DEAD_NO as i32 {
             return false;
         }
         let cls = s(cx.pev().classname);
@@ -115,7 +116,7 @@ impl<const KIND: u8> Item<KIND> {
                 emit(p, CHAN_ITEM, c"items/smallmedkit1.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
             }
             Kind::Battery => {
-                if unsafe { (*p).v.armorvalue } >= 100.0 {
+                if p.v().armorvalue >= 100.0 {
                     return false;
                 }
                 // TS ignores TakeArmor's result: the battery is used up either way.
@@ -189,7 +190,7 @@ impl<const KIND: u8> Entity for Item<KIND> {
         if !self.touchable || !is_player(other) {
             return;
         }
-        let ov = unsafe { &(*other).v };
+        let ov = other.v();
         if ov.deadflag != DEAD_NO as i32 || ov.health <= 0.0 {
             return;
         }
@@ -317,7 +318,7 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
             self.on = 2;
             emit(cx.edict, CHAN_STATIC, charge, vol, ATTN_NORM, 0, PITCH_NORM as i32);
         }
-        let pv = unsafe { &(*activator).v };
+        let pv = activator.v();
         if ARMOR {
             if pv.armorvalue < 100.0 {
                 self.full = false;

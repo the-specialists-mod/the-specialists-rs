@@ -7,6 +7,7 @@ use super::powerup::{entity_in_slow, go_slow};
 use super::state::{self, Mode};
 use super::{alive, cvars, other, scoring, teams};
 use crate::messages::{self, Msg};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::rules::SVC_INTERMISSION;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
@@ -64,7 +65,8 @@ fn multiplay_think(now: f32) -> bool {
         let (teamplay, ctb) = state::with(|g| (g.teamplay, g.mode == Mode::TeamDm && g.is_ctb()));
         if teamplay {
             teams::recount();
-            let scores: Vec<i32> = state::with(|g| g.teams.iter().filter(|t| !t.name.is_empty()).map(|t| if ctb { t.score } else { t.frags }).collect());
+            let scores: Vec<i32> =
+                state::with(|g| g.teams.iter().filter(|t| !t.name.is_empty()).map(|t| if ctb { t.score } else { t.frags }).collect());
             for s in scores {
                 if s as f32 >= fraglimit {
                     go_to_intermission();
@@ -74,7 +76,7 @@ fn multiplay_think(now: f32) -> bool {
             }
         } else {
             for e in super::players() {
-                let f = unsafe { (*e).v.frags };
+                let f = e.v().frags;
                 if f >= fraglimit {
                     go_to_intermission();
                     return true;
@@ -83,7 +85,8 @@ fn multiplay_think(now: f32) -> bool {
             }
         }
     }
-    let (lf, lt) = state::with(|g| (std::mem::replace(&mut g.last_frags_left, frags_left), std::mem::replace(&mut g.last_time_left, time_left)));
+    let (lf, lt) =
+        state::with(|g| (std::mem::replace(&mut g.last_frags_left, frags_left), std::mem::replace(&mut g.last_time_left, time_left)));
     if lf != frags_left {
         set_cvar_direct(c"mp_fragsleft", frags_left);
     }
@@ -95,10 +98,7 @@ fn multiplay_think(now: f32) -> bool {
 
 fn set_cvar_direct(name: &std::ffi::CStr, v: i32) {
     let eng = engine();
-    let c = eng.cvar_ptr(name);
-    if !c.is_null() {
-        eng.cvar_direct_set(unsafe { &*c }, &v.to_string());
-    }
+    eng.cvar_direct_set_by_name(name, &v.to_string());
 }
 
 /// `GoToIntermission`: freeze everyone and show the scoreboard; change level after mp_chattime.
@@ -126,7 +126,9 @@ fn change_level() {
     };
     let maps: Vec<String> = eng
         .load_file(&file)
-        .map(|d| String::from_utf8_lossy(&d).lines().filter_map(|l| l.split("//").next()?.split_whitespace().next().map(str::to_owned)).collect())
+        .map(|d| {
+            String::from_utf8_lossy(&d).lines().filter_map(|l| l.split("//").next()?.split_whitespace().next().map(str::to_owned)).collect()
+        })
         .unwrap_or_default();
     let next = next_map(&maps, &current, |m| eng.is_map_valid(m));
     eng.print(&format!("[ts] changing level to {next}\n"));
@@ -239,7 +241,7 @@ pub fn global_slow2(amount: f32, btime: bool) {
             if it.is_null() {
                 break;
             }
-            let v = unsafe { &mut (*it).v };
+            let v = it.v();
             if amount == 0.0 {
                 v.fuser1 = 1.0;
             } else if v.fuser1 == 1.0 {
@@ -268,7 +270,8 @@ fn auto_powerups(now: f32) {
         return;
     }
     let r = engine().random_float(0.0, 1.0);
-    let kind = if r < 0.25 && cvars::f(c"slowmatch") != 1.0 { shared::ts::powerup::SLOWMO } else { state::with(|g| g.random_powerup(0x1ff)) };
+    let kind =
+        if r < 0.25 && cvars::f(c"slowmatch") != 1.0 { shared::ts::powerup::SLOWMO } else { state::with(|g| g.random_powerup(0x1ff)) };
     let ok = put_powerup(kind);
     state::with(|g| g.next_powerup = now + if ok { 20.0 } else { 1.0 });
 }
@@ -291,7 +294,7 @@ fn put_powerup(kind: u16) -> bool {
     }
     while !spots.is_empty() {
         let i = eng.random_long(0, spots.len() as i32 - 1) as usize;
-        let org = random_position(unsafe { (*spots[i]).v.origin });
+        let org = random_position(spots[i].v().origin);
         let mut clear = true;
         let mut s = std::ptr::null_mut();
         loop {
@@ -299,7 +302,7 @@ fn put_powerup(kind: u16) -> bool {
             if s.is_null() {
                 break;
             }
-            if eng.string(unsafe { (*s).v.classname }) == c"ts_powerup" {
+            if eng.string(s.v().classname) == c"ts_powerup" {
                 clear = false;
                 break;
             }
@@ -346,7 +349,7 @@ fn check_deads(now: f32) {
     let mut living = Vec::new();
     for e in super::players() {
         total += 1;
-        if alive(unsafe { &(*e).v }) {
+        if alive(e.v()) {
             living.push(e);
         }
     }
@@ -427,7 +430,7 @@ fn the_one_check(now: f32) {
     let mut candidates = Vec::new();
     for e in super::players() {
         let one = other(e, |p| p.ts.is_the_one).unwrap_or(false);
-        let v = unsafe { &(*e).v };
+        let v = e.v();
         if one {
             exists = true;
         } else {

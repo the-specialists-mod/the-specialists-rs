@@ -215,7 +215,11 @@ impl Entity for GroundWeapon {
         if let Some(ids) = hl_weapon_ids(eng.string(cx.pev().classname)) {
             self.id = ids[eng.random_long(0, ids.len() as i32 - 1) as usize];
         }
-        let Some(asset) = u8::try_from(self.id).ok().and_then(|id| tables().asset(id)).filter(|_| self.id != BRIEFCASE && tables().weapon(self.id as u8).is_some()) else {
+        let Some(asset) = u8::try_from(self.id)
+            .ok()
+            .and_then(|id| tables().asset(id))
+            .filter(|_| self.id != BRIEFCASE && tables().weapon(self.id as u8).is_some())
+        else {
             eng.print(&format!("[ts] ts_groundweapon: unknown weapon id {}, removed\n", self.id));
             crate::entities::remove(e);
             return;

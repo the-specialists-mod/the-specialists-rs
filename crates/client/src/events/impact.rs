@@ -53,7 +53,17 @@ pub fn material_sounds(tex: u8) -> (&'static [&'static str], f32) {
             0.8,
         ),
         b'F' => (&[], 0.0),
-        _ => (&["debris/cement1.wav", "debris/cement2.wav", "debris/cement3.wav", "debris/cement4.wav", "debris/cement5.wav", "debris/cement6.wav"], 0.9),
+        _ => (
+            &[
+                "debris/cement1.wav",
+                "debris/cement2.wav",
+                "debris/cement3.wav",
+                "debris/cement4.wav",
+                "debris/cement5.wav",
+                "debris/cement6.wav",
+            ],
+            0.9,
+        ),
     }
 }
 

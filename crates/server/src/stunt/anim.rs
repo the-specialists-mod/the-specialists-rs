@@ -223,7 +223,8 @@ fn gait_close_combat(cx: &mut Cx, id: i32) -> bool {
     if id == 0x25 && (ducking || pev.button & IN_DUCK as i32 != 0) {
         return false;
     }
-    let kinds = (0x16..=0x17).contains(&id) || (0x21..=0x25).contains(&id) || id == 0x19 || id == 0x26 || id == 0x27 || (0x1d..=0x20).contains(&id);
+    let kinds =
+        (0x16..=0x17).contains(&id) || (0x21..=0x25).contains(&id) || id == 0x19 || id == 0x26 || id == 0x27 || (0x1d..=0x20).contains(&id);
     if id == 0x24 || id == 0x23 || id == 0x3a || !kinds {
         return false;
     }
@@ -420,13 +421,25 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
                 }
             }
             0x38 => {
-                if !fin && alive && iuser4 & GO_DUCK != 0 && !ladder && !matches!(id, 0x37 | 0x38 | 0x28) && !is_in_close_combat(id) && !grounded {
+                if !fin
+                    && alive
+                    && iuser4 & GO_DUCK != 0
+                    && !ladder
+                    && !matches!(id, 0x37 | 0x38 | 0x28)
+                    && !is_in_close_combat(id)
+                    && !grounded
+                {
                     return;
                 }
             }
             0x39 => {
                 // (unlike case 4, a jump id doesn't replace the super-jump pose)
-                if !fin && !matches!(id, 0x39 | 0x28 | 0x2f | 0x30 | 0x31 | 0x37 | 0x38 | 0x36 | 0x32) && alive && !grounded && !is_in_close_combat(id) {
+                if !fin
+                    && !matches!(id, 0x39 | 0x28 | 0x2f | 0x30 | 0x31 | 0x37 | 0x38 | 0x36 | 0x32)
+                    && alive
+                    && !grounded
+                    && !is_in_close_combat(id)
+                {
                     return;
                 }
             }
@@ -632,11 +645,7 @@ fn death(p: &mut Player, cx: &mut Cx) {
     let v = cx.pev().velocity;
     let a = &p.stunt.anim;
     let name = if hspeed2(v) >= 80.0 || a.last_damage > 50 {
-        let dir = if a.last_damage <= 50 {
-            normalized(v)
-        } else {
-            [-a.attack_dir[0], -a.attack_dir[1], -a.attack_dir[2]]
-        };
+        let dir = if a.last_damage <= 50 { normalized(v) } else { [-a.attack_dir[0], -a.attack_dir[1], -a.attack_dir[2]] };
         match get_direction(dir, cx.pev().v_angle, 0.6, 0.3) {
             2 => "forward_die",
             3 => {

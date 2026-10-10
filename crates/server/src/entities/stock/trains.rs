@@ -7,6 +7,7 @@
 use super::base::*;
 use crate::entities::fire_targets;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, snd, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -111,7 +112,7 @@ impl FuncTrain {
     fn wait(&mut self, cx: &mut Cx) {
         let me = cx.edict;
         if self.current_valid() {
-            let cv = unsafe { &mut (*self.current.get()).v };
+            let cv = self.current.get().v();
             if cv.message != 0 {
                 fire_targets(s(cv.message), me, me, UseType::Toggle, 0.0);
                 if cv.spawnflags & SF_CORNER_FIREONCE != 0 {
@@ -146,13 +147,13 @@ impl FuncTrain {
             self.stop_sound(cx);
             return;
         }
-        let tv = unsafe { &(*targ).v };
+        let tv = targ.v();
         let v = cx.pev();
         v.message = v.target;
         v.target = tv.target;
         self.t.wait = path_delay(targ);
         if self.current_valid() {
-            let cs = unsafe { (*self.current.get()).v.speed };
+            let cs = self.current.get().v().speed;
             if cs != 0.0 {
                 cx.pev().speed = cs;
             }
@@ -188,7 +189,7 @@ impl FuncTrain {
         if targ.is_null() {
             return;
         }
-        let tv = unsafe { &(*targ).v };
+        let tv = targ.v();
         let v = cx.pev();
         v.target = tv.target;
         self.current = EHandle::new(targ);
@@ -264,7 +265,7 @@ impl Entity for FuncTrain {
         } else {
             v.spawnflags |= SF_TRAIN_WAIT_RETRIGGER;
             if !v.enemy.is_null() {
-                v.target = unsafe { (*v.enemy).v.targetname };
+                v.target = v.enemy.v().targetname;
             }
             v.nextthink = 0.0;
             v.velocity = [0.0; 3];
@@ -492,11 +493,11 @@ fn spawn_plat_trigger(cx: &mut Cx, pos1: Vec3, pos2: Vec3) {
     if e.is_null() {
         return;
     }
-    world::create::<PlatTrigger>(unsafe { &mut (*e).v });
+    world::create::<PlatTrigger>(e.v());
     let platform = EHandle::new(cx.edict);
     world::with::<PlatTrigger, _>(e, |t| t.platform = platform);
     let pv = cx.pev();
-    let tv = unsafe { &mut (*e).v };
+    let tv = e.v();
     tv.classname = eng.alloc_string(c"plat_trigger");
     tv.solid = SOLID_TRIGGER as i32;
     tv.movetype = MOVETYPE_NONE as i32;
@@ -525,7 +526,7 @@ impl Entity for PlatTrigger {
         if !goldsrc::ext::entities::is_player(other) {
             return;
         }
-        let ov = unsafe { &(*other).v };
+        let ov = other.v();
         if ov.deadflag != DEAD_NO as i32 || ov.health <= 0.0 {
             return;
         }

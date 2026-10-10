@@ -26,10 +26,10 @@ pub mod teams;
 use crate::commands::Args;
 use crate::player::Player;
 use crate::world::{Cx, DamageInfo};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
-
 
 /// Per-player rules state (`CBasePlayer` TS fields; offsets from player-movement.md §8).
 #[derive(Default)]
@@ -254,15 +254,15 @@ pub fn is_player(e: *mut edict_t) -> bool {
     if e.is_null() {
         return false;
     }
-    let v = unsafe { &(*e).v };
-    v.flags & FL_CLIENT as i32 != 0 && unsafe { !(*e).pvPrivateData.is_null() } && engine().string(v.classname) == c"player"
+    let v = e.v();
+    v.flags & FL_CLIENT as i32 != 0 && e.has_private_data() && engine().string(v.classname) == c"player"
 }
 
 pub fn netname(e: *mut edict_t) -> String {
     if e.is_null() {
         return String::new();
     }
-    engine().string(unsafe { (*e).v.netname }).to_string_lossy().into_owned()
+    engine().string(e.v().netname).to_string_lossy().into_owned()
 }
 
 pub fn eye(v: &entvars_t) -> [f32; 3] {
@@ -283,7 +283,7 @@ pub fn len3(v: [f32; 3]) -> f32 {
 
 /// `pev->frags` and `Player::frags` kept in step (the engine reports `pev->frags`).
 pub fn add_frags(e: *mut edict_t, p: Option<&mut Player>, n: f32) {
-    let v = unsafe { &mut (*e).v };
+    let v = e.v();
     v.frags += n;
     let f = v.frags as i32;
     match p {

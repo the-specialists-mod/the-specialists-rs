@@ -5,6 +5,7 @@ pub use server::*;
 
 #[cfg(feature = "server")]
 mod server {
+    use crate::edict::EdictPtr;
     use crate::eng;
     use crate::server::Engine;
     use crate::sys::*;
@@ -39,6 +40,7 @@ mod server {
     impl WeaponsEngine for Engine {
         fn can_skip_player(&self, e: *const edict_t) -> bool {
             match self.f.pfnCanSkipPlayer {
+                // SAFETY: engine callback from the API table above, called with valid arguments.
                 Some(f) => unsafe { f(e) != 0 },
                 None => false,
             }
@@ -66,7 +68,7 @@ mod server {
                 return false;
             }
             let i = self.index_of(e);
-            i >= 1 && i <= self.max_clients() && unsafe { (*e).v.flags } & FL_CLIENT as i32 != 0
+            i >= 1 && i <= self.max_clients() && e.v().flags & FL_CLIENT as i32 != 0
         }
 
         fn send_weapon_anim(&self, to: *mut edict_t, anim: i32, body: i32) {
@@ -84,6 +86,7 @@ mod server {
         fn game_dir(&self) -> String {
             let mut buf = [0 as std::ffi::c_char; 512];
             eng!(pfnGetGameDir(buf.as_mut_ptr()));
+            // SAFETY: `pfnGetGameDir` wrote a NUL-terminated string into `buf`.
             unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
         }
     }

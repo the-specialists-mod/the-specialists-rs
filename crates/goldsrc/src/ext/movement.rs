@@ -36,10 +36,12 @@ impl StudioHdr {
     }
 
     fn i32_at(&self, off: usize) -> i32 {
+        // SAFETY: `off` lies inside the engine-loaded studio header (header offsets from the studio format); the header outlives `self` per `from_ptr`.
         unsafe { self.0.add(off).cast::<i32>().read_unaligned() }
     }
 
     fn f32_at(&self, off: usize) -> f32 {
+        // SAFETY: `off` lies inside the engine-loaded studio header (header offsets from the studio format); the header outlives `self` per `from_ptr`.
         unsafe { self.0.add(off).cast::<f32>().read_unaligned() }
     }
 
@@ -57,6 +59,7 @@ impl StudioHdr {
     /// The sequence's label (`char[32]`).
     pub fn sequence_name(&self, seq: i32) -> Option<&[u8]> {
         let off = self.seq_offset(seq)?;
+        // SAFETY: `off` lies inside the engine-loaded studio header (header offsets from the studio format); the header outlives `self` per `from_ptr`.
         let label = unsafe { std::slice::from_raw_parts(self.0.add(off), 32) };
         let len = label.iter().position(|&c| c == 0).unwrap_or(32);
         Some(&label[..len])
@@ -64,9 +67,7 @@ impl StudioHdr {
 
     /// SDK `LookupSequence`: case-insensitive label match, -1 if missing.
     pub fn lookup_sequence(&self, name: &str) -> i32 {
-        (0..self.num_sequences())
-            .find(|&i| self.sequence_name(i).is_some_and(|l| l.eq_ignore_ascii_case(name.as_bytes())))
-            .unwrap_or(-1)
+        (0..self.num_sequences()).find(|&i| self.sequence_name(i).is_some_and(|l| l.eq_ignore_ascii_case(name.as_bytes()))).unwrap_or(-1)
     }
 
     pub fn sequence_info(&self, seq: i32) -> Option<SeqInfo> {
@@ -109,6 +110,7 @@ mod server {
             return None;
         }
         let hdr = crate::eng!(pfnGetModelPtr(e));
+        // SAFETY: `pfnGetModelPtr`/the caller give null or a studio header loaded for the model's lifetime.
         unsafe { StudioHdr::from_ptr(hdr) }
     }
 
@@ -137,6 +139,7 @@ mod tests {
             buf[o + SEQ_FPS..o + SEQ_FPS + 4].copy_from_slice(&30.0f32.to_le_bytes());
             buf[o + SEQ_NUMFRAMES..o + SEQ_NUMFRAMES + 4].copy_from_slice(&31i32.to_le_bytes());
         }
+        // SAFETY: `buf` is a local studio header image that outlives `h`.
         let h = unsafe { StudioHdr::from_ptr(buf.as_ptr().cast()) }.unwrap();
         assert_eq!(h.lookup_sequence("RUN2"), 1);
         assert_eq!(h.lookup_sequence("missing"), -1);

@@ -12,7 +12,6 @@ use goldsrc::ext::render::{self as r, Cvar, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use shared::ts::stunt;
 use std::cell::RefCell;
-use std::ffi::c_void;
 
 struct Cvars {
     bob: Cvar,
@@ -157,7 +156,7 @@ pub fn init() {
 }
 
 /// `ts_test_angles <pitch> <yaw>`: sets the view angles (developer aid for scripted screenshots).
-unsafe extern "C" fn cmd_test_angles() {
+extern "C" fn cmd_test_angles() {
     let e = goldsrc::client::engine();
     let n = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
     let mut a = [n(1), n(2), 0.0];
@@ -165,37 +164,46 @@ unsafe extern "C" fn cmd_test_angles() {
 }
 
 /// `ts_test_view`: prints the view state (developer aid).
-unsafe extern "C" fn cmd_test_view() {
-    let s = with(|w| format!("third {} dead {} cam_back {:.1} cam_up {:.1} origin {:?} eye {:?} angles {:?}\n", w.third, w.forced_dead, w.cam_back, w.cam_up, w.cam.origin, w.eye, w.cam.angles));
+extern "C" fn cmd_test_view() {
+    let s = with(|w| {
+        format!(
+            "third {} dead {} cam_back {:.1} cam_up {:.1} origin {:?} eye {:?} angles {:?}\n",
+            w.third, w.forced_dead, w.cam_back, w.cam_up, w.cam.origin, w.eye, w.cam.angles
+        )
+    });
     let ts = state::with(|st| format!("ts {:.3}/{:.3} fov {:.1}/{:.1}\n", st.time_scale, st.time_scale_target, st.fov, st.fov_target));
     goldsrc::client::engine().print(&s);
     goldsrc::client::engine().print(&ts);
 }
 
 /// `ts_test_fade <r> <g> <b> <a> <duration> <hold>` (developer test of the TSFade path).
-unsafe extern "C" fn cmd_test_fade() {
+extern "C" fn cmd_test_fade() {
     let e = goldsrc::client::engine();
     let n = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
-    let f = shared::protocol::effects::TsFade { duration: n(5).max(0.1), hold: n(6), flags: 0, rgba: [n(1) as u8, n(2) as u8, n(3) as u8, n(4) as u8] };
+    let f = shared::protocol::effects::TsFade {
+        duration: n(5).max(0.1),
+        hold: n(6),
+        flags: 0,
+        rgba: [n(1) as u8, n(2) as u8, n(3) as u8, n(4) as u8],
+    };
     let mut b = Vec::new();
     f.encode(&mut b);
     on_tsfade(&b);
 }
 
 /// `ts_test_kick <view kick> <class>`: one shot's client-side recoil.
-unsafe extern "C" fn cmd_test_kick() {
+extern "C" fn cmd_test_kick() {
     let e = goldsrc::client::engine();
     let n = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
     kick(if n(1) == 0.0 { 5.5 } else { n(1) }, n(2) as u8, false, false);
 }
 
-unsafe extern "C" fn cmd_thirdperson() {
+extern "C" fn cmd_thirdperson() {
     with(|w| w.third = true);
 }
-unsafe extern "C" fn cmd_firstperson() {
+extern "C" fn cmd_firstperson() {
     with(|w| w.third = false);
 }
-
 
 /// `TSFade` (`0x1004c1e0`): stored with start = now; applied every frame in `calc_refdef`.
 pub fn on_tsfade(b: &[u8]) {
@@ -298,10 +306,9 @@ pub fn hardware() -> bool {
     with(|w| w.hardware)
 }
 
-/// Writes the eased FOV into `clientdata` (TS `CHud::UpdateClientData`). The `HUD_UpdateClientData`
-/// export in lib.rs should call this and return 1 (integration note in the implementation doc).
-pub fn update_client_data(cdata: *mut c_void) -> bool {
-    let Some(cd) = (unsafe { cdata.cast::<r::ClientData>().as_mut() }) else { return false };
+/// Writes the eased FOV into `clientdata` (TS `CHud::UpdateClientData`). Returns true (the
+/// engine's "changed" flag), as `HUD_UpdateClientData` must.
+pub fn update_client_data(cd: &mut r::ClientData) -> bool {
     cd.fov = state::with(|s| s.fov);
     true
 }

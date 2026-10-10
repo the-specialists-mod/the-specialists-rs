@@ -2,6 +2,7 @@
 //! the victim's `Entity::take_damage` decides what happens (players: player/damage.rs).
 
 use crate::world;
+use goldsrc::edict::EdictPtr;
 use goldsrc::sys::*;
 
 /// Damage bits (SDK `DMG_*`) used by TS.
@@ -64,7 +65,7 @@ impl DamageInfo {
 /// grenade), world::dispatch can't reach it and this returns false; handle self-damage at the
 /// call site with the `&mut` you already hold.
 pub fn apply(victim: *mut edict_t, info: &DamageInfo) -> bool {
-    if victim.is_null() || unsafe { (*victim).v.takedamage } == 0.0 {
+    if victim.is_null() || victim.v().takedamage == 0.0 {
         return false;
     }
     world::dispatch(victim, |e, cx| e.take_damage(cx, info)).unwrap_or(false)

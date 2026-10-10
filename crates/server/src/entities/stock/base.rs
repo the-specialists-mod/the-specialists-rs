@@ -8,6 +8,7 @@
 use crate::entities::{fire_targets, remove};
 use crate::world::{self, Cx, UseType};
 use goldsrc::Global;
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{EHandle, Vec3, vec};
 use goldsrc::server::{engine, intern};
 use goldsrc::sys::*;
@@ -100,14 +101,14 @@ pub fn next_think(cx: &mut Cx, delay: f32) {
 pub fn create_entity(classname: &CStr, origin: Vec3, angles: Vec3, owner: *mut edict_t) -> *mut edict_t {
     let eng = engine();
     let e = eng.create_named_entity(classname);
-    if e.is_null() || unsafe { (*e).pvPrivateData.is_null() } {
+    if e.is_null() || !e.has_private_data() {
         if !e.is_null() {
             eng.remove_entity(e);
         }
         eng.alert(ALERT_TYPE::at_console, &format!("NULL Ent in Create: {}\n", classname.to_string_lossy()));
         return std::ptr::null_mut();
     }
-    let v = unsafe { &mut (*e).v };
+    let v = e.v();
     v.origin = origin;
     v.angles = angles;
     v.owner = owner;
@@ -123,7 +124,7 @@ pub fn precache_other(classname: &CStr) {
     if e.is_null() {
         return;
     }
-    if unsafe { !(*e).pvPrivateData.is_null() } {
+    if e.has_private_data() {
         world::dispatch(e, |ent, cx| ent.spawn(cx));
     }
     eng.remove_entity(e);
@@ -195,13 +196,21 @@ impl Delay {
     /// `SUB_UseTargets(pActivator, useType, value)` for the entity `me` (whose `pev->target` is
     /// fired).
     pub fn use_targets(&self, me: *mut edict_t, activator: *mut edict_t, kind: UseType, value: f32) {
-        let target = unsafe { (*me).v.target };
+        let target = me.v().target;
         sub_use_targets(me, target, self.kill_target, self.delay, activator, kind, value);
     }
 }
 
 /// The body of `CBaseDelay::SUB_UseTargets` with explicit fields.
-pub fn sub_use_targets(me: *mut edict_t, target: string_t, kill_target: string_t, delay: f32, activator: *mut edict_t, kind: UseType, value: f32) {
+pub fn sub_use_targets(
+    me: *mut edict_t,
+    target: string_t,
+    kill_target: string_t,
+    delay: f32,
+    activator: *mut edict_t,
+    kind: UseType,
+    value: f32,
+) {
     if target == 0 && kill_target == 0 {
         return;
     }
@@ -212,9 +221,9 @@ pub fn sub_use_targets(me: *mut edict_t, target: string_t, kill_target: string_t
         if e.is_null() {
             return;
         }
-        world::create::<DelayedUse>(unsafe { &mut (*e).v });
+        world::create::<DelayedUse>(e.v());
         world::with::<DelayedUse, _>(e, |d| d.kill_target = kill_target);
-        let v = unsafe { &mut (*e).v };
+        let v = e.v();
         v.classname = eng.alloc_string(c"DelayedUse");
         v.nextthink = eng.time() + delay;
         v.button = kind as i32;

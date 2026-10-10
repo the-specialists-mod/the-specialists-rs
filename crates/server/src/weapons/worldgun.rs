@@ -7,6 +7,7 @@ use crate::damage::{self, DamageInfo};
 use crate::entities::{self, link_entities};
 use crate::player;
 use crate::world::{Cx, Entity};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
@@ -35,7 +36,7 @@ pub struct WorldGun {
 
 /// `CTSWorldGun::CreateWeapon(player, id, status)` + placement; returns the edict.
 pub fn create(owner: *mut edict_t, id: u8, status: Status, origin: Vec3, velocity: Vec3, original_owner: *mut edict_t) -> *mut edict_t {
-    let slow = if owner.is_null() { 1.0 } else { unsafe { (*owner).v.fuser1 } };
+    let slow = if owner.is_null() { 1.0 } else { owner.v().fuser1 };
     super::projectiles::spawn_entity::<WorldGun>(c"TSWorldGun", |w, cx| {
         w.id = id;
         w.status = status;
@@ -87,8 +88,7 @@ impl Entity for WorldGun {
         pev.friction = 0.8;
         e.set_origin(edict, origin);
         e.set_size(edict, [0.0; 3], [0.0; 3]);
-        self.expire = e.time()
-            + if self.id == id::BRIEFCASE { 30.0 } else { assets::cvars().weaponstay.clamp(5.0, 60.0) };
+        self.expire = e.time() + if self.id == id::BRIEFCASE { 30.0 } else { assets::cvars().weaponstay.clamp(5.0, 60.0) };
         let pev = cx.pev();
         pev.nextthink = e.time() + 0.1;
         pev.iuser4 = 2;
@@ -132,7 +132,7 @@ impl Entity for WorldGun {
         if tr.flFraction < 1.0 && !tr.pHit.is_null() && !e.is_player_edict(tr.pHit) {
             let slots = info(self.id).map(|w| w.slots).unwrap_or(10) as f32;
             let s = spread::length(pev.velocity) * slots;
-            let target = unsafe { &(*tr.pHit).v };
+            let target = tr.pHit.v();
             if target.takedamage != 0.0 && target.health <= s {
                 let mut d = DamageInfo::new(me, me, s * 0.001, 0x1080);
                 d.dir = pev.velocity;
@@ -145,7 +145,7 @@ impl Entity for WorldGun {
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         if self.on_ground {
             // WaitTouch: +use (the briefcase on plain touch)
-            let use_held = unsafe { (*other).v.button } & IN_USE as i32 != 0;
+            let use_held = other.v().button & IN_USE as i32 != 0;
             if self.id == id::BRIEFCASE || use_held {
                 self.get_weapon(cx, other);
             }
@@ -171,7 +171,7 @@ impl Entity for WorldGun {
             pev.angles[2] = 0.0;
         }
         // Players can also grab it while it's still sliding.
-        if e.is_player_edict(other) && unsafe { (*other).v.button } & IN_USE as i32 != 0 {
+        if e.is_player_edict(other) && other.v().button & IN_USE as i32 != 0 {
             self.get_weapon(cx, other);
         }
     }
@@ -180,7 +180,7 @@ impl Entity for WorldGun {
         if other.is_null() {
             return true;
         }
-        let c = engine().string(unsafe { (*other).v.classname }).to_bytes();
+        let c = engine().string(other.v().classname).to_bytes();
         c != b"WorldGun" && c != b"knife"
     }
 }
@@ -206,7 +206,7 @@ impl WorldGun {
         if self.taken || e.time() < self.pickup_after || !e.is_player_edict(other) {
             return;
         }
-        let ov = unsafe { &(*other).v };
+        let ov = other.v();
         if ov.deadflag != DEAD_NO as i32 || ov.health <= 0.0 || ov.effects & EF_NODRAW as i32 != 0 {
             return;
         }
@@ -247,7 +247,7 @@ pub fn drop_ammo(owner: *mut edict_t, reserve: [i32; MAX_AMMO]) {
         return;
     }
     let e = engine();
-    let v = unsafe { &(*owner).v };
+    let v = owner.v();
     let ang = [e.random_long(-100, 100) as f32, e.random_long(-100, 100) as f32, 0.0];
     let (f, r, _) = spread::angle_vectors(ang);
     let origin = spread::add(v.origin, spread::add(spread::scale(f, 8.0), spread::scale(r, 8.0)));
@@ -305,7 +305,7 @@ impl Entity for AmmoPack {
         if !self.on_ground || !e.is_player_edict(other) {
             return;
         }
-        let ov = unsafe { &(*other).v };
+        let ov = other.v();
         if ov.deadflag != DEAD_NO as i32 || ov.health <= 0.0 {
             return;
         }

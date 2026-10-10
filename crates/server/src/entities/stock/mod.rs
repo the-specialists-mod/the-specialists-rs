@@ -28,6 +28,7 @@ use breakable::{FuncBreakable, FuncPushable};
 use buttons::{Button, ButtonTarget, MultiSource};
 use doors::Door;
 use effects::*;
+use goldsrc::edict::EdictPtr;
 use items::{ArmorCharger, Battery, HealthCharger, HealthKit};
 use lights::Light;
 use maprules::GameText;
@@ -182,16 +183,28 @@ pub fn object_caps(e: *mut edict_t) -> i32 {
     if e.is_null() {
         return 0;
     }
-    let v = unsafe { &(*e).v };
+    let v = e.v();
     match engine().string(v.classname).to_bytes() {
         b"func_button" | b"func_rot_button" => {
-            if v.takedamage == 0.0 { FCAP_IMPULSE_USE } else { 0 }
+            if v.takedamage == 0.0 {
+                FCAP_IMPULSE_USE
+            } else {
+                0
+            }
         }
         b"func_door" | b"func_door_rotating" | b"func_water" => {
-            if doors::impulse_use(v) { FCAP_IMPULSE_USE } else { 0 }
+            if doors::impulse_use(v) {
+                FCAP_IMPULSE_USE
+            } else {
+                0
+            }
         }
         b"button_target" => {
-            if v.spawnflags & buttons::SF_BTARGET_USE != 0 { FCAP_IMPULSE_USE } else { 0 }
+            if v.spawnflags & buttons::SF_BTARGET_USE != 0 {
+                FCAP_IMPULSE_USE
+            } else {
+                0
+            }
         }
         b"func_pushable" | b"func_healthcharger" | b"func_recharge" => FCAP_CONTINUOUS_USE,
         _ => 0,
@@ -209,7 +222,7 @@ pub fn player_use(player: *mut edict_t, buttons: i32, old_buttons: i32) {
         return;
     }
     let eng = engine();
-    let pv = unsafe { &(*player).v };
+    let pv = player.v();
     let (fwd, _, _) = eng.make_vectors(pv.v_angle);
     let src = goldsrc::ext::entities::vec::add(pv.origin, pv.view_ofs);
     let mut best = std::ptr::null_mut();
@@ -224,7 +237,7 @@ pub fn player_use(player: *mut edict_t, buttons: i32, old_buttons: i32) {
         if caps & (FCAP_IMPULSE_USE | FCAP_CONTINUOUS_USE | FCAP_ONOFF_USE) == 0 {
             continue;
         }
-        let ev = unsafe { &(*e).v };
+        let ev = e.v();
         let center = goldsrc::ext::entities::vec::mad(ev.absmin, ev.size, 0.5);
         let to = goldsrc::ext::entities::vec::normalize(goldsrc::ext::entities::vec::sub(center, src));
         let d = goldsrc::ext::entities::vec::dot(to, fwd);

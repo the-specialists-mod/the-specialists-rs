@@ -5,15 +5,15 @@
 //! for the duration of the call, so engine calls that re-enter the game (touch, remove,
 //! create) never hit a live `RefCell` borrow.
 
+use goldsrc::Global;
+use goldsrc::edict::{EdictPtr, private_tag, set_private_tag};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use goldsrc::{Global, eng};
 use std::any::Any;
 use std::cell::RefCell;
-use std::ffi::{CStr, c_long};
+use std::ffi::CStr;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(C)]
 pub struct Handle {
     index: u32,
     serial: u32,
@@ -26,7 +26,7 @@ pub struct Cx {
 
 impl Cx {
     pub fn pev(&mut self) -> &mut entvars_t {
-        unsafe { &mut (*self.edict).v }
+        self.edict.v()
     }
     pub fn index(&self) -> i32 {
         engine().index_of(self.edict)
@@ -124,12 +124,9 @@ impl World {
     }
 }
 
+/// The slab handle stored in a game-owned edict's private data.
 fn handle_of(e: *const edict_t) -> Option<Handle> {
-    if e.is_null() {
-        return None;
-    }
-    let p = unsafe { (*e).pvPrivateData }.cast::<Handle>();
-    (!p.is_null()).then(|| unsafe { p.read() })
+    private_tag(e).map(|[index, serial]| Handle { index, serial })
 }
 
 /// Classname export body: attaches a new `T` to the edict that owns `pev`.
@@ -139,8 +136,7 @@ pub fn create<T: Entity + Default>(pev: *mut entvars_t) {
         return; // already game-owned (e.g. a client edict reused across maps)
     }
     let h = WORLD.0.borrow_mut().insert(Box::new(T::default()));
-    let p = eng!(pfnPvAllocEntPrivateData(e, size_of::<Handle>() as c_long));
-    unsafe { p.cast::<Handle>().write(h) };
+    set_private_tag(e, [h.index, h.serial]);
 }
 
 /// Runs `f` on the edict's object, with the object taken out of the slab during the call.

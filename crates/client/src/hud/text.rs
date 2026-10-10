@@ -19,8 +19,7 @@ impl Titles for EngineTitles {
         if m.pMessage.is_null() {
             return None;
         }
-        let s = unsafe { std::ffi::CStr::from_ptr(m.pMessage) };
-        Some(s.to_bytes().iter().map(|&b| b as char).collect())
+        Some(m.message().to_bytes().iter().map(|&b| b as char).collect())
     }
 }
 

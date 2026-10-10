@@ -153,11 +153,7 @@ impl GameRules {
         self.player_team = vec![String::new(); 33];
         self.init_teams();
         if teamplay {
-            let list = if !map_teams.is_empty() && cvars::on(c"mp_teamoverride") {
-                map_teams.clone()
-            } else {
-                cvars::s(c"mp_teamlist")
-            };
+            let list = if !map_teams.is_empty() && cvars::on(c"mp_teamoverride") { map_teams.clone() } else { cvars::s(c"mp_teamlist") };
             if !list.is_empty() {
                 self.set_team_list(&list);
             }

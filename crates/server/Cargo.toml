@@ -3,9 +3,9 @@ name = "ts-server"
 edition.workspace = true
 version.workspace = true
 
+# Game logic, free of `unsafe` (`#![deny(unsafe_code)]`). The exported library is `ts-server-dll`.
 [lib]
-name = "ts"                # -> libts.so / ts.dll; xtask installs dlls/ts_i386.so, ts_amd64.so, mp.dll
-crate-type = ["cdylib"]
+name = "ts_server"
 
 [dependencies]
 goldsrc = { path = "../goldsrc", features = ["server"] }

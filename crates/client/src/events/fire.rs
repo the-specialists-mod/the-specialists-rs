@@ -73,7 +73,17 @@ impl Shot {
         let shell_name = tables().asset(id as u8).map(|s| s.shell.clone()).unwrap_or_default();
         let shell = if shell_name.is_empty() { 0 } else { r::model_index(&format!("models/{shell_name}.mdl")) };
         let shell_right = if id == 17 { r::random_long(-40, 40) } else { r::random_long(120, 140) } as f32;
-        Shot { id, silenced: a.i2 & 1 != 0, fwd, right, up, shell, shell_snd: if id == 11 { 2 } else { 1 }, shell_right, shell_r: r::random_long(50, 100) as f32 }
+        Shot {
+            id,
+            silenced: a.i2 & 1 != 0,
+            fwd,
+            right,
+            up,
+            shell,
+            shell_snd: if id == 11 { 2 } else { 1 },
+            shell_right,
+            shell_r: r::random_long(50, 100) as f32,
+        }
     }
 
     fn shell_velocity(&self, a: &Args) -> Vec3 {
@@ -250,10 +260,22 @@ fn fire_akimbo(a: &Args, linked: bool) {
     let s = Shot::new(a);
     let pellets = tables().weapon(s.id as u8).map_or(1, |w| w.pellets);
     muzzle_light(a, &s);
-    let hands: &[usize] = if linked { &[0, 1] } else if a.b1 != 0 { &[1] } else { &[0] };
+    let hands: &[usize] = if linked {
+        &[0, 1]
+    } else if a.b1 != 0 {
+        &[1]
+    } else {
+        &[0]
+    };
     if a.is_local() {
         let set = anim_set(s.id);
-        let seq = if linked { set[26 + r::random_long(0, 1) as usize] } else if a.b1 != 0 { set[24 + r::random_long(0, 1) as usize] } else { set[22 + r::random_long(0, 1) as usize] };
+        let seq = if linked {
+            set[26 + r::random_long(0, 1) as usize]
+        } else if a.b1 != 0 {
+            set[24 + r::random_long(0, 1) as usize]
+        } else {
+            set[22 + r::random_long(0, 1) as usize]
+        };
         r::weapon_animation(seq as i32, weapon_body(s.id, a.i2));
     }
     for &h in hands {
@@ -416,7 +438,17 @@ pub struct ClientBullet {
 
 impl ClientBullet {
     pub fn new(shooter: i32, src: Vec3, dir: Vec3, dmg: f32, bullet_type: i32, ammo: i32, velocity_mps: f32) -> Self {
-        ClientBullet { shooter, pos: src, start: src, dir: v::normalize(dir), dmg, bullet_type, ammo, speed: velocity_mps * 40.0, travelled: 0.0 }
+        ClientBullet {
+            shooter,
+            pos: src,
+            start: src,
+            dir: v::normalize(dir),
+            dmg,
+            bullet_type,
+            ammo,
+            speed: velocity_mps * 40.0,
+            travelled: 0.0,
+        }
     }
 }
 

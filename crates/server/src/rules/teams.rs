@@ -8,6 +8,7 @@ use crate::damage::{DamageInfo, bits};
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::protocol::rules::{ScoreInfo, TeamInfo, TeamNames, TeamScore};
@@ -57,7 +58,7 @@ pub fn model_for(team: &str) -> String {
 pub fn recount() {
     let players = super::players();
     let names: Vec<String> = players.iter().map(|&e| team_name_of(e)).collect();
-    let frags: Vec<i32> = players.iter().map(|&e| unsafe { (*e).v.frags } as i32).collect();
+    let frags: Vec<i32> = players.iter().map(|&e| e.v().frags as i32).collect();
     state::with(|g| {
         for t in &mut g.teams {
             t.players = 0;
@@ -82,9 +83,7 @@ pub fn update_team_scores() {
 /// `TeamWithFewestPlayers`.
 fn fewest() -> String {
     recount();
-    state::with(|g| {
-        g.teams.iter().filter(|t| !t.name.is_empty()).min_by_key(|t| t.players).map(|t| t.name.clone()).unwrap_or_default()
-    })
+    state::with(|g| g.teams.iter().filter(|t| !t.name.is_empty()).min_by_key(|t| t.players).map(|t| t.name.clone()).unwrap_or_default())
 }
 
 /// `SetDefaultPlayerTeam` (0xe44ac): the `team` infokey, The One split, or the smallest team.
@@ -157,7 +156,8 @@ pub fn init_hud(p: &mut Player, cx: &mut Cx) {
     recount();
     let name = p.ts.team_name.clone();
     let model = engine().info_key(e, c"model").to_string_lossy().into_owned();
-    let text = if model.eq_ignore_ascii_case(&name) { format!("* you are on team '{name}'\n") } else { format!("* assigned to team {name}\n") };
+    let text =
+        if model.eq_ignore_ascii_case(&name) { format!("* you are on team '{name}'\n") } else { format!("* assigned to team {name}\n") };
     change_team(p, cx, &name, false, false);
     msg::say_one(e, cx.index(), &text);
     let eng = engine();
@@ -175,7 +175,8 @@ pub fn init_hud(p: &mut Player, cx: &mut Cx) {
 
 /// `TeamScore` of every team to all (after captures / wins).
 pub fn send_team_scores() {
-    let teams: Vec<(String, i32)> = state::with(|g| g.teams.iter().filter(|t| !t.name.is_empty()).map(|t| (t.name.clone(), t.score)).collect());
+    let teams: Vec<(String, i32)> =
+        state::with(|g| g.teams.iter().filter(|t| !t.name.is_empty()).map(|t| (t.name.clone(), t.score)).collect());
     for (team, score) in teams {
         let m = TeamScore { team, score: score as i16, deaths: 0 };
         msg::all(Msg::TeamScore, |w| m.write(w));

@@ -6,6 +6,7 @@ use super::SLOTS;
 use crate::messages::{self, Msg};
 use crate::player::Player;
 use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
 use shared::protocol::weapons::{self as proto, MsgSink, WStatus, WeaponInfo};
@@ -42,7 +43,7 @@ impl MsgSink for Sink {
 }
 
 fn bot(e: *mut edict_t) -> bool {
-    (unsafe { (*e).v.flags } & FL_FAKECLIENT as i32) != 0
+    (e.v().flags & FL_FAKECLIENT as i32) != 0
 }
 
 pub fn send_kfu_power(to: *mut edict_t, bar: f32) {

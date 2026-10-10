@@ -5,6 +5,7 @@
 
 use crate::damage::{self, DamageInfo};
 use crate::messages::{self, Msg};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{MsgWriterExt, Vec3, is_player, te, te_begin, vec};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
@@ -17,14 +18,14 @@ pub fn emit_sound_slow(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn
     if sample.is_empty() || e.is_null() {
         return;
     }
-    let ts = unsafe { (*e).v.fuser1 };
+    let ts = e.v().fuser1;
     let pitch = if ts != 0.0 { ((s * ts + 1.0 - s) * pitch as f32) as i32 } else { pitch };
     engine().emit_sound(e, chan as i32, sample, vol, attn, flags, pitch);
 }
 
 /// `GiveSlowMul` / `FixedSlowAmt`: the player's time scale, at least 0.01.
 fn slow_of(e: *mut edict_t) -> f32 {
-    unsafe { (*e).v.fuser1 }.max(0.01)
+    e.v().fuser1.max(0.01)
 }
 
 fn fixed_u16(v: f32, scale: f32) -> i32 {
@@ -40,7 +41,7 @@ pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32,
         if !is_player(p) {
             continue;
         }
-        let v = unsafe { &(*p).v };
+        let v = p.v();
         if v.flags & FL_ONGROUND as i32 == 0 {
             continue;
         }
@@ -71,7 +72,7 @@ pub const FFADE_STAYOUT: i32 = 4;
 
 /// `UTIL_ScreenFade` (TS): sent as `TSFade` to one player, durations divided by its time scale.
 pub fn screen_fade(p: *mut edict_t, color: Vec3, fade_time: f32, hold: f32, alpha: i32, flags: i32) {
-    if !is_player(p) || unsafe { (*p).v.flags } & FL_FAKECLIENT as i32 != 0 {
+    if !is_player(p) || p.v().flags & FL_FAKECLIENT as i32 != 0 {
         return; // IsNetClient()
     }
     let slow = slow_of(p);
@@ -104,7 +105,7 @@ pub fn ricochet(pos: Vec3, scale: f32) {
 }
 
 fn center(e: *mut edict_t) -> Vec3 {
-    let v = unsafe { &(*e).v };
+    let v = e.v();
     vec::mid(v.absmin, v.absmax)
 }
 
@@ -140,11 +141,11 @@ pub fn ts_explosion(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_
         if e == inflictor {
             continue;
         }
-        let (takedamage, deadflag) = unsafe { ((*e).v.takedamage, (*e).v.deadflag) };
+        let (takedamage, deadflag) = (e.v().takedamage, e.v().deadflag);
         if takedamage == 0.0 || deadflag == DEAD_DEAD as i32 {
             continue;
         }
-        if is_player(e) && unsafe { (*e).v.health } > 0.0 {
+        if is_player(e) && e.v().health > 0.0 {
             screen_fade(e, [222.0, 227.0, 189.0], 0.1, 0.05, 75, 0);
         }
         let mut spot = center(e);
@@ -186,7 +187,7 @@ pub fn radius_damage(src: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t,
         if e.is_null() {
             break;
         }
-        let v = unsafe { &(*e).v };
+        let v = e.v();
         if v.takedamage == 0.0 {
             continue;
         }

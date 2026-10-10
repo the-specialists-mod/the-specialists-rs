@@ -16,6 +16,7 @@ use super::breakable::{DMG_TS_KUNGFU, DMG_TS_SHOTGUN, break_sounds, mat, play_br
 use super::buttons::LockSounds;
 use crate::damage::bits as dmg;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, is_player, snd, te_break_model, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -132,7 +133,7 @@ impl Door {
         self.t.activator = EHandle::new(other);
         // TS: open at least as fast as the toucher is moving.
         let saved = cx.pev().speed;
-        let ospeed = vec::length(unsafe { (*other).v.velocity });
+        let ospeed = vec::length(other.v().velocity);
         cx.pev().speed = saved.max(ospeed);
         if self.door_activate(cx) {
             self.t.touch = None;
@@ -181,7 +182,7 @@ impl Door {
             let act = self.t.activator.get();
             let v = cx.pev();
             if !act.is_null() && v.spawnflags & SF_DOOR_ONEWAY == 0 && v.movedir[1] != 0.0 {
-                let av = unsafe { &(*act).v };
+                let av = act.v();
                 let to = vec::sub(av.origin, v.origin);
                 // TS: where the activator is heading, not where it's looking.
                 let next = vec::sub(vec::mad(av.origin, vec::normalize(av.velocity), 10.0), v.origin);
@@ -399,7 +400,7 @@ impl Door {
         let (_, _, flags) = break_sounds(self.material);
         let v = cx.pev();
         let center = vec::add(v.origin, vec::mid(v.mins, v.maxs));
-        let from = if info.attacker.is_null() { center } else { unsafe { (*info.attacker).v.origin } };
+        let from = if info.attacker.is_null() { center } else { info.attacker.v().origin };
         let dir = vec::normalize(vec::sub(center, from));
         let scale = if info.bits & DMG_TS_SHOTGUN != 0 { 8.0 } else { 1.0 };
         let vel = vec::scale(dir, info.damage * 2.0 * scale);
@@ -519,7 +520,7 @@ impl Entity for Door {
             if e == me {
                 continue;
             }
-            let cls = s(unsafe { (*e).v.classname });
+            let cls = s(e.v().classname);
             if cls != c"func_door" && cls != c"func_door_rotating" {
                 continue;
             }

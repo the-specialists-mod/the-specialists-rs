@@ -232,6 +232,7 @@ dependencies = [
 name = "shared"
 version = "0.1.0"
 dependencies = [
+ "goldsrc",
  "goldsrc-sys",
  "serde",
  "toml",
@@ -294,11 +295,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ts-client-dll"
+version = "0.1.0"
+dependencies = [
+ "goldsrc",
+ "shared",
+ "ts-client",
+]
+
+[[package]]
 name = "ts-server"
 version = "0.1.0"
 dependencies = [
  "goldsrc",
  "shared",
+]
+
+[[package]]
+name = "ts-server-dll"
+version = "0.1.0"
+dependencies = [
+ "goldsrc",
+ "shared",
+ "ts-server",
 ]
 
 [[package]]

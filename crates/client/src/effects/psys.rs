@@ -211,7 +211,9 @@ impl PSys {
     pub fn debug(&self, cam: &Camera) -> String {
         let near = self.parts.iter().map(|p| v::dist(p.origin, cam.origin)).fold(f32::MAX, f32::min);
         let inview = self.parts.iter().filter(|p| in_view_cone(cam, p.origin)).count();
-        let sample = self.parts.first().map(|p| format!("org {:?} r {:.1} c {:.2} life {:.1} spr {} mode {}", p.origin, p.radius, p.color, p.life, p.sprite, p.rendermode));
+        let sample = self.parts.first().map(|p| {
+            format!("org {:?} r {:.1} c {:.2} life {:.1} spr {} mode {}", p.origin, p.radius, p.color, p.life, p.sprite, p.rendermode)
+        });
         format!("nearest {near:.0} inview {inview} cam {:?} oldest {:?}", cam.origin, sample)
     }
 
@@ -493,12 +495,7 @@ pub fn build_quad(p: &Particle, cam: &Camera) -> [Vec3; 4] {
     }
     let rr = v::scale(right, p.radius);
     let uu = v::scale(up, p.radius);
-    [
-        v::add(v::sub(p.origin, rr), uu),
-        v::add(v::add(p.origin, rr), uu),
-        v::sub(v::add(p.origin, rr), uu),
-        v::sub(v::sub(p.origin, rr), uu),
-    ]
+    [v::add(v::sub(p.origin, rr), uu), v::add(v::add(p.origin, rr), uu), v::sub(v::add(p.origin, rr), uu), v::sub(v::sub(p.origin, rr), uu)]
 }
 
 #[cfg(test)]

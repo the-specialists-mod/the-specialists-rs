@@ -12,6 +12,7 @@ use crate::damage::{bits, hitgroup};
 use crate::messages::Msg;
 use crate::rules::{self, msg};
 use crate::world::{Cx, DamageInfo};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::protocol::hud_wire::{PTakeDam, TsFade, fade};
@@ -26,7 +27,11 @@ pub fn hitgroup_scale(group: i32, dmg_bits: i32) -> f32 {
     let c = &tables().combat;
     match group {
         hitgroup::HEAD if dmg_bits & (bits::BULLET | bits::THROWN) != 0 => {
-            if dmg_bits & DMG_SHOTGUN != 0 { c.headshot_shotgun } else { c.headshot }
+            if dmg_bits & DMG_SHOTGUN != 0 {
+                c.headshot_shotgun
+            } else {
+                c.headshot
+            }
         }
         hitgroup::LEFTLEG | hitgroup::RIGHTLEG => c.leg,
         _ => 1.0,
@@ -109,7 +114,8 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
                 } else if kevlar_hit {
                     c"player/kevlarhit.wav"
                 } else {
-                    [c"player/bodyhit1.wav", c"player/bodyhit2.wav", c"player/bodyhit3.wav", c"player/bodyhit4.wav"][eng.random_long(0, 3) as usize]
+                    [c"player/bodyhit1.wav", c"player/bodyhit2.wav", c"player/bodyhit3.wav", c"player/bodyhit4.wav"]
+                        [eng.random_long(0, 3) as usize]
                 };
                 eng.emit_sound(e, CHAN_BODY as i32, sample, 1.0, 1.25, 0, 95 + eng.random_long(0, 31));
             }
@@ -142,7 +148,7 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     {
         let v = cx.pev();
         if !dmg.inflictor.is_null() && v.movetype == MOVETYPE_WALK as i32 && dmg.dir != [0.0; 3] {
-            let attacker_trigger = !dmg.attacker.is_null() && unsafe { (*dmg.attacker).v.solid } == SOLID_TRIGGER as i32;
+            let attacker_trigger = !dmg.attacker.is_null() && dmg.attacker.v().solid == SOLID_TRIGGER as i32;
             if !attacker_trigger {
                 let force = amount * 5.0;
                 for i in 0..3 {

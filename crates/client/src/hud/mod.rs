@@ -21,7 +21,6 @@ use goldsrc::ext::hud::Screen;
 use shared::protocol::{MESSAGES, Msg};
 use state::{Ctx, Effect, Hud};
 use std::cell::{Cell, RefCell};
-use std::ffi::{c_char, c_int, c_void};
 
 /// Everything the draw pass needs besides the message state.
 #[derive(Default)]
@@ -101,16 +100,14 @@ pub fn zoom_sensitivity() -> f32 {
 
 macro_rules! hooks {
     ($($v:ident),* $(,)?) => {
-        /// One `pfnUserMsgHook` per message, dispatching to [`on_message`].
-        fn hook_for(m: Msg) -> goldsrc::sys::pfnUserMsgHook {
+        /// One message handler per message, dispatching to [`on_message`].
+        fn hook_for(m: Msg) -> fn(&[u8]) {
             match m {
                 $(Msg::$v => {
-                    unsafe extern "C" fn f(_n: *const c_char, size: c_int, buf: *mut c_void) -> c_int {
-                        let b: &[u8] = if buf.is_null() || size <= 0 { &[] } else { unsafe { std::slice::from_raw_parts(buf.cast(), size as usize) } };
+                    fn f(b: &[u8]) {
                         on_message(Msg::$v, b);
-                        1
                     }
-                    Some(f)
+                    f
                 })*
             }
         }
@@ -118,10 +115,70 @@ macro_rules! hooks {
 }
 
 hooks!(
-    SelAmmo, CurWeapon, Geiger, Health, Damage, Battery, Train, HudText, SayText, TextMsg, WeaponList, ResetHUD, InitHUD, GameTitle, DeathMsg, ScoreInfo, TeamInfo, TeamScore, GameMode, Motd,
-    ServerName, AmmoPickup, WeapPickup, ItemPickup, HideWeapon, SetFov, ShowMenu, ScreenShake, ScreenFade, TsFade, AmmoX, TeamNames, VguiMenu, WeaponInfo, ClipInfo, WStatus, ActItems, KFuPower, TsHealth,
-    TsArmor, TsState, TsCash, TsSpace, NextStunt, PwUp, PwUpTime, RoundTime, Objective, ShowObj, Wires, SrvSett, TsPAward, TsBTime, TsHVoice, TsFlag, CustomWp, Spectator, TsMBlur, TsMessage, TsSlowMo,
-    PTakeDam, TsFrags, PlInfo, TsPSys,
+    SelAmmo,
+    CurWeapon,
+    Geiger,
+    Health,
+    Damage,
+    Battery,
+    Train,
+    HudText,
+    SayText,
+    TextMsg,
+    WeaponList,
+    ResetHUD,
+    InitHUD,
+    GameTitle,
+    DeathMsg,
+    ScoreInfo,
+    TeamInfo,
+    TeamScore,
+    GameMode,
+    Motd,
+    ServerName,
+    AmmoPickup,
+    WeapPickup,
+    ItemPickup,
+    HideWeapon,
+    SetFov,
+    ShowMenu,
+    ScreenShake,
+    ScreenFade,
+    TsFade,
+    AmmoX,
+    TeamNames,
+    VguiMenu,
+    WeaponInfo,
+    ClipInfo,
+    WStatus,
+    ActItems,
+    KFuPower,
+    TsHealth,
+    TsArmor,
+    TsState,
+    TsCash,
+    TsSpace,
+    NextStunt,
+    PwUp,
+    PwUpTime,
+    RoundTime,
+    Objective,
+    ShowObj,
+    Wires,
+    SrvSett,
+    TsPAward,
+    TsBTime,
+    TsHVoice,
+    TsFlag,
+    CustomWp,
+    Spectator,
+    TsMBlur,
+    TsMessage,
+    TsSlowMo,
+    PTakeDam,
+    TsFrags,
+    PlInfo,
+    TsPSys,
 );
 
 fn local_index() -> i32 {
@@ -178,9 +235,10 @@ fn on_message(m: Msg, buf: &[u8]) {
         if let Some(d) = shared::protocol::hud::DeathMsg::decode(buf) {
             let name = |i: u8| if i > 0 { e.player_info(i as i32).name } else { String::new() };
             let (k, v) = (name(d.killer), name(d.victim));
-            let teamkill = d.killer != d.victim && with(|h| {
-                h.gamemode != 0 && h.players.get(d.killer as usize).map(|p| p.team) == h.players.get(d.victim as usize).map(|p| p.team)
-            });
+            let teamkill = d.killer != d.victim
+                && with(|h| {
+                    h.gamemode != 0 && h.players.get(d.killer as usize).map(|p| p.team) == h.players.get(d.victim as usize).map(|p| p.team)
+                });
             e.print(&notice::death_console_line(&k, &v, &d.weapon, d.killer == d.victim || d.killer == 0, teamkill));
         }
     }
@@ -236,50 +294,44 @@ fn apply_effect(f: Effect) {
 }
 
 /// Voice manager messages (registered by the server's `CVoiceGameMgr`, not in the TS table).
-unsafe extern "C" fn msg_voice_mask(_n: *const c_char, _size: c_int, _buf: *mut c_void) -> c_int {
-    1
-}
+fn msg_voice_mask(_buf: &[u8]) {}
 
 /// `ReqState`: the server asks for the voice state; the SDK answers `VModEnable` and `vban`.
-unsafe extern "C" fn msg_req_state(_n: *const c_char, _size: c_int, _buf: *mut c_void) -> c_int {
+fn msg_req_state(_buf: &[u8]) {
     let e = engine();
     e.server_cmd(&format!("VModEnable {}", cvars().voice_modenable.value() as i32));
     e.server_cmd("vban 0 0 0 0");
-    1
 }
 
 /// `Logo` (impulse 99): the animated logo; TS never ships `sprites/%d_logo.spr`, so ignore.
-unsafe extern "C" fn msg_logo(_n: *const c_char, _size: c_int, _buf: *mut c_void) -> c_int {
-    1
-}
+fn msg_logo(_buf: &[u8]) {}
 
 // ---------------------------------------------------------------------------------------------
 // Init
 
 fn register_cvars() -> HudCvars {
-    let e = engine();
     HudCvars {
-        voice_modenable: Cvar::from_raw(e.register_variable(c"voice_modenable", c"1", 1)),
-        voice_clientdebug: Cvar::from_raw(e.register_variable(c"voice_clientdebug", c"0", 0)),
-        drawhistory_time: Cvar::from_raw(e.register_variable(c"hud_drawhistory_time", c"5", 0)),
-        fastswitch: Cvar::from_raw(e.register_variable(c"hud_fastswitch", c"0", 1)),
-        deathnotice_time: Cvar::from_raw(e.register_variable(c"hud_deathnotice_time", c"6", 0)),
-        classautokill: Cvar::from_raw(e.register_variable(c"hud_classautokill", c"1", 3)),
-        takesshots: Cvar::from_raw(e.register_variable(c"hud_takesshots", c"0", 1)),
-        zoom_sensitivity_ratio: Cvar::from_raw(e.register_variable(c"zoom_sensitivity_ratio", c"1.2", 0)),
+        voice_modenable: Cvar::register(c"voice_modenable", c"1", 1),
+        voice_clientdebug: Cvar::register(c"voice_clientdebug", c"0", 0),
+        drawhistory_time: Cvar::register(c"hud_drawhistory_time", c"5", 0),
+        fastswitch: Cvar::register(c"hud_fastswitch", c"0", 1),
+        deathnotice_time: Cvar::register(c"hud_deathnotice_time", c"6", 0),
+        classautokill: Cvar::register(c"hud_classautokill", c"1", 3),
+        takesshots: Cvar::register(c"hud_takesshots", c"0", 1),
+        zoom_sensitivity_ratio: Cvar::register(c"zoom_sensitivity_ratio", c"1.2", 0),
         // TS registers "80" then forces the value to 80 (overriding configs); the port keeps the
         // user's value and defaults to 90 like ts-patcher (docs/design.md §10).
-        default_fov: Cvar::from_raw(e.register_variable(c"default_fov", c"90", 1)),
-        capturemouse: Cvar::from_raw(e.register_variable(c"hud_capturemouse", c"1", 1)),
-        saytext_time: Cvar::from_raw(e.register_variable(c"hud_saytext_time", c"5", 0)),
-        centerid: Cvar::from_raw(e.register_variable(c"hud_centerid", c"0", 1)),
-        drawnames: Cvar::from_raw(e.register_variable(c"cl_drawnames", c"1", 1)),
+        default_fov: Cvar::register(c"default_fov", c"90", 1),
+        capturemouse: Cvar::register(c"hud_capturemouse", c"1", 1),
+        saytext_time: Cvar::register(c"hud_saytext_time", c"5", 0),
+        centerid: Cvar::register(c"hud_centerid", c"0", 1),
+        drawnames: Cvar::register(c"cl_drawnames", c"1", 1),
     }
 }
 
 macro_rules! cmd {
     ($name:literal, $body:expr) => {{
-        unsafe extern "C" fn f() {
+        extern "C" fn f() {
             $body
         }
         engine().add_command($name, f);
@@ -353,9 +405,9 @@ pub fn init() {
         }
         e.hook_user_msg(name, hook_for(*m));
     }
-    e.hook_user_msg(c"VoiceMask", Some(msg_voice_mask));
-    e.hook_user_msg(c"ReqState", Some(msg_req_state));
-    e.hook_user_msg(c"Logo", Some(msg_logo));
+    e.hook_user_msg(c"VoiceMask", msg_voice_mask);
+    e.hook_user_msg(c"ReqState", msg_req_state);
+    e.hook_user_msg(c"Logo", msg_logo);
     register_commands();
     with(|h| *h = Hud::default());
 }
@@ -695,7 +747,7 @@ mod tests {
     #[test]
     fn every_message_has_a_hook() {
         for (m, _, _) in MESSAGES {
-            assert!(hook_for(*m).is_some());
+            let _: fn(&[u8]) = hook_for(*m); // every message maps to a handler (exhaustive match)
         }
     }
 }

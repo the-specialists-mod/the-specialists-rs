@@ -135,6 +135,12 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   behind with a world trace).
 * `HUD_AddEntity`'s in-eye hiding uses spectator mode 4 (SDK `OBS_IN_EYE`); the doc notes TS may use 5.
 
+* **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
+  the evicted shell's `die`. The port tags each shell with a sequence number in
+  `curstate.iuser2` (`effects::track_shell`), and the temp-entity loop (`client-dll/src/tempents.rs`)
+  kills shells older than the newest 64. That's the same result without keeping pointers to engine
+  memory, and it can't write to a tempent the engine already freed.
+
 ## Missing pieces
 
 * **Motion-blur ghosts** (`MotionBlur_*`, `TSMBlur`): need the TS studio renderer (renderfx 17 with

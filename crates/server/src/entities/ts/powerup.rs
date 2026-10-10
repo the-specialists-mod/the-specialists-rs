@@ -5,6 +5,7 @@
 use crate::player::{Player, with_player};
 use crate::rules::{self, cvars, msg, state};
 use crate::world::{Cx, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::ts::powerup as pw;
@@ -96,7 +97,8 @@ impl PowerUp {
             self.random = true;
         } else {
             let k = kind as u16;
-            self.kind = if (superjump_map && k & pw::SUPERJUMP != 0) || k & pw::ARMOR != 0 { state::with(|g| g.random_powerup(0x1ff)) } else { k };
+            self.kind =
+                if (superjump_map && k & pw::SUPERJUMP != 0) || k & pw::ARMOR != 0 { state::with(|g| g.random_powerup(0x1ff)) } else { k };
             self.random = false;
         }
         let (body, base) = body_and_secs(self.kind);
@@ -219,7 +221,8 @@ impl Entity for PowerUp {
 
     fn think(&mut self, cx: &mut Cx) {
         let now = cx.time();
-        let hidden_by_rules = cvars::f(c"nopowerup") == 1.0 || matches!(state::with(|g| g.mode), state::Mode::RoundTdm | state::Mode::Objective);
+        let hidden_by_rules =
+            cvars::f(c"nopowerup") == 1.0 || matches!(state::with(|g| g.mode), state::Mode::RoundTdm | state::Mode::Objective);
         match self.phase {
             Phase::Falling | Phase::Hidden => {
                 // `Fall`
@@ -271,7 +274,7 @@ pub fn create(kind: u16, secs: i32, origin: [f32; 3]) -> *mut edict_t {
         msg::text_all(shared::protocol::rules::hud_dest::TALK, "WARNING:cannot create powerup!\n");
         return e;
     }
-    unsafe { (*e).v.origin = origin };
+    (e.v().origin = origin);
     crate::world::dispatch(e, |ent, cx| {
         ent.spawn(cx);
         if let Some(pu) = (ent as &mut dyn std::any::Any).downcast_mut::<PowerUp>() {

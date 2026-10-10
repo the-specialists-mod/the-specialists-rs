@@ -5,6 +5,7 @@ use super::{alive, eye, state, teams};
 use crate::damage::{DamageInfo, bits};
 use crate::player::Player;
 use crate::world::{Cx, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::{IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use goldsrc::util::to_cstring;
@@ -49,7 +50,7 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
             break;
         }
         // (`IsTriggered` master check: spawn points carry no master in the port.)
-        let sv = unsafe { &(*it).v };
+        let sv = it.v();
         let mut enemy_sees = false;
         let mut teammate_sees = false;
         let mut min_dist = 4096;
@@ -57,7 +58,7 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
             if o == self_e {
                 continue;
             }
-            let ov = unsafe { &(*o).v };
+            let ov = o.v();
             if !alive(ov) || ov.effects & EF_NODRAW as i32 != 0 {
                 continue;
             }
@@ -95,7 +96,7 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
 /// Kills every living player within 128 units of the spot (300 damage, always gib).
 fn telefrag(spot: *mut edict_t, self_e: *mut edict_t) {
     let eng = engine();
-    let org = unsafe { (*spot).v.origin };
+    let org = spot.v().origin;
     let world = eng.entity_of_index(0);
     let mut it = std::ptr::null_mut();
     loop {
@@ -103,7 +104,7 @@ fn telefrag(spot: *mut edict_t, self_e: *mut edict_t) {
         if it.is_null() {
             break;
         }
-        if it == self_e || !super::is_player(it) || !alive(unsafe { &(*it).v }) || unsafe { (*it).v.effects } & EF_NODRAW as i32 != 0 {
+        if it == self_e || !super::is_player(it) || !alive(it.v()) || it.v().effects & EF_NODRAW as i32 != 0 {
             continue;
         }
         crate::damage::apply(it, &DamageInfo::new(world, world, 300.0, bits::ALWAYSGIB));
@@ -117,7 +118,7 @@ pub fn place(_p: &mut Player, cx: &mut Cx) {
     let (origin, angles) = if spot.is_null() {
         ([0.0, 0.0, 64.0], [0.0; 3])
     } else {
-        let s = unsafe { &(*spot).v };
+        let s = spot.v();
         ([s.origin[0], s.origin[1], s.origin[2] + 1.0], s.angles)
     };
     {
@@ -130,7 +131,7 @@ pub fn place(_p: &mut Player, cx: &mut Cx) {
     }
     eng.set_origin(cx.edict, origin);
     if !spot.is_null() {
-        let sv = unsafe { &(*spot).v };
+        let sv = spot.v();
         if sv.target != 0 {
             let t = eng.string(sv.target);
             crate::entities::fire_targets(t, cx.edict, cx.edict, UseType::Toggle, 0.0);

@@ -10,8 +10,9 @@ use super::buttons::{do_spark, precache_sparks};
 use super::explode::{emit_sound_slow, radius_damage, screen_fade, screen_fade_all, screen_shake, sparks};
 use crate::entities::remove;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{EHandle, MsgWriterExt, SVC_TEMPENTITY, Vec3, te, te_begin, te_explosion, te_smoke, vec};
-use goldsrc::server::{IGNORE_MONSTERS, DONT_IGNORE_MONSTERS, MsgWriter, engine};
+use goldsrc::server::{DONT_IGNORE_MONSTERS, IGNORE_MONSTERS, MsgWriter, engine};
 use goldsrc::sys::*;
 use std::ffi::CStr;
 
@@ -67,11 +68,11 @@ impl Sprite {
         if e.is_null() {
             return e;
         }
-        let v = unsafe { &mut (*e).v };
+        let v = e.v();
         v.model = alloc(name);
         v.origin = origin;
         world::dispatch(e, |ent, cx| ent.spawn(cx));
-        let v = unsafe { &mut (*e).v };
+        let v = e.v();
         v.solid = SOLID_NOT as i32;
         v.movetype = MOVETYPE_NOCLIP as i32;
         v.spawnflags |= SF_SPRITE_TEMPORARY;
@@ -294,7 +295,7 @@ pub fn decal_trace(tr: &TraceResult, decal_name: &CStr) {
     }
     let mut entity = 0;
     if !tr.pHit.is_null() {
-        let hv = unsafe { &(*tr.pHit).v };
+        let hv = tr.pHit.v();
         if hv.solid != SOLID_BSP as i32 && hv.movetype != MOVETYPE_PUSHSTEP as i32 {
             return;
         }
@@ -469,7 +470,7 @@ impl Entity for RenderFxManager {
             if e.is_null() {
                 break;
             }
-            let tv = unsafe { &mut (*e).v };
+            let tv = e.v();
             if sf & SF_RENDER_MASKFX == 0 {
                 tv.renderfx = fx;
             }
@@ -530,7 +531,7 @@ mod beam {
         if get_type(v) == BEAM_ENTS {
             let e = engine().entity_of_index(v.sequence & 0x0fff);
             if !e.is_null() {
-                return unsafe { (*e).v.origin };
+                return e.v().origin;
             }
         }
         v.origin
@@ -541,7 +542,7 @@ mod beam {
             return v.angles;
         }
         let e = engine().entity_of_index(v.skin & 0x0fff);
-        if !e.is_null() { unsafe { (*e).v.origin } } else { v.angles }
+        if !e.is_null() { e.v().origin } else { v.angles }
     }
     /// `RelinkBeam`: size the entity to cover both ends (for PVS culling).
     pub fn relink(cx: &mut Cx) {
@@ -580,7 +581,7 @@ mod beam {
             let decals = v.spawnflags & SF_BEAM_DECALS != 0;
             crate::damage::apply(tr.pHit, &info);
             if decals {
-                let hv = unsafe { &(*tr.pHit).v };
+                let hv = tr.pHit.v();
                 if hv.solid == SOLID_BSP as i32 || hv.movetype == MOVETYPE_PUSHSTEP as i32 {
                     let n = eng.random_long(1, 5);
                     decal_trace(tr, goldsrc::server::intern(&format!("{{bigshot{n}")));
@@ -608,7 +609,7 @@ mod beam {
         found
     }
     pub fn is_point_entity(e: *mut edict_t) -> bool {
-        let v = unsafe { &(*e).v };
+        let v = e.v();
         if v.modelindex == 0 {
             return true;
         }
@@ -676,7 +677,8 @@ impl Lightning {
     }
 
     fn zap(&mut self, cx: &mut Cx, src: Vec3, dest: Vec3) {
-        let w = MsgWriter::begin(MSG_BROADCAST as i32, SVC_TEMPENTITY, None, std::ptr::null_mut()).byte(te::BEAMPOINTS).vec3(src).vec3(dest);
+        let w =
+            MsgWriter::begin(MSG_BROADCAST as i32, SVC_TEMPENTITY, None, std::ptr::null_mut()).byte(te::BEAMPOINTS).vec3(src).vec3(dest);
         self.beam_tail(w, cx).end();
         beam::do_sparks(cx.pev(), src, dest);
     }
@@ -741,10 +743,13 @@ impl Lightning {
             } else {
                 let start = beam::random_targetname(s(self.start_entity));
                 if !start.is_null() {
-                    let o = unsafe { (*start).v.origin };
+                    let o = start.v().origin;
                     self.random_point(cx, o);
                 } else {
-                    eng.alert(ALERT_TYPE::at_console, &format!("env_beam: unknown entity \"{}\"\n", s(self.start_entity).to_string_lossy()));
+                    eng.alert(
+                        ALERT_TYPE::at_console,
+                        &format!("env_beam: unknown entity \"{}\"\n", s(self.start_entity).to_string_lossy()),
+                    );
                 }
             }
             return;
@@ -764,17 +769,17 @@ impl Lightning {
             if !beam::is_point_entity(end) {
                 std::mem::swap(&mut start, &mut end);
             }
-            let eo = unsafe { (*end).v.origin };
+            let eo = end.v().origin;
             if !beam::is_point_entity(start) {
                 w.byte(te::BEAMENTPOINT).short(eng.index_of(start)).vec3(eo)
             } else {
-                w.byte(te::BEAMPOINTS).vec3(unsafe { (*start).v.origin }).vec3(eo)
+                w.byte(te::BEAMPOINTS).vec3(start.v().origin).vec3(eo)
             }
         } else {
             w.byte(if ring { te::BEAMRING } else { te::BEAMENTS }).short(eng.index_of(start)).short(eng.index_of(end))
         };
         self.beam_tail(w, cx).end();
-        let (so, eo) = unsafe { ((*start).v.origin, (*end).v.origin) };
+        let (so, eo) = (start.v().origin, end.v().origin);
         beam::do_sparks(cx.pev(), so, eo);
         if cx.pev().dmg > 0.0 {
             let tr = eng.trace_line(so, eo, DONT_IGNORE_MONSTERS, std::ptr::null_mut());
@@ -820,9 +825,9 @@ impl Lightning {
         }
         beam::set_type(v, t);
         if t == BEAM_POINTS || t == BEAM_ENTPOINT {
-            v.origin = unsafe { (*start).v.origin };
+            v.origin = start.v().origin;
             if t == BEAM_POINTS {
-                v.angles = unsafe { (*end).v.origin };
+                v.angles = end.v().origin;
             } else {
                 beam::set_end_entity(v, eng.index_of(end));
             }
@@ -1046,7 +1051,7 @@ impl Entity for Laser {
                     let v = cx.pev();
                     (v.rendercolor, v.renderamt, v.renderfx)
                 };
-                let sv = unsafe { &mut (*sp).v };
+                let sv = sp.v();
                 sv.rendermode = kRenderGlow as i32;
                 sv.rendercolor = c;
                 sv.renderamt = a;
@@ -1066,7 +1071,7 @@ impl Entity for Laser {
         let eng = engine();
         let end = beam::random_targetname(s(cx.pev().message));
         if !end.is_null() {
-            self.fire_position = unsafe { (*end).v.origin };
+            self.fire_position = end.v().origin;
         }
         let org = cx.pev().origin;
         let tr = eng.trace_line(org, self.fire_position, DONT_IGNORE_MONSTERS, std::ptr::null_mut());
@@ -1125,7 +1130,7 @@ impl<const ENV: bool> GibShooter<ENV> {
         if e.is_null() {
             return e;
         }
-        world::create::<Gib>(unsafe { &mut (*e).v });
+        world::create::<Gib>(e.v());
         let model: &CStr = if ENV { s(cx.pev().model) } else { c"models/hgibs.mdl" };
         let material = if ENV { self.material } else { mat::NONE };
         let bleeds = !ENV;
@@ -1137,7 +1142,7 @@ impl<const ENV: bool> GibShooter<ENV> {
             }
         });
         let v = cx.pev();
-        let gv = unsafe { &mut (*e).v };
+        let gv = e.v();
         if ENV {
             gv.body = if v.body > 1 { eng.random_long(0, v.body - 1) } else { 0 };
             gv.rendermode = v.rendermode;
@@ -1166,7 +1171,7 @@ impl<const ENV: bool> GibShooter<ENV> {
         if !gib.is_null() {
             let org = cx.pev().origin;
             let life = self.gib_life * eng.random_float(0.95, 1.05);
-            let gv = unsafe { &mut (*gib).v };
+            let gv = gib.v();
             gv.origin = org;
             gv.velocity = vec::scale(dir, self.velocity);
             gv.avelocity[0] = eng.random_float(100.0, 200.0);
@@ -1543,7 +1548,7 @@ impl Entity for Decal {
         self.static_pending = false;
         let eng = engine();
         let tr = Self::trace(cx);
-        let (entity, model) = if tr.pHit.is_null() { (0, 0) } else { (eng.index_of(tr.pHit), unsafe { (*tr.pHit).v.modelindex }) };
+        let (entity, model) = if tr.pHit.is_null() { (0, 0) } else { (eng.index_of(tr.pHit), tr.pHit.v().modelindex) };
         let model = if entity != 0 { model } else { 0 };
         let (org, skin) = (cx.pev().origin, cx.pev().skin);
         eng.static_decal(org, skin, entity, model);
@@ -1557,7 +1562,7 @@ impl Entity for Decal {
         let eng = engine();
         let tr = Self::trace(cx);
         let entity = if tr.pHit.is_null() { 0 } else { eng.index_of(tr.pHit) };
-        let model = if entity != 0 { unsafe { (*tr.pHit).v.modelindex } } else { 0 };
+        let model = if entity != 0 { tr.pHit.v().modelindex } else { 0 };
         let (org, skin) = (cx.pev().origin, cx.pev().skin);
         goldsrc::ext::entities::te_bsp_decal(MSG_BROADCAST, org, skin, entity, model);
         self.removing = true;

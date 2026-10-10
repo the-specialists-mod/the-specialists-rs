@@ -7,6 +7,7 @@
 use super::base::*;
 use super::explode::{emit_sound_slow, sparks};
 use crate::world::{Cx, DamageInfo, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, is_player, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -95,7 +96,7 @@ impl LockSounds {
 /// SDK `DoSpark` (TS: spark pitch follows the entity's time scale, factor 0.5).
 pub fn do_spark(e: *mut edict_t, location: Vec3) {
     let eng = engine();
-    let size = unsafe { (*e).v.size };
+    let size = e.v().size;
     sparks(vec::mad(location, size, 0.5));
     let vol = eng.random_float(0.25, 0.75) * 0.4;
     let s: &CStr = match (eng.random_float(0.0, 1.0) * 6.0) as i32 {
@@ -110,7 +111,14 @@ pub fn do_spark(e: *mut edict_t, location: Vec3) {
 }
 
 pub fn precache_sparks() {
-    for s in [c"buttons/spark1.wav", c"buttons/spark2.wav", c"buttons/spark3.wav", c"buttons/spark4.wav", c"buttons/spark5.wav", c"buttons/spark6.wav"] {
+    for s in [
+        c"buttons/spark1.wav",
+        c"buttons/spark2.wav",
+        c"buttons/spark3.wav",
+        c"buttons/spark4.wav",
+        c"buttons/spark5.wav",
+        c"buttons/spark6.wav",
+    ] {
         engine().precache_sound(s);
     }
 }
@@ -293,7 +301,7 @@ impl<const ROT: bool> Button<ROT> {
                 if e.is_null() {
                     break;
                 }
-                if s(unsafe { (*e).v.classname }) != c"multisource" {
+                if s(e.v().classname) != c"multisource" {
                     continue;
                 }
                 let me = cx.edict;
@@ -522,7 +530,7 @@ impl MultiSource {
             if e.is_null() || self.entities.len() >= MS_MAX_TARGETS {
                 break;
             }
-            if unsafe { !(*e).pvPrivateData.is_null() } {
+            if e.has_private_data() {
                 self.entities.push(EHandle::new(e));
             }
         }
@@ -570,7 +578,7 @@ impl Entity for MultiSource {
 
     fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, caller: *mut edict_t, _kind: UseType, _value: f32) {
         let Some(i) = self.entities.iter().position(|h| h.get() == caller && !caller.is_null()) else {
-            let cls = if caller.is_null() { c"" } else { s(unsafe { (*caller).v.classname }) };
+            let cls = if caller.is_null() { c"" } else { s(caller.v().classname) };
             engine().alert(ALERT_TYPE::at_console, &format!("MultiSrc:Used by non member {}.\n", cls.to_string_lossy()));
             return;
         };

@@ -366,7 +366,9 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     }
     if b.page == page::ITEMS {
         let mut c = Column { dc, x: 0x108, y: y0, page: page::ITEMS, dim: false, rows };
-        for (key, id, label, price, slots) in [(1i32, buy::ITEM_KEVLAR, "Kevlar", 1900, 10), (2, buy::ITEM_STEALTH, "Stealth Shoes", 700, 0)] {
+        for (key, id, label, price, slots) in
+            [(1i32, buy::ITEM_KEVLAR, "Kevlar", 1900, 10), (2, buy::ITEM_STEALTH, "Stealth Shoes", 700, 0)]
+        {
             if buy::restricted(id, true, r) {
                 continue;
             }
@@ -503,7 +505,8 @@ fn draw_team_menu(dc: &Dc, rows: &mut Vec<(i32, i32, i32, i32, i32)>) {
         dc.string(x + 10, y + h + 4, &brief, half(dc.hud));
     }
     y += 36;
-    let mut entries: Vec<(String, i32)> = names.iter().take(4).enumerate().map(|(i, n)| (format!("{} {}", i + 1, localise(n)), i as i32 + 1)).collect();
+    let mut entries: Vec<(String, i32)> =
+        names.iter().take(4).enumerate().map(|(i, n)| (format!("{} {}", i + 1, localise(n)), i as i32 + 1)).collect();
     entries.push(("5 Auto assign".into(), 5));
     entries.push(("0 Cancel".into(), 10));
     for (text, key) in entries {

@@ -20,7 +20,7 @@ use std::ffi::CStr;
 pub use fire::{ClientBullet, client_bullets_frame};
 
 /// Events in TS's precache order (`CTSGun::Precache`), with their handlers.
-pub const EVENTS: [(&CStr, unsafe extern "C" fn(*mut event_args_s)); 11] = [
+pub const EVENTS: [(&CStr, fn(&event_args_s)); 11] = [
     (c"events/fire.sc", ev_fire),
     (c"events/coldcock.sc", ev_coldcock),
     (c"events/empty.sc", ev_empty),
@@ -125,10 +125,8 @@ pub fn first_person_view_model() -> Option<&'static mut cl_entity_s> {
 
 macro_rules! handler {
     ($name:ident => $f:path) => {
-        unsafe extern "C" fn $name(a: *mut event_args_s) {
-            if let Some(a) = unsafe { a.as_ref() } {
-                $f(&Args::from(a));
-            }
+        fn $name(a: &event_args_s) {
+            $f(&Args::from(a));
         }
     };
 }
@@ -159,7 +157,7 @@ mod tests {
 
 /// `ts_test_fire <weapon id> [attachments] [seed]`: runs the fire handler as if the local player
 /// fired (origin and angles from the local view).
-unsafe extern "C" fn cmd_test_fire() {
+extern "C" fn cmd_test_fire() {
     let e = goldsrc::client::engine();
     let arg = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<i32>().unwrap_or(0);
     let Some(p) = r::local_player() else { return };
@@ -174,12 +172,20 @@ unsafe extern "C" fn cmd_test_fire() {
 }
 
 /// `ts_test_event <name> <i1> <i2> <f1>`: runs one of the other handlers for the local player.
-unsafe extern "C" fn cmd_test_event() {
+extern "C" fn cmd_test_event() {
     let e = goldsrc::client::engine();
     let name = e.cmd_argv(1).to_string_lossy().into_owned();
     let arg = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
     let Some(p) = r::local_player() else { return };
-    let a = Args { entindex: p.index, origin: p.origin, angles: e.view_angles(), i1: arg(2) as i32, i2: arg(3) as i32, f1: arg(4), ..Default::default() };
+    let a = Args {
+        entindex: p.index,
+        origin: p.origin,
+        angles: e.view_angles(),
+        i1: arg(2) as i32,
+        i2: arg(3) as i32,
+        f1: arg(4),
+        ..Default::default()
+    };
     match name.as_str() {
         "empty" => misc::empty(&a),
         "pump" => misc::pump(&a),

@@ -104,8 +104,8 @@ pub mod mode {
 
 /// `g_iWeaponPriority` (auto-switch order after a drop), `compile_weapons_info` 0x7fe28.
 pub const PRIORITY: [u8; 38] = [
-    18, 32, 13, 5, 15, 27, 11, 20, 4, 26, 33, 16, 37, 6, 23, 7, 3, 17, 19, 10, 8, 21, 30, 31, 12, 36, 22, 9, 2, 14, 28, 1,
-    34, 25, 35, 24, 29, 0,
+    18, 32, 13, 5, 15, 27, 11, 20, 4, 26, 33, 16, 37, 6, 23, 7, 3, 17, 19, 10, 8, 21, 30, 31, 12, 36, 22, 9, 2, 14, 28, 1, 34, 25, 35, 24,
+    29, 0,
 ];
 
 /// Weapon table entry, or `None` for invalid ids (29, >= 38).

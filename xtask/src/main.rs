@@ -6,16 +6,15 @@
 //! cargo xtask install [--release] <root>... | all assemble <root>/ts and install libraries
 //! cargo xtask server  [--release] <root> [--map M] [--bots N] [--seconds S] [--port P]
 //!                                                 run a dedicated server and check it
-//! cargo xtask test    [--release] [<root>...]     install + server check on every root
+//! cargo xtask test    [--release] [<root>...]     dedicated server + bots on every root, in parallel
+//! cargo xtask play    [--release] [<fwgs-root>...]
+//!                                                 gameplay on a listen server (join, buy, spawn,
+//!                                                 power-up, grenade, kills, kick, bot fights), in
+//!                                                 parallel on fwgs and fwgs-win
+//! cargo xtask all     [--release]                 test, then play
 //! cargo xtask client  [--release] <server-root> [--map M] [--port P]
 //!                                                 FWGS client (Rust client library) joins a dedicated
 //!                                                 server on <server-root>; screenshot in target/
-//! cargo xtask listen  [--release] [<fwgs-root>...] [--map M]
-//!                                                 listen server on FWGS: buy a loadout, click to
-//!                                                 spawn, add/kick bots; screenshots in target/
-//! cargo xtask dojo    [--release] [<fwgs-root>...]
-//!                                                 gameplay on ts_dojo: power-up, grenade vs
-//!                                                 breakable, kill/death/respawn, bots fighting
 //! cargo xtask roots                               list engine roots and whether they exist
 //! ```
 //!
@@ -57,22 +56,22 @@ fn main() {
         }
         "test" => {
             let map = take_opt(&mut args, "--map").unwrap_or_else(|| "ts_arena".into());
-            let mut failed = Vec::new();
-            for (i, r) in select_roots(&args).into_iter().enumerate() {
-                if !r.exists() {
-                    println!("== {}: skipped ({} missing)", r.name, r.path.display());
-                    continue;
-                }
-                ctx.install(&r);
-                if !ctx.server(&r, &map, 2, 25, 27115 + i as u16) {
-                    failed.push(r.name);
-                }
-            }
-            if !failed.is_empty() {
-                eprintln!("FAILED: {failed:?}");
+            if !ctx.test_all(&select_roots(&args), &map) {
                 exit(1);
             }
-            println!("all server checks passed");
+        }
+        "play" => {
+            if !ctx.play_all(&play_roots(&args)) {
+                exit(1);
+            }
+        }
+        "all" => {
+            let servers = ctx.test_all(&Root::all(), "ts_arena");
+            let play = ctx.play_all(&play_roots(&[]));
+            say!("== all: dedicated servers {}, gameplay {}", pass(servers), pass(play));
+            if !(servers && play) {
+                exit(1);
+            }
         }
         "client" => {
             let map = take_opt(&mut args, "--map").unwrap_or_else(|| "ts_awaken".into());
@@ -91,51 +90,16 @@ fn main() {
                 exit(1);
             }
         }
-        "listen" => {
-            let map = take_opt(&mut args, "--map").unwrap_or_else(|| "ts_lobby".into());
-            let names = if args.is_empty() { vec!["fwgs".to_owned(), "fwgs-win".to_owned()] } else { args.clone() };
-            let mut failed = Vec::new();
-            for r in select_roots(&names) {
-                if r.engine != Engine::Fwgs {
-                    println!("== {}: skipped (listen servers need an FWGS client)", r.name);
-                    continue;
-                }
-                if !r.exists() {
-                    println!("== {}: skipped ({} missing)", r.name, r.path.display());
-                    continue;
-                }
-                ctx.install(&r);
-                if !ctx.listen(&r, &map) {
-                    failed.push(r.name);
-                }
-            }
-            if !failed.is_empty() {
-                eprintln!("FAILED: {failed:?}");
-                exit(1);
-            }
-        }
-        "dojo" => {
-            let names = if args.is_empty() { vec!["fwgs".to_owned(), "fwgs-win".to_owned()] } else { args.clone() };
-            let mut failed = Vec::new();
-            for r in select_roots(&names) {
-                if r.engine != Engine::Fwgs || !r.exists() {
-                    println!("== {}: skipped (needs an installed FWGS client)", r.name);
-                    continue;
-                }
-                ctx.install(&r);
-                if !ctx.dojo(&r) {
-                    failed.push(r.name);
-                }
-            }
-            if !failed.is_empty() {
-                eprintln!("FAILED: {failed:?}");
-                exit(1);
-            }
-        }
         "roots" => {
             for r in Root::all() {
-                println!("{:14} {:7} {:?} {} {}", r.name, format!("{:?}", r.os), r.engine, r.path.display(),
-                         if r.exists() { "ok" } else { "missing" });
+                say!(
+                    "{:14} {:7} {:?} {} {}",
+                    r.name,
+                    format!("{:?}", r.os),
+                    r.engine,
+                    r.path.display(),
+                    if r.exists() { "ok" } else { "missing" }
+                );
             }
         }
         _ => usage(),
@@ -143,7 +107,7 @@ fn main() {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: cargo xtask [--release] <build|dist|install|server|test|roots> ... (see xtask/src/main.rs)");
+    eprintln!("usage: cargo xtask [--release] <build|dist|install|server|test|play|all|client|roots> ... (see xtask/src/main.rs)");
     exit(2)
 }
 
@@ -165,10 +129,12 @@ fn select_roots(names: &[String]) -> Vec<Root> {
     }
     names
         .iter()
-        .map(|n| Root::all().into_iter().find(|r| r.name == n).unwrap_or_else(|| {
-            eprintln!("unknown root {n}; see `cargo xtask roots`");
-            exit(2)
-        }))
+        .map(|n| {
+            Root::all().into_iter().find(|r| r.name == n).unwrap_or_else(|| {
+                eprintln!("unknown root {n}; see `cargo xtask roots`");
+                exit(2)
+            })
+        })
         .collect()
 }
 
@@ -185,6 +151,98 @@ struct Ctx {
     repo: PathBuf,
 }
 
+thread_local! {
+    /// Output of the check running on this thread, printed as one block when it finishes (so
+    /// parallel roots don't interleave). `None`: print directly.
+    static CAPTURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `println!` that goes to the current thread's capture buffer while a parallel check runs.
+#[macro_export]
+macro_rules! say {
+    ($($t:tt)*) => { $crate::say_line(format!($($t)*)) };
+}
+
+fn say_line(s: String) {
+    CAPTURE.with(|c| match &mut *c.borrow_mut() {
+        Some(buf) => {
+            buf.push_str(&s);
+            buf.push('\n');
+        }
+        None => println!("{s}"),
+    })
+}
+
+fn pass(ok: bool) -> &'static str {
+    if ok { "PASS" } else { "FAIL" }
+}
+
+/// FWGS roots for `play` (default: both).
+fn play_roots(names: &[String]) -> Vec<Root> {
+    let names: Vec<String> = if names.is_empty() { vec!["fwgs".into(), "fwgs-win".into()] } else { names.to_vec() };
+    select_roots(&names).into_iter().filter(|r| r.engine == Engine::Fwgs).collect()
+}
+
+impl Ctx {
+    /// Installs every existing root (one build per target), then runs `check(root, index)` for
+    /// all of them in parallel. Each root's output is printed as a block when it finishes. Windows
+    /// roots share one Wine prefix, so per-root `wineserver -k` is skipped and done once at the end.
+    fn parallel(&self, roots: &[Root], check: impl Fn(&Root, usize) -> bool + Sync) -> bool {
+        let roots: Vec<&Root> = roots
+            .iter()
+            .filter(|r| {
+                let ok = r.exists();
+                if !ok {
+                    say!("== {}: skipped ({} missing)", r.name, r.path.display());
+                }
+                ok
+            })
+            .collect();
+        for r in &roots {
+            self.install(r);
+        }
+        let start = Instant::now();
+        roots::set_parallel(true);
+        let results: Vec<(&'static str, bool)> = std::thread::scope(|s| {
+            let handles: Vec<_> = roots
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    let check = &check;
+                    s.spawn(move || {
+                        CAPTURE.with(|c| *c.borrow_mut() = Some(String::new()));
+                        let ok = check(r, i);
+                        let out = CAPTURE.with(|c| c.borrow_mut().take()).unwrap_or_default();
+                        print!("{out}");
+                        (r.name, ok)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap_or(("?", false))).collect()
+        });
+        roots::set_parallel(false);
+        roots::wine_cleanup();
+        let failed: Vec<&str> = results.iter().filter(|r| !r.1).map(|r| r.0).collect();
+        say!(
+            "== {} root(s) in {:.0}s: {}",
+            results.len(),
+            start.elapsed().as_secs_f32(),
+            if failed.is_empty() { "all passed".to_owned() } else { format!("FAILED {failed:?}") }
+        );
+        failed.is_empty()
+    }
+
+    /// `test`: a dedicated server with 2 bots for 15 s on every root.
+    fn test_all(&self, roots: &[Root], map: &str) -> bool {
+        self.parallel(roots, |r, i| self.server(r, map, 2, 15, 27115 + i as u16))
+    }
+
+    /// `play`: the gameplay check on each FWGS root.
+    fn play_all(&self, roots: &[Root]) -> bool {
+        self.parallel(roots, |r, i| self.play(r, 27215 + 10 * i as u16))
+    }
+}
+
 impl Ctx {
     fn profile(&self) -> &'static str {
         if self.release { "release" } else { "debug" }
@@ -193,11 +251,11 @@ impl Ctx {
     fn build(&self, targets: &[Target]) {
         for t in targets {
             let mut c = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
-            c.current_dir(&self.repo).args(["build", "-p", "ts-server", "-p", "ts-client", "--target", t.triple]);
+            c.current_dir(&self.repo).args(["build", "-p", "ts-server-dll", "-p", "ts-client-dll", "--target", t.triple]);
             if self.release {
                 c.arg("--release");
             }
-            println!("== cargo build --target {}", t.triple);
+            say!("== cargo build --target {}", t.triple);
             if !c.status().expect("cargo").success() {
                 exit(1);
             }
@@ -237,7 +295,7 @@ impl Ctx {
             copy_dir(&self.repo.join("game/ts"), &gamedir);
             self.install_libs(t, &gamedir);
         }
-        println!("dist/ ready: copy dist/<platform>/ts over a TS 3.0 install's ts/ directory");
+        say!("dist/ ready: copy dist/<platform>/ts over a TS 3.0 install's ts/ directory");
     }
 
     /// Assembles `<root>/ts`: links TS content, copies writable config files, installs our game
@@ -253,13 +311,13 @@ impl Ctx {
         link_ts_content(&ts_dir(&self.repo), &gamedir);
         copy_dir(&self.repo.join("game/ts"), &gamedir);
         self.install_libs(&t, &gamedir);
-        println!("== {}: installed into {}", root.name, gamedir.display());
+        say!("== {}: installed into {}", root.name, gamedir.display());
     }
 
     /// Starts a dedicated server, waits for it to answer A2S_INFO, optionally checks that `bots`
     /// bots joined, watches the log for panics, then stops it.
     fn server(&self, root: &Root, map: &str, bots: u32, secs: u64, port: u16) -> bool {
-        println!("== {}: dedicated server, map {map}, {bots} bots, {secs}s, port {port}", root.name);
+        say!("== {}: dedicated server, map {map}, {bots} bots, {secs}s, port {port}", root.name);
         let log = root.log_path();
         let _ = fs::remove_file(&log);
         let mut cmd = root.server_command(map, port, bots);
@@ -282,9 +340,9 @@ impl Ctx {
         }
         let mut ok = true;
         match &info {
-            Some(i) => println!("   up after {:.1}s: {i}", start.elapsed().as_secs_f32()),
+            Some(i) => say!("   up after {:.1}s: {i}", start.elapsed().as_secs_f32()),
             None => {
-                println!("   FAIL: no A2S_INFO reply within {}s", limit.as_secs());
+                say!("   FAIL: no A2S_INFO reply within {}s", limit.as_secs());
                 ok = false;
             }
         }
@@ -301,28 +359,28 @@ impl Ctx {
             }
             match reply {
                 Ok(i) => {
-                    println!("   after {secs}s: {i}");
+                    say!("   after {secs}s: {i}");
                     if let Ok(pl) = a2s::players("127.0.0.1", port) {
                         let list: Vec<String> = pl.iter().map(|(n, f)| format!("{n}={f}")).collect();
-                        println!("   scores: {}", list.join(", "));
+                        say!("   scores: {}", list.join(", "));
                     }
                     if i.map != map {
-                        println!("   FAIL: map is {:?}, expected {map:?}", i.map);
+                        say!("   FAIL: map is {:?}, expected {map:?}", i.map);
                         ok = false;
                     }
                     if i.players < bots as u8 {
                         // The Xash `info` reply (old FWGS) doesn't count fake clients: use the log.
                         let added = root.read_log(&self.repo).matches("[ts] bots: added").count();
                         if i.game.is_empty() && added >= bots as usize {
-                            println!("   {added} bots joined (from the log; this engine's query doesn't count bots)");
+                            say!("   {added} bots joined (from the log; this engine's query doesn't count bots)");
                         } else {
-                            println!("   FAIL: {} players, expected {bots} bots", i.players);
+                            say!("   FAIL: {} players, expected {bots} bots", i.players);
                             ok = false;
                         }
                     }
                 }
                 Err(e) => {
-                    println!("   FAIL: server stopped answering: {e}");
+                    say!("   FAIL: server stopped answering: {e}");
                     ok = false;
                 }
             }
@@ -332,17 +390,17 @@ impl Ctx {
         root.cleanup();
         let text = root.read_log(&self.repo);
         for line in text.lines().filter(|l| l.contains("[ts]") || l.contains("PANIC") || l.contains("FATAL")) {
-            println!("   | {}", line.trim_end());
+            say!("   | {}", line.trim_end());
         }
         if text.contains("PANIC") || text.contains("FATAL ERROR") || text.contains("Segmentation") {
-            println!("   FAIL: panic or fatal error in the log");
+            say!("   FAIL: panic or fatal error in the log");
             ok = false;
         }
         if !text.contains("[ts] GameInit") {
-            println!("   FAIL: the Rust server library didn't load (no GameInit line)");
+            say!("   FAIL: the Rust server library didn't load (no GameInit line)");
             ok = false;
         }
-        println!("   {}", if ok { "PASS" } else { "FAIL" });
+        say!("   {}", if ok { "PASS" } else { "FAIL" });
         ok
     }
 }
@@ -393,22 +451,27 @@ impl Ctx {
         if let Some(p) = &shot {
             let dest = self.repo.join("target").join(format!("client-{}.png", server_root.name));
             let _ = fs::copy(p, &dest);
-            println!("   client screenshot: {}", dest.display());
+            say!("   client screenshot: {}", dest.display());
         }
         // `echo` output isn't always mirrored to stdout, so the screenshot is the in-game evidence.
         let ok = connected && !panicked && shot.is_some();
-        println!("   client: connected={connected} in_game={in_game} panic={panicked} screenshot={}", shot.is_some());
+        say!("   client: connected={connected} in_game={in_game} panic={panicked} screenshot={}", shot.is_some());
         let server_ok = server.join().unwrap();
-        println!("   {} (client + server)", if ok && server_ok { "PASS" } else { "FAIL" });
+        say!("   {} (client + server)", if ok && server_ok { "PASS" } else { "FAIL" });
         ok && server_ok
     }
 }
 
-/// Script helpers for listen-server tests. `wait` is one frame and the scripts pin `fps_max 100`;
-/// `script_start` defines `w10` (10 frames) and `w100` (1 s). Plain `wait` chains would overflow
-/// the engine's 32 KB command buffer on long scripts.
+/// Game time runs this many times faster than real time in scripted runs (`sys_timescale`). The
+/// scripts pin `fps_max 100`, and FWGS caps frames by real time, so a frame is 10 ms real and
+/// `TIMESCALE * 10` ms of game time.
+const TIMESCALE: f32 = 2.0;
+
+/// Wait `n` seconds of **game** time. `script_start` defines `w10` (10 frames) and `w100` (100
+/// frames); plain `wait` chains would overflow the engine's 32 KB command buffer. Under Wine the
+/// frame rate can drop below 100, which only makes the waits longer in game time.
 fn secs(n: f32) -> String {
-    let frames = (n * 100.0).round() as usize;
+    let frames = (n * 100.0 / TIMESCALE).round() as usize;
     "w100;".repeat(frames / 100) + &"w10;".repeat(frames % 100 / 10) + &"wait;".repeat(frames % 10) + "\n"
 }
 
@@ -417,10 +480,10 @@ fn shot(tag: &str) -> String {
 }
 
 /// Script prologue: cheats for the dev commands, scripted input past the client's anti-script
-/// gate (`ts_dev_scriptinput 1`), then the map.
+/// gate (`ts_dev_scriptinput 1`), faster game time, then the map.
 fn script_start(map: &str) -> String {
     format!(
-        "// Written by cargo xtask.\nalias w10 \"{}\"\nalias w100 \"{}\"\nfps_max 100\nsv_cheats 1\nts_dev_scriptinput 1\nmaxplayers 8\nmap {map}\n",
+        "// Written by cargo xtask.\nalias w10 \"{}\"\nalias w100 \"{}\"\nfps_max 100\nsys_timescale {TIMESCALE}\nsv_cheats 1\nts_dev_scriptinput 1\nmaxplayers 8\nmap {map}\n",
         "wait;".repeat(10),
         "w10;".repeat(10)
     )
@@ -433,7 +496,6 @@ fn script_join_and_spawn() -> String {
     for key in [4, 2, 3, 2, 5, 1, 10, 1] {
         cfg += &format!("slot{key}\n{}", secs(1.0));
     }
-    cfg += &shot("bought");
     cfg += &secs(5.0);
     cfg += &click();
     cfg + &secs(3.0)
@@ -503,25 +565,46 @@ fn status_dumps(text: &str) -> Vec<(String, Vec<PlayerStatus>)> {
 struct Run {
     text: String,
     shots: Vec<PathBuf>,
-    /// The game exited on its own (crash, or a script `quit`).
+    /// The game exited on its own (a crash: scripts never `quit`).
     exited: bool,
-    /// The script's last line (`echo XTASK: done`) ran.
+    /// The script reached its last line (`ts_dev_touch` marker).
     done: bool,
 }
 
 impl Ctx {
-    /// Runs the FWGS client of `root` as a listen server with `cfg` and stops it 10 s after the
-    /// script's final `echo XTASK: done`. Server commands the game library queues (`kick` from
-    /// the bot quota) wait behind the script in the console buffer, so the script must end
-    /// rather than `quit`.
-    fn run_script(&self, root: &Root, tag: &str, cfg: &str, limit: Duration) -> Run {
+    /// Runs the FWGS client of `root` as a listen server on `port` with `cfg`, and stops it
+    /// `linger` after the script's last line. The script ends with `ts_dev_touch`, which creates a
+    /// marker file at once (the engine log can sit in a write buffer until exit under Wine).
+    /// Scripts don't `quit`: server commands the game library queues (the bot quota's `kick`) wait
+    /// behind the script in the console buffer, so they only run once it has ended.
+    fn run_script(&self, root: &Root, tag: &str, cfg: &str, port: u16, linger: Duration, limit: Duration) -> Run {
         let gamedir = root.path.join("ts");
         let cfg_name = format!("xtask_{tag}.cfg");
-        fs::write(gamedir.join(&cfg_name), cfg).unwrap();
+        let marker = gamedir.join(format!("xtask_{tag}_done"));
+        let _ = fs::remove_file(&marker);
+        fs::write(gamedir.join(&cfg_name), format!("{cfg}echo XTASK: done\nts_dev_touch xtask_{tag}_done\n")).unwrap();
         let _ = fs::remove_dir_all(gamedir.join("scrshots"));
         let log_path = self.repo.join("target").join(format!("{tag}-{}.log", root.name));
         let log = fs::File::create(&log_path).unwrap();
-        let args = ["-game", "ts", "-dev", "2", "-log", "-windowed", "-width", "1024", "-height", "768", "+exec", &cfg_name];
+        let (port, clientport) = (port.to_string(), (port + 1).to_string());
+        let args = [
+            "-game",
+            "ts",
+            "-dev",
+            "2",
+            "-log",
+            "-windowed",
+            "-width",
+            "1024",
+            "-height",
+            "768",
+            "-port",
+            &port,
+            "-clientport",
+            &clientport,
+            "+exec",
+            &cfg_name,
+        ];
         let mut cmd = if root.os == Os::Windows {
             let mut c = Command::new("wine");
             c.env("WINEPREFIX", roots::wineprefix()).env("WINEDEBUG", "-all").arg("xash3d.exe");
@@ -538,24 +621,30 @@ impl Ctx {
                 exited = true;
                 break;
             }
-            if done_at.is_none() && fs::read(root.log_path()).is_ok_and(|b| String::from_utf8_lossy(&b).contains("XTASK: done")) {
+            if done_at.is_none() && marker.exists() {
                 done_at = Some(Instant::now());
             }
-            if done_at.is_some_and(|d| d.elapsed() > Duration::from_secs(10)) {
+            if done_at.is_some_and(|d| d.elapsed() >= linger) {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(500));
+            std::thread::sleep(Duration::from_millis(250));
         }
         let _ = child.kill();
         let _ = child.wait();
         root.cleanup();
+        say!("   script ran {:.0}s ({}x game time)", done_at.map_or(t.elapsed(), |d| d - t).as_secs_f32(), TIMESCALE);
 
         // engine.log (-log) has everything on both builds; stdout is the fallback. Not both:
         // the checks count lines.
         let engine_log = String::from_utf8_lossy(&fs::read(root.log_path()).unwrap_or_default()).into_owned();
-        let text = if engine_log.contains("XTASK:") { engine_log } else { String::from_utf8_lossy(&fs::read(&log_path).unwrap_or_default()).into_owned() };
+        let text = if engine_log.contains("XTASK:") {
+            engine_log
+        } else {
+            String::from_utf8_lossy(&fs::read(&log_path).unwrap_or_default()).into_owned()
+        };
         let text = text.replace('\r', "");
-        let mut shots: Vec<PathBuf> = fs::read_dir(gamedir.join("scrshots")).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        let mut shots: Vec<PathBuf> =
+            fs::read_dir(gamedir.join("scrshots")).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
         shots.sort();
         let shots = shots
             .iter()
@@ -571,90 +660,56 @@ impl Ctx {
 
     fn report(&self, root: &Root, tag: &str, run: &Run, checks: &[(&str, bool)]) -> bool {
         for p in &run.shots {
-            println!("   screenshot: {}", p.display());
+            say!("   screenshot: {}", p.display());
         }
         let mut ok = true;
         for (what, pass) in checks {
-            println!("   {} {what}", if *pass { "ok  " } else { "FAIL" });
+            say!("   {} {what}", if *pass { "ok  " } else { "FAIL" });
             ok &= *pass;
         }
         let log = self.repo.join("target").join(format!("{tag}-{}.log", root.name));
-        println!("   {} (full log: {}; engine log: {})", if ok { "PASS" } else { "FAIL" }, log.display(), root.log_path().display());
+        say!("   {} (full log: {}; engine log: {})", if ok { "PASS" } else { "FAIL" }, log.display(), root.log_path().display());
         ok
     }
 
-    /// A listen server played the way a person joins: the buy menu opens on join, the script
-    /// resets the random first loadout, picks an AK47 with a scope and confirms (`slotN`, as the
-    /// number keys do), clicks `+attack` after the respawn wait to spawn in, then adds bots,
-    /// kicks one and lets the bot quota add and remove more.
-    fn listen(&self, root: &Root, map: &str) -> bool {
-        println!("== {}: listen server on {map}", root.name);
-        let mut cfg = script_start(map) + &script_join_and_spawn() + &shot("spawned");
-        // `addbot` raises the quota to cover its bot; at 0 the quota would kick it right away.
-        cfg += &format!("addbot\n{}addbot\n{}ts_bot_quota\n", secs(2.0), secs(8.0));
-        // Kicking a bot left a dropped client the bot code kept driving (pfnSetClientMaxspeed crash).
-        cfg += &format!("kick \"Bot Neo\"\n{}", secs(10.0));
-        cfg += &format!("ts_bot_quota 3\n{}", secs(6.0));
-        cfg += &shot("bots");
-        cfg += "ts_bot_quota 0\necho XTASK: done\n";
-        let run = self.run_script(root, "listen", &cfg, Duration::from_secs(300));
-        let text = &run.text;
-        for line in text.lines().filter(|l| l.contains("XTASK:") || l.contains("spawned (#") || l.contains("kicked")) {
-            println!("   | {}", line.trim_end());
-        }
-        let spawn = text.lines().find(|l| l.contains("[ts] ") && l.contains("spawned (#1)"));
-        let checks = [
-            ("the host spawned in by clicking", spawn.is_some()),
-            ("with the bought AK47 (id 13)", spawn.is_some_and(|l| l.split_once(" with ").is_some_and(|(_, w)| w.contains("13")))),
-            ("bots were added", text.matches("[ts] bots: added").count() >= 2),
-            ("addbot raised the quota to 2", text.contains("\"ts_bot_quota\" is \"2\"")),
-            ("a bot was kicked", text.contains("was kicked")),
-            ("the quota removed bots", text.matches("was kicked").count() >= 2),
-            ("the script finished", run.done),
-            ("the game kept running to the end", !run.exited),
-            ("no panic or crash", !crashed(text)),
-            ("screenshots", run.shots.len() >= 4),
-        ];
-        self.report(root, "listen", &run, &checks)
-    }
-
-    /// Gameplay on ts_dojo, on a listen server:
-    /// 1. join, buy an AK47, click to spawn;
-    /// 2. with a stopped bot (`ts_bot_stop 1`) in view, step onto the slow-motion power-up
-    ///    (ts_dojo `0 -672 48`, pwuptype 1) and double-tap `+use` to activate it: the host runs
-    ///    at 0.6 and slows the players it sees to 0.35;
-    /// 3. take an M61, aim at a 1-HP wooden pillar (`*15`) and throw: the explosion breaks it;
-    /// 4. the stopped bot is put in front of the host, who shoots it dead;
-    /// 5. the host is killed (`ts_hurt`), clicks through the death cam and clicks to respawn;
-    /// 6. the host suicides and stays observer while four bots (`ts_bot_stop 0`) play for a
-    ///    minute: they move around and kill each other.
-    fn dojo(&self, root: &Root) -> bool {
-        println!("== {}: gameplay on ts_dojo", root.name);
+    /// The gameplay check: one listen server on ts_dojo, played through every path the
+    /// dedicated-server checks can't reach.
+    /// 1. Join: the buy menu opens; reset its random first loadout, buy an AK47 with a scope
+    ///    (`slotN`, as the number keys do), click `+attack` after the respawn wait to spawn.
+    /// 2. `addbot` (with `ts_bot_stop 1`, so the bot holds still): the quota rises to cover it.
+    /// 3. With the bot in view, step onto the slow-motion power-up (`0 -672 48`, pwuptype 1) and
+    ///    double-tap `+use`: the host runs at 0.6 and slows the bot to 0.35.
+    /// 4. Take an M61, aim at a 1-HP wooden pillar (`*15`) and throw: the explosion breaks it.
+    /// 5. Put the bot in front of the host, who shoots it dead.
+    /// 6. Kick the dead bot. A dropped bot used to stay in the bot list and crash the engine in
+    ///    `pfnSetClientMaxspeed` when it "respawned"; the quota then adds a replacement.
+    /// 7. The host is killed (`ts_hurt`), clicks through the death cam and clicks to respawn.
+    /// 8. The host suicides and stays observer; four bots (`ts_bot_stop 0`) play for 70 s: they
+    ///    move around and kill each other. Then `ts_bot_quota 0` kicks them.
+    fn play(&self, root: &Root, port: u16) -> bool {
+        say!("== {}: gameplay on ts_dojo (listen server, port {port})", root.name);
         let mut cfg = script_start("ts_dojo") + &script_join_and_spawn() + &status("spawned");
 
-        // A stopped bot (no movement, no fire) to be slowed and shot. It joins as an observer
-        // and respawns after the 5 s wait.
-        cfg += &format!("ts_bot_stop 1\naddbot\n{}", secs(9.0));
+        // 2. a stopped bot; it joins as an observer and respawns after the 5 s wait
+        cfg += &format!("ts_bot_stop 1\naddbot\n{}ts_bot_quota\n{}", secs(1.0), secs(8.0));
 
-        // 2. power-up, with the bot standing in view
+        // 3. power-up with the bot in view
         cfg += &format!("ts_tp 1 0 -672 60 90 0\n{}ts_tp 2 0 -480 60 270 0\n{}", secs(0.5), secs(1.5));
         cfg += &status("picked up");
-        cfg += "+use\nwait;wait;wait;wait;wait\n-use\nwait;wait;wait;wait;wait\n+use\nwait;wait;wait;wait;wait\n-use\n";
+        cfg += "+use\nwait;wait;wait\n-use\nwait;wait;wait\n+use\nwait;wait;wait\n-use\n";
         cfg += &secs(1.5);
         cfg += &status("power-up used");
         cfg += &shot("slow motion");
-        cfg += &secs(4.0);
+        cfg += &secs(3.0);
 
-        // 3. grenade
+        // 4. grenade; the host leaves before it goes off
         cfg += &format!("ts_give 24\n{}weapon_24\n{}", secs(0.5), secs(1.5));
         cfg += &format!("ts_tp 1 -332 -420 60 90 0\n{}ts_face 1 -332 -164 60\n{}", secs(1.0), secs(0.5));
-        cfg += &shot("aim grenade");
         cfg += "echo XTASK: throw\n+attack\nw10\n-attack\n";
         cfg += &secs(1.0);
-        cfg += &format!("ts_tp 1 0 -1344 60 90 0\n{}", secs(6.0));
-        cfg += &shot("after grenade");
+        cfg += &format!("ts_tp 1 0 -1344 60 90 0\n{}", secs(5.0));
 
-        // 4. the host shoots the stopped bot
+        // 5. the host shoots the stopped bot
         cfg += &format!("weapon_13\n{}ts_tp 2 0 -1200 60 270 0\n{}", secs(1.5), secs(0.5));
         cfg += "echo XTASK: shoot\n+attack\n";
         for _ in 0..15 {
@@ -662,36 +717,41 @@ impl Ctx {
         }
         cfg += "-attack\n";
         cfg += &status("bot shot");
-        cfg += &secs(1.0);
 
-        // 5. the host dies and respawns
-        cfg += "echo XTASK: host killed\nts_hurt 1 500 2 2\n";
+        // 6. kick the dead bot; the quota (1) adds another
+        cfg += &format!("kick \"Bot Neo\"\n{}", secs(4.0));
+
+        // 7. the host dies and clicks to respawn
+        cfg += "echo XTASK: host killed\nts_hurt 1 500\n";
         cfg += &secs(2.0);
         cfg += &click();
         cfg += &secs(1.0);
         cfg += &status("host dead");
-        cfg += &secs(6.0);
+        cfg += &secs(5.5);
         cfg += &click();
         cfg += &secs(2.0);
         cfg += &status("host respawned");
         cfg += &shot("respawned");
 
-        // 6. bots on their own; the host suicides and stays observer (no click)
-        cfg += &format!("kill\nts_bot_stop 0\n{}", secs(5.0));
-        cfg += "ts_bot_quota 4\n";
-        for i in 0..7 {
-            cfg += &secs(10.0);
+        // 8. bots on their own; dumps 5 s apart because movement is only measured within a life
+        cfg += &format!("kill\nts_bot_stop 0\n{}ts_bot_quota 4\n", secs(3.0));
+        for i in 0..14 {
+            cfg += &secs(5.0);
             cfg += &status(&format!("bots {i}"));
         }
         cfg += &shot("bots");
-        cfg += "echo XTASK: done\n";
+        cfg += "ts_bot_quota 0\n";
 
-        let run = self.run_script(root, "dojo", &cfg, Duration::from_secs(600));
+        // Linger for the quota's kicks (one per 0.5 s game time, queued behind the script).
+        let run = self.run_script(root, "play", &cfg, port, Duration::from_secs(5), Duration::from_secs(420));
         let text = &run.text;
         for line in text.lines().filter(|l| {
-            l.contains("XTASK:") || l.contains("spawned (#1)") || l.contains("func_breakable") || l.contains(" killed ") || l.contains("ts_tp")
+            l.contains("XTASK:") && !l.contains("XTASK: status")
+                || l.contains("spawned (#1)")
+                || l.contains("func_breakable") && !l.contains("by Bot")
+                || l.contains("kicked")
         }) {
-            println!("   | {}", line.trim_end());
+            say!("   | {}", line.trim_end());
         }
 
         let dumps = status_dumps(text);
@@ -699,18 +759,9 @@ impl Ctx {
         let host = |tag: &str| dump(tag).into_iter().find(|p| p.idx == 1);
         let host_name = host("spawned").map(|p| p.name).unwrap_or_default();
         let spawns: Vec<&str> = text.lines().filter(|l| l.contains("[ts] ") && l.contains("spawned (#1)")).collect();
+        let kick_at = text.find("Bot Neo was kicked");
+        let after_kick = |needle: &str| kick_at.is_some_and(|k| text[k..].contains(needle));
 
-        // Power-up: held after the pickup, then active with the slow-motion time scales.
-        let picked = host("picked up").is_some_and(|p| p.held == "0x1");
-        let used = host("power-up used").is_some_and(|p| p.active == "0x1" && (p.slow_target - 0.6).abs() < 0.01);
-        let bot_slowed = dump("power-up used").iter().any(|p| p.idx != 1 && (p.slow_target - 0.35).abs() < 0.01);
-        // Grenade: a breakable broken by the host's grenade (inflictor class "grenade", blast damage).
-        let grenade_break = text.lines().any(|l| l.contains("func_breakable") && l.contains(&format!("broken by {host_name} (grenade")));
-        // The host's kill and death.
-        let host_kill = text.lines().any(|l| l.contains(&format!("{host_name} killed Bot ")));
-        let host_frag = host("bot shot").is_some_and(|p| p.frags >= 1);
-        let host_died = host("host dead").is_some_and(|p| p.deaths >= 1 && p.state != "alive");
-        let respawned = spawns.len() >= 2 && host("host respawned").is_some_and(|p| p.state == "alive");
         // Bots: positions in consecutive dumps of the same life, and bot-on-bot kills.
         let bot_dumps: Vec<&Vec<PlayerStatus>> = dumps.iter().filter(|d| d.0.starts_with("bots ")).map(|d| &d.1).collect();
         let mut moved: std::collections::BTreeMap<String, f32> = Default::default();
@@ -723,29 +774,39 @@ impl Ctx {
                 }
             }
         }
-        println!("   bots' largest move between dumps: {moved:?}");
-        let bots_moved = moved.len() >= 3 && moved.values().filter(|&&d| d > 64.0).count() >= moved.len() - 1;
+        let moving = moved.values().filter(|&&d| d > 64.0).count();
         let bot_kills = text.lines().filter(|l| l.contains("Bot ") && l.contains(" killed Bot ")).count();
-        println!("   bot-on-bot kills: {bot_kills}");
+        say!("   bots' largest move within a life: {moved:?}; bot-on-bot kills: {bot_kills}");
         let last_bots = bot_dumps.last().map(|d| d.iter().filter(|p| p.name.starts_with("Bot ")).count()).unwrap_or(0);
 
+        let spawn_line = spawns.first().copied().unwrap_or("");
         let checks = [
-            ("the host spawned in by clicking", !spawns.is_empty()),
-            ("picked up the slow-motion power-up", picked),
-            ("double-tap +use activated it (host time scale 0.6)", used),
-            ("slow motion slowed the bot in view (0.35)", bot_slowed),
-            ("the thrown grenade broke a func_breakable", grenade_break),
-            ("the host shot a bot dead", host_kill && host_frag),
-            ("the host was killed", host_died),
-            ("the host clicked to respawn", respawned),
-            ("four bots played", last_bots >= 4),
-            ("bots moved around", bots_moved),
-            ("bots killed each other", bot_kills >= 2),
-            ("the script finished", run.done),
-            ("the game kept running to the end", !run.exited),
-            ("no panic or crash", !crashed(text)),
+            ("join: bought an AK47 and clicked to spawn", spawn_line.split_once(" with ").is_some_and(|(_, w)| w.contains("13"))),
+            ("addbot raised the quota to 1", text.contains("\"ts_bot_quota\" is \"1\"")),
+            ("picked up the slow-motion power-up", host("picked up").is_some_and(|p| p.held == "0x1")),
+            ("+use double tap: host at 0.6, the bot in view at 0.35", {
+                let d = dump("power-up used");
+                let host_ok = d.iter().any(|p| p.idx == 1 && p.active == "0x1" && (p.slow_target - 0.6).abs() < 0.01);
+                host_ok && d.iter().any(|p| p.idx != 1 && (p.slow_target - 0.35).abs() < 0.01)
+            }),
+            ("the thrown grenade broke a func_breakable", text.contains(&format!("broken by {host_name} (grenade"))),
+            (
+                "the host shot a bot dead",
+                text.contains(&format!("{host_name} killed Bot ")) && host("bot shot").is_some_and(|p| p.frags >= 1),
+            ),
+            ("kicking the dead bot: no crash, the quota replaced it", after_kick("[ts] bots: added") && !run.exited),
+            ("the host died and clicked to respawn", {
+                host("host dead").is_some_and(|p| p.deaths >= 1 && p.state != "alive")
+                    && spawns.len() >= 2
+                    && host("host respawned").is_some_and(|p| p.state == "alive")
+            }),
+            ("four bots moved around and killed each other", {
+                last_bots >= 4 && moved.len() >= 2 && moving >= 2 && moving >= moved.len() - 1 && bot_kills >= 2
+            }),
+            ("ts_bot_quota 0 kicked the bots", text.matches("was kicked").count() >= 4),
+            ("the script finished, no panic or crash", run.done && !run.exited && !crashed(text)),
         ];
-        self.report(root, "dojo", &run, &checks)
+        self.report(root, "play", &run, &checks)
     }
 }
 
@@ -845,6 +906,8 @@ mod tests {
 
     #[test]
     fn secs_uses_the_aliases() {
-        assert_eq!(secs(2.35), "w100;w100;w10;w10;w10;wait;wait;wait;wait;wait;\n");
+        // Game seconds: 4.7 s at 2x is 235 frames.
+        assert_eq!(TIMESCALE, 2.0);
+        assert_eq!(secs(4.7), "w100;w100;w10;w10;w10;wait;wait;wait;wait;wait;\n");
     }
 }

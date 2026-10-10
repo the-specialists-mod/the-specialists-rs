@@ -8,6 +8,7 @@ use crate::entities::{self, link_entities};
 use crate::messages::{self, Msg};
 use crate::player;
 use crate::world::{self, Cx, Entity};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
@@ -53,7 +54,7 @@ pub struct Grenade {
 
 /// `CM61Grenade::CreateGrenade(player, 3.0, origin, velocity)`, plus the throw/roll spin.
 pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: bool) {
-    let slow = unsafe { (*owner).v.fuser1 };
+    let slow = owner.v().fuser1;
     spawn_entity::<Grenade>(c"m61_grenade", |g, cx| {
         g.owner = Some(owner);
         g.fuse = 3.0;
@@ -146,7 +147,7 @@ impl Entity for Grenade {
 /// chip players). `skip_players` for knives.
 fn impact_damage(me: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
     let e = engine();
-    let v = unsafe { &(*me).v };
+    let v = me.v();
     let s = speed(v);
     if s <= 64.0 {
         return;
@@ -159,7 +160,7 @@ fn impact_damage(me: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
     if !any_entity && e.is_player_edict(tr.pHit) {
         return;
     }
-    let target = unsafe { &(*tr.pHit).v };
+    let target = tr.pHit.v();
     let dmg = s * k;
     if target.takedamage != 0.0 && target.health <= dmg {
         let mut info = DamageInfo::new(me, me, dmg, bits);
@@ -180,7 +181,7 @@ pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32,
         if p.is_null() {
             continue;
         }
-        let v = unsafe { &(*p).v };
+        let v = p.v();
         if v.flags & FL_ONGROUND as i32 == 0 {
             continue;
         }
@@ -200,7 +201,7 @@ pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32,
 
 /// `UTIL_ScreenFade` through TS's `TSFade` message (4.12 fixed-point times).
 pub fn screen_fade(p: *mut edict_t, color: [u8; 3], fade: f32, hold: f32, alpha: u8, flags: i32) {
-    if unsafe { (*p).v.flags } & FL_FAKECLIENT as i32 != 0 {
+    if p.v().flags & FL_FAKECLIENT as i32 != 0 {
         return;
     }
     let fixed = |v: f32| ((v * 4096.0) as i32).clamp(0, 0xffff);
@@ -226,15 +227,7 @@ pub fn explode(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t, dm
     let mut org = origin;
     org[2] += 1.0;
     screen_shake(org, dmg, 80.0, 1.0, r_max + r_max);
-    messages::all(Msg::TsFrags)
-        .coord(org[0])
-        .coord(org[1])
-        .coord(org[2])
-        .coord(dmg.round_ties_even())
-        .coord(0.0)
-        .coord(0.0)
-        .byte(1)
-        .end();
+    messages::all(Msg::TsFrags).coord(org[0]).coord(org[1]).coord(org[2]).coord(dmg.round_ties_even()).coord(0.0).coord(0.0).byte(1).end();
     let falloff = dmg / (r_max - r_full);
     let mut ent = std::ptr::null_mut();
     loop {
@@ -245,7 +238,7 @@ pub fn explode(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t, dm
         if ent == inflictor {
             continue;
         }
-        let v = unsafe { &mut (*ent).v };
+        let v = ent.v();
         let classname = e.string(v.classname);
         if classname.to_bytes() == b"WorldGun" {
             // knocked around by the blast
@@ -295,7 +288,7 @@ fn hit(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut edict_t, d:
     info.pos = pos;
     info.weapon = id::M61 as i32;
     let ok = damage::apply(victim, &info);
-    super::assets::debug(|| format!("explosion damage {d:.1} applied={ok} health={}", unsafe { (*victim).v.health }));
+    super::assets::debug(|| format!("explosion damage {d:.1} applied={ok} health={}", victim.v().health));
 }
 
 // ---- thrown knives --------------------------------------------------------------------------
@@ -315,7 +308,7 @@ pub struct Knife {
 /// `KnifeFire`/`KatanaThrow` throw: from the eyes + 32 forward + 1 right (traced), 1900 u/s.
 pub fn throw_blade(owner: *mut edict_t, btype: i32) {
     let e = engine();
-    let v = unsafe { &(*owner).v };
+    let v = owner.v();
     let (fwd, right, _) = spread::angle_vectors(v.v_angle);
     let eye = spread::add(v.origin, v.view_ofs);
     let from = spread::add(eye, right);
@@ -386,7 +379,7 @@ impl Entity for Knife {
             _ => (c"models/w_sealknife.mdl", 0.3),
         };
         e.set_model(edict, model);
-        let owner_slow = self.owner.map(|o| unsafe { (*o).v.fuser1 }).unwrap_or(1.0);
+        let owner_slow = self.owner.map(|o| o.v().fuser1).unwrap_or(1.0);
         let pev = cx.pev();
         pev.classname = e.alloc_string(c"knife");
         pev.gravity = gravity;
@@ -444,7 +437,7 @@ impl Knife {
         if Some(other) == self.owner || other.is_null() {
             return;
         }
-        let ov = unsafe { &mut (*other).v };
+        let ov = other.v();
         if ov.effects & EF_NODRAW as i32 != 0 {
             return;
         }
@@ -529,7 +522,7 @@ impl Knife {
             }
             return;
         }
-        let ov = unsafe { &(*other).v };
+        let ov = other.v();
         if self.flying || ov.button & IN_USE as i32 == 0 || ov.effects & EF_NODRAW as i32 != 0 {
             return;
         }

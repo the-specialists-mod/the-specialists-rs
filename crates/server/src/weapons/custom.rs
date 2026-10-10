@@ -99,7 +99,7 @@ pub fn inform(to: Option<*mut edict_t>) {
     }
 }
 
-pub unsafe extern "C" fn cmd_loadweapons() {
+pub extern "C" fn cmd_loadweapons() {
     let e = engine();
     if e.cmd_argc() < 2 {
         e.print("usage: loadweapons <file>\n");
@@ -111,7 +111,7 @@ pub unsafe extern "C" fn cmd_loadweapons() {
     }
 }
 
-pub unsafe extern "C" fn cmd_saveweapons() {
+pub extern "C" fn cmd_saveweapons() {
     let e = engine();
     if e.cmd_argc() < 2 {
         e.print("usage: saveweapons <file>\n");

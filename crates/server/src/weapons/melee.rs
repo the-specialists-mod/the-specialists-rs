@@ -10,6 +10,7 @@ use crate::damage::{self, DamageInfo};
 use crate::messages::{self, Msg};
 use crate::player::Player;
 use crate::world::{self, Cx};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
@@ -48,7 +49,7 @@ fn is_bsp(e: *mut edict_t) -> bool {
     if e.is_null() {
         return true;
     }
-    let v = unsafe { &(*e).v };
+    let v = e.v();
     v.solid == SOLID_BSP as i32 || v.movetype == MOVETYPE_PUSHSTEP as i32
 }
 
@@ -67,7 +68,7 @@ pub fn check_hull(start: Vec3, end: Vec3, hull: i32, skip: *mut edict_t) -> Trac
 }
 
 fn alive(e: *mut edict_t) -> bool {
-    let v = unsafe { &(*e).v };
+    let v = e.v();
     v.deadflag == DEAD_NO as i32 && v.health > 0.0
 }
 
@@ -132,8 +133,8 @@ fn hold(kind: MeleeKind, attacker: *mut edict_t, victim: *mut edict_t, atk_block
             emit(who, CHAN_BODY, c"player/kungfuhit.wav", 1.0, 0.8, 100);
         }
         MeleeKind::Knife | MeleeKind::Katana => {
-            let a = unsafe { &(*attacker).v };
-            let v = unsafe { &(*victim).v };
+            let a = attacker.v();
+            let v = victim.v();
             let mut mid = spread::scale(spread::add(a.origin, v.origin), 0.5);
             mid[2] += 20.0;
             sparks(mid);
@@ -158,7 +159,7 @@ pub fn sparks(pos: Vec3) {
 /// One melee attack by `attacker` (the player whose gun asked for it).
 pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeResult {
     let e = engine();
-    let pev = unsafe { &(*attacker).v };
+    let pev = attacker.v();
     if hit.kind == MeleeKind::KungFu && (e.random_long(10, 80) as f32) < hit.damage {
         messages::pvs(Msg::TsMBlur, pev.origin).byte(e.index_of(attacker)).byte(if hit.damage > 50.0 { 2 } else { 1 }).end();
     }
@@ -174,7 +175,7 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
         return MeleeResult::Miss;
     }
     let victim = tr.pHit;
-    let v = unsafe { &mut (*victim).v };
+    let v = victim.v();
     if v.takedamage == 0.0 || v.effects & EF_NODRAW as i32 != 0 {
         return MeleeResult::Miss;
     }
@@ -207,8 +208,8 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
 
 /// `v.vel += |a.vel| * dir(a -> v)`, `v.vel.z = 235`.
 fn knockback(attacker: *mut edict_t, victim: *mut edict_t) {
-    let a = unsafe { &(*attacker).v };
-    let v = unsafe { &mut (*victim).v };
+    let a = attacker.v();
+    let v = victim.v();
     let speed = spread::length(a.velocity);
     let dir = spread::normalize(spread::sub(v.origin, a.origin));
     v.velocity = spread::ma(v.velocity, speed, dir);
@@ -238,7 +239,7 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     if victim == p.inv.sv.lunge_victim {
         return;
     }
-    let v = unsafe { &(*victim).v };
+    let v = victim.v();
     if v.takedamage == 0.0 || v.effects & EF_NODRAW as i32 != 0 {
         return;
     }

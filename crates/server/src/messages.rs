@@ -4,8 +4,8 @@
 use goldsrc::Global;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
-pub use shared::protocol::Msg;
 use shared::protocol::MESSAGES;
+pub use shared::protocol::Msg;
 use std::cell::Cell;
 
 static IDS: Global<[Cell<i32>; 64]> = Global([const { Cell::new(0) }; 64]);

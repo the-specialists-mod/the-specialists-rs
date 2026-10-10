@@ -2,6 +2,7 @@
 
 use super::{assets, bullets};
 use crate::damage::{self, DamageInfo};
+use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
@@ -24,7 +25,7 @@ pub fn trace_expanded(start: Vec3, end: Vec3, skip: *mut edict_t) -> TraceResult
         if p.is_null() {
             continue;
         }
-        let v = unsafe { &mut (*p).v };
+        let v = p.v();
         saved.push((p, v.absmin, v.absmax));
         for k in 0..3 {
             v.absmin[k] -= 32.0;
@@ -33,7 +34,7 @@ pub fn trace_expanded(start: Vec3, end: Vec3, skip: *mut edict_t) -> TraceResult
     }
     let tr = e.trace_line(start, end, DONT_IGNORE_MONSTERS, skip);
     for (p, lo, hi) in saved {
-        let v = unsafe { &mut (*p).v };
+        let v = p.v();
         v.absmin = lo;
         v.absmax = hi;
     }
@@ -59,8 +60,14 @@ pub fn bullet_damage(shooter: *mut edict_t, tr: &TraceResult, dmg: f32, dir: Vec
     let ok = damage::apply(hit, &info);
     assets::debug(|| {
         let e = engine();
-        let v = unsafe { &(*hit).v };
-        format!("hit {} #{} dmg={dmg:.2} hitgroup={} bits={bits:#x} applied={ok} health={}", e.string(v.classname).to_string_lossy(), e.index_of(hit), tr.iHitgroup, v.health)
+        let v = hit.v();
+        format!(
+            "hit {} #{} dmg={dmg:.2} hitgroup={} bits={bits:#x} applied={ok} health={}",
+            e.string(v.classname).to_string_lossy(),
+            e.index_of(hit),
+            tr.iHitgroup,
+            v.health
+        )
     });
 }
 
@@ -68,8 +75,10 @@ pub fn bullet_damage(shooter: *mut edict_t, tr: &TraceResult, dmg: f32, dir: Vec
 /// simulated bullets (`realbullet`, or the shooter in slow motion).
 pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
     let e = engine();
-    assets::debug(|| format!("shoot weapon={} pellets={} spread={:.5} dmg={} seed={}", shot.weapon, shot.pellets, shot.spread, shot.damage, shot.seed));
-    let pev = unsafe { &(*shooter).v };
+    assets::debug(|| {
+        format!("shoot weapon={} pellets={} spread={:.5} dmg={} seed={}", shot.weapon, shot.pellets, shot.spread, shot.damage, shot.seed)
+    });
+    let pev = shooter.v();
     let real = assets::cvars().realbullet != 0.0 || pev.fuser1 < 0.99;
     let (fwd, right, up) = spread::angle_vectors(pev.v_angle);
     let mut src = gun_position(pev);

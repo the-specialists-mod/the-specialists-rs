@@ -15,14 +15,29 @@ use crate::player::{Player, with_player};
 use crate::rules::{self, cvars, lifecycle};
 use crate::world::{self, Cx};
 use goldsrc::Global;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::{IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use goldsrc::util::to_cstring;
 use std::cell::RefCell;
 
 const NAMES: &[&str] = &[
-    "Bot Neo", "Bot Trinity", "Bot Morpheus", "Bot Niobe", "Bot Ghost", "Bot Switch", "Bot Apoc", "Bot Tank", "Bot Dozer",
-    "Bot Mouse", "Bot Cypher", "Bot Link", "Bot Seraph", "Bot Sati", "Bot Rama", "Bot Kid",
+    "Bot Neo",
+    "Bot Trinity",
+    "Bot Morpheus",
+    "Bot Niobe",
+    "Bot Ghost",
+    "Bot Switch",
+    "Bot Apoc",
+    "Bot Tank",
+    "Bot Dozer",
+    "Bot Mouse",
+    "Bot Cypher",
+    "Bot Link",
+    "Bot Seraph",
+    "Bot Sati",
+    "Bot Rama",
+    "Bot Kid",
 ];
 
 /// Per-bot state (kept on the `Player`).
@@ -78,7 +93,7 @@ pub fn server_deactivate() {
 /// so also require a live user id.
 fn fake_clients() -> Vec<*mut edict_t> {
     let eng = engine();
-    eng.clients().filter(|&e| unsafe { (*e).v.flags } & FL_FAKECLIENT as i32 != 0 && eng.user_id(e) != -1).collect()
+    eng.clients().filter(|&e| e.v().flags & FL_FAKECLIENT as i32 != 0 && eng.user_id(e) != -1).collect()
 }
 
 /// The `addbot` server command: one more bot, with `ts_bot_quota` raised to cover it. Otherwise
@@ -109,9 +124,9 @@ pub fn add_bot() {
     }
     // A fake client gets no connect/put-in-server from the engine: do what a real client gets.
     rules::client_connect(e, &cname, c"127.0.0.1");
-    unsafe {
-        (*e).v.flags |= FL_FAKECLIENT as i32;
-        world::create::<Player>(&mut (*e).v);
+    {
+        e.v().flags |= FL_FAKECLIENT as i32;
+        world::create::<Player>(e.v());
     }
     world::with::<Player, ()>(e, |p| p.bot = Some(Bot::default()));
     world::dispatch(e, |ent, cx| ent.spawn(cx));
@@ -152,7 +167,7 @@ pub fn start_frame() {
         let cmd = with_player(e, |p, cx| think(p, cx)).flatten();
         if let Some(mut c) = cmd {
             // `ts_bot_stop 1`: no movement or buttons; dead and observing bots still respawn.
-            if stop && unsafe { (*e).v.deadflag } == DEAD_NO as i32 && unsafe { (*e).v.iuser1 } == 0 {
+            if stop && e.v().deadflag == DEAD_NO as i32 && e.v().iuser1 == 0 {
                 (c.forward, c.side, c.buttons) = (0.0, 0.0, 0);
             }
             eng.run_player_move(e, c.angles, c.forward, c.side, 0.0, c.buttons, 0, msec);
@@ -227,7 +242,7 @@ fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
             if o == me {
                 continue;
             }
-            let ov = unsafe { &(*o).v };
+            let ov = o.v();
             if !rules::alive(ov) || ov.iuser1 != 0 || ov.effects & EF_NODRAW as i32 != 0 || rules::teams::same_team(me, o) {
                 continue;
             }
@@ -260,7 +275,8 @@ fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
             // Weapon handling: reload an empty magazine, switch to the other gun when out of
             // ammo, close in when only kung fu is left.
             let gun = &p.inv.gun;
-            let melee = gun.current == 0 || matches!(shared::weapons::kind_of(gun.current), shared::weapons::kind::KNIFE | shared::weapons::kind::KATANA);
+            let melee = gun.current == 0
+                || matches!(shared::weapons::kind_of(gun.current), shared::weapons::kind::KNIFE | shared::weapons::kind::KATANA);
             let empty = gun.slot().is_some_and(|s| s.clip <= 0 && s.in_reload == 0);
             if empty && gun.current_reserve() > 0 {
                 if now >= bot.next_reload {
@@ -271,7 +287,6 @@ fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
                 switch_from_empty(p, cx);
             } else if bot.fire_toggle && on_target && (!melee || d < 96.0) {
                 buttons |= IN_ATTACK as u16;
-
             }
             // Fight in slow motion when holding a power-up.
             if p.ts.held != 0 && p.active_powerup == 0 && d < 1500.0 {
@@ -406,7 +421,7 @@ fn nearest_enemy(me: *mut edict_t, origin: [f32; 3]) -> Option<[f32; 3]> {
     rules::players()
         .into_iter()
         .filter(|&o| o != me)
-        .map(|o| unsafe { &(*o).v })
+        .map(|o| o.v())
         .filter(|ov| rules::alive(ov) && ov.iuser1 == 0)
         .map(|ov| (rules::dist(origin, ov.origin), ov.origin))
         .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -423,7 +438,7 @@ fn find_item(me: *mut edict_t, eye: [f32; 3]) -> Option<[f32; 3]> {
         if it.is_null() {
             break;
         }
-        let v = unsafe { &(*it).v };
+        let v = it.v();
         if v.effects & EF_NODRAW as i32 != 0 || v.solid != SOLID_TRIGGER as i32 {
             continue;
         }

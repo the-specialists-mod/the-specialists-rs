@@ -282,11 +282,11 @@ covers:
 ## 6. Integration notes (changes needed outside this package)
 
 1. **Keyvalue order.** The SDK's `DispatchKeyValue` parses entvars fields before the class
-   `KeyValue`. `lib.rs::key_value` does it the other way round.
+   `KeyValue`. `server-dll`'s `key_value` callback does it the other way round.
    * `multi_manager` works around this itself: it treats any unknown key as a target name, so it
      calls `entvars_key_value` first.
    * Other classes don't care.
-   * Changing `lib.rs` to entvars-first would match the SDK (decomp doc gamerules-entities.md §8
+   * Changing that callback to entvars-first would match the SDK (decomp doc gamerules-entities.md §8
      says the same).
 2. **`Activate`.** `ServerActivate` should call an `Entity::activate` hook on every entity, as
    `CBaseEntity::Activate` does in the SDK. Until then, three classes emulate it:
@@ -325,8 +325,7 @@ covers:
    `WorldGun` entities around, and the "spectacular" slow-motion point.
 9. **`entities::fire_targets`** doesn't skip `FL_KILLME` entities. The SDK `FireTargets` does. This
    is a small fix in `entities/mod.rs`.
-10. **`pfnResetGlobalState`.** It should call `stock::base::reset_global_state()`. It's a no-op in
-    `lib.rs` today.
+10. **`pfnResetGlobalState`.** Calls `stock::base::reset_global_state()` (done at integration).
 11. **Client hooks** (HUD package): `TSFrags` (glass debris and explosions), `TSFade`, `ItemPickup`,
     and the `events/train.sc` handler.
 12. **Precache** (player package): `player/pl_wade1.wav`, `pl_wade2.wav` and the other SDK

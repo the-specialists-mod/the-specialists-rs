@@ -13,6 +13,7 @@ pub mod triggers;
 use super::link_entities;
 use crate::player::Player;
 use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -150,7 +151,7 @@ pub fn respawn_entities() {
             if it.is_null() {
                 break;
             }
-            let v = unsafe { &mut (*it).v };
+            let v = it.v();
             if v.effects & EF_NODRAW as i32 != 0 {
                 v.nextthink = eng.time() + 0.1;
             }

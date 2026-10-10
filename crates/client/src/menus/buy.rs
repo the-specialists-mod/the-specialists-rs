@@ -66,7 +66,14 @@ impl Config {
         }
         for (i, e) in c.entries.iter_mut().enumerate() {
             let o = 0x80 + i * 0x38;
-            *e = Entry { is_item: b[o] != 0, id: rd(b, o + 4), att: rd(b, o + 8) as u32, cost: rd(b, o + 0xc), akimbo: b[o + 0x30] != 0, count: rd(b, o + 0x34) };
+            *e = Entry {
+                is_item: b[o] != 0,
+                id: rd(b, o + 4),
+                att: rd(b, o + 8) as u32,
+                cost: rd(b, o + 0xc),
+                akimbo: b[o + 0x30] != 0,
+                count: rd(b, o + 0x34),
+            };
         }
         c.total = rd(b, 0x400);
         c.slots = rd(b, 0x404);
@@ -162,11 +169,7 @@ pub fn weapon_restricted(id: i32, mask: i32) -> bool {
 
 /// `FUN_100365e0`: restricted for buying.
 pub fn restricted(id: i32, item: bool, r: &Rules) -> bool {
-    if !item {
-        weapon_restricted(id, r.restriction) || (r.gamemode < 2 && id == 24)
-    } else {
-        r.gamemode < 2 && id & ITEM_STEALTH != 0
-    }
+    if !item { weapon_restricted(id, r.restriction) || (r.gamemode < 2 && id == 24) } else { r.gamemode < 2 && id & ITEM_STEALTH != 0 }
 }
 
 fn att_price(att: u32) -> i32 {
@@ -255,7 +258,8 @@ pub mod page {
 /// Category table (`+0x2d6c`, 12 rows × 5 categories, set in `Init` 10036200).
 pub const TABLE: [[i32; 5]; 12] = {
     let mut t = [[-1; 5]; 12];
-    let cols: [&[i32]; 5] = [&[1, 9, 12, 14, 2, 21, 22, 28, 31, 36], &[3, 6, 7, 17, 19, 23], &[5, 13, 15, 27, 18], &[4, 11, 20, 26, 33], &[24, 25, 32, 34, 35]];
+    let cols: [&[i32]; 5] =
+        [&[1, 9, 12, 14, 2, 21, 22, 28, 31, 36], &[3, 6, 7, 17, 19, 23], &[5, 13, 15, 27, 18], &[4, 11, 20, 26, 33], &[24, 25, 32, 34, 35]];
     let mut c = 0;
     while c < 5 {
         let mut r = 0;
@@ -534,7 +538,18 @@ impl BuyMenu {
         self.add(melee, 0, full, false, r);
         let p = if p <= 0.0 { rng.float(0.0, 1.0) } else { p };
         if 0.1 < p && p < 0.9 {
-            const PISTOLS: [(i32, bool); 10] = [(36, false), (1, false), (9, true), (12, false), (14, true), (2, true), (21, false), (22, false), (28, false), (31, false)];
+            const PISTOLS: [(i32, bool); 10] = [
+                (36, false),
+                (1, false),
+                (9, true),
+                (12, false),
+                (14, true),
+                (2, true),
+                (21, false),
+                (22, false),
+                (28, false),
+                (31, false),
+            ];
             let (id, can_akimbo) = PISTOLS[rng.long(0, 9).clamp(0, 9) as usize];
             let ak = can_akimbo && rng.long(0, 1) != 0;
             let att = Self::random_attachments(id, rng);
@@ -581,11 +596,7 @@ impl BuyMenu {
                 }
                 let swap = if !a.is_item && !b.is_item {
                     let (aa, ab) = (ammo_of(a.id), ammo_of(b.id));
-                    if aa == 0 || ab == 0 {
-                        if aa == 0 && ab == 0 { b.cost < a.cost } else { aa != 0 }
-                    } else {
-                        b.cost < a.cost
-                    }
+                    if aa == 0 || ab == 0 { if aa == 0 && ab == 0 { b.cost < a.cost } else { aa != 0 } } else { b.cost < a.cost }
                 } else {
                     b.cost < a.cost
                 };
@@ -797,7 +808,11 @@ pub fn attachment_summary(att: u32, loc: &dyn Fn(&str) -> String) -> String {
     if att == 0 {
         return String::new();
     }
-    let parts: Vec<String> = [(1, "#Buy_Sil"), (2, "#Buy_Las"), (4, "#Buy_Fla"), (8, "#Buy_Sco")].iter().filter(|(b, _)| att & b != 0).map(|(_, k)| loc(k)).collect();
+    let parts: Vec<String> = [(1, "#Buy_Sil"), (2, "#Buy_Las"), (4, "#Buy_Fla"), (8, "#Buy_Sco")]
+        .iter()
+        .filter(|(b, _)| att & b != 0)
+        .map(|(_, k)| loc(k))
+        .collect();
     format!("({})", parts.join(","))
 }
 

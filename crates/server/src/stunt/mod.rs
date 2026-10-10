@@ -19,6 +19,7 @@ use crate::commands::Args;
 use crate::messages::{self, Msg};
 use crate::player::Player;
 use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::pm::Vec3;
@@ -152,7 +153,7 @@ fn is_alive(cx: &mut Cx) -> bool {
 /// TS `EMIT_SOUND_DYN` (0xe0a8c): the pitch follows the emitter's time scale,
 /// `pitch * (k * fuser1 + 1 - k)`.
 pub fn emit_sound_dyn(e: *mut edict_t, channel: i32, sample: &CStr, volume: f32, attn: f32, pitch: i32, k: f32) {
-    let ts = unsafe { (*e).v.fuser1 };
+    let ts = e.v().fuser1;
     let rest = 1.0 - k;
     let k = if ts != 0.0 { k * ts } else { k };
     let pitch = ((k + rest) * pitch as f32).round_ties_even() as i32;
@@ -229,7 +230,7 @@ pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32,
         if pl.is_null() {
             continue;
         }
-        let v = unsafe { &(*pl).v };
+        let v = pl.v();
         if v.flags & FL_ONGROUND as i32 == 0 {
             continue;
         }
@@ -335,7 +336,8 @@ fn debug_air(p: &mut Player, cx: &mut Cx) {
         (None, false) => p.stunt.debug_air = Some((z, z)),
         (Some((_, top)), false) => *top = top.max(z),
         (Some((start, top)), true) => {
-            let msg = format!("[stunt] landed: rise {:.2} (takeoff z {:.2}, apex z {:.2}, landing z {:.2})\n", *top - *start, *start, *top, z);
+            let msg =
+                format!("[stunt] landed: rise {:.2} (takeoff z {:.2}, apex z {:.2}, landing z {:.2})\n", *top - *start, *start, *top, z);
             p.stunt.debug_air = None;
             engine().print(&msg);
         }

@@ -164,7 +164,6 @@ pub fn select_next_prev(h: &mut Hud, next: bool, fastswitch: bool) -> Option<Str
 static HEART: goldsrc::Global<Cell<(i32, f32)>> = goldsrc::Global(Cell::new((0, 0.0)));
 static BREATH: goldsrc::Global<Cell<(i32, f32)>> = goldsrc::Global(Cell::new((0, 0.0)));
 
-
 /// `Think` (1004ce10) sound part: `sound/player/heartbeat1.wav` while the time scale is below 1,
 /// `sound/player/breathe2.wav` while kung-fu power is below 50; both fade out when the cause
 /// ends (volume −0.01 / −0.005 per frame with `SND_CHANGE_VOL`).
@@ -270,7 +269,8 @@ fn draw_weapon_info(dc: &Dc, h: &Hud) {
     let x = dc.w() - 136;
     let mut y = dc.h() - 8;
     let row = 20;
-    let active = crate::state::with(|s| s.active_items.get(engine().local_player().map_or(0, |p| p.index as usize)).copied().unwrap_or(0)) as u32;
+    let active =
+        crate::state::with(|s| s.active_items.get(engine().local_player().map_or(0, |p| p.index as usize)).copied().unwrap_or(0)) as u32;
     for (bit, label) in ATTACHMENT_LABELS.iter().enumerate() {
         let m = 1u32 << bit;
         if h.attachments & m == 0 {

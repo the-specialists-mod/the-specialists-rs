@@ -5,6 +5,7 @@
 use crate::messages::Msg;
 use crate::rules::{msg, state};
 use crate::world::{Cx, Entity};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::{engine, intern};
 use goldsrc::sys::*;
 use shared::protocol::rules::TsPSysWind;
@@ -212,10 +213,10 @@ pub fn create_dead_corpse(player: *mut edict_t, life: f32) {
     if e.is_null() {
         return;
     }
-    let src = unsafe { &(*player).v };
+    let src = player.v();
     let idx = eng.index_of(player);
     {
-        let v = unsafe { &mut (*e).v };
+        let v = e.v();
         v.classname = eng.alloc_string(c"deadcorpse");
         v.angles = src.angles;
         v.sequence = src.sequence;
@@ -256,10 +257,7 @@ pub struct Stub;
 impl Entity for Stub {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, _value: &CStr) -> bool {
         // Accept every class-specific key so the generic parser doesn't complain.
-        !matches!(
-            key.to_bytes(),
-            b"classname" | b"model" | b"origin" | b"angles" | b"targetname" | b"target" | b"message" | b"spawnflags"
-        )
+        !matches!(key.to_bytes(), b"classname" | b"model" | b"origin" | b"angles" | b"targetname" | b"target" | b"message" | b"spawnflags")
     }
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
