@@ -87,8 +87,7 @@ pub fn playback(invoker: *mut edict_t, ev: Event, a: EventArgs) {
     if idx == 0 {
         return;
     }
-    let (mut o, mut ang) = ([0.0f32; 3], [0.0f32; 3]);
-    goldsrc::eng!(pfnPlaybackEvent(1, invoker, idx, 0.0, o.as_mut_ptr(), ang.as_mut_ptr(), a.f1, a.f2, a.i1, a.i2, a.b1, a.b2));
+    engine().playback_weapon_event(1, invoker, idx, a.f1, a.f2, a.i1, a.i2, a.b1, a.b2);
 }
 
 impl GunHost for ServerHost<'_> {

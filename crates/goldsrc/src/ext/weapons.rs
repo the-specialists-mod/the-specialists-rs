@@ -35,6 +35,21 @@ mod server {
         fn model_index_str(&self, name: &CStr) -> i32;
         /// `pfnGetGameDir`: the game directory (e.g. `ts`).
         fn game_dir(&self) -> String;
+        /// `PLAYBACK_EVENT_FULL(flags, invoker, index, 0, zero, zero, ...)` with the `bparam`s
+        /// passed as ints (TS sends the shot seed in `bparam2`, which a `bool` would truncate).
+        #[allow(clippy::too_many_arguments)]
+        fn playback_weapon_event(
+            &self,
+            flags: i32,
+            invoker: *mut edict_t,
+            index: u16,
+            f1: f32,
+            f2: f32,
+            i1: i32,
+            i2: i32,
+            b1: i32,
+            b2: i32,
+        );
     }
 
     impl WeaponsEngine for Engine {
@@ -88,6 +103,22 @@ mod server {
             eng!(pfnGetGameDir(buf.as_mut_ptr()));
             // SAFETY: `pfnGetGameDir` wrote a NUL-terminated string into `buf`.
             unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
+        }
+
+        fn playback_weapon_event(
+            &self,
+            flags: i32,
+            invoker: *mut edict_t,
+            index: u16,
+            f1: f32,
+            f2: f32,
+            i1: i32,
+            i2: i32,
+            b1: i32,
+            b2: i32,
+        ) {
+            let (mut o, mut ang) = ([0.0f32; 3], [0.0f32; 3]);
+            eng!(pfnPlaybackEvent(flags, invoker, index, 0.0, o.as_mut_ptr(), ang.as_mut_ptr(), f1, f2, i1, i2, b1, b2));
         }
     }
 }

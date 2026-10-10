@@ -44,8 +44,12 @@ game/ts/         liblist.gam, gameinfo.txt, delta.lst
    `goldsrc::export_entity_class!` macro (`#[no_mangle]` is an unsafe attribute in Rust 2024) and
    `shared`'s player-movement test module, which fakes the engine with `extern "C"` callbacks.
 2. **Need new engine access? Add a safe wrapper to `goldsrc`.** Put it on `Engine`/`ClEngine`,
-   the `EdictPtr` or `PlayerMoveExt` traits, or a new module. Then call it from game code. Don't
-   use `eng!`/`cl_eng!`/`ev!`/`efx!` in game crates: they expand to `unsafe` at the call site.
+   the `EdictPtr` or `PlayerMoveExt` traits, or a module under `goldsrc/src/ext/` (e.g.
+   `ext::tri` for the triangle API). Then call it from game code. Don't use
+   `eng!`/`cl_eng!`/`ev!`/`efx!`/`tri!` in game crates: they expand to `unsafe` at the call site,
+   and `deny(unsafe_code)` doesn't fire on another crate's macro expansion. A source check in
+   `xtask/src/lint.rs` enforces this: it runs as a unit test (`cargo test`) and at the start of
+   `cargo xtask build`, and lists the offending lines.
 3. **A new engine callback or export goes in the `*-dll` crate.** Keep those functions thin:
    convert raw pointers to references (null-check), call a safe function in the game crate, and
    convert the result back. Logic belongs in the game crate. The one exception is

@@ -307,8 +307,8 @@ pub fn init() {
 extern "C" fn cmd_test_angles() {
     let e = goldsrc::client::engine();
     let n = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
-    let mut a = [n(1), n(2), 0.0];
-    goldsrc::cl_eng!(SetViewAngles(a.as_mut_ptr()));
+    let a = [n(1), n(2), 0.0];
+    e.set_view_angles(a);
 }
 
 /// `ts_test_view`: prints the view state (developer aid).
@@ -886,7 +886,7 @@ fn calc_normal(p: &mut ref_params_t) {
         vm.angles = [-base_angles[0] + p.crosshairangle[0] * 0.25, base_angles[1] + p.crosshairangle[1], base_angles[2]];
         let mut org = v::add(v::add(p.simorg, p.viewheight), [0.0, 0.0, water_ofs]);
         let mut ang = vm.angles;
-        goldsrc::cl_eng!(V_ApplyShake(org.as_mut_ptr(), ang.as_mut_ptr(), 0.9));
+        goldsrc::ext::spectator::apply_shake(&mut org, &mut ang, 0.9);
         vm.angles = ang;
         org = v::ma(org, gun_ofs[0], fwd);
         org = v::ma(org, gun_ofs[1], right);
@@ -968,8 +968,8 @@ fn view_model_framerate(w: &mut View, sequence: i32, animtime: f32, ts: f32) -> 
 }
 
 fn cl_calc_shake(p: &mut ref_params_t) {
-    goldsrc::cl_eng!(V_CalcShake());
-    goldsrc::cl_eng!(V_ApplyShake(p.vieworg.as_mut_ptr(), p.viewangles.as_mut_ptr(), 1.0));
+    goldsrc::ext::spectator::calc_shake();
+    goldsrc::ext::spectator::apply_shake(&mut p.vieworg, &mut p.viewangles, 1.0);
 }
 
 /// Slow-motion tint + `TSFade` blend (end of `V_CalcRefdef`).

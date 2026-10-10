@@ -151,7 +151,10 @@ The game crates (`ts-server`, `ts-client`, `shared`) are `#![deny(unsafe_code)]`
 code is in `goldsrc` (safe wrappers over the engine tables, edicts, player-move callbacks, client
 hooks, native mouse) and the two `*-dll` crates (exports and callbacks, which convert raw
 pointers to references). Game code keeps `*mut edict_t` as an entity handle and reads it through
-`goldsrc::edict::EdictPtr` (`e.v()`). The rules for working with this are in `AGENTS.md`.
+`goldsrc::edict::EdictPtr` (`e.v()`). Game crates also can't use `goldsrc`'s engine-call macros
+(`eng!`, `cl_eng!`, `ev!`, `efx!`, `tri!`), whose `unsafe` expansion `deny(unsafe_code)` doesn't
+see; `xtask/src/lint.rs` checks for them (in `cargo test` and `cargo xtask build`). The rules for
+working with this are in `AGENTS.md`.
 
 ## 5. Map entities
 

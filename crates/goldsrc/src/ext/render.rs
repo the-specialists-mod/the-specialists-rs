@@ -117,6 +117,14 @@ pub fn trace_texture(ground: i32, start: Vec3, end: Vec3) -> Option<String> {
     if p.is_null() { None } else { Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()) }
 }
 
+/// `EV_LocalPlayerViewheight`: the local player's view offset (zero if the engine leaves it
+/// untouched).
+pub fn local_player_viewheight() -> Vec3 {
+    let mut vh = [0.0f32; 3];
+    ev!(EV_LocalPlayerViewheight(vh.as_mut_ptr()));
+    vh
+}
+
 pub fn physent(idx: i32) -> Option<&'static physent_s> {
     let p = ev!(EV_GetPhysent(idx));
     // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.

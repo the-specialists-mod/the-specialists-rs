@@ -6,8 +6,8 @@
 //! second here (TS keeps units per 0.1 s; templates are converted on spawn).
 
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
+use goldsrc::ext::tri;
 use goldsrc::sys::*;
-use goldsrc::tri;
 
 pub const KIND_EFFECT: u8 = 0;
 pub const KIND_MAP: u8 = 3;
@@ -558,23 +558,23 @@ impl PSys {
                 continue;
             }
             let frame = (p.frame as i32).clamp(0, s.frames - 1);
-            if tri!(SpriteTexture(s.model as *mut model_s, frame)) == 0 {
+            if !tri::sprite_texture(s.model, frame) {
                 continue;
             }
             let a = if p.fadein > 0.0 { (((now - p.spawn) as f32) / p.fadein).min(1.0) } else { 1.0 } * p.alpha;
             let c = p.color.clamp(0.0, 1.0);
             let quad = build_quad(p, cam);
-            tri!(RenderMode(p.rendermode));
-            tri!(CullFace(TRICULLSTYLE_TRI_NONE));
-            tri!(Begin(TRI_QUADS as i32));
-            tri!(Color4f(c * p.rgb[0], c * p.rgb[1], c * p.rgb[2], a));
+            tri::render_mode(p.rendermode);
+            tri::cull_face(TRICULLSTYLE_TRI_NONE);
+            tri::begin(TRI_QUADS as i32);
+            tri::color4f(c * p.rgb[0], c * p.rgb[1], c * p.rgb[2], a);
             for (uv, vtx) in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].iter().zip(quad.iter()) {
-                tri!(TexCoord2f(uv[0], uv[1]));
-                tri!(Vertex3fv(vtx.as_ptr()));
+                tri::tex_coord2f(uv[0], uv[1]);
+                tri::vertex3fv(vtx);
             }
-            tri!(End());
+            tri::end();
         }
-        tri!(RenderMode(kRenderNormal as i32));
+        tri::render_mode(kRenderNormal as i32);
     }
 }
 

@@ -13,5 +13,7 @@ pub mod rules;
 pub mod spectator;
 #[cfg(feature = "client")]
 pub mod studio;
+#[cfg(feature = "client")]
+pub mod tri;
 pub mod voice;
 pub mod weapons;

@@ -1,7 +1,8 @@
 //! Build, package, install and validate the TS port.
 //!
 //! ```text
-//! cargo xtask build   [--release]                 build all four targets
+//! cargo xtask build   [--release]                 build all four targets (after checking that the
+//!                                                 game crates don't use goldsrc's engine-call macros)
 //! cargo xtask dist    [--release]                 dist/<platform>/ts/: libraries + game files
 //! cargo xtask install [--release] <root>... | all assemble <root>/ts and install libraries
 //! cargo xtask server  [--release] <root> [--map M] [--bots N] [--seconds S] [--port P]
@@ -23,6 +24,7 @@
 //! the installed game directory links to its maps, models and sounds without modifying it.
 
 mod a2s;
+mod lint;
 mod roots;
 
 use roots::{Engine, Os, Root, Target};
@@ -249,6 +251,14 @@ impl Ctx {
     }
 
     fn build(&self, targets: &[Target]) {
+        let hits = lint::engine_macro_uses(&self.repo);
+        if !hits.is_empty() {
+            eprintln!("engine-call macros in game crates (AGENTS.md rule 2: add a safe wrapper to goldsrc):");
+            for h in hits {
+                eprintln!("  {h}");
+            }
+            exit(1);
+        }
         for t in targets {
             let mut c = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
             c.current_dir(&self.repo).args(["build", "-p", "ts-server-dll", "-p", "ts-client-dll", "--target", t.triple]);
