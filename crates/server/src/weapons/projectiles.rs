@@ -234,6 +234,27 @@ impl Entity for Grenade {
     }
 }
 
+impl Grenade {
+    /// `CM61Grenade::Use` 0x7ce64, from the player's +use (`player::player_use`, the player
+    /// is the one being dispatched): kicks a grenade that rests on the ground away along the
+    /// player's yaw, 0.75 up, at 625 u/s on top of the player's own velocity.
+    pub fn use_by(&mut self, cx: &mut Cx, pcx: &mut Cx) {
+        if cx.pev().flags & FL_ONGROUND as i32 == 0 || !Player::is_alive(pcx) {
+            return;
+        }
+        let (v_angle, velocity, effects) = {
+            let v = pcx.pev();
+            (v.v_angle, v.velocity, v.effects)
+        };
+        if effects & EF_NODRAW as i32 != 0 {
+            return;
+        }
+        let (fwd, _, _) = spread::angle_vectors([0.0, v_angle[1], v_angle[2]]);
+        let dir = spread::normalize(spread::add(fwd, [0.0, 0.0, 0.75]));
+        cx.pev().velocity = spread::add(velocity, spread::scale(dir, 625.0));
+    }
+}
+
 /// The "flying impact" of grenades, knives and world guns: if the projectile is fast, the
 /// entity 64 u ahead takes `speed * k` when that is at least its health (breaks glass, doesn't
 /// chip players). `skip_players` for knives.
@@ -638,7 +659,7 @@ impl Knife {
         }
     }
 
-    /// `CTSKnife::Use` 0x7dda4, from the player's +use (`weapons::player_use`, the player is the
+    /// `CTSKnife::Use` 0x7dda4, from the player's +use (`player::player_use`, the player is the
     /// one being dispatched). A katana that hit something other than a player needs the kung-fu
     /// power-up. An expired blade is just removed.
     pub fn use_by(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {

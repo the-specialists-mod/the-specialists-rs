@@ -319,9 +319,15 @@ fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
                     let ang = eng.vec_to_angles(dir);
                     bot.yaw = approach_angle(bot.yaw, ang[1], 360.0 * ft);
                 }
-                if rules::len2d(dir) < 64.0 && now >= bot.next_use {
-                    buttons |= IN_USE as u16;
-                    bot.next_use = now + 0.5;
+                if rules::len2d(dir) < 64.0 {
+                    // Look at the item: `PlayerUse` wants it within 45° of the view.
+                    let ang = eng.vec_to_angles([g[0] - eye[0], g[1] - eye[1], g[2] - eye[2]]);
+                    let pitch = if ang[0] > 180.0 { ang[0] - 360.0 } else { ang[0] };
+                    bot.pitch = (-pitch).clamp(-89.0, 89.0);
+                    if now >= bot.next_use {
+                        buttons |= IN_USE as u16;
+                        bot.next_use = now + 0.5;
+                    }
                 }
             }
             forward = 400.0;

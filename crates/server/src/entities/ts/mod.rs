@@ -127,18 +127,51 @@ pub fn create_powerup(kind: u16, secs: i32, origin: [f32; 3]) {
     powerup::create(kind, secs, origin);
 }
 
-/// Classnames `+use` can pick up (ground weapons and their HL remaps).
+/// Ground weapon classnames (`ts_groundweapon` and its HL remaps); bots walk to these.
 pub fn is_usable(class: &CStr) -> bool {
     class == c"ts_groundweapon" || ground::hl_weapon_ids(class).is_some()
 }
 
-/// `+use` on a ground item from the player's own think (the player is being dispatched).
-pub fn player_use_item(item: *mut edict_t, p: &mut Player, cx: &mut Cx) {
-    crate::world::dispatch(item, |ent, icx| {
-        if let Some(g) = (ent as &mut dyn std::any::Any).downcast_mut::<ground::GroundWeapon>() {
-            g.player_use(icx, p, cx);
-        }
-    });
+/// `ObjectCaps()` of the TS entities, for the player's +use search (`player::player_use`):
+/// all of them are `FCAP_CONTINUOUS_USE` (0x10). Ground weapons (`CTSGroundWeapon::ObjectCaps`
+/// 0xa34a0), ground ammo (0xa34f4, whose `Use` 0xa2f3c is empty: it is picked up on touch, but
+/// still takes the +use search), dropped guns (`CTSWorldGun` 0xa3404), thrown blades (`CTSKnife`
+/// 0x7f04c), grenades (`CM61Grenade` 0x7effc; classname `grenade`), the CTB case (`CTSFlag`
+/// 0x9e704) and the dead hidden objectives (`CTSBomb` 0x8e738, `CTSHack` 0x8e788,
+/// `CTSTeamEscape` 0x8e820). 0 for anything else.
+pub fn object_caps(class: &CStr) -> i32 {
+    let usable = matches!(
+        class.to_bytes(),
+        b"ts_groundweapon"
+            | b"ts_groundammo"
+            | b"WorldGun"
+            | b"knife"
+            | b"grenade"
+            | b"ts_flag"
+            | b"ts_bomb"
+            | b"ts_hack"
+            | b"ts_teamescape"
+    ) || ground::hl_weapon_ids(class).is_some()
+        || ground::hl_ammo_weapons(class).is_some();
+    if usable { crate::entities::stock::FCAP_CONTINUOUS_USE } else { 0 }
+}
+
+/// `CanUsedTroughWalls()` (vtable slot 3; `CBaseEntity` 0xac5b0 returns 1): false for ground
+/// weapons (0xa34a8), ground ammo (0xa34fc), dropped guns (0xa340c) and the CTB case (0x9e70c),
+/// which `PlayerUse` only reaches with a clear line from the eyes.
+pub fn can_use_through_walls(class: &CStr) -> bool {
+    !(matches!(class.to_bytes(), b"ts_groundweapon" | b"ts_groundammo" | b"WorldGun" | b"ts_flag")
+        || ground::hl_weapon_ids(class).is_some()
+        || ground::hl_ammo_weapons(class).is_some())
+}
+
+/// The `Use` of a ground weapon (`CTSGroundWeapon::Use` 0xa230c → `GetWeapon`) when a player's
+/// +use picks it; the player is being dispatched, so it is passed directly. False if `ent` isn't
+/// a ground weapon.
+pub fn use_by_player(ent: &mut dyn std::any::Any, icx: &mut Cx, p: &mut Player, cx: &mut Cx) -> bool {
+    let Some(g) = ent.downcast_mut::<ground::GroundWeapon>() else { return false };
+    g.player_use(icx, p, cx);
+    true
 }
 
 /// `RespawnEntities` (round restart): hidden ground items and map power-ups come back now.

@@ -218,7 +218,7 @@ impl WorldGun {
         player::with_player(other, |p, pcx| self.give_to(cx, p, pcx));
     }
 
-    /// `CTSWorldGun::Use` 0xa1158, from the player's +use (`weapons::player_use`, the player is
+    /// `CTSWorldGun::Use` 0xa1158, from the player's +use (`player::player_use`, the player is
     /// the one being dispatched): works while the gun is still flying, once 0.5 s have passed.
     pub fn use_by(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
         if self.pickup_after < engine().time() {

@@ -33,6 +33,9 @@ pub struct DriveState {
     pub train: i32,
     /// `PFLAG_ONTRAIN`: the player is driving the train under them.
     pub on_train: bool,
+    /// `PFLAG_USING`: set by `PlayerUse` while a continuous user is in use. Nothing in TS reads
+    /// it and only `Spawn` clears it; kept for fidelity.
+    pub using: bool,
     /// `m_pTank`.
     pub tank: EHandle,
     /// `m_iHideHUD` and the last value sent (`m_iClientHideHUD`, -1 = resend).
@@ -44,7 +47,7 @@ impl Default for DriveState {
     /// `CBasePlayer::Precache` (0xda90c) starts with `m_iTrain = TRAIN_NEW`, so the first update
     /// clears the client's train HUD.
     fn default() -> Self {
-        DriveState { train: TRAIN_NEW, on_train: false, tank: EHandle::NULL, hide_hud: 0, sent_hide_hud: -1 }
+        DriveState { train: TRAIN_NEW, on_train: false, using: false, tank: EHandle::NULL, hide_hud: 0, sent_hide_hud: -1 }
     }
 }
 
@@ -53,6 +56,7 @@ impl Default for DriveState {
 pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     let d = &mut p.drive;
     d.on_train = false;
+    d.using = false;
     d.sent_hide_hud = -1;
     d.train = TRAIN_NEW | TRAIN_OFF;
     cx.pev().flags &= !(FL_ONTRAIN as i32);
