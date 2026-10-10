@@ -23,7 +23,15 @@ const VIEW_FIELD_NARROW: f32 = 0.7;
 /// with both).
 pub fn object_caps(e: *mut edict_t) -> i32 {
     match stock::object_caps(e) {
-        0 if !e.is_null() => crate::entities::ts::object_caps(engine().string(e.v().classname)),
+        0 if !e.is_null() => {
+            let v = e.v();
+            // A carried CTB case still exists in the port (it follows its carrier), where TS
+            // destroys it; keep it out of the search so it can't shadow what the carrier aims at.
+            if !v.aiment.is_null() && engine().string(v.classname) == c"ts_flag" {
+                return 0;
+            }
+            crate::entities::ts::object_caps(engine().string(v.classname))
+        }
         caps => caps,
     }
 }

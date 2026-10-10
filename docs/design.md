@@ -69,7 +69,7 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 |---|---|
 | `GameInit` | `messages::register_all`, then `rules`, `weapons`, `stunt`, `bots` `game_init` (cvars, server commands) |
 | `Spawn`/`Think`/`Touch`/`Use`/`Blocked`/`KeyValue` | the edict's `Entity` (world dispatch). Keyvalues go to `entities::entvars_key_value` first and only the rest reach the class, as TS `DispatchKeyValue` does. |
-| worldspawn spawn | `precache_all()`: player model, then `stunt`, `weapons`, `rules` `precache` |
+| worldspawn spawn | `CWorld::Precache` order: force `sv_gravity`/`sv_stepsize`, then `precache_all()` (player model, then `stunt`, `weapons`, `rules` `precache`, which installs the rules and queues the server config), then `sv_zmax`, chapter title, `v_dark`, `mp_defaultteam` |
 | `ClientConnect`/`Disconnect`/`Kill`/`UserInfoChanged` | `rules` |
 | `ClientPutInServer` | creates the `Player` entity and spawns it |
 | `ClientCommand` | `commands::client_command`: weapons, stunt, rules, bots, in that order |
@@ -117,7 +117,7 @@ Hook order, fixed in `player/mod.rs`:
 
 * **spawn:** base player setup, then `rules::on_spawn` (spawn point, loadout), `weapons::on_spawn`, `stunt::on_spawn`, `drive::on_spawn`, `hud::reset`.
 * **pre_think:** `drive::pre_think` (train speed control), then `rules`, `stunt`, `weapons`.
-* **post_think:** `drive::post_think` (tank firing / letting go), `weapons` (item post frame, skipped while a tank is in use; once the gun is ready it first runs `player::player_use`, TS's single `PlayerUse` for every usable entity: stock, TS items, dropped guns), `stunt`, `rules`, then `hud::update` (sends changed HUD values, including `Train` and `HideWeapon`).
+* **post_think:** as in TS `PostThink` (0x91610), during intermission or while dead only the weapon timers run down (plus `rules` and `hud::update`); otherwise `drive::post_think` (tank firing / letting go), `weapons` (item post frame, skipped while a tank is in use; once the gun is ready it first runs `player::player_use`, TS's single `PlayerUse` for every usable entity: stock, TS items, dropped guns), `stunt`, `rules`, then `hud::update` (sends changed HUD values, including `Train` and `HideWeapon`).
 * **fill_client_data:** `stunt`, `weapons`, `rules`.
 * **take_damage:** `player::damage::take_damage`, which on death calls `rules::on_killed`. That in turn calls `weapons::on_killed`. Self-inflicted damage from inside the player's own callbacks (fall, drowning, slime/lava, poison) calls `take_damage` directly, since `damage::apply` can't reach the dispatched entity.
 

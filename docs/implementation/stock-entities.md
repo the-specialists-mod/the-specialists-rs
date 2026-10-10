@@ -73,7 +73,7 @@ How the SDK patterns map to Rust:
 
 | Classname | Source | Notes |
 |---|---|---|
-| `worldspawn` | SDK world.cpp | Sets light styles 0–12 and 63 (only 0 was set before) and `sv_skyname`. Other keys go to `rules::world_key_value`. Resets the masters, path links and env_sound rooms on each map. |
+| `worldspawn` | `CWorld::KeyValue` 0xf4a18, `CWorld::Precache` 0xf449c | Keys: `skyname` (`sv_skyname`), `sounds` (CD track), `WaveHeight` (`pev.scale` = v/8, `sv_wateramp`), `MaxRange` (`pev.speed`), `chaptertitle`, `startdark`/`gametitle`/`defaultteam` (spawnflags 1/2/4), `newunit` (`sv_newunit 1`); `gamemode`, `mapteams`, `teammodels` go to `rules::world_key_value`. Spawn first forces `sv_gravity 800`, `sv_stepsize 18`, `room_type 0`, then precaches and installs the rules, then sets `sv_zmax` (`MaxRange`, or 4096 when ≤ 0), shows the chapter title through an `env_message` 0.3 s in, and sets `v_dark` and `mp_defaultteam` from the spawnflags. Light styles 0–12 and 63. Resets the masters, path links and env_sound rooms on each map. |
 | `func_wall`, `func_illusionary` | SDK bmodels.cpp | `func_wall` now sets `FL_WORLDBRUSH` and toggles its texture frame on Use. `func_illusionary` is `MOVETYPE_NONE`, and `skin` sets its contents. |
 | `func_wall_toggle`, `func_conveyor` | SDK | The conveyor speed is sent in `rendercolor`. |
 | `func_rotating` | SDK | Fan sounds, spin-up/down, hurt touch. Uses `fabs` where gcc 2.95 used the integer `abs`. |
@@ -317,7 +317,7 @@ out, no weapon, or +cancel during a reload). So no +use right after firing or wh
 
 * One search for every package: stock classes (`stock::object_caps`) and the TS entities
   (`entities::ts::object_caps`: ground weapons and ammo, `WorldGun`, `knife`, `grenade`,
-  `ts_flag`, the hidden objectives; all continuous users). Within 64 units of the origin, caps
+  `ts_flag` (not while carried), the hidden objectives; all continuous users). Within 64 units of the origin, caps
   & 0x38, `UTIL_ClampVectorToBox` (0xee5d8) of the eye → `VecBModelOrigin` vector against half
   the size, highest dot with the view above 0.7.
 * **TS addition:** if the winner's `CanUsedTroughWalls` (vtable slot 3) is false (ground weapons
@@ -497,6 +497,10 @@ covers:
 * **Precache location.** TS precaches the blood sprites in `W_Precache` and the gib models in
   `CWorld::Precache`; the port does both from worldspawn (`blood::precache_world`). German gibs
   (`sv_language 1`) aren't supported.
+* **worldspawn client cvars.** `v_dark` and `room_type` exist only on clients, so a dedicated
+  server skips setting them (FWGS would print "variable not found" each map); the result is the
+  same. TS sets `gDisplayTitle` from the `gametitle` flag but never reads it, and the
+  `GameTitle` message is never sent, so the port keeps only the spawnflag.
 * **`cycler` spawn** skips `ChangeYaw(360)`, a no-op because `ideal_yaw` was just set to the yaw.
 * **`monster_hevsuit_dead`** keeps only the corpse half of `CBaseMonster` (TS has no live monsters):
   `g_vecAttackDir` is computed per hit and passed to the gib spawner instead of being a global.

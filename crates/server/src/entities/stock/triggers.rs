@@ -1100,6 +1100,13 @@ impl Entity for EnvMessage {
         }
     }
 
+    /// Only the worldspawn chapter title schedules a think: `SUB_CallUseToggle`, which uses the
+    /// message with itself as the activator (`CWorld::Precache` 0xf449c).
+    fn think(&mut self, cx: &mut Cx) {
+        let me = cx.edict;
+        self.use_(cx, me, me, UseType::Toggle, 0.0);
+    }
+
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
         let eng = engine();
         let v = cx.pev();

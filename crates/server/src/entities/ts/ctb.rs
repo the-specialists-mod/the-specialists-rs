@@ -1,12 +1,14 @@
 //! Capture the briefcase (gamerules-entities.md §3.4): `ts_briefcase` (home + capture zone),
 //! `ts_flag` (the carried case), and `ts_scoregiver`/`ts_wingiver` (team score / win, §3.3).
 
+use crate::entities::stock::explode::emit_sound_slow;
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::rules::{self, msg, state, teams};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
+use goldsrc::ext::entities::ATTN_NORM;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::protocol::rules::{ScoreInfo, TsFlag, TsHVoice};
@@ -40,12 +42,24 @@ fn team_index_of(e: *mut edict_t) -> i32 {
 }
 
 fn score_info(e: *mut edict_t) {
+    rules::other(e, |p| score_info_of(e, p));
+}
+
+/// `ScoreInfo` for `e` from its `Player`, for when the caller already holds it.
+fn score_info_of(e: *mut edict_t, p: &Player) {
     let idx = engine().index_of(e);
-    if let Some(s) =
-        rules::other(e, |p| ScoreInfo { idx: idx as u8, frags: e.v().frags as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 })
-    {
-        msg::all(Msg::ScoreInfo, |w| s.write(w));
+    let s = ScoreInfo { idx: idx as u8, frags: e.v().frags as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 };
+    msg::all(Msg::ScoreInfo, |w| s.write(w));
+}
+
+/// The slot half of `CBasePlayer::TakeFlag`: the case needs 20 free slots and one case at most.
+fn take_flag(p: &mut Player, flag: *mut edict_t) -> bool {
+    if p.ts.flag.is_some() || shared::ts::SLOTS_TOTAL - p.slots_used < FLAG_SLOTS {
+        return false;
     }
+    p.slots_used += FLAG_SLOTS;
+    p.ts.flag = Some(flag);
+    true
 }
 
 // ---- ts_briefcase ----------------------------------------------------------------------------------
@@ -192,11 +206,12 @@ pub struct Flag {
 }
 
 impl Flag {
-    fn go_home(&mut self, cx: &mut Cx) {
+    /// Removes the case; its `ts_briefcase` drops a new one (`FlagFall`) after `delay`.
+    fn go_home(&mut self, cx: &mut Cx, delay: f32) {
         if let Some(home) = self.home {
             crate::world::dispatch(home, |ent, _| {
                 if let Some(b) = (ent as &mut dyn std::any::Any).downcast_mut::<Briefcase>() {
-                    b.respawn_flag(0.25);
+                    b.respawn_flag(delay);
                 }
             });
         }
@@ -228,27 +243,37 @@ impl Entity for Flag {
         if self.holder.is_none() && self.return_at != 0.0 && cx.time() > self.return_at {
             msg::ts_message_all([0, 255, 0], 8, 30, &format!("{} briefcase returned", self.contents));
             send_flag(0, self.id, self.team, 0);
-            self.go_home(cx);
+            self.go_home(cx, 0.25);
         }
     }
 
+    /// `CTSFlag::WaitTouch` (0x9e604).
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if self.holder.is_some() || !rules::is_player(other) || !rules::alive(other.v()) {
+        self.player_take_flag(cx, other, None);
+    }
+}
+
+impl Flag {
+    /// `CTSFlag::Use` (0x9e5dc) when a player's +use picks the case (`player::player_use`). The
+    /// player is being dispatched, so its object is passed in.
+    pub fn use_by_player(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
+        self.player_take_flag(cx, pcx.edict, Some(p));
+    }
+
+    /// `CTSFlag::PlayerTakeFlag` (0x9e330), shared by the touch and +use. `p` is the player's
+    /// object when the caller already holds it; otherwise it is looked up.
+    fn player_take_flag(&mut self, cx: &mut Cx, other: *mut edict_t, mut p: Option<&mut Player>) {
+        // A live, visible player (TS: `pev->effects` sign bit, EF_NODRAW, e.g. observers).
+        if self.holder.is_some() || !rules::is_player(other) || !rules::alive(other.v()) || other.v().effects & EF_NODRAW as i32 != 0 {
             return;
         }
         let team = team_index_of(other);
         if self.team == -1 || team != self.team {
-            // TakeFlag: needs 20 free slots.
             let me = cx.edict;
-            let took = crate::player::with_player(other, |p, _| {
-                if p.ts.flag.is_some() || shared::ts::SLOTS_TOTAL - p.slots_used < FLAG_SLOTS {
-                    return false;
-                }
-                p.slots_used += FLAG_SLOTS;
-                p.ts.flag = Some(me);
-                true
-            })
-            .unwrap_or(false);
+            let took = match p {
+                Some(p) => take_flag(p, me),
+                None => crate::player::with_player(other, |p, _| take_flag(p, me)).unwrap_or(false),
+            };
             if !took {
                 return;
             }
@@ -269,12 +294,19 @@ impl Entity for Flag {
                 eng.auth_id(other).to_string_lossy()
             ));
         } else if self.return_at != 0.0 {
-            // The owning team returns its dropped case.
-            rules::add_frags(other, None, 5.0);
-            score_info(other);
-            msg::ts_message_all([0, 255, 0], 8, 30, &format!("{} returned the briefcase!", rules::netname(other)));
+            // The owning team returns its dropped case; the bonus needs a second player.
+            emit_sound_slow(other, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
+            if rules::players().len() > 1 {
+                rules::add_frags(other, p.as_deref_mut(), 5.0);
+                msg::ts_message_all([0, 255, 0], 4, 30, &format!("{} returned the briefcase! 5 #TS_Frg", rules::netname(other)));
+                match p {
+                    Some(p) => score_info_of(other, p),
+                    None => score_info(other),
+                }
+            }
             send_flag(0, self.id, self.team, 0);
-            self.go_home(cx);
+            // FlagFall at home 1 s later (0x9e330).
+            self.go_home(cx, 1.0);
         }
     }
 }
@@ -317,7 +349,7 @@ pub fn drop_flag(p: &mut Player, cx: &mut Cx, captured: bool) {
         f.holder = None;
         if captured {
             send_flag(0, f.id, f.team, 0);
-            f.go_home(fcx);
+            f.go_home(fcx, 0.25);
             return;
         }
         f.return_at = engine().time() + 20.0;

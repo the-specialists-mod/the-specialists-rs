@@ -114,10 +114,18 @@ impl Player {
         crate::weapons::pre_think(self, cx);
     }
 
+    /// `CBasePlayer::PostThink` (0x91610). When the game is over (intermission) or the player is
+    /// dead, TS jumps straight to the end, which only runs the weapon timers down: no tank
+    /// control, `ItemPostFrame` (firing, `PlayerUse`), landing, animation or `m_afButtonLast`.
     pub fn post_think(&mut self, cx: &mut Cx) {
-        crate::entities::stock::drive::post_think(self, cx);
-        crate::weapons::post_think(self, cx);
-        crate::stunt::post_think(self, cx);
+        let active = !crate::rules::state::with(|g| g.game_over) && Self::is_alive(cx);
+        if active {
+            crate::entities::stock::drive::post_think(self, cx);
+        }
+        crate::weapons::post_think(self, cx, active);
+        if active {
+            crate::stunt::post_think(self, cx);
+        }
         crate::rules::post_think(self, cx);
         hud::update(self, cx);
     }
