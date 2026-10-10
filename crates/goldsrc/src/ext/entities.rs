@@ -195,6 +195,13 @@ impl Engine {
         tr
     }
 
+    /// `FIND_CLIENT_IN_PVS`: a client that can see `e`, or null (the engine's world edict is
+    /// mapped to null like `FNullEnt`).
+    pub fn find_client_in_pvs(&self, e: *mut edict_t) -> *mut edict_t {
+        let c = eng!(pfnFindClientInPVS(e));
+        if c.is_null() || self.index_of(c) == 0 { std::ptr::null_mut() } else { c }
+    }
+
     /// `UTIL_SetOrigin`.
     pub fn set_origin_v(&self, e: *mut edict_t, org: Vec3) {
         self.set_origin(e, org)

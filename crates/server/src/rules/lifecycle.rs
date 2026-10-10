@@ -167,6 +167,7 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     e.set_physics_key(cx.edict, c"hl", c"1");
     e.set_physics_key(cx.edict, c"mj", if superjump_map { c"1" } else { c"0" });
     e.set_client_maxspeed(cx.edict, 330.0);
+    crate::entities::stock::triggers::geiger_spawn(cx.edict);
     {
         let v = cx.pev();
         v.maxspeed = 330.0;
@@ -228,6 +229,9 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     if p.ts.init_hud {
         init_hud(p, cx);
     }
+
+    // CheckSuitUpdate (0xda2d0): the geiger counter (suit sentences never play in multiplayer).
+    crate::entities::stock::triggers::update_geiger_counter(cx.edict);
 
     // Time scale easing toward the target, and animation rate = time scale.
     let ft = engine().globals().frametime;
