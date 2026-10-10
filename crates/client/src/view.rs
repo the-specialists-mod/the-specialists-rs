@@ -41,6 +41,8 @@ struct View {
     bob_z: f32,
     bob_pitch: f32,
     // smoothing
+    /// Smoothed view height (`0x10191d90`). Zero-initialised and never reset, as in TS, so the
+    /// first spawn after the library loads eases the eye up from the origin.
     vh: f32,
     stairs: Stairs,
     roll: f32,
@@ -77,7 +79,6 @@ struct View {
     cam: Camera,
     eye: Vec3,
     hardware: bool,
-    initialised: bool,
 }
 
 mod state_fade {
@@ -243,6 +244,12 @@ impl Stairs {
         self.was_on_ground = on_ground;
         out
     }
+}
+
+/// View-height easing in `V_CalcNormalRefdef` (`0x100679ee..0x10067a43`):
+/// `vh += (target − vh)·min(15·ft, 1)`.
+fn ease_view_height(vh: f32, target: f32, ft: f32) -> f32 {
+    vh + (target - vh) * (15.0 * ft).min(1.0)
 }
 
 const RING: u32 = 64;
@@ -798,10 +805,6 @@ fn calc_normal(p: &mut ref_params_t) {
     }
 
     let third = with(|w| {
-        if !w.initialised {
-            w.initialised = true;
-            w.vh = p.viewheight[2];
-        }
         // Death forces third person (TS: `TSHealth` 0); leaving death returns.
         w.forced_dead = dead;
         state::with(|s| s.third_person = w.third || dead);
@@ -834,7 +837,7 @@ fn calc_normal(p: &mut ref_params_t) {
     // eases down to the hull centre like TS's.
     let on_ground = p.onground != 0;
     with(|w| {
-        w.vh += (p.viewheight[2] - w.vh) * (15.0 * ft).min(1.0);
+        w.vh = ease_view_height(w.vh, p.viewheight[2], ft);
         let z = w.stairs.smooth(p.simorg[2] + w.vh, on_ground, ft);
         p.vieworg = [p.simorg[0], p.simorg[1], z];
     });
@@ -1213,6 +1216,27 @@ mod tests {
         assert_eq!(s.smooth(40.0, false, 0.01), 80.0);
         let mut s = Stairs::default();
         assert!((s.smooth(40.0, true, 0.01) - 6.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn view_height_initial_state() {
+        // TS's view-height static starts at 0 and feeds the stair smoothing, which also starts at
+        // z 0: on the first frame on the ground both ease, the stair state toward an eye that is
+        // itself still low.
+        let mut w = View::default();
+        assert_eq!(w.vh, 0.0);
+        w.vh = ease_view_height(w.vh, 28.0, 0.01);
+        assert!((w.vh - 4.2).abs() < 1e-5, "{}", w.vh);
+        let z = w.stairs.smooth(100.0 + w.vh, true, 0.01);
+        assert!((z - 104.2 * 0.15).abs() < 1e-4, "{z}");
+        // Both settle on simorg + view height.
+        for _ in 0..200 {
+            w.vh = ease_view_height(w.vh, 28.0, 0.01);
+            w.stairs.smooth(100.0 + w.vh, true, 0.01);
+        }
+        assert!((w.vh - 28.0).abs() < 1e-3 && (w.stairs.smooth(128.0, true, 0.01) - 128.0).abs() < 1e-3);
+        // A slow first frame (15·ft ≥ 1) takes the view height at once.
+        assert_eq!(ease_view_height(0.0, 28.0, 0.1), 28.0);
     }
 
     #[test]

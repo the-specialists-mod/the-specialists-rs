@@ -151,7 +151,11 @@ prev_onground = onground;
   continuous.
 * **Initial state:** the statics start at 0, 0 and -1 (`.data` at `0x100972ac` is `ffffffff`).
   The first frame after the library loads counts as "was on the ground", and the first spawn
-  eases up from z 0. The state is never reset on map change, as in TS.
+  eases up from z 0. The state is never reset on map change, as in TS. The smoothed view height
+  (`0x10191d90`, only referenced at `0x10067a23..0x10067a3a`) is in BSS too (past `.data`'s raw
+  size), so it also starts at 0: on that first spawn the stair state eases toward an eye whose
+  view height is itself still easing up from 0, and both settle on `simorg.z + viewheight` in
+  about 0.3 s. The port's `View::vh` starts at 0 and is never reset, the same.
 * **Body cam** (`back == 0` after smoothing, e.g. `cl_camtype 3; cam_back 0`): TS calls
   `V_SmoothStairs` again on the camera origin (`0x10068313`), on the same state. On the ground the
   smoothed z is pulled toward both the eye and the camera every frame, so the body cam settles
