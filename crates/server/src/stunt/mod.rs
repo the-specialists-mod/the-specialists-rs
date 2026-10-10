@@ -20,7 +20,6 @@ use crate::entities::stock::explode::emit_sound_slow;
 use crate::messages::{self, Msg};
 use crate::player::Player;
 use crate::world::Cx;
-use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::pm::Vec3;
