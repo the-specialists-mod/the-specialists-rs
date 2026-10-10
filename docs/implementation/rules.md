@@ -105,7 +105,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | Class | Status |
 |---|---|
 | `ts_powerup`, `item_longjump` | Full: keys `pwuptype`/`pwupduration`/`pwupmult`, random set from spawnflags, bodies/durations, fall → ground (bbox ±16×64), pickup rules (single slot, +use swap, instant set 0x1e6), message/target, respawn clamps (<1 → 60, ≤10 → 10, ≤180), hidden with `nopowerup 1`. Temporary ones (auto spawner, drops) live 60 s and fade over the last 30 s. A map power-up disables the automatic spawner; `item_longjump` re-enables it (TS). |
-| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (× clip size via `give_ammo`), respawn (<1 → 60, 1 → 1, ≤180), message/target. Unknown/briefcase ids are removed. |
+| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (× clip size via `give_ammo`), respawn (<1 → 60, 1 → 1, ≤180), message/target. `buyable`/`attackerteam` (`GetWeapon` 0xa2328) are ported behind `state::cash_based()`, which is false as in TS: the team check (round modes, `attackerteam` ≠ -1), the price (`ground::buy_price`: cost + spawnflag attachments + ammo price × `wextraclip`; unit tested), "You don't have enough money…", and the charge after the pickup. Unknown/briefcase ids are removed. |
 | `ts_groundammo` + `ammo_9mmAR/buckshot/crossbow/gaussclip/rpgclip` | Full: `magsN` = N × per-buy rounds, HL ones give half max carry of their class's ammo types; picked up on touch via `weapons::give_ammo`. |
 | `ts_model` | Full. |
 | `ts_mapglobals` | Full: weapon mask (SrvSett 3), round timer flag, super jump map flag. |
@@ -180,7 +180,6 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 ## 7. Missing / partial
 
-* `ts_groundweapon` buyable/team checks (cash mode is off in 3.0).
 * Observer camera beyond the basics (in-eye, map modes are only mode numbers).
 * `loadweapons`/`saveweapons`, `CustomWP`.
 * Untested in-engine: CTB (no test map with briefcases), `ts_dmhill`, `ts_slowmotion`,

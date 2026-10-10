@@ -52,6 +52,21 @@ pub fn respawn_delay(v: i32) -> f32 {
     }
 }
 
+/// `GetWeapon`'s price of a `buyable` ground weapon: the weapon, the attachments in its
+/// spawnflags, and the ammo price per extra magazine.
+pub fn buy_price(id: i32, spawnflags: i32, extra_clip: i32) -> i32 {
+    let t = tables();
+    let Some(w) = u8::try_from(id).ok().and_then(|id| t.weapon(id)) else { return 0 };
+    let prices = &t.combat.attachment_price;
+    let mut cost = w.cost;
+    for (bit, price) in [(1, prices.silencer), (2, prices.laser), (4, prices.flashlight), (8, prices.scope)] {
+        if spawnflags & bit != 0 {
+            cost += price;
+        }
+    }
+    cost + t.ammo(w.ammo).map_or(0, |a| a.price) * extra_clip.max(0)
+}
+
 fn round_mode() -> bool {
     matches!(state::with(|g| g.mode), state::Mode::RoundTdm | state::Mode::Objective)
 }
@@ -152,7 +167,8 @@ pub struct GroundWeapon {
 }
 
 impl GroundWeapon {
-    /// `GetWeapon`: give the weapon (attachments from spawnflags) and extra magazines.
+    /// `GetWeapon` (0xa2328): in cash mode a `buyable` one checks `attackerteam` (round modes) and
+    /// the price first; then give the weapon (attachments from spawnflags) and extra magazines.
     fn give(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) -> bool {
         if !self.ground.waiting || !rules::alive(pcx.pev()) || pcx.pev().effects & EF_NODRAW as i32 != 0 {
             return false;
@@ -160,10 +176,27 @@ impl GroundWeapon {
         if cx.pev().effects & EF_NODRAW as i32 != 0 {
             return false;
         }
-        let attachments = (cx.pev().spawnflags & 0xf) as u8;
+        let flags = cx.pev().spawnflags;
+        let mut cost = 0;
+        if state::cash_based() && self.buyable {
+            if round_mode() && self.attacker_team != -1 {
+                let team = state::with(|g| g.team_index(&p.ts.team_name));
+                if team != self.attacker_team {
+                    msg::ts_message_one(pcx.edict, [0, 0, 0], 16, 30, "Your team cannot buy this weapon.");
+                    return false;
+                }
+            }
+            cost = buy_price(self.id, flags, self.extra_clip);
+            if p.cash < cost {
+                msg::ts_message_one(pcx.edict, [0, 0, 0], 16, 30, "You don't have enough money for that weapon.");
+                return false;
+            }
+        }
+        let attachments = (flags & 0xf) as u8;
         if !crate::weapons::give_weapon(p, pcx, self.id as u8, attachments) {
             return false;
         }
+        rules::lifecycle::give_cash(p, -cost);
         let extra = self.extra_clip.max(0);
         if extra != 0 {
             if let Some(w) = tables().weapon(self.id as u8) {
@@ -356,6 +389,18 @@ mod tests {
             }
         }
         assert!(hl_weapon_ids(c"weapon_crowbar").is_none());
+    }
+
+    #[test]
+    fn buyable_price() {
+        let t = tables();
+        let deagle = t.weapon(12).unwrap();
+        let ammo = t.ammo(deagle.ammo).unwrap().price;
+        assert_eq!(buy_price(12, 0, 0), deagle.cost);
+        assert_eq!(buy_price(12, 1 | 8 | 16, 0), deagle.cost + 900 + 1800);
+        assert_eq!(buy_price(12, 2 | 4, 3), deagle.cost + 800 + 500 + 3 * ammo);
+        assert_eq!(buy_price(12, 0, -2), deagle.cost);
+        assert_eq!(buy_price(99, 0, 0), 0);
     }
 
     #[test]

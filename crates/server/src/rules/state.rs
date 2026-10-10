@@ -115,6 +115,12 @@ pub fn lms() -> bool {
     with(|g| g.lms)
 }
 
+/// `CashBased()` (0x76abc): hard-wired off in TS 3.0, so nothing is ever charged. The cash code
+/// paths are ported behind it.
+pub fn cash_based() -> bool {
+    false
+}
+
 /// `DecideGamePlay` (0x767ac): returns (teamplay, lms, the_one).
 pub fn decide_gameplay(forced: i32, teamplay_cvar: bool, lms_cvar: bool, the_one_cvar: bool) -> (bool, bool, bool) {
     match forced {
