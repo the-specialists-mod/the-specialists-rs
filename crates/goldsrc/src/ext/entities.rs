@@ -149,8 +149,6 @@ impl Engine {
         out
     }
 
-    /// Next entity after `start` within `radius` of `org`; null when there are no more.
-
     /// First entity with `targetname == name` after `start` (null-safe).
     pub fn find_by_target_name(&self, start: *mut edict_t, name: &CStr) -> *mut edict_t {
         if name.is_empty() { std::ptr::null_mut() } else { self.find_by_string(start, c"targetname", name) }

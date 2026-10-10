@@ -54,7 +54,10 @@ game/ts/         liblist.gam, gameinfo.txt, delta.lst
    convert raw pointers to references (null-check), call a safe function in the game crate, and
    convert the result back. Logic belongs in the game crate. The one exception is
    `client-dll/src/tempents.rs`, the SDK temp-entity loop that walks the engine's linked list.
-4. **Every `unsafe` block gets a `// SAFETY:` comment** saying why it holds.
+4. **Every `unsafe` block gets a `// SAFETY:` comment** saying why it holds. `goldsrc` and the
+   `*-dll` crates warn on `clippy::undocumented_unsafe_blocks`; `cargo xtask lint` runs that
+   check for all four targets, which matters because Windows-only code (`goldsrc::platform::win`,
+   the WinMM joystick) is never compiled by a Linux clippy run.
 5. **Entity pointers:** game code passes `*mut edict_t` around as a handle (holding a raw
    pointer is safe). Read and write through `goldsrc::edict::EdictPtr`: `e.v()` for `entvars_t`,
    `e.is_free()`, `e.has_private_data()`. `v()` returns `&'static mut entvars_t`, so keep that
@@ -75,6 +78,7 @@ Windows engine roots, and `../xash3d-fwgs` (or set `FWGS_DIR`).
 ```sh
 cargo test                                # unit tests (all crates)
 cargo xtask build [--release]             # all four targets; must build with no warnings
+cargo xtask lint                          # undocumented-unsafe clippy check, all four targets (~30 s)
 cargo xtask install <root>|all            # assemble <root>/ts and install the libraries
 cargo xtask all                           # test + play, about 2.5 min
 cargo xtask test [--map M]                # dedicated server + bots on every engine root, in parallel (~25 s)
@@ -93,6 +97,7 @@ Before calling a change done:
   `cargo fmt --check` is clean.
 - `cargo test` passes.
 - `cargo xtask build` has no warnings.
+- When the change touches `unsafe` code (`goldsrc`, `*-dll`), `cargo xtask lint` passes.
 - Run `cargo xtask all` (or `test` alone for server-only changes that can't affect gameplay).
 - When the change touches exports or the `*-dll` crates, check that the exported symbol lists are
   unchanged (`nm -D --defined-only` / `objdump -p`).

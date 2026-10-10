@@ -42,7 +42,11 @@ pub mod sdl {
 
     #[cfg(windows)]
     pub(crate) fn lookup(name: &CStr) -> *mut c_void {
+        // SAFETY: GetModuleHandleA takes a NUL-terminated name, only looks up an already-loaded
+        // module (it never loads one) and returns null when SDL2.dll isn't loaded.
         let h = unsafe { super::win::GetModuleHandleA(c"SDL2.dll".as_ptr()) };
+        // SAFETY: `h` is a non-null module handle from GetModuleHandleA and `name` is
+        // NUL-terminated; GetProcAddress returns null for a missing export.
         if h.is_null() { std::ptr::null_mut() } else { unsafe { super::win::GetProcAddress(h, name.as_ptr()) } }
     }
 
@@ -116,6 +120,8 @@ pub mod win {
     }
 
     pub fn startup(s: &mut State) {
+        // SAFETY: SPI_GETMOUSE writes three ints (threshold1, threshold2, acceleration) to `pvParam`,
+        // and `s.original` is a `[c_int; 3]` that outlives the call.
         s.params_valid = unsafe { SystemParametersInfoA(SPI_GETMOUSE, 0, s.original.as_mut_ptr().cast(), 0) } != 0;
     }
 
@@ -126,6 +132,7 @@ pub mod win {
     fn center() -> (i32, i32) {
         let f = &engine().f;
         match (f.GetWindowCenterX, f.GetWindowCenterY) {
+            // SAFETY: engine client functions taking no arguments; the table is valid for the process.
             (Some(x), Some(y)) => unsafe { (x(), y()) },
             _ => (0, 0),
         }
@@ -135,12 +142,15 @@ pub mod win {
         if s.params_valid {
             // SDK newmouseparms {0, 0, 1}: no Windows acceleration while playing.
             let mut p: [c_int; 3] = [0, 0, 1];
+            // SAFETY: SPI_SETMOUSE reads three ints from `pvParam`; `p` is a local `[c_int; 3]`.
             s.restore = unsafe { SystemParametersInfoA(SPI_SETMOUSE, 0, p.as_mut_ptr().cast(), 0) } != 0;
         }
     }
 
     pub fn deactivate(s: &mut State) {
         if s.restore {
+            // SAFETY: SPI_SETMOUSE reads three ints from `pvParam`; `s.original` is a `[c_int; 3]`
+            // filled by SPI_GETMOUSE in `startup`.
             unsafe { SystemParametersInfoA(SPI_SETMOUSE, 0, s.original.as_mut_ptr().cast(), 0) };
             s.restore = false;
         }
@@ -153,12 +163,14 @@ pub mod win {
             return super::sdl::relative_delta();
         }
         let mut p = Point::default();
+        // SAFETY: GetCursorPos writes a POINT (two LONGs, `#[repr(C)] Point`) to a valid pointer.
         if unsafe { GetCursorPos(&mut p) } == 0 {
             return [0.0; 2];
         }
         let (cx, cy) = center();
         let d = [(p.x - cx) as f32, (p.y - cy) as f32];
         if d != [0.0; 2] {
+            // SAFETY: SetCursorPos takes plain integer screen coordinates; no pointers.
             unsafe { SetCursorPos(cx, cy) };
         }
         d

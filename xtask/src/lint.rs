@@ -5,9 +5,15 @@
 //! `ev!`, `efx!`, `tri!`) would compile there and smuggle `unsafe` past the boundary
 //! (AGENTS.md, rule 2). [`engine_macro_uses`] finds them; `cargo xtask build` and the unit test
 //! below fail on any hit.
+//!
+//! `cargo xtask lint` adds clippy's `undocumented_unsafe_blocks` (AGENTS.md, rule 4) on every
+//! build target. The Windows-only code (`goldsrc::platform::win`, the WinMM joystick) is only
+//! compiled, and so only linted, for a Windows target.
 
+use crate::roots::Target;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 /// `goldsrc`'s exported macros that expand to an `unsafe` engine call.
 pub const ENGINE_MACROS: [&str; 5] = ["eng", "cl_eng", "ev", "efx", "tri"];
@@ -34,6 +40,31 @@ pub fn engine_macro_uses(repo: &Path) -> Vec<String> {
         }
     }
     hits
+}
+
+/// `cargo xtask lint`: the engine-macro check, then clippy on the crates that hold `unsafe`
+/// code (`goldsrc` with both features, the two `*-dll` crates) for every target. Only the lints
+/// those crates enable themselves are on (`-A clippy::all` silences the rest, which the
+/// workspace isn't clean of, and keeps the bindgen output in `goldsrc-sys` quiet), and warnings
+/// are errors, so an `unsafe` block without a `// SAFETY:` comment fails. Returns false on any
+/// failure.
+pub fn run(repo: &Path) -> bool {
+    let hits = engine_macro_uses(repo);
+    for h in &hits {
+        eprintln!("engine-call macro in a game crate: {h}");
+    }
+    let mut ok = hits.is_empty();
+    for t in &Target::ALL {
+        crate::say!("== cargo clippy --target {} (goldsrc, ts-server-dll, ts-client-dll)", t.triple);
+        let status = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()))
+            .current_dir(repo)
+            .args(["clippy", "--target", t.triple, "-p", "goldsrc", "--features", "client,server"])
+            .args(["-p", "ts-server-dll", "-p", "ts-client-dll", "--", "-A", "clippy::all", "-D", "warnings"])
+            .status()
+            .expect("cargo clippy");
+        ok &= status.success();
+    }
+    ok
 }
 
 fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
