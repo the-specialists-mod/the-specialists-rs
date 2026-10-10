@@ -133,6 +133,12 @@ payload!(
     /// `TSHealth` (1004b730): byte hp.
     TsHealth { hp: u8 = byte });
 payload!(
+    /// `Train` (CHudTrain::MsgFunc_Train 10034df0): byte speed notch; 0 hides the train HUD.
+    Train { pos: u8 = byte });
+payload!(
+    /// `HideWeapon` (CHudAmmo 1001a110): byte `m_iHideHUDDisplay` (HIDEHUD_WEAPONS 1, _ALL 4).
+    HideWeapon { flags: u8 = byte });
+payload!(
     /// `TSArmor` (1004b920): byte kevlar.
     TsArmor { armor: u8 = byte });
 payload!(

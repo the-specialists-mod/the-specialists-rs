@@ -7,12 +7,14 @@ pub mod bmodels;
 pub mod breakable;
 pub mod buttons;
 pub mod doors;
+pub mod drive;
 pub mod effects;
 pub mod explode;
 pub mod items;
 pub mod lights;
 pub mod maprules;
 pub mod sound;
+pub mod tank;
 pub mod tracktrain;
 pub mod trains;
 pub mod triggers;
@@ -64,6 +66,13 @@ link_entities! {
     func_plat                 => FuncPlat,
     func_tracktrain           => tracktrain::TrackTrain,
     path_track                => tracktrain::PathTrack,
+    func_traincontrols        => tracktrain::TrainControls,
+    // func_tank.cpp
+    func_tank                 => tank::FuncTank<{ tank::GUN }>,
+    func_tanklaser            => tank::FuncTank<{ tank::LASER }>,
+    func_tankrocket           => tank::FuncTank<{ tank::ROCKET }>,
+    func_tankmortar           => tank::FuncTank<{ tank::MORTAR }>,
+    func_tankcontrols         => tank::TankControls,
     path_corner               => PathCorner,
     // triggers.cpp
     trigger_multiple          => Trigger<K_MULTIPLE>,
@@ -173,10 +182,10 @@ pub struct SpawnPoint;
 impl Entity for SpawnPoint {}
 
 /// SDK `FCAP_*` object caps for +use (the `Entity` trait has no `ObjectCaps`).
+pub const FCAP_IMPULSE_USE: i32 = 0x0000_0008;
 pub const FCAP_CONTINUOUS_USE: i32 = 0x0000_0010;
 pub const FCAP_ONOFF_USE: i32 = 0x0000_0020;
-pub const FCAP_IMPULSE_USE: i32 = 0x0000_0040;
-pub const FCAP_DIRECTIONAL_USE: i32 = 0x0000_0080;
+pub const FCAP_DIRECTIONAL_USE: i32 = 0x0000_0040;
 
 /// `ObjectCaps()` use bits of the stock classes, for the player's +use search
 /// (`CBasePlayer::PlayerUse`). 0 = not usable.
@@ -208,20 +217,28 @@ pub fn object_caps(e: *mut edict_t) -> i32 {
             }
         }
         b"func_pushable" | b"func_healthcharger" | b"func_recharge" => FCAP_CONTINUOUS_USE,
+        // CFuncTankControls::ObjectCaps (0xc4bc8); trains are driven through `drive`.
+        b"func_tankcontrols" => FCAP_IMPULSE_USE,
+        b"func_tracktrain" => FCAP_DIRECTIONAL_USE,
         _ => 0,
     }
 }
 
-/// SDK `CBasePlayer::PlayerUse` for the stock classes: on +use (pressed, or held for continuous
-/// users) find the closest usable entity within 64 units in front of the player and `Use` it.
-/// For the player package to call from PreThink with the button state.
-pub fn player_use(player: *mut edict_t, buttons: i32, old_buttons: i32) {
+/// SDK `CBasePlayer::PlayerUse` (TS 0xd9848) for the stock classes: a +use press first starts
+/// or stops driving a train or tank (`drive::player_use`); otherwise, on +use (pressed, or held
+/// for continuous users) find the closest usable entity within 64 units in front of the player
+/// and `Use` it. Called from the player's PreThink with this frame's and last frame's buttons.
+pub fn player_use(p: &mut crate::player::Player, cx: &mut Cx, buttons: i32, old_buttons: i32) {
     let use_bit = IN_USE as i32;
     let pressed = buttons & use_bit != 0 && old_buttons & use_bit == 0;
     let held = buttons & use_bit != 0;
     if !pressed && !held {
         return;
     }
+    if drive::player_use(p, cx, buttons & !old_buttons) {
+        return;
+    }
+    let player = cx.edict;
     let eng = engine();
     let pv = player.v();
     let (fwd, _, _) = eng.make_vectors(pv.v_angle);

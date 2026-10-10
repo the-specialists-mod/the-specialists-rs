@@ -27,6 +27,8 @@ pub struct Sprite {
     max_frame: f32,
     last_time: f32,
     animating: bool,
+    /// `AnimateUntilDead` think (set by [`Sprite::animate_and_die`]).
+    until_dead: bool,
 }
 
 impl Sprite {
@@ -81,6 +83,22 @@ impl Sprite {
         }
         e
     }
+
+    /// `CSprite::AnimateAndDie(framerate)`: play once at `framerate`, then remove itself
+    /// (`AnimateUntilDead`, removed once `dmgtime` passes).
+    pub fn animate_and_die(e: *mut edict_t, framerate: f32) {
+        let now = engine().time();
+        let Some(max_frame) = world::with::<Sprite, _>(e, |sp| {
+            sp.until_dead = true;
+            sp.max_frame
+        }) else {
+            return;
+        };
+        let v = e.v();
+        v.framerate = framerate;
+        v.dmgtime = now + max_frame / framerate;
+        v.nextthink = now;
+    }
 }
 
 impl Entity for Sprite {
@@ -111,10 +129,22 @@ impl Entity for Sprite {
     }
 
     fn think(&mut self, cx: &mut Cx) {
+        let now = engine().time();
+        if self.until_dead {
+            if now > cx.pev().dmgtime {
+                remove(cx.edict);
+                return;
+            }
+            // AnimateThink, then think again next frame.
+            let fr = cx.pev().framerate;
+            self.animate(cx, fr * (now - self.last_time));
+            self.last_time = now;
+            cx.pev().nextthink = now;
+            return;
+        }
         if !self.animating {
             return;
         }
-        let now = engine().time();
         let fr = cx.pev().framerate;
         self.animate(cx, fr * (now - self.last_time));
         if self.animating {
@@ -394,6 +424,23 @@ impl Entity for EnvExplosion {
             remove(cx.edict);
         }
     }
+}
+
+/// `ExplosionCreate` (0xc00e8): a one-shot `env_explosion` of `magnitude` at `center`, owned by
+/// `owner`; `damage = false` sets `SF_ENVEXPLOSION_NODAMAGE`.
+pub fn explosion_create(center: Vec3, angles: Vec3, owner: *mut edict_t, magnitude: i32, damage: bool) {
+    let e = create_entity(c"env_explosion", center, angles, owner);
+    if e.is_null() {
+        return;
+    }
+    world::with::<EnvExplosion, _>(e, |x| x.magnitude = magnitude);
+    if !damage {
+        e.v().spawnflags |= SF_ENVEXPLOSION_NODAMAGE;
+    }
+    world::dispatch(e, |ent, cx| {
+        ent.spawn(cx);
+        ent.use_(cx, std::ptr::null_mut(), std::ptr::null_mut(), UseType::Toggle, 0.0);
+    });
 }
 
 /// `spark_shower` (CShower): an invisible bouncing spark emitter.
@@ -1004,6 +1051,38 @@ impl Laser {
         v.dmgtime = now;
         v.nextthink = now;
     }
+
+    /// `CLaser::FireAtPoint`.
+    fn fire_at_point(&mut self, cx: &mut Cx, tr: &TraceResult) {
+        cx.pev().angles = tr.vecEndPos;
+        let sp = self.sprite.get();
+        if !sp.is_null() {
+            engine().set_origin(sp, tr.vecEndPos);
+        }
+        beam::damage(cx, tr);
+        let v = cx.pev();
+        let start = beam::start_pos(v);
+        beam::do_sparks(v, start, tr.vecEndPos);
+    }
+
+    /// `CLaser::TurnOff` on another entity (`func_tanklaser`). False if `e` isn't an env_laser.
+    pub fn turn_off_entity(e: *mut edict_t) -> bool {
+        world::dispatch(e, |ent, cx| (ent as &mut dyn std::any::Any).downcast_mut::<Laser>().map(|l| l.turn_off(cx))).flatten().is_some()
+    }
+
+    /// One `func_tanklaser` shot (`CFuncTankLaser::Fire` 0xc44e0): move the beam start to the
+    /// barrel, turn it on, deal a full second of `dmg`, aim it at `tr`, and stop its own think.
+    pub fn tank_shot(e: *mut edict_t, barrel_end: Vec3, tr: &TraceResult) {
+        world::dispatch(e, |ent, cx| {
+            let Some(l) = (ent as &mut dyn std::any::Any).downcast_mut::<Laser>() else { return };
+            let now = engine().time();
+            cx.pev().origin = barrel_end;
+            l.turn_on(cx);
+            cx.pev().dmgtime = now - 1.0;
+            l.fire_at_point(cx, tr);
+            cx.pev().nextthink = 0.0;
+        });
+    }
 }
 
 impl Entity for Laser {
@@ -1075,16 +1154,7 @@ impl Entity for Laser {
         }
         let org = cx.pev().origin;
         let tr = eng.trace_line(org, self.fire_position, DONT_IGNORE_MONSTERS, std::ptr::null_mut());
-        // FireAtPoint
-        cx.pev().angles = tr.vecEndPos;
-        let sp = self.sprite.get();
-        if !sp.is_null() {
-            eng.set_origin(sp, tr.vecEndPos);
-        }
-        beam::damage(cx, &tr);
-        let v = cx.pev();
-        let start = beam::start_pos(v);
-        beam::do_sparks(v, start, tr.vecEndPos);
+        self.fire_at_point(cx, &tr);
         cx.pev().nextthink = eng.time() + 0.1;
     }
 

@@ -1,9 +1,9 @@
-//! `func_tracktrain` and `path_track` (SDK plats.cpp / pathcorner.cpp; TS keeps the SDK code,
-//! including the `events/train.sc` pitch updates).
+//! `func_tracktrain`, `func_traincontrols` and `path_track` (SDK plats.cpp / pathcorner.cpp; TS
+//! keeps the SDK code, including the `events/train.sc` pitch updates).
 //!
-//! Not ported: player driving (`func_traincontrols`, the player's train HUD and +use on the
-//! controls). Trains still run from triggers and `startspeed`. `path_track` linking (SDK
-//! `Activate`) happens on the first train think after the map has spawned.
+//! Players drive a train by standing inside its control volume (`func_traincontrols`, or the
+//! train's own box) and pressing +use; the player side is in `drive.rs`. `path_track` linking
+//! (SDK `Activate`) happens on the first train think after the map has spawned.
 
 use super::base::*;
 use crate::entities::fire_targets;
@@ -271,6 +271,92 @@ pub struct TrackTrain {
     control_maxs: Vec3,
     adjust_pitch_event: u16,
     think: TrainThink,
+}
+
+/// `CFuncTrackTrain::OnControls` (0xd5100): is `pv` inside the train's control volume (in the
+/// train's local frame)? Always false with `SF_TRACKTRAIN_NOCONTROL` or for anything that isn't
+/// a `func_tracktrain`.
+pub fn on_controls(train: *mut edict_t, pv: &entvars_t) -> bool {
+    let Some((mins, maxs)) = world::with::<TrackTrain, _>(train, |t| (t.control_mins, t.control_maxs)) else { return false };
+    let tv = train.v();
+    if tv.spawnflags & SF_TRACKTRAIN_NOCONTROL != 0 {
+        return false;
+    }
+    let offset = vec::sub(pv.origin, tv.origin);
+    let (fwd, right, up) = engine().make_vectors(tv.angles);
+    let local = [vec::dot(offset, fwd), -vec::dot(offset, right), vec::dot(offset, up)];
+    (0..3).all(|i| local[i] >= mins[i] && local[i] <= maxs[i])
+}
+
+/// `CFuncTrackTrain::SetControls` (0xd503c): the control volume becomes `controls`' box, taken
+/// relative to the train's spawn origin.
+fn set_controls(train: *mut edict_t, controls: &entvars_t) {
+    let offset = vec::sub(controls.origin, train.v().oldorigin);
+    let (mins, maxs) = (vec::add(controls.mins, offset), vec::add(controls.maxs, offset));
+    world::with::<TrackTrain, _>(train, |t| {
+        t.control_mins = mins;
+        t.control_maxs = maxs;
+    });
+}
+
+/// `TrainSpeed` (0xd8660): the HUD notch for a speed: 5 back, 1 stopped, 2/3/4 for under a third,
+/// under two thirds, and the rest of `max`. TS divides in double precision.
+pub fn train_speed(speed: i32, max: i32) -> i32 {
+    if speed < 0 {
+        5
+    } else if speed == 0 {
+        1
+    } else {
+        let f = speed as f64 / max as f64;
+        if f < 0.33 {
+            2
+        } else if f < 0.66 {
+            3
+        } else {
+            4
+        }
+    }
+}
+
+// ---- func_traincontrols ---------------------------------------------------------------------------------
+
+/// `func_traincontrols` (`CFuncTrainControls`, 0xd5c18): a brush that hands its box to the
+/// `func_tracktrain` named by `target` as the control volume, then removes itself.
+#[derive(Default)]
+pub struct TrainControls;
+
+impl Entity for TrainControls {
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_NONE as i32;
+        set_own_model(cx);
+        let v = cx.pev();
+        let (mins, maxs, org) = (v.mins, v.maxs, v.origin);
+        eng.set_size(cx.edict, mins, maxs);
+        eng.set_origin(cx.edict, org);
+        cx.pev().nextthink = eng.time();
+    }
+
+    /// `CFuncTrainControls::Find` (0xd5ad4).
+    fn think(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let target = s(cx.pev().target);
+        let mut e = std::ptr::null_mut();
+        loop {
+            e = eng.find_by_target_name(e, target);
+            if e.is_null() || s(e.v().classname) == c"func_tracktrain" {
+                break;
+            }
+        }
+        if e.is_null() {
+            eng.alert(ALERT_TYPE::at_console, &format!("No train {}\n", target.to_string_lossy()));
+            return;
+        }
+        set_controls(e, cx.pev());
+        crate::entities::remove(cx.edict);
+    }
 }
 
 fn fix(mut a: f32) -> f32 {
@@ -639,6 +725,8 @@ impl Entity for TrackTrain {
         };
         eng.precache_sound(c"plats/ttrain_brake1.wav");
         eng.precache_sound(c"plats/ttrain_start1.wav");
+        // Played by the player taking the controls (TS precaches it in ClientPrecache).
+        eng.precache_sound(c"plats/train_use1.wav");
         self.adjust_pitch_event = eng.precache_event(c"events/train.sc");
     }
 
@@ -676,6 +764,9 @@ impl Entity for TrackTrain {
             }
             v.speed = self.speed * delta;
             self.next(cx);
+            let v = cx.pev();
+            let msg = format!("TRAIN({}), speed to {:.2}\n", s(v.targetname).to_string_lossy(), v.speed);
+            engine().alert(ALERT_TYPE::at_aiconsole, &msg);
         }
     }
 
@@ -710,5 +801,15 @@ mod tests {
         assert_eq!(approach_angle(90.0, 0.0, 10.0), 10.0);
         assert_eq!(approach_angle(0.0, 350.0, 20.0), 0.0);
         assert_eq!(fixup([-10.0, 370.0, 5.0]), [350.0, 10.0, 5.0]);
+    }
+
+    #[test]
+    fn hud_notches() {
+        assert_eq!(train_speed(-50, 300), 5);
+        assert_eq!(train_speed(0, 300), 1);
+        assert_eq!(train_speed(75, 300), 2);
+        assert_eq!(train_speed(150, 300), 3);
+        assert_eq!(train_speed(225, 300), 4);
+        assert_eq!(train_speed(300, 300), 4);
     }
 }

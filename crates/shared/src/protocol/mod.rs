@@ -158,5 +158,9 @@ mod wire_agreement {
         let b = enc(|b| w::TsFade { duration: 4096, hold: 2048, flags: 1, r: 255, g: 0, b: 0, a: 128 }.write(b));
         let d = hud::TsFade::decode(&b).unwrap();
         assert_eq!((d.duration, d.hold, d.flags, d.r, d.a), (4096, 2048, 1, 255, 128));
+        let b = enc(|b| w::Train { pos: 5 }.write(b));
+        assert_eq!(hud::Train::decode(&b).unwrap().pos, 5);
+        let b = enc(|b| w::HideWeapon { flags: 1 }.write(b));
+        assert_eq!(hud::HideWeapon::decode(&b).unwrap().flags, 1);
     }
 }

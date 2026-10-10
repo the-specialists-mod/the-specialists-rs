@@ -105,6 +105,7 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | `ts` | `rules::PlayerRules` | rules package |
 | `hud` | `player::hud::HudCache` | rules package |
 | `bot` | `Option<bots::Bot>` | rules package |
+| `drive` | `entities::stock::drive::DriveState` | stock entities (train/tank driving) |
 
 Fields several subsystems read live on `Player` itself: `slow_target`, `active_powerup`,
 `powerup_until`, `kungfu`, `superjump`, `slots_used`, `cash`, `team`, `frags`, `deaths`,
@@ -113,9 +114,9 @@ Fields several subsystems read live on `Player` itself: `slow_target`, `active_p
 
 Hook order, fixed in `player/mod.rs`:
 
-* **spawn:** base player setup, then `rules::on_spawn` (spawn point, loadout), `weapons::on_spawn`, `stunt::on_spawn`, `hud::reset`.
-* **pre_think:** `rules`, `stunt`, `weapons`.
-* **post_think:** `weapons` (item post frame), `stunt`, `rules`, then `hud::update` (sends changed HUD values).
+* **spawn:** base player setup, then `rules::on_spawn` (spawn point, loadout), `weapons::on_spawn`, `stunt::on_spawn`, `drive::on_spawn`, `hud::reset`.
+* **pre_think:** `stock::player_use` (+use on stock entities, train/tank controls; skipped while a tank is in use), `drive::pre_think` (train speed control), then `rules`, `stunt`, `weapons`.
+* **post_think:** `drive::post_think` (tank firing / letting go), `weapons` (item post frame, skipped while a tank is in use), `stunt`, `rules`, then `hud::update` (sends changed HUD values, including `Train` and `HideWeapon`).
 * **fill_client_data:** `stunt`, `weapons`, `rules`.
 * **take_damage:** `player::damage::take_damage`, which on death calls `rules::on_killed`. That in turn calls `weapons::on_killed`.
 

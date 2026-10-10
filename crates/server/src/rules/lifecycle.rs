@@ -466,6 +466,7 @@ pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
 pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f32; 3]) {
     let e = cx.edict;
     let idx = cx.index();
+    crate::entities::stock::drive::release_tank(p, cx);
     p.hud.cash = Some(p.cash);
     messages::one(Msg::TsCash, e).short(p.cash).end();
     {
@@ -690,6 +691,7 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     p.ts.observer_at = now + 3.0;
     p.hud.cash = None;
     eng.set_view(e, e);
+    crate::entities::stock::drive::release_tank(p, cx);
     p.ts.respawns_used = p.ts.respawns_used.saturating_add(1);
     p.ts.suicide_at = 0.0;
     if super::is_player(attacker) && attacker != e {

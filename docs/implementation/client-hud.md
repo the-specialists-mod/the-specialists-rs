@@ -80,7 +80,9 @@ also hooked. Malformed payloads are logged and ignored.
 | ScoreInfo / TeamInfo / TeamScore / TeamNames | stock | scoreboard data |
 | DeathMsg | B, B, Str | kill feed + TS console line |
 | SayText / TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2 (Spectator: observer flag, buy menu on entering) |
-| CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, HideWeapon, AmmoX, Geiger, Health, Battery, Damage, Train, GameTitle, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
+| Train | B notch | `CHudTrain`: `sprites/%d_train.spr` frame `notch - 1` in (255,160,0), x = w/3 + sprite w/4, y = h - sprite h - font height; hidden at 0 |
+| HideWeapon | B bits | `hide_hud`; HIDEHUD_ALL (4) hides the train element. TS only resets the engine crosshair, which it doesn't use |
+| CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Geiger, Health, Battery, Damage, GameTitle, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
 
 ## 3. Cvars and commands
 
