@@ -46,7 +46,7 @@ Packages used on Arch: `rustup cmake lib32-glibc lib32-gcc-libs mingw-w64-gcc wi
 ## 2. Running the checks
 
 ```sh
-cargo xtask lint                        # no engine-call macros in game crates; SAFETY comments on every target
+cargo xtask lint                        # no engine-call macros in game crates; clippy -D warnings on every target
 cargo xtask roots                       # which roots exist
 cargo xtask install all                 # assemble <root>/ts and install libraries
 cargo xtask server rehlds-linux --map ts_awaken --bots 4 --seconds 60
@@ -54,6 +54,12 @@ cargo xtask all                         # everything below, about 2.5 min
 cargo xtask test                        # dedicated server + 2 bots, 15 s, every root in parallel (~25 s)
 cargo xtask play                        # gameplay on a listen server, fwgs and fwgs-win in parallel (~2 min)
 ```
+
+`cargo xtask lint` runs `cargo clippy --workspace --all-targets -- -D warnings` for each of the
+four targets, so the Windows-only code (`goldsrc::platform::win`, the WinMM joystick) is linted
+too; `xtask` itself is Unix host tooling and is linted on the Linux targets only. Each game
+crate's `clippy.toml` lists `goldsrc`'s engine-call macros under `disallowed-macros`, a second
+guard next to the source check in `xtask/src/lint.rs`.
 
 The roots run in parallel: each one's output is printed as a block when it finishes. Windows
 roots share one Wine prefix, so `wineserver -k` runs once at the end instead of after each root.

@@ -49,15 +49,16 @@ game/ts/         liblist.gam, gameinfo.txt, delta.lst
    `eng!`/`cl_eng!`/`ev!`/`efx!`/`tri!` in game crates: they expand to `unsafe` at the call site,
    and `deny(unsafe_code)` doesn't fire on another crate's macro expansion. A source check in
    `xtask/src/lint.rs` enforces this: it runs as a unit test (`cargo test`) and at the start of
-   `cargo xtask build`, and lists the offending lines.
+   `cargo xtask build`, and lists the offending lines. Each game crate's `clippy.toml` also lists
+   the macros under `disallowed-macros`, which `cargo xtask lint` turns into errors.
 3. **A new engine callback or export goes in the `*-dll` crate.** Keep those functions thin:
    convert raw pointers to references (null-check), call a safe function in the game crate, and
    convert the result back. Logic belongs in the game crate. The one exception is
    `client-dll/src/tempents.rs`, the SDK temp-entity loop that walks the engine's linked list.
 4. **Every `unsafe` block gets a `// SAFETY:` comment** saying why it holds. `goldsrc` and the
-   `*-dll` crates warn on `clippy::undocumented_unsafe_blocks`; `cargo xtask lint` runs that
-   check for all four targets, which matters because Windows-only code (`goldsrc::platform::win`,
-   the WinMM joystick) is never compiled by a Linux clippy run.
+   `*-dll` crates warn on `clippy::undocumented_unsafe_blocks`; `cargo xtask lint` runs clippy
+   with warnings as errors for all four targets, which matters because Windows-only code
+   (`goldsrc::platform::win`, the WinMM joystick) is never compiled by a Linux clippy run.
 5. **Entity pointers:** game code passes `*mut edict_t` around as a handle (holding a raw
    pointer is safe). Read and write through `goldsrc::edict::EdictPtr`: `e.v()` for `entvars_t`,
    `e.is_free()`, `e.has_private_data()`. `v()` returns `&'static mut entvars_t`, so keep that
@@ -78,7 +79,8 @@ Windows engine roots, and `../xash3d-fwgs` (or set `FWGS_DIR`).
 ```sh
 cargo test                                # unit tests (all crates)
 cargo xtask build [--release]             # all four targets; must build with no warnings
-cargo xtask lint                          # undocumented-unsafe clippy check, all four targets (~30 s)
+cargo xtask lint                          # clippy --workspace --all-targets -D warnings, all four targets
+                                          # (~40 s cold), plus the engine-macro check
 cargo xtask install <root>|all            # assemble <root>/ts and install the libraries
 cargo xtask all                           # test + play, about 2.5 min
 cargo xtask test [--map M]                # dedicated server + bots on every engine root, in parallel (~25 s)
@@ -97,7 +99,9 @@ Before calling a change done:
   `cargo fmt --check` is clean.
 - `cargo test` passes.
 - `cargo xtask build` has no warnings.
-- When the change touches `unsafe` code (`goldsrc`, `*-dll`), `cargo xtask lint` passes.
+- `cargo xtask lint` passes: the workspace is clippy-clean on all four targets. Fix a lint
+  rather than silence it; where it fights a deliberate TS- or SDK-faithful pattern, use a
+  narrowly scoped `#[allow(clippy::...)]` with a comment saying why, never a crate-wide one.
 - Run `cargo xtask all` (or `test` alone for server-only changes that can't affect gameplay).
 - When the change touches exports or the `*-dll` crates, check that the exported symbol lists are
   unchanged (`nm -D --defined-only` / `objdump -p`).

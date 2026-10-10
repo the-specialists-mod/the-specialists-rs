@@ -4,13 +4,15 @@
 //! that come from another crate's macro, so `goldsrc`'s engine-call macros (`eng!`, `cl_eng!`,
 //! `ev!`, `efx!`, `tri!`) would compile there and smuggle `unsafe` past the boundary
 //! (AGENTS.md, rule 2). [`engine_macro_uses`] finds them; `cargo xtask build` and the unit test
-//! below fail on any hit.
+//! below fail on any hit. Each game crate's `clippy.toml` also lists the macros under
+//! `disallowed-macros`, a second guard that sees through renamed imports and local macros.
 //!
-//! `cargo xtask lint` adds clippy's `undocumented_unsafe_blocks` (AGENTS.md, rule 4) on every
-//! build target. The Windows-only code (`goldsrc::platform::win`, the WinMM joystick) is only
-//! compiled, and so only linted, for a Windows target.
+//! `cargo xtask lint` runs the whole clippy set with warnings as errors on every build target,
+//! including the `undocumented_unsafe_blocks` lint that `goldsrc` and the `*-dll` crates enable
+//! (AGENTS.md, rule 4). The Windows-only code (`goldsrc::platform::win`, the WinMM joystick) is
+//! only compiled, and so only linted, for a Windows target.
 
-use crate::roots::Target;
+use crate::roots::{Os, Target};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -42,12 +44,10 @@ pub fn engine_macro_uses(repo: &Path) -> Vec<String> {
     hits
 }
 
-/// `cargo xtask lint`: the engine-macro check, then clippy on the crates that hold `unsafe`
-/// code (`goldsrc` with both features, the two `*-dll` crates) for every target. Only the lints
-/// those crates enable themselves are on (`-A clippy::all` silences the rest, which the
-/// workspace isn't clean of, and keeps the bindgen output in `goldsrc-sys` quiet), and warnings
-/// are errors, so an `unsafe` block without a `// SAFETY:` comment fails. Returns false on any
-/// failure.
+/// `cargo xtask lint`: the engine-macro check, then `cargo clippy --workspace --all-targets
+/// -- -D warnings` for every target. A workspace build unifies `goldsrc`'s features, so both its
+/// `client` and `server` halves are linted. `xtask` is host tooling (it uses `std::os::unix`), so
+/// it's linted on the Linux targets only. Returns false on any failure.
 pub fn run(repo: &Path) -> bool {
     let hits = engine_macro_uses(repo);
     for h in &hits {
@@ -55,14 +55,13 @@ pub fn run(repo: &Path) -> bool {
     }
     let mut ok = hits.is_empty();
     for t in &Target::ALL {
-        crate::say!("== cargo clippy --target {} (goldsrc, ts-server-dll, ts-client-dll)", t.triple);
-        let status = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()))
-            .current_dir(repo)
-            .args(["clippy", "--target", t.triple, "-p", "goldsrc", "--features", "client,server"])
-            .args(["-p", "ts-server-dll", "-p", "ts-client-dll", "--", "-A", "clippy::all", "-D", "warnings"])
-            .status()
-            .expect("cargo clippy");
-        ok &= status.success();
+        crate::say!("== cargo clippy --workspace --all-targets --target {} -- -D warnings", t.triple);
+        let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));
+        c.current_dir(repo).args(["clippy", "--workspace", "--all-targets", "--target", t.triple]);
+        if t.os == Os::Windows {
+            c.args(["--exclude", "xtask"]);
+        }
+        ok &= c.args(["--", "-D", "warnings"]).status().expect("cargo clippy").success();
     }
     ok
 }

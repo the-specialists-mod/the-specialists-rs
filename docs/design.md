@@ -154,7 +154,8 @@ hooks, native mouse) and the two `*-dll` crates (exports and callbacks, which co
 pointers to references). Game code keeps `*mut edict_t` as an entity handle and reads it through
 `goldsrc::edict::EdictPtr` (`e.v()`). Game crates also can't use `goldsrc`'s engine-call macros
 (`eng!`, `cl_eng!`, `ev!`, `efx!`, `tri!`), whose `unsafe` expansion `deny(unsafe_code)` doesn't
-see; `xtask/src/lint.rs` checks for them (in `cargo test` and `cargo xtask build`). The rules for
+see; `xtask/src/lint.rs` checks for them (in `cargo test` and `cargo xtask build`), and so does
+clippy's `disallowed-macros` (each game crate's `clippy.toml`, in `cargo xtask lint`). The rules for
 working with this are in `AGENTS.md`.
 
 ## 5. Map entities
