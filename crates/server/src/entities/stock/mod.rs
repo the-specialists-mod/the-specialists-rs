@@ -31,7 +31,7 @@ use effects::*;
 use goldsrc::edict::EdictPtr;
 use items::{ArmorCharger, Battery, HealthCharger, HealthKit};
 use lights::Light;
-use maprules::GameText;
+use maprules::{GamePlayerEquip, GameText};
 use sound::AmbientGeneric;
 use trains::{FuncPlat, FuncTrain, PathCorner};
 use triggers::*;
@@ -113,6 +113,7 @@ link_entities! {
     item_healthkit            => HealthKit,
     item_battery              => Battery,
     game_text                 => GameText,
+    game_player_equip         => GamePlayerEquip,
     func_healthcharger        => HealthCharger,
     func_recharge             => ArmorCharger,
     env_global                => EnvGlobal,

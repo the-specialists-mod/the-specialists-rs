@@ -39,7 +39,7 @@ are Ghidra addresses.
 | `ClientKill` 0xacec8 | `lifecycle::client_kill` + `pre_think` | suicide 1 s later, not while observing. |
 | `ClientPutInServer` 0xacf44 | first `on_spawn` | cash = `initial_cash` "1200", `EF_NOINTERP` (`server-dll` creates the Player and spawns it). |
 | `ClientUserInfoChanged` 0xae638 + 0x8b244 | `lifecycle::userinfo_changed` | name change (% → space) broadcast/log; HLDM models refused. |
-| `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team, spawn spot. |
+| `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team, spawn spot. A map's `game_player_equip`s replace the loadout (`stock::maprules::equip_on_spawn` from `weapons::on_spawn`). |
 | `UpdateClientData` init block 0x91d00 | `lifecycle::init_hud` | `ResetHUD` every spawn; first time `InitHUD`, rules InitHUD, TS InitHUD, `game_playerjoin`; `game_playerspawn`; RoundTime; super jump PwUp. |
 | `CHalfLifeMultiplay::InitHUD` 0xcf618 / Teamplay 0xe45d8 | `lifecycle::rules_init_hud`, `teams::init_hud` | join TextMsg, log, `GameMode`, own ScoreInfo, MOTD, everyone's ScoreInfo; teamplay: TeamNames, assignment SayText, TeamInfo. |
 | `SendMOTDToClient` 0xd0ae4 | `lifecycle::send_motd` | `ServerName` = hostname, `motdfile` (default `motd.txt`) in ≤60-char chunks, ≤0x600 bytes. |
@@ -173,13 +173,16 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * Round modes 2/3, objectives, buy zones, cash-based buying stay off (dead in 3.0); `TeamWin`
   exists only as the score/win giver path.
 * `jointeam` (voluntary, not The One) puts the player in observer with a 5 s respawn.
+* `PlayerSpawn` with a `game_player_equip`: TS gives no `weapon_tsgun` (no gun at all unless
+  the equip lists it) and doesn't copy the stored cash; the port's TS gun is part of the player,
+  so the kung fu gun is kept. The equip touches run right after the player's spawn instead of
+  inside it.
 
 ## 7. Missing / partial
 
 * `ts_groundweapon` buyable/team checks (cash mode is off in 3.0).
 * Observer camera beyond the basics (in-eye, map modes are only mode numbers).
 * `loadweapons`/`saveweapons`, `CustomWP`.
-* The `game_player_equip` override in `PlayerSpawn` (stock entity package).
 * Untested in-engine: CTB (no test map with briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client.
 

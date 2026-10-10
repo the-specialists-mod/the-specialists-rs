@@ -26,7 +26,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `lights.rs` | `light`, `light_spot`, `light_environment` |
 | `effects.rs` | `env_sprite`, `env_glow`, `env_shake`, `env_fade`, `env_explosion` (+ `spark_shower`), `env_render`, `env_beam`, `env_laser`, `env_shooter`, `gibshooter` (+ `gib`), `env_spark` / `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite`, `cycler` |
 | `items.rs` | `item_healthkit`, `item_battery`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins |
-| `maprules.rs` | `game_text` |
+| `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`) |
 
 How the SDK patterns map to Rust:
 
@@ -101,6 +101,7 @@ How the SDK patterns map to Rust:
 | `item_healthkit`, `item_battery` | **TS** pickup rules | See §3.3. |
 | `func_healthcharger`, `func_recharge` | **TS** `CWallHealth` / `CRecharge` | One-shot: the first use refills fully, then the charger recharges after 60 s (health) or 30 s (armour). |
 | `game_text` | SDK maprules.cpp | `TE_TEXTMESSAGE` per client, master check. |
+| `game_player_equip` | SDK maprules.cpp (same in TS 0xcd494) | Unknown keys are items (`name#n` stripped, count ≥ 1, max 32), given through `GiveNamedItem` (item spawned at the player's feet with `SF_NORESPAWN`, then touched). Touch (master, not `USEONLY`) / use (no master). TS `PlayerSpawn` touches every one on spawn instead of buying the loadout (`maprules::equip_on_spawn`, called from `weapons::on_spawn`; deferred until the player's spawn dispatch returns). `weapon_tsgun` is a no-op: the TS gun is built into every player. |
 
 ## 3. TS deviations from the SDK (ported)
 
