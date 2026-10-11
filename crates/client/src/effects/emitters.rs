@@ -328,15 +328,15 @@ impl MapFx {
     /// `clock`, the emitter clock (`0x10189478`); `now` (client time) stamps the particles.
     pub fn emit(&mut self, ps: &mut PSys, cam: &Camera, clock: f64, now: f64, ts: f32) {
         let div = ps.divisor.max(1.0);
-        let mut sprites: Vec<Option<u16>> = self.templates.iter().map(|t| ps.sprite(&t.sprite_name)).collect();
         for em in self.emitters.iter_mut().filter(|e| !e.dead) {
             if em.next_emit >= clock {
                 continue;
             }
             let Some(ti) = em.template else { continue };
-            let Some(spr) = sprites[ti] else { continue };
             let mut n = r::random_long(em.ppe.1.min(em.ppe.0), em.ppe.0.max(em.ppe.1));
-            if n <= 0 {
+            // Only 0 is rejected (0x1003ac6d). A negative count goes on: it adds no particles but
+            // still plays the emit sound and reschedules.
+            if n == 0 {
                 continue;
             }
             let lo = v::add(em.origin, em.variance.1);
@@ -358,7 +358,17 @@ impl MapFx {
             n = (n as f32 / div).ceil() as i32;
             let count = ((n as f32) / f).ceil() as i32;
             let tmpl = &self.templates[ti];
-            let mut last = em.origin;
+            // The template's sprite is looked up only now, after the random count and the camera
+            // test (0x1003ae5f). A missing one is reported and the emitter is tried again next
+            // frame: 0x1003ae69..0x1003ae78 skip the `next_emit` writes.
+            let Some(spr) = ps.sprite(&tmpl.sprite_name) else {
+                engine().print(&format!("Sprite '{}' is not a valid sprite.\n", tmpl.sprite_name));
+                continue;
+            };
+            // The emit sound plays at the scratch particle's origin (`0x1018a720+0x14`), which
+            // `0x1004ffe0` zeroes and the loop sets: the last particle's, or the world origin when
+            // a negative count added none.
+            let mut last = v::ZERO;
             for _ in 0..count {
                 let mut p = tmpl.roll(&mut |a, b| r::random_float(a, b));
                 p.sprite = spr;
@@ -388,7 +398,6 @@ impl MapFx {
             let iv = if eps > 0.0 { (1.0 / eps) / ts.max(0.01) } else { 1.0 };
             em.next_emit = clock + (iv * div * f) as f64;
         }
-        sprites.clear();
     }
 
     /// One particle of template `t` at `pos` (collision `oncollide` 2/3 targets).

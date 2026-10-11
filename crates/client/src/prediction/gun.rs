@@ -36,6 +36,11 @@ struct Pred {
     alt_grip: u8,
     /// `lasthealth` (`0x100991a4`): the local health of the last `runfuncs` command, as an int.
     last_health: i32,
+    /// `0x1009ff08`: the client gun has been (re)spawned since the last `HUD_VidInit`.
+    gun_spawned: bool,
+    /// The client player's `m_pActiveItem` (`0x1009f008`) is the TS gun: set by the first command
+    /// whose `m_iId` is 16 and never cleared.
+    active_gun: bool,
 }
 
 static PRED: Global<RefCell<Option<Pred>>> = Global(RefCell::new(None));
@@ -75,6 +80,78 @@ pub fn reset_spread() {
 /// `CHudTSWeapons::VidInit` (`0x1004cb50`) clears the alternate grip.
 pub fn reset_alt_grip() {
     with(|p| p.alt_grip = 0);
+}
+
+/// `HUD_VidInit` (`0x1001aa50`) -> `VGui_Startup` (`0x1005b3e0`) -> the viewport's `Initialize`
+/// (`0x10060aa0`) -> the TS panel's reset (`0x10065ff0`, vtable slot 133) clears `0x1009ff08`, so
+/// the next `HUD_WeaponsPostThink` spawns the gun again (see [`spawn_gun`]).
+pub fn vid_init() {
+    with(|p| p.gun_spawned = false);
+}
+
+/// `CTSGun::Spawn` on the client gun (`0x100083f0`, with `CTSGun::Reset` `0x10008470`). It zeroes
+/// the inventory (`+0x104`, 38 records), the reserve ammo (`+0xc4`), the current id and its record
+/// and info pointers (`+0xb8..+0xc0`), the `UpdateClientData` send caches (`+0x83a`, `+0x83c`,
+/// `+0x86c`, `+0x870`), `+0x89c` (written nowhere else, read nowhere), the last shot time
+/// (`+0x8a0`, `Gun::last_shot`) and the last view-kick time (`+0x8c0`, `view::reset_kick_time`),
+/// and sets `m_iClip` (`+0xa4`) and `m_iDefaultAmmo` (`+0xb4`) to 1 and `m_iId` to 16. Only the
+/// two times have port state that outlives a command: the inventory, reserve, current id and
+/// `m_iClip` are rebuilt from the networked state on every command ([`gun_from`]). The combo
+/// counters (`+0x8b4..+0x8bc`) and the grenade-pin time (`+0x8c4`) are left alone, as are the
+/// player's fields (melee bar, windows, mode memory).
+fn spawn_gun(g: &mut Gun) {
+    g.last_shot = 0.0;
+    view::reset_kick_time();
+}
+
+/// The client player's `Killed` (`0x100036b0`): `m_pActiveItem->Holster()` (vtable `+0x128` =
+/// `0x1000aaf0` -> `CTSGun::HolsterWeapon` `0x1000ab00`). The client player's `IsAlive`
+/// (`0x10004700`) reads `pev->health`, which nothing on the client writes, so the holster always
+/// stops before its living-player part (reload/state reset, switch to kung fu, draw anim and
+/// event, combo reset). What runs first: view and weapon model 0, `Unzoom`, the animation
+/// extensions cleared, `m_flNextAttack = 0.5`, `m_flTimeWeaponIdle = 3.0` and, if a knife or
+/// katana hit is pending (`pl+0x788` window and `pl+0x790` source both set), the melee window
+/// cleared. The models, FOV, `m_flNextAttack` and the idle time are copied from `from` straight
+/// after (`0x100038e7..`), and [`gun_from`] unpacks the same fields, so the melee window is the
+/// only lasting effect.
+fn holster(g: &mut Gun) {
+    if g.melee_window != 0.0 && g.melee_source != 0 {
+        g.melee_window = 0.0;
+        g.melee_damage = 0.0;
+        g.melee_source = 0;
+    }
+}
+
+/// The start of `HUD_WeaponsPostThink`, before anything is read from `from`: the gun spawn after
+/// a `HUD_VidInit` (`0x100036f0`, the call at `0x10003713`, on every call) and, for `runfuncs`
+/// commands, the SDK's `lasthealth` check (`0x10003877..0x100038e2`, int `0x100991a4`). These
+/// act on the state carried from the last first-time prediction, which [`gun_from`] then
+/// overlays with the networked fields. Returns true on a respawn.
+fn spawn_and_death(c: &clientdata_t, runfuncs: bool) -> bool {
+    if !with(|p| std::mem::replace(&mut p.gun_spawned, true)) {
+        with(|p| spawn_gun(p.gun.get_or_insert_with(Gun::default)));
+    }
+    if !runfuncs {
+        return false;
+    }
+    let (died, spawned, active) = with(|p| {
+        let alive = c.health > 0.0;
+        let r = (!alive && p.last_health > 0, alive && p.last_health <= 0, p.active_gun);
+        p.last_health = c.health as i32;
+        r
+    });
+    if died && active {
+        // health > 0 -> <= 0 (0x1000389b).
+        with(|p| holster(p.gun.get_or_insert_with(Gun::default)));
+    }
+    if spawned {
+        // health <= 0 -> > 0: the client player's Spawn (0x100036d0), i.e. the active item's
+        // Deploy (the draw animation in `post_think`) and the spread reset 0x1000b9d0, then the
+        // gun's Spawn (0x100038c8).
+        reset_spread();
+        with(|p| spawn_gun(p.gun.get_or_insert_with(Gun::default)));
+    }
+    spawned
 }
 
 /// The alternate-grip update in `HUD_WeaponsPostThink` (`0x10003bc4..0x10003c0c`), on every call
@@ -246,6 +323,11 @@ fn gun_from(from: &local_state_t) -> (Gun, u16) {
 pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t, runfuncs: bool, time: f64, seed: u32) {
     let c = &from.client;
     let dead = c.deadflag != 0 || c.health <= 0.0;
+    let spawned = spawn_and_death(c, runfuncs);
+    // 0x10003d40, inside the `m_iId == 16` part of HUD_WeaponsPostThink, after the check above.
+    if c.m_iId == TS_GUN_SLOT as i32 {
+        with(|p| p.active_gun = true);
+    }
     update_alt_grip(c);
     let (mut gun, powerups) = gun_from(from);
     // HUD_PostRunCmd (0x10003830) keeps the active items for DrawLaserDots, cleared while the
@@ -261,19 +343,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     if runfuncs {
         let id = gun.current;
         let items = gun.slot().map(|s| s.items).unwrap_or(0);
-        // 0x10003877..0x100038e2 (the SDK's `lasthealth` check): health going from <= 0 (the
-        // last value, truncated to an int, `0x100991a4`) to > 0 runs the client player's Spawn
-        // (0x100036d0): the active weapon's Deploy (the draw animation below), then 0x1000b9d0,
-        // the spread reset. `to.client.health` is `from`'s here (the engine copies it).
-        let spawned = with(|p| {
-            let spawned = c.health > 0.0 && p.last_health <= 0;
-            p.last_health = c.health as i32;
-            spawned
-        });
-        if spawned {
-            gun.spread_penalty = 0.0;
-            reset_spread();
-        }
+        // A respawn ([`spawn_and_death`]) runs the active weapon's Deploy: the draw animation.
         let changed = with(|p| {
             let ch = p.last_id != Some(id) || spawned;
             p.last_id = Some(id);
@@ -362,5 +432,16 @@ mod tests {
         assert_eq!((c.clip, c.mode, c.items, c.alt_grip), (21, 1, att::SCOPE, true));
         assert_eq!(g.current_reserve(), 60);
         assert_eq!((g.next_primary, g.next_attack), (0.05, 0.3));
+    }
+
+    /// The death holster clears a pending knife/katana hit, not a kung-fu one (source 0).
+    #[test]
+    fn holster_clears_blade_window() {
+        let mut g = Gun { melee_window: 0.2, melee_damage: 40.0, melee_source: 1, ..Default::default() };
+        holster(&mut g);
+        assert_eq!((g.melee_window, g.melee_damage, g.melee_source), (0.0, 0.0, 0));
+        let mut g = Gun { melee_window: 0.2, melee_damage: 40.0, melee_source: 0, ..Default::default() };
+        holster(&mut g);
+        assert_eq!((g.melee_window, g.melee_damage, g.melee_source), (0.2, 40.0, 0));
     }
 }

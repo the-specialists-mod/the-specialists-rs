@@ -667,6 +667,12 @@ pub fn kick_angles(pitch: f32, yaw: f32, silenced: bool) {
     });
 }
 
+/// The client gun's Spawn (`0x100083f0`) zeroes `CTSGun+0x8c0`, the time of the last kick that
+/// `VKickback` (`0x10008230`) scales the shake by.
+pub fn reset_kick_time() {
+    with(|w| w.last_shot = 0.0);
+}
+
 /// `V_CalcBob` (`0x10066e70`, TS rewrite). Returns the gun offset (fwd, right, up components)
 /// and stores the bob pitch.
 fn calc_bob(w: &mut View, p: &ref_params_t, level: f32, ts: f32) -> Vec3 {

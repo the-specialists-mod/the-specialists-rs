@@ -48,6 +48,8 @@ pub unsafe extern "C" fn HUD_Init() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_VidInit() -> c_int {
     hud::vid_init();
+    // TS: VGui_Startup's viewport Initialize; the gun is spawned again on the next prediction.
+    prediction::vid_init();
     voice::vid_init();
     effects::vid_init();
     spectator::vid_init();
