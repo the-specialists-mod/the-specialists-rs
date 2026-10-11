@@ -160,6 +160,13 @@ pub trait GunHost {
     fn first_prediction(&self) -> bool {
         true
     }
+    /// The kung-fu power [`Gun::ccombat_block`] gates on, or `None` for the gun's own
+    /// [`Gun::melee_bar`] (`pl+0x774`), which the block then charges: the server. `client.dll`
+    /// keeps no bar: its block (`0x1000adc0`) gates on the HUD's networked power (`0x1018a718`)
+    /// and charges nothing.
+    fn kfu_power(&self) -> Option<f32> {
+        None
+    }
     /// Active power-up bits (`pl+0x724`, `shared::ts::powerup`).
     fn powerups(&self) -> u16;
     /// Permanent kung-fu power-up (x2 melee damage).
@@ -446,7 +453,8 @@ impl Gun {
 
     /// The weapon parts of `CBasePlayer::PreThink` 0x908cc: melee windows and kung-fu power
     /// regeneration (15/s); the server's PreThink also runs [`Gun::decay_spread`] while alive.
-    /// `dt` as for [`Gun::timer_dt`].
+    /// `dt` as for [`Gun::timer_dt`]. Server only: `client.dll`'s `HUD_WeaponsPostThink`
+    /// (`0x10003830`) has no PreThink part.
     pub fn pre_frame(&mut self, arith: Arith, dt: f32, alive: bool) {
         if self.melee_window != 0.0 {
             self.melee_window = (self.melee_window - dt).max(0.001);
@@ -1481,12 +1489,14 @@ impl Gun {
         }
     }
 
-    /// `CTSGun::CCombatBlock` 0x85ebc (reload key with kung fu or a blade).
+    /// `CTSGun::CCombatBlock` 0x85ebc (reload key with kung fu or a blade). The client's
+    /// (`0x1000adc0`) gates on [`GunHost::kfu_power`] and charges no power.
     pub fn ccombat_block(&mut self, host: &mut impl GunHost) {
         if self.next_attack > 0.0 || self.next_primary > 0.0 || self.next_secondary > 0.0 || self.next_alt > 0.0 {
             return;
         }
-        if host.iuser4() & STUNTING_MELEE != 0 || self.melee_bar < 0.01 {
+        let hud_power = host.kfu_power();
+        if host.iuser4() & STUNTING_MELEE != 0 || hud_power.unwrap_or(self.melee_bar) < 0.01 {
             return;
         }
         let i2 = if !self.has_slot() {
@@ -1502,7 +1512,9 @@ impl Gun {
         };
         host.event(Event::CloseCombat, EventArgs { f1: self.current as f32, f2: 0.0, i1: 0, i2, b1: 0, b2: 0 });
         host.player_anim(0x26);
-        self.update_melee_bar(33.0, host);
+        if hud_power.is_none() {
+            self.update_melee_bar(33.0, host);
+        }
         self.next_secondary = 0.5;
         self.next_primary = 0.5;
         self.idle = 3.0;

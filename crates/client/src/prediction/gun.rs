@@ -3,8 +3,8 @@
 //! The client runs the same `shared::weapons::Gun` state machine as the server, through a client
 //! [`GunHost`]: the networked state (`clientdata` `vuser*`/`ammo_*`/`m_flNextAttack` and
 //! `weapon_data[16]`) is unpacked with `shared::protocol::weapons`, the gun runs one usercmd
-//! (`pre_frame`, `weapon_post_frame` behind TS's client gate, `decrement_timers`) and the result
-//! is packed into `to`.
+//! (`weapon_post_frame` behind TS's client gate, `decrement_timers`, `decay_spread`; no
+//! `pre_frame`) and the result is packed into `to`.
 //!
 //! The server plays every weapon event with `FEV_NOTHOST`, so the shooter only sees and hears
 //! its own shots through these predicted events (`runfuncs` only). Traces, damage, projectiles
@@ -28,8 +28,10 @@ struct Pred {
     events: [u16; 11],
     /// View model indexes per weapon id (0 = not looked up).
     v_models: Vec<i32>,
-    /// State that isn't networked (recoil penalty, last shot time, kung-fu bar, combos, mode
-    /// memory), carried from one first-time prediction to the next.
+    /// State that isn't networked (recoil penalty, last shot time, combos, mode memory), carried
+    /// from one first-time prediction to the next. The gun's kung-fu bar and melee windows ride
+    /// along but nothing on the client reads them except the holster's window check (`0x1000abae`):
+    /// `client.dll` has no bar (the block reads the HUD's power) and never decrements the windows.
     gun: Option<Gun>,
     /// `0x100d5cb8`: the last view animation `HUD_SendWeaponAnim` (`0x1001ace0`) played.
     last_anim: i32,
@@ -286,6 +288,8 @@ struct ClientHost<'a> {
     time: f32,
     seed: u32,
     powerups: u16,
+    /// `0x1018a718` ([`state::Shared::kfu_power`]), the power the kung-fu block gates on.
+    kfu_power: f32,
     /// Predicted results written back into `to`.
     fov: f32,
     viewmodel: i32,
@@ -310,6 +314,9 @@ impl GunHost for ClientHost<'_> {
     }
     fn first_prediction(&self) -> bool {
         self.runfuncs
+    }
+    fn kfu_power(&self) -> Option<f32> {
+        Some(self.kfu_power)
     }
     fn powerups(&self) -> u16 {
         self.powerups
@@ -507,6 +514,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         time: time as f32,
         seed,
         powerups,
+        kfu_power: state::with(|s| s.kfu_power),
         fov: c.fov,
         viewmodel: c.viewmodel,
         iuser4: c.iuser4,
@@ -514,10 +522,10 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         body,
         silenced,
     };
-    // Same order as the server: PreThink (windows, bar), the weapon frame, then the timers. The
-    // penalty decays after the timers, on a first prediction only, dead or alive (`0x100040a5`).
+    // The weapon frame, then the timers. There is no PreThink part ([`Gun::pre_frame`]): the
+    // windows are never decremented and the HUD keeps the kung-fu power. The penalty decays after
+    // the timers, on a first prediction only, dead or alive (`0x100040a5`).
     let dt = Gun::timer_dt(Arith::CLIENT, frame_time(cmd.msec), spread::fixed_slow_amt(c.fuser1), powerups);
-    gun.pre_frame(Arith::CLIENT, dt, !dead);
     if post_frame_gate(c, state::with(|s| s.health)) {
         gun.weapon_post_frame(&mut host);
     }
@@ -599,6 +607,38 @@ mod tests {
         let mut g = Gun { melee_window: 0.2, melee_damage: 40.0, melee_source: 0, ..Default::default() };
         holster(&mut g);
         assert_eq!((g.melee_window, g.melee_damage, g.melee_source), (0.2, 40.0, 0));
+    }
+
+    /// The predicted kung-fu block (`0x1000adc0`) gates on the HUD's power (`0x1018a718`), not
+    /// the gun's bar, and charges none.
+    #[test]
+    fn block_gates_on_hud_power() {
+        let (from, cmd) = (local_state_t::default(), usercmd_t::default());
+        let block = |kfu_power: f32, bar: f32| {
+            let mut host = ClientHost {
+                from: &from,
+                final_origin: [0.0; 3],
+                cmd: &cmd,
+                runfuncs: false,
+                time: 0.0,
+                seed: 0,
+                powerups: 0,
+                kfu_power,
+                fov: 0.0,
+                viewmodel: 0,
+                iuser4: 0,
+                weaponanim: 0,
+                body: 0,
+                silenced: false,
+            };
+            let mut g = Gun { melee_bar: bar, ..Default::default() };
+            g.ccombat_block(&mut host);
+            g
+        };
+        let g = block(40.0, 0.0);
+        assert_eq!((g.block_kungfu, g.next_primary, g.melee_bar, g.next_attack), (0.5, 0.5, 0.0, 0.0));
+        let g = block(0.0, 100.0);
+        assert_eq!((g.block_kungfu, g.next_primary, g.melee_bar), (0.0, 0.0, 100.0));
     }
 
     /// Records other than the current one, and other ammo types' reserve, survive a command's

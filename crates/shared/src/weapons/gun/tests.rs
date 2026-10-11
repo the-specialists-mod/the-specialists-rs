@@ -36,6 +36,8 @@ struct Mock {
     arith: Option<Arith>,
     /// A client re-prediction (`g_runfuncs` 0).
     repredict: bool,
+    /// The client's HUD kung-fu power (`0x1018a718`); `None` = the server.
+    kfu_power: Option<f32>,
 }
 
 impl GunHost for Mock {
@@ -50,6 +52,9 @@ impl GunHost for Mock {
     }
     fn first_prediction(&self) -> bool {
         !self.repredict
+    }
+    fn kfu_power(&self) -> Option<f32> {
+        self.kfu_power
     }
     fn powerups(&self) -> u16 {
         self.powerups
@@ -591,6 +596,36 @@ fn kungfu_punch_and_bar() {
     // the bar regenerates at 15/s
     g.pre_frame(Arith::CLIENT, 1.0, true);
     assert!((g.melee_bar - 82.0).abs() < 1e-4);
+}
+
+/// `client.dll`'s block (`0x1000adc0`) gates on the HUD's power (`0.01 <= 0x1018a718`), not the
+/// gun's bar, and charges nothing: no bar cost, so no 1.5 s `m_flNextAttack` for an empty bar.
+#[test]
+fn client_block_gates_on_hud_power() {
+    let try_block = |bar: f32, hud: Option<f32>| {
+        let mut g = Gun { melee_bar: bar, ..Default::default() };
+        let mut h = Mock { kfu_power: hud, ..Default::default() };
+        let mut last = 0;
+        frame(&mut g, &mut h, IN_RELOAD, &mut last, 0.0);
+        (g, h.events.iter().any(|e| e.0 == Event::CloseCombat))
+    };
+    // A drained local bar doesn't stop the client while the HUD has power.
+    let (g, blocked) = try_block(0.0, Some(50.0));
+    assert!(blocked);
+    assert_eq!((g.block_kungfu, g.melee_bar, g.next_attack), (0.5, 0.0, 0.0));
+    // A full local bar doesn't let it through once the HUD's power is gone.
+    let (g, blocked) = try_block(100.0, Some(0.005));
+    assert!(!blocked);
+    assert_eq!(g.block_kungfu, 0.0);
+    assert!(try_block(100.0, Some(0.01)).1);
+    // A block that empties the client's bar leaves the next attack alone.
+    let (g, _) = try_block(20.0, Some(20.0));
+    assert_eq!((g.melee_bar, g.next_attack), (20.0, 0.0));
+    // The server gates on and charges its own bar (`UpdateMeleeBar` 0x9650c).
+    let (g, blocked) = try_block(20.0, None);
+    assert!(blocked);
+    assert_eq!((g.melee_bar, g.next_attack), (0.0, 1.5));
+    assert!(!try_block(0.005, None).1);
 }
 
 /// One kung-fu attack with the timers cleared; returns the close-combat event's (i1, i2).
