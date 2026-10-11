@@ -68,6 +68,15 @@ enum Kind {
     Security,
 }
 
+impl Kind {
+    /// Whether the item's `MyTouch` tests `deadflag`: only `CHealthKit::MyTouch` (0xc8968) and
+    /// `CItemBattery::MyTouch` (0xcb74c) do. `CItem::ItemTouch` (0xcaf8c) itself doesn't, so a
+    /// dead player takes an antidote, a suit or a security card.
+    fn refuses_dead(self) -> bool {
+        matches!(self, Kind::HealthKit | Kind::Battery)
+    }
+}
+
 /// `CItem` subclasses: `KIND` 0 = healthkit, 1 = battery, 2 = antidote, 3 = suit, 4 = security.
 #[derive(Default)]
 pub struct Item<const KIND: u8> {
@@ -97,22 +106,21 @@ impl<const KIND: u8> Item<KIND> {
     }
 
     fn my_touch(&mut self, cx: &mut Cx, p: *mut edict_t) -> bool {
-        if p.v().deadflag != DEAD_NO as i32 {
-            return false;
-        }
         let cls = s(cx.pev().classname);
         match Self::kind() {
             Kind::HealthKit => {
-                if !player_take_health(p, 50.0) {
+                // `CHealthKit::MyTouch` (0xc8968): refused while the player is dead (`deadflag`).
+                if (Self::kind().refuses_dead() && p.v().deadflag != DEAD_NO as i32) || !player_take_health(p, 50.0) {
                     return false;
                 }
                 messages::one(Msg::ItemPickup, p).string(cls).end();
                 emit(p, CHAN_ITEM, c"items/smallmedkit1.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
             }
             Kind::Battery => {
-                // `CItemBattery::MyTouch` (0xcb74c): needs the HEV suit bit (weapons bit 31).
+                // `CItemBattery::MyTouch` (0xcb74c): a living player with the HEV suit bit
+                // (weapons bit 31).
                 let v = p.v();
-                if v.armorvalue >= 100.0 || v.weapons >= 0 {
+                if (Self::kind().refuses_dead() && v.deadflag != DEAD_NO as i32) || v.armorvalue >= 100.0 || v.weapons >= 0 {
                     return false;
                 }
                 // TS ignores TakeArmor's result: the battery is used up either way.
@@ -216,12 +224,11 @@ impl<const KIND: u8> Entity for Item<KIND> {
         }
     }
 
+    /// `CItem::ItemTouch` (0xcaf8c): any player (`IsPlayer`; `CanHaveItem` is always 1), dead or
+    /// alive: only the healthkit's and the battery's `MyTouch` refuse the dead. The antidote, suit
+    /// and security card are taken by a dead player too.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         if !self.touchable || !is_player(other) {
-            return;
-        }
-        let ov = other.v();
-        if ov.deadflag != DEAD_NO as i32 || ov.health <= 0.0 {
             return;
         }
         if self.my_touch(cx, other) {
@@ -440,3 +447,17 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
 
 pub type HealthCharger = Charger<false>;
 pub type ArmorCharger = Charger<true>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_healthkit_and_battery_refuse_the_dead() {
+        assert!(Kind::HealthKit.refuses_dead());
+        assert!(Kind::Battery.refuses_dead());
+        assert!(!Kind::Antidote.refuses_dead());
+        assert!(!Kind::Suit.refuses_dead());
+        assert!(!Kind::Security.refuses_dead());
+    }
+}

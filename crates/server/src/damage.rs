@@ -98,12 +98,14 @@ impl DamageInfo {
 /// the damage (false when its TraceAttack added nothing). Like TS's callers it doesn't check
 /// `takedamage` first: each TraceAttack does (a `func_breakable` still sparks, a door still runs
 /// its own check), and callers that test it in TS (melee, explosions) test it themselves.
-/// Otherwise this is a direct `TakeDamage`. A player always gets it: `CBasePlayer::TakeDamage`
-/// (0x8fa94) has no `takedamage` test of its own, so with it off the damage is refused only inside
-/// `CBaseMonster::TakeDamage`, and the time-based reset, the director event and the fade still
-/// happen (crushers, telefrags and `game_player_hurt` don't test it first in TS either; the
-/// callers that do, like `trigger_hurt`, test it themselves). Other entities are skipped with
-/// `takedamage` off.
+/// Otherwise this is a direct `TakeDamage`, with no `takedamage` test here either: TS's crushers
+/// (`CFuncPlat::Blocked` 0xd2e64, the doors', trains' and rotators' `Blocked`), telefrags,
+/// `game_player_hurt`, falling and the Xen tree call the victim's `TakeDamage` straight away, and
+/// each class's `TakeDamage` decides (`CBaseEntity::TakeDamage` and `CBaseMonster::TakeDamage`
+/// refuse with `takedamage` off; `CBreakable`, `CBaseButton`, the cyclers and `CGunTarget` don't
+/// look at it; `CBasePlayer::TakeDamage` 0x8fa94 still runs its time-based reset, director event
+/// and fade before `CBaseMonster::TakeDamage` refuses). The callers that test it in TS, like
+/// `trigger_hurt` and `RadiusDamage`, test it themselves.
 ///
 /// Re-entrancy: if `victim` is the entity currently being dispatched (self-damage, e.g. your own
 /// grenade), world::dispatch can't reach it and this returns false; handle self-damage at the
@@ -116,9 +118,6 @@ pub fn apply(victim: *mut edict_t, info: &DamageInfo) -> bool {
         multi::clear();
         trace_attack(victim, info);
         return multi::apply(info.inflictor, info.attacker);
-    }
-    if victim.v().takedamage == 0.0 && !crate::rules::has_player(victim) {
-        return false;
     }
     world::dispatch(victim, |e, cx| e.take_damage(cx, info)).unwrap_or(false)
 }

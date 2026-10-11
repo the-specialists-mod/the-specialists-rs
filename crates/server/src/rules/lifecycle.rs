@@ -1046,9 +1046,9 @@ fn death_think(p: &mut Player, cx: &mut Cx, now: f32) {
             }
         }
     }
-    // `if (HasWeapons()) RemoveAllItems(TRUE)` (0x8ec15): the gun goes on the first death think,
-    // with `CurWeapon 0,0,0`.
-    if crate::weapons::has_gun(p) {
+    // `if (HasWeapons()) RemoveAllItems(TRUE)` (0x8ec15): the gun (and a picked-up
+    // `cycler_weapon`) goes on the first death think, with `CurWeapon 0,0,0`.
+    if crate::weapons::has_weapons(p) {
         crate::weapons::remove_all_items(p, cx);
     }
     // Stay dying until the death animation finishes, advancing it at the animation rate

@@ -58,6 +58,14 @@ pub fn plat_move_sound(n: i32) -> &'static CStr {
     }
 }
 
+/// `CBasePlatTrain::Precache` (0xd21a4) / `CFuncTrain::Precache`: each table sound is precached;
+/// `common/null.wav` (any other number) only gets its string (`CWorld::Precache` precached it).
+fn precache_plat_sound(n: &'static CStr) {
+    if n != c"common/null.wav" {
+        engine().precache_sound(n);
+    }
+}
+
 pub fn plat_stop_sound(n: i32) -> &'static CStr {
     match n {
         1 => c"plats/bigstop1.wav",
@@ -75,8 +83,9 @@ pub fn plat_stop_sound(n: i32) -> &'static CStr {
 #[derive(Default)]
 pub struct FuncTrain {
     t: Toggle<Self>,
-    move_snd: i32,
-    stop_snd: i32,
+    /// `m_bMoveSnd` / `m_bStopSnd` (`BYTE`s, [`plat_sound_index`]).
+    move_snd: u8,
+    stop_snd: u8,
     volume: f32,
     current: EHandle,
     activated: bool,
@@ -212,8 +221,8 @@ impl Entity for FuncTrain {
         match key.to_bytes() {
             b"height" => self.t.height = kv_f(value),
             b"rotation" => self.t.final_angle[0] = kv_f(value),
-            b"movesnd" => self.move_snd = kv_f(value) as i32,
-            b"stopsnd" => self.stop_snd = kv_f(value) as i32,
+            b"movesnd" => self.move_snd = plat_sound_index(kv_d(value)),
+            b"stopsnd" => self.stop_snd = plat_sound_index(kv_d(value)),
             b"volume" => self.volume = kv_f(value),
             _ => return self.t.key_value(key, value),
         }
@@ -222,9 +231,9 @@ impl Entity for FuncTrain {
 
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
-        let (m, st) = (plat_move_sound(self.move_snd), plat_stop_sound(self.stop_snd));
-        eng.precache_sound(m);
-        eng.precache_sound(st);
+        let (m, st) = (plat_move_sound(self.move_snd as i32), plat_stop_sound(self.stop_snd as i32));
+        precache_plat_sound(m);
+        precache_plat_sound(st);
         let v = cx.pev();
         v.noise = alloc(m);
         v.noise1 = alloc(st);
@@ -297,12 +306,12 @@ const PLAT_CRUSH: f32 = 1.0;
 /// `EMIT_SOUND_DYN`'s slow-motion pitch factor in every `CFuncPlat` sound.
 const PLAT_SLOW: f32 = 0.5;
 
-/// `movesnd` / `stopsnd` (`CBasePlatTrain::KeyValue` 0xd1f80): `strtod`, then `fistp` to a short
-/// with the x87 set to truncate (0xc20d8 objdump) keeping the low byte, which `Precache` reads
-/// unsigned (`movzbl`, 0xd21b7). Out of the short's range `fistp` stores 0x8000 (byte 0).
-fn plat_sound_index(v: f32) -> u8 {
-    let t = v.trunc();
-    if (-32768.0..=32767.0).contains(&t) { t as i16 as u8 } else { 0 }
+/// `movesnd` / `stopsnd` (`CBasePlatTrain::KeyValue` 0xd1f80, also `func_train`'s): `strtod`,
+/// then `fistp` to a short with the x87 set to truncate (0xc20d8 objdump) keeping the low byte,
+/// which `Precache` reads unsigned (`movzbl`, 0xd21b7). Out of the short's range `fistp` stores
+/// 0x8000 (byte 0).
+fn plat_sound_index(v: f64) -> u8 {
+    fistp16_low_byte(v)
 }
 
 /// The `CBasePlatTrain` + `CFuncPlat` members shared by `func_plat`, `func_platrot` and the track
@@ -362,8 +371,8 @@ pub fn plat_key_value<T>(p: &mut PlatBase<T>, key: &CStr, value: &CStr) -> bool 
         b"targetbot" => p.target_bottom = alloc(value),
         b"height" => p.t.height = kv_f(value),
         b"rotation" => p.t.final_angle[0] = kv_f(value),
-        b"movesnd" => p.move_snd = plat_sound_index(kv_f(value)),
-        b"stopsnd" => p.stop_snd = plat_sound_index(kv_f(value)),
+        b"movesnd" => p.move_snd = plat_sound_index(kv_d(value)),
+        b"stopsnd" => p.stop_snd = plat_sound_index(kv_d(value)),
         b"volume" => p.volume = kv_f(value),
         _ => return p.t.key_value(key, value),
     }
@@ -404,14 +413,12 @@ pub fn plat_setup<T: Plat>(this: &mut T, cx: &mut Cx) {
 /// `CFuncPlat::Precache` (0xd2754): `CBasePlatTrain::Precache` (0xd21a4) and, for a plat that
 /// isn't a toggle plat, the trigger volume.
 pub fn plat_precache<T: Plat>(this: &mut T, cx: &mut Cx) {
-    let eng = engine();
     let p = this.plat();
     let (m, st) = (plat_move_sound(p.move_snd as i32), plat_stop_sound(p.stop_snd as i32));
     let (pos1, pos2) = (p.t.pos1, p.t.pos2);
-    // TS doesn't precache `common/null.wav` for an unknown number (its `CWorld::Precache` does);
-    // the port's worldspawn doesn't, so it is precached here like any other plat sound.
-    eng.precache_sound(m);
-    eng.precache_sound(st);
+    // An unknown number is `common/null.wav`, which `CWorld::Precache` precaches and this doesn't.
+    precache_plat_sound(m);
+    precache_plat_sound(st);
     let v = cx.pev();
     v.noise = alloc(m);
     v.noise1 = alloc(st);
@@ -1043,7 +1050,11 @@ mod tests {
         assert_eq!(plat_sound_index(257.0), 1, "low byte of the short");
         assert_eq!(plat_sound_index(-255.0), 1);
         assert_eq!(plat_sound_index(40000.0), 0, "out of short range: 0x8000");
-        assert_eq!(plat_sound_index(f32::NAN), 0);
+        assert_eq!(plat_sound_index(f64::NAN), 0);
+        // The double, not a float: 255.99999999 truncates to 255 (as a float it would be 256).
+        assert_eq!(plat_sound_index(kv_d(c"255.99999999")), 255);
+        assert_eq!(plat_sound_index(kv_d(c"32767.9")), 255);
+        assert_eq!(plat_sound_index(kv_d(c"32768")), 0);
     }
 
     #[test]

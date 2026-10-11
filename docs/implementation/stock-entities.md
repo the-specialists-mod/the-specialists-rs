@@ -13,7 +13,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | File | Contents |
 |---|---|
 | `mod.rs` | The `link_entities!` table (one export per classname), `worldspawn` (light styles 0–12 and 63, per-map resets, the world `soundent` and the `bodyque` ring), spawn points, `object_caps` (the +use search itself is `player::player_use`) |
-| `base.rs` | `CBaseDelay` (`Delay`, `sub_use_targets`, the `DelayedUse` entity), `CBaseToggle` (`Toggle<T>`, `linear_move` / `angular_move` on `ltime`), master registry (`is_master_triggered`), `env_global` state table, keyvalue / precache helpers, `create_entity`, `precache_other`, `set_movedir`, axis helpers |
+| `base.rs` | `CBaseDelay` (`Delay`, `sub_use_targets`, the `DelayedUse` entity), `CBaseToggle` (`Toggle<T>`, `linear_move` / `angular_move` on `ltime`, their arithmetic in `move_params`), master registry (`is_master_triggered`), `env_global` state table, keyvalue / precache helpers, `create_entity`, `precache_other`, `set_movedir`, axis helpers |
 | `explode.rs` | TS `TSExplosion`, SDK `RadiusDamage`, TS `UTIL_ScreenShake` / `UTIL_ScreenFade` (`TSFade`), sparks, ricochet, TS slow-motion pitch `emit_sound_slow` |
 | `breakable.rs` | `func_breakable`, `func_pushable`, material tables, `respawn_all`, a map-placed `info_breakable` |
 | `doors.rs` | `func_door`, `func_door_rotating`, `func_water`, `momentary_door` |
@@ -32,11 +32,11 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `lights.rs` | `light`, `light_spot`, `light_environment` |
 | `effects.rs` | `env_sprite` (+ `CSprite::AnimateAndDie`, `SetAttachment`, `SetTransparency`), `env_glow`, `env_shake`, `env_fade`, `env_explosion` (+ `spark_shower`, `ExplosionCreate`), `env_render`, `env_beam`, `env_laser`, `env_shooter`, `gibshooter` (+ `gib`, `SpawnHeadGib`, `SpawnRandomGibs`), `env_spark` / `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite`, `cycler`, `cycler_prdroid`, `cycler_wreckage`, `beam` (+ `BeamCreate` / `PointsInit`), `test_effect`, `env_funnel`, `env_beverage`, `item_sodacan` |
 | `animating.rs` | `CBaseAnimating` / `CActAnimating` for stock model entities: `ResetSequenceInfo`, `StudioFrameAdvance`, `DispatchAnimEvents`, `SetActivity` / `LookupActivity`, `InitBoneControllers`, `SetSequenceBox` |
-| `blood.rs` | `UTIL_ShouldShowBlood`, `UTIL_BloodStream`, `UTIL_BloodDrips`, `UTIL_BloodDecalTrace`, `UTIL_RandomBloodVector`, the world blood/gib precaches, `env_blood` |
+| `blood.rs` | `UTIL_ShouldShowBlood`, `UTIL_BloodStream`, `UTIL_BloodDrips`, `UTIL_BloodDecalTrace`, `UTIL_RandomBloodVector`, the blood sprite indices and `g_Language` (`sv_language`, from `crate::precache`), `env_blood` |
 | `xen.rs` | `xen_plantlight`, `xen_hair`, `xen_tree` (+ `xen_ttrigger`), `xen_spore_small/medium/large` (+ `xen_hull`) |
 | `monsters.rs` | `monster_hevsuit_dead` (with the `CBaseMonster` corpse code: fall, `DeadTakeDamage`, gibbing, fade) |
 | `items.rs` | `item_healthkit`, `item_battery`, `item_antidote`, `item_suit`, `item_security`, `world_items`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins, `EMIT_SOUND_SUIT` |
-| `playeritem.rs` | weapons.cpp classes a map can place: `weaponbox`, `weapon_tsgun` (fall / touch / respawn), `cycler_weapon`, and the items' `SetObjectCollisionBox` boxes |
+| `playeritem.rs` | weapons.cpp classes a map can place: `weaponbox`, `weapon_tsgun` and `cycler_weapon` (`CBasePlayerItem`: fall / touch / respawn / attach / drop), and the items' `SetObjectCollisionBox` boxes |
 | `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`), `game_score` (+ `AddPoints` / `AddPointsToTeam`), `game_end`, `game_zone_player`, `game_player_hurt`, `game_counter`, `game_counter_set`, `game_team_master`, `game_team_set`, `game_player_team` |
 
 How the SDK patterns map to Rust:
@@ -45,9 +45,12 @@ How the SDK patterns map to Rust:
   `Option<fn(&mut Self, &mut Cx, ...)>` on the class: `Toggle<T>::{think, touch, move_done}`, or
   `ThinkFn<Self>` in classes without a `Toggle`. Classes with only a few think states use a small
   enum. `Entity::think` / `touch` call through these fields (`run_think`, `run_touch`).
-* **Push movers.** `CBaseToggle::LinearMove` and `AngularMove` set `nextthink = ltime + travel`
-  exactly as the SDK does, and `MOVETYPE_PUSH` entities think on `ltime`. `next_think(cx, d)` picks
-  `ltime` or global time from the movetype.
+* **Push movers.** `CBaseToggle::LinearMove` (0xe3658) and `AngularMove` (0xe386c) set
+  `nextthink = ltime + travel` and `velocity = delta / travel` with TS's x87 precision
+  (`move_params`: exact deltas, the length rounded to a float, `travel = length / speed` kept
+  unrounded). Like TS they don't check the speed: a speed of 0 gives an infinite `nextthink` and
+  no velocity, so the mover never arrives. `MOVETYPE_PUSH` entities think on `ltime`;
+  `next_think(cx, d)` picks `ltime` or global time from the movetype.
 * **Calls between entities.** `world::dispatch` plus a downcast handles method calls (a door's
   siblings in `Blocked`, a plat trigger calling its platform, `respawn_all`). `world::with` reads
   data that the SDK got through a pointer (`path_corner` wait, `path_track` links,
@@ -58,6 +61,33 @@ How the SDK patterns map to Rust:
   registry can.
 * **Engine-kept strings.** Dynamic model and sound names go through `goldsrc::server::intern`
   (`precache_model_s`, `precache_sound_s`, light patterns).
+
+### 1.1 Map-wide precaches
+
+The engine numbers models, sounds and events in precache order, so `crate::precache` issues
+`CWorld::Precache` (0xf449c)'s precaches exactly as TS does, from worldspawn's spawn:
+
+1. `InstallGameRules`: the multiplayer rules' `CVoiceGameMgr::Init` precaches
+   `sprites/voiceicon.spr` (single player doesn't).
+2. `W_Precache` (0xf12e8): the `UTIL_PrecacheOther`s (`item_suit`'s `w_suit.mdl`, `ts_bomb`'s
+   `misc/beep2.wav`; the other TS classes precache nothing), `CTSGun::Precache`'s 11 events,
+   `ts_powerup`'s model, then the explosion, smoke, bubble, blood and laser sprites,
+   `models/grenade.mdl`, `sprites/explode1.spr` and the debris / grenade / bullet hit sounds and
+   `items/weapondrop1.wav`.
+3. `ClientPrecache` (0xaeafc): the SDK step, swim, ladder, wade, debris, pain, HUD and geiger
+   sounds and `models/player.mdl` (TS's `giPrecacheGrunt` is 0).
+4. `TSPrecache` (0x9f320): player and debris sounds, then for each weapon id 0..37 its non-empty
+   shell, `v_`, `p_`, silenced `p_` and `w_` models and its two sounds (the shared tables give
+   the same names as TS's `Write_*` functions), then the shared weapon sounds and models and the
+   `m61_grenade`, `shrapnel` and `ts_flag` precaches.
+5. `common/null.wav`, `items/suitchargeok1.wav`, `items/gunpickup2.wav`,
+   `common/bodydrop3.wav`, `common/bodydrop4.wav`, then the gibs: `models/germangibs.mdl` with
+   `sv_language 1` (`g_Language`), else `hgibs.mdl` and `agibs.mdl`.
+
+`UTIL_PrecacheOther` creates and removes an entity; the freed edict is reused by the next
+allocation, so the port lists the class precaches directly. Entity classes precache the rest in
+their `Spawn`, as in TS (the classes touched in #102 were checked: `func_door`'s gib table and
+`common/null.wav`, `func_plat`/`func_train` sounds, `gibshooter`, `cycler_weapon`).
 
 `goldsrc::ext::entities` adds the following:
 
@@ -77,19 +107,19 @@ How the SDK patterns map to Rust:
 
 | Classname | Source | Notes |
 |---|---|---|
-| `worldspawn` | `CWorld::KeyValue` 0xf4a18, `CWorld::Precache` 0xf449c | Keys: `skyname` (`sv_skyname`), `sounds` (CD track), `WaveHeight` (`pev.scale` = v/8, `sv_wateramp`), `MaxRange` (`pev.speed`), `chaptertitle`, `startdark`/`gametitle`/`defaultteam` (spawnflags 1/2/4), `newunit` (`sv_newunit 1`); `gamemode`, `mapteams`, `teammodels` go to `rules::world_key_value`. Spawn first forces `sv_gravity 800`, `sv_stepsize 18`, `room_type 0`, then precaches and installs the rules, then sets `sv_zmax` (`MaxRange`, or 4096 when ≤ 0), shows the chapter title through an `env_message` 0.3 s in, and sets `v_dark` and `mp_defaultteam` from the spawnflags. Light styles 0–12 and 63. Resets the masters, path links and env_sound rooms on each map. |
+| `worldspawn` | `CWorld::KeyValue` 0xf4a18, `CWorld::Precache` 0xf449c | Keys: `skyname` (`sv_skyname`), `sounds` (CD track), `WaveHeight` (`pev.scale` = v/8, `sv_wateramp`), `MaxRange` (`pev.speed`), `chaptertitle`, `startdark`/`gametitle`/`defaultteam` (spawnflags 1/2/4), `newunit` (`sv_newunit 1`); `gamemode`, `mapteams`, `teammodels` go to `rules::world_key_value`. Spawn first forces `sv_gravity 800`, `sv_stepsize 18`, `room_type 0`, then follows `CWorld::Precache`: installs the rules (`rules::install`; the multiplayer rules precache the voice icon), creates the soundent and the body queue, loads sentences and the texture types, issues TS's map-wide precaches in TS's order (§1.1), then sets `sv_zmax` (`MaxRange`, or 4096 when ≤ 0), shows the chapter title through an `env_message` 0.3 s in, and sets `v_dark` and `mp_defaultteam` from the spawnflags. Light styles 0–12 and 63. Resets the masters, path links and env_sound rooms on each map. |
 | `func_wall`, `func_illusionary` | SDK bmodels.cpp | `func_wall` now sets `FL_WORLDBRUSH` and toggles its texture frame on Use. `func_illusionary` is `MOVETYPE_NONE`, and `skin` sets its contents. |
 | `func_wall_toggle`, `func_conveyor` | SDK | The conveyor speed is sent in `rendercolor`. |
 | `func_rotating` | SDK | Fan sounds, spin-up/down, hurt touch. Uses `fabs` where gcc 2.95 used the integer `abs`. |
 | `func_pendulum` | SDK | The INSTANT flag thinks on `ltime` (the SDK compares global time against `ltime`). |
 | `func_breakable` | **TS** `CBreakable` | See §3.1. |
 | `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use. A breakable pushable uses the TS breakable code. |
-| `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sounds and sentences as in §3.5. |
+| `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sounds and sentences as in §3.5. `movesnd`/`stopsnd` are BYTEs set like `func_plat`'s (`CBaseDoor::KeyValue` 0xb51a0, 16-bit `fistp`), `common/null.wav` isn't precached. |
 | `func_button`, `func_rot_button` | SDK buttons.cpp | Spark sounds use TS slow-motion pitch. Shootable buttons (health > 0) work through `take_damage`. Lock sounds and sentences as in §3.5. |
 | `momentary_door` | SDK 2.3 doors.cpp (TS `CMomentaryDoor` 0xb7d98..0xb87f4) | A `CBaseToggle`, so none of TS's `CBaseDoor` changes (§3.2) apply. Keys `movesnd` (`doors/doormove1..8.wav`, else `common/null.wav`; a BYTE via a 16-bit `fistp`), `stopsnd` and `healthvalue` (ignored), `lip`. Only `USE_SET` moves it: `value` (clamped to ≤ 1, no lower clamp) places it between closed and open, at 10 × the distance per second; the move sound (`CHAN_STATIC`, TS slow-motion pitch) starts when it isn't already moving. No stop sound, touch, `Blocked` or +use (`ObjectCaps` 0); `dmg` defaults to 2 unread. |
 | `momentary_rot_button` | SDK 2.3 buttons.cpp (TS `CMomentaryRotButton` 0xa948c..0xaa9d8) | Continuous +use (`ObjectCaps` 0x10) unless spawnflag 1, which also makes it solid. Each use turns it 0.1 s more at `speed` (default 100), reversing after every stop, moves every `momentary_rot_button` with the same `target`, and sends `USE_SET` with its position (`AxisDelta / distance`, from before this turn: the SDK 2.3 latency, not HL25's prediction) to the entities named by `target`. Spawnflag 16 with `returnspeed` > 0 turns it back on release, still updating the targets while above 0. A negative `distance` swaps the ends. `sounds` (`ButtonSound`) on the first turn after a stop, `CHAN_VOICE` with TS slow-motion pitch. |
 | `button_target`, `multisource` | SDK | |
-| `func_train`, `path_corner` | SDK plats.cpp | `Activate` is emulated (see §6). |
+| `func_train`, `path_corner` | SDK plats.cpp | `Activate` is emulated (see §6). `movesnd`/`stopsnd` are `CBasePlatTrain::KeyValue`'s (0xd1f80): the low byte of the `strtod` truncated to a short, as for `func_plat`; `common/null.wav` for any other number is only allocated (worldspawn precached it). |
 | `func_plat` | **TS** `CFuncPlat` | Adds the TS keys `targettop` and `targetbot`, which fire when the plat reaches the top or bottom. Spawns its own trigger volume. Sounds use TS slow-motion pitch (0.5). `movesnd`/`stopsnd` keep the low byte of the truncated short (`CBasePlatTrain::KeyValue` 0xd1f80: 257 is sound 1). `Blocked` (0xd2e64) logs "`<class>` Blocked by `<class>`" (`at_aiconsole`). |
 | `func_platrot` | SDK `CFuncPlatRot` (TS 0xd3010..0xd3294) | A `func_plat` that also turns `rotation` degrees about its `AxisDir` axis (spawnflag 64 Z, 128 X, else Y), from 0 at the bottom to `rotation` at the top, over the move's duration (`RotMove`: under 0.1 s, the whole turn becomes the angular velocity with a think 1 s on). Starts at the top angles with a targetname. |
 | `func_trackchange` | **TS** `CFuncTrackChange` (0xd5d84..0xd6a98) | A toggle `func_platrot` that never carries a train in TS (§7.3). Any use at the top goes down, at the bottom goes up; moving, it ignores uses. Spawnflag 8 starts at the bottom, 16 only turns (`AngularMove`, bottom at the spawn height). A 2 s think runs `CFuncTrainControls::Find` on it. |
@@ -152,11 +182,8 @@ How the SDK patterns map to Rust:
 | `item_security` | SDK `CItemSecurity` (TS 0xcb9e8..0xcba58) | `models/w_security.mdl`; always taken, no sound or message. TS adds one to `m_rgItems[ITEM_SECURITY]` (+0x838), which nothing reads; the port doesn't keep it. |
 | `world_items` | SDK `CWorldItem` (TS 0xcad0c / 0xcad6c) | Key `type`: 42 `item_antidote`, 43 `item_security`, 44 `item_battery`, 45 `item_suit` (created and spawned at its origin and angles, then given its `target`, `targetname` and spawnflags); anything else logs "unable to create world_item %d". Removes itself. |
 | `weaponbox` | SDK `CWeaponBox` (TS 0xf2868..0xf320c) | `models/w_weaponbox.mdl`, toss, trigger, zero size but a ±16 × 0..16 touch box (`SetObjectCollisionBox`). Every key that isn't an entity field is an ammo name (`PackAmmo`; after 32, "WeaponBox too full!"), but TS's `MaxAmmoCarry` (0xf0c0c) knows no ammo (the only `ItemInfoArray` entry, `weapon_tsgun`, names none), so each logs "MaxAmmoCarry() doesn't recognize" and nothing is packed. A living player touching it once it is on the ground hears `items/gunpickup2.wav` and it is removed. |
-| `weapon_tsgun` (map-placed) | **TS** `CTSGun::Spawn` 0x8053c + `CBasePlayerItem` 0xf1698..0xf1d80 | `models/w_glock18.mdl`, falls (`FallInit`/`FallThink`; `weapondrop1.wav` only with an owner), then a trigger with a ±24 × 0..16 touch box. A living player without a gun takes it: `weapons::give_gun_to` (the gun TS's `PlayerSpawn` gives: empty, kung fu), `items/gunpickup2.wav`, its `target` fires (`delay`/`killtarget` honoured). Without `SF_NORESPAWN` a hidden copy appears at the same spot and materialises (`suitchargeok1.wav`) 20 s later, or at once with `mp_weaponstay`. The taken one is removed (§7.5). |
-| `cycler_weapon` | SDK `CWeaponCycler` (TS 0xc7c78) | The map's `model` as a slidebox with a ±24 × 0..16 touch box; it can't be picked up in the port (§7.5). |
-| `info_breakable` (map-placed) | TS `CInfoBreakable` | No `Spawn` and no think until a breakable arms one, so a map-placed one is an inert point entity (`RespawnEntities`' `RespawnThink` on it does nothing: its breakable handle is empty). |
-| `func_healthcharger`, `func_recharge` | **TS** `CWallHealth` / `CRecharge` | One-shot: the first use refills fully, then the charger recharges after 60 s (health) or 30 s (armour); never with `deathmatch` 0 (`CHalfLifeRules`' recharge time is 0). |
-| `game_text` | SDK maprules.cpp | `TE_TEXTMESSAGE` per client, master check. |
+| `weapon_tsgun` (map-placed) | **TS** `CTSGun::Spawn` 0x8053c + `CBasePlayerItem` 0xf1698..0xf1d80 | `models/w_glock18.mdl`, falls (`FallInit`/`FallThink`; `weapondrop1.wav` only with an owner), then a trigger with a ±24 × 0..16 touch box. A living player without a gun takes it: `weapons::give_gun_item` (the gun TS's `PlayerSpawn` gives: empty, kung fu, weapon bit 16), `items/gunpickup2.wav`, its `target` fires (`delay`/`killtarget` honoured). Under the multiplayer rules and without `SF_NORESPAWN` a hidden copy appears at the same spot and materialises (`suitchargeok1.wav`) 20 s later, or at once with `mp_weaponstay`. The taken entity stays as the player's gun item (`AttachToPlayer`: following, hidden, no model) until `RemoveAllItems` drops it (removed 0.1 s later). |
+| `cycler_weapon` | SDK `CWeaponCycler` (TS 0xc7c78..0xc8840) | The map's `model` as a slidebox with a ±24 × 0..16 touch box. A living player without one takes it (`DefaultTouch`): HL item slot 1, weapon bit 0, `gunpickup2.wav`, `target` fired, then attached like the gun. Under the multiplayer rules and without `SF_NORESPAWN` a copy respawns, which has no model: TS precaches an empty name there (GoldSrc stops with "Bad string", FWGS warns), and so does the port. It is deployed (view model = its model, `m_flNextAttack` 1, weapon anim 0) only when the player has no active item, i.e. no TS gun; a gun given later holsters it. Its attacks never run (TS's `ItemPostFrame` returns for anything but the gun). Dropped with the gun by `RemoveAllItems` (death think, observer, disconnect, `player_weaponstrip`). |
 | `game_player_equip` | SDK maprules.cpp (same in TS 0xcd494) | Unknown keys are items (`name#n` stripped, count ≥ 1, max 32), given through `GiveNamedItem` (item spawned at the player's feet with `SF_NORESPAWN`, then touched). Touch (master, not `USEONLY`) / use (no master). TS `PlayerSpawn` touches every one on spawn instead of giving the gun and buying the loadout (`maprules::equip_on_spawn`, called from `weapons::on_spawn`; deferred until the player's spawn dispatch returns). `weapon_tsgun` gives the TS gun (`weapons::give_gun_to`: a new empty one, or none if the player already holds one). |
 | `game_team_master` | TS 0xccae8..0xccd40 | `teamindex` (-1 none), `triggerstate` (0 off, 2 toggle, else on), master. `USE_SET` takes the activator's team (`GetTeamIndex(TeamID)`) or none for a negative value; other uses fire the targets when the activator's team matches (`UTIL_TeamsMatch`: always outside teamplay; `ANYTEAM` with no team), once with flag 1. It is also a master (`IsTriggered` = `TeamMatch`), for spawn points, doors and the rest. |
 | `game_team_set` | TS 0xccd64 | `USE_SET` to its targets with 0, or -1 with `CLEARTEAM` (2); once with flag 1. |
@@ -242,6 +269,9 @@ How the SDK patterns map to Rust:
   `TakeArmor(100)` in one use. They recharge after 60 s and 30 s.
 * **Items** respawn after 30 s unless `SF_NORESPAWN` (1 << 30) is set, with the `suitchargeok1`
   materialise sound.
+* **Dead players.** `CItem::ItemTouch` (0xcaf8c) checks only `IsPlayer` and `CanHaveItem` (always
+  1). Only the healthkit's and the battery's `MyTouch` refuse a dead player (`deadflag`), so a
+  dead player touching an antidote, a suit or a security card takes it.
 
 ### 3.4 Effects
 
@@ -435,6 +465,10 @@ covers:
   * `UTIL_StripToken`, `UTIL_Approach`
   * the sky colour formula, game_text colours
   * the angle helpers for track trains
+  * #102: `move_params` (no speed check, division by the unrounded travel), the items that
+    refuse dead players, the `fistp` sound bytes (`strtod` as a double), TS's `ObjectCaps` table,
+    `ChangeList`'s flags and transition-list dedupe, the save-table helpers
+    (`goldsrc::ext::saverestore`), the precache lists' TS order and the gib models per language
   * #95: the soundent free/active lists and expiry, `speaker` presets and toggle use,
     `test_effect` brightness, the item touch boxes and weapon respawn time, the CD audio
     command, counter messages, transition box overlap, weaponstrip targeting, the momentary
@@ -547,8 +581,8 @@ covers:
 10. **`pfnResetGlobalState`.** Calls `stock::base::reset_global_state()` (done at integration).
 11. **Client hooks** (HUD package): `TSFrags` (glass debris and explosions), `TSFade`, `ItemPickup`,
     and the `events/train.sc` handler. (`Train` is drawn by the client HUD, see §3.5.)
-12. **Precache** (player package): `player/pl_wade1.wav`, `pl_wade2.wav` and the other SDK
-    `ClientPrecache` sounds. The engine plays them for any entity entering water.
+12. **Precache**: `ClientPrecache` and the rest of TS's map-wide precaches are issued by
+    `crate::precache` in TS's order (§1.1, #102).
 13. **`env_sound`.** Call `stock::sound::reset_player_room(index)` when a client connects, so a new
     client in a reused slot starts with the right DSP state.
 14. **Geiger counter.** `rules::lifecycle` calls `stock::triggers::geiger_spawn` on spawn and
@@ -571,9 +605,11 @@ covers:
 * **NULL activator.** TS's `game_score` and `game_player_hurt` call `IsPlayer()` through the
   activator and crash on a NULL one; the port treats it as not a player (the hurt still fires its
   targets).
-* **Precache location.** TS precaches the blood sprites in `W_Precache` and the gib models in
-  `CWorld::Precache`; the port does both from worldspawn (`blood::precache_world`). German gibs
-  (`sv_language 1`) aren't supported.
+* **German gibs** (`sv_language 1`, `g_Language`) follow TS: `germangibs.mdl` for head and
+  random gibs, `germanygibs.mdl` for `gibshooter`, no gib blood decals and red blood drawn in
+  colour 0. `CGib::SpawnStickyGibs` isn't ported (nothing in TS calls it). Still missing:
+  `CBloodSplat::Spray` (impulse 202, `player/impulse.rs`) draws its decal with `sv_language 1`,
+  where TS skips it.
 * **worldspawn client cvars.** `v_dark` and `room_type` exist only on clients, so a dedicated
   server skips setting them (FWGS would print "variable not found" each map); the result is the
   same. TS sets `gDisplayTitle` from the `gametitle` flag but never reads it, and the
@@ -606,10 +642,21 @@ writes out of bounds, or where the port lacks save/restore:
   dispatch returns, in the same frame.
 * **`PlayCDTrack` out of range.** TS's "TriggerCDAudio - Track %d out of range" passes no
   argument, so it prints stack garbage; the port prints the track.
-* **No level transitions.** The port has no save/restore (`ParmsChangeLevel` is a no-op), so
-  `trigger_transition` volumes only gate `ChangeLevelNow`, entities never cross a changelevel, and
-  the `fireanddie` that `changetarget` creates never fires (in TS only its `Precache`, run on
-  restore in the next level, schedules the think).
+* **Transition list without save/restore.** `ParmsChangeLevel` (0xaea68 → `ChangeList`
+  0xe87c4) is ported (`levelchange::parms_change_level`): with `pSaveData` set it fills
+  `levelList[]` / `connectionCount` from every `trigger_changelevel` whose landmark exists (16 at
+  most) and flags, in the engine's save table, the entities in each landmark's PVS that may cross
+  (`FENTTABLE_MOVEABLE` for `FCAP_ACROSS_TRANSITION`, `FENTTABLE_GLOBAL` for a non-dormant
+  `globalname`, plus the connection bit, when inside the transition volume or with
+  `FCAP_FORCE_TRANSITION`). `ObjectCaps` comes from a table of TS's classes by classname
+  (`ts_object_caps`, generated from the vtables: slot 12 of each linked class). The port still
+  writes no entity save data (`pfnSave`/`pfnRestore` are empty), so entities never actually
+  cross, and the `fireanddie` that `changetarget` creates never fires (in TS only its
+  `Precache`, run on restore in the next level, schedules the think). Guards: names over 31
+  bytes are cut where TS `strcpy`s them into the engine's 32-byte fields; TS's 512-entry PVS
+  arrays overflow from the 513th entity (after its "Too many entities" error), the port's list
+  grows; `EntityFlagsSet` refuses index `tableCount`, which TS accepts (never reached: the index
+  comes from `EntityIndex`).
 
 ### 7.3 Deviations and TS behaviour in the #95 plat and track classes
 
@@ -629,12 +676,11 @@ writes out of bounds, or where the port lacks save/restore:
   `path_corner`'s `wait` and uses 0 for anything else, as `func_train` does (in TS a
   `CBaseToggle` target would give its own `wait`).
 * **`func_guntarget` `Activate`** is emulated by a think (§6).
-* **`common/null.wav`.** `CBasePlatTrain::Precache` doesn't precache it for an unknown sound
-  number, because TS's `CWorld::Precache` already has; the port's worldspawn doesn't, so the plat
-  code precaches it.
-* **Damage through `damage::apply`.** `CFuncPlat::Blocked` calls `TakeDamage` directly; the port's
-  `damage::apply` first skips a victim with `takedamage` 0, so a stopped `func_guntarget` with
-  health left keeps it when crushed, where TS would take it off.
+* **Crushers** (`CFuncPlat::Blocked` 0xd2e64 and the doors', trains' and rotators'
+  `Blocked`) call the victim's `TakeDamage` directly, which decides itself whether `takedamage`
+  matters: a stopped `func_guntarget` with health left loses it when crushed, a shootable
+  `func_breakable` or a button with `takedamage` 0 still takes the hit (`damage::apply` has no
+  `takedamage` gate since #102).
 
 ### 7.4 Deviations in the #95 momentary classes
 
@@ -655,20 +701,19 @@ writes out of bounds, or where the port lacks save/restore:
 (0xabf9c), including its cube for rotated BSP models, which the port's old box (size + 1
 everywhere) lacked.
 
-* **`cycler_weapon` can't be picked up.** TS's `CBasePlayerItem::DefaultTouch` adds it to the
-  player's HL item slots (`AddPlayerItem`, `pev->weapons` bit 0), switches to it (holstering the
-  TS gun) and plays its sequences on +attack / +attack2; without `SF_NORESPAWN` it also
-  respawns a copy that has no model. The port has no general player item list (only the TS gun),
-  so touching it does nothing.
-* **A taken map `weapon_tsgun`** is removed at once; in TS it stays as the hidden
-  (`AttachToPlayer`) entity of the player's gun until that gun is destroyed. The port's gun has
-  no entity.
+* **`cycler_weapon` in single player.** `CHalfLifeRules::FShouldSwitchWeapon` (0xde74c) switches
+  to a picked-up cycler even from a held TS gun (holstering it). The port's gun can't be put
+  away while held, so the cycler is deployed only when the player has no gun (always the case
+  under the multiplayer rules, whose weights keep the gun). Switching to a held cycler later
+  (`use cycler_weapon`, `SelectItem`) isn't ported either: it needs the same holstered-gun state.
+* **Item entity of a gun from `GiveNamedItem`.** `PlayerSpawn` and `game_player_equip` give the
+  gun without creating a `weapon_tsgun` entity (TS creates one per player and keeps it attached),
+  so those edicts are missing from the port's edict numbering; only a map-placed `weapon_tsgun`
+  keeps its entity.
 * **`speaker` preset outside 1–12.** TS's switch has no default and reads an uninitialised
   pointer; the port plays nothing and logs the "bad sentence group name" error with an empty
   name.
 * **`item_security`'s count** (`m_rgItems[ITEM_SECURITY]`) isn't kept: nothing reads it.
-* **Precache location.** TS precaches `models/shrapnel.mdl` for every map (`TSPrecache` →
-  `UTIL_PrecacheOther("shrapnel")`); the port precaches it in `shrapnel`'s spawn.
 * **Exports.** Against `ts_i386.so` the port exports every entity class; TS's remaining lowercase
   dynamic symbols are global variables (cvars and tables). Against `mp.dll` the port lacks only
   `CreateInterface` and `Server_GetBlendingInterface` (not entity classes) and the C++-mangled

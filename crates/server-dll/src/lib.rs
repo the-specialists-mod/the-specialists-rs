@@ -98,7 +98,7 @@ fn dll_functions() -> DLL_FUNCTIONS {
         pfnPlayerPostThink: Some(player_post_think),
         pfnStartFrame: Some(start_frame),
         pfnParmsNewLevel: Some(noop),
-        pfnParmsChangeLevel: Some(noop),
+        pfnParmsChangeLevel: Some(parms_change_level),
         pfnGetGameDescription: Some(get_game_description),
         pfnPlayerCustomization: Some(player_customization),
         pfnSpectatorConnect: Some(noop_e),
@@ -125,6 +125,11 @@ fn dll_functions() -> DLL_FUNCTIONS {
 }
 
 unsafe extern "C" fn noop() {}
+
+/// `ParmsChangeLevel` (TS 0xaea68): the transition list for the save the engine is writing.
+unsafe extern "C" fn parms_change_level() {
+    entities::stock::levelchange::parms_change_level();
+}
 
 unsafe extern "C" fn reset_global_state() {
     entities::stock::base::reset_global_state();

@@ -11,6 +11,8 @@ pub mod movement;
 pub mod render;
 #[cfg(feature = "server")]
 pub mod rules;
+#[cfg(feature = "server")]
+pub mod saverestore;
 #[cfg(feature = "client")]
 pub mod spectator;
 #[cfg(feature = "client")]

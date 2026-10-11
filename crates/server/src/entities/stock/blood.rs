@@ -24,15 +24,29 @@ pub const BLOOD_COLOR_YELLOW: i32 = 195;
 /// `g_sModelIndexBloodSpray` / `g_sModelIndexBloodDrop` (precached by TS's `W_Precache`).
 static BLOOD_SPRITES: Global<Cell<(i32, i32)>> = Global(Cell::new((0, 0)));
 
-/// The world-wide precaches blood and gibs rely on: TS `W_Precache`'s blood sprites and
-/// `CWorld::Precache`'s gib models (0xf449c; German gibs aren't supported).
-pub fn precache_world() {
-    let eng = engine();
-    let spray = eng.precache_model(c"sprites/bloodspray.spr");
-    let drop = eng.precache_model(c"sprites/blood.spr");
-    BLOOD_SPRITES.0.set((spray, drop));
-    eng.precache_model(c"models/hgibs.mdl");
-    eng.precache_model(c"models/agibs.mdl");
+/// `g_sModelIndexBloodSpray`, precached by `W_Precache` (`crate::precache`).
+pub fn set_spray_sprite(index: i32) {
+    let (_, drop) = BLOOD_SPRITES.0.get();
+    BLOOD_SPRITES.0.set((index, drop));
+}
+
+/// `g_sModelIndexBloodDrop`, precached by `W_Precache` (`crate::precache`).
+pub fn set_drop_sprite(index: i32) {
+    let (spray, _) = BLOOD_SPRITES.0.get();
+    BLOOD_SPRITES.0.set((spray, index));
+}
+
+/// `g_Language`: `sv_language` as `CWorld::Precache` read it (1 = German: no blood decals from
+/// gibs and `models/germangibs.mdl` for every gib).
+static LANGUAGE: Global<Cell<i32>> = Global(Cell::new(0));
+
+pub fn set_language(language: i32) {
+    LANGUAGE.0.set(language);
+}
+
+/// `g_Language == 1`.
+pub fn german() -> bool {
+    LANGUAGE.0.get() == 1
 }
 
 /// `UTIL_ShouldShowBlood`: red blood needs `violence_hblood`, any other colour `violence_ablood`.
@@ -44,11 +58,17 @@ pub fn should_show_blood(color: i32) -> bool {
     engine().cvar_float(cvar) != 0.0
 }
 
-/// `UTIL_BloodStream`: a `TE_BLOODSTREAM` arc.
+/// `g_Language == 1` turns red blood into colour 0 in `UTIL_BloodStream` / `UTIL_BloodDrips`.
+fn language_color(color: i32) -> i32 {
+    if german() && color == BLOOD_COLOR_RED { 0 } else { color }
+}
+
+/// `UTIL_BloodStream` (0xedb68): a `TE_BLOODSTREAM` arc.
 pub fn blood_stream(origin: Vec3, dir: Vec3, color: i32, amount: i32) {
     if !should_show_blood(color) {
         return;
     }
+    let color = language_color(color);
     te_begin(MSG_PVS, Some(origin), te::BLOODSTREAM).vec3(origin).vec3(dir).byte(color).byte(amount.min(255)).end();
 }
 
@@ -58,6 +78,7 @@ pub fn blood_drips(origin: Vec3, _dir: Vec3, color: i32, amount: i32) {
     if !should_show_blood(color) || color == DONT_BLEED || amount == 0 {
         return;
     }
+    let color = language_color(color);
     let amount = if crate::rules::state::single_player() { amount } else { amount * 2 }.min(255);
     let (spray, drop) = BLOOD_SPRITES.0.get();
     te_begin(MSG_PVS, Some(origin), te::BLOODSPRITE)
