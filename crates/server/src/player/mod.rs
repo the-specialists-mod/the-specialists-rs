@@ -44,7 +44,6 @@ pub struct Player {
     /// Inventory slots in use (weapons writes; speed = shared::ts::speed_for_free_slots).
     pub slots_used: i32,
     pub cash: i32,
-    pub team: u8,
     /// Kills and deaths for the scoreboard.
     pub frags: i32,
     pub deaths: i32,

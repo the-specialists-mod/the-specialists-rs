@@ -65,7 +65,6 @@ pub fn client_disconnect(e: *mut edict_t) {
         p.cash = 0;
         p.frags = 0;
         p.deaths = 0;
-        p.team = 0;
     });
     // Nobody keeps slowing this slot.
     for o in super::players() {
@@ -396,7 +395,7 @@ fn rules_init_hud(p: &mut Player, cx: &mut Cx) {
 }
 
 pub fn score_info_of(p: &Player, v: &entvars_t, idx: i32) -> ScoreInfo {
-    ScoreInfo { idx: idx as u8, frags: v.frags as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 }
+    ScoreInfo { idx: idx as u8, frags: v.frags as i16, deaths: p.deaths as i16, class: 0, team: teams::score_team(idx) }
 }
 
 /// `CHalfLifeMultiplay::SendMOTDToClient`: ServerName, then the `motdfile` in ≤60-char chunks.

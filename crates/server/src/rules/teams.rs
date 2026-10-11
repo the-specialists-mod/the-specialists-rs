@@ -54,76 +54,94 @@ pub fn model_for(team: &str) -> String {
     models[engine().random_long(0, models.len() as i32 - 1) as usize].clone()
 }
 
-/// `RecountTeams`: player counts and team frag totals.
-pub fn recount() {
-    let players = super::players();
-    let names: Vec<String> = players.iter().map(|&e| team_name_of(e)).collect();
-    let frags: Vec<i32> = players.iter().map(|&e| e.v().frags as i32).collect();
-    state::with(|g| {
-        for t in &mut g.teams {
-            t.players = 0;
-            t.frags = 0;
+/// Every player's team name and frags, in index order (`UTIL_PlayerByIndex` + `IsPlayer`).
+fn player_teams() -> Vec<(*mut edict_t, String, f32)> {
+    super::players().into_iter().map(|e| (e, team_name_of(e), e.v().frags)).collect()
+}
+
+/// `CHalfLifeTeamplay::RecountTeams` (0xe5608): rebuilds the team list and team frags. With
+/// `send` (`SetDefaultPlayerTeam`), every player on a valid team also goes to everyone as a
+/// `TeamInfo`, and in CTB that player gets the `TeamScore` of every listed team.
+pub fn recount(send: bool) {
+    let players = player_teams();
+    let names: Vec<(String, f32)> = players.iter().map(|(_, n, f)| (n.clone(), *f)).collect();
+    state::with(|g| g.recount_teams(&names));
+    if !send {
+        return;
+    }
+    let ctb = state::with(|g| g.mode == state::Mode::TeamDm && g.is_ctb());
+    let scores: Vec<(String, i32)> =
+        state::with(|g| g.teams.iter().filter(|t| !t.name.is_empty()).map(|t| (t.name.clone(), t.score)).collect());
+    let eng = engine();
+    for (e, team, _) in players {
+        if !state::with(|g| g.is_valid_team(&team)) {
+            continue;
         }
-        for (n, f) in names.iter().zip(frags) {
-            let i = g.team_index(n);
-            if i >= 0 {
-                g.teams[i as usize].players += 1;
-                g.teams[i as usize].frags += f;
+        let idx = eng.index_of(e);
+        msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team: team.clone() }.write(w));
+        if ctb {
+            for (name, score) in &scores {
+                let m = TeamScore { team: name.clone(), score: *score as i16, deaths: 0 };
+                msg::one(Msg::TeamScore, e, |w| m.write(w));
             }
         }
-    });
+    }
 }
 
 pub fn update_team_scores() {
     if state::teamplay() {
-        recount();
+        recount(false);
     }
 }
 
-/// `TeamWithFewestPlayers`.
-fn fewest() -> String {
-    recount();
-    state::with(|g| g.teams.iter().filter(|t| !t.name.is_empty()).min_by_key(|t| t.players).map(|t| t.name.clone()).unwrap_or_default())
+/// The `team` field of a player's `ScoreInfo`: `g_pGameRules->GetTeamIndex(m_szTeamName) + 1`
+/// at send time (`CHalfLifeTeamplay::GetTeamIndex` 0xe5434), 0 outside teamplay or for a name
+/// the last `RecountTeams` didn't list.
+pub fn score_team(idx: i32) -> i16 {
+    state::with(|g| {
+        let name = g.player_team.get(idx.clamp(0, 32) as usize).cloned().unwrap_or_default();
+        (g.tp_team_index(&name) + 1) as i16
+    })
 }
 
-/// `SetDefaultPlayerTeam` (0xe44ac): the `team` infokey, The One split, or the smallest team.
+/// `TeamWithFewestPlayers` (0xe5510), counted from the players' current teams.
+fn fewest() -> String {
+    let names: Vec<String> = player_teams().into_iter().map(|(_, n, _)| n).collect();
+    state::with(|g| g.team_with_fewest(&names))
+}
+
+/// Whether `SetDefaultPlayerTeam` keeps the team it read: a non-empty, valid name and no
+/// `mp_defaultteam` (0xe4570..0xe45a0). Otherwise `team_names[0]` under `mp_defaultteam`, else
+/// the smallest team.
+fn default_team_kept(name: &str, valid: bool, defaultteam: bool) -> bool {
+    !name.is_empty() && valid && !defaultteam
+}
+
+/// `CHalfLifeTeamplay::SetDefaultPlayerTeam` (0xe44ac), on every teamplay spawn and InitHUD:
+/// reads the `team` key (The One mode: The One's team or the other one), recounts with
+/// `TeamInfo`, then falls back to `team_names[0]` or the smallest team. It only stores the name
+/// (`m_szTeamName`); the `model` and `team` keys are `ChangePlayerTeam`'s.
 pub fn set_default_team(p: &mut Player, cx: &mut Cx) {
     let e = cx.edict;
-    let (the_one, names, defaultteam) = state::with(|g| (g.the_one, g.team_names(), super::cvars::on(c"mp_defaultteam")));
-    let mut name = if the_one {
-        names.get(if p.ts.is_the_one { 0 } else { 1 }).cloned().unwrap_or_default()
+    let (the_one, one) = state::with(|g| (g.the_one, g.the_one_team_names()));
+    let name = if the_one {
+        one[if p.ts.is_the_one { 0 } else { 1 }].clone()
     } else {
-        let cur = team_name_of(e);
-        if !cur.is_empty() { cur } else { engine().info_key(e, c"team").to_string_lossy().into_owned() }
+        engine().info_key(e, c"team").to_string_lossy().into_owned()
     };
-    let valid = state::with(|g| g.team_index(&name) >= 0);
-    if name.is_empty() || !valid || (defaultteam && !the_one) {
-        name = if !defaultteam { fewest() } else { names.first().cloned().unwrap_or_default() };
+    store_team(p, e, &name);
+    recount(true);
+    let defaultteam = super::cvars::on(c"mp_defaultteam");
+    if !default_team_kept(&name, state::with(|g| g.is_valid_team(&name)), defaultteam) {
+        let name = if defaultteam { state::with(|g| g.first_team_slot()) } else { fewest() };
+        store_team(p, e, &name);
     }
-    apply_team(p, cx, &name);
 }
 
-/// Stores the team on the player: the name and `Player::team`.
+/// Stores the team name on the player (`m_szTeamName`).
 fn store_team(p: &mut Player, e: *mut edict_t, name: &str) {
     set_team_name(e, name);
-    let i = state::with(|g| g.team_index(name));
-    p.team = (i + 1).max(0) as u8;
     p.ts.team_name = name.to_owned();
-}
-
-/// Stores the team on the player (name, `Player::team`, `team` and `model` infokeys).
-fn apply_team(p: &mut Player, cx: &mut Cx, name: &str) {
-    let e = cx.edict;
-    let old = team_name_of(e);
-    store_team(p, e, name);
-    let eng = engine();
-    if !old.eq_ignore_ascii_case(name) || eng.info_key(e, c"team").to_bytes() != name.as_bytes() {
-        let model = model_for(name);
-        if !model.is_empty() {
-            eng.set_client_key(e, "model", &model);
-        }
-        eng.set_client_key(e, "team", name);
-    }
 }
 
 /// The `model` key `ChangePlayerTeam` always sets (0xe4a0f..0xe4b28): with a team limit
@@ -140,13 +158,14 @@ fn change_team_model(team_limit: bool, team: &str, models: &[String], pick: impl
 }
 
 /// The team `ChangePlayerTeam` (0xe488c) settles on: in The One mode The One goes to the first
-/// team and everyone else to the second, whatever was asked; otherwise an empty or unknown name
-/// means the smallest team (`None`).
-fn change_team_choice(requested: &str, the_one: bool, is_the_one: bool, names: &[String]) -> Option<String> {
+/// `TSGameRules` team and everyone else to the second, whatever was asked; otherwise an empty
+/// name or one `IsValidTeam` refuses means the smallest team (`None`). Without a team limit any
+/// name is valid.
+fn change_team_choice(requested: &str, the_one: bool, is_the_one: bool, one: &[String; 2], valid: bool) -> Option<String> {
     if the_one {
-        return names.get(if is_the_one { 0 } else { 1 }).cloned();
+        return Some(one[if is_the_one { 0 } else { 1 }].clone());
     }
-    names.iter().find(|n| !requested.is_empty() && n.eq_ignore_ascii_case(requested)).map(|_| requested.to_owned())
+    (!requested.is_empty() && valid).then(|| requested.to_owned())
 }
 
 /// Whether `ChangePlayerTeam` sends the player to observer with a 5 s respawn (0xe4c38..0xe4ca1):
@@ -167,21 +186,21 @@ pub fn change_team(p: &mut Player, cx: &mut Cx, name: &str, kill: bool, gib: boo
         crate::player::damage::take_damage(p, cx, &DamageInfo::new(world, world, 900.0, b));
         state::with(|g| g.death_suppressed = false);
     }
-    let (the_one, names) = state::with(|g| (g.the_one, g.team_names()));
-    let name = change_team_choice(name, the_one, p.ts.is_the_one, &names).unwrap_or_else(fewest);
+    let (the_one, one, valid) = state::with(|g| (g.the_one, g.the_one_team_names(), g.is_valid_team(name)));
+    let name = change_team_choice(name, the_one, p.ts.is_the_one, &one, valid).unwrap_or_else(fewest);
     let e = cx.edict;
     store_team(p, e, &name);
     let (limit, models) = state::with(|g| {
         let i = g.team_index(&name);
-        (g.team_limit(), if i < 0 { Vec::new() } else { g.teams[i as usize].models.clone() })
+        (g.team_limit, if i < 0 { Vec::new() } else { g.teams[i as usize].models.clone() })
     });
     let eng = engine();
     eng.set_client_key(e, "model", &change_team_model(limit, &name, &models, |n| eng.random_long(0, n - 1)));
     eng.set_client_key(e, "team", &name);
-    recount();
+    recount(false);
     let idx = cx.index();
     msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team: name.clone() }.write(w));
-    let s = ScoreInfo { idx: idx as u8, frags: cx.pev().frags as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 };
+    let s = ScoreInfo { idx: idx as u8, frags: cx.pev().frags as i16, deaths: p.deaths as i16, class: 0, team: score_team(idx) };
     msg::all(Msg::ScoreInfo, |w| s.write(w));
     if change_team_observes(kill, the_one) {
         let (o, a) = (cx.pev().origin, cx.pev().v_angle);
@@ -201,17 +220,19 @@ pub fn send_team_names(to: *mut edict_t) {
     }
 }
 
-/// Teamplay part of `InitHUD`: TeamNames, the assignment notice, TeamInfo of everyone.
+/// Teamplay part of `InitHUD` (0xe45d8): TeamNames, the assignment notice (`model` key equal to
+/// the team, case-sensitive), `ChangePlayerTeam`, then the TeamInfo of every player on a valid
+/// team (any team without a team limit).
 pub fn init_hud(p: &mut Player, cx: &mut Cx) {
     let e = cx.edict;
     send_team_names(e);
-    recount();
+    recount(false);
     let name = p.ts.team_name.clone();
     let model = engine().info_key(e, c"model").to_string_lossy().into_owned();
-    let text =
-        if model.eq_ignore_ascii_case(&name) { format!("* you are on team '{name}'\n") } else { format!("* assigned to team {name}\n") };
+    let text = if model == name { format!("* you are on team '{name}'\n") } else { format!("* assigned to team {name}\n") };
     change_team(p, cx, &name, false, false);
     msg::say_one(e, cx.index(), &text);
+    recount(false);
     let eng = engine();
     for i in 1..=eng.max_clients() {
         let o = eng.client(i);
@@ -219,7 +240,7 @@ pub fn init_hud(p: &mut Player, cx: &mut Cx) {
             continue;
         }
         let t = team_name_of(o);
-        if state::with(|g| g.team_index(&t)) >= 0 {
+        if state::with(|g| g.is_valid_team(&t)) {
             msg::one(Msg::TeamInfo, e, |w| TeamInfo { idx: i as u8, team: t.clone() }.write(w));
         }
     }
@@ -247,10 +268,7 @@ pub fn the_one_teams() {
         if !team_name_of(e).eq_ignore_ascii_case(want) {
             set_team_name(e, want);
             let t = want.clone();
-            other(e, |p| {
-                p.team = if one { 1 } else { 2 };
-                p.ts.team_name = t.clone();
-            });
+            other(e, |p| p.ts.team_name = t.clone());
             let i = engine().index_of(e);
             msg::all(Msg::TeamInfo, |w| TeamInfo { idx: i as u8, team: want.clone() }.write(w));
         }
@@ -260,25 +278,53 @@ pub fn the_one_teams() {
 
 #[cfg(test)]
 mod tests {
-    use super::{change_team_choice, change_team_model, change_team_observes};
+    use super::{change_team_choice, change_team_model, change_team_observes, default_team_kept};
+    use crate::rules::state::GameRules;
 
-    fn names() -> Vec<String> {
-        vec!["hitman".to_owned(), "gordon".to_owned()]
+    fn one() -> [String; 2] {
+        ["The ONE".to_owned(), "gordon".to_owned()]
+    }
+
+    /// The rules after the Teamplay constructor for `list`.
+    fn teamplay(list: &str) -> GameRules {
+        let mut g = GameRules { teams: (0..4).map(|_| Default::default()).collect(), ..Default::default() };
+        g.set_team_list(list);
+        g.init_teamplay_list();
+        g
     }
 
     #[test]
-    fn change_team_picks_a_listed_team_or_the_smallest() {
-        assert_eq!(change_team_choice("GORDON", false, false, &names()).as_deref(), Some("GORDON"));
-        assert_eq!(change_team_choice("hitman", false, false, &names()).as_deref(), Some("hitman"));
+    fn change_team_picks_a_valid_team_or_the_smallest() {
+        let g = teamplay("hitman;gordon");
+        let choice = |name: &str| change_team_choice(name, false, false, &one(), g.is_valid_team(name));
+        assert_eq!(choice("GORDON").as_deref(), Some("GORDON"));
+        assert_eq!(choice("hitman").as_deref(), Some("hitman"));
         // `jointeam` out of range: GetIndexedTeamName gives "" and TS picks the smallest team.
-        assert_eq!(change_team_choice("", false, false, &names()), None);
-        assert_eq!(change_team_choice("seal", false, false, &names()), None);
+        assert_eq!(choice(""), None);
+        assert_eq!(choice("seal"), None);
+    }
+
+    #[test]
+    fn change_team_without_a_team_limit_takes_any_name() {
+        let g = teamplay("hitman");
+        let choice = |name: &str| change_team_choice(name, false, false, &one(), g.is_valid_team(name));
+        assert_eq!(choice("seal").as_deref(), Some("seal"));
+        assert_eq!(choice(""), None, "an empty name still goes to the smallest team");
     }
 
     #[test]
     fn change_team_in_the_one_mode_ignores_the_request() {
-        assert_eq!(change_team_choice("gordon", true, true, &names()).as_deref(), Some("hitman"));
-        assert_eq!(change_team_choice("hitman", true, false, &names()).as_deref(), Some("gordon"));
+        assert_eq!(change_team_choice("gordon", true, true, &one(), false).as_deref(), Some("The ONE"));
+        assert_eq!(change_team_choice("hitman", true, false, &one(), true).as_deref(), Some("gordon"));
+    }
+
+    #[test]
+    fn default_team_keeps_a_valid_team_key() {
+        assert!(default_team_kept("gordon", true, false));
+        // mp_defaultteam always replaces it (with team_names[0]).
+        assert!(!default_team_kept("gordon", true, true));
+        assert!(!default_team_kept("seal", false, false));
+        assert!(!default_team_kept("", true, false));
     }
 
     #[test]

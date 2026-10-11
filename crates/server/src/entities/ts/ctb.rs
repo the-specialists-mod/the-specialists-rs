@@ -51,7 +51,7 @@ fn score_info(e: *mut edict_t) {
 /// `ScoreInfo` for `e` from its `Player`, for when the caller already holds it.
 fn score_info_of(e: *mut edict_t, p: &Player) {
     let idx = engine().index_of(e);
-    let s = ScoreInfo { idx: idx as u8, frags: e.v().frags as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 };
+    let s = ScoreInfo { idx: idx as u8, frags: e.v().frags as i16, deaths: p.deaths as i16, class: 0, team: teams::score_team(idx) };
     msg::all(Msg::ScoreInfo, |w| s.write(w));
 }
 

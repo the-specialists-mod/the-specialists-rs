@@ -221,7 +221,7 @@ fn send_score(e: *mut edict_t) {
         frags: e.v().frags as i16,
         deaths: p.deaths as i16,
         class: 0,
-        team: p.team as i16,
+        team: teams::score_team(idx),
     });
     if let Some(s) = s {
         msg::all(Msg::ScoreInfo, |w| s.write(w));
