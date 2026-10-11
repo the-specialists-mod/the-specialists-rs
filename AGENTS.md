@@ -89,7 +89,8 @@ cargo xtask play [fwgs fwgs-win]          # listen-server gameplay on ts_dojo: j
                                           # Escape; then meck; both roots in parallel (~3 min)
 cargo xtask meck [fwgs fwgs-win]          # grenades on MecklenburgV_Rain_Final: a grenade kill and broken func_breakables
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
-cargo xtask dist --release                # dist/<platform>/ts/: libraries + game files
+cargo xtask dist --release                # dist/<platform>/ts/: libraries + game files (stripped)
+cargo xtask dist --release-debug          # the same release build, libraries with debug info
 cargo xtask package-xash-win              # windows-i686 dist --release + stock TS 3.0 + FWGS win32
                                           # -> ~/ts-xash-win-release.tar.gz (writes to $HOME)
 ```
@@ -167,7 +168,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   (`Cbuf_InsertTextToBuffer: overflow`). xtask scripts use `w10`/`w100` aliases.
 - **Windows crash dialogs (`Sys_Crash`) name the nearest export**, which is meaningless. Solve
   the DLL's load base from the frame addresses and the export RVAs, then
-  `addr2line -e mp.dll` on the debug build.
+  `addr2line -e mp.dll` on the debug build. For a crash in a shipped (stripped) release, use
+  the `--release-debug` libraries of the same commit: same code, with debug info.
 - **Stopping engines:** use `pkill -x xash` (or `xash3d`). `pkill -f` patterns can match your
   own shell.
 
@@ -176,4 +178,6 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - Work on `main` unless told otherwise. Commit or push only when asked.
 - If git has no HTTPS credentials, push with
   `git -c credential.helper='!gh auth git-credential' push`.
+- Releases: push a `v*` tag; `.github/workflows/release.yml` builds and publishes the release and
+  `-debug` archives. The workflow pins the FWGS commit the bindings are generated from.
 - Track gaps and bugs as GitHub issues. Integration work uses the `integration` label.

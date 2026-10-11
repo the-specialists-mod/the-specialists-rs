@@ -16,7 +16,13 @@ overflow-checks = false
 [profile.test]
 overflow-checks = true
 
+# Optimized for size: GoldSrc game code is light, and the stripped libraries are ~9x smaller than
+# an unstripped `opt-level = 3` build. Rust has no fast-math, so float results don't change. The
+# build keeps full debug info: `cargo xtask --release` strips copies of the libraries for shipping,
+# `--release-debug` ships them as built, so the debug build symbolizes the release build's crashes.
 [profile.release]
 panic = "abort"
-lto = "thin"
-debug = "line-tables-only"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+debug = true

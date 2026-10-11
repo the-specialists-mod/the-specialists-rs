@@ -7,6 +7,10 @@
 //!                                                 --all-targets -- -D warnings`, all four targets
 //!                                                 (Windows-only code included)
 //! cargo xtask dist    [--release]                 dist/<platform>/ts/: libraries + game files
+//!
+//! `--release` builds the release profile and installs stripped copies of the libraries;
+//! `--release-debug` installs them as built, with debug info. The code is the same, so the
+//! debug libraries symbolize crash addresses from the stripped ones (`addr2line -e`).
 //! cargo xtask package-xash-win                    `dist --release` for windows-i686, then
 //!                                                 ~/ts-xash-win-release.tar.gz: FWGS win32 engine +
 //!                                                 stock TS 3.0 + the port (see package.rs)
@@ -48,9 +52,15 @@ use std::{env, fs};
 
 fn main() {
     let mut args: Vec<String> = env::args().skip(1).collect();
-    let release = take_flag(&mut args, "--release");
+    let profile = if take_flag(&mut args, "--release-debug") {
+        Profile::ReleaseDebug
+    } else if take_flag(&mut args, "--release") {
+        Profile::Release
+    } else {
+        Profile::Dev
+    };
     let Some(cmd) = (!args.is_empty()).then(|| args.remove(0)) else { usage() };
-    let ctx = Ctx { release, repo: repo_root() };
+    let ctx = Ctx { profile, repo: repo_root() };
     match cmd.as_str() {
         "build" => ctx.build(&Target::ALL),
         "lint" => {
@@ -60,7 +70,7 @@ fn main() {
         }
         "dist" => ctx.dist(&Target::ALL),
         "package-xash-win" => {
-            let ctx = Ctx { release: true, ..ctx };
+            let ctx = Ctx { profile: Profile::Release, ..ctx };
             ctx.dist(&[Target::WINDOWS_I686]);
             let (commit, date) = package::commit(&ctx.repo);
             let dist_ts = ctx.repo.join("dist").join(Target::WINDOWS_I686.platform).join("ts");
@@ -141,7 +151,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release] <build|lint|dist|package-xash-win|install|server|test|play|meck|all|client|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|all|client|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }
@@ -181,8 +191,24 @@ fn ts_dir(repo: &Path) -> PathBuf {
     env::var_os("TS_DIR").map(PathBuf::from).unwrap_or_else(|| package::sibling(repo, "ts_custom"))
 }
 
+/// `Dev`: the dev profile. `Release` and `ReleaseDebug` share one release-profile build (with
+/// debug info); `Release` installs stripped copies of its libraries.
+#[derive(Clone, Copy, PartialEq)]
+enum Profile {
+    Dev,
+    Release,
+    ReleaseDebug,
+}
+
+impl Profile {
+    /// The output directory under target/<triple>/.
+    fn dir(self) -> &'static str {
+        if self == Profile::Dev { "debug" } else { "release" }
+    }
+}
+
 struct Ctx {
-    release: bool,
+    profile: Profile,
     repo: PathBuf,
 }
 
@@ -284,7 +310,7 @@ impl Ctx {
 
 impl Ctx {
     fn profile(&self) -> &'static str {
-        if self.release { "release" } else { "debug" }
+        self.profile.dir()
     }
 
     fn build(&self, targets: &[Target]) {
@@ -299,7 +325,7 @@ impl Ctx {
         for t in targets {
             let mut c = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
             c.current_dir(&self.repo).args(["build", "-p", "ts-server-dll", "-p", "ts-client-dll", "--target", t.triple]);
-            if self.release {
+            if self.profile != Profile::Dev {
                 c.arg("--release");
             }
             say!("== cargo build --target {}", t.triple);
@@ -322,16 +348,22 @@ impl Ctx {
 
     /// Copies the libraries for `t` into `gamedir` under the names each engine loads.
     fn install_libs(&self, t: &Target, gamedir: &Path) {
-        copy(&self.artifact(t, true), &gamedir.join("dlls").join(t.server_name));
+        let server = gamedir.join("dlls").join(t.server_name);
+        let client = gamedir.join("cl_dlls").join(t.client_name);
+        copy(&self.artifact(t, true), &server);
+        copy(&self.artifact(t, false), &client);
+        for lib in [&server, &client] {
+            if self.profile == Profile::Release {
+                strip(t, lib);
+            }
+            if t.os == Os::Windows {
+                msvc_style_export_section(lib);
+            }
+        }
         // Stock HLDS (8684 and HL25) strips "_i386" from gamedll_linux and loads dlls/ts.so;
         // ReHLDS and old engines load the name as written. Install both.
         if t.server_name == "ts_i386.so" {
-            copy(&self.artifact(t, true), &gamedir.join("dlls/ts.so"));
-        }
-        copy(&self.artifact(t, false), &gamedir.join("cl_dlls").join(t.client_name));
-        if t.os == Os::Windows {
-            msvc_style_export_section(&gamedir.join("dlls").join(t.server_name));
-            msvc_style_export_section(&gamedir.join("cl_dlls").join(t.client_name));
+            copy(&server, &gamedir.join("dlls/ts.so"));
         }
     }
 
@@ -463,7 +495,7 @@ impl Ctx {
     /// client from `client_root`. Passes when the client connects and the server check passes.
     fn client(&self, server_root: &Root, client_root: &Root, map: &str, port: u16) -> bool {
         self.install(client_root);
-        let srv = Ctx { release: self.release, repo: self.repo.clone() };
+        let srv = Ctx { profile: self.profile, repo: self.repo.clone() };
         let (sr, m) = (server_root.clone(), map.to_owned());
         let server = std::thread::spawn(move || srv.server(&sr, &m, 2, 60, port));
         let start = Instant::now();
@@ -1240,6 +1272,18 @@ fn msvc_style_export_section(path: &Path) {
         }
     }
     fs::write(path, pe).unwrap();
+}
+
+/// Removes symbols and debug info from an installed library (binutils `strip`; the MinGW one for
+/// PE files).
+fn strip(t: &Target, lib: &Path) {
+    let tool = match t.triple {
+        "i686-pc-windows-gnu" => "i686-w64-mingw32-strip",
+        "x86_64-pc-windows-gnu" => "x86_64-w64-mingw32-strip",
+        _ => "strip",
+    };
+    let ok = Command::new(tool).arg(lib).status().unwrap_or_else(|e| panic!("{tool}: {e}")).success();
+    assert!(ok, "{tool} {} failed", lib.display());
 }
 
 fn copy(from: &Path, to: &Path) {

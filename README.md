@@ -38,6 +38,14 @@ cargo xtask build --release      # all four targets
 cargo xtask dist --release       # dist/<platform>/ts/: libraries + liblist.gam, gameinfo.txt, delta.lst
 ```
 
+`--release` installs stripped, size-optimized libraries (about 1.2-1.8 MB each).
+`--release-debug` installs the same build with its debug info (11-16 MB), which symbolizes crash
+addresses from the stripped libraries with `addr2line -e`.
+
+Pushing a `v*` tag builds both for all four platforms and publishes them as a GitHub release
+(`.github/workflows/release.yml`): `the-specialists-rs-<tag>-<platform>.zip`/`.tar.gz` and the
+matching `-debug` archives, each holding a `ts/` directory.
+
 To play or host, copy `dist/<platform>/ts/` over a TS 3.0 install's `ts/` directory. Use the
 `dist` output rather than raw `cargo build` DLLs: the xtask patches the Windows DLLs' export section
 so Steam's engine can load them ([details](docs/validation.md#4-pitfalls-found-during-setup)).
