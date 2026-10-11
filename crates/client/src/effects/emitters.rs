@@ -131,7 +131,9 @@ impl Template {
     /// `ParticleKeyValue` (`0x10055f90`) plus the server's `CTSParticle::CheckValues` clamps
     /// (the client copy has none; the doc recommends applying them).
     pub fn from_kv(kv: &[(String, String)]) -> Template {
-        let mut t = Template { followaxis: [0.0, 0.0, 1.0], ..Default::default() };
+        // No defaults (TS zeroes the struct): a `follow_view 3` template without `followaxis`
+        // builds a zero-height quad, as in TS.
+        let mut t = Template::default();
         for (k, val) in kv {
             let f = num(val);
             let vv = goldsrc::util::parse_vec3(val);

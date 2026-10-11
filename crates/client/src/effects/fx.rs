@@ -257,12 +257,11 @@ pub fn surface_mark(
     fadespeed: f32,
     scalespeed: f32,
 ) {
-    if !psys::in_view_cone(&ps.cam, pos) {
+    if !psys::in_view_cone(&ps.cam, ps.cull_origin, pos) {
         return;
     }
     let Some(s) = ps.sprite(sprite) else { return };
-    // VecToAngles with the pitch negated (AngleVectors' convention), truncated to whole degrees.
-    let a = v::vector_angles(n);
+    let a = vec_to_angles(n);
     let frame = random_frame(ps, s);
     ps.add(
         Particle {
@@ -276,11 +275,31 @@ pub fn surface_mark(
             life: 0.0,
             frame,
             orient: psys::ORIENT_FREE,
-            angles: [(-a[0]).trunc(), a[1].trunc(), 0.0],
+            angles: a,
             ..Default::default()
         },
         now,
     );
+}
+
+/// TS's `VecToAngles` (`0x10046110`): the SDK `VectorAngles` with each angle truncated to whole
+/// degrees *before* a negative one gets 360 added, and the pitch negated (AngleVectors'
+/// convention). Straight up/down is (-90 / -270, 0, 0).
+fn vec_to_angles(f: Vec3) -> Vec3 {
+    if f[0] == 0.0 && f[1] == 0.0 {
+        return [if f[2] > 0.0 { -90.0 } else { -270.0 }, 0.0, 0.0];
+    }
+    let deg = |y: f32, x: f32| ((y as f64).atan2(x as f64) * 57.295_779_513_082_32) as i32 as f32;
+    let wrap = |a: f32| if a < 0.0 { a + 360.0 } else { a };
+    let yaw = if f[0] != 0.0 {
+        wrap(deg(f[1], f[0]))
+    } else if f[1] > 0.0 {
+        90.0
+    } else {
+        270.0
+    };
+    let pitch = wrap(deg(f[2], (f[0] * f[0] + f[1] * f[1]).sqrt()));
+    [-pitch, yaw, 0.0]
 }
 
 /// `TS_Sparks(org, dir, n, scale, spread)` (`0x100492b0`): `sprites/sparks.spr`, `n/2..n`
@@ -288,7 +307,7 @@ pub fn surface_mark(
 /// units (1024 zoomed). The long-lived ones collide when the quality is high.
 pub fn sparks(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, n: i32, scale: f32, spread: f32) {
     let max = if (ps.cam.fov as i32) < 40 { 1024.0 } else { 512.0 };
-    if v::dist(org, ps.cull_origin) >= max || !psys::in_view_cone(&ps.cam, org) {
+    if v::dist(org, ps.cull_origin) >= max || !psys::in_view_cone(&ps.cam, ps.cull_origin, org) {
         return;
     }
     let Some(s) = ps.sprite("sprites/sparks.spr") else { return };
@@ -628,8 +647,9 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
     engine().ev_play_sound(0, org, CHAN_STATIC as i32, snd, rf(0.92, 1.0), 0.2, 0, crate::events::fire_pitch());
     ps.push_radial(org, 512.0, radius * 10.0);
     let scale = ps.tuning.scale;
-    let cloud = |ps: &mut PSys, sprite: &str, count: f32, size: f32, rise: f32, speed: f32, fr: (i32, i32)| {
-        let Some(s) = ps.sprite(sprite) else { return };
+    // A sprite that fails to load ends the whole effect (`je 0x100486e7`): no smoke, light or flash.
+    let cloud = |ps: &mut PSys, sprite: &str, count: f32, size: f32, rise: f32, speed: f32, fr: (i32, i32)| -> bool {
+        let Some(s) = ps.sprite(sprite) else { return false };
         for _ in 0..(scale * count) as i32 {
             ps.add(
                 Particle {
@@ -649,9 +669,13 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
                 now,
             );
         }
+        true
     };
-    cloud(ps, "sprites/grenade_asplode.spr", 24.0, 0.5, 0.25, 70.0, (25, 30));
-    cloud(ps, "sprites/gun_smoke_add.spr", 48.0, 0.7, 0.35, 54.0, (2, 10));
+    if !cloud(ps, "sprites/grenade_asplode.spr", 24.0, 0.5, 0.25, 70.0, (25, 30))
+        || !cloud(ps, "sprites/gun_smoke_add.spr", 48.0, 0.7, 0.35, 54.0, (2, 10))
+    {
+        return;
+    }
     muzzle_dlight(ps, now, v::add(org, [0.0, 0.0, 32.0]));
     if let Some(s) = ps.sprite("sprites/scintille_metal.spr") {
         let frame = random_frame(ps, s);
@@ -666,6 +690,8 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
                 scalespeed: 2.0,
                 life: 0.0,
                 frame,
+                // TS reuses the smoke's scratch particle, so the flash keeps its drag (0x10048540).
+                drag: 3.3,
                 ..Default::default()
             },
             now,
@@ -697,6 +723,17 @@ pub fn bullet_trail(ps: &mut PSys, now: f64, p1: Vec3, p2: Vec3, w: f32, alpha: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `VecToAngles` (`0x10046110`) truncates before wrapping: -45.7° yaw is 315, not 314.
+    #[test]
+    fn vec_to_angles_truncates_first() {
+        let a = vec_to_angles([1.0, (-45.7f32).to_radians().tan(), 0.0]);
+        assert_eq!(a, [-0.0, 315.0, 0.0]);
+        assert_eq!(vec_to_angles([0.0, 0.0, 1.0]), [-90.0, 0.0, 0.0]);
+        assert_eq!(vec_to_angles([0.0, -1.0, 0.0])[1], 270.0);
+        // Pitch up 30°: stored negated.
+        assert_eq!(vec_to_angles([3f32.sqrt(), 0.0, 1.0])[0], -30.0);
+    }
 
     #[test]
     fn blood_count_follows_cl_gore() {

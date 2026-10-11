@@ -18,6 +18,7 @@ struct Mock {
     events: Vec<(Event, EventArgs)>,
     shots: Vec<Shot>,
     kicks: Vec<(f32, f32)>,
+    shakes: Vec<f32>,
     melee: Vec<MeleeHit>,
     melee_result: Option<MeleeResult>,
     grenades: Vec<(Vec3, Vec3, bool)>,
@@ -100,6 +101,9 @@ impl GunHost for Mock {
     fn player_anim(&mut self, _anim: i32) {}
     fn kick(&mut self, pitch: f32, yaw: f32) {
         self.kicks.push((pitch, yaw));
+    }
+    fn view_shake(&mut self, amp: f32) {
+        self.shakes.push(amp);
     }
     fn sound(&mut self, _s: Sound) {}
     fn shoot(&mut self, shot: &Shot) {
@@ -427,6 +431,8 @@ fn kungfu_punch_and_bar() {
     frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
     assert_eq!(h.melee.len(), 1);
     assert_eq!(h.melee[0].damage, 20.0);
+    // Client view shake: the base damage x 0.35 (0x1000b5c7).
+    assert_eq!(h.shakes, vec![20.0 * 0.35]);
     let cc: Vec<_> = h.events.iter().filter(|e| e.0 == Event::CloseCombat).collect();
     assert_eq!(cc[0].1.i1, 1);
     assert_eq!(cc[0].1.i2, 23);
@@ -492,4 +498,25 @@ fn deploy_remembers_fire_mode() {
     g.switch_to(0, &mut h);
     g.switch_to(id::AK47, &mut h);
     assert_eq!(g.status[id::AK47 as usize].mode, mode::SEMI);
+}
+
+/// The client melee view shakes (`ViewShake::Start(amp, 0.2, 10)`): knife slash damage x 0.15
+/// (0x1000a327) and the katana's own ground-swing strength 45 x 0.2 (0x1000a156).
+#[test]
+fn melee_view_shakes() {
+    let (mut g, mut h) = armed(id::KNIFE);
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    assert_eq!(h.shakes, vec![info(id::KNIFE).unwrap().damage * 0.15]);
+    let (mut g, mut h) = armed(id::KATANA);
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    assert_eq!(h.shakes, vec![45.0 * 0.2]);
+    // Airborne: clamp(speed / 6.5, 35, 55).
+    let (mut g, mut h) = armed(id::KATANA);
+    h.flags = 0;
+    h.velocity = [600.0, 0.0, 0.0];
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    assert_eq!(h.shakes, vec![55.0 * 0.2]);
 }

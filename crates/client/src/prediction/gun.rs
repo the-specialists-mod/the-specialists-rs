@@ -369,6 +369,12 @@ impl GunHost for ClientHost<'_> {
             view::kick_angles(pitch, yaw, self.silenced, self.time);
         }
     }
+    fn view_shake(&mut self, amp: f32) {
+        // Gated on runfuncs (`*0x100d5cbc`) like the kick.
+        if self.runfuncs {
+            view::melee_shake(amp);
+        }
+    }
     fn sound(&mut self, _s: Sound) {}
     fn shoot(&mut self, _shot: &Shot) {}
     fn melee(&mut self, _hit: &MeleeHit) -> MeleeResult {

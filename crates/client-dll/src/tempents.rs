@@ -52,6 +52,8 @@ pub unsafe fn update(
         if active.is_null() || (*active).is_null() {
             return;
         }
+        // TS keeps this for its particles only past the same check (0x1001bd0e..0x1001bd25).
+        ts_client::effects::set_cl_gravity(cl_gravity as f32);
         let frametime = frametime * time_scale as f64;
         ev!(EV_SetUpPlayerPrediction(0, 1));
         ev!(EV_PushPMStates());
