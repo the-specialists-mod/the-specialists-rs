@@ -327,36 +327,34 @@ impl MapFx {
     /// Emission step (`CTS_CL_Emitter::Frame` `0x1003ab40`, doc §5.3). Emitters are scheduled on
     /// `clock`, the emitter clock (`0x10189478`); `now` (client time) stamps the particles.
     pub fn emit(&mut self, ps: &mut PSys, cam: &Camera, clock: f64, now: f64, ts: f32) {
-        let div = ps.divisor.max(1.0);
+        // `0x1018ca60` is an int (1, 2, 4, 6 or 8).
+        let div = (ps.divisor as i32).max(1);
         for em in self.emitters.iter_mut().filter(|e| !e.dead) {
             if em.next_emit >= clock {
                 continue;
             }
             let Some(ti) = em.template else { continue };
-            let mut n = r::random_long(em.ppe.1.min(em.ppe.0), em.ppe.0.max(em.ppe.1));
-            // Only 0 is rejected (0x1003ac6d). A negative count goes on: it adds no particles but
-            // still plays the emit sound and reschedules.
+            // The raw keyvalues (0x1003ac54): with ppelow > ppehigh the engine returns ppelow.
+            let n = r::random_long(em.ppe.1, em.ppe.0);
+            // Only 0 is rejected (0x1003ac6d). A negative count goes on: it plays the emit sound
+            // and reschedules.
             if n == 0 {
                 continue;
             }
-            let lo = v::add(em.origin, em.variance.1);
-            let hi = v::add(em.origin, em.variance.0);
-            let inside = (lo[0].min(hi[0])..=lo[0].max(hi[0])).contains(&cam.origin[0])
-                && (lo[1].min(hi[1])..=lo[1].max(hi[1])).contains(&cam.origin[1]);
+            let (low, high) = (em.variance.1, em.variance.0);
+            let lo = v::add(em.origin, low);
+            let hi = v::add(em.origin, high);
+            let inside = inside_xy(lo, hi, cam.origin);
             let mut f = 1.0f32;
             if !inside {
-                let centre = v::scale(v::add(lo, hi), 0.5);
-                let d = v::sub(centre, cam.origin);
-                let dist = v::len(d).max(1.0);
                 // Behind the camera: skipped this frame and not rescheduled (0x1003ad96 jumps
                 // past the `next_emit` writes), so it is tested again next frame.
-                if v::dot(cam.forward, v::scale(d, 1.0 / dist)) < 0.1 {
-                    continue;
-                }
-                f = (dist / v::len(v::sub(hi, lo)).max(1.0)).clamp(1.0, 10.0);
+                let Some(lod) = lod_factor(lo, hi, v::sub(high, low), cam) else { continue };
+                f = lod;
             }
-            n = (n as f32 / div).ceil() as i32;
-            let count = ((n as f32) / f).ceil() as i32;
+            let n = ceil_div(n, div);
+            // `(float)i < n / f` (0x1003afb3, 0x1003b139).
+            let limit = n as f32 / f;
             let tmpl = &self.templates[ti];
             // The template's sprite is looked up only now, after the random count and the camera
             // test (0x1003ae5f). A missing one is reported and the emitter is tried again next
@@ -369,19 +367,20 @@ impl MapFx {
             // `0x1004ffe0` zeroes and the loop sets: the last particle's, or the world origin when
             // a negative count added none.
             let mut last = v::ZERO;
-            for _ in 0..count {
+            let mut i = 0;
+            while (i as f32) < limit {
+                i += 1;
                 let mut p = tmpl.roll(&mut |a, b| r::random_float(a, b));
                 p.sprite = spr;
-                let mut pos = [
-                    r::random_float(lo[0].min(hi[0]), lo[0].max(hi[0])),
-                    r::random_float(lo[1].min(hi[1]), lo[1].max(hi[1])),
-                    r::random_float(lo[2].min(hi[2]), lo[2].max(hi[2])),
-                ];
-                if em.cameradensity > 0.01 && em.cameraradius > 0.01 && inside {
+                // XY around the camera (0x1003b024..0x1003b09d) or `origin + RandomFloat(low,
+                // high)` (0x1003b0cd..0x1003b101); z always from the box (0x1003b104).
+                let (x, y) = if em.cameradensity > 0.01 && em.cameraradius > 0.01 && inside {
                     let rad = em.cameraradius * (2.0 - em.cameradensity.min(1.0));
-                    pos[0] = cam.origin[0] + r::random_float(-rad, rad);
-                    pos[1] = cam.origin[1] + r::random_float(-rad, rad);
-                }
+                    (cam.origin[0] + r::random_float(-rad, rad), cam.origin[1] + r::random_float(-rad, rad))
+                } else {
+                    (em.origin[0] + r::random_float(low[0], high[0]), em.origin[1] + r::random_float(low[1], high[1]))
+                };
+                let pos = [x, y, em.origin[2] + r::random_float(low[2], high[2])];
                 p.origin = pos;
                 last = pos;
                 ps.add(p, now);
@@ -394,9 +393,9 @@ impl MapFx {
                 em.dead = true;
                 continue;
             }
-            let eps = r::random_float(em.eps.1.min(em.eps.0), em.eps.0.max(em.eps.1));
+            let eps = r::random_float(em.eps.1, em.eps.0);
             let iv = if eps > 0.0 { (1.0 / eps) / ts.max(0.01) } else { 1.0 };
-            em.next_emit = clock + (iv * div * f) as f64;
+            em.next_emit = clock + (iv * div as f32 * f) as f64;
         }
     }
 
@@ -412,6 +411,34 @@ impl MapFx {
         }
         ps.add(p, now);
     }
+}
+
+/// The camera is strictly inside the emitter's XY box, with low and high as given
+/// (0x1003ac75..0x1003acce): a box whose low is above its high has no inside.
+fn inside_xy(lo: Vec3, hi: Vec3, cam: Vec3) -> bool {
+    lo[0] < cam[0] && lo[1] < cam[1] && hi[0] > cam[0] && hi[1] > cam[1]
+}
+
+/// Level-of-detail factor of an emitter the camera is outside of, or `None` when its box centre
+/// is behind the camera. Horizontal only (0x1003ace9..0x1003ad96): the direction has z = 0 and
+/// the distance is the XY one, floored at 1e-4. `size` (high - low) is 3D and not floored
+/// (0x1003ad9c..0x1003ae25), so a zero-size box gives an infinite ratio and f = 10.
+fn lod_factor(lo: Vec3, hi: Vec3, size: Vec3, cam: &Camera) -> Option<f32> {
+    let dx = (lo[0] + hi[0]) * 0.5 - cam.origin[0];
+    let dy = (lo[1] + hi[1]) * 0.5 - cam.origin[1];
+    let dist = (dx * dx + dy * dy).sqrt().max(1e-4);
+    // The threshold is the double 0.1 (0x1007a540).
+    if (((cam.forward[0] * dx + cam.forward[1] * dy) / dist) as f64) < 0.1 {
+        return None;
+    }
+    Some((dist / v::len(size)).clamp(1.0, 10.0))
+}
+
+/// Particle count over the `cl_fx` divisor, rounded up as `idiv` plus `inc` on a non-zero
+/// remainder (0x1003ae29..0x1003ae40): with a divisor above 1 a small negative count becomes 1
+/// (-1 / 2 = 0 remainder -1, then + 1).
+fn ceil_div(n: i32, div: i32) -> i32 {
+    n / div + i32::from(n % div != 0)
 }
 
 #[cfg(test)]
@@ -506,5 +533,29 @@ mod tests {
         assert_eq!(parse_entities("{ \"a\" \"b\" } junk { \"c\" \"d\" }").len(), 1);
         assert!(parse_entities("").is_empty());
         assert_eq!(parse_entities("{ \"a\" ").len(), 0);
+    }
+
+    #[test]
+    fn emitter_camera_tests() {
+        let (lo, hi) = ([-10.0, -10.0, 0.0], [10.0, 10.0, 0.0]);
+        assert!(inside_xy(lo, hi, [0.0, 0.0, 500.0]), "z is ignored");
+        assert!(!inside_xy(lo, hi, [10.0, 0.0, 0.0]), "strict");
+        assert!(!inside_xy(hi, lo, [0.0, 0.0, 0.0]), "low above high: never inside");
+
+        let cam = Camera { origin: [0.0, 0.0, 1000.0], forward: [1.0, 0.0, 0.0], ..Default::default() };
+        // A box 100 units ahead, far below: the 2D direction is straight ahead.
+        let (lo, hi) = ([90.0, -10.0, 0.0], [110.0, 10.0, 0.0]);
+        let size = v::sub(hi, lo);
+        let f = lod_factor(lo, hi, size, &cam).unwrap();
+        assert!((f - 100.0 / size[0].hypot(size[1])).abs() < 1e-4, "XY distance over the 3D size: {f}");
+        assert_eq!(lod_factor(lo, hi, v::ZERO, &cam), Some(10.0), "zero size: f = 10");
+        let up = Camera { forward: [0.0, 0.0, 1.0], ..cam };
+        assert_eq!(lod_factor(lo, hi, size, &up), None, "looking straight up: z is 0 in the dot");
+
+        assert_eq!(ceil_div(7, 2), 4);
+        assert_eq!(ceil_div(8, 2), 4);
+        assert_eq!(ceil_div(-1, 2), 1);
+        assert_eq!(ceil_div(-3, 2), 0);
+        assert_eq!(ceil_div(-3, 1), -3);
     }
 }

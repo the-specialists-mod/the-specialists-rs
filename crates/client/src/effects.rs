@@ -72,13 +72,18 @@ struct Quality {
     next: f64,
     next_adapt: f64,
     applied: f32,
-    /// `TS_DrawEffects` has run once (`0x1018d16a`: `cl_fx` applied, particle pool set up).
+    /// The particle pool exists (`g_PSys+8`, `0x1018bdf0`): allocated by the first
+    /// `TS_DrawEffects` and never freed (`PSys_Init` `0x100507e0` reallocates it in place), so
+    /// once set it stays set across level changes. Emitters wait for it (0x1003abef).
     ready: bool,
+    /// `TS_DrawEffects` has run since the last `HUD_VidInit` (`0x1018d16a`; set by
+    /// `PSys_Startup` 0x10056bd0, cleared by the TS panel's reset 0x1006600f).
+    started: bool,
 }
 
 impl Default for Quality {
     fn default() -> Self {
-        Quality { q: 1.0, samples: [0.0; 20], n: 0, next: 0.0, next_adapt: 0.0, applied: -1.0, ready: false }
+        Quality { q: 1.0, samples: [0.0; 20], n: 0, next: 0.0, next_adapt: 0.0, applied: -1.0, ready: false, started: false }
     }
 }
 
@@ -284,6 +289,9 @@ pub fn vid_init() {
         fx.bullets.clear();
         fx.shell_seq = 0;
         fx.blur.reset();
+        // HUD_VidInit -> VGui_Startup -> the TS panel's reset (0x1006600f). The pool pointer that
+        // gates emitters is untouched, so they keep emitting until the next `TS_DrawEffects`.
+        fx.quality.started = false;
     });
 }
 
@@ -388,7 +396,8 @@ pub fn frame(time: f64, frametime: f64) {
         fx.psys.cull_origin = cull_origin;
         fx.psys.time_scale = ts;
         // 0x1003abef: no emission, and no emitter clock, until the first `TS_DrawEffects` has
-        // applied `cl_fx` and set up the particle pool (0x10056bc0).
+        // allocated the particle pool (0x10056bc0). TS tests the pool pointer, not 0x1018d16a,
+        // so this does not wait again after a `HUD_VidInit`.
         if fx.level.is_empty() || !fx.quality.ready {
             return;
         }
@@ -398,12 +407,22 @@ pub fn frame(time: f64, frametime: f64) {
     });
 }
 
-/// The start of `TS_DrawEffects` (`0x10056dd0..0x10056e04`): `FX_ApplyCvar` (`0x10057d50`) on
-/// the first call and whenever `cl_fx` differs from the value last applied (`0x1018cac4`).
+/// The start of `TS_DrawEffects` (`0x10056dd0..0x10056e04`). On the first call after every
+/// `HUD_VidInit` (`0x1018d16a` clear): `FX_ApplyCvar` (`0x10057d50`), `PSys_Startup`
+/// (`0x10056bc0` -> `PSys_Init` `0x100507e0`: a fresh pool, sprite cache and cooldowns) and the
+/// client bullet reset (`0x10034eb0`). Otherwise `FX_ApplyCvar` whenever `cl_fx` differs from the
+/// value last applied (`0x1018cac4`).
 fn apply_cvar(fx: &mut Fx, cl_fx: f32) {
+    let startup = !fx.quality.started;
+    if startup {
+        fx.psys.reset_sprites();
+        fx.psys.clear();
+        fx.bullets.clear();
+    }
     let q = &mut fx.quality;
     q.ready = true;
-    if cl_fx != q.applied {
+    q.started = true;
+    if startup || cl_fx != q.applied {
         // cl_fx 1 and 2 start at full quality, anything else is low.
         q.applied = cl_fx;
         let full = cl_fx == 1.0 || cl_fx == 2.0;

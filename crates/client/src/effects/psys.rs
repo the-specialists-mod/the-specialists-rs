@@ -117,7 +117,6 @@ impl Default for Particle {
 
 struct Sprite {
     name: String,
-    h: HSPRITE,
     model: *const model_s,
     frames: i32,
 }
@@ -274,19 +273,23 @@ impl PSys {
     }
 
     /// Sprite slot for `name` (`PSys_LoadSprite` `0x100509d0`), loading it on first use. 64
-    /// slots in TS; unlimited here.
+    /// slots in TS; unlimited here. Only loaded sprites take a slot: a miss leaves none behind
+    /// (`0x10050a43` stores the null handle in the free slot, which still reads as free), so TS
+    /// calls `SPR_Load` again and warns on every miss. Callers look a sprite up once per effect
+    /// or emission, not per particle.
     pub fn sprite(&mut self, name: &str) -> Option<u16> {
         if let Some(i) = self.sprites.iter().position(|s| s.name.eq_ignore_ascii_case(name)) {
-            return (self.sprites[i].h != 0).then_some(i as u16);
+            return Some(i as u16);
         }
         let h = engine().spr_load(name);
-        let (model, frames) = if h != 0 { (r::sprite_model(h), r::spr_frames(h).max(1)) } else { (std::ptr::null(), 1) };
-        if h == 0 || model.is_null() {
-            goldsrc::client::engine().print(&format!("WARNING! cannot found {name}\n"));
+        let model = if h != 0 { r::sprite_model(h) } else { std::ptr::null() };
+        if model.is_null() {
+            // TS prints this through `CHudSayText::SayTextPrint` (0x10050a69: chat and console).
+            engine().print(&format!("WARNING! cannot found {name}\n"));
+            return None;
         }
-        self.sprites.push(Sprite { name: name.to_owned(), h: if model.is_null() { 0 } else { h }, model, frames });
-        let i = self.sprites.len() - 1;
-        (self.sprites[i].h != 0).then_some(i as u16)
+        self.sprites.push(Sprite { name: name.to_owned(), model, frames: r::spr_frames(h).max(1) });
+        Some((self.sprites.len() - 1) as u16)
     }
 
     pub fn frames(&self, sprite: u16) -> i32 {
