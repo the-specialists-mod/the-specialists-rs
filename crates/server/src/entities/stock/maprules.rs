@@ -171,8 +171,10 @@ impl Entity for GamePlayerEquip {
 /// `CBasePlayer::GiveNamedItem` (0xdb524): create the item at the player's feet (never
 /// respawning), spawn it and let it touch the player.
 pub fn give_named_item(player: *mut edict_t, class: &CStr) {
-    // Port: the TS gun isn't an entity, every player always has it.
+    // The port's TS gun isn't an entity: giving it is `weapons::give_gun` (a new empty gun, or the
+    // duplicate absorbed when the player already holds one).
     if class == c"weapon_tsgun" {
+        crate::weapons::give_gun_to(player);
         return;
     }
     let eng = engine();

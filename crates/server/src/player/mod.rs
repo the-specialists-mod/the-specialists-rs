@@ -97,6 +97,10 @@ impl Entity for Player {
         hud::reset(self);
     }
 
+    fn trace_attack(&mut self, cx: &mut Cx, dmg: &DamageInfo) {
+        damage::trace_attack(self, cx, dmg);
+    }
+
     fn take_damage(&mut self, cx: &mut Cx, dmg: &DamageInfo) -> bool {
         damage::take_damage(self, cx, dmg)
     }

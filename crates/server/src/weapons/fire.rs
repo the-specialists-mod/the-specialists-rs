@@ -54,23 +54,25 @@ pub fn gun_position(v: &entvars_t) -> Vec3 {
     spread::add(v.origin, v.view_ofs)
 }
 
-/// Applies bullet damage from `tr` (TraceAttack + the hitgroup the trace reports).
-pub fn bullet_damage(shooter: *mut edict_t, tr: &TraceResult, dmg: f32, dir: Vec3, bits: i32, weapon: u8) {
+/// `pEntity->TraceAttack(shooter, dmg, dir, &tr, bits)` for a bullet that hit something: the
+/// hitgroup the trace reports, the damage going into the multi-damage (`damage::multi`). The
+/// caller applies it.
+pub fn bullet_trace_attack(shooter: *mut edict_t, tr: &TraceResult, dmg: f32, dir: Vec3, bits: i32, weapon: u8) {
     let hit = tr.pHit;
-    if hit.is_null() || dmg <= 0.0 {
-        return;
+    if hit.is_null() {
+        return; // the world: `CBaseEntity::TraceAttack` with `takedamage` off does nothing
     }
     let mut info = DamageInfo::new(shooter, shooter, dmg, bits).traced();
     info.hitgroup = tr.iHitgroup;
     info.dir = dir;
     info.pos = tr.vecEndPos;
     info.weapon = weapon as i32;
-    let ok = damage::apply(hit, &info);
+    damage::trace_attack(hit, &info);
     assets::debug(|| {
         let e = engine();
         let v = hit.v();
         format!(
-            "hit {} #{} dmg={dmg:.2} hitgroup={} bits={bits:#x} applied={ok} health={}",
+            "hit {} #{} dmg={dmg:.2} hitgroup={} bits={bits:#x} health={}",
             e.string(v.classname).to_string_lossy(),
             e.index_of(hit),
             tr.iHitgroup,
@@ -98,6 +100,13 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
     let pierce = ammo.map(|a| a.pierce).unwrap_or(0.0);
     let adjust = assets::damage_adjust();
     let bits = if shot.btype == 1 { DMG_SHOTGUN_TS } else { DMG_BULLET_TS };
+    // Every pellet's TraceAttack adds to one multi-damage, applied once after the loop: the
+    // pellets that hit one victim in a row reach its TakeDamage as one hit. Simulated bullets
+    // apply their own later, but the type is set either way (0x6f7cb).
+    if !real {
+        damage::multi::clear();
+    }
+    damage::multi::set_type(DMG_BULLET_TS);
 
     let mut left = 0.0f32;
     let mut last: Option<(TraceResult, Vec3)> = None;
@@ -115,7 +124,7 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
         if tr.flFraction != 1.0 {
             let dist = spread::length(spread::sub(src, tr.vecEndPos));
             let amount = range_multiplier(spread::range_index(dist, unit)) * shot.damage;
-            bullet_damage(shooter, &tr, amount * adjust, dir, bits, shot.weapon);
+            bullet_trace_attack(shooter, &tr, amount * adjust, dir, bits, shot.weapon);
             projectiles::report_damage(|| format!("damage:{:.6}\n", amount * adjust));
             left = amount * pierce;
             if e.is_player_edict(tr.pHit) {
@@ -125,7 +134,11 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
         bubble_trail(src, tr.vecEndPos, (spread::MAX_RANGE * tr.flFraction / 64.0).round_ties_even() as i32);
         last = Some((tr, dir));
     }
-    if real || shot.btype == 1 || shot.btype == 2 || left <= 5.0 {
+    if real {
+        return;
+    }
+    damage::multi::apply(shooter, shooter);
+    if shot.btype == 1 || shot.btype == 2 || left <= 5.0 {
         return;
     }
     let Some((tr, dir)) = last else { return };
@@ -139,6 +152,8 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
 /// The recursion with `btype 2`: a straight 4096-unit trace from the exit point, range falloff
 /// with a fixed 30-unit index unit, no further penetration.
 fn pierce_shot(shooter: *mut edict_t, src: Vec3, dir: Vec3, dmg: f32, weapon: u8) {
+    damage::multi::clear();
+    damage::multi::set_type(DMG_BULLET_TS);
     let end = spread::ma(src, 4096.0, dir);
     let tr = trace_expanded(src, end, shooter);
     LAST_TRACE.0.set((tr.vecEndPos, tr.flFraction));
@@ -146,10 +161,11 @@ fn pierce_shot(shooter: *mut edict_t, src: Vec3, dir: Vec3, dmg: f32, weapon: u8
         let dist = spread::length(spread::sub(src, tr.vecEndPos));
         let idx = (dist * 0.003_333_333_4 * 10.0).round_ties_even() as i32;
         let amount = range_multiplier(idx) * dmg;
-        bullet_damage(shooter, &tr, amount, dir, DMG_BULLET_TS, weapon);
+        bullet_trace_attack(shooter, &tr, amount, dir, DMG_BULLET_TS, weapon);
         projectiles::report_damage(|| format!("damage(piercing):{amount:.6}\n"));
     }
     bubble_trail(src, tr.vecEndPos, (tr.flFraction * 4096.0 / 64.0).round_ties_even() as i32);
+    damage::multi::apply(shooter, shooter);
 }
 
 /// `UTIL_WaterLevel` 0xee73c: the water surface height above `pos` between `minz` and `maxz`

@@ -66,7 +66,16 @@ pub trait Entity: Any {
     fn touch(&mut self, _cx: &mut Cx, _other: *mut edict_t) {}
     fn use_(&mut self, _cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {}
     fn blocked(&mut self, _cx: &mut Cx, _other: *mut edict_t) {}
-    /// Apply damage. Return true if the entity took it.
+    /// `TraceAttack` (vtable +0x54): the hit's effects, then whatever damage the entity takes goes
+    /// into the multi-damage (`crate::damage::multi`) for one `take_damage` from
+    /// `ApplyMultiDamage`. The default is `CBaseEntity::TraceAttack` (0xb3740): add the damage if
+    /// `takedamage` is on (no blood: the port's entities don't bleed).
+    fn trace_attack(&mut self, cx: &mut Cx, dmg: &DamageInfo) {
+        if cx.pev().takedamage != 0.0 {
+            crate::damage::multi::add(dmg.attacker, cx.edict, dmg.damage, dmg.bits, dmg);
+        }
+    }
+    /// Apply damage (`TakeDamage`, vtable +0x58). Return true if the entity took it.
     fn take_damage(&mut self, _cx: &mut Cx, _dmg: &DamageInfo) -> bool {
         false
     }

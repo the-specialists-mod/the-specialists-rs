@@ -533,11 +533,12 @@ impl Entity for Door {
         }
     }
 
-    fn take_damage(&mut self, cx: &mut Cx, info: &DamageInfo) -> bool {
-        // The break logic is `CBaseDoor::TraceAttack` (0xb57ac); a direct TakeDamage never reaches it.
-        if info.traced {
-            self.door_damage(cx, info);
-        }
+    /// `CBaseDoor::TraceAttack` (0xb57ac): the break logic, and no `AddMultiDamage`.
+    fn trace_attack(&mut self, cx: &mut Cx, info: &DamageInfo) {
+        self.door_damage(cx, info);
+    }
+
+    fn take_damage(&mut self, _cx: &mut Cx, _info: &DamageInfo) -> bool {
         false
     }
 }

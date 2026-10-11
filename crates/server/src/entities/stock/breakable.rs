@@ -656,12 +656,18 @@ impl<const PUSH: bool> Entity for Breakable<PUSH> {
         self.breakable_use(cx, activator, caller);
     }
 
+    /// `CBreakable::TraceAttack` (0xc1060, pushables too): the hit effects, then
+    /// `CBaseEntity::TraceAttack` adds the damage.
+    fn trace_attack(&mut self, cx: &mut Cx, info: &DamageInfo) {
+        Breakable::<PUSH>::trace_attack(self, cx, info);
+        if cx.pev().takedamage != 0.0 {
+            crate::damage::multi::add(info.attacker, cx.edict, info.damage, info.bits, info);
+        }
+    }
+
     fn take_damage(&mut self, cx: &mut Cx, info: &DamageInfo) -> bool {
         if PUSH && !Self::breakable_flag(cx) {
             return true;
-        }
-        if info.traced {
-            self.trace_attack(cx, info);
         }
         self.take_damage_impl(cx, info)
     }

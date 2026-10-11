@@ -2,11 +2,11 @@
 //! Reference: decomp docs/server/player-movement.md §6, weapons.md §5.9;
 //! `CBasePlayer::TraceAttack` (0x901cc) and `CBasePlayer::TakeDamage` (0x8fa94).
 //!
-//! `damage::apply` has a single entry point, so the TraceAttack part (spawn protection, stunt and
-//! dodge ×0.7, team check, hitgroup multipliers, `PTakeDam`, hit sounds) runs only for damage the
-//! caller marked `DamageInfo::traced`, i.e. what TS routes through `TraceAttack` (bullets, melee,
-//! explosions even through walls, thrown and falling objects). The TakeDamage part (team check,
-//! kevlar, health) runs for everything.
+//! As in TS the two are separate: [`trace_attack`] (spawn protection, stunt and dodge ×0.7,
+//! team check, hitgroup multipliers, `PTakeDam`, hit sounds) only adds its scaled damage to the
+//! multi-damage (`crate::damage::multi`), and [`take_damage`] (team check, kevlar, health) gets the
+//! sum from `ApplyMultiDamage`, so the pellets of one shotgun shot reach it as one hit. Direct
+//! damage (falls, drowning, triggers, crushers) goes straight to `take_damage`.
 
 use super::Player;
 use crate::damage::{bits, hitgroup};
@@ -119,92 +119,115 @@ pub fn arms_bullet_dance(group: i32, speed2d: f32, dmg: f32) -> bool {
     !matches!(group, hitgroup::LEFTLEG | hitgroup::RIGHTLEG) && speed2d < 80.0 && dmg <= 80.0
 }
 
-pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
+/// `CBasePlayer::TraceAttack` (0x901cc): spawn protection, stunt and dodge ×0.7, team check,
+/// hitgroup multipliers, the dead-body twitch, `PTakeDam` and the hit sounds, then
+/// `AddMultiDamage` with the scaled damage (the `TakeDamage` comes from `ApplyMultiDamage`).
+pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     let eng = engine();
     let now = cx.time();
     let e = cx.edict;
     let mut amount = dmg.damage;
-    let attacker_is_teammate = !dmg.attacker.is_null() && dmg.attacker != e && rules::teams::same_team(dmg.attacker, e);
-    let friendly_fire = rules::cvars::on(c"mp_friendlyfire");
 
-    if dmg.traced {
-        if now < p.ts.protect_until {
-            return false;
-        }
-        if cx.pev().iuser4 & rules::scoring::STUNTING != 0 {
-            amount *= tables().combat.stunt_damage_taken;
-        }
-        if now < p.stunt.dodge_until && dmg.bits & bits::BULLET != 0 {
-            amount *= tables().combat.stunt_damage_taken;
-        }
-        if attacker_is_teammate && !friendly_fire {
-            return false;
-        }
-        if cx.pev().takedamage == 0.0 {
-            return false;
-        }
-        p.ts.last_hitgroup = dmg.hitgroup;
-        let headshot = dmg.hitgroup == hitgroup::HEAD && dmg.bits & (bits::BULLET | bits::THROWN) != 0;
-        amount *= hitgroup_scale(dmg.hitgroup, dmg.bits);
-        let is_alive = Player::is_alive(cx);
-        let kevlar_hit = cx.pev().armorvalue != 0.0
-            && dmg.bits & bits::BULLET != 0
-            && is_alive
-            && (hitgroup::CHEST..=hitgroup::RIGHTARM).contains(&dmg.hitgroup);
-        if !is_alive {
-            // A body still in its death animation twitches when shot.
-            crate::stunt::anim::bullet_dance(p, cx);
-            let v = cx.pev();
-            if v.flags & FL_ONGROUND as i32 == 0 {
-                for i in 0..3 {
-                    v.velocity[i] += dmg.dir[i] * 50.0;
-                }
+    if now < p.ts.protect_until {
+        return;
+    }
+    if cx.pev().iuser4 & rules::scoring::STUNTING != 0 {
+        amount *= tables().combat.stunt_damage_taken;
+    }
+    if now < p.stunt.dodge_until && dmg.bits & bits::BULLET != 0 {
+        amount *= tables().combat.stunt_damage_taken;
+    }
+    if trace_attack_refused(dmg.attacker, e) {
+        return;
+    }
+    if cx.pev().takedamage == 0.0 {
+        return;
+    }
+    p.ts.last_hitgroup = dmg.hitgroup;
+    let headshot = dmg.hitgroup == hitgroup::HEAD && dmg.bits & (bits::BULLET | bits::THROWN) != 0;
+    if headshot {
+        crate::damage::multi::set_headshot();
+    }
+    amount *= hitgroup_scale(dmg.hitgroup, dmg.bits);
+    let is_alive = Player::is_alive(cx);
+    let kevlar_hit = cx.pev().armorvalue != 0.0
+        && dmg.bits & bits::BULLET != 0
+        && is_alive
+        && (hitgroup::CHEST..=hitgroup::RIGHTARM).contains(&dmg.hitgroup);
+    if !is_alive {
+        // A body still in its death animation twitches when shot.
+        crate::stunt::anim::bullet_dance(p, cx);
+        let v = cx.pev();
+        if v.flags & FL_ONGROUND as i32 == 0 {
+            for i in 0..3 {
+                v.velocity[i] += dmg.dir[i] * 50.0;
             }
-        }
-        if now > p.ts.next_ptakedam {
-            p.ts.next_ptakedam = now + 0.3;
-            let m = PTakeDam {
-                x: dmg.pos[0],
-                y: dmg.pos[1],
-                z: dmg.pos[2],
-                dx: dmg.dir[0],
-                dy: dmg.dir[1],
-                dz: dmg.dir[2],
-                amount: ptakedam_amount(amount, dmg.bits, kevlar_hit),
-            };
-            msg::pvs(Msg::PTakeDam, cx.pev().origin, |w| m.write(w));
-            if dmg.bits & (bits::BULLET | bits::BLAST) != 0 {
-                let sample = if headshot {
-                    if eng.random_long(0, 1) == 0 { c"player/headshot.wav" } else { c"player/headshot2.wav" }
-                } else if kevlar_hit {
-                    c"player/kevlarhit.wav"
-                } else {
-                    [c"player/bodyhit1.wav", c"player/bodyhit2.wav", c"player/bodyhit3.wav", c"player/bodyhit4.wav"]
-                        [eng.random_long(0, 3) as usize]
-                };
-                eng.emit_sound(e, CHAN_BODY as i32, sample, 1.0, 1.25, 0, 95 + eng.random_long(0, 31));
-            }
-            if is_alive {
-                let pain = match eng.random_long(1, 7) {
-                    1 => Some(c"player/pain2.wav"),
-                    2 => Some(c"player/pain3.wav"),
-                    3 => Some(c"player/pain4.wav"),
-                    _ => None,
-                };
-                if let Some(s) = pain {
-                    eng.emit_sound(e, CHAN_VOICE as i32, s, 1.0, 1.25, 0, 100);
-                }
-            }
-        }
-        // TraceAttack's `dmgreport` cheat log (any non-zero value).
-        if crate::weapons::dmgreport() != 0.0 && !dmg.attacker.is_null() {
-            let (by, to) = (eng.string(dmg.attacker.v().netname), eng.string(cx.pev().netname));
-            let line = format!("{} damaged {} ({amount:.6} hp)\n", by.to_string_lossy(), to.to_string_lossy());
-            eng.alert(ALERT_TYPE::at_console, &line);
         }
     }
+    if now > p.ts.next_ptakedam {
+        p.ts.next_ptakedam = now + 0.3;
+        let m = PTakeDam {
+            x: dmg.pos[0],
+            y: dmg.pos[1],
+            z: dmg.pos[2],
+            dx: dmg.dir[0],
+            dy: dmg.dir[1],
+            dz: dmg.dir[2],
+            amount: ptakedam_amount(amount, dmg.bits, kevlar_hit),
+        };
+        msg::pvs(Msg::PTakeDam, cx.pev().origin, |w| m.write(w));
+        if dmg.bits & (bits::BULLET | bits::BLAST) != 0 {
+            let sample = if headshot {
+                if eng.random_long(0, 1) == 0 { c"player/headshot.wav" } else { c"player/headshot2.wav" }
+            } else if kevlar_hit {
+                c"player/kevlarhit.wav"
+            } else {
+                [c"player/bodyhit1.wav", c"player/bodyhit2.wav", c"player/bodyhit3.wav", c"player/bodyhit4.wav"]
+                    [eng.random_long(0, 3) as usize]
+            };
+            eng.emit_sound(e, CHAN_BODY as i32, sample, 1.0, 1.25, 0, 95 + eng.random_long(0, 31));
+        }
+        if is_alive {
+            let pain = match eng.random_long(1, 7) {
+                1 => Some(c"player/pain2.wav"),
+                2 => Some(c"player/pain3.wav"),
+                3 => Some(c"player/pain4.wav"),
+                _ => None,
+            };
+            if let Some(s) = pain {
+                eng.emit_sound(e, CHAN_VOICE as i32, s, 1.0, 1.25, 0, 100);
+            }
+        }
+    }
+    crate::damage::multi::add(dmg.attacker, e, amount, dmg.bits, dmg);
+    // TraceAttack's `dmgreport` cheat log (any non-zero value), after the AddMultiDamage.
+    if crate::weapons::dmgreport() != 0.0 && !dmg.attacker.is_null() {
+        let (by, to) = (eng.string(dmg.attacker.v().netname), eng.string(cx.pev().netname));
+        let line = format!("{} damaged {} ({amount:.6} hp)\n", by.to_string_lossy(), to.to_string_lossy());
+        eng.alert(ALERT_TYPE::at_console, &line);
+    }
+}
 
-    // CBasePlayer::TakeDamage
+/// TraceAttack's team check (0x90256): a player attacker on the victim's team
+/// (`PlayerRelationship == GR_TEAMMATE`) without `mp_friendlyfire`. Unlike
+/// `FPlayerCanTakeDamage` it doesn't exempt the victim itself, so in teamplay without friendly
+/// fire a player's own traced damage (its grenade's blast) is refused.
+fn trace_attack_refused(attacker: *mut edict_t, victim: *mut edict_t) -> bool {
+    rules::is_player(attacker) && rules::teams::same_team(attacker, victim) && !rules::cvars::on(c"mp_friendlyfire")
+}
+
+/// `CHalfLifeTeamplay::FPlayerCanTakeDamage` (0xe5208) refusing: a teammate other than the
+/// victim, without `mp_friendlyfire`.
+fn take_damage_refused(attacker: *mut edict_t, victim: *mut edict_t) -> bool {
+    !attacker.is_null() && attacker != victim && rules::teams::same_team(attacker, victim) && !rules::cvars::on(c"mp_friendlyfire")
+}
+
+/// `CBasePlayer::TakeDamage` (0x8fa94) with `CBaseMonster::TakeDamage` (0xb2430) inside it:
+/// what `ApplyMultiDamage` (the TraceAttacks' sum) or a direct hit deals. The hitgroup is the
+/// one the last TraceAttack left (`m_LastHitGroup`).
+pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
+    let e = cx.edict;
+    let amount = dmg.damage;
     if !Player::is_alive(cx) || amount == 0.0 {
         return false;
     }
@@ -217,50 +240,51 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     } else {
         crate::stunt::anim::disable_bullet_dance(p);
     }
-    if attacker_is_teammate && !friendly_fire {
+    if take_damage_refused(dmg.attacker, e) {
         return false; // FPlayerCanTakeDamage
     }
     // Truncated, like the kevlar-scaled damage below (0x8fbd0).
     p.ts.last_damage = amount as i32;
-    let amount = after_kevlar(amount, cx.pev().armorvalue, p.ts.last_hitgroup, dmg.bits);
-    // TS tells the HLTV director after CBaseMonster::TakeDamage, even when that refused the
-    // damage (`takedamage` off); a kill's DeathNotice event therefore goes out first.
-    let tell_director = |e: *mut edict_t, inflictor: *mut edict_t| {
-        let eng = engine();
-        rules::msg::director_event(eng.index_of(e), eng.index_of(inflictor), director::FLAGS_DAMAGE);
-    };
-    if cx.pev().takedamage == 0.0 {
-        p.tbd.on_damage(dmg.bits);
-        tell_director(e, dmg.inflictor);
-        return false;
-    }
+    let after = after_kevlar(amount, cx.pev().armorvalue, p.ts.last_hitgroup, dmg.bits);
 
-    // CBaseMonster::TakeDamage: knockback, health, death.
-    {
-        let v = cx.pev();
-        if !dmg.inflictor.is_null() && v.movetype == MOVETYPE_WALK as i32 && dmg.dir != [0.0; 3] {
-            let attacker_trigger = !dmg.attacker.is_null() && dmg.attacker.v().solid == SOLID_TRIGGER as i32;
-            if !attacker_trigger {
-                let force = amount * 5.0;
-                for i in 0..3 {
-                    v.velocity[i] += dmg.dir[i] * force;
-                }
-            }
-        }
-        v.dmg_take += amount;
-        v.dmg_inflictor = dmg.inflictor;
-        v.health -= amount;
-    }
-    if amount >= 1.0 {
+    let took = monster_take_damage(p, cx, dmg, after);
+
+    // The rest of CBasePlayer::TakeDamage runs whether or not that took it: each time-based type
+    // taken restarts its countdown and `m_bitsDamageType |= bits` (`player::water`), then the
+    // HLTV director hears of it (after a kill's DeathNotice), then the red fade for a hit of 1+.
+    p.tbd.on_damage(dmg.bits);
+    let eng = engine();
+    rules::msg::director_event(eng.index_of(e), eng.index_of(dmg.inflictor), director::FLAGS_DAMAGE);
+    if after >= 1.0 {
         let f = TsFade::new([150, 10, 10], 0x4b, 0.3, 0.15, fade::IN);
         msg::one(Msg::TsFade, e, |w| f.write(w));
     }
+    took
+}
+
+/// `CBaseMonster::TakeDamage` (0xb2430) for a live player: refused with `takedamage` off; the
+/// damage counters (the inflictor only when there is one); refused in god mode (`FL_GODMODE`);
+/// then the health drops and `Killed` runs at 0 or below (returning 0). TS has no knockback here
+/// (no `DamageForce` call, no velocity write); only `Killed` pushes the body.
+fn monster_take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo, amount: f32) -> bool {
+    {
+        let v = cx.pev();
+        if v.takedamage == 0.0 {
+            return false;
+        }
+        if !dmg.inflictor.is_null() {
+            v.dmg_inflictor = dmg.inflictor;
+        }
+        v.dmg_take += amount;
+        if v.flags & FL_GODMODE as i32 != 0 {
+            return false;
+        }
+        v.health -= amount;
+    }
     if cx.pev().health <= 0.0 {
         rules::on_killed(p, cx, dmg);
+        return false;
     }
-    // Time-based damage bookkeeping (`player::water`), after the damage either way.
-    p.tbd.on_damage(dmg.bits);
-    tell_director(e, dmg.inflictor);
     true
 }
 

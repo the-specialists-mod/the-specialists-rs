@@ -5,7 +5,7 @@
 use super::lifecycle::{give_cash, score_info_of};
 use super::msg::{self, ts_message_all};
 use super::{cvars, is_player, netname, other, state, teams};
-use crate::damage::{DamageInfo, bits, hitgroup};
+use crate::damage::{DamageInfo, bits};
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::world::{Cx, UseType};
@@ -96,6 +96,11 @@ struct Killer {
 
 /// The `PlayerKilled` body. `p`/`cx` are the victim.
 pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
+    // `glast_headshot` as it is during the kill (it is reset once `ApplyMultiDamage` returns).
+    player_killed_with(p, cx, d, crate::damage::multi::headshot());
+}
+
+fn player_killed_with(p: &mut Player, cx: &mut Cx, d: &DamageInfo, headshot: bool) {
     // `CHalfLifeTeamplay::PlayerKilled` (0xe51b8) skips everything, the death notice included,
     // while `ChangePlayerTeam` kills the player.
     if state::with(|g| g.death_suppressed) {
@@ -116,7 +121,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
     if killer_is_player && crate::world::is_taken_out(attacker) {
         let d = *d;
         crate::world::defer(attacker, move || {
-            crate::player::with_player(victim, |p, cx| player_killed(p, cx, &d));
+            crate::player::with_player(victim, |p, cx| player_killed_with(p, cx, &d, headshot));
         });
         return;
     }
@@ -209,7 +214,9 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
         let mut health_delta: Option<f32> = None; // (+hp, cap 150) for awards
         let mut give_specialist = false;
         if points > 0 {
-            if p.ts.last_hitgroup == hitgroup::HEAD && d.bits & (bits::BULLET | bits::THROWN) != 0 {
+            // `glast_headshot`: any bullet or thrown head hit since the last ApplyMultiDamage, so
+            // also another victim's from the same shotgun shot.
+            if headshot {
                 ts_message_all(GREEN, 1, 20, &format!("#TS_Headshot #TS_FrgFr {kname}!"));
             }
             if (d.inflictor == d.attacker || d.inflictor.is_null()) && !close {

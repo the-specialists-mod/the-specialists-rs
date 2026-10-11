@@ -147,13 +147,48 @@ pub fn update_client(p: &mut Player, cx: &mut Cx) {
 
 /// TS `UpdateClientData` weapon fields + the view model index.
 pub fn fill_client_data(p: &mut Player, cx: &mut Cx, cd: &mut clientdata_t) {
-    proto::pack_clientdata(&p.inv.gun, p.active_powerup, cd);
+    if p.inv.sv.has_gun {
+        proto::pack_clientdata(&p.inv.gun, p.active_powerup, cd);
+    } else {
+        pack_clientdata_no_gun(p.inv.gun.next_attack, p.active_powerup, cd);
+    }
     let vm = cx.pev().viewmodel;
     cd.viewmodel = if vm != 0 { engine().model_index(engine().string(vm)) } else { 0 };
     let _ = SLOTS;
 }
 
-/// TS `GetWeaponData`: only the TS gun, under HL weapon id 16.
+/// `UpdateClientData` (0xb0294) for a player without the gun: `m_flNextAttack`, the power-ups,
+/// the ammo fields and weapon id 0 (`vuser3[0]`), then it returns before the weapon state;
+/// `m_iId` is left as the engine passed it.
+fn pack_clientdata_no_gun(next_attack: f32, powerups: u16, cd: &mut clientdata_t) {
+    cd.m_flNextAttack = next_attack;
+    cd.vuser1[1] = powerups as f32;
+    cd.ammo_shells = 0;
+    cd.ammo_rockets = 0;
+    cd.ammo_cells = 0;
+    cd.vuser3[0] = 0.0;
+}
+
+/// TS `GetWeaponData`: only the TS gun, under HL weapon id 16; all zero without it.
 pub fn get_weapon_data(p: &mut Player, _cx: &mut Cx, info: &mut [weapon_data_t; 32]) {
-    proto::pack_weapon_data(&p.inv.gun, &mut info[proto::TSGUN_ID as usize]);
+    if p.inv.sv.has_gun {
+        proto::pack_weapon_data(&p.inv.gun, &mut info[proto::TSGUN_ID as usize]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clientdata_without_the_gun_stops_after_the_weapon_id() {
+        let mut cd = clientdata_t { m_iId: 7, ..Default::default() };
+        cd.vuser3 = [5.0, 6.0, 7.0];
+        cd.vuser4[1] = 9.0;
+        cd.ammo_shells = 3;
+        pack_clientdata_no_gun(0.25, 0x10, &mut cd);
+        assert_eq!((cd.m_flNextAttack, cd.vuser1[1], cd.ammo_shells), (0.25, 16.0, 0));
+        assert_eq!(cd.vuser3, [0.0, 6.0, 7.0], "only the weapon id is cleared");
+        assert_eq!((cd.m_iId, cd.vuser4[1]), (7, 9.0), "the weapon fields are left alone");
+    }
 }

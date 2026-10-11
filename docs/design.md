@@ -124,13 +124,13 @@ Hook order, fixed in `player/mod.rs`:
 ### 4.4 Subsystems and their APIs
 
 * **`stunt`**: `CTSStunt`/`CTSAnimation`. It sets `iuser4` bits and impulses, and picks `sequence`/`gaitsequence`. The physics they trigger runs in `shared::pm`.
-* **`weapons`**: the per-player TS gun (one container, 38 weapon records), firing, hit resolution, penetration, `CBulletManager`, grenades, knives, kung fu. API for other subsystems: `give_weapon`, `give_ammo`, `strip_all`, `multiply_clip`.
+* **`weapons`**: the per-player TS gun (one container, 38 weapon records), firing, hit resolution, penetration, `CBulletManager`, grenades, knives, kung fu. API for other subsystems: `give_weapon`, `give_ammo`, `strip_all`, `multiply_clip`, and TS's `weapon_tsgun` item itself (`has_gun`, `give_gun`, `remove_all_items`).
 * **`rules`**: game modes, spawn selection, scoring and awards, death and respawn, power-ups (held slot, activation), slow-motion propagation, chat (`say`), cvars, TS map entities (`entities/ts`), HUD sync (`player/hud.rs`), player damage (`player/damage.rs`), drowning and time-based damage (`player/water.rs`).
 * **`bots`**: fake clients driven by `pfnRunPlayerMove`. They let a dedicated server be exercised without a human. Controlled by the `ts_bot_quota` cvar.
 
 ### 4.5 Damage
 
-`damage::DamageInfo` carries the inflictor, attacker, damage, `DMG_*` bits, hitgroup, direction, position and weapon id. `damage::apply(victim, &info)` dispatches to the victim's `take_damage`. Hitgroup multipliers and armour follow decomp `server/weapons.md` §5.9 and `server/player-movement.md` §6.
+`damage::DamageInfo` carries the inflictor, attacker, damage, `DMG_*` bits, hitgroup, direction, position and weapon id. `damage::apply(victim, &info)` dispatches to the victim's `take_damage` (TS `TakeDamage`), or, for a `traced` hit, runs TS's `ClearMultiDamage`, the victim's `trace_attack` (`TraceAttack`, which adds to `damage::multi`) and `ApplyMultiDamage` (one `take_damage` with the sum). `ShootBulletsPlayer` traces every pellet before its one Apply, so a shotgun's pellets on one victim are one hit. Hitgroup multipliers and armour follow decomp `server/weapons.md` §5.9 and `server/player-movement.md` §6.
 
 ### 4.6 Messages
 

@@ -51,6 +51,9 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
     if let Some(n) = cmd.strip_prefix("weapon_") {
         // weapon_<id>: select (remembers lastinv)
         let Some((id, _)) = scan_int(n) else { return true };
+        if !p.inv.sv.has_gun {
+            return true;
+        }
         p.inv.sv.last_inv = p.inv.gun.current;
         if (0..38).contains(&id) {
             with_host(p, cx, |gun, h| gun.switch_to(id as u8, h));
@@ -118,15 +121,19 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
             true
         }
         "firemode" => {
-            p.inv.gun.switch_fire_mode();
+            if p.inv.sv.has_gun {
+                p.inv.gun.switch_fire_mode();
+            }
             true
         }
         "useitems" => {
-            with_host(p, cx, |gun, h| gun.switch_items(h));
+            if p.inv.sv.has_gun {
+                with_host(p, cx, |gun, h| gun.switch_items(h));
+            }
             true
         }
         "lastinv" => {
-            if p.inv.gun.current == 0 {
+            if !p.inv.sv.has_gun || p.inv.gun.current == 0 {
                 return true;
             }
             let target = p.inv.sv.last_inv;

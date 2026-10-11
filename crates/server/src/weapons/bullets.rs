@@ -136,7 +136,9 @@ fn update(b: &mut Bullet, now: f32) -> bool {
         range_multiplier(spread::range_index(dist, unit)) * b.damage
     };
     let bits = if b.btype == 1 { fire::DMG_SHOTGUN_TS } else { fire::DMG_BULLET_TS };
-    fire::bullet_damage(b.owner, &tr, amount * adjust, b.dir, bits, b.weapon);
+    crate::damage::multi::clear();
+    fire::bullet_trace_attack(b.owner, &tr, amount * adjust, b.dir, bits, b.weapon);
+    crate::damage::multi::apply(b.owner, b.owner);
     projectiles::report_damage(|| format!("damage:{:.6}\n", amount * adjust));
     let mut left = amount * ammo.map(|a| a.pierce).unwrap_or(0.0);
     if e.is_player_edict(tr.pHit) {

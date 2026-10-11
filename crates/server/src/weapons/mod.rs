@@ -41,6 +41,11 @@ pub struct ArmamentEntry {
 
 /// Per-player server state around the shared gun.
 pub struct SvState {
+    /// The player holds TS's one weapon item, `weapon_tsgun` (`CTSGun` in `m_rgpPlayerItems` and
+    /// `m_pActiveItem`, pl+0xa10). `PlayerSpawn` gives it only on maps without a
+    /// `game_player_equip`, and `RemoveAllItems` destroys it (death think, observer). Without it
+    /// there is no weapon play at all, kung fu included: see [`has_gun`].
+    pub has_gun: bool,
     /// Loadout (`tkw`/`tki`), max 32 entries, and ammo purchases per type (`tka`).
     pub armament: Vec<ArmamentEntry>,
     pub armament_ammo: [i32; MAX_AMMO],
@@ -83,6 +88,7 @@ pub struct SvState {
 impl Default for SvState {
     fn default() -> Self {
         SvState {
+            has_gun: false,
             armament: Vec::new(),
             armament_ammo: [0; MAX_AMMO],
             free_slots: SLOTS,
@@ -154,8 +160,8 @@ pub fn start_frame() {
 
 pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     // TSInit: kung-fu power 100, recoil penalty 0, fresh timers. The records were emptied where TS
-    // loses its gun (`on_killed`, `strip_all`); a spawn without that keeps them, as TS keeps the
-    // gun it already holds (`AddPlayerItem` kills the new duplicate).
+    // loses its gun (`remove_all_items`, `strip_all`); a spawn without that keeps them, as TS
+    // keeps the gun it already holds (`AddPlayerItem` kills the new duplicate).
     p.inv.gun.reset_for_spawn();
     inventory::reset_items(p);
     p.inv.gun.mode_memory = [0; MAX_WEAPONS];
@@ -167,20 +173,11 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     sv.last_buttons = 0;
     sv.reset_net();
     cx.pev().fov = 0.0;
-    // CHalfLifeMultiplay::PlayerSpawn: the gun deploys (kung fu), then BuyArmament unless the map
-    // has a game_player_equip.
-    host::with_host(p, cx, |gun, h| {
-        let cur = gun.current;
-        gun.current = 0;
-        if cur != 0 && gun.status[cur as usize].owned {
-            gun.current = cur;
-            gun.deploy(h);
-        } else {
-            gun.holster_weapon(h);
-        }
-    });
-    // A map's game_player_equip replaces the loadout (rules/stock-entity hook).
+    // CHalfLifeMultiplay::PlayerSpawn (0x890ac): every game_player_equip touches the player;
+    // only without one does it get `weapon_tsgun` and buy its loadout. A gunless player stays
+    // without weapons (kung fu included) unless an equip lists `weapon_tsgun`.
     if !crate::entities::stock::maprules::equip_on_spawn(cx.edict) {
+        give_gun(p, cx);
         inventory::buy_armament(p, cx);
     }
     inventory::sync_speed(p, cx);
@@ -238,11 +235,15 @@ pub fn post_think(p: &mut Player, cx: &mut Cx, active: bool) {
     // the gun is ready, `ImpulseCommands` (0xdb780: `PlayerUse` 0xd9848 and the impulses) and then
     // the weapon frame.
     if active {
-        if !p.drive.tank.is_valid() && p.inv.gun.post_frame_ready(cx.pev().button as u32) {
+        // Without the gun `ImpulseCommands` still runs (whatever `m_flNextAttack` says), but
+        // there is no weapon frame and no reseed.
+        if !p.drive.tank.is_valid() && (!p.inv.sv.has_gun || p.inv.gun.post_frame_ready(cx.pev().button as u32)) {
             let (buttons, last) = (cx.pev().button, p.inv.sv.last_buttons as i32);
             crate::player::player_use::impulse_commands(p, cx, buttons & !last, last & !buttons);
-            host::with_host(p, cx, |gun, h| gun.weapon_post_frame(h));
-            p.inv.sv.seed = engine().random_long(0, 32000) as u32;
+            if p.inv.sv.has_gun {
+                host::with_host(p, cx, |gun, h| gun.weapon_post_frame(h));
+                p.inv.sv.seed = engine().random_long(0, 32000) as u32;
+            }
         }
         p.inv.sv.last_buttons = cx.pev().button as u32;
     }
@@ -259,18 +260,82 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
 }
 
 /// `CFuncTank::StartControl` (0xc2a24): `m_pActiveItem->Holster()` (`CTSGun::Holster` 0x85674,
-/// back to kung fu).
+/// back to kung fu), when there is an active item.
 pub fn holster_for_tank(p: &mut Player, cx: &mut Cx) {
-    host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
+    if p.inv.sv.has_gun {
+        host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
+    }
 }
 
-/// `CFuncTank::StopControl` (0xc2b1c): `m_pActiveItem->Deploy()` (`CTSGun::Deploy` 0x81030).
+/// `CFuncTank::StopControl` (0xc2b1c): `m_pActiveItem->Deploy()` (`CTSGun::Deploy` 0x81030),
+/// when there is an active item.
 pub fn deploy_after_tank(p: &mut Player, cx: &mut Cx) {
-    host::with_host(p, cx, |gun, h| gun.deploy(h));
+    if p.inv.sv.has_gun {
+        host::with_host(p, cx, |gun, h| gun.deploy(h));
+    }
 }
 
+/// The weapon part of `CBasePlayer::Killed` (0x8ed5c): holster, the ammo pack, the CTB case,
+/// then every weapon. The gun itself goes on the first death think ([`remove_all_items`]).
 pub fn on_killed(p: &mut Player, cx: &mut Cx) {
     inventory::on_killed(p, cx);
+}
+
+/// The player holds `weapon_tsgun` (see [`SvState::has_gun`]). Without it TS skips the weapon
+/// frame (attacks, kung fu, reload), every weapon command (`weapon_<n>`, `firemode`,
+/// `useitems`, `lastinv`, `drop`, so the CTB case can't be dropped either), pickups
+/// (`PickUpWeapon` 0x9314c: dropped guns, `ts_groundweapon`, thrown knives, the grenade
+/// power-up), ammo packs and ground ammo, the infinite-clip power-up, weapon and ammo buys and
+/// attachments, the `ActItems` and `CTSGun::UpdateClientData` messages, and the weapon fields
+/// of `UpdateClientData` / `GetWeaponData`. +use, stunts, kevlar and the other power-ups still
+/// work.
+pub fn has_gun(p: &Player) -> bool {
+    p.inv.sv.has_gun
+}
+
+/// `GiveNamedItem("weapon_tsgun")` (0xdb524): a new `CTSGun` (`Spawn` → `Reset`: an empty
+/// inventory, kung fu) is added and deployed when the player has none (`AddPlayerItem` 0xdc0c4,
+/// `FShouldSwitchWeapon` with no active item). A player that already holds one keeps it
+/// (`AddDuplicate`, then the new one is killed).
+pub fn give_gun(p: &mut Player, cx: &mut Cx) {
+    if !p.inv.sv.has_gun {
+        p.inv.sv.has_gun = true;
+        p.inv.gun.reset_inventory();
+        p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
+    }
+    host::with_host(p, cx, |gun, h| {
+        let cur = gun.current;
+        gun.current = 0;
+        if cur != 0 && gun.status[cur as usize].owned {
+            gun.current = cur;
+            gun.deploy(h);
+        } else {
+            gun.holster_weapon(h);
+        }
+    });
+}
+
+/// `GiveNamedItem("weapon_tsgun")` for a player edict (a `game_player_equip` listing it).
+pub fn give_gun_to(player: *mut edict_t) {
+    crate::player::with_player(player, |p, cx| {
+        give_gun(p, cx);
+        inventory::sync_speed(p, cx);
+    });
+}
+
+/// `CBasePlayer::RemoveAllItems(TRUE)` (0xd8cec), from `PlayerDeathThink` (0x8eaec) while the
+/// player still holds the gun (`HasWeapons`): the gun is holstered and destroyed with
+/// everything in it (the inventory and reserve ammo), then [`remove_all_items_tail`]
+/// (`UpdateClientData`, then `CurWeapon 0,0,0`). The rest of the player's weapon bookkeeping (free slots, loadout items)
+/// is left as `Killed` left it.
+pub fn remove_all_items(p: &mut Player, cx: &mut Cx) {
+    if p.inv.sv.has_gun {
+        host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
+    }
+    p.inv.sv.has_gun = false;
+    p.inv.gun.reset_inventory();
+    p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
+    remove_all_items_tail(p, cx);
 }
 
 pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bool {
@@ -299,15 +364,18 @@ pub fn cmd_start(p: &mut Player, _cx: &mut Cx, _cmd: &usercmd_t, seed: u32) {
 /// (`CBasePlayer::PickUpWeapon(id, NULL, attachments, select = id != 29, own = false)`, what a
 /// `ts_groundweapon` does.)
 pub fn give_weapon(p: &mut Player, cx: &mut Cx, id: u8, attachments: u8) -> bool {
+    if !p.inv.sv.has_gun {
+        return false; // `PickUpWeapon` needs the gun
+    }
     let ok = inventory::pick_up_weapon(p, cx, id, None, attachments as u32, id != shared::weapons::id::BRIEFCASE, false);
     inventory::sync_speed(p, cx);
     ok
 }
 
 /// Gives `rounds` of ammo type `ammo`. Returns rounds actually added (`CTSGun::AddAmmo`,
-/// clamped to the `ammocount` max carry).
+/// clamped to the `ammocount` max carry); none without the gun.
 pub fn give_ammo(p: &mut Player, _cx: &mut Cx, ammo: u8, rounds: i32) -> i32 {
-    if ammo as usize >= MAX_AMMO {
+    if !p.inv.sv.has_gun || ammo as usize >= MAX_AMMO {
         return 0;
     }
     let before = p.inv.gun.reserve[ammo as usize];
@@ -317,13 +385,19 @@ pub fn give_ammo(p: &mut Player, _cx: &mut Cx, ammo: u8, rounds: i32) -> i32 {
 
 /// Selects weapon `id` like the `weapon_<id>` client command (0 = kung fu).
 pub fn select(p: &mut Player, cx: &mut Cx, id: u8) {
+    if !p.inv.sv.has_gun {
+        return;
+    }
     p.inv.sv.last_inv = p.inv.gun.current;
     host::with_host(p, cx, |gun, h| gun.switch_to(id, h));
 }
 
-/// Removes every weapon (death, spectate).
+/// Removes every weapon, the gun included (observer, disconnect).
 pub fn strip_all(p: &mut Player, cx: &mut Cx) {
-    host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
+    if p.inv.sv.has_gun {
+        host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
+    }
+    p.inv.sv.has_gun = false;
     p.inv.gun.reset_inventory();
     p.inv.sv.free_slots = SLOTS;
     p.inv.sv.items = 0;
@@ -334,7 +408,8 @@ pub fn strip_all(p: &mut Player, cx: &mut Cx) {
 /// The tail of `CBasePlayer::RemoveAllItems(TRUE)` (0xd8cec) that [`strip_all`] leaves out:
 /// no view or weapon model, `pev->weapons = 0` (the HEV suit bit too, so the geiger counter
 /// stops), `UpdateClientData` inline (0xd8eb5, throttled as usual), and `CurWeapon 0,0,0` to the
-/// player. Callers: `StartObserver` (0x99986) and `ClientDisconnected` (0xcf960).
+/// player. Callers: `StartObserver` (0x99986), `ClientDisconnected` (0xcf960) and
+/// `PlayerDeathThink` (0x8eaec, [`remove_all_items`]).
 pub fn remove_all_items_tail(p: &mut Player, cx: &mut Cx) {
     let v = cx.pev();
     v.viewmodel = 0;
@@ -346,6 +421,9 @@ pub fn remove_all_items_tail(p: &mut Player, cx: &mut Cx) {
 
 /// Infinite Clip power-up: double the current gun's clip. False if no gun.
 pub fn multiply_clip(p: &mut Player, cx: &mut Cx) -> bool {
+    if !p.inv.sv.has_gun {
+        return false; // `PlayerAddPowerUp` 0x97bc8: `if (!m_pActiveItem) return 0`
+    }
     let free = p.inv.sv.free_slots;
     match p.inv.gun.multiply_clips(free) {
         Some(used) => {

@@ -609,26 +609,35 @@ fn tank_trace(me: *mut edict_t, start: Vec3, forward: Vec3, spread: Vec3, right:
 #[allow(clippy::too_many_arguments)]
 fn fire_bullet(me: *mut edict_t, src: Vec3, forward: Vec3, spread: Vec3, right: Vec3, up: Vec3, damage: i32, attacker: *mut edict_t) {
     use crate::damage::bits;
+    use crate::damage::multi;
     let eng = engine();
+    // FireBullets(1, …): ClearMultiDamage, the type starts at DMG_BULLET | DMG_NEVERGIB, the shot's
+    // TraceAttack adds to it, and ApplyMultiDamage(tank, attacker) after the shot.
+    multi::clear();
+    multi::set_type(0x1002);
     let dir = spread_dir(forward, spread, right, up);
     let tr = eng.trace_line(src, vec::mad(src, dir, 4096.0), DONT_IGNORE_MONSTERS, me);
     te_begin(MSG_PAS, Some(src), te::TRACER).vec3(src).vec3(tr.vecEndPos).end();
-    if tr.flFraction == 1.0 {
-        return;
-    }
-    let hit = if tr.pHit.is_null() { eng.entity_of_index(0) } else { tr.pHit };
-    if damage != 0 {
-        let gib = if damage > 16 { bits::ALWAYSGIB } else { bits::NEVERGIB };
-        // FireBullets: `TraceAttack(attacker, dmg, dir, &tr, bits)`, so the hitgroup counts.
-        let mut info = DamageInfo::new(me, attacker, damage as f32, bits::BULLET | gib).traced();
+    if tr.flFraction != 1.0 {
+        let hit = if tr.pHit.is_null() { eng.entity_of_index(0) } else { tr.pHit };
+        // `TraceAttack(attacker, dmg, dir, &tr, bits)`, so the hitgroup counts. Without
+        // `bullet_damage` TS still traces the monster bullet type's (zero) skill damage as
+        // DMG_BULLET (0xb4012..0xb40fa).
+        let (dmg, b) = if damage != 0 {
+            (damage as f32, bits::BULLET | if damage > 16 { bits::ALWAYSGIB } else { bits::NEVERGIB })
+        } else {
+            (0.0, bits::BULLET)
+        };
+        let mut info = DamageInfo::new(me, attacker, dmg, b).traced();
         info.hitgroup = tr.iHitgroup;
         info.dir = dir;
         info.pos = tr.vecEndPos;
-        crate::damage::apply(hit, &info);
+        crate::damage::trace_attack(hit, &info);
+        // DecalGunshot: `{shot1`..`{shot5` on brush entities and the world.
+        let n = eng.random_long(1, 5);
+        decal_trace(&tr, goldsrc::server::intern(&format!("{{shot{n}")));
     }
-    // DecalGunshot: `{shot1`..`{shot5` on brush entities and the world.
-    let n = eng.random_long(1, 5);
-    decal_trace(&tr, goldsrc::server::intern(&format!("{{shot{n}")));
+    multi::apply(me, attacker);
 }
 
 // ---- func_tankcontrols ----------------------------------------------------------------------------------

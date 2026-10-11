@@ -93,21 +93,39 @@ addresses of `ts_i386.so`.
 * `precache`: the 11 events, every v_/p_/p_sil/w_ model, shells, fire sounds, the server-side
   weapon sounds, `w_m61`/`w_knife`/`w_sealknife`/`w_katana`/`ammopack`, `sprites/bubble.spr`
   (`g_sModelIndexBubbles`), `common/wpn_select.wav`; applies `customweapons`.
-* `on_spawn`: TSInit (bar 100, penalty 0, timers), deploy (kung fu unless the port-only bots
-  already got a weapon from the rules), `BuyArmament` from the `tkw`/`tki`/`tka` lists (or the
-  map's `game_player_equip`s instead), speed, `KFuPower`, `CustomWP` once per client. The gun's
-  records are emptied where TS loses its `weapon_tsgun` (see §5), not here.
+* `on_spawn`: TSInit (bar 100, penalty 0, timers); then, as `PlayerSpawn` (0x890ac), either the
+  map's `game_player_equip`s touch the player, or (no equip) `give_gun` (`GiveNamedItem
+  ("weapon_tsgun")`: a new empty gun, or the one already held; deploy, kung fu unless the
+  port-only bots already got a weapon) and `BuyArmament` from the `tkw`/`tki`/`tka` lists;
+  speed, `KFuPower`, `CustomWP` once per client. The gun's records are emptied where TS loses
+  its `weapon_tsgun` (`remove_all_items`, `strip_all`), not here.
+* No gun (`SvState::has_gun` false: on an equip map whose equips don't list `weapon_tsgun`, and
+  from the first death think until the next gun): as in TS no weapon frame (no attack, kung fu,
+  reload; `ImpulseCommands`' +use still runs), `weapon_<n>`/`firemode`/`useitems`/`lastinv`
+  ignored, `drop`/`drop_<n>` do nothing (the CTB case can't be dropped either), no pickups
+  (`PickUpWeapon`: dropped guns, `ts_groundweapon`, knives, the grenade power-up), ammo packs and
+  ground ammo left alone, the infinite-clip power-up refused, no weapon/ammo buys or
+  attachments (kevlar still works), no `ActItems`/`WStatus`/`WeaponInfo`, `clientdata_t` stops
+  after the weapon id (0), `GetWeaponData` all zero. Stunts and the other power-ups work. An
+  equip listing `weapon_tsgun` gives a new, empty gun (`maprules::give_named_item`).
 * `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
   melee windows), `BlockPlayer` expiry, the delayed melee hit.
 * `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
   tank (dead or game over, `PostThink` skips to the timer tail): once the gun is ready
-  (`Gun::post_frame_ready`), `ImpulseCommands`' `PlayerUse` (`player::player_use`) and then the
-  weapon frame (`Gun::weapon_post_frame`), seed reroll (`RandomLong(0, 32000)`, as TS), timer
-  decrement by `frametime * fuser1 * (DFR ? 1.5 : 1)`, speed, messages.
-* `on_killed`: holster, ammo pack, drop every weapon as `WorldGun` (a corpse's grenades become
-  grenade power-ups), clear inventory, slots, kevlar flag, loadout (TS `ResetArmament`),
-  `CurWeapon 0,0,0`. `ActItems 0` is the rules' (sent once, later in `Killed`); the player's
-  `UpdateClientData` sends `ActItems` only while alive (`player::hud`).
+  (`Gun::post_frame_ready`, or always without a gun), `ImpulseCommands` (`PlayerUse` and the
+  impulses, `player::player_use::impulse_commands`) and then, with a gun, the weapon frame
+  (`Gun::weapon_post_frame`) and the seed reroll (`RandomLong(0, 32000)`, as TS); timer decrement
+  by `frametime * fuser1 * (DFR ? 1.5 : 1)`, speed, messages.
+* `on_killed` (`Killed` 0x8ed5c): with the gun, holster and ammo pack; the CTB case
+  (`DropFlag(false)`, gun or not); drop every weapon as `WorldGun` (a corpse's grenades become
+  grenade power-ups, their record staying in the gun); slots, kevlar flag, loadout (TS
+  `ResetArmament`). `ActItems 0` is the rules' (sent once, later in `Killed`); the player's
+  `UpdateClientData` sends `ActItems` only while alive and holding the gun (`player::hud`).
+* `remove_all_items` (`RemoveAllItems(TRUE)` 0xd8cec, from the first `PlayerDeathThink` while
+  the player has the gun): holster, the gun destroyed with what's left in it (reserve, records),
+  then `remove_all_items_tail`: no view/weapon model, `pev->weapons = 0`, `UpdateClientData`
+  inline (0xd8eb5), `CurWeapon 0,0,0`. `StartObserver` does the same through `strip_all` +
+  `remove_all_items_tail`.
 * `client_command`: `weapon_<n>`, `lastinv`, `drop`, `drop_<n>`, `firemode`, `useitems`,
   `lasclr_<n>` (`PlInfo`), `rst_cfg`, `tkw id_att ...`, `tki item ...`, `tka type_count ...`;
   test helpers (need `sv_cheats`): `ts_give id_att ...` (weapon + full ammo),
@@ -193,9 +211,9 @@ addresses of `ts_i386.so`.
 * Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`rules::scoring::do_spectacularness`; `spectacularness`
   clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a
   `ts_slowmotionpoint` at the blast (amount 0.25, 1 s, no bullet time).
-* Ammo pack touch (alive player): every type goes through `AddAmmo` (whole amount clamped to the
-  max carry, if the reserve is below it; no weapon needed), then the pack is removed whether or
-  not anything fitted.
+* Ammo pack touch (alive player holding the gun): every type goes through `AddAmmo` (whole
+  amount clamped to the max carry, if the reserve is below it; no weapon needed), then the pack
+  is removed whether or not anything fitted. Without the gun nothing happens and it stays.
 * Slots: 81 free at spawn, speed `round(210 + free*120/81)` (330 with nothing carried).
 * Disarm threshold: katana 30, knives 25, weapons with < 21 slots 20, else `min(slots, 50)`.
 * Dropped guns live `clamp(weaponstay, 5, 60)` s; `drop`/disarm drops `clamp(2*weaponstay, 10,
@@ -223,9 +241,10 @@ kung fu / 0x12, an index into that weapon's set A).
 Messages: `WeaponInfo` (B id, B clip, S reserve, B mode, B items; kung fu: B 0, B bar, 0,0,0),
 `WStatus` (B id, B owned, B clip; when the owned flag changes and for the akimbo/single twin
 with each `WeaponInfo`), `ActItems` (ALL: B entindex, B active | 0x40 akimbo) and `TSSpace`
-(B free; both sent by `player::hud`, from `CBasePlayer::UpdateClientData`), `KFuPower` (C round(bar)), `CurWeapon` (0,0,0 on death), `PlInfo` (ALL: B entindex,
+(B free; both sent by `player::hud`, from `CBasePlayer::UpdateClientData`), `KFuPower` (C round(bar)), `CurWeapon` (0,0,0), `PlInfo` (ALL: B entindex,
 B 0, B colour), `CustomWP` (string), `TSMBlur` (PVS, kung fu), `TSFrags` (explosion),
-`ScreenShake`, `TSFade`, `TSMessage` (custom weapons notice).
+`ScreenShake`, `TSFade`, `TSMessage` (custom weapons notice). `CurWeapon 0,0,0` goes out from
+`RemoveAllItems`: the first death think (not `Killed`) and `StartObserver`.
 
 `clientdata_t` (sendweapons): `m_flNextAttack`, `vuser1[1]` power-ups, `m_iId 16`,
 `vuser3 = (id, mode, owned attachments)` (kung fu: `(0, kick combo, punch combo)`),
@@ -253,17 +272,6 @@ Remaining deviations from TS:
   the thrower. The thrower is checked at impact time: it must still be a connected client
   (`FL_CLIENT`) with the user id it had at the throw, so a player who left, or a new client in the
   same slot, is never credited; then the projectile is the attacker, as in TS.
-* **Each hit is dealt on its own, not summed.** TS's `TraceAttack` only adds to the multi-damage
-  and `ApplyMultiDamage` deals the sum with one `TakeDamage` per victim: all the pellets of a shot
-  (`ShootBulletsPlayer` clears it once, applies it after the loop), or one bullet / melee hit.
-  The port's `damage::apply` runs the victim's TraceAttack and TakeDamage together per pellet, so
-  a shotgun blast is several `TakeDamage`s (armour, pain sounds, the kill on the pellet that
-  drops health to 0). Summing needs the players' TraceAttack split from TakeDamage
-  (`player/damage.rs`, and every entity's `take_damage`), which is the damage package's.
-* **A map with a `game_player_equip` still gets a TS gun.** TS's `PlayerSpawn` (0x890ac) gives
-  `weapon_tsgun` and the loadout only when the map has no `game_player_equip`; with one, the
-  player has no gun unless the equip lists one, so `DropWeapon`, firing and pickups do nothing.
-  The port's player always has its `Gun`, so the equip only replaces the loadout.
 
 Port additions and defensive checks (TS has no equivalent, or would read invalid memory):
 
@@ -279,11 +287,21 @@ Port additions and defensive checks (TS has no equivalent, or would read invalid
 
 How the port maps TS where the structure differs (not deviations):
 
-* **The gun's lifetime.** TS gives a fresh `weapon_tsgun` at `PlayerSpawn` and loses it in
-  `RemoveAllItems` (the death think after `Killed`, and `StartObserver`); a spawn while a gun is
-  still held keeps it (`AddPlayerItem` kills the new duplicate). The port's one `Gun` per player
-  is emptied by `on_killed` (`Killed`'s drops plus the later `RemoveAllItems`) and `strip_all`
-  (`StartObserver`, disconnect); `reset_for_spawn` gives the fields a fresh gun starts with.
+* **The gun's lifetime.** TS gives a fresh `weapon_tsgun` at `PlayerSpawn` (only on maps without
+  a `game_player_equip`, or from an equip listing it) and loses it in `RemoveAllItems` (the first
+  death think after `Killed`, and `StartObserver`); a spawn while a gun is still held keeps it
+  (`AddPlayerItem` kills the new duplicate). The port's `Gun` per player stays allocated;
+  `SvState::has_gun` says whether TS's gun exists, `give_gun` sets it with an emptied inventory,
+  and `remove_all_items` / `strip_all` (`StartObserver`, disconnect) clear it and empty the
+  records. `reset_for_spawn` gives the fields a fresh gun starts with.
+* **Multi-damage.** Hits go through TS's `ClearMultiDamage` / `TraceAttack` / `ApplyMultiDamage`
+  (`damage::multi`): `ShootBulletsPlayer` clears once (not with simulated bullets), sets the type
+  0x1002, traces every pellet and applies after the loop, so the pellets that hit one victim in a
+  row are one `TakeDamage` with their sum (a pellet on another victim first applies the previous
+  one's sum); the pierce shot, each simulated bullet (`UpdateBullet`) and every other caller
+  (melee, explosions, thrown and falling objects, `func_tank`, beams) is its own
+  Clear/TraceAttack/Apply. `glast_headshot` (any head hit since the last Apply) picks the
+  `#TS_Headshot` message.
 * The loadout is cleared at death (TS `Killed` -> `ResetArmament`); the TS client resends
   `rst_cfg` + `tkw/tki/tka` from its buy menu.
 * M61 buys and stealth shoes are refused, as in TS 3.0 (only allowed when
@@ -328,7 +346,10 @@ How the port maps TS where the structure differs (not deviations):
   restore, TS's gravity compounding at rest), ammo pack contents (`take_ammo`), the explosion's
   `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and damage falloff (`falloff_damage`),
   the thrown blade's ground slide (`ground_slide`), glance-or-stick test (`glances_off`) and
-  hit pitch (`hit_pitch`).
+  hit pitch (`hit_pitch`), the gunless `clientdata_t` packing
+  (`clientdata_without_the_gun_stops_after_the_weapon_id`), and the multi-damage
+  (`damage::multi::tests`: pellets summed into one `TakeDamage`, a new victim flushing the old one
+  with the accumulated bits, no victim no apply, `glast_headshot` reset).
 * **Not yet tested in engine**: slowed projectiles (power-up slow motion / `globalslow` with a
   grenade, thrown knife and dropped gun in sight), bullet-time simulated bullets (slow pause),
   bubble trails under water, `dmgreport 2` with `sv_cheats 1`, +use on a flying/landed gun, on a
@@ -362,10 +383,12 @@ How the port maps TS where the structure differs (not deviations):
 * Power-ups: Infinite Clip -> `weapons::multiply_clip`; grenade -> `give_weapon(p, cx, 24, 0)`;
   kung fu sets `Player::kungfu` (x2 melee), DFR/slow-mo are read from `Player::active_powerup`
   and `pev->fuser1`.
-* `rules::on_killed` must call `weapons::on_killed(p, cx)` (drops, loadout reset, `CurWeapon`
-  reset) and send `ActItems 0` itself. `StartObserver` / disconnect: `weapons::strip_all` and
-  `weapons::remove_all_items_tail` (TS `RemoveAllItems(TRUE)`, with its inline
-  `UpdateClientData`); a spawn without either keeps the gun, as in TS.
+* `rules::on_killed` calls `weapons::on_killed(p, cx)` (holster, ammo pack, CTB case, drops,
+  loadout reset) and sends `ActItems 0` itself; the first death think calls
+  `weapons::remove_all_items` (the gun, then `remove_all_items_tail`). `StartObserver` /
+  disconnect: `weapons::strip_all` and `weapons::remove_all_items_tail` (TS
+  `RemoveAllItems(TRUE)`, with its inline `UpdateClientData`, then `CurWeapon 0,0,0`); a spawn
+  without either keeps the gun, as in TS.
 * `pfnStartFrame` calls `weapons::start_frame` after the rules' frame (the simulated bullets).
 * Restrictions: `weapons::set_restriction(mask)` (`ts_mapglobals` spawnflags: `0x1f ^ flags`),
   `weapons::restriction()` (the whole int, as `BuyWeapon` 0x945bc passes it to

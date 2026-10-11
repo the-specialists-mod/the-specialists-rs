@@ -879,7 +879,6 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     p.ts.observer_at = now + 3.0;
     p.hud.cash = None;
     eng.set_view(e, e);
-    crate::entities::stock::drive::release_tank(p, cx);
     p.ts.respawns_used = p.ts.respawns_used.saturating_add(1);
     p.ts.suicide_at = 0.0;
     // `g_pevLastInflictor`, the inflictor while `TakeDamage` kills (NULL for the `kill` command's
@@ -902,17 +901,22 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         powerup::go_slow_self(p, cx, 0.33, false);
     }
     cx.pev().iuser4 = stunt::DEAD_LOCK;
-    // Death pose: CTSAnimation::Animate(7) reads the last damage, hitgroup and attack direction.
+
+    // Holster, ammo pack, CTB case, every weapon (0x8f06c..0x8f185). A slow-motion power-up runs
+    // out on the next PreThink (`UpdatePowerUpState` while dead), not here.
+    crate::weapons::on_killed(p, cx);
+
+    scoring::player_killed(p, cx, dmg); // 0x8f1b1
+
+    // `m_pTank->Use(this, this, USE_OFF)` after PlayerKilled (0x8f1e1).
+    crate::entities::stock::drive::release_tank(p, cx);
+
+    // Death pose: CTSAnimation::Animate(7) (0x8f22e), after all of the above, reads the last
+    // damage, hitgroup and attack direction.
     p.stunt.anim.last_damage = p.ts.last_damage;
     p.stunt.anim.last_hitgroup = p.ts.last_hitgroup;
     p.stunt.anim.attack_dir = dmg.dir;
     crate::stunt::animate(p, cx, 7);
-
-    powerup::deactivate_flow(p, cx);
-    crate::weapons::on_killed(p, cx);
-    crate::entities::ts::drop_flag(p, cx, false);
-
-    scoring::player_killed(p, cx, dmg);
 
     // Dying: physics, knockback, HUD.
     let force = (p.ts.last_damage as f32 * 5.0).min(500.0);
@@ -937,8 +941,9 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     msg::one(Msg::SetFov, e, |w| SetFov { fov: 0 }.write(w));
 
     let gib = dmg.bits & crate::damage::bits::ALWAYSGIB != 0 || (cx.pev().health < -40.0 && dmg.bits & crate::damage::bits::NEVERGIB == 0);
+    // `takedamage` stays on (TS's Killed never clears it; `StartObserver` does), so the body
+    // still takes TraceAttacks (the bullet dance twitch).
     let v = cx.pev();
-    v.takedamage = DAMAGE_NO as f32;
     if gib {
         v.solid = SOLID_NOT as i32;
         v.effects |= EF_NODRAW as i32;
@@ -964,6 +969,11 @@ fn death_think(p: &mut Player, cx: &mut Cx, now: f32) {
                 v.velocity = [0.0; 3];
             }
         }
+    }
+    // `if (HasWeapons()) RemoveAllItems(TRUE)` (0x8ec15): the gun goes on the first death think,
+    // with `CurWeapon 0,0,0`.
+    if crate::weapons::has_gun(p) {
+        crate::weapons::remove_all_items(p, cx);
     }
     // Stay dying until the death animation finishes, advancing it at the animation rate
     // (`framerate` is the player's time scale, so slow motion stretches it). A sequence with a
