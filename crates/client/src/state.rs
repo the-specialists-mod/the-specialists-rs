@@ -96,6 +96,11 @@ pub struct Shared {
     /// Predicted spread penalty of the current gun (TS `0x1018d188`); the crosshair opens by
     /// `spread × 160` px. Written by `prediction`, read by the HUD.
     pub spread: f32,
+    /// `0x1018a718`: the HUD's kung-fu power ([`crate::hud::state::Hud::kfu_power`]) as the TS
+    /// weapon element's `Think` (`0x1004cf5e`) last left it, after its regeneration. Written by
+    /// the HUD, read by the predicted kung-fu block (`0x1000ae35`). 0 until the first `Think`
+    /// (TS keeps it past `.data`).
+    pub kfu_power: f32,
     /// Last `TSFade`, if any.
     pub ts_fade: Option<TsFadeState>,
     /// Per-client active attachment bits (`ActItems`, laser/flashlight on; 0x40 = akimbo),

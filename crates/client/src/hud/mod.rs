@@ -666,7 +666,7 @@ fn think(dt: f32) {
     let ic = input::cvars();
     let laser = ic.cl_lasercolor.value() as i32;
     let ts = crate::state::with(|s| s.time_scale.max(0.01));
-    let (send_laser, firemode_changed) = with(|h| {
+    let (send_laser, firemode_changed, kfu_power) = with(|h| {
         let send = h.last_laser_color != laser;
         h.last_laser_color = laser;
         h.next_stunt = (h.next_stunt - dt / ts).max(0.0);
@@ -675,8 +675,10 @@ fn think(dt: f32) {
         if fm {
             h.last_firemode = h.firemode;
         }
-        (send, fm)
+        (send, fm, h.kfu_power)
     });
+    // `0x1004cf5e`: the copy the predicted kung-fu block gates on.
+    crate::state::with(|s| s.kfu_power = kfu_power);
     if send_laser {
         e.server_cmd(&format!("lasclr_{laser}"));
     }

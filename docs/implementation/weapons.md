@@ -334,6 +334,14 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 client calls them). The client rebuilds the akimbo right clip as `clip - left`, 0 when below 1
 (`0x10003ae1..0x10003aed`). The client prediction runs `Gun::weapon_post_frame` behind TS's client
 gate (`deadflag != 5`, last `TSHealth` > 0, `m_flNextAttack <= 0`), not `Gun::post_frame_ready`.
+`HUD_WeaponsPostThink` (`0x10003830`) has no `PreThink` part, so the prediction runs no
+`Gun::pre_frame`: the melee windows are never decremented (the client never arms `pl+0x788` and
+never reads `+0x794..+0x79c`; the death holster's check `0x1000abae` is the only reader) and
+`client.dll` keeps no kung-fu bar. Its kung-fu block (`0x1000adc0`) gates on the HUD's power
+instead, `0.01 <= 0x1018a718`, the copy the TS weapon element's `Think` (`0x1004cf5e`) makes of
+the networked, locally regenerated `KFuPower` value on each `Think` (`state::Shared::kfu_power`), and
+charges nothing (no `UpdateMeleeBar`, so no 1.5 s `m_flNextAttack` for an empty bar):
+`GunHost::kfu_power`, `None` on the server, which gates on and charges its own bar.
 
 ## 5. Deviations and decisions
 
@@ -590,7 +598,7 @@ sends its model index, which the client draws merged onto the player (third pers
 players, motion-blur ghosts) and shows in-eye as the spectated player's view model.
 
 **Client / prediction package**: drive `shared::weapons::Gun` with a client `GunHost`:
-`unpack_clientdata` + `unpack_weapon_data` before the command, `Gun::pre_frame`,
+`unpack_clientdata` + `unpack_weapon_data` before the command (no `Gun::pre_frame`, §4),
 `item_post_frame`, `decrement_timers(Gun::timer_dt(Arith::CLIENT, frame_time(msec), fixed_slow_amt(fuser1), powerups))`; host events
 go to the local event handlers, `shoot` can be a no-op (the `fire` event re-traces with
 `spread::pellet_dir` and the same seed), `kick` feeds the view kick (timed with the prediction
