@@ -70,13 +70,13 @@ impl Player {
         for _ in 0..5 {
             f.zero();
         }
-        // The HEV suit queue: m_flSuitUpdate, m_rgSuitPlayList, m_iSuitPlayNext,
-        // m_rgiSuitNoRepeat, m_rgflSuitNoRepeatTime. TS fills it only under `CHalfLifeRules`
-        // (`SetSuitUpdate` 0xda410 returns in multiplayer), which the port doesn't model
-        // (sentences.rs `set_suit_update`): saved empty.
-        for _ in 0..5 {
-            f.zero();
-        }
+        // The HEV suit queue (`suit.rs`; filled only under `CHalfLifeRules`).
+        let q = &mut self.suit;
+        f.float(&mut q.update);
+        f.ints(&mut q.play_list);
+        f.int(&mut q.play_next);
+        f.ints(&mut q.no_repeat);
+        f.floats(&mut q.no_repeat_time);
         f.int(&mut self.stunt.anim.last_damage);
         // m_rgpPlayerItems: slot 1 the cycler (`cycler_weapon`), slot 2 the gun (`weapon_tsgun`).
         let sv = &mut self.inv.sv;

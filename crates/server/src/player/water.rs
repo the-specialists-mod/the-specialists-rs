@@ -53,8 +53,12 @@ pub struct TimeBasedDamage {
 /// What a `CheckTimeBasedDamage` tick asks the caller to do, in this order.
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct Tick {
+    /// An antidote cured nerve gas: queue the suit's `!HEV_HEAL4`.
+    pub cured_nervegas: bool,
     /// Deal `POISON_DAMAGE` (`DMG_GENERIC`, from the player to itself).
     pub poison: bool,
+    /// An antidote cured poison (after that tick's poison damage): `!HEV_HEAL4`.
+    pub cured_poison: bool,
     /// `TakeHealth(heal)`; the restored counter has already been bumped, as in TS, whether or
     /// not the health is accepted.
     pub heal: i32,
@@ -135,7 +139,11 @@ impl TimeBasedDamage {
             if cures && self.antidotes != 0 {
                 self.left[i] = 0;
                 self.antidotes -= 1;
-                // TS also queues "!HEV_HEAL4"; suit sentences never play in multiplayer.
+                if i == ITBD_NERVEGAS {
+                    out.cured_nervegas = true;
+                } else {
+                    out.cured_poison = true;
+                }
             }
             if self.left[i] == 0 || {
                 self.left[i] -= 1;
@@ -248,9 +256,16 @@ pub fn check_time_based_damage(p: &mut Player, cx: &mut Cx) {
     let Some(tick) = p.tbd.tick(now) else {
         return;
     };
+    // `SetSuitUpdate("!HEV_HEAL4", FALSE, 0)` (0xda199) for a cure, in the loop's type order.
+    if tick.cured_nervegas {
+        super::suit::set_suit_update(p, cx, Some(c"!HEV_HEAL4"), false, 0);
+    }
     if tick.poison {
         let e = cx.edict;
         super::damage::take_damage(p, cx, &DamageInfo::new(e, e, POISON_DAMAGE, bits::GENERIC));
+    }
+    if tick.cured_poison {
+        super::suit::set_suit_update(p, cx, Some(c"!HEV_HEAL4"), false, 0);
     }
     if tick.heal > 0 {
         super::damage::take_health(p, cx, tick.heal as f32);
@@ -348,11 +363,23 @@ mod tests {
         let mut t = TimeBasedDamage { antidotes: 1, ..Default::default() };
         t.on_damage(bits::POISON);
         assert!(t.tick(10.0).unwrap().poison);
-        assert!(t.tick(12.0).unwrap().poison);
+        assert!(!t.tick(12.0).unwrap().cured_poison);
         assert_eq!(t.antidotes, 1, "the countdown must have dropped below 5 first");
-        assert!(t.tick(14.0).unwrap().poison, "the cure comes after this tick's damage");
+        let tick = t.tick(14.0).unwrap();
+        assert!(tick.poison && tick.cured_poison && !tick.cured_nervegas, "the cure (and HEV_HEAL4) after this tick's damage");
         assert_eq!(t.antidotes, 0);
         assert_eq!(t.bits & bits::POISON, 0);
+    }
+
+    #[test]
+    fn antidote_cures_nerve_gas_before_the_poison_damage() {
+        let mut t = TimeBasedDamage { antidotes: 2, ..Default::default() };
+        t.on_damage(0x10000); // DMG_NERVEGAS
+        assert_eq!(t.tick(10.0), Some(Tick::default()), "the first tick starts the countdown");
+        assert_eq!(t.tick(12.0), Some(Tick::default()), "the countdown must have dropped below 2 first");
+        let tick = t.tick(14.0).unwrap();
+        assert!(tick.cured_nervegas && !tick.cured_poison);
+        assert_eq!(t.antidotes, 1);
     }
 
     #[test]

@@ -7,6 +7,7 @@ pub mod hud;
 pub mod impulse;
 pub mod player_use;
 pub mod save;
+pub mod suit;
 pub mod water;
 
 use crate::entities::link_entities;
@@ -34,6 +35,8 @@ pub struct Player {
     pub drive: crate::entities::stock::drive::DriveState,
     /// Spray and developer impulses (`impulse.rs`).
     pub impulse: impulse::ImpulseState,
+    /// The HEV suit's sentence queue (`suit.rs`).
+    pub suit: suit::SuitQueue,
     pub bot: Option<crate::bots::Bot>,
 
     // ---- shared fields -------------------------------------------------------------------------
@@ -55,8 +58,8 @@ pub struct Player {
     pub respawn_at: f32,
     /// Joined the game (past the MOTD/team menu); spectators have this false.
     pub joined: bool,
-    /// `m_pfnThink` is `PlayerDeathThink`: `Killed` (0x8ed5c) sets it for a death that doesn't
-    /// gib, and nothing clears it. Only the save data shows it.
+    /// `m_pfnThink` is `PlayerDeathThink`: `Killed` (0x8ed5c) sets it (with `nextthink` 0.1 s
+    /// on) for a death that doesn't gib, and nothing clears it; [`Entity::think`] runs it.
     pub death_think: bool,
     /// `m_rgItems[ITEM_SECURITY]` (+0x838): `item_security` pickups. Nothing reads it but the save.
     pub security_cards: i32,
@@ -105,6 +108,16 @@ impl Entity for Player {
         crate::entities::stock::drive::on_spawn(self, cx);
         impulse::on_spawn(self);
         hud::reset(self);
+    }
+
+    /// `CBaseEntity::Think` (0xe2c50; `CBasePlayer` doesn't override it): `m_pfnThink`, if set.
+    /// The engine calls it from the player's usercmd, after PreThink, once `nextthink` is due
+    /// (`SV_PlayerRunThink`), so the `PlayerDeathThink` that `Killed` schedules runs once 0.1 s
+    /// after the death, on top of the one every PreThink of a dead player runs.
+    fn think(&mut self, cx: &mut Cx) {
+        if self.death_think {
+            crate::rules::lifecycle::death_think(self, cx);
+        }
     }
 
     fn trace_attack(&mut self, cx: &mut Cx, dmg: &DamageInfo) {

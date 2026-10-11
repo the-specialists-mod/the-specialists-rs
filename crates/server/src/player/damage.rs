@@ -18,6 +18,7 @@ use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::protocol::hud_wire::{PTakeDam, TsFade, director, fade};
 use shared::weapons::tables;
+use std::ffi::CStr;
 
 /// TS: shotgun pellets (headshot ×1.5 instead of ×2, `PTakeDam` amount ×8).
 pub const DMG_SHOTGUN: i32 = 0x0200_0000;
@@ -228,6 +229,8 @@ fn take_damage_refused(attacker: *mut edict_t, victim: *mut edict_t) -> bool {
 pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     let e = cx.edict;
     let amount = dmg.damage;
+    // `flHealthPrev`, for the suit's health reports.
+    let health_prev = cx.pev().health;
     if !Player::is_alive(cx) || amount == 0.0 {
         return false;
     }
@@ -255,11 +258,132 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     p.tbd.on_damage(dmg.bits);
     let eng = engine();
     rules::msg::director_event(eng.index_of(e), eng.index_of(dmg.inflictor), director::FLAGS_DAMAGE);
+    // "How bad is it, doc?": the HEV suit's damage reports (queued in single player only,
+    // `player::suit`), on the health and `m_lastDamageAmount` the hit left.
+    let health = cx.pev().health;
+    let severity = Severity { trivial: health > 75.0 || p.ts.last_damage < 5, major: p.ts.last_damage > 25 };
+    if took {
+        for (name, no_repeat) in damage_reports(dmg.bits, severity, p.ts.last_damage) {
+            super::suit::set_suit_update(p, cx, Some(name), false, no_repeat);
+        }
+    }
     if after >= 1.0 {
         let f = TsFade::new([150, 10, 10], 0x4b, 0.3, 0.15, fade::IN);
         msg::one(Msg::TsFade, e, |w| f.write(w));
     }
+    if took {
+        health_reports(p, cx, severity, health < 30.0, health_prev, dmg.bits);
+    }
     took
+}
+
+/// `TakeDamage`'s `ftrivial` (health over 75 or under 5 damage) and `fmajor` (over 25 damage).
+#[derive(Clone, Copy, Debug)]
+struct Severity {
+    trivial: bool,
+    major: bool,
+}
+
+/// Damage types `TakeDamage`'s suit reports name that `crate::damage::bits` doesn't.
+const DMG_SONIC: i32 = 1 << 9;
+const DMG_NERVEGAS: i32 = 1 << 16;
+const DMG_RADIATION: i32 = 1 << 18;
+
+/// `CBasePlayer::TakeDamage`'s report loop (`SetSuitUpdate` calls 0x8fe2e..0x8ffa3), for
+/// damage that was taken: one sentence per kind of damage (unless the hit was trivial and not
+/// time-based), as `(name, no-repeat seconds)` in TS's order.
+fn damage_reports(dmg_bits: i32, s: Severity, last_damage: i32) -> Vec<(&'static CStr, i32)> {
+    let mut out = Vec::new();
+    let mut b = dmg_bits;
+    let mut found = true;
+    while (!s.trivial || b & bits::TIMEBASED != 0) && found && b != 0 {
+        found = false;
+        if b & bits::CLUB != 0 {
+            if s.major {
+                out.push((c"!HEV_DMG4", 30));
+            }
+            b &= !bits::CLUB;
+            found = true;
+        }
+        if b & (bits::CRUSH | bits::FALL) != 0 {
+            out.push((if s.major { c"!HEV_DMG5" } else { c"!HEV_DMG4" }, 30));
+            b &= !(bits::CRUSH | bits::FALL);
+            found = true;
+        }
+        if b & bits::BULLET != 0 {
+            if last_damage > 5 {
+                out.push((c"!HEV_DMG6", 30));
+            }
+            b &= !bits::BULLET;
+            found = true;
+        }
+        if b & bits::SLASH != 0 {
+            out.push((if s.major { c"!HEV_DMG1" } else { c"!HEV_DMG0" }, 30));
+            b &= !bits::SLASH;
+            found = true;
+        }
+        if b & DMG_SONIC != 0 {
+            if s.major {
+                out.push((c"!HEV_DMG2", 60));
+            }
+            b &= !DMG_SONIC;
+            found = true;
+        }
+        if b & (bits::POISON | bits::PARALYZE) != 0 {
+            out.push((c"!HEV_DMG3", 60));
+            b &= !(bits::POISON | bits::PARALYZE);
+            found = true;
+        }
+        if b & bits::ACID != 0 {
+            out.push((c"!HEV_DET1", 60));
+            b &= !bits::ACID;
+            found = true;
+        }
+        if b & DMG_NERVEGAS != 0 {
+            out.push((c"!HEV_DET0", 60));
+            b &= !DMG_NERVEGAS;
+            found = true;
+        }
+        if b & DMG_RADIATION != 0 {
+            out.push((c"!HEV_DET2", 60));
+            b &= !DMG_RADIATION;
+            found = true;
+        }
+        if b & bits::SHOCK != 0 {
+            b &= !bits::SHOCK;
+            found = true;
+        }
+    }
+    out
+}
+
+/// The end of `CBasePlayer::TakeDamage` (`SetSuitUpdate` calls 0x9006e..0x901b3), for damage
+/// that was taken: the suit's health reports. The `RandomLong(0, 3)` rolls run under any rules
+/// (only the queueing is single-player).
+fn health_reports(p: &mut Player, cx: &mut Cx, s: Severity, critical: bool, health_prev: f32, dmg_bits: i32) {
+    let eng = engine();
+    if !s.trivial && s.major && health_prev >= 75.0 {
+        super::suit::set_suit_update(p, cx, Some(c"!HEV_MED1"), false, 1800);
+        super::suit::set_suit_update(p, cx, Some(c"!HEV_HEAL7"), false, 1800);
+    }
+    if !s.trivial && critical && health_prev < 75.0 {
+        let health = cx.pev().health;
+        if health < 6.0 {
+            super::suit::set_suit_update(p, cx, Some(c"!HEV_HLTH3"), false, 600);
+        } else if health < 20.0 {
+            super::suit::set_suit_update(p, cx, Some(c"!HEV_HLTH2"), false, 600);
+        }
+        if eng.random_long(0, 3) == 0 && health_prev < 50.0 {
+            super::suit::set_suit_update(p, cx, Some(c"!HEV_DMG7"), false, 300);
+        }
+    }
+    if dmg_bits & bits::TIMEBASED != 0 && health_prev < 75.0 {
+        if health_prev >= 50.0 {
+            super::suit::set_suit_update(p, cx, Some(c"!HEV_HLTH1"), false, 600);
+        } else if eng.random_long(0, 3) == 0 {
+            super::suit::set_suit_update(p, cx, Some(c"!HEV_DMG7"), false, 300);
+        }
+    }
 }
 
 /// `CBaseMonster::TakeDamage` (0xb2430) for a live player: refused with `takedamage` off;
@@ -350,6 +474,26 @@ mod tests {
         v.takedamage = 0.0;
         assert_eq!(add_health(&mut v, 10.0), None, "takedamage off");
         assert_eq!(v.health, 60.0);
+    }
+
+    #[test]
+    fn suit_damage_reports() {
+        let names = |bits, trivial, major, last| -> Vec<(String, i32)> {
+            damage_reports(bits, Severity { trivial, major }, last).into_iter().map(|(n, t)| (n.to_str().unwrap().to_owned(), t)).collect()
+        };
+        assert_eq!(names(bits::BULLET, true, false, 30), [], "trivial and not time-based");
+        assert_eq!(names(bits::BULLET, false, false, 6), [("!HEV_DMG6".into(), 30)]);
+        assert_eq!(names(bits::BULLET, false, false, 5), [], "bullets over 5 damage only");
+        assert_eq!(names(bits::CLUB, false, false, 10), [], "a club only reports major hits");
+        assert_eq!(names(bits::FALL, false, true, 30), [("!HEV_DMG5".into(), 30)]);
+        assert_eq!(names(bits::SLASH | bits::CRUSH, false, false, 10), [("!HEV_DMG4".into(), 30), ("!HEV_DMG0".into(), 30)]);
+        assert_eq!(names(bits::POISON, true, false, 2), [("!HEV_DMG3".into(), 60)], "time-based reports even when trivial");
+        assert_eq!(
+            names(bits::ACID | DMG_NERVEGAS | DMG_RADIATION | bits::SHOCK | bits::BLAST, false, true, 30),
+            [("!HEV_DET1".into(), 60), ("!HEV_DET0".into(), 60), ("!HEV_DET2".into(), 60)]
+        );
+        assert_eq!(names(DMG_SONIC, false, false, 10), [], "sonic only when major");
+        assert_eq!(names(bits::BLAST, false, true, 30), [], "no report for blast");
     }
 
     #[test]

@@ -353,8 +353,8 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     crate::player::hud::update_client_data(p, cx);
     crate::player::water::check_time_based_damage(p, cx);
 
-    // CheckSuitUpdate (0xda2d0): the geiger counter (suit sentences never play in multiplayer).
-    crate::entities::stock::triggers::update_geiger_counter(cx.edict);
+    // CheckSuitUpdate (0xda2d0): the geiger counter, and the suit sentences in single player.
+    crate::player::suit::check_suit_update(p, cx);
 
     // Time scale easing toward the target, and animation rate = time scale.
     let ft = engine().globals().frametime;
@@ -374,7 +374,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         return;
     }
     if cx.pev().deadflag > DEAD_NO as i32 {
-        death_think(p, cx, now);
+        death_think(p, cx);
         return;
     }
 
@@ -646,6 +646,8 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     crate::weapons::observer_holster(p, cx);
     crate::entities::ts::drop_flag(p, cx, false);
     crate::entities::stock::drive::release_tank(p, cx);
+    // `SetSuitUpdate(NULL, FALSE, 0)` (0x997ac).
+    crate::player::suit::set_suit_update(p, cx, None, false, 0);
     msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
     msg::one(Msg::SetFov, e, |w| SetFov { fov: 0 }.write(w));
     {
@@ -985,6 +987,8 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
             v.gravity = 0.5;
         }
     }
+    // `SetSuitUpdate(NULL, FALSE, 0)` (0x8f3e9): the queued suit sentences are dropped.
+    crate::player::suit::set_suit_update(p, cx, None, false, 0);
     p.hud.health = Some(0);
     msg::one(Msg::TsHealth, e, |w| TsHealth { hp: 0 }.write(w));
     msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
@@ -1001,8 +1005,10 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     } else {
         v.angles[0] = 0.0;
         v.angles[2] = 0.0;
-        // `SetThink(&CBasePlayer::PlayerDeathThink)`.
+        // `SetThink(&CBasePlayer::PlayerDeathThink)`, `nextthink = time + 0.1` (a double
+        // constant, 0x8f550): `Player::think` runs it once then, besides PreThink's calls.
         p.death_think = true;
+        v.nextthink = (now as f64 + 0.1) as f32;
     }
 }
 
@@ -1042,8 +1048,11 @@ fn death_push(velocity: [f32; 3], size: [f32; 3], last_damage: i32, attack_dir: 
 }
 
 /// `CBasePlayer::PlayerDeathThink` (0x8eaec): settle, play out the death animation, then become
-/// an observer after 3 s or on any button, leaving a corpse.
-fn death_think(p: &mut Player, cx: &mut Cx, now: f32) {
+/// an observer after 3 s or on any button, leaving a corpse. Every PreThink of a dead player
+/// that isn't observing calls it, and so does the player's think (`Player::think`) that `Killed`
+/// schedules 0.1 s after the death.
+pub fn death_think(p: &mut Player, cx: &mut Cx) {
+    let now = cx.time();
     {
         let v = cx.pev();
         if v.flags & FL_ONGROUND as i32 != 0 {
