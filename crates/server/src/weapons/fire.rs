@@ -2,6 +2,7 @@
 
 use super::{assets, bullets, projectiles};
 use crate::damage::{self, DamageInfo};
+use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{MsgWriterExt, te, te_begin};
 use goldsrc::ext::weapons::WeaponsEngine;
@@ -42,6 +43,12 @@ pub fn trace_expanded(start: Vec3, end: Vec3, skip: *mut edict_t) -> TraceResult
     tr
 }
 
+/// `ShootBulletsPlayer`'s static `tr` (end position, fraction): every hitscan trace writes it,
+/// and the bubble trail after each pellet reads it, so a simulated bullet's trail
+/// (`realbullet` / slow motion) uses the last hitscan trace, of any player and any earlier frame
+/// (all zero before the first).
+static LAST_TRACE: Global<std::cell::Cell<(Vec3, f32)>> = Global(std::cell::Cell::new(([0.0; 3], 0.0)));
+
 /// Gun position (`GetGunPosition`): origin + view offset.
 pub fn gun_position(v: &entvars_t) -> Vec3 {
     spread::add(v.origin, v.view_ofs)
@@ -80,7 +87,7 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
         format!("shoot weapon={} pellets={} spread={:.5} dmg={} seed={}", shot.weapon, shot.pellets, shot.spread, shot.damage, shot.seed)
     });
     let pev = shooter.v();
-    let real = assets::cvars().realbullet != 0.0 || pev.fuser1 < 0.99;
+    let real = assets::realbullet() != 0 || pev.fuser1.max(0.01) < 0.99;
     let (fwd, right, up) = spread::angle_vectors(pev.v_angle);
     let mut src = gun_position(pev);
     if shot.right_offset != 0.0 {
@@ -98,10 +105,13 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
         let dir = spread::pellet_dir(fwd, right, up, [shot.spread, shot.spread], shot.seed, i, spread::RADIAL_SPREAD);
         if real {
             bullets::fire(shooter, src, dir, shot.damage, shot.ammo, shot.weapon, shot.btype);
+            let (end, fraction) = LAST_TRACE.0.get();
+            bubble_trail(src, end, (spread::MAX_RANGE * fraction / 64.0).round_ties_even() as i32);
             continue;
         }
         let end = spread::ma(src, spread::MAX_RANGE, dir);
         let tr = trace_expanded(src, end, shooter);
+        LAST_TRACE.0.set((tr.vecEndPos, tr.flFraction));
         if tr.flFraction != 1.0 {
             let dist = spread::length(spread::sub(src, tr.vecEndPos));
             let amount = range_multiplier(spread::range_index(dist, unit)) * shot.damage;
@@ -131,6 +141,7 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
 fn pierce_shot(shooter: *mut edict_t, src: Vec3, dir: Vec3, dmg: f32, weapon: u8) {
     let end = spread::ma(src, 4096.0, dir);
     let tr = trace_expanded(src, end, shooter);
+    LAST_TRACE.0.set((tr.vecEndPos, tr.flFraction));
     if tr.flFraction != 1.0 {
         let dist = spread::length(spread::sub(src, tr.vecEndPos));
         let idx = (dist * 0.003_333_333_4 * 10.0).round_ties_even() as i32;

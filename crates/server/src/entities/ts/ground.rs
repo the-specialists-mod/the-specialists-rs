@@ -20,7 +20,7 @@ pub fn hl_weapon_ids(class: &CStr) -> Option<&'static [i32]> {
         b"weapon_shotgun" => &[4, 26, 33, 20, 11],
         b"weapon_gauss" | b"weapon_egon" => &[13, 5, 27, 15],
         b"weapon_rpg" => &[23, 7, 6, 19, 17, 3],
-        b"weapon_9MMAR" | b"weapon_9mmAR" => &[31, 12, 36],
+        b"weapon_9MMAR" => &[31, 12, 36],
         b"weapon_hornetgun" => &[32],
         b"weapon_satchel" | b"ammo_ARgrenades" => &[25, 35],
         b"weapon_snark" => &[34],
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn remaps_are_real_weapons() {
-        for c in [c"weapon_shotgun", c"weapon_9MMAR", c"weapon_9mmAR", c"weapon_handgrenade", c"ammo_ARgrenades"] {
+        for c in [c"weapon_shotgun", c"weapon_9MMAR", c"weapon_handgrenade", c"ammo_ARgrenades"] {
             for &id in hl_weapon_ids(c).unwrap() {
                 assert!(tables().weapon(id as u8).is_some(), "{c:?} → {id}");
                 assert!(tables().asset(id as u8).is_some());

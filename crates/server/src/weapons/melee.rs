@@ -164,8 +164,8 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
         messages::pvs(Msg::TsMBlur, pev.origin).byte(e.index_of(attacker)).byte(if hit.damage > 50.0 { 2 } else { 1 }).end();
     }
     let mut ang = pev.v_angle;
-    if hit.level {
-        ang[0] = 0.0;
+    if hit.zero_roll {
+        ang[2] = 0.0;
     }
     let (fwd, _, _) = spread::angle_vectors(ang);
     let start = spread::add(pev.origin, pev.view_ofs);
@@ -176,20 +176,39 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
     }
     let victim = tr.pHit;
     let v = victim.v();
-    if v.takedamage == 0.0 || v.effects & EF_NODRAW as i32 != 0 {
-        return MeleeResult::Miss;
-    }
-    if matches!(hit.kind, MeleeKind::Knife | MeleeKind::Katana) && !alive(victim) {
-        return MeleeResult::Miss;
-    }
     let is_player = e.is_player_edict(victim);
+    match hit.kind {
+        // `CloseCombatAttack` 0x95f88 / `ColdCockAttack` 0x96610: no damage taken, a world brush
+        // (`FL_WORLDBRUSH`) or an invisible entity is no target, and neither is a teammate with
+        // `mp_friendlyfire 0` (`PlayerRelationship` == GR_TEAMMATE).
+        MeleeKind::KungFu | MeleeKind::ColdCock => {
+            if v.takedamage == 0.0 || v.flags & FL_WORLDBRUSH as i32 != 0 || v.effects & EF_NODRAW as i32 != 0 {
+                return MeleeResult::Miss;
+            }
+            if is_player && same_team(attacker, victim) {
+                return MeleeResult::Miss;
+            }
+        }
+        // `KnifeFire` / `KatanaFire` (0x7394d): the target must be alive (`IsAlive`) and visible.
+        MeleeKind::Knife | MeleeKind::Katana => {
+            if !alive(victim) || v.effects & EF_NODRAW as i32 != 0 {
+                return MeleeResult::Miss;
+            }
+        }
+    }
     if is_player {
         if let Some(blocked) = hold(hit.kind, attacker, victim, atk_block) {
             return blocked;
         }
         if matches!(hit.kind, MeleeKind::KungFu | MeleeKind::ColdCock) {
+            // No disarm while the victim's spawn protection (`pl+0x71c`) runs.
+            let now = e.time();
             if hit.disarm {
-                crate::player::with_player(victim, |vp, vcx| inventory::drop_weapon(vp, vcx, Drop::Disarm(hit.damage)));
+                crate::player::with_player(victim, |vp, vcx| {
+                    if vp.ts.protect_until < now {
+                        inventory::drop_weapon(vp, vcx, Drop::Disarm(hit.damage));
+                    }
+                });
             }
             if hit.knockback && hit.damage > 30.0 {
                 knockback(attacker, victim);

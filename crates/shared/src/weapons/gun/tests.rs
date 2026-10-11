@@ -25,6 +25,9 @@ struct Mock {
     blades: Vec<i32>,
     slots: i32,
     anims: Vec<i32>,
+    blocks: Vec<f32>,
+    crouches: Vec<i32>,
+    cooldowns: Vec<f32>,
 }
 
 impl GunHost for Mock {
@@ -123,7 +126,17 @@ impl GunHost for Mock {
         self.slots += delta_free;
     }
     fn melee_bar_changed(&mut self, _bar: f32) {}
-    fn block_player(&mut self, _t: f32) {}
+    fn block_player(&mut self, t: f32) {
+        self.blocks.push(t);
+        self.iuser4 |= 1;
+    }
+    fn set_close_combat_cooldown(&mut self, t: f32) {
+        self.cooldowns.push(t);
+    }
+    fn melee_crouch(&mut self, bits: i32) {
+        self.crouches.push(bits);
+        self.iuser4 |= bits;
+    }
 }
 
 fn armed(id: u8) -> (Gun, Mock) {
@@ -577,4 +590,78 @@ fn melee_view_shakes() {
     let mut last = 0;
     frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
     assert_eq!(h.shakes, vec![55.0 * 0.2]);
+}
+
+/// One kung-fu attack (timers cleared, nothing hit): the trace it asked for, the delayed-hit
+/// window it armed and the `BlockPlayer` time, if any.
+fn kungfu_hit(g: &mut Gun, h: &mut Mock, buttons: u32, pressed: u32) -> (MeleeHit, f32, Option<f32>) {
+    kungfu_move(g, h, buttons, pressed);
+    let hit = *h.melee.last().unwrap();
+    let block = h.blocks.pop();
+    h.iuser4 = 0;
+    (hit, g.melee_window, block)
+}
+
+/// `CCombatAttack`'s stack slots as the disassembly uses them (0x76078..0x76e19): reach in units
+/// (`esp+0x18`), the `Animate` id (`esp+0x2c`), the delayed-hit window (`esp+0x20`) and the
+/// delay (`esp+0x24`), which is also the `BlockPlayer` time x 0.75 and `pl+0x4f8`.
+#[test]
+fn kungfu_reach_anim_window_and_block() {
+    let mut g = Gun::default();
+    let mut h = Mock { flags: 0x200, ..Default::default() };
+    let (hit, window, block) = kungfu_hit(&mut g, &mut h, IN_ATTACK, IN_ATTACK);
+    assert_eq!((hit.reach, hit.hull, hit.player_anim, hit.damage), (35.0, 3, 23, 20.0));
+    assert_eq!((window, block), (0.15, None));
+    assert_eq!(h.cooldowns.last(), Some(&0.35));
+    // A held kick on the ground: 45 units, window 0.2, blocked for 0.3 x 0.75.
+    let (hit, window, block) = kungfu_hit(&mut g, &mut h, IN_ATTACK2, 0);
+    assert_eq!((hit.reach, hit.damage), (45.0, 15.0));
+    assert!(matches!(hit.player_anim, 11 | 12));
+    assert_eq!((window, block), (0.2, Some(0.3 * 0.75)));
+    // The uppercut forces a crouch (iuser4 4|1), so it never blocks.
+    let (hit, window, block) = kungfu_hit(&mut g, &mut h, IN_ATTACK2 | IN_DUCK, IN_ATTACK2);
+    assert_eq!((hit.reach, hit.player_anim, hit.damage), (45.0, 20, 35.0));
+    assert_eq!((window, block), (0.35, None));
+    assert_eq!(h.crouches, vec![5]);
+    // The back kick: 55 units behind, human hull, roll 0.
+    let (hit, window, block) = kungfu_hit(&mut g, &mut h, IN_ATTACK2 | IN_BACK, IN_ATTACK2);
+    assert_eq!((hit.reach, hit.hull, hit.zero_roll, hit.player_anim), (-55.0, 1, true, 17));
+    assert_eq!((window, block), (0.3, Some(0.75)));
+    assert!(g.melee_damage < 0.0, "the delayed hit looks behind");
+    // A stunt punch plays no animation.
+    h.iuser4 = STUNTING_KUNGFU;
+    let (hit, _, _) = kungfu_hit(&mut g, &mut h, IN_ATTACK, IN_ATTACK);
+    assert_eq!((hit.reach, hit.player_anim, hit.damage), (35.0, -1, 15.0));
+}
+
+/// `KatanaFire` (0x73580..0x737a8): the reach is 50 units (35 stunting, 55 backward), the damage
+/// is the swing's strength (45 ground, 65 crouched, 75 backward) and the event carries the view
+/// index.
+#[test]
+fn katana_swings() {
+    let (mut g, mut h) = armed(id::KATANA);
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    let hit = h.melee[0];
+    assert_eq!((hit.reach, hit.hull, hit.damage), (50.0, 3, 45.0));
+    let ev = h.events.iter().find(|e| e.0 == Event::Katana).unwrap();
+    assert!(matches!(ev.1.i1, 0x10 | 0x11));
+    assert_eq!(h.cooldowns, vec![0.7]);
+    assert!(h.blocks.is_empty());
+
+    let (mut g, mut h) = armed(id::KATANA);
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK | IN_BACK, &mut last, 0.01);
+    let hit = h.melee[0];
+    assert_eq!((hit.reach, hit.hull, hit.damage), (-55.0, 1, 75.0));
+    assert_eq!(h.blocks, vec![0.9]);
+    assert!(g.melee_damage < 0.0);
+
+    // Crouched: the forced crouch sets iuser4 bit 1, so no BlockPlayer.
+    let (mut g, mut h) = armed(id::KATANA);
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK | IN_DUCK, &mut last, 0.01);
+    assert_eq!((h.melee[0].reach, h.melee[0].damage), (50.0, 65.0));
+    assert_eq!(h.crouches, vec![5]);
+    assert!(h.blocks.is_empty());
 }

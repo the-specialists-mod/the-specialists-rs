@@ -385,7 +385,8 @@ impl GunHost for ClientHost<'_> {
     fn slots_changed(&mut self, _delta_free: i32) {}
     fn melee_bar_changed(&mut self, _bar: f32) {}
     fn block_player(&mut self, _t: f32) {
-        self.iuser4 |= 1;
+        // The client copies of `KatanaFire` (0x10009ee0) and `CCombatAttack` (0x1000af10) never
+        // block: the only `iuser4` write in the client gun is leaving a wall climb (0x1000b4ef).
     }
 }
 

@@ -25,13 +25,17 @@ pub struct ServerHost<'a> {
     anims: Vec<i32>,
     /// The deploy/holster changed the animation extension.
     ext_changed: bool,
+    /// Writes to the stunt state (`pl+0x4f4` recover timer, `pl+0x4f8` close-combat cooldown),
+    /// applied with the animations once the gun is released.
+    stunt_recover: Option<f32>,
+    close_attack_cd: Option<f32>,
 }
 
 /// Runs `f` with the player's gun and a host for it, then applies the third-person animation
 /// requests (`set_anim_ext`, `Animate`) to the movement package's state.
 pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut ServerHost) -> R) -> R {
     let throw_scale = projectiles::thrower_time_scale(p, cx.pev());
-    let (r, anims, ext_changed) = {
+    let (r, anims, ext_changed, recover, close_cd) = {
         let Player { inv, active_powerup, kungfu, .. } = p;
         let Inventory { gun, sv } = inv;
         sv.atk_block = gun.block_kungfu;
@@ -43,10 +47,19 @@ pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut S
             throw_scale,
             anims: Vec::new(),
             ext_changed: false,
+            stunt_recover: None,
+            close_attack_cd: None,
         };
         let r = f(gun, &mut h);
-        (r, h.anims, h.ext_changed)
+        (r, h.anims, h.ext_changed, h.stunt_recover, h.close_attack_cd)
     };
+    // TS writes these before its `Animate` call (`KatanaFire` 0x736bf, `CCombatAttack` 0x7653e).
+    if let Some(t) = recover {
+        p.stunt.recover = t;
+    }
+    if let Some(t) = close_cd {
+        p.stunt.close_attack_cd = t;
+    }
     if ext_changed {
         let ext2 = p.inv.sv.anim_ext.clone();
         crate::stunt::set_anim_ext(p, idle_override(p.inv.gun.current), &ext2);
@@ -248,5 +261,20 @@ impl GunHost for ServerHost<'_> {
     fn block_player(&mut self, t: f32) {
         self.sv.block_timer = t;
         self.pev().iuser4 |= 1;
+    }
+    fn set_close_combat_cooldown(&mut self, t: f32) {
+        self.close_attack_cd = Some(t);
+    }
+    fn melee_crouch(&mut self, bits: i32) {
+        let pev = self.pev();
+        pev.iuser4 |= bits;
+        pev.view_ofs = [0.0, 0.0, 16.0];
+        self.stunt_recover = Some(2.0);
+    }
+    fn leave_wall_climb(&mut self) {
+        let pev = self.pev();
+        pev.view_ofs = [0.0, 0.0, if pev.flags & FL_DUCKING as i32 != 0 { 16.0 } else { 28.0 }];
+        pev.gravity = 1.0;
+        pev.friction = 1.0;
     }
 }

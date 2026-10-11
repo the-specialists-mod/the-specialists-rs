@@ -1,15 +1,13 @@
 //! `CBulletManager` (0x6ebe0..0x6f4f0): simulated bullets, used when `realbullet` is set or the
-//! shooter is in slow motion. Up to 256 bullets step every `0.1 / (realbullet + 1)` s
+//! shooter is in slow motion. 256 slots, each stepped every `0.1 / (realbullet + 1)` s
 //! (`realbullet >= 2`: every frame) at `velocity * 40 u/m * dt * GetBulletVelocityMult`.
 //!
-//! TS drives it from `CTSGameRules::Think`; here a hidden `ts_bulletmanager` entity thinks every
-//! frame while bullets are in flight (so hits on any player, including the one whose hooks
-//! fired the bullet, dispatch normally).
+//! As in TS, the manager is part of the game rules (`TSGameRules + 0x1864`): `CTSGameRules::Think`
+//! runs it from `StartFrame` while it counts any bullet ([`start_frame`]). A bullet only ends by
+//! hitting something.
 
 use super::{assets, fire, projectiles};
-use crate::entities::{self, link_entities};
 use crate::player::Player;
-use crate::world::{Cx, Entity};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
@@ -17,123 +15,91 @@ use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::weapons::spread::{self, Vec3};
 use shared::weapons::{range_multiplier, tables};
-use std::cell::{Cell, RefCell};
-
-link_entities! {
-    ts_bulletmanager => BulletManager,
-}
+use std::cell::RefCell;
 
 const MAX_BULLETS: usize = 256;
-/// Bullets that travel this far without hitting anything are dropped (TS has no limit).
-const MAX_TRAVEL: f32 = 16384.0;
 
+/// One slot (0x40 bytes in TS; a null owner is a free slot).
 #[derive(Clone, Copy)]
 struct Bullet {
+    /// +0x00
     owner: *mut edict_t,
+    /// +0x04 position, +0x10 start of the current flight (for the range falloff), +0x1c dir.
     pos: Vec3,
     start: Vec3,
     dir: Vec3,
+    /// +0x28 damage, +0x2c ammo type, +0x30 weapon id (-1 without a TS gun), +0x38 next update,
+    /// +0x3c bullet type (2 after a penetration).
     damage: f32,
     ammo: u8,
     weapon: u8,
-    btype: i32,
     next_update: f32,
-    travelled: f32,
+    btype: i32,
 }
 
-static BULLETS: Global<RefCell<Vec<Bullet>>> = Global(RefCell::new(Vec::new()));
-static MANAGER: Global<Cell<*mut edict_t>> = Global(Cell::new(std::ptr::null_mut()));
+struct Manager {
+    slots: [Option<Bullet>; MAX_BULLETS],
+    /// +0x4000: bullets counted by the last `Think` plus those fired since.
+    count: i32,
+}
 
-/// Forget everything (new map).
+static MANAGER: Global<RefCell<Manager>> = Global(RefCell::new(Manager { slots: [None; MAX_BULLETS], count: 0 }));
+
+/// `CBulletManager::Reset` (from `CTSGameRules::Init`, every map).
 pub fn reset() {
-    BULLETS.0.borrow_mut().clear();
-    MANAGER.0.set(std::ptr::null_mut());
+    let mut m = MANAGER.0.borrow_mut();
+    m.slots = [None; MAX_BULLETS];
+    m.count = 0;
 }
 
-/// `CBulletManager::FireBullet`.
+/// `CBulletManager::FireBullet` 0x6eda4: the first free slot, or the warning to everyone.
 pub fn fire(owner: *mut edict_t, src: Vec3, dir: Vec3, damage: f32, ammo: u8, weapon: u8, btype: i32) {
-    {
-        let mut b = BULLETS.0.borrow_mut();
-        if b.len() >= MAX_BULLETS {
-            engine().print("WARNING:cannot create bullet!\n");
-            return;
-        }
-        b.push(Bullet { owner, pos: src, start: src, dir, damage, ammo, weapon, btype, next_update: 0.0, travelled: 0.0 });
-    }
-    ensure_manager();
-}
-
-/// Creates the manager entity if bullets are pending and none is running.
-pub fn ensure_manager() {
-    if BULLETS.0.borrow().is_empty() || !MANAGER.0.get().is_null() {
+    let mut m = MANAGER.0.borrow_mut();
+    let Some(i) = m.slots.iter().position(Option::is_none) else {
+        drop(m);
+        const HUD_PRINTTALK: u8 = 3;
+        crate::rules::msg::text_all(HUD_PRINTTALK, "WARNING:cannot create bullet!\n");
         return;
-    }
-    let e = engine().create_named_entity(c"ts_bulletmanager");
-    if e.is_null() {
-        return;
-    }
-    MANAGER.0.set(e);
-    crate::world::dispatch(e, |ent, cx| ent.spawn(cx));
+    };
+    m.slots[i] = Some(Bullet { owner, pos: src, start: src, dir, damage, ammo, weapon, next_update: 0.0, btype });
+    m.count += 1;
 }
 
-#[derive(Default)]
-pub struct BulletManager;
-
-impl Entity for BulletManager {
-    fn spawn(&mut self, cx: &mut Cx) {
-        let pev = cx.pev();
-        pev.classname = engine().alloc_string(c"ts_bulletmanager");
-        pev.solid = SOLID_NOT as i32;
-        pev.movetype = MOVETYPE_NONE as i32;
-        pev.effects |= EF_NODRAW as i32;
-        pev.nextthink = engine().time() + 0.001;
-    }
-
-    fn think(&mut self, cx: &mut Cx) {
-        run();
-        if BULLETS.0.borrow().is_empty() {
-            MANAGER.0.set(std::ptr::null_mut());
-            entities::remove(cx.edict);
-        } else {
-            cx.pev().nextthink = engine().time() + 0.001;
-        }
+/// The bullet part of `CTSGameRules::Think` (0x7764c): `CBulletManager::Think` while the
+/// manager counts any bullet.
+pub fn start_frame() {
+    if MANAGER.0.borrow().count != 0 {
+        think();
     }
 }
 
-/// `CBulletManager::Think`.
-fn run() {
+/// `CBulletManager::Think` 0x6ec7c: every slot in order; a slot is counted before its update.
+fn think() {
     let e = engine();
     let now = e.time();
-    let rb = assets::cvars().realbullet as i32;
-    let mut i = 0;
-    loop {
-        let b = {
-            let list = BULLETS.0.borrow();
-            match list.get(i) {
-                Some(b) => *b,
-                None => break,
-            }
-        };
+    let rb = assets::realbullet();
+    MANAGER.0.borrow_mut().count = 0;
+    for i in 0..MAX_BULLETS {
+        let b = MANAGER.0.borrow().slots[i];
+        let Some(mut b) = b else { continue };
+        MANAGER.0.borrow_mut().count += 1;
         if b.next_update >= now {
-            i += 1;
             continue;
         }
-        let mut b = b;
-        b.next_update = now + if rb < 2 { 0.1 / (rb + 1) as f32 } else { 0.0 };
-        let keep = update(&mut b, now);
-        let mut list = BULLETS.0.borrow_mut();
-        if keep {
-            list[i] = b;
-            i += 1;
-        } else {
-            list.remove(i);
+        b.next_update = now;
+        if rb < 2 {
+            b.next_update += 0.1 / (rb + 1) as f32;
         }
+        let keep = update(&mut b, now);
+        MANAGER.0.borrow_mut().slots[i] = keep.then_some(b);
     }
 }
 
-/// `CBulletManager::UpdateBullet` 0x6ef5c. Returns false when the bullet is destroyed.
+/// `CBulletManager::UpdateBullet` 0x6ef5c. Returns false when the bullet is destroyed
+/// (`DestroyBullet`).
 fn update(b: &mut Bullet, now: f32) -> bool {
     let e = engine();
+    // Port addition: TS reads the owner without a check; a freed edict can't be read here.
     if b.owner.is_null() || b.owner.is_free() {
         return false;
     }
@@ -150,13 +116,14 @@ fn update(b: &mut Bullet, now: f32) -> bool {
     let (slow, btime) = crate::world::with::<Player, _>(b.owner, |p| (p.ts.slow_others, p.ts.btime)).unwrap_or((0.0, false));
     let slowmul = if slow != 0.0 { slow } else { fuser1.max(0.01) };
     let mult = spread::bullet_velocity_mult(slowmul, btime);
-    let step = spread::scale(b.dir, velocity * spread::UNITS_PER_METER * dt * mult);
+    // `mult * (dt * (velocity * 40) * dir)`, in TS's order (0x6f038..).
+    let v40 = velocity * spread::UNITS_PER_METER;
+    let step = [mult * (dt * v40 * b.dir[0]), mult * (dt * v40 * b.dir[1]), mult * (dt * v40 * b.dir[2])];
     let end = spread::add(b.pos, step);
     let tr = fire::trace_expanded(b.pos, end, b.owner);
     if tr.flFraction == 1.0 {
         b.pos = end;
-        b.travelled += spread::length(step);
-        return b.travelled < MAX_TRAVEL;
+        return true;
     }
     b.pos = tr.vecEndPos;
     let dist = spread::length(spread::sub(b.start, b.pos));

@@ -30,7 +30,6 @@ link_entities! {
     weapon_egon => ground::GroundWeapon,
     weapon_rpg => ground::GroundWeapon,
     weapon_9MMAR => ground::GroundWeapon,
-    weapon_9mmAR => ground::GroundWeapon,
     weapon_hornetgun => ground::GroundWeapon,
     weapon_satchel => ground::GroundWeapon,
     weapon_snark => ground::GroundWeapon,

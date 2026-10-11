@@ -264,7 +264,6 @@ TS bugs found in the decomp are fixed unless parity requires keeping them:
 * the missing `#` in `Buy_SMGs`
 * `default_fov` being forced to 80
 * `delta.lst`'s missing commas
-* `weapon_9MMAR`: both spellings are exported
 * `_special`, which the TS client sends on every `+attack2`, is accepted silently instead of
   printing "Unknown command"
 

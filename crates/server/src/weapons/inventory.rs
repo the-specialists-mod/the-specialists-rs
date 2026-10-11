@@ -82,14 +82,17 @@ pub fn pick_up_weapon(p: &mut Player, cx: &mut Cx, id: u8, from: Option<&Status>
     true
 }
 
-/// `CBasePlayer::ThrowWeapon(id, status, angle offset, position offset)`: a `WorldGun` 16 u in
-/// front of the eyes (random direction for corpses).
+/// `CBasePlayer::ThrowWeapon(id, status, angle offset, position offset)` (0x9529c): a
+/// `WorldGun` 16 u in front of the eyes, thrown along the view at `(90 - pitch) * 2` u/s, or in
+/// a random direction at 60..160 u/s by a corpse, plus 0.9 of the player's velocity and a third
+/// of the speed upward (disassembly 0x85359, 0x855fb..0x856cf: constants 90, 0.9, 0.33; the
+/// decompile garbles this part). No caller passes an angle offset.
 fn throw_weapon(p: &mut Player, cx: &mut Cx, id: u8, status: Status, pos_offset: Option<Vec3>) -> *mut edict_t {
     let e = engine();
     let alive = Player::is_alive(cx);
     let pev = cx.pev();
     let (ang, speed) = if alive {
-        (pev.v_angle, 250.0)
+        (pev.v_angle, (90.0 - pev.v_angle[0]) * 2.0)
     } else {
         ([e.random_long(-60, 60) as f32, e.random_long(-180, 180) as f32, 0.0], e.random_long(60, 160) as f32)
     };
@@ -98,8 +101,8 @@ fn throw_weapon(p: &mut Player, cx: &mut Cx, id: u8, status: Status, pos_offset:
     let eye = spread::add(pev.origin, pev.view_ofs);
     let mut origin = spread::add(eye, spread::add(spread::scale(f, off[0]), spread::scale(r, off[1])));
     origin[2] += off[2];
-    let mut vel = spread::ma(pev.velocity, speed, f);
-    vel[2] += speed * 0.5;
+    let mut vel = spread::add(spread::scale(pev.velocity, 0.9), spread::scale(f, speed));
+    vel[2] += speed * 0.33;
     let owner = p.inv.sv.owners[id as usize];
     let time_scale = super::projectiles::thrower_time_scale(p, cx.pev());
     worldgun::create(cx.edict, id, status, origin, vel, owner, time_scale)
@@ -141,6 +144,22 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
         return;
     }
     if !p.inv.gun.status[target as usize].owned {
+        return;
+    }
+    // 0x94aaf: a corpse's grenades become grenade power-ups (`CreatePowerUp(0x20, -1)`), 5 u
+    // apart along x from its origin, outside round modes (`TSGameRules.m_mode < 2`, always in
+    // 3.0). The record stays in the gun (no `CTSGun::DropWeapon`, no drop sound or speed update).
+    if target == id::M61 && !assets::grenade_buys() && !Player::is_alive(cx) {
+        if p.inv.gun.status[id::M61 as usize].state == 1 {
+            with_host(p, cx, |gun, h| gun.grenade_idle(true, h));
+        }
+        let mut i = 0;
+        while i < p.inv.gun.status[id::M61 as usize].clip {
+            let mut at = cx.pev().origin;
+            at[0] += (5 * i) as f32;
+            crate::entities::ts::create_powerup(shared::ts::powerup::GRENADE, -1, at);
+            i += 1;
+        }
         return;
     }
     let w = info(target).expect("owned weapon has a table entry");
@@ -412,7 +431,7 @@ pub fn on_killed(p: &mut Player, cx: &mut Cx) {
     p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
     p.inv.sv.armament.clear();
     p.inv.sv.armament_ammo = [0; MAX_AMMO];
-    net::send_act_items(cx.edict, 0);
+    // `ActItems 0` goes out once, from the rest of `Killed` (rules).
     p.inv.sv.sent_act_items = Some(0);
     net::send_cur_weapon_reset(cx.edict);
     sync_speed(p, cx);

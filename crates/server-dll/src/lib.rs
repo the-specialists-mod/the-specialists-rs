@@ -238,6 +238,7 @@ unsafe extern "C" fn player_post_think(e: *mut edict_t) {
 
 unsafe extern "C" fn start_frame() {
     rules::start_frame();
+    weapons::start_frame();
     bots::start_frame();
 }
 
