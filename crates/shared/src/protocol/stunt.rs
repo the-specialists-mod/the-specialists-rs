@@ -49,4 +49,14 @@ mod tests {
         assert_eq!(decode_motion_blur(&[3, 2]), Some((3, 2)));
         assert_eq!(decode_motion_blur(&[3]), None);
     }
+
+    #[test]
+    fn decoders_survive_garbage() {
+        for b in [&[][..], &[0xff], &[0xff; 2], &[0xff; 300]] {
+            let _ = (decode_next_stunt(b), decode_state(b), decode_motion_blur(b));
+        }
+        for s in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 1e30] {
+            let _ = encode_next_stunt(s);
+        }
+    }
 }

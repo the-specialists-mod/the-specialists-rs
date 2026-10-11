@@ -249,8 +249,8 @@ fn update_team_menu() {
     let (extra, names) = hud::with(|h| (h.players.clone(), team_names(h)));
     let frags: Vec<i16> = with(|m| m.board.teams.iter().map(|t| t.frags).collect());
     let team_frags = |i: usize| frags.get(i).copied().unwrap_or(0);
-    let level = format!("maps/{}.bsp", goldsrc::ext::render::level_name());
-    let level = if goldsrc::ext::render::level_name().is_empty() { String::new() } else { level };
+    // `pfnGetLevelName` is already `maps/<map>.bsp` (`Update` `0x10066020` uses it as it comes).
+    let level = goldsrc::ext::render::level_name();
     let size = |t: &[u8]| vgui::with_schemes(|s| s.font_of("Briefing Text").map(|f| f.text_size(t))).flatten().unwrap_or((0, 0));
     let inp = team::Inputs {
         team_names: &names,
@@ -268,11 +268,11 @@ fn update_team_menu() {
 
 /// The viewport's team menu, made for the screen size.
 fn team_menu(m: &mut Menus, w: i32, h: i32) -> &mut team::TeamMenu {
-    if m.team.is_none() || m.team_size != (w, h) {
-        m.team = Some(team::TeamMenu::new(w, h, &hud::text::lookup));
+    if m.team_size != (w, h) {
+        m.team = None;
         m.team_size = (w, h);
     }
-    m.team.as_mut().expect("just made")
+    m.team.get_or_insert_with(|| team::TeamMenu::new(w, h, &hud::text::lookup))
 }
 
 /// The viewport's message handlers that feed its menus (`TeamNames` `0x10064df0`, `ScoreInfo`
@@ -354,8 +354,9 @@ pub fn show_vgui_menu(id: i32) {
                 let (server, text) = hud::with(|h| (h.server_name.clone(), h.motd.clone()));
                 motd::Motd::for_motd(&server, &text, &ok, shade, w, h, &briefing_wrapped)
             } else {
+                // `pfnGetLevelName`: `maps/<map>.bsp` already.
                 let level = goldsrc::ext::render::level_name();
-                let level = (!level.is_empty()).then(|| format!("maps/{level}.bsp"));
+                let level = (!level.is_empty()).then_some(level);
                 let load = |p: &[u8]| goldsrc::ext::render::load_file(&hud::saytext::string(p));
                 let mut name = with(|m| std::mem::take(&mut m.map_name));
                 let made = motd::map_briefing(&mut name, level.as_deref().map(str::as_bytes), &load);
@@ -695,7 +696,8 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     }
     draw_summary(dc, b, r);
     let cur = &b.current;
-    let affordable = |cost: i32, slots: i32| cost + cur.total <= buy::CASH && slots + cur.slots <= buy::SLOTS;
+    // Wrapping: a loaded `tsbuylist.tsa` config's totals can be anything (C int arithmetic).
+    let affordable = |cost: i32, slots: i32| cost.wrapping_add(cur.total) <= buy::CASH && slots.wrapping_add(cur.slots) <= buy::SLOTS;
 
     // Columns are drawn child-first, parents after (each TS page function calls its parent).
     if b.page == page::OPTIONS {
@@ -707,9 +709,9 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
         let prices = [900, 800, 500, 1800];
         for bit in 0..4 {
             if b.attachment_allowed(1 << bit) {
-                let price = base + prices[bit];
+                let price = base.wrapping_add(prices[bit]);
                 let text = fmt(&format!("%i {}  %i", labels[bit]), &[I(bit as i64 + 2), I(price as i64)]);
-                c.row(&text, if price + cur.total <= buy::CASH { hud2 } else { RED }, bit as i32 + 2);
+                c.row(&text, if price.wrapping_add(cur.total) <= buy::CASH { hud2 } else { RED }, bit as i32 + 2);
             }
         }
         if let Some(w) = shared::weapons::tables().weapon(id.max(0) as u8) {
@@ -726,7 +728,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     if matches!(b.page, page::WEAPONS | page::OPTIONS) {
         let mut c = Column { dc, x: 0x108, y: y0, page: page::WEAPONS, dim: b.page != page::WEAPONS, rows };
         for row in 0..12 {
-            let id = buy::TABLE[row][b.category as usize];
+            let id = buy::TABLE[row][b.category.clamp(0, 4) as usize];
             if id == -1 || buy::restricted(id, false, r) {
                 continue;
             }
@@ -790,7 +792,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
         c.row("1 #Buy_EmptyConfig", RED, 1);
     } else {
         let t = if b.new_config { "1 #Buy_UseNewConfig" } else { "1 #Buy_UseLastConfig" };
-        c.row(t, if buy::CASH - cur.total < 0 { RED } else { GREEN }, 1);
+        c.row(t, if buy::CASH.wrapping_sub(cur.total) < 0 { RED } else { GREEN }, 1);
     }
     c.row("2 #Buy_Buy", hud2, 2);
     c.row("3 #Buy_RemoveItem", hud2, 3);
@@ -823,9 +825,10 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
     use hud::text::Arg::I;
     dc.fill(8, 8, 0x280, 0x13, hud2, 0x32);
     let total = hud::text::format(&localise("#Buy_Total"), &[I(cur.total as i64)]);
-    dc.string(8, 8, &total, if buy::CASH - cur.total <= 0 { RED } else { hud2 });
-    let free = hud::text::format(&localise("#Buy_FreeSlots"), &[I((buy::SLOTS - cur.slots) as i64)]);
-    dc.string(0x108, 8, &free, if buy::SLOTS - cur.slots <= 0 { RED } else { hud2 });
+    dc.string(8, 8, &total, if buy::CASH.wrapping_sub(cur.total) <= 0 { RED } else { hud2 });
+    let free_slots = buy::SLOTS.wrapping_sub(cur.slots);
+    let free = hud::text::format(&localise("#Buy_FreeSlots"), &[I(free_slots as i64)]);
+    dc.string(0x108, 8, &free, if free_slots <= 0 { RED } else { hud2 });
     let t = shared::weapons::tables();
     for bucket in 1..=5 {
         let x = bucket * 0x80 - 0x78;

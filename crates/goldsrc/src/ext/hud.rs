@@ -410,7 +410,7 @@ impl ClEngine {
     /// docs/implementation/client-hud.md §5.
     pub fn crosshair_trace(&self, start: [f32; 3], end: [f32; 3], local_index: i32) -> Option<(f32, [f32; 3], i32)> {
         self.event_api()?;
-        Some(render::with_solid_players(local_index - 1, || {
+        Some(render::with_solid_players(local_index.wrapping_sub(1), || {
             let mut tr = render::player_trace(start, end, 2, PM_STUDIO_BOX, local_index);
             let ent = render::index_from_trace(&mut tr);
             (tr.fraction, tr.endpos, ent)

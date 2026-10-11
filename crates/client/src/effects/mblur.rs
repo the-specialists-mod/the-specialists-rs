@@ -37,7 +37,8 @@ impl MotionBlur {
         // so they are dropped.
         let Some(t) = self.trails.get_mut(ent) else { return };
         if t.active {
-            t.max += 5;
+            // Saturating: a server can repeat the message without end.
+            t.max = t.max.saturating_add(5);
             return;
         }
         // The handler sign-extends the level byte (`movsx edx, al` at `0x1004bfaf`).
@@ -159,6 +160,29 @@ mod tests {
         m.add(32, 1, 1.0, 1.0, 0.0); // out of the table: ignored
         m.add(7, 200u8 as i8, 1.0, 2.0, 0.0); // the level byte is signed: -56 -> 5 ghosts
         assert_eq!(m.trails[7].max, 5);
+    }
+
+    /// `TSMBlur` bytes are the server's: every entity byte and level, repeated without end, and any
+    /// cvar or clock value.
+    #[test]
+    fn any_message_and_cvar_values() {
+        let mut m = MotionBlur::default();
+        for ent in 0..=255usize {
+            for level in [i8::MIN, -1, 0, 1, 2, i8::MAX] {
+                for (blur, fx) in [(1.0, 1.0), (f32::NAN, f32::NAN), (f32::INFINITY, -1e30)] {
+                    m.add(ent, level, blur, fx, f32::NAN);
+                }
+            }
+        }
+        m.trails[1] = Trail { active: true, count: 0, max: i32::MAX - 1, next: 0.0 };
+        m.add(1, 1, 1.0, 1.0, 0.0);
+        assert_eq!(m.trails[1].max, i32::MAX, "saturates");
+        for ts in [f32::NAN, 0.0, -1.0, 0.5] {
+            for ent in m.due(1.0, ts, 1e9) {
+                m.spawned(ent);
+            }
+        }
+        m.spawned(1000);
     }
 
     #[test]

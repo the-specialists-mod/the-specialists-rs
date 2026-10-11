@@ -143,7 +143,8 @@ fn deploy(g: &mut Gun) -> Option<(u8, u32)> {
     g.idle = 3.0;
     let mem = &mut g.mode_memory[id as usize];
     if *mem < 1 {
-        *mem = g.status[id as usize].mode + 1;
+        // A byte in TS (`pl+0x486+id`), so a networked mode of 255 wraps instead of overflowing.
+        *mem = g.status[id as usize].mode.wrapping_add(1);
     } else {
         g.status[id as usize].mode = *mem - 1;
     }
@@ -635,5 +636,31 @@ mod tests {
         let mut g = Gun { melee_window: 0.2, melee_damage: 40.0, melee_source: 1, ..Default::default() };
         assert_eq!(deploy(&mut g), None);
         assert_eq!(g.melee_window, 0.0);
+    }
+
+    /// Networked weapon state of any value (a hostile server's `vuser*`/`ammo_*` floats), then
+    /// the respawn Deploy: a mode of 255 wraps the byte mode memory instead of overflowing.
+    #[test]
+    fn garbage_clientdata_rebuild_and_deploy() {
+        for v in [f32::NAN, f32::INFINITY, -f32::INFINITY, 1e20, -1e20, 255.0, 256.0, -1.0, 0.0, 16.0, 38.0] {
+            let mut ls = local_state_t::default();
+            let c = &mut ls.client;
+            (c.vuser1, c.vuser2, c.vuser3, c.vuser4) = ([v; 3], [v; 3], [v; 3], [v; 3]);
+            (c.ammo_shells, c.ammo_nails, c.m_flNextAttack) = (v as i32 / 2, v as i32 / 2, v);
+            ls.weapondata[TS_GUN_SLOT].m_iClip = v as i32;
+            for current in [None, Some(id::AK47)] {
+                let mut g = Gun::default();
+                rebuild(&mut g, &ls);
+                if let Some(id) = current {
+                    g.current = id;
+                }
+                rebuilt_body(&g);
+                deploy(&mut g);
+            }
+        }
+        let mut g = Gun { current: id::AK47, ..Default::default() };
+        g.status[id::AK47 as usize].mode = 255;
+        deploy(&mut g);
+        assert_eq!(g.mode_memory[id::AK47 as usize], 0);
     }
 }

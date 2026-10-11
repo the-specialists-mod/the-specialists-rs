@@ -776,4 +776,32 @@ mod tests {
         assert_eq!(parse_director_message(&[3, 1]), None, "DRC_CMD_MODE isn't handled by TS");
         assert_eq!(parse_director_message(&[]), None);
     }
+
+    /// `svc_director` payloads and entity-lump origins of any length and content.
+    #[test]
+    fn director_and_origin_garbage() {
+        let mut x = 0xdead_beef_u32;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        assert_eq!(parse_director_message(&[2]), Some((director::DRC_CAMERA, 0, 0, 0)), "short: zeros");
+        assert_eq!(parse_director_message(&[0xff; 64]), None);
+        assert_eq!(
+            parse_director_message(&[2, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+            Some((director::DRC_CAMERA, 65535, 65535, -1))
+        );
+        for n in 0..3000 {
+            let buf: Vec<u8> = (0..n % 20).map(|_| rnd() as u8 & if n % 3 == 0 { 3 } else { 0xff }).collect();
+            parse_director_message(&buf);
+            let text: String = buf.iter().map(|&b| if b < 0x80 { b as char } else { 'é' }).collect();
+            parse_vec(&text);
+        }
+        let v = parse_vec("1e40 nan -inf x");
+        assert!(v[0] == f32::INFINITY && v[1].is_nan() && v[2] == f32::NEG_INFINITY);
+        let ents = vec![vec![("origin".to_string(), "é 2 3 4 5".to_string()), ("classname".to_string(), "info_player_start".to_string())]];
+        assert_eq!(camera_from_entities(&ents), [0.0, 2.0, 3.0]);
+    }
 }

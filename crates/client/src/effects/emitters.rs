@@ -364,8 +364,12 @@ impl MapFx {
                 f = lod;
             }
             let n = ceil_div(n, div);
-            // `(float)i < n / f` (0x1003afb3, 0x1003b139).
+            // `(float)i < n / f` (0x1003afb3, 0x1003b139). Capped at the largest pool: nothing dies
+            // during the loop, so particles past the pool size are dropped anyway, and a map's
+            // `ppehigh` of 2^31 would otherwise freeze the game rolling them.
+            // (Not `f32::min`, which would turn a NaN limit, no particles, into the cap.)
             let limit = n as f32 / f;
+            let limit = if limit > MAX_PER_EMIT { MAX_PER_EMIT } else { limit };
             let tmpl = &self.templates[ti];
             // The template's sprite is looked up only now, after the random count and the camera
             // test (0x1003ae5f). A missing one is reported and the emitter is tried again next
@@ -467,6 +471,9 @@ fn lod_factor(lo: Vec3, hi: Vec3, size: Vec3, cam: &Camera) -> Option<f32> {
     Some((dist / v::len(size)).clamp(1.0, 10.0))
 }
 
+/// Most particles one emission rolls: `PSys_Init`'s largest pool (port guard, see [`MapFx::emit`]).
+const MAX_PER_EMIT: f32 = 4096.0;
+
 /// Particle count over the `cl_fx` divisor, rounded up as `idiv` plus `inc` on a non-zero
 /// remainder (0x1003ae29..0x1003ae40): with a divisor above 1 a small negative count becomes 1
 /// (-1 / 2 = 0 remainder -1, then + 1).
@@ -559,6 +566,67 @@ mod tests {
         assert_eq!(MapFx::from_lump(text).fog.unwrap().far, 10.0);
         b[0] = 31;
         assert!(entity_lump(&b).is_none());
+    }
+
+    fn xorshift(seed: u64) -> impl FnMut() -> u64 {
+        let mut x = seed;
+        move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        }
+    }
+
+    /// A BSP from the game dir can hold anything: short headers, negative or huge lump offsets and
+    /// lengths, lumps past the end, non-UTF-8 text.
+    #[test]
+    fn bsp_header_survives_garbage() {
+        let mut next = xorshift(0x5eed_0fb5_f00d);
+        for len in [0usize, 3, 4, 8, 11, 12, 13, 64] {
+            for _ in 0..200 {
+                let mut b: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+                let _ = entity_lump(&b);
+                if b.len() >= 12 {
+                    b[0..4].copy_from_slice(&30i32.to_le_bytes());
+                    let _ = entity_lump(&b).map(MapFx::from_lump);
+                }
+            }
+        }
+        for (ofs, n) in [(-1, 4), (12, -1), (i32::MAX, i32::MAX), (i32::MIN, 1), (12, 1000), (0, 12)] {
+            let mut b = vec![0xffu8; 32];
+            b[0..4].copy_from_slice(&29i32.to_le_bytes());
+            b[4..8].copy_from_slice(&i32::to_le_bytes(ofs));
+            b[8..12].copy_from_slice(&i32::to_le_bytes(n));
+            let _ = entity_lump(&b).map(MapFx::from_lump);
+        }
+    }
+
+    /// Random entity text and keyvalues with extreme numbers parse without a panic.
+    #[test]
+    fn lump_text_survives_garbage() {
+        let mut next = xorshift(0xabcd_ef01);
+        let alphabet = b"{}\"/ \n\tab0-.e9\0\xff";
+        for _ in 0..300 {
+            let len = (next() % 200) as usize;
+            let bytes: Vec<u8> = (0..len).map(|_| alphabet[(next() % alphabet.len() as u64) as usize]).collect();
+            let text = String::from_utf8_lossy(&bytes);
+            let _ = MapFx::from_lump(&text);
+        }
+        let weird = r#"{ "classname" "ts_particle" "targetname" "a" "target" "a" "current_framehigh" "1e40"
+            "follow_view" "-nan" "oncollide" "inf" "lifehigh" "nan" "sprite_trans" "-1e40" }
+            { "classname" "ts_emitter" "particle" "a" "ppehigh" "2147483647" "ppelow" "-2147483648"
+            "variancehigh" "inf -inf nan" "epshigh" "1e40" }
+            { "classname" "ts_fog" "near" "nan" "color" "1e40" }"#;
+        let fx = MapFx::from_lump(weird);
+        assert_eq!(fx.templates[0].target_index, Some(0), "a template may target itself");
+        assert_eq!(fx.emitters[0].ppe, (i32::MAX, i32::MIN));
+        // Division by the (int) divisor with any count.
+        for n in [i32::MIN, -1, 0, 1, i32::MAX] {
+            for d in [1, 2, 8, i32::MAX] {
+                let _ = ceil_div(n, d);
+            }
+        }
     }
 
     #[test]

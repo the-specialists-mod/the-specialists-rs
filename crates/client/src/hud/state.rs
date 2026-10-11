@@ -14,6 +14,8 @@ pub const GRID_ROWS: usize = 17;
 pub const GRID_BUCKETS: usize = 11;
 pub const MAX_TS_MESSAGES: usize = 16;
 pub const MAX_OBJECTIVES: usize = 32;
+/// The team names `TeamNames` keeps (`0x10064df0` stores teams 1..4).
+pub const MAX_TEAM_NAMES: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Slot {
@@ -665,7 +667,10 @@ impl Hud {
                 }
             }
             Msg::TeamNames => {
-                let Some(names) = p::decode_team_names(buf) else { return false };
+                let Some(mut names) = p::decode_team_names(buf) else { return false };
+                // `0x10064df0` stores only teams 1..4 (64-byte names at `+0x8fc`); the rest are
+                // skipped, so the team menu never sees more than four.
+                names.truncate(MAX_TEAM_NAMES);
                 self.team_names = names;
                 for n in &self.team_names {
                     if !self.team_scores.iter().any(|t| t.name.eq_ignore_ascii_case(n)) {
@@ -1172,6 +1177,60 @@ mod tests {
         assert!(toggles(0, 13, true), "kung fu to a gun: first person");
         assert!(!toggles(13, 13, true) && !toggles(12, 13, true), "not on a gun-to-gun change");
         assert!(!toggles(0, 13, false));
+    }
+
+    /// Every handler takes any payload (empty, all 0xff, oversized, random, no NUL) and keeps
+    /// its indexed state in range.
+    #[test]
+    fn handlers_survive_garbage() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut bufs: Vec<Vec<u8>> = vec![vec![], vec![0xff; 1], vec![0xff; 16], vec![0xff; 700], vec![0; 32], b"%999999999s\0".to_vec()];
+        for _ in 0..60 {
+            let n = (next() % 48) as usize;
+            bufs.push((0..n).map(|_| next() as u8).collect());
+        }
+        let s = Screen::default();
+        let mut h = Hud::default();
+        for third in [false, true] {
+            let c = Ctx { third_person: third, thirdperson_switch: true, cl_thirdperson: f32::NAN, now: f32::MAX, ..ctx(&s) };
+            for b in &bufs {
+                for &(m, _, _) in shared::protocol::MESSAGES {
+                    let mut fx = Vec::new();
+                    h.apply(m, b, &c, &mut fx);
+                    // A TextMsg whose format pads to a huge width stays bounded.
+                    for f in &fx {
+                        if let Effect::ConsolePrint(t) | Effect::CenterPrint(t) | Effect::SayText(t, _) = f {
+                            assert!(t.len() < 0x10000);
+                        }
+                    }
+                }
+                h.regen_kungfu(f32::INFINITY);
+                h.tick_round_timer(f32::NAN);
+                let _ = h.menu_select(i32::MIN);
+                let _ = h.menu_select(10);
+            }
+        }
+        assert_eq!((h.players.len(), h.messages.len(), h.objectives.len()), (MAX_CLIENTS + 1, MAX_TS_MESSAGES, MAX_OBJECTIVES));
+        assert!(h.ammo_type(i32::MIN) < 16 && h.ammo_type(i32::MAX) < 16);
+        assert!(h.team_names.len() <= MAX_TEAM_NAMES);
+        let mut many = vec![9u8];
+        for t in ["a", "b", "c", "d", "e", "f", "g", "h", "i"] {
+            many.extend_from_slice(t.as_bytes());
+            many.push(0);
+        }
+        let mut h = Hud::default();
+        assert!(h.apply(Msg::TeamNames, &many, &ctx(&s), &mut Vec::new()));
+        assert_eq!(h.team_names, ["a", "b", "c", "d"], "TS keeps four");
+        let mut h = Hud::default();
+        let mut fx = Vec::new();
+        h.apply(Msg::TextMsg, &TextMsg { dest: 4, strings: vec!["%999999999s|%-2147483648d|%".into()] }.encode(), &ctx(&s), &mut fx);
+        assert_eq!(h.center_text.len(), 2 * 0x400 + 2, "two fields padded to the cap, and two '|'");
     }
 
     #[test]

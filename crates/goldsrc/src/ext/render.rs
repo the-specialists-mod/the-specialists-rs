@@ -143,7 +143,8 @@ pub fn index_from_trace(tr: &mut pmtrace_s) -> i32 {
 
 /// `EV_IsLocal` takes a 0-based player number; this takes the entity index.
 pub fn is_local(entindex: i32) -> bool {
-    ev!(EV_IsLocal(entindex - 1)) != 0
+    // Wrapping as TS's C does: an event's entindex can be i32::MIN.
+    ev!(EV_IsLocal(entindex.wrapping_sub(1))) != 0
 }
 
 pub fn is_player(entindex: i32) -> bool {
@@ -192,7 +193,7 @@ pub fn set_screen_fade(f: &mut screenfade_s) {
 }
 
 /// Hooks a client event (`pfnHookEvent`). Events don't pass their name to the hook, so each
-/// hooked event gets its own trampoline slot (up to [`MAX_EVENT_HOOKS`]).
+/// hooked event gets its own trampoline slot (up to [`MAX_EVENT_HOOKS`]; later ones are ignored).
 pub fn hook_event(name: &'static CStr, f: fn(&event_args_s)) {
     let slot = {
         let mut hooks = EVENT_HOOKS.0.borrow_mut();
@@ -201,8 +202,9 @@ pub fn hook_event(name: &'static CStr, f: fn(&event_args_s)) {
                 hooks[i].1 = f;
                 i
             }
+            // Out of trampolines: leave the event unhooked rather than panic (TS hooks eleven).
+            None if hooks.len() >= MAX_EVENT_HOOKS => return,
             None => {
-                assert!(hooks.len() < MAX_EVENT_HOOKS, "too many event hooks");
                 hooks.push((name, f));
                 hooks.len() - 1
             }

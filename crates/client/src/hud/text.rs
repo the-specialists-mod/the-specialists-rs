@@ -176,6 +176,9 @@ pub enum Arg<'a> {
     S(&'a str),
 }
 
+/// The widest field [`format`] pads to (the size of `BufferedLocaliseTextString`'s buffer).
+const MAX_FORMAT_WIDTH: usize = 0x400;
+
 /// Minimal `sprintf` for the TS titles strings: `%i %d %s %c %%`, with optional width digits.
 pub fn format(fmt: &str, args: &[Arg]) -> String {
     let mut out = String::new();
@@ -219,8 +222,17 @@ pub fn format(fmt: &str, args: &[Arg]) -> String {
         if conv != '%' {
             next += 1;
         }
-        let w: i32 = width.trim_start_matches('-').parse().unwrap_or(0);
-        let pad = (w as usize).saturating_sub(s.chars().count());
+        // Guarded: the format string can come from the server (`TextMsg`), and a width like
+        // `%999999999s` would pad by gigabytes; TS's `sprintf` would overrun its 128-byte buffer.
+        let digits = width.trim_start_matches('-');
+        let w = match digits.parse::<usize>() {
+            Ok(w) => w,
+            // All digits but too many for a usize: as wide as it gets.
+            Err(_) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => usize::MAX,
+            Err(_) => 0,
+        }
+        .min(MAX_FORMAT_WIDTH);
+        let pad = w.saturating_sub(s.chars().count());
         if width.starts_with('-') {
             out.push_str(&s);
             out.extend(std::iter::repeat_n(' ', pad));
@@ -327,5 +339,33 @@ mod tests {
         assert_eq!(format("%i_%i ", &[Arg::I(5), Arg::I(2)]), "5_2 ");
         assert_eq!(format("%c %s", &[Arg::I('3' as i64), Arg::S("AK47")]), "3 AK47");
         assert_eq!(format("%3d|%-3d|%%", &[Arg::I(7), Arg::I(8)]), "  7|8  |%");
+    }
+
+    /// Server-supplied format strings: huge widths are capped, odd conversions and a trailing
+    /// `%` are harmless, and localising any bytes into any buffer size stays in bounds.
+    #[test]
+    fn hostile_formats_and_sources() {
+        assert_eq!(format("%999999999s", &[Arg::S("x")]).len(), MAX_FORMAT_WIDTH);
+        assert_eq!(format("%99999999999999999999999d", &[Arg::I(1)]).len(), MAX_FORMAT_WIDTH);
+        assert_eq!(format("%--5s|%5-3d|%", &[Arg::S("a"), Arg::I(2)]), "a    |2|");
+        assert_eq!(format("%c%c", &[Arg::I(-1), Arg::I(0x11_0000)]), "");
+        let mut seed = 0x1234_5678_9abc_def1u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..300 {
+            let n = (next() % 40) as usize;
+            let src: Vec<u8> = (0..n).map(|_| [b'#', b'B', b'%', 0, 0xff, b'u'][(next() % 6) as usize]).collect();
+            let size = (next() % 12) as usize;
+            assert!(localise_text_string(&T, &src, size).len() <= size);
+            let _ = lookup_string(&T, &src, Some(&mut 0));
+            let _ = buffered_localise(&T, &src);
+            let s = super::super::saytext::string(&src);
+            let _ = format(&s, &[Arg::S(&s), Arg::I(i64::MIN)]);
+            assert!(string_len(&Screen::default(), &s) >= 0);
+        }
     }
 }

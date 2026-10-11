@@ -6,15 +6,25 @@
 #[derive(Clone, Copy)]
 pub struct Bytes<'a>(pub &'a [u8]);
 
+/// The largest offset [`at`] produces. Offsets come from the model's own (untrusted) `int`
+/// indexes and counts; capped, the small field offsets added after them can't overflow `usize`
+/// (32 bits on i686), and a read there is simply out of range.
+const MAX_OFFSET: usize = usize::MAX / 4;
+
+/// `base + add` for offsets taken from model data, saturating at [`MAX_OFFSET`].
+pub fn at(base: usize, add: usize) -> usize {
+    base.saturating_add(add).min(MAX_OFFSET)
+}
+
 impl<'a> Bytes<'a> {
     pub fn i32(&self, off: usize) -> i32 {
-        self.0.get(off..off + 4).map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        off.checked_add(4).and_then(|end| self.0.get(off..end)).map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
     pub fn f32(&self, off: usize) -> f32 {
         f32::from_bits(self.i32(off) as u32)
     }
     pub fn i16(&self, off: usize) -> i16 {
-        self.0.get(off..off + 2).map_or(0, |b| i16::from_le_bytes([b[0], b[1]]))
+        off.checked_add(2).and_then(|end| self.0.get(off..end)).map_or(0, |b| i16::from_le_bytes([b[0], b[1]]))
     }
     pub fn u16(&self, off: usize) -> u16 {
         self.i16(off) as u16
@@ -23,11 +33,11 @@ impl<'a> Bytes<'a> {
         self.0.get(off).copied().unwrap_or(0)
     }
     pub fn vec3(&self, off: usize) -> [f32; 3] {
-        [self.f32(off), self.f32(off + 4), self.f32(off + 8)]
+        [self.f32(off), self.f32(off.saturating_add(4)), self.f32(off.saturating_add(8))]
     }
     /// A NUL-terminated name in a fixed `char[len]` field.
     pub fn name(&self, off: usize, len: usize) -> &'a [u8] {
-        let field = self.0.get(off..(off + len).min(self.0.len())).unwrap_or(&[]);
+        let field = self.0.get(off..off.saturating_add(len).min(self.0.len())).unwrap_or(&[]);
         let end = field.iter().position(|&c| c == 0).unwrap_or(field.len());
         &field[..end]
     }
@@ -142,7 +152,7 @@ impl<'a> Studio<'a> {
     }
 
     fn table(&self, index_off: usize, i: usize, size: usize) -> usize {
-        count(self.b.i32(index_off)) + i * size
+        at(count(self.b.i32(index_off)), i.saturating_mul(size))
     }
 
     pub fn bone(&self, i: usize) -> Bone<'a> {
@@ -211,15 +221,15 @@ pub struct Anim<'a> {
 impl<'a> Anim<'a> {
     /// The anim of blend `blend` (`panim += numbones` per blend).
     pub fn blend(self, blend: usize, numbones: usize) -> Self {
-        Anim { data: self.data, base: self.base + blend * numbones * ANIM_SIZE }
+        Anim { data: self.data, base: at(self.base, blend.saturating_mul(numbones).saturating_mul(ANIM_SIZE)) }
     }
 
     /// Byte offset of bone `bone`'s channel `ch` (0..2 position, 3..5 rotation) value run, or
     /// None when the channel is constant (`offset[ch] == 0`).
     fn channel(&self, bone: usize, ch: usize) -> Option<usize> {
-        let panim = self.base + bone * ANIM_SIZE;
+        let panim = at(self.base, bone.saturating_mul(ANIM_SIZE));
         let off = self.data.u16(panim + 2 * ch) as usize;
-        (off != 0).then_some(panim + off)
+        (off != 0).then_some(at(panim, off))
     }
 
     /// Finds the run that holds `frame` (`num.valid`, `num.total` in each run header, followed by
@@ -237,7 +247,7 @@ impl<'a> Anim<'a> {
         while total <= k {
             k -= total;
             let valid = d.u8(p) as i32;
-            p += (valid as usize + 1) * 2;
+            p = at(p, (valid as usize + 1) * 2);
             let (v, t) = (d.u8(p) as i32, d.u8(p + 1) as i32);
             if t < v {
                 k = 0;
@@ -254,7 +264,7 @@ impl<'a> Anim<'a> {
 
     /// Value `i` of the run at `p` (`panimvalue[i].value`).
     fn value(&self, p: usize, i: i32) -> f32 {
-        self.data.i16(p + 2 * i.max(0) as usize) as f32
+        self.data.i16(at(p, 2 * i.max(0) as usize)) as f32
     }
 
     /// The two raw rotation samples (frame, frame + 1) of a channel, as `StudioCalcBoneQuaterion`
@@ -479,5 +489,49 @@ pub(crate) mod tests {
         // Garbage offsets read as zero and never loop forever.
         let bad = Anim { data: Bytes(&[1, 0, 0xff, 0xff]), base: 0 };
         assert!(bad.rotation_samples(0, 0, 200).is_some());
+    }
+
+    /// Random, all-0xff and truncated model data and huge offsets: every read stays in bounds and
+    /// no offset arithmetic overflows (`usize` is 32 bits on i686).
+    #[test]
+    fn garbage_models_never_panic() {
+        let mut x = 0x9e37_79b9_u32;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        let mut bufs: Vec<Vec<u8>> = vec![vec![], vec![0xff; 300], vec![0x7f; 4096]];
+        for n in 0..40 {
+            bufs.push((0..(n * 37) % 2000).map(|_| rnd() as u8).collect());
+        }
+        for b in &bufs {
+            let m = Studio::new(b);
+            for i in [0, 1, m.numbones().saturating_sub(1), usize::MAX / 2, usize::MAX] {
+                m.bone(i);
+                m.bone_controller(i);
+                m.attachment(i);
+            }
+            for i in [-1, 0, 1, i32::MAX, i32::MIN, m.numseq().saturating_sub(1)] {
+                m.seq(i);
+                m.seqgroup(i);
+            }
+            for base in [0, 7, usize::MAX / 2, usize::MAX - 3, usize::MAX] {
+                let a = Anim { data: Bytes(b), base };
+                for blend in [0, 3, usize::MAX] {
+                    let a = a.blend(blend, 128);
+                    for (bone, frame) in [(0, 0), (127, 255), (usize::MAX, i32::MAX), (5, i32::MIN), (1, -1)] {
+                        a.rotation_samples(bone, 3, frame);
+                        a.position_sample(bone, 2, frame, 0.5);
+                    }
+                }
+            }
+        }
+        let b = Bytes(&[1, 2, 3, 4, 5]);
+        assert_eq!((b.i32(usize::MAX), b.i16(usize::MAX - 1), b.u8(usize::MAX)), (0, 0, 0));
+        assert_eq!(b.vec3(usize::MAX), [0.0; 3]);
+        assert_eq!(b.name(usize::MAX, 32), b"");
+        assert_eq!(b.name(3, usize::MAX), [4, 5]);
     }
 }

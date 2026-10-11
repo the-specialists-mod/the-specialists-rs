@@ -243,7 +243,8 @@ pub fn unpack_clientdata(cd: &clientdata_t, gun: &mut Gun) -> u16 {
         s.left = cd.ammo_nails;
         // `clip - left`, 0 when below 1 (client `0x10003ae1..0x10003aed`: `setle`/`dec`/`and`).
         // Only the client unpacks; the server keeps its own records.
-        s.right = (s.clip - s.left).max(0);
+        // Wrapping as TS's int subtraction: both come from the server's delta data.
+        s.right = s.clip.wrapping_sub(s.left).max(0);
         s.in_reload = cd.vuser4[2] as i32;
         s.state = cd.vuser2[0] as i32;
         s.alt_grip = cd.vuser2[2] != 0.0;
@@ -340,5 +341,71 @@ mod tests {
         pack_weapon_data(&g, &mut wd);
         assert_eq!(wd.m_iId, 16);
         assert_eq!(wd.m_flNextPrimaryAttack, -0.001);
+    }
+
+    fn xorshift(seed: u64) -> impl FnMut() -> u64 {
+        let mut x = seed;
+        move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        }
+    }
+
+    /// The message readers take any bytes: short, oversized, unterminated or non-UTF-8 strings.
+    #[test]
+    fn readers_survive_garbage() {
+        let mut next = xorshift(0x1234_5678_9abc_def1);
+        let mut bufs: Vec<Vec<u8>> = vec![vec![], vec![0xff], vec![0xff; 32], vec![b'a'; 100]];
+        for _ in 0..2000 {
+            let len = (next() % 24) as usize;
+            bufs.push((0..len).map(|_| next() as u8).collect());
+        }
+        for b in &bufs {
+            let _ = WeaponInfo::read(b);
+            let _ = WStatus::read(b);
+            let _ = ActItems::read(b);
+            let _ = read_kfu_power(b);
+            let mut r = Reader::new(b);
+            for _ in 0..8 {
+                let _ = (r.byte(), r.char(), r.short(), r.string());
+            }
+            let _ = parse_custom_wp(&String::from_utf8_lossy(b));
+        }
+        assert_eq!(WeaponInfo::read(&[1, 2, 3, 4, 5]), None, "one byte short");
+        assert_eq!(parse_custom_wp("999 nan inf -inf 1e40 99999999999"), None, "id and cost out of range");
+    }
+
+    /// `clientdata_t` comes from the server's delta: any id, NaN and huge values unpack without a
+    /// panic.
+    #[test]
+    fn unpack_clientdata_survives_any_values() {
+        let vals = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 0.0, 8.0, 37.0, 38.0, 255.0, 1e10, -1e10];
+        let ints = [i32::MIN, -1, 0, 1, i32::MAX];
+        for &a in &vals {
+            for &n in &ints {
+                let cd = clientdata_t {
+                    vuser1: [a; 3],
+                    vuser2: [a; 3],
+                    vuser3: [a; 3],
+                    vuser4: [a; 3],
+                    ammo_nails: n,
+                    ammo_shells: n,
+                    m_flNextAttack: a,
+                    ..Default::default()
+                };
+                let mut g = Gun::default();
+                unpack_clientdata(&cd, &mut g);
+                assert!(g.status.iter().all(|s| s.right >= 0));
+            }
+        }
+        let mut cd = clientdata_t::default();
+        cd.vuser3[0] = id::BERETTA as f32;
+        cd.vuser4[1] = -3e9; // saturates to i32::MIN
+        cd.ammo_nails = 1;
+        let mut g = Gun::default();
+        unpack_clientdata(&cd, &mut g);
+        assert_eq!(g.status[id::BERETTA as usize].right, i32::MAX, "clip - left wraps as TS's int does");
     }
 }

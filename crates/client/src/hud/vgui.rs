@@ -102,7 +102,7 @@ impl BitmapFont {
         let id_len = data[0] as usize;
         let w = u16::from_le_bytes([data[12], data[13]]) as usize;
         let h = u16::from_le_bytes([data[14], data[15]]) as usize;
-        if w < 256 || h == 0 {
+        if w < 256 || h == 0 || !tga_fits(data.len(), id_len, 4, w * h) {
             return None;
         }
         let mut px = vec![[0u8; 4]; w * h];
@@ -288,6 +288,11 @@ impl Image {
         let (id_len, rle, bits) = (data[0] as usize, data[2] == 10, data[16]);
         let w = u16::from_le_bytes([data[12], data[13]]) as usize;
         let h = u16::from_le_bytes([data[14], data[15]]) as usize;
+        // RLE packets repeat a pixel at most 128 times; raw pixels take `bits / 8` bytes each.
+        let packet = if rle { 1 + bits as usize / 8 } else { 128 * (bits as usize / 8) };
+        if !tga_fits(data.len(), id_len, packet, w * h) {
+            return None;
+        }
         let mut px = vec![[0u8; 4]; w * h];
         let mut p = 18 + id_len;
         let read = |p: &mut usize| -> Option<[u8; 4]> {
@@ -337,10 +342,26 @@ impl Image {
         Some(Image { wide: w as i32, tall: h as i32, px })
     }
 
+    /// The pixel at (`x`, `y`); transparent black outside the image.
     pub fn pixel(&self, x: i32, y: i32) -> [u8; 4] {
-        self.px[(y * self.wide + x) as usize]
+        if !(0..self.wide).contains(&x) || !(0..self.tall).contains(&y) {
+            return [0; 4];
+        }
+        self.px.get((y * self.wide + x) as usize).copied().unwrap_or([0; 4])
     }
 }
+
+/// Whether a TGA of `data_len` bytes can hold `pixels` pixels when each `packet` bytes give at
+/// most 128 of them, and the image stays under [`MAX_TGA_PIXELS`]. Guarded: the header's 16-bit
+/// width and height would otherwise size the pixel buffer (up to 17 GB) before the data runs out.
+fn tga_fits(data_len: usize, id_len: usize, packet: usize, pixels: usize) -> bool {
+    let avail = data_len.saturating_sub(18 + id_len);
+    pixels <= MAX_TGA_PIXELS && pixels <= avail.div_ceil(packet).saturating_mul(128)
+}
+
+/// The largest VGUI1 TGA the port decodes (64 MB of pixels); the shipped fonts are under a
+/// million pixels.
+const MAX_TGA_PIXELS: usize = 1 << 24;
 
 /// Tokens as `COM_ParseFile` splits them: whitespace-separated, `"…"` quoted, `//` comments.
 fn tokens(text: &str) -> Vec<String> {
@@ -657,8 +678,9 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// Corners wrap as VGUI's C ints do.
     pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Rect {
-        Rect { x0: x, y0: y, x1: x + w, y1: y + h }
+        Rect { x0: x, y0: y, x1: x.wrapping_add(w), y1: y.wrapping_add(h) }
     }
     pub fn intersect(self, o: Rect) -> Rect {
         Rect { x0: self.x0.max(o.x0), y0: self.y0.max(o.y0), x1: self.x1.min(o.x1), y1: self.y1.min(o.y1) }
@@ -703,7 +725,7 @@ impl Panel {
     /// A child at (`x`, `y`) in this panel (`Panel::solve`: after this panel's inset), clipped to
     /// its bounds and this panel's clip rectangle.
     pub fn child(&self, x: i32, y: i32, w: i32, h: i32) -> Panel {
-        let (ax, ay) = (self.x + self.inset + x, self.y + self.inset + y);
+        let (ax, ay) = (self.x.wrapping_add(self.inset).wrapping_add(x), self.y.wrapping_add(self.inset).wrapping_add(y));
         Panel { x: ax, y: ay, w, h, inset: 0, clip: Rect::new(ax, ay, w, h).intersect(self.clip) }
     }
 
@@ -714,12 +736,13 @@ impl Panel {
 
     /// `Panel::getPaintSize`: the size inside the border.
     pub fn paint_size(&self) -> (i32, i32) {
-        (self.w - 2 * self.inset, self.h - 2 * self.inset)
+        let border = self.inset.wrapping_mul(2);
+        (self.w.wrapping_sub(border), self.h.wrapping_sub(border))
     }
 
     /// `Panel::isWithin`: a screen point inside the panel's bounds (not its clip).
     pub fn is_within(&self, x: i32, y: i32) -> bool {
-        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+        x >= self.x && x < self.x.wrapping_add(self.w) && y >= self.y && y < self.y.wrapping_add(self.h)
     }
 
     fn fill_abs(&self, s: &mut dyn Surface, r: Rect, c: Color) {
@@ -729,22 +752,24 @@ impl Panel {
         }
         let r = r.intersect(self.clip);
         if !r.is_empty() {
-            s.fill(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, c.rgb(), c.opacity());
+            s.fill(r.x0, r.y0, r.x1.wrapping_sub(r.x0), r.y1.wrapping_sub(r.y0), c.rgb(), c.opacity());
         }
     }
 
     /// `drawFilledRect(x0, y0, x1, y1)` in the panel's paint coordinates (inside its inset).
     pub fn fill_rect(&self, s: &mut dyn Surface, x0: i32, y0: i32, x1: i32, y1: i32, c: Color) {
-        let (ox, oy) = (self.x + self.inset, self.y + self.inset);
-        self.fill_abs(s, Rect { x0: ox + x0, y0: oy + y0, x1: ox + x1, y1: oy + y1 }, c);
+        let (ox, oy) = (self.x.wrapping_add(self.inset), self.y.wrapping_add(self.inset));
+        let r = Rect { x0: ox.wrapping_add(x0), y0: oy.wrapping_add(y0), x1: ox.wrapping_add(x1), y1: oy.wrapping_add(y1) };
+        self.fill_abs(s, r, c);
     }
 
     /// `drawOutlinedRect`: four 1-pixel fills (`Surface::drawOutlinedRect`).
     pub fn outlined_rect(&self, s: &mut dyn Surface, x0: i32, y0: i32, x1: i32, y1: i32, c: Color) {
-        self.fill_rect(s, x0, y0, x1, y0 + 1, c);
-        self.fill_rect(s, x0, y1 - 1, x1, y1, c);
-        self.fill_rect(s, x0, y0 + 1, x0 + 1, y1 - 1, c);
-        self.fill_rect(s, x1 - 1, y0 + 1, x1, y1 - 1, c);
+        let (x0p, y0p, x1m, y1m) = (x0.wrapping_add(1), y0.wrapping_add(1), x1.wrapping_sub(1), y1.wrapping_sub(1));
+        self.fill_rect(s, x0, y0, x1, y0p, c);
+        self.fill_rect(s, x0, y1m, x1, y1, c);
+        self.fill_rect(s, x0, y0p, x0p, y1m, c);
+        self.fill_rect(s, x1m, y0p, x1, y1m, c);
     }
 
     /// `Panel::paintBackground`: the paint size in the background colour.
@@ -755,11 +780,13 @@ impl Panel {
 
     /// `LineBorder::paint`: drawn at the panel's own origin (no inset).
     pub fn line_border(&self, s: &mut dyn Surface, c: Color) {
-        let (x, y, w, h, i) = (self.x, self.y, self.w, self.h, self.inset);
-        self.fill_abs(s, Rect { x0: x, y0: y, x1: x + w, y1: y + i }, c);
-        self.fill_abs(s, Rect { x0: x, y0: y + h - i, x1: x + w, y1: y + h }, c);
-        self.fill_abs(s, Rect { x0: x, y0: y + i, x1: x + i, y1: y + h - i }, c);
-        self.fill_abs(s, Rect { x0: x + w - i, y0: y + i, x1: x + w, y1: y + h - i }, c);
+        let (x, y, i) = (self.x, self.y, self.inset);
+        let (xw, yh) = (x.wrapping_add(self.w), y.wrapping_add(self.h));
+        let (xi, yi, xwi, yhi) = (x.wrapping_add(i), y.wrapping_add(i), xw.wrapping_sub(i), yh.wrapping_sub(i));
+        self.fill_abs(s, Rect { x0: x, y0: y, x1: xw, y1: yi }, c);
+        self.fill_abs(s, Rect { x0: x, y0: yhi, x1: xw, y1: yh }, c);
+        self.fill_abs(s, Rect { x0: x, y0: yi, x1: xi, y1: yhi }, c);
+        self.fill_abs(s, Rect { x0: xwi, y0: yi, x1: xw, y1: yhi }, c);
     }
 
     /// `TextImage::paint` of `text` at (`x`, `y`) in paint coordinates, laid out `wrap` wide.
@@ -768,11 +795,11 @@ impl Panel {
         if c.a == 255 {
             return;
         }
-        let (ox, oy) = (self.x + self.inset + x, self.y + self.inset + y);
+        let (ox, oy) = (self.x.wrapping_add(self.inset).wrapping_add(x), self.y.wrapping_add(self.inset).wrapping_add(y));
         font.paint(text, wrap, |rx, ry, w, h| {
-            let r = Rect::new(ox + rx, oy + ry, w, h).intersect(self.clip);
+            let r = Rect::new(ox.wrapping_add(rx), oy.wrapping_add(ry), w, h).intersect(self.clip);
             if !r.is_empty() {
-                s.fill(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, c.rgb(), c.opacity());
+                s.fill(r.x0, r.y0, r.x1.wrapping_sub(r.x0), r.y1.wrapping_sub(r.y0), c.rgb(), c.opacity());
             }
         });
     }
@@ -781,11 +808,11 @@ impl Panel {
     /// colour (`drawSetColor` before `drawTexturedRect`), each pixel's opacity scaled by the
     /// colour's. Runs of equal pixels share a fill.
     pub fn image(&self, s: &mut dyn Surface, img: &Image, x: i32, y: i32, c: Color) {
-        let (ox, oy) = (self.x + self.inset + x, self.y + self.inset + y);
+        let (ox, oy) = (self.x.wrapping_add(self.inset).wrapping_add(x), self.y.wrapping_add(self.inset).wrapping_add(y));
         let m = |t: u8, k: u8| ((t as u32 * k as u32 + 127) / 255) as u8;
         let out = |p: [u8; 4]| ([m(p[0], c.r), m(p[1], c.g), m(p[2], c.b)], m(p[3], c.opacity()));
         for py in 0..img.tall {
-            let sy = oy + py;
+            let sy = oy.wrapping_add(py);
             if sy < self.clip.y0 || sy >= self.clip.y1 {
                 continue;
             }
@@ -800,9 +827,9 @@ impl Panel {
                 if o.1 == 0 {
                     continue;
                 }
-                let r = Rect::new(ox + start, sy, px - start, 1).intersect(self.clip);
+                let r = Rect::new(ox.wrapping_add(start), sy, px - start, 1).intersect(self.clip);
                 if !r.is_empty() {
-                    s.fill(r.x0, r.y0, r.x1 - r.x0, 1, o.0, o.1);
+                    s.fill(r.x0, r.y0, r.x1.wrapping_sub(r.x0), 1, o.0, o.1);
                 }
             }
         }
@@ -1037,6 +1064,75 @@ SchemeName = "No Size"
         assert_eq!((img.pixel(0, 0), img.pixel(0, 1)), ([9, 9, 9, 10], [9, 9, 9, 10]));
         assert_eq!(Image::from_tga(&r, true).unwrap().pixel(0, 0)[3], 245);
         assert!(Image::from_tga(&r[..20], true).is_none(), "truncated");
+    }
+
+    /// Game-dir TGAs can claim any size: a 65535×65535 header with no data is refused before
+    /// anything is allocated, and truncated or random files decode to `None` or an image.
+    #[test]
+    fn hostile_tgas() {
+        for (kind, bits) in [(2u8, 24u8), (2, 32), (10, 24), (10, 32)] {
+            let mut d = vec![0, 0, kind, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, bits, 0];
+            assert!(Image::from_tga(&d, true).is_none());
+            assert!(BitmapFont::from_tga(&d).is_none());
+            // One RLE packet can cover 128 pixels: enough data for a 128-wide row is accepted.
+            d[12..16].copy_from_slice(&[128, 0, 1, 0]);
+            d.extend_from_slice(&[0xff, 1, 2, 3, 4]);
+            assert_eq!(Image::from_tga(&d, false).is_some(), kind == 10);
+        }
+        let mut seed = 0x0bad_c0de_dead_beefu64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for i in 0..400 {
+            let n = 18 + (next() % 300) as usize;
+            let mut d: Vec<u8> = (0..n).map(|_| next() as u8).collect();
+            d[2] = [2, 10][i % 2];
+            d[16] = [24, 32][(i / 2) % 2];
+            d[1] = 0;
+            d[13] %= 2;
+            d[15] %= 2;
+            if let Some(img) = Image::from_tga(&d, i % 3 == 0) {
+                let _ = (img.pixel(-1, 0), img.pixel(img.wide, img.tall), img.pixel(i32::MAX, i32::MIN));
+                Panel::root(64, 64).image(&mut Record::default(), &img, i32::MIN / 2, 3, Color::new(1, 2, 3, 4));
+            }
+            if let Some(f) = BitmapFont::from_tga(&d) {
+                let _ = (f.text_size(&d), f.text_size_wrapped(&d, i32::MIN), f.chars_wide(&d));
+            }
+        }
+    }
+
+    /// Panels and rectangles at the ends of the int range draw without overflowing.
+    #[test]
+    fn panels_at_extreme_coordinates() {
+        let ends = [i32::MIN, -1, 0, 1, i32::MAX];
+        let mut s = Record::default();
+        let font = test_font();
+        for &a in &ends {
+            for &b in &ends {
+                let p = Panel::root(a, b).bordered().child(a, b, b, a).bordered();
+                p.fill_rect(&mut s, a, b, b, a, Color::new(1, 1, 1, 0));
+                p.outlined_rect(&mut s, a, b, b, a, Color::new(1, 1, 1, 0));
+                p.line_border(&mut s, Color::new(1, 1, 1, 0));
+                p.paint_background(&mut s, Color::new(1, 1, 1, 0));
+                p.text(&mut s, &font, a, b, Color::new(1, 1, 1, 0), b"A. A", a);
+                let _ = (p.is_within(a, b), p.paint_size(), Rect::new(a, b, a, b).is_empty());
+            }
+        }
+    }
+
+    /// A scheme file of random tokens parses into something usable.
+    #[test]
+    fn hostile_schemes() {
+        let bad = "SchemeName = \nFontSize = 99999999999 FgColor = \"-5 999 x\" = = = // \n\"unterminated";
+        let s = Schemes::load(i32::MAX, true, &|p: &str| p.ends_with("textscheme.txt").then(|| bad.as_bytes().to_vec()));
+        assert!(!s.schemes.is_empty());
+        let _ = (s.get("nope"), s.font_of(""));
+        let s = Schemes::load(i32::MIN, false, &|_: &str| Some(vec![0xff; 64]));
+        assert_eq!(s.get("x").name, "Default Scheme");
+        assert_eq!(rgba("300 -1 1e9 nan 7"), [44, 255, 0, 0]);
     }
 
     #[test]

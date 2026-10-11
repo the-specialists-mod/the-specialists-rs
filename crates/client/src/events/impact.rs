@@ -111,8 +111,10 @@ pub fn texture_sound(tr: &mut pmtrace_s, src: Vec3, end: Vec3, bullet_type: i32)
     if material_roll_plays(roll) {
         // The pitch's `RandomLong(-5, 5)` comes before the sample's (`0x10044ffd`, `0x10045040`).
         let pitch = slow_pitch();
-        let s = sounds[r::random_long(0, sounds.len() as i32 - 1) as usize];
-        engine().ev_play_sound(0, tr.endpos, CHAN_STATIC as i32, s, vol, MATERIAL_ATTN, 0, pitch);
+        // `get`: the engine's RandomLong is trusted to stay in range, but not to the point of a crash.
+        if let Some(s) = usize::try_from(r::random_long(0, sounds.len() as i32 - 1)).ok().and_then(|i| sounds.get(i)) {
+            engine().ev_play_sound(0, tr.endpos, CHAN_STATIC as i32, s, vol, MATERIAL_ATTN, 0, pitch);
+        }
     }
     tex
 }

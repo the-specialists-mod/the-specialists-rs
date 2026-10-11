@@ -553,7 +553,8 @@ pub fn ease_fov(cur: f32, target: f32, ft: f32) -> f32 {
     if cur == target {
         return cur as f32;
     }
-    let step = (((target - cur).abs() / 2) as f64 * (ft as f64) * 50.0).max(1.0);
+    // C `int` arithmetic: a server FOV far from the current one wraps rather than overflowing.
+    let step = ((target.wrapping_sub(cur).wrapping_abs() / 2) as f64 * (ft as f64) * 50.0).max(1.0);
     let next = if cur < target { ((cur as f64 + step) as i32).min(target) } else { ((cur as f64 - step) as i32).max(target) };
     next as f32
 }
@@ -1699,6 +1700,12 @@ mod tests {
         assert_eq!(ease_fov(22.0, 20.0, 0.0), 21.0);
         assert_eq!(ease_fov(0.0, 35.0, 0.016), 35.0, "unset snaps");
         assert_eq!(ease_fov(85.0, 20.0, 1.0), 20.0, "never passes the target");
+        // A server FOV of any value (the `int` difference wraps as in C, no overflow).
+        for (cur, target) in [(90.0, -3e9), (90.0, 3e9), (3e9, -3e9), (-3e9, 3e9), (90.0, f32::NAN), (f32::INFINITY, f32::NEG_INFINITY)] {
+            for ft in [0.0, 0.016, f32::NAN, f32::INFINITY, -1.0] {
+                ease_fov(cur, target, ft);
+            }
+        }
     }
 
     #[test]

@@ -209,25 +209,26 @@ fn draw_notice(d: &DeathNotice, y: i32, screen_width: i32, skull: Option<usize>,
     // Guarded: with no `d_skull` in hud.txt TS uses index -1 and reads a rectangle from before
     // the table; the port gives it no width and draws no sprite.
     let rect = skull.and_then(|i| sprites.rects.get(i)).copied().unwrap_or_default();
-    let sprite_width = rect.right - rect.left;
+    // C int arithmetic: the rectangle is hud.txt data and the widths the engine's.
+    let sprite_width = rect.right.wrapping_sub(rect.left);
     let victim_width = c.console_size(&d.victim).0;
     let mut x = if d.weapon.is_empty() {
-        screen_width - sprite_width - victim_width - 5
+        screen_width.wrapping_sub(sprite_width).wrapping_sub(victim_width).wrapping_sub(5)
     } else {
-        screen_width - c.console_size(&d.weapon).0 - victim_width - 10
+        screen_width.wrapping_sub(c.console_size(&d.weapon).0).wrapping_sub(victim_width).wrapping_sub(10)
     };
     if !d.suicide {
-        x -= 5 + c.console_size(&d.killer).0;
-        x = c.console_string(x, y, d.killer_color, &d.killer) + 5;
+        x = x.wrapping_sub(c.console_size(&d.killer).0.wrapping_add(5));
+        x = c.console_string(x, y, d.killer_color, &d.killer).wrapping_add(5);
     }
     if d.weapon.is_empty() {
         let rgb = if d.team_kill { [10, 240, 10] } else { [255, 255, 255] };
         if let Some(i) = skull {
             c.sprite(i, rgb, x, y);
         }
-        x += sprite_width;
+        x = x.wrapping_add(sprite_width);
     } else {
-        x = c.console_string(x, y, Some([1.0, 0.5, 0.2]), &d.weapon) + 5;
+        x = c.console_string(x, y, Some([1.0, 0.5, 0.2]), &d.weapon).wrapping_add(5);
     }
     if !d.non_player_kill {
         c.console_string(x, y, d.victim_color, &d.victim);
@@ -458,6 +459,46 @@ mod tests {
         n.draw(6.5, false, 640, &sprites, &mut r);
         assert!(r.0.is_empty());
         assert_eq!(n.list.len(), 0, "display time 6 passed");
+    }
+
+    /// Any killer/victim bytes, long names and weapons, a wild `hud_deathnotice_time`, and a
+    /// hud.txt `d_skull` rectangle at the ends of the int range.
+    #[test]
+    fn hostile_notices_and_rects() {
+        struct Huge;
+        impl Canvas for Huge {
+            fn console_size(&self, _: &[u8]) -> (i32, i32) {
+                (i32::MAX, i32::MAX)
+            }
+            fn console_string(&mut self, _: i32, _: i32, _: Option<[f32; 3]>, _: &[u8]) -> i32 {
+                i32::MAX
+            }
+            fn character(&mut self, _: i32, _: i32, _: u8, _: [i32; 3]) {}
+            fn sprite(&mut self, _: usize, _: [i32; 3], _: i32, _: i32) {}
+        }
+        let long: &dyn Fn(u8) -> Option<Vec<u8>> = &|_| Some(vec![0xff; 500]);
+        let none: &dyn Fn(u8) -> Option<Vec<u8>> = &|_| None;
+        let mut n = DeathNotices::default();
+        for (i, t) in [f32::NAN, f32::INFINITY, -1e30, 6.0].into_iter().enumerate() {
+            for (k, v) in [(0u8, 0u8), (0xff, 0xff), (64, 65), (1, 0xff)] {
+                let env = DeathEnv { name: if i % 2 == 0 { long } else { none }, color: &colors, now: f32::MAX, cvar_time: t };
+                n.add(k, v, &[b'w'; 300], &env);
+                n.add(k, v, b"", &env);
+                assert!(n.list.len() <= MAX_DEATHNOTICES);
+            }
+        }
+        let sprites = HudSprites {
+            names: vec!["d_skull".into()],
+            handles: vec![],
+            rects: vec![wrect_t { left: i32::MIN, right: i32::MAX, top: 0, bottom: 0 }],
+            number_0: None,
+        };
+        for w in [i32::MIN, 0, i32::MAX] {
+            n.draw(0.0, true, w, &sprites, &mut Huge);
+        }
+        assert_eq!(client_color(&[], 3, -1), None);
+        assert_eq!(client_color(&[], 3, i32::MAX), None);
+        assert!(parse_menu("\\\\\\").is_empty());
     }
 
     #[test]

@@ -118,7 +118,8 @@ impl Slider {
         }
         let size = self.size();
         let span = (self.range[1] - self.range[0]) as f32;
-        let offset = (self.value - self.range[0]) as f32;
+        // The value can be `0x80000000` (see `recompute_value`): C int arithmetic, which wraps.
+        let offset = self.value.wrapping_sub(self.range[0]) as f32;
         let (pos, nob_size) = match self.kind {
             Kind::Vgui => {
                 // x87 throughout, each result stored as a float before the truncation.
@@ -134,7 +135,7 @@ impl Slider {
         };
         self.nob = [cvtt(pos), cvtt(pos as f32 as f64 + nob_size)];
         if self.nob[1] > size {
-            self.nob = [size - cvtt(nob_size), size];
+            self.nob = [size.wrapping_sub(cvtt(nob_size)), size];
         }
     }
 
@@ -143,7 +144,7 @@ impl Slider {
     fn recompute_value(&mut self) {
         let window = self.eff_window();
         let span = (self.range[1] - self.range[0]) as f32;
-        let mut offset = (self.value - self.range[0]) as f64;
+        let mut offset = self.value.wrapping_sub(self.range[0]) as f64;
         if window > 0.0 {
             let (size, nob0) = (self.size() as f64, self.nob[0] as f64);
             offset = match self.kind {
@@ -189,13 +190,14 @@ impl Slider {
             return false;
         }
         let size = self.size();
-        let d = if self.vertical { y - self.drag_start[1] } else { x - self.drag_start[0] };
-        self.nob = [self.nob_drag_start[0] + d, self.nob_drag_start[1] + d];
+        // Wrapping (C int arithmetic): a degenerate slider's nob can sit at `0x80000000`.
+        let d = if self.vertical { y.wrapping_sub(self.drag_start[1]) } else { x.wrapping_sub(self.drag_start[0]) };
+        self.nob = [self.nob_drag_start[0].wrapping_add(d), self.nob_drag_start[1].wrapping_add(d)];
         if self.nob[1] > size {
-            self.nob = [size - (self.nob[1] - self.nob[0]), size];
+            self.nob = [size.wrapping_sub(self.nob[1].wrapping_sub(self.nob[0])), size];
         }
         if self.nob[0] < 0 {
-            self.nob = [0, self.nob[1] - self.nob[0]];
+            self.nob = [0, self.nob[1].wrapping_sub(self.nob[0])];
         }
         self.recompute_value();
         true
@@ -276,7 +278,8 @@ impl ScrollBar {
 
     /// `doButtonPressed`: up (0) or down (1) by the step; true if the value changed.
     pub fn do_button_pressed(&mut self, i: usize) -> bool {
-        let v = self.slider.value + if i == 0 { -self.step } else { self.step };
+        // Wrapping: the value can be `0x80000000` after a degenerate drag (C int arithmetic).
+        let v = self.slider.value.wrapping_add(if i == 0 { -self.step } else { self.step });
         self.slider.set_value(v)
     }
 
@@ -308,7 +311,7 @@ impl ScrollBar {
         }
         let sp = self.slider_panel(parent);
         if within_clip(&sp, x, y) {
-            self.slider.press(x - sp.x, y - sp.y);
+            self.slider.press(x.wrapping_sub(sp.x), y.wrapping_sub(sp.y));
             return true;
         }
         self.button_at(parent, x, y).is_some() || within_clip(&self.panel(parent), x, y)
@@ -317,7 +320,7 @@ impl ScrollBar {
     /// The cursor moved: a dragging slider follows it (true if its value signal fired).
     fn drag(&mut self, parent: &Panel, x: i32, y: i32) -> bool {
         let sp = self.slider_panel(parent);
-        self.slider.drag(x - sp.x, y - sp.y)
+        self.slider.drag(x.wrapping_sub(sp.x), y.wrapping_sub(sp.y))
     }
 
     /// A release: the dragging slider lets go (the release is its alone, it captured the mouse),
@@ -449,7 +452,7 @@ impl ScrollPanel {
 
     /// `recomputeScroll`, on either bar's value signal: the client moves by the values.
     fn recompute_scroll(&mut self) {
-        (self.client.0, self.client.1) = (-self.hbar.slider.value, -self.vbar.slider.value);
+        (self.client.0, self.client.1) = (self.hbar.slider.value.wrapping_neg(), self.vbar.slider.value.wrapping_neg());
     }
 
     pub fn panel(&self, parent: &Panel) -> Panel {
@@ -523,7 +526,7 @@ impl ScrollPanel {
 fn ctf_slider_paint(s: &mut dyn Surface, p: &Panel, sl: &Slider, vs: &ViewportScheme) {
     let (w, h) = p.paint_size();
     p.outlined_rect(s, 0, 0, w, h, vs.secondary1);
-    let [a, b] = sl.nob;
+    let [a, b] = paint_nob(sl.nob);
     if sl.vertical {
         p.fill_rect(s, 0, a, w, b, vs.primary2);
         p.outlined_rect(s, 0, a, w, b, vs.primary1);
@@ -531,6 +534,13 @@ fn ctf_slider_paint(s: &mut dyn Surface, p: &Panel, sl: &Slider, vs: &ViewportSc
         p.fill_rect(s, a, 0, b, h, vs.primary2);
         p.outlined_rect(s, a, 0, b, h, vs.primary1);
     }
+}
+
+/// The nob's ends for painting, kept off the `i32` limits: a degenerate slider's nob is
+/// `0x80000000` (see `recompute_nob`), and the paint maths add to and subtract from them. Anything
+/// this far out is off the screen either way.
+fn paint_nob(nob: [i32; 2]) -> [i32; 2] {
+    nob.map(|v| v.clamp(-(1 << 30), 1 << 30))
 }
 
 /// The `CTFScrollButton` arrows: `LoadTGAForRes` (`0x1005a070`) of `arrowup`, `arrowdn`, `arrowlt`
@@ -647,7 +657,7 @@ impl ListBox {
         }
         let p = self.bar.slider_panel(list);
         let (w, h) = p.paint_size();
-        let [a, b] = self.bar.slider.nob;
+        let [a, b] = paint_nob(self.bar.slider.nob);
         let grey = Color::new(60, 60, 60, 0);
         p.fill_rect(s, 0, 0, w, h, Color::new(40, 40, 40, 0));
         p.fill_rect(s, 0, a, w, b, Color::new(0, 0, 0, 0));
@@ -662,6 +672,85 @@ impl ListBox {
 mod tests {
     use super::*;
     use crate::hud::vgui::tests::Record;
+
+    /// A tiny xorshift for the fuzz tests.
+    fn xorshift(s: &mut u64) -> u64 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        *s
+    }
+
+    /// A `Slider2` whose window equals its size divides by zero when dragged: the value becomes
+    /// `0x80000000`, and stepping, scrolling and painting from there must not overflow.
+    #[test]
+    fn degenerate_slider_doesnt_overflow() {
+        let mut l = ListBox::default();
+        l.set_scroll_range(10);
+        let heights = [20; 74];
+        // The slider is the list's height less the two 15-pixel buttons: 50, the window.
+        l.layout(200, 80, &heights);
+        let list = Panel::root(640, 480).child(0, 0, 200, 80);
+        l.bar.visible = true;
+        l.bar.slider.nob = [0, 50];
+        assert!(l.mouse_pressed(&list, 190, 20));
+        l.cursor_moved(&list, 190, 40);
+        assert_eq!(l.bar.slider.value, i32::MIN);
+        assert!(l.mouse_released(&list, 190, 40, true));
+        for (x, y) in [(190, 5), (190, 75)] {
+            l.mouse_released(&list, x, y, true);
+        }
+        l.bar.slider.value = i32::MIN;
+        l.bar.do_button_pressed(0);
+        l.bar.slider.nob = [i32::MIN, i32::MAX];
+        l.bar.slider.dragging = true;
+        l.bar.slider.nob_drag_start = [i32::MIN, i32::MAX];
+        l.cursor_moved(&list, i32::MAX, i32::MIN);
+        l.bar.slider.nob = [i32::MIN, i32::MIN];
+        let ys = l.layout(200, 80, &heights);
+        assert_eq!(ys.len(), 74);
+        l.bar.visible = true;
+        l.paint(&mut Record::default(), &list, &[None, None]);
+        // The scroll panel's client follows the values, `0x80000000` included.
+        let mut p = ScrollPanel::ctf(0, 0, 200, 100);
+        p.content = Some((150, 300));
+        p.validate();
+        p.vbar.slider.value = i32::MIN;
+        p.recompute_scroll();
+        assert_eq!(p.client.1, i32::MIN);
+        p.vbar.slider.nob = [i32::MIN, i32::MIN];
+        let vs = ViewportScheme::from(&crate::hud::vgui::Schemes::load(640, false, &|_| None));
+        p.paint_bars(&mut Record::default(), &Panel::root(640, 480), &vs, &[None, None, None, None]);
+    }
+
+    /// Random geometry, contents and input.
+    #[test]
+    fn random_scroll_input() {
+        let mut s = 0xdead_beef_cafe_f00du64;
+        let root = Panel::root(640, 480);
+        let vs = ViewportScheme::from(&crate::hud::vgui::Schemes::load(640, false, &|_| None));
+        let mut r = move || (xorshift(&mut s) % 700) as i32 - 50;
+        for _ in 0..200 {
+            let mut p = ScrollPanel::ctf(r(), r(), r(), r());
+            p.content = Some((r() * 3, r() * 3));
+            p.validate();
+            let mut l = ListBox::default();
+            l.set_scroll_range(r() / 8);
+            let heights: Vec<i32> = (0..74).map(|_| r() / 10).collect();
+            l.layout(r(), r(), &heights);
+            for _ in 0..20 {
+                let (x, y) = (r(), r());
+                p.mouse_pressed(&root, x, y);
+                p.cursor_moved(&root, r(), r());
+                p.mouse_released(&root, r(), r(), x & 1 == 0);
+                l.mouse_pressed(&root, x, y);
+                l.cursor_moved(&root, r(), r());
+                l.mouse_released(&root, r(), r(), y & 1 == 0);
+            }
+            p.paint_bars(&mut Record::default(), &root, &vs, &[None, None, None, None]);
+            l.paint(&mut Record::default(), &root, &[None, None]);
+        }
+    }
 
     #[test]
     fn vgui_slider_maths() {

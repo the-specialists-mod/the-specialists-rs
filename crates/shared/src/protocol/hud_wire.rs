@@ -284,6 +284,23 @@ mod tests {
         assert_eq!(DirectorEvent::read(&mut b), DirectorEvent { command: 3, primary: 3, secondary: 7, flags: 0x27 });
     }
 
+    /// Reading past the end gives zeros and empty strings, however far.
+    #[test]
+    fn reads_past_the_end() {
+        for buf in [vec![], vec![0xff; 3], vec![b'x'; 5]] {
+            let mut b = Bytes { buf, pos: 0 };
+            let _ = PTakeDam::read(&mut b);
+            let _ = DirectorEvent::read(&mut b);
+            for _ in 0..8 {
+                let _ = (WireRead::string(&mut b), WireRead::long(&mut b), WireRead::coord(&mut b));
+            }
+            assert_eq!((WireRead::long(&mut b), WireRead::string(&mut b)), (0, String::new()));
+        }
+        let mut b = Bytes::default();
+        TsFade::new([1, 2, 3], 4, f32::NAN, f32::INFINITY, fade::OUT).write(&mut b);
+        assert_eq!(b.buf.len(), 10);
+    }
+
     #[test]
     fn fade_fixed_point() {
         let f = TsFade::new([150, 10, 10], 75, 0.3, 0.15, fade::IN);

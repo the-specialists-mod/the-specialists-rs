@@ -42,7 +42,7 @@ pub unsafe fn update(
 ) {
     // SAFETY: the engine passes its temp-entity list heads and the two callbacks; this follows the SDK `entity.cpp` loop and only touches entities on those lists, which the engine keeps alive during the call.
     unsafe {
-        if active.is_null() || (*active).is_null() {
+        if free.is_null() || active.is_null() || (*active).is_null() {
             return;
         }
         // TS keeps this for its particles only past the same check (0x1001bd0e..0x1001bd25).

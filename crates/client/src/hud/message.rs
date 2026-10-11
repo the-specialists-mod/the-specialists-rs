@@ -121,17 +121,18 @@ impl Default for HudMessage {
 }
 
 /// `XPosition` (`0x10028a50`): -1 centres, a negative value aligns `totalWidth` to the right,
-/// then the line is kept on screen.
+/// then the line is kept on screen. The sums wrap as TS's ints do: titles.txt positions and the
+/// widths of long texts can be anything.
 pub fn x_position(x: f32, width: i32, total_width: i32, screen_width: i32) -> i32 {
     let pos = if x == -1.0 {
-        (screen_width - width) / 2
+        screen_width.wrapping_sub(width) / 2
     } else if x < 0.0 {
         ftol((1.0 + x as f64) * screen_width as f64 - total_width as f64)
     } else {
         ftol(screen_width as f64 * x as f64)
     };
-    if pos + width > screen_width {
-        screen_width - width
+    if pos.wrapping_add(width) > screen_width {
+        screen_width.wrapping_sub(width)
     } else if pos < 0 {
         0
     } else {
@@ -142,14 +143,14 @@ pub fn x_position(x: f32, width: i32, total_width: i32, screen_width: i32) -> i3
 /// `YPosition` (`0x10028ad0`).
 pub fn y_position(y: f32, height: i32, screen_height: i32) -> i32 {
     let pos = if y == -1.0 {
-        ftol((screen_height - height) as f64 * 0.5)
+        ftol(screen_height.wrapping_sub(height) as f64 * 0.5)
     } else if y < 0.0 {
         ftol((1.0 + y as f64) * screen_height as f64 - height as f64)
     } else {
         ftol(screen_height as f64 * y as f64)
     };
-    if pos + height > screen_height {
-        screen_height - height
+    if pos.wrapping_add(height) > screen_height {
+        screen_height.wrapping_sub(height)
     } else if pos < 0 {
         0
     } else {
@@ -261,9 +262,10 @@ impl HudMessage {
                 let life = sprites.index("title_life");
                 let rect = |i: Option<usize>| i.and_then(|i| sprites.rects.get(i)).copied().unwrap_or_default();
                 let (rh, rl) = (rect(half), rect(life));
-                let half_width = rh.right - rh.left;
-                let full_width = half_width + rl.right - rl.left;
-                let full_height = rh.bottom - rh.top;
+                // hud.txt rectangles are file data: C int arithmetic.
+                let half_width = rh.right.wrapping_sub(rh.left);
+                let full_width = half_width.wrapping_add(rl.right.wrapping_sub(rl.left));
+                let full_height = rh.bottom.wrapping_sub(rh.top);
                 let x = x_position(t.x, full_width, full_width, s.width);
                 let y = y_position(t.y, full_height, s.height);
                 let b = brightness as f64;
@@ -272,7 +274,7 @@ impl HudMessage {
                     c.sprite(i, rgb, x, y);
                 }
                 if let Some(i) = life {
-                    c.sprite(i, rgb, x + half_width, y);
+                    c.sprite(i, rgb, x.wrapping_add(half_width), y);
                 }
                 drawn = 1;
             } else {
@@ -315,35 +317,35 @@ impl HudMessage {
 
     /// `MessageDrawScan` (`0x10028eb0`).
     fn draw_scan(&mut self, m: &TitleMsg, time: f32, s: &Screen, c: &mut dyn Canvas, rand: &mut CrtRand) {
-        let mut lines = 1;
-        let (mut width, mut total_width) = (0, 0);
+        let mut lines: i32 = 1;
+        let (mut width, mut total_width) = (0i32, 0);
         for &ch in &m.text {
             if ch == b'\n' {
-                lines += 1;
+                lines = lines.wrapping_add(1);
                 total_width = total_width.max(width);
                 width = 0;
             } else {
-                width += char_width(s, ch);
+                width = width.wrapping_add(char_width(s, ch));
             }
         }
         self.parms.time = time;
-        let mut y = y_position(m.y, lines * s.char_height, s.height);
+        let mut y = y_position(m.y, lines.wrapping_mul(s.char_height), s.height);
         self.parms.char_time = 0.0;
         self.scan_start(m, m.text.len(), rand);
         // Guarded: TS copies each line into an 80-byte stack buffer without a bound; the port
         // draws the line from the text instead.
         for line in m.text.split(|&b| b == b'\n').take(lines as usize) {
-            let line_width: i32 = line.iter().map(|&ch| char_width(s, ch)).sum();
+            let line_width = line.iter().fold(0i32, |w, &ch| w.wrapping_add(char_width(s, ch)));
             let mut x = x_position(m.x, line_width, total_width, s.width);
             for &ch in line {
-                let next = x + char_width(s, ch);
+                let next = x.wrapping_add(char_width(s, ch));
                 let rgb = self.scan_next_char(m, ch, x, y, s, c);
                 if x >= 0 && y >= 0 && next <= s.width {
                     c.character(x, y, ch, rgb);
                 }
                 x = next;
             }
-            y += s.char_height;
+            y = y.wrapping_add(s.char_height);
         }
     }
 
@@ -410,7 +412,7 @@ impl HudMessage {
         }
         .clamp(0, 255);
         let rgb = [0, 1, 2].map(|k| (src[k] * (255 - blend) + dest[k] * blend) >> 8);
-        if m.effect == 1 && p.char_time != 0.0 && x >= 0 && y >= 0 && x + char_width(s, ch) <= s.width {
+        if m.effect == 1 && p.char_time != 0.0 && x >= 0 && y >= 0 && x.wrapping_add(char_width(s, ch)) <= s.width {
             c.character(x, y, ch, [m.color2[0] as i32, m.color2[1] as i32, m.color2[2] as i32]);
         }
         rgb
@@ -599,6 +601,60 @@ mod tests {
         assert_eq!(r.sprites, [(0, [127, 127, 127], x, y), (1, [127, 127, 127], x + 100, y)]);
         h.draw(7.6, &s, &sprites, &mut Rec::default(), &mut CrtRand(1)); // past 0.5 + 1 + 2
         assert_eq!(h.game_title_time, 0.0);
+    }
+
+    /// titles.txt entries with wild values (positions, times, colours, huge rectangles) and
+    /// long texts draw without overflowing.
+    #[test]
+    fn extreme_titles_and_screens() {
+        let wild = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, -f32::MAX, -1.0, -0.5, 0.0, 1e9, -1e9];
+        for &v in &wild {
+            for (w, h) in [(i32::MAX, i32::MAX), (i32::MIN, i32::MIN), (0, 0), (640, 480)] {
+                let _ = x_position(v, i32::MAX, i32::MIN, w);
+                let _ = x_position(v, i32::MIN, i32::MAX, h);
+                let _ = y_position(v, i32::MAX, h);
+                let _ = y_position(v, i32::MIN, w);
+                let _ = fade_blend(v, v, v, v);
+            }
+        }
+        struct Wild(f32);
+        impl Titles for Wild {
+            fn get(&self, _: &str) -> Option<String> {
+                None
+            }
+            fn message(&self, key: &[u8]) -> Option<TitleMsg> {
+                let v = self.0;
+                Some(TitleMsg {
+                    effect: key.len() as i32 % 4,
+                    color1: [255; 4],
+                    color2: [255; 4],
+                    x: v,
+                    y: v,
+                    fadein: v,
+                    fadeout: v,
+                    holdtime: v,
+                    fxtime: v,
+                    text: [&b"\n\n"[..], &[0xff; 2000], key].concat(),
+                })
+            }
+        }
+        let rect = wrect_t { left: i32::MIN, right: i32::MAX, top: i32::MIN, bottom: i32::MAX };
+        let sprites =
+            HudSprites { names: vec!["title_half".into(), "title_life".into()], handles: vec![1], rects: vec![rect], number_0: None };
+        let wide = Screen { width: i32::MAX, height: i32::MAX, char_height: i32::MAX, char_widths: [i16::MAX; 256] };
+        for &v in &wild {
+            for s in [screen(), wide.clone(), Screen { width: i32::MIN, height: 0, char_height: i32::MIN, char_widths: [i16::MIN; 256] }] {
+                let mut h = HudMessage::default();
+                for k in [&b"a"[..], b"bb", b"ccc", b"#dddd", b"GAMETITLE"] {
+                    h.msg_hud_text(k, 1.0, &Wild(v));
+                }
+                h.msg_game_title(1.0, &Wild(v));
+                for now in [0.5, 1.0, 2.0, f32::MAX, f32::NAN] {
+                    h.draw(now, &s, &sprites, &mut Rec::default(), &mut CrtRand(7));
+                }
+            }
+        }
+        assert_eq!(TitleMsg::custom(&[b'x'; 5000]).text.len(), CUSTOM_TEXT_SIZE - 1);
     }
 
     #[test]

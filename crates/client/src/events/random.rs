@@ -49,7 +49,12 @@ pub fn shared_random_long(seed: u32, low: i32, high: i32) -> i32 {
         return low;
     }
     let r = g.next();
-    low.wrapping_add((r % range.wrapping_add(1)) as i32)
+    // The full 32-bit range (`low` i32::MIN, `high` i32::MAX) makes `range + 1` wrap to 0, a
+    // division by zero in the SDK's C; modulo 2^32 leaves `r` as it is.
+    match range.checked_add(1) {
+        Some(m) => low.wrapping_add((r % m) as i32),
+        None => low.wrapping_add(r as i32),
+    }
 }
 
 /// `UTIL_SharedRandomFloat(seed, low, high)` (TS build: float range).
@@ -101,6 +106,23 @@ mod tests {
         }
         let pi = std::f32::consts::PI;
         assert_ne!(shared_random_float(77, -pi, pi).to_bits(), sv::shared_random_float(77, -pi, pi).to_bits());
+    }
+
+    /// Any seed and bounds, including the full i32 range and reversed or non-finite bounds.
+    #[test]
+    fn extreme_bounds_do_not_panic() {
+        let bounds = [i32::MIN, -1, 0, 1, i32::MAX];
+        for seed in [0u32, 1, 0xff, u32::MAX] {
+            for &lo in &bounds {
+                for &hi in &bounds {
+                    let _ = shared_random_long(seed, lo, hi);
+                }
+            }
+            for (lo, hi) in [(f32::NAN, 1.0), (f32::NEG_INFINITY, f32::INFINITY), (f32::MAX, -f32::MAX), (1.0, 0.0)] {
+                let _ = shared_random_float(seed, lo, hi);
+            }
+        }
+        assert_eq!(shared_random_long(7, 5, 5), 5);
     }
 
     #[test]

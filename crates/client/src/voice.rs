@@ -60,8 +60,13 @@ impl BanList {
         if i32::from_le_bytes([v[0], v[1], v[2], v[3]]) != BAN_FILE_VERSION {
             return list;
         }
-        for id in bytes[4..].as_chunks::<16>().0 {
-            list.set(id, true);
+        // Deduplicated through a set, as `set` would: `set`'s linear search is quadratic, and the
+        // file can be any size.
+        let mut seen = std::collections::HashSet::new();
+        for id in bytes.get(4..).unwrap_or_default().as_chunks::<16>().0 {
+            if seen.insert(*id) {
+                list.ids.push(*id);
+            }
         }
         list
     }
@@ -629,6 +634,46 @@ pub fn redraw() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tiny xorshift for the fuzz tests.
+    fn xorshift(s: &mut u64) -> u64 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        *s
+    }
+
+    /// Ban files of any size and content, voice masks of any length and any entity index.
+    #[test]
+    fn garbage_voice_input() {
+        let mut s = 0x1234_5678_9abc_def1u64;
+        for n in [0usize, 1, 3, 4, 5, 19, 20, 21, 4 + 16 * 300 + 9] {
+            let mut b: Vec<u8> = (0..n).map(|_| xorshift(&mut s) as u8).collect();
+            if b.len() >= 4 {
+                b[..4].copy_from_slice(&BAN_FILE_VERSION.to_le_bytes());
+            }
+            let l = BanList::parse(&b);
+            assert!(l.len() <= n.saturating_sub(4) / 16);
+            assert_eq!(BanList::parse(&l.serialize()).len(), l.len());
+            assert!(BanList::parse(&vec![0xff; n]).is_empty());
+            let _ = on_voice_mask(&b);
+        }
+        // Many duplicate ids parse once.
+        let mut b = BAN_FILE_VERSION.to_le_bytes().to_vec();
+        for _ in 0..10_000 {
+            b.extend_from_slice(&id(7));
+        }
+        assert_eq!(BanList::parse(&b).len(), 1);
+        let mut v = Voice::default();
+        for e in [i32::MIN, -3, -2, -1, 0, 1, 31, 32, 33, 64, 65, i32::MAX] {
+            speaker_status(&mut v, e, true);
+            speaker_status(&mut v, e, false);
+        }
+        for _ in 0..1000 {
+            speaker_status(&mut v, xorshift(&mut s) as i32 % 40, xorshift(&mut s) & 1 != 0);
+        }
+        assert!(bit(usize::MAX) == 0 && bit(32) == 0);
+    }
 
     fn id(b: u8) -> [u8; 16] {
         let mut id = [0u8; 16];

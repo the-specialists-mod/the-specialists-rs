@@ -647,8 +647,8 @@ fn apply_mouse(raw: [f32; 2], view: &mut [f32; 3]) {
     if crate::menus::wants_cursor() {
         let s = crate::hud::screen();
         mouse(|m| {
-            m.cursor[0] = (m.cursor[0] + mx).clamp(0.0, (s.width - 1) as f32);
-            m.cursor[1] = (m.cursor[1] + my).clamp(0.0, (s.height - 1) as f32);
+            m.cursor[0] = (m.cursor[0] + mx).clamp(0.0, cursor_max(s.width));
+            m.cursor[1] = (m.cursor[1] + my).clamp(0.0, cursor_max(s.height));
         });
         return;
     }
@@ -673,6 +673,12 @@ fn apply_mouse(raw: [f32; 2], view: &mut [f32; 3]) {
     }
     view[YAW] -= c.m_yaw.value() * mx;
     view[PITCH] = (view[PITCH] + c.m_pitch.value() * my).clamp(-89.0, 89.0);
+}
+
+/// The last cursor pixel on a screen `size` wide (or high). Before `VidInit` fills the screen
+/// info its size is 0, which would make `clamp`'s upper bound negative (a panic), so it is 0.
+fn cursor_max(size: i32) -> f32 {
+    size.saturating_sub(1).max(0) as f32
 }
 
 const PITCH: usize = 0;
@@ -1216,6 +1222,39 @@ mod tests {
         assert!((a - 6.0).abs() < 1e-5);
         let a = accelerate(-4.0, 0.5, 1.0, 1.0);
         assert!((a + 5.0).abs() < 1e-5, "capped by m_accelmax");
+    }
+
+    /// The virtual cursor's bound before `VidInit` (screen 0×0) and for nonsense sizes: never
+    /// negative, so `clamp` can't panic.
+    #[test]
+    fn cursor_bound_never_negative() {
+        assert_eq!((cursor_max(640), cursor_max(1), cursor_max(0), cursor_max(-5), cursor_max(i32::MIN)), (639.0, 0.0, 0.0, 0.0, 0.0));
+        for size in [0, i32::MIN, i32::MAX] {
+            for v in [f32::NAN, -1e30, 1e30, 5.0] {
+                let _ = v.clamp(0.0, cursor_max(size));
+            }
+        }
+    }
+
+    /// `KB_ConvertString` on random menu text (a `ShowMenu` payload), with a binding lookup that
+    /// returns long names.
+    #[test]
+    fn kb_convert_string_garbage() {
+        let mut x = 0x5eed_1234_u32;
+        let lookup = |b: &[u8]| b.len().is_multiple_of(2).then(|| vec![b'k'; b.len() * 100]);
+        for n in 0..500 {
+            let text: Vec<u8> = (0..n * 7 % 3000)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    if x & 1 == 0 { b'+' } else { (x >> 8) as u8 }
+                })
+                .collect();
+            assert!(kb_convert_string(&text, &lookup).len() < 4096);
+        }
+        assert_eq!(kb_convert_string(b"+", &lookup), b"+");
+        assert_eq!(kb_convert_string(b"", &lookup), b"");
     }
 
     #[test]

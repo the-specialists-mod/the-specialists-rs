@@ -236,17 +236,18 @@ pub fn draw_number(s: &HudSprites, x: i32, y: i32, flags: u8, n: i32, rgb: [i32;
         let t = n.to_string();
         return e.draw_console_string(x, y, [rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0], &t);
     };
-    let w = s.rects[n0].right - s.rects[n0].left;
+    // hud.txt rectangles are file data: C int arithmetic.
+    let w = s.rects.get(n0).map_or(0, |r| r.right.wrapping_sub(r.left));
     let mut x = x;
     for cell in number_cells(n, flags) {
         if let Some(d) = cell {
             let i = n0 + d as usize;
-            if i < s.handles.len() {
-                e.spr_set(s.handles[i], rgb);
-                e.spr_draw_additive(0, x, y, Some(&s.rects[i]));
+            if let (Some(&h), Some(rc)) = (s.handles.get(i), s.rects.get(i)) {
+                e.spr_set(h, rgb);
+                e.spr_draw_additive(0, x, y, Some(rc));
             }
         }
-        x += w;
+        x = x.wrapping_add(w);
     }
     x
 }
@@ -263,6 +264,9 @@ mod tests {
         assert_eq!(number_cells(0, num::DIGITS_3), Vec::<Option<u8>>::new());
         assert_eq!(number_cells(0, num::DIGITS_2 | num::DRAW_ZERO), [None, Some(0)]);
         assert_eq!(number_cells(12345, 0), [Some(1), Some(2), Some(3), Some(4), Some(5)]);
+        assert_eq!(number_cells(i32::MIN, 0xff), [Some(0); 5], "negatives draw as zero");
+        assert_eq!(number_cells(i32::MAX, 0).len(), 5, "only the five low places");
+        assert_eq!(ftol(f64::NAN), i32::MIN);
     }
 
     #[test]

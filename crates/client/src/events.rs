@@ -78,7 +78,7 @@ impl Args {
         }
     }
     pub fn is_local(&self) -> bool {
-        r::is_local(self.entindex)
+        is_local_entity(self.entindex)
     }
     /// The player we spectate in-eye (`0x1001c5c0`: `g_iUser1 == 5 && g_iUser2 == entindex`).
     pub fn is_in_eye_target(&self) -> bool {
@@ -103,6 +103,12 @@ impl Args {
     pub fn vectors(&self) -> (Vec3, Vec3, Vec3) {
         v::angle_vectors(self.angles)
     }
+}
+
+/// `EV_IsLocal(entindex - 1)`. The server picks `entindex`; i32::MIN, which can't be a player,
+/// is refused here because the wrapper's `entindex - 1` would overflow.
+pub fn is_local_entity(entindex: i32) -> bool {
+    entindex != i32::MIN && r::is_local(entindex)
 }
 
 /// Eased cosmetic time scale (`g_flTimeScale`).

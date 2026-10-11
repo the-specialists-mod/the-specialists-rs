@@ -330,7 +330,8 @@ pub fn joy_move(frametime: f32, view: &mut [f32; 3], forward: &mut f32, side: &m
     };
     if c.joywwhack1.value() != 0.0 {
         // `IN_ReadJoystick`: the WingMan Warrior's U axis is off by 100.
-        r.axes[4] += 100;
+        // A DWORD in TS: wraps rather than overflowing on a bogus driver value.
+        r.axes[4] = r.axes[4].wrapping_add(100);
     }
     with(|j| j.last = Some(r));
     let p = MoveParams {
@@ -444,5 +445,22 @@ mod tests {
         assert_eq!(pov_bits(POV_CENTERED), 0);
         assert_eq!(pov_bits(9000), 2);
         assert_eq!(pov_bits(4500), 0);
+    }
+
+    /// Device readings, button counts and cvars of any value.
+    #[test]
+    fn garbage_readings_and_cvars() {
+        for count in [0, 4, 32, 33, u32::MAX] {
+            button_events(u32::MAX, 0, count);
+            button_events(0, u32::MAX, count);
+        }
+        for v in [f32::NAN, f32::INFINITY, -f32::INFINITY, -1.0, 1e20, 4.0, 19.0] {
+            let map = axis_map(true, [v; MAX_AXES]);
+            for raw in [[0; MAX_AXES], [u32::MAX; MAX_AXES], [32768; MAX_AXES]] {
+                let p = MoveParams { wwhack2: true, jlook: v.is_nan(), frametime: v, pitch_sensitivity: v, ..params() };
+                let (mut view, mut fwd, mut side) = ([v; 3], 0.0, 0.0);
+                apply_axes(&raw, &map, &p, &mut view, &mut fwd, &mut side);
+            }
+        }
     }
 }

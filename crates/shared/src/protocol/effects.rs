@@ -283,4 +283,41 @@ mod tests {
         assert_eq!(decode_slowmo(&b), Some(0.35));
         assert!(TsFade::decode(&[1, 2]).is_none());
     }
+
+    /// Every decoder takes any bytes a server can send: empty, short, oversized, all 0xff, random.
+    #[test]
+    fn decoders_survive_garbage() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut bufs: Vec<Vec<u8>> = vec![vec![], vec![0xff; 1], vec![0xff; 64], vec![0; 300]];
+        for _ in 0..2000 {
+            let len = (next() % 48) as usize;
+            bufs.push((0..len).map(|_| next() as u8).collect());
+        }
+        for b in &bufs {
+            let _ = TsFade::decode(b);
+            let _ = TsWind::decode(b);
+            let _ = PTakeDam::decode(b);
+            let _ = TsFrags::decode(b);
+            let _ = TsMBlur::decode(b);
+            let _ = decode_slowmo(b);
+            let _ = decode_btime(b);
+            let mut r = Reader::new(b);
+            for _ in 0..40 {
+                let _ = (r.byte(), r.short(), r.long(), r.vec());
+            }
+            assert!(b.len() >= 40 * 13 || !r.ok());
+        }
+        // A truncated glass message is dropped, not read as zeros.
+        let mut b = Vec::new();
+        TsFrags::Glass { origin: [1.0; 3], size: [2.0; 3], hit: [3.0; 3], dir: [0.0; 3], dmg_bits: 2, force: 5.0 }.encode(&mut b);
+        for n in 0..b.len() {
+            assert!(TsFrags::decode(&b[..n]).is_none(), "{n} bytes");
+        }
+    }
 }

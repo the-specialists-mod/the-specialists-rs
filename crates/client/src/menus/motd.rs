@@ -171,6 +171,36 @@ impl Motd {
 mod tests {
     use super::*;
 
+    /// A tiny xorshift for the fuzz tests.
+    fn xorshift(s: &mut u64) -> u64 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        *s
+    }
+
+    /// Garbage map names, level names and briefing files.
+    #[test]
+    fn garbage_briefings() {
+        let mut s = 0x0bad_c0de_1234_5678u64;
+        let sb = Schemes::load(640, false, &|_| None);
+        let mut bytes = move |n: u64| -> Vec<u8> {
+            let n = xorshift(&mut s) % n;
+            (0..n).map(|_| [b'.', b'/', b'\\', 0, 0xff, b'a'][(xorshift(&mut s) % 6) as usize]).collect()
+        };
+        for _ in 0..300 {
+            let mut name = bytes(80);
+            let level = bytes(80);
+            let file = bytes(3000);
+            let made = map_briefing(&mut name, Some(&level), &|_| Some(file.clone()));
+            let Some((title, text)) = made else { panic!("a file loads") };
+            assert!(title.len() <= 31 && !text.contains(&0));
+            let m = Motd::new(&title, &text, "\u{e9}OK", true, 640, 480, &|t, w| (w, t.len() as i32 * 12));
+            m.paint(&mut crate::hud::vgui::tests::Record::default(), &sb, 640, 480, &[None, None, None, None]);
+        }
+        let _ = Motd::for_motd("\u{1F600}\u{e9}", "\u{1F600}", "", false, 0, 0, &|_, _| (i32::MAX / 2, i32::MAX / 2));
+    }
+
     #[test]
     fn motd_layout() {
         let (win, scroll) = layout(640, 480);

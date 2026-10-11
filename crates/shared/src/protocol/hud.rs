@@ -432,6 +432,41 @@ mod tests {
         assert!((c.damage - 39.0).abs() < 1e-6);
     }
 
+    /// Every decoder takes any bytes (short, long, all 0xff, no NUL) without panicking.
+    #[test]
+    fn decoders_survive_garbage() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut bufs: Vec<Vec<u8>> = vec![vec![], vec![0xff; 1], vec![0xff; 64], vec![0; 64], vec![b'a'; 300]];
+        for _ in 0..400 {
+            let n = (next() % 80) as usize;
+            bufs.push((0..n).map(|_| next() as u8).collect());
+        }
+        for b in &bufs {
+            let _ = (TsHealth::decode(b), Train::decode(b), HideWeapon::decode(b), TsArmor::decode(b), TsState::decode(b));
+            let _ = (TsCash::decode(b), TsSpace::decode(b), PwUp::decode(b), PwUpTime::decode(b), RoundTime::decode(b));
+            let _ = (Objective::decode(b), ShowObj::decode(b), TsMessage::decode(b), PTakeDam::decode(b), TsSlowMo::decode(b));
+            let _ = (TsPAward::decode(b), SrvSett::decode(b), TsBTime::decode(b), TsHVoice::decode(b), TsFlag::decode(b));
+            let _ = (TsMBlur::decode(b), PlInfo::decode(b), TsFade::decode(b), TsPSys::decode(b), TsFrags::decode(b));
+            let _ = (WeaponInfo::decode(b), ClipInfo::decode(b), WStatus::decode(b), ActItems::decode(b), NextStunt::decode(b));
+            let _ = (Wires::decode(b), KFuPower::decode(b), CustomWp::decode(b), ScoreInfo::decode(b), TeamInfo::decode(b));
+            let _ = (TeamScore::decode(b), DeathMsg::decode(b), SayText::decode(b), ShowMenu::decode(b), Motd::decode(b));
+            let _ = (Spectator::decode(b), CurWeapon::decode(b), HudText::decode(b), TextMsg::decode(b), decode_team_names(b));
+            let mut r = Reader::new(b);
+            for _ in 0..b.len() + 4 {
+                let _ = (r.string(), r.long(), r.coord(), r.remaining());
+            }
+        }
+        let mut w = Writer::default();
+        w.string("nan inf -inf 1e99 99999999999 0");
+        assert_eq!(CustomWp::decode(&w.0), None, "an out-of-range id is dropped");
+    }
+
     #[test]
     fn frags_variants() {
         let mut w = Writer::default();

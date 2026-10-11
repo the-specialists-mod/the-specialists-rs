@@ -168,9 +168,10 @@ fn torso_controller(yaw: f32) -> u8 {
     ((yaw as f64 * 0.25 + 30.0) * 4.25) as i32 as u8
 }
 
-/// `x - (int)(x * (1 / 360.f)) * 360`.
+/// `x - (int)(x * (1 / 360.f)) * 360`. The `int` product wraps as C's does, so a huge angle
+/// (any float from delta state) can't overflow.
 fn wrap360(x: f32) -> f32 {
-    x - ((x * (1.0f32 / 360.0)) as i32 * 360) as f32
+    x - ((x * (1.0f32 / 360.0)) as i32).wrapping_mul(360) as f32
 }
 
 /// The view model's animation rate in slow motion (`StudioDrawModel` `0x10031b44..0x10031bf4`):
@@ -700,7 +701,8 @@ impl Renderer {
             info.gaitframe += framerate * seq.fps * dt;
         }
         if seq.numframes > 0 {
-            info.gaitframe -= ((info.gaitframe / numframes) as i32 * seq.numframes) as f32;
+            // C `int` product: wraps (rather than overflowing) for a runaway gait frame.
+            info.gaitframe -= ((info.gaitframe / numframes) as i32).wrapping_mul(seq.numframes) as f32;
             if info.gaitframe < 0.0 {
                 info.gaitframe += numframes;
             }
@@ -812,7 +814,7 @@ impl Renderer {
         let empty = Anim { data: Bytes(&[]), base: 0 };
         let Some((file, data)) = m.seqgroup(seq.seqgroup) else { return empty };
         if seq.seqgroup == 0 {
-            return Anim { data: m.b, base: (data.max(0) + seq.animindex.max(0)) as usize };
+            return Anim { data: m.b, base: model::at(data.max(0) as usize, seq.animindex.max(0) as usize) };
         }
         let Ok(name) = std::ffi::CString::new(file) else { return empty };
         match es::seqgroup_data(model, seq.seqgroup as usize, &name) {
@@ -1130,7 +1132,7 @@ fn bone_adj(m: &Studio, dadt: f32, c1: &[u8; 4], c2: &[u8; 4], mouth: u8) -> [f3
 /// (`0x10030380`) and `StudioCalcBonePosition` (`0x10030550`): the pose at frame `f`.
 fn sample_pose(m: &Studio, pose: &mut Pose, seq: &SeqDesc, anim: Anim, f: f32, adj: &[f32; 8]) {
     let mut f = f;
-    if f > (seq.numframes - 1) as f32 {
+    if f > seq.numframes.saturating_sub(1) as f32 {
         f = 0.0; // bah, fix this bug with changing sequences too fast (SDK)
     } else if f < -0.01 {
         f = -0.01;
@@ -1353,5 +1355,47 @@ mod tests {
         sample_pose(&m, &mut pose, &seq, anim, 0.0, &adj);
         let a = quaternion_angles(pose.q[0]);
         assert!((a[2] - 30f32.to_radians()).abs() < 1e-4, "{a:?}");
+    }
+
+    /// Delta-state angles, frames and sequences and model data of any value: no overflow, no
+    /// out-of-range bone or controller index.
+    #[test]
+    fn garbage_inputs_never_panic() {
+        for x in [f32::MAX, f32::MIN, f32::INFINITY, f32::NAN, 1e12, -1e12, 0.0] {
+            wrap360(x);
+            torso_controller(x);
+            let seq = SeqDesc { blendstart: [x, 0.0], blendend: [-x, 0.0], ..Default::default() };
+            let mut pitch = x;
+            player_blend(&seq, &mut pitch);
+        }
+        assert_eq!(wrap360(370.0), 10.0);
+        let mut x = 0x1234_5678_u32;
+        let mut bufs: Vec<Vec<u8>> = vec![vec![], vec![0xff; 1024]];
+        for n in 1..30 {
+            bufs.push(
+                (0..n * 61)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 17;
+                        x ^= x << 5;
+                        x as u8
+                    })
+                    .collect(),
+            );
+        }
+        for b in &bufs {
+            let m = Studio::new(b);
+            let adj = bone_adj(&m, f32::NAN, &[255; 4], &[0; 4], 255);
+            for numframes in [i32::MIN, -1, 0, 1, 2, i32::MAX] {
+                let seq = SeqDesc { numframes, motionbone: i32::MAX, motiontype: 7, ..Default::default() };
+                for f in [f32::NAN, f32::INFINITY, -f32::INFINITY, -5.0, 0.0, 1e9] {
+                    let mut pose = Pose::default();
+                    sample_pose(&m, &mut pose, &seq, Anim { data: Bytes(b), base: usize::MAX }, f, &adj);
+                    sample_pose(&m, &mut pose, &seq, Anim { data: Bytes(b), base: 0 }, f, &adj);
+                }
+            }
+            let mut legs = Pose::default();
+            split_torso(&m, &mut legs, &Pose::default());
+        }
     }
 }

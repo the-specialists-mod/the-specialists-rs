@@ -225,10 +225,12 @@ impl StatusBar {
         }
         for i in 0..MAX_STATUSBAR_LINES {
             let (w, h) = c.console_size(&self.bar[i]);
-            let mut y = if s.height < 480 { s.height - 45 } else { s.height - 55 } - h * i as i32;
+            // C int arithmetic on the engine's sizes.
+            let base = if s.height < 480 { s.height.wrapping_sub(45) } else { s.height.wrapping_sub(55) };
+            let mut y = base.wrapping_sub(h.wrapping_mul(i as i32));
             let mut x = 5;
             if i == 1 && centerid != 0.0 && !centerid.is_nan() {
-                x = (s.width - w).max(2) / 2;
+                x = s.width.wrapping_sub(w).max(2) / 2;
                 y = ftol(h as f64 * centerid as f64 + (s.height / 2) as f64);
             }
             c.console_string(x, y, self.name_colors[i], &self.bar[i]);
@@ -347,6 +349,42 @@ mod tests {
         s.msg_status_text(&msg(0, &format!("0{}", "x".repeat(120))));
         s.parse(0, &T, &mut players);
         assert_eq!(s.bar[0], b"xxxxx");
+    }
+
+    /// Random `StatusText`/`StatusValue` payloads, parsed and laid out on odd screens.
+    #[test]
+    fn hostile_messages() {
+        struct Null;
+        impl Canvas for Null {
+            fn console_size(&self, _: &[u8]) -> (i32, i32) {
+                (i32::MAX, i32::MIN)
+            }
+            fn console_string(&mut self, x: i32, _: i32, _: Option<[f32; 3]>, _: &[u8]) -> i32 {
+                x
+            }
+            fn character(&mut self, _: i32, _: i32, _: u8, _: [i32; 3]) {}
+            fn sprite(&mut self, _: usize, _: [i32; 3], _: i32, _: i32) {}
+        }
+        let mut seed = 0x5151_7272_9393_a4a4u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut s = StatusBar::default();
+        let mut long = |v: i32| (v % 2 == 0).then(|| (vec![b'%'; 200], None));
+        for i in 0..400 {
+            let n = (next() % 200) as usize;
+            let b: Vec<u8> = (0..n).map(|_| [b'%', b'p', b'i', b'1', b'0', b'\n', 0, 0xff, b'-'][(next() % 9) as usize]).collect();
+            s.msg_status_text(&[&[(i % 3) as u8][..], &b].concat());
+            s.msg_status_value(&b);
+            s.msg_status_value(&[(next() % 9) as u8, next() as u8, next() as u8]);
+            let screen = Screen { width: [i32::MIN, 0, 640][i % 3], height: [i32::MIN, 100, 480][i % 3], ..Screen::default() };
+            s.draw(&screen, [f32::NAN, f32::INFINITY, -1e30, 2.0][i % 4], &T, &mut long, &mut Null);
+            assert!(s.bar.iter().all(|l| l.len() <= MAX_STATUSTEXT_LENGTH));
+        }
+        assert_eq!((atoi(b"99999999999"), atoi(b"-2147483648")), (1215752191, i32::MIN), "wraps like MSVC's");
     }
 
     #[test]

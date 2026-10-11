@@ -178,8 +178,9 @@ pub fn shell_life() -> f32 {
 /// pointers and set the old shell's `die`). Here each shell gets a sequence number in
 /// `curstate.iuser2`, and the temp-entity update kills shells that fell out of the last 64.
 pub fn track_shell(t: &mut TEMPENTITY) {
+    // Wrapping: the count only resets on `HUD_VidInit`, and a wrap must not end the game.
     let seq = with(|fx| {
-        fx.shell_seq += 1;
+        fx.shell_seq = fx.shell_seq.wrapping_add(1);
         fx.shell_seq
     });
     t.entity.curstate.iuser2 = seq;
@@ -187,7 +188,12 @@ pub fn track_shell(t: &mut TEMPENTITY) {
 
 /// True if the shell with sequence number `seq` (from [`track_shell`]) is older than the newest 64.
 pub fn shell_expired(seq: i32) -> bool {
-    seq > 0 && with(|fx| fx.shell_seq - seq >= 64)
+    seq > 0 && with(|fx| shell_older(fx.shell_seq, seq))
+}
+
+/// `seq` is at least 64 shells older than `newest` (wrapping, like the counter).
+fn shell_older(newest: i32, seq: i32) -> bool {
+    newest.wrapping_sub(seq) >= 64
 }
 
 /// Whizz sounds alternate between channels 503 and 504.
@@ -370,11 +376,16 @@ pub fn on_tsfrags(b: &[u8]) {
 /// (`READ_BYTE` `0x10029a10`), so a one-byte message has level -1 (5 ghosts). An empty message
 /// (entity -1) is dropped: TS would write before its trail table.
 pub fn on_tsmblur(b: &[u8]) {
-    let Some(&ent) = b.first() else { return };
-    let level = b.get(1).map_or(-1, |&l| l as i8);
+    let Some((ent, level)) = tsmblur_args(b) else { return };
     let (blur, fxq) = (cvar(|c| c.motionblur), cvar(|c| c.fx));
     let now = crate::hud::now();
-    with(|fx| fx.blur.add(ent as usize, level, blur, fxq, now));
+    with(|fx| fx.blur.add(ent, level, blur, fxq, now));
+}
+
+/// `TSMBlur`'s (entity, signed level) as TS reads them, `None` for an empty message.
+fn tsmblur_args(b: &[u8]) -> Option<(usize, i8)> {
+    let &ent = b.first()?;
+    Some((ent as usize, b.get(1).map_or(-1, |&l| l as i8)))
 }
 
 /// `TSBTime` (`0x1004b8e0`).
@@ -793,6 +804,29 @@ mod tests {
         // The colour goes to glFogfv as is (GL clamps it).
         let bright = Some(emitters::Fog { near: 0.0, far: 1.0, color: [128.0, -1.0, 0.5] });
         assert_eq!(fog_params(false, 1.0, bright, user, gl), Some(([128.0, -1.0, 0.5, 1.0], 0.0, 1.0)));
+    }
+
+    #[test]
+    fn shell_ring_wraps() {
+        assert!(!shell_older(10, 1));
+        assert!(shell_older(65, 1));
+        assert!(shell_older(i32::MIN + 10, i32::MAX - 60), "across the wrap");
+        assert!(!shell_older(i32::MIN, i32::MAX), "the shell just before the wrap is new");
+        assert!(!shell_older(0, i32::MAX));
+    }
+
+    #[test]
+    fn tsmblur_bytes() {
+        assert_eq!(tsmblur_args(&[]), None);
+        assert_eq!(tsmblur_args(&[5]), Some((5, -1)), "a missing level byte reads as -1");
+        assert_eq!(tsmblur_args(&[255, 0xff, 9, 9]), Some((255, -1)));
+        let mut m = mblur::MotionBlur::default();
+        for e in 0..=255u8 {
+            for l in 0..=255u8 {
+                let (ent, level) = tsmblur_args(&[e, l]).unwrap();
+                m.add(ent, level, 1.0, 2.0, 0.0);
+            }
+        }
     }
 
     #[test]

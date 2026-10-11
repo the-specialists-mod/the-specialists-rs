@@ -30,6 +30,9 @@ use shared::ts::obs;
 const MAX_ENTITIES: usize = 128;
 /// Name-tag slots (`+0x96c`, 12 bytes each).
 const MAX_TAGS: usize = 64;
+/// The most overview image cells across (×4) and down (×3): 32 is a 128×96-tile image (12288
+/// frames), far beyond any real overview.
+const MAX_TILE_CELLS: i32 = 32;
 
 /// The parsed `overviews/<map>.txt` (`m_OverviewData`, `+0x1c..+0x148`). TS keeps one layer.
 #[derive(Debug, Clone, PartialEq)]
@@ -381,11 +384,13 @@ fn layer_tiles(data: &OverviewData, x_tiles: i32, y_tiles: i32, z: f32) -> Vec<T
 }
 
 /// Tiles across and down: the image's frames form a 4:3 grid of `sqrt(frames / 12)` cells (TS
-/// truncates), 8 × 6 tiles of `sprites/tile.spr` without an image.
+/// truncates), 8 × 6 tiles of `sprites/tile.spr` without an image. The cell count is capped at
+/// [`MAX_TILE_CELLS`] (a port guard: TS would build millions of quads every frame for a sprite
+/// claiming billions of frames).
 fn tile_counts(map_frames: Option<i32>) -> (i32, i32) {
     match map_frames {
         Some(n) => {
-            let i = ((n / 12) as f32).sqrt() as i32;
+            let i = (((n / 12) as f32).sqrt() as i32).min(MAX_TILE_CELLS);
             (i * 4, i * 3)
         }
         None => (8, 6),
@@ -546,7 +551,8 @@ fn tag_color(team: i32) -> [f32; 3] {
 fn under_inset(inset: [i32; 4], p: [f32; 2], w: i32, h: i32) -> bool {
     let (sx, sy) = (w as f32 * (1.0 / 640.0), h as f32 * (1.0 / 480.0));
     let [ix, iy, iw, ih] = inset;
-    ix as f32 * sx < p[0] && iy as f32 * sy < p[1] && p[0] < (ix + iw) as f32 * sx && p[1] < (iy + ih) as f32 * sy
+    // C `int` sums of the overview file's values: wrap rather than overflow.
+    ix as f32 * sx < p[0] && iy as f32 * sy < p[1] && p[0] < ix.wrapping_add(iw) as f32 * sx && p[1] < iy.wrapping_add(ih) as f32 * sy
 }
 
 /// `CHudSpectator::Draw` (`0x10023080`): HLTV name tags.
@@ -643,5 +649,59 @@ mod tests {
         assert!(under_inset([4, 4, 240, 180], [100.0, 100.0], 640, 480));
         assert!(!under_inset([4, 4, 240, 180], [300.0, 100.0], 640, 480));
         assert!((rotate_yaw([1.0, 0.0, 0.0], 90.0)[1] - 1.0).abs() < 1e-6);
+    }
+
+    /// `overviews/<map>.txt` with any content, sprite frame counts and inset values of any size.
+    #[test]
+    fn garbage_overview_files() {
+        let mut x = 0x0bad_f00d_u32;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        const WORDS: [&str; 16] = [
+            "global",
+            "layer",
+            "{",
+            "}",
+            "zoom",
+            "origin",
+            "inset",
+            "image",
+            "height",
+            "rotated",
+            "\"",
+            "//",
+            "-1e39",
+            "é",
+            "+",
+            "2147483648",
+        ];
+        for n in 0..1500 {
+            let text: String = if n % 2 == 0 {
+                (0..n % 64).map(|_| WORDS[rnd() as usize % WORDS.len()]).collect::<Vec<_>>().join(if n % 4 == 0 { " " } else { "" })
+            } else {
+                String::from_utf8_lossy(&(0..n % 97).map(|_| rnd() as u8).collect::<Vec<_>>()).into_owned()
+            };
+            let mut d = OverviewData::default();
+            let _ = parse_overview(&text, &mut d);
+            atof(&text);
+            for p in [[0.0, 0.0], [f32::NAN, 1e30]] {
+                under_inset(d.inset, p, 640, 480);
+            }
+        }
+        assert_eq!(atof("é1"), 0.0);
+        assert_eq!(atof(" -12.5x"), -12.5);
+        assert_eq!(tokens("\"unterminated"), ["unterminated"]);
+        let mut d = OverviewData::default();
+        assert_eq!(parse_overview("global { inset 2147483647 2147483647 2147483647 2147483647 }", &mut d), Ok(()));
+        assert!(!under_inset(d.inset, [1.0, 1.0], 640, 480));
+        for n in [i32::MIN, -1, 0, 11, 12, i32::MAX] {
+            let (w, h) = tile_counts(Some(n));
+            assert!((0..=MAX_TILE_CELLS * 4).contains(&w) && (0..=MAX_TILE_CELLS * 3).contains(&h));
+        }
+        assert_eq!(layer_tiles(&OverviewData { zoom: 0.0, ..Default::default() }, 4, 3, f32::NAN).len(), 12);
     }
 }

@@ -166,6 +166,41 @@ mod tests {
         assert_eq!(TextMsg::read(&mut b, 1).params, ["bob"]);
     }
 
+    /// The readers take any bytes: short, all 0xff, unterminated or non-UTF-8 strings.
+    #[test]
+    fn readers_survive_garbage() {
+        let mut x = 0xdead_beef_cafe_f00du64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut bufs: Vec<Vec<u8>> = vec![vec![], vec![0xff], vec![0xff; 600], vec![b'x'; 40]];
+        for _ in 0..1000 {
+            let len = (next() % 40) as usize;
+            bufs.push((0..len).map(|_| next() as u8).collect());
+        }
+        let rd = |b: &Vec<u8>| Bytes { buf: b.clone(), pos: 0 };
+        for b in &bufs {
+            let _ = ScoreInfo::read(&mut rd(b));
+            let _ = DeathMsg::read(&mut rd(b));
+            let _ = TeamInfo::read(&mut rd(b));
+            let _ = TeamScore::read(&mut rd(b));
+            let _ = SrvSett::read(&mut rd(b));
+            let _ = RoundTime::read(&mut rd(b));
+            let _ = TsMessage::read(&mut rd(b));
+            let _ = SayText::read(&mut rd(b));
+            let _ = Motd::read(&mut rd(b));
+            let _ = TsFlag::read(&mut rd(b));
+            let _ = TsPSysWind::read(&mut rd(b));
+            let t = TeamNames::read(&mut rd(b));
+            assert!(t.names.len() <= 255);
+            let m = TextMsg::read(&mut rd(b), usize::MAX);
+            assert!(m.params.len() <= 4);
+        }
+    }
+
     #[test]
     fn fixed_sizes_match_registration() {
         use super::super::Msg;

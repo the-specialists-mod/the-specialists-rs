@@ -210,9 +210,10 @@ impl TeamMenu {
         self.scroll.validate();
     }
 
-    /// `SlotInput` (`0x100665a0`): 5 is auto-assign; 1..teams fires a visible team button.
+    /// `SlotInput` (`0x100665a0`): 5 is auto-assign; 1..teams fires a visible team button. A
+    /// `TeamNames` message can list more teams than the menu has buttons (TS keeps four).
     pub fn slot_input(&self, n: i32, teams: usize) -> Option<Action> {
-        if n == 5 || (n >= 1 && n as usize <= teams && self.buttons[n as usize].visible) {
+        if n == 5 || (n >= 1 && n as usize <= teams && self.buttons.get(n as usize).is_some_and(|b| b.visible)) {
             return Some(Action::Command(format!("jointeam {n}")));
         }
         None
@@ -328,6 +329,40 @@ impl TeamMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `TeamNames` can list up to 255 teams and the slot keys reach 0..9 (any int through the
+    /// `slot` commands): only the menu's buttons answer.
+    #[test]
+    fn slot_input_out_of_range() {
+        let m = TeamMenu::new(640, 480, &|s| s.to_owned());
+        for n in [i32::MIN, -1, 0, 1, 4, 6, 7, 9, 10, 255, i32::MAX] {
+            assert_eq!(m.slot_input(n, 255), None, "slot {n}");
+        }
+        assert!(m.slot_input(5, 0).is_some());
+        // Many team names, players on any team number, and odd level names.
+        let names: Vec<String> = (0..255).map(|i| format!("t{i}")).collect();
+        let players = vec![PlayerSlot { name: Some(vec![0xff; 40]), ..PlayerSlot::default() }; 65];
+        let extra: Vec<PlayerExtra> =
+            (0..65).map(|i| PlayerExtra { team: [i32::MIN, -1, 1, 4, i32::MAX][i % 5], ..PlayerExtra::default() }).collect();
+        let sb = Schemes::load(640, false, &|_| None);
+        for level in ["maps/", "maps", ".", "/", "\\x.", "maps/\u{e9}t\u{e9}.bsp", "a/b/c.d.e"] {
+            let mut m = TeamMenu::new(640, 480, &|s| s.to_owned());
+            let inp = Inputs {
+                team_names: &names,
+                players: &players,
+                extra: &extra,
+                team_frags: &|_| i16::MIN,
+                level,
+                load: &|_| Some(vec![0xff; 5000]),
+                briefing_size: &|t| (t.len() as i32, i32::MAX / 2),
+                w: 640,
+                h: 480,
+            };
+            m.update(&inp);
+            m.hover(640, 480, 50, 120);
+            m.paint(&mut crate::hud::vgui::tests::Record::default(), &sb, 640, 480, &[None, None, None, None]);
+        }
+    }
 
     fn slot(name: &str, this: bool) -> PlayerSlot {
         PlayerSlot { name: Some(name.as_bytes().to_vec()), ping: 0, packetloss: 0, this_player: this, entity: true }

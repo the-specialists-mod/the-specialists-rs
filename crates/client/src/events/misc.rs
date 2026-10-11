@@ -186,7 +186,7 @@ fn melee_trace(a: &Args, reach: f32) -> Option<(Vec3, Vec3, u8)> {
     let (fwd, _, _) = a.vectors();
     let src = a.gun_position();
     let end = v::ma(src, reach, fwd);
-    r::with_solid_players(a.entindex - 1, || {
+    r::with_solid_players(a.entindex.wrapping_sub(1), || {
         let mut tr = r::player_trace(src, end, 2, PM_STUDIO_BOX as i32, -1);
         (tr.fraction < 1.0).then(|| {
             let tex = texture_type(&mut tr, src, end);

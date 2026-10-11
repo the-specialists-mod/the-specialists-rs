@@ -366,6 +366,20 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
   precision control; the port uses `f64::atan2`/`acos`, which can differ in the last `double`
   bit. Every result is rounded to `float` before use, so this only shows when that bit decides
   the `float` rounding.
+* **Panic guards (the game must never abort).** Both profiles build with `panic = "abort"`, so
+  out-of-range data from the server, the demo, the model or map files, or cvars is bounded instead
+  of panicking:
+  * An emitter rolls at most 4096 particles per emission (`MAX_PER_EMIT`).
+  * `shared_random_long` over the full 32-bit range returns `low + r` instead of overflowing.
+  * An event entindex of `i32::MIN` is never local (`is_local` and the shooter and melee indices
+    wrap).
+  * The shell sequence and the gun's deploy `mode` wrap. The motion-blur `max` saturates.
+  * `unpack_clientdata`'s `clip - left` wraps.
+  * The overview layer is capped at 128×96 tiles (`MAX_TILE_CELLS` 32), and its inset sum wraps.
+  * Studio model offsets past `usize::MAX / 4` read as 0 (`model::at`). Angle wrapping, gait, the
+    animation base and `numframes` use wrapping or saturating maths.
+  * `input`'s cursor bounds tolerate the 0×0 screen before `HUD_VidInit`. The camera offset, the
+    joystick axes and the zoom easing wrap as C `int`s.
 
 ## TS behaviour worth knowing (not deviations)
 

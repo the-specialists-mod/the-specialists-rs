@@ -11,6 +11,8 @@ const MAX_LINES: usize = 5;
 const LINE_SIZE: usize = 256;
 /// `LINE_START`: the text's x.
 const LINE_START: i32 = 10;
+/// The deepest [`SayText::wrap`] recursion: every move takes at least a byte off a 255-byte line.
+const MAX_WRAP_DEPTH: usize = LINE_SIZE;
 
 /// The say text colour (`0x1009359c`, also team 3's): 1.0 0.7 0.0.
 pub const SAY_COLOR: [f32; 3] = [1.0, 0.7, 0.0];
@@ -144,18 +146,29 @@ impl SayText {
         }
         self.active = true;
         let h = screen.1;
-        let base = if h < 480 { h - 45 } else { h - 60 };
-        self.y_start = base - self.line_height * 6;
+        // C int arithmetic on the engine's sizes.
+        let base = if h < 480 { h.wrapping_sub(45) } else { h.wrapping_sub(60) };
+        self.y_start = base.wrapping_sub(self.line_height.wrapping_mul(6));
     }
 
     /// `EnsureTextFitsInOneLineAndWrapIfHaveTo` (`0x1002ee90`), with its SDK quirks: a break that
     /// isn't at a space drops the rest of the text (the unsigned length check always fails), and
     /// `/(...)` colour codes are skipped when measuring.
-    pub fn wrap(&mut self, mut line: usize, screen_width: i32, env: &mut dyn SayEnv) {
-        let max_width = screen_width - 40;
+    pub fn wrap(&mut self, line: usize, screen_width: i32, env: &mut dyn SayEnv) {
+        self.wrap_at_depth(line, screen_width, env, 0);
+    }
+
+    /// [`Self::wrap`]'s recursion. Guarded: on a screen narrower than a character, a line starting
+    /// with a space moves whole to the free line its last move emptied, back and forth, until TS's
+    /// stack overflows; the port stops after [`MAX_WRAP_DEPTH`] moves.
+    fn wrap_at_depth(&mut self, mut line: usize, screen_width: i32, env: &mut dyn SayEnv, depth: usize) {
+        if depth > MAX_WRAP_DEPTH {
+            return;
+        }
+        let max_width = screen_width.saturating_sub(40);
         let (w, h) = env.string_size(&self.lines[line]);
         self.line_height = h;
-        if w + LINE_START <= max_width {
+        if w.wrapping_add(LINE_START) <= max_width {
             return;
         }
         let mut length = LINE_START;
@@ -180,7 +193,7 @@ impl SayText {
             }
             let (cw, ch) = env.string_size(&buf[x..x + 1]);
             self.line_height = ch;
-            length += cw;
+            length = length.wrapping_add(cw);
             if length > max_width {
                 // `x - 1` when no space came first; at the very first character that is one
                 // byte before the line, which TS then reads as that byte. The port clamps it.
@@ -209,7 +222,7 @@ impl SayText {
                 }
                 let l = &mut self.lines[line];
                 l.truncate(brk.min(l.len()));
-                self.wrap(j, screen_width, env);
+                self.wrap_at_depth(j, screen_width, env, depth + 1);
                 return;
             }
             x += 1;
@@ -258,7 +271,7 @@ impl SayText {
                     _ => out.push(DrawLine::Plain { y, text: l.clone() }),
                 }
             }
-            y += self.line_height;
+            y = y.wrapping_add(self.line_height);
         }
         out
     }
@@ -313,6 +326,43 @@ mod tests {
         print(&mut s, &mut env, "abcdefghijklmnopqrstuvwxyz", 200);
         assert_eq!(s.lines[0], b"abcdefghijklmnopq", "cut one character before the overflow");
         assert!(s.lines[1].is_empty(), "SDK quirk: the remainder isn't copied");
+    }
+
+    /// A screen narrower than a character: a line starting with a space used to bounce between
+    /// two free lines forever (TS overflows its stack); the wrap now gives up.
+    #[test]
+    fn narrow_screens_dont_recurse_forever() {
+        for w in [i32::MIN, -1, 0, 30, 45] {
+            let (mut s, mut env) = (SayText::default(), Env::default());
+            print(&mut s, &mut env, " leading space", w);
+            print(&mut s, &mut env, "  x y z", w);
+            print(&mut s, &mut env, "\u{2}bob: a b c", w);
+            let _ = s.draw_plan(f32::MAX, &mut env);
+        }
+    }
+
+    /// Random bytes (NULs, `/(` colour codes, `\x02`, spaces) at random widths and heights.
+    #[test]
+    fn random_text_and_screens() {
+        let mut seed = 0xdead_beef_cafe_f00du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (mut s, mut env) = (SayText::default(), Env::default());
+        for i in 0..300 {
+            let n = (next() % 400) as usize;
+            let text: Vec<u8> = (0..n).map(|_| [b' ', b'/', b'(', b')', 2, 0, b'b', 0xff][(next() % 8) as usize]).collect();
+            let w = [(next() % 2000) as i32, i32::MAX, i32::MIN, 0][i % 4];
+            let name: &[u8] = if i % 3 == 0 { b"" } else { b"b" };
+            s.print(&text, Some((name, None)), i as f32, || f32::NAN, (w, (next() % 1000) as i32 - 100), &mut env);
+            for l in &s.lines {
+                assert!(l.len() < LINE_SIZE);
+            }
+            let _ = s.draw_plan(i as f32 * 0.5, &mut env);
+        }
     }
 
     #[test]

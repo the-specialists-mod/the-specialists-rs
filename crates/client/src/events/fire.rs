@@ -396,7 +396,7 @@ pub fn pellet_dir(dir: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], seed: i32,
 /// with TS's distance ([`heron_height`]), and only while the view is inside the sphere
 /// `|mid − view| < |mid − end| − 100`. Volume `min(1, 2/(h + 0.1))`, channels 503/504 alternating.
 fn whizz(b: &Bullets, end: Vec3) {
-    if r::is_local(b.shooter) {
+    if super::is_local_entity(b.shooter) {
         return;
     }
     let len = v::dist(b.src, end);
@@ -425,7 +425,7 @@ pub fn fire_bullets(b: &Bullets) {
 
     if b.bullet_type == 2 {
         let end = v::ma(b.src, 4096.0, b.dir);
-        r::with_solid_players(b.shooter - 1, || {
+        r::with_solid_players(b.shooter.wrapping_sub(1), || {
             let mut tr = r::player_trace(b.src, end, 2, PM_STUDIO_BOX as i32, -1);
             if trace_hit(tr.fraction) {
                 impact::texture_sound(&mut tr, b.src, end, 2);
@@ -458,7 +458,7 @@ pub fn fire_bullets(b: &Bullets) {
             effects::add_client_bullet(b.shooter, b.src, d, b.dmg, b.ammo, b.bullet_type);
             continue;
         }
-        r::with_solid_players(b.shooter - 1, || {
+        r::with_solid_players(b.shooter.wrapping_sub(1), || {
             let mut tr = r::player_trace(b.src, end, 2, PM_STUDIO_BOX as i32, -1);
             last_end = tr.endpos;
             if trace_hit(tr.fraction) {
@@ -665,7 +665,7 @@ fn client_bullet_impact(s: &mut ClientBullet, frametime: f32) {
     let dt = step_time(s.next_update, engine().client_time(), frametime);
     let v40 = velocity * 40.0;
     let step = s.dir.map(|d| d * v40 * dt * mult);
-    let clear = r::with_solid_players(s.shooter - 1, || {
+    let clear = r::with_solid_players(s.shooter.wrapping_sub(1), || {
         let end = v::add(step, s.pos);
         let mut tr = r::player_trace(s.pos, end, 2, PM_STUDIO_BOX as i32, -1);
         if tr.fraction == 1.0 {
@@ -925,6 +925,34 @@ mod tests {
         );
         assert_eq!(fire_sample("ak47/fire.wav", "", true), (String::new(), (0.84, 0.92), 2.0));
         assert_eq!(fire_sample("", "x.wav", false), (String::new(), (0.92, 1.0), 1.0));
+    }
+
+    /// Event parameters are the server's: any weapon id, ammo index, seed and float.
+    #[test]
+    fn event_params_out_of_range() {
+        for id in [i32::MIN, -1, 0, 29, 38, 255, 256, i32::MAX] {
+            let _ = weapon_body(id, -1);
+            let _ = super::info::info(id).map(|i| i.set(true));
+            let _ = super::info::class(id);
+        }
+        for ammo in [i32::MIN, -1, 14, 16, 255, i32::MAX] {
+            assert_eq!(ammo_consts(ammo), (0.0, 80.0, 330.0));
+        }
+        for x in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, 0.0] {
+            let _ = range_index(x, x);
+            let _ = impact::range_mult(range_index(x, 80.0));
+            let _ = (bullet_velocity_mult(x, true), bullet_width(x), streak_length(x), slow_time(x, x), step_time(x, x, x));
+            let _ = pellet_dir([x; 3], [x; 3], [x; 3], [x, x], i32::MIN, i32::MAX);
+            let _ = near_alpha([x; 3], [0.0; 3]);
+        }
+        for rb in [i32::MIN, -1, 0, 1, 2, i32::MAX] {
+            let _ = next_update(1.0, rb);
+        }
+        let mut b = ClientBullets::default();
+        for i in 0..1000 {
+            b.add(i32::MIN + i, [f32::NAN; 3], [f32::INFINITY; 3], f32::NAN, i32::MAX, i32::MIN);
+        }
+        assert_eq!(b.count, CLIENT_BULLETS as i32);
     }
 
     #[test]

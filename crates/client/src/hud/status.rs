@@ -162,7 +162,8 @@ fn crosshair_trace() -> Option<(i32, u8, String)> {
     if name.is_empty() {
         return None;
     }
-    let (gm, mine, theirs) = super::with(|h| (h.gamemode, h.players[me.index as usize].team, h.players[idx as usize].team));
+    let team = |h: &Hud, i: i32| usize::try_from(i).ok().and_then(|i| h.players.get(i)).map_or(0, |p| p.team);
+    let (gm, mine, theirs) = super::with(|h| (h.gamemode, team(h, me.index), team(h, idx)));
     let team = if gm == 0 || mine != theirs { 2 } else { 1 };
     Some((idx, team, name))
 }
@@ -189,10 +190,11 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
             e.spr_set(stance, RED);
             e.spr_draw_additive(0, 8, y - 4, None);
         }
-        let top = sh - hp * sh / 100;
+        // C int arithmetic: the sprite's height is file data.
+        let top = sh.wrapping_sub(hp.wrapping_mul(sh) / 100);
         let rc = goldsrc::sys::wrect_t { left: 0, right: sw, top, bottom: sh };
         e.spr_set(stance, half(hud));
-        e.spr_draw_additive(0, 8, y - 4 + top, Some(&rc));
+        e.spr_draw_additive(0, 8, (y - 4).wrapping_add(top), Some(&rc));
     }
     let hp_rgb = if h.health < 50 { RED } else { half(hud) };
     dc.number(0x48, y + 4, num::DIGITS_3 | num::DRAW_ZERO, h.health as i32, hp_rgb);
@@ -205,8 +207,8 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
     y -= 0x14;
     if h.gamemode != 0
         && let Some(me) = e.local_player()
+        && let Some(p) = usize::try_from(me.index).ok().and_then(|i| h.players.get(i))
     {
-        let p = &h.players[me.index as usize];
         let c = TEAM_COLORS[(p.team.max(0) as usize).min(TEAM_COLORS.len() - 1)];
         dc.fill(8, y, 0x7f, 0x13, c, 0x23);
         dc.string(10, y, &p.teamname, c);

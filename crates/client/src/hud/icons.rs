@@ -53,10 +53,10 @@ impl StatusIcons {
             .unwrap_or(0);
         let ic = &mut self.icons[i];
         let idx = sprites.index(&String::from_utf8_lossy(name));
-        ic.spr = idx.map_or(0, |k| sprites.handles[k]);
+        ic.spr = idx.and_then(|k| sprites.handles.get(k)).copied().unwrap_or(0);
         // TS copies the rectangle at index -1 for an unknown name (memory before the array);
         // the port leaves it zero.
-        ic.rc = idx.map_or(wrect_t::default(), |k| sprites.rects[k]);
+        ic.rc = idx.and_then(|k| sprites.rects.get(k)).copied().unwrap_or_default();
         ic.rgb = rgb;
         // `strcpy` into the 24-byte buffer; a longer name runs over the slot in TS. The port
         // keeps the first 23 bytes.
@@ -82,9 +82,32 @@ impl StatusIcons {
             if ic.spr == 0 {
                 continue;
             }
-            y += (ic.rc.top - ic.rc.bottom) - 5;
+            // hud.txt rectangles are file data: C int arithmetic.
+            y = y.wrapping_add(ic.rc.top.wrapping_sub(ic.rc.bottom)).wrapping_sub(5);
             e.spr_set(ic.spr, [ic.rgb[0] as i32, ic.rgb[1] as i32, ic.rgb[2] as i32]);
             e.spr_draw_additive(0, 5, y, Some(&ic.rc));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Long, empty and non-UTF-8 names, and a sprite list whose handles or rectangles are short.
+    #[test]
+    fn enable_any_name() {
+        let sprites = HudSprites { names: vec!["grenade".into(), "x".into()], handles: vec![], rects: vec![], number_0: None };
+        let mut icons = StatusIcons::default();
+        assert!(icons.enable(b"grenade", [1, 2, 3], &sprites));
+        let rc = icons.icons[0].rc;
+        assert_eq!((icons.icons[0].spr, rc.left, rc.right, rc.top, rc.bottom), (0, 0, 0, 0, 0));
+        for name in [&b""[..], &[0xff; 100], b"a_grenade_with_a_very_long_name", b"x"] {
+            icons.enable(name, [0; 3], &sprites);
+            icons.disable(name);
+        }
+        assert!(icons.icons.iter().all(|ic| ic.name().len() < NAME_LEN));
+        icons.reset();
+        assert!(!icons.active);
     }
 }

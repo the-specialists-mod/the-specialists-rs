@@ -144,7 +144,7 @@ pub fn hook() {
     viewport!(c"AllowSpec", AllowSpec);
     e.hook_user_msg(c"SecAmmoVal", |b| super::with(|h| h.sec_ammo.msg_val(b)));
     e.hook_user_msg(c"SecAmmoIcon", |b| {
-        let index = |n: &str| super::gfx(|g| g.sprites.index(n));
+        let index = |n: &str| super::gfx_ref(|g| g.sprites.index(n));
         super::with(|h| h.sec_ammo.msg_icon(b, index));
     });
 }
@@ -166,6 +166,20 @@ mod tests {
         assert_eq!((v.is_feigning, v.is_setting_detpack, v.build_state, v.random_pc, v.allow_spectators), (1, 2, 255, 1, -1));
         v.initialize();
         assert_eq!((v.valid_classes, v.random_pc, v.is_feigning), ([0; 5], 0, 1));
+    }
+
+    /// Every TFC handler takes any payload.
+    #[test]
+    fn hostile_payloads() {
+        let (mut v, mut a) = (ViewportTfc::default(), AmmoSecondary::default());
+        for b in [&[][..], &[0xff; 1], &[0xff; 64], &[3, 0xff], &[0, 0x80, 0, 0x80]] {
+            for m in [TfcMsg::ValClass, TfcMsg::Feign, TfcMsg::Detpack, TfcMsg::BuildSt, TfcMsg::RandomPC, TfcMsg::AllowSpec] {
+                v.apply(m, b);
+            }
+            a.msg_val(b);
+            a.msg_icon(b, |_| Some(usize::MAX));
+        }
+        assert_eq!(a.icon, -1, "an index past i32 wraps to -1 as TS's int");
     }
 
     #[test]

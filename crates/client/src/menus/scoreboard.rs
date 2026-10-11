@@ -811,6 +811,66 @@ impl ScoreBoard {
 mod tests {
     use super::*;
 
+    /// A tiny xorshift for the fuzz tests.
+    fn xorshift(s: &mut u64) -> u64 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        *s
+    }
+
+    /// Players with any team numbers, frags, names and awards; kills with any indices; team
+    /// scores for names nobody has.
+    #[test]
+    fn garbage_scoreboard_input() {
+        let mut s = 0x5eed_5eed_5eed_5eedu64;
+        let sb = Schemes::load(640, false, &|_| None);
+        let mut b = ScoreBoard::default();
+        let long = "\u{e9}".repeat(20);
+        for round in 0..30 {
+            let mut players = vec![PlayerSlot::default(); 65];
+            let mut extra = vec![PlayerExtra::default(); 65];
+            for i in 1..65 {
+                let r = xorshift(&mut s);
+                if r & 1 != 0 {
+                    players[i] = PlayerSlot {
+                        name: Some(vec![0xff; (r % 50) as usize]),
+                        ping: r as i16,
+                        packetloss: (r >> 8) as u8,
+                        this_player: r.is_multiple_of(7),
+                        entity: r & 2 != 0,
+                    };
+                }
+                extra[i].team = [i32::MIN, -1, 0, 1, 2, 5, i32::MAX][(r % 7) as usize];
+                extra[i].frags = (r >> 16) as i32;
+                extra[i].deaths = (r >> 32) as i32;
+                extra[i].award = (r >> 40) as u8;
+                extra[i].teamname = ["", "A", "b", long.as_str()][(r >> 48) as usize % 4].into();
+                if r.is_multiple_of(11) {
+                    extra[i].teamname = format!("team{i}");
+                }
+            }
+            let names: Vec<String> = (0..10).map(|i| format!("n{i}")).collect();
+            let mut inp = inputs(&players, &extra, round % 3);
+            inp.team_names = &names;
+            inp.squelch = round & 1 == 0;
+            b.rebuild_teams(&inp, &sb);
+            b.team_score("nobody", i16::MIN, i16::MAX);
+            b.team_score("A", i16::MIN, i16::MAX);
+            b.death_msg(xorshift(&mut s) as i32, xorshift(&mut s) as i32, f32::MAX);
+            b.death_msg(0, b.player_num, f32::NAN);
+            b.update(&inp, &sb);
+            b.cursor_moved(xorshift(&mut s) as i32 % 700, xorshift(&mut s) as i32 % 500, true, &|_| (true, false, true));
+            let _ = b.highlighted_player();
+            let _ = b.on_entry(300, 200);
+            let mut voice = |_: i32| Some((None, Some(Color::new(1, 2, 3, 4))));
+            b.paint(&mut crate::hud::vgui::tests::Record::default(), &sb, 640, 480, &mut voice, &[None, None]);
+            b.scroll_pressed(640, 480, 530, 200);
+            b.scroll_cursor(640, 480, 530, 400);
+            b.scroll_released(640, 480, 530, 470, true);
+        }
+    }
+
     fn slot(name: &str, this: bool) -> PlayerSlot {
         PlayerSlot { name: Some(name.as_bytes().to_vec()), ping: 10, packetloss: 0, this_player: this, entity: true }
     }

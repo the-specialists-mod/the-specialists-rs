@@ -90,16 +90,18 @@ pub unsafe extern "C" fn HUD_Shutdown() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_PlayerMove(pm: *mut playermove_t, _server: c_int) {
-    // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    let pm = unsafe { &mut *pm };
+    // SAFETY: the engine passes its playermove_t (or null) for the duration of this call.
+    let Some(pm) = (unsafe { pm.as_mut() }) else { return };
     spectator::begin_player_move(pm);
     shared::pm::player_move_with(pm, shared::pm::Arith::CLIENT, Some(spectator::spectator_move));
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_PlayerMoveInit(pm: *mut playermove_t) {
-    // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    shared::pm::init(unsafe { &mut *pm });
+    // SAFETY: the engine passes its playermove_t (or null) for the duration of this call.
+    if let Some(pm) = unsafe { pm.as_mut() } {
+        shared::pm::init(pm);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -110,6 +112,9 @@ pub unsafe extern "C" fn HUD_PlayerMoveTexture(name: *mut c_char) -> c_char {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_GetHullBounds(hull: c_int, mins: *mut f32, maxs: *mut f32) -> c_int {
+    if mins.is_null() || maxs.is_null() {
+        return 0;
+    }
     match shared::pm::hull_bounds(hull) {
         Some((lo, hi)) => {
             // SAFETY: the engine passes valid pointers (and writable out-pointers) for the duration of this call.
@@ -158,8 +163,10 @@ pub unsafe extern "C" fn IN_Accumulate() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn CL_CreateMove(frametime: f32, cmd: *mut usercmd_t, active: c_int) {
-    // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    input::create_move(frametime, unsafe { &mut *cmd }, active != 0);
+    // SAFETY: the engine passes its usercmd_t (or null) for the duration of this call.
+    if let Some(cmd) = unsafe { cmd.as_mut() } {
+        input::create_move(frametime, cmd, active != 0);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -169,7 +176,10 @@ pub unsafe extern "C" fn CL_IsThirdPerson() -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn CL_CameraOffset(ofs: *mut f32) {
-    // SAFETY: the engine passes valid out-pointers for this call.
+    if ofs.is_null() {
+        return;
+    }
+    // SAFETY: the engine passes a valid out-pointer for this call (null-checked).
     unsafe { ofs.cast::<[f32; 3]>().write([0.0; 3]) };
 }
 
@@ -186,8 +196,10 @@ pub unsafe extern "C" fn CAM_Think() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn V_CalcRefdef(p: *mut ref_params_t) {
-    // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    view::calc_refdef(unsafe { &mut *p });
+    // SAFETY: the engine passes its ref_params_t (or null) for the duration of this call.
+    if let Some(p) = unsafe { p.as_mut() } {
+        view::calc_refdef(p);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -230,20 +242,25 @@ pub unsafe extern "C" fn HUD_PostRunCmd(
     time: f64,
     random_seed: u32,
 ) {
-    // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    unsafe { prediction::post_run_cmd(&mut *from, &mut *to, &mut *cmd, runfuncs != 0, time, random_seed) };
+    // SAFETY: the engine passes valid pointers (or nulls, rejected here) for the duration of this call.
+    let (Some(from), Some(to), Some(cmd)) = (unsafe { (from.as_mut(), to.as_mut(), cmd.as_mut()) }) else { return };
+    prediction::post_run_cmd(from, to, cmd, runfuncs != 0, time, random_seed);
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_TxferLocalOverrides(state: *mut entity_state_t, client: *const clientdata_t) {
-    // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    unsafe { prediction::txfer_local_overrides(&mut *state, &*client) };
+    // SAFETY: the engine passes valid pointers (or nulls, rejected here) for the duration of this call.
+    if let (Some(state), Some(client)) = unsafe { (state.as_mut(), client.as_ref()) } {
+        prediction::txfer_local_overrides(state, client);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_ProcessPlayerState(dst: *mut entity_state_t, src: *const entity_state_t) {
-    // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    unsafe { prediction::process_player_state(&mut *dst, &*src) };
+    // SAFETY: the engine passes valid pointers (or nulls, rejected here) for the duration of this call.
+    if let (Some(dst), Some(src)) = unsafe { (dst.as_mut(), src.as_ref()) } {
+        prediction::process_player_state(dst, src);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -255,12 +272,21 @@ pub unsafe extern "C" fn HUD_TxferPredictionData(
     wd: *mut weapon_data_t,
     pwd: *const weapon_data_t,
 ) {
-    // SAFETY: the engine passes valid pointers (and writable out-pointers) for the duration of this call.
-    unsafe {
-        let wd = &mut *wd.cast::<[weapon_data_t; 32]>();
-        let pwd = &*pwd.cast::<[weapon_data_t; 32]>();
-        prediction::txfer_prediction_data(&mut *ps, &*pps, &mut *pcd, &*ppcd, wd, pwd);
-    }
+    // SAFETY: the engine passes valid pointers (or nulls, rejected here) for the duration of this
+    // call; the weapon data arrays have 32 entries (`MAX_WEAPONS`).
+    let (Some(ps), Some(pps), Some(pcd), Some(ppcd), Some(wd), Some(pwd)) = (unsafe {
+        (
+            ps.as_mut(),
+            pps.as_ref(),
+            pcd.as_mut(),
+            ppcd.as_ref(),
+            wd.cast::<[weapon_data_t; 32]>().as_mut(),
+            pwd.cast::<[weapon_data_t; 32]>().as_ref(),
+        )
+    }) else {
+        return;
+    };
+    prediction::txfer_prediction_data(ps, pps, pcd, ppcd, wd, pwd);
 }
 
 #[unsafe(no_mangle)]
@@ -280,8 +306,10 @@ pub unsafe extern "C" fn HUD_ConnectionlessPacket(
     _buf: *mut c_char,
     size: *mut c_int,
 ) -> c_int {
-    // SAFETY: the engine passes valid out-pointers for this call.
-    unsafe { *size = 0 };
+    // SAFETY: the engine passes a valid out-pointer (or null) for this call.
+    if let Some(size) = unsafe { size.as_mut() } {
+        *size = 0;
+    }
     0
 }
 

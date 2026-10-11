@@ -176,7 +176,8 @@ pub fn think_sounds(_dt: f32) {
     let (ts, power) = (crate::state::with(|s| s.time_scale), super::with(|h| h.kfu_power));
     let play = |ch: i32, sample: &str, vol: f32, flags: i32| {
         let r = goldsrc::ext::render::random_long(-5, 5);
-        let pitch = r + (25 - (ts as f64 * -75.0) as i32);
+        // `__ftol` and C int arithmetic: a wild time scale wraps instead of overflowing.
+        let pitch = r.wrapping_add(25i32.wrapping_sub((ts as f64 * -75.0) as i32));
         if let Some(me) = e.local_player() {
             let (index, origin) = (me.index, me.curstate.origin);
             e.ev_play_sound(index, origin, ch, sample, vol, 0.8, flags, pitch);
@@ -295,7 +296,13 @@ fn laser_dot_positions(
     }
     let to_px = |d: [f32; 2]| (((1.0 + d[0]) * w as f32 * 0.5) as i32, ((1.0 - d[1]) * h as f32 * 0.5) as i32);
     let pinned: &[(i32, i32)] = if items & 0x40 == 0 { &[(cx + jx, cy + jy)] } else { &[(cx + 4 + jx, cy + jy), (cx - 4 + jy, cy + jx)] };
-    pinned.iter().zip(dots).filter_map(|(&p, d)| d.map(|d| if centred { p } else { to_px(d) })).map(|(x, y)| (x - 1, y - 1)).collect()
+    // A hit point projected from near the eye plane can saturate the cast; C would wrap.
+    pinned
+        .iter()
+        .zip(dots)
+        .filter_map(|(&p, d)| d.map(|d| if centred { p } else { to_px(d) }))
+        .map(|(x, y)| (x.wrapping_sub(1), y.wrapping_sub(1)))
+        .collect()
 }
 
 fn realhud() -> bool {
@@ -502,7 +509,9 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
     if !scoped || id_team == Some(1) {
         let base = if active & 2 != 0 { 12 } else { 22 };
         let spread = crate::state::with(|s| s.spread);
-        let gap = (base as f32 + spread * 160.0) as i32;
+        // Guarded: a huge predicted spread would overflow `cx + gap`; at this size the lines
+        // are far off screen anyway.
+        let gap = ((base as f32 + spread * 160.0) as i32).clamp(-0x10000, 0x10000);
         if id_team == Some(1) {
             dc.spr(dc.g.ts.cross_t, cx - 32, cy - 32, rgb);
         } else {
@@ -622,6 +631,41 @@ mod tests {
         assert_eq!(laser_dot_positions(2, false, c, j, dots, sz), [(479, 119)], "at the projected hit");
         assert_eq!(laser_dot_positions(0x42, true, c, j, dots, sz), [(324, 239), (315, 240)], "akimbo: +3/-5 px, jitter swapped");
         assert_eq!(laser_dot_positions(0x42, true, c, j, [None, dots[1]], sz), [(315, 240)], "off-screen hit: no dot");
+    }
+
+    /// Projections from near the eye plane (infinite or NaN) and odd screens give no overflow.
+    #[test]
+    fn laser_dots_with_wild_projections() {
+        let wild = [Some([f32::INFINITY, f32::NEG_INFINITY]), Some([f32::NAN, -f32::MAX])];
+        for items in [2, 0x42] {
+            for size in [(i32::MAX, i32::MAX), (i32::MIN, i32::MIN), (0, 0)] {
+                let _ = laser_dot_positions(items, false, (0, 0), (0, 0), wild, size);
+            }
+        }
+        let _ = divestep_layout(true, u8::MAX, f32::NAN, [0; 3], (i32::MAX, i32::MIN));
+        assert!(!crosshair_scoped(f32::NAN, true));
+    }
+
+    /// Slot selection with every bucket and weapon ids the server may have put in the grid
+    /// (255, unknown akimbo links) always ends.
+    #[test]
+    fn slot_selection_with_any_grid() {
+        let mut h = Hud::default();
+        for (r, row) in h.grid.iter_mut().enumerate() {
+            for (b, s) in row.iter_mut().enumerate() {
+                *s = Slot { id: ((r * 11 + b) * 7 % 256) as i32, clip: -5 };
+            }
+        }
+        for n in [-1, 0, 1, 5, 6, 10, 11, i32::MIN, i32::MAX] {
+            for fast in [false, true] {
+                let _ = select_slot(&mut h, n, fast);
+                let _ = select_next_prev(&mut h, n % 2 == 0, fast);
+                assert!((0..GRID_ROWS as i32).contains(&h.menu_row));
+            }
+        }
+        h.grid = [[super::super::state::EMPTY; super::super::state::GRID_BUCKETS]; GRID_ROWS];
+        assert_eq!(select_next_prev(&mut h, true, true), None, "an empty grid ends the walk");
+        assert_eq!(select_slot(&mut h, 3, true), None);
     }
 
     #[test]

@@ -40,14 +40,23 @@ pub fn write_buffer(kind: i32, data: &[u8]) {
 /// `Demo_ReadBuffer` (`0x1001b8c0`), from the engine during playback. Every known type carries
 /// four bytes of data.
 pub fn read_buffer(buf: &[u8]) {
+    if !apply(buf) {
+        engine().print("Unknown demo buffer type, skipping.\n");
+    }
+}
+
+/// The engine-free part of [`read_buffer`]: stores a known record (a known type with less than
+/// four bytes of data is ignored) and returns false for an unknown or missing type.
+fn apply(buf: &[u8]) -> bool {
     let data = buf.get(4..8).map(|b| [b[0], b[1], b[2], b[3]]);
     match (buf.get(..4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]])), data) {
         (Some(FOV), Some(d)) => RECORDED_FOV.0.set(f32::from_le_bytes(d)),
         (Some(ALT_GRIP), Some(d)) => RECORDED_ALT_GRIP.0.set(i32::from_le_bytes(d)),
         (Some(THIRDPERSON), Some(d)) => RECORDED_THIRDPERSON.0.set(i32::from_le_bytes(d)),
         (Some(FOV | ALT_GRIP | THIRDPERSON), None) => {}
-        _ => engine().print("Unknown demo buffer type, skipping.\n"),
+        _ => return false,
     }
+    true
 }
 
 /// The zoom FOV target as the demo being played last recorded it.
@@ -82,5 +91,26 @@ mod tests {
         read_buffer(&record(ALT_GRIP, &0x101i32.to_le_bytes()));
         read_buffer(&record(THIRDPERSON, &1i32.to_le_bytes()));
         assert_eq!((recorded_fov(), recorded_alt_grip(), recorded_thirdperson()), (35.0, 1, 1));
+
+        // Payloads of any size and content: short, oversized, unknown types and random bytes.
+        // (One test, as the records are process-wide statics.)
+        assert!(!apply(&[]));
+        assert!(!apply(&[0, 0, 0]));
+        assert!(apply(&[2, 0, 0, 0, 1]), "known type, short data: ignored");
+        assert!(!apply(&[0xff; 64]));
+        assert!(apply(&record(FOV, &[0xff; 300])));
+        let mut x = 0x2545_f491_u32;
+        for n in 0..2000 {
+            let buf: Vec<u8> = (0..n % 40)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    if x & 0x30 == 0 { (x >> 8) as u8 & 3 } else { x as u8 }
+                })
+                .collect();
+            apply(&buf);
+            let _ = (recorded_fov(), recorded_alt_grip(), recorded_thirdperson());
+        }
     }
 }

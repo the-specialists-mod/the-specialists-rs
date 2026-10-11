@@ -523,6 +523,33 @@ Undefined in TS:
   port, where TS has whatever the stack held.
 * The viewport is allocated without clearing; `Initialize` zeroes the valid classes and
   `RandomPC`. The port starts `Feign`/`Detpack`/`BuildSt`/`AllowSpec` at 0 too.
+* **Panic guards (the game must never abort).** Both profiles build with `panic = "abort"`, so
+  bad input from the server, game files or cvars is dropped or bounded instead of panicking.
+  Where TS would only read or write out of bounds, the port also differs:
+  * Integer maths on HUD positions, panel and VGUI coordinates (`hud/vgui.rs` `Rect`/`Panel`),
+    ammo, scores, buy-list totals and joystick and camera offsets wraps as TS's C `int` maths
+    does, instead of tripping debug overflow checks.
+  * `text::format` pads to at most 0x400 columns. A SayText whose `%s` substitutions keep
+    expanding stops wrapping after 256 levels of recursion. The crosshair gap is clamped to
+    ±65536 px.
+  * A TGA (`gfx/vgui/*.tga`) whose pixel data can't fill its header size, or that is larger than
+    2^24 pixels, is refused rather than allocated. `Image::pixel` is bounds-checked.
+  * `TeamNames` keeps the first four names (TS's handler `0x10064df0` only stores teams 1..4). A
+    longer list used to index past the team menu's buttons.
+  * The buy menu's sort stops after 256 passes. A loaded `tsbuylist.tsa` uses wrapping sums. The
+    scroll panels clamp the nob to ±2^30 px for painting. `voice_ban.dt` is deduplicated through a
+    set as it loads.
+  * `hud::screen()` takes a shared borrow, with a default if the HUD state is already borrowed.
+    `ConCuss`, `StatusIcon` and the secondary-ammo icon read sprites through a shared borrow
+    (`gfx_ref`), so a handler that runs while the HUD is drawing doesn't double-borrow.
+  * The client-dll exports null-check every engine pointer, including the temp-entity free list.
+    `goldsrc::ext::studio` reads a bone index past `MAXSTUDIOBONES`, or a missing engine matrix,
+    as a zero matrix and drops writes to it. Event hooks past 32 and temp-entity callbacks past
+    four are ignored rather than asserted.
+* **Map name for the team menu and map briefing.** The port used to wrap `pfnGetLevelName` as
+  `maps/{}.bsp`, but the engine already returns `maps/<map>.bsp`, so the briefing file was never
+  found. It now uses the name as it comes, as TS's `Update` (`0x10066020`) does. This is a return
+  to TS behaviour.
 
 Notes (no observable difference):
 * HLTV name tags (`CHudSpectator::Draw` `0x10023080`) use the console font like TS; TS's

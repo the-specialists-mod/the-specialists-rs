@@ -137,7 +137,7 @@ pub fn mouse_step(v: f32, off: i32, (min, max): (f32, f32), scale: f32) -> f32 {
         }
     } else if off < 0 {
         if v > min {
-            v -= (-off / 2) as f32 * scale;
+            v -= -(off / 2) as f32 * scale;
         }
         if v < min {
             v = min;
@@ -246,6 +246,10 @@ mod tests {
         // Distance: one unit per two pixels, bounded by c_min/maxdistance.
         assert_eq!(mouse_step(100.0, 20, (30.0, 200.0), 1.0), 110.0);
         assert_eq!(mouse_step(35.0, -20, (30.0, 200.0), 1.0), 30.0);
+        // Extreme cursor offsets (a huge or infinite mouse delta saturates to these) and bounds.
+        assert_eq!(mouse_step(0.0, i32::MIN, (-1e12, 0.0), 1.0), (i32::MIN / 2) as f32);
+        mouse_step(0.0, i32::MAX, b, 0.5);
+        mouse_step(f32::NAN, i32::MIN, (f32::NAN, f32::NAN), f32::INFINITY);
     }
 
     #[test]

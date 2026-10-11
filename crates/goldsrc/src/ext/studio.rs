@@ -336,52 +336,60 @@ pub fn alias_scale() -> (f32, f32) {
 
 // ---- matrices -------------------------------------------------------------------------------------
 
-fn bone_slot(arr: *mut [Mat34; MAX_BONES], i: usize) -> *mut Mat34 {
-    assert!(i < MAX_BONES && !arr.is_null(), "bone index {i} out of range");
-    // SAFETY: `arr` is the engine's `float[MAXSTUDIOBONES][3][4]` and `i` is in range.
-    unsafe { (*arr).as_mut_ptr().add(i) }
+/// Element `i` of one of the engine's bone matrix arrays, or `None` when `i` is past
+/// `MAXSTUDIOBONES` (a malformed model's `numbones`) or the engine gave no array. Reads then give
+/// a zero matrix and writes are dropped, rather than panicking or writing past the array.
+fn bone_slot(arr: *mut [Mat34; MAX_BONES], i: usize) -> Option<*mut Mat34> {
+    if i >= MAX_BONES || arr.is_null() {
+        return None;
+    }
+    // SAFETY: `arr` is the engine's `float[MAXSTUDIOBONES][3][4]` (non-null) and `i` is in range.
+    Some(unsafe { (*arr).as_mut_ptr().add(i) })
+}
+
+/// Reads a matrix the engine owns; zero for `None` (see [`bone_slot`]) or a null pointer.
+fn read_mat(p: Option<*mut Mat34>) -> Mat34 {
+    // SAFETY: null or an element of the engine's static matrix arrays (`bone_slot`, the cached
+    // rotation/alias pointers), read by value.
+    p.and_then(|p| unsafe { p.as_ref() }).copied().unwrap_or_default()
+}
+
+/// Writes a matrix the engine owns; dropped for `None` or a null pointer.
+fn write_mat(p: Option<*mut Mat34>, m: &Mat34) {
+    // SAFETY: as in `read_mat`; written by value, no reference kept.
+    if let Some(p) = p.and_then(|p| unsafe { p.as_mut() }) {
+        *p = *m;
+    }
 }
 
 /// Bone `i` of the engine's bone transform array (what the engine skins with).
 pub fn bone(i: usize) -> Mat34 {
-    // SAFETY: `bone_slot` returns an in-range element of the engine's static array.
-    unsafe { *bone_slot(api().bones, i) }
+    read_mat(bone_slot(api().bones, i))
 }
 pub fn set_bone(i: usize, m: &Mat34) {
-    // SAFETY: as in `bone`; written by value, no reference kept.
-    unsafe { *bone_slot(api().bones, i) = *m }
+    write_mat(bone_slot(api().bones, i), m);
 }
 /// Bone `i` of the engine's light transform array (lighting and attachments).
 pub fn light(i: usize) -> Mat34 {
-    // SAFETY: as in `bone`.
-    unsafe { *bone_slot(api().lights, i) }
+    read_mat(bone_slot(api().lights, i))
 }
 pub fn set_light(i: usize, m: &Mat34) {
-    // SAFETY: as in `set_bone`.
-    unsafe { *bone_slot(api().lights, i) = *m }
+    write_mat(bone_slot(api().lights, i), m);
 }
 
-fn mat(p: *mut Mat34) -> *mut Mat34 {
-    assert!(!p.is_null(), "studio matrix not available");
-    p
-}
-/// The model's rotation matrix (`m_protationmatrix`).
+/// The model's rotation matrix (`m_protationmatrix`); zero if the engine gave none.
 pub fn rotation() -> Mat34 {
-    // SAFETY: the engine's static `float[3][4]`, non-null (checked).
-    unsafe { *mat(api().rotation) }
+    read_mat(Some(api().rotation))
 }
 pub fn set_rotation(m: &Mat34) {
-    // SAFETY: as in `rotation`.
-    unsafe { *mat(api().rotation) = *m }
+    write_mat(Some(api().rotation), m);
 }
-/// The software renderer's alias transform (`m_paliastransform`).
+/// The software renderer's alias transform (`m_paliastransform`); zero if the engine gave none.
 pub fn alias() -> Mat34 {
-    // SAFETY: as in `rotation`.
-    unsafe { *mat(api().alias) }
+    read_mat(Some(api().alias))
 }
 pub fn set_alias(m: &Mat34) {
-    // SAFETY: as in `rotation`.
-    unsafe { *mat(api().alias) = *m }
+    write_mat(Some(api().alias), m);
 }
 
 // ---- drawing --------------------------------------------------------------------------------------
@@ -527,14 +535,15 @@ static TENT_TRAMPOLINES: [RawTentCallback; MAX_TENT_CALLBACKS] =
     [tent_trampoline::<0>, tent_trampoline::<1>, tent_trampoline::<2>, tent_trampoline::<3>];
 
 /// `CL_TempEntAllocCustom(origin, model, high, callback)`. Each distinct callback gets its own
-/// trampoline slot (at most four).
+/// trampoline slot (at most four; `None` past that).
 pub fn alloc_custom_tempent(origin: [f32; 3], model: Model, high: bool, cb: TempEntCallback) -> Option<&'static mut TEMPENTITY> {
     let slot = {
         let mut cbs = TENT_CALLBACKS.0.borrow_mut();
         match cbs.iter().position(|&f| f as usize == cb as usize) {
             Some(i) => i,
+            // Out of trampolines: no temp entity rather than a panic (the client registers one).
+            None if cbs.len() >= MAX_TENT_CALLBACKS => return None,
             None => {
-                assert!(cbs.len() < MAX_TENT_CALLBACKS, "too many temp-entity callbacks");
                 cbs.push(cb);
                 cbs.len() - 1
             }

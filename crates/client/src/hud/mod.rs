@@ -85,8 +85,26 @@ fn gfx<R>(f: impl FnOnce(&mut Gfx) -> R) -> R {
     f(g.get_or_insert_with(Gfx::default))
 }
 
+/// The HUD's screen info. A shared borrow, so it works while the draw pass holds the graphics
+/// (menus, voice and the spectator HUD ask for it from there); under the one mutable borrow
+/// (`vid_init`) it falls back to the engine's.
 pub fn screen() -> Screen {
-    gfx(|g| g.screen.clone())
+    match GFX.0.try_borrow() {
+        Ok(g) => g.as_ref().map_or_else(Screen::default, |g| g.screen.clone()),
+        Err(_) => engine().screen(),
+    }
+}
+
+/// Runs `f` with a shared borrow of the graphics, or with empty ones before the first
+/// `vid_init` (or, defensively, while they are mutably borrowed).
+fn gfx_ref<R>(f: impl FnOnce(&Gfx) -> R) -> R {
+    match GFX.0.try_borrow() {
+        Ok(g) => match g.as_ref() {
+            Some(g) => f(g),
+            None => f(&Gfx::default()),
+        },
+        Err(_) => f(&Gfx::default()),
+    }
 }
 
 pub fn now() -> f32 {
@@ -287,12 +305,12 @@ fn sync_shared(h: &Hud) {
         s.observer = h.observer;
         s.weapon = h.weapon;
         s.menu_open = h.menu_open || h.menu.displayed;
-        for (i, p) in h.players.iter().enumerate().take(s.active_items.len()) {
-            s.active_items[i] = p.active_items;
-            s.laser_color[i] = p.laser_color;
-            if (1..=32).contains(&i) {
-                s.spectator[i - 1] = p.observer;
-            }
+        for ((p, items), laser) in h.players.iter().zip(s.active_items.iter_mut()).zip(s.laser_color.iter_mut()) {
+            *items = p.active_items;
+            *laser = p.laser_color;
+        }
+        for (spec, p) in s.spectator.iter_mut().zip(h.players.iter().skip(1)) {
+            *spec = p.observer;
         }
     });
 }
@@ -350,7 +368,7 @@ fn msg_concuss(buf: &[u8]) {
         false
     });
     if icon {
-        let grenade = gfx(|g| with(|h| h.icons.enable(b"dmg_concuss", [255, 160, 0], &g.sprites)));
+        let grenade = gfx_ref(|g| with(|h| h.icons.enable(b"dmg_concuss", [255, 160, 0], &g.sprites)));
         if grenade {
             play_timer_sound();
         }
@@ -368,7 +386,7 @@ fn msg_status_icon(buf: &[u8]) {
         return;
     }
     let rgb = [r.byte(), r.byte(), r.byte()];
-    let grenade = gfx(|g| {
+    let grenade = gfx_ref(|g| {
         with(|h| {
             let gren = h.icons.enable(&name, rgb, &g.sprites);
             h.icons.active = true;

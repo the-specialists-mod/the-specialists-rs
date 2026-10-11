@@ -48,8 +48,9 @@ impl Default for Config {
     }
 }
 
+/// A little-endian int at `o`, 0 past the end.
 fn rd(b: &[u8], o: usize) -> i32 {
-    i32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+    b.get(o..o + 4).and_then(|s| s.try_into().ok()).map_or(0, i32::from_le_bytes)
 }
 fn wr(b: &mut [u8], o: usize, v: i32) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
@@ -67,11 +68,11 @@ impl Config {
         for (i, e) in c.entries.iter_mut().enumerate() {
             let o = 0x80 + i * 0x38;
             *e = Entry {
-                is_item: b[o] != 0,
+                is_item: b.get(o).is_some_and(|&v| v != 0),
                 id: rd(b, o + 4),
                 att: rd(b, o + 8) as u32,
                 cost: rd(b, o + 0xc),
-                akimbo: b[o + 0x30] != 0,
+                akimbo: b.get(o + 0x30).is_some_and(|&v| v != 0),
                 count: rd(b, o + 0x34),
             };
         }
@@ -373,7 +374,7 @@ impl BuyMenu {
 
     /// `FUN_100392b0`: fill ammo round-robin over the guns with the money left.
     pub fn recompute_ammo(&mut self, r: &Rules) {
-        let mut budget = CASH - self.current.total;
+        let mut budget = CASH.wrapping_sub(self.current.total);
         self.current.ammo = [(0, 0); 16];
         if budget > 0 {
             loop {
@@ -400,13 +401,15 @@ impl BuyMenu {
 
     /// `FUN_10038e40`: remove entry `i` and compact the list.
     pub fn remove(&mut self, i: usize) {
-        let e = self.current.entries[i];
-        self.current.total -= e.cost;
+        let Some(&e) = self.current.entries.get(i) else { return };
+        // A loaded `tsbuylist.tsa` can hold any numbers: C int arithmetic, which wraps.
+        self.current.total = self.current.total.wrapping_sub(e.cost);
         if !e.is_item {
             let w = tables().weapon(e.id as u8).map_or(0, |w| w.slots);
-            self.current.slots -= if e.count == 0 { w * (e.akimbo as i32 + 1) } else { w * e.count };
+            let n = if e.count == 0 { w.wrapping_mul(e.akimbo as i32 + 1) } else { w.wrapping_mul(e.count) };
+            self.current.slots = self.current.slots.wrapping_sub(n);
         } else if e.id & ITEM_KEVLAR != 0 {
-            self.current.slots -= 10;
+            self.current.slots = self.current.slots.wrapping_sub(10);
         }
         self.current.entries[i] = Entry::default();
         // Bubble empty entries to the end.
@@ -440,10 +443,11 @@ impl BuyMenu {
         {
             full = false;
         }
-        if cost(id, att, full, item) + self.current.total > CASH {
+        // `wrapping_add`: a loaded config's totals can be anything (C int arithmetic).
+        if cost(id, att, full, item).wrapping_add(self.current.total) > CASH {
             return false;
         }
-        if slots_for(id, full, item) + self.current.slots > SLOTS {
+        if slots_for(id, full, item).wrapping_add(self.current.slots) > SLOTS {
             return false;
         }
         for i in 0..ENTRIES {
@@ -457,17 +461,17 @@ impl BuyMenu {
                 }
                 continue;
             }
-            let w = info.unwrap();
+            let Some(w) = info else { continue };
             if w.stack {
                 if e.count >= w.pellets {
                     return false;
                 }
-                let n = if full { w.pellets - e.count } else { 1 };
+                let n = if full { w.pellets.wrapping_sub(e.count) } else { 1 };
                 let en = &mut self.current.entries[i];
-                en.count += n;
-                en.cost += w.cost * n;
-                self.current.total += w.cost * n;
-                self.current.slots += w.slots * n;
+                en.count = en.count.wrapping_add(n);
+                en.cost = en.cost.wrapping_add(w.cost.wrapping_mul(n));
+                self.current.total = self.current.total.wrapping_add(w.cost.wrapping_mul(n));
+                self.current.slots = self.current.slots.wrapping_add(w.slots.wrapping_mul(n));
                 self.recompute_ammo(r);
                 self.new_config = true;
                 return true;
@@ -488,11 +492,11 @@ impl BuyMenu {
         }
         e.cost = cost(id, att, full, item);
         if !item && stack {
-            e.count = if full { info.unwrap().pellets } else { 1 };
+            e.count = if full { info.map_or(1, |w| w.pellets) } else { 1 };
         }
         self.current.entries[j] = e;
-        self.current.total += e.cost;
-        self.current.slots += slots_for(id, full, item);
+        self.current.total = self.current.total.wrapping_add(e.cost);
+        self.current.slots = self.current.slots.wrapping_add(slots_for(id, full, item));
         self.recompute_ammo(r);
         self.new_config = true;
         true
@@ -573,7 +577,10 @@ impl BuyMenu {
         }
         // Sort (bubble, pairs 0..15): ascending price, melee/grenades (no ammo type) first.
         let ammo_of = |id: i32| tables().weapon(id as u8).map_or(0, |w| w.ammo);
-        loop {
+        // TS loops until a pass swaps nothing. Its order isn't transitive once items mix with
+        // ammo-less guns, so the passes are capped (a consistent order needs fewer than
+        // ENTRIES) to never hang on a loaded config.
+        for _ in 0..ENTRIES * ENTRIES {
             let mut swapped = false;
             for i in 0..ENTRIES - 1 {
                 let (a, b) = (self.current.entries[i], self.current.entries[i + 1]);
@@ -1081,6 +1088,83 @@ mod tests {
         let ids: Vec<i32> = m.current.entries.iter().filter(|e| e.id != 0).map(|e| e.id).collect();
         assert_eq!(ids, [ITEM_KEVLAR, 25, 12, 13]);
         assert!(m.current.slots <= SLOTS);
+    }
+
+    /// A tiny xorshift for the fuzz tests.
+    struct XorShift(u64);
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn bytes(&mut self, n: usize) -> Vec<u8> {
+            (0..n).map(|_| self.next() as u8).collect()
+        }
+    }
+    impl Rng for XorShift {
+        fn long(&mut self, lo: i32, hi: i32) -> i32 {
+            lo.wrapping_add((self.next() % (hi.wrapping_sub(lo) as u32 as u64 + 1)) as i32)
+        }
+        fn float(&mut self, lo: f32, hi: f32) -> f32 {
+            lo + (self.next() % 1000) as f32 / 1000.0 * (hi - lo)
+        }
+    }
+
+    /// Garbage, short, oversized and all-0xff buy lists parse, and every page and key on the
+    /// loaded configs (any totals, ids, counts and costs) neither panics nor hangs.
+    #[test]
+    fn garbage_buylist_and_keys() {
+        let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
+        let mut files = vec![Vec::new(), vec![0xff; 3], vec![0xff; CONFIG_SIZE * SAVED_CONFIGS + 7], vec![0; CONFIG_SIZE - 1]];
+        for _ in 0..40 {
+            let n = (rng.next() % (CONFIG_SIZE as u64 * 10)) as usize;
+            files.push(rng.bytes(n));
+        }
+        for file in files {
+            let saved = parse_buylist(&file);
+            assert_eq!(write_buylist(&saved).len(), CONFIG_SIZE * SAVED_CONFIGS);
+            for gamemode in [0, 2] {
+                let r = Rules { gamemode, restriction: rng.next() as i32, ammocount: rng.next() as i32, buy_kevlar: true };
+                let mut m = BuyMenu { saved: saved.clone(), ..BuyMenu::default() };
+                m.open(&r, &mut rng);
+                for _ in 0..200 {
+                    let pg = (rng.next() % 10) as i32;
+                    let key = (rng.next() % 13) as i32;
+                    m.page = pg;
+                    m.handle_key(pg, key, &r, &mut rng);
+                    let (x, y) = ((rng.next() % 2000) as i32 - 100, (rng.next() % 2000) as i32 - 100);
+                    m.hit_test(x, y, 480, &r);
+                }
+                for c in &saved {
+                    m.current = c.clone();
+                    m.recompute_ammo(&r);
+                    m.submit(&mut Vec::new());
+                    m.remove(0);
+                    m.remove(ENTRIES + 3);
+                    m.add(25, 0, true, false, &r);
+                    m.add(13, 0xffff_ffff, true, false, &r);
+                }
+            }
+        }
+        // Extreme numbers in a config.
+        let mut c = Config { total: i32::MAX, slots: i32::MIN, ..Config::default() };
+        c.entries[0] = Entry { is_item: false, id: 25, att: 0, cost: i32::MIN, akimbo: true, count: i32::MIN };
+        c.entries[1] = Entry { is_item: true, id: -1, att: u32::MAX, cost: i32::MAX, akimbo: true, count: i32::MAX };
+        let r = rules();
+        let mut m = BuyMenu { current: c, ..BuyMenu::default() };
+        m.add(25, 0, true, false, &r);
+        m.recompute_ammo(&r);
+        m.remove(0);
+        m.remove(0);
+        m.submit(&mut Vec::new());
+    }
+
+    #[test]
+    fn short_config_reads_zero() {
+        assert_eq!(Config::from_bytes(&[0xff; CONFIG_SIZE - 1]), Config::default());
+        assert_eq!(rd(&[1, 0, 0], 0), 0, "past the end");
     }
 
     #[test]
