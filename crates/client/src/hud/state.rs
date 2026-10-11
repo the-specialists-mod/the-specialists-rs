@@ -175,8 +175,6 @@ pub struct Hud {
     pub ammocount: i32,
     pub restriction: i32,
     pub bullettime: bool,
-    /// `m_iFOV` target from `SetFOV` (0 → default).
-    pub fov: i32,
     pub players: Vec<PlayerExtra>,
     pub team_scores: Vec<TeamScore>,
     pub team_names: Vec<String>,
@@ -250,7 +248,6 @@ impl Default for Hud {
             // weapon in the buy menu, so the port starts from the server default mask.
             restriction: 0x1f,
             bullettime: false,
-            fov: 0,
             players: vec![PlayerExtra::default(); MAX_CLIENTS + 1],
             team_scores: Vec::new(),
             team_names: Vec::new(),
@@ -588,11 +585,8 @@ impl Hud {
                 let mut r = p::Reader::new(buf);
                 self.gamemode = r.byte() as i32;
             }
-            Msg::SetFov => {
-                // Ignored while cl_lw is on (prediction sets the FOV); checked by the caller.
-                let mut r = p::Reader::new(buf);
-                self.fov = r.byte() as i32;
-            }
+            // The caller applies it (`hud::set_fov`): the zoom lives in `crate::state`.
+            Msg::SetFov => {}
             Msg::ScoreInfo => {
                 let v = dec!(p::ScoreInfo);
                 if (1..=MAX_CLIENTS as u8).contains(&v.client) {

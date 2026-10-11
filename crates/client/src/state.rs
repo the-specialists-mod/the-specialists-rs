@@ -38,13 +38,15 @@ pub struct Shared {
     /// Local player is dead / spectating.
     pub dead: bool,
     pub health: i32,
-    /// Current weapon id (TS ids) and zoom FOV (0 = default).
+    /// Current weapon id (TS ids).
     pub weapon: i32,
+    /// The eased zoom FOV, `CHud::m_iFOV` (whole degrees; 0 until `CHud::Think` first runs).
     pub fov: f32,
 
     // ---- added by the render package -------------------------------------------------------
-    /// Zoom target from `SetFOV` (0 = default_fov). Written by the HUD `SetFOV` handler; the
-    /// render package eases `fov` toward it every frame (TS `CHud::Think`, animated zoom).
+    /// Zoom target (`0x100df1a4`, 0 = `default_fov`): `to.client.fov` from `HUD_PostRunCmd`, or
+    /// the `SetFOV` message while `cl_lw` is off. `CHud::Think` reads it through `HUD_GetFOV`
+    /// (`hud::get_fov`, which also records and replays it in demos) and eases `fov` toward it.
     pub fov_target: f32,
     /// `TSBTime` bullet-time flag (render hooks `TSBTime`).
     pub bullet_time: bool,
@@ -73,8 +75,6 @@ pub struct Shared {
     pub items_ready: i32,
     /// Predicted local velocity (`from.client.velocity`, TS's `simvel`), for particle react.
     pub local_velocity: [f32; 3],
-    /// Third-person camera active (render writes; HUD may read for the crosshair).
-    pub third_person: bool,
     /// Spectator globals from `HUD_ProcessPlayerState` (g_iUser1/2/3): mode, target, flags.
     pub spec_mode: i32,
     pub spec_target: i32,

@@ -53,8 +53,9 @@ static GFX: Global<RefCell<Option<Gfx>>> = Global(RefCell::new(None));
 static CVARS: Global<Cell<Option<HudCvars>>> = Global(Cell::new(None));
 /// `gHUD.m_flTime` and the last frame time.
 static TIME: Global<Cell<(f32, f32)>> = Global(Cell::new((0.0, 0.0)));
-/// Smoothed FOV (`m_iFOV`) and the zoom sensitivity (`m_flMouseSensitivity`).
-static FOV: Global<Cell<(f32, f32)>> = Global(Cell::new((90.0, 0.0)));
+/// The zoom sensitivity (`m_flMouseSensitivity`, `CHud+0x18`). The eased FOV (`m_iFOV`) is
+/// `state.fov`.
+static ZOOM_SENS: Global<Cell<f32>> = Global(Cell::new(0.0));
 static INTERMISSION: Global<Cell<bool>> = Global(Cell::new(false));
 static ATTACK_CONSUMED: Global<Cell<bool>> = Global(Cell::new(false));
 static PREV_BITS: Global<Cell<u32>> = Global(Cell::new(0));
@@ -92,7 +93,7 @@ pub fn observer() -> bool {
 
 /// `gHUD.m_flMouseSensitivity`: non-zero while zoomed.
 pub fn zoom_sensitivity() -> f32 {
-    FOV.0.get().1
+    ZOOM_SENS.0.get()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -221,8 +222,12 @@ fn on_message(m: Msg, buf: &[u8]) {
         _ => {}
     }
     let e = engine();
-    if m == Msg::SetFov && e.cvar_float(c"cl_lw") != 0.0 {
-        return; // TS ignores SetFOV while client weapons predict the FOV.
+    if m == Msg::SetFov {
+        // TS ignores SetFOV while client weapons predict the FOV (`cl_lw`).
+        if e.cvar_float(c"cl_lw") == 0.0 {
+            set_fov(shared::protocol::hud::Reader::new(buf).byte());
+        }
+        return;
     }
     let screen = screen();
     let li = local_index();
@@ -435,6 +440,7 @@ pub fn vid_init() {
         st.time_scale = 1.0;
         st.time_scale_target = 1.0;
     });
+    crate::prediction::reset_alt_grip();
     with(|h| {
         h.reset();
         // CHudTSStatus::VidInit also clears messages, objectives and flags.
@@ -473,26 +479,60 @@ pub fn frame(time: f64) {
     crate::state::with(|s| s.time_scale = approach_timescale(dt, s.time_scale, s.time_scale_target));
 }
 
-/// Smooth zoom (`CHud::Think` 10049760 / `UTIL_ApproachFOV` 10049620) and zoom sensitivity.
-fn think_fov(dt: f32) {
+/// `HUD_GetFOV` (`0x100209f0`): the zoom target `CHud::Think` eases toward (`0x100df1a4`,
+/// `state.fov_target`). While recording it writes the value to the demo on every call (record
+/// type 0); during playback the last recorded value replaces it.
+fn get_fov() -> f32 {
+    let e = engine();
+    let fov = crate::state::with(|s| s.fov_target);
+    if e.demo_recording() {
+        crate::demo::write_buffer(crate::demo::FOV, &fov.to_le_bytes());
+    }
+    if e.demo_playing() {
+        let fov = crate::demo::recorded_fov();
+        crate::state::with(|s| s.fov_target = fov);
+        return fov;
+    }
+    fov
+}
+
+/// `CHud::Think` (`0x10049760`), from `CHud::UpdateClientData` (`0x10024b00`, i.e.
+/// `HUD_UpdateClientData`): eases `m_iFOV` (`state.fov`) toward `HUD_GetFOV` (or `default_fov`
+/// while that is 0) with `UTIL_ApproachFOV` ([`crate::view::ease_fov`]) and sets the zoom
+/// sensitivity. `ft` is the last refdef's frame time. Returns the eased FOV.
+pub fn think_fov(ft: f32) -> f32 {
     let c = cvars();
     let df = c.default_fov.value();
     let default = if df < 0.001 { 80.0 } else { df.clamp(70.0, 110.0) };
-    let target = with(|h| if h.fov == 0 { default } else { h.fov as f32 });
-    let (mut cur, _) = FOV.0.get();
-    if cur < 0.001 {
-        cur = target;
-    } else if cur != target {
-        let step = ((target - cur).abs() * (dt * 12.0).min(1.0)).max(dt * 60.0);
-        cur = if cur < target { (cur + step).min(target) } else { (cur - step).max(target) };
-    }
-    let sens = if (target - default).abs() >= 0.01 {
-        target / default * input::cvars().sensitivity.value() * c.zoom_sensitivity_ratio.value()
+    let want = get_fov() as i32;
+    let target = if (want as f32) < 0.001 { default as i32 } else { want };
+    let mut cur = crate::state::with(|s| crate::view::ease_fov(s.fov, target as f32, ft));
+    let sens = if (cur - default).abs() >= 0.01 {
+        want as f32 / default * input::cvars().sensitivity.value() * c.zoom_sensitivity_ratio.value()
     } else {
         0.0
     };
-    FOV.0.set((cur, sens));
+    ZOOM_SENS.0.set(sens);
+    if cur < 0.001 {
+        cur = default as i32 as f32;
+    }
     crate::state::with(|s| s.fov = cur);
+    cur
+}
+
+/// The tail of `CHud::MsgFunc_SetFOV` (`0x10049570`), reached only while `cl_lw` is off: the
+/// zoom target takes the new FOV, `m_iFOV` jumps to it (0 means 80), and the zoom sensitivity
+/// becomes `fov * 0.0125 * sensitivity * zoom_sensitivity_ratio` (0 at 80).
+fn set_fov(fov: u8) {
+    let fov = fov as i32;
+    let cur = if fov == 0 { 80 } else { fov };
+    crate::state::with(|s| {
+        s.fov_target = fov as f32;
+        s.fov = cur as f32;
+    });
+    let sens =
+        if cur == 80 { 0.0 } else { fov as f32 * 0.0125 * input::cvars().sensitivity.value() * cvars().zoom_sensitivity_ratio.value() };
+    ZOOM_SENS.0.set(sens);
 }
 
 /// The TS weapon element's `Think` (1004ce10), the parts that need no key bits: laser colour,
@@ -714,7 +754,6 @@ pub fn redraw(time: f32, intermission: bool) {
         }
         g.screen = s;
     });
-    think_fov(dt);
     think(dt);
     with(|h| sync_shared(h));
     if intermission {

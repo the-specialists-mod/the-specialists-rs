@@ -8,7 +8,7 @@ use crate::state;
 use goldsrc::client::engine;
 use goldsrc::sys::*;
 
-pub use gun::alt_grip;
+pub use gun::{alt_grip, reset_alt_grip};
 
 /// TS keeps one weapon, the `CTSGun` container, in HL weapon slot 16.
 pub const TS_GUN_SLOT: usize = 16;
@@ -16,10 +16,8 @@ pub const TS_GUN_SLOT: usize = 16;
 /// `HUD_PostRunCmd` (`0x100045b0` -> `HUD_WeaponsPostThink` `0x10003830`).
 pub fn post_run_cmd(from: &mut local_state_t, to: &mut local_state_t, cmd: &mut usercmd_t, runfuncs: bool, time: f64, seed: u32) {
     gun::post_think(from, to, cmd, runfuncs, time, seed);
-    if runfuncs {
-        // Store the predicted FOV for the view's zoom easing (TS stores `to->client.fov`).
-        state::with(|s| s.fov_target = to.client.fov);
-    }
+    // The zoom target `CHud::Think` eases toward (`0x100df1a4`), on every call as in TS.
+    state::with(|s| s.fov_target = to.client.fov);
 }
 
 /// `HUD_TxferLocalOverrides` (`0x1001b900`): SDK set plus `iuser4`.

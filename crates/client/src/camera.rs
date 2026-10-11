@@ -86,7 +86,7 @@ pub(crate) fn register_commands(thirdperson: extern "C" fn(), firstperson: exter
 /// `CAM_StartMouseMove` (`0x100255d0`): only in third person (`cam_thirdperson`). TS's cursor
 /// read and sensitivity-scaled `cam_old_mouse_x/y` here are never used, so they're left out.
 fn start_mouse_move() {
-    let third = crate::view::cam_thirdperson();
+    let third = crate::view::is_third_person();
     update(|m| {
         if !third {
             (m.mousemove, m.in_use) = (false, false);
@@ -98,7 +98,7 @@ fn start_mouse_move() {
 
 /// `CAM_StartDistance` (`0x10025680`): as [`start_mouse_move`], and the mouse sets the distance.
 fn start_distance() {
-    let third = crate::view::cam_thirdperson();
+    let third = crate::view::is_third_person();
     update(|m| {
         if !third {
             (m.distancemove, m.mousemove, m.in_use) = (false, false, false);
