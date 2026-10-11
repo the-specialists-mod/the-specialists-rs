@@ -23,8 +23,20 @@ client an original server). Keeping TS's split is what the wire-compatibility co
 The cost is TS's: one-shot impulses reach client prediction one round trip late.
 
 `shared::pm` is a straight port of TS's `pm_shared.c` (all SDK features plus the TS changes),
-one implementation for both libraries. Math is `f32` in the C operation order. Global C state
-(`OldrotArray`, stuck tables, texture table, `iSkipStep`) is per library, as in C.
+one implementation for both libraries. Global C state (`OldrotArray`, stuck tables, texture
+table, `iSkipStep`) is per library, as in C.
+
+**Floating point is TS's server arithmetic, bit for bit.** `ts_i386.so` (GCC 2.95, x87) evaluates
+each expression in extended precision (64-bit significand) and rounds to `float` only where it
+stores: `float` locals (the build spills every one to memory), `pmove` fields, `float`
+arguments. Double constants (`0.001`, `0.333`, `0.8`, `0.65`, `0.7`, `0.1`, ...) stay doubles;
+`(int)` casts truncate. `pm/ext.rs` implements that arithmetic in software (`Ext`, checked
+against the FPU itself by `ext_matches_x87_hardware`), and every function was redone from the
+machine code: the operation order, which intermediates are rounded, and how each comparison
+treats a NaN (`math::eq87` for the `test $0x40` equality tests). `f64` isn't enough: it rounds
+twice, and the cases where that matters come up in play, e.g. `0.001 * 600 <= 0.6` (`PM_Duck`)
+is false in extended precision and true in `f64`, so with 10 ms frames the duck completes at
+590 ms, not 600.
 
 ## Implemented functions
 
@@ -41,7 +53,7 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 | `TSHandle` | 0xf96a0 | `Pm::ts_handle` (`pm/ts.rs`) |
 | `TSDive` / `TSWallJump` / `TSWallJumpClimb` | 0xf9534 / 0xf9444 / 0xf94e0 | `ts_dive`, `ts_wall_jump`, `ts_wall_jump_climb` |
 | `TSGoDuck` / `TSStandUp` / `PseudoClimb` | 0xf93a8 / 0xf91fc / 0xf8fc8 | `ts_go_duck`, `ts_stand_up`, `pseudo_climb` |
-| `PM_GetAccelBySpeed` | 0xfdcc4 | `pm::accel_by_speed` |
+| `PM_GetAccelBySpeed` | 0xfdcc4 | `accel_by_speed_x` (unrounded), `pm::accel_by_speed` |
 | `PM_Accelerate` / `PM_AirAccelerate` / `PM_Friction` | 0xfdd08 / 0xfdfdc / 0xfde08 | `accelerate`, `air_accelerate`, `friction` |
 | `PM_WalkMove` / `PM_AirMove` / `PM_FlyMove` / `PM_ClipVelocity` | 0xfa26c / 0xfe434 / 0xfd408 / 0xfd210 | `walk_move`, `air_move`, `fly_move`, `clip_velocity` |
 | `PM_AddCorrectGravity` / `PM_FixupGravityVelocity` / `PM_AddGravity` / `PM_CheckVelocity` | 0xfd304 / 0xfd390 / 0xffbb0 / 0xfd0b8 | same names |
@@ -54,6 +66,7 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 | `PM_SpectatorMove` / `GetChaseOrigin` | 0xfef3c / 0xfee5c | `spectator_move`, `chase_origin` |
 | `PM_NoClip` / `PM_Physics_Toss` / `PM_PushEntity` / `PM_AddToTouched` | 0x10000c / 0xffce8 / 0xffc24 / 0xfcfdc | same names |
 | `PM_UpdateStepSound` / `PM_PlayStepSound` / `PM_MapTextureTypeStepType` / `PM_CatagorizeTextureType` | 0xfcc20 / 0xfc344 / 0xfca90 / 0xfcb40 | `sound.rs`, `categorize_texture_type` |
+| `AngleVectors` / `VectorMA` / `VectorNormalize` / `Length` / `CrossProduct` / `VectorScale` | 0xfb430 / 0xfbbc4 / 0xfbcf8 / 0xfbcbc / 0xfbc80 / 0xfbd68 | `pm/math.rs` |
 | `FixVelocity` (empty), `CanJumpHigh` (no callers), debug `PM_Draw*` | | not ported (dead) |
 
 ### Server stunts (`stunt/moves.rs`, `stunt/mod.rs`)
@@ -67,6 +80,8 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 | `CheckForWallJump` / `CheckForWallDive` / `CheckForWallClimb` | 0x9ac14 / 0x9ad44 / 0x9ae6c | `check_for_wall_jump`, `check_for_wall_dive`, `check_for_wall_climb` |
 | `HandleStunt` / `HandleDive` / `Landing` / `HandleWheel` / `HandleSlide` / `HandleWallJump` / `HandleWallClimb` | 0x9b000 ... 0x9b9f8 | same names (snake case); wall landings share `land_wall_stunt` |
 | `GoWheel` / `GoRoll` | 0x9c9bc / 0x9cfe8 | `go_wheel`, `go_roll` |
+| `TEXTURETYPE_PlaySound` (roll with `FREEZE_ANGLES`, dead in TS) | 0xe1330 | `moves::texture_type_play_sound` |
+| `TEXTURETYPE_Init` / `LoadStandardMaterials` / `LoadMapMaterials` / `Find` | 0xe1244 / 0xe0e14 / 0xe1014 / 0xe12c4 | `textures::texturetype::{init, find}` (`init` from `stunt::precache`, as TS's `CWorld::Precache`) |
 | `CheckForBreakables` | 0x9bd9c | `check_for_breakables` |
 | `CBasePlayer::Jump` / `Duck` | 0x92864 / 0x927fc | `moves::jump`, `moves::duck` |
 | `CBasePlayer::PreThink` (stunt parts) | 0x908cc | `stunt::pre_think` (not during intermission: `Player::pre_think` stops after `rules::player_think`, as TS returns on `g_fGameOver`): button edges, `framerate = slowmul`, last-ground time, close-combat/block timers, `Play`, `UpdateTimers`, `NO_VIEW` bit, `BlockPlayer` expiry, breakables, `Jump()`/`Duck()`, `m_flFallVelocity`, `UpdatePlayerState` + `TSState` |
@@ -99,16 +114,17 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 | Jump | `vel.z = 236.64319` (`sqrt(2*800*35)`, 35 units; SDK 268.33/45) |
 | Super jump (physinfo `mj` = 1, ducked or `bInDuck`, `IN_DUCK` held, `flDuckTime > 0`) | `vel.z = 400`, `iuser4 |= 0x200000` |
 | Glide (`0x100000`) | cmd ×(0.5, 0.25, 0.25); gravity 0.3 rising / 0.75 falling with jump held, else 1.0 |
-| Friction | `control * friction * pmove->friction * 0.75 * frametime`; edge friction unchanged |
+| Friction | `friction * pmove->friction * 0.75 * control * frametime`; edge friction unchanged |
 | Accel factor | `maxspeed >= 330 ? 1.1 : (maxspeed-210)*0.008333334*0.5+0.6`, not while prone or ducked |
 | Backpedal | `forwardmove *= 0.8` in `PM_WalkMove` |
-| Time scale | `frametime = msec*0.001*fuser1`, 0 if `fuser1 < 0.1`; timers use raw msec; step interval `round(t / max(fuser1, 0.1))`; punch decay ×`fuser1` again |
+| Time scale | `frametime = (float)(msec*0.001)*fuser1`, 0 if `fuser1 < 0.1`; timers use raw msec; step interval `(int)((1/max(fuser1, 0.1)) * t)` (truncated); punch decay ×`fuser1` again |
 | View heights | stand 28, duck 16 (transition `(1-f)*28 + (16-18)*f`, `TIME_TO_DUCK` 0.4), dead -8 |
 | Dives (`TSDive`) | 0x100 → (90, 25) z 200; 0x40 → (90, 50) z 282.84; 0x80 → (100, 10) z 126.49; `vel.xy += speed*normalize(vel)`, wall dive uses `forward*3` |
 | Wall jump / climb | `vel.xy = -forward.xy*210`, `vel.z = 236.64319` / `vel.z = 334.664` |
 | PseudoClimb | pitch within ±60; eye trace 64 u (+40 above when pitch < -30), feet trace 32 u, needs `|vel| < 0.5*maxspeed`, adds `frametime*1600` |
 | Ladder | flat 200 u/s, jump-off `normal*270` |
 | Falling | punch threshold 350, safe 680 (fallpain3 above), 0.85 vol above 340, bounce 200 |
+| Wall bounce (`PM_FlyMove`, walking with `onground == -1` or `friction != 1`) | overbounce `1 + (1 - friction) * 0.01`: TS hardcodes 0.01 where the SDK reads `movevars->bounce`, and reflects off every plane hit this move (no SDK `numplanes == 1` test) |
 | Footsteps | silent while `iuser4 & (0x1 | 0x200)`, attenuation 1.25, no `mp_footsteps` check |
 | Materials | `sound/materials.txt`, ≤ 1024 entries (TS file has ~1140: the tail is ignored, as in TS), 15 significant chars |
 | cmd lockouts | zeroed while `iuser4 & 0x10c10`; jump blocked (not latched) by `0x30c34`; `PM_Duck` off for `0x30c3c` |
@@ -124,17 +140,29 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 
 ## Deviations from TS 3.0
 
-* **x87 precision.** TS keeps some intermediates in 80-bit registers; this port is `f32`
-  throughout, in the same operation order. Expect last-bit differences, not behavioural ones.
-* **Spectator in-eye mode (`iuser1 == 4`).** The decompiled `PM_SpectatorMove` leaves the angles
-  uninitialised in this mode; the port uses the target's angles.
-* **Defensive bounds.** `player_index`, `numtouch`, `numphysent`, `nummoveent` are clamped
-  before indexing (TS trusts the engine). `PM_TestPlayerPosition`/`PM_PlaySound`/... being null
-  is tolerated (only matters for the unit tests).
-* **`TEXTURETYPE_PlaySound` on a roll with `FREEZE_ANGLES`.** No TS code sets `0x80000`, so the
-  branch is dead; only `land.wav` is ported.
-* **`PFLAG_DUCKING`** (`m_afPhysicsFlags & 8`) isn't tracked here; `Duck()` is called on
-  `IN_DUCK` or `FL_DUCKING`, which covers the cases that reach it.
+* **Client-side arithmetic.** `shared::pm` reproduces the server build (`ts_i386.so`) on both
+  sides. TS's own `client.dll` copy is MSVC code with different spill points and, under engines
+  that leave the Windows default, 53-bit FPU precision, so the original TS client and server
+  already disagree in the last bits; the port's client predicts like the TS server. TS's Windows
+  server (`mp.dll`, also MSVC) wasn't compared. The emulation assumes the FPU runs at 64-bit
+  precision, round to nearest, which is the Linux default and nothing in the server changes;
+  `fsin`/`fcos` go through `f64` (TS rounds both to `float` at once), and the exponent range is
+  unbounded, which only matters beyond ±1e4900.
+* **Spectator locked view (`iuser1 == 4`).** TS reads three stack slots it never writes as the
+  camera angles: the outgoing arguments `PM_CheckParamters` last pushed (`PM_CalcRoll`'s
+  `v_angle` pointer, `pmove->velocity` pointer and `rollangle`, or only the
+  `PM_DropPunchAngle(punchangle)` pointer while dead or `DEAD_LOCK`). The port reproduces that
+  (`STALE_ARGS`): the roll is `sv_rollangle` exactly, pitch and yaw are the low 32 bits of the
+  equivalent Rust addresses as floats. Address values can't match (they depend on the process
+  layout in TS too), and when only the first slot is rewritten the other two keep the port's
+  last values, where TS's depend on whatever the engine left on that stack. The server never
+  sets mode 4 for players.
+* **Defensive bounds (only matter on invalid engine input).** `numtouch`, `numphysent`,
+  `nummoveent` and `PM_CheckStuck`'s `hitent` are clamped before indexing (TS trusts the
+  engine). A null `PM_TestPlayerPosition`/`PM_PlaySound`/`PM_TraceLine`/`PM_TraceModel`/print
+  callback is tolerated (only the unit tests lack them): `GetChaseOrigin` then returns the
+  unclipped camera spot and `PM_LadderMove` sees a default trace. `TEXTURETYPE_PlaySound`
+  clamps its random sample index.
 * **Debug aids (not in TS):** cvar `ts_debug_stunt` (logs `iuser4` changes with origin, velocity,
   sequences, timers, and the rise of each airborne phase) and, only while it is set, the client
   commands `ts_debug_alt1` (simulates holding `+alt1` for 3 frames) and
@@ -157,14 +185,18 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 
 ## Tests
 
-* `cargo test -p shared`: 27 tests pass. PM fake-world tests (`pm/tests.rs`, floor at z=0, wall at
+* `cargo test -p shared`: PM fake-world tests (`pm/tests.rs`, floor at z=0, wall at
   x=200, hull-aware traces): falling/landing, walk to maxspeed and stop at a wall, backpedal
   256 u/s at 320, **jump height 35 ± 0.6**, **friction ×0.75 exact**, edge friction, **accel
   factor** (0.6/0.85/1.1 and one-frame acceleration, none while ducked), **time scale** (frozen
   below 0.1; 20 frames at 0.5 = 10 at 1.0), step interval ÷ time scale, **dive impulses**
   (all three, bits consumed, duck hull), wall dive, wall jump/climb, stunt jump lockout without
   latching, **duck view 16** (transition, hull, origin, unduck), super jump needs `mj`, glide
-  gravity, `DEAD_LOCK` yaw cache, cmd clamp only for spectators, stuck table layout; plus
+  gravity, `DEAD_LOCK` yaw cache, cmd clamp only for spectators, stuck table layout,
+  **duck completes at 590 ms** (extended-precision compare), locked-view stale angles, jump
+  constants as rounded roots; the software extended precision against the x87 FPU (100 000
+  random operations and `fstps`) and against `f32` for single operations; the `TEXTURETYPE`
+  table (unsorted, first match); plus
   texture-table parsing/sorting/lookup, `AngleVectors`, and message decoders.
   `cargo test -p goldsrc --features server`: studio header lookup on a synthetic header.
 * Builds: `cargo build -p ts-server -p ts-client` (native), `--target i686-unknown-linux-gnu`,

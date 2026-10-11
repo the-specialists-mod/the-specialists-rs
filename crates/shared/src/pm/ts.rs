@@ -76,9 +76,10 @@ impl Pm<'_> {
         if self.p.iuser4 & WALLDIVE != 0 {
             dir = scale(self.p.forward, 3.0);
         }
-        self.p.velocity[0] += divespeed as f32 * dir[0];
-        self.p.velocity[1] += divespeed as f32 * dir[1];
-        self.p.velocity[2] = ((upspeed * 1600) as f32).sqrt();
+        let ds = Ext::from_i32(divespeed);
+        self.p.velocity[0] = (ds * x(dir[0]) + x(self.p.velocity[0])).f();
+        self.p.velocity[1] = (ds * x(dir[1]) + x(self.p.velocity[1])).f();
+        self.p.velocity[2] = Ext::from_i32(upspeed * 1600).sqrt().f();
         self.p.onground = -1;
         self.p.iuser4 &= !WALLDIVE;
         self.fixup_gravity_velocity();
@@ -116,9 +117,7 @@ impl Pm<'_> {
         self.p.usehull = 1;
         self.p.flags |= FL_DUCKING as i32;
         if self.p.onground != -1 {
-            for i in 0..3 {
-                self.p.origin[i] -= self.p.player_mins[1][i] - self.p.player_mins[0][i];
-            }
+            self.p.origin = self.duck_hull_offset(-1.0);
             self.fix_player_crouch_stuck(1);
             self.categorize_position();
         }
@@ -127,10 +126,7 @@ impl Pm<'_> {
     /// `TSStandUp` (0xf91fc): `PM_UnDuck` that keeps the duck hull while `IN_DUCK` is held.
     /// Nothing on the TS server sets `STAND_UP`, so this is dead code kept for parity.
     fn ts_stand_up(&mut self) {
-        let mut new_origin = self.p.origin;
-        if self.p.onground != -1 {
-            new_origin = add(new_origin, sub(self.p.player_mins[1], self.p.player_mins[0]));
-        }
+        let new_origin = self.duck_hull_offset(1.0);
         let trace = self.trace(new_origin, new_origin);
         if self.p.cmd.buttons & IN_DUCK as u16 != 0 {
             self.p.usehull = 1;
@@ -168,20 +164,21 @@ impl Pm<'_> {
         let climb = pitch < -30.0;
         let savehull = self.p.usehull;
         self.p.usehull = 2;
-        let mut start = [self.p.origin[0], self.p.origin[1], self.p.origin[2] + self.p.view_ofs[2]];
-        if climb {
-            start[2] += 40.0;
-        }
-        let end = [self.p.forward[0] * 64.0 + start[0], self.p.forward[1] * 64.0 + start[1], start[2]];
+        // One rounding for the eye height and the +40 (TS adds both on the FPU stack).
+        let z = x(self.p.origin[2]) + x(self.p.view_ofs[2]);
+        let z = if climb { z + x(40.0) } else { z };
+        let mut start = [self.p.origin[0], self.p.origin[1], z.f()];
+        let fwd = |i: usize, d: f32, s: f32| (x(self.p.forward[i]) * x(d) + x(s)).f();
+        let end = [fwd(0, 64.0, start[0]), fwd(1, 64.0, start[1]), start[2]];
         let tr = self.trace(start, end);
-        if tr.fraction == 1.0 {
+        if eq87(tr.fraction, 1.0) {
             start[2] = self.p.origin[2] + self.p.player_mins[savehull as usize & 3][2];
-            let end = [self.p.forward[0] * 32.0 + start[0], self.p.forward[1] * 32.0 + start[1], start[2]];
+            let end = [fwd(0, 32.0, start[0]), fwd(1, 32.0, start[1]), start[2]];
             self.p.usehull = 2;
             let tr = self.trace(start, end);
-            if tr.fraction != 1.0 && length(self.p.velocity) < 0.5 * self.p.maxspeed {
+            if !eq87(tr.fraction, 1.0) && x(length(self.p.velocity)) < xd(0.5) * x(self.p.maxspeed) {
                 self.p.onground = -1;
-                self.p.velocity[2] += self.p.frametime * 16.0 * 100.0;
+                self.p.velocity[2] = (x(16.0) * x(self.p.frametime) * xd(100.0) + x(self.p.velocity[2])).f();
                 self.fixup_gravity_velocity();
             }
         }

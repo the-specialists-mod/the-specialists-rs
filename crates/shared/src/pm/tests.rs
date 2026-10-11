@@ -505,3 +505,122 @@ fn in_eye_spectator_is_mode_5() {
     assert_eq!(f.p.angles, [6.0, 90.0, 0.0], "locked chase pitches to 10 - pitch");
     assert!(f.p.origin[1] < 60.0, "locked chase sits behind the target");
 }
+
+/// `PM_Duck` compares `0.001 * flDuckTime <= 0.6` in extended precision: at 600 ms left it is
+/// false, so with 10 ms frames the duck completes at 590 ms.
+#[test]
+fn duck_completes_at_590_ms() {
+    let mut f = Fixture::standing();
+    f.p.cmd.buttons = IN_DUCK as u16;
+    f.run(41); // the press frame sets 1000, then 40 frames of 10 ms
+    assert_eq!(f.p.flDuckTime, 600.0);
+    assert_eq!(f.p.flags & FL_DUCKING as i32, 0, "not yet at 600 ms");
+    f.run(1);
+    assert_eq!(f.p.flDuckTime, 590.0);
+    assert_ne!(f.p.flags & FL_DUCKING as i32, 0);
+}
+
+/// The HLTV locked view (mode 4) takes the stale `PM_CalcRoll` arguments as its angles; the roll
+/// slot is `movevars->rollangle`.
+#[test]
+fn locked_view_reads_stale_calc_roll_args() {
+    let mut f = Fixture::standing();
+    f.mv.rollangle = 2.0;
+    f.p.movevars = &mut *f.mv;
+    CURRENT.with(|c| c.set(&*f.p));
+    f.p.numphysent = 2;
+    f.p.physents[1].info = 2;
+    f.p.physents[1].origin = [50.0, 60.0, 70.0];
+    f.p.iuser1 = crate::ts::obs::LOCKED_VIEW;
+    f.p.iuser2 = 2;
+    player_move(&mut f.p);
+    assert_eq!(f.p.angles[2], 2.0);
+}
+
+#[test]
+fn ts_constants_are_the_rounded_roots() {
+    use super::math::xd;
+    assert_eq!(ts::JUMP_VELOCITY, xd(56000.0).sqrt().f());
+    assert_eq!(ts::WALLCLIMB_VELOCITY, xd(112_000.0).sqrt().f());
+    assert_eq!(ts::HIGH_JUMP_VELOCITY, xd(160_000.0).sqrt().f());
+}
+
+/// The software extended precision (`ext.rs`) against the FPU itself: x86-64 Linux runs the
+/// x87 at 64-bit precision, round to nearest, as TS's 32-bit server did.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn ext_matches_x87_hardware() {
+    use super::ext::{Ext, x, xd};
+    use std::arch::asm;
+
+    /// `fld b; fld a; op st, st(1); fstp out; fstp st(0)`: `a op b` (op 4 = `fsqrt` of `a`).
+    fn hw(a: [u8; 10], b: [u8; 10], op: u8) -> [u8; 10] {
+        let mut o = [0u8; 10];
+        let (pa, pb, po) = (a.as_ptr(), b.as_ptr(), o.as_mut_ptr());
+        macro_rules! run {
+            ($ins:literal) => {
+                // SAFETY: loads two 10-byte values and stores one; the x87 stack is left empty.
+                unsafe {
+                    asm!(
+                        "fld tbyte ptr [{b}]", "fld tbyte ptr [{a}]", $ins, "fstp tbyte ptr [{o}]", "fstp st(0)",
+                        a = in(reg) pa, b = in(reg) pb, o = in(reg) po,
+                        out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                        out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                    )
+                }
+            };
+        }
+        match op {
+            0 => run!("fadd st, st(1)"),
+            1 => run!("fsub st, st(1)"),
+            2 => run!("fmul st, st(1)"),
+            3 => run!("fdiv st, st(1)"),
+            _ => run!("fsqrt"),
+        }
+        o
+    }
+
+    /// `fld tbyte; fstp dword`.
+    fn hw_f32(a: [u8; 10]) -> f32 {
+        let mut o = 0f32;
+        // SAFETY: loads a 10-byte value and stores it as a float; the x87 stack is left empty.
+        unsafe {
+            asm!(
+                "fld tbyte ptr [{a}]", "fstp dword ptr [{o}]",
+                a = in(reg) a.as_ptr(), o = in(reg) &mut o as *mut f32,
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+            )
+        }
+        o
+    }
+
+    let mut seed = 0x1234_5678_9abc_def0u64;
+    let mut rnd = || {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        seed
+    };
+    let float = |r: &mut dyn FnMut() -> u64| -> f32 {
+        let b = r();
+        let exp = 100 + (b >> 40) as u32 % 56; // 2^-27 .. 2^28
+        f32::from_bits(((b >> 63) as u32) << 31 | exp << 23 | (b as u32 & 0x7f_ffff))
+    };
+    let consts = [0.001f64, 0.333, 0.8, 0.7, 0.65, 0.013, 0.35, 0.3, 0.5, 0.9, 0.05, 0.01, 1.5];
+    for i in 0..20_000 {
+        // Operands with full 64-bit significands, as the expressions in movement produce.
+        let a = x(float(&mut rnd)) * x(float(&mut rnd)) + x(float(&mut rnd));
+        let b = if i % 3 == 0 { xd(consts[i % consts.len()]) } else { x(float(&mut rnd)) / x(float(&mut rnd)) };
+        for op in 0..5u8 {
+            let ours: Ext = match op {
+                0 => a + b,
+                1 => a - b,
+                2 => a * b,
+                3 => a / b,
+                _ => a.abs().sqrt(),
+            };
+            let src = if op == 4 { a.abs() } else { a };
+            assert_eq!(ours.to_bits80(), hw(src.to_bits80(), b.to_bits80(), op), "op {op} on {a:?} {b:?}");
+            assert_eq!(ours.f().to_bits(), hw_f32(ours.to_bits80()).to_bits(), "fstps of {ours:?}");
+        }
+    }
+}

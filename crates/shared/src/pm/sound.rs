@@ -5,7 +5,8 @@
 //! steps are silent while `iuser4 & (RECOVER | 0x200)`, attenuation is 1.25 (SDK `ATTN_NORM`),
 //! and `mp_footsteps` (movevars) is not checked.
 
-use super::{CHAN_BODY, Pm, round_int};
+use super::math::{Ext, x, xd};
+use super::{CHAN_BODY, Pm};
 use goldsrc_sys::{CONTENTS_WATER, MOVETYPE_FLY};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 
@@ -115,9 +116,10 @@ impl Pm<'_> {
         }
         let walking = speed < velrun;
         let usehull = self.p.usehull as usize & 3;
-        let height = self.p.player_maxs[usehull][2] - self.p.player_mins[usehull][2];
-        let knee = [self.p.origin[0], self.p.origin[1], self.p.origin[2] - 0.3 * height];
-        let feet = [self.p.origin[0], self.p.origin[1], self.p.origin[2] - 0.5 * height];
+        let height = x(self.p.player_maxs[usehull][2]) - x(self.p.player_mins[usehull][2]);
+        let o = self.p.origin;
+        let knee = [o[0], o[1], (x(o[2]) - height * xd(0.3)).f()];
+        let feet = [o[0], o[1], (x(o[2]) - height * xd(0.5)).f()];
 
         let (step, mut fvol);
         if ladder {
@@ -160,12 +162,13 @@ impl Pm<'_> {
             };
             self.p.flTimeStepSound = if walking { 400 } else { 300 };
         }
-        self.p.flTimeStepSound = round_int(flduck + self.p.flTimeStepSound as f32);
-        // TS: footsteps get sparser in slow motion.
-        let ts = self.p.fuser1.max(0.1);
-        self.p.flTimeStepSound = round_int((1.0 / ts) * self.p.flTimeStepSound as f32);
+        // `(int)` casts: GCC switches the FPU to truncation for the `fistp`.
+        self.p.flTimeStepSound = (x(flduck) + Ext::from_i32(self.p.flTimeStepSound)).trunc_i32();
+        // TS: footsteps get sparser in slow motion; 1 / fuser1 isn't rounded.
+        let ts = if self.p.fuser1 >= 0.1 { self.p.fuser1 } else { 0.1 };
+        self.p.flTimeStepSound = (x(1.0) / x(ts) * Ext::from_i32(self.p.flTimeStepSound)).trunc_i32();
         if self.p.flags & goldsrc_sys::FL_DUCKING as i32 != 0 {
-            fvol *= 0.35;
+            fvol = (xd(0.35) * x(fvol)).f();
         }
         self.play_step_sound(step, fvol);
     }

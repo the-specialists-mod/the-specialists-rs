@@ -48,9 +48,9 @@ fn lines(data: &[u8]) -> impl Iterator<Item = &[u8]> {
     data.split_inclusive(|&c| c == b'\n')
 }
 
-fn parse(data: &[u8]) -> Table {
-    let mut names = Vec::new();
-    let mut types = Vec::new();
+/// The line parser shared by `PM_InitTextureTypes` and `TEXTURETYPE_LoadStandardMaterials`/
+/// `TEXTURETYPE_LoadMapMaterials`: appends to the table until it holds 1024 entries.
+fn parse_into(data: &[u8], names: &mut Vec<[u8; NAME_LEN]>, types: &mut Vec<u8>) {
     for raw in lines(data) {
         if names.len() >= MAX_TEXTURES {
             break;
@@ -87,6 +87,12 @@ fn parse(data: &[u8]) -> Table {
         names.push(name);
         types.push(kind);
     }
+}
+
+fn parse(data: &[u8]) -> Table {
+    let mut names = Vec::new();
+    let mut types = Vec::new();
+    parse_into(data, &mut names, &mut types);
     // PM_SortTextures: for each i, swap with every later j that sorts before it.
     let n = names.len();
     for i in 0..n {
@@ -125,6 +131,39 @@ pub fn find(name: &[u8]) -> u8 {
     CHAR_TEX_CONCRETE
 }
 
+/// The game code's own material table (`TEXTURETYPE_*`, server 0xe0e14..0xe1330), which
+/// `TEXTURETYPE_PlaySound` reads: `sound/materials.txt` followed by `sound/<map>_materials.txt`,
+/// unsorted, searched linearly (the first match wins).
+pub mod texturetype {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// The table and `fTextureTypeInit`.
+    static TABLE: Mutex<(bool, Vec<[u8; NAME_LEN]>, Vec<u8>)> = Mutex::new((false, Vec::new(), Vec::new()));
+
+    /// `TEXTURETYPE_Init` (0xe1244), from `CWorld::Precache`. Only loads while no file has been
+    /// found yet, so the map file of the first map that has either file sticks for the whole
+    /// process, as in TS. `load` reads a game file.
+    pub fn init(mapname: &str, mut load: impl FnMut(&str) -> Option<Vec<u8>>) {
+        let mut t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        if t.0 {
+            return;
+        }
+        let (_, names, types) = &mut *t;
+        names.clear();
+        types.clear();
+        let standard = load("sound/materials.txt").map(|d| parse_into(&d, names, types)).is_some();
+        let map = load(&format!("sound/{mapname}_materials.txt")).map(|d| parse_into(&d, names, types)).is_some();
+        t.0 = standard || map;
+    }
+
+    /// `TEXTURETYPE_Find` (0xe12c4): `CHAR_TEX_CONCRETE` when the name isn't listed.
+    pub fn find(name: &[u8]) -> u8 {
+        let t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        t.1.iter().position(|n| strncasecmp(name, n, CMP_LEN) == Ordering::Equal).map_or(CHAR_TEX_CONCRETE, |i| t.2[i])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +177,18 @@ mod tests {
         assert_eq!(&t.names[1][..15], b"BOARD03_128X128");
         assert_eq!(&t.names[2][..15], b"thisnameiswayto");
         assert_eq!(t.names[2][15], 0);
+    }
+
+    #[test]
+    fn texturetype_table_is_unsorted_first_match() {
+        texturetype::init("dojo", |path| match path {
+            "sound/materials.txt" => Some(b"m crate\nw crate\n".to_vec()),
+            "sound/dojo_materials.txt" => Some(b"g grid\n".to_vec()),
+            _ => None,
+        });
+        assert_eq!(texturetype::find(b"CRATE"), b'M');
+        assert_eq!(texturetype::find(b"grid"), b'G');
+        assert_eq!(texturetype::find(b"other"), b'C');
     }
 
     #[test]

@@ -12,6 +12,7 @@
 //!
 //! Global state (`OldrotArray`, the stuck tables, the texture table) is per library, as in C.
 
+mod ext;
 mod math;
 mod sound;
 pub mod textures;
@@ -37,14 +38,13 @@ use std::sync::atomic::{AtomicI32, AtomicU32, Ordering::Relaxed};
 // ---- constants (pm_shared.c / TS) --------------------------------------------------------------
 
 const MAX_CLIP_PLANES: usize = 5;
-const STOP_EPSILON: f32 = 0.1;
+const STOP_EPSILON: f64 = 0.1;
 const MAX_PHYSENTS: i32 = 600;
 const MAX_CLIENTS: usize = 32;
 const PM_DEAD_VIEWHEIGHT: f32 = -8.0;
 /// TS view heights: standing 28, ducked 16 (SDK 12).
 pub const VIEW_STAND: f32 = 28.0;
 pub const VIEW_DUCK: f32 = 16.0;
-const TIME_TO_DUCK: f32 = 0.4;
 /// TS ladder speed: always 200 (no maxspeed clamp, no duck multiplier).
 const MAX_CLIMB_SPEED: f32 = 200.0;
 const PLAYER_FALL_PUNCH_THRESHHOLD: f32 = 350.0;
@@ -52,7 +52,7 @@ const PLAYER_FALL_PUNCH_THRESHHOLD: f32 = 350.0;
 pub const PLAYER_MAX_SAFE_FALL_SPEED: f32 = 680.0;
 const PLAYER_MIN_BOUNCE_SPEED: f32 = 200.0;
 const BUNNYJUMP_MAX_SPEED_FACTOR: f32 = 1.7;
-const PM_CHECKSTUCK_MINTIME: f32 = 0.05;
+const PM_CHECKSTUCK_MINTIME: f64 = 0.05;
 const STUCK_MOVEUP: i32 = 1;
 const WJ_HEIGHT: f32 = 8.0;
 const ATTN_NORM: f32 = 0.8;
@@ -82,6 +82,20 @@ static OLDROT: [AtomicU32; MAX_CLIENTS] = [const { AtomicU32::new(0) }; MAX_CLIE
 static STUCK_LAST: [[AtomicI32; 2]; MAX_CLIENTS] = [const { [const { AtomicI32::new(0) }; 2] }; MAX_CLIENTS];
 /// `rgStuckCheckTime[MAX_CLIENTS][2]` (f32 bits).
 static STUCK_CHECK_TIME: [[AtomicU32; 2]; MAX_CLIENTS] = [const { [const { AtomicU32::new(0) }; 2] }; MAX_CLIENTS];
+thread_local! {
+    /// What `PM_SpectatorMove` (0xfef3c) finds in its camera-angle slots in the locked view
+    /// (`iuser1 == 4`), where it never writes them before `GetChaseOrigin` reads them and they are
+    /// copied to `pmove->angles`. In `ts_i386.so` the three floats (`0x30..0x38(%esp)`) sit exactly
+    /// where `PM_CheckParamters` (called from the same `PM_PlayerMove` frame, which calls nothing
+    /// that reaches that deep in between) pushed its last outgoing arguments: `PM_CalcRoll`'s
+    /// `(v_angle, pmove->velocity, rollangle)` when it rolls the view, otherwise only the first
+    /// slot is rewritten, by `PM_DropPunchAngle(pmove->punchangle)`. Two of them are addresses, so
+    /// the port stores the low 32 bits of the matching addresses; the roll slot is
+    /// `movevars->rollangle` exactly. Between moves the engine can reuse that stack, which isn't
+    /// reproduced: the slots keep the last values written here. Per thread, like a stack.
+    static STALE_ARGS: std::cell::Cell<[u32; 3]> = const { std::cell::Cell::new([0; 3]) };
+}
+
 /// `rgv3tStuckTable[54]` (`PM_CreateStuckTable`).
 static STUCK_TABLE: LazyLock<[Vec3; 54]> = LazyLock::new(create_stuck_table);
 
@@ -290,9 +304,9 @@ impl Pm<'_> {
     fn player_move(&mut self) {
         self.check_parameters();
         self.p.numtouch = 0;
-        // TS: frametime is scaled by the per-player time scale and frozen below 0.1.
-        self.p.frametime = self.p.cmd.msec as f32 * 0.001;
-        self.p.frametime = if self.p.fuser1 < crate::ts::TIME_SCALE_FREEZE { 0.0 } else { self.p.frametime * self.p.fuser1 };
+        // TS: frametime is scaled by the per-player time scale and frozen below 0.1 (or NaN).
+        self.p.frametime = (xd(0.001) * Ext::from_i32(self.p.cmd.msec as i32)).f();
+        self.p.frametime = if below87(self.p.fuser1, crate::ts::TIME_SCALE_FREEZE) { 0.0 } else { self.p.frametime * self.p.fuser1 };
         // Duck, step, swim and water-jump timers still run on the unscaled msec.
         self.reduce_timers();
         let (f, r, u) = angle_vectors(self.p.angles);
@@ -369,7 +383,7 @@ impl Pm<'_> {
             self.add_correct_gravity();
         }
         // Waterjumping: just move.
-        if self.p.waterjumptime != 0.0 {
+        if !eq87(self.p.waterjumptime, 0.0) {
             self.water_jump();
             self.fly_move();
             self.check_water();
@@ -427,19 +441,21 @@ impl Pm<'_> {
 
     fn check_parameters(&mut self) {
         let c = &self.p.cmd;
-        let spd = (c.upmove * c.upmove + c.sidemove * c.sidemove + c.forwardmove * c.forwardmove).sqrt();
+        let (fm, sm, um) = (x(c.forwardmove), x(c.sidemove), x(c.upmove));
+        let spd = (fm * fm + sm * sm + um * um).sqrt().f();
         let maxspeed = self.p.clientmaxspeed;
-        if maxspeed != 0.0 {
-            self.p.maxspeed = maxspeed.min(self.p.maxspeed);
+        if !eq87(maxspeed, 0.0) && self.p.maxspeed > maxspeed {
+            self.p.maxspeed = maxspeed;
         }
         // TS: no IN_USE slowdown, and the command is clamped to maxspeed only for spectators
-        // (walk/air move clamp the wish speed anyway).
-        if spd != 0.0 && spd > self.p.maxspeed {
-            let ratio = self.p.maxspeed / spd;
+        // (walk/air move clamp the wish speed anyway). The ratio isn't rounded.
+        if !eq87(spd, 0.0) && spd > self.p.maxspeed {
+            let ratio = x(self.p.maxspeed) / x(spd);
             if self.p.iuser1 > 0 {
-                self.p.cmd.forwardmove *= ratio;
-                self.p.cmd.sidemove *= ratio;
-                self.p.cmd.upmove *= ratio;
+                let c = &mut self.p.cmd;
+                c.forwardmove = (ratio * x(c.forwardmove)).f();
+                c.sidemove = (ratio * x(c.sidemove)).f();
+                c.upmove = (ratio * x(c.upmove)).f();
             }
         }
         use crate::ts::stunt;
@@ -455,20 +471,25 @@ impl Pm<'_> {
             self.p.cmd.upmove *= 0.25;
             self.p.gravity = if self.p.cmd.buttons & IN_JUMP_ == 0 {
                 1.0
-            } else if self.p.velocity[2] >= 0.0 {
+            } else if not_above87(0.0, self.p.velocity[2]) {
                 0.3
             } else {
                 0.75
             };
         }
 
+        // The outgoing argument of `PM_DropPunchAngle(pmove->punchangle)`; see `StaleArgs`.
+        let mut stale = STALE_ARGS.get();
+        stale[0] = std::ptr::addr_of!(self.p.punchangle) as usize as u32;
         self.drop_punch_angle();
 
         if self.p.dead == 0 && self.p.iuser4 & stunt::DEAD_LOCK == 0 {
             let v_angle = add(self.p.cmd.viewangles, self.p.punchangle);
             let rollangle = self.mv().rollangle;
             let rollspeed = self.mv().rollspeed;
-            self.p.angles[2] = calc_roll(v_angle, self.p.velocity, rollangle, rollspeed) * 4.0;
+            // `PM_CalcRoll(v_angle, pmove->velocity, rollangle, rollspeed)`'s arguments.
+            stale = [std::ptr::addr_of!(v_angle) as usize as u32, std::ptr::addr_of!(self.p.velocity) as usize as u32, rollangle.to_bits()];
+            self.p.angles[2] = (calc_roll(v_angle, self.p.velocity, rollangle, rollspeed) * x(4.0)).f();
             self.p.angles[0] = v_angle[0];
             self.p.angles[1] = v_angle[1];
             if let Some(i) = self.player_slot() {
@@ -478,6 +499,7 @@ impl Pm<'_> {
             // TS: only the yaw is restored (SDK: angles = oldangles).
             self.p.angles[1] = f32::from_bits(OLDROT[i].load(Relaxed));
         }
+        STALE_ARGS.set(stale);
 
         if self.p.dead != 0 {
             self.p.view_ofs[2] = PM_DEAD_VIEWHEIGHT;
@@ -492,8 +514,9 @@ impl Pm<'_> {
     fn drop_punch_angle(&mut self) {
         let mut punch = self.p.punchangle;
         let len = if self.p.dead == 0 {
-            let len = normalize(&mut punch);
-            (len - (len * 0.5 + 10.0) * self.p.frametime * self.p.fuser1).max(0.0)
+            let len = x(normalize(&mut punch));
+            let len = (len - (len * xd(0.5) + xd(10.0)) * x(self.p.frametime) * x(self.p.fuser1)).f();
+            if 0.0 > len { 0.0 } else { len }
         } else {
             0.0
         };
@@ -524,51 +547,64 @@ impl Pm<'_> {
 
     // ---- velocity helpers --------------------------------------------------------------------------
 
+    /// `PM_CheckVelocity` (0xfd0b8). `IS_NAN` tests the exponent bits only, so an infinity
+    /// counts as a NaN.
     pub(crate) fn check_velocity(&mut self) {
+        let is_nan = |v: f32| v.to_bits() & 0x7f80_0000 == 0x7f80_0000;
         let max = self.mv().maxvelocity;
         for i in 0..3 {
-            if self.p.velocity[i].is_nan() {
+            if is_nan(self.p.velocity[i]) {
+                self.p.con_printf(&format!("PM  Got a NaN velocity {i}\n"));
                 self.p.velocity[i] = 0.0;
             }
-            if self.p.origin[i].is_nan() {
+            if is_nan(self.p.origin[i]) {
+                self.p.con_printf(&format!("PM  Got a NaN origin on {i}\n"));
                 self.p.origin[i] = 0.0;
             }
             if self.p.velocity[i] > max {
+                self.p.dprint(&format!("PM  Got a velocity too high on {i}\n"));
                 self.p.velocity[i] = max;
             } else if self.p.velocity[i] < -max {
+                self.p.dprint(&format!("PM  Got a velocity too low on {i}\n"));
                 self.p.velocity[i] = -max;
             }
         }
     }
 
+    /// `pmove->gravity`, or 1 when it is 0.
     fn ent_gravity(&self) -> f32 {
-        if self.p.gravity != 0.0 { self.p.gravity } else { 1.0 }
+        if eq87(self.p.gravity, 0.0) { 1.0 } else { self.p.gravity }
     }
 
+    /// `PM_AddCorrectGravity` (0xfd304).
     fn add_correct_gravity(&mut self) {
-        if self.p.waterjumptime != 0.0 {
+        if !eq87(self.p.waterjumptime, 0.0) {
             return;
         }
-        let g = self.ent_gravity();
-        self.p.velocity[2] -= g * self.mv().gravity * 0.5 * self.p.frametime;
-        self.p.velocity[2] += self.p.basevelocity[2] * self.p.frametime;
+        let g = x(self.ent_gravity());
+        let (ft, vz) = (x(self.p.frametime), x(self.p.velocity[2]));
+        self.p.velocity[2] = (vz - g * x(self.mv().gravity) * xd(0.5) * ft).f();
+        self.p.velocity[2] = (x(self.p.basevelocity[2]) * ft + x(self.p.velocity[2])).f();
         self.p.basevelocity[2] = 0.0;
         self.check_velocity();
     }
 
+    /// `PM_FixupGravityVelocity` (0xfd390).
     pub(crate) fn fixup_gravity_velocity(&mut self) {
-        if self.p.waterjumptime != 0.0 {
+        if !eq87(self.p.waterjumptime, 0.0) {
             return;
         }
-        let g = self.ent_gravity();
-        self.p.velocity[2] -= g * self.mv().gravity * self.p.frametime * 0.5;
+        let g = x(self.ent_gravity());
+        self.p.velocity[2] = (x(self.p.velocity[2]) - g * x(self.mv().gravity) * x(self.p.frametime) * xd(0.5)).f();
         self.check_velocity();
     }
 
+    /// `PM_AddGravity` (0xffbb0).
     fn add_gravity(&mut self) {
-        let g = self.ent_gravity();
-        self.p.velocity[2] -= g * self.mv().gravity * self.p.frametime;
-        self.p.velocity[2] += self.p.basevelocity[2] * self.p.frametime;
+        let g = x(self.ent_gravity());
+        let ft = x(self.p.frametime);
+        self.p.velocity[2] = (x(self.p.velocity[2]) - g * x(self.mv().gravity) * ft).f();
+        self.p.velocity[2] = (x(self.p.basevelocity[2]) * ft + x(self.p.velocity[2])).f();
         self.p.basevelocity[2] = 0.0;
         self.check_velocity();
     }
@@ -589,6 +625,7 @@ impl Pm<'_> {
 
     // ---- PM_FlyMove ---------------------------------------------------------------------------------
 
+    /// `PM_FlyMove` (0xfd408).
     pub(crate) fn fly_move(&mut self) -> i32 {
         let numbumps = 4;
         let mut blocked = 0;
@@ -601,13 +638,14 @@ impl Pm<'_> {
         let mut time_left = self.p.frametime;
 
         for _ in 0..numbumps {
-            if self.p.velocity[0] == 0.0 && self.p.velocity[1] == 0.0 && self.p.velocity[2] == 0.0 {
+            if eq87(self.p.velocity[0], 0.0) && eq87(self.p.velocity[1], 0.0) && eq87(self.p.velocity[2], 0.0) {
                 break;
             }
+            let tl = x(time_left);
             let end = [
-                self.p.origin[0] + time_left * self.p.velocity[0],
-                self.p.origin[1] + time_left * self.p.velocity[1],
-                self.p.origin[2] + time_left * self.p.velocity[2],
+                (tl * x(self.p.velocity[0]) + x(self.p.origin[0])).f(),
+                (tl * x(self.p.velocity[1]) + x(self.p.origin[1])).f(),
+                (tl * x(self.p.velocity[2]) + x(self.p.origin[2])).f(),
             ];
             let trace = self.trace(self.p.origin, end);
             all_fraction += trace.fraction;
@@ -615,23 +653,23 @@ impl Pm<'_> {
                 self.p.velocity = ZERO;
                 return 4;
             }
-            if trace.fraction > 0.0 {
+            if below87(0.0, trace.fraction) {
                 self.p.origin = trace.endpos;
                 original_velocity = self.p.velocity;
                 numplanes = 0;
             }
-            if trace.fraction == 1.0 {
+            if eq87(trace.fraction, 1.0) {
                 break;
             }
             self.add_to_touched(trace, self.p.velocity);
 
-            if trace.plane.normal[2] > 0.7 {
+            if x(trace.plane.normal[2]) > xd(0.7) {
                 blocked |= 1;
             }
-            if trace.plane.normal[2] == 0.0 {
+            if eq87(trace.plane.normal[2], 0.0) {
                 blocked |= 2;
             }
-            time_left -= time_left * trace.fraction;
+            time_left = (x(time_left) - x(time_left) * x(trace.fraction)).f();
 
             if numplanes >= MAX_CLIP_PLANES {
                 self.p.velocity = ZERO;
@@ -640,13 +678,15 @@ impl Pm<'_> {
             planes[numplanes] = trace.plane.normal;
             numplanes += 1;
 
-            if numplanes == 1 && self.p.movetype == MT_WALK && (self.p.onground == -1 || self.p.friction != 1.0) {
+            // The SDK's `numplanes == 1 &&` isn't in TS's build: every plane so far is reflected.
+            if self.p.movetype == MT_WALK && (self.p.onground == -1 || !eq87(self.p.friction, 1.0)) {
                 for plane in planes.iter().take(numplanes) {
-                    if plane[2] > 0.7 {
+                    if x(plane[2]) > xd(0.7) {
                         clip_velocity(original_velocity, *plane, &mut new_velocity, 1.0);
                         original_velocity = new_velocity;
                     } else {
-                        let ob = 1.0 + self.mv().bounce * (1.0 - self.p.friction);
+                        // TS: a fixed 0.01 where the SDK reads `movevars->bounce`.
+                        let ob = ((x(1.0) - x(self.p.friction)) * xd(0.01) + xd(1.0)).f();
                         clip_velocity(original_velocity, *plane, &mut new_velocity, ob);
                     }
                 }
@@ -658,7 +698,7 @@ impl Pm<'_> {
                     clip_velocity(original_velocity, planes[i], &mut self.p.velocity, 1.0);
                     let mut j = 0;
                     while j < numplanes {
-                        if j != i && dot(self.p.velocity, planes[j]) < 0.0 {
+                        if j != i && below87(dotx(self.p.velocity, planes[j]), Ext::ZERO) {
                             break;
                         }
                         j += 1;
@@ -677,13 +717,13 @@ impl Pm<'_> {
                     let d = dot(dir, self.p.velocity);
                     self.p.velocity = scale(dir, d);
                 }
-                if dot(self.p.velocity, primal_velocity) <= 0.0 {
+                if not_above87(dotx(self.p.velocity, primal_velocity), Ext::ZERO) {
                     self.p.velocity = ZERO;
                     break;
                 }
             }
         }
-        if all_fraction == 0.0 {
+        if eq87(all_fraction, 0.0) {
             self.p.velocity = ZERO;
         }
         blocked
@@ -692,18 +732,20 @@ impl Pm<'_> {
     // ---- acceleration and friction ------------------------------------------------------------------
 
     /// `PM_Accelerate` (0xfdd08) with TS's `PM_GetAccelBySpeed` factor.
+    /// `PM_Accelerate` (0xfdd08) with TS's `PM_GetAccelBySpeed` factor. The add speed is tested
+    /// unrounded, then stored; the acceleration is stored before and after the factor.
     fn accelerate(&mut self, wishdir: Vec3, wishspeed: f32, accel: f32) {
-        if self.p.dead != 0 || self.p.waterjumptime != 0.0 {
+        if self.p.dead != 0 || !eq87(self.p.waterjumptime, 0.0) {
             return;
         }
-        let currentspeed = dot(self.p.velocity, wishdir);
-        let addspeed = wishspeed - currentspeed;
-        if addspeed <= 0.0 {
+        let addspeed = x(wishspeed) - dotx(self.p.velocity, wishdir);
+        if not_above87(addspeed, Ext::ZERO) {
             return;
         }
-        let mut accelspeed = accel * self.p.frametime * wishspeed * self.p.friction;
+        let addspeed = addspeed.f();
+        let mut accelspeed = (x(accel) * x(self.p.frametime) * x(wishspeed) * x(self.p.friction)).f();
         if self.p.iuser4 & crate::ts::stunt::PRONE == 0 && self.p.flags & FL_DUCKING_ == 0 {
-            accelspeed *= accel_by_speed(self.p.maxspeed);
+            accelspeed = (accel_by_speed_x(self.p.maxspeed) * x(accelspeed)).f();
         }
         if accelspeed > addspeed {
             accelspeed = addspeed;
@@ -711,58 +753,60 @@ impl Pm<'_> {
         self.p.velocity = ma(self.p.velocity, accelspeed, wishdir);
     }
 
+    /// `PM_AirAccelerate` (0xfdfdc): nothing is rounded until the velocity.
     fn air_accelerate(&mut self, wishdir: Vec3, wishspeed: f32, accel: f32) {
-        if self.p.dead != 0 || self.p.waterjumptime != 0.0 {
+        if self.p.dead != 0 || !eq87(self.p.waterjumptime, 0.0) {
             return;
         }
-        let wishspd = wishspeed.min(30.0);
-        let currentspeed = dot(self.p.velocity, wishdir);
-        let addspeed = wishspd - currentspeed;
-        if addspeed <= 0.0 {
+        let wishspd = if wishspeed > 30.0 { 30.0 } else { wishspeed };
+        let addspeed = x(wishspd) - dotx(self.p.velocity, wishdir);
+        if not_above87(addspeed, Ext::ZERO) {
             return;
         }
-        let mut accelspeed = accel * wishspeed * self.p.frametime * self.p.friction;
+        let mut accelspeed = x(wishspeed) * x(accel) * x(self.p.frametime) * x(self.p.friction);
         if accelspeed > addspeed {
             accelspeed = addspeed;
         }
-        self.p.velocity = ma(self.p.velocity, accelspeed, wishdir);
+        self.p.velocity = ma_x(self.p.velocity, accelspeed, wishdir);
     }
 
     /// `PM_Friction` (0xfde08): SDK edge friction, TS extra factor 0.75.
     fn friction(&mut self) {
-        if self.p.waterjumptime != 0.0 {
+        if !eq87(self.p.waterjumptime, 0.0) {
             return;
         }
         let vel = self.p.velocity;
-        let speed = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
-        if speed < 0.1 {
+        let speed = (x(vel[0]) * x(vel[0]) + x(vel[1]) * x(vel[1]) + x(vel[2]) * x(vel[2])).sqrt().f();
+        if below87(speed, 0.1) {
             return;
         }
+        let sp = x(speed);
         let mut drop = 0.0f32;
         if self.p.onground != -1 {
-            let start_z = self.p.origin[2] + self.hull_min(self.p.usehull)[2];
-            let start = [self.p.origin[0] + vel[0] / speed * 16.0, self.p.origin[1] + vel[1] / speed * 16.0, start_z];
-            let stop = [start[0], start[1], start_z - 34.0];
+            let z = x(self.p.origin[2]) + x(self.hull_min(self.p.usehull)[2]);
+            let start = [(x(vel[0]) / sp * x(16.0) + x(self.p.origin[0])).f(), (x(vel[1]) / sp * x(16.0) + x(self.p.origin[1])).f(), z.f()];
+            let stop = [start[0], start[1], (z - x(34.0)).f()];
             let trace = self.trace(start, stop);
-            let friction = if trace.fraction == 1.0 { self.mv().friction * self.mv().edgefriction } else { self.mv().friction };
-            let control = if speed < self.mv().stopspeed { self.mv().stopspeed } else { speed };
-            drop += control * friction * self.p.friction * 0.75 * self.p.frametime;
+            let friction =
+                if eq87(trace.fraction, 1.0) { x(self.mv().friction) * x(self.mv().edgefriction) } else { x(self.mv().friction) };
+            let control = if speed >= self.mv().stopspeed { speed } else { self.mv().stopspeed };
+            drop = (friction * x(self.p.friction) * x(0.75) * x(control) * x(self.p.frametime) + x(drop)).f();
         }
-        let mut newspeed = speed - drop;
-        if newspeed < 0.0 {
-            newspeed = 0.0;
-        }
-        newspeed /= speed;
-        self.p.velocity = scale(vel, newspeed);
+        let newspeed = sp - x(drop);
+        let newspeed = if Ext::ZERO > newspeed { Ext::ZERO } else { newspeed } / sp;
+        self.p.velocity = [(newspeed * x(vel[0])).f(), (newspeed * x(vel[1])).f(), (newspeed * x(vel[2])).f()];
     }
 
-    /// Horizontal wish velocity from `fmove`/`smove` with flattened forward/right.
+    /// Horizontal wish velocity from `fmove`/`smove` with flattened forward/right (`PM_WalkMove`,
+    /// `PM_AirMove`). TS also scales `wishvel` down to maxspeed, but nothing reads it after.
     fn flat_wish(&mut self, fmove: f32, smove: f32) -> (Vec3, f32) {
         self.p.forward[2] = 0.0;
         self.p.right[2] = 0.0;
         normalize(&mut self.p.forward);
         normalize(&mut self.p.right);
-        let wishvel = [self.p.forward[0] * fmove + self.p.right[0] * smove, self.p.forward[1] * fmove + self.p.right[1] * smove, 0.0];
+        let (f, s) = (x(fmove), x(smove));
+        let wishvel =
+            [(f * x(self.p.forward[0]) + s * x(self.p.right[0])).f(), (f * x(self.p.forward[1]) + s * x(self.p.right[1])).f(), 0.0];
         let mut wishdir = wishvel;
         let mut wishspeed = normalize(&mut wishdir);
         if wishspeed > self.p.maxspeed {
@@ -771,11 +815,11 @@ impl Pm<'_> {
         (wishdir, wishspeed)
     }
 
-    /// `PM_WalkMove` (0xfa26c). TS: backpedalling at 80 %.
+    /// `PM_WalkMove` (0xfa26c). TS: backpedalling at 80 % (a `double` 0.8).
     fn walk_move(&mut self) {
         let mut fmove = self.p.cmd.forwardmove;
-        if fmove < 0.0 {
-            fmove *= 0.8;
+        if below87(fmove, 0.0) {
+            fmove = (xd(0.8) * x(fmove)).f();
         }
         let smove = self.p.cmd.sidemove;
         let (wishdir, wishspeed) = self.flat_wish(fmove, smove);
@@ -787,26 +831,27 @@ impl Pm<'_> {
         self.p.velocity = add(self.p.velocity, self.p.basevelocity);
 
         let spd = length(self.p.velocity);
-        if spd < 1.0 {
+        if below87(spd, 1.0) {
             self.p.velocity = ZERO;
             return;
         }
 
         let oldonground = self.p.onground;
+        let ft = x(self.p.frametime);
         let dest = [
-            self.p.origin[0] + self.p.velocity[0] * self.p.frametime,
-            self.p.origin[1] + self.p.velocity[1] * self.p.frametime,
+            (x(self.p.velocity[0]) * ft + x(self.p.origin[0])).f(),
+            (x(self.p.velocity[1]) * ft + x(self.p.origin[1])).f(),
             self.p.origin[2],
         ];
         let trace = self.trace(self.p.origin, dest);
-        if trace.fraction == 1.0 {
+        if eq87(trace.fraction, 1.0) {
             self.p.origin = trace.endpos;
             return;
         }
         if oldonground == -1 && self.p.waterlevel == 0 {
             return;
         }
-        if self.p.waterjumptime != 0.0 {
+        if !eq87(self.p.waterjumptime, 0.0) {
             return;
         }
 
@@ -831,7 +876,7 @@ impl Pm<'_> {
         let mut dest = self.p.origin;
         dest[2] -= stepsize;
         let trace = self.trace(self.p.origin, dest);
-        let usedown = if trace.plane.normal[2] < 0.7 {
+        let usedown = if below87(x(trace.plane.normal[2]), xd(0.7)) {
             true
         } else {
             if trace.startsolid == 0 && trace.allsolid == 0 {
@@ -839,10 +884,11 @@ impl Pm<'_> {
             }
             // The SDK copies the result into pmove->up (sic).
             self.p.up = self.p.origin;
-            let downdist = (down[0] - original[0]) * (down[0] - original[0]) + (down[1] - original[1]) * (down[1] - original[1]);
-            let updist =
-                (self.p.up[0] - original[0]) * (self.p.up[0] - original[0]) + (self.p.up[1] - original[1]) * (self.p.up[1] - original[1]);
-            downdist > updist
+            let dist2 = |p: Vec3| {
+                let (dx, dy) = (x(p[0]) - x(original[0]), x(p[1]) - x(original[1]));
+                dx * dx + dy * dy
+            };
+            dist2(down) > dist2(self.p.up)
         };
         if usedown {
             self.p.origin = down;
@@ -871,8 +917,12 @@ impl Pm<'_> {
     pub(crate) fn check_water(&mut self) -> bool {
         let hull = self.p.usehull;
         let (mins, maxs) = (self.hull_min(hull), self.hull_max(hull));
-        let mut point =
-            [self.p.origin[0] + (mins[0] + maxs[0]) * 0.5, self.p.origin[1] + (mins[1] + maxs[1]) * 0.5, self.p.origin[2] + mins[2] + 1.0];
+        let o = self.p.origin;
+        let mut point = [
+            ((x(mins[0]) + x(maxs[0])) * xd(0.5) + x(o[0])).f(),
+            ((x(mins[1]) + x(maxs[1])) * xd(0.5) + x(o[1])).f(),
+            (x(o[2]) + x(mins[2]) + x(1.0)).f(),
+        ];
         self.p.waterlevel = 0;
         self.p.watertype = CONTENTS_EMPTY;
         let is_liquid = |c: i32| c <= CONTENTS_WATER && c > CONTENTS_TRANSLUCENT;
@@ -881,7 +931,7 @@ impl Pm<'_> {
         if is_liquid(cont) {
             self.p.watertype = cont;
             self.p.waterlevel = 1;
-            let heightover2 = (mins[2] + maxs[2]) * 0.5;
+            let heightover2 = ((x(mins[2]) + x(maxs[2])) * xd(0.5)).f();
             point[2] = self.p.origin[2] + heightover2;
             if is_liquid(self.point_contents(point, None)) {
                 self.p.waterlevel = 2;
@@ -900,14 +950,16 @@ impl Pm<'_> {
         self.p.waterlevel > 1
     }
 
+    /// `PM_WaterMove` (0xfe0b8).
     fn water_move(&mut self) {
         let c = self.p.cmd;
-        let mut wishvel = [0.0f32; 3];
-        for (i, w) in wishvel.iter_mut().enumerate() {
-            *w = self.p.forward[i] * c.forwardmove + self.p.right[i] * c.sidemove;
-        }
-        if c.forwardmove == 0.0 && c.sidemove == 0.0 && c.upmove == 0.0 {
-            wishvel[2] -= 60.0;
+        let (fm, sm) = (x(c.forwardmove), x(c.sidemove));
+        let w = |i: usize| x(self.p.forward[i]) * fm + x(self.p.right[i]) * sm;
+        let w2 = w(2);
+        let mut wishvel = [w(0).f(), w(1).f(), w2.f()];
+        if eq87(c.forwardmove, 0.0) && eq87(c.sidemove, 0.0) && eq87(c.upmove, 0.0) {
+            // TS subtracts from the unrounded sum still on the FPU stack.
+            wishvel[2] = (w2 - x(60.0)).f();
         } else {
             wishvel[2] += c.upmove;
         }
@@ -917,38 +969,38 @@ impl Pm<'_> {
             wishvel = scale(wishvel, self.p.maxspeed / wishspeed);
             wishspeed = self.p.maxspeed;
         }
-        wishspeed *= 0.8;
+        wishspeed = (xd(0.8) * x(wishspeed)).f();
 
         self.p.velocity = add(self.p.velocity, self.p.basevelocity);
         let mut temp = self.p.velocity;
         let speed = normalize(&mut temp);
-        let newspeed = if speed != 0.0 {
-            let mut ns = speed - self.p.frametime * speed * self.mv().friction * self.p.friction;
-            if ns < 0.0 {
-                ns = 0.0;
-            }
+        let newspeed = if !eq87(speed, 0.0) {
+            let sp = x(speed);
+            let ns = sp - sp * x(self.p.frametime) * x(self.mv().friction) * x(self.p.friction);
+            let ns = if ns >= Ext::ZERO { ns.f() } else { 0.0 };
             self.p.velocity = scale(self.p.velocity, ns / speed);
             ns
         } else {
             0.0
         };
 
-        if wishspeed < 0.1 {
+        if below87(wishspeed, 0.1) {
             return;
         }
-        let addspeed = wishspeed - newspeed;
-        if addspeed > 0.0 {
+        let addspeed = x(wishspeed) - x(newspeed);
+        if addspeed > Ext::ZERO {
+            let addspeed = addspeed.f();
             normalize(&mut wishvel);
-            let mut accelspeed = self.mv().accelerate * wishspeed * self.p.frametime * self.p.friction;
-            if accelspeed > addspeed {
-                accelspeed = addspeed;
+            let mut accelspeed = x(wishspeed) * x(self.mv().accelerate) * x(self.p.frametime) * x(self.p.friction);
+            if accelspeed > x(addspeed) {
+                accelspeed = x(addspeed);
             }
-            self.p.velocity = ma(self.p.velocity, accelspeed, wishvel);
+            self.p.velocity = ma_x(self.p.velocity, accelspeed, wishvel);
         }
 
         let dest = ma(self.p.origin, self.p.frametime, self.p.velocity);
         let mut start = dest;
-        start[2] += self.mv().stepsize + 1.0;
+        start[2] = (x(dest[2]) + x(self.mv().stepsize) + x(1.0)).f();
         let trace = self.trace(start, dest);
         if trace.startsolid == 0 && trace.allsolid == 0 {
             self.p.origin = trace.endpos;
@@ -984,7 +1036,7 @@ impl Pm<'_> {
         let curspeed = normalize(&mut flatvelocity);
         let mut flatforward = [self.p.forward[0], self.p.forward[1], 0.0];
         normalize(&mut flatforward);
-        if curspeed != 0.0 && dot(flatvelocity, flatforward) < 0.0 {
+        if !eq87(curspeed, 0.0) && dotx(flatvelocity, flatforward) < Ext::ZERO {
             return;
         }
         let mut start = self.p.origin;
@@ -994,7 +1046,7 @@ impl Pm<'_> {
         self.p.usehull = 2;
         let tr = self.trace(start, end);
         if tr.fraction < 1.0 && tr.plane.normal[2].abs() < 0.1 {
-            start[2] += self.hull_max(savehull)[2] - WJ_HEIGHT;
+            start[2] = (x(self.hull_max(savehull)[2]) - x(WJ_HEIGHT) + x(start[2])).f();
             let end = ma(start, 24.0, flatforward);
             self.p.movedir = ma(ZERO, -50.0, tr.plane.normal);
             let tr = self.trace(start, end);
@@ -1036,7 +1088,7 @@ impl Pm<'_> {
             return;
         }
         let tr = self.trace(self.p.origin, point);
-        self.p.onground = if tr.plane.normal[2] < 0.7 { -1 } else { tr.ent };
+        self.p.onground = if below87(x(tr.plane.normal[2]), xd(0.7)) { -1 } else { tr.ent };
         if self.p.onground != -1 {
             self.p.waterjumptime = 0.0;
             if self.p.waterlevel < 2 && tr.startsolid == 0 && tr.allsolid == 0 {
@@ -1089,7 +1141,7 @@ impl Pm<'_> {
         let idx = if sv != 0 { 0 } else { 1 };
         let ftime = self.p.float_time() as f32;
         if let Some(slot) = STUCK_CHECK_TIME.get(pi as usize) {
-            if f32::from_bits(slot[idx].load(Relaxed)) >= ftime - PM_CHECKSTUCK_MINTIME {
+            if not_above87(x(ftime) - xd(PM_CHECKSTUCK_MINTIME), x(f32::from_bits(slot[idx].load(Relaxed)))) {
                 return true;
             }
             slot[idx].store(ftime.to_bits(), Relaxed);
@@ -1140,40 +1192,36 @@ impl Pm<'_> {
     fn spectator_move(&mut self) {
         if self.p.iuser1 == OBS_ROAMING || self.p.iuser2 == 0 {
             let speed = length(self.p.velocity);
-            if speed < 1.0 {
+            if below87(speed, 1.0) {
                 self.p.velocity = ZERO;
             } else {
-                let friction = self.mv().friction * 1.5;
-                let control = if speed < self.mv().stopspeed { self.mv().stopspeed } else { speed };
-                let drop = control * friction * self.p.frametime;
-                let newspeed = (speed - drop).max(0.0) / speed;
-                self.p.velocity = scale(self.p.velocity, newspeed);
+                let friction = (xd(1.5) * x(self.mv().friction)).f();
+                let control = if speed >= self.mv().stopspeed { speed } else { self.mv().stopspeed };
+                let drop = x(control) * x(friction) * x(self.p.frametime) + Ext::ZERO;
+                let newspeed = x(speed) - drop;
+                let newspeed = if Ext::ZERO > newspeed { Ext::ZERO } else { newspeed };
+                self.p.velocity = scale(self.p.velocity, (newspeed / x(speed)).f());
             }
-            let fmove = self.p.cmd.forwardmove;
-            let smove = self.p.cmd.sidemove;
+            let (fmove, smove) = (x(self.p.cmd.forwardmove), x(self.p.cmd.sidemove));
             normalize(&mut self.p.forward);
             normalize(&mut self.p.right);
-            let mut wishvel = [0.0f32; 3];
-            for (i, w) in wishvel.iter_mut().enumerate() {
-                *w = self.p.forward[i] * fmove + self.p.right[i] * smove;
-            }
-            wishvel[2] += self.p.cmd.upmove;
+            let w = |i: usize| fmove * x(self.p.forward[i]) + smove * x(self.p.right[i]);
+            let wishvel = [w(0).f(), w(1).f(), (w(2) + x(self.p.cmd.upmove)).f()];
             let mut wishdir = wishvel;
             let mut wishspeed = normalize(&mut wishdir);
             let maxspd = self.mv().spectatormaxspeed;
             if wishspeed > maxspd {
                 wishspeed = maxspd;
             }
-            let currentspeed = dot(self.p.velocity, wishdir);
-            let addspeed = wishspeed - currentspeed;
-            if addspeed <= 0.0 {
+            let addspeed = x(wishspeed) - dotx(self.p.velocity, wishdir);
+            if not_above87(addspeed, Ext::ZERO) {
                 return;
             }
-            let mut accelspeed = self.mv().accelerate * self.p.frametime * wishspeed;
+            let mut accelspeed = x(self.mv().accelerate) * x(self.p.frametime) * x(wishspeed);
             if accelspeed > addspeed {
                 accelspeed = addspeed;
             }
-            self.p.velocity = ma(self.p.velocity, accelspeed, wishdir);
+            self.p.velocity = ma_x(self.p.velocity, accelspeed, wishdir);
             self.p.origin = ma(self.p.origin, self.p.frametime, self.p.velocity);
             return;
         }
@@ -1182,11 +1230,12 @@ impl Pm<'_> {
         let Some(target) = (0..n).find(|&i| self.p.physents[i].info == self.p.iuser2) else { return };
         let pe = &self.p.physents[target];
         let mode = self.p.iuser1;
-        // TS leaves the angles uninitialised for the HLTV-only locked view (4); the target's
-        // angles are a sane stand-in.
+        // TS never sets the camera angles for the HLTV locked view (4): whatever the stack
+        // held is used, which `StaleArgs` reproduces.
         let angles = match mode {
             OBS_CHASE_LOCKED => [10.0 - pe.angles[0], pe.angles[1], pe.angles[2]],
-            OBS_IN_EYE | OBS_LOCKED_VIEW => pe.angles,
+            OBS_IN_EYE => pe.angles,
+            OBS_LOCKED_VIEW => STALE_ARGS.get().map(f32::from_bits),
             _ => self.p.angles,
         };
         let origin = if mode == OBS_IN_EYE { pe.origin } else { self.chase_origin(angles, target) };
@@ -1201,16 +1250,13 @@ impl Pm<'_> {
         chase_origin(self.p, angles, target)
     }
 
+    /// `PM_NoClip` (0x10000c).
     fn noclip(&mut self) {
-        let fmove = self.p.cmd.forwardmove;
-        let smove = self.p.cmd.sidemove;
+        let (fmove, smove) = (x(self.p.cmd.forwardmove), x(self.p.cmd.sidemove));
         normalize(&mut self.p.forward);
         normalize(&mut self.p.right);
-        let mut wishvel = [0.0f32; 3];
-        for (i, w) in wishvel.iter_mut().enumerate() {
-            *w = self.p.forward[i] * fmove + self.p.right[i] * smove;
-        }
-        wishvel[2] += self.p.cmd.upmove;
+        let w = |i: usize| fmove * x(self.p.forward[i]) + smove * x(self.p.right[i]);
+        let wishvel = [w(0).f(), w(1).f(), (w(2) + x(self.p.cmd.upmove)).f()];
         self.p.origin = ma(self.p.origin, self.p.frametime, wishvel);
         self.p.velocity = ZERO;
     }
@@ -1248,28 +1294,29 @@ impl Pm<'_> {
             self.p.velocity = ZERO;
             return;
         }
-        if trace.fraction == 1.0 {
+        if eq87(trace.fraction, 1.0) {
             self.check_water();
             return;
         }
         let backoff = match self.p.movetype {
-            MT_BOUNCE => 2.0 - self.p.friction,
+            MT_BOUNCE => (xd(2.0) - x(self.p.friction)).f(),
             MT_BOUNCEMISSILE => 2.0,
             _ => 1.0,
         };
         let v = self.p.velocity;
         clip_velocity(v, trace.plane.normal, &mut self.p.velocity, backoff);
-        if trace.plane.normal[2] > 0.7 {
-            if self.p.velocity[2] < self.mv().gravity * self.p.frametime {
+        if x(trace.plane.normal[2]) > xd(0.7) {
+            if x(self.p.velocity[2]) < x(self.mv().gravity) * x(self.p.frametime) {
                 self.p.onground = trace.ent;
                 self.p.velocity[2] = 0.0;
             }
-            let vel = dot(self.p.velocity, self.p.velocity);
-            if vel < 30.0 * 30.0 || (self.p.movetype != MT_BOUNCE && self.p.movetype != MT_BOUNCEMISSILE) {
+            let v = self.p.velocity;
+            let vel = x(v[0]) * x(v[0]) + x(v[1]) * x(v[1]) + x(v[2]) * x(v[2]);
+            if below87(vel, x(30.0 * 30.0)) || (self.p.movetype != MT_BOUNCE && self.p.movetype != MT_BOUNCEMISSILE) {
                 self.p.onground = trace.ent;
                 self.p.velocity = ZERO;
             } else {
-                let mv = scale(self.p.velocity, (1.0 - trace.fraction) * self.p.frametime * 0.9);
+                let mv = scale(self.p.velocity, ((xd(1.0) - x(trace.fraction)) * x(self.p.frametime) * xd(0.9)).f());
                 self.push_entity(mv);
             }
         }
@@ -1303,12 +1350,12 @@ impl Pm<'_> {
         self.p.movetype = MT_FLY;
 
         let mut floor = self.p.origin;
-        floor[2] += self.hull_min(self.p.usehull)[2] - 1.0;
+        floor[2] = (x(self.hull_min(self.p.usehull)[2]) - x(1.0) + x(floor[2])).f();
         let on_floor = self.point_contents(floor, None) == CONTENTS_SOLID;
 
         self.p.gravity = 0.0;
         let trace = self.p.moveent_trace_model(ladder, self.p.origin, ladder_center).unwrap_or_default();
-        if trace.fraction == 1.0 {
+        if eq87(trace.fraction, 1.0) {
             return;
         }
         let (vpn, v_right, _) = angle_vectors(self.p.angles);
@@ -1366,12 +1413,24 @@ impl Pm<'_> {
         self.p.origin = test;
     }
 
+    /// The origin moved by the hull difference `player_mins[1] - player_mins[0]`: up (`+1`,
+    /// `PM_UnDuck`, `TSStandUp`, when on the ground) or down (`-1`, `PM_Duck`, `TSGoDuck`). Each
+    /// component is rounded once, as TS computes the difference on the FPU stack.
+    pub(crate) fn duck_hull_offset(&self, sign: f32) -> Vec3 {
+        let mut o = self.p.origin;
+        if sign > 0.0 && self.p.onground == -1 {
+            return o;
+        }
+        for (i, c) in o.iter_mut().enumerate() {
+            let d = x(self.p.player_mins[1][i]) - x(self.p.player_mins[0][i]);
+            *c = if sign > 0.0 { d + x(*c) } else { x(*c) - d }.f();
+        }
+        o
+    }
+
     /// `PM_UnDuck` (0xff51c), view height 28.
     fn unduck(&mut self) {
-        let mut new_origin = self.p.origin;
-        if self.p.onground != -1 {
-            new_origin = add(new_origin, sub(self.p.player_mins[1], self.p.player_mins[0]));
-        }
+        let new_origin = self.duck_hull_offset(1.0);
         let trace = self.trace(new_origin, new_origin);
         if trace.startsolid == 0 {
             self.p.usehull = 0;
@@ -1410,9 +1469,10 @@ impl Pm<'_> {
             return;
         }
         if self.p.flags & FL_DUCKING_ != 0 {
-            self.p.cmd.forwardmove *= 0.333;
-            self.p.cmd.sidemove *= 0.333;
-            self.p.cmd.upmove *= 0.333;
+            let c = &mut self.p.cmd;
+            c.forwardmove = (xd(0.333) * x(c.forwardmove)).f();
+            c.sidemove = (xd(0.333) * x(c.sidemove)).f();
+            c.upmove = (xd(0.333) * x(c.upmove)).f();
         }
         if buttons & IN_DUCK as i32 == 0 && self.p.bInDuck == 0 && self.p.flags & FL_DUCKING_ == 0 {
             return;
@@ -1425,41 +1485,44 @@ impl Pm<'_> {
             self.p.flDuckTime = 1000.0;
             self.p.bInDuck = 1;
         }
-        let time = (1.0 - self.p.flDuckTime * 0.001).max(0.0);
+        // Both duck-time products keep the `double` 0.001 in extended precision: at 600 ms the
+        // test below is false (0.6000000000000000124 > 0.6), so the duck completes a frame later
+        // than `f32` or `f64` arithmetic would have it.
+        let time = xd(1.0) - xd(0.001) * x(self.p.flDuckTime);
+        let time = (if Ext::ZERO > time { Ext::ZERO } else { time }).f();
         if self.p.bInDuck == 0 {
             return;
         }
-        if self.p.flDuckTime * 0.001 <= 1.0 - TIME_TO_DUCK || self.p.onground == -1 {
+        if not_above87(xd(0.001) * x(self.p.flDuckTime), xd(0.6)) || self.p.onground == -1 {
             self.p.usehull = 1;
             self.p.view_ofs[2] = VIEW_DUCK;
             self.p.flags |= FL_DUCKING_;
             self.p.bInDuck = 0;
             if self.p.onground != -1 {
-                for i in 0..3 {
-                    self.p.origin[i] -= self.p.player_mins[1][i] - self.p.player_mins[0][i];
-                }
+                self.p.origin = self.duck_hull_offset(-1.0);
                 self.fix_player_crouch_stuck(STUCK_MOVEUP);
                 self.categorize_position();
             }
         } else {
             // fMore = VEC_DUCK_HULL_MIN - VEC_HULL_MIN = 18
-            let duck_fraction = spline_fraction(time, 1.0 / TIME_TO_DUCK);
-            self.p.view_ofs[2] = (1.0 - duck_fraction) * VIEW_STAND + (VIEW_DUCK - 18.0) * duck_fraction;
+            let duck_fraction = spline_fraction(time, 2.5);
+            self.p.view_ofs[2] = ((x(1.0) - duck_fraction) * x(VIEW_STAND) + (x(VIEW_DUCK) - x(18.0)) * duck_fraction).f();
         }
     }
 
     // ---- jumping and falling ------------------------------------------------------------------------
 
+    /// `PM_PreventMegaBunnyJumping` (0x1000d4).
     fn prevent_mega_bunny_jumping(&mut self) {
         let maxscaledspeed = BUNNYJUMP_MAX_SPEED_FACTOR * self.p.maxspeed;
-        if maxscaledspeed <= 0.0 {
+        if not_above87(maxscaledspeed, 0.0) {
             return;
         }
         let spd = length(self.p.velocity);
-        if spd <= maxscaledspeed {
+        if not_above87(spd, maxscaledspeed) {
             return;
         }
-        let fraction = (maxscaledspeed / spd) * 0.65;
+        let fraction = (x(maxscaledspeed) / x(spd) * xd(0.65)).f();
         self.p.velocity = scale(self.p.velocity, fraction);
     }
 
@@ -1538,7 +1601,7 @@ impl Pm<'_> {
                 self.update_step_sound();
                 let step = sound::map_texture_type_step_type(self.p.chtexturetype as u8);
                 self.play_step_sound(step, fvol);
-                self.p.punchangle[2] = self.p.flFallVelocity * 0.013;
+                self.p.punchangle[2] = (xd(0.013) * x(self.p.flFallVelocity)).f();
                 if self.p.punchangle[0] > 8.0 {
                     self.p.punchangle[0] = 8.0;
                 }
@@ -1577,45 +1640,50 @@ impl Pm<'_> {
 
 // ---- free helpers ---------------------------------------------------------------------------------
 
-/// `PM_ClipVelocity`: slide off the impacting plane. Returns the blocked flags.
+/// `PM_ClipVelocity` (0xfd210): slide off the impacting plane. Returns the blocked flags. The
+/// near-zero test reads the unrounded component against the `double` ±0.1.
 fn clip_velocity(input: Vec3, normal: Vec3, out: &mut Vec3, overbounce: f32) -> i32 {
     let angle = normal[2];
     let mut blocked = 0;
     if angle > 0.0 {
         blocked |= 1;
     }
-    if angle == 0.0 {
+    if eq87(angle, 0.0) {
         blocked |= 2;
     }
-    let backoff = dot(input, normal) * overbounce;
+    let backoff = dotx(input, normal) * x(overbounce);
     for i in 0..3 {
-        let change = normal[i] * backoff;
-        out[i] = input[i] - change;
-        if out[i] > -STOP_EPSILON && out[i] < STOP_EPSILON {
-            out[i] = 0.0;
-        }
+        let o = x(input[i]) - backoff * x(normal[i]);
+        out[i] = if o > xd(-STOP_EPSILON) && o < xd(STOP_EPSILON) { 0.0 } else { o.f() };
     }
     blocked
 }
 
-fn spline_fraction(value: f32, scale: f32) -> f32 {
-    let value = scale * value;
+/// `PM_SplineFraction` (0xff3ec), returned unrounded.
+fn spline_fraction(value: f32, scale: f32) -> Ext {
+    let value = x(scale) * x(value);
     let value_squared = value * value;
-    3.0 * value_squared - 2.0 * value_squared * value
+    value_squared * x(3.0) - (value_squared + value_squared) * value
 }
 
-fn calc_roll(angles: Vec3, velocity: Vec3, rollangle: f32, rollspeed: f32) -> f32 {
+/// `PM_CalcRoll` (0x1006d4), returned unrounded.
+fn calc_roll(angles: Vec3, velocity: Vec3, rollangle: f32, rollspeed: f32) -> Ext {
     let (_, right, _) = angle_vectors(angles);
-    let side = dot(velocity, right);
-    let sign = if side < 0.0 { -1.0 } else { 1.0 };
+    let side = dotx(velocity, right);
+    let sign = if side >= Ext::ZERO { x(1.0) } else { x(-1.0) };
     let side = side.abs();
-    let value = rollangle;
-    let side = if side < rollspeed { side * value / rollspeed } else { value };
+    let value = x(rollangle);
+    let side = if side >= x(rollspeed) { value } else { side * value / x(rollspeed) };
     side * sign
 }
 
 /// `PM_GetAccelBySpeed` (0xfdcc4): ground acceleration factor from the slot-weight maxspeed,
-/// 0.6 at 210 u/s up to 1.1 at 330 u/s.
+/// 0.6 at 210 u/s up to 1.1 at 330 u/s, returned unrounded.
+fn accel_by_speed_x(maxspeed: f32) -> Ext {
+    if maxspeed >= 330.0 { x(1.1) } else { (x(maxspeed) - x(210.0)) * x(0.008_333_334) * x(0.5) + x(0.6) }
+}
+
+/// [`accel_by_speed_x`] rounded to a `float`.
 pub fn accel_by_speed(maxspeed: f32) -> f32 {
-    if maxspeed >= 330.0 { 1.1 } else { (maxspeed - 210.0) * 0.008_333_334 * 0.5 + 0.6 }
+    accel_by_speed_x(maxspeed).f()
 }

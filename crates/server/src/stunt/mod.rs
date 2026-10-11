@@ -69,6 +69,10 @@ pub struct StuntState {
     pub last_ground_time: f32,
     /// pl+0x828 `m_flFallVelocity`.
     pub fall_velocity: f32,
+    /// pl+0x848 `m_afPhysicsFlags & PFLAG_DUCKING` (8). `PreThink` calls `Duck()` while it is
+    /// set, but nothing in TS sets it: `Spawn` zeroes the flags and `StartObserver` (0x99634)
+    /// clears the bit, so it stays false. Ported for the `PreThink` test.
+    pub pflag_ducking: bool,
     /// pl+0x498/0x499 `TSState` stance (0 stand, 1 crouch, 2 prone/diving) and last sent.
     pub stance: u8,
     stance_sent: Option<u8>,
@@ -111,6 +115,7 @@ impl Default for StuntState {
             button_released: 0,
             last_ground_time: 0.0,
             fall_velocity: 0.0,
+            pflag_ducking: false,
             stance: 0,
             stance_sent: None,
             the_one: false,
@@ -358,6 +363,9 @@ pub fn precache() {
     for s in SOUNDS {
         e.precache_sound(s);
     }
+    // `CWorld::Precache` (0xf449c): `TEXTURETYPE_Init`, the table `GoRoll`'s impact sound reads.
+    let map = e.string(e.globals().mapname).to_string_lossy().into_owned();
+    shared::pm::textures::texturetype::init(&map, |path| e.load_file(path));
 }
 
 /// `TSInit` (0x92a4c), the stunt and animation parts.
@@ -451,7 +459,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     if button & IN_JUMP as i32 != 0 {
         moves::jump(p, cx);
     }
-    if button & IN_DUCK as i32 != 0 || cx.pev().flags & FL_DUCKING as i32 != 0 {
+    if button & IN_DUCK as i32 != 0 || cx.pev().flags & FL_DUCKING as i32 != 0 || p.stunt.pflag_ducking {
         moves::duck(p, cx);
     }
     if !on_ground(cx) {
