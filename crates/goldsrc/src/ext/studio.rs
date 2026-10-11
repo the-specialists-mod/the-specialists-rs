@@ -459,6 +459,15 @@ pub fn restore_renderer() {
 pub fn is_hardware() -> bool {
     st!(IsHardware()) != 0
 }
+/// `IEngineStudio.IsHardware()` as the engine returns it (GoldSrc: 0 software, 1 OpenGL, 2
+/// Direct3D; FWGS always 1), or 0 before `HUD_GetStudioModelInterface` handed over the table.
+pub fn hardware_kind() -> i32 {
+    match API.0.get().and_then(|a| a.f.IsHardware) {
+        // SAFETY: a slot from the engine's table (see `st!`), taking no arguments.
+        Some(f) => unsafe { f() },
+        None => 0,
+    }
+}
 /// `IEngineStudio.StudioSetupModel` (the body part and submodel pointers aren't needed here).
 pub fn setup_model(bodypart: i32) {
     let (mut bp, mut sm) = (std::ptr::null_mut(), std::ptr::null_mut());

@@ -1,6 +1,6 @@
 //! Safe wrappers over the engine's triangle API (`pTriAPI`, triangleapi.h) for the client's
-//! TriAPI effects (lasers, particles, scope overlay, fog). Keep additions here to avoid merge
-//! conflicts.
+//! TriAPI effects (lasers, particles, scope overlay, client bullets). TS's fog is raw OpenGL
+//! ([`crate::ext::gl`]). Keep additions here to avoid merge conflicts.
 //!
 //! Each wrapper is one `tri!` call; like the macro, it panics with the slot name if the engine
 //! left the slot null.
@@ -47,10 +47,4 @@ pub fn vertex3fv(p: &[f32; 3]) {
 /// [`sprite_model`](crate::ext::render::sprite_model)). False when the engine can't bind it.
 pub fn sprite_texture(model: *const model_s, frame: i32) -> bool {
     tri!(SpriteTexture(model.cast_mut(), frame)) != 0
-}
-
-/// `Fog`: `color` is 0..255; `on` false turns the fog off.
-pub fn fog(color: [f32; 3], start: f32, end: f32, on: bool) {
-    let mut c = color;
-    tri!(Fog(c.as_mut_ptr(), start, end, on as i32));
 }

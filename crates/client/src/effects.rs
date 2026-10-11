@@ -14,7 +14,7 @@ pub mod psys;
 pub use laser::laser_color;
 mod scope;
 
-use crate::events::ClientBullet;
+use crate::events::ClientBullets;
 use crate::{state, view};
 use emitters::MapFx;
 use goldsrc::Global;
@@ -30,7 +30,8 @@ struct Fx {
     map: MapFx,
     level: String,
     fog: Option<emitters::Fog>,
-    bullets: Vec<ClientBullet>,
+    /// `0x100eb678`.
+    bullets: ClientBullets,
     visible: [bool; 33],
     /// `CachePlayerAttachments` (`0x10056e70`, `0x1018caf8`): attachments 0-3 of every player
     /// entity as they stood at the last `TS_DrawEffects`.
@@ -97,7 +98,7 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         map: MapFx::default(),
         level: String::new(),
         fog: None,
-        bullets: Vec::new(),
+        bullets: ClientBullets::default(),
         visible: [false; 33],
         attachments: [[v::ZERO; 4]; 33],
         shell_seq: 0,
@@ -198,13 +199,9 @@ pub fn next_whizz_channel() -> i32 {
     })
 }
 
-pub fn add_client_bullet(b: ClientBullet) {
-    with(|fx| {
-        if fx.bullets.len() >= 256 {
-            fx.bullets.remove(0);
-        }
-        fx.bullets.push(b)
-    });
+/// `ClientBullets_Add` (`0x10035c20`) from `EV_TS_FireBullets`.
+pub fn add_client_bullet(shooter: i32, src: Vec3, dir: Vec3, dmg: f32, ammo: i32, bullet_type: i32) {
+    with(|fx| fx.bullets.add(shooter, src, dir, dmg, ammo, bullet_type));
 }
 
 /// Impact particles at a bullet hit (`TS_ImpactParticles`); `bullet_type` 1 buckshot, 2 exit.
@@ -473,7 +470,7 @@ fn apply_cvar(fx: &mut Fx, cl_fx: f32) {
     // `PSys_Startup` with the pool size `FX_ApplyCvar` just chose, then the client bullet reset.
     if startup {
         fx.psys.init();
-        fx.bullets.clear();
+        fx.bullets.reset();
     }
     fx.psys.tuning.smoke = cl_fx != 0.0;
 }
@@ -597,20 +594,11 @@ fn occlusion_visible(e: &cl_entity_t, cam: &Camera) -> bool {
     false
 }
 
-/// `HUD_CreateEntities` (`0x1001bce0`): client bullets, then the motion-blur ghosts
-/// (`MotionBlur_Update` `0x10029780`).
+/// `HUD_CreateEntities` (`0x1001bce0`): the motion-blur ghosts (`MotionBlur_Update`
+/// `0x10029780`). TS first calls `ClientBullets_AddEntities` (`0x10034e80`), whose bullet models
+/// are never enabled (`0x1d34d` stays 0), so it adds nothing; the bullets are stepped and drawn in
+/// [`draw_transparent`].
 pub fn create_entities() {
-    let mut bullets = with(|fx| std::mem::take(&mut fx.bullets));
-    if !bullets.is_empty() {
-        let ft = with(|fx| fx.frametime);
-        crate::events::client_bullets_frame(&mut bullets, ft);
-    }
-    with(|fx| {
-        let mut b = bullets;
-        b.append(&mut fx.bullets);
-        fx.bullets = b;
-    });
-
     let (blur, ts, now) = (cvar(|c| c.motionblur), state::with(|s| s.time_scale), crate::hud::now());
     for ent in with(|fx| fx.blur.due(blur, ts, now)) {
         if mblur::spawn_ghost(ent) {
@@ -661,12 +649,15 @@ pub fn draw_transparent() {
     with(|fx| {
         fx.visible = [false; 33];
         adapt_quality(fx, fxq);
-        // `ClientBullets_Draw` (`0x10034e60` -> `0x10035b50`) looks its sprite up every pass
-        // while bullets are in flight.
-        if !fx.bullets.is_empty() {
-            fx.psys.sprite("sprites/shotgun_pellets.spr", kRenderTransAdd as i32);
-        }
     });
+    // `ClientBullets_Draw` (`0x10034e60`): the client bullet frame while the slot counter is set.
+    // The bullets are taken out for it: their impacts and trails call back into `effects`.
+    if let Some(mut bullets) = with(|fx| (fx.bullets.count != 0).then(|| std::mem::take(&mut fx.bullets))) {
+        let cull = if third { view::eye() } else { cam.origin };
+        let f = crate::events::BulletFrame { cam, cull, frametime: with(|fx| fx.frametime) };
+        crate::events::client_bullets_frame(&mut bullets, &f);
+        with(|fx| fx.bullets = bullets);
+    }
     fog_end();
 }
 
@@ -715,7 +706,10 @@ fn cam_hardware() -> bool {
     view::hardware()
 }
 
-/// `V_SetFog` (`0x10056c20`), through TriAPI instead of raw OpenGL (linear fog either way).
+/// `V_SetFog` (`0x10056c20`, from `V_CalcRefdef`): linear fog through raw OpenGL, as TS calls
+/// `opengl32.dll` itself ([`goldsrc::ext::gl`], which does nothing unless the engine draws with
+/// OpenGL). The map's fog also needs `IEngineStudio.IsHardware()` to be exactly 1
+/// (`0x10056d20`); the single-player user fog doesn't ask.
 pub fn fog_begin() {
     let user = CVARS
         .0
@@ -723,33 +717,44 @@ pub fn fog_begin() {
         .as_ref()
         .map_or(([0.0; 3], 0.0, 0.0), |c| (c.fog_color.map(|v| v.value()), c.fog_range[0].value(), c.fog_range[1].value()));
     let single = engine().max_clients() == 1;
-    if let Some((color, start, end)) = fog_params(single, cvar(|c| c.gl_fog), with(|fx| fx.fog), user) {
-        goldsrc::ext::tri::fog(color, start, end, true);
+    let hardware = goldsrc::ext::studio::hardware_kind;
+    if let Some((color, start, end)) = fog_params(single, cvar(|c| c.gl_fog), with(|fx| fx.fog), user, hardware) {
+        use goldsrc::ext::gl;
+        gl::fogi(gl::GL_FOG_MODE, gl::GL_LINEAR);
+        gl::fogfv(gl::GL_FOG_COLOR, &color);
+        gl::fogf(gl::GL_FOG_DENSITY, 1.0);
+        gl::hint(gl::GL_FOG_HINT, gl::GL_NICEST);
+        gl::fogf(gl::GL_FOG_START, start);
+        gl::fogf(gl::GL_FOG_END, end);
+        gl::enable(gl::GL_FOG);
     }
 }
 
 /// `V_SetFog`'s choice: in single player with `gl_fog 2` the user's `gl_fog_red/green/blue`
-/// (`user.0`) and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` is on.
-/// Returns (colour 0..255 for TriAPI, start, end). TS feeds both colours to `glFogfv`, which
-/// clamps them to 0..1.
-fn fog_params(single: bool, gl_fog: f32, map: Option<emitters::Fog>, user: (Vec3, f32, f32)) -> Option<(Vec3, f32, f32)> {
+/// (`user.0`) and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` is on and
+/// `hardware()` (asked last, as TS does) is 1. Returns the `glFogfv` colour (alpha 1; GL clamps it
+/// to 0..1), start and end.
+fn fog_params(
+    single: bool,
+    gl_fog: f32,
+    map: Option<emitters::Fog>,
+    user: (Vec3, f32, f32),
+    hardware: impl FnOnce() -> i32,
+) -> Option<([f32; 4], f32, f32)> {
+    let rgba = |c: Vec3| [c[0], c[1], c[2], 1.0];
     if single && gl_fog == 2.0 {
-        Some((user.0.map(gl_color), user.1, user.2))
-    } else if gl_fog != 0.0 {
-        map.map(|f| (f.color.map(gl_color), f.near, f.far))
+        Some((rgba(user.0), user.1, user.2))
     } else {
-        None
+        let f = map?;
+        (gl_fog != 0.0 && hardware() == 1).then(|| (rgba(f.color), f.near, f.far))
     }
 }
 
-/// A `glFogfv` colour component (clamped to 0..1 by GL) as TriAPI's 0..255.
-fn gl_color(x: f32) -> f32 {
-    x.clamp(0.0, 1.0) * 255.0
-}
-
-/// TS disables `GL_FOG` at the end of every transparent pass (`0x10056e5e`), whatever was drawn.
+/// TS disables `GL_FOG` at the end of every transparent pass (`glDisable` at `0x10056e5e`),
+/// whatever was drawn. Being raw GL, it also switches off the engine's own fog (FWGS's underwater
+/// fog, enabled before the transparent pass) for the rest of the frame, as in TS.
 fn fog_end() {
-    goldsrc::ext::tri::fog([0.0; 3], 0.0, 0.0, false);
+    goldsrc::ext::gl::disable(goldsrc::ext::gl::GL_FOG);
 }
 
 /// `HUD_StudioEvent` (`0x10044b50`): only 5002 (sparks) and 5004 (sound) remain.
@@ -770,15 +775,24 @@ mod tests {
     fn fog_sources() {
         let map = Some(emitters::Fog { near: 100.0, far: 900.0, color: [0.2, 0.4, 1.0] });
         let user = ([0.5, 0.5, 0.5], 0.0, 2048.0);
-        assert_eq!(fog_params(true, 0.0, map, user), None, "gl_fog 0: no fog");
-        assert_eq!(fog_params(true, 1.0, map, user), Some(([51.0, 102.0, 255.0], 100.0, 900.0)));
-        assert_eq!(fog_params(true, 2.0, map, user), Some(([127.5; 3], 0.0, 2048.0)), "gl_fog 2 in single player: the user's");
-        assert_eq!(fog_params(true, 2.0, None, user), Some(([127.5; 3], 0.0, 2048.0)), "...even without ts_fog");
-        assert_eq!(fog_params(false, 2.0, map, user), Some(([51.0, 102.0, 255.0], 100.0, 900.0)), "multiplayer: the map's");
-        assert_eq!(fog_params(false, 2.0, None, user), None);
-        // GL clamps `glFogfv` colours to 0..1.
+        let gl = || 1;
+        assert_eq!(fog_params(true, 0.0, map, user, gl), None, "gl_fog 0: no fog");
+        assert_eq!(fog_params(true, 1.0, map, user, gl), Some(([0.2, 0.4, 1.0, 1.0], 100.0, 900.0)));
+        assert_eq!(
+            fog_params(true, 2.0, map, user, gl),
+            Some(([0.5, 0.5, 0.5, 1.0], 0.0, 2048.0)),
+            "gl_fog 2 in single player: the user's"
+        );
+        assert_eq!(fog_params(true, 2.0, None, user, gl), Some(([0.5, 0.5, 0.5, 1.0], 0.0, 2048.0)), "...even without ts_fog");
+        assert_eq!(fog_params(true, 2.0, map, user, || 0), Some(([0.5, 0.5, 0.5, 1.0], 0.0, 2048.0)), "...and in software");
+        assert_eq!(fog_params(false, 2.0, map, user, gl), Some(([0.2, 0.4, 1.0, 1.0], 100.0, 900.0)), "multiplayer: the map's");
+        assert_eq!(fog_params(false, 2.0, None, user, gl), None);
+        // The map's fog needs IsHardware() == 1 exactly (0x10056d26).
+        assert_eq!(fog_params(false, 1.0, map, user, || 0), None, "software");
+        assert_eq!(fog_params(false, 1.0, map, user, || 2), None, "Direct3D");
+        // The colour goes to glFogfv as is (GL clamps it).
         let bright = Some(emitters::Fog { near: 0.0, far: 1.0, color: [128.0, -1.0, 0.5] });
-        assert_eq!(fog_params(false, 1.0, bright, user), Some(([255.0, 0.0, 127.5], 0.0, 1.0)));
+        assert_eq!(fog_params(false, 1.0, bright, user, gl), Some(([128.0, -1.0, 0.5, 1.0], 0.0, 1.0)));
     }
 
     #[test]

@@ -17,7 +17,8 @@ decomp `docs/client/rendering-effects-prediction.md` (cited as **R§n**), `docs/
 | `crates/client-dll/src/lib.rs` | `HUD_GetStudioModelInterface` and the two `r_studio_interface_t` callbacks |
 | `crates/client/src/state.rs` | fields **added** (see "Integration") |
 | `crates/goldsrc/src/ext/render.rs` | `ev!`/`efx!`/`tri!` macros (goldsrc-only; they panic with the table name if `ClEngine::event_api`/`efx_api`/`tri_api` is null), engine wrappers (`level_name` and `sprite_model`, the one `pfnGetLevelName`/`GetSpritePointer` wrappers), `vec3` maths (cvars are `goldsrc::client::Cvar`); `with_solid_players`, the one `EV_SetUpPlayerPrediction` + `EV_PushPMStates` + `EV_SetSolidPlayers` ... `EV_PopPMStates` wrapper (SDK order), and `player_trace`, the one `EV_SetTraceHull` + `EV_PlayerTrace` wrapper. Entities by index, `GetMaxClients`, `GetClientTime`, `SPR_Load` and `EV_PlaySound` go through the `ClEngine` methods in `ext/hud.rs` |
-| `crates/goldsrc/src/ext/tri.rs` | safe triangle-API wrappers (`render_mode`, `begin`, `vertex3fv`, `sprite_texture`, `fog`, ...) for the lasers, particles, scope, fog and the studio glow shell; the one wrapper per TriAPI call |
+| `crates/goldsrc/src/ext/tri.rs` | safe triangle-API wrappers (`render_mode`, `begin`, `vertex3fv`, `sprite_texture`, ...) for the lasers, particles, scope, client bullets and the studio glow shell; the one wrapper per TriAPI call |
+| `crates/goldsrc/src/ext/gl.rs` | raw OpenGL (`glEnable`, `glDisable`, `glFogi/f/fv`, `glHint`) for TS's own `opengl32.dll` calls (fog), looked up at run time in the GL library the renderer loaded: `opengl32.dll` on Windows (Steam `hw.dll`, FWGS under Windows or Wine), `SDL_GL_GetProcAddress` from the engine's SDL2 on Linux (else an already loaded `libGL.so.1`/`libOpenGL.so.0`). Every call is a no-op unless the engine draws with desktop GL: FWGS's `r_refdll_loaded` is `gl`, or (no such cvar: Steam GoldSrc) `IEngineStudio.IsHardware()` is 1 |
 | `crates/shared/src/protocol/effects.rs` | `TSFade`, `TSPSys` (wind), `PTakeDam`, `TSFrags`, `TSMBlur`, `TSSlowMo`, `TSBTime` payloads: `decode` + `encode(&mut impl Sink)` |
 | `crates/goldsrc-sys/build.rs` | **changed beyond the allowlist lines**: see below |
 
@@ -62,7 +63,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` (prediction: `view::kick_angles`) | done; every constant read from `.rdata` (`0x1007a884..0x1007a8ac`) and identical to the server's (`0x80414`, `.rodata` `0xf7f04..0xf7f20`) |
 | client melee view shakes: `ColdCock`, `KatanaFire`, `KnifeFire`, `CCombatAttack` | `ViewShake::Start(amp, 0.2, 10)` at `0x10008dc3`, `0x1000a16f`, `0x1000a340`, `0x1000b5e0` | `GunHost::view_shake` -> `view::melee_shake` (runfuncs only) | done: stock damage ×0.3; knife damage (×2/3 stunting) ×0.15; katana's own strength ×0.2 (stunt 35, backward −75, airborne `clamp(speed·0.15384616, 35, 55)`, crouched 65, ground 45); kung fu base damage ×0.35 |
 | screen fade + `TSFade` | end of `0x10069b90`, `0x1004c1e0` | `view::write_screen_fade`, `view::fade_color`, `view::on_tsfade` | done, verified in game |
-| `V_SetFog` | `0x10056c20` | `effects::fog_begin` / `fog_params` (TriAPI `Fog`), `fog_end` | done, unit-tested: single player with `gl_fog 2` uses `gl_fog_red/green/blue` and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` != 0 |
+| `V_SetFog` | `0x10056c20` | `effects::fog_begin` / `fog_params` (raw GL through `goldsrc::ext::gl`), `fog_end` (`glDisable(GL_FOG)` at the end of `TS_DrawEffects`, `0x10056e5e`) | done, unit-tested: `glFogi(GL_FOG_MODE, GL_LINEAR)`, `glFogfv(GL_FOG_COLOR, rgb + alpha 1)`, `glFogf(GL_FOG_DENSITY, 1)`, `glHint(GL_FOG_HINT, GL_NICEST)`, start, end, `glEnable(GL_FOG)`. Single player with `gl_fog 2` uses `gl_fog_red/green/blue` and `gl_fog_start/end` (no renderer check); otherwise the map's `ts_fog` while `gl_fog` != 0 and `IsHardware()` is exactly 1 (`0x10056d20`) |
 | `CAM_Init` / `CAM_Think` / `MoveToward` / `CL_IsThirdPerson` / camera offset | `0x10025370` / `0x10024c80` / `0x10024ba0` / `0x1004fec0` / §7.4 | `view::cam_init` (from `input::init`, as `InitInput` calls it), `view::cam_think` (`cam_command`, `cam_ofs` from `cam_snapto`/`cam_ideal*`, `move_toward`, unit-tested; in third person only, so `cam_ofs`, a zeroed static until the toggle seeds it, keeps its stale value in first person, as in TS; the camera is placed along its pitch and yaw with roll 0, `0x10067f53`), `view::is_third_person` (`cam_thirdperson` only; TS has no separate death-cam flag, the death cam is the `TSHealth` 0 toggle), third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`, `model_pitch`; collision trace through the engine's `PM_TraceLine`, `render::pm_trace_line`) | done, checked against the assembly; camera verified in game before the offset smoothing was rewritten to TS's form; body cam, model z smoothing and the `camAngles` view not yet verified in game |
 | camera controls: `+/-campitchup`, `+/-campitchdown`, `+/-camyawleft`, `+/-camyawright`, `+/-camin`, `+/-camout` (kbuttons `0x100df338`/`370`/`2e8`/`348`/`380`/`328`), `+/-cammousemove`, `+/-camdistance`, `snapto`; `CAM_Think`'s adjustment block | `0x10025260..0x10025310`, `0x100255d0`/`0x10025670`, `0x10025680`/`0x10025700`, `0x10025340`; `0x10024cdc..0x1002515d` | `camera::register_commands` (from `view::cam_init`, in `CAM_Init`'s order), `camera::adjust_ideal` (`key_step`: ±2.5° pitch/yaw, ±1 distance, `+camin` under 30 resets to 0/0/30, unbounded; `mouse_step`: half a degree, or one unit of distance in `+camdistance`, per two pixels of cursor offset, bounded by `c_min/max*`; both unit-tested). While a mouse mode holds the mouse (`iMouseInUse` `0x100df394`), `input` skips mouse look (`IN_Move` `0x100282e0`), `IN_Accumulate` (`0x100278b0`) and the mouse buttons (`IN_MouseEvent` `0x100273d0`) | done (see deviations); not exercised in game |
 | `thirdperson` toggle | `0x1004fe00` | `view::toggle_third_person` (also `cam_command 1`, and the HUD's switches from inside their handlers: the `TSHealth` death cam, `cl_thirdpersonswitch` in `WeaponInfo`, `cl_thirdperson` and observer in `Spectator`; nothing else reads those two cvars): during demo playback switches only when `cam_thirdperson` differs from the recorded state; otherwise refused for an observer in first person; flips `cam_thirdperson`, seeds `cam_ofs` = (view pitch, view yaw, 30) when switching on, sets `cam_command` 0, and while recording writes demo record type 2 | done; not exercised in game |
@@ -72,8 +73,8 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `EV_TS_FireStandard` | `0x1003dfa0` | `fire::fire_standard` | done |
 | `EV_TS_FireAkimbo` | `0x1003f090` | `fire::fire_akimbo` | done |
 | `EV_TS_FirePump` | `0x10040c20` | `fire::fire_pump` | done |
-| `EV_TS_FireBullets` | `0x100450c0` | `fire::fire_bullets`, `fire::pellet_dir` | done (spread unit-tested) |
-| fire sound | `0x1003de90` | `fire::fire_sound` | done |
+| `EV_TS_FireBullets` | `0x100450c0` | `fire::fire_bullets`, `fire::pellet_dir`, `fire::range_index` | done (spread and range index unit-tested). Client bullets instead of traces while the server's `realbullet` (`SrvSett` 0, `0x1018d16c`) is non-zero or ts < 0.99 (`0x10045330`); the range index is `__ftol(dist / (unit·10) · 10)` (`0x10045b41`) |
+| fire sound | `0x1003de90` | `fire::fire_sound`, `fire::fire_sample` | done, unit-tested: the silenced flag alone picks `sound2` (`info+0x306`) or `sound` (`info+0x2c6`), even an empty one (`0x1003de98`/`0x1003dee5`) |
 | `EV_TS_EjectShell` | `0x10056890` | `fire::eject_shell` + `effects::track_shell` | done |
 | `GetWeaponBody` | `0x10007110` | `fire::weapon_body` | done |
 | `GetActiveAnimSet` + info anim tables | `0x1003df60`, builders `0x100047d0..` | `events::info` (generated; all 37 sets re-extracted from the builders' stores, kung fu's set A was missing) | done |
@@ -94,10 +95,10 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `TS_ImpactParticles` | `0x10048f60` | `fx::impact` | done |
 | `TS_BloodImpact` (`PTakeDam`) | `0x10048840`, `0x1004bcd0` | `fx::blood`, `effects::on_ptakedam` | done |
 | `TS_GlassShatter`, `TS_Explosion` (`TSFrags`) | `0x10047cb0`, `0x100481b0`, `0x1004bd50` | `fx::glass`, `fx::explosion`, `effects::on_tsfrags` | done, verified in game |
-| client bullets | `0x10035c20`, `0x10035010`, `0x10035d40` | `fire::ClientBullet`, `fire::client_bullets_frame`, `fx::bullet_trail` | simple version (impact; trail quads with `cl_wavedetail` > 0, as TS) |
+| client bullets (`0x100eb678`, 256 slots) | `ClientBullets_Add` `0x10035c20`, `_Frame` `0x10035b50` (from `0x10034e60`), `_Impact` `0x10035d40`, `_Update` `0x10035010`, `_Clear` `0x10035d10`, `_Reset` `0x10034f60` | `fire::ClientBullets`, `fire::client_bullets_frame`, `fx::bullet_trail` | done, unit-tested (slots, throttle, sizes, quads). See "Client bullets" below |
 | `GetBulletVelocityMult` | `0x10055b30` | `fire::bullet_velocity_mult` | done, unit-tested |
 | `HUD_AddEntity` (hemisphere, spectator, anti-peek, item fades) | `0x100447f0` | `effects::add_entity`, `occlusion_visible` | done |
-| `HUD_CreateEntities` | `0x1001bce0` | `effects::create_entities` | client bullets, then motion-blur ghosts |
+| `HUD_CreateEntities` | `0x1001bce0` | `effects::create_entities` | motion-blur ghosts. TS's `ClientBullets_AddEntities` (`0x10034e80`) runs first but adds nothing: its bullet models need `0x1d34d`, which only `0x10034f90` writes, always 0 |
 | `HUD_GetStudioModelInterface` | `0x1001f3f0` | `client-dll` + `goldsrc::ext::studio::init` + `studio::init` | done (version 1, 43-slot table copy) |
 | `R_StudioDrawModel` / `R_StudioDrawPlayer` | `0x1001f3d0` / `0x1001f3b0` | `studio::draw_model` / `draw_player` | done |
 | `StudioDrawModel` (view-model slow motion; renderfx 17: corpse / ghost) | `0x10031ae0` | `Renderer::draw_model`, `latch_view_model_rate`, `draw_corpse`, `draw_ghost` | done (audited against the asm) |
@@ -265,7 +266,41 @@ the same there.
 
 Pitch: `25 + 75*ts + rand(-5,5)` everywhere (see deviations for the fire sound). Fire sound:
 `weapons/<sound>` (silenced: `sound2`, volume 0.84-0.92, attenuation x2), attenuation from the
-client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
+client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`). The silenced flag
+alone picks the sample: a weapon with no `sound2` (AK-47, USAS-12, ...) fired with the flag set
+plays TS's empty buffer, an empty sample name, which the engines ignore.
+
+### Client bullets
+
+`EV_TS_FireBullets` queues one per pellet (`ClientBullets_Add`, first free slot of 256; with all
+in use the bullet is dropped) with the pellet direction unnormalised, the damage, ammo and bullet
+type. The slot counter (`0x100f1278`) counts bullets added since the last frame plus those the
+last frame found in use; `TS_DrawEffects` runs the frame at its very end, just before
+`glDisable(GL_FOG)`, while the counter is non-zero. The frame looks up
+`sprites/shotgun_pellets.spr` (additive) and walks the slots in order:
+
+1. **Trace step** (`ClientBullets_Impact`) when the client time is past the slot's next-step
+   time. The next step is then due 0.1 s later with `realbullet` 0, 0.05 s with 1, otherwise next
+   frame; the step covers that time (the frame time when it is under 1 ms):
+   `dir · velocity·40 · dt · GetBulletVelocityMult(ts, bullet time)`. It traces with players
+   solid except the shooter (hull 2, studio boxes). A hit runs `TS_PlayTextureSound` (from the
+   hit point toward the hit point plus the step) and the decal, then clears the slot, unless the
+   bullet is type 0 and the damage left (range falloff from the leg's start, on a fixed 30-unit
+   scale for exit bullets, times the ammo's pierce) is over 5: then it moves `min(left, 48)` on
+   and, outside a solid, carries on from there as an exit bullet (type 2) after the exit point's
+   impact. A bullet that never hits keeps flying (no range limit).
+2. **Draw** (`ClientBullets_Update`) in slow motion (ts < 0.99), also on the frame the step just
+   cleared the slot (it then draws a `w`-sized sprite at the world origin and adds an empty trail
+   quad, as TS). Nothing happens outside the view cone (`InViewCone` of the drawn position).
+   Otherwise, with the sprite: `RenderMode(TransAdd)`, no culling, `Color4f(1, 1, 1, a)` where
+   `a = d²·0.1` within `sqrt(10)` units of the view and 1 beyond; unless the ammo is buckshot (3),
+   two streaks `clamp(ts·37.5, 5, 25)` either side of the drawn position along `dir`, `w =
+   max(1 − ts², 0.15)` wide across the view's up and then right; then a `w`-radius billboard. The
+   drawn position then moves `dir · velocity·40 · mult · frametime`: it is separate from the
+   traced position (which moves in throttled steps and alone hits, penetrates or clears), and it
+   doesn't move while out of the view cone. With `cl_wavedetail` > 0, at most every
+   `SlowTime(0.01)` s, a `bullet_trail.spr` quad (`TS_BulletTrail`, `w` wide, alpha `a·0.75`) joins
+   the last trail point to it.
 
 ## Deviations from TS 3.0
 
@@ -276,10 +311,9 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   (kept) record; a stale record never becomes a predicted switch. Throwing the last grenade or
   blade still predicts the drop to kung fu as before, where TS predicts nothing until the server's
   state arrives.
-* **Melee view shakes** run inside the shared `Gun`, so they follow its branch choice. The client
-  `KatanaFire`/`CCombatAttack` test `FL_DUCKING` on the *weapon's* `pev` (`[esi+0x4]+0x1a4`,
-  `0x1000a052`, `0x1000b1c1`) where the shared code reads the player's flags; only a crouch without
-  `+duck` held picks a different katana strength (65 instead of 45) or kung-fu branch.
+* **Melee view shakes** run inside the shared `Gun`, so they follow its branch choice (which, like
+  the client `KatanaFire`/`CCombatAttack`, reads `FL_DUCKING` on the gun's own `pev`,
+  `0x1000a052`/`0x1000b1c1`, so only `+duck` counts).
 * **Camera mouse modes read the mouse motion, not the Win32 cursor.** TS's `CAM_Think` reads
   `GetCursorPos`, takes the offset from `GetWindowCenterX/Y` and re-centres with `SetCursorPos`,
   while `iMouseInUse` keeps `IN_MouseMove`/`IN_Accumulate` off the cursor. The port takes the
@@ -297,15 +331,14 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   memory the handler never writes (`[esp+0x3c]` at `0x1004be15`/`0x1004be3b`; the message's
   second vector, read into `[esp+0x18]`, is unused), so its value is whatever an earlier call
   left there. The port uses the message's vector. No server sends type 2.
-* **Fog goes through TriAPI `Fog`** (FWGS) instead of raw OpenGL (both linear); colours are
-  clamped to 0..1 as `glFogfv` does and converted to 0..255. TS disables `GL_FOG` itself at the end
-  of every transparent pass (`0x10056e5e`); the port calls TriAPI `Fog(off)` there every pass too,
-  which FWGS ignores while its own fog is active (`RI.fogEnabled`, e.g. under water) or `gl_fog`
-  is 0, so where TS's raw `glDisable` would also switch off the engine's underwater fog for the
-  rest of the frame, the port leaves it on. Matching that needs raw OpenGL calls behind FWGS's
-  tracked GL state (a `goldsrc` wrapper the client doesn't have). TS's map-fog branch also requires
-  the hardware renderer; FWGS's software TriAPI `Fog` does nothing anyway. FWGS's `TriFog` also
-  turns fog off when end <= start.
+* **Raw GL fog only with desktop OpenGL.** TS calls `opengl32.dll` unconditionally (a software
+  renderer has no GL context, so the calls do nothing there). The port looks the functions up in
+  the renderer's GL library and calls them only when the engine draws with desktop GL (FWGS
+  `r_refdll_loaded` = `gl`; elsewhere `IsHardware()` = 1). On FWGS's GLES renderers (`gles1`,
+  `gles2`, `gl4es`, `gles3compat`), which translate GL through a wrapper or lack the fog calls, the
+  port skips them, so there is no TS fog and the end-of-pass `glDisable(GL_FOG)` doesn't switch
+  off the engine's own fog. On desktop GL the `glDisable` does, as in TS (e.g. FWGS's underwater
+  fog, for the rest of the frame).
 * **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
   the evicted shell's `die`. The port tags each shell with a sequence number in
   `curstate.iuser2` (`effects::track_shell`), and the temp-entity loop (`client-dll/src/tempents.rs`)
@@ -325,7 +358,9 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   would quit the game. `TSMBlur` for entity 32 or above, or an empty message (entity -1), is
   ignored: TS's 32-entry trail table would be written out of bounds. A map particle whose
   `oncollide` 2/3 target names no template doesn't spawn (TS indexes the template table with -1).
-  Cooldown slots wrap at 128.
+  Cooldown slots wrap at 128. A client bullet or `EV_TS_FireBullets` with an ammo index outside
+  the ammo table uses pierce 0, range unit 80 and velocity 330 (TS reads past its table,
+  `FUN_100071f0`), and a bullet sprite whose model the engine can't find isn't bound.
 
 ## TS behaviour worth knowing (not deviations)
 
@@ -540,7 +575,7 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 | `time_scale_target` (existing) | HUD `TSSlowMo` handler (`decode_slowmo` in `protocol::effects`; also play `goslow.wav`) | `hud::frame` (`HUD_Frame`) eases `time_scale` |
 | `fov_target` (`0x100df1a4`) | HUD `SetFOV` handler (`cl_lw` 0) and `prediction` (`to.client.fov`, every `HUD_PostRunCmd`); `hud::get_fov` during demo playback | `hud::think_fov` eases `fov` |
 | `fov` (`m_iFOV`) | `hud::think_fov` (eased, from `HUD_UpdateClientData`); `SetFOV` sets it outright | HUD (sensitivity, scope), `view`, effects |
-| `bullet_time` | render (`TSBTime`) | client bullets |
+| `bullet_time` | render (`TSBTime`) | client bullets (`GetBulletVelocityMult`) |
 | `powerups`, `attachments`, `active_items`, `firemode`, `clip`, `reserve_ammo` | prediction (from clientdata) | HUD may read; lasers |
 | `active_items[65]` | HUD `ActItems` handler (index = entity number) | `effects::laser::draw_others`, HUD |
 | `laser_color[65]` | HUD `PlInfo` handler (key 0, index = entity number) | lasers, HUD `DrawLaserDots` |

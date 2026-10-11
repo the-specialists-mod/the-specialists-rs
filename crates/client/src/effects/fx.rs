@@ -694,10 +694,11 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
 }
 
 /// `TS_BulletTrail(p1, p2, w1, w2, alpha)` (`0x10046240`): a `bullet_trail.spr` quad from the
-/// last trail point `p2` to the bullet at `p1`, `w` wide along `v_up`, colour `alpha·0.75`.
-pub fn bullet_trail(ps: &mut PSys, now: f64, p1: Vec3, p2: Vec3, w: f32, alpha: f32) {
+/// last trail point `p2` to the bullet at `p1`, `w` wide along `view_up` (this pass's view up,
+/// `0x1018bda8`), colour `alpha·0.75`. The client bullets pass `w` for both widths.
+pub fn bullet_trail(ps: &mut PSys, now: f64, p1: Vec3, p2: Vec3, w: f32, alpha: f32, view_up: Vec3) {
     let Some(s) = ps.sprite("sprites/bullet_trail.spr", ADD) else { return };
-    let up = v::scale(ps.cam.up, w);
+    let up = v::scale(view_up, w);
     ps.add(
         Particle {
             sprite: s,
