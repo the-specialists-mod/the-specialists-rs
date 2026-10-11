@@ -10,7 +10,7 @@ It runs on Xash3D FWGS, ReHLDS (pre-anniversary HLDS) and post-anniversary (HL25
 on Linux and Windows. The latest release is
 [v0.1.0](https://github.com/the-specialists-mod/the-specialists-rs/releases/tag/v0.1.0).
 
-![Rust client and server, TS content](docs/img/alive-ak47-fwgs.png)
+![The Rust client and server on Xash3D FWGS: ts_dojo, AK47 against a bot](docs/img/ts-dojo-fwgs.png)
 
 ## Status
 
