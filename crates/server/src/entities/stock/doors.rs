@@ -10,10 +10,14 @@
 //! * `DoorTouch` opens at `max(speed, toucher speed)`.
 //! * Rotating doors pick their opening direction from the activator's *velocity* (not its view).
 //! * The SDK 2.3 `LinearMoveDone` (no re-move on small errors) is used, see base.rs.
+//!
+//! `momentary_door` (`CMomentaryDoor`) is a separate `CBaseToggle` in TS too, so none of the
+//! `CBaseDoor` changes above reach it; it's the SDK 2.3 class plus TS's slow-motion sound pitch.
 
 use super::base::*;
 use super::breakable::{DMG_TS_KUNGFU, DMG_TS_SHOTGUN, break_sounds, mat, play_break_sound, precache_material, send_glass_debris};
 use super::buttons::LockSounds;
+use super::explode::emit_sound_slow;
 use crate::damage::bits as dmg;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
 use goldsrc::edict::EdictPtr;
@@ -546,4 +550,164 @@ impl Entity for Door {
 /// `CBaseDoor::ObjectCaps`: +use opens use-only doors.
 pub fn impulse_use(v: &entvars_t) -> bool {
     v.spawnflags & SF_DOOR_USE_ONLY != 0
+}
+
+// ---- momentary_door ----------------------------------------------------------------------------------
+
+/// `momentary_door` (`CMomentaryDoor`): a sliding door that a `USE_SET` value (0..1, normally from
+/// a `momentary_rot_button`) places between its closed and open positions. `ObjectCaps`
+/// (0xb87f4) is 0: not +usable.
+#[derive(Default)]
+pub struct MomentaryDoor {
+    t: Toggle<Self>,
+    /// `m_bMoveSnd` (a BYTE).
+    move_snd: u8,
+}
+
+impl Mover for MomentaryDoor {
+    fn toggle(&mut self) -> &mut Toggle<Self> {
+        &mut self.t
+    }
+}
+
+/// `CMomentaryDoor::KeyValue` (0xb81a0) `movesnd`: `atof`, truncated into a 16-bit integer by
+/// `fistp` (out of range or NaN gives 0x8000), then its low byte.
+fn momentary_move_snd(v: f32) -> u8 {
+    let t = v.trunc();
+    if (-32768.0..=32767.0).contains(&t) { t as i16 as u8 } else { 0 }
+}
+
+/// `CMomentaryDoor::Precache` (0xb800c): `doors/doormove1..8.wav`; anything else is
+/// `common/null.wav`, not precached (unlike `func_door`, 9 and 10 aren't in the table).
+fn momentary_move_sound(n: u8) -> Option<&'static CStr> {
+    (1..=8).contains(&n).then(|| move_sound(n as i32))
+}
+
+/// `CMomentaryDoor::Spawn` (0xb7e38): the open position, `pos1 + movedir × (|movedir · (size -
+/// 2)| - lip)`. The distance is summed x, y, z on the x87 stack and rounded to float once.
+fn momentary_door_pos2(pos1: Vec3, movedir: Vec3, size: Vec3, lip: f32) -> Vec3 {
+    let axis = |k: usize| ((size[k] as f64 - 2.0) * movedir[k] as f64).abs();
+    let dist = (axis(0) + axis(1) + axis(2) - lip as f64) as f32;
+    mad_x87(pos1, movedir, dist)
+}
+
+/// `CMomentaryDoor::Use` (0xb8260): the destination for `value` (clamped to at most 1; TS has no
+/// lower clamp) and the speed, ten times the distance (a 0.1 s move). The x87 code keeps
+/// `pos2.x - pos1.x` and the destination unrounded for the distance; `f64` stands in for that.
+fn momentary_door_move(pos1: Vec3, pos2: Vec3, origin: Vec3, value: f32) -> (Vec3, f32) {
+    let value = if value > 1.0 { 1.0 } else { value };
+    let v = value as f64;
+    let part = [(v * (pos2[0] as f64 - pos1[0] as f64)) as f32, value * (pos2[1] - pos1[1]), value * (pos2[2] - pos1[2])];
+    let dest64: [f64; 3] = std::array::from_fn(|k| pos1[k] as f64 + part[k] as f64);
+    let dist = dest64.iter().zip(origin).map(|(d, o)| (d - o as f64).powi(2)).sum::<f64>().sqrt() as f32;
+    (dest64.map(|c| c as f32), dist * 10.0)
+}
+
+impl MomentaryDoor {
+    /// `CMomentaryDoor::Precache` (0xb800c).
+    fn precache(&mut self, cx: &mut Cx) {
+        let snd = match momentary_move_sound(self.move_snd) {
+            Some(snd) => {
+                engine().precache_sound(snd);
+                snd
+            }
+            None => c"common/null.wav",
+        };
+        cx.pev().noise1 = alloc(snd);
+    }
+}
+
+impl Entity for MomentaryDoor {
+    /// `CMomentaryDoor::KeyValue` (0xb81a0): `stopsnd` and `healthvalue` are swallowed.
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"movesnd" => self.move_snd = momentary_move_snd(kv_f(value)),
+            b"stopsnd" | b"healthvalue" => {}
+            _ => return self.t.key_value(key, value),
+        }
+        true
+    }
+
+    /// `CMomentaryDoor::Spawn` (0xb7e38). `dmg` defaults to 2 but nothing reads it: the class has
+    /// no `Blocked`.
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let v = cx.pev();
+        set_movedir(v);
+        v.solid = SOLID_BSP as i32;
+        v.movetype = MOVETYPE_PUSH as i32;
+        let org = v.origin;
+        eng.set_origin(cx.edict, org);
+        set_own_model(cx);
+        let v = cx.pev();
+        if v.speed == 0.0 {
+            v.speed = 100.0;
+        }
+        if v.dmg == 0.0 {
+            v.dmg = 2.0;
+        }
+        self.t.pos1 = v.origin;
+        self.t.pos2 = momentary_door_pos2(self.t.pos1, v.movedir, v.size, self.t.lip);
+        if v.spawnflags & SF_DOOR_START_OPEN != 0 {
+            let p2 = self.t.pos2;
+            eng.set_origin(cx.edict, p2);
+            self.t.pos2 = self.t.pos1;
+            self.t.pos1 = cx.pev().origin;
+        }
+        self.t.touch = None;
+        self.precache(cx);
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        run_think(self, cx);
+    }
+
+    /// `CMomentaryDoor::Use` (0xb8260): only `USE_SET` moves it. The move sound starts when the
+    /// door isn't already moving; there is no stop sound and no move-done callback.
+    fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, value: f32) {
+        if kind != UseType::Set {
+            return;
+        }
+        let v = cx.pev();
+        let (dest, speed) = momentary_door_move(self.t.pos1, self.t.pos2, v.origin, value);
+        if speed == 0.0 {
+            return;
+        }
+        if v.nextthink < v.ltime || v.nextthink == 0.0 {
+            let n = s(v.noise1);
+            emit_sound_slow(cx.edict, CHAN_STATIC, n, 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
+        }
+        linear_move(self, cx, dest, speed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn momentary_keys_and_sounds() {
+        assert_eq!(momentary_move_snd(3.9), 3);
+        assert_eq!(momentary_move_snd(-1.0), 255);
+        assert_eq!(momentary_move_snd(257.0), 1);
+        assert_eq!(momentary_move_snd(40000.0), 0);
+        assert_eq!(momentary_move_snd(f32::NAN), 0);
+        assert_eq!(momentary_move_sound(8), Some(c"doors/doormove8.wav"));
+        assert_eq!(momentary_move_sound(9), None);
+        assert_eq!(momentary_move_sound(0), None);
+    }
+
+    #[test]
+    fn momentary_positions() {
+        // A 64-unit-tall door moving up with lip 4: 66 - 2 - 4 = 60 units.
+        let p2 = momentary_door_pos2([10.0, 20.0, 30.0], [0.0, 0.0, 1.0], [32.0, 8.0, 66.0], 4.0);
+        assert_eq!(p2, [10.0, 20.0, 90.0]);
+        let (dest, speed) = momentary_door_move([0.0; 3], [0.0, 0.0, 60.0], [0.0; 3], 0.5);
+        assert_eq!(dest, [0.0, 0.0, 30.0]);
+        assert_eq!(speed, 300.0);
+        // Clamped above 1 only: a negative value overshoots the closed position.
+        assert_eq!(momentary_door_move([0.0; 3], [0.0, 0.0, 60.0], [0.0; 3], 2.0).0, [0.0, 0.0, 60.0]);
+        assert_eq!(momentary_door_move([0.0; 3], [0.0, 0.0, 60.0], [0.0; 3], -0.5).0, [0.0, 0.0, -30.0]);
+        assert_eq!(momentary_door_move([0.0; 3], [0.0, 0.0, 60.0], [0.0, 0.0, 30.0], 0.5).1, 0.0);
+    }
 }

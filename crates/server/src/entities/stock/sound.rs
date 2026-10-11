@@ -1,4 +1,4 @@
-//! `ambient_generic` (SDK sound.cpp; byte-identical in TS including the preset table).
+//! `ambient_generic` (SDK sound.cpp; byte-identical in TS including the preset table) and `speaker`.
 //! Sentence names (`!NAME`) aren't precached and go out as `!<index>` (`UTIL_EmitAmbientSound`).
 
 use super::base::*;
@@ -531,4 +531,176 @@ impl Entity for EnvSound {
 /// New map: every client's room state starts clean.
 pub fn reset_rooms() {
     *ROOMS.0.borrow_mut() = [PlayerRoom::default(); 33];
+}
+
+// ---- speaker -------------------------------------------------------------------------------------------------------
+
+/// `speaker` spawnflag: start silent (the first announcement waits for a use).
+pub const SPEAKER_START_SILENT: i32 = 1;
+
+/// `CTalkMonster::g_talkWaitTime`: no announcement before this time. TS has no talking monsters,
+/// so only speakers move it. A process-wide static, never reset across maps, as in TS.
+static TALK_WAIT_TIME: goldsrc::Global<std::cell::Cell<f32>> = goldsrc::Global(std::cell::Cell::new(0.0));
+
+/// The sentence group a `speaker` `preset` names (`CSpeaker::SpeakerThink` 0xe1af4); 0 is the
+/// `message` key.
+fn speaker_preset(preset: i32) -> Option<&'static CStr> {
+    Some(match preset {
+        1 => c"C1A0_",
+        2 => c"C1A1_",
+        3 => c"C1A2_",
+        4 => c"C1A3_",
+        5 => c"C1A4_",
+        6 => c"C2A1_",
+        7 => c"C2A2_",
+        8 => c"C2A3_",
+        9 => c"C2A4_",
+        10 => c"C2A5_",
+        11 => c"C3A1_",
+        12 => c"C3A2_",
+        _ => return None,
+    })
+}
+
+/// `CSpeaker::ToggleUse` (0xe1cfc): the new `nextthink` (on = 0.1 s from now, off = 0), or `None`
+/// to leave it. The speaker is on while `nextthink > 0`.
+fn speaker_toggle(nextthink: f32, kind: UseType, now: f32) -> Option<f32> {
+    let active = nextthink > 0.0;
+    if kind != UseType::Toggle && ((active && kind == UseType::On) || (!active && kind == UseType::Off)) {
+        return None;
+    }
+    Some(if kind == UseType::On || (kind != UseType::Off && !active) { now + 0.1 } else { 0.0 })
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum SpeakerThink {
+    #[default]
+    None,
+    Speak,
+    /// `SUB_Remove`: a speaker with nothing to say.
+    Remove,
+}
+
+/// `speaker` (`CSpeaker`): announcements from a sentence group (`preset` 1-12, or the `message`
+/// key) every 15-135 s while on, volume `health` / 10; a `!sentence` plays once.
+#[derive(Default)]
+pub struct Speaker {
+    preset: i32,
+    think: SpeakerThink,
+    usable: bool,
+}
+
+impl Speaker {
+    /// `CSpeaker::SpeakerThink` (0xe1af4).
+    fn speak(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let now = eng.time();
+        let me = cx.edict;
+        let v = cx.pev();
+        let vol = v.health * 0.1;
+        let wait = TALK_WAIT_TIME.0.get();
+        if wait >= now {
+            let r = eng.random_float(5.0, 10.0);
+            cx.pev().nextthink = (r as f64 + wait as f64) as f32;
+            return;
+        }
+        // Guard: TS's switch has no default, so a preset outside 1-12 reads an uninitialised
+        // pointer. The port plays nothing and logs the bad group.
+        let name = if self.preset == 0 { s(v.message) } else { speaker_preset(self.preset).unwrap_or(c"") };
+        let origin = v.origin;
+        if name.to_bytes().first() == Some(&b'!') {
+            super::sentences::emit_ambient(me, origin, name, vol, 0.3, 0, PITCH_NORM as i32);
+            cx.pev().nextthink = 0.0;
+        } else {
+            if super::sentences::play_random(me, name, vol, 0.3, 0, PITCH_NORM as i32) < 0 {
+                eng.alert(
+                    ALERT_TYPE::at_console,
+                    &format!("Level Design Error!\nSPEAKER has bad sentence group name: {}\n", name.to_string_lossy()),
+                );
+            }
+            let r = eng.random_float(15.0, 135.0);
+            let now = eng.time();
+            cx.pev().nextthink = (r as f64 + now as f64) as f32;
+            TALK_WAIT_TIME.0.set(now + 5.0);
+        }
+    }
+}
+
+impl Entity for Speaker {
+    /// `CSpeaker::KeyValue` (0xe1d88).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key != c"preset" {
+            return false;
+        }
+        self.preset = kv_i(value);
+        true
+    }
+
+    /// `CSpeaker::Spawn` (0xe1988) and `Precache` (0xe1a98).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let now = eng.time();
+        let v = cx.pev();
+        if self.preset == 0 && s(v.message).is_empty() {
+            let o = v.origin;
+            eng.alert(ALERT_TYPE::at_error, &format!("SPEAKER with no Level/Sentence! at: {:.6}, {:.6}, {:.6}\n", o[0], o[1], o[2]));
+            v.nextthink = now + 0.1;
+            self.think = SpeakerThink::Remove;
+            return;
+        }
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_NONE as i32;
+        self.think = SpeakerThink::Speak;
+        v.nextthink = 0.0;
+        self.usable = true;
+        if v.spawnflags & SPEAKER_START_SILENT == 0 {
+            let r = eng.random_float(5.0, 15.0);
+            cx.pev().nextthink = (r as f64 + eng.time() as f64) as f32;
+        }
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        match self.think {
+            SpeakerThink::Speak => self.speak(cx),
+            SpeakerThink::Remove => sub_remove(cx.edict),
+            SpeakerThink::None => {}
+        }
+    }
+
+    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, kind: UseType, _v: f32) {
+        if !self.usable {
+            return;
+        }
+        let now = engine().time();
+        if let Some(t) = speaker_toggle(cx.pev().nextthink, kind, now) {
+            cx.pev().nextthink = t;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speaker_toggle_states() {
+        // Off (nextthink 0): toggle/on/set start it; off leaves it.
+        assert_eq!(speaker_toggle(0.0, UseType::Toggle, 10.0), Some(10.1));
+        assert_eq!(speaker_toggle(0.0, UseType::On, 10.0), Some(10.1));
+        assert_eq!(speaker_toggle(0.0, UseType::Set, 10.0), Some(10.1));
+        assert_eq!(speaker_toggle(0.0, UseType::Off, 10.0), None);
+        // On: toggle/off/set stop it; on leaves it.
+        assert_eq!(speaker_toggle(20.0, UseType::Toggle, 10.0), Some(0.0));
+        assert_eq!(speaker_toggle(20.0, UseType::Off, 10.0), Some(0.0));
+        assert_eq!(speaker_toggle(20.0, UseType::Set, 10.0), Some(0.0));
+        assert_eq!(speaker_toggle(20.0, UseType::On, 10.0), None);
+    }
+
+    #[test]
+    fn speaker_presets() {
+        assert_eq!(speaker_preset(1), Some(c"C1A0_"));
+        assert_eq!(speaker_preset(12), Some(c"C3A2_"));
+        assert_eq!(speaker_preset(0), None);
+        assert_eq!(speaker_preset(13), None);
+    }
 }

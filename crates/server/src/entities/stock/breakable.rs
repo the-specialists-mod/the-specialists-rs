@@ -721,3 +721,10 @@ pub fn respawn_all(force: bool) {
         });
     }
 }
+
+/// `info_breakable` (`CInfoBreakable`) placed by a map. TS's breakables create these as their
+/// respawn timer (`RespawnThink` 0x75da0, the port keeps that timer on the breakable itself); a
+/// map-placed one has no think set and `CBaseEntity::Spawn`, so it is an inert point entity.
+#[derive(Default)]
+pub struct InfoBreakable;
+impl Entity for InfoBreakable {}

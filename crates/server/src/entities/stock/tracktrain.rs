@@ -326,6 +326,7 @@ pub fn train_speed(speed: i32, max: i32) -> i32 {
 pub struct TrainControls;
 
 impl Entity for TrainControls {
+    /// `CFuncTrainControls::Spawn` (0xd5c18); its think is [`train_controls_find`].
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let v = cx.pev();
@@ -339,24 +340,30 @@ impl Entity for TrainControls {
         cx.pev().nextthink = eng.time();
     }
 
-    /// `CFuncTrainControls::Find` (0xd5ad4).
     fn think(&mut self, cx: &mut Cx) {
-        let eng = engine();
-        let target = s(cx.pev().target);
-        let mut e = std::ptr::null_mut();
-        loop {
-            e = eng.find_by_target_name(e, target);
-            if e.is_null() || s(e.v().classname) == c"func_tracktrain" {
-                break;
-            }
-        }
-        if e.is_null() {
-            eng.alert(ALERT_TYPE::at_console, &format!("No train {}\n", target.to_string_lossy()));
-            return;
-        }
-        set_controls(e, cx.pev());
-        crate::entities::remove(cx.edict);
+        train_controls_find(cx);
     }
+}
+
+/// `CFuncTrainControls::Find` (0xd5ad4) on `cx`'s entity: the first `func_tracktrain` named by its
+/// `target` takes its box as the control volume and the entity is removed. TS's
+/// `CFuncTrackChange::Spawn` (0xd5d84) installs it as the track change's think too.
+pub fn train_controls_find(cx: &mut Cx) {
+    let eng = engine();
+    let target = s(cx.pev().target);
+    let mut e = std::ptr::null_mut();
+    loop {
+        e = eng.find_by_target_name(e, target);
+        if e.is_null() || s(e.v().classname) == c"func_tracktrain" {
+            break;
+        }
+    }
+    if e.is_null() {
+        eng.alert(ALERT_TYPE::at_console, &format!("No train {}\n", target.to_string_lossy()));
+        return;
+    }
+    set_controls(e, cx.pev());
+    crate::entities::remove(cx.edict);
 }
 
 fn fix(mut a: f32) -> f32 {

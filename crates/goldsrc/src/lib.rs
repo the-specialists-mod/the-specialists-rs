@@ -53,6 +53,7 @@ unsafe impl<T> Sync for Global<T> {}
 macro_rules! export_entity_class {
     ($class:ident, $create:expr) => {
         #[allow(unsafe_code)]
+        #[allow(non_snake_case)] // the export is the classname, e.g. TS's `DelayedUse`
         #[unsafe(no_mangle)]
         pub extern "C" fn $class(pev: *mut $crate::sys::entvars_t) {
             ($create)(pev)

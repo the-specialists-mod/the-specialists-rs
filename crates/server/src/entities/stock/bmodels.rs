@@ -1,5 +1,5 @@
 //! Simple brush entities (SDK bmodels.cpp; same in TS): `func_wall`, `func_illusionary`,
-//! `func_wall_toggle`, `func_conveyor`, `func_rotating`.
+//! `func_wall_toggle`, `func_conveyor`, `func_rotating`, `func_monsterclip`.
 
 use super::base::*;
 use crate::damage::bits as dmg;
@@ -38,6 +38,22 @@ impl Entity for FuncWall {
     }
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, kind: UseType, _v: f32) {
         wall_use(cx, kind);
+    }
+}
+
+/// `func_monsterclip` (`CFuncMonsterClip`): a `func_wall` (`CFuncWall::Spawn`) that only blocks
+/// monsters (`FL_MONSTERCLIP`); Spawn (0xa55d0) replaces `effects` with `EF_NODRAW` unless
+/// `showtriggers`, and Use (0xa74ec) does nothing.
+#[derive(Default)]
+pub struct FuncMonsterClip;
+
+impl Entity for FuncMonsterClip {
+    fn spawn(&mut self, cx: &mut Cx) {
+        wall_spawn(cx);
+        if engine().cvar_float(c"showtriggers") == 0.0 {
+            cx.pev().effects = EF_NODRAW as i32;
+        }
+        cx.pev().flags |= FL_MONSTERCLIP as i32;
     }
 }
 

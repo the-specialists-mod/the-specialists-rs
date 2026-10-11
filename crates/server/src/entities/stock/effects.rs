@@ -13,7 +13,9 @@ use super::explode::{emit_sound_slow, radius_damage, screen_fade, screen_fade_al
 use crate::entities::remove;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{EHandle, MsgWriterExt, SVC_TEMPENTITY, Vec3, te, te_begin, te_explosion, te_smoke, vec};
+use goldsrc::ext::entities::{
+    ATTN_NORM, EHandle, MsgWriterExt, SVC_TEMPENTITY, Vec3, is_player, te, te_begin, te_explosion, te_smoke, vec,
+};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, IGNORE_MONSTERS, MsgWriter, engine};
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -1530,6 +1532,11 @@ impl Entity for Gib {
                 } else if v.velocity == [0.0; 3] {
                     self.state = GibState::StartFade;
                     v.nextthink = now + self.life_time;
+                    // `CSoundEnt::InsertSound(bits_SOUND_MEAT, origin, 384, 25)` (0xb1e5b).
+                    if self.blood_color != DONT_BLEED {
+                        let origin = v.origin;
+                        super::soundent::insert_sound(super::soundent::SOUND_MEAT, origin, 384, 25.0);
+                    }
                 } else {
                     v.nextthink = now + 0.5;
                 }
@@ -1850,29 +1857,42 @@ impl Entity for CyclerSprite {
     }
 }
 
-/// `cycler` (`CGenericCycler::Spawn` 0xc86ac → `CCycler::GenericCyclerSpawn` 0xc75d4): a studio
-/// model cycling its sequence. +use toggles the animation; damage steps to the next sequence
-/// while animating, or advances one 0.1 s frame step while paused.
+/// `cycler` (`CGenericCycler::Spawn` 0xc86ac) and `cycler_prdroid` (`CCyclerProbe::Spawn`
+/// 0xc752c), both through `CCycler::GenericCyclerSpawn` (0xc75d4): a studio model cycling its
+/// sequence. +use toggles the animation; damage steps to the next sequence while animating, or
+/// advances one 0.1 s frame step while paused. Both are renamed `cycler`.
 #[derive(Default)]
-pub struct Cycler {
+pub struct Cycler<const PROBE: bool> {
     anim: Animating,
     animate: bool,
 }
 
-impl Entity for Cycler {
-    fn spawn(&mut self, cx: &mut Cx) {
+pub type GenericCycler = Cycler<false>;
+pub type CyclerProbe = Cycler<true>;
+
+impl<const PROBE: bool> Cycler<PROBE> {
+    /// `CCycler::GenericCyclerSpawn` (0xc75d4). `model` is `None` for the map's `model` key.
+    fn generic_spawn(&mut self, cx: &mut Cx, model: Option<&'static CStr>, mins: Vec3, maxs: Vec3) {
         let eng = engine();
         let v = cx.pev();
-        let model = s(v.model);
-        if model.is_empty() {
+        let name = model.unwrap_or_else(|| s(v.model));
+        if name.is_empty() {
             let o = v.origin;
             eng.alert(ALERT_TYPE::at_error, &format!("cycler at {:.0} {:.0} {:.0} missing modelname", o[0], o[1], o[2]));
             remove(cx.edict);
             return;
         }
         v.classname = eng.alloc_string(c"cycler");
-        precache_model_s(v.model);
-        set_own_model(cx);
+        match model {
+            Some(m) => {
+                eng.precache_model(m);
+                eng.set_model(cx.edict, m);
+            }
+            None => {
+                precache_model_s(v.model);
+                set_own_model(cx);
+            }
+        }
         // CCycler::Spawn (0xc7694)
         init_bone_controllers(cx.edict);
         let v = cx.pev();
@@ -1895,7 +1915,19 @@ impl Entity for Cycler {
         } else {
             self.animate = true;
         }
-        eng.set_size(cx.edict, [-16.0, -16.0, 0.0], [16.0, 16.0, 72.0]);
+        eng.set_size(cx.edict, mins, maxs);
+    }
+}
+
+impl<const PROBE: bool> Entity for Cycler<PROBE> {
+    fn spawn(&mut self, cx: &mut Cx) {
+        if PROBE {
+            // CCyclerProbe::Spawn (0xc752c): 16 units up (no relink until SET_MODEL).
+            cx.pev().origin[2] += 16.0;
+            self.generic_spawn(cx, Some(c"models/prdroid.mdl"), [-16.0; 3], [16.0; 3]);
+        } else {
+            self.generic_spawn(cx, None, [-16.0, -16.0, 0.0], [16.0, 16.0, 72.0]);
+        }
     }
 
     /// `CCycler::Think` (0xc778c).
@@ -1944,5 +1976,389 @@ impl Entity for Cycler {
             engine().alert(ALERT_TYPE::at_console, &format!("sequence: {}, frame {:.0}\n", v.sequence, v.frame));
         }
         false
+    }
+}
+
+// ---- cycler_wreckage ---------------------------------------------------------------------------------------------
+
+/// `cycler_wreckage` (`CWreckage`): a smoking model. With `dmgtime` set it smokes less and less
+/// until that time, then removes itself.
+#[derive(Default)]
+pub struct Wreckage {
+    anim: Animating,
+    /// `m_flStartTime`, an `int` in TS (the spawn time truncated).
+    start_time: i32,
+    /// `g_sModelIndexSmoke` (`sprites/steam1.spr`, precached by TS's `W_Precache`).
+    smoke: i32,
+}
+
+impl Entity for Wreckage {
+    /// `CWreckage::Spawn` (0xc7fe4). It doesn't call `Precache`.
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let now = eng.time();
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_NONE as i32;
+        v.takedamage = 0.0;
+        v.effects = 0;
+        v.frame = 0.0;
+        v.nextthink = now + 0.1;
+        if v.model != 0 {
+            precache_model_s(v.model);
+            set_own_model(cx);
+        }
+        // fistp under the truncating control word (0xc80b6).
+        self.start_time = now as i32;
+        self.smoke = eng.precache_model(c"sprites/steam1.spr");
+    }
+
+    /// `CWreckage::Think` (0xc8118).
+    fn think(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        self.anim.frame_advance(cx.edict, 0.0);
+        let now = eng.time();
+        let v = cx.pev();
+        v.nextthink = now + 0.2;
+        if v.dmgtime != 0.0 {
+            if v.dmgtime < now {
+                remove(cx.edict);
+                return;
+            }
+            let r = eng.random_float(0.0, v.dmgtime - self.start_time as f32);
+            if (v.dmgtime as f64 - now as f64) < r as f64 {
+                return;
+            }
+        }
+        let v = cx.pev();
+        let (mins, maxs) = (v.absmin, v.absmax);
+        let x = eng.random_float(mins[0], maxs[0]);
+        let y = eng.random_float(mins[1], maxs[1]);
+        let z = eng.random_float(mins[2], maxs[2]);
+        let pos = [x, y, z];
+        let scale = eng.random_long(0, 49) + 50;
+        let rate = eng.random_long(0, 3) + 8;
+        te_begin(MSG_PVS, Some(pos), te::SMOKE).vec3(pos).short(self.smoke).byte(scale).byte(rate).end();
+    }
+}
+
+// ---- beam / test_effect --------------------------------------------------------------------------------------------
+
+/// `beam` (`CBeam`). A map-placed one only clears its solidity and, like any beam, takes its end
+/// entities from `owner` / `aiment` (`CBeam::Precache` 0xb8cd4). Code creates beams through
+/// [`beam_create`].
+#[derive(Default)]
+pub struct Beam;
+
+impl Entity for Beam {
+    /// `CBeam::Spawn` (0xb8cb4).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        if !v.owner.is_null() {
+            let i = eng.index_of(v.owner);
+            beam::set_start_entity(v, i);
+        }
+        let v = cx.pev();
+        if !v.aiment.is_null() {
+            let i = eng.index_of(v.aiment);
+            beam::set_end_entity(v, i);
+        }
+    }
+}
+
+/// `CBeam::BeamCreate` (0xb8eb8) + `BeamInit` (0xb8f0c): a new `beam` entity (not spawned) with
+/// the sprite and width.
+fn beam_create(sprite: &'static CStr, width: i32) -> *mut edict_t {
+    let eng = engine();
+    let e = eng.create_entity();
+    if e.is_null() {
+        return e;
+    }
+    world::create::<Beam>(e.v());
+    let index = eng.precache_model(sprite);
+    let v = e.v();
+    v.classname = eng.alloc_string(c"beam");
+    v.flags |= FL_CUSTOMENTITY as i32;
+    v.rendercolor = [255.0; 3];
+    v.renderamt = 255.0;
+    v.body = 0;
+    v.frame = 0.0;
+    v.animtime = 0.0;
+    v.model = eng.alloc_string(sprite);
+    v.modelindex = index;
+    v.scale = width as f32;
+    v.skin = 0;
+    v.sequence = 0;
+    v.rendermode = 0;
+    e
+}
+
+/// `CBeam::PointsInit` (0xb8ff0).
+fn beam_points_init(e: *mut edict_t, start: Vec3, end: Vec3) {
+    let v = e.v();
+    beam::set_type(v, BEAM_POINTS);
+    v.origin = start;
+    v.angles = end;
+    v.sequence &= 0x0fff;
+    v.skin &= 0x0fff;
+    beam::relink(&mut Cx { edict: e });
+}
+
+const TEST_EFFECT_BEAMS: usize = 24;
+
+/// `test_effect` (`CTestEffect`): on use, up to 24 lightning beams grow out of it, one every
+/// 0.1 s, brightening, until they all vanish 3 s after the use.
+#[derive(Default)]
+pub struct TestEffect {
+    /// `SetThink(TestThink)` (cleared when the beams go).
+    thinking: bool,
+    /// `m_iLoop`.
+    count: usize,
+    beams: [Option<EHandle>; TEST_EFFECT_BEAMS],
+    beam_time: [f32; TEST_EFFECT_BEAMS],
+    /// `m_flStartTime`.
+    start_time: f32,
+}
+
+impl TestEffect {
+    /// `CTestEffect::TestThink` (0xbcc04).
+    fn test_think(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let now = eng.time();
+        let elapsed = now - self.start_time;
+        if self.count < TEST_EFFECT_BEAMS {
+            let b = beam_create(c"sprites/lgtning.spr", 100);
+            let start = cx.pev().origin;
+            let d = [eng.random_float(-1.0, 1.0), eng.random_float(-1.0, 1.0), eng.random_float(-1.0, 1.0)];
+            let dir = normalize_or_up(d);
+            let tr = eng.trace_line(start, vec::mad(start, dir, 128.0), IGNORE_MONSTERS, cx.edict);
+            if !b.is_null() {
+                beam_points_init(b, start, tr.vecEndPos);
+                let bv = b.v();
+                bv.rendercolor = [255.0, 180.0, 100.0];
+                bv.scale = 100.0;
+                bv.animtime = 12.0;
+            }
+            self.beam_time[self.count] = now;
+            self.beams[self.count] = (!b.is_null()).then(|| EHandle::new(b));
+            self.count += 1;
+        }
+        if elapsed >= 3.0 {
+            for h in self.beams[..self.count].iter().flatten() {
+                remove(h.get());
+            }
+            self.start_time = now;
+            self.count = 0;
+            self.thinking = false;
+        } else {
+            for i in 0..self.count {
+                let amt = beam_brightness(now, self.beam_time[i], self.start_time);
+                if let Some(b) = self.beams[i].map(|h| h.get()).filter(|b| !b.is_null()) {
+                    b.v().renderamt = amt as f32;
+                }
+            }
+            cx.pev().nextthink = now + 0.1;
+        }
+    }
+}
+
+/// `Vector::Normalize` as TS inlines it: the length on the x87 stack, rounded to a float, then
+/// scaled by its reciprocal; `(0, 0, 1)` for a zero vector.
+fn normalize_or_up(d: Vec3) -> Vec3 {
+    let len = (d[0] as f64 * d[0] as f64 + d[1] as f64 * d[1] as f64 + d[2] as f64 * d[2] as f64).sqrt() as f32;
+    if len == 0.0 {
+        return [0.0, 0.0, 1.0];
+    }
+    let k = 1.0 / len;
+    [k * d[0], k * d[1], k * d[2]]
+}
+
+/// `CTestEffect::TestThink`'s beam brightness: the share of the beam's 3 s life so far × 255,
+/// truncated (fistp under the truncating control word, 0xbceb5).
+fn beam_brightness(now: f32, born: f32, start: f32) -> i32 {
+    let born = born as f64;
+    ((now as f64 - born) / ((start as f64 + 3.0) - born) * 255.0) as i32
+}
+
+impl Entity for TestEffect {
+    /// `CTestEffect::Spawn` (0xbcbc8) / `Precache` (0xbcbdc).
+    fn spawn(&mut self, _cx: &mut Cx) {
+        engine().precache_model(c"sprites/lgtning.spr");
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        if self.thinking {
+            self.test_think(cx);
+        }
+    }
+
+    /// `CTestEffect::Use` (0xbcf4c).
+    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+        let now = engine().time();
+        self.thinking = true;
+        cx.pev().nextthink = now + 0.1;
+        self.start_time = now;
+    }
+}
+
+// ---- env_funnel / env_beverage / item_sodacan ---------------------------------------------------------------------
+
+pub const SF_FUNNEL_REVERSE: i32 = 1;
+
+/// `env_funnel` (`CEnvFunnel`): one `TE_LARGEFUNNEL` on use, then it removes itself.
+#[derive(Default)]
+pub struct EnvFunnel {
+    sprite: i32,
+    /// `SetThink(SUB_Remove)`.
+    removing: bool,
+}
+
+impl Entity for EnvFunnel {
+    /// `CEnvFunnel::Spawn` (0xbde24) / `Precache` (0xbdcfc).
+    fn spawn(&mut self, cx: &mut Cx) {
+        self.sprite = engine().precache_model(c"sprites/flare6.spr");
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.effects = EF_NODRAW as i32;
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        if self.removing {
+            sub_remove(cx.edict);
+        }
+    }
+
+    /// `CEnvFunnel::Use` (0xbdd50).
+    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+        let v = cx.pev();
+        let reverse = if v.spawnflags & SF_FUNNEL_REVERSE != 0 { 1 } else { 0 };
+        te_begin(MSG_BROADCAST, None, te::LARGEFUNNEL).vec3(v.origin).short(self.sprite).short(reverse).end();
+        self.removing = true;
+        cx.pev().nextthink = engine().time();
+    }
+}
+
+/// `env_beverage` (`CEnvBeverage`): each use drops an `item_sodacan` (skin 6 = random 0..5),
+/// `health` cans in all (10 by default), the next only once the last one was drunk (`frags`).
+#[derive(Default)]
+pub struct EnvBeverage;
+
+impl Entity for EnvBeverage {
+    /// `CEnvBeverage::Spawn` (0xbdf70) / `Precache` (0xbde50).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        eng.precache_model(c"models/can.mdl");
+        eng.precache_sound(c"weapons/g_bounce3.wav");
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.effects = EF_NODRAW as i32;
+        v.frags = 0.0;
+        if v.health == 0.0 {
+            v.health = 10.0;
+        }
+    }
+
+    /// `CEnvBeverage::Use` (0xbdeac).
+    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+        let me = cx.edict;
+        let v = cx.pev();
+        if v.frags != 0.0 || v.health <= 0.0 {
+            return;
+        }
+        let (origin, angles, skin) = (v.origin, v.angles, v.skin);
+        let can = create_entity(c"item_sodacan", origin, angles, me);
+        if !can.is_null() {
+            can.v().skin = if skin == 6 { engine().random_long(0, 5) } else { skin };
+        }
+        let v = cx.pev();
+        v.frags = 1.0;
+        v.health -= 1.0;
+    }
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum SodaState {
+    #[default]
+    None,
+    /// `CanThink`, half a second after spawning.
+    Land,
+    /// `CanTouch`.
+    Touchable,
+    /// `SUB_Remove`.
+    Remove,
+}
+
+/// `item_sodacan` (`CItemSoda`): falls, then a player touching it drinks it (1 health) and lets
+/// its `env_beverage` drop the next one.
+#[derive(Default)]
+pub struct ItemSoda {
+    state: SodaState,
+}
+
+impl Entity for ItemSoda {
+    /// `CItemSoda::Spawn` (0xbe004); `Precache` is empty (the beverage precaches the model).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_TOSS as i32;
+        eng.set_model(cx.edict, c"models/can.mdl");
+        eng.set_size(cx.edict, [0.0; 3], [0.0; 3]);
+        self.state = SodaState::Land;
+        cx.pev().nextthink = eng.time() + 0.5;
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        match self.state {
+            // CItemSoda::CanThink (0xbe0c0)
+            SodaState::Land => {
+                emit_sound_slow(cx.edict, CHAN_WEAPON, c"weapons/g_bounce3.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
+                cx.pev().solid = SOLID_TRIGGER as i32;
+                engine().set_size(cx.edict, [-8.0, -8.0, 0.0], [8.0, 8.0, 8.0]);
+                self.state = SodaState::Touchable;
+            }
+            SodaState::Remove => sub_remove(cx.edict),
+            _ => {}
+        }
+    }
+
+    /// `CItemSoda::CanTouch` (0xbe178).
+    fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if self.state != SodaState::Touchable || !is_player(other) {
+            return;
+        }
+        // TakeHealth(1, DMG_GENERIC); the result isn't checked.
+        super::items::player_take_health(other, 1.0);
+        let owner = cx.pev().owner;
+        if !owner.is_null() && engine().index_of(owner) != 0 {
+            owner.v().frags = 0.0;
+        }
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_NONE as i32;
+        v.effects = EF_NODRAW as i32;
+        self.state = SodaState::Remove;
+        cx.pev().nextthink = engine().time();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_effect_brightness() {
+        // Used at t = 10: a beam made at 10.5 is half bright at 11.75 (1.25 / 2.5), and full at 13.
+        assert_eq!(beam_brightness(11.75, 10.5, 10.0), 127);
+        assert_eq!(beam_brightness(13.0, 10.5, 10.0), 255);
+        assert_eq!(beam_brightness(10.5, 10.5, 10.0), 0);
+    }
+
+    #[test]
+    fn normalize_zero_is_up() {
+        assert_eq!(normalize_or_up([0.0; 3]), [0.0, 0.0, 1.0]);
+        assert_eq!(normalize_or_up([0.0, 3.0, 4.0]), [0.0, 0.6, 0.8]);
     }
 }

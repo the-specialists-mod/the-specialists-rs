@@ -64,9 +64,11 @@ enum Kind {
     HealthKit,
     Battery,
     Antidote,
+    Suit,
+    Security,
 }
 
-/// `CItem` subclasses: `KIND` 0 = healthkit, 1 = battery, 2 = antidote.
+/// `CItem` subclasses: `KIND` 0 = healthkit, 1 = battery, 2 = antidote, 3 = suit, 4 = security.
 #[derive(Default)]
 pub struct Item<const KIND: u8> {
     respawning: bool,
@@ -78,7 +80,9 @@ impl<const KIND: u8> Item<KIND> {
         match KIND {
             0 => Kind::HealthKit,
             1 => Kind::Battery,
-            _ => Kind::Antidote,
+            2 => Kind::Antidote,
+            3 => Kind::Suit,
+            _ => Kind::Security,
         }
     }
 
@@ -87,6 +91,8 @@ impl<const KIND: u8> Item<KIND> {
             Kind::HealthKit => c"models/w_medkit.mdl",
             Kind::Battery => c"models/w_battery.mdl",
             Kind::Antidote => c"models/w_antidote.mdl",
+            Kind::Suit => c"models/w_suit.mdl",
+            Kind::Security => c"models/w_security.mdl",
         }
     }
 
@@ -130,6 +136,21 @@ impl<const KIND: u8> Item<KIND> {
                     crate::player::with_player(p, |pl, _| pl.tbd.antidotes += 1);
                 });
             }
+            Kind::Suit => {
+                // `CItemSuit::MyTouch` (0xcb60c): refused while the player has the suit bit, which
+                // every TS player gets on spawn.
+                let v = p.v();
+                if v.weapons < 0 {
+                    return false;
+                }
+                let sentence = if cx.pev().spawnflags & SF_SUIT_SHORTLOGON != 0 { c"!HEV_A0" } else { c"!HEV_AAx" };
+                emit_sound_suit(p, sentence);
+                p.v().weapons |= WEAPON_SUIT;
+            }
+            Kind::Security => {
+                // `CItemSecurity::MyTouch` (0xcba58): `m_rgItems[ITEM_SECURITY]++` (+0x838) and
+                // always taken. Nothing in TS reads the count, so the port doesn't keep it.
+            }
         }
         true
     }
@@ -166,8 +187,9 @@ impl<const KIND: u8> Entity for Item<KIND> {
                 eng.precache_sound(c"weapons/items.wav");
                 eng.precache_sound(c"items/gunpickup2.wav")
             }
-            // `CItemAntidote::Precache` (0xcb940) only precaches the model.
-            Kind::Antidote => 0,
+            // `CItemAntidote::Precache` (0xcb940), `CItemSuit::Precache` (0xcb5e4) and
+            // `CItemSecurity::Precache` (0xcba30) only precache the model.
+            Kind::Antidote | Kind::Suit | Kind::Security => 0,
         };
         eng.precache_sound(c"items/suitchargeok1.wav");
         eng.set_model(cx.edict, Self::model());
@@ -219,6 +241,73 @@ pub type HealthKit = Item<0>;
 pub type Battery = Item<1>;
 /// `item_antidote` (`CItemAntidote`, 0xcb1c0; Spawn 0xcb8f8).
 pub type Antidote = Item<2>;
+/// `item_suit` (`CItemSuit`, 0xcb178; Spawn 0xcb59c).
+pub type Suit = Item<3>;
+/// `item_security` (`CItemSecurity`, 0xcb1e4; Spawn 0xcb9e8).
+pub type Security = Item<4>;
+
+/// `item_suit` spawnflag: the short logon sentence.
+pub const SF_SUIT_SHORTLOGON: i32 = 1;
+/// The HEV suit bit in `pev->weapons` (`WEAPON_SUIT`, 31).
+pub const WEAPON_SUIT: i32 = 1 << 31;
+
+/// `EMIT_SOUND_SUIT` (0xe0bb0): a suit sentence on the player's `CHAN_STATIC` at `suitvolume`
+/// (a client cvar: 0 on a dedicated server, so silent there), pitch 100 or, half the time,
+/// 98..104.
+pub fn emit_sound_suit(p: *mut edict_t, sample: &CStr) {
+    let eng = engine();
+    let vol = eng.cvar_float(c"suitvolume");
+    let pitch = if eng.random_long(0, 1) != 0 { eng.random_long(0, 6) + 98 } else { PITCH_NORM as i32 };
+    if vol > 0.05 {
+        super::explode::emit_sound_slow(p, CHAN_STATIC, sample, vol, ATTN_NORM, 0, pitch, 0.5);
+    }
+}
+
+/// `world_items` (`CWorldItem`): spawns the item its `type` names (42 antidote, 43 security, 44
+/// battery, 45 suit), hands it its `target`, `targetname` and spawnflags, and removes itself.
+#[derive(Default)]
+pub struct WorldItem {
+    kind: i32,
+}
+
+impl WorldItem {
+    fn class_for(kind: i32) -> Option<&'static CStr> {
+        Some(match kind {
+            42 => c"item_antidote",
+            43 => c"item_security",
+            44 => c"item_battery",
+            45 => c"item_suit",
+            _ => return None,
+        })
+    }
+}
+
+impl Entity for WorldItem {
+    /// `CWorldItem::KeyValue` (0xcad0c).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key != c"type" {
+            return false;
+        }
+        self.kind = kv_i(value);
+        true
+    }
+
+    /// `CWorldItem::Spawn` (0xcad6c).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        let (origin, angles, target, targetname, flags) = (v.origin, v.angles, v.target, v.targetname, v.spawnflags);
+        let item = Self::class_for(self.kind).map_or(std::ptr::null_mut(), |c| create_entity(c, origin, angles, std::ptr::null_mut()));
+        if item.is_null() {
+            engine().alert(ALERT_TYPE::at_console, &format!("unable to create world_item {}\n", self.kind));
+        } else {
+            let iv = item.v();
+            iv.target = target;
+            iv.targetname = targetname;
+            iv.spawnflags = flags;
+        }
+        remove(cx.edict);
+    }
+}
 
 // ---- func_healthcharger / func_recharge ---------------------------------------------------------------
 
