@@ -336,6 +336,7 @@ pub fn change_level() {
     // clears the chosen map too).
     let now = eng.time();
     state::with(|g| g.ts_init(now));
+    crate::bots::ts_init(); // mp.dll: nodes and bot texts (of the map that is ending)
     crate::weapons::reset_bullets();
     if next_map.is_empty() || !eng.is_map_valid(&next_map) {
         next_map = first;

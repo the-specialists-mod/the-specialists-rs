@@ -1,31 +1,43 @@
-//! Server-side bots (fake clients) used to exercise dedicated servers without a human client.
-//! Owner: rules work package.
+//! TS's bots (Windows `mp.dll` only; decomp `docs/server/bots.md`). Owner: rules work package.
 //!
-//! `ts_bot_quota N` keeps N fake clients on the server once a map is active. Each one goes
-//! through ClientConnect and ClientPutInServer like a real client and is driven every frame
-//! with `pfnRunPlayerMove`: wander, turn away from walls, walk to items, aim and fire at visible
-//! enemies, and respawn when dead. Robust beats smart. `ts_bot_stop 1` freezes them in place
-//! (no movement, no fire) for scripted tests.
+//! Layout (bots.md §16):
+//! * this module: `addbot`/`addcustombot` (`BotCreate`/`BotCreateCustom`/`BotSetup`, §2), the
+//!   `CBot` hooks (`Spawn`, `TraceAttack`, `Killed`, the kill taunt; §4, §10.1), the per-frame
+//!   driver (`pfnStartFrame`, §5.3), node learning and the node commands (§11.2–11.3), and the
+//!   port's `ts_bot_quota`.
+//! * [`brain`]: `CBotBrain` (buttons, module mask and order, view turning, usercmd; §5).
+//! * [`states`] (§6), [`modules`] (vision, buy, stunt, look around, power-up, chat; §7, §9,
+//!   §10), [`attack`] (§8), [`nav`] (`CBotNav`, §11.7), [`nodes`] (`CNodeGraph`, §11.1–11.6),
+//!   [`files`] (`bots.txt`, `bot_say.txt`; §3).
 //!
-//! TS clears the loadout at death and real clients resend it from the buy menu; bots instead get
-//! a random loadout (a main gun and a sidearm, with spare magazines) every time they spawn.
-//!
-//! On a listen server `addbot`/`addcustombot` add bots as TS's Windows server does
-//! ([`add_listen_bot`]: names from `bots.txt`, TS's models), driven by the same AI. The quota
-//! leaves those alone.
+//! A bot is a `Player` with a brain (`Player::bot`, TS's `CBot` object) and `Player::is_bot`
+//! (`m_bIsBot`, `pl+0x160`). TS thinks bots only on listen servers. Port additions: the
+//! `ts_bot_quota` bots are TS bots too, and they also think on dedicated servers (the quota is
+//! there to test dedicated servers); `ts_bot_stop 1` freezes living bots.
+
+pub mod attack;
+pub mod brain;
+pub mod files;
+pub mod modules;
+pub mod nav;
+pub mod nodes;
+pub mod states;
+
+pub use brain::Brain;
 
 use crate::commands::Args;
 use crate::player::{Player, with_player};
-use crate::rules::{self, cvars, lifecycle};
-use crate::world::{self, Cx};
+use crate::rules::{self, cvars};
+use crate::world::{self, Cx, DamageInfo};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
-use goldsrc::server::{IGNORE_MONSTERS, engine};
+use goldsrc::server::engine;
 use goldsrc::sys::*;
-use goldsrc::util::to_cstring;
 use std::cell::RefCell;
+use std::ffi::CString;
 
-const NAMES: &[&str] = &[
+/// Names of the port's quota bots ("Bot Neo", ...; the xtask scenes look for the `Bot ` prefix).
+const QUOTA_NAMES: &[&str] = &[
     "Bot Neo",
     "Bot Trinity",
     "Bot Morpheus",
@@ -44,26 +56,14 @@ const NAMES: &[&str] = &[
     "Bot Kid",
 ];
 
-/// Per-bot state (kept on the `Player`).
+/// The player models `BotCreate` picks from outside teamplay (jump table 0x1006b94c).
+const BOT_MODELS: [&str; 7] = ["seal", "merc", "gordon", "hitman", "castor", "agent", "laurence"];
+
+/// `bots.txt` and `bot_say.txt` as loaded (`g_botNames`... at 0x100db1e0).
 #[derive(Default)]
-pub struct Bot {
-    yaw: f32,
-    pitch: f32,
-    next_turn: f32,
-    /// Stuck detection: position a second ago.
-    check_at: f32,
-    check_origin: [f32; 3],
-    strafe: f32,
-    next_strafe: f32,
-    fire_toggle: bool,
-    next_fire_toggle: f32,
-    next_use: f32,
-    goal: Option<[f32; 3]>,
-    next_goal_scan: f32,
-    jump: bool,
-    /// The loadout of this life was given.
-    armed: bool,
-    next_reload: f32,
+pub struct Files {
+    pub names: files::BotNames,
+    pub say: files::BotSay,
 }
 
 #[derive(Default)]
@@ -74,598 +74,365 @@ struct Manager {
     added: u32,
     /// The last add found the server full (the quota then retries quietly).
     full: bool,
-    /// User ids of the bots `addbot`/`addcustombot` added. The quota neither counts nor kicks
-    /// them. (The engines drop fake clients on a level change anyway.)
-    manual: Vec<i32>,
-    /// `bots.txt` as TS's bot name picker sees it, reloaded on every map as TS does.
-    names: BotNames,
+    /// User ids of the quota's bots: it counts and kicks only these, and on a dedicated server
+    /// only these think.
+    quota: Vec<i32>,
 }
 
-static MGR: Global<RefCell<Manager>> = Global(RefCell::new(Manager {
-    active: false,
-    start_at: 0.0,
-    next_add: 0.0,
-    added: 0,
-    full: false,
-    manual: Vec::new(),
-    names: BotNames { names: Vec::new(), skills: Vec::new(), used: Vec::new() },
-}));
+static MGR: Global<RefCell<Option<Manager>>> = Global(RefCell::new(None));
+static FILES: Global<RefCell<Option<Files>>> = Global(RefCell::new(None));
+
+fn mgr<R>(f: impl FnOnce(&mut Manager) -> R) -> R {
+    let mut m = MGR.0.borrow_mut();
+    f(m.get_or_insert_with(Manager::default))
+}
+
+/// The loaded text files (no engine calls inside `f`).
+pub fn with_files<R>(f: impl FnOnce(&mut Files) -> R) -> R {
+    let mut m = FILES.0.borrow_mut();
+    f(m.get_or_insert_with(Files::default))
+}
 
 pub fn game_init() {
-    // `ts_bot_quota` is registered with the rules cvars.
+    // `addbot`/`addcustombot` and the bot cvars are registered with the rules commands and cvars.
+}
+
+/// The bot part of `CTSGameRules::Init` (0x1004d910, from both rules constructors and
+/// `ChangeLevel`): reset and load the node graph, then `BotLoadFiles` (0x1006bee0).
+pub fn ts_init() {
+    nodes::map_init();
+    let eng = engine();
+    let names = files::BotNames::parse(eng.load_file("bots.txt").as_deref());
+    let say = files::BotSay::parse(eng.load_file("bot_say.txt").as_deref());
+    with_files(|f| *f = Files { names, say });
 }
 
 pub fn server_activate() {
     let now = engine().time();
-    let names = BotNames::parse(&engine().load_file("bots.txt").unwrap_or_default());
-    let mut m = MGR.0.borrow_mut();
-    m.active = true;
-    m.start_at = now + 1.0;
-    m.next_add = now + 1.0;
-    m.names = names;
+    mgr(|m| {
+        m.active = true;
+        m.start_at = now + 1.0;
+        m.next_add = now + 1.0;
+    });
 }
 
 pub fn server_deactivate() {
-    MGR.0.borrow_mut().active = false;
+    mgr(|m| m.active = false);
 }
 
-/// Connected fake clients. A dropped client's edict can keep FL_FAKECLIENT and its private data
-/// (HL25 drops every bot when the last human leaves); `pfnRunPlayerMove` on it crashes the engine,
-/// so also require a live user id.
-fn fake_clients() -> Vec<*mut edict_t> {
+// ---- creation ------------------------------------------------------------------------------------
+
+/// `addbot [model]` on a listen server: `BotCreate` (0x1006b7c0). The argument is the model/team
+/// (despite the usage text); the name always comes from `bots.txt`. Afterwards `botlearn 1`
+/// when the node graph is empty.
+pub fn add_bot(model: &str) {
     let eng = engine();
-    eng.clients().filter(|&e| e.v().flags & FL_FAKECLIENT as i32 != 0 && eng.user_id(e) != -1).collect()
-}
-
-/// The quota's bots: the fake clients `addbot` didn't add.
-fn quota_bots() -> Vec<*mut edict_t> {
-    let eng = engine();
-    let manual = MGR.0.borrow().manual.clone();
-    fake_clients().into_iter().filter(|&e| !manual.contains(&eng.user_id(e))).collect()
-}
-
-/// Adds one quota bot ("Bot Neo", ...). False when the server has no free client slot (reported
-/// once per streak of failed adds: the quota retries every half second).
-pub fn add_bot() -> bool {
-    let n = MGR.0.borrow().added + 1;
-    let base = NAMES[(n as usize - 1) % NAMES.len()];
-    let name = if n as usize > NAMES.len() { format!("{base} {}", n) } else { base.to_owned() };
-    let Some(e) = create(&name) else {
-        if !std::mem::replace(&mut MGR.0.borrow_mut().full, true) {
-            engine().print("[ts] bots: no free client slot\n");
-        }
-        return false;
-    };
-    {
-        let mut m = MGR.0.borrow_mut();
-        m.added = n;
-        m.full = false;
+    let model = pick_model(model);
+    let mut skill = eng.random_float(0.1, 1.0);
+    let name = with_files(|f| f.names.pick(|lo, hi| eng.random_long(lo, hi), &mut skill));
+    if create(&name, &model, skill, true).is_some() && nodes::with(|g| g.count()) < 1 {
+        eng.server_command("botlearn 1\n");
     }
-    spawn(e, &name);
-    true
 }
 
-/// Creates the fake client and its `Player` with a bot. None when no client slot is free.
-fn create(name: &str) -> Option<*mut edict_t> {
-    let cname = to_cstring(name);
-    let e = engine().create_fake_client(&cname);
+/// `addcustombot [name] [model] [skill]` on a listen server: `BotCreateCustom` (0x1006b590). The
+/// skill is random in 0.1..1 when not positive, else kept in 0.1..3; an empty name is picked from
+/// `bots.txt` (whose per-name skill then wins).
+pub fn add_custom_bot(name: &[u8], model: &str, skill: f32) {
+    let eng = engine();
+    let model = pick_model(model);
+    let mut skill = if skill <= 0.0 {
+        eng.random_float(0.1, 1.0)
+    } else if skill as f64 >= 3.0 {
+        3.0
+    } else if skill as f64 <= 0.1 {
+        0.1
+    } else {
+        skill
+    };
+    let name = if name.is_empty() { with_files(|f| f.names.pick(|lo, hi| eng.random_long(lo, hi), &mut skill)) } else { name.to_vec() };
+    create(&name, &model, skill, true);
+}
+
+/// The model argument, else outside teamplay one of TS's seven (`RANDOM_LONG(0, 6)`).
+fn pick_model(arg: &str) -> String {
+    if !arg.is_empty() {
+        arg.to_owned()
+    } else if !rules::state::teamplay() {
+        BOT_MODELS[engine().random_long(0, 6).clamp(0, 6) as usize].to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// `CREATE_FAKE_CLIENT` and `BotSetup` (0x1006b3b0), TS's `ClientPutInServer` for bots: the
+/// `CBot` object with its skill, "<name> connected with skill <f>" (`announce`; the unclamped
+/// skill), `SetCustomDecalFrames(-1)`, `Spawn` (before the keys, so the first spawn sees no
+/// model), the `model`/`team`/`cl_lw` keys, the team change for a given model, the rules'
+/// `PlayerThink` and the `ts_playeramount` count. No `ClientConnected`, starting cash or
+/// `EF_NOINTERP`, as in TS.
+fn create(name: &[u8], model: &str, skill: f32, announce: bool) -> Option<*mut edict_t> {
+    let eng = engine();
+    let cname = CString::new(name.iter().copied().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default();
+    let e = eng.create_fake_client(&cname);
     if e.is_null() {
+        if announce {
+            eng.alert(ALERT_TYPE::at_console, "Could not find any free client slots. Try setting maxplayers to a higher value.\n");
+        }
         return None;
     }
-    // A fake client gets no connect/put-in-server from the engine: do what a real client gets.
-    rules::client_connect(e, &cname, c"127.0.0.1");
+    // `g_botNetnames[ENTINDEX(ed)]`: the netname stays this string for the bot's life.
+    e.v().netname = eng.alloc_string(&cname);
     {
         e.v().flags |= FL_FAKECLIENT as i32;
         world::create::<Player>(e.v());
     }
-    world::with::<Player, ()>(e, |p| p.bot = Some(Bot::default()));
+    world::with::<Player, ()>(e, |p| {
+        p.bot = Some(Box::new(Brain::new(skill)));
+        p.cbot = true;
+        p.is_bot = 1;
+        p.impulse.custom_decal_frames = crate::player::impulse::custom_decal_frames(-1);
+    });
+    if announce {
+        eng.alert(ALERT_TYPE::at_console, &format!("{} connected with skill {:.6}\n", cname.to_string_lossy(), skill));
+    }
+    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    eng.set_client_key(e, "model", if model.is_empty() { "seal" } else { model });
+    eng.set_client_key(e, "team", model);
+    eng.set_client_key(e, "cl_lw", "1");
+    if !model.is_empty() && rules::state::teamplay() {
+        // `CHalfLifeMultiplay::ChangePlayerTeam` is empty; teamplay's changes the team.
+        with_player(e, |p, cx| rules::teams::change_team(p, cx, model, false, false));
+    }
+    // `g_pGameRules->PlayerThink(pl)` (0x1002c370): in intermission the new bot's button state is
+    // cleared (it has pressed nothing, so the intermission isn't ended).
+    if rules::state::with(|g| g.game_over) {
+        with_player(e, |p, cx| {
+            p.ts.buttons_pressed = 0;
+            p.stunt.button_pressed = 0;
+            p.stunt.button_released = 0;
+            cx.pev().button = 0;
+        });
+    }
+    crate::entities::ts::player_amount_changed(true);
     Some(e)
 }
 
-fn spawn(e: *mut edict_t, name: &str) {
-    world::dispatch(e, |ent, cx| ent.spawn(cx));
-    rules::userinfo_changed(e);
+/// The port's quota bot ("Bot Neo", ...): created like `addbot`'s (a random model outside
+/// teamplay, a random skill in 0.1..1), but without TS's announcement, so the dedicated-server
+/// tests can tell it from an `addbot`. False when the server has no free client slot (reported
+/// once per streak of failed adds: the quota retries every half second).
+fn add_quota_bot() -> bool {
     let eng = engine();
-    eng.print(&format!("[ts] bots: added \"{name}\" (#{})\n", eng.index_of(e)));
-}
-
-/// The player models TS's `CreateBot` picks from outside teamplay (the `0x1006b5ce` jump table).
-const BOT_MODELS: [&str; 7] = ["seal", "merc", "gordon", "hitman", "castor", "agent", "laurence"];
-
-/// `bots.txt` as TS loads it (`0x1006bee0`, from the multiplay rules' constructor): up to 64
-/// names, each line cut to 63 bytes with trailing white space trimmed, blank lines skipped;
-/// `name//skill` gives that name a skill.
-#[derive(Default, Debug, PartialEq)]
-struct BotNames {
-    names: Vec<String>,
-    skills: Vec<f32>,
-    used: Vec<bool>,
-}
-
-impl BotNames {
-    fn parse(file: &[u8]) -> BotNames {
-        let mut out = BotNames::default();
-        for line in String::from_utf8_lossy(file).split('\n') {
-            if out.names.len() >= 64 {
-                break;
-            }
-            let line: String = line.chars().take(63).collect();
-            let line = line.trim_end();
-            if line.is_empty() {
-                continue;
-            }
-            let (name, skill) = match line.find("//") {
-                Some(i) => (&line[..i], scan_float(&line[i + 2..])),
-                None => (line, 0.0),
-            };
-            out.names.push(name.to_owned());
-            out.skills.push(skill);
+    let n = mgr(|m| m.added) + 1;
+    let base = QUOTA_NAMES[(n as usize - 1) % QUOTA_NAMES.len()];
+    let name = if n as usize > QUOTA_NAMES.len() { format!("{base} {n}") } else { base.to_owned() };
+    let model = pick_model("");
+    let skill = eng.random_float(0.1, 1.0);
+    let Some(e) = create(name.as_bytes(), &model, skill, false) else {
+        if !mgr(|m| std::mem::replace(&mut m.full, true)) {
+            eng.print("[ts] bots: no free client slot\n");
         }
-        out.used = vec![false; out.names.len()];
-        out
-    }
-
-    /// `0x1006c150`: an unused name, searched both ways from a random index (the upward one wins
-    /// a tie); once every name is used the flags are cleared and it picks again. "Bot" without a
-    /// `bots.txt`. A positive skill from the file replaces `skill`. `random(hi)` is
-    /// `RANDOM_LONG(0, hi)`.
-    fn pick(&mut self, mut random: impl FnMut(i32) -> i32, skill: &mut f32) -> String {
-        let count = self.names.len() as i32;
-        if count <= 0 {
-            return "Bot".to_owned();
-        }
-        loop {
-            let start = random(count - 1).clamp(0, count - 1);
-            let (mut up, mut down, mut found) = (start, start, -1);
-            while found == -1 && (up < count || down >= 0) {
-                if down >= 0 && !self.used[down as usize] {
-                    found = down;
-                }
-                if up < count && !self.used[up as usize] {
-                    found = up;
-                }
-                up += 1;
-                down -= 1;
-            }
-            if found == -1 {
-                self.used.iter_mut().for_each(|u| *u = false);
-                continue;
-            }
-            let i = found as usize;
-            self.used[i] = true;
-            if self.skills[i] > 0.0 {
-                *skill = self.skills[i];
-            }
-            return self.names[i].clone();
-        }
-    }
-}
-
-/// C `sscanf("%f")` on the start of `s`: 0 when there is no number.
-pub(crate) fn scan_float(s: &str) -> f32 {
-    let s = s.trim_start();
-    let end = s
-        .char_indices()
-        .take_while(|&(i, c)| c.is_ascii_digit() || c == '.' || (i == 0 && (c == '-' || c == '+')))
-        .last()
-        .map_or(0, |(i, c)| i + c.len_utf8());
-    s[..end].parse().unwrap_or(0.0)
-}
-
-/// TS's `CreateBot` (`0x1006b7c0`, from `addbot [model]`) and `CreateCustomBot` (`0x1006b590`,
-/// from `addcustombot [name] [model] [skill]`) on a listen server, with this port's bot AI in
-/// place of TS's (which isn't ported). The name comes from `bots.txt` unless given. The model is
-/// the argument, else outside teamplay one of TS's seven at random. The skill is random in
-/// 0.1..1 unless a positive one is given (clamped; the port's bots have no skill, so it is only
-/// printed). Then `0x1006b3b0`: "<name> connected with skill <f>", spawn, the userinfo keys
-/// `model` (`seal` without a model), `team` (the model) and `cl_lw 1`, and in teamplay a team
-/// change to the model's team. Finally `botlearn 1` if it was off. False when the server is full
-/// (TS's "Could not find any free client slots" message).
-pub fn add_listen_bot(name: Option<&str>, model: &str, skill: Option<f32>) -> bool {
-    let eng = engine();
-    let teamplay = rules::state::teamplay();
-    let model = if !model.is_empty() {
-        model.to_owned()
-    } else if !teamplay {
-        BOT_MODELS[eng.random_long(0, 6).clamp(0, 6) as usize].to_owned()
-    } else {
-        String::new()
-    };
-    let mut skill = match skill {
-        Some(s) if s > 0.0 => s.clamp(0.1, 1.0),
-        _ => eng.random_float(0.1, 1.0),
-    };
-    let name = match name.filter(|n| !n.is_empty()) {
-        Some(n) => n.to_owned(),
-        None => MGR.0.borrow_mut().names.pick(|hi| eng.random_long(0, hi), &mut skill),
-    };
-    let Some(e) = create(&name) else {
-        eng.alert(ALERT_TYPE::at_console, "Could not find any free client slots. Try setting maxplayers to a higher value.\n");
         return false;
     };
-    MGR.0.borrow_mut().manual.push(eng.user_id(e));
-    eng.alert(ALERT_TYPE::at_console, &format!("{name} connected with skill {skill:.6}\n"));
-    eng.set_client_key(e, "model", if model.is_empty() { "seal" } else { &model });
-    eng.set_client_key(e, "team", &model);
-    eng.set_client_key(e, "cl_lw", "1");
-    spawn(e, &name);
-    if teamplay && !model.is_empty() {
-        with_player(e, |p, cx| rules::teams::change_team(p, cx, &model, false, false));
-    }
-    if cvars::f(c"botlearn") <= 0.0 {
-        eng.server_command("botlearn 1\n");
-    }
+    let uid = eng.user_id(e);
+    mgr(|m| {
+        m.added = n;
+        m.full = false;
+        m.quota.push(uid);
+    });
+    eng.print(&format!("[ts] bots: added \"{name}\" (#{}) skill {skill:.2}\n", eng.index_of(e)));
     true
 }
 
-/// Called every server frame: keeps the quota and drives each bot with `pfnRunPlayerMove`.
+// ---- per frame -----------------------------------------------------------------------------------
+
+/// Connected fake clients with a live user id. Guard: HL25 drops every bot when the last human
+/// leaves, and driving a dropped client with `pfnRunPlayerMove` crashes the engine.
+fn live_fake_clients() -> Vec<*mut edict_t> {
+    let eng = engine();
+    eng.clients().filter(|&e| e.v().flags & FL_FAKECLIENT as i32 != 0 && eng.user_id(e) != -1).collect()
+}
+
+/// The quota's bots that are still connected.
+fn quota_bots() -> Vec<*mut edict_t> {
+    let eng = engine();
+    let ids = mgr(|m| m.quota.clone());
+    live_fake_clients().into_iter().filter(|&e| ids.contains(&eng.user_id(e))).collect()
+}
+
+/// The bot part of `pfnStartFrame` (0x10010e00), which runs before the rules' `Think`: on a
+/// listen server every player whose `m_bIsBot == 1` thinks, in entity order (`BotPlayerByIndex`
+/// 0x1006b360: `FL_FAKECLIENT` or `FL_CLIENT`, with private data). Port: the quota first, and
+/// on a dedicated server the quota's bots think too.
 pub fn start_frame() {
     let eng = engine();
     let now = eng.time();
-    let (active, start_at, next_add) = {
-        let m = MGR.0.borrow();
-        (m.active, m.start_at, m.next_add)
-    };
+    quota_think(now);
+    let dedicated = eng.is_dedicated();
+    let quota: Vec<i32> = if dedicated { mgr(|m| m.quota.clone()) } else { Vec::new() };
+    let frozen = cvars::f(c"ts_bot_stop") != 0.0;
+    for i in 1..=eng.max_clients() {
+        let e = eng.player(i);
+        if e.is_null() || e.is_free() || !e.has_private_data() || e.v().flags & (FL_FAKECLIENT | FL_CLIENT) as i32 == 0 {
+            continue;
+        }
+        if eng.user_id(e) == -1 || (dedicated && !quota.contains(&eng.user_id(e))) {
+            continue;
+        }
+        let Some(Some(cmd)) = with_player(e, |p, cx| if p.is_bot == 1 { brain::think(p, cx, frozen) } else { None }) else {
+            continue;
+        };
+        // `pfnRunPlayerMove`, outside the player's dispatch: the engine runs its PreThink/PostThink.
+        eng.run_player_move(e, cmd.angles, cmd.forward, cmd.side, 0.0, cmd.buttons, 0, cmd.msec);
+    }
+}
+
+/// `ts_bot_quota N` (port): keep N quota bots, adding or kicking one every half second. A quota
+/// bot that lost its brain (a client the engine kept across a level change) gets a new one.
+fn quota_think(now: f32) {
+    let eng = engine();
+    let (active, start_at, next_add) = mgr(|m| (m.active, m.start_at, m.next_add));
     if !active || now < start_at {
         return;
     }
-    let quota = cvars::f(c"ts_bot_quota").max(0.0) as usize;
+    let want = cvars::f(c"ts_bot_quota").max(0.0) as usize;
     let bots = quota_bots();
-    if bots.len() < quota && now >= next_add {
-        MGR.0.borrow_mut().next_add = now + 0.5;
-        add_bot();
-    } else if bots.len() > quota && now >= next_add {
-        MGR.0.borrow_mut().next_add = now + 0.5;
+    for &e in &bots {
+        world::with::<Player, ()>(e, |p| {
+            if p.bot.is_none() {
+                p.bot = Some(Box::new(Brain::new(1.0)));
+                p.cbot = true;
+                p.is_bot = 1;
+            }
+        });
+    }
+    if now < next_add {
+        return;
+    }
+    if bots.len() < want {
+        mgr(|m| m.next_add = now + 0.5);
+        add_quota_bot();
+    } else if bots.len() > want {
+        mgr(|m| m.next_add = now + 0.5);
         if let Some(&e) = bots.last() {
             eng.server_command(&format!("kick #{}\n", eng.user_id(e)));
         }
     }
-
-    let msec = (eng.globals().frametime * 1000.0).round().clamp(1.0, 100.0) as u8;
-    let stop = cvars::f(c"ts_bot_stop") != 0.0;
-    for e in fake_clients() {
-        // Bots created by another mod or a previous map have no Rust bot: adopt them.
-        if world::with::<Player, bool>(e, |p| p.bot.is_some()) == Some(false) {
-            world::with::<Player, ()>(e, |p| p.bot = Some(Bot::default()));
-        }
-        let cmd = with_player(e, think).flatten();
-        if let Some(mut c) = cmd {
-            // `ts_bot_stop 1`: no movement or buttons; dead and observing bots still respawn.
-            if stop && e.v().deadflag == DEAD_NO as i32 && e.v().iuser1 == 0 {
-                (c.forward, c.side, c.buttons) = (0.0, 0.0, 0);
-            }
-            eng.run_player_move(e, c.angles, c.forward, c.side, 0.0, c.buttons, 0, msec);
-        }
-    }
 }
 
-pub fn client_command(_p: &mut Player, _cx: &mut Cx, _cmd: &str, _args: &Args) -> bool {
-    false
-}
+// ---- CBot overrides and hooks -------------------------------------------------------------------
 
-struct Cmd {
-    angles: [f32; 3],
-    forward: f32,
-    side: f32,
-    buttons: u16,
-}
-
-fn angle_mod(a: f32) -> f32 {
-    let mut a = a % 360.0;
-    if a < 0.0 {
-        a += 360.0;
-    }
-    a
-}
-
-/// Turns `cur` toward `target` by at most `step` degrees.
-fn approach_angle(cur: f32, target: f32, step: f32) -> f32 {
-    let mut d = angle_mod(target - cur);
-    if d > 180.0 {
-        d -= 360.0;
-    }
-    angle_mod(cur + d.clamp(-step, step))
-}
-
-/// One bot's decision for this frame. Returns None if it has no bot state.
-fn think(p: &mut Player, cx: &mut Cx) -> Option<Cmd> {
-    let eng = engine();
+/// The head of `CBot::Spawn` (0x1006bb40): `CBotBrain::Reset`, before `CBasePlayer::Spawn`.
+pub fn spawn_pre(p: &mut Player, cx: &mut Cx) {
     let now = cx.time();
-    let me = cx.edict;
-    let ft = eng.globals().frametime.max(0.001);
-    let mut bot = p.bot.take()?;
-    let mut buttons: u16 = 0;
-    let (mut forward, mut side) = (0.0, 0.0);
-
-    let (observer, deadflag) = (cx.pev().iuser1 != 0, cx.pev().deadflag);
-    if observer || deadflag != DEAD_NO as i32 {
-        bot.armed = false;
+    let mode = rules::state::with(|g| g.mode);
+    if let Some(b) = p.bot.as_mut() {
+        b.reset(now, mode);
     }
-    if observer {
-        if lifecycle::can_respawn(p, cx) && eng.random_long(0, 20) == 0 {
-            lifecycle::respawn_command(p, cx);
-            bot = Bot { yaw: cx.pev().angles[1], ..Bot::default() };
-        }
-    } else if deadflag != DEAD_NO as i32 {
-        // Any button skips the death cam once the body settles.
-        if eng.random_long(0, 10) == 0 {
-            buttons |= IN_ATTACK as u16;
-        }
+}
+
+/// The tail of `CBot::Spawn`: a random laser-sight colour (`PlInfo` key 0: 0 for 76/101, 1 for
+/// 15/101, 2 for 10/101), as the `lasclr_<n>` command sends it.
+pub fn spawn_post(p: &mut Player, cx: &mut Cx) {
+    if !p.cbot {
+        return;
+    }
+    let r = engine().random_long(0, 100);
+    let laser = if r > 90 {
+        2
+    } else if r > 75 {
+        1
     } else {
-        if !bot.armed {
-            bot.armed = true;
-            give_loadout(p, cx);
-        }
-        let v = cx.pev();
-        let eye = rules::eye(v);
-        let origin = v.origin;
-
-        // Enemy in sight?
-        let mut enemy: Option<(f32, [f32; 3])> = None;
-        for o in rules::players() {
-            if o == me {
-                continue;
-            }
-            let ov = o.v();
-            if !rules::alive(ov) || ov.iuser1 != 0 || ov.effects & EF_NODRAW as i32 != 0 || rules::teams::same_team(me, o) {
-                continue;
-            }
-            let target = [ov.origin[0], ov.origin[1], ov.origin[2] + 16.0];
-            let d = rules::dist(eye, target);
-            if d > 3000.0 || enemy.is_some_and(|(best, _)| d >= best) {
-                continue;
-            }
-            let tr = eng.trace_line(eye, target, IGNORE_MONSTERS, me);
-            if tr.flFraction >= 1.0 || tr.pHit == o {
-                enemy = Some((d, target));
-            }
-        }
-
-        if let Some((d, target)) = enemy {
-            let ang = eng.vec_to_angles([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
-            bot.yaw = approach_angle(bot.yaw, ang[1], 540.0 * ft);
-            // vec_to_angles returns 0..360; v_angle pitch is positive looking down.
-            let pitch = if ang[0] > 180.0 { ang[0] - 360.0 } else { ang[0] };
-            bot.pitch = (-pitch).clamp(-60.0, 60.0);
-            // Only shoot once roughly facing the target (within ~8 degrees, or the body at
-            // close range).
-            let err = angle_mod(ang[1] - bot.yaw);
-            let err = err.min(360.0 - err);
-            let on_target = err < 8.0f32.max(((32.0 / d.max(1.0)).atan()).to_degrees());
-            if now >= bot.next_fire_toggle {
-                bot.fire_toggle = !bot.fire_toggle;
-                bot.next_fire_toggle = now + if bot.fire_toggle { 0.25 } else { 0.1 };
-            }
-            // Weapon handling: reload an empty magazine, switch to the other gun when out of
-            // ammo, close in when only kung fu is left.
-            let gun = &p.inv.gun;
-            let melee = gun.current == 0
-                || matches!(shared::weapons::kind_of(gun.current), shared::weapons::kind::KNIFE | shared::weapons::kind::KATANA);
-            let empty = gun.slot().is_some_and(|s| s.clip <= 0 && s.in_reload == 0);
-            if empty && gun.current_reserve() > 0 {
-                if now >= bot.next_reload {
-                    buttons |= IN_RELOAD as u16;
-                    bot.next_reload = now + 0.5;
-                }
-            } else if empty {
-                switch_from_empty(p, cx);
-            } else if bot.fire_toggle && on_target && (!melee || d < 96.0) {
-                buttons |= IN_ATTACK as u16;
-            }
-            // Fight in slow motion when holding a power-up.
-            if p.ts.held != 0 && p.active_powerup == 0 && d < 1500.0 {
-                rules::powerup::use_powerup(p, cx);
-            }
-            let close = if melee { 48.0 } else { 400.0 };
-            forward = if d > close { 300.0 } else { 0.0 };
-            if now >= bot.next_strafe {
-                bot.strafe = [-300.0, 0.0, 300.0][eng.random_long(0, 2) as usize];
-                bot.next_strafe = now + 0.6;
-            }
-            side = bot.strafe;
-        } else {
-            bot.pitch = 0.0;
-            // Items worth walking to: ground weapons and power-ups in sight.
-            if now >= bot.next_goal_scan {
-                bot.next_goal_scan = now + 1.0;
-                bot.goal = find_item(me, eye);
-                // Nothing to pick up: now and then head for the nearest enemy, so bots on big
-                // maps meet (no waypoints; wall avoidance still steers).
-                if bot.goal.is_none() && eng.random_long(0, 2) == 0 {
-                    bot.goal = nearest_enemy(me, origin);
-                }
-            }
-            if let Some(g) = bot.goal {
-                let dir = [g[0] - origin[0], g[1] - origin[1], 0.0];
-                if rules::len2d(dir) < 24.0 {
-                    bot.goal = None;
-                } else {
-                    let ang = eng.vec_to_angles(dir);
-                    bot.yaw = approach_angle(bot.yaw, ang[1], 360.0 * ft);
-                }
-                if rules::len2d(dir) < 64.0 {
-                    // Look at the item: `PlayerUse` wants it within 45° of the view.
-                    let ang = eng.vec_to_angles([g[0] - eye[0], g[1] - eye[1], g[2] - eye[2]]);
-                    let pitch = if ang[0] > 180.0 { ang[0] - 360.0 } else { ang[0] };
-                    bot.pitch = (-pitch).clamp(-89.0, 89.0);
-                    if now >= bot.next_use {
-                        buttons |= IN_USE as u16;
-                        bot.next_use = now + 0.5;
-                    }
-                }
-            }
-            forward = 400.0;
-
-            // Turn away from walls.
-            let (fwd, _, _) = eng.angle_vectors([0.0, bot.yaw, 0.0]);
-            let from = [origin[0], origin[1], origin[2]];
-            let ahead = [from[0] + fwd[0] * 72.0, from[1] + fwd[1] * 72.0, from[2]];
-            let tr = eng.trace_hull(from, ahead, IGNORE_MONSTERS, goldsrc::server::HEAD_HULL, me);
-            if tr.flFraction < 1.0 && now >= bot.next_turn {
-                bot.goal = None;
-                let turn = eng.random_float(90.0, 180.0) * if eng.random_long(0, 1) == 0 { 1.0 } else { -1.0 };
-                bot.yaw = angle_mod(bot.yaw + turn);
-                bot.next_turn = now + 0.3;
-            } else if now >= bot.next_turn && eng.random_long(0, 200) == 0 {
-                bot.yaw = angle_mod(bot.yaw + eng.random_float(-60.0, 60.0));
-                bot.next_turn = now + 1.0;
-            }
-        }
-
-        // Stuck: barely moved in a second → turn around and jump.
-        if now >= bot.check_at {
-            if rules::dist(origin, bot.check_origin) < 16.0 && forward != 0.0 {
-                bot.yaw = angle_mod(bot.yaw + 180.0 + eng.random_float(-45.0, 45.0));
-                bot.jump = true;
-                bot.goal = None;
-            }
-            bot.check_origin = origin;
-            bot.check_at = now + 1.0;
-        }
-        if bot.jump || eng.random_long(0, 400) == 0 {
-            buttons |= IN_JUMP as u16;
-            bot.jump = false;
-        }
-    }
-
-    let angles = [bot.pitch, bot.yaw, 0.0];
-    // The engine only copies the usercmd angles into v_angle while `fixangle` is clear, and
-    // nothing clears it for a fake client (it is reset when svc_setangle is sent): aim directly.
-    if deadflag == DEAD_NO as i32 && !observer {
-        let pev = cx.pev();
-        pev.fixangle = 0;
-        pev.v_angle = angles;
-        pev.angles = [-angles[0] / 3.0, angles[1], 0.0];
-    }
-    p.bot = Some(bot);
-    Some(Cmd { angles, forward, side, buttons })
-}
-
-/// Main guns and sidearms bots pick from (TS ids).
-const MAIN_GUNS: &[u8] = &[3, 5, 7, 11, 13, 15, 19, 20, 23, 26, 27, 6, 17];
-const SIDEARMS: &[u8] = &[1, 2, 9, 12, 14, 22, 28, 31];
-
-/// A random loadout for this life: a sidearm, then a main gun (selected), each with spare
-/// magazines, within the 81 inventory slots and the map's weapon restriction.
-fn give_loadout(p: &mut Player, cx: &mut Cx) {
-    use shared::weapons::{info, is_restricted};
-    let eng = engine();
-    let allowed = crate::weapons::restriction();
-    let pick = |list: &[u8]| -> Option<u8> {
-        let ok: Vec<u8> = list.iter().copied().filter(|&id| !is_restricted(id, allowed)).collect();
-        (!ok.is_empty()).then(|| ok[eng.random_long(0, ok.len() as i32 - 1) as usize])
+        0
     };
-    let mut given = Vec::new();
-    // Sometimes only a sidearm, like a light TS loadout.
-    let guns = [pick(SIDEARMS), if eng.random_long(0, 4) > 0 { pick(MAIN_GUNS) } else { None }];
-    for id in guns.into_iter().flatten() {
-        let Some(w) = info(id) else { continue };
-        if w.slots > p.inv.sv.free_slots {
-            continue;
-        }
-        if crate::weapons::give_weapon(p, cx, id, 0) {
-            crate::weapons::give_ammo(p, cx, w.ammo, w.clip.max(1) * 4);
-            given.push(id);
-        }
+    crate::messages::all(shared::protocol::Msg::PlInfo).byte(cx.index()).byte(0).byte(laser).end();
+}
+
+/// `CBot::TraceAttack` (0x1006bac0), after `CBasePlayer::TraceAttack`: a player's hit turns the
+/// wanted view toward the attacker's origin (no enemy or goal is set). TS's `GetClassPtr` would
+/// allocate a `CBaseEntity` for an attacker without private data; the port only looks.
+pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
+    let a = dmg.attacker;
+    if !p.cbot || a.is_null() || !rules::has_player(a) {
+        return;
     }
-    if eng.cvar_float(c"developer") != 0.0 {
-        let name = eng.string(cx.pev().netname).to_string_lossy().into_owned();
-        eng.print(&format!("[ts] bots: {name} spawns with {given:?} (slots used {})\n", p.slots_used));
+    let target = a.v().origin;
+    if let Some(b) = p.bot.as_mut() {
+        b.look_at(cx.pev(), target);
     }
 }
 
-/// Out of ammo for the current gun: switch to another owned gun with ammo, or kung fu.
-fn switch_from_empty(p: &mut Player, cx: &mut Cx) {
-    let gun = &p.inv.gun;
-    let cur = gun.current;
-    let next = (1..shared::weapons::MAX_WEAPONS as u8).find(|&id| {
-        let s = &gun.status[id as usize];
-        let ammo = shared::weapons::info(id).map(|w| w.ammo as usize).unwrap_or(0);
-        id != cur && s.owned && (s.clip > 0 || gun.reserve[ammo.min(shared::weapons::MAX_AMMO - 1)] > 0)
-    });
-    crate::weapons::select(p, cx, next.unwrap_or(0));
-}
-
-/// The closest living enemy, seen or not.
-fn nearest_enemy(me: *mut edict_t, origin: [f32; 3]) -> Option<[f32; 3]> {
-    rules::players()
-        .into_iter()
-        .filter(|&o| o != me)
-        .map(|o| o.v())
-        .filter(|ov| rules::alive(ov) && ov.iuser1 == 0)
-        .map(|ov| (rules::dist(origin, ov.origin), ov.origin))
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, o)| o)
-}
-
-/// The closest visible ground weapon or power-up within 600 units.
-fn find_item(me: *mut edict_t, eye: [f32; 3]) -> Option<[f32; 3]> {
+/// `CBot::Killed` (0x1006ba00), after `CBasePlayer::Killed` (whose `PlayerKilled` may already
+/// have queued the killer bot's taunt): killed by a player, 10/101 to answer from the `killed`
+/// section with the killer's name in 0.5..2 s (a player-class suicide uses the bot's own).
+pub fn killed(p: &mut Player, cx: &mut Cx, attacker: *mut edict_t) {
+    if !p.cbot {
+        return;
+    }
+    let a = if attacker.is_null() { engine().entity_of_index(0) } else { attacker };
+    if a.is_null() || !rules::has_player(a) {
+        return;
+    }
     let eng = engine();
-    let mut best: Option<(f32, [f32; 3])> = None;
-    let mut it = std::ptr::null_mut();
-    loop {
-        it = eng.find_in_sphere(it, eye, 600.0);
-        if it.is_null() {
-            break;
-        }
-        let v = it.v();
-        if v.effects & EF_NODRAW as i32 != 0 || v.solid != SOLID_TRIGGER as i32 {
-            continue;
-        }
-        let cls = eng.string(v.classname);
-        if cls != c"ts_powerup" && !crate::entities::ts::is_usable(cls) && cls != c"ts_groundammo" {
-            continue;
-        }
-        let c = [(v.absmin[0] + v.absmax[0]) * 0.5, (v.absmin[1] + v.absmax[1]) * 0.5, (v.absmin[2] + v.absmax[2]) * 0.5];
-        let d = rules::dist(eye, c);
-        if best.is_some_and(|(b, _)| d >= b) {
-            continue;
-        }
-        let tr = eng.trace_line(eye, c, IGNORE_MONSTERS, me);
-        if tr.flFraction >= 1.0 || tr.pHit == it {
-            best = Some((d, c));
+    if eng.random_long(0, 100) > 90 {
+        let name = eng.string(a.v().netname).to_bytes().to_vec();
+        let now = cx.time();
+        if let Some(b) = p.bot.as_mut() {
+            b.chat_name = name;
+            b.chat_section = files::KILLED;
+            b.next_chat = (eng.random_float(0.5, 2.0) as f64 + now as f64) as f32;
         }
     }
-    best.map(|(_, c)| c)
 }
 
+/// `CBot::OnKill(pevVictim)` (0x1006b970), from `CHalfLifeMultiplay::PlayerKilled` when the killer
+/// is a bot (`m_bIsBot != 0`) and the kill scored points: 10/101 to taunt the victim from the
+/// `offense` section in 0.5..2 s. `killer` is the killer's `Player`.
+pub fn on_kill(killer: &mut Player, victim: *mut edict_t, now: f32) {
+    if killer.is_bot == 0 {
+        return;
+    }
+    let eng = engine();
+    if eng.random_long(0, 100) > 90 {
+        let name = eng.string(victim.v().netname).to_bytes().to_vec();
+        // Guard: the `CBot` members exist only on a bot; TS's flag and class always agree.
+        if let Some(b) = killer.bot.as_mut() {
+            b.chat_name = name;
+            b.chat_section = files::OFFENSE;
+            b.next_chat = (eng.random_float(0.5, 2.0) as f64 + now as f64) as f32;
+        }
+    }
+}
+
+/// The node-learning block of `CBasePlayer::PreThink` (0x1005fed2), for every living player that
+/// isn't observing: while `botlearn > 0`, a node at the player's origin every 0.1 s.
+pub fn learn(p: &mut Player, cx: &mut Cx) {
+    let v = cx.pev();
+    if v.iuser1 != 0 || v.deadflag > DEAD_NO as i32 {
+        return;
+    }
+    let (origin, ladder) = (v.origin, nav::on_ladder(v));
+    nodes::learn(&mut p.next_node_learn, cx.time(), origin, ladder);
+}
+
+/// The node commands of `pfnClientCommand` (0x1000f8a0): `testpath`, `resetnodes`, `loadnodes`,
+/// `savenodes`, `addnode`. Any client may use them (TS has no access check).
+pub fn client_command(_p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bool {
+    if !matches!(cmd, "testpath" | "resetnodes" | "loadnodes" | "savenodes" | "addnode") {
+        return false;
+    }
+    let argv: Vec<String> = (0..args.argc()).map(|i| args.argv(i).to_string_lossy().into_owned()).collect();
+    let v = cx.pev();
+    let playing = rules::alive(v) && v.iuser1 == 0;
+    let (origin, ladder) = (v.origin, nav::on_ladder(v));
+    nodes::client_command(cmd, &argv, playing, origin, ladder)
+}
+
+/// Finds a TS content directory (`ts_original`, `ts_custom`) next to one of the checkout's
+/// parents, as xtask does (tests only).
 #[cfg(test)]
-mod tests {
-    use super::{BotNames, approach_angle, scan_float};
-
-    #[test]
-    fn bots_txt_names_and_skills() {
-        let b = BotNames::parse(b"Lombardi\r\n\r\n  \nWinters//0.5\nLe Marc  \n");
-        assert_eq!(b.names, ["Lombardi", "Winters", "Le Marc"]);
-        assert_eq!(b.skills, [0.0, 0.5, 0.0]);
-        let many: String = (0..100).map(|i| format!("n{i}\n")).collect();
-        assert_eq!(BotNames::parse(many.as_bytes()).names.len(), 64, "TS keeps 64");
-        assert_eq!(scan_float(" 0.25x"), 0.25);
-        assert_eq!(scan_float("abc"), 0.0);
-    }
-
-    #[test]
-    fn bot_name_picker() {
-        let mut none = BotNames::parse(b"");
-        let mut skill = 0.3;
-        assert_eq!(none.pick(|_| 0, &mut skill), "Bot");
-        let mut b = BotNames::parse(b"a\nb//0.9\nc\n");
-        // Start at 1: unused, taken; the file's skill replaces the random one.
-        assert_eq!(b.pick(|_| 1, &mut skill), "b");
-        assert_eq!(skill, 0.9);
-        // Start at 1 again: 1 is used; one step out both ways, the upward one wins.
-        assert_eq!(b.pick(|_| 1, &mut skill), "c");
-        assert_eq!(b.pick(|_| 1, &mut skill), "a");
-        // All used: the flags are cleared and it picks again.
-        assert_eq!(b.pick(|_| 2, &mut skill), "c");
-        // Out-of-range randoms never index out of bounds.
-        assert_eq!(b.pick(|_| 99, &mut skill), "b");
-    }
-
-    #[test]
-    fn turning() {
-        assert_eq!(approach_angle(10.0, 20.0, 5.0), 15.0);
-        assert_eq!(approach_angle(350.0, 10.0, 30.0), 10.0, "wraps the short way");
-        assert_eq!(approach_angle(10.0, 350.0, 5.0), 5.0);
-    }
+pub fn testdata_content_dir(name: &str) -> Option<std::path::PathBuf> {
+    let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    here.ancestors().map(|a| a.join(name)).find(|d| d.join("maps").is_dir())
 }

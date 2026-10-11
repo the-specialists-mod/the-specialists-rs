@@ -1,0 +1,158 @@
+map ts_japa 97
+row 0 b759d341e9ca838f
+row 1 809f85301cc097f0
+row 2 366b83806dcd4148
+row 3 9db749b1e6ceba21
+row 4 7d9558dfd62e38a9
+row 5 ee239f13f791eabc
+row 6 bf6ea07f3fe1a445
+row 7 d05bc3cda1e7a79a
+row 8 8f15504ddc1c6c23
+row 9 1d0254c09f72be97
+row 10 b7aa6026519b39df
+row 11 baeb452690cb7788
+row 12 c7dacb6b1d12e7b7
+row 13 bd433401e12f1f0d
+row 14 d66a6919db25d42b
+row 15 46bc24130c6f396f
+row 16 a21e7f943f9d8a03
+row 17 bfe2e030a85aa737
+row 18 fdd214aeb2d84bcc
+row 19 b232e5c6943c4dac
+row 20 9205e2ea9c263434
+row 21 bfe2e030a85aa737
+row 22 0541319eccb17976
+row 23 cd15a9e2db459598
+row 24 2783695312e9729d
+row 25 3db02c547423edc0
+row 26 b99c9b6ffb3c2f42
+row 27 58e6e45130e0d6f1
+row 28 f72ebf93f3528778
+row 29 8ce9182b8c91aa33
+row 30 d500eabcd4f516ba
+row 31 1ec238e1959cfc87
+row 32 b895e9bbf765a386
+row 33 0050028b57111e88
+row 34 f08d98b6bd3aed7a
+row 35 e89f212f3875d2cb
+row 36 0d02d2ea33a8bfec
+row 37 732caeab3c7f5dbd
+row 38 acf55a4297f363c2
+row 39 33791134ce80d163
+row 40 9f91d9b982e5c30c
+row 41 1b269922507e2a0d
+row 42 66e6e56a68615db0
+row 43 0ff966a323e6aa0e
+row 44 742b07c4a6f0022e
+row 45 b189bc0977461bce
+row 46 144ba7ea2fd0ced4
+row 47 04a3f57d046c3534
+row 48 8e70977f9c59f995
+row 49 afc64b8cfaf8a93e
+row 50 3c3005ec9342d2c2
+row 51 01f31b8b38c0d912
+row 52 107eb5ef4b1657a0
+row 53 f90baccb3c06ab76
+row 54 0caa04e19c5cad00
+row 55 e50db40fb9c0941a
+row 56 187c931bb552a0fc
+row 57 9e8b6c1d9b4fe25a
+row 58 5338b98f6b139552
+row 59 a6527cda475d6b8e
+row 60 d9730994d9ae9f35
+row 61 b9ee7e42ea503783
+row 62 f9f4d932e8b66c68
+row 63 bdec4d8c2eda70c8
+row 64 90d8fdf1e733f2e5
+row 65 ef94caa6abe4b57b
+row 66 c366c4906cb5a8ec
+row 67 cc1df8457c5c19e4
+row 68 8571a9dace2cdf7f
+row 69 e5325ccac7f56523
+row 70 000064e686968660
+row 71 90da7d8ae057e482
+row 72 251abe2e1469557e
+row 73 04847a1315c08199
+row 74 249db4875c0a9785
+row 75 7fccdee9cd7487c1
+row 76 7010832d7ad0c09e
+row 77 8b3ae935cc8b44e0
+row 78 e0ad189a039acf05
+row 79 308cbdc05c998384
+row 80 06b4b3cd2b25205e
+row 81 e24159af63b372a6
+row 82 bfe2e030a85aa737
+row 83 1356df937e3d6c00
+row 84 b9124ca39e72d4c3
+row 85 3c477b191288e5c3
+row 86 1f6db7fc34b68355
+row 87 ce286f29641de973
+row 88 d07424c8b25d7a64
+row 89 b0ab4923aba53ed0
+row 90 e8e0b741eb2f2456
+row 91 bfe2e030a85aa737
+row 92 c300f603bf861b00
+row 93 746e5487b3bf8da3
+row 94 bfe2e030a85aa737
+row 95 b7dcc4ba78f1f45a
+row 96 bc65c29fa8d5c0a2
+path 0 11 1 1 0,3,11
+path 0 14 0 1 -
+path 0 15 0 1 -
+path 0 17 0 1 -
+path 0 21 0 1 -
+path 0 22 1 1 0,4,22
+path 0 31 0 1 -
+path 0 32 0 1 -
+path 0 33 0 1 -
+path 0 34 0 1 -
+path 0 35 0 1 -
+path 0 36 0 1 -
+path 0 37 0 1 -
+path 0 38 0 1 -
+path 0 39 0 1 -
+path 0 40 0 1 -
+path 0 41 0 1 -
+path 0 42 0 1 -
+path 0 43 0 1 -
+path 0 44 0 1 -
+path 0 45 0 1 -
+path 0 46 0 1 -
+path 1 4 1 0 1,4
+path 1 26 1 0 1,26
+path 2 8 1 0 2,8
+path 2 19 1 1 2,5,19
+path 2 30 1 0 2,30
+path 3 1 1 0 3,1
+path 3 12 1 1 3,4,12
+path 3 23 1 0 3,23
+path 4 5 1 0 4,5
+path 4 16 1 0 4,16
+path 4 27 1 0 4,27
+path 5 9 1 0 5,9
+path 5 20 1 0 5,20
+path 6 2 1 0 6,2
+path 6 13 1 0 6,13
+path 6 24 1 0 6,24
+path 7 6 1 0 7,6
+path 7 28 1 1 7,5,28
+path 8 10 1 0 8,10
+path 9 3 1 0 9,3
+path 9 25 1 1 9,5,25
+path 10 7 1 0 10,7
+path 10 18 1 1 10,19,18
+path 10 29 1 1 10,5,29
+path 11 0 1 2 11,6,1,0
+path 11 22 1 0 11,22
+path 12 4 1 0 12,4
+path 12 26 1 1 12,5,26
+path 13 8 1 0 13,8
+path 13 19 1 0 13,19
+path 13 30 1 1 13,5,30
+path 16 9 1 1 16,2,9
+path 16 20 1 1 16,4,20
+path 18 6 1 1 18,19,6
+path 18 28 1 2 18,19,5,28
+path 19 10 1 0 19,10
+path 20 3 1 1 20,5,3
+path 20 25 1 0 20,25

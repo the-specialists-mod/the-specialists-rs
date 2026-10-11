@@ -25,6 +25,10 @@
 //! cargo xtask meck    [--release] [<fwgs-root>...]
 //!                                                 grenades on MecklenburgV_Rain_Final: a grenade
 //!                                                 kill and broken func_breakables (also run by play)
+//! cargo xtask bots    [--release] [<fwgs-root>...]
+//!                                                 TS's bot AI on ts_dojo: testpath, four addbot bots
+//!                                                 roaming the node graph and fighting, botlearn
+//!                                                 (also run by play)
 //! cargo xtask all     [--release]                 test, then play
 //! cargo xtask client  [--release] <server-root> [--map M] [--port P]
 //!                                                 FWGS client (Rust client library) joins a dedicated
@@ -103,6 +107,11 @@ fn main() {
                 exit(1);
             }
         }
+        "bots" => {
+            if !ctx.bots_all(&play_roots(&args)) {
+                exit(1);
+            }
+        }
         "play" => {
             if !ctx.play_all(&play_roots(&args)) {
                 exit(1);
@@ -151,7 +160,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|all|client|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|all|client|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }
@@ -300,11 +309,17 @@ impl Ctx {
 
     /// `play`: the gameplay check on each FWGS root.
     fn play_all(&self, roots: &[Root]) -> bool {
-        self.parallel(roots, |r, i| self.play(r, 27215 + 10 * i as u16) & self.meck(r, 27315 + 10 * i as u16))
+        self.parallel(roots, |r, i| {
+            self.play(r, 27215 + 10 * i as u16) & self.meck(r, 27315 + 10 * i as u16) & self.ts_bots(r, 27415 + 10 * i as u16)
+        })
     }
 
     fn meck_all(&self, roots: &[Root]) -> bool {
         self.parallel(roots, |r, i| self.meck(r, 27315 + 10 * i as u16))
+    }
+
+    fn bots_all(&self, roots: &[Root]) -> bool {
+        self.parallel(roots, |r, i| self.ts_bots(r, 27415 + 10 * i as u16))
     }
 }
 
@@ -782,6 +797,79 @@ fn addbot_checks(text: &str, dumps: &[(String, Vec<PlayerStatus>)]) -> Vec<(&'st
     )]
 }
 
+/// Node paths `testpath` prints on ts_dojo, start first. The original TS 3.0 (Windows `mp.dll`
+/// under FWGS win32) prints all three. The decomp's `scripts/ndm.py` replica of `FindPath` gives
+/// the first two; for 89 → 25 it rounds the walk's heuristic to a float, which mp.dll's x87 code
+/// doesn't, and gets `89,87,25` (the bots package's unit tests compare every pair against the
+/// replica with that rounding removed).
+const TESTPATHS: [(i32, i32, &str); 3] = [(0, 50, "path:0,47,50 "), (10, 100, "path:10,15,63,84,100 "), (89, 25, "path:89,88,25 ")];
+
+/// TS's bot AI with `addbot` bots on ts_dojo, on its own listen server (the play scene's quota
+/// kicks wait behind its script, and `maxplayers 8` leaves no room). The host joins, spawns and
+/// suicides, so it watches as an observer:
+/// 1. `testpath` on the shipped ts_dojo graph with `botlearn 2`, which prints the path
+///    ([`TESTPATHS`]).
+/// 2. Four `addbot`s play for 40 s. `botlearn 2` makes TS print every node path the bots plan
+///    (`(debug)arrived` + `path:...`), so the roaming is seen to use the graph.
+/// 3. `resetnodes`: with `botlearn 2` the bots' own walking learns a new graph (`(debug)N nodes`).
+///    Then `loadnodes` puts the shipped graph back and `botlearn 0`. (`savenodes` isn't run: the
+///    roots link the content's `maps` directory.)
+fn script_ts_bots() -> String {
+    let mut s = format!("kill\n{}echo XTASK: testpath\nbotlearn 2\n", secs(2.0));
+    for (a, b, _) in TESTPATHS {
+        s += &format!("testpath {a} {b}\n");
+    }
+    s += &secs(2.0);
+    s += "echo XTASK: tsbots\naddbot\naddbot\naddbot\naddbot\n";
+    for i in 0..8 {
+        s += &secs(5.0);
+        s += &status(&format!("tsbots {i}"));
+    }
+    s += &format!("echo XTASK: learn\nresetnodes\n{}echo XTASK: learned\nloadnodes\nbotlearn 0\n", secs(6.0));
+    s
+}
+
+fn ts_bots_checks(text: &str, dumps: &[(String, Vec<PlayerStatus>)], host_name: &str) -> Vec<(&'static str, bool)> {
+    let section = |from: &str, to: &str| text.split_once(from).map_or("", |(_, a)| a.split_once(to).map_or(a, |(b, _)| b)).to_owned();
+    // The client may print the replies after the bots have joined (and planned paths of their
+    // own), so the whole scene is searched for them.
+    let testpath = section("XTASK: testpath", "XTASK: learn");
+    let paths: Vec<&str> = testpath.lines().filter_map(|l| l.find("path:").map(|i| &l[i..])).collect();
+    say!("   testpath: {:?}", TESTPATHS.iter().map(|t| (t.2, paths.contains(&t.2))).collect::<Vec<_>>());
+    let tsbots = section("XTASK: tsbots", "XTASK: learn");
+    let planned = tsbots.lines().filter(|l| l.contains("(debug)arrived")).count();
+    // Movement of the TS bots (bots.txt names) within a life, as for the quota bots.
+    let bot_dumps: Vec<&Vec<PlayerStatus>> = dumps.iter().filter(|d| d.0.starts_with("tsbots ")).map(|d| &d.1).collect();
+    let mut moved: std::collections::BTreeMap<String, f32> = Default::default();
+    for w in bot_dumps.windows(2) {
+        for a in w[0].iter().filter(|p| p.idx != 1 && p.state == "alive") {
+            if let Some(b) = w[1].iter().find(|b| b.idx == a.idx && b.name == a.name && b.deaths == a.deaths && b.state == "alive") {
+                let d = ((a.org[0] - b.org[0]).powi(2) + (a.org[1] - b.org[1]).powi(2)).sqrt();
+                let m = moved.entry(a.name.clone()).or_default();
+                *m = m.max(d);
+            }
+        }
+    }
+    let moving = moved.values().filter(|&&d| d > 64.0).count();
+    let names: Vec<String> =
+        bot_dumps.last().map(|d| d.iter().filter(|p| p.idx != 1).map(|p| p.name.clone()).collect()).unwrap_or_default();
+    let kills = tsbots
+        .lines()
+        .filter(|l| l.contains(" killed ") && !l.contains(host_name) && names.iter().any(|n| l.contains(&format!("{n} killed "))))
+        .count();
+    let learn = section("XTASK: learn", "XTASK: learned");
+    let learned = (1..=3).all(|n| learn.contains(&format!("(debug){n} nodes")));
+    say!("   TS bots: {} planned node paths, largest moves {moved:?}, kills {kills}; learning after resetnodes: {learned}", planned);
+    vec![
+        ("testpath prints the node paths of scripts/ndm.py's FindPath replica", TESTPATHS.iter().all(|t| paths.contains(&t.2))),
+        (
+            "four addbot bots roam over the node graph (planned paths), move and fight",
+            names.len() >= 4 && planned >= 2 && moving >= 2 && moving + 1 >= moved.len() && kills >= 1,
+        ),
+        ("botlearn 2 learns nodes from the bots' walk after resetnodes", learned),
+    ]
+}
+
 /// The Escape scene, last in a script: `cancelselect` is what Escape runs in game on Steam GoldSrc
 /// and FWGS 0.21. With no weapon menu open it sends `escape` (the engine's main menu); with one
 /// open it closes it first, so the scene runs it twice.
@@ -1204,6 +1292,23 @@ impl Ctx {
         ];
         say!("   func_breakables broken by the host's grenades: {broken1} + {broken2}");
         self.report(root, "meck", &run, &checks)
+    }
+
+    /// TS's bot AI ([`script_ts_bots`]).
+    fn ts_bots(&self, root: &Root, port: u16) -> bool {
+        say!("== {}: TS bots on ts_dojo (listen server, port {port})", root.name);
+        let cfg = script_start("ts_dojo") + &script_join_and_spawn() + &status("spawned") + &script_ts_bots();
+        let run = self.run_script(root, "bots", &cfg, port, Duration::from_secs(3), Duration::from_secs(300));
+        let text = &run.text;
+        for line in text.lines().filter(|l| l.contains("XTASK:") && !l.contains("XTASK: status") || l.contains("connected with skill")) {
+            say!("   | {}", line.trim_end());
+        }
+        let dumps = status_dumps(text);
+        let host_name = dumps.iter().find(|d| d.0 == "spawned").and_then(|d| d.1.iter().find(|p| p.idx == 1)).map(|p| p.name.clone());
+        let mut checks = vec![("the host joined", host_name.is_some())];
+        checks.extend(ts_bots_checks(text, &dumps, &host_name.unwrap_or_default()));
+        checks.push(("the script finished, no panic or crash", run.done && !run.exited && !crashed(text)));
+        self.report(root, "bots", &run, &checks)
     }
 }
 

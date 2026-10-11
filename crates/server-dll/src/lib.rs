@@ -331,8 +331,9 @@ unsafe extern "C" fn player_post_think(e: *mut edict_t) {
 }
 
 unsafe extern "C" fn start_frame() {
-    rules::start_frame();
+    // mp.dll's `pfnStartFrame` (0x10010e00) thinks the bots before the rules' `Think`.
     bots::start_frame();
+    rules::start_frame();
 }
 
 unsafe extern "C" fn get_game_description() -> *const c_char {

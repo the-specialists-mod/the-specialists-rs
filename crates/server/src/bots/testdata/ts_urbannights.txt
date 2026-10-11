@@ -1,0 +1,6 @@
+map ts_urbannights 196
+path 0 12 0 1 -
+path 0 14 0 1 -
+path 0 15 0 1 -
+path 0 16 0 1 -
+path 0 17 0 1 -

@@ -384,6 +384,10 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
             k.held = pw::SLOWMO;
             k.held_secs = (k.held_secs + 1).min(3);
         }
+        // mp.dll (0x1005b18a): a bot that scored the kill may taunt the victim (`CBot::OnKill`).
+        if points > 0 {
+            other(k.e, |kp| crate::bots::on_kill(kp, victim, now));
+        }
 
         // Team kills: 3 within rolling 30 s windows → kick or ban.
         let mut kick = false;
@@ -684,6 +688,7 @@ pub fn set_player_the_one(p: &mut Player, cx: &mut Cx) {
     p.superjump = true;
     eng.set_physics_key(e, c"mj", c"1");
     // SetPlayerSpeed(330).
+    p.player_speed = 330.0;
     cx.pev().maxspeed = 330.0;
     super::set_client_maxspeed(e, 330.0);
     msg::one(Msg::PwUp, e, |w| PwUp { bits: pw::KUNGFU as i16, secs: 0 }.write(w));

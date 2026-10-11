@@ -37,7 +37,18 @@ pub struct Player {
     pub impulse: impulse::ImpulseState,
     /// The HEV suit's sentence queue (`suit.rs`).
     pub suit: suit::SuitQueue,
-    pub bot: Option<crate::bots::Bot>,
+    /// TS's `CBot` part (`CBotBrain` at `bot+0xb78`): the bot AI, `None` for a plain player.
+    pub bot: Option<Box<crate::bots::Brain>>,
+    /// The object is a `CBot` (its class: `IsNetClient()` is false). Never cleared, unlike
+    /// [`is_bot`](Self::is_bot).
+    pub cbot: bool,
+    /// `m_bIsBot` (`pl+0x160`): set by `BotSetup`, cleared by `TSPlayerDisconnect`. `Spawn` turns
+    /// it into `FL_FAKECLIENT`, and only bots with it think.
+    pub is_bot: i32,
+    /// `pl+0x788`: the next node-learning time (`botlearn`, mp.dll's PreThink); `TSInit` zeroes it.
+    pub next_node_learn: f32,
+    /// `m_flPlayerSpeed` (`pl+0x550`): what `SetPlayerSpeed` last set (the bots' walking speed).
+    pub player_speed: f32,
 
     // ---- shared fields -------------------------------------------------------------------------
     /// Slow-motion target; `pev->fuser1` eases toward it (rules writes, everyone reads fuser1).
@@ -67,6 +78,8 @@ pub struct Player {
 
 impl Entity for Player {
     fn spawn(&mut self, cx: &mut Cx) {
+        // `CBot::Spawn` (0x1006bb40) resets the brain before `CBasePlayer::Spawn`.
+        crate::bots::spawn_pre(self, cx);
         let e = engine();
         let edict = cx.edict;
         let pev = cx.pev();
@@ -77,7 +90,9 @@ impl Entity for Player {
         pev.takedamage = DAMAGE_AIM as f32;
         pev.solid = SOLID_SLIDEBOX as i32;
         pev.movetype = MOVETYPE_WALK as i32;
-        pev.flags = FL_CLIENT as i32 | (pev.flags & FL_FAKECLIENT as i32);
+        // `flags |= FL_FAKECLIENT` when `m_bIsBot` is set (0x8f604); the engine's own fake-client
+        // flag is kept too.
+        pev.flags = FL_CLIENT as i32 | (pev.flags & FL_FAKECLIENT as i32) | if self.is_bot != 0 { FL_FAKECLIENT as i32 } else { 0 };
         pev.deadflag = DEAD_NO as i32;
         pev.friction = 1.0;
         pev.gravity = 1.0;
@@ -108,6 +123,7 @@ impl Entity for Player {
         crate::entities::stock::drive::on_spawn(self, cx);
         impulse::on_spawn(self);
         hud::reset(self);
+        crate::bots::spawn_post(self, cx);
     }
 
     /// `CBaseEntity::Think` (0xe2c50; `CBasePlayer` doesn't override it): `m_pfnThink`, if set.
@@ -122,6 +138,7 @@ impl Entity for Player {
 
     fn trace_attack(&mut self, cx: &mut Cx, dmg: &DamageInfo) {
         damage::trace_attack(self, cx, dmg);
+        crate::bots::trace_attack(self, cx, dmg); // `CBot::TraceAttack` (0x1006bac0)
     }
 
     fn take_damage(&mut self, cx: &mut Cx, dmg: &DamageInfo) -> bool {
@@ -154,6 +171,8 @@ impl Player {
         crate::entities::stock::drive::pre_think(self, cx, buttons & !last);
         crate::rules::pre_think(self, cx);
         crate::stunt::pre_think(self, cx);
+        // mp.dll's node learning, between `UpdatePlayerState` and `CheckForWires` (0x1005fed2).
+        crate::bots::learn(self, cx);
         crate::weapons::pre_think(self, cx);
     }
 

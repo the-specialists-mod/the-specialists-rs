@@ -186,10 +186,10 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
         let lms = state::lms();
         let me_alive = alive(cx.pev());
         let my_respawn = p.respawn_at;
-        // `UTIL_FindEntityByClassname(.., "player")` + `IsNetClient()`: every `CBasePlayer`,
-        // players who left included (the engine drops a message to a free slot).
+        // `UTIL_FindEntityByClassname(.., "player")` + `IsNetClient()`: every `CBasePlayer` but
+        // the bots, players who left included (the engine drops a message to a free slot).
         for o in super::slot_players() {
-            if o == e {
+            if o == e || !super::is_net_client(o) {
                 continue;
             }
             if team && !teams::same_team(o, e) {
@@ -423,8 +423,8 @@ extern "C" fn cmd_givepowerup() {
 
 /// `addbot [model]` (Windows `mp.dll` `0x10026110`): on a dedicated server only "Bots only in
 /// listen servers." (all the Linux `ts_i386.so`, which is dedicated-only, has: 0xc5520). On a
-/// listen server, `addbot help` prints the usage and anything else adds a bot (`CreateBot`,
-/// [`crate::bots::add_listen_bot`]).
+/// listen server, `addbot help` prints the usage and anything else adds a bot (`BotCreate`,
+/// [`crate::bots::add_bot`]: the argument is the model, not the name).
 extern "C" fn cmd_addbot() {
     let e = engine();
     if e.is_dedicated() {
@@ -432,12 +432,13 @@ extern "C" fn cmd_addbot() {
     } else if e.cmd_argv(1) == c"help" {
         e.alert(ALERT_TYPE::at_console, "Usage: addbot [botname]\n");
     } else {
-        crate::bots::add_listen_bot(None, &e.cmd_argv(1).to_string_lossy(), None);
+        crate::bots::add_bot(&e.cmd_argv(1).to_string_lossy());
     }
 }
 
 /// `addcustombot [name] [model] [skill]` (Windows `mp.dll` `0x100261a0`; Linux 0xc5550 as
-/// `addbot`): as [`cmd_addbot`], with `CreateCustomBot`'s name, model and skill (`atof`).
+/// `addbot`): as [`cmd_addbot`], with `BotCreateCustom`'s name, model and skill
+/// ([`crate::bots::add_custom_bot`]). The arguments are read last to first, as TS does.
 extern "C" fn cmd_addcustombot() {
     let e = engine();
     if e.is_dedicated() {
@@ -445,9 +446,9 @@ extern "C" fn cmd_addcustombot() {
     } else if e.cmd_argv(1) == c"help" {
         e.alert(ALERT_TYPE::at_console, "Usage: addcustombot [botname] [team] [skill]\n");
     } else {
-        let arg = |i| e.cmd_argv(i).to_string_lossy().into_owned();
-        let skill = crate::bots::scan_float(&arg(3));
-        crate::bots::add_listen_bot(Some(&arg(1)), &arg(2), Some(skill));
+        let skill = crate::bots::files::scan_f32(e.cmd_argv(3).to_bytes()).unwrap_or(0.0); // (float)atof
+        let model = e.cmd_argv(2).to_string_lossy().into_owned();
+        crate::bots::add_custom_bot(e.cmd_argv(1).to_bytes(), &model, skill);
     }
 }
 

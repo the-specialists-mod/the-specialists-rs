@@ -111,8 +111,8 @@ fn client_disconnected(e: *mut edict_t, idx: i32) {
         // = -1).
         p.ts.game_hud_initialized = false;
         p.hud.next_update = -1.0;
-        // Port-only bot bookkeeping.
-        p.bot = None;
+        // `m_bIsBot` off (the object stays a `CBot`, so its brain and `IsNetClient` are kept).
+        p.is_bot = 0;
         p.joined = false;
     });
     state::with(|g| {
@@ -259,6 +259,9 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     p.superjump = superjump_map;
     p.respawn_at = 0.0;
     p.slots_used = 0;
+    p.next_node_learn = 0.0;
+    // `SetPlayerSpeed(330)`.
+    p.player_speed = 330.0;
     crate::weapons::ts_init(p);
     p.ts.protect_until = now + 1.0;
     p.ts.init_hud = true;
@@ -302,8 +305,11 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     if first {
         // ClientPutInServer: GiveCash(atoi(initial_cash.string)), EF_NOINTERP.
         p.ts.put_in_server = true;
-        give_cash(p, cvars::INITIAL_CASH);
-        cx.pev().effects |= EF_NOINTERP;
+        // `BotSetup` (0x1006b3b0), TS's put-in-server for bots, gives neither.
+        if !p.cbot {
+            give_cash(p, cvars::INITIAL_CASH);
+            cx.pev().effects |= EF_NOINTERP;
+        }
     }
 
     if state::teamplay() {
@@ -1041,6 +1047,8 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         p.death_think = true;
         v.nextthink = (now as f64 + 0.1) as f32;
     }
+    // `CBot::Killed` (0x1006ba00) after `CBasePlayer::Killed`: the bot's answer to its killer.
+    crate::bots::killed(p, cx, dmg.attacker);
 }
 
 /// `Killed`'s roll for the killer's TSMBlur (0x8ed73..0x8ede1): `RandomLong(0, 100) <= 0x31`;

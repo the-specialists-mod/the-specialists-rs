@@ -647,6 +647,15 @@ pub fn select(p: &mut Player, cx: &mut Cx, id: u8) {
     host::with_host(p, cx, |gun, h| gun.switch_to(id, h));
 }
 
+/// `CTSGun::GetBetterWeapon(excluded)` (0x80f40) on the player's gun: draw the first owned weapon
+/// in `g_iWeaponPriority` other than `excluded` (the bots' weapon switch). Nothing without the gun.
+pub fn get_better_weapon(p: &mut Player, cx: &mut Cx, excluded: u8) {
+    if !gun_active(p) {
+        return;
+    }
+    host::with_host(p, cx, |gun, h| gun.get_better_weapon(excluded, h));
+}
+
 /// The tail of `CBasePlayer::RemoveAllItems(TRUE)` (0xd8cec), once the items are gone:
 /// no view or weapon model, `pev->weapons = 0` (the HEV suit bit too, so the geiger counter
 /// stops), `UpdateClientData` inline (0xd8eb5, throttled as usual), and `CurWeapon 0,0,0` to the

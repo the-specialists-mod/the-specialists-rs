@@ -36,6 +36,7 @@ pub fn sync_speed(p: &mut Player, cx: &mut Cx) {
     p.inv.sv.speed_for = Some(free);
     let speed = if free < SLOTS { shared::ts::speed_for_free_slots(free).round_ties_even() } else { 330.0 };
     let speed = speed.clamp(0.0, 330.0);
+    p.player_speed = speed; // `m_flPlayerSpeed`
     let pev = cx.pev();
     if pev.maxspeed != speed {
         pev.maxspeed = speed;

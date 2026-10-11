@@ -135,6 +135,9 @@ pub fn install() {
     e.server_command("exec game.cfg\n");
     e.server_execute();
     state::with(|g| g.install());
+    // mp.dll's `CTSGameRules::Init` (from the rules' constructor) also loads the node graph and
+    // the bot texts.
+    crate::bots::ts_init();
     crate::entities::ts::map_init();
     if !state::single_player() {
         voice::precache();
@@ -292,6 +295,13 @@ pub fn slot_players() -> Vec<*mut edict_t> {
 /// [`ts_flags`]). A player who left still passes all of them until the slot's next client spawns.
 pub fn has_player(e: *mut edict_t) -> bool {
     !e.is_null() && !e.is_free() && e.has_private_data() && engine().string(e.v().classname) == c"player"
+}
+
+/// `IsNetClient()` (vtable slot 49): true for any `CBasePlayer` but TS's bots, whose `CBot`
+/// (mp.dll vtable 0x10094a9c) returns 0. A player being dispatched further up the stack counts
+/// as a net client (callers skip the player they run for).
+pub fn is_net_client(e: *mut edict_t) -> bool {
+    has_player(e) && !other(e, |p| p.cbot).unwrap_or(false)
 }
 
 /// `pev->flags` as TS sees them. `CBasePlayer::Spawn` (0x8f604) sets `FL_CLIENT` and nothing in

@@ -65,7 +65,7 @@ pub fn parse(text: &str) -> Option<VoteCmd> {
 }
 
 impl Votes {
-    /// `CheckVotes` tally: counts every player (`IsNetClient`, so bots too) in `voters`, groups
+    /// `CheckVotes` tally: counts every player (`IsNetClient`, so not bots) in `voters`, groups
     /// the records of those players by map, and sets `chosen` when the leading map has
     /// `min_votes(players)`. On a tie the map that reached the count first wins.
     pub fn tally(&mut self, voters: impl IntoIterator<Item = usize>) {
@@ -175,8 +175,13 @@ pub fn check_votes(now: f32) {
     }
     let eng = engine();
     // `UTIL_FindEntityByClassname("player")` + `IsNetClient`: players who left still count (with
-    // their vote cleared), and index 32 never does (`< 0x20`).
-    let voters: Vec<usize> = super::slot_players().into_iter().map(|e| eng.index_of(e) as usize).filter(|&i| i < 0x20).collect();
+    // their vote cleared), bots don't, and index 32 never does (`< 0x20`).
+    let voters: Vec<usize> = super::slot_players()
+        .into_iter()
+        .filter(|&e| super::is_net_client(e))
+        .map(|e| eng.index_of(e) as usize)
+        .filter(|&i| i < 0x20)
+        .collect();
     state::with(|g| g.votes.tally(voters));
 }
 

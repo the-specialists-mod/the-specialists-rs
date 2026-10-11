@@ -21,6 +21,8 @@ const W_PRECACHE_OTHERS: &[Asset] = &[Asset::Model(c"models/w_suit.mdl"), Asset:
 /// The end of `W_Precache`, after `ts_powerup` (`CTSPowerUp::Precache` 0x98548), `ts_groundweapon`
 /// and `deadcorpse` (no precaches) and the discarded `IsDeathmatch()` call.
 const W_PRECACHE_TAIL: &[Asset] = &[
+    // mp.dll only (`W_Precache` 0x100799c0): the bots' debug beams. The Linux build has no bots.
+    Asset::Lightning,
     Asset::Model(c"sprites/zerogxplode.spr"),
     Asset::Model(c"sprites/WXplo1.spr"),
     Asset::Model(c"sprites/steam1.spr"),
@@ -241,6 +243,8 @@ enum Asset {
     BloodSpray,
     /// `g_sModelIndexBloodDrop` (`sprites/blood.spr`).
     BloodDrop,
+    /// `g_sModelIndexLightning` (`sprites/lgtning.spr`, mp.dll).
+    Lightning,
 }
 
 impl Asset {
@@ -256,6 +260,7 @@ impl Asset {
             Asset::Bubbles => crate::weapons::set_bubbles_model(eng.precache_model(c"sprites/bubble.spr")),
             Asset::BloodSpray => crate::entities::stock::blood::set_spray_sprite(eng.precache_model(c"sprites/bloodspray.spr")),
             Asset::BloodDrop => crate::entities::stock::blood::set_drop_sprite(eng.precache_model(c"sprites/blood.spr")),
+            Asset::Lightning => crate::bots::nodes::set_lightning_sprite(eng.precache_model(c"sprites/lgtning.spr")),
         }
     }
 }
@@ -334,7 +339,7 @@ mod tests {
         assert_eq!(t.len(), 41);
         // knife_hit.wav twice: shrapnel's Precache, then TSPrecache's own list.
         assert_eq!(t.iter().filter(|n| **n == c"weapons/knife/knife_hit.wav").count(), 2);
-        assert_eq!(W_PRECACHE_TAIL[3..6], [Asset::Bubbles, Asset::BloodSpray, Asset::BloodDrop]);
+        assert_eq!(W_PRECACHE_TAIL[4..7], [Asset::Bubbles, Asset::BloodSpray, Asset::BloodDrop]);
         assert_eq!(names(WORLD_SOUNDS)[0], c"common/null.wav");
     }
 
