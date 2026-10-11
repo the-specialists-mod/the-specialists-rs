@@ -72,11 +72,13 @@ struct Quality {
     next: f64,
     next_adapt: f64,
     applied: f32,
+    /// `TS_DrawEffects` has run once (`0x1018d16a`: `cl_fx` applied, particle pool set up).
+    ready: bool,
 }
 
 impl Default for Quality {
     fn default() -> Self {
-        Quality { q: 1.0, samples: [0.0; 20], n: 0, next: 0.0, next_adapt: 0.0, applied: -1.0 }
+        Quality { q: 1.0, samples: [0.0; 20], n: 0, next: 0.0, next_adapt: 0.0, applied: -1.0, ready: false }
     }
 }
 
@@ -346,10 +348,11 @@ pub fn on_tsbtime(b: &[u8]) {
 // ---- per frame -------------------------------------------------------------------------------
 
 /// Called from `view::frame` (HUD_Frame): map change detection, emitter loading and emission
-/// (`CTS_CL_Emitter::Frame` `0x1003ab40`), quality adaptation. `frametime` is `HUD_Frame`'s
-/// argument, unclamped: the emitter clock adds it as is, and the particle system, client bullets
-/// and `FX_AdaptQuality` read TS's copy of `ref_params_t::frametime` (`0x10191478`), which the
-/// engine fills from the same `host.frametime` (FWGS `V_SetupRefDef`).
+/// (`CTS_CL_Emitter::Frame` `0x1003ab40`). `frametime` is `HUD_Frame`'s argument, unclamped: the
+/// emitter clock adds it as is, and the particle system, client bullets and `FX_AdaptQuality`
+/// read TS's copy of `ref_params_t::frametime` (`0x10191478`), which the engine fills from the
+/// same `host.frametime` (FWGS `V_SetupRefDef`). `cl_fx` is applied and adapted later in the
+/// frame, from [`draw_transparent`], as TS does.
 pub fn frame(time: f64, frametime: f64) {
     with(|fx| {
         fx.time = time;
@@ -377,7 +380,6 @@ pub fn frame(time: f64, frametime: f64) {
             fx.emit_clock = 0.0;
         });
     }
-    let fxq = cvar(|c| c.fx);
     let ts = state::with(|s| s.time_scale);
     let cam = view::camera();
     let cull_origin = if view::is_third_person() { view::eye() } else { cam.origin };
@@ -385,8 +387,9 @@ pub fn frame(time: f64, frametime: f64) {
         fx.psys.cam = cam;
         fx.psys.cull_origin = cull_origin;
         fx.psys.time_scale = ts;
-        apply_quality(fx, fxq, fx.frametime);
-        if fx.level.is_empty() {
+        // 0x1003abef: no emission, and no emitter clock, until the first `TS_DrawEffects` has
+        // applied `cl_fx` and set up the particle pool (0x10056bc0).
+        if fx.level.is_empty() || !fx.quality.ready {
             return;
         }
         fx.emit_clock += frametime;
@@ -395,10 +398,13 @@ pub fn frame(time: f64, frametime: f64) {
     });
 }
 
-fn apply_quality(fx: &mut Fx, cl_fx: f32, frametime: f32) {
+/// The start of `TS_DrawEffects` (`0x10056dd0..0x10056e04`): `FX_ApplyCvar` (`0x10057d50`) on
+/// the first call and whenever `cl_fx` differs from the value last applied (`0x1018cac4`).
+fn apply_cvar(fx: &mut Fx, cl_fx: f32) {
     let q = &mut fx.quality;
+    q.ready = true;
     if cl_fx != q.applied {
-        // FX_ApplyCvar (0x10057d50): cl_fx 1 and 2 start at full quality, anything else is low.
+        // cl_fx 1 and 2 start at full quality, anything else is low.
         q.applied = cl_fx;
         let full = cl_fx == 1.0 || cl_fx == 2.0;
         let ps = &mut fx.psys;
@@ -416,11 +422,19 @@ fn apply_quality(fx: &mut Fx, cl_fx: f32, frametime: f32) {
         q.next_adapt = 0.0;
     }
     fx.psys.tuning.smoke = cl_fx != 0.0;
+}
+
+/// `FX_AdaptQuality` (`0x10057a70`), near the end of `TS_DrawEffects` (`0x10056e45`) and only
+/// while `cl_fx` is exactly 1. It runs after the particles were updated and drawn, so what it
+/// decides takes effect from the next frame's emission and particle pass. It samples the frame
+/// time (`0x10191478`) every 0.1 s into a ring of 20; every second it derives the quality from
+/// the ring's mean (in 1/100 s, 1.11..3.33 maps to 1..0).
+fn adapt_quality(fx: &mut Fx, cl_fx: f32) {
     if cl_fx != 1.0 {
         return;
     }
-    // FX_AdaptQuality (0x10057a70): sample the frame time every 0.1 s into a ring of 20; every
-    // second derive the quality from the ring's mean (in 1/100 s, 1.11..3.33 maps to 1..0).
+    let frametime = fx.frametime;
+    let q = &mut fx.quality;
     if fx.time < q.next {
         return;
     }
@@ -548,6 +562,8 @@ pub fn draw_normal() {}
 
 /// `HUD_DrawTransparentTriangles` -> `TS_DrawEffects` (`0x10056dd0`).
 pub fn draw_transparent() {
+    let fxq = cvar(|c| c.fx);
+    with(|fx| apply_cvar(fx, fxq));
     let cam = view::camera();
     let ts = state::with(|s| s.time_scale);
     let third = view::is_third_person();
@@ -586,7 +602,11 @@ pub fn draw_transparent() {
     if cam_hardware() {
         scope::draw(scope_sprite, &cam, third);
     }
-    with(|fx| fx.visible = [false; 33]);
+    let fxq = cvar(|c| c.fx);
+    with(|fx| {
+        fx.visible = [false; 33];
+        adapt_quality(fx, fxq);
+    });
     fog_end();
 }
 

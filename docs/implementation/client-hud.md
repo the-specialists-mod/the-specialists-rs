@@ -417,7 +417,12 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   `time_scale_target` (TSSlowMo) and eases `time_scale` in `HUD_Frame` (TS does it there, after
   the emitters and before clearing the key gate; nothing else eases it). `CHud::VidInit`
   (`0x100208a9`) resets `time_scale` to 1 but not the target, which only `TSSlowMo` writes
-  (`0x1004bf10`), so slow motion still active after a level change eases back in.
+  (`0x1004bf10`), so slow motion still active after a level change eases back in. The target
+  starts at 0, as in TS (`0x1009ff04` is past the 0x8000 initialised bytes of `.data`), so until
+  the first `TSSlowMo` the scale eases from 1 toward 0. The port's server sends it on the first
+  client update, which hides this in play; on a server that never sends it, or playing back a
+  demo recorded after it was sent (in a fresh client), the scale stays near 0 (most readers clamp
+  it to 0.01), in TS and in the port alike.
 * The FWGS `IN_ClientLookEvent`/`IN_ClientMoveEvent` exports are in `client-dll` and call
   `input::look_event`/`move_event`.
 * The server should send `SrvSett 3` (restriction) and `GameMode` in `InitHUD` like TS, and

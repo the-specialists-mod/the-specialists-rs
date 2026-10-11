@@ -34,7 +34,8 @@ struct Pred {
     /// The local weapon's alternate grip (`0x10189f9d`, a byte): `(int)vuser2[2]` from
     /// `HUD_WeaponsPostThink`, or the demo's record type 1 during playback.
     alt_grip: u8,
-    was_dead: bool,
+    /// `lasthealth` (`0x100991a4`): the local health of the last `runfuncs` command, as an int.
+    last_health: i32,
 }
 
 static PRED: Global<RefCell<Option<Pred>>> = Global(RefCell::new(None));
@@ -260,10 +261,22 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     if runfuncs {
         let id = gun.current;
         let items = gun.slot().map(|s| s.items).unwrap_or(0);
+        // 0x10003877..0x100038e2 (the SDK's `lasthealth` check): health going from <= 0 (the
+        // last value, truncated to an int, `0x100991a4`) to > 0 runs the client player's Spawn
+        // (0x100036d0): the active weapon's Deploy (the draw animation below), then 0x1000b9d0,
+        // the spread reset. `to.client.health` is `from`'s here (the engine copies it).
+        let spawned = with(|p| {
+            let spawned = c.health > 0.0 && p.last_health <= 0;
+            p.last_health = c.health as i32;
+            spawned
+        });
+        if spawned {
+            gun.spread_penalty = 0.0;
+            reset_spread();
+        }
         let changed = with(|p| {
-            let ch = p.last_id != Some(id) || (p.was_dead && !dead);
+            let ch = p.last_id != Some(id) || spawned;
             p.last_id = Some(id);
-            p.was_dead = dead;
             ch
         });
         if changed && !dead && c.m_iId == TS_GUN_SLOT as i32 {

@@ -80,10 +80,10 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `TS_MeleeMaterialSound` | `0x10045df0` | `misc::melee_material_sound` | done |
 | particle system `g_PSys` (`PSys_*`, `Particle_*`, `Quad_*`) | §5.2-5.4 | `effects::psys` | done (see deviations) |
 | `PSys_PushRadial` / `PushAlongLine` / `BlastPush` | `0x100524c0` / `0x10052720` / `0x10052c80` | `PSys::push_radial` / `push_along_line` / `blast_push` | done (from the disassembly) |
-| `CTS_CL_Emitter::Frame`, `LoadMap`, `LoadEntityLump`, `ProcessEnts`, keyvalue parsers | §5.1-5.3 | `effects::frame`, `effects::emitters` | done, unit-tested, verified in game (ts_frigid snow). Emission runs on the emitters' own clock (`0x10189478`): `HUD_Frame`'s frame times, unclamped, summed since the map loaded |
+| `CTS_CL_Emitter::Frame`, `LoadMap`, `LoadEntityLump`, `ProcessEnts`, keyvalue parsers | §5.1-5.3 | `effects::frame`, `effects::emitters` | done, unit-tested, verified in game (ts_frigid snow). Emission runs on the emitters' own clock (`0x10189478`): `HUD_Frame`'s frame times, unclamped, summed since the map loaded. Nothing is emitted, and the clock doesn't run, until the first `TS_DrawEffects` (`0x1003abef`). An emitter behind the camera (forward · direction < 0.1) is skipped for that frame without rescheduling (`0x1003ad96`) |
 | wind (`MsgFunc_TSPSys`, `CosineLerp`) | `0x1004bfd0`, `0x10050760` | `effects::on_tspsys`, `psys::Wind` | done, unit-tested |
 | `TS_MuzzleFlash`, `TS_MuzzleDlight`, `TS_GunSmoke`, `TS_SpriteDebris` (debris and the muzzle pellet spray), `TS_Sparks`, `TS_Scintille`, `TS_ImpactSmoke`, `TS_SmallPuff`, surface mark `0x10046a70` | §4.4-4.5 | `effects::fx::*` | done (numbers from the disassembly) |
-| `FX_ApplyCvar` / `FX_AdaptQuality` (`cl_fx`) | `0x10057d50` / `0x10057a70` | `effects::apply_quality`, `psys::FxTuning` | done |
+| `FX_ApplyCvar` / `FX_AdaptQuality` (`cl_fx`) | `0x10057d50` / `0x10057a70` | `effects::apply_cvar` / `effects::adapt_quality`, `psys::FxTuning` | done; both run from `effects::draw_transparent` (`TS_DrawEffects` `0x10056dd0`): `FX_ApplyCvar` first, `FX_AdaptQuality` (`cl_fx` exactly 1) after the particle pass, so its result takes effect next frame |
 | `TS_ImpactParticles` | `0x10048f60` | `fx::impact` | done |
 | `TS_BloodImpact` (`PTakeDam`) | `0x10048840`, `0x1004bcd0` | `fx::blood`, `effects::on_ptakedam` | done |
 | `TS_GlassShatter`, `TS_Explosion` (`TSFrags`) | `0x10047cb0`, `0x100481b0`, `0x1004bd50` | `fx::glass`, `fx::explosion`, `effects::on_tsfrags` | done, verified in game |
@@ -109,12 +109,12 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `DrawLocalLaser` / `DrawOtherLasers` / flashlights | `0x1003bb00` / `0x1003d600` / `0x1003b250` / `0x1003b750` | `effects::laser` | done (untested: needs server state) |
 | `DrawPlayerShadows` | `0x10055760` | `laser::draw_shadows` | done, verified in game |
 | `DrawScopeOverlay` | `0x10054510` | `effects::scope` | done (not yet checked in engine) |
-| `FX_ApplyCvar` / `FX_AdaptQuality` | `0x10057d50` / `0x10057a70` | `effects::apply_quality` | done |
+| `FX_ApplyCvar` / `FX_AdaptQuality` | `0x10057d50` / `0x10057a70` | `effects::apply_cvar` / `effects::adapt_quality` (from `draw_transparent`) | done |
 | view-model framerate x time scale | `StudioDrawModel` `0x10031ae0` | `view::view_model_framerate` (writes `curstate.framerate` once per frame in `V_CalcRefdef`, not in the renderer) | written, untested |
 | `HUD_TxferLocalOverrides` | `0x1001b900` | `prediction::txfer_local_overrides` | done |
 | `HUD_ProcessPlayerState` | `0x1001b950` | `prediction::process_player_state` | done |
 | `HUD_TxferPredictionData` | `0x1001bb00` | `prediction::txfer_prediction_data` | done |
-| `HUD_PostRunCmd` / `HUD_WeaponsPostThink` | `0x100045b0` / `0x10003830` | `prediction::post_run_cmd`, `prediction::gun` | structure + stopgap predictor |
+| `HUD_PostRunCmd` / `HUD_WeaponsPostThink` | `0x100045b0` / `0x10003830` | `prediction::post_run_cmd`, `prediction::gun` | structure + stopgap predictor. The SDK `lasthealth` check (`0x10003877`, int `0x100991a4`): health going from <= 0 to > 0 runs the client player's Spawn (`0x100036d0`), the draw animation (Deploy, vtable +0x120) and the spread reset (`0x1000b9d0`, `prediction::reset_spread`) |
 
 ### Stair smoothing (`V_SmoothStairs`, `0x100677d0`)
 

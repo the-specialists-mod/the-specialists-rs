@@ -348,8 +348,9 @@ impl MapFx {
                 let centre = v::scale(v::add(lo, hi), 0.5);
                 let d = v::sub(centre, cam.origin);
                 let dist = v::len(d).max(1.0);
+                // Behind the camera: skipped this frame and not rescheduled (0x1003ad96 jumps
+                // past the `next_emit` writes), so it is tested again next frame.
                 if v::dot(cam.forward, v::scale(d, 1.0 / dist)) < 0.1 {
-                    em.next_emit = clock + 0.25;
                     continue;
                 }
                 f = (dist / v::len(v::sub(hi, lo)).max(1.0)).clamp(1.0, 10.0);

@@ -32,8 +32,12 @@ pub struct TsFadeState {
 
 #[derive(Default)]
 pub struct Shared {
-    /// Slow-motion target from `TSSlowMo` (1.0 = normal) and the eased cosmetic clock.
+    /// Slow-motion target from `TSSlowMo` (1.0 = normal; `0x1009ff04`). It starts at 0, not 1:
+    /// TS keeps it past the initialised part of `.data` (which ends at `0x10099000`) and only the
+    /// `TSSlowMo` handler (`0x1004bf10`) writes it, so until the first message `HUD_Frame` eases
+    /// the scale toward 0.
     pub time_scale_target: f32,
+    /// The eased scale, `g_flTimescale` (`0x100963e8`, initialised to 1.0).
     pub time_scale: f32,
     /// Local player is dead / spectating.
     pub dead: bool,
@@ -105,7 +109,7 @@ static SHARED: Global<RefCell<Option<Shared>>> = Global(RefCell::new(None));
 pub fn with<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
     let mut s = SHARED.0.borrow_mut();
     let s = s.get_or_insert_with(|| Shared {
-        time_scale_target: 1.0,
+        time_scale_target: 0.0,
         time_scale: 1.0,
         fov: 90.0,
         active_items: vec![0; 65],
