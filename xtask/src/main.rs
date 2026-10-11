@@ -953,8 +953,14 @@ fn link_ts_content(ts: &Path, gamedir: &Path) {
         let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
         let ext = Path::new(&*name_s).extension().map(|x| x.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         if is_dir && DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name_s)) || !is_dir && LINK_EXT.contains(&ext.as_str()) {
-            if fs::symlink_metadata(&dest).is_err() {
-                std::os::unix::fs::symlink(e.path(), &dest).unwrap();
+            // Re-point a link left from another content directory (TS_DIR moved); keep real files.
+            match fs::symlink_metadata(&dest) {
+                Ok(m) if m.file_type().is_symlink() && fs::read_link(&dest).ok().as_deref() != Some(e.path().as_path()) => {
+                    fs::remove_file(&dest).unwrap();
+                    std::os::unix::fs::symlink(e.path(), &dest).unwrap();
+                }
+                Ok(_) => {}
+                Err(_) => std::os::unix::fs::symlink(e.path(), &dest).unwrap(),
             }
         } else if !is_dir && COPY_EXT.contains(&ext.as_str()) && !dest.exists() {
             fs::copy(e.path(), &dest).unwrap();
