@@ -92,3 +92,42 @@ switched off in 3.0, or an SDK constant kept for completeness:
   (torso/legs split while running and aiming, corpses, ghosts during slow motion).
 * Not tested with real keyboard and mouse. The only Steam GoldSrc client run so far is the
   scripted HL25 Linux listen server (`docs/validation.md` §5).
+
+## 6. Deviations: engine calls that stop the server
+
+Port rule: the game never crashes, hangs or stops the engine, even where TS does. TS makes some
+engine calls that the Steam engines (HLDS, ReHLDS) answer with `Host_Error` (the map ends and the
+server stops) or `Sys_Error` (the process quits), and a few that stop FWGS too. The wrappers in
+`goldsrc` (`server.rs`, `ext/`) check those calls first, with the bookkeeping in `goldsrc::guard`
+(unit-tested), and every refusal is logged with `at_error` and "(port guard)". Where FWGS only warns
+(detected by its `host_ver` cvar, `Engine::is_xash`), the call is made as TS makes it, so FWGS
+behaves exactly as with TS. Otherwise the port does what FWGS does with the same call:
+
+| Call | Engine effect | Port |
+|---|---|---|
+| `PRECACHE_MODEL/SOUND/GENERIC`, `PRECACHE_EVENT` with an empty name or a first byte below `' '` (signed) | Steam: `Host_Error` "Bad string" (FWGS returns 0) | Not called; returns 0. Reached by a respawned `cycler_weapon` (stock-entities.md §2). |
+| `PRECACHE_SOUND("!…")` | Steam: `Host_Error` "do not precache sentence names" (FWGS warns, 0) | Not called; returns 0. |
+| A precache of a new name after `ServerActivate` | Steam: `Host_Error` "Precache can only be done in spawn functions" (FWGS late-precaches) | Not called; returns 0. A name already precached this level, in any case, is passed in its precached spelling (ReHLDS with `REHLDS_FIXES` compares case-sensitively). |
+| A precache past 512 models, 512 sounds, 512 generic files or 256 events | Steam: `Host_Error` (FWGS's limits are higher) | Not called; returns 0. The tables fill in order, so the highest index the engine returned shows how full one is. |
+| `PRECACHE_MODEL` of a model file that doesn't exist (a map's custom model), `PRECACHE_EVENT` of a missing script | Steam: `Sys_Error` "Mod_ForName: %s not found" (the model is loaded with `crash` set, optional `!` models too) / `Host_Error` "file missing from server" (FWGS warns) | Not called (the file is looked up with `pfnGetFileSize` first); returns 0. |
+| `SET_MODEL`/`MODEL_INDEX` of a model not precached this level (not empty, not `*n`, not the world) | Steam: `Host_Error` "no precache" / ReHLDS `Sys_Error` in `SV_ModelIndex` (FWGS late-precaches, or warns) | `SET_MODEL` leaves the entity unchanged; `MODEL_INDEX` gives 0. |
+| `EMIT_SOUND_DYN` with volume outside 0..1, attenuation outside 0..4, channel outside 0..7 or pitch outside 0..255 | ReHLDS: `Sys_Error` in `PF_sound_I` (FWGS clamps) | Clamped, as `SV_BuildSoundMsg` (and FWGS) does with the value it then gets; NaN is passed on, as the engines' checks pass it. |
+| `SET_SIZE` with a min above its max | Steam: `Host_Error` "backwards mins/maxs" (FWGS logs, relinks) | Size kept, entity relinked (`SET_ORIGIN`). |
+| `LIGHT_STYLE` outside 0..63 | FWGS: `Host_Error`; Steam writes outside `lightstyles[64]` | Skipped. |
+| `SET_VIEW` on an entity outside the client slots | Steam: `Host_Error` "not a client" (FWGS logs) | Skipped. |
+| `CREATE_ENTITY`/`CREATE_NAMED_ENTITY` with no edict left | Every engine: `ED_Alloc` "no free edicts" (`Sys_Error`/`Host_Error`) | Null, which every caller already handles (the entity isn't created). The wrapper reads the engine's edict array: free when the last slot was never used or a non-client slot is free and reusable (`ED_Alloc`'s 0.5 s rule). |
+| A user message: `MSG_ONE` to a non-client or with no entity, type 0 | Steam: `Host_Error`/`Sys_Error` | Dropped. `MsgWriter` holds the writes until `end()` and checks the message before `MESSAGE_BEGIN`. |
+| A variable-size user message over 192 bytes, a fixed-size one of the wrong size, any message over 512 bytes | Steam: `Host_Error` "Refusing to send user message" / `Sys_Error` (FWGS drops it) | Dropped (sizes as the Steam engines count them: a coord is a short). |
+| A broadcast message with a target entity | Steam: `Sys_Error` | Sent without the entity. |
+| `WRITE_ENTITY` of a number outside the edict range | FWGS: `Host_Error` (Steam writes the short) | Written with `WRITE_SHORT`: the same bytes. |
+
+Not guarded:
+* A `*n` brush model name the map doesn't have, given to `SET_MODEL`/`MODEL_INDEX` on a Steam
+  engine (the game can't see the BSP's model count).
+* Engine-side failures the game doesn't call: a map over the edict limit while it loads, a
+  BSP that can't be loaded, a reliable channel overflowing a client (that client is dropped; the
+  server goes on).
+* An entity whose `solid`, `movetype` or `modelindex` game code changes to one the physics
+  stops on without relinking it (stock-entities.md §7.8 catches it at the next link).
+* On FWGS the guards that only exist for the Steam engines are off, so FWGS's own limits (4096
+  models, 2048 sounds, ...) apply.

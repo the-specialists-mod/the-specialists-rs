@@ -71,6 +71,12 @@ A server check passes when all of these hold:
 * the log contains `[ts] GameInit`,
 * there is no panic, fatal error or segfault.
 
+A line ending in "(port guard)" (with `developer` on) means the game skipped or changed an engine
+call that TS makes and the engine would stop on (`implementation/integration.md` §6,
+`stock-entities.md` §7.8). It isn't a failure, but on the stock maps none is expected apart from
+a respawned `cycler_weapon`'s empty precache on the Steam engines. The guards' decisions are
+unit-tested in `goldsrc::guard` and `entities` (`cargo test`).
+
 Client checks run the FWGS client with an autotest cfg (`wait` chains, commands, `screenshot`,
 `quit`) and inspect the screenshots. FWGS joins GoldSrc-protocol servers with
 `connect host:port gs`. That covers the full chain: the Rust client on FWGS, connected to the

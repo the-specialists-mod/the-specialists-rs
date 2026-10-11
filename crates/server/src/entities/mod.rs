@@ -196,9 +196,31 @@ pub fn entvars_key_value(v: &mut entvars_t, key: &CStr, value: &CStr) -> bool {
         Field::Edict => engine().alert(ALERT_TYPE::at_error, "Bad field in entity!!\n"),
         _ => {
             set_entvars_number(v, field, value);
+            // Port guard: `SV_Physics` stops every engine on a movetype it has no case for
+            // ("bad movetype"), which TS takes from a map's `movetype` key as it is.
+            if key.to_bytes().eq_ignore_ascii_case(b"movetype") && !physics_movetype(v.movetype) {
+                let msg = format!("movetype {} would stop the engine; MOVETYPE_NONE (port guard)\n", v.movetype);
+                engine().alert(ALERT_TYPE::at_error, &msg);
+                v.movetype = MOVETYPE_NONE as i32;
+            }
         }
     }
     true
+}
+
+/// A movetype `SV_Physics` runs for a non-player entity (ReHLDS and FWGS both stop the server on
+/// any other, `MOVETYPE_WALK` and the unused `ANGLENOCLIP`/`ANGLECLIP` included).
+fn physics_movetype(m: i32) -> bool {
+    [MOVETYPE_NONE, MOVETYPE_STEP, MOVETYPE_FLY, MOVETYPE_TOSS, MOVETYPE_PUSH, MOVETYPE_NOCLIP]
+        .into_iter()
+        .chain([MOVETYPE_FLYMISSILE, MOVETYPE_BOUNCE, MOVETYPE_BOUNCEMISSILE, MOVETYPE_FOLLOW, MOVETYPE_PUSHSTEP])
+        .any(|t| t as i32 == m)
+}
+
+/// Whether the engines can trace a `SOLID_BSP` entity: a pusher (`MOVETYPE_PUSH`/`PUSHSTEP`)
+/// with a brush model (`*n`).
+fn bsp_hull_ok(movetype: i32, modelindex: i32, model: &[u8]) -> bool {
+    (movetype == MOVETYPE_PUSH as i32 || movetype == MOVETYPE_PUSHSTEP as i32) && modelindex != 0 && model.first() == Some(&b'*')
 }
 
 /// Fires `use_` on every entity whose targetname is `target` (SDK `FireTargets`).
@@ -234,6 +256,23 @@ pub fn use_targets(pev: &entvars_t, activator: *mut edict_t, caller: *mut edict_
 pub fn set_object_collision_box(e: *mut edict_t) {
     let v = e.v();
     let classname = if v.classname == 0 { c"" } else { engine().string(v.classname) };
+    // Port guard: every engine stops the server when a trace meets a `SOLID_BSP` entity that
+    // isn't a pusher (`SV_HullForEntity`) or has no brush model (`SV_HullForBsp`: "Hit a %s with
+    // no model"), e.g. a map `func_wall` given a studio model, which TS sets up as it is. The
+    // engine links the entity after this call, so it is made `SOLID_BBOX` (its box) instead.
+    if v.solid == SOLID_BSP as i32 && v.modelindex != 1 {
+        let model = if v.model == 0 { c"" } else { engine().string(v.model) };
+        if !bsp_hull_ok(v.movetype, v.modelindex, model.to_bytes()) {
+            let msg = format!(
+                "{} with SOLID_BSP, movetype {} and model \"{}\" would stop the engine; made SOLID_BBOX (port guard)\n",
+                classname.to_string_lossy(),
+                v.movetype,
+                model.to_string_lossy()
+            );
+            engine().alert(ALERT_TYPE::at_error, &msg);
+            v.solid = SOLID_BBOX as i32;
+        }
+    }
     if let Some((mins, maxs)) = stock::playeritem::object_collision_box(classname, v.origin) {
         v.absmin = mins;
         v.absmax = maxs;
@@ -424,6 +463,22 @@ mod tests {
         // Capped at 1000.
         let v = base_push([0.0, 0.0, 5.0], [0.0; 3], ([-1.0, -1.0, -11.0], [1.0, 1.0, -9.0]), [1.0, 1.0, 1.0], 100.0);
         assert_eq!(v, [0.0, 0.0, 1005.0]);
+    }
+
+    #[test]
+    fn engine_fatal_entity_states_are_recognised() {
+        assert!(bsp_hull_ok(MOVETYPE_PUSH as i32, 5, b"*3"));
+        assert!(bsp_hull_ok(MOVETYPE_PUSHSTEP as i32, 5, b"*3"));
+        assert!(!bsp_hull_ok(MOVETYPE_NONE as i32, 5, b"*3"));
+        assert!(!bsp_hull_ok(MOVETYPE_PUSH as i32, 0, b"*3"));
+        assert!(!bsp_hull_ok(MOVETYPE_PUSH as i32, 5, b"models/tree.mdl"));
+        assert!(!bsp_hull_ok(MOVETYPE_PUSH as i32, 5, b""));
+        for m in [0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
+            assert!(physics_movetype(m), "{m}");
+        }
+        for m in [-1, 1, 2, 3, 14, 99] {
+            assert!(!physics_movetype(m), "{m}");
+        }
     }
 
     #[test]

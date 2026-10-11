@@ -70,7 +70,14 @@ impl Engine {
         eng!(pfnSetClientKeyValue(self.index_of(e), buf, k.as_ptr().cast_mut(), v.as_ptr().cast_mut()))
     }
 
+    /// `SET_VIEW`. Guarded: a `client` that isn't in a client slot is skipped (the Steam engines'
+    /// `PF_setview_I` `Host_Error`s "not a client"; FWGS logs and returns).
     pub fn set_view(&self, client: *mut edict_t, view: *mut edict_t) {
+        let n = if client.is_null() { 0 } else { self.index_of(client) };
+        if n < 1 || n > self.max_clients() {
+            self.alert(ALERT_TYPE::at_error, &format!("SET_VIEW on entity {n}, not a client; skipped (port guard)\n"));
+            return;
+        }
         eng!(pfnSetView(client, view))
     }
 
