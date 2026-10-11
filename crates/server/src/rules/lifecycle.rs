@@ -457,10 +457,12 @@ pub fn init_hud_block(p: &mut Player, cx: &mut Cx) {
         ts_init_hud(p, cx);
         p.ts.game_hud_initialized = true;
         if !single {
-            crate::entities::fire_targets(c"game_playerjoin", e, e, crate::world::UseType::Toggle, 0.0);
+            crate::world::lend(e, p, || crate::entities::fire_targets(c"game_playerjoin", e, e, crate::world::UseType::Toggle, 0.0));
         }
     }
-    crate::entities::fire_targets(c"game_playerspawn", e, e, crate::world::UseType::Toggle, 0.0);
+    // Lent back to its slot for both, so a `game_player_team` they reach changes our team at
+    // once, as in TS.
+    crate::world::lend(e, p, || crate::entities::fire_targets(c"game_playerspawn", e, e, crate::world::UseType::Toggle, 0.0));
     let (round_end, timer) = state::with(|g| (g.round_end, g.round_timer));
     if round_end != 0.0 && timer {
         let rt = RoundTime { secs: (round_end - cx.time()).max(0.0).round() as u8, state: 0 };
@@ -544,7 +546,7 @@ pub fn motd_chunks(text: &[u8]) -> Vec<(String, bool)> {
     chunks.into_iter().enumerate().map(|(i, c)| (String::from_utf8_lossy(c).into_owned(), i + 1 == n)).collect()
 }
 
-/// `CTSGameRules::InitHUD` (0x79134): cheat notice, SrvSett ×4, RoundTime, Spectator flags of
+/// `CTSGameRules::InitHUD` (0x79134): cheat notice, custom weapons, SrvSett ×4, RoundTime, Spectator flags of
 /// everyone, then the joiner starts as an observer with a respawn delay.
 fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     let e = cx.edict;
@@ -554,6 +556,10 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
         if dm > 0.0 {
             ts_message_one(e, [45, 195, 45], 8, 100, &format!("This server has custom weapon damages ({dm:.2})"));
         }
+    }
+    // `+0x5884`, set by `loadweapons` on this map (`CTSGameRules::Init` clears it).
+    if state::with(|g| g.custom_weapons) {
+        crate::weapons::inform_custom_weapons(e);
     }
     let (rb, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0].max(0), g.allowed_weapons, g.round_end, g.round_timer));
     let sets = [(0u8, rb), (1, cvars::on(c"usecash") as i32), (2, cvars::f(c"ammocount").round() as i32), (3, mask)];
@@ -950,6 +956,8 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
 
     // `m_pTank->Use(this, this, USE_OFF)` after PlayerKilled (0x8f1e1).
     crate::entities::stock::drive::release_tank(p, cx);
+    // `CSound::Reset` on the player's `soundent` slot (0x8f1f0).
+    crate::entities::stock::soundent::reset_player_sound(idx);
 
     // Death pose: CTSAnimation::Animate(7) (0x8f22e), after all of the above, reads the last
     // damage, hitgroup and attack direction (`g_vecAttackDir`).
@@ -1003,7 +1011,7 @@ fn killer_blur(close_combat: bool, mut roll: impl FnMut() -> i32) -> bool {
 
 /// `CBaseMonster::DamageForce` (0xb2d08): `73728 / (size.x · size.y · size.z) · damage · 5`
 /// (computed on the x87 stack, stored as a float), at most 1000.
-fn damage_force(size: [f32; 3], damage: f32) -> f32 {
+pub fn damage_force(size: [f32; 3], damage: f32) -> f32 {
     let f = ((73728.0 / (size[0] as f64 * size[1] as f64 * size[2] as f64)) * damage as f64 * 5.0) as f32;
     if f > 1000.0 { 1000.0 } else { f }
 }

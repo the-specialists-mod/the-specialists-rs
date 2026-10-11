@@ -208,10 +208,7 @@ pub mod multi {
     /// TraceAttack (`attacker` is the TraceAttack's `pevAttacker`). The type keeps every bit since
     /// the last Clear, even across a change of victim; a different victim first gets the damage
     /// collected so far applied to the old one, with `attacker` as inflictor and attacker.
-    ///
-    /// `_traced` (the TraceAttack's own arguments) isn't kept: TS's `AddMultiDamage` takes only
-    /// the values above. The parameter stays until every TraceAttack stops passing it.
-    pub fn add(attacker: *mut edict_t, victim: *mut edict_t, amount: f32, bits: i32, _traced: &DamageInfo) {
+    pub fn add(attacker: *mut edict_t, victim: *mut edict_t, amount: f32, bits: i32) {
         add_to(&MULTI.0, victim, amount, bits, || {
             apply(attacker, attacker);
         });
@@ -344,6 +341,12 @@ static ATTACK_DIR: goldsrc::Global<std::cell::Cell<[f32; 3]>> = goldsrc::Global(
 /// `g_vecAttackDir`.
 pub fn attack_dir() -> [f32; 3] {
     ATTACK_DIR.0.get()
+}
+
+/// Writes `g_vecAttackDir`, as `CBaseEntity::TakeDamage`, `CBreakable::TakeDamage`/`Use` and
+/// `DeadTakeDamage` do with their own directions.
+pub fn set_attack_dir(dir: [f32; 3]) {
+    ATTACK_DIR.0.set(dir);
 }
 
 /// SDK `Vector::Normalize`: `(0, 0, 1)` for a zero vector, else each component times `1 / length`

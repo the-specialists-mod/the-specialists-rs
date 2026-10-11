@@ -96,14 +96,16 @@ pub fn unknown_sentence(sample: &CStr) {
 }
 
 /// `CBaseEntity::SUB_Remove` (0xe2d40): an entity removed with health left gets it zeroed and a
-/// developer message first.
+/// developer message first, then `REMOVE_ENTITY` frees the edict at once (unlike `UTIL_Remove`,
+/// `entities::remove`, which waits for the end of the frame). Call it last: the edict is free
+/// when it returns.
 pub fn sub_remove(e: *mut edict_t) {
     let v = e.v();
     if v.health > 0.0 {
         v.health = 0.0;
         engine().alert(ALERT_TYPE::at_aiconsole, "SUB_Remove called on entity with health > 0\n");
     }
-    remove(e);
+    engine().remove_entity(e);
 }
 
 /// `pev->nextthink = pev->ltime + delay` (MOVETYPE_PUSH entities think on local time).

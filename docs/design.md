@@ -85,13 +85,18 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
   holds the handle. `OnFreeEntPrivateData` drops the object.
 * **Take-out dispatch:** during a callback the object is moved out of its slot. Engine calls that
   re-enter the game (touch, remove, create, damage to *another* entity) therefore work. Damage to
-  *yourself* can't be dispatched; handle it with the `&mut self` you hold.
+  *yourself* can't be dispatched; handle it with the `&mut self` you hold. Work for a taken-out
+  object can wait for it (`world::defer`); a callback can lend its object back to the slot
+  around a call that must reach it (`world::lend`: `world::run_now_or_defer` then runs at once,
+  and `world::with_lent` reads it, e.g. `PlayerKilled` naming the thrown knife inside its touch).
 * `Entity` trait methods: `key_value`, `spawn`, `think`, `touch`, `use_`, `blocked`,
-  `take_damage`, `should_collide`. All have no-op defaults.
+  `trace_attack`, `take_damage`, `should_collide`. `trace_attack` and `take_damage` default to
+  `CBaseEntity`'s (`entities::base_take_damage`); the rest are no-ops.
 * `entities::link_entities!` exports one C symbol per classname (through
   `goldsrc::export_entity_class!`, so the export lands in the server library even though it's
   declared in `ts-server`). `fire_targets`/`use_targets`
-  implement SDK `FireTargets`; `entities::remove` is the deferred `UTIL_Remove` (`FL_KILLME`).
+  implement SDK `FireTargets`; `entities::remove` is the deferred `UTIL_Remove` (`FL_KILLME`) and
+  `stock::base::sub_remove` the immediate `SUB_Remove`.
 * Stock Half-Life classes live in `entities/stock/`, TS classes in `entities/ts/`.
 
 ### 4.3 The player

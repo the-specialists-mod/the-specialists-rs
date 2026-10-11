@@ -351,6 +351,12 @@ impl<const PUSH: bool> Breakable<PUSH> {
     /// `CBreakable::TakeDamage` (TS). Returns true while the breakable is still standing.
     fn take_damage_impl(&mut self, cx: &mut Cx, info: &DamageInfo) -> bool {
         let mut damage = info.damage;
+        // From our box centre to the inflictor's origin (the attacker's when they are the same).
+        // Guard: TS reads through a NULL inflictor; the port leaves the direction alone then.
+        let dir = (!info.inflictor.is_null()).then(|| {
+            let v = cx.pev();
+            vec::sub(info.inflictor.v().origin, vec::mad(v.absmin, v.size, 0.5))
+        });
         if info.attacker == info.inflictor && is_player(info.attacker) {
             let sf = cx.pev().spawnflags;
             if sf & SF_BREAK_CROWBAR != 0 && info.bits & dmg::CLUB != 0 {
@@ -365,6 +371,10 @@ impl<const PUSH: bool> Breakable<PUSH> {
         }
         if info.bits & DMG_POISON != 0 {
             damage *= 0.1;
+        }
+        // `g_vecAttackDir` (0xc1532), only for a breakable one.
+        if let Some(d) = dir {
+            crate::damage::set_attack_dir(crate::damage::normalize(d));
         }
         let v = cx.pev();
         v.health -= damage;
@@ -661,7 +671,7 @@ impl<const PUSH: bool> Entity for Breakable<PUSH> {
     fn trace_attack(&mut self, cx: &mut Cx, info: &DamageInfo) {
         Breakable::<PUSH>::trace_attack(self, cx, info);
         if cx.pev().takedamage != 0.0 {
-            crate::damage::multi::add(info.attacker, cx.edict, info.damage, info.bits, info);
+            crate::damage::multi::add(info.attacker, cx.edict, info.damage, info.bits);
         }
     }
 
@@ -688,6 +698,9 @@ impl<const PUSH: bool> Breakable<PUSH> {
         self.hit_bits = 0;
         self.hit_damage = vec::length(d);
         v.angles[1] = self.angle;
+        // `g_vecAttackDir = v_forward` of the restored angles (0xc0fe9..0xc1047).
+        let angles = v.angles;
+        crate::damage::set_attack_dir(engine().make_vectors(angles).0);
         self.die(cx, std::ptr::null_mut());
     }
 }

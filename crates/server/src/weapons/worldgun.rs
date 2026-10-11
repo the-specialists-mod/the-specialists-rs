@@ -287,9 +287,12 @@ impl WorldGun {
             return;
         }
         let id = self.id;
+        let owned_before = p.inv.gun.status.map(|s| s.owned);
         let ok = inventory::pick_up_weapon(p, pcx, id, Some(&self.status), 0, id != shared::weapons::id::BRIEFCASE, false);
-        if ok && let Some(o) = self.original_owner {
-            p.inv.sv.owners[id as usize] = o;
+        // `TakeWeapon` copies the whole record, so the original owner comes along, a NULL one
+        // included.
+        if ok && let Some(t) = inventory::copied_record(id, &owned_before) {
+            p.inv.sv.owners[t as usize] = self.original_owner.unwrap_or(std::ptr::null_mut());
         }
         inventory::sync_speed(p, pcx);
         if ok {

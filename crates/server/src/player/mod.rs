@@ -139,6 +139,7 @@ impl Player {
         crate::weapons::post_think(self, cx, active);
         if active {
             crate::stunt::post_think(self, cx);
+            impulse::update_player_sound(self, cx);
         }
         crate::rules::post_think(self, cx);
     }

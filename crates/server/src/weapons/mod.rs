@@ -18,7 +18,6 @@ pub mod worldgun;
 use crate::commands::Args;
 use crate::player::Player;
 use crate::world::Cx;
-use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::{clientdata_t, edict_t, usercmd_t, weapon_data_t};
 use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
@@ -26,7 +25,7 @@ use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 #[allow(unused_imports)]
 pub use assets::{cvars, dmgreport, restriction, set_restriction};
 pub use inventory::Drop;
-pub use projectiles::{SlowPhysics, bounce_ground_damping, give_slow_mul, thrower_time_scale};
+pub use projectiles::{SlowPhysics, bounce_ground_damping, give_slow_mul, thrower_time_scale, thrown_knife_description};
 
 /// Free inventory slots at spawn (`TSInit`: `pl+0x548 = 81`).
 pub const SLOTS: i32 = shared::ts::SLOTS_TOTAL;
@@ -81,8 +80,6 @@ pub struct SvState {
     pub sent_owned: [bool; MAX_WEAPONS],
     /// Free-slot count the move speed was last computed for.
     pub speed_for: Option<i32>,
-    /// `CustomWP` sent to this client.
-    pub custom_informed: bool,
 }
 
 impl Default for SvState {
@@ -110,7 +107,6 @@ impl Default for SvState {
             sent_reserve: -1,
             sent_owned: [false; MAX_WEAPONS],
             speed_for: None,
-            custom_informed: false,
         }
     }
 }
@@ -186,10 +182,6 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     }
     inventory::sync_speed(p, cx);
     net::send_kfu_power(cx.edict, p.inv.gun.melee_bar);
-    if !p.inv.sv.custom_informed && cx.edict.v().flags & goldsrc::sys::FL_FAKECLIENT as i32 == 0 {
-        p.inv.sv.custom_informed = true;
-        custom::inform(Some(cx.edict));
-    }
 }
 
 pub fn pre_think(p: &mut Player, cx: &mut Cx) {
@@ -295,6 +287,13 @@ pub fn on_killed(p: &mut Player, cx: &mut Cx) {
 /// work.
 pub fn has_gun(p: &Player) -> bool {
     p.inv.sv.has_gun
+}
+
+/// `InformClientsOnWeaponsParams(player)` (0x9eb14): the custom-weapons notice and every
+/// weapon's parameters (`CustomWP`), from `CTSGameRules::InitHUD` while the custom-weapons flag
+/// is set.
+pub fn inform_custom_weapons(e: *mut edict_t) {
+    custom::inform(Some(e));
 }
 
 /// `CBulletManager::Reset` (0x6ec50), the part of `CTSGameRules::Init` the weapons own.

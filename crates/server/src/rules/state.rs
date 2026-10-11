@@ -72,6 +72,14 @@ pub struct GameRules {
     pub base_weapons: i32,
     /// `ts_mapglobals` flag 64: everyone has super jump.
     pub superjump_map: bool,
+    /// `+0x5884`: a weapons file (`loadweapons`) changed the weapon parameters since the last
+    /// `Init`; `InitHUD` then sends them to each joiner. The parameters themselves
+    /// (`shared::weapons::table`, TS's `global_weapon_info`) outlive the map.
+    pub custom_weapons: bool,
+    /// `+0x588c`: the fraction kevlar absorbs (`armor_absorb` of a weapons file).
+    pub armor_absorb: f32,
+    /// `+0x5888`: `health_absorb` of a weapons file; nothing reads it.
+    pub health_absorb: f32,
     pub the_one_exists: bool,
     pub next_the_one_check: f32,
     /// Players other than The One (regeneration rate).
@@ -127,6 +135,16 @@ pub fn mode() -> (Mode, bool, bool, bool) {
 
 pub fn teamplay() -> bool {
     with(|g| g.teamplay)
+}
+
+/// `armor_absorb` after `CTSGameRules::Init` (0x3e59999a).
+pub const INIT_ARMOR_ABSORB: f32 = 0.2125;
+/// `health_absorb` after `CTSGameRules::Init` (0x3dcccccd).
+pub const INIT_HEALTH_ABSORB: f32 = 0.1;
+
+/// `TSGameRules+0x588c`, the fraction kevlar absorbs (`CBasePlayer::TakeDamage` 0x8fc0c).
+pub fn armor_absorb() -> f32 {
+    with(|g| g.armor_absorb)
 }
 
 /// `g_pGameRules` is `CHalfLifeRules` (0xde6fc): `deathmatch` was 0 when the map's rules were
@@ -278,6 +296,9 @@ impl GameRules {
         self.check_deads_at = 0.0;
         self.the_one_others = 0;
         self.superjump_map = false;
+        self.custom_weapons = false;
+        self.health_absorb = INIT_HEALTH_ABSORB;
+        self.armor_absorb = INIT_ARMOR_ABSORB;
     }
 
     /// `CTSGameRules::InitTeams`.
@@ -494,8 +515,14 @@ mod tests {
         g.the_one_exists = true;
         g.check_deads_at = 12.0;
         g.the_one_others = 4;
+        // A weapons file loaded on the last map.
+        g.custom_weapons = true;
+        g.armor_absorb = 0.9;
+        g.health_absorb = 0.5;
 
         g.ts_init(100.0);
+        assert!(!g.custom_weapons, "the custom-weapons notice is per map");
+        assert_eq!((g.armor_absorb.to_bits(), g.health_absorb.to_bits()), (0x3e59999a, 0x3dcccccd));
         assert_eq!(g.mode, Mode::TeamDm, "the mode follows g_teamplay");
         assert_eq!(g.teams.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Team1", "Team2", "Team3", "Team4"]);
         assert_eq!(g.teams[0].models, ["seal", "merc"]);

@@ -541,10 +541,7 @@ impl Entity for Door {
     fn trace_attack(&mut self, cx: &mut Cx, info: &DamageInfo) {
         self.door_damage(cx, info);
     }
-
-    fn take_damage(&mut self, _cx: &mut Cx, _info: &DamageInfo) -> bool {
-        false
-    }
+    // `TakeDamage` is `CBaseEntity`'s (the trait default).
 }
 
 /// `CBaseDoor::ObjectCaps`: +use opens use-only doors.

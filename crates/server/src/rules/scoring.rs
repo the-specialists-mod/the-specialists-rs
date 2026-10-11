@@ -75,13 +75,20 @@ pub fn weapon_name(d: &DamageInfo, g: &Snapshot, killer_gun: Option<u8>) -> Stri
         } else if d.inflictor == d.attacker {
             own_weapon_name(g, killer_gun)
         } else {
-            classname(d.inflictor)
+            let cls = classname(d.inflictor);
+            if cls == "knife" {
+                // `CTSKnife::GetDescription`; without a knife object the name stays "world".
+                crate::weapons::thrown_knife_description(d.inflictor).unwrap_or("world").to_owned()
+            } else {
+                cls
+            }
         }
     } else if !d.inflictor.is_null() {
+        // The netname when it is set at all (`string_t` non-zero), else the classname.
         let v = d.inflictor.v();
-        let n = engine().string(v.netname).to_string_lossy().into_owned();
-        if n.is_empty() { classname(d.inflictor) } else { n }
+        if v.netname == 0 { classname(d.inflictor) } else { engine().string(v.netname).to_string_lossy().into_owned() }
     } else {
+        // Guard: TS reads the classname through a NULL inflictor here.
         "world".to_owned()
     };
     for prefix in ["weapon_", "monster_", "func_"] {
@@ -90,11 +97,17 @@ pub fn weapon_name(d: &DamageInfo, g: &Snapshot, killer_gun: Option<u8>) -> Stri
             break;
         }
     }
+    rename_weapon(name)
+}
+
+/// The last step of the weapon name (0x89b40..0x89bdf): the three classnames TS spells out. A
+/// thrown knife already carries its description, so "knife" only comes from an inflictor of a
+/// non-player attacker. An empty name stays empty.
+fn rename_weapon(name: String) -> String {
     match name.as_str() {
         "knife" => "Throwing Knife".to_owned(),
         "shrapnel" => "Shrapnel".to_owned(),
-        "grenade" | "m61_grenade" => "M61 Grenade".to_owned(),
-        "" => "world".to_owned(),
+        "grenade" => "M61 Grenade".to_owned(),
         _ => name,
     }
 }
@@ -123,6 +136,8 @@ struct Killer {
     active: u16,
     /// [`active_gun`].
     gun: Option<u8>,
+    /// The killer's current weapon record was first owned by the victim ([`victims_gun`]).
+    victims_gun: bool,
 }
 
 /// The `PlayerKilled` body. `p`/`cx` are the victim; `g` holds TS's damage globals as the kill
@@ -166,6 +181,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
             held_secs: k.ts.held_secs,
             active: k.active_powerup,
             gun: active_gun(k),
+            victims_gun: victims_gun(active_gun(k), |cur| k.inv.sv.owners[cur as usize], victim),
         })
     } else {
         None
@@ -196,28 +212,40 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
         }
     }
 
+    // ` (victims_weapon)`: also only for a kill by the killer's own hand, outside
+    // `glast_closecombat`.
+    let victims_weapon = killer.as_ref().is_some_and(|k| k.victims_gun) && !close && d.inflictor == attacker;
     let attacker_gun =
         if suicide { active_gun(p) } else { killer.as_ref().map_or_else(|| other(attacker, |k| active_gun(k)).flatten(), |k| k.gun) };
     let weapon = weapon_name(d, &g, attacker_gun);
     death_notice(attacker, d.inflictor, victim, &weapon);
-    log_kill(
-        attacker,
-        victim,
-        &weapon,
-        suicide,
-        sliding,
-        diving,
-        double_kill,
+    let spree = if is_unstoppable {
+        " (is_unstoppable)"
+    } else if is_specialist {
+        " (is_specialist)"
+    } else if is_demolition {
+        " (is_demolition)"
+    } else if is_killer {
+        " (is_killer)"
+    } else {
+        ""
+    };
+    let tags = KillTags {
+        victims_weapon,
+        stopped_fury: stopped_fury.then(|| vname.clone()),
         killed_specialist,
-        stopped_fury.then_some(&vname),
-        is_killer,
-        is_demolition,
-        is_specialist,
-        is_unstoppable,
-    );
+        double_kill,
+        diving,
+        sliding,
+        killed_the_one: p.ts.is_the_one,
+        spree,
+    };
+    log_kill(attacker, victim, &weapon, suicide, &tags);
 
     p.deaths += 1;
-    crate::entities::fire_targets(c"game_playerdie", victim, victim, UseType::Toggle, 0.0);
+    // Lent back to its slot, so a `game_player_team` it reaches changes our team inside the
+    // `Use`, as in TS.
+    crate::world::lend(victim, p, || crate::entities::fire_targets(c"game_playerdie", victim, victim, UseType::Toggle, 0.0));
     if p.ts.is_the_one {
         the_one_is_dead(p, cx, killer.as_ref().map(|k| k.e));
         p.ts.spree = 0;
@@ -436,9 +464,8 @@ fn points_for_frag(d: &DamageInfo, g: &Snapshot, k: &Killer, base: i32, sliding:
             if classname(d.inflictor) != "knife" {
                 return points;
             }
-            // TS names the knife (`CTSKnife::GetDescription` 0x7db04, "Throwing" only without
-            // an object); the port keeps "Throwing".
-            desc = "Throwing".to_owned();
+            // `CTSKnife::GetDescription` (0x7db04), "Throwing" without a knife object.
+            desc = crate::weapons::thrown_knife_description(d.inflictor).unwrap_or("Throwing").to_owned();
             points = 2;
         }
     }
@@ -487,25 +514,64 @@ fn death_notice(attacker: *mut edict_t, inflictor: *mut edict_t, victim: *mut ed
     msg::director_event(eng.index_of(victim), eng.index_of(secondary), director::FLAGS_DEATH);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn log_kill(
-    attacker: *mut edict_t,
-    victim: *mut edict_t,
-    weapon: &str,
-    suicide: bool,
-    sliding: bool,
-    diving: bool,
-    double_kill: bool,
+/// The kill's log tags, in `PlayerKilled`'s order (0x89f0d..0x89fa4).
+#[derive(Default)]
+struct KillTags {
+    victims_weapon: bool,
+    /// The victim's name when the kill ended a spree of three or more.
+    stopped_fury: Option<String>,
     killed_specialist: bool,
-    fury: Option<&String>,
-    killer: bool,
-    demolition: bool,
-    specialist: bool,
-    unstoppable: bool,
-) {
+    double_kill: bool,
+    diving: bool,
+    sliding: bool,
+    /// The victim was The One (`pl+0x7b9`, read before `TheOneIsDead`).
+    killed_the_one: bool,
+    /// " (is_killer)", " (is_demolition)", " (is_specialist)", " (is_unstoppable)" or "".
+    spree: &'static str,
+}
+
+impl KillTags {
+    fn suffix(&self) -> String {
+        let flag = |on: bool, s: &str| if on { s.to_owned() } else { String::new() };
+        let fury = self.stopped_fury.as_ref().map(|n| format!(" (stopped_fury \"{n}\")")).unwrap_or_default();
+        [
+            flag(self.victims_weapon, " (victims_weapon)"),
+            fury,
+            flag(self.killed_specialist, " (killed_specialist)"),
+            flag(self.double_kill, " (double_kill)"),
+            flag(self.diving, " (diving)"),
+            flag(self.sliding, " (sliding)"),
+            flag(self.killed_the_one, " (killed_the_one)"),
+            self.spree.to_owned(),
+        ]
+        .concat()
+    }
+}
+
+/// `"name<userid><authid><x>"` of a log line: `x` is the user id again outside teamplay, the
+/// `model` key in teamplay.
+fn log_id(name: &str, uid: i32, auth: &str, model: Option<&str>) -> String {
+    match model {
+        Some(m) => format!("\"{name}<{uid}><{auth}><{m}>\""),
+        None => format!("\"{name}<{uid}><{auth}><{uid}>\""),
+    }
+}
+
+/// The log weapon: A-Z lowered and spaces made underscores (0x89c28..0x89c5f).
+fn log_weapon(weapon: &str) -> String {
+    weapon.to_ascii_lowercase().replace(' ', "_")
+}
+
+/// `PlayerKilled`'s log line (0x89c61..0x8a2bb): a suicide, a death by something that isn't a
+/// client (" (world)"), or the kill with its tags.
+fn log_kill(attacker: *mut edict_t, victim: *mut edict_t, weapon: &str, suicide: bool, tags: &KillTags) {
     let eng = engine();
-    let id = |e: *mut edict_t| format!("\"{}<{}><{}><>\"", netname(e), eng.user_id(e), eng.auth_id(e).to_string_lossy());
-    let w = weapon.to_ascii_lowercase().replace(' ', "_");
+    let teamplay = state::teamplay();
+    let id = |e: *mut edict_t| {
+        let model = teamplay.then(|| eng.info_key(e, c"model").to_string_lossy().into_owned());
+        log_id(&netname(e), eng.user_id(e), &eng.auth_id(e).to_string_lossy(), model.as_deref())
+    };
+    let w = log_weapon(weapon);
     if suicide {
         msg::log(&format!("{} committed suicide with \"{w}\"\n", id(victim)));
         return;
@@ -514,27 +580,17 @@ fn log_kill(
         msg::log(&format!("{} committed suicide with \"{w}\" (world)\n", id(victim)));
         return;
     }
-    let spree = if unstoppable {
-        " (is_unstoppable)"
-    } else if specialist {
-        " (is_specialist)"
-    } else if demolition {
-        " (is_demolition)"
-    } else if killer {
-        " (is_killer)"
-    } else {
-        ""
-    };
-    let fury = fury.map(|n| format!(" (stopped_fury \"{n}\")")).unwrap_or_default();
-    msg::log(&format!(
-        "{} killed {} with \"{w}\"{spree}{fury}{}{}{}{}\n",
-        id(attacker),
-        id(victim),
-        if killed_specialist { " (killed_specialist)" } else { "" },
-        if double_kill { " (double_kill)" } else { "" },
-        if diving { " (diving)" } else { "" },
-        if sliding { " (sliding)" } else { "" },
-    ));
+    msg::log(&format!("{} killed {} with \"{w}\"{}\n", id(attacker), id(victim), tags.suffix()));
+}
+
+/// `PlayerKilled`'s ` (victims_weapon)` gun test (0x89703..0x8975c): the killer holds a weapon
+/// record (`gun+0xcc`) whose original owner (`s_weapon_status+0x30`, `owner_of`) is the victim,
+/// and `GetWeaponType` isn't 2, 3 or 11 (grenades, blades; 11 has no weapon). `cur` is
+/// [`active_gun`].
+fn victims_gun(cur: Option<u8>, owner_of: impl FnOnce(u8) -> *mut edict_t, victim: *mut edict_t) -> bool {
+    use shared::weapons::{kind, restriction_type};
+    let Some(cur) = cur.filter(|&c| c != 0 && (c as usize) < shared::weapons::MAX_WEAPONS) else { return false };
+    owner_of(cur) == victim && !matches!(restriction_type(cur), kind::GRENADE | kind::KNIFE | kind::FLAG)
 }
 
 fn team_kill_punish(killer: *mut edict_t, victim: *mut edict_t) {
@@ -630,8 +686,66 @@ pub fn broadcast_score(e: *mut edict_t) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Snapshot, kung_fu_frag, own_weapon_name, spectacular_roll, weapon_info_name};
-    use shared::weapons::tables;
+    use super::{
+        KillTags, Snapshot, kung_fu_frag, log_id, log_weapon, own_weapon_name, rename_weapon, spectacular_roll, victims_gun,
+        weapon_info_name,
+    };
+    use goldsrc::sys::edict_t;
+    use shared::weapons::{id, tables};
+
+    #[test]
+    fn weapon_names_ts_spells_out() {
+        assert_eq!(rename_weapon("knife".into()), "Throwing Knife");
+        assert_eq!(rename_weapon("shrapnel".into()), "Shrapnel");
+        assert_eq!(rename_weapon("grenade".into()), "M61 Grenade");
+        // Only those three: the grenade's spawn name and an empty name pass through.
+        assert_eq!(rename_weapon("m61_grenade".into()), "m61_grenade");
+        assert_eq!(rename_weapon(String::new()), "");
+        assert_eq!(rename_weapon("Throwing Katana".into()), "Throwing Katana");
+    }
+
+    #[test]
+    fn kill_log_tags_keep_ts_order() {
+        let all = KillTags {
+            victims_weapon: true,
+            stopped_fury: Some("Bob".into()),
+            killed_specialist: true,
+            double_kill: true,
+            diving: true,
+            sliding: true,
+            killed_the_one: true,
+            spree: " (is_killer)",
+        };
+        assert_eq!(
+            all.suffix(),
+            " (victims_weapon) (stopped_fury \"Bob\") (killed_specialist) (double_kill) (diving) (sliding) (killed_the_one) (is_killer)"
+        );
+        assert_eq!(KillTags::default().suffix(), "");
+        assert_eq!(KillTags { victims_weapon: true, ..Default::default() }.suffix(), " (victims_weapon)");
+    }
+
+    #[test]
+    fn log_ids_repeat_the_user_id_outside_teamplay() {
+        assert_eq!(log_id("Bob", 7, "STEAM_0:1:2", None), "\"Bob<7><STEAM_0:1:2><7>\"");
+        assert_eq!(log_id("Bob", 7, "BOT", Some("merc")), "\"Bob<7><BOT><merc>\"");
+        assert_eq!(log_weapon("Throwing Combat Knife"), "throwing_combat_knife");
+    }
+
+    #[test]
+    fn victims_weapon_needs_the_victims_gun_in_hand() {
+        let victim: *mut edict_t = std::ptr::without_provenance_mut(0x100);
+        let other: *mut edict_t = std::ptr::without_provenance_mut(0x200);
+        assert!(victims_gun(Some(id::BERETTA), |_| victim, victim));
+        assert!(!victims_gun(Some(id::BERETTA), |_| other, victim));
+        // Kung fu, no gun, grenades and blades never count. (The CTB case has no weapon info in
+        // TS, so its type is 0 and it would.)
+        assert!(!victims_gun(Some(0), |_| victim, victim));
+        assert!(!victims_gun(None, |_| victim, victim));
+        assert!(victims_gun(Some(id::BRIEFCASE), |_| victim, victim));
+        for w in [id::M61, id::KNIFE, id::SEAL_KNIFE, id::KATANA] {
+            assert!(!victims_gun(Some(w), |_| victim, victim), "weapon {w}");
+        }
+    }
 
     fn name(id: u8) -> String {
         tables().weapon(id).unwrap().name.clone()

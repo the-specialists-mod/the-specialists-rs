@@ -273,10 +273,72 @@ pub fn remove(e: *mut edict_t) {
     v.targetname = 0;
 }
 
+/// `CBaseEntity::TakeDamage` (0xab994), what every class without its own `TakeDamage` runs
+/// (`world::Entity::take_damage`'s default): refused with `takedamage` off; `g_vecAttackDir`
+/// from the brush centre to the inflictor's origin; a `MOVETYPE_WALK`/`STEP` entity hit by a
+/// real inflictor (not the world) of an attacker that isn't `SOLID_TRIGGER` is pushed away from
+/// the inflictor's centre (`DamageForce`); then the health drops, and at 0 `Killed`
+/// ([`base_killed`]). Returns whether it is still alive.
+pub fn base_take_damage(cx: &mut world::Cx, dmg: &crate::damage::DamageInfo) -> bool {
+    use goldsrc::ext::entities::vec;
+    if cx.pev().takedamage == 0.0 {
+        return false;
+    }
+    let (inflictor, attacker) = (dmg.inflictor, dmg.attacker);
+    // Guard: TS reads the inflictor's origin (and below, the attacker's `solid`) through NULL.
+    if !inflictor.is_null() {
+        let v = cx.pev();
+        let dir = vec::sub(inflictor.v().origin, vec::mad(v.absmin, v.size, 0.5));
+        crate::damage::set_attack_dir(crate::damage::normalize(dir));
+        let walks = v.movetype == MOVETYPE_WALK as i32 || v.movetype == MOVETYPE_STEP as i32;
+        let trigger = !attacker.is_null() && attacker.v().solid == SOLID_TRIGGER as i32;
+        if engine().index_of(inflictor) != 0 && walks && !trigger {
+            let iv = inflictor.v();
+            let v = cx.pev();
+            v.velocity = base_push(v.velocity, v.origin, (iv.absmin, iv.absmax), v.size, dmg.damage);
+        }
+    }
+    let v = cx.pev();
+    v.health -= dmg.damage;
+    let alive = v.health > 0.0;
+    if !alive {
+        base_killed(cx);
+    }
+    alive
+}
+
+/// `CBaseEntity::TakeDamage`'s push: `velocity += normalize(origin - inflictor centre) ·
+/// DamageForce(damage)` (at most 1000).
+fn base_push(velocity: [f32; 3], origin: [f32; 3], inflictor: ([f32; 3], [f32; 3]), size: [f32; 3], damage: f32) -> [f32; 3] {
+    let centre = [0, 1, 2].map(|i| (inflictor.0[i] + inflictor.1[i]) * 0.5);
+    let dir = crate::damage::normalize([0, 1, 2].map(|i| origin[i] - centre[i]));
+    let force = crate::rules::lifecycle::damage_force(size, damage);
+    [0, 1, 2].map(|i| (velocity[i] as f64 + force as f64 * dir[i] as f64) as f32)
+}
+
+/// `CBaseEntity::Killed` (0xabd4c): `takedamage` off, `DEAD_DEAD`, `UTIL_Remove`.
+pub fn base_killed(cx: &mut world::Cx) {
+    let v = cx.pev();
+    v.takedamage = DAMAGE_NO as f32;
+    v.deadflag = DEAD_DEAD as i32;
+    remove(cx.edict);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn base_take_damage_pushes_away_from_the_inflictor() {
+        // A 32x32x72 box hit for 10 from a centre 100 units along -x: DamageForce
+        // 73728 / 73728 * 10 * 5 = 50 along +x.
+        let v = base_push([0.0; 3], [0.0; 3], ([-110.0, -10.0, -10.0], [-90.0, 10.0, 10.0]), [32.0, 32.0, 72.0], 10.0);
+        assert_eq!(v, [50.0, 0.0, 0.0]);
+        // Capped at 1000.
+        let v = base_push([0.0, 0.0, 5.0], [0.0; 3], ([-1.0, -1.0, -11.0], [1.0, 1.0, -9.0]), [1.0, 1.0, 1.0], 100.0);
+        assert_eq!(v, [0.0, 0.0, 1005.0]);
+    }
 
     #[test]
     fn collision_boxes() {
