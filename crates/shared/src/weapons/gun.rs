@@ -190,6 +190,11 @@ pub trait GunHost {
     /// `VKickback` result. TS writes it to `v_angle` only for bots; the client applies it to the
     /// local view.
     fn kick(&mut self, pitch: f32, yaw: f32);
+    /// The client's melee view shake, `ViewShake::Start(amp, 0.2, 10)`: the client copies of
+    /// `ColdCock` (`0x10008da1`), `KatanaFire` (`0x1000a156`), `KnifeFire` (`0x1000a327`) and
+    /// `CCombatAttack` (`0x1000b5c7`) start it on the first prediction of the command. The server
+    /// has no view shake.
+    fn view_shake(&mut self, _amp: f32) {}
     fn sound(&mut self, s: Sound);
 
     fn shoot(&mut self, shot: &Shot);
@@ -933,6 +938,8 @@ impl Gun {
         if !self.has_slot() {
             return;
         }
+        // Client: stock damage x 0.3 (0x10008db2, constant 0x1007a8b0), stunting or not.
+        host.view_shake(self.info().stock as f32 * 0.3);
         let mut dmg = self.info().stock as f32;
         if stunting {
             dmg *= 0.666_666_7;
@@ -1066,6 +1073,9 @@ impl Gun {
                 host.player_anim(r + 0x1d);
             }
             let mut dmg = if stunting { info.damage * 0.666_666_7 } else { info.damage };
+            // Client: the damage before the melee-bar multiplier x 0.15 (0x1000a313..0x1000a327,
+            // constants 0x1007a894 / 0x1007a898).
+            host.view_shake(dmg * 0.15);
             dmg *= spread::melee_multiplier(self.melee_bar);
             let res = host.melee(&MeleeHit {
                 kind: MeleeKind::Knife,
@@ -1156,6 +1166,23 @@ impl Gun {
             (0x11, 50.0, 0.9, 37, true)
         };
         host.player_anim(panim);
+        // Client: its own strength per swing x 0.2 (0x1000a156, constant 0x1007a8f0): stunt 35
+        // (0x1007a8d8), backward -75 (0x1007a904), airborne `clamp(speed·0.15384616, 35, 55)`
+        // (0x1000a0e9, 0x1007a8f8 / 0x1007a8d8 / 0x1007a8f4), crouched 65 (0x1007a8fc), ground
+        // swings 45 (0x1007a900). The crouch test reads the player's flags here (see the client
+        // rendering doc's deviations).
+        let strength = if stunting {
+            35.0
+        } else if backward {
+            -75.0
+        } else if host.flags() & FL_ONGROUND == 0 {
+            (speed * 0.153_846_16).clamp(35.0, 55.0)
+        } else if panim == 37 {
+            65.0
+        } else {
+            45.0
+        };
+        host.view_shake(strength * 0.2);
         dmg *= spread::melee_multiplier(self.melee_bar);
         let res = host.melee(&MeleeHit {
             kind: MeleeKind::Katana,
@@ -1377,6 +1404,9 @@ impl Gun {
                 host.set_iuser4(iuser4 & !0x20000 & !0x4);
             }
             self.last_melee_anim = view_anim;
+            // Client: the base damage x 0.35 (0x1000b5c7, constant 0x1007a8a8); the client copy
+            // picks the same per-attack values (0x1000b09f..0x1000b4e4).
+            host.view_shake(dmg * 0.35);
             dmg *= spread::melee_multiplier(self.melee_bar);
             if host.kungfu() {
                 dmg += dmg;

@@ -31,28 +31,45 @@ pub fn empty(a: &Args) {
     sound(a, CHAN_ITEM, "weapons/pistol-empty.wav", 0.8);
 }
 
-/// `EV_TS_Pump` (`0x100419a0`): pump anim; in first person a shotgun shell and one smoke puff;
-/// the pump sound (`info+0x306`).
+/// `EV_TS_Pump` (`0x100419a0`): pump anim; a shotgun shell and one forced smoke wisp, both
+/// `muzzle - fwd·ofs` (`info+0x34c`) back along the barrel, from the view model's attachment 0 in
+/// first person (`0x10041c78..0x10041f2e`) or the player's attachment 3 in third person and for
+/// other players (`0x100420dc..0x100423be`); then the pump sound (`info+0x306`). Without a shell
+/// model nothing is ejected and there is no smoke (`0x10041c70`, `0x100420f9`); with no view model
+/// the shell leaves from the view origin, without smoke.
 pub fn pump(a: &Args) {
     let id = a.i1;
+    let (fwd, right, up) = a.vectors();
+    // Shell speeds (0x10041bc9..0x10041be8): 60-80 forward and right, 50-100 up.
+    let side = r::random_long(60, 80) as f32;
+    let lift = r::random_long(50, 100) as f32;
+    let shell = tables().asset(id as u8).map(|s| s.shell.clone()).unwrap_or_default();
+    let model = if shell.is_empty() { 0 } else { r::model_index(&format!("models/{shell}.mdl")) };
+    let ofs = tables().asset(id as u8).map_or(0, |s| s.fx[0]) as f32;
+    let shell_vel = v::ma(v::ma(v::ma(a.velocity, side, right), lift, up), side, fwd);
+    let wisp = |muzzle: Vec3| {
+        let now = effects::now();
+        let at = v::ma(muzzle, -ofs, fwd);
+        eject_shell(at, shell_vel, a.angles, model, 2);
+        let vel = a.velocity;
+        effects::with_psys(|ps| effects::fx::gun_smoke(ps, now, 1.0, r::random_long(20, 40), at, vel, right, 4.0, true));
+    };
+    let first_person = a.is_local() && !view::is_third_person();
     if a.is_local() {
         r::weapon_animation(set(id)[13 + r::random_long(0, 1) as usize] as i32, weapon_body(id, a.i2));
-        if let Some(vm) = first_person_view_model() {
-            let (fwd, right, up) = a.vectors();
-            let shell = tables().asset(id as u8).map(|s| s.shell.clone()).unwrap_or_default();
-            if !shell.is_empty() {
-                let vel = v::ma(v::ma(v::ma(a.velocity, r::random_float(100.0, 130.0), right), r::random_float(40.0, 80.0), up), 30.0, fwd);
-                eject_shell(vm.attachment[0], vel, a.angles, r::model_index(&format!("models/{shell}.mdl")), 2);
+        if first_person && model != 0 {
+            match first_person_view_model() {
+                Some(vm) => wisp(vm.attachment[0]),
+                None => eject_shell(view::origin(), shell_vel, a.angles, model, 2),
             }
-            // One forced wisp: radius 1, frame rate 20-40, speed 4, back along the barrel by the
-            // muzzle offset (`info+0x34c`). The direction argument is unclear in the decompile;
-            // `right` is used, as in the silenced shot's second smoke call.
-            let now = effects::now();
-            let ofs = tables().asset(id as u8).map_or(0, |s| s.fx[0]) as f32;
-            let at = v::ma(vm.attachment[0], -ofs, fwd);
-            let vel = a.velocity;
-            effects::with_psys(|ps| effects::fx::gun_smoke(ps, now, 1.0, r::random_long(20, 40), at, vel, right, 4.0, true));
         }
+    }
+    if !first_person
+        && model != 0
+        && (a.is_local() || effects::player_visible(a.entindex))
+        && let Some(e) = engine().entity(a.entindex)
+    {
+        wisp(e.attachment[3]);
     }
     if let Some(asset) = tables().asset(id as u8).filter(|s| !s.sound2.is_empty()) {
         sound(a, CHAN_ITEM, &format!("weapons/{}", asset.sound2), r::random_float(0.92, 1.0));
@@ -158,8 +175,11 @@ fn melee_trace(a: &Args, reach: f32) -> Option<(Vec3, Vec3, u8)> {
     })
 }
 
+/// The knife's and katana's byte tables (`0x10044140` / `0x10044708`, indexed by texture type up
+/// to `'W'`, anything above takes the spark branch): no texture, `'D'` and `'W'` are 0 and `'F'`
+/// is 1, which both skip the sparks and the hit sound; every other type, slosh included, sparks.
 fn hard(tex: u8) -> bool {
-    !matches!(tex, b'F' | b'S' | b'D' | b'W')
+    !matches!(tex, 0 | b'F' | b'D' | b'W')
 }
 
 /// Melee hit puff: `TS_SmallPuff(pos, n, sprite, 5, 12, 30)`, wood smoke on dirt and wood.
@@ -178,21 +198,21 @@ fn metal_hit(pos: Vec3, n: Vec3, size: f32) {
     });
 }
 
-/// `EV_TS_Knife` (`0x10043c90`): trace 35 ahead; metal sparks + `knife_hit` on hard surfaces,
-/// `knife_miss` otherwise.
+/// `EV_TS_Knife` (`0x10043c90`): trace 35 ahead. A hit plays the material sound
+/// (`TS_MeleeMaterialSound` `0x10043f63`), plus metal sparks and `knife_hit` on hard surfaces
+/// (`0x10043f8d`); only a miss plays `knife_miss` (`0x10044042`).
 pub fn knife(a: &Args) {
     if a.is_local() {
         let s = set(a.i1);
         r::weapon_animation(s[15 + r::random_long(0, 2) as usize] as i32, 0);
     }
     match melee_trace(a, 35.0) {
-        Some((pos, n, tex)) if hard(tex) => {
-            metal_hit(pos, n, 6.0);
-            sound(a, CHAN_WEAPON, "weapons/knife/knife_hit.wav", 1.0);
-        }
-        Some((pos, _, tex)) => {
+        Some((pos, n, tex)) => {
             melee_material_sound(tex, pos);
-            sound(a, CHAN_WEAPON, "weapons/knife/knife_miss.wav", 1.0);
+            if hard(tex) {
+                metal_hit(pos, n, 6.0);
+                sound(a, CHAN_WEAPON, "weapons/knife/knife_hit.wav", 1.0);
+            }
         }
         None => sound(a, CHAN_WEAPON, "weapons/knife/knife_miss.wav", 1.0),
     }
@@ -208,11 +228,14 @@ pub fn katana(a: &Args) {
     let reach = if a.i1 == 15 { -55.0 } else { 50.0 };
     let n = if r::random_long(0, 1) == 0 { "" } else { "1" };
     match melee_trace(a, reach) {
+        // As the knife (`0x10044585`..`0x100446ad`): the material sound on every hit, sparks and
+        // `hit`/`hit1` only on hard surfaces.
         Some((pos, nrm, tex)) => {
+            melee_material_sound(tex, pos);
             if hard(tex) {
                 metal_hit(pos, nrm, 12.0);
+                sound(a, CHAN_WEAPON, &format!("weapons/katana/hit{n}.wav"), 1.0);
             }
-            sound(a, CHAN_WEAPON, &format!("weapons/katana/hit{n}.wav"), 1.0);
         }
         None => sound(a, CHAN_WEAPON, &format!("weapons/katana/miss{n}.wav"), 1.0),
     }

@@ -269,7 +269,8 @@ nothing is shown, as before.
 
 Divesteps (1004ef50, drawn when not scoped or in third person; checked against the TS binary):
 the three sprites at `(cx − 40, cy − 40)`. Sprite i is red (195, 45, 45) when `81 − free slots`
-≥ 42 / 52 / 62; the threshold helpers (1004eec0/1004eef0/1004ef20) compute
+≥ 42 / 52 / 62 (free slots: the `TSSpace` byte, `MsgFunc_TSSpace` 1004b9b0 writing element
+`0x100d43cc` + 0x28, read at 1004eec5); the threshold helpers (1004eec0/1004eef0/1004ef20) compute
 `81 − slots − f()` with `f` (1004eeb0) a stub returning 0, so the decompile's
 `HUD_GetUserEntity` term is that 0. Otherwise the sprite has the base colour (red while
 `NextStunt ≥ 0.01`, else the HUD colour) ×1 for the band the pitch is in (< −10°, −10..10°,

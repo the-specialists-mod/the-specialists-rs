@@ -73,7 +73,9 @@ switched off in 3.0, or an SDK constant kept for completeness:
   (`0x10057ed0`) and `ViewShake` (`0x10057fa0`/`0x10058000`) match the port's constants, and
   each shot permanently raises the view by `view_kick·0.85` (yaw by weapon class; ×0.775
   silenced, ×2/3 with double fire rate). Nothing pulls it back (`TSKickAlign` is unused), so the
-  steep climb under sustained fire is TS behaviour. A side-by-side check of the feel is still
-  open.
+  steep climb under sustained fire is TS behaviour. The server's `VKickback` (`0x80414`) uses the
+  same constants (`.rodata` `0xf7f04..0xf7f20`) and writes `punchangle` for bots only. The
+  client's melee attacks also start `ViewShake(amp, 0.2, 10)`; the port runs them through
+  `GunHost::view_shake` (see `client-rendering.md`).
 * Not tested with real keyboard and mouse. The only Steam GoldSrc client run so far is the
   scripted HL25 Linux listen server (`docs/validation.md` §5).

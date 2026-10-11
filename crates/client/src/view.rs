@@ -668,6 +668,12 @@ pub fn kick_angles(pitch: f32, yaw: f32, silenced: bool, now: f32) {
     });
 }
 
+/// The client melee attacks' view shake: `ViewShake::Start(amp, 0.2, 10)` (`0x10008da7`,
+/// `0x1000a15c`, `0x1000a32d`, `0x1000b5cd`). It restarts the same spring as the gun kick.
+pub fn melee_shake(amp: f32) {
+    with(|w| w.shake.start(amp, 0.2, 10.0));
+}
+
 /// `VKickback`'s shake strength (`0x10008346..0x100083ad`): `(0.15 - (now - last) * ts) * 15`,
 /// capped at 1, or `None` at or below 0.001. A time scale of 0 counts as 1.
 fn shake_amplitude(now: f32, last: f32, ts: f32) -> Option<f32> {

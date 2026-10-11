@@ -55,7 +55,8 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `V_CalcViewRoll` / `V_CalcRoll` | `0x100675b0` / `0x100671f0` | `view::calc_view_roll` | done |
 | `V_ApplyKick` | `0x10057ed0` | in `calc_normal` (step into `cl_viewangles`) | done, verified in game |
 | `ViewShake::Start` / `Update` | `0x10057fa0` / `0x10058000` | `view::Shake` | done, unit-tested |
-| `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` (prediction: `view::kick_angles`) | done, constants checked against the decomp |
+| `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` (prediction: `view::kick_angles`) | done; every constant read from `.rdata` (`0x1007a884..0x1007a8ac`) and identical to the server's (`0x80414`, `.rodata` `0xf7f04..0xf7f20`) |
+| client melee view shakes: `ColdCock`, `KatanaFire`, `KnifeFire`, `CCombatAttack` | `ViewShake::Start(amp, 0.2, 10)` at `0x10008dc3`, `0x1000a16f`, `0x1000a340`, `0x1000b5e0` | `GunHost::view_shake` -> `view::melee_shake` (runfuncs only) | done: stock damage ×0.3; knife damage (×2/3 stunting) ×0.15; katana's own strength ×0.2 (stunt 35, backward −75, airborne `clamp(speed·0.15384616, 35, 55)`, crouched 65, ground 45); kung fu base damage ×0.35 |
 | screen fade + `TSFade` | end of `0x10069b90`, `0x1004c1e0` | `view::write_screen_fade`, `view::fade_color`, `view::on_tsfade` | done, verified in game |
 | `V_SetFog` | `0x10056c20` | `effects::fog_begin` / `fog_params` (TriAPI `Fog`), `fog_end` | done, unit-tested: single player with `gl_fog 2` uses `gl_fog_red/green/blue` and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` != 0 |
 | `CAM_Init` / `CAM_Think` / `MoveToward` / `CL_IsThirdPerson` / camera offset | `0x10025370` / `0x10024c80` / `0x10024ba0` / `0x1004fec0` / §7.4 | `view::cam_init` (from `input::init`, as `InitInput` calls it), `view::cam_think` (`cam_command`, `cam_ofs` from `cam_snapto`/`cam_ideal*`, `move_toward`, unit-tested), `view::is_third_person` (`cam_thirdperson` only; TS has no separate death-cam flag, the death cam is the `TSHealth` 0 toggle), third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`) | done; camera verified in game before the offset smoothing was rewritten to TS's form, body cam and model z smoothing not yet |
@@ -238,24 +239,34 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   `cam_snapto`/`cam_ideal*` printed at the console can show a stale string, as in TS.
 * The third-person collision trace is world-only (`PM_WORLD_ONLY`) from the model origin; TS uses
   `PM_TraceLine` against the pmove physents.
-* **Particle numbers** in `effects::fx` are read from the TS client's disassembly (the decompile
-  hides float arguments behind `__ftol`), including every call site's arguments, the `cl_fx`
-  tuning globals (`0x1018ca40..0x1018ca60`) and the cooldown slots. Notable corrections: the
-  `TS_GunSmoke` "45-55" argument is the animation frame rate (always 5 puffs); the muzzle flash
-  spreads `max(3, 9·fxmul)` sprites over `info+0x354` with base radius `info+0x358`, and silenced
-  shots draw a dim flash that fades out by 512 units; the shotgun's muzzle spray is
-  `TS_SpriteDebris`; glass is always 81 shards on a 9×9 grid; the explosion has no sparks, 24/48
-  fireball/smoke particles × the quality scale, and uses the muzzle light. Smoke-like particles
-  (life 0, no fade) live for one run of their animation, as in TS. Still to compare visually: the
-  sprite frame counts (they set those lifetimes) and the quad width of stretched particles (TS
-  scales it by the unnormalised view cross product; the port keeps `radius`).
+* **Particle numbers** in `effects::fx` and the fire/melee event call sites are read from the TS
+  client's disassembly (the decompile hides float arguments behind `__ftol`), including every call
+  site's arguments, the `cl_fx` tuning globals (`0x1018ca40..0x1018ca60`) and the cooldown slots.
+  Notable corrections: the `TS_GunSmoke` "45-55" argument is the animation frame rate (always 5
+  puffs, `0x10047130`); the muzzle flash spreads `max(3, 9·fxmul)` sprites over `info+0x354` with
+  base radius `info+0x358`, and silenced shots draw a dim flash that fades out by 512 units; the
+  shotgun's muzzle spray is `TS_SpriteDebris`, from attachment 3 in third person (`0x1003ed21`);
+  the silenced shot's second wisp sits `muzzle − fwd·ofs` back along the barrel (`0x1003e54b`);
+  akimbo flashes from attachment 0 (`b1` set) or 2, both for a linked shot, and smokes once at the
+  `b1` gun, with no pellet spray (`0x1003f55c`, `0x1004050e`); the pump's shell and wisp leave
+  `muzzle − fwd·ofs` (view model attachment 0, or the player's attachment 3 in third person and for
+  others), only when the weapon has a shell model; glass is always 81 shards on a 9×9 grid; the
+  explosion has no sparks, 24/48 fireball/smoke particles × the quality scale, ends early if a
+  cloud sprite is missing, and its flash keeps the smoke's drag 3.3 (TS reuses the scratch
+  particle); the surface mark's angles are truncated before a negative angle is wrapped
+  (`VecToAngles` `0x10046110`). Smoke-like particles (life 0, no fade) live for one run of their
+  animation, which comes from the sprite file's own frame count (`SPR_Frames`), as in TS.
+* Melee events: the knife and katana play the material sound on every hit (`0x10043f63`,
+  `0x10044585`) and add metal sparks plus `knife_hit`/`hit`/`hit1` on every texture type except
+  none, `'D'`, `'W'` and `'F'` (byte tables `0x10044140`/`0x10044708`; slosh sparks too). Only a
+  miss plays `knife_miss`.
 * Stretch lengths use TS's speed (units per 0.1 s): `stretchspeed` is a TS-unit factor in both
   the map templates and the effects.
 * TSFrags type 2 passes an uninitialised direction to its scintille/sparks in TS (`0x1004be0c`);
   the port uses the message's direction. No server sends type 2.
 * The explosion sound uses the port's fire pitch curve (see the first bullet), not TS's 400.
-* `EV_TS_Pump`'s smoke wisp direction is unclear in the decompile; `v_right` is used, as in the
-  silenced shot's second smoke call.
+* `EV_TS_Pump`'s wisp blows along `v_right` (`0x10189e10`, the right vector of the
+  `AngleVectors` call at `0x10041b09`).
 * `PointVisible` traces from the cull origin with `PM_GLASS_IGNORE`, ignoring no entity; TS passes
   the local player's entity index as the physent to ignore.
 * `PSys_LoadSprite`'s `WARNING! cannot found <name>` goes to the console only. TS prints it with
@@ -263,14 +274,43 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   lookups run inside the effects state, so the port doesn't call back into the HUD from there.
   The cache has no 64-slot limit (TS returns "no sprite" silently once 64 sprites are loaded), and
   is keyed by name only (TS also keys by render mode, which only matters for that limit).
-* Particles: unsorted like TS, oldest replaced at the cap, collision is world-only
-  (`PM_WORLD_ONLY`), and particles that spawn inside a brush (emitters right under a sky) don't
-  count as hits. `Particle_Think` follows the disassembly: the random drift steers an accumulator
-  (`+0x68`) by at most `randomdelta` (3D length) and adds it times the think interval; react moves
-  the particle's *origin* sideways by `(128 − d)·|v|·dot/128·T·react` for every solid player within
-  128 units (local: predicted velocity, others: velocity between their last two updates); wind is
-  ×10 (TS units), physics-gated and skips resting particles; the gust segments chain through
-  `SharedRandomFloat/Long` as in TS. Think distances halve when zoomed (FOV < 40).
+* Particles follow `PSys_UpdateDraw` (`0x100520d0`), `Particle_Move` (`0x10050ce0`),
+  `Particle_Think` (`0x10051270`) and `Particle_Collide` (`0x10051d50`): the four-way death test
+  with TS's 0.001 thresholds; fading (clamped to 0..1) only after the life ends; gravity from the
+  engine's `cl_gravity` (`0x100963ec`, stored by `HUD_TempEntUpdate` at `0x1001bd25`); think
+  before move; nothing moves, thinks or collides while resting; collision traces the whole path
+  since the last trace, only inside the view cone (which also hides the particle), at
+  `max(d·zoom/8192 (×2 beyond 1024), 0.016)` s from the cull origin; a trace stuck from the start
+  kills a particle younger than 0.5 s and rests an older one, a start inside a solid kills it
+  after the bounce; the hit lands exactly on the surface, damps by `0.3·max(1 − 7·iv, 0)` and
+  rests once `ts·travelled < 3·drag` (`Particle_Rest` also clears the roll and its spin); frames
+  advance only after the life ends and aren't clamped (`(int)min(frame, frames − 1)` is drawn);
+  only collision culls (`InViewCone` from the cull origin, fixed 0.9 threshold, no FOV term).
+  Random drift steers an accumulator (`+0x68`) by at most `randomdelta` and adds it times the
+  think interval; react moves the particle's *origin* by `(128 − d)·|v|·dot/128·T·react` for
+  every solid player within 128 units (local: predicted velocity, others: velocity between their
+  last two updates); wind is ×10 (TS units), physics-gated, steps its seeded segment inside a wind
+  particle's think and interpolates speed and direction; `TSPSys` eases from the old gust to the
+  new base speed over the old segment length (`0x1004c00b..0x1004c082`). Think and trace
+  distances halve when zoomed (FOV < 40). Port differences: the pool replaces the oldest particle
+  at the cap (TS drops the new one), collision is world-only (`PM_WORLD_ONLY`), a particle killed
+  during its collision isn't drawn that frame, TS's per-frame callback slot (`+0x118`, always
+  null) and the attached-entity particles (`+0x06`/`+0x07`, never set in 3.0) aren't ported, and
+  the pushes see every live reacting particle where TS walks the list built by the previous
+  frame.
+* **Quads** (`Quad_Build` `0x10050080`): a resting particle is a screen billboard whatever its
+  `follow_view`. A stretched quad runs head (v = 0) to tail, `radius·(toCam̂ × vel̂)` wide, so it
+  narrows as the velocity turns toward the camera; `follow_view` 3 uses `followaxis` unnormalised
+  (no default: a template without one draws nothing, as in TS) and `toCam̂ × followaxis` across.
+* **Melee view shakes** run inside the shared `Gun`, so they follow its branch choice. The client
+  `KatanaFire`/`CCombatAttack` test `FL_DUCKING` on the *weapon's* `pev` (`[esi+0x4]+0x1a4`,
+  `0x1000a052`, `0x1000b1c1`) where the shared code reads the player's flags; only a crouch without
+  `+duck` held picks a different katana strength (65 instead of 45) or kung-fu branch.
+* **First-person flash origin (unverified).** TS's first-person muzzle flashes and pellet spray
+  read the per-player attachment cache (`0x10056be0`, filled from each player entity in
+  `TS_DrawEffects` at `0x10056eb4`), the smoke the view model's attachment; the port uses the view
+  model's attachments for all of them. Which positions the engine leaves in the local player's
+  attachments in first person hasn't been checked.
 * `weapons/sshell.wav` (TS shotgun-shell bounce) isn't shipped with TS 3.0; `sshell1/2.wav` are used.
 * Fog goes through TriAPI `Fog` (FWGS) instead of raw OpenGL (both linear); colours are
   converted from 0..1 to 0..255. TS sets `GL_FOG` itself and turns it off at the end of the

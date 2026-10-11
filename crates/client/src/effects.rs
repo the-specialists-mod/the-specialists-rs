@@ -122,6 +122,11 @@ pub fn with_psys<R>(f: impl FnOnce(&mut PSys) -> R) -> R {
     with(|fx| f(&mut fx.psys))
 }
 
+/// `HUD_TempEntUpdate`'s `cl_gravity` (`0x1001bd25`): the particles fall with it.
+pub fn set_cl_gravity(gravity: f32) {
+    with(|fx| fx.psys.gravity = gravity);
+}
+
 /// Effects clock (client time, seconds).
 pub fn now() -> f64 {
     with(|fx| fx.time)
@@ -526,7 +531,9 @@ pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
     };
     let max = if fov < 40.0 { max * 2.0 } else { max };
     let d = v::dist(e.origin, cam.origin);
-    if d >= max || !psys::in_view_cone(&cam, e.origin) {
+    // `InViewCone` measures from `GetCullOrigin` (this frame's, set by `frame`).
+    let cull = with(|fx| fx.psys.cull_origin);
+    if d >= max || !psys::in_view_cone(&cam, cull, e.origin) {
         return false;
     }
     if fov >= 80.0 && d > start {
