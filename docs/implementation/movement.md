@@ -244,8 +244,8 @@ the same as the GCC build once the stack is 53 bits wide.
   skips `GoWheel` if it hit.
 * **Melee details in `CheckForBreakables`** with an attack window: the block checks
   (`VictimKungfuHold/KnifeHold/KatanaHold`), disarm (`DropWeapon(-2, dmg)`), the melee-bar cost
-  of the backflip kick (22.5), and `glast_closecombat` (passed as damage bit `0x4000000`
-  instead). The team check approximates `PlayerRelationship` with `mp_friendlyfire` and
+  of the backflip kick (22.5). (`glast_closecombat` is set around the kung-fu hit:
+  `weapons::melee::pending_hit`, `damage::glast`.) The team check approximates `PlayerRelationship` with `mp_friendlyfire` and
   `Player::team`.
 * **Super-jump roll landing** also sets `m_flNextAttack = 0.75` (weapons timer): not applied.
 * `SetPlayerGravity` (temp gravity timer, pl+0x4ec), `InterpolateSlowMotion`, power-ups,
@@ -313,7 +313,7 @@ the same as the GCC build once the stack is 53 bits wide.
   `stunt::anim::studio_frame_advance` until `anim.seq_finished` (`death_think`); set `p.stunt.the_one`; set `Player::superjump` (the physinfo `mj` key is
   synced from it every PreThink); apply ×0.7 to damage while `stunt::in_airborne_stunt(cx)` and to
   bullets while `cx.time() < p.stunt.dodge_until`; count kills during `in_airborne_stunt` (or
-  damage bit `0x4000000`) as spectacular.
+  `glast_closecombat`, `damage::glast`) as spectacular.
 * **rules or weapons** must set the move speed (`SetPlayerSpeed`: `set_client_maxspeed` with
   `shared::ts::speed_for_free_slots`, 330 at spawn): PM's accel factor depends on it.
 * **weapons** must: keep `Player::slots_used` current (stunt ability); call

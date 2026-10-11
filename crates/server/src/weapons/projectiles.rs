@@ -559,7 +559,6 @@ impl Knife {
             info.hitgroup = gt.trace_hitgroup;
             info.dir = spread::normalize(pev.velocity);
             info.pos = gt.trace_endpos;
-            info.weapon = self.weapon_id() as i32;
             damage::apply(other, &info);
             let pev = cx.pev();
             pev.velocity = spread::scale(pev.velocity, -0.25);

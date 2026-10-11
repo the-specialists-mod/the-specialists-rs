@@ -487,8 +487,17 @@ fn rules_init_hud(p: &mut Player, cx: &mut Cx) {
     }
 }
 
+/// The `ScoreInfo` TS sends for a player (`AddPoints` 0xd9e18, `PlayerKilled`, `InitHUD`, team
+/// changes): `WRITE_SHORT((int)pev->frags)`, `WRITE_SHORT(m_iDeaths)`, 0, team + 1.
 pub fn score_info_of(p: &Player, v: &entvars_t, idx: i32) -> ScoreInfo {
-    ScoreInfo { idx: idx as u8, frags: v.frags as i16, deaths: p.deaths as i16, class: 0, team: teams::score_team(idx) }
+    ScoreInfo { idx: idx as u8, frags: score_frags(v.frags), deaths: p.deaths as i16, class: 0, team: teams::score_team(idx) }
+}
+
+/// The frags short: a C `(int)` cast (`fistp` under a truncating control word, 0xd9e74..0xd9e8d;
+/// out of range gives 0x80000000), of which `WRITE_SHORT` keeps the low 16 bits, so a score past
+/// ±32767 wraps instead of sticking at the limit.
+pub fn score_frags(frags: f32) -> i16 {
+    crate::entities::stock::maprules::x87_int(frags) as i16
 }
 
 /// `CHalfLifeMultiplay::SendMOTDToClient`: ServerName, then the `motdfile` in ≤60-char chunks.
@@ -862,11 +871,14 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     let now = cx.time();
     let e = cx.edict;
     let idx = cx.index();
-    let close_combat = scoring::is_close_combat(dmg);
+    // The damage globals as this hit left them (`glast_closecombat`, `glast_coldcock`,
+    // `glast_weaponid`, `glast_headshot`), for the blur below and for PlayerKilled.
+    let globals = crate::damage::glast::snapshot();
 
-    // Motion blur trails on the killer (50 %, 80 % for melee) and off on the victim (50 %).
+    // Motion blur trails on the killer and off on the victim (50 %). Guard: TS doesn't test
+    // for a NULL attacker.
     let attacker = dmg.attacker;
-    if !attacker.is_null() && eng.random_long(0, 100) <= if close_combat { 0x4f } else { 0x31 } {
+    if !attacker.is_null() && killer_blur(globals.close_combat, || eng.random_long(0, 100)) {
         let org = attacker.v().origin;
         let b = TsMBlur { entindex: eng.index_of(attacker) as u8, mode: 1 };
         msg::pvs(Msg::TsMBlur, org, |w| b.write(w));
@@ -906,29 +918,30 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     // out on the next PreThink (`UpdatePowerUpState` while dead), not here.
     crate::weapons::on_killed(p, cx);
 
-    scoring::player_killed(p, cx, dmg); // 0x8f1b1
+    scoring::player_killed(p, cx, dmg, globals); // 0x8f1b1
 
     // `m_pTank->Use(this, this, USE_OFF)` after PlayerKilled (0x8f1e1).
     crate::entities::stock::drive::release_tank(p, cx);
 
     // Death pose: CTSAnimation::Animate(7) (0x8f22e), after all of the above, reads the last
-    // damage, hitgroup and attack direction.
+    // damage, hitgroup and attack direction (`g_vecAttackDir`).
+    let attack_dir = crate::damage::attack_dir();
     p.stunt.anim.last_damage = p.ts.last_damage;
     p.stunt.anim.last_hitgroup = p.ts.last_hitgroup;
-    p.stunt.anim.attack_dir = dmg.dir;
+    p.stunt.anim.attack_dir = attack_dir;
     crate::stunt::animate(p, cx, 7);
 
     // Dying: physics, knockback, HUD.
-    let force = (p.ts.last_damage as f32 * 5.0).min(500.0);
     {
         let v = cx.pev();
         v.modelindex = eng.model_index(crate::player::PLAYER_MODEL);
         v.deadflag = DEAD_DYING as i32;
         v.movetype = MOVETYPE_TOSS as i32;
         v.flags &= !(FL_ONGROUND as i32);
-        for i in 0..3 {
-            v.velocity[i] += dmg.dir[i] * force;
-        }
+        v.velocity = death_push(v.velocity, v.size, p.ts.last_damage, attack_dir);
+        // TS also needs `pl+0x470 == 0` for the hop. No other instruction in `ts_i386.so`
+        // addresses that word (0x8f3c2 is the only one) and the engine zeroes private data, so
+        // it is always 0.
         if super::len2d(v.velocity) > 80.0 || p.ts.last_damage > 50 {
             v.velocity[2] = 180.0;
             v.gravity = 0.5;
@@ -951,6 +964,41 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         v.angles[0] = 0.0;
         v.angles[2] = 0.0;
     }
+}
+
+/// `Killed`'s roll for the killer's TSMBlur (0x8ed73..0x8ede1): `RandomLong(0, 100) <= 0x31`;
+/// with `glast_closecombat` a first roll `<= 0x4f` wins, and a miss rolls again with the 0x31
+/// test (about 90 % in all).
+fn killer_blur(close_combat: bool, mut roll: impl FnMut() -> i32) -> bool {
+    (close_combat && roll() <= 0x4f) || roll() <= 0x31
+}
+
+/// `CBaseMonster::DamageForce` (0xb2d08): `73728 / (size.x · size.y · size.z) · damage · 5`
+/// (computed on the x87 stack, stored as a float), at most 1000.
+fn damage_force(size: [f32; 3], damage: f32) -> f32 {
+    let f = ((73728.0 / (size[0] as f64 * size[1] as f64 * size[2] as f64)) * damage as f64 * 5.0) as f32;
+    if f > 1000.0 { 1000.0 } else { f }
+}
+
+/// `Killed`'s push (0x8f2a0..0x8f391): `velocity += F · normalize(g_vecAttackDir)`, with
+/// `F = -DamageForce(m_lastDamageAmount)`, or -500 once that reaches 500. `g_vecAttackDir`
+/// points from the body towards the inflictor, so the body flies away from it.
+fn death_push(velocity: [f32; 3], size: [f32; 3], last_damage: i32, attack_dir: [f32; 3]) -> [f32; 3] {
+    // Inline `Normalize` (0x8f2a2..0x8f2fa): the length is stored as a float, `1 / length` stays
+    // on the x87 stack, the products are stored as floats.
+    let a = attack_dir;
+    let len = (a[0] as f64 * a[0] as f64 + a[1] as f64 * a[1] as f64 + a[2] as f64 * a[2] as f64).sqrt() as f32;
+    let dir = if len == 0.0 {
+        [0.0, 0.0, 1.0]
+    } else {
+        let inv = 1.0 / len as f64;
+        a.map(|c| (c as f64 * inv) as f32)
+    };
+    let force = damage_force(size, last_damage as f32);
+    let f = f64::from(if force >= 500.0 { -500.0 } else { -force });
+    // The x product stays on the x87 stack for its add (0x8f352 `fsts`); y and z are stored as
+    // floats first (0x8f358, 0x8f35c) and added from memory.
+    [(velocity[0] as f64 + f * dir[0] as f64) as f32, velocity[1] + (f * dir[1] as f64) as f32, velocity[2] + (f * dir[2] as f64) as f32]
 }
 
 /// `CBasePlayer::PlayerDeathThink` (0x8eaec): settle, play out the death animation, then become
@@ -1008,7 +1056,7 @@ pub fn send_award(idx: i32, award: u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::{player_is_cheating, respawn_countdown_text, scan_c_int};
+    use super::{damage_force, death_push, killer_blur, player_is_cheating, respawn_countdown_text, scan_c_int, score_frags};
 
     #[test]
     fn cl_lw_is_read_like_sscanf_i() {
@@ -1036,5 +1084,48 @@ mod tests {
         // The whole last second (not only the last half) says "Press Fire To Play!".
         assert_eq!(respawn_countdown_text(0.9), (30, "Press Fire To Play!".to_owned()));
         assert_eq!(respawn_countdown_text(0.4), (30, "Press Fire To Play!".to_owned()));
+    }
+
+    #[test]
+    fn score_frags_keep_the_low_16_bits() {
+        assert_eq!(score_frags(12.0), 12);
+        assert_eq!(score_frags(-3.9), -3, "truncated");
+        assert_eq!(score_frags(32767.0), 32767);
+        assert_eq!(score_frags(32768.0), -32768, "wraps instead of clamping");
+        assert_eq!(score_frags(70000.0), 70000i32 as i16);
+        assert_eq!(score_frags(-32769.0), 32767);
+        assert_eq!(score_frags(f32::NAN), 0, "0x80000000 keeps 0");
+    }
+
+    #[test]
+    fn killer_blur_rerolls_after_a_close_combat_miss() {
+        let rolls = |seq: &[i32], close: bool| {
+            let mut it = seq.iter().copied();
+            let mut n = 0;
+            let hit = killer_blur(close, || {
+                n += 1;
+                it.next().unwrap()
+            });
+            (hit, n)
+        };
+        assert_eq!(rolls(&[0x31], false), (true, 1));
+        assert_eq!(rolls(&[0x32], false), (false, 1));
+        assert_eq!(rolls(&[0x4f], true), (true, 1));
+        assert_eq!(rolls(&[0x50, 0x31], true), (true, 2), "a miss rolls the 50 % test");
+        assert_eq!(rolls(&[0x50, 0x32], true), (false, 2));
+    }
+
+    #[test]
+    fn death_push_is_away_from_the_inflictor() {
+        let stand = [32.0, 32.0, 72.0];
+        assert_eq!(damage_force(stand, 30.0), 150.0);
+        assert_eq!(damage_force([32.0, 32.0, 36.0], 30.0), 300.0, "a ducked body is lighter");
+        assert_eq!(damage_force(stand, 300.0), 1000.0);
+        // g_vecAttackDir points at the inflictor (+x): the body goes -x.
+        assert_eq!(death_push([10.0, 0.0, 0.0], stand, 30, [1.0, 0.0, 0.0]), [-140.0, 0.0, 0.0]);
+        // Capped at 500 from DamageForce 500 up.
+        assert_eq!(death_push([0.0; 3], stand, 100, [0.0, -2.0, 0.0]), [0.0, 500.0, 0.0]);
+        // A zero direction (no inflictor yet) normalises to straight up: pushed down.
+        assert_eq!(death_push([0.0; 3], stand, 10, [0.0; 3]), [0.0, 0.0, -50.0]);
     }
 }

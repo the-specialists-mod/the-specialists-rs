@@ -55,11 +55,12 @@ pub struct DamageInfo {
     pub damage: f32,
     pub bits: i32,
     pub hitgroup: i32,
-    /// Direction of travel (normalised) and impact point, when known.
+    /// `TraceAttack`'s `vecDir` (direction of travel, normalised) and `ptr->vecEndPos`, when
+    /// known. Like the hitgroup they only reach `TraceAttack`: `TakeDamage` gets TS's four
+    /// arguments (inflictor, attacker, amount, bits), and `Killed` pushes the body along
+    /// [`attack_dir`] (`g_vecAttackDir`), not along `dir`.
     pub dir: [f32; 3],
     pub pos: [f32; 3],
-    /// TS weapon id that did it, or -1.
-    pub weapon: i32,
     /// Dealt as TS's `ClearMultiDamage`, `victim->TraceAttack` (vtable +0x54),
     /// `ApplyMultiDamage(inflictor, attacker)` sequence rather than a direct `TakeDamage` (+0x58):
     /// [`apply`] then runs the victim's [`world::Entity::trace_attack`] (players: spawn
@@ -80,7 +81,7 @@ pub struct DamageInfo {
 
 impl DamageInfo {
     pub fn new(inflictor: *mut edict_t, attacker: *mut edict_t, damage: f32, bits: i32) -> Self {
-        Self { inflictor, attacker, damage, bits, hitgroup: hitgroup::GENERIC, dir: [0.0; 3], pos: [0.0; 3], weapon: -1, traced: false }
+        Self { inflictor, attacker, damage, bits, hitgroup: hitgroup::GENERIC, dir: [0.0; 3], pos: [0.0; 3], traced: false }
     }
 
     /// The same damage, dealt through `TraceAttack` (sets the `traced` field).
@@ -97,7 +98,12 @@ impl DamageInfo {
 /// the damage (false when its TraceAttack added nothing). Like TS's callers it doesn't check
 /// `takedamage` first: each TraceAttack does (a `func_breakable` still sparks, a door still runs
 /// its own check), and callers that test it in TS (melee, explosions) test it themselves.
-/// Otherwise this is a direct `TakeDamage`, skipped with `takedamage` off.
+/// Otherwise this is a direct `TakeDamage`. A player always gets it: `CBasePlayer::TakeDamage`
+/// (0x8fa94) has no `takedamage` test of its own, so with it off the damage is refused only inside
+/// `CBaseMonster::TakeDamage`, and the time-based reset, the director event and the fade still
+/// happen (crushers, telefrags and `game_player_hurt` don't test it first in TS either; the
+/// callers that do, like `trigger_hurt`, test it themselves). Other entities are skipped with
+/// `takedamage` off.
 ///
 /// Re-entrancy: if `victim` is the entity currently being dispatched (self-damage, e.g. your own
 /// grenade), world::dispatch can't reach it and this returns false; handle self-damage at the
@@ -111,7 +117,7 @@ pub fn apply(victim: *mut edict_t, info: &DamageInfo) -> bool {
         trace_attack(victim, info);
         return multi::apply(info.inflictor, info.attacker);
     }
-    if victim.v().takedamage == 0.0 {
+    if victim.v().takedamage == 0.0 && !crate::rules::has_player(victim) {
         return false;
     }
     world::dispatch(victim, |e, cx| e.take_damage(cx, info)).unwrap_or(false)
@@ -138,32 +144,26 @@ pub mod multi {
     use goldsrc::sys::edict_t;
     use std::cell::Cell;
 
-    /// `gMultiDamage`, plus what the port's `take_damage` reads beyond TS's four arguments
-    /// (hitgroup, direction, impact point, weapon id: from the victim's latest TraceAttack).
-    #[derive(Clone, Copy, Debug)]
+    /// `gMultiDamage` (entity, amount, type). Nothing else of a TraceAttack is kept: `TakeDamage`
+    /// gets TS's four arguments, and what `Killed`/`PlayerKilled` read besides them are TS's
+    /// globals ([`super::attack_dir`], [`super::glast`], [`headshot`]).
+    #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct MultiDamage {
         pub entity: *mut edict_t,
         pub amount: f32,
         pub bits: i32,
-        pub meta: Option<DamageInfo>,
     }
 
     impl MultiDamage {
-        pub const EMPTY: Self = Self { entity: std::ptr::null_mut(), amount: 0.0, bits: 0, meta: None };
+        pub const EMPTY: Self = Self { entity: std::ptr::null_mut(), amount: 0.0, bits: 0 };
 
-        /// The `TakeDamage` arguments `ApplyMultiDamage(inflictor, attacker)` passes, or `None`
-        /// without a victim.
+        /// The `TakeDamage(inflictor, attacker, amount, type)` arguments
+        /// `ApplyMultiDamage(inflictor, attacker)` passes, or `None` without a victim.
         pub fn take_damage_info(&self, inflictor: *mut edict_t, attacker: *mut edict_t) -> Option<DamageInfo> {
             if self.entity.is_null() {
                 return None;
             }
-            let mut info = self.meta.unwrap_or(DamageInfo::new(inflictor, attacker, 0.0, 0));
-            info.inflictor = inflictor;
-            info.attacker = attacker;
-            info.damage = self.amount;
-            info.bits = self.bits;
-            info.traced = false;
-            Some(info)
+            Some(DamageInfo::new(inflictor, attacker, self.amount, self.bits))
         }
     }
 
@@ -184,7 +184,7 @@ pub mod multi {
     }
 
     /// `AddMultiDamage` on `cell`; `flush` is the `ApplyMultiDamage` of the old victim.
-    fn add_to(cell: &Cell<MultiDamage>, victim: *mut edict_t, amount: f32, bits: i32, meta: &DamageInfo, flush: impl FnOnce()) {
+    fn add_to(cell: &Cell<MultiDamage>, victim: *mut edict_t, amount: f32, bits: i32, flush: impl FnOnce()) {
         if victim.is_null() {
             return;
         }
@@ -201,7 +201,6 @@ pub mod multi {
         }
         let mut m = cell.get();
         m.amount += amount;
-        m.meta = Some(*meta);
         cell.set(m);
     }
 
@@ -209,8 +208,11 @@ pub mod multi {
     /// TraceAttack (`attacker` is the TraceAttack's `pevAttacker`). The type keeps every bit since
     /// the last Clear, even across a change of victim; a different victim first gets the damage
     /// collected so far applied to the old one, with `attacker` as inflictor and attacker.
-    pub fn add(attacker: *mut edict_t, victim: *mut edict_t, amount: f32, bits: i32, meta: &DamageInfo) {
-        add_to(&MULTI.0, victim, amount, bits, meta, || {
+    ///
+    /// `_traced` (the TraceAttack's own arguments) isn't kept: TS's `AddMultiDamage` takes only
+    /// the values above. The parameter stays until every TraceAttack stops passing it.
+    pub fn add(attacker: *mut edict_t, victim: *mut edict_t, amount: f32, bits: i32, _traced: &DamageInfo) {
+        add_to(&MULTI.0, victim, amount, bits, || {
             apply(attacker, attacker);
         });
     }
@@ -269,10 +271,9 @@ pub mod multi {
             let hs = Cell::new(true);
             let (shooter, a) = (fake(1), fake(2));
             cell.set(MultiDamage { bits: 0x1002, ..MultiDamage::EMPTY });
-            let meta = DamageInfo::new(shooter, shooter, 0.0, 0x0200_1002);
             for _ in 0..3 {
                 // Only the first Add "flushes", the cleared (null) victim.
-                add_to(&cell, a, 7.5, 0x0200_1002, &meta, || assert!(cell.get().entity.is_null(), "same victim never flushes"));
+                add_to(&cell, a, 7.5, 0x0200_1002, || assert!(cell.get().entity.is_null(), "same victim never flushes"));
             }
             let mut calls = Vec::new();
             let took = apply_from(&cell, &hs, shooter, shooter, |v, info| {
@@ -287,13 +288,24 @@ pub mod multi {
         }
 
         #[test]
+        fn take_damage_gets_only_the_four_arguments() {
+            // TS's `TakeDamage(pevInflictor, pevAttacker, flDamage, bitsDamageType)`: no hitgroup,
+            // direction, impact point or weapon survives the multi-damage.
+            let (inflictor, attacker) = (fake(1), fake(4));
+            let m = MultiDamage { entity: fake(2), amount: 12.0, bits: bits::CLUB };
+            let info = m.take_damage_info(inflictor, attacker).expect("a victim");
+            assert_eq!((info.inflictor, info.attacker, info.damage, info.bits), (inflictor, attacker, 12.0, bits::CLUB));
+            assert_eq!((info.hitgroup, info.dir, info.pos, info.traced), (crate::damage::hitgroup::GENERIC, [0.0; 3], [0.0; 3], false));
+            assert_eq!(MultiDamage::EMPTY.take_damage_info(inflictor, attacker).map(|i| i.damage), None);
+        }
+
+        #[test]
         fn a_new_victim_flushes_the_old_one_first() {
             let cell = Cell::new(MultiDamage::EMPTY);
             let (a, b) = (fake(2), fake(3));
-            let meta = DamageInfo::new(fake(1), fake(1), 0.0, 0);
-            add_to(&cell, a, 10.0, bits::BULLET, &meta, || {});
+            add_to(&cell, a, 10.0, bits::BULLET, || {});
             let mut flushed = None;
-            add_to(&cell, b, 4.0, bits::CLUB, &meta, || flushed = Some(cell.get()));
+            add_to(&cell, b, 4.0, bits::CLUB, || flushed = Some(cell.get()));
             let f = flushed.expect("victim changed");
             assert_eq!((f.entity, f.amount), (a, 10.0));
             assert_eq!(f.bits, bits::BULLET | bits::CLUB, "the old victim gets the new bits too");
@@ -305,7 +317,7 @@ pub mod multi {
         fn no_victim_nothing_applied() {
             let cell = Cell::new(MultiDamage::EMPTY);
             let hs = Cell::new(true);
-            add_to(&cell, std::ptr::null_mut(), 5.0, bits::BULLET, &DamageInfo::new(fake(1), fake(1), 0.0, 0), || panic!());
+            add_to(&cell, std::ptr::null_mut(), 5.0, bits::BULLET, || panic!());
             assert_eq!(cell.get().bits, 0, "a null victim adds nothing, not even its bits");
             assert!(!apply_from(&cell, &hs, fake(1), fake(1), |_, _| panic!("no victim")));
             assert!(hs.get(), "glast_headshot is only reset with a victim");
@@ -316,9 +328,147 @@ pub mod multi {
             // The "old victim" of the first Add is the cleared null entity: its Apply is a no-op.
             let cell = Cell::new(MultiDamage::EMPTY);
             let hs = Cell::new(false);
-            let meta = DamageInfo::new(fake(1), fake(1), 0.0, 0);
-            add_to(&cell, fake(2), 1.0, 0, &meta, || assert!(!apply_from(&cell, &hs, fake(1), fake(1), |_, _| panic!())));
+            add_to(&cell, fake(2), 1.0, 0, || assert!(!apply_from(&cell, &hs, fake(1), fake(1), |_, _| panic!())));
             assert_eq!(cell.get().amount, 1.0);
+        }
+    }
+}
+
+/// `g_vecAttackDir` (0x190ee0, zero at load): the last attack direction `CBaseMonster::TakeDamage`
+/// (0xb2430) computed, from the victim towards just below the inflictor's centre. Only a hit with
+/// a real inflictor (not NULL, not the world) writes it, so it keeps the previous hit's value
+/// otherwise. `CBasePlayer::Killed` (0x8f2a0..0x8f380) pushes the body against it and the death
+/// pose (`CTSAnimation::Animate(7)`) reads it.
+static ATTACK_DIR: goldsrc::Global<std::cell::Cell<[f32; 3]>> = goldsrc::Global(std::cell::Cell::new([0.0; 3]));
+
+/// `g_vecAttackDir`.
+pub fn attack_dir() -> [f32; 3] {
+    ATTACK_DIR.0.get()
+}
+
+/// SDK `Vector::Normalize`: `(0, 0, 1)` for a zero vector, else each component times `1 / length`
+/// (the length and its inverse are stored as floats).
+pub fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] as f64 * v[0] as f64 + v[1] as f64 * v[1] as f64 + v[2] as f64 * v[2] as f64).sqrt() as f32;
+    if len == 0.0 {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = 1.0 / len;
+    [v[0] * inv, v[1] * inv, v[2] * inv]
+}
+
+/// `CBaseEntity::Center`: `(absmax + absmin) * 0.5`.
+fn center(absmin: [f32; 3], absmax: [f32; 3]) -> [f32; 3] {
+    [(absmax[0] + absmin[0]) * 0.5, (absmax[1] + absmin[1]) * 0.5, (absmax[2] + absmin[2]) * 0.5]
+}
+
+/// The direction `CBaseMonster::TakeDamage` stores in `g_vecAttackDir`:
+/// `(inflictor->Center() - (0, 0, 10) - Center()).Normalize()`, normalised a second time.
+pub fn attack_dir_between(inflictor: (&[f32; 3], &[f32; 3]), victim: (&[f32; 3], &[f32; 3])) -> [f32; 3] {
+    let from = center(*inflictor.0, *inflictor.1);
+    let to = center(*victim.0, *victim.1);
+    let d = [from[0] - to[0], from[1] - to[1], from[2] - 10.0 - to[2]];
+    normalize(normalize(d))
+}
+
+/// The `g_vecAttackDir` update of `CBaseMonster::TakeDamage` (0xb2430) for `victim` (after its
+/// `takedamage` test): only for an inflictor that isn't NULL or the world (`FNullEnt`) and has an
+/// object (`CBaseEntity::Instance`).
+pub fn update_attack_dir(inflictor: *mut edict_t, victim: &entvars_t) {
+    if inflictor.is_null() || goldsrc::server::engine().index_of(inflictor) == 0 || !inflictor.has_private_data() {
+        return;
+    }
+    let iv = inflictor.v();
+    ATTACK_DIR.0.set(attack_dir_between((&iv.absmin, &iv.absmax), (&victim.absmin, &victim.absmax)));
+}
+
+/// TS's melee and bullet globals that `CBasePlayer::Killed` and `PlayerKilled` read:
+/// `glast_closecombat` (0x114480), `glast_coldcock` (0x114481) and `glast_weaponid` (0x11100c).
+/// Each is set right before one Clear/TraceAttack/Apply and reset right after it, so it is only
+/// seen by a `TakeDamage` (and the `Killed` inside it) that this one hit causes.
+pub mod glast {
+    use goldsrc::Global;
+    use std::cell::Cell;
+
+    static CLOSE_COMBAT: Global<Cell<bool>> = Global(Cell::new(false));
+    static COLDCOCK: Global<Cell<bool>> = Global(Cell::new(false));
+    /// -1 (no simulated bullet) at load, like TS's initialised `.data` word.
+    static WEAPON_ID: Global<Cell<i32>> = Global(Cell::new(-1));
+
+    /// Sets `cell` to `on` for `f`, then to `off` (TS stores the constant, it doesn't restore).
+    fn during<T: Copy, R>(cell: &Cell<T>, on: T, off: T, f: impl FnOnce() -> R) -> R {
+        cell.set(on);
+        let r = f();
+        cell.set(off);
+        r
+    }
+
+    /// `glast_closecombat = 1` around the hit: `CBasePlayer::CloseCombatAttack` (0x95f88, set at
+    /// 0x96490) and the kung-fu hit of `CTSStunt::CheckForBreakables` (0x9bd9c, set when the
+    /// stored attack is kung fu, `pl+0x7a4 == 0`; reset at the function's end).
+    pub fn close_combat<R>(f: impl FnOnce() -> R) -> R {
+        during(&CLOSE_COMBAT.0, true, false, f)
+    }
+
+    /// `glast_coldcock = 1` around the stock hit of `CBasePlayer::ColdCockAttack` (0x96610, set at 0x96a29),
+    /// when the victim didn't block it.
+    pub fn coldcock<R>(f: impl FnOnce() -> R) -> R {
+        during(&COLDCOCK.0, true, false, f)
+    }
+
+    /// `glast_weaponid = bullet+0x30` around a simulated bullet's hit
+    /// (`CBulletManager::UpdateBullet`, 0x6f2ad..0x6f311), -1 after it.
+    pub fn weapon_id<R>(id: i32, f: impl FnOnce() -> R) -> R {
+        during(&WEAPON_ID.0, id, -1, f)
+    }
+
+    /// The globals at one moment, with `glast_headshot`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Snapshot {
+        pub headshot: bool,
+        pub close_combat: bool,
+        pub coldcock: bool,
+        /// `glast_weaponid`, -1 outside a simulated bullet's hit.
+        pub weapon_id: i32,
+    }
+
+    impl Default for Snapshot {
+        fn default() -> Self {
+            Self { headshot: false, close_combat: false, coldcock: false, weapon_id: -1 }
+        }
+    }
+
+    /// The globals now. `Killed` takes this as it starts, so a `PlayerKilled` the port has to run
+    /// later (the killer is mid-think) still sees the values of the kill.
+    pub fn snapshot() -> Snapshot {
+        Snapshot {
+            headshot: super::multi::headshot(),
+            close_combat: CLOSE_COMBAT.0.get(),
+            coldcock: COLDCOCK.0.get(),
+            weapon_id: WEAPON_ID.0.get(),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn set_for_one_hit_then_reset_not_restored() {
+            let flag = Cell::new(false);
+            assert!(during(&flag, true, false, || flag.get()));
+            assert!(!flag.get());
+            // A nested hit (a Killed's own damage) leaves the flag off for the rest of the outer
+            // one, as TS's `glast_* = 0` does.
+            let after_nested = during(&flag, true, false, || {
+                during(&flag, true, false, || ());
+                flag.get()
+            });
+            assert!(!after_nested);
+            let id = Cell::new(-1);
+            assert_eq!(during(&id, 12, -1, || id.get()), 12);
+            assert_eq!(id.get(), -1);
+            assert_eq!(Snapshot::default().weapon_id, -1);
         }
     }
 }
@@ -335,6 +485,21 @@ mod tests {
         let traced = DamageInfo::new(null, null, 10.0, bits::BLAST).traced();
         assert!(traced.traced, "an occluded blast keeps hitgroup GENERIC but is still traced");
         assert_eq!(traced.hitgroup, hitgroup::GENERIC);
-        assert_eq!((traced.damage, traced.bits, traced.weapon), (10.0, bits::BLAST, -1));
+        assert_eq!((traced.damage, traced.bits), (10.0, bits::BLAST));
+    }
+
+    #[test]
+    fn attack_dir_points_from_the_victim_to_below_the_inflictor() {
+        // Victim box centred on the origin; inflictor centred 100 u ahead and 10 u up, so the
+        // `- (0, 0, 10)` makes the direction level.
+        let victim = ([-16.0, -16.0, -36.0], [16.0, 16.0, 36.0]);
+        let inflictor = ([96.0, -4.0, 6.0], [104.0, 4.0, 14.0]);
+        assert_eq!(attack_dir_between((&inflictor.0, &inflictor.1), (&victim.0, &victim.1)), [1.0, 0.0, 0.0]);
+        // Same centre (after the 10 u drop): SDK `Normalize` gives straight up.
+        let same = ([-16.0, -16.0, -26.0], [16.0, 16.0, 46.0]);
+        assert_eq!(attack_dir_between((&same.0, &same.1), (&victim.0, &victim.1)), [0.0, 0.0, 1.0]);
+        assert_eq!(normalize([0.0; 3]), [0.0, 0.0, 1.0]);
+        let n = normalize([3.0, 0.0, 4.0]);
+        assert!((n[0] - 0.6).abs() < 1e-7 && n[1] == 0.0 && (n[2] - 0.8).abs() < 1e-7);
     }
 }

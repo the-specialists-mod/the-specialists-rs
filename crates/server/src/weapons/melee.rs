@@ -220,8 +220,13 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
     info.hitgroup = tr.iHitgroup;
     info.dir = fwd;
     info.pos = tr.vecEndPos;
-    info.weapon = hit.weapon as i32;
-    damage::apply(victim, &info);
+    // `glast_closecombat` / `glast_coldcock` are set only around these two attacks' hit (the
+    // knife and katana slashes set neither), for the kill's TSMBlur chance, points and messages.
+    match hit.kind {
+        MeleeKind::KungFu => damage::glast::close_combat(|| damage::apply(victim, &info)),
+        MeleeKind::ColdCock => damage::glast::coldcock(|| damage::apply(victim, &info)),
+        MeleeKind::Knife | MeleeKind::Katana => damage::apply(victim, &info),
+    };
     MeleeResult::Hit { player: is_player }
 }
 
@@ -316,8 +321,12 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     info.hitgroup = tr.iHitgroup;
     info.dir = spread::normalize(spread::sub(v.origin, pev.origin));
     info.pos = tr.vecEndPos;
-    info.weapon = p.inv.gun.current as i32;
-    damage::apply(victim, &info);
+    // `glast_closecombat` only for a stored kung-fu attack (`pl+0x7a4 == 0`, set at 0x9c19d).
+    if source == 0 {
+        damage::glast::close_combat(|| damage::apply(victim, &info));
+    } else {
+        damage::apply(victim, &info);
+    }
 }
 
 /// `friendlyfire 0` and the rules say teammates (team play only).

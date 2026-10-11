@@ -262,8 +262,8 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     took
 }
 
-/// `CBaseMonster::TakeDamage` (0xb2430) for a live player: refused with `takedamage` off; the
-/// damage counters (the inflictor only when there is one); refused in god mode (`FL_GODMODE`);
+/// `CBaseMonster::TakeDamage` (0xb2430) for a live player: refused with `takedamage` off;
+/// `g_vecAttackDir` from a real inflictor (`damage::update_attack_dir`); the damage counters (the inflictor only when there is one); refused in god mode (`FL_GODMODE`);
 /// then the health drops and `Killed` runs at 0 or below (returning 0). TS has no knockback here
 /// (no `DamageForce` call, no velocity write); only `Killed` pushes the body.
 fn monster_take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo, amount: f32) -> bool {
@@ -272,6 +272,7 @@ fn monster_take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo, amount: f3
         if v.takedamage == 0.0 {
             return false;
         }
+        crate::damage::update_attack_dir(dmg.inflictor, v);
         if !dmg.inflictor.is_null() {
             v.dmg_inflictor = dmg.inflictor;
         }

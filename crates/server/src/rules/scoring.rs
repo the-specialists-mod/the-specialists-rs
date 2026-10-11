@@ -5,7 +5,8 @@
 use super::lifecycle::{give_cash, score_info_of};
 use super::msg::{self, ts_message_all};
 use super::{cvars, is_player, netname, other, state, teams};
-use crate::damage::{DamageInfo, bits};
+use crate::damage::DamageInfo;
+use crate::damage::glast::Snapshot;
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::world::{Cx, UseType};
@@ -21,11 +22,6 @@ const GREEN: [u8; 3] = [0, 255, 0];
 /// `iuser4` bits that count as "stunting" for scoring and damage (dive, flips, wall jump).
 pub const STUNTING: i32 = 0x10c10;
 
-/// Close combat: kung fu / melee strike (no projectile).
-pub fn is_close_combat(d: &DamageInfo) -> bool {
-    d.weapon == 0 || (d.inflictor == d.attacker && d.bits & (bits::CLUB | bits::SLASH) != 0 && d.bits & bits::THROWN == 0)
-}
-
 fn classname(e: *mut edict_t) -> String {
     if e.is_null() {
         return String::new();
@@ -33,18 +29,51 @@ fn classname(e: *mut edict_t) -> String {
     engine().string(e.v().classname).to_string_lossy().into_owned()
 }
 
-/// Weapon name for `DeathMsg` and logs (gamerules-entities.md §2.3).
-pub fn weapon_name(d: &DamageInfo) -> String {
+/// `get_weapon_info(id)` (0x7f190) `+0x11`, the weapon's name: entry 0 for an id outside 0..0x26.
+fn weapon_info_name(id: i32) -> String {
+    let t = tables();
+    u32::try_from(id)
+        .ok()
+        .filter(|&i| i < 0x26)
+        .and_then(|i| t.weapon(i as u8))
+        .or_else(|| t.weapon(0))
+        .map(|w| w.name.clone())
+        .unwrap_or_default()
+}
+
+/// The killer's active `weapon_tsgun` as `PlayerKilled` reads it (`pl+0xa10`, item id 0x10):
+/// `Some(gun+0xc8)`, the current weapon id (0 = kung fu, `gun+0xcc` NULL), or `None` without the
+/// gun (a `game_player_equip` map, weapons.md §2).
+fn active_gun(p: &Player) -> Option<u8> {
+    crate::weapons::has_gun(p).then_some(p.inv.gun.current)
+}
+
+/// The `DeathMsg`/log weapon when the attacker is its own inflictor (`PlayerKilled` 0x895e4):
+/// a simulated bullet's `glast_weaponid`; else "Kung Fu" under
+/// `glast_closecombat`; else the killer's current gun weapon (with " Stock" under
+/// `glast_coldcock`); else "world" (kung fu outside `CloseCombatAttack`, no gun).
+fn own_weapon_name(g: &Snapshot, killer_gun: Option<u8>) -> String {
+    if g.weapon_id != -1 {
+        weapon_info_name(g.weapon_id)
+    } else if g.close_combat {
+        "Kung Fu".to_owned()
+    } else if let Some(cur) = killer_gun.filter(|&c| c != 0) {
+        let name = weapon_info_name(cur as i32);
+        if g.coldcock { name + " Stock" } else { name }
+    } else {
+        "world".to_owned()
+    }
+}
+
+/// Weapon name for `DeathMsg` and logs (gamerules-entities.md §2.3). `killer_gun` is the
+/// attacker's [`active_gun`].
+pub fn weapon_name(d: &DamageInfo, g: &Snapshot, killer_gun: Option<u8>) -> String {
     let attacker_client = !d.attacker.is_null() && d.attacker.v().flags & FL_CLIENT as i32 != 0;
     let mut name = if attacker_client {
-        if d.inflictor == d.attacker || d.inflictor.is_null() {
-            if d.weapon == 0 || (d.weapon < 0 && is_close_combat(d)) {
-                "Kung Fu".to_owned()
-            } else if let Some(w) = u8::try_from(d.weapon).ok().and_then(|id| tables().weapon(id)) {
-                w.name.clone()
-            } else {
-                "world".to_owned()
-            }
+        if d.inflictor.is_null() {
+            "world".to_owned()
+        } else if d.inflictor == d.attacker {
+            own_weapon_name(g, killer_gun)
         } else {
             classname(d.inflictor)
         }
@@ -92,15 +121,14 @@ struct Killer {
     held: u16,
     held_secs: i32,
     active: u16,
+    /// [`active_gun`].
+    gun: Option<u8>,
 }
 
-/// The `PlayerKilled` body. `p`/`cx` are the victim.
-pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
-    // `glast_headshot` as it is during the kill (it is reset once `ApplyMultiDamage` returns).
-    player_killed_with(p, cx, d, crate::damage::multi::headshot());
-}
-
-fn player_killed_with(p: &mut Player, cx: &mut Cx, d: &DamageInfo, headshot: bool) {
+/// The `PlayerKilled` body. `p`/`cx` are the victim; `g` holds TS's damage globals as the kill
+/// left them (`Killed` takes it first: they are reset once the hit's `ApplyMultiDamage` returns,
+/// and this may run later, below).
+pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
     // `CHalfLifeTeamplay::PlayerKilled` (0xe51b8) skips everything, the death notice included,
     // while `ChangePlayerTeam` kills the player.
     if state::with(|g| g.death_suppressed) {
@@ -114,14 +142,14 @@ fn player_killed_with(p: &mut Player, cx: &mut Cx, d: &DamageInfo, headshot: boo
     let attacker = if d.attacker.is_null() { eng.entity_of_index(0) } else { d.attacker };
     let suicide = attacker == victim;
     let killer_is_player = !suicide && is_player(attacker);
-    let close = is_close_combat(d);
+    let close = g.close_combat;
 
     // The killer's own think (its weapon frame) is usually what killed: its Player is taken
     // out further up the stack. Score as soon as that call returns.
     if killer_is_player && crate::world::is_taken_out(attacker) {
         let d = *d;
         crate::world::defer(attacker, move || {
-            crate::player::with_player(victim, |p, cx| player_killed_with(p, cx, &d, headshot));
+            crate::player::with_player(victim, |p, cx| player_killed(p, cx, &d, g));
         });
         return;
     }
@@ -137,6 +165,7 @@ fn player_killed_with(p: &mut Player, cx: &mut Cx, d: &DamageInfo, headshot: boo
             held: k.ts.held,
             held_secs: k.ts.held_secs,
             active: k.active_powerup,
+            gun: active_gun(k),
         })
     } else {
         None
@@ -151,7 +180,7 @@ fn player_killed_with(p: &mut Player, cx: &mut Cx, d: &DamageInfo, headshot: boo
     let (mut is_killer, mut is_demolition, mut is_specialist, mut is_unstoppable) = (false, false, false, false);
 
     if let Some(k) = killer.as_mut() {
-        points = points_for_frag(d, attacker, victim, points, k.is_the_one, k.spree, k.last_kill, &mut sliding, &mut diving, &vname, now);
+        points = points_for_frag(d, &g, k, points, &mut sliding, &mut diving, now);
         double_kill = now - k.last_kill < 2.0;
         if p.ts.spree > 2 {
             stopped_fury = true;
@@ -167,7 +196,9 @@ fn player_killed_with(p: &mut Player, cx: &mut Cx, d: &DamageInfo, headshot: boo
         }
     }
 
-    let weapon = weapon_name(d);
+    let attacker_gun =
+        if suicide { active_gun(p) } else { killer.as_ref().map_or_else(|| other(attacker, |k| active_gun(k)).flatten(), |k| k.gun) };
+    let weapon = weapon_name(d, &g, attacker_gun);
     death_notice(attacker, d.inflictor, victim, &weapon);
     log_kill(
         attacker,
@@ -216,15 +247,20 @@ fn player_killed_with(p: &mut Player, cx: &mut Cx, d: &DamageInfo, headshot: boo
         if points > 0 {
             // `glast_headshot`: any bullet or thrown head hit since the last ApplyMultiDamage, so
             // also another victim's from the same shotgun shot.
-            if headshot {
+            if g.headshot {
                 ts_message_all(GREEN, 1, 20, &format!("#TS_Headshot #TS_FrgFr {kname}!"));
             }
-            if (d.inflictor == d.attacker || d.inflictor.is_null()) && !close {
-                match u8::try_from(d.weapon).ok().and_then(|id| tables().weapon(id)).map(|w| w.kind) {
+            // The killer's current gun weapon decides (`get_weapon_info(gun+0xc8)+0xd2`), not
+            // what dealt the damage.
+            if d.inflictor == attacker && !close {
+                match k.gun.filter(|&c| c != 0).and_then(|c| tables().weapon(c)).map(|w| w.kind) {
                     Some(WeaponKind::Knife) => ts_message_all(GREEN, 1, 20, &format!("#TS_KnifeKill #TS_FrgFr {kname}!")),
                     Some(WeaponKind::Katana) => ts_message_all(GREEN, 1, 20, &format!("#TS_KatanaKill #TS_FrgFr {kname}!")),
                     _ => {}
                 }
+            }
+            if g.coldcock {
+                ts_message_all(GREEN, 1, 20, &format!("#TS_Coldcock #TS_FrgFr {kname}!"));
             }
             if double_kill {
                 points *= 2;
@@ -362,37 +398,49 @@ fn spectacular_roll(roll: i32, spectacularness: f32) -> bool {
     pct != 0 && roll <= pct
 }
 
-/// `TSGetPointsForFrag` (0x89140).
-#[allow(clippy::too_many_arguments)]
-fn points_for_frag(
-    d: &DamageInfo,
-    attacker: *mut edict_t,
-    victim: *mut edict_t,
-    base: i32,
-    killer_is_the_one: bool,
-    spree: u8,
-    last_kill: f32,
-    sliding: &mut bool,
-    diving: &mut bool,
-    vname: &str,
-    now: f32,
-) -> i32 {
+/// `TSGetPointsForFrag`'s `#TS_KungFu` test for a killer that is its own inflictor:
+/// `glast_weaponid == -1`, then without an active item `glast_closecombat`, with the gun
+/// kung fu out (`gun+0xcc` NULL) or `glast_closecombat`.
+fn kung_fu_frag(g: &Snapshot, killer_gun: Option<u8>) -> bool {
+    g.weapon_id == -1
+        && match killer_gun {
+            None => g.close_combat,
+            Some(cur) => cur == 0 || g.close_combat,
+        }
+}
+
+/// `TSGetPointsForFrag` (0x89140) for a killing player `k`: 2 points and `#TS_KungFu` when the
+/// attacker is its own inflictor, outside a simulated bullet's hit, and either holds no gun under
+/// `glast_closecombat` or has kung fu out (or is under `glast_closecombat`); 2 points and the
+/// knife's name for a thrown knife. Any other inflictor returns the base points at once (no
+/// stunt bonus, no message). Then +1 for a stunt or a slide above 80 u/s (not under
+/// `glast_closecombat`), and the frag message, which names the killer.
+fn points_for_frag(d: &DamageInfo, g: &Snapshot, k: &Killer, base: i32, sliding: &mut bool, diving: &mut bool, now: f32) -> i32 {
     if base < 0 {
         return base;
     }
-    if state::the_one_mode() && !killer_is_the_one {
+    if state::the_one_mode() && !k.is_the_one {
         return 0;
     }
-    let _ = victim;
+    let attacker = k.e;
+    let close = g.close_combat;
     let mut points = base;
     let mut desc = String::new();
-    let close = is_close_combat(d);
-    if close {
-        desc = "#TS_KungFu".to_owned();
-        points = 2;
-    } else if !d.inflictor.is_null() && d.inflictor != attacker && classname(d.inflictor) == "knife" {
-        desc = "Throwing".to_owned();
-        points = 2;
+    if !d.inflictor.is_null() {
+        if d.inflictor == attacker {
+            if kung_fu_frag(g, k.gun) {
+                desc = "#TS_KungFu".to_owned();
+                points = 2;
+            }
+        } else {
+            if classname(d.inflictor) != "knife" {
+                return points;
+            }
+            // TS names the knife (`CTSKnife::GetDescription` 0x7db04, "Throwing" only without
+            // an object); the port keeps "Throwing".
+            desc = "Throwing".to_owned();
+            points = 2;
+        }
     }
     let av = attacker.v();
     let speed = super::len3(av.velocity);
@@ -417,13 +465,13 @@ fn points_for_frag(
     }
     if points > 1 {
         let mut shown = points;
-        if spree > 8 {
+        if k.spree > 8 {
             shown *= 2;
         }
-        if now - last_kill < 2.0 {
+        if now - k.last_kill < 2.0 {
             shown *= 2;
         }
-        ts_message_all(GREEN, 1, 30, &format!("{shown} #TS_Frg #TS_FrgFr {vname}, {desc}"));
+        ts_message_all(GREEN, 1, 30, &format!("{shown} #TS_Frg #TS_FrgFr {}, {desc}", netname(attacker)));
     }
     points
 }
@@ -582,7 +630,49 @@ pub fn broadcast_score(e: *mut edict_t) {
 
 #[cfg(test)]
 mod tests {
-    use super::spectacular_roll;
+    use super::{Snapshot, kung_fu_frag, own_weapon_name, spectacular_roll, weapon_info_name};
+    use shared::weapons::tables;
+
+    fn name(id: u8) -> String {
+        tables().weapon(id).unwrap().name.clone()
+    }
+
+    #[test]
+    fn own_weapon_follows_the_ts_globals() {
+        let none = Snapshot::default();
+        let close = Snapshot { close_combat: true, ..none };
+        let coldcock = Snapshot { coldcock: true, ..none };
+        // A simulated bullet names its own weapon, whatever is held now.
+        assert_eq!(own_weapon_name(&Snapshot { weapon_id: 12, ..close }, Some(0)), name(12));
+        // CloseCombatAttack: kung fu even with a gun out (a delayed kick after switching).
+        assert_eq!(own_weapon_name(&close, Some(12)), "Kung Fu");
+        assert_eq!(own_weapon_name(&close, None), "Kung Fu");
+        // A slash or hitscan shot: the weapon in hand; the stock hit says so.
+        assert_eq!(own_weapon_name(&none, Some(12)), name(12));
+        assert_eq!(own_weapon_name(&coldcock, Some(12)), name(12) + " Stock");
+        // Kung fu outside CloseCombatAttack (a dive through glass), or no gun: "world".
+        assert_eq!(own_weapon_name(&none, Some(0)), "world");
+        assert_eq!(own_weapon_name(&coldcock, None), "world");
+    }
+
+    #[test]
+    fn weapon_info_falls_back_to_entry_zero() {
+        assert_eq!(weapon_info_name(-1), name(0));
+        assert_eq!(weapon_info_name(0x26), name(0));
+        assert_eq!(weapon_info_name(1), name(1));
+    }
+
+    #[test]
+    fn kung_fu_frag_needs_close_combat_or_bare_hands() {
+        let none = Snapshot::default();
+        let close = Snapshot { close_combat: true, ..none };
+        assert!(kung_fu_frag(&close, None));
+        assert!(!kung_fu_frag(&none, None), "no gun, no close combat");
+        assert!(kung_fu_frag(&none, Some(0)), "kung fu out");
+        assert!(kung_fu_frag(&close, Some(12)));
+        assert!(!kung_fu_frag(&none, Some(12)), "a knife or katana slash is no kung-fu frag");
+        assert!(!kung_fu_frag(&Snapshot { weapon_id: 12, ..close }, Some(0)), "a simulated bullet");
+    }
 
     #[test]
     fn spectacularness_zero_never_fires() {
