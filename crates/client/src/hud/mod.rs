@@ -266,6 +266,8 @@ fn on_message(m: Msg, buf: &[u8]) {
                 h.gamemode != 0 && h.players.get(d.killer as usize).map(|p| p.team) == h.players.get(d.victim as usize).map(|p| p.team)
             });
         e.print(&notice::death_console_line(&k, &v, &d.weapon, d.killer == d.victim || d.killer == 0, teamkill));
+        // TS's handler ends with `CHudSpectator::DeathMessage` (the overview's dead icon).
+        crate::spectator::death_notice(d.victim as i32);
     }
 }
 

@@ -787,7 +787,10 @@ pub fn calc_refdef(p: &mut ref_params_t) {
     // The screen fade and fog are written every frame, paused or not.
     write_screen_fade(p.time);
     effects::fog_begin();
-    p.nextView = 0;
+    // Only the spectator view asks for a second pass (its inset window).
+    if !spectating {
+        p.nextView = 0;
+    }
 }
 
 /// Stores the camera the effects, HUD and events read (`v_origin` `0x10190b28` and `v_angles`

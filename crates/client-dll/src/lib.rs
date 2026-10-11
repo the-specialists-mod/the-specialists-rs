@@ -59,6 +59,7 @@ pub unsafe extern "C" fn HUD_VidInit() -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_Redraw(time: f32, intermission: c_int) -> c_int {
     hud::redraw(time, intermission != 0);
+    spectator::redraw();
     voice::redraw();
     menus::redraw(time);
     1
@@ -86,9 +87,8 @@ pub unsafe extern "C" fn HUD_Shutdown() {}
 pub unsafe extern "C" fn HUD_PlayerMove(pm: *mut playermove_t, _server: c_int) {
     // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
     let pm = unsafe { &mut *pm };
-    if !spectator::pin_camera(pm) {
-        shared::pm::player_move(pm);
-    }
+    spectator::begin_player_move(pm);
+    shared::pm::player_move_with(pm, Some(spectator::spectator_move));
 }
 
 #[unsafe(no_mangle)]
@@ -202,6 +202,7 @@ pub unsafe extern "C" fn HUD_CreateEntities() {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_DrawNormalTriangles() {
     effects::draw_normal();
+    spectator::draw_overview();
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_DrawTransparentTriangles() {

@@ -47,11 +47,11 @@ are Ghidra addresses.
 | `SendMOTDToClient` 0xd0ae4 | `lifecycle::send_motd` | `ServerName` = hostname, `motdfile` (default `motd.txt`) in ≤60-char chunks, ≤0x600 bytes. |
 | `CTSGameRules::InitHUD` 0x79134 | `lifecycle::ts_init_hud` | cheat notices, `SrvSett` 0–3, RoundTime, `Spectator` of everyone, **joiner starts as observer** with `respawntime` (5..30 s). |
 | `SetPlayerRespawnTime` 0x75ff4 | `lifecycle::set_respawn_time` | LMS respawn budget (`respawnnumber` → 1), join deadline; award 1 / 11. |
-| `StartObserver` 0x99634 / `StopObserver` 0x99a14 | `lifecycle::{start_observer, stop_observer}` | TSCash resend, TE_KILLPLAYERATTACHMENTS, ActItems 0, SetFOV 0, `EF_NODRAW`, deadflag 3, TeamInfo, `Spectator 1`, starts in the saved mode (chase free the first time); stop saves the mode. |
+| `StartObserver` 0x99634 / `StopObserver` 0x99a14 | `lifecycle::{start_observer, stop_observer}` | TSCash resend, TE_KILLPLAYERATTACHMENTS (at `pev->origin`), the CTB case dropped before the inventory is cleared, ActItems 0, SetFOV 0, `EF_NODRAW`, deadflag 3, health 1, velocity left as it was, TeamInfo, then the `RemoveAllItems(TRUE)` tail (no view/weapon model, `pev->weapons = 0` so the HEV suit bit and its geiger counter go, `CurWeapon 0,0,0`), `Spectator 1`, starts in the saved mode (chase free the first time); stop saves the mode. |
 | `Observer_SetMode` 0x99e44 / `Observer_FindNextPlayer` 0x99b0c / `Observer_HandleButtons` 0x99d34 / `Observer_Idle` 0x99ca4 | `lifecycle::{observer_set_mode, observer_find_next_player, observer_handle_buttons, observer_idle}` | TS observer modes (`shared::ts::obs`): 1 chase locked, 2 chase free, 3 roaming (maxspeed 420), **5 in-eye**; there are no map modes and 4 is HLTV-only. Jump cycles 3 → 2 → 1 → 5 → 3, forward/back pick the next/previous target (not while roaming), 0.2 s apart. The target (`m_hObserverTarget`, `PlayerRules::obs_target`) is the killer (last inflictor if a player), kept across lives; the next one is a living, visible, non-observing player, only teammates in LMS while a respawn is pending. Twice a second a dead or observing target is replaced. No target → roaming. The camera position is `PM_SpectatorMove`'s. |
 | `respawn` client command (ClientCommand) | `lifecycle::respawn_command` | only while observing and after `respawn_at`; "You have to wait until the next round." |
 | `CHalfLifeMultiplay::PlayerThink` 0xcfb60 | `lifecycle::player_think` | from the head of `PreThink`, after the button edges: during intermission a newly pressed attack/attack2/jump/duck/use (0x827, against `m_afButtonLast`, which PostThink no longer updates) sets `end_intermission_button_hit`, and the edges and `pev->button` are cleared. It returns true then and `Player::pre_think` stops, as TS returns on `g_fGameOver`: no water, time-based damage, stunt, weapon timers or train controls in intermission. |
-| `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | `WaterMove`, InitHUD, `CheckTimeBasedDamage`, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text (once a second while the respawn time is ahead; "Press Fire To Play!" only in the last half second, not repeated), death think, +use double tap, spawn protection end, delayed suicide. |
+| `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | `WaterMove`, InitHUD, `CheckTimeBasedDamage`, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text (once a second while the respawn time is ahead; seconds truncated like TS's `(int)` cast, capped at 30; "Press Fire To Play!" in the last second, not repeated; the LMS join countdown also truncates), death think, +use double tap, spawn protection end, delayed suicide. |
 | `CBasePlayer::Killed` 0x8ed5c | `lifecycle::killed` | TSMBlur (random), respawn time, headshot victim slow 0.33, `iuser4 = DEAD_LOCK`, `weapons::on_killed`, drop flag, PlayerKilled, knockback (min(dmg×5, 500)), hop when fast/hard hit, TSHealth 0, ActItems 0, SetFOV 0, gib. |
 | `PlayerDeathThink` | `lifecycle::death_think` | settle; while dying, advance the death sequence (`studio_frame_advance`, at the slow-motion `framerate`) until it finishes; then corpse (`deadcorpse`, 10 s) + observer after 3 s or any button. |
 | `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | points (stock/kung fu/knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`DoSpectacularNess` 0x76b48 = `scoring::do_spectacularness`, shared with explosions: `spectacularness` clamped 0..100 and rounded, 0 never fires), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, log lines with TS suffixes, `game_playerdie`/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
@@ -210,10 +210,31 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
   next 0.3 s update corrects it.
 * A suicide doesn't make the player its own spectator target (TS sets `m_hObserverTarget` to
   the dead player and `Observer_Idle` replaces it within 0.5 s).
+* `m_hObserverTarget` (`+0x75c`) is a raw `CBasePlayer*` in TS, not an `EHANDLE`; the port
+  checks that `obs_target` is still a connected player before using it, so a target that left
+  is treated as no target.
+* `StartObserver`: the port releases a tank first and holsters and clears the gun
+  (`weapons::strip_all`) before `ActItems`/`SetFOV`/`TeamInfo`. TS holsters at the top, uses the
+  tank off after `DropFlag`, and runs `RemoveAllItems(TRUE)` after `TeamInfo`. Only the order of
+  the weapon messages differs. TS's `RemoveAllItems` also calls `UpdateClientData` inline, so
+  `ResetHUD` can go out inside `StartObserver` when the 0.1 s throttle allows. The port sends it
+  from the next `PreThink`.
 
 ## 7. Missing / partial
 
 * `loadweapons`/`saveweapons`, `CustomWP`.
+* Observer code (audited against `ts_i386.so` for issue #7; the `Observer_*` functions,
+  `StartObserver`/`StopObserver`, the PreThink observer block and `PlayerDeathThink` match).
+  Still different, outside those functions:
+  * `jointeam`: TS's `ChangePlayerTeam` (0xe488c) always starts observer and calls
+    `SetPlayerRespawnTime(5)` (0xe4c38..0xe4ca1) unless it's a kill or The One mode; the port
+    (`commands.rs` `jointeam`) skips a change to the same team, only starts observer when not
+    observing, and sets `respawn_at` directly (no respawn award 11). TS's teamplay InitHUD
+    (0xe45d8) also goes through `ChangePlayerTeam`; `teams::init_hud` doesn't start observer.
+  * `fullupdate`: TS's `ForceClientDllUpdate` (0x92594) sends `Spectator` (observer = deadflag 3)
+    and doesn't set the InitHUD flag; the port sends no `Spectator` and does set it.
+  * `CallCheckDeads` (0x79bc0) only schedules a check while no round restart is pending; the
+    port's callers schedule it unconditionally (`check_deads` returns during a restart anyway).
 * Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client,
   `item_antidote` (no shipped map places one).

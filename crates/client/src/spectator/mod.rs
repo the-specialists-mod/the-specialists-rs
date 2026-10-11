@@ -1,16 +1,25 @@
-//! Spectating: TS's `CHudSpectator` (HUD element 13, `gHUD+0x6d8`, vtable `1007cb00`) and the
-//! spectator view (`V_CalcSpectatorRefdef` `0x10068f70`). Reference: decomp
-//! client/architecture-hud.md §4 and rendering-effects-prediction.md §7.
+//! Spectating: TS's `CHudSpectator` (HUD element 13, `gHUD+0x6d8`, vtable `1007cb00`), the
+//! spectator view (`V_CalcSpectatorRefdef` `0x10068f70`) and the client's own
+//! `PM_SpectatorMove` (`0x1002c790`). Reference: decomp client/architecture-hud.md §4 and
+//! rendering-effects-prediction.md §7.
 //!
 //! TS uses the pre-HLTV-rewrite observer numbering (`shared::ts::obs`): 1 chase locked, 2 chase
 //! free, 3 roaming, 4 the director's locked view (HLTV only), 5 in-eye.
 //!
-//! For players the server drives the mode and target (`iuser1`/`iuser2`), and the camera
-//! position comes from player movement (`PM_SpectatorMove` puts the chase camera into `simorg`).
-//! This module adds TS's in-eye view (the target's eyes and gun), the `cl_vsmoothing` rings, and
-//! the HLTV-only parts of `CHudSpectator`: director events, `specmode`, the director-reset camera.
-//! TS's overview map and name tags only draw for HLTV spectators and aren't ported
-//! (docs/implementation/client-hud.md §8).
+//! For players the server drives the mode and target (`iuser1`/`iuser2`). Client prediction runs
+//! TS's client spectator move ([`movement`]), which places the camera and tells the view to use
+//! it, keeps the last camera when the target leaves the PVS, and runs the director's locked view.
+//! The view adds TS's in-eye view (the target's eyes and gun) and the `cl_vsmoothing` rings.
+//! [`panel`] is TS's VGUI spectator bar. The HLTV-only parts of `CHudSpectator` are the director
+//! events, `specmode`, the director-reset camera, the overview map and the name tags
+//! ([`overview`]), and the inset view (unreachable in TS, which never sets an inset mode).
+
+mod movement;
+mod overview;
+mod panel;
+
+pub use movement::{begin_player_move, spectator_move};
+pub use overview::{add_entity as add_overview_entity, death as death_notice, draw as draw_overview};
 
 use crate::hud::text::localise;
 use crate::state;
@@ -70,12 +79,12 @@ impl Ring {
 
 #[derive(Default)]
 struct Spectator {
-    /// Picture-in-picture mode (`+0x14`; HLTV, never drawn here).
+    /// Inset mode (`+0x14`; only ever 0 in TS).
     pip: i32,
     /// Target picked for the locked view (`+0x948`).
     locked_target: i32,
     /// Last director camera: primary and secondary entity (`+0xca0`/`+0xca4`) and flags
-    /// (`0x10192158`, read by TS's client `PM_SpectatorMove` for the locked view).
+    /// (`0x10192158`, read by the client `PM_SpectatorMove` for the locked view).
     last_primary: i32,
     last_secondary: i32,
     director_flags: i32,
@@ -85,6 +94,19 @@ struct Spectator {
     pin_pending: bool,
     /// `sprites/crosshairs.spr` (`+0xc8c`).
     crosshair: HSPRITE,
+    // ---- client `PM_SpectatorMove` → view ----
+    /// `cl_vsmoothing` flags (`0x101914ec`, [`movement::smooth`]).
+    smooth_flags: i32,
+    /// The view uses the camera player movement computed (`0x1019149c` angles, `0x101914f0`
+    /// origin) ...
+    angles_override: bool,
+    origin_override: bool,
+    /// ... kept here (`0x10190b6c`, `0x101913e4`); the view writes its own camera back while the
+    /// overrides are off.
+    saved_angles: Vec3,
+    saved_origin: Vec3,
+    /// The locked view's eased angles (`0x100e0eec`).
+    locked_angles: Vec3,
     // ---- view (`V_CalcSpectatorRefdef` statics) ----
     /// Angle ring and the last angles stored in it (`0x10190b44`).
     angles: Ring,
@@ -96,6 +118,9 @@ struct Spectator {
     /// (`0x10191db0`/`0x10097218`).
     gun_weaponmodel: i32,
     gun: Option<u8>,
+    // ---- HUD ----
+    overview: overview::Overview,
+    panel: panel::Panel,
 }
 
 static SPEC: Global<RefCell<Option<Spectator>>> = Global(RefCell::new(None));
@@ -112,12 +137,15 @@ pub fn init() {
     engine().add_command(c"specmode", cmd_specmode);
 }
 
-/// `CHudSpectator::VidInit` (`0x10022fe0`). TS also loads the overview sprites (iplayer*,
-/// tile, camera, laserbeam); without the overview only the crosshair is used. It also zeroes the
-/// observer input timer (`+0xc94`), which the port keeps in `input`.
+/// `CHudSpectator::VidInit` (`0x10022fe0`): the overview sprites and the crosshair. It also
+/// zeroes the observer input timer (`+0xc94`), which the port keeps in `input`.
 pub fn vid_init() {
+    let sprites = overview::load_sprites();
     let h = engine().spr_load("sprites/crosshairs.spr");
-    with(|s| s.crosshair = h);
+    with(|s| {
+        s.overview.sprites = sprites;
+        s.crosshair = h;
+    });
     crate::input::reset_key_tap();
 }
 
@@ -204,6 +232,8 @@ pub fn set_modes(mode: i32, pip: i32) {
             spec::set_crosshair(0, [0; 4], [0; 3]);
         }
     }
+    // `SetModes` ends with `UpdateSpectatorPanel` whenever the mode number was valid.
+    panel::update();
 }
 
 /// `HUD_DirectorEvent` (`0x1001ab60`) → `CHudSpectator::DirectorMessage` (`0x10023380`): TS's
@@ -219,13 +249,20 @@ pub fn director_event(command: u8, primary: i32, secondary: i32, flags: i32) {
                 s.last_primary = 0;
                 s.last_secondary = 0;
                 s.pin_pending = false;
+                s.overview.reset_entities();
             });
+            crate::input::reset_key_tap();
             state::with(|st| st.spec_mode = obs::NONE);
             set_modes(2, 0);
+            with(|s| s.overview.reset());
+            // `0x10022da0`: the map camera, which the view also uses until player movement
+            // takes over.
             let origin = map_camera();
             with(|s| {
                 s.default_origin = origin;
                 s.pin_pending = true;
+                s.saved_origin = origin;
+                s.origin_override = true;
             });
         }
         director::DRC_CAMERA => {
@@ -308,28 +345,6 @@ fn parse_vec(s: &str) -> Vec3 {
     out
 }
 
-/// The client's `PM_SpectatorMove` (`0x1002c790`) start: after a director reset, a roaming
-/// spectator is moved to the map camera once (angles and velocity cleared) and the move ends
-/// there. Returns true when it did; `HUD_PlayerMove` then skips the shared player movement.
-pub fn pin_camera(pm: &mut playermove_t) -> bool {
-    if pm.spectator == 0 && pm.iuser1 <= 0 {
-        return false;
-    }
-    let roaming = pm.iuser1 == obs::ROAMING || pm.iuser2 == 0;
-    let origin = with(|s| {
-        let o = (s.pin_pending && roaming).then_some(s.default_origin);
-        if o.is_some() {
-            s.pin_pending = false;
-        }
-        o
-    });
-    let Some(origin) = origin else { return false };
-    pm.origin = origin;
-    pm.angles = [0.0; 3];
-    pm.velocity = [0.0; 3];
-    true
-}
-
 /// Spectating someone in-eye (`g_iUser1 == 5`).
 pub fn in_eye() -> bool {
     state::with(|s| s.spec_mode == obs::IN_EYE)
@@ -337,18 +352,48 @@ pub fn in_eye() -> bool {
 
 // ---- view ---------------------------------------------------------------------------------------
 
-/// `V_CalcSpectatorRefdef` (`0x10068f70`). The camera starts at `simorg` with the mouse angles:
-/// player movement has already put a chasing spectator behind its target, so the chase and
-/// roaming modes use them as they are (TS's chase-position code there only writes globals the
-/// function overwrites at its end). In-eye moves to the target's eyes and shows its gun.
+/// `V_CalcSpectatorRefdef` (`0x10068f70`). The camera starts at `simorg` with the mouse angles,
+/// or at the camera the client's `PM_SpectatorMove` computed when it said so ([`movement`]):
+/// that puts a chasing spectator behind its target looking its way (chase locked), on the
+/// director's locked view, or keeps the last camera when the target left the PVS. TS's
+/// chase-position code here only writes globals the function overwrites at its end. On the first
+/// pass the `cl_vsmoothing` rings run and in-eye moves to the target's eyes; with an inset mode
+/// (never set in TS) a second pass draws the inset window. In-eye shows the target's gun.
 pub fn calc_refdef(p: &mut ref_params_t) {
     let (mode, target) = state::with(|s| (s.spec_mode, s.spec_target));
+    let first = p.nextView == 0;
     p.vieworg = p.simorg;
     p.viewangles = p.cl_viewangles;
-    p.onlyClientDraw = 0;
-    smooth(p, mode, target);
-    if mode == obs::IN_EYE {
-        in_eye_position(target, &mut p.vieworg, &mut p.viewangles);
+    with(|s| {
+        if s.origin_override {
+            p.vieworg = s.saved_origin;
+        } else {
+            s.saved_origin = p.vieworg;
+        }
+        if s.angles_override {
+            p.viewangles = s.saved_angles;
+        } else {
+            s.saved_angles = p.viewangles;
+        }
+    });
+    if first {
+        smooth(p);
+    }
+    with(|s| s.last_origin = p.vieworg);
+    if first {
+        match mode {
+            obs::IN_EYE => in_eye_position(target, &mut p.vieworg, &mut p.viewangles),
+            obs::CHASE_LOCKED | obs::CHASE_FREE | obs::ROAMING => {}
+            _ => p.onlyClientDraw = 0,
+        }
+        with(|s| {
+            if s.pip != 0 {
+                p.nextView = 1;
+            }
+            s.overview.draw_cycle = 0;
+        });
+    } else {
+        inset_view(p);
     }
     let weaponmodel = (target != 0).then(|| engine().entity(target)).flatten().map(|t| t.curstate.weaponmodel);
     match weaponmodel {
@@ -365,17 +410,33 @@ pub fn calc_refdef(p: &mut ref_params_t) {
     }
 }
 
-/// `cl_vsmoothing` (the angle ring `0x10190f98` and origin ring `0x10190b98`). TS's client
-/// `PM_SpectatorMove` flags what to smooth when it follows a target: origins in chase locked,
-/// both in the locked view and in-eye (where the in-eye position replaces them afterwards).
-fn smooth(p: &mut ref_params_t, mode: i32, target: i32) {
-    let following = target != 0 && engine().entity(target).is_some_and(|e| e.player != 0);
-    let (smooth_angles, smooth_origin) = match mode {
-        _ if !following => (false, false),
-        obs::CHASE_LOCKED => (false, true),
-        obs::LOCKED_VIEW | obs::IN_EYE => (true, true),
-        _ => (false, false),
-    };
+/// The inset pass of `V_CalcSpectatorRefdef` (`0x1006970b`): the overview file's inset window
+/// (640×480 units, `__ftol`), in-eye of the locked target (mode 2) or the overview map alone
+/// (mode 3). TS never sets an inset mode, so this never runs there either.
+fn inset_view(p: &mut ref_params_t) {
+    let sc = engine().screen();
+    let (sx, sy) = (sc.width as f32 * (1.0 / 640.0), sc.height as f32 * (1.0 / 480.0));
+    let (pip, [x, y, w, h], locked) = with(|s| (s.pip, s.overview.data.inset, s.locked_target));
+    p.viewport = [(sx * x as f32) as i32, (sy * y as f32) as i32, (sx * w as f32) as i32, (sy * h as f32) as i32];
+    p.nextView = 0;
+    p.onlyClientDraw = 0;
+    match pip {
+        2 => in_eye_position(locked, &mut p.vieworg, &mut p.viewangles),
+        3 => {
+            p.onlyClientDraw = 1;
+            let (org, ang) = with(|s| overview::map_view(s, p.cl_viewangles));
+            p.vieworg = org;
+            p.viewangles = ang;
+        }
+        _ => {}
+    }
+    with(|s| s.overview.draw_cycle = 1);
+}
+
+/// `cl_vsmoothing` (the angle ring `0x10190f98` and origin ring `0x10190b98`), smoothing what
+/// the client's `PM_SpectatorMove` flagged (angles in in-eye and the locked view, origins also in
+/// chase locked). A smoothed camera is also what the view keeps for the next frame.
+fn smooth(p: &mut ref_params_t) {
     let amount = crate::input::cvars().cl_vsmoothing.value();
     let time = p.time;
     with(|s| {
@@ -384,26 +445,39 @@ fn smooth(p: &mut ref_params_t, mode: i32, target: i32) {
             s.last_angles = p.viewangles;
         }
         if amount != 0.0
-            && smooth_angles
+            && s.smooth_flags & movement::smooth::ANGLES != 0
             && let Some((a, b, frac)) = s.angles.sample(time - amount)
             && angle_between(v::angle_vectors(a).0, v::angle_vectors(b).0) < 22.5
         {
-            p.viewangles = interpolate_angles(a, b, frac);
+            s.saved_angles = interpolate_angles(a, b, frac);
+            p.viewangles = s.saved_angles;
         }
         // TS compares against the last *smoothed* origin.
         if v::len(v::sub(p.vieworg, s.last_origin)) != 0.0 {
             s.origins.push(p.vieworg, time);
         }
         if amount != 0.0
-            && smooth_origin
+            && s.smooth_flags & movement::smooth::ORIGIN != 0
             && let Some((a, b, frac)) = s.origins.sample(time - amount)
             && v::len(v::sub(b, a)) < 64.0
         {
             let org = v::ma(a, frac, v::sub(b, a));
             p.vieworg = v::add(p.vieworg, v::sub(org, p.simorg));
+            s.saved_origin = p.vieworg;
         }
-        s.last_origin = p.vieworg;
     });
+}
+
+/// HUD and VGUI drawing, after the HUD elements: `CHudSpectator::Draw`'s HLTV name tags (a HUD
+/// element: not in intermission or with `HIDEHUD_ALL`), then the spectator panel, which the
+/// viewport refreshes first.
+pub fn redraw() {
+    let (intermission, hide_all) = crate::hud::with(|h| (h.intermission, h.hide_hud & 4 != 0));
+    if !intermission && !hide_all {
+        overview::draw_names();
+    }
+    panel::think();
+    panel::draw();
 }
 
 /// `0x10029d70`: angle between two vectors in degrees (0 if either is zero).

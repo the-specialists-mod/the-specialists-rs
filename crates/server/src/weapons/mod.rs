@@ -324,6 +324,18 @@ pub fn strip_all(p: &mut Player, cx: &mut Cx) {
     inventory::sync_speed(p, cx);
 }
 
+/// The tail of `CBasePlayer::RemoveAllItems(TRUE)` (0xd8cec) that [`strip_all`] leaves out:
+/// no view or weapon model, `pev->weapons = 0` (the HEV suit bit too, so the geiger counter
+/// stops), and `CurWeapon 0,0,0` to the player. `StartObserver` (0x99986) is TS's only
+/// `RemoveAllItems(TRUE)` caller.
+pub fn remove_all_items_tail(cx: &mut Cx) {
+    let v = cx.pev();
+    v.viewmodel = 0;
+    v.weaponmodel = 0;
+    v.weapons = 0;
+    net::send_cur_weapon_reset(cx.edict);
+}
+
 /// Infinite Clip power-up: double the current gun's clip. False if no gun.
 pub fn multiply_clip(p: &mut Player, cx: &mut Cx) -> bool {
     let free = p.inv.sv.free_slots;
