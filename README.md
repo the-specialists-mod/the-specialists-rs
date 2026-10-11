@@ -80,6 +80,8 @@ and TS content in `../ts_custom` (or `TS_DIR`).
 
 ## Quick start
 
+Step-by-step instructions for each engine: [docs/INSTALL.md](docs/INSTALL.md).
+
 Prebuilt libraries for all four platforms are on the
 [releases page](https://github.com/the-specialists-mod/the-specialists-rs/releases): unpack the
 archive for your platform and copy its `ts/` directory over your TS 3.0 install's `ts/`. The
@@ -138,6 +140,7 @@ Setting up the roots (steamcmd, ReHLDS, Wine) and the latest results: [docs/vali
 
 | Doc | Contents |
 |---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | Installing the port on Xash3D FWGS, Steam Half-Life and dedicated servers, bots, troubleshooting |
 | [AGENTS.md](AGENTS.md) | Working in this repo (people and coding agents): crate layout, the `unsafe` boundary, build and test commands, conventions, pitfalls |
 | [docs/design.md](docs/design.md) | Goals, the wire-compatibility contract, architecture (server, client, shared), module ownership, build targets, deviations from TS |
 | [docs/validation.md](docs/validation.md) | Engine roots and how to set them up, test commands, results, setup pitfalls |
