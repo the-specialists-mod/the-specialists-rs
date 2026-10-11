@@ -43,7 +43,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `InterpolateSlowMotion` | `0x10055ae0` | `hud::approach_timescale`, TS's only time-scale easer, from `HUD_Frame` (`hud::frame`, after the emitters, by the unclamped frame time) | done, unit-tested |
 | `CHud::Think` zoom (from `CHud::UpdateClientData` `0x10024b00`), `UTIL_ApproachFOV`, `HUD_GetFOV` | `0x10049760`, `0x10049620`, `0x100209f0` | `hud::think_fov` from `view::update_client_data` (`HUD_UpdateClientData`), `view::ease_fov` (integer steps of `max(1, (\|d\|/2)·ft·50)` with the last refdef's frame time `0x10191478`), `hud::get_fov` (target `state.fov_target` = `0x100df1a4`, demo record type 0) | done, unit-tested |
 | `V_CalcRefdef` | `0x10069b90` | `view::calc_refdef` (dispatch in `view::refdef_path`) | done, dispatch unit-tested; while paused (outside intermission and spectating) no view is computed, as in TS, so the engine keeps last frame's view and the bob, kick, shake and stair state hold |
-| `V_CalcNormalRefdef` | `0x10067890` | `view::calc_normal` | done (see deviations). The gun is placed at the finished first-person eye (`vieworg` at `0x10068547`: smoothed view height and stairs, shake, the 1/32 nudge, water), so it follows the stunt `NO_VIEW` descent with the view. In third person the view angles become `camAngles` (`CL_CameraOffset`'s pitch and yaw, roll 0; `0x100689ef`) and the model's pitch is `-camPitch/3`; the effects/HUD camera (`view::camera`) keeps `v_angles` (`0x101914d0`), the angles before that override. A view entity above `maxclients` (`SET_VIEW`, `trigger_camera`) replaces the origin and angles (`0x10068a73`) |
+| `V_CalcNormalRefdef` | `0x10067890` | `view::calc_normal` | done (see deviations). The camera the client `PM_SpectatorMove` left (`spectator::view_overrides`) replaces `simorg` (`0x101914f0`, `0x100679aa`) and `cl_viewangles` (`0x1019149c`, `0x10067a4b`); `cl_viewangles` goes into its own ring (`0x10191908`), lagged by `cl_vsmoothing` while the angle flag is set, and the origin ring also runs on the origin flag (`0x1006878f`); smoothed results become the saved spectator camera (`0x10067c73`, `0x10068974`). In normal play `PM_PlayerMove` clears all of it every move, so this only shows when movement spectates and the HUD doesn't (yet), or after an HLTV director reset. This frame's `forward/right/up` come from `cl_viewangles` (`0x10067ebf`). The gun is placed at `vieworg` (`0x10068547`: the finished first-person eye with smoothed view height and stairs, shake, the 1/32 nudge and water, so it follows the stunt `NO_VIEW` descent; the camera in third person, where the engine doesn't draw it), then shaken, then the bob offset and fov push are added. In third person the view angles become `camAngles` (`CL_CameraOffset`'s pitch and yaw, roll 0; `0x100689ef`) and the model's pitch is `-camPitch/3`; the effects/HUD camera (`view::camera`) keeps `v_angles` (`0x101914d0`), the angles before that override. A view entity above `maxclients` (`SET_VIEW`, `trigger_camera`) replaces the origin and angles (`0x10068a73`) |
 | `V_CalcSpectatorRefdef` | `0x10068f70` | `view::calc_spectator` → `spectator::calc_refdef` | done: `simorg` + mouse angles unless the client `PM_SpectatorMove` overrode the camera (`0x101914f0`/`0x1019149c`, saved in `0x101913e4`/`0x10190b6c`), `cl_vsmoothing` rings on the flags it set, in-eye (mode 5) `V_GetInEyePos` `0x10068e20` and the target's gun as view model; HLTV inset pass (`nextView`, `spectator::inset_view`) ported, unreachable as in TS |
 | `PM_SpectatorMove` (client-modified), `PM_PlayerMove` flag reset | `0x1002c790`, `0x1002e330` | `spectator::{spectator_move, begin_player_move}` via `shared::pm::player_move_with` from `HUD_PlayerMove`; `GetChaseOrigin` `0x1002c6c0` is `shared::pm::chase_origin` | done: smoothing flags, camera overrides, last camera kept when the target isn't a physent, director locked view (mode 4), director-reset camera pin; unit-tested angle maths |
 | `CHudSpectator::DrawOverview` (+ layer, entities, expiry), `AddOverviewEntity`, `DeathMessage` | `0x10024970` (`0x10023c90`, `0x10024160`, `0x100249b0`), `0x100249f0`, `0x10024a60` | `spectator::overview::{draw, add_entity, death}` from `HUD_DrawNormalTriangles`, `effects::add_entity` and the `DeathMsg` handler | done, HLTV spectators only (as TS); tiling, file parser and entity list unit-tested |
@@ -52,7 +52,9 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `V_AddIdle` | `0x10067550` | `view::add_idle` | done (intermission only, see deviations) |
 | local-player translucency, `Approach` | start of `0x10067890`, `0x10057e90` | `view::local_amt_step` (crosshair flag from the HUD's `DrawCrosshairID`, step size from `hud::time_delta` = `gHUD.m_flTimeDelta`) | done, unit-tested |
 | `cl_vsmoothing` origin ring (SDK `ViewInterp`) | step 14 of `0x10067890` | `view::Ring` | done, unit-tested |
-| `V_CalcBob` / `V_SmoothBobZ` | `0x10066e70` / `0x10066de0` | `view::calc_bob` | done (cl_bob levels 0..4) |
+| `V_CalcBob` / `V_SmoothBobZ` | `0x10066e70` / `0x10066de0` | `view::Bob` | done, unit-tested; see "Bob" below |
+| `V_CalcGunAngle` | `0x100674a0` | `view::calc_gun_angle` (also the in-eye gun) | done, unit-tested: `(bob − pitch, yaw, roll)` of the view angles, current and latched angles set before the 0.9 shake; no `crosshairangle`; the `ev_punchangle·1.25` terms are always 0 |
+| `cl_vsmoothing` angle ring (normal view) | `0x10067a7a..0x10067c90` | `view::Ring::sample_pair` + `spectator::interpolate_angles` (`0x10029cf0`) | done, unit-tested |
 | `V_SmoothStairs` + view-height smoothing | `0x100677d0` | `view::Stairs` (called from `calc_normal`, and again for the body cam) | done, unit-tested; behaviour as TS, see "Stair smoothing" below |
 | `V_CalcViewRoll` / `V_CalcRoll` | `0x100675b0` / `0x100671f0` | `view::calc_view_roll` | done |
 | `V_ApplyKick` | `0x10057ed0` | in `calc_normal` (step into `cl_viewangles`) | done, verified in game |
@@ -170,6 +172,41 @@ prev_onground = onground;
   `15·ft ≥ 1`). In the air the second call reuses the offset and decays it a second time. The
   port makes the same two calls.
 
+### Bob (`V_CalcBob`, `0x10066e70`; `V_CalcGunAngle`, `0x100674a0`)
+
+Read from the assembly, constants from `.rdata` (`0x10081e20..0x10081e40`, `0x1007d5b0`,
+`0x1007d6a0`, `0x1007d74c`, ...). `view::Bob` holds the statics: phase (`0x10191d74`), amplitude
+(`0x10191d6c`, also the return value), peak (`0x10191d78`), last time (`0x10191d70`), gun offset
+(`0x10191428`), smoothed z (`0x1019144c`) and bob pitch (`0x10190b78`).
+
+* **Skipped** (return 0, no static touched, so the gun offset stays as it was): third person,
+  `pparams->spectator`, or `PM_SpectatorMove`'s smoothing flags (`0x101914ec`) non-zero without
+  the in-eye "keep bobbing" value 8.
+* **`cl_bob` level** (gun level, pitch level): `__ftol` then an unsigned switch, so 0 → (0.1, 0),
+  1 → (0.3, 0), 2 → (0.5, 0.15), 3 → (0.7, 0.5) and anything else, negatives included, (1, 1).
+* **Advancing** only when on the ground, `pparams->time` differs from the last bobbing frame and
+  the view height isn't 0 (a stunt's `NO_VIEW`):
+  `sp = min(|vel.xy|/300, 1.1)`, `phase += ft·5.5·ts·sp·100` (`g_flTimeScale`, unclamped), reset
+  to 0 (not wrapped) once above 360. The amplitude is `|vel.xy|·0.01`, unclamped, which also sets
+  the peak; while the amplitude is below the peak (after the air halving) it eases as
+  `(amp + 2.5)·sp·0.5` instead and the peak stays. That converges on `2.5·sp/(2 − sp)`, below
+  the `3·sp` the speed formula gives at any `sp ≤ 1.1`, so once the amplitude has dropped below
+  the peak (a jump, a fall, a stunt's `NO_VIEW`) it only goes back to the speed formula when the
+  easing value reaches the old peak, i.e. by moving faster than when the peak was set; in
+  practice the amplitude stays on the easing formula (2.5 at 300 u/s, 0 standing). As in TS.
+* **Gun offset**, in world space from the engine's `pparams->forward/right/up` (the previous
+  frame's view vectors; `V_CalcBob` runs before this frame's are computed):
+  `up·sin(2φ)·amp·0.11 + forward·(0.75 − amp/2) + right·sin(φ)·amp·0.3`, x and y times the level,
+  z = `(0.5 − 0.65·amp + z)·level`; bob pitch = `sin(2φ)·amp·pitchLevel·0.25`.
+* **Not advancing:** the amplitude halves while above 0.01, the offset is `forward·(0.75 − amp/2)`
+  times the level with z replaced (not added to) by `(0.5 − 0.65·amp)·level`, bob pitch 0.
+* Either way z then goes through `V_SmoothBobZ`: a step of `(smoothZ − z)·ft·20`, never past z.
+* **Use:** the view model is placed at `vieworg`, shaken (0.9), then the offset is added as is
+  and the fov push follows. `V_CalcGunAngle` sets the gun's angles to
+  `(amp − viewangles.pitch, viewangles.yaw, viewangles.roll)`: the gun pitches up by the bob
+  amplitude and rolls with the stunt roll. The bob pitch goes into `cl_viewangles` (see
+  deviations).
+
 ## Event parameters (as handled)
 
 All events arrive with `FEV_NOTHOST`; the shooter's copy comes from local prediction. Where R§4.2
@@ -207,8 +244,12 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   any pitch > 1 through unclamped, so copying it would play every gunshot at 4x speed. These use
   the TS curve of every other event sound instead (`events::fire_pitch` = `slow_pitch`).
 * **Bob pitch** is added to `cl_viewangles` as a per-frame *delta* (`0.1 * (bob - previous bob)`),
-  like the kick and shake steps; TS adds a value it zeroes every frame, which the engine copy-back
-  would accumulate. The net view is the same, without drift.
+  like the kick and shake steps, so the view is pitched by `0.1 * bob` and no more. TS adds
+  `0.1 * bob` itself every frame (`0x10067d14`) and the engine copies `cl_viewangles` back, so
+  its pitch *integrates* the bob: a swing that grows with the frame rate (about ±0.4° at 100 fps
+  running, ten times that at 1000 fps) and drifts the aim wherever the phase reset at 360° or a
+  changing amplitude leaves the sum off zero. The port keeps the bob's shape without the
+  frame-rate dependence and drift. On frames `V_CalcBob` skips the bob pitch is 0, as in TS.
 * **Idle sway** (`V_AddIdle`) runs in the intermission view only. Its levels and cycles are not 0
   in TS: they are the SDK's unregistered static `cvar_t`s (`v_iroll_cycle` 0.5 / level 0.1,
   `v_ipitch_cycle` 1 / 0.3, `v_iyaw_cycle` 2 / 0.3, values at `0x10097244..0x100972a4`). The normal
@@ -239,13 +280,6 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   and are left out.
 * **`snapto` and `CAM_Think` write `cvar->value` directly** (`Cvar::set_value`), as TS does, so
   `cam_snapto`/`cam_ideal*` printed at the console can show a stale string, as in TS.
-* **`cl_vsmoothing` angle ring and the spectator overrides in the normal view.** TS's normal view
-  also records `cl_viewangles` into the angle ring (`0x10191908`) and, while the client
-  `PM_SpectatorMove` flags (`0x101914ec` bit 2, `0x1019149c`, `0x101914f0`) are set, lags the angles
-  and pins the origin to the spectator's. `PM_PlayerMove` clears those flags on every run
-  (`0x1002e3ce`) and only `PM_SpectatorMove` (`0x1002c7a5..`) or the director reset
-  (`0x10022fca`) sets them, so they are only set while spectating, when the spectator view runs
-  instead. The port keeps those rings in `spectator` and leaves them out of the normal view.
 * **Particle numbers** in `effects::fx` are read from the TS client's disassembly (the decompile
   hides float arguments behind `__ftol`), including every call site's arguments, the `cl_fx`
   tuning globals (`0x1018ca40..0x1018ca60`) and the cooldown slots. Notable corrections: the
@@ -375,8 +409,8 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   spectator view instead of clearing it.
 * Overview entities are kept by entity index (TS stores the `cl_entity_t*`) and looked up when
   drawn. The name-tag offset uses `WorldToScreen`'s x and y (TS's z is 0 too).
-* In-eye gun: TS adds its bob and gun-offset globals, which hold whatever `V_CalcNormalRefdef`
-  last left; the port uses no bob or offset. TS's `V_GetInEyePos` scales the pitch by -π (the SDK
+* In-eye gun: as in TS, the gun offset is whatever `V_CalcBob` last left in the normal view
+  (`0x10069a70`), and the pitch takes a bob global nothing writes (`0x10191dac`, so 0). TS's `V_GetInEyePos` scales the pitch by -π (the SDK
   uses -3); kept.
 
 * **Studio renderer safety checks.** The renderer parses the model from the bytes the engine

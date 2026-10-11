@@ -18,7 +18,7 @@ use goldsrc::sys::*;
 use shared::ts::obs;
 
 /// `cl_vsmoothing` flag bits (`0x101914ec`).
-pub(super) mod smooth {
+pub(crate) mod smooth {
     /// Set on every client spectator move.
     pub const MOVED: i32 = 1;
     pub const ANGLES: i32 = 2;
