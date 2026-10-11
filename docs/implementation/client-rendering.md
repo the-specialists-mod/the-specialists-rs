@@ -44,7 +44,9 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `CHud::Think` zoom (from `CHud::UpdateClientData` `0x10024b00`), `UTIL_ApproachFOV`, `HUD_GetFOV` | `0x10049760`, `0x10049620`, `0x100209f0` | `hud::think_fov` from `view::update_client_data` (`HUD_UpdateClientData`), `view::ease_fov` (integer steps of `max(1, (\|d\|/2)·ft·50)` with the last refdef's frame time `0x10191478`), `hud::get_fov` (target `state.fov_target` = `0x100df1a4`, demo record type 0) | done, unit-tested |
 | `V_CalcRefdef` | `0x10069b90` | `view::calc_refdef` (dispatch in `view::refdef_path`) | done, dispatch unit-tested; while paused (outside intermission and spectating) no view is computed, as in TS, so the engine keeps last frame's view and the bob, kick, shake and stair state hold |
 | `V_CalcNormalRefdef` | `0x10067890` | `view::calc_normal` | done (see deviations) |
-| `V_CalcSpectatorRefdef` | `0x10068f70` | `view::calc_spectator` → `spectator::calc_refdef` | done: chase/roaming use `simorg` + mouse angles, in-eye (mode 5) `V_GetInEyePos` `0x10068e20` and the target's gun as view model, `cl_vsmoothing` rings; no HLTV inset view |
+| `V_CalcSpectatorRefdef` | `0x10068f70` | `view::calc_spectator` → `spectator::calc_refdef` | done: `simorg` + mouse angles unless the client `PM_SpectatorMove` overrode the camera (`0x101914f0`/`0x1019149c`, saved in `0x101913e4`/`0x10190b6c`), `cl_vsmoothing` rings on the flags it set, in-eye (mode 5) `V_GetInEyePos` `0x10068e20` and the target's gun as view model; HLTV inset pass (`nextView`, `spectator::inset_view`) ported, unreachable as in TS |
+| `PM_SpectatorMove` (client-modified), `PM_PlayerMove` flag reset | `0x1002c790`, `0x1002e330` | `spectator::{spectator_move, begin_player_move}` via `shared::pm::player_move_with` from `HUD_PlayerMove`; `GetChaseOrigin` `0x1002c6c0` is `shared::pm::chase_origin` | done: smoothing flags, camera overrides, last camera kept when the target isn't a physent, director locked view (mode 4), director-reset camera pin; unit-tested angle maths |
+| `CHudSpectator::DrawOverview` (+ layer, entities, expiry), `AddOverviewEntity`, `DeathMessage` | `0x10024970` (`0x10023c90`, `0x10024160`, `0x100249b0`), `0x100249f0`, `0x10024a60` | `spectator::overview::{draw, add_entity, death}` from `HUD_DrawNormalTriangles`, `effects::add_entity` and the `DeathMsg` handler | done, HLTV spectators only (as TS); tiling, file parser and entity list unit-tested |
 | `V_CalcIntermissionRefdef` | `0x100676e0` | `view::calc_intermission` | done |
 | `V_DriftPitch` / `V_StopPitchDrift` | `0x10067320` / `0x100672f0` | `view::Drift`, `view::stop_pitch_drift` (called from `input` like `CL_AdjustAngles` `0x10026330` and `IN_MouseMove` `0x100274d0`) | done, unit-tested |
 | `V_AddIdle` | `0x10067550` | `view::add_idle` | done (intermission only, see deviations) |
@@ -299,13 +301,24 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   grenade events (`0x1001c5c0`) and `V_CalcSpectatorRefdef` test `g_iUser1 == 5`. Mode 4 is the
   HLTV director's locked view.
 * Spectator refdef: TS computes chase positions there too, but only into globals the function
-  overwrites at its end; the camera is `simorg` (where `PM_SpectatorMove` put it) with the mouse
-  angles, and the port does just that. TS's client-side `PM_SpectatorMove` (`0x1002c790`) differs
-  from the server's: it raises the `cl_vsmoothing` flags per mode, keeps the last view when the
-  target leaves the PVS, and runs the HLTV locked view. The port runs the shared movement on both
-  sides; the smoothing flags are derived from the mode in `spectator::smooth` (origins in chase
-  locked, both in in-eye and the locked view, while the target entity exists), and only the
-  director-reset camera pin is ported (`spectator::pin_camera`).
+  overwrites at its end; the camera comes from player movement. TS's client-side
+  `PM_SpectatorMove` (`0x1002c790`) differs from the server's, and the port runs it on the client
+  (`spectator::movement`, plugged into the shared movement with `shared::pm::player_move_with`):
+  it raises the `cl_vsmoothing` flags (origins in chase locked, angles and origins in in-eye and
+  the locked view, plus in-eye's "keep bobbing" bit), makes the view use the camera it computed
+  (so chase locked looks along the target's view, not the mouse), keeps the last camera while
+  the target isn't sent (outside the PVS), and runs the director's locked view (mode 4, HLTV:
+  from the primary target towards the secondary, 12.5° pitch and 22.5° to the side the director
+  flags pick, swung 45° back when the line is blocked, eased by 0.1 per move). With no secondary
+  target TS halves and negates the target's yaw (`0x1002cb7d`); kept. The flags and overrides
+  are only written on `runfuncs` moves, so with `cl_predict 0` the view falls back to `simorg`
+  and the mouse angles, as in TS.
+* The HLTV inset view (`V_CalcSpectatorRefdef`'s second pass, `nextView`) and the overview's
+  camera icon are ported, but TS never sets an inset mode (`specmode` and the director reset
+  both pass 0), so neither runs, there or here. `view::calc_refdef` leaves `nextView` to the
+  spectator view instead of clearing it.
+* Overview entities are kept by entity index (TS stores the `cl_entity_t*`) and looked up when
+  drawn. The name-tag offset uses `WorldToScreen`'s x and y (TS's z is 0 too).
 * In-eye gun: TS adds its bob and gun-offset globals, which hold whatever `V_CalcNormalRefdef`
   last left; the port uses no bob or offset. TS's `V_GetInEyePos` scales the pitch by -π (the SDK
   uses -3); kept.

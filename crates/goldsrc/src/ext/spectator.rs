@@ -35,3 +35,17 @@ pub fn set_crosshair(hspr: HSPRITE, rect: [i32; 4], rgb: [i32; 3]) {
     let rc = wrect_t { left: rect[0], right: rect[1], top: rect[2], bottom: rect[3] };
     cl_eng!(pfnSetCrosshair(hspr, rc, rgb[0], rgb[1], rgb[2]))
 }
+
+/// `LoadMapSprite`: loads an overview image (`overviews/*.bmp`/`.tga`) as a sprite model for
+/// TriAPI [`sprite_texture`](crate::ext::tri::sprite_texture); null if it can't be loaded. The
+/// engine owns the model.
+pub fn load_map_sprite(name: &str) -> *const model_s {
+    let s = crate::util::to_cstring(name);
+    cl_eng!(LoadMapSprite(s.as_ptr()))
+}
+
+/// `model_s::numframes` of a model handle (0 for null).
+pub fn model_frames(m: *const model_s) -> i32 {
+    // SAFETY: `m` is null or a model the engine returned (`LoadMapSprite`/`GetSpritePointer`), which it keeps for the level.
+    unsafe { m.as_ref() }.map_or(0, |m| m.numframes)
+}

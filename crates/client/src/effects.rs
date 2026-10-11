@@ -504,7 +504,12 @@ pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
         let in_eye_target = state::with(|s| s.spec_mode == shared::ts::obs::IN_EYE && s.spec_target == idx);
         let d = v::dist(e.origin, cam.origin);
         let hemisphere = d < 256.0 || v::dot(v::sub(e.origin, cam.origin), cam.forward) >= 0.0;
-        let visible = hemisphere && !spectator && !in_eye_target && occlusion_visible(e, &cam);
+        let seen = hemisphere && !spectator && occlusion_visible(e, &cam);
+        // TS adds the overview icon after its visibility tests, before hiding the in-eye target.
+        if seen {
+            crate::spectator::add_overview_entity(kind, e);
+        }
+        let visible = seen && !in_eye_target;
         with(|fx| {
             if let Some(v) = fx.visible.get_mut(idx as usize) {
                 *v = visible;

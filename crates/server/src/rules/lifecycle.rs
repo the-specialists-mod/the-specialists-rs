@@ -487,12 +487,16 @@ pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
 // ---- observer ------------------------------------------------------------------------------------
 
 /// `CBasePlayer::StartObserver` (0x99634).
+///
+/// TS leaves `pev->velocity` alone, clears the HEV suit bit through `RemoveAllItems(TRUE)` and
+/// sends `CurWeapon 0,0,0` from there.
 pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f32; 3]) {
     let e = cx.edict;
     let idx = cx.index();
     crate::entities::stock::drive::release_tank(p, cx);
     p.hud.cash = Some(p.cash);
     messages::one(Msg::TsCash, e).short(p.cash).end();
+    p.ts.obs_next_idle = 0.0;
     {
         let v = cx.pev();
         v.iuser4 = 0;
@@ -500,12 +504,16 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     }
     p.ts.slow_display = 1.0;
     p.slow_target = 1.0;
-    MsgWriter::begin(MSG_PAS as i32, SVC_TEMPENTITY, Some(origin), std::ptr::null_mut())
+    // TS sends this from `pev->origin`, not the new position.
+    let here = cx.pev().origin;
+    MsgWriter::begin(MSG_PAS as i32, SVC_TEMPENTITY, Some(here), std::ptr::null_mut())
         .byte(TE_KILLPLAYERATTACHMENTS)
         .byte(idx & 0xff)
         .end();
-    crate::weapons::strip_all(p, cx);
+    // `DropFlag(false)` (0x9975f) comes before `RemoveAllItems` (0x99986): dropping the case
+    // after the reset would leave `free_slots` 20 above the 81 maximum.
     crate::entities::ts::drop_flag(p, cx, false);
+    crate::weapons::strip_all(p, cx);
     msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
     msg::one(Msg::SetFov, e, |w| SetFov { fov: 0 }.write(w));
     {
@@ -522,13 +530,12 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
         v.flags &= !(FL_DUCKING as i32);
         v.deadflag = DEAD_RESPAWNABLE as i32;
         v.health = 1.0;
-        v.velocity = [0.0; 3];
     }
     p.ts.init_hud = true;
     let team = teams::team_name_of(e);
     msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team }.write(w));
+    crate::weapons::remove_all_items_tail(cx);
     engine().set_origin(e, origin);
-    p.ts.obs_next_idle = 0.0;
     let mode = if p.ts.obs_mode == 0 { obs::CHASE_FREE } else { p.ts.obs_mode };
     observer_set_mode(p, cx, mode);
     msg::all(Msg::Spectator, |w| Spectator { entindex: idx as u8, observer: 1 }.write(w));
@@ -620,24 +627,20 @@ fn observer_find_next_player(p: &mut Player, cx: &mut Cx, reverse: bool) {
 /// `Observer_HandleButtons`, `Observer_Idle`.
 ///
 /// The countdown runs only while the respawn time is ahead. "Press Fire To Play!" (30 s hold) is
-/// sent by the tick that lands in its last half second, and isn't repeated after that.
+/// sent by the tick that lands in its last second, and isn't repeated after that.
 fn observer_think(p: &mut Player, cx: &mut Cx, now: f32) {
     let e = cx.edict;
     if p.respawn_at > 0.0 && now < p.respawn_at && p.ts.next_hud_msg < now {
         p.ts.next_hud_msg = now + 1.0;
-        // x87 `fistp` rounding, ties to even.
-        let left = (p.respawn_at - now).round_ties_even() as i32;
-        if left < 1 {
-            ts_message_one(e, [0, 0, 0], 16, 30, "Press Fire To Play!");
-        } else {
-            ts_message_one(e, [0, 0, 0], 16, 20, &format!("{}", (p.respawn_at - now).min(30.0).round_ties_even() as i32));
-        }
+        let (hold, text) = respawn_countdown_text(p.respawn_at - now);
+        ts_message_one(e, [0, 0, 0], 16, hold, &text);
     }
     if p.ts.join_deadline != 0.0 {
         if now <= p.ts.join_deadline {
             if p.ts.next_hud_msg < now {
                 p.ts.next_hud_msg = now + 1.0;
-                let left = (p.ts.join_deadline - now).round() as i32;
+                // `(int)` cast: truncation (0x91063, like the countdown).
+                let left = (p.ts.join_deadline - now) as i32;
                 ts_message_one(e, [0, 0, 0], 16, 20, &format!("{left} seconds left for respawn, press Fire to Play!"));
             }
         } else {
@@ -651,6 +654,14 @@ fn observer_think(p: &mut Player, cx: &mut Cx, now: f32) {
 
     observer_handle_buttons(p, cx, now);
     observer_idle(p, cx, now);
+}
+
+/// The observer respawn countdown text and hold time for `left` seconds to go (PreThink
+/// 0x90ec4..0x90fab). TS converts with a plain `(int)` cast, which GCC emits as `fistp` under a
+/// truncating control word (`fldcw` with RC = 11), so 4.7 s shows "4" and the last second
+/// shows "Press Fire To Play!". The number is capped at 30.
+fn respawn_countdown_text(left: f32) -> (u8, String) {
+    if (left as i32) < 1 { (30, "Press Fire To Play!".to_owned()) } else { (20, format!("{}", left.min(30.0) as i32)) }
 }
 
 /// `CBasePlayer::Observer_HandleButtons` (0x99d34): jump cycles roaming → chase free → chase
@@ -879,4 +890,21 @@ fn death_think(p: &mut Player, cx: &mut Cx, now: f32) {
 /// Broadcasts `TSPAward` for a player (used by scoring for the killer).
 pub fn send_award(idx: i32, award: u8) {
     msg::all(Msg::TsPAward, |w| TsPAward { entindex: idx as u8, award }.write(w));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::respawn_countdown_text;
+
+    #[test]
+    fn respawn_countdown_truncates_like_ts() {
+        // PreThink 0x90ec4: `(int)(m_flRespawnTime - time)`, truncated, capped at 30.
+        assert_eq!(respawn_countdown_text(4.7), (20, "4".to_owned()));
+        assert_eq!(respawn_countdown_text(1.0), (20, "1".to_owned()));
+        assert_eq!(respawn_countdown_text(45.0), (20, "30".to_owned()));
+        assert_eq!(respawn_countdown_text(30.9), (20, "30".to_owned()));
+        // The whole last second (not only the last half) says "Press Fire To Play!".
+        assert_eq!(respawn_countdown_text(0.9), (30, "Press Fire To Play!".to_owned()));
+        assert_eq!(respawn_countdown_text(0.4), (30, "Press Fire To Play!".to_owned()));
+    }
 }

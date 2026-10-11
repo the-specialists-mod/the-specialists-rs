@@ -60,7 +60,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `IN_StartupJoystick` 10027960, `IN_ReadJoystick` 10027de0 | `goldsrc::joystick::startup`/`read` |
 | `Joy_AdvancedUpdate_f` 10027b00, `IN_Commands` 10027ca0, `IN_JoyMove` 10027e40 | `joystick::axis_map`/`joy_advanced_update`, `joystick::commands`, `joystick::joy_move`/`apply_axes` |
 | `CMessageWindowPanel` (MOTD, VGUIMenu 5) | `menus::draw_motd` |
-| `CHudSpectator` 10022c70 (Init), 10022fe0 (VidInit), `DirectorMessage` 10023380, `SetModes` 100234d0, `specmode` 10022c10, map camera 10022da0 | `spectator::{init, vid_init, director_event, set_modes}`; `HUD_DirectorEvent` 1001ab60 and `HUD_DirectorMessage` exports. `VidInit` also zeroes the 0.2 s click timer (`+0xc94`, `input::reset_key_tap`): the client clock restarts with each map, and a timer left from the old map blocked click-to-spawn after a `changelevel` |
+| `CHudSpectator` 10022c70 (Init), 10022fe0 (VidInit), `DirectorMessage` 10023380, `SetModes` 100234d0, `specmode` 10022c10, map camera 10022da0, `Draw` (HLTV name tags) 10023080, `ParseOverviewFile` 10023720, `LoadMapSprites` 10023c60 | `spectator::{init, vid_init, director_event, set_modes, redraw}`, `spectator::overview::{draw_names, Overview::reset, parse_overview}`; `HUD_DirectorEvent` 1001ab60 and `HUD_DirectorMessage` exports. `VidInit` also zeroes the 0.2 s click timer (`+0xc94`, `input::reset_key_tap`): the client clock restarts with each map, and a timer left from the old map blocked click-to-spawn after a `changelevel` |
 
 ## 2. Message table
 
@@ -340,6 +340,17 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   `IN_DeactivateMouse`/`IN_ActivateMouse` when the game UI opens and closes, so `HideClientUI`
   (from `CBaseUI::ActivateGameUI`) and `ActivateClientUI` (from `CBaseUI::HideGameUI`) forward
   to them. FWGS calls neither export and draws the world itself.
+* Spectator panel (`TeamFortressViewport` `+0x884`, created by `0x10064410`, filled by
+  `UpdateSpectatorPanel` `0x10063870`): TS's VGUI1 bar is drawn in immediate mode
+  (`spectator::panel`, after the HUD elements) with the same geometry (full width, the bottom
+  `YRES(40)`, the mode line at the top and the help line at `YRES(25)`), the same texts
+  (`#Spec_Mode%d[ : name]`, `#Directed ` in the locked view, `#Spec_TSHelp%d` or
+  `#Spec_Only_Help`, localised by `#word`), the same refresh rule (mode, target or `nohud`
+  changed, or a `SetModes`) and the same visibility (observing, `nohud 0`). The look differs: a
+  black fill at alpha 155 (VGUI's 100 is inverted) and the console font in the schemes' orange
+  (255, 170, 0), centred, instead of the Arial "Primary Button Text"/"Briefing Text" fonts.
+* HLTV name tags (`CHudSpectator::Draw` `0x10023080`) use the console font like TS; TS's
+  overview zoom and pan deltas (`+0xc98`/`+0xc9c`) are never set, so that code isn't ported.
 * Golden Colts are never restricted (server rule) where the client's own remap would treat them as
   pistols.
 * `ts_hud_selftest [dead]` is port-only.
@@ -362,11 +373,9 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
 
 ## 8. Missing / not done
 
-* `CHudSpectator`'s overview map and player name tags (`DrawOverview` `10024970`,
-  `ParseOverviewFile` `10023720`, `Draw` `10023080`): TS draws them only for HLTV spectators
-  (`IsSpectateOnly`). The rest of the element is in `client/src/spectator.rs`: director events,
-  `specmode`, `SetModes` (crosshair, `#Spec_Mode%d`), the director-reset map camera. The VGUI
-  spectator panel (`#Spec_TSHelp%d`) is not ported either.
+* Spectating (issue #7) is complete; what remains is HLTV-only and unverified in game (it needs
+  an HLTV proxy on a Steam server): the overview map, name tags and director view are ported but
+  have only unit tests, and the inset view is unreachable in TS itself (see client-rendering.md).
 * Server browser, command menu, TFC panels (dropped as allowed by §7).
 * `HUD_UpdateClientData` runs `CHud::Think`'s zoom easing and writes the eased FOV
   (`view::update_client_data` → `hud::think_fov`), as TS's `CHud::UpdateClientData` does.

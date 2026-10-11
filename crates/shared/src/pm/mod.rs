@@ -188,7 +188,31 @@ pub fn angle_vectors(angles: Vec3) -> (Vec3, Vec3, Vec3) {
 /// Runs one usercmd of movement (`PM_Move` 0x101188). Called by the engine on the server and
 /// during client prediction; `pmove->server` is set by the engine.
 pub fn player_move(p: &mut playermove_t) {
-    let mut pm = Pm { p, onladder: false };
+    player_move_with(p, None);
+}
+
+/// A side's own spectator move, run in place of the shared [`PM_SpectatorMove`] step; it returns
+/// false to fall back to the shared one. The client passes TS's client-modified
+/// `PM_SpectatorMove` (`0x1002c790`).
+///
+/// [`PM_SpectatorMove`]: Pm::spectator_move
+pub type SpectatorMove = fn(&mut playermove_t) -> bool;
+
+/// `GetChaseOrigin` (server 0xfee5c, client 0x1002c6c0): 90 units behind `physents[target]`'s
+/// eyes (z + 35) along `angles`, pulled 4 units off any wall in between.
+pub fn chase_origin(p: &playermove_t, angles: Vec3, target: usize) -> Vec3 {
+    let (forward, _, _) = angle_vectors(angles);
+    let pe = &p.physents[target];
+    let start = [pe.origin[0], pe.origin[1], pe.origin[2] + 35.0];
+    let back = ma(ZERO, 90.0, forward);
+    let end = sub(start, back);
+    let Some(tr) = p.trace_line(start, end, 0, 2, target as i32) else { return end };
+    ma(tr.endpos, 4.0, tr.plane.normal)
+}
+
+/// [`player_move`] with an optional [`SpectatorMove`] override.
+pub fn player_move_with(p: &mut playermove_t, spectator: Option<SpectatorMove>) {
+    let mut pm = Pm { p, onladder: false, spectator };
     pm.player_move();
     let p = pm.p;
     if p.onground == -1 {
@@ -207,6 +231,8 @@ pub(crate) struct Pm<'a> {
     pub(crate) p: &'a mut playermove_t,
     /// `g_onladder`.
     pub(crate) onladder: bool,
+    /// The caller's spectator move, if any ([`player_move_with`]).
+    pub(crate) spectator: Option<SpectatorMove>,
 }
 
 impl Pm<'_> {
@@ -273,7 +299,9 @@ impl Pm<'_> {
         (self.p.forward, self.p.right, self.p.up) = (f, r, u);
 
         if self.p.spectator != 0 || self.p.iuser1 > 0 {
-            self.spectator_move();
+            if !self.spectator.is_some_and(|f| f(self.p)) {
+                self.spectator_move();
+            }
             self.categorize_position();
             return;
         }
@@ -1170,13 +1198,7 @@ impl Pm<'_> {
     /// `GetChaseOrigin` (0xfee5c): 90 units behind the target's eyes (z + 35), pulled 4 units
     /// off any wall in between.
     fn chase_origin(&self, angles: Vec3, target: usize) -> Vec3 {
-        let (forward, _, _) = angle_vectors(angles);
-        let pe = &self.p.physents[target];
-        let start = [pe.origin[0], pe.origin[1], pe.origin[2] + 35.0];
-        let back = ma(ZERO, 90.0, forward);
-        let end = sub(start, back);
-        let Some(tr) = self.p.trace_line(start, end, 0, 2, target as i32) else { return end };
-        ma(tr.endpos, 4.0, tr.plane.normal)
+        chase_origin(self.p, angles, target)
     }
 
     fn noclip(&mut self) {

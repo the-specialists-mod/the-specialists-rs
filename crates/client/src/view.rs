@@ -772,7 +772,10 @@ pub fn calc_refdef(p: &mut ref_params_t) {
     // The screen fade and fog are written every frame, paused or not.
     write_screen_fade(p.time);
     effects::fog_begin();
-    p.nextView = 0;
+    // Only the spectator view asks for a second pass (its inset window).
+    if !spectating {
+        p.nextView = 0;
+    }
 }
 
 fn finish(w: &mut View, p: &mut ref_params_t) {
