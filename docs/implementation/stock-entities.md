@@ -134,7 +134,7 @@ How the SDK patterns map to Rust:
 | `env_funnel` | SDK `CEnvFunnel` (TS 0xbdcfc..0xbde24) | On use, one `TE_LARGEFUNNEL` to everyone (`sprites/flare6.spr`, spawnflag 1 reverses), then `SUB_Remove`. |
 | `env_beverage`, `item_sodacan` | SDK `CEnvBeverage` / `CItemSoda` (TS 0xbde50..0xbe178) | Each use drops a can (`models/can.mdl`, skin from the beverage's, 6 = random 0–5) while the last one was drunk (`frags` 0) and cans are left (`health`, default 10). The can lands after 0.5 s (`weapons/g_bounce3.wav`, TS slow-motion pitch), then a player touching it gets 1 health (`TakeHealth`) and the beverage may drop the next. |
 | `speaker` | SDK `CSpeaker` (TS 0xe1988..0xe1d88) | `preset` 1–12 (`C1A0_` … `C3A2_`) or the `message` key (neither: "SPEAKER with no Level/Sentence!" and removed). Starts 5–15 s after spawn unless spawnflag 1; toggled by use. Plays a random sentence of the group (`SENTENCEG_PlayRndSz`, volume `health`/10, attenuation 0.3) every 15–135 s, holding off while `CTalkMonster::g_talkWaitTime` (5 s after any speaker, never reset across maps) hasn't passed; a `!sentence` plays once as an ambient sound. |
-| `soundent`, `bodyque` | SDK `CSoundEnt` (TS 0xe2140..0xe281c) / `CCorpse` | worldspawn creates a classless `soundent` (`GetClassPtr<CSoundEnt>`) and four `bodyque`s linked in a ring, before any map entity (TS edict numbering). The soundent keeps the 64-sound list with one never-expiring slot per client and expires sounds every 0.3 s; landed bleeding gibs add a meat sound. Nothing reads it (no monsters); `displaysoundlist 1` prints "Soundlist: active / free (change)". `CopyToBodyQue` is never called in TS (`StartDeathCam` has no callers), so the corpses stay empty. A map-placed `soundent` takes its client reserve from the world's list, as in TS. |
+| `soundent`, `bodyque` | SDK `CSoundEnt` (TS 0xe2140..0xe281c) / `CCorpse` | worldspawn creates a classless `soundent` (`GetClassPtr<CSoundEnt>`) and four `bodyque`s linked in a ring, before any map entity (TS edict numbering). The soundent keeps the 64-sound list with one never-expiring slot per client and expires sounds every 0.3 s; landed bleeding gibs add a meat sound. A live player's `PostThink` updates its slot (`CBasePlayer::UpdatePlayerSound` 0xda630, `player::impulse::update_player_sound`): its origin, `bits_SOUND_PLAYER`, and a volume that follows the speed on the ground (at most 512, +100 while jumping) and fades 250/s, 0 under impulse 105's `m_fNoPlayerSound`; `Killed` resets the slot (`CSound::Reset`, which also cuts the active list after it, as in TS). Nothing reads it (no monsters); `displaysoundlist 1` prints "Soundlist: active / free (change)". `CopyToBodyQue` is never called in TS (`StartDeathCam` has no callers), so the corpses stay empty. A map-placed `soundent` takes its client reserve from the world's list, as in TS. |
 | `fireanddie`, `DelayedUse` (map-placed) | TS `CFireAndDie` / `CBaseDelay` | Linked because TS exports them. A map's `fireanddie` fires its targets (`delay`, `killtarget`) only if the map sets `nextthink`; a map's `DelayedUse` never thinks (only `SUB_UseTargets` arms one). |
 | `shrapnel` | **TS** `CTSShrapnel` (0x7c0a0..0x7f09c), `entities::ts::shrapnel` | Nothing in TS calls `CTSShrapnel::Create`, so only a map places one: invisible (`EF_NODRAW`), bouncing, slowed like the other `CTSPhysicObject`s. It hits a player for 100 (`DMG_NEVERGIB | DMG_SLASH`, traced), sticks 6 units back into `worldspawn` / `func_wall`, otherwise bounces back at a quarter speed with `knife_hit.wav`; loses 1 u/s per think, is removed under 100 u/s unless stuck, and 30 s after spawning (10 s after its last hit). Continuous +use caps, no `Use`. |
 | `cycler` | SDK h_cycler.cpp | Server-side studio animation (`CCycler::Think` 0xc778c): bone controllers zeroed, `frame` advanced, one-shot sequences restart. +use toggles the animation. Damage steps to the next sequence (wrapping to 0) while animating, or one 0.1 s frame step while paused. |
@@ -160,7 +160,7 @@ How the SDK patterns map to Rust:
 | `game_player_equip` | SDK maprules.cpp (same in TS 0xcd494) | Unknown keys are items (`name#n` stripped, count ≥ 1, max 32), given through `GiveNamedItem` (item spawned at the player's feet with `SF_NORESPAWN`, then touched). Touch (master, not `USEONLY`) / use (no master). TS `PlayerSpawn` touches every one on spawn instead of giving the gun and buying the loadout (`maprules::equip_on_spawn`, called from `weapons::on_spawn`; deferred until the player's spawn dispatch returns). `weapon_tsgun` gives the TS gun (`weapons::give_gun_to`: a new empty one, or none if the player already holds one). |
 | `game_team_master` | TS 0xccae8..0xccd40 | `teamindex` (-1 none), `triggerstate` (0 off, 2 toggle, else on), master. `USE_SET` takes the activator's team (`GetTeamIndex(TeamID)`) or none for a negative value; other uses fire the targets when the activator's team matches (`UTIL_TeamsMatch`: always outside teamplay; `ANYTEAM` with no team), once with flag 1. It is also a master (`IsTriggered` = `TeamMatch`), for spawn points, doors and the rest. |
 | `game_team_set` | TS 0xccd64 | `USE_SET` to its targets with 0, or -1 with `CLEARTEAM` (2); once with flag 1. |
-| `game_player_team` | TS 0xcd740..0xce658 | A player activator moves to the team of the targeted `game_team_master` (`ChangePlayerTeam(team, kill = flag 2, gib = flag 4)`; nothing outside teamplay); once with flag 1. The change happens inside the `Use`, as in TS: a player whose +use fired it is lent back to its slot for the `Use` (`world::lend`, `world::run_now_or_defer`); a player mid-dispatch any other way changes once that dispatch returns. |
+| `game_player_team` | TS 0xcd740..0xce658 | A player activator moves to the team of the targeted `game_team_master` (`ChangePlayerTeam(team, kill = flag 2, gib = flag 4)`; nothing outside teamplay); once with flag 1. The change happens inside the `Use`, as in TS: a player whose +use, `game_playerdie`, `game_playerjoin` or `game_playerspawn` fired it is lent back to its slot meanwhile (`world::lend`, `world::run_now_or_defer`); only a player's own weapon frame (shooting a button) still changes once the frame returns (rules.md §7). |
 
 ## 3. TS deviations from the SDK (ported)
 
@@ -185,6 +185,8 @@ How the SDK patterns map to Rust:
 * **TakeDamage.**
   * A crowbar instant-break applies to club damage from a client.
   * Club damage ×2, poison ×0.1.
+  * A breakable one sets `g_vecAttackDir` from its box centre to the inflictor's origin
+    (0xc1532). (Guard: TS reads through a NULL inflictor; the port leaves the global alone.)
   * On death it calls `Die` directly (TS skips `Killed`).
 * **Die.**
   * Pitch is 95–124 (100 for rolls 3–7). Volume is `rand(0.85,1) + |health|/100`. The attacker's
@@ -197,7 +199,8 @@ How the SDK patterns map to Rust:
   * Explodables call `TSExplosion(center, self, attacker, mag, BLAST|NEVERGIB, mag, mag*2.5)`.
   * The breakable is hidden (`EF_NODRAW`, `DEAD_DEAD`) instead of removed while it waits to
     respawn.
-* **Use** debris flies away from the activator. Use does nothing once the breakable is dead.
+* **Use** debris flies away from the activator, and `g_vecAttackDir` becomes the `v_forward` of
+  the restored angles before `Die`. Use does nothing once the breakable is dead.
 * **Implementation difference.** TS keeps the timer on a hidden `info_breakable` helper entity.
   Here the breakable thinks on its own `ltime`, `MOVETYPE_PUSH` style, with the same timings.
 
@@ -537,7 +540,23 @@ covers:
      callers (crushers, `trigger_hurt`, breakable touch, ...) leave it false. `RadiusDamage`
      (env_explosion) is traced, with the trace's hitgroup, only when its trace hit something.
    * Doors only break from `TraceAttack`-style damage carrying blast (`0x40`) or the TS bits
-     `0x2000000` (shotgun) / `0x4000000` (kung fu).
+     `0x2000000` (shotgun) / `0x4000000` (kung fu). A direct `TakeDamage` on a door is
+     `CBaseEntity::TakeDamage`, as for every class without its own.
+   * `CBaseEntity::TakeDamage` (0xab994, `entities::base_take_damage`) is the `Entity::take_damage`
+     default: refused with `takedamage` off; `g_vecAttackDir` from the brush centre to the
+     inflictor's origin; a `MOVETYPE_WALK`/`STEP` entity is pushed away from a real inflictor
+     (`DamageForce`, at most 1000) unless the attacker is `SOLID_TRIGGER`; the health drops, and
+     at 0 `CBaseEntity::Killed` (`takedamage` off, `DEAD_DEAD`, `UTIL_Remove`). It matters for
+     entities that have `takedamage` without their own `TakeDamage` (a breakable door, a map's
+     `takedamage` key). Guards: TS reads the inflictor's origin and the attacker's `solid`
+     through NULL; the port skips the direction and push without an inflictor and pushes for a
+     NULL attacker.
+   * `monster_hevsuit_dead`'s `DeadTakeDamage` (0xb2a10) writes `g_vecAttackDir` like a live
+     monster (from a real inflictor only), and its gibs fly against the global.
+   * `SUB_Remove` (`base::sub_remove`: `speaker`, `env_funnel`, `item_sodacan`, a fired
+     `trigger_once`, the dead HEV corpse, impulse 202's blood splat) frees the edict at once
+     (`REMOVE_ENTITY`); `UTIL_Remove` (`entities::remove`) waits for the end of the frame
+     (`FL_KILLME`), as in TS.
    * The SDK `DamageDecal` for glass (`{bproof`-style decals 0x19–0x1b, 0x23 for unbreakable glass)
      is for the weapons package to apply when it hits a `func_breakable`.
 8. **Explosions.** `stock::explode::ts_explosion` is TS's `TSExplosion` for both the grenade and
@@ -556,9 +575,8 @@ covers:
 
 ## 7. What's missing or simplified
 
-* Monster AI sounds: the soundent list and the gibs' `InsertSound` are ported (§2), but the
-  player's own sounds (`UpdatePlayerSound` from `PostThink`) aren't added, so `displaysoundlist 1`
-  counts fewer active sounds than TS. Nothing else reads the list.
+* Monster AI sounds: the soundent list, the gibs' `InsertSound` and the players' slots are ported
+  (§2). Nothing reads the list (TS has no monsters).
 
 ### 7.1 Deviations in the #22 classes
 
@@ -579,8 +597,7 @@ covers:
   same. TS sets `gDisplayTitle` from the `gametitle` flag but never reads it, and the
   `GameTitle` message is never sent, so the port keeps only the spawnflag.
 * **`cycler` spawn** skips `ChangeYaw(360)`, a no-op because `ideal_yaw` was just set to the yaw.
-* **`monster_hevsuit_dead`** keeps only the corpse half of `CBaseMonster` (TS has no live monsters):
-  `g_vecAttackDir` is computed per hit and passed to the gib spawner instead of being a global.
+* **`monster_hevsuit_dead`** keeps only the corpse half of `CBaseMonster` (TS has no live monsters).
 
 ### 7.2 Deviations in the #95 trigger classes
 

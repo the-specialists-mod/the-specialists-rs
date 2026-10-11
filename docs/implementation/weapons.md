@@ -79,25 +79,26 @@ addresses of `ts_i386.so`.
 | `GetBodyByItems` 0x7f0a4 | `body_by_items` |
 | `ClientCommand` 0xad838 (weapon part) | `commands::client_command` |
 | `UpdateClientData` 0xb0294 (weapon part) / `GetWeaponData` 0xb00ac / `CmdStart` 0xb067c | `protocol::weapons::pack_clientdata` / `pack_weapon_data` / `weapons::cmd_start` |
-| `adjust_weapon_value` 0x9eca4, `save_weapon_value` 0x9f044, `SendWeaponParams` 0x9eb98, `InformClientsOnWeaponsParams` 0x9eb14 | `custom.rs` (`loadweapons`, `saveweapons`, `customweapons`, `CustomWP`) |
+| `adjust_weapon_value` 0x9eca4, `save_weapon_value` 0x9f044, `SendWeaponParams` 0x9eb98, `InformClientsOnWeaponsParams` 0x9eb14 | `custom.rs` (`loadweapons`, `saveweapons`, `CustomWP`; TS's file format and messages, the absorb values and the custom-weapons flag in the rules state, reset by `CTSGameRules::Init`: rules.md §2) |
 | `CBasePlayer::Killed` 0x8ed5c (weapon part) | `inventory::on_killed` |
 | `TSPrecache` 0x9f320 (weapon part) | `assets::precache` |
 
 ### Hooks
 
 * `game_init`: cvars `realbullet` 0, `ammocount` 0, `weaponstay` 15, `damagemult` 0,
-  `customweapons` "", `ts_weapons_debug` 0 (not TS); server commands `weaponrestriction`,
+  `customweapons` "" (registered and, as in TS, never read), `ts_weapons_debug` 0 (not TS); server commands `weaponrestriction`,
   `loadweapons`, `saveweapons`. `dmgreport` is read but, as in TS, never registered.
 * `start_frame` (from `pfnStartFrame`, after the rules' frame): the simulated bullets, as
   `CTSGameRules::Think` runs `CBulletManager::Think` while it counts any bullet.
 * `precache`: the 11 events, every v_/p_/p_sil/w_ model, shells, fire sounds, the server-side
   weapon sounds, `w_m61`/`w_knife`/`w_sealknife`/`w_katana`/`ammopack`, `sprites/bubble.spr`
-  (`g_sModelIndexBubbles`), `common/wpn_select.wav`; applies `customweapons`.
+  (`g_sModelIndexBubbles`), `common/wpn_select.wav`.
 * `on_spawn`: TSInit (bar 100, penalty 0, timers); then, as `PlayerSpawn` (0x890ac), either the
   map's `game_player_equip`s touch the player, or (no equip) `give_gun` (`GiveNamedItem
   ("weapon_tsgun")`: a new empty gun, or the one already held; deploy, kung fu unless the
   port-only bots already got a weapon) and `BuyArmament` from the `tkw`/`tki`/`tka` lists;
-  speed, `KFuPower`, `CustomWP` once per client. The gun's records are emptied where TS loses
+  speed, `KFuPower`. (`CustomWP` goes to a joiner from `CTSGameRules::InitHUD` while the
+  custom-weapons flag is set: `weapons::inform_custom_weapons`.) The gun's records are emptied where TS loses
   its `weapon_tsgun` (`remove_all_items`, `strip_all`), not here.
 * No gun (`SvState::has_gun` false: on an equip map whose equips don't list `weapon_tsgun`, and
   from the first death think until the next gun): as in TS no weapon frame (no attack, kung fu,
@@ -167,7 +168,7 @@ addresses of `ts_i386.so`.
   slowed at rest re-saves every think (its gravity and spin shrink by `s` each time) and is never
   restored, and a restore puts back the pre-slow velocity, so a slowed grenade or knife lying on
   the ground jumps off with its throw velocity when the slow ends.
-* `dmgreport` (only with `sv_cheats`): `> 1` prints `damage:%f`, `damage(piercing):%f` (bullets)
+* `dmgreport` (only with `g_flWeaponCheat`, `sv_cheats` as the map started; `damagemult` too): `> 1` prints `damage:%f`, `damage(piercing):%f` (bullets)
   and `(debug)%f` (thrown blades) to everyone as `HUD_PRINTTALK`; any non-zero value logs
   `<attacker> damaged <victim> (%f hp)` to the console from the player's TraceAttack.
 * Melee: stock 35 u ahead hull 3, rate 0.725 (1.0875 stunting), damage `info.stock`
@@ -309,7 +310,16 @@ How the port maps TS where the structure differs (not deviations):
   `CheckForBreakables` (`melee::pending_hit`), `glast_coldcock` around an unblocked
   `ColdCockAttack`, `glast_weaponid` around a simulated bullet's hit (`bullets.rs`); knife and
   katana slashes set none of them. `g_vecAttackDir` (`damage::attack_dir`) is set by the
-  victim's `TakeDamage` (rules.md).
+  victim's `TakeDamage` (rules.md; also `CBaseEntity::TakeDamage`, breakables and dead monsters:
+  stock-entities.md). `multi::add` takes TS's four `AddMultiDamage` values only.
+* A gun's original owner (`s_weapon_status+0x30`, `SvState::owners`): a buy sets it (and the
+  akimbo pair's, when owned); a dropped gun carries it, and picking it up copies it into the
+  record `TakeWeapon` fills (`inventory::copied_record`: the id, or its akimbo pair; a NULL owner
+  too). A fresh pick-up without a record (a thrown knife, a power-up grenade) leaves the old one,
+  as TS never clears it. `PlayerKilled` logs ` (victims_weapon)` from it (rules.md).
+* Thrown blades lend themselves back to their slot while their touch or think deals damage
+  (`world::lend`), so the kill they score names them (`weapons::thrown_knife_description`,
+  `CTSKnife::GetDescription` 0x7db04).
 * The loadout is cleared at death (TS `Killed` -> `ResetArmament`); the TS client resends
   `rst_cfg` + `tkw/tki/tka` from its buy menu.
 * M61 buys and stealth shoes are refused, as in TS 3.0 (only allowed when
@@ -358,7 +368,13 @@ How the port maps TS where the structure differs (not deviations):
   (`clientdata_without_the_gun_stops_after_the_weapon_id`), and the multi-damage
   (`damage::multi::tests`: pellets summed into one `TakeDamage`, a new victim flushing the old one
   with the accumulated bits, no victim no apply, `glast_headshot` reset, `TakeDamage` getting only
-  the four arguments) and the `glast_*` set-then-reset (`damage::glast::tests`).
+  the four arguments) and the `glast_*` set-then-reset (`damage::glast::tests`), the blade
+  names (`knife_descriptions_follow_the_blade_type`), the record a dropped gun's status lands in
+  (`dropped_gun_status_lands_in_takeweapons_record`), and the weapons file: line rules, `%i`
+  hex/octal, `saveweapons` text reading back (`custom::tests`).
+* **Not yet tested in engine**: a thrown knife's kill naming the blade in `DeathMsg` and the log,
+  ` (victims_weapon)` after picking up a victim's dropped gun, `loadweapons` then a map change
+  (no notice for new joiners, kevlar back at 0.2125).
 * **Not yet tested in engine**: slowed projectiles (power-up slow motion / `globalslow` with a
   grenade, thrown knife and dropped gun in sight), bullet-time simulated bullets (slow pause),
   bubble trails under water, `dmgreport 2` with `sv_cheats 1`, +use on a flying/landed gun, on a
@@ -403,8 +419,8 @@ How the port maps TS where the structure differs (not deviations):
   `weapons::restriction()` (the whole int, as `BuyWeapon` 0x945bc passes it to
   `IsRestrictedWeapon`; not masked to 0x1f); broadcast it as `SrvSett 3`, `realbullet` as `SrvSett 0`,
   `ammocount` as `SrvSett 2` (cvars registered here).
-* Armour absorb: read `shared::weapons::tables().combat.armor_absorb` (a weapons file may
-  change it).
+* Armour absorb: `rules::state::armor_absorb()` (`TSGameRules+0x588c`: 0.2125 from every
+  `Init`, or a weapons file's value).
 * `Player::slots_used` and `maxspeed` are written by weapons only when the slot count changes.
 * Kevlar: every armour source (loadout `tki 16`, the armour power-up, `item_battery`,
   `func_recharge`) goes through `weapons::take_armor` (`TakeArmor` 0x93da4). The first vest needs

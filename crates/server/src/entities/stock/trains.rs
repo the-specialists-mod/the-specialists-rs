@@ -1008,7 +1008,7 @@ impl Entity for GunTarget {
             return;
         }
         let damage = monster_hitgroup_damage(dmg.hitgroup, dmg.damage);
-        crate::damage::multi::add(dmg.attacker, cx.edict, damage, dmg.bits, dmg);
+        crate::damage::multi::add(dmg.attacker, cx.edict, damage, dmg.bits);
     }
 
     /// `CGunTarget::TakeDamage` (0xd729c): wear the health down; at 0 stop and fire `message`.

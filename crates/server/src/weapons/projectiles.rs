@@ -402,6 +402,24 @@ pub fn knife_glows_for(ent: *mut edict_t, host: *mut edict_t) -> bool {
     world::with::<Knife, _>(ent, |k| k.owner == Some(host)).unwrap_or(false)
 }
 
+/// `CTSKnife::GetDescription` (0x7db04) on the blade's type (`+0xa0`).
+fn knife_description(btype: i32) -> &'static str {
+    match btype {
+        6 => "Throwing Combat Knife",
+        7 => "Throwing Seal Knife",
+        8 => "Throwing Katana",
+        _ => "",
+    }
+}
+
+/// `CTSKnife::GetDescription` of the thrown knife `e`, as `PlayerKilled` and
+/// `TSGetPointsForFrag` read it. The blade lends itself back to its slot while its own touch or
+/// think deals the damage (`world::lend`), so the kill it scores can read it. `None` when `e`
+/// has no knife object (TS: NULL private data).
+pub fn thrown_knife_description(e: *mut edict_t) -> Option<&'static str> {
+    world::with_lent::<Knife, _>(e, |k| knife_description(k.btype))
+}
+
 impl Knife {
     fn weapon_id(&self) -> u8 {
         match self.btype {
@@ -510,7 +528,9 @@ impl Entity for Knife {
         // flying impact runs for a blade that bounced off a player or slides along the floor
         // too. It has no ground friction: that is `WaitTouch`, which the engine runs on every
         // frame a sliding blade is pushed into the floor (see `ground_slide`).
-        impact_damage(cx.edict, self.thrower.or(cx.edict), 0.1, 0x0800_1000, false);
+        // Lent back for the hit, so the kill it scores can name the blade.
+        let (me, thrower) = (cx.edict, self.thrower.or(cx.edict));
+        world::lend(me, self, || impact_damage(me, thrower, 0.1, 0x0800_1000, false));
         // A blade stuck in a wall (MOVETYPE_FLY) stays put.
         let pev = cx.pev();
         if pev.movetype != MOVETYPE_FLY as i32 {
@@ -559,7 +579,8 @@ impl Knife {
             info.hitgroup = gt.trace_hitgroup;
             info.dir = spread::normalize(pev.velocity);
             info.pos = gt.trace_endpos;
-            damage::apply(other, &info);
+            // Lent back for the hit, so the kill it scores can name the blade.
+            world::lend(me, self, || damage::apply(other, &info));
             let pev = cx.pev();
             pev.velocity = spread::scale(pev.velocity, -0.25);
             emit(me, CHAN_BODY, c"weapons/knife/knife_hitbody.wav", 1.0, 0.8, 100);
@@ -648,6 +669,14 @@ impl Knife {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn knife_descriptions_follow_the_blade_type() {
+        assert_eq!(knife_description(6), "Throwing Combat Knife");
+        assert_eq!(knife_description(7), "Throwing Seal Knife");
+        assert_eq!(knife_description(8), "Throwing Katana");
+        assert_eq!(knife_description(5), "");
+    }
 
     #[test]
     fn ground_bounce_damps_slow_objects_more() {

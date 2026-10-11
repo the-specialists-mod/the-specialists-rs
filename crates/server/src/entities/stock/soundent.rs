@@ -219,6 +219,117 @@ pub fn insert_sound(kind: i32, origin: Vec3, volume: i32, duration: f32) {
     }
 }
 
+/// `bits_SOUND_COMBAT`.
+const SOUND_COMBAT: i32 = 1 << 0;
+/// `bits_SOUND_PLAYER`.
+const SOUND_PLAYER: i32 = 1 << 2;
+
+/// A C `(int)` cast on the x87 stack: truncation, and the "integer indefinite" for NaN or out of
+/// range.
+fn x87_int(f: f64) -> i32 {
+    if (-2_147_483_648.0..2_147_483_648.0).contains(&f) { f as i32 } else { i32::MIN }
+}
+
+/// What `CBasePlayer::UpdatePlayerSound` reads from the player.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlayerSoundInput {
+    pub origin: Vec3,
+    pub velocity: Vec3,
+    pub on_ground: bool,
+    /// `pev->button & IN_JUMP`.
+    pub jumping: bool,
+    /// `m_fNoPlayerSound` (impulse 105).
+    pub silent: bool,
+    pub frametime: f32,
+}
+
+/// The sound part of `CBasePlayer::UpdatePlayerSound` (0xda630) on the client's reserved slot:
+/// the body volume (speed on the ground, at most 512, +100 while jumping) or the louder fading
+/// `m_iWeaponVolume`; the slot's volume jumps up to that target and fades 250/s below it (0 once
+/// under it). `weapon_volume` is `m_iWeaponVolume` (pl+0x7f8), which nothing else in TS writes,
+/// so it only ever runs down from 0. TS's `m_iExtraSoundTypes` and `m_iWeaponFlash` are never set
+/// either, so they add nothing.
+fn update_player_slot(s: &mut Sound, weapon_volume: &mut i32, inp: &PlayerSoundInput) {
+    s.kind = 0;
+    let mut body = 0;
+    if inp.on_ground {
+        let v = inp.velocity.map(f64::from);
+        body = x87_int((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).min(512);
+    }
+    if inp.jumping {
+        body += 100;
+    }
+    let target = if body < *weapon_volume {
+        s.kind |= SOUND_COMBAT;
+        *weapon_volume
+    } else {
+        body
+    };
+    let fade = inp.frametime as f64 * 250.0;
+    *weapon_volume = x87_int(*weapon_volume as f32 as f64 - fade);
+    let mut volume = s.volume;
+    if volume < target {
+        volume = target;
+    } else if target < volume {
+        let v = x87_int(volume as f32 as f64 - fade);
+        volume = if v < target { 0 } else { v };
+    }
+    s.origin = inp.origin;
+    s.kind |= SOUND_PLAYER;
+    s.volume = if inp.silent { 0 } else { volume };
+}
+
+/// `CSoundEnt::ClientSoundIndex` + `SoundPointerForIndex` (0xe26f8, 0xe2678): the world
+/// soundent's slot for player `index` (1-based), or the console note TS prints without one.
+fn with_client_sound<R>(index: i32, f: impl FnOnce(&mut Sound) -> R) -> Result<R, &'static str> {
+    let e = SOUND_ENT.0.get();
+    let slot = index - 1;
+    let lost = "Client lost reserved sound!\n";
+    if e.is_null() || e.is_free() {
+        return Err(lost);
+    }
+    if slot < 0 {
+        return Err("SoundPointerForIndex() - Index < 0!\n");
+    }
+    if slot >= MAX_WORLD_SOUNDS as i32 {
+        return Err("SoundPointerForIndex() - Index too large!\n");
+    }
+    world::with::<SoundEnt, _>(e, |s| f(&mut s.list.pool[slot as usize])).ok_or(lost)
+}
+
+/// `CBasePlayer::UpdatePlayerSound` (0xda630), from the end of a live player's `PostThink`.
+pub fn update_player_sound(index: i32, weapon_volume: &mut i32, inp: &PlayerSoundInput) {
+    let eng = engine();
+    match with_client_sound(index, |s| update_player_slot(s, weapon_volume, inp)) {
+        Ok(()) => {}
+        Err(note) => {
+            // A bad index prints its own note before the lost-sound one.
+            if !note.starts_with("Client") {
+                eng.alert(ALERT_TYPE::at_console, note);
+            }
+            eng.alert(ALERT_TYPE::at_console, "Client lost reserved sound!\n");
+        }
+    }
+}
+
+/// `CSound::Reset` (0xe20d8) on the player's slot, from `CBasePlayer::Killed` (0x8f1f0): origin,
+/// type and volume cleared and the `next` link set to `SOUND_LIST_EMPTY`, which cuts the active
+/// list after this slot, as in TS.
+pub fn reset_player_sound(index: i32) {
+    if let Err(note) = with_client_sound(index, reset_sound)
+        && !note.starts_with("Client")
+    {
+        engine().alert(ALERT_TYPE::at_console, note);
+    }
+}
+
+fn reset_sound(s: &mut Sound) {
+    s.origin = [0.0; 3];
+    s.kind = 0;
+    s.volume = 0;
+    s.next = LIST_EMPTY;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +375,39 @@ mod tests {
         l.expire(30.0);
         assert_eq!(l.count(l.active), 1);
         assert_eq!(l.active, a as i32);
+    }
+
+    #[test]
+    fn player_sound_follows_speed_and_silence() {
+        let mut s = Sound::CLEAR;
+        let mut weapon = 0;
+        let run = PlayerSoundInput {
+            origin: [1.0, 2.0, 3.0],
+            velocity: [300.0, 400.0, 0.0],
+            on_ground: true,
+            frametime: 0.125,
+            ..Default::default()
+        };
+        update_player_slot(&mut s, &mut weapon, &run);
+        assert_eq!((s.volume, s.kind, s.origin), (500, SOUND_PLAYER, [1.0, 2.0, 3.0]));
+        // `m_iWeaponVolume` only runs down from 0, so it never wins.
+        assert_eq!(weapon, -31);
+        // Faster than 512 caps; a jump adds 100.
+        update_player_slot(&mut s, &mut weapon, &PlayerSoundInput { velocity: [900.0, 0.0, 0.0], jumping: true, ..run });
+        assert_eq!(s.volume, 612);
+        // Standing still: the volume fades 250/s towards the target (612 - 31.25, truncated).
+        let still = PlayerSoundInput { velocity: [0.0; 3], ..run };
+        update_player_slot(&mut s, &mut weapon, &still);
+        assert_eq!(s.volume, 580);
+        // A target (560) just under the volume: below it after the fade means 0.
+        update_player_slot(&mut s, &mut weapon, &PlayerSoundInput { velocity: [460.0, 0.0, 0.0], jumping: true, ..run });
+        assert_eq!(s.volume, 0);
+        // Impulse 105: the slot is still updated, at volume 0.
+        update_player_slot(&mut s, &mut weapon, &PlayerSoundInput { silent: true, ..run });
+        assert_eq!((s.volume, s.kind), (0, SOUND_PLAYER));
+        // Killed's `CSound::Reset` cuts the list after the slot.
+        s.next = 5;
+        reset_sound(&mut s);
+        assert_eq!((s.volume, s.kind, s.origin, s.next), (0, 0, [0.0; 3], LIST_EMPTY));
     }
 }

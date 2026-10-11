@@ -218,7 +218,7 @@ fn send_score(e: *mut edict_t) {
     let idx = engine().index_of(e);
     let s = rules::other(e, |p| ScoreInfo {
         idx: idx as u8,
-        frags: e.v().frags as i16,
+        frags: rules::lifecycle::score_frags(e.v().frags),
         deaths: p.deaths as i16,
         class: 0,
         team: teams::score_team(idx),

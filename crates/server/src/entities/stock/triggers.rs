@@ -227,8 +227,9 @@ impl<const KIND: u8> Trigger<KIND> {
         self.t.think = None;
     }
 
+    /// `SetThink(SUB_Remove)` of `ActivateMultiTrigger` (0xe778c).
     fn sub_remove(&mut self, cx: &mut Cx) {
-        remove(cx.edict);
+        sub_remove(cx.edict);
     }
 
     fn toggle_use_fn(&mut self, cx: &mut Cx, _activator: *mut edict_t) {

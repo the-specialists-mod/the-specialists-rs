@@ -8,10 +8,8 @@ use super::blood::BLOOD_COLOR_RED;
 use super::effects::Gib;
 use super::explode::emit_sound_slow;
 use crate::damage::{DamageInfo, bits};
-use crate::entities::remove;
 use crate::world::{Cx, Entity};
-use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, Vec3, vec};
+use goldsrc::ext::entities::{ATTN_NORM, Vec3};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -189,7 +187,7 @@ impl Entity for DeadHev {
                     self.think = DeadThink::Remove;
                 }
             }
-            DeadThink::Remove => remove(cx.edict),
+            DeadThink::Remove => super::base::sub_remove(cx.edict),
         }
     }
 
@@ -200,19 +198,15 @@ impl Entity for DeadHev {
         if cx.pev().takedamage == 0.0 {
             return false;
         }
-        // g_vecAttackDir: from just below the inflictor's centre towards ours.
-        let mut attack_dir = [0.0; 3];
-        if !info.inflictor.is_null() && engine().index_of(info.inflictor) != 0 {
-            let iv = info.inflictor.v();
-            let from = vec::sub(vec::mid(iv.absmin, iv.absmax), [0.0, 0.0, 10.0]);
-            let v = cx.pev();
-            attack_dir = vec::normalize(vec::sub(from, vec::mid(v.absmin, v.absmax)));
-        }
+        // g_vecAttackDir, from our centre towards just below the inflictor's (0xb2a6c..0xb2b9c),
+        // the same as a live monster's; without a real inflictor it keeps the last hit's.
+        crate::damage::update_attack_dir(info.inflictor, cx.pev());
         if info.bits & DMG_GIB_CORPSE != 0 {
             let v = cx.pev();
             if v.health <= info.damage {
                 v.health = -50.0;
-                self.killed(cx, attack_dir);
+                // The gibs fly against `g_vecAttackDir` (`CGib::SpawnRandomGibs` reads it).
+                self.killed(cx, crate::damage::attack_dir());
                 return false;
             }
             v.health -= info.damage * 0.1;

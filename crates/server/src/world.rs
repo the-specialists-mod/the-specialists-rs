@@ -79,12 +79,14 @@ pub trait Entity: Any {
     /// `takedamage` is on (no blood: the port's entities don't bleed).
     fn trace_attack(&mut self, cx: &mut Cx, dmg: &DamageInfo) {
         if cx.pev().takedamage != 0.0 {
-            crate::damage::multi::add(dmg.attacker, cx.edict, dmg.damage, dmg.bits, dmg);
+            crate::damage::multi::add(dmg.attacker, cx.edict, dmg.damage, dmg.bits);
         }
     }
-    /// Apply damage (`TakeDamage`, vtable +0x58). Return true if the entity took it.
-    fn take_damage(&mut self, _cx: &mut Cx, _dmg: &DamageInfo) -> bool {
-        false
+    /// Apply damage (`TakeDamage`, vtable +0x58). Return true if the entity took it. The default
+    /// is `CBaseEntity::TakeDamage` (0xab994, `entities::base_take_damage`), which every TS class
+    /// without its own inherits.
+    fn take_damage(&mut self, cx: &mut Cx, dmg: &DamageInfo) -> bool {
+        crate::entities::base_take_damage(cx, dmg)
     }
     /// `pfnShouldCollide` (NEW_DLL_FUNCTIONS): return false to let `other` pass through.
     fn should_collide(&mut self, _cx: &mut Cx, _other: *mut edict_t) -> bool {
@@ -311,6 +313,14 @@ impl Store {
         }
     }
 
+    fn with_lent<T: Entity, R>(&self, h: Handle, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let mut w = self.world.borrow_mut();
+        match &w.slot(h)?.state {
+            State::Present(ent) | State::Parked(ent) => (&**ent as &dyn Any).downcast_ref::<T>().map(f),
+            _ => None,
+        }
+    }
+
     fn free(&self, h: Handle) {
         let dropped = {
             let mut w = self.world.borrow_mut();
@@ -393,6 +403,13 @@ pub fn run_now_or_defer(e: *const edict_t, job: impl FnOnce() + 'static) {
 /// Short, non-reentrant access to a concrete entity type. Never call the engine inside `f`.
 pub fn with<T: Entity, R>(e: *const edict_t, f: impl FnOnce(&mut T) -> R) -> Option<R> {
     STORE.0.with(handle_of(e)?, f)
+}
+
+/// Read-only [`with`] that also reaches an object lent back to its slot by [`lend`]: TS reads
+/// the private data of an object whose own call is further up the stack (`PlayerKilled` naming
+/// the thrown knife that is inside its touch). Never call the engine inside `f`.
+pub fn with_lent<T: Entity, R>(e: *const edict_t, f: impl FnOnce(&T) -> R) -> Option<R> {
+    STORE.0.with_lent(handle_of(e)?, f)
 }
 
 /// `pfnOnFreeEntPrivateData`: the engine is about to free the edict's private data.
@@ -502,6 +519,25 @@ mod tests {
         let h2 = s.insert(Box::new(Thing { value: 9 }));
         assert_eq!(h2.index, h.index);
         assert_eq!(value(&s, h2), Some(9));
+    }
+
+    #[test]
+    fn with_lent_reads_a_lent_object_only() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 4 }));
+        let read = |s: &Store| s.with_lent::<Thing, _>(h, |t| t.value);
+        assert_eq!(read(&s), Some(4), "in its slot");
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            assert_eq!(read(&s2), None, "taken out and not lent");
+            me.value = 5;
+            s2.lend(Some(h), me, || {
+                assert_eq!(read(&s2), Some(5), "lent back");
+                assert_eq!(value(&s2, h), None, "still closed to `with`");
+            });
+        });
+        assert_eq!(read(&s), Some(5));
     }
 
     #[test]

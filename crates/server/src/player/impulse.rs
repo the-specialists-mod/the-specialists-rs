@@ -24,14 +24,16 @@ pub struct ImpulseState {
     /// `m_nCustomSprayFrames` (pl+0xb40): frames of the player's uploaded spray, -1 for none
     /// (`ClientPutInServer` sets -1).
     pub custom_decal_frames: i32,
-    /// `m_fNoPlayerSound` (pl+0x9d0), impulse 105: the `CSoundEnt` player sound is off. The port
-    /// has no `CSoundEnt` (only monsters hear it), so the flag has no other effect.
+    /// `m_fNoPlayerSound` (pl+0x9d0), impulse 105: the player's `soundent` slot gets volume 0
+    /// ([`update_player_sound`]). Only monsters would hear it, and TS has none.
     pub silent: bool,
+    /// `m_iWeaponVolume` (pl+0x7f8): only `UpdatePlayerSound` writes it.
+    pub weapon_volume: i32,
 }
 
 impl Default for ImpulseState {
     fn default() -> Self {
-        ImpulseState { next_decal_time: 0.0, custom_decal_frames: -1, silent: false }
+        ImpulseState { next_decal_time: 0.0, custom_decal_frames: -1, silent: false, weapon_volume: 0 }
     }
 }
 
@@ -39,6 +41,23 @@ impl Default for ImpulseState {
 pub fn on_spawn(p: &mut Player) {
     p.impulse.next_decal_time = 0.0;
     p.impulse.silent = false;
+}
+
+/// `CBasePlayer::UpdatePlayerSound` (0xda630), near the end of a live player's `PostThink`
+/// (0x91aa6): the player's reserved `soundent` slot.
+pub fn update_player_sound(p: &mut Player, cx: &mut Cx) {
+    use crate::entities::stock::soundent::{PlayerSoundInput, update_player_sound};
+    let idx = cx.index();
+    let v = cx.pev();
+    let inp = PlayerSoundInput {
+        origin: v.origin,
+        velocity: v.velocity,
+        on_ground: v.flags & FL_ONGROUND as i32 != 0,
+        jumping: v.button & IN_JUMP as i32 != 0,
+        silent: p.impulse.silent,
+        frametime: engine().globals().frametime,
+    };
+    update_player_sound(idx, &mut p.impulse.weapon_volume, &inp);
 }
 
 /// The spray sound (`ClientPrecache` 0xaeafc).
@@ -218,8 +237,8 @@ pub struct BloodSplat {
 impl Entity for BloodSplat {
     fn think(&mut self, cx: &mut Cx) {
         if self.sprayed {
-            // `SUB_Remove`.
-            crate::entities::remove(cx.edict);
+            // `SUB_Remove`: the edict is freed at once.
+            crate::entities::stock::base::sub_remove(cx.edict);
             return;
         }
         // `CBloodSplat::Spray`: no German build (`g_Language` is never 1 in the port).

@@ -86,6 +86,21 @@ pub fn pick_up_weapon(p: &mut Player, cx: &mut Cx, id: u8, from: Option<&Status>
     true
 }
 
+/// The record `CTSGun::TakeWeapon` (0x80a04) copies a dropped gun's status into, given what was
+/// owned before the pick-up: `id` when it wasn't owned, its akimbo pair when it was (and isn't
+/// stackable); `None` for a stackable one already owned (only its count goes up). The whole
+/// 0x38-byte record is copied there, original owner (`+0x30`) included.
+pub fn copied_record(id: u8, owned_before: &[bool; MAX_WEAPONS]) -> Option<u8> {
+    let w = info(id)?;
+    if !owned_before[id as usize] {
+        Some(id)
+    } else if w.stack {
+        None
+    } else {
+        u8::try_from(w.akimbo).ok().filter(|&a| (a as usize) < MAX_WEAPONS)
+    }
+}
+
 /// `CBasePlayer::ThrowWeapon(id, status, angle offset, position offset)` (0x9529c): a
 /// `WorldGun` 16 u in front of the eyes, thrown along the view at `(90 - pitch) * 2` u/s, or in
 /// a random direction at 60..160 u/s by a corpse, plus 0.9 of the player's velocity and a third
@@ -456,6 +471,21 @@ pub fn on_killed(p: &mut Player, cx: &mut Cx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_gun_status_lands_in_takeweapons_record() {
+        let mut owned = [false; MAX_WEAPONS];
+        assert_eq!(copied_record(id::BERETTA, &owned), Some(id::BERETTA));
+        // A second single pistol becomes the akimbo pair.
+        owned[id::BERETTA as usize] = true;
+        let pair = info(id::BERETTA).unwrap().akimbo;
+        assert!(pair > 0);
+        assert_eq!(copied_record(id::BERETTA, &owned), Some(pair as u8));
+        // A stackable one already owned only counts up.
+        let stack = (0..MAX_WEAPONS as u8).find(|&i| info(i).is_some_and(|w| w.stack)).unwrap();
+        owned[stack as usize] = true;
+        assert_eq!(copied_record(stack, &owned), None);
+    }
 
     #[test]
     fn first_vest_costs_ten_slots() {

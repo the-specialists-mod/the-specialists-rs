@@ -163,7 +163,6 @@ pub struct AttachmentPrice {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Combat {
-    pub armor_absorb: f32,
     pub silencer: Silencer,
     pub headshot: f32,
     pub headshot_shotgun: f32,
@@ -269,13 +268,6 @@ impl Tables {
         w.cost = cost;
         Some(t)
     }
-
-    /// `armor_absorb x` line of a weapons file (clamped at 0).
-    pub fn with_armor_absorb(&self, v: f32) -> Tables {
-        let mut t = self.clone();
-        t.combat.armor_absorb = v.max(0.0);
-        t
-    }
 }
 
 /// Installs custom tables (the old ones are leaked; changes are rare).
@@ -319,7 +311,6 @@ mod tests {
         assert!(t.weapon(29).is_none(), "29 is the briefcase");
         assert_eq!(t.ammo(4).unwrap().name, "5.56 Nato");
         assert_eq!(t.asset(13).unwrap().model, "ak47");
-        assert!((t.combat.armor_absorb - 0.2125).abs() < 1e-6);
     }
 
     #[test]

@@ -41,14 +41,14 @@ pub fn hitgroup_scale(group: i32, dmg_bits: i32) -> f32 {
 
 /// Kevlar: on chest/stomach/arms, for damage types it covers, `dmg -= dmg * min(absorb, 1)`.
 /// Armour is never depleted.
-pub fn kevlar_scale(armor: f32, group: i32, dmg_bits: i32) -> f32 {
-    1.0 - kevlar_absorb(armor, group, dmg_bits)
+pub fn kevlar_scale(armor: f32, group: i32, dmg_bits: i32, absorb: f32) -> f32 {
+    1.0 - kevlar_absorb(armor, group, dmg_bits, absorb)
 }
 
 /// The fraction kevlar absorbs, `min(absorb, 1)`, or 0 where it doesn't apply.
-fn kevlar_absorb(armor: f32, group: i32, dmg_bits: i32) -> f32 {
+fn kevlar_absorb(armor: f32, group: i32, dmg_bits: i32, absorb: f32) -> f32 {
     if armor != 0.0 && dmg_bits & bits::ARMOR_EXEMPT == 0 && (hitgroup::CHEST..=hitgroup::RIGHTARM).contains(&group) {
-        tables().combat.armor_absorb.min(1.0)
+        absorb.min(1.0)
     } else {
         0.0
     }
@@ -67,8 +67,8 @@ pub fn ptakedam_amount(dmg: f32, dmg_bits: i32, kevlar: bool) -> u8 {
 /// computes `dmg - min(absorb, 1) * dmg` on the x87 stack (0x8fc38), stores it as a float, then
 /// truncates it to an int (0x8fc5f) and passes it back as a float. The product of two floats is
 /// exact in `f64`, so only the subtraction can round differently from the 80-bit original.
-pub fn after_kevlar(amount: f32, armor: f32, group: i32, dmg_bits: i32) -> f32 {
-    let absorbed = kevlar_absorb(armor, group, dmg_bits);
+pub fn after_kevlar(amount: f32, armor: f32, group: i32, dmg_bits: i32, absorb: f32) -> f32 {
+    let absorbed = kevlar_absorb(armor, group, dmg_bits, absorb);
     let d = amount as f64;
     ((d - absorbed as f64 * d) as f32).trunc()
 }
@@ -199,7 +199,7 @@ pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
             }
         }
     }
-    crate::damage::multi::add(dmg.attacker, e, amount, dmg.bits, dmg);
+    crate::damage::multi::add(dmg.attacker, e, amount, dmg.bits);
     // TraceAttack's `dmgreport` cheat log (any non-zero value), after the AddMultiDamage.
     if crate::weapons::dmgreport() != 0.0 && !dmg.attacker.is_null() {
         let (by, to) = (eng.string(dmg.attacker.v().netname), eng.string(cx.pev().netname));
@@ -245,7 +245,7 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     }
     // Truncated, like the kevlar-scaled damage below (0x8fbd0).
     p.ts.last_damage = amount as i32;
-    let after = after_kevlar(amount, cx.pev().armorvalue, p.ts.last_hitgroup, dmg.bits);
+    let after = after_kevlar(amount, cx.pev().armorvalue, p.ts.last_hitgroup, dmg.bits, crate::rules::state::armor_absorb());
 
     let took = monster_take_damage(p, cx, dmg, after);
 
@@ -293,6 +293,9 @@ fn monster_take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo, amount: f3
 mod tests {
     use super::*;
 
+    /// `armor_absorb` as `CTSGameRules::Init` sets it.
+    const ABSORB: f32 = crate::rules::state::INIT_ARMOR_ABSORB;
+
     #[test]
     fn multipliers() {
         assert_eq!(hitgroup_scale(hitgroup::HEAD, bits::BULLET), 2.0);
@@ -314,13 +317,13 @@ mod tests {
 
     #[test]
     fn kevlar() {
-        let s = kevlar_scale(100.0, hitgroup::CHEST, bits::BULLET);
+        let s = kevlar_scale(100.0, hitgroup::CHEST, bits::BULLET, ABSORB);
         assert!((s - (1.0 - 0.2125)).abs() < 1e-6);
-        assert_eq!(kevlar_scale(0.0, hitgroup::CHEST, bits::BULLET), 1.0, "no armour");
-        assert_eq!(kevlar_scale(100.0, hitgroup::HEAD, bits::BULLET), 1.0, "head isn't covered");
-        assert_eq!(kevlar_scale(100.0, hitgroup::LEFTLEG, bits::BULLET), 1.0, "legs aren't covered");
-        assert_eq!(kevlar_scale(100.0, hitgroup::STOMACH, bits::BLAST), 1.0, "blast is exempt");
-        assert_eq!(kevlar_scale(100.0, hitgroup::LEFTARM, bits::THROWN), 1.0, "thrown knives are exempt");
+        assert_eq!(kevlar_scale(0.0, hitgroup::CHEST, bits::BULLET, ABSORB), 1.0, "no armour");
+        assert_eq!(kevlar_scale(100.0, hitgroup::HEAD, bits::BULLET, ABSORB), 1.0, "head isn't covered");
+        assert_eq!(kevlar_scale(100.0, hitgroup::LEFTLEG, bits::BULLET, ABSORB), 1.0, "legs aren't covered");
+        assert_eq!(kevlar_scale(100.0, hitgroup::STOMACH, bits::BLAST, ABSORB), 1.0, "blast is exempt");
+        assert_eq!(kevlar_scale(100.0, hitgroup::LEFTARM, bits::THROWN, ABSORB), 1.0, "thrown knives are exempt");
     }
 
     #[test]
@@ -352,8 +355,8 @@ mod tests {
     #[test]
     fn kevlar_damage_truncates() {
         // 30 × (1 − 0.2125) = 23.625: TS does 23.
-        assert_eq!(after_kevlar(30.0, 100.0, hitgroup::CHEST, bits::BULLET), 23.0);
-        assert_eq!(after_kevlar(30.9, 0.0, hitgroup::CHEST, bits::BULLET), 30.0, "no armour still truncates");
-        assert_eq!(after_kevlar(0.5, 0.0, hitgroup::HEAD, bits::BULLET), 0.0);
+        assert_eq!(after_kevlar(30.0, 100.0, hitgroup::CHEST, bits::BULLET, ABSORB), 23.0);
+        assert_eq!(after_kevlar(30.9, 0.0, hitgroup::CHEST, bits::BULLET, ABSORB), 30.0, "no armour still truncates");
+        assert_eq!(after_kevlar(0.5, 0.0, hitgroup::HEAD, bits::BULLET, ABSORB), 0.0);
     }
 }

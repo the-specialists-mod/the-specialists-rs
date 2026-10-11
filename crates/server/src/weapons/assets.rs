@@ -35,7 +35,7 @@ pub struct CvarValues {
     /// `weaponstay`: dropped weapon lifetime (clamped 5..60 s; drops of the held gun 10..120 s
     /// at twice the value).
     pub weaponstay: f32,
-    /// `damagemult`: weapon damage multiplier, only with `sv_cheats`.
+    /// `damagemult`: weapon damage multiplier, only with weapon cheats on (`g_flWeaponCheat`).
     pub damagemult: f32,
 }
 
@@ -55,10 +55,11 @@ pub fn cvars() -> CvarValues {
     }
 }
 
-/// `damagemult` applies only when weapon cheats (`sv_cheats`) are on.
+/// `damagemult` applies only with `g_flWeaponCheat` (`sv_cheats` latched at map load,
+/// `rules::cvars::cheats`; `CBulletManager.c:316`, `CBasePlayer.c:221`).
 pub fn damage_adjust() -> f32 {
     let m = cvars().damagemult;
-    if m > 0.0 && engine().cvar_float(c"sv_cheats") != 0.0 { m } else { 1.0 }
+    if m > 0.0 && crate::rules::cvars::cheats() { m } else { 1.0 }
 }
 
 /// Max carry of ammo type `t` for the current `ammocount` (`Set_ammo_count`).
@@ -67,13 +68,13 @@ pub fn max_carry(t: u8) -> i32 {
     tables().ammo(t).map(|a| a.max_carry[col]).unwrap_or(0)
 }
 
-/// `dmgreport`, read only with weapon cheats on (`g_flWeaponCheat`, i.e. `sv_cheats`), else 0.
+/// `dmgreport`, read only with `g_flWeaponCheat` on (`sv_cheats` latched at map load), else 0.
 /// Values above 1 print bullet and thrown-blade damage to everyone. Any non-zero value logs
 /// player damage to the server console. As in TS, nothing registers it (`CVarGetFloat` of a
 /// missing cvar is 0), so it only works where the engine lets the console create it.
 pub fn dmgreport() -> f32 {
     let e = engine();
-    if e.cvar_float(c"sv_cheats") == 0.0 {
+    if !crate::rules::cvars::cheats() {
         return 0.0;
     }
     e.cvar_float(c"dmgreport")
@@ -248,14 +249,8 @@ pub fn precache() {
         }
     }
     *ASSETS.0.borrow_mut() = Some(a);
-    // customweapons: weapon parameter file applied at every map start
-    let file = e.cvar_string(c"customweapons").to_string_lossy().into_owned();
-    if !file.is_empty() {
-        let f = file;
-        if !super::custom::load(&f) {
-            e.print(&format!("customweapons: can't read {f}\n"));
-        }
-    }
+    // `customweapons` is registered but, as in TS, never read: weapons files load with
+    // `loadweapons` only.
 }
 
 #[cfg(test)]

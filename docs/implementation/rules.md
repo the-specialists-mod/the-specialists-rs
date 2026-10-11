@@ -66,9 +66,9 @@ are Ghidra addresses.
 | `CBasePlayer::PreThink` 0x908cc (rules parts) | `lifecycle::pre_think` | `WaterMove`, InitHUD, `CheckTimeBasedDamage`, fuser1 easing + `framerate`, power-up state, slow flow, health decay / The One regen, observer countdown text (once a second while the respawn time is ahead; seconds truncated like TS's `(int)` cast, capped at 30; "Press Fire To Play!" in the last second, not repeated; the LMS join countdown also truncates), death think, +use double tap, spawn protection end, delayed suicide. |
 | `CBasePlayer::Killed` 0x8ed5c | `lifecycle::killed` | In TS's order: TSMBlur on the killer (`RandomLong(0,100) <= 0x31`; under `glast_closecombat` a first roll `<= 0x4f`, then the 0x31 roll again on a miss) and off on the victim, respawn time, headshot victim slow 0.33, `iuser4 = DEAD_LOCK`, `weapons::on_killed` (holster and ammo pack with a gun, `DropFlag`, then every `DropWeapon`), PlayerKilled, tank let go (`USE_OFF`), `Animate(7)` (reads `g_vecAttackDir`), push `velocity += -min(DamageForce(last damage), 500) × normalize(g_vecAttackDir)` (`DamageForce` 0xb2d08 = `73728 / volume × dmg × 5`, at most 1000: a ducked body flies twice as far), so away from the inflictor, hop when fast/hard hit (TS also tests `pl+0x470`, a word nothing writes), TSHealth 0, ActItems 0, SetFOV 0, gib. `takedamage` stays on (only `StartObserver` clears it), so the body still takes TraceAttacks; slow motion isn't stopped here (the dead player's next `UpdatePowerUpState` does it). |
 | `PlayerDeathThink` 0x8eaec | `lifecycle::death_think` | settle; `RemoveAllItems(TRUE)` while the player still has the gun (`weapons::remove_all_items`: the gun goes, inline `UpdateClientData`, `CurWeapon 0,0,0`); while dying, advance the death sequence (`studio_frame_advance`, at the slow-motion `framerate`) until it finishes; then corpse (`deadcorpse`, 10 s) + observer after 3 s or any button. |
-| `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | TS's damage globals as `Killed` took them (`damage::glast::Snapshot`: `glast_headshot`, `glast_closecombat`, `glast_coldcock`, `glast_weaponid`), points (kung fu/thrown knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), `#TS_KnifeKill`/`#TS_KatanaKill` from the killer's current gun weapon (own inflictor, not under `glast_closecombat`), `#TS_Coldcock`, double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`DoSpectacularNess` 0x76b48 = `scoring::do_spectacularness`, shared with explosions: `spectacularness` clamped 0..100 and rounded, 0 never fires), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, log lines with TS suffixes, `game_playerdie`/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
-| `TSGetPointsForFrag` 0x89140 | `scoring::points_for_frag` | Own inflictor: `#TS_KungFu` and 2 points outside a simulated bullet's hit, under `glast_closecombat` or with kung fu out (`scoring::kung_fu_frag`); a `knife` inflictor: `Throwing` and 2; any other inflictor returns the base points (no stunt bonus, no message). Then `#TS_StStl`/`#TS_SlStl` +1 (not under `glast_closecombat`) or `#TS_Stl`, and the frag message naming the killer. Unit tested. |
-| `DeathNotice` 0x88f7c | `scoring::death_notice` | `DeathMsg`; weapon name rules (strip prefixes, Throwing Knife, Shrapnel, M61 Grenade, Kung Fu); HLTV director event (victim, inflictor or killer, 0x27). |
+| `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | TS's damage globals as `Killed` took them (`damage::glast::Snapshot`: `glast_headshot`, `glast_closecombat`, `glast_coldcock`, `glast_weaponid`), points (kung fu/thrown knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), `#TS_KnifeKill`/`#TS_KatanaKill` from the killer's current gun weapon (own inflictor, not under `glast_closecombat`), `#TS_Coldcock`, double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`DoSpectacularNess` 0x76b48 = `scoring::do_spectacularness`, shared with explosions: `spectacularness` clamped 0..100 and rounded, 0 never fires), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, the log line (`"name<uid><authid><uid>"`, the `model` key instead of the second user id in teamplay; tags in TS's order: ` (victims_weapon)` when the killer's current weapon record was first owned by the victim (`s_weapon_status+0x30`: `weapons::SvState::owners`, set by a buy and carried by a dropped gun) and not a grenade or blade, killed by the killer's own hand outside `glast_closecombat`; ` (stopped_fury "victim")`, ` (killed_specialist)`, ` (double_kill)`, ` (diving)`, ` (sliding)`, ` (killed_the_one)`, then the spree tag; `scoring::{KillTags, log_kill}`), `game_playerdie` (the victim lent back to its slot, `world::lend`)/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
+| `TSGetPointsForFrag` 0x89140 | `scoring::points_for_frag` | Own inflictor: `#TS_KungFu` and 2 points outside a simulated bullet's hit, under `glast_closecombat` or with kung fu out (`scoring::kung_fu_frag`); a `knife` inflictor: the blade's `CTSKnife::GetDescription` (0x7db04: "Throwing Combat Knife", "Throwing Seal Knife", "Throwing Katana"; "Throwing" without a knife object) and 2; any other inflictor returns the base points (no stunt bonus, no message). Then `#TS_StStl`/`#TS_SlStl` +1 (not under `glast_closecombat`) or `#TS_Stl`, and the frag message naming the killer. Unit tested. |
+| `DeathNotice` 0x88f7c | `scoring::death_notice` | `DeathMsg`; weapon name rules (`scoring::weapon_name`: a thrown knife of a player is named by `GetDescription`, "world" without its object; another non-player inflictor by its netname when set at all, else its classname; strip `weapon_`/`monster_`/`func_`; then only `knife`, `shrapnel`, `grenade` are renamed (Throwing Knife, Shrapnel, M61 Grenade), and an empty name stays empty; Kung Fu); HLTV director event (victim, inflictor or killer, 0x27). |
 | `TheOneIsDead` 0x7b258, `SetPlayerTheOne` 0x7b078, `SelectRandomTheOne` 0x7af28, The One part of `CTSGameRules::Think` | `scoring::{the_one_is_dead, set_player_the_one}`, `frame::{the_one_check, select_random_the_one}`, `teams::the_one_switch` | Every 10 s Think counts the non-dormant players other than The One (`+0x5876`, the regeneration rate; TS loops slots 0..maxClients-1, so the last slot never counts) and, with no One, `SelectRandomTheOne` picks a living non-observer. `SetPlayerTheOne` (living, not observing): health 150, kung fu, super jump, speed 330, PwUp ×2, a stored 3 s slow pause when nothing is held or active, award 10, "%s is The One!" (100,150,255), `the_one` log. The team switch is `SetDefaultPlayerTeam` + `ChangePlayerTeam(TeamID, 0, 0)` (keys, TeamInfo, ScoreInfo, TeamNames, no observer). The One's death: "The One is dead." (suicide or no player killer), or "The One was killed by %s!", the victim's team switch, `SetPlayerTheOne(killer)` and the killer's switch, before the killer's spree rewards. |
 | `EntSelectSpawnPoint` 0x76128 / `TSSelectSpawnSpot` 0x76244 | `spawnpoint::{select, spot_score, place}` | spots whose `master` (`CBaseDMStart::KeyValue` 0xe2bb8 → `netname`, `IsTriggered` 0xe2c20) isn't triggered are skipped; up to 32 spots scored by enemy/teammate visibility and nearest player; telefrag (300, ALWAYSGIB) within 128 when the best score < 128; fires the spot's target. Unit tested. |
 | `CTSGameRules::Think` 0x77204 | `frame::ts_think` | global slow expiry/apply, CheckDeads, auto power-ups, The One every 10 s, LMS restart/checks, SrvSett 0–2 on change. |
@@ -129,8 +129,20 @@ and the port's `ts_bot_quota 0`.
 
 `g_flWeaponCheat` (`cvars::cheats`) is `sv_cheats` as `CWorld::Spawn` (0xf4450) found it, so a new
 value counts from the next map: the `fov`/`powerup`/`cashala` commands, `CheatImpulseCommands` and
-the InitHUD cheat notice. The port's dev aids (`ts_tp`, `ts_face`, `ts_dev_touch`; `cvars::dev_cheats`)
-read `sv_cheats` live.
+the InitHUD cheat notice, `damagemult` and `dmgreport` (`weapons::damage_adjust`,
+`weapons::dmgreport`). The port's dev aids (`ts_tp`, `ts_face`, `ts_dev_touch`, `ts_give`,
+`ts_weapons_debug`; `cvars::dev_cheats`) read `sv_cheats` live.
+
+`customweapons` is registered, as in TS, and nothing reads it (one reference in `ts_i386.so`, the
+`CVarRegister` at 0xc5d97): weapons files load with `loadweapons` only.
+
+`CTSGameRules::Init` (every map) clears the custom-weapons flag (`+0x5884`) and sets
+`armor_absorb` 0.2125 and `health_absorb` 0.1 (`+0x588c`/`+0x5888`; `state::GameRules::{custom_weapons,
+armor_absorb, health_absorb}`). Kevlar reads `armor_absorb` (`player::damage::after_kevlar`);
+nothing reads `health_absorb`. A `loadweapons` file sets them and the flag; its weapon values
+live in the weapon tables and, like TS's `global_weapon_info`, outlive the map, but from the next
+map on joiners no longer get the "custom weapons" notice and `CustomWP` in `InitHUD`.
+`deathmatch 0` runs no `Init`, so the values carry over (0 on a fresh server, as TS's `.bss`).
 
 TS never registers `initial_cash`, `cashforwin`, `cashforlose`, `respawnnumber`, `dmgreport`;
 they are constants (`cvars::INITIAL_CASH` 1200 etc., respawnnumber 1). Nothing registers
@@ -241,26 +253,27 @@ Where TS reads garbage or crashes on input it never gets in practice:
 * `ResetSequenceInfo` on a negative sequence: TS reads before the sequence table; the port gives
   frame rate 0 (as for a sequence past the end), so such a death animation never ends, like any
   sequence with frame rate 0 in TS.
+* `PlayerKilled`'s weapon name for a non-player attacker without an inflictor: TS reads the
+  classname through NULL; the port says "world".
+* A weapons-file line longer than 255 bytes: `adjust_weapon_value` `strcpy`s it into a 256-byte
+  buffer; the port reads the first 255.
 
 Port structure:
 * `PlayerSpawn` with a `game_player_equip`: as in TS no `weapon_tsgun` (no gun at all, kung fu
   included, unless the equip lists it: `weapons::has_gun`, weapons.md §2) and no `BuyArmament`.
   The equip touches run right after the player's spawn instead of inside it.
-* `game_player_team` changes the activator's team inside the `Use`, as TS does, when +use fired
-  it: `player_use` lends the player back to its slot for the `Use` (`world::lend`), and
-  `world::run_now_or_defer` reaches it. When the activator is mid-dispatch any other way (a TS
-  item picked up with +use firing its `target`, or a player's own weapon frame), the change still
-  waits until that dispatch returns.
-* `CTSGameRules::Init` doesn't reset `armor_absorb`/`health_absorb` (`+0x588c`/`+0x5888`) or the
-  custom-weapons flag (`+0x5884`): the port keeps them in the weapons tables
-  (`shared::weapons::table`), which outlive a map (TS resets them with every `Init`, so on every
-  map too).
-* The spray can and the blood splat are removed with `FL_KILLME` (`entities::remove`, the end of
-  the frame), where the blood splat's `SUB_Remove` frees its edict at once.
+* `game_player_team` changes the activator's team inside the `Use`, as TS does, when the
+  activator's own call fired it: `player_use` (+use), `game_playerdie` (`PlayerKilled`) and
+  `game_playerjoin`/`game_playerspawn` (`UpdateClientData`'s InitHUD block) lend the player back to
+  its slot for the targets (`world::lend`), and `world::run_now_or_defer` reaches it. (TS items
+  fire their `target` with themselves as activator, so `game_player_team` ignores them.) One case
+  still waits: a player's own weapon frame (shooting a `func_button` that targets it). The frame
+  holds the player's gun and inventory borrowed for the whole `ItemPostFrame`, and a team change
+  with flag 2 kills the player, which drops that same inventory; TS does it mid-frame on aliased
+  memory. The change runs as soon as the weapon frame returns, in the same `PostThink`.
 * `deathmatch 0` (`CHalfLifeRules`, §2.1): `CBulletManager::Reset` still runs on every map from
   the weapons' precache (TS resets only from `CTSGameRules::Init`; no bullet moves in single
-  player either way). `m_fNoPlayerSound` (impulse 105) has no effect, as the port has no
-  `CSoundEnt`.
+  player either way).
 
 Not deviations, for the record: `PlayerSpawn`'s stored-cash copy without an equip
 (`pl+0x53c = pl+0x540`, 0x8912d) isn't modelled because nothing reads `pl+0x53c`: the only
@@ -281,14 +294,6 @@ ammo, dropped guns, knives, grenades, the CTB case and the hidden objectives all
   `SetDefaultPlayerTeam`, `RecountTeams`' team list and limit, `IsValidTeam` and the `ScoreInfo`
   team index for issue #86; `ClientUserInfoChanged`, The One's team switch, `game_player_team`,
   disconnects and the deviations list for issue #87).
-* Thrown knives in `PlayerKilled`: TS names the blade with `CTSKnife::GetDescription` (0x7db04:
-  "Throwing Combat Knife", "Throwing Seal Knife", "Throwing Katana" by type, "" otherwise) for the
-  `DeathMsg`/log weapon and the `TSGetPointsForFrag` message; the port says "Throwing Knife" and
-  "Throwing". The knife is taken out for its own touch while the kill is scored, so its type
-  isn't readable there yet.
-* The log's ` (victims_weapon)` suffix (killed with a gun whose original owner, `gun+0x30`, is the
-  victim; `GetWeaponType` 0x8705c not 2, 3 or 11; not under `glast_closecombat`) isn't written: the port
-  doesn't track a gun's original owner.
 * Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client,
   `item_antidote` (no shipped map places one).
@@ -300,7 +305,10 @@ ammo, dropped guns, knives, grenades, the CTB case and the hidden objectives all
   `fullupdate` `Spectator` flag, `UpdateClientData` byte/compare rules and resets
   (`player::hud::tests`), the impulse 99 `Logo` toggle, the spray frames, `SetCustomDecalFrames`,
   the customization types and the impulse 106 text (`player::impulse::tests`), `CTSGameRules::Init`
-  (`state::tests::ts_init_resets_only_the_ts_state`), the dispatch lend (`world::tests`), the map cycle (`mapcycle::tests`: parsing,
+  (`state::tests::ts_init_resets_only_the_ts_state`, with the custom-weapons flag and the absorb
+  values), the dispatch lend and `with_lent` (`world::tests`), the kill log's tags, ids and weapon
+  renames and the ` (victims_weapon)` gun test (`scoring::tests`), the player's `soundent` slot
+  (`soundent::tests::player_sound_follows_speed_and_silence`), the map cycle (`mapcycle::tests`: parsing,
   rule commands, min/max players, the traversal), the restriction mask's high bits,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
   clamps, weapon restriction, map vote parsing/tally, round refunds, `DoSpectacularNess` rounding/clamping, power-up bodies/respawn clamps, HL remaps, drowning/time-based damage (`player::water::tests`: drown ramp, wade sounds, 2 s tick gate, poison ticks and restart, antidote, drown recovery 10/10/2 and its stop underwater), the HLTV
