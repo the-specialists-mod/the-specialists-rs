@@ -106,6 +106,10 @@ pub trait Entity: Any {
     fn restored(&mut self, _cx: &mut Cx) {}
     /// `OverrideReset` (vtable +0x98): after a global entity was restored over this one.
     fn override_reset(&mut self, _cx: &mut Cx) {}
+    /// `Activate` (vtable +0x3c): `ServerActivate` runs it on every entity once the map has
+    /// spawned, and again after a restore (`entities::server_activate`). The default is
+    /// `CBaseEntity::Activate` (0xac64c), which does nothing.
+    fn activate(&mut self, _cx: &mut Cx) {}
 }
 
 enum State {

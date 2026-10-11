@@ -161,7 +161,10 @@ fn exec_server_config() {
     e.server_command(&format!("exec {file}\n"));
 }
 
-pub fn server_activate() {
+/// `ServerActivate` (0xae928): `Activate` on the map's entities (`entities::server_activate`),
+/// then the port's bot manager.
+pub fn server_activate(edict_count: i32, client_max: i32) {
+    crate::entities::server_activate(edict_count, client_max);
     crate::bots::server_activate();
 }
 

@@ -218,7 +218,7 @@ Census of the 97 shipped maps: how many maps use each class. Implement in this o
 |---|---|
 | 1 (most maps) | `worldspawn`, `func_wall`, `info_player_deathmatch`, `func_illusionary`, `light`, `func_breakable`, `light_environment`, `func_ladder`, `info_player_start`, `ambient_generic`, `env_sprite`, `ts_powerup`, `trigger_hurt`, `trigger_multiple`, `func_button`, `func_door_rotating`, `multi_manager`, `ts_model`, `func_water`, `ts_groundweapon`, `func_door`, `info_target`, `env_glow`, `light_spot`, `infodecal` |
 | 2 | `trigger_teleport`, `trigger_auto`, `info_teleport_destination`, `func_rotating`, `trigger_push`, `func_train`, `path_corner`, `func_conveyor`, `item_healthkit`, `ts_mapglobals`, `func_wall_toggle`, `trigger_camera`, `trigger_changetarget`, `trigger_relay`, `cycler_sprite`, `info_null`, `env_shake`, `env_explosion`, `multisource`, `trigger_once`, `item_battery`, `env_render`, `func_pushable`, `env_beam`, `info_player_teamspawn`, `ts_groundammo`, `game_text`, `env_fade`, `env_shooter` |
-| 3 | HL weapon/ammo names that TS re-points at ground items (`weapon_*`, `ammo_*`: decomp `server/architecture.md` §5), `ts_emitter`/`ts_particle`/`ts_fog` (validate and remove; the client reads them), the remaining TS objective entities (stubs: they're dead in 3.0) |
+| 3 | HL weapon/ammo names that TS re-points at ground items (`weapon_*`, `ammo_*`: decomp `server/architecture.md` §5), `ts_emitter`/`ts_particle`/`ts_fog` (the client reads them; the server validates them and removes all but the particles), the remaining TS objective entities (stubs: they're dead in 3.0) |
 
 Unknown classnames make the engine print "No spawn function" and free the entity, so maps
 still load.

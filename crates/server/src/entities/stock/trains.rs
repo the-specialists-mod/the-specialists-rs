@@ -2,9 +2,8 @@
 //! (TS `CFuncPlat`, with its trigger volume), `func_platrot` (`CFuncPlatRot`) and
 //! `func_guntarget` (`CGunTarget`).
 //!
-//! The SDK starts trains from `CFuncTrain::Activate`, which `ServerActivate` calls once every
-//! entity has spawned. The entity framework has no activate hook, so the train runs `Activate`
-//! from a think 0.1 s (local time) after spawning instead.
+//! Trains and gun targets go to their first corner from `Activate`, which `ServerActivate` runs
+//! once every entity has spawned (and again after a restore).
 
 use super::base::*;
 use super::explode::emit_sound_slow;
@@ -145,17 +144,19 @@ impl FuncTrain {
         v.noise1 = alloc(st);
     }
 
+    /// Every `CFuncTrain` sound is `EMIT_SOUND_DYN` with pitch 100 and the slow-motion factor
+    /// 0.5 (`Next` 0xd37b4, `Wait` 0xd35b4, `Use` 0xd34d8).
     fn stop_move_sound(cx: &mut Cx) {
         let n = cx.pev().noise;
         if n != 0 {
-            engine().emit_sound(cx.edict, CHAN_STATIC as i32, s(n), 0.0, 0.0, snd::STOP, PITCH_NORM as i32);
+            emit_sound_slow(cx.edict, CHAN_STATIC, s(n), 0.0, 0.0, snd::STOP, PITCH_NORM as i32, PLAT_SLOW);
         }
     }
 
     fn stop_sound(&self, cx: &mut Cx) {
         let n = cx.pev().noise1;
         if n != 0 {
-            emit(cx.edict, CHAN_VOICE, s(n), self.volume, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_sound_slow(cx.edict, CHAN_VOICE, s(n), self.volume, ATTN_NORM, 0, PITCH_NORM as i32, PLAT_SLOW);
         }
     }
 
@@ -224,7 +225,7 @@ impl FuncTrain {
             let n = v.noise;
             if n != 0 {
                 Self::stop_move_sound(cx);
-                emit(cx.edict, CHAN_STATIC, s(n), self.volume, ATTN_NORM, 0, PITCH_NORM as i32);
+                emit_sound_slow(cx.edict, CHAN_STATIC, s(n), self.volume, ATTN_NORM, 0, PITCH_NORM as i32, PLAT_SLOW);
             }
             cx.pev().effects &= !(EF_NOINTERP as i32);
             self.t.move_done = Some(Self::wait);
@@ -233,13 +234,16 @@ impl FuncTrain {
         }
     }
 
-    fn activate(&mut self, cx: &mut Cx) {
+    /// `CFuncTrain::Activate` (0xd3b44): once, to the first corner; an unnamed train starts
+    /// moving 0.1 s (local time) on, a named one waits for its `Use`.
+    fn train_activate(&mut self, cx: &mut Cx) {
         if self.activated {
             return;
         }
         self.activated = true;
         let eng = engine();
         let targ = eng.find_by_target_name(std::ptr::null_mut(), s(cx.pev().target));
+        // Guard: TS reads the missing corner's `target` and origin through NULL.
         if targ.is_null() {
             return;
         }
@@ -297,17 +301,11 @@ impl Entity for FuncTrain {
         if self.volume == 0.0 {
             self.volume = 0.85;
         }
-        // Stand-in for CFuncTrain::Activate (see module docs).
-        self.t.think = Some(Self::activate);
-        think_ltime(cx, 0.1);
     }
 
-    /// `CFuncTrain::Save` / `Restore` (0xd3374 / 0xd33c4). `Use` and `Blocked` are virtuals;
-    /// `m_pfnThink` is set unless it's the port's `Activate` stand-in (TS has no think until
-    /// `Activate` runs).
+    /// `CFuncTrain::Save` / `Restore` (0xd3374 / 0xd33c4). `Use` and `Blocked` are virtuals.
     fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
-        let stand_in = Self::activate as fn(&mut Self, &mut Cx);
-        let think = self.t.think.is_some_and(|t| !std::ptr::fn_addr_eq(t, stand_in));
+        let think = self.t.think.is_some();
         let cleared = f.base_funcs(cx, BaseFuncs { think, touch: self.t.touch.is_some(), use_: false, blocked: false });
         if cleared.think {
             self.t.think = None;
@@ -325,15 +323,15 @@ impl Entity for FuncTrain {
         f.boolean(&mut self.activated);
     }
 
-    /// `CFuncTrain::Precache` (0xd3de8). `ServerActivate` runs `Activate` again after a load,
-    /// which only does anything for a train that hadn't activated: the port's stand-in think
-    /// does that (see the module docs).
+    /// `CFuncTrain::Precache` (0xd3de8).
     fn restored(&mut self, cx: &mut Cx) {
         self.precache(cx);
-        if !self.activated {
-            self.t.think = Some(Self::activate);
-            think_ltime(cx, 0.1);
-        }
+    }
+
+    /// `CFuncTrain::Activate` (0xd3b44). After a restore it only acts for a train that hadn't
+    /// activated (`m_activated` is saved).
+    fn activate(&mut self, cx: &mut Cx) {
+        self.train_activate(cx);
     }
 
     /// `CFuncTrain::OverrideReset` (0xd3e0c): a train that was moving heads for its current
@@ -359,10 +357,8 @@ impl Entity for FuncTrain {
         run_think(self, cx);
     }
 
+    /// `CFuncTrain::Use` (0xd34d8).
     fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
-        if !self.activated {
-            self.activate(cx);
-        }
         let v = cx.pev();
         if v.spawnflags & SF_TRAIN_WAIT_RETRIGGER != 0 {
             v.spawnflags &= !SF_TRAIN_WAIT_RETRIGGER;
@@ -396,7 +392,7 @@ pub const SF_PLAT_TOGGLE: i32 = 1;
 
 /// `CFuncPlat::Blocked` (0xd2e64) crush damage.
 const PLAT_CRUSH: f32 = 1.0;
-/// `EMIT_SOUND_DYN`'s slow-motion pitch factor in every `CFuncPlat` sound.
+/// `EMIT_SOUND_DYN`'s slow-motion pitch factor in every `CFuncPlat` and `CFuncTrain` sound.
 const PLAT_SLOW: f32 = 0.5;
 
 /// `movesnd` / `stopsnd` (`CBasePlatTrain::KeyValue` 0xd1f80, also `func_train`'s): `strtod`,
@@ -972,21 +968,16 @@ fn monster_hitgroup_damage(hitgroup: i32, damage: f32) -> f32 {
 /// for traced hits, `CBaseMonster::KeyValue` (0xce80c) is just `CBaseToggle::KeyValue`, and
 /// `FL_MONSTER` is set. `ObjectCaps` (0xd7da8) is 0.
 ///
-/// `CGunTarget::Activate` (0xd6f38) runs from `ServerActivate`; the entity framework has no
-/// activate hook, so it runs from a think 0.1 s (local time) after spawning, or from `Use` if that
-/// comes first, as `func_train` does.
+/// `CGunTarget::Activate` (0xd6f38) runs from `ServerActivate`, on a new map and after a restore.
 pub struct GunTarget {
     t: Toggle<Self>,
     /// `m_hTargetEnt` (+0x138), a `CBaseMonster` member TS doesn't save.
     target_ent: EHandle,
-    activated: bool,
-    /// When `Spawn` scheduled `Start` (`ltime + 0.3`), kept while the activate think runs first.
-    start_at: f32,
 }
 
 impl Default for GunTarget {
     fn default() -> Self {
-        Self { t: ts_toggle(), target_ent: EHandle::NULL, activated: false, start_at: 0.0 }
+        Self { t: ts_toggle(), target_ent: EHandle::NULL }
     }
 }
 
@@ -1008,39 +999,6 @@ fn get_next_target(cx: &mut Cx) -> *mut edict_t {
 }
 
 impl GunTarget {
-    /// `CGunTarget::Activate` (0xd6f38): start at the first path corner.
-    fn activate(&mut self, cx: &mut Cx) {
-        self.activated = true;
-        let t = get_next_target(cx);
-        if t.is_null() {
-            return;
-        }
-        self.target_ent = EHandle::new(t);
-        let v = cx.pev();
-        let dest = vec::sub(t.v().origin, vec::mid(v.mins, v.maxs));
-        engine().set_origin(cx.edict, dest);
-    }
-
-    /// Stand-in for the `ServerActivate` after a load (see `restored`), then the restored
-    /// `nextthink` back (TS's think is unset, but the engine's pusher physics still moves the
-    /// target only up to it).
-    fn reactivate(&mut self, cx: &mut Cx) {
-        self.t.think = None;
-        self.activate(cx);
-        cx.pev().nextthink = self.start_at;
-    }
-
-    /// Stand-in for `ServerActivate` (see the type docs), then `Spawn`'s `Start` think if it set one.
-    fn activate_think(&mut self, cx: &mut Cx) {
-        if !self.activated {
-            self.activate(cx);
-        }
-        if cx.pev().spawnflags & SF_GUNTARGET_START_ON != 0 {
-            self.t.think = Some(Self::start);
-            cx.pev().nextthink = self.start_at;
-        }
-    }
-
     /// `CGunTarget::Start` (0xd701c).
     fn start(&mut self, cx: &mut Cx) {
         let me = cx.edict;
@@ -1122,26 +1080,16 @@ impl Entity for GunTarget {
         v.takedamage = DAMAGE_NO as f32;
         v.flags |= FL_MONSTER as i32;
         v.max_health = v.health;
-        self.start_at = v.ltime + 0.3;
-        // Stand-in for CGunTarget::Activate (see the type docs); it schedules `Start` at
-        // `start_at` for FGT_START_ON.
-        self.activated = false;
-        self.t.think = Some(Self::activate_think);
-        think_ltime(cx, 0.1);
+        if v.spawnflags & SF_GUNTARGET_START_ON != 0 {
+            self.t.think = Some(Self::start);
+            think_ltime(cx, 0.3);
+        }
     }
 
     /// `CGunTarget::Save` / `Restore` (0xd6da8 / 0xd6df8): the `CBaseToggle` chain (TS's
-    /// `CBaseMonster` part isn't saved) and `m_on`. `Use` is a virtual. While the port's
-    /// activate stand-in is pending, TS's `m_pfnThink` is `Spawn`'s `Start` for `FGT_START_ON`
-    /// and unset otherwise (and unset after a load).
+    /// `CBaseMonster` part isn't saved) and `m_on`. `Use` is a virtual.
     fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
-        let think = match self.t.think {
-            Some(t) if std::ptr::fn_addr_eq(t, Self::activate_think as fn(&mut Self, &mut Cx)) => {
-                cx.pev().spawnflags & SF_GUNTARGET_START_ON != 0
-            }
-            Some(t) => !std::ptr::fn_addr_eq(t, Self::reactivate as fn(&mut Self, &mut Cx)),
-            None => false,
-        };
+        let think = self.t.think.is_some();
         let cleared = f.base_funcs(cx, BaseFuncs { think, touch: self.t.touch.is_some(), use_: false, blocked: false });
         if cleared.think {
             self.t.think = None;
@@ -1157,15 +1105,18 @@ impl Entity for GunTarget {
         f.zero();
     }
 
-    /// `Precache` is `CBaseEntity`'s. After a load `ServerActivate` runs `CGunTarget::Activate`
-    /// again (it has no guard), so the target jumps to the corner its `target` names; the port
-    /// does that from a think 0.1 s on, as at spawn.
-    fn restored(&mut self, cx: &mut Cx) {
-        self.activated = false;
-        // `start_at` isn't TS state (nor saved): it holds the restored nextthink for `reactivate`.
-        self.start_at = cx.pev().nextthink;
-        self.t.think = Some(Self::reactivate);
-        think_ltime(cx, 0.1);
+    /// `CGunTarget::Activate` (0xd6f38): to the corner `target` names. It has no guard, so after
+    /// a restore the target jumps to the corner its `target` names now. `Precache` is
+    /// `CBaseEntity`'s.
+    fn activate(&mut self, cx: &mut Cx) {
+        let t = get_next_target(cx);
+        if t.is_null() {
+            return;
+        }
+        self.target_ent = EHandle::new(t);
+        let v = cx.pev();
+        let dest = vec::sub(t.v().origin, vec::mid(v.mins, v.maxs));
+        engine().set_origin(cx.edict, dest);
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -1175,9 +1126,6 @@ impl Entity for GunTarget {
     /// `CGunTarget::Use` (0xd733c). `m_on` (+0x164) is cleared by `Spawn` and never set (as in
     /// the SDK), so every use that passes `ShouldToggle` (re)starts the target at full health.
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, kind: UseType, _v: f32) {
-        if !self.activated {
-            self.activate(cx);
-        }
         let on = false;
         if !should_toggle(kind, on) {
             return;

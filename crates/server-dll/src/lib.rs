@@ -299,7 +299,7 @@ unsafe extern "C" fn client_userinfo_changed(e: *mut edict_t, _: *mut c_char) {
 }
 
 unsafe extern "C" fn server_activate(_: *mut edict_t, edict_count: c_int, client_max: c_int) {
-    rules::server_activate();
+    rules::server_activate(edict_count, client_max);
     engine().print(&format!("[ts] ServerActivate: {edict_count} edicts, {client_max} max clients\n"));
 }
 

@@ -414,7 +414,7 @@ impl<const ARMOR: bool> Charger<ARMOR> {
     fn off(&mut self, cx: &mut Cx) {
         let (_, charge, _, _) = Self::sounds();
         if self.on > 1 {
-            engine().emit_sound(cx.edict, CHAN_STATIC as i32, charge, 0.0, 0.0, goldsrc::ext::entities::snd::STOP, PITCH_NORM as i32);
+            emit_slow(cx.edict, CHAN_STATIC, charge, 0.0, 0.0, goldsrc::ext::entities::snd::STOP);
         }
         self.on = 0;
         self.think_set = true;
@@ -433,9 +433,13 @@ impl<const ARMOR: bool> Charger<ARMOR> {
         self.recharge_at = None;
     }
 
+    /// `CWallHealth::Recharge` (0xc8f2c) / `CRecharge::Recharge` (0xc7234): only the health
+    /// charger plays its start sound.
     fn recharge(&mut self, cx: &mut Cx) {
-        let (start, _, _, vol) = Self::sounds();
-        emit(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0, PITCH_NORM as i32);
+        if !ARMOR {
+            let (start, _, _, vol) = Self::sounds();
+            emit_slow(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0);
+        }
         self.full = true;
         cx.pev().frame = 0.0;
         self.recharge_at = None;
@@ -517,11 +521,12 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
             cx.pev().frame = 1.0;
             self.off(cx);
         }
-        // `CRecharge::Use` (0xc6fd0) also refuses players without the HEV suit bit.
-        if !self.full || (ARMOR && activator.v().weapons >= 0) {
+        // `CWallHealth::Use` (0xc8d08) and `CRecharge::Use` (0xc6fd0) both refuse players
+        // without the HEV suit bit.
+        if !self.full || activator.v().weapons & WEAPON_SUIT == 0 {
             if self.sound_time <= now {
                 self.sound_time = now + 0.62;
-                emit(cx.edict, CHAN_ITEM, deny, vol, ATTN_NORM, 0, PITCH_NORM as i32);
+                emit_slow(cx.edict, CHAN_ITEM, deny, vol, ATTN_NORM, 0);
             }
             return;
         }
@@ -533,12 +538,12 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         }
         if self.on == 0 {
             self.on = 1;
-            emit(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_slow(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0);
             self.sound_time = now + 0.56;
         }
         if self.on == 1 && self.sound_time <= now {
             self.on = 2;
-            emit(cx.edict, CHAN_STATIC, charge, vol, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_slow(cx.edict, CHAN_STATIC, charge, vol, ATTN_NORM, 0);
         }
         let pv = activator.v();
         if ARMOR {
@@ -554,6 +559,11 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         }
         self.next_charge = now + 0.1;
     }
+}
+
+/// The chargers' `EMIT_SOUND_DYN`: pitch 100 with the slow-motion factor 0.5.
+fn emit_slow(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn: f32, flags: i32) {
+    super::explode::emit_sound_slow(e, chan, sample, vol, attn, flags, PITCH_NORM as i32, 0.5);
 }
 
 pub type HealthCharger = Charger<false>;

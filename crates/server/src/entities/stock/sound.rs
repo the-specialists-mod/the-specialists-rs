@@ -218,17 +218,16 @@ fn ramp(x: i32) -> i32 {
 
 impl AmbientGeneric {
     /// `CAmbientGeneric::Precache` (0xdec90): the sample, the modulation, and an active ambient's
-    /// sound.
+    /// sound. Only a sample longer than one character (and no `!` sentence) is precached, but the
+    /// sounds play `message` whatever its length.
     fn precache(&mut self, cx: &mut Cx) {
         let eng = engine();
         let name = kv_str(s(cx.pev().message));
-        if name.len() > 1 {
-            let n = intern(name);
-            if !name.starts_with('!') {
-                eng.precache_sound(n);
-            }
-            self.sample = Some(n);
+        let n = intern(name);
+        if name.len() > 1 && !name.starts_with('!') {
+            eng.precache_sound(n);
         }
+        self.sample = Some(n);
         self.init_modulation(cx);
         if cx.pev().spawnflags & AMBIENT_SOUND_START_SILENT == 0 && self.looping {
             self.active = true;

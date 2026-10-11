@@ -68,8 +68,6 @@ pub struct FuncTank<const K: u8> {
     // CFuncTankLaser
     laser: EHandle,
     laser_time: f32,
-    /// `CFuncTankLaser::Activate` hasn't run yet (the port runs it from the first think).
-    pending_activate: bool,
 }
 
 /// `CFuncTank::OnControls` (0xc2970) for any tank class: `SF_TANK_CANCONTROL` and `pv` within 30
@@ -525,14 +523,6 @@ impl<const K: u8> Entity for FuncTank<K> {
         }
         let v = cx.pev();
         v.oldorigin = v.origin;
-        if K == LASER {
-            // CFuncTankLaser::Activate runs from ServerActivate in the SDK; here from the first
-            // think, after every env_laser has spawned.
-            self.pending_activate = true;
-            if v.nextthink <= 0.0 {
-                v.nextthink = v.ltime + 0.1;
-            }
-        }
     }
 
     /// `CFuncTank::Save` / `Restore` (0xc20e8 / 0xc2138), then for `func_tanklaser`
@@ -575,35 +565,28 @@ impl<const K: u8> Entity for FuncTank<K> {
     }
 
     /// `CFuncTank::Precache` (0xc2390; `func_tankrocket`'s `CFuncTankRocket::Precache` 0xc47f0
-    /// first precaches `rpg_rocket`, a class TS doesn't link, which the port skips). A laser
-    /// tank also gets `CFuncTankLaser::Activate`, which `ServerActivate` runs after a restore
-    /// too; the port runs it from the next think, as after `Spawn`.
+    /// first precaches `rpg_rocket`, a class TS doesn't link, which the port skips).
     fn restored(&mut self, cx: &mut Cx) {
         self.precache(cx);
-        if K == LASER {
-            self.pending_activate = true;
-            let v = cx.pev();
-            if v.nextthink <= 0.0 {
-                v.nextthink = v.ltime + 0.1;
-            }
+    }
+
+    /// `CFuncTankLaser::Activate` (0xc428c), from `ServerActivate` on a new map and after a
+    /// restore: turn the laser off, or remove a tank that has none. The other tanks have
+    /// `CBaseEntity`'s no-op.
+    fn activate(&mut self, cx: &mut Cx) {
+        if K != LASER {
+            return;
+        }
+        if self.get_laser(cx).is_null() {
+            crate::entities::remove(cx.edict);
+            engine().alert(ALERT_TYPE::at_error, "Laser tank with no env_laser!\n");
+        } else {
+            Laser::turn_off_entity(self.laser.get());
         }
     }
 
     fn think(&mut self, cx: &mut Cx) {
         if K == LASER {
-            if self.pending_activate {
-                self.pending_activate = false;
-                // CFuncTankLaser::Activate (0xc428c).
-                if self.get_laser(cx).is_null() {
-                    crate::entities::remove(cx.edict);
-                    engine().alert(ALERT_TYPE::at_error, "Laser tank with no env_laser!\n");
-                    return;
-                }
-                Laser::turn_off_entity(self.laser.get());
-                if !Self::is_active(cx) && !self.controller.is_valid() {
-                    return;
-                }
-            }
             // CFuncTankLaser::Think (0xc4488).
             if self.laser.is_valid() && engine().time() > self.laser_time {
                 Laser::turn_off_entity(self.laser.get());

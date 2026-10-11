@@ -342,11 +342,9 @@ impl Entity for Fade {
 
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
-        // TS spawns it like a brush so spawnflag 8 has a box to test.
-        let v = cx.pev();
-        if v.model != 0 {
-            set_own_model(cx);
-        }
+        // `CFade::Spawn` (0xbd68c) spawns it like a brush so spawnflag 8 has a box to test:
+        // `SET_MODEL` even without a model.
+        set_own_model(cx);
         let v = cx.pev();
         let (mins, maxs, org) = (v.mins, v.maxs, v.origin);
         eng.set_size(cx.edict, mins, maxs);
@@ -849,7 +847,6 @@ pub struct Lightning {
     /// Think modes (SDK SetThink targets).
     mode: BeamThink,
     usable: BeamUse,
-    needs_activate: bool,
     delay: Delay,
 }
 
@@ -859,6 +856,9 @@ enum BeamThink {
     None,
     Damage,
     Strike,
+    /// `SUB_Remove`: `Spawn` without a texture, which sets no `nextthink`, so it only runs if
+    /// the map gave one.
+    Remove,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -1089,10 +1089,11 @@ impl Entity for Lightning {
         true
     }
 
+    /// `CLightning::Spawn` (0xb9580). A server-side beam takes its ends in `Activate`.
     fn spawn(&mut self, cx: &mut Cx) {
         let now = engine().time();
         if self.sprite_name == 0 {
-            remove(cx.edict);
+            self.mode = BeamThink::Remove;
             return;
         }
         cx.pev().solid = SOLID_NOT as i32;
@@ -1103,21 +1104,19 @@ impl Entity for Lightning {
             let v = cx.pev();
             if v.dmg > 0.0 {
                 self.mode = BeamThink::Damage;
+                v.nextthink = now + 0.1;
             }
+            // An unnamed beam leaves `m_active` 0 (only `ToggleUse` reads it).
             if v.targetname != 0 {
                 if v.spawnflags & SF_BEAM_STARTON == 0 {
                     v.effects = EF_NODRAW as i32;
                     self.active = false;
+                    v.nextthink = 0.0;
                 } else {
                     self.active = true;
                 }
                 self.usable = BeamUse::Toggle;
-            } else {
-                self.active = true;
             }
-            // SDK Activate -> BeamUpdateVars once everything has spawned.
-            self.needs_activate = true;
-            cx.pev().nextthink = now + 0.05;
         } else {
             self.active = false;
             let v = cx.pev();
@@ -1160,25 +1159,23 @@ impl Entity for Lightning {
         f.float(&mut self.radius);
     }
 
-    /// `CLightning::Precache` (0xb972c). `ServerActivate` then runs `Activate`
-    /// (`BeamUpdateVars`) for a server-side beam: the port does that at its next think.
+    /// `CLightning::Precache` (0xb972c).
     fn restored(&mut self, cx: &mut Cx) {
         self.precache(cx);
-        self.needs_activate = Self::server_side(cx, self.life);
+    }
+
+    /// `CLightning::Activate` (0xb9778): a server-side beam finds its ends.
+    fn activate(&mut self, cx: &mut Cx) {
+        if Self::server_side(cx, self.life) {
+            self.update_vars(cx);
+        }
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        if self.needs_activate {
-            self.needs_activate = false;
-            self.update_vars(cx);
-            let now = engine().time();
-            let v = cx.pev();
-            v.nextthink = if self.mode == BeamThink::Damage && self.active { now + 0.1 } else { 0.0 };
-            return;
-        }
         match self.mode {
             BeamThink::Damage => self.damage_think(cx),
             BeamThink::Strike => self.strike_think(cx),
+            BeamThink::Remove => sub_remove(cx.edict),
             BeamThink::None => {}
         }
     }
@@ -1238,6 +1235,9 @@ pub struct Laser {
     fire_position: Vec3,
     /// `SetThink(StrikeThink)`, from `Spawn`.
     thinking: bool,
+    /// `SetThink(SUB_Remove)`: `Spawn` without a model, which sets no `nextthink`, so it only
+    /// runs if the map gave one.
+    removing: bool,
 }
 
 impl Laser {
@@ -1323,10 +1323,11 @@ impl Entity for Laser {
         true
     }
 
+    /// `CLaser::Spawn` (0xbb104).
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         if cx.pev().model == 0 {
-            remove(cx.edict);
+            self.removing = true;
             return;
         }
         cx.pev().solid = SOLID_NOT as i32;
@@ -1364,9 +1365,10 @@ impl Entity for Laser {
     /// `CLaser::Save` (0xbb064) / `Restore`: `CBaseEntity`'s part (think `StrikeThink`; `Use` is
     /// virtual), then `"CLaser"`.
     fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
-        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.thinking, ..Default::default() });
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.thinking || self.removing, ..Default::default() });
         if cleared.think {
             self.thinking = false;
+            self.removing = false;
         }
         f.table(&crate::save::tables::CLaser);
         let mut sprite = self.sprite.get();
@@ -1385,6 +1387,10 @@ impl Entity for Laser {
 
     /// `CLaser::StrikeThink` (0xbb75c).
     fn think(&mut self, cx: &mut Cx) {
+        if self.removing {
+            sub_remove(cx.edict);
+            return;
+        }
         if !self.thinking {
             return;
         }
@@ -1437,6 +1443,8 @@ pub struct GibShooter<const ENV: bool> {
     material: i32,
     /// `SetThink(ShootThink)`, from `Use`.
     shooting: bool,
+    /// `SetThink(SUB_Remove)`: a non-repeatable shooter's last gib removes it the next frame.
+    removing: bool,
     usable: bool,
 }
 
@@ -1522,13 +1530,15 @@ impl<const ENV: bool> GibShooter<ENV> {
         }
         self.gibs -= 1;
         if self.gibs <= 0 {
+            // `ShootThink` (0xbc4c4): the next think is now either way, so a non-repeatable
+            // shooter's `SUB_Remove` runs on the next frame.
+            self.shooting = false;
             if cx.pev().spawnflags & SF_GIBSHOOTER_REPEATABLE != 0 {
                 self.gibs = self.capacity;
-                self.shooting = false;
-                cx.pev().nextthink = now;
             } else {
-                remove(cx.edict);
+                self.removing = true;
             }
+            cx.pev().nextthink = now;
         }
     }
 }
@@ -1588,9 +1598,10 @@ impl<const ENV: bool> Entity for GibShooter<ENV> {
     /// `CGibShooter::Save` (0xbc100) / `Restore` (also `CEnvShooter`'s): `CBaseEntity`'s part
     /// (think `ShootThink`; `Use` is virtual), `"CBaseDelay"`, then `"CGibShooter"`.
     fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
-        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.shooting, ..Default::default() });
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.shooting || self.removing, ..Default::default() });
         if cleared.think {
             self.shooting = false;
+            self.removing = false;
         }
         f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
         f.table(&crate::save::tables::CGibShooter);
@@ -1609,13 +1620,17 @@ impl<const ENV: bool> Entity for GibShooter<ENV> {
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        if self.shooting {
+        if self.removing {
+            sub_remove(cx.edict);
+        } else if self.shooting {
             self.shoot_think(cx);
         }
     }
 
+    /// `CGibShooter::Use` (`SetThink(ShootThink)`, which replaces a pending `SUB_Remove`).
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
         self.shooting = true;
+        self.removing = false;
         cx.pev().nextthink = engine().time();
     }
 }
