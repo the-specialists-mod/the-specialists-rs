@@ -163,7 +163,7 @@ The player's save data (`CBasePlayer::m_playerSaveData`) is mapped in `player/sa
 
 ### 4.6 Messages
 
-* `messages::{one, one_unreliable, all, pvs, pas}(Msg, …)` return a `MsgWriter`; call `.byte()`, `.short()`, …, then `.end()`.
+* `messages::{one, one_unreliable, all, pvs, pas}(Msg, …)` return a `MsgWriter`; call `.byte()`, `.short()`, …, then `.end()`. The writer holds the writes until `.end()`, which drops a message that would stop the engine (§10).
 * HUD values are sent from `hud::update_client_data` (TS `CBasePlayer::UpdateClientData`, 0.1 s throttle, InitHUD block included) when they change, like TS's shadow-copy approach; it ends with the gun's own `UpdateClientData` (`weapons::update_client_data`). `fullupdate` and `RemoveAllItems` (`StartObserver`, disconnect) run it inline, as TS does.
 
 ### 4.7 Time scale (slow motion)
@@ -339,6 +339,23 @@ only happen on bad input, which are guarded instead (each implementation doc lis
 
 * the scoreboard overrun (74 writes into a 64-byte array)
 * the always-true objective bounds checks
+
+The port also never crashes, hangs or stops the engine where TS does; it does the least that
+keeps the game running and logs it ("(port guard)"):
+
+* Engine calls the Steam engines answer with `Host_Error`/`Sys_Error` (empty, sentence, late,
+  missing-file or over-limit precaches, unprecached `SET_MODEL`/`MODEL_INDEX`, out-of-range
+  sound parameters, backwards `SET_SIZE`, too-long or mis-sized user messages, `MSG_ONE`/`SET_VIEW`
+  to a non-client) and those every engine stops on (light styles past 63, no free edict, a bad
+  `WRITE_ENTITY`) are checked in `goldsrc` (`guard.rs`) first; on FWGS, which only warns about
+  the former, they are made as TS makes them. The list is in `implementation/integration.md` §6;
+  the respawned `cycler_weapon`'s empty precache is one TS reaches.
+* Entity states the physics stops on (a `SOLID_BSP` entity that isn't a pusher with a brush
+  model, a map `movetype` without a physics case), `Use` chains that recurse back into
+  themselves, and `Q_log2` of a negative number, which never returns in TS:
+  `implementation/stock-entities.md` §7.8.
+* The client's `exit(-1)` on a model with more than 4 attachments
+  (`implementation/client-rendering.md`).
 
 Dead 3.0 features (round-based and objective modes, cash) are implemented only as far as the
 port needs them; `docs/implementation/*.md` records what's live.

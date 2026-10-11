@@ -1,6 +1,7 @@
 //! Server-side engine handle (`enginefuncs_t` + `globalvars_t`) and helpers.
 
 use crate::edict::EdictPtr;
+use crate::guard::{self, Kind};
 use crate::sys::*;
 use crate::util::{cstr, to_cstring};
 use std::ffi::{CStr, c_int};
@@ -117,16 +118,100 @@ impl Engine {
         eng!(pfnAllocString(s.as_ptr()))
     }
 
-    /// The engine keeps the pointer, so the name must be `'static`.
+    /// The engine keeps the pointer, so the name must be `'static`. Guarded (`guard`): on the
+    /// Steam engines a name they would stop the server over returns 0 without the call.
     pub fn precache_model(&self, name: &'static CStr) -> i32 {
-        eng!(pfnPrecacheModel(name.as_ptr()))
+        self.precache(Kind::Model, name, |n| eng!(pfnPrecacheModel(n.as_ptr())))
     }
 
+    /// True on FWGS (Xash3D), which has the `host_ver` cvar; false on the Steam engines.
+    /// FWGS only warns where the Steam engines stop the server, so the guards pass calls through
+    /// there, as TS makes them.
+    pub fn is_xash(&self) -> bool {
+        static XASH: OnceLock<bool> = OnceLock::new();
+        *XASH.get_or_init(|| !self.cvar_string(c"host_ver").is_empty())
+    }
+
+    /// `PRECACHE_*` through the guard: the Steam engines `Host_Error` on a bad name, a sentence
+    /// sound, a new name once the level is active or a full table; the port logs and returns 0
+    /// (FWGS's answer for a bad name) instead.
+    fn precache(&self, kind: Kind, name: &'static CStr, call: impl FnOnce(&'static CStr) -> i32) -> i32 {
+        if self.is_xash() {
+            return call(name);
+        }
+        let decision = guard::with(|s| {
+            let loading = s.loading;
+            let t = s.table(kind);
+            t.decide(kind, name, loading).map(|n| (n, t.find(guard::lookup_name(kind, n)).is_none()))
+        });
+        // A new model is loaded at once with `crash` set (`Mod_ForName`: `Sys_Error` "not found")
+        // and a new event script must exist (`Host_Error` "file missing from server").
+        let decision = decision.and_then(|(n, new)| {
+            let file = guard::lookup_name(kind, n);
+            let missing = new && matches!(kind, Kind::Model | Kind::Event) && self.file_size(file).is_some_and(|size| size < 0);
+            if missing { Err("file not found") } else { Ok(n) }
+        });
+        match decision {
+            Ok(n) => {
+                let i = call(n);
+                guard::with(|s| s.table(kind).record(kind, n, i));
+                i
+            }
+            Err(why) => {
+                let msg = format!("Precache {kind:?} \"{}\": {why}; skipped (port guard)\n", name.to_string_lossy());
+                self.alert(ALERT_TYPE::at_error, &msg);
+                0
+            }
+        }
+    }
+
+    /// `pfnGetFileSize` (`COM_FileSize`): the file's size, -1 when the engine's file system
+    /// can't open it; `None` if the engine has no such slot.
+    pub fn file_size(&self, name: &CStr) -> Option<i32> {
+        // SAFETY: an engine slot from its function table, called with a NUL-terminated name.
+        self.f.pfnGetFileSize.map(|f| unsafe { f(name.as_ptr()) })
+    }
+
+    /// The name to give a Steam engine's `SET_MODEL`/`MODEL_INDEX` for `model`, or `None` when it
+    /// would stop the server ("no precache" / "not precached"): an empty name (model 0), a brush
+    /// model, the world, or a name precached this level (in its precached spelling).
+    fn precached_model<'a>(&self, model: &'a CStr) -> Option<&'a CStr> {
+        let b = model.to_bytes();
+        if b.is_empty() || b[0] == b'*' {
+            return Some(model);
+        }
+        if guard::bad_string(b) {
+            return None;
+        }
+        let map = self.string(self.globals().mapname).to_string_lossy();
+        if b.eq_ignore_ascii_case(format!("maps/{map}.bsp").as_bytes()) {
+            return Some(model);
+        }
+        guard::with(|s| s.models.resolve(model))
+    }
+
+    /// `SET_MODEL`. Guarded on the Steam engines: an unprecached model ("no precache", a
+    /// `Host_Error`) leaves the entity as it was, as FWGS does with a bad name.
     pub fn set_model(&self, e: *mut edict_t, model: &CStr) {
-        eng!(pfnSetModel(e, model.as_ptr()))
+        let name = if self.is_xash() { Some(model) } else { self.precached_model(model) };
+        match name {
+            Some(m) => eng!(pfnSetModel(e, m.as_ptr())),
+            None => {
+                let msg = format!("SET_MODEL \"{}\": not precached; skipped (port guard)\n", model.to_string_lossy());
+                self.alert(ALERT_TYPE::at_error, &msg);
+            }
+        }
     }
 
+    /// `SET_SIZE`. Guarded on the Steam engines: backwards bounds (a `Host_Error`) leave the size
+    /// and only relink, as FWGS does.
     pub fn set_size(&self, e: *mut edict_t, mins: [f32; 3], maxs: [f32; 3]) {
+        if !self.is_xash() && (0..3).any(|i| mins[i] > maxs[i]) {
+            self.alert(ALERT_TYPE::at_error, "SET_SIZE with backwards mins/maxs; skipped (port guard)\n");
+            let org = e.v().origin;
+            self.set_origin(e, org);
+            return;
+        }
         eng!(pfnSetSize(e, mins.as_ptr(), maxs.as_ptr()))
     }
 
@@ -218,25 +303,47 @@ impl Engine {
 
     // ---- sounds, events, precache --------------------------------------------------------------
 
+    /// Guarded like [`Engine::precache_model`].
     pub fn precache_sound(&self, name: &'static CStr) -> i32 {
-        eng!(pfnPrecacheSound(name.as_ptr()))
+        self.precache(Kind::Sound, name, |n| eng!(pfnPrecacheSound(n.as_ptr())))
     }
 
+    /// Guarded like [`Engine::precache_model`].
     pub fn precache_generic(&self, name: &'static CStr) -> i32 {
-        eng!(pfnPrecacheGeneric(name.as_ptr()))
+        self.precache(Kind::Generic, name, |n| eng!(pfnPrecacheGeneric(n.as_ptr())))
     }
 
     /// `pfnPrecacheEvent(1, "events/x.sc")`; the `.sc` file must exist in the mod's events/.
+    /// Guarded like [`Engine::precache_model`].
     pub fn precache_event(&self, name: &'static CStr) -> u16 {
-        eng!(pfnPrecacheEvent(1, name.as_ptr()))
+        self.precache(Kind::Event, name, |n| eng!(pfnPrecacheEvent(1, n.as_ptr())) as i32) as u16
     }
 
+    /// `MODEL_INDEX`. Guarded on the Steam engines: an unprecached model (ReHLDS `Sys_Error`s in
+    /// `SV_ModelIndex`) gives 0, FWGS's answer.
     pub fn model_index(&self, name: &CStr) -> i32 {
-        eng!(pfnModelIndex(name.as_ptr()))
+        let known = if self.is_xash() { Some(name) } else { self.precached_model(name) };
+        match known {
+            Some(n) => eng!(pfnModelIndex(n.as_ptr())),
+            None => {
+                let msg = format!("MODEL_INDEX \"{}\": not precached; 0 (port guard)\n", name.to_string_lossy());
+                self.alert(ALERT_TYPE::at_error, &msg);
+                0
+            }
+        }
     }
 
+    /// `EMIT_SOUND_DYN`. Guarded on the Steam engines: `PF_sound_I` `Sys_Error`s on a volume
+    /// outside 0..1 (0..255 without `REHLDS_FIXES`), an attenuation outside 0..4, a channel
+    /// outside 0..7 or a pitch outside 0..255. The port clamps them, which is what
+    /// `SV_BuildSoundMsg` (and FWGS) does with the values it is then given.
     #[allow(clippy::too_many_arguments)]
     pub fn emit_sound(&self, e: *mut edict_t, channel: i32, sample: &CStr, volume: f32, attn: f32, flags: i32, pitch: i32) {
+        let (mut channel, mut volume, mut attn, mut pitch) = (channel, volume, attn, pitch);
+        if !self.is_xash() {
+            (volume, attn) = (guard::clamp_nan_kept(volume, 1.0), guard::clamp_nan_kept(attn, 4.0));
+            (channel, pitch) = (channel.clamp(0, 7), pitch.clamp(0, 255));
+        }
         eng!(pfnEmitSound(e, channel, sample.as_ptr(), volume, attn, flags, pitch))
     }
 
@@ -268,9 +375,39 @@ impl Engine {
 
     // ---- entities -------------------------------------------------------------------------------
 
+    /// `CREATE_NAMED_ENTITY`. Guarded: null when the engine has no edict to give (every engine
+    /// stops the server in `ED_Alloc` then; see [`Engine::edict_available`]).
     pub fn create_named_entity(&self, classname: &CStr) -> *mut edict_t {
+        if !self.edict_available() {
+            return std::ptr::null_mut();
+        }
         let s = self.alloc_string(classname);
         eng!(pfnCreateNamedEntity(s))
+    }
+
+    /// Whether `ED_Alloc` (ReHLDS) / `SV_AllocEdict` (FWGS) can return an edict now instead of
+    /// stopping the server with "no free edicts": the engine's edict count is below
+    /// `maxEntities` (the last slot was never used: slots are taken in order and start zeroed),
+    /// or a non-client slot is free and reusable (freed in the first 2 s of the level or over
+    /// 0.5 s ago). Logs when not.
+    pub fn edict_available(&self) -> bool {
+        let g = self.globals();
+        let (max, clients, time) = (g.maxEntities, g.maxClients.max(0), g.time);
+        let base = self.entity_of_index(0);
+        if base.is_null() || max <= clients + 1 {
+            return true;
+        }
+        // SAFETY: the engines allocate their edict array for `maxEntities` edicts up front
+        // (ReHLDS `Hunk_AllocName`, FWGS `Mem_Calloc`) and edict 0 is its start, so every index
+        // below `maxEntities` is inside it; only plain fields are read, on the game thread.
+        let edict = |i: i32| unsafe { &*base.add(i as usize) };
+        let last = edict(max - 1);
+        let never_used = last.free == 0 && last.pvPrivateData.is_null() && last.v.classname == 0;
+        if never_used || (clients + 1..max).any(|i| guard::reusable(edict(i).free != 0, edict(i).freetime, time)) {
+            return true;
+        }
+        self.alert(ALERT_TYPE::at_error, &format!("No free edicts (max is {max}); entity not created (port guard)\n"));
+        false
     }
 
     pub fn remove_entity(&self, e: *mut edict_t) {
@@ -311,7 +448,13 @@ impl Engine {
         eng!(pfnRandomLong(lo, hi))
     }
 
+    /// `LIGHT_STYLE`. Guarded: a style outside 0..64 is skipped (FWGS `Host_Error`s past its
+    /// limit; the Steam engines write outside their `lightstyles[64]`).
     pub fn light_style(&self, style: i32, value: &'static CStr) {
+        if !(0..guard::MAX_LIGHTSTYLES).contains(&style) {
+            self.alert(ALERT_TYPE::at_error, &format!("LIGHT_STYLE {style} out of range; skipped (port guard)\n"));
+            return;
+        }
         eng!(pfnLightStyle(style, value.as_ptr()))
     }
 
@@ -400,8 +543,13 @@ impl Engine {
         eng!(pfnAddServerCommand(name.as_ptr(), Some(f)))
     }
 
+    /// Registers a user message; its size is kept for [`MsgWriter::end`]'s check.
     pub fn reg_user_msg(&self, name: &'static CStr, size: i32) -> i32 {
-        eng!(pfnRegUserMsg(name.as_ptr(), size))
+        let id = eng!(pfnRegUserMsg(name.as_ptr(), size));
+        if id != 0 {
+            guard::with(|s| s.user_msgs.insert(id, size));
+        }
+        id
     }
 }
 
@@ -414,50 +562,127 @@ pub fn cvar_value(c: &cvar_t) -> f32 {
 
 // ---- user messages ---------------------------------------------------------------------------------
 
+/// One `WRITE_*` call held by [`MsgWriter`].
+enum Op {
+    Byte(i32),
+    Char(i32),
+    Short(i32),
+    Long(i32),
+    Angle(f32),
+    Coord(f32),
+    Str(std::ffi::CString),
+    Entity(i32),
+}
+
+impl Op {
+    /// Size the Steam engines give the write (`MSG_WriteCoord` and `WRITE_ENTITY` are shorts).
+    fn size(&self) -> usize {
+        match self {
+            Op::Byte(_) | Op::Char(_) | Op::Angle(_) => 1,
+            Op::Short(_) | Op::Coord(_) | Op::Entity(_) => 2,
+            Op::Long(_) => 4,
+            Op::Str(s) => s.as_bytes().len() + 1,
+        }
+    }
+}
+
 /// Builder for `pfnMessageBegin` ... `pfnMessageEnd`. Call `end()` to send.
+///
+/// The writes are held until `end()`, which checks the message first (port guard): one that would
+/// stop the server (a `MSG_ONE` to a non-client or type 0 anywhere; on the Steam engines also a
+/// message too long or of the wrong size for its registration) is dropped and logged, as FWGS
+/// drops it. On the Steam engines a broadcast loses its target entity (a `Sys_Error` there), and
+/// everywhere a `WRITE_ENTITY` number outside the edict range is written as the short it is (FWGS
+/// `Host_Error`s on it).
 #[must_use = "call .end() to send the message"]
-pub struct MsgWriter(());
+pub struct MsgWriter {
+    dest: c_int,
+    msg_type: c_int,
+    origin: Option<[f32; 3]>,
+    ed: *mut edict_t,
+    ops: Vec<Op>,
+}
 
 impl MsgWriter {
     pub fn begin(dest: c_int, msg_type: c_int, origin: Option<[f32; 3]>, ed: *mut edict_t) -> Self {
-        let o = origin.unwrap_or_default();
-        let po = if origin.is_some() { o.as_ptr() } else { std::ptr::null() };
-        eng!(pfnMessageBegin(dest, msg_type, po, ed));
-        MsgWriter(())
+        MsgWriter { dest, msg_type, origin, ed, ops: Vec::new() }
+    }
+    fn op(mut self, op: Op) -> Self {
+        self.ops.push(op);
+        self
     }
     pub fn byte(self, v: i32) -> Self {
-        eng!(pfnWriteByte(v));
-        self
+        self.op(Op::Byte(v))
     }
     pub fn char(self, v: i32) -> Self {
-        eng!(pfnWriteChar(v));
-        self
+        self.op(Op::Char(v))
     }
     pub fn short(self, v: i32) -> Self {
-        eng!(pfnWriteShort(v));
-        self
+        self.op(Op::Short(v))
     }
     pub fn long(self, v: i32) -> Self {
-        eng!(pfnWriteLong(v));
-        self
+        self.op(Op::Long(v))
     }
     pub fn angle(self, v: f32) -> Self {
-        eng!(pfnWriteAngle(v));
-        self
+        self.op(Op::Angle(v))
     }
     pub fn coord(self, v: f32) -> Self {
-        eng!(pfnWriteCoord(v));
-        self
+        self.op(Op::Coord(v))
     }
     pub fn string(self, s: &CStr) -> Self {
-        eng!(pfnWriteString(s.as_ptr()));
-        self
+        self.op(Op::Str(s.to_owned()))
     }
     pub fn entity(self, v: i32) -> Self {
-        eng!(pfnWriteEntity(v));
-        self
+        self.op(Op::Entity(v))
     }
+
+    fn to_one(&self) -> bool {
+        self.dest == MSG_ONE as c_int || self.dest == MSG_ONE_UNRELIABLE as c_int
+    }
+
+    /// Why sending the message would stop the server, if it would.
+    fn error(&self, eng: &Engine) -> Option<String> {
+        if self.msg_type == 0 {
+            return Some("message type 0".into());
+        }
+        if self.to_one() {
+            let n = if self.ed.is_null() { 0 } else { eng.index_of(self.ed) };
+            if n < 1 || n > eng.max_clients() {
+                return Some(format!("MSG_ONE to entity {n}, not a client"));
+            }
+        }
+        if eng.is_xash() {
+            return None;
+        }
+        let user_size = guard::with(|s| s.user_msgs.get(&self.msg_type).copied());
+        guard::message_size_error(user_size, self.ops.iter().map(Op::size).sum())
+    }
+
     pub fn end(self) {
+        let eng = engine();
+        if let Some(why) = self.error(eng) {
+            eng.alert(ALERT_TYPE::at_error, &format!("Message {} dropped: {why} (port guard)\n", self.msg_type));
+            return;
+        }
+        let ed = if !self.to_one() && !eng.is_xash() { std::ptr::null_mut() } else { self.ed };
+        let o = self.origin.unwrap_or_default();
+        let po = if self.origin.is_some() { o.as_ptr() } else { std::ptr::null() };
+        let max_entities = eng.globals().maxEntities;
+        eng!(pfnMessageBegin(self.dest, self.msg_type, po, ed));
+        for op in &self.ops {
+            match *op {
+                Op::Byte(v) => eng!(pfnWriteByte(v)),
+                Op::Char(v) => eng!(pfnWriteChar(v)),
+                Op::Short(v) => eng!(pfnWriteShort(v)),
+                Op::Long(v) => eng!(pfnWriteLong(v)),
+                Op::Angle(v) => eng!(pfnWriteAngle(v)),
+                Op::Coord(v) => eng!(pfnWriteCoord(v)),
+                Op::Str(ref s) => eng!(pfnWriteString(s.as_ptr())),
+                Op::Entity(v) if (0..max_entities).contains(&v) => eng!(pfnWriteEntity(v)),
+                // `WRITE_ENTITY` is `MSG_WriteShort` on every engine; FWGS stops on a bad number.
+                Op::Entity(v) => eng!(pfnWriteShort(v)),
+            }
+        }
         eng!(pfnMessageEnd());
     }
 }

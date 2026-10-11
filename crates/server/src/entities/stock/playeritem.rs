@@ -486,8 +486,10 @@ impl Entity for WeaponCycler {
     }
 
     /// `CWeaponCycler::Spawn` (0xc7c78). Like TS it precaches and sets `STRING(pev->model)` even
-    /// when that is empty, which a copy made by `Respawn` always is (`Create` sets no model): the
-    /// engine decides then (GoldSrc stops with "Bad string", FWGS warns and uses the world).
+    /// when that is empty, which a copy made by `Respawn` always is (`Create` sets no model). FWGS
+    /// warns and uses the world; the Steam engines stop the server on the empty precache ("Bad
+    /// string"), which the port's precache guard (`goldsrc::guard`) skips there, logging it, so
+    /// the copy gets model 0 as it does on FWGS.
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let v = cx.pev();

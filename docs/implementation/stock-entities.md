@@ -278,7 +278,7 @@ The track change that its own train fires reads the train's path through a side 
 | `world_items` | SDK `CWorldItem` (TS 0xcad0c / 0xcad6c) | Key `type`: 42 `item_antidote`, 43 `item_security`, 44 `item_battery`, 45 `item_suit` (created and spawned at its origin and angles, then given its `target`, `targetname` and spawnflags); anything else logs "unable to create world_item %d". Removes itself. |
 | `weaponbox` | SDK `CWeaponBox` (TS 0xf2868..0xf320c) | `models/w_weaponbox.mdl`, toss, trigger, zero size but a ±16 × 0..16 touch box (`SetObjectCollisionBox`). Every key that isn't an entity field is an ammo name (`PackAmmo`; after 32, "WeaponBox too full!"), but TS's `MaxAmmoCarry` (0xf0c0c) knows no ammo (the only `ItemInfoArray` entry, `weapon_tsgun`, names none), so each logs "MaxAmmoCarry() doesn't recognize" and nothing is packed. A living player touching it once it is on the ground hears `items/gunpickup2.wav` and it is removed. |
 | `weapon_tsgun` | **TS** `CTSGun::Spawn` 0x8053c + `CBasePlayerItem` 0xf1698..0xf1d80 | Placed by a map or created by `GiveNamedItem` (`PlayerSpawn`, `game_player_equip`). `models/w_glock18.mdl`, falls (`FallInit`/`FallThink`; `weapondrop1.wav` only with an owner), then a trigger with a ±24 × 0..16 touch box. A living player without a gun takes it (`DefaultTouch`, reaching a player lent by its own call: `player::with_player_now`): `weapons::add_gun` (empty, kung fu, weapon bit 16), `CheckRespawn`, `weapons::switch_to_gun` (holstering an active cycler), `AttachToPlayer`, `items/gunpickup2.wav`, its `target` fires (`delay`/`killtarget` honoured). A player who already holds a gun leaves it lying (a `GiveNamedItem` one at its feet, for anyone else). A `GiveNamedItem` gun is taken in the air, so it keeps its `FallThink` (every 0.1 s, never landing) while held. Under the multiplayer rules and without `SF_NORESPAWN` a hidden copy appears at the same spot and materialises (`suitchargeok1.wav`) 20 s later, or at once with `mp_weaponstay`. The taken entity stays as the player's gun item (`AttachToPlayer`: following, hidden, no model) until `RemoveAllItems` drops it (removed 0.1 s later). |
-| `cycler_weapon` | SDK `CWeaponCycler` (TS 0xc7c78..0xc8840) | The map's `model` as a slidebox with a ±24 × 0..16 touch box. A living player without one takes it (`DefaultTouch`): HL item slot 1, weapon bit 0, `gunpickup2.wav`, `target` fired, then attached like the gun. Under the multiplayer rules and without `SF_NORESPAWN` a copy respawns, which has no model: TS precaches an empty name there (GoldSrc stops with "Bad string", FWGS warns), and so does the port. It is deployed (view model = its model, `m_flNextAttack` 1, weapon anim 0) as `FShouldSwitchWeapon` decides: under the multiplayer rules only with no active item (no TS gun), in single player always, holstering a held gun to kung fu; a gun given later holsters it. `use cycler_weapon` / `use weapon_tsgun` switch between them (`weapons::select_item`). Its attacks never run (TS's `ItemPostFrame` returns for anything but the gun). Dropped with the gun by `RemoveAllItems` (death think, observer, disconnect, `player_weaponstrip`). |
+| `cycler_weapon` | SDK `CWeaponCycler` (TS 0xc7c78..0xc8840) | The map's `model` as a slidebox with a ±24 × 0..16 touch box. A living player without one takes it (`DefaultTouch`): HL item slot 1, weapon bit 0, `gunpickup2.wav`, `target` fired, then attached like the gun. Under the multiplayer rules and without `SF_NORESPAWN` a copy respawns, which has no model: TS precaches an empty name there (GoldSrc stops with "Bad string", FWGS warns and gives the world). The port makes the same calls; on the Steam engines its precache guard skips the empty precache and logs it (§7.8), so the copy has model 0 on every engine. It is deployed (view model = its model, `m_flNextAttack` 1, weapon anim 0) as `FShouldSwitchWeapon` decides: under the multiplayer rules only with no active item (no TS gun), in single player always, holstering a held gun to kung fu; a gun given later holsters it. `use cycler_weapon` / `use weapon_tsgun` switch between them (`weapons::select_item`). Its attacks never run (TS's `ItemPostFrame` returns for anything but the gun). Dropped with the gun by `RemoveAllItems` (death think, observer, disconnect, `player_weaponstrip`). |
 | `game_player_equip` | SDK maprules.cpp (same in TS 0xcd494) | Unknown keys are items (`name#n` stripped, count ≥ 1, max 32), given through `GiveNamedItem` (item spawned at the player's feet with `SF_NORESPAWN`, then touched). Touch (master, not `USEONLY`) / use (no master). TS `PlayerSpawn` touches every one on spawn instead of giving the gun and buying the loadout (`maprules::equip_on_spawn`, called from `weapons::on_spawn` inside the spawn, the player lent to its slot). `weapon_tsgun` is TS's gun entity: a new, empty gun for a player without one, otherwise left lying at its feet. The item touches reach a player whose own +use or spawn is on the stack (`player::with_player_now`), as in TS. |
 | `game_team_master` | TS 0xccae8..0xccd40 | `teamindex` (-1 none), `triggerstate` (0 off, 2 toggle, else on), master. `USE_SET` takes the activator's team (`GetTeamIndex(TeamID)`) or none for a negative value; other uses fire the targets when the activator's team matches (`UTIL_TeamsMatch`: always outside teamplay; `ANYTEAM` with no team), once with flag 1. It is also a master (`IsTriggered` = `TeamMatch`), for spawn points, doors and the rest. |
 | `game_team_set` | TS 0xccd64 | `USE_SET` to its targets with 0, or -1 with `CLEARTEAM` (2); once with flag 1. |
@@ -929,7 +929,9 @@ everywhere) lacked.
   either. Guard: TS writes through the interface out-pointer and reads the studio API without
   NULL checks; the port skips a NULL one.
 * **`Length`**: TS reads the vector without a NULL check; the port returns 0 for NULL.
-  **`Q_log2`** never returns for a negative argument, as in TS. Nothing calls either.
+  **`Q_log2`**: TS's loop never ends for a negative argument (the arithmetic shift stops at -1),
+  which would hang the caller. The port shifts the argument as unsigned: the same answer for
+  every non-negative value, 31 for a negative one (§7.8). Nothing calls either.
 * **`CreateInterface`** (mp.dll 0x10028f70): nothing in mp.dll registers an interface, so it
   always sets `IFACE_FAILED` (when the return-code pointer isn't NULL) and returns NULL.
 
@@ -959,6 +961,28 @@ Where TS goes on through NULL, the port stops instead:
   still set their model), where TS would give the weapon.
 * A ground weapon `Use` with a NULL activator (TS calls `IsPlayer` through NULL): treated as
   not a player.
+
+### 7.8 Guards against TS behaviour that stops the engine
+
+The port never crashes, hangs or stops the server, even where TS does (design §10). Where an
+entity sets up something the engines stop on, the port changes the least it can:
+
+* **`SOLID_BSP` that can't be traced.** Every engine stops the server when a trace meets a
+  `SOLID_BSP` entity that isn't `MOVETYPE_PUSH`/`PUSHSTEP` (ReHLDS `SV_HullForEntity`
+  `Sys_Error`, FWGS `Host_Error`) or has no brush model (`SV_HullForBsp`: "Hit a %s with no
+  model"), e.g. a `func_wall` whose map `model` is a studio model or empty, which TS sets up
+  as given. `pfnSetAbsBox` (`entities::set_object_collision_box`), which runs before each link,
+  makes such an entity `SOLID_BBOX` (its own box) and logs it. An entity changed to that state
+  without being relinked isn't caught.
+* **A map `movetype` the physics has no case for** (`SV_Physics` "bad movetype": anything but
+  0 and 4–13, `MOVETYPE_WALK` included): `EntvarsKeyvalue` stores `MOVETYPE_NONE` instead
+  and logs it. Spawn functions that set their own movetype are unaffected.
+* **Re-entrant `Use` loops** (a `momentary_rot_button` targeting itself, §7.4, or any trigger
+  chain that comes back to an entity) recurse in TS until the stack overflows; the port's
+  dispatch skips an entity already being dispatched (`world.rs`), so every chain ends.
+* **`cycler_weapon` respawn copies** precache an empty model: see the table in §2 and the engine
+  call guards in `integration.md` §6.
+* **`Q_log2`** of a negative number: §7.5.
 
 ## 8. Census script
 

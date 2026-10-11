@@ -167,13 +167,15 @@ pub fn anglemod(a: f32) -> f32 {
 }
 
 /// `Q_log2` (server 0xfbd8c), exported by `ts_i386.so` and called by nothing: the number of
-/// arithmetic right shifts before `val` reaches 0. As in TS, a negative `val` never reaches 0, so
-/// the loop doesn't end.
+/// arithmetic right shifts before `val` reaches 0. In TS a negative `val` never reaches 0 (it
+/// stops at -1), so the loop never ends and hangs the caller. Port guard: the shifts are logical
+/// (`val` read as unsigned), which gives TS's answer for every non-negative `val` and 31, the
+/// shift count of a 32-bit value, for a negative one.
 pub fn q_log2(val: i32) -> i32 {
     let mut answer: i32 = 0;
-    let mut v = val >> 1;
+    let mut v = (val as u32) >> 1;
     while v != 0 {
-        answer = answer.wrapping_add(1);
+        answer += 1;
         v >>= 1;
     }
     answer
@@ -220,6 +222,9 @@ mod tests {
         assert_eq!(q_log2(256), 8);
         assert_eq!(q_log2(511), 8);
         assert_eq!(q_log2(i32::MAX), 30);
+        // TS never returns for these; the port ends (port guard).
+        assert_eq!(q_log2(-1), 31);
+        assert_eq!(q_log2(i32::MIN), 31);
     }
 
     #[test]

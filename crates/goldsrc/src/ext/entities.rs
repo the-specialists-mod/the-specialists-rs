@@ -167,8 +167,12 @@ impl Engine {
         if c.is_null() || self.index_of(c) == 0 { std::ptr::null_mut() } else { c }
     }
 
-    /// `CREATE_ENTITY()`: a fresh edict with no private data and no classname.
+    /// `CREATE_ENTITY()`: a fresh edict with no private data and no classname. Guarded: null
+    /// when the engine has no edict to give ([`Engine::edict_available`]).
     pub fn create_entity(&self) -> *mut edict_t {
+        if !self.edict_available() {
+            return std::ptr::null_mut();
+        }
         eng!(pfnCreateEntity())
     }
 

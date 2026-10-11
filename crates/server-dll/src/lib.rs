@@ -153,7 +153,16 @@ unsafe extern "C" fn game_init() {
 }
 
 unsafe extern "C" fn spawn(e: *mut edict_t) -> c_int {
+    level_start_on_world(e);
     entities::dispatch_spawn(e)
+}
+
+/// The world (edict 0) is spawned or restored first in every level: the engine's precache tables
+/// are empty again and take new names (`goldsrc::guard`).
+fn level_start_on_world(e: *mut edict_t) {
+    if !e.is_null() && engine().index_of(e) == 0 {
+        goldsrc::guard::level_loading();
+    }
 }
 
 unsafe extern "C" fn think(e: *mut edict_t) {
@@ -195,6 +204,7 @@ unsafe extern "C" fn save(e: *mut edict_t, sd: *mut SAVERESTOREDATA) {
 
 /// `DispatchRestore` (TS 0xab128).
 unsafe extern "C" fn restore(e: *mut edict_t, sd: *mut SAVERESTOREDATA, global_entity: c_int) -> c_int {
+    level_start_on_world(e);
     // SAFETY: as in `save`.
     match unsafe { SaveData::from_raw(sd) } {
         Some(mut sd) => save::dispatch_restore(e, &mut sd, global_entity != 0),
@@ -303,10 +313,13 @@ unsafe extern "C" fn client_userinfo_changed(e: *mut edict_t, _: *mut c_char) {
 unsafe extern "C" fn server_activate(_: *mut edict_t, edict_count: c_int, client_max: c_int) {
     rules::server_activate(edict_count, client_max);
     engine().print(&format!("[ts] ServerActivate: {edict_count} edicts, {client_max} max clients\n"));
+    // The engine goes `ss_active` when this returns and refuses new precaches from then on.
+    goldsrc::guard::level_active();
 }
 
 unsafe extern "C" fn server_deactivate() {
     rules::server_deactivate();
+    goldsrc::guard::level_loading();
 }
 
 unsafe extern "C" fn player_pre_think(e: *mut edict_t) {

@@ -30,6 +30,8 @@ pub mod util;
 
 #[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "server")]
+pub mod guard;
 #[cfg(feature = "client")]
 pub mod joystick;
 #[cfg(feature = "client")]
