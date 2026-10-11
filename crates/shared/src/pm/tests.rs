@@ -49,7 +49,7 @@ unsafe extern "C" fn trace(start: *mut f32, end: *mut f32, _flags: i32, _ignore:
     if front_e > WALL_X && front_s <= WALL_X {
         hit((WALL_X - front_s) / (front_e - front_s), [-1.0, 0.0, 0.0]);
     }
-    tr.endpos = ma(s, tr.fraction, sub(e, s));
+    tr.endpos = Gcc::ma(s, tr.fraction, sub(e, s));
     tr
 }
 
@@ -99,6 +99,8 @@ unsafe extern "C" fn info_value(s: *const c_char, key: *const c_char) -> *const 
 struct Fixture {
     p: Box<playermove_t>,
     mv: Box<movevars_s>,
+    /// The build being tested (`ts_i386.so` unless a test says otherwise).
+    arith: Arith,
 }
 
 impl Fixture {
@@ -140,7 +142,7 @@ impl Fixture {
         p.Sys_FloatTime = Some(float_time);
         p.PM_PlaySound = Some(play_sound);
         p.PM_Info_ValueForKey = Some(info_value);
-        Fixture { p, mv }
+        Fixture { p, mv, arith: Arith::Gcc }
     }
 
     fn set_physinfo(&mut self, s: &str) {
@@ -155,7 +157,7 @@ impl Fixture {
         CURRENT.with(|c| c.set(&*self.p));
         for _ in 0..frames {
             self.p.cmd.msec = 10;
-            player_move(&mut self.p);
+            player_move(&mut self.p, self.arith);
         }
     }
 
@@ -462,11 +464,11 @@ fn command_is_not_clamped_for_players() {
     f.p.cmd.msec = 10;
     f.p.movevars = &mut *f.mv;
     CURRENT.with(|c| c.set(&*f.p));
-    player_move(&mut f.p);
+    player_move(&mut f.p, Arith::Gcc);
     assert_eq!(f.p.cmd.forwardmove, 1000.0);
     f.p.iuser1 = 3; // roaming spectator
     f.p.cmd.forwardmove = 1000.0;
-    player_move(&mut f.p);
+    player_move(&mut f.p, Arith::Gcc);
     assert!((f.p.cmd.forwardmove - 320.0).abs() < 1e-3);
 }
 
@@ -496,12 +498,12 @@ fn in_eye_spectator_is_mode_5() {
     f.p.physents[1].angles = [4.0, 90.0, 0.0];
     f.p.iuser1 = crate::ts::obs::IN_EYE;
     f.p.iuser2 = 2;
-    player_move(&mut f.p);
+    player_move(&mut f.p, Arith::Gcc);
     assert_eq!(f.p.origin, [50.0, 60.0, 70.0], "in-eye sits at the target's origin");
     assert_eq!(f.p.angles, [4.0, 90.0, 0.0]);
 
     f.p.iuser1 = crate::ts::obs::CHASE_LOCKED;
-    player_move(&mut f.p);
+    player_move(&mut f.p, Arith::Gcc);
     assert_eq!(f.p.angles, [6.0, 90.0, 0.0], "locked chase pitches to 10 - pitch");
     assert!(f.p.origin[1] < 60.0, "locked chase sits behind the target");
 }
@@ -520,6 +522,46 @@ fn duck_completes_at_590_ms() {
     assert_ne!(f.p.flags & FL_DUCKING as i32, 0);
 }
 
+/// TS's client (and `mp.dll`) runs the same compare at 53-bit precision, where `0.001 * 600`
+/// rounds to the double 0.6: the duck completes at 600 ms, a frame before the Linux server.
+#[test]
+fn msvc_duck_completes_at_600_ms() {
+    let mut f = Fixture::standing();
+    f.arith = Arith::Msvc;
+    f.p.cmd.buttons = IN_DUCK as u16;
+    f.run(40);
+    assert_eq!(f.p.flDuckTime, 610.0);
+    assert_eq!(f.p.flags & FL_DUCKING as i32, 0);
+    f.run(1);
+    assert_eq!(f.p.flDuckTime, 600.0);
+    assert_ne!(f.p.flags & FL_DUCKING as i32, 0, "done at 600 ms");
+}
+
+#[test]
+fn arith_per_side() {
+    assert_eq!(Arith::CLIENT, Arith::Msvc);
+    assert_eq!(Arith::SERVER, if cfg!(windows) { Arith::Msvc } else { Arith::Gcc });
+}
+
+/// MSVC's `_ftol` keeps the low dword of a 64-bit `fistp`; GCC's `fistpl` gives 0x80000000.
+#[test]
+fn int_casts_per_build() {
+    assert_eq!(Num::trunc_i32(-7.9f64), -7);
+    assert_eq!(Num::trunc_i32(4_294_967_301.5f64), 5);
+    assert_eq!(Num::trunc_i32(f64::NAN), 0);
+    assert_eq!(Gcc::xd(4_294_967_301.5).trunc_i32(), i32::MIN);
+    assert_eq!(Gcc::xd(-7.9).trunc_i32(), -7);
+}
+
+/// The two builds share the logic but not the last bits, so the same commands drift apart; the
+/// client's run is pinned like the server's.
+#[test]
+fn msvc_trajectory_is_pinned() {
+    let msvc = trajectory_hash(|p| player_move(p, Arith::Msvc));
+    assert_ne!(msvc, trajectory_hash(|p| player_move(p, Arith::Gcc)));
+    assert_eq!(msvc, 0xb197_b0b5_2fa8_d4e3, "{msvc:#x}");
+}
+
 /// The HLTV locked view (mode 4) takes the stale `PM_CalcRoll` arguments as its angles; the roll
 /// slot is `movevars->rollangle`.
 #[test]
@@ -533,13 +575,13 @@ fn locked_view_reads_stale_calc_roll_args() {
     f.p.physents[1].origin = [50.0, 60.0, 70.0];
     f.p.iuser1 = crate::ts::obs::LOCKED_VIEW;
     f.p.iuser2 = 2;
-    player_move(&mut f.p);
+    player_move(&mut f.p, Arith::Gcc);
     assert_eq!(f.p.angles[2], 2.0);
 }
 
 #[test]
 fn ts_constants_are_the_rounded_roots() {
-    use super::math::xd;
+    let xd = Gcc::xd;
     assert_eq!(ts::JUMP_VELOCITY, xd(56000.0).sqrt().f());
     assert_eq!(ts::WALLCLIMB_VELOCITY, xd(112_000.0).sqrt().f());
     assert_eq!(ts::HIGH_JUMP_VELOCITY, xd(160_000.0).sqrt().f());
@@ -623,4 +665,287 @@ fn ext_matches_x87_hardware() {
             assert_eq!(ours.f().to_bits(), hw_f32(ours.to_bits80()).to_bits(), "fstps of {ours:?}");
         }
     }
+}
+
+/// A long scripted run through most of movement (walking with turning, strafing into the wall,
+/// friction, jumps, ducking, stunt impulses, slow motion, a bouncy low-friction slide, falling,
+/// spectating), hashing every float bit of the state after each command.
+fn trajectory_hash(mv: fn(&mut playermove_t)) -> u64 {
+    let mut f = Fixture::new();
+    f.p.origin = [-37.3, 11.7, 64.25];
+    f.p.player_index = 3;
+    f.mv.rollangle = 2.0;
+    f.mv.rollspeed = 200.0;
+    f.p.movevars = &mut *f.mv;
+    CURRENT.with(|c| c.set(&*f.p));
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut mix = |v: u32| {
+        h ^= v as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    };
+    for i in 0..1500u32 {
+        let t = i as f32;
+        let c = &mut f.p.cmd;
+        c.msec = [10, 7, 13, 16, 9][i as usize % 5];
+        c.viewangles = [((t * 0.37) % 120.0) - 60.0, (t * 1.13) % 360.0, 0.0];
+        c.forwardmove = [320.0, 400.0, -320.0, 0.0, 250.0][(i / 37) as usize % 5];
+        c.sidemove = [0.0, 150.0, -320.0, 0.0][(i / 23) as usize % 4];
+        c.upmove = 0.0;
+        let mut b = 0u16;
+        if i % 97 < 3 || (300..340).contains(&i) {
+            b |= IN_JUMP as u16;
+        }
+        if (150..260).contains(&i) || (600..700).contains(&i) {
+            b |= IN_DUCK as u16;
+        }
+        c.buttons = b;
+        f.p.iuser4 = match i {
+            400 => stunt::GO_DUCK | stunt::DIVING | stunt::DIVE_HIGH,
+            460 => stunt::GO_DUCK | stunt::DIVING | stunt::DIVE_LOW,
+            520 => stunt::GO_DUCK | stunt::WALLJUMPING | stunt::WALLJUMP_IMPULSE,
+            560 => stunt::RECOVER,
+            580 => stunt::PRONE,
+            590 => 0,
+            800 => stunt::SUPERJUMP_GLIDE,
+            900 => 0,
+            _ => f.p.iuser4 & !(stunt::DIVE_IMPULSE_MASK | stunt::WALLJUMP_IMPULSE),
+        };
+        f.p.fuser1 = if (700..800).contains(&i) { 0.37 } else { 1.0 };
+        f.p.friction = if (1000..1100).contains(&i) { 0.3 } else { 1.0 };
+        if i == 1100 {
+            f.p.origin = [10.0, -20.0, 300.0];
+            f.p.velocity = [123.4, -56.7, 89.1];
+        }
+        if i == 1350 {
+            f.p.iuser1 = crate::ts::obs::ROAMING;
+        }
+        mv(&mut f.p);
+        let p = &*f.p;
+        for v in [p.origin, p.velocity, p.view_ofs, p.angles, p.punchangle, p.basevelocity] {
+            v.iter().for_each(|c| mix(c.to_bits()));
+        }
+        mix(p.flDuckTime.to_bits());
+        mix(p.flFallVelocity.to_bits());
+        mix(p.frametime.to_bits());
+        mix(p.flags as u32);
+        mix(p.iuser4 as u32);
+        mix(p.onground as u32);
+        mix(p.usehull as u32);
+        mix(p.flTimeStepSound as u32);
+    }
+    h
+}
+
+/// `ts_i386.so`'s arithmetic, pinned when the movement became generic over the build.
+#[test]
+fn server_trajectory_is_unchanged() {
+    let h = trajectory_hash(|p| player_move(p, Arith::Gcc));
+    assert_eq!(h, 0x3bb0_c84b_4c23_562f, "{h:#x}");
+}
+
+/// Runs `body` with the x87 control word set to `cw`, restoring the old one after.
+#[cfg(target_arch = "x86_64")]
+fn with_x87_cw<T>(cw: u16, body: impl FnOnce() -> T) -> T {
+    use std::arch::asm;
+    let mut old = 0u16;
+    // SAFETY: stores and loads the x87 control word through valid pointers.
+    unsafe { asm!("fnstcw word ptr [{o}]", "fldcw word ptr [{n}]", o = in(reg) &mut old as *mut u16, n = in(reg) &cw as *const u16) };
+    let r = body();
+    // SAFETY: as above.
+    unsafe { asm!("fldcw word ptr [{o}]", o = in(reg) &old as *const u16) };
+    r
+}
+
+/// The premise of `Msvc`: at the precision MSVC's CRT sets (`_PC_53`, control word 0x27f) the
+/// x87's add, sub, mul, div and sqrt round exactly like `f64`, even on operands that are
+/// themselves unrounded results.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn x87_at_53_bits_is_f64() {
+    use std::arch::asm;
+
+    fn hw(a: f64, b: f64, op: u8) -> f64 {
+        let mut o = 0f64;
+        let (pa, pb, po) = (&a as *const f64, &b as *const f64, &mut o as *mut f64);
+        macro_rules! run {
+            ($ins:literal) => {
+                // SAFETY: loads two doubles and stores one; the x87 stack is left empty.
+                unsafe {
+                    asm!(
+                        "fld qword ptr [{b}]", "fld qword ptr [{a}]", $ins, "fstp qword ptr [{o}]", "fstp st(0)",
+                        a = in(reg) pa, b = in(reg) pb, o = in(reg) po,
+                        out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                        out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                    )
+                }
+            };
+        }
+        match op {
+            0 => run!("fadd st, st(1)"),
+            1 => run!("fsub st, st(1)"),
+            2 => run!("fmul st, st(1)"),
+            3 => run!("fdiv st, st(1)"),
+            _ => run!("fsqrt"),
+        }
+        o
+    }
+
+    let mut seed = 0x0fed_cba9_8765_4321u64;
+    let mut rnd = || {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        seed
+    };
+    let mut float = || {
+        let b = rnd();
+        let exp = 100 + (b >> 40) as u32 % 56;
+        f32::from_bits(((b >> 63) as u32) << 31 | exp << 23 | (b as u32 & 0x7f_ffff)) as f64
+    };
+    with_x87_cw(0x27f, || {
+        for i in 0..20_000 {
+            let a = float() * float() + float();
+            let b = if i % 3 == 0 { [0.001, 0.333, 0.8, 0.7, 0.65, 0.3, 1.5][i % 7] } else { float() / float() };
+            for (op, ours) in [a + b, a - b, a * b, a / b, a.abs().sqrt()].into_iter().enumerate() {
+                let src = if op == 4 { a.abs() } else { a };
+                assert_eq!(ours.to_bits(), hw(src, b, op as u8).to_bits(), "op {op} on {a:e} {b:e}");
+            }
+        }
+    });
+}
+
+/// `Msvc::angle_vectors` against client.dll's `AngleVectors` (0x10029bb0) itself: its
+/// instructions, run on the FPU at 53-bit precision. The only gap is `fsin`/`fcos`, which the
+/// port takes from `f64` (the FPU's own results carry 64 bits): it could flip the last bit of a
+/// component, though none of these 180 000 components differ.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn msvc_angle_vectors_match_client_dll() {
+    use std::arch::asm;
+
+    fn hw(angles: Vec3) -> [f32; 9] {
+        let mut out = [0f32; 9];
+        let mut s = [0f32; 6];
+        let k: (f64, f32) = (0.017_453_292_519_943_295, -1.0);
+        // SAFETY: client.dll 0x10029bb0's body with its stack slots moved to `s` (sr, cr, cp, sp,
+        // -, sy) and its constants to `k`; it reads `angles` and writes `out`, and leaves the x87
+        // stack empty.
+        unsafe {
+            asm!(
+                "fld dword ptr [{a}+4]", "fmul qword ptr [{k}]", "fld st(0)", "fsin", "fstp dword ptr [{s}+20]", "fcos",
+                "fld dword ptr [{a}]", "fmul qword ptr [{k}]", "fld st(0)", "fsin", "fstp dword ptr [{s}+12]", "fcos",
+                "fstp dword ptr [{s}+8]",
+                "fld dword ptr [{a}+8]", "fmul qword ptr [{k}]", "fld st(0)", "fsin", "fstp dword ptr [{s}]", "fcos",
+                "fstp dword ptr [{s}+4]",
+                // forward
+                "fld dword ptr [{s}+8]", "fmul st, st(1)", "fstp dword ptr [{o}]",
+                "fld dword ptr [{s}+8]", "fmul dword ptr [{s}+20]", "fstp dword ptr [{o}+4]",
+                "fld dword ptr [{s}+12]", "fchs", "fstp dword ptr [{o}+8]",
+                // right (`.byte 0xde, 0xe9` is Intel's `fsubp st(1), st`: st(1) - st)
+                "fld dword ptr [{s}]", "fmul dword ptr [{s}+12]", "fld dword ptr [{s}+4]", "fmul dword ptr [{s}+20]",
+                "fld st(1)", "fmul st, st(3)", ".byte 0xde, 0xe9", "fstp dword ptr [{o}+12]",
+                "fmul dword ptr [{s}+20]", "fld dword ptr [{s}+4]", "fmul st, st(2)", "faddp st(1), st",
+                "fmul dword ptr [{k}+8]", "fstp dword ptr [{o}+16]",
+                "fld dword ptr [{s}]", "fmul dword ptr [{s}+8]", "fmul dword ptr [{k}+8]", "fstp dword ptr [{o}+20]",
+                // up
+                "fld dword ptr [{s}+4]", "fmul dword ptr [{s}+12]", "fld st(0)", "fmul st, st(2)",
+                "fld dword ptr [{s}]", "fmul dword ptr [{s}+20]", "faddp st(1), st", "fstp dword ptr [{o}+24]",
+                "fmul dword ptr [{s}+20]", "fld dword ptr [{s}]", "fmul st, st(2)", ".byte 0xde, 0xe9",
+                "fstp dword ptr [{o}+28]", "fstp st(0)",
+                "fld dword ptr [{s}+4]", "fmul dword ptr [{s}+8]", "fstp dword ptr [{o}+32]",
+                a = in(reg) angles.as_ptr(), k = in(reg) &k as *const (f64, f32), s = in(reg) s.as_mut_ptr(),
+                o = in(reg) out.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+            )
+        }
+        out
+    }
+
+    let mut seed = 0x5eed_u64;
+    let mut angle = || {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        ((seed >> 40) as f32 / (1u64 << 24) as f32) * 720.0 - 360.0
+    };
+    let (mut n, mut flips) = (0, 0);
+    with_x87_cw(0x27f, || {
+        for _ in 0..20_000 {
+            let a = [angle(), angle(), if n % 4 == 0 { 0.0 } else { angle() }];
+            let (f, r, u) = Msvc::angle_vectors(a);
+            let ours = [f, r, u].concat();
+            for (o, h) in ours.iter().zip(hw(a)) {
+                n += 1;
+                let d = (o.to_bits() as i64 - h.to_bits() as i64).abs();
+                assert!(d <= 1, "{a:?}: {ours:?} vs {:?}", hw(a));
+                flips += d as usize;
+            }
+        }
+    });
+    assert!(flips * 10_000 < n, "{flips} of {n} components off by one ulp");
+}
+
+/// `Pm<Msvc>::friction` against client.dll's `PM_Friction` tail (0x1002ba27..0x1002baa4) run on
+/// the FPU at 53-bit precision: the drop and the scale stay on the stack, and only the x
+/// component uses the unrounded scale.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn msvc_friction_matches_client_dll() {
+    use std::arch::asm;
+
+    /// `[mvfric, pfric, control, frametime, speed, v0, v1, v2]` -> velocity.
+    fn hw(i: [f32; 8]) -> Vec3 {
+        let (mut o, mut ns) = ([0f32; 3], 0f32);
+        let c075 = 0.75f32;
+        // SAFETY: the instructions from client.dll with `pmove` fields and locals moved to `i`, `o`
+        // and `ns`; the x87 stack is left empty.
+        unsafe {
+            asm!(
+                "fld dword ptr [{i}]", "fmul dword ptr [{i}+4]", "fmul dword ptr [{c}]",
+                "fld dword ptr [{i}+8]", "fmul dword ptr [{i}+12]", "fmulp st(1), st",
+                "fsubr dword ptr [{i}+16]", "fdiv dword ptr [{i}+16]", "fst dword ptr [{ns}]",
+                "fmul dword ptr [{i}+20]", "fld dword ptr [{ns}]", "fmul dword ptr [{i}+24]", "fstp dword ptr [{o}+4]",
+                "fld dword ptr [{ns}]", "fmul dword ptr [{i}+28]", "fstp dword ptr [{o}+8]", "fstp dword ptr [{o}]",
+                i = in(reg) i.as_ptr(), c = in(reg) &c075 as *const f32, ns = in(reg) &mut ns as *mut f32,
+                o = in(reg) o.as_mut_ptr(),
+                out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+            )
+        }
+        o
+    }
+
+    let mut f = Fixture::standing();
+    let mut seed = 0xf00d_u64;
+    let mut unit = || {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 40) as f32 / (1u64 << 24) as f32
+    };
+    let mut differs_from_gcc = 0;
+    for _ in 0..20_000 {
+        let v = [unit() * 600.0 - 300.0, unit() * 600.0 - 300.0, 0.0];
+        let (pfric, ft) = (0.2 + unit() * 1.3, 0.001 + unit() * 0.02);
+        let speed = ((v[0] as f64 * v[0] as f64 + v[1] as f64 * v[1] as f64) + 0.0).sqrt() as f32;
+        if speed < 0.1 {
+            continue;
+        }
+        let control = if speed >= f.mv.stopspeed { speed } else { f.mv.stopspeed };
+        if (f.mv.friction * pfric * 0.75 * control * ft) as f64 >= speed as f64 * 0.99 {
+            continue; // stays clear of the clamp to 0, which the tail above leaves out
+        }
+        let run = |f: &mut Fixture, arith: Arith| {
+            f.p.velocity = v;
+            f.p.friction = pfric;
+            f.p.frametime = ft;
+            f.p.movevars = &mut *f.mv;
+            CURRENT.with(|c| c.set(&*f.p));
+            match arith {
+                Arith::Gcc => Pm::<Gcc> { p: &mut f.p, onladder: false, spectator: None, fpu: PhantomData }.friction(),
+                Arith::Msvc => Pm::<Msvc> { p: &mut f.p, onladder: false, spectator: None, fpu: PhantomData }.friction(),
+            }
+            f.p.velocity
+        };
+        let ours = run(&mut f, Arith::Msvc);
+        let dll = with_x87_cw(0x27f, || hw([f.mv.friction, pfric, control, ft, speed, v[0], v[1], v[2]]));
+        assert_eq!(ours.map(f32::to_bits), dll.map(f32::to_bits), "{v:?} pfric {pfric} ft {ft}");
+        differs_from_gcc += (run(&mut f, Arith::Gcc) != dll) as u32;
+    }
+    assert!(differs_from_gcc > 0, "the test should tell the builds apart");
 }

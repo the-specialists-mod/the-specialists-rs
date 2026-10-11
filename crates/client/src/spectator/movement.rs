@@ -111,7 +111,7 @@ fn follow(s: &mut Spectator, pm: &mut playermove_t, runfuncs: bool) {
                     let from = pe.origin;
                     let to = pm.physents[sec].origin;
                     let a = locked_view_angles(v::sub(to, from), s.director_flags);
-                    let cam = shared::pm::chase_origin(pm, a, target);
+                    let cam = shared::pm::chase_origin(pm, shared::pm::Arith::CLIENT, a, target);
                     let blocked = pm.trace_line(cam, to, PM_STUDIO_IGNORE as i32, 2, -1).is_some_and(|tr| tr.fraction != 1.0);
                     if blocked { swing_round(a, s.director_flags) } else { a }
                 }
@@ -129,7 +129,7 @@ fn follow(s: &mut Spectator, pm: &mut playermove_t, runfuncs: bool) {
         }
         _ => pm.angles,
     };
-    let origin = if mode == obs::IN_EYE { pe.origin } else { shared::pm::chase_origin(pm, angles, target) };
+    let origin = if mode == obs::IN_EYE { pe.origin } else { shared::pm::chase_origin(pm, shared::pm::Arith::CLIENT, angles, target) };
     pm.origin = origin;
     pm.angles = angles;
     pm.velocity = [0.0; 3];

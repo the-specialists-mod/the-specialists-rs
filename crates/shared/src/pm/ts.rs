@@ -25,7 +25,7 @@ pub const NO_JUMP_MASK: i32 = GO_DUCK | DIVING | PRONE | FLIP_HIGH | FLIP_LOW | 
 /// Bits that make `PM_Duck` do nothing (the stunt owns the hull).
 pub const NO_DUCK_MASK: i32 = NO_JUMP_MASK | STAND_UP; // 0x30c3c
 
-impl Pm<'_> {
+impl<F: Fpu> Pm<'_, F> {
     /// `TSHandle`: runs after `PM_Ladder`, before the step sound and `PM_Duck`.
     pub(crate) fn ts_handle(&mut self) {
         if self.p.cmd.buttons & IN_JUMP as u16 != 0 && self.p.onground == -1 {
@@ -39,8 +39,14 @@ impl Pm<'_> {
         }
         if self.p.iuser4 & PRONE != 0 {
             c.forwardmove = 0.0;
-            c.sidemove *= 0.3;
-            c.upmove *= 0.3;
+            if F::MSVC {
+                // A `double` 0.3 in client.dll / mp.dll.
+                c.sidemove = (F::x(c.sidemove) * F::xd(0.3)).f();
+                c.upmove = (F::x(c.upmove) * F::xd(0.3)).f();
+            } else {
+                c.sidemove *= 0.3;
+                c.upmove *= 0.3;
+            }
         }
         if self.p.iuser4 & DIVE_IMPULSE_MASK != 0 {
             self.ts_dive();
@@ -72,14 +78,14 @@ impl Pm<'_> {
             (100, 10)
         };
         let mut dir = self.p.velocity;
-        normalize(&mut dir);
+        F::normalize(&mut dir);
         if self.p.iuser4 & WALLDIVE != 0 {
             dir = scale(self.p.forward, 3.0);
         }
-        let ds = Ext::from_i32(divespeed);
-        self.p.velocity[0] = (ds * x(dir[0]) + x(self.p.velocity[0])).f();
-        self.p.velocity[1] = (ds * x(dir[1]) + x(self.p.velocity[1])).f();
-        self.p.velocity[2] = Ext::from_i32(upspeed * 1600).sqrt().f();
+        let ds = F::xi(divespeed);
+        self.p.velocity[0] = (ds * F::x(dir[0]) + F::x(self.p.velocity[0])).f();
+        self.p.velocity[1] = (ds * F::x(dir[1]) + F::x(self.p.velocity[1])).f();
+        self.p.velocity[2] = F::xi(upspeed * 1600).sqrt().f();
         self.p.onground = -1;
         self.p.iuser4 &= !WALLDIVE;
         self.fixup_gravity_velocity();
@@ -164,11 +170,16 @@ impl Pm<'_> {
         let climb = pitch < -30.0;
         let savehull = self.p.usehull;
         self.p.usehull = 2;
-        // One rounding for the eye height and the +40 (TS adds both on the FPU stack).
-        let z = x(self.p.origin[2]) + x(self.p.view_ofs[2]);
-        let z = if climb { z + x(40.0) } else { z };
+        // One rounding for the eye height and the +40 (TS adds both on the FPU stack). MSVC
+        // starts from `fild` of 40 or 0, then adds the view height and the origin.
+        let z = if F::MSVC {
+            F::xi(if climb { 40 } else { 0 }) + F::x(self.p.view_ofs[2]) + F::x(self.p.origin[2])
+        } else {
+            let z = F::x(self.p.origin[2]) + F::x(self.p.view_ofs[2]);
+            if climb { z + F::x(40.0) } else { z }
+        };
         let mut start = [self.p.origin[0], self.p.origin[1], z.f()];
-        let fwd = |i: usize, d: f32, s: f32| (x(self.p.forward[i]) * x(d) + x(s)).f();
+        let fwd = |i: usize, d: f32, s: f32| (F::x(self.p.forward[i]) * F::x(d) + F::x(s)).f();
         let end = [fwd(0, 64.0, start[0]), fwd(1, 64.0, start[1]), start[2]];
         let tr = self.trace(start, end);
         if eq87(tr.fraction, 1.0) {
@@ -176,9 +187,9 @@ impl Pm<'_> {
             let end = [fwd(0, 32.0, start[0]), fwd(1, 32.0, start[1]), start[2]];
             self.p.usehull = 2;
             let tr = self.trace(start, end);
-            if !eq87(tr.fraction, 1.0) && x(length(self.p.velocity)) < xd(0.5) * x(self.p.maxspeed) {
+            if !eq87(tr.fraction, 1.0) && F::length(self.p.velocity) < F::xd(0.5) * F::x(self.p.maxspeed) {
                 self.p.onground = -1;
-                self.p.velocity[2] = (x(16.0) * x(self.p.frametime) * xd(100.0) + x(self.p.velocity[2])).f();
+                self.p.velocity[2] = (F::x(16.0) * F::x(self.p.frametime) * F::xd(100.0) + F::x(self.p.velocity[2])).f();
                 self.fixup_gravity_velocity();
             }
         }

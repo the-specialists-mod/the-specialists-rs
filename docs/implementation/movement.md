@@ -7,7 +7,7 @@ Work package `movement`. Sources of truth: decomp `docs/server/player-movement.m
 
 | Area | Files |
 |---|---|
-| Shared player movement (server `PM_Move` and client prediction) | `crates/shared/src/pm/` (`mod.rs` core, `ts.rs` TS hooks, `sound.rs` footsteps, `textures.rs` materials, `math.rs`, `tests.rs`) |
+| Shared player movement (server `PM_Move` and client prediction) | `crates/shared/src/pm/` (`mod.rs` core, `ts.rs` TS hooks, `sound.rs` footsteps, `textures.rs` materials, `math.rs` mathlib, `fpu.rs` the two builds' arithmetic, `ext.rs` x87 extended precision, `tests.rs`) |
 | Server stunts (`CTSStunt`) and the stunt parts of `CBasePlayer` | `crates/server/src/stunt/mod.rs` (state, hooks, helpers), `moves.rs` |
 | Player animation (`CTSAnimation`) | `crates/server/src/stunt/anim.rs` |
 | Studio header access (`LookupSequence`, sequence info) | `crates/goldsrc/src/ext/movement.rs` |
@@ -26,17 +26,79 @@ The cost is TS's: one-shot impulses reach client prediction one round trip late.
 one implementation for both libraries. Global C state (`OldrotArray`, stuck tables, texture
 table, `iSkipStep`) is per library, as in C.
 
-**Floating point is TS's server arithmetic, bit for bit.** `ts_i386.so` (GCC 2.95, x87) evaluates
-each expression in extended precision (64-bit significand) and rounds to `float` only where it
-stores: `float` locals (the build spills every one to memory), `pmove` fields, `float`
-arguments. Double constants (`0.001`, `0.333`, `0.8`, `0.65`, `0.7`, `0.1`, ...) stay doubles;
-`(int)` casts truncate. `pm/ext.rs` implements that arithmetic in software (`Ext`, checked
-against the FPU itself by `ext_matches_x87_hardware`), and every function was redone from the
-machine code: the operation order, which intermediates are rounded, and how each comparison
-treats a NaN (`math::eq87` for the `test $0x40` equality tests). `f64` isn't enough: it rounds
-twice, and the cases where that matters come up in play, e.g. `0.001 * 600 <= 0.6` (`PM_Duck`)
-is false in extended precision and true in `f64`, so with 10 ms frames the duck completes at
-590 ms, not 600.
+**Floating point is each TS build's, bit for bit.** TS compiled `pm_shared.c` twice, and the
+two builds disagree in the last bits, so the port carries both (`pm/fpu.rs`): `Pm<F>` is generic
+over the build, every function names its operations in machine-code order (`F::x` a `float`
+operand, `F::xd` a `double`, `F::xi` an `fild`, `.f()` the `fstp dword`) and branches on
+`F::MSVC` where the two machine codes differ. Both copies are monomorphised; the caller picks
+one with `shared::pm::Arith`:
+
+| Side | TS binary it stands in for | `Arith` |
+|---|---|---|
+| Server, Linux (and any non-Windows build) | `ts_i386.so` | `Arith::SERVER` = `Gcc` |
+| Server, Windows | `mp.dll` | `Arith::SERVER` = `Msvc` |
+| Client prediction (`HUD_PlayerMove`), every platform | `client.dll` (TS's only client) | `Arith::CLIENT` = `Msvc` |
+
+* **`ts_i386.so` (`Gcc`)**, GCC 2.95, evaluates each expression on the x87 in extended
+  precision (64-bit significand; Linux leaves the FPU at that) and rounds to `float` only where
+  it stores: `float` locals (the build spills every one to memory), `pmove` fields, `float`
+  arguments. Double constants (`0.001`, `0.333`, `0.8`, `0.65`, `0.7`, `0.1`, ...) stay doubles;
+  `(int)` casts truncate. `pm/ext.rs` implements that arithmetic in software (`Ext`, checked
+  against the FPU itself by `ext_matches_x87_hardware`). `f64` isn't enough: it rounds twice, and
+  the cases where that matters come up in play, e.g. `0.001 * 600 <= 0.6` (`PM_Duck`) is false in
+  extended precision, so with 10 ms frames the server's duck completes at 590 ms.
+* **`client.dll` and `mp.dll` (`Msvc`)**, MSVC 6, also use the x87, but at **53-bit precision**:
+  each DLL's CRT calls `_controlfp(_PC_53, _MCW_PC)` when it loads (`_fpmath`: client
+  0x1006accc → 0x1006d7c7, mp.dll 0x1007d2c0 → 0x1007ea5a), and nothing changes it afterwards: TS
+  only switches the control word inside CRT math helpers that restore it, Steam's `hw.dll` and
+  `swds.dll` only push 64-bit precision around `QueryPerformanceCounter` in `Sys_FloatTime`
+  (Quake's `Sys_HighFPPrecision`/`Sys_LowFPPrecision` are in `hw.dll` with no callers), and FWGS
+  never touches it. At 53 bits each add, sub, mul, div and sqrt rounds exactly like an IEEE
+  `double` (`x87_at_53_bits_is_f64` checks it on the FPU), so the client runs on native `f64`.
+  The duck test above is true there: TS's client finishes the duck at 600 ms, a frame before
+  its Linux server. MSVC also keeps `float` locals on the FPU stack across statements (both
+  `Length` and `VectorNormalize` return the root unrounded), reassociates products, sums most
+  `DotProduct`s from z down, uses `float` constants in places, and its compares send a NaN the
+  other way in many tests.
+* **`mp.dll` is `client.dll`'s code.** Every movement function in the two DLLs is the same
+  instruction sequence (addresses aside) except `PM_PlayerMove` (the client clears three
+  spectator-camera globals; the floating point is the same), `PM_Move` (the client caches
+  `physents[0].model`) and `PM_SpectatorMove` (the client's is its own; its roaming part is
+  mp.dll's, instruction for instruction). So the Windows server build follows `mp.dll`, where
+  an original TS client agrees with it, and the Linux build follows `ts_i386.so`, as TS's own
+  Linux server did.
+
+The MSVC differences, function by function (client address; `mp.dll` is the same):
+
+| Function | What `Msvc` does differently from `Gcc` |
+|---|---|
+| `AngleVectors` 0x10029bb0 | radians not rounded before `fsin`/`fcos`; `cos(yaw)` stays on the stack (64-bit) for every product that uses it; `right`/`up` factored as `cr*sy - (sr*sp)*cy`, `((sr*sp)*sy + cr*cy) * -1`, `(cr*sp)*cy + sr*sy`, `(cr*sp)*sy - sr*cy` |
+| `Length` 0x10058390, `VectorNormalize` 0x10029e40 | root returned unrounded; `VectorNormalize` skips a NaN length |
+| `PM_ClipVelocity` 0x1002b190 | dot summed y, z, x; the ±0.1 test reads the stored component |
+| `PM_CalcRoll` 0x1002e120 | dot summed z, y, x; `side` stored before `fabs` |
+| `PM_DropPunchAngle` 0x1002e1c0 | unrounded length; `× fuser1` before `× frametime`; clamp on the unrounded result (NaN and -0 become +0) |
+| `PM_Accelerate` 0x1002b830 | dot z, y, x; `((pmove->friction × frametime) × wishspeed) × accel` kept unrounded (the speed factor multiplies the stored copy); velocity stepped with the unrounded value |
+| `PM_AirAccelerate` 0x1002bab0 | dot z, y, x; same product order; clamped to the stored add speed |
+| `PM_Friction` 0x1002b910 | drop `(friction × pmove->friction × 0.75) × (control × frametime)` not stored; scale stored after the x component used it; NaN speed clamps to 0 |
+| `PM_FlyMove` 0x1002b310 | dots z, x, y and z, y, x; `fraction > 0` ordered; `friction != 1` as an integer compare |
+| `PM_WalkMove` 0x10053fd0 | `Length` < 1 unrounded; NaN step distances keep the down move |
+| `PM_WaterMove` 0x1002bb70 | lengths unrounded; `(mvfric × pfric × frametime) × speed` and `accel × pfric × frametime × wishspeed`; `wishvel[2] - 60` from the stored value |
+| `PM_CheckWater` 0x1002bfe0 | half height added without storing |
+| `PM_CheckStuck` 0x1002c340 | `Sys_FloatTime()` compared as a double, stored after |
+| `PM_SpectatorMove` mp 0x10038d20 (client roaming 0x1002cd6b) | speeds and friction unrounded, `friction × (control × frametime)`, dot z, y, x, clamp to the stored add speed, `wishvel[2]` reloaded before `+ upmove` |
+| `PM_NoClip` 0x1002daf0 | `wishvel[2]` reloaded before `+ upmove` |
+| `PM_LadderMove` 0x1002d1b0 | dot z, y, x |
+| `PM_PreventMegaBunnyJumping` 0x1002dba0 | `maxspeed × 1.7` tested unrounded; divides by the unrounded speed |
+| `PseudoClimb` 0x10052fd0 | eye height `fild(40 or 0) + view_ofs + origin`; speed test unrounded |
+| `TSHandle` 0x10053660 | prone ×0.3 with a `double` 0.3 |
+| `PM_PlayStepSound` 0x1002a3a0 / `PM_UpdateStepSound` 0x1002aca0 | speed tests on the unrounded `Length`; `_ftol` keeps the low dword of a 64-bit `fistp` |
+| NaN-only compare directions | `PM_PlayerMove` water-jump cancel, `PM_CheckParamters` (maxspeed clamp, glide gravity), `PM_CheckVelocity` (too low), `PM_Jump`, `PM_WaterJump`, `PM_CheckWaterJump`, `PM_PushEntity`, `PM_Physics_Toss` (`VectorCompare` counts NaN as equal), `PM_UpdateStepSound` |
+
+The rest (`CrossProduct`, `VectorMA`, `VectorScale`, `PM_SplineFraction`, the gravity functions,
+`PM_ReduceTimers`, `PM_GetAccelBySpeed`, `PM_CatagorizePosition`, `PM_Duck`, `PM_UnDuck`,
+`PM_FixPlayerCrouchStuck`, `PM_CheckFalling`, `PM_CreateStuckTable`, `TSDive`, `TSWallJump`,
+`TSWallJumpClimb`, `TSGoDuck`, `TSStandUp`, `GetChaseOrigin`, `PM_CatagorizeTextureType`) computes
+the same as the GCC build once the stack is 53 bits wide.
 
 ## Implemented functions
 
@@ -45,7 +107,7 @@ is false in extended precision and true in `f64`, so with 10 ms frames the duck 
 | TS function | Address | Rust |
 |---|---|---|
 | `PM_Move` | 0x101188 | `pm::player_move` (sets `FL_ONGROUND`, SP friction reset) |
-| `PM_PlayerMove` | 0x1008d8 | `Pm::player_move`, `Pm::walk_physics` |
+| `PM_PlayerMove` | 0x1008d8 | `Pm::player_move`, `Pm::walk_physics` (an unknown movetype prints TS's "Bogus pmove player movetype" developer message) |
 | `PM_Init` / `PM_CreateStuckTable` / `PM_InitTextureTypes` | 0x101280 / 0x100d74 / 0xfc050 | `pm::init`, `create_stuck_table`, `textures::load` |
 | `PM_FindTextureType` / `PM_SortTextures` | 0xfc28c / 0xfbfc8 | `pm::find_texture_type`, `textures::find`, `textures::parse` |
 | `PM_CheckParamters` | 0xf9c94 | `Pm::check_parameters` |
@@ -140,14 +202,19 @@ is false in extended precision and true in `f64`, so with 10 ms frames the duck 
 
 ## Deviations from TS 3.0
 
-* **Client-side arithmetic.** `shared::pm` reproduces the server build (`ts_i386.so`) on both
-  sides. TS's own `client.dll` copy is MSVC code with different spill points and, under engines
-  that leave the Windows default, 53-bit FPU precision, so the original TS client and server
-  already disagree in the last bits; the port's client predicts like the TS server. TS's Windows
-  server (`mp.dll`, also MSVC) wasn't compared. The emulation assumes the FPU runs at 64-bit
-  precision, round to nearest, which is the Linux default and nothing in the server changes;
-  `fsin`/`fcos` go through `f64` (TS rounds both to `float` at once), and the exponent range is
-  unbounded, which only matters beyond ±1e4900.
+* **Limits of the floating-point emulation.** `Gcc` assumes the FPU at 64-bit precision, round
+  to nearest (the Linux default; nothing in the server changes it), `Msvc` the 53 bits the MSVC
+  CRT sets (see Design). `fsin`/`fcos` go through `f64`: GCC rounds both to `float` at once, but
+  MSVC's `AngleVectors` multiplies by the 64-bit `fcos(yaw)`, where `f64` carries 53 bits, so a
+  component can in principle land one `float` ulp away (`msvc_angle_vectors_match_client_dll`
+  runs client.dll's instructions on the FPU: none of 180 000 components differ). `Ext`'s
+  exponent range is unbounded (matters beyond ±1e4900), and `f64`'s is narrower than the x87's
+  (beyond ±1e308); movement never gets near either. MSVC copies many floats with `fld`/`fstp`,
+  which quiets a signalling NaN; the port copies bits.
+* **Original TS client against the Linux server.** The port's client predicts like TS's client
+  (`Msvc`), so against a Linux server (the port's or TS's) it mispredicts in the last bits
+  exactly as TS's own client did, e.g. a duck finishes a frame early. Against a Windows server
+  both sides agree.
 * **Spectator locked view (`iuser1 == 4`).** TS reads three stack slots it never writes as the
   camera angles: the outgoing arguments `PM_CheckParamters` last pushed (`PM_CalcRoll`'s
   `v_angle` pointer, `pmove->velocity` pointer and `rollangle`, or only the
@@ -182,6 +249,16 @@ is false in extended precision and true in `f64`, so with 10 ms frames the duck 
 * **Super-jump roll landing** also sets `m_flNextAttack = 0.75` (weapons timer): not applied.
 * `SetPlayerGravity` (temp gravity timer, pl+0x4ec), `InterpolateSlowMotion`, power-ups,
   `GoSlow` (rules).
+* **The client's own `PM_SpectatorMove` (0x1002c790) outside roaming** lives in
+  `crates/client/src/spectator/` and still computes in `f32` with Rust's compares. Against
+  client.dll: the locked view's blocked test is `fraction != 1.0` where TS uses `eq87`
+  (`movement.rs`, asm 0x1002ca94); `VectorAngles` (0x10029e90) takes `fpatan`'s result
+  unrounded into `× 57.29577951308232` (a `double`) and tests `eq87`, where `render.rs`'s
+  `vector_angles` rounds each step to `f32`; `InterpolateAngles` (0x10029cf0) keeps the
+  difference unrounded and tests `-180` with C0, and `NormalizeAngles` (0x10029cb0) is
+  `a > 180 ? a - 360 : a < -180 ? a + 360 : a` in doubles with no `%` (`spectator/mod.rs`
+  `interpolate_angles`, `render.rs` `norm_angle`). Its `GetChaseOrigin` and roaming part already
+  use `Msvc` through `shared::pm`.
 
 ## Tests
 
@@ -193,10 +270,18 @@ is false in extended precision and true in `f64`, so with 10 ms frames the duck 
   (all three, bits consumed, duck hull), wall dive, wall jump/climb, stunt jump lockout without
   latching, **duck view 16** (transition, hull, origin, unduck), super jump needs `mj`, glide
   gravity, `DEAD_LOCK` yaw cache, cmd clamp only for spectators, stuck table layout,
-  **duck completes at 590 ms** (extended-precision compare), locked-view stale angles, jump
+  **duck completes at 590 ms** (extended-precision compare) on the server build and **600 ms**
+  on the client build, locked-view stale angles, jump
   constants as rounded roots; the software extended precision against the x87 FPU (100 000
-  random operations and `fstps`) and against `f32` for single operations; the `TEXTURETYPE`
-  table (unsorted, first match); plus
+  random operations and `fstps`) and against `f32` for single operations; **the 53-bit x87
+  against `f64`** (`x87_at_53_bits_is_f64`, 100 000 operations at control word 0x27f);
+  **client.dll's own instructions on the FPU** against `Pm<Msvc>`: `AngleVectors` (180 000
+  components, all equal) and the `PM_Friction` tail (20 000 velocities, all equal, some of them
+  different from the GCC build); `_ftol` vs `fistpl` casts; a 1 500-command scripted run
+  (walk, turn, strafe into a wall, jumps, ducks, dives, wall jump, prone, slow motion, low
+  friction, glide, falling, roaming spectator) hashed for each build, so neither drifts
+  (`server_trajectory_is_unchanged` was taken before the movement became generic); the
+  `TEXTURETYPE` table (unsorted, first match); plus
   texture-table parsing/sorting/lookup, `AngleVectors`, and message decoders.
   `cargo test -p goldsrc --features server`: studio header lookup on a synthetic header.
 * Builds: `cargo build -p ts-server -p ts-client` (native), `--target i686-unknown-linux-gnu`,

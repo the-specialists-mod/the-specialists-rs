@@ -399,13 +399,13 @@ impl PartialOrd for Ext {
 }
 
 /// `flds`: a `float` operand.
-#[inline]
+#[cfg(test)]
 pub fn x(v: f32) -> Ext {
     Ext::from_f32(v)
 }
 
 /// `fldl`: a `double` constant.
-#[inline]
+#[cfg(test)]
 pub fn xd(v: f64) -> Ext {
     Ext::from_f64(v)
 }

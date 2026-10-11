@@ -203,7 +203,7 @@ renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::st
 
 ## 7. Shared crate
 
-* `pm`: TS player movement, an exact port of the server's `pm_shared` with the TS changes (decomp `server/player-movement.md` §1). The client's copy in `client.dll` is identical apart from `PM_SpectatorMove` (HLTV camera additions, see `docs/implementation/client-rendering.md`), so one implementation serves both sides.
+* `pm`: TS player movement, an exact port of the server's `pm_shared` with the TS changes (decomp `server/player-movement.md` §1). The client's copy in `client.dll` (and `mp.dll`'s) has the same logic apart from `PM_SpectatorMove` (HLTV camera additions, see `docs/implementation/client-rendering.md`), so one implementation serves both sides. The floating point differs, though: `ts_i386.so` is GCC at x87 extended precision, `client.dll`/`mp.dll` are MSVC at 53 bits with other rounding points, so the code is generic over the build (`pm::Arith`): the server uses `Arith::SERVER` (`mp.dll`'s on Windows, `ts_i386.so`'s elsewhere) and client prediction `Arith::CLIENT` (`client.dll`'s). See `docs/implementation/movement.md`.
 * `weapons`: `tables()` parses the embedded TOML once. The predicted gun state machine (fire modes, timers × `fuser1`, spread penalty, seeded pellets) goes here.
 * `protocol`: the message table and per-area payload encoders and decoders.
 * `ts`: stunt bits, power-up bits, observer modes (TS numbering: in-eye is 5), `IN_ALT1`, the slot/speed formula.

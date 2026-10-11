@@ -258,7 +258,7 @@ unsafe extern "C" fn sys_error(msg: *const c_char) {
 
 unsafe extern "C" fn pm_move(pm: *mut playermove_t, _server: qboolean) {
     // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    shared::pm::player_move(unsafe { &mut *pm });
+    shared::pm::player_move(unsafe { &mut *pm }, shared::pm::Arith::SERVER);
 }
 
 unsafe extern "C" fn pm_init(pm: *mut playermove_t) {
