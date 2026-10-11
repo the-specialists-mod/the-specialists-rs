@@ -33,8 +33,8 @@ impl MotionBlur {
 
     /// `MotionBlur_Add` (`0x10029680`, from `TSMBlur` `0x1004bf90`): start a trail on `ent`, or
     /// lengthen a running one by 5 ghosts. The level is capped by `cl_fx`: 1 -> 10 ghosts,
-    /// 2 -> 15, anything else 5.
-    pub fn add(&mut self, ent: usize, level: u8, cl_motionblur: f32, cl_fx: f32, now: f64) {
+    /// 2 -> 15, anything else 5. `now` is `gHUD.m_flTime` (`0x100cf944`).
+    pub fn add(&mut self, ent: usize, level: u8, cl_motionblur: f32, cl_fx: f32, now: f32) {
         if cl_motionblur as i32 == 0 {
             return;
         }
@@ -44,33 +44,36 @@ impl MotionBlur {
             t.max += 5;
             return;
         }
-        let lvl = (level as f32).min(cl_fx) as i32;
+        // The handler sign-extends the level byte (`movsx edx, al` at `0x1004bfaf`).
+        let lvl = (level as i8 as f32).min(cl_fx) as i32;
         t.max = match lvl {
             1 => 10,
             2 => 15,
             _ => 5,
         };
-        t.next = now;
+        t.next = now as f64;
         t.active = true;
         t.count = 0;
     }
 
-    /// The scheduling half of `MotionBlur_Update` (`0x10029780`): the entities due a ghost now.
-    /// Trails stop as soon as the game is back to (nearly) normal speed.
-    pub fn due(&mut self, cl_motionblur: f32, ts: f32, now: f64) -> Vec<usize> {
+    /// The scheduling half of `MotionBlur_Update` (`0x10029780`): the entities due a ghost now
+    /// (`gHUD.m_flTime`; the stored double is compared as a float). Trails stop as soon as the
+    /// game is back to (nearly) normal speed.
+    pub fn due(&mut self, cl_motionblur: f32, ts: f32, now: f32) -> Vec<usize> {
         if cl_motionblur as i32 == 0 {
             return Vec::new();
         }
         let mut out = Vec::new();
         for (i, t) in self.trails.iter_mut().enumerate() {
-            if !t.active || t.next > now {
+            if !t.active || t.next as f32 > now {
                 continue;
             }
             if ts > 0.99 {
                 t.active = false;
                 continue;
             }
-            t.next = now + (0.03 / ts.max(0.01)) as f64;
+            // `0x10056fa0`: 0.03 * (1 / max(ts, 0.01))
+            t.next = (0.03 * (1.0 / ts.max(0.01)) + now) as f64;
             out.push(i);
         }
         out
@@ -160,6 +163,8 @@ mod tests {
         m.add(6, 1, 0.0, 2.0, 0.0);
         assert!(!m.trails[6].active, "cl_motionblur 0");
         m.add(32, 1, 1.0, 1.0, 0.0); // out of the table: ignored
+        m.add(7, 200, 1.0, 2.0, 0.0); // the level byte is signed: -56 -> 5 ghosts
+        assert_eq!(m.trails[7].max, 5);
     }
 
     #[test]

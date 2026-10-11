@@ -10,6 +10,8 @@
 //!   yaw between the upper-body and gait roots, so the torso keeps aiming while the legs run.
 //! * `StudioEstimateGait` (`0x10031fa0`): 2-D speed; gait movement x0.75 below 180 units/s.
 //! * `StudioProcessGait` (`0x10032250`): the fps-driven gait advance is scaled by `curstate.framerate`.
+//! * `StudioDrawModel` (`0x10031ae0`) slows the view model's animation with the time scale and
+//!   the local power-ups ([`Renderer::latch_view_model_rate`]).
 //! * renderfx 17 (`kRenderFxDeadPlayer`) is redefined (`StudioDrawModel` `0x10031ae0`):
 //!   `rendercolor.r` is the player, `rendercolor.b == 1` marks a motion-blur ghost
 //!   (`StudioDrawGhostPlayer` `0x100337f0`), anything else a corpse (`StudioDrawDeadPlayer`
@@ -89,6 +91,12 @@ struct Renderer {
     cached: Vec<CachedBone>,
     draw_entities: Cvar,
     motionblur: Cvar,
+    /// The view model's slowed framerate (`g_vmFramerate` `0x10094cf0`, initially 1) and the frame
+    /// count and `latched.prevframe` of the last view-model draw that computed it (`0x100eae6c`,
+    /// `0x100eae70`).
+    vm_framerate: f32,
+    vm_frame_count: i32,
+    vm_prevframe: f32,
 }
 
 impl Default for Renderer {
@@ -113,6 +121,9 @@ impl Default for Renderer {
             cached: Vec::new(),
             draw_entities: Cvar::NULL,
             motionblur: Cvar::NULL,
+            vm_framerate: 1.0,
+            vm_frame_count: 0,
+            vm_prevframe: 0.0,
         }
     }
 }
@@ -151,14 +162,35 @@ fn time_scale() -> f32 {
     state::with(|s| s.time_scale)
 }
 
-/// Torso controller value for a yaw offset: `((yaw / 4) + 30) / (60 / 255)`, truncated to a byte.
+/// Torso controller value for a yaw offset: `(yaw * 0.25 + 30) * 4.25` (the x87 code's doubles),
+/// truncated to a byte.
 fn torso_controller(yaw: f32) -> u8 {
-    (((yaw / 4.0 + 30.0) as f64 * (255.0 / 60.0)) as i32) as u8
+    ((yaw as f64 * 0.25 + 30.0) * 4.25) as i32 as u8
 }
 
-/// `x - (int)(x / 360) * 360`.
+/// `x - (int)(x * (1 / 360.f)) * 360`.
 fn wrap360(x: f32) -> f32 {
-    x - ((x / 360.0) as i32 * 360) as f32
+    x - ((x * (1.0f32 / 360.0)) as i32 * 360) as f32
+}
+
+/// The view model's animation rate in slow motion (`StudioDrawModel` `0x10031b44..0x10031bf4`):
+/// the time scale, x3.5556 with slow-pause (8), x1.71429 with slow-motion (1), x1.5 with double
+/// fire rate (0x10). `None` (rate left alone) at normal speed without double fire rate.
+fn view_model_rate(powerups: i32, ts: f32) -> Option<f32> {
+    if powerups & 0x10 == 0 && (0.999..=1.001).contains(&ts) {
+        return None;
+    }
+    let mut r = ts;
+    if powerups & 8 != 0 {
+        r *= f32::from_bits(0x4063_8e3a); // 3.5555558 (0x1007d694)
+    }
+    if powerups & 1 != 0 {
+        r *= f32::from_bits(0x3fdb_6db8); // 1.7142859 (0x1007d690)
+    }
+    if powerups & 0x10 != 0 {
+        r *= 1.5;
+    }
+    Some(r)
 }
 
 impl Renderer {
@@ -222,8 +254,11 @@ impl Renderer {
     fn draw_model(&mut self, flags: i32) -> bool {
         let Some(ent) = self.begin() else { return false };
         self.pinfo = None;
-        // TS also rescales the view model's framerate here (slow motion); `view` does that once per
-        // frame instead (`view::view_model_framerate`).
+        if let Some(rate) = view_model_rate(state::with(|s| s.powerups), time_scale())
+            && es::is_view_model(ent)
+        {
+            self.latch_view_model_rate(ent.get(), rate);
+        }
         let e = ent.get();
         if e.curstate.renderfx == kRenderFxDeadPlayer as i32 {
             return if e.curstate.rendercolor.b != 1 { self.draw_corpse(flags) } else { self.draw_ghost(flags) };
@@ -268,6 +303,20 @@ impl Renderer {
             self.render();
         }
         true
+    }
+
+    /// TS's view-model slow motion (`0x10031bb0..0x10031bf4`). The rate is taken into
+    /// `g_vmFramerate` on the first draw of a frame when the last draw advanced the animation
+    /// (`latched.prevframe` more than 0.001 past the one the draw before saw), and written to
+    /// `curstate.framerate` on every draw. At normal speed TS leaves the framerate alone, so the
+    /// last slowed rate holds until the engine resets it to 1 on the next weapon animation.
+    fn latch_view_model_rate(&mut self, e: &mut cl_entity_s, rate: f32) {
+        if self.vm_frame_count != self.frame_count && self.vm_prevframe + 0.001 < e.latched.prevframe {
+            self.vm_framerate = rate;
+        }
+        e.curstate.framerate = self.vm_framerate;
+        self.vm_prevframe = e.latched.prevframe;
+        self.vm_frame_count = self.frame_count;
     }
 
     /// renderfx 17, `rendercolor.b != 1`: a corpse draws as its player, from a copy of the player's
@@ -1244,6 +1293,36 @@ mod tests {
         assert_eq!(torso_controller(-120.0), 0);
         assert_eq!(wrap360(370.0), 10.0);
         assert_eq!(wrap360(-370.0), -10.0);
+    }
+
+    #[test]
+    fn view_model_rate_and_latch() {
+        assert_eq!(view_model_rate(0, 1.0), None, "normal speed: framerate left alone");
+        assert_eq!(view_model_rate(0, 1.0005), None);
+        assert_eq!(view_model_rate(0x10, 1.0), Some(1.5));
+        assert_eq!(view_model_rate(0, 0.5), Some(0.5));
+        let r = view_model_rate(1 | 8, 0.3).unwrap();
+        assert!((r - 0.3 * 3.5555558 * 1.7142859).abs() < 1e-5, "{r}");
+
+        let mut rd = Renderer { frame_count: 1, ..Default::default() };
+        let mut e = cl_entity_s::default();
+        e.latched.prevframe = 0.5;
+        rd.latch_view_model_rate(&mut e, 0.4);
+        assert_eq!(e.curstate.framerate, 0.4, "first draw: the animation advanced from 0");
+        // Same frame (a second draw): written, not re-latched.
+        e.latched.prevframe = 0.9;
+        rd.latch_view_model_rate(&mut e, 0.2);
+        assert_eq!(e.curstate.framerate, 0.4);
+        // Next frame, animation restarted (prevframe fell back): the old rate holds.
+        rd.frame_count = 2;
+        e.latched.prevframe = 0.1;
+        rd.latch_view_model_rate(&mut e, 0.2);
+        assert_eq!(e.curstate.framerate, 0.4);
+        // Next frame, advancing again: latched.
+        rd.frame_count = 3;
+        e.latched.prevframe = 0.3;
+        rd.latch_view_model_rate(&mut e, 0.2);
+        assert_eq!(e.curstate.framerate, 0.2);
     }
 
     #[test]

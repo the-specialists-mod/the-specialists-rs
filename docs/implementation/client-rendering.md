@@ -94,24 +94,24 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `HUD_CreateEntities` | `0x1001bce0` | `effects::create_entities` | client bullets, then motion-blur ghosts |
 | `HUD_GetStudioModelInterface` | `0x1001f3f0` | `client-dll` + `goldsrc::ext::studio::init` + `studio::init` | done (version 1, 43-slot table copy) |
 | `R_StudioDrawModel` / `R_StudioDrawPlayer` | `0x1001f3d0` / `0x1001f3b0` | `studio::draw_model` / `draw_player` | done |
-| `StudioDrawModel` (renderfx 17: corpse / ghost) | `0x10031ae0` | `Renderer::draw_model`, `draw_corpse`, `draw_ghost` | done |
-| `StudioDrawPlayer` | `0x10032540` | `Renderer::draw_player` | done (SDK flow, `renderamt = 255`, in-eye hide) |
-| TS `StudioDrawDeadPlayer` / `StudioDrawGhostPlayer` | `0x10033540` / `0x100337f0` | `draw_dead_player` / `draw_ghost_player` | done |
+| `StudioDrawModel` (view-model slow motion; renderfx 17: corpse / ghost) | `0x10031ae0` | `Renderer::draw_model`, `latch_view_model_rate`, `draw_corpse`, `draw_ghost` | done (audited against the asm) |
+| `StudioDrawPlayer` | `0x10032540` | `Renderer::draw_player` | done (SDK flow, `renderamt = 255`, in-eye hide, colours clamped 0..360, `p_` weapon merged) |
+| TS `StudioDrawDeadPlayer` / `StudioDrawGhostPlayer` | `0x10033540` / `0x100337f0` | `draw_dead_player` / `draw_ghost_player` | done (corpse: no gait, events, no weapon; ghost: stored gait yaw turns the torso, no gait advance, no events, no `renderframe`, weapon drawn) |
 | `StudioSetupBones` (split at `Bip01 Dorso`/`Bip01 Spine`, torso yaw fix) | `0x10031080` | `Renderer::setup_bones`, `split_torso` | done, unit-tested |
-| `StudioEstimateGait` (2-D, x0.75 below 180 u/s) / `StudioProcessGait` (gaitframe x framerate) | `0x10031fa0` / `0x10032250` | `estimate_gait` / `process_gait`, `turn_torso` | done |
+| `StudioEstimateGait` (2-D, x0.75 below 180 u/s) / `StudioProcessGait` (gaitframe x framerate) | `0x10031fa0` / `0x10032250` | `estimate_gait` / `process_gait`, `turn_torso` | done (wrap `x - (int)(x * (1/360)) * 360` and torso controller `(yaw * 0.25 + 30) * 4.25` as in the asm) |
 | `StudioSetUpTransform`, `EstimateInterpolant`, `EstimateFrame`, `FxTransform`, `GetAnim`, `PlayerBlend` | `0x10030970`, `0x10030c40`, `0x10030f80`, `0x10030e60`, `0x100307e0`, `0x10030890` | `Renderer::*` | done (SDK) |
 | `StudioCalcRotations`, `CalcBoneAdj`, `CalcBoneQuaterion`, `CalcBonePosition`, `SlerpBones` | `0x10030ca0`, `0x10030140`, `0x10030380`, `0x10030550`, `0x100306a0` | `sample_pose`, `bone_adj`, `model::Anim`, `slerp_bones` | done, unit-tested |
 | `StudioSaveBones` / `StudioMergeBones` / `StudioCalcAttachments` | `0x100317b0` / `0x10031890` / `0x10034560` | `save_bones` / `merge_bones` / `calc_attachments` | done |
 | `StudioRenderModel` (glow shell) / `RenderFinal_Hardware` / `_Software` | `0x100345f0` / `0x10034750` / `0x10034690` | `render` / `render_final` | done |
 | `AngleQuaternion`, `QuaternionSlerp`, `QuaternionMatrix`, `MatrixAngles`, TS `QuaternionAngles`, `AngleMatrix`, `ConcatTransforms`, `VectorTransform` | `0x1002fbd0`, `0x1002fc70`, `0x1002fdf0`, `0x1002fef0`, `0x1002ffe0`, `0x1002f920`, `0x1002fa90`, `0x1002fa30` | `studio::math` | done, unit-tested |
-| `MotionBlur_Reset` / `_Add` / `_Update` / ghost callback | `0x10029660` / `0x10029680` / `0x10029780` / `0x10029710` | `effects::mblur` (`reset`, `add`, `due` + `spawn_ghost`, `ghost_think`) | done, unit-tested |
+| `MotionBlur_Reset` / `_Add` / `_Update` / ghost callback | `0x10029660` / `0x10029680` / `0x10029780` / `0x10029710` | `effects::mblur` (`reset`, `add`, `due` + `spawn_ghost`, `ghost_think`) | done, unit-tested. Clock is `gHUD.m_flTime` (`0x100cf944`, `hud::now`); the `TSMBlur` level byte is sign-extended (`0x1004bfaf`), so levels above 127 give 5 ghosts |
 | `HUD_TempEntUpdate` | `0x1001bd00`, `0x100569a0` | `effects::tempents::update` | done (SDK loop, ts-scaled, TS shell sounds) |
 | `HUD_StudioEvent` | `0x10044b50` | `effects::studio_event` | done (5002, 5004) |
 | `DrawLocalLaser` / `DrawOtherLasers` / flashlights | `0x1003bb00` / `0x1003d600` / `0x1003b250` / `0x1003b750` | `effects::laser` | done (untested: needs server state) |
 | `DrawPlayerShadows` | `0x10055760` | `laser::draw_shadows` | done, verified in game |
 | `DrawScopeOverlay` | `0x10054510` | `effects::scope` | done (not yet checked in engine) |
 | `FX_ApplyCvar` / `FX_AdaptQuality` | `0x10057d50` / `0x10057a70` | `effects::apply_cvar` / `effects::adapt_quality` (from `draw_transparent`) | done |
-| view-model framerate x time scale | `StudioDrawModel` `0x10031ae0` | `view::view_model_framerate` (writes `curstate.framerate` once per frame in `V_CalcRefdef`, not in the renderer) | written, untested |
+| view-model framerate x time scale | `StudioDrawModel` `0x10031b44..0x10031bf4` | `studio::view_model_rate`, `Renderer::latch_view_model_rate` (in `draw_model`, as TS) | done, unit-tested |
 | `HUD_TxferLocalOverrides` | `0x1001b900` | `prediction::txfer_local_overrides` | done |
 | `HUD_ProcessPlayerState` | `0x1001b950` | `prediction::process_player_state` | done |
 | `HUD_TxferPredictionData` | `0x1001bb00` | `prediction::txfer_prediction_data` | done |
@@ -319,8 +319,13 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   missing sequence-group file reads as the bind pose. `player_info_t` is copied in and written
   back where TS keeps the engine pointer (same result; the engine doesn't touch it mid-draw), and
   `StudioDrawPlayer`'s engine state is a copy with `renderamt`/`gaitsequence` written back.
-* **View-model framerate.** TS latches the slowed view-model framerate inside `StudioDrawModel`;
-  the port keeps doing it in `view` (once per frame, before the draw). Same value.
+* **View-model framerate (decomp correction).** R§2.3 says the rate is latched "once per
+  animation restart". The asm (`0x10031bb0..0x10031bf4`) latches it on the first view-model draw
+  of a frame whose `latched.prevframe` is more than 0.001 past the one the previous draw saw,
+  i.e. while the animation advances, so the rate follows the easing time scale; a restart (frame
+  falling back) keeps the old rate. At normal speed without double fire rate the framerate isn't
+  written, so the last slowed rate holds until the engine's next weapon animation sets it to 1.
+  The port does exactly this in `Renderer::draw_model`.
 * **Torso yaw fix (decomp correction).** R§2.3 reads the asm as `a3[2] = a3[0] + d`. The x87
   stores are to `a3[0]`: `a3[0] += a1[2] - a2[2]` (Ghidra's C agrees). That turns the split bone
   about its own x axis (the Biped spine's long axis) by the yaw between the upper-body and gait
@@ -335,7 +340,11 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 * **Spectator hide.** `StudioDrawPlayer` hides the player spectated with `g_iUser1 == 5` (in-eye,
   `shared::ts::obs`) as TS does.
 * **Motion blur.** `MotionBlur_Reset` has no caller in the TS image; the port resets the trails on
-  `HUD_VidInit`. `TSMBlur` for entity index 32 is ignored (TS's 32-entry table would overflow).
+  `HUD_VidInit`. `TSMBlur` for entity index 32 or above is ignored (TS's 32-entry table would
+  overflow), and a short `TSMBlur` is dropped (TS reads -1 for the missing bytes). A trail on
+  entity 0 makes no ghosts (TS would allocate one with the world model and ask for player -1).
+* **Renderer index checks.** TS's `StudioProcessGait` and `StudioSetupBones` don't range-check
+  `curstate.sequence`/`gaitsequence`; the port treats out-of-range (and negative) values as 0.
 * **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
   the evicted shell's `die`. The port tags each shell with a sequence number in
   `curstate.iuser2` (`effects::track_shell`), and the temp-entity loop (`client-dll/src/tempents.rs`)
@@ -343,6 +352,10 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   memory, and it can't write to a tempent the engine already freed.
 
 ## Missing pieces
+
+* Nothing in the studio renderer (issue #2) or the motion-blur ghosts (issue #3): every
+  overridden `CStudioModelRenderer` slot (R§2.2) and `MotionBlur_*` is ported and was audited
+  against the asm. What is still open is running them in an engine (see "Testing").
 
 * **Weapon prediction** is a stopgap (below). Shotgun reload phases, kung fu, grenades, melee
   blocking and akimbo linked shots are not predicted (the server plays those; the shooter only
@@ -440,7 +453,8 @@ explosion|sparks|wind <speed>|mblur [ent] [level]|stats`, `ts_test_fade r g b a 
   scheduling and fade). Not yet run in an engine: check with `cargo xtask play` / `client` that
   every model still draws (world models, view model, players with `p_` weapons, items), that a
   running player aims the torso while the legs follow the movement, corpses, and the ghosts behind
-  players during slow motion. Ghosts without a server: `cl_motionblur 2`, third person,
+  players during slow motion, and that the view model animates at the slowed rate (`ts_test_fx
+  slowmo 0.3`, then fire or reload). Ghosts without a server: `cl_motionblur 2`, third person,
   `ts_test_fx slowmo 0.3`, then `ts_test_fx mblur` (the local player: 10 ghosts at `cl_fx 1`, 15 at `cl_fx 2`); the
   server sends `TSMBlur` on power-up use, stunts and kills.
 * **Not tested in engine:** anything that needs the server to send TS state or events (this

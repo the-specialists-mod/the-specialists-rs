@@ -341,7 +341,7 @@ pub fn on_tsfrags(b: &[u8]) {
 pub fn on_tsmblur(b: &[u8]) {
     if let Some(m) = msg::TsMBlur::decode(b) {
         let (blur, fxq) = (cvar(|c| c.motionblur), cvar(|c| c.fx));
-        let now = engine().client_time() as f64;
+        let now = crate::hud::now();
         with(|fx| fx.blur.add(m.entindex as usize, m.level, blur, fxq, now));
     }
 }
@@ -569,7 +569,7 @@ pub fn create_entities() {
         fx.bullets = b;
     });
 
-    let (blur, ts, now) = (cvar(|c| c.motionblur), state::with(|s| s.time_scale), engine().client_time() as f64);
+    let (blur, ts, now) = (cvar(|c| c.motionblur), state::with(|s| s.time_scale), crate::hud::now());
     for ent in with(|fx| fx.blur.due(blur, ts, now)) {
         if mblur::spawn_ghost(ent) {
             with(|fx| fx.blur.spawned(ent));

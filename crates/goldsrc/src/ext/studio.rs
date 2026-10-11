@@ -211,6 +211,11 @@ pub fn current_entity() -> Option<Ent> {
     Ent::from_ptr(st!(GetCurrentEntity()))
 }
 
+/// Whether `e` is the engine's view model (`gEngfuncs.GetViewModel() == e`).
+pub fn is_view_model(e: Ent) -> bool {
+    std::ptr::eq(crate::cl_eng!(GetViewModel()), e.0.as_ptr())
+}
+
 /// Animation data of a demand-loaded sequence group (`StudioGetAnim` `0x100307e0`, group > 0):
 /// the engine caches group files in a `cache_user_t[16]` hung off the model's `submodels` field.
 /// Returns the group file's bytes (its `studioseqhdr_t` and animation data).

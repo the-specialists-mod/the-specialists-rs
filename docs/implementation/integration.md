@@ -75,5 +75,9 @@ switched off in 3.0, or an SDK constant kept for completeness:
   silenced, ×2/3 with double fire rate). Nothing pulls it back (`TSKickAlign` is unused), so the
   steep climb under sustained fire is TS behaviour. A side-by-side check of the feel is still
   open.
+* The TS studio renderer (issue #2) and motion-blur ghosts (issue #3) are fully ported and were
+  audited slot by slot against the asm (`client-rendering.md`); the view-model slow-motion rate
+  now lives in the renderer as in TS. They are unit-tested but not yet checked in an engine
+  (torso/legs split while running and aiming, corpses, ghosts during slow motion).
 * Not tested with real keyboard and mouse. The only Steam GoldSrc client run so far is the
   scripted HL25 Linux listen server (`docs/validation.md` §5).
