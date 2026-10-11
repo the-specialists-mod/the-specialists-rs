@@ -93,11 +93,11 @@ payloads are logged and ignored.
 | TSPSys | B type [type 3: L, L, Co] | queued `TsEffect::Wind` |
 | PlInfo | B cl, B key, B value | laser colour (key 0) |
 | TSFade | S, S, S, B×4 | `state.ts_fade` (seconds = value/4096) |
-| WeaponInfo | B id (0xff keep), B clip, S reserve, B mode, B att | current gun, grid; `cl_thirdpersonswitch` 1 (TS `1004f93b`, the only reader): kung fu (id < 1) toggles to third person if not already there; a gun toggles back to first person only when the weapon before the message was kung fu (id 0) |
+| WeaponInfo | B id, B clip, S reserve, B mode, B att | current gun, grid. Every id byte is a weapon, 0xff included: TS's `READ_BYTE` (`0x10029a10`) zero-extends and the handler keeps the old id only on -1, a read past the end (`0x1004f822`; the port drops a short message). An id outside 0..38 takes entry 0's ammo type and grid slot, as `GetWeaponInfo` (`0x100071c0`) answers it with kung fu; `cl_thirdpersonswitch` 1 (TS `1004f93b`, the only reader): kung fu (id < 1) toggles to third person if not already there; a gun toggles back to first person only when the weapon before the message was kung fu (id 0) |
 | ClipInfo / WStatus / ActItems / NextStunt / Wires / KFuPower / CustomWP | §3.3 | grid, active items, stunt cooldown, wires, kung-fu power, custom weapon params |
 | ScoreInfo / TeamInfo / TeamScore / TeamNames | stock | scoreboard data |
 | DeathMsg | B, B, Str | kill feed + TS console line |
-| SayText / TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2 (Spectator, TS `10065250`, for the local player on every message: observer is `observer == 1`; an observer leaves third person and gets the buy menu, otherwise `cl_thirdperson` 1 or 0 picks the camera and other values keep it, so the death cam doesn't outlive the respawn. This handler is the only reader of `cl_thirdperson`) |
+| SayText / TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2 (Spectator, TS `10065250`, for the local player on every message: observer is `observer == 1`; an observer leaves third person and gets the buy menu, otherwise `cl_thirdperson` 1 or 0 picks the camera and other values keep it, so the death cam doesn't outlive the respawn. This handler is the only reader of `cl_thirdperson`. Then, observer or not, `0x100652fd` runs `0x1000b9d0` on the client `player`: the predicted spread penalty (`player+0x764`) and the crosshair's copy (`0x1018d188`) go to 0 (`prediction::reset_spread`); the other fields it zeroes, `player+0x768..0x770` and `ev_punchangle` (`0x10191480`), are never read or never non-zero in the TS client. The per-player flag is stored as `observer != 0`: TS keeps the raw byte (`0x101900ec[i]`, `0x101901f5`), but `HUD_AddEntity` (`0x10044846`) and the scoreboard (`0x1005e3e8`) only test it for zero) |
 | Train | B notch | `CHudTrain`: `sprites/%d_train.spr` frame `notch - 1` in (255,160,0), x = w/3 + sprite w/4, y = h - sprite h - font height; hidden at 0 |
 | HideWeapon | B bits | `hide_hud`; HIDEHUD_ALL (4) hides the train element. TS only resets the engine crosshair, which it doesn't use |
 | CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Geiger, Health, Battery, Damage, GameTitle, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
@@ -415,7 +415,9 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   The HUD writes `health`, `dead`, `weapon`, `fov` (smoothed zoom FOV, default `default_fov`;
   `fov_target` from `SetFOV`/prediction),
   `time_scale_target` (TSSlowMo) and eases `time_scale` in `HUD_Frame` (TS does it there, after
-  the emitters and before clearing the key gate; nothing else eases it).
+  the emitters and before clearing the key gate; nothing else eases it). `CHud::VidInit`
+  (`0x100208a9`) resets `time_scale` to 1 but not the target, which only `TSSlowMo` writes
+  (`0x1004bf10`), so slow motion still active after a level change eases back in.
 * The FWGS `IN_ClientLookEvent`/`IN_ClientMoveEvent` exports are in `client-dll` and call
   `input::look_event`/`move_event`.
 * The server should send `SrvSett 3` (restriction) and `GameMode` in `InitHUD` like TS, and

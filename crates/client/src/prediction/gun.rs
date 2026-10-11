@@ -57,6 +57,20 @@ pub fn alt_grip() -> bool {
     PRED.0.try_borrow().ok().and_then(|g| g.as_ref().map(|p| p.alt_grip)).unwrap_or(0) != 0
 }
 
+/// `0x1000b9d0` on the client `player` (`0x1009e628`), which the `Spectator` handler runs for the
+/// local player (`0x100652fd`): the predicted spread penalty (`player+0x764`, the non-networked
+/// `Gun::spread_penalty`) and the crosshair's copy of it (`0x1018d188`, `state.spread`) go to 0.
+/// It also zeroes `player+0x768..0x770`, which nothing in the client reads, and `ev_punchangle`
+/// (`0x10191480`), which only `V_DropPunchAngle` ever writes, so neither has port state.
+pub fn reset_spread() {
+    with(|p| {
+        if let Some(g) = p.gun.as_mut() {
+            g.spread_penalty = 0.0;
+        }
+    });
+    state::with(|s| s.spread = 0.0);
+}
+
 /// `CHudTSWeapons::VidInit` (`0x1004cb50`) clears the alternate grip.
 pub fn reset_alt_grip() {
     with(|p| p.alt_grip = 0);

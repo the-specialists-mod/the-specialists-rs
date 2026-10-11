@@ -39,6 +39,9 @@ struct Fx {
     whizz: u32,
     time: f64,
     frametime: f32,
+    /// The emitters' own clock (`0x10189478`): `HUD_Frame`'s frame times summed since the map
+    /// loaded, which emission is scheduled against.
+    emit_clock: f64,
     sprites: Option<laser::Sprites>,
     quality: Quality,
     blur: mblur::MotionBlur,
@@ -94,6 +97,7 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         whizz: 0,
         time: 0.0,
         frametime: 0.0,
+        emit_clock: 0.0,
         sprites: None,
         quality: Quality::default(),
         blur: mblur::MotionBlur::default(),
@@ -342,11 +346,14 @@ pub fn on_tsbtime(b: &[u8]) {
 // ---- per frame -------------------------------------------------------------------------------
 
 /// Called from `view::frame` (HUD_Frame): map change detection, emitter loading and emission
-/// (`CTS_CL_Emitter::Frame` `0x1003ab40`), quality adaptation.
-pub fn frame(time: f64, frametime: f32) {
+/// (`CTS_CL_Emitter::Frame` `0x1003ab40`), quality adaptation. `frametime` is `HUD_Frame`'s
+/// argument, unclamped: the emitter clock adds it as is, and the particle system, client bullets
+/// and `FX_AdaptQuality` read TS's copy of `ref_params_t::frametime` (`0x10191478`), which the
+/// engine fills from the same `host.frametime` (FWGS `V_SetupRefDef`).
+pub fn frame(time: f64, frametime: f64) {
     with(|fx| {
         fx.time = time;
-        fx.frametime = frametime;
+        fx.frametime = frametime as f32;
     });
     let level = r::level_name();
     let changed = with(|fx| fx.level != level);
@@ -367,6 +374,7 @@ pub fn frame(time: f64, frametime: f32) {
             fx.map = fxmap;
             fx.level = level;
             fx.bullets.clear();
+            fx.emit_clock = 0.0;
         });
     }
     let fxq = cvar(|c| c.fx);
@@ -377,9 +385,13 @@ pub fn frame(time: f64, frametime: f32) {
         fx.psys.cam = cam;
         fx.psys.cull_origin = cull_origin;
         fx.psys.time_scale = ts;
-        apply_quality(fx, fxq, frametime);
-        let t = fx.time;
-        fx.map.emit(&mut fx.psys, &cam, t, ts);
+        apply_quality(fx, fxq, fx.frametime);
+        if fx.level.is_empty() {
+            return;
+        }
+        fx.emit_clock += frametime;
+        let (clock, t) = (fx.emit_clock, fx.time);
+        fx.map.emit(&mut fx.psys, &cam, clock, t, ts);
     });
 }
 

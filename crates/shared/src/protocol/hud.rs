@@ -263,8 +263,9 @@ impl TsFrags {
 // ---- CHudTSWeapons messages (architecture-hud.md §3.3) ----------------------------------------
 
 payload!(
-    /// `WeaponInfo` (1004f800): byte id (0xff = keep), byte clip, short reserve, byte fire mode,
-    /// byte attachment flags.
+    /// `WeaponInfo` (1004f800): byte id, byte clip, short reserve, byte fire mode, byte attachment
+    /// flags. Every id byte is a weapon (0xff is 255); TS keeps the old id only when the read runs
+    /// off the end of the message.
     WeaponInfo { id: u8 = byte, clip: u8 = byte, reserve: i16 = short, mode: u8 = byte, attachments: u8 = byte });
 payload!(
     /// `ClipInfo` (1004f780): byte clip.

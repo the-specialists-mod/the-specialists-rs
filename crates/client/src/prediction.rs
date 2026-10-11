@@ -8,7 +8,7 @@ use crate::state;
 use goldsrc::client::engine;
 use goldsrc::sys::*;
 
-pub use gun::{alt_grip, reset_alt_grip};
+pub use gun::{alt_grip, reset_alt_grip, reset_spread};
 
 /// TS keeps one weapon, the `CTSGun` container, in HL weapon slot 16.
 pub const TS_GUN_SLOT: usize = 16;

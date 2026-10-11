@@ -295,6 +295,7 @@ fn apply_effect(f: Effect) {
         Effect::OpenBuyMenu => crate::menus::open_buy(),
         Effect::OpenTeamMenu => crate::menus::open_team_menu(),
         Effect::OpenMotd => crate::menus::open_motd(),
+        Effect::ResetSpread => crate::prediction::reset_spread(),
         Effect::Fx(fx) => crate::state::with(|s| {
             if s.ts_effects.len() < 256 {
                 s.ts_effects.push(fx);
@@ -435,10 +436,9 @@ pub fn vid_init() {
         g.train = train;
         g.loaded = true;
     });
-    crate::state::with(|st| {
-        st.time_scale = 1.0;
-        st.time_scale_target = 1.0;
-    });
+    // `CHud::VidInit` (`0x100208a9`) resets only the current scale (`0x100963e8`). The `TSSlowMo`
+    // target (`0x1009ff04`) is left alone, so slow motion still active eases back in.
+    crate::state::with(|st| st.time_scale = 1.0);
     crate::prediction::reset_alt_grip();
     with(|h| {
         h.reset();

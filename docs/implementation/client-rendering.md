@@ -80,7 +80,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `TS_MeleeMaterialSound` | `0x10045df0` | `misc::melee_material_sound` | done |
 | particle system `g_PSys` (`PSys_*`, `Particle_*`, `Quad_*`) | §5.2-5.4 | `effects::psys` | done (see deviations) |
 | `PSys_PushRadial` / `PushAlongLine` / `BlastPush` | `0x100524c0` / `0x10052720` / `0x10052c80` | `PSys::push_radial` / `push_along_line` / `blast_push` | done (from the disassembly) |
-| `CTS_CL_Emitter::Frame`, `LoadMap`, `LoadEntityLump`, `ProcessEnts`, keyvalue parsers | §5.1-5.3 | `effects::frame`, `effects::emitters` | done, unit-tested, verified in game (ts_frigid snow) |
+| `CTS_CL_Emitter::Frame`, `LoadMap`, `LoadEntityLump`, `ProcessEnts`, keyvalue parsers | §5.1-5.3 | `effects::frame`, `effects::emitters` | done, unit-tested, verified in game (ts_frigid snow). Emission runs on the emitters' own clock (`0x10189478`): `HUD_Frame`'s frame times, unclamped, summed since the map loaded |
 | wind (`MsgFunc_TSPSys`, `CosineLerp`) | `0x1004bfd0`, `0x10050760` | `effects::on_tspsys`, `psys::Wind` | done, unit-tested |
 | `TS_MuzzleFlash`, `TS_MuzzleDlight`, `TS_GunSmoke`, `TS_SpriteDebris` (debris and the muzzle pellet spray), `TS_Sparks`, `TS_Scintille`, `TS_ImpactSmoke`, `TS_SmallPuff`, surface mark `0x10046a70` | §4.4-4.5 | `effects::fx::*` | done (numbers from the disassembly) |
 | `FX_ApplyCvar` / `FX_AdaptQuality` (`cl_fx`) | `0x10057d50` / `0x10057a70` | `effects::apply_quality`, `psys::FxTuning` | done |
@@ -391,7 +391,10 @@ hook for a name (`hud::init` runs first), so if the HUD hooks one of these it mu
 * `HUD_UpdateClientData` calls `view::update_client_data(cdata)` and returns 1: it runs
   `CHud::Think`'s zoom easing and hands the eased FOV to the engine (TS `CHud::UpdateClientData`).
 * `HUD_Frame` passes the engine's **frame time** (FWGS `host.frametime`), and `view::frame` treats
-  it as such (absolute time comes from `GetClientTime`).
+  it as such (absolute time comes from `GetClientTime`). It is not clamped: TS hands it straight to
+  the emitters (`0x1001ab02` -> `0x1003ab40`) and the time-scale easer. The particle system,
+  client bullets and `FX_AdaptQuality` read TS's copy of `ref_params_t::frametime` (`0x10191478`)
+  instead, which FWGS fills from the same `host.frametime`, so `effects` uses one value for both.
 
 ## Developer test commands
 

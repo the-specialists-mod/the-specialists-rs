@@ -509,15 +509,15 @@ pub fn ease_fov(cur: f32, target: f32, ft: f32) -> f32 {
 
 /// The emitter part of `HUD_Frame` (`CTS_CL_Emitter::Frame` `0x1003ab40`), before the slow-motion
 /// easer ([`crate::hud::frame`]). The engine passes the frame time (FWGS `host.frametime`, as the
-/// SDK's `HUD_Frame(double time)` does), not an absolute time.
+/// SDK's `HUD_Frame(double time)` does), not an absolute time. TS hands it on unclamped
+/// (`0x1001ab02`).
 pub fn frame(frametime: f64) {
-    let ft = (frametime as f32).clamp(0.0, 0.25);
     let time = engine().client_time() as f64;
     with(|w| {
         w.last_frame = time;
-        w.frametime = ft;
+        w.frametime = frametime as f32;
     });
-    effects::frame(time, ft);
+    effects::frame(time, frametime);
 }
 
 /// `CAM_Think` (`0x10024c80`), every frame from the engine: `cam_command` 1 runs `thirdperson`

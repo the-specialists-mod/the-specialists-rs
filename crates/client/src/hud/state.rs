@@ -6,6 +6,7 @@ use super::text::{Titles, localise_with};
 use goldsrc::ext::hud::Screen;
 use shared::protocol::Msg;
 use shared::protocol::hud as p;
+use shared::weapons::MAX_WEAPONS;
 
 pub const MAX_CLIENTS: usize = 64;
 /// Weapon grid: 17 rows × 11 buckets (`m_rgSlots` at `+0x164`, index `bucket + row*11`).
@@ -103,6 +104,9 @@ pub enum Effect {
     OpenBuyMenu,
     OpenTeamMenu,
     OpenMotd,
+    /// `Spectator` for the local player (`0x100652fd` -> `0x1000b9d0`): clear the predicted spread
+    /// penalty ([`crate::prediction::reset_spread`]).
+    ResetSpread,
     /// Forward to the effects package (`crate::state::Shared::ts_effects`).
     Fx(crate::state::TsEffect),
     Fade(p::TsFade),
@@ -521,18 +525,22 @@ impl Hud {
             Msg::TsFade => fx.push(Effect::Fade(dec!(p::TsFade))),
             // ---- CHudTSWeapons
             Msg::WeaponInfo => {
+                // TS's `READ_BYTE` (`0x10029a10`) zero-extends, so every id byte, 0xff included, is
+                // the new weapon; it keeps the old id (`0x1004f822`) only on -1, a read past the end,
+                // and the port drops a short message instead.
                 let v = dec!(p::WeaponInfo);
                 let old = self.weapon;
-                if v.id != 0xff {
-                    self.weapon = v.id as i32;
-                }
+                self.weapon = v.id as i32;
                 self.clip = v.clip as i32;
-                let t = self.ammo_type(self.weapon);
+                // `GetWeaponInfo` (`0x100071c0`) answers ids outside 0..38 with entry 0, so such an
+                // id takes kung fu's ammo type and slot.
+                let info_id = if (0..MAX_WEAPONS as i32).contains(&self.weapon) { self.weapon } else { 0 };
+                let t = self.ammo_type(info_id);
                 self.reserve[t] = v.reserve as i32;
                 self.firemode = v.mode;
                 self.attachments = v.attachments as u32;
                 if self.weapon >= 1
-                    && let Some((r, b)) = grid_pos(self.weapon)
+                    && let Some((r, b)) = grid_pos(info_id)
                 {
                     self.grid[r][b] = Slot { id: self.weapon, clip: self.clip };
                 }
@@ -641,6 +649,9 @@ impl Hud {
                 let v = dec!(p::Spectator);
                 let cl = v.client as usize;
                 if (1..=MAX_CLIENTS).contains(&cl) {
+                    // TS keeps the raw byte (`0x101900ec[i]`, copied to `0x101901f5`), but its
+                    // readers, `HUD_AddEntity` (`0x10044846`) and the scoreboard (`0x1005e3e8`),
+                    // only test it for zero; the local `== 1` test below is the one that differs.
                     self.players[cl].observer = v.observer != 0;
                     self.players[cl].active_items = 0;
                 }
@@ -663,6 +674,7 @@ impl Hud {
                     if self.observer {
                         fx.push(Effect::OpenBuyMenu);
                     }
+                    fx.push(Effect::ResetSpread);
                 }
             }
             Msg::VguiMenu => {
@@ -885,8 +897,14 @@ mod tests {
         assert_eq!((r, b), (3, 4), "AK47 hud = [4, 3]");
         assert_eq!(h.grid[r][b], Slot { id: 13, clip: 30 });
         assert_eq!(h.reserve[6], 90, "7.62x39 is ammo type 6");
-        h.apply(Msg::WeaponInfo, &WeaponInfo { id: 0xff, clip: 29, reserve: 90, mode: 1, attachments: 8 }.encode(), &c, &mut fx);
+        h.apply(Msg::WeaponInfo, &WeaponInfo { id: 13, clip: 29, reserve: 90, mode: 1, attachments: 8 }.encode(), &c, &mut fx);
         assert_eq!((h.weapon, h.clip, h.firemode), (13, 29, 1));
+        // 0xff is weapon 255, as in TS: entry 0's slot (kung fu) and ammo type take it.
+        h.apply(Msg::WeaponInfo, &WeaponInfo { id: 0xff, clip: 7, reserve: 5, mode: 0, attachments: 0 }.encode(), &c, &mut fx);
+        assert_eq!(h.weapon, 255);
+        let (kr, kb) = grid_pos(0).unwrap();
+        assert_eq!(h.grid[kr][kb], Slot { id: 255, clip: 7 });
+        assert_eq!(h.grid[r][b], Slot { id: 13, clip: 29 });
         h.apply(Msg::WStatus, &WStatus { id: 13, owned: 0, clip: 0 }.encode(), &c, &mut fx);
         assert_eq!(h.grid[r][b].id, -1);
         h.apply(Msg::KFuPower, &KFuPower { power: -120 }.encode(), &c, &mut fx);
@@ -978,11 +996,11 @@ mod tests {
         let mut fx = Vec::new();
         h.apply(Msg::Spectator, &Spectator { client: 1, observer: 1 }.encode(), &c, &mut fx);
         assert!(h.observer);
-        assert_eq!(fx, [Effect::OpenBuyMenu], "first person stays");
+        assert_eq!(fx, [Effect::OpenBuyMenu, Effect::ResetSpread], "first person stays");
         fx.clear();
         let third = Ctx { third_person: true, ..ctx(&s) };
         h.apply(Msg::Spectator, &Spectator { client: 1, observer: 1 }.encode(), &third, &mut fx);
-        assert_eq!(fx, [Effect::ToggleThirdPerson, Effect::OpenBuyMenu], "every message, not only on a change");
+        assert_eq!(fx, [Effect::ToggleThirdPerson, Effect::OpenBuyMenu, Effect::ResetSpread], "every message, not only on a change");
         fx.clear();
         h.apply(Msg::Spectator, &Spectator { client: 2, observer: 1 }.encode(), &c, &mut fx);
         assert!(fx.is_empty());
@@ -999,7 +1017,7 @@ mod tests {
             let c = Ctx { third_person: third, cl_thirdperson, ..ctx(&s) };
             let mut fx = Vec::new();
             h.apply(Msg::Spectator, &Spectator { client: 1, observer: 0 }.encode(), &c, &mut fx);
-            fx == [Effect::ToggleThirdPerson]
+            fx.contains(&Effect::ToggleThirdPerson)
         };
         assert!(toggles(true, 0.0), "the death cam doesn't survive the respawn");
         assert!(toggles(false, 1.0));

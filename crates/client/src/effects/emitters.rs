@@ -324,12 +324,13 @@ impl MapFx {
         fx
     }
 
-    /// Emission step (`CTS_CL_Emitter::Frame` `0x1003ab40`, doc §5.3).
-    pub fn emit(&mut self, ps: &mut PSys, cam: &Camera, now: f64, ts: f32) {
+    /// Emission step (`CTS_CL_Emitter::Frame` `0x1003ab40`, doc §5.3). Emitters are scheduled on
+    /// `clock`, the emitter clock (`0x10189478`); `now` (client time) stamps the particles.
+    pub fn emit(&mut self, ps: &mut PSys, cam: &Camera, clock: f64, now: f64, ts: f32) {
         let div = ps.divisor.max(1.0);
         let mut sprites: Vec<Option<u16>> = self.templates.iter().map(|t| ps.sprite(&t.sprite_name)).collect();
         for em in self.emitters.iter_mut().filter(|e| !e.dead) {
-            if em.next_emit >= now {
+            if em.next_emit >= clock {
                 continue;
             }
             let Some(ti) = em.template else { continue };
@@ -348,7 +349,7 @@ impl MapFx {
                 let d = v::sub(centre, cam.origin);
                 let dist = v::len(d).max(1.0);
                 if v::dot(cam.forward, v::scale(d, 1.0 / dist)) < 0.1 {
-                    em.next_emit = now + 0.25;
+                    em.next_emit = clock + 0.25;
                     continue;
                 }
                 f = (dist / v::len(v::sub(hi, lo)).max(1.0)).clamp(1.0, 10.0);
@@ -384,7 +385,7 @@ impl MapFx {
             }
             let eps = r::random_float(em.eps.1.min(em.eps.0), em.eps.0.max(em.eps.1));
             let iv = if eps > 0.0 { (1.0 / eps) / ts.max(0.01) } else { 1.0 };
-            em.next_emit = now + (iv * div * f) as f64;
+            em.next_emit = clock + (iv * div * f) as f64;
         }
         sprites.clear();
     }
