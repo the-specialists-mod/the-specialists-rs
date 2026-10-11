@@ -619,12 +619,12 @@ pub fn cmd_start(p: &mut Player, _cx: &mut Cx, _cmd: &usercmd_t, seed: u32) {
 
 /// Gives weapon `id` with attachment bits. Returns false if it doesn't fit.
 /// (`CBasePlayer::PickUpWeapon(id, NULL, attachments, select = id != 29, own = false)`, what a
-/// `ts_groundweapon` does.)
-pub fn give_weapon(p: &mut Player, cx: &mut Cx, id: u8, attachments: u8) -> bool {
+/// `ts_groundweapon` does with its whole spawnflags.)
+pub fn give_weapon(p: &mut Player, cx: &mut Cx, id: u8, attachments: u32) -> bool {
     if !gun_active(p) {
         return false; // `PickUpWeapon` needs the gun
     }
-    let ok = inventory::pick_up_weapon(p, cx, id, None, attachments as u32, id != shared::weapons::id::BRIEFCASE, false);
+    let ok = inventory::pick_up_weapon(p, cx, id, None, attachments, id != shared::weapons::id::BRIEFCASE, false);
     inventory::sync_speed(p, cx);
     ok
 }

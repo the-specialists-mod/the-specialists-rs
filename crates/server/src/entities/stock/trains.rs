@@ -915,9 +915,11 @@ pub struct PlatTrigger {
 
 impl Entity for PlatTrigger {
     /// `CPlatTrigger::Touch` (0xd29d0): a live player calls the plat (`func_plat` or
-    /// `func_platrot`; the track changes are toggle plats and have no trigger).
+    /// `func_platrot`; the track changes are toggle plats and have no trigger). "Player" is the
+    /// classname `"player"` (any `CBasePlayer`, connected or not: `rules::has_player`), then
+    /// `IsAlive()`.
     fn touch(&mut self, _cx: &mut Cx, other: *mut edict_t) {
-        if !goldsrc::ext::entities::is_player(other) {
+        if !crate::rules::has_player(other) {
             return;
         }
         let ov = other.v();

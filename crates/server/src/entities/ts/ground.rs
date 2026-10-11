@@ -2,17 +2,44 @@
 //! HL weapon/ammo classnames TS re-points at them (architecture.md §5.2, weapons.md §7.4).
 //! Weapons are picked up with +use, ammo on touch. Giving goes through `crate::weapons`.
 
-use crate::player::{Player, with_player};
+use crate::entities::stock::base::sub_remove;
+use crate::player::{Player, with_player_now};
+use crate::rules::mapcycle::atoi;
 use crate::rules::{self, msg, state};
 use crate::save::{BaseFuncs, Fields};
 use crate::world::{Cx, Entity, UseType};
+use goldsrc::edict::EdictPtr;
 use goldsrc::server::{engine, intern};
 use goldsrc::sys::*;
-use shared::weapons::tables;
+use shared::weapons::{kind, kind_of, tables};
 use std::ffi::CStr;
 
 const BRIEFCASE: i32 = 29;
 const ON_WALL: i32 = 16;
+/// Entries of `global_weapon_info`; `get_weapon_info` (0x7f190) hands back entry 0 for any other
+/// id, and `CTSGun::TakeWeapon` (0x80a04) refuses ids above 0x25.
+const MAX_WEAPONS: i32 = 38;
+/// Ammo slots of a `CTSGroundAmmo` (`+0x68..+0xa8`, one int per ammo type).
+const AMMO_SLOTS: usize = 16;
+
+/// `get_weapon_info(id)->valid` (`info+0x00`): set by every `Write_*` of `compile_weapons_info`
+/// (0x7fe28) except `Write_melee`, so kung fu (0), the briefcase (29, `Write_flag` is never
+/// called) and every id outside 0..38 (entry 0) have none.
+pub fn weapon_valid(id: i32) -> bool {
+    (1..MAX_WEAPONS).contains(&id) && tables().weapon(id as u8).is_some()
+}
+
+/// `CTSGroundWeapon::Spawn` (0xa1b40)'s check and remap of the weapon id: `None` for an id without
+/// a valid `get_weapon_info` entry (the entity removes itself 0.1 s later); an akimbo pair built
+/// from two singles (kind 4 with `info+0xcc` != -1) becomes its single, the only form
+/// `PickUpWeapon` (0x9314c) accepts. The Golden Colts (kind 5, no single) stay.
+pub fn spawn_weapon_id(id: i32) -> Option<i32> {
+    if !weapon_valid(id) {
+        return None;
+    }
+    let w = tables().weapon(id as u8)?;
+    Some(if kind_of(id as u8) == kind::AKIMBO && w.single != -1 { w.single } else { id })
+}
 
 /// HL classname → TS weapon ids it picks from, in `Random<Kind>`'s `RANDOM_LONG(1, n)` order.
 pub fn hl_weapon_ids(class: &CStr) -> Option<&'static [i32]> {
@@ -45,16 +72,25 @@ pub fn hl_weapon_repicks(class: &CStr) -> bool {
 /// `CTSMGWeapon::Spawn` (0xc9dac), `weapon_hornetgun`: `wextraclip` is 100 whatever the key said.
 const MG_EXTRA_CLIP: i32 = 100;
 
-/// HL ammo classname → the weapon class whose ammo types it carries.
-pub fn hl_ammo_weapons(class: &CStr) -> Option<&'static [i32]> {
+/// HL ammo classname → the ammo types its TS class fills with half the max carry after
+/// `CTSGroundAmmo::Spawn`: `CTSSniperAmmo` (0xc94a8: .50BMG and 7.62x51), `CTSShotgunAmmo`
+/// (0xc9534), `CTSRifleAmmo` (0xc96b4), `CTSSMGAmmo` (0xc9848) and `CTSBigPistolAmmo` (0xc9c38:
+/// .50AE and .454 only).
+pub fn hl_ammo_types(class: &CStr) -> Option<&'static [u8]> {
     Some(match class.to_bytes() {
-        b"ammo_9mmAR" => &[31, 12, 36],
-        b"ammo_buckshot" => &[4, 26, 33, 20, 11],
-        b"ammo_crossbow" => &[18],
-        b"ammo_gaussclip" => &[13, 5, 27, 15],
-        b"ammo_rpgclip" => &[23, 7, 6, 19, 17, 3],
+        b"ammo_crossbow" => &[8, 13],
+        b"ammo_buckshot" => &[3],
+        b"ammo_gaussclip" => &[6, 4],
+        b"ammo_rpgclip" => &[2, 1, 7, 12],
+        b"ammo_9mmAR" => &[5, 11],
         _ => return None,
     })
+}
+
+/// `get_ammo_info(t)->max_carry / 2` (`+0x0c`, C division) in `Set_ammo_count` column `col`, what
+/// the HL ammo classes put in each of their types.
+pub fn hl_ammo_rounds(t: u8, col: usize) -> i32 {
+    tables().ammo(t).map_or(0, |a| a.max_carry[col.min(3)] / 2)
 }
 
 /// Respawn delay of ground items: < 1 → 60 s, 1 → 1 s, else min(v, 180).
@@ -68,29 +104,38 @@ pub fn respawn_delay(v: i32) -> f32 {
     }
 }
 
-/// `GetWeapon`'s price of a `buyable` ground weapon: the weapon, the attachments in its
-/// spawnflags, and the ammo price per extra magazine.
+/// `GetWeapon`'s price of a `buyable` ground weapon: `get_weapon_info(id)->cost`, the
+/// attachments in its spawnflags (900/800/500/1800), and the ammo price per extra magazine.
 pub fn buy_price(id: i32, spawnflags: i32, extra_clip: i32) -> i32 {
     let t = tables();
-    let Some(w) = u8::try_from(id).ok().and_then(|id| t.weapon(id)) else { return 0 };
+    // `get_weapon_info` falls back to entry 0 (kung fu: no cost, no ammo).
+    let w = u8::try_from(id).ok().filter(|&i| i32::from(i) < MAX_WEAPONS).and_then(|id| t.weapon(id));
     let prices = &t.combat.attachment_price;
-    let mut cost = w.cost;
+    let mut cost = w.map_or(0, |w| w.cost);
     for (bit, price) in [(1, prices.silencer), (2, prices.laser), (4, prices.flashlight), (8, prices.scope)] {
         if spawnflags & bit != 0 {
             cost += price;
         }
     }
-    cost + t.ammo(w.ammo).map_or(0, |a| a.price) * extra_clip.max(0)
+    let ammo_price = w.and_then(|w| t.ammo(w.ammo)).map_or(0, |a| a.price);
+    cost.wrapping_add(ammo_price.wrapping_mul(extra_clip))
 }
 
 fn round_mode() -> bool {
     matches!(state::with(|g| g.mode), state::Mode::RoundTdm | state::Mode::Objective)
 }
 
+fn hidden(cx: &mut Cx) -> bool {
+    cx.pev().effects & EF_NODRAW as i32 != 0
+}
+
 /// Shared falling / landing behaviour.
 #[derive(Default)]
 struct Ground {
     landed: bool,
+    /// `m_pfnThink` is `SUB_Remove`, not `Fall` (`CTSGroundWeapon::Spawn` with an invalid id).
+    /// Only meaningful while `funcs.think` is set; not saved (a restore clears the think).
+    removing: bool,
     /// TS's member pointers: `m_pfnThink` `Fall` from `Spawn` until `OnGround`, and again after a
     /// pickup unless the item stays hidden; `m_pfnTouch` `WaitTouch` from `OnGround` until a pickup.
     funcs: BaseFuncs,
@@ -128,12 +173,15 @@ impl Ground {
         engine().set_size(e, [-4.0; 3], [4.0; 3]);
         self.funcs.touch = true;
         self.funcs.think = false;
+        self.removing = false;
         self.landed = true;
     }
 
-    /// `Spawn`'s pointers (touch none, think `Fall`) and `iuser4` (`= 0; |= 2`).
+    /// `Spawn`'s pointers (touch none, think `Fall`), `iuser4` (`= 0; |= 2`) and `+0x64` (landed).
     fn spawned(&mut self, cx: &mut Cx) {
         self.funcs = BaseFuncs { think: true, ..BaseFuncs::default() };
+        self.removing = false;
+        self.landed = false;
         cx.pev().iuser4 = 2;
     }
 
@@ -145,28 +193,33 @@ impl Ground {
         v.effects |= EF_NODRAW as i32;
         // A null think (`nextthink` left as it was) keeps it hidden until `RespawnEntities`.
         self.funcs.think = !(respawn < 1 && round_mode());
+        self.removing = false;
         if self.funcs.think {
             v.nextthink = engine().time() + respawn_delay(respawn);
         }
     }
 }
 
-/// `PutOnWall`: find the closest surface in 8 horizontal directions and stick to it.
+/// `PutOnWall` (0xa1cd8 / 0xa28f4): trace 1024 units in 8 horizontal directions and stick to the
+/// closest surface it may use ([`wall_surface`]). TS keeps the best distance as a rounded int
+/// (from 9999), so a later hit must be closer than that int.
 fn put_on_wall(cx: &mut Cx) {
     let eng = engine();
     let e = cx.edict;
     let org = cx.pev().origin;
-    let mut best: Option<(f32, [f32; 3], [f32; 3])> = None;
+    let mut best: Option<(i32, [f32; 3], [f32; 3])> = None;
     for k in 0..8 {
-        let a = (k as f32 * 45.0).to_radians();
-        let dir = [a.cos(), a.sin(), 0.0];
-        let end = [org[0] + dir[0] * 1024.0, org[1] + dir[1] * 1024.0, org[2]];
+        // `fcos`/`fsin` of `k * 45 * (long double)(pi / 180)`, stored as floats.
+        let a = f64::from(k * 45) * 0.017453292519943295;
+        let dir = [a.cos() as f32, a.sin() as f32, 0.0];
+        let end = [org[0] + dir[0] * 1024.0, org[1] + dir[1] * 1024.0, org[2] + dir[2] * 1024.0];
         let tr = eng.trace_line(org, end, goldsrc::server::IGNORE_MONSTERS, e);
-        if tr.flFraction < 1.0 {
-            let d = rules::dist(org, tr.vecEndPos);
-            if best.is_none_or(|b| d < b.0) {
-                best = Some((d, tr.vecEndPos, tr.vecPlaneNormal));
-            }
+        if tr.flFraction >= 1.0 || !wall_surface(tr.pHit) {
+            continue;
+        }
+        let d = rules::dist(org, tr.vecEndPos);
+        if let Some(kept) = wall_distance(d, best.map(|b| b.0)) {
+            best = Some((kept, tr.vecEndPos, tr.vecPlaneNormal));
         }
     }
     let v = cx.pev();
@@ -178,6 +231,23 @@ fn put_on_wall(cx: &mut Cx) {
         }
         None => v.angles[2] = 90.0,
     }
+}
+
+/// `PutOnWall`'s distance bookkeeping: a hit at `d` wins if it is closer than the kept int (9999
+/// to start with), and is kept rounded (x87 `fistp`: half to even).
+fn wall_distance(d: f32, kept: Option<i32>) -> Option<i32> {
+    (d < kept.unwrap_or(9999) as f32).then(|| d.round_ties_even() as i32)
+}
+
+/// `PutOnWall`'s test of what the trace hit (a NULL `pHit` is the world): anything without a game
+/// object, or an entity that doesn't take damage (`takedamage != DAMAGE_YES`) and isn't hidden.
+fn wall_surface(hit: *mut edict_t) -> bool {
+    let hit = if hit.is_null() { engine().entity_of_index(0) } else { hit };
+    if hit.is_null() || !hit.has_private_data() {
+        return true;
+    }
+    let v = hit.v();
+    v.takedamage != DAMAGE_YES as f32 && v.effects & EF_NODRAW as i32 == 0
 }
 
 // ---- ts_groundweapon ---------------------------------------------------------------------------
@@ -193,15 +263,14 @@ pub struct GroundWeapon {
 }
 
 impl GroundWeapon {
-    /// `GetWeapon` (0xa2328): in cash mode a `buyable` one checks `attackerteam` (round modes) and
-    /// the price first; then give the weapon (attachments from spawnflags) and extra magazines.
-    /// Any visible weapon can be taken, falling or landed.
-    fn give(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) -> bool {
-        if !rules::alive(pcx.pev()) || pcx.pev().effects & EF_NODRAW as i32 != 0 {
-            return false;
-        }
-        if cx.pev().effects & EF_NODRAW as i32 != 0 {
-            return false;
+    /// `CTSGroundWeapon::GetWeapon` (0xa2328) past its `IsPlayer` test: a live, visible player and
+    /// a visible weapon (falling or landed). In cash mode a `buyable` one checks `attackerteam`
+    /// (round modes) and the price first; then `PickUpWeapon(id, NULL, spawnflags, id != 29,
+    /// false)`, and on success the cash, the hide/respawn, the extra magazines, `message` and
+    /// `target`, in TS's order.
+    fn give(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
+        if !rules::alive(pcx.pev()) || hidden(pcx) || hidden(cx) {
+            return;
         }
         let flags = cx.pev().spawnflags;
         // A negative `wextraclip` is clamped to 0 for good.
@@ -212,22 +281,28 @@ impl GroundWeapon {
                 let team = state::with(|g| g.team_index(&p.ts.team_name));
                 if team != self.attacker_team {
                     msg::ts_message_one(pcx.edict, [0, 0, 0], 16, 30, "Your team cannot buy this weapon.");
-                    return false;
+                    return;
                 }
             }
             cost = buy_price(self.id, flags, self.extra_clip);
             if p.cash < cost {
                 msg::ts_message_one(pcx.edict, [0, 0, 0], 16, 30, "You don't have enough money for that weapon.");
-                return false;
+                return;
             }
         }
-        let attachments = (flags & 0xf) as u8;
-        if !crate::weapons::give_weapon(p, pcx, self.id as u8, attachments) {
-            return false;
+        // `TakeWeapon` refuses an id without a valid entry (only a restored id can be one).
+        if !weapon_valid(self.id) {
+            return;
+        }
+        // The whole spawnflags go in as the attachments: `TakeWeapon` masks a new record with the
+        // allowed attachments, but ORs them unmasked into the single of a new akimbo pair.
+        if !crate::weapons::give_weapon(p, pcx, self.id as u8, flags as u32) {
+            return;
         }
         rules::lifecycle::give_cash(p, -cost);
-        // TS tops up only an empty reserve, checked after the pickup (0xa2328: `reserve[ammo] < 1`),
-        // with `CTSGun::AddAmmo(ammo, wextraclip)`: the key's raw number of rounds.
+        self.ground.taken(cx, self.respawn);
+        // TS tops up only an empty reserve, checked after the pickup (`reserve[ammo] < 1`), with
+        // `CTSGun::AddAmmo(ammo, wextraclip)`: the key's raw number of rounds.
         let extra = self.extra_clip;
         if extra != 0
             && let Some(w) = tables().weapon(self.id as u8)
@@ -237,14 +312,9 @@ impl GroundWeapon {
                 crate::entities::stock::explode::emit_sound_slow(pcx.edict, CHAN_ITEM, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100, 0.5);
             }
         }
-        true
-    }
-
-    fn after_give(&mut self, cx: &mut Cx, player: *mut edict_t) {
-        self.ground.taken(cx, self.respawn);
         let (message, target) = (cx.pev().message, cx.pev().target);
         if message != 0 {
-            msg::ts_message_one(player, [0, 0, 0], 8, 30, &engine().string(message).to_string_lossy());
+            msg::ts_message_one(pcx.edict, [0, 0, 0], 8, 30, &engine().string(message).to_string_lossy());
         }
         if target != 0 {
             crate::entities::fire_targets(engine().string(target), cx.edict, cx.edict, UseType::Toggle, 0.0);
@@ -258,23 +328,39 @@ impl GroundWeapon {
         self.ground.fall(cx, false);
     }
 
-    /// The class's `GetWeapon` (vtable +0x118), which `Use` calls: `CTSGroundWeapon`'s, and for
-    /// the re-picking HL classes ([`hl_weapon_repicks`]) a new weapon once taken and its model
-    /// set again (even when the pickup failed).
-    fn get_weapon(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
-        if self.give(cx, p, pcx) {
-            self.after_give(cx, pcx.edict);
-        }
+    /// The class's `GetWeapon` (vtable +0x118), which `Use` and the briefcase's `WaitTouch` call
+    /// with any entity. `CTSGroundWeapon`'s gives to a player ([`give`](Self::give)). The
+    /// re-picking HL classes ([`hl_weapon_repicks`]) do nothing while hidden; otherwise they run
+    /// it, draw a new weapon if it was taken, and set the model again (even when nothing was
+    /// given, or `other` isn't a player).
+    fn get_weapon(&mut self, cx: &mut Cx, player: Option<(&mut Player, &mut Cx)>) {
         let eng = engine();
-        if !hl_weapon_repicks(eng.string(cx.pev().classname)) {
+        let repicks = hl_weapon_repicks(eng.string(cx.pev().classname));
+        if repicks && hidden(cx) {
             return;
         }
-        if cx.pev().effects & EF_NODRAW as i32 != 0 {
+        if let Some((p, pcx)) = player {
+            self.give(cx, p, pcx);
+        }
+        if !repicks {
+            return;
+        }
+        if hidden(cx) {
             self.pick(cx);
         }
         if let Some(model) = self.model() {
             eng.set_model(cx.edict, model);
         }
+    }
+
+    /// [`get_weapon`](Self::get_weapon) for an entity: `GetWeapon` goes on only for `IsPlayer()`
+    /// (vtable 50), which every `CBasePlayer` answers, connected or not (`rules::has_player`).
+    fn get_weapon_for(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if rules::has_player(other) && with_player_now(other, |p, pcx| self.get_weapon(cx, Some((p, pcx)))).is_some() {
+            return;
+        }
+        // Not a player (or one held by a dispatch further up, which the port can't reach).
+        self.get_weapon(cx, None);
     }
 
     /// The weapon id an HL classname's TS class sets in `Spawn`: `Random<Kind>`'s
@@ -288,7 +374,8 @@ impl GroundWeapon {
         }
     }
 
-    /// The world model of the weapon id (`get_weapon_info(id) + 0x1f2`).
+    /// The world model of the weapon id (`get_weapon_info(id) + 0x1f2`), which `TSPrecache`
+    /// precaches for every weapon (`weapons::precache_weapon_assets`).
     fn model(&self) -> Option<&'static CStr> {
         let asset = u8::try_from(self.id).ok().and_then(|id| tables().asset(id))?;
         Some(intern(&format!("models/w_{}.mdl", asset.w_model)))
@@ -296,7 +383,7 @@ impl GroundWeapon {
 
     /// +use from the player's own think (the player is the dispatched entity).
     pub fn player_use(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
-        self.get_weapon(cx, p, pcx);
+        self.get_weapon(cx, Some((p, pcx)));
     }
 }
 
@@ -314,9 +401,9 @@ impl Entity for GroundWeapon {
 
     // `CTSGroundWeapon::Precache` (0xa1cd4) is empty: nothing to do after a restore.
 
+    /// `CTSGroundWeapon::KeyValue` (0xa19f0): `strtol(value, 0, 10)` for each key.
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v = value.to_str().unwrap_or("").trim();
-        let i = || v.parse::<i32>().unwrap_or(0);
+        let i = || atoi(&value.to_string_lossy());
         match key.to_bytes() {
             b"tsweaponid" => self.id = i(),
             b"wduration" => self.respawn = i(),
@@ -328,6 +415,8 @@ impl Entity for GroundWeapon {
         true
     }
 
+    /// The HL classes' `Spawn` sets the id (and the MG its `wextraclip`) before
+    /// `CTSGroundWeapon::Spawn` (0xa1b40), whose empty `Precache` precaches nothing.
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let e = cx.edict;
@@ -335,13 +424,17 @@ impl Entity for GroundWeapon {
         if eng.string(cx.pev().classname) == c"weapon_hornetgun" {
             self.extra_clip = MG_EXTRA_CLIP;
         }
-        let Some(model) = self.model().filter(|_| self.id != BRIEFCASE && tables().weapon(self.id as u8).is_some()) else {
-            eng.print(&format!("[ts] ts_groundweapon: unknown weapon id {}, removed\n", self.id));
-            crate::entities::remove(e);
+        let Some(id) = spawn_weapon_id(self.id) else {
+            // `SetThink(SUB_Remove)`, 0.1 s later; nothing else is set up.
+            self.ground.funcs.think = true;
+            self.ground.removing = true;
+            cx.think_in(0.1);
             return;
         };
-        eng.precache_model(model);
-        eng.set_model(e, model);
+        self.id = id;
+        if let Some(model) = self.model() {
+            eng.set_model(e, model);
+        }
         let wall = cx.pev().spawnflags & ON_WALL != 0;
         let v = cx.pev();
         v.movetype = if wall { MOVETYPE_FLY } else { MOVETYPE_TOSS } as i32;
@@ -349,21 +442,32 @@ impl Entity for GroundWeapon {
         let org = v.origin;
         eng.set_origin(e, org);
         eng.set_size(e, [0.0; 3], [0.0; 3]);
-        cx.think_in(0.1);
         self.ground.spawned(cx);
+        cx.think_in(0.1);
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        if self.ground.funcs.think {
+        if !self.ground.funcs.think {
+            return;
+        }
+        if self.ground.removing {
+            sub_remove(cx.edict);
+        } else {
             self.fall(cx);
         }
     }
 
-    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
-        if !rules::is_player(activator) {
-            return;
+    /// `CTSGroundWeapon::WaitTouch` (0xa26cc): only the briefcase (29) is taken on touch, which
+    /// `Spawn` never lets through.
+    fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if self.ground.funcs.touch && self.id == BRIEFCASE {
+            self.get_weapon_for(cx, other);
         }
-        let _ = with_player(activator, |p, pcx| self.get_weapon(cx, p, pcx));
+    }
+
+    /// `CTSGroundWeapon::Use` (0xa230c): `GetWeapon(activator)`.
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        self.get_weapon_for(cx, activator);
     }
 }
 
@@ -373,7 +477,7 @@ impl Entity for GroundWeapon {
 pub struct GroundAmmo {
     respawn: i32,
     /// Rounds per ammo type (index = TS ammo id).
-    rounds: [i32; 16],
+    rounds: [i32; AMMO_SLOTS],
     ground: Ground,
 }
 
@@ -386,38 +490,33 @@ impl Entity for GroundAmmo {
 
     // `CTSGroundAmmo::Precache` (0xa28f0) is empty.
 
+    /// `CTSGroundAmmo::KeyValue` (0xa2718): `wduration`, and `mags<t>` = `strtol(value)` ×
+    /// `get_ammo_info(t)->per_buy` (`+0x10`; 0 for the empty entries 0, 14 and 15). A `mags` key
+    /// leaves `fHandled` as it was (unhandled).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let k = key.to_str().unwrap_or("");
-        let v: i32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0);
-        if k == "wduration" {
+        let v = atoi(&value.to_string_lossy());
+        if key.to_bytes() == b"wduration" {
             self.respawn = v;
             return true;
         }
-        if let Some(n) = k.strip_prefix("mags") {
-            let ty: usize = n.trim().parse().unwrap_or(0);
-            if let Some(a) = tables().ammo(ty as u8) {
-                self.rounds[ty.min(15)] = v * a.per_buy;
+        if let Some(n) = key.to_bytes().strip_prefix(b"mags") {
+            // Port guard: TS writes `+0x68 + t * 4` for any `t` (`strtol` as unsigned), past the
+            // 16 slots for t >= 16; the port ignores those.
+            let t = atoi(&String::from_utf8_lossy(n)) as u32 as usize;
+            if t < AMMO_SLOTS {
+                let per_buy = tables().ammo(t as u8).map_or(0, |a| a.per_buy);
+                self.rounds[t] = v.wrapping_mul(per_buy);
             }
-            return true;
         }
         false
     }
 
+    /// `CTSGroundAmmo::Spawn` (0xa27e4), then the HL ammo classes' half max carry
+    /// ([`hl_ammo_types`]) in the `Set_ammo_count` column in force: the map's entities spawn
+    /// before the gamerules' first `Think` applies `ammocount`, so that is the default column.
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let e = cx.edict;
-        if let Some(ids) = hl_ammo_weapons(eng.string(cx.pev().classname)) {
-            // HL ammo: half the max carry of each ammo type the class uses.
-            let count = cvars_ammocount();
-            for &id in ids {
-                if let Some(w) = tables().weapon(id as u8)
-                    && let Some(a) = tables().ammo(w.ammo)
-                {
-                    self.rounds[w.ammo as usize % 16] = a.max_carry[count] / 2;
-                }
-            }
-        }
-        eng.precache_model(c"models/ammopack.mdl");
         eng.set_model(e, c"models/ammopack.mdl");
         let wall = cx.pev().spawnflags & ON_WALL != 0;
         let v = cx.pev();
@@ -426,8 +525,14 @@ impl Entity for GroundAmmo {
         let org = v.origin;
         eng.set_origin(e, org);
         eng.set_size(e, [0.0; 3], [0.0; 3]);
-        cx.think_in(0.1);
         self.ground.spawned(cx);
+        cx.think_in(0.1);
+        if let Some(types) = hl_ammo_types(eng.string(cx.pev().classname)) {
+            let col = state::ammo_column();
+            for &t in types {
+                self.rounds[t as usize] = hl_ammo_rounds(t, col);
+            }
+        }
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -436,23 +541,26 @@ impl Entity for GroundAmmo {
         }
     }
 
+    /// `CTSGroundAmmo::WaitTouch` (0xa2f40): a visible pack, `IsPlayer()` (any `CBasePlayer`),
+    /// `IsAlive()` and a gun; `AddAmmo` for every non-zero slot, and if any took, the slow-motion
+    /// pickup sound, hide and respawn.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.ground.funcs.touch || cx.pev().effects & EF_NODRAW as i32 != 0 || !rules::is_player(other) {
+        if !self.ground.funcs.touch || hidden(cx) || !rules::has_player(other) {
             return;
         }
         let rounds = self.rounds;
-        let took = with_player(other, |p, pcx| {
+        let took = with_player_now(other, |p, pcx| {
             if !rules::alive(pcx.pev()) {
                 return false;
             }
             let mut any = false;
             for (ty, &n) in rounds.iter().enumerate() {
-                if n > 0 && crate::weapons::give_ammo(p, pcx, ty as u8, n) > 0 {
+                if n != 0 && crate::weapons::give_ammo(p, pcx, ty as u8, n) > 0 {
                     any = true;
                 }
             }
             if any {
-                engine().emit_sound(pcx.edict, CHAN_ITEM as i32, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100);
+                crate::entities::stock::explode::emit_sound_slow(pcx.edict, CHAN_ITEM, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100, 0.5);
             }
             any
         })
@@ -461,10 +569,6 @@ impl Entity for GroundAmmo {
             self.ground.taken(cx, self.respawn);
         }
     }
-}
-
-fn cvars_ammocount() -> usize {
-    (rules::cvars::f(c"ammocount").round() as i32).clamp(0, 3) as usize
 }
 
 #[cfg(test)]
@@ -500,6 +604,56 @@ mod tests {
     }
 
     #[test]
+    fn valid_ids_follow_weapon_info() {
+        // Kung fu and the briefcase have no `valid` byte; ids outside 0..38 read entry 0.
+        for id in [0, 29, 38, 39, 255, 256 + 5, -1, i32::MIN] {
+            assert!(!weapon_valid(id), "{id}");
+            assert_eq!(spawn_weapon_id(id), None, "{id}");
+        }
+        for id in (1..38).filter(|&id| id != 29) {
+            assert!(weapon_valid(id), "{id}");
+            // Every weapon a ground weapon can show has a precached world model.
+            assert!(tables().asset(id as u8).is_some(), "{id}");
+        }
+    }
+
+    #[test]
+    fn spawn_turns_akimbo_pairs_into_singles() {
+        // Berettas, MK23, Mini-Uzis, Five-seveNs, Skorpions → their single.
+        for (pair, single) in [(8, 2), (10, 9), (16, 3), (30, 14), (37, 17)] {
+            assert_eq!(spawn_weapon_id(pair), Some(single), "{pair}");
+        }
+        // The Golden Colts (kind 5, no single) and ordinary weapons keep their id.
+        assert_eq!(spawn_weapon_id(21), Some(21));
+        for id in [1, 2, 12, 18, 24, 34] {
+            assert_eq!(spawn_weapon_id(id), Some(id));
+        }
+        // Every id a ground weapon ends up with is one `PickUpWeapon` accepts.
+        for id in 0..40 {
+            if let Some(got) = spawn_weapon_id(id) {
+                assert!(weapon_valid(got));
+                assert_ne!(kind_of(got as u8), kind::AKIMBO, "{id}");
+            }
+        }
+    }
+
+    #[test]
+    fn hl_ammo_classes_fill_their_types() {
+        assert_eq!(hl_ammo_types(c"ammo_crossbow"), Some(&[8, 13][..]));
+        assert_eq!(hl_ammo_types(c"ammo_buckshot"), Some(&[3][..]));
+        assert_eq!(hl_ammo_types(c"ammo_gaussclip"), Some(&[6, 4][..]));
+        assert_eq!(hl_ammo_types(c"ammo_rpgclip"), Some(&[2, 1, 7, 12][..]));
+        assert_eq!(hl_ammo_types(c"ammo_9mmAR"), Some(&[5, 11][..]));
+        assert_eq!(hl_ammo_types(c"ts_groundammo"), None);
+        // Half the max carry (default column: 50BMG 30, 7.62x51 35 → 17).
+        assert_eq!(hl_ammo_rounds(8, 0), 15);
+        assert_eq!(hl_ammo_rounds(13, 0), 17);
+        assert_eq!(hl_ammo_rounds(1, 1), 45);
+        assert_eq!(hl_ammo_rounds(3, 3), 0);
+        assert_eq!(hl_ammo_rounds(0, 0), 0);
+    }
+
+    #[test]
     fn buyable_price() {
         let t = tables();
         let deagle = t.weapon(12).unwrap();
@@ -507,8 +661,21 @@ mod tests {
         assert_eq!(buy_price(12, 0, 0), deagle.cost);
         assert_eq!(buy_price(12, 1 | 8 | 16, 0), deagle.cost + 900 + 1800);
         assert_eq!(buy_price(12, 2 | 4, 3), deagle.cost + 800 + 500 + 3 * ammo);
-        assert_eq!(buy_price(12, 0, -2), deagle.cost);
+        // `GetWeapon` clamps a negative `wextraclip` to 0 before pricing.
+        assert_eq!(buy_price(12, 0, 0), deagle.cost);
+        // An id outside the table prices as entry 0 (kung fu): attachments only.
         assert_eq!(buy_price(99, 0, 0), 0);
+        assert_eq!(buy_price(99, 1, 4), 900);
+    }
+
+    #[test]
+    fn wall_distance_is_kept_as_an_int() {
+        assert_eq!(wall_distance(100.4, None), Some(100));
+        // Closer than the first hit, but not than its rounded distance.
+        assert_eq!(wall_distance(100.2, Some(100)), None);
+        assert_eq!(wall_distance(99.9, Some(100)), Some(100));
+        assert_eq!(wall_distance(98.5, Some(100)), Some(98));
+        assert_eq!(wall_distance(9999.0, None), None);
     }
 
     #[test]

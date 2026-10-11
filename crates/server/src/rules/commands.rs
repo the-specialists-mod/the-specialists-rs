@@ -186,7 +186,9 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
         let lms = state::lms();
         let me_alive = alive(cx.pev());
         let my_respawn = p.respawn_at;
-        for o in super::players() {
+        // `UTIL_FindEntityByClassname(.., "player")` + `IsNetClient()`: every `CBasePlayer`,
+        // players who left included (the engine drops a message to a free slot).
+        for o in super::slot_players() {
             if o == e {
                 continue;
             }

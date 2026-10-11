@@ -45,9 +45,10 @@ pub fn take_health(e: *mut edict_t, amount: f32) -> bool {
 /// charger is used from the player's own `PlayerUse`, which lends the player to its slot
 /// (`player_use`), so the armour lands inside the `Use` as in TS (`world::run_now`). A player
 /// held by a dispatch that didn't lend it gets the armour once that returns, and this then
-/// reports success, which both callers ignore anyway, as TS does.
+/// reports success, which both callers ignore anyway, as TS does. Any `CBasePlayer` takes it,
+/// connected or not (`rules::has_player`): the callers have one in hand.
 pub fn player_take_armor(p: *mut edict_t, amount: f32) -> bool {
-    if !is_player(p) {
+    if !crate::rules::has_player(p) {
         return false;
     }
     let n = amount as i32;
@@ -511,8 +512,11 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         }
     }
 
+    /// `CRecharge::Use` (0xc6fd0) takes an activator whose classname is `"player"`;
+    /// `CWallHealth::Use` (0xc8d08) a non-NULL one whose `IsPlayer()` holds. Both are true for any
+    /// `CBasePlayer`, connected or not (`rules::has_player`), not just for `FL_CLIENT` edicts.
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
-        if !is_player(activator) {
+        if !crate::rules::has_player(activator) {
             return;
         }
         let now = engine().time();

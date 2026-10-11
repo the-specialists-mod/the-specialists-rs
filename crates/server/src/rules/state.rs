@@ -164,6 +164,21 @@ pub fn lms() -> bool {
     with(|g| g.lms)
 }
 
+/// The max-carry column `Set_ammo_count` (0x7f2cc) last applied: `compile_ammo_info` sets the
+/// default one (0) at each map's precache, and `CTSGameRules::Think` applies `ROUND(ammocount)`
+/// once it differs from `+0x55c` (`last_srvsett[2]`, -1 from the constructor). 1, 2 and 3 pick
+/// the reduced columns, any other value the default one.
+pub fn ammo_column() -> usize {
+    with(|g| ammo_column_of(g.last_srvsett[2]))
+}
+
+fn ammo_column_of(applied: i32) -> usize {
+    match applied {
+        1..=3 => applied as usize,
+        _ => 0,
+    }
+}
+
 /// `CashBased()` (0x76abc): hard-wired off in TS 3.0, so nothing is ever charged. The cash code
 /// paths are ported behind it.
 pub fn cash_based() -> bool {
@@ -530,6 +545,8 @@ mod tests {
         assert_eq!((g.round_restart, g.round_timer, g.slow_blocked), (105.0, true, false));
         assert!(!g.global_slow.active && g.global_slow.amount == 0.0);
         assert_eq!(g.last_srvsett, [-1; 4]);
+        // Until the first Think, the precache's `Set_ammo_count(0)` stands.
+        assert_eq!(ammo_column_of(g.last_srvsett[2]), 0);
         assert!(g.votes.records.iter().all(String::is_empty));
         assert_eq!(g.votes.tallies.len(), 1, "the tallies after the records stay");
         assert_eq!((g.votes.next_check, g.votes.chosen.as_str()), (110.0, ""));
@@ -668,5 +685,14 @@ mod tests {
         g.round_restart = 12.0;
         g.call_check_deads(10.0);
         assert_eq!(g.check_deads_at, 0.0);
+    }
+
+    #[test]
+    fn ammo_column_follows_set_ammo_count() {
+        // `Set_ammo_count`'s switch: 1..3 pick a column, anything else (the constructor's -1,
+        // negative or large values) the default one.
+        for (applied, col) in [(-1, 0), (0, 0), (1, 1), (2, 2), (3, 3), (4, 0), (7, 0), (-3, 0)] {
+            assert_eq!(ammo_column_of(applied), col, "{applied}");
+        }
     }
 }

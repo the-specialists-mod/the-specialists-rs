@@ -7,7 +7,7 @@ use super::bmodels::SF_PENDULUM_AUTO_RETURN;
 use super::explode::{emit_sound_slow, sparks};
 use crate::world::{Cx, DamageInfo, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, is_player, vec};
+use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -287,8 +287,10 @@ impl<const ROT: bool> Button<ROT> {
         }
     }
 
+    /// `CBaseButton::ButtonTouch` (0xa8c24): only an entity whose classname is `"player"`
+    /// (any `CBasePlayer`, connected or not: `rules::has_player`).
     fn button_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !is_player(other) {
+        if !crate::rules::has_player(other) {
             return;
         }
         self.t.activator = EHandle::new(other);

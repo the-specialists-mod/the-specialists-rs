@@ -157,7 +157,7 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
                 if let Some((id, att)) = scan_pair(args.str(i))
                     && (1..38).contains(&id)
                 {
-                    super::give_weapon(p, cx, id as u8, att as u8);
+                    super::give_weapon(p, cx, id as u8, u32::from(att as u8));
                     if let Some(w) = info(id as u8) {
                         super::give_ammo(p, cx, w.ammo, 999);
                     }

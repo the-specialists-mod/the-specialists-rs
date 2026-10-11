@@ -138,8 +138,10 @@ impl Door {
         cx.pev().spawnflags & SF_DOOR_SILENT != 0
     }
 
+    /// `CBaseDoor::DoorTouch` (0xb6ba0): only an entity whose classname is `"player"` (any
+    /// `CBasePlayer`, connected or not: `rules::has_player`).
     fn door_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !is_player(other) {
+        if !crate::rules::has_player(other) {
             return;
         }
         if self.t.master != 0 && !is_master_triggered(self.t.master, other) {

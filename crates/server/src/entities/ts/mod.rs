@@ -205,7 +205,7 @@ pub fn object_caps(class: &CStr) -> i32 {
             | b"ts_hack"
             | b"ts_teamescape"
     ) || ground::hl_weapon_ids(class).is_some()
-        || ground::hl_ammo_weapons(class).is_some();
+        || ground::hl_ammo_types(class).is_some();
     if usable { crate::entities::stock::FCAP_CONTINUOUS_USE } else { 0 }
 }
 
@@ -215,7 +215,7 @@ pub fn object_caps(class: &CStr) -> i32 {
 pub fn can_use_through_walls(class: &CStr) -> bool {
     !(matches!(class.to_bytes(), b"ts_groundweapon" | b"ts_groundammo" | b"WorldGun" | b"ts_flag")
         || ground::hl_weapon_ids(class).is_some()
-        || ground::hl_ammo_weapons(class).is_some())
+        || ground::hl_ammo_types(class).is_some())
 }
 
 /// The `Use` of a ground weapon (`CTSGroundWeapon::Use` 0xa230c → `GetWeapon`) or the CTB case

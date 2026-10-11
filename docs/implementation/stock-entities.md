@@ -366,7 +366,9 @@ The track change that its own train fires reads the train's path through a side 
   count is never reset, so it survives death. None of the 97 shipped maps place one.
 * **Chargers.** The health charger refills to max in one use. The HEV charger calls
   `TakeArmor(100)` in one use. They recharge after 60 s and 30 s. Both refuse players without the
-  HEV suit bit (`CWallHealth::Use` 0xc8d08, `CRecharge::Use` 0xc6fd0). Only the health charger
+  HEV suit bit (`CWallHealth::Use` 0xc8d08, `CRecharge::Use` 0xc6fd0). The HEV charger takes an
+  activator whose classname is `"player"`, the health charger a non-NULL one whose `IsPlayer()`
+  holds: both accept any `CBasePlayer`, connected or not (§3.8). Only the health charger
   plays a sound when it recharges (`CRecharge::Recharge` 0xc7234 is silent). Every charger sound
   uses TS slow-motion pitch (0.5).
 * **Items** respawn after 30 s unless `SF_NORESPAWN` (1 << 30) is set, with the `suitchargeok1`
@@ -516,6 +518,28 @@ out, no weapon, or +cancel during a reload). So no +use right after firing or wh
   `PFLAG_USING`, `DriveState::using`, which nothing reads); a release sends on/off users
   `USE_SET` value 0. No stock class in the port has `FCAP_ONOFF_USE`. `momentary_rot_button`
   (without spawnflag 1) is a continuous user: it keeps turning while +use is held.
+
+### 3.8 Which entities count as a player
+
+TS tests "is a player" three ways, and the port keeps each:
+
+* **Classname `"player"`** (`strcmp` or `UTIL_FindEntityByClassname`) and the **`IsPlayer()`**
+  virtual are true for every `CBasePlayer`, including a player who has left (the engine keeps the
+  edict and its object until the slot's next client). The port tests `rules::has_player`
+  (classname `"player"` and a game object) and loops over `rules::slot_players()`. Classname
+  tests: `CBaseButton::ButtonTouch` (0xa8c24), `CBaseDoor::DoorTouch` (0xb6ba0),
+  `CPlatTrigger::Touch` (0xd29d0, then `IsAlive`), `CRecharge::Use` (0xc6fd0),
+  `CChangeLevel::TouchChangeLevel` (0xe83e4) and `CBaseTrigger::CounterUse` (0xe79b0, the
+  "more to go" messages), plus the loops of `Host_Say` (0xad02c), `CTSDMHill::WaitTouch` (0x71be8,
+  its team frags), `CheckVotes` (0x7a5c4) and `TSSelectSpawnSpot` (0x76244, which then needs
+  `IsAlive`, so a departed player never counts). `ActivateMultiTrigger` (0xe778c) also compares
+  `pev->enemy`'s classname for a `trigger_secret`, a class TS doesn't link, so that branch can't run.
+* **`FL_CLIENT`** (`pev->flags & 8`): `rules::is_player` / `rules::players()`, which drop a player
+  the moment `ClientDisconnect` clears the flag.
+
+A departed player is left dead and hidden (`TSPlayerDisconnect`), so the difference shows mostly
+for an activator kept by a delayed target, or for messages (the engine drops one sent to a free
+slot).
 
 ## 4. Coverage (97 shipped maps)
 
@@ -911,6 +935,16 @@ Where TS goes on through NULL, the port stops instead:
 * `game_text` with a NULL activator (TS calls `IsNetClient` through it): only the all-players
   form sends.
 * `TSCreateDeadCorpse` when `CBaseEntity::Create` fails (TS writes through NULL): no corpse.
+
+### 7.7 Guards in the #110 changes
+
+* `ts_groundammo` `mags<t>` with `t` ≥ 16 (TS writes `+0x68 + t * 4`, past the 16 ammo slots
+  into `wduration` and beyond): ignored.
+* A ground weapon used or touched by a player whose object is held by a dispatch further up the
+  stack (`world::run_now` can't lend it): `GetWeapon` runs without the player (the HL classes
+  still set their model), where TS would give the weapon.
+* A ground weapon `Use` with a NULL activator (TS calls `IsPlayer` through NULL): treated as
+  not a player.
 
 ## 8. Census script
 

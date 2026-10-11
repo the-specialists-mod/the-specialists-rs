@@ -479,8 +479,16 @@ How the port maps TS where the structure differs (not deviations):
 
 **Rules package**
 * Give weapons: `weapons::give_weapon(p, cx, id, attachments)` (= `ts_groundweapon` pickup,
-  selects it), ammo: `weapons::give_ammo(p, cx, ammo_type, rounds)` (returns rounds added; a
-  ground weapon's `wextraclip` gives `mags * per_buy` only if the reserve is empty).
+  selects it; `attachments` is a `u32` because a ground weapon passes its whole spawnflags, as
+  `GetWeapon` 0xa2328 does: `TakeWeapon` masks a new record with the allowed attachments but ORs
+  them unmasked into the single of a new akimbo pair), ammo: `weapons::give_ammo(p, cx,
+  ammo_type, rounds)` (returns rounds added; a ground weapon's `wextraclip` gives that raw number
+  of rounds, only if the reserve is empty after the pickup).
+* Ground weapon ids (`entities::ts::ground`, `CTSGroundWeapon::Spawn` 0xa1b40): an id without a
+  valid `get_weapon_info` entry (kung fu 0, the briefcase 29, anything outside 0..38, which reads
+  entry 0) gets `SUB_Remove` 0.1 s later; an akimbo pair built from two singles (kind 4,
+  `info+0xcc` != -1: 8, 10, 16, 30, 37) is turned into its single, since `PickUpWeapon` refuses
+  those pairs. The Golden Colts (21, kind 5) stay. Both unit tested (`ground::spawn_weapon_id`).
 * Power-ups: Infinite Clip -> `weapons::multiply_clip`; grenade -> `give_weapon(p, cx, 24, 0)`;
   kung fu sets `Player::kungfu` (x2 melee), DFR/slow-mo are read from `Player::active_powerup`
   and `pev->fuser1`.

@@ -228,9 +228,11 @@ impl Entity for DmHill {
                 t.push_str(&format!(" ,{} frags for him", self.frags));
             }
         } else {
+            // `UTIL_FindEntityByClassname(.., "player")`, `IsPlayer()` and a case-sensitive
+            // `strcmp` of the `TeamID()`s.
             let team = teams::team_name_of(other);
-            for p in rules::players() {
-                if teams::team_name_of(p).eq_ignore_ascii_case(&team) {
+            for p in rules::slot_players() {
+                if teams::team_name_of(p) == team {
                     rules::add_frags(p, None, self.frags_team as f32);
                     send_score(p);
                 }
