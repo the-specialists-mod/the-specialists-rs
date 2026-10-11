@@ -115,7 +115,7 @@ fn pwup_secs_byte(secs: i32) -> u8 {
 /// `CBasePlayer::UpdateClientData` (0x91d00). Runs when `next_update <= time` and isn't
 /// negative, then waits 0.1 s. The InitHUD block (`m_fInitHUD`) is inside the throttle: ResetHUD
 /// every spawn and observer start, InitHUD and both rules InitHUDs once. Then, on change:
-/// HideWeapon/Train, TSHealth, TSArmor, TSState, TSCash, TSSpace, PwUp, TSSlowMo, TSBTime,
+/// HideWeapon, TSHealth, TSArmor, Train, TSState, TSCash, TSSpace, PwUp, TSSlowMo, TSBTime,
 /// ActItems (alive only), TSPAward, and the gun's own (also 10 Hz) `UpdateClientData`.
 pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
     let now = cx.time();
@@ -127,8 +127,7 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
         crate::rules::lifecycle::init_hud_block(p, cx);
     }
     let e = cx.edict;
-    // HideWeapon and Train; TS sends Train after TSHealth and TSArmor.
-    crate::entities::stock::drive::update_client(p, cx);
+    crate::entities::stock::drive::update_client_hide_weapon(p, cx);
     let (health, armor, state, alive) = {
         let v = cx.pev();
         (v.health, v.armorvalue, stance(v), crate::rules::alive(v))
@@ -143,6 +142,7 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
         let armor = armor_byte(armor);
         msg::one(Msg::TsArmor, e, |w| TsArmor { armor }.write(w));
     }
+    crate::entities::stock::drive::update_client_train(p, cx);
     if p.hud.state != state {
         p.hud.state = state;
         msg::one(Msg::TsState, e, |w| TsState { state }.write(w));

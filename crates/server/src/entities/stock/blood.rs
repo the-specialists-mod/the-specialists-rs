@@ -52,12 +52,13 @@ pub fn blood_stream(origin: Vec3, dir: Vec3, color: i32, amount: i32) {
     te_begin(MSG_PVS, Some(origin), te::BLOODSTREAM).vec3(origin).vec3(dir).byte(color).byte(amount.min(255)).end();
 }
 
-/// `UTIL_BloodDrips`: a `TE_BLOODSPRITE` puff; the amount is doubled in multiplayer (always, in TS).
+/// `UTIL_BloodDrips` (0xedc64): a `TE_BLOODSPRITE` puff; the amount is doubled in multiplayer
+/// (`IsMultiplayer()`: every rules but single player's).
 pub fn blood_drips(origin: Vec3, _dir: Vec3, color: i32, amount: i32) {
     if !should_show_blood(color) || color == DONT_BLEED || amount == 0 {
         return;
     }
-    let amount = (amount * 2).min(255);
+    let amount = if crate::rules::state::single_player() { amount } else { amount * 2 }.min(255);
     let (spray, drop) = BLOOD_SPRITES.0.get();
     te_begin(MSG_PVS, Some(origin), te::BLOODSPRITE)
         .vec3(origin)

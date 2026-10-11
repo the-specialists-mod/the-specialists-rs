@@ -332,6 +332,11 @@ pub fn change_level() {
         next_map = voted;
     }
     state::with(|g| g.votes.chosen.clear());
+    // `CTSGameRules::Init`: the TS state is reset for the frames until the next map loads (it
+    // clears the chosen map too).
+    let now = eng.time();
+    state::with(|g| g.ts_init(now));
+    crate::weapons::reset_bullets();
     if next_map.is_empty() || !eng.is_map_valid(&next_map) {
         next_map = first;
     }

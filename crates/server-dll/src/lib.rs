@@ -210,8 +210,7 @@ unsafe extern "C" fn client_kill(e: *mut edict_t) {
 }
 
 unsafe extern "C" fn client_put_in_server(e: *mut edict_t) {
-    world::create::<player::Player>(e.v());
-    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    player::client_put_in_server(e);
 }
 
 unsafe extern "C" fn client_command(e: *mut edict_t) {
@@ -249,7 +248,11 @@ unsafe extern "C" fn get_game_description() -> *const c_char {
     rules::game_description().as_ptr()
 }
 
-unsafe extern "C" fn player_customization(_: *mut edict_t, _: *mut customization_t) {}
+unsafe extern "C" fn player_customization(e: *mut edict_t, custom: *mut customization_t) {
+    // SAFETY: the engine passes null or a customization valid for this call.
+    let custom = unsafe { custom.as_ref() }.map(|c| (c.resource.type_ as i32, c.nUserData2));
+    player::impulse::player_customization(e, custom);
+}
 
 unsafe extern "C" fn sys_error(msg: *const c_char) {
     // SAFETY: the engine passes null or a NUL-terminated string valid for this call.

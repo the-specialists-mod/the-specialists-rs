@@ -30,10 +30,12 @@ const HLDM_MODELS: [&str; 9] = ["barney", "gina", "gman", "helmet", "hgrunt", "r
 // ---- connection ----------------------------------------------------------------------------------
 
 /// `ClientConnect`: notify `ts_playeramount`, `CHalfLifeMultiplay::ClientConnected` (0xcf59c:
-/// the voice manager), then accept.
+/// the voice manager), then accept. `CHalfLifeRules::ClientConnected` (0xde794) only accepts.
 pub fn client_connect(e: *mut edict_t, _name: &CStr, _addr: &CStr) -> bool {
     crate::entities::ts::player_amount_changed(true);
-    super::voice::client_connected(e);
+    if !state::single_player() {
+        super::voice::client_connected(e);
+    }
     true
 }
 
@@ -53,7 +55,10 @@ pub fn client_disconnect(e: *mut edict_t) {
         v.takedamage = DAMAGE_NO as f32;
         v.solid = SOLID_NOT as i32;
         eng.set_origin(e, v.origin);
-        client_disconnected(e, idx);
+        // `CHalfLifeRules::ClientDisconnected` (0xde7a0) is empty.
+        if !state::single_player() {
+            client_disconnected(e, idx);
+        }
     }
     // Port addition (engine safety): the engines leave FL_CLIENT on a dropped client's edict, and
     // FWGS still maps it to the freed slot: pfnGetPlayerUserId returns the old id, and
@@ -143,6 +148,10 @@ pub fn userinfo_changed(e: *mut edict_t) {
         let uid = eng.user_id(e);
         let tail = if state::teamplay() { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
         msg::log(&format!("\"{old}<{uid}><{}><{tail}>\" changed name to \"{new}\"\n", eng.auth_id(e).to_string_lossy()));
+    }
+    // `CHalfLifeRules` keeps `CGameRules::ClientUserInfoChanged` (empty).
+    if state::single_player() {
+        return;
     }
     crate::player::with_player(e, |p, cx| {
         multiplay_userinfo_changed(p, cx);
@@ -268,7 +277,11 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
         v.sequence = 0;
         v.gaitsequence = 0;
         v.frame = 0.0;
-        v.weapons |= 0x8000_0000u32 as i32;
+        // The suit bit, from `CHalfLifeMultiplay::PlayerSpawn` (`CHalfLifeRules::PlayerSpawn`
+        // 0xde7d8 is empty).
+        if !state::single_player() {
+            v.weapons |= 0x8000_0000u32 as i32;
+        }
         v.air_finished = now + 12.0;
         v.dmg = 2.0;
         v.velocity = [0.0; 3];
@@ -435,10 +448,17 @@ pub fn init_hud_block(p: &mut Player, cx: &mut Cx) {
     messages::one(Msg::ResetHUD, e).byte(0).end();
     if !p.ts.game_hud_initialized {
         messages::one(Msg::InitHUD, e).end();
-        rules_init_hud(p, cx);
+        // `CHalfLifeRules::InitHUD` (0xde79c) is empty; `game_playerjoin` only fires when
+        // `IsMultiplayer()`. `CTSGameRules::InitHUD` runs either way.
+        let single = state::single_player();
+        if !single {
+            rules_init_hud(p, cx);
+        }
         ts_init_hud(p, cx);
         p.ts.game_hud_initialized = true;
-        crate::entities::fire_targets(c"game_playerjoin", e, e, crate::world::UseType::Toggle, 0.0);
+        if !single {
+            crate::entities::fire_targets(c"game_playerjoin", e, e, crate::world::UseType::Toggle, 0.0);
+        }
     }
     crate::entities::fire_targets(c"game_playerspawn", e, e, crate::world::UseType::Toggle, 0.0);
     let (round_end, timer) = state::with(|g| (g.round_end, g.round_timer));
@@ -855,7 +875,13 @@ pub fn stop_observer(p: &mut Player, cx: &mut Cx) {
     }
     cx.pev().button = 0;
     p.joined = true;
-    p.spawn(cx);
+    // `respawn` (0xace58): with neither coop nor deathmatch the map reloads instead.
+    let g = engine().globals();
+    if g.coop == 0.0 && g.deathmatch == 0.0 {
+        engine().server_command("reload\n");
+    } else {
+        p.spawn(cx);
+    }
     cx.pev().nextthink = -1.0;
     if engine().cvar_float(c"developer") != 0.0 {
         let owned: Vec<usize> = (1..p.inv.gun.status.len()).filter(|&i| p.inv.gun.status[i].owned).collect();
@@ -918,7 +944,9 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     // out on the next PreThink (`UpdatePowerUpState` while dead), not here.
     crate::weapons::on_killed(p, cx);
 
-    scoring::player_killed(p, cx, dmg, globals); // 0x8f1b1
+    if !state::single_player() {
+        scoring::player_killed(p, cx, dmg, globals); // 0x8f1b1 (`CHalfLifeRules::PlayerKilled` 0xde82c is empty)
+    }
 
     // `m_pTank->Use(this, this, USE_OFF)` after PlayerKilled (0x8f1e1).
     crate::entities::stock::drive::release_tank(p, cx);

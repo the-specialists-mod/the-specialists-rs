@@ -17,7 +17,9 @@ use shared::weapons::{Gun, att, id, tables};
 use std::cell::Cell;
 
 pub fn think() {
-    if !state::with(|g| g.installed) {
+    // `CHalfLifeRules::Think` (0xde730) is empty: in single player neither the multiplayer nor
+    // the TS think runs.
+    if !state::with(|g| g.installed && !g.single_player) {
         return;
     }
     let now = engine().time();

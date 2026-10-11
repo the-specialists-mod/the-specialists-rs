@@ -34,6 +34,11 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
                 engine().client_print(cx.edict, PRINT_TYPE::print_console, &format!("\"fov\" is \"{fov}\"\n"));
             }
         }
+        // `CBasePlayer::SelectItem(argv(1))` (0xdade4): switch to the held item of that class
+        // (`strcmp`) unless it is `m_pActiveItem`. A TS player's one item, `weapon_tsgun`, is
+        // `m_pActiveItem` whenever it is held (`AddPlayerItem` deploys it: no active item before,
+        // `CanDeploy` always true), so the command is taken and changes nothing.
+        "use" => {}
         // No teamplay check (0xae49c): the TS client ignores menu 2 unless `GameMode` said
         // teamplay (`ShowVGUIMenu` 0x10064050 -> 0x10064280).
         "changeteam" => msg::one(Msg::VguiMenu, cx.edict, |w| VguiMenu { menu: 2 }.write(w)),
@@ -46,12 +51,18 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
                 teams::change_team(p, cx, &name, false, false);
             }
         }
-        "motd" => send_motd(cx.edict),
+        // Only when `IsMultiplayer()`.
+        "motd" => {
+            if !state::single_player() {
+                send_motd(cx.edict);
+            }
+        }
         "fullupdate" => force_client_dll_update(p, cx),
         c if c.starts_with("cutwire_") => {} // bomb wires: objective modes are dead in 3.0
         // Past `ClientCommand`'s own names, `CHalfLifeMultiplay::ClientCommand` (0xceee8): the voice
         // manager (`vban`/`VModEnable` by `strcasecmp`, the only case-insensitive names), then
-        // `menuselect`.
+        // `menuselect`. `CHalfLifeRules` keeps `CGameRules::ClientCommand`, which takes nothing.
+        _ if state::single_player() => return false,
         _ if super::voice::client_command(cx.edict, p.respawn_at, cmd, args) => {}
         "menuselect" => {}
         _ => return false,
@@ -224,7 +235,7 @@ pub fn register_server_commands() {
 extern "C" fn cmd_dev_touch() {
     use goldsrc::ext::weapons::WeaponsEngine;
     let e = engine();
-    if !cvars::cheats() || e.cmd_argc() < 2 {
+    if !cvars::dev_cheats() || e.cmd_argc() < 2 {
         e.print("usage (sv_cheats 1): ts_dev_touch <file>\n");
         return;
     }
@@ -256,7 +267,7 @@ fn arg_f32(i: i32) -> f32 {
 /// floor and optionally sets the view. Lets scripted tests reach map features.
 extern "C" fn cmd_tp() {
     let e = engine();
-    if !cvars::cheats() || e.cmd_argc() < 5 {
+    if !cvars::dev_cheats() || e.cmd_argc() < 5 {
         e.print("usage (sv_cheats 1): ts_tp <player#> <x> <y> <z> [yaw] [pitch]\n");
         return;
     }
@@ -279,7 +290,7 @@ extern "C" fn cmd_tp() {
 /// view at another player's chest or at a point.
 extern "C" fn cmd_face() {
     let e = engine();
-    if !cvars::cheats() || (e.cmd_argc() != 3 && e.cmd_argc() != 5) {
+    if !cvars::dev_cheats() || (e.cmd_argc() != 3 && e.cmd_argc() != 5) {
         e.print("usage (sv_cheats 1): ts_face <player#> <target#> | <player#> <x> <y> <z>\n");
         return;
     }

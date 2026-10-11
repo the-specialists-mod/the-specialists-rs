@@ -206,7 +206,8 @@ impl<const KIND: u8> Entity for Item<KIND> {
             let me = cx.edict;
             sub_use_targets(me, cx.pev().target, 0, 0.0, other, UseType::Toggle, 0.0);
             self.touchable = false;
-            if cx.pev().spawnflags & SF_NORESPAWN == 0 {
+            // `ItemShouldRespawn`: `CHalfLifeRules` (0xde8a0) never respawns.
+            if cx.pev().spawnflags & SF_NORESPAWN == 0 && !crate::rules::state::single_player() {
                 self.respawn(cx);
             } else {
                 remove(me);
@@ -249,7 +250,9 @@ impl<const ARMOR: bool> Charger<ARMOR> {
             engine().emit_sound(cx.edict, CHAN_STATIC as i32, charge, 0.0, 0.0, goldsrc::ext::entities::snd::STOP, PITCH_NORM as i32);
         }
         self.on = 0;
-        if !self.full {
+        // `FlHealthChargerRechargeTime` / `FlHEVChargerRechargeTime` are 0 in single player
+        // (`CHalfLifeRules` 0xde934, `CGameRules`), and an empty charger then stays empty.
+        if !self.full && !crate::rules::state::single_player() {
             let t = if ARMOR { 30.0 } else { 60.0 };
             self.recharge_at = Some(t);
             think_ltime(cx, t);

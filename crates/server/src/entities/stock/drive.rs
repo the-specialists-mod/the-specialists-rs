@@ -221,15 +221,20 @@ pub fn tank_stopped(player: *mut edict_t) {
     });
 }
 
-/// The `HideWeapon` and `Train` parts of `CBasePlayer::UpdateClientData` (0x91d00).
-pub fn update_client(p: &mut Player, cx: &mut Cx) {
-    let e = cx.edict;
+/// The `HideWeapon` part of `CBasePlayer::UpdateClientData` (0x91d00), before `TSHealth`.
+pub fn update_client_hide_weapon(p: &mut Player, cx: &mut Cx) {
     let d = &mut p.drive;
     if d.hide_hud != d.sent_hide_hud {
         let flags = d.hide_hud as u8;
-        msg::one(Msg::HideWeapon, e, |w| HideWeapon { flags }.write(w));
+        msg::one(Msg::HideWeapon, cx.edict, |w| HideWeapon { flags }.write(w));
         d.sent_hide_hud = d.hide_hud;
     }
+}
+
+/// The `Train` part of `CBasePlayer::UpdateClientData` (0x91d00), after `TSArmor`.
+pub fn update_client_train(p: &mut Player, cx: &mut Cx) {
+    let e = cx.edict;
+    let d = &mut p.drive;
     if d.train & TRAIN_NEW != 0 {
         let pos = (d.train & 0xf) as u8;
         msg::one(Msg::Train, e, |w| Train { pos }.write(w));

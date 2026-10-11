@@ -279,6 +279,8 @@ impl Entity for World {
         // TS also sets gDisplayTitle from SF_WORLD_TITLE, but nothing reads it (the GameTitle
         // message is registered and never sent), so the port keeps only the spawnflag.
         eng.set_cvar_float(c"mp_defaultteam", if flags & SF_WORLD_FORCETEAM != 0 { 1.0 } else { 0.0 });
+        // The end of `CWorld::Spawn`: `g_flWeaponCheat = CVAR_GET_FLOAT("sv_cheats")`.
+        crate::rules::cvars::latch_weapon_cheat();
     }
 }
 

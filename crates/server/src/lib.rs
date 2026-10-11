@@ -32,6 +32,7 @@ pub fn precache_all() {
     for s in [c"player/pl_wade1.wav", c"player/pl_wade2.wav", c"player/pl_wade3.wav", c"player/pl_wade4.wav"] {
         engine().precache_sound(s);
     }
+    player::impulse::precache();
     stunt::precache();
     weapons::precache();
     rules::precache();
