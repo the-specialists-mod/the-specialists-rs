@@ -5,8 +5,11 @@
 //! * "Select Team" in "Title Font" at (`XRES(40)`, `YRES(32)`).
 //! * A window at (`XRES(176)`, `YRES(80)`), `XRES(424)`×`YRES(312)`, with an orange `LineBorder`:
 //!   the map's name in "Title Font", the map's `maps/<map>.txt` in "Briefing Text" (else
-//!   "#Map_Description_not_available"), and the hovered team's info ("<team>: N Player(s) (F
-//!   points)" and its other players) in "Team Info Text" in the team colour.
+//!   "#Map_Description_not_available") in a `CTFScrollPanel` (its bars automatic, validated at
+//!   the end of every `Update`), and the hovered team's info ("<team>: N Player(s) (F points)"
+//!   and its other players) in "Team Info Text" in the team colour. The default text's panel is
+//!   wider and taller than the scroll panel's client clip, so without a map briefing TS shows
+//!   both scroll bars.
 //! * A column of `CommandButton`s at `XRES(40)` from `YRES(80)`, `XRES(124)`×`YRES(24)` and
 //!   `YRES(8)` apart: one per team (`TeamNames`, at most four, bound to their digits), "Auto
 //!   assign" (5), and "#Menu_Cancel", which TS always shows (`Update` `0x10066020`).
@@ -15,9 +18,11 @@
 //!   (`CMenuHandler_StringCommandWatch` `0x10064a20`).
 
 use super::scoreboard::PlayerSlot;
+use super::scroll::ScrollPanel;
 use super::widgets::{CommandButton, ViewportScheme, team_color, transparent_background};
 use crate::hud::state::PlayerExtra;
-use crate::hud::vgui::{Align, Color, Panel, Schemes, Surface, ftol, label_content_size, label_text_pos, spill, xs, ys};
+use crate::hud::vgui::{Align, Color, Image, Panel, Schemes, Surface, ftol, label_content_size, label_text_pos, spill, xs, ys};
+use std::rc::Rc;
 
 /// Everything `Update` reads.
 pub struct Inputs<'a> {
@@ -57,10 +62,11 @@ pub struct TeamMenu {
     /// `m_bUpdatedMapName`.
     pub updated_map: bool,
     pub map_title: Vec<u8>,
-    /// The briefing text, and whether it came from the map's file (the panel is then resized to
-    /// the text; the default text keeps the constructor's size).
+    /// The briefing text and its panel's size: the constructor's, or the map file's text size.
     pub briefing: Vec<u8>,
-    pub briefing_loaded: Option<(i32, i32)>,
+    pub briefing_size: (i32, i32),
+    /// `m_pScrollPanel`, in the window; its client holds the briefing panel.
+    pub scroll: ScrollPanel,
     /// The button under the cursor (`cursorEntered`/`cursorExited`): 1..=5, 6 = cancel.
     hover: Option<usize>,
 }
@@ -87,6 +93,13 @@ impl TeamMenu {
             b
         });
         let cancel = CommandButton::new(&crate::hud::saytext::bytes(&lookup("#Menu_Cancel")), bx, 0, bw, bh);
+        // The scroll panel at (`XRES(16)`, `YRES(48)`) in the window, its bars set automatic
+        // before the briefing panel (`XRES(424) - XRES(16)`×`YRES(178)`) joins its client.
+        let x16 = spill(xsc * 16.0);
+        let mut scroll = ScrollPanel::ctf(ftol(x16), ftol(ysc * 48.0), ftol(xsc * 424.0 - x16 * 2.0), ftol(ysc * 178.0));
+        scroll.set_scroll_bar_visible(false, false);
+        let briefing_size = (ftol(xsc * 424.0 - xsc * 16.0), ftol(ysc * 178.0));
+        scroll.content = Some(briefing_size);
         let mut m = TeamMenu {
             buttons,
             cancel,
@@ -96,7 +109,8 @@ impl TeamMenu {
             updated_map: false,
             map_title: Vec::new(),
             briefing: crate::hud::saytext::bytes(&lookup("#Map_Description_not_available")),
-            briefing_loaded: None,
+            briefing_size,
+            scroll,
             hover: None,
         };
         m.initialize();
@@ -187,11 +201,13 @@ impl TeamMenu {
             let base = level.split('.').next().unwrap_or(level);
             if let Some(text) = (inp.load)(&format!("{base}.txt")) {
                 let text: Vec<u8> = text.into_iter().take_while(|&c| c != 0).collect();
-                self.briefing_loaded = Some((inp.briefing_size)(&text));
+                self.briefing_size = (inp.briefing_size)(&text);
+                self.scroll.content = Some(self.briefing_size);
                 self.briefing = text;
             }
             self.updated_map = true;
         }
+        self.scroll.validate();
     }
 
     /// `SlotInput` (`0x100665a0`): 5 is auto-assign; 1..teams fires a visible team button.
@@ -211,10 +227,18 @@ impl TeamMenu {
             .map(move |(i, b)| (i, b.panel(&menu)))
     }
 
+    /// The window panel (`m_pTeamWindow`), which holds the scroll panel.
+    fn window(w: i32, h: i32) -> Panel {
+        let (xsc, ysc) = (xs(w), ys(h));
+        let menu = Panel::root(w, h).child(0, 0, w, h);
+        menu.child(ftol(spill(xsc) * 176.0), ftol(ysc * 80.0), ftol(xsc * 424.0), ftol(ysc * 312.0)).bordered()
+    }
+
     /// The cursor moved to (`x`, `y`): `cursorEntered`/`cursorExited` on the buttons. A team
     /// button shows its info (`CHandler_MenuButtonOver`); the cancel button arms while hovered
-    /// (`CHandler_CommandButtonHighlight`).
+    /// (`CHandler_CommandButtonHighlight`). The briefing's scroll bars follow too.
     pub fn hover(&mut self, w: i32, h: i32, x: i32, y: i32) {
+        self.scroll.cursor_moved(&Self::window(w, h), x, y);
         let menu = Panel::root(w, h).child(0, 0, w, h);
         let now = self.button_panels(&menu).filter(|(_, p)| p.is_within(x, y)).map(|(i, _)| i).last();
         if now == self.hover {
@@ -231,6 +255,20 @@ impl TeamMenu {
         self.hover = now;
     }
 
+    /// A mouse press: the briefing's scroll bar sliders.
+    pub fn press(&mut self, w: i32, h: i32, x: i32, y: i32) {
+        self.scroll.mouse_pressed(&Self::window(w, h), x, y);
+    }
+
+    /// A mouse release (`left`: the left button): the briefing's scroll bars take theirs, else a
+    /// left release fires the button under it.
+    pub fn release(&mut self, w: i32, h: i32, x: i32, y: i32, left: bool) -> Option<Action> {
+        if self.scroll.mouse_released(&Self::window(w, h), x, y, left) || !left {
+            return None;
+        }
+        self.click(w, h, x, y)
+    }
+
     /// A left-button release at (`x`, `y`): the button under it fires.
     pub fn click(&self, w: i32, h: i32, x: i32, y: i32) -> Option<Action> {
         let menu = Panel::root(w, h).child(0, 0, w, h);
@@ -240,7 +278,7 @@ impl TeamMenu {
 
     /// Paints the menu (`paintBackground` `0x10066640` updates it first while the map name is
     /// unset, then the panel's black at VGUI alpha 100; then its children).
-    pub fn paint(&self, s: &mut dyn Surface, sb: &Schemes, w: i32, h: i32) {
+    pub fn paint(&self, s: &mut dyn Surface, sb: &Schemes, w: i32, h: i32, arrows: &[Option<Rc<Image>>; 4]) {
         let (xsc, ysc) = (xs(w), ys(h));
         let vs = ViewportScheme::from(sb);
         let menu = Panel::root(w, h).child(0, 0, w, h);
@@ -258,19 +296,18 @@ impl TeamMenu {
         };
         fitted_label(s, &menu, ftol(xsc * 40.0), ftol(ysc * 32.0), b"Select Team");
         // The window: an orange line border, no background (`CTransparentPanel(255)`).
-        let win = menu.child(ftol(spill(xsc) * 176.0), ftol(ysc * 80.0), ftol(xsc * 424.0), ftol(ysc * 312.0)).bordered();
+        let win = Self::window(w, h);
         win.line_border(s, Color::new(178, 118, 0, 0));
         fitted_label(s, &win, ftol(xsc * 16.0), ftol(ysc * 16.0), &self.map_title);
-        let x16 = spill(xsc * 16.0);
-        let scroll = win.child(ftol(x16), ftol(ysc * 48.0), ftol(xsc * 424.0 - x16 * 2.0), ftol(ysc * 178.0));
         let brief = sb.get("Briefing Text");
-        if let Some(f) = sb.font(brief) {
+        if let (Some(f), Some(p)) = (sb.font(brief), self.scroll.content_panel(&win)) {
+            // `TextImage::setText` sizes the text image to the text (after `setFont`), and the
+            // map file's panel is set to that size too: the text never wraps.
             let (tw, _) = f.text_size(&self.briefing);
-            let (bw, bh) = self.briefing_loaded.unwrap_or((ftol(xsc * 424.0 - xsc * 16.0), ftol(ysc * 178.0)));
-            let p = scroll.child(0, 0, bw, bh);
             p.paint_background(s, brief.bg);
             p.text(s, f, 0, 0, brief.fg, &self.briefing, tw);
         }
+        self.scroll.paint_bars(s, &win, &vs, arrows);
         if let Some(f) = sb.font_of("Team Info Text") {
             for i in 1..=5 {
                 if !self.info_visible[i] {
@@ -332,7 +369,8 @@ mod tests {
         assert!(m.info_visible[1] && !m.info_visible[2] && m.buttons[1].armed);
         assert_eq!(m.info[1], b"Specialists: 2 Players (10 points)\nbob, eve");
         assert!(m.info[2].is_empty());
-        assert_eq!((m.map_title.as_slice(), m.briefing_loaded), (&b"ts_dojo"[..], Some((16, 2))));
+        assert_eq!((m.map_title.as_slice(), m.briefing_size), (&b"ts_dojo"[..], (16, 2)));
+        assert!(!m.scroll.vbar.visible && !m.scroll.hbar.visible, "a small briefing needs no bars");
         assert!(m.updated_map);
         // Input.
         assert_eq!(m.slot_input(2, 2), Some(Action::Command("jointeam 2".into())));
@@ -348,6 +386,18 @@ mod tests {
         assert_eq!(m.click(640, 480, 50, 180), Some(Action::Close));
         assert_eq!(m.click(640, 480, 50, 85), Some(Action::Command("jointeam 1".into())));
         assert_eq!(m.click(640, 480, 300, 300), None);
+    }
+
+    /// The default text's panel (`XRES(408)`×`YRES(178)`) is larger than the client clip
+    /// (`XRES(392)`×`YRES(178)`): both bars show.
+    #[test]
+    fn default_briefing_shows_both_bars() {
+        let m = TeamMenu::new(640, 480, &|s| s.to_owned());
+        let mut m = m;
+        m.scroll.validate();
+        assert_eq!((m.scroll.w, m.scroll.h, m.briefing_size), (392, 178, (408, 178)));
+        assert!(m.scroll.vbar.visible && m.scroll.hbar.visible);
+        assert_eq!(m.scroll.clip, (376, 162));
     }
 
     #[test]

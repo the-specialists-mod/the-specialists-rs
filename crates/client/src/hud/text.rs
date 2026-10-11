@@ -12,12 +12,19 @@ pub trait Titles {
     fn message(&self, _key: &[u8]) -> Option<super::message::TitleMsg> {
         None
     }
+    /// The entry's `effect` (0 if none).
+    fn effect(&self, _key: &str) -> i32 {
+        0
+    }
 }
 
 /// Engine titles (`pfnTextMessageGet`).
 pub struct EngineTitles;
 
 impl Titles for EngineTitles {
+    fn effect(&self, key: &str) -> i32 {
+        engine().text_message(key).map_or(0, |m| m.effect)
+    }
     fn get(&self, key: &str) -> Option<String> {
         let m = engine().text_message(key)?;
         if m.pMessage.is_null() {
@@ -43,25 +50,26 @@ impl Titles for EngineTitles {
     }
 }
 
-/// `LocaliseTextString` (`0x100348d0`) into a `size`-byte buffer, as `CHudStatusBar` uses it:
-/// each step copies one byte, or replaces a `#word` (word bytes `A`..`z` and digits) with its
-/// titles.txt text, and uses up one byte of `size` however much it wrote; when the source ends
-/// the buffer is cut at `size - steps - 1`. Guarded: writes past `size` (a long titles text) and
-/// the `[-1]` terminator TS writes when `size` steps run out are dropped.
-pub fn localise_text_string(t: &dyn Titles, src: &[u8], size: usize) -> Vec<u8> {
-    let mut dst = vec![0u8; size];
+/// `LocaliseTextString` (`0x100348d0`) into `dst` (its `size` is `dst.len()`), as TS writes it:
+/// each step copies one byte, or replaces a `#word` (word bytes `A`..`z`, which takes in
+/// `[\]^_` and the backtick, and digits) with its titles.txt text, and uses up one byte of `size`
+/// however much it wrote; when the source ends the buffer is cut at `size - steps - 1`. A `#` with
+/// no entry is copied alone and, unlike the other steps, isn't followed by a terminator, so a
+/// source ending in one shows whatever the buffer held after it. Returns the length up to the
+/// first NUL. Guarded: writes past `size` (a long titles text) and the `[-1]` terminator TS writes
+/// when `size` steps run out are dropped.
+pub fn localise_text_string_in(t: &dyn Titles, src: &[u8], dst: &mut [u8]) -> usize {
+    let size = dst.len();
     let mut put = |i: usize, b: u8| {
         if i < size {
             dst[i] = b;
         }
     };
+    let at = |i: usize| src.get(i).copied().unwrap_or(0);
     let (mut s, mut d, mut budget) = (0, 0, size);
-    if src.first().is_some_and(|&b| b != 0) {
-        loop {
-            if budget == 0 {
-                break;
-            }
-            if src[s] == b'#' {
+    if at(0) != 0 {
+        while budget > 0 {
+            if at(s) == b'#' {
                 let end = s + 1 + src[s + 1..].iter().take_while(|&&c| (b'A'..=b'z').contains(&c) || c.is_ascii_digit()).count();
                 let word = &src[s + 1..end];
                 // A missing entry, or one with a null `pMessage`, copies the `#` alone.
@@ -75,18 +83,18 @@ pub fn localise_text_string(t: &dyn Titles, src: &[u8], size: usize) -> Vec<u8> 
                         s = end;
                     }
                     None => {
-                        put(d, src[s]);
+                        put(d, b'#');
                         d += 1;
                         s += 1;
                     }
                 }
             } else {
-                put(d, src[s]);
+                put(d, at(s));
                 d += 1;
                 s += 1;
                 put(d, 0);
             }
-            if s >= src.len() || src[s] == 0 {
+            if at(s) == 0 {
                 if let Some(i) = budget.checked_sub(2) {
                     put(i, 0);
                 }
@@ -97,43 +105,61 @@ pub fn localise_text_string(t: &dyn Titles, src: &[u8], size: usize) -> Vec<u8> 
     } else if let Some(i) = size.checked_sub(1) {
         put(i, 0);
     }
-    let len = dst.iter().position(|&b| b == 0).unwrap_or(size);
-    dst.truncate(len);
+    dst.iter().position(|&b| b == 0).unwrap_or(size)
+}
+
+/// `LocaliseTextString` into a fresh `size`-byte buffer (TS's callers pass stack buffers; the
+/// port starts them zeroed).
+pub fn localise_text_string(t: &dyn Titles, src: &[u8], size: usize) -> Vec<u8> {
+    let mut dst = vec![0u8; size];
+    let n = localise_text_string_in(t, src, &mut dst);
+    dst.truncate(n);
     dst
 }
 
-/// SDK `LocaliseTextString`: every `#word` (word = `[A-Za-z0-9_]`) that names a titles.txt
-/// entry is replaced by its text; unknown words are left as written.
+thread_local! {
+    /// `BufferedLocaliseTextString`'s static buffer (`0x100eb274`, 0x400 bytes), shared by all
+    /// its callers (TS's client runs on one thread).
+    static BUFFER: std::cell::RefCell<[u8; 0x400]> = const { std::cell::RefCell::new([0; 0x400]) };
+}
+
+/// `BufferedLocaliseTextString` (`0x100349a0`): `LocaliseTextString` into the one 0x400-byte
+/// static buffer.
+pub fn buffered_localise(t: &dyn Titles, src: &[u8]) -> Vec<u8> {
+    BUFFER.with_borrow_mut(|b| {
+        let n = localise_text_string_in(t, src, b);
+        b[..n].to_vec()
+    })
+}
+
+/// [`buffered_localise`] on the port's Latin-1 strings (one char per byte). TS localises this way
+/// wherever it localises a whole text: `AddTSMessage` (`TSMessage`), `ShowMenu`, the buy menu and
+/// the HUD labels.
 pub fn localise_with(t: &dyn Titles, msg: &str) -> String {
-    let mut out = String::with_capacity(msg.len());
-    let chars: Vec<char> = msg.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '#' {
-            let mut j = i + 1;
-            while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
-                j += 1;
-            }
-            let word: String = chars[i + 1..j].iter().collect();
-            if !word.is_empty()
-                && let Some(text) = t.get(&word)
-            {
-                out.push_str(&text);
-                i = j;
-                continue;
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    out
+    super::saytext::string(&buffered_localise(t, &super::saytext::bytes(msg)))
 }
 
 pub fn localise(msg: &str) -> String {
-    if !msg.contains('#') {
-        return msg.to_owned();
-    }
     localise_with(&EngineTitles, msg)
+}
+
+/// `CHudTextMessage::LookupString` (`0x100349c0`): only a whole-string `#key` is looked up (the
+/// rest of the string is the key). A found entry with a negative `effect` sets `dest` to its
+/// negation.
+pub fn lookup_string(t: &dyn Titles, msg: &[u8], dest: Option<&mut i32>) -> Vec<u8> {
+    if let Some(key) = msg.strip_prefix(b"#") {
+        let key = super::saytext::string(key);
+        if let Some(text) = t.get(&key) {
+            if let Some(d) = dest {
+                let effect = t.effect(&key);
+                if effect < 0 {
+                    *d = -effect;
+                }
+            }
+            return super::saytext::bytes(&text);
+        }
+    }
+    msg.to_vec()
 }
 
 /// SDK `LookupString`: only a whole-string `#key` is looked up.
@@ -267,6 +293,31 @@ mod tests {
         assert_eq!(localise_text_string(&T, b"", 128), b"");
         // Five steps ("a", "#Chg_Join", ".", "z", "z") in 9 bytes: cut at 9 - 5 - 1 = 3.
         assert_eq!(localise_text_string(&T, b"a#Chg_Join.zz", 9), b"aJo");
+    }
+
+    /// TS's rules in [`localise_with`] (`BufferedLocaliseTextString`): the word takes `A`..`z`
+    /// (so `#Buy_Buy^` misses where the SDK's `[A-Za-z0-9_]` would stop), a 0x400-byte buffer
+    /// shared by every call, and a trailing unknown `#` left unterminated over the last text.
+    #[test]
+    fn buffered_localise_rules() {
+        assert_eq!(localise_with(&T, "#Buy_Buy^x"), "#Buy_Buy^x");
+        assert_eq!(localise_with(&T, "#Buy_Buy-x"), "Buy-x");
+        assert_eq!(localise_with(&T, "#Buy_Buy"), "Buy");
+        assert_eq!(localise_with(&T, "abcdef"), "abcdef");
+        assert_eq!(localise_with(&T, "x#"), "x#cdef", "the old text shows after an unknown trailing #");
+        // 600 plain bytes: cut at 0x400 - 600 - 1.
+        assert_eq!(localise_with(&T, &"a".repeat(600)).len(), 0x400 - 600 - 1);
+    }
+
+    /// `LookupString` (`0x100349c0`): a whole-string key only.
+    #[test]
+    fn lookup_string_whole_keys() {
+        assert_eq!(lookup_string(&T, b"#Buy_Buy", None), b"Buy");
+        assert_eq!(lookup_string(&T, b"#Buy_Buy x", None), b"#Buy_Buy x");
+        assert_eq!(lookup_string(&T, b"x #Buy_Buy", None), b"x #Buy_Buy");
+        let mut dest = 3;
+        assert_eq!(lookup_string(&T, b"#Nope", Some(&mut dest)), b"#Nope");
+        assert_eq!(dest, 3);
     }
 
     #[test]

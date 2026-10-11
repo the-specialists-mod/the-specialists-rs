@@ -64,7 +64,11 @@ impl Default for Screen {
 /// Player info from `pfnGetPlayerInfo`.
 #[derive(Debug, Clone, Default)]
 pub struct PlayerInfo {
+    /// The name decoded as UTF-8 (invalid bytes become U+FFFD).
     pub name: String,
+    /// The name's raw bytes as the engine holds them (empty for a null name): what TS draws and
+    /// prints.
+    pub name_bytes: Vec<u8>,
     pub ping: i32,
     pub packetloss: i32,
     pub this_player: bool,
@@ -219,6 +223,11 @@ impl ClEngine {
         let s = to_cstring(text);
         cl_eng!(pfnCenterPrint(s.as_ptr()));
     }
+    /// `pfnCenterPrint` on raw bytes (no UTF-8 conversion).
+    pub fn center_print_bytes(&self, text: &[u8]) {
+        let s = std::ffi::CString::new(text.iter().copied().filter(|&b| b != 0).collect::<Vec<u8>>()).unwrap_or_default();
+        cl_eng!(pfnCenterPrint(s.as_ptr()));
+    }
 
     pub fn cvar_string(&self, name: &CStr) -> String {
         let p = cl_eng!(pfnGetCvarString(name.as_ptr()));
@@ -243,9 +252,11 @@ impl ClEngine {
     pub fn player_info(&self, index: i32) -> PlayerInfo {
         let mut info = hud_player_info_t::default();
         cl_eng!(pfnGetPlayerInfo(index, &mut info));
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
+        let name = unsafe { cstr(info.name) };
         PlayerInfo {
-            // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.
-            name: unsafe { cstr(info.name) }.to_string_lossy().into_owned(),
+            name: name.to_string_lossy().into_owned(),
+            name_bytes: name.to_bytes().to_vec(),
             ping: info.ping as i32,
             packetloss: info.packetloss as i32,
             this_player: info.thisplayer != 0,

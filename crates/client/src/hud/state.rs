@@ -2,7 +2,7 @@
 //! `CHudTSWeapons` 0x100d0ca0, the viewport's `g_PlayerExtraInfo`, and the SDK elements TS
 //! kept). Handlers are pure: engine side effects come back as [`Effect`]s so they can be tested.
 
-use super::text::{Titles, localise_with};
+use super::text::{Titles, localise_with, lookup_string};
 use goldsrc::ext::hud::Screen;
 use shared::protocol::Msg;
 use shared::protocol::hud as p;
@@ -74,7 +74,10 @@ pub struct TeamScore {
 pub struct TextMenu {
     pub displayed: bool,
     pub text: String,
+    /// `g_szPrelocalisedMenuString` (512 bytes).
     pub pending: String,
+    /// `m_fWaitingForMore`: the last chunk said more follows.
+    pub waiting: bool,
     pub slots: u16,
     /// Absolute time to hide, 0 = until a selection.
     pub shutoff: f32,
@@ -88,7 +91,8 @@ pub enum Effect {
     /// (`TSHealth`), `cl_thirdpersonswitch` (`WeaponInfo`) and `Spectator`.
     ToggleThirdPerson,
     OpenBuyMenu,
-    OpenTeamMenu,
+    /// `MsgFunc_VGUIMenu` (`0x10064f00`): the menu id and, for menu 4, the map name.
+    VguiMenu(i32, Option<Vec<u8>>),
     OpenMotd,
     /// `Spectator` for the local player (`0x100652fd` -> `0x1000b9d0`): clear the predicted spread
     /// penalty ([`crate::prediction::reset_spread`]).
@@ -182,7 +186,11 @@ pub struct Hud {
     pub server_name: String,
     pub motd: String,
     pub motd_final: bool,
-    pub map_briefing: String,
+    /// `CHudGeiger` (`+0x1a4`): `m_iGeigerRange` and `HUD_ACTIVE`, set by the first `Geiger`.
+    pub geiger_range: i32,
+    pub geiger_active: bool,
+    /// The CRT's `rand` state, shared by the Geiger clicks and the HudText flicker.
+    pub crt: super::message::CrtRand,
     // ---- SDK elements kept by TS
     /// `CHudDeathNotice`.
     pub deaths: super::notice::DeathNotices,
@@ -269,7 +277,9 @@ impl Default for Hud {
             server_name: String::new(),
             motd: String::new(),
             motd_final: false,
-            map_briefing: String::new(),
+            geiger_range: 0,
+            geiger_active: false,
+            crt: super::message::CrtRand(1),
             deaths: Default::default(),
             message: Default::default(),
             status_bar: Default::default(),
@@ -627,7 +637,8 @@ impl Hud {
                     pl.frags = v.frags as i32;
                     pl.deaths = v.deaths as i32;
                     pl.class = v.class as i32;
-                    pl.team = v.team as i32;
+                    // A negative team number is stored as 0 (`0x100650f6`).
+                    pl.team = v.team.max(0) as i32;
                 }
             }
             Msg::TeamInfo => {
@@ -656,6 +667,12 @@ impl Hud {
                 }
             }
             Msg::ServerName => self.server_name = p::Reader::new(buf).string(),
+            // `CHudGeiger::MsgFunc_Geiger` (`0x1001f4a0`): the range is the byte times 4.
+            Msg::Geiger => {
+                let mut r = p::Reader::new(buf);
+                self.geiger_range = (r.byte() as i32) << 2;
+                self.geiger_active = true;
+            }
             Msg::Motd => {
                 let v = dec!(p::Motd);
                 if self.motd_final {
@@ -708,14 +725,10 @@ impl Hud {
                 if r.bad {
                     return false;
                 }
-                match id {
-                    // `ShowVGUIMenu` (0x10064050): the team menu (0x10064280) needs
-                    // `m_Teamplay >= 1`, so a non-teamplay server's `changeteam` reply is ignored.
-                    2 if self.gamemode >= 1 => fx.push(Effect::OpenTeamMenu),
-                    4 => self.map_briefing = r.string().chars().take(63).collect(),
-                    5 => fx.push(Effect::OpenMotd),
-                    _ => {}
-                }
+                // `0x10064f00`: menu 4 carries the map's name (`strncpy` 64, `[63] = 0`); every id
+                // goes to `ShowVGUIMenu` (`0x10064050`), which makes only 2, 4 and 5 here.
+                let name = (id == 4).then(|| super::saytext::bytes(&r.string()).into_iter().take(63).collect());
+                fx.push(Effect::VguiMenu(id as i32, name));
             }
             // `hud::notice::on_death_msg` handles it: it needs the engine's player names.
             Msg::DeathMsg => {
@@ -726,24 +739,40 @@ impl Hud {
                 let v = dec!(p::SayText);
                 fx.push(Effect::SayText(v.text, v.client as i32));
             }
+            // `MsgFunc_TextMsg` (`0x10034a60`): the destination, then five strings (missing ones
+            // read as ""), each through `LookupString` (a whole-string `#key` only; the first
+            // may change the destination), the four arguments losing one trailing newline
+            // (`0x10034a10`). `sprintf(msg, arg1..arg4)`, then `\r` becomes `\n` (`0x10034a40`).
+            // Guarded: TS copies the strings and the result into 128-byte static buffers with
+            // `strcpy`/`sprintf` and overflows them on a long text; the port keeps them whole.
             Msg::TextMsg => {
                 let v = dec!(p::TextMsg);
-                let mut args: Vec<String> = v.strings.iter().map(|s| localise_with(ctx.titles, s)).collect();
-                if args.is_empty() {
-                    return true;
-                }
-                let fmt = args.remove(0).replace('\r', "\n");
-                let a: Vec<super::text::Arg> = args.iter().map(|s| super::text::Arg::S(s.trim_end_matches('\n'))).collect();
-                let text = super::text::format(&fmt, &a);
-                match v.dest {
+                let read = |i: usize| super::saytext::bytes(v.strings.get(i).map_or("", String::as_str));
+                let mut dest = v.dest as i32;
+                let msg = super::saytext::string(&lookup_string(ctx.titles, &read(0), Some(&mut dest)));
+                let args: Vec<String> = (1..5)
+                    .map(|i| {
+                        let mut a = lookup_string(ctx.titles, &read(i), None);
+                        if matches!(a.last(), Some(b'\n' | b'\r')) {
+                            a.pop();
+                        }
+                        super::saytext::string(&a)
+                    })
+                    .collect();
+                let a: Vec<super::text::Arg> = args.iter().map(|s| super::text::Arg::S(s)).collect();
+                let text = super::text::format(&msg, &a).replace('\r', "\n");
+                match dest {
+                    // HUD_PRINTNOTIFY: a leading 1 sends it to the notify area.
+                    1 => fx.push(Effect::ConsolePrint(format!("\u{1}{text}"))),
+                    2 => fx.push(Effect::ConsolePrint(text)),
+                    // HUD_PRINTTALK: `SayTextPrint(text, 128, -1)` (`0x10034c01`).
+                    3 => fx.push(Effect::SayText(text, -1)),
                     4 => {
                         self.center_text = text.clone();
                         self.center_expire = now + 5.0;
                         fx.push(Effect::CenterPrint(text));
                     }
-                    // HUD_PRINTTALK: `SayTextPrint(text, 128, -1)` (`0x10034c01`).
-                    3 => fx.push(Effect::SayText(text, -1)),
-                    _ => fx.push(Effect::ConsolePrint(text)),
+                    _ => {}
                 }
             }
             // `CHudMessage::MsgFunc_HudText` (`0x100295c0`). A short message is TS's empty
@@ -759,19 +788,30 @@ impl Hud {
             // CHudAmmo::MsgFunc_HideWeapon (1001a110). TS only resets the engine crosshair,
             // which it doesn't use; the port keeps the bits for HIDEHUD_ALL.
             Msg::HideWeapon => self.hide_hud = dec!(p::HideWeapon).flags,
+            // `CHudMenu::MsgFunc_ShowMenu` (`0x10028760`): the slots and the shutoff time take
+            // effect at once. No slots hides the menu. Otherwise the text starts or (after a chunk
+            // that said more follows) extends the prelocalised string, kept to 511 bytes; the
+            // last chunk localises it (`BufferedLocaliseTextString`). The menu shows after every
+            // chunk, with the last localised text until the new one is complete.
             Msg::ShowMenu => {
                 let v = dec!(p::ShowMenu);
+                self.menu.slots = v.slots;
+                self.menu.shutoff = if v.time > 0 { now + v.time as f32 } else { 0.0 };
                 if v.slots == 0 {
-                    self.menu = TextMenu::default();
+                    self.menu.displayed = false;
+                    self.menu.waiting = v.more != 0;
                     return true;
                 }
-                self.menu.pending.push_str(&v.text);
-                if v.more == 0 {
-                    self.menu.text = localise_with(ctx.titles, &std::mem::take(&mut self.menu.pending));
-                    self.menu.slots = v.slots;
-                    self.menu.displayed = true;
-                    self.menu.shutoff = if v.time > 0 { now + v.time as f32 } else { 0.0 };
+                if !self.menu.waiting {
+                    self.menu.pending.clear();
                 }
+                self.menu.pending.push_str(&v.text);
+                self.menu.pending = self.menu.pending.chars().take(0x1ff).collect();
+                if v.more == 0 {
+                    self.menu.text = localise_with(ctx.titles, &self.menu.pending);
+                }
+                self.menu.displayed = true;
+                self.menu.waiting = v.more != 0;
             }
             // Stock/TFC bookkeeping messages TS keeps hooked; their elements draw nothing.
             Msg::CurWeapon
@@ -780,7 +820,6 @@ impl Hud {
             | Msg::WeapPickup
             | Msg::ItemPickup
             | Msg::AmmoX
-            | Msg::Geiger
             | Msg::Health
             | Msg::Battery
             | Msg::Damage
@@ -839,7 +878,14 @@ mod tests {
     struct NoTitles;
     impl Titles for NoTitles {
         fn get(&self, key: &str) -> Option<String> {
-            (key == "HUD_Credits").then(|| "Credits".to_owned())
+            match key {
+                "HUD_Credits" => Some("Credits".to_owned()),
+                "Notify" => Some("Note %s".to_owned()),
+                _ => None,
+            }
+        }
+        fn effect(&self, key: &str) -> i32 {
+            if key == "Notify" { -1 } else { 0 }
         }
     }
 
@@ -978,18 +1024,48 @@ mod tests {
         assert_eq!(h.team_scores[0].frags, 9);
     }
 
+    /// `VGUIMenu` hands every id to `ShowVGUIMenu` (which refuses the team menu outside teamplay);
+    /// menu 4 brings the map's name, 63 bytes at most.
     #[test]
-    fn team_menu_only_in_teamplay() {
+    fn vgui_menu_message() {
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
         let mut fx = Vec::new();
-        let menu = [2u8];
-        assert!(h.apply(Msg::VguiMenu, &menu, &c, &mut fx));
-        assert!(fx.is_empty(), "the server sends it for changeteam in DM too");
-        h.apply(Msg::GameMode, &[1], &c, &mut fx);
-        h.apply(Msg::VguiMenu, &menu, &c, &mut fx);
-        assert_eq!(fx, [Effect::OpenTeamMenu]);
+        assert!(h.apply(Msg::VguiMenu, &[2], &c, &mut fx));
+        let mut four = vec![4u8];
+        four.extend_from_slice(&[b'm'; 70]);
+        four.push(0);
+        h.apply(Msg::VguiMenu, &four, &c, &mut fx);
+        assert_eq!(fx, [Effect::VguiMenu(2, None), Effect::VguiMenu(4, Some(vec![b'm'; 63]))]);
+    }
+
+    /// `ScoreInfo` stores a negative team number as 0 (`0x100650f6`).
+    #[test]
+    fn score_info_clamps_the_team() {
+        let s = Screen::default();
+        let c = ctx(&s);
+        let mut h = Hud::default();
+        let mut fx = Vec::new();
+        h.apply(Msg::ScoreInfo, &ScoreInfo { client: 3, frags: 5, deaths: -2, class: 1, team: -7 }.encode(), &c, &mut fx);
+        let p = &h.players[3];
+        assert_eq!((p.frags, p.deaths, p.class, p.team), (5, -2, 1, 0));
+        h.apply(Msg::ScoreInfo, &ScoreInfo { client: 3, team: 2, ..Default::default() }.encode(), &c, &mut fx);
+        assert_eq!(h.players[3].team, 2);
+    }
+
+    /// `Geiger` turns the element on with the byte times 4.
+    #[test]
+    fn geiger_message() {
+        let s = Screen::default();
+        let c = ctx(&s);
+        let mut h = Hud::default();
+        let mut fx = Vec::new();
+        assert!(!h.geiger_active);
+        h.apply(Msg::Geiger, &[100], &c, &mut fx);
+        assert_eq!((h.geiger_active, h.geiger_range), (true, 400));
+        h.apply(Msg::Geiger, &[0], &c, &mut fx);
+        assert_eq!((h.geiger_active, h.geiger_range), (true, 0), "a zero range stays on, silent");
     }
 
     #[test]
@@ -1003,12 +1079,19 @@ mod tests {
         assert_eq!(h.motd, "Hello world");
         assert_eq!(fx, [Effect::OpenMotd]);
         h.apply(Msg::ShowMenu, &ShowMenu { slots: 0b11, time: -1, more: 1, text: "1. A\n".into() }.encode(), &c, &mut fx);
-        assert!(!h.menu.displayed);
-        h.apply(Msg::ShowMenu, &ShowMenu { slots: 0b11, time: -1, more: 0, text: "2. B".into() }.encode(), &c, &mut fx);
-        assert_eq!(h.menu.text, "1. A\n2. B");
+        assert!(h.menu.displayed && h.menu.text.is_empty(), "TS shows the menu after every chunk, with the old text");
+        h.apply(Msg::ShowMenu, &ShowMenu { slots: 0b11, time: -1, more: 0, text: "2. #HUD_Credits".into() }.encode(), &c, &mut fx);
+        assert_eq!(h.menu.text, "1. A\n2. Credits", "the whole text is localised (BufferedLocaliseTextString)");
         assert_eq!(h.menu_select(3), None);
         assert_eq!(h.menu_select(2).as_deref(), Some("menuselect 2\n"));
         assert!(!h.menu.displayed);
+        // A new menu replaces the old text; no slots hides it and still takes the "more" flag.
+        h.apply(Msg::ShowMenu, &ShowMenu { slots: 1, time: 5, more: 0, text: "x".repeat(600) }.encode(), &c, &mut fx);
+        assert_eq!((h.menu.pending.len(), h.menu.text.len(), h.menu.shutoff), (511, 511, 15.0), "kept to 511 bytes");
+        h.apply(Msg::ShowMenu, &ShowMenu { slots: 0, time: 0, more: 1, text: String::new() }.encode(), &c, &mut fx);
+        assert!(!h.menu.displayed && h.menu.waiting);
+        h.apply(Msg::ShowMenu, &ShowMenu { slots: 1, time: 0, more: 0, text: "y".into() }.encode(), &c, &mut fx);
+        assert_eq!(h.menu.text, "x".repeat(511), "waiting: appended to the full old string, and cut again");
     }
 
     #[test]
@@ -1082,9 +1165,22 @@ mod tests {
         let c = ctx(&s);
         let mut h = Hud::default();
         let mut fx = Vec::new();
-        let t = TextMsg { dest: 4, strings: vec!["%s has #HUD_Credits".into(), "Bob".into()] };
+        // `LookupString`: only a whole-string key is looked up; an argument loses one newline.
+        let t = TextMsg { dest: 4, strings: vec!["%s has #HUD_Credits".into(), "Bob\n\n".into()] };
         h.apply(Msg::TextMsg, &t.encode(), &c, &mut fx);
-        assert_eq!(h.center_text, "Bob has Credits");
+        assert_eq!(h.center_text, "Bob\n has #HUD_Credits");
+        fx.clear();
+        let t = TextMsg { dest: 2, strings: vec!["#HUD_Credits".into(), "#HUD_Credits".into()] };
+        h.apply(Msg::TextMsg, &t.encode(), &c, &mut fx);
+        assert_eq!(fx, [Effect::ConsolePrint("Credits".into())]);
+        // A negative `effect` on the message's entry picks the destination; `\r` becomes `\n`.
+        fx.clear();
+        let t = TextMsg { dest: 2, strings: vec!["#Notify".into(), "a\rb".into()] };
+        h.apply(Msg::TextMsg, &t.encode(), &c, &mut fx);
+        assert_eq!(fx, [Effect::ConsolePrint("\u{1}Note a\nb".into())]);
+        fx.clear();
+        h.apply(Msg::TextMsg, &TextMsg { dest: 9, strings: vec!["x".into()] }.encode(), &c, &mut fx);
+        assert!(fx.is_empty(), "other destinations print nothing");
     }
 
     /// `HudText` reaches `CHudMessage` (a short message is an empty custom message, as TS's

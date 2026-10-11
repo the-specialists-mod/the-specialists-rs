@@ -357,7 +357,7 @@ pub fn update_speaker_status(entindex: i32, talking: bool) {
     }
     if let Some(c) = with(|v| speaker_status(v, entindex, talking)) {
         // The label's text and colour (`0x100181e0`: `"%s   "` and `GetPlayerTextColor`).
-        let mut text = hud::saytext::bytes(&e.player_info(c as i32 + 1).name);
+        let mut text = e.player_info(c as i32 + 1).name_bytes;
         text.extend_from_slice(b"   ");
         let color = player_color(c as i32 + 1);
         with(|v| {
@@ -481,7 +481,7 @@ pub fn toggle_block(player: i32) {
 /// so in the chat area (`"%c** %s\n"` through `CHudTextMessage`).
 pub fn scoreboard_toggle(player: i32) {
     let e = engine();
-    let name = e.player_info(player).name;
+    let name = hud::saytext::string(&e.player_info(player).name_bytes);
     if name.is_empty() {
         return;
     }
