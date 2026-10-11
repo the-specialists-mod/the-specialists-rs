@@ -75,7 +75,9 @@ A line ending in "(port guard)" (with `developer` on) means the game skipped or 
 call that TS makes and the engine would stop on (`implementation/integration.md` §6,
 `stock-entities.md` §7.8). It isn't a failure, but on the stock maps none is expected apart from
 a respawned `cycler_weapon`'s empty precache on the Steam engines. The guards' decisions are
-unit-tested in `goldsrc::guard` and `entities` (`cargo test`).
+unit-tested in `goldsrc::guard` and `entities` (`cargo test`). The client prints its own
+"(port guard)" lines to the console, once per kind (`implementation/integration.md` §6.1; tests in
+`goldsrc::cl_guard`).
 
 Client checks run the FWGS client with an autotest cfg (`wait` chains, commands, `screenshot`,
 `quit`) and inspect the screenshots. FWGS joins GoldSrc-protocol servers with

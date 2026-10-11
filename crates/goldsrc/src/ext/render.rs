@@ -160,7 +160,13 @@ pub fn model_index(name: &str) -> i32 {
     ev!(EV_FindModelIndex(s.as_ptr()))
 }
 
+/// `R_TempModel`. Guarded: Steam GoldSrc's `CL_GetModelByIndex` reads a negative model index
+/// out of bounds, so one gives no temp entity, as FWGS answers.
 pub fn temp_model(pos: Vec3, vel: Vec3, angles: Vec3, life: f32, model: i32, soundtype: i32) -> Option<&'static mut TEMPENTITY> {
+    if model < 0 {
+        engine().port_guard("R_TempModel negative", || format!("R_TempModel: model index {model}; skipped"));
+        return None;
+    }
     let p = efx!(R_TempModel(pos.as_ptr(), vel.as_ptr(), angles.as_ptr(), life, model, soundtype));
     // SAFETY: the engine returns null or a pointer to an object it owns that stays valid for the current frame.
     unsafe { p.as_mut() }
@@ -173,7 +179,13 @@ pub fn decal_index(name: &str) -> i32 {
     efx!(Draw_DecalIndex(id))
 }
 
+/// `R_DecalShoot`. Guarded: Steam GoldSrc indexes its entity array with `entity` unchecked, so
+/// a decal on an entity the engine doesn't have (`GetEntityByIndex` null) isn't shot.
 pub fn decal_shoot(texture: i32, entity: i32, model_index: i32, pos: Vec3, flags: i32) {
+    if engine().entity(entity).is_none() {
+        engine().port_guard("R_DecalShoot entity", || format!("R_DecalShoot: no entity {entity}; skipped"));
+        return;
+    }
     let mut p = pos;
     efx!(R_DecalShoot(texture, entity, model_index, p.as_mut_ptr(), flags));
 }
@@ -236,9 +248,19 @@ pub fn precache_event(name: &'static CStr) -> u16 {
     cl_eng!(pfnPrecacheEvent(1, name.as_ptr()))
 }
 
-/// Client-side event playback (weapon prediction). `invoker` is null on the client.
+/// Client-side event playback (weapon prediction). `invoker` is null on the client. Guarded:
+/// index 0 (an event that wasn't precached) plays nothing on either engine and isn't sent, and
+/// the Steam client's `CL_FireEvents` reads its 256-entry event table with the index unchecked,
+/// so a larger one is refused there.
 #[allow(clippy::too_many_arguments)]
 pub fn playback_event(flags: i32, index: u16, f1: f32, f2: f32, i1: i32, i2: i32, b1: bool, b2: i32) {
+    if index == 0 {
+        return;
+    }
+    if index >= crate::cl_guard::MAX_EVENTS && !engine().is_xash() {
+        engine().port_guard("PlaybackEvent index", || format!("PlaybackEvent: event index {index}; skipped"));
+        return;
+    }
     let mut zero = [0.0f32; 3];
     let mut zero2 = [0.0f32; 3];
     cl_eng!(pfnPlaybackEvent(flags, std::ptr::null(), index, 0.0, zero.as_mut_ptr(), zero2.as_mut_ptr(), f1, f2, i1, i2, b1 as c_int, b2));

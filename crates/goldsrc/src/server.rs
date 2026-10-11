@@ -136,6 +136,17 @@ impl Engine {
     /// sound, a new name once the level is active or a full table; the port logs and returns 0
     /// (FWGS's answer for a bad name) instead.
     fn precache(&self, kind: Kind, name: &'static CStr, call: impl FnOnce(&'static CStr) -> i32) -> i32 {
+        // A brush model is already in the table if the map has it, on every engine; one it lacks
+        // is a `Sys_Error` on the Steam engines ("Mod_ForName: *n not found") and an empty model
+        // on FWGS.
+        if kind == Kind::Model && guard::is_brush_name(guard::lookup_name(kind, name).to_bytes()) {
+            if self.brush_model_ok(guard::lookup_name(kind, name).to_bytes()) {
+                return call(name);
+            }
+            let msg = format!("Precache Model \"{}\": the map has no such brush model; skipped (port guard)\n", name.to_string_lossy());
+            self.alert(ALERT_TYPE::at_error, &msg);
+            return 0;
+        }
         if self.is_xash() {
             return call(name);
         }
@@ -173,11 +184,12 @@ impl Engine {
     }
 
     /// The name to give a Steam engine's `SET_MODEL`/`MODEL_INDEX` for `model`, or `None` when it
-    /// would stop the server ("no precache" / "not precached"): an empty name (model 0), a brush
-    /// model, the world, or a name precached this level (in its precached spelling).
+    /// would stop the server ("no precache" / "not precached"): an empty name (model 0), the
+    /// world, or a name precached this level (in its precached spelling). Brush models are
+    /// checked by [`Engine::model_to_set`].
     fn precached_model<'a>(&self, model: &'a CStr) -> Option<&'a CStr> {
         let b = model.to_bytes();
-        if b.is_empty() || b[0] == b'*' {
+        if b.is_empty() {
             return Some(model);
         }
         if guard::bad_string(b) {
@@ -190,14 +202,58 @@ impl Engine {
         guard::with(|s| s.models.resolve(model))
     }
 
-    /// `SET_MODEL`. Guarded on the Steam engines: an unprecached model ("no precache", a
-    /// `Host_Error`) leaves the entity as it was, as FWGS does with a bad name.
+    /// Whether the map has brush model `name` (`*n`): its BSP's models lump is read once per
+    /// level (`pfnLoadFileForMe` on `maps/<mapname>.bsp`, as the engine loaded it). A BSP the
+    /// port can't read or doesn't know (not version 29/30) lets every `*n` through, as before.
+    pub fn brush_model_ok(&self, name: &[u8]) -> bool {
+        let map = self.string(self.globals().mapname).to_bytes().to_vec();
+        let cached = guard::with(|s| s.brush.as_ref().filter(|(m, _)| *m == map).map(|(_, c)| *c));
+        let count = cached.unwrap_or_else(|| {
+            let path = format!("maps/{}.bsp", String::from_utf8_lossy(&map));
+            let count = self.file_head(&path, guard::BSP_HEADER_MODELS_END).and_then(|h| guard::bsp_model_count(&h));
+            guard::with(|s| s.brush = Some((map, count)));
+            count
+        });
+        count.is_none_or(|c| guard::brush_model_known(name, c))
+    }
+
+    /// The first `n` bytes (or fewer) of a game file, through `pfnLoadFileForMe`.
+    fn file_head(&self, name: &str, n: usize) -> Option<Vec<u8>> {
+        let s = to_cstring(name);
+        let mut len = 0;
+        let p = eng!(pfnLoadFileForMe(s.as_ptr(), &mut len));
+        if p.is_null() {
+            return None;
+        }
+        // SAFETY: the engine returned `len` bytes at non-null `p`; at most that many are copied
+        // before the file is freed.
+        let out = unsafe { std::slice::from_raw_parts(p as *const u8, (len.max(0) as usize).min(n)) }.to_vec();
+        eng!(pfnFreeFile(p.cast()));
+        Some(out)
+    }
+
+    /// What `SET_MODEL`/`MODEL_INDEX` may be given for `model`: a `*n` the map doesn't have stops
+    /// the Steam engines ("no precache" `Host_Error`, `SV_ModelIndex` `Sys_Error`) and makes FWGS
+    /// register a model with no data, which a `SOLID_BSP` entity then stops it with, so it is
+    /// refused on every engine; other names as [`Engine::precached_model`] on the Steam engines.
+    fn model_to_set<'a>(&self, model: &'a CStr) -> Result<&'a CStr, &'static str> {
+        let b = model.to_bytes();
+        if guard::is_brush_name(b) {
+            return if self.brush_model_ok(b) { Ok(model) } else { Err("the map has no such brush model") };
+        }
+        if self.is_xash() {
+            return Ok(model);
+        }
+        self.precached_model(model).ok_or("not precached")
+    }
+
+    /// `SET_MODEL`. Guarded ([`Engine::model_to_set`]): a model that would stop the server leaves
+    /// the entity as it was, as FWGS does with a bad name.
     pub fn set_model(&self, e: *mut edict_t, model: &CStr) {
-        let name = if self.is_xash() { Some(model) } else { self.precached_model(model) };
-        match name {
-            Some(m) => eng!(pfnSetModel(e, m.as_ptr())),
-            None => {
-                let msg = format!("SET_MODEL \"{}\": not precached; skipped (port guard)\n", model.to_string_lossy());
+        match self.model_to_set(model) {
+            Ok(m) => eng!(pfnSetModel(e, m.as_ptr())),
+            Err(why) => {
+                let msg = format!("SET_MODEL \"{}\": {why}; skipped (port guard)\n", model.to_string_lossy());
                 self.alert(ALERT_TYPE::at_error, &msg);
             }
         }
@@ -319,14 +375,13 @@ impl Engine {
         self.precache(Kind::Event, name, |n| eng!(pfnPrecacheEvent(1, n.as_ptr())) as i32) as u16
     }
 
-    /// `MODEL_INDEX`. Guarded on the Steam engines: an unprecached model (ReHLDS `Sys_Error`s in
-    /// `SV_ModelIndex`) gives 0, FWGS's answer.
+    /// `MODEL_INDEX`. Guarded ([`Engine::model_to_set`]): a model that would stop the server
+    /// (ReHLDS `Sys_Error`s in `SV_ModelIndex`) gives 0, FWGS's answer for a bad name.
     pub fn model_index(&self, name: &CStr) -> i32 {
-        let known = if self.is_xash() { Some(name) } else { self.precached_model(name) };
-        match known {
-            Some(n) => eng!(pfnModelIndex(n.as_ptr())),
-            None => {
-                let msg = format!("MODEL_INDEX \"{}\": not precached; 0 (port guard)\n", name.to_string_lossy());
+        match self.model_to_set(name) {
+            Ok(n) => eng!(pfnModelIndex(n.as_ptr())),
+            Err(why) => {
+                let msg = format!("MODEL_INDEX \"{}\": {why}; 0 (port guard)\n", name.to_string_lossy());
                 self.alert(ALERT_TYPE::at_error, &msg);
                 0
             }

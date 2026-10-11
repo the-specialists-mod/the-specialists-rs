@@ -79,10 +79,25 @@ pub struct PlayerInfo {
 }
 
 impl ClEngine {
-    /// `pfnSPR_Load`: the single wrapper for it.
+    /// `pfnSPR_Load`: the single wrapper for it. Guarded on Steam GoldSrc, whose `SPR_Load`
+    /// `Sys_Error`s on a new name once its 256 HUD sprite slots are taken: such a load returns 0,
+    /// FWGS's answer when its slots run out ([`crate::cl_guard::HudSprites`]).
     pub fn spr_load(&self, name: &str) -> HSPRITE {
+        static SLOTS: std::sync::Mutex<Option<crate::cl_guard::HudSprites>> = std::sync::Mutex::new(None);
+        let steam = !self.is_xash();
+        if steam {
+            let ok = SLOTS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).may_load(name.as_bytes());
+            if !ok {
+                self.port_guard(&format!("SPR_Load {name}"), || format!("SPR_Load \"{name}\": no HUD sprite slot left; 0"));
+                return 0;
+            }
+        }
         let s = to_cstring(name);
-        cl_eng!(pfnSPR_Load(s.as_ptr()))
+        let h = cl_eng!(pfnSPR_Load(s.as_ptr()));
+        if steam {
+            SLOTS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).record(name.as_bytes(), h);
+        }
+        h
     }
     pub fn spr_width(&self, h: HSPRITE, frame: i32) -> i32 {
         if h == 0 { 0 } else { cl_eng!(pfnSPR_Width(h, frame)) }
@@ -333,9 +348,23 @@ impl ClEngine {
     pub fn key_event(&self, key: i32, down: bool) {
         cl_eng!(Key_Event(key, down as c_int));
     }
+    /// `pfnPlaySoundByName`. Guarded: a name too long for the engine is dropped.
     pub fn play_sound(&self, name: &str, volume: f32) {
+        if !self.sound_name_ok("PlaySoundByName", name) {
+            return;
+        }
         let s = to_cstring(name);
         cl_eng!(pfnPlaySoundByName(s.as_ptr().cast_mut(), volume));
+    }
+
+    /// Steam GoldSrc's `S_FindName` `Sys_Error`s on a sound name over 63 bytes ("Sound name too
+    /// long"); FWGS refuses the same names without a word, so they are dropped on every engine.
+    fn sound_name_ok(&self, call: &str, name: &str) -> bool {
+        let ok = name.bytes().filter(|&b| b != 0).count() <= crate::cl_guard::MAX_SOUND_NAME;
+        if !ok {
+            self.port_guard(&format!("{call} {name}"), || format!("{call} \"{name}\": sound name too long; skipped"));
+        }
+        ok
     }
     pub fn game_directory(&self) -> String {
         let p = cl_eng!(pfnGetGameDirectory());
@@ -457,10 +486,14 @@ impl ClEngine {
     /// `EV_PlaySound(ent, origin, channel, sample, volume, attenuation, flags, pitch)`: the
     /// single wrapper for it. `ent` 0 plays at `origin`, -1 is a positional sound with no
     /// entity. Every engine fills the slot; if the table or slot is null the sound is dropped
-    /// rather than panicking, since callers are fire-and-forget.
+    /// rather than panicking, since callers are fire-and-forget. A name too long for the engine
+    /// is dropped too (see `play_sound`).
     #[allow(clippy::too_many_arguments)]
     pub fn ev_play_sound(&self, ent: i32, origin: [f32; 3], channel: i32, sample: &str, volume: f32, attn: f32, flags: i32, pitch: i32) {
         let Some(f) = self.event_api().and_then(|a| a.EV_PlaySound) else { return };
+        if !self.sound_name_ok("EV_PlaySound", sample) {
+            return;
+        }
         let s = to_cstring(sample);
         let mut o = origin;
         // SAFETY: engine callback from the event API table, called with a 3-float origin and a NUL-terminated sample that outlive the call.

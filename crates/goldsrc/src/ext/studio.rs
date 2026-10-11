@@ -190,16 +190,24 @@ pub fn extradata(m: Model) -> Option<Header> {
     (len >= STUDIOHDR_SIZE).then_some(Header { ptr: p, len })
 }
 
+/// The header last given to the engine ([`set_header`]), for the [`setup_model`] guard.
+static CURRENT_HEADER: Global<Cell<Option<Header>>> = Global(Cell::new(None));
+
 /// `IEngineStudio.StudioSetHeader`.
 pub fn set_header(h: Header) {
+    CURRENT_HEADER.0.set(Some(h));
     st!(StudioSetHeader(h.ptr.as_ptr().cast::<c_void>()));
 }
 /// `IEngineStudio.SetRenderModel`.
 pub fn set_render_model(m: Model) {
     st!(SetRenderModel(m.as_ptr()));
 }
-/// `IEngineStudio.GetModelByIndex`.
+/// `IEngineStudio.GetModelByIndex`. Guarded: Steam GoldSrc's `CL_GetModelByIndex` only checks
+/// the upper bound, so a negative index (read out of bounds there) gives `None`, FWGS's answer.
 pub fn model_by_index(index: i32) -> Option<Model> {
+    if index < 0 {
+        return None;
+    }
     Model::from_ptr(st!(GetModelByIndex(index)))
 }
 /// `IEngineStudio.SetupPlayerModel` (0-based player number).
@@ -238,6 +246,15 @@ pub fn seqgroup_data(m: Model, group: usize, file: &CStr) -> Option<&'static [u8
     // SAFETY: `group < 16`, inside the list.
     let slot = unsafe { list.add(group) };
     if st!(Cache_Check(slot)).is_null() {
+        // Port guard: FWGS's `Mod_LoadCacheFile` `Host_Error`s on a missing or empty file (Steam
+        // GoldSrc leaves the slot empty, which is handled below).
+        let e = crate::client::engine();
+        if e.is_xash() && crate::ext::render::load_file(&file.to_string_lossy()).is_none_or(|b| b.is_empty()) {
+            e.port_guard(&format!("LoadCacheFile {}", file.to_string_lossy()), || {
+                format!("LoadCacheFile \"{}\": file missing or empty; skipped", file.to_string_lossy())
+            });
+            return None;
+        }
         st!(LoadCacheFile(file.as_ptr(), slot));
     }
     // SAFETY: `slot` is a valid cache_user_t; after LoadCacheFile its data is null or the whole
@@ -477,9 +494,20 @@ pub fn hardware_kind() -> i32 {
     }
 }
 /// `IEngineStudio.StudioSetupModel` (the body part and submodel pointers aren't needed here).
-pub fn setup_model(bodypart: i32) {
+/// Guarded ([`crate::cl_guard::bodypart_ok`]): for a body part or entity `body` the engine would
+/// read out of bounds or divide by zero with, the call is skipped and this returns false; the
+/// caller then doesn't draw that body part.
+pub fn setup_model(bodypart: i32) -> bool {
+    let body = current_entity().map_or(0, |e| e.get().curstate.body);
+    let ok = CURRENT_HEADER.0.get().is_some_and(|h| crate::cl_guard::bodypart_ok(h.data(), bodypart, body));
+    if !ok {
+        crate::client::engine()
+            .port_guard("StudioSetupModel", || format!("StudioSetupModel: body part {bodypart}, body {body} not in the model; skipped"));
+        return false;
+    }
     let (mut bp, mut sm) = (std::ptr::null_mut(), std::ptr::null_mut());
     st!(StudioSetupModel(bodypart, &mut bp, &mut sm));
+    true
 }
 pub fn draw_points() {
     st!(StudioDrawPoints());

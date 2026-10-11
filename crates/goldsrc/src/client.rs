@@ -57,11 +57,34 @@ impl ClEngine {
         cl_eng!(pfnAddCommand(name.as_ptr(), Some(f)));
     }
 
+    /// True on FWGS (Xash3D), which has the `host_ver` cvar; false on Steam GoldSrc. Guards for
+    /// what only one engine stops on (`cl_guard`) check it.
+    pub fn is_xash(&self) -> bool {
+        static XASH: OnceLock<bool> = OnceLock::new();
+        *XASH.get_or_init(|| !Cvar::find(c"host_ver").is_null())
+    }
+
+    /// Logs a guarded call the wrapper refused (port rule: never crash), once per `key` so a
+    /// refusal repeated every frame doesn't flood the console.
+    pub fn port_guard(&self, key: &str, msg: impl FnOnce() -> String) {
+        if crate::cl_guard::once(key) {
+            self.print(&format!("{} (port guard)\n", msg()));
+        }
+    }
+
     /// Hooks a server user message. The engine calls one shared trampoline with the message
     /// name; it finds `f` by name and passes the payload as a byte slice. Return value: the
-    /// engine ignores it, so the handler has none.
+    /// engine ignores it, so the handler has none. Guarded: FWGS `Host_Error`s on a new name past
+    /// its 197 message slots, so a hook past them is refused there.
     pub fn hook_user_msg(&self, name: &'static CStr, f: fn(&[u8])) {
         let mut hooks = USER_MSG_HOOKS.0.borrow_mut();
+        let known = hooks.iter().any(|(n, _)| n.to_bytes().eq_ignore_ascii_case(name.to_bytes()));
+        if !known && self.is_xash() && hooks.len() >= crate::cl_guard::XASH_MAX_USER_MESSAGES {
+            drop(hooks);
+            let n = name.to_string_lossy();
+            self.port_guard(&format!("HookUserMsg {n}"), || format!("HookUserMsg \"{n}\": no message slot left; skipped"));
+            return;
+        }
         match hooks.iter_mut().find(|(n, _)| *n == name) {
             Some(h) => h.1 = f,
             None => hooks.push((name, f)),

@@ -110,6 +110,7 @@ behaves exactly as with TS. Otherwise the port does what FWGS does with the same
 | A precache of a new name after `ServerActivate` | Steam: `Host_Error` "Precache can only be done in spawn functions" (FWGS late-precaches) | Not called; returns 0. A name already precached this level, in any case, is passed in its precached spelling (ReHLDS with `REHLDS_FIXES` compares case-sensitively). |
 | A precache past 512 models, 512 sounds, 512 generic files or 256 events | Steam: `Host_Error` (FWGS's limits are higher) | Not called; returns 0. The tables fill in order, so the highest index the engine returned shows how full one is. |
 | `PRECACHE_MODEL` of a model file that doesn't exist (a map's custom model), `PRECACHE_EVENT` of a missing script | Steam: `Sys_Error` "Mod_ForName: %s not found" (the model is loaded with `crash` set, optional `!` models too) / `Host_Error` "file missing from server" (FWGS warns) | Not called (the file is looked up with `pfnGetFileSize` first); returns 0. |
+| `SET_MODEL`/`MODEL_INDEX`/`PRECACHE_MODEL` of a brush model `*n` the map doesn't have (only `*1` up to the BSP's model count minus 1, spelt `"*%i"`, are in the table) | Steam: `Host_Error` "no precache" (`SET_MODEL`), `Sys_Error` in `SV_ModelIndex`, `Sys_Error` "Mod_ForName: *n not found" (a precache while loading) or `Host_Error` "not precached" (after); FWGS registers a model with no data, which it then `Host_Error`s over for a `SOLID_BSP` entity ("SOLID_BSP with a non bsp model") | Guarded on every engine: `SET_MODEL` leaves the entity unchanged, `MODEL_INDEX` and the precache give 0. The count is the models lump's `filelen / 64`, read once per level from the header of `maps/<mapname>.bsp` (`pfnLoadFileForMe`, `Engine::brush_model_ok`); a BSP that isn't version 29/30 (FWGS's BSP2) lets every `*n` through. A `*n` the map has is passed on without the precache bookkeeping (it is already in the engine's table, also after `ServerActivate`). |
 | `SET_MODEL`/`MODEL_INDEX` of a model not precached this level (not empty, not `*n`, not the world) | Steam: `Host_Error` "no precache" / ReHLDS `Sys_Error` in `SV_ModelIndex` (FWGS late-precaches, or warns) | `SET_MODEL` leaves the entity unchanged; `MODEL_INDEX` gives 0. |
 | `EMIT_SOUND_DYN` with volume outside 0..1, attenuation outside 0..4, channel outside 0..7 or pitch outside 0..255 | ReHLDS: `Sys_Error` in `PF_sound_I` (FWGS clamps) | Clamped, as `SV_BuildSoundMsg` (and FWGS) does with the value it then gets; NaN is passed on, as the engines' checks pass it. |
 | `SET_SIZE` with a min above its max | Steam: `Host_Error` "backwards mins/maxs" (FWGS logs, relinks) | Size kept, entity relinked (`SET_ORIGIN`). |
@@ -122,8 +123,6 @@ behaves exactly as with TS. Otherwise the port does what FWGS does with the same
 | `WRITE_ENTITY` of a number outside the edict range | FWGS: `Host_Error` (Steam writes the short) | Written with `WRITE_SHORT`: the same bytes. |
 
 Not guarded:
-* A `*n` brush model name the map doesn't have, given to `SET_MODEL`/`MODEL_INDEX` on a Steam
-  engine (the game can't see the BSP's model count).
 * Engine-side failures the game doesn't call: a map over the edict limit while it loads, a
   BSP that can't be loaded, a reliable channel overflowing a client (that client is dropped; the
   server goes on).
@@ -131,3 +130,45 @@ Not guarded:
   stops on without relinking it (stock-entities.md §7.8 catches it at the next link).
 * On FWGS the guards that only exist for the Steam engines are off, so FWGS's own limits (4096
   models, 2048 sounds, ...) apply.
+
+### 6.1 The client
+
+The client engine has the same kind of calls. Steam GoldSrc's client isn't open source; what it
+does was read from the HL25 Linux `hw.so`, which ships with symbols (FWGS from its source). The
+wrappers in `goldsrc` (`client.rs`, `ext/`) check these first, with the pure checks in
+`goldsrc::cl_guard` (unit-tested); a refusal is printed to the console once per kind and name
+("(port guard)"), not every frame. Steam-only checks use `ClEngine::is_xash` (FWGS's `host_ver`
+cvar). Valid input reaches the engine unchanged.
+
+| Call | Engine effect | Port |
+|---|---|---|
+| `SPR_Load` of a new name with the 256 HUD sprite slots taken | Steam: `Sys_Error` "cannot allocate more than 256 HUD sprites" (FWGS returns 0) | Steam: returns 0 without the call. The slots are tracked by the handles `SPR_Load` returned (`cl_guard::HudSprites`); the engine empties them on disconnect, which the port can't see, so it errs towards allowing. TS loads far fewer. |
+| `PlaySoundByName` / `EV_PlaySound` with a name over 63 bytes | Steam: `Sys_Error` "Sound name too long" in `S_FindName` (FWGS ignores it) | Dropped on every engine (FWGS's result). |
+| TriAPI `SpriteTexture` with a null model (a sprite that didn't load) | Steam: `R_TriangleSpriteTexture` reads `model->cache` through null (FWGS returns 0) | Returns false without the call. Reached by the overview's sprites when one is missing. |
+| `LoadMapSprite` of an image name not ending in `bmp`/`tga` (from the map's `overviews/*.txt`) | Steam: `Sys_Error` "Unsupported map image file format" | Steam: null without the call (the overview then has no map image). |
+| Studio `GetModelByIndex` / `R_TempModel` with a negative model index | Steam: `CL_GetModelByIndex` only checks the upper bound, reads before `cl.model_precache` (FWGS returns null) | `None` without the call (`spectator::model_by_index` already refused 0 and below). |
+| Studio `StudioSetupModel(bodypart)` with `bodypart == numbodyparts` or negative, a body part with `base` or `nummodels` 0, or an entity `body` that makes the submodel index negative | Both engines: only `bodypart > numbodyparts` is replaced, so the rest reads out of bounds; `body / base % nummodels` is a C integer division (`SIGFPE` on 0) | Skipped (`setup_model` returns false) and the renderer doesn't draw that body part. Checked against the header last given to `StudioSetHeader`; every TS model passes. |
+| Studio `LoadCacheFile` of a missing or empty sequence group file (`<model>NN.mdl`) | FWGS: `Host_Error` "LoadCacheFile: can't load" (Steam leaves the cache slot empty) | FWGS: the file is read first (`COM_LoadFile`); missing or empty, the group has no animation (as on Steam). |
+| `PlaybackEvent` with index 0 or (Steam) 256 and up | Steam: `CL_FireEvents` reads `cl.event_precache[index]` unchecked (FWGS checks the index against its own table) | Not called (index 0 plays nothing on either engine). |
+| `R_DecalShoot` on an entity index the engine doesn't have | Steam: indexes `cl_entities` unchecked | Not called unless `GetEntityByIndex` (bounds-checked) has the entity. |
+| `HookUserMsg` of a new name past 197 hooks | FWGS: `Host_Error` "MAX_USER_MESSAGES hit" (Steam keeps a list) | FWGS: not hooked. TS hooks far fewer. |
+
+Checked and not fatal, so not guarded: `SPR_Set`/`SPR_Draw*`/`SPR_Width`/`SPR_Height`/`SPR_Frames`
+with a bad handle (both engines check it; an unset sprite draws nothing) or frame (both clamp and
+log), `SetCrosshair` (checked when drawn), `ClientCmd` (`Cbuf_AddText` prints "overflow"),
+`ServerCmd` (Steam formats `cmd %s` into 2 KB; an overflowing net message is flagged and dropped,
+as on FWGS), `ConsolePrint`/`CenterPrint` (HL25 `Con_Printf` uses a 4 KB `vsnprintf`,
+`SCR_CenterPrint` copies at most 1023 bytes; FWGS likewise), registering a cvar or command twice
+(both print; Steam's `pfnRegisterVariable` then returns an unlinked copy, and the port registers
+each cvar once anyway, see `goldsrc::client::Cvar`), `HookEvent` past the engine's limit (ignored),
+`GetEntityByIndex`, and a null `CL_TempEntAlloc*`/`R_TempModel`/`CL_AllocDlight` (the wrappers
+return `Option`).
+
+Not guarded:
+* `Draw_DecalIndex` of a decal slot with no name: Steam `Sys_Error`s ("Used decal #%d without a
+  name"). `Draw_DecalIndexFromName` answers 0 both for decal 0 and for an unknown name, and the
+  API can't read the names, so the port can't tell; it needs a server that sent no decal list.
+* `Mod_Extradata` of a model whose file was removed after it loaded (Steam `Sys_Error` "caching
+  failed"), and the Steam `S_FindName` limit of 1024 distinct sounds per level.
+* `EV_PlaySound` with `SND_SENTENCE` and a sentence number past the table (Steam reads out of
+  bounds): the client never passes that flag.

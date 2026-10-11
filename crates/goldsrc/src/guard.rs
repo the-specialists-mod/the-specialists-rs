@@ -10,10 +10,11 @@
 //! On those engines the wrappers in `server.rs` skip the call (or clamp, as the engines do further
 //! down) and log the error instead; on FWGS they make the call as TS would, because FWGS handles it
 //! itself. Calls that stop every engine (light styles past 63, no free edicts, a bad
-//! `WRITE_ENTITY` number) are guarded everywhere.
+//! `WRITE_ENTITY` number, a `*n` brush model the map doesn't have) are guarded everywhere.
 //!
 //! This module holds the bookkeeping: the names the game precached this level (so a call the
-//! engine would refuse can be recognised before it is made) and the registered user-message sizes.
+//! engine would refuse can be recognised before it is made), the map's brush-model count and the
+//! registered user-message sizes. The client's guards are in `cl_guard`.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
@@ -146,6 +147,9 @@ pub struct State {
     pub events: Table,
     /// User-message type → registered size (-1 variable); kept across levels like the engine's.
     pub user_msgs: HashMap<i32, i32>,
+    /// The level's map name and its BSP's brush-model count (`None`: the header couldn't be
+    /// read), read once per level by `Engine::brush_model_ok`.
+    pub brush: Option<(Vec<u8>, Option<i32>)>,
 }
 
 impl State {
@@ -176,12 +180,46 @@ pub fn level_loading() {
         s.sounds = Table::default();
         s.generic = Table::default();
         s.events = Table::default();
+        s.brush = None;
     });
 }
 
 /// `ServerActivate` has returned: the engine is `ss_active` and refuses new precaches.
 pub fn level_active() {
     with(|s| s.loading = false);
+}
+
+/// `LUMP_MODELS` in a BSP version 29/30 header (`version`, then 15 `{fileofs, filelen}` lumps).
+const LUMP_MODELS: usize = 14;
+/// The bytes of a BSP header up to the end of the models lump entry.
+pub const BSP_HEADER_MODELS_END: usize = 4 + (LUMP_MODELS + 1) * 8;
+/// `sizeof(dmodel_t)` in BSP versions 29 and 30.
+const DMODEL_SIZE: i32 = 64;
+
+/// The number of models in a BSP's models lump (the world and its brush models), as
+/// `Mod_LoadSubmodels` counts them (`filelen / sizeof(dmodel_t)`). `None` for a header that isn't
+/// version 29 or 30 (FWGS also loads BSP2, whose header differs), so the caller doesn't guard.
+pub fn bsp_model_count(header: &[u8]) -> Option<i32> {
+    let rd = |o: usize| header.get(o..o + 4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let version = rd(0)?;
+    if version != 29 && version != 30 {
+        return None;
+    }
+    let len = rd(4 + LUMP_MODELS * 8 + 4)?;
+    (len >= 0).then_some(len / DMODEL_SIZE)
+}
+
+/// A brush-model name (`*n`), which the engines look up in the map's model table, not on disk.
+pub fn is_brush_name(name: &[u8]) -> bool {
+    name.first() == Some(&b'*')
+}
+
+/// Whether `name` is in the model table a map with `count` models gets: `SV_SpawnServer` (ReHLDS
+/// and FWGS) adds `"*%i"` for 1..count, so any other number or spelling (`*0`, `*01`, `*+1`)
+/// isn't there.
+pub fn brush_model_known(name: &[u8], count: i32) -> bool {
+    let Some(digits) = name.strip_prefix(b"*").and_then(|d| std::str::from_utf8(d).ok()) else { return false };
+    digits.parse::<i32>().is_ok_and(|n| n >= 1 && n < count && digits == n.to_string())
 }
 
 /// The engines' `ED_Alloc` reuse test for a free edict: freed in the level's first 2 s, or more
@@ -290,6 +328,26 @@ mod tests {
         assert_eq!(t.resolve(c"models/a.mdl"), Some(c"models/a.mdl"));
         assert_eq!(t.resolve(c"MODELS/a.mdl"), Some(c"models/a.mdl"));
         assert_eq!(t.resolve(c"models/b.mdl"), None);
+    }
+
+    #[test]
+    fn brush_model_names() {
+        let mut h = vec![0u8; BSP_HEADER_MODELS_END];
+        h[..4].copy_from_slice(&30i32.to_le_bytes());
+        h[4 + 14 * 8 + 4..][..4].copy_from_slice(&(5 * 64i32).to_le_bytes());
+        assert_eq!(bsp_model_count(&h), Some(5));
+        assert_eq!(bsp_model_count(&h[..BSP_HEADER_MODELS_END - 1]), None);
+        h[..4].copy_from_slice(&31i32.to_le_bytes());
+        assert_eq!(bsp_model_count(&h), None);
+        h[..4].copy_from_slice(&29i32.to_le_bytes());
+        h[4 + 14 * 8 + 4..][..4].copy_from_slice(&(-64i32).to_le_bytes());
+        assert_eq!(bsp_model_count(&h), None);
+        assert!(is_brush_name(b"*3") && !is_brush_name(b"models/a.mdl") && !is_brush_name(b""));
+        // A map with 5 models has the world and *1..*4.
+        assert!(brush_model_known(b"*1", 5) && brush_model_known(b"*4", 5));
+        for bad in [&b"*0"[..], b"*5", b"*99", b"*", b"*01", b"*+1", b"*-1", b"*1x", b"* 1", b"1"] {
+            assert!(!brush_model_known(bad, 5), "{}", String::from_utf8_lossy(bad));
+        }
     }
 
     #[test]
