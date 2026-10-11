@@ -104,13 +104,110 @@ impl Dpv {
     }
 }
 
+impl Dpv {
+    /// `dynpitchvol_t`'s 25 ints in TS's order: the bytes of `m_dpv` (`FIELD_CHARACTER`, 100).
+    fn bytes(&self) -> [u8; 100] {
+        let f = self.fields();
+        let mut b = [0u8; 100];
+        for (chunk, x) in b.as_chunks_mut::<4>().0.iter_mut().zip(f) {
+            *chunk = x.to_le_bytes();
+        }
+        b
+    }
+
+    fn set_bytes(&mut self, b: &[u8; 100]) {
+        let mut f = [0i32; 25];
+        for (x, chunk) in f.iter_mut().zip(b.as_chunks::<4>().0) {
+            *x = i32::from_le_bytes(*chunk);
+        }
+        let [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24] = f;
+        *self = Dpv {
+            preset: a0,
+            pitchrun: a1,
+            pitchstart: a2,
+            spinup: a3,
+            spindown: a4,
+            volrun: a5,
+            volstart: a6,
+            fadein: a7,
+            fadeout: a8,
+            lfotype: a9,
+            lforate: a10,
+            lfomodpitch: a11,
+            lfomodvol: a12,
+            cspinup: a13,
+            cspincount: a14,
+            pitch: a15,
+            spinupsav: a16,
+            spindownsav: a17,
+            pitchfrac: a18,
+            vol: a19,
+            fadeinsav: a20,
+            fadeoutsav: a21,
+            volfrac: a22,
+            lfofrac: a23,
+            lfomult: a24,
+        };
+    }
+
+    fn fields(&self) -> [i32; 25] {
+        let d = self;
+        [
+            d.preset,
+            d.pitchrun,
+            d.pitchstart,
+            d.spinup,
+            d.spindown,
+            d.volrun,
+            d.volstart,
+            d.fadein,
+            d.fadeout,
+            d.lfotype,
+            d.lforate,
+            d.lfomodpitch,
+            d.lfomodvol,
+            d.cspinup,
+            d.cspincount,
+            d.pitch,
+            d.spinupsav,
+            d.spindownsav,
+            d.pitchfrac,
+            d.vol,
+            d.fadeinsav,
+            d.fadeoutsav,
+            d.volfrac,
+            d.lfofrac,
+            d.lfomult,
+        ]
+    }
+}
+
+/// `CAmbientGeneric`'s think (`m_pfnThink`).
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum AmbientThink {
+    #[default]
+    None,
+    /// `RampThink`, set by `Spawn`.
+    Ramp,
+    /// `SUB_Remove`: an ambient with no `message`.
+    Remove,
+}
+
 #[derive(Default)]
 pub struct AmbientGeneric {
+    /// `m_flAttenuation` (+0x64).
     attenuation: f32,
+    /// `m_dpv` (+0x68).
     dpv: Dpv,
+    /// `m_fActive` (+0xcc).
     active: bool,
+    /// `m_fLooping` (+0xd0).
     looping: bool,
+    /// The `message` sample, interned (derived from `pev->message`).
     sample: Option<&'static CStr>,
+    think: AmbientThink,
+    /// `SetUse(ToggleUse)`, from `Spawn`.
+    usable: bool,
 }
 
 /// `(101 - x) * 64` for a non-zero 0..100 ramp time.
@@ -120,6 +217,29 @@ fn ramp(x: i32) -> i32 {
 }
 
 impl AmbientGeneric {
+    /// `CAmbientGeneric::Precache` (0xdec90): the sample, the modulation, and an active ambient's
+    /// sound.
+    fn precache(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let name = kv_str(s(cx.pev().message));
+        if name.len() > 1 {
+            let n = intern(name);
+            if !name.starts_with('!') {
+                eng.precache_sound(n);
+            }
+            self.sample = Some(n);
+        }
+        self.init_modulation(cx);
+        if cx.pev().spawnflags & AMBIENT_SOUND_START_SILENT == 0 && self.looping {
+            self.active = true;
+        }
+        if self.active {
+            let (vol, attn, pitch) = (self.dpv.vol as f32 * 0.01, self.attenuation, self.dpv.pitch);
+            self.emit(cx, vol, attn, snd::SPAWNING, pitch);
+            cx.pev().nextthink = eng.time() + 0.1;
+        }
+    }
+
     fn emit(&self, cx: &mut Cx, vol: f32, attn: f32, flags: i32, pitch: i32) {
         if let Some(s) = self.sample {
             let org = cx.pev().origin;
@@ -315,6 +435,7 @@ impl Entity for AmbientGeneric {
         true
     }
 
+    /// `CAmbientGeneric::Spawn` (0xdeb14).
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let sf = cx.pev().spawnflags;
@@ -331,43 +452,62 @@ impl Entity for AmbientGeneric {
         };
         let msg = s(cx.pev().message);
         if msg.is_empty() {
+            // Removed a tenth of a second later (SetThink(SUB_Remove)).
             let o = cx.pev().origin;
-            eng.alert(ALERT_TYPE::at_error, &format!("EMPTY AMBIENT AT: {}, {}, {}\n", o[0], o[1], o[2]));
-            crate::entities::remove(cx.edict);
+            eng.alert(ALERT_TYPE::at_error, &format!("EMPTY AMBIENT AT: {:.6}, {:.6}, {:.6}\n", o[0], o[1], o[2]));
+            cx.pev().nextthink = eng.time() + 0.1;
+            self.think = AmbientThink::Remove;
             return;
         }
         let v = cx.pev();
         v.solid = SOLID_NOT as i32;
         v.movetype = MOVETYPE_NONE as i32;
+        self.think = AmbientThink::Ramp;
         v.nextthink = 0.0;
+        self.usable = true;
         self.active = false;
         self.looping = sf & AMBIENT_SOUND_NOT_LOOPING == 0;
+        self.precache(cx);
+    }
 
-        // Precache
-        let name = kv_str(msg);
-        if name.len() > 1 {
-            let n = intern(name);
-            if !name.starts_with('!') {
-                eng.precache_sound(n);
-            }
-            self.sample = Some(n);
+    /// `CAmbientGeneric::Save` (0xdea74) / `Restore`: `CBaseEntity`'s part (think `RampThink` or
+    /// `SUB_Remove`, use `ToggleUse`), then `"CAmbientGeneric"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs = crate::save::BaseFuncs { think: self.think != AmbientThink::None, use_: self.usable, ..Default::default() };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.think = AmbientThink::None;
         }
-        self.init_modulation(cx);
-        if sf & AMBIENT_SOUND_START_SILENT == 0 && self.looping {
-            self.active = true;
+        if cleared.use_ {
+            self.usable = false;
         }
-        if self.active {
-            let (vol, attn, pitch) = (self.dpv.vol as f32 * 0.01, self.attenuation, self.dpv.pitch);
-            self.emit(cx, vol, attn, snd::SPAWNING, pitch);
-            cx.pev().nextthink = eng.time() + 0.1;
-        }
+        f.table(&crate::save::tables::CAmbientGeneric);
+        f.float(&mut self.attenuation);
+        f.boolean(&mut self.active);
+        f.boolean(&mut self.looping);
+        let mut b = self.dpv.bytes();
+        f.bytes(&mut b);
+        self.dpv.set_bytes(&b);
+    }
+
+    /// `CAmbientGeneric::Precache` (0xdec90): it restarts the sound of an active looping ambient.
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        self.ramp_think(cx);
+        match self.think {
+            AmbientThink::Ramp => self.ramp_think(cx),
+            AmbientThink::Remove => sub_remove(cx.edict),
+            AmbientThink::None => {}
+        }
     }
 
+    /// `CAmbientGeneric::ToggleUse` (0xdf3f4), through `m_pfnUse`.
     fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, value: f32) {
+        if !self.usable {
+            return;
+        }
         let now = engine().time();
         if kind != UseType::Toggle && ((self.active && kind == UseType::On) || (!self.active && kind == UseType::Off)) {
             return;
@@ -451,7 +591,9 @@ pub fn reset_player_room(index: i32) {
 /// line of sight.
 #[derive(Default)]
 pub struct EnvSound {
+    /// `m_flRadius` (+0x64).
     radius: f32,
+    /// `m_flRoomtype` (+0x68).
     roomtype: f32,
 }
 
@@ -485,6 +627,15 @@ impl Entity for EnvSound {
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         cx.pev().nextthink = eng.time() + eng.random_float(0.0, 0.5);
+    }
+
+    /// `CEnvSound::Save` / `Restore`: `CBaseEntity`'s part (its `Think` is a virtual override, no
+    /// member pointer), then `"CEnvSound"`. `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        f.base_funcs(cx, crate::save::BaseFuncs::default());
+        f.table(&crate::save::tables::CEnvSound);
+        f.float(&mut self.radius);
+        f.float(&mut self.roomtype);
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -585,12 +736,23 @@ enum SpeakerThink {
 /// key) every 15-135 s while on, volume `health` / 10; a `!sentence` plays once.
 #[derive(Default)]
 pub struct Speaker {
+    /// `m_preset` (+0x64).
     preset: i32,
     think: SpeakerThink,
+    /// `SetUse(ToggleUse)`.
     usable: bool,
 }
 
 impl Speaker {
+    /// `CSpeaker::Precache` (0xe1a98): a speaker that doesn't start silent speaks in 5-15 s.
+    fn precache(cx: &mut Cx) {
+        let eng = engine();
+        if cx.pev().spawnflags & SPEAKER_START_SILENT == 0 {
+            let r = eng.random_float(5.0, 15.0);
+            cx.pev().nextthink = (r as f64 + eng.time() as f64) as f32;
+        }
+    }
+
     /// `CSpeaker::SpeakerThink` (0xe1af4).
     fn speak(&mut self, cx: &mut Cx) {
         let eng = engine();
@@ -653,10 +815,27 @@ impl Entity for Speaker {
         self.think = SpeakerThink::Speak;
         v.nextthink = 0.0;
         self.usable = true;
-        if v.spawnflags & SPEAKER_START_SILENT == 0 {
-            let r = eng.random_float(5.0, 15.0);
-            cx.pev().nextthink = (r as f64 + eng.time() as f64) as f32;
+        Self::precache(cx);
+    }
+
+    /// `CSpeaker::Save` / `Restore`: `CBaseEntity`'s part (think `SpeakerThink` or `SUB_Remove`,
+    /// use `ToggleUse`), then `"CSpeaker"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs = crate::save::BaseFuncs { think: self.think != SpeakerThink::None, use_: self.usable, ..Default::default() };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.think = SpeakerThink::None;
         }
+        if cleared.use_ {
+            self.usable = false;
+        }
+        f.table(&crate::save::tables::CSpeaker);
+        f.int(&mut self.preset);
+    }
+
+    /// `CSpeaker::Precache` (0xe1a98).
+    fn restored(&mut self, cx: &mut Cx) {
+        Self::precache(cx);
     }
 
     fn think(&mut self, cx: &mut Cx) {

@@ -6,8 +6,10 @@
 //! `trigger_monsterjump`, plus `target_cdaudio`.
 
 use super::base::*;
+use super::trains::{ent_handle, ts_toggle};
 use crate::entities::{fire_targets, remove};
 use crate::messages::{self, Msg};
+use crate::save::{Animating, BaseFuncs, Fields, tables};
 use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
@@ -126,14 +128,37 @@ pub fn show_message(text: &CStr, player: *mut edict_t) {
 }
 
 /// `CBaseTrigger` and its brush subclasses. The kind is decided by the link type.
-#[derive(Default)]
 pub struct Trigger<const KIND: u8> {
+    /// `m_cTriggersLeft` (+0xcc, the `count` key) and `m_bitsDamageInflict` (+0xfc, the
+    /// `damagetype` key) are `t.triggers_left` / `t.damage_inflict`.
     t: Toggle<Self>,
-    /// `m_cTriggersLeft` (+0xcc), the `count` key.
-    triggers_left: i32,
-    damage_inflict: i32,
     /// `m_pfnUse`: `ToggleUse` (hurt, push, monsterjump), `CounterUse`, `EndSectionUse`.
     use_fn: Option<fn(&mut Self, &mut Cx, *mut edict_t)>,
+}
+
+impl<const KIND: u8> Default for Trigger<KIND> {
+    fn default() -> Self {
+        Self { t: ts_toggle(), use_fn: None }
+    }
+}
+
+/// A `(int)` of `strtod`'s double as TS's x87 code does it (truncating `fistp`): out of range
+/// (or NaN) is the integer indefinite, `i32::MIN`.
+fn fistp32(v: f64) -> i32 {
+    let t = v.trunc();
+    if (-2147483648.0..=2147483647.0).contains(&t) { t as i32 } else { i32::MIN }
+}
+
+/// `CBaseTrigger::KeyValue` (0xe68bc): `damage`, `count` and `damagetype`, then
+/// `CBaseToggle::KeyValue`.
+pub(super) fn trigger_key_value<T>(t: &mut Toggle<T>, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+    match key.to_bytes() {
+        b"damage" => cx.pev().dmg = kv_f(value),
+        b"count" => t.triggers_left = fistp32(kv_d(value)),
+        b"damagetype" => t.damage_inflict = kv_i(value),
+        _ => return t.key_value(key, value),
+    }
+    true
 }
 
 pub const K_MULTIPLE: u8 = 0;
@@ -240,9 +265,9 @@ impl<const KIND: u8> Trigger<KIND> {
     /// `ActivateMultiTrigger` when it reaches 0. A `player` activator gets the progress text on
     /// the server console unless `SF_COUNTER_NOMESSAGE`.
     fn counter_use(&mut self, cx: &mut Cx, activator: *mut edict_t) {
-        self.triggers_left = self.triggers_left.wrapping_sub(1);
+        self.t.triggers_left = self.t.triggers_left.wrapping_sub(1);
         self.t.activator = EHandle::new(activator);
-        if self.triggers_left < 0 {
+        if self.t.triggers_left < 0 {
             return;
         }
         // TS reads the classname through `m_hActivator->` and crashes on a NULL (or object-less)
@@ -251,9 +276,9 @@ impl<const KIND: u8> Trigger<KIND> {
         let message =
             !a.is_null() && a.has_private_data() && s(a.v().classname) == c"player" && cx.pev().spawnflags & SF_COUNTER_NOMESSAGE == 0;
         if message {
-            engine().alert(ALERT_TYPE::at_console, counter_message(self.triggers_left));
+            engine().alert(ALERT_TYPE::at_console, counter_message(self.t.triggers_left));
         }
-        if self.triggers_left == 0 {
+        if self.t.triggers_left == 0 {
             self.activate_multi_trigger(cx, a);
         }
     }
@@ -399,7 +424,7 @@ impl<const KIND: u8> Trigger<KIND> {
         if fldmg < 0.0 {
             super::items::take_health(other, -fldmg);
         } else {
-            crate::damage::apply(other, &crate::damage::DamageInfo::new(me, me, fldmg, self.damage_inflict));
+            crate::damage::apply(other, &crate::damage::DamageInfo::new(me, me, fldmg, self.t.damage_inflict));
         }
         let v = cx.pev();
         v.pain_finished = now;
@@ -493,14 +518,21 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
     /// `CBaseTrigger::KeyValue` (0xe68bc); `CTriggerEndSection::KeyValue` (0xe96fc) takes
     /// `section` first.
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        match key.to_bytes() {
-            b"section" if KIND == K_ENDSECTION => cx.pev().message = alloc(value),
-            b"damage" => cx.pev().dmg = kv_f(value),
-            b"count" => self.triggers_left = kv_f(value) as i32,
-            b"damagetype" => self.damage_inflict = kv_i(value),
-            _ => return self.t.key_value(key, value),
+        if KIND == K_ENDSECTION && key == c"section" {
+            cx.pev().message = alloc(value);
+            return true;
         }
-        true
+        trigger_key_value(&mut self.t, cx, key, value)
+    }
+
+    /// `CBaseToggle::Save` / `Restore` (every `CBaseTrigger` kind's chain ends there). The
+    /// member pointers are the `think` / `touch` slots and `use_fn`; `trigger_cdaudio`'s
+    /// `Touch` / `Use` and `trigger_monsterjump`'s `Think` / `Touch` are virtuals. Every kind's
+    /// `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        if self.t.save_chain(cx, f, &mut Animating::default(), self.use_fn.is_some(), false).use_ {
+            self.use_fn = None;
+        }
     }
 
     fn spawn(&mut self, cx: &mut Cx) {
@@ -522,7 +554,7 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
                 if cx.pev().targetname != 0 {
                     self.use_fn = Some(Self::toggle_use_fn);
                 }
-                if self.damage_inflict & DMG_RADIATION != 0 {
+                if self.t.damage_inflict & DMG_RADIATION != 0 {
                     self.t.think = Some(Self::radiation_think);
                     cx.pev().nextthink = eng.time() + eng.random_float(0.0, 0.5);
                 }
@@ -571,8 +603,8 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
             // CTriggerCounter::Spawn (0xe7b54): no InitTrigger, so no model and not solid.
             K_COUNTER => {
                 self.t.wait = -1.0;
-                if self.triggers_left == 0 {
-                    self.triggers_left = 2;
+                if self.t.triggers_left == 0 {
+                    self.t.triggers_left = 2;
                 }
                 self.use_fn = Some(Self::counter_use);
             }
@@ -724,32 +756,55 @@ impl Entity for TargetCdAudio {
 
 // ---- func_ladder ------------------------------------------------------------------------------------
 
-/// `func_ladder`: CONTENTS_LADDER brush, invisible unless `showtriggers`.
-#[derive(Default)]
-pub struct Ladder;
+/// `func_ladder` (`CLadder`, a `CBaseTrigger`): CONTENTS_LADDER brush, invisible unless
+/// `showtriggers`.
+pub struct Ladder {
+    /// Only keyvalue state (saved; a ladder doesn't use it).
+    t: Toggle<Self>,
+}
 
-impl Entity for Ladder {
-    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        // CBaseTrigger::KeyValue (damage/count/damagetype go nowhere useful on a ladder).
-        match key.to_bytes() {
-            b"damage" => cx.pev().dmg = kv_f(value),
-            b"count" | b"damagetype" | b"lip" | b"wait" | b"master" | b"distance" | b"delay" | b"killtarget" => {}
-            _ => return false,
-        }
-        true
+impl Default for Ladder {
+    fn default() -> Self {
+        Self { t: ts_toggle() }
     }
+}
 
-    fn spawn(&mut self, cx: &mut Cx) {
+impl Ladder {
+    /// `CLadder::Precache` (0xe8e20).
+    fn precache(cx: &mut Cx) {
+        let hide = !show_triggers();
         let v = cx.pev();
         v.solid = SOLID_NOT as i32;
         v.skin = CONTENTS_LADDER;
-        if !show_triggers() {
+        if hide {
             v.rendermode = kRenderTransTexture as i32;
             v.renderamt = 0.0;
         }
         v.effects &= !(EF_NODRAW as i32);
+    }
+}
+
+impl Entity for Ladder {
+    /// `CLadder::KeyValue` (0xe8df8) = `CBaseTrigger::KeyValue`.
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        trigger_key_value(&mut self.t, cx, key, value)
+    }
+
+    /// `CLadder::Spawn` (0xe8ea0).
+    fn spawn(&mut self, cx: &mut Cx) {
+        Self::precache(cx);
         set_own_model(cx);
         cx.pev().movetype = MOVETYPE_PUSH as i32;
+    }
+
+    /// `CBaseToggle::Save` / `Restore`: no member pointers.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        self.t.save_chain(cx, f, &mut Animating::default(), false, false);
+    }
+
+    /// `CLadder::Precache` (0xe8e20).
+    fn restored(&mut self, cx: &mut Cx) {
+        Self::precache(cx);
     }
 }
 
@@ -758,7 +813,10 @@ impl Entity for Ladder {
 /// `func_friction`: sets the toucher's friction (`modifier` percent).
 #[derive(Default)]
 pub struct FrictionModifier {
+    /// `m_frictionFraction` (+0x64).
     friction: f32,
+    /// `SetTouch(ChangeFriction)`, from `Spawn` on.
+    touch: bool,
 }
 
 impl Entity for FrictionModifier {
@@ -775,9 +833,24 @@ impl Entity for FrictionModifier {
         v.solid = SOLID_TRIGGER as i32;
         set_own_model(cx);
         cx.pev().movetype = MOVETYPE_NONE as i32;
+        self.touch = true;
     }
 
+    /// `CFrictionModifier::Save` / `Restore` (0xe5aac / 0xe5afc). `m_pfnTouch` is always set,
+    /// so TS's restore stops after `"BASE"`: a restored one has no fraction and no touch.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        if f.base_funcs(cx, BaseFuncs { touch: self.touch, ..Default::default() }).touch {
+            self.touch = false;
+        }
+        f.table(&tables::CFrictionModifier);
+        f.float(&mut self.friction);
+    }
+
+    /// `CFrictionModifier::ChangeFriction` (0xe5bc0).
     fn touch(&mut self, _cx: &mut Cx, other: *mut edict_t) {
+        if !self.touch {
+            return;
+        }
         let ov = other.v();
         if ov.movetype != MOVETYPE_BOUNCEMISSILE as i32 && ov.movetype != MOVETYPE_BOUNCE as i32 {
             ov.friction = self.friction;
@@ -793,6 +866,14 @@ fn trigger_state(v: &CStr) -> UseType {
         2 => UseType::Toggle,
         _ => UseType::On,
     }
+}
+
+/// `triggerType` (`FIELD_INTEGER`, a `USE_TYPE`). Guard: TS keeps any int it reads back; the
+/// port's `UseType` is one of the four (anything above 2 is `USE_TOGGLE`).
+fn save_use_type(f: &mut Fields, kind: &mut UseType) {
+    let mut i = *kind as i32;
+    f.int(&mut i);
+    *kind = use_type(i);
 }
 
 pub const SF_AUTO_FIREONCE: i32 = 1;
@@ -820,7 +901,23 @@ impl Entity for AutoTrigger {
         true
     }
 
+    /// `CAutoTrigger::Spawn` (0xe5dd4) = `Precache`.
     fn spawn(&mut self, cx: &mut Cx) {
+        self.restored(cx);
+    }
+
+    /// `CAutoTrigger::Save` / `Restore` (0xe5c70 / 0xe5cc0): `m_globalstate`, `triggerType`.
+    /// `Think` is a virtual.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        f.base_funcs(cx, BaseFuncs::default());
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+        f.table(&tables::CAutoTrigger);
+        f.string(&mut self.globalstate);
+        save_use_type(f, &mut self.kind);
+    }
+
+    /// `CAutoTrigger::Precache` (0xe5de8): fire 0.1 s on, so a restored one fires again.
+    fn restored(&mut self, cx: &mut Cx) {
         cx.pev().nextthink = engine().time() + 0.1;
     }
 
@@ -855,6 +952,14 @@ impl Entity for TriggerRelay {
         self.delay.key_value(key, value)
     }
 
+    /// `CTriggerRelay::Save` / `Restore` (0xe5ea0 / 0xe5ef0): `triggerType`. `Use` is a virtual.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        f.base_funcs(cx, BaseFuncs::default());
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+        f.table(&tables::CTriggerRelay);
+        save_use_type(f, &mut self.kind);
+    }
+
     fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
         let me = cx.edict;
         self.delay.use_targets(me, me, self.kind, 0.0);
@@ -881,6 +986,15 @@ impl Entity for ChangeTarget {
         self.delay.key_value(key, value)
     }
 
+    /// `CTriggerChangeTarget::Save` / `Restore` (0xe981c / 0xe986c): `m_iszNewTarget`. `Use`
+    /// is a virtual.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        f.base_funcs(cx, BaseFuncs::default());
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+        f.table(&tables::CTriggerChangeTarget);
+        f.string(&mut self.new_target);
+    }
+
     fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
         let target = s(cx.pev().target);
         let e = engine().find_by_target_name(std::ptr::null_mut(), target);
@@ -896,15 +1010,27 @@ const MAX_MULTI_TARGETS: usize = 16;
 const SF_MULTIMAN_THREAD: i32 = 1;
 const SF_MULTIMAN_CLONE: i32 = i32::MIN;
 
-#[derive(Default, Clone)]
+/// `multi_manager` (`CMultiManager`, a `CBaseToggle`).
 pub struct MultiManager {
+    /// `m_cTargets`, `m_iTargetName[16]`, `m_flTargetDelay[16]` (+0x104, +0x110, +0x150).
     targets: Vec<(string_t, f32)>,
-    wait: f32,
+    /// `m_flWait` (the `wait` key) is `t.wait`; `m_hActivator` is `t.activator`. Nothing else
+    /// of it is used.
+    t: Toggle<Self>,
+    /// `m_index` (+0x108).
     index: usize,
+    /// `m_startTime` (+0x10c).
     start_time: f32,
-    activator: EHandle,
+    /// `m_pfnThink` = `ManagerThink`: from `Spawn` until the last target fires.
     thinking: bool,
+    /// `m_pfnUse` = `ManagerUse`.
     usable: bool,
+}
+
+impl Default for MultiManager {
+    fn default() -> Self {
+        Self { targets: Vec::new(), t: ts_toggle(), index: 0, start_time: 0.0, thinking: false, usable: false }
+    }
 }
 
 /// `UTIL_StripToken`: `"name#2"` -> `"name"`.
@@ -943,7 +1069,7 @@ impl MultiManager {
             });
             return;
         }
-        self.activator = EHandle::new(activator);
+        self.t.activator = EHandle::new(activator);
         self.index = 0;
         self.start_time = engine().time();
         self.usable = false;
@@ -957,7 +1083,7 @@ impl MultiManager {
         let me = cx.edict;
         while self.index < self.targets.len() && self.targets[self.index].1 <= t {
             let (name, _) = self.targets[self.index];
-            fire_targets(s(name), self.activator.get(), me, UseType::Toggle, 0.0);
+            fire_targets(s(name), self.t.activator.get(), me, UseType::Toggle, 0.0);
             self.index += 1;
         }
         if self.index >= self.targets.len() {
@@ -977,7 +1103,7 @@ impl Entity for MultiManager {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         // Every key that isn't an entvars field (those never get here) or `wait` is a target.
         if key == c"wait" {
-            self.wait = kv_f(value);
+            self.t.wait = kv_f(value);
             return true;
         }
         if self.targets.len() < MAX_MULTI_TARGETS {
@@ -988,9 +1114,47 @@ impl Entity for MultiManager {
         false
     }
 
+    /// `CMultiManager::Save` / `Restore` (0xe6034 / 0xe6084): the `CBaseToggle` chain, then the
+    /// target list and the run in progress. `ManagerUse` and `ManagerThink` are `m_pfnUse` /
+    /// `m_pfnThink`, so a spawned manager's restore stops after `"BASE"`.
+    ///
+    /// Guard: a restored `m_cTargets` outside 0..=16 (TS indexes its arrays with it) is clamped.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        let cleared = f.base_funcs(cx, BaseFuncs { think: self.thinking, use_: self.usable, ..Default::default() });
+        if cleared.think {
+            self.thinking = false;
+        }
+        if cleared.use_ {
+            self.usable = false;
+        }
+        f.delay(&mut self.t.delay.delay, &mut self.t.delay.kill_target);
+        f.animating(&mut Animating::default());
+        self.t.save_toggle(f);
+        f.table(&tables::CMultiManager);
+        let mut count = self.targets.len() as i32;
+        f.int(&mut count);
+        let mut index = self.index as i32;
+        f.int(&mut index);
+        self.index = index.max(0) as usize;
+        f.float(&mut self.start_time);
+        let mut names = [0; MAX_MULTI_TARGETS];
+        let mut delays = [0.0; MAX_MULTI_TARGETS];
+        for (i, (n, d)) in self.targets.iter().enumerate() {
+            names[i] = *n;
+            delays[i] = *d;
+        }
+        f.strings(&mut names);
+        f.floats(&mut delays);
+        let count = count.clamp(0, MAX_MULTI_TARGETS as i32) as usize;
+        self.targets = names[..count].iter().copied().zip(delays[..count].iter().copied()).collect();
+    }
+
     fn spawn(&mut self, cx: &mut Cx) {
         cx.pev().solid = SOLID_NOT as i32;
+        // CMultiManager::Spawn (0xe619c): SetUse(ManagerUse), SetThink(ManagerThink) (it doesn't
+        // run before a use sets nextthink).
         self.usable = true;
+        self.thinking = true;
         // Bubble sort by delay (stable, like the SDK).
         let mut swapped = true;
         while swapped {
@@ -1038,7 +1202,10 @@ pub struct TriggerCamera {
     initial_speed: f32,
     acceleration: f32,
     deceleration: f32,
+    /// `m_state` (+0xa4).
     state: bool,
+    /// `SetThink(FollowTarget)`: from the first `Use` that finds a target on (TS never clears
+    /// it; the think stops by not rescheduling).
     following: bool,
 }
 
@@ -1081,7 +1248,6 @@ impl TriggerCamera {
         let now = eng.time();
         let player = self.player.get();
         if player.is_null() {
-            self.following = false;
             return;
         }
         let target = self.target.get();
@@ -1095,7 +1261,6 @@ impl TriggerCamera {
             self.delay.use_targets(me, me, UseType::Toggle, 0.0);
             cx.pev().avelocity = [0.0; 3];
             self.state = false;
-            self.following = false;
             return;
         }
         let v = cx.pev();
@@ -1197,6 +1362,29 @@ impl Entity for TriggerCamera {
         if self.deceleration == 0.0 {
             self.deceleration = 500.0;
         }
+    }
+
+    /// `CTriggerCamera::Save` / `Restore` (0xe99b8 / 0xe9a08). `Use` is a virtual; `m_pfnThink`
+    /// is `FollowTarget`. `m_pentPath` (a `CBaseEntity *`) is the `path` handle.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        if f.base_funcs(cx, BaseFuncs { think: self.following, ..Default::default() }).think {
+            self.following = false;
+        }
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+        f.table(&tables::CTriggerCamera);
+        f.ehandle(&mut self.player);
+        f.ehandle(&mut self.target);
+        ent_handle(f, &mut self.path);
+        f.string(&mut self.path_name);
+        f.float(&mut self.wait);
+        f.float(&mut self.return_time);
+        f.float(&mut self.stop_time);
+        f.float(&mut self.move_distance);
+        f.float(&mut self.target_speed);
+        f.float(&mut self.initial_speed);
+        f.float(&mut self.acceleration);
+        f.float(&mut self.deceleration);
+        f.boolean(&mut self.state);
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -1348,6 +1536,15 @@ impl Entity for EnvGlobal {
         true
     }
 
+    /// `CEnvGlobal::Save` / `Restore` (0xa7590 / 0xa75e0). `Use` is a virtual.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        f.base_funcs(cx, BaseFuncs::default());
+        f.table(&tables::CEnvGlobal);
+        f.string(&mut self.globalstate);
+        f.int(&mut self.trigger_mode);
+        f.int(&mut self.initial_state);
+    }
+
     fn spawn(&mut self, cx: &mut Cx) {
         if self.globalstate == 0 {
             remove(cx.edict);
@@ -1380,9 +1577,27 @@ pub const SF_MESSAGE_ALL: i32 = 2;
 
 /// `env_message`: a titles.txt message (`HudText`) plus an optional sound.
 #[derive(Default)]
-pub struct EnvMessage;
+pub struct EnvMessage {
+    /// Restored from a save: TS's `m_pfnThink` is unset then.
+    restored: bool,
+}
 
 impl Entity for EnvMessage {
+    /// TS's chain is `CBaseEntity`'s. `m_pfnThink` is set only on the worldspawn chapter title
+    /// (`SetThink(SUB_CallUseToggle)`), the only one with a `nextthink`; `Use` is a virtual.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        let think = !self.restored && cx.pev().nextthink != 0.0;
+        if f.base_funcs(cx, BaseFuncs { think, ..Default::default() }).think {
+            self.restored = true;
+        }
+    }
+
+    /// `CMessage::Precache` (0xbdaa0).
+    fn restored(&mut self, cx: &mut Cx) {
+        self.restored = true;
+        precache_sound_s(cx.pev().noise);
+    }
+
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v = cx.pev();
         match key.to_bytes() {
@@ -1414,6 +1629,9 @@ impl Entity for EnvMessage {
     /// Only the worldspawn chapter title schedules a think: `SUB_CallUseToggle`, which uses the
     /// message with itself as the activator (`CWorld::Precache` 0xf449c).
     fn think(&mut self, cx: &mut Cx) {
+        if self.restored {
+            return;
+        }
         let me = cx.edict;
         self.use_(cx, me, me, UseType::Toggle, 0.0);
     }

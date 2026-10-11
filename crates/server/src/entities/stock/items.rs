@@ -81,7 +81,11 @@ impl Kind {
 #[derive(Default)]
 pub struct Item<const KIND: u8> {
     respawning: bool,
+    /// `m_pfnTouch` is `ItemTouch` (`CItem::Spawn` 0xcae8c, `Materialize`).
     touchable: bool,
+    /// `m_pfnThink` is `Materialize`: set by the first `Respawn` (0xcb064) and never cleared
+    /// (`Materialize` 0xcb0f8 leaves it), so only the save sees it after the item is back.
+    think_set: bool,
 }
 
 impl<const KIND: u8> Item<KIND> {
@@ -157,7 +161,11 @@ impl<const KIND: u8> Item<KIND> {
             }
             Kind::Security => {
                 // `CItemSecurity::MyTouch` (0xcba58): `m_rgItems[ITEM_SECURITY]++` (+0x838) and
-                // always taken. Nothing in TS reads the count, so the port doesn't keep it.
+                // always taken. Only the player's save reads the count. As for the antidote, the
+                // player can be taken out further up the stack.
+                crate::world::defer(p, move || {
+                    crate::player::with_player(p, |pl, _| pl.security_cards += 1);
+                });
             }
         }
         true
@@ -170,6 +178,7 @@ impl<const KIND: u8> Item<KIND> {
         let org = cx.pev().origin;
         engine().set_origin(cx.edict, org);
         self.respawning = true;
+        self.think_set = true;
         cx.pev().nextthink = engine().time() + ITEM_RESPAWN_TIME;
     }
 
@@ -215,6 +224,26 @@ pub fn precache_class(class: &CStr) -> bool {
 }
 
 impl<const KIND: u8> Entity for Item<KIND> {
+    /// `CBaseEntity::Save` (0xabe40): TS's items (`CItem` subclasses) save no table of their
+    /// own. A restored think or touch never runs, so a restored item that was set to touch or to
+    /// come back can't be picked up any more, as in TS.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs = crate::save::BaseFuncs { think: self.think_set, touch: self.touchable, ..Default::default() };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.think_set = false;
+            self.respawning = false;
+        }
+        if cleared.touch {
+            self.touchable = false;
+        }
+    }
+
+    /// The class's `Precache` (see [`Self::precache`]).
+    fn restored(&mut self, _cx: &mut Cx) {
+        Self::precache();
+    }
+
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         Self::precache();
@@ -342,11 +371,21 @@ impl Entity for WorldItem {
 /// then recharges after 60 s (health) / 30 s (armour). Continuous +use.
 #[derive(Default)]
 pub struct Charger<const ARMOR: bool> {
+    /// `m_iJuice` (+0x10c): 1 full, 0 empty.
     full: bool,
+    /// `m_iOn` (+0x110).
     on: i32,
+    /// `m_flNextCharge` (+0x104).
     next_charge: f32,
+    /// `m_flSoundTime` (+0x114).
     sound_time: f32,
+    /// The think is `Recharge` (else `Off` or `SUB_DoNothing`).
     recharge_at: Option<f32>,
+    /// `m_iReactivate` (+0x108): the `dmdelay` key, then the recharge time `Off` last took.
+    reactivate: i32,
+    /// `m_pfnThink` is set: the first `Use` that charges or `Off` sets it, and nothing clears it.
+    /// A restored one never runs.
+    think_set: bool,
 }
 
 impl<const ARMOR: bool> Charger<ARMOR> {
@@ -373,15 +412,20 @@ impl<const ARMOR: bool> Charger<ARMOR> {
             engine().emit_sound(cx.edict, CHAN_STATIC as i32, charge, 0.0, 0.0, goldsrc::ext::entities::snd::STOP, PITCH_NORM as i32);
         }
         self.on = 0;
+        self.think_set = true;
         // `FlHealthChargerRechargeTime` / `FlHEVChargerRechargeTime` are 0 in single player
         // (`CHalfLifeRules` 0xde934, `CGameRules`), and an empty charger then stays empty.
-        if !self.full && !crate::rules::state::single_player() {
-            let t = if ARMOR { 30.0 } else { 60.0 };
-            self.recharge_at = Some(t);
-            think_ltime(cx, t);
-        } else {
-            self.recharge_at = None;
+        if !self.full {
+            let time = if ARMOR { 30 } else { 60 };
+            self.reactivate = if crate::rules::state::single_player() { 0 } else { time };
+            if self.reactivate > 0 {
+                let t = self.reactivate as f32;
+                self.recharge_at = Some(t);
+                think_ltime(cx, t);
+                return;
+            }
         }
+        self.recharge_at = None;
     }
 
     fn recharge(&mut self, cx: &mut Cx) {
@@ -393,17 +437,49 @@ impl<const ARMOR: bool> Charger<ARMOR> {
     }
 }
 
-impl<const ARMOR: bool> Entity for Charger<ARMOR> {
-    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, _value: &CStr) -> bool {
-        // style/height/value1-3/dmdelay are swallowed; the rest go to CBaseToggle (unused here).
-        matches!(key.to_bytes(), b"style" | b"height" | b"value1" | b"value2" | b"value3" | b"dmdelay")
-    }
-
-    fn spawn(&mut self, cx: &mut Cx) {
+impl<const ARMOR: bool> Charger<ARMOR> {
+    fn precache() {
         let eng = engine();
         for snd in Self::precaches() {
             eng.precache_sound(snd);
         }
+    }
+}
+
+impl<const ARMOR: bool> Entity for Charger<ARMOR> {
+    /// `CWallHealth::KeyValue` (0xc8b34) / `CRecharge::KeyValue` (0xc6dfc): `dmdelay` is
+    /// `m_iReactivate`; style/height/value1-3 are swallowed; the rest go to CBaseToggle (unused
+    /// here).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key == c"dmdelay" {
+            self.reactivate = kv_i(value);
+            return true;
+        }
+        matches!(key.to_bytes(), b"style" | b"height" | b"value1" | b"value2" | b"value3")
+    }
+
+    /// `CWallHealth::Save` (0xc8a70) / `CRecharge::Save` (0xc6d38). `Use` is the class's own.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        if f.base_funcs(cx, crate::save::BaseFuncs { think: self.think_set, ..Default::default() }).think {
+            self.think_set = false;
+            self.recharge_at = None;
+        }
+        f.table(if ARMOR { &crate::save::tables::CRecharge } else { &crate::save::tables::CWallHealth });
+        f.float(&mut self.next_charge);
+        f.int(&mut self.reactivate);
+        f.boolean(&mut self.full);
+        f.int(&mut self.on);
+        f.float(&mut self.sound_time);
+    }
+
+    /// `CWallHealth::Precache` (0xc8cc4) / `CRecharge::Precache` (0xc6f8c).
+    fn restored(&mut self, _cx: &mut Cx) {
+        Self::precache();
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        Self::precache();
         let v = cx.pev();
         v.solid = SOLID_BSP as i32;
         v.movetype = MOVETYPE_PUSH as i32;
@@ -416,6 +492,9 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
     }
 
     fn think(&mut self, cx: &mut Cx) {
+        if !self.think_set {
+            return;
+        }
         if self.recharge_at.is_some() {
             self.recharge(cx);
         } else {
@@ -442,6 +521,7 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
             return;
         }
         self.recharge_at = None;
+        self.think_set = true;
         think_ltime(cx, 0.25);
         if self.next_charge >= now {
             return;

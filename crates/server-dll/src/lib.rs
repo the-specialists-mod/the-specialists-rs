@@ -12,12 +12,13 @@
 #![allow(clippy::missing_safety_doc)]
 
 use goldsrc::edict::EdictPtr;
+use goldsrc::ext::saverestore::{EngineHost, SaveData, raw};
 use goldsrc::server::{self as sv, engine};
 use goldsrc::sys::*;
 use goldsrc::util::cstr;
-use std::ffi::{c_char, c_int, c_uchar, c_uint, c_void};
+use std::ffi::{CStr, c_char, c_int, c_uchar, c_uint, c_void};
 use ts_server::world::{self, UseType};
-use ts_server::{bots, commands, entities, messages, net, player, rules, stunt, weapons};
+use ts_server::{bots, commands, entities, messages, net, player, rules, save, stunt, weapons};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn GiveFnptrsToDll(funcs: *const enginefuncs_t, globals: *mut globalvars_t) {
@@ -81,10 +82,10 @@ fn dll_functions() -> DLL_FUNCTIONS {
         pfnSave: Some(save),
         pfnRestore: Some(restore),
         pfnSetAbsBox: Some(set_abs_box),
-        pfnSaveWriteFields: Some(save_fields),
-        pfnSaveReadFields: Some(save_fields),
+        pfnSaveWriteFields: Some(save_write_fields),
+        pfnSaveReadFields: Some(save_read_fields),
         pfnSaveGlobalState: Some(save_global_state),
-        pfnRestoreGlobalState: Some(save_global_state),
+        pfnRestoreGlobalState: Some(restore_global_state),
         pfnResetGlobalState: Some(reset_global_state),
         pfnClientConnect: Some(client_connect),
         pfnClientDisconnect: Some(client_disconnect),
@@ -131,8 +132,9 @@ unsafe extern "C" fn parms_change_level() {
     entities::stock::levelchange::parms_change_level();
 }
 
+/// `ResetGlobalState` (TS 0xf43fc).
 unsafe extern "C" fn reset_global_state() {
-    entities::stock::base::reset_global_state();
+    save::reset_global_state();
 }
 unsafe extern "C" fn noop_e(_: *mut edict_t) {}
 
@@ -181,13 +183,89 @@ unsafe extern "C" fn key_value(e: *mut edict_t, kvd: *mut KeyValueData) {
     kvd.fHandled = entities::dispatch_key_value(e, !kvd.szClassName.is_null(), key, value) as c_int;
 }
 
-// Multiplayer only: save/restore are stubs.
-unsafe extern "C" fn save(_: *mut edict_t, _: *mut SAVERESTOREDATA) {}
-unsafe extern "C" fn restore(_: *mut edict_t, _: *mut SAVERESTOREDATA, _: c_int) -> c_int {
-    0
+/// `DispatchSave` (TS 0xaaf18).
+unsafe extern "C" fn save(e: *mut edict_t, sd: *mut SAVERESTOREDATA) {
+    // SAFETY: the engine passes its live save state (or null) for the duration of this call.
+    if let Some(mut sd) = unsafe { SaveData::from_raw(sd) } {
+        save::dispatch_save(e, &mut sd);
+    }
 }
-unsafe extern "C" fn save_fields(_: *mut SAVERESTOREDATA, _: *const c_char, _: *mut c_void, _: *mut TYPEDESCRIPTION, _: c_int) {}
-unsafe extern "C" fn save_global_state(_: *mut SAVERESTOREDATA) {}
+
+/// `DispatchRestore` (TS 0xab128).
+unsafe extern "C" fn restore(e: *mut edict_t, sd: *mut SAVERESTOREDATA, global_entity: c_int) -> c_int {
+    // SAFETY: as in `save`.
+    match unsafe { SaveData::from_raw(sd) } {
+        Some(mut sd) => save::dispatch_restore(e, &mut sd, global_entity != 0),
+        None => 0,
+    }
+}
+
+/// `SaveWriteFields` (TS 0xab654): the engine's own structs (save header, entity table, ...).
+unsafe extern "C" fn save_write_fields(
+    sd: *mut SAVERESTOREDATA,
+    name: *const c_char,
+    base: *mut c_void,
+    descs: *mut TYPEDESCRIPTION,
+    n: c_int,
+) {
+    if name.is_null() || base.is_null() {
+        return;
+    }
+    // SAFETY: the engine passes its save state, a static block name, the struct and its `n`
+    // static descriptors, valid for this call (the names outlive the save as tokens).
+    unsafe {
+        let Some(mut sd) = SaveData::from_raw(sd) else { return };
+        let name: &'static CStr = CStr::from_ptr(name);
+        let host = EngineHost;
+        let fields = raw::descs(descs, n);
+        let descs: Vec<_> = fields.iter().map(|(d, _)| *d).collect();
+        let vals: Vec<_> = fields.iter().map(|(d, off)| raw::load(&host, base.cast(), d, *off)).collect();
+        sd.write_fields(&host, name, &descs, &vals);
+    }
+}
+
+/// `SaveReadFields` (TS 0xab6e8): reads them back (`m_global` off, `m_precache` on).
+unsafe extern "C" fn save_read_fields(
+    sd: *mut SAVERESTOREDATA,
+    name: *const c_char,
+    base: *mut c_void,
+    descs: *mut TYPEDESCRIPTION,
+    n: c_int,
+) {
+    if name.is_null() || base.is_null() {
+        return;
+    }
+    // SAFETY: as in `save_write_fields`, with `base` writable.
+    unsafe {
+        let Some(mut sd) = SaveData::from_raw(sd) else { return };
+        let name: &'static CStr = CStr::from_ptr(name);
+        let host = EngineHost;
+        let fields = raw::descs(descs, n);
+        let descs: Vec<_> = fields.iter().map(|(d, _)| *d).collect();
+        let Some(out) = sd.read_fields(&host, name, &descs, false, true) else { return };
+        for ((d, off), v) in fields.iter().zip(out) {
+            if let Some(v) = v {
+                raw::store(base.cast(), d, *off, &v);
+            }
+        }
+    }
+}
+
+/// `SaveGlobalState` (TS 0xf42ec).
+unsafe extern "C" fn save_global_state(sd: *mut SAVERESTOREDATA) {
+    // SAFETY: as in `save`.
+    if let Some(mut sd) = unsafe { SaveData::from_raw(sd) } {
+        save::save_global_state(&mut sd);
+    }
+}
+
+/// `RestoreGlobalState` (TS 0xf436c).
+unsafe extern "C" fn restore_global_state(sd: *mut SAVERESTOREDATA) {
+    // SAFETY: as in `save`.
+    if let Some(mut sd) = unsafe { SaveData::from_raw(sd) } {
+        save::restore_global_state(&mut sd);
+    }
+}
 
 /// `DispatchObjectCollsionBox`: the class's collision box (`entities::set_object_collision_box`).
 unsafe extern "C" fn set_abs_box(e: *mut edict_t) {

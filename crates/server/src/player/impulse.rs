@@ -29,11 +29,13 @@ pub struct ImpulseState {
     pub silent: bool,
     /// `m_iWeaponVolume` (pl+0x7f8): only `UpdatePlayerSound` writes it.
     pub weapon_volume: i32,
+    /// `m_iTargetVolume` (pl+0x7f4): the volume `UpdatePlayerSound` aimed the slot at last.
+    pub target_volume: i32,
 }
 
 impl Default for ImpulseState {
     fn default() -> Self {
-        ImpulseState { next_decal_time: 0.0, custom_decal_frames: -1, silent: false, weapon_volume: 0 }
+        ImpulseState { next_decal_time: 0.0, custom_decal_frames: -1, silent: false, weapon_volume: 0, target_volume: 0 }
     }
 }
 
@@ -57,7 +59,7 @@ pub fn update_player_sound(p: &mut Player, cx: &mut Cx) {
         silent: p.impulse.silent,
         frametime: engine().globals().frametime,
     };
-    update_player_sound(idx, &mut p.impulse.weapon_volume, &inp);
+    update_player_sound(idx, &mut p.impulse.weapon_volume, &mut p.impulse.target_volume, &inp);
 }
 
 /// `CBasePlayer::SetCustomDecalFrames` (0xdd488): 1..=7 frames are kept, anything else is -1.

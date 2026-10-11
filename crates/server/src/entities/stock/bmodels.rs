@@ -59,11 +59,25 @@ impl Entity for FuncMonsterClip {
 
 /// `func_illusionary`: non-solid; `skin` can give it contents (e.g. water). `CFuncIllusionary::KeyValue`
 /// (0xa54b0) also parses `skin`, but `DispatchKeyValue` sets the entvars field first, so that branch
-/// never runs.
+/// never runs; every other key goes to `CBaseToggle::KeyValue`.
 #[derive(Default)]
-pub struct FuncIllusionary;
+pub struct FuncIllusionary {
+    /// TS's class is a `CBaseToggle`: nothing uses its state, but the keyvalues land there and
+    /// are saved.
+    t: Toggle<Self>,
+}
 
 impl Entity for FuncIllusionary {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        self.t.key_value(key, value)
+    }
+
+    /// `CFuncIllusionary` has no `Save` of its own: `CBaseToggle::Save` (no member pointer is
+    /// ever set). Its `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        self.t.save_chain(cx, f, &mut crate::save::Animating::default(), false, false);
+    }
+
     fn spawn(&mut self, cx: &mut Cx) {
         let v = cx.pev();
         v.angles = [0.0; 3];
@@ -175,7 +189,10 @@ pub struct FuncRotating {
     pitch: f32,
     sounds: i32,
     think: ThinkFn<Self>,
+    /// `m_pfnTouch` = `HurtTouch` (`SF_BRUSH_HURT`).
     hurt: bool,
+    /// `m_pfnUse` = `RotatingUse`: set by `Spawn` (0xa5874), cleared by a restore.
+    usable: bool,
 }
 
 fn first_nonzero(a: [f32; 3]) -> f32 {
@@ -379,6 +396,7 @@ impl Entity for FuncRotating {
             self.think = Some(Self::call_use_toggle);
             think_ltime(cx, 1.5);
         }
+        self.usable = true;
         self.hurt = sf & SF_BRUSH_HURT != 0;
         self.precache(cx);
     }
@@ -407,7 +425,36 @@ impl Entity for FuncRotating {
     }
 
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _kind: UseType, _v: f32) {
-        self.rotating_use(cx);
+        if self.usable {
+            self.rotating_use(cx);
+        }
+    }
+
+    /// `CFuncRotating::Save` / `Restore` (0xa5634 / 0xa5684). `Use` goes through `m_pfnUse`,
+    /// which `Spawn` always sets, so a restore stops after `"BASE"`; `Blocked` is a virtual.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs = crate::save::BaseFuncs { think: self.think.is_some(), touch: self.hurt, use_: self.usable, blocked: false };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.think = None;
+        }
+        if cleared.touch {
+            self.hurt = false;
+        }
+        if cleared.use_ {
+            self.usable = false;
+        }
+        f.table(&crate::save::tables::CFuncRotating);
+        f.float(&mut self.fan_friction);
+        f.float(&mut self.attenuation);
+        f.float(&mut self.volume);
+        f.float(&mut self.pitch);
+        f.int(&mut self.sounds);
+    }
+
+    /// `CFuncRotating::Precache` (0xa5aec): the sound, and `SpinUp` in 1.5 s if it was turning.
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
     }
 
     fn blocked(&mut self, cx: &mut Cx, other: *mut edict_t) {
@@ -443,7 +490,10 @@ pub struct Pendulum {
     start: [f32; 3],
     center: [f32; 3],
     think: PendulumThink,
+    /// `m_pfnUse` = `PendulumUse` (set by `Spawn` when it has a distance).
     usable: bool,
+    /// `m_pfnTouch` = `RopeTouch` (spawnflag 2): set but never called, `Touch` is a virtual.
+    rope: bool,
 }
 
 impl Pendulum {
@@ -532,6 +582,7 @@ impl Entity for Pendulum {
         }
         v.speed = 0.0;
         self.usable = true;
+        self.rope = v.spawnflags & 2 != 0;
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -560,6 +611,33 @@ impl Entity for Pendulum {
 
     fn blocked(&mut self, _cx: &mut Cx, _other: *mut edict_t) {
         self.time = engine().time();
+    }
+
+    /// `CPendulum::Save` / `Restore` (0xa66ac / 0xa66fc). `Spawn` sets `m_pfnUse` whenever it
+    /// has a distance, so a restore of a working pendulum stops after `"BASE"`. Its `Precache` is
+    /// `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs =
+            crate::save::BaseFuncs { think: self.think != PendulumThink::None, touch: self.rope, use_: self.usable, blocked: false };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.think = PendulumThink::None;
+        }
+        if cleared.touch {
+            self.rope = false;
+        }
+        if cleared.use_ {
+            self.usable = false;
+        }
+        f.table(&crate::save::tables::CPendulum);
+        f.float(&mut self.accel);
+        f.float(&mut self.distance);
+        f.float(&mut self.time);
+        f.float(&mut self.damp);
+        f.float(&mut self.max_speed);
+        f.float(&mut self.damp_speed);
+        f.vector(&mut self.center);
+        f.vector(&mut self.start);
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {

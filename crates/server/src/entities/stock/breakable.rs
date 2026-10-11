@@ -178,7 +178,8 @@ pub struct Breakable<const PUSH: bool> {
     gib_index: i32,
     angle: f32,
     gib_model: string_t,
-    spawn_object: &'static CStr,
+    /// `m_iszSpawnObject`: TS stores the `pSpawnObjects` entry as a `string_t`.
+    spawn_object: string_t,
     respawn_time: f32,
     respawn_target: CString,
     max_health: f32,
@@ -189,6 +190,13 @@ pub struct Breakable<const PUSH: bool> {
     hit_bits: i32,
     think: ThinkFn<Self>,
     touch: TouchFn<Self>,
+    /// TS's `m_pfnThink` (`Die`, from a pressure touch). The port's own respawn timer stands for
+    /// the `info_breakable` helper's think, which isn't the breakable's.
+    die_think: bool,
+    /// TS's `info_breakable` helper handle (+0x70) is set: `Spawn` makes one when `respawntime`
+    /// is not negative. It isn't saved, so a restored breakable has none: it is removed when it
+    /// breaks and `RespawnEntities` doesn't reach it.
+    helper: bool,
     push: PushState,
 }
 
@@ -201,7 +209,7 @@ impl<const PUSH: bool> Default for Breakable<PUSH> {
             gib_index: 0,
             angle: 0.0,
             gib_model: 0,
-            spawn_object: c"",
+            spawn_object: 0,
             respawn_time: 0.0,
             respawn_target: CString::default(),
             max_health: 0.0,
@@ -211,6 +219,8 @@ impl<const PUSH: bool> Default for Breakable<PUSH> {
             hit_bits: 0,
             think: None,
             touch: None,
+            die_think: false,
+            helper: false,
             push: PushState::default(),
         }
     }
@@ -240,8 +250,8 @@ impl<const PUSH: bool> Breakable<PUSH> {
             return;
         }
         self.gib_index = precache_material(self.material, self.gib_model);
-        if !self.spawn_object.is_empty() {
-            precache_other(self.spawn_object);
+        if self.spawn_object != 0 {
+            precache_other(s(self.spawn_object));
         }
     }
 
@@ -264,6 +274,9 @@ impl<const PUSH: bool> Breakable<PUSH> {
         self.touch = if v.spawnflags & SF_BREAK_TRIGGER_ONLY != 0 { None } else { Some(Self::break_touch) };
         if !self.is_breakable() && v.rendermode != kRenderNormal as i32 {
             v.flags |= FL_WORLDBRUSH as i32;
+        }
+        if self.respawn_time >= 0.0 {
+            self.helper = true;
         }
     }
 
@@ -316,6 +329,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         if sf & SF_BREAK_PRESSURE != 0 && oabsmin_z >= cx.pev().maxs[2] - 2.0 {
             self.damage_sound(cx);
             self.think = Some(Self::die_think);
+            self.die_think = true;
             self.touch = None;
             if self.delay.delay == 0.0 {
                 self.delay.delay = 0.1;
@@ -443,9 +457,9 @@ impl<const PUSH: bool> Breakable<PUSH> {
         self.delay.use_targets(me, std::ptr::null_mut(), UseType::Toggle, 0.0);
 
         let v = cx.pev();
-        if !self.spawn_object.is_empty() {
+        if self.spawn_object != 0 {
             let (org, ang) = (bmodel_origin(v), v.angles);
-            create_entity(self.spawn_object, org, ang, me);
+            create_entity(s(self.spawn_object), org, ang, me);
         }
         let v = cx.pev();
         if v.impulse > 0 {
@@ -458,7 +472,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         v.deadflag = DEAD_DEAD as i32;
         v.effects = EF_NODRAW as i32;
         v.takedamage = DAMAGE_NO as f32;
-        if self.respawn_time >= 0.0 {
+        if self.respawn_time >= 0.0 && self.helper {
             let t = if self.respawn_time == 0.0 { 30.0 } else { self.respawn_time };
             self.schedule_respawn(cx, t);
         } else {
@@ -507,6 +521,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         v.health = self.max_health;
         v.effects = 0;
         self.think = None;
+        self.die_think = false;
         self.touch = None;
         self.spawn(cx);
     }
@@ -597,7 +612,7 @@ impl<const PUSH: bool> Entity for Breakable<PUSH> {
             b"spawnobject" => {
                 let i = kv_i(value);
                 if (1..SPAWN_OBJECTS.len() as i32).contains(&i) {
-                    self.spawn_object = SPAWN_OBJECTS[i as usize];
+                    self.spawn_object = alloc(SPAWN_OBJECTS[i as usize]);
                 }
             }
             b"explodemagnitude" => cx.pev().impulse = kv_i(value),
@@ -686,6 +701,41 @@ impl<const PUSH: bool> Entity for Breakable<PUSH> {
         }
         self.take_damage_impl(cx, info)
     }
+
+    /// `CBreakable::Save` / `Restore` (0xc05ec / 0xc063c), then for `func_pushable`
+    /// `CPushable::Save` / `Restore` (0xc1688 / 0xc16d8). TS's `CBreakable` skips
+    /// `CBaseDelay::Save`, so the delay, kill target, `respawntime`, `respawntarget`, the spawn
+    /// health and the helper link aren't saved: they come back zero. `Use` and (pushables)
+    /// `Touch` are virtuals; `m_pfnTouch` is `BreakTouch` unless trigger-only (a breakable
+    /// `func_pushable` sets it too, unused).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs = crate::save::BaseFuncs { think: self.die_think, touch: self.touch.is_some(), use_: false, blocked: false };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.die_think = false;
+            self.think = None;
+        }
+        if cleared.touch {
+            self.touch = None;
+        }
+        f.table(&crate::save::tables::CBreakable);
+        f.int(&mut self.material);
+        f.boolean(&mut self.explosion_directed);
+        f.float(&mut self.angle);
+        f.string(&mut self.gib_model);
+        f.string(&mut self.spawn_object);
+        if PUSH {
+            f.table(&crate::save::tables::CPushable);
+            f.float(&mut self.push.max_speed);
+            f.float(&mut self.push.sound_time);
+        }
+    }
+
+    /// `CBreakable::Precache` (0xc0820) / `CPushable::Precache` (0xc1894): the gib model index
+    /// comes back from the restored material and `gibmodel`.
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
+    }
 }
 
 impl<const PUSH: bool> Breakable<PUSH> {
@@ -726,11 +776,11 @@ pub fn respawn_all(force: bool) {
         world::dispatch(e, |ent, cx| {
             let any = ent as &mut dyn std::any::Any;
             if let Some(b) = any.downcast_mut::<FuncBreakable>() {
-                if b.respawn_time >= 0.0 {
+                if b.respawn_time >= 0.0 && b.helper {
                     b.breakable_respawn(cx, force);
                 }
             } else if let Some(b) = any.downcast_mut::<FuncPushable>() {
-                if FuncPushable::breakable_flag(cx) && b.respawn_time >= 0.0 {
+                if FuncPushable::breakable_flag(cx) && b.respawn_time >= 0.0 && b.helper {
                     b.breakable_respawn(cx, force);
                 }
             } else if let Some(d) = any.downcast_mut::<super::doors::Door>() {

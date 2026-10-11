@@ -444,6 +444,8 @@ fn health_regen(p: &mut Player, cx: &mut Cx, now: f32) {
 /// the spawn already did that (`Spawn`/`TSInit`), and the values follow in the same update.
 pub fn init_hud_block(p: &mut Player, cx: &mut Cx) {
     p.ts.init_hud = false;
+    // `gInitHUD = 0` (UpdateClientData 0x91d00).
+    crate::save::set_init_hud(false);
     let e = cx.edict;
     messages::one(Msg::ResetHUD, e).byte(0).end();
     if !p.ts.game_hud_initialized {
@@ -999,6 +1001,8 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     } else {
         v.angles[0] = 0.0;
         v.angles[2] = 0.0;
+        // `SetThink(&CBasePlayer::PlayerDeathThink)`.
+        p.death_think = true;
     }
 }
 

@@ -13,9 +13,18 @@ use stock::base::{kv_f, kv_i, kv_vec};
 
 /// Exports `$class(entvars_t*)` for each classname, creating a `$ty` on the edict.
 macro_rules! link_entities {
-    ($($class:ident => $ty:ty),* $(,)?) => {$(
-        goldsrc::export_entity_class!($class, $crate::world::create::<$ty>);
-    )*};
+    ($($class:ident => $ty:ty),* $(,)?) => {
+        $(goldsrc::export_entity_class!($class, $crate::world::create::<$ty>);)*
+
+        /// The classnames this module links, each with a constructor (the save-table tests).
+        #[cfg(test)]
+        pub(crate) fn linked_entities() -> Vec<$crate::world::Linked> {
+            vec![$((
+                stringify!($class),
+                (|| Box::new(<$ty>::default()) as Box<dyn $crate::world::Entity>) as fn() -> Box<dyn $crate::world::Entity>,
+            )),*]
+        }
+    };
 }
 pub(crate) use link_entities;
 

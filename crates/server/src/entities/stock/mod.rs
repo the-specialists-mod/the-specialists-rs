@@ -279,8 +279,23 @@ impl Entity for World {
         true
     }
 
-    /// `CWorld::Spawn` (0xf4450) and `CWorld::Precache` (0xf449c).
+    /// `CWorld::Spawn` (0xf4450): `Precache`, then `g_flWeaponCheat = CVAR_GET_FLOAT("sv_cheats")`.
     fn spawn(&mut self, cx: &mut Cx) {
+        self.precache(cx);
+        crate::rules::cvars::latch_weapon_cheat();
+    }
+
+    /// `CWorld::Precache` (0xf449c), which `DispatchRestore` runs for a restored world: the game
+    /// rules, the soundent, the body queue and every precache come back as for a new map. The
+    /// world saves only `CBaseEntity`'s part and sets no member pointer.
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
+    }
+}
+
+impl World {
+    /// `CWorld::Precache` (0xf449c).
+    fn precache(&mut self, cx: &mut Cx) {
         let eng = engine();
         // Precache forces the movement defaults first. The server config that the game rules
         // queue (`rules::install`, the `CHalfLifeMultiplay` constructor) runs after the map has
@@ -337,8 +352,6 @@ impl Entity for World {
         // TS also sets gDisplayTitle from SF_WORLD_TITLE, but nothing reads it (the GameTitle
         // message is registered and never sent), so the port keeps only the spawnflag.
         eng.set_cvar_float(c"mp_defaultteam", if flags & SF_WORLD_FORCETEAM != 0 { 1.0 } else { 0.0 });
-        // The end of `CWorld::Spawn`: `g_flWeaponCheat = CVAR_GET_FLOAT("sv_cheats")`.
-        crate::rules::cvars::latch_weapon_cheat();
     }
 }
 

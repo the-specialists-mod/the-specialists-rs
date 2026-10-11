@@ -4,6 +4,7 @@
 
 use crate::messages::Msg;
 use crate::rules::{self, msg, state, teams};
+use crate::save::{BaseFuncs, Fields};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{IGNORE_MONSTERS, engine};
@@ -85,9 +86,25 @@ pub struct Trigger {
     next_check: f32,
     team: i32,
     ready_at: f32,
+    /// `m_pfnTouch` (`WaitTouch`), set by `Spawn`.
+    funcs: BaseFuncs,
+}
+
+/// `max(nextcheck, 0.5)`, the interval of `ts_trigger` and `ts_dmhill`.
+fn check_step(next_check: f32) -> f32 {
+    if next_check < 0.5 { 0.5 } else { next_check }
 }
 
 impl Entity for Trigger {
+    /// `CBaseToggle::Save` / `Restore`: TS builds `CTSTrigger` on `CBaseToggle`, but its
+    /// `KeyValue` (0x70890) keeps `nextcheck` / the team in its own unsaved members and never
+    /// falls back to `CBaseToggle::KeyValue`, so the inherited tables stay empty. `WaitTouch` is
+    /// set from `Spawn` on, so TS's restore stops after `"BASE"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.funcs);
+        super::save_unused_toggle(f);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v: f32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0.0);
         match key.to_bytes() {
@@ -99,14 +116,18 @@ impl Entity for Trigger {
         true
     }
 
+    /// `CTSTrigger::Spawn` (0x709b8): no think, but `nextthink` is set all the same.
     fn spawn(&mut self, cx: &mut Cx) {
         trigger_brush(cx, c"ts_trigger");
-        self.ready_at = cx.time() + self.next_check.max(0.5);
+        self.funcs = BaseFuncs { touch: true, ..BaseFuncs::default() };
+        let step = check_step(self.next_check);
+        cx.think_in(step);
+        self.ready_at = cx.time() + step;
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let now = cx.time();
-        if now < self.ready_at || !rules::is_player(other) || !rules::alive(other.v()) {
+        if !self.funcs.touch || now < self.ready_at || !rules::is_player(other) || !rules::alive(other.v()) {
             return;
         }
         let team_ok = self.team == -1 || state::with(|g| g.team_index(&teams::team_name_of(other))) == self.team;
@@ -135,10 +156,21 @@ pub struct DmHill {
     king: Option<*mut edict_t>,
     last_touch: f32,
     award_at: f32,
-    enabled: bool,
+    /// `m_pfnTouch` (`WaitTouch`): `Spawn` sets it when the mode's frag amount is positive.
+    funcs: BaseFuncs,
 }
 
 impl Entity for DmHill {
+    /// `CTSDMHill::Save` / `Restore`: `fragseverycheck` (`+0x70`, `fragamt`),
+    /// `fragseverycheckteam` (`+0x74`, `fragamtteam`), `nextcheck` (`+0x78`).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.funcs);
+        f.table(&crate::save::tables::CTSDMHill);
+        f.int(&mut self.frags);
+        f.int(&mut self.frags_team);
+        f.float(&mut self.next_check);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v = value.to_str().unwrap_or("").trim();
         match key.to_bytes() {
@@ -153,7 +185,10 @@ impl Entity for DmHill {
     fn spawn(&mut self, cx: &mut Cx) {
         trigger_brush(cx, c"ts_dmhill");
         let teamplay = state::teamplay();
-        self.enabled = if teamplay { self.frags_team > 0 } else { self.frags > 0 };
+        let enabled = if teamplay { self.frags_team > 0 } else { self.frags > 0 };
+        self.funcs = BaseFuncs { touch: enabled, ..BaseFuncs::default() };
+        // `CTSDMHill::Spawn` (0x71a8c) sets `nextthink` without a think.
+        cx.think_in(check_step(self.next_check));
         self.blocked_until = cx.time() + 1.0;
         self.king = None;
     }
@@ -161,7 +196,7 @@ impl Entity for DmHill {
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let now = cx.time();
         let step = self.next_check.max(0.5);
-        if !self.enabled || now < self.blocked_until || !rules::is_player(other) || !rules::alive(other.v()) {
+        if !self.funcs.touch || now < self.blocked_until || !rules::is_player(other) || !rules::alive(other.v()) {
             return;
         }
         let Some(king) = self.king else {
@@ -230,30 +265,40 @@ fn send_score(e: *mut edict_t) {
 
 // ---- ts_timer ------------------------------------------------------------------------------------
 
-/// `CTSTimer` (0x72d2c). Without flag 1 it starts and loops; with flag 1 each Use runs it once.
+/// `CTSTimer` (0x72d2c). Without flag 1 it starts and loops. With flag 1 a fire clears the think
+/// but not the on/off byte, so after a fire the next Use only switches it off and the one after
+/// that runs it again.
 #[derive(Default)]
 pub struct Timer {
     duration: i32,
+    /// `+0x68`: switched by `ToggleTimer`.
     running: bool,
+    /// `m_pfnThink` (`WaitThink`).
+    funcs: BaseFuncs,
 }
 
 impl Timer {
+    /// `CTSTimer::ToggleTimer` (0x72e44).
     fn toggle(&mut self, cx: &mut Cx) {
         if self.duration < 1 {
             self.running = false;
-            cx.pev().nextthink = 0.0;
+            self.funcs.think = false;
             return;
         }
         self.running = !self.running;
+        self.funcs.think = self.running;
         if self.running {
             cx.think_in(self.duration as f32);
-        } else {
-            cx.pev().nextthink = 0.0;
         }
     }
 }
 
 impl Entity for Timer {
+    /// `CBaseEntity::Save` / `Restore` (`duration` isn't saved).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.funcs);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key.to_bytes() == b"duration" {
             self.duration = value.to_str().unwrap_or("").trim().parse().unwrap_or(0);
@@ -269,13 +314,15 @@ impl Entity for Timer {
         v.solid = SOLID_NOT as i32;
         v.movetype = MOVETYPE_FLY as i32;
         self.running = false;
+        self.funcs = BaseFuncs::default();
         if cx.pev().spawnflags & 1 == 0 {
             self.toggle(cx);
         }
     }
 
+    /// `CTSTimer::WaitThink` (0x72eb8).
     fn think(&mut self, cx: &mut Cx) {
-        if !self.running {
+        if !self.funcs.think {
             return;
         }
         fire_own_target(cx);
@@ -283,11 +330,9 @@ impl Entity for Timer {
             msg::ts_message_all([0, 255, 0], 1, 30, &m);
         }
         if cx.pev().spawnflags & 1 != 0 {
-            self.running = false;
-            cx.pev().nextthink = 0.0;
-        } else {
-            cx.think_in(self.duration as f32);
+            self.funcs.think = false;
         }
+        cx.think_in(self.duration as f32);
     }
 
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
@@ -396,6 +441,16 @@ impl PlayerAmount {
 }
 
 impl Entity for PlayerAmount {
+    /// `CBaseDelay::Save` / `Restore`: TS builds `CTSPlayerAmount` on `CBaseDelay`, but its
+    /// `KeyValue` (0x729c0) never falls back to `CBaseDelay::KeyValue`, so `m_flDelay` and
+    /// `m_iszKillTarget` stay 0 (and its `DelayedUse` branch never runs). No member pointers.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        f.base_funcs(cx, BaseFuncs::default());
+        f.table(&crate::save::tables::CBaseDelay);
+        f.zero();
+        f.zero();
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v = value.to_string_lossy().chars().take(99).collect::<String>();
         match key.to_bytes() {
@@ -430,6 +485,9 @@ pub struct SlowMotion {
     btime: bool,
     radius: f32,
     slowed: Vec<*mut edict_t>,
+    /// `m_pfnThink` (`WaitThink`, from `Spawn`) and `m_pfnTouch` (`WaitTouch`, from
+    /// `ActivateSlow` for an area slow, until a timed one runs out).
+    funcs: BaseFuncs,
 }
 
 impl SlowMotion {
@@ -437,6 +495,7 @@ impl SlowMotion {
         self.until != 0.0 || self.toggled_on
     }
 
+    /// `CTSSlowMotion::ActivateSlow` (0x71384).
     fn activate(&mut self, cx: &mut Cx) {
         if self.duration > 0.0 {
             self.until = cx.time() + self.duration;
@@ -446,6 +505,9 @@ impl SlowMotion {
             if !self.toggled_on {
                 self.deactivate();
             }
+        }
+        if !self.global {
+            self.funcs.touch = true;
         }
     }
 
@@ -477,6 +539,15 @@ impl SlowMotion {
 }
 
 impl Entity for SlowMotion {
+    /// `CTSSlowMotion::Save` / `Restore`: `duration` (`+0xf8`) and `slow_ammount` (`+0xfc`,
+    /// `slowamt`). The think is set from `Spawn` on, so TS's restore stops after `"BASE"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.funcs);
+        f.table(&crate::save::tables::CTSSlowMotion);
+        f.float(&mut self.duration);
+        f.float(&mut self.amount);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v: f32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0.0);
         match key.to_bytes() {
@@ -495,6 +566,7 @@ impl Entity for SlowMotion {
         self.global = v.spawnflags & 2 != 0;
         self.btime = v.spawnflags & 4 != 0;
         let start_on = v.spawnflags & 1 != 0;
+        self.funcs = BaseFuncs { think: true, ..BaseFuncs::default() };
         cx.think_in(0.5);
         if start_on {
             self.activate(cx);
@@ -502,6 +574,9 @@ impl Entity for SlowMotion {
     }
 
     fn think(&mut self, cx: &mut Cx) {
+        if !self.funcs.think {
+            return;
+        }
         cx.think_in(0.5);
         let now = cx.time();
         if self.toggled_on {
@@ -511,13 +586,14 @@ impl Entity for SlowMotion {
             if now <= self.until {
                 if self.global { crate::rules::frame::global_slow2(self.amount, self.btime) } else { self.check_distance(cx) }
             } else {
+                self.funcs.touch = false;
                 self.deactivate();
             }
         }
     }
 
     fn touch(&mut self, _cx: &mut Cx, other: *mut edict_t) {
-        if self.global || !self.active() || !rules::is_player(other) {
+        if !self.funcs.touch || self.global || !self.active() || !rules::is_player(other) {
             return;
         }
         if !rules::powerup::entity_in_slow(other) {
@@ -546,6 +622,8 @@ pub struct SlowMotionPoint {
     amount: f32,
     btime: bool,
     slowed: Vec<*mut edict_t>,
+    /// `m_pfnThink` (`WaitThink`, from `Spawn`).
+    funcs: BaseFuncs,
 }
 
 impl SlowMotionPoint {
@@ -557,6 +635,11 @@ impl SlowMotionPoint {
 }
 
 impl Entity for SlowMotionPoint {
+    /// `CBaseEntity::Save` / `Restore`, with the think set.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.funcs);
+    }
+
     fn spawn(&mut self, cx: &mut Cx) {
         let e = cx.edict;
         cx.pev().classname = engine().alloc_string(c"ts_slowmotionpoint");
@@ -567,10 +650,14 @@ impl Entity for SlowMotionPoint {
         v.effects = EF_NODRAW as i32;
         v.movetype = MOVETYPE_NONE as i32;
         v.solid = SOLID_NOT as i32;
+        self.funcs.think = true;
         cx.think_in(0.1);
     }
 
     fn think(&mut self, cx: &mut Cx) {
+        if !self.funcs.think {
+            return;
+        }
         cx.think_in(0.5);
         if cx.time() > self.until {
             self.deactivate();

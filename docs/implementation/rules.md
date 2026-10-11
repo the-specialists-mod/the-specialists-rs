@@ -183,6 +183,34 @@ then the active item), `changeteam` (VGUIMenu 2, in every mode: TS has no teampl
 | `info_player_team1..4` | `CBaseDMStart` points like `info_player_deathmatch` (`master` key; team spawns are found by classname). TS doesn't export `info_player_teamspawn`, so the engine frees it ("No spawn function"), as with TS. |
 | `ts_objective_manager`, `ts_objective_ptr`, `ts_bomb`, `ts_hack`, `ts_teamescape`, `ts_sellzone` | Stubs: hidden, non-solid (dead in 3.0). |
 
+### 4.1 Save data
+
+The TS classes save TS's tables (`save_fields` in `entities/ts/*`, `weapons/worldgun.rs`,
+`weapons/projectiles.rs`): `CTSPowerUp` its type and `pwupduration`, `CTSGroundWeapon` id,
+`wduration`, `wextraclip`, `CTSDMHill` `fragamt` / `fragamtteam` / `nextcheck`, `CTSSlowMotion`
+`duration` / `slowamt`, `CTSWinGiver` cash, team and call count, `CTSObjectiveManager` its messages
+and targets, `CTSObjective` / `CTSBomb` / `CTSHack` / `CTSTeamEscape` theirs (always empty in TS:
+`CTSMapGlobals`, `CTSPlayerAmount`'s `CBaseDelay` part, `CTSTrigger`'s inherited tables). The
+objective classes the port doesn't otherwise implement (`ts_objective_manager`, `ts_bomb`,
+`ts_hack`, `ts_teamescape`, `ts_sellzone`) got their own types holding the saved keys; their
+`Use` / think / touch behaviour is still unported (§7). Power-ups, the CTB zone and case, world
+guns, ammo packs, grenades, knives, shrapnel, wind, the slow-motion entities, a running timer,
+`ts_trigger`, an enabled `ts_dmhill` and the objectives set a member pointer, so (as in TS) their
+restore stops after `"BASE"` and they come back inert. A power-up's type is a `u16` in the port, so
+a restored type above 0xffff is cut.
+
+The player (`player/save.rs`) saves `CBasePlayer::m_playerSaveData` from the subsystems that hold
+each field (buttons and fall speed from `stunt`, `m_rgItems` antidotes and security cards, the
+physics flags `ONTRAIN` / `DUCKING` / `USING`, items and the active / last item from `weapons`,
+drowning from `tbd`, train / tank / hide-HUD from `drive`, the sound volumes from `impulse`,
+`m_fInitHUD`), the `CBaseAnimating` part from the animation state (`ResetSequenceInfo` now keeps
+`m_flLastEventCheck`), and `m_pfnThink` set after a death that didn't gib (`death_think`). Fields
+TS keeps constant are written as such (`m_bitsHUDDamage` -1, the rest 0). `Restore`'s tail
+(spawn spot without a landmark, view angles, hull, `hl` / `slj`, `m_flNextAttack`) and `Precache`
+(`m_iTrain = TRAIN_NEW`, the armour cache, `m_bitsDamageType`, `gInitHUD` → `m_fInitHUD`) follow.
+Deviation: the HEV suit queue (`m_flSuitUpdate`, the play list and no-repeat tables) is saved
+empty, since the port doesn't queue suit sentences (see §6).
+
 ## 5. Messages sent (payloads in `shared::protocol`)
 
 | Message | Dest | Payload | Sent from |
@@ -297,6 +325,14 @@ ammo, dropped guns, knives, grenades, the CTB case and the hidden objectives all
   `SetDefaultPlayerTeam`, `RecountTeams`' team list and limit, `IsValidTeam` and the `ScoreInfo`
   team index for issue #86; `ClientUserInfoChanged`, The One's team switch, `game_player_team`,
   disconnects and the deviations list for issue #87).
+* The HEV suit queue under `CHalfLifeRules` (`deathmatch` 0): `SetSuitUpdate` (0xda410) queues
+  sentences there (`CHalfLifeRules::IsMultiplayer` 0xde734 is 0) and `CheckSuitUpdate` plays them;
+  `entities::stock::sentences::set_suit_update` returns as under the multiplayer rules, so single
+  player has no suit voice and the player's save data holds an empty queue.
+* Objective classes (`ts_objective_manager`, `ts_bomb`, `ts_hack`, `ts_teamescape`,
+  `ts_sellzone`, `ts_objective_ptr`): only their saved fields and spawn flags are ported (§4.1).
+* Save/restore is unit-tested only (byte layout, every class against TS's tables, round trips);
+  no save from TS's server has been loaded in-engine yet.
 * Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client,
   `item_antidote` (no shipped map places one).

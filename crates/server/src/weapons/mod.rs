@@ -15,6 +15,14 @@ mod net;
 mod projectiles;
 pub mod worldgun;
 
+/// The classnames the weapons modules link (the save-table tests).
+#[cfg(test)]
+pub(crate) fn linked_entities() -> Vec<crate::world::Linked> {
+    let mut v = worldgun::linked_entities();
+    v.extend(projectiles::linked_entities());
+    v
+}
+
 use crate::commands::Args;
 use crate::player::Player;
 use crate::world::Cx;
@@ -97,6 +105,9 @@ pub struct SvState {
     /// The cycler is `m_pActiveItem` (`SwitchWeapon` or `SelectItem` deployed it); a held gun is
     /// holstered meanwhile.
     pub cycler_active: bool,
+    /// `m_pLastItem` (pl+0xa18): the item `SelectItem` switched away from. Only `SelectLastItem`
+    /// reads it, and nothing calls that; it is saved with the player.
+    pub last_item: Active,
 }
 
 impl Default for SvState {
@@ -129,6 +140,7 @@ impl Default for SvState {
             cycler_model: 0,
             cycler_model_index: 0,
             cycler_active: false,
+            last_item: Active::None,
         }
     }
 }
@@ -198,6 +210,8 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     inventory::reset_items(p);
     p.inv.gun.mode_memory = [0; MAX_WEAPONS];
     let sv = &mut p.inv.sv;
+    // CBasePlayer::Spawn (0x8f568): `m_pLastItem = NULL`.
+    sv.last_item = Active::None;
     sv.grenades_bought = 0;
     sv.disarm = 0.0;
     sv.block_timer = 0.0;
@@ -338,8 +352,9 @@ pub fn holds_gun(p: &Player) -> bool {
 }
 
 /// What `m_pActiveItem` (pl+0xa10) is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Active {
+    #[default]
     None,
     Gun,
     Cycler,
@@ -614,6 +629,7 @@ fn deploy_active(p: &mut Player, cx: &mut Cx) {
 fn drop_player_items(p: &mut Player) {
     let sv = &mut p.inv.sv;
     sv.cycler_active = false;
+    sv.last_item = Active::None;
     for h in [std::mem::take(&mut sv.cycler), std::mem::take(&mut sv.gun_item)] {
         crate::entities::stock::playeritem::drop_item(h.get());
     }
@@ -683,6 +699,7 @@ pub fn select_item(p: &mut Player, cx: &mut Cx, name: &std::ffi::CStr) {
     if matches!((item, active_item(p)), (Item::Gun, Active::Gun) | (Item::Cycler, Active::Cycler)) {
         return;
     }
+    p.inv.sv.last_item = active_item(p);
     holster_active(p, cx);
     match item {
         Item::Cycler => {

@@ -78,6 +78,23 @@ impl Entity for WeaponBox {
         true
     }
 
+    /// `CWeaponBox::Save` (0xf27c8). `Touch` is the class's own (its `SetTouch(NULL)` leaves the
+    /// pointer unset). Nothing is ever packed in TS (see the module docs), so the ammo counts,
+    /// ammo names and items are empty.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        f.base_funcs(cx, crate::save::BaseFuncs::default());
+        f.table(&crate::save::tables::CWeaponBox);
+        f.zero();
+        f.zero();
+        f.zero();
+        f.int(&mut self.ammo_types);
+    }
+
+    /// `CWeaponBox::Precache` (0xf2868).
+    fn restored(&mut self, _cx: &mut Cx) {
+        engine().precache_model(c"models/w_weaponbox.mdl");
+    }
+
     /// `CWeaponBox::Spawn` (0xf2914) / `Precache` (0xf2868).
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
@@ -128,12 +145,82 @@ struct PlayerItem {
     /// `SetTouch(DefaultTouch)`.
     touchable: bool,
     delay: Delay,
+    /// `m_pPlayer` (+0x80): set by `AddToPlayer` (0xf1c98), never cleared.
+    player: *mut edict_t,
+    /// `m_iId` (+0x88): 16 for the gun (`CTSGun::Spawn` 0x8053c), 0 for a cycler.
+    id: i32,
+    /// The `CBasePlayerWeapon` members TS saves, as the item itself has them. A held gun's
+    /// timers and clip are the holder's (`weapons::Inventory::gun`): see [`WorldTsGun`].
+    weapon: WeaponFields,
+}
+
+/// `CBasePlayerWeapon`'s saved members.
+#[derive(Default, Clone, Copy)]
+struct WeaponFields {
+    /// `m_flNextPrimaryAttack` (+0x9c), `m_flNextSecondaryAttack` (+0xa0), `m_flTimeWeaponIdle`
+    /// (+0xa8): relative to `UTIL_WeaponTimeBase` (`UseDecrement` is 1), hence plain floats.
+    next_primary: f32,
+    next_secondary: f32,
+    idle: f32,
+    /// `m_iPrimaryAmmoType` (+0xac) / `m_iSecondaryAmmoType` (+0xb0): -1 from the first
+    /// `AddToPlayer` on (no `ItemInfo` names ammo).
+    primary_ammo_type: i32,
+    secondary_ammo_type: i32,
+    /// `m_iClip` (+0xb4).
+    clip: i32,
+    /// `m_iDefaultAmmo` (+0xc4).
+    default_ammo: i32,
+}
+
+impl WeaponFields {
+    fn visit(&mut self, f: &mut crate::save::Fields) {
+        f.table(&crate::save::tables::CBasePlayerWeapon);
+        f.float(&mut self.next_primary);
+        f.float(&mut self.next_secondary);
+        f.float(&mut self.idle);
+        f.int(&mut self.primary_ammo_type);
+        f.int(&mut self.secondary_ammo_type);
+        f.int(&mut self.clip);
+        f.int(&mut self.default_ammo);
+    }
 }
 
 /// Reaches the `PlayerItem` of an item entity of one class (for `Respawn`'s copy).
 type ItemAccess = fn(*mut edict_t, &mut dyn FnMut(&mut PlayerItem));
 
 impl PlayerItem {
+    /// `CBasePlayerItem::Save` (0xf1558) and the chain above it: the member pointers are
+    /// `FallThink` / `AttemptToMaterialize` / `SUB_Remove` and `DefaultTouch`. TS never animates
+    /// an item, so its `CBaseAnimating` members stay zero. `m_pNext` is always NULL: each slot
+    /// list holds one item at most (the gun in its own, a cycler in slot 1), and
+    /// `RemoveAllItems` empties the lists before the next one is added.
+    fn save_head(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs = crate::save::BaseFuncs { think: self.think != ItemThink::None, touch: self.touchable, ..Default::default() };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.think = ItemThink::None;
+        }
+        if cleared.touch {
+            self.touchable = false;
+        }
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+        f.animating(&mut crate::save::Animating::default());
+        f.table(&crate::save::tables::CBasePlayerItem);
+        f.ent(&mut self.player);
+        f.zero();
+        f.int(&mut self.id);
+    }
+
+    /// `CBasePlayerItem::AddToPlayer` (0xf1c98) and `CBasePlayerWeapon::AddToPlayer`'s (0xf1e60)
+    /// ammo indices: `GetAmmoIndex(NULL)` is -1, looked up while the primary one is still 0.
+    fn added_to_player(&mut self, player: *mut edict_t) {
+        self.player = player;
+        if self.weapon.primary_ammo_type == 0 {
+            self.weapon.primary_ammo_type = -1;
+            self.weapon.secondary_ammo_type = -1;
+        }
+    }
+
     /// `CBasePlayerItem::Materialize` (0xf18f0).
     fn materialize(&mut self, cx: &mut Cx) {
         if cx.pev().effects & EF_NODRAW as i32 != 0 {
@@ -251,6 +338,18 @@ pub fn drop_item(e: *mut edict_t) {
     }
 }
 
+/// Runs `f` on the player `holder` while its gun entity is `gun` (engine-free).
+fn with_holder(holder: *mut edict_t, gun: *mut edict_t, f: impl FnOnce(&mut crate::player::Player)) {
+    if holder.is_null() {
+        return;
+    }
+    world::with::<crate::player::Player, _>(holder, |p| {
+        if p.inv.sv.gun_item.get() == gun {
+            f(p);
+        }
+    });
+}
+
 fn with_tsgun_item(e: *mut edict_t, f: &mut dyn FnMut(&mut PlayerItem)) {
     world::with::<WorldTsGun, _>(e, |g| f(&mut g.item));
 }
@@ -291,9 +390,38 @@ impl Entity for WorldTsGun {
         let org = v.origin;
         eng.set_origin(me, org);
         eng.set_size(me, [0.0; 3], [0.0; 3]);
+        self.item.id = shared::protocol::weapons::TSGUN_ID;
+        self.item.weapon.clip = 1;
+        self.item.weapon.default_ammo = 1;
         self.item.touchable = true;
         self.item.think = ItemThink::Fall;
         cx.pev().nextthink = eng.time() + 0.1;
+    }
+
+    /// `CBasePlayerWeapon::Save` (0xf15f8). The gun a player holds keeps its timers and clip in
+    /// the holder's `Gun` (`weapons::Inventory`): they are read from there and restored into it
+    /// while the holder's `gun_item` is this entity.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        self.item.save_head(cx, f);
+        let (me, holder) = (cx.edict, self.item.player);
+        let mut w = self.item.weapon;
+        with_holder(holder, me, |p| {
+            let g = &p.inv.gun;
+            (w.next_primary, w.next_secondary, w.idle, w.clip) = (g.next_primary, g.next_secondary, g.idle, g.clip_mirror);
+        });
+        w.visit(f);
+        if f.restoring() {
+            self.item.weapon = w;
+            with_holder(holder, me, |p| {
+                let g = &mut p.inv.gun;
+                (g.next_primary, g.next_secondary, g.idle, g.clip_mirror) = (w.next_primary, w.next_secondary, w.idle, w.clip);
+            });
+        }
+    }
+
+    /// `CTSGun::Precache` (0x80660): the gun events (`weapons::precache_events`).
+    fn restored(&mut self, _cx: &mut Cx) {
+        crate::weapons::precache_events();
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -321,6 +449,7 @@ impl Entity for WorldTsGun {
         // SwitchWeapon.
         let me = cx.edict;
         crate::player::with_player_now(other, |p, pcx| crate::weapons::add_gun(p, pcx, me));
+        self.item.added_to_player(other);
         if PlayerItem::should_respawn(cx) {
             PlayerItem::respawn(cx, with_tsgun_item);
         }
@@ -374,6 +503,14 @@ impl Entity for WeaponCycler {
         self.item.touchable = true;
     }
 
+    /// `CBasePlayerWeapon::Save` (0xf15f8). `m_iszModel` / `m_iModel` aren't saved: a restored
+    /// cycler has neither, as in TS. Its timers stay 0 (`ItemPostFrame` never fires it) and so
+    /// does its clip (`CWeaponCycler::Deploy` 0xc7d6c only zeroes it again).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        self.item.save_head(cx, f);
+        self.item.weapon.visit(f);
+    }
+
     fn think(&mut self, cx: &mut Cx) {
         self.item.think(cx);
     }
@@ -390,6 +527,7 @@ impl Entity for WeaponCycler {
         let (me, model, model_index) = (cx.edict, self.model, self.model_index);
         // AddToPlayer (bit 0, slot list 1), CheckRespawn, then FShouldSwitchWeapon / Deploy.
         crate::player::with_player_now(other, |p, pcx| crate::weapons::add_cycler(p, pcx, me, model, model_index));
+        self.item.added_to_player(other);
         if PlayerItem::should_respawn(cx) {
             PlayerItem::respawn(cx, with_cycler_item);
         }
