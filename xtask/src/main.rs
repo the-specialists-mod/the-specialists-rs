@@ -454,9 +454,17 @@ impl Ctx {
             match reply {
                 Ok(i) => {
                     say!("   after {secs}s: {i}");
-                    if let Ok(pl) = a2s::players("127.0.0.1", port) {
-                        let list: Vec<String> = pl.iter().map(|(n, f)| format!("{n}={f}")).collect();
-                        say!("   scores: {}", list.join(", "));
+                    let players = a2s::players("127.0.0.1", port).unwrap_or_default();
+                    let list: Vec<String> = players.iter().map(|(n, f)| format!("{n}={f}")).collect();
+                    say!("   scores: {}", list.join(", "));
+                    // `xtask_server.cfg` runs `addbot`: the port adds the bot on a dedicated server
+                    // too (TS only says "Bots only in listen servers."). Its name comes from
+                    // `bots.txt`, not the quota's "Bot " names. GoldSrc prints TS's "connected
+                    // with skill" only with `developer`, the old FWGS query lists no bots.
+                    let named = players.iter().any(|(n, _)| !n.starts_with("Bot "));
+                    if !named && !root.read_log(&self.repo).contains("connected with skill") {
+                        say!("   FAIL: addbot added no bot on a dedicated server");
+                        ok = false;
                     }
                     if i.map != map {
                         say!("   FAIL: map is {:?}, expected {map:?}", i.map);
@@ -492,12 +500,6 @@ impl Ctx {
         }
         if !text.contains("[ts] GameInit") {
             say!("   FAIL: the Rust server library didn't load (no GameInit line)");
-            ok = false;
-        }
-        // `xtask_server.cfg` runs `addbot`: TS adds no bot on a dedicated server (it only says
-        // "Bots only in listen servers.", which needs `developer` to show).
-        if text.contains("connected with skill") {
-            say!("   FAIL: addbot added a bot on a dedicated server");
             ok = false;
         }
         say!("   {}", if ok { "PASS" } else { "FAIL" });

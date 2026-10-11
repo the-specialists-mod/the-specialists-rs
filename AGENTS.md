@@ -123,8 +123,9 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - `ts_dev_touch <file>` writes the end-of-script marker.
 - `ts_tp` teleports, and `ts_face` aims a player's view.
 - `ts_bot_stop 1` freezes living bots (dead ones still buy and respawn). Bots run TS's AI
-  (`crates/server/src/bots`, decomp `docs/server/bots.md`); the `ts_bot_quota` bots think on
-  dedicated servers too, `addbot` bots exist only on listen servers, as in TS.
+  (`crates/server/src/bots`, decomp `docs/server/bots.md`). Deviation (user's choice): `addbot`,
+  `addcustombot` and `ts_bot_quota` bots run on dedicated servers too (server console, configs
+  and rcon only); TS has bots only on listen servers.
 - `ts_observe` sets an observer's mode and target; `ts_dev_fxlog 1` (client) logs each predicted
   shot's flash, bullet, impact and decal, akimbo shots and laser beams as `[ts fx]` lines.
 - `ts_dev_keylog 1` (client) logs Escape's `HUD_Key_Event` answer and `cancelselect` as `[ts key]`.

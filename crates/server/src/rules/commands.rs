@@ -421,15 +421,15 @@ extern "C" fn cmd_givepowerup() {
     });
 }
 
-/// `addbot [model]` (Windows `mp.dll` `0x10026110`): on a dedicated server only "Bots only in
-/// listen servers." (all the Linux `ts_i386.so`, which is dedicated-only, has: 0xc5520). On a
-/// listen server, `addbot help` prints the usage and anything else adds a bot (`BotCreate`,
-/// [`crate::bots::add_bot`]: the argument is the model, not the name).
+/// `addbot [model]` (Windows `mp.dll` `0x10026110`): `addbot help` prints the usage and anything
+/// else adds a bot (`BotCreate`, [`crate::bots::add_bot`]: the argument is the model, not the
+/// name). Deviation (chosen): TS refuses on a dedicated server with "Bots only in listen
+/// servers." (all the Linux `ts_i386.so`, which is dedicated-only, has: 0xc5520); the port adds
+/// the bot there too. As a server command it only runs from the server's console, command line
+/// and configs, or `rcon`: a client's command goes to `ClientCommand`, which doesn't have it.
 extern "C" fn cmd_addbot() {
     let e = engine();
-    if e.is_dedicated() {
-        e.alert(ALERT_TYPE::at_console, "Bots only in listen servers.\n");
-    } else if e.cmd_argv(1) == c"help" {
+    if e.cmd_argv(1) == c"help" {
         e.alert(ALERT_TYPE::at_console, "Usage: addbot [botname]\n");
     } else {
         crate::bots::add_bot(&e.cmd_argv(1).to_string_lossy());
@@ -437,13 +437,11 @@ extern "C" fn cmd_addbot() {
 }
 
 /// `addcustombot [name] [model] [skill]` (Windows `mp.dll` `0x100261a0`; Linux 0xc5550 as
-/// `addbot`): as [`cmd_addbot`], with `BotCreateCustom`'s name, model and skill
-/// ([`crate::bots::add_custom_bot`]). The arguments are read last to first, as TS does.
+/// `addbot`): as [`cmd_addbot`], dedicated servers included, with `BotCreateCustom`'s name, model
+/// and skill ([`crate::bots::add_custom_bot`]). The arguments are read last to first, as TS does.
 extern "C" fn cmd_addcustombot() {
     let e = engine();
-    if e.is_dedicated() {
-        e.alert(ALERT_TYPE::at_console, "Bots only in listen servers.\n");
-    } else if e.cmd_argv(1) == c"help" {
+    if e.cmd_argv(1) == c"help" {
         e.alert(ALERT_TYPE::at_console, "Usage: addcustombot [botname] [team] [skill]\n");
     } else {
         let skill = crate::bots::files::scan_f32(e.cmd_argv(3).to_bytes()).unwrap_or(0.0); // (float)atof

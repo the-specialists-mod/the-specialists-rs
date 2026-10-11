@@ -117,8 +117,8 @@ Dedicated server, e.g. ReHLDS or HLDS on Linux:
 
 ```sh
 ./hlds_linux -game ts +maxplayers 16 +map ts_lobby
-# bots: put `ts_bot_quota N` in ts/server.cfg (GoldSrc runs command-line +cvars before the
-# game registers its cvars). TS's own `addbot` works on listen servers only, as in TS.
+# bots: put `ts_bot_quota N` or `addbot` lines in ts/server.cfg (GoldSrc runs command-line
+# +cvars before the game registers its cvars); `addbot` also works from the console and rcon.
 ```
 
 ## Development and validation

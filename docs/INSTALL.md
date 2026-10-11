@@ -113,12 +113,15 @@ GoldSrc runs command-line `+cvar`s before the game registers its cvars, so put g
 
 ## 5. Bots
 
-* **Listen server** (Create Server in the menu): `addbot [model]` and
-  `addcustombot [name] [model] [skill]` add TS's bots, as in the original game. TS's stock
-  `listenserver.cfg` adds four. Bots walk the map's node graph (`maps/<map>.ndm`); on a map without
-  one, `botlearn 1` lets them build it as players move around, and `savenodes` writes it.
-* **Dedicated server:** TS has no bots there (`addbot` prints "Bots only in listen servers.").
-  The port adds `ts_bot_quota N`, which keeps N bots running TS's AI; put it in `ts/server.cfg`.
+* `addbot [model]` and `addcustombot [name] [model] [skill]` add TS's bots. Bots walk the map's
+  node graph (`maps/<map>.ndm`); on a map without one, `botlearn 1` lets them build it as players
+  move around, and `savenodes` writes it.
+* **Listen server** (Create Server in the menu): as in the original game. TS's stock
+  `listenserver.cfg` adds four.
+* **Dedicated server:** TS has no bots there; the port allows them. `addbot` and
+  `addcustombot` are server commands, so only the server's console or command line, its configs
+  (`ts/server.cfg`) and `rcon` can run them, not players. The port also adds
+  `ts_bot_quota N`, which keeps N bots running; put it in `ts/server.cfg`.
 
 The port also adds `ts_pm_arith` (default `msvc`): player movement and the weapon maths
 (timers, spread, kick) are computed as TS's Windows server computes them, on every platform, so

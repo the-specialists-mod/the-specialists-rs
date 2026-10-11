@@ -155,8 +155,9 @@ they are constants (`cvars::INITIAL_CASH` 1200 etc., respawnnumber 1). Nothing r
 
 Server commands: `globalslow`, `restartround`, `weaponrestriction`, `addbot [model]` /
 `addcustombot [name] [model] [skill]` (as TS's Windows `mp.dll`, `0x10026110`/`0x100261a0`: on a
-dedicated server they only print "Bots only in listen servers.", which is all the Linux
-`ts_i386.so` has; on a listen server `help` prints the usage and anything else adds a bot:
+dedicated server TS only prints "Bots only in listen servers.", which is all the Linux
+`ts_i386.so` has; the port adds the bot there too, a chosen deviation below. `help` prints the
+usage and anything else adds a bot:
 `bots::add_bot`/`add_custom_bot`, TS's `BotCreate`/`BotCreateCustom` with TS's AI (§10): the
 `addbot` argument is the model, the name comes from `bots.txt`, "<name> connected with skill <f>",
 and `botlearn 1` when the node graph is empty; the quota neither counts nor kicks them. TS's
@@ -499,8 +500,10 @@ Port additions:
   without its brain gets a new one.
 * **`ts_bot_stop 1`** freezes living bots: no AI, buttons or movement (the view still settles).
   Dead and observing bots still buy and respawn.
-* `addbot`/`addcustombot` on a dedicated server print TS's "Bots only in listen servers." and do
-  nothing, as TS (the Linux build has no more than that).
+* **Deviation (chosen): bots on dedicated servers.** TS's `addbot`/`addcustombot` print "Bots
+  only in listen servers." on a dedicated server, and its `pfnStartFrame` thinks bots only on
+  listen servers. The port adds them and thinks every bot there too. Being server commands, they
+  only run from the server's console, command line, configs or `rcon`; players can't run them.
 
 Paths: `Load` reads `<gamedir>/maps/<map>.ndm` and `BotLoadFiles` `<gamedir>/bots.txt` and
 `<gamedir>/bot_say.txt` as TS does (plain file reads relative to the engine's working directory,

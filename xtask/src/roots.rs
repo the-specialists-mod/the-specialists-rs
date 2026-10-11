@@ -140,7 +140,7 @@ impl Root {
             c.current_dir(&self.path).args(["-game", "ts", "-port", &port.to_string(), "+maxplayers", "8", "+sv_lan", "1"]);
             // Game cvars don't exist yet when command-line `+cvar` runs on GoldSrc, so set them
             // from the per-map server config instead (the engine runs it after GameInit).
-            // `addbot` checks that a dedicated server adds no bot for it (TS: listen servers only).
+            // `addbot` checks that a dedicated server adds a bot for it (a port deviation: TS refuses).
             let cfg = format!("// Written by cargo xtask server.\nexec server.cfg\nts_bot_quota {bots}\naddbot\n");
             std::fs::write(self.path.join("ts").join("xtask_server.cfg"), cfg).unwrap();
             // FWGS applies command-line cvars after GameInit, GoldSrc reads the config: pass both.

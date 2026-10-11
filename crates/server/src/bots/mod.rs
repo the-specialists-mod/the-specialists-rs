@@ -11,9 +11,9 @@
 //!   [`files`] (`bots.txt`, `bot_say.txt`; §3).
 //!
 //! A bot is a `Player` with a brain (`Player::bot`, TS's `CBot` object) and `Player::is_bot`
-//! (`m_bIsBot`, `pl+0x160`). TS thinks bots only on listen servers. Port additions: the
-//! `ts_bot_quota` bots are TS bots too, and they also think on dedicated servers (the quota is
-//! there to test dedicated servers); `ts_bot_stop 1` freezes living bots.
+//! (`m_bIsBot`, `pl+0x160`). TS has bots only on listen servers. Deviation (chosen): `addbot`,
+//! `addcustombot` and the port's `ts_bot_quota` bots also run on dedicated servers. Port addition:
+//! `ts_bot_stop 1` freezes living bots.
 
 pub mod attack;
 pub mod brain;
@@ -75,8 +75,7 @@ struct Manager {
     added: u32,
     /// The last add found the server full (the quota then retries quietly).
     full: bool,
-    /// User ids of the quota's bots: it counts and kicks only these, and on a dedicated server
-    /// only these think.
+    /// User ids of the quota's bots: it counts and kicks only these.
     quota: Vec<i32>,
 }
 
@@ -127,7 +126,7 @@ pub fn server_deactivate() {
 
 // ---- creation ------------------------------------------------------------------------------------
 
-/// `addbot [model]` on a listen server: `BotCreate` (0x1006b7c0). The argument is the model/team
+/// `addbot [model]`: `BotCreate` (0x1006b7c0). The argument is the model/team
 /// (despite the usage text); the name always comes from `bots.txt`. Afterwards `botlearn 1`
 /// when the node graph is empty.
 pub fn add_bot(model: &str) {
@@ -140,7 +139,7 @@ pub fn add_bot(model: &str) {
     }
 }
 
-/// `addcustombot [name] [model] [skill]` on a listen server: `BotCreateCustom` (0x1006b590). The
+/// `addcustombot [name] [model] [skill]`: `BotCreateCustom` (0x1006b590). The
 /// skill is random in 0.1..1 when not positive, else kept in 0.1..3; an empty name is picked from
 /// `bots.txt` (whose per-name skill then wins).
 pub fn add_custom_bot(name: &[u8], model: &str, skill: f32) {
@@ -269,20 +268,18 @@ fn quota_bots() -> Vec<*mut edict_t> {
 /// The bot part of `pfnStartFrame` (0x10010e00), which runs before the rules' `Think`: on a
 /// listen server every player whose `m_bIsBot == 1` thinks, in entity order (`BotPlayerByIndex`
 /// 0x1006b360: `FL_FAKECLIENT` or `FL_CLIENT`, with private data). Port: the quota first, and
-/// on a dedicated server the quota's bots think too.
+/// bots think on dedicated servers too.
 pub fn start_frame() {
     let eng = engine();
     let now = eng.time();
     quota_think(now);
-    let dedicated = eng.is_dedicated();
-    let quota: Vec<i32> = if dedicated { mgr(|m| m.quota.clone()) } else { Vec::new() };
     let frozen = cvars::f(c"ts_bot_stop") != 0.0;
     for i in 1..=eng.max_clients() {
         let e = eng.player(i);
         if e.is_null() || e.is_free() || !e.has_private_data() || e.v().flags & (FL_FAKECLIENT | FL_CLIENT) as i32 == 0 {
             continue;
         }
-        if eng.user_id(e) == -1 || (dedicated && !quota.contains(&eng.user_id(e))) {
+        if eng.user_id(e) == -1 {
             continue;
         }
         let Some(Some(cmd)) = with_player(e, |p, cx| if p.is_bot == 1 { brain::think(p, cx, frozen) } else { None }) else {
