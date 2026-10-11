@@ -78,6 +78,9 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | `PM_Move`/`PM_Init`/`PM_FindTextureType` | `shared::pm` |
 | `UpdateClientData`/`AddToFullPack`/`CreateBaseline` | `net` (+ `Player::fill_client_data`) |
 | `GetWeaponData`/`CmdStart` | `weapons` |
+| `Save`/`Restore`/`SaveGlobalState`/`RestoreGlobalState`/`ResetGlobalState` | `save` (§4.9) |
+| `SaveWriteFields`/`SaveReadFields` | `goldsrc::ext::saverestore` (the engine's own structs, through `raw`) |
+| `ParmsChangeLevel` | `entities::stock::levelchange::parms_change_level` (the transition list) |
 
 ### 4.2 Entity framework (`world.rs`, `entities/`)
 
@@ -92,8 +95,10 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
   inside its touch). A player's weapon frame lends the player, inventory and all, around each shot
   and swing (`weapons::host::ServerHost::reach_player`), so what the hit sets off can change it.
 * `Entity` trait methods: `key_value`, `spawn`, `think`, `touch`, `use_`, `blocked`,
-  `trace_attack`, `take_damage`, `should_collide`. `trace_attack` and `take_damage` default to
-  `CBaseEntity`'s (`entities::base_take_damage`); the rest are no-ops.
+  `trace_attack`, `take_damage`, `should_collide`, and for save/restore `save_fields`, `restored`
+  (TS's `Precache`, which `DispatchRestore` runs) and `override_reset`. `trace_attack` and
+  `take_damage` default to `CBaseEntity`'s (`entities::base_take_damage`), `save_fields` to the
+  `CBaseEntity` part of the chain (§4.9); the rest are no-ops.
 * `entities::link_entities!` exports one C symbol per classname (through
   `goldsrc::export_entity_class!`, so the export lands in the server library even though it's
   declared in `ts-server`). `fire_targets`/`use_targets`
@@ -127,6 +132,8 @@ Hook order, fixed in `player/mod.rs`:
 * **post_think:** as in TS `PostThink` (0x91610), during intermission or while dead only the weapon timers run down (plus `rules`); otherwise `drive::post_think` (tank firing / letting go), `weapons` (item post frame, skipped while a tank is in use; once the gun is ready it first runs `player::player_use::impulse_commands`, TS's `ImpulseCommands`: the single `PlayerUse` for every usable entity (stock, TS items, dropped guns), then the spray (201), 99, 204 and the cheat impulses), `stunt`, `rules`.
 * **fill_client_data:** `stunt`, `weapons`, `rules`.
 * **take_damage:** `player::damage::take_damage`, which on death calls `rules::on_killed`. That in turn calls `weapons::on_killed`. Self-inflicted damage from inside the player's own callbacks (fall, drowning, slime/lava, poison) calls `take_damage` directly, since `damage::apply` can't reach the dispatched entity.
+
+The player's save data (`CBasePlayer::m_playerSaveData`) is mapped in `player/save.rs`.
 
 ### 4.4 Subsystems and their APIs
 
@@ -164,6 +171,44 @@ pointers to references). Game code keeps `*mut edict_t` as an entity handle and 
 see; `xtask/src/lint.rs` checks for them (in `cargo test` and `cargo xtask build`), and so does
 clippy's `disallowed-macros` (each game crate's `clippy.toml`, in `cargo xtask lint`). The rules for
 working with this are in `AGENTS.md`.
+
+### 4.9 Save and restore (`save/`, `goldsrc::ext::saverestore`)
+
+Save games and level transitions write TS's bytes, so a save from TS's server loads in the port
+and the other way round (as far as the entity set allows).
+
+* **Codec** (`goldsrc::ext::saverestore`): `CSave`/`CRestore` as TS has them (the SDK's code):
+  `[short size][short token][data]` records, the token being the field name's slot in the
+  engine's string hash (`TokenHash`), each block led by an `int` record with its count of
+  non-empty fields (`DataEmpty` over TS's `gSizes`). Times are saved relative to the save's
+  time, position vectors relative to the landmark, entity references as entity-table indices.
+  Fields are exchanged as `Value`s (what TS's object holds there); engine calls go through a
+  `Host` trait so the bytes are unit-tested without an engine. `raw` reads and writes the
+  engine's own structs for `SaveWriteFields`/`SaveReadFields`.
+* **Tables** (`save/tables.rs`): every `TYPEDESCRIPTION` array of `ts_i386.so` (`gEntvarsDescription`,
+  each class's `m_SaveData`, `m_playerSaveData`, `CGlobalState`'s and `gGlobalEntitySaveData`),
+  generated from the binary with each field's type, count, flags and TS offset, plus each class's
+  `Save` chain (from the decomp's `::Save` parents and the vtables) and the classname → class map.
+  TS's chains differ from the SDK's in places (`CFuncTrackTrain` and `CBreakable` derive their
+  saves straight from `CBaseEntity`, the player skips `CBaseMonster`).
+* **Per-class mapping**: `Entity::save_fields` walks the class's chain with a `save::Fields`
+  visitor, one call per TS field in table order, used both ways (save reads the port's state,
+  restore writes it). Shared heads: `Fields::base` (`ENTVARS` + `BASE`), `delay`, `animating`,
+  `stock::base::Toggle::save_chain` (down to `CBaseToggle`). Unit tests walk every linked class
+  in a probe mode against its TS chain (names, field types, counts) and round-trip every class
+  with all fields filled.
+* **Member function pointers.** TS's g++ 2.95 member pointers are 8 bytes, delta and vtable index
+  first; the `FIELD_FUNCTION` entries point at that first word (`0xffff0000` for every set
+  non-virtual function), which no engine can name. `WriteFunction` logs "Invalid function pointer
+  in entity!" and writes nothing, but the field was counted, so on restore the next block's header
+  is consumed as a field and the rest of that entity's chain isn't read. The port passes the same
+  word to `pfnNameForFunction` and so writes the same bytes; classes only say whether each of TS's
+  pointers would be set.
+* **Engine callbacks**: `DispatchSave` (table entry, `FCAP_DONT_SAVE`, push-entity `ltime`),
+  `DispatchRestore` (global entities restored over the live one in global mode with the landmark
+  offset moved by the `mins`, then `Precache`; `gGlobalState` checks), `SaveGlobalState` /
+  `RestoreGlobalState` (`"GLOBAL"` + `"GENT"` blocks), `ResetGlobalState` (also `gInitHUD`).
+  `ObjectCaps` comes from the classname table `levelchange::ts_object_caps`.
 
 ## 5. Map entities
 

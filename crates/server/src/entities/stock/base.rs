@@ -6,6 +6,7 @@
 //! `Option<fn(&mut T, ...)>` fields on the class; its `Entity::think`/`touch` call them.
 
 use crate::entities::{fire_targets, remove};
+use crate::save::{Animating, BaseFuncs, Fields};
 use crate::world::{self, Cx, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
@@ -308,20 +309,33 @@ pub fn sub_use_targets(
 /// does anything.
 #[derive(Default)]
 pub struct DelayedUse {
+    /// `m_flDelay` (+0x64): a map-placed one's `delay` key (`SUB_UseTargets` leaves it 0).
+    delay: f32,
     kill_target: string_t,
     /// `SetThink(&CBaseDelay::DelayThink)`, only from `SUB_UseTargets`.
     armed: bool,
 }
 
 impl crate::world::Entity for DelayedUse {
-    /// `CBaseDelay::KeyValue`: `delay` / `killtarget` (the delay is unused without the think).
+    /// `CBaseDelay::KeyValue` (0xe2e5c): `delay` / `killtarget` (the delay is unused without the
+    /// think, but saved).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
-            b"delay" => {}
+            b"delay" => self.delay = kv_f(value),
             b"killtarget" => self.kill_target = alloc(value),
             _ => return false,
         }
         true
+    }
+
+    /// `CBaseDelay::Save` / `Restore` (0xe2dbc / 0xe2e0c): `m_pfnThink` is `DelayThink` once
+    /// `SUB_UseTargets` armed it. A restored one is never armed again (TS can't restore the
+    /// pointer either), so it never fires. `Precache` is `CBaseEntity`'s (empty).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        if f.base_funcs(cx, BaseFuncs { think: self.armed, ..Default::default() }).think {
+            self.armed = false;
+        }
+        f.delay(&mut self.delay, &mut self.kill_target);
     }
 
     /// `CBaseDelay::DelayThink`.
@@ -378,6 +392,13 @@ pub struct Toggle<T> {
     pub final_dest: Vec3,
     pub final_angle: Vec3,
     pub master: string_t,
+    /// `m_flActivateFinished`, `m_flTWidth`, `m_flTLength`, `m_cTriggersLeft` and
+    /// `m_bitsDamageInflict`: saved with the rest of `CBaseToggle`.
+    pub activate_finished: f32,
+    pub t_width: f32,
+    pub t_length: f32,
+    pub triggers_left: i32,
+    pub damage_inflict: i32,
     pub think: ThinkFn<T>,
     pub touch: TouchFn<T>,
     pub move_done: ThinkFn<T>,
@@ -400,6 +421,11 @@ impl<T> Default for Toggle<T> {
             final_dest: [0.0; 3],
             final_angle: [0.0; 3],
             master: 0,
+            activate_finished: 0.0,
+            t_width: 0.0,
+            t_length: 0.0,
+            triggers_left: 0,
+            damage_inflict: 0,
             think: None,
             touch: None,
             move_done: None,
@@ -426,6 +452,57 @@ impl<T> Toggle<T> {
 
     pub fn use_targets(&self, me: *mut edict_t, activator: *mut edict_t, kind: UseType, value: f32) {
         self.delay.use_targets(me, activator, kind, value);
+    }
+
+    /// The `"CBaseToggle"` table (`m_pfnCallWhenMoveDone` is the `move_done` slot).
+    pub fn save_toggle(&mut self, f: &mut Fields) {
+        f.table(&crate::save::tables::CBaseToggle);
+        let mut state = self.state as i32;
+        f.int(&mut state);
+        // Guard: TS keeps any int; the port's state is one of the four.
+        self.state = match state {
+            0 => ToggleState::AtTop,
+            2 => ToggleState::GoingUp,
+            3 => ToggleState::GoingDown,
+            _ => ToggleState::AtBottom,
+        };
+        f.float(&mut self.activate_finished);
+        f.float(&mut self.move_distance);
+        f.float(&mut self.wait);
+        f.float(&mut self.lip);
+        f.float(&mut self.t_width);
+        f.float(&mut self.t_length);
+        f.vector(&mut self.pos1);
+        f.vector(&mut self.pos2);
+        f.vector(&mut self.angle1);
+        f.vector(&mut self.angle2);
+        f.int(&mut self.triggers_left);
+        f.float(&mut self.height);
+        f.ehandle(&mut self.activator);
+        f.func_slot(&mut self.move_done);
+        f.vector(&mut self.final_dest);
+        f.vector(&mut self.final_angle);
+        f.string(&mut self.master);
+        f.int(&mut self.damage_inflict);
+    }
+
+    /// TS's chain from `CBaseEntity` down to `CBaseToggle`: entvars and `"BASE"` (no goal entity;
+    /// `m_pfnThink` / `m_pfnTouch` are the `think` / `touch` slots, `m_pfnUse` / `m_pfnBlocked`
+    /// as given), `"CBaseDelay"`, `"CBaseAnimating"` (`anim`), `"CBaseToggle"`. Returns the
+    /// `Use` / `Blocked` pointers a restore cleared (the think and touch slots are cleared here).
+    pub fn save_chain(&mut self, cx: &mut Cx, f: &mut Fields, anim: &mut Animating, use_: bool, blocked: bool) -> BaseFuncs {
+        let funcs = BaseFuncs { think: self.think.is_some(), touch: self.touch.is_some(), use_, blocked };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.think = None;
+        }
+        if cleared.touch {
+            self.touch = None;
+        }
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+        f.animating(anim);
+        self.save_toggle(f);
+        cleared
     }
 }
 
@@ -563,13 +640,14 @@ pub enum GlobalState {
     Dead = 2,
 }
 
-/// `gGlobalState`'s entries: name, the map that added it, state, oldest first.
+/// `gGlobalState`'s entries: name, the map that added it, state, oldest first (TS's list is
+/// newest first; `Find` returns the newest entry of a name).
 static GLOBALS: Global<RefCell<Vec<(String, String, GlobalState)>>> = Global(RefCell::new(Vec::new()));
 
 /// `gGlobalState.EntityGetState`: unknown names are Off.
 pub fn global_state(name: &CStr) -> GlobalState {
     let n = kv_str(name);
-    GLOBALS.0.borrow().iter().find(|(k, _, _)| k == n).map(|(_, _, st)| *st).unwrap_or(GlobalState::Off)
+    GLOBALS.0.borrow().iter().rev().find(|(k, _, _)| k == n).map(|(_, _, st)| *st).unwrap_or(GlobalState::Off)
 }
 
 pub fn global_exists(name: &CStr) -> bool {
@@ -586,7 +664,8 @@ pub fn set_global_state(name: &CStr, st: GlobalState) {
     }
 }
 
-fn map_name() -> String {
+/// `STRING(gpGlobals->mapname)`.
+pub fn map_name() -> String {
     let eng = engine();
     eng.string(eng.globals().mapname).to_string_lossy().into_owned()
 }
@@ -594,7 +673,7 @@ fn map_name() -> String {
 /// `CGlobalState::EntitySetState` (0xf3f60): only a name already in the table changes; returns
 /// whether it was found.
 fn entity_set_state(g: &mut [(String, String, GlobalState)], name: &str, st: GlobalState) -> bool {
-    match g.iter_mut().find(|(k, _, _)| k == name) {
+    match g.iter_mut().rev().find(|(k, _, _)| k == name) {
         Some(e) => {
             e.2 = st;
             true
@@ -634,7 +713,7 @@ pub fn global_spawn(name: &CStr) -> GlobalSpawn {
 }
 
 fn global_spawn_in(g: &mut Vec<(String, String, GlobalState)>, name: &str, level: String) -> GlobalSpawn {
-    match g.iter().find(|(k, _, _)| k == name) {
+    match g.iter().rev().find(|(k, _, _)| k == name) {
         None => {
             g.push((name.to_owned(), level, GlobalState::On));
             GlobalSpawn::Added
@@ -661,9 +740,33 @@ pub fn reset_registries() {
     MASTERS.0.borrow_mut().take();
 }
 
-/// `pfnResetGlobalState`.
-pub fn reset_global_state() {
+/// `CGlobalState::ClearStates` (0xf42a8).
+pub fn global_clear() {
     GLOBALS.0.borrow_mut().clear();
+}
+
+/// `CGlobalState::EntityAdd` (0xf3ee4): a new entry (the newest).
+pub fn global_add(name: &str, level: &str, st: GlobalState) {
+    GLOBALS.0.borrow_mut().push((name.to_owned(), level.to_owned(), st));
+}
+
+/// `CGlobalState::EntityFromTable` (0xf3f98): the entry's map and state.
+pub fn global_entry(name: &CStr) -> Option<(String, GlobalState)> {
+    let n = kv_str(name);
+    GLOBALS.0.borrow().iter().rev().find(|(k, _, _)| k == n).map(|(_, l, st)| (l.clone(), *st))
+}
+
+/// The map that owns the entry `name` (`EntityFromTable(name)->levelName`).
+pub fn global_level(name: &CStr) -> Option<Vec<u8>> {
+    global_entry(name).map(|(l, _)| l.into_bytes())
+}
+
+/// `CGlobalState::EntityUpdate` (0xf4258): the entry now belongs to `level`.
+pub fn global_update_level(name: &CStr, level: &str) {
+    let n = kv_str(name);
+    if let Some(e) = GLOBALS.0.borrow_mut().iter_mut().rev().find(|(k, _, _)| k == n) {
+        e.1 = level.to_owned();
+    }
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
 
 use crate::player::{Player, with_player};
 use crate::rules::{self, msg, state};
+use crate::save::{BaseFuncs, Fields};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::server::{engine, intern};
 use goldsrc::sys::*;
@@ -76,6 +77,9 @@ fn round_mode() -> bool {
 struct Ground {
     landed: bool,
     waiting: bool,
+    /// TS's member pointers: `m_pfnThink` `Fall` from `Spawn` until `OnGround`, and again after a
+    /// pickup unless the item stays hidden; `m_pfnTouch` `WaitTouch` from `OnGround` until a pickup.
+    funcs: BaseFuncs,
 }
 
 impl Ground {
@@ -96,7 +100,7 @@ impl Ground {
         // TS's slow-motion `EMIT_SOUND_DYN` (factor 0.5), as in `CTSGroundWeapon::Fall` (0xa2150)
         // and `CTSGroundAmmo::Fall` (0xa2d6c).
         crate::entities::stock::explode::emit_sound_slow(cx.edict, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, 0.8, 0, 100, 0.5);
-        // OnGround
+        // OnGround (0xa226c / 0xa2e88): touch `WaitTouch`, no think (`nextthink` keeps Fall's).
         let e = cx.edict;
         let v = cx.pev();
         if ammo {
@@ -105,23 +109,31 @@ impl Ground {
         }
         v.solid = SOLID_TRIGGER as i32;
         v.effects &= !(EF_NODRAW as i32);
-        v.nextthink = 0.0;
         let org = v.origin;
         engine().set_origin(e, org);
         engine().set_size(e, [-4.0; 3], [4.0; 3]);
+        self.funcs.touch = true;
+        self.funcs.think = false;
         self.landed = true;
         self.waiting = true;
+    }
+
+    /// `Spawn`'s pointers (touch none, think `Fall`) and `iuser4` (`= 0; |= 2`).
+    fn spawned(&mut self, cx: &mut Cx) {
+        self.funcs = BaseFuncs { think: true, ..BaseFuncs::default() };
+        cx.pev().iuser4 = 2;
     }
 
     /// Hide after a pickup and schedule the respawn.
     fn taken(&mut self, cx: &mut Cx, respawn: i32) {
         self.waiting = false;
+        self.funcs.touch = false;
         let v = cx.pev();
         v.effects |= EF_NODRAW as i32;
         v.solid = SOLID_NOT as i32;
-        if respawn < 1 && round_mode() {
-            v.nextthink = 0.0;
-        } else {
+        // A null think (`nextthink` left as it was) keeps it hidden until `RespawnEntities`.
+        self.funcs.think = !(respawn < 1 && round_mode());
+        if self.funcs.think {
             v.nextthink = engine().time() + respawn_delay(respawn);
         }
     }
@@ -242,6 +254,19 @@ impl GroundWeapon {
 }
 
 impl Entity for GroundWeapon {
+    /// `CTSGroundWeapon::Save` / `Restore` (0xa1950 / 0xa19a0): the weapon id (`+0xa4`, the
+    /// `tsweaponid` key, or the HL classname's random pick), `wduration` (`+0xa0`) and
+    /// `wextraclip` (`+0xa8`). `Use` is a virtual, not `m_pfnUse`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.ground.funcs);
+        f.table(&crate::save::tables::CTSGroundWeapon);
+        f.int(&mut self.id);
+        f.int(&mut self.respawn);
+        f.int(&mut self.extra_clip);
+    }
+
+    // `CTSGroundWeapon::Precache` (0xa1cd4) is empty: nothing to do after a restore.
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v = value.to_str().unwrap_or("").trim();
         let i = || v.parse::<i32>().unwrap_or(0);
@@ -278,15 +303,17 @@ impl Entity for GroundWeapon {
         let v = cx.pev();
         v.movetype = if wall { MOVETYPE_FLY } else { MOVETYPE_TOSS } as i32;
         v.solid = SOLID_BBOX as i32;
-        v.iuser4 |= 2;
         let org = v.origin;
         eng.set_origin(e, org);
         eng.set_size(e, [0.0; 3], [0.0; 3]);
         cx.think_in(0.1);
+        self.ground.spawned(cx);
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        self.fall(cx);
+        if self.ground.funcs.think {
+            self.fall(cx);
+        }
     }
 
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
@@ -311,6 +338,14 @@ pub struct GroundAmmo {
 }
 
 impl Entity for GroundAmmo {
+    /// `CBaseEntity::Save` / `Restore`: TS saves nothing of its own (`+0x64..` stay as the
+    /// constructor left them).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.ground.funcs);
+    }
+
+    // `CTSGroundAmmo::Precache` (0xa28f0) is empty.
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let k = key.to_str().unwrap_or("");
         let v: i32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0);
@@ -348,19 +383,21 @@ impl Entity for GroundAmmo {
         let v = cx.pev();
         v.movetype = if wall { MOVETYPE_FLY } else { MOVETYPE_TOSS } as i32;
         v.solid = SOLID_BBOX as i32;
-        v.iuser4 |= 2;
         let org = v.origin;
         eng.set_origin(e, org);
         eng.set_size(e, [0.0; 3], [0.0; 3]);
         cx.think_in(0.1);
+        self.ground.spawned(cx);
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        self.ground.fall(cx, true);
+        if self.ground.funcs.think {
+            self.ground.fall(cx, true);
+        }
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.ground.waiting || cx.pev().effects & EF_NODRAW as i32 != 0 || !rules::is_player(other) {
+        if !self.ground.funcs.touch || !self.ground.waiting || cx.pev().effects & EF_NODRAW as i32 != 0 || !rules::is_player(other) {
             return;
         }
         let rounds = self.rounds;

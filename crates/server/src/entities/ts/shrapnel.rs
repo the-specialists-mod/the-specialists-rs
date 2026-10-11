@@ -6,6 +6,7 @@
 use crate::damage::{self, DamageInfo};
 use crate::entities::remove;
 use crate::entities::stock::explode::emit_sound_slow;
+use crate::save::{BaseFuncs, Fields};
 use crate::weapons::SlowPhysics;
 use crate::world::{Cx, Entity};
 use goldsrc::edict::EdictPtr;
@@ -24,6 +25,9 @@ pub struct Shrapnel {
     expire: f32,
     /// `+0x8c`: who threw it (only `Create` sets it).
     thrower: Option<*mut edict_t>,
+    /// TS's member pointers: `m_pfnThink` (`WaitThink`) and `m_pfnTouch` (`BounceTouch`), set by
+    /// `Spawn`.
+    funcs: BaseFuncs,
 }
 
 /// `Vector::Normalize` as TS inlines it: `(0, 0, 1)` for a zero vector.
@@ -37,6 +41,18 @@ fn normalize_or_up(v: Vec3) -> Vec3 {
 }
 
 impl Entity for Shrapnel {
+    /// `CBaseEntity::Save` / `Restore`: `CTSShrapnel`'s own state isn't saved; both pointers set.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.funcs);
+    }
+
+    /// `CTSShrapnel::Precache` (0x7c1c8).
+    fn restored(&mut self, _cx: &mut Cx) {
+        let eng = engine();
+        eng.precache_model(c"models/shrapnel.mdl");
+        eng.precache_sound(c"weapons/knife/knife_hit.wav");
+    }
+
     /// `CTSShrapnel::Spawn` (0x7c0a0) with `CTSPhysicObject::Spawn` (0x7ba54). TS precaches the
     /// model for every map (`TSPrecache` → `UTIL_PrecacheOther("shrapnel")`); the port precaches
     /// it here, before the `SET_MODEL` that needs it.
@@ -59,10 +75,14 @@ impl Entity for Shrapnel {
         self.expire = now + 30.0;
         v.iuser4 = 4;
         v.effects |= EF_NODRAW as i32;
+        self.funcs = BaseFuncs { think: true, touch: true, ..BaseFuncs::default() };
     }
 
     /// `CTSShrapnel::WaitThink` (0x7c678).
     fn think(&mut self, cx: &mut Cx) {
+        if !self.funcs.think {
+            return;
+        }
         let eng = engine();
         let now = eng.time();
         let v = cx.pev();
@@ -89,7 +109,7 @@ impl Entity for Shrapnel {
 
     /// `CTSShrapnel::BounceTouch` (0x7c200).
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if other.is_null() || other.v().effects & EF_NODRAW as i32 != 0 {
+        if !self.funcs.touch || other.is_null() || other.v().effects & EF_NODRAW as i32 != 0 {
             return;
         }
         let eng = engine();

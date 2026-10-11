@@ -99,6 +99,16 @@ pub struct LockSounds {
 }
 
 impl LockSounds {
+    /// `m_bLockedSound`, `m_bLockedSentence`, `m_bUnlockedSound`, `m_bUnlockedSentence`: the four
+    /// BYTE keyvalues, in the save tables' order (`CBaseDoor`, `CBaseButton`).
+    pub fn save_bytes(&mut self, f: &mut crate::save::Fields) {
+        for n in [&mut self.locked_n, &mut self.locked_sentence_n, &mut self.unlocked_n, &mut self.unlocked_sentence_n] {
+            let mut b = *n as u8;
+            f.byte(&mut b);
+            *n = b as i32;
+        }
+    }
+
     pub fn key_value(&mut self, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"locked_sound" => self.locked_n = fistp16_low_byte(kv_d(value)) as i32,
@@ -492,6 +502,27 @@ impl<const ROT: bool> Entity for Button<ROT> {
         }
     }
 
+    /// `CBaseButton::Save` / `Restore` (0xa7e30 / 0xa7e80), for `CRotButton` too. `m_pfnUse`
+    /// (`ButtonUse`) is set unless the button is touch-only, so most restores stop after
+    /// `"BASE"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let cleared = self.t.save_chain(cx, f, &mut crate::save::Animating::default(), self.usable, false);
+        if cleared.use_ {
+            self.usable = false;
+        }
+        f.table(&crate::save::tables::CBaseButton);
+        f.boolean(&mut self.stay_pushed);
+        f.boolean(&mut self.rotating);
+        f.int(&mut self.sounds);
+        self.ls.save_bytes(f);
+        f.string(&mut self.change_target);
+    }
+
+    /// `CBaseButton::Precache` (0xa7ed0), also `CRotButton`'s (whose `Spawn` doesn't call it).
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
+    }
+
     fn take_damage(&mut self, cx: &mut Cx, info: &DamageInfo) -> bool {
         let code = self.response_to_touch(cx);
         if code == Code::Nothing {
@@ -769,6 +800,19 @@ impl Entity for MomentaryRotButton {
         run_think(self, cx);
     }
 
+    /// `CMomentaryRotButton::Save` / `Restore` (0xa948c / 0xa94dc): `Use` is a virtual, the
+    /// think is `Off` / `Return`. Its `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        self.t.save_chain(cx, f, &mut crate::save::Animating::default(), false, false);
+        f.table(&crate::save::tables::CMomentaryRotButton);
+        f.boolean(&mut self.last_used);
+        f.int(&mut self.direction);
+        f.float(&mut self.return_speed);
+        f.vector(&mut self.start);
+        f.vector(&mut self.end);
+        f.int(&mut self.sounds);
+    }
+
     /// `CMomentaryRotButton::Use` (0xa9850): any use type. The targets get the position from
     /// before this use's turn (the SDK's "BUGBUG" latency).
     fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
@@ -836,6 +880,9 @@ pub struct MultiSource {
     triggered: Vec<bool>,
     globalstate: string_t,
     registered: bool,
+    /// TS's `m_pfnThink`: `Register` from `Spawn` (0xa7a28), then `SUB_DoNothing`; a restore
+    /// clears it, so a restored multisource never registers.
+    think_set: bool,
 }
 
 impl MultiSource {
@@ -891,13 +938,48 @@ impl Entity for MultiSource {
         v.movetype = MOVETYPE_NONE as i32;
         v.nextthink = engine().time() + 0.1;
         v.spawnflags |= SF_MULTI_INIT;
+        self.think_set = true;
         self.publish(cx);
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        if !self.registered {
+        if self.think_set && !self.registered {
             self.register(cx);
         }
+    }
+
+    /// `CMultiSource::Save` / `Restore` (0xa785c / 0xa78ac). The think is always set after
+    /// `Spawn`, so a restore stops after `"BASE"`: no members, which `IsTriggered` (0xa7b84)
+    /// takes as all on.
+    ///
+    /// Guard: TS loops over `m_iTotal` entries of its 32-entry arrays; the port caps a restored
+    /// count at 32 (and 0).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.think_set, ..Default::default() });
+        if cleared.think {
+            self.think_set = false;
+        }
+        f.table(&crate::save::tables::CMultiSource);
+        let mut ents = [EHandle::NULL; MS_MAX_TARGETS];
+        let mut trig = [0i32; MS_MAX_TARGETS];
+        for (i, h) in self.entities.iter().take(MS_MAX_TARGETS).enumerate() {
+            ents[i] = *h;
+            trig[i] = self.triggered.get(i).copied().unwrap_or(false) as i32;
+        }
+        let mut total = self.entities.len() as i32;
+        f.ehandles(&mut ents);
+        f.ints(&mut trig);
+        f.int(&mut total);
+        f.string(&mut self.globalstate);
+        let n = total.clamp(0, MS_MAX_TARGETS as i32) as usize;
+        self.entities = ents[..n].to_vec();
+        self.triggered = trig[..n].iter().map(|t| *t != 0).collect();
+    }
+
+    /// `CMultiSource` has `CBaseEntity::Precache`; the port's master table is rebuilt from the
+    /// restored state.
+    fn restored(&mut self, cx: &mut Cx) {
+        self.publish(cx);
     }
 
     fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, caller: *mut edict_t, _kind: UseType, _value: f32) {

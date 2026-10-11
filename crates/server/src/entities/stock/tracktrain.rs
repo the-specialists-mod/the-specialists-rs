@@ -6,7 +6,9 @@
 //! (SDK `Activate`) happens on the first train think after the map has spawned.
 
 use super::base::*;
+use super::trains::ent_handle;
 use crate::entities::fire_targets;
+use crate::save::{BaseFuncs, Fields, tables};
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
@@ -206,6 +208,50 @@ fn look_ahead(this: *mut edict_t, org: &mut Vec3, dist: f32, mv: bool) -> *mut e
     cur
 }
 
+/// `CPathTrack::Nearest` (0xd1a9c): the node of `this`'s path (following `GetNext`) closest to
+/// `pos` in 2D, starting from `this`. After 10000 nodes without ending or coming back to `this`,
+/// "Bad sequence of path_tracks" and null.
+pub fn nearest(this: *mut edict_t, pos: Vec3) -> *mut edict_t {
+    let dist2d = |e: *mut edict_t| {
+        let o = origin(e);
+        let (dx, dy) = ((pos[0] - o[0]) as f64, (pos[1] - o[1]) as f64);
+        (dy * dy + dx * dx).sqrt() as f32
+    };
+    let mut best = this;
+    let mut closest = dist2d(this);
+    let mut cur = get_next(this);
+    if cur.is_null() || cur == this {
+        return this;
+    }
+    for _ in 1..10000 {
+        let d = dist2d(cur);
+        if d < closest {
+            best = cur;
+            closest = d;
+        }
+        cur = get_next(cur);
+        if cur.is_null() || cur == this {
+            return best;
+        }
+    }
+    engine().alert(ALERT_TYPE::at_error, &format!("Bad sequence of path_tracks from {}", s(this.v().targetname).to_string_lossy()));
+    std::ptr::null_mut()
+}
+
+/// `m_pnext` / `m_pprevious` of a `path_track` (null for anything else).
+pub fn path_links(e: *mut edict_t) -> (*mut edict_t, *mut edict_t) {
+    let (next, prev, _) = data(e);
+    (next.get(), prev.get())
+}
+
+/// `CPathTrack::GetNext` (0xd15d0) of a `path_track` (null for anything else).
+pub fn path_next(e: *mut edict_t) -> *mut edict_t {
+    if world::with::<PathTrack, _>(e, |_| ()).is_none() {
+        return std::ptr::null_mut();
+    }
+    get_next(e)
+}
+
 impl Entity for PathTrack {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key == c"altpath" {
@@ -213,6 +259,18 @@ impl Entity for PathTrack {
             return true;
         }
         false
+    }
+
+    /// `CPathTrack::Save` / `Restore` (0xd10a4 / 0xd10f4). `m_length` (+0x64) is never written
+    /// (always 0); `Use` is a virtual and `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        f.base_funcs(cx, BaseFuncs::default());
+        f.table(&tables::CPathTrack);
+        f.zero();
+        ent_handle(f, &mut self.next);
+        ent_handle(f, &mut self.alt);
+        ent_handle(f, &mut self.prev);
+        f.string(&mut self.alt_name);
     }
 
     fn spawn(&mut self, cx: &mut Cx) {
@@ -256,6 +314,7 @@ enum TrainThink {
 
 #[derive(Default)]
 pub struct TrackTrain {
+    /// `m_ppath` (+0x64).
     path: EHandle,
     length: f32,
     height: f32,
@@ -286,6 +345,44 @@ pub fn on_controls(train: *mut edict_t, pv: &entvars_t) -> bool {
     let (fwd, right, up) = engine().make_vectors(tv.angles);
     let local = [vec::dot(offset, fwd), -vec::dot(offset, right), vec::dot(offset, up)];
     (0..3).all(|i| local[i] >= mins[i] && local[i] <= maxs[i])
+}
+
+/// The train whose think is firing targets (its edict, `m_ppath`, `m_length`): its object is
+/// taken out of the world meanwhile, and a `func_trackautochange` it fires reads them.
+static FIRING: Global<Cell<Option<Firing>>> = Global(Cell::new(None));
+
+/// [`FIRING`]'s train: its edict, `m_ppath` and `m_length`.
+type Firing = (*mut edict_t, EHandle, f32);
+
+/// `m_ppath` and `m_length` of a `func_tracktrain` (`CFuncTrackTrain::Instance` 0xd56f4: none for
+/// anything else).
+pub fn train_path_length(train: *mut edict_t) -> Option<(*mut edict_t, f32)> {
+    if let Some((e, path, length)) = FIRING.0.get()
+        && e == train
+    {
+        return Some((path.get(), length));
+    }
+    world::with::<TrackTrain, _>(train, |t| (t.path.get(), t.length))
+}
+
+/// Sets a `func_tracktrain`'s `m_ppath`. A train firing targets doesn't read it again before its
+/// think returns, so the write waits for that.
+pub fn set_train_path(train: *mut edict_t, path: *mut edict_t) {
+    let path = EHandle::new(path);
+    world::run_now_or_defer(train, move || {
+        world::with::<TrackTrain, _>(train, |t| t.path = path);
+    });
+}
+
+/// `CFuncTrackTrain::NextThink` (0xd4154) on a train's entvars: `FL_ALWAYSTHINK` on or off and
+/// `nextthink`.
+pub fn train_next_think(v: &mut entvars_t, at: f32, always: bool) {
+    if always {
+        v.flags |= FL_ALWAYSTHINK as i32;
+    } else {
+        v.flags &= !(FL_ALWAYSTHINK as i32);
+    }
+    v.nextthink = at;
 }
 
 /// `CFuncTrackTrain::SetControls` (0xd503c): the control volume becomes `controls`' box, taken
@@ -323,11 +420,15 @@ pub fn train_speed(speed: i32, max: i32) -> i32 {
 /// `func_traincontrols` (`CFuncTrainControls`, 0xd5c18): a brush that hands its box to the
 /// `func_tracktrain` named by `target` as the control volume, then removes itself.
 #[derive(Default)]
-pub struct TrainControls;
+pub struct TrainControls {
+    /// `SetThink(Find)`, from `Spawn` on.
+    think: bool,
+}
 
 impl Entity for TrainControls {
     /// `CFuncTrainControls::Spawn` (0xd5c18); its think is [`train_controls_find`].
     fn spawn(&mut self, cx: &mut Cx) {
+        self.think = true;
         let eng = engine();
         let v = cx.pev();
         v.solid = SOLID_NOT as i32;
@@ -340,8 +441,18 @@ impl Entity for TrainControls {
         cx.pev().nextthink = eng.time();
     }
 
+    /// TS's chain is `CBaseEntity`'s: `m_pfnThink` is `Find` (a restored one never finds its
+    /// train: TS can't restore the pointer).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        if f.base_funcs(cx, BaseFuncs { think: self.think, ..Default::default() }).think {
+            self.think = false;
+        }
+    }
+
     fn think(&mut self, cx: &mut Cx) {
-        train_controls_find(cx);
+        if self.think {
+            train_controls_find(cx);
+        }
     }
 }
 
@@ -425,13 +536,43 @@ pub fn approach_angle(target: f32, value: f32, speed: f32) -> f32 {
 
 impl TrackTrain {
     fn next_think(cx: &mut Cx, at: f32, always: bool) {
-        let v = cx.pev();
-        if always {
-            v.flags |= FL_ALWAYSTHINK as i32;
-        } else {
-            v.flags &= !(FL_ALWAYSTHINK as i32);
+        train_next_think(cx.pev(), at, always);
+    }
+
+    /// `FireTargets(target, this, this, USE_TOGGLE, 0)`, with `m_ppath` / `m_length` readable
+    /// meanwhile ([`train_path_length`]).
+    fn fire(&self, me: *mut edict_t, target: &CStr) {
+        let outer = FIRING.0.replace(Some((me, self.path, self.length)));
+        fire_targets(target, me, me, UseType::Toggle, 0.0);
+        FIRING.0.set(outer);
+    }
+
+    /// `CFuncTrackTrain::Precache` (0xd5968).
+    fn precache(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        if self.volume == 0.0 {
+            self.volume = 1.0;
         }
-        v.nextthink = at;
+        let noise: Option<&'static CStr> = match self.sounds {
+            1 => Some(c"plats/ttrain1.wav"),
+            2 => Some(c"plats/ttrain2.wav"),
+            3 => Some(c"plats/ttrain3.wav"),
+            4 => Some(c"plats/ttrain4.wav"),
+            5 => Some(c"plats/ttrain6.wav"),
+            6 => Some(c"plats/ttrain7.wav"),
+            _ => None,
+        };
+        cx.pev().noise = match noise {
+            Some(n) => {
+                eng.precache_sound(n);
+                alloc(n)
+            }
+            None => 0,
+        };
+        eng.precache_sound(c"plats/ttrain_brake1.wav");
+        eng.precache_sound(c"plats/ttrain_start1.wav");
+        // `plats/train_use1.wav`, played by the player taking the controls, is ClientPrecache's.
+        self.adjust_pitch_event = eng.precache_event(c"events/train.sc");
     }
 
     fn stop_sound(&mut self, cx: &mut Cx) {
@@ -538,8 +679,7 @@ impl TrackTrain {
                 self.path = EHandle::new(pnext);
                 let fv = fire.v();
                 if fv.message != 0 {
-                    let me = cx.edict;
-                    fire_targets(s(fv.message), me, me, UseType::Toggle, 0.0);
+                    self.fire(cx.edict, s(fv.message));
                     if fv.spawnflags & SF_PATH_FIREONCE != 0 {
                         fv.message = 0;
                     }
@@ -592,8 +732,7 @@ impl TrackTrain {
         if !track.is_null() {
             let net = track.v().netname;
             if net != 0 {
-                let me = cx.edict;
-                fire_targets(s(net), me, me, UseType::Toggle, 0.0);
+                self.fire(cx.edict, s(net));
             }
         }
     }
@@ -710,30 +849,41 @@ impl Entity for TrackTrain {
         let at = v.ltime + 0.1;
         Self::next_think(cx, at, false);
         self.think = TrainThink::Find;
-        // Precache
-        if self.volume == 0.0 {
-            self.volume = 1.0;
+        self.precache(cx);
+    }
+
+    /// `CFuncTrackTrain::Save` / `Restore` (0xd3eec / 0xd3f3c). `Use` and `Blocked` are
+    /// virtuals; `m_pfnThink` is `think`. `m_soundPlaying` (+0x94) isn't saved: a restored train
+    /// starts silent.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        if f.base_funcs(cx, BaseFuncs { think: self.think != TrainThink::None, ..Default::default() }).think {
+            self.think = TrainThink::None;
         }
-        let noise: Option<&'static CStr> = match self.sounds {
-            1 => Some(c"plats/ttrain1.wav"),
-            2 => Some(c"plats/ttrain2.wav"),
-            3 => Some(c"plats/ttrain3.wav"),
-            4 => Some(c"plats/ttrain4.wav"),
-            5 => Some(c"plats/ttrain6.wav"),
-            6 => Some(c"plats/ttrain7.wav"),
-            _ => None,
-        };
-        cx.pev().noise = match noise {
-            Some(n) => {
-                eng.precache_sound(n);
-                alloc(n)
-            }
-            None => 0,
-        };
-        eng.precache_sound(c"plats/ttrain_brake1.wav");
-        eng.precache_sound(c"plats/ttrain_start1.wav");
-        // `plats/train_use1.wav`, played by the player taking the controls, is ClientPrecache's.
-        self.adjust_pitch_event = eng.precache_event(c"events/train.sc");
+        f.table(&tables::CFuncTrackTrain);
+        ent_handle(f, &mut self.path);
+        f.float(&mut self.length);
+        f.float(&mut self.height);
+        f.float(&mut self.speed);
+        f.float(&mut self.dir);
+        f.float(&mut self.start_speed);
+        f.vector(&mut self.control_mins);
+        f.vector(&mut self.control_maxs);
+        f.int(&mut self.sounds);
+        f.float(&mut self.volume);
+        f.float(&mut self.bank);
+        f.float(&mut self.old_speed);
+    }
+
+    /// `CFuncTrackTrain::Precache` (0xd5968).
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
+    }
+
+    /// `CFuncTrackTrain::OverrideReset` (0xd569c): find the nearest track 0.1 s on.
+    fn override_reset(&mut self, cx: &mut Cx) {
+        let at = cx.pev().ltime + 0.1;
+        Self::next_think(cx, at, false);
+        self.think = TrainThink::NearestPath;
     }
 
     fn think(&mut self, cx: &mut Cx) {

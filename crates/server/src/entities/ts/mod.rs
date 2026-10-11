@@ -67,14 +67,68 @@ link_entities! {
     ts_wingiver => ctb::WinGiver<false>,
     ts_scoregiver => ctb::WinGiver<true>,
     // objective entities that are dead in 3.0
-    ts_objective_manager => misc::Stub,
+    ts_objective_manager => misc::ObjectiveManager,
     ts_objective_ptr => misc::Stub,
-    ts_bomb => misc::Stub,
-    ts_hack => misc::Stub,
-    ts_teamescape => misc::Stub,
-    ts_sellzone => misc::Stub,
+    ts_bomb => misc::Bomb,
+    ts_hack => misc::Hack,
+    ts_teamescape => misc::TeamEscape,
+    ts_sellzone => misc::SellZone,
     // #95: CTSShrapnel (only a map can place one: nothing calls CTSShrapnel::Create)
     shrapnel => shrapnel::Shrapnel,
+}
+
+/// `CBaseEntity::Save` / `Restore` (0xabe40 / 0xabe9c) for a class with no goal entity:
+/// `"ENTVARS"` and `"BASE"` with TS's member pointers `funcs` (which of `m_pfnThink` /
+/// `m_pfnTouch` / `m_pfnUse` / `m_pfnBlocked` TS's object has set for the port's state). A restore
+/// leaves them null (`ReadFields` zeroes every field first, and a set one is never written), so
+/// they are cleared here and the class's think / touch, which check them, then do nothing, as
+/// TS's `CBaseEntity::Think` / `Touch` do with a null pointer.
+pub fn save_base(cx: &mut Cx, f: &mut crate::save::Fields, funcs: &mut crate::save::BaseFuncs) {
+    let cleared = f.base_funcs(cx, *funcs);
+    funcs.think &= !cleared.think;
+    funcs.touch &= !cleared.touch;
+    funcs.use_ &= !cleared.use_;
+    funcs.blocked &= !cleared.blocked;
+}
+
+/// The `CBaseAnimating` part of the port's animation state, as the save visitor takes it.
+pub fn anim_to_save(a: &crate::entities::stock::animating::Animating) -> crate::save::Animating {
+    crate::save::Animating {
+        frame_rate: a.frame_rate,
+        ground_speed: a.ground_speed,
+        last_event_check: a.last_event_check,
+        sequence_finished: a.finished,
+        sequence_loops: a.loops,
+    }
+}
+
+/// Back from [`anim_to_save`] (the activity isn't part of `CBaseAnimating`'s table).
+pub fn anim_from_save(a: &mut crate::entities::stock::animating::Animating, s: &crate::save::Animating) {
+    a.frame_rate = s.frame_rate;
+    a.ground_speed = s.ground_speed;
+    a.last_event_check = s.last_event_check;
+    a.finished = s.sequence_finished;
+    a.loops = s.sequence_loops;
+}
+
+/// `"CBaseAnimating"` over the port's animation state.
+pub fn save_animating(f: &mut crate::save::Fields, a: &mut crate::entities::stock::animating::Animating) {
+    let mut s = anim_to_save(a);
+    f.animating(&mut s);
+    anim_from_save(a, &s);
+}
+
+/// `"CBaseDelay"`, `"CBaseAnimating"` and `"CBaseToggle"` of a TS class built on `CBaseToggle`
+/// that never sets any of their fields (its `KeyValue` doesn't fall back to
+/// `CBaseToggle::KeyValue`, and nothing else writes them): all empty, as in TS's zero-filled
+/// object.
+pub fn save_unused_toggle(f: &mut crate::save::Fields) {
+    for t in [&crate::save::tables::CBaseDelay, &crate::save::tables::CBaseAnimating, &crate::save::tables::CBaseToggle] {
+        f.table(t);
+        for _ in 0..t.fields.len() {
+            f.zero();
+        }
+    }
 }
 
 /// Per-map state of the TS entities (the `ts_particle` count). Their map-wide models

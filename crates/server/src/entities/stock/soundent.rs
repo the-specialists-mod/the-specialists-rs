@@ -249,7 +249,8 @@ pub struct PlayerSoundInput {
 /// under it). `weapon_volume` is `m_iWeaponVolume` (pl+0x7f8), which nothing else in TS writes,
 /// so it only ever runs down from 0. TS's `m_iExtraSoundTypes` and `m_iWeaponFlash` are never set
 /// either, so they add nothing.
-fn update_player_slot(s: &mut Sound, weapon_volume: &mut i32, inp: &PlayerSoundInput) {
+/// Returns `m_iTargetVolume` (pl+0x7f4), which the player keeps for its save data.
+fn update_player_slot(s: &mut Sound, weapon_volume: &mut i32, inp: &PlayerSoundInput) -> i32 {
     s.kind = 0;
     let mut body = 0;
     if inp.on_ground {
@@ -277,6 +278,7 @@ fn update_player_slot(s: &mut Sound, weapon_volume: &mut i32, inp: &PlayerSoundI
     s.origin = inp.origin;
     s.kind |= SOUND_PLAYER;
     s.volume = if inp.silent { 0 } else { volume };
+    target
 }
 
 /// `CSoundEnt::ClientSoundIndex` + `SoundPointerForIndex` (0xe26f8, 0xe2678): the world
@@ -298,10 +300,11 @@ fn with_client_sound<R>(index: i32, f: impl FnOnce(&mut Sound) -> R) -> Result<R
 }
 
 /// `CBasePlayer::UpdatePlayerSound` (0xda630), from the end of a live player's `PostThink`.
-pub fn update_player_sound(index: i32, weapon_volume: &mut i32, inp: &PlayerSoundInput) {
+/// `target_volume` (`m_iTargetVolume`) is only written when the player's slot exists.
+pub fn update_player_sound(index: i32, weapon_volume: &mut i32, target_volume: &mut i32, inp: &PlayerSoundInput) {
     let eng = engine();
     match with_client_sound(index, |s| update_player_slot(s, weapon_volume, inp)) {
-        Ok(()) => {}
+        Ok(t) => *target_volume = t,
         Err(note) => {
             // A bad index prints its own note before the lost-sound one.
             if !note.starts_with("Client") {

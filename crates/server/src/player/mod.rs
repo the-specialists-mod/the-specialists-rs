@@ -6,6 +6,7 @@ pub mod damage;
 pub mod hud;
 pub mod impulse;
 pub mod player_use;
+pub mod save;
 pub mod water;
 
 use crate::entities::link_entities;
@@ -54,6 +55,11 @@ pub struct Player {
     pub respawn_at: f32,
     /// Joined the game (past the MOTD/team menu); spectators have this false.
     pub joined: bool,
+    /// `m_pfnThink` is `PlayerDeathThink`: `Killed` (0x8ed5c) sets it for a death that doesn't
+    /// gib, and nothing clears it. Only the save data shows it.
+    pub death_think: bool,
+    /// `m_rgItems[ITEM_SECURITY]` (+0x838): `item_security` pickups. Nothing reads it but the save.
+    pub security_cards: i32,
 }
 
 impl Entity for Player {
@@ -107,6 +113,16 @@ impl Entity for Player {
 
     fn take_damage(&mut self, cx: &mut Cx, dmg: &DamageInfo) -> bool {
         damage::take_damage(self, cx, dmg)
+    }
+
+    /// `CBasePlayer::Save` / `Restore` (0xda9d8 / 0xdaa2c): `save.rs`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        self.walk_save(cx, f);
+    }
+
+    /// `CBasePlayer::Precache` (0xda90c).
+    fn restored(&mut self, _cx: &mut Cx) {
+        self.restore_precache();
     }
 }
 

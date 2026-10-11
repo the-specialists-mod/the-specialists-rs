@@ -6,6 +6,7 @@ use crate::entities::stock::explode::emit_sound_slow;
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::rules::{self, lifecycle, msg, state, teams};
+use crate::save::{BaseFuncs, Fields};
 use crate::weapons::{SlowPhysics, bounce_ground_damping, give_slow_mul};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::Global;
@@ -87,11 +88,20 @@ static FALL_PENDING: Global<RefCell<Vec<usize>>> = Global(RefCell::new(Vec::new(
 
 /// `SetThink(FlagFall); pev->nextthink = time + delay` on a `ts_briefcase`.
 fn schedule_flag_fall(home: *mut edict_t, delay: f32) {
-    let mut pending = FALL_PENDING.0.borrow_mut();
-    if !pending.contains(&(home as usize)) {
-        pending.push(home as usize);
+    {
+        let mut pending = FALL_PENDING.0.borrow_mut();
+        if !pending.contains(&(home as usize)) {
+            pending.push(home as usize);
+        }
     }
     home.v().nextthink = engine().time() + delay;
+    // `m_pfnThink` is set again (it matters after a restore cleared it). A zone in its own
+    // `CaptureTouch` is out for dispatch: its touch sets it.
+    crate::world::with::<Briefcase, _>(home, |b| b.funcs.think = true);
+}
+
+fn flag_fall_pending(home: *mut edict_t) -> bool {
+    FALL_PENDING.0.borrow().contains(&(home as usize))
 }
 
 fn take_flag_fall(home: *mut edict_t) -> bool {
@@ -108,6 +118,9 @@ pub struct Briefcase {
     contents: String,
     /// `+0x64`: captures are accepted (`FlagFall` sets it; a case taken from home clears it).
     active: bool,
+    /// TS's member pointers: `m_pfnThink` (`FlagFall` / `WaitThink`) and `m_pfnTouch`
+    /// (`CaptureTouch`), both set from `Spawn` on.
+    funcs: BaseFuncs,
 }
 
 impl Default for Briefcase {
@@ -118,7 +131,7 @@ impl Default for Briefcase {
             id = 1;
         }
         NEXT_FLAG_ID.0.set(id);
-        Self { id, owner_team: -1, contents: String::new(), active: false }
+        Self { id, owner_team: -1, contents: String::new(), active: false, funcs: BaseFuncs::default() }
     }
 }
 
@@ -142,11 +155,25 @@ impl Briefcase {
         }
         self.active = true;
         send_flag(0, self.id, self.owner_team, 0);
+        self.funcs.think = true;
         cx.think_in(1.0);
     }
 }
 
 impl Entity for Briefcase {
+    /// `CBaseEntity::Save` / `Restore`: TS saves none of `CTSBriefcase`'s own state. Both pointers
+    /// are set, so TS's restore stops after `"BASE"`, and the restored zone neither drops a case
+    /// nor takes captures.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.funcs);
+    }
+
+    /// `CBaseEntity::Precache` (empty). The restore left TS's think null, so a `FlagFall` the
+    /// port had pending for this edict is dropped too.
+    fn restored(&mut self, cx: &mut Cx) {
+        take_flag_fall(cx.edict);
+    }
+
     /// `CTSBriefcase::KeyValue` (0x8d7f4).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
@@ -180,13 +207,14 @@ impl Entity for Briefcase {
         if self.contents.is_empty() {
             self.contents = "a flag".into();
         }
+        self.funcs = BaseFuncs { think: true, touch: true, ..BaseFuncs::default() };
         schedule_flag_fall(e, 1.0);
     }
 
     fn think(&mut self, cx: &mut Cx) {
         if take_flag_fall(cx.edict) {
             self.flag_fall(cx);
-        } else {
+        } else if self.funcs.think {
             // `CTSBriefcase::WaitThink` (0x8db14).
             cx.think_in(1.0);
         }
@@ -195,13 +223,16 @@ impl Entity for Briefcase {
     /// `CTSBriefcase::CaptureTouch` (0x8db9c): open, a living player who carries a case and may
     /// use this zone (`CanInteract`: any team, or the zone's).
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.active || !rules::has_player(other) || !rules::alive(other.v()) || !has_flag(other) {
+        if !self.funcs.touch || !self.active || !rules::has_player(other) || !rules::alive(other.v()) || !has_flag(other) {
             return;
         }
         if self.owner_team != -1 && self.owner_team != team_index_of(other) {
             return;
         }
         capture(cx, other);
+        if flag_fall_pending(cx.edict) {
+            self.funcs.think = true;
+        }
     }
 }
 
@@ -269,6 +300,9 @@ pub struct Flag {
     /// flying: touch `BounceTouch`, think `Fall`.
     on_ground: bool,
     phys: SlowPhysics,
+    /// TS's member pointers: `m_pfnThink` (`Fall` / `WaitThink`) and `m_pfnTouch` (`BounceTouch` /
+    /// `WaitTouch`), both set from `Spawn` on.
+    funcs: BaseFuncs,
 }
 
 /// `DropFlag` 0x9334c, alive: thrown along `v_angle` at `(90 - pitch) * 2`, so looking down
@@ -412,6 +446,16 @@ impl Flag {
 }
 
 impl Entity for Flag {
+    /// `CBaseEntity::Save` / `Restore` (`CTSFlag`'s own state isn't saved), both pointers set.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.funcs);
+    }
+
+    /// `CTSFlag::Precache` (0x9db94).
+    fn restored(&mut self, _cx: &mut Cx) {
+        engine().precache_model(MODEL);
+    }
+
     /// `CTSFlag::Spawn` (0x9d978): a flying, zero-size `SOLID_BBOX` case with the team's glow,
     /// due home in 20 s (`FlagFall` clears that for a case at home). It is linked where it is
     /// (the world origin for a new case: `CreateFlag`'s callers then set `pev->origin` without
@@ -434,6 +478,7 @@ impl Entity for Flag {
         self.return_at = eng.time() + 20.0;
         self.thrown = false;
         self.on_ground = false;
+        self.funcs = BaseFuncs { think: true, touch: true, ..BaseFuncs::default() };
         cx.think_in(0.1);
         let v = cx.pev();
         v.iuser4 = 2;
@@ -445,6 +490,9 @@ impl Entity for Flag {
 
     /// `Fall` while flying, `CTSFlag::WaitThink` (0x9e1b8) once landed; both every 0.1 s.
     fn think(&mut self, cx: &mut Cx) {
+        if !self.funcs.think {
+            return;
+        }
         cx.think_in(0.1);
         if !self.on_ground {
             self.fall(cx);
@@ -456,6 +504,9 @@ impl Entity for Flag {
     /// `BounceTouch` while flying (a flying case is only taken with +use), `CTSFlag::WaitTouch`
     /// (0x9e604) once landed.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if !self.funcs.touch {
+            return;
+        }
         if self.on_ground {
             self.player_take_flag(cx, other, None);
         } else {
@@ -632,24 +683,46 @@ pub struct WinGiver<const SCORE: bool> {
     calls_needed: i32,
     calls: i32,
     used: bool,
+    /// `cash_for_winner` / `cash_for_loser` (`victorycash` / `defeatcash`): saved, otherwise
+    /// unused.
+    cash_winner: i32,
+    cash_loser: i32,
 }
 
 impl<const SCORE: bool> Entity for WinGiver<SCORE> {
+    /// `CTSWinGiver::KeyValue` (0x8bdfc; `CTSScoreGiver::KeyValue` 0x8c090 calls it).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v: i32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0);
         match key.to_bytes() {
             b"winnerteam" => self.winner = v,
             b"callsnumber" => self.calls_needed = v,
-            b"victorycash" | b"defeatcash" => {}
+            b"victorycash" => self.cash_winner = v,
+            b"defeatcash" => self.cash_loser = v,
             _ => return false,
         }
         true
     }
 
+    /// `CTSWinGiver::Save` / `Restore` (`ts_scoregiver` too): `cash_for_winner` (`+0x6c`),
+    /// `cash_for_loser` (`+0x70`), `winnerteam` (`+0x74`), `numberofcall` (`+0x78`, the
+    /// `callsnumber` key). `Use` is a virtual; `Spawn` clears the pointers.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        f.base_funcs(cx, BaseFuncs::default());
+        f.table(&crate::save::tables::CTSWinGiver);
+        f.int(&mut self.cash_winner);
+        f.int(&mut self.cash_loser);
+        f.int(&mut self.winner);
+        f.int(&mut self.calls_needed);
+    }
+
+    /// `CTSWinGiver::Spawn` (0x8bf10) / `CTSScoreGiver::Spawn` (0x8c0b8).
     fn spawn(&mut self, cx: &mut Cx) {
         let v = cx.pev();
-        v.effects |= EF_NODRAW as i32;
+        v.effects = EF_NODRAW as i32;
         v.solid = SOLID_NOT as i32;
+        v.flags = 0;
+        v.movetype = MOVETYPE_NONE as i32;
+        cx.think_in(10.0);
     }
 
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {

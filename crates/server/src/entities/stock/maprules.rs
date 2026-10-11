@@ -40,7 +40,55 @@ pub fn int_array4(v: &str) -> [i32; 4] {
     out
 }
 
+/// `hudtextparms_t` as TS's 40 bytes (`CGameText::m_textParms` +0x68): x, y, effect, the two
+/// colours, fade-in, fade-out, hold, fx time, channel.
+fn parms_bytes(p: &HudTextParms) -> [u8; 40] {
+    let mut b = [0u8; 40];
+    let words = [p.x.to_bits(), p.y.to_bits(), p.effect as u32];
+    for (i, w) in words.iter().enumerate() {
+        b[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    b[12..20].copy_from_slice(&[p.r1, p.g1, p.b1, p.a1, p.r2, p.g2, p.b2, p.a2]);
+    let tail = [p.fade_in.to_bits(), p.fade_out.to_bits(), p.hold.to_bits(), p.fx_time.to_bits(), p.channel as u32];
+    for (i, w) in tail.iter().enumerate() {
+        b[20 + i * 4..24 + i * 4].copy_from_slice(&w.to_le_bytes());
+    }
+    b
+}
+
+fn parms_from_bytes(b: &[u8; 40]) -> HudTextParms {
+    let w = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    HudTextParms {
+        x: f32::from_bits(w(0)),
+        y: f32::from_bits(w(4)),
+        effect: w(8) as i32,
+        r1: b[12],
+        g1: b[13],
+        b1: b[14],
+        a1: b[15],
+        r2: b[16],
+        g2: b[17],
+        b2: b[18],
+        a2: b[19],
+        fade_in: f32::from_bits(w(20)),
+        fade_out: f32::from_bits(w(24)),
+        hold: f32::from_bits(w(28)),
+        fx_time: f32::from_bits(w(32)),
+        channel: w(36) as i32,
+    }
+}
+
 impl Entity for GameText {
+    /// `CGameText::Save` (0xcc6d0): `CRuleEntity`'s master, then `m_textParms` as 40 bytes. The
+    /// port's delay keys have no TS field (TS's `CGameText` is no `CBaseDelay`).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+        f.table(&crate::save::tables::CGameText);
+        let mut b = parms_bytes(&self.parms);
+        f.bytes(&mut b);
+        self.parms = parms_from_bytes(&b);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let p = &mut self.parms;
         match key.to_bytes() {
@@ -126,6 +174,13 @@ impl GamePlayerEquip {
 }
 
 impl Entity for GamePlayerEquip {
+    /// `CRuleEntity::Save` (0xcc2b4): only the master. TS doesn't save `m_weaponNames` /
+    /// `m_weaponCount`, so a restored equip gives nothing (the port's list starts empty too).
+    /// `Touch` and `Use` are the class's own.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key == c"master" {
             self.master = alloc(value);
@@ -231,6 +286,11 @@ pub struct GameScore {
 }
 
 impl Entity for GameScore {
+    /// `CRuleEntity::Save` (0xcc2b4); the points are `pev->frags`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+    }
+
     /// `CGameScore::KeyValue` (0xcc4fc).
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
@@ -314,6 +374,11 @@ pub struct GameEnd {
 }
 
 impl Entity for GameEnd {
+    /// `CRuleEntity::Save` (0xcc2b4).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         rule_key_value(&mut self.master, key, value)
     }
@@ -343,6 +408,11 @@ pub struct GamePlayerHurt {
 }
 
 impl Entity for GamePlayerHurt {
+    /// `CRuleEntity::Save` (0xcc2b4).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         rule_key_value(&mut self.master, key, value)
     }
@@ -390,6 +460,11 @@ pub struct GameCounter {
 }
 
 impl Entity for GameCounter {
+    /// `CRuleEntity::Save` (0xcc2b4); the count, target and start count are in entvars.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         rule_key_value(&mut self.master, key, value)
     }
@@ -440,6 +515,11 @@ pub struct GameCounterSet {
 }
 
 impl Entity for GameCounterSet {
+    /// `CRuleEntity::Save` (0xcc2b4).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         rule_key_value(&mut self.master, key, value)
     }
@@ -479,6 +559,16 @@ pub struct GamePlayerZone {
 }
 
 impl Entity for GamePlayerZone {
+    /// `CGamePlayerZone::Save` (0xccdf0): the master, then the four target names.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+        f.table(&crate::save::tables::CGamePlayerZone);
+        f.string(&mut self.in_target);
+        f.string(&mut self.out_target);
+        f.string(&mut self.in_count);
+        f.string(&mut self.out_count);
+    }
+
     /// `CGamePlayerZone::KeyValue` (0xcce90).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let field = match key.to_bytes() {
@@ -538,6 +628,14 @@ impl Entity for GamePlayerZone {
             crate::entities::fire_targets(s(self.out_count), activator, me, UseType::Set, outside as f32);
         }
     }
+}
+
+/// `CRuleEntity::Save` (0xcc2b4): the `CBaseEntity` part (no rule entity sets a member pointer:
+/// their `Use`/`Touch` are virtual overrides), then `"CRuleEntity"` (`m_iszMaster` +0x64).
+fn save_rule(cx: &mut Cx, f: &mut crate::save::Fields, master: &mut string_t) {
+    f.base_funcs(cx, crate::save::BaseFuncs::default());
+    f.table(&crate::save::tables::CRuleEntity);
+    f.string(master);
 }
 
 /// `CRuleEntity::KeyValue` (0xcc380): only `master`.
@@ -640,6 +738,15 @@ pub struct GameTeamMaster {
 }
 
 impl Entity for GameTeamMaster {
+    /// `CRuleEntity::Save` (0xcc2b4). `m_teamIndex` isn't saved, so a restored master is on
+    /// team 0 (TS's object starts zeroed).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+        if f.restoring() {
+            set_team_index(cx.edict, 0);
+        }
+    }
+
     /// `CGameTeamMaster::KeyValue` (0xccae8).
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
@@ -706,6 +813,11 @@ pub struct GameTeamSet {
 }
 
 impl Entity for GameTeamSet {
+    /// `CRuleEntity::Save` (0xcc2b4).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"master" => self.master = alloc(value),
@@ -759,6 +871,11 @@ fn target_team_name(target: &CStr) -> Option<String> {
 }
 
 impl Entity for GamePlayerTeam {
+    /// `CRuleEntity::Save` (0xcc2b4).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        save_rule(cx, f, &mut self.master);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"master" => self.master = alloc(value),

@@ -113,6 +113,20 @@ impl<const K: u8> FuncTank<K> {
         TANK_SPREAD.get(self.spread as usize).copied().unwrap_or([0.0; 3])
     }
 
+    /// `CFuncTank::Precache` (0xc2390): the smoke and flash sprites, the rotate sound.
+    fn precache(&mut self, cx: &mut Cx) {
+        if self.sprite_smoke != 0 {
+            precache_model_s(self.sprite_smoke);
+        }
+        if self.sprite_flash != 0 {
+            precache_model_s(self.sprite_flash);
+        }
+        let noise = cx.pev().noise;
+        if noise != 0 {
+            precache_sound_s(noise);
+        }
+    }
+
     /// `CFuncTank::BarrelPosition` (0xc5294).
     fn barrel_position(&self, cx: &mut Cx) -> Vec3 {
         let v = cx.pev();
@@ -491,16 +505,7 @@ impl<const K: u8> Entity for FuncTank<K> {
 
     /// `CFuncTank::Spawn` (0xc2188) and `Precache` (0xc2390).
     fn spawn(&mut self, cx: &mut Cx) {
-        if self.sprite_smoke != 0 {
-            precache_model_s(self.sprite_smoke);
-        }
-        if self.sprite_flash != 0 {
-            precache_model_s(self.sprite_flash);
-        }
-        let noise = cx.pev().noise;
-        if noise != 0 {
-            precache_sound_s(noise);
-        }
+        self.precache(cx);
         let v = cx.pev();
         v.movetype = MOVETYPE_PUSH as i32;
         v.solid = SOLID_BSP as i32;
@@ -524,6 +529,60 @@ impl<const K: u8> Entity for FuncTank<K> {
             // CFuncTankLaser::Activate runs from ServerActivate in the SDK; here from the first
             // think, after every env_laser has spawned.
             self.pending_activate = true;
+            if v.nextthink <= 0.0 {
+                v.nextthink = v.ltime + 0.1;
+            }
+        }
+    }
+
+    /// `CFuncTank::Save` / `Restore` (0xc20e8 / 0xc2138), then for `func_tanklaser`
+    /// `CFuncTankLaser::Save` / `Restore` (0xc41ec / 0xc423c). `Think` and `Use` are virtuals:
+    /// no member pointer is set.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        f.base_funcs(cx, crate::save::BaseFuncs::default());
+        f.table(&crate::save::tables::CFuncTank);
+        f.float(&mut self.yaw_center);
+        f.float(&mut self.yaw_rate);
+        f.float(&mut self.yaw_range);
+        f.float(&mut self.yaw_tolerance);
+        f.float(&mut self.pitch_center);
+        f.float(&mut self.pitch_rate);
+        f.float(&mut self.pitch_range);
+        f.float(&mut self.pitch_tolerance);
+        f.float(&mut self.fire_last);
+        f.float(&mut self.fire_rate);
+        f.float(&mut self.last_sight_time);
+        f.float(&mut self.persist);
+        f.float(&mut self.min_range);
+        f.float(&mut self.max_range);
+        f.vector(&mut self.barrel_pos);
+        f.float(&mut self.sprite_scale);
+        f.string(&mut self.sprite_smoke);
+        f.string(&mut self.sprite_flash);
+        f.int(&mut self.bullet_type);
+        f.vector(&mut self.sight_origin);
+        f.int(&mut self.spread);
+        class_ptr(f, &mut self.controller);
+        f.vector(&mut self.controller_use_pos);
+        f.float(&mut self.next_attack);
+        f.int(&mut self.bullet_damage);
+        f.string(&mut self.master);
+        if K == LASER {
+            f.table(&crate::save::tables::CFuncTankLaser);
+            class_ptr(f, &mut self.laser);
+            f.float(&mut self.laser_time);
+        }
+    }
+
+    /// `CFuncTank::Precache` (0xc2390; `func_tankrocket`'s `CFuncTankRocket::Precache` 0xc47f0
+    /// first precaches `rpg_rocket`, a class TS doesn't link, which the port skips). A laser
+    /// tank also gets `CFuncTankLaser::Activate`, which `ServerActivate` runs after a restore
+    /// too; the port runs it from the next think, as after `Spawn`.
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
+        if K == LASER {
+            self.pending_activate = true;
+            let v = cx.pev();
             if v.nextthink <= 0.0 {
                 v.nextthink = v.ltime + 0.1;
             }
@@ -593,6 +652,16 @@ impl<const K: u8> Entity for FuncTank<K> {
                 self.activate(cx);
             }
         }
+    }
+}
+
+/// A `FIELD_CLASSPTR` the port keeps as an [`EHandle`].
+fn class_ptr(f: &mut crate::save::Fields, h: &mut EHandle) {
+    let cur = h.get();
+    let mut e = cur;
+    f.ent(&mut e);
+    if e != cur {
+        *h = EHandle::new(e);
     }
 }
 
@@ -684,6 +753,14 @@ impl Entity for TankControls {
             return;
         }
         self.tank = EHandle::new(e);
+    }
+
+    /// `CFuncTankControls::Save` / `Restore` (0xc4b28 / 0xc4b78): `m_pTank`. `Think` is a
+    /// virtual; its `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        f.base_funcs(cx, crate::save::BaseFuncs::default());
+        f.table(&crate::save::tables::CFuncTankControls);
+        class_ptr(f, &mut self.tank);
     }
 
     /// `CFuncTankControls::Use` (0xc4bd0).

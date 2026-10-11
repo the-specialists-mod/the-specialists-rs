@@ -7,6 +7,7 @@ use super::{assets, inventory, melee};
 use crate::damage::{self, DamageInfo};
 use crate::entities::{self, link_entities};
 use crate::player::Player;
+use crate::save::{BaseFuncs, Fields};
 use crate::world::{self, Cx, Entity};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::is_player;
@@ -140,6 +141,14 @@ impl SlowPhysics {
     }
 }
 
+/// `CTSGrenade::Precache` (0x7bdd8), the `Precache` of both `CM61Grenade` and `CTSKnife`.
+fn grenade_precache() {
+    let e = engine();
+    for s in [c"weapons/grenbounce1.wav", c"weapons/grenbounce2.wav", c"weapons/grenbounce3.wav", c"weapons/grenbounce4.wav"] {
+        e.precache_sound(s);
+    }
+}
+
 // ---- dmgreport ------------------------------------------------------------------------------
 
 /// The `dmgreport > 1` cheat lines (`UTIL_ClientPrintAll(HUD_PRINTTALK, ...)`): bullet damage in
@@ -163,6 +172,9 @@ pub struct Grenade {
     fuse: f32,
     elapsed: f32,
     phys: SlowPhysics,
+    /// TS's member pointers: `m_pfnThink` (`WaitThink`) and `m_pfnTouch` (`BounceTouch`), set by
+    /// `Spawn` (0x7c974).
+    funcs: BaseFuncs,
 }
 
 /// `CM61Grenade::CreateGrenade(player, 3.0, origin, velocity)`, plus the throw/roll spin.
@@ -187,6 +199,16 @@ pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: b
 }
 
 impl Entity for Grenade {
+    /// `CBaseEntity::Save` / `Restore`: the fuse and thrower aren't saved; both pointers are set,
+    /// so TS's restore stops after `"BASE"` and the restored grenade never goes off.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        crate::entities::ts::save_base(cx, f, &mut self.funcs);
+    }
+
+    fn restored(&mut self, _cx: &mut Cx) {
+        grenade_precache();
+    }
+
     fn spawn(&mut self, cx: &mut Cx) {
         let e = engine();
         let edict = cx.edict;
@@ -209,9 +231,13 @@ impl Entity for Grenade {
         if self.fuse == 0.0 {
             self.fuse = 3.0;
         }
+        self.funcs = BaseFuncs { think: true, touch: true, ..BaseFuncs::default() };
     }
 
     fn think(&mut self, cx: &mut Cx) {
+        if !self.funcs.think {
+            return;
+        }
         let e = engine();
         let me = cx.edict;
         cx.pev().nextthink = e.time() + 0.1;
@@ -233,7 +259,7 @@ impl Entity for Grenade {
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if Some(other) == self.owner {
+        if !self.funcs.touch || Some(other) == self.owner {
             return;
         }
         let e = engine();
@@ -367,6 +393,9 @@ pub struct Knife {
     needs_kungfu: bool,
     stuck: bool,
     phys: SlowPhysics,
+    /// TS's member pointers: `m_pfnThink` (`WaitThink`) and `m_pfnTouch` (`BounceTouch`, then
+    /// `WaitTouch`), set from `Spawn` (0x7db54) on.
+    funcs: BaseFuncs,
 }
 
 /// `KnifeFire`/`KatanaThrow` throw: from the eyes + 32 forward + 1 right (traced), 1900 u/s.
@@ -487,6 +516,16 @@ fn hit_pitch(random: f32) -> i32 {
 }
 
 impl Entity for Knife {
+    /// `CBaseEntity::Save` / `Restore`: `CTSKnife`'s own state isn't saved; both pointers set.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        crate::entities::ts::save_base(cx, f, &mut self.funcs);
+    }
+
+    /// `CTSKnife`'s `Precache` slot is `CTSGrenade::Precache`.
+    fn restored(&mut self, _cx: &mut Cx) {
+        grenade_precache();
+    }
+
     fn spawn(&mut self, cx: &mut Cx) {
         let e = engine();
         let edict = cx.edict;
@@ -515,9 +554,13 @@ impl Entity for Knife {
         self.expire = e.time() + 30.0;
         self.flying = true;
         self.needs_kungfu = false;
+        self.funcs = BaseFuncs { think: true, touch: true, ..BaseFuncs::default() };
     }
 
     fn think(&mut self, cx: &mut Cx) {
+        if !self.funcs.think {
+            return;
+        }
         let e = engine();
         cx.pev().nextthink = e.time() + 0.1;
         if self.expire != 0.0 && e.time() > self.expire {
@@ -539,6 +582,9 @@ impl Entity for Knife {
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if !self.funcs.touch {
+            return;
+        }
         if self.stuck {
             self.wait_touch(cx, other);
         } else {

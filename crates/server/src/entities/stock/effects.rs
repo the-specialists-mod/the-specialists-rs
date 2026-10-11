@@ -28,14 +28,49 @@ pub const SF_SPRITE_TEMPORARY: i32 = 0x8000;
 
 #[derive(Default)]
 pub struct Sprite {
+    /// `m_maxFrame` (+0x68).
     max_frame: f32,
+    /// `m_lastTime` (+0x64).
     last_time: f32,
-    animating: bool,
-    /// `AnimateUntilDead` think (set by [`Sprite::animate_and_die`]).
-    until_dead: bool,
+    think: SpriteThink,
+}
+
+/// `CSprite`'s `m_pfnThink`. `TurnOff` leaves it set.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum SpriteThink {
+    #[default]
+    None,
+    /// `AnimateThink` (`TurnOn`).
+    Animate,
+    /// `AnimateUntilDead` (set by [`Sprite::animate_and_die`]).
+    UntilDead,
 }
 
 impl Sprite {
+    /// `CSprite::Precache` (0xbbc10): a sprite with an `aiment` follows that entity's attachment
+    /// `body` (the client reads skin = entity index, body = attachment).
+    fn precache(cx: &mut Cx) {
+        let v = cx.pev();
+        precache_model_s(v.model);
+        if v.aiment.is_null() {
+            v.skin = 0;
+            v.body = 0;
+        } else {
+            v.skin = engine().index_of(v.aiment);
+            v.movetype = MOVETYPE_FOLLOW as i32;
+        }
+    }
+
+    /// `CSprite::AnimateThink` (0xbbdb4): it thinks again even after `Animate` turned a
+    /// play-once sprite off.
+    fn animate_think(&mut self, cx: &mut Cx) {
+        let now = engine().time();
+        let fr = cx.pev().framerate;
+        self.animate(cx, fr * (now - self.last_time));
+        cx.pev().nextthink = now + 0.1;
+        self.last_time = now;
+    }
+
     fn animate(&mut self, cx: &mut Cx, frames: f32) {
         let v = cx.pev();
         v.frame += frames;
@@ -52,7 +87,6 @@ impl Sprite {
         let v = cx.pev();
         v.effects = EF_NODRAW as i32;
         v.nextthink = 0.0;
-        self.animating = false;
     }
 
     fn turn_on(&mut self, cx: &mut Cx) {
@@ -60,14 +94,15 @@ impl Sprite {
         let v = cx.pev();
         v.effects = 0;
         if (v.framerate != 0.0 && self.max_frame > 1.0) || v.spawnflags & SF_SPRITE_ONCE != 0 {
-            self.animating = true;
+            self.think = SpriteThink::Animate;
             v.nextthink = now;
             self.last_time = now;
         }
         v.frame = 0.0;
     }
 
-    /// `CSprite::SpriteCreate(name, origin, animate)`: a temporary env_sprite.
+    /// `CSprite::SpriteCreate(name, origin, animate)` (0xbbd2c): an env_sprite. TS doesn't set
+    /// `SF_SPRITE_TEMPORARY` here, so these sprites are saved like a map's.
     pub fn create(name: &CStr, origin: Vec3, animate: bool) -> *mut edict_t {
         let eng = engine();
         let e = eng.create_named_entity(c"env_sprite");
@@ -81,7 +116,6 @@ impl Sprite {
         let v = e.v();
         v.solid = SOLID_NOT as i32;
         v.movetype = MOVETYPE_NOCLIP as i32;
-        v.spawnflags |= SF_SPRITE_TEMPORARY;
         if animate {
             world::dispatch(e, |ent, cx| ent.use_(cx, std::ptr::null_mut(), std::ptr::null_mut(), UseType::On, 0.0));
         }
@@ -93,7 +127,7 @@ impl Sprite {
     pub fn animate_and_die(e: *mut edict_t, framerate: f32) {
         let now = engine().time();
         let Some(max_frame) = world::with::<Sprite, _>(e, |sp| {
-            sp.until_dead = true;
+            sp.think = SpriteThink::UntilDead;
             sp.max_frame
         }) else {
             return;
@@ -136,16 +170,7 @@ impl Entity for Sprite {
         v.movetype = MOVETYPE_NONE as i32;
         v.effects = 0;
         v.frame = 0.0;
-        // CSprite::Precache (0xbbc10): a sprite with an `aiment` follows that entity's attachment
-        // `body` (the client reads skin = entity index, body = attachment).
-        precache_model_s(v.model);
-        if v.aiment.is_null() {
-            v.skin = 0;
-            v.body = 0;
-        } else {
-            v.skin = engine().index_of(v.aiment);
-            v.movetype = MOVETYPE_FOLLOW as i32;
-        }
+        Self::precache(cx);
         set_own_model(cx);
         let v = cx.pev();
         self.max_frame = engine().model_frames(v.modelindex) as f32 - 1.0;
@@ -161,29 +186,38 @@ impl Entity for Sprite {
         }
     }
 
+    /// `CSprite::Save` (0xbba74) / `Restore`: `CBaseEntity`'s part (think `AnimateThink` /
+    /// `AnimateUntilDead`; `Use` is virtual), then `"CSprite"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.think != SpriteThink::None, ..Default::default() });
+        if cleared.think {
+            self.think = SpriteThink::None;
+        }
+        f.table(&crate::save::tables::CSprite);
+        f.float(&mut self.last_time);
+        f.float(&mut self.max_frame);
+    }
+
+    /// `CSprite::Precache` (0xbbc10).
+    fn restored(&mut self, cx: &mut Cx) {
+        Self::precache(cx);
+    }
+
     fn think(&mut self, cx: &mut Cx) {
-        let now = engine().time();
-        if self.until_dead {
-            if now > cx.pev().dmgtime {
-                remove(cx.edict);
-                return;
+        match self.think {
+            SpriteThink::Animate => self.animate_think(cx),
+            // CSprite::AnimateUntilDead (0xbbe0c)
+            SpriteThink::UntilDead => {
+                let now = engine().time();
+                if now > cx.pev().dmgtime {
+                    remove(cx.edict);
+                    return;
+                }
+                self.animate_think(cx);
+                cx.pev().nextthink = now;
             }
-            // AnimateThink, then think again next frame.
-            let fr = cx.pev().framerate;
-            self.animate(cx, fr * (now - self.last_time));
-            self.last_time = now;
-            cx.pev().nextthink = now;
-            return;
+            SpriteThink::None => {}
         }
-        if !self.animating {
-            return;
-        }
-        let fr = cx.pev().framerate;
-        self.animate(cx, fr * (now - self.last_time));
-        if self.animating {
-            cx.pev().nextthink = now + 0.1;
-        }
-        self.last_time = now;
     }
 
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, kind: UseType, _v: f32) {
@@ -202,11 +236,22 @@ impl Entity for Sprite {
 
 #[derive(Default)]
 pub struct Glow {
+    /// `m_maxFrame` (+0x68).
     max_frame: f32,
+    /// `m_lastTime` (+0x64).
     last_time: f32,
 }
 
 impl Entity for Glow {
+    /// `CGlow::Save` (0xbb818) / `Restore`: `CBaseEntity`'s part (`Think` is virtual, no member
+    /// pointer), then `"CGlow"`. `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        f.base_funcs(cx, crate::save::BaseFuncs::default());
+        f.table(&crate::save::tables::CGlow);
+        f.float(&mut self.last_time);
+        f.float(&mut self.max_frame);
+    }
+
     fn spawn(&mut self, cx: &mut Cx) {
         let now = engine().time();
         let v = cx.pev();
@@ -279,18 +324,18 @@ pub const SF_FADE_ONLYONE: i32 = 4;
 /// TS: fade only the clients inside the entity's brush.
 pub const SF_FADE_INBOX: i32 = 8;
 
-/// `env_fade` (TS): duration in `dmg_take`, hold in `dmg_save`; sent as `TSFade`.
+/// `env_fade` (TS): duration in `dmg_take`, hold in `dmg_save`; sent as `TSFade`. A
+/// `CPointEntity` (no `delay` / `killtarget` keys; `CBaseEntity::SUB_UseTargets`).
 #[derive(Default)]
-pub struct Fade {
-    delay: Delay,
-}
+pub struct Fade;
 
 impl Entity for Fade {
+    /// `CFade::KeyValue` (0xbd72c).
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"duration" => cx.pev().dmg_take = kv_f(value),
             b"holdtime" => cx.pev().dmg_save = kv_f(value),
-            _ => return self.delay.key_value(key, value),
+            _ => return false,
         }
         true
     }
@@ -332,8 +377,10 @@ impl Entity for Fade {
         } else {
             screen_fade_all(color, dur, hold, alpha, flags);
         }
+        // CBaseEntity::SUB_UseTargets (0xe2efc): FireTargets(target, this, this, USE_TOGGLE, 0).
         let me = cx.edict;
-        self.delay.use_targets(me, me, UseType::Toggle, 0.0);
+        let target = cx.pev().target;
+        sub_use_targets(me, target, 0, 0.0, me, UseType::Toggle, 0.0);
     }
 }
 
@@ -345,6 +392,37 @@ pub const SF_ENVEXPLOSION_NOFIREBALL: i32 = 4;
 pub const SF_ENVEXPLOSION_NOSMOKE: i32 = 8;
 pub const SF_ENVEXPLOSION_NODECAL: i32 = 16;
 pub const SF_ENVEXPLOSION_NOSPARKS: i32 = 32;
+
+/// A table TS writes for a class that never sets its fields: each saved empty (`f.zero()`).
+fn zero_table(f: &mut crate::save::Fields, t: &'static crate::save::Table) {
+    f.table(t);
+    for _ in t.fields {
+        f.zero();
+    }
+}
+
+/// A `CBaseToggle` part as TS's zero-filled object has it (`m_toggle_state` 0, `TS_AT_TOP`),
+/// for the `CBaseMonster` classes that only fill it from `CBaseToggle::KeyValue`.
+fn zeroed_toggle<T>() -> Toggle<T> {
+    Toggle { state: ToggleState::AtTop, ..Toggle::default() }
+}
+
+/// `"CBaseAnimating"` over the port's [`Animating`].
+fn save_animating(f: &mut crate::save::Fields, a: &mut Animating) {
+    let mut s = crate::save::Animating {
+        frame_rate: a.frame_rate,
+        ground_speed: a.ground_speed,
+        last_event_check: a.last_event_check,
+        sequence_finished: a.finished,
+        sequence_loops: a.loops,
+    };
+    f.animating(&mut s);
+    a.frame_rate = s.frame_rate;
+    a.ground_speed = s.ground_speed;
+    a.last_event_check = s.last_event_check;
+    a.finished = s.sequence_finished;
+    a.loops = s.sequence_loops;
+}
 
 /// `UTIL_DecalTrace`: world or brush-entity decal at a trace end.
 pub fn decal_trace(tr: &TraceResult, decal_name: &CStr) {
@@ -394,7 +472,43 @@ pub struct EnvExplosion {
     monster: super::monsters::MonsterBase,
 }
 
+impl EnvExplosion {
+    /// `g_sModelIndexFireball` / `g_sModelIndexSmoke` (TS's `W_Precache` precaches both, and
+    /// `models/grenade.mdl` for the spark showers).
+    fn model_indices(&mut self) {
+        let eng = engine();
+        self.fireball = eng.precache_model(c"sprites/zerogxplode.spr");
+        self.smoke = eng.precache_model(c"sprites/steam1.spr");
+        eng.precache_model(c"models/grenade.mdl");
+    }
+}
+
 impl Entity for EnvExplosion {
+    /// `CEnvExplosion::Save` (0xbf9f4) / `Restore`: `CBaseEntity`'s part (think `Smoke`, or a
+    /// death's `SUB_StartFadeOut` / `SUB_Remove`), `"CBaseDelay"`, `"CBaseAnimating"` and
+    /// `"CBaseToggle"` (all empty: its `KeyValue` takes `iMagnitude` alone and nothing sets
+    /// them), then `"CEnvExplosion"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let think = self.smoking || self.monster.think != super::monsters::MonsterThink::None;
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think, ..Default::default() });
+        if cleared.think {
+            self.smoking = false;
+            self.monster.think = super::monsters::MonsterThink::None;
+        }
+        zero_table(f, &crate::save::tables::CBaseDelay);
+        zero_table(f, &crate::save::tables::CBaseAnimating);
+        zero_table(f, &crate::save::tables::CBaseToggle);
+        f.table(&crate::save::tables::CEnvExplosion);
+        f.int(&mut self.magnitude);
+        f.int(&mut self.sprite_scale);
+    }
+
+    /// TS's `Precache` is `CBaseEntity`'s; the port's copies of the global model indices come
+    /// back.
+    fn restored(&mut self, _cx: &mut Cx) {
+        self.model_indices();
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key == c"iMagnitude" {
             self.magnitude = kv_i(value);
@@ -404,11 +518,7 @@ impl Entity for EnvExplosion {
     }
 
     fn spawn(&mut self, cx: &mut Cx) {
-        let eng = engine();
-        // Precached globally by the SDK's W_Precache.
-        self.fireball = eng.precache_model(c"sprites/zerogxplode.spr");
-        self.smoke = eng.precache_model(c"sprites/steam1.spr");
-        eng.precache_model(c"models/grenade.mdl");
+        self.model_indices();
         let v = cx.pev();
         v.solid = SOLID_NOT as i32;
         v.effects = EF_NODRAW as i32;
@@ -712,17 +822,29 @@ mod beam {
 
 #[derive(Default)]
 pub struct Lightning {
+    /// `m_active` (+0x64).
     active: bool,
+    /// `m_spriteTexture` (+0x88).
     sprite_texture: i32,
+    /// `m_iszSpriteName` (+0x8c).
     sprite_name: string_t,
+    /// `m_iszStartEntity` (+0x68).
     start_entity: string_t,
+    /// `m_iszEndEntity` (+0x6c).
     end_entity: string_t,
+    /// `m_life` (+0x70).
     life: f32,
+    /// `m_boltWidth` (+0x74).
     bolt_width: i32,
+    /// `m_noiseAmplitude` (+0x78).
     noise: i32,
+    /// `m_frameStart` (+0x90).
     frame_start: i32,
+    /// `m_speed` (+0x80).
     speed: i32,
+    /// `m_restrike` (+0x84).
     restrike: f32,
+    /// `m_radius` (+0x94).
     radius: f32,
     /// Think modes (SDK SetThink targets).
     mode: BeamThink,
@@ -890,6 +1012,13 @@ impl Lightning {
         beam::damage(cx, &tr);
     }
 
+    /// `CLightning::Precache` (0xb972c) with `CBeam::Precache` (0xb8cd4): the texture, and the
+    /// beam's end entities from `owner` / `aiment`.
+    fn precache(&mut self, cx: &mut Cx) {
+        self.sprite_texture = precache_model_s(self.sprite_name);
+        beam_precache(cx);
+    }
+
     /// `CLightning::BeamUpdateVars` (run from `Activate` in the SDK).
     fn update_vars(&mut self, cx: &mut Cx) {
         let eng = engine();
@@ -967,7 +1096,7 @@ impl Entity for Lightning {
             return;
         }
         cx.pev().solid = SOLID_NOT as i32;
-        self.sprite_texture = precache_model_s(self.sprite_name);
+        self.precache(cx);
         cx.pev().dmgtime = now;
         if Self::server_side(cx, self.life) {
             self.mode = BeamThink::None;
@@ -1000,6 +1129,42 @@ impl Entity for Lightning {
                 v.nextthink = now + 1.0;
             }
         }
+    }
+
+    /// `CLightning::Save` (0xb94e0) / `Restore`: `CBaseEntity`'s part (think `DamageThink` /
+    /// `StrikeThink`, use `ToggleUse` / `StrikeUse`), then `"CLightning"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs =
+            crate::save::BaseFuncs { think: self.mode != BeamThink::None, use_: self.usable != BeamUse::None, ..Default::default() };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.mode = BeamThink::None;
+        }
+        if cleared.use_ {
+            self.usable = BeamUse::None;
+        }
+        f.table(&crate::save::tables::CLightning);
+        f.boolean(&mut self.active);
+        f.string(&mut self.start_entity);
+        f.string(&mut self.end_entity);
+        f.float(&mut self.life);
+        f.int(&mut self.bolt_width);
+        f.int(&mut self.noise);
+        // m_brightness (+0x7c): no key or code sets it.
+        f.zero();
+        f.int(&mut self.speed);
+        f.float(&mut self.restrike);
+        f.int(&mut self.sprite_texture);
+        f.string(&mut self.sprite_name);
+        f.int(&mut self.frame_start);
+        f.float(&mut self.radius);
+    }
+
+    /// `CLightning::Precache` (0xb972c). `ServerActivate` then runs `Activate`
+    /// (`BeamUpdateVars`) for a server-side beam: the port does that at its next think.
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
+        self.needs_activate = Self::server_side(cx, self.life);
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -1065,18 +1230,30 @@ impl Entity for Lightning {
 /// `env_laser` (CLaser).
 #[derive(Default)]
 pub struct Laser {
+    /// `m_pSprite` (+0x64).
     sprite: EHandle,
+    /// `m_iszSpriteName` (+0x68).
     sprite_name: string_t,
+    /// `m_firePosition` (+0x6c).
     fire_position: Vec3,
-    on: bool,
+    /// `SetThink(StrikeThink)`, from `Spawn`.
+    thinking: bool,
 }
 
 impl Laser {
+    /// `CLaser::Precache` (0xbb320).
+    fn precache(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        v.modelindex = precache_model_s(v.model);
+        if self.sprite_name != 0 {
+            precache_model_s(self.sprite_name);
+        }
+    }
+
     fn turn_off(&mut self, cx: &mut Cx) {
         let v = cx.pev();
         v.effects |= EF_NODRAW as i32;
         v.nextthink = 0.0;
-        self.on = false;
         let sp = self.sprite.get();
         if !sp.is_null() {
             world::dispatch(sp, |e, c| e.use_(c, std::ptr::null_mut(), std::ptr::null_mut(), UseType::Off, 0.0));
@@ -1087,7 +1264,6 @@ impl Laser {
         let now = engine().time();
         let v = cx.pev();
         v.effects &= !(EF_NODRAW as i32);
-        self.on = true;
         let sp = self.sprite.get();
         if !sp.is_null() {
             world::dispatch(sp, |e, c| e.use_(c, std::ptr::null_mut(), std::ptr::null_mut(), UseType::On, 0.0));
@@ -1153,13 +1329,10 @@ impl Entity for Laser {
             remove(cx.edict);
             return;
         }
-        let v = cx.pev();
-        v.solid = SOLID_NOT as i32;
-        v.flags |= FL_CUSTOMENTITY as i32;
-        v.modelindex = precache_model_s(v.model);
-        if self.sprite_name != 0 {
-            precache_model_s(self.sprite_name);
-        }
+        cx.pev().solid = SOLID_NOT as i32;
+        self.precache(cx);
+        self.thinking = true;
+        cx.pev().flags |= FL_CUSTOMENTITY as i32;
         // PointsInit(origin, origin)
         let v = cx.pev();
         beam::set_type(v, BEAM_POINTS);
@@ -1171,15 +1344,12 @@ impl Entity for Laser {
             let org = cx.pev().origin;
             let sp = Sprite::create(s(self.sprite_name), org, true);
             if !sp.is_null() {
+                // SetTransparency(kRenderGlow, colour, amount, fx): int parameters.
                 let (c, a, fx) = {
                     let v = cx.pev();
                     (v.rendercolor, v.renderamt, v.renderfx)
                 };
-                let sv = sp.v();
-                sv.rendermode = kRenderGlow as i32;
-                sv.rendercolor = c;
-                sv.renderamt = a;
-                sv.renderfx = fx;
+                sprite_set_transparency(sp, kRenderGlow as i32, c, a, fx);
             }
             self.sprite = EHandle::new(sp);
         }
@@ -1191,7 +1361,33 @@ impl Entity for Laser {
         }
     }
 
+    /// `CLaser::Save` (0xbb064) / `Restore`: `CBaseEntity`'s part (think `StrikeThink`; `Use` is
+    /// virtual), then `"CLaser"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.thinking, ..Default::default() });
+        if cleared.think {
+            self.thinking = false;
+        }
+        f.table(&crate::save::tables::CLaser);
+        let mut sprite = self.sprite.get();
+        f.ent(&mut sprite);
+        if f.restoring() {
+            self.sprite = EHandle::new(sprite);
+        }
+        f.string(&mut self.sprite_name);
+        f.vector(&mut self.fire_position);
+    }
+
+    /// `CLaser::Precache` (0xbb320).
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
+    }
+
+    /// `CLaser::StrikeThink` (0xbb75c).
     fn think(&mut self, cx: &mut Cx) {
+        if !self.thinking {
+            return;
+        }
         let eng = engine();
         let end = beam::random_targetname(s(cx.pev().message));
         if !end.is_null() {
@@ -1223,19 +1419,43 @@ pub const SF_GIBSHOOTER_REPEATABLE: i32 = 1;
 /// `gibshooter` (`ENV = false`, human gibs) and `env_shooter` (`ENV = true`, any model).
 #[derive(Default)]
 pub struct GibShooter<const ENV: bool> {
+    /// `CBaseDelay` (`m_flDelay` is the time between gibs).
     delay: Delay,
+    /// `m_iGibs` (+0x6c).
     gibs: i32,
+    /// `m_iGibCapacity` (+0x70).
     capacity: i32,
+    /// `m_flGibVelocity` (+0x7c).
     velocity: f32,
+    /// `m_flVariance` (+0x80).
     variance: f32,
+    /// `m_flGibLife` (+0x84).
     gib_life: f32,
+    /// `m_iGibModelIndex` (+0x78).
     model_index: i32,
+    /// `m_iGibMaterial` (+0x74).
     material: i32,
+    /// `SetThink(ShootThink)`, from `Use`.
     shooting: bool,
     usable: bool,
 }
 
 impl<const ENV: bool> GibShooter<ENV> {
+    /// `CGibShooter::Precache` (0xbc1c4): TS's (misspelt) German gib model or the human gibs;
+    /// `CEnvShooter::Precache` (0xbca44): the model, then the material sounds.
+    fn precache(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        self.model_index = if ENV {
+            let index = precache_model_s(cx.pev().model);
+            material_sound_precache(self.material);
+            index
+        } else if super::blood::german() {
+            eng.precache_model(c"models/germanygibs.mdl")
+        } else {
+            eng.precache_model(c"models/hgibs.mdl")
+        };
+    }
+
     fn create_gib(&mut self, cx: &mut Cx) -> *mut edict_t {
         let eng = engine();
         if !ENV && eng.cvar_float(c"violence_hgibs") == 0.0 {
@@ -1350,17 +1570,7 @@ impl<const ENV: bool> Entity for GibShooter<ENV> {
 
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
-        self.model_index = if ENV {
-            // CEnvShooter::Precache (0xbca44): the model, then the material sounds.
-            let index = precache_model_s(cx.pev().model);
-            material_sound_precache(self.material);
-            index
-        } else if super::blood::german() {
-            // CGibShooter::Precache (0xbc1c4): TS's (misspelt) German gib model.
-            eng.precache_model(c"models/germanygibs.mdl")
-        } else {
-            eng.precache_model(c"models/hgibs.mdl")
-        };
+        self.precache(cx);
         let v = cx.pev();
         v.solid = SOLID_NOT as i32;
         v.effects = EF_NODRAW as i32;
@@ -1373,6 +1583,29 @@ impl<const ENV: bool> Entity for GibShooter<ENV> {
         set_movedir(cx.pev());
         cx.pev().body = eng.model_frames(self.model_index);
         self.usable = true;
+    }
+
+    /// `CGibShooter::Save` (0xbc100) / `Restore` (also `CEnvShooter`'s): `CBaseEntity`'s part
+    /// (think `ShootThink`; `Use` is virtual), `"CBaseDelay"`, then `"CGibShooter"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.shooting, ..Default::default() });
+        if cleared.think {
+            self.shooting = false;
+        }
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+        f.table(&crate::save::tables::CGibShooter);
+        f.int(&mut self.gibs);
+        f.int(&mut self.capacity);
+        f.int(&mut self.material);
+        f.int(&mut self.model_index);
+        f.float(&mut self.velocity);
+        f.float(&mut self.variance);
+        f.float(&mut self.gib_life);
+    }
+
+    /// `CGibShooter::Precache` (0xbc1c4) / `CEnvShooter::Precache` (0xbca44).
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -1621,8 +1854,11 @@ impl Entity for Gib {
 
 #[derive(Default)]
 pub struct EnvSpark {
+    /// `m_flDelay` (+0x64): the `MaxDelay` key.
     max_delay: f32,
+    /// `SetThink(SparkThink)`.
     sparking: bool,
+    /// `SetUse(SparkStart / SparkStop)`.
     usable: bool,
 }
 
@@ -1663,6 +1899,25 @@ impl Entity for EnvSpark {
         precache_sparks();
     }
 
+    /// `CEnvSpark::Save` (0xa9de4) / `Restore` (also `env_debris`): `CBaseEntity`'s part (think
+    /// `SparkThink`, use `SparkStart` / `SparkStop`), then `"CEnvSpark"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.sparking, use_: self.usable, ..Default::default() });
+        if cleared.think {
+            self.sparking = false;
+        }
+        if cleared.use_ {
+            self.usable = false;
+        }
+        f.table(&crate::save::tables::CEnvSpark);
+        f.float(&mut self.max_delay);
+    }
+
+    /// `CEnvSpark::Precache` (0xa9fc4).
+    fn restored(&mut self, _cx: &mut Cx) {
+        precache_sparks();
+    }
+
     fn think(&mut self, cx: &mut Cx) {
         if !self.sparking {
             return;
@@ -1689,10 +1944,16 @@ pub const SF_BUBBLES_STARTOFF: i32 = 1;
 
 #[derive(Default)]
 pub struct Bubbling {
+    /// `m_density` (+0x64).
     density: i32,
+    /// `m_frequency` (+0x68).
     frequency: i32,
+    /// `m_bubbleModel` (+0x6c), not saved: `Precache` sets it.
     bubble_model: i32,
+    /// `m_state` (+0x70).
     state: bool,
+    /// `SetThink(FizzThink)`: set with `m_state`, but a restore clears it alone.
+    fizzing: bool,
 }
 
 impl Entity for Bubbling {
@@ -1706,9 +1967,10 @@ impl Entity for Bubbling {
         true
     }
 
+    /// `CBubbling::Spawn` (0xb88e4).
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
-        self.bubble_model = eng.precache_model(c"sprites/bubble.spr");
+        self.restored(cx);
         set_own_model(cx);
         let v = cx.pev();
         v.solid = SOLID_NOT as i32;
@@ -1717,15 +1979,35 @@ impl Entity for Bubbling {
         let speed = v.speed.abs() as i32;
         v.rendercolor = [(speed >> 8) as f32, (speed & 255) as f32, if v.speed < 0.0 { 1.0 } else { 0.0 }];
         if v.spawnflags & SF_BUBBLES_STARTOFF == 0 {
-            self.state = true;
+            self.fizzing = true;
             v.nextthink = eng.time() + 2.0;
+            self.state = true;
         } else {
             self.state = false;
         }
     }
 
+    /// `CBubbling::Save` (0xb8844) / `Restore`: `CBaseEntity`'s part (think `FizzThink`; `Use` is
+    /// virtual), then `"CBubbling"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.fizzing, ..Default::default() });
+        if cleared.think {
+            self.fizzing = false;
+        }
+        f.table(&crate::save::tables::CBubbling);
+        f.int(&mut self.density);
+        f.int(&mut self.frequency);
+        f.boolean(&mut self.state);
+    }
+
+    /// `CBubbling::Precache` (0xb8a24).
+    fn restored(&mut self, _cx: &mut Cx) {
+        self.bubble_model = engine().precache_model(c"sprites/bubble.spr");
+    }
+
+    /// `CBubbling::FizzThink` (0xb8bb8).
     fn think(&mut self, cx: &mut Cx) {
-        if !self.state {
+        if !self.fizzing {
             return;
         }
         let eng = engine();
@@ -1735,10 +2017,12 @@ impl Entity for Bubbling {
         cx.pev().nextthink = eng.time() + if f > 19 { 0.5 } else { 2.5 - 0.1 * f as f32 };
     }
 
+    /// `CBubbling::Use` (0xb8a54).
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, kind: UseType, _v: f32) {
         if should_toggle(kind, self.state) {
             self.state = !self.state;
         }
+        self.fizzing = self.state;
         cx.pev().nextthink = if self.state { engine().time() + 0.1 } else { 0.0 };
     }
 }
@@ -1749,8 +2033,22 @@ pub const SF_DECAL_NOTINDEATHMATCH: i32 = 2048;
 
 #[derive(Default)]
 pub struct Decal {
-    static_pending: bool,
-    removing: bool,
+    think: DecalThink,
+    /// `SetUse(TriggerDecal)`, for a named decal.
+    usable: bool,
+}
+
+/// `CDecal`'s `m_pfnThink`.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum DecalThink {
+    #[default]
+    None,
+    /// `StaticDecal`, for an unnamed decal.
+    Static,
+    /// `SUB_DoNothing`, for a named one until it is used.
+    DoNothing,
+    /// `SUB_Remove`, after `TriggerDecal`.
+    Remove,
 }
 
 impl Decal {
@@ -1782,20 +2080,37 @@ impl Entity for Decal {
             return;
         }
         if v.targetname == 0 {
-            self.static_pending = true;
+            self.think = DecalThink::Static;
             v.nextthink = eng.time();
+        } else {
+            self.think = DecalThink::DoNothing;
+            self.usable = true;
+        }
+    }
+
+    /// `CDecal`'s chain is `CBaseEntity`'s: think `StaticDecal` / `SUB_DoNothing` /
+    /// `SUB_Remove`, use `TriggerDecal`. `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs = crate::save::BaseFuncs { think: self.think != DecalThink::None, use_: self.usable, ..Default::default() };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.think = DecalThink::None;
+        }
+        if cleared.use_ {
+            self.usable = false;
         }
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        if self.removing {
-            remove(cx.edict);
-            return;
+        match self.think {
+            DecalThink::Remove => {
+                remove(cx.edict);
+                return;
+            }
+            DecalThink::Static => {}
+            DecalThink::None | DecalThink::DoNothing => return,
         }
-        if !self.static_pending {
-            return;
-        }
-        self.static_pending = false;
+        // CDecal::StaticDecal (0xf39c8)
         let eng = engine();
         let tr = Self::trace(cx);
         let (entity, model) = if tr.pHit.is_null() { (0, 0) } else { (eng.index_of(tr.pHit), tr.pHit.v().modelindex) };
@@ -1805,8 +2120,10 @@ impl Entity for Decal {
         remove(cx.edict);
     }
 
+    /// `CDecal::TriggerDecal` (0xf381c), through `m_pfnUse`: it stays set, so another use before
+    /// the removal sends the decal again.
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
-        if cx.pev().targetname == 0 || self.removing {
+        if !self.usable {
             return;
         }
         let eng = engine();
@@ -1815,7 +2132,7 @@ impl Entity for Decal {
         let model = if entity != 0 { tr.pHit.v().modelindex } else { 0 };
         let (org, skin) = (cx.pev().origin, cx.pev().skin);
         goldsrc::ext::entities::te_bsp_decal(MSG_BROADCAST, org, skin, entity, model);
-        self.removing = true;
+        self.think = DecalThink::Remove;
         cx.pev().nextthink = eng.time() + 0.1;
     }
 }
@@ -1824,8 +2141,11 @@ impl Entity for Decal {
 
 #[derive(Default)]
 pub struct CyclerSprite {
+    /// `m_animate` (+0x64).
     animate: bool,
+    /// `m_lastTime` (+0x68).
     last_time: f32,
+    /// `m_maxFrame` (+0x6c).
     max_frame: f32,
 }
 
@@ -1866,8 +2186,22 @@ impl Entity for CyclerSprite {
         self.last_time = now;
     }
 
-    fn use_(&mut self, _cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+    /// `CCyclerSprite::Use` (0xc7b5c).
+    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
         self.animate = !self.animate;
+        let model = s(cx.pev().model);
+        engine().alert(ALERT_TYPE::at_console, &format!("Sprite: {}\n", model.to_string_lossy()));
+    }
+
+    /// `CCyclerSprite::Save` (0xc7960) / `Restore`: `CBaseEntity`'s part (`Think` / `Use` are
+    /// virtual), then `"CCyclerSprite"`. Its `ObjectCaps` has `FCAP_DONT_SAVE`, so TS never
+    /// writes it. `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        f.base_funcs(cx, crate::save::BaseFuncs::default());
+        f.table(&crate::save::tables::CCyclerSprite);
+        f.boolean(&mut self.animate);
+        f.float(&mut self.last_time);
+        f.float(&mut self.max_frame);
     }
 
     fn take_damage(&mut self, cx: &mut Cx, _info: &DamageInfo) -> bool {
@@ -1882,10 +2216,19 @@ impl Entity for CyclerSprite {
 /// 0xc752c), both through `CCycler::GenericCyclerSpawn` (0xc75d4): a studio model cycling its
 /// sequence. +use toggles the animation; damage steps to the next sequence while animating, or
 /// advances one 0.1 s frame step while paused. Both are renamed `cycler`.
-#[derive(Default)]
 pub struct Cycler<const PROBE: bool> {
+    /// `CBaseDelay` / `CBaseToggle`: only `CBaseToggle::KeyValue` (through
+    /// `CBaseMonster::KeyValue`) fills them.
+    t: Toggle<Self>,
     anim: Animating,
+    /// `m_animate` (+0x164).
     animate: bool,
+}
+
+impl<const PROBE: bool> Default for Cycler<PROBE> {
+    fn default() -> Self {
+        Cycler { t: zeroed_toggle(), anim: Animating::default(), animate: false }
+    }
 }
 
 pub type GenericCycler = Cycler<false>;
@@ -1941,6 +2284,23 @@ impl<const PROBE: bool> Cycler<PROBE> {
 }
 
 impl<const PROBE: bool> Entity for Cycler<PROBE> {
+    /// `CBaseMonster::KeyValue` (0xce80c) -> `CBaseToggle::KeyValue` (0xe3534).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        self.t.key_value(key, value)
+    }
+
+    /// `CCycler::Save` (0xc7444) / `Restore`: `CBaseToggle`'s chain (no member pointer:
+    /// `Think`, `Use` and `TakeDamage` are virtual), then `"CCycler"`. `Precache` is
+    /// `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        f.base_funcs(cx, crate::save::BaseFuncs::default());
+        f.delay(&mut self.t.delay.delay, &mut self.t.delay.kill_target);
+        save_animating(f, &mut self.anim);
+        self.t.save_toggle(f);
+        f.table(&crate::save::tables::CCycler);
+        f.boolean(&mut self.animate);
+    }
+
     fn spawn(&mut self, cx: &mut Cx) {
         if PROBE {
             // CCyclerProbe::Spawn (0xc752c): 16 units up (no relink until SET_MODEL).
@@ -2004,10 +2364,12 @@ impl<const PROBE: bool> Entity for Cycler<PROBE> {
 
 /// `cycler_wreckage` (`CWreckage`): a smoking model. With `dmgtime` set it smokes less and less
 /// until that time, then removes itself.
-#[derive(Default)]
 pub struct Wreckage {
+    /// `CBaseDelay` / `CBaseToggle`: only `CBaseToggle::KeyValue` (through
+    /// `CBaseMonster::KeyValue`) fills them.
+    t: Toggle<Self>,
     anim: Animating,
-    /// `m_flStartTime`, an `int` in TS (the spawn time truncated).
+    /// `m_flStartTime` (+0x164), an `int` in TS (the spawn time truncated).
     start_time: i32,
     /// `g_sModelIndexSmoke` (`sprites/steam1.spr`, precached by TS's `W_Precache`).
     smoke: i32,
@@ -2016,7 +2378,50 @@ pub struct Wreckage {
     monster: super::monsters::MonsterBase,
 }
 
+impl Default for Wreckage {
+    fn default() -> Self {
+        Wreckage {
+            t: zeroed_toggle(),
+            anim: Animating::default(),
+            start_time: 0,
+            smoke: 0,
+            monster: super::monsters::MonsterBase::default(),
+        }
+    }
+}
+
 impl Entity for Wreckage {
+    /// `CBaseMonster::KeyValue` (0xce80c) -> `CBaseToggle::KeyValue` (0xe3534).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        self.t.key_value(key, value)
+    }
+
+    /// `CWreckage::Save` (0xc7f20) / `Restore`: `CBaseToggle`'s chain (think: a death's
+    /// `SUB_StartFadeOut` / `SUB_Remove`, which its own `Think` never runs), then `"CWreckage"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let think = self.monster.think != super::monsters::MonsterThink::None;
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think, ..Default::default() });
+        if cleared.think {
+            self.monster.think = super::monsters::MonsterThink::None;
+        }
+        f.delay(&mut self.t.delay.delay, &mut self.t.delay.kill_target);
+        save_animating(f, &mut self.anim);
+        self.t.save_toggle(f);
+        f.table(&crate::save::tables::CWreckage);
+        // A FIELD_TIME over TS's int: the int's bits go through the time fix-up as a float.
+        let mut start = f32::from_bits(self.start_time as u32);
+        f.float(&mut start);
+        self.start_time = start.to_bits() as i32;
+    }
+
+    /// `CWreckage::Precache` (0xc80d0), and the port's copy of `g_sModelIndexSmoke`.
+    fn restored(&mut self, cx: &mut Cx) {
+        if cx.pev().model != 0 {
+            precache_model_s(cx.pev().model);
+        }
+        self.smoke = engine().precache_model(c"sprites/steam1.spr");
+    }
+
     /// `CWreckage::Spawn` (0xc7fe4). It doesn't call `Precache`.
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
@@ -2079,21 +2484,32 @@ impl Entity for Wreckage {
 #[derive(Default)]
 pub struct Beam;
 
+/// `CBeam::Precache` (0xb8cd4): the end entities from `owner` / `aiment`.
+fn beam_precache(cx: &mut Cx) {
+    let eng = engine();
+    let v = cx.pev();
+    if !v.owner.is_null() {
+        let i = eng.index_of(v.owner);
+        beam::set_start_entity(v, i);
+    }
+    let v = cx.pev();
+    if !v.aiment.is_null() {
+        let i = eng.index_of(v.aiment);
+        beam::set_end_entity(v, i);
+    }
+}
+
 impl Entity for Beam {
     /// `CBeam::Spawn` (0xb8cb4).
     fn spawn(&mut self, cx: &mut Cx) {
-        let eng = engine();
-        let v = cx.pev();
-        v.solid = SOLID_NOT as i32;
-        if !v.owner.is_null() {
-            let i = eng.index_of(v.owner);
-            beam::set_start_entity(v, i);
-        }
-        let v = cx.pev();
-        if !v.aiment.is_null() {
-            let i = eng.index_of(v.aiment);
-            beam::set_end_entity(v, i);
-        }
+        cx.pev().solid = SOLID_NOT as i32;
+        beam_precache(cx);
+    }
+
+    /// `CBeam`'s chain is `CBaseEntity`'s, no member pointer set (only `LiveForTime`, which
+    /// nothing calls, sets one); `CBeam::Precache` (0xb8cd4) runs after a restore.
+    fn restored(&mut self, cx: &mut Cx) {
+        beam_precache(cx);
     }
 }
 
@@ -2141,6 +2557,8 @@ const TEST_EFFECT_BEAMS: usize = 24;
 /// 0.1 s, brightening, until they all vanish 3 s after the use.
 #[derive(Default)]
 pub struct TestEffect {
+    /// `CBaseDelay` (its `KeyValue`; nothing reads it).
+    delay: Delay,
     /// `SetThink(TestThink)` (cleared when the beams go).
     thinking: bool,
     /// `m_iLoop`.
@@ -2212,9 +2630,29 @@ fn beam_brightness(now: f32, born: f32, start: f32) -> i32 {
 }
 
 impl Entity for TestEffect {
+    /// `CBaseDelay::KeyValue` (0xe2e5c).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        self.delay.key_value(key, value)
+    }
+
     /// `CTestEffect::Spawn` (0xbcbc8) / `Precache` (0xbcbdc).
     fn spawn(&mut self, _cx: &mut Cx) {
         engine().precache_model(c"sprites/lgtning.spr");
+    }
+
+    /// `CBaseDelay`'s chain: `CBaseEntity`'s part (think `TestThink`; `Use` is virtual), then
+    /// `"CBaseDelay"`. The beams aren't saved.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.thinking, ..Default::default() });
+        if cleared.think {
+            self.thinking = false;
+        }
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+    }
+
+    /// `CTestEffect::Precache` (0xbcbdc).
+    fn restored(&mut self, cx: &mut Cx) {
+        self.spawn(cx);
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -2239,18 +2677,41 @@ pub const SF_FUNNEL_REVERSE: i32 = 1;
 /// `env_funnel` (`CEnvFunnel`): one `TE_LARGEFUNNEL` on use, then it removes itself.
 #[derive(Default)]
 pub struct EnvFunnel {
+    /// `CBaseDelay` (its `KeyValue`; nothing reads it).
+    delay: Delay,
+    /// `m_iSprite` (+0x6c), not saved: `Precache` sets it.
     sprite: i32,
     /// `SetThink(SUB_Remove)`.
     removing: bool,
 }
 
 impl Entity for EnvFunnel {
-    /// `CEnvFunnel::Spawn` (0xbde24) / `Precache` (0xbdcfc).
+    /// `CBaseDelay::KeyValue` (0xe2e5c).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        self.delay.key_value(key, value)
+    }
+
+    /// `CEnvFunnel::Spawn` (0xbde24).
     fn spawn(&mut self, cx: &mut Cx) {
-        self.sprite = engine().precache_model(c"sprites/flare6.spr");
+        self.restored(cx);
         let v = cx.pev();
         v.solid = SOLID_NOT as i32;
         v.effects = EF_NODRAW as i32;
+    }
+
+    /// `CBaseDelay`'s chain: `CBaseEntity`'s part (think `SUB_Remove` once used; `Use` is
+    /// virtual), then `"CBaseDelay"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let cleared = f.base_funcs(cx, crate::save::BaseFuncs { think: self.removing, ..Default::default() });
+        if cleared.think {
+            self.removing = false;
+        }
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+    }
+
+    /// `CEnvFunnel::Precache` (0xbdcfc).
+    fn restored(&mut self, _cx: &mut Cx) {
+        self.sprite = engine().precache_model(c"sprites/flare6.spr");
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -2272,14 +2733,34 @@ impl Entity for EnvFunnel {
 /// `env_beverage` (`CEnvBeverage`): each use drops an `item_sodacan` (skin 6 = random 0..5),
 /// `health` cans in all (10 by default), the next only once the last one was drunk (`frags`).
 #[derive(Default)]
-pub struct EnvBeverage;
+pub struct EnvBeverage {
+    /// `CBaseDelay` (its `KeyValue`; nothing reads it).
+    delay: Delay,
+}
 
 impl Entity for EnvBeverage {
-    /// `CEnvBeverage::Spawn` (0xbdf70) / `Precache` (0xbde50).
-    fn spawn(&mut self, cx: &mut Cx) {
+    /// `CBaseDelay::KeyValue` (0xe2e5c).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        self.delay.key_value(key, value)
+    }
+
+    /// `CBaseDelay`'s chain: `CBaseEntity`'s part (no member pointer; `Use` is virtual), then
+    /// `"CBaseDelay"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        f.base_funcs(cx, crate::save::BaseFuncs::default());
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+    }
+
+    /// `CEnvBeverage::Precache` (0xbde50).
+    fn restored(&mut self, _cx: &mut Cx) {
         let eng = engine();
         eng.precache_model(c"models/can.mdl");
         eng.precache_sound(c"weapons/g_bounce3.wav");
+    }
+
+    /// `CEnvBeverage::Spawn` (0xbdf70).
+    fn spawn(&mut self, cx: &mut Cx) {
+        self.restored(cx);
         let v = cx.pev();
         v.solid = SOLID_NOT as i32;
         v.effects = EF_NODRAW as i32;
@@ -2337,6 +2818,20 @@ impl Entity for ItemSoda {
         eng.set_size(cx.edict, [0.0; 3], [0.0; 3]);
         self.state = SodaState::Land;
         cx.pev().nextthink = eng.time() + 0.5;
+    }
+
+    /// `CItemSoda`'s chain is `CBaseEntity`'s: think `CanThink` or `SUB_Remove`, touch
+    /// `CanTouch`. `Precache` (0xbdfdc) is empty.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs = crate::save::BaseFuncs {
+            think: matches!(self.state, SodaState::Land | SodaState::Remove),
+            touch: self.state == SodaState::Touchable,
+            ..Default::default()
+        };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think || cleared.touch {
+            self.state = SodaState::None;
+        }
     }
 
     fn think(&mut self, cx: &mut Cx) {

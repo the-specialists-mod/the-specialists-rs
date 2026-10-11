@@ -2,8 +2,11 @@
 //! temporary ones the auto spawner and dying players leave, pickup and respawn.
 //! Gamerules-entities.md §4.1–§4.2.
 
+use crate::entities::stock::animating::Animating;
+use crate::entities::stock::base::Delay;
 use crate::player::{Player, with_player};
 use crate::rules::{self, cvars, msg, state};
+use crate::save::{BaseFuncs, Fields};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
@@ -39,11 +42,32 @@ pub struct PowerUp {
     respawn: i32,
     mult: f32,
     phase: Phase,
+    /// TS's member pointers: `m_pfnThink` (`Fall` / `WaitThink`) from `Spawn` on, `m_pfnTouch`
+    /// (`WaitTouch`) while it waits on the ground.
+    funcs: BaseFuncs,
+    /// `CBaseDelay` (`delay` / `killtarget`: `KeyValue` falls back to `CBaseDelay::KeyValue`).
+    /// Saved, otherwise unused.
+    delay: Delay,
+    /// `CBaseAnimating`: `Spawn` resets the sequence, `WaitThink` advances it.
+    anim: Animating,
 }
 
 impl Default for PowerUp {
     fn default() -> Self {
-        Self { kind_key: 0, kind: 0, random: false, permanent: true, secs: 0, expire: 0.0, respawn: 0, mult: 1.0, phase: Phase::Falling }
+        Self {
+            kind_key: 0,
+            kind: 0,
+            random: false,
+            permanent: true,
+            secs: 0,
+            expire: 0.0,
+            respawn: 0,
+            mult: 1.0,
+            phase: Phase::Falling,
+            funcs: BaseFuncs::default(),
+            delay: Delay::default(),
+            anim: Animating::default(),
+        }
     }
 }
 
@@ -140,6 +164,8 @@ impl PowerUp {
         engine().set_origin(e, org);
         engine().set_size(e, [-16.0, -16.0, 0.0], [16.0, 16.0, 64.0]);
         self.phase = Phase::Waiting;
+        self.funcs.touch = true;
+        self.funcs.think = true;
     }
 
     /// `WaitTouch`: the pickup rules (single held slot, +use swaps).
@@ -179,6 +205,8 @@ impl PowerUp {
             self.setup(cx, 0, -1, 0.0, true);
         }
         self.phase = Phase::Hidden;
+        self.funcs.touch = false;
+        self.funcs.think = true;
         let v = cx.pev();
         v.effects |= EF_NODRAW as i32;
         v.solid = SOLID_NOT as i32;
@@ -194,13 +222,37 @@ impl PowerUp {
 }
 
 impl Entity for PowerUp {
+    /// `CTSPowerUp::Save` / `Restore` (0x97e1c / 0x97e6c): `poweruptype` is the current type
+    /// (`+0x84`, the `pwuptype` key until `SetupPowerUp` replaces it), `pwupduration` the respawn
+    /// key (`+0x94`). `m_pfnThink` is set from `Spawn` on, so TS's restore never gets past
+    /// `"BASE"`.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        super::save_base(cx, f, &mut self.funcs);
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+        super::save_animating(f, &mut self.anim);
+        f.table(&crate::save::tables::CTSPowerUp);
+        // The port keeps the type in 16 bits (`SetupPowerUp`'s bit tests only read 9).
+        let mut kind = self.kind as i32;
+        f.int(&mut kind);
+        self.kind = kind as u16;
+        if f.restoring() {
+            self.kind_key = kind;
+        }
+        f.int(&mut self.respawn);
+    }
+
+    /// `CTSPowerUp::Precache` (0x98548).
+    fn restored(&mut self, _cx: &mut Cx) {
+        engine().precache_model(MODEL);
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v = value.to_str().unwrap_or("").trim();
         match key.to_bytes() {
             b"pwuptype" => self.kind_key = v.parse().unwrap_or(0),
             b"pwupduration" => self.respawn = v.parse().unwrap_or(0),
             b"pwupmult" => self.mult = v.parse().unwrap_or(0.0),
-            _ => return false,
+            _ => return self.delay.key_value(key, value),
         }
         true
     }
@@ -230,23 +282,28 @@ impl Entity for PowerUp {
         v.rendermode = kRenderTransColor as i32;
         v.rendercolor = [0.0; 3];
         v.renderfx = kRenderFxNoDissipation as i32;
-        v.framerate = 1.0;
-        v.animtime = eng.time();
         let org = v.origin;
         eng.set_origin(e, org);
         eng.set_size(e, [0.0; 3], [0.0; 3]);
+        self.funcs = BaseFuncs { think: true, ..BaseFuncs::default() };
         cx.think_in(0.1);
+        self.anim.reset_sequence_info(e);
+        cx.pev().framerate = 1.0;
         self.phase = Phase::Falling;
         let k = self.kind_key;
         self.setup(cx, k, -1, 0.0, true);
     }
 
     fn think(&mut self, cx: &mut Cx) {
+        if !self.funcs.think {
+            return;
+        }
         let now = cx.time();
         match self.phase {
             Phase::Falling | Phase::Hidden => self.fall(cx),
             Phase::Waiting => {
-                // `WaitThink`: temporary power-ups fade over their last 30 s.
+                // `WaitThink` (0x98570): temporary power-ups fade over their last 30 s.
+                self.anim.frame_advance(cx.edict, 0.0);
                 cx.think_in(1.0);
                 if !self.permanent {
                     if now <= self.expire {
@@ -260,7 +317,7 @@ impl Entity for PowerUp {
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if self.phase != Phase::Waiting || !rules::is_player(other) {
+        if !self.funcs.touch || self.phase != Phase::Waiting || !rules::is_player(other) {
             return;
         }
         let took = with_player(other, |p, pcx| self.pickup(cx, p, pcx)).unwrap_or(false);

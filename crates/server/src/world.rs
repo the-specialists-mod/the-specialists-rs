@@ -49,6 +49,10 @@ impl Cx {
     }
 }
 
+/// A linked classname and a constructor for its class (the save-table tests).
+#[cfg(test)]
+pub type Linked = (&'static str, fn() -> Box<dyn Entity>);
+
 /// `USE_TYPE` from the SDK.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UseType {
@@ -92,6 +96,16 @@ pub trait Entity: Any {
     fn should_collide(&mut self, _cx: &mut Cx, _other: *mut edict_t) -> bool {
         true
     }
+    /// `Save` / `Restore` (vtable +0x30 / +0x34): the class's TS field chain, walked with the
+    /// visitor in both directions (`crate::save`). The default is `CBaseEntity`'s part alone.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        crate::save::base_only(cx, f);
+    }
+    /// What `DispatchRestore` runs after the restore: the class's `Precache` (vtable +0x28; no TS
+    /// class has `FCAP_MUST_SPAWN`, which would run `Spawn`).
+    fn restored(&mut self, _cx: &mut Cx) {}
+    /// `OverrideReset` (vtable +0x98): after a global entity was restored over this one.
+    fn override_reset(&mut self, _cx: &mut Cx) {}
 }
 
 enum State {

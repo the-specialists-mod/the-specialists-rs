@@ -61,6 +61,9 @@ How the SDK patterns map to Rust:
   registry can.
 * **Engine-kept strings.** Dynamic model and sound names go through `goldsrc::server::intern`
   (`precache_model_s`, `precache_sound_s`, light patterns).
+* **Save data.** Each class's `save_fields` walks its TS `Save` chain (`crate::save`, design §4.9)
+  and `restored` is its TS `Precache`. TS state the port didn't keep before (keyvalues TS stores,
+  member-pointer states) was added where the save shows it; §1.2 lists what each class saves.
 
 ### 1.1 Map-wide precaches
 
@@ -129,6 +132,64 @@ and `ts_model` with an empty `model` is removed; TS would pass "" to the engine.
   `te_smoke`, `te_bsp_decal`, `te_bubbles`, and `te_text_message` (`UTIL_HudMessage`, 511-character
   limit as in TS).
 
+### 1.2 Save data
+
+Every class's `save_fields` walks its TS chain (`save::tables::chain`, design §4.9); the doc
+comment on each says what it saves. What matters across classes:
+
+* **Restores that stop after `"BASE"` (TS).** A set member function pointer is counted but not
+  written (TS hands `pfnNameForFunction` the first word of a g++ 2.95 member pointer), so the
+  restore reads the next block's header as a field and the rest of that entity's chain is lost.
+  This hits most triggers (touch set), `func_friction`, `multi_manager`, plats with a
+  `targetname`, moving trains, `func_rotating`, spawned `multisource`s, buttons that aren't
+  touch-only, pendulums with a distance, a respawning item or charger, a falling or fading
+  `monster_hevsuit_dead`, a `speaker`. The port reproduces it: restored objects come back with the
+  member pointers cleared and the later tables unread (so `multisource` reads as fully on, a
+  restored `func_rot_button` has `m_fRotating` 0, items and chargers stay inert).
+* **Member-pointer state the port didn't keep** was added as flags or enums where TS sets a pointer
+  that the port's code didn't model (`func_rotating`'s `RotatingUse`, a pendulum's `RopeTouch`,
+  `CBreakable::Die`, `multisource`'s `Register`, items' `Materialize`, `func_traincontrols`,
+  `env_message`, `func_friction`, the effects' think/use states).
+* **Fields TS saves that the port dropped** are kept now: `CBaseToggle`'s `m_flActivateFinished`,
+  `m_flTWidth`, `m_flTLength`, `m_cTriggersLeft`, `m_bitsDamageInflict` (in `Toggle`), the
+  `CBaseTrigger` keys of `func_ladder` and `trigger_changelevel`, `func_train`'s `sounds`,
+  `CBaseDelay` keys of `test_effect` / `env_funnel` / `env_beverage` / the xen plants / `DelayedUse`,
+  the cyclers' `CBaseToggle` keys, a door's `m_bHealthValue` as TS's byte (`fistp16_low_byte`), a
+  light's `m_iszPattern`, the charger's `dmdelay` (`m_iReactivate`), `func_trackchange`'s
+  `train` / `toptrack` / `bottomtrack`. Classes whose `Spawn` never sets `m_toggle_state` start at 0
+  (`AtTop`), TS's zero-filled value.
+* **`restored` is TS's `Precache`.** Its side effects come with it: `trigger_auto` fires 0.1 s after
+  a load, `fireanddie` `m_flDelay` after one, `func_plat` builds a new trigger volume, a restored
+  `worldspawn` repeats the whole map precache (game rules, soundent, body queue),
+  `ambient_generic` restarts an active looping sound.
+* **`OverrideReset`** (a global entity restored over a live one): `func_train`, `func_tracktrain`,
+  `func_trackchange` / `func_trackautochange`. `CFuncTrackChange::OverrideReset` installs the real
+  `CFuncTrackChange::Find` (0xd5ff4), which `Spawn` never does (§7.3), so its train logic
+  (`Find`, `EvaluateTrain`, `UpdateTrain`, `UpdateAutoTargets`, both `Use`s, `CPathTrack::Nearest`)
+  is ported for that path.
+* **`Activate` after a load.** TS's `ServerActivate` runs every entity's `Activate` after a restore;
+  the port has no such hook, so `func_train`, `func_guntarget`, `func_tanklaser` and `env_beam` queue
+  it through their next think (0.1 s for the trains).
+* **Not saved by TS**, so lost on a restore as in TS: `func_breakable`'s `CBaseDelay` part and its
+  respawn state (`CBreakable` saves straight from `CBaseEntity`), the breakable-door state,
+  `game_player_equip`'s item list, `game_team_master`'s team index, `cycler_weapon`'s model,
+  `weapon_tsgun`'s inventory beyond its timers and clip.
+
+Guards (TS reads or writes out of bounds on a bad save): a restored `multisource` `m_iTotal` is
+capped to 0..32 and a `multi_manager` `m_cTargets` to 0..16 (negative `m_index` to 0); a restored
+`triggerType` above 2 is `USE_TOGGLE`; a restored xen spore `skin` outside the model list
+precaches nothing; a restored `m_toggle_state` outside 0..3 is `AtBottom`; `CFuncTrackChange`'s
+`Find` / arrival / `CFuncTrackAuto::Use` leave a track that isn't a `path_track` NULL (TS calls
+`Nearest` through NULL) and treat a NULL activator as no train.
+
+Deviations: `CFuncTankRocket::Precache`'s `UTIL_PrecacheOther("rpg_rocket")` (a class TS doesn't
+link) is skipped, so its "NULL Ent" console line is missing; a dropped `weapon_tsgun` saved in the
+0.1 s before its removal writes its own spawn-time timers, not the player's (the player is
+mid-dispatch); `game_team_master` resets its index on a global restore too (TS keeps the live
+one); `env_message`'s think state is read from `nextthink != 0` (only the chapter title sets it).
+The track change that its own train fires reads the train's path through a side channel
+(`tracktrain::FIRING`), since the train is taken out of the world during its think.
+
 ## 2. Classes
 
 "SDK" means the class is ported from the SDK file named, with no TS change found in the decomp.
@@ -194,7 +255,7 @@ and `ts_model` with an empty `model` is removed; TS would pass "" to the engine.
 | `env_beverage`, `item_sodacan` | SDK `CEnvBeverage` / `CItemSoda` (TS 0xbde50..0xbe178) | Each use drops a can (`models/can.mdl`, skin from the beverage's, 6 = random 0–5) while the last one was drunk (`frags` 0) and cans are left (`health`, default 10). The can lands after 0.5 s (`weapons/g_bounce3.wav`, TS slow-motion pitch), then a player touching it gets 1 health (`TakeHealth`) and the beverage may drop the next. |
 | `speaker` | SDK `CSpeaker` (TS 0xe1988..0xe1d88) | `preset` 1–12 (`C1A0_` … `C3A2_`) or the `message` key (neither: "SPEAKER with no Level/Sentence!" and removed). Starts 5–15 s after spawn unless spawnflag 1; toggled by use. Plays a random sentence of the group (`SENTENCEG_PlayRndSz`, volume `health`/10, attenuation 0.3) every 15–135 s, holding off while `CTalkMonster::g_talkWaitTime` (5 s after any speaker, never reset across maps) hasn't passed; a `!sentence` plays once as an ambient sound. |
 | `soundent`, `bodyque` | SDK `CSoundEnt` (TS 0xe2140..0xe281c) / `CCorpse` | worldspawn creates a classless `soundent` (`GetClassPtr<CSoundEnt>`) and four `bodyque`s linked in a ring, before any map entity (TS edict numbering). The soundent keeps the 64-sound list with one never-expiring slot per client and expires sounds every 0.3 s; landed bleeding gibs add a meat sound. A live player's `PostThink` updates its slot (`CBasePlayer::UpdatePlayerSound` 0xda630, `player::impulse::update_player_sound`): its origin, `bits_SOUND_PLAYER`, and a volume that follows the speed on the ground (at most 512, +100 while jumping) and fades 250/s, 0 under impulse 105's `m_fNoPlayerSound`; `Killed` resets the slot (`CSound::Reset`, which also cuts the active list after it, as in TS). Nothing reads it (no monsters); `displaysoundlist 1` prints "Soundlist: active / free (change)". `CopyToBodyQue` is never called in TS (`StartDeathCam` has no callers), so the corpses stay empty. A map-placed `soundent` takes its client reserve from the world's list, as in TS. |
-| `fireanddie`, `DelayedUse` (map-placed) | TS `CFireAndDie` / `CBaseDelay` | Linked because TS exports them. A map's `fireanddie` fires its targets (`delay`, `killtarget`) only if the map sets `nextthink`; a map's `DelayedUse` never thinks (only `SUB_UseTargets` arms one). |
+| `fireanddie`, `DelayedUse` (map-placed) | TS `CFireAndDie` / `CBaseDelay` | Linked because TS exports them. A map's `fireanddie` fires its targets (`delay`, `killtarget`) only if the map sets `nextthink`, or `m_flDelay` after a restore (its `Precache` schedules the think); a map's `DelayedUse` never thinks (only `SUB_UseTargets` arms one). |
 | `shrapnel` | **TS** `CTSShrapnel` (0x7c0a0..0x7f09c), `entities::ts::shrapnel` | Nothing in TS calls `CTSShrapnel::Create`, so only a map places one: invisible (`EF_NODRAW`), bouncing, slowed like the other `CTSPhysicObject`s. It hits a player for 100 (`DMG_NEVERGIB | DMG_SLASH`, traced), sticks 6 units back into `worldspawn` / `func_wall`, otherwise bounces back at a quarter speed with `knife_hit.wav`; loses 1 u/s per think, is removed under 100 u/s unless stuck, and 30 s after spawning (10 s after its last hit). Continuous +use caps, no `Use`. |
 | `cycler` | SDK h_cycler.cpp | Server-side studio animation (`CCycler::Think` 0xc778c): bone controllers zeroed, `frame` advanced, one-shot sequences restart. +use toggles the animation. Damage steps to the next sequence (wrapping to 0) while animating, or one 0.1 s frame step while paused. |
 | `env_blood` | SDK effects.cpp `CBlood` | `color` 1 = yellow, else red; `amount`. Drips (`TE_BLOODSPRITE`, amount doubled for multiplayer) or, with spawnflag 2, a stream (red becomes colour 70). Spawnflags 1 random direction, 4 at the activator's (or player 1's) eyes, 8 blood decal along the direction. |
@@ -725,21 +786,21 @@ writes out of bounds, or where the port lacks save/restore:
   dispatch returns, in the same frame.
 * **`PlayCDTrack` out of range.** TS's "TriggerCDAudio - Track %d out of range" passes no
   argument, so it prints stack garbage; the port prints the track.
-* **Transition list without save/restore.** `ParmsChangeLevel` (0xaea68 → `ChangeList`
-  0xe87c4) is ported (`levelchange::parms_change_level`): with `pSaveData` set it fills
-  `levelList[]` / `connectionCount` from every `trigger_changelevel` whose landmark exists (16 at
-  most) and flags, in the engine's save table, the entities in each landmark's PVS that may cross
+* **Transition list.** `ParmsChangeLevel` (0xaea68 → `ChangeList` 0xe87c4) is ported
+  (`levelchange::parms_change_level`): with `pSaveData` set it fills `levelList[]` /
+  `connectionCount` from every `trigger_changelevel` whose landmark exists (16 at most) and flags,
+  in the engine's save table, the entities in each landmark's PVS that may cross
   (`FENTTABLE_MOVEABLE` for `FCAP_ACROSS_TRANSITION`, `FENTTABLE_GLOBAL` for a non-dormant
   `globalname`, plus the connection bit, when inside the transition volume or with
   `FCAP_FORCE_TRANSITION`). `ObjectCaps` comes from a table of TS's classes by classname
-  (`ts_object_caps`, generated from the vtables: slot 12 of each linked class). The port still
-  writes no entity save data (`pfnSave`/`pfnRestore` are empty), so entities never actually
-  cross, and the `fireanddie` that `changetarget` creates never fires (in TS only its
-  `Precache`, run on restore in the next level, schedules the think). Guards: names over 31
-  bytes are cut where TS `strcpy`s them into the engine's 32-byte fields; TS's 512-entry PVS
-  arrays overflow from the 513th entity (after its "Too many entities" error), the port's list
-  grows; `EntityFlagsSet` refuses index `tableCount`, which TS accepts (never reached: the index
-  comes from `EntityIndex`).
+  (`ts_object_caps`, generated from the vtables: slot 12 of each linked class). The entities'
+  save data is written and read as TS's (§1.2, design §4.9), so they cross, and the `fireanddie`
+  that `changetarget` creates fires `m_flDelay` after the next level restores it (its `Precache`).
+  Guards: names over 31 bytes are cut where TS `strcpy`s them into the engine's 32-byte fields
+  (and in the saved `m_szMapName` / `m_szLandmarkName`); TS's 512-entry PVS arrays overflow from
+  the 513th entity (after its "Too many entities" error), the port's list grows; `EntityFlagsSet`
+  refuses index `tableCount`, which TS accepts (never reached: the index comes from
+  `EntityIndex`).
 
 ### 7.3 Deviations and TS behaviour in the #95 plat and track classes
 
@@ -750,7 +811,9 @@ writes out of bounds, or where the port lacks save/restore:
   looked up and `m_trackTop`/`m_trackBottom`/`m_train` stay NULL: `EvaluateTrain` is always
   `TRAIN_SAFE` (no `buttons/button11.wav` alarm, though it is precached), the train is never moved
   or re-pathed, `UpdateAutoTargets` never toggles a `path_track`, and `CFuncTrackAuto::Use` does
-  nothing. The port keeps exactly that and doesn't port the unreachable code. The think itself is
+  nothing. The port keeps exactly that. Only a global restore over a live track change reaches the
+  real `Find`, through `OverrideReset`; that path and the train logic behind it are ported (§1.2).
+  The think itself is
   ported: with a `target` naming a `func_tracktrain`, that train gets the platform's box as its
   control volume and the platform is removed; otherwise "No train" is logged.
 * **NULL activator.** `CFuncTrackAuto::Use` reads the activator's classname first and crashes on a

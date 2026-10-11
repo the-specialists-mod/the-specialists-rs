@@ -272,6 +272,10 @@ pub struct DeadHev {
     /// `CorpseFallThink` until it lands.
     falling: bool,
     monster: MonsterBase,
+    /// The `CBaseDelay` / `CBaseToggle` members: only their keys (`CDeadHEV::KeyValue` passes the
+    /// rest to `CBaseMonster::KeyValue` 0xce80c, which is `CBaseToggle::KeyValue`) ever set them,
+    /// and nothing reads them back, but TS saves them.
+    toggle: super::base::Toggle<DeadHev>,
 }
 
 impl DeadHev {
@@ -307,9 +311,24 @@ impl Entity for DeadHev {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"pose" => self.pose = super::base::kv_i(value),
-            _ => return false,
+            _ => return self.toggle.key_value(key, value),
         }
         true
+    }
+
+    /// `CBaseToggle::Save` (0xe3494); `CBaseMonster` saves nothing in TS. The think pointer is
+    /// set while it falls (`MonsterInitDead` 0xce728 → `CorpseFallThink`, cleared on landing
+    /// 0xce6bc) and from a fade or gib (`SUB_StartFadeOut`/`SUB_FadeOut`/`SUB_Remove`);
+    /// `Killed`'s `SetTouch(NULL)` leaves the touch unset. A restored think never runs.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let think = self.falling || self.monster.think != MonsterThink::None;
+        if f.base_funcs(cx, crate::save::BaseFuncs { think, ..Default::default() }).think {
+            self.falling = false;
+            self.monster.think = MonsterThink::None;
+        }
+        f.delay(&mut self.toggle.delay.delay, &mut self.toggle.delay.kill_target);
+        self.anim.save_fields(f);
+        self.toggle.save_toggle(f);
     }
 
     /// `CDeadHEV::Spawn` (0xdda9c).

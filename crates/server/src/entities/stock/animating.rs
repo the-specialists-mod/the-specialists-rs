@@ -38,6 +38,32 @@ pub struct Animating {
 }
 
 impl Animating {
+    /// The `"CBaseAnimating"` table (`CBaseAnimating::Save` 0xa3500): the five members at
+    /// +0x6c..+0x7c, both ways.
+    pub fn save_fields(&mut self, f: &mut crate::save::Fields) {
+        let mut a = crate::save::Animating {
+            frame_rate: self.frame_rate,
+            ground_speed: self.ground_speed,
+            last_event_check: self.last_event_check,
+            sequence_finished: self.finished,
+            sequence_loops: self.loops,
+        };
+        f.animating(&mut a);
+        self.frame_rate = a.frame_rate;
+        self.ground_speed = a.ground_speed;
+        self.last_event_check = a.last_event_check;
+        self.finished = a.sequence_finished;
+        self.loops = a.sequence_loops;
+    }
+
+    /// `"CBaseAnimating"`, then `"CActAnimating"` (`CActAnimating::Save` 0xf5064): `m_Activity`
+    /// (+0x80).
+    pub fn save_act_fields(&mut self, f: &mut crate::save::Fields) {
+        self.save_fields(f);
+        f.table(&crate::save::tables::CActAnimating);
+        f.int(&mut self.activity);
+    }
+
     /// `CBaseAnimating::ResetSequenceInfo` (0xa37c4).
     pub fn reset_sequence_info(&mut self, e: *mut edict_t) {
         let seq = e.v().sequence;

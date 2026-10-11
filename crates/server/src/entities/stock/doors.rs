@@ -42,7 +42,8 @@ pub struct Door {
     /// `strtod`, read unsigned by `Precache` 0xb6448).
     move_snd: u8,
     stop_snd: u8,
-    health_value: i32,
+    /// `m_bHealthValue` (+0x13d), a BYTE set like `movesnd`.
+    health_value: u8,
     ls: LockSounds,
     // TS breakable door
     max_damage: f32,
@@ -178,7 +179,7 @@ impl Door {
             self.door_go_down(cx);
         } else {
             let act = self.t.activator.get();
-            if is_player(act) && self.health_value > 0 {
+            if is_player(act) && self.health_value != 0 {
                 super::items::player_take_health(act, self.health_value as f32);
             }
             self.ls.play(cx.edict, false, false);
@@ -479,7 +480,7 @@ impl Entity for Door {
         match key.to_bytes() {
             b"movesnd" => self.move_snd = fistp16_low_byte(kv_d(value)),
             b"stopsnd" => self.stop_snd = fistp16_low_byte(kv_d(value)),
-            b"healthvalue" => self.health_value = kv_f(value) as i32,
+            b"healthvalue" => self.health_value = fistp16_low_byte(kv_d(value)),
             b"WaveHeight" => cx.pev().scale = kv_f(value) * (1.0 / 8.0),
             b"maxdamage" => self.max_damage = kv_i(value) as f32,
             b"doormaterial" => {
@@ -494,6 +495,25 @@ impl Entity for Door {
 
     fn spawn(&mut self, cx: &mut Cx) {
         self.door_spawn(cx);
+    }
+
+    /// `CBaseDoor::Save` / `Restore` (0xb4eb0 / 0xb4f00; `CRotDoor` uses them too). The door
+    /// overrides `Use` and `Blocked` instead of setting `m_pfnUse` / `m_pfnBlocked`, and never
+    /// animates. TS's breakable-door state isn't saved: a restored door can't break.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        self.t.save_chain(cx, f, &mut crate::save::Animating::default(), false, false);
+        f.table(&crate::save::tables::CBaseDoor);
+        f.byte(&mut self.health_value);
+        f.byte(&mut self.move_snd);
+        f.byte(&mut self.stop_snd);
+        self.ls.save_bytes(f);
+    }
+
+    /// `CBaseDoor::Precache` (0xb6448). `rotating` stands for the TS class the object is
+    /// (`CRotDoor` for `func_door_rotating`).
+    fn restored(&mut self, cx: &mut Cx) {
+        self.rotating = s(cx.pev().classname) == c"func_door_rotating";
+        self.precache(cx);
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -670,6 +690,18 @@ impl Entity for MomentaryDoor {
 
     fn think(&mut self, cx: &mut Cx) {
         run_think(self, cx);
+    }
+
+    /// `CMomentaryDoor::Save` / `Restore` (0xb7d98 / 0xb7de8): no `m_pfnUse` (`Use` is its own).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        self.t.save_chain(cx, f, &mut crate::save::Animating::default(), false, false);
+        f.table(&crate::save::tables::CMomentaryDoor);
+        f.byte(&mut self.move_snd);
+    }
+
+    /// `CMomentaryDoor::Precache` (0xb800c).
+    fn restored(&mut self, cx: &mut Cx) {
+        self.precache(cx);
     }
 
     /// `CMomentaryDoor::Use` (0xb8260): only `USE_SET` moves it. The move sound starts when the

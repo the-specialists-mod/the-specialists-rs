@@ -6,7 +6,7 @@
 use super::base::*;
 use crate::entities::remove;
 use crate::world::{Cx, Entity, UseType};
-use goldsrc::server::{engine, intern};
+use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
 
@@ -14,8 +14,10 @@ pub const SF_LIGHT_START_OFF: i32 = 1;
 
 #[derive(Default)]
 pub struct Light<const ENV: bool> {
+    /// `m_iStyle` (+0x64).
     style: i32,
-    pattern: Option<&'static CStr>,
+    /// `m_iszPattern` (+0x68): the `pattern` key, `ALLOC_STRING`ed.
+    pattern: string_t,
 }
 
 fn set_style(style: i32, value: &'static CStr) {
@@ -39,7 +41,24 @@ pub fn sky_color(value: &str) -> (i32, i32, i32) {
     (f(r), f(g), f(b))
 }
 
+impl<const ENV: bool> Light<ENV> {
+    /// The "on" style: the pattern, or `"m"` without one.
+    fn pattern(&self) -> &'static CStr {
+        if self.pattern == 0 { c"m" } else { s(self.pattern) }
+    }
+}
+
 impl<const ENV: bool> Entity for Light<ENV> {
+    /// `CLight::Save` (0xcba8c) / `Restore`: `CBaseEntity`'s part, then `"CLight"` (also
+    /// `CEnvLight`'s). `Use` is a virtual override and no member pointer is ever set; `Precache` is
+    /// `CBaseEntity`'s (empty), so nothing runs after a restore.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        f.base_funcs(cx, crate::save::BaseFuncs::default());
+        f.table(&crate::save::tables::CLight);
+        f.int(&mut self.style);
+        f.string(&mut self.pattern);
+    }
+
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"_light" if ENV => {
@@ -51,7 +70,7 @@ impl<const ENV: bool> Entity for Light<ENV> {
             }
             b"style" => self.style = kv_i(value),
             b"pitch" => cx.pev().angles[0] = kv_f(value),
-            b"pattern" => self.pattern = Some(intern(kv_str(value))),
+            b"pattern" => self.pattern = alloc(value),
             _ => return false,
         }
         true
@@ -75,7 +94,7 @@ impl<const ENV: bool> Entity for Light<ENV> {
             if cx.pev().spawnflags & SF_LIGHT_START_OFF != 0 {
                 set_style(self.style, c"a");
             } else {
-                set_style(self.style, self.pattern.unwrap_or(c"m"));
+                set_style(self.style, self.pattern());
             }
         }
     }
@@ -90,7 +109,7 @@ impl<const ENV: bool> Entity for Light<ENV> {
             return;
         }
         if off {
-            set_style(self.style, self.pattern.unwrap_or(c"m"));
+            set_style(self.style, self.pattern());
             v.spawnflags &= !SF_LIGHT_START_OFF;
         } else {
             set_style(self.style, c"a");

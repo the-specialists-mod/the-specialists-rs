@@ -7,6 +7,7 @@ use super::{assets, inventory};
 use crate::damage::{self, DamageInfo};
 use crate::entities::{self, link_entities};
 use crate::player::{self, Player};
+use crate::save::{BaseFuncs, Fields};
 use crate::world::{Cx, Entity};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
@@ -35,6 +36,9 @@ pub struct WorldGun {
     taken: bool,
     on_ground: bool,
     phys: SlowPhysics,
+    /// TS's member pointers: `m_pfnThink` (`Fall` / `WaitThink`) and `m_pfnTouch` (`BounceTouch`
+    /// / `WaitTouch`), both set from `Spawn` on (`TSExplosion` sets them again).
+    funcs: BaseFuncs,
 }
 
 /// `CTSWorldGun::CreateWeapon(player, id, status)` + placement; returns the edict. `time_scale`
@@ -97,6 +101,8 @@ pub fn blast(gun: *mut edict_t, from: Vec3, r_max: f32) {
     // the ground.
     let Some(id) = crate::world::with::<WorldGun, _>(gun, |w| {
         w.on_ground = false;
+        w.funcs.think = true;
+        w.funcs.touch = true;
         w.id
     }) else {
         return;
@@ -142,6 +148,15 @@ pub fn ground_hop(vz: f32) -> f32 {
 }
 
 impl Entity for WorldGun {
+    /// `CBaseEntity::Save` / `Restore`: `CTSWorldGun`'s own state isn't saved, and both pointers
+    /// are set, so TS's restore stops after `"BASE"` and the restored gun lies inert (`Use` is a
+    /// virtual: +use still reaches it).
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        crate::entities::ts::save_base(cx, f, &mut self.funcs);
+    }
+
+    // `CTSWorldGun::Precache` (0xa0b08) is empty.
+
     fn spawn(&mut self, cx: &mut Cx) {
         let e = engine();
         let edict = cx.edict;
@@ -162,12 +177,16 @@ impl Entity for WorldGun {
         pev.iuser4 = 2;
         self.pickup_after = e.time() + 0.5;
         self.taken = false;
+        self.funcs = BaseFuncs { think: true, touch: true, ..BaseFuncs::default() };
     }
 
     /// `Fall` (0xa0d84) until it lands, then `WaitThink`. TS adds no friction here: a sliding
     /// gun is slowed only by `BounceTouch`'s ground damping, which the engine runs on every frame
     /// it scrapes the floor.
     fn think(&mut self, cx: &mut Cx) {
+        if !self.funcs.think {
+            return;
+        }
         let e = engine();
         let me = cx.edict;
         let now = e.time();
@@ -208,6 +227,9 @@ impl Entity for WorldGun {
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if !self.funcs.touch {
+            return;
+        }
         if self.on_ground {
             // WaitTouch 0xa1250: +use (the briefcase on plain touch)
             let use_held = other.v().button & IN_USE as i32 != 0;
@@ -309,6 +331,9 @@ pub struct AmmoPack {
     pub reserve: [i32; MAX_AMMO],
     expire: f32,
     on_ground: bool,
+    /// TS's member pointers: `m_pfnThink` (`Fall`, then `WaitThink`) from `Spawn` on, `m_pfnTouch`
+    /// (`WaitTouch`) from `OnGround`.
+    funcs: BaseFuncs,
 }
 
 /// `CBasePlayer::DropAmmo` 0x946f0 (on death): all reserve ammo in one pack.
@@ -331,6 +356,13 @@ pub fn drop_ammo(owner: *mut edict_t, reserve: [i32; MAX_AMMO]) {
 }
 
 impl Entity for AmmoPack {
+    /// `CBaseEntity::Save` / `Restore`: the reserve isn't saved; the think is always set.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        crate::entities::ts::save_base(cx, f, &mut self.funcs);
+    }
+
+    // `CTSAmmoPack::Precache` (0xa1540) is empty.
+
     fn spawn(&mut self, cx: &mut Cx) {
         let e = engine();
         let edict = cx.edict;
@@ -348,14 +380,19 @@ impl Entity for AmmoPack {
         pev.iuser4 = 0;
         pev.armorvalue = 0.0;
         pev.owner = std::ptr::null_mut();
+        self.funcs = BaseFuncs { think: true, ..BaseFuncs::default() };
     }
 
     fn think(&mut self, cx: &mut Cx) {
+        if !self.funcs.think {
+            return;
+        }
         let e = engine();
         let me = cx.edict;
         cx.pev().nextthink = e.time() + 0.1;
         if !self.on_ground && cx.pev().flags & FL_ONGROUND as i32 != 0 {
             self.on_ground = true;
+            self.funcs.touch = true;
             let pev = cx.pev();
             pev.angles[0] = 0.0;
             pev.angles[2] = 0.0;
@@ -372,7 +409,7 @@ impl Entity for AmmoPack {
     /// `CTSAmmoPack::WaitTouch`: an alive player takes what fits.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let e = engine();
-        if !self.on_ground || !e.is_player_edict(other) {
+        if !self.funcs.touch || !self.on_ground || !e.is_player_edict(other) {
             return;
         }
         let ov = other.v();

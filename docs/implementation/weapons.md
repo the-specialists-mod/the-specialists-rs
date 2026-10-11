@@ -186,6 +186,17 @@ addresses of `ts_i386.so`.
   `ts_weapons_debug n` (sets the cvar when typed in a listen server console).
 * `fill_client_data` / `get_weapon_data` / `cmd_start`: TS packing (below), seed.
 
+### Save data
+
+`weapon_tsgun` (`CTSGun`) saves `CBasePlayerItem` (`m_pPlayer`, `m_pNext` always 0, `m_iId` 16)
+and `CBasePlayerWeapon` (`stock::playeritem`): for a held gun the timers and clip come from the
+holder's `Inventory::gun`, and a restore writes them back while that player's `gun_item` is this
+entity. Pickups set the ammo types to -1 as `AddToPlayer` does. TS saves nothing else of the
+gun's inventory (the 38 weapon records, reserve ammo, loadout), so a restored player keeps only
+those. The player's item slots, `m_pActiveItem` and `m_pLastItem` (now kept: `SvState::last_item`,
+set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player's save data
+(`player/save.rs`); `m_rgAmmo` is always empty in TS.
+
 ## 3. Constants and formulas (as implemented)
 
 * Timers: `dt = frametime * fuser1 * (DFR ? 1.5 : 1)`; NPA clamps at -1, the others at -0.001;

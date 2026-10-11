@@ -171,6 +171,11 @@ win32 under Wine (listen server, `ts_arena`).
 
 ### 3.2 Not validated
 
+* **Save games and level transitions** (#104): the save/restore code is covered by unit tests
+  only (`cargo test`: the codec's byte layout, every linked class walked against TS's save tables,
+  every class round-tripped with all fields filled, the global state's blocks). No xtask scenario
+  saves, loads or crosses a `trigger_changelevel` yet, and no save written by TS's own server has
+  been loaded into the port (or the other way round).
 * A Steam GoldSrc **client** beyond the scripted HL25 Linux runs in §5 (listen server, and
   joining HL25 and ReHLDS Linux dedicated servers): the HL25 Windows client (#25), a real keyboard and mouse on either, the in-game menu opened with a real Esc
   key, and muting a second human in the GameUI player list. The pre-anniversary

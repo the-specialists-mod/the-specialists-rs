@@ -63,6 +63,8 @@ pub struct AnimState {
     pub frame_rate: f32,
     pub ground_speed: f32,
     pub seq_loops: bool,
+    /// `m_flLastEventCheck` (+0x74): `ResetSequenceInfo` sets it; saved with the player.
+    pub last_event_check: f32,
 }
 
 impl Default for AnimState {
@@ -87,6 +89,7 @@ impl Default for AnimState {
             frame_rate: 0.0,
             ground_speed: 0.0,
             seq_loops: false,
+            last_event_check: 0.0,
         }
     }
 }
@@ -95,7 +98,7 @@ fn lookup(cx: &mut Cx, name: &str) -> i32 {
     studio::lookup_sequence(cx.edict, name)
 }
 
-/// SDK `ResetSequenceInfo`.
+/// `CBaseAnimating::ResetSequenceInfo` (0xa37c4).
 pub fn reset_sequence_info(p: &mut Player, cx: &mut Cx) {
     let seq = cx.pev().sequence;
     let hdr = studio::model_ptr(cx.edict);
@@ -120,6 +123,7 @@ pub fn reset_sequence_info(p: &mut Player, cx: &mut Cx) {
     pev.animtime = time;
     pev.framerate = 1.0;
     a.seq_finished = false;
+    a.last_event_check = time;
 }
 
 /// SDK `CBaseAnimating::StudioFrameAdvance(0)`.

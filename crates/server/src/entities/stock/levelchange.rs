@@ -9,8 +9,10 @@
 
 use super::base::*;
 use super::explode::{FFADE_OUT, screen_fade_all};
-use super::triggers::{init_trigger, rules_deathmatch, show_message};
+use super::trains::ts_toggle;
+use super::triggers::{init_trigger, rules_deathmatch, show_message, trigger_key_value};
 use crate::entities::remove;
+use crate::save::{Animating, BaseFuncs, Fields, tables};
 use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{EHandle, is_player};
@@ -30,8 +32,9 @@ fn intersects(a: &entvars_t, b: &entvars_t) -> bool {
 }
 
 /// `trigger_changelevel` (`CChangeLevel`, 0xe7da0..0xe865c).
-#[derive(Default)]
 pub struct ChangeLevel {
+    /// `m_cTriggersLeft` / `m_bitsDamageInflict` (`count` / `damagetype`, saved, unused) are
+    /// `t.triggers_left` / `t.damage_inflict`.
     t: Toggle<Self>,
     /// `m_szMapName` (+0x104).
     map: CString,
@@ -42,6 +45,27 @@ pub struct ChangeLevel {
     change_delay: f32,
     /// `SetUse(UseChangeLevel)`: only with a targetname.
     usable: bool,
+}
+
+impl Default for ChangeLevel {
+    fn default() -> Self {
+        Self { t: ts_toggle(), map: CString::default(), landmark: CString::default(), change_target: 0, change_delay: 0.0, usable: false }
+    }
+}
+
+/// A `char[32]` field: the name and a NUL. Guard: TS `strcpy`s a longer name past the field
+/// (into the next one); the port saves its first 31 bytes.
+fn save_name(f: &mut Fields, name: &mut CString) {
+    let mut b = [0u8; MAP_NAME_MOST];
+    let n = name.as_bytes();
+    let len = n.len().min(MAP_NAME_MOST - 1);
+    b[..len].copy_from_slice(&n[..len]);
+    let before = b;
+    f.bytes(&mut b);
+    if b != before {
+        let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        *name = CString::new(&b[..end]).unwrap_or_default();
+    }
 }
 
 impl Mover for ChangeLevel {
@@ -160,12 +184,23 @@ impl Entity for ChangeLevel {
             b"landmark" => self.landmark = level_name("Landmark", value),
             b"changetarget" => self.change_target = alloc(value),
             b"changedelay" => self.change_delay = kv_f(value),
-            b"damage" => cx.pev().dmg = kv_f(value),
-            // `m_cTriggersLeft` / `m_bitsDamageInflict`: stored, never read by this class.
-            b"count" | b"damagetype" => {}
-            _ => return self.t.key_value(key, value),
+            _ => return trigger_key_value(&mut self.t, cx, key, value),
         }
         true
+    }
+
+    /// `CChangeLevel::Save` / `Restore` (0xe7d00 / 0xe7d50): the `CBaseToggle` chain, then the
+    /// names and the change target. `m_pfnUse` is `UseChangeLevel`, `m_pfnTouch`
+    /// `TouchChangeLevel`. `Precache` is `CBaseEntity`'s.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        if self.t.save_chain(cx, f, &mut Animating::default(), self.usable, false).use_ {
+            self.usable = false;
+        }
+        f.table(&tables::CChangeLevel);
+        save_name(f, &mut self.map);
+        save_name(f, &mut self.landmark);
+        f.string(&mut self.change_target);
+        f.float(&mut self.change_delay);
     }
 
     /// `CChangeLevel::Spawn` (0xe7f30).
@@ -198,10 +233,10 @@ impl Entity for ChangeLevel {
 
 /// `fireanddie` (`CFireAndDie`, 0xe7c58..0xe7cac): fires `target` (`USE_TOGGLE`, itself as
 /// activator) `m_flDelay` after it is restored on the next level, then removes itself. Only
-/// `Precache` (run on restore) schedules the think, so on the level that creates it it does
-/// nothing; the port has no save/restore, so it never fires here either. A map-placed one
-/// (`delay` / `killtarget` keys, `CBaseDelay::KeyValue`) fires only if the map sets its
-/// `nextthink`.
+/// `Precache` (run on restore, [`Entity::restored`]) schedules the think, so on the level that
+/// creates it it does nothing; its `FCAP_ACROSS_TRANSITION` carries it into the next level's
+/// save, where it fires. A map-placed one (`delay` / `killtarget` keys, `CBaseDelay::KeyValue`)
+/// fires only if the map sets its `nextthink`, or after a load.
 #[derive(Default)]
 pub struct FireAndDie {
     delay: Delay,
@@ -230,6 +265,17 @@ impl Entity for FireAndDie {
     /// `nextthink = time + m_flDelay`).
     fn spawn(&mut self, cx: &mut Cx) {
         cx.pev().classname = engine().alloc_string(c"fireanddie");
+    }
+
+    /// `CBaseDelay::Save` / `Restore` (0xe2dbc / 0xe2e0c): `Think` is a virtual.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        f.base_funcs(cx, BaseFuncs::default());
+        f.delay(&mut self.delay.delay, &mut self.delay.kill_target);
+    }
+
+    /// `CFireAndDie::Precache` (0xe7c84): fire `m_flDelay` from now.
+    fn restored(&mut self, cx: &mut Cx) {
+        cx.pev().nextthink = engine().time() + self.delay.delay;
     }
 
     /// `CFireAndDie::Think` (0xe7cac).
@@ -318,6 +364,17 @@ impl Entity for RevertSaved {
     /// `CPointEntity::Spawn`.
     fn spawn(&mut self, cx: &mut Cx) {
         cx.pev().solid = SOLID_NOT as i32;
+    }
+
+    /// `CRevertSaved::Save` / `Restore` (0xddc6c / 0xddcbc): `m_pfnThink` is `MessageThink` /
+    /// `LoadThink` once used; `Use` is a virtual.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
+        if f.base_funcs(cx, BaseFuncs { think: self.think.is_some(), ..Default::default() }).think {
+            self.think = None;
+        }
+        f.table(&tables::CRevertSaved);
+        f.float(&mut self.message_time);
+        f.float(&mut self.load_time);
     }
 
     fn think(&mut self, cx: &mut Cx) {
