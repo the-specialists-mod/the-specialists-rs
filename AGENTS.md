@@ -191,4 +191,22 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   `git -c credential.helper='!gh auth git-credential' push`.
 - Releases: push a `v*` tag; `.github/workflows/release.yml` builds and publishes the release and
   `-debug` archives. The workflow pins the FWGS commit the bindings are generated from.
-- Track gaps and bugs as GitHub issues. Integration work uses the `integration` label.
+- Track gaps and bugs as GitHub issues (`gh issue create -R the-specialists-mod/the-specialists-rs`).
+  Integration work uses the `integration` label.
+
+## Lodging what you find
+
+Every bug, gap or TS mismatch you find gets a GitHub issue, whether or not you fix it:
+
+- **Found and fixed in your change:** lodge an issue for it too, so there's a record of what was
+  wrong, and close it from the commit (`Fixes #N`). This includes problems found along the way,
+  not just the one you were asked to fix.
+- **Found but out of scope:** don't fix it in passing and don't leave it only in a report or a
+  code comment. Lodge an issue.
+- **Verify first.** Confirm it against the decomp, a test or a log before filing. Give the
+  evidence: TS addresses, the port's `file:line`, and what happens versus what TS does.
+- Combine closely related findings into one issue. Search the open issues first
+  (`gh issue list --search ...`) and comment on an existing one instead of filing a duplicate.
+- Label it: `bug` for wrong behaviour, `enhancement` for missing features, `integration` for
+  engine integration, `validation` for untested platforms, `documentation` for docs.
+- Something that turns out not to be a bug: close it with a comment that explains why.
