@@ -10,9 +10,12 @@
 //! * Layout: the panel at (`XRES(104)`, `YRES(40)`) (30, 30 at 512 wide; 0, 20 at 400) with a grey
 //!   `LineBorder` over black at VGUI alpha 96; the server name in "Scoreboard Title Text"; a
 //!   header grid of eight columns (640-based widths 24, 140, 56, 40, 46, 46, 40 and the rest) in
-//!   "Scoreboard Small Text"; one grid per row in a list box.
+//!   "Scoreboard Small Text"; one grid per row in a list box (`CListBox`, [`super::scroll`]),
+//!   which scrolls by rows: `Update` sets its range to the row count, and its `ScrollBar2` shows
+//!   when rows are scrolled off the top or run past the bottom.
 //! * Squelch mode (voice muting): see `mouse_pressed` and `cursor_moved`.
 
+use super::scroll::ListBox;
 use super::widgets::{SC_WHITE, ViewportScheme, team_color};
 use crate::hud::state::PlayerExtra;
 use crate::hud::vgui::{self, Align, BitmapFont, Color, Image, Panel, Schemes, Surface, ftol, spill, xs, ys};
@@ -163,8 +166,12 @@ pub struct ScoreBoard {
     /// The last bounds of each row's labels: VGUI keeps a hidden row's old bounds, and
     /// `cursorMoved` tests all rows.
     bounds: Vec<Option<[Panel; NUM_COLUMNS]>>,
+    /// Which grids the list showed at the last paint (only shown panels take input).
+    shown: Vec<bool>,
     /// `m_flScoreBoardLastUpdated` (viewport `+0x20c`).
     pub next_update: f32,
+    /// `m_PlayerList`'s scrolling.
+    pub list: ListBox,
 }
 
 impl Default for ScoreBoard {
@@ -186,7 +193,9 @@ impl Default for ScoreBoard {
             highlight_row: -1,
             highlight_label: None,
             bounds: vec![None; NUM_ROWS],
+            shown: vec![false; NUM_ROWS],
             next_update: 0.0,
+            list: ListBox::default(),
         }
     }
 }
@@ -396,7 +405,29 @@ impl ScoreBoard {
         } else {
             self.sort_teams(inp);
         }
+        // `m_PlayerList.SetScrollRange(m_iRows)` (`0x1005b860`).
+        self.list.set_scroll_range(self.rows as i32);
         self.fill_grid(inp, sb);
+    }
+
+    /// The list's panel on a `w`×`h` screen.
+    fn list_panel(w: i32, h: i32) -> Panel {
+        layout(w, h).list
+    }
+
+    /// The cursor moved: the list's scroll bar slider follows it while dragged.
+    pub fn scroll_cursor(&mut self, w: i32, h: i32, x: i32, y: i32) {
+        self.list.cursor_moved(&Self::list_panel(w, h), x, y);
+    }
+
+    /// A press on the list's scroll bar (true if it took it).
+    pub fn scroll_pressed(&mut self, w: i32, h: i32, x: i32, y: i32) -> bool {
+        self.list.mouse_pressed(&Self::list_panel(w, h), x, y)
+    }
+
+    /// A release on the list's scroll bar (true if it took it).
+    pub fn scroll_released(&mut self, w: i32, h: i32, x: i32, y: i32, left: bool) -> bool {
+        self.list.mouse_released(&Self::list_panel(w, h), x, y, left)
     }
 
     /// `FillGrid` (`0x1005db70`).
@@ -569,7 +600,7 @@ impl ScoreBoard {
     /// Whether (`x`, `y`) is on a visible player-entry label (they carry the panel's input signal;
     /// the title and header labels don't).
     pub fn on_entry(&self, x: i32, y: i32) -> bool {
-        (0..self.rows).any(|r| {
+        (0..self.rows).filter(|&r| self.shown[r]).any(|r| {
             self.cells[r]
                 .iter()
                 .zip(self.bounds[r].iter().flatten())
@@ -701,7 +732,15 @@ impl ScoreBoard {
     /// Paints the board (the viewport's paint pass): the panel, title, header grid and rows.
     /// `voice(player)` is `UpdateBanButton` (run every frame, `0x10017ef6`): the voice column's
     /// new image and the label foreground it sets, or `None` to leave both.
-    pub fn paint(&mut self, s: &mut dyn Surface, sb: &Schemes, w: i32, h: i32, voice: &mut dyn FnMut(i32) -> Option<VoiceIcon>) {
+    pub fn paint(
+        &mut self,
+        s: &mut dyn Surface,
+        sb: &Schemes,
+        w: i32,
+        h: i32,
+        voice: &mut dyn FnMut(i32) -> Option<VoiceIcon>,
+        arrows: &[Option<Rc<Image>>; 2],
+    ) {
         let l = layout(w, h);
         let vs = ViewportScheme::from(sb);
         // `ScorePanel`: grey line border, black background at VGUI alpha 96.
@@ -723,10 +762,14 @@ impl ScoreBoard {
             let text = title.map(|t| crate::hud::saytext::bytes(&crate::hud::text::lookup(t))).unwrap_or_default();
             paint_dual(s, &p, small, default_font, &text, b"", 0, Align::East, vs.primary1);
         }
-        // Rows: `CListBox::InternalLayout` stacks the visible grids from the top of the items panel.
-        let mut y = 0;
-        for row in 0..self.rows {
-            let tall = self.cells[row].iter().map(|c| c.tall).max().unwrap_or(0);
+        // Rows: `CListBox::InternalLayout` stacks the shown grids (from the scroll offset up to
+        // the row count) from the top of the items panel; hidden ones keep their old bounds.
+        let heights: Vec<i32> = self.cells.iter().map(|r| r.iter().map(|c| c.tall).max().unwrap_or(0)).collect();
+        let ys = self.list.layout(l.list.w, l.list.h, &heights);
+        self.shown = ys.iter().map(Option::is_some).collect();
+        for row in 0..NUM_ROWS {
+            let Some(y) = ys[row] else { continue };
+            let tall = heights[row];
             let grid = l.items.child(0, y, l.list.w, tall);
             if let Some((off, c)) = self.underline[row] {
                 // `CGrid::paint`, before the labels: one line `off` pixels above the row's bottom.
@@ -734,6 +777,9 @@ impl ScoreBoard {
             }
             let b: [Panel; NUM_COLUMNS] = std::array::from_fn(|col| grid.child(col_x(&l.widths, col), 0, l.widths[col], tall));
             for (col, p) in b.iter().enumerate() {
+                if !self.cells[row][col].visible {
+                    continue;
+                }
                 let player = self.cells[row][col].voice;
                 if player > 0
                     && let Some((img, fg)) = voice(player)
@@ -756,8 +802,8 @@ impl ScoreBoard {
                 }
             }
             self.bounds[row] = Some(b);
-            y += tall;
         }
+        self.list.paint(s, &l.list, arrows);
     }
 }
 

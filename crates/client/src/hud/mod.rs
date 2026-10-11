@@ -7,6 +7,7 @@
 //! text and `CHudMenu`.
 
 pub mod draw;
+mod geiger;
 mod icons;
 mod message;
 mod notice;
@@ -247,7 +248,7 @@ fn on_message(m: Msg, buf: &[u8]) {
         screen: &screen,
         titles: &text::EngineTitles,
         local_index: li,
-        local_name: if li > 0 { e.player_info(li).name } else { String::new() },
+        local_name: if li > 0 { saytext::string(&e.player_info(li).name_bytes) } else { String::new() },
         third_person: third_person(),
         thirdperson_switch: input::cvars().cl_thirdpersonswitch.value() == 1.0,
         cl_thirdperson: input::cvars().cl_thirdperson.value(),
@@ -301,7 +302,7 @@ fn apply_effect(f: Effect) {
         Effect::Sound(name) => e.play_sound(name, 1.0),
         Effect::ToggleThirdPerson => crate::view::toggle_third_person(),
         Effect::OpenBuyMenu => crate::menus::open_buy(),
-        Effect::OpenTeamMenu => crate::menus::open_team_menu(),
+        Effect::VguiMenu(id, map_name) => crate::menus::vgui_menu_message(id, map_name),
         Effect::OpenMotd => crate::menus::open_motd(),
         Effect::ResetSpread => crate::prediction::reset_spread(),
         Effect::Fx(fx) => crate::state::with(|s| {
@@ -319,10 +320,11 @@ fn apply_effect(f: Effect) {
             };
             crate::state::with(|s| s.ts_fade = Some(st));
         }
-        Effect::ConsolePrint(t) => e.print(&t),
+        // The texts are the port's Latin-1 strings: the bytes go to the engine as they came.
+        Effect::ConsolePrint(t) => e.print_bytes(&saytext::bytes(&t)),
         Effect::SayText(t, client) => say_text_print(&saytext::bytes(&t), client),
         // SDK CHudTextMessage sends HUD_PRINTCENTER to the engine's centre print.
-        Effect::CenterPrint(t) => e.center_print(&t),
+        Effect::CenterPrint(t) => e.center_print_bytes(&saytext::bytes(&t)),
     }
 }
 
@@ -500,7 +502,9 @@ pub fn init() {
     tfc::hook();
     statusbar::hook();
     register_commands();
-    with(|h| *h = Hud::default());
+    // `CHudGeiger::Init` (`0x1001f450`) seeds the CRT's `rand`: `srand(time(NULL))`.
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32);
+    with(|h| *h = Hud { crt: message::CrtRand(seed), ..Hud::default() });
 }
 
 pub fn vid_init() {
@@ -857,14 +861,17 @@ pub fn redraw(time: f32, intermission: bool) {
         draw_say_text(&dc);
     } else if !hide_all {
         let nohud = input::cvars().nohud.value() != 0.0;
-        // TS element order (§4.1), each needing `HUD_ACTIVE` and no `HIDEHUD_ALL`: CHudTrain,
-        // CHudMessage, CHudStatusBar, CHudDeathNotice, CHudStatusIcons, CHudSpectator (HLTV
-        // name tags), CHudTSWeapons, CHudTSStatus, CHudSayText, CHudMenu.
+        // TS element order (§4.1), each needing `HUD_ACTIVE` and no `HIDEHUD_ALL`: CHudGeiger,
+        // CHudTrain, CHudMessage, CHudStatusBar, CHudDeathNotice, CHudStatusIcons, CHudSpectator
+        // (HLTV name tags), CHudTSWeapons, CHudTSStatus, CHudSayText, CHudMenu.
+        if let Some((sample, vol)) = with(|h| if h.geiger_active { geiger::draw(h.geiger_range, &mut h.crt) } else { None }) {
+            e.play_sound(&sample, vol);
+        }
         draw_train(&dc);
         let mut canvas = draw::EngineCanvas(&g.sprites);
         with(|h| {
             if h.message.active {
-                h.message.draw(time, &g.screen, &g.sprites, &mut canvas)
+                h.message.draw(time, &g.screen, &g.sprites, &mut canvas, &mut h.crt)
             }
         });
         statusbar::draw(&dc);
@@ -972,7 +979,7 @@ pub fn say_text_print(text: &[u8], client: i32) {
         return;
     };
     let h = h.get_or_insert_with(Hud::default);
-    let name = (text.first() == Some(&2) && client > 0).then(|| saytext::bytes(&e.player_info(client).name));
+    let name = (text.first() == Some(&2) && client > 0).then(|| e.player_info(client).name_bytes);
     // `GetClientColor` reads the scoreboard teams, which live in the state borrowed here.
     let color = name.as_ref().and_then(|_| notice::client_color(&h.players, local_index(), client));
     // `ScreenWidth`/`ScreenHeight` (the HUD's screen info); the draw pass may hold it.

@@ -12,6 +12,7 @@
 pub mod buy;
 mod motd;
 mod scoreboard;
+mod scroll;
 mod team;
 mod widgets;
 
@@ -30,15 +31,15 @@ use std::ffi::CStr;
 enum Menu {
     /// 2: `CTeamMenuPanel` (the viewport's one instance).
     Team,
-    /// 5: the MOTD's `CMessageWindowPanel`, made when it was asked for.
-    Motd(Box<motd::Motd>),
+    /// 4 (the map briefing) or 5 (the MOTD): a `CMessageWindowPanel`, made when it was asked for.
+    Text(i32, Box<motd::Motd>),
 }
 
 impl Menu {
     fn id(&self) -> i32 {
         match self {
             Menu::Team => 2,
-            Menu::Motd(_) => 5,
+            Menu::Text(id, _) => *id,
         }
     }
 }
@@ -57,6 +58,9 @@ struct Menus {
     scores: bool,
     board: ScoreBoard,
     path: String,
+    /// The viewport's `m_sMapName` (`+0xa5c`, 64 bytes): `VGUIMenu` 4's map name, or the level's
+    /// once a briefing was made from it. `ReInitialize` empties it.
+    map_name: Vec<u8>,
 }
 
 static MENUS: Global<RefCell<Option<Menus>>> = Global(RefCell::new(None));
@@ -105,6 +109,7 @@ pub fn vid_init(_first: bool) {
         }
         m.board.initialize();
         m.scores = false;
+        m.map_name.clear();
     });
     crate::voice::stop_squelch_mode();
 }
@@ -195,7 +200,7 @@ fn player_slots() -> Vec<PlayerSlot> {
     for (i, slot) in v.iter_mut().enumerate().take(64).skip(1) {
         let info = e.player_info(i as i32);
         *slot = PlayerSlot {
-            name: (!info.name.is_empty()).then(|| hud::saytext::bytes(&info.name)),
+            name: (!info.name_bytes.is_empty()).then_some(info.name_bytes),
             ping: info.ping as i16,
             packetloss: info.packetloss as u8,
             this_player: info.this_player,
@@ -307,9 +312,25 @@ pub fn on_message(m: Msg, buf: &[u8]) {
 
 // ---- VGUI menu queue -------------------------------------------------------------------------
 
+/// `MsgFunc_VGUIMenu` (`0x10064f00`): menu 4 brings the map's name (63 characters at most) into
+/// `m_sMapName`; then `ShowVGUIMenu` with whatever id came.
+pub fn vgui_menu_message(id: i32, map_name: Option<Vec<u8>>) {
+    if let Some(mut n) = map_name {
+        n.truncate(63);
+        with(|m| m.map_name = n);
+    }
+    show_vgui_menu(id);
+}
+
+/// "Briefing Text"'s `getTextSizeWrapped` (the message window sizes its text panel by it).
+fn briefing_wrapped(text: &[u8], width: i32) -> (i32, i32) {
+    vgui::with_schemes(|s| s.font_of("Briefing Text").map(|f| f.text_size_wrapped(text, width))).flatten().unwrap_or((0, 0))
+}
+
 /// `ShowVGUIMenu` (`0x10064050`): refused during demo playback and (but for the MOTD) at
 /// intermission, and when the menu is already queued; the team menu only in teamplay
-/// (`0x10064280`). The first menu opens at once; later ones wait their turn.
+/// (`0x10064280`), the map briefing only when its file loads (`CreateTextWindow` returns null
+/// otherwise). The first menu opens at once; later ones wait their turn.
 pub fn show_vgui_menu(id: i32) {
     let e = engine();
     if e.demo_playing() || (hud::intermission() && id != 5) || with(|m| m.queue.iter().any(|q| q.id() == id)) {
@@ -324,11 +345,24 @@ pub fn show_vgui_menu(id: i32) {
             with(|m| team_menu(m, w, h).reset());
             Menu::Team
         }
-        5 => {
-            let (server, text) = hud::with(|h| (h.server_name.clone(), h.motd.clone()));
-            let class = e.local_player().map_or(0, |p| p.curstate.playerclass);
+        4 | 5 => {
+            // The window shades the screen while the player has no class (`g_iPlayerClass`).
+            let shade = e.local_player().map_or(0, |p| p.curstate.playerclass) == 0;
             let ok = hud::text::lookup("#Menu_OK");
-            Menu::Motd(Box::new(motd::Motd::new(&server, &text, &ok, class == 0, w, h)))
+            let window = if id == 5 {
+                let (server, text) = hud::with(|h| (h.server_name.clone(), h.motd.clone()));
+                motd::Motd::for_motd(&server, &text, &ok, shade, w, h, &briefing_wrapped)
+            } else {
+                let level = goldsrc::ext::render::level_name();
+                let level = (!level.is_empty()).then(|| format!("maps/{level}.bsp"));
+                let load = |p: &[u8]| goldsrc::ext::render::load_file(&hud::saytext::string(p));
+                let mut name = with(|m| std::mem::take(&mut m.map_name));
+                let made = motd::map_briefing(&mut name, level.as_deref().map(str::as_bytes), &load);
+                with(|m| m.map_name = name);
+                let Some((title, text)) = made else { return };
+                motd::Motd::new(&title, &text, &ok, shade, w, h, &briefing_wrapped)
+            };
+            Menu::Text(id, Box::new(window))
         }
         _ => return,
     };
@@ -489,7 +523,8 @@ const K_KP_ENTER: i32 = 169;
 /// * with the team menu shown, Escape closes it once the player has a team (`g_iTeamNumber`,
 ///   `0x10190b24`, the local player's state), a digit goes to its `SlotInput` and `+jump`
 ///   auto-assigns;
-/// * with the MOTD shown, Enter, keypad Enter, Space or Escape close it.
+/// * with the map briefing or the MOTD shown (menus 4 and 5; TS's list also has the class help,
+///   6), Enter, keypad Enter, Space or Escape close it.
 ///
 /// The buy menu takes no keys here (Escape doesn't close it). Returns true if a menu consumed
 /// the key.
@@ -512,7 +547,7 @@ pub fn key_event(down: bool, key: i32, binding: &CStr) -> bool {
             return true;
         }
     }
-    if down && matches!(key, K_ENTER | K_KP_ENTER | K_SPACE | K_ESCAPE) && cur == 5 {
+    if down && matches!(key, K_ENTER | K_KP_ENTER | K_SPACE | K_ESCAPE) && matches!(cur, 4 | 5) {
         hide_top_menu();
         return true;
     }
@@ -531,17 +566,31 @@ pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
     let pressed = state & !old;
     let released = old & !state;
     let (w, h) = screen_size();
-    match with(|m| m.queue.first().cloned()) {
-        Some(Menu::Motd(motd)) => {
-            if released & 1 != 0 && motd.click(w, h, x, y) {
+    match current_menu() {
+        Some(4 | 5) => {
+            let close = with(|m| match m.queue.first_mut() {
+                Some(Menu::Text(_, t)) => {
+                    if pressed != 0 {
+                        t.press(w, h, x, y);
+                    }
+                    released != 0 && t.release(w, h, x, y, released & 1 != 0)
+                }
+                _ => false,
+            });
+            if close {
                 hide_top_menu();
             }
             return;
         }
-        Some(Menu::Team) => {
-            if released & 1 != 0
-                && let Some(a) = with(|m| m.team.as_ref().and_then(|t| t.click(w, h, x, y)))
-            {
+        Some(_) => {
+            let action = with(|m| {
+                let t = m.team.as_mut()?;
+                if pressed != 0 {
+                    t.press(w, h, x, y);
+                }
+                if released != 0 { t.release(w, h, x, y, released & 1 != 0) } else { None }
+            });
+            if let Some(a) = action {
                 run_team_action(a);
             }
             return;
@@ -549,6 +598,22 @@ pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
         None => {}
     }
     if squelching() && !buy_open() {
+        // The list's scroll bar takes presses and releases on it (the hit-test panel is hidden
+        // in squelch mode, so they reach it).
+        let (sw, sh) = screen_size();
+        let taken = with(|m| {
+            let mut t = false;
+            if pressed != 0 {
+                t |= m.board.scroll_pressed(sw, sh, x, y);
+            }
+            if released != 0 {
+                t |= m.board.scroll_released(sw, sh, x, y, released & 1 != 0);
+            }
+            t
+        });
+        if taken {
+            return;
+        }
         // `ScorePanel::mousePressed` from a player-entry label: any button toggles the
         // highlighted player's mute.
         if pressed != 0
@@ -818,10 +883,11 @@ fn paint_vgui() {
     let audible = |p: i32| {
         let info = engine().player_info(p);
         let blocked_self = info.this_player && !goldsrc::ext::spectator::is_spectate_only();
-        (!info.name.is_empty(), blocked_self, crate::voice::is_player_audible(p))
+        (!info.name_bytes.is_empty(), blocked_self, crate::voice::is_player_audible(p))
     };
     let shown = scores_visible();
     if shown {
+        with(|m| m.board.scroll_cursor(w, h, cx, cy));
         with(|m| m.board.cursor_moved(cx, cy, squelch, &audible));
         if with(|m| m.board.next_update < now) {
             with_board_inputs(|b, inp, sb| b.update(inp, sb));
@@ -831,7 +897,7 @@ fn paint_vgui() {
     let cur = with(|m| m.queue.first().map(Menu::id));
     if wants_cursor() {
         with(|m| match m.queue.first_mut() {
-            Some(Menu::Motd(motd)) => motd.hover(w, h, cx, cy),
+            Some(Menu::Text(_, t)) => t.hover(w, h, cx, cy),
             Some(Menu::Team) => {
                 if let Some(t) = &mut m.team {
                     t.hover(w, h, cx, cy);
@@ -843,22 +909,24 @@ fn paint_vgui() {
     if cur == Some(2) && with(|m| m.team.as_ref().is_some_and(|t| !t.updated_map)) {
         update_team_menu();
     }
+    let arrows = scroll::ctf_arrows(w, &|p| vgui::image(p, true));
+    let list_arrows = [vgui::image("gfx/vgui/arrowup.tga", true), vgui::image("gfx/vgui/arrowdown.tga", true)];
     vgui::with_schemes(|sb| {
         let s = &mut EngineSurface;
         with(|m| {
             if cur == Some(2)
                 && let Some(t) = &m.team
             {
-                t.paint(s, sb, w, h);
+                t.paint(s, sb, w, h, &arrows);
             }
         });
         if shown {
             let mut voice = |p: i32| crate::voice::scoreboard_icon(p);
-            with(|m| m.board.paint(s, sb, w, h, &mut voice));
+            with(|m| m.board.paint(s, sb, w, h, &mut voice, &list_arrows));
         }
         with(|m| {
-            if let Some(Menu::Motd(motd)) = m.queue.first() {
-                motd.paint(s, sb, w, h);
+            if let Some(Menu::Text(_, t)) = m.queue.first() {
+                t.paint(s, sb, w, h, &arrows);
             }
         });
     });

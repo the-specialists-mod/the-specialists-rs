@@ -158,7 +158,7 @@ fn crosshair_trace() -> Option<(i32, u8, String)> {
     if ent.player == 0 || !(1..=64).contains(&idx) {
         return None;
     }
-    let name = e.player_info(idx).name;
+    let name = super::saytext::string(&e.player_info(idx).name_bytes);
     if name.is_empty() {
         return None;
     }

@@ -51,7 +51,10 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `Draw` 1004d3f0, `DrawWirePanel` 1004d550, `DrawKungFuBar` 1004d5f0, `DrawKungFuLabel` 1004d700, `DrawWeaponInfo` 1004d7e0, `DrawWeaponList` 1004e030, `DrawLaserDots` 1004e6f0, `DrawCrosshair` 1004e9f0 + 1004ef50 | `hud::weapons::*` |
 | `SelectSlot` 1004f220, `SelectNextPrev` 1004f500, `CmdBuy` 1004fda0 | `hud::select_slot` → `weapons::select_slot`; `weapons::select_next_prev`; `hud::cmd_buy` |
 | `DrawHudNumberTS` 1004c290, `DrawHudString` 10021ce0, `DrawHudStringLen` 10021ca0 | `draw::draw_number`/`number_cells`, `text::draw_string`, `text::string_len` |
-| `LocaliseTextString` 100348d0, `LookupString` 100349c0 | `text::localise`, `text::lookup`; `text::localise_text_string` (the status bar's, with TS's step budget) |
+| `LocaliseTextString` 100348d0, `BufferedLocaliseTextString` 100349a0, `LookupString` 100349c0 | `text::localise_text_string(_in)` (TS's word bytes `A`..`z` and digits, its step budget, the unterminated unknown `#`), `text::buffered_localise` / `localise_with` / `localise` (the shared 0x400-byte buffer: `AddTSMessage`, `ShowMenu`, buy menu, HUD labels), `text::lookup_string` (`TextMsg`: whole-string keys, a negative `effect` picks the destination), `text::lookup` |
+| `MsgFunc_TextMsg` 10034a60 (`StripEndNewlineFromString` 10034a10, `ConvertCRtoNL` 10034a40) | `Hud::apply` (`Msg::TextMsg`) |
+| `CHudMenu::MsgFunc_ShowMenu` 10028760 | `Hud::apply` (`Msg::ShowMenu`) |
+| `CHudGeiger` `Init` 1001f450 (`srand(time(NULL))`), `MsgFunc_Geiger` 1001f4a0, `Draw` 1001f4e0 | `hud::init`, `Hud::apply` (`Msg::Geiger`), `hud::geiger::draw` (from `hud::redraw`, before `CHudTrain`) |
 | `CHudDeathNotice` Init 1001afa0, VidInit 1001b000 (`d_skull`), InitHUDData 1001afe0, `Draw` 1001b020, `MsgFunc_DeathMsg` 1001b360; `GetClientColor` 1001af40 | `hud::notice::DeathNotices` (`add`, `draw`, `clear`), `notice::on_death_msg`, `notice::client_color` |
 | `CHudMessage` Init 10028900, VidInit 10028940, Reset 10028980, `FadeBlend` 100289b0, `XPosition`/`YPosition` 10028a50/10028ad0, `MessageScanNextChar` 10028b60, `MessageScanStart` 10028d40, `MessageDrawScan` 10028eb0, `Draw` 100290b0, `MessageAdd` 100293f0, `MsgFunc_HudText` 100295c0, `MsgFunc_GameTitle` 10029610 | `hud::message::HudMessage` and its helpers |
 | `CHudStatusBar` Init 1002f3c0, Reset 1002f430, `ParseStatusString` 1002f480, `Draw` 1002f6f0, `MsgFunc_StatusText` 1002f850, `MsgFunc_StatusValue` 1002f8d0 | `hud::statusbar::StatusBar` |
@@ -65,6 +68,8 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CTeamMenuPanel` 100655d0 (VGUIMenu 2; opened only when `GameMode` said teamplay, `0x10064280`, since the server sends it for `changeteam` in any mode), `Update` 10066020, `SlotInput` 100665a0, `SetActiveInfo` 10066690, `Open` 10066610, `paintBackground` 10066640; `CMenuHandler_StringCommandWatch` 10064a20 | `menus::team::TeamMenu::*`, `menus::team_menu_key` |
 | `CommandButton` 1005a0b0 (`Init` 1005a170, `RecalculateText` 1005a1f0, `paint` 1005a2f0, `paintBackground` 1005a370), `CTransparentPanel`, `iTeamColors` 10096974, viewport scheme colours 100607f0 | `menus::widgets` |
 | `ShowVGUIMenu` 10064050, `HideTopMenu` 10064200, `SetCurrentMenu` 10063bd0, `KeyInput` 10064b90 | `menus::show_vgui_menu`, `hide_top_menu`, `key_event` |
+| `MsgFunc_VGUIMenu` 10064f00 (menu 4's `m_sMapName`), `CreateTextWindow` 10063c00 (MOTD and map briefing), `CMessageWindowPanel` 1005bb90 | `menus::vgui_menu_message`, `menus::motd::{Motd, map_briefing}` |
+| `CTFScrollPanel` 1005a860 (`CTFScrollButton` 1005a620/paint 1005a6b0, `CTFSlider::paintBackground` 1005a750, `LoadTGAForRes` 1005a070); VGUI1 `ScrollPanel`/`ScrollBar`/`Slider` (`vgui.so`); `CListBox` 1005b490 (`InternalLayout` 1005b730, `SetScrollRange` 1005b860, `setPixelScroll` 1005b700), `ScrollBar2` 100153f0, `Slider2` 10016690 | `menus::scroll::{ScrollPanel, ScrollBar, Slider, ListBox}` |
 | `CVoiceStatus::Init` 100178c0 / `VidInit` 10017af0 / `Frame` 10017ea0 | `voice::init`, `vid_init`, `frame` |
 | `CVoiceStatus::CreateEntities` 10017f30 (`HUD_CreateEntities`) | `voice::create_entities` |
 | `UpdateSpeakerStatus` 100180c0 (`HUD_VoiceStatus` 1001ab40) | `voice::update_speaker_status` |
@@ -134,7 +139,11 @@ hooks `VoiceMask` (audible and server-side ban masks) and `ReqState` (answers `V
 | TextMsg / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2. ResetHUD resets every element (status icons, `CHudMessage`, the status bar and `CHudAmmoSecondary` too), then `m_flMouseSensitivity` and `m_iConcuss` (TS `100219a0`) (Spectator, TS `10065250`, for the local player on every message: observer is `observer == 1`; an observer leaves third person and gets the buy menu, otherwise `cl_thirdperson` 1 or 0 picks the camera and other values keep it, so the death cam doesn't outlive the respawn. This handler is the only reader of `cl_thirdperson`. Then, observer or not, `0x100652fd` runs `0x1000b9d0` on the client `player`: the predicted spread penalty (`player+0x764`) and the crosshair's copy (`0x1018d188`) go to 0 (`prediction::reset_spread`); the other fields it zeroes, `player+0x768..0x770` and `ev_punchangle` (`0x10191480`), are never read or never non-zero in the TS client. The per-player flag is stored as `observer != 0`: TS keeps the raw byte (`0x101900ec[i]`, `0x101901f5`), but `HUD_AddEntity` (`0x10044846`) and the scoreboard (`0x1005e3e8`) only test it for zero) |
 | Train | B notch | `CHudTrain`: `sprites/%d_train.spr` frame `notch - 1` in (255,160,0), x = w/3 + sprite w/4, y = h - sprite h - font height; hidden at 0 |
 | HideWeapon | B bits | `hide_hud`; HIDEHUD_ALL (4) hides the train element. TS only resets the engine crosshair, which it doesn't use |
-| CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Geiger, Health, Battery, Damage, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing; see Missing for Geiger) |
+| CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Health, Battery, Damage, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
+| Geiger | B | `CHudGeiger`: range = byte × 4, element on for good. Each frame (before `CHudTrain`, not at intermission or under `HIDEHUD_ALL`), with the range in 1..999: CRT `rand` gives the volume (`(r & 127) × scale / 255 + 0.25`), a click when either of two more `rand`s (`& 127`) is under the range's chance (0 past 800, then 2, 4, 8, 8, 28, 40, 60, 80, 90, 95 out of 128 as it falls), and one or two more choose `player/geiger1..3.wav` (`PlaySoundByName`). The CRT `rand` is the one the HudText flicker uses, seeded by `srand(time(NULL))` in `CHudGeiger::Init` |
+| TextMsg | B dest, Str × 5 | `LookupString` on each (a whole-string `#key`; a negative titles `effect` on the first sets the destination), one trailing `\n`/`\r` off each argument, `sprintf(msg, a1..a4)`, `\r` → `\n`; 1 notify console (leading `\x01`), 2 console, 3 chat (`SayTextPrint(…, -1)`), 4 centre print, others nothing; all skipped while `AllowedToPrintText` is false |
+| ShowMenu | S slots, C time, B more, Str | slots and shutoff at once; no slots hides the menu (keeping the "more" flag); otherwise the text starts (or after a "more" chunk extends) the 511-byte prelocalised string, the last chunk localises it whole (`BufferedLocaliseTextString`), and the menu shows after every chunk |
+| VGUIMenu | B id [, Str map] | menu 4's map name goes to `m_sMapName` (63 bytes); every id to `ShowVGUIMenu`: 2 team menu (teamplay only), 4 map briefing (`maps/<m_sMapName>.txt`, or the level's when the name is empty, which then fills it; nothing without the file), 5 MOTD |
 
 ## 3. Cvars and commands
 
@@ -419,13 +428,38 @@ Drawing that TS leaves to the engine's VGUI1 surface:
   `vgui_LoadTGA` and are inverted with `vgui_LoadTGANoInvertAlpha`, RLE ones the other way round.
   So the speaker label's `speaker4.tga` (uncompressed, loaded without inversion) draws as a white
   square with the speaker cut out, in TS as in the port. What remains different:
-  * **No scroll bars.** TS's `CTFScrollPanel` (team menu briefing, MOTD text) and the scoreboard's
-    `CListBox` show VGUI scroll bars (arrow buttons, a slider) when their content overflows; the
-    port clips the content and can't scroll it. Long map briefings (most TS maps), long MOTDs and
-    scoreboards with more rows than fit are affected.
+  * Scroll bars follow VGUI1 (`menus::scroll`): `CTFScrollPanel` (team menu briefing, MOTD and
+    map briefing) is VGUI1's `ScrollPanel` as `vgui.so` codes it (bars shown automatically
+    unless the slider has the full range, horizontal decided first, the client clip losing a
+    shown bar's 16 pixels, `validate` = four `setSize`s, ranges and windows from the client size,
+    the proportional `size / window × size` nob with x87 truncation, `0x80000000` for an empty
+    span) with TS's buttons (the `640_`/`320_` `arrowup`/`arrowdn`/`arrowlt`/`arrowrt` TGAs at
+    their own (0, 0), white, half transparent unless armed; with the stock Half-Life files only
+    `640_arrowup.tga` exists, so the other buttons are blank in TS as in the port) and
+    `CTFSlider` (`sc_secondary1` frame, nob in `sc_primary2` outlined in `sc_primary1`). The team
+    menu's default "#Map_Description_not_available" panel is larger than its client clip, so TS
+    shows both bars there and the port does too. The scoreboard's `CListBox` scrolls by rows (range
+    = row count, `ScrollBar2` with `arrowup.tga`/`arrowdown.tga` buttons in (140, 140, 140) and a
+    `Slider2` with a 50-pixel nob, step 1), shown when a row is scrolled off the top or the rows
+    run past the bottom. Input is VGUI1's: a press in a nob drags it (the slider keeps the mouse
+    until the release), a left release over a button steps the value, a `CTFScrollButton` arms
+    under the cursor; the scoreboard's bar takes input in squelch mode, when the cursor is up. No
+    panel takes the mouse wheel, as in TS (no VGUI1 signal here handles `mouseWheeled`). The port
+    arms and hit-tests by the cursor position each frame rather than VGUI's enter/exit events.
   * The engine's VGUI surface draws bitmap-font glyphs and images as textured quads; the port
-    draws the same pixels as fills (glyph ink opaque in the text colour's opacity), and VGUI's own
-    cursor is the TS sprite cursor the port already draws.
+    draws the same pixels as fills (glyph ink opaque in the text colour's opacity, images per
+    pixel run with VGUI1's TGA alpha and colour modulation), and VGUI's own cursor is the TS sprite
+    cursor the port already draws. A textured path was considered and not taken: the 2007 client
+    API has no texture upload, `LoadMapSprite` + TriAPI would load the TGA through the engine's
+    image loader (losing VGUI1's per-type alpha rules) and filter it, and the raw GL wrapper
+    (`goldsrc::ext::gl`) works only on desktop GL renderers and behind the engine's state. With
+    `pfnFillRGBABlend` the fills give VGUI1's pixels exactly; only engines older than the 2013
+    update (no blend fill) lose fidelity, as noted for the spectator panel above.
+  * The MOTD's full-screen shade is the whole `ScreenWidth`×`ScreenHeight` panel (`0x100d5908`/
+    `0x100d590c`, `gHUD.m_scrinfo`, passed by `CreateTextWindow`), as in the port. A report of it
+    covering only the left ~825 pixels at 1896×924 on FWGS came from a map whose near wall ends
+    there: in that screenshot every world pixel, on both sides, is at most 100/255 bright (white
+    shaded by VGUI alpha 100), and the view model is shaded evenly across that edge.
   * Squelch mode centres the virtual cursor, and the first scoreboard press (entering squelch mode)
     isn't passed to the engine as a key. Panels are laid out from the current screen size each
     frame (TS builds them once with the viewport).
@@ -473,9 +507,12 @@ Undefined in TS:
 * `CHudMessage::Draw` keeps each message's end time in a stack slot that only effects 0-2 write;
   a titles.txt effect outside 0..2 reuses the previous message's end time from the same draw, or
   for the first such message, uninitialised stack. The port uses 0 there (the message ends).
-* The flicker (effect 1) draws from MSVC's CRT `rand` (seed 1). TS shares that generator with
-  `CHudGeiger`'s sounds, which the port doesn't have, so the sequence matches TS only while no
-  Geiger sound plays.
+* The flicker (effect 1) and the Geiger clicks share MSVC's CRT `rand`, seeded as TS seeds it
+  (`srand(time(NULL))` in `CHudGeiger::Init`), so the sequence is TS's for the same start time.
+* `BufferedLocaliseTextString` copies an unknown `#` without a terminator, so a text ending in
+  one shows the rest of the previous buffered text; the port keeps the shared buffer and shows the
+  same bytes. `LocaliseTextString` into stack buffers (the status bar's) starts from zeros in the
+  port, where TS has whatever the stack held.
 * The viewport is allocated without clearing; `Initialize` zeroes the valid classes and
   `RandomPC`. The port starts `Feign`/`Detpack`/`BuildSt`/`AllowSpec` at 0 too.
 
@@ -493,12 +530,12 @@ Notes (no observable difference):
 * Server browser, command menu, TFC panels (dropped as allowed by §7). The TFC message values
   (`hud::tfc::ViewportTfc`) are kept for a command menu; `UpdateCommandMenu` (`0x10063840`),
   which the TFC handlers call, has nothing to update.
-* `CHudGeiger::Draw` (`0x1001f4e0`, `player/geiger%d.wav` by range with CRT `rand`) isn't
-  ported; `Geiger` is parsed and ignored.
-* The scoreboard's `DeathMsg` (`ScorePanel::DeathMsg` `0x1005e5d0`, from the viewport at
-  `0x10065230`: who last killed the local player, and when) isn't ported.
-* Player names come from `goldsrc`'s `player_info` (`to_string_lossy`), so bytes that aren't
-  UTF-8 show as `?` in the kill feed, status bar and chat.
+* `ShowMenu`'s `KB_ConvertString` (`0x10025740`, called at `0x10028843`: `+command` key names
+  swapped into the menu text) isn't ported; the text is shown as localised.
+* Player names: the HUD, menus and voice code use `PlayerInfo::name_bytes`, the engine's raw
+  bytes, so the kill feed, status bar, crosshair ID, chat, scoreboard, team menu and voice labels
+  draw TS's glyphs for any byte. (`PlayerInfo::name`, decoded as UTF-8, is left for the other
+  packages.)
 * `HUD_UpdateClientData` runs `CHud::Think`'s zoom easing and writes the eased FOV
   (`view::update_client_data` → `hud::think_fov`), as TS's `CHud::UpdateClientData` does.
 * The death-cam / `cl_thirdpersonswitch` / `Spectator` camera switches run TS's `thirdperson`
@@ -519,7 +556,10 @@ Notes (no observable difference):
   `FadeBlend`, `MessageAdd` replacement/duplicates/the shared custom message, fade and
   write-out colours per character, level-transition fix-up, game title sprites
   (`hud::message::tests`); status-bar messages, parsing, caps and layout
-  (`hud::statusbar::tests`); `LocaliseTextString`'s budget (`hud::text::tests`); the TFC and
+  (`hud::statusbar::tests`); `LocaliseTextString`'s budget, `BufferedLocaliseTextString`'s word
+  bytes and shared buffer, `LookupString` (`hud::text::tests`); `TextMsg` destinations,
+  `ShowMenu` chunks, `VGUIMenu` ids, `ScoreInfo`'s team clamp and `Geiger` (`hud::state::tests`);
+  the Geiger click/volume/sample choice on the CRT sequence (`hud::geiger::tests`); the TFC and
   `SecAmmo*` values (`hud::tfc::tests`); `HudText`/`ResetHUD` through `Hud::apply`.
   The VGUI panels have their own: scheme parsing and colour defaults,
   bitmap-font metrics and wrapping, TGA alpha rules (also on the shipped `gfx/vgui` icons when
@@ -527,7 +567,10 @@ Notes (no observable difference):
   `ScorePanel` sorting (`SortTeams`/`SortPlayers`, game-mode score rule, `TeamScore` overrides,
   `RebuildTeams` slot reuse), `FillGrid` cells (colours, fonts, status column, killer fade, voice
   column), layout at 640/1024/512/400 and squelch highlighting; the team menu's `Update` layout,
-  info text, map briefing, slots, hover and clicks; the MOTD window's layout and OK button; the
+  info text, map briefing, slots, hover and clicks; the MOTD window's layout, OK button, scroll
+  set-up and full-screen shade, and `CreateTextWindow`'s map briefing file and name; VGUI1
+  slider maths (nob, value, drag, full range, empty span), `CTFScrollPanel` layout, input and
+  paint, and the `CListBox` layout and scrolling (`menus::scroll::tests`); the
   speaker label layout.
 * Builds: x86_64 Linux (dev), `i686-unknown-linux-gnu`, `i686-pc-windows-gnu`,
   `x86_64-pc-windows-gnu`. The Windows DLL imports only system DLLs (`USER32` added for the

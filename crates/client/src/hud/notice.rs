@@ -36,7 +36,7 @@ pub fn player_name(i: i32, max: i32) -> Option<Vec<u8>> {
     if !(0..=max).contains(&i) {
         return None;
     }
-    let n = saytext::bytes(&engine().player_info(i).name);
+    let n = engine().player_info(i).name_bytes;
     (!n.is_empty()).then_some(n)
 }
 

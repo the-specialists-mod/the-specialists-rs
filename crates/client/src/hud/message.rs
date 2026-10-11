@@ -76,12 +76,14 @@ struct Parms {
     char_time: f32,
 }
 
-/// MSVC CRT `rand` (`0x1006c05a`): TS's flicker draws from the CRT's generator (seed 1).
-#[derive(Debug, Clone)]
-struct CrtRand(u32);
+/// MSVC CRT `rand` (`0x1006c05a`), which only the HudText flicker and `CHudGeiger::Draw` call.
+/// `CHudGeiger::Init` (`0x1001f450`) seeds it with `srand(time(NULL))`; until then (and in tests)
+/// it has the CRT's seed 1.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrtRand(pub u32);
 
 impl CrtRand {
-    fn next(&mut self) -> i32 {
+    pub fn next(&mut self) -> i32 {
         self.0 = self.0.wrapping_mul(214013).wrapping_add(2531011);
         ((self.0 >> 16) & 0x7fff) as i32
     }
@@ -102,7 +104,6 @@ pub struct HudMessage {
     /// `HUD_ACTIVE`.
     pub active: bool,
     parms: Parms,
-    rand: CrtRand,
 }
 
 impl Default for HudMessage {
@@ -115,7 +116,6 @@ impl Default for HudMessage {
             custom: TitleMsg::default(),
             active: false,
             parms: Parms::default(),
-            rand: CrtRand(1),
         }
     }
 }
@@ -242,7 +242,7 @@ impl HudMessage {
 
     /// `Draw` (`0x100290b0`), called while `HUD_ACTIVE`: the game title, then each message until
     /// its end time. Nothing drawn turns the element off.
-    pub fn draw(&mut self, now: f32, s: &Screen, sprites: &HudSprites, c: &mut dyn Canvas) {
+    pub fn draw(&mut self, now: f32, s: &Screen, sprites: &HudSprites, c: &mut dyn Canvas, rand: &mut CrtRand) {
         let mut drawn = 0;
         // Guarded: TS dereferences `m_pGameTitle` here even when the last `GameTitle` found no
         // `GAMETITLE` entry (a null pointer).
@@ -303,7 +303,7 @@ impl HudMessage {
             if now > end_time {
                 self.slots[i] = None;
             } else {
-                self.draw_scan(&m, (now as f64 - start) as f32, s, c);
+                self.draw_scan(&m, (now as f64 - start) as f32, s, c, rand);
                 drawn += 1;
             }
         }
@@ -314,7 +314,7 @@ impl HudMessage {
     }
 
     /// `MessageDrawScan` (`0x10028eb0`).
-    fn draw_scan(&mut self, m: &TitleMsg, time: f32, s: &Screen, c: &mut dyn Canvas) {
+    fn draw_scan(&mut self, m: &TitleMsg, time: f32, s: &Screen, c: &mut dyn Canvas, rand: &mut CrtRand) {
         let mut lines = 1;
         let (mut width, mut total_width) = (0, 0);
         for &ch in &m.text {
@@ -329,7 +329,7 @@ impl HudMessage {
         self.parms.time = time;
         let mut y = y_position(m.y, lines * s.char_height, s.height);
         self.parms.char_time = 0.0;
-        self.scan_start(m, m.text.len());
+        self.scan_start(m, m.text.len(), rand);
         // Guarded: TS copies each line into an 80-byte stack buffer without a bound; the port
         // draws the line from the text instead.
         for line in m.text.split(|&b| b == b'\n').take(lines as usize) {
@@ -348,7 +348,7 @@ impl HudMessage {
     }
 
     /// `MessageScanStart` (`0x10028d40`): the fade for this message time.
-    fn scan_start(&mut self, m: &TitleMsg, length: usize) {
+    fn scan_start(&mut self, m: &TitleMsg, length: usize, rand: &mut CrtRand) {
         let p = &mut self.parms;
         let time = p.time;
         match m.effect {
@@ -362,7 +362,7 @@ impl HudMessage {
                     0
                 };
                 p.char_time = 0.0;
-                if m.effect == 1 && self.rand.next() % 100 < 10 {
+                if m.effect == 1 && rand.next() % 100 < 10 {
                     p.char_time = 1.0;
                 }
             }
@@ -532,7 +532,7 @@ mod tests {
         h.msg_hud_text(b"HELLO", 10.0, &T);
         let mut r = Rec::default();
         // 1.5 s in: past the 0.5 s fade-in, inside the 2 s hold: full colour.
-        h.draw(11.5, &s, &sprites, &mut r);
+        h.draw(11.5, &s, &sprites, &mut r, &mut CrtRand(1));
         let total_height = 2 * 10;
         let y0 = y_position(0.5, total_height, 480);
         assert_eq!(r.chars.len(), 7);
@@ -542,12 +542,12 @@ mod tests {
         assert!(h.active);
         // Fading out: 3 s in, a second past the hold, fadeout 1: blend 255 * 0.5.
         let mut r = Rec::default();
-        h.draw(13.0, &s, &sprites, &mut r);
+        h.draw(13.0, &s, &sprites, &mut r, &mut CrtRand(1));
         let blend = ftol(0.5 * 255.0);
         assert_eq!(r.chars[0].3, [(200 * (255 - blend)) >> 8, (100 * (255 - blend)) >> 8, (50 * (255 - blend)) >> 8]);
         // Over: end = start + hold + fadeout + fadein = 13.5.
         let mut r = Rec::default();
-        h.draw(13.6, &s, &sprites, &mut r);
+        h.draw(13.6, &s, &sprites, &mut r, &mut CrtRand(1));
         assert!(r.chars.is_empty());
         assert!(h.slots.iter().all(Option::is_none));
         assert!(!h.active, "nothing drawn turns the element off");
@@ -560,7 +560,7 @@ mod tests {
         h.add(b"ab", 0.0, &T);
         let mut r = Rec::default();
         // 0.015 s in: 'a' (char time 0.01) is 0.005 s into its 0.25 s fx; 'b' (0.02) not yet.
-        h.draw(0.015, &s, &HudSprites::default(), &mut r);
+        h.draw(0.015, &s, &HudSprites::default(), &mut r, &mut CrtRand(1));
         let delta = (0.015f32 as f64 - (0.0f32 as f64 + 0.01f32 as f64)) as f32;
         let blend = ftol(255.0 - ((1.0 / 0.25f32 as f64) * delta as f64 * 255.0 + 0.5));
         let a = [100 * (255 - blend) + 240 * blend, 100 * (255 - blend) + 110 * blend, 100 * (255 - blend)].map(|v| v >> 8);
@@ -575,7 +575,7 @@ mod tests {
         let mut h = HudMessage::default();
         h.msg_hud_text(b"HELLO", 50.0, &T);
         // New map: the clock restarted at 2.
-        h.draw(2.0, &s, &HudSprites::default(), &mut Rec::default());
+        h.draw(2.0, &s, &HudSprites::default(), &mut Rec::default(), &mut CrtRand(1));
         assert_eq!(h.start_time[0], ((2.0f64 + 50.0 - 50.0) + 0.2) as f32);
     }
 
@@ -593,11 +593,11 @@ mod tests {
         h.msg_game_title(4.0, &T);
         assert!(h.active);
         let mut r = Rec::default();
-        h.draw(4.25, &s, &sprites, &mut r); // half the 0.5 s fade-in
+        h.draw(4.25, &s, &sprites, &mut r, &mut CrtRand(1)); // half the 0.5 s fade-in
         let x = x_position(-1.0, 160, 160, 640);
         let y = y_position(-1.0, 40, 480);
         assert_eq!(r.sprites, [(0, [127, 127, 127], x, y), (1, [127, 127, 127], x + 100, y)]);
-        h.draw(7.6, &s, &sprites, &mut Rec::default()); // past 0.5 + 1 + 2
+        h.draw(7.6, &s, &sprites, &mut Rec::default(), &mut CrtRand(1)); // past 0.5 + 1 + 2
         assert_eq!(h.game_title_time, 0.0);
     }
 
