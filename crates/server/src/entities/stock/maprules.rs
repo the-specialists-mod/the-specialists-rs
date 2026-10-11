@@ -6,6 +6,9 @@
 //!   TS spawn loadout (`CHalfLifeMultiplay::PlayerSpawn` 0x890ac, see [`equip_on_spawn`]).
 //! * `game_score` (`CGameScore` 0xcc4d8..0xcc568): points for the activating player or their
 //!   teammates, gated by an optional `master`.
+//! * `game_end`, `game_player_hurt`, `game_counter`, `game_counter_set`, `game_zone_player`
+//!   (0xcc644..0xcd3f4), and TS's team entities `game_team_master`, `game_team_set`,
+//!   `game_player_team`.
 
 use super::base::*;
 use super::items::SF_NORESPAWN;
@@ -231,37 +234,28 @@ pub struct GameScore {
 }
 
 impl Entity for GameScore {
+    /// `CGameScore::KeyValue` (0xcc4fc).
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"points" => cx.pev().frags = kv_i(value) as f32,
-            // CRuleEntity::KeyValue (0xcc380)
-            b"master" => self.master = alloc(value),
-            _ => return false,
+            _ => return rule_key_value(&mut self.master, key, value),
         }
         true
     }
 
-    /// `CRulePointEntity::Spawn` (0xcc42c).
+    /// `CGameScore::Spawn` (0xcc4d8) → `CRulePointEntity::Spawn` (0xcc42c).
     fn spawn(&mut self, cx: &mut Cx) {
-        let v = cx.pev();
-        v.solid = SOLID_NOT as i32;
-        v.movetype = MOVETYPE_NONE as i32;
-        v.effects = EF_NODRAW as i32;
-        v.frame = 0.0;
-        v.model = 0;
+        rule_point_spawn(cx);
     }
 
     /// `CGameScore::Use` (0xcc568).
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
-        // CRuleEntity::CanFireForActivator (0xcc3e4)
-        if self.master != 0 && !is_master_triggered(self.master, activator) {
-            return;
-        }
-        if !is_player(activator) {
+        // `IsPlayer()` through the activator (a NULL one crashes TS; here it isn't a player).
+        if !can_fire_for_activator(self.master, activator) || !crate::rules::has_player(activator) {
             return;
         }
         let v = cx.pev();
-        let (points, allow_negative) = (v.frags as i32, v.spawnflags & SF_SCORE_NEGATIVE != 0);
+        let (points, allow_negative) = (x87_int(v.frags), v.spawnflags & SF_SCORE_NEGATIVE != 0);
         if v.spawnflags & SF_SCORE_TEAM != 0 {
             add_points_to_team(activator, points, allow_negative);
         } else {
@@ -270,13 +264,20 @@ impl Entity for GameScore {
     }
 }
 
-/// `CBasePlayer::AddPoints` (0xd9e18): frags plus `ScoreInfo` to everyone.
+/// A C `(int)` cast of a float as GCC 2.95 compiles it for TS: `fistp` under a truncating
+/// control word, so NaN and anything out of range give the x87 "integer indefinite" 0x80000000.
+pub fn x87_int(f: f32) -> i32 {
+    if (-2_147_483_648.0..2_147_483_648.0).contains(&f) { f as i32 } else { i32::MIN }
+}
+
+/// `CBasePlayer::AddPoints` (0xd9e18): frags, then `ScoreInfo` to everyone.
 pub fn add_points(player: *mut edict_t, points: i32, allow_negative: bool) {
     let v = player.v();
     let Some(points) = clamp_points(v.frags, points, allow_negative) else { return };
     v.frags += points as f32;
-    // (When the player itself is mid-dispatch the message waits for the next score update.)
-    crate::rules::scoring::broadcast_score(player);
+    // The message reads the deaths from the player object, which is taken out when the player's
+    // own +use fired us: it then goes out as soon as that dispatch returns (same frame).
+    world::defer(player, move || crate::rules::scoring::broadcast_score(player));
 }
 
 /// `AddPoints`' floor: without `allow_negative` a score can't be taken below zero (and an
@@ -286,20 +287,267 @@ fn clamp_points(frags: f32, points: i32, allow_negative: bool) -> Option<i32> {
         if frags < 0.0 {
             return None;
         }
-        if frags < -points as f32 {
-            return Some((-frags) as i32);
+        if frags < points.wrapping_neg() as f32 {
+            return Some(x87_int(-frags));
         }
     }
     Some(points)
 }
 
-/// `CBasePlayer::AddPointsToTeam` (0xd9f68): `AddPoints` for every other player on the same team.
+/// `CBasePlayer::AddPointsToTeam` (0xd9f68): `AddPoints` for every other slot player
+/// (`UTIL_PlayerByIndex`) the rules call a teammate (`PlayerRelationship == GR_TEAMMATE`).
 pub fn add_points_to_team(player: *mut edict_t, points: i32, allow_negative: bool) {
-    for other in crate::rules::players() {
-        if other != player && crate::rules::teams::same_team(player, other) {
+    let eng = engine();
+    let me = eng.index_of(player);
+    for i in 1..=eng.max_clients() {
+        let other = eng.player(i);
+        if !other.is_null() && i != me && crate::rules::teams::same_team(player, other) {
             add_points(other, points, allow_negative);
         }
     }
+}
+
+/// `game_end` (`CGameEnd::Use` 0xcc668): `g_pGameRules->EndMultiplayerGame()`, which is
+/// `GoToIntermission` for the multiplayer rules (0xd0dbc) and nothing for `CHalfLifeRules`
+/// (`deathmatch` 0; 0xc6358).
+#[derive(Default)]
+pub struct GameEnd {
+    master: string_t,
+}
+
+impl Entity for GameEnd {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        rule_key_value(&mut self.master, key, value)
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        rule_point_spawn(cx);
+    }
+
+    fn use_(&mut self, _cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        if !can_fire_for_activator(self.master, activator) {
+            return;
+        }
+        if !crate::rules::state::with(|g| g.single_player) {
+            crate::rules::frame::go_to_intermission();
+        }
+    }
+}
+
+pub const SF_PKILL_FIREONCE: i32 = 1;
+
+/// `game_player_hurt` (`CGamePlayerHurt::Use` 0xcd16c): `dmg` damage (`DMG_GENERIC`, the entity
+/// as inflictor and attacker) to a player activator, or `-dmg` health when negative; then its
+/// targets with the same use type and value; once with flag 1.
+#[derive(Default)]
+pub struct GamePlayerHurt {
+    master: string_t,
+}
+
+impl Entity for GamePlayerHurt {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        rule_key_value(&mut self.master, key, value)
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        rule_point_spawn(cx);
+    }
+
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, value: f32) {
+        if !can_fire_for_activator(self.master, activator) {
+            return;
+        }
+        // `IsPlayer()` through the activator (a NULL one crashes TS; here it isn't a player).
+        if crate::rules::has_player(activator) {
+            let me = cx.edict;
+            let dmg = cx.pev().dmg;
+            if 0.0 <= dmg {
+                // The activator is usually mid-dispatch (its +use fired us): the damage lands as
+                // soon as that returns (same frame); TS deals it inside the `Use`.
+                world::defer(activator, move || {
+                    crate::damage::apply(activator, &world::DamageInfo::new(me, me, dmg, 0));
+                });
+            } else {
+                crate::player::damage::take_health_edict(activator, -dmg);
+            }
+        }
+        rule_use_targets(cx, activator, kind, value);
+        if cx.pev().spawnflags & SF_PKILL_FIREONCE != 0 {
+            crate::entities::remove(cx.edict);
+        }
+    }
+}
+
+pub const SF_GAMECOUNT_FIREONCE: i32 = 1;
+pub const SF_GAMECOUNT_RESET: i32 = 2;
+
+/// `game_counter` (`CGameCounter` 0xcd24c..0xce510): counts `frags` down on `USE_OFF`, up on
+/// `USE_ON`/`USE_TOGGLE`, to `(int)value` on `USE_SET`. When the count reaches `health` (both
+/// cast to int) it fires its targets (`USE_TOGGLE`), once with flag 1, and with flag 2 goes back
+/// to the spawn count (kept in `dmg`).
+#[derive(Default)]
+pub struct GameCounter {
+    master: string_t,
+}
+
+impl Entity for GameCounter {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        rule_key_value(&mut self.master, key, value)
+    }
+
+    /// `CGameCounter::Spawn` (0xcd24c).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        v.dmg = x87_int(v.frags) as f32;
+        rule_point_spawn(cx);
+    }
+
+    /// `CGameCounter::Use` (0xcd2a4).
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, value: f32) {
+        if !can_fire_for_activator(self.master, activator) {
+            return;
+        }
+        let v = cx.pev();
+        v.frags = count_step(v.frags, kind, value);
+        if x87_int(v.frags) == x87_int(v.health) {
+            rule_use_targets(cx, activator, UseType::Toggle, 0.0);
+            if cx.pev().spawnflags & SF_GAMECOUNT_FIREONCE != 0 {
+                crate::entities::remove(cx.edict);
+            }
+            let v = cx.pev();
+            if v.spawnflags & SF_GAMECOUNT_RESET != 0 {
+                v.frags = v.dmg;
+            }
+        }
+    }
+}
+
+/// `CGameCounter::Use`'s count change.
+fn count_step(frags: f32, kind: UseType, value: f32) -> f32 {
+    match kind {
+        UseType::Off => frags - 1.0,
+        UseType::On | UseType::Toggle => frags + 1.0,
+        UseType::Set => x87_int(value) as f32,
+    }
+}
+
+pub const SF_GAMECOUNTSET_FIREONCE: i32 = 1;
+
+/// `game_counter_set` (`CGameCounterSet::Use` 0xcd418): `USE_SET` with its `frags` to its
+/// targets (a `game_counter` takes that count); once with flag 1.
+#[derive(Default)]
+pub struct GameCounterSet {
+    master: string_t,
+}
+
+impl Entity for GameCounterSet {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        rule_key_value(&mut self.master, key, value)
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        rule_point_spawn(cx);
+    }
+
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        if !can_fire_for_activator(self.master, activator) {
+            return;
+        }
+        let frags = cx.pev().frags;
+        rule_use_targets(cx, activator, UseType::Set, frags);
+        if cx.pev().spawnflags & SF_GAMECOUNTSET_FIREONCE != 0 {
+            crate::entities::remove(cx.edict);
+        }
+    }
+}
+
+/// `pfnTraceModel` hull numbers (`human_hull`, `head_hull`).
+const HUMAN_HULL: i32 = 1;
+const HEAD_HULL: i32 = 3;
+
+/// `game_zone_player` (`CGamePlayerZone` 0xcce90..0xcd148): a brush that, on use, sorts every
+/// slot player by whether the hull they stand in (the head hull when ducking) starts inside its
+/// model. Each player inside fires `intarget`, each one outside `outtarget` (the player as
+/// activator, our activator as caller, our use type and value); then `incount`/`outcount` get
+/// `USE_SET` with the number of players inside/outside.
+#[derive(Default)]
+pub struct GamePlayerZone {
+    master: string_t,
+    in_target: string_t,
+    out_target: string_t,
+    in_count: string_t,
+    out_count: string_t,
+}
+
+impl Entity for GamePlayerZone {
+    /// `CGamePlayerZone::KeyValue` (0xcce90).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        let field = match key.to_bytes() {
+            b"intarget" => &mut self.in_target,
+            b"outtarget" => &mut self.out_target,
+            b"incount" => &mut self.in_count,
+            b"outcount" => &mut self.out_count,
+            _ => return rule_key_value(&mut self.master, key, value),
+        };
+        *field = alloc(value);
+        true
+    }
+
+    /// `CRuleBrushEntity::Spawn` (0xcc468): the brush model, then `CRuleEntity::Spawn` (0xcc354).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let model = cx.pev().model;
+        engine().set_model(cx.edict, s(model));
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_NONE as i32;
+        v.effects = EF_NODRAW as i32;
+    }
+
+    /// `CGamePlayerZone::Use` (0xccfa0).
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, value: f32) {
+        if !can_fire_for_activator(self.master, activator) {
+            return;
+        }
+        let eng = engine();
+        let me = cx.edict;
+        let (mut inside, mut outside) = (0, 0);
+        // `UTIL_PlayerByIndex`, looked up as the loop goes (a fired target can change the slots).
+        for i in 1..=eng.max_clients() {
+            let p = eng.player(i);
+            if p.is_null() {
+                continue;
+            }
+            let v = p.v();
+            let hull = if v.flags & FL_DUCKING as i32 != 0 { HEAD_HULL } else { HUMAN_HULL };
+            let org = v.origin;
+            let tr = eng.trace_model(org, org, hull, me);
+            let target = if tr.fStartSolid != 0 {
+                inside += 1;
+                self.in_target
+            } else {
+                outside += 1;
+                self.out_target
+            };
+            if target != 0 {
+                crate::entities::fire_targets(s(target), p, activator, kind, value);
+            }
+        }
+        if self.in_count != 0 {
+            crate::entities::fire_targets(s(self.in_count), activator, me, UseType::Set, inside as f32);
+        }
+        if self.out_count != 0 {
+            crate::entities::fire_targets(s(self.out_count), activator, me, UseType::Set, outside as f32);
+        }
+    }
+}
+
+/// `CRuleEntity::KeyValue` (0xcc380): only `master`.
+fn rule_key_value(master: &mut string_t, key: &CStr, value: &CStr) -> bool {
+    if key == c"master" {
+        *master = alloc(value);
+        return true;
+    }
+    false
 }
 
 /// `CRulePointEntity::Spawn` (0xcc42c).
@@ -557,6 +805,33 @@ mod tests {
         assert_eq!(clamp_points(2.0, -3, false), Some(-2));
         assert_eq!(clamp_points(-1.0, -3, false), None);
         assert_eq!(clamp_points(2.0, -3, true), Some(-3));
+        // The floor truncates a fractional score (`(int)-frags`).
+        assert_eq!(clamp_points(2.7, -3, false), Some(-2));
+        // `-INT_MIN` wraps in TS, so the floor never applies.
+        assert_eq!(clamp_points(5.0, i32::MIN, false), Some(i32::MIN));
+    }
+
+    #[test]
+    fn x87_casts() {
+        use super::x87_int;
+        assert_eq!(x87_int(2.9), 2);
+        assert_eq!(x87_int(-2.9), -2);
+        assert_eq!(x87_int(-2_147_483_648.0), i32::MIN);
+        assert_eq!(x87_int(2_147_483_648.0), i32::MIN);
+        assert_eq!(x87_int(f32::NAN), i32::MIN);
+        assert_eq!(x87_int(f32::NEG_INFINITY), i32::MIN);
+    }
+
+    #[test]
+    fn counter_steps() {
+        use super::count_step;
+        use crate::world::UseType;
+        assert_eq!(count_step(3.0, UseType::Off, 9.0), 2.0);
+        assert_eq!(count_step(3.0, UseType::On, 9.0), 4.0);
+        assert_eq!(count_step(3.0, UseType::Toggle, 9.0), 4.0);
+        // `USE_SET` takes the value cast to int.
+        assert_eq!(count_step(3.0, UseType::Set, 7.8), 7.0);
+        assert_eq!(count_step(3.0, UseType::Set, -7.8), -7.0);
     }
 
     #[test]

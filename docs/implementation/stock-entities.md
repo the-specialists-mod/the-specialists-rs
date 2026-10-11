@@ -33,7 +33,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `xen.rs` | `xen_plantlight`, `xen_hair`, `xen_tree` (+ `xen_ttrigger`), `xen_spore_small/medium/large` (+ `xen_hull`) |
 | `monsters.rs` | `monster_hevsuit_dead` (with the `CBaseMonster` corpse code: fall, `DeadTakeDamage`, gibbing, fade) |
 | `items.rs` | `item_healthkit`, `item_battery`, `item_antidote`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins |
-| `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`), `game_score` (+ `AddPoints` / `AddPointsToTeam`), `game_team_master`, `game_team_set`, `game_player_team` |
+| `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`), `game_score` (+ `AddPoints` / `AddPointsToTeam`), `game_end`, `game_zone_player`, `game_player_hurt`, `game_counter`, `game_counter_set`, `game_team_master`, `game_team_set`, `game_player_team` |
 
 How the SDK patterns map to Rust:
 
@@ -109,7 +109,12 @@ How the SDK patterns map to Rust:
 | `env_shooter`, `gibshooter`, `gib` | SDK | Gib bounce sounds use TS slow-motion pitch. `gibshooter` gibs bleed red: up to 5 blood decals, one per airborne bounce (`BounceGibTouch` 0xb1ebc, `violence_hblood`); `env_shooter` gibs don't bleed. |
 | `cycler` | SDK h_cycler.cpp | Server-side studio animation (`CCycler::Think` 0xc778c): bone controllers zeroed, `frame` advanced, one-shot sequences restart. +use toggles the animation. Damage steps to the next sequence (wrapping to 0) while animating, or one 0.1 s frame step while paused. |
 | `env_blood` | SDK effects.cpp `CBlood` | `color` 1 = yellow, else red; `amount`. Drips (`TE_BLOODSPRITE`, amount doubled for multiplayer) or, with spawnflag 2, a stream (red becomes colour 70). Spawnflags 1 random direction, 4 at the activator's (or player 1's) eyes, 8 blood decal along the direction. |
-| `game_score` | SDK maprules.cpp | `points` to the activating player (`AddPoints`, `ScoreInfo` to all), or with spawnflag 2 to each of their teammates; without spawnflag 1 a score isn't taken below 0. `master` gates it. |
+| `game_score` | SDK maprules.cpp (same in TS 0xcc4d8..0xcc568) | `points` (`strtol`, into `frags`) to the activating player (`IsPlayer`: any slot player; `AddPoints` 0xd9e18, `ScoreInfo` to all), or with spawnflag 2 to each other slot player who is a teammate (`AddPointsToTeam` 0xd9f68, `PlayerRelationship`: never outside teamplay); without spawnflag 1 a score isn't taken below 0 (the floor is `(int)-frags`). `frags` is read with a C `(int)` cast (`maprules::x87_int`: truncation, 0x80000000 for NaN/out of range). `master` gates it. |
+| `game_end` | SDK maprules.cpp (TS 0xcc668) | `EndMultiplayerGame`: the intermission (`frame::go_to_intermission`); nothing when `deathmatch` was 0 (TS's `CHalfLifeRules`). `master` gates it. |
+| `game_zone_player` | SDK maprules.cpp (TS 0xcce90..0xcd148) | Brush (`CRuleBrushEntity::Spawn`: model set, invisible, not solid). Keys `intarget`, `outtarget`, `incount`, `outcount`, `master`. On use, each slot player (`UTIL_PlayerByIndex`, players who left included) is inside when `pfnTraceModel` from its origin to its origin with the human hull (head hull when `FL_DUCKING`) against the brush starts solid; it fires `intarget`/`outtarget` with the player as activator, our activator as caller and our use type and value. Then `incount`/`outcount` get `USE_SET` with the counts (activator, us as caller). |
+| `game_player_hurt` | SDK maprules.cpp (TS 0xcd16c) | A player activator takes `dmg` (`DMG_GENERIC`, the entity as inflictor and attacker), or `-dmg` health (`TakeHealth`) when `dmg` is negative; then the targets fire with our use type and value; removed after firing with flag 1. `master` gates it. |
+| `game_counter` | SDK maprules.cpp (TS 0xcd24c..0xce510) | Spawn keeps `(int)frags` in `dmg`. `USE_OFF` counts down, `USE_ON`/`USE_TOGGLE` up, `USE_SET` sets `(int)value`. When `(int)frags == (int)health` the targets get `USE_TOGGLE`; flag 1 removes it, flag 2 resets the count to `dmg`. `master` gates it. |
+| `game_counter_set` | SDK maprules.cpp (TS 0xcd418) | `USE_SET` with its `frags` to its targets; removed after firing with flag 1. `master` gates it. |
 | `monster_hevsuit_dead` | SDK `CDeadHEV` | `models/player.mdl`, body 1, sequence from `pose` (0–3: `deadback`, `deadsitting`, `deadstomach`, `deadtable`; a missing sequence logs "Dead hevsuit with bad pose" and gets `EF_BRIGHTFIELD`). Falls (`MOVETYPE_TOSS`) and takes its sequence box on landing. Crush/fall/blast/sonic/club damage wears it down (10 %) and gibs it when a hit reaches its health: head gib + 4 human gibs with blood, `common/bodysplat.wav`; with `violence_hgibs 0` it fades out instead. |
 | `xen_plantlight`, `xen_hair`, `xen_tree`, `xen_ttrigger`, `xen_spore_small`, `xen_spore_medium`, `xen_spore_large`, `xen_hull` | SDK xen.cpp | Studio animation through `animating.rs`. The light plant ducks on player touch (glow sprite attached to attachment 1 goes `EF_NODRAW`, targets fired off) and rises 5 s later (targets on). The tree swings at anything touching its 48×48×128 trigger 64 units ahead or shooting it, and its `TREE_AE_ATTACK` model event deals 25 crush/slash, punch 15 and a 100 u/s shove. Large spores add five invisible `xen_hull` leg boxes. |
 | `item_healthkit`, `item_battery`, `item_antidote` | **TS** pickup rules | See §3.3. |
@@ -455,9 +460,9 @@ covers:
      first takes or leaves train controls (`drive::player_use`). The weapons' PostThink calls it.
    * TS entities get `Use` through `weapons::use_by_player` / `entities::ts::use_by_player`,
      because the player is being dispatched; stock ones through `Entity::use_`.
-4. **Round restart.** `CTSGameRules::RespawnEntities` should call
-   `stock::breakable::respawn_all(false)`. This covers breakables, breakable pushables and
-   breakable doors.
+4. **Round restart.** `CTSGameRules::RespawnEntities` (`entities::ts::respawn_entities`) calls
+   `stock::breakable::respawn_all(false)` first, standing in for the `info_breakable` helpers:
+   breakables and breakable pushables with `respawntime` ≥ 0, and every door.
 5. **Player state the SDK keeps on `CBasePlayer`.**
    * The health decay above `max_health` (PreThink, `+0x73c`) belongs to the rules package.
    * Kevlar: `items::player_take_armor` calls the one `TakeArmor` port, `weapons::take_armor`
@@ -500,9 +505,15 @@ covers:
 
 ### 7.1 Deviations in the #22 classes
 
-* **`game_score` score message.** `add_points` changes `frags` directly and broadcasts `ScoreInfo`
-  through the player object; when the scoring player is the entity currently being dispatched
-  (a `game_score` fired from that player's own +use), the message waits for the next score update.
+* **Map rules and a mid-dispatch activator.** When the activator is the entity being dispatched
+  (its own +use fired the button that fired us), its object is taken out: `game_score`'s
+  `ScoreInfo` (it reads the deaths from the player object) and `game_player_hurt`'s damage go out
+  as soon as that dispatch returns, in the same frame; TS does both inside the `Use`, so the
+  hurt's targets fire before the damage here. `frags` and `game_player_hurt`'s healing change at
+  once.
+* **NULL activator.** TS's `game_score` and `game_player_hurt` call `IsPlayer()` through the
+  activator and crash on a NULL one; the port treats it as not a player (the hurt still fires its
+  targets).
 * **Precache location.** TS precaches the blood sprites in `W_Precache` and the gib models in
   `CWorld::Precache`; the port does both from worldspawn (`blood::precache_world`). German gibs
   (`sv_language 1`) aren't supported.

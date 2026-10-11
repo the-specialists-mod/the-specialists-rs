@@ -13,7 +13,6 @@ pub mod triggers;
 use super::link_entities;
 use crate::player::Player;
 use crate::world::Cx;
-use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -177,33 +176,52 @@ pub fn use_by_player(ent: &mut dyn std::any::Any, icx: &mut Cx, p: &mut Player, 
     true
 }
 
-/// `RespawnEntities` (round restart): hidden ground items and map power-ups come back now.
+/// `CTSGameRules::RespawnEntities` (0x77764), from `RestartRound`:
+/// 1. every broken breakable (`info_breakable` → `BreakableRespawn(false)`);
+/// 2. in round modes 2/3 or LMS, `CTSGroundWeapon::Fall` on every `ts_groundweapon` (only that
+///    classname: not the HL remaps or ground ammo), which shows a taken one again at once;
+/// 3. in LMS, `CTSPowerUp::Fall` on every `ts_powerup`;
+/// 4. `CTSFlag::RespawnFlag` on every case.
+///
+/// TS shares one `UTIL_FindEntityByClassname` cursor between the four loops; each loop only
+/// stops early on an entity without an edict (or worldspawn), which no class here can be, so
+/// every loop starts from the beginning.
 pub fn respawn_entities() {
-    let eng = engine();
-    for class in [c"ts_groundweapon", c"ts_groundammo", c"ts_powerup"] {
-        let mut it = std::ptr::null_mut();
-        loop {
-            it = eng.find_by_string(it, c"classname", class);
-            if it.is_null() {
-                break;
-            }
-            let v = it.v();
-            if v.effects & EF_NODRAW as i32 != 0 {
-                v.nextthink = eng.time() + 0.1;
-            }
-        }
-    }
-    // Every case goes home (`CTSFlag::RespawnFlag`).
-    let mut it = std::ptr::null_mut();
-    loop {
-        it = eng.find_by_string(it, c"classname", c"ts_flag");
-        if it.is_null() {
-            break;
-        }
-        crate::world::dispatch(it, |ent, cx| {
-            if let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<ctb::Flag>() {
-                f.round_respawn(cx);
+    crate::entities::stock::breakable::respawn_all(false);
+    let (round_mode, lms) = crate::rules::state::with(|g| {
+        (matches!(g.mode, crate::rules::state::Mode::RoundTdm | crate::rules::state::Mode::Objective), g.lms)
+    });
+    if round_mode || lms {
+        for_each_class(c"ts_groundweapon", |ent, cx| {
+            if let Some(g) = ent.downcast_mut::<ground::GroundWeapon>() {
+                g.fall(cx);
             }
         });
+    }
+    if lms {
+        for_each_class(c"ts_powerup", |ent, cx| {
+            if let Some(p) = ent.downcast_mut::<powerup::PowerUp>() {
+                p.fall(cx);
+            }
+        });
+    }
+    for_each_class(c"ts_flag", |ent, cx| {
+        if let Some(f) = ent.downcast_mut::<ctb::Flag>() {
+            f.round_respawn(cx);
+        }
+    });
+}
+
+/// `UTIL_FindEntityByClassname` over `class`, dispatching each match (the next one is looked up
+/// after the call, as TS's loops do, so an entity removed by the call is still stepped past).
+fn for_each_class(class: &CStr, mut f: impl FnMut(&mut dyn std::any::Any, &mut Cx)) {
+    let eng = engine();
+    let mut it = std::ptr::null_mut();
+    loop {
+        it = eng.find_by_string(it, c"classname", class);
+        if it.is_null() {
+            return;
+        }
+        crate::world::dispatch(it, |ent, cx| f(ent as &mut dyn std::any::Any, cx));
     }
 }

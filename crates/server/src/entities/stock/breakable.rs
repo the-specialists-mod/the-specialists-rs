@@ -686,8 +686,12 @@ impl<const PUSH: bool> Breakable<PUSH> {
     }
 }
 
-/// Respawns every broken breakable / breakable door (TS `CTSGameRules::RespawnEntities`, which
-/// calls `BreakableRespawn(false)` on each `info_breakable`). For the rules package.
+/// Respawns every broken breakable / breakable door: TS `CTSGameRules::RespawnEntities`
+/// (0x77764) calls `CInfoBreakable::RespawnThink` (0x75da0) on each `info_breakable` helper,
+/// which drops the helper's pending timer and calls its owner's `BreakableRespawn(false)`.
+/// Helpers exist for every `func_breakable` and door with `respawntime` ≥ 0 and, since
+/// `CPushable::Spawn` (0xc174c) only runs `CBreakable::Spawn` then, for breakable
+/// `func_pushable`s (flag 128). The port has no helpers, so it walks the owners in index order.
 pub fn respawn_all(force: bool) {
     let eng = engine();
     for i in 1..eng.max_entities() {
@@ -698,9 +702,13 @@ pub fn respawn_all(force: bool) {
         world::dispatch(e, |ent, cx| {
             let any = ent as &mut dyn std::any::Any;
             if let Some(b) = any.downcast_mut::<FuncBreakable>() {
-                b.breakable_respawn(cx, force);
+                if b.respawn_time >= 0.0 {
+                    b.breakable_respawn(cx, force);
+                }
             } else if let Some(b) = any.downcast_mut::<FuncPushable>() {
-                b.breakable_respawn(cx, force);
+                if FuncPushable::breakable_flag(cx) && b.respawn_time >= 0.0 {
+                    b.breakable_respawn(cx, force);
+                }
             } else if let Some(d) = any.downcast_mut::<super::doors::Door>() {
                 d.breakable_respawn(cx, force);
             }

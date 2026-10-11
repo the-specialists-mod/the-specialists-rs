@@ -108,6 +108,28 @@ impl PowerUp {
         self.permanent = permanent;
     }
 
+    /// `CTSPowerUp::Fall` (0x983cc): the falling think, and what `RespawnEntities` calls on
+    /// every power-up in LMS. Hidden (every 5 s) with `nopowerup 1` or in round modes 2/3;
+    /// otherwise it becomes pickable once on the ground, and a temporary one past its life goes.
+    /// It leaves the think (`phase`) alone, as TS does, so a waiting power-up hidden from
+    /// `RespawnEntities` keeps its `WaitThink` and `WaitTouch`.
+    pub fn fall(&mut self, cx: &mut Cx) {
+        let hidden_by_rules =
+            cvars::f(c"nopowerup") == 1.0 || matches!(state::with(|g| g.mode), state::Mode::RoundTdm | state::Mode::Objective);
+        if hidden_by_rules {
+            cx.think_in(5.0);
+            cx.pev().effects = EF_NODRAW as i32;
+            return;
+        }
+        cx.think_in(0.1);
+        if cx.pev().flags & FL_ONGROUND as i32 != 0 {
+            self.on_ground(cx);
+        }
+        if !self.permanent && self.expire < cx.time() {
+            crate::entities::remove(cx.edict);
+        }
+    }
+
     fn on_ground(&mut self, cx: &mut Cx) {
         let e = cx.edict;
         let v = cx.pev();
@@ -221,26 +243,8 @@ impl Entity for PowerUp {
 
     fn think(&mut self, cx: &mut Cx) {
         let now = cx.time();
-        let hidden_by_rules =
-            cvars::f(c"nopowerup") == 1.0 || matches!(state::with(|g| g.mode), state::Mode::RoundTdm | state::Mode::Objective);
         match self.phase {
-            Phase::Falling | Phase::Hidden => {
-                // `Fall`
-                if hidden_by_rules {
-                    cx.think_in(5.0);
-                    cx.pev().effects = EF_NODRAW as i32;
-                    self.phase = Phase::Hidden;
-                    return;
-                }
-                cx.think_in(0.1);
-                self.phase = Phase::Falling;
-                if cx.pev().flags & FL_ONGROUND as i32 != 0 || cx.pev().movetype == MOVETYPE_NONE as i32 {
-                    self.on_ground(cx);
-                }
-                if !self.permanent && self.expire < now {
-                    crate::entities::remove(cx.edict);
-                }
-            }
+            Phase::Falling | Phase::Hidden => self.fall(cx),
             Phase::Waiting => {
                 // `WaitThink`: temporary power-ups fade over their last 30 s.
                 cx.think_in(1.0);

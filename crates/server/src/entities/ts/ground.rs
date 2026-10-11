@@ -93,7 +93,9 @@ impl Ground {
         } else if !self.landed {
             put_on_wall(cx);
         }
-        engine().emit_sound(cx.edict, CHAN_STATIC as i32, c"items/weapondrop1.wav", 1.0, 0.8, 0, 100);
+        // TS's slow-motion `EMIT_SOUND_DYN` (factor 0.5), as in `CTSGroundWeapon::Fall` (0xa2150)
+        // and `CTSGroundAmmo::Fall` (0xa2d6c).
+        crate::entities::stock::explode::emit_sound_slow(cx.edict, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, 0.8, 0, 100, 0.5);
         // OnGround
         let e = cx.edict;
         let v = cx.pev();
@@ -224,6 +226,13 @@ impl GroundWeapon {
         }
     }
 
+    /// `CTSGroundWeapon::Fall` (0xa2150), its think, which `RespawnEntities` also calls directly:
+    /// a weapon that has landed before (taken or not) shows again at once and drops its respawn
+    /// timer.
+    pub fn fall(&mut self, cx: &mut Cx) {
+        self.ground.fall(cx, false);
+    }
+
     /// +use from the player's own think (the player is the dispatched entity).
     pub fn player_use(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
         if self.give(cx, p, pcx) {
@@ -277,7 +286,7 @@ impl Entity for GroundWeapon {
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        self.ground.fall(cx, false);
+        self.fall(cx);
     }
 
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
