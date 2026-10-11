@@ -811,6 +811,10 @@ covers:
   same. TS sets `gDisplayTitle` from the `gametitle` flag but never reads it, and the
   `GameTitle` message is never sent, so the port keeps only the spawnflag.
 * **`cycler` spawn** skips `ChangeYaw(360)`, a no-op because `ideal_yaw` was just set to the yaw.
+* **Malformed studio models** (`goldsrc::ext::movement::StudioHdr`). The header's offsets wrap as
+  in C pointer arithmetic instead of overflowing, `LookupActivity`'s weight sum wraps like TS's
+  `int`, and a sequence's event list and the bone controllers are capped at 1024 and 8 entries
+  (`studiomdl`'s own controller limit) instead of sizing an allocation from the file.
 * **`monster_hevsuit_dead`**, `env_explosion` and `cycler_wreckage` keep only the parts of
   `CBaseMonster` that can show without AI (`MonsterBase`, §6 item 7): `m_bitsDamageType`, the
   conditions, `m_vecEnemyLKP` and the monster states aren't kept, since nothing reads them.

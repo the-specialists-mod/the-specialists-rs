@@ -36,7 +36,7 @@ fn team_color(team: i32) -> [f32; 3] {
 }
 
 fn send_flag(state_: u8, id: i32, team: i32, holder: i32) {
-    let m = TsFlag { state: state_, id: id as u8, team: (team + 1) as u8, holder: holder as u8 };
+    let m = TsFlag { state: state_, id: id as u8, team: team.wrapping_add(1) as u8, holder: holder as u8 };
     msg::all(Msg::TsFlag, |w| m.write(w));
 }
 
@@ -178,7 +178,7 @@ impl Entity for Briefcase {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"contents" => self.contents = String::from_utf8_lossy(&value.to_bytes()[..value.to_bytes().len().min(31)]).into_owned(),
-            b"ownerteam" => self.owner_team = crate::entities::stock::base::kv_i(value) - 1,
+            b"ownerteam" => self.owner_team = crate::entities::stock::base::kv_i(value).wrapping_sub(1),
             _ => return false,
         }
         true

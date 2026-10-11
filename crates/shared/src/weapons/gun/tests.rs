@@ -288,6 +288,29 @@ fn magazine_reload_moves_rounds_after_reload_time() {
     assert_eq!(g.status[id::AK47 as usize].in_reload, 0);
 }
 
+/// Prediction runs on networked clip/reserve values: out-of-range ones wrap like TS's C ints
+/// instead of overflowing (an abort under `panic = "abort"`).
+#[test]
+fn extreme_networked_values_wrap() {
+    let (mut g, mut h) = armed(id::AK47);
+    let ammo = info(id::AK47).unwrap().ammo as usize;
+    g.status[id::AK47 as usize].clip = i32::MIN;
+    g.status[id::AK47 as usize].in_reload = 1;
+    g.reserve[ammo] = i32::MAX;
+    let mut last = 0;
+    frame(&mut g, &mut h, 0, &mut last, 0.01);
+    assert_eq!(g.status[id::AK47 as usize].in_reload, 0);
+    // Firing with a clip of i32::MIN.
+    let (mut g, mut h) = armed(id::AK47);
+    g.status[id::AK47 as usize].clip = i32::MIN;
+    frame(&mut g, &mut h, IN_RELOAD, &mut last, 0.01);
+    g.status[id::AK47 as usize].mode = u8::MAX;
+    g.switch_fire_mode();
+    g.reserve[ammo] = 1;
+    assert!(g.add_ammo(ammo as u8, i32::MAX, i32::MAX));
+    assert_eq!(g.reserve[ammo], i32::MAX);
+}
+
 #[test]
 fn shotgun_reload_three_phases() {
     let (mut g, mut h) = armed(id::BENELLI);

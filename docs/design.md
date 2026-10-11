@@ -291,7 +291,17 @@ renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::st
   `.rdata`, as MSVC lays it out. MinGW's `.edata` breaks that, so the xtask renames the sections of
   every Windows DLL it installs or packages (see `docs/validation.md` §4). DLLs straight out of
   `cargo build` are not patched: use `cargo xtask install`/`dist`.
-* `panic = "abort"`. A panic hook writes `ts_server_panic.log` / `ts_client_panic.log`.
+* `panic = "abort"`. A panic hook writes `ts_server_panic.log` / `ts_client_panic.log`, then the
+  whole engine process ends, so game code must not panic on anything the engine, a map, a model,
+  a save, a cvar or a client can feed it. `catch_unwind` at the export boundaries is no help
+  under `abort` (nothing unwinds to catch), and unwinding across `extern "C"` is undefined, so the
+  strategy stays: guard the input instead (checked indexing, no `RefCell` borrow held across a
+  call that can borrow it again, wrapping C arithmetic where TS's C would wrap).
+* **Integer overflow wraps** in every installed build. `cargo xtask install` defaults to the dev
+  profile, which has `overflow-checks = false` so that an overflow does what TS's C (and the
+  release profile) does instead of aborting; `cargo test` keeps the checks (`profile.test`).
+  Division by zero and `i32::MIN / -1` still panic in every profile, so divisors from data are
+  guarded.
 
 ## 9. Validation
 

@@ -355,6 +355,15 @@ Port additions and defensive checks (TS has no equivalent, or would read invalid
   which therefore deploys a weapon the player already holds instead of kung fu.
 * `CBulletManager::UpdateBullet` reads the shooter without a check; the port drops a bullet
   whose shooter edict is null or freed.
+* `BuyArmament` buys each `tka` ammo type as many times as the client asked (any `int`); the
+  port stops at the first purchase that adds nothing (the reserve is full or the type invalid),
+  since every later one would add nothing too, instead of looping billions of times at spawn.
+* `tki`/`tkw`/`tka` and `weapon_<n>` parse with `sscanf("%i")`; `-2147483648` negates with C
+  wrapping rather than overflowing. Gun arithmetic on clips, reserves and fire modes (which the
+  client also runs on networked values for prediction) wraps like TS's C `int`s; `AddAmmo`'s sum
+  saturates before the `max_carry` clamp. `UTIL_SharedRandomLong` over the full 32-bit range
+  (`range` wraps to 0, a division by zero in TS) returns `low + rnum`.
+* `DropWeapon` on an owned id without a table entry returns instead of reading TS's entry 0.
 * TS precaches `models/p_pdw_sil.mdl`, shipped as `p_pdw_Sil.mdl`. Engines that look files up
   case-insensitively (Windows, FWGS) load it under TS's name; on a case-sensitive server, where TS
   stops at map load, the port precaches the shipped spelling instead

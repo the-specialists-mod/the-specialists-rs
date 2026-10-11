@@ -170,13 +170,14 @@ fn events_in_range(info: &SeqInfo, events: &[StudioEvent], start: f32, end: f32)
 pub fn lookup_activity(e: *mut edict_t, activity: i32) -> i32 {
     let Some(h) = model_ptr(e) else { return 0 };
     let eng = engine();
-    let mut total = 0;
+    let mut total = 0i32;
     let mut seq = -1;
     for i in 0..h.num_sequences() {
         let Some((a, weight)) = h.sequence_activity(i) else { continue };
         if a == activity {
-            total += weight;
-            if total == 0 || eng.random_long(0, total - 1) < weight {
+            // The weights come from the model file: C int arithmetic (wrapping).
+            total = total.wrapping_add(weight);
+            if total == 0 || eng.random_long(0, total.wrapping_sub(1)) < weight {
                 seq = i;
             }
         }
