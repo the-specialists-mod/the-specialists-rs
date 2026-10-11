@@ -361,11 +361,14 @@ the prediction both compute:
 Where the builds differ the function takes a `shared::pm::Arith` (`GunHost::arith`): the server
 passes its `ts_pm_arith` selection (default `msvc`, `mp.dll`, which is what every client
 predicts with; `gcc` for `ts_i386.so`), the prediction `Arith::CLIENT`. With the default the
-server and the prediction compute these values bit for bit alike. Not reproduced: `client.dll`
-grows and decays the penalty only on a command's first prediction (`g_runfuncs`; the port's
-prediction runs them on every prediction but keeps the gun state only from first predictions), and the server's
-`PreThink` sees the previous command's frame time (the engine sets it before `PostThink`), which
-the prediction can't know. NaN inputs take each build's compare direction.
+server and the prediction compute these values bit for bit alike. As in `client.dll`, the
+prediction adds, grows and decays the penalty, and moves the last-shot time, only on a command's
+first prediction (`g_runfuncs`, `GunHost::first_prediction`; a re-predicted shot's spread has no
+penalty), and decays it after the timers, dead or alive (`0x100040a5`), where the server's
+`PreThink` decays it before the weapon frame while alive. TS's server and client also differ in
+the frame time that decay uses: `PreThink` sees the previous command's (the engine sets
+`frametime` before `PostThink`), the client the current one; both sides of the port keep their
+build's. NaN inputs take each build's compare direction.
 
 Remaining deviations from TS:
 

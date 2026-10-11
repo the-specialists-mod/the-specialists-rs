@@ -120,9 +120,10 @@ GoldSrc runs command-line `+cvar`s before the game registers its cvars, so put g
 * **Dedicated server:** TS has no bots there (`addbot` prints "Bots only in listen servers.").
   The port adds `ts_bot_quota N`, which keeps N bots running TS's AI; put it in `ts/server.cfg`.
 
-The port also adds `ts_pm_arith` (default `msvc`): player movement is computed as TS's Windows
-server computes it, on every platform, so clients predict it exactly. `ts_pm_arith gcc` makes a
-server compute it as TS's Linux server did instead.
+The port also adds `ts_pm_arith` (default `msvc`): player movement and the weapon maths
+(timers, spread, kick) are computed as TS's Windows server computes them, on every platform, so
+clients predict them exactly. `ts_pm_arith gcc` makes a server compute them as TS's Linux server
+did instead.
 
 ## 6. Check that the port is running
 

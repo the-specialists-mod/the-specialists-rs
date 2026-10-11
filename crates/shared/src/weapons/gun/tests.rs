@@ -34,6 +34,8 @@ struct Mock {
     update_now: u32,
     /// The build reproduced (`Arith::CLIENT` unless set).
     arith: Option<Arith>,
+    /// A client re-prediction (`g_runfuncs` 0).
+    repredict: bool,
 }
 
 impl GunHost for Mock {
@@ -45,6 +47,9 @@ impl GunHost for Mock {
     }
     fn arith(&self) -> Arith {
         self.arith.unwrap_or(Arith::CLIENT)
+    }
+    fn first_prediction(&self) -> bool {
+        !self.repredict
     }
     fn powerups(&self) -> u16 {
         self.powerups
@@ -343,8 +348,25 @@ fn spread_penalty_grows_caps_and_decays() {
     let last_spread = h.events.iter().rev().find(|e| e.0 == Event::Fire).unwrap().1.f1;
     assert!(last_spread > 0.01);
     let p = g.spread_penalty;
-    g.pre_frame(Arith::CLIENT, 0.5, true);
+    g.decay_spread(Arith::CLIENT, 0.5);
     assert!((g.spread_penalty - (p - 0.05).max(0.0)).abs() < 1e-6);
+}
+
+/// `client.dll`'s `ScaleSpread` (`0x10008100`) neither adds nor grows the penalty, nor moves the
+/// last-shot time, when re-predicting; the silencer's 0.875 still applies.
+#[test]
+fn spread_penalty_only_on_first_prediction() {
+    let mut g = Gun { spread_penalty: 0.05, last_shot: 1.0, ..Default::default() };
+    let mut h = Mock { time: 2.0, repredict: true, ..Default::default() };
+    let mut spread = 0.04;
+    g.scale_spread(&mut spread, 0.01, true, &h);
+    assert_eq!((spread, g.spread_penalty, g.last_shot), (0.04 * 0.875, 0.05, 1.0));
+    h.repredict = false;
+    let mut spread = 0.04;
+    g.scale_spread(&mut spread, 0.01, false, &h);
+    assert_eq!(spread, 0.04 + 0.05);
+    assert!(g.spread_penalty > 0.05);
+    assert_eq!(g.last_shot, 2.0);
 }
 
 #[test]

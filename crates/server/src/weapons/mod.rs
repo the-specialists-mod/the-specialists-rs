@@ -275,6 +275,9 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     let dt = Gun::timer_dt(arith, engine().globals().frametime, shared::weapons::spread::fixed_slow_amt(pev.fuser1), p.active_powerup);
     let alive = Player::is_alive(cx);
     p.inv.gun.pre_frame(arith, dt, alive);
+    if alive {
+        p.inv.gun.decay_spread(arith, dt);
+    }
     p.inv.sv.disarm = (p.inv.sv.disarm - dt * 5.0).max(0.0);
     // BlockPlayer expiry (PreThink: clears iuser4 bit 1 when the timer runs out).
     let sv = &mut p.inv.sv;

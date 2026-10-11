@@ -154,6 +154,12 @@ pub trait GunHost {
     /// The TS build whose floating point this side reproduces ([`spread`]): the server's
     /// `ts_pm_arith` selection, `Arith::CLIENT` for the prediction.
     fn arith(&self) -> Arith;
+    /// The client's `g_runfuncs` (`0x100d5cbc`): this command is predicted for the first time.
+    /// `client.dll`'s `ScaleSpread` (`0x10008100`) only adds and grows the recoil penalty then.
+    /// Always true on the server.
+    fn first_prediction(&self) -> bool {
+        true
+    }
     /// Active power-up bits (`pl+0x724`, `shared::ts::powerup`).
     fn powerups(&self) -> u16;
     /// Permanent kung-fu power-up (x2 melee damage).
@@ -438,8 +444,9 @@ impl Gun {
         spread::timer_step(arith, frametime, slowmul, powerups & powerup::DOUBLE_FIRERATE != 0)
     }
 
-    /// The weapon parts of `CBasePlayer::PreThink` 0x908cc: melee windows, recoil penalty decay
-    /// (0.1/s) and kung-fu power regeneration (15/s). `dt` as for [`Gun::timer_dt`].
+    /// The weapon parts of `CBasePlayer::PreThink` 0x908cc: melee windows and kung-fu power
+    /// regeneration (15/s); the server's PreThink also runs [`Gun::decay_spread`] while alive.
+    /// `dt` as for [`Gun::timer_dt`].
     pub fn pre_frame(&mut self, arith: Arith, dt: f32, alive: bool) {
         if self.melee_window != 0.0 {
             self.melee_window = (self.melee_window - dt).max(0.001);
@@ -448,7 +455,6 @@ impl Gun {
         self.block_katana = (self.block_katana - dt).max(0.0);
         self.block_knife = (self.block_knife - dt).max(0.0);
         if alive {
-            self.spread_penalty = spread::decay_spread_penalty(arith, self.spread_penalty, dt);
             self.melee_bar = spread::regen_melee_bar(arith, self.melee_bar, dt);
         }
         if self.melee_window != 0.0 {
@@ -459,6 +465,13 @@ impl Gun {
             }
             self.block_kungfu = 0.0;
         }
+    }
+
+    /// The recoil penalty's decay (0.1/s, [`spread::decay_spread_penalty`]): the server's
+    /// `PreThink` (0x80d88) while alive; the client's `HUD_WeaponsPostThink` after the timers, on
+    /// a first prediction only, dead or alive (`0x100040a5`).
+    pub fn decay_spread(&mut self, arith: Arith, dt: f32) {
+        self.spread_penalty = spread::decay_spread_penalty(arith, self.spread_penalty, dt);
     }
 
     /// `CBasePlayer::UpdateMeleeBar(cost)` 0x9650c.
@@ -708,12 +721,13 @@ impl Gun {
         }
     }
 
-    /// `CTSGun::ScaleSpread` 0x802a8: adds the recoil penalty to `spread` and grows it.
+    /// `CTSGun::ScaleSpread` 0x802a8: adds the recoil penalty to `spread` and grows it. The
+    /// client's (`0x10008100`) does both, and the last-shot update, on a first prediction only.
     pub fn scale_spread(&mut self, spread: &mut f32, akick: f32, silenced: bool, host: &impl GunHost) {
         if silenced {
             *spread *= 0.875;
         }
-        if akick > 0.0 {
+        if akick > 0.0 && host.first_prediction() {
             let mut k = if Self::double_fire_rate(host) { 1.0 } else { 2.0 };
             if silenced {
                 k *= 0.775;

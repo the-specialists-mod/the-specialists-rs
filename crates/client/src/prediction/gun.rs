@@ -308,6 +308,9 @@ impl GunHost for ClientHost<'_> {
     fn arith(&self) -> Arith {
         Arith::CLIENT
     }
+    fn first_prediction(&self) -> bool {
+        self.runfuncs
+    }
     fn powerups(&self) -> u16 {
         self.powerups
     }
@@ -511,14 +514,17 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         body,
         silenced,
     };
-    // Same order as the server: PreThink (windows, penalty decay, bar), the weapon frame, then
-    // the timers.
+    // Same order as the server: PreThink (windows, bar), the weapon frame, then the timers. The
+    // penalty decays after the timers, on a first prediction only, dead or alive (`0x100040a5`).
     let dt = Gun::timer_dt(Arith::CLIENT, frame_time(cmd.msec), spread::fixed_slow_amt(c.fuser1), powerups);
     gun.pre_frame(Arith::CLIENT, dt, !dead);
     if post_frame_gate(c, state::with(|s| s.health)) {
         gun.weapon_post_frame(&mut host);
     }
     gun.decrement_timers(dt);
+    if runfuncs {
+        gun.decay_spread(Arith::CLIENT, dt);
+    }
 
     let (fov, viewmodel, iuser4, weaponanim) = (host.fov, host.viewmodel, host.iuser4, host.weaponanim);
     pack_clientdata(&gun, powerups, &mut to.client);
