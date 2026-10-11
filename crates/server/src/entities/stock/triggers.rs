@@ -9,11 +9,12 @@ use super::base::*;
 use super::trains::{ent_handle, ts_toggle};
 use crate::entities::{fire_targets, remove};
 use crate::messages::{self, Msg};
+use crate::rules::has_player;
 use crate::save::{Animating, BaseFuncs, Fields, tables};
 use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, EHandle, is_player, vec};
+use goldsrc::ext::entities::{ATTN_NORM, EHandle, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::cell::RefCell;
@@ -121,7 +122,7 @@ pub fn update_geiger_counter(player: *mut edict_t) {
 
 /// `UTIL_ShowMessage`: `HudText` to one player.
 pub fn show_message(text: &CStr, player: *mut edict_t) {
-    if !is_player(player) {
+    if !has_player(player) {
         return;
     }
     messages::one(Msg::HudText, player).string(text).end();
@@ -211,7 +212,7 @@ impl<const KIND: u8> Trigger<KIND> {
     fn multi_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let ov = other.v();
         let sf = cx.pev().spawnflags;
-        if (ov.flags & FL_CLIENT as i32 != 0 && sf & SF_TRIGGER_NOCLIENTS == 0)
+        if (crate::rules::ts_flags(other) & FL_CLIENT as i32 != 0 && sf & SF_TRIGGER_NOCLIENTS == 0)
             || (ov.flags & FL_MONSTER as i32 != 0 && sf & SF_TRIGGER_ALLOWMONSTERS != 0)
             || (sf & SF_TRIGGER_PUSHABLES != 0 && s(ov.classname) == c"func_pushable")
         {
@@ -235,7 +236,7 @@ impl<const KIND: u8> Trigger<KIND> {
         self.t.activator = EHandle::new(activator);
         self.t.use_targets(me, activator, UseType::Toggle, 0.0);
         let msg = cx.pev().message;
-        if msg != 0 && is_player(activator) {
+        if msg != 0 && has_player(activator) {
             show_message(s(msg), activator);
         }
         if self.t.wait > 0.0 {
@@ -285,7 +286,7 @@ impl<const KIND: u8> Trigger<KIND> {
 
     /// `CTriggerSave::SaveTouch` (0xe94c8).
     fn save_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !is_master_triggered(self.t.master, other) || !is_player(other) {
+        if !is_master_triggered(self.t.master, other) || !has_player(other) {
             return;
         }
         self.t.touch = None;
@@ -302,7 +303,7 @@ impl<const KIND: u8> Trigger<KIND> {
 
     /// `CTriggerEndSection::EndSectionUse` (0xe9560): a net client (player) or no activator.
     fn end_section_use(&mut self, cx: &mut Cx, activator: *mut edict_t) {
-        if !activator.is_null() && !is_player(activator) {
+        if !activator.is_null() && !has_player(activator) {
             return;
         }
         self.use_fn = None;
@@ -311,7 +312,7 @@ impl<const KIND: u8> Trigger<KIND> {
 
     /// `CTriggerEndSection::EndSectionTouch` (0xe967c).
     fn end_section_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !is_player(other) {
+        if !has_player(other) {
             return;
         }
         self.t.touch = None;
@@ -387,7 +388,7 @@ impl<const KIND: u8> Trigger<KIND> {
             return;
         }
         let sf = cx.pev().spawnflags;
-        let player = is_player(other);
+        let player = has_player(other);
         if sf & SF_TRIGGER_HURT_CLIENTONLYTOUCH != 0 && !player {
             return;
         }
@@ -443,7 +444,7 @@ impl<const KIND: u8> Trigger<KIND> {
     fn teleport_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let eng = engine();
         let ov = other.v();
-        if ov.flags & (FL_CLIENT | FL_MONSTER) as i32 == 0 {
+        if crate::rules::ts_flags(other) & (FL_CLIENT | FL_MONSTER) as i32 == 0 {
             return;
         }
         if !is_master_triggered(self.t.master, other) {
@@ -453,7 +454,7 @@ impl<const KIND: u8> Trigger<KIND> {
         if sf & SF_TRIGGER_ALLOWMONSTERS == 0 && ov.flags & FL_MONSTER as i32 != 0 {
             return;
         }
-        let player = is_player(other);
+        let player = has_player(other);
         if sf & SF_TRIGGER_NOCLIENTS != 0 && player {
             return;
         }
@@ -506,7 +507,7 @@ impl<const KIND: u8> Trigger<KIND> {
     }
 
     fn gravity_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !is_player(other) {
+        if !has_player(other) {
             return;
         }
         let g = cx.pev().gravity;
@@ -653,7 +654,7 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
         match KIND {
             // CTriggerCDAudio::Touch (0xe6bb0), a virtual override.
             K_CDAUDIO => {
-                if is_player(other) {
+                if has_player(other) {
                     self.play_track(cx);
                 }
             }
@@ -1211,7 +1212,7 @@ pub struct TriggerCamera {
 
 /// `EnableControl(on)` on a player: FL_FROZEN.
 pub fn enable_control(p: *mut edict_t, on: bool) {
-    if is_player(p) {
+    if has_player(p) {
         let v = p.v();
         if on {
             v.flags &= !(FL_FROZEN as i32);
@@ -1406,7 +1407,7 @@ impl Entity for TriggerCamera {
             self.return_time = now;
             return;
         }
-        let activator = if is_player(activator) {
+        let activator = if has_player(activator) {
             activator
         } else {
             let first = eng.entity_of_index(1);
@@ -1693,7 +1694,7 @@ impl Entity for EnvMessage {
                 show_message(msg, eng.player(i));
             }
         } else {
-            let p = if is_player(activator) { activator } else { eng.entity_of_index(1) };
+            let p = if has_player(activator) { activator } else { eng.entity_of_index(1) };
             show_message(msg, p);
         }
         let v = cx.pev();

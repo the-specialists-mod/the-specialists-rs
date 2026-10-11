@@ -287,7 +287,7 @@ pub fn sub_use_targets(
         v.nextthink = eng.time() + delay;
         v.button = kind as i32;
         v.target = target;
-        v.owner = if goldsrc::ext::entities::is_player(activator) { activator } else { std::ptr::null_mut() };
+        v.owner = if crate::rules::has_player(activator) { activator } else { std::ptr::null_mut() };
         return;
     }
     if kill_target != 0 {

@@ -11,7 +11,6 @@ use crate::save::{BaseFuncs, Fields};
 use crate::world::{self, Cx, Entity};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::is_player;
-use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use shared::weapons::id;
@@ -364,7 +363,7 @@ fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, k: f32, bits: i32, an
     if tr.flFraction >= 1.0 || tr.pHit.is_null() {
         return;
     }
-    if !any_entity && e.is_player_edict(tr.pHit) {
+    if !any_entity && crate::rules::has_player(tr.pHit) {
         return;
     }
     let target = tr.pHit.v();
@@ -617,7 +616,7 @@ impl Knife {
         let dmg = self.damage();
         report_damage(|| format!("(debug){dmg:.6}\n"));
         self.needs_kungfu = false;
-        if ov.takedamage != 0.0 && e.is_player_edict(other) {
+        if ov.takedamage != 0.0 && crate::rules::has_player(other) {
             let gt = e.globals();
             let pev = cx.pev();
             let attacker = self.owner.unwrap_or(me);

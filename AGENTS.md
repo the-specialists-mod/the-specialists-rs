@@ -142,7 +142,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   raw `cargo build` DLLs.
 - **Don't trust `pfnGetPlayerUserId` for liveness.** After a client drops, FWGS still maps its
   edict to the freed slot (old user id, NULL `cl->edict`). `ClientDisconnect` clears
-  `FL_CLIENT`/`FL_FAKECLIENT`, which `players()`/`is_player()` rely on.
+  `FL_CLIENT`/`FL_FAKECLIENT`, which `players()`/`is_player()` rely on. TS keeps the flag, so ports
+  of TS player tests use `rules::has_player`/`ts_flags`/`slot_players`, never the flag.
 - **HL25 drops every bot when the last human leaves.**
 - **Server commands the game queues run late in scripted tests.** `pfnServerCommand` text (e.g.
   the bot quota's `kick`) goes to the end of the console buffer, behind a running `wait` script.

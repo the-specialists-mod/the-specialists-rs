@@ -199,6 +199,13 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
 
 ## 3. Constants and formulas (as implemented)
 
+* Max carry (`get_ammo_info(t)+0x0c`, `assets::max_carry`): the column `Set_ammo_count`
+  (0x7f2cc) last wrote for types 1..13 (`rules::state::ammo_column`). `W_Precache`'s
+  `compile_ammo_info` writes the default column at every map; the end of `CTSGameRules::Think`
+  writes `(int)ammocount` (truncated toward zero, not rounded) when it differs from the last
+  value, so a change counts from the next Think. 1, 2 and 3 are the reduced columns (9 x 19mm:
+  90, 30, 0; column 3 is 0 for every type); 0, 4, 5, negative or out-of-range values are the
+  switch's default, the full carry (210). `ammocount 5` therefore gives the full carry, not 0.
 * Timers: `dt = frametime * fuser1 * (DFR ? 1.5 : 1)`; NPA clamps at -1, the others at -0.001;
   `UTIL_WeaponTimeBase() = 0`.
 * Spread = `accuracy` (+ `pl.spread_penalty` via `ScaleSpread`), x0.875 silenced; growth

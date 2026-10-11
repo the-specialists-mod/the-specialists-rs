@@ -12,9 +12,10 @@
 use super::base::*;
 use crate::entities::remove;
 use crate::messages::{self, Msg};
+use crate::rules::has_player;
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, is_player};
+use goldsrc::ext::entities::ATTN_NORM;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -25,12 +26,12 @@ const ITEM_RESPAWN_TIME: f32 = 30.0;
 /// TS `CBasePlayer::TakeHealth` (0xd8760, `player::damage::take_health_edict`): fails only with
 /// takedamage off or health above max; no cap; overhealing starts the 1/s decay.
 pub fn player_take_health(p: *mut edict_t, amount: f32) -> bool {
-    is_player(p) && crate::player::damage::take_health_edict(p, amount)
+    has_player(p) && crate::player::damage::take_health_edict(p, amount)
 }
 
 /// `pOther->TakeHealth(amount)` for any entity (SDK `CBaseEntity::TakeHealth` caps at max).
 pub fn take_health(e: *mut edict_t, amount: f32) -> bool {
-    if is_player(e) {
+    if has_player(e) {
         return player_take_health(e, amount);
     }
     let v = e.v();
@@ -48,7 +49,7 @@ pub fn take_health(e: *mut edict_t, amount: f32) -> bool {
 /// reports success, which both callers ignore anyway, as TS does. Any `CBasePlayer` takes it,
 /// connected or not (`rules::has_player`): the callers have one in hand.
 pub fn player_take_armor(p: *mut edict_t, amount: f32) -> bool {
-    if !crate::rules::has_player(p) {
+    if !has_player(p) {
         return false;
     }
     let n = amount as i32;
@@ -281,7 +282,7 @@ impl<const KIND: u8> Entity for Item<KIND> {
     /// alive: only the healthkit's and the battery's `MyTouch` refuse the dead. The antidote, suit
     /// and security card are taken by a dead player too.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.touchable || !is_player(other) {
+        if !self.touchable || !has_player(other) {
             return;
         }
         if self.my_touch(cx, other) {
@@ -516,7 +517,7 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
     /// `CWallHealth::Use` (0xc8d08) a non-NULL one whose `IsPlayer()` holds. Both are true for any
     /// `CBasePlayer`, connected or not (`rules::has_player`), not just for `FL_CLIENT` edicts.
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
-        if !crate::rules::has_player(activator) {
+        if !has_player(activator) {
             return;
         }
         let now = engine().time();

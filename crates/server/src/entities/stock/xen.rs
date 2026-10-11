@@ -7,9 +7,10 @@ use super::base::*;
 use super::effects::{Sprite, sprite_set_attachment, sprite_set_transparency};
 use super::explode::emit_sound_slow;
 use crate::damage::{self, DamageInfo, bits};
+use crate::rules::has_player;
 use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, is_player, vec};
+use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -122,7 +123,7 @@ impl Entity for XenPLight {
 
     /// `CXenPLight::Touch` (0xf5648).
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if is_player(other) {
+        if has_player(other) {
             cx.pev().dmgtime = engine().time() + HIDE_TIME;
             if self.anim.activity == act::IDLE || self.anim.activity == act::STAND {
                 self.anim.set_activity(cx.edict, act::CROUCH);
@@ -260,7 +261,7 @@ impl XenTree {
         let eng = engine();
         let me = cx.edict;
         let tv = self.trigger.get().v();
-        let list = eng.entities_in_box(tv.absmin, tv.absmax, (FL_MONSTER | FL_CLIENT) as i32, 8);
+        let list = crate::rules::entities_in_box(tv.absmin, tv.absmax, (FL_MONSTER | FL_CLIENT) as i32, 8);
         let (forward, _, _) = eng.angle_vectors(cx.pev().angles);
         let mut hit = false;
         for e in list {
@@ -359,7 +360,7 @@ impl Entity for XenTree {
 
     /// `CXenTree::Touch` (0xf5d58): anything but a big momma.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !is_player(other) && s(other.v().classname) == c"monster_bigmomma" {
+        if !has_player(other) && s(other.v().classname) == c"monster_bigmomma" {
             return;
         }
         self.attack(cx);

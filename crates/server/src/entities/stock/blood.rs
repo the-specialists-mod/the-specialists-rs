@@ -4,10 +4,11 @@
 
 use super::base::*;
 use super::effects::decal_trace;
+use crate::rules::has_player;
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{MsgWriterExt, Vec3, is_player, te, te_begin, vec};
+use goldsrc::ext::entities::{MsgWriterExt, Vec3, te, te_begin, vec};
 use goldsrc::server::{IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use std::cell::Cell;
@@ -130,7 +131,7 @@ impl EnvBlood {
     fn position(cx: &mut Cx, activator: *mut edict_t) -> Vec3 {
         if cx.pev().spawnflags & SF_BLOOD_PLAYER != 0 {
             let eng = engine();
-            let p = if is_player(activator) { activator } else { eng.entity_of_index(1) };
+            let p = if has_player(activator) { activator } else { eng.entity_of_index(1) };
             if !p.is_null() {
                 let eye = vec::add(p.v().origin, p.v().view_ofs);
                 let x = eng.random_float(-10.0, 10.0);

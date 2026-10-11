@@ -10,7 +10,6 @@ use super::{assets, fire, projectiles};
 use crate::player::Player;
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::weapons::spread::{self, Vec3};
@@ -144,7 +143,7 @@ fn update(b: &mut Bullet, now: f32) -> bool {
     });
     projectiles::report_damage(|| format!("damage:{:.6}\n", amount * adjust));
     let mut left = amount * ammo.map(|a| a.pierce).unwrap_or(0.0);
-    if e.is_player_edict(tr.pHit) {
+    if crate::rules::has_player(tr.pHit) {
         left *= 0.5;
     }
     if b.btype != 1 && b.btype != 2 && left > 5.0 {

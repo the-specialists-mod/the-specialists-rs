@@ -10,7 +10,6 @@ use crate::player::{self, Player};
 use crate::save::{BaseFuncs, Fields};
 use crate::world::{Cx, Entity};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use shared::weapons::spread::{self, Vec3};
@@ -212,7 +211,7 @@ impl Entity for WorldGun {
         let pev = cx.pev();
         let end = spread::ma(pev.origin, 0.1, pev.velocity);
         let tr = e.trace_line(pev.origin, end, DONT_IGNORE_MONSTERS, me);
-        if tr.flFraction < 1.0 && !tr.pHit.is_null() && !e.is_player_edict(tr.pHit) {
+        if tr.flFraction < 1.0 && !tr.pHit.is_null() && !crate::rules::has_player(tr.pHit) {
             let slots = info(self.id).map(|w| w.slots).unwrap_or(10) as f32;
             let s = spread::length(pev.velocity) * slots;
             let target = tr.pHit.v();
@@ -286,7 +285,7 @@ impl WorldGun {
 
     /// `CTSWorldGun::GetWeapon` 0xa1198 for a touching player.
     fn get_weapon(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !engine().is_player_edict(other) {
+        if !crate::rules::has_player(other) {
             return;
         }
         player::with_player(other, |p, pcx| self.give_to(cx, p, pcx));
@@ -408,8 +407,7 @@ impl Entity for AmmoPack {
 
     /// `CTSAmmoPack::WaitTouch`: an alive player takes what fits.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        let e = engine();
-        if !self.funcs.touch || !self.on_ground || !e.is_player_edict(other) {
+        if !self.funcs.touch || !self.on_ground || !crate::rules::has_player(other) {
             return;
         }
         let ov = other.v();

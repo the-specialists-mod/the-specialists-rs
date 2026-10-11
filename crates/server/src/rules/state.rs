@@ -165,14 +165,16 @@ pub fn lms() -> bool {
 }
 
 /// The max-carry column `Set_ammo_count` (0x7f2cc) last applied: `compile_ammo_info` sets the
-/// default one (0) at each map's precache, and `CTSGameRules::Think` applies `ROUND(ammocount)`
-/// once it differs from `+0x55c` (`last_srvsett[2]`, -1 from the constructor). 1, 2 and 3 pick
-/// the reduced columns, any other value the default one.
+/// default one (0) at each map's precache (`W_Precache`, after `CTSGameRules::Init` has set
+/// `+0x55c` to -1), and the end of `CTSGameRules::Think` applies `(int)ammocount` (truncated,
+/// `frame::ammocount`) once it differs from `+0x55c` (`last_srvsett[2]`). 1, 2 and 3 pick the
+/// reduced columns, any other value the default one. So a changed `ammocount` takes effect at
+/// the next `Think`, not at once.
 pub fn ammo_column() -> usize {
     with(|g| ammo_column_of(g.last_srvsett[2]))
 }
 
-fn ammo_column_of(applied: i32) -> usize {
+pub(crate) fn ammo_column_of(applied: i32) -> usize {
     match applied {
         1..=3 => applied as usize,
         _ => 0,
@@ -693,6 +695,29 @@ mod tests {
         // negative or large values) the default one.
         for (applied, col) in [(-1, 0), (0, 0), (1, 1), (2, 2), (3, 3), (4, 0), (7, 0), (-3, 0)] {
             assert_eq!(ammo_column_of(applied), col, "{applied}");
+        }
+    }
+
+    #[test]
+    fn ammocount_cvar_is_truncated_then_mapped() {
+        use crate::entities::stock::maprules::x87_int;
+        // `(int)ammocount`: truncated toward zero, NaN and out of range the integer indefinite.
+        for (cvar, col) in [
+            (0.0, 0),
+            (0.9, 0),
+            (1.0, 1),
+            (1.5, 1),
+            (2.9, 2),
+            (3.0, 3),
+            (3.99, 3),
+            (4.0, 0),
+            (5.0, 0),
+            (-0.9, 0),
+            (-2.0, 0),
+            (f32::NAN, 0),
+            (3.0e9, 0),
+        ] {
+            assert_eq!(ammo_column_of(x87_int(cvar)), col, "{cvar}");
         }
     }
 }

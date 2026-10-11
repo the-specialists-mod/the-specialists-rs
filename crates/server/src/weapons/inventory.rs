@@ -39,7 +39,7 @@ pub fn sync_speed(p: &mut Player, cx: &mut Cx) {
     let pev = cx.pev();
     if pev.maxspeed != speed {
         pev.maxspeed = speed;
-        engine().set_client_maxspeed(cx.edict, speed);
+        crate::rules::set_client_maxspeed(cx.edict, speed);
     }
 }
 

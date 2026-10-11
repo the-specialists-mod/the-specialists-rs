@@ -270,7 +270,9 @@ pub fn other<R>(e: *mut edict_t, f: impl FnOnce(&mut Player) -> R) -> Option<R> 
     crate::world::with::<Player, R>(e, f)
 }
 
-/// Client edicts that have a `Player` object.
+/// Connected client edicts that have a `Player` object (the port's liveness test, `FL_CLIENT`).
+/// TS has no such loop: its player loops are [`slot_players`]. Only port additions (bots, dev
+/// commands) use this.
 pub fn players() -> Vec<*mut edict_t> {
     engine().clients().filter(|&e| is_player(e)).collect()
 }
@@ -284,12 +286,46 @@ pub fn slot_players() -> Vec<*mut edict_t> {
     (1..=eng.max_clients()).map(|i| eng.player(i)).filter(|&e| has_player(e)).collect()
 }
 
-/// A non-free edict with a `Player` attached, connected or not.
+/// A non-free edict with a `Player` attached, connected or not. This is TS's player test in all
+/// its forms: the `IsPlayer()` and `IsNetClient()` virtuals (true for any `CBasePlayer`),
+/// `Classify() == CLASS_PLAYER`, a classname compare with `"player"`, and `FL_CLIENT` (see
+/// [`ts_flags`]). A player who left still passes all of them until the slot's next client spawns.
 pub fn has_player(e: *mut edict_t) -> bool {
     !e.is_null() && !e.is_free() && e.has_private_data() && engine().string(e.v().classname) == c"player"
 }
 
-/// True if `e` is a client edict with a Player attached (works for the dispatched one too).
+/// `pev->flags` as TS sees them. `CBasePlayer::Spawn` (0x8f604) sets `FL_CLIENT` and nothing in
+/// TS or the engines clears it, so it stays on a player who left; the port clears it in
+/// `ClientDisconnect` (engine safety, `lifecycle::client_disconnect`) and puts it back here.
+pub fn ts_flags(e: *mut edict_t) -> i32 {
+    ts_flags_of(e.v().flags, has_player(e))
+}
+
+/// [`ts_flags`] from the stored flags and [`has_player`].
+pub fn ts_flags_of(flags: i32, has_player: bool) -> i32 {
+    if has_player { flags | FL_CLIENT as i32 } else { flags }
+}
+
+/// TS's `UTIL_EntitiesInBox(.., flagMask)` (0xec1bc): the flag test reads
+/// [`ts_flags`], so a player who left is still found with `FL_CLIENT` in the mask.
+pub fn entities_in_box(mins: [f32; 3], maxs: [f32; 3], flag_mask: i32, max: usize) -> Vec<*mut edict_t> {
+    engine().entities_in_box_by(mins, maxs, max, |e| flag_mask == 0 || ts_flags(e) & flag_mask != 0)
+}
+
+/// `CBasePlayer::SetPlayerSpeed`'s and `Observer_SetMode`'s `pfnSetClientMaxspeed`. Guard (engine
+/// crash): FWGS's `pfnSetClientMaxspeed` finds a dropped client's slot and writes through its
+/// NULL `cl->edict`, so for a player who left (`FL_CLIENT` cleared by the port) only
+/// `pev->maxspeed` is set, which is all the Steam engines' version does.
+pub fn set_client_maxspeed(e: *mut edict_t, speed: f32) {
+    if e.v().flags & FL_CLIENT as i32 != 0 {
+        engine().set_client_maxspeed(e, speed);
+    } else {
+        e.v().maxspeed = speed;
+    }
+}
+
+/// True if `e` is a connected client edict with a Player attached (the port's liveness test:
+/// `FL_CLIENT`, cleared on disconnect). Not a TS test; see [`has_player`].
 pub fn is_player(e: *mut edict_t) -> bool {
     if e.is_null() {
         return false;
@@ -331,5 +367,28 @@ pub fn add_frags(e: *mut edict_t, p: Option<&mut Player>, n: f32) {
         None => {
             other(e, |p| p.frags = f);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ts_flags_of;
+    use goldsrc::sys::*;
+
+    #[test]
+    fn ts_flags_keep_fl_client_on_a_player_who_left() {
+        let (client, fake, dormant, monster) = (FL_CLIENT as i32, FL_FAKECLIENT as i32, FL_DORMANT as i32, FL_MONSTER as i32);
+        // Connected: the flags as stored.
+        assert_eq!(ts_flags_of(client | fake, true), client | fake);
+        // Left: `ClientDisconnect` cleared FL_CLIENT/FL_FAKECLIENT, `TSPlayerDisconnect` set
+        // FL_DORMANT; TS still has FL_CLIENT (its tests with 8, 0x28 or 0x2008 still match).
+        let left = ts_flags_of(dormant, true);
+        assert_eq!(left, client | dormant);
+        assert_ne!(left & (client | monster), 0);
+        assert_ne!(left & (client | fake), 0);
+        assert_eq!(left & fake, 0);
+        // Anything that isn't a player keeps its own flags.
+        assert_eq!(ts_flags_of(monster, false), monster);
+        assert_eq!(ts_flags_of(0, false) & client, 0);
     }
 }

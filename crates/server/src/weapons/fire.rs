@@ -5,7 +5,6 @@ use crate::damage::{self, DamageInfo};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{MsgWriterExt, te, te_begin};
-use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use shared::weapons::gun::Shot;
@@ -126,7 +125,7 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
             bullet_trace_attack(shooter, &tr, amount * adjust, dir, bits);
             projectiles::report_damage(|| format!("damage:{:.6}\n", amount * adjust));
             left = amount * pierce;
-            if e.is_player_edict(tr.pHit) {
+            if crate::rules::has_player(tr.pHit) {
                 left *= 0.5;
             }
         }

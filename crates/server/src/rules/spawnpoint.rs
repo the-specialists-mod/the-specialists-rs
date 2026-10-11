@@ -41,7 +41,9 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
         class_c = to_cstring(&f);
     }
 
-    let players = super::players();
+    // TS walks the classname "player" with `IsPlayer()` (0x76324): players who left are on the
+    // list, and the `IsAlive`/`EF_NODRAW` tests below skip them.
+    let players = super::slot_players();
     let mut spots: Vec<(*mut edict_t, i32)> = Vec::new();
     let mut it = std::ptr::null_mut();
     while spots.len() < 32 {
@@ -108,7 +110,7 @@ fn telefrag(spot: *mut edict_t, self_e: *mut edict_t) {
         if it.is_null() {
             break;
         }
-        if it == self_e || !super::is_player(it) || !alive(it.v()) || it.v().effects & EF_NODRAW as i32 != 0 {
+        if it == self_e || !super::has_player(it) || !alive(it.v()) || it.v().effects & EF_NODRAW as i32 != 0 {
             continue;
         }
         crate::damage::apply(it, &DamageInfo::new(world, world, 300.0, bits::ALWAYSGIB));

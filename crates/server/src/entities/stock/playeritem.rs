@@ -10,9 +10,10 @@ use super::base::*;
 use super::explode::emit_sound_slow;
 use super::items::SF_NORESPAWN;
 use crate::entities::remove;
+use crate::rules::has_player;
 use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, Vec3, is_player};
+use goldsrc::ext::entities::{ATTN_NORM, Vec3};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -109,7 +110,7 @@ impl Entity for WeaponBox {
     /// `CWeaponBox::Touch` (0xf2a80): a living player touching the box once it has landed takes
     /// its (always empty) contents.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if cx.pev().flags & FL_ONGROUND as i32 == 0 || !is_player(other) || !is_alive(other) {
+        if cx.pev().flags & FL_ONGROUND as i32 == 0 || !has_player(other) || !is_alive(other) {
             return;
         }
         emit_sound_slow(other, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
@@ -433,7 +434,7 @@ impl Entity for WorldTsGun {
     /// is on the stack and lent it (`with_player_now`: an equip it used, its spawn's
     /// `GiveNamedItem`), as TS's touch reaches it.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.item.touchable || !is_player(other) {
+        if !self.item.touchable || !has_player(other) {
             return;
         }
         // `CHalfLifeMultiplay::CanHavePlayerItem` (0xcfd38) / `CGameRules::CanHavePlayerItem`
@@ -518,7 +519,7 @@ impl Entity for WeaponCycler {
 
     /// `CBasePlayerItem::DefaultTouch` (0xf1b40) with `AddPlayerItem` (0xdc0c4).
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.item.touchable || !is_player(other) {
+        if !self.item.touchable || !has_player(other) {
             return;
         }
         let Some(can_have) = crate::player::with_player_now(other, |p, pcx| crate::weapons::can_have_cycler(p, pcx)) else { return };

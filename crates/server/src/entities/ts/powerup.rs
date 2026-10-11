@@ -317,7 +317,7 @@ impl Entity for PowerUp {
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.funcs.touch || self.phase != Phase::Waiting || !rules::is_player(other) {
+        if !self.funcs.touch || self.phase != Phase::Waiting || !rules::has_player(other) {
             return;
         }
         let took = with_player(other, |p, pcx| self.pickup(cx, p, pcx)).unwrap_or(false);

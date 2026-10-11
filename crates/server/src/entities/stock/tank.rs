@@ -15,9 +15,10 @@ use super::effects::{Laser, Sprite, decal_trace, explosion_create};
 use super::explode::emit_sound_slow;
 use super::tracktrain::angle_distance;
 use crate::entities::fire_targets;
+use crate::rules::has_player;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, EHandle, MsgWriterExt, Vec3, is_player, snd, te, te_begin, vec};
+use goldsrc::ext::entities::{ATTN_NORM, EHandle, MsgWriterExt, Vec3, snd, te, te_begin, vec};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -592,9 +593,10 @@ impl<const K: u8> Entity for FuncTank<K> {
                 Laser::turn_off_entity(self.laser.get());
             }
         }
-        // Port addition: a controller who disconnected (or whose slot was reused) lets go.
+        // Port addition: a controller whose edict no longer holds a player lets go. A controller
+        // who left keeps the tank, as `m_pController` does in TS.
         let c = self.controller.get();
-        if self.controller.is_valid() && !is_player(c) {
+        if self.controller.is_valid() && !has_player(c) {
             self.stop_control(cx);
         }
         // CFuncTank::Think (0xc2f48).
@@ -611,7 +613,7 @@ impl<const K: u8> Entity for FuncTank<K> {
     /// `CFuncTank::Use` (0xc2db8).
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, value: f32) {
         if cx.pev().spawnflags & SF_TANK_CANCONTROL != 0 {
-            if !is_player(activator) {
+            if !has_player(activator) {
                 return;
             }
             if value == 2.0 && kind == UseType::Set {

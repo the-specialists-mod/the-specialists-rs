@@ -19,9 +19,10 @@ use super::breakable::{DMG_TS_KUNGFU, DMG_TS_SHOTGUN, break_sounds, mat, play_br
 use super::buttons::LockSounds;
 use super::explode::emit_sound_slow;
 use crate::damage::bits as dmg;
+use crate::rules::has_player;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, is_player, snd, te_break_model, vec};
+use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, snd, te_break_model, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -141,7 +142,7 @@ impl Door {
     /// `CBaseDoor::DoorTouch` (0xb6ba0): only an entity whose classname is `"player"` (any
     /// `CBasePlayer`, connected or not: `rules::has_player`).
     fn door_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !crate::rules::has_player(other) {
+        if !has_player(other) {
             return;
         }
         if self.t.master != 0 && !is_master_triggered(self.t.master, other) {
@@ -181,7 +182,7 @@ impl Door {
             self.door_go_down(cx);
         } else {
             let act = self.t.activator.get();
-            if is_player(act) && self.health_value != 0 {
+            if has_player(act) && self.health_value != 0 {
                 super::items::player_take_health(act, self.health_value as f32);
             }
             self.ls.play(cx.edict, false, false);
@@ -455,7 +456,7 @@ impl Door {
             return;
         }
         let (absmin, absmax) = (v.absmin, v.absmax);
-        if !engine().entities_in_box(absmin, absmax, (FL_CLIENT | FL_FAKECLIENT) as i32, 1).is_empty() {
+        if !crate::rules::entities_in_box(absmin, absmax, (FL_CLIENT | FL_FAKECLIENT) as i32, 1).is_empty() {
             self.t.think = Some(Self::respawn_think);
             think_ltime(cx, 5.0);
             return;

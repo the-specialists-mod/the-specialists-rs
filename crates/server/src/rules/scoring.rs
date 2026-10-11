@@ -4,7 +4,7 @@
 
 use super::lifecycle::{give_cash, score_info_of};
 use super::msg::{self, ts_message_all};
-use super::{cvars, is_player, netname, other, state, teams};
+use super::{cvars, netname, other, state, teams};
 use crate::damage::DamageInfo;
 use crate::damage::glast::Snapshot;
 use crate::messages::Msg;
@@ -68,7 +68,8 @@ fn own_weapon_name(g: &Snapshot, killer_gun: Option<u8>) -> String {
 /// Weapon name for `DeathMsg` and logs (gamerules-entities.md §2.3). `killer_gun` is the
 /// attacker's [`active_gun`].
 pub fn weapon_name(d: &DamageInfo, g: &Snapshot, killer_gun: Option<u8>) -> String {
-    let attacker_client = !d.attacker.is_null() && d.attacker.v().flags & FL_CLIENT as i32 != 0;
+    // TS's `FL_CLIENT` test (0x8986d): still true for an attacker who has left.
+    let attacker_client = !d.attacker.is_null() && super::ts_flags(d.attacker) & FL_CLIENT as i32 != 0;
     let mut name = if attacker_client {
         if d.inflictor.is_null() {
             "world".to_owned()
@@ -156,7 +157,9 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
     let vname = netname(victim);
     let attacker = if d.attacker.is_null() { eng.entity_of_index(0) } else { d.attacker };
     let suicide = attacker == victim;
-    let killer_is_player = !suicide && is_player(attacker);
+    // `IsPlayer()` (0x896dc): any `CBasePlayer`, so a killer who has left (its grenade still
+    // flying) is scored as one.
+    let killer_is_player = !suicide && super::has_player(attacker);
     let close = g.close_combat;
 
     // The killer's own think (its weapon frame) is usually what killed: its Player is taken
@@ -518,10 +521,18 @@ fn points_for_frag(d: &DamageInfo, g: &Snapshot, k: &Killer, base: i32, sliding:
 }
 
 /// `CHalfLifeMultiplay::DeathNotice` (0x88f7c): `DeathMsg` to all, then the HLTV director event
-/// (victim, then the inflictor or else the killer, priority 0x27).
+/// (victim, then the inflictor or else the killer, priority 0x27). In teamplay
+/// `CHalfLifeTeamplay::DeathNotice` (0xe509c) comes first: a kill by a teammate (`FL_CLIENT`,
+/// `PlayerRelationship == GR_TEAMMATE`) is only `DeathMsg(killer, victim, "teammate")`.
 fn death_notice(attacker: *mut edict_t, inflictor: *mut edict_t, victim: *mut edict_t, weapon: &str) {
     let eng = engine();
-    let killer = if !attacker.is_null() && attacker.v().flags & FL_CLIENT as i32 != 0 { eng.index_of(attacker) } else { 0 };
+    let attacker_client = !attacker.is_null() && super::ts_flags(attacker) & FL_CLIENT as i32 != 0;
+    if state::teamplay() && attacker_client && attacker != victim && teams::same_team(victim, attacker) {
+        let m = DeathMsg { killer: eng.index_of(attacker) as u8, victim: eng.index_of(victim) as u8, weapon: "teammate".to_owned() };
+        msg::all(Msg::DeathMsg, |w| m.write(w));
+        return;
+    }
+    let killer = if attacker_client { eng.index_of(attacker) } else { 0 };
     let m = DeathMsg { killer: killer as u8, victim: eng.index_of(victim) as u8, weapon: weapon.to_owned() };
     msg::all(Msg::DeathMsg, |w| m.write(w));
     let secondary = if inflictor.is_null() { attacker } else { inflictor };
@@ -590,7 +601,7 @@ fn log_kill(attacker: *mut edict_t, victim: *mut edict_t, weapon: &str, suicide:
         msg::log(&format!("{} committed suicide with \"{w}\"\n", id(victim)));
         return;
     }
-    if attacker.v().flags & FL_CLIENT as i32 == 0 {
+    if super::ts_flags(attacker) & FL_CLIENT as i32 == 0 {
         msg::log(&format!("{} committed suicide with \"{w}\" (world)\n", id(victim)));
         return;
     }
@@ -674,7 +685,7 @@ pub fn set_player_the_one(p: &mut Player, cx: &mut Cx) {
     eng.set_physics_key(e, c"mj", c"1");
     // SetPlayerSpeed(330).
     cx.pev().maxspeed = 330.0;
-    eng.set_client_maxspeed(e, 330.0);
+    super::set_client_maxspeed(e, 330.0);
     msg::one(Msg::PwUp, e, |w| PwUp { bits: pw::KUNGFU as i16, secs: 0 }.write(w));
     msg::one(Msg::PwUp, e, |w| PwUp { bits: pw::SUPERJUMP as i16, secs: 0 }.write(w));
     if p.active_powerup == 0 && p.ts.held == 0 {

@@ -63,8 +63,10 @@ pub fn client_disconnect(e: *mut edict_t) {
     // Port addition (engine safety): the engines leave FL_CLIENT on a dropped client's edict, and
     // FWGS still maps it to the freed slot: pfnGetPlayerUserId returns the old id, and
     // pfnSetClientMaxspeed then dereferences the slot's NULL edict (the "kick a bot" crash).
-    // Clearing the flags takes the edict out of players(), is_player() and the bot list until a
-    // client connects to the slot; `slot_players()` still finds it, as `UTIL_PlayerByIndex` does.
+    // The cleared flag is the port's liveness test (`rules::set_client_maxspeed`, players(),
+    // is_player(), the bot list) until a client spawns in the slot. TS's own tests don't see it:
+    // `has_player`, `slot_players()` and `ts_flags` (which puts FL_CLIENT back) still find the
+    // player, as `IsPlayer()`, `UTIL_PlayerByIndex` and `pev->flags & FL_CLIENT` do in TS.
     (e.v().flags &= !((FL_CLIENT | FL_FAKECLIENT) as i32));
 }
 
@@ -263,7 +265,7 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     e.set_physics_key(cx.edict, c"slj", c"0");
     e.set_physics_key(cx.edict, c"hl", c"1");
     e.set_physics_key(cx.edict, c"mj", if superjump_map { c"1" } else { c"0" });
-    e.set_client_maxspeed(cx.edict, 330.0);
+    super::set_client_maxspeed(cx.edict, 330.0);
     crate::entities::stock::triggers::geiger_spawn(cx.edict);
     {
         let v = cx.pev();
@@ -564,7 +566,7 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
         crate::weapons::inform_custom_weapons(e);
     }
     let (rb, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0].max(0), g.allowed_weapons, g.round_end, g.round_timer));
-    let sets = [(0u8, rb), (1, cvars::on(c"usecash") as i32), (2, cvars::f(c"ammocount").round() as i32), (3, mask)];
+    let sets = [(0u8, rb), (1, cvars::on(c"usecash") as i32), (2, super::frame::ammocount()), (3, mask)];
     for (key, value) in sets {
         let s = SrvSett { key, value: value as i16 };
         msg::one(Msg::SrvSett, e, |w| s.write(w));
@@ -693,7 +695,7 @@ fn observer_set_mode(p: &mut Player, cx: &mut Cx, mode: i32) {
         let v = cx.pev();
         v.iuser1 = obs::ROAMING;
         v.iuser2 = 0;
-        engine().set_client_maxspeed(cx.edict, 420.0);
+        super::set_client_maxspeed(cx.edict, 420.0);
         return;
     }
     if !matches!(mode, obs::CHASE_LOCKED | obs::CHASE_FREE | obs::IN_EYE) {
@@ -737,9 +739,11 @@ fn observer_find_next_player(p: &mut Player, cx: &mut Cx, reverse: bool) {
         if i < 1 {
             i = n;
         }
-        let o = eng.client(i);
+        // `UTIL_PlayerByIndex`: a player who left is still a candidate (only during intermission
+        // is it alive and visible).
+        let o = eng.player(i);
         if i != me
-            && super::is_player(o)
+            && super::has_player(o)
             && {
                 let v = o.v();
                 v.iuser1 == 0 && v.effects & EF_NODRAW as i32 == 0 && alive(v)
@@ -757,7 +761,7 @@ fn observer_find_next_player(p: &mut Player, cx: &mut Cx, reverse: bool) {
         observer_set_mode(p, cx, obs::ROAMING);
     } else {
         cx.pev().iuser2 = p.ts.obs_target;
-        let org = eng.client(p.ts.obs_target).v().origin;
+        let org = eng.player(p.ts.obs_target).v().origin;
         eng.set_origin(cx.edict, org);
     }
 }

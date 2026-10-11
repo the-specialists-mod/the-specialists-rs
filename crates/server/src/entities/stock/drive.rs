@@ -217,8 +217,10 @@ pub fn tank_started(player: *mut edict_t, tank: *mut edict_t, started: bool) {
 /// The player half of `CFuncTank::StopControl` (0xc2b1c): redeploy the gun and show the weapon
 /// HUD again.
 pub fn tank_stopped(player: *mut edict_t) {
-    if !goldsrc::ext::entities::is_player(player) {
-        return; // disconnected while in control
+    // TS reaches `m_pController` whether or not it is still connected (a player who left has no
+    // active item to deploy: `RemoveAllItems`).
+    if !crate::rules::has_player(player) {
+        return;
     }
     with_player(player, |p, cx| {
         crate::weapons::deploy_after_tank(p, cx);

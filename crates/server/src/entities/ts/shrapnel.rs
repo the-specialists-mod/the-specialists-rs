@@ -6,11 +6,12 @@
 use crate::damage::{self, DamageInfo};
 use crate::entities::remove;
 use crate::entities::stock::explode::emit_sound_slow;
+use crate::rules::has_player;
 use crate::save::{BaseFuncs, Fields};
 use crate::weapons::SlowPhysics;
 use crate::world::{Cx, Entity};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, Vec3, is_player, vec};
+use goldsrc::ext::entities::{ATTN_NORM, Vec3, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 
@@ -115,7 +116,7 @@ impl Entity for Shrapnel {
         let eng = engine();
         let me = cx.edict;
         let ov = other.v();
-        if ov.takedamage == 0.0 || !is_player(other) {
+        if ov.takedamage == 0.0 || !has_player(other) {
             let class = if ov.classname == 0 { c"" } else { eng.string(ov.classname) };
             if class == c"worldspawn" || class == c"func_wall" {
                 // Stick 6 units back along the flight path.

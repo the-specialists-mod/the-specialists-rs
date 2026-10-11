@@ -125,6 +125,12 @@ impl Engine {
     /// `UTIL_EntitiesInBox`: live entities whose absolute box overlaps `mins..maxs` and whose
     /// `flags` intersect `flag_mask` (0 = any). Free and private-data-less edicts are skipped.
     pub fn entities_in_box(&self, mins: Vec3, maxs: Vec3, flag_mask: i32, max: usize) -> Vec<*mut edict_t> {
+        self.entities_in_box_by(mins, maxs, max, |e| flag_mask == 0 || e.v().flags & flag_mask != 0)
+    }
+
+    /// [`Engine::entities_in_box`] with the flag test replaced by `pick`, for callers whose flags
+    /// differ from what the engine holds (the server's view of `FL_CLIENT` on a player who left).
+    pub fn entities_in_box_by(&self, mins: Vec3, maxs: Vec3, max: usize, pick: impl Fn(*mut edict_t) -> bool) -> Vec<*mut edict_t> {
         let mut out = Vec::new();
         for i in 1..self.max_entities() {
             let e = self.entity_of_index(i);
@@ -134,10 +140,10 @@ impl Engine {
             if e.is_free() || !e.has_private_data() {
                 continue;
             }
-            let v = e.v();
-            if flag_mask != 0 && v.flags & flag_mask == 0 {
+            if !pick(e) {
                 continue;
             }
+            let v = e.v();
             if (0..3).any(|k| mins[k] > v.absmax[k] || maxs[k] < v.absmin[k]) {
                 continue;
             }

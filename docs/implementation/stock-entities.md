@@ -521,7 +521,7 @@ out, no weapon, or +cancel during a reload). So no +use right after firing or wh
 
 ### 3.8 Which entities count as a player
 
-TS tests "is a player" three ways, and the port keeps each:
+TS tests "is a player" in several ways, all still true for a player who has left, and the port keeps each:
 
 * **Classname `"player"`** (`strcmp` or `UTIL_FindEntityByClassname`) and the **`IsPlayer()`**
   virtual are true for every `CBasePlayer`, including a player who has left (the engine keeps the
@@ -534,8 +534,18 @@ TS tests "is a player" three ways, and the port keeps each:
   its team frags), `CheckVotes` (0x7a5c4) and `TSSelectSpawnSpot` (0x76244, which then needs
   `IsAlive`, so a departed player never counts). `ActivateMultiTrigger` (0xe778c) also compares
   `pev->enemy`'s classname for a `trigger_secret`, a class TS doesn't link, so that branch can't run.
-* **`FL_CLIENT`** (`pev->flags & 8`): `rules::is_player` / `rules::players()`, which drop a player
-  the moment `ClientDisconnect` clears the flag.
+  `IsPlayer()` is behind every other stock and TS entity's player test (touches, `Use`s,
+  `SUB_UseTargets`'s delayed activator, the tank's `Classify() == CLASS_PLAYER`), and
+  `IsNetClient()` (`UTIL_ShowMessage`, `UTIL_ScreenFadeWrite`, `game_text`, `trigger_endsection`)
+  is true for the same objects, so those are `rules::has_player` too.
+* **`FL_CLIENT`** (`pev->flags & 8`, alone or as 0x28 / 0x2008): TS never clears it, so a player who
+  has left still has it. The port clears it in `ClientDisconnect` (engine safety, rules.md §6), so
+  these tests read `rules::ts_flags` (the flags with `FL_CLIENT` put back on a player):
+  `CBaseTrigger::MultiTouch` (0xe7708), `TeleportTouch` (0xe91c8), `CBreakable::TakeDamage`
+  (0xc1344), `CFuncTrackTrain::NearestPath` (0xd5410), and `UTIL_EntitiesInBox` (0xec1bc,
+  `rules::entities_in_box`) for the breakable and door respawn (0x2008), `env_fade` and the Xen
+  tree. `rules::is_player` / `rules::players()` (the cleared flag) are only the port's liveness
+  test (bots, dev commands, the `pfnSetClientMaxspeed` guard).
 
 A departed player is left dead and hidden (`TSPlayerDisconnect`), so the difference shows mostly
 for an activator kept by a delayed target, or for messages (the engine drops one sent to a free

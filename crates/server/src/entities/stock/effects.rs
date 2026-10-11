@@ -11,11 +11,10 @@ use super::breakable::{mat, material_sound_list, material_sound_precache};
 use super::buttons::{do_spark, precache_sparks};
 use super::explode::{emit_sound_slow, radius_damage, screen_fade, screen_fade_all, screen_shake, sparks};
 use crate::entities::remove;
+use crate::rules::has_player;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{
-    ATTN_NORM, EHandle, MsgWriterExt, SVC_TEMPENTITY, Vec3, is_player, te, te_begin, te_explosion, te_smoke, vec,
-};
+use goldsrc::ext::entities::{ATTN_NORM, EHandle, MsgWriterExt, SVC_TEMPENTITY, Vec3, te, te_begin, te_explosion, te_smoke, vec};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, IGNORE_MONSTERS, MsgWriter, engine};
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -367,7 +366,7 @@ impl Entity for Fade {
         let (color, dur, hold, alpha) = (v.rendercolor, v.dmg_take, v.dmg_save, v.renderamt as i32);
         if v.spawnflags & SF_FADE_INBOX != 0 {
             let (lo, hi) = (v.absmin, v.absmax);
-            for p in engine().entities_in_box(lo, hi, FL_CLIENT as i32, 32) {
+            for p in crate::rules::entities_in_box(lo, hi, FL_CLIENT as i32, 32) {
                 screen_fade(p, color, dur, hold, alpha, flags);
             }
         } else if v.spawnflags & SF_FADE_ONLYONE != 0 {
@@ -2865,7 +2864,7 @@ impl Entity for ItemSoda {
 
     /// `CItemSoda::CanTouch` (0xbe178).
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if self.state != SodaState::Touchable || !is_player(other) {
+        if self.state != SodaState::Touchable || !has_player(other) {
             return;
         }
         // TakeHealth(1, DMG_GENERIC); the result isn't checked.

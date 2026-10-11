@@ -127,7 +127,7 @@ impl Entity for Trigger {
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let now = cx.time();
-        if !self.funcs.touch || now < self.ready_at || !rules::is_player(other) || !rules::alive(other.v()) {
+        if !self.funcs.touch || now < self.ready_at || !rules::has_player(other) || !rules::alive(other.v()) {
             return;
         }
         let team_ok = self.team == -1 || state::with(|g| g.team_index(&teams::team_name_of(other))) == self.team;
@@ -196,7 +196,7 @@ impl Entity for DmHill {
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let now = cx.time();
         let step = self.next_check.max(0.5);
-        if !self.funcs.touch || now < self.blocked_until || !rules::is_player(other) || !rules::alive(other.v()) {
+        if !self.funcs.touch || now < self.blocked_until || !rules::has_player(other) || !rules::alive(other.v()) {
             return;
         }
         let Some(king) = self.king else {
@@ -595,7 +595,7 @@ impl Entity for SlowMotion {
     }
 
     fn touch(&mut self, _cx: &mut Cx, other: *mut edict_t) {
-        if !self.funcs.touch || self.global || !self.active() || !rules::is_player(other) {
+        if !self.funcs.touch || self.global || !self.active() || !rules::has_player(other) {
             return;
         }
         if !rules::powerup::entity_in_slow(other) {
@@ -668,7 +668,8 @@ impl Entity for SlowMotionPoint {
         }
         let eng = engine();
         let org = cx.pev().origin;
-        for p in rules::players() {
+        // `UTIL_PlayerByIndex` and `IsPlayer()` (0x717c5): players who left too.
+        for p in rules::slot_players() {
             if rules::powerup::entity_in_slow(p) {
                 continue;
             }

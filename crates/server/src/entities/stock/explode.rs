@@ -5,9 +5,10 @@
 
 use crate::damage::{self, DamageInfo};
 use crate::messages::{self, Msg};
+use crate::rules::has_player;
 use crate::weapons::worldgun;
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{MsgWriterExt, Vec3, is_player, te, te_begin, vec};
+use goldsrc::ext::entities::{MsgWriterExt, Vec3, te, te_begin, vec};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use std::ffi::CStr;
@@ -62,7 +63,7 @@ pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32,
     let frequency = fixed_u16(frequency, 256.0);
     for i in 1..=eng.max_clients() {
         let p = eng.player(i);
-        if !is_player(p) {
+        if !has_player(p) {
             continue;
         }
         let v = p.v();
@@ -89,7 +90,7 @@ pub const FFADE_STAYOUT: i32 = 4;
 /// TS `UTIL_ScreenFade` (0xecdec, `UTIL_ScreenFadeBuild`/`UTIL_ScreenFadeWrite`): sent as `TSFade`
 /// to one net client, the fixed-point durations divided by its time scale.
 pub fn screen_fade(p: *mut edict_t, color: Vec3, fade_time: f32, hold: f32, alpha: i32, flags: i32) {
-    if !is_player(p) || p.v().flags & FL_FAKECLIENT as i32 != 0 {
+    if !has_player(p) || p.v().flags & FL_FAKECLIENT as i32 != 0 {
         return; // IsNetClient()
     }
     let slow = slow_of(p);
@@ -249,7 +250,7 @@ fn explosion_damage(
     let eng = engine();
     // `IsAlive() && IsPlayer()`.
     let v = e.v();
-    if is_player(e) && v.deadflag == DEAD_NO as i32 && v.health > 0.0 {
+    if has_player(e) && v.deadflag == DEAD_NO as i32 && v.health > 0.0 {
         screen_fade(e, [222.0, 227.0, 189.0], 0.1, 0.05, 75, 0);
     }
     let mut spot = center(e);

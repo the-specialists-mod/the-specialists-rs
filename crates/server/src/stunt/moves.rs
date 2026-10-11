@@ -216,12 +216,9 @@ fn check_for_wall_climb(p: &mut Player, cx: &mut Cx) -> bool {
     n < 0.5 && n > -0.5 && cx.pev().velocity[2] > -370.0
 }
 
+/// `IsPlayer()` (0x9af9e, 0x9c075): any `CBasePlayer`.
 fn is_player(e: *mut edict_t) -> bool {
-    if e.is_null() {
-        return false;
-    }
-    let i = engine().index_of(e);
-    i >= 1 && i <= engine().max_clients()
+    crate::rules::has_player(e)
 }
 
 /// Common start of every stunt: the hull drops to duck through `GO_DUCK`, the view to 0.

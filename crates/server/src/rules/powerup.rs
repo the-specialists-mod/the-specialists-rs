@@ -45,7 +45,7 @@ pub fn go_slow(e: *mut edict_t, amount: f32, btime: bool) {
         p.ts.slow_display = amount;
         p.ts.btime = btime;
     });
-    if done.is_none() && !super::is_player(e) {
+    if done.is_none() && !super::has_player(e) {
         (e.v().fuser1 = amount);
     }
 }
@@ -122,8 +122,10 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
     let my_eye = eye(cx.pev());
     let mine = p.ts.slow_others;
     let mut abort = false;
+    // `UTIL_PlayerByIndex` and `IsPlayer()`: players who left are slowed too (TS keeps their
+    // object; the slowed list holds the slot).
     for i in 1..=eng.max_clients().min(32) {
-        let o = eng.client(i);
+        let o = eng.player(i);
         let i = i as usize;
         if p.ts.slowed & (1 << i) != 0 {
             // Someone we slowed became an activator: re-evaluate.
@@ -133,7 +135,7 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
             }
             p.ts.slowed &= !(1 << i);
         }
-        if o.is_null() || o == me || !super::is_player(o) {
+        if o.is_null() || o == me || !super::has_player(o) {
             continue;
         }
         let Some((oself, oothers)) = other(o, |q| (q.ts.slow_self, q.ts.slow_others)) else { continue };
@@ -161,7 +163,7 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
         if p.ts.slowed & (1 << i) == 0 {
             continue;
         }
-        let o = eng.client(i);
+        let o = eng.player(i);
         let keep = !o.is_null() && other(o, |q| q.ts.slow_self == 0.0 || q.ts.slow_others != mine).unwrap_or(false);
         if keep {
             go_slow(o, mine, btime);
@@ -220,7 +222,7 @@ pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
             continue;
         }
         p.ts.slowed &= !(1 << i);
-        let o = eng.client(i);
+        let o = eng.player(i);
         if o.is_null() {
             continue;
         }

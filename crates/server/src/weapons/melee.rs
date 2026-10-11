@@ -11,7 +11,6 @@ use crate::messages::{self, Msg};
 use crate::player::Player;
 use crate::world::{self, Cx};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use shared::weapons::gun::{MeleeHit, MeleeKind, MeleeResult};
@@ -77,8 +76,7 @@ fn alive(e: *mut edict_t) -> bool {
 /// `atk_block` is the attacker's own kung-fu block window (the attacker is the player being
 /// dispatched, so the caller passes it; victims are other players, reachable with world::with).
 fn hold(kind: MeleeKind, attacker: *mut edict_t, victim: *mut edict_t, atk_block: f32) -> Option<MeleeResult> {
-    let e = engine();
-    if !e.is_player_edict(victim) {
+    if !crate::rules::has_player(victim) {
         return None;
     }
     let r = world::with::<Player, _>(victim, |v| {
@@ -176,7 +174,7 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
     }
     let victim = tr.pHit;
     let v = victim.v();
-    let is_player = e.is_player_edict(victim);
+    let is_player = crate::rules::has_player(victim);
     match hit.kind {
         // `CloseCombatAttack` 0x95f88 / `ColdCockAttack` 0x96610: no damage taken, a world brush
         // (`FL_WORLDBRUSH`) or an invisible entity is no target, and neither is a teammate with
@@ -276,7 +274,7 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     if dmg <= 0.0 {
         return;
     }
-    let is_player = e.is_player_edict(victim);
+    let is_player = crate::rules::has_player(victim);
     if is_player && same_team(me, victim) {
         // TS: `friendlyfire 0` and PlayerRelationship == GR_TEAMMATE: no damage, but the
         // victim still counts as hit.

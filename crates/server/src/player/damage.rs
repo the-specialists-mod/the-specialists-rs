@@ -209,12 +209,12 @@ pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     }
 }
 
-/// TraceAttack's team check (0x90256): a player attacker on the victim's team
+/// TraceAttack's team check (0x90256): a player attacker (`IsPlayer()`, so also one who has left) on the victim's team
 /// (`PlayerRelationship == GR_TEAMMATE`) without `mp_friendlyfire`. Unlike
 /// `FPlayerCanTakeDamage` it doesn't exempt the victim itself, so in teamplay without friendly
 /// fire a player's own traced damage (its grenade's blast) is refused.
 fn trace_attack_refused(attacker: *mut edict_t, victim: *mut edict_t) -> bool {
-    rules::is_player(attacker) && rules::teams::same_team(attacker, victim) && !rules::cvars::on(c"mp_friendlyfire")
+    rules::has_player(attacker) && rules::teams::same_team(attacker, victim) && !rules::cvars::on(c"mp_friendlyfire")
 }
 
 /// `CHalfLifeTeamplay::FPlayerCanTakeDamage` (0xe5208) refusing: a teammate other than the

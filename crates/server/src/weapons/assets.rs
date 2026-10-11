@@ -31,8 +31,6 @@ pub fn register_cvars() {
 pub struct CvarValues {
     /// `realbullet`: simulated bullets (`CBulletManager`) for everyone; 2+ = per-frame steps.
     pub realbullet: f32,
-    /// `ammocount`: max-carry column (0 default, 1..3 reduced).
-    pub ammocount: f32,
     /// `weaponstay`: dropped weapon lifetime (clamped 5..60 s; drops of the held gun 10..120 s
     /// at twice the value).
     pub weaponstay: f32,
@@ -48,12 +46,7 @@ pub fn realbullet() -> i32 {
 
 pub fn cvars() -> CvarValues {
     let e = engine();
-    CvarValues {
-        realbullet: e.cvar_float(c"realbullet"),
-        ammocount: e.cvar_float(c"ammocount"),
-        weaponstay: e.cvar_float(c"weaponstay"),
-        damagemult: e.cvar_float(c"damagemult"),
-    }
+    CvarValues { realbullet: e.cvar_float(c"realbullet"), weaponstay: e.cvar_float(c"weaponstay"), damagemult: e.cvar_float(c"damagemult") }
 }
 
 /// `damagemult` applies only with `g_flWeaponCheat` (`sv_cheats` latched at map load,
@@ -63,9 +56,15 @@ pub fn damage_adjust() -> f32 {
     if m > 0.0 && crate::rules::cvars::cheats() { m } else { 1.0 }
 }
 
-/// Max carry of ammo type `t` for the current `ammocount` (`Set_ammo_count`).
+/// Max carry of ammo type `t` (`get_ammo_info(t)+0x0c`) in the column `Set_ammo_count` (0x7f2cc)
+/// last wrote: `ammocount` takes effect at the next `CTSGameRules::Think`, truncated, and any
+/// value other than 1..3 is the default column (`rules::state::ammo_column`).
 pub fn max_carry(t: u8) -> i32 {
-    let col = (cvars().ammocount as i32).clamp(0, 3) as usize;
+    max_carry_in(t, crate::rules::state::ammo_column())
+}
+
+/// [`max_carry`] in column `col` (0 default, 1..3 reduced).
+pub fn max_carry_in(t: u8, col: usize) -> i32 {
     tables().ammo(t).map(|a| a.max_carry[col]).unwrap_or(0)
 }
 
@@ -213,7 +212,26 @@ pub fn precache_weapon_assets() {
 
 #[cfg(test)]
 mod tests {
+    use super::max_carry_in;
+    use crate::entities::stock::maprules::x87_int;
+    use crate::rules::state::ammo_column_of;
     use shared::weapons::{id, is_restricted};
+
+    #[test]
+    fn ammocount_outside_1_to_3_keeps_the_default_carry() {
+        // 9 x 19mm in `Set_ammo_count` (0x7f2cc): 210 / 90 / 30, and 0 in column 3. The cvar is
+        // truncated, and 0, 4, 5 or a negative value is the switch's default (the full carry).
+        let carry = |cvar: f32| max_carry_in(1, ammo_column_of(x87_int(cvar)));
+        for (cvar, want) in [(0.0, 210), (5.0, 210), (4.0, 210), (-1.0, 210), (0.9, 210), (1.7, 90), (2.0, 30), (2.99, 30), (3.5, 0)] {
+            assert_eq!(carry(cvar), want, "ammocount {cvar}");
+        }
+        // Every type `Set_ammo_count` writes (1..=13) has its four columns in the table.
+        let default = [210, 175, 60, 120, 70, 90, 160, 30, 90, 150, 50, 300, 35];
+        for (t, &d) in (1u8..=13).zip(&default) {
+            assert_eq!(max_carry_in(t, 0), d, "type {t}");
+            assert_eq!(max_carry_in(t, 3), 0, "type {t}");
+        }
+    }
 
     #[test]
     fn restriction_mask_keeps_high_bits() {

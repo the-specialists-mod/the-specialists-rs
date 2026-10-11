@@ -211,14 +211,22 @@ fn ts_think(now: f32) {
 
     votes::check_votes(now);
 
-    // SrvSett broadcasts when the cvars change.
-    let values = [cvars::f(c"realbullet").round() as i32, cvars::on(c"usecash") as i32, cvars::f(c"ammocount").round() as i32];
+    // SrvSett broadcasts when the cvars change. `ammocount` (0x776de..0x77714) is truncated
+    // (`(int)`), and a change is `Set_ammo_count` too (`state::ammo_column`).
+    let values = [cvars::f(c"realbullet").round() as i32, cvars::on(c"usecash") as i32, ammocount()];
     for (key, v) in values.into_iter().enumerate() {
         let changed = state::with(|g| std::mem::replace(&mut g.last_srvsett[key], v) != v);
         if changed {
             msg::all(Msg::SrvSett, |w| SrvSett { key: key as u8, value: v as i16 }.write(w));
         }
     }
+}
+
+/// `(int)ammocount` as `CTSGameRules::Think` (0x776de) and `InitHUD` (0x792c2) take it: a C cast
+/// under GCC's truncating control word, so 2.9 is 2 and NaN or out of range the x87 "integer
+/// indefinite" (which, like 0 or 5, `Set_ammo_count` maps to the default column).
+pub fn ammocount() -> i32 {
+    crate::entities::stock::maprules::x87_int(cvars::f(c"ammocount"))
 }
 
 /// `SetGlobalSlowMotion(amount, duration)` (`globalslow`, `ts_slowmotion` flag 2).
@@ -241,7 +249,8 @@ pub fn set_global_slow(amount: f32, duration: f32) {
     });
 }
 
-/// `GlobalSlowMotion2`: every 0.5 s, slow everything not already slowed (0 resets to 1).
+/// `CTSGameRules::GlobalSlowMotion2` (0x79720): every 0.5 s, slow everything not already slowed
+/// (0 resets to 1). Every `UTIL_PlayerByIndex` player, players who left included.
 pub fn global_slow2(amount: f32, btime: bool) {
     let now = engine().time();
     let due = state::with(|g| {
@@ -256,7 +265,7 @@ pub fn global_slow2(amount: f32, btime: bool) {
         return;
     }
     let eng = engine();
-    for e in super::players() {
+    for e in super::slot_players() {
         if amount == 0.0 {
             go_slow(e, 1.0, false);
         } else if !entity_in_slow(e) {
@@ -376,7 +385,8 @@ fn check_deads(now: f32) {
     }
     let mut total = 0;
     let mut living = Vec::new();
-    for e in super::players() {
+    // `UTIL_PlayerByIndex` and `IsPlayer()`: a player who left counts (dead, so not living).
+    for e in super::slot_players() {
         total += 1;
         if alive(e.v()) {
             living.push(e);
@@ -418,7 +428,9 @@ pub fn restart_round(now: f32) {
     if timer {
         msg::all(Msg::RoundTime, |w| RoundTime { secs: rt.round() as u8, state: 0 }.write(w));
     }
-    for e in super::players() {
+    // `UTIL_PlayerByIndex` and `IsPlayer()`: a player who left (still `iuser1` 0 if it left alive)
+    // is put in observer mode as well; see `rules::set_client_maxspeed`.
+    for e in super::slot_players() {
         crate::player::with_player(e, |p, cx| {
             p.ts.join_deadline = now + 10.0;
             p.respawn_at = now + 3.0;

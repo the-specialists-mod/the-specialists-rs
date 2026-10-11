@@ -794,7 +794,7 @@ impl TrackTrain {
                 break;
             }
             let ev = e.v();
-            if ev.flags & (FL_CLIENT | FL_MONSTER) as i32 == 0 && is_path(e) {
+            if crate::rules::ts_flags(e) & (FL_CLIENT | FL_MONSTER) as i32 == 0 && is_path(e) {
                 let d = vec::length(vec::sub(org, ev.origin));
                 if d < closest {
                     closest = d;

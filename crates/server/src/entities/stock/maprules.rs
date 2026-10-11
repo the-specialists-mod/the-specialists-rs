@@ -12,10 +12,11 @@
 
 use super::base::*;
 use super::items::SF_NORESPAWN;
+use crate::rules::has_player;
 use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{HudTextParms, is_player, te_text_message};
+use goldsrc::ext::entities::{HudTextParms, te_text_message};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::cell::RefCell;
@@ -129,11 +130,11 @@ impl Entity for GameText {
             let eng = engine();
             for i in 1..=eng.max_clients() {
                 let p = eng.player(i);
-                if is_player(p) && p.v().flags & FL_FAKECLIENT as i32 == 0 {
+                if has_player(p) && p.v().flags & FL_FAKECLIENT as i32 == 0 {
                     te_text_message(p, &self.parms, msg);
                 }
             }
-        } else if is_player(activator) && activator.v().flags & FL_FAKECLIENT as i32 == 0 {
+        } else if has_player(activator) && activator.v().flags & FL_FAKECLIENT as i32 == 0 {
             te_text_message(activator, &self.parms, msg);
         }
     }
@@ -158,7 +159,7 @@ pub fn strip_token(key: &str) -> &str {
 impl GamePlayerEquip {
     /// `CGamePlayerEquip::EquipPlayer`.
     fn equip(&self, player: *mut edict_t) {
-        if !is_player(player) {
+        if !has_player(player) {
             return;
         }
         for &(item, count) in &self.items {
@@ -304,7 +305,7 @@ impl Entity for GameScore {
     /// `CGameScore::Use` (0xcc568).
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
         // `IsPlayer()` through the activator (a NULL one crashes TS; here it isn't a player).
-        if !can_fire_for_activator(self.master, activator) || !crate::rules::has_player(activator) {
+        if !can_fire_for_activator(self.master, activator) || !has_player(activator) {
             return;
         }
         let v = cx.pev();
@@ -422,7 +423,7 @@ impl Entity for GamePlayerHurt {
             return;
         }
         // `IsPlayer()` through the activator (a NULL one crashes TS; here it isn't a player).
-        if crate::rules::has_player(activator) {
+        if has_player(activator) {
             let me = cx.edict;
             let dmg = cx.pev().dmg;
             if 0.0 <= dmg {
@@ -669,7 +670,7 @@ fn team_id(e: *mut edict_t) -> String {
     if e.is_null() {
         return String::new();
     }
-    if is_player(e) || crate::rules::has_player(e) {
+    if has_player(e) {
         return crate::rules::teams::team_name_of(e);
     }
     if s(e.v().classname) == c"game_team_master" {
@@ -898,7 +899,7 @@ impl Entity for GamePlayerTeam {
             return;
         }
         let sf = cx.pev().spawnflags;
-        if crate::rules::has_player(activator)
+        if has_player(activator)
             && let Some(team) = target_team_name(s(cx.pev().target))
             && crate::rules::state::teamplay()
         {

@@ -5,7 +5,6 @@ pub use server::*;
 
 #[cfg(feature = "server")]
 mod server {
-    use crate::edict::EdictPtr;
     use crate::eng;
     use crate::server::Engine;
     use crate::sys::*;
@@ -27,8 +26,6 @@ mod server {
         /// `pfnTraceModel`-free helper: `pfnTraceLine` ignoring nothing but `skip`, with
         /// `fNoMonsters`.
         fn trace_line_ex(&self, start: [f32; 3], end: [f32; 3], no_monsters: c_int, skip: *mut edict_t) -> TraceResult;
-        /// `pfnGetPlayerUserId` != -1 and the edict is a client in use.
-        fn is_player_edict(&self, e: *const edict_t) -> bool;
         /// `pfnMessageBegin(MSG_ONE, SVC_WEAPONANIM)` + anim + body.
         fn send_weapon_anim(&self, to: *mut edict_t, anim: i32, body: i32);
         fn get_global_trace_hit(&self) -> *mut edict_t;
@@ -76,14 +73,6 @@ mod server {
 
         fn trace_line_ex(&self, start: [f32; 3], end: [f32; 3], no_monsters: c_int, skip: *mut edict_t) -> TraceResult {
             self.trace_line(start, end, no_monsters, skip)
-        }
-
-        fn is_player_edict(&self, e: *const edict_t) -> bool {
-            if e.is_null() {
-                return false;
-            }
-            let i = self.index_of(e);
-            i >= 1 && i <= self.max_clients() && e.v().flags & FL_CLIENT as i32 != 0
         }
 
         fn send_weapon_anim(&self, to: *mut edict_t, anim: i32, body: i32) {

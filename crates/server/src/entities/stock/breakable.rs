@@ -18,9 +18,10 @@ use super::explode::{emit_sound_slow, ricochet, sparks, ts_explosion};
 use crate::damage::bits as dmg;
 use crate::entities::{fire_targets, remove};
 use crate::messages::{self, Msg};
+use crate::rules::has_player;
 use crate::world::{self, Cx, DamageInfo, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{ATTN_NORM, MsgWriterExt, Vec3, is_player, te, te_break_model, vec};
+use goldsrc::ext::entities::{ATTN_NORM, MsgWriterExt, Vec3, te, te_break_model, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::{CStr, CString};
@@ -310,7 +311,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
     }
 
     fn break_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !is_player(other) || !self.is_breakable() {
+        if !has_player(other) || !self.is_breakable() {
             return;
         }
         let ov = other.v();
@@ -376,7 +377,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
             let v = cx.pev();
             vec::sub(info.inflictor.v().origin, vec::mad(v.absmin, v.size, 0.5))
         });
-        if info.attacker == info.inflictor && is_player(info.attacker) {
+        if info.attacker == info.inflictor && has_player(info.attacker) {
             let sf = cx.pev().spawnflags;
             if sf & SF_BREAK_CROWBAR != 0 && info.bits & dmg::CLUB != 0 {
                 damage = cx.pev().health;
@@ -500,7 +501,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
             return;
         }
         let (absmin, absmax) = (v.absmin, v.absmax);
-        if !engine().entities_in_box(absmin, absmax, (FL_CLIENT | FL_FAKECLIENT) as i32, 1).is_empty() {
+        if !crate::rules::entities_in_box(absmin, absmax, (FL_CLIENT | FL_FAKECLIENT) as i32, 1).is_empty() {
             self.schedule_respawn(cx, 5.0);
             return;
         }
@@ -538,7 +539,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
             }
             return;
         }
-        let player = is_player(other);
+        let player = has_player(other);
         if player && push && tv.button & (IN_FORWARD | IN_USE) as i32 == 0 {
             return;
         }
@@ -672,7 +673,7 @@ impl<const PUSH: bool> Entity for Breakable<PUSH> {
 
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, caller: *mut edict_t, _kind: UseType, _value: f32) {
         if PUSH {
-            if !is_player(activator) {
+            if !has_player(activator) {
                 if Self::breakable_flag(cx) {
                     self.breakable_use(cx, activator, caller);
                 }

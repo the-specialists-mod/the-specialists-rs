@@ -12,10 +12,11 @@ use super::explode::{FFADE_OUT, screen_fade_all};
 use super::trains::ts_toggle;
 use super::triggers::{init_trigger, rules_deathmatch, show_message, trigger_key_value};
 use crate::entities::remove;
+use crate::rules::has_player;
 use crate::save::{Animating, BaseFuncs, Fields, tables};
 use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::{EHandle, is_player};
+use goldsrc::ext::entities::EHandle;
 use goldsrc::ext::saverestore::{FENTTABLE_GLOBAL, FENTTABLE_MOVEABLE, LevelConnection, MAX_LEVEL_CONNECTIONS};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
@@ -421,7 +422,7 @@ impl Entity for StripWeapons {
 
     fn use_(&mut self, _cx: &mut Cx, activator: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
         let eng = engine();
-        let player = match strip_target(is_player(activator), rules_deathmatch()) {
+        let player = match strip_target(has_player(activator), rules_deathmatch()) {
             Some(true) => activator,
             // `INDEXENT(1)`, else the world edict. TS calls `CBasePlayer::RemoveAllItems` on
             // whatever object that edict holds (the world's `CWorld` when slot 1 has no edict,
