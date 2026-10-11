@@ -37,9 +37,10 @@ struct View {
     /// steps the zoom by.
     refdef_frametime: f32,
     bob: Bob,
-    /// The bob pitch already added to `cl_viewangles` (port: see the deviation in
-    /// `client-rendering.md`).
-    bob_pitch_applied: f32,
+    /// `v_idlescale` (`0x10191414`), the `V_AddIdle` scale: `CHud::UpdateClientData` sets it from
+    /// the HUD's concussion level (`0x10024b63`), which only the TFC `Concuss` message sets, so it
+    /// stays 0.
+    idlescale: f32,
     // smoothing
     /// Smoothed view height (`0x10191d90`). Zero-initialised and never reset, as in TS, so the
     /// first spawn after the library loads eases the eye up from the origin.
@@ -75,10 +76,10 @@ struct View {
     /// it starts at 0 and only changes in third person, so the model slides in from wherever it
     /// was when third person was last left (from z 0 the first time).
     model_z: f32,
-    /// `cam_ofs` (`0x100df318`): the camera's (pitch, yaw, distance) from [`cam_think`]. `None`
-    /// while in first person; TS's `thirdperson` toggle (`0x1004fe00`) seeds it with the view
-    /// angles and distance 30, which [`cam_think`] does when third person starts.
-    cam_ofs: Option<Vec3>,
+    /// `cam_ofs` (`0x100df318`): the camera's (pitch, yaw, distance) from [`cam_think`]. A BSS
+    /// static: zero until the `thirdperson` toggle (`0x1004fe00`) seeds it with the view angles and
+    /// distance 30, only updated in third person and left stale in first person, as in TS.
+    cam_ofs: Vec3,
     // TSFade
     fade: Option<(f32, state_fade::Fade)>,
     // outputs
@@ -116,11 +117,12 @@ impl Shake {
         self.flip = 1.0 / freq;
         self.target = [r::random_float(-amp, amp), r::random_float(-amp, amp), 0.0];
     }
-    /// `ViewShake::Update` (`0x10058000`): returns this frame's step (added to cl_viewangles).
+    /// `ViewShake::Update` (`0x10058000`), on `dt = g_flTimeScale·frametime`: returns this
+    /// frame's step, which TS adds to `cl_viewangles`. The x87 keeps the rate·dt factor and the
+    /// pitch difference unrounded (`0x100580f3..0x1005814b`); the others are stored first.
     fn update(&mut self, dt: f32) -> Vec3 {
-        let (target, rate) = if self.time_left <= 0.0 {
-            (v::ZERO, 20.0)
-        } else {
+        // `time_left > 0` (`0x10058017`; a NaN counts as run out).
+        let (target, rate) = if self.time_left > 0.0 {
             self.time_left -= dt;
             self.flip -= dt;
             if self.flip < 0.0 {
@@ -128,9 +130,16 @@ impl Shake {
                 self.target = v::scale(self.target, -0.5);
             }
             (self.target, self.freq)
+        } else {
+            (v::ZERO, 20.0)
         };
-        let k = (rate * dt).min(1.0);
-        let step = v::scale(v::sub(target, self.cur), k);
+        let k = rate as f64 * dt as f64;
+        let k = if k < 1.0 || k.is_nan() { k } else { 1.0 };
+        let step = [
+            ((target[0] as f64 - self.cur[0] as f64) * k) as f32,
+            ((target[1] - self.cur[1]) as f64 * k) as f32,
+            ((target[2] - self.cur[2]) as f64 * k) as f32,
+        ];
         self.cur = v::add(self.cur, step);
         step
     }
@@ -202,20 +211,21 @@ impl Drift {
             self.pitchvel = 0.0;
             return;
         }
-        let mut step = self.pitchvel * i.frametime;
-        self.pitchvel += i.centerspeed * i.frametime;
+        // The x87 keeps the step and `v_centerspeed·ft` unrounded (`0x100673e8..0x10067403`).
+        let mut step = self.pitchvel as f64 * i.frametime as f64;
+        self.pitchvel = (i.centerspeed as f64 * i.frametime as f64 + self.pitchvel as f64) as f32;
         if delta > 0.0 {
-            if delta < step {
+            if (delta as f64) < step {
                 self.pitchvel = 0.0;
-                step = delta;
+                step = delta as f64;
             }
-            *pitch += step;
+            *pitch = (step + *pitch as f64) as f32;
         } else {
-            if -delta < step {
+            if (-delta as f64) < step {
                 self.pitchvel = 0.0;
-                step = -delta;
+                step = -delta as f64;
             }
-            *pitch -= step;
+            *pitch = (*pitch as f64 - step) as f32;
         }
     }
 }
@@ -493,7 +503,7 @@ pub fn toggle_third_person() {
     with(|w| {
         w.third = third;
         if third {
-            w.cam_ofs = Some([view[0], view[1], 30.0]);
+            w.cam_ofs = [view[0], view[1], 30.0];
         }
     });
     e.cvar_set(c"cam_command", 0.0);
@@ -551,7 +561,8 @@ pub fn frame(frametime: f64) {
 /// ([`crate::camera::adjust_ideal`], written straight to the cvar values as TS does), and
 /// `cam_ofs` follows the view angles plus the ideal angles (snapped with `cam_snapto`, else eased
 /// by `MoveToward`) and takes `cam_idealdist`. [`calc_normal`] places the camera along
-/// `cam_ofs`'s pitch and yaw (`CL_CameraOffset`); TS ignores the distance there.
+/// `cam_ofs`'s pitch and yaw (`CL_CameraOffset`); TS ignores the distance there. In first person
+/// `cam_ofs` is left as it was.
 pub fn cam_think() {
     let Some(c) = CAM.0.get() else { return };
     match c.command.value() as i32 {
@@ -560,7 +571,6 @@ pub fn cam_think() {
         _ => {}
     }
     if !is_third_person() {
-        with(|w| w.cam_ofs = None);
         return;
     }
     let lim = crate::camera::Limits {
@@ -574,10 +584,7 @@ pub fn cam_think() {
     c.idealdist.set_value(ideal[2]);
     let view = engine().view_angles();
     let snapto = c.snapto.value() != 0.0;
-    with(|w| {
-        let cur = w.cam_ofs.unwrap_or([view[0], view[1], 30.0]);
-        w.cam_ofs = Some(cam_ofs_step(cur, view, ideal, snapto));
-    });
+    with(|w| w.cam_ofs = cam_ofs_step(w.cam_ofs, view, ideal, snapto));
 }
 
 /// The `cam_ofs` update at the end of `CAM_Think` (`0x10025160..0x10025247`). `ideal` is
@@ -647,6 +654,9 @@ pub fn hardware() -> bool {
 /// [`crate::hud::think_fov`]) and writes the eased FOV into `clientdata`. Returns true (the
 /// engine's "changed" flag), as `HUD_UpdateClientData` must.
 pub fn update_client_data(cd: &mut r::ClientData) -> bool {
+    // `v_idlescale = m_iConcuss` (`0x10024b63`): the port's HUD has no concussion level (TS's
+    // comes from the TFC `Concuss` message, which no TS server sends), so it is 0.
+    with(|w| w.idlescale = 0.0);
     cd.fov = crate::hud::think_fov(with(|w| w.refdef_frametime));
     true
 }
@@ -921,13 +931,11 @@ pub fn calc_refdef(p: &mut ref_params_t) {
         RefdefPath::Normal => calc_normal(p),
         RefdefPath::None => {}
     }
-    // The screen fade and fog are written every frame, paused or not.
+    // The screen fade and fog are written every frame, paused or not. `nextView` is left alone,
+    // as TS does: the engine zeroes it before the first pass, and only the spectator view asks
+    // for a second one (its inset window).
     write_screen_fade(p.time);
     effects::fog_begin();
-    // Only the spectator view asks for a second pass (its inset window).
-    if !spectating {
-        p.nextView = 0;
-    }
 }
 
 /// Stores the camera the effects, HUD and events read (`v_origin` `0x10190b28` and `v_angles`
@@ -946,12 +954,15 @@ pub fn stop_pitch_drift() {
     with(|w| w.drift.stop(now));
 }
 
-/// `V_AddIdle` (`0x10067550`): idle sway with TS's fixed (unregistered) `v_i*` values: roll
-/// cycle 0.5 level 0.1, pitch cycle 1 level 0.3, yaw cycle 2 level 0.3.
+/// `V_AddIdle` (`0x10067550`): idle sway with TS's fixed (unregistered) `v_i*` values
+/// (`0x10097244..0x100972a4`): roll cycle 0.5 level 0.1, pitch cycle 1 level 0.3, yaw cycle 2
+/// level 0.3, each `sin(cycle·time)·level·scale` added in that order on the x87.
 fn add_idle(angles: &mut Vec3, time: f32, scale: f32) {
-    angles[2] += scale * (time * 0.5).sin() * 0.1;
-    angles[0] += scale * time.sin() * 0.3;
-    angles[1] += scale * (time * 2.0).sin() * 0.3;
+    let idle =
+        |angle: f32, cycle: f32, level: f32| ((cycle as f64 * time as f64).sin() * level as f64 * scale as f64 + angle as f64) as f32;
+    angles[2] = idle(angles[2], 0.5, 0.1);
+    angles[0] = idle(angles[0], 1.0, 0.3);
+    angles[1] = idle(angles[1], 2.0, 0.3);
 }
 
 /// `V_CalcIntermissionRefdef` (`0x100676e0`): the view sways with idle scale 1.
@@ -1058,8 +1069,38 @@ fn smooth_model_z(cur: f32, z: f32, ft: f32) -> f32 {
     cur - step
 }
 
+/// `V_ApplyKick` (`0x10057ed0`): eases the current kick (`0x101914f8`) toward the target
+/// (`0x10191d10`) at `min(ft·15, 1)` and returns the step (`0x10190b38`, roll 0) TS adds to
+/// `cl_viewangles`. Within 0.1° (squared length below the double 0.01) all three are zeroed. The
+/// x87 keeps the yaw difference for the length test and the pitch step for the add to the current
+/// kick unrounded.
+fn apply_kick(target: &mut [f32; 2], cur: &mut [f32; 2], ft: f32) -> Vec3 {
+    let d0 = (target[0] - cur[0]) as f64;
+    let d1 = target[1] as f64 - cur[1] as f64;
+    // A NaN length counts as settled (`0x10057f02`).
+    let moving = d0 * d0 + d1 * d1 >= 0.01;
+    if !moving {
+        *target = [0.0; 2];
+        *cur = [0.0; 2];
+        return v::ZERO;
+    }
+    let k = ft * 15.0;
+    let k = if k > 1.0 { 1.0 } else { k };
+    let s0 = d0 * k as f64;
+    let s1 = (d1 as f32) * k;
+    cur[0] = (s0 + cur[0] as f64) as f32;
+    cur[1] += s1;
+    [s0 as f32, s1, 0.0]
+}
+
+/// `0x10067d14`: `pitch + bobpitch·0.1f`, rounded once (x87).
+fn add_bob_pitch(pitch: f32, bob_pitch: f32) -> f32 {
+    (bob_pitch as f64 * f64::from(0.1f32) + pitch as f64) as f32
+}
+
 fn calc_normal(p: &mut ref_params_t) {
-    let ts = state::with(|s| s.time_scale).clamp(0.01, 1.0);
+    // `g_flTimeScale` (`0x100963e8`), unclamped: `V_CalcBob` and `ViewShake::Update` scale by it.
+    let ts = state::with(|s| s.time_scale);
     let dead = p.health <= 0;
     let iuser4 = engine().local_player().map_or(0, |e| e.curstate.iuser4);
     let bob_level = cv(|c| c.bob);
@@ -1117,33 +1158,14 @@ fn calc_normal(p: &mut ref_params_t) {
         frametime: ft,
         viewheight: p.viewheight[2],
         simvel: p.simvel,
-        ts: state::with(|s| s.time_scale),
+        ts,
         forward: p.forward,
         right: p.right,
         up: p.up,
     };
 
-    let (bob, gun_ofs, bob_pitch_step, kick_step, shake_step) = with(|w| {
-        let bob = w.bob.calc(&bob_in);
-        let pitch = std::mem::take(&mut w.bob.pitch);
-        let bob_step = (pitch - w.bob_pitch_applied) * 0.1;
-        w.bob_pitch_applied = pitch;
-        // Weapon kick (`V_ApplyKick` `0x10057ed0`): ease current toward target, step goes into
-        // cl_viewangles.
-        let mut step = [0.0f32; 2];
-        let d = [w.kick_target[0] - w.kick_cur[0], w.kick_target[1] - w.kick_cur[1]];
-        if d[0] * d[0] + d[1] * d[1] >= 0.01 {
-            let k = (ft * 15.0).min(1.0);
-            step = [d[0] * k, d[1] * k];
-            w.kick_cur[0] += step[0];
-            w.kick_cur[1] += step[1];
-        } else {
-            w.kick_target = [0.0; 2];
-            w.kick_cur = [0.0; 2];
-        }
-        let sh = w.shake.update(ft * ts);
-        (bob, w.bob.ofs, bob_step, step, sh)
-    });
+    // `V_CalcBob` (`0x100679a5`) runs before the spectator camera replaces `simorg`.
+    let (bob, gun_ofs) = with(|w| (w.bob.calc(&bob_in), w.bob.ofs));
 
     // The spectator camera origin replaces `simorg` (`0x100679aa`).
     if let Some(org) = ov.origin {
@@ -1186,10 +1208,22 @@ fn calc_normal(p: &mut ref_params_t) {
         }
     }
 
-    // Recoil and shake written back into the engine's view angles (FWGS copies cl_viewangles
-    // back after V_CalcRefdef; rendering doc §6).
-    p.cl_viewangles[0] += kick_step[0] + shake_step[0] + bob_pitch_step;
-    p.cl_viewangles[1] += kick_step[1] + shake_step[1];
+    // TS's per-frame additions to `pparams->cl_viewangles` (`0x10067c94..0x10067d31`), in its
+    // order: the kick step, the view-shake step, then a tenth of the bob pitch. There is no engine
+    // call: the engine copies `cl_viewangles` back into its view angles after `V_CalcRefdef` (FWGS
+    // `V_GetRefParams`), so all three are kept and add up from frame to frame. The bob pitch is
+    // added whole every frame, so the view pitch integrates it: frame-rate dependent, and the aim
+    // drifts by whatever the sum is when the bob stops or its phase resets, as in TS.
+    with(|w| {
+        let kick = apply_kick(&mut w.kick_target, &mut w.kick_cur, ft);
+        p.cl_viewangles = v::add(p.cl_viewangles, kick);
+        let shake = w.shake.update(ts * ft);
+        p.cl_viewangles = v::add(p.cl_viewangles, shake);
+        // `0x10067d14`: `cl_viewangles.pitch += bobpitch · 0.1f` (`0x1007a84c`) on the x87, then
+        // the bob pitch is zeroed.
+        let pitch = std::mem::take(&mut w.bob.pitch);
+        p.cl_viewangles[0] = add_bob_pitch(p.cl_viewangles[0], pitch);
+    });
     p.viewangles = p.cl_viewangles;
 
     cl_calc_shake(p);
@@ -1223,8 +1257,9 @@ fn calc_normal(p: &mut ref_params_t) {
     p.vieworg[2] += water_ofs;
 
     with(|w| calc_view_roll(w, p, iuser4));
-    // `V_AddIdle` would follow, scaled by the HUD's concussion level. Only the TFC `Concuss`
-    // message sets that and TS never sends it, so the scale is always 0 here.
+    // `V_AddIdle` (`0x10067eba`) at `v_idlescale`, the HUD's concussion level (0 in TS games).
+    let idlescale = with(|w| w.idlescale);
+    add_idle(&mut p.viewangles, p.time, idlescale);
     let mut eye = p.vieworg;
     // TS takes this frame's vectors from `cl_viewangles` (`0x10067ebf`), so without the shake
     // and stunt roll `viewangles` has by now.
@@ -1240,10 +1275,9 @@ fn calc_normal(p: &mut ref_params_t) {
         let state = CamState { ducked: vh < 28.0 && vh != 0.0, alive: !dead, stunt: iuser4 & 0x130c30 != 0, ft };
         let (back, right_ofs, up_ofs) = cam_base(camtype, cb, cr, cu);
         let (back, up_ofs) = with(|w| cam_smooth(&mut w.cam_up_ofs, &mut w.cam_back_ofs, back, up_ofs, state));
-        let view_angles = [p.cl_viewangles[0], p.cl_viewangles[1], 0.0];
         // TS (`0x10067f53`) orbits the camera along `CL_CameraOffset`'s pitch and yaw, roll 0;
         // `cam_think` keeps that following the view.
-        let cam_angles = with(|w| w.cam_ofs).map_or(view_angles, |o| [o[0], o[1], 0.0]);
+        let cam_angles = with(|w| [w.cam_ofs[0], w.cam_ofs[1], 0.0]);
         let (cf, cr2, cu2) = v::angle_vectors(cam_angles);
         if back == 0.0 {
             let org = body_cam(v::add(ent_org, p.viewheight), state.ducked, cam_angles[0], cf, cu2);
@@ -1904,5 +1938,42 @@ mod tests {
             total = v::add(total, s.update(0.01));
         }
         assert!(v::len(total) < 1e-3, "net view change returns to zero: {total:?}");
+    }
+
+    /// `V_ApplyKick`: eases toward the target at min(ft·15, 1); within 0.1° everything is zeroed.
+    #[test]
+    fn kick_eases_then_settles() {
+        let (mut target, mut cur) = ([-4.0f32, 2.0], [0.0f32; 2]);
+        let k = 0.01f32 * 15.0;
+        let step = apply_kick(&mut target, &mut cur, 0.01);
+        assert_eq!(step, [-4.0 * k, 2.0 * k, 0.0]);
+        assert_eq!(cur, [step[0], step[1]]);
+        let rest = [target[0] - cur[0], target[1] - cur[1]];
+        let step = apply_kick(&mut target, &mut cur, 1.0);
+        assert_eq!(cur, target, "ft·15 is capped at 1");
+        assert_eq!(step, [rest[0], rest[1], 0.0]);
+        let (mut target, mut cur) = ([0.05f32, 0.05], [0.0f32; 2]);
+        assert_eq!(apply_kick(&mut target, &mut cur, 0.01), v::ZERO);
+        assert_eq!((target, cur), ([0.0; 2], [0.0; 2]));
+    }
+
+    /// TS adds a tenth of the bob pitch to `cl_viewangles` every frame, and the engine keeps it,
+    /// so the view pitch is the running sum: it grows with the frame count, not the time.
+    #[test]
+    fn bob_pitch_accumulates_in_view_angles() {
+        let run = |frames: usize, ft: f32| {
+            let mut b = Bob::default();
+            let mut pitch = 0.0f32;
+            for n in 1..=frames {
+                b.calc(&BobInput { frametime: ft, ..bob_input(n as f32 * ft, 300.0) });
+                pitch = add_bob_pitch(pitch, std::mem::take(&mut b.pitch));
+            }
+            pitch
+        };
+        // The same 0.1 s of running: ten times the frames, about ten times the pitch.
+        let slow = run(10, 0.01);
+        let fast = run(100, 0.001);
+        assert!(slow > 0.0 && fast > 5.0 * slow, "{slow} {fast}");
+        assert_eq!(add_bob_pitch(10.0, 3.0), (3.0f64 * f64::from(0.1f32) + 10.0) as f32);
     }
 }

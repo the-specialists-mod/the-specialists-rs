@@ -43,13 +43,13 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `InterpolateSlowMotion` | `0x10055ae0` | `hud::approach_timescale`, TS's only time-scale easer, from `HUD_Frame` (`hud::frame`, after the emitters, by the unclamped frame time) | done, unit-tested |
 | `CHud::Think` zoom (from `CHud::UpdateClientData` `0x10024b00`), `UTIL_ApproachFOV`, `HUD_GetFOV` | `0x10049760`, `0x10049620`, `0x100209f0` | `hud::think_fov` from `view::update_client_data` (`HUD_UpdateClientData`), `view::ease_fov` (integer steps of `max(1, (\|d\|/2)·ft·50)` with the last refdef's frame time `0x10191478`), `hud::get_fov` (target `state.fov_target` = `0x100df1a4`, demo record type 0) | done, unit-tested |
 | `V_CalcRefdef` | `0x10069b90` | `view::calc_refdef` (dispatch in `view::refdef_path`) | done, dispatch unit-tested; while paused (outside intermission and spectating) no view is computed, as in TS, so the engine keeps last frame's view and the bob, kick, shake and stair state hold |
-| `V_CalcNormalRefdef` | `0x10067890` | `view::calc_normal` | done (see deviations). The camera the client `PM_SpectatorMove` left (`spectator::view_overrides`) replaces `simorg` (`0x101914f0`, `0x100679aa`) and `cl_viewangles` (`0x1019149c`, `0x10067a4b`); `cl_viewangles` goes into its own ring (`0x10191908`), lagged by `cl_vsmoothing` while the angle flag is set, and the origin ring also runs on the origin flag (`0x1006878f`); smoothed results become the saved spectator camera (`0x10067c73`, `0x10068974`). In normal play `PM_PlayerMove` clears all of it every move, so this only shows when movement spectates and the HUD doesn't (yet), or after an HLTV director reset. This frame's `forward/right/up` come from `cl_viewangles` (`0x10067ebf`). The gun is placed at `vieworg` (`0x10068547`: the finished first-person eye with smoothed view height and stairs, shake, the 1/32 nudge and water, so it follows the stunt `NO_VIEW` descent; the camera in third person, where the engine doesn't draw it), then shaken, then the bob offset and fov push are added. In third person the view angles become `camAngles` (`CL_CameraOffset`'s pitch and yaw, roll 0; `0x100689ef`) and the model's pitch is `-camPitch/3`; the effects/HUD camera (`view::camera`) keeps `v_angles` (`0x101914d0`), the angles before that override. A view entity above `maxclients` (`SET_VIEW`, `trigger_camera`) replaces the origin and angles (`0x10068a73`) |
+| `V_CalcNormalRefdef` | `0x10067890` | `view::calc_normal` | done. After the angle ring TS writes `pparams->cl_viewangles` three more times (`0x10067c94..0x10067d31`): the `V_ApplyKick` step, the `ViewShake::Update` step (scaled by the unclamped `g_flTimeScale`) and `0.1f·bob pitch`, in that order and with TS's x87 rounding; there is no engine call, the engine copies `cl_viewangles` back afterwards (FWGS `V_GetRefParams`), so all three persist. Then `viewangles = cl_viewangles`, `V_CalcViewRoll` and `V_AddIdle` (`0x10067eba`, at `v_idlescale`). The camera the client `PM_SpectatorMove` left (`spectator::view_overrides`) replaces `simorg` (`0x101914f0`, `0x100679aa`) and `cl_viewangles` (`0x1019149c`, `0x10067a4b`); `cl_viewangles` goes into its own ring (`0x10191908`), lagged by `cl_vsmoothing` while the angle flag is set, and the origin ring also runs on the origin flag (`0x1006878f`); smoothed results become the saved spectator camera (`0x10067c73`, `0x10068974`). In normal play `PM_PlayerMove` clears all of it every move, so this only shows when movement spectates and the HUD doesn't (yet), or after an HLTV director reset. This frame's `forward/right/up` come from `cl_viewangles` (`0x10067ebf`). The gun is placed at `vieworg` (`0x10068547`: the finished first-person eye with smoothed view height and stairs, shake, the 1/32 nudge and water, so it follows the stunt `NO_VIEW` descent; the camera in third person, where the engine doesn't draw it), then shaken, then the bob offset and fov push are added. In third person the view angles become `camAngles` (`CL_CameraOffset`'s pitch and yaw, roll 0; `0x100689ef`) and the model's pitch is `-camPitch/3`; the effects/HUD camera (`view::camera`) keeps `v_angles` (`0x101914d0`), the angles before that override. A view entity above `maxclients` (`SET_VIEW`, `trigger_camera`) replaces the origin and angles (`0x10068a73`) |
 | `V_CalcSpectatorRefdef` | `0x10068f70` | `view::calc_spectator` → `spectator::calc_refdef` | done: `simorg` + mouse angles unless the client `PM_SpectatorMove` overrode the camera (`0x101914f0`/`0x1019149c`, saved in `0x101913e4`/`0x10190b6c`), `cl_vsmoothing` rings on the flags it set, in-eye (mode 5) `V_GetInEyePos` `0x10068e20` and the target's gun as view model; HLTV inset pass (`nextView`, `spectator::inset_view`) ported, unreachable as in TS |
 | `PM_SpectatorMove` (client-modified), `PM_PlayerMove` flag reset | `0x1002c790`, `0x1002e330` | `spectator::{spectator_move, begin_player_move}` via `shared::pm::player_move_with` from `HUD_PlayerMove`; `GetChaseOrigin` `0x1002c6c0` is `shared::pm::chase_origin` | done: smoothing flags, camera overrides, last camera kept when the target isn't a physent, director locked view (mode 4), director-reset camera pin; unit-tested angle maths |
 | `CHudSpectator::DrawOverview` (+ layer, entities, expiry), `AddOverviewEntity`, `DeathMessage` | `0x10024970` (`0x10023c90`, `0x10024160`, `0x100249b0`), `0x100249f0`, `0x10024a60` | `spectator::overview::{draw, add_entity, death}` from `HUD_DrawNormalTriangles`, `effects::add_entity` and the `DeathMsg` handler | done, HLTV spectators only (as TS); tiling, file parser and entity list unit-tested |
 | `V_CalcIntermissionRefdef` | `0x100676e0` | `view::calc_intermission` | done |
 | `V_DriftPitch` / `V_StartPitchDrift` (`centerview`) / `V_StopPitchDrift` | `0x10067320` / `0x10067290` / `0x100672f0` | `view::Drift` (`centerview` registered in `view::init`, as `V_Init` `0x10069e90` does), `view::stop_pitch_drift` (called from `input` like `CL_AdjustAngles` `0x10026330` and `IN_MouseMove` `0x100274d0`, and from the joystick like `0x10027e40`) | done, unit-tested |
-| `V_AddIdle` | `0x10067550` | `view::add_idle` | done (intermission only, see deviations) |
+| `V_AddIdle` | `0x10067550` | `view::add_idle` | done: intermission at scale 1 (`0x10067734`), the normal view at `v_idlescale` (`0x10191414`), which `CHud::UpdateClientData` sets from `m_iConcuss` (`0x10024b63`). Only the TFC `Concuss` message (`0x10021a40`) sets that and no TS server sends it, so the port's `update_client_data` writes 0 and the normal-view call adds nothing, as in TS. The `v_i*` levels and cycles are the SDK's unregistered statics (`0x10097244..0x100972a4`: roll 0.5/0.1, pitch 1/0.3, yaw 2/0.3) |
 | local-player translucency, `Approach` | start of `0x10067890`, `0x10057e90` | `view::local_amt_step` (crosshair flag from the HUD's `DrawCrosshairID`, step size from `hud::time_delta` = `gHUD.m_flTimeDelta`) | done, unit-tested |
 | `cl_vsmoothing` origin ring (SDK `ViewInterp`) | step 14 of `0x10067890` | `view::Ring` | done, unit-tested |
 | `V_CalcBob` / `V_SmoothBobZ` | `0x10066e70` / `0x10066de0` | `view::Bob` | done, unit-tested; see "Bob" below |
@@ -57,13 +57,13 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `cl_vsmoothing` angle ring (normal view) | `0x10067a7a..0x10067c90` | `view::Ring::sample_pair` + `spectator::interpolate_angles` (`0x10029cf0`) | done, unit-tested |
 | `V_SmoothStairs` + view-height smoothing | `0x100677d0` | `view::Stairs` (called from `calc_normal`, and again for the body cam) | done, unit-tested; behaviour as TS, see "Stair smoothing" below |
 | `V_CalcViewRoll` / `V_CalcRoll` | `0x100675b0` / `0x100671f0` | `view::calc_view_roll` | done |
-| `V_ApplyKick` | `0x10057ed0` | in `calc_normal` (step into `cl_viewangles`) | done, verified in game |
+| `V_ApplyKick` | `0x10057ed0` | `view::apply_kick`, step added to `cl_viewangles` | done, unit-tested, verified in game |
 | `ViewShake::Start` / `Update` | `0x10057fa0` / `0x10058000` | `view::Shake` | done, unit-tested |
 | `CTSGun::VKickback` (client) | `0x10008230` | `view::kick` (prediction: `view::kick_angles`) | done; every constant read from `.rdata` (`0x1007a884..0x1007a8ac`) and identical to the server's (`0x80414`, `.rodata` `0xf7f04..0xf7f20`) |
 | client melee view shakes: `ColdCock`, `KatanaFire`, `KnifeFire`, `CCombatAttack` | `ViewShake::Start(amp, 0.2, 10)` at `0x10008dc3`, `0x1000a16f`, `0x1000a340`, `0x1000b5e0` | `GunHost::view_shake` -> `view::melee_shake` (runfuncs only) | done: stock damage ×0.3; knife damage (×2/3 stunting) ×0.15; katana's own strength ×0.2 (stunt 35, backward −75, airborne `clamp(speed·0.15384616, 35, 55)`, crouched 65, ground 45); kung fu base damage ×0.35 |
 | screen fade + `TSFade` | end of `0x10069b90`, `0x1004c1e0` | `view::write_screen_fade`, `view::fade_color`, `view::on_tsfade` | done, verified in game |
 | `V_SetFog` | `0x10056c20` | `effects::fog_begin` / `fog_params` (TriAPI `Fog`), `fog_end` | done, unit-tested: single player with `gl_fog 2` uses `gl_fog_red/green/blue` and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` != 0 |
-| `CAM_Init` / `CAM_Think` / `MoveToward` / `CL_IsThirdPerson` / camera offset | `0x10025370` / `0x10024c80` / `0x10024ba0` / `0x1004fec0` / §7.4 | `view::cam_init` (from `input::init`, as `InitInput` calls it), `view::cam_think` (`cam_command`, `cam_ofs` from `cam_snapto`/`cam_ideal*`, `move_toward`, unit-tested), `view::is_third_person` (`cam_thirdperson` only; TS has no separate death-cam flag, the death cam is the `TSHealth` 0 toggle), third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`, `model_pitch`; collision trace through the engine's `PM_TraceLine`, `render::pm_trace_line`) | done, checked against the assembly; camera verified in game before the offset smoothing was rewritten to TS's form; body cam, model z smoothing and the `camAngles` view not yet verified in game |
+| `CAM_Init` / `CAM_Think` / `MoveToward` / `CL_IsThirdPerson` / camera offset | `0x10025370` / `0x10024c80` / `0x10024ba0` / `0x1004fec0` / §7.4 | `view::cam_init` (from `input::init`, as `InitInput` calls it), `view::cam_think` (`cam_command`, `cam_ofs` from `cam_snapto`/`cam_ideal*`, `move_toward`, unit-tested; in third person only, so `cam_ofs`, a zeroed static until the toggle seeds it, keeps its stale value in first person, as in TS; the camera is placed along its pitch and yaw with roll 0, `0x10067f53`), `view::is_third_person` (`cam_thirdperson` only; TS has no separate death-cam flag, the death cam is the `TSHealth` 0 toggle), third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`, `model_pitch`; collision trace through the engine's `PM_TraceLine`, `render::pm_trace_line`) | done, checked against the assembly; camera verified in game before the offset smoothing was rewritten to TS's form; body cam, model z smoothing and the `camAngles` view not yet verified in game |
 | camera controls: `+/-campitchup`, `+/-campitchdown`, `+/-camyawleft`, `+/-camyawright`, `+/-camin`, `+/-camout` (kbuttons `0x100df338`/`370`/`2e8`/`348`/`380`/`328`), `+/-cammousemove`, `+/-camdistance`, `snapto`; `CAM_Think`'s adjustment block | `0x10025260..0x10025310`, `0x100255d0`/`0x10025670`, `0x10025680`/`0x10025700`, `0x10025340`; `0x10024cdc..0x1002515d` | `camera::register_commands` (from `view::cam_init`, in `CAM_Init`'s order), `camera::adjust_ideal` (`key_step`: ±2.5° pitch/yaw, ±1 distance, `+camin` under 30 resets to 0/0/30, unbounded; `mouse_step`: half a degree, or one unit of distance in `+camdistance`, per two pixels of cursor offset, bounded by `c_min/max*`; both unit-tested). While a mouse mode holds the mouse (`iMouseInUse` `0x100df394`), `input` skips mouse look (`IN_Move` `0x100282e0`), `IN_Accumulate` (`0x100278b0`) and the mouse buttons (`IN_MouseEvent` `0x100273d0`) | done (see deviations); not exercised in game |
 | `thirdperson` toggle | `0x1004fe00` | `view::toggle_third_person` (also `cam_command 1`, and the HUD's switches from inside their handlers: the `TSHealth` death cam, `cl_thirdpersonswitch` in `WeaponInfo`, `cl_thirdperson` and observer in `Spectator`; nothing else reads those two cvars): during demo playback switches only when `cam_thirdperson` differs from the recorded state; otherwise refused for an observer in first person; flips `cam_thirdperson`, seeds `cam_ofs` = (view pitch, view yaw, 30) when switching on, sets `cam_command` 0, and while recording writes demo record type 2 | done; not exercised in game |
 | `Demo_WriteBuffer` / `Demo_ReadBuffer` | `0x1001b860` / `0x1001b8c0` | `demo::write_buffer` (`ClEngine::demo_write_buffer`), `demo::read_buffer` (from the `Demo_ReadBuffer` export): `int` type + 4 bytes. Type 0: the zoom target (`float`), written by `hud::get_fov` on every `CHud::Think` while recording (`0x10020a11`) and replacing the target during playback (`0x10020a25`). Type 1: the alternate grip (`int` `vuser2[2]`), written by `prediction::gun::update_alt_grip` when it changes while the `from` weapon is the TS gun (`0x10003bf9`) and applied by `prediction::alt_grip` (`GetActiveAnimSet`, `0x1003df6c`) during playback; `CHudTSWeapons::VidInit` (`0x1004cb50`) clears the grip. Type 2: `cam_thirdperson`. Unknown types print TS's "Unknown demo buffer type, skipping." | done, unit-tested; not exercised in a recorded demo |
@@ -205,8 +205,16 @@ Read from the assembly, constants from `.rdata` (`0x10081e20..0x10081e40`, `0x10
 * **Use:** the view model is placed at `vieworg`, shaken (0.9), then the offset is added as is
   and the fov push follows. `V_CalcGunAngle` sets the gun's angles to
   `(amp − viewangles.pitch, viewangles.yaw, viewangles.roll)`: the gun pitches up by the bob
-  amplitude and rolls with the stunt roll. The bob pitch goes into `cl_viewangles` (see
-  deviations).
+  amplitude and rolls with the stunt roll.
+* **Bob pitch into the aim.** `V_CalcNormalRefdef` adds `0.1f·bob pitch` (`0x1007a84c`) to
+  `pparams->cl_viewangles.pitch` every frame (`0x10067d14`) and zeroes the bob pitch, after the
+  kick and shake steps. The engine copies `cl_viewangles` back into its view angles (FWGS
+  `V_GetRefParams`; there is no `SetViewAngles` call), so the view pitch is the running sum of
+  the bob pitch: a swing that grows with the frame rate (about ±0.4° at 100 fps running, ten
+  times that at 1000 fps), and the aim keeps whatever the sum is when the bob stops, its phase
+  resets at 360° or its amplitude changes. The port does the same, on the same value
+  (`view::add_bob_pitch`). Frames `V_CalcBob` skips (third person, spectating) add 0; the
+  spectator and intermission views don't add it.
 
 ## Event parameters (as handled)
 
@@ -272,41 +280,22 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   `0x1007d6f4` is -300.0, `0x1003eeed`), i.e. **400** at normal speed. FWGS's `S_StartSound` passes
   any pitch > 1 through unclamped, so copying it would play every gunshot at 4x speed. These use
   the TS curve of every other event sound instead (`events::fire_pitch` = `slow_pitch`).
-* **Bob pitch** is added to `cl_viewangles` as a per-frame *delta* (`0.1 * (bob - previous bob)`),
-  like the kick and shake steps, so the view is pitched by `0.1 * bob` and no more. TS adds
-  `0.1 * bob` itself every frame (`0x10067d14`) and the engine copies `cl_viewangles` back, so
-  its pitch *integrates* the bob: a swing that grows with the frame rate (about ±0.4° at 100 fps
-  running, ten times that at 1000 fps) and drifts the aim wherever the phase reset at 360° or a
-  changing amplitude leaves the sum off zero. The port keeps the bob's shape without the
-  frame-rate dependence and drift. On frames `V_CalcBob` skips the bob pitch is 0, as in TS.
-* **Idle sway** (`V_AddIdle`) runs in the intermission view only. Its levels and cycles are not 0
-  in TS: they are the SDK's unregistered static `cvar_t`s (`v_iroll_cycle` 0.5 / level 0.1,
-  `v_ipitch_cycle` 1 / 0.3, `v_iyaw_cycle` 2 / 0.3, values at `0x10097244..0x100972a4`). The normal
-  view calls it (`0x10067eba`) scaled by `v_idlescale` (`0x10191414`), which `CHud::UpdateClientData`
-  sets from `m_iConcuss` (`0x10024b63`), and only the TFC `Concuss` message (`0x10021a40`) sets
-  that. The TS server has no `Concuss` message (not in its strings) and neither has the port's, so
-  the scale is always 0 there; the port hooks neither and leaves the call out.
 * **Local-player translucency**: the crosshair-on-player flag is the HUD's `crosshair_id` from the
   previous HUD draw, as in TS (`0x1018a60c`, set to 1 or 2 by `DrawCrosshairID` for a named
   player).
-* **Third-person camera direction.** As in TS (`0x10067f53`), the camera is placed along
-  `cam_ofs`'s pitch and yaw (`CAM_Think`), which follows the view angles plus
-  `cam_idealpitch`/`cam_idealyaw`: eased a quarter of the way per frame by `MoveToward`, or snapped
-  with `cam_snapto 1`, and the view looks along those angles with roll 0. `cam_ofs`
-  is dropped in first person (TS keeps the stale value, which nothing reads in first person), and
-  `CAM_Think` falls back to the toggle's seed (view angles, distance 30) if it finds third person
-  without one; every switch into third person goes through the toggle, so that doesn't happen.
 * **Camera mouse modes read the mouse motion, not the Win32 cursor.** TS's `CAM_Think` reads
   `GetCursorPos`, takes the offset from `GetWindowCenterX/Y` and re-centres with `SetCursorPos`,
   while `iMouseInUse` keeps `IN_MouseMove`/`IN_Accumulate` off the cursor. The port takes the
   pending raw mouse counts from `input` instead (`input::take_cursor_offset`), which on the Windows
   Steam path without `m_rawinput` is that same `GetCursorPos`/`SetCursorPos` re-centring, and on
   FWGS (`IN_ClientLookEvent`) and SDL relative mouse the equivalent motion. Fractional counts
-  (FWGS) carry over to the next frame. Two TS quirks differ: TS's `cam_mouse` reading after
-  `-cammousemove` with `+camdistance` still held stays stale and keeps moving the distance, as in
-  the port, but TS's re-centre then also throws away motion meant for mouse look; the port leaves
-  that motion to mouse look. The sensitivity-scaled `cam_old_mouse_x/y` TS stores are never read
-  and are left out.
+  (FWGS) carry over to the next frame. The engines the port runs on don't all have a Win32 cursor
+  to read (FWGS on Linux and SDL relative mouse report motion only), so the cursor itself can't be
+  used; the motion is the same. TS's quirks are kept: after `-cammousemove` with `+camdistance`
+  still held, the stale `cam_mouse` reading keeps moving the distance, and the distance block's
+  re-centre (`0x10025138`) throws away the motion meant for mouse look (`camera::adjust_ideal`
+  drains it). The sensitivity-scaled `cam_old_mouse_x/y` TS stores are never read and are left
+  out.
 * **`snapto` and `CAM_Think` write `cvar->value` directly** (`Cvar::set_value`), as TS does, so
   `cam_snapto`/`cam_ideal*` printed at the console can show a stale string, as in TS.
 * **Particle numbers** in `effects::fx` are read from the TS client's disassembly (the decompile
@@ -434,8 +423,8 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   and the mouse angles, as in TS.
 * The HLTV inset view (`V_CalcSpectatorRefdef`'s second pass, `nextView`) and the overview's
   camera icon are ported, but TS never sets an inset mode (`specmode` and the director reset
-  both pass 0), so neither runs, there or here. `view::calc_refdef` leaves `nextView` to the
-  spectator view instead of clearing it.
+  both pass 0), so neither runs, there or here. Like TS, `view::calc_refdef` never writes
+  `nextView` itself (the engine zeroes it before the first pass).
 * Overview entities are kept by entity index (TS stores the `cl_entity_t*`) and looked up when
   drawn. The name-tag offset uses `WorldToScreen`'s x and y (TS's z is 0 too).
 * In-eye gun: as in TS, the gun offset is whatever `V_CalcBob` last left in the normal view

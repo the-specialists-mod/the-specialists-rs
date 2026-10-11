@@ -200,6 +200,11 @@ pub(crate) fn adjust_ideal(ideal: [f32; 3], lim: Limits) -> [f32; 3] {
             yaw = mouse_step(yaw, m.cursor[0], lim.yaw, 0.5);
             pitch = mouse_step(pitch, m.cursor[1], lim.pitch, 0.5);
         }
+    } else if m.distancemove {
+        // `-cammousemove` with `+camdistance` still held: TS doesn't read the cursor, but the
+        // distance block still re-centres it (`SetCursorPos`, `0x10025138`), and with mouse look
+        // back on that throws away the motion since the last re-centre. Drop it the same way.
+        crate::input::take_cursor_offset();
     }
     [pitch, yaw, dist] = key_step([pitch, yaw, dist], |k| {
         let b = match k {
