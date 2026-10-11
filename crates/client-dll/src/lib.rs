@@ -82,6 +82,8 @@ pub unsafe extern "C" fn HUD_Reset() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_Shutdown() {
+    // TS's `HUD_Shutdown` (`0x10027250`) jumps to `ShutdownInput` (`0x10027240`).
+    input::shutdown();
     // TS's `g_VoiceStatus` destructor writes `voice_ban.dt` when the library unloads.
     voice::shutdown();
 }

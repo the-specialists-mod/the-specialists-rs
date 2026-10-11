@@ -8,6 +8,10 @@ use goldsrc::ext::hud::Screen;
 /// Looks up a `titles.txt` key without the `#`. Separate so tests can supply a table.
 pub trait Titles {
     fn get(&self, key: &str) -> Option<String>;
+    /// The whole `client_textmessage_t` (`pfnTextMessageGet`), for `CHudMessage`.
+    fn message(&self, _key: &[u8]) -> Option<super::message::TitleMsg> {
+        None
+    }
 }
 
 /// Engine titles (`pfnTextMessageGet`).
@@ -21,6 +25,81 @@ impl Titles for EngineTitles {
         }
         Some(m.message().to_bytes().iter().map(|&b| b as char).collect())
     }
+    fn message(&self, key: &[u8]) -> Option<super::message::TitleMsg> {
+        let m = engine().text_message(&super::saytext::string(key))?;
+        Some(super::message::TitleMsg {
+            effect: m.effect,
+            color1: [m.r1, m.g1, m.b1, m.a1],
+            color2: [m.r2, m.g2, m.b2, m.a2],
+            x: m.x,
+            y: m.y,
+            fadein: m.fadein,
+            fadeout: m.fadeout,
+            holdtime: m.holdtime,
+            fxtime: m.fxtime,
+            // Guarded: a null `pMessage` (TS would dereference it) reads as empty.
+            text: m.message().to_bytes().to_vec(),
+        })
+    }
+}
+
+/// `LocaliseTextString` (`0x100348d0`) into a `size`-byte buffer, as `CHudStatusBar` uses it:
+/// each step copies one byte, or replaces a `#word` (word bytes `A`..`z` and digits) with its
+/// titles.txt text, and uses up one byte of `size` however much it wrote; when the source ends
+/// the buffer is cut at `size - steps - 1`. Guarded: writes past `size` (a long titles text) and
+/// the `[-1]` terminator TS writes when `size` steps run out are dropped.
+pub fn localise_text_string(t: &dyn Titles, src: &[u8], size: usize) -> Vec<u8> {
+    let mut dst = vec![0u8; size];
+    let mut put = |i: usize, b: u8| {
+        if i < size {
+            dst[i] = b;
+        }
+    };
+    let (mut s, mut d, mut budget) = (0, 0, size);
+    if src.first().is_some_and(|&b| b != 0) {
+        loop {
+            if budget == 0 {
+                break;
+            }
+            if src[s] == b'#' {
+                let end = s + 1 + src[s + 1..].iter().take_while(|&&c| (b'A'..=b'z').contains(&c) || c.is_ascii_digit()).count();
+                let word = &src[s + 1..end];
+                // A missing entry, or one with a null `pMessage`, copies the `#` alone.
+                match t.get(&super::saytext::string(word)).map(|w| super::saytext::bytes(&w)) {
+                    Some(text) => {
+                        for &b in &text {
+                            put(d, b);
+                            d += 1;
+                        }
+                        put(d, 0);
+                        s = end;
+                    }
+                    None => {
+                        put(d, src[s]);
+                        d += 1;
+                        s += 1;
+                    }
+                }
+            } else {
+                put(d, src[s]);
+                d += 1;
+                s += 1;
+                put(d, 0);
+            }
+            if s >= src.len() || src[s] == 0 {
+                if let Some(i) = budget.checked_sub(2) {
+                    put(i, 0);
+                }
+                break;
+            }
+            budget -= 1;
+        }
+    } else if let Some(i) = size.checked_sub(1) {
+        put(i, 0);
+    }
+    let len = dst.iter().position(|&b| b == 0).unwrap_or(size);
+    dst.truncate(len);
+    dst
 }
 
 /// SDK `LocaliseTextString`: every `#word` (word = `[A-Za-z0-9_]`) that names a titles.txt
@@ -175,6 +254,19 @@ mod tests {
         // A string without a `#` stays raw.
         assert_eq!(localise_with(&T, "Buy_SMGs"), "Buy_SMGs");
         assert_eq!(localise_with(&T, "#Nope here"), "#Nope here");
+    }
+
+    /// `LocaliseTextString` (`0x100348d0`) with TS's step budget.
+    #[test]
+    fn localise_text_string_budget() {
+        assert_eq!(localise_text_string(&T, b"1 #Buy_Buy x", 128), b"1 Buy x");
+        assert_eq!(localise_text_string(&T, b"#Nope here", 128), b"#Nope here", "unknown: the # is copied alone");
+        // Word bytes run `A`..`z`, so `[` belongs to the word and the lookup misses.
+        assert_eq!(localise_text_string(&T, b"#Buy_Buy[", 128), b"#Buy_Buy[");
+        assert_eq!(localise_text_string(&T, b"#Buy_Buy.", 128), b"Buy.");
+        assert_eq!(localise_text_string(&T, b"", 128), b"");
+        // Five steps ("a", "#Chg_Join", ".", "z", "z") in 9 bytes: cut at 9 - 5 - 1 = 3.
+        assert_eq!(localise_text_string(&T, b"a#Chg_Join.zz", 9), b"aJo");
     }
 
     #[test]

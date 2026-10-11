@@ -69,14 +69,6 @@ pub struct TeamScore {
     pub deaths: i32,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct DeathNotice {
-    pub killer: i32,
-    pub victim: i32,
-    pub weapon: String,
-    pub expire: f32,
-}
-
 /// `CHudMenu` (SDK menu.cpp): the `ShowMenu` text menu.
 #[derive(Debug, Clone, Default)]
 pub struct TextMenu {
@@ -123,6 +115,9 @@ pub struct Ctx<'a> {
     /// `cl_thirdperson` (`0x100df544`, read only by `Spectator`).
     pub cl_thirdperson: f32,
     pub saytext_time: f32,
+    /// `hud_deathnotice_time`. No handler here reads it any more (`DeathMsg` is handled by
+    /// `hud::notice::on_death_msg`, which reads the cvar itself); kept so callers building a
+    /// `Ctx` elsewhere (the menus) stay unchanged.
     pub deathnotice_time: f32,
 }
 
@@ -189,7 +184,16 @@ pub struct Hud {
     pub motd_final: bool,
     pub map_briefing: String,
     // ---- SDK elements kept by TS
-    pub deaths: Vec<DeathNotice>,
+    /// `CHudDeathNotice`.
+    pub deaths: super::notice::DeathNotices,
+    /// `CHudMessage` (`HudText`, `GameTitle`).
+    pub message: super::message::HudMessage,
+    /// `CHudStatusBar` (`StatusText`, `StatusValue`).
+    pub status_bar: super::statusbar::StatusBar,
+    /// `CHudAmmoSecondary` (`SecAmmoVal`, `SecAmmoIcon`).
+    pub sec_ammo: super::tfc::AmmoSecondary,
+    /// The viewport's TFC message values (`ValClass` … `AllowSpec`).
+    pub tfc: super::tfc::ViewportTfc,
     /// `CHudSayText`.
     pub say_text: super::saytext::SayText,
     /// `CHudStatusIcons`.
@@ -200,8 +204,6 @@ pub struct Hud {
     pub logo: i32,
     pub center_text: String,
     pub center_expire: f32,
-    pub hud_text: String,
-    pub hud_text_expire: f32,
     pub menu: TextMenu,
     pub crosshair_id: Option<(i32, u8)>,
     pub intermission: bool,
@@ -268,15 +270,17 @@ impl Default for Hud {
             motd: String::new(),
             motd_final: false,
             map_briefing: String::new(),
-            deaths: Vec::new(),
+            deaths: Default::default(),
+            message: Default::default(),
+            status_bar: Default::default(),
+            sec_ammo: Default::default(),
+            tfc: Default::default(),
             say_text: Default::default(),
             icons: Default::default(),
             concuss: 0,
             logo: 0,
             center_text: String::new(),
             center_expire: 0.0,
-            hud_text: String::new(),
-            hud_text_expire: 0.0,
             menu: TextMenu::default(),
             crosshair_id: None,
             intermission: false,
@@ -604,6 +608,9 @@ impl Hud {
             Msg::ResetHUD => {
                 self.reset();
                 self.icons.reset();
+                self.message.reset();
+                self.status_bar.reset();
+                self.sec_ammo.reset();
                 self.concuss = 0;
             }
             Msg::InitHUD => self.init_hud_data(),
@@ -710,17 +717,9 @@ impl Hud {
                     _ => {}
                 }
             }
+            // `hud::notice::on_death_msg` handles it: it needs the engine's player names.
             Msg::DeathMsg => {
-                let v = dec!(p::DeathMsg);
-                if self.deaths.len() >= 4 {
-                    self.deaths.remove(0);
-                }
-                self.deaths.push(DeathNotice {
-                    killer: v.killer as i32,
-                    victim: v.victim as i32,
-                    weapon: v.weapon,
-                    expire: now + ctx.deathnotice_time,
-                });
+                dec!(p::DeathMsg);
             }
             // `MsgFunc_SayText` (`0x1002ecc0`): `SayTextPrint(text, size - 1, client)`.
             Msg::SayText => {
@@ -747,11 +746,14 @@ impl Hud {
                     _ => fx.push(Effect::ConsolePrint(text)),
                 }
             }
+            // `CHudMessage::MsgFunc_HudText` (`0x100295c0`). A short message is TS's empty
+            // `READ_STRING`, a custom message with no text.
             Msg::HudText => {
-                let v = dec!(p::HudText);
-                self.hud_text = v.text;
-                self.hud_text_expire = now + 5.0;
+                let text = super::saytext::bytes(&p::Reader::new(buf).string());
+                self.message.msg_hud_text(&text, now, ctx.titles);
             }
+            // `CHudMessage::MsgFunc_GameTitle` (`0x10029610`, hooked at `0x100288e0`).
+            Msg::GameTitle => self.message.msg_game_title(now, ctx.titles),
             // CHudTrain::MsgFunc_Train (10034df0).
             Msg::Train => self.train_pos = dec!(p::Train).pos,
             // CHudAmmo::MsgFunc_HideWeapon (1001a110). TS only resets the engine crosshair,
@@ -782,7 +784,6 @@ impl Hud {
             | Msg::Health
             | Msg::Battery
             | Msg::Damage
-            | Msg::GameTitle
             | Msg::SelAmmo => {}
             // Engine-handled; never hooked.
             Msg::ScreenShake | Msg::ScreenFade => {}
@@ -1084,5 +1085,26 @@ mod tests {
         let t = TextMsg { dest: 4, strings: vec!["%s has #HUD_Credits".into(), "Bob".into()] };
         h.apply(Msg::TextMsg, &t.encode(), &c, &mut fx);
         assert_eq!(h.center_text, "Bob has Credits");
+    }
+
+    /// `HudText` reaches `CHudMessage` (a short message is an empty custom message, as TS's
+    /// `READ_STRING` gives ""), and `ResetHUD` runs the SDK elements' `Reset`s.
+    #[test]
+    fn hud_text_and_reset_hud() {
+        let s = Screen::default();
+        let c = ctx(&s);
+        let mut h = Hud::default();
+        let mut fx = Vec::new();
+        assert!(h.apply(Msg::HudText, b"#Unknown\0", &c, &mut fx));
+        assert_eq!(h.message.custom.text, b"#Unknown");
+        assert!(h.message.active);
+        assert!(h.apply(Msg::HudText, b"", &c, &mut fx));
+        assert_eq!(h.message.custom.text, b"", "a short message still adds");
+        h.status_bar.msg_status_text(&[0, b'0', b'x', 0]);
+        h.sec_ammo.msg_val(&[0, 3]);
+        assert!(h.apply(Msg::ResetHUD, &[0], &c, &mut fx));
+        assert!(h.message.slots.iter().all(Option::is_none));
+        assert!(!h.status_bar.active && h.status_bar.text[0].is_empty());
+        assert_eq!(h.sec_ammo.fade, 0.0);
     }
 }

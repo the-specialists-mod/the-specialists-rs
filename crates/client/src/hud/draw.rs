@@ -46,6 +46,50 @@ impl HudSprites {
     }
 }
 
+/// MSVC `__ftol` (`0x1006ad1c`): truncates toward zero; out of range (or NaN) gives the integer
+/// indefinite value `0x80000000`. TS's x87 runs at 53-bit precision (the MSVC CRT default), so
+/// callers compute the operand in `f64`.
+pub fn ftol(v: f64) -> i32 {
+    let t = v.trunc();
+    if (-2147483648.0..=2147483647.0).contains(&t) { t as i32 } else { i32::MIN }
+}
+
+/// The engine drawing calls the SDK elements make (`CHudMessage`, `CHudStatusBar`,
+/// `CHudDeathNotice`), behind a trait so tests can record them.
+pub trait Canvas {
+    /// `pfnDrawConsoleStringLen`: (width, height).
+    fn console_size(&self, text: &[u8]) -> (i32, i32);
+    /// `pfnDrawSetTextColor` (when `color` is set; otherwise the engine's current colour) and
+    /// `pfnDrawConsoleString`: returns the x after the text.
+    fn console_string(&mut self, x: i32, y: i32, color: Option<[f32; 3]>, text: &[u8]) -> i32;
+    /// `pfnDrawCharacter` (`TextMessageDrawChar`).
+    fn character(&mut self, x: i32, y: i32, ch: u8, rgb: [i32; 3]);
+    /// `SPR_Set(gHUD.GetSprite(index), r, g, b)` and `SPR_DrawAdditive(0, x, y,
+    /// &gHUD.GetSpriteRect(index))`.
+    fn sprite(&mut self, index: usize, rgb: [i32; 3], x: i32, y: i32);
+}
+
+/// [`Canvas`] on the engine, with the hud.txt sprites.
+pub struct EngineCanvas<'a>(pub &'a HudSprites);
+
+impl Canvas for EngineCanvas<'_> {
+    fn console_size(&self, text: &[u8]) -> (i32, i32) {
+        engine().console_bytes_size(text)
+    }
+    fn console_string(&mut self, x: i32, y: i32, color: Option<[f32; 3]>, text: &[u8]) -> i32 {
+        engine().draw_console_bytes(x, y, color, text)
+    }
+    fn character(&mut self, x: i32, y: i32, ch: u8, rgb: [i32; 3]) {
+        engine().draw_character(x, y, ch, rgb);
+    }
+    fn sprite(&mut self, index: usize, rgb: [i32; 3], x: i32, y: i32) {
+        let (Some(&h), Some(rc)) = (self.0.handles.get(index), self.0.rects.get(index)) else { return };
+        let e = engine();
+        e.spr_set(h, rgb);
+        e.spr_draw_additive(0, x, y, Some(rc));
+    }
+}
+
 /// Sprites the two TS elements load in `VidInit` (1004cb50, 10049d10).
 #[derive(Default)]
 pub struct TsSprites {

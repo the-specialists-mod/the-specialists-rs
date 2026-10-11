@@ -125,45 +125,80 @@ impl Button {
 }
 
 macro_rules! buttons {
-    ($($ident:ident, $name:literal;)*) => {
+    ($($ident:ident;)*) => {
         $(pub static $ident: Button = Button::new();)*
-
-        /// `KB_Find`: the engine looks buttons up by these names (TS registers `in_graph`,
-        /// `in_mlook` and `in_jlook`; the rest are found the same way for completeness).
-        pub fn find(name: &CStr) -> *mut c_void {
-            $(if name == $name { return $ident.ptr(); })*
-            std::ptr::null_mut()
-        }
     };
 }
 
 buttons! {
-    IN_KLOOK, c"in_klook";
-    IN_JLOOK, c"in_jlook";
-    IN_MLOOK, c"in_mlook";
-    IN_GRAPH, c"in_graph";
-    IN_BREAK, c"in_break";
-    IN_STRAFE, c"in_strafe";
-    IN_LEFTB, c"in_left";
-    IN_RIGHTB, c"in_right";
-    IN_FWD, c"in_forward";
-    IN_BK, c"in_back";
-    IN_LOOKUP, c"in_lookup";
-    IN_LOOKDOWN, c"in_lookdown";
-    IN_MOVELEFTB, c"in_moveleft";
-    IN_MOVERIGHTB, c"in_moveright";
-    IN_UPK, c"in_moveup";
-    IN_DOWNK, c"in_movedown";
-    IN_SPEED, c"in_speed";
-    IN_JMP, c"in_jump";
-    IN_DCK, c"in_duck";
-    IN_ATK, c"in_attack";
-    IN_ATK2, c"in_attack2";
-    IN_USEK, c"in_use";
-    IN_RELOD, c"in_reload";
-    IN_ALT1B, c"in_alt1";
-    IN_ALT2B, c"in_alt2";
-    IN_SCOREB, c"in_score";
+    IN_KLOOK;
+    IN_JLOOK;
+    IN_MLOOK;
+    IN_GRAPH;
+    IN_BREAK;
+    IN_STRAFE;
+    IN_LEFTB;
+    IN_RIGHTB;
+    IN_FWD;
+    IN_BK;
+    IN_LOOKUP;
+    IN_LOOKDOWN;
+    IN_MOVELEFTB;
+    IN_MOVERIGHTB;
+    IN_UPK;
+    IN_DOWNK;
+    IN_SPEED;
+    IN_JMP;
+    IN_DCK;
+    IN_ATK;
+    IN_ATK2;
+    IN_USEK;
+    IN_RELOD;
+    IN_ALT1B;
+    IN_ALT2B;
+    IN_SCOREB;
+}
+
+/// The `kbutton_t` list `KB_Find` walks (`g_kbkeys`, `0x100df5c8`): a name and its button.
+type KbEntry = (&'static CStr, &'static Button);
+
+/// `g_kbkeys` (`0x100df5c8`), newest first as `KB_Add` (`0x100258c0`) links them.
+static KB_KEYS: Global<RefCell<Vec<KbEntry>>> = Global(RefCell::new(Vec::new()));
+
+/// `KB_Find` (`0x10025880`): the first entry whose name matches, case-insensitively (TS compares
+/// with `_stricmp`, `0x10076d90`).
+fn kb_find_entry(list: &[KbEntry], name: &CStr) -> Option<&'static Button> {
+    list.iter().find(|(n, _)| n.to_bytes().eq_ignore_ascii_case(name.to_bytes())).map(|(_, b)| *b)
+}
+
+/// `KB_Add` (`0x100258c0`): links a new entry at the head unless the name is already listed.
+fn kb_add(list: &mut Vec<KbEntry>, name: &'static CStr, button: &'static Button) {
+    if kb_find_entry(list, name).is_none() {
+        list.insert(0, (name, button));
+    }
+}
+
+/// `KB_Init` (`0x10025930`, the end of `InitInput`): only `in_graph`, `in_mlook` and `in_jlook`
+/// are listed, so `KB_Find` answers null for every other name.
+fn kb_init(list: &mut Vec<KbEntry>) {
+    list.clear();
+    kb_add(list, c"in_graph", &IN_GRAPH);
+    kb_add(list, c"in_mlook", &IN_MLOOK);
+    kb_add(list, c"in_jlook", &IN_JLOOK);
+}
+
+/// `KB_Find` export (`0x10025880`): the engine looks buttons up by name. Null once
+/// `KB_Shutdown` has emptied the list.
+pub fn find(name: &CStr) -> *mut c_void {
+    kb_find_entry(&KB_KEYS.0.borrow(), name).map_or(std::ptr::null_mut(), Button::ptr)
+}
+
+/// `ShutdownInput` (`0x10027240`, the body of the `HUD_Shutdown` export `0x10027250`):
+/// `IN_Shutdown`, which on Windows is just `IN_DeactivateMouse` (`0x100272a0`), then
+/// `KB_Shutdown` (`0x10025970`), which frees the `kbutton_t` list.
+pub fn shutdown() {
+    deactivate_mouse();
+    KB_KEYS.0.borrow_mut().clear();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -761,6 +796,8 @@ pub fn init() {
         goldsrc::platform::win::startup(&mut m.win);
     });
     crate::joystick::init(fwgs);
+    // `KB_Init` (`0x10025930`) runs between `IN_Init` and `V_Init`.
+    kb_init(&mut KB_KEYS.0.borrow_mut());
     // TS removed +mlook: mouse look is always on. Report it to the engine through in_mlook.
     IN_MLOOK.get().state = 1;
     engine().print(if fwgs { "[ts] input: FWGS mouse (IN_ClientLookEvent)\n" } else { "[ts] input: client-side mouse (GoldSrc)\n" });
@@ -970,6 +1007,27 @@ fn menu_hold(held: Option<[f32; 3]>, last_set: Option<[f32; 3]>, engine: [f32; 3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `KB_Init`/`KB_Find`/`KB_Shutdown` (`0x10025930`/`0x10025880`/`0x10025970`): only the three
+    /// buttons TS lists are found, case-insensitively, and none after the shutdown.
+    #[test]
+    fn kb_list_holds_only_ts_buttons_until_shutdown() {
+        let mut list = Vec::new();
+        kb_init(&mut list);
+        assert_eq!(list.iter().map(|(n, _)| *n).collect::<Vec<_>>(), [c"in_jlook", c"in_mlook", c"in_graph"], "newest first");
+        assert!(std::ptr::eq(kb_find_entry(&list, c"in_mlook").unwrap(), &IN_MLOOK));
+        assert!(std::ptr::eq(kb_find_entry(&list, c"IN_Graph").unwrap(), &IN_GRAPH), "_stricmp");
+        assert!(std::ptr::eq(kb_find_entry(&list, c"in_jlook").unwrap(), &IN_JLOOK));
+        assert!(kb_find_entry(&list, c"in_attack").is_none(), "TS never lists the other buttons");
+        kb_add(&mut list, c"in_mlook", &IN_KLOOK);
+        assert_eq!(list.len(), 3, "KB_Add skips a listed name");
+        kb_init(&mut list);
+        assert_eq!(list.len(), 3, "KB_Init restarts the list");
+        KB_KEYS.0.borrow_mut().clone_from(&list);
+        assert!(!find(c"in_graph").is_null());
+        KB_KEYS.0.borrow_mut().clear(); // `shutdown`'s `KB_Shutdown` half
+        assert!(find(c"in_graph").is_null());
+    }
 
     #[test]
     fn key_tap_sends_respawn_on_attack_only_and_throttles() {
