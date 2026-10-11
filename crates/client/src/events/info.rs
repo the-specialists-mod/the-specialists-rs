@@ -19,7 +19,8 @@ const NONE: [i16; 29] = {
 };
 
 pub static INFO: &[ClientInfo] = &[
-    ClientInfo { id: 0, class: 0, a: [0; 29], b: NONE },
+    // Kung fu (`0x1000d065..0x1000d0cc`): the builder stores most of set A from registers.
+    ClientInfo { id: 0, class: 0, a: [0, 4, 1, 2, 10, 3, 5, 9, 6, 5, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], b: NONE },
     ClientInfo { id: 1, class: 8, a: [0, 1, 2, 3, 4, 3, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], b: NONE },
     ClientInfo { id: 2, class: 8, a: [0, 5, 4, 1, 2, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], b: NONE },
     ClientInfo {
@@ -145,5 +146,8 @@ mod tests {
         assert_eq!(super::class(4), 1);
         assert_eq!(super::class(34), 10);
         assert!(super::info(29).is_none());
+        // Kung fu's set A is stored from registers (0x1000d065..): block [1] = 4, [10] = 8.
+        let kf = super::info(0).unwrap();
+        assert_eq!((kf.a[1], kf.a[4], kf.a[10], kf.a[11]), (4, 10, 8, 7));
     }
 }

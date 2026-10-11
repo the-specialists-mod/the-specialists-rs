@@ -34,6 +34,9 @@ struct Fx {
     fog_on: bool,
     bullets: Vec<ClientBullet>,
     visible: [bool; 33],
+    /// `CachePlayerAttachments` (`0x10056e70`, `0x1018caf8`): attachments 0-3 of every player
+    /// entity as they stood at the last `TS_DrawEffects`.
+    attachments: [[Vec3; 4]; 33],
     /// Sequence number of the newest tracked shell (see [`track_shell`]).
     shell_seq: i32,
     whizz: u32,
@@ -100,6 +103,7 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         fog_on: false,
         bullets: Vec::new(),
         visible: [false; 33],
+        attachments: [[v::ZERO; 4]; 33],
         shell_seq: 0,
         whizz: 0,
         time: 0.0,
@@ -134,6 +138,35 @@ pub fn now() -> f64 {
 
 pub fn player_visible(idx: i32) -> bool {
     with(|fx| fx.visible.get(idx as usize).copied().unwrap_or(false))
+}
+
+/// `0x10056be0(out, entindex, n)`: player `entindex`'s attachment `n` from the cache that
+/// [`cache_player_attachments`] fills at the last `TS_DrawEffects`. TS reads every player
+/// attachment in its weapon events from here, not from the live entity: the engine resets a
+/// player's attachments to its origin when it links the frame's entities (FWGS `CL_LinkPlayers`),
+/// which runs before the events fire and before the studio renderer recomputes them. TS doesn't
+/// range-check either index; out-of-range ones read zero here.
+pub fn player_attachment(entindex: i32, n: usize) -> Vec3 {
+    with(|fx| attachment_slot(&fx.attachments, entindex, n))
+}
+
+fn attachment_slot(cache: &[[Vec3; 4]; 33], entindex: i32, n: usize) -> Vec3 {
+    usize::try_from(entindex).ok().and_then(|i| cache.get(i)).and_then(|a| a.get(n)).copied().unwrap_or(v::ZERO)
+}
+
+/// `CachePlayerAttachments` (`0x10056e70`, the copy at `0x10056eb4`): entities 0..=maxclients
+/// whose `player` flag is set (`+0x4`) copy their four attachments (`+0xb60`) into the cache;
+/// the rest keep their old entries. The positions are whatever the engine left there this frame:
+/// the studio renderer's for a player it drew, the entity origin for one it linked but didn't
+/// draw. On FWGS that includes the local player in first person (`CL_AddVisibleEntity` passes it
+/// to `HUD_AddEntity` but doesn't draw it), so TS's first-person muzzle flashes and pellet spray
+/// start at the player's origin.
+fn cache_player_attachments(fx: &mut Fx) {
+    for i in 0..=engine().max_clients().min(32) {
+        if let Some(e) = engine().entity(i).filter(|e| e.player != 0) {
+            fx.attachments[i as usize] = e.attachment;
+        }
+    }
 }
 
 pub fn paintball() -> bool {
@@ -594,7 +627,10 @@ pub fn draw_normal() {}
 /// `HUD_DrawTransparentTriangles` -> `TS_DrawEffects` (`0x10056dd0`).
 pub fn draw_transparent() {
     let fxq = cvar(|c| c.fx);
-    with(|fx| apply_cvar(fx, fxq));
+    with(|fx| {
+        apply_cvar(fx, fxq);
+        cache_player_attachments(fx);
+    });
     let cam = view::camera();
     let ts = state::with(|s| s.time_scale);
     let third = view::is_third_person();
@@ -744,5 +780,18 @@ mod tests {
         assert_eq!(fog_params(true, 2.0, None, user), Some(([127.5; 3], 0.0, 2048.0)), "...even without ts_fog");
         assert_eq!(fog_params(false, 2.0, map, user), Some(([51.0, 102.0, 255.0], 100.0, 900.0)), "multiplayer: the map's");
         assert_eq!(fog_params(false, 2.0, None, user), None);
+    }
+
+    #[test]
+    fn attachment_cache_slots() {
+        let mut cache = [[v::ZERO; 4]; 33];
+        cache[3][2] = [1.0, 2.0, 3.0];
+        cache[32][3] = [4.0, 5.0, 6.0];
+        assert_eq!(attachment_slot(&cache, 3, 2), [1.0, 2.0, 3.0]);
+        assert_eq!(attachment_slot(&cache, 32, 3), [4.0, 5.0, 6.0]);
+        assert_eq!(attachment_slot(&cache, 3, 0), v::ZERO);
+        assert_eq!(attachment_slot(&cache, -1, 0), v::ZERO, "out of range reads zero");
+        assert_eq!(attachment_slot(&cache, 33, 0), v::ZERO);
+        assert_eq!(attachment_slot(&cache, 3, 4), v::ZERO);
     }
 }

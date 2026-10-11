@@ -78,6 +78,15 @@ switched off in 3.0, or an SDK constant kept for completeness:
   client's melee attacks also start `ViewShake(amp, 0.2, 10)`; the port runs them through
   `GunHost::view_shake` (see `client-rendering.md`). A side-by-side check of the feel is still
   open.
+* Weapon events (issues #11, #82): the anim choices, attachment sources, branch gates and sound
+  volumes in `events::fire`/`events::misc` were re-traced to the client's disassembly. The
+  view-model anim indices were re-checked (akimbo `[3..5]`/`[22..23]`/
+  `[24..25]`, pump `[12]`/`[11]`, melee from set A, grenade body 1), and player attachments now
+  come from TS's per-frame cache (`0x10056be0`), as TS reads them. In first person on FWGS that
+  cache holds the local player's origin, so the muzzle flash and pellet spray start there as in
+  TS; Steam GoldSrc's behaviour is unverified (`client-rendering.md`, "Event parameters"). The
+  close-combat view animation still differs (server and client must change together; see
+  `client-rendering.md` "Missing pieces").
 * The TS studio renderer (issue #2) and motion-blur ghosts (issue #3) are fully ported and were
   audited slot by slot against the asm (`client-rendering.md`); the view-model slow-motion rate
   now lives in the renderer as in TS. They are unit-tested but not yet checked in an engine
