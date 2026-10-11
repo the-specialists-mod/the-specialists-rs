@@ -339,9 +339,8 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   `AngleVectors` call at `0x10041b09`).
 * `PointVisible` traces from the cull origin with `PM_GLASS_IGNORE`, ignoring no entity; TS passes
   the local player's entity index as the physent to ignore.
-* `PSys_LoadSprite`'s `WARNING! cannot found <name>` goes to the console only. TS prints it with
-  `CHudSayText::SayTextPrint` (`0x10050a69`), which also puts it in the chat area; the sprite
-  lookups run inside the effects state, so the port doesn't call back into the HUD from there.
+* `PSys_LoadSprite`'s `WARNING! cannot found <name>` goes through `SayTextPrint` (`0x10050a69`)
+  as in TS (`hud::say_text_print`, which queues it if the HUD state is borrowed at the time).
   The cache has no 64-slot limit (TS returns "no sprite" silently once 64 sprites are loaded), and
   is keyed by name only (TS also keys by render mode, which only matters for that limit).
 * Particles follow `PSys_UpdateDraw` (`0x100520d0`), `Particle_Move` (`0x10050ce0`),

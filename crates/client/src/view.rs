@@ -38,8 +38,7 @@ struct View {
     refdef_frametime: f32,
     bob: Bob,
     /// `v_idlescale` (`0x10191414`), the `V_AddIdle` scale: `CHud::UpdateClientData` sets it from
-    /// the HUD's concussion level (`0x10024b63`), which only the TFC `Concuss` message sets, so it
-    /// stays 0.
+    /// the HUD's concussion level (`0x10024b63`), which only the TFC `Concuss` message sets.
     idlescale: f32,
     // smoothing
     /// Smoothed view height (`0x10191d90`). Zero-initialised and never reset, as in TS, so the
@@ -654,10 +653,10 @@ pub fn hardware() -> bool {
 /// [`crate::hud::think_fov`]) and writes the eased FOV into `clientdata`. Returns true (the
 /// engine's "changed" flag), as `HUD_UpdateClientData` must.
 pub fn update_client_data(cd: &mut r::ClientData) -> bool {
-    // `v_idlescale = m_iConcuss` (`0x10024b63`): the port's HUD has no concussion level (TS's
-    // comes from the TFC `Concuss` message, which no TS server sends), so it is 0.
-    with(|w| w.idlescale = 0.0);
     cd.fov = crate::hud::think_fov(with(|w| w.refdef_frametime));
+    // `v_idlescale = m_iConcuss` (`0x10024b63`, after `CHud::Think`).
+    let concuss = crate::hud::concussion();
+    with(|w| w.idlescale = concuss);
     true
 }
 

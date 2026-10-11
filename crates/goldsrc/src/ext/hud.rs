@@ -1,7 +1,8 @@
 //! Engine helpers added by the hud work package. Keep additions here to avoid merge conflicts.
 //!
 //! Only slots present in the 2007 `cl_enginefunc_t` that TS 3.0 was built against are used, so
-//! these work on old Steam GoldSrc, HL25 and FWGS alike.
+//! these work on old Steam GoldSrc, HL25 and FWGS alike. The one exception,
+//! [`ClEngine::fill_blend`], checks for an engine that has its slot and falls back otherwise.
 //!
 //! Each engine call has one wrapper, either here or in [`render`]; the `ClEngine` table
 //! accessors (`event_api`, `efx_api`, `tri_api`, `demo_api`) are the null-checked ones, and
@@ -150,9 +151,52 @@ impl ClEngine {
         (w, h)
     }
 
-    /// `pfnFillRGBA`: the single wrapper for it.
+    /// `pfnFillRGBA`: the single wrapper for it. The engine draws it additively.
     pub fn fill(&self, x: i32, y: i32, w: i32, h: i32, rgb: [i32; 3], a: i32) {
         cl_eng!(pfnFillRGBA(x, y, w, h, rgb[0], rgb[1], rgb[2], a));
+    }
+
+    /// An alpha-blended fill, as the engine's VGUI surface draws panels and text: the single
+    /// `pfnFillRGBABlend` wrapper. That slot came after the 2007 table (SteamPipe, 2013), so it is
+    /// only used on engines known to have it: FWGS (its `host_ver` cvar) and Steam GoldSrc builds
+    /// of that update or later (its `m_rawinput` cvar). Elsewhere this falls back to the additive
+    /// [`fill`](Self::fill).
+    pub fn fill_blend(&self, x: i32, y: i32, w: i32, h: i32, rgb: [i32; 3], a: i32) {
+        static HAS_BLEND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let has = *HAS_BLEND.get_or_init(|| {
+            let found = |n: &'static CStr| !crate::client::Cvar::find(n).is_null();
+            self.f.pfnFillRGBABlend.is_some() && (found(c"host_ver") || found(c"m_rawinput"))
+        });
+        if has {
+            cl_eng!(pfnFillRGBABlend(x, y, w, h, rgb[0], rgb[1], rgb[2], a));
+        } else {
+            self.fill(x, y, w, h, rgb, a);
+        }
+    }
+
+    /// `pfnDrawConsoleString` on raw bytes (no UTF-8 conversion), with `rgb` set first through
+    /// `pfnDrawSetTextColor`, or in the engine's default text colour when `None` (the engine
+    /// resets the colour after every string). Returns the x after the text.
+    pub fn draw_console_bytes(&self, x: i32, y: i32, rgb: Option<[f32; 3]>, text: &[u8]) -> i32 {
+        let s = std::ffi::CString::new(text.iter().copied().filter(|&b| b != 0).collect::<Vec<u8>>()).unwrap_or_default();
+        if let Some(c) = rgb {
+            cl_eng!(pfnDrawSetTextColor(c[0], c[1], c[2]));
+        }
+        cl_eng!(pfnDrawConsoleString(x, y, s.as_ptr().cast_mut()))
+    }
+
+    /// `pfnDrawConsoleStringLen` on raw bytes: (width, height).
+    pub fn console_bytes_size(&self, text: &[u8]) -> (i32, i32) {
+        let s = std::ffi::CString::new(text.iter().copied().filter(|&b| b != 0).collect::<Vec<u8>>()).unwrap_or_default();
+        let (mut w, mut h) = (0, 0);
+        cl_eng!(pfnDrawConsoleStringLen(s.as_ptr(), &mut w, &mut h));
+        (w, h)
+    }
+
+    /// `pfnConsolePrint` on raw bytes.
+    pub fn print_bytes(&self, text: &[u8]) {
+        let s = std::ffi::CString::new(text.iter().copied().filter(|&b| b != 0).collect::<Vec<u8>>()).unwrap_or_default();
+        cl_eng!(pfnConsolePrint(s.as_ptr()))
     }
 
     /// `pfnServerCmd`: the single wrapper for it. Every engine fills the slot; if it is null the

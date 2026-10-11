@@ -172,7 +172,7 @@ mod tests {
     fn localise_tokens_anywhere() {
         assert_eq!(localise_with(&T, "1 #Buy_Buy"), "1 Buy");
         assert_eq!(localise_with(&T, "1 #Chg_Join Specialists"), "1 Join Specialists");
-        // TS's missing-# bug: "Buy_SMGs" stays raw (we keep the string, the menu adds the #).
+        // A string without a `#` stays raw.
         assert_eq!(localise_with(&T, "Buy_SMGs"), "Buy_SMGs");
         assert_eq!(localise_with(&T, "#Nope here"), "#Nope here");
     }

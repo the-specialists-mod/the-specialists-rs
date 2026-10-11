@@ -257,12 +257,11 @@ weapons), and `ts_lobby` (19 classes, the classic).
 
 ## 10. Deliberate deviations from TS 3.0
 
-TS bugs found in the decomp are fixed unless parity requires keeping them:
+TS bugs found in the decomp are kept where they show in valid play; out-of-bounds reads and
+writes on bad input are guarded instead (client-hud.md §7 lists them):
 
 * the scoreboard overrun (74 vs 72 entries)
 * the always-true objective bounds checks
-* the missing `#` in `Buy_SMGs`
-* `default_fov` being forced to 80
 * `delta.lst`'s missing commas
 * `weapon_9MMAR`: both spellings are exported
 * `_special`, which the TS client sends on every `+attack2`, is accepted silently instead of

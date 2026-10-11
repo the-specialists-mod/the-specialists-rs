@@ -194,7 +194,9 @@ pub fn init() {
 }
 
 /// `CVoiceStatus::VidInit` (10017af0): the head icon sprite. TS also reads
-/// `scripts/voicemodel.txt` but places the icon at a fixed 45 units, so the port skips the file.
+/// `scripts/voicemodel.txt` into `m_VoiceHeadModelHeight` (`+0x177e0`), which nothing reads:
+/// `CreateEntities` (`0x10018053`) places the icon at a constant 45 units. The read has no
+/// effect, so the port skips it.
 pub fn vid_init() {
     let h = engine().spr_load("sprites/voiceicon.spr");
     with(|v| v.head_sprite = h);
@@ -396,6 +398,14 @@ pub fn speaker_icon(player: i32) -> SpeakerIcon {
     })
 }
 
+/// `CVoiceStatus::~CVoiceStatus` (`0x100177e0`, the static `g_VoiceStatus` torn down when the
+/// library unloads) saves the bans (`CVoiceBanMgr::SaveState` `0x10017300`). The port has no
+/// static destructors and does it from `HUD_Shutdown`, which the engine calls just before
+/// unloading the library.
+pub fn shutdown() {
+    save_bans();
+}
+
 fn save_bans() {
     let (path, bytes) = with(|v| (v.ban_path.clone(), v.bans.serialize()));
     let tmp = format!("{path}.tmp");
@@ -404,8 +414,8 @@ fn save_bans() {
     }
 }
 
-/// `SetPlayerBlockedState` (10018cf0): TS toggles the ban, and only for audible players. The port
-/// writes `voice_ban.dt` right away (the SDK saves it when the client library unloads).
+/// `SetPlayerBlockedState` (10018cf0): TS toggles the ban, and only for audible players.
+/// `voice_ban.dt` is written when the library shuts down ([`shutdown`]).
 pub fn toggle_block(player: i32) {
     let e = engine();
     let dbg = debug();
@@ -427,7 +437,6 @@ pub fn toggle_block(player: i32) {
     if dbg {
         e.print(&format!("CVoiceStatus::SetPlayerBlockedState: setting player {player} ban to {}\n", banned as i32));
     }
-    save_bans();
     update_server_state(false);
 }
 

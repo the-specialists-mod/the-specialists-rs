@@ -81,7 +81,10 @@ pub unsafe extern "C" fn HUD_Reset() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn HUD_Shutdown() {}
+pub unsafe extern "C" fn HUD_Shutdown() {
+    // TS's `g_VoiceStatus` destructor writes `voice_ban.dt` when the library unloads.
+    voice::shutdown();
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn HUD_PlayerMove(pm: *mut playermove_t, _server: c_int) {

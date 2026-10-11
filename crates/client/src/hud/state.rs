@@ -77,12 +77,6 @@ pub struct DeathNotice {
     pub expire: f32,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct SayLine {
-    pub client: i32,
-    pub text: String,
-}
-
 /// `CHudMenu` (SDK menu.cpp): the `ShowMenu` text menu.
 #[derive(Debug, Clone, Default)]
 pub struct TextMenu {
@@ -112,6 +106,8 @@ pub enum Effect {
     Fade(p::TsFade),
     ConsolePrint(String),
     CenterPrint(String),
+    /// `CHudSayText::SayTextPrint(text, client)` ([`super::say_text_print`]).
+    SayText(String, i32),
 }
 
 /// Context for handlers: what TS reads from globals while parsing.
@@ -194,8 +190,14 @@ pub struct Hud {
     pub map_briefing: String,
     // ---- SDK elements kept by TS
     pub deaths: Vec<DeathNotice>,
-    pub say: Vec<SayLine>,
-    pub say_scroll: f32,
+    /// `CHudSayText`.
+    pub say_text: super::saytext::SayText,
+    /// `CHudStatusIcons`.
+    pub icons: super::icons::StatusIcons,
+    /// `CHud::m_iConcuss` (`+0x1c`, the `Concuss` message), `v_idlescale`'s source.
+    pub concuss: i32,
+    /// `CHud::m_iLogo` (`+0x8`, the `Logo` message).
+    pub logo: i32,
     pub center_text: String,
     pub center_expire: f32,
     pub hud_text: String,
@@ -255,9 +257,9 @@ impl Default for Hud {
             realbullet: 0,
             cashbased: 0,
             ammocount: 0,
-            // TS leaves 0 until the server's SrvSett 3 (sent in InitHUD); 0 would block every
-            // weapon in the buy menu, so the port starts from the server default mask.
-            restriction: 0x1f,
+            // `0x1018d174` is zero (`.bss`) until the server's `SrvSett 3` (sent in `InitHUD`),
+            // which blocks every weapon in the buy menu until then, as in TS.
+            restriction: 0,
             bullettime: false,
             players: vec![PlayerExtra::default(); MAX_CLIENTS + 1],
             team_scores: Vec::new(),
@@ -267,8 +269,10 @@ impl Default for Hud {
             motd_final: false,
             map_briefing: String::new(),
             deaths: Vec::new(),
-            say: Vec::new(),
-            say_scroll: 0.0,
+            say_text: Default::default(),
+            icons: Default::default(),
+            concuss: 0,
+            logo: 0,
             center_text: String::new(),
             center_expire: 0.0,
             hud_text: String::new(),
@@ -337,7 +341,7 @@ impl Hud {
     /// `InitHUD`: `InitHUDData` (death notices and say text cleared).
     pub fn init_hud_data(&mut self) {
         self.deaths.clear();
-        self.say.clear();
+        self.say_text.clear();
         self.menu = TextMenu::default();
     }
 
@@ -595,7 +599,13 @@ impl Hud {
                 self.kfu_power = (dec!(p::KFuPower).power as f32).clamp(-100.0, 100.0);
             }
             // ---- CHud / viewport
-            Msg::ResetHUD => self.reset(),
+            // `0x100219a0`: every element's `Reset` (`CHudStatusIcons` too), then `m_iConcuss`
+            // = 0; the caller zeroes the zoom sensitivity (`+0x18`).
+            Msg::ResetHUD => {
+                self.reset();
+                self.icons.reset();
+                self.concuss = 0;
+            }
             Msg::InitHUD => self.init_hud_data(),
             Msg::GameMode => {
                 let mut r = p::Reader::new(buf);
@@ -712,17 +722,10 @@ impl Hud {
                     expire: now + ctx.deathnotice_time,
                 });
             }
+            // `MsgFunc_SayText` (`0x1002ecc0`): `SayTextPrint(text, size - 1, client)`.
             Msg::SayText => {
                 let v = dec!(p::SayText);
-                let text = v.text.trim_end_matches(['\n', '\r']).to_owned();
-                fx.push(Effect::ConsolePrint(format!("{}\n", text.trim_start_matches(['\u{1}', '\u{2}']))));
-                if self.say.len() >= 5 {
-                    self.say.remove(0);
-                }
-                if self.say.is_empty() {
-                    self.say_scroll = now + ctx.saytext_time;
-                }
-                self.say.push(SayLine { client: v.client as i32, text });
+                fx.push(Effect::SayText(v.text, v.client as i32));
             }
             Msg::TextMsg => {
                 let v = dec!(p::TextMsg);
@@ -739,16 +742,8 @@ impl Hud {
                         self.center_expire = now + 5.0;
                         fx.push(Effect::CenterPrint(text));
                     }
-                    3 => {
-                        if self.say.len() >= 5 {
-                            self.say.remove(0);
-                        }
-                        if self.say.is_empty() {
-                            self.say_scroll = now + ctx.saytext_time;
-                        }
-                        fx.push(Effect::ConsolePrint(text.clone()));
-                        self.say.push(SayLine { client: 0, text: text.trim_end().to_owned() });
-                    }
+                    // HUD_PRINTTALK: `SayTextPrint(text, 128, -1)` (`0x10034c01`).
+                    3 => fx.push(Effect::SayText(text, -1)),
                     _ => fx.push(Effect::ConsolePrint(text)),
                 }
             }

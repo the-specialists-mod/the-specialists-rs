@@ -224,6 +224,17 @@ pub fn intermission(on: bool) {
     }
 }
 
+/// `TeamFortressViewport::AllowedToPrintText` (`0x10064240`): false while the team menu or the
+/// MOTD (VGUI menus 2 and 5; TS also lists the class and class-help menus 3 and 6, which the
+/// port doesn't have) is up and the local player has no class (`g_iPlayerClass`, `0x10190a10`,
+/// from the local player's state). Chat then goes to the console only.
+pub fn allowed_to_print_text() -> bool {
+    if !with(|m| m.team_open || m.motd_open) {
+        return true;
+    }
+    engine().local_player().map_or(0, |p| p.curstate.playerclass) != 0
+}
+
 // ---- input -----------------------------------------------------------------------------------
 
 /// A menu owns the mouse (virtual cursor, clicks).
@@ -239,31 +250,31 @@ fn squelching() -> bool {
 const K_ENTER: i32 = 13;
 const K_ESCAPE: i32 = 27;
 const K_SPACE: i32 = 32;
-const K_KP_ENTER: i32 = 172;
+/// GoldSrc keydefs.h `K_KP_ENTER` (169, `0xa9` in `0x10064b90`).
+const K_KP_ENTER: i32 = 169;
 
+/// The parts of `TeamFortressViewport::KeyInput` (`0x10064b90`, from `HUD_Key_Event`) for the
+/// port's menus: with the team menu up, Escape closes it once the player has a team
+/// (`g_iTeamNumber`, `0x10190b24`, the local player's state); with the MOTD up, Enter, keypad
+/// Enter, Space or Escape close it. The buy menu takes no keys here (Escape doesn't close it).
 /// Returns true if a menu consumed the key.
 pub fn key_event(down: bool, key: i32, _binding: &CStr) -> bool {
-    if !down {
-        return false;
-    }
-    let (motd, buy_open, team) = with(|m| (m.motd_open, m.buy.active, m.team_open));
-    if motd && matches!(key, K_ENTER | K_ESCAPE | K_SPACE | K_KP_ENTER) {
-        with(|m| m.motd_open = false);
-        return true;
-    }
-    if key == K_ESCAPE && buy_open {
-        with(|m| m.buy.close());
-        return true;
-    }
-    if key == K_ESCAPE && team {
+    let (motd, team) = with(|m| (m.motd_open, m.team_open));
+    if team && key == K_ESCAPE && engine().local_player().is_some_and(|p| p.curstate.team != 0) {
         with(|m| m.team_open = false);
+        return true;
+    }
+    if down && motd && matches!(key, K_ENTER | K_ESCAPE | K_SPACE | K_KP_ENTER) {
+        with(|m| m.motd_open = false);
         return true;
     }
     false
 }
 
-/// Mouse buttons while a menu has the cursor (`CTSBuyMenu::MouseEvent` 10038360): left release
-/// selects the row under the cursor, right release is key 10 (back).
+/// Mouse buttons while a menu has the cursor. The buy menu gets them only while no VGUI menu is
+/// up (`IN_MouseEvent` `0x100273d0`): `CTSBuyMenu::MouseEvent` (10038360) runs the row under the
+/// cursor on a left release (key 1 of the current page when there is none) and key 10 (back) on
+/// a right release.
 pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
     let pressed = state & !old;
     if squelching() && !with(|m| m.buy.active || m.team_open || m.motd_open) {
@@ -279,15 +290,8 @@ pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
     let released = old & !state;
     if released & 1 != 0 {
         click(x, y);
-    } else if released & 2 != 0 {
-        if buy_open() {
-            buy_key(10);
-        } else {
-            with(|m| {
-                m.team_open = false;
-                m.motd_open = false;
-            });
-        }
+    } else if released & 2 != 0 && buy_open() && !with(|m| m.team_open || m.motd_open) {
+        buy_key(10);
     }
 }
 
@@ -303,16 +307,26 @@ fn click(x: i32, y: i32) {
         }
         return;
     }
-    if let Some(key) = with(|m| m.team_rows.iter().find(|r| m.team_open && hit((r.0, r.1, r.2, r.3), x, y)).map(|r| r.4)) {
-        team_menu_key(key);
+    if with(|m| m.team_open) {
+        if let Some(key) = with(|m| m.team_rows.iter().find(|r| hit((r.0, r.1, r.2, r.3), x, y)).map(|r| r.4)) {
+            team_menu_key(key);
+        }
         return;
     }
-    let row = with(|m| m.rows.iter().rev().find(|r| hit((r.0, r.1, r.2, r.3), x, y)).copied());
-    if let Some((_, _, _, _, pg, key)) = row {
-        let r = rules();
-        let actions = with(|m| m.buy.handle_key(pg, key, &r, &mut EngineRng));
-        run_actions(actions);
+    if !buy_open() {
+        return;
     }
+    let r = rules();
+    let h = hud::screen().height;
+    let actions = with(|m| match m.buy.hit_test(x, y, h, &r) {
+        buy::Hit::Row(pg, key) => m.buy.handle_key(pg, key, &r, &mut EngineRng),
+        buy::Hit::Miss => {
+            let pg = m.buy.page;
+            m.buy.handle_key(pg, 1, &r, &mut EngineRng)
+        }
+        buy::Hit::Unset => Vec::new(),
+    });
+    run_actions(actions);
 }
 
 // ---- drawing ---------------------------------------------------------------------------------

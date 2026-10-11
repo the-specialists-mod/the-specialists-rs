@@ -99,38 +99,6 @@ pub fn death_console_line(killer: &str, victim: &str, weapon: &str, suicide: boo
     }
 }
 
-/// `CHudSayText::Draw` (1002eb40): up to five lines above the bottom, scrolling every
-/// `hud_saytext_time` seconds.
-pub fn draw_say_text(dc: &Dc) {
-    let e = engine();
-    let st = super::cvars().saytext_time.value().max(0.5);
-    let lines = super::with(|h| {
-        if !h.say.is_empty() && h.say_scroll <= dc.now {
-            h.say.remove(0);
-            h.say_scroll = dc.now + st;
-        }
-        h.say.iter().map(|l| (l.client, l.text.clone(), h.players.get(l.client.max(0) as usize).map_or(0, |p| p.team))).collect::<Vec<_>>()
-    });
-    let lh = dc.g.screen.char_height.max(14) + 2;
-    let mut y = dc.h() - 60 - lh * 6;
-    for (client, text, team) in lines {
-        let x = 10;
-        // \x02 marks "name: message" lines; the name takes the team colour.
-        if let Some(rest) = text.strip_prefix('\u{2}') {
-            let name = if client > 0 { e.player_info(client).name } else { String::new() };
-            if !name.is_empty() && rest.starts_with(&name) {
-                let nx = e.draw_console_string(x, y, team_color(team), &name);
-                e.draw_console_string(nx, y, CON_COLOR, &rest[name.len()..]);
-            } else {
-                e.draw_console_string(x, y, CON_COLOR, rest);
-            }
-        } else {
-            e.draw_console_string(x, y, CON_COLOR, text.trim_start_matches('\u{1}'));
-        }
-        y += lh;
-    }
-}
-
 /// Parsed span of a `ShowMenu` line (SDK menu.cpp escapes `\w \d \y \r \R`).
 #[derive(Debug, PartialEq)]
 pub struct Span {
