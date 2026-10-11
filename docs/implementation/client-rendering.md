@@ -76,13 +76,14 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | fire sound | `0x1003de90` | `fire::fire_sound` | done |
 | `EV_TS_EjectShell` | `0x10056890` | `fire::eject_shell` + `effects::track_shell` | done |
 | `GetWeaponBody` | `0x10007110` | `fire::weapon_body` | done |
-| `GetActiveAnimSet` + info anim tables | `0x1003df60`, builders `0x100047d0..` | `events::info` (generated) | done |
+| `GetActiveAnimSet` + info anim tables | `0x1003df60`, builders `0x100047d0..` | `events::info` (generated; all 37 sets re-extracted from the builders' stores, kung fu's set A was missing) | done |
 | `UTIL_SharedRandomLong/Float` | `0x1001ae60` / `0x1001aea0` | `events::random` | done, bit-exact vs C reference |
 | `TS_PlayTextureSound` | `0x10044bf0` | `impact::texture_sound` | done |
 | `TS_DecalGunshot` / `TS_DamageDecal` | `0x10001180` / `0x10001000` | `impact::decal_gunshot` / `damage_decal` | done |
 | range table | `0x10007220` | `impact::range_mult` | done |
 | `EV_TS_Empty`, `Pump`, `Reload`, `Draw`, `Grenade`, `Knife`, `Katana`, `CloseCombat`, `ColdCock` | §4.1 | `events::misc::*` | done |
 | `TS_MeleeMaterialSound` | `0x10045df0` | `misc::melee_material_sound` | done |
+| `CachePlayerAttachments` / getter | `0x10056e70` / `0x10056be0` | `effects::{cache_player_attachments, player_attachment}` | done (filled in `draw_transparent`, read by every weapon event) |
 | particle system `g_PSys` (`PSys_*`, `Particle_*`, `Quad_*`) | §5.2-5.4 | `effects::psys` | done (see deviations) |
 | `PSys_PushRadial` / `PushAlongLine` / `BlastPush` | `0x100524c0` / `0x10052720` / `0x10052c80` | `PSys::push_radial` / `push_along_line` / `blast_push` | done (from the disassembly) |
 | `CTS_CL_Emitter::Frame`, `LoadMap`, `LoadEntityLump`, `ProcessEnts`, keyvalue parsers | §5.1-5.3 | `effects::frame`, `effects::emitters` | done, unit-tested, verified in game (ts_frigid snow). Emission runs on the emitters' own clock (`0x10189478`): `HUD_Frame`'s frame times, unclamped, summed since the map loaded. Nothing is emitted, and the clock doesn't run, until the first `TS_DrawEffects` has allocated the particle pool (`0x1003abef` tests `g_PSys+8`, `0x1018bdf0`); the pool is never freed, so emitters don't wait again after a level change. The count is `RandomLong(ppelow, ppehigh)` on the raw keyvalues (`0x1003ac54`; the engine returns `ppelow` when it is above `ppehigh`), divided by the integer `cl_fx` divisor and rounded up with `idiv` + `inc` (`0x1003ae29`). Particles of an emitter with `cameradensity` and `cameraradius` above 0.01 and the camera inside spawn at the camera ± `cameraradius × (2 − min(cameradensity, 1))` on x and y, then 1.5 × the local player's `curstate.velocity` x/y (`GetLocalPlayer`, `0x1003b0a0..0x1003b0cb`, 1.5 at `0x1007a860`) is added so rain and snow lead a moving player (`emitters::camera_xy`). The camera is inside an emitter when it is strictly between `origin + variancelow` and `origin + variancehigh` on x and y, not normalised (`0x1003ac75..0x1003acce`). Outside, the camera test is horizontal (`0x1003ace9..0x1003ae25`): the direction to the box centre has z = 0 and the XY distance is floored at 1e-4; the emitter is skipped for that frame without rescheduling when forward · direction < 0.1 (`0x1003ad96`), otherwise the LOD factor is `clamp(distance / |high − low|, 1, 10)`, with the 3D box size unfloored (a zero-size box gives 10). Only a random particle count of exactly 0 is rejected (`0x1003ac6d`); a negative one still plays the emit sound (at the world origin, the zeroed scratch particle's) and reschedules, and with a divisor above 1 a small negative count rounds up to one particle. The template sprite is looked up after the count and the camera test (`0x1003ae5f`), so a missing sprite doesn't change the random sequence; it prints `Sprite '<name>' is not a valid sprite.` and the emitter is retried next frame without rescheduling (`0x1003ae69..0x1003ae78`) |
@@ -214,17 +215,45 @@ and W§6.1 disagree, the handler accepts both.
 
 | Event | f1 | f2 | i1 | i2 | b1 | b2 | Handler behaviour |
 |---|---|---|---|---|---|---|---|
-| fire | spread X | spread Y | weapon id | attachments (1 sil, 2 laser, 4 flash, 8 scope) | clip empty / akimbo hand / pump mode | shared-random seed | dispatch on class (4/5 akimbo, 1 pump, else standard) |
-| firelinked | spread | spread | id | attachments | hand | seed | both guns, +-5 along right, second seed + 0x21 |
-| empty | - | - | - | - | - | - | `weapons/pistol-empty.wav` |
-| pump | 0 | 0 | id | attachments | 1 | 0 | anim set[13/14], shell + puff (first person), pump sound (`sound2`) |
-| reload | 0 or 8/9/10 | 0 | id | attachments | 0 | 0 | anim set[1] (sawed-off with rounds: [8]) or [phase]; `insert-shell`, `generic_reload`; casings for revolver/sawed-off/contender |
+| fire | spread X | spread Y | weapon id | attachments (1 sil, 2 laser, 4 flash, 8 scope) | clip empty / akimbo hand / pump mode | shared-random seed | dispatch on class (4/5 akimbo, 1 pump, else standard). Anims: standard `[6]` if `b1`, else `[3 + r(0,2)]`; pump `[12]` if `b1` (pump mode), else `[11]`; akimbo `[22 + r(0,1)]` if `b1`, else `[24 + r(0,1)]` |
+| firelinked | spread | spread | id | attachments | hand | seed | both guns, +-5 along right, second seed + 0x21; anim `[3 + r(0,2)]` |
+| empty | - | - | - | - | - | - | `weapons/pistol-empty.wav`, `CHAN_WEAPON` |
+| pump | 0 | 0 | id | attachments | 1 | 0 | anim set[13/14], shell + puff, pump sound (`sound2`, entity -1 at the event origin) |
+| reload | 0 or 8/9/10 | 0 | id | attachments | 0 | 0 | anim set[1] (`f1` 0) or set[phase]; `insert-shell` (9, everyone); pump sound (10) and `generic_reload` (0) for others and third person, then for a visible player the casings (sawed-off, Raging Bull, Contender) or `generic_clip` (two for akimbo) |
 | draw | 0 | 0 | id | attachments | 0 | 0 | in-eye spectating only: set[2] |
-| grenade | 0 | 0 | 19/20/21 | 0 | 0 | 0 | in-eye only: M61 set[i1] |
-| knife | 0 | 0 | id | hit flag | 0 | 0 | trace 35: sparks + `knife_hit` on hard surfaces, else `knife_miss` |
-| katana | 0 | 0 | anim index (15 = back swing) | hit flag | 0 | 0 | trace 50 / -55: sparks + `katana/hit[1]`, else `miss[1]` |
-| closecombat | weapon id (block) | 0 | 0 block / 1-3 attack | anim index | 0 | 0 | `player/block.wav` or `player/closecombat.wav` + material sound + puff |
-| coldcock | dir.x (unused) | - | id | attachments | 0 | 0 | set[28], trace 30, material sound + puff |
+| grenade | 0 | 0 | 19/20/21 | 0 | 0 | 0 | in-eye only: M61 set[i1], body 1 |
+| knife | 0 | 0 | id | hit flag | 0 | 0 | trace 35: sparks + `knife_hit` on hard surfaces, else `knife_miss`; then set A[15 + r(0,2)], body `i2` (1 on flesh), first person only |
+| katana | 0 | 0 | anim index (15 = back swing) | hit flag | 0 | 0 | trace 50 / -55: sparks + `katana/hit[1]`, else `miss[1]`; then set A[i1], body as the knife |
+| closecombat | weapon id (block) | 0 | 0 block / 1-3 attack | anim index | 0 | 0 | `player/block.wav` or `player/closecombat.wav` + material sound + puff (anim: see gaps) |
+| coldcock | dir.x (unused) | - | id | attachments | 0 | 0 | set A[28], trace 30, material sound + puff |
+
+The "view owner" (`0x1001c5e0`) is the local player or the player spectated in-eye: the fire,
+pump, reload and coldcock anims play for both, and the fire/pump events' first-person branch runs
+for the owner outside third person. Everyone else, and the owner in third person, gets the
+player-model effects only if `HUD_AddEntity` marked them visible this frame. `r(a,b)` is
+`RandomLong`; "set" is `GetActiveAnimSet`'s, "set A" the normal set (`info+0x252`) the melee
+events index directly. Every event sound uses volume `RandomFloat(0.92, 1.0)` and attenuation 0.8,
+except the fire sound (`0x1003de90`) and the material sounds.
+
+**Player attachments come from a per-frame cache.** TS's events never read a player entity's
+`attachment[]` directly: `TS_DrawEffects` copies attachments 0-3 of every entity with the `player`
+flag (indices 0..=maxclients) into `0x1018caf8` (`0x10056eb4`), and the events read that through
+`0x10056be0`. The cache matters on FWGS: `CL_EmitEntities` runs `CL_LinkPlayers`, which sets every
+linked player's attachments to its origin, then `CL_FireEvents`, before the studio renderer
+recomputes them for the players it draws. So at event time the live entity holds the origin, and
+the cache holds last frame's drawn positions. The port does the same
+(`effects::cache_player_attachments`, `effects::player_attachment`).
+
+In first person TS takes the muzzle flashes and the pellet spray from that cache too
+(`0x1003e39e`, `0x1003e5c4`, `0x1003f4b8`, `0x1003f579`, `0x10040fcd`, `0x10041091`), and only the
+smoke and shells from the view model (`g_pViewModel+0xb60`). On FWGS the local player isn't drawn
+in first person (`CL_AddVisibleEntity` calls `HUD_AddEntity` but skips `R_AddEntity` when
+`!CL_IsThirdPerson() && index == cl.viewentity`), so its cached attachments are its origin (the
+interpolated `cl.simorg`, 28 units below the eye standing) and the first-person flashes and spray
+start there. The port matches that. The Steam GoldSrc client engine isn't in this checkout (only
+dedicated servers), so what it leaves in the local player's attachments in first person is
+unverified; FWGS's `CL_LinkPlayers` follows GoldSrc's, and if GoldSrc does likewise the result is
+the same there.
 
 Pitch: `25 + 75*ts + rand(-5,5)` everywhere (see deviations for the fire sound). Fire sound:
 `weapons/<sound>` (silenced: `sound2`, volume 0.84-0.92, attenuation x2), attenuation from the
@@ -301,8 +330,8 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   the silenced shot's second wisp sits `muzzle − fwd·ofs` back along the barrel (`0x1003e54b`);
   akimbo flashes from attachment 0 (`b1` set) or 2, both for a linked shot, and smokes once at the
   `b1` gun, with no pellet spray (`0x1003f55c`, `0x1004050e`); the pump's shell and wisp leave
-  `muzzle − fwd·ofs` (view model attachment 0, or the player's attachment 3 in third person and for
-  others), only when the weapon has a shell model; glass is always 81 shards on a 9×9 grid; the
+  `muzzle − fwd·ofs` (view model attachment 0, or the cached player attachment 3 in third person and
+  for others), only when the weapon has a shell model; glass is always 81 shards on a 9×9 grid; the
   explosion has no sparks, 24/48 fireball/smoke particles × the quality scale, ends early if a
   cloud sprite is missing, and its flash keeps the smoke's drag 3.3 (TS reuses the scratch
   particle); the surface mark's angles are truncated before a negative angle is wrapped
@@ -358,11 +387,11 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   `KatanaFire`/`CCombatAttack` test `FL_DUCKING` on the *weapon's* `pev` (`[esi+0x4]+0x1a4`,
   `0x1000a052`, `0x1000b1c1`) where the shared code reads the player's flags; only a crouch without
   `+duck` held picks a different katana strength (65 instead of 45) or kung-fu branch.
-* **First-person flash origin (unverified).** TS's first-person muzzle flashes and pellet spray
-  read the per-player attachment cache (`0x10056be0`, filled from each player entity in
-  `TS_DrawEffects` at `0x10056eb4`), the smoke the view model's attachment; the port uses the view
-  model's attachments for all of them. Which positions the engine leaves in the local player's
-  attachments in first person hasn't been checked.
+* **First-person flash origin follows TS on FWGS.** The muzzle flashes
+  and pellet spray read the per-player attachment cache, which on FWGS holds the local player's
+  origin in first person (see "Player attachments come from a per-frame cache" above), so they
+  start below the view rather than at the gun. This is TS's behaviour on FWGS; the Steam GoldSrc
+  result is unverified.
 * `weapons/sshell.wav` (TS shotgun-shell bounce) isn't shipped with TS 3.0; `sshell1/2.wav` are used.
 * Fog goes through TriAPI `Fog` (FWGS) instead of raw OpenGL (both linear); colours are
   converted from 0..1 to 0..255. TS sets `GL_FOG` itself and turns it off at the end of the
@@ -464,6 +493,13 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   blocking and akimbo linked shots are not predicted (the server plays those; the shooter only
   sees them once prediction moves to `shared::weapons`).
 * Particle `termvelocity` unused (TS doesn't read it either).
+* **Close-combat view animation.** TS's `EV_TS_CloseCombat` plays set A of the weapon `f1`
+  (`info(ftol(f1))+0x252`) at index `i2`, body 0, for the view owner, blocks included
+  (`0x100433bb..0x10043401`). The TS server's `CCombatAttack` sends `i2` as that index (kung-fu
+  set-A indices 0..11, the stack slot written at objdump `0x762d7..0x76997` in `ts_i386.so` and
+  pushed at `0x76daa`), but the port's `Gun::ccombat_attack` sends `view_anim` (-1, 10..25), so
+  the port's handler still plays `i2` as a raw sequence, for the local player's attacks only.
+  Fixing it needs the server and the handler changed together.
 
 ## Integration notes
 

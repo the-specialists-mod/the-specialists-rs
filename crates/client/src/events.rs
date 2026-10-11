@@ -80,6 +80,15 @@ impl Args {
     pub fn is_local(&self) -> bool {
         r::is_local(self.entindex)
     }
+    /// The player we spectate in-eye (`0x1001c5c0`: `g_iUser1 == 5 && g_iUser2 == entindex`).
+    pub fn is_in_eye_target(&self) -> bool {
+        state::with(|s| s.spec_mode == shared::ts::obs::IN_EYE && s.spec_target == self.entindex)
+    }
+    /// `0x1001c5e0`: the local player or the one spectated in-eye, whose gun is the view model.
+    /// The weapon events play their view animations and first-person effects for this player.
+    pub fn is_view_owner(&self) -> bool {
+        self.is_local() || self.is_in_eye_target()
+    }
     /// `EV_GetGunPosition`: origin + view offset (TS duck view 16).
     pub fn gun_position(&self) -> Vec3 {
         let ofs = if self.is_local() {

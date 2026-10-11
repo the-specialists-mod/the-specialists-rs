@@ -182,15 +182,11 @@ pub fn eject_shell(origin: Vec3, vel: Vec3, angles: Vec3, model: i32, snd: i32) 
     }
 }
 
-fn player_attachment(entindex: i32, n: usize) -> Option<Vec3> {
-    engine().entity(entindex).map(|e| e.attachment[n])
-}
-
-/// Effects at the shooter's player-model attachments (third person and other players): flashes
-/// at `flash_atts`, the smoke at `smoke_att`, the pellet spray at `spray_att`, and a shell behind
-/// each flash.
+/// Effects at the shooter's cached player attachments ([`effects::player_attachment`]; third
+/// person and other players): flashes at `flash_atts`, the smoke at `smoke_att`, the pellet spray
+/// at `spray_att`, and a shell behind each flash.
 fn world_effects(a: &Args, s: &Shot, flash_atts: &[usize], smoke_att: usize, spray_att: Option<usize>, pump: bool, pellets: i32) {
-    let att = |n: usize| player_attachment(a.entindex, n).unwrap_or(a.origin);
+    let att = |n: usize| effects::player_attachment(a.entindex, n);
     let flashes: Vec<Vec3> = flash_atts.iter().map(|&n| att(n)).collect();
     gun_fx(a, s, &FxAt { flashes: &flashes, smoke: att(smoke_att), spray: spray_att.map(att) }, true, pump, pellets);
     for &muzzle in &flashes {
@@ -198,24 +194,39 @@ fn world_effects(a: &Args, s: &Shot, flash_atts: &[usize], smoke_att: usize, spr
     }
 }
 
-/// First-person effects at the view model's attachments (as [`world_effects`]; the spray, when
-/// there is one, comes from the first flash).
+/// First-person effects. As TS, the flashes and the pellet spray come from the shooter's cached
+/// player attachments (`0x1003e39e`, `0x1003e5c4`, `0x1003f4b8`, `0x1003f579`, `0x10040fcd`,
+/// `0x10041091`), while the smoke and each shell (behind its flash's gun) come from the view
+/// model's (`0x1003e408`, `0x1003e7cc`, `0x1003f5e6`, `0x1003f8ff`, `0x1003fb1b`, `0x10041017`,
+/// `0x10041286`). The spray, when there is one, is at the first flash's attachment.
 fn view_model_effects(a: &Args, s: &Shot, flash_atts: &[usize], smoke_att: usize, spray: bool, pump: bool, pellets: i32) {
     let Some(vm) = first_person_view_model() else {
         // No view model (scoped): shell from the view origin.
         eject_shell(view::origin(), s.shell_velocity(a), a.angles, s.shell, s.shell_snd);
         return;
     };
-    let flashes: Vec<Vec3> = flash_atts.iter().map(|&n| vm.attachment[n]).collect();
+    let flashes: Vec<Vec3> = flash_atts.iter().map(|&n| effects::player_attachment(a.entindex, n)).collect();
     let at = FxAt { flashes: &flashes, smoke: vm.attachment[smoke_att], spray: spray.then(|| flashes[0]) };
     gun_fx(a, s, &at, false, pump, pellets);
-    for &muzzle in &flashes {
-        eject_shell(v::ma(muzzle, -s.muzzle_ofs(), s.fwd), s.shell_velocity(a), a.angles, s.shell, s.shell_snd);
+    for &n in flash_atts {
+        eject_shell(v::ma(vm.attachment[n], -s.muzzle_ofs(), s.fwd), s.shell_velocity(a), a.angles, s.shell, s.shell_snd);
     }
 }
 
+/// Which branch of a fire event runs (`0x1003e2b6`/`0x1003e32f`/`0x1003e9ee..0x1003ea1e` in
+/// `EV_TS_FireStandard`, the same in the akimbo and pump handlers): the view owner (the local
+/// player, or the one spectated in-eye) gets the view animation and, outside third person, the
+/// first-person effects; everyone else, and the owner in third person, gets the player-model
+/// effects if `HUD_AddEntity` saw them this frame.
+fn branches(a: &Args) -> (bool, bool, bool) {
+    let owner = a.is_view_owner();
+    let third = view::is_third_person();
+    (owner, owner && !third, (third || !owner) && effects::player_visible(a.entindex))
+}
+
+/// The muzzle dlight: unsilenced shots from a visible player or the view owner (`0x1003e21c..`).
 fn muzzle_light(a: &Args, s: &Shot) {
-    if s.silenced || !(a.is_local() || effects::player_visible(a.entindex)) {
+    if s.silenced || !(effects::player_visible(a.entindex) || a.is_view_owner()) {
         return;
     }
     let pos = v::ma(v::ma(a.origin, 16.0, s.fwd), 32.0, s.up);
@@ -262,14 +273,17 @@ fn fire_standard(a: &Args) {
     let s = Shot::new(a);
     let pellets = tables().weapon(s.id as u8).map_or(1, |w| w.pellets);
     muzzle_light(a, &s);
-    if a.is_local() {
+    let (owner, first_person, world) = branches(a);
+    if owner {
+        // Last shot `[6]` (`0x1003e2fa`), else `[3 + RandomLong(0, 2)]` (`0x1003e313`).
         let set = anim_set(s.id);
         let seq = if a.b1 != 0 { set[6] } else { set[3 + r::random_long(0, 2) as usize] };
         r::weapon_animation(seq as i32, weapon_body(s.id, a.i2));
     }
-    if a.is_local() && !view::is_third_person() {
+    if first_person {
         view_model_effects(a, &s, &[0], 0, true, false, pellets);
-    } else if engine().entity(a.entindex).is_some() && (a.is_local() || effects::player_visible(a.entindex)) {
+    }
+    if world {
         // Rifles and snipers flash from attachment 3, the rest from 0 (0x1003ed4e); the pellet
         // spray always comes from attachment 3 (0x1003ed21).
         let att = if matches!(info::class(s.id), 6 | 7) { 3 } else { 0 };
@@ -285,14 +299,17 @@ fn fire_pump(a: &Args) {
     let s = Shot::new(a);
     let pellets = tables().weapon(s.id as u8).map_or(8, |w| w.pellets);
     muzzle_light(a, &s);
-    if a.is_local() {
+    let (owner, first_person, world) = branches(a);
+    if owner {
+        // Pump mode `[12]` (`0x10040f4b`), semi `[11]` (`0x10040f57`).
         let set = anim_set(s.id);
-        r::weapon_animation(set[if a.b1 != 0 { 11 } else { 12 }] as i32, weapon_body(s.id, a.i2));
+        r::weapon_animation(set[if a.b1 != 0 { 12 } else { 11 }] as i32, weapon_body(s.id, a.i2));
     }
     let shell = if a.b1 != 0 { Shot { shell: 0, ..s } } else { s };
-    if a.is_local() && !view::is_third_person() {
+    if first_person {
         view_model_effects(a, &shell, &[0], 0, true, true, pellets);
-    } else if engine().entity(a.entindex).is_some() && (a.is_local() || effects::player_visible(a.entindex)) {
+    }
+    if world {
         world_effects(a, &shell, &[3], 3, Some(3), true, pellets);
     }
     fire_sound(a, shell.id, false);
@@ -310,20 +327,24 @@ fn fire_akimbo(a: &Args, linked: bool) {
     muzzle_light(a, &s);
     let sel = if a.b1 != 0 { 0 } else { 2 };
     let hands: &[usize] = if linked { &[0, 2] } else { &[sel] };
-    if a.is_local() {
+    let (owner, first_person, world) = branches(a);
+    if owner {
+        // Linked `[3 + RandomLong(0, 2)]` (`0x1003f3e4`), `b1` gun `[22 + RandomLong(0, 1)]`
+        // (`0x1003f406`), the other `[24 + RandomLong(0, 1)]` (`0x1003f41c`).
         let set = anim_set(s.id);
         let seq = if linked {
-            set[26 + r::random_long(0, 1) as usize]
+            set[3 + r::random_long(0, 2) as usize]
         } else if a.b1 != 0 {
-            set[24 + r::random_long(0, 1) as usize]
-        } else {
             set[22 + r::random_long(0, 1) as usize]
+        } else {
+            set[24 + r::random_long(0, 1) as usize]
         };
         r::weapon_animation(seq as i32, weapon_body(s.id, a.i2));
     }
-    if a.is_local() && !view::is_third_person() {
+    if first_person {
         view_model_effects(a, &s, hands, sel, false, false, pellets);
-    } else if engine().entity(a.entindex).is_some() && (a.is_local() || effects::player_visible(a.entindex)) {
+    }
+    if world {
         world_effects(a, &s, hands, sel, None, false, pellets);
     }
     fire_sound(a, s.id, s.silenced);
