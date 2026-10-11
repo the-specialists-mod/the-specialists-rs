@@ -264,7 +264,6 @@ TS bugs found in the decomp are fixed unless parity requires keeping them:
 * the missing `#` in `Buy_SMGs`
 * `default_fov` being forced to 80
 * `delta.lst`'s missing commas
-* `weapon_9MMAR`: both spellings are exported
 
 Dead 3.0 features (round-based and objective modes, cash) are implemented only as far as the
 port needs them; `docs/implementation/*.md` records what's live.

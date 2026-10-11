@@ -56,7 +56,7 @@ addresses of `ts_i386.so`.
 | `CBasePlayer::UpdateMeleeBar` 0x9650c / `GetMeleeMultiplier` 0x965d0 | `Gun::update_melee_bar` / `spread::melee_multiplier` |
 | `CBasePlayer::ShootBulletsPlayer` 0x6f69c, `UTIL_TraceLine_Expanded` 0x6f4f4 | `fire::shoot_bullets`, `fire::trace_expanded` |
 | `compile_range_damage` 0x7f1f4 | `range_multiplier` (pure function) |
-| `CBulletManager` 0x6ebe0.. | `bullets.rs` (`ts_bulletmanager` entity) |
+| `CBulletManager` 0x6ebe0.. | `bullets.rs` (256 slots, run from `StartFrame` as `CTSGameRules::Think` does) |
 | `CBasePlayer::CheckHull` 0x95e28, `CloseCombatAttack` 0x95f88 | `melee::check_hull`, `melee::attack` |
 | `VictimKungfuHold/KnifeHold/KatanaHold` 0x76f50/0x76de4/0x76c8c | `melee::hold` |
 | `CTSStunt::CheckForBreakables` (melee-window part) | `melee::pending_hit` |
@@ -86,15 +86,17 @@ addresses of `ts_i386.so`.
 ### Hooks
 
 * `game_init`: cvars `realbullet` 0, `ammocount` 0, `weaponstay` 15, `damagemult` 0,
-  `customweapons` "", `ts_weapons_debug` 0 (not TS), `dmgreport` 0 (TS reads it but never
-  registers it); server commands `weaponrestriction`, `loadweapons`, `saveweapons`.
+  `customweapons` "", `ts_weapons_debug` 0 (not TS); server commands `weaponrestriction`,
+  `loadweapons`, `saveweapons`. `dmgreport` is read but, as in TS, never registered.
+* `start_frame` (from `pfnStartFrame`, after the rules' frame): the simulated bullets, as
+  `CTSGameRules::Think` runs `CBulletManager::Think` while it counts any bullet.
 * `precache`: the 11 events, every v_/p_/p_sil/w_ model, shells, fire sounds, the server-side
   weapon sounds, `w_m61`/`w_knife`/`w_sealknife`/`w_katana`/`ammopack`, `sprites/bubble.spr`
   (`g_sModelIndexBubbles`), `common/wpn_select.wav`; applies `customweapons`.
-* `on_spawn`: TSInit (bar 100, penalty 0, timers), deploy (kung fu unless rules already gave a
-  weapon), `BuyArmament` from the `tkw`/`tki`/`tka` lists (or the map's `game_player_equip`s
-  instead), speed, `KFuPower`, `CustomWP` once per client. The inventory itself is **not**
-  cleared here (see on_killed) so weapons the rules give in their `on_spawn` survive.
+* `on_spawn`: TSInit (bar 100, penalty 0, timers), deploy (kung fu unless the port-only bots
+  already got a weapon from the rules), `BuyArmament` from the `tkw`/`tki`/`tka` lists (or the
+  map's `game_player_equip`s instead), speed, `KFuPower`, `CustomWP` once per client. The gun's
+  records are emptied where TS loses its `weapon_tsgun` (see §5), not here.
 * `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
   melee windows), `BlockPlayer` expiry, the delayed melee hit.
 * `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
@@ -102,8 +104,9 @@ addresses of `ts_i386.so`.
   (`Gun::post_frame_ready`), `ImpulseCommands`' `PlayerUse` (`player::player_use`) and then the
   weapon frame (`Gun::weapon_post_frame`), seed reroll (`RandomLong(0, 32000)`, as TS), timer
   decrement by `frametime * fuser1 * (DFR ? 1.5 : 1)`, speed, messages.
-* `on_killed`: holster, ammo pack, drop every weapon as `WorldGun`, clear inventory, slots,
-  kevlar flag, loadout (TS `ResetArmament`), `ActItems 0`, `CurWeapon 0,0,0`.
+* `on_killed`: holster, ammo pack, drop every weapon as `WorldGun` (a corpse's grenades become
+  grenade power-ups), clear inventory, slots, kevlar flag, loadout (TS `ResetArmament`),
+  `CurWeapon 0,0,0`. `ActItems 0` is the rules' (sent once, later in `Killed`).
 * `client_command`: `weapon_<n>`, `lastinv`, `drop`, `drop_<n>`, `firemode`, `useitems`,
   `lasclr_<n>` (`PlInfo`), `rst_cfg`, `tkw id_att ...`, `tki item ...`, `tka type_count ...`;
   test helpers (need `sv_cheats`): `ts_give id_att ...` (weapon + full ammo),
@@ -127,38 +130,61 @@ addresses of `ts_i386.so`.
   0x2001002 (x1.5 headshot flag). Penetration: `left = dmg * pierce` (x0.5 into a player),
   `btype` not 1/2 and `left > 5`: step `min(2*left, 48)` (simulated bullets: `min(left, 48)`),
   then one 4096 u trace with a 30-unit range index.
-* Simulated bullets: when `realbullet != 0` or the shooter's `fuser1 < 0.99`; step every
+* Simulated bullets: when `round(realbullet) != 0` (`TSGameRules+0x578`) or the shooter's
+  `GiveSlowMul() < 0.99`; 256 slots filled first-free and updated in slot order; step every
   `0.1/(realbullet+1)` s (every frame for >= 2) at `velocity_mps * 40 * dt * mult`, with
   `mult = GetBulletVelocityMult(s, bt)`: `s` is the shooter's slow-motion "others" amount
   (`pl+0x180`) while it's an activator, else `max(fuser1, 0.01)`; `bt` is the bullet-time flag
   (`pl+0x175`, `PlayerRules::btime`: slow pause, `ts_slowmotion` flag 4).
-* Bubble trails: every hitscan pellet sends `TE_BUBBLETRAIL` (src -> end, `round(8192 *
-  fraction / 64)` bubbles, the pierce shot `round(4096 * fraction / 64)`) when either end is at
-  least 8 u under water.
+* Bubble trails: every pellet sends `TE_BUBBLETRAIL` (src -> end, `round(8192 * fraction / 64)`
+  bubbles, the pierce shot `round(4096 * fraction / 64)`) when either end is at least 8 u under
+  water. End and fraction come from `ShootBulletsPlayer`'s static trace: a simulated bullet's
+  pellet reuses the last hitscan trace of anyone, as in TS (`fire::LAST_TRACE`).
 * Slow motion of projectiles: grenades, knives (not while stuck in a wall) and falling
   `WorldGun`s start at the thrower's scale (`pl+0x180` if it's an activator, else
   `max(fuser1, 0.01)`) and run `SlowPhysics` every 0.1 s think: `velocity * s`, `avelocity * s`,
-  `gravity * s²` from the saved pre-slow values, restored when `fuser1` returns to 1.
+  `gravity * s²` from the saved pre-slow values, restored when `fuser1` returns to 1. As in TS,
+  "saved" means a non-zero saved velocity (`CTSPhysicObject::SavePhysics` 0x7bac0): an object
+  slowed at rest re-saves every think (its gravity and spin shrink by `s` each time) and is never
+  restored, and a restore puts back the pre-slow velocity, so a slowed grenade or knife lying on
+  the ground jumps off with its throw velocity when the slow ends.
 * `dmgreport` (only with `sv_cheats`): `> 1` prints `damage:%f`, `damage(piercing):%f` (bullets)
   and `(debug)%f` (thrown blades) to everyone as `HUD_PRINTTALK`; any non-zero value logs
   `<attacker> damaged <victim> (%f hp)` to the console from the player's TraceAttack.
 * Melee: stock 35 u ahead hull 3, rate 0.725 (1.0875 stunting), damage `info.stock`
-  (x2/3 stunting), bits 0x4001080. Knife slash 35 u, `damage * meleemult` (x2/3 stunting), bits
-  0x1004, rate x1.5 stunting. Katana: reach 15-17 u, 50 (35 stunting, 55 backward) x meleemult,
-  bits 0x1080, delays 1.0 / 1.0 / 1.1 / 0.7 / 0.9. Thrown: 1900 u/s, 100 / 50 / 150, bits
-  0x8001000. Block windows 0.5 s, cost 33.
-* Kung fu (decoded `CCombatAttack`): punches 10 (held jab, 0.25 s) / 20 (press, 0.35 s) /
-  30 (combo end or duck, 0.65 s) / air 25 (0.5 s); kicks: uppercut 35 (1.0 s), back kick
-  `clamp(speed*0.303,15,80)` (1.35 s airborne / 1.0 s ground), flying kick
-  `clamp(speed*0.1538,15,45)` (1.0 s), combo kick 25 (0.5 s), quick kick 15 (0.3 s), speed kick
-  `clamp(speed*0.1,15,30)` (0.75 s); stunting 15 (0.55 s). x meleemult, x2 with the kung-fu
-  power-up. Bits 0x4001080, disarm + knockback (`v.vel += |a.vel|*dir`, `z = 235` above 30).
-  Each attack picks two numbers: the event's `i2`, an index into kung fu's set A that the client
-  plays (stack slot `0x8(%esp)`, objdump `0x762d7..0x76997`, pushed at `0x76daa`; the client copy
+  (x2/3 stunting), bits 0x4001080; a blocked stock hit still plays `kevlarhit` (`ColdCockAttack`
+  returns the target). Knife slash 35 u, `damage * meleemult` (x2/3 stunting), bits 0x1004, rate
+  x1.5 stunting. Katana (disassembly 0x73580..0x737a8): reach 50 u (35 stunting, 55 backward,
+  behind with hull 1), damage = the swing's strength x meleemult: stunting 35, backward 75,
+  airborne `clamp(speed*0.1538, 35, 55)`, ground 45 (alternating view index 0x11/0x10), crouched
+  65; bits 0x1080, delays 1.0 / 1.0 / 1.1 / 0.7 / 0.9. A knife or katana slash that hits a player
+  sets the gun's `pev->body` to 1 (`Gun::body`, sent with the grip-switch and idle animations).
+  Knife, katana and kung fu store their delay in `pl+0x4f8` (the stunts' close-combat cooldown).
+  Targets: knife/katana need `IsAlive` and no `EF_NODRAW`; kung fu and the stock need
+  `takedamage`, no `FL_WORLDBRUSH`/`EF_NODRAW`, and not a teammate under `mp_friendlyfire 0`.
+  Thrown: 1900 u/s, 100 / 50 / 150, bits 0x8001000. Block windows 0.5 s, cost 33.
+* Kung fu (`CCombatAttack`, decoded from the disassembly 0x76078..0x76e19; damage, delay,
+  delayed-hit window, reach): punches 10 / 0.25 s / 0.1 / 35 u (held jab), 20 / 0.35 / 0.15 / 35
+  (press), 30 / 0.65 / 0.15 / 35 (combo end or duck), air 25 / 0.5 / 0.15 / 35; kicks: uppercut
+  35 / 1.0 / 0.35 / 45, back kick `clamp(speed*0.303,15,80)` / 1.35 airborne, 1.0 ground / 0.3 /
+  55 behind (hull 1, `v_angle` with roll 0), flying kick `clamp(speed*0.1538,15,45)` / 1.0 / 0.25
+  / 45, combo kick 25 / 0.5 / 0.3 / 45, quick kick 15 / 0.3 / 0.2 / 45, speed kick
+  `clamp(speed*0.1,15,30)` / 0.75 / 0.25 / 45; stunting 15 / 0.55 / 0.15 / 35. x meleemult, x2
+  with the kung-fu power-up. Ground kicks (and the back kick on the ground) `BlockPlayer(delay *
+  0.75)` unless `iuser4 & 1`. The uppercut and the flying kick force a crouch (`iuser4 |= 4|1` /
+  `|= 4`, `view_ofs` 16, stunt recover timer 2 s), as does the crouched katana swing; the
+  uppercut's bit 1 means it never blocks. Leaving a wall climb sets `view_ofs` 28 (16 ducking)
+  and gravity/friction 1. The crouch tests of the uppercut and the katana read `FL_DUCKING` on
+  the gun entity's own pev, so only `+duck` counts. Bits 0x4001080, disarm (not during the
+  victim's spawn protection, `pl+0x71c`) + knockback (`v.vel += |a.vel|*dir`, `z = 235` above
+  30). Each attack picks two numbers: the event's `i2`, an index into kung fu's set A that the
+  client plays (stack slot `0x8(%esp)`, pushed at `0x76daa`; the client copy
   `0x1000b0b0..0x1000b4ea` picks the same), and a move id kept in `gun+0xa04`
-  (`Gun::last_melee_anim`) that the kick combos chain on. Jab 3 / move 22, press 4 / 23, combo end
-  11 / 25, air punch 5 / 24, stunting 4 / -1, uppercut 6 / 20, back kick 7 / 17, flying kick
-  8 / 16, quick kick 9 / 11-12, combo kick 10 / 10, 13-15, speed kick 10 / 15, 18, 19.
+  (`Gun::last_melee_anim`): the kick combos chain on it and `CloseCombatAttack` plays it as the
+  `CTSAnimation` id. Jab 3 / move 22, press 4 / 23, combo end 11 / 25, air punch 5 / 24,
+  stunting 4 / -1, uppercut 6 / 20, back kick 7 / 17, flying kick 8 / 16, quick kick 9 / 11-12,
+  combo kick 10 / 10, 13-15, speed kick 10 / 15, 18, 19. The client copies never block, crouch
+  or touch the stunt timers.
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
   `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target,
@@ -213,91 +239,67 @@ gate (`deadflag != 5`, last `TSHealth` > 0, `m_flNextAttack <= 0`), not `Gun::po
 
 ## 5. Deviations and decisions
 
-* **Inventory reset at death, not at spawn**: TS gets a fresh `weapon_tsgun` every spawn. Here
-  `on_killed` clears it, so weapons the rules give in `rules::on_spawn` (which runs before
-  `weapons::on_spawn`) are kept. Anyone respawning a player without killing them must call
-  `weapons::strip_all` first.
-* **The loadout is cleared at death** (TS `Killed` -> `ResetArmament`); the TS client resends
-  `rst_cfg` + `tkw/tki/tka` from its buy menu. Bots must be given weapons again (rules).
-* **M61 buys and stealth shoes are refused**, as in TS 3.0 (only allowed when
-  `CTSGameRules::m_mode > 1`, unreachable). `weapons::set_round_mode_items(true)` enables them.
-  Grenades still come from power-ups via `give_weapon(24)`. On death TS turns carried grenades
-  into grenade power-ups; here they drop as `WorldGun`s.
-* `CTSAnimation::Animate` calls (third-person sequences) are not made: `GunHost::player_anim`
-  is a no-op on the server (movement package). `Inventory::anim_extension()` exposes the
-  `DefaultDeploy` extension.
-* The kung-fu uppercut / flying kick / katana duck swing force a crouch through `iuser4` and the
-  stunt recover timer in TS; those stunt-state writes are left to the movement package (only
-  `BlockPlayer` is applied).
-* `ShootBulletsPlayer` applies each pellet's damage directly (TS sums them in
-  `Apply/AddMultiDamage`); hitgroup multipliers and armour are the damage package's.
-* Spawn protection (`pl+0x71c`) isn't checked before a disarm (rules field).
-* `ThrowWeapon`'s velocity is garbled in the decompile: alive drops fly at 250 u/s (+125 up)
-  plus the player's velocity, corpses drop at 60..160 u/s in a random direction.
-* **`WorldGun` ground friction is TS's, with no port extra** (issue #64). `BounceTouch`
-  (0xa0b0c) keeps 0.3 of the vertical speed, then on the ground scales velocity and spin by 0.9
-  while the horizontal speed is above `40 * GiveSlowMul()` and by 0.7 at or below it
-  (`projectiles::bounce_ground_damping`, shared with the CTB case). Its 3× (landing in `Fall`),
-  18× (drop sound) and 40× thresholds use `GiveSlowMul` = `FixedSlowAmt(fuser1)` =
-  `max(fuser1, 0.01)` (`projectiles::give_slow_mul`). The drop sound plays on every fast floor
-  hit, not only the first: TS's gate byte (+0xc8) is set by `Spawn` and set again by the touch.
-  The port used to add ×0.5 per 0.1 s in `think`, on the theory that FWGS doesn't slow a sliding
-  `MOVETYPE_BOUNCE` entity. That's true, but no GoldSrc engine does: FWGS
-  (`engine/server/sv_phys.c` `SV_Physics_Toss`), ReHLDS (`rehlds/engine/sv_phys.cpp`
-  `SV_Physics_Bounce`, which HLDS runs for `MOVETYPE_BOUNCE`) and so HLDS apply no linear ground
-  friction. Each frame they add gravity, push the entity, call `Touch` on the impact (inside
-  `SV_PushEntity`, before the clip), clip the velocity with backoff `2 - friction` (which only
-  changes the component into the floor), zero `velocity[2]` and set `FL_ONGROUND`, and stop it
-  outright below 30 u/s (`|v|² < 900`). A sliding gun is pushed into the floor by gravity every
-  frame, so the game's damping runs every frame. The workaround made up for the missing ×0.9
-  branch, and it is removed. (FWGS also applies `friction` to the angular velocity in
-  `SV_AngularMove`; HLDS doesn't. That only affects the spin.) Like TS, the slide length depends
-  on the server frame rate.
-* **Thrown blades have TS's ground friction, with no port extra** (issue #66). The only
-  slowing on the ground is `CTSKnife::WaitTouch` (0x7dce8, `projectiles::ground_slide`): with
-  `FL_ONGROUND`, velocity ×0.5, and below 32 u/s pitch and roll go to 0 and the blade stops
-  (TS doesn't touch the spin; the engine clears `avelocity` at rest). As for the `WorldGun`
-  above, the engine runs that touch on every frame a sliding `MOVETYPE_BOUNCE` / `SOLID_BBOX`
-  blade is pushed into the floor, so a port-only ×0.5 per 0.1 s in `Knife::think` was removed.
-  `CTSKnife::WaitThink` (0x7ea30) is the think in every state: the flying impact (> 64 u/s,
-  `speed * 0.1` to a non-player 64 u ahead) also runs for a blade that bounced off a player or
-  slides along the floor, and a blade stuck in a wall (`MOVETYPE_FLY`) skips the slow-motion
-  physics. A blade stuck in a wall is `SOLID_NOT`, as in TS (+use finds it through
-  `FindEntityInSphere`, which ignores `solid`; the port used to make it `SOLID_TRIGGER`, so a
-  player walking through it ran `WaitTouch`). World hits use TS's sounds: a glancing hit
-  (≥ 100 u/s, `-normal·dir < 0.4`, `normal.z <= 0.98`) plays `knife_hit` at
-  `100 + RANDOM_FLOAT(0, 10)` truncated, and a blade under 100 u/s plays an extra
-  `100 + RANDOM_FLOAT(-10, 0)` hit before the pitch-100 one on the same channel.
-* **`SlowPhysics` keeps an explicit "saved" flag.** TS treats "saved velocity == 0" as "nothing
-  saved". With that sentinel, a resting slowed object saves again on every think (its gravity
-  shrinks by `s²` each time) and is never restored. The port saves once and restores the saved
-  values. Kept as TS: the restore puts back the *pre-slow* velocity, so a slowed grenade or
-  knife lying on the ground jumps off with its throw velocity when the slow ends.
-* `UTIL_BubbleTrail` is not sent for simulated bullets (`realbullet` / slow motion): TS sends it
-  with the stale static trace result of the previous hitscan shot.
-* `dmgreport` is registered as a cvar (port addition, default 0). TS reads it with
-  `CVarGetFloat` but never registers it, so TS output needs the cvar created elsewhere.
-* `WorldGun` `WaitTouch` doesn't check the 0.5 s pickup delay (as TS: only `Use` does).
-* **Deviation: the flying impact credits the thrower** (issue #1). TS passes `this->pev` as the
-  TraceAttack attacker and as both `ApplyMultiDamage` arguments in `CM61Grenade::WaitThink`
-  (0x7cacc; see the disassembly at 0x7ce3c/0x7ce46), `CTSKnife::WaitThink` (0x7ea30) and
-  `CTSWorldGun::Fall` (0xa0d84), not `pev->owner`, so in TS a breakable broken, or a player
-  killed, by a flying projectile isn't credited to the thrower. The port keeps the projectile as
-  the inflictor but makes the thrower the attacker (`projectiles::Thrower`, used by
+Remaining deviations from TS:
+
+* **Deviation: the flying impact credits the thrower** (issue #1, a deliberate choice). TS passes
+  `this->pev` as the TraceAttack attacker and as both `ApplyMultiDamage` arguments in
+  `CM61Grenade::WaitThink` (0x7cacc; see the disassembly at 0x7ce3c/0x7ce46), `CTSKnife::WaitThink`
+  (0x7ea30) and `CTSWorldGun::Fall` (0xa0d84), not `pev->owner`, so in TS a breakable broken, or a
+  player killed, by a flying projectile isn't credited to the thrower. The port keeps the
+  projectile as the inflictor but makes the thrower the attacker (`projectiles::Thrower`, used by
   `impact_damage` and the `WorldGun` fall damage): breakables take the thrower's time scale and
   name it in the `broken by` log, kills are the thrower's, and the team / friendly-fire checks see
   the thrower. The thrower is checked at impact time: it must still be a connected client
   (`FL_CLIENT`) with the user id it had at the throw, so a player who left, or a new client in the
   same slot, is never credited; then the projectile is the attacker, as in TS.
-* The bullet manager runs on a hidden `ts_bulletmanager` entity (TS: `CTSGameRules::Think`);
-  bullets are also dropped after 16384 u without a hit.
-* The kick for bots goes to `punchangle` (TS `pev+0x68`), humans get it client-side.
-* `p_pdw_sil.mdl` is missing from the content (`p_pdw_Sil.mdl`): the MP7 uses `p_pdw.mdl`.
-* The `CloseCombatAttack` / `CCombatAttack` / `KatanaFire` stack slots are mangled in the
-  decompile; values were re-associated by usage (the delay stored in `pl+0x4f8` is the next
-  attack, the smaller `BlockPlayer` value is separate; the katana event's `iparam1` is the swing
-  index the client indexes its sequence table with). The weapons.md §4.4 "Delay" column is the
-  `BlockPlayer` time, not the attack delay.
+* **Each hit is dealt on its own, not summed.** TS's `TraceAttack` only adds to the multi-damage
+  and `ApplyMultiDamage` deals the sum with one `TakeDamage` per victim: all the pellets of a shot
+  (`ShootBulletsPlayer` clears it once, applies it after the loop), or one bullet / melee hit.
+  The port's `damage::apply` runs the victim's TraceAttack and TakeDamage together per pellet, so
+  a shotgun blast is several `TakeDamage`s (armour, pain sounds, the kill on the pellet that
+  drops health to 0). Summing needs the players' TraceAttack split from TakeDamage
+  (`player/damage.rs`, and every entity's `take_damage`), which is the damage package's.
+* **A map with a `game_player_equip` still gets a TS gun.** TS's `PlayerSpawn` (0x890ac) gives
+  `weapon_tsgun` and the loadout only when the map has no `game_player_equip`; with one, the
+  player has no gun unless the equip lists one, so `DropWeapon`, firing and pickups do nothing.
+  The port's player always has its `Gun`, so the equip only replaces the loadout.
+
+Port additions and defensive checks (TS has no equivalent, or would read invalid memory):
+
+* `ts_weapons_debug` (cvar) and `ts_give` (cheat command) are port-only test aids.
+* Bots (port-only) get their loadout from the rules' `on_spawn`, before `weapons::on_spawn`,
+  which therefore deploys a weapon the player already holds instead of kung fu.
+* `CBulletManager::UpdateBullet` reads the shooter without a check; the port drops a bullet
+  whose shooter edict is null or freed.
+* TS precaches `models/p_pdw_sil.mdl`, shipped as `p_pdw_Sil.mdl`. Engines that look files up
+  case-insensitively (Windows, FWGS) load it under TS's name; on a case-sensitive server, where TS
+  stops at map load, the port precaches the shipped spelling instead
+  (`shared::weapons::MP7_SIL_ON_DISK`).
+
+How the port maps TS where the structure differs (not deviations):
+
+* **The gun's lifetime.** TS gives a fresh `weapon_tsgun` at `PlayerSpawn` and loses it in
+  `RemoveAllItems` (the death think after `Killed`, and `StartObserver`); a spawn while a gun is
+  still held keeps it (`AddPlayerItem` kills the new duplicate). The port's one `Gun` per player
+  is emptied by `on_killed` (`Killed`'s drops plus the later `RemoveAllItems`) and `strip_all`
+  (`StartObserver`, disconnect); `reset_for_spawn` gives the fields a fresh gun starts with.
+* The loadout is cleared at death (TS `Killed` -> `ResetArmament`); the TS client resends
+  `rst_cfg` + `tkw/tki/tka` from its buy menu.
+* M61 buys and stealth shoes are refused, as in TS 3.0 (only allowed when
+  `CTSGameRules::m_mode > 1`, unreachable). `weapons::set_round_mode_items(true)` enables them,
+  and then a corpse's grenades drop as `WorldGun`s instead of grenade power-ups.
+* `VKickback` writes `punchangle` (`pev+0x68`) only for bots (`FL_FAKECLIENT`); humans get the
+  kick from their client's fire event.
+* `WorldGun` and thrown-blade ground friction are TS's alone (issues #64, #66): no GoldSrc engine
+  slows a sliding `MOVETYPE_BOUNCE` entity, and the engine runs `BounceTouch` (0xa0b0c: x0.9
+  above `40 * GiveSlowMul()`, x0.7 at or below) / `CTSKnife::WaitTouch` (0x7dce8: x0.5, stop
+  below 32 u/s) on every frame the object is pushed into the floor, so the slide depends on the
+  server frame rate as in TS. The gun's drop sound plays on every fast floor hit. A blade stuck
+  in a wall is `SOLID_NOT` and skips the slow-motion physics.
+* `WorldGun` `WaitTouch` doesn't check the 0.5 s pickup delay (as TS: only `Use` does).
+* `CloseCombatAttack`, `CCombatAttack`, `KatanaFire` and `ThrowWeapon` are garbled in the
+  decompile (stack slots shared between unrelated values); their numbers come from the
+  disassembly (addresses in §3 and in the code).
 
 ## 6. Missing / partial
 
@@ -311,16 +313,18 @@ gate (`deadflag != 5`, last `TSHealth` > 0, `m_flNextAttack <= 0`), not `Gun::po
 
 ## 7. Tests
 
-* `cargo test -p shared`: 44 tests pass (x86_64 and `--target i686-unknown-linux-gnu`). Includes `random::matches_sdk_c_bit_for_bit` (43 seeds
+* `cargo test -p shared`: weapon tests pass (x86_64 and `--target i686-unknown-linux-gnu`). Includes `random::matches_sdk_c_bit_for_bit` (43 seeds
   compared against the SDK C `util.cpp` compiled with `gcc -m32 -O0 -mfpmath=387`), fire rates
   (auto, semi, DFR x1.5, slow motion), burst (3 / UMP 2), pump alternation, magazine and
   3-phase shotgun reloads, recoil penalty growth/cap/decay, silencer multipliers, akimbo merge +
   linked shot (seed + 0x21, +-5 offsets, clip split, single mirror), zoom steps (AK 32/13 and the
   hidden view model), grip toggle, grenade pull/throw/slots, throw math, knife stacks, kung-fu
   punch + block + bar regen, Infinite Clip, priority switching, pickup limits, mode memory,
-  message layouts, `CustomWP` round trip, clientdata/weapon_data packing.
+  message layouts, `CustomWP` round trip, clientdata/weapon_data packing, the kung-fu and
+  katana reach / damage / window / block / forced crouch per move (`kungfu_reach_anim_window_and_block`,
+  `katana_swings`).
 * `cargo test -p ts-server`: command argument parsing (`%i_%i`), `SlowPhysics` (scale, rescale,
-  restore, no gravity compounding at rest), ammo pack contents (`take_ammo`), the explosion's
+  restore, TS's gravity compounding at rest), ammo pack contents (`take_ammo`), the explosion's
   `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and damage falloff (`falloff_damage`),
   the thrown blade's ground slide (`ground_slide`), glance-or-stick test (`glances_off`) and
   hit pitch (`hit_pitch`).
@@ -357,8 +361,10 @@ gate (`deadflag != 5`, last `TSHealth` > 0, `m_flNextAttack <= 0`), not `Gun::po
 * Power-ups: Infinite Clip -> `weapons::multiply_clip`; grenade -> `give_weapon(p, cx, 24, 0)`;
   kung fu sets `Player::kungfu` (x2 melee), DFR/slow-mo are read from `Player::active_powerup`
   and `pev->fuser1`.
-* `rules::on_killed` must call `weapons::on_killed(p, cx)` (drops, ActItems reset, loadout
-  reset). Spectate/team change without death: `weapons::strip_all`.
+* `rules::on_killed` must call `weapons::on_killed(p, cx)` (drops, loadout reset, `CurWeapon`
+  reset) and send `ActItems 0` itself. `StartObserver` / disconnect: `weapons::strip_all`
+  (TS `RemoveAllItems`); a spawn without either keeps the gun, as in TS.
+* `pfnStartFrame` calls `weapons::start_frame` after the rules' frame (the simulated bullets).
 * Restrictions: `weapons::set_restriction(mask)` (`ts_mapglobals` spawnflags: `0x1f ^ flags`),
   `weapons::restriction()`; broadcast it as `SrvSett 3`, `realbullet` as `SrvSett 0`,
   `ammocount` as `SrvSett 2` (cvars registered here).

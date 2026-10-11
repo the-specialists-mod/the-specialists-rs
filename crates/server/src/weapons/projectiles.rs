@@ -76,8 +76,6 @@ pub struct SlowPhysics {
     velocity: Vec3,
     avelocity: Vec3,
     gravity: f32,
-    /// TS uses "saved velocity != 0" as this flag (see `docs/implementation/weapons.md`).
-    saved: bool,
     /// The scale the live values were derived with (`+0x20`).
     last: f32,
 }
@@ -85,7 +83,7 @@ pub struct SlowPhysics {
 impl Default for SlowPhysics {
     /// `CTSPhysicObject::Spawn` 0x7ba54.
     fn default() -> Self {
-        SlowPhysics { velocity: [0.0; 3], avelocity: [0.0; 3], gravity: 0.0, saved: false, last: 1.0 }
+        SlowPhysics { velocity: [0.0; 3], avelocity: [0.0; 3], gravity: 0.0, last: 1.0 }
     }
 }
 
@@ -100,31 +98,39 @@ impl SlowPhysics {
         }
     }
 
-    /// `CTSPhysicObject::SavePhysics` 0x7bac0.
+    /// TS's "nothing saved" test: the saved velocity equals `g_vecZero` (0x6baff, 0x6bbc6).
+    fn nothing_saved(&self) -> bool {
+        self.velocity == [0.0; 3]
+    }
+
+    /// `CTSPhysicObject::SavePhysics` 0x7bac0. "Saved" means a non-zero saved velocity, so an
+    /// object slowed while at rest saves again on every think: its gravity (and spin) shrink by
+    /// the scale each time and the shrunken values are what gets restored.
     fn save(&mut self, pev: &mut entvars_t) {
         let s = pev.fuser1;
-        if self.saved {
-            if self.last != s {
-                pev.velocity = spread::scale(self.velocity, s);
-                pev.avelocity = spread::scale(self.avelocity, s);
-                pev.gravity = self.gravity * s * s;
-                self.last = s;
-            }
+        if self.last != s && !self.nothing_saved() {
+            pev.velocity = spread::scale(self.velocity, s);
+            pev.avelocity = spread::scale(self.avelocity, s);
+            pev.gravity = self.gravity * s * s;
+            self.last = s;
+            return;
+        }
+        if !self.nothing_saved() {
             return;
         }
         self.velocity = pev.velocity;
         self.avelocity = pev.avelocity;
         self.gravity = pev.gravity;
-        self.saved = true;
         pev.velocity = spread::scale(pev.velocity, s);
         pev.avelocity = spread::scale(pev.avelocity, s);
-        pev.gravity *= s * s;
+        pev.gravity = pev.gravity * s * s;
         self.last = s;
     }
 
-    /// `CTSPhysicObject::RestorePhysycs` 0x7bcd4: back to the saved (pre-slow) motion.
+    /// `CTSPhysicObject::RestorePhysycs` 0x7bcd4: back to the saved (pre-slow) motion, unless the
+    /// saved velocity is zero.
     fn restore(&mut self, pev: &mut entvars_t) {
-        if !self.saved {
+        if self.nothing_saved() {
             return;
         }
         pev.velocity = self.velocity;
@@ -767,16 +773,20 @@ mod tests {
         assert_eq!(v.velocity, [500.0, 0.0, 100.0]);
     }
 
+    /// TS's sentinel is a zero saved velocity: an object slowed at rest saves again every think,
+    /// so its gravity shrinks by `s²` each time, and the slow's end restores nothing.
     #[test]
-    fn resting_object_gravity_does_not_compound() {
-        let mut v = entvars_t { gravity: 0.75, fuser1: 0.5, ..Default::default() };
+    fn resting_object_gravity_compounds_as_in_ts() {
+        let mut v = entvars_t { gravity: 0.75, avelocity: [0.0, 8.0, 0.0], fuser1: 0.5, ..Default::default() };
         let mut ph = SlowPhysics::default();
-        for _ in 0..5 {
+        for _ in 0..3 {
             ph.update(&mut v);
         }
-        assert_eq!(v.gravity, 0.75 * 0.25);
+        assert_eq!(v.gravity, 0.75 * 0.25 * 0.25 * 0.25);
+        assert_eq!(v.avelocity, [0.0, 1.0, 0.0]);
         v.fuser1 = 1.0;
         ph.update(&mut v);
-        assert_eq!(v.gravity, 0.75);
+        assert_eq!(v.gravity, 0.75 * 0.25 * 0.25 * 0.25);
+        assert_eq!(v.avelocity, [0.0, 1.0, 0.0]);
     }
 }

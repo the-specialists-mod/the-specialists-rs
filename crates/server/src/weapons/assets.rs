@@ -11,7 +11,6 @@ use std::ffi::CStr;
 
 /// `ts_weapons_debug` (not TS): logs fires, hits, explosions, drops to the server console.
 static DEBUG: Global<Cell<Option<&'static cvar_t>>> = Global(Cell::new(None));
-static DMGREPORT: Global<Cell<Option<&'static cvar_t>>> = Global(Cell::new(None));
 static GRENADE_BUYS: Global<Cell<bool>> = Global(Cell::new(false));
 /// `g_sModelIndexBubbles` (`sprites/bubble.spr`, precached by TS's `W_Precache`).
 static BUBBLES: Global<Cell<i32>> = Global(Cell::new(0));
@@ -23,10 +22,6 @@ static BUBBLES: Global<Cell<i32>> = Global(Cell::new(0));
 pub fn register_cvars() {
     let e = engine();
     DEBUG.0.set(Some(e.register_cvar("ts_weapons_debug", "0", 0)));
-    // Port addition: TS reads `dmgreport` (5 sites) but never registers it, so there it's 0
-    // unless something else creates the cvar. Registered here (default 0, same behaviour) so the
-    // cheat output can be switched on.
-    DMGREPORT.0.set(Some(e.register_cvar("dmgreport", "0", 0)));
     e.add_server_command(c"loadweapons", super::custom::cmd_loadweapons);
     e.add_server_command(c"saveweapons", super::custom::cmd_saveweapons);
 }
@@ -42,6 +37,12 @@ pub struct CvarValues {
     pub weaponstay: f32,
     /// `damagemult`: weapon damage multiplier, only with `sv_cheats`.
     pub damagemult: f32,
+}
+
+/// `TSGameRules + 0x578`: `realbullet` rounded to an int (`CTSGameRules::Think` refreshes it every
+/// frame), what `ShootBulletsPlayer` and `CBulletManager::Think` test.
+pub fn realbullet() -> i32 {
+    cvars().realbullet.round_ties_even() as i32
 }
 
 pub fn cvars() -> CvarValues {
@@ -68,12 +69,14 @@ pub fn max_carry(t: u8) -> i32 {
 
 /// `dmgreport`, read only with weapon cheats on (`g_flWeaponCheat`, i.e. `sv_cheats`), else 0.
 /// Values above 1 print bullet and thrown-blade damage to everyone. Any non-zero value logs
-/// player damage to the server console.
+/// player damage to the server console. As in TS, nothing registers it (`CVarGetFloat` of a
+/// missing cvar is 0), so it only works where the engine lets the console create it.
 pub fn dmgreport() -> f32 {
-    if engine().cvar_float(c"sv_cheats") == 0.0 {
+    let e = engine();
+    if e.cvar_float(c"sv_cheats") == 0.0 {
         return 0.0;
     }
-    DMGREPORT.0.get().map(cvar_value).unwrap_or(0.0)
+    e.cvar_float(c"dmgreport")
 }
 
 /// `g_sModelIndexBubbles` for `UTIL_BubbleTrail`.
@@ -218,7 +221,12 @@ pub fn precache() {
             e.precache_model_str(&p);
             a.p_model[id as usize] = e.alloc_string(intern(&p));
         }
-        if let Some(ps) = psil {
+        if let Some(mut ps) = psil {
+            // Port addition (defensive): TS precaches `p_pdw_sil.mdl` whatever the file's case,
+            // which kills a case-sensitive server at map load; use the shipped spelling there.
+            if id == shared::weapons::id::MP7 && e.load_file(&ps).is_none() && e.load_file(shared::weapons::MP7_SIL_ON_DISK).is_some() {
+                ps = shared::weapons::MP7_SIL_ON_DISK.to_owned();
+            }
             e.precache_model_str(&ps);
             a.p_model_sil[id as usize] = e.alloc_string(intern(&ps));
         }

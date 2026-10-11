@@ -116,8 +116,8 @@ pub struct MeleeHit {
     pub player_anim: i32,
     pub disarm: bool,
     pub knockback: bool,
-    /// Use `v_angle` with pitch 0 (running back kick).
-    pub level: bool,
+    /// Use `v_angle` with roll 0 (the running back kick, `CCombatAttack` 0x76af1).
+    pub zero_roll: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -207,8 +207,22 @@ pub trait GunHost {
     fn slots_changed(&mut self, delta_free: i32);
     /// `UpdateMeleeBar` sends `KFuPower`.
     fn melee_bar_changed(&mut self, bar: f32);
-    /// `CBasePlayer::BlockPlayer(t)`: half speed (`iuser4 |= 1`) for `t` seconds.
+    /// `CBasePlayer::BlockPlayer(t)`: half speed (`iuser4 |= 1`) for `t` seconds. Server only:
+    /// the client copies of `KatanaFire` and `CCombatAttack` never block.
     fn block_player(&mut self, t: f32);
+    /// `pl+0x4f8` (`CTSStunt` +0x08, the stunts' close-combat cooldown): the server `KatanaFire`
+    /// (0x73b54), `KnifeFire` (0x740e1) and `CCombatAttack` store their attack delay there. The
+    /// client copies have no such field.
+    fn set_close_combat_cooldown(&mut self, _t: f32) {}
+    /// The forced crouch of the uppercut and the flying kick (`CCombatAttack` 0x764e4, 0x766d2) and
+    /// the crouched katana swing (`KatanaFire` 0x73665): `iuser4 |= bits`, `view_ofs = (0, 0, 16)`
+    /// and `pl+0x4f4` (the stunt recover timer) = 2. Server only: the client copies don't.
+    fn melee_crouch(&mut self, _bits: i32) {}
+    /// The rest of leaving a wall climb for a kung-fu attack (`CCombatAttack` 0x769ec..0x76a88,
+    /// after `iuser4 &= !0x20004`): `view_ofs` (0, 0, 16) when the player is ducking, else
+    /// (0, 0, 28), and gravity and friction 1. The client copy (`0x1000b4ef`) writes these to its
+    /// player too, but only `iuser4` leaves the command, so the client host doesn't need it.
+    fn leave_wall_climb(&mut self) {}
 }
 
 /// `s_weapon_status` (0x38 bytes per weapon id).
@@ -281,6 +295,11 @@ pub struct Gun {
     pub mode_memory: [u8; MAX_WEAPONS],
     /// Last spread offset returned by `ShootBulletsPlayer` (stale, sent with `coldcock.sc`).
     pub last_dir: Vec3,
+    /// The gun entity's own `pev->body`: `Deploy` sets it to the record's body (+0x18), and a
+    /// knife or katana slash that hits a player sets it to 1 (0x73a17, `KnifeFire`). The
+    /// alternate-grip switch (`SecondaryAttack`) and `WeaponIdle` send it with their view
+    /// animation.
+    pub body: i32,
 }
 
 impl Default for Gun {
@@ -310,6 +329,7 @@ impl Default for Gun {
             block_katana: 0.0,
             mode_memory: [0; MAX_WEAPONS],
             last_dir: [0.0; 3],
+            body: 0,
         }
     }
 }
@@ -619,9 +639,8 @@ impl Gun {
             if has_alt_grip(self.current) {
                 // anim [7] of the table in use before the switch
                 let a = self.seq(7);
-                let body = s.body;
                 self.cur().alt_grip = !s.alt_grip;
-                host.weapon_anim(a, true, body);
+                host.weapon_anim(a, true, self.body);
             }
         } else if host.fov() == 0.0 {
             if info.zoom[0] != 0 {
@@ -955,8 +974,10 @@ impl Gun {
             player_anim: if stunting { -1 } else { 0x27 },
             disarm: false,
             knockback: false,
-            level: false,
+            zero_roll: false,
         });
+        // `ColdCockAttack` returns the target even when it blocks (0x9678c is only reached for no
+        // target), so the hit sound (0x7204a) plays for a block too.
         match r {
             MeleeResult::Hit { .. } => host.sound(Sound::KevlarHit),
             MeleeResult::Blocked { next_attack, bar_cost } => {
@@ -965,6 +986,7 @@ impl Gun {
                 if bar_cost > 0.0 {
                     self.update_melee_bar(bar_cost, host);
                 }
+                host.sound(Sound::KevlarHit);
             }
             MeleeResult::Miss => {}
         }
@@ -1066,6 +1088,7 @@ impl Gun {
         self.next_secondary = rate;
         self.next_primary = rate;
         self.idle = 3.0;
+        host.set_close_combat_cooldown(rate);
         let thrown;
         if !self.status[self.current as usize].toggle {
             thrown = false;
@@ -1088,12 +1111,13 @@ impl Gun {
                 player_anim: -1,
                 disarm: false,
                 knockback: false,
-                level: false,
+                zero_roll: false,
             });
             match res {
                 MeleeResult::Hit { player } => {
                     if player {
                         self.cur().state = 1;
+                        self.body = 1;
                         host.sound(Sound::KnifeHitBody);
                     }
                 }
@@ -1135,7 +1159,10 @@ impl Gun {
     }
 
     /// `CTSGun::KatanaFire` 0x833f0: four swing variants (stunt, backward, airborne, ground
-    /// alternating, crouched).
+    /// alternating, crouched). Decoded from the disassembly (0x73580..0x737a8): each swing sets a
+    /// strength (`esp+0x14`, the damage before the melee-bar multiplier; negative = behind), a
+    /// reach (`esp+0x10`, 50 units unless stunting 35 or backward 55), the event's view-animation
+    /// index (`esp+0xc`), the delay (`esp+0x1c`) and the `Animate` id (`esp+0x18`).
     pub fn katana_fire(&mut self, host: &mut impl GunHost) {
         if !self.has_slot() {
             return;
@@ -1145,62 +1172,53 @@ impl Gun {
         let (fwd, _, _) = spread::angle_vectors(host.v_angle());
         let backward =
             if speed <= 100.0 { host.buttons() & IN_BACK != 0 } else { spread::dot(fwd, spread::normalize(host.velocity())) <= -0.5 };
-        // (reach / view anim index, damage, delay, player anim, block after)
-        let (reach, mut dmg, delay, panim, block): (i32, f32, f32, i32, bool) = if stunting {
-            (0x11, 35.0, 1.0, -1, false)
+        // (view anim index, strength, reach, delay, player anim, block after). The crouch test
+        // reads `FL_DUCKING` on the gun entity's own pev (server 0x73624, client 0x1000a052),
+        // which never has it, so only `+duck` counts.
+        let (view, strength, reach, delay, panim, block): (i32, f32, f32, f32, i32, bool) = if stunting {
+            (0x11, 35.0, 35.0, 1.0, -1, false)
         } else if backward {
-            (0xf, 55.0, 1.0, 35, true)
+            (0xf, -75.0, 55.0, 1.0, 35, true)
         } else if host.flags() & FL_ONGROUND == 0 {
-            (0x11, 50.0, 1.1, 36, false)
-        } else if host.buttons() & IN_DUCK == 0 && host.flags() & FL_DUCKING == 0 {
+            (0x11, (speed * 0.153_846_16).clamp(35.0, 55.0), 50.0, 1.1, 36, false)
+        } else if host.buttons() & IN_DUCK == 0 {
             if !(1..=2).contains(&self.last_melee_anim) {
                 self.last_melee_anim = host.random_long(1, 2);
             }
             if self.last_melee_anim == 1 {
                 self.last_melee_anim = 2;
-                (0x11, 50.0, 0.7, 33, false)
+                (0x11, 45.0, 50.0, 0.7, 33, false)
             } else {
                 self.last_melee_anim = 1;
-                (0x10, 50.0, 0.7, 34, false)
+                (0x10, 45.0, 50.0, 0.7, 34, false)
             }
         } else {
-            (0x11, 50.0, 0.9, 37, true)
+            host.melee_crouch(0x4 | 0x1);
+            (0x11, 65.0, 50.0, 0.9, 37, true)
         };
         host.player_anim(panim);
-        // Client: its own strength per swing x 0.2 (0x1000a156, constant 0x1007a8f0): stunt 35
-        // (0x1007a8d8), backward -75 (0x1007a904), airborne `clamp(speed·0.15384616, 35, 55)`
-        // (0x1000a0e9, 0x1007a8f8 / 0x1007a8d8 / 0x1007a8f4), crouched 65 (0x1007a8fc), ground
-        // swings 45 (0x1007a900). The crouch test reads the player's flags here (see the client
-        // rendering doc's deviations).
-        let strength = if stunting {
-            35.0
-        } else if backward {
-            -75.0
-        } else if host.flags() & FL_ONGROUND == 0 {
-            (speed * 0.153_846_16).clamp(35.0, 55.0)
-        } else if panim == 37 {
-            65.0
-        } else {
-            45.0
-        };
+        // Client: the strength x 0.2 (0x1000a156, constant 0x1007a8f0), before the bar.
         host.view_shake(strength * 0.2);
-        dmg *= spread::melee_multiplier(self.melee_bar);
+        let dmg = strength * spread::melee_multiplier(self.melee_bar);
+        // A negative strength swings behind with the human hull (0x7386b, 0x738cf).
+        let behind = dmg < 0.0;
         let res = host.melee(&MeleeHit {
             kind: MeleeKind::Katana,
             weapon: self.current,
-            reach: reach as f32,
-            hull: 3,
-            damage: dmg,
+            reach: if behind { -reach } else { reach },
+            hull: if behind { 1 } else { 3 },
+            damage: dmg.abs(),
             bits: 0x1080,
             player_anim: -1,
             disarm: false,
             knockback: false,
-            level: false,
+            zero_roll: false,
         });
         match res {
             MeleeResult::Hit { player } => {
                 if player {
                     self.cur().state = 1;
+                    self.body = 1;
                     host.sound(Sound::KatanaHitBody);
                 }
             }
@@ -1210,6 +1228,7 @@ impl Gun {
                 self.update_melee_bar(bar_cost, host);
             }
             MeleeResult::Miss => {
+                // The signed strength: the delayed hit looks behind for a backward swing.
                 self.melee_window = 0.25;
                 self.melee_damage = dmg;
                 self.melee_source = 2;
@@ -1219,10 +1238,11 @@ impl Gun {
             host.block_player(delay * 0.9);
         }
         let st = self.status[self.current as usize].state;
-        host.event(Event::Katana, EventArgs { i1: reach, i2: st, ..Default::default() });
+        host.event(Event::Katana, EventArgs { i1: view, i2: st, ..Default::default() });
         self.next_secondary = delay;
         self.next_primary = delay;
         self.idle = 3.0;
+        host.set_close_combat_cooldown(delay);
     }
 
     /// `CTSGun::KatanaThrow` 0x83b68 (cooldown `info.accuracy` = 0.7 s).
@@ -1247,9 +1267,12 @@ impl Gun {
 
     // ---- kung fu ------------------------------------------------------------------------------
 
-    /// `CTSGun::CCombatAttack` 0x86078. Decoded from the decompile with the stack slots
-    /// re-associated (docs/implementation/weapons.md, "Kung fu"): the next-attack delay is the
-    /// value TS also stores in `pl+0x4f8`, the shorter value is the `BlockPlayer` time.
+    /// `CTSGun::CCombatAttack` 0x86078, decoded from the disassembly (0x76078..0x76e19). Each move
+    /// sets, in stack slots: the attack type for the event (`esp+0x28`), the move id (`esp+0x2c`:
+    /// the `Animate` id `CloseCombatAttack` plays and the `gun+0xa04` the kick combos chain on),
+    /// the event's kung-fu anim index (`esp+0x8`), the damage (`esp+0x1c`), the reach in units
+    /// (`esp+0x18`), the delay (`esp+0x24`: next attack, `pl+0x4f8` and, x0.75, the `BlockPlayer`
+    /// time) and the delayed-hit window (`esp+0x20`).
     pub fn ccombat_attack(&mut self, host: &mut impl GunHost) {
         if self.next_attack > 0.0 || self.next_primary > 0.0 || self.next_secondary > 0.0 {
             return;
@@ -1271,19 +1294,19 @@ impl Gun {
             dot <= -0.5
         };
 
-        let mut reach = if backward { 3 } else { 2 };
+        // `esp+0x14` == 3: the running back kick (reach behind, human hull, roll 0).
+        let mut back = backward;
         // attack type (event iparam1): 0 none, 1 punch, 2 kick, 3 running back kick
         let mut atype = 0;
-        // The move's id, kept in `last_melee_anim` (TS `this+0xa04`) to chain the kick combos.
         let mut move_id = 0;
-        // Event iparam2: an index into the kung-fu anim set A, which the client plays (0x762d7..
-        // 0x76997, pushed at 0x76daa; the client copy picks the same, 0x1000b0b0..0x1000b4ea).
+        // Event iparam2: an index into the kung-fu anim set A, which the client plays (pushed at
+        // 0x76daa; the client copy picks the same, 0x1000b0b0..0x1000b4ea).
         let mut view_anim = 0;
         let mut dmg = 0.0f32;
-        let mut delay = 0.6f32; // next attack
-        let mut block_time = 0.0f32; // BlockPlayer(block_time * 0.75) for ground kicks
+        let mut reach = 0.0f32;
+        let mut delay = 0.6f32;
+        let mut window = 0.0f32;
         let mut block_after = false;
-        let mut panim = 0; // CTSAnimation sequence
         let mut stand_fix = true;
 
         let pick = |host: &mut dyn FnMut(i32, i32) -> i32, last: i32, table: &[(i32, i32)], choices: &[i32]| -> i32 {
@@ -1296,128 +1319,84 @@ impl Gun {
         };
 
         if stunting {
-            move_id = -1;
-            view_anim = 4;
-            delay = 0.55;
-            block_time = 0.15;
-            dmg = 15.0;
+            (back, atype, move_id, view_anim, delay, window, dmg, reach) = (false, 1, -1, 4, 0.55, 0.15, 15.0, 35.0);
             self.punch_combo = 0;
-            atype = 1;
-            reach = 2;
-            panim = 35;
-        } else if buttons & IN_ATTACK == 0 {
-            if buttons & IN_ATTACK2 != 0 {
-                if on_ground && (buttons & IN_DUCK != 0 || host.flags() & FL_DUCKING != 0) {
-                    // uppercut
-                    dmg = 35.0;
-                    atype = 2;
-                    block_after = true;
-                    move_id = 20;
-                    view_anim = 6;
-                    panim = 45;
-                    delay = 1.0;
-                    block_time = 0.35;
-                    reach = 2;
-                } else if backward {
-                    atype = 3;
-                    move_id = 17;
-                    view_anim = 7;
-                    dmg = (speed * 0.303_030_3).clamp(15.0, 80.0);
-                    panim = 55;
-                    if on_ground {
-                        block_after = true;
-                        delay = 1.0;
-                    } else {
-                        delay = 1.35;
-                    }
-                    block_time = 0.3;
-                } else {
-                    atype = 2;
-                    if !on_ground && speed > 270.0 && buttons & IN_DUCK != 0 && dot > 0.5 {
-                        // flying kick
-                        self.kick_combo = 0;
-                        dmg = (speed * 0.153_846_16).clamp(15.0, 45.0);
-                        panim = 45;
-                        delay = 1.0;
-                        block_time = 0.25;
-                        move_id = 16;
-                        view_anim = 8;
-                        stand_fix = false;
-                    } else if on_ground || speed <= 200.0 {
-                        block_after = true;
-                        panim = 45;
-                        if pressed & IN_ATTACK2 != 0 || self.kick_combo > 2 {
-                            delay = 0.5;
-                            block_time = 0.3;
-                            self.kick_combo = 0;
-                            let mut r = |lo, hi| host.random_long(lo, hi);
-                            move_id = pick(&mut r, self.last_melee_anim, &[(15, 10), (10, 14), (14, 13), (13, 15)], &[14, 13, 10, 15]);
-                            view_anim = 10;
-                            dmg = 25.0;
-                        } else {
-                            self.kick_combo += 1;
-                            delay = 0.3;
-                            block_time = 0.2;
-                            dmg = 15.0;
-                            let mut r = |lo, hi| host.random_long(lo, hi);
-                            move_id = pick(&mut r, self.last_melee_anim, &[(11, 12), (12, 11)], &[11, 12]);
-                            view_anim = 9;
-                        }
-                    } else {
-                        // airborne speed kick
-                        self.kick_combo = 0;
-                        dmg = (speed * 0.1).clamp(15.0, 30.0);
-                        panim = 45;
-                        delay = 0.75;
-                        block_time = 0.25;
-                        let mut r = |lo, hi| host.random_long(lo, hi);
-                        move_id = pick(&mut r, self.last_melee_anim, &[(15, 19), (19, 18), (18, 15)], &[19, 18, 15]);
-                        view_anim = 10;
-                    }
-                }
-            }
-        } else {
-            // punches
+        } else if buttons & IN_ATTACK != 0 {
+            (back, atype, reach) = (false, 1, 35.0);
             if !on_ground {
-                move_id = 24;
-                view_anim = 5;
-                delay = 0.5;
-                block_time = 0.15;
-                dmg = 25.0;
+                (move_id, view_anim, delay, window, dmg) = (24, 5, 0.5, 0.15, 25.0);
                 self.punch_combo = 0;
             } else if self.punch_combo > 2 || (buttons & IN_DUCK != 0 && host.flags() & FL_DUCKING == 0) {
-                move_id = 25;
-                view_anim = 11;
-                delay = 0.65;
-                block_time = 0.15;
-                dmg = 30.0;
+                (move_id, view_anim, delay, window, dmg) = (25, 11, 0.65, 0.15, 30.0);
                 self.punch_combo = 0;
             } else if pressed & IN_ATTACK != 0 {
                 // a fresh press: straight punch
-                delay = 0.35;
-                block_time = 0.15;
+                (move_id, view_anim, delay, window, dmg) = (23, 4, 0.35, 0.15, 20.0);
                 self.punch_combo = 0;
-                move_id = 23;
-                view_anim = 4;
-                dmg = 20.0;
             } else {
                 // held: fast jabs (the combo counter leads to the heavy punch)
                 self.punch_combo += 1;
-                move_id = 22;
-                view_anim = 3;
-                delay = 0.25;
-                block_time = 0.1;
-                dmg = 10.0;
+                (move_id, view_anim, delay, window, dmg) = (22, 3, 0.25, 0.1, 10.0);
             }
-            atype = 1;
-            reach = 2;
-            panim = 35;
+        } else if buttons & IN_ATTACK2 != 0 {
+            // The crouch test reads `FL_DUCKING` on the gun entity's own pev (server 0x76487,
+            // client 0x1000b1c1), which never has it, so only `+duck` counts.
+            if on_ground && buttons & IN_DUCK != 0 {
+                // uppercut kick
+                (back, atype, block_after, move_id, view_anim, reach, delay, window, dmg) = (false, 2, true, 20, 6, 45.0, 1.0, 0.35, 35.0);
+                host.melee_crouch(0x4 | 0x1);
+            } else if backward {
+                (atype, move_id, view_anim, reach, window) = (3, 17, 7, 55.0, 0.3);
+                dmg = (speed * 0.303_030_3).clamp(15.0, 80.0);
+                if on_ground {
+                    block_after = true;
+                    delay = 1.0;
+                } else {
+                    delay = 1.35;
+                }
+            } else {
+                atype = 2;
+                if !on_ground && speed > 270.0 && buttons & IN_DUCK != 0 && dot > 0.5 {
+                    // flying kick
+                    self.kick_combo = 0;
+                    dmg = (speed * 0.153_846_16).clamp(15.0, 45.0);
+                    (reach, delay, window, move_id, view_anim) = (45.0, 1.0, 0.25, 16, 8);
+                    stand_fix = false;
+                    host.melee_crouch(0x4);
+                } else if on_ground || speed <= 200.0 {
+                    block_after = true;
+                    reach = 45.0;
+                    if pressed & IN_ATTACK2 != 0 || self.kick_combo > 2 {
+                        (delay, window, dmg) = (0.5, 0.3, 25.0);
+                        self.kick_combo = 0;
+                        let mut r = |lo, hi| host.random_long(lo, hi);
+                        move_id = pick(&mut r, self.last_melee_anim, &[(15, 10), (10, 14), (14, 13), (13, 15)], &[14, 13, 10, 15]);
+                        view_anim = 10;
+                    } else {
+                        self.kick_combo += 1;
+                        (delay, window, dmg) = (0.3, 0.2, 15.0);
+                        let mut r = |lo, hi| host.random_long(lo, hi);
+                        move_id = pick(&mut r, self.last_melee_anim, &[(11, 12), (12, 11)], &[11, 12]);
+                        view_anim = 9;
+                    }
+                } else {
+                    // airborne speed kick
+                    self.kick_combo = 0;
+                    dmg = (speed as f64 * 0.1).clamp(15.0, 30.0) as f32;
+                    (reach, delay, window) = (45.0, 0.75, 0.25);
+                    let mut r = |lo, hi| host.random_long(lo, hi);
+                    move_id = pick(&mut r, self.last_melee_anim, &[(15, 19), (19, 18), (18, 15)], &[19, 18, 15]);
+                    view_anim = 10;
+                }
+            }
         }
 
         if atype != 0 {
+            let iuser4 = host.iuser4();
             if stand_fix && iuser4 & 0x20000 != 0 {
                 // leave a wall climb
                 host.set_iuser4(iuser4 & !0x20000 & !0x4);
+                host.leave_wall_climb();
             }
             self.last_melee_anim = move_id;
             // Client: the base damage x 0.35 (0x1000b5c7, constant 0x1007a8a8); the client copy
@@ -1427,18 +1406,17 @@ impl Gun {
             if host.kungfu() {
                 dmg += dmg;
             }
-            let back = reach == 3;
             let res = host.melee(&MeleeHit {
                 kind: MeleeKind::KungFu,
                 weapon: 0,
-                reach: if back { -(reach as f32) } else { reach as f32 },
+                reach: if back { -reach } else { reach },
                 hull: if back { 1 } else { 3 },
                 damage: dmg,
                 bits: 0x0400_1080,
-                player_anim: panim,
+                player_anim: move_id,
                 disarm: true,
                 knockback: true,
-                level: back,
+                zero_roll: back,
             });
             match res {
                 MeleeResult::Hit { .. } => {}
@@ -1447,12 +1425,12 @@ impl Gun {
                     if bar_cost > 0.0 {
                         self.update_melee_bar(bar_cost, host);
                     }
-                    self.arm_kungfu_window(dmg, delay, back);
+                    self.arm_kungfu_window(dmg, window, back);
                 }
-                MeleeResult::Miss => self.arm_kungfu_window(dmg, delay, back),
+                MeleeResult::Miss => self.arm_kungfu_window(dmg, window, back),
             }
             if block_after && host.iuser4() & 1 == 0 {
-                host.block_player(block_time * 0.75);
+                host.block_player(delay * 0.75);
             }
             host.event(Event::CloseCombat, EventArgs { f1: 0.0, f2: 0.0, i1: atype, i2: view_anim, b1: 0, b2: 0 });
         }
@@ -1460,10 +1438,13 @@ impl Gun {
         self.next_primary = delay;
         self.idle = 2.0;
         self.block_kungfu = 0.0;
+        host.set_close_combat_cooldown(delay);
     }
 
+    /// No target (or a blocked one): the delayed hit (0x76d02), armed while the move's window is
+    /// open.
     fn arm_kungfu_window(&mut self, dmg: f32, window: f32, back: bool) {
-        if dmg > 0.001 {
+        if window > 0.001 {
             self.melee_window = window;
             self.melee_damage = if back { -dmg } else { dmg };
             self.melee_source = 0;
@@ -1643,8 +1624,7 @@ impl Gun {
             self.reload(host);
         } else if self.status[self.current as usize].clip != 0 {
             self.idle = 3.0;
-            let body = self.status[self.current as usize].body;
-            host.weapon_anim(self.seq(0), false, body);
+            host.weapon_anim(self.seq(0), false, self.body);
         }
     }
 
@@ -1756,6 +1736,7 @@ impl Gun {
             st.state = 0;
             st.alt_grip = false;
         }
+        self.body = body;
         let draw = anim(id, false, 2);
         // CBasePlayerWeapon::DefaultDeploy(v, p, anim, ext, skiplocal 0, body)
         host.set_view_model(Some(id));
@@ -2002,6 +1983,7 @@ impl Gun {
         self.status = [Status::default(); MAX_WEAPONS];
         self.reserve = [0; MAX_AMMO];
         self.current = 0;
+        self.body = 0;
     }
 
     /// Per-spawn reset (`TSInit` + `CTSGun::Spawn`).
@@ -2009,10 +1991,12 @@ impl Gun {
         let status = self.status;
         let reserve = self.reserve;
         let current = self.current;
+        let body = self.body;
         *self = Gun::default();
         self.status = status;
         self.reserve = reserve;
         self.current = current;
+        self.body = body;
     }
 }
 

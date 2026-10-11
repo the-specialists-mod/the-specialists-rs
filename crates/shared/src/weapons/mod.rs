@@ -216,16 +216,16 @@ pub fn body_by_items(id: u8, items: u32) -> i32 {
     b
 }
 
-/// Model paths for weapon `id`: (v_, p_, p_ silenced, w_). Kung fu only has `v_melee.mdl`.
-/// `p_pdw_sil.mdl` is referenced by TS but missing from the content (the file is
-/// `p_pdw_Sil.mdl`), so the MP7 falls back to its normal p_ model.
+/// Model paths for weapon `id`: (v_, p_, p_ silenced, w_), the names TS uses. Kung fu only has
+/// `v_melee.mdl`. TS's `models/p_pdw_sil.mdl` is shipped as `p_pdw_Sil.mdl` (see
+/// [`MP7_SIL_ON_DISK`]).
 pub fn models(id: u8) -> (String, Option<String>, Option<String>, Option<String>) {
     if id == id::KUNGFU {
         return ("models/v_melee.mdl".into(), None, None, None);
     }
     match tables().asset(id) {
         Some(a) => {
-            let sil = (!a.p_model_sil.is_empty() && id != id::MP7).then(|| format!("models/{}", a.p_model_sil));
+            let sil = (!a.p_model_sil.is_empty()).then(|| format!("models/{}", a.p_model_sil));
             (
                 format!("models/v_{}.mdl", a.model),
                 Some(format!("models/p_{}.mdl", a.model)),
@@ -236,6 +236,12 @@ pub fn models(id: u8) -> (String, Option<String>, Option<String>, Option<String>
         None => ("models/v_melee.mdl".into(), None, None, None),
     }
 }
+
+/// The file name TS 3.0's content has for the MP7's silenced p_ model (TS asks for
+/// `models/p_pdw_sil.mdl`). Engines that look files up case-insensitively (all of them on
+/// Windows; FWGS everywhere) find it under TS's name; a case-sensitive server would fail the
+/// map's precache, so the server falls back to this spelling there.
+pub const MP7_SIL_ON_DISK: &str = "models/p_pdw_Sil.mdl";
 
 /// `range_damage_multipler[idx]` (`compile_range_damage` 0x7f1f4) as a pure function:
 /// `min(1, 1/sqrt(max(idx, 1) * 0.1))`.

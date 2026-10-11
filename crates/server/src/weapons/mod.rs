@@ -152,9 +152,16 @@ pub fn precache() {
     assets::precache();
 }
 
+/// The weapon part of `StartFrame`: `CTSGameRules::Think` runs the simulated bullets
+/// (`CBulletManager::Think`).
+pub fn start_frame() {
+    bullets::start_frame();
+}
+
 pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
-    // TSInit: kung-fu power 100, recoil penalty 0, fresh timers; the inventory itself was cleared
-    // at death (see on_killed) so weapons the rules gave in their on_spawn are kept.
+    // TSInit: kung-fu power 100, recoil penalty 0, fresh timers. The records were emptied where TS
+    // loses its gun (`on_killed`, `strip_all`); a spawn without that keeps them, as TS keeps the
+    // gun it already holds (`AddPlayerItem` kills the new duplicate).
     p.inv.gun.reset_for_spawn();
     inventory::reset_items(p);
     p.inv.gun.mode_memory = [0; MAX_WEAPONS];
