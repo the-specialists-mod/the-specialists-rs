@@ -47,7 +47,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CTSBuyMenu` 10036200..100398e0 (Init, Load/Save file, Open, Close, Draw pages, HandleKey 10038840, Add 10038f60, Remove 10038e40, ammo fill 100392b0, Submit 10039400, Random 100398e0, restriction 100365e0/1000b6d0, cost 10012ad0, slots 10038dc0) | `menus::buy::BuyMenu::*`, `menus::draw_buy`, `menus::save_file` |
 | `CTSBuyMenu::MouseEvent` 10038360 | `menus::mouse_buttons` / `click` |
 | `ScorePanel` 1005ce70/1005db70 | `menus::scoreboard` |
-| `CTeamMenuPanel` 100655d0 (VGUIMenu 2) | `menus::draw_team_menu`, `team_menu_key` |
+| `CTeamMenuPanel` 100655d0 (VGUIMenu 2; opened only when `GameMode` said teamplay, `0x10064280`, since the server sends it for `changeteam` in any mode) | `menus::draw_team_menu`, `team_menu_key` |
 | `CVoiceStatus::Init` 100178c0 / `VidInit` 10017af0 / `Frame` 10017ea0 | `voice::init`, `vid_init`, `frame` |
 | `CVoiceStatus::CreateEntities` 10017f30 (`HUD_CreateEntities`) | `voice::create_entities` |
 | `UpdateSpeakerStatus` 100180c0 (`HUD_VoiceStatus` 1001ab40) | `voice::update_speaker_status` |

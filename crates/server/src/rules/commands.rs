@@ -34,11 +34,9 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
                 engine().client_print(cx.edict, PRINT_TYPE::print_console, &format!("\"fov\" is \"{fov}\"\n"));
             }
         }
-        "changeteam" => {
-            if state::teamplay() {
-                msg::one(Msg::VguiMenu, cx.edict, |w| VguiMenu { menu: 2 }.write(w));
-            }
-        }
+        // No teamplay check (0xae49c): the TS client ignores menu 2 unless `GameMode` said
+        // teamplay (`ShowVGUIMenu` 0x10064050 -> 0x10064280).
+        "changeteam" => msg::one(Msg::VguiMenu, cx.edict, |w| VguiMenu { menu: 2 }.write(w)),
         // `ChangePlayerTeam(GetIndexedTeamName(n - 1), 0, 0)` with no other checks: rejoining
         // the same team, or an out-of-range number (the smallest team), still sends the player
         // to observer. Outside teamplay `CGameRules::ChangePlayerTeam` (0xc632c) is empty.

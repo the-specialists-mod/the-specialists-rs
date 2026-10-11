@@ -44,7 +44,7 @@ are Ghidra addresses.
 | `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team, spawn spot. A map's `game_player_equip`s replace the loadout (`stock::maprules::equip_on_spawn` from `weapons::on_spawn`). |
 | `UpdateClientData` init block 0x91d00 | `lifecycle::init_hud` | `ResetHUD` every spawn; first time `InitHUD`, rules InitHUD, TS InitHUD, `game_playerjoin`; `game_playerspawn`; RoundTime; super jump PwUp. |
 | `CHalfLifeMultiplay::InitHUD` 0xcf618 / Teamplay 0xe45d8 | `lifecycle::rules_init_hud`, `teams::init_hud` | join TextMsg, log, `GameMode`, own ScoreInfo, MOTD, everyone's ScoreInfo; teamplay: TeamNames, assignment SayText (after `ChangePlayerTeam`, so a teamplay joiner already starts observer here, before `CTSGameRules::InitHUD` does it again), TeamInfo. |
-| `CHalfLifeTeamplay::ChangePlayerTeam` 0xe488c, `GetIndexedTeamName` 0xe54a0 | `teams::change_team`, `GameRules::indexed_team_name` | `jointeam <n>` (team `n - 1`, `""` out of range) and the teamplay InitHUD: The One mode puts The One on the first team and everyone else on the second; an empty or unknown name goes to the smallest team; `team`/`model` keys, RecountTeams, TeamInfo + ScoreInfo to all, then **unless it's a kill or The One mode, always** `StartObserver` + `SetPlayerRespawnTime(5)` (0xe4c38..0xe4ca1; respawn award 11), even for the same team or an observer; TeamNames to all. Unit tested (`teams::tests`). Outside teamplay `CGameRules::ChangePlayerTeam` (0xc632c) is empty, so `jointeam` does nothing. |
+| `CHalfLifeTeamplay::ChangePlayerTeam` 0xe488c, `GetIndexedTeamName` 0xe54a0 | `teams::change_team`, `GameRules::indexed_team_name` | `jointeam <n>` (team `n - 1`, `""` out of range) and the teamplay InitHUD: The One mode puts The One on the first team and everyone else on the second; an empty or unknown name goes to the smallest team; with kill set, `TakeDamage(900)` (never/always gib) whether or not the player is alive, with `PlayerKilled` and the death notice off for the call (`+0x20c`/`+0x210`, `GameRules::death_suppressed`); **always** the `model` key (with a team limit `+0x214`, i.e. two or more listed teams, `GetPlayerModel` 0x79a08: a random team model or `""`; without one the team name) and the `team` key, RecountTeams, TeamInfo + ScoreInfo to all, then **unless it's a kill or The One mode, always** `StartObserver` + `SetPlayerRespawnTime(5)` (0xe4c38..0xe4ca1; respawn award 11), even for the same team or an observer; TeamNames to all. Unit tested (`teams::tests`). Outside teamplay `CGameRules::ChangePlayerTeam` (0xc632c) is empty, so `jointeam` does nothing. |
 | `CBasePlayer::ForceClientDllUpdate` 0x92594 | `commands::force_client_dll_update` (`fullupdate`) | resend every HUD and weapon value, the HUD update at once, then `Spectator` (own index, observer = `deadflag == DEAD_RESPAWNABLE`, 0x9267b) to the player; no `m_fInitHUD`, so no `ResetHUD`. |
 | `CTSGameRules::CallCheckDeads` 0x79bc0 | `GameRules::call_check_deads` | `CheckDeads` in 1 s, only while no round restart is pending; from `PlayerKilled`, the LMS join deadline in `PreThink` and `TSPlayerDisconnect`. Unit tested. |
 | `SendMOTDToClient` 0xd0ae4 | `lifecycle::send_motd` | `ServerName` = hostname, `motdfile` (default `motd.txt`) in ≤60-char chunks, ≤0x600 bytes. |
@@ -110,7 +110,7 @@ Server commands: `globalslow`, `restartround`, `weaponrestriction`, `addbot`/`ad
 `ts_givepowerup <#> <bits>`.
 
 Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `powerup <n>` (cheat),
-`cashala` (cheat), `fov`, `changeteam` (VGUIMenu 2), `jointeam <n>`, `motd`, `fullupdate`,
+`cashala` (cheat), `fov`, `changeteam` (VGUIMenu 2, in every mode: TS has no teamplay check, 0xae49c; the client only opens the team menu when `GameMode` said teamplay, `ShowVGUIMenu` 0x10064050 → 0x10064280, as the port's client does), `jointeam <n>`, `motd`, `fullupdate`,
 `lasclr_<n>` (PlInfo), `menuselect`, `vban`, `VModEnable` (voice manager, §2), `cutwire_<n>` (no-op).
 
 ## 4. Map entities (`entities/ts`)
@@ -164,7 +164,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | TSFlag | ALL | `B state, B id, B team+1, B holder` | CTB |
 | TSHVoice | ONE | `B lost` | captures, wins |
 | TSPSys | ALL | `B 3, L seed, L yaw, Co strength` | ts_wind |
-| VGUIMenu | ONE | `B 2` | changeteam |
+| VGUIMenu | ONE | `B 2` | changeteam (any mode) |
 | PlInfo | ALL | `B ent, B 0, B colour` | lasclr_N |
 | VoiceMask | ONE | `L audible, L banned` | voice `UpdateMasks` on change |
 | ReqState | ONE | – | voice `UpdateMasks` until the client answers `VModEnable` |
@@ -207,6 +207,12 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
   (0xe54d4) accepts any name when no team limit is set. Only `jointeam` (always a listed name or
   `""`) and the teamplay InitHUD (already resolved by `SetDefaultPlayerTeam`) reach it, so the
   choice is the same.
+* `SetDefaultPlayerTeam` (0xe44ac) only stores `m_szTeamName`; the port's
+  `teams::set_default_team` also sets the `team` key and, when the team or that key changed, a
+  random team `model` (it runs on every teamplay spawn and InitHUD, as in TS).
+* A team list with fewer than two teams: TS's `RecountTeams` (0xe5608) then sets `num_teams` to 0
+  and drops the team limit, so team names come from the players' own teams; the port keeps the
+  single listed team. Only the `model` key in `ChangePlayerTeam` follows the missing limit.
 * `PlayerSpawn` with a `game_player_equip`: TS gives no `weapon_tsgun` (no gun at all unless
   the equip lists it) and doesn't copy the stored cash; the port's TS gun is part of the player,
   so the kung fu gun is kept. The equip touches run right after the player's spawn instead of
@@ -234,7 +240,8 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * `loadweapons`/`saveweapons`, `CustomWP`.
 * Observer code (audited against `ts_i386.so` for issue #7; the `Observer_*` functions,
   `StartObserver`/`StopObserver`, the PreThink observer block and `PlayerDeathThink` match;
-  `jointeam`/`ChangePlayerTeam`, `fullupdate` and `CallCheckDeads` were aligned for issue #81).
+  `jointeam`/`ChangePlayerTeam`, `fullupdate` and `CallCheckDeads` were aligned for issue #81;
+  `changeteam`, the `ChangePlayerTeam` `model` key and its kill path for issue #84).
 * Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client,
   `item_antidote` (no shipped map places one).
@@ -242,7 +249,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 ## 8. Tests
 
 * `cargo test`: payload encoders (sizes match registration), `decide_gameplay`, team lists,
-  `ChangePlayerTeam` team choice and observer rule, `GetIndexedTeamName`, `CallCheckDeads`, the
+  `ChangePlayerTeam` team choice, observer rule and `model` key (`teams::tests`), the team limit (`state::tests::team_lists`), the client's team menu only in teamplay (`hud::state::tests::team_menu_only_in_teamplay`), `GetIndexedTeamName`, `CallCheckDeads`, the
   `fullupdate` `Spectator` flag,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
   clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, `DoSpectacularNess` rounding/clamping, power-up bodies/respawn clamps, HL remaps, drowning/time-based damage (`player::water::tests`: drown ramp, wade sounds, 2 s tick gate, poison ticks and restart, antidote, drown recovery 10/10/2 and its stop underwater), the HLTV

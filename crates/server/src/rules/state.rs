@@ -89,6 +89,11 @@ pub struct GameRules {
     pub end_intermission_button_hit: bool,
     pub last_frags_left: i32,
     pub last_time_left: i32,
+
+    // CHalfLifeTeamplay
+    /// `m_DisableDeathMessage` / `m_DisableDeathPenalty` (`+0x20c`/`+0x210`), always set together:
+    /// on while `ChangePlayerTeam` kills the player, so `PlayerKilled` does nothing.
+    pub death_suppressed: bool,
 }
 
 pub static RULES: Global<RefCell<Option<GameRules>>> = Global(RefCell::new(None));
@@ -263,6 +268,12 @@ impl GameRules {
         self.teams.iter().position(|t| !t.name.is_empty() && t.name.eq_ignore_ascii_case(name)).map_or(-1, |i| i as i32)
     }
 
+    /// `m_teamLimit` (`+0x214`): the Teamplay constructor sets it and `RecountTeams` (0xe5608)
+    /// clears it when the list holds fewer than two teams.
+    pub fn team_limit(&self) -> bool {
+        self.team_names().len() >= 2
+    }
+
     /// `CHalfLifeTeamplay::GetIndexedTeamName` (0xe54a0): the team at `index`, or `""` when it is
     /// out of range (`ChangePlayerTeam` then picks the smallest team).
     pub fn indexed_team_name(&self, index: i32) -> String {
@@ -322,6 +333,9 @@ mod tests {
         assert_eq!(g.team_names(), ["hitman", "gordon"]);
         assert_eq!(g.team_index("GORDON"), 1);
         assert_eq!(g.team_index("seal"), -1);
+        assert!(g.team_limit());
+        g.set_team_list("hitman");
+        assert!(!g.team_limit(), "RecountTeams drops the limit below two teams");
         g.the_one = true;
         g.set_team_list("hitman;gordon;agent");
         assert_eq!(g.team_names(), ["The ONE", "gordon"]);

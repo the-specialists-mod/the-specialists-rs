@@ -3,7 +3,7 @@
 //! any code can read them without dispatching to the player.
 
 use super::msg;
-use super::{alive, netname, other, state};
+use super::{netname, other, state};
 use crate::damage::{DamageInfo, bits};
 use crate::messages::Msg;
 use crate::player::Player;
@@ -103,14 +103,19 @@ pub fn set_default_team(p: &mut Player, cx: &mut Cx) {
     apply_team(p, cx, &name);
 }
 
-/// Stores the team on the player (name, `Player::team`, `team` and `model` infokeys).
-fn apply_team(p: &mut Player, cx: &mut Cx, name: &str) {
-    let e = cx.edict;
-    let old = team_name_of(e);
+/// Stores the team on the player: the name and `Player::team`.
+fn store_team(p: &mut Player, e: *mut edict_t, name: &str) {
     set_team_name(e, name);
     let i = state::with(|g| g.team_index(name));
     p.team = (i + 1).max(0) as u8;
     p.ts.team_name = name.to_owned();
+}
+
+/// Stores the team on the player (name, `Player::team`, `team` and `model` infokeys).
+fn apply_team(p: &mut Player, cx: &mut Cx, name: &str) {
+    let e = cx.edict;
+    let old = team_name_of(e);
+    store_team(p, e, name);
     let eng = engine();
     if !old.eq_ignore_ascii_case(name) || eng.info_key(e, c"team").to_bytes() != name.as_bytes() {
         let model = model_for(name);
@@ -119,6 +124,19 @@ fn apply_team(p: &mut Player, cx: &mut Cx, name: &str) {
         }
         eng.set_client_key(e, "team", name);
     }
+}
+
+/// The `model` key `ChangePlayerTeam` always sets (0xe4a0f..0xe4b28): with a team limit
+/// (`+0x214`) `CTSGameRules::GetPlayerModel` (0x79a08), a random one of the team's models or `""`
+/// when it has none (`pick(n)` gives `RANDOM_LONG(0, n - 1)`); without one the team name itself.
+fn change_team_model(team_limit: bool, team: &str, models: &[String], pick: impl FnOnce(i32) -> i32) -> String {
+    if !team_limit {
+        return team.to_owned();
+    }
+    if models.is_empty() {
+        return String::new();
+    }
+    models.get(pick(models.len() as i32) as usize).cloned().unwrap_or_default()
 }
 
 /// The team `ChangePlayerTeam` (0xe488c) settles on: in The One mode The One goes to the first
@@ -140,14 +158,26 @@ fn change_team_observes(kill: bool, the_one: bool) -> bool {
 
 /// `CHalfLifeTeamplay::ChangePlayerTeam` (0xe488c): `jointeam` and the teamplay `InitHUD`.
 pub fn change_team(p: &mut Player, cx: &mut Cx, name: &str, kill: bool, gib: bool) {
-    if kill && alive(cx.pev()) {
+    // TS doesn't check that the player is alive (0xe48e2..0xe4954): `TakeDamage(900)` with the
+    // death message and penalty (`+0x20c`/`+0x210`) off for the call.
+    if kill {
         let world = engine().entity_of_index(0);
         let b = if gib { bits::ALWAYSGIB } else { bits::NEVERGIB };
+        state::with(|g| g.death_suppressed = true);
         crate::player::damage::take_damage(p, cx, &DamageInfo::new(world, world, 900.0, b));
+        state::with(|g| g.death_suppressed = false);
     }
     let (the_one, names) = state::with(|g| (g.the_one, g.team_names()));
     let name = change_team_choice(name, the_one, p.ts.is_the_one, &names).unwrap_or_else(fewest);
-    apply_team(p, cx, &name);
+    let e = cx.edict;
+    store_team(p, e, &name);
+    let (limit, models) = state::with(|g| {
+        let i = g.team_index(&name);
+        (g.team_limit(), if i < 0 { Vec::new() } else { g.teams[i as usize].models.clone() })
+    });
+    let eng = engine();
+    eng.set_client_key(e, "model", &change_team_model(limit, &name, &models, |n| eng.random_long(0, n - 1)));
+    eng.set_client_key(e, "team", &name);
     recount();
     let idx = cx.index();
     msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team: name.clone() }.write(w));
@@ -230,7 +260,7 @@ pub fn the_one_teams() {
 
 #[cfg(test)]
 mod tests {
-    use super::{change_team_choice, change_team_observes};
+    use super::{change_team_choice, change_team_model, change_team_observes};
 
     fn names() -> Vec<String> {
         vec!["hitman".to_owned(), "gordon".to_owned()]
@@ -256,5 +286,17 @@ mod tests {
         assert!(change_team_observes(false, false));
         assert!(!change_team_observes(true, false));
         assert!(!change_team_observes(false, true));
+    }
+
+    #[test]
+    fn change_team_model_follows_the_team_limit() {
+        let models = vec!["seal".to_owned(), "merc".to_owned()];
+        // No team limit: the team name is the model, whatever the list holds.
+        assert_eq!(change_team_model(false, "hitman", &models, |_| unreachable!()), "hitman");
+        // With one: GetPlayerModel picks from the team's models (RANDOM_LONG(0, n - 1)).
+        assert_eq!(change_team_model(true, "hitman", &models, |n| n - 1), "merc");
+        assert_eq!(change_team_model(true, "hitman", &models, |_| 0), "seal");
+        // A team without models (or an unknown one) still sets the key, to "".
+        assert_eq!(change_team_model(true, "hitman", &[], |_| unreachable!()), "");
     }
 }

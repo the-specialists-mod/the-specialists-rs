@@ -96,6 +96,11 @@ struct Killer {
 
 /// The `PlayerKilled` body. `p`/`cx` are the victim.
 pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
+    // `CHalfLifeTeamplay::PlayerKilled` (0xe51b8) skips everything, the death notice included,
+    // while `ChangePlayerTeam` kills the player.
+    if state::with(|g| g.death_suppressed) {
+        return;
+    }
     let eng = engine();
     let now = cx.time();
     let victim = cx.edict;

@@ -692,6 +692,8 @@ impl Hud {
                     return false;
                 }
                 match id {
+                    // `ShowVGUIMenu` (0x10064050): the team menu (0x10064280) needs
+                    // `m_Teamplay >= 1`, so a non-teamplay server's `changeteam` reply is ignored.
                     2 if self.gamemode >= 1 => fx.push(Effect::OpenTeamMenu),
                     4 => self.map_briefing = r.string().chars().take(63).collect(),
                     5 => fx.push(Effect::OpenMotd),
@@ -978,6 +980,20 @@ mod tests {
         assert_eq!(p.teamname, "Specialists");
         h.apply(Msg::TeamScore, &p::TeamScore { team: "Specialists".into(), frags: 9, deaths: 3 }.encode(), &c, &mut fx);
         assert_eq!(h.team_scores[0].frags, 9);
+    }
+
+    #[test]
+    fn team_menu_only_in_teamplay() {
+        let s = Screen::default();
+        let c = ctx(&s);
+        let mut h = Hud::default();
+        let mut fx = Vec::new();
+        let menu = [2u8];
+        assert!(h.apply(Msg::VguiMenu, &menu, &c, &mut fx));
+        assert!(fx.is_empty(), "the server sends it for changeteam in DM too");
+        h.apply(Msg::GameMode, &[1], &c, &mut fx);
+        h.apply(Msg::VguiMenu, &menu, &c, &mut fx);
+        assert_eq!(fx, [Effect::OpenTeamMenu]);
     }
 
     #[test]
