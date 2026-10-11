@@ -3,7 +3,8 @@
 //! (`realbullet >= 2`: every frame) at `velocity * 40 u/m * dt * GetBulletVelocityMult`.
 //!
 //! As in TS, the manager is part of the game rules (`TSGameRules + 0x1864`): `CTSGameRules::Think`
-//! runs it from `StartFrame` while it counts any bullet ([`start_frame`]). A bullet only ends by
+//! runs it (after its `realbullet` update) while it counts any bullet ([`start_frame`]); single
+//! player and an intermission don't run that Think, so the bullets freeze. A bullet only ends by
 //! hitting something.
 
 use super::{assets, fire, projectiles};

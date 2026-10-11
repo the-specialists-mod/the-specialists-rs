@@ -85,6 +85,9 @@ pub struct GameRules {
     /// Players other than The One (regeneration rate).
     pub the_one_others: i32,
     pub check_deads_at: f32,
+    /// The `SrvSett` copies `CTSGameRules::Think` keeps (`frame::refresh_copy`): `[0]` `+0x578`
+    /// `(int)realbullet`, `[1]` `+0x558` `(int)usecash`, `[2]` `+0x55c` `(int)ammocount`. `Init`
+    /// sets them to -1; `[3]` is unused.
     pub last_srvsett: [i32; 4],
     /// Chat map votes (`+0x684..+0x1864`).
     pub votes: super::votes::Votes,
@@ -172,6 +175,13 @@ pub fn lms() -> bool {
 /// the next `Think`, not at once.
 pub fn ammo_column() -> usize {
     with(|g| ammo_column_of(g.last_srvsett[2]))
+}
+
+/// `TSGameRules + 0x578`: the `(int)realbullet` copy `CTSGameRules::Think` last stored (-1 from
+/// `Init` until the first Think; a single-player map keeps the last map's, 0 on a fresh server),
+/// what `ShootBulletsPlayer` and `CBulletManager::Think` test.
+pub fn realbullet() -> i32 {
+    with(|g| g.last_srvsett[0])
 }
 
 pub(crate) fn ammo_column_of(applied: i32) -> usize {

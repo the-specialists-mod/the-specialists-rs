@@ -57,7 +57,7 @@ addresses of `ts_i386.so`.
 | `CBasePlayer::UpdateMeleeBar` 0x9650c / `GetMeleeMultiplier` 0x965d0 | `Gun::update_melee_bar` / `spread::melee_multiplier` |
 | `CBasePlayer::ShootBulletsPlayer` 0x6f69c, `UTIL_TraceLine_Expanded` 0x6f4f4 | `fire::shoot_bullets`, `fire::trace_expanded` |
 | `compile_range_damage` 0x7f1f4 | `range_multiplier` (pure function) |
-| `CBulletManager` 0x6ebe0.. | `bullets.rs` (256 slots, run from `StartFrame` as `CTSGameRules::Think` does) |
+| `CBulletManager` 0x6ebe0.. | `bullets.rs` (256 slots, run from `CTSGameRules::Think` between its `realbullet` and `usecash` updates) |
 | `CBasePlayer::CheckHull` 0x95e28, `CloseCombatAttack` 0x95f88 | `melee::check_hull`, `melee::attack` |
 | `VictimKungfuHold/KnifeHold/KatanaHold` 0x76f50/0x76de4/0x76c8c | `melee::hold` |
 | `CTSStunt::CheckForBreakables` (melee-window part) | `melee::pending_hit` |
@@ -96,8 +96,9 @@ addresses of `ts_i386.so`.
 * `game_init`: cvars `realbullet` 0, `ammocount` 0, `weaponstay` 15, `damagemult` 0,
   `customweapons` "" (registered and, as in TS, never read), `ts_weapons_debug` 0 (not TS); server commands `weaponrestriction`,
   `loadweapons`, `saveweapons`. `dmgreport` is read but, as in TS, never registered.
-* `start_frame` (from `pfnStartFrame`, after the rules' frame): the simulated bullets, as
-  `CTSGameRules::Think` runs `CBulletManager::Think` while it counts any bullet.
+* `bullet_think` (from `rules::frame`'s `CTSGameRules::Think`, 0x77635, right after the
+  `realbullet` update and before `usecash`): `CBulletManager::Think` while it counts any bullet. Single
+  player and an intermission don't run that Think, so the bullets freeze then, as in TS.
 * Precaches: `crate::precache` issues TS's map-wide sequence (stock-entities.md §1.1) and calls
   `precache_events` (the 11 events, in `W_Precache` where `UTIL_PrecacheOtherWeapon
   ("weapon_tsgun")` runs `CTSGun::Precache`), `set_bubbles_model` (`g_sModelIndexBubbles`) and
@@ -221,7 +222,9 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   0x2001002 (x1.5 headshot flag). Penetration: `left = dmg * pierce` (x0.5 into a player),
   `btype` not 1/2 and `left > 5`: step `min(2*left, 48)` (simulated bullets: `min(left, 48)`),
   then one 4096 u trace with a 30-unit range index.
-* Simulated bullets: when `round(realbullet) != 0` (`TSGameRules+0x578`) or the shooter's
+* Simulated bullets: when `TSGameRules+0x578` is non-zero (`assets::realbullet` =
+  `rules::state::realbullet`: the `(int)realbullet` copy `CTSGameRules::Think` refreshes, truncated,
+  -1 from `Init` until the first Think; never the live cvar) or the shooter's
   `GiveSlowMul() < 0.99`; 256 slots filled first-free and updated in slot order; step every
   `0.1/(realbullet+1)` s (every frame for >= 2) at `velocity_mps * 40 * dt * mult`, with
   `mult = GetBulletVelocityMult(s, bt)`: `s` is the shooter's slow-motion "others" amount
@@ -505,11 +508,11 @@ How the port maps TS where the structure differs (not deviations):
   disconnect call `weapons::remove_all_items` too (TS `RemoveAllItems(TRUE)`, with its inline
   `UpdateClientData`, then `CurWeapon 0,0,0`); a spawn without either keeps the gun, as in TS.
   The spawn's TSInit block calls `weapons::ts_init` (slots, items).
-* `pfnStartFrame` calls `weapons::start_frame` after the rules' frame (the simulated bullets).
+* `CTSGameRules::Think` (`rules::frame`) calls `weapons::bullet_think` (the simulated bullets).
 * Restrictions: `weapons::set_restriction(mask)` (`ts_mapglobals` spawnflags: `0x1f ^ flags`),
   `weapons::restriction()` (the whole int, as `BuyWeapon` 0x945bc passes it to
-  `IsRestrictedWeapon`; not masked to 0x1f); broadcast it as `SrvSett 3`, `realbullet` as `SrvSett 0`,
-  `ammocount` as `SrvSett 2` (cvars registered here).
+  `IsRestrictedWeapon`; not masked to 0x1f); broadcast it as `SrvSett 3`; the rules broadcast `realbullet` as `SrvSett 0` and
+  `ammocount` as `SrvSett 2` (`rules::frame::srvsett_think`; cvars registered by the rules).
 * Armour absorb: `rules::state::armor_absorb()` (`TSGameRules+0x588c`: 0.2125 from every
   `Init`, or a weapons file's value).
 * `Player::slots_used` and `maxspeed` are written by weapons only when the slot count changes

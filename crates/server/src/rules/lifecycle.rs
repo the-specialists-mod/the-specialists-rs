@@ -469,7 +469,9 @@ pub fn init_hud_block(p: &mut Player, cx: &mut Cx) {
     crate::world::lend(e, p, || crate::entities::fire_targets(c"game_playerspawn", e, e, crate::world::UseType::Toggle, 0.0));
     let (round_end, timer) = state::with(|g| (g.round_end, g.round_timer));
     if round_end != 0.0 && timer {
-        let rt = RoundTime { secs: (round_end - cx.time()).max(0.0).round() as u8, state: 0 };
+        // 0x79370: clamped at 0 and truncated.
+        let secs = super::frame::round_time_byte(super::frame::x87_max0(round_end as f64 - cx.time() as f64));
+        let rt = RoundTime { secs, state: 0 };
         msg::one(Msg::RoundTime, e, |w| rt.write(w));
     }
     if state::with(|g| g.superjump_map) && p.superjump {
@@ -565,14 +567,20 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     if state::with(|g| g.custom_weapons) {
         crate::weapons::inform_custom_weapons(e);
     }
-    let (rb, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0].max(0), g.allowed_weapons, g.round_end, g.round_timer));
-    let sets = [(0u8, rb), (1, cvars::on(c"usecash") as i32), (2, super::frame::ammocount()), (3, mask)];
+    // 0x79214..0x7930a: `realbullet` is Think's copy (-1 before the first Think), `usecash` the live
+    // cvar `!= 0` (`fldz; fcomp; sete`, so 0.5 sends 1 and a NaN 0), `ammocount` the live cvar
+    // truncated, and the weapon mask.
+    let (rb, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0], g.allowed_weapons, g.round_end, g.round_timer));
+    let cash = !super::frame::x87_eq(cvars::f(c"usecash") as f64, 0.0);
+    let sets = [(0u8, rb), (1, cash as i32), (2, super::frame::ammocount()), (3, mask)];
     for (key, value) in sets {
         let s = SrvSett { key, value: value as i16 };
         msg::one(Msg::SrvSett, e, |w| s.write(w));
     }
     if round_end != 0.0 && timer {
-        let rt = RoundTime { secs: (round_end - cx.time()).max(0.0).round() as u8, state: 0 };
+        // 0x79370: clamped at 0 and truncated.
+        let secs = super::frame::round_time_byte(super::frame::x87_max0(round_end as f64 - cx.time() as f64));
+        let rt = RoundTime { secs, state: 0 };
         msg::one(Msg::RoundTime, e, |w| rt.write(w));
     }
     let eng = engine();

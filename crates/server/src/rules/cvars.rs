@@ -90,14 +90,28 @@ pub fn on(name: &CStr) -> bool {
     f(name) != 0.0
 }
 
-/// `respawntime`, clamped to 5..30 s as TS does in `Killed` and `CTSGameRules::InitHUD`.
+/// `respawntime` as `CBasePlayer::Killed` (0x8ef8f) and `CTSGameRules::InitHUD` (0x79514) pass it
+/// to `SetPlayerRespawnTime`: clamped to 5..30 s (`fcom 5.0; jae`, so a NaN becomes 5), then
+/// `(int)` under the truncating control word, so 7.9 is 7.
 pub fn respawn_time() -> f32 {
-    f(c"respawntime").clamp(5.0, 30.0).round()
+    clamp_respawn_time(f(c"respawntime"))
 }
 
-/// `roundtime`, clamped to 30..180 s.
+pub(crate) fn clamp_respawn_time(t: f32) -> f32 {
+    let t = if t >= 5.0 { t } else { 5.0 };
+    (if t > 30.0 { 30.0 } else { t }).trunc()
+}
+
+/// `roundtime`, clamped to 30..180 s as `RestartRound` (0x77941) does: `fcom 30.0; jae`, so a NaN
+/// (unordered) becomes 30 too (`f32::clamp` would keep it).
 pub fn round_time() -> f32 {
-    f(c"roundtime").clamp(30.0, 180.0)
+    let t = f(c"roundtime");
+    clamp_round_time(t)
+}
+
+pub(crate) fn clamp_round_time(t: f32) -> f32 {
+    let t = if t >= 30.0 { t } else { 30.0 };
+    if t > 180.0 { 180.0 } else { t }
 }
 
 /// `g_flWeaponCheat`: `sv_cheats` as it was when the map's worldspawn spawned
@@ -119,4 +133,24 @@ pub fn cheats() -> bool {
 /// `sv_cheats` now, for the port's own dev aids (`ts_tp`, `ts_dev_touch`, ...; not TS).
 pub fn dev_cheats() -> bool {
     f(c"sv_cheats") != 0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clamp_respawn_time, clamp_round_time};
+
+    #[test]
+    fn round_and_respawn_time_clamps() {
+        // `fcom lo; jae`: a NaN takes the low bound.
+        assert_eq!(clamp_round_time(f32::NAN), 30.0);
+        assert_eq!(clamp_round_time(10.0), 30.0);
+        assert_eq!(clamp_round_time(95.5), 95.5);
+        assert_eq!(clamp_round_time(500.0), 180.0);
+        assert_eq!(clamp_respawn_time(f32::NAN), 5.0);
+        assert_eq!(clamp_respawn_time(1.0), 5.0);
+        // Truncated by the `(int)` cast.
+        assert_eq!(clamp_respawn_time(7.9), 7.0);
+        assert_eq!(clamp_respawn_time(29.5), 29.0);
+        assert_eq!(clamp_respawn_time(99.0), 30.0);
+    }
 }

@@ -210,16 +210,60 @@ fn ts_think(now: f32) {
     }
 
     votes::check_votes(now);
+    srvsett_think();
+}
 
-    // SrvSett broadcasts when the cvars change. `ammocount` (0x776de..0x77714) is truncated
-    // (`(int)`), and a change is `Set_ammo_count` too (`state::ammo_column`).
-    let values = [cvars::f(c"realbullet").round() as i32, cvars::on(c"usecash") as i32, ammocount()];
-    for (key, v) in values.into_iter().enumerate() {
-        let changed = state::with(|g| std::mem::replace(&mut g.last_srvsett[key], v) != v);
-        if changed {
-            msg::all(Msg::SrvSett, |w| SrvSett { key: key as u8, value: v as i16 }.write(w));
-        }
+/// The end of `CTSGameRules::Think`: the `realbullet` copy (0x775b3..0x77632), the simulated
+/// bullets (0x77635), the `usecash` copy (0x77650..0x776d5) and `ammocount` (0x776d8..0x7775b),
+/// each broadcast as `SrvSett` when it changes.
+fn srvsett_think() {
+    let rb = cvars::f(c"realbullet");
+    if let Some(v) = state::with(|g| refresh_copy(&mut g.last_srvsett[0], rb)) {
+        msg::all(Msg::SrvSett, |w| SrvSett { key: 0, value: v as i16 }.write(w));
     }
+    // Between the two copies, so a bullet steps with this frame's `realbullet`.
+    crate::weapons::bullet_think();
+    let cash = cvars::f(c"usecash");
+    if let Some(v) = state::with(|g| refresh_copy(&mut g.last_srvsett[1], cash)) {
+        // `setne`: whether the truncated copy is non-zero, so 0.5 sends 0.
+        msg::all(Msg::SrvSett, |w| SrvSett { key: 1, value: (v != 0) as i16 }.write(w));
+    }
+    // `ammocount` is compared as an int (truncated first), and a change is `Set_ammo_count` too
+    // (`state::ammo_column`).
+    let v = ammocount();
+    if state::with(|g| std::mem::replace(&mut g.last_srvsett[2], v) != v) {
+        msg::all(Msg::SrvSett, |w| SrvSett { key: 2, value: v as i16 }.write(w));
+    }
+}
+
+/// The `realbullet`/`usecash` update of `CTSGameRules::Think`: `fild` the stored int, `fcomp` it
+/// with the float cvar and, unless they're equal, store `(int)cvar` (truncated) and return it to be
+/// sent. A fractional value never equals its truncation, so TS re-sends it every Think; a NaN
+/// compares unordered, which the `test ah,0x40` takes as equal, so it never updates.
+pub(crate) fn refresh_copy(stored: &mut i32, cvar: f32) -> Option<i32> {
+    if x87_eq(*stored as f64, cvar as f64) {
+        return None;
+    }
+    *stored = crate::entities::stock::maprules::x87_int(cvar);
+    Some(*stored)
+}
+
+/// An x87 `fcom` tested with `test ah,0x40` (C3): equal, or unordered when either side is NaN.
+pub(crate) fn x87_eq(a: f64, b: f64) -> bool {
+    a == b || a.is_nan() || b.is_nan()
+}
+
+/// A `RoundTime` byte as TS computes it: `(int)` of the extended-precision `m_flRoundEnd - time`
+/// (truncated; NaN or out of range the integer indefinite), of which `WriteByte` sends the low byte.
+pub(crate) fn round_time_byte(secs: f64) -> u8 {
+    let i = if (-2_147_483_648.0..2_147_483_648.0).contains(&secs) { secs as i32 } else { i32::MIN };
+    i as u8
+}
+
+/// `fVar < 0 ? 0 : fVar` as `RestartRound` (0x779b6) and `InitHUD` (0x79375) compile it: `fldz;
+/// fcom st(1); jbe`, so a NaN is kept.
+pub(crate) fn x87_max0(v: f64) -> f64 {
+    if v < 0.0 { 0.0 } else { v }
 }
 
 /// `(int)ammocount` as `CTSGameRules::Think` (0x776de) and `InitHUD` (0x792c2) take it: a C cast
@@ -297,7 +341,8 @@ fn auto_powerups(now: f32) {
         }
         g.powerup_spawner == 1
     });
-    if cvars::f(c"nopowerup") == 1.0 || !enabled {
+    // `fld1; fcomp; test ah,0x40` (0x772f9): a NaN `nopowerup` counts as 1.
+    if x87_eq(cvars::f(c"nopowerup") as f64, 1.0) || !enabled {
         return;
     }
     let next = state::with(|g| g.next_powerup);
@@ -308,8 +353,12 @@ fn auto_powerups(now: f32) {
         return;
     }
     let r = engine().random_float(0.0, 1.0);
-    let kind =
-        if r < 0.25 && cvars::f(c"slowmatch") != 1.0 { shared::ts::powerup::SLOWMO } else { state::with(|g| g.random_powerup(0x1ff)) };
+    // A NaN `slowmatch` counts as 1 too (0x77358).
+    let kind = if r < 0.25 && !x87_eq(cvars::f(c"slowmatch") as f64, 1.0) {
+        shared::ts::powerup::SLOWMO
+    } else {
+        state::with(|g| g.random_powerup(0x1ff))
+    };
     let ok = put_powerup(kind);
     state::with(|g| g.next_powerup = now + if ok { 20.0 } else { 1.0 });
 }
@@ -405,7 +454,8 @@ fn check_deads(now: f32) {
         }
         state::with(|g| g.round_restart = now + 3.0);
         if timer {
-            let rt = RoundTime { secs: (round_end - now).max(0.0).round() as u8, state: 2 };
+            // 0x79e89: no clamp here, so an overrun round sends the low byte of a negative count.
+            let rt = RoundTime { secs: round_time_byte(round_end as f64 - now as f64), state: 2 };
             msg::all(Msg::RoundTime, |w| rt.write(w));
         }
     } else if (!living.is_empty() && now <= round_end && total > 1) || !timer {
@@ -420,13 +470,16 @@ fn check_deads(now: f32) {
 /// forced respawn in 3 s, map items respawned.
 pub fn restart_round(now: f32) {
     let rt = cvars::round_time();
-    let timer = state::with(|g| {
+    let (timer, end) = state::with(|g| {
         g.round_end = now + rt;
         g.round_restart = 0.0;
-        g.round_timer
+        (g.round_timer, g.round_end)
     });
     if timer {
-        msg::all(Msg::RoundTime, |w| RoundTime { secs: rt.round() as u8, state: 0 }.write(w));
+        // 0x779b1: the stored end time less `time` (truncated), not the round time itself, so the
+        // `f32` rounding of `m_flRoundEnd` can make it a second short.
+        let secs = round_time_byte(x87_max0(end as f64 - now as f64));
+        msg::all(Msg::RoundTime, |w| RoundTime { secs, state: 0 }.write(w));
     }
     // `UTIL_PlayerByIndex` and `IsPlayer()`: a player who left (still `iuser1` 0 if it left alive)
     // is put in observer mode as well; see `rules::set_client_maxspeed`.
@@ -552,6 +605,72 @@ fn unused() -> MsgWriter {
 
 #[cfg(test)]
 mod tests {
+    use super::{refresh_copy, round_time_byte, x87_eq, x87_max0};
+
+    /// Runs `n` Thinks with the cvar at `cvar`, returning the `SrvSett` values sent.
+    fn thinks(stored: &mut i32, cvar: f32, n: usize) -> Vec<i32> {
+        (0..n).filter_map(|_| refresh_copy(stored, cvar)).collect()
+    }
+
+    #[test]
+    fn srvsett_copy_is_truncated_and_compared_as_float() {
+        // `Init`'s -1: the first Think sends the value, later ones nothing while it stands.
+        let mut c = -1;
+        assert_eq!(thinks(&mut c, 0.0, 3), [0]);
+        assert_eq!(thinks(&mut c, 2.0, 3), [2]);
+        assert_eq!(c, 2);
+        // Truncated, not rounded: 1.9 is 1, -0.7 is 0.
+        let mut c = -1;
+        assert_eq!(refresh_copy(&mut c, 1.9), Some(1));
+        assert_eq!(refresh_copy(&mut c, -0.7), Some(0));
+        // A fractional value never equals its truncated copy: sent again every Think.
+        let mut c = -1;
+        assert_eq!(thinks(&mut c, 0.5, 3), [0, 0, 0]);
+        assert_eq!(thinks(&mut c, 2.5, 2), [2, 2]);
+        // NaN compares unordered, which TS takes as equal: never updated, never sent.
+        let mut c = 1;
+        assert_eq!(thinks(&mut c, f32::NAN, 2), []);
+        assert_eq!(c, 1);
+        // Out of range: the integer indefinite, which never equals the float either.
+        let mut c = 0;
+        assert_eq!(thinks(&mut c, 3.0e9, 2), [i32::MIN, i32::MIN]);
+        // The compare is exact (`fild` is exact), so a large integral float settles.
+        let mut c = 0;
+        assert_eq!(thinks(&mut c, 16_777_216.0, 2), [16_777_216]);
+    }
+
+    #[test]
+    fn usecash_sends_whether_the_truncated_copy_is_non_zero() {
+        let sent = |cvar: f32| {
+            let mut c = -1;
+            refresh_copy(&mut c, cvar).map(|v| (v != 0) as i16)
+        };
+        assert_eq!(sent(0.5), Some(0), "0.5 truncates to 0");
+        assert_eq!(sent(1.0), Some(1));
+        assert_eq!(sent(-1.5), Some(1));
+        assert_eq!(sent(0.0), Some(0));
+        assert_eq!(sent(f32::NAN), None);
+    }
+
+    #[test]
+    fn x87_compares_and_round_time_bytes() {
+        assert!(x87_eq(1.0, 1.0) && x87_eq(f64::NAN, 1.0) && x87_eq(1.0, f64::NAN));
+        assert!(!x87_eq(1.0, 0.5));
+        // `fldz; fcom st(1); jbe`: negatives clamp, NaN is kept.
+        assert_eq!(x87_max0(-3.0), 0.0);
+        assert_eq!(x87_max0(4.5), 4.5);
+        assert!(x87_max0(f64::NAN).is_nan());
+        // Truncated, then `WriteByte`'s low byte.
+        assert_eq!(round_time_byte(29.99), 29);
+        assert_eq!(round_time_byte(300.0), 44);
+        assert_eq!(round_time_byte(-2.5), 254);
+        assert_eq!(round_time_byte(f64::NAN), 0);
+        // `RestartRound` sends the stored end time less `time`: the `f32` end can fall short.
+        let now = 1000.013f32;
+        let end = now + 30.0;
+        assert_eq!(round_time_byte(x87_max0(end as f64 - now as f64)), 29);
+    }
+
     #[test]
     fn refund() {
         use super::round_refund;

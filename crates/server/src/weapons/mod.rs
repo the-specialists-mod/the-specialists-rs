@@ -212,13 +212,11 @@ pub fn set_bubbles_model(index: i32) {
     assets::set_bubbles_model(index);
 }
 
-/// The weapon part of `StartFrame`: `CTSGameRules::Think` runs the simulated bullets
-/// (`CBulletManager::Think`).
-pub fn start_frame() {
-    // `CBulletManager::Think` runs from `CTSGameRules::Think`, which single player never runs.
-    if !crate::rules::state::single_player() {
-        bullets::start_frame();
-    }
+/// The simulated bullets' step (`CBulletManager::Think`), which `CTSGameRules::Think` runs between
+/// its `realbullet` and `usecash` updates (`rules::frame`). Neither single player nor an
+/// intermission runs that Think, so the bullets freeze then, as in TS.
+pub fn bullet_think() {
+    bullets::start_frame();
 }
 
 /// The weapon fields of `CBasePlayer::TSInit` (0x92a4c), which runs first in

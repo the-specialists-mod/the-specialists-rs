@@ -29,8 +29,6 @@ pub fn register_cvars() {
 
 /// Current values of the TS weapon cvars (registered by the rules).
 pub struct CvarValues {
-    /// `realbullet`: simulated bullets (`CBulletManager`) for everyone; 2+ = per-frame steps.
-    pub realbullet: f32,
     /// `weaponstay`: dropped weapon lifetime (clamped 5..60 s; drops of the held gun 10..120 s
     /// at twice the value).
     pub weaponstay: f32,
@@ -38,15 +36,16 @@ pub struct CvarValues {
     pub damagemult: f32,
 }
 
-/// `TSGameRules + 0x578`: `realbullet` rounded to an int (`CTSGameRules::Think` refreshes it every
-/// frame), what `ShootBulletsPlayer` and `CBulletManager::Think` test.
+/// `realbullet` as the weapons see it: not the live cvar but `TSGameRules + 0x578`, the truncated
+/// copy `CTSGameRules::Think` refreshes (`rules::state::realbullet`). Non-zero: simulated bullets
+/// (`CBulletManager`) for everyone; 2+: per-frame steps.
 pub fn realbullet() -> i32 {
-    cvars().realbullet.round_ties_even() as i32
+    crate::rules::state::realbullet()
 }
 
 pub fn cvars() -> CvarValues {
     let e = engine();
-    CvarValues { realbullet: e.cvar_float(c"realbullet"), weaponstay: e.cvar_float(c"weaponstay"), damagemult: e.cvar_float(c"damagemult") }
+    CvarValues { weaponstay: e.cvar_float(c"weaponstay"), damagemult: e.cvar_float(c"damagemult") }
 }
 
 /// `damagemult` applies only with `g_flWeaponCheat` (`sv_cheats` latched at map load,
