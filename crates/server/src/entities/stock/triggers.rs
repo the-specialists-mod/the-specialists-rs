@@ -237,7 +237,13 @@ impl<const KIND: u8> Trigger<KIND> {
             return;
         }
         let v = cx.pev();
-        if v.dmgtime > now {
+        // Single player (`!IsMultiplayer()`) has no per-player mask: nothing is hurt again before
+        // `dmgtime` except in the frame that started it.
+        if crate::rules::state::single_player() {
+            if v.dmgtime > now && now != v.pain_finished {
+                return;
+            }
+        } else if v.dmgtime > now {
             if now != v.pain_finished {
                 if player {
                     let mask = 1i32.wrapping_shl((eng.index_of(other) - 1) as u32);

@@ -41,8 +41,8 @@ pub struct GlobalSlow {
 #[derive(Debug, Default)]
 pub struct GameRules {
     pub installed: bool,
-    /// `deathmatch` was 0 at install: TS builds `CHalfLifeRules` then (the port only reports it
-    /// in `GetGameDescription`).
+    /// `deathmatch` was 0 at install: `g_pGameRules` is `CHalfLifeRules` (0xde6fc), the
+    /// single-player rules ([`single_player`]).
     pub single_player: bool,
     pub mode: Mode,
     /// `g_teamplay`: the CHalfLifeTeamplay object is in use.
@@ -129,6 +129,15 @@ pub fn teamplay() -> bool {
     with(|g| g.teamplay)
 }
 
+/// `g_pGameRules` is `CHalfLifeRules` (0xde6fc): `deathmatch` was 0 when the map's rules were
+/// installed. Its hooks are empty or SDK defaults: no rules `Think` (so no `CTSGameRules::Think`),
+/// no multiplayer `InitHUD`/`PlayerSpawn`/`PlayerKilled`/`DeathNotice`/`ClientDisconnected`/
+/// `ClientUserInfoChanged`, no voice manager or `menuselect`, spawn spots without their target,
+/// items and chargers that don't come back, and `respawn` reloads the map.
+pub fn single_player() -> bool {
+    with(|g| g.single_player)
+}
+
 pub fn the_one_mode() -> bool {
     with(|g| g.the_one)
 }
@@ -170,6 +179,10 @@ impl GameRules {
     /// `InstallGameRules` + `CTSGameRules::Init` (+ the Teamplay constructor's team setup).
     /// Called when worldspawn spawns (its keyvalues have been parsed by then).
     pub fn install(&mut self) {
+        if engine().globals().deathmatch == 0.0 {
+            self.install_single_player();
+            return;
+        }
         let forced = self.forced_gamemode;
         let (teamplay, lms, the_one) =
             decide_gameplay(forced, cvars::on(c"mp_teamplay"), cvars::on(c"lastmanstanding"), cvars::on(c"mp_theonemode"));
@@ -180,9 +193,9 @@ impl GameRules {
         self.teamplay = teamplay;
         self.lms = lms;
         self.the_one = the_one;
-        self.mode = if teamplay { Mode::TeamDm } else { Mode::Dm };
         self.player_team = vec![String::new(); 33];
-        self.init_teams();
+        // The `CHalfLifeMultiplay` constructor (0xcedd0) starts with `CTSGameRules::Init`.
+        self.ts_init(engine().time());
         if teamplay {
             let list = if !map_teams.is_empty() && cvars::on(c"mp_teamoverride") { map_teams.clone() } else { cvars::s(c"mp_teamlist") };
             if !list.is_empty() {
@@ -196,18 +209,6 @@ impl GameRules {
         }
         self.map_teams = map_teams;
         self.map_team_models = map_models;
-
-        let now = engine().time();
-        self.powerup_spawner = 0xff;
-        self.next_powerup = 0.0;
-        self.round_end = 0.0;
-        self.round_restart = now + 5.0;
-        self.round_timer = true;
-        self.allowed_weapons = 0x1f;
-        self.base_weapons = 0x1f;
-        self.next_the_one_check = now + 10.0;
-        self.votes.next_check = now + 10.0;
-        self.last_srvsett = [-1; 4];
         engine().print(&format!(
             "[ts] game rules: {} ({})\n",
             match (self.teamplay, self.lms, self.the_one) {
@@ -218,6 +219,65 @@ impl GameRules {
             },
             self.teams.iter().filter(|t| !t.name.is_empty()).map(|t| t.name.as_str()).collect::<Vec<_>>().join(";")
         ));
+    }
+
+    /// `InstallGameRules` (0xc6050) with `deathmatch` 0: `g_teamplay = 0` and `CHalfLifeRules`,
+    /// whose constructor runs neither `DecideGamePlay` (LMS and The One keep the last map's
+    /// values) nor `CTSGameRules::Init`, so the TS state carries over from the last map (`.bss`
+    /// zeroes on a fresh server: four teams with no names). The multiplayer and teamplay rules
+    /// state, and the players' team names, start empty.
+    fn install_single_player(&mut self) {
+        self.installed = true;
+        self.single_player = true;
+        self.teamplay = false;
+        self.player_team = vec![String::new(); 33];
+        self.game_over = false;
+        self.intermission_start = 0.0;
+        self.intermission_end = 0.0;
+        self.end_intermission_button_hit = false;
+        self.death_suppressed = false;
+        self.team_list.clear();
+        self.team_limit = false;
+        self.tp_names.clear();
+        self.num_teams = 0;
+        self.tp_scores.clear();
+        if self.teams.len() < 4 {
+            self.teams.resize(4, Team::default());
+        }
+        engine().print("[ts] game rules: single player (deathmatch 0)\n");
+    }
+
+    /// `CTSGameRules::Init` (0x77d6c), from the multiplayer rules' constructors and from
+    /// `CHalfLifeMultiplay::ChangeLevel` (0xd0784): the mode from `g_teamplay`, `InitTeams`, and
+    /// the spawner, round, slow-motion, `SrvSett`, vote, weapon-restriction, super-jump and The One
+    /// state. `CBulletManager::Reset` is the caller's (`weapons::bullets::reset`, outside the
+    /// rules borrow); `InitObjectives`/`SetObjective` only act in the unreachable modes 2/3; two
+    /// fields nothing reads (+0x14, +0x570) aren't modelled.
+    pub fn ts_init(&mut self, now: f32) {
+        self.mode = if self.teamplay { Mode::TeamDm } else { Mode::Dm };
+        self.init_teams();
+        self.powerup_spawner = 0xff;
+        self.global_slow = GlobalSlow::default();
+        self.last_srvsett = [-1; 4];
+        self.next_powerup = 0.0;
+        self.round_end = 0.0;
+        self.slow_blocked = false;
+        self.round_restart = now + 5.0;
+        self.round_timer = true;
+        // +0x684..+0xf84 (the per-player records), the next check and the chosen map; the tallies
+        // after them stay.
+        for r in &mut self.votes.records {
+            r.clear();
+        }
+        self.votes.next_check = now + 10.0;
+        self.votes.chosen.clear();
+        self.allowed_weapons = 0x1f; // `InitWeaponRestriction` (0x76ad0)
+        self.base_weapons = 0x1f;
+        self.the_one_exists = false;
+        self.next_the_one_check = now + 10.0;
+        self.check_deads_at = 0.0;
+        self.the_one_others = 0;
+        self.superjump_map = false;
     }
 
     /// `CTSGameRules::InitTeams`.
@@ -411,6 +471,49 @@ impl GameRules {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ts_init_resets_only_the_ts_state() {
+        // A teamplay game near its end, as `ChangeLevel` finds it.
+        let mut g = GameRules { teamplay: true, game_over: true, intermission_end: 50.0, ..Default::default() };
+        g.ts_init(0.0);
+        g.set_team_list("Red;Blue");
+        g.init_teamplay_list();
+        g.powerup_spawner = 1;
+        g.round_restart = 0.0;
+        g.round_timer = false;
+        g.slow_blocked = true;
+        g.global_slow = GlobalSlow { active: true, amount: 0.5, until: 30.0, next: 31.0 };
+        g.last_srvsett = [1, 1, 1, 0x1f];
+        g.votes.records[3] = "ts_awaken".into();
+        g.votes.tallies = vec![("ts_awaken".into(), 1)];
+        g.votes.chosen = "ts_awaken".into();
+        g.allowed_weapons = 3;
+        g.base_weapons = 0x3f;
+        g.superjump_map = true;
+        g.the_one_exists = true;
+        g.check_deads_at = 12.0;
+        g.the_one_others = 4;
+
+        g.ts_init(100.0);
+        assert_eq!(g.mode, Mode::TeamDm, "the mode follows g_teamplay");
+        assert_eq!(g.teams.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Team1", "Team2", "Team3", "Team4"]);
+        assert_eq!(g.teams[0].models, ["seal", "merc"]);
+        assert_eq!((g.powerup_spawner, g.next_powerup, g.round_end), (0xff, 0.0, 0.0));
+        assert_eq!((g.round_restart, g.round_timer, g.slow_blocked), (105.0, true, false));
+        assert!(!g.global_slow.active && g.global_slow.amount == 0.0);
+        assert_eq!(g.last_srvsett, [-1; 4]);
+        assert!(g.votes.records.iter().all(String::is_empty));
+        assert_eq!(g.votes.tallies.len(), 1, "the tallies after the records stay");
+        assert_eq!((g.votes.next_check, g.votes.chosen.as_str()), (110.0, ""));
+        assert_eq!((g.allowed_weapons, g.base_weapons, g.superjump_map), (0x1f, 0x1f, false));
+        assert_eq!((g.the_one_exists, g.next_the_one_check, g.check_deads_at, g.the_one_others), (false, 110.0, 0.0, 0));
+        // The multiplayer and teamplay rules objects aren't touched.
+        assert!(g.teamplay && g.game_over && g.intermission_end == 50.0);
+        assert_eq!(g.team_list, ["Red", "Blue"]);
+        assert!(g.team_limit);
+        assert_eq!(g.team_names(), ["Red", "Blue"]);
+    }
 
     #[test]
     fn gameplay_decision() {

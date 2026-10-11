@@ -155,7 +155,10 @@ pub fn precache() {
 /// The weapon part of `StartFrame`: `CTSGameRules::Think` runs the simulated bullets
 /// (`CBulletManager::Think`).
 pub fn start_frame() {
-    bullets::start_frame();
+    // `CBulletManager::Think` runs from `CTSGameRules::Think`, which single player never runs.
+    if !crate::rules::state::single_player() {
+        bullets::start_frame();
+    }
 }
 
 pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
@@ -176,7 +179,8 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     // CHalfLifeMultiplay::PlayerSpawn (0x890ac): every game_player_equip touches the player;
     // only without one does it get `weapon_tsgun` and buy its loadout. A gunless player stays
     // without weapons (kung fu included) unless an equip lists `weapon_tsgun`.
-    if !crate::entities::stock::maprules::equip_on_spawn(cx.edict) {
+    // `CHalfLifeRules::PlayerSpawn` (0xde7d8) is empty: single player spawns with nothing.
+    if !crate::rules::state::single_player() && !crate::entities::stock::maprules::equip_on_spawn(cx.edict) {
         give_gun(p, cx);
         inventory::buy_armament(p, cx);
     }
@@ -291,6 +295,11 @@ pub fn on_killed(p: &mut Player, cx: &mut Cx) {
 /// work.
 pub fn has_gun(p: &Player) -> bool {
     p.inv.sv.has_gun
+}
+
+/// `CBulletManager::Reset` (0x6ec50), the part of `CTSGameRules::Init` the weapons own.
+pub fn reset_bullets() {
+    bullets::reset();
 }
 
 /// `GiveNamedItem("weapon_tsgun")` (0xdb524): a new `CTSGun` (`Spawn` → `Reset`: an empty

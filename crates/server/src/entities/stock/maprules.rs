@@ -785,9 +785,9 @@ impl Entity for GamePlayerTeam {
             && crate::rules::state::teamplay()
         {
             let (kill, gib) = (sf & SF_PTEAM_KILL != 0, sf & SF_PTEAM_GIB != 0);
-            // The player is usually mid-dispatch (its +use or touch fired us): change its team
-            // as soon as that returns.
-            world::defer(activator, move || {
+            // Inside the `Use`, as in TS: a player whose +use fired us lent itself back
+            // (`player_use`); one that is otherwise mid-dispatch changes once that returns.
+            world::run_now_or_defer(activator, move || {
                 crate::player::with_player(activator, |p, pcx| crate::rules::teams::change_team(p, pcx, &team, kill, gib));
             });
         }

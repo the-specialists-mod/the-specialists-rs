@@ -116,7 +116,7 @@ pub fn create_entity(classname: &CStr, origin: Vec3, angles: Vec3, owner: *mut e
         if !e.is_null() {
             eng.remove_entity(e);
         }
-        eng.alert(ALERT_TYPE::at_console, &format!("NULL Ent in Create: {}\n", classname.to_string_lossy()));
+        eng.alert(ALERT_TYPE::at_console, "NULL Ent in Create!\n");
         return std::ptr::null_mut();
     }
     let v = e.v();
@@ -486,26 +486,38 @@ pub enum GlobalState {
     Dead = 2,
 }
 
-static GLOBALS: Global<RefCell<Vec<(String, GlobalState)>>> = Global(RefCell::new(Vec::new()));
+/// `gGlobalState`'s entries: name, the map that added it, state, oldest first.
+static GLOBALS: Global<RefCell<Vec<(String, String, GlobalState)>>> = Global(RefCell::new(Vec::new()));
 
 /// `gGlobalState.EntityGetState`: unknown names are Off.
 pub fn global_state(name: &CStr) -> GlobalState {
     let n = kv_str(name);
-    GLOBALS.0.borrow().iter().find(|(k, _)| k == n).map(|(_, st)| *st).unwrap_or(GlobalState::Off)
+    GLOBALS.0.borrow().iter().find(|(k, _, _)| k == n).map(|(_, _, st)| *st).unwrap_or(GlobalState::Off)
 }
 
 pub fn global_exists(name: &CStr) -> bool {
     let n = kv_str(name);
-    GLOBALS.0.borrow().iter().any(|(k, _)| k == n)
+    GLOBALS.0.borrow().iter().any(|(k, _, _)| k == n)
 }
 
+/// `EntitySetState`, or `EntityAdd(name, gpGlobals->mapname, st)` for a new name.
 pub fn set_global_state(name: &CStr, st: GlobalState) {
     let n = kv_str(name);
     let mut g = GLOBALS.0.borrow_mut();
-    match g.iter_mut().find(|(k, _)| k == n) {
-        Some(e) => e.1 = st,
-        None => g.push((n.to_owned(), st)),
+    match g.iter_mut().find(|(k, _, _)| k == n) {
+        Some(e) => e.2 = st,
+        None => {
+            let eng = engine();
+            let level = eng.string(eng.globals().mapname).to_string_lossy().into_owned();
+            g.push((n.to_owned(), level, st));
+        }
     }
+}
+
+/// `CGlobalState::DumpGlobals` (0xf3e74) entries, newest first (`EntityAdd` prepends to the list):
+/// name, the map that added it, state.
+pub fn global_list() -> Vec<(String, String, GlobalState)> {
+    GLOBALS.0.borrow().iter().rev().cloned().collect()
 }
 
 pub fn global_in_table(name: &CStr) -> bool {

@@ -4,6 +4,7 @@
 
 pub mod damage;
 pub mod hud;
+pub mod impulse;
 pub mod player_use;
 pub mod water;
 
@@ -30,6 +31,8 @@ pub struct Player {
     pub tbd: water::TimeBasedDamage,
     /// Train and tank driving (stock entities package).
     pub drive: crate::entities::stock::drive::DriveState,
+    /// Spray and developer impulses (`impulse.rs`).
+    pub impulse: impulse::ImpulseState,
     pub bot: Option<crate::bots::Bot>,
 
     // ---- shared fields -------------------------------------------------------------------------
@@ -94,6 +97,7 @@ impl Entity for Player {
         crate::weapons::on_spawn(self, cx);
         crate::stunt::on_spawn(self, cx);
         crate::entities::stock::drive::on_spawn(self, cx);
+        impulse::on_spawn(self);
         hud::reset(self);
     }
 
@@ -155,4 +159,16 @@ impl Player {
 /// Runs `f` on the `Player` attached to `e`, if any (take-out dispatch).
 pub fn with_player<R>(e: *mut edict_t, f: impl FnOnce(&mut Player, &mut Cx) -> R) -> Option<R> {
     crate::world::dispatch(e, |ent, cx| (ent as &mut dyn std::any::Any).downcast_mut::<Player>().map(|p| f(p, cx))).flatten()
+}
+
+/// `ClientPutInServer` (0xacf44): a `Player` for the edict (the engine may hand back one from the
+/// last map, which keeps its object), `SetCustomDecalFrames(-1)`, then `Spawn`.
+pub fn client_put_in_server(e: *mut edict_t) {
+    crate::world::create::<Player>(goldsrc::edict::EdictPtr::v(e));
+    crate::world::dispatch(e, |ent, cx| {
+        if let Some(p) = (&mut *ent as &mut dyn std::any::Any).downcast_mut::<Player>() {
+            p.impulse.custom_decal_frames = impulse::custom_decal_frames(-1);
+        }
+        ent.spawn(cx);
+    });
 }

@@ -115,7 +115,9 @@ fn telefrag(spot: *mut edict_t, self_e: *mut edict_t) {
     }
 }
 
-/// `GetPlayerSpawnSpot`: select, place at origin + 1 z, copy angles, fire the spot's target.
+/// `GetPlayerSpawnSpot`: select, place at origin + 1 z, copy angles, then
+/// (`CHalfLifeMultiplay::GetPlayerSpawnSpot` only, not `CGameRules`'s 0xc5e2c that single player
+/// keeps) fire the spot's target.
 pub fn place(_p: &mut Player, cx: &mut Cx) {
     let eng = engine();
     let spot = select(cx.edict);
@@ -134,7 +136,7 @@ pub fn place(_p: &mut Player, cx: &mut Cx) {
         v.fixangle = 1;
     }
     eng.set_origin(cx.edict, origin);
-    if !spot.is_null() {
+    if !spot.is_null() && !super::state::single_player() {
         let sv = spot.v();
         if sv.target != 0 {
             let t = eng.string(sv.target);

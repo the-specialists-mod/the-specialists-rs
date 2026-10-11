@@ -104,7 +104,9 @@ pub fn player_use(p: &mut Player, cx: &mut Cx, pressed: i32, released: i32) {
         // TS items take the player, who is being dispatched, directly.
         let any = &mut *ent as &mut dyn std::any::Any;
         if !crate::weapons::use_by_player(any, icx, p, cx) && !crate::entities::ts::use_by_player(any, icx, p, cx) {
-            ent.use_(icx, me, me, UseType::Set, value);
+            // Lent back for the `Use`, so a `game_player_team` it reaches changes our team inside
+            // it (`world::run_now_or_defer`), as TS does.
+            world::lend(me, p, || ent.use_(icx, me, me, UseType::Set, value));
         }
     });
 }
@@ -125,15 +127,16 @@ pub fn clamp_to_box(v: Vec3, half: Vec3) -> Vec3 {
     spread::normalize(out)
 }
 
-/// `CBasePlayer::ImpulseCommands` (0xdb780): `PlayerUse`, then `pev->impulse`: 99 toggles the
-/// `Logo` message, 204 is `ForceClientDllUpdate`; the impulse is cleared whatever it was.
+/// `CBasePlayer::ImpulseCommands` (0xdb780): `PlayerUse`, then `pev->impulse`: 201 sprays, 99
+/// toggles the `Logo` message, 204 is `ForceClientDllUpdate`, anything else (0 included) goes to
+/// `CheatImpulseCommands`; the impulse is cleared whatever it was.
 pub fn impulse_commands(p: &mut Player, cx: &mut Cx, pressed: i32, released: i32) {
     player_use(p, cx, pressed, released);
     match cx.pev().impulse {
+        201 => super::impulse::spray(p, cx),
         99 => logo(cx.edict),
         204 => crate::rules::commands::force_client_dll_update(p, cx),
-        // 201 (spray, `CSprayCan`) and `CheatImpulseCommands` aren't ported.
-        _ => {}
+        n => super::impulse::cheat_impulse_commands(p, cx, n),
     }
     cx.pev().impulse = 0;
 }

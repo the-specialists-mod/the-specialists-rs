@@ -100,7 +100,23 @@ pub fn round_time() -> f32 {
     f(c"roundtime").clamp(30.0, 180.0)
 }
 
-/// `sv_cheats` gates the cheat commands (`g_flWeaponCheat`).
+/// `g_flWeaponCheat`: `sv_cheats` as it was when the map's worldspawn spawned
+/// (`CWorld::Spawn` 0xf4450), 0 before the first map.
+static WEAPON_CHEAT: goldsrc::Global<std::cell::Cell<f32>> = goldsrc::Global(std::cell::Cell::new(0.0));
+
+/// `CWorld::Spawn` (0xf4450): latch `g_flWeaponCheat` for the map.
+pub fn latch_weapon_cheat() {
+    WEAPON_CHEAT.0.set(f(c"sv_cheats"));
+}
+
+/// TS's cheat gate, `g_flWeaponCheat != 0`: the cheat commands (`fov`, `powerup`, `cashala`),
+/// `CheatImpulseCommands` and the `InitHUD` cheat notice. A new `sv_cheats` takes effect on the
+/// next map.
 pub fn cheats() -> bool {
+    WEAPON_CHEAT.0.get() != 0.0
+}
+
+/// `sv_cheats` now, for the port's own dev aids (`ts_tp`, `ts_dev_touch`, ...; not TS).
+pub fn dev_cheats() -> bool {
     f(c"sv_cheats") != 0.0
 }
