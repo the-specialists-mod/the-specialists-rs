@@ -6,6 +6,43 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::ffi::c_int;
+use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
+
+/// `g_groupmask` / `g_groupop`: the game's copy of the engine group-trace filter.
+static GROUP_MASK: AtomicI32 = AtomicI32::new(0);
+static GROUP_OP: AtomicI32 = AtomicI32::new(0);
+
+/// `UTIL_SetGroupTrace` (0xebecc): filter traces by `groupinfo` (`op` 0 = AND, 1 = NAND).
+pub fn set_group_trace(mask: i32, op: i32) {
+    GROUP_MASK.store(mask, Relaxed);
+    GROUP_OP.store(op, Relaxed);
+    engine().set_group_mask(mask, op);
+}
+
+/// `UTIL_UnsetGroupTrace` (0xebf0c).
+pub fn unset_group_trace() {
+    GROUP_MASK.store(0, Relaxed);
+    GROUP_OP.store(0, Relaxed);
+    engine().set_group_mask(0, 0);
+}
+
+/// The group-trace half of `CmdStart` (0xb067c): the player's usercmd runs with its `groupinfo`
+/// as the trace filter. Nothing in TS sets `groupinfo`, so this only matters for content that does.
+pub fn cmd_start(player: *const edict_t) {
+    if !player.is_null() && player.has_private_data() {
+        let group = player.v().groupinfo;
+        if group != 0 {
+            set_group_trace(group, 0);
+        }
+    }
+}
+
+/// `CmdEnd` (0xb06f4): clears the filter `cmd_start` set.
+pub fn cmd_end(player: *const edict_t) {
+    if !player.is_null() && player.has_private_data() && player.v().groupinfo != 0 {
+        unset_group_trace();
+    }
+}
 
 /// `pfnAddToFullPack`: decide whether `ent` is sent to `host` this frame, and fill `state`.
 /// `pset` is the engine's PVS buffer, passed back to it untouched.
@@ -18,9 +55,12 @@ pub fn add_to_full_pack(
     player: c_int,
     pset: *mut u8,
 ) -> c_int {
+    // Read before borrowing `ent`'s entvars: `host` can be `ent`.
+    let host_group = if host.is_null() { 0 } else { host.v().groupinfo };
     let v = ent.v();
 
-    if v.effects & EF_NODRAW as i32 != 0 && ent != host {
+    // TS hides only `effects == EF_NODRAW` exactly: EF_NODRAW combined with another bit is sent.
+    if v.effects == EF_NODRAW as i32 && ent != host {
         return 0;
     }
     // Spectators aren't sent to other players.
@@ -38,6 +78,18 @@ pub fn add_to_full_pack(
     if v.flags & FL_SKIPLOCALHOST as i32 != 0 && hostflags & 1 != 0 && v.owner == host {
         return 0;
     }
+    if host_group != 0 {
+        set_group_trace(host_group, 0);
+        if v.groupinfo != 0 {
+            let op = GROUP_OP.load(Relaxed);
+            if (op == 0 && v.groupinfo & host_group == 0) || (op == 1 && v.groupinfo & host_group != 0) {
+                // TS returns here without `UTIL_UnsetGroupTrace`, leaving the filter on until
+                // the next unset.
+                return 0;
+            }
+        }
+        unset_group_trace();
+    }
 
     *state = entity_state_t::default();
     state.number = e;
@@ -49,6 +101,8 @@ pub fn add_to_full_pack(
     state.maxs = v.maxs;
     state.startpos = v.startpos;
     state.endpos = v.endpos;
+    state.impacttime = v.impacttime;
+    state.starttime = v.starttime;
     state.modelindex = v.modelindex;
     state.frame = v.frame;
     state.skin = v.skin as i16;
@@ -63,9 +117,12 @@ pub fn add_to_full_pack(
     state.controller = v.controller;
     state.blending[..2].copy_from_slice(&v.blending);
     state.rendermode = v.rendermode;
+    // TS converts with x87 truncation (the decomp's ROUND is `fistp` under a truncating control
+    // word), and the colour through a short, so out-of-range channels wrap instead of clamping.
     state.renderamt = v.renderamt as i32;
     state.renderfx = v.renderfx;
-    state.rendercolor = color24 { r: v.rendercolor[0] as u8, g: v.rendercolor[1] as u8, b: v.rendercolor[2] as u8 };
+    let channel = |c: f32| c as i16 as u8;
+    state.rendercolor = color24 { r: channel(v.rendercolor[0]), g: channel(v.rendercolor[1]), b: channel(v.rendercolor[2]) };
     if !v.aiment.is_null() {
         state.aiment = engine().index_of(v.aiment);
     }
@@ -75,8 +132,9 @@ pub fn add_to_full_pack(
             state.owner = owner; // only players matter to the client
         }
     }
-    // Non-moving animated entities are interpolated by the client (SDK: FL_FLY -> EFLAG_SLERP).
-    if v.flags & FL_FLY as i32 != 0 {
+    // EFLAG_SLERP: TS keeps the older SDK test (an animating non-player standing still), not
+    // the later SDK's FL_FLY.
+    if player == 0 && v.animtime != 0.0 && v.velocity == [0.0; 3] {
         state.eflags |= 1;
     }
     // TS: the stunt/state bits go out for every entity (delta.lst has iuser4 on both).
@@ -92,7 +150,8 @@ pub fn add_to_full_pack(
 
     if player != 0 {
         state.basevelocity = v.basevelocity;
-        state.weaponmodel = 0;
+        // The p_ model the client merges onto the player (`StudioDrawPlayer`).
+        state.weaponmodel = engine().model_index(engine().string(v.weaponmodel));
         state.gaitsequence = v.gaitsequence;
         state.spectator = (v.flags & FL_SPECTATOR as i32 != 0) as i32;
         state.friction = v.friction;

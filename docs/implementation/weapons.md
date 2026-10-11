@@ -370,7 +370,9 @@ NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
 
 **net.rs (AddToFullPack)**: `weapons::glow_for_host(ent, host)` says when TS forces
 `rendermode 0, renderamt 2, renderfx 19, rendercolor 100,100,100` (own dropped gun / thrown
-knife). Players' `weaponmodel` (p_ model) is set in `pev->weaponmodel`.
+knife). Players' `weaponmodel` (p_ model) is set in `pev->weaponmodel`; `AddToFullPack`
+sends its model index, which the client draws merged onto the player (third person, other
+players, motion-blur ghosts) and shows in-eye as the spectated player's view model.
 
 **Client / prediction package**: drive `shared::weapons::Gun` with a client `GunHost`:
 `unpack_clientdata` + `unpack_weapon_data` before the command, `Gun::pre_frame`,

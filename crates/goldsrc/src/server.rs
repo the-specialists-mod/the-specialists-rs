@@ -56,6 +56,12 @@ impl Engine {
         eng!(pfnCheckVisibility(e, set)) != 0
     }
 
+    /// `pfnSetGroupMask`: traces and player movement skip entities whose `groupinfo` fails `op`
+    /// (0 = AND, 1 = NAND) against `mask`; `(0, 0)` turns the filter off.
+    pub fn set_group_mask(&self, mask: i32, op: i32) {
+        eng!(pfnSetGroupMask(mask, op))
+    }
+
     /// The client's physics info string (`pfnGetPhysicsInfoString`).
     pub fn physics_info(&self, e: *const edict_t) -> &'static CStr {
         let p = eng!(pfnGetPhysicsInfoString(e));

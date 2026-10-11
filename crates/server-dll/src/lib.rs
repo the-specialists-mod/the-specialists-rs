@@ -326,10 +326,13 @@ unsafe extern "C" fn get_weapon_data(e: *mut edict_t, info: *mut weapon_data_t) 
 unsafe extern "C" fn cmd_start(e: *const edict_t, cmd: *const usercmd_t, seed: c_uint) {
     // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
     let cmd = unsafe { &*cmd };
+    net::cmd_start(e);
     player::with_player(e.cast_mut(), |p, cx| weapons::cmd_start(p, cx, cmd, seed));
 }
 
-unsafe extern "C" fn cmd_end(_: *const edict_t) {}
+unsafe extern "C" fn cmd_end(e: *const edict_t) {
+    net::cmd_end(e);
+}
 
 unsafe extern "C" fn connectionless_packet(_: *const netadr_s, _: *const c_char, _: *mut c_char, size: *mut c_int) -> c_int {
     // SAFETY: the engine passes valid out-pointers for this call.
