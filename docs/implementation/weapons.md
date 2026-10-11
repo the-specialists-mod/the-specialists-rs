@@ -48,7 +48,8 @@ addresses of `ts_i386.so`.
 | `CTSGun::KatanaFire` 0x833f0 / `KatanaThrow` 0x83b68 / `KnifeFire` 0x84044 | same names |
 | `CTSGun::ReloadWeapon` 0x84a14 / `ShotgunReload` 0x84aac / `Reload` 0x84d5c | same names |
 | `CTSGun::WeaponIdle` 0x854dc / `HolsterWeapon` 0x85698 | same names |
-| `CTSGun::UpdateClientData` 0x858c8 | `weapons::update_client_data` → `net::update_client` (`WStatus`, `WeaponInfo`, 10 Hz), called at the end of the player's `UpdateClientData` (`player::hud::update_client_data`, from PreThink) |
+| `CTSGun::UpdateClientData` 0x858c8 | `weapons::update_client_data` → `net::update_client` (`WStatus`, `WeaponInfo`, 10 Hz), called at the end of the player's `UpdateClientData` (`player::hud::update_client_data`, from PreThink). The caches (`SvState::next_update`, `sent_*`) are the gun entity's in TS: a new gun starts with `CTSGun::Reset`'s values (`new_gun_state`: last id 0, so a gun on kung fu sends no `WeaponInfo`; timer 0), `CTSGun::Deploy` with a weapon zeroes the timer (`GunHost::deploy_update_now`), and a spawn keeps the caches of a gun still held. `WeaponInfo`'s decision is `net::weapon_info_update`. |
+| `CBasePlayer::TSInit` 0x92a4c (weapon fields) | `weapons::ts_init`, from `rules::lifecycle::on_spawn`'s TSInit block | 81 free slots, no loadout items, the speed (330) recorded for 81. The only reset of these: `RemoveAllItems`, `StartObserver` and `Killed` leave them to the item code. |
 | `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` |
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
 | `CBasePlayer::PostThink` timer tail 0x91610 | `Gun::decrement_timers`, `Gun::timer_dt` |
@@ -111,7 +112,9 @@ addresses of `ts_i386.so`.
   holding a gun leaves the new one lying there) and `BuyArmament` from the `tkw`/`tki`/`tka` lists;
   speed, `KFuPower`. (`CustomWP` goes to a joiner from `CTSGameRules::InitHUD` while the
   custom-weapons flag is set: `weapons::inform_custom_weapons`.) The gun's records are emptied where TS loses
-  its `weapon_tsgun` (`remove_all_items`, `strip_all`), not here.
+  its `weapon_tsgun` (`remove_all_items`), not here, and the `UpdateClientData` caches are not
+  touched: a held gun keeps them, a new one gets `CTSGun::Reset`'s from `add_gun`. The free
+  slots and loadout items were reset just before, by `weapons::ts_init` (TSInit).
 * No gun (`SvState::has_gun` false: on an equip map whose equips don't list `weapon_tsgun`, and
   from the first death think until the next gun): as in TS no weapon frame (no attack, kung fu,
   reload; `ImpulseCommands`' +use still runs), `weapon_<n>`/`firemode`/`useitems`/`lastinv`
@@ -140,16 +143,19 @@ addresses of `ts_i386.so`.
 * `on_killed` (`Killed` 0x8ed5c): the active item's holster (gun or cycler), the ammo pack with
   the gun active; the CTB case
   (`DropFlag(false)`, gun or not); drop every weapon as `WorldGun` (a corpse's grenades become
-  grenade power-ups, their record staying in the gun); slots, kevlar flag, loadout (TS
-  `ResetArmament`). `ActItems 0` is the rules' (sent once, later in `Killed`); the player's
+  grenade power-ups, their record staying in the gun); the loadout lists (TS `ResetArmament`
+  0x93e88). The free slots, the kevlar flag and the speed are what the drops leave (a worn vest
+  keeps its 10 slots taken) until the next spawn's TSInit, as in TS. `ActItems 0` is the rules' (sent once, later in `Killed`); the player's
   `UpdateClientData` sends `ActItems` only while alive and holding the gun (`player::hud`).
 * `remove_all_items` (`RemoveAllItems(TRUE)` 0xd8cec, from the first `PlayerDeathThink` while
   the player `HasWeapons`: the gun or a `cycler_weapon`): the active item holstered, the item
   entities (a picked-up `cycler_weapon`, then a map-placed `weapon_tsgun` that became the gun)
   `Drop`ped (removed 0.1 s later), the gun destroyed with what's left in it (reserve, records),
   then `remove_all_items_tail`: no view/weapon model, `pev->weapons = 0`, `UpdateClientData`
-  inline (0xd8eb5), `CurWeapon 0,0,0`. `StartObserver` does the same through `strip_all` +
-  `remove_all_items_tail`, after its own holsters (`observer_holster`, 0x9971e..0x9974f): with
+  inline (0xd8eb5), `CurWeapon 0,0,0`. Free slots, loadout items and speed are left alone
+  (only TSInit and the item code change them), so `TSSpace` is not resent and `maxspeed` keeps its
+  value. `StartObserver` and a disconnect call the same `remove_all_items`, `StartObserver` after
+  its own holsters (`observer_holster`, 0x9971e..0x9974f): with
   the gun active, `CTSGun::Reset` (`gun_reset`: records, reserve, current weapon and the
   `UpdateClientData` caches +0x97a..+0x9de zeroed), `HolsterWeapon`, then `Holster`
   (`HolsterWeapon` again); a cycler gets its `Holster`. So the gun holsters three times in all,
@@ -339,9 +345,9 @@ How the port maps TS where the structure differs (not deviations):
   a `game_player_equip`, or from an equip listing it) and loses it in `RemoveAllItems` (the first
   death think after `Killed`, and `StartObserver`); a spawn while a gun is still held keeps it
   (`AddPlayerItem` kills the new duplicate). The port's `Gun` per player stays allocated;
-  `SvState::has_gun` says whether TS's gun exists, `give_gun` sets it with an emptied inventory,
-  and `remove_all_items` / `strip_all` (`StartObserver`, disconnect) clear it and empty the
-  records. `reset_for_spawn` gives the fields a fresh gun starts with. TS's gun is a
+  `SvState::has_gun` says whether TS's gun exists, `add_gun` sets it with an emptied inventory
+  and fresh send caches (`new_gun_state`), and `remove_all_items` (death think, `StartObserver`,
+  disconnect) clears it and empties the records. `reset_for_spawn` gives the fields a fresh gun starts with. TS's gun is a
   `weapon_tsgun` entity attached to the player, and so is the port's (`SvState::gun_item`, from
   `GiveNamedItem` or a map-placed one, dropped with the gun), so edicts are allocated and numbered
   as in TS; the gun's state lives in the player's `Gun`, not in the entity. A `GiveNamedItem` gun
@@ -425,7 +431,12 @@ How the port maps TS where the structure differs (not deviations):
   the four arguments) and the `glast_*` set-then-reset (`damage::glast::tests`), the blade
   names (`knife_descriptions_follow_the_blade_type`), the record a dropped gun's status lands in
   (`dropped_gun_status_lands_in_takeweapons_record`), and the weapons file: line rules, `%i`
-  hex/octal, `saveweapons` text reading back (`custom::tests`).
+  hex/octal, `saveweapons` text reading back (`custom::tests`). Issue #106: TSInit's slots and
+  items with a held gun's caches kept (`ts_init_frees_the_slots_and_drops_the_loadout_items`),
+  `RemoveAllItems` leaving slots, items and speed (`destroying_the_items_leaves_slots_items_and_speed`),
+  a new gun's `CTSGun::Reset` caches (`a_new_gun_starts_with_reset_send_caches`), no kung-fu
+  `WeaponInfo` from a fresh gun and the on-change rules (`net::tests`), and `Deploy` zeroing the
+  update timer only with a weapon (shared `deploy_with_a_weapon_updates_the_client_at_once`).
 * **Not yet tested in engine**: a thrown knife's kill naming the blade in `DeathMsg` and the log,
   ` (victims_weapon)` after picking up a victim's dropped gun, `loadweapons` then a map change
   (no notice for new joiners, kevlar back at 0.2125).
@@ -465,9 +476,9 @@ How the port maps TS where the structure differs (not deviations):
 * `rules::on_killed` calls `weapons::on_killed(p, cx)` (holster, ammo pack, CTB case, drops,
   loadout reset) and sends `ActItems 0` itself; the first death think calls
   `weapons::remove_all_items` (the gun, then `remove_all_items_tail`). `StartObserver` /
-  disconnect: `weapons::strip_all` and `weapons::remove_all_items_tail` (TS
-  `RemoveAllItems(TRUE)`, with its inline `UpdateClientData`, then `CurWeapon 0,0,0`); a spawn
-  without either keeps the gun, as in TS.
+  disconnect call `weapons::remove_all_items` too (TS `RemoveAllItems(TRUE)`, with its inline
+  `UpdateClientData`, then `CurWeapon 0,0,0`); a spawn without either keeps the gun, as in TS.
+  The spawn's TSInit block calls `weapons::ts_init` (slots, items).
 * `pfnStartFrame` calls `weapons::start_frame` after the rules' frame (the simulated bullets).
 * Restrictions: `weapons::set_restriction(mask)` (`ts_mapglobals` spawnflags: `0x1f ^ flags`),
   `weapons::restriction()` (the whole int, as `BuyWeapon` 0x945bc passes it to
@@ -475,14 +486,14 @@ How the port maps TS where the structure differs (not deviations):
   `ammocount` as `SrvSett 2` (cvars registered here).
 * Armour absorb: `rules::state::armor_absorb()` (`TSGameRules+0x588c`: 0.2125 from every
   `Init`, or a weapons file's value).
-* `Player::slots_used` and `maxspeed` are written by weapons only when the slot count changes.
+* `Player::slots_used` and `maxspeed` are written by weapons only when the slot count changes
+  (`SvState::speed_for`, port bookkeeping; `ts_init` records TSInit's 330 as the speed for 81).
 * Kevlar: every armour source (loadout `tki 16`, the armour power-up, `item_battery`,
   `func_recharge`) goes through `weapons::take_armor` (`TakeArmor` 0x93da4). The first vest needs
   10 of the shared `free_slots` (`pl+0x548`, the same count weapons and the CTB case use) and sets
-  `SvState::items & 0x10`; `take_armor(-1)` takes it off and gives the slots back. Death
-  (`on_killed`/`strip_all`) resets `free_slots` and `items` together, and spawn
-  (`inventory::reset_items`, TSInit's `pl+0x718 = 0`) returns a vest's slots if one is still
-  worn. Stealth shoes are `items & 0x20` plus `iuser4` bit 0x200 (`stunt::STEALTH_SHOES`, which
+  `SvState::items & 0x10`; `take_armor(-1)` takes it off and gives the slots back. Death,
+  `StartObserver` and a disconnect leave `free_slots` and `items` alone; the spawn's TSInit
+  (`weapons::ts_init`: `pl+0x548 = 81`, `pl+0x718 = 0`) resets both. Stealth shoes are `items & 0x20` plus `iuser4` bit 0x200 (`stunt::STEALTH_SHOES`, which
   the decomp docs call `HAS_KEVLAR`).
 
 **Damage package**: `DamageInfo.hitgroup` = trace hitgroup, bits as listed in §3 (0x2000000 =

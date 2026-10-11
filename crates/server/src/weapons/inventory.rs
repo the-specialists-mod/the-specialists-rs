@@ -329,13 +329,6 @@ pub fn take_armor(p: &mut Player, cx: &mut Cx, n: i32) -> bool {
 
 /// The loadout part of `TSInit` (0x92a4c): `pl+0x718 = 0`. `Player::spawn` has already zeroed
 /// `armorvalue`, so a vest still worn (a spawn that didn't go through death) gives its slots back.
-pub fn reset_items(p: &mut Player) {
-    if p.inv.sv.items & att::KEVLAR != 0 {
-        p.inv.sv.free_slots += KEVLAR_SLOTS;
-    }
-    p.inv.sv.items = 0;
-}
-
 /// `CBasePlayer::AddItem(bits)` (`tki`): 0x10 kevlar, 0x20 stealth shoes, else attachments for
 /// the held weapon. Prices are never charged (`CashBased() == 0`).
 fn add_item(p: &mut Player, cx: &mut Cx, bits: u32) {
@@ -443,9 +436,12 @@ pub fn buy_armament(p: &mut Player, cx: &mut Cx) {
 /// `CBasePlayer::Killed` (0x8ed5c) weapon part: the active item's `Holster` (the gun's, or a
 /// cycler's), `DropAmmo` (0x946f0, the active gun's reserve copied into a pack), `DropFlag(false)` (the CTB case,
 /// with or without a gun), then `DropWeapon` for every id (each one twice when it has an akimbo
-/// pair), and the loadout cleared (`ResetArmament`; the client resubmits it from the buy menu).
-/// What is left in the gun (the reserve, a corpse's grenades) goes with the gun itself on the
-/// first death think (`weapons::remove_all_items`, which also sends `CurWeapon 0,0,0`).
+/// pair), and the loadout cleared (`ResetArmament` 0x93e88: `+0x554..+0x714`; the client
+/// resubmits it from the buy menu). What is left in the gun (the reserve, a corpse's grenades)
+/// goes with the gun itself on the first death think (`weapons::remove_all_items`, which also
+/// sends `CurWeapon 0,0,0`). The free slots, loadout items (a vest's 10 slots stay taken) and
+/// speed are only what the drops left; the next spawn's `TSInit` resets them
+/// (`weapons::ts_init`).
 pub fn on_killed(p: &mut Player, cx: &mut Cx) {
     super::holster_active(p, cx);
     if super::gun_active(p) {
@@ -461,11 +457,8 @@ pub fn on_killed(p: &mut Player, cx: &mut Cx) {
             drop_weapon(p, cx, Drop::Id(wid));
         }
     }
-    p.inv.sv.free_slots = SLOTS;
-    p.inv.sv.items = 0;
     p.inv.sv.armament.clear();
     p.inv.sv.armament_ammo = [0; MAX_AMMO];
-    sync_speed(p, cx);
 }
 
 #[cfg(test)]

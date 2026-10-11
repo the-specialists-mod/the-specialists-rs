@@ -280,6 +280,9 @@ impl GunHost for ServerHost<'_> {
     fn throw_blade(&mut self, btype: i32) {
         projectiles::throw_blade(self.edict, btype, self.throw_scale);
     }
+    fn deploy_update_now(&mut self) {
+        self.sv.next_update = 0.0;
+    }
     fn slots_changed(&mut self, delta_free: i32) {
         self.sv.free_slots += delta_free;
     }

@@ -74,13 +74,22 @@ pub struct SvState {
     pub lunge_victim: *mut edict_t,
     /// The attacker's kung-fu block window at the start of the weapon frame (for blocks).
     pub atk_block: f32,
-    // ---- network caches (CTSGun::UpdateClientData) ----
+    // ---- network caches (`CTSGun::UpdateClientData` 0x858c8) ----
+    // They belong to the gun entity in TS: a new gun starts with `CTSGun::Reset`'s values
+    // ([`new_gun_state`]), and a gun that is still held keeps them through a spawn.
+    /// `+0x9e0`: the 10 Hz throttle (0 in a new gun; `CTSGun::Deploy` with a weapon zeroes it).
     pub next_update: f32,
+    /// `+0x97a`: the weapon id of the last `WeaponInfo` (`Reset`: 0). `None` only after the
+    /// port-only `ts_give` ([`SvState::force_resend`]).
     pub sent_id: Option<u8>,
+    /// `+0x97c`: the record the last `WeaponInfo` was built from (`Reset`: zero).
     pub sent_status: Status,
+    /// `+0x9b4`: the reserve the last `WeaponInfo` sent (`Reset`: 0).
     pub sent_reserve: i32,
+    /// `+0x9b8`: the `owned` flag the last `WStatus` sent, per weapon (`Reset`: zero).
     pub sent_owned: [bool; MAX_WEAPONS],
-    /// Free-slot count the move speed was last computed for.
+    /// Port bookkeeping: the free-slot count `pev->maxspeed` was last computed for
+    /// (`inventory::sync_speed`). `TSInit`'s `SetPlayerSpeed(330)` is the value for 81.
     pub speed_for: Option<i32>,
     /// The `weapon_tsgun` entity that is the gun: TS's `CTSGun` is an entity, from
     /// `GiveNamedItem("weapon_tsgun")` (`PlayerSpawn`, a `game_player_equip`) or placed by the
@@ -119,9 +128,9 @@ impl Default for SvState {
             lunge_victim: std::ptr::null_mut(),
             atk_block: 0.0,
             next_update: 0.0,
-            sent_id: None,
+            sent_id: Some(0),
             sent_status: Status::default(),
-            sent_reserve: -1,
+            sent_reserve: 0,
             sent_owned: [false; MAX_WEAPONS],
             speed_for: None,
             gun_item: EHandle::NULL,
@@ -134,13 +143,23 @@ impl Default for SvState {
 }
 
 impl SvState {
-    /// Forces every weapon message to be resent.
-    pub fn reset_net(&mut self) {
+    /// Port addition for the `ts_give` dev command: every weapon message is resent on the next
+    /// update. TS has no such reset; a spawn keeps the caches of a held gun.
+    pub fn force_resend(&mut self) {
         self.next_update = 0.0;
         self.sent_id = None;
         self.sent_reserve = -1;
         self.sent_owned = [false; MAX_WEAPONS];
-        self.speed_for = None;
+    }
+
+    /// The `UpdateClientData` caches `CTSGun::Reset` (0x805e0) zeroes (+0x97a..+0x9de): last
+    /// `WeaponInfo` id 0 (kung fu, so a gun left on kung fu sends no `WeaponInfo`), its record
+    /// and reserve, and the `WStatus` owned flags. The 10 Hz timer (+0x9e0) is not among them.
+    fn reset_send_caches(&mut self) {
+        self.sent_id = Some(0);
+        self.sent_status = Status::default();
+        self.sent_reserve = 0;
+        self.sent_owned = [false; MAX_WEAPONS];
     }
 }
 
@@ -190,12 +209,27 @@ pub fn start_frame() {
     }
 }
 
+/// The weapon fields of `CBasePlayer::TSInit` (0x92a4c), which runs first in
+/// `CBasePlayer::Spawn` (0x8f568, its only caller): 81 free slots (`+0x548 = 0x51`), no loadout
+/// items (`+0x718 = 0`) and `SetPlayerSpeed(330)` (the caller, `rules::lifecycle::on_spawn`,
+/// writes the speed). Nothing else resets them: `RemoveAllItems`, `StartObserver` and `Killed`
+/// leave them to the item and weapon code (pickups, drops, armour, the CTB case). A gun held
+/// through the spawn keeps its weapons, whose slots are free again, as in TS. `TSSpace` is
+/// resent by `UpdateClientData` (`TSInit`'s `+0x54c = -1`, `player::hud::reset`).
+pub fn ts_init(p: &mut Player) {
+    let sv = &mut p.inv.sv;
+    sv.free_slots = SLOTS;
+    sv.items = 0;
+    sv.speed_for = Some(SLOTS);
+}
+
 pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     // TSInit: kung-fu power 100, recoil penalty 0, fresh timers. The records were emptied where TS
-    // loses its gun (`remove_all_items`, `strip_all`); a spawn without that keeps them, as TS
-    // keeps the gun it already holds (`AddPlayerItem` kills the new duplicate).
+    // loses its gun (`remove_all_items`); a spawn without that keeps them, as TS keeps the gun it
+    // already holds (`AddPlayerItem` kills the new duplicate), and with it the gun's
+    // `UpdateClientData` caches, so nothing is resent. A new gun gets `CTSGun::Reset`'s caches
+    // (`add_gun`). The slots and loadout items were reset by `ts_init`.
     p.inv.gun.reset_for_spawn();
-    inventory::reset_items(p);
     p.inv.gun.mode_memory = [0; MAX_WEAPONS];
     let sv = &mut p.inv.sv;
     sv.grenades_bought = 0;
@@ -203,7 +237,6 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     sv.block_timer = 0.0;
     sv.pressed = 0;
     sv.last_buttons = 0;
-    sv.reset_net();
     cx.pev().fov = 0.0;
     // CHalfLifeMultiplay::PlayerSpawn (0x890ac): every game_player_equip touches the player;
     // only without one does it get `weapon_tsgun` (`GiveNamedItem`, an entity) and buy its
@@ -328,11 +361,17 @@ fn gun_reset(inv: &mut Inventory) {
     let body = inv.gun.body;
     inv.gun.reset_inventory();
     inv.gun.body = body;
-    let sv = &mut inv.sv;
-    sv.sent_id = Some(0);
-    sv.sent_status = Status::default();
-    sv.sent_reserve = 0;
-    sv.sent_owned = [false; MAX_WEAPONS];
+    inv.sv.reset_send_caches();
+}
+
+/// The state of a `weapon_tsgun` that has just joined the player ([`add_gun`]): a new entity
+/// (zeroed private data, then `CTSGun::Spawn` 0x8053c → `Reset`), so an empty inventory, no
+/// owners, `Reset`'s send caches and the `UpdateClientData` timer at 0.
+fn new_gun_state(inv: &mut Inventory) {
+    inv.gun.reset_inventory();
+    inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
+    inv.sv.reset_send_caches();
+    inv.sv.next_update = 0.0;
 }
 
 /// `CFuncTank::StopControl` (0xc2b1c): `m_pActiveItem->Deploy()` (`CTSGun::Deploy` 0x81030, or
@@ -466,8 +505,7 @@ pub const TSGUN_WEAPON_BIT: i32 = 1 << shared::protocol::weapons::TSGUN_ID;
 /// `CheckRespawn`.
 pub fn add_gun(p: &mut Player, cx: &mut Cx, item: *mut edict_t) {
     p.inv.sv.has_gun = true;
-    p.inv.gun.reset_inventory();
-    p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
+    new_gun_state(&mut p.inv);
     p.inv.sv.gun_item = EHandle::new(item);
     cx.pev().weapons |= TSGUN_WEAPON_BIT;
 }
@@ -507,17 +545,24 @@ pub fn give_named_gun(p: &mut Player, cx: &mut Cx) {
 }
 
 /// `CBasePlayer::RemoveAllItems(TRUE)` (0xd8cec), from `PlayerDeathThink` (0x8eaec) while the
-/// player still holds the gun (`HasWeapons`): the gun is holstered and destroyed with
-/// everything in it (the inventory and reserve ammo), then [`remove_all_items_tail`]
-/// (`UpdateClientData`, then `CurWeapon 0,0,0`). The rest of the player's weapon bookkeeping (free slots, loadout items)
-/// is left as `Killed` left it.
+/// player still holds the gun (`HasWeapons`), `StartObserver` (0x99986) and
+/// `ClientDisconnected` (0xcf960): the active item is holstered and every item destroyed, the
+/// gun with everything in it (the inventory and reserve ammo), then [`remove_all_items_tail`]
+/// (`UpdateClientData`, then `CurWeapon 0,0,0`). The free slots, loadout items and move speed
+/// are left alone: only `TSInit` ([`ts_init`]) and the item code change them.
 pub fn remove_all_items(p: &mut Player, cx: &mut Cx) {
     holster_active(p, cx);
     drop_player_items(p);
-    p.inv.sv.has_gun = false;
-    p.inv.gun.reset_inventory();
-    p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
+    clear_held_items(&mut p.inv);
     remove_all_items_tail(p, cx);
+}
+
+/// What destroying the player's items takes with it: the gun (its records and reserve, kept in
+/// the port's [`Inventory`]) and the records' owners. Nothing of the player's own state.
+fn clear_held_items(inv: &mut Inventory) {
+    inv.sv.has_gun = false;
+    inv.gun.reset_inventory();
+    inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
 }
 
 /// `CBasePlayer::RemoveAllItems(FALSE)` (0xd8cec), from `player_weaponstrip`
@@ -526,9 +571,7 @@ pub fn remove_all_items(p: &mut Player, cx: &mut Cx) {
 pub fn remove_all_items_keep_suit(p: &mut Player, cx: &mut Cx) {
     holster_active(p, cx);
     drop_player_items(p);
-    p.inv.sv.has_gun = false;
-    p.inv.gun.reset_inventory();
-    p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
+    clear_held_items(&mut p.inv);
     let v = cx.pev();
     v.viewmodel = 0;
     v.weaponmodel = 0;
@@ -591,19 +634,7 @@ pub fn select(p: &mut Player, cx: &mut Cx, id: u8) {
     host::with_host(p, cx, |gun, h| gun.switch_to(id, h));
 }
 
-/// Removes every weapon, the gun included (observer, disconnect).
-pub fn strip_all(p: &mut Player, cx: &mut Cx) {
-    holster_active(p, cx);
-    drop_player_items(p);
-    p.inv.sv.has_gun = false;
-    p.inv.gun.reset_inventory();
-    p.inv.sv.free_slots = SLOTS;
-    p.inv.sv.items = 0;
-    p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
-    inventory::sync_speed(p, cx);
-}
-
-/// The tail of `CBasePlayer::RemoveAllItems(TRUE)` (0xd8cec) that [`strip_all`] leaves out:
+/// The tail of `CBasePlayer::RemoveAllItems(TRUE)` (0xd8cec), once the items are gone:
 /// no view or weapon model, `pev->weapons = 0` (the HEV suit bit too, so the geiger counter
 /// stops), `UpdateClientData` inline (0xd8eb5, throttled as usual), and `CurWeapon 0,0,0` to the
 /// player. Callers: `StartObserver` (0x99986), `ClientDisconnected` (0xcf960) and
@@ -878,6 +909,72 @@ mod tests {
         // The gun entity's pev (body) and the player-side fields stay.
         assert_eq!(inv.gun.body, 1);
         assert_eq!(inv.gun.melee_bar, 42.0);
+    }
+
+    #[test]
+    fn ts_init_frees_the_slots_and_drops_the_loadout_items() {
+        use shared::weapons::{att, id};
+        let mut p = Player::default();
+        p.inv.sv.has_gun = true;
+        assert_eq!(p.inv.gun.take_weapon(id::AK47, None, 0), Some(id::AK47));
+        p.inv.sv.free_slots = 30;
+        p.inv.sv.items = att::KEVLAR | att::STEALTH_SHOES;
+        p.inv.sv.speed_for = Some(30);
+        p.inv.sv.sent_id = Some(id::AK47);
+        p.inv.sv.sent_owned[id::AK47 as usize] = true;
+        p.inv.sv.next_update = 7.5;
+        ts_init(&mut p);
+        // TSInit (0x92a4c): +0x548 = 0x51, +0x718 = 0, SetPlayerSpeed(330) (the value for 81).
+        assert_eq!((p.inv.sv.free_slots, p.inv.sv.items, p.inv.sv.speed_for), (SLOTS, 0, Some(SLOTS)));
+        // A gun still held keeps its weapons and its UpdateClientData caches.
+        assert!(p.inv.gun.status[id::AK47 as usize].owned);
+        assert_eq!(p.inv.sv.sent_id, Some(id::AK47));
+        assert!(p.inv.sv.sent_owned[id::AK47 as usize]);
+        assert_eq!(p.inv.sv.next_update, 7.5);
+    }
+
+    #[test]
+    fn destroying_the_items_leaves_slots_items_and_speed() {
+        use shared::weapons::{att, id};
+        let mut inv = Inventory::default();
+        inv.sv.has_gun = true;
+        assert_eq!(inv.gun.take_weapon(id::AK47, None, 0), Some(id::AK47));
+        inv.sv.free_slots = 40;
+        inv.sv.items = att::KEVLAR;
+        inv.sv.speed_for = Some(40);
+        clear_held_items(&mut inv);
+        // RemoveAllItems (0xd8cec) / StartObserver (0x99634) never write +0x548, +0x718 or the
+        // speed: the gun and its records go, the rest stays until TSInit.
+        assert!(!inv.sv.has_gun);
+        assert!(inv.gun.status.iter().all(|s| !s.owned));
+        assert_eq!((inv.sv.free_slots, inv.sv.items, inv.sv.speed_for), (40, att::KEVLAR, Some(40)));
+    }
+
+    #[test]
+    fn a_new_gun_starts_with_reset_send_caches() {
+        use shared::weapons::id;
+        let mut inv = Inventory::default();
+        // What an earlier gun left behind (the port keeps the caches with the player).
+        inv.sv.sent_id = Some(id::AK47);
+        inv.sv.sent_reserve = 90;
+        inv.sv.sent_status.clip = 30;
+        inv.sv.sent_owned[id::AK47 as usize] = true;
+        inv.sv.next_update = 12.0;
+        inv.sv.owners[1] = std::ptr::dangling_mut();
+        inv.gun.reserve[3] = 5;
+        new_gun_state(&mut inv);
+        // A fresh entity: CTSGun::Spawn -> Reset (0x805e0), the +0x9e0 timer zeroed memory.
+        assert_eq!(inv.sv.sent_id, Some(0));
+        assert_eq!(inv.sv.sent_reserve, 0);
+        assert_eq!(inv.sv.sent_status, Status::default());
+        assert_eq!(inv.sv.sent_owned, [false; MAX_WEAPONS]);
+        assert_eq!(inv.sv.next_update, 0.0);
+        assert!(inv.sv.owners.iter().all(|o| o.is_null()));
+        assert_eq!(inv.gun.reserve, [0; shared::weapons::MAX_AMMO]);
+        // Kung fu (id 0) is what +0x97a says was sent: no WeaponInfo, as in TS.
+        assert_eq!(inv.gun.current, 0);
+        let fresh = SvState::default();
+        assert_eq!((fresh.sent_id, fresh.sent_reserve), (inv.sv.sent_id, inv.sv.sent_reserve));
     }
 
     #[test]

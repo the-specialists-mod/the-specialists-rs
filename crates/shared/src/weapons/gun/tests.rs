@@ -30,6 +30,8 @@ struct Mock {
     cooldowns: Vec<f32>,
     /// `IsAlive()` false (`HolsterWeapon` stops before its animation and event).
     dead: bool,
+    /// `deploy_update_now` calls (`CTSGun::Deploy` zeroing the `UpdateClientData` timer).
+    update_now: u32,
 }
 
 impl GunHost for Mock {
@@ -99,6 +101,9 @@ impl GunHost for Mock {
     fn set_weapon_model(&mut self, _model: Option<(u8, bool)>) {}
     fn event(&mut self, ev: Event, args: EventArgs) {
         self.events.push((ev, args));
+    }
+    fn deploy_update_now(&mut self) {
+        self.update_now += 1;
     }
     fn weapon_anim(&mut self, anim: i32, _skip_local: bool, _body: i32) {
         self.anims.push(anim);
@@ -592,6 +597,21 @@ fn restricted_pickups() {
         g.take_weapon(id::KNIFE, None, 0);
     }
     assert_eq!(g.status[id::KNIFE as usize].clip, 5);
+}
+
+/// `CTSGun::Deploy` (0x81030) zeroes the `UpdateClientData` timer (+0x9e0) only when it deploys
+/// a weapon; with none it is `HolsterWeapon` (kung fu), which leaves the timer.
+#[test]
+fn deploy_with_a_weapon_updates_the_client_at_once() {
+    let (mut g, mut h) = armed(id::AK47);
+    h.update_now = 0;
+    g.switch_to(0, &mut h);
+    assert_eq!(h.update_now, 0, "kung fu");
+    g.switch_to(id::AK47, &mut h);
+    assert_eq!(h.update_now, 1);
+    g.current = 0;
+    g.deploy(&mut h);
+    assert_eq!(h.update_now, 1, "Deploy without a weapon holsters");
 }
 
 #[test]

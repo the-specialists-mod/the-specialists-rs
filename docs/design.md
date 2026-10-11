@@ -131,7 +131,7 @@ Hook order, fixed in `player/mod.rs`:
 ### 4.4 Subsystems and their APIs
 
 * **`stunt`**: `CTSStunt`/`CTSAnimation`. It sets `iuser4` bits and impulses, and picks `sequence`/`gaitsequence`. The physics they trigger runs in `shared::pm`.
-* **`weapons`**: the per-player TS gun (one container, 38 weapon records), firing, hit resolution, penetration, `CBulletManager`, grenades, knives, kung fu. API for other subsystems: `give_weapon`, `give_ammo`, `strip_all`, `multiply_clip`, and TS's `weapon_tsgun` item itself (`has_gun`, `give_gun`, `remove_all_items`).
+* **`weapons`**: the per-player TS gun (one container, 38 weapon records), firing, hit resolution, penetration, `CBulletManager`, grenades, knives, kung fu. API for other subsystems: `give_weapon`, `give_ammo`, `ts_init`, `multiply_clip`, and TS's `weapon_tsgun` item itself (`has_gun`, `give_gun`, `remove_all_items`).
 * **`rules`**: game modes, spawn selection, scoring and awards, death and respawn, power-ups (held slot, activation), slow-motion propagation, chat (`say`), cvars, TS map entities (`entities/ts`), HUD sync (`player/hud.rs`), player damage (`player/damage.rs`), drowning and time-based damage (`player/water.rs`).
 * **`bots`**: fake clients driven by `pfnRunPlayerMove`. They let a dedicated server be exercised without a human. Controlled by the `ts_bot_quota` cvar.
 

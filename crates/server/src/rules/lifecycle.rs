@@ -83,8 +83,7 @@ fn client_disconnected(e: *mut edict_t, idx: i32) {
     msg::log(&format!("\"{}<{uid}><{auth}><{tail}>\" disconnected\n", netname(e)));
     crate::player::with_player(e, |p, cx| {
         // `RemoveAllItems(TRUE)`, `UpdateClientData` inline included.
-        crate::weapons::strip_all(p, cx);
-        crate::weapons::remove_all_items_tail(p, cx);
+        crate::weapons::remove_all_items(p, cx);
         // TSPlayerDisconnect.
         crate::entities::ts::drop_flag(p, cx, false);
         if (idx as u32) < 0x20 {
@@ -258,6 +257,7 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     p.superjump = superjump_map;
     p.respawn_at = 0.0;
     p.slots_used = 0;
+    crate::weapons::ts_init(p);
     p.ts.protect_until = now + 1.0;
     p.ts.init_hud = true;
     e.set_physics_key(cx.edict, c"slj", c"0");
@@ -640,8 +640,7 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     // The gun is emptied and holstered first (`CTSGun::Reset`, `HolsterWeapon`, then its
     // `Holster`), the case dropped, then a tank let go (`Use(USE_OFF)`, which re-deploys the
     // emptied gun: kung fu). `DropFlag(false)` (0x9975f) comes before `RemoveAllItems`
-    // (0x99986): dropping the case after `strip_all` would leave `free_slots` 20 above the 81
-    // maximum.
+    // (0x99986), which leaves `free_slots` alone, as it leaves the speed.
     crate::weapons::observer_holster(p, cx);
     crate::entities::ts::drop_flag(p, cx, false);
     crate::entities::stock::drive::release_tank(p, cx);
@@ -665,10 +664,10 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     p.ts.init_hud = true;
     let team = teams::team_name_of(e);
     msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team }.write(w));
-    // `RemoveAllItems(TRUE)`: the gun's `Holster` again, the inventory cleared, then the tail
-    // (with `UpdateClientData` inline, which sends ResetHUD now if the throttle allows).
-    crate::weapons::strip_all(p, cx);
-    crate::weapons::remove_all_items_tail(p, cx);
+    // `RemoveAllItems(TRUE)`: the gun's `Holster` again, the items destroyed, then the tail
+    // (with `UpdateClientData` inline, which sends ResetHUD now if the throttle allows). The free
+    // slots, loadout items and speed stay as they were (`TSSpace` is not resent).
+    crate::weapons::remove_all_items(p, cx);
     engine().set_origin(e, origin);
     let mode = if p.ts.obs_mode == 0 { obs::CHASE_FREE } else { p.ts.obs_mode };
     observer_set_mode(p, cx, mode);

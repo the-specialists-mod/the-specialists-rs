@@ -183,6 +183,9 @@ pub trait GunHost {
     }
 
     fn event(&mut self, ev: Event, args: EventArgs);
+    /// `CTSGun::Deploy` (0x81030) with a weapon zeroes the gun's `UpdateClientData` timer
+    /// (+0x9e0), so the new weapon's `WeaponInfo` goes out on the next update. Server only.
+    fn deploy_update_now(&mut self) {}
     /// `SendWeaponAnim(anim, skiplocal, body)`.
     fn weapon_anim(&mut self, anim: i32, skip_local: bool, body: i32);
     /// `CTSAnimation::Animate(n)` (third-person sequence; owned by the movement package).
@@ -1744,6 +1747,7 @@ impl Gun {
             self.holster_weapon(host);
             return;
         }
+        host.deploy_update_now();
         let id = self.current;
         let items = self.status[id as usize].items;
         let body = body_by_items(id, items);
