@@ -186,13 +186,8 @@ pub fn give_named_item(player: *mut edict_t, class: &CStr) {
     let v = e.v();
     v.origin = origin;
     v.spawnflags |= SF_NORESPAWN;
-    // TODO(#104 merge): `crate::entities::dispatch_spawn(e)` (DispatchSpawn 0xaab8c, from the
-    // parallel #104 branch, b79337a) replaces these lines: it also runs the globalname step.
-    // Until then, its starting bounds (origin ±1) and the spawn.
-    let v = e.v();
-    v.absmin = v.origin.map(|o| o - 1.0);
-    v.absmax = v.origin.map(|o| o + 1.0);
-    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    // `DispatchSpawn` (0xaab8c); TS ignores its result here.
+    crate::entities::dispatch_spawn(e);
     if !e.is_free() && e.v().flags & FL_KILLME as i32 == 0 {
         world::dispatch(e, |ent, cx| ent.touch(cx, player));
     }
