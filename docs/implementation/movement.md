@@ -35,9 +35,20 @@ one with `shared::pm::Arith`:
 
 | Side | TS binary it stands in for | `Arith` |
 |---|---|---|
-| Server, Linux (and any non-Windows build) | `ts_i386.so` | `Arith::SERVER` = `Gcc` |
-| Server, Windows | `mp.dll` | `Arith::SERVER` = `Msvc` |
+| Server, every platform (default) | `mp.dll` | `ts_pm_arith msvc` → `Msvc` (`Arith::SERVER_DEFAULT`) |
+| Server with `ts_pm_arith gcc` | `ts_i386.so` | `Gcc` |
 | Client prediction (`HUD_PlayerMove`), every platform | `client.dll` (TS's only client) | `Arith::CLIENT` = `Msvc` |
+
+**`ts_pm_arith`** (server cvar, **port addition**, `FCVAR_SERVER`, default `msvc`) selects the
+server's arithmetic: `gcc` (any case) is `ts_i386.so`'s, anything else `mp.dll`'s.
+`rules::cvars::pm_arith` reads it on every `pfnPM_Move` (through the registered `cvar_t`, no
+lookup), so a change applies from the next command. It also covers the server's other uses of
+the movement maths: the stunt code's `AngleVectors` (`shared::pm::angle_vectors`: the dive and
+wall-check forward vector, `GetDirection`, the bullet-dance side test). The default makes the
+server agree bit for bit with every client's prediction, TS's `client.dll` and the port's
+client alike, on Linux too; `gcc` reproduces TS's own Linux server exactly (and its
+mispredictions, see Deviations). The client needs no setting: it always predicts as
+`client.dll`, which is what the default server computes.
 
 * **`ts_i386.so` (`Gcc`)**, GCC 2.95, evaluates each expression on the x87 in extended
   precision (64-bit significand; Linux leaves the FPU at that) and rounds to `float` only where
@@ -46,7 +57,7 @@ one with `shared::pm::Arith`:
   `(int)` casts truncate. `pm/ext.rs` implements that arithmetic in software (`Ext`, checked
   against the FPU itself by `ext_matches_x87_hardware`). `f64` isn't enough: it rounds twice, and
   the cases where that matters come up in play, e.g. `0.001 * 600 <= 0.6` (`PM_Duck`) is false in
-  extended precision, so with 10 ms frames the server's duck completes at 590 ms.
+  extended precision, so with 10 ms frames `ts_i386.so`'s duck completes at 590 ms.
 * **`client.dll` and `mp.dll` (`Msvc`)**, MSVC 6, also use the x87, but at **53-bit precision**:
   each DLL's CRT calls `_controlfp(_PC_53, _MCW_PC)` when it loads (`_fpmath`: client
   0x1006accc → 0x1006d7c7, mp.dll 0x1007d2c0 → 0x1007ea5a), and nothing changes it afterwards: TS
@@ -65,9 +76,9 @@ one with `shared::pm::Arith`:
   spectator-camera globals; the floating point is the same), `PM_Move` (the client caches
   `physents[0].model`) and `PM_SpectatorMove` (the client's is its own; its roaming part is
   mp.dll's, instruction for instruction; the rest, in `crates/client/src/spectator/`, uses
-  client.dll's angle helpers in the same 53-bit arithmetic, see `client-rendering.md`). So the Windows server build follows `mp.dll`, where
-  an original TS client agrees with it, and the Linux build follows `ts_i386.so`, as TS's own
-  Linux server did.
+  client.dll's angle helpers in the same 53-bit arithmetic, see `client-rendering.md`). So the
+  server follows `mp.dll` by default on every platform, where an original TS client agrees with
+  it, and follows `ts_i386.so`, as TS's own Linux server did, with `ts_pm_arith gcc`.
 
 The MSVC differences, function by function (client address; `mp.dll` is the same):
 
@@ -212,10 +223,13 @@ the same as the GCC build once the stack is 53 bits wide.
   exponent range is unbounded (matters beyond ±1e4900), and `f64`'s is narrower than the x87's
   (beyond ±1e308); movement never gets near either. MSVC copies many floats with `fld`/`fstp`,
   which quiets a signalling NaN; the port copies bits.
-* **Original TS client against the Linux server.** The port's client predicts like TS's client
-  (`Msvc`), so against a Linux server (the port's or TS's) it mispredicts in the last bits
-  exactly as TS's own client did, e.g. a duck finishes a frame early. Against a Windows server
-  both sides agree.
+* **The Linux server computes movement as `mp.dll` (`ts_pm_arith`, port addition).** TS's
+  Linux server (`ts_i386.so`) used GCC's extended precision, so TS's client (53-bit) mispredicted
+  it in the last bits, e.g. a duck finished a frame early (600 ms on the client, 590 ms on the
+  server). The port's server defaults to the Windows server's arithmetic on every platform, so
+  every client, TS's or the port's, predicts it exactly: TS behaviour, but of the Windows build.
+  `ts_pm_arith gcc` restores `ts_i386.so`'s arithmetic bit for bit, and with it TS's Linux
+  mispredictions (the port's client predicts like TS's client, `Msvc`, either way).
 * **Spectator locked view (`iuser1 == 4`).** TS reads three stack slots it never writes as the
   camera angles: the outgoing arguments `PM_CheckParamters` last pushed (`PM_CalcRoll`'s
   `v_angle` pointer, `pmove->velocity` pointer and `rollangle`, or only the
@@ -261,8 +275,10 @@ the same as the GCC build once the stack is 53 bits wide.
   (all three, bits consumed, duck hull), wall dive, wall jump/climb, stunt jump lockout without
   latching, **duck view 16** (transition, hull, origin, unduck), super jump needs `mj`, glide
   gravity, `DEAD_LOCK` yaw cache, cmd clamp only for spectators, stuck table layout,
-  **duck completes at 590 ms** (extended-precision compare) on the server build and **600 ms**
-  on the client build, locked-view stale angles, jump
+  **duck completes at 590 ms** (extended-precision compare) with `ts_pm_arith gcc` and **600 ms**
+  on the client and the default server (`msvc_duck_completes_at_600_ms`), the server's default
+  arithmetic equal to the client's (`arith_per_side`, `server_default_trajectory_is_the_clients`)
+  and the cvar's parsing, locked-view stale angles, jump
   constants as rounded roots; the software extended precision against the x87 FPU (100 000
   random operations and `fstps`) and against `f32` for single operations; **the 53-bit x87
   against `f64`** (`x87_at_53_bits_is_f64`, 100 000 operations at control word 0x27f);

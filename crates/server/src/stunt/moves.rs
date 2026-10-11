@@ -25,7 +25,7 @@ fn can_dive_low(p: &Player) -> bool {
 const NEXT_DIVE: f32 = 0.0;
 
 fn forward(cx: &mut Cx) -> Vec3 {
-    shared::pm::angle_vectors(cx.pev().v_angle).0
+    shared::pm::angle_vectors(crate::rules::cvars::pm_arith(), cx.pev().v_angle).0
 }
 
 fn hspeed(v: Vec3) -> f32 {

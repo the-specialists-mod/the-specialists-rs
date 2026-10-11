@@ -126,7 +126,8 @@ Registered in TS order with TS defaults and flags (0x4 = FCVAR_SERVER, 0x100 = U
 `weaponstay 15`, `mp_theonemode 0`, `mp_theone gordon`, `mp_theothers seal`,
 `lastmanstanding 0`, `spectacularness 1`, `customweapons ""`, `banfortk 0`, `botarmor 0`,
 `voice_serverdebug 0`, `sv_alltalk 0` (FWGS already has it; the engine refuses the duplicate),
-and the port's `ts_bot_quota 0` and `ts_bot_stop 0`. The three bot cvars are read as TS reads
+and the port's `ts_bot_quota 0`, `ts_bot_stop 0` and `ts_pm_arith msvc` (movement arithmetic,
+`movement.md`). The three bot cvars are read as TS reads
 them: `botlearn` (> 0 learns nodes, 2 adds debug output), `bottalk` (bot chat), `botarmor` (the
 buy module's kevlar), §10.
 
@@ -264,6 +265,8 @@ TS keeps constant are written as such (`m_bitsHUDDamage` -1, the rest 0). `Resto
 Port additions:
 * `ts_bot_quota` (TS's bots on dedicated servers too) and `ts_bot_stop`: §10.1. On a full server
   the quota retries quietly every 0.5 s.
+* `ts_pm_arith` (`msvc` default, or `gcc`): the server's movement arithmetic, `mp.dll`'s or
+  `ts_i386.so`'s (`cvars::pm_arith`, `movement.md`).
 * `ClientDisconnect` clears `FL_CLIENT`/`FL_FAKECLIENT` (engine safety, still needed: FWGS's
   `pfnSetClientMaxspeed` (`sv_game.c`) looks the client up with `SV_ClientFromEdict(e, false)`,
   which still returns a dropped client's slot, and then writes `cl->edict->v.maxspeed`, but

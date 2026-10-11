@@ -16,7 +16,7 @@ on Linux and Windows. The latest release is
 
 | Area | State |
 |---|---|
-| Player movement (shared, predicted) | The TS `pm_shared` port: ladders, water, duck, step-up, the TS jump, friction and acceleration, the `fuser1` time scale. 27 unit tests. |
+| Player movement (shared, predicted) | The TS `pm_shared` port: ladders, water, duck, step-up, the TS jump, friction and acceleration, the `fuser1` time scale, bit for bit in the arithmetic of each TS build. The server computes it as TS's Windows server on every platform, so every client predicts it exactly (`ts_pm_arith gcc` selects the Linux `ts_i386.so`'s instead). |
 | Stunts and animation | Dives, rolls, flips, cartwheels, wall jump and climb, slide and prone, super jump, bullet-time dodge. TS animation selection. |
 | Weapons | All 37 TS weapons from the decoded tables. One shared `Gun` state machine for server and client prediction: fire modes, akimbo, burst, pump, zoom, attachments. Penetration, simulated bullets, grenades, thrown blades, kung fu with blocks, dropped guns, loadouts. |
 | Game rules | DM, team DM, LMS, The One. Spawn selection, scoring and awards, power-ups (slow motion, slow pause, double fire rate, infinite clip, kung fu, health, armour, super jump), slow-motion propagation, chat and chat votes (`vote map`/`stats`/`reset`), MOTD, the TS cvars, TS's bots (the Windows server's AI: `addbot`, the `.ndm` node graph, `botlearn`), HLTV director messages. |

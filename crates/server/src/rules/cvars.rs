@@ -3,6 +3,9 @@
 //! the engine registered first still works.
 
 use goldsrc::server::engine;
+use goldsrc::sys::cvar_t;
+use shared::pm::Arith;
+use std::cell::Cell;
 use std::ffi::CStr;
 
 const SERVER: i32 = 0x4; // FCVAR_SERVER
@@ -10,6 +13,7 @@ const UNLOGGED: i32 = 0x100; // FCVAR_UNLOGGED
 
 /// (name, default, flags), in TS registration order. All of these are registered by TS's
 /// `GameDLLInit` except the voice pair (`CVoiceGameMgr::Init`) and `ts_bot_quota`/`ts_bot_stop` (this port).
+/// The port's `ts_pm_arith` is registered after them ([`pm_arith`]).
 pub const CVARS: &[(&str, &str, i32)] = &[
     ("displaysoundlist", "0", 0),
     ("mp_fragsleft", "0", SERVER | UNLOGGED),
@@ -75,6 +79,24 @@ pub fn register() {
             continue;
         }
         e.register_cvar(name, value, flags);
+    }
+    // Port addition. Not in `CVARS`: `pm_arith` keeps the pointer, as it reads it every command.
+    PM_ARITH.0.set(Some(e.register_cvar("ts_pm_arith", "msvc", SERVER)));
+}
+
+/// `ts_pm_arith` (port addition; TS has no such cvar).
+static PM_ARITH: goldsrc::Global<Cell<Option<&'static cvar_t>>> = goldsrc::Global(Cell::new(None));
+
+/// The arithmetic the server's player movement and stunt maths run in, from `ts_pm_arith` (port
+/// addition), read on every call so a change applies from the next command. `msvc`, the
+/// default, is `mp.dll`'s: TS's `client.dll` and this port's client predict with it, so server
+/// and prediction agree exactly on every platform. `gcc` is `ts_i386.so`'s (TS's own Linux
+/// server; a frame different in places, e.g. the duck completes at 590 ms instead of 600). See
+/// `docs/implementation/movement.md`.
+pub fn pm_arith() -> Arith {
+    match PM_ARITH.0.get() {
+        Some(c) => Arith::from_cvar(goldsrc::server::cvar_string(c).to_bytes()),
+        None => Arith::SERVER_DEFAULT,
     }
 }
 

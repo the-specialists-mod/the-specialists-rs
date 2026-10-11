@@ -18,8 +18,10 @@
 //!
 //! Each function names the operations in machine-code order with [`Fpu::x`] (`fld dword`, a
 //! `float` operand), [`Fpu::xd`] (`fld qword`, a `double`), [`Fpu::xi`] (`fild`) and [`Num::f`]
-//! (`fstp dword`, rounding to `float`). Everything is monomorphised, so the server pays nothing
-//! for the client's variant and the client runs on native `f64`.
+//! (`fstp dword`, rounding to `float`). Both builds are monomorphised and picked once per call
+//! by [`Arith`]: the client always runs `Msvc` on native `f64`; the server runs `Msvc` too by
+//! default (`mp.dll`'s arithmetic, which every client predicts with) and `Gcc` when its
+//! `ts_pm_arith` cvar (a port addition) is `gcc`.
 
 pub use super::ext::Ext;
 use std::fmt::Debug;
@@ -166,8 +168,16 @@ pub enum Arith {
 }
 
 impl Arith {
-    /// TS's server on this platform: `mp.dll` on Windows, `ts_i386.so` elsewhere.
-    pub const SERVER: Arith = if cfg!(windows) { Arith::Msvc } else { Arith::Gcc };
+    /// The server's arithmetic unless the port's `ts_pm_arith` cvar says otherwise: `mp.dll`'s on
+    /// every platform, so the server agrees bit for bit with every client's prediction (TS's
+    /// `client.dll` and this port's). `ts_pm_arith gcc` selects `ts_i386.so`'s instead.
+    pub const SERVER_DEFAULT: Arith = Arith::Msvc;
     /// TS's only client, `client.dll`.
     pub const CLIENT: Arith = Arith::Msvc;
+
+    /// The `ts_pm_arith` cvar's value (port addition): `gcc` (any case, surrounding blanks
+    /// ignored) is `ts_i386.so`'s arithmetic; anything else, `msvc` included, is the default.
+    pub fn from_cvar(value: &[u8]) -> Arith {
+        if value.trim_ascii().eq_ignore_ascii_case(b"gcc") { Arith::Gcc } else { Arith::SERVER_DEFAULT }
+    }
 }

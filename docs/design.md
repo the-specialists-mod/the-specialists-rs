@@ -270,7 +270,7 @@ renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::st
 
 ## 7. Shared crate
 
-* `pm`: TS player movement, an exact port of the server's `pm_shared` with the TS changes (decomp `server/player-movement.md` §1). The client's copy in `client.dll` (and `mp.dll`'s) has the same logic apart from `PM_SpectatorMove` (HLTV camera additions, see `docs/implementation/client-rendering.md`), so one implementation serves both sides. The floating point differs, though: `ts_i386.so` is GCC at x87 extended precision, `client.dll`/`mp.dll` are MSVC at 53 bits with other rounding points, so the code is generic over the build (`pm::Arith`): the server uses `Arith::SERVER` (`mp.dll`'s on Windows, `ts_i386.so`'s elsewhere) and client prediction `Arith::CLIENT` (`client.dll`'s). See `docs/implementation/movement.md`.
+* `pm`: TS player movement, an exact port of the server's `pm_shared` with the TS changes (decomp `server/player-movement.md` §1). The client's copy in `client.dll` (and `mp.dll`'s) has the same logic apart from `PM_SpectatorMove` (HLTV camera additions, see `docs/implementation/client-rendering.md`), so one implementation serves both sides. The floating point differs, though: `ts_i386.so` is GCC at x87 extended precision, `client.dll`/`mp.dll` are MSVC at 53 bits with other rounding points, so the code is generic over the build (`pm::Arith`): client prediction uses `Arith::CLIENT` (`client.dll`'s), and the server `mp.dll`'s on every platform (`Arith::SERVER_DEFAULT`, the same arithmetic, so server and prediction agree exactly) unless the port's `ts_pm_arith gcc` cvar selects `ts_i386.so`'s (§10). See `docs/implementation/movement.md`.
 * `weapons`: `tables()` parses the embedded TOML once. The predicted gun state machine (fire modes, timers × `fuser1`, spread penalty, seeded pellets) goes here.
 * `protocol`: the message table and per-area payload encoders and decoders.
 * `ts`: stunt bits, power-up bits, observer modes (TS numbering: in-eye is 5), `IN_ALT1`, the slot/speed formula.
@@ -364,6 +364,16 @@ keeps the game running and logs it ("(port guard)"):
   `implementation/stock-entities.md` §7.8.
 * The client's `exit(-1)` on a model with more than 4 attachments
   (`implementation/client-rendering.md`).
+
+One behaviour follows TS's Windows build on every platform:
+
+* **Player movement on a Linux server uses `mp.dll`'s arithmetic.** TS's Linux `ts_i386.so`
+  (GCC, x87 extended precision) and its Windows `mp.dll`/`client.dll` (MSVC, 53-bit) round
+  movement differently in the last bits, so TS's client mispredicted its own Linux server (a
+  duck finished at 600 ms on the client, 590 ms on the server). The port's server runs the
+  Windows build's arithmetic everywhere by default, which every client (TS's and the port's)
+  predicts exactly. The port's server cvar `ts_pm_arith gcc` restores `ts_i386.so`'s arithmetic
+  bit for bit (`implementation/movement.md`).
 
 Dead 3.0 features (round-based and objective modes, cash) are implemented only as far as the
 port needs them; `docs/implementation/*.md` records what's live.

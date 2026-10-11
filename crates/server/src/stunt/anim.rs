@@ -398,7 +398,7 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
                 }
             }
             0x2a | 0x2b => {
-                let (_, right, _) = shared::pm::angle_vectors(cx.pev().v_angle);
+                let (_, right, _) = shared::pm::angle_vectors(crate::rules::cvars::pm_arith(), cx.pev().v_angle);
                 let len = (v[2] * v[2] + v[1] * v[1] + v[0] * v[0]).sqrt();
                 let check = len == 0.0 || {
                     let a = normalized(v);

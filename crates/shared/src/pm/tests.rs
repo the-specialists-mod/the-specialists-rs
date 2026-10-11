@@ -509,10 +509,13 @@ fn in_eye_spectator_is_mode_5() {
 }
 
 /// `PM_Duck` compares `0.001 * flDuckTime <= 0.6` in extended precision: at 600 ms left it is
-/// false, so with 10 ms frames the duck completes at 590 ms.
+/// false, so with 10 ms frames `ts_i386.so`'s duck (the server with `ts_pm_arith gcc`) completes
+/// at 590 ms.
 #[test]
-fn duck_completes_at_590_ms() {
+fn gcc_duck_completes_at_590_ms() {
     let mut f = Fixture::standing();
+    f.arith = Arith::from_cvar(b"gcc");
+    assert_eq!(f.arith, Arith::Gcc);
     f.p.cmd.buttons = IN_DUCK as u16;
     f.run(41); // the press frame sets 1000, then 40 frames of 10 ms
     assert_eq!(f.p.flDuckTime, 600.0);
@@ -522,25 +525,43 @@ fn duck_completes_at_590_ms() {
     assert_ne!(f.p.flags & FL_DUCKING as i32, 0);
 }
 
-/// TS's client (and `mp.dll`) runs the same compare at 53-bit precision, where `0.001 * 600`
-/// rounds to the double 0.6: the duck completes at 600 ms, a frame before the Linux server.
+/// TS's client and `mp.dll` run the same compare at 53-bit precision, where `0.001 * 600` rounds
+/// to the double 0.6: the duck completes at 600 ms, a frame before `ts_i386.so`'s. The port's
+/// server does the same by default, so it agrees with every client's prediction.
 #[test]
 fn msvc_duck_completes_at_600_ms() {
-    let mut f = Fixture::standing();
-    f.arith = Arith::Msvc;
-    f.p.cmd.buttons = IN_DUCK as u16;
-    f.run(40);
-    assert_eq!(f.p.flDuckTime, 610.0);
-    assert_eq!(f.p.flags & FL_DUCKING as i32, 0);
-    f.run(1);
-    assert_eq!(f.p.flDuckTime, 600.0);
-    assert_ne!(f.p.flags & FL_DUCKING as i32, 0, "done at 600 ms");
+    for arith in [Arith::CLIENT, Arith::SERVER_DEFAULT, Arith::from_cvar(b"msvc")] {
+        let mut f = Fixture::standing();
+        f.arith = arith;
+        f.p.cmd.buttons = IN_DUCK as u16;
+        f.run(40);
+        assert_eq!(f.p.flDuckTime, 610.0);
+        assert_eq!(f.p.flags & FL_DUCKING as i32, 0);
+        f.run(1);
+        assert_eq!(f.p.flDuckTime, 600.0);
+        assert_ne!(f.p.flags & FL_DUCKING as i32, 0, "done at 600 ms ({arith:?})");
+    }
 }
 
+/// The client predicts with `client.dll`'s arithmetic; the server defaults to `mp.dll`'s, the
+/// same, on every platform. Only `ts_pm_arith gcc` selects `ts_i386.so`'s.
 #[test]
 fn arith_per_side() {
     assert_eq!(Arith::CLIENT, Arith::Msvc);
-    assert_eq!(Arith::SERVER, if cfg!(windows) { Arith::Msvc } else { Arith::Gcc });
+    assert_eq!(Arith::SERVER_DEFAULT, Arith::CLIENT);
+    assert_eq!(Arith::from_cvar(b"msvc"), Arith::Msvc);
+    assert_eq!(Arith::from_cvar(b""), Arith::Msvc);
+    assert_eq!(Arith::from_cvar(b"1"), Arith::Msvc);
+    assert_eq!(Arith::from_cvar(b"gcc"), Arith::Gcc);
+    assert_eq!(Arith::from_cvar(b" GCC "), Arith::Gcc);
+}
+
+/// The server's default run is the client's prediction, command for command.
+#[test]
+fn server_default_trajectory_is_the_clients() {
+    let server = trajectory_hash(|p| player_move(p, Arith::SERVER_DEFAULT));
+    assert_eq!(server, trajectory_hash(|p| player_move(p, Arith::CLIENT)));
+    assert_ne!(server, trajectory_hash(|p| player_move(p, Arith::from_cvar(b"gcc"))));
 }
 
 /// MSVC's `_ftol` keeps the low dword of a 64-bit `fistp`; GCC's `fistpl` gives 0x80000000.
@@ -736,7 +757,8 @@ fn trajectory_hash(mv: fn(&mut playermove_t)) -> u64 {
     h
 }
 
-/// `ts_i386.so`'s arithmetic, pinned when the movement became generic over the build.
+/// `ts_i386.so`'s arithmetic (the server's `ts_pm_arith gcc`), pinned when the movement became
+/// generic over the build.
 #[test]
 fn server_trajectory_is_unchanged() {
     let h = trajectory_hash(|p| player_move(p, Arith::Gcc));

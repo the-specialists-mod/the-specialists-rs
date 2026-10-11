@@ -201,17 +201,19 @@ pub fn hull_bounds(hull: i32) -> Option<(Vec3, Vec3)> {
     }
 }
 
-/// Quake's `AngleVectors`, computed as TS's server on this platform does ([`Arith::SERVER`]).
-pub fn angle_vectors(angles: Vec3) -> (Vec3, Vec3, Vec3) {
-    match Arith::SERVER {
+/// Quake's `AngleVectors` in the arithmetic of the given TS build (the server's stunt code passes
+/// its `ts_pm_arith` selection, as for [`player_move`]).
+pub fn angle_vectors(arith: Arith, angles: Vec3) -> (Vec3, Vec3, Vec3) {
+    match arith {
         Arith::Gcc => Gcc::angle_vectors(angles),
         Arith::Msvc => Msvc::angle_vectors(angles),
     }
 }
 
 /// Runs one usercmd of movement (`PM_Move`: server 0x101188, client 0x1002e990) with the
-/// arithmetic of the TS build this side replaces: [`Arith::SERVER`] for `pfnPM_Move`,
-/// [`Arith::CLIENT`] for `HUD_PlayerMove`. `pmove->server` is set by the engine.
+/// arithmetic of a TS build: the server's `ts_pm_arith` selection (default
+/// [`Arith::SERVER_DEFAULT`], `mp.dll`'s) for `pfnPM_Move`, [`Arith::CLIENT`] for
+/// `HUD_PlayerMove`. `pmove->server` is set by the engine.
 pub fn player_move(p: &mut playermove_t, arith: Arith) {
     player_move_with(p, arith, None);
 }

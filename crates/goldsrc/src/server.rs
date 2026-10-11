@@ -615,6 +615,15 @@ pub fn cvar_value(c: &cvar_t) -> f32 {
     unsafe { std::ptr::read_volatile(&c.value) }
 }
 
+/// A registered cvar's current string. The engine replaces `string` when the cvar is set, so
+/// copy or compare it before the next engine call.
+pub fn cvar_string(c: &cvar_t) -> &CStr {
+    // SAFETY: `c` is a live reference; the volatile read only stops the compiler caching a pointer the engine replaces.
+    let p = unsafe { std::ptr::read_volatile(&c.string) };
+    // SAFETY: the engine keeps `string` null or a NUL-terminated string it owns until the cvar is next set.
+    unsafe { cstr(p) }
+}
+
 // ---- user messages ---------------------------------------------------------------------------------
 
 /// One `WRITE_*` call held by [`MsgWriter`].

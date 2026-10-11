@@ -184,7 +184,7 @@ fn maybe_blur(cx: &mut Cx, threshold: f32) {
 /// `GetDirection(dir, angles, 0.6, 0.3)` (0x6b008) on the yaw-only basis:
 /// 0 left, 1 right, 2 forward, 3 back.
 pub fn get_direction(dir: Vec3, angles: Vec3, side: f32, back: f32) -> i32 {
-    let (forward, right, _) = shared::pm::angle_vectors([0.0, angles[1], angles[2]]);
+    let (forward, right, _) = shared::pm::angle_vectors(crate::rules::cvars::pm_arith(), [0.0, angles[1], angles[2]]);
     let d = right[0] * dir[0] + right[1] * dir[1] + right[2] * dir[2];
     if d < -side {
         0
