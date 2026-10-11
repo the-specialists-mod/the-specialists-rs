@@ -562,11 +562,17 @@ pub fn draw_names() {
             continue;
         }
         let idx = i as i32 + 1;
-        let name = e.player_info(idx).name;
+        // 0x100232e0: `sprintf("%s", g_PlayerInfoList[i].name)`, the engine's raw bytes.
+        let name = e.player_info(idx).name_bytes;
         let team = crate::hud::with(|h| h.players.get(idx as usize).map_or(0, |p| p.team));
-        let x = (t[0] - (name.len() * 3) as f32) as i32;
-        e.draw_console_string(x, t[1] as i32, tag_color(team), &name);
+        e.draw_console_bytes(tag_x(t[0], &name), t[1] as i32, Some(tag_color(team)), &name);
     }
+}
+
+/// A name tag's left edge (`0x10023308`): the tag's x less 3 per byte of the name (`strlen`),
+/// truncated (`__ftol`).
+fn tag_x(x: f32, name: &[u8]) -> i32 {
+    (x - (name.len() * 3) as f32) as i32
 }
 
 #[cfg(test)]
@@ -588,6 +594,13 @@ mod tests {
         assert_eq!(parse_overview("global { size 3 }", &mut d), Err("size unkown".into()));
         assert_eq!(parse_overview("global zoom", &mut OverviewData::default()), Err("expected { ".into()));
         assert_eq!(OverviewData::default().inset, [4, 4, 240, 180]);
+    }
+
+    #[test]
+    fn tag_x_counts_raw_bytes() {
+        // A name with bytes >= 0x80 (not valid UTF-8): 3 pixels per byte, as `strlen` counts.
+        assert_eq!(tag_x(100.0, b"\xe9t\xe9"), 91);
+        assert_eq!(tag_x(10.5, b"abcd"), -1, "truncated toward zero");
     }
 
     #[test]

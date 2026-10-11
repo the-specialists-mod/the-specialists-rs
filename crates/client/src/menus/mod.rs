@@ -156,6 +156,7 @@ fn add_message(text: &str, rgb: [i32; 3]) {
         cl_thirdperson: 0.0,
         saytext_time: 5.0,
         deathnotice_time: 6.0,
+        key_binding: &hud::state::no_key_binding,
     };
     hud::with(|h| h.add_ts_message(&ctx, text, rgb, 20, 0));
 }

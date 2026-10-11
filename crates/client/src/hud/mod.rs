@@ -254,6 +254,7 @@ fn on_message(m: Msg, buf: &[u8]) {
         cl_thirdperson: input::cvars().cl_thirdperson.value(),
         saytext_time: c.saytext_time.value(),
         deathnotice_time: c.deathnotice_time.value(),
+        key_binding: &|b| e.key_lookup_binding(b),
     };
     let mut fx = Vec::new();
     let ok = with(|h| {

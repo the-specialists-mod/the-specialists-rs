@@ -241,6 +241,18 @@ impl ClEngine {
         cl_eng!(Cmd_Argc())
     }
 
+    /// `Key_LookupBinding`: the name of a key bound to `binding` (the command without its `+`;
+    /// the engine skips a bound command's leading `+` when it compares), or `None` when no key
+    /// is bound. The engine's string is copied out at once. A `binding` with a NUL byte can't be
+    /// passed to C and reads as unbound.
+    pub fn key_lookup_binding(&self, binding: &[u8]) -> Option<Vec<u8>> {
+        let s = std::ffi::CString::new(binding).ok()?;
+        let p = cl_eng!(Key_LookupBinding(s.as_ptr()));
+        // SAFETY: the engine returns null or a NUL-terminated key name it owns; it's copied here,
+        // before any other engine call.
+        (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_bytes().to_vec())
+    }
+
     /// `pfnTextMessageGet` (titles.txt): the message, if the key exists.
     pub fn text_message(&self, name: &str) -> Option<TextMessage> {
         let s = to_cstring(name);

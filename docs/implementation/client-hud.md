@@ -54,6 +54,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `LocaliseTextString` 100348d0, `BufferedLocaliseTextString` 100349a0, `LookupString` 100349c0 | `text::localise_text_string(_in)` (TS's word bytes `A`..`z` and digits, its step budget, the unterminated unknown `#`), `text::buffered_localise` / `localise_with` / `localise` (the shared 0x400-byte buffer: `AddTSMessage`, `ShowMenu`, buy menu, HUD labels), `text::lookup_string` (`TextMsg`: whole-string keys, a negative `effect` picks the destination), `text::lookup` |
 | `MsgFunc_TextMsg` 10034a60 (`StripEndNewlineFromString` 10034a10, `ConvertCRtoNL` 10034a40) | `Hud::apply` (`Msg::TextMsg`) |
 | `CHudMenu::MsgFunc_ShowMenu` 10028760 | `Hud::apply` (`Msg::ShowMenu`) |
+| `KB_ConvertString` 10025740 (only caller: `ShowMenu`, 10028843), `Key_LookupBinding` | `input::kb_convert_string`, through `Ctx::key_binding` (`ClEngine::key_lookup_binding`) |
 | `CHudGeiger` `Init` 1001f450 (`srand(time(NULL))`), `MsgFunc_Geiger` 1001f4a0, `Draw` 1001f4e0 | `hud::init`, `Hud::apply` (`Msg::Geiger`), `hud::geiger::draw` (from `hud::redraw`, before `CHudTrain`) |
 | `CHudDeathNotice` Init 1001afa0, VidInit 1001b000 (`d_skull`), InitHUDData 1001afe0, `Draw` 1001b020, `MsgFunc_DeathMsg` 1001b360; `GetClientColor` 1001af40 | `hud::notice::DeathNotices` (`add`, `draw`, `clear`), `notice::on_death_msg`, `notice::client_color` |
 | `CHudMessage` Init 10028900, VidInit 10028940, Reset 10028980, `FadeBlend` 100289b0, `XPosition`/`YPosition` 10028a50/10028ad0, `MessageScanNextChar` 10028b60, `MessageScanStart` 10028d40, `MessageDrawScan` 10028eb0, `Draw` 100290b0, `MessageAdd` 100293f0, `MsgFunc_HudText` 100295c0, `MsgFunc_GameTitle` 10029610 | `hud::message::HudMessage` and its helpers |
@@ -142,7 +143,7 @@ hooks `VoiceMask` (audible and server-side ban masks) and `ReqState` (answers `V
 | CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Health, Battery, Damage, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
 | Geiger | B | `CHudGeiger`: range = byte × 4, element on for good. Each frame (before `CHudTrain`, not at intermission or under `HIDEHUD_ALL`), with the range in 1..999: CRT `rand` gives the volume (`(r & 127) × scale / 255 + 0.25`), a click when either of two more `rand`s (`& 127`) is under the range's chance (0 past 800, then 2, 4, 8, 8, 28, 40, 60, 80, 90, 95 out of 128 as it falls), and one or two more choose `player/geiger1..3.wav` (`PlaySoundByName`). The CRT `rand` is the one the HudText flicker uses, seeded by `srand(time(NULL))` in `CHudGeiger::Init` |
 | TextMsg | B dest, Str × 5 | `LookupString` on each (a whole-string `#key`; a negative titles `effect` on the first sets the destination), one trailing `\n`/`\r` off each argument, `sprintf(msg, a1..a4)`, `\r` → `\n`; 1 notify console (leading `\x01`), 2 console, 3 chat (`SayTextPrint(…, -1)`), 4 centre print, others nothing; all skipped while `AllowedToPrintText` is false |
-| ShowMenu | S slots, C time, B more, Str | slots and shutoff at once; no slots hides the menu (keeping the "more" flag); otherwise the text starts (or after a "more" chunk extends) the 511-byte prelocalised string, the last chunk localises it whole (`BufferedLocaliseTextString`), and the menu shows after every chunk |
+| ShowMenu | S slots, C time, B more, Str | slots and shutoff at once; no slots hides the menu (keeping the "more" flag); otherwise the text starts (or after a "more" chunk extends) the 511-byte prelocalised string, the last chunk localises it whole (`BufferedLocaliseTextString`) and swaps each `+command` for `[key]`, the key bound to it (`KB_ConvertString`; unbound commands stay as written), and the menu shows after every chunk |
 | VGUIMenu | B id [, Str map] | menu 4's map name goes to `m_sMapName` (63 bytes); every id to `ShowVGUIMenu`: 2 team menu (teamplay only), 4 map briefing (`maps/<m_sMapName>.txt`, or the level's when the name is empty, which then fills it; nothing without the file), 5 MOTD |
 
 ## 3. Cvars and commands
@@ -502,6 +503,13 @@ Checks that only matter on input TS mishandles (TS writes or reads out of bounds
   `%`) and past a 32-byte name stop; a `%p` value outside 0..64 has no name (TS calls
   `GetPlayerInfo` into `g_PlayerInfoList[value]`, out of bounds); `LocaliseTextString`'s output
   is bounded and its `[-1]` terminator (written when the step budget runs out) is skipped.
+* `KB_ConvertString` (`0x10025740`): TS's `isalnum` (`0x1006c45a`) indexes `_pctype` with the
+  sign-extended byte, so a byte 0x80..0xff reads before the table (unrelated data and
+  relocated pointers); the port counts those bytes as not alphanumeric, as the C locale's table
+  does for the bytes it covers. Output past 4095 bytes is dropped (TS writes into its 4096-byte
+  stack buffer unbounded). `ShowMenu` then `strcpy`s the result, like the up-to-1023-byte
+  localised text before it, into the 512-byte `g_szMenuString` (`0x100df918`), running into the
+  globals after it; the port keeps the whole string, as it already did for the localised text.
 
 Undefined in TS:
 * `CHudMessage::Draw` keeps each message's end time in a stack slot that only effects 0-2 write;
@@ -530,12 +538,11 @@ Notes (no observable difference):
 * Server browser, command menu, TFC panels (dropped as allowed by §7). The TFC message values
   (`hud::tfc::ViewportTfc`) are kept for a command menu; `UpdateCommandMenu` (`0x10063840`),
   which the TFC handlers call, has nothing to update.
-* `ShowMenu`'s `KB_ConvertString` (`0x10025740`, called at `0x10028843`: `+command` key names
-  swapped into the menu text) isn't ported; the text is shown as localised.
 * Player names: the HUD, menus and voice code use `PlayerInfo::name_bytes`, the engine's raw
-  bytes, so the kill feed, status bar, crosshair ID, chat, scoreboard, team menu and voice labels
-  draw TS's glyphs for any byte. (`PlayerInfo::name`, decoded as UTF-8, is left for the other
-  packages.)
+  bytes, so the kill feed, status bar, crosshair ID, chat, scoreboard, team menu, voice labels,
+  HLTV name tags (`0x100232e0`: `sprintf("%s", name)`, 3 pixels left per byte) and the
+  spectator panel's target name (`0x10063952`) draw TS's glyphs for any byte. No client code
+  reads `PlayerInfo::name` (decoded as UTF-8) any more.
 * `HUD_UpdateClientData` runs `CHud::Think`'s zoom easing and writes the eased FOV
   (`view::update_client_data` → `hud::think_fov`), as TS's `CHud::UpdateClientData` does.
 * The death-cam / `cl_thirdpersonswitch` / `Spectator` camera switches run TS's `thirdperson`
@@ -560,7 +567,11 @@ Notes (no observable difference):
   bytes and shared buffer, `LookupString` (`hud::text::tests`); `TextMsg` destinations,
   `ShowMenu` chunks, `VGUIMenu` ids, `ScoreInfo`'s team clamp and `Geiger` (`hud::state::tests`);
   the Geiger click/volume/sample choice on the CRT sequence (`hud::geiger::tests`); the TFC and
-  `SecAmmo*` values (`hud::tfc::tests`); `HudText`/`ResetHUD` through `Hud::apply`.
+  `SecAmmo*` values (`hud::tfc::tests`); `HudText`/`ResetHUD` through `Hud::apply`. Issue #103
+  added `KB_ConvertString`'s name scan, lookups, NUL end and bounds
+  (`input::tests::kb_convert_string_swaps_bound_commands`), `ShowMenu`'s key names
+  (`hud::state::tests::show_menu_key_names`) and the name tag's raw-byte offset
+  (`spectator::overview::tests::tag_x_counts_raw_bytes`).
   The VGUI panels have their own: scheme parsing and colour defaults,
   bitmap-font metrics and wrapping, TGA alpha rules (also on the shipped `gfx/vgui` icons when
   installed), panel clipping/insets/borders, label alignment and `XRES`/`YRES` truncation;

@@ -256,6 +256,56 @@ pub fn binding_is_gated(binding: &str) -> bool {
     GATED_BINDINGS.contains(&binding)
 }
 
+/// `KB_ConvertString` (`0x10025740`, SDK input.cpp; TS's only caller is `ShowMenu` at
+/// `0x10028843`): each `+command` in `text` becomes `[key]`, the name of the key bound to it
+/// (`Key_LookupBinding(command)`, the name without its `+`), or stays as written when nothing is
+/// bound. The command is the `+` and the alphanumerics after it (`isalnum`, `0x1006c45a`), at
+/// most 63 bytes; a longer run goes on as plain text. A lone `+` isn't looked up. The text ends
+/// at the first NUL, as TS's C string does.
+///
+/// Out-of-bounds guards: TS's `isalnum` indexes `_pctype` with the sign-extended byte, so a
+/// byte >= 0x80 reads memory before the table; here it is not alphanumeric (as the C locale's
+/// table says for the in-bounds bytes). TS writes into a 4096-byte stack buffer with no bound;
+/// here output past 4095 bytes is dropped.
+pub fn kb_convert_string(text: &[u8], lookup: &dyn Fn(&[u8]) -> Option<Vec<u8>>) -> Vec<u8> {
+    const SZ: usize = 4096;
+    let at = |i: usize| text.get(i).copied().unwrap_or(0);
+    let mut out = Vec::with_capacity(text.len());
+    let mut put = |b: u8| {
+        if out.len() < SZ - 1 {
+            out.push(b);
+        }
+    };
+    let mut p = 0;
+    while at(p) != 0 {
+        if at(p) != b'+' {
+            put(at(p));
+            p += 1;
+            continue;
+        }
+        // 0x1002578b: copy while (isalnum(*p) || pEnd == binding) && pEnd - binding < 63.
+        let mut binding = Vec::new();
+        while (at(p).is_ascii_alphanumeric() || binding.is_empty()) && binding.len() < 63 {
+            binding.push(at(p));
+            p += 1;
+            if at(p) == 0 {
+                break;
+            }
+        }
+        // 0x100257c7: `strlen(binding + 1)`; only a non-empty name is looked up.
+        let key = if binding.len() > 1 { lookup(&binding[1..]) } else { None };
+        match key {
+            Some(k) => {
+                put(b'[');
+                k.iter().take_while(|&&c| c != 0).for_each(|&c| put(c));
+                put(b']');
+            }
+            None => binding.iter().for_each(|&c| put(c)),
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------------------------
 // Cvars
 
@@ -1007,6 +1057,38 @@ fn menu_hold(held: Option<[f32; 3]>, last_set: Option<[f32; 3]>, engine: [f32; 3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `KB_ConvertString` (`0x10025740`).
+    #[test]
+    fn kb_convert_string_swaps_bound_commands() {
+        let looked_up = std::cell::RefCell::new(Vec::new());
+        let bind = |b: &[u8]| {
+            looked_up.borrow_mut().push(b.to_vec());
+            match b {
+                b"attack" => Some(b"MOUSE1".to_vec()),
+                b"use" => Some(b"e".to_vec()),
+                _ => None,
+            }
+        };
+        let conv = |t: &[u8]| kb_convert_string(t, &bind);
+        // The name is looked up without its `+` and ends at the first non-alphanumeric byte.
+        assert_eq!(conv(b"1. +attack!\n2. +use+use"), b"1. [MOUSE1]!\n2. [e][e]");
+        assert_eq!(*looked_up.borrow(), [b"attack".to_vec(), b"use".to_vec(), b"use".to_vec()]);
+        looked_up.borrow_mut().clear();
+        // Unbound names stay; a lone `+` (or `++`) isn't looked up; `_` and `-` end a name.
+        assert_eq!(conv(b"+jump + ++ +a_b +x-y"), b"+jump + ++ +a_b +x-y");
+        assert_eq!(*looked_up.borrow(), [b"jump".to_vec(), b"a".to_vec(), b"x".to_vec()]);
+        looked_up.borrow_mut().clear();
+        // Bytes >= 0x80 are not alphanumeric (the guarded `_pctype` read); text ends at a NUL.
+        assert_eq!(conv(b"+use\xe9 a\0+use"), b"[e]\xe9 a");
+        // At most 63 bytes (with the `+`) make the name; the rest is plain text.
+        let long = [b"+".as_slice(), &[b'a'; 70]].concat();
+        looked_up.borrow_mut().clear();
+        assert_eq!(conv(&long), long);
+        assert_eq!(*looked_up.borrow(), [vec![b'a'; 62]]);
+        // The 4096-byte output buffer: output past 4095 bytes is dropped (TS overflows it).
+        assert_eq!(conv(&b"+use".repeat(2000)).len(), 4095);
+    }
 
     /// `KB_Init`/`KB_Find`/`KB_Shutdown` (`0x10025930`/`0x10025880`/`0x10025970`): only the three
     /// buttons TS lists are found, case-insensitively, and none after the shutdown.

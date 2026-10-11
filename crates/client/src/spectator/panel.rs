@@ -56,7 +56,11 @@ pub(super) fn update() {
     let (mode, target) = state::with(|s| (s.spec_mode, s.spec_target));
     let nohud = crate::input::cvars().nohud.value() as i32;
     let e = engine();
-    let name = (target >= 1 && target <= e.max_clients()).then(|| e.player_info(target).name).filter(|n| !n.is_empty());
+    // 0x10063952: `g_PlayerInfoList[target].name`, the engine's raw bytes (one char per byte
+    // here, as the localiser and the label draw take them).
+    let name = (target >= 1 && target <= e.max_clients())
+        .then(|| crate::hud::saytext::string(&e.player_info(target).name_bytes))
+        .filter(|n| !n.is_empty());
     let (mode_text, help) = texts(mode, nohud, spec::is_spectate_only(), name.as_deref());
     with(|s| {
         let p = &mut s.panel;
@@ -112,10 +116,10 @@ pub(super) fn draw() {
             .is_some_and(|(tw, _)| vgui::draw_text_clipped(scheme, north_x(w, tw), ly, fg, &bytes, (0, ly, w, lh)));
         if !drawn {
             // No bitmap font at all (the game files are missing): the console font, centred.
-            let text = text.trim_end_matches(['\r', '\n']);
-            let (tw, _) = e.console_string_size(text);
+            let text = crate::hud::saytext::bytes(text.trim_end_matches(['\r', '\n']));
+            let (tw, _) = e.console_bytes_size(&text);
             let c = [fg[0] as f32 / 255.0, fg[1] as f32 / 255.0, fg[2] as f32 / 255.0];
-            e.draw_console_string(north_x(w, tw), ly, c, text);
+            e.draw_console_bytes(north_x(w, tw), ly, Some(c), &text);
         }
     }
 }

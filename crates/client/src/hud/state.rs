@@ -123,6 +123,13 @@ pub struct Ctx<'a> {
     /// `hud::notice::on_death_msg`, which reads the cvar itself); kept so callers building a
     /// `Ctx` elsewhere (the menus) stay unchanged.
     pub deathnotice_time: f32,
+    /// `Key_LookupBinding` (`gEngfuncs` slot `0x100d5c4c`), for `ShowMenu`'s `KB_ConvertString`.
+    pub key_binding: &'a dyn Fn(&[u8]) -> Option<Vec<u8>>,
+}
+
+/// A [`Ctx::key_binding`] with no key bound to anything.
+pub fn no_key_binding(_: &[u8]) -> Option<Vec<u8>> {
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -808,7 +815,10 @@ impl Hud {
                 self.menu.pending.push_str(&v.text);
                 self.menu.pending = self.menu.pending.chars().take(0x1ff).collect();
                 if v.more == 0 {
-                    self.menu.text = localise_with(ctx.titles, &self.menu.pending);
+                    // 0x10028843: `KB_ConvertString` swaps each `+command` for its key, and TS
+                    // always takes the result.
+                    let text = super::saytext::bytes(&localise_with(ctx.titles, &self.menu.pending));
+                    self.menu.text = super::saytext::string(&crate::input::kb_convert_string(&text, ctx.key_binding));
                 }
                 self.menu.displayed = true;
                 self.menu.waiting = v.more != 0;
@@ -901,6 +911,7 @@ mod tests {
             cl_thirdperson: 0.0,
             saytext_time: 5.0,
             deathnotice_time: 6.0,
+            key_binding: &no_key_binding,
         }
     }
 
@@ -1092,6 +1103,20 @@ mod tests {
         assert!(!h.menu.displayed && h.menu.waiting);
         h.apply(Msg::ShowMenu, &ShowMenu { slots: 1, time: 0, more: 0, text: "y".into() }.encode(), &c, &mut fx);
         assert_eq!(h.menu.text, "x".repeat(511), "waiting: appended to the full old string, and cut again");
+    }
+
+    /// `ShowMenu` runs `KB_ConvertString` (`0x10028843`) on the localised text.
+    #[test]
+    fn show_menu_key_names() {
+        let s = Screen::default();
+        let bind = |b: &[u8]| (b.eq_ignore_ascii_case(b"use")).then(|| b"e".to_vec());
+        let c = Ctx { key_binding: &bind, ..ctx(&s) };
+        let mut h = Hud::default();
+        let mut fx = Vec::new();
+        h.apply(Msg::ShowMenu, &ShowMenu { slots: 1, time: 0, more: 0, text: "Press +use or +jump".into() }.encode(), &c, &mut fx);
+        assert_eq!(h.menu.text, "Press [e] or +jump");
+        h.apply(Msg::ShowMenu, &ShowMenu { slots: 1, time: 0, more: 0, text: "+use".into() }.encode(), &ctx(&s), &mut fx);
+        assert_eq!(h.menu.text, "+use", "unbound: as written");
     }
 
     #[test]
