@@ -2,7 +2,7 @@
 
 This repository ports **The Specialists 3.0** (TS) to Rust: the server game library
 (`ts_i386.so`/`mp.dll`) and the client library (`client.dll`). The source of truth for behaviour
-is the decompilation in [the-specialists-decomp](https://github.com/CrunchyMonkies/the-specialists-decomp)
+is the decompilation in [the-specialists-decomp](https://github.com/the-specialists-mod/the-specialists-decomp)
 (referred to below as **the decomp**). Its `docs/` describe every subsystem with addresses,
 constants, and payloads; this document says how those pieces are organised in Rust.
 

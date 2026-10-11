@@ -2,7 +2,7 @@
 
 A Rust port of **The Specialists 3.0** (TS), the GoldSrc/Half-Life mod: both game libraries,
 the server (`mp.dll` / `ts_i386.so`) and the client (`client.dll`). It's ported from the
-decompilation in [the-specialists-decomp](https://github.com/CrunchyMonkies/the-specialists-decomp)
+decompilation in [the-specialists-decomp](https://github.com/the-specialists-mod/the-specialists-decomp)
 and is **wire-compatible with TS 3.0**: the original TS client can join this server, and this
 client speaks the same protocol.
 

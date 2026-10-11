@@ -94,7 +94,7 @@ pub fn readme(commit: &str, date: &str, overlay: &[String]) -> String {
          {others} come from the port too. Everything else\n\
          (engine, valve/, TS 3.0 maps, models, sounds) is the stock content.\n\
          \n\
-         Source: https://github.com/CrunchyMonkies/rust-hlmod-the-specialists\n"
+         Source: https://github.com/the-specialists-mod/the-specialists-rs\n"
     );
     text.replace('\n', "\r\n")
 }
@@ -263,7 +263,7 @@ mod tests {
         assert!(r.contains("commit abc1234 2026-10-12 (cargo xtask dist --release, windows-i686),\r\n"));
         assert!(r.contains("Run:   run_ts.cmd   (xash3d.exe -game ts -console)\r\n"));
         assert!(r.contains("ts/delta.lst, ts/gameinfo.txt and ts/liblist.gam come from the port too."));
-        assert!(r.ends_with("Source: https://github.com/CrunchyMonkies/rust-hlmod-the-specialists\r\n"));
+        assert!(r.ends_with("Source: https://github.com/the-specialists-mod/the-specialists-rs\r\n"));
         assert!(!r.replace("\r\n", "").contains('\n'), "every line ends in CRLF");
     }
 }
