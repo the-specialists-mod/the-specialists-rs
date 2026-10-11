@@ -114,7 +114,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `HUD_TempEntUpdate` | `0x1001bd00`, `0x100569a0` | `effects::tempents::update` | done (SDK loop, ts-scaled, TS shell sounds) |
 | `HUD_StudioEvent` | `0x10044b50` | `effects::studio_event` | done (5002, 5004) |
 | `DrawLocalLaser` / `DrawOtherLasers` / flashlights | `0x1003bb00` / `0x1003d600` / `0x1003b250` / `0x1003b750` | `effects::laser` | done (untested: needs server state). Drawn in TS's order (local laser, other lasers, local flashlight, other flashlights); other players' lasers need both `laserdot.spr` and `laserbeam.spr` |
-| `DrawPlayerShadows` | `0x10055760` | `laser::draw_shadows` | done, verified in game. Any non-zero `cl_shadow` (negative too) draws them |
+| `DrawPlayerShadows` / `DrawPlayerShadow` | `0x10055760` / `0x10055500` | `laser::draw_shadows` | done. Any non-zero `cl_shadow` (negative too) draws them, in one TransAlpha batch: under the view in first person (not observing, `cl_shadow` exactly 1; distance less 12) and under every player `HUD_AddEntity` found visible; each a `PM_NORMAL` point-hull trace 8192 down ignoring physent = the player's index, a 24-unit quad facing `VecToAngles(normal)` one unit off the floor, alpha `1 − d·0.005` below 200 units |
 | `DrawScopeOverlay` | `0x10054510` | `effects::scope` | done (not yet checked in engine) |
 | `FX_ApplyCvar` / `FX_AdaptQuality` | `0x10057d50` / `0x10057a70` | `effects::apply_cvar` / `effects::adapt_quality` (from `draw_transparent`) | done |
 | view-model framerate x time scale | `StudioDrawModel` `0x10031b44..0x10031bf4` | `studio::view_model_rate`, `Renderer::latch_view_model_rate` (in `draw_model`, as TS) | done, unit-tested |
@@ -409,7 +409,7 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   are never set in 3.0 and aren't ported. The pool, sprite cache, client bullets, emitters and
   motion-blur trails are not reset by `HUD_VidInit` or a level change; the first `TS_DrawEffects`
   after `HUD_VidInit` rebuilds the pool and the sprite cache, and a level change only reloads the
-  emitters, templates and fog and restarts the emitter clock (`0x1003abb4..`).
+  emitters, templates and fog and restarts the emitter clock (`0x1003ab8e..0x1003abc3`).
 * **Quads** (`Quad_Build` `0x10050080`): a resting particle is a screen billboard whatever its
   `follow_view`. A stretched quad runs head (v = 0) to tail, `radius·(toCam̂ × vel̂)` wide, so it
   narrows as the velocity turns toward the camera; `follow_view` 3 uses `followaxis` unnormalised

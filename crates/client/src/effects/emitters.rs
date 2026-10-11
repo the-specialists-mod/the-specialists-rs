@@ -303,21 +303,24 @@ impl MapFx {
         let ents = parse_entities(text);
         let mut fx = MapFx::default();
         // pass 1: templates
-        for e in ents.iter().filter(|e| classname(e) == "ts_particle").take(512) {
+        for e in ents.iter().filter(|e| classname(e).eq_ignore_ascii_case("ts_particle")).take(512) {
             fx.templates.push(Template::from_kv(e));
         }
+        // `0x1003a820`: the first template whose targetname matches, case-insensitively; an
+        // empty name matches an unnamed template.
         let names: Vec<String> = fx.templates.iter().map(|t| t.targetname.clone()).collect();
+        let lookup = |name: &str| names.iter().position(|n| n.eq_ignore_ascii_case(name));
         for t in &mut fx.templates {
-            t.target_index = (!t.target.is_empty()).then(|| names.iter().position(|n| *n == t.target)).flatten().map(|i| i as u16);
+            t.target_index = lookup(&t.target).map(|i| i as u16);
         }
         // pass 2: emitters, linked to the template whose targetname == particle
-        for e in ents.iter().filter(|e| classname(e) == "ts_emitter").take(512) {
+        for e in ents.iter().filter(|e| classname(e).eq_ignore_ascii_case("ts_emitter")).take(512) {
             let mut em = Emitter::from_kv(e);
-            em.template = names.iter().position(|n| *n == em.particle);
+            em.template = lookup(&em.particle);
             fx.emitters.push(em);
         }
-        // pass 3: fog
-        if let Some(e) = ents.iter().find(|e| classname(e) == "ts_fog") {
+        // pass 3: fog. Every `ts_fog` overwrites the last (`0x1003a7f0`), so the last one counts.
+        if let Some(e) = ents.iter().rev().find(|e| classname(e).eq_ignore_ascii_case("ts_fog")) {
             let mut f = Fog::default();
             for (k, val) in e.iter() {
                 match k.as_str() {

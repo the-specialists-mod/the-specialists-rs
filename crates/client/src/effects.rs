@@ -413,7 +413,7 @@ pub fn frame(time: f64, frametime: f64) {
                 if fxmap.fog.is_some() { ", fog" } else { "" }
             ));
         }
-        // TS resets the emitters, templates, fog and the emitter clock here (0x1003abb4..), not
+        // TS resets the emitters, templates, fog and the emitter clock here (0x1003ab8e..0x1003abc3), not
         // the particle pool or the client bullets.
         with(|fx| {
             fx.fog = fxmap.fog;

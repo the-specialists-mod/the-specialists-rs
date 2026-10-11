@@ -29,7 +29,7 @@ pub const ORIENT_AXIS: u8 = 3;
 pub const ONCOLLIDE_BLOOD: u8 = 4;
 
 /// What a particle's collision callback (`+0x11c`) asks the caller to do, run inside the
-/// particle pass at the moment TS calls it (`0x10052043`), so the particles it spawns land in
+/// particle pass at the moment TS calls it (`0x10052093`), so the particles it spawns land in
 /// the pool (and are walked this frame if their slot lies ahead) and the engine random numbers
 /// come in TS's order.
 pub enum Collision {
