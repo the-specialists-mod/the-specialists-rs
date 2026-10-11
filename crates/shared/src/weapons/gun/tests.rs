@@ -435,7 +435,9 @@ fn kungfu_punch_and_bar() {
     assert_eq!(h.shakes, vec![20.0 * 0.35]);
     let cc: Vec<_> = h.events.iter().filter(|e| e.0 == Event::CloseCombat).collect();
     assert_eq!(cc[0].1.i1, 1);
-    assert_eq!(cc[0].1.i2, 23);
+    // A fresh punch: set A index 4 on the wire (0x7643e), move 23 kept for the combos.
+    assert_eq!(cc[0].1.i2, 4);
+    assert_eq!(g.last_melee_anim, 23);
     assert!((g.next_primary - 0.35 + 0.01).abs() < 0.02);
     // block costs 33 power
     for _ in 0..60 {
@@ -447,6 +449,62 @@ fn kungfu_punch_and_bar() {
     // the bar regenerates at 15/s
     g.pre_frame(1.0, true);
     assert!((g.melee_bar - 82.0).abs() < 1e-4);
+}
+
+/// One kung-fu attack with the timers cleared; returns the close-combat event's (i1, i2).
+fn kungfu_move(g: &mut Gun, h: &mut Mock, buttons: u32, pressed: u32) -> (i32, i32) {
+    g.next_attack = 0.0;
+    g.next_primary = 0.0;
+    g.next_secondary = 0.0;
+    h.buttons = buttons;
+    h.pressed = pressed;
+    h.events.clear();
+    g.ccombat_attack(h);
+    let cc: Vec<_> = h.events.iter().filter(|e| e.0 == Event::CloseCombat).collect();
+    assert_eq!(cc.len(), 1);
+    (cc[0].1.i1, cc[0].1.i2)
+}
+
+/// The close-combat event's `i2` is TS's set A index (`CCombatAttack` 0x762d7..0x76997, pushed at
+/// 0x76daa), not the move id the combos chain on.
+#[test]
+fn kungfu_view_anim_indices() {
+    let mut g = Gun::default();
+    let mut h = Mock { flags: 0x200, ..Default::default() };
+    // Punches on the ground: fresh 4, held jabs 3, the fourth in a row the heavy punch 11.
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK, IN_ATTACK), (1, 4));
+    for _ in 0..3 {
+        assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK, 0), (1, 3));
+        assert_eq!(g.last_melee_anim, 22);
+    }
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK, 0), (1, 11));
+    assert_eq!(g.last_melee_anim, 25);
+    // Kicks on the ground: held 9 (moves 11/12), pressed 10 (moves 10/13/14/15).
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK2, 0), (2, 9));
+    assert!(matches!(g.last_melee_anim, 11 | 12));
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK2, IN_ATTACK2), (2, 10));
+    assert!(matches!(g.last_melee_anim, 10 | 13 | 14 | 15));
+    // Uppercut 6, back kick 7.
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK2 | IN_DUCK, IN_ATTACK2), (2, 6));
+    assert_eq!(g.last_melee_anim, 20);
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK2 | IN_BACK, IN_ATTACK2), (3, 7));
+    assert_eq!(g.last_melee_anim, 17);
+    // Airborne: punch 5, fast kick 10, flying kick 8.
+    h.flags = 0;
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK, IN_ATTACK), (1, 5));
+    assert_eq!(g.last_melee_anim, 24);
+    h.velocity = [250.0, 0.0, 0.0];
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK2, IN_ATTACK2), (2, 10));
+    assert!(matches!(g.last_melee_anim, 15 | 18 | 19));
+    h.velocity = [300.0, 0.0, 0.0];
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK2 | IN_DUCK, IN_ATTACK2), (2, 8));
+    assert_eq!(g.last_melee_anim, 16);
+    // A stunt punch: index 4, move -1.
+    h.flags = 0x200;
+    h.velocity = [0.0; 3];
+    h.iuser4 = STUNTING_KUNGFU;
+    assert_eq!(kungfu_move(&mut g, &mut h, IN_ATTACK, IN_ATTACK), (1, 4));
+    assert_eq!(g.last_melee_anim, -1);
 }
 
 #[test]

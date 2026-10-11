@@ -275,14 +275,16 @@ pub fn katana(a: &Args) {
     blade_anim(a, flesh, || set_a(34).get(a.i1 as usize).copied().unwrap_or(0));
 }
 
-/// `EV_TS_CloseCombat` (`0x10043200`): kung-fu block (`i1` 0) or attack (`i1` 1..3, `i2` anim).
+/// `EV_TS_CloseCombat` (`0x10043200`): block (`i1` 0, `f1` the weapon id) or kung-fu attack (`i1`
+/// 1..3, `f1` 0). For both, the view owner plays set A of weapon `f1` at index `i2`, body 0
+/// (`0x100433bb..0x10043401`), before the block sound or the attack's trace.
 pub fn close_combat(a: &Args) {
+    if a.is_view_owner() {
+        r::weapon_animation(close_combat_seq(&set_a(a.f1 as i32), a.i2), 0);
+    }
     if a.i1 == 0 {
         sound(a, CHAN_WEAPON, "player/block.wav", melee_vol());
         return;
-    }
-    if a.is_local() && a.i2 > 0 {
-        r::weapon_animation(a.i2, 0);
     }
     if let Some((pos, n, tex)) = melee_trace(a, 48.0) {
         melee_material_sound(tex, pos);
@@ -291,6 +293,12 @@ pub fn close_combat(a: &Args) {
         }
     }
     sound(a, CHAN_WEAPON, "player/closecombat.wav", melee_vol());
+}
+
+/// The close-combat view sequence: `set[i2]`. TS reads it unchecked (`movswl 0x252(%ebx,%edi,2)`);
+/// the servers send 0..11 for attacks and 1 or 0x12 for blocks, so out of range plays sequence 0.
+fn close_combat_seq(set: &[i16; 29], i2: i32) -> i32 {
+    usize::try_from(i2).ok().and_then(|i| set.get(i)).copied().unwrap_or(0) as i32
 }
 
 /// `EV_TS_ColdCock` (`0x10043800`): stock hit, set A `[28]` for the view owner (`0x10043a30`),
@@ -306,4 +314,24 @@ pub fn coldcock(a: &Args) {
         }
     }
     sound(a, CHAN_WEAPON, "player/closecombat.wav", melee_vol());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_combat_plays_set_a_at_the_index() {
+        // Kung-fu attacks (f1 0): the server's indices 3..11 into set A.
+        let kf = set_a(0);
+        assert_eq!(close_combat_seq(&kf, 3), 2); // jab
+        assert_eq!(close_combat_seq(&kf, 4), 10); // straight punch, stunt punch
+        assert_eq!(close_combat_seq(&kf, 11), 7); // heavy punch
+        // Blocks: kung fu sends 1, a weapon 0x12 with f1 = its id.
+        assert_eq!(close_combat_seq(&kf, 1), 4);
+        assert_eq!(close_combat_seq(&set_a(34), 0x12), set_a(34)[0x12] as i32);
+        // Out of range (the port's old 10..25 move ids, -1) falls back to sequence 0.
+        assert_eq!(close_combat_seq(&kf, -1), 0);
+        assert_eq!(close_combat_seq(&kf, 29), 0);
+    }
 }

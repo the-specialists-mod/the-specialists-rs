@@ -261,7 +261,8 @@ pub struct Gun {
     pub last_shot: f32,
     /// `pl+0x778`: recoil spread penalty (max 0.1).
     pub spread_penalty: f32,
-    /// `gun+0x9fc` / `+0xa00` / `+0xa04`: punch combo, kick combo, last melee view anim.
+    /// `gun+0x9fc` / `+0xa00` / `+0xa04`: punch combo, kick combo, last melee move (the kung-fu
+    /// move id 10..25 or -1 that chains the kick combos, not the event's anim index).
     pub punch_combo: i32,
     pub kick_combo: i32,
     pub last_melee_anim: i32,
@@ -1273,7 +1274,11 @@ impl Gun {
         let mut reach = if backward { 3 } else { 2 };
         // attack type (event iparam1): 0 none, 1 punch, 2 kick, 3 running back kick
         let mut atype = 0;
-        let mut view_anim = 0; // event iparam2, index into the kung-fu sequence table
+        // The move's id, kept in `last_melee_anim` (TS `this+0xa04`) to chain the kick combos.
+        let mut move_id = 0;
+        // Event iparam2: an index into the kung-fu anim set A, which the client plays (0x762d7..
+        // 0x76997, pushed at 0x76daa; the client copy picks the same, 0x1000b0b0..0x1000b4ea).
+        let mut view_anim = 0;
         let mut dmg = 0.0f32;
         let mut delay = 0.6f32; // next attack
         let mut block_time = 0.0f32; // BlockPlayer(block_time * 0.75) for ground kicks
@@ -1291,7 +1296,8 @@ impl Gun {
         };
 
         if stunting {
-            view_anim = -1;
+            move_id = -1;
+            view_anim = 4;
             delay = 0.55;
             block_time = 0.15;
             dmg = 15.0;
@@ -1306,14 +1312,16 @@ impl Gun {
                     dmg = 35.0;
                     atype = 2;
                     block_after = true;
-                    view_anim = 20;
+                    move_id = 20;
+                    view_anim = 6;
                     panim = 45;
                     delay = 1.0;
                     block_time = 0.35;
                     reach = 2;
                 } else if backward {
                     atype = 3;
-                    view_anim = 17;
+                    move_id = 17;
+                    view_anim = 7;
                     dmg = (speed * 0.303_030_3).clamp(15.0, 80.0);
                     panim = 55;
                     if on_ground {
@@ -1332,7 +1340,8 @@ impl Gun {
                         panim = 45;
                         delay = 1.0;
                         block_time = 0.25;
-                        view_anim = 16;
+                        move_id = 16;
+                        view_anim = 8;
                         stand_fix = false;
                     } else if on_ground || speed <= 200.0 {
                         block_after = true;
@@ -1342,7 +1351,8 @@ impl Gun {
                             block_time = 0.3;
                             self.kick_combo = 0;
                             let mut r = |lo, hi| host.random_long(lo, hi);
-                            view_anim = pick(&mut r, self.last_melee_anim, &[(15, 10), (10, 14), (14, 13), (13, 15)], &[14, 13, 10, 15]);
+                            move_id = pick(&mut r, self.last_melee_anim, &[(15, 10), (10, 14), (14, 13), (13, 15)], &[14, 13, 10, 15]);
+                            view_anim = 10;
                             dmg = 25.0;
                         } else {
                             self.kick_combo += 1;
@@ -1350,7 +1360,8 @@ impl Gun {
                             block_time = 0.2;
                             dmg = 15.0;
                             let mut r = |lo, hi| host.random_long(lo, hi);
-                            view_anim = pick(&mut r, self.last_melee_anim, &[(11, 12), (12, 11)], &[11, 12]);
+                            move_id = pick(&mut r, self.last_melee_anim, &[(11, 12), (12, 11)], &[11, 12]);
+                            view_anim = 9;
                         }
                     } else {
                         // airborne speed kick
@@ -1360,20 +1371,23 @@ impl Gun {
                         delay = 0.75;
                         block_time = 0.25;
                         let mut r = |lo, hi| host.random_long(lo, hi);
-                        view_anim = pick(&mut r, self.last_melee_anim, &[(15, 19), (19, 18), (18, 15)], &[19, 18, 15]);
+                        move_id = pick(&mut r, self.last_melee_anim, &[(15, 19), (19, 18), (18, 15)], &[19, 18, 15]);
+                        view_anim = 10;
                     }
                 }
             }
         } else {
             // punches
             if !on_ground {
-                view_anim = 24;
+                move_id = 24;
+                view_anim = 5;
                 delay = 0.5;
                 block_time = 0.15;
                 dmg = 25.0;
                 self.punch_combo = 0;
             } else if self.punch_combo > 2 || (buttons & IN_DUCK != 0 && host.flags() & FL_DUCKING == 0) {
-                view_anim = 25;
+                move_id = 25;
+                view_anim = 11;
                 delay = 0.65;
                 block_time = 0.15;
                 dmg = 30.0;
@@ -1383,12 +1397,14 @@ impl Gun {
                 delay = 0.35;
                 block_time = 0.15;
                 self.punch_combo = 0;
-                view_anim = 23;
+                move_id = 23;
+                view_anim = 4;
                 dmg = 20.0;
             } else {
                 // held: fast jabs (the combo counter leads to the heavy punch)
                 self.punch_combo += 1;
-                view_anim = 22;
+                move_id = 22;
+                view_anim = 3;
                 delay = 0.25;
                 block_time = 0.1;
                 dmg = 10.0;
@@ -1403,7 +1419,7 @@ impl Gun {
                 // leave a wall climb
                 host.set_iuser4(iuser4 & !0x20000 & !0x4);
             }
-            self.last_melee_anim = view_anim;
+            self.last_melee_anim = move_id;
             // Client: the base damage x 0.35 (0x1000b5c7, constant 0x1007a8a8); the client copy
             // picks the same per-attack values (0x1000b09f..0x1000b4e4).
             host.view_shake(dmg * 0.35);
