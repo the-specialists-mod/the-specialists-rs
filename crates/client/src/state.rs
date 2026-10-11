@@ -63,6 +63,11 @@ pub struct Shared {
     /// 2 laser, 4 flashlight, 8 scope), active items `vuser1[2]` (`local_items`), firemode `vuser3[1]`, clip.
     pub attachments: i32,
     pub local_items: i32,
+    /// `CHudTSWeapons+0x14` (`0x100d0cb4`) as the last HUD draw left it: the local player's
+    /// `ActItems` bits (0x40 = akimbo) while a weapon is held, else 0. TS's local laser and
+    /// flashlight read this, not the predicted `local_items` (which has no akimbo bit). Written by
+    /// `hud::weapons::draw`, read by `effects::laser` in the next frame's transparent pass.
+    pub hud_items: i32,
     pub firemode: i32,
     pub clip: i32,
     pub reserve_ammo: i32,

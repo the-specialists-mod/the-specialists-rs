@@ -630,17 +630,17 @@ pub fn draw_transparent() {
     let cam = view::camera();
     let ts = state::with(|s| s.time_scale);
     let third = view::is_third_person();
-    let (laser_mode, color, shadow) = (cvar(|c| c.laser), cvar(|c| c.lasercolor) as i32, cvar(|c| c.shadow));
+    let (laser_mode, shadow) = (cvar(|c| c.laser), cvar(|c| c.shadow));
     let visible = with(|fx| fx.visible);
     if cam_hardware() {
         laser::draw_shadows(&cam, &visible, shadow, third);
     }
     // `0x1003de00` (local laser, other lasers), then `0x1003bad0` (local flashlight, others').
-    let now = now();
-    laser::draw_local_laser(&cam, now, laser_mode, color);
-    laser::draw_other_lasers(&cam, &visible);
+    let (now, frametime) = (now(), with(|fx| fx.frametime));
+    laser::draw_local_laser(&cam, now, frametime, laser_mode);
+    laser::draw_other_lasers(&cam, &visible, now, frametime);
     laser::draw_local_flashlight(&cam);
-    laser::draw_other_flashlights(&visible);
+    laser::draw_other_flashlights(&cam, &visible);
 
     let players = react_players();
     with(|fx| {

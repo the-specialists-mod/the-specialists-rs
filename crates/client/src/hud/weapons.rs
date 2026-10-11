@@ -216,6 +216,7 @@ pub fn think_sounds(_dt: f32) {
 pub fn draw(dc: &Dc, nohud: bool) {
     let hidden = super::dead_or_observer();
     let items = super::with(|h| items_flags(h, nohud, hidden));
+    crate::state::with(|s| s.hud_items = items);
     draw_laser_dots(dc, items);
     if nohud || hidden {
         return;

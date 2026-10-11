@@ -360,6 +360,20 @@ fn fire_pump(a: &Args) {
 /// `0x1003f579`) but smokes once, at the `b1` gun (`0x1003f5cc..0x1003f70b`). Akimbo has no
 /// pellet spray.
 fn fire_akimbo(a: &Args, linked: bool) {
+    super::fx_log(|| {
+        format!(
+            "akimbo shot #{} weapon {} {}",
+            a.entindex,
+            a.i1,
+            if linked {
+                "linked"
+            } else if a.b1 != 0 {
+                "gun b1"
+            } else {
+                "gun b0"
+            }
+        )
+    });
     let s = Shot::new(a);
     let pellets = tables().weapon(s.id as u8).map_or(1, |w| w.pellets);
     muzzle_light(a, &s);

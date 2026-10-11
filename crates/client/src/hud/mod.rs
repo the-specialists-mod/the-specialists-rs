@@ -439,6 +439,21 @@ fn register_cvars() -> HudCvars {
     }
 }
 
+/// `cancelselect` (`UserCmd_Close` `0x1001a4e0`, the engine's hard binding for Escape): closes
+/// the weapon menu with `common/wpn_hudoff.wav`, otherwise sends `escape` to the engine, which
+/// opens the main menu. On Steam GoldSrc and FWGS 0.21 that is the only way Escape reaches the
+/// menu in game: the engine runs the key's binding instead of opening the menu itself (newer
+/// FWGS opens it before the binding).
+fn cancel_select() {
+    let was_open = with(|h| std::mem::replace(&mut h.menu_open, false));
+    crate::events::dev_key_log(|| format!("cancelselect: {}", if was_open { "weapon menu closed" } else { "escape" }));
+    if was_open {
+        engine().play_sound("common/wpn_hudoff.wav", 1.0);
+    } else {
+        engine().client_cmd("escape");
+    }
+}
+
 macro_rules! cmd {
     ($name:literal, $body:expr) => {{
         extern "C" fn f() {
@@ -449,7 +464,7 @@ macro_rules! cmd {
 }
 
 fn register_commands() {
-    cmd!(c"cancelselect", with(|h| h.menu_open = false));
+    cmd!(c"cancelselect", cancel_select());
     cmd!(c"special", engine().server_cmd("_special"));
     cmd!(c"slot1", select_slot(1));
     cmd!(c"slot2", select_slot(2));

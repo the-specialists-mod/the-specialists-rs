@@ -872,7 +872,25 @@ pub fn frame() {
     REAL_KEY.0.set(false);
 }
 
-/// `HUD_Key_Event` (10025a80): TS forwards keydown 'a' to the weapon element as slot 11, then
+/// `HUD_Key_Event` (10025a80): the slot-11 key and the anti-script gate ([`key_event`]), then
+/// `TeamFortressViewport::KeyInput` ([`crate::menus::key_event`]). 0 when a menu took the key;
+/// 1 hands it to the engine, which for Escape opens the main menu (newer FWGS) or runs its
+/// `cancelselect` binding (Steam GoldSrc, FWGS 0.21), which sends `escape`.
+pub fn hud_key_event(down: bool, key: i32, binding: &CStr) -> i32 {
+    key_event(down, key, binding);
+    let ret = if crate::menus::key_event(down, key, binding) { 0 } else { 1 };
+    if key == K_ESCAPE {
+        crate::events::dev_key_log(|| {
+            format!("HUD_Key_Event escape down={} binding=\"{}\" -> {ret}", down as i32, binding.to_string_lossy())
+        });
+    }
+    ret
+}
+
+/// GoldSrc `keydefs.h` `K_ESCAPE`.
+const K_ESCAPE: i32 = 27;
+
+/// `HUD_Key_Event`'s first part: TS forwards keydown 'a' to the weapon element as slot 11, then
 /// opens the gate when the binding is one of the gated commands.
 pub fn key_event(down: bool, key: i32, binding: &CStr) {
     if down && key == b'a' as i32 {

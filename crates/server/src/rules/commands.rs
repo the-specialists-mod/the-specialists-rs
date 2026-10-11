@@ -217,7 +217,7 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
 pub fn register_server_commands() {
     let e = engine();
     e.add_server_command(c"addbot", cmd_addbot);
-    e.add_server_command(c"addcustombot", cmd_addbot);
+    e.add_server_command(c"addcustombot", cmd_addcustombot);
     e.add_server_command(c"globalslow", cmd_globalslow);
     e.add_server_command(c"restartround", cmd_restartround);
     e.add_server_command(c"weaponrestriction", cmd_weaponrestriction);
@@ -228,6 +228,7 @@ pub fn register_server_commands() {
     e.add_server_command(c"ts_tp", cmd_tp);
     e.add_server_command(c"ts_face", cmd_face);
     e.add_server_command(c"ts_observe", cmd_observe);
+    e.add_server_command(c"ts_as", crate::commands::cmd_as);
     e.add_server_command(c"ts_dev_touch", cmd_dev_touch);
 }
 
@@ -420,10 +421,34 @@ extern "C" fn cmd_givepowerup() {
     });
 }
 
-/// `addbot` / `addcustombot` (0xc5520, 0xc5550): TS has no bots and only says so. The port's bots
-/// come from `ts_bot_quota` (a port addition, bots/mod.rs).
+/// `addbot [model]` (Windows `mp.dll` `0x10026110`): on a dedicated server only "Bots only in
+/// listen servers." (all the Linux `ts_i386.so`, which is dedicated-only, has: 0xc5520). On a
+/// listen server, `addbot help` prints the usage and anything else adds a bot (`CreateBot`,
+/// [`crate::bots::add_listen_bot`]).
 extern "C" fn cmd_addbot() {
-    engine().alert(ALERT_TYPE::at_console, "Bots only in listen servers.\n");
+    let e = engine();
+    if e.is_dedicated() {
+        e.alert(ALERT_TYPE::at_console, "Bots only in listen servers.\n");
+    } else if e.cmd_argv(1) == c"help" {
+        e.alert(ALERT_TYPE::at_console, "Usage: addbot [botname]\n");
+    } else {
+        crate::bots::add_listen_bot(None, &e.cmd_argv(1).to_string_lossy(), None);
+    }
+}
+
+/// `addcustombot [name] [model] [skill]` (Windows `mp.dll` `0x100261a0`; Linux 0xc5550 as
+/// `addbot`): as [`cmd_addbot`], with `CreateCustomBot`'s name, model and skill (`atof`).
+extern "C" fn cmd_addcustombot() {
+    let e = engine();
+    if e.is_dedicated() {
+        e.alert(ALERT_TYPE::at_console, "Bots only in listen servers.\n");
+    } else if e.cmd_argv(1) == c"help" {
+        e.alert(ALERT_TYPE::at_console, "Usage: addcustombot [botname] [team] [skill]\n");
+    } else {
+        let arg = |i| e.cmd_argv(i).to_string_lossy().into_owned();
+        let skill = crate::bots::scan_float(&arg(3));
+        crate::bots::add_listen_bot(Some(&arg(1)), &arg(2), Some(skill));
+    }
 }
 
 /// `globalslow [percent]` (0xc5580).

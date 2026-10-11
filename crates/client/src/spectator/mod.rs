@@ -608,7 +608,7 @@ pub(crate) fn interpolate_angles(start: &mut Vec3, end: &mut Vec3, frac: f32) ->
 /// `V_GetInEyePos` (`0x10068e20`): the target's origin raised to eye height (16 ducked, 28
 /// standing, none while `NO_VIEW` stunts are on) and its angles with the model pitch undone. TS
 /// scales the pitch by -π where the SDK uses -3. A dead target (not solid) rolls 80° and drops 8.
-fn in_eye_position(target: i32, org: &mut Vec3, ang: &mut Vec3) {
+pub(crate) fn in_eye_position(target: i32, org: &mut Vec3, ang: &mut Vec3) {
     let Some(e) = engine().entity(target).filter(|e| e.player != 0) else { return };
     *org = e.origin;
     *ang = e.angles;

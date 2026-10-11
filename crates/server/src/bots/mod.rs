@@ -9,6 +9,10 @@
 //!
 //! TS clears the loadout at death and real clients resend it from the buy menu; bots instead get
 //! a random loadout (a main gun and a sidearm, with spare magazines) every time they spawn.
+//!
+//! On a listen server `addbot`/`addcustombot` add bots as TS's Windows server does
+//! ([`add_listen_bot`]: names from `bots.txt`, TS's models), driven by the same AI. The quota
+//! leaves those alone.
 
 use crate::commands::Args;
 use crate::player::{Player, with_player};
@@ -70,9 +74,22 @@ struct Manager {
     added: u32,
     /// The last add found the server full (the quota then retries quietly).
     full: bool,
+    /// User ids of the bots `addbot`/`addcustombot` added. The quota neither counts nor kicks
+    /// them. (The engines drop fake clients on a level change anyway.)
+    manual: Vec<i32>,
+    /// `bots.txt` as TS's bot name picker sees it, reloaded on every map as TS does.
+    names: BotNames,
 }
 
-static MGR: Global<RefCell<Manager>> = Global(RefCell::new(Manager { active: false, start_at: 0.0, next_add: 0.0, added: 0, full: false }));
+static MGR: Global<RefCell<Manager>> = Global(RefCell::new(Manager {
+    active: false,
+    start_at: 0.0,
+    next_add: 0.0,
+    added: 0,
+    full: false,
+    manual: Vec::new(),
+    names: BotNames { names: Vec::new(), skills: Vec::new(), used: Vec::new() },
+}));
 
 pub fn game_init() {
     // `ts_bot_quota` is registered with the rules cvars.
@@ -80,10 +97,12 @@ pub fn game_init() {
 
 pub fn server_activate() {
     let now = engine().time();
+    let names = BotNames::parse(&engine().load_file("bots.txt").unwrap_or_default());
     let mut m = MGR.0.borrow_mut();
     m.active = true;
     m.start_at = now + 1.0;
     m.next_add = now + 1.0;
+    m.names = names;
 }
 
 pub fn server_deactivate() {
@@ -98,25 +117,40 @@ fn fake_clients() -> Vec<*mut edict_t> {
     eng.clients().filter(|&e| e.v().flags & FL_FAKECLIENT as i32 != 0 && eng.user_id(e) != -1).collect()
 }
 
-/// Adds one bot. False when the server has no free client slot (reported once per streak of
-/// failed adds: the quota retries every half second).
-pub fn add_bot() -> bool {
+/// The quota's bots: the fake clients `addbot` didn't add.
+fn quota_bots() -> Vec<*mut edict_t> {
     let eng = engine();
+    let manual = MGR.0.borrow().manual.clone();
+    fake_clients().into_iter().filter(|&e| !manual.contains(&eng.user_id(e))).collect()
+}
+
+/// Adds one quota bot ("Bot Neo", ...). False when the server has no free client slot (reported
+/// once per streak of failed adds: the quota retries every half second).
+pub fn add_bot() -> bool {
     let n = MGR.0.borrow().added + 1;
     let base = NAMES[(n as usize - 1) % NAMES.len()];
     let name = if n as usize > NAMES.len() { format!("{base} {}", n) } else { base.to_owned() };
-    let cname = to_cstring(&name);
-    let e = eng.create_fake_client(&cname);
-    if e.is_null() {
+    let Some(e) = create(&name) else {
         if !std::mem::replace(&mut MGR.0.borrow_mut().full, true) {
-            eng.print("[ts] bots: no free client slot\n");
+            engine().print("[ts] bots: no free client slot\n");
         }
         return false;
-    }
+    };
     {
         let mut m = MGR.0.borrow_mut();
         m.added = n;
         m.full = false;
+    }
+    spawn(e, &name);
+    true
+}
+
+/// Creates the fake client and its `Player` with a bot. None when no client slot is free.
+fn create(name: &str) -> Option<*mut edict_t> {
+    let cname = to_cstring(name);
+    let e = engine().create_fake_client(&cname);
+    if e.is_null() {
+        return None;
     }
     // A fake client gets no connect/put-in-server from the engine: do what a real client gets.
     rules::client_connect(e, &cname, c"127.0.0.1");
@@ -125,9 +159,142 @@ pub fn add_bot() -> bool {
         world::create::<Player>(e.v());
     }
     world::with::<Player, ()>(e, |p| p.bot = Some(Bot::default()));
+    Some(e)
+}
+
+fn spawn(e: *mut edict_t, name: &str) {
     world::dispatch(e, |ent, cx| ent.spawn(cx));
     rules::userinfo_changed(e);
+    let eng = engine();
     eng.print(&format!("[ts] bots: added \"{name}\" (#{})\n", eng.index_of(e)));
+}
+
+/// The player models TS's `CreateBot` picks from outside teamplay (the `0x1006b5ce` jump table).
+const BOT_MODELS: [&str; 7] = ["seal", "merc", "gordon", "hitman", "castor", "agent", "laurence"];
+
+/// `bots.txt` as TS loads it (`0x1006bee0`, from the multiplay rules' constructor): up to 64
+/// names, each line cut to 63 bytes with trailing white space trimmed, blank lines skipped;
+/// `name//skill` gives that name a skill.
+#[derive(Default, Debug, PartialEq)]
+struct BotNames {
+    names: Vec<String>,
+    skills: Vec<f32>,
+    used: Vec<bool>,
+}
+
+impl BotNames {
+    fn parse(file: &[u8]) -> BotNames {
+        let mut out = BotNames::default();
+        for line in String::from_utf8_lossy(file).split('\n') {
+            if out.names.len() >= 64 {
+                break;
+            }
+            let line: String = line.chars().take(63).collect();
+            let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
+            let (name, skill) = match line.find("//") {
+                Some(i) => (&line[..i], scan_float(&line[i + 2..])),
+                None => (line, 0.0),
+            };
+            out.names.push(name.to_owned());
+            out.skills.push(skill);
+        }
+        out.used = vec![false; out.names.len()];
+        out
+    }
+
+    /// `0x1006c150`: an unused name, searched both ways from a random index (the upward one wins
+    /// a tie); once every name is used the flags are cleared and it picks again. "Bot" without a
+    /// `bots.txt`. A positive skill from the file replaces `skill`. `random(hi)` is
+    /// `RANDOM_LONG(0, hi)`.
+    fn pick(&mut self, mut random: impl FnMut(i32) -> i32, skill: &mut f32) -> String {
+        let count = self.names.len() as i32;
+        if count <= 0 {
+            return "Bot".to_owned();
+        }
+        loop {
+            let start = random(count - 1).clamp(0, count - 1);
+            let (mut up, mut down, mut found) = (start, start, -1);
+            while found == -1 && (up < count || down >= 0) {
+                if down >= 0 && !self.used[down as usize] {
+                    found = down;
+                }
+                if up < count && !self.used[up as usize] {
+                    found = up;
+                }
+                up += 1;
+                down -= 1;
+            }
+            if found == -1 {
+                self.used.iter_mut().for_each(|u| *u = false);
+                continue;
+            }
+            let i = found as usize;
+            self.used[i] = true;
+            if self.skills[i] > 0.0 {
+                *skill = self.skills[i];
+            }
+            return self.names[i].clone();
+        }
+    }
+}
+
+/// C `sscanf("%f")` on the start of `s`: 0 when there is no number.
+pub(crate) fn scan_float(s: &str) -> f32 {
+    let s = s.trim_start();
+    let end = s
+        .char_indices()
+        .take_while(|&(i, c)| c.is_ascii_digit() || c == '.' || (i == 0 && (c == '-' || c == '+')))
+        .last()
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    s[..end].parse().unwrap_or(0.0)
+}
+
+/// TS's `CreateBot` (`0x1006b7c0`, from `addbot [model]`) and `CreateCustomBot` (`0x1006b590`,
+/// from `addcustombot [name] [model] [skill]`) on a listen server, with this port's bot AI in
+/// place of TS's (which isn't ported). The name comes from `bots.txt` unless given. The model is
+/// the argument, else outside teamplay one of TS's seven at random. The skill is random in
+/// 0.1..1 unless a positive one is given (clamped; the port's bots have no skill, so it is only
+/// printed). Then `0x1006b3b0`: "<name> connected with skill <f>", spawn, the userinfo keys
+/// `model` (`seal` without a model), `team` (the model) and `cl_lw 1`, and in teamplay a team
+/// change to the model's team. Finally `botlearn 1` if it was off. False when the server is full
+/// (TS's "Could not find any free client slots" message).
+pub fn add_listen_bot(name: Option<&str>, model: &str, skill: Option<f32>) -> bool {
+    let eng = engine();
+    let teamplay = rules::state::teamplay();
+    let model = if !model.is_empty() {
+        model.to_owned()
+    } else if !teamplay {
+        BOT_MODELS[eng.random_long(0, 6).clamp(0, 6) as usize].to_owned()
+    } else {
+        String::new()
+    };
+    let mut skill = match skill {
+        Some(s) if s > 0.0 => s.clamp(0.1, 1.0),
+        _ => eng.random_float(0.1, 1.0),
+    };
+    let name = match name.filter(|n| !n.is_empty()) {
+        Some(n) => n.to_owned(),
+        None => MGR.0.borrow_mut().names.pick(|hi| eng.random_long(0, hi), &mut skill),
+    };
+    let Some(e) = create(&name) else {
+        eng.alert(ALERT_TYPE::at_console, "Could not find any free client slots. Try setting maxplayers to a higher value.\n");
+        return false;
+    };
+    MGR.0.borrow_mut().manual.push(eng.user_id(e));
+    eng.alert(ALERT_TYPE::at_console, &format!("{name} connected with skill {skill:.6}\n"));
+    eng.set_client_key(e, "model", if model.is_empty() { "seal" } else { &model });
+    eng.set_client_key(e, "team", &model);
+    eng.set_client_key(e, "cl_lw", "1");
+    spawn(e, &name);
+    if teamplay && !model.is_empty() {
+        with_player(e, |p, cx| rules::teams::change_team(p, cx, &model, false, false));
+    }
+    if cvars::f(c"botlearn") <= 0.0 {
+        eng.server_command("botlearn 1\n");
+    }
     true
 }
 
@@ -143,7 +310,7 @@ pub fn start_frame() {
         return;
     }
     let quota = cvars::f(c"ts_bot_quota").max(0.0) as usize;
-    let bots = fake_clients();
+    let bots = quota_bots();
     if bots.len() < quota && now >= next_add {
         MGR.0.borrow_mut().next_add = now + 0.5;
         add_bot();
@@ -464,7 +631,36 @@ fn find_item(me: *mut edict_t, eye: [f32; 3]) -> Option<[f32; 3]> {
 
 #[cfg(test)]
 mod tests {
-    use super::approach_angle;
+    use super::{BotNames, approach_angle, scan_float};
+
+    #[test]
+    fn bots_txt_names_and_skills() {
+        let b = BotNames::parse(b"Lombardi\r\n\r\n  \nWinters//0.5\nLe Marc  \n");
+        assert_eq!(b.names, ["Lombardi", "Winters", "Le Marc"]);
+        assert_eq!(b.skills, [0.0, 0.5, 0.0]);
+        let many: String = (0..100).map(|i| format!("n{i}\n")).collect();
+        assert_eq!(BotNames::parse(many.as_bytes()).names.len(), 64, "TS keeps 64");
+        assert_eq!(scan_float(" 0.25x"), 0.25);
+        assert_eq!(scan_float("abc"), 0.0);
+    }
+
+    #[test]
+    fn bot_name_picker() {
+        let mut none = BotNames::parse(b"");
+        let mut skill = 0.3;
+        assert_eq!(none.pick(|_| 0, &mut skill), "Bot");
+        let mut b = BotNames::parse(b"a\nb//0.9\nc\n");
+        // Start at 1: unused, taken; the file's skill replaces the random one.
+        assert_eq!(b.pick(|_| 1, &mut skill), "b");
+        assert_eq!(skill, 0.9);
+        // Start at 1 again: 1 is used; one step out both ways, the upward one wins.
+        assert_eq!(b.pick(|_| 1, &mut skill), "c");
+        assert_eq!(b.pick(|_| 1, &mut skill), "a");
+        // All used: the flags are cleared and it picks again.
+        assert_eq!(b.pick(|_| 2, &mut skill), "c");
+        // Out-of-range randoms never index out of bounds.
+        assert_eq!(b.pick(|_| 99, &mut skill), "b");
+    }
 
     #[test]
     fn turning() {

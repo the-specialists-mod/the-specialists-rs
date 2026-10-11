@@ -45,6 +45,22 @@ Packages used on Arch: `rustup cmake lib32-glibc lib32-gcc-libs mingw-w64-gcc wi
 
 ## 2. Running the checks
 
+TS content: xtask's dev and test commands link `TS_DIR`, by default `../ts_custom` (TS 3.0 plus
+custom maps such as `MecklenburgV_Rain_Final`, which `meck` needs), found from the checkout's
+parent directories so worktrees under `.claude/worktrees` use it too. The stock TS 3.0 content,
+`../ts_original` (`TS_ORIGINAL_DIR`), is only packaged:
+
+```sh
+cargo xtask package-xash-win   # dist --release (windows-i686), then ~/ts-xash-win-release.tar.gz
+```
+
+The archive's top directory `ts-xash-win/` holds the FWGS win32 engine from `../xash3d-ts`
+(`XASH_WIN_DIR`; symlinks followed, without its `ts/`, `.git` and `engine.log`), `ts/` = the stock
+content (symlinks followed, without `scrshots/`, `xtask_*`, `condump*.txt`, `custom.hpk`,
+`voice_ban.dt` and the Linux `dlls/ts_i386.so`/`ts_i686.so`) with `dist/windows-i686/ts` over it,
+and a CRLF `README-RUST-PORT.txt` naming the commit. `TS_PACKAGE_OUT` changes the output path;
+the system `tar` writes it. The path rules are unit-tested (`xtask/src/package.rs`).
+
 ```sh
 cargo xtask lint                        # no engine-call macros in game crates; clippy -D warnings on every target
 cargo xtask roots                       # which roots exist
@@ -93,7 +109,9 @@ results from `ts_status` dumps, kill notices and developer log lines:
 |---|---|---|
 | Join | The buy menu opens with a random first loadout: reset it, pick an AK47 with a scope and confirm (`slotN`, as the number keys do), click `+attack` after the respawn wait | `[ts] <host> spawned (#1) with [13]` |
 | Wall | `ts_dev_fxlog 1`, stand in front of the dojo's front wall (`100 -760 60`, yaw 70) and fire three single shots | From the `[ts fx]` lines: every first-person flash is more ahead of the eye than off the view axis, within 8 units of the view model's muzzle, and spreads along the view (direction dot > 0.95); three bullets start within 64 units of the shooter and hit within 400; at least three impacts and three decals, all on the wall in front |
-| Bot | `ts_bot_stop 1` (the bot stands still and holds fire), `ts_bot_quota 1` (TS's `addbot` only prints "Bots only in listen servers.") | The quota reads 1 and a bot was added |
+| Bot | `ts_bot_stop 1` (the bot stands still and holds fire), `ts_bot_quota 1` (`addbot` bots get `bots.txt` names, so the scenes use a quota bot) | The quota reads 1 and a bot was added |
+| Lasers | The host and the bot get akimbo Berettas with a laser (`ts_give 2_2` twice, `ts_as 2 ...` for the bot), the host switches to free semi and looks at the bot from the side, `ts_dev_fxlog 1` | From the `[ts fx] laser` lines: two first-person beams, each starting at its gun's muzzle in front of the eye (the right gun right of the left one); the bot's beam starts 16 units along it from its `p_` model's gun hand, which is 4–64 units from its origin (attachments from the drawn model, not the origin FWGS resets them to) |
+| Akimbo | Free semi: `+attack` and `+attack2` in one frame, then 0.3 s apart | From the `[ts fx] akimbo shot` lines: a linked double shot, then the `b0` gun, then the `b1` gun |
 | Power-up | Stand on the slow-motion `ts_powerup` (`0 -672 48`, pwuptype 1) with the bot in view, double-tap `+use` | Held `0x1` after the pickup. Then active `0x1`, host time scale 0.6, bot 0.35 |
 | Grenade | `ts_give 24`, `weapon_24`, aim at the 1-HP pillar `*15`, throw (`+attack`, release), move away | `func_breakable ... broken by <host> (grenade, ...)`: the explosion (bits `0x1040`) or the grenade still in flight (`0x1080`), which credits the thrower too (issue #1) |
 | Kill | Put the bot in front of the host, aim and fire the AK47 | `<host> killed Bot ...` and a frag |
@@ -101,6 +119,8 @@ results from `ts_status` dumps, kill notices and developer log lines:
 | Death and respawn | `ts_hurt 1 500`, click through the death cam, click after the wait | Dead with a death, then a second spawn line and alive |
 | Bots | Host suicides and stays observer; `ts_bot_stop 0`, `ts_bot_quota 4`, 70 s of play | Four bots. Within one life, all but at most one of the bots measured (at least two) move over 64 units between dumps 5 s apart. At least 2 `Bot ... killed Bot ...` lines |
 | Quota down | `ts_bot_quota 0` | The bots are kicked |
+| addbot | `addbot` on the listen server | "<name> connected with skill", a player with a `bots.txt` name in `ts_status`, no "Bots only in listen servers.", and the quota (0) doesn't kick it |
+| Escape | `ts_dev_keylog 1`, `cancelselect` twice (Escape's binding; the first may close the weapon menu) | `[ts key] cancelselect: escape`: the client sent `escape`, which opens the engine's main menu |
 
 Screenshots go to `target/play-<root>-N.png` (`-2` is the wall scene). The script can't close the
 MOTD, which needs a real Enter key or click, so the scripts set `motdfile` to a file that doesn't
@@ -151,7 +171,14 @@ Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`)
 * `ts_observe <player#> <mode> [target#]` puts an observer in a spectator mode (5 is in-eye) on a
   target, for clients whose input a script can't drive (the original TS client, below).
 * `ts_dev_fxlog 1` (client) prints a `[ts fx]` line for each predicted shot's flash, bullet,
-  impact and decal.
+  impact and decal, each akimbo shot (`akimbo shot #<ent> weapon <id> linked|gun b0|gun b1`), and,
+  at most twice a second, the laser beams (`laser local gun <n> beam ... muzzle ... ahead/right/up`
+  for the first-person ones, `laser other #<ent> beam ... hand ... origin ... eye ... aim ...` for
+  other players').
+* `ts_dev_keylog 1` (client) prints `[ts key]` lines: `HUD_Key_Event`'s answer for Escape
+  (`-> 1` hands it to the engine) and what `cancelselect` did.
+* `ts_as <player#> <command> [args...]` runs a client command as that player (a bot), e.g.
+  `ts_as 2 ts_give 2_2`.
 * `ts_status`, `ts_hurt`, `ts_givepowerup`, `ts_give` (existing).
 * With `developer` on, each broken `func_breakable` is logged with its attacker, inflictor class
   and damage bits.
@@ -280,7 +307,9 @@ original client's own cfg takes a screenshot every few frames. Findings:
 | Bots never join on GoldSrc; fine on FWGS | Command-line `+cvar` runs before GameInit registers the game's cvars | xtask writes the quota into `xtask_server.cfg` and passes `+servercfgfile`. |
 | HL25 crashes after the last human leaves | HL25 drops every bot then; driving a dropped bot with `pfnRunPlayerMove` crashes `SV_RunCmd` | Bots are driven only while they have a live user id. |
 | Crash in `pfnSetClientMaxspeed` (FWGS) after a bot is kicked; the Windows dialog shows `Host_Shutdown (xash.dll)` under `mp.dll` frames | A dropped client keeps `FL_CLIENT`/`FL_FAKECLIENT`, and FWGS still maps its edict to the freed slot: `pfnGetPlayerUserId` returns the old id, and `pfnSetClientMaxspeed` dereferences the slot's NULL edict when the bot respawns | `ClientDisconnect` clears both flags, so dropped players drop out of `players()`, `is_player()` and the bot list, and `rules::set_client_maxspeed` skips the engine call for them (TS's own player tests still see them: `has_player`, `ts_flags`, `slot_players`) |
-| `addbot` bot kicked half a second later | `ts_bot_quota` (default 0) kicked bots above the quota | Superseded: `addbot` now does what TS's does (prints "Bots only in listen servers."); bots come only from `ts_bot_quota` |
+| `addbot` bot kicked half a second later | `ts_bot_quota` (default 0) kicked bots above the quota | The quota counts and kicks only its own bots; `addbot` bots (listen servers, as TS) are left alone |
+| `addbot` did nothing on a listen server ("Create Server") | The port followed the Linux `ts_i386.so`, a dedicated-only build whose `addbot` only prints "Bots only in listen servers." | `addbot`/`addcustombot` do what TS's Windows `mp.dll` does: that message on a dedicated server, a bot on a listen server. `xtask test` runs `addbot` on every dedicated server and fails if a bot connects |
+| Escape did nothing in game (FWGS 0.21 win32, Steam GoldSrc) | Those engines run Escape's hard binding, `cancelselect`, instead of opening the menu; TS's `cancelselect` sends `escape` when no weapon menu is open, the port's only closed the weapon menu (newer FWGS opens the menu itself) | `cancelselect` sends `escape` as TS (`hud::cancel_select`); `xtask play` checks it |
 | Quota kicks never happen in a scripted test | `pfnServerCommand("kick ...")` is appended to the console buffer behind the rest of the running `wait` script | The listen script ends right after `ts_bot_quota 0`; xtask stops the game 10 s later |
 | `SteamAPI_Init() failed` in HLDS logs | Normal for dedicated servers (they use the game-server API) | none |
 | Steam HL25 client: the game runs, but the world is black and the "Loading… Parsing game info" dialog never goes away (issue #62) | A client without `IClientVGUI` is treated as VGUI1, and the engine then only draws the world when the client's VGUI1 viewport calls `VGui_ViewportPaintBackground` (TS's does). The port has no VGUI1 viewport, so `V_CalcRefdef` and `HUD_Redraw` were never called and the screen kept the dialog's last frame | `client-dll` exports `ClientFactory`/`CreateInterface` and an `IClientVGUI` with `UseVGUI1() == false` (`implementation/client-hud.md` §7) |
@@ -301,7 +330,7 @@ at a time. This is the manual setup used for issue #62, on the Linux 25th-annive
 1. Steam running and logged in, Half-Life (app 70) installed at
    `~/.local/share/Steam/steamapps/common/Half-Life`.
 2. Assemble `Half-Life/ts` the way `cargo xtask install` does: symlink every entry of the TS
-   content directory (`../ts`: maps, models, sound, wads, `resource`, ...) into it, copy the files
+   content directory (`../ts_custom`: maps, models, sound, wads, `resource`, ...) into it, copy the files
    from `game/ts` over the links, and install the i686 Linux build:
 
    ```sh
@@ -398,7 +427,7 @@ The HUD's additive sprites vanish over the white `ts_dojo` sky (expected).
 
 **`maxplayers 1` listen server** (`maxplayers 1`, `map ts_dojo`): join, buy, spawn, walk, fire,
 `ts_hurt` death and respawn all work; the rules are deathmatch, as in TS. (Then, `addbot` reported
-`no free client slot` once; it now only prints TS's "Bots only in listen servers.") The game does not pause while the game menu or the console is open:
+`no free client slot` once; on a listen server it now adds a bot, as TS's Windows server does.) The game does not pause while the game menu or the console is open:
 server time keeps running. Stock Half-Life (`-game valve`, `map crossfire`, `maxplayers 1`) with
 the menu opened the same way doesn't pause either, so this is the engine's behaviour.
 

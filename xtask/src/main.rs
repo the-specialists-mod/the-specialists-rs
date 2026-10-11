@@ -7,6 +7,9 @@
 //!                                                 --all-targets -- -D warnings`, all four targets
 //!                                                 (Windows-only code included)
 //! cargo xtask dist    [--release]                 dist/<platform>/ts/: libraries + game files
+//! cargo xtask package-xash-win                    `dist --release` for windows-i686, then
+//!                                                 ~/ts-xash-win-release.tar.gz: FWGS win32 engine +
+//!                                                 stock TS 3.0 + the port (see package.rs)
 //! cargo xtask install [--release] <root>... | all assemble <root>/ts and install libraries
 //! cargo xtask server  [--release] <root> [--map M] [--bots N] [--seconds S] [--port P]
 //!                                                 run a dedicated server and check it
@@ -26,11 +29,15 @@
 //! ```
 //!
 //! Engine roots default to ~/games/<dir> and can be overridden with `TS_ROOT_<NAME>`
-//! (e.g. `TS_ROOT_REHLDS_LINUX=/srv/hlds`). TS content comes from `TS_DIR` (default ../ts):
-//! the installed game directory links to its maps, models and sounds without modifying it.
+//! (e.g. `TS_ROOT_REHLDS_LINUX=/srv/hlds`). TS content comes from `TS_DIR` (default
+//! `../ts_custom`, TS 3.0 with custom maps such as MecklenburgV_Rain_Final; looked up from the
+//! checkout's parent directories, so worktrees find it too): the installed game directory links to
+//! its maps, models and sounds without modifying it. The stock content (`../ts_original`,
+//! `TS_ORIGINAL_DIR`) is only for `package-xash-win`.
 
 mod a2s;
 mod lint;
+mod package;
 mod roots;
 
 use roots::{Engine, Os, Root, Target};
@@ -51,7 +58,15 @@ fn main() {
                 exit(1);
             }
         }
-        "dist" => ctx.dist(),
+        "dist" => ctx.dist(&Target::ALL),
+        "package-xash-win" => {
+            let ctx = Ctx { release: true, ..ctx };
+            ctx.dist(&[Target::WINDOWS_I686]);
+            let (commit, date) = package::commit(&ctx.repo);
+            let dist_ts = ctx.repo.join("dist").join(Target::WINDOWS_I686.platform).join("ts");
+            let stage = ctx.repo.join("target").join("package-xash-win");
+            package::package(&package::Paths::from_env(&ctx.repo), &dist_ts, &stage, &commit, &date);
+        }
         "install" => {
             for r in select_roots(&args) {
                 ctx.install(&r);
@@ -126,7 +141,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release] <build|lint|dist|install|server|test|play|meck|all|client|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release] <build|lint|dist|package-xash-win|install|server|test|play|meck|all|client|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }
@@ -163,7 +178,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn ts_dir(repo: &Path) -> PathBuf {
-    env::var_os("TS_DIR").map(PathBuf::from).unwrap_or_else(|| repo.join("../ts"))
+    env::var_os("TS_DIR").map(PathBuf::from).unwrap_or_else(|| package::sibling(repo, "ts_custom"))
 }
 
 struct Ctx {
@@ -320,9 +335,9 @@ impl Ctx {
         }
     }
 
-    fn dist(&self) {
-        self.build(&Target::ALL);
-        for t in &Target::ALL {
+    fn dist(&self, targets: &[Target]) {
+        self.build(targets);
+        for t in targets {
             let gamedir = self.repo.join("dist").join(t.platform).join("ts");
             copy_dir(&self.repo.join("game/ts"), &gamedir);
             self.install_libs(t, &gamedir);
@@ -430,6 +445,12 @@ impl Ctx {
         }
         if !text.contains("[ts] GameInit") {
             say!("   FAIL: the Rust server library didn't load (no GameInit line)");
+            ok = false;
+        }
+        // `xtask_server.cfg` runs `addbot`: TS adds no bot on a dedicated server (it only says
+        // "Bots only in listen servers.", which needs `developer` to show).
+        if text.contains("connected with skill") {
+            say!("   FAIL: addbot added a bot on a dedicated server");
             ok = false;
         }
         say!("   {}", if ok { "PASS" } else { "FAIL" });
@@ -626,6 +647,124 @@ fn wall_checks(text: &str) -> Vec<(&'static str, bool)> {
     ]
 }
 
+/// The `[ts fx]` lines between `XTASK: <tag>` and `XTASK: <tag> done` (`echo` ends its line with a
+/// space).
+fn fx_lines<'a>(text: &'a str, tag: &str) -> Vec<&'a str> {
+    let (start, end) = (format!("XTASK: {tag}"), format!("XTASK: {tag} done"));
+    let mut out = Vec::new();
+    let mut inside = false;
+    for l in text.lines() {
+        let t = l.trim_end();
+        if t.ends_with(&end) {
+            break;
+        }
+        if t.ends_with(&start) {
+            inside = true;
+        } else if let Some((_, r)) = l.split_once("[ts fx] ").filter(|_| inside) {
+            out.push(r.trim_end());
+        }
+    }
+    out
+}
+
+/// The laser and akimbo scene, with the stopped bot #2 in the game: the host and the bot each get
+/// akimbo Berettas with a laser sight (two `ts_give 2_2`; the laser comes on with the gun), the
+/// host switches to free semi (`firemode`) and looks at the bot side on from 200 units. Then two
+/// akimbo shots: both triggers in one frame (a linked double shot), and the triggers 0.3 s apart
+/// (one shot per gun).
+fn script_lasers_and_akimbo() -> String {
+    let mut cfg = "ts_dev_fxlog 1\nts_give 2_2\nwait;wait\nts_give 2_2\nts_as 2 ts_give 2_2\nwait;wait\nts_as 2 ts_give 2_2\n".to_owned();
+    cfg += &secs(1.0);
+    cfg += "firemode\n";
+    cfg += &format!("ts_tp 2 0 -480 60 270 0\n{}ts_tp 1 200 -480 60 180 0\n{}ts_face 1 2\n", secs(0.5), secs(0.5));
+    cfg += &format!("{}echo XTASK: lasers\n{}", secs(0.5), secs(2.0));
+    cfg += &shot("lasers");
+    // The shots go past the bot, which the later scenes need alive.
+    cfg += &format!("echo XTASK: lasers done\nts_face 1 200 -1000 60\n{}", secs(0.5));
+    cfg += "echo XTASK: akimbo\n+attack\n+attack2\nwait;wait\n-attack\n-attack2\n";
+    cfg += &secs(1.0);
+    cfg += &format!("+attack\n{}+attack2\nwait;wait\n-attack\n-attack2\n{}", secs(0.3), secs(1.0));
+    cfg + "echo XTASK: akimbo done\nts_dev_fxlog 0\nweapon_13\n"
+}
+
+/// Checks for the laser scene, from the `[ts fx] laser` lines. First person: two local beams
+/// (akimbo), each starting in front of the eye at its gun's view-model muzzle (the right gun to the
+/// right of the left one). The bot's beam (TS draws one per other player, akimbo or not) starts at
+/// its `p_` model's gun hand, away from the entity origin (the attachments come from the drawn
+/// model, not the origin FWGS resets them to), near the bot's eye.
+fn laser_checks(text: &str) -> Vec<(&'static str, bool)> {
+    let fx = fx_lines(text, "lasers");
+    let local = |gun: &str| -> Vec<&str> { fx.iter().copied().filter(|l| l.starts_with(&format!("laser local gun {gun} "))).collect() };
+    let (g0, g1) = (local("0"), local("1"));
+    let others: Vec<&str> = fx.iter().copied().filter(|l| l.starts_with("laser other #2 ")).collect();
+    let num = |l: &str, key: &str| field(l, key).and_then(|v| v.parse::<f32>().ok());
+    let local_ok = |l: &str| num(l, "ahead ").is_some_and(|a| a > 0.0 && a < 48.0) && num(l, "right ").is_some_and(|r| r.abs() < 32.0);
+    let right = |ls: &[&str]| ls.first().and_then(|l| num(l, "right "));
+    let other_ok = |l: &str| {
+        let (Some(beam), Some(hand), Some(origin), Some(eye)) =
+            (vec_after(l, "beam "), vec_after(l, "hand "), vec_after(l, "origin "), vec_after(l, "eye "))
+        else {
+            return false;
+        };
+        dist(hand, origin) > 4.0 && dist(hand, origin) < 64.0 && dist(beam, hand) < 17.0 && dist(beam, eye) < 64.0
+    };
+    say!(
+        "   laser scene: {} + {} local beam lines, {} for the bot{}",
+        g0.len(),
+        g1.len(),
+        others.len(),
+        others.first().map_or(String::new(), |l| format!("; first: {l}"))
+    );
+    vec![
+        (
+            "lasers: two first-person beams (akimbo), each from its gun's muzzle in front of the eye",
+            !g0.is_empty() && !g1.is_empty() && g0.iter().chain(&g1).all(|l| local_ok(l)) && right(&g0) > right(&g1),
+        ),
+        ("lasers: the bot's beam starts at its gun hand, not at its origin", !others.is_empty() && others.iter().all(|l| other_ok(l))),
+    ]
+}
+
+/// Checks for the akimbo shots: both triggers in one frame fire both guns (a linked shot); the
+/// triggers apart fire one gun each (free semi: `+attack` the `b0` gun, `+attack2` the `b1` gun).
+fn akimbo_checks(text: &str) -> Vec<(&'static str, bool)> {
+    let shots: Vec<&str> = fx_lines(text, "akimbo").into_iter().filter(|l| l.starts_with("akimbo shot #1 ")).collect();
+    say!("   akimbo shots: {shots:?}");
+    let kinds: Vec<&str> = shots.iter().map(|l| l.rsplit(' ').next().unwrap_or("")).collect();
+    vec![("akimbo free semi: both triggers fire both guns (linked), then each trigger its own gun", kinds == ["linked", "b0", "b1"])]
+}
+
+/// The `addbot` scene (after the quota bots are gone): a listen server adds a bot named from
+/// `bots.txt`, as TS's Windows server does, and the quota (0) leaves it alone.
+fn script_addbot() -> String {
+    format!("echo XTASK: addbot\naddbot\n{}{}", secs(3.0), status("addbot"))
+}
+
+fn addbot_checks(text: &str, dumps: &[(String, Vec<PlayerStatus>)]) -> Vec<(&'static str, bool)> {
+    let bot = dumps.iter().find(|d| d.0 == "addbot").and_then(|d| d.1.iter().find(|p| p.idx != 1 && !p.name.starts_with("Bot ")).cloned());
+    let after = text.split_once("XTASK: addbot").map_or("", |(_, a)| a);
+    let named = bot.as_ref().is_some_and(|b| after.contains(&format!("{} connected with skill", b.name)));
+    say!("   addbot: {:?}", bot.as_ref().map(|b| (&b.name, &b.state)));
+    vec![(
+        "addbot on a listen server added a bot (bots.txt name), and the quota kept it",
+        named && !after.contains("Bots only in listen servers") && bot.is_some_and(|b| !after.contains(&format!("{} was kicked", b.name))),
+    )]
+}
+
+/// The Escape scene, last in a script: `cancelselect` is what Escape runs in game on Steam GoldSrc
+/// and FWGS 0.21. With no weapon menu open it sends `escape` (the engine's main menu); with one
+/// open it closes it first, so the scene runs it twice.
+fn script_escape() -> String {
+    "ts_dev_keylog 1\necho XTASK: escape\ncancelselect\nwait;wait\ncancelselect\nwait;wait\n".to_owned()
+}
+
+fn escape_checks(text: &str) -> Vec<(&'static str, bool)> {
+    let after = text.split_once("XTASK: escape").map_or("", |(_, a)| a);
+    vec![(
+        "Escape (cancelselect) with no menu open sends escape to the engine's main menu",
+        after.contains("[ts key] cancelselect: escape"),
+    )]
+}
+
 /// `ts_status` dump tagged so checks can find it.
 fn status(tag: &str) -> String {
     format!("echo XTASK: status {tag}\nts_status\n")
@@ -798,8 +937,8 @@ impl Ctx {
     /// 1. Join: the buy menu opens; reset its random first loadout, buy an AK47 with a scope
     ///    (`slotN`, as the number keys do), click `+attack` after the respawn wait to spawn. Then
     ///    fire three shots at a wall ([`wall_checks`]: flash, bullets, impacts, decals).
-    /// 2. `ts_bot_quota 1` (with `ts_bot_stop 1`, so the bot holds still) adds a bot (TS's
-    ///    `addbot` only prints "Bots only in listen servers.").
+    /// 2. `ts_bot_quota 1` (with `ts_bot_stop 1`, so the bot holds still) adds a bot. Then the
+    ///    laser and akimbo scene ([`script_lasers_and_akimbo`]).
     /// 3. With the bot in view, step onto the slow-motion power-up (`0 -672 48`, pwuptype 1) and
     ///    double-tap `+use`: the host runs at 0.6 and slows the bot to 0.35.
     /// 4. Take an M61, aim at a 1-HP wooden pillar (`*15`) and throw: the explosion breaks it.
@@ -809,6 +948,8 @@ impl Ctx {
     /// 7. The host is killed (`ts_hurt`), clicks through the death cam and clicks to respawn.
     /// 8. The host suicides and stays observer; four bots (`ts_bot_stop 0`) play for 70 s: they
     ///    move around and kill each other. Then `ts_bot_quota 0` kicks them.
+    /// 9. `addbot` adds a TS listen-server bot the quota keeps; then Escape (`cancelselect`) sends
+    ///    `escape`.
     fn play(&self, root: &Root, port: u16) -> bool {
         say!("== {}: gameplay on ts_dojo (listen server, port {port})", root.name);
         let mut cfg = script_start("ts_dojo") + &script_join_and_spawn() + &status("spawned");
@@ -818,6 +959,9 @@ impl Ctx {
 
         // 2. a stopped bot; it joins as an observer and respawns after the 5 s wait
         cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}ts_bot_quota\n{}", secs(1.0), secs(8.0));
+
+        // 2b. lasers (first person and on the bot) and akimbo free semi
+        cfg += &script_lasers_and_akimbo();
 
         // 3. power-up with the bot in view
         cfg += &format!("ts_tp 1 0 -672 60 90 0\n{}ts_tp 2 0 -480 60 270 0\n{}", secs(0.5), secs(1.5));
@@ -869,6 +1013,10 @@ impl Ctx {
         }
         cfg += &shot("bots");
         cfg += "ts_bot_quota 0\n";
+
+        // 9. `addbot` (TS's listen-server bots), then Escape last: its `escape` opens the menu
+        cfg += &script_addbot();
+        cfg += &script_escape();
 
         // Linger for the quota's kicks (one per 0.5 s game time, queued behind the script).
         let run = self.run_script(root, "play", &cfg, port, Duration::from_secs(5), Duration::from_secs(420));
@@ -935,6 +1083,10 @@ impl Ctx {
             ("the script finished, no panic or crash", run.done && !run.exited && !crashed(text)),
         ];
         checks.splice(1..1, wall_checks(text));
+        let at = checks.iter().position(|c| c.0 == "ts_bot_quota 1 added a bot").map_or(checks.len(), |i| i + 1);
+        checks.splice(at..at, laser_checks(text).into_iter().chain(akimbo_checks(text)));
+        let at = checks.len() - 1;
+        checks.splice(at..at, addbot_checks(text, &dumps).into_iter().chain(escape_checks(text)));
         self.report(root, "play", &run, &checks)
     }
 
@@ -1147,6 +1299,30 @@ mod tests {
         let three: Vec<&str> = before.iter().cycle().take(12).copied().collect();
         assert!(wall_checks(&scene(&three)).iter().all(|c| !c.1));
         assert!(wall_checks(&scene(&[])).iter().all(|c| !c.1), "no shots");
+    }
+
+    #[test]
+    fn laser_akimbo_addbot_escape_checks() {
+        let text = "XTASK: lasers \n\
+            [ts fx] laser local gun 0 beam [1, 2, 3] to [4, 5, 6] muzzle [1, 2, 4] ahead 17.6 right 6.8 up 0.3\n\
+            [ts fx] laser local gun 1 beam [1, 2, 3] to [4, 5, 6] muzzle [1, 2, 4] ahead 18.0 right -4.9 up -2.0\n\
+            [ts fx] laser other #2 beam [-1142.2, -44.2, -21.6] to [-1123.6, -3950.0, 8.7] hand [-1142.3, -28.2, -21.6] origin [-1152.0, 0.0, -20.0] eye [-1152.0, 0.0, 8.0] dir [0.0, -1.0, 0.0]\n\
+            XTASK: lasers done \n\
+            XTASK: akimbo \n[ts fx] akimbo shot #1 weapon 8 linked\n[ts fx] flash at [0, 0, 0]\n\
+            [ts fx] akimbo shot #1 weapon 8 gun b0\n[ts fx] akimbo shot #1 weapon 8 gun b1\nXTASK: akimbo done \n\
+            XTASK: addbot \nLe Marc connected with skill 0.500000\n\
+            XTASK: escape \n[ts key] cancelselect: escape\n";
+        assert!(laser_checks(text).iter().all(|c| c.1), "{:?}", laser_checks(text));
+        assert!(akimbo_checks(text)[0].1);
+        let dumps = vec![("addbot".to_owned(), vec![parse_status_line("[ts]  #3 Le Marc          alive hp=100 ar=0 frags=0 deaths=0 cash=1200 team='' held=0x0/0s active=0x0 slow=1.00->1.00 award=0 spree=0 org=(0 0 0)").unwrap()])];
+        assert!(addbot_checks(text, &dumps)[0].1);
+        assert!(escape_checks(text)[0].1);
+        // One local beam only (the akimbo bug), a beam from the origin, a dropped second shot.
+        let bad =
+            text.replace("laser local gun 1", "laser local gun 0").replace("hand [-1142.3, -28.2, -21.6]", "hand [-1152.0, 0.0, -20.0]");
+        assert!(laser_checks(&bad).iter().all(|c| !c.1));
+        assert!(!akimbo_checks(&text.replace("gun b1\n", "x\n"))[0].1);
+        assert!(!addbot_checks(&text.replace("XTASK: addbot", "Bots only in listen servers.\nXTASK: addbot"), &[])[0].1);
     }
 
     #[test]

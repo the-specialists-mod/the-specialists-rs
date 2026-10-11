@@ -390,6 +390,46 @@ fn akimbo_pickup_merges_and_linked_fire() {
     assert_eq!(g2.status[id::BERETTA_AKIMBO as usize].mode, mode::SEMI);
 }
 
+/// Free semi as TS has it (`AkimboFire` 0x829c0, `ItemPostFrame` 0xa03d4): `+attack` fires the
+/// `b1 = 0` gun and `+attack2` the other, each on its own press; both pressed in one command fire a
+/// linked pair. A shot sets both attack timers to 0.1 s, so a second trigger pressed within that
+/// time (in a later command) is dropped, as in TS.
+#[test]
+fn akimbo_free_semi_triggers() {
+    let mut g = Gun::default();
+    let mut h = Mock { flags: 0x200, time: 1.0, ..Default::default() };
+    g.take_weapon(id::BERETTA, None, 0);
+    g.take_weapon(id::BERETTA, None, 0);
+    g.reserve[1] = 60;
+    g.switch_to(id::BERETTA_AKIMBO, &mut h);
+    g.next_attack = 0.0;
+    g.switch_fire_mode();
+    assert_eq!(g.status[id::BERETTA_AKIMBO as usize].mode, mode::AKIMBO_SEMI);
+    let fired = |h: &Mock| -> Vec<(Event, i32)> {
+        h.events.iter().filter(|e| matches!(e.0, Event::Fire | Event::FireLinked)).map(|e| (e.0, e.1.b1)).collect()
+    };
+    let mut last = 0;
+    // +attack, then +attack2 30 ms later: one shot (the second press falls in the 0.1 s).
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    frame(&mut g, &mut h, IN_ATTACK | IN_ATTACK2, &mut last, 0.01);
+    for _ in 0..20 {
+        frame(&mut g, &mut h, IN_ATTACK | IN_ATTACK2, &mut last, 0.01);
+    }
+    assert_eq!(fired(&h), [(Event::Fire, 0)]);
+    // Released; +attack2 alone: the other gun.
+    frame(&mut g, &mut h, 0, &mut last, 0.01);
+    frame(&mut g, &mut h, IN_ATTACK2, &mut last, 0.01);
+    assert_eq!(fired(&h)[1..], [(Event::Fire, 1)]);
+    for _ in 0..20 {
+        frame(&mut g, &mut h, 0, &mut last, 0.01);
+    }
+    // Both in one command: a linked pair.
+    frame(&mut g, &mut h, IN_ATTACK | IN_ATTACK2, &mut last, 0.01);
+    assert_eq!(fired(&h)[2..].iter().map(|e| e.0).collect::<Vec<_>>(), [Event::FireLinked]);
+}
+
 #[test]
 fn zoom_steps() {
     let (mut g, mut h) = armed(id::AK47);

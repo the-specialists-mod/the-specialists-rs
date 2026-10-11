@@ -43,6 +43,7 @@ pub fn init() {
         r::hook_event(name, f);
     }
     DEV_FX_LOG.0.set(goldsrc::client::Cvar::register(c"ts_dev_fxlog", c"0", 0));
+    DEV_KEY_LOG.0.set(goldsrc::client::Cvar::register(c"ts_dev_keylog", c"0", 0));
     register_test_commands();
 }
 
@@ -57,6 +58,19 @@ static DEV_FX_LOG: goldsrc::Global<std::cell::Cell<goldsrc::client::Cvar>> =
 pub(crate) fn fx_log(line: impl FnOnce() -> String) {
     if DEV_FX_LOG.0.get().value() != 0.0 {
         engine().print(&format!("[ts fx] {}\n", line()));
+    }
+}
+
+/// `ts_dev_keylog 1` (port-only development aid): `HUD_Key_Event`'s answer for Escape and what
+/// `cancelselect` did print as `[ts key]` lines, so scripted tests can check that Escape reaches
+/// the engine's menu.
+static DEV_KEY_LOG: goldsrc::Global<std::cell::Cell<goldsrc::client::Cvar>> =
+    goldsrc::Global(std::cell::Cell::new(goldsrc::client::Cvar::NULL));
+
+/// Prints `[ts key] <line>` when `ts_dev_keylog` is on.
+pub fn dev_key_log(line: impl FnOnce() -> String) {
+    if DEV_KEY_LOG.0.get().value() != 0.0 {
+        engine().print(&format!("[ts key] {}\n", line()));
     }
 }
 

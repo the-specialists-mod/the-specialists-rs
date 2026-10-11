@@ -84,12 +84,20 @@ cargo xtask lint                          # clippy --workspace --all-targets -D 
 cargo xtask install <root>|all            # assemble <root>/ts and install the libraries
 cargo xtask all                           # test + play (meck included), about 3.5 min
 cargo xtask test [--map M]                # dedicated server + bots on every engine root, in parallel (~25 s)
-cargo xtask play [fwgs fwgs-win]          # listen-server gameplay on ts_dojo: join/buy/spawn, power-up, grenade,
-                                          # kill, kick, death/respawn, bot fights; then meck; both roots in parallel (~3 min)
+cargo xtask play [fwgs fwgs-win]          # listen-server gameplay on ts_dojo: join/buy/spawn, wall shots, lasers,
+                                          # akimbo, power-up, grenade, kill, kick, death/respawn, bot fights, addbot,
+                                          # Escape; then meck; both roots in parallel (~3 min)
 cargo xtask meck [fwgs fwgs-win]          # grenades on MecklenburgV_Rain_Final: a grenade kill and broken func_breakables
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask dist --release                # dist/<platform>/ts/: libraries + game files
+cargo xtask package-xash-win              # windows-i686 dist --release + stock TS 3.0 + FWGS win32
+                                          # -> ~/ts-xash-win-release.tar.gz (writes to $HOME)
 ```
+
+TS content: dev and test commands link `TS_DIR`, default `../ts_custom` (with the custom maps,
+e.g. `MecklenburgV_Rain_Final`; found from the checkout's parents, so worktrees work).
+`../ts_original` (stock TS 3.0, `TS_ORIGINAL_DIR`) and `../xash3d-ts` (`XASH_WIN_DIR`) are only for
+`package-xash-win`; `TS_PACKAGE_OUT` overrides the archive path.
 
 Engine roots (`cargo xtask roots`) default to `~/games/<dir>`: `fwgs` (native amd64 FWGS),
 `fwgs-win` (FWGS 0.21 win32 under Wine), `rehlds-linux`, `rehlds-win`, `hlds25-linux` and
@@ -113,7 +121,9 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - `ts_tp` teleports, and `ts_face` aims a player's view.
 - `ts_bot_stop 1` freezes bots.
 - `ts_observe` sets an observer's mode and target; `ts_dev_fxlog 1` (client) logs each predicted
-  shot's flash, bullet, impact and decal as `[ts fx]` lines.
+  shot's flash, bullet, impact and decal, akimbo shots and laser beams as `[ts fx]` lines.
+- `ts_dev_keylog 1` (client) logs Escape's `HUD_Key_Event` answer and `cancelselect` as `[ts key]`.
+- `ts_as <player#> <command> ...` runs a client command as another player (e.g. a bot's `ts_give`).
 - `ts_status`, `ts_hurt` and `ts_give` are also available.
 
 ## Conventions

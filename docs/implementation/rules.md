@@ -150,8 +150,15 @@ they are constants (`cvars::INITIAL_CASH` 1200 etc., respawnnumber 1). Nothing r
 `dmgreport` in the port either: `weapons::dmgreport` reads it by name (0 when missing), as TS's
 `CVarGetFloat` does, so its cheat output only works where the engine lets the console create it.
 
-Server commands: `globalslow`, `restartround`, `weaponrestriction`, `addbot`/`addcustombot`
-(print "Bots only in listen servers.", as TS; the port's bots come from `ts_bot_quota`),
+Server commands: `globalslow`, `restartround`, `weaponrestriction`, `addbot [model]` /
+`addcustombot [name] [model] [skill]` (as TS's Windows `mp.dll`, `0x10026110`/`0x100261a0`: on a
+dedicated server they only print "Bots only in listen servers.", which is all the Linux
+`ts_i386.so` has; on a listen server `help` prints the usage and anything else adds a bot:
+`bots::add_listen_bot`, TS's `CreateBot`/`CreateCustomBot` with a `bots.txt` name, one of TS's seven
+models outside teamplay, "<name> connected with skill <f>", and `botlearn 1`. TS's bot AI isn't
+ported, so these bots run the port's quota AI and ignore the skill; the quota neither counts nor
+kicks them. TS's shipped `listenserver.cfg` runs four `addbot`s on every map, so "Create Server"
+starts with four bots, as in TS),
 `loadweapons`/`saveweapons` (the weapons package, `weapons::custom`), and test helpers `ts_status`, `ts_hurt <#> <dmg> [hitgroup] [attacker#]`,
 `ts_givepowerup <#> <bits>`.
 

@@ -326,12 +326,7 @@ pub unsafe extern "C" fn HUD_Frame(time: f64) {
 pub unsafe extern "C" fn HUD_Key_Event(down: c_int, key: c_int, binding: *const c_char) -> c_int {
     // SAFETY: the engine passes null or a NUL-terminated string valid for this call.
     let binding = unsafe { goldsrc::util::cstr(binding) };
-    // Menus swallow keys while open; otherwise the engine handles the key.
-    if menus::key_event(down != 0, key, binding) {
-        return 0;
-    }
-    input::key_event(down != 0, key, binding);
-    1
+    input::hud_key_event(down != 0, key, binding)
 }
 
 #[unsafe(no_mangle)]

@@ -191,7 +191,10 @@ the engine or another module that this code only reads (`host_ver`, `sv_cheats`,
 
 Commands: `+/-moveup movedown left right forward back moveleft moveright lookup lookdown speed
 attack attack2 use jump klook jlook duck reload alt1 alt2 score showscores graph break`, `impulse`,
-`slot1..slot10`, `invnext`, `invprev`, `buy`, `cancelselect`, `special`, `specmode` (HLTV only),
+`slot1..slot10`, `invnext`, `invprev`, `buy`, `cancelselect` (`UserCmd_Close` `0x1001a4e0`: closes the
+weapon menu with `common/wpn_hudoff.wav`, else sends `escape`; Escape's hard binding, which Steam
+GoldSrc and FWGS 0.21 run for Escape in game, so this is how Escape opens the main menu there),
+`special`, `specmode` (HLTV only),
 `voice_showbanned`, `joyadvancedupdate`, and `ts_hud_selftest` (port-only development aid).
 Server-side commands (`lastinv`, `drop`, `firemode`, `useitems`,
 `jointeam`, `changeteam`) are forwarded to the server by the engine, as in TS.
