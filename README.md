@@ -7,7 +7,8 @@ and is **wire-compatible with TS 3.0**: the original TS client can join this ser
 client speaks the same protocol.
 
 It runs on Xash3D FWGS, ReHLDS (pre-anniversary HLDS) and post-anniversary (HL25) Valve HLDS,
-on Linux and Windows.
+on Linux and Windows. The latest release is
+[v0.1.0](https://github.com/the-specialists-mod/the-specialists-rs/releases/tag/v0.1.0).
 
 ![Rust client and server, TS content](docs/img/alive-ak47-fwgs.png)
 
@@ -22,18 +23,67 @@ on Linux and Windows.
 | Map entities | 72 stock classnames with TS's changes (respawning breakables and doors, …) plus the TS entities. All 97 shipped maps load, and 88.8 % of map entities have a class. |
 | Client HUD and UI | Every server message hooked. TS HUD in draw order, the loadout/buy menu, scoreboard, team select, MOTD, `ShowMenu`. TS input with `+alt1`/`+alt2`, the anti-script gate, and mouse look for FWGS and Steam GoldSrc. |
 | Client view and effects | TS view (bob, client-side recoil, third person, slow-mo tint and fades), all 11 weapon events, the TS particle system and map emitters, lasers, flashlights, shadows, the TS studio renderer (split torso/legs bones) and motion-blur ghosts. |
-| Not yet | Map votes, HLTV director messages. Testing with a Steam GoldSrc client and real input (see [validation](docs/validation.md#32-not-validated)). |
+| Save games | Save/restore of every linked class against TS's save tables. Unit tests only: no in-engine save, load or level transition yet. |
+| Not yet | Map votes, HLTV director messages. |
 
 Per-subsystem details, decomp mappings and gaps: [docs/implementation/](docs/implementation/).
 
+### Where it has been tested
+
+Every change is checked with `cargo xtask all`: a dedicated server with bots on all six engine
+roots, then scripted listen-server gameplay on both FWGS roots (join, buy, spawn, wall shots,
+lasers, akimbo, power-ups, grenades, kills, kick, death and respawn, bot fights, the Escape menu,
+grenade kills and breakables on `MecklenburgV_Rain_Final`). v0.1.0 passed it with the stripped
+release libraries, and the 663 unit tests pass.
+
+| Engine | Server | Client |
+|---|---|---|
+| Xash3D FWGS, Linux amd64 | dedicated and listen, scripted gameplay | the Rust client: scripted gameplay; joins the FWGS, ReHLDS and HL25 dedicated servers |
+| Xash3D FWGS 0.21 win32 (under Wine) | dedicated and listen, scripted gameplay | the Rust client; the **original TS 3.0 client** joins port servers (wire compatibility) |
+| ReHLDS, Linux and Windows (Wine) | dedicated, bots | — |
+| Valve HLDS 25th anniversary, Linux and Windows (Wine) | dedicated, bots | — |
+| Steam Half-Life 25th anniversary, Linux | listen server | scripted: listen server, joins HL25 and ReHLDS Linux servers |
+
+Not validated yet: native Windows (only Wine so far), the Steam client on Windows, real keyboard
+and mouse (every client run is scripted), joysticks, voice chat with microphones, long sessions
+with many players and real latency, save games and level transitions, drowning and time-based
+damage in-engine. Details: [docs/validation.md](docs/validation.md#32-not-validated).
+
+## Requirements
+
+**To play or host:** a The Specialists 3.0 install (the maps, models, sounds and other content;
+the port replaces only the game libraries) and one of these engines:
+
+* Xash3D FWGS (Linux or Windows, 32- or 64-bit).
+* Steam Half-Life (25th anniversary) on Linux or Windows, or Steam HLDS for a dedicated server.
+* ReHLDS (Linux or Windows).
+
+**To build:**
+
+* Rust stable (edition 2024, so 1.85 or newer) with the four targets:
+  `rustup target add i686-unknown-linux-gnu x86_64-unknown-linux-gnu i686-pc-windows-gnu x86_64-pc-windows-gnu`.
+* `clang`/libclang, for bindgen (clang 18 or newer: clang 14 fails on the MinGW headers).
+* MinGW-w64 (`i686-w64-mingw32-*` and `x86_64-w64-mingw32-*` gcc and binutils) for the Windows
+  builds, and 32-bit glibc and libgcc for the i686 Linux build. Arch:
+  `clang mingw-w64-gcc lib32-glibc lib32-gcc-libs`; Debian/Ubuntu: `libclang-dev mingw-w64 gcc-multilib`.
+* An [xash3d-fwgs](https://github.com/FWGS/xash3d-fwgs) checkout next to this repository, with its
+  `3rdparty/library_suffix` submodule (or set `FWGS_DIR`). The engine bindings are generated
+  from its headers; the release workflow pins the commit it builds against.
+
+**To run the checks** (`cargo xtask test`/`play`/`all`): Wine, the engine roots (set up with
+steamcmd, ReHLDS and FWGS builds as described in [docs/validation.md](docs/validation.md#11-setting-the-roots-up)),
+and TS content in `../ts_custom` (or `TS_DIR`).
+
 ## Quick start
 
-Requirements: Rust (stable), `clang` (bindgen), MinGW-w64 for the Windows builds, and an
-`xash3d-fwgs` checkout next to this repository (the bindings are generated from its headers, or
-set `FWGS_DIR`).
+Prebuilt libraries for all four platforms are on the
+[releases page](https://github.com/the-specialists-mod/the-specialists-rs/releases): unpack the
+archive for your platform and copy its `ts/` directory over your TS 3.0 install's `ts/`. The
+`-debug` archives hold the same libraries with debug info, for crash reports.
+
+To build them yourself:
 
 ```sh
-rustup target add i686-unknown-linux-gnu i686-pc-windows-gnu x86_64-pc-windows-gnu
 cargo xtask build --release      # all four targets
 cargo xtask dist --release       # dist/<platform>/ts/: libraries + liblist.gam, gameinfo.txt, delta.lst
 ```
