@@ -91,7 +91,7 @@ pub unsafe extern "C" fn HUD_PlayerMove(pm: *mut playermove_t, _server: c_int) {
     // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
     let pm = unsafe { &mut *pm };
     spectator::begin_player_move(pm);
-    shared::pm::player_move_with(pm, Some(spectator::spectator_move));
+    shared::pm::player_move_with(pm, shared::pm::Arith::CLIENT, Some(spectator::spectator_move));
 }
 
 #[unsafe(no_mangle)]
