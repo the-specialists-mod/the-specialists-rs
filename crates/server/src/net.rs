@@ -44,7 +44,7 @@ pub fn cmd_end(player: *const edict_t) {
     }
 }
 
-/// `pfnAddToFullPack`: decide whether `ent` is sent to `host` this frame, and fill `state`.
+/// `AddToFullPack` (0xaf180): decide whether `ent` is sent to `host` this frame, and fill `state`.
 /// `pset` is the engine's PVS buffer, passed back to it untouched.
 pub fn add_to_full_pack(
     state: &mut entity_state_t,
@@ -63,11 +63,13 @@ pub fn add_to_full_pack(
     if v.effects == EF_NODRAW as i32 && ent != host {
         return 0;
     }
-    // Spectators aren't sent to other players.
-    if v.flags & FL_SPECTATOR as i32 != 0 && ent != host {
+    // TS's only model tests are `modelindex == 0` and `pStringBase + pev->model == NULL`, which
+    // can't fail, so an entity with a model index but an empty `model` string is still sent.
+    if v.modelindex == 0 {
         return 0;
     }
-    if v.modelindex == 0 || engine().string(v.model).is_empty() {
+    // Spectators aren't sent to other players.
+    if v.flags & FL_SPECTATOR as i32 != 0 && ent != host {
         return 0;
     }
     // The engine already culled by PVS for players; check everything else here.
@@ -153,6 +155,10 @@ pub fn add_to_full_pack(
         // The p_ model the client merges onto the player (`StudioDrawPlayer`).
         state.weaponmodel = engine().model_index(engine().string(v.weaponmodel));
         state.gaitsequence = v.gaitsequence;
+        // TS stores `flags & FL_SPECTATOR` (0x4000000) into the 1-bit `spectator` field; every
+        // engine clamps an out-of-range unsigned delta integer to its maximum (FWGS
+        // `Delta_ClampIntegerField`, HLDS/ReHLDS `MSG_WriteBits`), so the wire carries 1 either
+        // way. 0/1 is the same delta and avoids FWGS's debug-build overflow warning.
         state.spectator = (v.flags & FL_SPECTATOR as i32 != 0) as i32;
         state.friction = v.friction;
         state.gravity = v.gravity;
