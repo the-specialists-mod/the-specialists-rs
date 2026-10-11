@@ -28,7 +28,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `levelchange.rs` | `trigger_changelevel` (+ the `fireanddie` it creates), `trigger_transition`, `player_loadsaved`, `player_weaponstrip` |
 | `sound.rs` | `ambient_generic` (with the full dynpitchvol / LFO code and the 27 presets), `env_sound`, `speaker` |
 | `soundent.rs` | `soundent` (`CSoundEnt`: the AI sound list, `InsertSound`) |
-| `sentences.rs` | `SENTENCEG_*`: the sentences.txt loader, `!NAME` lookup, sequential and random group picks, `UTIL_EmitAmbientSound`, the (multiplayer no-op) `SetSuitUpdate` |
+| `sentences.rs` | `SENTENCEG_*`: the sentences.txt loader, `!NAME` lookup, sequential and random group picks, `UTIL_EmitAmbientSound`, `SENTENCEG_GetIndex` / `PlayRndI`, the edict entry to `SetSuitUpdate` (the queue is `player::suit`) |
 | `lights.rs` | `light`, `light_spot`, `light_environment` |
 | `effects.rs` | `env_sprite` (+ `CSprite::AnimateAndDie`, `SetAttachment`, `SetTransparency`), `env_glow`, `env_shake`, `env_fade`, `env_explosion` (+ `spark_shower`, `ExplosionCreate`), `env_render`, `env_beam`, `env_laser`, `env_shooter`, `gibshooter` (+ `gib`, `SpawnHeadGib`, `SpawnRandomGibs`), `env_spark` / `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite`, `cycler`, `cycler_prdroid`, `cycler_wreckage`, `beam` (+ `BeamCreate` / `PointsInit`), `test_effect`, `env_funnel`, `env_beverage`, `item_sodacan` |
 | `animating.rs` | `CBaseAnimating` / `CActAnimating` for stock model entities: `ResetSequenceInfo`, `StudioFrameAdvance`, `DispatchAnimEvents`, `SetActivity` / `LookupActivity`, `InitBoneControllers`, `SetSequenceBox` |
@@ -353,10 +353,10 @@ The track change that its own train fires reads the train's path through a side 
   calls `TakeArmor(50)`. The first kevlar takes 10 free inventory slots: without them there's no
   armour, but the battery is still used up. Armour is capped at 100 and speed is recomputed from
   the free slots. It then queues the `!HEV_<n>P` charge report with `SetSuitUpdate`, which TS
-  drops in multiplayer (§3.5), so no sentence plays.
+  drops in multiplayer, so the sentence plays only in single player (`player::suit`).
 * **Antidote** (`CItemAntidote`, 0xcb1c0). `models/w_antidote.mdl` (only the model is precached).
   Touching it always succeeds, with no pickup message or sound: it queues `!HEV_DET4` (dropped
-  in multiplayer, §3.5) and adds one to the player's antidote count (+0x834,
+  in multiplayer, as above) and adds one to the player's antidote count (+0x834,
   `TimeBasedDamage::antidotes`), which cures nerve gas or poison (`CheckTimeBasedDamage`). The
   count is never reset, so it survives death. None of the 97 shipped maps place one.
 * **Chargers.** The health charger refills to max in one use. The HEV charger calls
@@ -476,10 +476,14 @@ Port notes:
   table). `PlayLockSounds` plays the group in order (`SENTENCEG_PlaySequentialSz`, volume 0.85,
   `CHAN_VOICE`) at most every 6 s and stops after the last sentence; when the lock sound plays at the
   same time it drops to volume 0.25. Lock sounds now use TS's slow-motion pitch factor (0.5).
-* **Suit sentences.** `CBasePlayer::SetSuitUpdate` (0xda410) returns early because TS's rules are
-  always multiplayer (`CHalfLifeMultiplay::IsMultiplayer` returns 1), so the HEV queue and
-  `CheckSuitUpdate`'s sentence half aren't ported; `sentences::set_suit_update` keeps the call
-  sites.
+* **Suit sentences.** `CBasePlayer::SetSuitUpdate` (0xda410) returns at once under the
+  multiplayer rules (`CHalfLifeMultiplay::IsMultiplayer` 0xcf330 returns 1). Under
+  `CHalfLifeRules` (`deathmatch` 0, `IsMultiplayer` 0xde734 returns 0) it queues the sentence,
+  and `CheckSuitUpdate` plays it from PreThink (`player::suit`, rules.md). Entities that hold only
+  the player's edict (the battery, the antidote) go through `sentences::set_suit_update`, which
+  reaches the player at once or, while a dispatch further up holds it, when that returns.
+  `SENTENCEG_PlayRndI` (0xe0438, for a group in the queue) plays only a non-zero ordinal, unlike
+  `PlayRndSz`.
 * **Deviation.** `USENTENCEG_Pick` on a group of more than 32 sentences reads past its 32-entry LRU
   array into the next group's record in TS; the port only uses the 32 LRU entries.
 

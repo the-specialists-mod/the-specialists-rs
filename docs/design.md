@@ -130,6 +130,7 @@ lists match `ts_i386.so` and `mp.dll` (`implementation/stock-entities.md` §7.5)
 | `ts` | `rules::PlayerRules` | rules package |
 | `hud` | `player::hud::HudCache` | rules package |
 | `tbd` | `player::water::TimeBasedDamage` | rules package (damage types taken, time-based damage, drown recovery) |
+| `suit` | `player::suit::SuitQueue` | rules package (the HEV suit's sentence queue, single player only) |
 | `bot` | `Option<bots::Bot>` | rules package |
 | `drive` | `entities::stock::drive::DriveState` | stock entities (train/tank driving) |
 
@@ -143,6 +144,7 @@ Hook order, fixed in `player/mod.rs`:
 * **spawn:** base player setup, then `rules::on_spawn` (spawn point, loadout), `weapons::on_spawn`, `stunt::on_spawn`, `drive::on_spawn`, `hud::reset`.
 * **pre_think:** as in TS `PreThink` (0x908cc), `rules::player_think` first (button edges, `PlayerThink`); during intermission PreThink stops there. Otherwise `drive::pre_think` (train speed control), then `rules` (which runs `hud::update_client_data`, TS's `UpdateClientData`, right after `WaterMove`), `stunt`, `weapons`.
 * **post_think:** as in TS `PostThink` (0x91610), during intermission or while dead only the weapon timers run down (plus `rules`); otherwise `drive::post_think` (tank firing / letting go), `weapons` (item post frame, skipped while a tank is in use; once the gun is ready it first runs `player::player_use::impulse_commands`, TS's `ImpulseCommands`: the single `PlayerUse` for every usable entity (stock, TS items, dropped guns), then the spray (201), 99, 204 and the cheat impulses), `stunt`, `rules`.
+* **think:** `CBaseEntity::Think`, which the engine calls from the player's usercmd after PreThink once `nextthink` is due: `rules::lifecycle::death_think` (TS's `PlayerDeathThink`) when `Killed` scheduled it, 0.1 s after a death that didn't gib. PreThink also calls it every frame while dead.
 * **fill_client_data:** `stunt`, `weapons`, `rules`.
 * **take_damage:** `player::damage::take_damage`, which on death calls `rules::on_killed`. That in turn calls `weapons::on_killed`. Self-inflicted damage from inside the player's own callbacks (fall, drowning, slime/lava, poison) calls `take_damage` directly, since `damage::apply` can't reach the dispatched entity.
 

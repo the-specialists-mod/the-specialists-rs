@@ -9,7 +9,6 @@
 
 use super::explode::emit_sound_slow;
 use goldsrc::Global;
-use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::borrow::Cow;
@@ -167,6 +166,19 @@ pub fn lookup(sample: &CStr) -> Option<usize> {
     TABLE.0.borrow().as_ref()?.names.iter().position(|n| n.as_bytes().eq_ignore_ascii_case(name))
 }
 
+/// `gszallsentencenames[i]`, if loaded and in range.
+pub fn name(i: usize) -> Option<String> {
+    TABLE.0.borrow().as_ref()?.names.get(i).cloned()
+}
+
+/// `SENTENCEG_GetIndex` (0xe03b8): the index of group `name` (exact match), -1 if there is none
+/// or the file isn't loaded.
+pub fn group_index(name: &CStr) -> i32 {
+    let table = TABLE.0.borrow();
+    let Some(t) = table.as_ref() else { return -1 };
+    t.groups.iter().position(|g| g.name.as_bytes() == name.to_bytes()).map_or(-1, |i| i as i32)
+}
+
 /// The sample to hand the engine: `!NAME` becomes `!<index>`, anything else is passed through.
 /// `None` means a sentence that isn't in sentences.txt, which TS doesn't play.
 pub fn resolve(sample: &CStr) -> Option<Cow<'_, CStr>> {
@@ -252,6 +264,28 @@ pub fn play_random(e: *mut edict_t, name: &CStr, vol: f32, attn: f32, flags: i32
     ipick
 }
 
+/// `SENTENCEG_PlayRndI` (0xe0438): plays a random sentence of group index `group` on
+/// `CHAN_VOICE` and returns its ordinal (-1 if the file isn't loaded or the group is empty).
+/// Unlike `SENTENCEG_PlayRndSz` it plays only a non-zero ordinal (`jle` at 0xe0478), so the
+/// group's sentence 0 is picked but never heard. Guard: TS indexes `rgsentenceg` with any
+/// non-negative `group`.
+pub fn play_random_index(e: *mut edict_t, group: i32, vol: f32, attn: f32, flags: i32, pitch: i32) -> i32 {
+    let eng = engine();
+    let picked = {
+        let mut table = TABLE.0.borrow_mut();
+        let Some(t) = table.as_mut() else { return -1 };
+        let Ok(gi) = usize::try_from(group) else { return -1 };
+        pick(t, gi, |lo, hi| eng.random_long(lo, hi))
+    };
+    let Some((sentence, ipick)) = picked else { return -1 };
+    if ipick > 0
+        && let Ok(s) = CString::new(sentence)
+    {
+        emit_sound_slow(e, CHAN_VOICE, &s, vol, attn, flags, pitch, 0.5);
+    }
+    ipick
+}
+
 /// `UTIL_EmitAmbientSound` (0xec7e8): `pfnEmitAmbientSound` with `!NAME` resolved.
 #[allow(clippy::too_many_arguments)]
 pub fn emit_ambient(e: *mut edict_t, origin: [f32; 3], sample: &CStr, vol: f32, attn: f32, flags: i32, pitch: i32) {
@@ -260,17 +294,11 @@ pub fn emit_ambient(e: *mut edict_t, origin: [f32; 3], sample: &CStr, vol: f32, 
     }
 }
 
-/// `CBasePlayer::SetSuitUpdate` (0xda410) as TS reaches it: it ignores players without the HEV
-/// suit bit, and then returns because `g_pGameRules->IsMultiplayer()` is always true in TS
-/// (`CHalfLifeMultiplay::IsMultiplayer`, 0xcf330). Suit sentences (the battery's `!HEV_xP`, the
-/// damage reports) are therefore never queued, so the suit queue and `CheckSuitUpdate` aren't
-/// ported.
-#[allow(clippy::needless_return)] // keeps TS's suit-bit early return ahead of the IsMultiplayer() one
-pub fn set_suit_update(player: *mut edict_t, _name: &CStr, _group: bool, _no_repeat: i32) {
-    if player.is_null() || player.v().weapons >= 0 {
-        return;
-    }
-    // IsMultiplayer() == 1: "play no suit sounds in multiplayer".
+/// `CBasePlayer::SetSuitUpdate` (0xda410) for an entity holding the player's edict (the
+/// battery and antidote touches): `player::suit`, which ignores players without the HEV suit
+/// bit and, as TS does, everything under the multiplayer rules.
+pub fn set_suit_update(player: *mut edict_t, name: &CStr, group: bool, no_repeat: i32) {
+    crate::player::suit::set_suit_update_edict(player, name, group, no_repeat);
 }
 
 #[cfg(test)]
