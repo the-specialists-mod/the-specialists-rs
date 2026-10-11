@@ -176,7 +176,7 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
         msg::one(Msg::TsBTime, e, |w| TsBTime { on: btime }.write(w));
     }
     // `m_pActiveItem` is the TS gun and the player is alive.
-    let has_gun = crate::weapons::has_gun(p);
+    let has_gun = crate::weapons::gun_active(p);
     if has_gun && alive {
         let mask = p.inv.gun.active_items() as u8;
         if p.hud.act_items != mask {
@@ -191,7 +191,7 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
         msg::all(Msg::TsPAward, |w| m.write(w));
     }
     // `m_pActiveItem->UpdateClientData(this)`: `CTSGun::UpdateClientData` (0x858c8), only while
-    // the player holds the gun.
+    // the gun is the active item.
     if has_gun {
         crate::weapons::update_client_data(p, cx);
     }

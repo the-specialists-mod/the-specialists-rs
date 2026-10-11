@@ -376,8 +376,8 @@ impl GunHost for ClientHost<'_> {
         }
     }
     fn sound(&mut self, _s: Sound) {}
-    fn shoot(&mut self, _shot: &Shot) {}
-    fn melee(&mut self, _hit: &MeleeHit) -> MeleeResult {
+    fn shoot(&mut self, _shot: &Shot, _gun: &mut Gun) {}
+    fn melee(&mut self, _hit: &MeleeHit, _gun: &mut Gun) -> MeleeResult {
         MeleeResult::Miss // hits are resolved by the server
     }
     fn throw_grenade(&mut self, _origin: Vec3, _velocity: Vec3, _roll: bool) {}

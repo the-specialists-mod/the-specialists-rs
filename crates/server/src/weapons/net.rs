@@ -147,7 +147,7 @@ pub fn update_client(p: &mut Player, cx: &mut Cx) {
 
 /// TS `UpdateClientData` weapon fields + the view model index.
 pub fn fill_client_data(p: &mut Player, cx: &mut Cx, cd: &mut clientdata_t) {
-    if p.inv.sv.has_gun {
+    if super::gun_active(p) {
         proto::pack_clientdata(&p.inv.gun, p.active_powerup, cd);
     } else {
         pack_clientdata_no_gun(p.inv.gun.next_attack, p.active_powerup, cd);
@@ -171,7 +171,7 @@ fn pack_clientdata_no_gun(next_attack: f32, powerups: u16, cd: &mut clientdata_t
 
 /// TS `GetWeaponData`: only the TS gun, under HL weapon id 16; all zero without it.
 pub fn get_weapon_data(p: &mut Player, _cx: &mut Cx, info: &mut [weapon_data_t; 32]) {
-    if p.inv.sv.has_gun {
+    if super::gun_active(p) {
         proto::pack_weapon_data(&p.inv.gun, &mut info[proto::TSGUN_ID as usize]);
     }
 }

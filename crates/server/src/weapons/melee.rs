@@ -322,10 +322,12 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     info.dir = spread::normalize(spread::sub(v.origin, pev.origin));
     info.pos = tr.vecEndPos;
     // `glast_closecombat` only for a stored kung-fu attack (`pl+0x7a4 == 0`, set at 0x9c19d).
+    // The hit runs inside the attacker in TS, so it is lent meanwhile (a kicked button's
+    // `game_player_team` changes its team at once; `ServerHost::reach_player`).
     if source == 0 {
-        damage::glast::close_combat(|| damage::apply(victim, &info));
+        crate::world::lend(me, p, || damage::glast::close_combat(|| damage::apply(victim, &info)));
     } else {
-        damage::apply(victim, &info);
+        crate::world::lend(me, p, || damage::apply(victim, &info));
     }
 }
 

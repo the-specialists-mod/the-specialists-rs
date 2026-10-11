@@ -46,7 +46,7 @@ pub fn sync_speed(p: &mut Player, cx: &mut Cx) {
 /// `CBasePlayer::PickUpWeapon(id, status, attachments, select, own)`.
 /// Refused without the gun (`m_pActiveItem` must be a `CTSGun`).
 pub fn pick_up_weapon(p: &mut Player, cx: &mut Cx, id: u8, from: Option<&Status>, attachments: u32, select: bool, own: bool) -> bool {
-    if !p.inv.sv.has_gun {
+    if !super::gun_active(p) {
         return false;
     }
     let Some(w) = info(id) else { return false };
@@ -130,7 +130,7 @@ fn throw_weapon(p: &mut Player, cx: &mut Cx, id: u8, status: Status, pos_offset:
 /// `CBasePlayer::DropWeapon(id | -1 current | -2 disarm, dmg)`.
 pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
     // Nothing at all without the gun (0x94900 returns first), not even the CTB case.
-    if !p.inv.sv.has_gun {
+    if !super::gun_active(p) {
         return;
     }
     let cur = p.inv.gun.current;
@@ -359,7 +359,7 @@ fn add_item(p: &mut Player, cx: &mut Cx, bits: u32) {
         emit(cx.edict, CHAN_ITEM, c"weapons/items.wav", 1.0, 0.8, 100);
         return;
     }
-    if !p.inv.sv.has_gun {
+    if !super::gun_active(p) {
         return; // attachments go on the gun's weapon
     }
     with_host(p, cx, |gun, h| gun.add_item(bits, h));
@@ -367,7 +367,7 @@ fn add_item(p: &mut Player, cx: &mut Cx, bits: u32) {
 
 /// `CBasePlayer::BuyWeapon(id, attachments)`.
 fn buy_weapon(p: &mut Player, cx: &mut Cx, wid: i32, attachments: u32) {
-    if !p.inv.sv.has_gun || !(0..MAX_WEAPONS as i32).contains(&wid) {
+    if !super::gun_active(p) || !(0..MAX_WEAPONS as i32).contains(&wid) {
         return;
     }
     let wid = wid as u8;
@@ -386,7 +386,7 @@ fn buy_weapon(p: &mut Player, cx: &mut Cx, wid: i32, attachments: u32) {
 /// `CBasePlayer::BuyAmmo(type)`: one purchase (`per_buy` rounds); -1 = held weapon's type,
 /// -2 = every owned weapon's type until full.
 pub fn buy_ammo(p: &mut Player, cx: &mut Cx, t: i32) {
-    if !p.inv.sv.has_gun {
+    if !super::gun_active(p) {
         return;
     }
     let per_buy = |t: u8| tables().ammo(t).map(|a| a.per_buy).unwrap_or(0);
@@ -440,15 +440,15 @@ pub fn buy_armament(p: &mut Player, cx: &mut Cx) {
     }
 }
 
-/// `CBasePlayer::Killed` (0x8ed5c) weapon part: the gun's `Holster` (with an active item),
-/// `DropAmmo` (0x946f0, the gun's reserve copied into a pack), `DropFlag(false)` (the CTB case,
+/// `CBasePlayer::Killed` (0x8ed5c) weapon part: the active item's `Holster` (the gun's, or a
+/// cycler's), `DropAmmo` (0x946f0, the active gun's reserve copied into a pack), `DropFlag(false)` (the CTB case,
 /// with or without a gun), then `DropWeapon` for every id (each one twice when it has an akimbo
 /// pair), and the loadout cleared (`ResetArmament`; the client resubmits it from the buy menu).
 /// What is left in the gun (the reserve, a corpse's grenades) goes with the gun itself on the
 /// first death think (`weapons::remove_all_items`, which also sends `CurWeapon 0,0,0`).
 pub fn on_killed(p: &mut Player, cx: &mut Cx) {
-    if p.inv.sv.has_gun {
-        with_host(p, cx, |gun, h| gun.holster_weapon(h));
+    super::holster_active(p, cx);
+    if super::gun_active(p) {
         worldgun::drop_ammo(cx.edict, p.inv.gun.reserve);
     }
     crate::entities::ts::drop_flag(p, cx, false);

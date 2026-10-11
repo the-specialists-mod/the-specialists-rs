@@ -43,9 +43,9 @@ fn weapon_info_name(id: i32) -> String {
 
 /// The killer's active `weapon_tsgun` as `PlayerKilled` reads it (`pl+0xa10`, item id 0x10):
 /// `Some(gun+0xc8)`, the current weapon id (0 = kung fu, `gun+0xcc` NULL), or `None` without the
-/// gun (a `game_player_equip` map, weapons.md §2).
+/// gun active (a `game_player_equip` map, weapons.md §2, or a `cycler_weapon` switched to).
 fn active_gun(p: &Player) -> Option<u8> {
-    crate::weapons::has_gun(p).then_some(p.inv.gun.current)
+    crate::weapons::gun_active(p).then_some(p.inv.gun.current)
 }
 
 /// The `DeathMsg`/log weapon when the attacker is its own inflictor (`PlayerKilled` 0x895e4):

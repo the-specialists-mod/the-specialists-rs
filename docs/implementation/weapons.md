@@ -82,8 +82,13 @@ addresses of `ts_i386.so`.
 | `adjust_weapon_value` 0x9eca4, `save_weapon_value` 0x9f044, `SendWeaponParams` 0x9eb98, `InformClientsOnWeaponsParams` 0x9eb14 | `custom.rs` (`loadweapons`, `saveweapons`, `CustomWP`; TS's file format and messages, the absorb values and the custom-weapons flag in the rules state, reset by `CTSGameRules::Init`: rules.md §2) |
 | `CBasePlayer::Killed` 0x8ed5c (weapon part) | `inventory::on_killed` |
 | `TSPrecache` 0x9f320 (weapon loop) | `assets::precache_weapon_assets` (from `crate::precache::ts_precache`) |
-| `CBasePlayerWeapon::AddToPlayer` 0xf1e60 (weapon bit) | `give_gun` (`TSGUN_WEAPON_BIT`, bit 16), `add_cycler` (bit 0) |
+| `CBasePlayerWeapon::AddToPlayer` 0xf1e60 (weapon bit) | `add_gun` (`TSGUN_WEAPON_BIT`, bit 16), `add_cycler` (bit 0) |
 | `CBasePlayer::HasWeapons` 0xdb060 | `has_weapons` (the gun or a `cycler_weapon`) |
+| `CBasePlayer::GiveNamedItem` 0xdb524 (`weapon_tsgun`) | `give_named_gun` (`PlayerSpawn`) / `maprules::give_named_item`: a `weapon_tsgun` entity (`playeritem::WorldTsGun`) |
+| `CBasePlayer::AddPlayerItem` 0xdc0c4 / `SwitchWeapon` 0xdd98c | `add_gun` + `switch_to_gun`, `add_cycler` + `deploy_cycler` (`should_switch_weapon`) |
+| `FShouldSwitchWeapon` 0xcf380 (multiplayer) / 0xde74c (single player) | `should_switch_weapon` |
+| `CBasePlayer::SelectItem` 0xdade4 (`use <classname>`) | `select_item` |
+| `CBasePlayer::ItemPostFrame` 0xdc4d0 (gate) | `item_post_frame_ready` (gun: `Gun::post_frame_ready`; cycler: `cycler_post_frame_ready`) |
 
 ### Hooks
 
@@ -98,10 +103,12 @@ addresses of `ts_i386.so`.
   `precache_weapon_assets` (`TSPrecache`'s loop: per weapon id its shell, `v_`, `p_`, silenced
   `p_` and `w_` models and its two sounds, non-empty ones only).
   The other weapon sounds and models are in `TSPrecache`'s own lists.
-* `on_spawn`: TSInit (bar 100, penalty 0, timers); then, as `PlayerSpawn` (0x890ac), either the
-  map's `game_player_equip`s touch the player, or (no equip) `give_gun` (`GiveNamedItem
-  ("weapon_tsgun")`: a new empty gun, or the one already held; deploy, kung fu unless the
-  port-only bots already got a weapon) and `BuyArmament` from the `tkw`/`tki`/`tka` lists;
+* `on_spawn`: TSInit (bar 100, penalty 0, timers); then, as `PlayerSpawn` (0x890ac), with the
+  player lent to its slot (`world::lend`), either the map's `game_player_equip`s touch the player,
+  or (no equip) `give_named_gun` (`GiveNamedItem("weapon_tsgun")`: a `weapon_tsgun` entity at the
+  player's feet with `SF_NORESPAWN`, spawned and touched: `add_gun`, a new empty gun, then
+  `switch_to_gun`, deploy, kung fu unless the port-only bots already got a weapon; a player still
+  holding a gun leaves the new one lying there) and `BuyArmament` from the `tkw`/`tki`/`tka` lists;
   speed, `KFuPower`. (`CustomWP` goes to a joiner from `CTSGameRules::InitHUD` while the
   custom-weapons flag is set: `weapons::inform_custom_weapons`.) The gun's records are emptied where TS loses
   its `weapon_tsgun` (`remove_all_items`, `strip_all`), not here.
@@ -113,16 +120,25 @@ addresses of `ts_i386.so`.
   ground ammo left alone, the infinite-clip power-up refused, no weapon/ammo buys or
   attachments (kevlar still works), no `ActItems`/`WStatus`/`WeaponInfo`, `clientdata_t` stops
   after the weapon id (0), `GetWeaponData` all zero. Stunts and the other power-ups work. An
-  equip listing `weapon_tsgun` gives a new, empty gun (`maprules::give_named_item`).
+  equip listing `weapon_tsgun` gives a new, empty gun (`maprules::give_named_item`). TS tests
+  `m_pActiveItem` (and `m_iId == 16`) on all these paths, so a gun holstered for a
+  `cycler_weapon` counts as no gun there too (`gun_active`); holding it (`holds_gun`) matters only
+  to `CanHavePlayerItem`, `HasWeapons`, `SelectItem` and `RemoveAllItems`.
 * `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
   melee windows), `BlockPlayer` expiry, the delayed melee hit.
 * `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
-  tank (dead or game over, `PostThink` skips to the timer tail): once the gun is ready
-  (`Gun::post_frame_ready`, or always without a gun), `ImpulseCommands` (`PlayerUse` and the
-  impulses, `player::player_use::impulse_commands`) and then, with a gun, the weapon frame
-  (`Gun::weapon_post_frame`) and the seed reroll (`RandomLong(0, 32000)`, as TS); timer decrement
-  by `frametime * fuser1 * (DFR ? 1.5 : 1)`, speed, messages.
-* `on_killed` (`Killed` 0x8ed5c): with the gun, holster and ammo pack; the CTB case
+  tank (dead or game over, `PostThink` skips to the timer tail): once the active item is ready
+  (`item_post_frame_ready`: the gun's `Gun::post_frame_ready`; a cycler's `m_flNextAttack` run
+  out or its `m_iModel` 0; always with no active item), `ImpulseCommands` (`PlayerUse` and the
+  impulses, `player::player_use::impulse_commands`) and then, with the gun active, the weapon
+  frame (`Gun::weapon_post_frame`), and with any active item (a cycler's `ItemPostFrame` returns
+  at once) the seed reroll (`RandomLong(0, 32000)`, as TS); timer decrement
+  by `frametime * fuser1 * (DFR ? 1.5 : 1)`, speed, messages. Each shot and melee swing of the
+  frame lends the player to its slot (`host::ServerHost::reach_player`: the inventory is moved out
+  for the gun call and put back for the hit), so a `game_player_team` the hit fires changes the
+  player at once (rules.md §7).
+* `on_killed` (`Killed` 0x8ed5c): the active item's holster (gun or cycler), the ammo pack with
+  the gun active; the CTB case
   (`DropFlag(false)`, gun or not); drop every weapon as `WorldGun` (a corpse's grenades become
   grenade power-ups, their record staying in the gun); slots, kevlar flag, loadout (TS
   `ResetArmament`). `ActItems 0` is the rules' (sent once, later in `Killed`); the player's
@@ -140,11 +156,16 @@ addresses of `ts_i386.so`.
   clears them (`= 0`, or `&= 0x80000000` from `player_weaponstrip`); `DropPlayerItem`, the
   other SDK place, is never called in TS, and the TS client never reads `iWeaponBits`.
 * `cycler_weapon` (`CWeaponCycler`, stock-entities.md §2): `add_cycler` puts it in the HL item
-  list and `deploy_cycler` makes it the active item when the player has no gun
-  (`CHalfLifeMultiplay::FShouldSwitchWeapon`): its model as the view model, `m_flNextAttack`
-  (`gun.next_attack`) 1, weapon anim 0. A gun given later holsters it (`m_flNextAttack` 0.5)
-  and deploys. Nothing else runs for it: TS's `ItemPostFrame`, `UpdateClientData` and every
-  gun path test `m_iId == 16` first.
+  list and `deploy_cycler` makes it the active item when `FShouldSwitchWeapon` says so
+  (`should_switch_weapon`: under the multiplayer rules only with no active item, the gun weighing
+  1 to the cycler's 0; in single player always, holstering a held gun to kung fu first): its
+  model as the view model, `m_flNextAttack` (`gun.next_attack`) 1, weapon anim 0 with the
+  cycler's `body`. A gun given later holsters it (`m_flNextAttack` 0.5) and deploys.
+  `use cycler_weapon` / `use weapon_tsgun` (`select_item`, `SelectItem`) switch between the held
+  two the same way (the old item's `Holster`, the new one's `Deploy`), with no alive check. Tanks
+  holster and redeploy whichever item is active. Nothing else runs for it: TS's `ItemPostFrame`,
+  `UpdateClientData` and every gun path test `m_iId == 16` first (or read it as a `CTSGun`, see
+  `gun_active`).
 * `client_command`: `weapon_<n>`, `lastinv`, `drop`, `drop_<n>`, `firemode`, `useitems`,
   `lasclr_<n>` (`PlInfo`), `rst_cfg`, `tkw id_att ...`, `tki item ...`, `tka type_count ...`;
   test helpers (need `sv_cheats`): `ts_give id_att ...` (weapon + full ammo),
@@ -313,14 +334,13 @@ How the port maps TS where the structure differs (not deviations):
   `SvState::has_gun` says whether TS's gun exists, `give_gun` sets it with an emptied inventory,
   and `remove_all_items` / `strip_all` (`StartObserver`, disconnect) clear it and empty the
   records. `reset_for_spawn` gives the fields a fresh gun starts with. TS's gun is a
-  `weapon_tsgun` entity attached to the player; the port keeps one only when the gun came from a
-  map-placed `weapon_tsgun` (`SvState::gun_item`, dropped with the gun). `GiveNamedItem`'s gun
-  (`PlayerSpawn`, `game_player_equip`) has no entity, so the port allocates one edict fewer per
-  armed player than TS (a deviation of the edict numbering, not of behaviour).
-* **`cycler_weapon` switches (deviation).** Single player's `CHalfLifeRules::FShouldSwitchWeapon`
-  (0xde74c) holsters a held TS gun for a picked-up cycler, and `use cycler_weapon` (`SelectItem`)
-  can switch to a held one later. The port's gun has no holstered-while-held state, so the
-  cycler is deployed only when the player has no gun.
+  `weapon_tsgun` entity attached to the player, and so is the port's (`SvState::gun_item`, from
+  `GiveNamedItem` or a map-placed one, dropped with the gun), so edicts are allocated and numbered
+  as in TS; the gun's state lives in the player's `Gun`, not in the entity. A `GiveNamedItem` gun
+  stays on its `FallThink` while held (it never lands), thinking every 0.1 s, as TS's does.
+* **A gun holstered for a `cycler_weapon`.** `SvState::has_gun` (held) and
+  `SvState::cycler_active` (`m_pActiveItem` is the cycler) together give TS's active item
+  (`active_item`); gun paths use `gun_active`.
 * **Multi-damage.** Hits go through TS's `ClearMultiDamage` / `TraceAttack` / `ApplyMultiDamage`
   (`damage::multi`): `ShootBulletsPlayer` clears once (not with simulated bullets), sets the type
   0x1002, traces every pellet and applies after the loop, so the pellets that hit one victim in a

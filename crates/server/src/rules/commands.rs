@@ -35,10 +35,9 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
             }
         }
         // `CBasePlayer::SelectItem(argv(1))` (0xdade4): switch to the held item of that class
-        // (`strcmp`) unless it is `m_pActiveItem`. A TS player's one item, `weapon_tsgun`, is
-        // `m_pActiveItem` whenever it is held (`AddPlayerItem` deploys it: no active item before,
-        // `CanDeploy` always true), so the command is taken and changes nothing.
-        "use" => {}
+        // (`strcmp`) unless it is `m_pActiveItem`: between `weapon_tsgun` and a picked-up
+        // `cycler_weapon`. With only the gun the command changes nothing.
+        "use" => crate::weapons::select_item(p, cx, args.argv(1)),
         // No teamplay check (0xae49c): the TS client ignores menu 2 unless `GameMode` said
         // teamplay (`ShowVGUIMenu` 0x10064050 -> 0x10064280).
         "changeteam" => msg::one(Msg::VguiMenu, cx.edict, |w| VguiMenu { menu: 2 }.write(w)),

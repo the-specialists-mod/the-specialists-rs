@@ -382,7 +382,7 @@ impl Entity for AmmoPack {
         let reserve = &mut self.reserve;
         // Without the gun the whole touch is skipped: nothing taken, the pack stays.
         let took = player::with_player(other, |p, _| {
-            p.inv.sv.has_gun.then(|| take_ammo(reserve, |t, n| p.inv.gun.add_ammo(t, n, assets::max_carry(t))))
+            crate::weapons::gun_active(p).then(|| take_ammo(reserve, |t, n| p.inv.gun.add_ammo(t, n, assets::max_carry(t))))
         });
         let Some(Some(took)) = took else {
             return;

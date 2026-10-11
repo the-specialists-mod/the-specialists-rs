@@ -161,8 +161,9 @@ voice manager sees every command that gets past `ClientCommand`'s own names, the
 anything else gets "Unknown command". A client without private data is ignored.
 
 Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `powerup <n>` (cheat),
-`cashala` (cheat), `fov`, `use <classname>` (`SelectItem` 0xdade4: taken, and it never changes
-anything, since a TS player's one item, `weapon_tsgun`, is the active item whenever it is held), `changeteam` (VGUIMenu 2, in every mode: TS has no teamplay check, 0xae49c; the client only opens the team menu when `GameMode` said teamplay, `ShowVGUIMenu` 0x10064050 → 0x10064280, as the port's client does), `jointeam <n>`, `motd`, `fullupdate`,
+`cashala` (cheat), `fov`, `use <classname>` (`SelectItem` 0xdade4, `weapons::select_item`: switches
+between `weapon_tsgun` and a picked-up `cycler_weapon`; with only the gun it changes nothing, since the gun is
+then the active item), `changeteam` (VGUIMenu 2, in every mode: TS has no teamplay check, 0xae49c; the client only opens the team menu when `GameMode` said teamplay, `ShowVGUIMenu` 0x10064050 → 0x10064280, as the port's client does), `jointeam <n>`, `motd`, `fullupdate`,
 `lasclr_<n>` (PlInfo), `menuselect`, `vban`, `VModEnable` (voice manager, §2), `cutwire_<n>` (no-op).
 
 ## 4. Map entities (`entities/ts`)
@@ -266,11 +267,13 @@ Port structure:
   activator's own call fired it: `player_use` (+use), `game_playerdie` (`PlayerKilled`) and
   `game_playerjoin`/`game_playerspawn` (`UpdateClientData`'s InitHUD block) lend the player back to
   its slot for the targets (`world::lend`), and `world::run_now_or_defer` reaches it. (TS items
-  fire their `target` with themselves as activator, so `game_player_team` ignores them.) One case
-  still waits: a player's own weapon frame (shooting a `func_button` that targets it). The frame
-  holds the player's gun and inventory borrowed for the whole `ItemPostFrame`, and a team change
-  with flag 2 kills the player, which drops that same inventory; TS does it mid-frame on aliased
-  memory. The change runs as soon as the weapon frame returns, in the same `PostThink`.
+  fire their `target` with themselves as activator, so `game_player_team` ignores them.) A
+  player's own weapon frame does the same: each shot and melee swing (and the stunt hook's delayed
+  kung-fu hit) lends the player, gun and inventory put back into it, around the hit
+  (`weapons::host::ServerHost::reach_player`), so shooting a `func_breakable` or button that
+  targets `game_player_team` changes the team mid-shot, as in TS. A change with flag 2 kills the
+  shooter there, holstering and emptying the gun that is firing; the attack then carries on with
+  that gun, as TS's carries on with its changed `CTSGun`.
 * `deathmatch 0` (`CHalfLifeRules`, §2.1): `CBulletManager::Reset` still runs on every map from
   the weapons' precache (TS resets only from `CTSGameRules::Init`; no bullet moves in single
   player either way).
@@ -306,7 +309,7 @@ ammo, dropped guns, knives, grenades, the CTB case and the hidden objectives all
   (`player::hud::tests`), the impulse 99 `Logo` toggle, the spray frames, `SetCustomDecalFrames`,
   the customization types and the impulse 106 text (`player::impulse::tests`), `CTSGameRules::Init`
   (`state::tests::ts_init_resets_only_the_ts_state`, with the custom-weapons flag and the absorb
-  values), the dispatch lend and `with_lent` (`world::tests`), the kill log's tags, ids and weapon
+  values), the dispatch lend, `run_now` and `with_lent` (`world::tests`), the kill log's tags, ids and weapon
   renames and the ` (victims_weapon)` gun test (`scoring::tests`), the player's `soundent` slot
   (`soundent::tests::player_sound_follows_speed_and_silence`), the map cycle (`mapcycle::tests`: parsing,
   rule commands, min/max players, the traversal), the restriction mask's high bits,

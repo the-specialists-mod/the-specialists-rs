@@ -87,8 +87,10 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
   re-enter the game (touch, remove, create, damage to *another* entity) therefore work. Damage to
   *yourself* can't be dispatched; handle it with the `&mut self` you hold. Work for a taken-out
   object can wait for it (`world::defer`); a callback can lend its object back to the slot
-  around a call that must reach it (`world::lend`: `world::run_now_or_defer` then runs at once,
-  and `world::with_lent` reads it, e.g. `PlayerKilled` naming the thrown knife inside its touch).
+  around a call that must reach it (`world::lend`: `world::run_now_or_defer` and `world::run_now`
+  then run at once, and `world::with_lent` reads it, e.g. `PlayerKilled` naming the thrown knife
+  inside its touch). A player's weapon frame lends the player, inventory and all, around each shot
+  and swing (`weapons::host::ServerHost::reach_player`), so what the hit sets off can change it.
 * `Entity` trait methods: `key_value`, `spawn`, `think`, `touch`, `use_`, `blocked`,
   `trace_attack`, `take_damage`, `should_collide`. `trace_attack` and `take_damage` default to
   `CBaseEntity`'s (`entities::base_take_damage`); the rest are no-ops.
