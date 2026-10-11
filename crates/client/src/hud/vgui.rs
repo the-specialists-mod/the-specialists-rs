@@ -1,5 +1,6 @@
-//! TS's VGUI1 text: the scheme manager's fonts and the label text drawing its viewport panels
-//! use, drawn with engine fills since the port has no VGUI1.
+//! TS's VGUI1 layer: the scheme manager's fonts and colours, VGUI1's TGA images, and the panel
+//! painting its viewport panels use (fills, borders, label text and images), drawn with engine
+//! fills since the port has no VGUI1.
 //!
 //! `CSchemeManager` (`0x1005c300`, from the viewport constructor `0x100607f0` with the screen
 //! width) reads `<res>_textscheme.txt` (the largest of 320…1600 not above the width that loads,
@@ -17,12 +18,48 @@
 //! rightmost ink column + 1, except the space (`cell width / 4 + 1`).
 //!
 //! Text is drawn as VGUI1's `TextImage::paint` does (`\r` skipped, `\n` starts a line, a space
-//! advances only when more text follows on the line), opaque in the scheme's foreground colour.
+//! advances only when more text follows on the line, a word that doesn't fit the image's width
+//! starts a new line), in the colour's opacity.
+//!
+//! Panels follow VGUI1's `Panel` rules: a child's position is relative to its parent's position
+//! plus the parent's border inset, every panel is clipped to its own bounds and its parents'
+//! clip rectangle (`Panel::solve`), a border paints at the panel's origin and the background and
+//! contents at the origin plus the inset. VGUI1 colours carry an inverted alpha (0 = opaque, 255 =
+//! transparent); the engine's surface (FWGS `VGUI_SetupDrawingRect`) draws with `255 - a` and skips
+//! fully transparent fills.
 
 use goldsrc::client::engine;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// The resolutions `LoadFileByResolution` tries (`0x1009650c`, 9 entries).
 const RESOLUTIONS: [i32; 9] = [320, 400, 512, 640, 800, 1024, 1152, 1280, 1600];
+
+/// A VGUI1 colour: RGB and VGUI's inverted alpha (0 opaque, 255 transparent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Color {
+    pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Color {
+        Color { r, g, b, a }
+    }
+    /// From the file's RGBA (A = opacity), as the scheme manager's fix-up stores it.
+    pub const fn from_rgba(c: [u8; 4]) -> Color {
+        Color { r: c[0], g: c[1], b: c[2], a: 255 - c[3] }
+    }
+    pub const fn rgb(self) -> [u8; 3] {
+        [self.r, self.g, self.b]
+    }
+    /// The opacity the engine's surface draws with.
+    pub const fn opacity(self) -> u8 {
+        255 - self.a
+    }
+}
 
 /// One `SchemeName` block of the text scheme (`0x7c`-byte records).
 #[derive(Debug, Clone, PartialEq)]
@@ -31,9 +68,15 @@ pub struct Scheme {
     pub font_name: String,
     pub font_size: i32,
     pub font_weight: i32,
-    /// RGBA as written in the file (the manager stores VGUI's inverted alpha, `255 - a`).
-    pub fg: [u8; 4],
-    pub bg: [u8; 4],
+    /// `getFgColor` etc.: VGUI colours (the manager stores `255 - A`). The border colour is the
+    /// file's RGBA, as the manager leaves it.
+    pub fg: Color,
+    pub bg: Color,
+    pub armed_fg: Color,
+    pub armed_bg: Color,
+    pub mousedown_fg: Color,
+    pub mousedown_bg: Color,
+    pub border: [u8; 4],
     /// Index into [`Schemes::fonts`].
     pub font: usize,
 }
@@ -45,8 +88,9 @@ pub struct BitmapFont {
     pub cell_tall: usize,
     /// `b` of `getCharABCwide` (`a` = `c` = 0).
     pub widths: [i32; 256],
-    /// Ink bits, `cell_wide × 256` per row, top row first.
-    bits: Vec<bool>,
+    /// Ink of each character as rectangles (x, y, w, h) relative to its cell: the 1-pixel rows'
+    /// runs merged downwards, so a glyph costs a few fills.
+    rects: Vec<Vec<(i32, i32, i32, i32)>>,
 }
 
 impl BitmapFont {
@@ -87,19 +131,30 @@ impl BitmapFont {
             }
         }
         let cw = w / 256;
-        let mut f = BitmapFont { cell_wide: cw, cell_tall: h, widths: [0; 256], bits: vec![false; cw * 256 * h] };
+        let mut f = BitmapFont { cell_wide: cw, cell_tall: h, widths: [0; 256], rects: Vec::with_capacity(256) };
         for ch in 0..256 {
+            let ink = |x: usize, y: usize| px[y * w + ch * cw + x] != [0; 4];
             let mut right = 0;
+            let mut rows: Vec<Vec<(i32, i32)>> = Vec::with_capacity(h);
             for y in 0..h {
-                for x in 0..cw {
-                    let ink = px[y * w + ch * cw + x] != [0; 4];
-                    f.bits[y * cw * 256 + ch * cw + x] = ink;
-                    if ink && x > right {
-                        right = x;
+                let mut runs = Vec::new();
+                let mut x = 0;
+                while x < cw {
+                    if ink(x, y) {
+                        let start = x;
+                        while x < cw && ink(x, y) {
+                            x += 1;
+                        }
+                        right = right.max(x - 1);
+                        runs.push((start as i32, (x - start) as i32));
+                    } else {
+                        x += 1;
                     }
                 }
+                rows.push(runs);
             }
             f.widths[ch] = if ch == b' ' as usize { (cw / 4) as i32 + 1 } else { right as i32 + 1 };
+            f.rects.push(merge_runs(&mut rows));
         }
         Some(f)
     }
@@ -126,38 +181,21 @@ impl BitmapFont {
         (wide, tall)
     }
 
-    /// Horizontal ink runs of character `ch`, relative to its cell: (x, y, length).
-    fn runs(&self, ch: u8, mut out: impl FnMut(i32, i32, i32)) {
-        let row = self.cell_wide * 256;
-        for y in 0..self.cell_tall {
-            let base = y * row + ch as usize * self.cell_wide;
-            let mut x = 0;
-            while x < self.cell_wide {
-                if self.bits[base + x] {
-                    let start = x;
-                    while x < self.cell_wide && self.bits[base + x] {
-                        x += 1;
-                    }
-                    out(start as i32, y as i32, (x - start) as i32);
-                } else {
-                    x += 1;
-                }
-            }
-        }
+    /// The sum of `getCharABCwide` over `text` (`CLabelHeader::setText`'s gap).
+    pub fn chars_wide(&self, text: &[u8]) -> i32 {
+        text.iter().take_while(|&&c| c != 0).map(|&c| self.widths[c as usize]).sum()
     }
 
-    /// `TextImage::paint` with the image as wide as `wrap` (VGUI sizes a label's text image to
-    /// the text, so it never wraps unless the text is wider than itself): calls `fill(x, y, w)` for
-    /// each 1-pixel-high ink run, relative to the image's top-left.
-    pub fn paint(&self, text: &[u8], wrap: i32, mut fill: impl FnMut(i32, i32, i32)) {
+    /// `TextImage::paint`'s layout with the image `wrap` wide: calls `glyph(x, y, ch)` for each
+    /// character drawn, relative to the image's top-left.
+    pub fn layout(&self, text: &[u8], wrap: i32, mut glyph: impl FnMut(i32, i32, u8)) {
         let end = text.iter().position(|&c| c == 0).unwrap_or(text.len());
         let text = &text[..end];
         let (mut x, mut y) = (0, 0);
         let tall = self.tall();
         let mut i = 0;
         while i < text.len() {
-            let ch = text[i];
-            match ch {
+            match text[i] {
                 b'\r' => {}
                 b'\n' => {
                     x = 0;
@@ -180,7 +218,7 @@ impl BitmapFont {
                         y += tall;
                     }
                     for &c in &text[i..i + word] {
-                        self.runs(c, |rx, ry, n| fill(x + rx, y + ry, n));
+                        glyph(x, y, c);
                         x += self.widths[c as usize];
                     }
                     i += word;
@@ -189,6 +227,118 @@ impl BitmapFont {
             }
             i += 1;
         }
+    }
+
+    /// `TextImage::paint` with the image `wrap` wide: calls `fill(x, y, w, h)` for each ink
+    /// rectangle, relative to the image's top-left.
+    pub fn paint(&self, text: &[u8], wrap: i32, mut fill: impl FnMut(i32, i32, i32, i32)) {
+        self.layout(text, wrap, |x, y, c| {
+            for &(rx, ry, w, h) in &self.rects[c as usize] {
+                fill(x + rx, y + ry, w, h);
+            }
+        });
+    }
+
+    /// `TextImage::getTextSizeWrapped`: the extent of the characters laid out `wrap` wide.
+    pub fn text_size_wrapped(&self, text: &[u8], wrap: i32) -> (i32, i32) {
+        let (mut w, mut h) = (0, 0);
+        self.layout(text, wrap, |x, y, c| {
+            w = w.max(x + self.widths[c as usize]);
+            h = h.max(y + self.tall());
+        });
+        (w, h)
+    }
+}
+
+/// Merges each row's runs (x, length) with identical runs in the rows below into rectangles.
+fn merge_runs(rows: &mut [Vec<(i32, i32)>]) -> Vec<(i32, i32, i32, i32)> {
+    let mut out = Vec::new();
+    for y in 0..rows.len() {
+        while let Some((x, n)) = rows[y].pop() {
+            let mut h = 1;
+            while let Some(i) = rows.get(y + h).and_then(|r| r.iter().position(|&r| r == (x, n))) {
+                rows[y + h].remove(i);
+                h += 1;
+            }
+            out.push((x, y as i32, n, h as i32));
+        }
+    }
+    out
+}
+
+/// A VGUI1 `BitmapTGA`: RGBA rows, top first, with the alpha as uploaded to the surface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Image {
+    pub wide: i32,
+    pub tall: i32,
+    px: Vec<[u8; 4]>,
+}
+
+impl Image {
+    /// `BitmapTGA::loadTGA` (VGUI1; Valve's `vgui.so` at `0x23880`, and freevgui's reimplementation
+    /// documents the same quirks): types 2 and 10, 24 or 32 bits, rows stored bottom-up. The alpha
+    /// handling differs by type: uncompressed 32-bit pixels are inverted when `invert_alpha` is
+    /// *off* and 24-bit ones are opaque; RLE 32-bit pixels are inverted when it is on and 24-bit
+    /// ones are 0 (on) or 255 (off). `vgui_LoadTGA` (`0x1005b8d0`) passes true and
+    /// `vgui_LoadTGANoInvertAlpha` (`0x1005ba50`) false.
+    pub fn from_tga(data: &[u8], invert_alpha: bool) -> Option<Image> {
+        if data.len() < 18 || !matches!(data[2], 2 | 10) || data[1] != 0 || !matches!(data[16], 24 | 32) {
+            return None;
+        }
+        let (id_len, rle, bits) = (data[0] as usize, data[2] == 10, data[16]);
+        let w = u16::from_le_bytes([data[12], data[13]]) as usize;
+        let h = u16::from_le_bytes([data[14], data[15]]) as usize;
+        let mut px = vec![[0u8; 4]; w * h];
+        let mut p = 18 + id_len;
+        let read = |p: &mut usize| -> Option<[u8; 4]> {
+            let n = bits as usize / 8;
+            let s = data.get(*p..*p + n)?;
+            *p += n;
+            let a = if bits == 24 {
+                if rle && invert_alpha { 0 } else { 255 }
+            } else if rle == invert_alpha {
+                255 - s[3]
+            } else {
+                s[3]
+            };
+            Some([s[2], s[1], s[0], a])
+        };
+        // Pixels fill rows from the bottom; RLE packets may span rows.
+        let total = w * h;
+        let mut n = 0;
+        let mut put = |n: &mut usize, c: [u8; 4]| {
+            if *n < total {
+                let (row, col) = (h - 1 - *n / w, *n % w);
+                px[row * w + col] = c;
+                *n += 1;
+            }
+        };
+        while n < total {
+            if rle {
+                let head = *data.get(p)?;
+                p += 1;
+                let count = (head & 0x7f) as usize + 1;
+                if head & 0x80 != 0 {
+                    let c = read(&mut p)?;
+                    for _ in 0..count {
+                        put(&mut n, c);
+                    }
+                } else {
+                    for _ in 0..count {
+                        let c = read(&mut p)?;
+                        put(&mut n, c);
+                    }
+                }
+            } else {
+                let c = read(&mut p)?;
+                put(&mut n, c);
+            }
+        }
+        Some(Image { wide: w as i32, tall: h as i32, px })
+    }
+
+    pub fn pixel(&self, x: i32, y: i32) -> [u8; 4] {
+        self.px[(y * self.wide + x) as usize]
     }
 }
 
@@ -262,14 +412,22 @@ impl Schemes {
             s.schemes = parse(&String::from_utf8_lossy(&f));
         }
         if s.schemes.is_empty() {
-            // "Default Scheme": Arial, size 0 (17 is only filled in for parsed schemes).
+            // "Default Scheme": Arial, size 0 (17 is only filled in for parsed schemes); white
+            // foregrounds, the backgrounds left zero.
+            let white = Color::from_rgba([255; 4]);
+            let clear = Color::from_rgba([0; 4]);
             s.schemes.push(Scheme {
                 name: "Default Scheme".into(),
                 font_name: "Arial".into(),
                 font_size: 0,
                 font_weight: 0,
-                fg: [255; 4],
-                bg: [0; 4],
+                fg: white,
+                bg: clear,
+                armed_fg: white,
+                armed_bg: clear,
+                mousedown_fg: white,
+                mousedown_bg: clear,
+                border: [0; 4],
                 font: 0,
             });
         }
@@ -306,21 +464,64 @@ impl Schemes {
     pub fn font(&self, scheme: &Scheme) -> Option<&BitmapFont> {
         self.fonts.get(scheme.font).and_then(Option::as_ref)
     }
+
+    /// `getFont(getSchemeHandle(name))`.
+    pub fn font_of(&self, name: &str) -> Option<&BitmapFont> {
+        self.font(self.get(name))
+    }
 }
 
-/// The scheme blocks (`0x1005c300`'s parse loop): `SchemeName` starts one; a block with no
-/// `FontSize` gets 17 and one with no `FontName` gets Arial when the next block starts.
+/// The scheme blocks (`0x1005c300`'s parse loop). `SchemeName` starts one; when the next starts,
+/// the previous gets its defaults: an unset foreground is white and an unset background clear,
+/// an unset armed colour copies the normal one and an unset mouse-down colour the armed one, an
+/// unset size is 17 and an unset font Arial. `BorderColor` sets the mouse-down background's
+/// "was set" flag, not its own (TS's code, as the SDK's). The last block gets no defaults: its
+/// unset colours stay zero, as in TS's zeroed table.
 fn parse(text: &str) -> Vec<Scheme> {
-    let t = tokens(text);
-    let mut out: Vec<Scheme> = Vec::new();
-    let finish = |s: &mut Scheme| {
-        if s.font_size == 0 {
-            s.font_size = 17;
+    #[derive(Default)]
+    struct Raw {
+        name: String,
+        font_name: String,
+        font_size: i32,
+        font_weight: i32,
+        c: [[u8; 4]; 6],
+        border: [u8; 4],
+        has: [bool; 6],
+    }
+    const FG: usize = 0;
+    const BG: usize = 1;
+    const ARMED_FG: usize = 2;
+    const ARMED_BG: usize = 3;
+    const MD_FG: usize = 4;
+    const MD_BG: usize = 5;
+    let finish = |r: &mut Raw| {
+        if !r.has[FG] {
+            r.c[FG] = [255; 4];
         }
-        if s.font_name.is_empty() {
-            s.font_name = "Arial".into();
+        if !r.has[ARMED_FG] {
+            r.c[ARMED_FG] = r.c[FG];
+        }
+        if !r.has[MD_FG] {
+            r.c[MD_FG] = r.c[ARMED_FG];
+        }
+        if !r.has[BG] {
+            r.c[BG] = [0; 4];
+        }
+        if !r.has[ARMED_BG] {
+            r.c[ARMED_BG] = r.c[BG];
+        }
+        if !r.has[MD_BG] {
+            r.c[MD_BG] = r.c[ARMED_BG];
+        }
+        if r.font_size == 0 {
+            r.font_size = 17;
+        }
+        if r.font_name.is_empty() {
+            r.font_name = "Arial".into();
         }
     };
+    let t = tokens(text);
+    let mut raw: Vec<Raw> = Vec::new();
     let mut i = 0;
     while i + 2 < t.len() {
         let (key, eq, val) = (&t[i], &t[i + 1], &t[i + 2]);
@@ -328,25 +529,29 @@ fn parse(text: &str) -> Vec<Scheme> {
             break;
         }
         if key.eq_ignore_ascii_case("SchemeName") {
-            if let Some(last) = out.last_mut() {
+            if let Some(last) = raw.last_mut() {
                 finish(last);
             }
-            out.push(Scheme {
-                name: val.chars().take(31).collect(),
-                font_name: String::new(),
-                font_size: 0,
-                font_weight: 0,
-                fg: [255; 4],
-                bg: [0; 4],
-                font: 0,
-            });
-        } else if let Some(s) = out.last_mut() {
+            raw.push(Raw { name: val.chars().take(31).collect(), ..Raw::default() });
+        } else if let Some(s) = raw.last_mut() {
+            let mut colour = |k: usize| {
+                s.c[k] = rgba(val);
+                s.has[k] = true;
+            };
             match key.to_ascii_lowercase().as_str() {
                 "fontname" => s.font_name = val.chars().take(47).collect(),
                 "fontsize" => s.font_size = val.trim().parse().unwrap_or(0),
                 "fontweight" => s.font_weight = val.trim().parse().unwrap_or(0),
-                "fgcolor" => s.fg = rgba(val),
-                "bgcolor" => s.bg = rgba(val),
+                "fgcolor" => colour(FG),
+                "bgcolor" => colour(BG),
+                "fgcolorarmed" => colour(ARMED_FG),
+                "bgcolorarmed" => colour(ARMED_BG),
+                "fgcolormousedown" => colour(MD_FG),
+                "bgcolormousedown" => colour(MD_BG),
+                "bordercolor" => {
+                    s.border = rgba(val);
+                    s.has[MD_BG] = true;
+                }
                 _ => {}
             }
         } else {
@@ -354,7 +559,254 @@ fn parse(text: &str) -> Vec<Scheme> {
         }
         i += 3;
     }
-    out
+    raw.into_iter()
+        .map(|r| Scheme {
+            name: r.name,
+            font_name: r.font_name,
+            font_size: r.font_size,
+            font_weight: r.font_weight,
+            fg: Color::from_rgba(r.c[FG]),
+            bg: Color::from_rgba(r.c[BG]),
+            armed_fg: Color::from_rgba(r.c[ARMED_FG]),
+            armed_bg: Color::from_rgba(r.c[ARMED_BG]),
+            mousedown_fg: Color::from_rgba(r.c[MD_FG]),
+            mousedown_bg: Color::from_rgba(r.c[MD_BG]),
+            border: r.border,
+            font: 0,
+        })
+        .collect()
+}
+
+// ---- layout ---------------------------------------------------------------------------------
+
+/// TS's `XRES` scale: `ScreenWidth * (1/640)` with the constant as the float TS multiplies by
+/// (`0x1007d43c`). The callers multiply by the 640-based size and truncate where TS does
+/// (`__ftol`); the products are exact in `f64`, as in the x87's extended precision.
+pub fn xs(width: i32) -> f64 {
+    width as f64 * 0.0015625f32 as f64
+}
+
+/// TS's `YRES` scale: `ScreenHeight * (1/480)` (`0x1007d438`).
+pub fn ys(height: i32) -> f64 {
+    height as f64 * (1.0f32 / 480.0) as f64
+}
+
+/// `__ftol`: truncation towards zero.
+pub fn ftol(v: f64) -> i32 {
+    v as i32
+}
+
+/// A value TS spills to a `float` on the stack (`fst DWORD PTR`) and reloads: MSVC's x87 code
+/// otherwise keeps double precision, so only these round to single precision.
+pub fn spill(v: f64) -> f64 {
+    v as f32 as f64
+}
+
+/// `vgui::Label::Alignment`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    NorthWest,
+    North,
+    NorthEast,
+    West,
+    Center,
+    East,
+    SouthWest,
+    South,
+    SouthEast,
+}
+
+impl Align {
+    fn column(self) -> i32 {
+        self as i32 % 3
+    }
+    fn row(self) -> i32 {
+        self as i32 / 3
+    }
+}
+
+/// `Label::computeAlignment` for a label with text only: where text `tw`×`th` goes in a label
+/// whose paint size is `w`×`h` (the text alignment doesn't matter without an image).
+pub fn label_text_pos(align: Align, w: i32, h: i32, tw: i32, th: i32) -> (i32, i32) {
+    let x = match align.column() {
+        0 => 0,
+        1 => w / 2 - tw / 2,
+        _ => w - tw,
+    };
+    let y = match align.row() {
+        0 => 0,
+        1 => h / 2 - th / 2,
+        _ => h - th,
+    };
+    (x, y)
+}
+
+/// `Label::getContentSize` for text only: VGUI pads the content by 4 on each side, so a
+/// content-fitted label (`Label(text, x, y)`) is the text size plus 8.
+pub fn label_content_size(tw: i32, th: i32) -> (i32, i32) {
+    (tw + 8, th + 8)
+}
+
+/// A screen rectangle (x0, y0) inclusive to (x1, y1) exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rect {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+}
+
+impl Rect {
+    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Rect {
+        Rect { x0: x, y0: y, x1: x + w, y1: y + h }
+    }
+    pub fn intersect(self, o: Rect) -> Rect {
+        Rect { x0: self.x0.max(o.x0), y0: self.y0.max(o.y0), x1: self.x1.min(o.x1), y1: self.y1.min(o.y1) }
+    }
+    pub fn is_empty(self) -> bool {
+        self.x1 <= self.x0 || self.y1 <= self.y0
+    }
+}
+
+/// Where the engine's VGUI surface draws: filled rectangles in an RGB and opacity.
+pub trait Surface {
+    fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, rgb: [u8; 3], opacity: u8);
+}
+
+/// The engine: `pfnFillRGBABlend` (see `goldsrc::ext::hud`'s `fill_blend`).
+pub struct EngineSurface;
+
+impl Surface for EngineSurface {
+    fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, rgb: [u8; 3], opacity: u8) {
+        engine().fill_blend(x, y, w, h, [rgb[0] as i32, rgb[1] as i32, rgb[2] as i32], opacity as i32);
+    }
+}
+
+/// A VGUI1 panel's place on screen: position, size, border inset and clip rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Panel {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    /// The border's inset (1 for a `LineBorder`, else 0).
+    pub inset: i32,
+    pub clip: Rect,
+}
+
+impl Panel {
+    /// The viewport: the whole screen.
+    pub fn root(w: i32, h: i32) -> Panel {
+        Panel { x: 0, y: 0, w, h, inset: 0, clip: Rect::new(0, 0, w, h) }
+    }
+
+    /// A child at (`x`, `y`) in this panel (`Panel::solve`: after this panel's inset), clipped to
+    /// its bounds and this panel's clip rectangle.
+    pub fn child(&self, x: i32, y: i32, w: i32, h: i32) -> Panel {
+        let (ax, ay) = (self.x + self.inset + x, self.y + self.inset + y);
+        Panel { x: ax, y: ay, w, h, inset: 0, clip: Rect::new(ax, ay, w, h).intersect(self.clip) }
+    }
+
+    /// The same panel with a 1-pixel `LineBorder`.
+    pub fn bordered(self) -> Panel {
+        Panel { inset: 1, ..self }
+    }
+
+    /// `Panel::getPaintSize`: the size inside the border.
+    pub fn paint_size(&self) -> (i32, i32) {
+        (self.w - 2 * self.inset, self.h - 2 * self.inset)
+    }
+
+    /// `Panel::isWithin`: a screen point inside the panel's bounds (not its clip).
+    pub fn is_within(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+    }
+
+    fn fill_abs(&self, s: &mut dyn Surface, r: Rect, c: Color) {
+        // FWGS `XashSurface::drawFilledRect` and GoldSrc both skip fully transparent colours.
+        if c.a == 255 {
+            return;
+        }
+        let r = r.intersect(self.clip);
+        if !r.is_empty() {
+            s.fill(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, c.rgb(), c.opacity());
+        }
+    }
+
+    /// `drawFilledRect(x0, y0, x1, y1)` in the panel's paint coordinates (inside its inset).
+    pub fn fill_rect(&self, s: &mut dyn Surface, x0: i32, y0: i32, x1: i32, y1: i32, c: Color) {
+        let (ox, oy) = (self.x + self.inset, self.y + self.inset);
+        self.fill_abs(s, Rect { x0: ox + x0, y0: oy + y0, x1: ox + x1, y1: oy + y1 }, c);
+    }
+
+    /// `drawOutlinedRect`: four 1-pixel fills (`Surface::drawOutlinedRect`).
+    pub fn outlined_rect(&self, s: &mut dyn Surface, x0: i32, y0: i32, x1: i32, y1: i32, c: Color) {
+        self.fill_rect(s, x0, y0, x1, y0 + 1, c);
+        self.fill_rect(s, x0, y1 - 1, x1, y1, c);
+        self.fill_rect(s, x0, y0 + 1, x0 + 1, y1 - 1, c);
+        self.fill_rect(s, x1 - 1, y0 + 1, x1, y1 - 1, c);
+    }
+
+    /// `Panel::paintBackground`: the paint size in the background colour.
+    pub fn paint_background(&self, s: &mut dyn Surface, bg: Color) {
+        let (w, h) = self.paint_size();
+        self.fill_rect(s, 0, 0, w, h, bg);
+    }
+
+    /// `LineBorder::paint`: drawn at the panel's own origin (no inset).
+    pub fn line_border(&self, s: &mut dyn Surface, c: Color) {
+        let (x, y, w, h, i) = (self.x, self.y, self.w, self.h, self.inset);
+        self.fill_abs(s, Rect { x0: x, y0: y, x1: x + w, y1: y + i }, c);
+        self.fill_abs(s, Rect { x0: x, y0: y + h - i, x1: x + w, y1: y + h }, c);
+        self.fill_abs(s, Rect { x0: x, y0: y + i, x1: x + i, y1: y + h - i }, c);
+        self.fill_abs(s, Rect { x0: x + w - i, y0: y + i, x1: x + w, y1: y + h - i }, c);
+    }
+
+    /// `TextImage::paint` of `text` at (`x`, `y`) in paint coordinates, laid out `wrap` wide.
+    #[allow(clippy::too_many_arguments)] // TextImage's own parameters: position, colour, text, width
+    pub fn text(&self, s: &mut dyn Surface, font: &BitmapFont, x: i32, y: i32, c: Color, text: &[u8], wrap: i32) {
+        if c.a == 255 {
+            return;
+        }
+        let (ox, oy) = (self.x + self.inset + x, self.y + self.inset + y);
+        font.paint(text, wrap, |rx, ry, w, h| {
+            let r = Rect::new(ox + rx, oy + ry, w, h).intersect(self.clip);
+            if !r.is_empty() {
+                s.fill(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0, c.rgb(), c.opacity());
+            }
+        });
+    }
+
+    /// `Bitmap::paint` at (`x`, `y`) in paint coordinates: the texture modulated by the image's
+    /// colour (`drawSetColor` before `drawTexturedRect`), each pixel's opacity scaled by the
+    /// colour's. Runs of equal pixels share a fill.
+    pub fn image(&self, s: &mut dyn Surface, img: &Image, x: i32, y: i32, c: Color) {
+        let (ox, oy) = (self.x + self.inset + x, self.y + self.inset + y);
+        let m = |t: u8, k: u8| ((t as u32 * k as u32 + 127) / 255) as u8;
+        let out = |p: [u8; 4]| ([m(p[0], c.r), m(p[1], c.g), m(p[2], c.b)], m(p[3], c.opacity()));
+        for py in 0..img.tall {
+            let sy = oy + py;
+            if sy < self.clip.y0 || sy >= self.clip.y1 {
+                continue;
+            }
+            let mut px = 0;
+            while px < img.wide {
+                let o = out(img.pixel(px, py));
+                let start = px;
+                px += 1;
+                while px < img.wide && out(img.pixel(px, py)) == o {
+                    px += 1;
+                }
+                if o.1 == 0 {
+                    continue;
+                }
+                let r = Rect::new(ox + start, sy, px - start, 1).intersect(self.clip);
+                if !r.is_empty() {
+                    s.fill(r.x0, r.y0, r.x1 - r.x0, 1, o.0, o.1);
+                }
+            }
+        }
+    }
 }
 
 // ---- engine side ----------------------------------------------------------------------------
@@ -362,7 +814,10 @@ fn parse(text: &str) -> Vec<Scheme> {
 use goldsrc::Global;
 use std::cell::RefCell;
 
+type ImageCache = HashMap<(String, bool), Option<Rc<Image>>>;
+
 static SCHEMES: Global<RefCell<Option<Schemes>>> = Global(RefCell::new(None));
+static IMAGES: Global<RefCell<Option<ImageCache>>> = Global(RefCell::new(None));
 
 /// Builds the scheme manager for the screen width (TS: the viewport's, which `HUD_VidInit`'s
 /// `VGui_Startup` recreates when the resolution changes).
@@ -377,6 +832,22 @@ pub fn vid_init() {
     *SCHEMES.0.borrow_mut() = Some(s);
 }
 
+/// Runs `f` with the scheme manager, if built.
+pub fn with_schemes<R>(f: impl FnOnce(&Schemes) -> R) -> Option<R> {
+    SCHEMES.0.borrow().as_ref().map(f)
+}
+
+/// `vgui_LoadTGA` (`invert_alpha`) / `vgui_LoadTGANoInvertAlpha` through `COM_LoadFile`, loaded
+/// once per path.
+pub fn image(path: &str, invert_alpha: bool) -> Option<Rc<Image>> {
+    let mut cache = IMAGES.0.borrow_mut();
+    let cache = cache.get_or_insert_with(HashMap::new);
+    cache
+        .entry((path.to_owned(), invert_alpha))
+        .or_insert_with(|| goldsrc::ext::render::load_file(path).and_then(|d| Image::from_tga(&d, invert_alpha)).map(Rc::new))
+        .clone()
+}
+
 /// Draws `text` in scheme `scheme`'s font at (`x`, `y`) in `rgb` (opaque), as a VGUI1 label's
 /// text image paints it, clipped to the label's rectangle `clip` (x, y, w, h) as VGUI clips a
 /// panel's painting. Returns false if the scheme has no font.
@@ -384,15 +855,8 @@ pub fn draw_text_clipped(scheme: &str, x: i32, y: i32, rgb: [u8; 3], text: &[u8]
     let s = SCHEMES.0.borrow();
     let Some(font) = s.as_ref().and_then(|s| s.font(s.get(scheme))) else { return false };
     let (w, _) = font.text_size(text);
-    let e = engine();
-    let c = [rgb[0] as i32, rgb[1] as i32, rgb[2] as i32];
-    let (cx0, cy0, cx1, cy1) = (clip.0, clip.1, clip.0 + clip.2, clip.1 + clip.3);
-    font.paint(text, w, |rx, ry, n| {
-        let (py, x0, x1) = (y + ry, (x + rx).max(cx0), (x + rx + n).min(cx1));
-        if py >= cy0 && py < cy1 && x0 < x1 {
-            e.fill_blend(x0, py, x1 - x0, 1, c, 255);
-        }
-    });
+    let panel = Panel { x: 0, y: 0, w: 0, h: 0, inset: 0, clip: Rect::new(clip.0, clip.1, clip.2, clip.3) };
+    panel.text(&mut EngineSurface, font, x, y, Color::new(rgb[0], rgb[1], rgb[2], 0), text, w);
     true
 }
 
@@ -405,17 +869,23 @@ pub fn text_size(scheme: &str, text: &[u8]) -> Option<(i32, i32)> {
 /// The scheme's foreground colour (RGB).
 pub fn fg(scheme: &str) -> [u8; 3] {
     let s = SCHEMES.0.borrow();
-    s.as_ref().map_or([255, 170, 0], |s| {
-        let c = s.get(scheme).fg;
-        [c[0], c[1], c[2]]
-    })
+    s.as_ref().map_or([255, 170, 0], |s| s.get(scheme).fg.rgb())
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn tga(w: u16, h: u16, rows_bottom_up: &[&[[u8; 4]]]) -> Vec<u8> {
+    /// A surface that records fills.
+    #[derive(Default)]
+    pub struct Record(pub Vec<(i32, i32, i32, i32, [u8; 3], u8)>);
+    impl Surface for Record {
+        fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, rgb: [u8; 3], opacity: u8) {
+            self.0.push((x, y, w, h, rgb, opacity));
+        }
+    }
+
+    pub fn tga(w: u16, h: u16, rows_bottom_up: &[&[[u8; 4]]]) -> Vec<u8> {
         let mut d = vec![0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         d.extend_from_slice(&w.to_le_bytes());
         d.extend_from_slice(&h.to_le_bytes());
@@ -431,26 +901,44 @@ mod tests {
         d
     }
 
-    #[test]
-    fn bitmap_font_metrics() {
+    /// A 4×2-cell font: 'A' has ink at x=2 in the top row, '.' at x=0 in the bottom row.
+    pub fn test_font() -> BitmapFont {
         const INK: [u8; 4] = [255, 255, 255, 0];
-        // 256 cells of 4×2. 'A' (65) has ink at x=2 in the top row; '.' at x=0 in the bottom row.
         let mut top = vec![[0u8; 4]; 1024];
         let mut bottom = vec![[0u8; 4]; 1024];
         top[65 * 4 + 2] = INK;
         bottom[b'.' as usize * 4] = INK;
-        let f = BitmapFont::from_tga(&tga(1024, 2, &[&bottom, &top])).unwrap();
+        BitmapFont::from_tga(&tga(1024, 2, &[&bottom, &top])).unwrap()
+    }
+
+    #[test]
+    fn bitmap_font_metrics() {
+        let f = test_font();
         assert_eq!((f.cell_wide, f.tall()), (4, 2));
         assert_eq!((f.widths[65], f.widths[b'.' as usize], f.widths[b' ' as usize], f.widths[b'x' as usize]), (3, 1, 2, 1));
         assert_eq!(f.text_size(b"A A"), (8, 2));
         assert_eq!(f.text_size(b"A\nA"), (4, 4), "a newline counts its own width");
         let mut fills = Vec::new();
-        f.paint(b"A.", 100, |x, y, n| fills.push((x, y, n)));
-        assert_eq!(fills, vec![(2, 0, 1), (3, 1, 1)]);
+        f.paint(b"A.", 100, |x, y, w, h| fills.push((x, y, w, h)));
+        assert_eq!(fills, vec![(2, 0, 1, 1), (3, 1, 1, 1)]);
         fills.clear();
-        f.paint(b"A ", 100, |x, y, n| fills.push((x, y, n)));
-        f.paint(b" .", 100, |x, y, n| fills.push((x, y, n)));
-        assert_eq!(fills, vec![(2, 0, 1), (2, 1, 1)], "a trailing space doesn't advance; a leading one does");
+        f.paint(b"A ", 100, |x, y, w, h| fills.push((x, y, w, h)));
+        f.paint(b" .", 100, |x, y, w, h| fills.push((x, y, w, h)));
+        assert_eq!(fills, vec![(2, 0, 1, 1), (2, 1, 1, 1)], "a trailing space doesn't advance; a leading one does");
+        // A word that doesn't fit the image's width starts a new line.
+        fills.clear();
+        f.paint(b"A A", 5, |x, y, w, h| fills.push((x, y, w, h)));
+        assert_eq!(fills, vec![(2, 0, 1, 1), (2, 2, 1, 1)]);
+        assert_eq!(f.text_size_wrapped(b"A A", 5), (3, 4));
+        assert_eq!(f.chars_wide(b"A.\0A"), 4);
+    }
+
+    #[test]
+    fn glyph_runs_merge_into_rectangles() {
+        let mut rows = vec![vec![(1, 2)], vec![(1, 2), (5, 1)], vec![(5, 1)], vec![(1, 2)]];
+        let mut r = merge_runs(&mut rows);
+        r.sort();
+        assert_eq!(r, vec![(1, 0, 2, 2), (1, 3, 2, 1), (5, 1, 1, 2)]);
     }
 
     /// The shipped Half-Life bitmap fonts decode (skipped when the game files aren't installed).
@@ -463,12 +951,30 @@ mod tests {
         assert!(f.widths[b'W' as usize] > f.widths[b'i' as usize] && f.widths[b'i' as usize] > 1);
         assert_eq!(f.widths[b' ' as usize], 5);
         let mut ink = 0;
-        f.paint(b"Free-Look", 1000, |_, _, n| ink += n);
+        f.paint(b"Free-Look", 1000, |_, _, w, h| ink += w * h);
         assert!(ink > 100);
         // Rows are stored bottom-up: descenders land in the last rows.
         let mut rows = [0; 13];
-        f.paint(b"gjy", 1000, |_, y, n| rows[y as usize] += n);
+        f.paint(b"gjy", 1000, |_, y, w, h| {
+            for r in y..y + h {
+                rows[r as usize] += w;
+            }
+        });
         assert!(rows[12] > 0 && rows[0] == 0);
+    }
+
+    /// The shipped voice icons decode with TS's loaders (skipped without the game files).
+    #[test]
+    fn decodes_the_shipped_voice_icons() {
+        let dir = std::env::var("HOME").unwrap_or_default() + "/games/xash_win_orig/valve/gfx/vgui/";
+        let Ok(pl) = std::fs::read(dir.clone() + "icntlk_pl.tga") else { return };
+        let pl = Image::from_tga(&pl, true).unwrap();
+        assert_eq!((pl.wide, pl.tall), (32, 32));
+        assert_eq!(pl.pixel(5, 15)[3], 255, "vgui_LoadTGA keeps an uncompressed icon's alpha");
+        assert_eq!(pl.pixel(0, 0)[3], 0);
+        let sp = Image::from_tga(&std::fs::read(dir.clone() + "640_speaker3.tga").unwrap(), false).unwrap();
+        assert_eq!((sp.wide, sp.tall), (16, 16));
+        assert!((0..16).any(|y| (0..16).any(|x| sp.pixel(x, y)[3] == 0)) && (0..16).any(|y| (0..16).any(|x| sp.pixel(x, y)[3] > 200)));
     }
 
     #[test]
@@ -478,10 +984,12 @@ SchemeName = "Primary Button Text"
 FontName = "Arial"
 FontSize = 20
 FgColor = "255 170 0 255"
+BgColorArmed = "255 170 0 67"
 SchemeName = "Scoreboard Text"
 FontName = "Arial"
 FontSize = 15
 FontWeight = 0
+BorderColor = "1 1 1 1"
 SchemeName = "Briefing Text"
 FontName = "Arial"
 FontSize = 15
@@ -497,12 +1005,85 @@ SchemeName = "No Size"
         assert_eq!(s.res, 800);
         assert_eq!(loaded.borrow()[0], "800_textscheme.txt", "largest resolution not above the width");
         assert_eq!(s.schemes.len(), 4);
-        assert_eq!(s.get("briefing text").fg, [1, 2, 3, 4]);
+        let p = s.get("Primary Button Text");
+        assert_eq!((p.fg, p.armed_fg, p.mousedown_fg), (Color::new(255, 170, 0, 0), p.fg, p.fg), "armed copies normal");
+        assert_eq!((p.bg, p.armed_bg, p.mousedown_bg), (Color::new(0, 0, 0, 255), Color::new(255, 170, 0, 188), p.armed_bg));
+        let sb = s.get("Scoreboard Text");
+        assert_eq!(sb.fg, Color::new(255, 255, 255, 0), "unset foreground is white");
+        assert_eq!((sb.border, sb.mousedown_bg), ([1; 4], Color::new(0, 0, 0, 255)), "BorderColor sets the mouse-down flag");
+        assert_eq!(s.get("briefing text").fg, Color::new(1, 2, 3, 251));
+        let last = s.get("No Size");
+        assert_eq!((last.font_size, last.fg), (0, Color::new(0, 0, 0, 255)), "the last block gets no defaults");
         assert_eq!(s.get("briefing text").font, s.get("Scoreboard Text").font, "same name, size and weight share a font");
         assert_ne!(s.get("Primary Button Text").font, s.get("Scoreboard Text").font);
         assert_eq!(s.get("missing").name, "Primary Button Text");
         assert!(loaded.borrow().contains(&"gfx/vgui/fonts/1000_Primary Button Text.tga".to_owned()));
         assert!(loaded.borrow().contains(&"gfx/vgui/fonts/800_Primary Button Text.tga".to_owned()), "system-font fallback");
         assert!(!loaded.borrow().iter().any(|p| p.contains("Briefing")), "a shared font isn't loaded again");
+    }
+
+    #[test]
+    fn tga_alpha_rules() {
+        // 2×1 uncompressed 32-bit: alpha kept with invert on, inverted with it off.
+        let mut d = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0, 32, 8];
+        d.extend_from_slice(&[1, 2, 3, 200, 4, 5, 6, 0]);
+        let on = Image::from_tga(&d, true).unwrap();
+        assert_eq!((on.wide, on.tall, on.pixel(0, 0), on.pixel(1, 0)), (2, 1, [3, 2, 1, 200], [6, 5, 4, 0]));
+        assert_eq!(Image::from_tga(&d, false).unwrap().pixel(0, 0)[3], 55);
+        // RLE: the other way round; packets may span rows; rows are stored bottom-up.
+        let mut r = vec![0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 32, 8];
+        r.extend_from_slice(&[0x81, 9, 9, 9, 10]);
+        let img = Image::from_tga(&r, false).unwrap();
+        assert_eq!((img.pixel(0, 0), img.pixel(0, 1)), ([9, 9, 9, 10], [9, 9, 9, 10]));
+        assert_eq!(Image::from_tga(&r, true).unwrap().pixel(0, 0)[3], 245);
+        assert!(Image::from_tga(&r[..20], true).is_none(), "truncated");
+    }
+
+    #[test]
+    fn panel_clipping_and_drawing() {
+        let root = Panel::root(640, 480);
+        let win = root.child(100, 50, 200, 100).bordered();
+        let label = win.child(10, 10, 300, 20);
+        assert_eq!((label.x, label.y), (111, 61), "children sit inside the parent's border");
+        assert_eq!(label.clip, Rect { x0: 111, y0: 61, x1: 300, y1: 81 }, "clipped to the parent");
+        assert_eq!(win.paint_size(), (198, 98));
+        let mut s = Record::default();
+        win.line_border(&mut s, Color::new(178, 118, 0, 0));
+        assert_eq!(s.0[0], (100, 50, 200, 1, [178, 118, 0], 255));
+        assert_eq!(s.0[3], (299, 51, 1, 98, [178, 118, 0], 255));
+        s.0.clear();
+        win.paint_background(&mut s, Color::new(0, 0, 0, 255));
+        assert!(s.0.is_empty(), "fully transparent colours draw nothing");
+        win.fill_rect(&mut s, 0, 0, 500, 500, Color::new(0, 0, 0, 100));
+        assert_eq!(s.0[0], (101, 51, 199, 99, [0, 0, 0], 155), "paints inside the inset, clipped to the panel");
+        s.0.clear();
+        root.outlined_rect(&mut s, 0, 0, 10, 5, Color::new(1, 1, 1, 0));
+        assert_eq!(s.0, vec![(0, 0, 10, 1, [1; 3], 255), (0, 4, 10, 1, [1; 3], 255), (0, 1, 1, 3, [1; 3], 255), (9, 1, 1, 3, [1; 3], 255)]);
+        s.0.clear();
+        root.text(&mut s, &test_font(), 5, 6, Color::new(255, 0, 0, 5), b"A", 100);
+        assert_eq!(s.0, vec![(7, 6, 1, 1, [255, 0, 0], 250)]);
+        assert!(label.is_within(111, 61) && !label.is_within(110, 61));
+    }
+
+    #[test]
+    fn image_modulation() {
+        let mut d = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 1, 0, 32, 8];
+        d.extend_from_slice(&[255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0]);
+        let img = Image::from_tga(&d, true).unwrap();
+        let mut s = Record::default();
+        Panel::root(640, 480).image(&mut s, &img, 10, 20, Color::new(255, 170, 0, 1));
+        assert_eq!(s.0, vec![(10, 20, 2, 1, [255, 170, 0], 254)], "equal pixels share a fill; clear ones draw nothing");
+    }
+
+    #[test]
+    fn label_and_scale_maths() {
+        assert_eq!(label_text_pos(Align::West, 100, 20, 30, 10), (0, 5));
+        assert_eq!(label_text_pos(Align::North, 101, 20, 31, 10), (35, 0));
+        assert_eq!(label_text_pos(Align::East, 100, 21, 30, 10), (70, 5));
+        assert_eq!(label_text_pos(Align::SouthEast, 100, 20, 30, 10), (70, 10));
+        assert_eq!(label_content_size(30, 10), (38, 18));
+        assert_eq!((ftol(xs(640) * 40.0), ftol(ys(480) * 32.0)), (40, 32));
+        assert_eq!((ftol(xs(800) * 124.0), ftol(ys(600) * 24.0)), (155, 30));
+        assert_eq!((ftol(xs(1024) * 176.0), ftol(ys(768) * 312.0)), (281, 499));
     }
 }

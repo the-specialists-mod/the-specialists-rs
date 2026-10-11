@@ -263,6 +263,8 @@ fn on_message(m: Msg, buf: &[u8]) {
     for f in fx {
         apply_effect(f);
     }
+    // The viewport's handlers for the same messages (scoreboard teams, team menu).
+    crate::menus::on_message(m, buf);
     if m == Msg::ResetHUD {
         // `0x100219c7`: `m_flMouseSensitivity` (`+0x18`) = 0 after the elements' `Reset`.
         ZOOM_SENS.0.set(0.0);
