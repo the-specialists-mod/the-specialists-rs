@@ -281,8 +281,9 @@ pub unsafe extern "C" fn HUD_ConnectionlessPacket(
 pub unsafe extern "C" fn HUD_Frame(time: f64) {
     // TS order: server browser, CVoiceStatus::Frame, emitters, slow motion, then the key gate.
     voice::frame(time);
-    input::frame(time);
     view::frame(time);
+    hud::frame(time);
+    input::frame();
 }
 
 #[unsafe(no_mangle)]

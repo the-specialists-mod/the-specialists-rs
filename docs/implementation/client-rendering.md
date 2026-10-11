@@ -40,7 +40,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 
 | TS (client.dll) | Address | Rust | Status |
 |---|---|---|---|
-| `InterpolateSlowMotion` | `0x10055ae0` | `view::ease_time_scale` (called in `view::frame`) | done, unit-tested |
+| `InterpolateSlowMotion` | `0x10055ae0` | `hud::approach_timescale`, TS's only time-scale easer, from `HUD_Frame` (`hud::frame`, after the emitters, by the unclamped frame time) | done, unit-tested |
 | `CHud::Think` zoom (from `CHud::UpdateClientData` `0x10024b00`), `UTIL_ApproachFOV`, `HUD_GetFOV` | `0x10049760`, `0x10049620`, `0x100209f0` | `hud::think_fov` from `view::update_client_data` (`HUD_UpdateClientData`), `view::ease_fov` (integer steps of `max(1, (\|d\|/2)·ft·50)` with the last refdef's frame time `0x10191478`), `hud::get_fov` (target `state.fov_target` = `0x100df1a4`, demo record type 0) | done, unit-tested |
 | `V_CalcRefdef` | `0x10069b90` | `view::calc_refdef` (dispatch in `view::refdef_path`) | done, dispatch unit-tested; while paused (outside intermission and spectating) no view is computed, as in TS, so the engine keeps last frame's view and the bob, kick, shake and stair state hold |
 | `V_CalcNormalRefdef` | `0x10067890` | `view::calc_normal` | done (see deviations) |
@@ -60,7 +60,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `V_SetFog` | `0x10056c20` | `effects::fog_begin` / `fog_params` (TriAPI `Fog`), `fog_end` | done, unit-tested: single player with `gl_fog 2` uses `gl_fog_red/green/blue` and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` != 0 |
 | `CAM_Init` / `CAM_Think` / `MoveToward` / `CL_IsThirdPerson` / camera offset | `0x10025370` / `0x10024c80` / `0x10024ba0` / `0x1004fec0` / §7.4 | `view::cam_init` (from `input::init`, as `InitInput` calls it), `view::cam_think` (`cam_command`, `cam_ofs` from `cam_snapto`/`cam_ideal*`, `move_toward`, unit-tested), `view::is_third_person` (`cam_thirdperson` only; TS has no separate death-cam flag, the death cam is the `TSHealth` 0 toggle), third-person block of `calc_normal` (`cam_base`, `cam_smooth`, `body_cam`, `smooth_model_z`) | done; camera verified in game before the offset smoothing was rewritten to TS's form, body cam and model z smoothing not yet |
 | camera controls: `+/-campitchup`, `+/-campitchdown`, `+/-camyawleft`, `+/-camyawright`, `+/-camin`, `+/-camout` (kbuttons `0x100df338`/`370`/`2e8`/`348`/`380`/`328`), `+/-cammousemove`, `+/-camdistance`, `snapto`; `CAM_Think`'s adjustment block | `0x10025260..0x10025310`, `0x100255d0`/`0x10025670`, `0x10025680`/`0x10025700`, `0x10025340`; `0x10024cdc..0x1002515d` | `camera::register_commands` (from `view::cam_init`, in `CAM_Init`'s order), `camera::adjust_ideal` (`key_step`: ±2.5° pitch/yaw, ±1 distance, `+camin` under 30 resets to 0/0/30, unbounded; `mouse_step`: half a degree, or one unit of distance in `+camdistance`, per two pixels of cursor offset, bounded by `c_min/max*`; both unit-tested). While a mouse mode holds the mouse (`iMouseInUse` `0x100df394`), `input` skips mouse look (`IN_Move` `0x100282e0`), `IN_Accumulate` (`0x100278b0`) and the mouse buttons (`IN_MouseEvent` `0x100273d0`) | done (see deviations); not exercised in game |
-| `thirdperson` toggle | `0x1004fe00` | `view::toggle_third_person` (also `cam_command 1` and the HUD's death cam, `cl_thirdpersonswitch` and observer switches): during demo playback switches only when `cam_thirdperson` differs from the recorded state; otherwise refused for an observer in first person; flips `cam_thirdperson`, seeds `cam_ofs` = (view pitch, view yaw, 30) when switching on, sets `cam_command` 0, and while recording writes demo record type 2 | done; not exercised in game |
+| `thirdperson` toggle | `0x1004fe00` | `view::toggle_third_person` (also `cam_command 1`, and the HUD's switches from inside their handlers: the `TSHealth` death cam, `cl_thirdpersonswitch` in `WeaponInfo`, `cl_thirdperson` and observer in `Spectator`; nothing else reads those two cvars): during demo playback switches only when `cam_thirdperson` differs from the recorded state; otherwise refused for an observer in first person; flips `cam_thirdperson`, seeds `cam_ofs` = (view pitch, view yaw, 30) when switching on, sets `cam_command` 0, and while recording writes demo record type 2 | done; not exercised in game |
 | `Demo_WriteBuffer` / `Demo_ReadBuffer` | `0x1001b860` / `0x1001b8c0` | `demo::write_buffer` (`ClEngine::demo_write_buffer`), `demo::read_buffer` (from the `Demo_ReadBuffer` export): `int` type + 4 bytes. Type 0: the zoom target (`float`), written by `hud::get_fov` on every `CHud::Think` while recording (`0x10020a11`) and replacing the target during playback (`0x10020a25`). Type 1: the alternate grip (`int` `vuser2[2]`), written by `prediction::gun::update_alt_grip` when it changes while the `from` weapon is the TS gun (`0x10003bf9`) and applied by `prediction::alt_grip` (`GetActiveAnimSet`, `0x1003df6c`) during playback; `CHudTSWeapons::VidInit` (`0x1004cb50`) clears the grip. Type 2: `cam_thirdperson`. Unknown types print TS's "Unknown demo buffer type, skipping." | done, unit-tested; not exercised in a recorded demo |
 | `HookEvents` | `0x10003240` | `events::init` | all 11 |
 | `EV_TS_Fire` / `FireLinked` | `0x1003de40` / `0x1003de10` | `events::fire::{fire, fire_linked}` | done |
@@ -212,9 +212,9 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   `cam_idealpitch`/`cam_idealyaw`: eased a quarter of the way per frame by `MoveToward`, or snapped
   with `cam_snapto 1`. The view itself still looks along `cl_viewangles` with roll 0, as before
   (not re-checked against TS, which leaves `pparams->viewangles` alone in this block). `cam_ofs`
-  is also seeded lazily (view angles, distance 30) when third person starts by a path that doesn't
-  go through the `thirdperson` toggle (the `cl_thirdperson` cvar, `cl_thirdpersonswitch` in `view::frame`),
-  and is dropped in first person; TS keeps the stale value, which nothing reads in first person.
+  is dropped in first person (TS keeps the stale value, which nothing reads in first person), and
+  `CAM_Think` falls back to the toggle's seed (view angles, distance 30) if it finds third person
+  without one; every switch into third person goes through the toggle, so that doesn't happen.
 * **Camera mouse modes read the mouse motion, not the Win32 cursor.** TS's `CAM_Think` reads
   `GetCursorPos`, takes the offset from `GetWindowCenterX/Y` and re-centres with `SetCursorPos`,
   while `iMouseInUse` keeps `IN_MouseMove`/`IN_Accumulate` off the cursor. The port takes the
@@ -367,7 +367,7 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 
 | Field | Writer | Reader |
 |---|---|---|
-| `time_scale_target` (existing) | HUD `TSSlowMo` handler (`decode_slowmo` in `protocol::effects`; also play `goslow.wav`) | `view::frame` eases `time_scale` |
+| `time_scale_target` (existing) | HUD `TSSlowMo` handler (`decode_slowmo` in `protocol::effects`; also play `goslow.wav`) | `hud::frame` (`HUD_Frame`) eases `time_scale` |
 | `fov_target` (`0x100df1a4`) | HUD `SetFOV` handler (`cl_lw` 0) and `prediction` (`to.client.fov`, every `HUD_PostRunCmd`); `hud::get_fov` during demo playback | `hud::think_fov` eases `fov` |
 | `fov` (`m_iFOV`) | `hud::think_fov` (eased, from `HUD_UpdateClientData`); `SetFOV` sets it outright | HUD (sensitivity, scope), `view`, effects |
 | `bullet_time` | render (`TSBTime`) | client bullets |
@@ -379,7 +379,7 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
 | `laser_range` | `effects::laser::draw_local` (first hit distance ×0.025) | HUD `DrawCrosshair` |
 | `items_ready` | prediction (`from` active items, 0 while `m_flNextAttack > 0`) | HUD `DrawLaserDots` |
 | `spec_mode`/`spec_target`/`spec_flags` | `prediction::process_player_state` (g_iUser1..3) | view, events, HUD |
-| `dead`, `weapon` (existing) | HUD | view (`cl_thirdpersonswitch`), lasers |
+| `dead`, `weapon` (existing) | HUD | lasers, effects |
 
 **Messages hooked by render** (in `effects::init` / `view::init`): `TSPSys`, `PTakeDam`,
 `TSFrags`, `TSMBlur`, `TSBTime`, `TSFade`. The HUD package hooks the other 58. FWGS keeps the first

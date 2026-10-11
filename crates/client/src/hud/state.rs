@@ -97,12 +97,9 @@ pub struct TextMenu {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Sound(&'static str),
-    /// Toggle third person (death cam, `cl_thirdpersonswitch`, spectator changes).
+    /// Run the `thirdperson` toggle (`0x1004fe00`) now, as TS's handlers do: the death cam
+    /// (`TSHealth`), `cl_thirdpersonswitch` (`WeaponInfo`) and `Spectator`.
     ToggleThirdPerson,
-    /// Go back to `cl_thirdperson`'s setting after leaving observer mode.
-    RestoreThirdPerson,
-    /// Leave third person (entering observer mode).
-    LeaveThirdPerson,
     OpenBuyMenu,
     OpenTeamMenu,
     OpenMotd,
@@ -121,7 +118,10 @@ pub struct Ctx<'a> {
     pub local_index: i32,
     pub local_name: String,
     pub third_person: bool,
+    /// `cl_thirdpersonswitch == 1` (`0x100df3a4`, read only by `WeaponInfo`).
     pub thirdperson_switch: bool,
+    /// `cl_thirdperson` (`0x100df544`, read only by `Spectator`).
+    pub cl_thirdperson: f32,
     pub saytext_time: f32,
     pub deathnotice_time: f32,
 }
@@ -536,12 +536,12 @@ impl Hud {
                 {
                     self.grid[r][b] = Slot { id: self.weapon, clip: self.clip };
                 }
-                // cl_thirdpersonswitch 1: third person with kung fu, first person with a gun.
-                if ctx.thirdperson_switch {
-                    let want_third = self.weapon < 1;
-                    if want_third != ctx.third_person && (old != self.weapon || want_third) {
-                        fx.push(Effect::ToggleThirdPerson);
-                    }
+                // `cl_thirdpersonswitch` 1 (`0x1004f93b..0x1004f970`): kung fu goes to third person
+                // whatever the old weapon was; a gun goes back to first person only when the
+                // weapon before this message was kung fu (id 0), not on a gun-to-gun change.
+                let toggle = if self.weapon < 1 { !ctx.third_person } else { ctx.third_person && old == 0 };
+                if ctx.thirdperson_switch && toggle {
+                    fx.push(Effect::ToggleThirdPerson);
                 }
             }
             Msg::ClipInfo => {
@@ -644,15 +644,25 @@ impl Hud {
                     self.players[cl].observer = v.observer != 0;
                     self.players[cl].active_items = 0;
                 }
+                // The local player (`10065294..100652f8`), on every message, not only on a change:
+                // observer (`0x100d4401`) is `observer == 1`. Entering leaves third person and
+                // opens the buy menu; otherwise `cl_thirdperson` 1 or 0 picks the camera (other
+                // values keep it), so the death cam doesn't outlive the respawn.
                 if cl as i32 == ctx.local_index {
-                    let obs = v.observer != 0;
-                    if obs && !self.observer {
-                        fx.push(Effect::LeaveThirdPerson);
-                        fx.push(Effect::OpenBuyMenu);
-                    } else if !obs && self.observer {
-                        fx.push(Effect::RestoreThirdPerson);
+                    self.observer = v.observer == 1;
+                    let toggle = if self.observer {
+                        ctx.third_person
+                    } else if ctx.cl_thirdperson == 1.0 {
+                        !ctx.third_person
+                    } else {
+                        ctx.cl_thirdperson == 0.0 && ctx.third_person
+                    };
+                    if toggle {
+                        fx.push(Effect::ToggleThirdPerson);
                     }
-                    self.observer = obs;
+                    if self.observer {
+                        fx.push(Effect::OpenBuyMenu);
+                    }
                 }
             }
             Msg::VguiMenu => {
@@ -824,6 +834,7 @@ mod tests {
             local_name: "me".into(),
             third_person: false,
             thirdperson_switch: false,
+            cl_thirdperson: 0.0,
             saytext_time: 5.0,
             deathnotice_time: 6.0,
         }
@@ -967,11 +978,51 @@ mod tests {
         let mut fx = Vec::new();
         h.apply(Msg::Spectator, &Spectator { client: 1, observer: 1 }.encode(), &c, &mut fx);
         assert!(h.observer);
-        assert_eq!(fx, [Effect::LeaveThirdPerson, Effect::OpenBuyMenu]);
+        assert_eq!(fx, [Effect::OpenBuyMenu], "first person stays");
+        fx.clear();
+        let third = Ctx { third_person: true, ..ctx(&s) };
+        h.apply(Msg::Spectator, &Spectator { client: 1, observer: 1 }.encode(), &third, &mut fx);
+        assert_eq!(fx, [Effect::ToggleThirdPerson, Effect::OpenBuyMenu], "every message, not only on a change");
         fx.clear();
         h.apply(Msg::Spectator, &Spectator { client: 2, observer: 1 }.encode(), &c, &mut fx);
         assert!(fx.is_empty());
         assert!(h.players[2].observer);
+        h.apply(Msg::Spectator, &Spectator { client: 1, observer: 2 }.encode(), &c, &mut fx);
+        assert!(!h.observer, "only 1 is an observer");
+    }
+
+    #[test]
+    fn spectator_applies_cl_thirdperson() {
+        let s = Screen::default();
+        let mut h = Hud::default();
+        let mut toggles = |third: bool, cl_thirdperson: f32| {
+            let c = Ctx { third_person: third, cl_thirdperson, ..ctx(&s) };
+            let mut fx = Vec::new();
+            h.apply(Msg::Spectator, &Spectator { client: 1, observer: 0 }.encode(), &c, &mut fx);
+            fx == [Effect::ToggleThirdPerson]
+        };
+        assert!(toggles(true, 0.0), "the death cam doesn't survive the respawn");
+        assert!(toggles(false, 1.0));
+        assert!(!toggles(true, 1.0) && !toggles(false, 0.0));
+        assert!(!toggles(true, 2.0) && !toggles(false, 2.0), "other values keep the camera");
+    }
+
+    #[test]
+    fn thirdperson_switch_on_weapon_info() {
+        let s = Screen::default();
+        let mut h = Hud::default();
+        let mut toggles = |old: i32, new: u8, third: bool| {
+            h.weapon = old;
+            let c = Ctx { third_person: third, thirdperson_switch: true, ..ctx(&s) };
+            let mut fx = Vec::new();
+            h.apply(Msg::WeaponInfo, &WeaponInfo { id: new, clip: 0, reserve: 0, mode: 0, attachments: 0 }.encode(), &c, &mut fx);
+            fx == [Effect::ToggleThirdPerson]
+        };
+        assert!(toggles(13, 0, false) && toggles(0, 0, false), "kung fu: third person, changed or not");
+        assert!(!toggles(13, 0, true));
+        assert!(toggles(0, 13, true), "kung fu to a gun: first person");
+        assert!(!toggles(13, 13, true) && !toggles(12, 13, true), "not on a gun-to-gun change");
+        assert!(!toggles(0, 13, false));
     }
 
     #[test]

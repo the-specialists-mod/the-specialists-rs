@@ -94,12 +94,6 @@ pub struct Shared {
     pub laser_color: Vec<u8>,
     /// Effect messages waiting for `effects`.
     pub ts_effects: Vec<TsEffect>,
-    /// Third-person toggles requested by TS HUD logic (death cam on `TSHealth` 0,
-    /// `cl_thirdpersonswitch`, observer changes). `view` consumes them.
-    pub thirdperson_toggles: u32,
-    /// Leave / restore third person on entering / leaving observer mode.
-    pub thirdperson_leave: bool,
-    pub thirdperson_restore: bool,
     /// The weapon menu, buy menu or another HUD menu is open (view/effects may hide things).
     pub menu_open: bool,
 }

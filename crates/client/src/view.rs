@@ -22,8 +22,6 @@ struct Cvars {
     cam_back: Cvar,
     cam_right: Cvar,
     cam_up: Cvar,
-    thirdperson: Cvar,
-    thirdpersonswitch: Cvar,
     thirdtransparency: Cvar,
     vsmoothing: Cvar,
     centermove: Cvar,
@@ -75,8 +73,6 @@ struct View {
     /// while in first person; TS's `thirdperson` toggle (`0x1004fe00`) seeds it with the view
     /// angles and distance 30, which [`cam_think`] does when third person starts.
     cam_ofs: Option<Vec3>,
-    last_thirdperson_cvar: f32,
-    last_weapon: i32,
     // TSFade
     fade: Option<(f32, state_fade::Fade)>,
     // view-model framerate latch (`g_vmFramerate` `0x10094cf0`): (sequence, animtime, rate)
@@ -381,8 +377,6 @@ pub fn init() {
         cam_back: i.cam_back,
         cam_right: i.cam_right,
         cam_up: i.cam_up,
-        thirdperson: i.cl_thirdperson,
-        thirdpersonswitch: i.cl_thirdpersonswitch,
         thirdtransparency: i.cl_thirdtransparency,
         vsmoothing: i.cl_vsmoothing,
         centermove: Cvar::register(c"v_centermove", c"0.15", 0),
@@ -450,8 +444,8 @@ extern "C" fn cmd_thirdperson() {
 }
 
 /// TS's `thirdperson` (`0x1004fe00`, replacing the SDK's `CAM_ToThirdPerson`): a toggle, also
-/// run by `cam_command 1` and by the HUD's camera switches (death cam, `cl_thirdpersonswitch`,
-/// observer changes).
+/// run by `cam_command 1` and, from inside their handlers, by the HUD's camera switches: the death
+/// cam (`TSHealth`), `cl_thirdpersonswitch` (`WeaponInfo`) and `cl_thirdperson` (`Spectator`).
 /// * During demo playback it only switches when `cam_thirdperson` differs from the state the demo
 ///   last recorded ([`crate::demo::recorded_thirdperson`]), so replayed switches follow the
 ///   recording.
@@ -497,12 +491,6 @@ pub fn on_tsfade(b: &[u8]) {
     }
 }
 
-/// `InterpolateSlowMotion` (`0x10055ae0`): ease toward `target` at `min(7 ft, 1)`, snap within 0.05.
-pub fn ease_time_scale(cur: f32, target: f32, ft: f32) -> f32 {
-    let d = target - cur;
-    if d.abs() > 0.05 { cur + d * (7.0 * ft).min(1.0) } else { target }
-}
-
 /// `UTIL_ApproachFOV` (`0x10049620`), from `CHud::Think`: `m_iFOV` (an `int`) moves toward
 /// `target` by `max(1, (|d| / 2) * ft * 50)` (integer halving), truncated, without passing it.
 /// An unset FOV (below 0.001) snaps.
@@ -519,7 +507,8 @@ pub fn ease_fov(cur: f32, target: f32, ft: f32) -> f32 {
     next as f32
 }
 
-/// Called from `HUD_Frame`. The engine passes the frame time (FWGS `host.frametime`, as the
+/// The emitter part of `HUD_Frame` (`CTS_CL_Emitter::Frame` `0x1003ab40`), before the slow-motion
+/// easer ([`crate::hud::frame`]). The engine passes the frame time (FWGS `host.frametime`, as the
 /// SDK's `HUD_Frame(double time)` does), not an absolute time.
 pub fn frame(frametime: f64) {
     let ft = (frametime as f32).clamp(0.0, 0.25);
@@ -528,51 +517,7 @@ pub fn frame(frametime: f64) {
         w.last_frame = time;
         w.frametime = ft;
     });
-    state::with(|s| s.time_scale = ease_time_scale(s.time_scale, s.time_scale_target.max(0.0), ft));
-    // Camera requests from the HUD (death cam on TSHealth 0, cl_thirdpersonswitch, observer).
-    let (toggles, leave, restore) = state::with(|s| {
-        (std::mem::take(&mut s.thirdperson_toggles), std::mem::take(&mut s.thirdperson_leave), std::mem::take(&mut s.thirdperson_restore))
-    });
-    // Automatic camera switches: cl_thirdperson on change, cl_thirdpersonswitch on weapon change.
-    // Each goes through TS's toggle (`0x1004fe00`), with its observer and demo checks.
-    let tp = cv(|c| c.thirdperson);
-    for _ in 0..toggles {
-        toggle_third_person();
-    }
-    if leave && is_third_person() {
-        toggle_third_person();
-    }
-    if restore && third_after_observer(is_third_person(), tp) != is_third_person() {
-        toggle_third_person();
-    }
-    let sw = cv(|c| c.thirdpersonswitch);
-    let weapon = state::with(|s| s.weapon);
-    with(|w| {
-        if tp != w.last_thirdperson_cvar {
-            w.last_thirdperson_cvar = tp;
-            w.third = tp != 0.0;
-        }
-        if weapon != w.last_weapon {
-            if sw != 0.0 {
-                w.third = weapon == 0;
-            }
-            w.last_weapon = weapon;
-        }
-    });
     effects::frame(time, ft);
-}
-
-/// Leaving observer mode (`Spectator` handler `10065250`): TS re-applies `cl_thirdperson` (1 →
-/// third person, 0 → first person, other values keep the camera). The death cam that was on
-/// before the observer mode doesn't come back.
-fn third_after_observer(third: bool, cl_thirdperson: f32) -> bool {
-    if cl_thirdperson == 1.0 {
-        true
-    } else if cl_thirdperson == 0.0 {
-        false
-    } else {
-        third
-    }
 }
 
 /// `CAM_Think` (`0x10024c80`), every frame from the engine: `cam_command` 1 runs `thirdperson`
@@ -1250,14 +1195,6 @@ fn write_screen_fade(_time: f32) {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn leaving_observer_reapplies_cl_thirdperson() {
-        use super::third_after_observer as f;
-        assert!(!f(true, 0.0), "the death cam doesn't survive the respawn");
-        assert!(f(false, 1.0));
-        assert!(f(true, 2.0) && !f(false, 2.0), "other values keep the camera");
-    }
-
     use super::*;
 
     #[test]
@@ -1282,17 +1219,6 @@ mod tests {
         assert_eq!(cam_ofs_step([0.0, 60.0, 30.0], view, [0.0, 0.0, 100.0], false), [5.0, 70.0, 100.0]);
         // Already at view + ideal: unchanged (not even wrapped).
         assert_eq!(cam_ofs_step([-10.0, 100.0, 30.0], [-10.0, 100.0, 0.0], [0.0; 3], false), [-10.0, 100.0, 0.0]);
-    }
-
-    #[test]
-    fn time_scale_easing() {
-        let mut ts = 1.0;
-        for _ in 0..200 {
-            ts = ease_time_scale(ts, 0.35, 0.01);
-        }
-        assert_eq!(ts, 0.35);
-        assert!((ease_time_scale(1.0, 0.35, 0.01) - (1.0 - 0.65 * 0.07)).abs() < 1e-6);
-        assert_eq!(ease_time_scale(0.97, 1.0, 0.01), 1.0, "snaps within 0.05");
     }
 
     #[test]

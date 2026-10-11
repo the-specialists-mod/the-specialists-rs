@@ -772,11 +772,10 @@ pub fn commands() {
     }
 }
 
-/// `HUD_Frame`: TS clears the anti-script gate here (after the frame's commands ran), and the HUD
-/// eases the slow-motion clock.
-pub fn frame(time: f64) {
+/// The end of `HUD_Frame` (`0x1001ab27`): TS clears the anti-script gate (`0x100df5cc`) after the
+/// frame's commands ran.
+pub fn frame() {
     REAL_KEY.0.set(false);
-    hud::frame(time);
 }
 
 /// `HUD_Key_Event` (10025a80): TS forwards keydown 'a' to the weapon element as slot 11, then

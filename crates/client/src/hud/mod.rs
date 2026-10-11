@@ -240,6 +240,7 @@ fn on_message(m: Msg, buf: &[u8]) {
         local_name: if li > 0 { e.player_info(li).name } else { String::new() },
         third_person: third_person(),
         thirdperson_switch: input::cvars().cl_thirdpersonswitch.value() == 1.0,
+        cl_thirdperson: input::cvars().cl_thirdperson.value(),
         saytext_time: c.saytext_time.value(),
         deathnotice_time: c.deathnotice_time.value(),
     };
@@ -290,9 +291,7 @@ fn apply_effect(f: Effect) {
     let e = engine();
     match f {
         Effect::Sound(name) => e.play_sound(name, 1.0),
-        Effect::ToggleThirdPerson => crate::state::with(|s| s.thirdperson_toggles += 1),
-        Effect::LeaveThirdPerson => crate::state::with(|s| s.thirdperson_leave = true),
-        Effect::RestoreThirdPerson => crate::state::with(|s| s.thirdperson_restore = true),
+        Effect::ToggleThirdPerson => crate::view::toggle_third_person(),
         Effect::OpenBuyMenu => crate::menus::open_buy(),
         Effect::OpenTeamMenu => crate::menus::open_team_menu(),
         Effect::OpenMotd => crate::menus::open_motd(),
@@ -464,19 +463,21 @@ pub fn reset() {
 // ---------------------------------------------------------------------------------------------
 // Per-frame logic
 
-/// `HUD_Frame`: TS eases `g_flTimescale` toward the `TSSlowMo` target (10055ae0):
-/// `cur += min(dt*7, 1) * (target - cur)` while the difference exceeds 0.05, else snap.
+/// `InterpolateSlowMotion` (`0x10055ae0`): `cur += min(dt*7, 1) * (target - cur)` while the
+/// difference exceeds 0.05, else `cur = target`. TS works on the x87 stack and rounds once when
+/// storing; f64 is as close as Rust gets.
 pub fn approach_timescale(dt: f32, cur: f32, target: f32) -> f32 {
-    if (target - cur).abs() > 0.05 { cur + (dt * 7.0).min(1.0) * (target - cur) } else { target }
+    let d = target as f64 - cur as f64;
+    let d = if d.abs() > 0.05f32 as f64 { (dt as f64 * 7.0).min(1.0) * d } else { d };
+    (d + cur as f64) as f32
 }
 
-static LAST_FRAME: Global<Cell<f64>> = Global(Cell::new(0.0));
-
+/// The slow-motion part of `HUD_Frame` (`0x1001ab09..0x1001ab24`), TS's only time-scale easer:
+/// `g_flTimescale` (`0x100963e8`, `state.time_scale`) moves toward the `TSSlowMo` target
+/// (`0x1009ff04`, `state.time_scale_target`) by `HUD_Frame`'s argument, the frame time (FWGS
+/// `host.frametime`), narrowed to a float and not clamped.
 pub fn frame(time: f64) {
-    // Engines pass frame time (FWGS: host.frametime) to HUD_Frame.
-    let dt = if time > 0.0 && time < 1.0 { time as f32 } else { 0.0 };
-    LAST_FRAME.0.set(time);
-    crate::state::with(|s| s.time_scale = approach_timescale(dt, s.time_scale, s.time_scale_target));
+    crate::state::with(|s| s.time_scale = approach_timescale(time as f32, s.time_scale, s.time_scale_target));
 }
 
 /// `HUD_GetFOV` (`0x100209f0`): the zoom target `CHud::Think` eases toward (`0x100df1a4`,
@@ -805,6 +806,11 @@ mod tests {
         assert!((v - (1.0 + 0.7 * (0.35 - 1.0))).abs() < 1e-6);
         assert_eq!(approach_timescale(0.1, 0.38, 0.35), 0.35, "snaps within 0.05");
         assert!((approach_timescale(1.0, 1.0, 0.35) - 0.35).abs() < 1e-6, "rate capped at 1");
+        let mut ts = 1.0;
+        for _ in 0..200 {
+            ts = approach_timescale(0.01, ts, 0.35);
+        }
+        assert_eq!(ts, 0.35, "settles exactly on the target");
     }
 
     #[test]

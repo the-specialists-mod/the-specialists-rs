@@ -32,7 +32,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `HUD_Key_Event` 10025a80 gate, `HUD_Frame` gate clear | `input::key_event`, `input::frame` |
 | `KB_Find` 10025880 | `input::find` |
 | `IN_MouseMove` 100274d0 / `IN_MouseEvent` 100273d0 / `IN_Accumulate` 100278b0 | `input::apply_mouse`, `mouse_event`, `accumulate` (+ `native`, `win`, `sdl`); all three stand down while `camera::mouse_in_use` (`iMouseInUse` 0x100df394), leaving the motion to `CAM_Think` (`input::take_cursor_offset`) |
-| `TS_ApproachTimescale` 10055ae0 | `hud::approach_timescale` (called from `HUD_Frame`) |
+| `InterpolateSlowMotion` 10055ae0 | `hud::approach_timescale` (from `HUD_Frame`, `hud::frame`; TS's only time-scale easer) |
 | `CHud::Think` 10049760 (from `CHud::UpdateClientData` 10024b00), `UTIL_ApproachFOV` 10049620, `HUD_GetFOV` 100209f0, `SetFOV` 10049570 | `hud::think_fov` (from `view::update_client_data`), `view::ease_fov`, `hud::get_fov` (demo record type 0), `hud::set_fov` (ignored while `cl_lw` is on; sets the target and `m_iFOV`, and the sensitivity `fov·0.0125·sensitivity·zoom_sensitivity_ratio`) |
 | `CHudTSStatus` handlers 1004b730..1004c1e0 | `Hud::apply` (status arms) |
 | `AddTSMessage` 1004b520 | `Hud::add_ts_message` |
@@ -72,7 +72,7 @@ payloads are logged and ignored.
 
 | Message | Read order | Effect |
 |---|---|---|
-| TSHealth | B hp | health; hp 0, not observing and not already in third person → `thirdperson` toggle request (TS `1004b730`). This toggle is the whole death cam: TS has no other dead-camera flag, and everything that checks third person reads `cam_thirdperson` |
+| TSHealth | B hp | health; hp 0, not observing and not already in third person → `thirdperson` toggle (TS `1004b730`). This toggle is the whole death cam: TS has no other dead-camera flag, and everything that checks third person reads `cam_thirdperson` |
 | TSArmor / TSState / TSSpace | B | kevlar / stance / free slots |
 | TSCash | S | credits |
 | PwUp | S flags, B value | flags & 0x104 → kung-fu / movement icon, else timed power-up |
@@ -93,11 +93,11 @@ payloads are logged and ignored.
 | TSPSys | B type [type 3: L, L, Co] | queued `TsEffect::Wind` |
 | PlInfo | B cl, B key, B value | laser colour (key 0) |
 | TSFade | S, S, S, B×4 | `state.ts_fade` (seconds = value/4096) |
-| WeaponInfo | B id (0xff keep), B clip, S reserve, B mode, B att | current gun, grid; `cl_thirdpersonswitch` |
+| WeaponInfo | B id (0xff keep), B clip, S reserve, B mode, B att | current gun, grid; `cl_thirdpersonswitch` 1 (TS `1004f93b`, the only reader): kung fu (id < 1) toggles to third person if not already there; a gun toggles back to first person only when the weapon before the message was kung fu (id 0) |
 | ClipInfo / WStatus / ActItems / NextStunt / Wires / KFuPower / CustomWP | §3.3 | grid, active items, stunt cooldown, wires, kung-fu power, custom weapon params |
 | ScoreInfo / TeamInfo / TeamScore / TeamNames | stock | scoreboard data |
 | DeathMsg | B, B, Str | kill feed + TS console line |
-| SayText / TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2 (Spectator: observer flag; entering leaves third person and opens the buy menu, leaving re-applies `cl_thirdperson` like TS `10065250`, so the death cam doesn't outlive the respawn) |
+| SayText / TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2 (Spectator, TS `10065250`, for the local player on every message: observer is `observer == 1`; an observer leaves third person and gets the buy menu, otherwise `cl_thirdperson` 1 or 0 picks the camera and other values keep it, so the death cam doesn't outlive the respawn. This handler is the only reader of `cl_thirdperson`) |
 | Train | B notch | `CHudTrain`: `sprites/%d_train.spr` frame `notch - 1` in (255,160,0), x = w/3 + sprite w/4, y = h - sprite h - font height; hidden at 0 |
 | HideWeapon | B bits | `hide_hud`; HIDEHUD_ALL (4) hides the train element. TS only resets the engine crosshair, which it doesn't use |
 | CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Geiger, Health, Battery, Damage, GameTitle, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
@@ -309,7 +309,7 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   attachments), `tki <items> …`, `tka <type>_<buys> …`, each with TS's trailing space, after TS's
   bubble sort (melee/grenades first, then ascending price). Verified against the disassembly at
   0x10039620..0x10039810 (format strings `%i_%i `, `%i `, `tkw `/`tki `/`tka `).
-* Opens only when dead or observing (`buy`, or automatically on becoming an observer); closes
+* Opens only when dead or observing (`buy`, or automatically on each local `Spectator` message with observer 1); closes
   when alive again (except the team page); first open of the session random-buys like TS.
 
 ## 7. Deviations
@@ -370,9 +370,9 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
 * Server browser, command menu, TFC panels (dropped as allowed by §7).
 * `HUD_UpdateClientData` runs `CHud::Think`'s zoom easing and writes the eased FOV
   (`view::update_client_data` → `hud::think_fov`), as TS's `CHud::UpdateClientData` does.
-* Death-cam / `cl_thirdpersonswitch` / observer third-person changes are only *requested*
-  (`state.thirdperson_*`); the view package owns `cam_thirdperson` and runs each request through
-  TS's `thirdperson` toggle (`view::toggle_third_person`, with its observer and demo checks).
+* The death-cam / `cl_thirdpersonswitch` / `Spectator` camera switches run TS's `thirdperson`
+  toggle (`view::toggle_third_person`, with its observer and demo checks) right after the handler,
+  as TS calls it inside the handler; the view package owns `cam_thirdperson`.
 
 ## 9. Tests and results
 
@@ -411,10 +411,11 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
 * `state::Shared` additions: `observer`, `spread` (prediction should write the gun's spread
   penalty), `ts_fade` (view applies TSFade), `active_items`/`laser_color` (effects: laser and
   flashlight), `ts_effects` queue (effects drains `PlayerHit`, `Frags`, `Wind`, `MotionBlur`),
-  `thirdperson_toggles`/`thirdperson_leave`/`thirdperson_restore` (view consumes), `menu_open`.
+  `menu_open`.
   The HUD writes `health`, `dead`, `weapon`, `fov` (smoothed zoom FOV, default `default_fov`;
   `fov_target` from `SetFOV`/prediction),
-  `time_scale_target` (TSSlowMo) and eases `time_scale` in `HUD_Frame` (TS does it there).
+  `time_scale_target` (TSSlowMo) and eases `time_scale` in `HUD_Frame` (TS does it there, after
+  the emitters and before clearing the key gate; nothing else eases it).
 * The FWGS `IN_ClientLookEvent`/`IN_ClientMoveEvent` exports are in `client-dll` and call
   `input::look_event`/`move_event`.
 * The server should send `SrvSett 3` (restriction) and `GameMode` in `InitHUD` like TS, and

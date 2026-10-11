@@ -113,6 +113,7 @@ fn add_message(text: &str, rgb: [i32; 3]) {
         local_name: String::new(),
         third_person: false,
         thirdperson_switch: false,
+        cl_thirdperson: 0.0,
         saytext_time: 5.0,
         deathnotice_time: 6.0,
     };
