@@ -1,13 +1,14 @@
 //! `EV_TS_Fire` (`0x1003de40`) and its variants, `EV_TS_FireBullets` (`0x100450c0`), shell
-//! ejection (`0x10056890`) and slow-motion client bullets (`0x10035c20`...).
+//! ejection (`0x10056890`) and client bullets (`ClientBullets_*`, `0x10035b50`...).
 
 use super::impact::{self, AMMO_ATTENUATION, MAX_RANGE, SPREAD_RADIUS};
 use super::random::shared_random_float;
-use super::{Args, fire_pitch, first_person_view_model, info, slow_pitch, time_scale};
-use crate::effects::psys::heron_height;
+use super::{Args, fire_pitch, first_person_view_model, info, slow_pitch};
+use crate::effects::psys::{self, Camera, heron_height};
 use crate::{effects, state, view};
 use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
+use goldsrc::ext::tri;
 use goldsrc::sys::*;
 use shared::weapons::tables;
 
@@ -235,20 +236,24 @@ fn muzzle_light(a: &Args, s: &Shot) {
 }
 
 /// The weapon fire sound (`0x1003de90`): `fire_pitch() + rand(-5, 5)`, rolled before the volume.
+/// The silenced flag alone picks the sample (`0x1003de98`): `sound2` (`info+0x306`, volume
+/// 0.84-0.92, attenuation x2) or `sound` (`info+0x2c6`, `0x1003dee5`), even when that one is empty;
+/// TS then plays its empty buffer, and so does the port.
 fn fire_sound(a: &Args, id: i32, silenced: bool) {
     let Some(asset) = tables().asset(id as u8) else { return };
     let ammo = tables().weapon(id as u8).map_or(0, |w| w.ammo) as usize;
     let atten = AMMO_ATTENUATION.get(ammo).copied().unwrap_or(0.4);
     let pitch = r::random_long(-5, 5) + fire_pitch();
-    let (sample, vol, attn) = if silenced && !asset.sound2.is_empty() {
-        (&asset.sound2, r::random_float(0.84, 0.92), atten * 2.0)
-    } else {
-        (&asset.sound, r::random_float(0.92, 1.0), atten)
-    };
-    if sample.is_empty() {
-        return;
-    }
-    engine().ev_play_sound(a.entindex, a.origin, CHAN_WEAPON as i32, &format!("weapons/{sample}"), vol, attn, 0, pitch);
+    let (sample, vol, attn) = fire_sample(&asset.sound, &asset.sound2, silenced);
+    let vol = r::random_float(vol.0, vol.1);
+    engine().ev_play_sound(a.entindex, a.origin, CHAN_WEAPON as i32, &sample, vol, attn * atten, 0, pitch);
+}
+
+/// The fire sound's sample path, volume range and attenuation factor. TS's info buffers hold
+/// `weapons/...` paths or nothing; the table holds them without the prefix.
+fn fire_sample(sound: &str, sound2: &str, silenced: bool) -> (String, (f32, f32), f32) {
+    let path = |s: &str| if s.is_empty() { String::new() } else { format!("weapons/{s}") };
+    if silenced { (path(sound2), (0.84, 0.92), 2.0) } else { (path(sound), (0.92, 1.0), 1.0) }
 }
 
 fn bullets_for(a: &Args, s: &Shot, src: Vec3, seed: i32, f1: f32, f2: f32) {
@@ -410,12 +415,11 @@ fn whizz(b: &Bullets, end: Vec3) {
 }
 
 /// `EV_TS_FireBullets` (`0x100450c0`): mirrors the server's `ShootBulletsPlayer` so decals land
-/// where the server's bullets hit. In slow motion (or bullet time) the bullets are queued as
-/// visible client bullets instead of traced.
+/// where the server's bullets hit. With the server's `realbullet` on (`SrvSett` 0, `0x1018d16c`)
+/// or in slow motion (`0x10045330`) the pellets are queued as client bullets instead of traced.
 pub fn fire_bullets(b: &Bullets) {
-    let ammo = tables().ammo(b.ammo as u8);
-    let (pierce, unit, velocity) = ammo.map_or((0.0, 80.0, 330.0), |a| (a.pierce, a.range_unit, a.velocity));
-    let slow = state::with(|s| s.bullet_time) || time_scale() < 0.99;
+    let (pierce, unit, _) = ammo_consts(b.ammo);
+    let slow = crate::hud::with(|h| h.realbullet) != 0 || state::with(|s| s.time_scale) < 0.99;
 
     if b.bullet_type == 2 {
         let end = v::ma(b.src, 4096.0, b.dir);
@@ -447,15 +451,14 @@ pub fn fire_bullets(b: &Bullets) {
         last_dir = d;
         let end = v::ma(b.src, MAX_RANGE, d);
         if slow {
-            effects::add_client_bullet(ClientBullet::new(b.shooter, b.src, d, b.dmg, b.bullet_type, b.ammo, velocity));
+            // `ClientBullets_Add` (0x10045a8b) with the pellet direction as is, not normalised.
+            effects::add_client_bullet(b.shooter, b.src, d, b.dmg, b.ammo, b.bullet_type);
             continue;
         }
         r::with_solid_players(b.shooter - 1, || {
             let mut tr = r::player_trace(b.src, end, 2, PM_STUDIO_BOX as i32, -1);
             if tr.fraction < 1.0 {
-                let dist = v::dist(b.src, tr.endpos);
-                let idx = (dist / (unit * 10.0)) as i32;
-                remaining = impact::range_mult(idx) * b.dmg;
+                remaining = impact::range_mult(range_index(v::dist(b.src, tr.endpos), unit)) * b.dmg;
                 let bt = if b.bullet_type == 1 { 1 } else { b.bullet_type };
                 impact::texture_sound(b.dmg, &mut tr, b.src, end, bt);
                 impact::decal_gunshot(&mut tr);
@@ -485,41 +488,104 @@ pub fn fire_bullets(b: &Bullets) {
     fire_bullets(&Bullets { pellets: 1, src: p, dir: last_dir, spread: [0.0; 2], dmg: remaining, bullet_type: 2, ..*b });
 }
 
-/// A slow-motion bullet (`ClientBullets_*`, 256 slots in TS): flies at
-/// `velocity * 40 u/s * GetBulletVelocityMult`, leaves a `bullet_trail.spr` streak and runs the
-/// impact code when it hits.
-#[derive(Clone, Copy, Debug)]
-pub struct ClientBullet {
-    pub shooter: i32,
-    pub pos: Vec3,
-    pub start: Vec3,
-    pub dir: Vec3,
-    pub dmg: f32,
-    pub bullet_type: i32,
-    pub ammo: i32,
-    pub speed: f32,
-    pub travelled: f32,
-    /// Where the last trail segment ended, and when the next may start.
-    pub trail: Vec3,
-    pub next_trail: f64,
+/// `FUN_100071f0(ammo)`: the ammo table's (pierce `+0x18`, range unit `+0x20`, velocity in metres
+/// per second `+0x24`). An ammo index outside the table reads (0, 80, 330) here; TS indexes past
+/// its table.
+fn ammo_consts(ammo: i32) -> (f32, f32, f32) {
+    u8::try_from(ammo).ok().and_then(|a| tables().ammo(a)).map_or((0.0, 80.0, 330.0), |a| (a.pierce, a.range_unit, a.velocity))
 }
 
-impl ClientBullet {
-    pub fn new(shooter: i32, src: Vec3, dir: Vec3, dmg: f32, bullet_type: i32, ammo: i32, velocity_mps: f32) -> Self {
-        ClientBullet {
-            shooter,
-            pos: src,
-            start: src,
-            dir: v::normalize(dir),
-            dmg,
-            bullet_type,
-            ammo,
-            speed: velocity_mps * 40.0,
-            travelled: 0.0,
-            trail: src,
-            next_trail: 0.0,
-        }
+/// The range-falloff index of a hit `dist` units away with range unit `unit`:
+/// `__ftol(dist / (unit·10) · 10)`, truncating (`0x10045b2b`, `0x10035f94`). TS keeps the x87
+/// intermediates in extended precision, approximated here in f64.
+fn range_index(dist: f32, unit: f32) -> i32 {
+    ftol(dist as f64 / (unit as f64 * 10.0) * 10.0)
+}
+
+/// MSVC's `__ftol` (`0x1006ad1c`): truncate to 64 bits, keep the low 32.
+fn ftol(x: f64) -> i32 {
+    x as i64 as i32
+}
+
+/// Client bullet slots (`0x100eb678`: 256 slots of `0x5c` bytes).
+pub const CLIENT_BULLETS: usize = 256;
+
+/// One client bullet slot. Each lives two lives: the traced bullet ([`ClientBullet::pos`]),
+/// stepped and traced by `ClientBullets_Impact` (`0x10035d40`) on a throttle, and the drawn one
+/// ([`ClientBullet::draw_pos`]), moved by `ClientBullets_Update` (`0x10035010`) every frame it is
+/// in the view cone. They part ways: only the traced one hits, penetrates or is cleared.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ClientBullet {
+    /// `+0x00`: the shooter's entity index; 0 marks a free slot.
+    pub shooter: i32,
+    /// `+0x04`: the traced position.
+    pub pos: Vec3,
+    /// `+0x10`: where the current leg started (the fire point, or the exit point after a
+    /// penetration); the range falloff is measured from here.
+    pub start: Vec3,
+    /// `+0x1c`: the pellet direction, not normalised.
+    pub dir: Vec3,
+    /// `+0x28`: the drawn position.
+    pub draw_pos: Vec3,
+    /// `+0x34`: where the last trail segment ended.
+    pub trail: Vec3,
+    /// `+0x40`.
+    pub dmg: f32,
+    /// `+0x44`: ammo index.
+    pub ammo: i32,
+    /// `+0x4c`: client time the next trail segment may start.
+    pub next_trail: f32,
+    /// `+0x50`: client time of the next trace step.
+    pub next_update: f32,
+    /// `+0x54`: 0 normal, 1 buckshot, 2 exit (after a penetration).
+    pub bullet_type: i32,
+}
+
+/// The client bullet slots and their counter (`+0x5c00`, `0x100f1278`): every bullet added since
+/// the last frame plus those the last frame found in use. `TS_DrawEffects` runs the frame only
+/// while it is non-zero, so the frame after the last bullet is gone still runs once.
+#[derive(Default)]
+pub struct ClientBullets {
+    /// Empty until the first [`ClientBullets::add`] or [`ClientBullets::reset`], then 256 slots.
+    slots: Vec<ClientBullet>,
+    pub count: i32,
+}
+
+impl ClientBullets {
+    /// `ClientBullets_Reset` (`0x10034f60`): every slot free, the counter 0.
+    pub fn reset(&mut self) {
+        self.slots.clear();
+        self.slots.resize(CLIENT_BULLETS, ClientBullet::default());
+        self.count = 0;
     }
+
+    /// `ClientBullets_Add` (`0x10035c20`): the first free slot. With all 256 in use the new
+    /// bullet is dropped.
+    pub fn add(&mut self, shooter: i32, src: Vec3, dir: Vec3, dmg: f32, ammo: i32, bullet_type: i32) {
+        if self.slots.is_empty() {
+            self.reset();
+        }
+        let Some(s) = self.slots.iter_mut().find(|s| s.shooter == 0) else { return };
+        *s = ClientBullet { shooter, pos: src, start: src, dir, draw_pos: src, trail: src, dmg, ammo, bullet_type, ..Default::default() };
+        self.count += 1;
+    }
+
+    /// The slots (empty before the first add or reset).
+    pub fn slots(&self) -> &[ClientBullet] {
+        &self.slots
+    }
+}
+
+/// What a client bullet frame reads from the rest of the client, gathered once by
+/// `TS_DrawEffects`.
+pub struct BulletFrame {
+    /// The view of this transparent pass (TS's `AngleVectors` at `0x10056f60` and the refdef
+    /// origin `0x10190b28`).
+    pub cam: Camera,
+    /// `GetCullOrigin` (`0x10057270`).
+    pub cull: Vec3,
+    /// TS's copy of `ref_params_t::frametime` (`0x10191478`).
+    pub frametime: f32,
 }
 
 /// `GetBulletVelocityMult(ts, bt)` (`0x10055b30`).
@@ -530,43 +596,191 @@ pub fn bullet_velocity_mult(ts: f32, bullet_time: bool) -> f32 {
     ts / ((1.0 - ts * ts) * if bullet_time { 10.0 } else { 1.0 }).max(1.0)
 }
 
-/// Steps the client bullets (`ClientBullets_Frame`/`_Update`/`_Impact`). Returns the survivors.
-pub fn client_bullets_frame(bullets: &mut Vec<ClientBullet>, frametime: f32) {
-    let ts = time_scale();
-    let bt = state::with(|s| s.bullet_time);
-    let mult = bullet_velocity_mult(ts, bt);
-    let now = effects::now();
-    let trails = crate::input::cvars().cl_wavedetail.value() > 0.0;
-    let eye = view::origin();
-    bullets.retain_mut(|b| {
-        let step = b.speed * frametime * mult;
-        let next = v::ma(b.pos, step, b.dir);
-        let hit = r::with_solid_players(b.shooter - 1, || {
-            let mut tr = r::player_trace(b.pos, next, 2, PM_STUDIO_BOX as i32, -1);
-            if tr.fraction < 1.0 {
-                impact::texture_sound(b.dmg, &mut tr, b.pos, next, b.bullet_type);
-                impact::decal_gunshot(&mut tr);
-                Some(tr.endpos)
-            } else {
-                None
-            }
-        });
-        let to = hit.unwrap_or(next);
-        // Trail (`ClientBullets_Update` 0x10035ace): with `cl_wavedetail` > 0, at most every
-        // 0.01/ts s, `max(1 − ts², 0.15)` wide, faded only right at the view.
-        if trails && now >= b.next_trail {
-            b.next_trail = now + (0.01 / ts.max(0.01)) as f64;
-            let d2 = v::dot(v::sub(to, eye), v::sub(to, eye));
-            let alpha = if d2 < 10.0 { d2 * 0.1 } else { 1.0 };
-            let w = (1.0 - ts * ts).max(0.15);
-            let from = b.trail;
-            effects::with_psys(|ps| effects::fx::bullet_trail(ps, now, to, from, w, alpha));
-            b.trail = to;
+/// When a slot's next trace step is due, set when one runs at client time `now` (`0x10035b97`):
+/// every 0.1 s with `realbullet` 0, every 0.05 s with 1, otherwise every frame.
+pub fn next_update(now: f32, realbullet: i32) -> f32 {
+    if (0..2).contains(&realbullet) { 0.1 / (realbullet + 1) as f32 + now } else { now }
+}
+
+/// The time a trace step covers (`0x10035d82..0x10035da2`): up to the next step, or the frame
+/// time when that is under a millisecond away (every-frame stepping).
+pub fn step_time(next_update: f32, now: f32, frametime: f32) -> f32 {
+    let dt = next_update - now;
+    if dt < 0.001 { frametime } else { dt }
+}
+
+/// `ClientBullets_Frame` (`0x10035b50`), at the end of `TS_DrawEffects` (`0x10034e60`): looks up
+/// `sprites/shotgun_pellets.spr` (additive), then for each slot in use steps its trace when due
+/// and, in slow motion (ts < 0.99), draws it, even when the step just cleared it.
+pub fn client_bullets_frame(bullets: &mut ClientBullets, f: &BulletFrame) {
+    let sprite = effects::with_psys(|ps| ps.sprite("sprites/shotgun_pellets.spr", kRenderTransAdd as i32));
+    bullets.count = 0;
+    for i in 0..bullets.slots.len() {
+        if bullets.slots[i].shooter == 0 {
+            continue;
         }
-        b.travelled += v::dist(b.pos, to);
-        b.pos = to;
-        hit.is_none() && b.travelled < MAX_RANGE
+        let now = engine().client_time();
+        if now > bullets.slots[i].next_update {
+            bullets.slots[i].next_update = next_update(now, crate::hud::with(|h| h.realbullet));
+            client_bullet_impact(&mut bullets.slots[i], f.frametime);
+        }
+        if state::with(|s| s.time_scale) < 0.99 {
+            client_bullet_draw(&mut bullets.slots[i], sprite, f);
+        }
+        bullets.count += 1;
+    }
+}
+
+/// `ClientBullets_Impact` (`0x10035d40`): one trace step of `dir·(velocity·40)·dt·mult`
+/// (`GetBulletVelocityMult`), with players solid except the shooter. A miss moves on. A hit runs
+/// the impact code (from the hit point, toward the hit point plus the step) and decal, and clears
+/// the slot, unless a normal bullet (type 0) has more than 5 damage left after the range falloff
+/// and the ammo's pierce factor: then, as `EV_TS_FireBullets`, it steps `min(left, 48)` units on,
+/// and unless that is inside a solid it carries on from there as an exit bullet (type 2) with the
+/// damage left, after the exit point's impact (traced back to the hit).
+fn client_bullet_impact(s: &mut ClientBullet, frametime: f32) {
+    let (pierce, unit, velocity) = ammo_consts(s.ammo);
+    let (ts, bt) = state::with(|st| (st.time_scale, st.bullet_time));
+    let mult = bullet_velocity_mult(ts, bt);
+    let dt = step_time(s.next_update, engine().client_time(), frametime);
+    let v40 = velocity * 40.0;
+    let step = s.dir.map(|d| d * v40 * dt * mult);
+    let clear = r::with_solid_players(s.shooter - 1, || {
+        let end = v::add(step, s.pos);
+        let mut tr = r::player_trace(s.pos, end, 2, PM_STUDIO_BOX as i32, -1);
+        if tr.fraction == 1.0 {
+            s.pos = end;
+            return false;
+        }
+        let hit = tr.endpos;
+        s.pos = hit;
+        let d = v::sub(s.start, s.pos);
+        let dist = ((d[2] as f64 * d[2] as f64 + d[1] as f64 * d[1] as f64) + d[0] as f64 * d[0] as f64).sqrt();
+        // Exit bullets fall off on a fixed 30-unit scale (`0x10035f44`).
+        let idx = if s.bullet_type == 2 { ftol(dist * 0.003_333_333_4f32 as f64 * 10.0) } else { range_index(dist as f32, unit) };
+        let mut left = impact::range_mult(idx) * s.dmg;
+        // TS passes its shooter index first, which `TS_PlayTextureSound` never reads; the port's
+        // `texture_sound` takes the damage there, as `fire_bullets` passes it.
+        impact::texture_sound(s.dmg, &mut tr, s.pos, v::add(step, s.pos), s.bullet_type);
+        impact::decal_gunshot(&mut tr);
+        left *= pierce;
+        if s.bullet_type == 2 || s.bullet_type == 1 || left <= 5.0 {
+            return true;
+        }
+        let ahead = if left < 48.0 { left } else { 48.0 };
+        let p = v::add(s.dir.map(|d| d * ahead), hit);
+        if r::point_contents(p) == CONTENTS_SOLID {
+            return true;
+        }
+        s.pos = p;
+        s.start = p;
+        s.dmg = left;
+        s.bullet_type = 2;
+        let mut tr = r::player_trace(p, hit, 2, 0, -1);
+        if tr.fraction != 1.0 {
+            impact::texture_sound(s.dmg, &mut tr, p, hit, 2);
+            impact::decal_gunshot(&mut tr);
+        }
+        false
     });
+    if clear {
+        // `ClientBullets_Clear` (`0x10035d10`).
+        *s = ClientBullet::default();
+    }
+}
+
+/// Width of a drawn bullet and its trail: `max(1 − ts², 0.15)` (`0x1003503f`).
+pub fn bullet_width(ts: f32) -> f32 {
+    let w = 1.0 - ts as f64 * ts as f64;
+    if 0.15f32 as f64 > w { 0.15 } else { w as f32 }
+}
+
+/// Half-length of a drawn bullet's streaks: `ts·37.5` clamped to 5..25 (`0x100352e0`).
+pub fn streak_length(ts: f32) -> f32 {
+    (ts as f64 * 37.5).clamp(5.0, 25.0) as f32
+}
+
+/// A drawn bullet's alpha, also its trail's: faded right at the view, `d²·0.1` when the squared
+/// distance `d²` from the view origin is under 10 (`0x10035070..0x100350c9`).
+pub fn near_alpha(view: Vec3, pos: Vec3) -> f32 {
+    let dx = (view[0] - pos[0]) as f64;
+    let dy = (view[1] - pos[1]) as f64;
+    // TS multiplies the unrounded z difference by its stored copy.
+    let dz = view[2] as f64 - pos[2] as f64;
+    let d2 = dz * (dz as f32) as f64 + dy * dy + dx * dx;
+    if d2 < 10.0 { (d2 * 0.1f32 as f64) as f32 } else { 1.0 }
+}
+
+/// A drawn bullet's quads (uv (0,0) (1,0) (1,1) (0,1) each): unless it's buckshot (ammo 3), two
+/// streaks from `pos + dir·len` (head) to `pos − dir·len` (tail), `w` either side across the
+/// view's up and then its right (`0x10035335..0x1003599e`); then a `w`-radius billboard at `pos`
+/// (`Quad_Build` `0x10050080` as a screen sprite, `0x100359be`).
+pub fn bullet_quads(pos: Vec3, dir: Vec3, buckshot: bool, len: f32, w: f32, up: Vec3, right: Vec3) -> Vec<[Vec3; 4]> {
+    let mut quads = Vec::with_capacity(3);
+    if !buckshot {
+        let along = dir.map(|d| len * d);
+        let head = v::add(along, pos);
+        let tail = v::sub(pos, along);
+        for axis in [up, right] {
+            let a = axis.map(|x| x * w);
+            quads.push([v::sub(head, a), v::add(a, head), v::add(a, tail), v::sub(tail, a)]);
+        }
+    }
+    let u = up.map(|x| x * w);
+    let r = right.map(|x| x * w);
+    let top = v::add(u, pos);
+    let bottom = v::sub(pos, u);
+    quads.push([v::sub(top, r), v::add(top, r), v::add(bottom, r), v::sub(bottom, r)]);
+    quads
+}
+
+/// `ClientBullets_Update` (`0x10035010`): nothing at all outside the view cone (`InViewCone` of
+/// the drawn position). Otherwise the bullet's quads with the pellets sprite, then the drawn
+/// position moves `dir·velocity·40·mult·frametime`, and with `cl_wavedetail` > 0 a
+/// `bullet_trail.spr` segment (`TS_BulletTrail` `0x10046240`) runs from the last trail point to
+/// it, at most every `SlowTime(0.01)` s. The bullet-model path (`0x100350df`) is dead in TS
+/// (`0x1d34d` is only ever cleared, by `0x10034f90` from `HUD_CreateEntities`).
+fn client_bullet_draw(s: &mut ClientBullet, sprite: Option<i16>, f: &BulletFrame) {
+    if !psys::in_view_cone(&f.cam, f.cull, s.draw_pos) {
+        return;
+    }
+    let (ts, bt) = state::with(|st| (st.time_scale, st.bullet_time));
+    let w = bullet_width(ts);
+    let alpha = near_alpha(f.cam.origin, s.draw_pos);
+    if let Some(sprite) = sprite {
+        let model = r::sprite_model(effects::with_psys(|ps| ps.sprite_handle(sprite)));
+        if !model.is_null() && tri::sprite_texture(model, 0) {
+            tri::render_mode(kRenderTransAdd as i32);
+            tri::cull_face(TRICULLSTYLE_TRI_NONE);
+            tri::begin(TRI_QUADS as i32);
+            tri::color4f(1.0, 1.0, 1.0, alpha);
+            for q in bullet_quads(s.draw_pos, s.dir, s.ammo == 3, streak_length(ts), w, f.cam.up, f.cam.right) {
+                for (uv, vtx) in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].iter().zip(q.iter()) {
+                    tri::tex_coord2f(uv[0], uv[1]);
+                    tri::vertex3fv(vtx);
+                }
+            }
+            tri::end();
+            tri::render_mode(kRenderNormal as i32);
+        }
+    }
+    let (_, _, velocity) = ammo_consts(s.ammo);
+    let k = velocity as f64 * 40.0 * bullet_velocity_mult(ts, bt) as f64 * f.frametime as f64;
+    s.draw_pos = v::add(s.dir.map(|d| (k * d as f64) as f32), s.draw_pos);
+    let now = engine().client_time();
+    if crate::input::cvars().cl_wavedetail.value() > 0.0 && now > s.next_trail {
+        s.next_trail = (now as f64 + slow_time(ts, 0.01) as f64) as f32;
+        let (p1, p2, up) = (s.draw_pos, s.trail, f.cam.up);
+        let t = effects::now();
+        effects::with_psys(|ps| effects::fx::bullet_trail(ps, t, p1, p2, w, alpha, up));
+        s.trail = s.draw_pos;
+    }
+}
+
+/// `SlowTime(x)` (`0x10056fa0`): `x · (1 / max(ts, 0.01))`, rounded to a float.
+fn slow_time(ts: f32, x: f32) -> f32 {
+    let m = if ts < 0.01 { 0.01f32 } else { ts };
+    (1.0 / m as f64 * x as f64) as f32
 }
 
 #[cfg(test)]
@@ -585,6 +799,102 @@ mod tests {
             assert!(d[1].hypot(d[2]) <= 0.05 + 1e-6);
         }
         assert_eq!(pellet_dir(dir, right, up, [0.0, 0.0], 5, 1), dir);
+    }
+
+    /// `ClientBullets_Add` (0x10035c20): first free slot, every position at the source, the
+    /// direction as given; a full table drops the new bullet.
+    #[test]
+    fn client_bullet_slots() {
+        let mut b = ClientBullets::default();
+        let dir = [0.9, 0.1, 0.05];
+        b.add(3, [1.0, 2.0, 3.0], dir, 30.0, 2, 0);
+        assert_eq!(b.count, 1);
+        let s = b.slots()[0];
+        assert_eq!(
+            (s.shooter, s.pos, s.start, s.draw_pos, s.trail),
+            (3, [1.0, 2.0, 3.0], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+        );
+        assert_eq!((s.dir, s.dmg, s.ammo, s.bullet_type, s.next_update, s.next_trail), (dir, 30.0, 2, 0, 0.0, 0.0));
+        assert_eq!(b.slots().len(), CLIENT_BULLETS);
+        for i in 1..CLIENT_BULLETS {
+            b.add(i as i32 % 32 + 1, [0.0; 3], dir, 1.0, 1, 0);
+        }
+        assert_eq!(b.count, 256);
+        b.add(9, [5.0; 3], dir, 1.0, 1, 0);
+        assert_eq!(b.count, 256, "full: dropped");
+        assert!(b.slots().iter().all(|s| s.pos != [5.0; 3]));
+        // A freed slot is reused first.
+        b.slots[7] = ClientBullet::default();
+        b.add(9, [5.0; 3], dir, 1.0, 1, 0);
+        assert_eq!(b.slots()[7].pos, [5.0; 3]);
+        b.reset();
+        assert_eq!(b.count, 0);
+        assert!(b.slots().iter().all(|s| *s == ClientBullet::default()));
+    }
+
+    /// The trace-step throttle (0x10035b97..0x10035bc9) and the step time (0x10035d82).
+    #[test]
+    fn client_bullet_throttle() {
+        assert_eq!(next_update(10.0, 0), 10.0 + 0.1f32);
+        assert_eq!(next_update(10.0, 1), 10.0 + 0.05f32);
+        assert_eq!(next_update(10.0, 2), 10.0, "2 and up: every frame");
+        assert_eq!(next_update(10.0, -1), 10.0);
+        assert_eq!(step_time(10.1, 10.0, 0.016), 10.1f32 - 10.0);
+        assert_eq!(step_time(10.0, 10.0, 0.016), 0.016, "due now: the frame time");
+        assert_eq!(step_time(10.0005, 10.0, 0.016), 0.016);
+    }
+
+    #[test]
+    fn client_bullet_looks() {
+        assert_eq!(bullet_width(1.0), 0.15);
+        assert_eq!(bullet_width(0.2), 0.96);
+        assert_eq!(bullet_width(0.95), 0.15, "1 - 0.9025 is under 0.15");
+        assert_eq!(streak_length(0.1), 5.0);
+        assert_eq!(streak_length(0.4), 15.0);
+        assert_eq!(streak_length(0.98), 25.0);
+        assert_eq!(near_alpha([0.0; 3], [100.0, 0.0, 0.0]), 1.0);
+        assert_eq!(near_alpha([0.0; 3], [2.0, 0.0, 0.0]), 0.4);
+        assert_eq!(near_alpha([0.0; 3], [0.0, 0.0, 3.0]), 0.90000004);
+        assert_eq!(slow_time(0.5, 0.01), 0.02);
+        assert_eq!(slow_time(0.001, 0.01), 1.0, "ts floored at 0.01");
+    }
+
+    /// `ClientBullets_Update`'s quads (0x10035335..0x100359be): two crossed streaks and a
+    /// billboard; buckshot only the billboard.
+    #[test]
+    fn client_bullet_quads() {
+        let (up, right) = ([0.0, 0.0, 1.0], [0.0, -1.0, 0.0]);
+        let q = bullet_quads([100.0, 0.0, 0.0], [1.0, 0.0, 0.0], false, 10.0, 0.5, up, right);
+        assert_eq!(q.len(), 3);
+        assert_eq!(q[0], [[110.0, 0.0, -0.5], [110.0, 0.0, 0.5], [90.0, 0.0, 0.5], [90.0, 0.0, -0.5]]);
+        assert_eq!(q[1], [[110.0, 0.5, 0.0], [110.0, -0.5, 0.0], [90.0, -0.5, 0.0], [90.0, 0.5, 0.0]]);
+        assert_eq!(q[2], [[100.0, 0.5, 0.5], [100.0, -0.5, 0.5], [100.0, -0.5, -0.5], [100.0, 0.5, -0.5]]);
+        let b = bullet_quads([100.0, 0.0, 0.0], [1.0, 0.0, 0.0], true, 10.0, 0.5, up, right);
+        assert_eq!(b, vec![q[2]]);
+    }
+
+    /// The range index is `dist / (unit·10) · 10`, truncated (0x10045b41, 0x10035f9f).
+    #[test]
+    fn range_index_truncates_tenths() {
+        assert_eq!(range_index(400.0, 80.0), 5);
+        assert_eq!(range_index(799.0, 80.0), 9);
+        assert_eq!(range_index(4000.0, 80.0), 50);
+        assert_eq!(range_index(0.0, 80.0), 0);
+    }
+
+    /// `0x1003de98`: the silenced flag alone picks the sample, even an empty one.
+    #[test]
+    fn fire_sound_sample() {
+        assert_eq!(
+            fire_sample("glock/glock-fire.wav", "glock/glock-fire-sil.wav", false),
+            ("weapons/glock/glock-fire.wav".into(), (0.92, 1.0), 1.0)
+        );
+        assert_eq!(
+            fire_sample("glock/glock-fire.wav", "glock/glock-fire-sil.wav", true),
+            ("weapons/glock/glock-fire-sil.wav".into(), (0.84, 0.92), 2.0)
+        );
+        assert_eq!(fire_sample("ak47/fire.wav", "", true), (String::new(), (0.84, 0.92), 2.0));
+        assert_eq!(fire_sample("", "x.wav", false), (String::new(), (0.92, 1.0), 1.0));
     }
 
     #[test]

@@ -154,6 +154,16 @@ impl Cvar {
         unsafe { self.0.as_ref() }.map_or(0.0, |c| c.value)
     }
 
+    /// `cvar->string`, `None` for a null handle or string. Copy it before the cvar is next set.
+    pub fn string(self) -> Option<&'static CStr> {
+        // SAFETY: non-null cvar pointers come from the engine and live for the process; the
+        // engine keeps `string` null or NUL-terminated, and frees it only when the cvar is set,
+        // which can't happen on the client thread while the caller holds the reference.
+        let s = unsafe { self.0.as_ref() }?.string;
+        // SAFETY: as above.
+        (!s.is_null()).then(|| unsafe { CStr::from_ptr(s) })
+    }
+
     /// Writes `cvar->value` directly, as the SDK's and TS's camera code does (`snapto`,
     /// `CAM_Think`'s `cam_ideal*` updates): the string is left alone and the engine isn't told.
     /// Use `Cvar_SetValue` (`ClEngine::cvar_set`) for a normal change. No-op on a null handle.
