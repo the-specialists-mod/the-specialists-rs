@@ -154,8 +154,6 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
 * **Super-jump roll landing** also sets `m_flNextAttack = 0.75` (weapons timer): not applied.
 * `SetPlayerGravity` (temp gravity timer, pl+0x4ec), `InterpolateSlowMotion`, power-ups,
   `GoSlow` (rules).
-* The HUD hooks for `NextStunt`, `TSState`, `TSMBlur` (HUD/rendering packages; decoders in
-  `shared::protocol::stunt`).
 
 ## Tests
 
@@ -218,10 +216,11 @@ one implementation for both libraries. Math is `f32` in the C operation order. G
   `CheckForBreakables`; use `p.stunt.close_attack_cd` for the jump kick; use
   `stunt::block_player` for the post-attack slowdown; respect TS's "no attack while
   `iuser4 & 0x30c30`".
-* **client (rendering/HUD)** must: hook `NextStunt`, `TSState`, `TSMBlur`; bind `+alt1` to
-  `shared::ts::IN_ALT1`. The view during stunts is done (`client/src/view.rs`): the server sets
-  `view_ofs = 0` (`NO_VIEW`), and TS's normal view just follows that view height, easing the eye
-  down to the hull centre at rate 15; the third-person camera pulls back to -92 for the stunt
+* **client (rendering/HUD)**: `NextStunt` and `TSState` are hooked in `hud::state`, `TSMBlur` in
+  `effects`, and `+alt1` sets `shared::ts::IN_ALT1` (`input`). The view during stunts is done
+  (`client/src/view.rs`): the server sets `view_ofs = 0` (`NO_VIEW`), and TS's normal view just
+  follows that view height, easing the eye down to the hull centre at rate 15 (the view model is
+  placed at that eye, so it follows); the third-person camera pulls back to -92 for the stunt
   bits `0x130c30`. `NO_VIEW` itself is read only by `V_GetPlayerEye` (`0x10068e20`, in-eye
   spectating: the eye stays at the target's origin instead of +28/+16).
 * `stunt::screen_shake` is the TS slow-motion-aware `UTIL_ScreenShake`; the stunt sounds use
