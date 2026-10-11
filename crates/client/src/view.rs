@@ -939,10 +939,12 @@ pub fn calc_refdef(p: &mut ref_params_t) {
 }
 
 /// Stores the camera the effects, HUD and events read (`v_origin` `0x10190b28` and `v_angles`
-/// `0x101914d0`). `angles` is `v_angles`: the view angles before the third-person override.
+/// `0x101914d0`). `angles` is `v_angles`: the view angles before the third-person override. The
+/// effects' vectors are `AngleVectors(v_angles)` (`0x10056f74`). `pparams->forward/right/up` are
+/// left alone: only the normal view writes them (`0x10067eee`, from `cl_viewangles`); the
+/// intermission (`0x100676e0`) and spectator (`0x10068f70`) views never do.
 fn finish(w: &mut View, p: &mut ref_params_t, angles: Vec3) {
     let (f, r_, u) = v::angle_vectors(angles);
-    (p.forward, p.right, p.up) = (f, r_, u);
     w.cam = Camera { origin: p.vieworg, angles, forward: f, right: r_, up: u, fov: 90.0 };
     w.hardware = p.hardware != 0;
 }

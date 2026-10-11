@@ -128,8 +128,9 @@ pub struct Template {
 }
 
 impl Template {
-    /// `ParticleKeyValue` (`0x10055f90`) plus the server's `CTSParticle::CheckValues` clamps
-    /// (the client copy has none; the doc recommends applying them).
+    /// `ParticleKeyValue` (`0x10055f90`). The values are kept as the map gives them: the
+    /// server's `CTSParticle::CheckValues` clamps have no client copy, so a colour above 1 or a
+    /// negative life reaches the particles, as in TS.
     pub fn from_kv(kv: &[(String, String)]) -> Template {
         // No defaults (TS zeroes the struct): a `follow_view 3` template without `followaxis`
         // builds a zero-height quad, as in TS.
@@ -142,9 +143,11 @@ impl Template {
                 "target" => t.target = val.clone(),
                 "sprite_name" => t.sprite_name = val.clone(),
                 "sprite_trans" => t.sprite_trans = f as i32,
-                "follow_view" => t.follow_view = (f as i32).clamp(0, 3) as u8,
+                // The particle keeps the low byte (`+0x05`); `Quad_Build` treats 4+ as 0.
+                "follow_view" => t.follow_view = f as i32 as u8,
                 "collide" => t.collide = f != 0.0,
-                "oncollide" => t.oncollide = (f as i32).clamp(0, 3) as u8,
+                // Only 1-3 pick a callback (`0x1003af76..0x1003afa9`); anything else has none.
+                "oncollide" => t.oncollide = if (1..=3).contains(&(f as i32)) { f as i32 as u8 } else { 0 },
                 "spawnflags" => t.spawnflags = f as i32,
                 "soundonemit" => t.soundonemit = val.clone(),
                 "lifehigh" => t.life.0 = f,
@@ -182,46 +185,49 @@ impl Template {
                 _ => {}
             }
         }
-        let clamp_pair = |p: &mut (f32, f32), lo: f32, hi: f32| {
-            p.0 = p.0.clamp(lo, hi);
-            p.1 = p.1.clamp(lo, hi);
-        };
-        clamp_pair(&mut t.life, 0.0, f32::MAX);
-        clamp_pair(&mut t.color, 0.0, 1.0);
-        clamp_pair(&mut t.fadespeed, 0.0, f32::MAX);
-        clamp_pair(&mut t.radius, 0.0, f32::MAX);
-        t.frame.0 = t.frame.0.max(0);
-        t.frame.1 = t.frame.1.max(0);
         t
     }
 
-    /// `Particle_RandomizeFromTemplate` (`0x1003a9b0`). Velocities: TS units per 0.1 s -> u/s.
-    pub fn roll(&self, rnd: &mut impl FnMut(f32, f32) -> f32) -> Particle {
-        fn pickv(rnd: &mut impl FnMut(f32, f32) -> f32, p: (Vec3, Vec3)) -> Vec3 {
-            [0, 1, 2].map(|i| rnd(p.1[i].min(p.0[i]), p.0[i].max(p.1[i])))
-        }
-        let velocity = pickv(rnd, self.velocity);
-        let avel = pickv(rnd, self.avelocity);
-        let mut pick = |p: (f32, f32)| rnd(p.1.min(p.0), p.0.max(p.1));
+    /// `Particle_RandomizeFromTemplate` (`0x1003a9b0`) plus the fields the spawners copy from the
+    /// template (`0x1003ae7d..`, `0x10039d50`). Each value is `RandomFloat(low, high)` (the frame
+    /// `RandomLong`) with the template's raw bounds, in TS's order: life, gravity, colour, fade
+    /// speed, radius, scale speed, frame, frame rate, random delta, react, wind, fade-in,
+    /// velocity, angular velocity. Velocities: TS units per 0.1 s -> u/s.
+    pub fn roll(&self, rf: &mut impl FnMut(f32, f32) -> f32, rl: &mut impl FnMut(i32, i32) -> i32) -> Particle {
+        let mut pick = |p: (f32, f32)| rf(p.1, p.0);
+        let life = pick(self.life);
+        let gravity = pick(self.gravity);
+        let color = pick(self.color);
+        let fadespeed = pick(self.fadespeed);
+        let radius = pick(self.radius);
+        let scalespeed = pick(self.scalespeed);
+        let frame = rl(self.frame.1, self.frame.0) as f32;
+        let mut pick = |p: (f32, f32)| rf(p.1, p.0);
+        let framerate = pick(self.framerate);
+        let randomdelta = pick(self.randomdelta);
+        let react = pick(self.react);
+        let wind = pick(self.wind);
+        let fadein = pick(self.fadein);
+        let velocity = [0, 1, 2].map(|i| rf(self.velocity.1[i], self.velocity.0[i]));
+        let avel = [0, 1, 2].map(|i| rf(self.avelocity.1[i], self.avelocity.0[i]));
         Particle {
             kind: psys::KIND_MAP,
-            rendermode: self.sprite_trans,
             vel: v::scale(velocity, 10.0),
             avel: v::scale(avel, 10.0),
             randvel_lo: v::scale(self.randomvel.1, 10.0),
             randvel_hi: v::scale(self.randomvel.0, 10.0),
-            randomdelta: pick(self.randomdelta) * 10.0,
-            life: pick(self.life),
-            gravity: pick(self.gravity),
-            color: pick(self.color),
-            fadespeed: pick(self.fadespeed),
-            radius: pick(self.radius),
-            scalespeed: pick(self.scalespeed),
-            frame: pick((self.frame.0 as f32, self.frame.1 as f32)).round(),
-            framerate: pick(self.framerate),
-            react: pick(self.react),
-            wind: pick(self.wind),
-            fadein: pick(self.fadein),
+            randomdelta: randomdelta * 10.0,
+            life,
+            gravity,
+            color,
+            fadespeed,
+            radius,
+            scalespeed,
+            frame,
+            framerate,
+            react,
+            wind,
+            fadein,
             orient: self.follow_view,
             followaxis: self.followaxis,
             stretch: self.stretch,
@@ -361,7 +367,7 @@ impl MapFx {
             // The template's sprite is looked up only now, after the random count and the camera
             // test (0x1003ae5f). A missing one is reported and the emitter is tried again next
             // frame: 0x1003ae69..0x1003ae78 skip the `next_emit` writes.
-            let Some(spr) = ps.sprite(&tmpl.sprite_name) else {
+            let Some(spr) = ps.sprite(&tmpl.sprite_name, tmpl.sprite_trans) else {
                 engine().print(&format!("Sprite '{}' is not a valid sprite.\n", tmpl.sprite_name));
                 continue;
             };
@@ -372,7 +378,7 @@ impl MapFx {
             let mut i = 0;
             while (i as f32) < limit {
                 i += 1;
-                let mut p = tmpl.roll(&mut |a, b| r::random_float(a, b));
+                let mut p = tmpl.roll(&mut r::random_float, &mut r::random_long);
                 p.sprite = spr;
                 // XY around the camera (0x1003b024..0x1003b0cb), led by the local player's
                 // velocity, or `origin + RandomFloat(low, high)` (0x1003b0cd..0x1003b101); z always
@@ -403,16 +409,24 @@ impl MapFx {
         }
     }
 
-    /// One particle of template `t` at `pos` (collision `oncollide` 2/3 targets).
-    pub fn spawn_one(&self, ps: &mut PSys, t: u16, pos: Vec3, now: f64) {
+    /// The `oncollide` 2/3 callbacks' spawn (`0x10039d50`/`0x10039f60`, after 2 has killed the
+    /// particle that hit): one particle of template `t` at `pos`. A sprite that won't load is
+    /// reported. With the template's spawn flag 1 the velocity is rolled again from the
+    /// template's bounds; otherwise it is the colliding particle's (`parent_vel`).
+    pub fn spawn_one(&self, ps: &mut PSys, t: u16, pos: Vec3, parent_vel: Vec3, now: f64) {
         let Some(tmpl) = self.templates.get(t as usize) else { return };
-        let Some(spr) = ps.sprite(&tmpl.sprite_name) else { return };
-        let mut p = tmpl.roll(&mut |a, b| r::random_float(a, b));
+        let Some(spr) = ps.sprite(&tmpl.sprite_name, tmpl.sprite_trans) else {
+            engine().print(&format!("Sprite '{}' is not a valid sprite.\n", tmpl.sprite_name));
+            return;
+        };
+        let mut p = tmpl.roll(&mut r::random_float, &mut r::random_long);
         p.sprite = spr;
         p.origin = pos;
-        if tmpl.spawnflags & 1 == 0 {
-            p.vel = v::ZERO;
-        }
+        p.vel = if tmpl.spawnflags & 1 == 0 {
+            parent_vel
+        } else {
+            v::scale([0, 1, 2].map(|i| r::random_float(tmpl.velocity.1[i], tmpl.velocity.0[i])), 10.0)
+        };
         ps.add(p, now);
     }
 }
@@ -515,9 +529,9 @@ mod tests {
         let t = &fx.templates[0];
         assert_eq!(t.sprite_name, "sprites/snowy.spr");
         assert_eq!(t.life, (30.0, 30.0));
-        assert_eq!(t.color, (1.0, 0.4), "colour clamped to 0..1");
+        assert_eq!(t.color, (1.5, 0.4), "no clamping in the TS client");
         assert_eq!(t.target_index, Some(1));
-        assert_eq!(fx.templates[1].life.0, 0.0, "life clamped >= 0");
+        assert_eq!(fx.templates[1].life.0, -1.0, "no clamping in the TS client");
         assert_eq!(fx.emitters.len(), 1);
         let e = &fx.emitters[0];
         assert_eq!(e.template, Some(0));
@@ -525,9 +539,9 @@ mod tests {
         assert_eq!(e.variance.1, [-1024.0, -1248.0, 0.0]);
         assert_eq!(e.spawnflags, 1);
 
-        let p = t.roll(&mut |a, b| (a + b) * 0.5);
+        let p = t.roll(&mut |a, b| (a + b) * 0.5, &mut |a, _| a);
         assert_eq!(p.vel, [0.0, 0.0, -0.5], "units per 0.1 s -> per second");
-        assert_eq!(p.rendermode, 5);
+        assert_eq!(t.sprite_trans, 5);
     }
 
     #[test]

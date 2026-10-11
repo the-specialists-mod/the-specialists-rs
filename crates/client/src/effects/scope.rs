@@ -35,9 +35,14 @@ pub fn quads(cam: &Camera, fov: i32) -> [Quad; 4] {
 
 /// `DrawScopeOverlay`: first person, alive, not observing, and the (eased) FOV below 40. The
 /// caller checks for the hardware renderer, as TS does.
-pub fn draw(sprite: HSPRITE, cam: &Camera, third_person: bool) {
+/// The sprite goes through the particle system's cache (render mode key 2, `0x1005455b`).
+pub fn draw(cam: &Camera, third_person: bool) {
     let fov = crate::state::with(|s| s.fov) as i32;
-    if third_person || fov >= 40 || crate::hud::dead_or_observer() || !super::laser::set_sprite(sprite, 0) {
+    if third_person || fov >= 40 || crate::hud::dead_or_observer() {
+        return;
+    }
+    let Some(sprite) = super::with_psys(|ps| ps.sprite(SPRITE, kRenderTransTexture as i32).map(|s| ps.sprite_handle(s))) else { return };
+    if !super::laser::set_sprite(sprite, 0) {
         return;
     }
     tri::render_mode(kRenderTransTexture as i32);
