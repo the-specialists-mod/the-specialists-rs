@@ -308,62 +308,11 @@ fn debug_air(p: &mut Player, cx: &mut Cx) {
     }
 }
 
-/// Stunt and player-movement sounds (PM plays footsteps through the engine).
-pub fn precache() {
-    const SOUNDS: &[&CStr] = &[
-        c"player/airwheel.wav",
-        c"player/dive.wav",
-        c"player/land.wav",
-        c"player/superjump-land.wav",
-        c"player/kungfuhit.wav",
-        c"player/closecombat.wav",
-        c"common/bodysplat.wav",
-        c"weapons/knife/knife_hitbody.wav",
-        c"weapons/katana/hit-body.wav",
-        c"player/pl_fallpain3.wav",
-        c"player/pl_step1.wav",
-        c"player/pl_step2.wav",
-        c"player/pl_step3.wav",
-        c"player/pl_step4.wav",
-        c"player/pl_metal1.wav",
-        c"player/pl_metal2.wav",
-        c"player/pl_metal3.wav",
-        c"player/pl_metal4.wav",
-        c"player/pl_dirt1.wav",
-        c"player/pl_dirt2.wav",
-        c"player/pl_dirt3.wav",
-        c"player/pl_dirt4.wav",
-        c"player/pl_duct1.wav",
-        c"player/pl_duct2.wav",
-        c"player/pl_duct3.wav",
-        c"player/pl_duct4.wav",
-        c"player/pl_grate1.wav",
-        c"player/pl_grate2.wav",
-        c"player/pl_grate3.wav",
-        c"player/pl_grate4.wav",
-        c"player/pl_tile1.wav",
-        c"player/pl_tile2.wav",
-        c"player/pl_tile3.wav",
-        c"player/pl_tile4.wav",
-        c"player/pl_tile5.wav",
-        c"player/pl_slosh1.wav",
-        c"player/pl_slosh2.wav",
-        c"player/pl_slosh3.wav",
-        c"player/pl_slosh4.wav",
-        c"player/pl_wade1.wav",
-        c"player/pl_wade2.wav",
-        c"player/pl_wade3.wav",
-        c"player/pl_wade4.wav",
-        c"player/pl_ladder1.wav",
-        c"player/pl_ladder2.wav",
-        c"player/pl_ladder3.wav",
-        c"player/pl_ladder4.wav",
-    ];
+/// `TEXTURETYPE_Init`, from `CWorld::Precache` (0xf449c): the texture table `GoRoll`'s impact
+/// sound reads. (The stunt and footstep sounds are in `ClientPrecache` / `TSPrecache`,
+/// `crate::precache`.)
+pub fn texture_type_init() {
     let e = engine();
-    for s in SOUNDS {
-        e.precache_sound(s);
-    }
-    // `CWorld::Precache` (0xf449c): `TEXTURETYPE_Init`, the table `GoRoll`'s impact sound reads.
     let map = e.string(e.globals().mapname).to_string_lossy().into_owned();
     shared::pm::textures::texturetype::init(&map, |path| e.load_file(path));
 }

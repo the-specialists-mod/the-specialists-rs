@@ -69,7 +69,7 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 |---|---|
 | `GameInit` | `messages::register_all`, then `rules`, `weapons`, `stunt`, `bots` `game_init` (cvars, server commands) |
 | `Spawn`/`Think`/`Touch`/`Use`/`Blocked`/`KeyValue` | the edict's `Entity` (world dispatch). Keyvalues go to `entities::entvars_key_value` first and only the rest reach the class, as TS `DispatchKeyValue` does. |
-| worldspawn spawn | `CWorld::Precache` order: force `sv_gravity`/`sv_stepsize`, then `precache_all()` (player model, then `stunt`, `weapons`, `rules` `precache`, which installs the rules and queues the server config), then `sv_zmax`, chapter title, `v_dark`, `mp_defaultteam` |
+| worldspawn spawn | `CWorld::Precache` order: force `sv_gravity`/`sv_stepsize`, `rules::install` (installs the rules, the multiplayer voice icon, queues the server config), soundent and body queue, sentences and texture types, then `precache::{w_precache, client_precache, ts_precache, world_sounds_and_gibs}` (TS's map-wide precaches in TS's order, so model/sound/event indices match), light styles, `sv_zmax`, chapter title, `v_dark`, `mp_defaultteam` |
 | `ClientConnect`/`Disconnect`/`Kill`/`UserInfoChanged` | `rules` |
 | `ClientPutInServer` | creates the `Player` entity and spawns it |
 | `ClientCommand` | `commands::client_command`: weapons, stunt, rules, bots, in that order |

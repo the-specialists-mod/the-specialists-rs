@@ -15,7 +15,7 @@
 //! `CBaseDoor` changes above reach it; it's the SDK 2.3 class plus TS's slow-motion sound pitch.
 
 use super::base::*;
-use super::breakable::{DMG_TS_KUNGFU, DMG_TS_SHOTGUN, break_sounds, mat, play_break_sound, precache_material, send_glass_debris};
+use super::breakable::{DMG_TS_KUNGFU, DMG_TS_SHOTGUN, break_sounds, mat, play_break_sound, send_glass_debris};
 use super::buttons::LockSounds;
 use super::explode::emit_sound_slow;
 use crate::damage::bits as dmg;
@@ -38,8 +38,10 @@ pub const SF_DOOR_SILENT: i32 = i32::MIN; // 0x80000000
 pub struct Door {
     t: Toggle<Self>,
     rotating: bool,
-    move_snd: i32,
-    stop_snd: i32,
+    /// `m_bMoveSnd` / `m_bStopSnd` (`CBaseDoor::KeyValue` 0xb51a0: [`fistp16_low_byte`] of the
+    /// `strtod`, read unsigned by `Precache` 0xb6448).
+    move_snd: u8,
+    stop_snd: u8,
     health_value: i32,
     ls: LockSounds,
     // TS breakable door
@@ -91,12 +93,17 @@ fn stop_sound(n: i32) -> &'static CStr {
 }
 
 impl Door {
+    /// `CBaseDoor::Precache` (0xb6448).
     fn precache(&mut self, cx: &mut Cx) {
         let eng = engine();
-        let m = move_sound(self.move_snd);
-        let st = stop_sound(self.stop_snd);
-        eng.precache_sound(m);
-        eng.precache_sound(st);
+        let m = move_sound(self.move_snd as i32);
+        let st = stop_sound(self.stop_snd as i32);
+        // Any other number is `common/null.wav`, only allocated (`CWorld::Precache` has it).
+        for n in [m, st] {
+            if n != c"common/null.wav" {
+                eng.precache_sound(n);
+            }
+        }
         let v = cx.pev();
         v.noise1 = alloc(m);
         v.noise2 = alloc(st);
@@ -104,18 +111,25 @@ impl Door {
         self.gib_index = 0;
         if self.max_damage > 0.0 {
             // TS door gib table: glass, metal, cinder, ceiling, computer; everything else wood.
-            let m = match self.material {
-                mat::GLASS | mat::UNBREAKABLE_GLASS => mat::GLASS,
-                mat::METAL | mat::CINDER | mat::CEILING | mat::COMPUTER => self.material,
-                _ => mat::WOOD,
+            // Its break sounds first, then the real material's impact sounds, then the model.
+            // (The door later plays the real material's break sound, which TS doesn't precache
+            // for flesh or rocks: the engine refuses those.)
+            let (gib, sounds): (&CStr, &[&CStr]) = match self.material {
+                mat::GLASS | mat::UNBREAKABLE_GLASS => (c"models/glassgibs.mdl", &[c"debris/bustglass1.wav", c"debris/bustglass2.wav"]),
+                mat::METAL => (c"models/metalplategibs.mdl", &[c"debris/bustmetal1.wav", c"debris/bustmetal2.wav"]),
+                mat::CINDER => (c"models/cindergibs.mdl", &[c"debris/bustconcrete1.wav", c"debris/bustconcrete2.wav"]),
+                mat::CEILING => (c"models/ceilinggibs.mdl", &[c"debris/bustceiling.wav"]),
+                mat::COMPUTER => (
+                    c"models/computergibs.mdl",
+                    &[c"buttons/spark5.wav", c"buttons/spark6.wav", c"debris/bustmetal1.wav", c"debris/bustmetal2.wav"],
+                ),
+                _ => (c"models/woodgibs.mdl", &[c"debris/bustcrate1.wav", c"debris/bustcrate2.wav"]),
             };
-            self.gib_index = precache_material(m, 0);
-            super::breakable::material_sound_precache(self.material);
-            // TS plays the real material's break sound but precaches by the table above; precache
-            // both so e.g. flesh doors don't play an unprecached sound.
-            for snd in break_sounds(self.material).0 {
+            for snd in sounds {
                 eng.precache_sound(snd);
             }
+            super::breakable::material_sound_precache(self.material);
+            self.gib_index = eng.precache_model(gib);
         }
     }
 
@@ -463,8 +477,8 @@ impl Entity for Door {
     /// the entvars field first.
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
-            b"movesnd" => self.move_snd = kv_f(value) as i32,
-            b"stopsnd" => self.stop_snd = kv_f(value) as i32,
+            b"movesnd" => self.move_snd = fistp16_low_byte(kv_d(value)),
+            b"stopsnd" => self.stop_snd = fistp16_low_byte(kv_d(value)),
             b"healthvalue" => self.health_value = kv_f(value) as i32,
             b"WaveHeight" => cx.pev().scale = kv_f(value) * (1.0 / 8.0),
             b"maxdamage" => self.max_damage = kv_i(value) as f32,
@@ -569,9 +583,8 @@ impl Mover for MomentaryDoor {
 
 /// `CMomentaryDoor::KeyValue` (0xb81a0) `movesnd`: `atof`, truncated into a 16-bit integer by
 /// `fistp` (out of range or NaN gives 0x8000), then its low byte.
-fn momentary_move_snd(v: f32) -> u8 {
-    let t = v.trunc();
-    if (-32768.0..=32767.0).contains(&t) { t as i16 as u8 } else { 0 }
+fn momentary_move_snd(v: f64) -> u8 {
+    fistp16_low_byte(v)
 }
 
 /// `CMomentaryDoor::Precache` (0xb800c): `doors/doormove1..8.wav`; anything else is
@@ -618,7 +631,7 @@ impl Entity for MomentaryDoor {
     /// `CMomentaryDoor::KeyValue` (0xb81a0): `stopsnd` and `healthvalue` are swallowed.
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
-            b"movesnd" => self.move_snd = momentary_move_snd(kv_f(value)),
+            b"movesnd" => self.move_snd = momentary_move_snd(kv_d(value)),
             b"stopsnd" | b"healthvalue" => {}
             _ => return self.t.key_value(key, value),
         }
@@ -688,7 +701,7 @@ mod tests {
         assert_eq!(momentary_move_snd(-1.0), 255);
         assert_eq!(momentary_move_snd(257.0), 1);
         assert_eq!(momentary_move_snd(40000.0), 0);
-        assert_eq!(momentary_move_snd(f32::NAN), 0);
+        assert_eq!(momentary_move_snd(f64::NAN), 0);
         assert_eq!(momentary_move_sound(8), Some(c"doors/doormove8.wav"));
         assert_eq!(momentary_move_sound(9), None);
         assert_eq!(momentary_move_sound(0), None);

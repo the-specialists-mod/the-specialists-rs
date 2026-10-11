@@ -144,7 +144,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | `HandleStunt` / `HandleDive` / `Landing` / `HandleWheel` / `HandleSlide` / `HandleWallJump` / `HandleWallClimb` | 0x9b000 ... 0x9b9f8 | same names (snake case); wall landings share `land_wall_stunt` |
 | `GoWheel` / `GoRoll` | 0x9c9bc / 0x9cfe8 | `go_wheel`, `go_roll` |
 | `TEXTURETYPE_PlaySound` (roll with `FREEZE_ANGLES`, dead in TS) | 0xe1330 | `moves::texture_type_play_sound` |
-| `TEXTURETYPE_Init` / `LoadStandardMaterials` / `LoadMapMaterials` / `Find` | 0xe1244 / 0xe0e14 / 0xe1014 / 0xe12c4 | `textures::texturetype::{init, find}` (`init` from `stunt::precache`, as TS's `CWorld::Precache`) |
+| `TEXTURETYPE_Init` / `LoadStandardMaterials` / `LoadMapMaterials` / `Find` | 0xe1244 / 0xe0e14 / 0xe1014 / 0xe12c4 | `textures::texturetype::{init, find}` (`init` from `stunt::texture_type_init`, as TS's `CWorld::Precache`) |
 | `CheckForBreakables` | 0x9bd9c | `check_for_breakables` |
 | `CBasePlayer::Jump` / `Duck` | 0x92864 / 0x927fc | `moves::jump`, `moves::duck` |
 | `CBasePlayer::PreThink` (stunt parts) | 0x908cc | `stunt::pre_think` (not during intermission: `Player::pre_think` stops after `rules::player_think`, as TS returns on `g_fGameOver`): button edges, `framerate = slowmul`, last-ground time, close-combat/block timers, `Play`, `UpdateTimers`, `NO_VIEW` bit, `BlockPlayer` expiry, breakables, `Jump()`/`Duck()`, `m_flFallVelocity`, `UpdatePlayerState` + `TSState` |
@@ -333,4 +333,4 @@ the same as the GCC build once the stack is 53 bits wide.
   spectating: the eye stays at the target's origin instead of +28/+16).
 * `stunt::screen_shake` is the TS slow-motion-aware `UTIL_ScreenShake`; the stunt sounds use
   the shared `explode::emit_sound_slow` (TS `EMIT_SOUND_DYN`).
-* `stunt::precache` precaches the stunt sounds and every PM footstep/wade/ladder sound.
+* The stunt sounds and every PM footstep/wade/ladder sound are precached by `crate::precache` (TS's `ClientPrecache` / `TSPrecache`, in TS's order).

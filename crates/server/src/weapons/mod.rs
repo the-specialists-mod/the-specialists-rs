@@ -18,6 +18,8 @@ pub mod worldgun;
 use crate::commands::Args;
 use crate::player::Player;
 use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
+use goldsrc::ext::entities::EHandle;
 use goldsrc::server::engine;
 use goldsrc::sys::{clientdata_t, edict_t, usercmd_t, weapon_data_t};
 use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
@@ -80,6 +82,17 @@ pub struct SvState {
     pub sent_owned: [bool; MAX_WEAPONS],
     /// Free-slot count the move speed was last computed for.
     pub speed_for: Option<i32>,
+    /// The map-placed `weapon_tsgun` this gun came from: TS keeps that `CTSGun` entity as the
+    /// player's gun (`AttachToPlayer` 0xf1d80: hidden, following the player) until
+    /// `RemoveAllItems` drops it ([`drop_player_items`]). A gun from `GiveNamedItem` has no
+    /// entity in the port.
+    pub gun_item: EHandle,
+    /// A `cycler_weapon` in the player's HL item slot 1 (`m_rgpPlayerItems[1]`, from
+    /// `CBasePlayerItem::DefaultTouch` 0xf1b40), attached like `gun_item`.
+    pub cycler: EHandle,
+    /// The cycler is `m_pActiveItem` (deployed by `SwitchWeapon` because the player had no
+    /// active item).
+    pub cycler_active: bool,
 }
 
 impl Default for SvState {
@@ -107,6 +120,9 @@ impl Default for SvState {
             sent_reserve: -1,
             sent_owned: [false; MAX_WEAPONS],
             speed_for: None,
+            gun_item: EHandle::NULL,
+            cycler: EHandle::NULL,
+            cycler_active: false,
         }
     }
 }
@@ -144,8 +160,19 @@ pub fn game_init() {
     assets::register_cvars();
 }
 
-pub fn precache() {
-    assets::precache();
+/// `CTSGun::Precache`'s events, from `W_Precache` (`crate::precache`).
+pub fn precache_events() {
+    assets::precache_events();
+}
+
+/// `TSPrecache`'s weapon loop (`crate::precache`).
+pub fn precache_weapon_assets() {
+    assets::precache_weapon_assets();
+}
+
+/// `g_sModelIndexBubbles`, from `W_Precache` (`crate::precache`).
+pub fn set_bubbles_model(index: i32) {
+    assets::set_bubbles_model(index);
 }
 
 /// The weapon part of `StartFrame`: `CTSGameRules::Think` runs the simulated bullets
@@ -296,20 +323,38 @@ pub fn inform_custom_weapons(e: *mut edict_t) {
     custom::inform(Some(e));
 }
 
+/// `CBasePlayer::HasWeapons` (0xdb060): any item in the player's slot lists, the gun or a
+/// `cycler_weapon`.
+pub fn has_weapons(p: &Player) -> bool {
+    p.inv.sv.has_gun || p.inv.sv.cycler.is_valid()
+}
+
 /// `CBulletManager::Reset` (0x6ec50), the part of `CTSGameRules::Init` the weapons own.
 pub fn reset_bullets() {
     bullets::reset();
 }
 
+/// `CBasePlayerWeapon::AddToPlayer` (0xf1e60) sets `pev->weapons |= 1 << m_iId`; the TS gun's
+/// id is 16 (`CTSGun::GetItemInfo` 0x85dd0). Only `RemoveAllItems` clears it again (TS never
+/// calls `DropPlayerItem`, the other place that clears a weapon bit, and nothing reads it: the
+/// TS client ignores `iWeaponBits`).
+pub const TSGUN_WEAPON_BIT: i32 = 1 << shared::protocol::weapons::TSGUN_ID;
+
 /// `GiveNamedItem("weapon_tsgun")` (0xdb524): a new `CTSGun` (`Spawn` → `Reset`: an empty
-/// inventory, kung fu) is added and deployed when the player has none (`AddPlayerItem` 0xdc0c4,
-/// `FShouldSwitchWeapon` with no active item). A player that already holds one keeps it
-/// (`AddDuplicate`, then the new one is killed).
+/// inventory, kung fu) is added and deployed when the player has none (`AddPlayerItem` 0xdc0c4:
+/// `AddToPlayer` sets weapon bit 16, then `FShouldSwitchWeapon` with no active item, or with a
+/// deployed `cycler_weapon`, which weighs 0 to the gun's 1). A player that already holds one
+/// keeps it (`AddDuplicate`, then the new one is killed).
 pub fn give_gun(p: &mut Player, cx: &mut Cx) {
     if !p.inv.sv.has_gun {
         p.inv.sv.has_gun = true;
         p.inv.gun.reset_inventory();
         p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
+        cx.pev().weapons |= TSGUN_WEAPON_BIT;
+        // SwitchWeapon (0xdd98c): the active cycler is holstered before the gun deploys.
+        if p.inv.sv.cycler_active {
+            cycler_holster(p);
+        }
     }
     host::with_host(p, cx, |gun, h| {
         let cur = gun.current;
@@ -337,9 +382,8 @@ pub fn give_gun_to(player: *mut edict_t) {
 /// (`UpdateClientData`, then `CurWeapon 0,0,0`). The rest of the player's weapon bookkeeping (free slots, loadout items)
 /// is left as `Killed` left it.
 pub fn remove_all_items(p: &mut Player, cx: &mut Cx) {
-    if p.inv.sv.has_gun {
-        host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
-    }
+    holster_active(p, cx);
+    drop_player_items(p);
     p.inv.sv.has_gun = false;
     p.inv.gun.reset_inventory();
     p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
@@ -350,9 +394,8 @@ pub fn remove_all_items(p: &mut Player, cx: &mut Cx) {
 /// (`CStripWeapons::Use` 0xddbb0): [`remove_all_items`] except that `pev->weapons` keeps the HEV
 /// suit bit (`&= 0x80000000`, set before `UpdateClientData` and `CurWeapon 0,0,0`).
 pub fn remove_all_items_keep_suit(p: &mut Player, cx: &mut Cx) {
-    if p.inv.sv.has_gun {
-        host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
-    }
+    holster_active(p, cx);
+    drop_player_items(p);
     p.inv.sv.has_gun = false;
     p.inv.gun.reset_inventory();
     p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
@@ -420,9 +463,8 @@ pub fn select(p: &mut Player, cx: &mut Cx, id: u8) {
 
 /// Removes every weapon, the gun included (observer, disconnect).
 pub fn strip_all(p: &mut Player, cx: &mut Cx) {
-    if p.inv.sv.has_gun {
-        host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
-    }
+    holster_active(p, cx);
+    drop_player_items(p);
     p.inv.sv.has_gun = false;
     p.inv.gun.reset_inventory();
     p.inv.sv.free_slots = SLOTS;
@@ -443,6 +485,85 @@ pub fn remove_all_items_tail(p: &mut Player, cx: &mut Cx) {
     v.weapons = 0;
     crate::player::hud::update_client_data(p, cx);
     net::send_cur_weapon_reset(cx.edict);
+}
+
+/// The start of `RemoveAllItems` (0xd8cec): `m_pActiveItem->Holster()`, the gun's or a deployed
+/// cycler's (`CWeaponCycler::Holster` 0xc7dd4).
+fn holster_active(p: &mut Player, cx: &mut Cx) {
+    if p.inv.sv.cycler_active {
+        cycler_holster(p);
+    } else if p.inv.sv.has_gun {
+        host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
+    }
+}
+
+/// The item loop of `RemoveAllItems` (0xd8cec): every item entity the player holds is
+/// `Drop`ped (`CBasePlayerItem::Drop` 0xf1cac, removed 0.1 s later). Slot list 1 (the cycler)
+/// comes before slot list 2 (the gun).
+fn drop_player_items(p: &mut Player) {
+    let sv = &mut p.inv.sv;
+    for h in [std::mem::take(&mut sv.cycler), std::mem::take(&mut sv.gun_item)] {
+        crate::entities::stock::playeritem::drop_item(h.get());
+    }
+}
+
+/// `CWeaponCycler::Holster` (0xc7dd4): `m_flNextAttack = UTIL_WeaponTimeBase() + 0.5` (the time
+/// base is 0); the cycler stops being the active item.
+fn cycler_holster(p: &mut Player) {
+    p.inv.sv.cycler_active = false;
+    p.inv.gun.next_attack = 0.5;
+}
+
+/// `CBasePlayer::AddPlayerItem` (0xdc0c4) for a `cycler_weapon` (`item`), after
+/// `CanHavePlayerItem`: `CBasePlayerWeapon::AddToPlayer` (0xf1e60) sets weapon bit 0 (the
+/// cycler's `m_iId` is never set) and the item goes into slot list 1. [`deploy_cycler`] is the
+/// `FShouldSwitchWeapon` / `SwitchWeapon` part that follows `CheckRespawn`.
+pub fn add_cycler(p: &mut Player, cx: &mut Cx, item: *mut edict_t) {
+    cx.pev().weapons |= 1;
+    p.inv.sv.cycler = EHandle::new(item);
+}
+
+/// The end of `AddPlayerItem` for a `cycler_weapon`: `CHalfLifeMultiplay::FShouldSwitchWeapon`
+/// (0xcf380) deploys it only when the player has no active item (the gun's weight 1 beats the
+/// cycler's 0). `CWeaponCycler::Deploy` (0xc7d6c): the cycler's model (`m_iszModel`, `model`) as
+/// the view model, `m_flNextAttack = 1` (time base 0) and `SendWeaponAnim(0, skiplocal)` with
+/// the cycler's `body`. (`CHalfLifeRules::FShouldSwitchWeapon` 0xde74c would also switch away
+/// from a held gun in single player: a deviation, see weapons.md.)
+pub fn deploy_cycler(p: &mut Player, cx: &mut Cx, model: goldsrc::sys::string_t, body: i32) {
+    if p.inv.sv.has_gun || !p.inv.sv.cycler.is_valid() {
+        return;
+    }
+    p.inv.sv.cycler_active = true;
+    cx.pev().viewmodel = model;
+    p.inv.gun.next_attack = 1.0;
+    // CBasePlayerWeapon::SendWeaponAnim (0xa00d0), as `host`'s weapon_anim sends it.
+    cx.pev().weaponanim = 0;
+    if cx.pev().flags & goldsrc::sys::FL_FAKECLIENT as i32 != 0 {
+        return;
+    }
+    use goldsrc::ext::weapons::WeaponsEngine;
+    let eng = engine();
+    if !eng.can_skip_player(cx.edict) {
+        eng.send_weapon_anim(cx.edict, 0, body);
+    }
+}
+
+/// `DefaultTouch` on a map-placed `weapon_tsgun` (`item`): [`give_gun_to`], and the entity
+/// becomes the player's gun item (dropped with the gun by `RemoveAllItems`).
+pub fn give_gun_item(player: *mut edict_t, item: *mut edict_t) {
+    crate::player::with_player(player, |p, cx| {
+        give_gun(p, cx);
+        p.inv.sv.gun_item = EHandle::new(item);
+        inventory::sync_speed(p, cx);
+    });
+}
+
+/// `CHalfLifeMultiplay::CanHavePlayerItem` (0xcfd38) / `CGameRules::CanHavePlayerItem`
+/// (0xc5f48) for a `cycler_weapon`: a living player (`deadflag`) without one already (by id
+/// with `weaponstay` on, otherwise `HasPlayerItem` by classname: the same test, since the gun's
+/// id and classname differ from the cycler's).
+pub fn can_have_cycler(p: &Player, cx: &mut Cx) -> bool {
+    cx.pev().deadflag == goldsrc::sys::DEAD_NO as i32 && !p.inv.sv.cycler.is_valid()
 }
 
 /// Infinite Clip power-up: double the current gun's clip. False if no gun.
@@ -506,4 +627,17 @@ pub fn glow_for_host(ent: *mut edict_t, host: *mut edict_t) -> bool {
 /// `CTSGameRules::m_mode > 1`, which 3.0 DM/TDM never reach, so they default to off.
 pub fn set_round_mode_items(allowed: bool) {
     assets::set_grenade_buys(allowed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gun_weapon_bit_is_id_16() {
+        assert_eq!(TSGUN_WEAPON_BIT, 0x1_0000);
+        // RemoveAllItems(FALSE) keeps only the suit bit; (TRUE) clears everything.
+        let weapons = i32::MIN | TSGUN_WEAPON_BIT | 1;
+        assert_eq!(weapons & i32::MIN, i32::MIN);
+    }
 }

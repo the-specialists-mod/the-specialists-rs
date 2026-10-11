@@ -283,7 +283,7 @@ impl Entity for World {
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         // Precache forces the movement defaults first. The server config that the game rules
-        // queue (`rules::precache`, the `CHalfLifeMultiplay` constructor) runs after the map has
+        // queue (`rules::install`, the `CHalfLifeMultiplay` constructor) runs after the map has
         // loaded, so a `sv_gravity` in server.cfg still wins, as in TS.
         eng.set_cvar_cstr(c"sv_gravity", c"800");
         eng.set_cvar_cstr(c"sv_stepsize", c"18");
@@ -292,13 +292,21 @@ impl Entity for World {
         base::reset_registries();
         tracktrain::reset();
         sound::reset_rooms();
-        // CWorld::Precache (0xf449c), right after the rules: the soundent and the body queue
-        // are the first edicts after the clients, so map entities get TS's edict numbers.
+        // CWorld::Precache (0xf449c) in TS's order: InstallGameRules (the multiplayer rules
+        // precache the voice icon), then the soundent and the body queue, the first edicts after
+        // the clients, so map entities get TS's edict numbers.
+        crate::rules::install();
         soundent::create_world_soundent();
         init_body_que();
-        // CWorld::Precache (0xf449c): sentences.txt, once per process.
+        // SENTENCEG_Init (sentences.txt, once per process) and TEXTURETYPE_Init.
         sentences::init();
-        blood::precache_world();
+        crate::stunt::texture_type_init();
+        // W_Precache, ClientPrecache, TSPrecache, the world's sounds and the gib models: the
+        // engine numbers precaches in this order (`crate::precache`).
+        crate::precache::w_precache();
+        crate::precache::client_precache();
+        crate::precache::ts_precache();
+        crate::precache::world_sounds_and_gibs();
         // Style 0 is normal light; without it the whole map renders black. Styles 1-12 are the
         // SDK's animated presets (world.cpp), 63 is the testing style.
         eng.light_style(0, c"m");
@@ -306,9 +314,8 @@ impl Entity for World {
             eng.light_style(i as i32 + 1, s);
         }
         eng.light_style(63, c"a");
-        crate::precache_all();
 
-        // The rest of CWorld::Precache runs after the game rules are installed.
+        // The rest of CWorld::Precache.
         let (speed, netname, flags) = {
             let v = cx.pev();
             (v.speed, std::mem::take(&mut v.netname), v.spawnflags)

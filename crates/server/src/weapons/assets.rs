@@ -1,5 +1,6 @@
-//! Precache (`CTSGun::Precache` events, `TSPrecache` weapon models and sounds), per-map model
-//! strings, cvars and the weapon restriction mask.
+//! The weapon precaches (`CTSGun::Precache` events, `TSPrecache`'s weapon loop; `crate::precache`
+//! places them in TS's map-wide order), per-map model strings, cvars and the weapon restriction
+//! mask.
 
 use goldsrc::Global;
 use goldsrc::ext::weapons::WeaponsEngine;
@@ -134,79 +135,33 @@ pub fn event_index(ev: Event) -> u16 {
     with(|a| a.events[ev as usize]).unwrap_or(0)
 }
 
-/// Sounds the server itself emits or that TSPrecache lists for weapons.
-const SOUNDS: &[&CStr] = &[
-    c"weapons/switch.wav",
-    c"player/kevlarhit.wav",
-    c"player/kungfuhit.wav",
-    c"player/closecombat.wav",
-    c"player/block.wav",
-    c"weapons/knife/knife_miss.wav",
-    c"weapons/knife/knife_hit.wav",
-    c"weapons/knife/knife_hitbody.wav",
-    c"weapons/katana/hit-body.wav",
-    c"weapons/katana/miss.wav",
-    c"weapons/katana/miss1.wav",
-    c"weapons/katana/hit.wav",
-    c"weapons/katana/hit1.wav",
-    c"items/gunpickup2.wav",
-    // +use on a dropped weapon (`PlayerUse`; TS precaches it in `ClientPrecache`).
-    c"common/wpn_select.wav",
-    c"items/9mmclip1.wav",
-    c"items/weapondrop1.wav",
-    c"weapons/items.wav",
-    c"weapons/weapondrop.wav",
-    c"weapons/draw.wav",
-    c"weapons/pistol-empty.wav",
-    c"weapons/insert-shell.wav",
-    c"weapons/generic_reload.wav",
-    c"weapons/shell.wav",
-    c"weapons/sshell.wav",
-    c"weapons/whizz1.wav",
-    c"weapons/whizz2.wav",
-    c"weapons/whizz3.wav",
-    c"weapons/whizz4.wav",
-    c"weapons/whizz5.wav",
-    c"weapons/grenbounce1.wav",
-    c"weapons/grenbounce2.wav",
-    c"weapons/grenbounce3.wav",
-    c"weapons/grenbounce4.wav",
-    c"explo/explode.wav",
-    c"explo/explode1.wav",
-    c"explo/explode2.wav",
-    c"explo/explode3.wav",
-    c"explo/explode4.wav",
-];
+/// `CTSGun::Precache`'s events (0x80660), precached by `W_Precache` before the weapon models.
+static EVENTS: Global<Cell<[u16; 11]>> = Global(Cell::new([0; 11]));
 
-const MODELS: &[&CStr] = &[
-    c"models/generic_clip.mdl",
-    c"models/ammopack.mdl",
-    c"models/bullet.mdl",
-    c"models/long_bullet.mdl",
-    c"models/pellet.mdl",
-    c"models/w_m61.mdl",
-    c"models/w_knife.mdl",
-    c"models/w_sealknife.mdl",
-    c"models/w_katana.mdl",
-];
-
-/// Called from worldspawn's precache, once per map.
-pub fn precache() {
-    super::bullets::reset();
+/// `CTSGun::Precache` (0x80660) as `W_Precache` runs it (`UTIL_PrecacheOtherWeapon`): the 11
+/// weapon events in `Event::ALL` order.
+pub fn precache_events() {
     let e = engine();
     let mut events = [0u16; 11];
     for ev in Event::ALL {
         events[ev as usize] = e.precache_event(ev.path());
     }
-    for s in SOUNDS {
-        e.precache_sound(s);
-    }
-    for m in MODELS {
-        e.precache_model(m);
-    }
-    BUBBLES.0.set(e.precache_model(c"sprites/bubble.spr"));
+    EVENTS.0.set(events);
+}
+
+/// `g_sModelIndexBubbles`, precached by `W_Precache`.
+pub fn set_bubbles_model(index: i32) {
+    BUBBLES.0.set(index);
+}
+
+/// The weapon loop of `TSPrecache` (0x9f320): for each weapon id 0..=37 with an info entry, its
+/// non-empty shell model (`info+0xe8`), `v_`, `p_`, silenced `p_` and `w_` models, then its two
+/// sounds (`info+0x2c6`, `+0x306`). The per-map model strings are kept for the weapon code.
+pub fn precache_weapon_assets() {
+    super::bullets::reset();
+    let e = engine();
     let mut a = Assets {
-        events,
+        events: EVENTS.0.get(),
         v_model: [0; MAX_WEAPONS],
         p_model: [0; MAX_WEAPONS],
         p_model_sil: [0; MAX_WEAPONS],
@@ -216,6 +171,12 @@ pub fn precache() {
     for id in 0..MAX_WEAPONS as u8 {
         if id != 0 && t.weapon(id).is_none() {
             continue;
+        }
+        let asset = t.asset(id);
+        if let Some(asset) = asset
+            && !asset.shell.is_empty()
+        {
+            e.precache_model_str(&format!("models/{}.mdl", asset.shell));
         }
         let (v, p, psil, w) = models(id);
         e.precache_model_str(&v);
@@ -237,10 +198,7 @@ pub fn precache() {
             e.precache_model_str(&w);
             a.w_model[id as usize] = Some(intern(&w));
         }
-        if let Some(asset) = t.asset(id) {
-            if !asset.shell.is_empty() {
-                e.precache_model_str(&format!("models/{}.mdl", asset.shell));
-            }
+        if let Some(asset) = asset {
             for s in [&asset.sound, &asset.sound2] {
                 if !s.is_empty() {
                     e.precache_sound_str(&format!("weapons/{s}"));

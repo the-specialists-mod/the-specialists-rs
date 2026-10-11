@@ -33,6 +33,23 @@ pub fn kv_f(v: &CStr) -> f32 {
         s[..end].parse().unwrap_or(0.0)
     })
 }
+/// `strtod`: [`kv_f`] without the rounding to a float (TS converts the double straight to an
+/// integer in some keys).
+pub fn kv_d(v: &CStr) -> f64 {
+    let s = kv_str(v).trim();
+    s.parse().unwrap_or_else(|_| {
+        let end = s.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'))).unwrap_or(s.len());
+        s[..end].parse().unwrap_or(0.0)
+    })
+}
+/// A `BYTE` member set from `strtod` the way TS's x87 code does it (`CBasePlatTrain::KeyValue`
+/// 0xd1f80, `CBaseDoor::KeyValue` 0xb51a0, `CMomentaryDoor::KeyValue` 0xb81a0): `fistp` to a
+/// short with the rounding mode set to truncate (out of the short's range, or NaN, stores
+/// 0x8000), then the low byte, which the `Precache`s read unsigned.
+pub fn fistp16_low_byte(v: f64) -> u8 {
+    let t = v.trunc();
+    if (-32768.0..=32767.0).contains(&t) { t as i16 as u8 } else { 0 }
+}
 /// `atoi`.
 pub fn kv_i(v: &CStr) -> i32 {
     let s = kv_str(v).trim();
@@ -424,19 +441,32 @@ pub fn run_touch<T: Mover>(this: &mut T, cx: &mut Cx, other: *mut edict_t) {
     }
 }
 
-/// `CBaseToggle::LinearMove`: move to `dest` at `speed`, then call `move_done`.
+/// The arithmetic of `CBaseToggle::LinearMove` (0xe3658) and `AngularMove` (0xe386c) for a move
+/// from `from` to `dest` (which differ) at `speed`: `(nextthink, velocity)`. The x87 code keeps
+/// the exact difference for the length, rounds the length and the stored deltas to floats, and
+/// keeps `travel = length / speed` unrounded for `ltime + travel` and the per-axis
+/// `delta / travel`. There is no speed check: a speed of 0 gives an infinite `nextthink` and a
+/// zero velocity (the mover never arrives), a negative one a move away that finishes at once.
+pub fn move_params(dest: Vec3, from: Vec3, speed: f32, ltime: f32) -> (f32, Vec3) {
+    let exact = [dest[0] as f64 - from[0] as f64, dest[1] as f64 - from[1] as f64, dest[2] as f64 - from[2] as f64];
+    let len = (exact[2] * exact[2] + exact[1] * exact[1] + exact[0] * exact[0]).sqrt() as f32;
+    let travel = len as f64 / speed as f64;
+    let vel = exact.map(|d| ((d as f32) as f64 / travel) as f32);
+    ((travel + ltime as f64) as f32, vel)
+}
+
+/// `CBaseToggle::LinearMove` (0xe3658): move to `dest` at `speed`, then call `move_done`.
 pub fn linear_move<T: Mover>(this: &mut T, cx: &mut Cx, dest: Vec3, speed: f32) {
     this.toggle().final_dest = dest;
     let origin = cx.pev().origin;
-    if dest == origin || speed == 0.0 {
+    if dest == origin {
         linear_move_done(this, cx);
         return;
     }
-    let delta = vec::sub(dest, origin);
-    let travel = vec::length(delta) / speed;
-    think_ltime(cx, travel);
+    let (next, vel) = move_params(dest, origin, speed, cx.pev().ltime);
+    cx.pev().nextthink = next;
     this.toggle().think = Some(linear_move_done::<T>);
-    cx.pev().velocity = vec::scale(delta, 1.0 / travel);
+    cx.pev().velocity = vel;
 }
 
 pub fn linear_move_done<T: Mover>(this: &mut T, cx: &mut Cx) {
@@ -450,19 +480,18 @@ pub fn linear_move_done<T: Mover>(this: &mut T, cx: &mut Cx) {
     }
 }
 
-/// `CBaseToggle::AngularMove`.
+/// `CBaseToggle::AngularMove` (0xe386c): turn to `dest` at `speed` ([`move_params`]).
 pub fn angular_move<T: Mover>(this: &mut T, cx: &mut Cx, dest: Vec3, speed: f32) {
     this.toggle().final_angle = dest;
     let angles = cx.pev().angles;
-    if dest == angles || speed == 0.0 {
+    if dest == angles {
         angular_move_done(this, cx);
         return;
     }
-    let delta = vec::sub(dest, angles);
-    let travel = vec::length(delta) / speed;
-    think_ltime(cx, travel);
+    let (next, avel) = move_params(dest, angles, speed, cx.pev().ltime);
+    cx.pev().nextthink = next;
     this.toggle().think = Some(angular_move_done::<T>);
-    cx.pev().avelocity = vec::scale(delta, 1.0 / travel);
+    cx.pev().avelocity = avel;
 }
 
 pub fn angular_move_done<T: Mover>(this: &mut T, cx: &mut Cx) {
@@ -597,6 +626,25 @@ mod tests {
         assert_eq!(kv_f(c"3abc"), 3.0);
         assert_eq!(kv_f(c"x"), 0.0);
         assert_eq!(kv_i(c"7.9"), 7);
+    }
+
+    #[test]
+    fn move_params_divide_without_a_speed_check() {
+        // 3-4-5 triangle at 10 u/s: 0.5 s, velocity = delta / travel.
+        let (next, vel) = move_params([3.0, 4.0, 0.0], [0.0; 3], 10.0, 2.0);
+        assert_eq!(next, 2.5);
+        assert_eq!(vel, [6.0, 8.0, 0.0]);
+        // Speed 0: never arrives (nextthink inf), no velocity (delta / inf).
+        let (next, vel) = move_params([0.0, 0.0, 64.0], [0.0; 3], 0.0, 1.0);
+        assert_eq!(next, f32::INFINITY);
+        assert_eq!(vel, [0.0, 0.0, 0.0]);
+        // Negative speed: a nextthink in the past and the velocity reversed.
+        let (next, vel) = move_params([0.0, 0.0, 64.0], [0.0; 3], -32.0, 5.0);
+        assert_eq!(next, 3.0);
+        assert_eq!(vel, [0.0, 0.0, -32.0]);
+        // Division by the unrounded travel, not multiplication by its rounded reciprocal.
+        let (_, vel) = move_params([100.0, 0.0, 0.0], [0.0; 3], 3.0, 0.0);
+        assert_eq!(vel[0], (100.0f64 / (100.0f64 / 3.0)) as f32);
     }
 
     #[test]

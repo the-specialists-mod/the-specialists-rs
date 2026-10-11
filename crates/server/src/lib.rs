@@ -18,22 +18,8 @@ pub mod entities;
 pub mod messages;
 pub mod net;
 pub mod player;
+pub mod precache;
 pub mod rules;
 pub mod stunt;
 pub mod weapons;
 pub mod world;
-
-use goldsrc::server::engine;
-
-/// Precache everything; called from worldspawn's spawn (the first entity of every map).
-pub fn precache_all() {
-    engine().precache_model(player::PLAYER_MODEL);
-    // Engine water sounds: played when anything enters water, so precache them up front.
-    for s in [c"player/pl_wade1.wav", c"player/pl_wade2.wav", c"player/pl_wade3.wav", c"player/pl_wade4.wav"] {
-        engine().precache_sound(s);
-    }
-    player::impulse::precache();
-    stunt::precache();
-    weapons::precache();
-    rules::precache();
-}

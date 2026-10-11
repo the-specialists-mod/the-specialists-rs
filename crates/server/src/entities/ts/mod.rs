@@ -77,12 +77,10 @@ link_entities! {
     shrapnel => shrapnel::Shrapnel,
 }
 
-/// Models and sounds the TS entities need even when created at runtime.
-pub fn precache() {
-    let e = engine();
-    e.precache_model(powerup::MODEL);
-    e.precache_model(ctb::MODEL);
-    e.precache_model(c"models/ammopack.mdl");
+/// Per-map state of the TS entities (the `ts_particle` count). Their map-wide models
+/// (`ts_powerup`, `ts_flag`, the ammo pack) are precached by `crate::precache` where TS's
+/// `W_Precache` / `TSPrecache` do.
+pub fn map_init() {
     misc::PARTICLES.0.set(0);
 }
 

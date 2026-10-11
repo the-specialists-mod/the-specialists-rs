@@ -106,7 +106,7 @@ fn is_alive(p: *mut edict_t) -> bool {
     v.deadflag == DEAD_NO as i32 && v.health > 0.0
 }
 
-// ---- weapon_tsgun ---------------------------------------------------------------------------------------------------
+// ---- weapon_tsgun / cycler_weapon: CBasePlayerItem ----------------------------------------------------------------
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum ItemThink {
@@ -116,22 +116,24 @@ enum ItemThink {
     Fall,
     /// `CBasePlayerItem::AttemptToMaterialize`.
     AttemptToMaterialize,
+    /// `CBaseEntity::SUB_Remove`, from `Drop` / `Kill`.
+    Remove,
 }
 
-/// `weapon_tsgun` placed by a map: a TS gun lying in the world. A living player without a gun
-/// picks it up (the gun TS's `PlayerSpawn` would otherwise give, empty, with kung fu); without
-/// `SF_NORESPAWN` a copy reappears at the same spot 20 s later (`mp_weaponstay 0`).
-///
-/// `game_player_equip` doesn't create one: the port's gun has no entity, and
-/// `maprules::give_named_item` gives it directly.
+/// The `CBasePlayerItem` state both item classes share: the think and touch functions and the
+/// `CBaseDelay` keys `SUB_UseTargets` reads.
 #[derive(Default)]
-pub struct WorldTsGun {
+struct PlayerItem {
     think: ItemThink,
+    /// `SetTouch(DefaultTouch)`.
     touchable: bool,
     delay: Delay,
 }
 
-impl WorldTsGun {
+/// Reaches the `PlayerItem` of an item entity of one class (for `Respawn`'s copy).
+type ItemAccess = fn(*mut edict_t, &mut dyn FnMut(&mut PlayerItem));
+
+impl PlayerItem {
     /// `CBasePlayerItem::Materialize` (0xf18f0).
     fn materialize(&mut self, cx: &mut Cx) {
         if cx.pev().effects & EF_NODRAW as i32 != 0 {
@@ -146,58 +148,6 @@ impl WorldTsGun {
         engine().set_origin(cx.edict, org);
         self.touchable = true;
         self.think = ItemThink::None;
-    }
-
-    /// `CBasePlayerItem::Respawn` (0xf1a44): a hidden copy here that materialises after
-    /// `FlWeaponRespawnTime`.
-    fn respawn(&mut self, cx: &mut Cx) {
-        let eng = engine();
-        let v = cx.pev();
-        let (class, origin, angles, owner) = (v.classname, v.origin, v.angles, v.owner);
-        let new = create_entity(s(class), origin, angles, owner);
-        if new.is_null() {
-            eng.alert(ALERT_TYPE::at_console, &format!("Respawn failed to create {}!\n", s(class).to_string_lossy()));
-            return;
-        }
-        new.v().effects |= EF_NODRAW as i32;
-        world::with::<WorldTsGun, _>(new, |g| {
-            g.touchable = false;
-            g.think = ItemThink::AttemptToMaterialize;
-        });
-        // DROP_TO_FLOOR(ENT(pev)): the SDK drops the item being picked up, not the copy.
-        eng.drop_to_floor(cx.edict);
-        new.v().nextthink = weapon_respawn_time(eng.time(), eng.cvar_float(c"mp_weaponstay"));
-    }
-}
-
-/// `CHalfLifeMultiplay::FlWeaponRespawnTime` (0xcfc18) for `weapon_tsgun` (no
-/// `ITEM_FLAG_LIMITINWORLD`): 20 s, or at once with `mp_weaponstay` on.
-fn weapon_respawn_time(now: f32, weaponstay: f32) -> f32 {
-    if weaponstay <= 0.0 { (20.0f64 + now as f64) as f32 } else { now }
-}
-
-impl Entity for WorldTsGun {
-    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        self.delay.key_value(key, value)
-    }
-
-    /// `CTSGun::Spawn` (0x8053c) and `CBasePlayerItem::FallInit` (0xf175c). `CTSGun::Precache`
-    /// only precaches the gun events, which the port's weapons precache for every map.
-    fn spawn(&mut self, cx: &mut Cx) {
-        let eng = engine();
-        let me = cx.edict;
-        cx.pev().classname = eng.alloc_string(c"weapon_tsgun");
-        eng.precache_model(c"models/w_glock18.mdl");
-        eng.set_model(me, c"models/w_glock18.mdl");
-        let v = cx.pev();
-        v.movetype = MOVETYPE_TOSS as i32;
-        v.solid = SOLID_BBOX as i32;
-        let org = v.origin;
-        eng.set_origin(me, org);
-        eng.set_size(me, [0.0; 3], [0.0; 3]);
-        self.touchable = true;
-        self.think = ItemThink::Fall;
-        cx.pev().nextthink = eng.time() + 0.1;
     }
 
     fn think(&mut self, cx: &mut Cx) {
@@ -223,13 +173,133 @@ impl Entity for WorldTsGun {
             // CBasePlayerItem::AttemptToMaterialize (0xf1998): `FlWeaponTryRespawn` is 0 for an
             // item without ITEM_FLAG_LIMITINWORLD.
             ItemThink::AttemptToMaterialize => self.materialize(cx),
+            ItemThink::Remove => sub_remove(cx.edict),
             ItemThink::None => {}
         }
     }
 
+    /// `CBasePlayerItem::CheckRespawn` (0xf19fc): `WeaponShouldRespawn` is `GR_WEAPON_RESPAWN_YES`
+    /// only under the multiplayer rules (0xcfd20) and without `SF_NORESPAWN`;
+    /// `CHalfLifeRules::WeaponShouldRespawn` (0xde88c) never respawns.
+    fn should_respawn(cx: &mut Cx) -> bool {
+        cx.pev().spawnflags & SF_NORESPAWN == 0 && !crate::rules::state::single_player()
+    }
+
+    /// `CBasePlayerItem::Respawn` (0xf1a44): a hidden copy here (`Create`, so its `Spawn` runs)
+    /// that materialises after `FlWeaponRespawnTime`.
+    fn respawn(cx: &mut Cx, item: ItemAccess) {
+        let eng = engine();
+        let v = cx.pev();
+        let (class, origin, angles, owner) = (v.classname, v.origin, v.angles, v.owner);
+        let new = create_entity(s(class), origin, angles, owner);
+        if new.is_null() {
+            eng.alert(ALERT_TYPE::at_console, &format!("Respawn failed to create {}!\n", s(class).to_string_lossy()));
+            return;
+        }
+        new.v().effects |= EF_NODRAW as i32;
+        item(new, &mut |g| {
+            g.touchable = false;
+            g.think = ItemThink::AttemptToMaterialize;
+        });
+        // DROP_TO_FLOOR(ENT(pev)): the SDK drops the item being picked up, not the copy.
+        eng.drop_to_floor(cx.edict);
+        new.v().nextthink = weapon_respawn_time(eng.time(), eng.cvar_float(c"mp_weaponstay"));
+    }
+
+    /// `CBasePlayerItem::AttachToPlayer` (0xf1d80): the item follows the player, hidden, until the
+    /// player loses it (`Drop`). The think function stays as it was (none after `Materialize`).
+    fn attach_to_player(&mut self, cx: &mut Cx, player: *mut edict_t) {
+        self.touchable = false;
+        let now = engine().time();
+        let v = cx.pev();
+        v.movetype = MOVETYPE_FOLLOW as i32;
+        v.solid = SOLID_NOT as i32;
+        v.aiment = player;
+        v.effects = EF_NODRAW as i32;
+        v.modelindex = 0;
+        v.model = 0;
+        v.owner = player;
+        v.nextthink = now + 0.1;
+    }
+
+    /// `CBasePlayerItem::Drop` (0xf1cac): no touch, `SUB_Remove` 0.1 s later.
+    fn drop(&mut self, e: *mut edict_t) {
+        self.touchable = false;
+        self.think = ItemThink::Remove;
+        e.v().nextthink = engine().time() + 0.1;
+    }
+}
+
+/// `CHalfLifeMultiplay::FlWeaponRespawnTime` (0xcfc18) for an item without
+/// `ITEM_FLAG_LIMITINWORLD` (`weapon_tsgun`, and `cycler_weapon`'s zeroed `ItemInfo`): 20 s, or at
+/// once with `mp_weaponstay` on.
+fn weapon_respawn_time(now: f32, weaponstay: f32) -> f32 {
+    if weaponstay <= 0.0 { (20.0f64 + now as f64) as f32 } else { now }
+}
+
+/// `CBasePlayerItem::Drop` (0xf1cac) on a player's item entity (`RemoveAllItems`). Nothing for
+/// a null edict or one that is no player item.
+pub fn drop_item(e: *mut edict_t) {
+    if e.is_null() {
+        return;
+    }
+    if world::with::<WorldTsGun, _>(e, |g| g.item.drop(e)).is_none() {
+        world::with::<WeaponCycler, _>(e, |c| c.item.drop(e));
+    }
+}
+
+fn with_tsgun_item(e: *mut edict_t, f: &mut dyn FnMut(&mut PlayerItem)) {
+    world::with::<WorldTsGun, _>(e, |g| f(&mut g.item));
+}
+
+fn with_cycler_item(e: *mut edict_t, f: &mut dyn FnMut(&mut PlayerItem)) {
+    world::with::<WeaponCycler, _>(e, |c| f(&mut c.item));
+}
+
+/// `weapon_tsgun` placed by a map: a TS gun lying in the world. A living player without a gun
+/// picks it up (the gun TS's `PlayerSpawn` would otherwise give, empty, with kung fu); under the
+/// multiplayer rules and without `SF_NORESPAWN` a copy reappears at the same spot 20 s later
+/// (`mp_weaponstay 0`). The picked-up entity stays, hidden and following the player, until
+/// `RemoveAllItems` drops the gun (`weapons::SvState::gun_item`).
+///
+/// `game_player_equip` doesn't create one: the port's gun has no entity, and
+/// `maprules::give_named_item` gives it directly.
+#[derive(Default)]
+pub struct WorldTsGun {
+    item: PlayerItem,
+}
+
+impl Entity for WorldTsGun {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        self.item.delay.key_value(key, value)
+    }
+
+    /// `CTSGun::Spawn` (0x8053c) and `CBasePlayerItem::FallInit` (0xf175c). `CTSGun::Precache`
+    /// only precaches the gun events, which `W_Precache` already did for the map.
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let me = cx.edict;
+        cx.pev().classname = eng.alloc_string(c"weapon_tsgun");
+        eng.precache_model(c"models/w_glock18.mdl");
+        eng.set_model(me, c"models/w_glock18.mdl");
+        let v = cx.pev();
+        v.movetype = MOVETYPE_TOSS as i32;
+        v.solid = SOLID_BBOX as i32;
+        let org = v.origin;
+        eng.set_origin(me, org);
+        eng.set_size(me, [0.0; 3], [0.0; 3]);
+        self.item.touchable = true;
+        self.item.think = ItemThink::Fall;
+        cx.pev().nextthink = eng.time() + 0.1;
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        self.item.think(cx);
+    }
+
     /// `CBasePlayerItem::DefaultTouch` (0xf1b40).
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.touchable || !is_player(other) {
+        if !self.item.touchable || !is_player(other) {
             return;
         }
         // `CHalfLifeMultiplay::CanHavePlayerItem` (0xcfd38) / `CGameRules::CanHavePlayerItem`
@@ -243,57 +313,85 @@ impl Entity for WorldTsGun {
             return;
         }
         // AddPlayerItem → AddToPlayer, then CheckRespawn (0xf19fc) inside it.
-        crate::weapons::give_gun_to(other);
-        if cx.pev().spawnflags & SF_NORESPAWN == 0 {
-            self.respawn(cx);
+        crate::weapons::give_gun_item(other, cx.edict);
+        if PlayerItem::should_respawn(cx) {
+            PlayerItem::respawn(cx, with_tsgun_item);
         }
-        // AttachToPlayer (0xf1d80): TS keeps this entity as the player's gun until the gun is
-        // destroyed; the port's gun is no entity, so it goes now.
-        self.touchable = false;
-        self.think = ItemThink::None;
-        let v = cx.pev();
-        v.movetype = MOVETYPE_FOLLOW as i32;
-        v.solid = SOLID_NOT as i32;
-        v.aiment = other;
-        v.effects = EF_NODRAW as i32;
-        v.modelindex = 0;
-        v.model = 0;
-        v.owner = other;
-        remove(cx.edict);
+        self.item.attach_to_player(cx, other);
         emit_sound_slow(other, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
-        self.delay.use_targets(cx.edict, other, UseType::Toggle, 0.0);
+        self.item.delay.use_targets(cx.edict, other, UseType::Toggle, 0.0);
     }
 }
 
 // ---- cycler_weapon --------------------------------------------------------------------------------------------------
 
-/// `cycler_weapon` (`CWeaponCycler`): a model lying in the world as a player weapon.
+/// `cycler_weapon` (`CWeaponCycler`): a model lying in the world as a player weapon. A living
+/// player without one picks it up into HL item slot 1 (`DefaultTouch`, `weapons::add_cycler`);
+/// it is deployed only when the player has no active item (no TS gun), as the multiplayer rules'
+/// `FShouldSwitchWeapon` decides. TS's `ItemPostFrame` (0xa03d4) returns at once for any item but
+/// the gun, so its `PrimaryAttack` / `SecondaryAttack` never run.
 ///
-/// Deviation: TS's `DefaultTouch` adds it to the player's HL item slots and switches to it
-/// (holstering the TS gun), and it then plays its sequences on +attack / +attack2. The port has
-/// no general player item list (only the TS gun, `weapons`), so it can't be picked up.
+/// Deviation (single player only): `CHalfLifeRules::FShouldSwitchWeapon` (0xde74c) switches away
+/// from a held TS gun too; the port's gun can't be holstered while held, so it keeps the gun
+/// deployed there (weapons.md).
 #[derive(Default)]
 pub struct WeaponCycler {
-    /// `m_iszModel` / `m_iModel`: the model, which `Deploy` would show as the view model.
+    item: PlayerItem,
+    /// `m_iszModel`: the model, which `Deploy` shows as the view model.
     model: string_t,
+    /// `m_iModel`.
     model_index: i32,
 }
 
 impl Entity for WeaponCycler {
-    /// `CWeaponCycler::Spawn` (0xc7c78).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        self.item.delay.key_value(key, value)
+    }
+
+    /// `CWeaponCycler::Spawn` (0xc7c78). Like TS it precaches and sets `STRING(pev->model)` even
+    /// when that is empty, which a copy made by `Respawn` always is (`Create` sets no model): the
+    /// engine decides then (GoldSrc stops with "Bad string", FWGS warns and uses the world).
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let v = cx.pev();
         v.solid = SOLID_SLIDEBOX as i32;
         v.movetype = MOVETYPE_NONE as i32;
-        precache_model_s(v.model);
-        set_own_model(cx);
+        let model = s(v.model);
+        eng.precache_model(model);
+        eng.set_model(cx.edict, model);
         let v = cx.pev();
         self.model = v.model;
         self.model_index = v.modelindex;
         let org = v.origin;
         eng.set_origin(cx.edict, org);
         eng.set_size(cx.edict, [-16.0, -16.0, 0.0], [16.0, 16.0, 16.0]);
+        self.item.touchable = true;
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        self.item.think(cx);
+    }
+
+    /// `CBasePlayerItem::DefaultTouch` (0xf1b40) with `AddPlayerItem` (0xdc0c4).
+    fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if !self.item.touchable || !is_player(other) {
+            return;
+        }
+        let Some(can_have) = crate::player::with_player(other, |p, pcx| crate::weapons::can_have_cycler(p, pcx)) else { return };
+        if !can_have {
+            return;
+        }
+        let me = cx.edict;
+        // AddToPlayer (bit 0, slot list 1), CheckRespawn, then FShouldSwitchWeapon / Deploy.
+        crate::player::with_player(other, |p, pcx| crate::weapons::add_cycler(p, pcx, me));
+        if PlayerItem::should_respawn(cx) {
+            PlayerItem::respawn(cx, with_cycler_item);
+        }
+        let (model, body) = (self.model, cx.pev().body);
+        crate::player::with_player(other, |p, pcx| crate::weapons::deploy_cycler(p, pcx, model, body));
+        self.item.attach_to_player(cx, other);
+        emit_sound_slow(other, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
+        self.item.delay.use_targets(cx.edict, other, UseType::Toggle, 0.0);
     }
 }
 

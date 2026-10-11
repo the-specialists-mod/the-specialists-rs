@@ -1343,6 +1343,9 @@ impl<const ENV: bool> Entity for GibShooter<ENV> {
         self.model_index = if ENV {
             material_sound_precache(self.material);
             precache_model_s(cx.pev().model)
+        } else if super::blood::german() {
+            // CGibShooter::Precache (0xbc1c4): TS's (misspelt) German gib model.
+            eng.precache_model(c"models/germanygibs.mdl")
         } else {
             eng.precache_model(c"models/hgibs.mdl")
         };
@@ -1432,7 +1435,7 @@ impl Gib {
     /// see it). `blood_color` is the victim's `BloodColor()`.
     pub fn spawn_head_gib(victim: *mut edict_t, blood_color: i32) {
         let eng = engine();
-        let e = Self::create(c"models/hgibs.mdl");
+        let e = Self::create(if super::blood::german() { c"models/germangibs.mdl" } else { c"models/hgibs.mdl" });
         if e.is_null() {
             return;
         }
@@ -1468,7 +1471,13 @@ impl Gib {
     pub fn spawn_random_gibs(victim: *mut edict_t, count: i32, human: bool, blood_color: i32, attack_dir: Vec3) {
         let eng = engine();
         for _ in 0..count {
-            let (model, lo, hi) = if human { (c"models/hgibs.mdl", 1, 5) } else { (c"models/agibs.mdl", 0, 3) };
+            let (model, lo, hi) = if super::blood::german() {
+                (c"models/germangibs.mdl", 0, 3)
+            } else if human {
+                (c"models/hgibs.mdl", 1, 5)
+            } else {
+                (c"models/agibs.mdl", 0, 3)
+            };
             let e = Self::create(model);
             if e.is_null() {
                 return;
@@ -1578,7 +1587,7 @@ impl Entity for Gib {
             v.avelocity[2] = 0.0;
         } else {
             // CGib::BounceGibTouch (0xb1ebc): a blood decal under the gib for its first bounces.
-            if self.blood_decals > 0 && self.blood_color != DONT_BLEED {
+            if !super::blood::german() && self.blood_decals > 0 && self.blood_color != DONT_BLEED {
                 let spot = vec::add(v.origin, [0.0, 0.0, 8.0]);
                 let tr = eng.trace_line(spot, vec::add(spot, [0.0, 0.0, -24.0]), IGNORE_MONSTERS, cx.edict);
                 blood_decal_trace(&tr, self.blood_color);

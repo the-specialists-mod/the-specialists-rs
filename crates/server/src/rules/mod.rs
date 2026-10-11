@@ -126,33 +126,20 @@ pub fn game_init() {
     commands::register_server_commands();
 }
 
-/// Precache and install the rules; called from worldspawn's spawn (keyvalues already parsed).
-pub fn precache() {
+/// `InstallGameRules` (0xc6050), from `CWorld::Precache` (worldspawn's keyvalues are parsed by
+/// then): `exec game.cfg` run at once, the rules decided and built. The multiplayer rules'
+/// constructor (0xcedd0) runs `CVoiceGameMgr::Init`, which precaches the voice icon, and queues
+/// the server config; `CHalfLifeRules` (0xde6fc) does neither.
+pub fn install() {
     let e = engine();
-    // InstallGameRules: exec game.cfg and run it before deciding the mode.
     e.server_command("exec game.cfg\n");
     e.server_execute();
     state::with(|g| g.install());
+    crate::entities::ts::map_init();
+    if !state::single_player() {
+        voice::precache();
+    }
     exec_server_config();
-    crate::entities::ts::precache();
-    voice::precache();
-    for s in [c"items/gunpickup2.wav", c"items/9mmclip1.wav", c"items/weapondrop1.wav", c"weapons/items.wav", c"common/bodysplat.wav"] {
-        e.precache_sound(s);
-    }
-    for s in [
-        c"player/headshot.wav",
-        c"player/headshot2.wav",
-        c"player/kevlarhit.wav",
-        c"player/bodyhit1.wav",
-        c"player/bodyhit2.wav",
-        c"player/bodyhit3.wav",
-        c"player/bodyhit4.wav",
-        c"player/pain2.wav",
-        c"player/pain3.wav",
-        c"player/pain4.wav",
-    ] {
-        e.precache_sound(s);
-    }
 }
 
 /// The tail of the `CHalfLifeMultiplay` constructor (0xcedd0): queue `exec <servercfgfile>` on a
