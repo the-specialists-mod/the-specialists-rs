@@ -31,7 +31,7 @@ the original.
   rename, reorder or resize them.
 * **Events:** the same `events/*.sc` names and the same `fparam`/`iparam`/`bparam` meanings
   (decomp `server/weapons.md` §6.1, `client/rendering-effects-prediction.md` §4.2).
-* **Networked fields** (`delta.lst` is TS's own, with its two missing commas fixed):
+* **Networked fields** (`delta.lst` is TS's original file, byte for byte; both engines accept its two missing commas):
   * `pev->iuser4` / `clientdata.iuser4`: stunt bitfield (`shared::ts::stunt`).
   * `pev->fuser1` / `clientdata.fuser1` / `weapon_data.fuser1`: per-entity time scale.
   * `clientdata.vuser1..4` and `ammo_*`: TS weapon state (decomp `server/architecture.md` §7.2).
@@ -257,12 +257,11 @@ weapons), and `ts_lobby` (19 classes, the classic).
 
 ## 10. Deliberate deviations from TS 3.0
 
-TS bugs found in the decomp are kept where they show in valid play; out-of-bounds reads and
-writes on bad input are guarded instead (client-hud.md §7 lists them):
+The port matches TS, including its bugs. The exceptions are out-of-bounds reads and writes that
+only happen on bad input, which are guarded instead (each implementation doc lists them):
 
-* the scoreboard overrun (74 vs 72 entries)
+* the scoreboard overrun (74 writes into a 64-byte array)
 * the always-true objective bounds checks
-* `delta.lst`'s missing commas
 
 Dead 3.0 features (round-based and objective modes, cash) are implemented only as far as the
 port needs them; `docs/implementation/*.md` records what's live.
