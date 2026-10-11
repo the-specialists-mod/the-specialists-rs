@@ -15,6 +15,9 @@
 //!                                                 gameplay on a listen server (join, buy, spawn,
 //!                                                 power-up, grenade, kills, kick, bot fights), in
 //!                                                 parallel on fwgs and fwgs-win
+//! cargo xtask meck    [--release] [<fwgs-root>...]
+//!                                                 grenades on MecklenburgV_Rain_Final: a grenade
+//!                                                 kill and broken func_breakables (also run by play)
 //! cargo xtask all     [--release]                 test, then play
 //! cargo xtask client  [--release] <server-root> [--map M] [--port P]
 //!                                                 FWGS client (Rust client library) joins a dedicated
@@ -70,6 +73,11 @@ fn main() {
                 exit(1);
             }
         }
+        "meck" => {
+            if !ctx.meck_all(&play_roots(&args)) {
+                exit(1);
+            }
+        }
         "play" => {
             if !ctx.play_all(&play_roots(&args)) {
                 exit(1);
@@ -117,7 +125,9 @@ fn main() {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: cargo xtask [--release] <build|lint|dist|install|server|test|play|all|client|roots> ... (see xtask/src/main.rs)");
+    eprintln!(
+        "usage: cargo xtask [--release] <build|lint|dist|install|server|test|play|meck|all|client|roots> ... (see xtask/src/main.rs)"
+    );
     exit(2)
 }
 
@@ -249,7 +259,11 @@ impl Ctx {
 
     /// `play`: the gameplay check on each FWGS root.
     fn play_all(&self, roots: &[Root]) -> bool {
-        self.parallel(roots, |r, i| self.play(r, 27215 + 10 * i as u16))
+        self.parallel(roots, |r, i| self.play(r, 27215 + 10 * i as u16) & self.meck(r, 27315 + 10 * i as u16))
+    }
+
+    fn meck_all(&self, roots: &[Root]) -> bool {
+        self.parallel(roots, |r, i| self.meck(r, 27315 + 10 * i as u16))
     }
 }
 
@@ -830,6 +844,90 @@ impl Ctx {
             ("the script finished, no panic or crash", run.done && !run.exited && !crashed(text)),
         ];
         self.report(root, "play", &run, &checks)
+    }
+
+    /// Grenades on a big custom map: a listen server on `MecklenburgV_Rain_Final` (a third-party
+    /// map with 37 `func_breakable`s, rain emitters, fog and wind).
+    /// 1. Join and spawn as in [`Ctx::play`]; add one stopped bot.
+    /// 2. Stand between two 10-HP walls (`*113`, `*114`), take an M61 (110 damage), drop it at
+    ///    the host's feet (thrown straight down) and leave; the stopped bot is moved onto the
+    ///    grenade. The blast breaks both walls and hurts the bot (a player takes half of it).
+    /// 3. The same between two 50-HP walls (`*217`, `*220`): they break and the bot dies.
+    fn meck(&self, root: &Root, port: u16) -> bool {
+        const MAP: &str = "MecklenburgV_Rain_Final";
+        say!("== {}: grenades on {MAP} (listen server, port {port})", root.name);
+        let mut cfg = script_start(MAP) + &script_join_and_spawn() + &status("spawned");
+        cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}", secs(8.0));
+        cfg += &status("bot added");
+
+        // A far spawn point to wait at while each grenade goes off.
+        let away = "ts_tp 1 1900 -2845 -250 90 0\n";
+        // Stand at `at`, look straight down and throw: the grenade drops at the host's feet. The
+        // host is gone before the fuse runs out.
+        let drop_at = |at: [i32; 3], then: &str| {
+            format!(
+                "ts_give 24\n{}weapon_24\n{}ts_tp 1 {} {} {} 90 89\n{}echo XTASK: throw\n{}+attack\n{}-attack\n{}{away}{then}{}",
+                secs(0.5),
+                secs(3.0),
+                at[0],
+                at[1],
+                at[2],
+                secs(1.0),
+                status("grenade in hand"),
+                secs(0.5),
+                secs(0.4),
+                secs(5.0)
+            )
+        };
+
+        // 2. between the two 10-HP walls; once the host has gone, the bot stands on the grenade
+        cfg += &format!("ts_tp 2 -2290 -1300 -380 90 0\n{}", secs(1.0));
+        cfg += &status("bot placed");
+        cfg += &drop_at([-2290, -1150, -380], "ts_tp 2 -2290 -1150 -380 90 0\n");
+        cfg += &status("after grenade 1");
+        cfg += &shot("grenade 1");
+
+        // 3. between the two 50-HP walls
+        cfg += &drop_at([-300, 712, -340], "ts_tp 2 -300 712 -340 90 0\n");
+        cfg += &status("after grenade 2");
+        cfg += &shot("grenade 2");
+        cfg += "ts_bot_quota 0\n";
+
+        let run = self.run_script(root, "meck", &cfg, port, Duration::from_secs(3), Duration::from_secs(300));
+        let text = &run.text;
+        for line in text.lines().filter(|l| {
+            l.contains("XTASK:") && !l.contains("XTASK: status")
+                || l.contains("ts_tp:")
+                || l.contains("func_breakable")
+                || l.contains(" killed ")
+                || l.contains("(port guard)")
+        }) {
+            say!("   | {}", line.trim_end());
+        }
+        let dumps = status_dumps(text);
+        let host = |tag: &str| dumps.iter().find(|d| d.0 == tag).and_then(|d| d.1.iter().find(|p| p.idx == 1).cloned());
+        let host_name = host("spawned").map(|p| p.name).unwrap_or_default();
+        let broken_in = |part: &str| {
+            part.lines().filter(|l| l.contains("func_breakable") && l.contains(&format!("broken by {host_name} (grenade"))).count()
+        };
+        let (first, second) = text.split_once("XTASK: grenade 1").unwrap_or((text, ""));
+        let (broken1, broken2) = (broken_in(first), broken_in(second));
+        let checks = [
+            ("the map loaded and the host spawned", host("spawned").is_some_and(|p| p.state == "alive")),
+            ("ts_bot_quota 1 added a bot", text.contains("[ts] bots: added")),
+            (
+                "a thrown grenade killed the bot",
+                text.lines()
+                    .any(|l| l.contains(host_name.as_str()) && l.contains(" killed Bot ") && l.to_ascii_lowercase().contains("grenade"))
+                    && host("after grenade 2").is_some_and(|p| p.frags >= 1),
+            ),
+            ("each grenade broke func_breakables (at least three in all)", broken1 >= 1 && broken2 >= 1 && broken1 + broken2 >= 3),
+            ("the host survived both grenades", host("after grenade 2").is_some_and(|p| p.state == "alive")),
+            ("no port guard refused a call", !text.contains("(port guard)")),
+            ("the script finished, no panic or crash", run.done && !run.exited && !crashed(text)),
+        ];
+        say!("   func_breakables broken by the host's grenades: {broken1} + {broken2}");
+        self.report(root, "meck", &run, &checks)
     }
 }
 

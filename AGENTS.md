@@ -82,10 +82,11 @@ cargo xtask build [--release]             # all four targets; must build with no
 cargo xtask lint                          # clippy --workspace --all-targets -D warnings, all four targets
                                           # (~40 s cold), plus the engine-macro check
 cargo xtask install <root>|all            # assemble <root>/ts and install the libraries
-cargo xtask all                           # test + play, about 2.5 min
+cargo xtask all                           # test + play (meck included), about 3.5 min
 cargo xtask test [--map M]                # dedicated server + bots on every engine root, in parallel (~25 s)
 cargo xtask play [fwgs fwgs-win]          # listen-server gameplay on ts_dojo: join/buy/spawn, power-up, grenade,
-                                          # kill, kick, death/respawn, bot fights; both roots in parallel (~2 min)
+                                          # kill, kick, death/respawn, bot fights; then meck; both roots in parallel (~3 min)
+cargo xtask meck [fwgs fwgs-win]          # grenades on MecklenburgV_Rain_Final: a grenade kill and broken func_breakables
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask dist --release                # dist/<platform>/ts/: libraries + game files
 ```

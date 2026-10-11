@@ -972,8 +972,11 @@ entity sets up something the engines stop on, the port changes the least it can:
   `Sys_Error`, FWGS `Host_Error`) or has no brush model (`SV_HullForBsp`: "Hit a %s with no
   model"), e.g. a `func_wall` whose map `model` is a studio model or empty, which TS sets up
   as given. `pfnSetAbsBox` (`entities::set_object_collision_box`), which runs before each link,
-  makes such an entity `SOLID_BBOX` (its own box) and logs it. An entity changed to that state
-  without being relinked isn't caught.
+  makes such an entity `SOLID_BBOX` (its own box) and logs it. An entity that has a model name
+  but no model index yet is skipped: brush entities (doors among them) link through
+  `UTIL_SetOrigin` before `SET_MODEL` in their `Spawn`, and the link from `SET_MODEL` checks
+  them. An entity changed to a fatal state without being relinked isn't caught, and neither is
+  one that keeps a model name it never sets.
 * **A map `movetype` the physics has no case for** (`SV_Physics` "bad movetype": anything but
   0 and 4–13, `MOVETYPE_WALK` included): `EntvarsKeyvalue` stores `MOVETYPE_NONE` instead
   and logs it. Spawn functions that set their own movetype are unaffected.

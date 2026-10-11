@@ -50,9 +50,10 @@ cargo xtask lint                        # no engine-call macros in game crates; 
 cargo xtask roots                       # which roots exist
 cargo xtask install all                 # assemble <root>/ts and install libraries
 cargo xtask server rehlds-linux --map ts_awaken --bots 4 --seconds 60
-cargo xtask all                         # everything below, about 2.5 min
+cargo xtask all                         # everything below, about 3.5 min
 cargo xtask test                        # dedicated server + 2 bots, 15 s, every root in parallel (~25 s)
-cargo xtask play                        # gameplay on a listen server, fwgs and fwgs-win in parallel (~2 min)
+cargo xtask play                        # gameplay on a listen server, fwgs and fwgs-win in parallel (~3 min, meck included)
+cargo xtask meck                        # grenades on MecklenburgV_Rain_Final only (~30 s fwgs, ~1 min fwgs-win)
 ```
 
 `cargo xtask lint` runs `cargo clippy --workspace --all-targets -- -D warnings` for each of the
@@ -100,6 +101,21 @@ results from `ts_status` dumps, kill notices and developer log lines:
 
 Screenshots go to `target/play-<root>-N.png`. The script can't close the MOTD, which needs a real
 Enter key or click, so the MOTD stays on screen.
+
+After that, `play` runs the grenade check on a large third-party map (`cargo xtask meck` runs it on
+its own): a listen server on `MecklenburgV_Rain_Final` (37 `func_breakable`s, 158 doors, rain
+emitters, fog and wind). Screenshots go to `target/meck-<root>-N.png`.
+
+| Scene | How | Passes when |
+|---|---|---|
+| Join and bot | As above; one stopped bot | The host spawned alive and a bot was added |
+| Grenade 1 | `ts_give 24`, `weapon_24`, stand between the two 10-HP walls `*113`/`*114`, look straight down (pitch 89) and throw, so the M61 drops at the host's feet; teleport away and move the bot onto the grenade | At least one `func_breakable ... broken by <host> (grenade, ...)` before the second throw. A player takes half of the M61's 110, so the bot is left at 45 HP |
+| Grenade 2 | The same between the two 50-HP walls `*217`/`*220` | More walls broken (at least three in all), `<host> killed Bot ... with M61 Grenade` and a frag |
+| Safety | The host waits at a far spawn point while each grenade goes off | The host is alive at the end; no "(port guard)" line, panic or crash |
+
+The map's doors exposed a bug in the `SOLID_BSP` guard (`stock-entities.md` §7.8): brush
+entities link before `SET_MODEL`, and the guard had turned every door into `SOLID_BBOX`. The
+"no port guard" check catches a regression.
 
 How the scripts run:
 * Game time runs at 2x (`sys_timescale 2`, with `fps_max 100`), and waits are written in game

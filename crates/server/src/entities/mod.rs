@@ -218,8 +218,13 @@ fn physics_movetype(m: i32) -> bool {
 }
 
 /// Whether the engines can trace a `SOLID_BSP` entity: a pusher (`MOVETYPE_PUSH`/`PUSHSTEP`)
-/// with a brush model (`*n`).
+/// with a brush model (`*n`). An entity that has a model name but no model index yet is still in
+/// its `Spawn`: brush entities (the SDK's doors among them) link through `UTIL_SetOrigin` before
+/// `SET_MODEL`, and only a trace is fatal, so it is checked again when `SET_MODEL` links it.
 fn bsp_hull_ok(movetype: i32, modelindex: i32, model: &[u8]) -> bool {
+    if modelindex == 0 && !model.is_empty() {
+        return true;
+    }
     (movetype == MOVETYPE_PUSH as i32 || movetype == MOVETYPE_PUSHSTEP as i32) && modelindex != 0 && model.first() == Some(&b'*')
 }
 
@@ -470,7 +475,10 @@ mod tests {
         assert!(bsp_hull_ok(MOVETYPE_PUSH as i32, 5, b"*3"));
         assert!(bsp_hull_ok(MOVETYPE_PUSHSTEP as i32, 5, b"*3"));
         assert!(!bsp_hull_ok(MOVETYPE_NONE as i32, 5, b"*3"));
-        assert!(!bsp_hull_ok(MOVETYPE_PUSH as i32, 0, b"*3"));
+        // Still in its Spawn: the model is set (and checked) by the next link.
+        assert!(bsp_hull_ok(MOVETYPE_PUSH as i32, 0, b"*3"));
+        assert!(bsp_hull_ok(MOVETYPE_NONE as i32, 0, b"*3"));
+        assert!(!bsp_hull_ok(MOVETYPE_PUSH as i32, 0, b""));
         assert!(!bsp_hull_ok(MOVETYPE_PUSH as i32, 5, b"models/tree.mdl"));
         assert!(!bsp_hull_ok(MOVETYPE_PUSH as i32, 5, b""));
         for m in [0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
