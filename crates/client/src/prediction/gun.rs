@@ -15,9 +15,10 @@ use crate::{state, view};
 use goldsrc::Global;
 use goldsrc::ext::render as r;
 use goldsrc::sys::*;
+use shared::pm::Arith;
 use shared::protocol::weapons::{pack_clientdata, pack_weapon_data, unpack_clientdata, unpack_weapon_data};
 use shared::weapons::gun::{MeleeHit, MeleeResult, Shot, Sound};
-use shared::weapons::spread::Vec3;
+use shared::weapons::spread::{self, Vec3};
 use shared::weapons::{Event, EventArgs, Gun, GunHost, MAX_AMMO, MAX_WEAPONS, Status, att, body_by_items, info, models};
 use std::cell::RefCell;
 
@@ -302,7 +303,10 @@ impl GunHost for ClientHost<'_> {
         self.time
     }
     fn slow_mul(&self) -> f32 {
-        self.from.client.fuser1.max(0.0)
+        spread::fixed_slow_amt(self.from.client.fuser1)
+    }
+    fn arith(&self) -> Arith {
+        Arith::CLIENT
     }
     fn powerups(&self) -> u16 {
         self.powerups
@@ -447,6 +451,15 @@ fn post_frame_gate(c: &clientdata_t, hud_health: i32) -> bool {
 }
 
 /// `HUD_WeaponsPostThink` (`0x10003830`) for one usercmd.
+/// The command's frame time as `HUD_WeaponsPostThink` computes it: `(float)(msec * 0.001)` with
+/// the `double` constant (`fild; fmul qword; fstp dword` at `0x10003eb7`), which is also the
+/// engine's `gpGlobals->frametime` for the server's `PostThink` (ReHLDS `SV_RunCmd`, FWGS
+/// `msec / 1000.0`). A `float` 0.001 differs for 141 of the 256 msec values, 10 ms among them,
+/// and would run the predicted timers out a frame before the server's.
+fn frame_time(msec: u8) -> f32 {
+    (msec as f64 * 0.001) as f32
+}
+
 pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t, runfuncs: bool, time: f64, seed: u32) {
     let c = &from.client;
     let final_origin = to.playerstate.origin;
@@ -500,8 +513,8 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     };
     // Same order as the server: PreThink (windows, penalty decay, bar), the weapon frame, then
     // the timers.
-    let dt = Gun::timer_dt(cmd.msec as f32 * 0.001, c.fuser1.max(0.0), powerups);
-    gun.pre_frame(dt, !dead);
+    let dt = Gun::timer_dt(Arith::CLIENT, frame_time(cmd.msec), spread::fixed_slow_amt(c.fuser1), powerups);
+    gun.pre_frame(Arith::CLIENT, dt, !dead);
     if post_frame_gate(c, state::with(|s| s.health)) {
         gun.weapon_post_frame(&mut host);
     }
@@ -677,5 +690,26 @@ mod tests {
         g.status[id::AK47 as usize].mode = 255;
         deploy(&mut g);
         assert_eq!(g.mode_memory[id::AK47 as usize], 0);
+    }
+
+    /// The predicted fire timers run out on the server's frame: an AK-47's 0.08 s at 10 ms
+    /// frames takes 9 commands on both (with `msec as f32 * 0.001` it took 8).
+    #[test]
+    fn frame_time_is_the_servers() {
+        assert_eq!(frame_time(10).to_bits(), 0x3c23_d70a);
+        for msec in 0..=255u8 {
+            assert_eq!(frame_time(msec), (msec as f64 / 1000.0) as f32, "FWGS's frametime for {msec} ms");
+        }
+        let frames = |dt: f32| {
+            let mut g = Gun { next_primary: 0.08, ..Gun::default() };
+            (1..).find(|_| {
+                g.decrement_timers(dt);
+                g.next_primary <= 0.0
+            })
+        };
+        let server = Gun::timer_dt(Arith::SERVER_DEFAULT, 0.01, 1.0, 0);
+        assert_eq!(frames(Gun::timer_dt(Arith::CLIENT, frame_time(10), 1.0, 0)), frames(server));
+        assert_eq!(frames(server), Some(9));
+        assert_eq!(frames(Gun::timer_dt(Arith::CLIENT, 10.0f32 * 0.001f32, 1.0, 0)), Some(8));
     }
 }

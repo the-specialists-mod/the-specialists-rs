@@ -207,11 +207,14 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   value, so a change counts from the next Think. 1, 2 and 3 are the reduced columns (9 x 19mm:
   90, 30, 0; column 3 is 0 for every type); 0, 4, 5, negative or out-of-range values are the
   switch's default, the full carry (210). `ammocount 5` therefore gives the full carry, not 0.
-* Timers: `dt = frametime * fuser1 * (DFR ? 1.5 : 1)`; NPA clamps at -1, the others at -0.001;
-  `UTIL_WeaponTimeBase() = 0`.
+* Timers: `dt = frametime * GiveSlowMul() * (DFR ? 1.5 : 1)`, `GiveSlowMul` = `fuser1` with a
+  floor of 0.01 (`FixedSlowAmt`, `spread::fixed_slow_amt`); NPA clamps at -1, the others at
+  -0.001; `UTIL_WeaponTimeBase() = 0`. The frame time is the engine's `(float)(msec * 0.001)` on
+  the server and the same expression in client prediction (§5, floating point).
 * Spread = `accuracy` (+ `pl.spread_penalty` via `ScaleSpread`), x0.875 silenced; growth
-  `(1 - min(slowmul*dt, ->0.5 if >=1)) * acc_kick * (DFR ? 1 : 2) * (silenced ? 0.775 : 1)`,
-  cap 0.1, decay 0.1/s. Barrett: penalty 0.3 above 35 u/s; M60: acc kick x5 above 175 u/s.
+  `(1 - (slowmul*dt >= 1 ? 0.5 : slowmul*dt)) * acc_kick * (DFR ? 1 : 2) * (silenced ? 0.775 : 1)`
+  for shots at least 1 ms apart, cap 0.1 (`double`), decay 0.1/s. Barrett: penalty 0.3 above
+  35 u/s; M60: acc kick x5 above 175 u/s.
 * Silencer (not built-in): damage x0.775, spread x0.875, kick x0.775.
 * Rates: semi on auto-capable weapons 0.1 s; shotgun semi 0.15 s; burst 3 x 0.03 s then 0.2 s
   (UMP 2 rounds); akimbo semi modes 0.1 s.
@@ -334,6 +337,36 @@ gate (`deadflag != 5`, last `TSHealth` > 0, `m_flNextAttack <= 0`), not `Gun::po
 
 ## 5. Deviations and decisions
 
+**Floating point, per TS build.** `ts_i386.so` (GCC, x87 extended precision), `mp.dll` and
+`client.dll` (MSVC, x87 at 53 bits) compile the weapon code separately, as they do movement
+(`movement.md`). Audited against the three binaries' machine code, for every value the server and
+the prediction both compute:
+
+| Value (TS function) | `ts_i386.so` | `mp.dll` / `client.dll` | Port |
+|---|---|---|---|
+| Frame time (`SV_RunCmd`; client `HUD_WeaponsPostThink` 0x10003eb7) | engine `(float)(msec * 0.001)` | client: `fild msec; fmul qword 0.001; fstp` (the same) | `frame_time` = `(msec as f64 * 0.001) as f32`. **Was** `msec as f32 * 0.001`, a different float for 141 of the 256 msec values (10 ms too): predicted timers ran out a frame before the server's (an AK-47's 0.08 s at 10 ms: 8 commands instead of 9), so the client predicted shots the server fired a command later with another seed. Fixed |
+| Timer step `slow * ft * 1.5` (PostThink 0x91ae7, PreThink 0x909c5; mp 0x1006053c; client 0x10003ec5) | the unrounded product × 1.5, stored once | the product stored as a `float`, then × 1.5 | `spread::timer_step(arith)`: both. Differs only in slow motion with double fire rate, by one float ulp; no frame-count difference found |
+| `GiveSlowMul` (`FixedSlowAmt` 0x990bc, client 0x10055aa0) | floor 0.01 (`double`) | floor 0.01f | `fixed_slow_amt` (0.01f). **Was** `max(fuser1, 0)`: fixed |
+| Timer decrements and clamps (PostThink tail; mp 0x10060592; client 0x10003f40) | the difference of two floats is exact, one rounding | the same | f32: equal |
+| `ScaleSpread` elapsed test (0x802a8; mp 0x10053ee0; client 0x10008100) | stored float `>= 0.001f` | the unrounded difference | `spread::shot_interval(arith)`: equal in practice (nearby times subtract exactly) |
+| `ScaleSpread` growth | `x = (float)(slow * dt)`, the test `slow*dt >= 1` on the unrounded product, `pen + (1-x)*akick*k` in extended precision, one store | `x` unrounded, `(1-x)*k*akick + pen` at 53 bits | `spread::grow_spread_penalty(arith)`: both. **Was** f32 throughout: a product just below 1 rounded to 1.0 and added 0.5·akick·k instead of almost nothing, and about one penalty in ten was an ulp off. GCC ≠ MSVC only in slow motion (an ulp) |
+| Penalty decay (PreThink 0x80d88; mp 0x1005fa29; client 0x100040a5) | `pen - dt*0.1f`, one store, the unrounded result `< 0` clears | the same at 53 bits | `spread::decay_spread_penalty(arith)`. **Was** two roundings (an ulp off in ~6 % of frames, never a frame's difference in reaching 0) |
+| Melee bar regeneration (PreThink 0x80ddc; mp 0x1005fa65) | `bar + dt*15`, one store | the same | `spread::regen_melee_bar(arith)` (was two roundings) |
+| `VKickback` (0x80414; mp 0x10054000; client 0x10008230) | yaw from the unrounded `0.85*kick`; silenced pitch from the stored pitch | yaw the same; silenced pitch from the unrounded product | `spread::view_kick(arith)`: both (was an ulp off in ~20 % of kicks). The server applies it only to bots |
+| `GetMeleeMultiplier` × damage (0x965d0; mp 0x10063e60) | `(max(bar,0)*0.5f + 50f) * 0.01f` left on the FPU, product stored once | the same | `spread::melee_damage(arith)`. **Was** a `double` 0.01 and two roundings (1-2 ulp in ~30 % of hits). Server only |
+| `UTIL_SharedRandomFloat` (0xebc54; mp 0x10076190; client 0x1001aea0) | range truncated by a 64-bit `fistp` | `mp.dll`: `__ftol`, the same; `client.dll`: the float range, untruncated (TS's client bug) | server: `weapons::random` (exact for both servers); the client's fire events use `events::random`, `client.dll`'s, as TS's client did |
+| Pellet offset/direction (`ShootBulletsPlayer` 0x6f69c; client `EV_TS_FireBullets`) | `1 - r³`, `fcos`/`fsin` in extended precision, components rounded once | 53 bits, different order | `f64` trig, f32 vector steps: an ulp off at most (a few 1e-4 units at 8192). Not changed |
+| Speed gates (Barrett 35, M60 175) | the stored `sqrt` | unrounded | f32: differs only exactly at the boundary. Not changed |
+
+Where the builds differ the function takes a `shared::pm::Arith` (`GunHost::arith`): the server
+passes its `ts_pm_arith` selection (default `msvc`, `mp.dll`, which is what every client
+predicts with; `gcc` for `ts_i386.so`), the prediction `Arith::CLIENT`. With the default the
+server and the prediction compute these values bit for bit alike. Not reproduced: `client.dll`
+grows and decays the penalty only on a command's first prediction (`g_runfuncs`; the port's
+prediction runs them on every prediction but keeps the gun state only from first predictions), and the server's
+`PreThink` sees the previous command's frame time (the engine sets it before `PostThink`), which
+the prediction can't know. NaN inputs take each build's compare direction.
+
 Remaining deviations from TS:
 
 * **Deviation: the flying impact credits the thrower** (issue #1, a deliberate choice). TS passes
@@ -439,6 +472,14 @@ How the port maps TS where the structure differs (not deviations):
   `shrapnel` is (`entities::ts::shrapnel`, #95; see stock-entities.md §2).
 
 ## 7. Tests
+
+* Floating point per build (`shared::weapons::spread` tests, reference bits from exact models of
+  the x87 at 64 and 53 bits): `timer_step_per_build` (DFR in slow motion: GCC 0x3a7f9725, MSVC
+  0x3a7f9724), `spread_penalty_growth` (incl. a `slowmul*dt` of 0.99999998 adding nothing),
+  `penalty_decay_and_melee_bar`, `kick` (silenced pitch per build), `melee_and_bullets`
+  (`20 × multiplier(95.6)` = 0x419c7ae1). `cargo test -p ts-client`:
+  `frame_time_is_the_servers` (every msec equals FWGS's frame time; an AK-47's 0.08 s takes the
+  server's 9 commands at 10 ms, 8 with the old `float` 0.001).
 
 * `cargo test -p shared`: weapon tests pass (x86_64 and `--target i686-unknown-linux-gnu`). Includes `random::matches_sdk_c_bit_for_bit` (43 seeds
   compared against the SDK C `util.cpp` compiled with `gcc -m32 -O0 -mfpmath=387`), fire rates
@@ -547,7 +588,7 @@ players, motion-blur ghosts) and shows in-eye as the spectated player's view mod
 
 **Client / prediction package**: drive `shared::weapons::Gun` with a client `GunHost`:
 `unpack_clientdata` + `unpack_weapon_data` before the command, `Gun::pre_frame`,
-`item_post_frame`, `decrement_timers(Gun::timer_dt(msec/1000, fuser1, powerups))`; host events
+`item_post_frame`, `decrement_timers(Gun::timer_dt(Arith::CLIENT, frame_time(msec), fixed_slow_amt(fuser1), powerups))`; host events
 go to the local event handlers, `shoot` can be a no-op (the `fire` event re-traces with
 `spread::pellet_dir` and the same seed), `kick` feeds the view kick (timed with the prediction
 time, as TS's client `VKickback`). The client keeps the weapon records between commands (only the

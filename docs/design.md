@@ -367,13 +367,14 @@ keeps the game running and logs it ("(port guard)"):
 
 One behaviour follows TS's Windows build on every platform:
 
-* **Player movement on a Linux server uses `mp.dll`'s arithmetic.** TS's Linux `ts_i386.so`
-  (GCC, x87 extended precision) and its Windows `mp.dll`/`client.dll` (MSVC, 53-bit) round
-  movement differently in the last bits, so TS's client mispredicted its own Linux server (a
-  duck finished at 600 ms on the client, 590 ms on the server). The port's server runs the
+* **Player movement (and the weapon maths both sides share) on a Linux server uses `mp.dll`'s
+  arithmetic.** TS's Linux `ts_i386.so` (GCC, x87 extended precision) and its Windows
+  `mp.dll`/`client.dll` (MSVC, 53-bit) round movement differently in the last bits, so TS's
+  client mispredicted its own Linux server (a duck finished at 600 ms on the client, 590 ms on
+  the server). The port's server runs the
   Windows build's arithmetic everywhere by default, which every client (TS's and the port's)
   predicts exactly. The port's server cvar `ts_pm_arith gcc` restores `ts_i386.so`'s arithmetic
-  bit for bit (`implementation/movement.md`).
+  bit for bit (`implementation/movement.md`, `implementation/weapons.md` §5).
 
 Dead 3.0 features (round-based and objective modes, cash) are implemented only as far as the
 port needs them; `docs/implementation/*.md` records what's live.

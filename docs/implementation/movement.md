@@ -44,7 +44,9 @@ server's arithmetic: `gcc` (any case) is `ts_i386.so`'s, anything else `mp.dll`'
 `rules::cvars::pm_arith` reads it on every `pfnPM_Move` (through the registered `cvar_t`, no
 lookup), so a change applies from the next command. It also covers the server's other uses of
 the movement maths: the stunt code's `AngleVectors` (`shared::pm::angle_vectors`: the dive and
-wall-check forward vector, `GetDirection`, the bullet-dance side test). The default makes the
+wall-check forward vector, `GetDirection`, the bullet-dance side test) and the shared weapon
+maths whose rounding differs between the builds (`GunHost::arith`: timer steps, the recoil
+penalty, `VKickback`, melee damage; `weapons.md` §5). The default makes the
 server agree bit for bit with every client's prediction, TS's `client.dll` and the port's
 client alike, on Linux too; `gcc` reproduces TS's own Linux server exactly (and its
 mispredictions, see Deviations). The client needs no setting: it always predicts as

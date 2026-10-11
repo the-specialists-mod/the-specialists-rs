@@ -163,10 +163,11 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   `FL_CLIENT`/`FL_FAKECLIENT`, which `players()`/`is_player()` rely on. TS keeps the flag, so ports
   of TS player tests use `rules::has_player`/`ts_flags`/`slot_players`, never the flag.
 - **HL25 drops every bot when the last human leaves.**
-- **Movement floating point is per TS build** (`shared::pm::Arith`, `docs/implementation/movement.md`).
+- **Movement and weapon floating point is per TS build** (`shared::pm::Arith`, `movement.md`, `weapons.md` §5).
   The client predicts as `client.dll` (`Msvc`); the server runs `mp.dll`'s identical arithmetic on
   every platform unless the port's cvar `ts_pm_arith gcc` selects `ts_i386.so`'s. Server code that
-  uses the movement maths takes `rules::cvars::pm_arith()`, never a fixed `Arith`.
+  uses the movement maths or the shared weapon maths takes `rules::cvars::pm_arith()` (the weapon
+  code through `GunHost::arith`), never a fixed `Arith`.
 - **Server commands the game queues run late in scripted tests.** `pfnServerCommand` text (e.g.
   the bot quota's `kick`) goes to the end of the console buffer, behind a running `wait` script.
   End the script; don't `quit` from it.

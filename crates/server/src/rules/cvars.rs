@@ -87,12 +87,12 @@ pub fn register() {
 /// `ts_pm_arith` (port addition; TS has no such cvar).
 static PM_ARITH: goldsrc::Global<Cell<Option<&'static cvar_t>>> = goldsrc::Global(Cell::new(None));
 
-/// The arithmetic the server's player movement and stunt maths run in, from `ts_pm_arith` (port
-/// addition), read on every call so a change applies from the next command. `msvc`, the
-/// default, is `mp.dll`'s: TS's `client.dll` and this port's client predict with it, so server
-/// and prediction agree exactly on every platform. `gcc` is `ts_i386.so`'s (TS's own Linux
-/// server; a frame different in places, e.g. the duck completes at 590 ms instead of 600). See
-/// `docs/implementation/movement.md`.
+/// The arithmetic the server's player movement, stunt maths and shared weapon maths
+/// (`GunHost::arith`) run in, from `ts_pm_arith` (port addition), read on every call so a change
+/// applies from the next command. `msvc`, the default, is `mp.dll`'s: TS's `client.dll` and this
+/// port's client predict with it, so server and prediction agree exactly on every platform.
+/// `gcc` is `ts_i386.so`'s (TS's own Linux server; a frame different in places, e.g. the duck
+/// completes at 590 ms instead of 600). See `docs/implementation/movement.md` and `weapons.md` §5.
 pub fn pm_arith() -> Arith {
     match PM_ARITH.0.get() {
         Some(c) => Arith::from_cvar(goldsrc::server::cvar_string(c).to_bytes()),

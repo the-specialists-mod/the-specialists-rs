@@ -11,6 +11,7 @@
 
 use super::spread::{self, Vec3};
 use super::*;
+use crate::pm::Arith;
 use crate::ts::powerup;
 use std::ffi::CStr;
 
@@ -148,8 +149,11 @@ pub enum Sound {
 /// Everything the gun needs from the player and the engine.
 pub trait GunHost {
     fn time(&self) -> f32;
-    /// `GiveSlowMul()`: the player's time scale (`pev->fuser1`).
+    /// `GiveSlowMul()`: the player's time scale (`pev->fuser1`, [`spread::fixed_slow_amt`]).
     fn slow_mul(&self) -> f32;
+    /// The TS build whose floating point this side reproduces ([`spread`]): the server's
+    /// `ts_pm_arith` selection, `Arith::CLIENT` for the prediction.
+    fn arith(&self) -> Arith;
     /// Active power-up bits (`pl+0x724`, `shared::ts::powerup`).
     fn powerups(&self) -> u16;
     /// Permanent kung-fu power-up (x2 melee damage).
@@ -427,15 +431,16 @@ impl Gun {
         }
     }
 
-    /// Weapon timer step: `frametime * slowmul * (double fire rate ? 1.5 : 1)`.
-    pub fn timer_dt(frametime: f32, slowmul: f32, powerups: u16) -> f32 {
-        let dt = slowmul * frametime;
-        if powerups & powerup::DOUBLE_FIRERATE != 0 { dt * 1.5 } else { dt }
+    /// Weapon timer step: `frametime * slowmul * (double fire rate ? 1.5 : 1)` in `arith`'s
+    /// rounding ([`spread::timer_step`]). `slowmul` is `GiveSlowMul()`
+    /// ([`spread::fixed_slow_amt`]).
+    pub fn timer_dt(arith: Arith, frametime: f32, slowmul: f32, powerups: u16) -> f32 {
+        spread::timer_step(arith, frametime, slowmul, powerups & powerup::DOUBLE_FIRERATE != 0)
     }
 
     /// The weapon parts of `CBasePlayer::PreThink` 0x908cc: melee windows, recoil penalty decay
     /// (0.1/s) and kung-fu power regeneration (15/s). `dt` as for [`Gun::timer_dt`].
-    pub fn pre_frame(&mut self, dt: f32, alive: bool) {
+    pub fn pre_frame(&mut self, arith: Arith, dt: f32, alive: bool) {
         if self.melee_window != 0.0 {
             self.melee_window = (self.melee_window - dt).max(0.001);
         }
@@ -443,16 +448,8 @@ impl Gun {
         self.block_katana = (self.block_katana - dt).max(0.0);
         self.block_knife = (self.block_knife - dt).max(0.0);
         if alive {
-            if self.spread_penalty > 0.0 {
-                self.spread_penalty -= dt * 0.1;
-                if self.spread_penalty < 0.0 {
-                    self.spread_penalty = 0.0;
-                }
-            }
-            if self.melee_bar < 100.0 {
-                let step = if self.melee_bar >= -0.001 { dt * 15.0 } else { dt };
-                self.melee_bar = (self.melee_bar + step).min(100.0);
-            }
+            self.spread_penalty = spread::decay_spread_penalty(arith, self.spread_penalty, dt);
+            self.melee_bar = spread::regen_melee_bar(arith, self.melee_bar, dt);
         }
         if self.melee_window != 0.0 {
             if self.melee_window < 0.01 || self.melee_damage == 0.0 {
@@ -722,14 +719,10 @@ impl Gun {
                 k *= 0.775;
             }
             let now = host.time();
-            let dt = now - self.last_shot;
-            if dt >= 0.001 {
+            let arith = host.arith();
+            if let Some(elapsed) = spread::shot_interval(arith, now, self.last_shot) {
                 *spread += self.spread_penalty;
-                let mut x = host.slow_mul() * dt;
-                if x >= 1.0 {
-                    x = 0.5;
-                }
-                self.spread_penalty = ((1.0 - x) * akick * k + self.spread_penalty).min(0.1);
+                self.spread_penalty = spread::grow_spread_penalty(arith, self.spread_penalty, host.slow_mul(), elapsed, akick, k);
             }
             self.last_shot = now;
         }
@@ -737,7 +730,7 @@ impl Gun {
 
     /// `CTSGun::VKickback` 0x80414.
     pub fn vkickback(&self, view_kick: f32, k: u8, silenced: bool, host: &mut impl GunHost) {
-        let (p, y) = spread::view_kick(view_kick, k, silenced, Self::double_fire_rate(host));
+        let (p, y) = spread::view_kick(host.arith(), view_kick, k, silenced, Self::double_fire_rate(host));
         host.kick(p, y);
     }
 
@@ -1113,7 +1106,7 @@ impl Gun {
             // Client: the damage before the melee-bar multiplier x 0.15 (0x1000a313..0x1000a327,
             // constants 0x1007a894 / 0x1007a898).
             host.view_shake(dmg * 0.15);
-            dmg *= spread::melee_multiplier(self.melee_bar);
+            dmg = spread::melee_damage(host.arith(), dmg, self.melee_bar);
             let res = host.melee(
                 &MeleeHit {
                     kind: MeleeKind::Knife,
@@ -1216,7 +1209,7 @@ impl Gun {
         host.player_anim(panim);
         // Client: the strength x 0.2 (0x1000a156, constant 0x1007a8f0), before the bar.
         host.view_shake(strength * 0.2);
-        let dmg = strength * spread::melee_multiplier(self.melee_bar);
+        let dmg = spread::melee_damage(host.arith(), strength, self.melee_bar);
         // A negative strength swings behind with the human hull (0x7386b, 0x738cf).
         let behind = dmg < 0.0;
         let res = host.melee(
@@ -1422,7 +1415,7 @@ impl Gun {
             // Client: the base damage x 0.35 (0x1000b5c7, constant 0x1007a8a8); the client copy
             // picks the same per-attack values (0x1000b09f..0x1000b4e4).
             host.view_shake(dmg * 0.35);
-            dmg *= spread::melee_multiplier(self.melee_bar);
+            dmg = spread::melee_damage(host.arith(), dmg, self.melee_bar);
             if host.kungfu() {
                 dmg += dmg;
             }

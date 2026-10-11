@@ -32,6 +32,8 @@ struct Mock {
     dead: bool,
     /// `deploy_update_now` calls (`CTSGun::Deploy` zeroing the `UpdateClientData` timer).
     update_now: u32,
+    /// The build reproduced (`Arith::CLIENT` unless set).
+    arith: Option<Arith>,
 }
 
 impl GunHost for Mock {
@@ -40,6 +42,9 @@ impl GunHost for Mock {
     }
     fn slow_mul(&self) -> f32 {
         if self.slow == 0.0 { 1.0 } else { self.slow }
+    }
+    fn arith(&self) -> Arith {
+        self.arith.unwrap_or(Arith::CLIENT)
     }
     fn powerups(&self) -> u16 {
         self.powerups
@@ -164,7 +169,7 @@ fn frame(g: &mut Gun, h: &mut Mock, buttons: u32, last: &mut u32, dt: f32) {
     h.pressed = buttons & !*last;
     *last = buttons;
     g.item_post_frame(h);
-    g.decrement_timers(Gun::timer_dt(dt, h.slow_mul(), h.powerups));
+    g.decrement_timers(Gun::timer_dt(h.arith(), dt, h.slow_mul(), h.powerups));
     h.time += dt;
 }
 
@@ -338,7 +343,7 @@ fn spread_penalty_grows_caps_and_decays() {
     let last_spread = h.events.iter().rev().find(|e| e.0 == Event::Fire).unwrap().1.f1;
     assert!(last_spread > 0.01);
     let p = g.spread_penalty;
-    g.pre_frame(0.5, true);
+    g.pre_frame(Arith::CLIENT, 0.5, true);
     assert!((g.spread_penalty - (p - 0.05).max(0.0)).abs() < 1e-6);
 }
 
@@ -562,7 +567,7 @@ fn kungfu_punch_and_bar() {
     assert!((g.melee_bar - 67.0).abs() < 1e-4);
     assert!(g.block_kungfu > 0.0);
     // the bar regenerates at 15/s
-    g.pre_frame(1.0, true);
+    g.pre_frame(Arith::CLIENT, 1.0, true);
     assert!((g.melee_bar - 82.0).abs() < 1e-4);
 }
 

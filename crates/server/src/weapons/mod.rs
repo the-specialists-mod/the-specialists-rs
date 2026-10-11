@@ -271,9 +271,10 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     let pev = cx.pev();
     let buttons = pev.button as u32;
     p.inv.sv.pressed = buttons & !p.inv.sv.last_buttons;
-    let dt = Gun::timer_dt(engine().globals().frametime, pev.fuser1.max(0.0), p.active_powerup);
+    let arith = crate::rules::cvars::pm_arith();
+    let dt = Gun::timer_dt(arith, engine().globals().frametime, shared::weapons::spread::fixed_slow_amt(pev.fuser1), p.active_powerup);
     let alive = Player::is_alive(cx);
-    p.inv.gun.pre_frame(dt, alive);
+    p.inv.gun.pre_frame(arith, dt, alive);
     p.inv.sv.disarm = (p.inv.sv.disarm - dt * 5.0).max(0.0);
     // BlockPlayer expiry (PreThink: clears iuser4 bit 1 when the timer runs out).
     let sv = &mut p.inv.sv;
@@ -332,7 +333,8 @@ pub fn post_think(p: &mut Player, cx: &mut Cx, active: bool) {
         p.inv.sv.last_buttons = cx.pev().button as u32;
     }
     let pev = cx.pev();
-    let dt = Gun::timer_dt(engine().globals().frametime, pev.fuser1.max(0.0), p.active_powerup);
+    let arith = crate::rules::cvars::pm_arith();
+    let dt = Gun::timer_dt(arith, engine().globals().frametime, shared::weapons::spread::fixed_slow_amt(pev.fuser1), p.active_powerup);
     p.inv.gun.decrement_timers(dt);
     inventory::sync_speed(p, cx);
 }

@@ -67,7 +67,8 @@ pub fn shared_random_float(seed: u32, low: f32, high: f32) -> f32 {
         return low;
     }
     let t = (g.next() & 0xffff) as f64 * (1.0 / 65536.0);
-    // x87: (t * range) + low in extended precision, rounded once to float on return.
+    // client.dll (0x1001aef3): (t * range) + low on the 53-bit x87 (`f64`), returned unrounded and
+    // stored to a float by the caller.
     (t * range as f64 + low as f64) as f32
 }
 

@@ -134,7 +134,10 @@ impl GunHost for ServerHost<'_> {
         engine().time()
     }
     fn slow_mul(&self) -> f32 {
-        self.pev().fuser1.max(0.0)
+        shared::weapons::spread::fixed_slow_amt(self.pev().fuser1)
+    }
+    fn arith(&self) -> shared::pm::Arith {
+        crate::rules::cvars::pm_arith()
     }
     fn powerups(&self) -> u16 {
         self.powerups

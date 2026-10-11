@@ -265,7 +265,7 @@ TS keeps constant are written as such (`m_bitsHUDDamage` -1, the rest 0). `Resto
 Port additions:
 * `ts_bot_quota` (TS's bots on dedicated servers too) and `ts_bot_stop`: §10.1. On a full server
   the quota retries quietly every 0.5 s.
-* `ts_pm_arith` (`msvc` default, or `gcc`): the server's movement arithmetic, `mp.dll`'s or
+* `ts_pm_arith` (`msvc` default, or `gcc`): the server's movement and shared weapon arithmetic, `mp.dll`'s or
   `ts_i386.so`'s (`cvars::pm_arith`, `movement.md`).
 * `ClientDisconnect` clears `FL_CLIENT`/`FL_FAKECLIENT` (engine safety, still needed: FWGS's
   `pfnSetClientMaxspeed` (`sv_game.c`) looks the client up with `SV_ClientFromEdict(e, false)`,
