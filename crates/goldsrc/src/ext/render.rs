@@ -248,12 +248,14 @@ pub fn precache_event(name: &'static CStr) -> u16 {
     cl_eng!(pfnPrecacheEvent(1, name.as_ptr()))
 }
 
-/// Client-side event playback (weapon prediction). `invoker` is null on the client. Guarded:
+/// Client-side event playback (weapon prediction). `invoker` is null on the client, and the
+/// engine queues `origin` and `angles` as given (neither engine fills in the local player's), so
+/// the caller passes them as the SDK's and TS's `HUD_PlaybackEvent` (`0x1001ad50`) does. Guarded:
 /// index 0 (an event that wasn't precached) plays nothing on either engine and isn't sent, and
 /// the Steam client's `CL_FireEvents` reads its 256-entry event table with the index unchecked,
 /// so a larger one is refused there.
 #[allow(clippy::too_many_arguments)]
-pub fn playback_event(flags: i32, index: u16, f1: f32, f2: f32, i1: i32, i2: i32, b1: bool, b2: i32) {
+pub fn playback_event(flags: i32, index: u16, origin: Vec3, angles: Vec3, f1: f32, f2: f32, i1: i32, i2: i32, b1: bool, b2: i32) {
     if index == 0 {
         return;
     }
@@ -261,9 +263,8 @@ pub fn playback_event(flags: i32, index: u16, f1: f32, f2: f32, i1: i32, i2: i32
         engine().port_guard("PlaybackEvent index", || format!("PlaybackEvent: event index {index}; skipped"));
         return;
     }
-    let mut zero = [0.0f32; 3];
-    let mut zero2 = [0.0f32; 3];
-    cl_eng!(pfnPlaybackEvent(flags, std::ptr::null(), index, 0.0, zero.as_mut_ptr(), zero2.as_mut_ptr(), f1, f2, i1, i2, b1 as c_int, b2));
+    let (mut o, mut a) = (origin, angles);
+    cl_eng!(pfnPlaybackEvent(flags, std::ptr::null(), index, 0.0, o.as_mut_ptr(), a.as_mut_ptr(), f1, f2, i1, i2, b1 as c_int, b2));
 }
 
 pub fn view_model() -> Option<&'static mut cl_entity_s> {

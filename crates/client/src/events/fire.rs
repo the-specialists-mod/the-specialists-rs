@@ -202,18 +202,48 @@ fn world_effects(a: &Args, s: &Shot, flash_atts: &[usize], smoke_att: usize, spr
 /// `0x10041091`), while the smoke and each shell (behind its flash's gun) come from the view
 /// model's (`0x1003e408`, `0x1003e7cc`, `0x1003f5e6`, `0x1003f8ff`, `0x1003fb1b`, `0x10041017`,
 /// `0x10041286`). The spray, when there is one, is at the first flash's attachment.
+///
+/// For the local player the cache holds the view model's muzzle: both engines run the view
+/// model's `STUDIO_EVENTS` pass before the transparent pass that fills the cache (Steam
+/// `R_PreDrawViewModel`, FWGS `R_RunViewmodelEvents`), and the studio renderer copies its
+/// attachments into the entity of the view model's `index`, the local player's
+/// ([`crate::studio`]'s `events`). Spectating in-eye (port deviation), the cache holds the
+/// target's origin: the engines reset a player's attachments to its origin every update and
+/// never draw the in-eye target, so TS's flash starts at the target's hull centre, about 28 units
+/// below the eye. The port takes the view model's attachments there, while the view model's
+/// events run (`r_drawviewmodel`).
 fn view_model_effects(a: &Args, s: &Shot, flash_atts: &[usize], smoke_att: usize, spray: bool, pump: bool, pellets: i32) {
     let Some(vm) = first_person_view_model() else {
         // No view model (scoped): shell from the view origin.
         eject_shell(view::origin(), s.shell_velocity(a), a.angles, s.shell, s.shell_snd);
         return;
     };
-    let flashes: Vec<Vec3> = flash_atts.iter().map(|&n| effects::player_attachment(a.entindex, n)).collect();
-    let at = FxAt { flashes: &flashes, smoke: vm.attachment[smoke_att], spray: spray.then(|| flashes[0]) };
+    let att = |n: usize| vm.attachment.get(n).copied().unwrap_or(vm.origin);
+    let in_eye_vm = !a.is_local() && engine().cvar_float(c"r_drawviewmodel") != 0.0;
+    let flash_at = |n: usize| if in_eye_vm { att(n) } else { effects::player_attachment(a.entindex, n) };
+    let flashes: Vec<Vec3> = flash_atts.iter().map(|&n| flash_at(n)).collect();
+    if let Some(&flash) = flashes.first() {
+        log_flash(flash, att(flash_atts[0]), s.fwd);
+    }
+    let at = FxAt { flashes: &flashes, smoke: att(smoke_att), spray: spray.then(|| flashes[0]) };
     gun_fx(a, s, &at, false, pump, pellets);
     for &n in flash_atts {
-        eject_shell(v::ma(vm.attachment[n], -s.muzzle_ofs(), s.fwd), s.shell_velocity(a), a.angles, s.shell, s.shell_snd);
+        eject_shell(v::ma(att(n), -s.muzzle_ofs(), s.fwd), s.shell_velocity(a), a.angles, s.shell, s.shell_snd);
     }
+}
+
+/// `ts_dev_fxlog` line for a first-person flash: where it sits relative to the view (units ahead
+/// along the view axis and off it), how far it is from the view model's muzzle, and how well the
+/// direction the flash sprites spread along (the event's angles) matches the view's.
+fn log_flash(flash: Vec3, muzzle: Vec3, fwd: Vec3) {
+    super::fx_log(|| {
+        let cam = view::camera();
+        let d = v::sub(flash, cam.origin);
+        let ahead = v::dot(d, cam.forward);
+        let off = v::len(v::ma(d, -ahead, cam.forward));
+        let (to_muzzle, dir) = (v::dist(flash, muzzle), v::dot(fwd, cam.forward));
+        format!("flash at {flash:.1?} ahead {ahead:.1} off-axis {off:.1} muzzle-distance {to_muzzle:.1} direction-dot {dir:.3}")
+    });
 }
 
 /// Which branch of a fire event runs (`0x1003e2b6`/`0x1003e32f`/`0x1003e9ee..0x1003ea1e` in
@@ -461,6 +491,7 @@ pub fn fire_bullets(b: &Bullets) {
         r::with_solid_players(b.shooter.wrapping_sub(1), || {
             let mut tr = r::player_trace(b.src, end, 2, PM_STUDIO_BOX as i32, -1);
             last_end = tr.endpos;
+            super::fx_log(|| format!("bullet from {:.1?} to {:.1?}", b.src, tr.endpos));
             if trace_hit(tr.fraction) {
                 let remaining = impact::range_mult(range_index(v::dist(b.src, tr.endpos), unit)) * b.dmg;
                 let bt = if b.bullet_type == 1 { 1 } else { b.bullet_type };

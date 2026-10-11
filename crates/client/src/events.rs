@@ -42,7 +42,22 @@ pub fn init() {
     for (name, f) in EVENTS {
         r::hook_event(name, f);
     }
+    DEV_FX_LOG.0.set(goldsrc::client::Cvar::register(c"ts_dev_fxlog", c"0", 0));
     register_test_commands();
+}
+
+/// `ts_dev_fxlog 1` (port-only development aid): the weapon events print a `[ts fx]` console
+/// line for each predicted shot's first-person flash (placed against the view and the view
+/// model's muzzle), each bullet trace, impact and decal, so scripted in-engine tests
+/// (`cargo xtask play`) can check them.
+static DEV_FX_LOG: goldsrc::Global<std::cell::Cell<goldsrc::client::Cvar>> =
+    goldsrc::Global(std::cell::Cell::new(goldsrc::client::Cvar::NULL));
+
+/// Prints `[ts fx] <line>` when `ts_dev_fxlog` is on.
+pub(crate) fn fx_log(line: impl FnOnce() -> String) {
+    if DEV_FX_LOG.0.get().value() != 0.0 {
+        engine().print(&format!("[ts fx] {}\n", line()));
+    }
 }
 
 /// Decoded `event_args_t`.

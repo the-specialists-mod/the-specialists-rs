@@ -722,6 +722,24 @@ fn observer_set_mode(p: &mut Player, cx: &mut Cx, mode: i32) {
     v.iuser2 = p.ts.obs_target;
 }
 
+/// `ts_observe` (port-only development aid): puts an observing player in observer `mode` on
+/// player `target` (0 keeps the current one), as `Observer_SetMode` would after the observer's
+/// own `+jump` and `+attack`. Scripted tests use it for clients whose input can't be scripted (the
+/// original TS client's anti-script gate). Returns false for a player who isn't observing.
+pub fn dev_observe(p: &mut Player, cx: &mut Cx, mode: i32, target: i32) -> bool {
+    if cx.pev().iuser1 == 0 {
+        return false;
+    }
+    if target > 0 && obs_handle_valid(target) {
+        p.ts.obs_target = target;
+        if cx.pev().iuser1 == mode && mode != obs::ROAMING {
+            cx.pev().iuser2 = target;
+        }
+    }
+    observer_set_mode(p, cx, mode);
+    true
+}
+
 /// `m_hObserverTarget` (`+0x75c`) is a raw `CBasePlayer*` in TS: a player who left is still a
 /// target (dead, invisible, dormant) until `Observer_Idle` replaces it, as long as the slot keeps
 /// its player.

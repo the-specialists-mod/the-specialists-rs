@@ -255,14 +255,34 @@ the cache holds last frame's drawn positions. The port does the same
 
 In first person TS takes the muzzle flashes and the pellet spray from that cache too
 (`0x1003e39e`, `0x1003e5c4`, `0x1003f4b8`, `0x1003f579`, `0x10040fcd`, `0x10041091`), and only the
-smoke and shells from the view model (`g_pViewModel+0xb60`). On FWGS the local player isn't drawn
-in first person (`CL_AddVisibleEntity` calls `HUD_AddEntity` but skips `R_AddEntity` when
-`!CL_IsThirdPerson() && index == cl.viewentity`), so its cached attachments are its origin (the
-interpolated `cl.simorg`, 28 units below the eye standing) and the first-person flashes and spray
-start there. The port matches that. The Steam GoldSrc client engine isn't in this checkout (only
-dedicated servers), so what it leaves in the local player's attachments in first person is
-unverified; FWGS's `CL_LinkPlayers` follows GoldSrc's, and if GoldSrc does likewise the result is
-the same there.
+smoke and shells from the view model (`g_pViewModel+0xb60`). For the local player the cache holds
+the view model's muzzle, on both engines: the local player isn't drawn in first person (Steam
+`CL_LinkPlayers` skips it unless `chase_active`; FWGS `CL_AddVisibleEntity` skips `R_AddEntity`),
+but before the scene each engine runs the view model's `STUDIO_EVENTS` pass (Steam
+`R_PreDrawViewModel`, then `R_RenderScene`, then `R_DrawViewModel`, in `hw.so`'s `R_RenderView`;
+FWGS `R_RunViewmodelEvents` before `R_RenderScene`), and the studio renderer's events step copies
+the view model's attachments into the entity of its `index`, which is the local player's (Steam
+`cl.viewent.index`, FWGS `V_SetupViewModel`'s `cl.playernum + 1`; `studio.rs` `events`, as
+`StudioDrawModel` does). The transparent pass that fills the cache comes after it. Measured in the
+port on native FWGS (`ts_dev_fxlog`): the cached attachment and the view model's attachment 0 are
+the same point, 36 units ahead of the eye and 7 off the view axis.
+
+Spectating in-eye the cache doesn't hold the gun: the view model's attachments go to the
+spectator's own entity, and the target's are its origin (FWGS `CL_LinkPlayers` every frame, Steam
+`CL_ProcessEntityUpdate` on every update), since the in-eye target isn't drawn. TS's flash for an
+in-eye target starts at the target's hull centre, 28 units below the eye; the port takes the view
+model's attachments there instead (see Deviations).
+
+**The predicted events carry the player's origin and view angles.** TS's client weapon code plays
+its events through `HUD_PlaybackEvent` (`0x1001ad50`), the SDK's: only with `runfuncs` and a final
+state, with `origin = g_finalstate->playerstate.origin` (the command's `to`, set for the length of
+`HUD_WeaponsPostThink`, `0x10003830`) and `angles = 0x10190b50`, the `pparams->viewangles` the last
+`V_CalcNormalRefdef` (`0x10067890`) left. Neither engine fills them in for a client-side event
+(FWGS `CL_PlaybackEvent` queues them as given), so they decide where the shooter's own bullets,
+impacts, decals and whizz traces go and which way the flash, smoke and shells point. The port used
+to pass zeros (`goldsrc::ext::render::playback_event`), so every predicted shot flew from the world
+origin along +x and the flash sprites streaked along world +x whichever way the player looked; it
+now passes both as TS does (`prediction::gun::playback`, `view::playback_angles`).
 
 Pitch: `25 + 75*ts + rand(-5,5)` everywhere (see deviations for the fire sound). Fire sound:
 `weapons/<sound>` (silenced: `sound2`, volume 0.84-0.92, attenuation x2), attenuation from the
@@ -465,11 +485,12 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
   `follow_view`. A stretched quad runs head (v = 0) to tail, `radius·(toCam̂ × vel̂)` wide, so it
   narrows as the velocity turns toward the camera; `follow_view` 3 uses `followaxis` unnormalised
   (no default: a template without one draws nothing, as in TS) and `toCam̂ × followaxis` across.
-* **First-person flash origin follows TS on FWGS.** The muzzle flashes
-  and pellet spray read the per-player attachment cache, which on FWGS holds the local player's
-  origin in first person (see "Player attachments come from a per-frame cache" above), so they
-  start below the view rather than at the gun. This is TS's behaviour on FWGS; the Steam GoldSrc
-  result is unverified.
+* **In-eye flash at the gun.** Spectating in-eye, the target's muzzle flashes and pellet spray
+  come from the view model's attachments (while `r_drawviewmodel` lets the view model's events
+  run), not from TS's player-attachment cache, which holds the target's origin there (see "Player
+  attachments come from a per-frame cache" above): TS's own flash starts 28 units below the eye.
+  For the local player the cache already holds the view model's muzzle, so the port reads it as TS
+  does.
 * The TS shotgun shell bounce plays `weapons/sshell.wav` (`TempEnt_PlayShellSound` `0x100569a0`),
   which TS 3.0 ships.
 * **`gl_fog` is an engine cvar on FWGS.** `ref_gl` registers `gl_fog` ("1", `FCVAR_GLCONFIG`)
@@ -621,6 +642,12 @@ hook for a name (`hud::init` runs first), so if the HUD hooks one of these it mu
   instead, which FWGS fills from the same `host.frametime`, so `effects` uses one value for both.
 
 ## Developer test commands
+
+`ts_dev_fxlog 1` (port addition) makes the weapon events print a `[ts fx]` console line for each
+predicted shot's first-person flash (position, units ahead of the eye and off the view axis,
+distance from the view model's muzzle, and the dot product of the flash direction with the view
+direction), each bullet trace (`bullet from ... to ...`), impact and decal. `cargo xtask play`'s
+wall scene reads them.
 
 Registered by the client for scripted tests (no server support needed): `ts_test_fire <id> [att]
 [seed]`, `ts_test_event <name> <i1> <i2> <f1>`, `ts_test_fx slowmo <s>|bullettime <0|1>|blood|glass|

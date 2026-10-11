@@ -227,6 +227,7 @@ pub fn register_server_commands() {
     e.add_server_command(c"ts_givepowerup", cmd_givepowerup);
     e.add_server_command(c"ts_tp", cmd_tp);
     e.add_server_command(c"ts_face", cmd_face);
+    e.add_server_command(c"ts_observe", cmd_observe);
     e.add_server_command(c"ts_dev_touch", cmd_dev_touch);
 }
 
@@ -314,6 +315,30 @@ extern "C" fn cmd_face() {
     let a = e.vec_to_angles([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
     // VecToAngles pitch is up-positive; view angles look down with positive pitch.
     set_view_angles(p, [-a[0], a[1], 0.0]);
+}
+
+/// `ts_observe <player#> <mode> [target#]` (sv_cheats, port addition): sets an observer's mode
+/// (1 chase locked, 2 chase free, 3 roaming, 5 in-eye) and target.
+extern "C" fn cmd_observe() {
+    let e = engine();
+    if !cvars::dev_cheats() || e.cmd_argc() < 3 {
+        e.print("usage (sv_cheats 1): ts_observe <player#> <mode> [target#]\n");
+        return;
+    }
+    let p = e.client(arg_f32(1) as i32);
+    if p.is_null() {
+        return;
+    }
+    let (mode, target) = (arg_f32(2) as i32, if e.cmd_argc() > 3 { arg_f32(3) as i32 } else { 0 });
+    let ok = crate::player::with_player(p, |pl, cx| super::lifecycle::dev_observe(pl, cx, mode, target)).unwrap_or(false);
+    let v = p.v();
+    e.print(&format!(
+        "[ts] ts_observe: #{} {} mode={} target={}\n",
+        e.index_of(p),
+        if ok { "set" } else { "not observing" },
+        v.iuser1,
+        v.iuser2
+    ));
 }
 
 /// `ts_status`: one line per player (state, health, frags, power-ups, time scale).

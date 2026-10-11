@@ -112,6 +112,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - `ts_dev_touch <file>` writes the end-of-script marker.
 - `ts_tp` teleports, and `ts_face` aims a player's view.
 - `ts_bot_stop 1` freezes bots.
+- `ts_observe` sets an observer's mode and target; `ts_dev_fxlog 1` (client) logs each predicted
+  shot's flash, bullet, impact and decal as `[ts fx]` lines.
 - `ts_status`, `ts_hurt` and `ts_give` are also available.
 
 ## Conventions

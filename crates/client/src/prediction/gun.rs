@@ -174,7 +174,7 @@ fn holster(g: &mut Gun) {
 /// commands, the SDK's `lasthealth` check (`0x10003877..0x100038e2`, int `0x100991a4`). These
 /// act on the state carried from the last first-time prediction, which [`gun_from`] then
 /// overlays with the networked fields.
-fn spawn_and_death(c: &clientdata_t, runfuncs: bool) {
+fn spawn_and_death(c: &clientdata_t, final_origin: Vec3, runfuncs: bool) {
     if !with(|p| std::mem::replace(&mut p.gun_spawned, true)) {
         with(|p| spawn_gun(p.gun.get_or_insert_with(Gun::default)));
     }
@@ -209,7 +209,7 @@ fn spawn_and_death(c: &clientdata_t, runfuncs: bool) {
         });
         if let Some(Some((id, items))) = deployed {
             let ev = event_index(Event::Draw);
-            r::playback_event(FEV_NOTHOST as i32, ev, 0.0, 0.0, id as i32, items as i32, false, 0);
+            playback(ev, final_origin, 0.0, 0.0, id as i32, items as i32, false, 0);
         }
         reset_spread();
         with(|p| spawn_gun(p.gun.get_or_insert_with(Gun::default)));
@@ -255,6 +255,16 @@ fn view_model_index(id: u8) -> i32 {
     idx
 }
 
+/// `HUD_PlaybackEvent` (`0x1001ad50`, TS's `pfnPlaybackEvent` for the client weapon code): the
+/// event plays at `g_finalstate->playerstate.origin` (the command's `to`, set for the length of
+/// `HUD_WeaponsPostThink`) with the last normal view's angles (`0x10190b50`). The engine queues
+/// both as given, so passing zeros (as the port once did) fired every predicted shot from the
+/// world origin along +x: its bullets, impacts and decals went there.
+#[allow(clippy::too_many_arguments)]
+fn playback(ev: u16, final_origin: Vec3, f1: f32, f2: f32, i1: i32, i2: i32, b1: bool, b2: i32) {
+    r::playback_event(FEV_NOTHOST as i32, ev, final_origin, view::playback_angles(), f1, f2, i1, i2, b1, b2);
+}
+
 /// `HUD_SendWeaponAnim` (`0x1001ace0`): the local view model, on a command's first prediction or
 /// when forced. Remembers the animation for the replay at the end of [`post_think`].
 fn send_weapon_anim(anim: i32, body: i32, runfuncs: bool, force: bool) {
@@ -267,6 +277,9 @@ fn send_weapon_anim(anim: i32, body: i32, runfuncs: bool, force: bool) {
 /// The client side of the gun's side effects for one usercmd.
 struct ClientHost<'a> {
     from: &'a local_state_t,
+    /// `to.playerstate.origin`: the predicted origin after this command's move, where TS plays
+    /// the predicted events (`g_finalstate`).
+    final_origin: Vec3,
     cmd: &'a usercmd_t,
     runfuncs: bool,
     time: f32,
@@ -353,7 +366,7 @@ impl GunHost for ClientHost<'_> {
     fn set_weapon_model(&mut self, _model: Option<(u8, bool)>) {}
     fn event(&mut self, ev: Event, a: EventArgs) {
         if self.runfuncs {
-            r::playback_event(FEV_NOTHOST as i32, event_index(ev), a.f1, a.f2, a.i1, a.i2, a.b1 != 0, a.b2);
+            playback(event_index(ev), self.final_origin, a.f1, a.f2, a.i1, a.i2, a.b1 != 0, a.b2);
         }
     }
     fn weapon_anim(&mut self, anim: i32, _skip_local: bool, _body: i32) {
@@ -436,7 +449,8 @@ fn post_frame_gate(c: &clientdata_t, hud_health: i32) -> bool {
 /// `HUD_WeaponsPostThink` (`0x10003830`) for one usercmd.
 pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t, runfuncs: bool, time: f64, seed: u32) {
     let c = &from.client;
-    spawn_and_death(c, runfuncs);
+    let final_origin = to.playerstate.origin;
+    spawn_and_death(c, final_origin, runfuncs);
     // `local_68` (set at 0x1000385c, tested at 0x10003965, which jumps to the epilogue): everything
     // else, including writing `to`, needs `from`'s weapon to be the TS gun. Otherwise `to` keeps
     // the engine's copy of `from` (FWGS `CL_RunUsercmd`: `*to = *from`, then pmove).
@@ -471,6 +485,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     let silenced = gun.slot().is_some_and(|s| s.items & att::SILENCER != 0) && info(gun.current).is_some_and(|w| w.att_default & 1 == 0);
     let mut host = ClientHost {
         from,
+        final_origin,
         cmd,
         runfuncs,
         time: time as f32,

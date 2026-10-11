@@ -56,6 +56,10 @@ struct View {
     drift: Drift,
     /// Local player `renderamt` being eased (`0x10097214`); 255 = opaque.
     local_amt: f32,
+    /// `0x10190b50`: `pparams->viewangles` as the last normal view left them (after the
+    /// third-person and view-entity overrides). The predicted weapon events are played back with
+    /// these angles (`HUD_PlaybackEvent` `0x1001ad50`).
+    playback_angles: Vec3,
     // `cl_vsmoothing` origin ring (SDK `ViewInterp`, `0x10191508`) and the last recorded simorg
     org_ring: Ring,
     last_simorg: Vec3,
@@ -658,6 +662,10 @@ pub fn origin() -> Vec3 {
 /// Eye position (`g_vecEyePos`): origin + view height, also in third person.
 pub fn eye() -> Vec3 {
     with(|w| w.eye)
+}
+/// The angles the predicted weapon events are played back with ([`View::playback_angles`]).
+pub fn playback_angles() -> Vec3 {
+    with(|w| w.playback_angles)
 }
 pub fn camera() -> Camera {
     let fov = state::with(|s| s.fov);
@@ -1410,6 +1418,7 @@ fn calc_normal(p: &mut ref_params_t) {
 
     with(|w| {
         w.eye = eye;
+        w.playback_angles = p.viewangles;
         finish(w, p, v_angles);
     });
 }

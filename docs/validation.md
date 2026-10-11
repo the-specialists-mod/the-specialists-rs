@@ -92,6 +92,7 @@ results from `ts_status` dumps, kill notices and developer log lines:
 | Scene | How | Passes when |
 |---|---|---|
 | Join | The buy menu opens with a random first loadout: reset it, pick an AK47 with a scope and confirm (`slotN`, as the number keys do), click `+attack` after the respawn wait | `[ts] <host> spawned (#1) with [13]` |
+| Wall | `ts_dev_fxlog 1`, stand in front of the dojo's front wall (`100 -760 60`, yaw 70) and fire three single shots | From the `[ts fx]` lines: every first-person flash is more ahead of the eye than off the view axis, within 8 units of the view model's muzzle, and spreads along the view (direction dot > 0.95); three bullets start within 64 units of the shooter and hit within 400; at least three impacts and three decals, all on the wall in front |
 | Bot | `ts_bot_stop 1` (the bot stands still and holds fire), `ts_bot_quota 1` (TS's `addbot` only prints "Bots only in listen servers.") | The quota reads 1 and a bot was added |
 | Power-up | Stand on the slow-motion `ts_powerup` (`0 -672 48`, pwuptype 1) with the bot in view, double-tap `+use` | Held `0x1` after the pickup. Then active `0x1`, host time scale 0.6, bot 0.35 |
 | Grenade | `ts_give 24`, `weapon_24`, aim at the 1-HP pillar `*15`, throw (`+attack`, release), move away | `func_breakable ... broken by <host> (grenade, ...)`: the explosion (bits `0x1040`) or the grenade still in flight (`0x1080`), which credits the thrower too (issue #1) |
@@ -101,8 +102,16 @@ results from `ts_status` dumps, kill notices and developer log lines:
 | Bots | Host suicides and stays observer; `ts_bot_stop 0`, `ts_bot_quota 4`, 70 s of play | Four bots. Within one life, all but at most one of the bots measured (at least two) move over 64 units between dumps 5 s apart. At least 2 `Bot ... killed Bot ...` lines |
 | Quota down | `ts_bot_quota 0` | The bots are kicked |
 
-Screenshots go to `target/play-<root>-N.png`. The script can't close the MOTD, which needs a real
-Enter key or click, so the MOTD stays on screen.
+Screenshots go to `target/play-<root>-N.png` (`-2` is the wall scene). The script can't close the
+MOTD, which needs a real Enter key or click, so the scripts set `motdfile` to a file that doesn't
+exist and the server sends no MOTD.
+
+The wall scene catches the bug where the client played its predicted weapon events with a zero
+origin and zero angles: the shooter's own bullets then flew from the world origin along +x (the
+impacts and decals landed there, out of sight) and the first-person flash streaked along world +x
+whatever the view (`implementation/client-rendering.md`, "Event parameters"). With that bug put
+back, the scene reports `direction-dot 0.342` (cos 70°) and bullets from `[0, 0, 28]`, and all
+three wall checks fail.
 
 After that, `play` runs the grenade check on a large third-party map (`cargo xtask meck` runs it on
 its own): a listen server on `MecklenburgV_Rain_Final` (37 `func_breakable`s, 158 doors, rain
@@ -139,6 +148,10 @@ Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`)
 * `ts_face <player#> <target#>` or `ts_face <player#> <x> <y> <z>` aims a player's view.
 * `ts_bot_stop 1` makes bots stand still and hold fire. They still respawn.
 * `ts_dev_touch <file>` creates an empty file in the game directory (the end-of-script marker).
+* `ts_observe <player#> <mode> [target#]` puts an observer in a spectator mode (5 is in-eye) on a
+  target, for clients whose input a script can't drive (the original TS client, below).
+* `ts_dev_fxlog 1` (client) prints a `[ts fx]` line for each predicted shot's flash, bullet,
+  impact and decal.
 * `ts_status`, `ts_hurt`, `ts_givepowerup`, `ts_give` (existing).
 * With `developer` on, each broken `func_breakable` is logged with its attacker, inflictor class
   and damage bits.
@@ -231,6 +244,28 @@ win32 under Wine (listen server, `ts_arena`).
 
 The server library loaded on all six roots. The FWGS client joined ReHLDS (`TSHealth` shown in
 the HUD), and the Windows client library loaded in FWGS win32.
+
+### 3.4 Weapon effects against the original TS client
+
+The original TS 3.0 client (`~/games/xash_win_orig`, FWGS 0.21 win32 under Wine, unmodified
+`client.dll`) joins a port listen server on native FWGS (`connect 127.0.0.1:<port>`, Xash
+protocol). The host runs an `xtask`-style script; `ts_observe 2 5 1` puts the original client in
+in-eye mode on the host, who fires at the dojo's front wall from `100 -760 60` (yaw 70); the
+original client's own cfg takes a screenshot every few frames. Findings:
+
+* **Decals and impacts.** The original client shows `{shot` decals on the wall where the host's
+  shots hit (events from the server carry the real origin and angles); the port's host shows the
+  same decals, sparks, debris and smoke after the playback fix. Before it the port showed none at
+  the wall: its predicted shots went to the world origin.
+* **Flash.** In first person TS's flash comes from the per-player attachment cache, which for the
+  local player holds the view model's muzzle on both engines (`client-rendering.md`, "Event
+  parameters"); the port's log shows the cached point and the view model's attachment 0 are the
+  same. In-eye, the original's flash glows in the middle of the view, away from the barrel (the
+  target's cache is its origin); the port flashes at the view model's muzzle there (deviation).
+* **Not done:** firing from the original client itself. Its anti-script gate needs a real key or
+  click, and keys sent into the Wine window (`SendInput`, posted `WM_KEYDOWN`) didn't reach it.
+* Seen on both clients, not investigated: the in-eye view pitches up, away from where the host
+  aims, after `ts_tp` set the host's view.
 
 ## 4. Pitfalls found during setup
 

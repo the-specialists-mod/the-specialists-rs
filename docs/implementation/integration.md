@@ -82,9 +82,14 @@ switched off in 3.0, or an SDK constant kept for completeness:
   volumes in `events::fire`/`events::misc` were re-traced to the client's disassembly. The
   view-model anim indices were re-checked (akimbo `[3..5]`/`[22..23]`/
   `[24..25]`, pump `[12]`/`[11]`, melee from set A, grenade body 1), and player attachments now
-  come from TS's per-frame cache (`0x10056be0`), as TS reads them. In first person on FWGS that
-  cache holds the local player's origin, so the muzzle flash and pellet spray start there as in
-  TS; Steam GoldSrc's behaviour is unverified (`client-rendering.md`, "Event parameters"). The
+  come from TS's per-frame cache (`0x10056be0`), as TS reads them. In first person that cache
+  holds the view model's muzzle on both engines (the view model's events pass copies its
+  attachments into the local player before the cache is filled); spectating in-eye it holds the
+  target's origin, where the port uses the view model's attachments instead
+  (`client-rendering.md`, "Event parameters"). The predicted events now carry the player's origin
+  and view angles (`HUD_PlaybackEvent` `0x1001ad50`); they were played with zeros, so the
+  shooter's own bullets, impacts and decals went to the world origin and the flash pointed along
+  world +x. The
   close-combat event plays TS's set-A index (#83) and traces 35/45/-55 by attack type (#85).
 * The TS studio renderer (issue #2) and motion-blur ghosts (issue #3) are fully ported and were
   audited slot by slot against the asm (`client-rendering.md`); the view-model slow-motion rate

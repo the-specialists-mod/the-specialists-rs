@@ -106,6 +106,7 @@ pub fn texture_sound(tr: &mut pmtrace_s, src: Vec3, end: Vec3, bullet_type: i32)
     if ric < 0x3fff {
         engine().ev_play_sound(-1, tr.endpos, CHAN_AUTO as i32, &ricochet_sound(ric), 1.0, 0.99, 0, fire_pitch());
     }
+    super::fx_log(|| format!("impact on texture type {} at {:.1?}", tex as char, tr.endpos));
     effects::impact(tr.endpos, tr.plane.normal, tex, bullet_type);
     let (sounds, vol) = material_sounds(tex);
     if material_roll_plays(roll) {
@@ -145,6 +146,7 @@ pub fn decal_gunshot(tr: &mut pmtrace_s) {
     let name = damage_decal(pe, effects::paintball());
     let idx = r::decal_index(&name);
     let ent = r::index_from_trace(tr);
+    super::fx_log(|| format!("decal {name} on entity {ent} at {:.1?}", tr.endpos));
     r::decal_shoot(idx, ent, 0, tr.endpos, 0);
 }
 

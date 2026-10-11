@@ -514,10 +514,12 @@ fn shot(tag: &str) -> String {
 /// Script prologue: cheats for the dev commands, scripted input past the client's anti-script
 /// gate (`ts_dev_scriptinput 1`), faster game time, then the map. `lservercfgfile ""` stops the
 /// game from queueing the root's `listenserver.cfg` on every map (TS's `CHalfLifeMultiplay`
-/// constructor does, and TS's shipped file adds four bots and turns `sv_cheats` off).
+/// constructor does, and TS's shipped file adds four bots and turns `sv_cheats` off). A `motdfile`
+/// that doesn't exist sends no MOTD (only the server name), so the MOTD window, which a script
+/// can't close, doesn't cover the screenshots.
 fn script_start(map: &str) -> String {
     format!(
-        "// Written by cargo xtask.\nalias w10 \"{}\"\nalias w100 \"{}\"\nfps_max 100\nsys_timescale {TIMESCALE}\nsv_cheats 1\nts_dev_scriptinput 1\nmaxplayers 8\nlservercfgfile \"\"\nmap {map}\n",
+        "// Written by cargo xtask.\nalias w10 \"{}\"\nalias w100 \"{}\"\nfps_max 100\nsys_timescale {TIMESCALE}\nsv_cheats 1\nts_dev_scriptinput 1\nmaxplayers 8\nlservercfgfile \"\"\nmotdfile xtask_no_motd.txt\nmap {map}\n",
         "wait;".repeat(10),
         "w10;".repeat(10)
     )
@@ -537,6 +539,91 @@ fn script_join_and_spawn() -> String {
 
 fn click() -> String {
     "echo XTASK: click\n+attack\nwait;wait;wait;wait;wait\n-attack\n".to_owned()
+}
+
+/// Where the wall scene stands: in front of the dojo's front wall (a world brush at y = -632),
+/// looking at it level (yaw 70).
+const WALL_SPOT: [f32; 3] = [100.0, -760.0, 60.0];
+
+/// The wall scene: with `ts_dev_fxlog 1` the client logs each predicted shot's first-person flash,
+/// bullet, impact and decal (`[ts fx]` lines); three single shots at the wall, then a screenshot.
+fn script_wall_shots() -> String {
+    let [x, y, z] = WALL_SPOT;
+    let mut cfg = format!("ts_dev_fxlog 1\nts_tp 1 {x} {y} {z} 70 0\n{}echo XTASK: wall\n", secs(1.0));
+    for _ in 0..3 {
+        cfg += &format!("+attack\nwait;wait\n-attack\n{}", secs(0.6));
+    }
+    cfg += &shot("wall shots");
+    cfg + "echo XTASK: wall done\nts_dev_fxlog 0\n"
+}
+
+/// The numbers in a `[x, y, z]` list starting at `key`.
+fn vec_after(line: &str, key: &str) -> Option<[f32; 3]> {
+    let rest = &line[line.find(key)? + key.len()..];
+    let inner = rest.strip_prefix('[')?.split(']').next()?;
+    let v: Vec<f32> = inner.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+    Some([*v.first()?, *v.get(1)?, *v.get(2)?])
+}
+
+fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// Checks for the wall scene, from the `[ts fx]` lines between its markers. The first-person flash
+/// must sit in front of the view near the view model's muzzle and spread along the view direction
+/// (the predicted events used to play with zero origin and angles, so the flash streaked along
+/// world +x and the bullets flew from the world origin), and the bullets must hit the wall in front
+/// of the shooter with impacts and decals.
+fn wall_checks(text: &str) -> Vec<(&'static str, bool)> {
+    // `echo` ends its line with a space.
+    let mut fx: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for l in text.lines() {
+        let t = l.trim_end();
+        if t.ends_with("XTASK: wall done") {
+            break;
+        }
+        if t.ends_with("XTASK: wall") {
+            inside = true;
+        } else if let Some((_, r)) = l.split_once("[ts fx] ").filter(|_| inside) {
+            fx.push(r);
+        }
+    }
+    let num = |l: &str, key: &str| field(l, key).and_then(|v| v.parse::<f32>().ok());
+    let flashes: Vec<&str> = fx.iter().copied().filter(|l| l.starts_with("flash at")).collect();
+    let flash_ok = |l: &str| -> bool {
+        let (Some(ahead), Some(off), Some(muzzle), Some(dir)) =
+            (num(l, "ahead "), num(l, "off-axis "), num(l, "muzzle-distance "), num(l, "direction-dot "))
+        else {
+            return false;
+        };
+        ahead > 8.0 && off < ahead && muzzle < 8.0 && dir > 0.95
+    };
+    let near = |p: Option<[f32; 3]>, r: f32| p.is_some_and(|p| dist(p, WALL_SPOT) < r);
+    let bullets: Vec<&str> = fx.iter().copied().filter(|l| l.starts_with("bullet from")).collect();
+    let impacts = fx.iter().filter(|l| l.starts_with("impact on")).count();
+    let decals: Vec<&str> = fx.iter().copied().filter(|l| l.starts_with("decal ")).collect();
+    say!(
+        "   wall scene: {} flashes, {} bullets, {impacts} impacts, {} decals{}",
+        flashes.len(),
+        bullets.len(),
+        decals.len(),
+        flashes.first().map_or(String::new(), |f| format!("; first flash: {f}"))
+    );
+    vec![
+        (
+            "wall: the first-person flash is at the gun's muzzle, in front of the view, along the view direction",
+            !flashes.is_empty() && flashes.iter().all(|l| flash_ok(l)),
+        ),
+        (
+            "wall: the bullets fly from the shooter's eye and hit the wall in front",
+            bullets.len() >= 3 && bullets.iter().all(|l| near(vec_after(l, "from "), 64.0) && near(vec_after(l, " to "), 400.0)),
+        ),
+        (
+            "wall: bullet impacts and decals on the wall",
+            impacts >= 3 && decals.len() >= 3 && decals.iter().all(|l| near(vec_after(l, " at "), 400.0)),
+        ),
+    ]
 }
 
 /// `ts_status` dump tagged so checks can find it.
@@ -709,7 +796,8 @@ impl Ctx {
     /// The gameplay check: one listen server on ts_dojo, played through every path the
     /// dedicated-server checks can't reach.
     /// 1. Join: the buy menu opens; reset its random first loadout, buy an AK47 with a scope
-    ///    (`slotN`, as the number keys do), click `+attack` after the respawn wait to spawn.
+    ///    (`slotN`, as the number keys do), click `+attack` after the respawn wait to spawn. Then
+    ///    fire three shots at a wall ([`wall_checks`]: flash, bullets, impacts, decals).
     /// 2. `ts_bot_quota 1` (with `ts_bot_stop 1`, so the bot holds still) adds a bot (TS's
     ///    `addbot` only prints "Bots only in listen servers.").
     /// 3. With the bot in view, step onto the slow-motion power-up (`0 -672 48`, pwuptype 1) and
@@ -724,6 +812,9 @@ impl Ctx {
     fn play(&self, root: &Root, port: u16) -> bool {
         say!("== {}: gameplay on ts_dojo (listen server, port {port})", root.name);
         let mut cfg = script_start("ts_dojo") + &script_join_and_spawn() + &status("spawned");
+
+        // 1b. shoot the dojo's front wall: flash, bullets, impacts and decals
+        cfg += &script_wall_shots();
 
         // 2. a stopped bot; it joins as an observer and respawns after the 5 s wait
         cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}ts_bot_quota\n{}", secs(1.0), secs(8.0));
@@ -817,7 +908,7 @@ impl Ctx {
         let last_bots = bot_dumps.last().map(|d| d.iter().filter(|p| p.name.starts_with("Bot ")).count()).unwrap_or(0);
 
         let spawn_line = spawns.first().copied().unwrap_or("");
-        let checks = [
+        let mut checks = vec![
             ("join: bought an AK47 and clicked to spawn", spawn_line.split_once(" with ").is_some_and(|(_, w)| w.contains("13"))),
             ("ts_bot_quota 1 added a bot", text.contains("\"ts_bot_quota\" is \"1\"") && text.contains("[ts] bots: added")),
             ("picked up the slow-motion power-up", host("picked up").is_some_and(|p| p.held == "0x1")),
@@ -843,6 +934,7 @@ impl Ctx {
             ("ts_bot_quota 0 kicked the bots", text.matches("was kicked").count() >= 4),
             ("the script finished, no panic or crash", run.done && !run.exited && !crashed(text)),
         ];
+        checks.splice(1..1, wall_checks(text));
         self.report(root, "play", &run, &checks)
     }
 
@@ -1029,6 +1121,32 @@ mod tests {
         let text = "XTASK: status a\n[ts] status: Dm\n".to_owned() + line + "\nXTASK: status b\n";
         let dumps = status_dumps(&text);
         assert_eq!((dumps.len(), dumps[0].1.len(), dumps[1].1.len()), (2, 1, 0));
+    }
+
+    #[test]
+    fn wall_scene_checks() {
+        let scene = |fx: &[&str]| {
+            let lines: String = fx.iter().map(|l| format!("[23:57:29] [ts fx] {l}\n")).collect();
+            format!("[ts fx] decal {{shot1 on entity 0 at [0.0, 0.0, 0.0]\nXTASK: wall \n{lines}XTASK: wall shots \nXTASK: wall done \n")
+        };
+        let good = [
+            "flash at [116.7, -727.4, 45.5] ahead 36.3 off-axis 7.5 muzzle-distance 0.0 direction-dot 1.000",
+            "bullet from [100.0, -760.0, 51.5] to [146.7, -632.0, 51.3]",
+            "impact on texture type C at [146.7, -632.0, 51.3]",
+            "decal {shot4 on entity 0 at [146.7, -632.0, 51.3]",
+        ];
+        let three: Vec<&str> = good.iter().cycle().take(12).copied().collect();
+        assert!(wall_checks(&scene(&three)).iter().all(|c| c.1), "a line before the scene doesn't count");
+        // The regression: predicted events played with zero origin and angles.
+        let before = [
+            "flash at [116.7, -727.4, 45.5] ahead 36.3 off-axis 7.5 muzzle-distance 0.0 direction-dot 0.342",
+            "bullet from [0.0, 0.0, 28.0] to [440.0, -0.1, 28.6]",
+            "impact on texture type C at [440.0, -0.1, 28.6]",
+            "decal {shot5 on entity 0 at [440.0, -0.1, 28.6]",
+        ];
+        let three: Vec<&str> = before.iter().cycle().take(12).copied().collect();
+        assert!(wall_checks(&scene(&three)).iter().all(|c| !c.1));
+        assert!(wall_checks(&scene(&[])).iter().all(|c| !c.1), "no shots");
     }
 
     #[test]
