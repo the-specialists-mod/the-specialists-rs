@@ -10,15 +10,17 @@
 //!   `<gamedir>/voice_ban.dt` and go to the server as `vban <mask>`, which stops it relaying
 //!   that player's voice (`CVoiceGameMgr` in the server's `rules::voice`).
 //!
-//! TS drew the labels and icons with VGUI1 panels and TGA images; the port draws them in immediate
-//! mode like its other VGUI replacements (docs/implementation/client-hud.md §7).
+//! TS draws the labels and icons as VGUI1 panels with `gfx/vgui/*.tga` images; the port paints
+//! the same panels with engine fills ([`crate::hud::vgui`]).
 
-use crate::hud::{self, Dc};
+use crate::hud;
+use crate::hud::vgui::{self, Align, Color, Image, Panel};
 use goldsrc::Global;
 use goldsrc::client::{Cvar, engine};
 use goldsrc::ext::voice::{SpriteEntity, add_sprite_entity};
 use goldsrc::sys::*;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// `MAX_VOICE_SPEAKERS`: speaker labels on screen at once.
 pub const MAX_SPEAKERS: usize = 7;
@@ -140,6 +142,8 @@ struct Voice {
     blink_timer: f64,
     /// `m_Labels[i].m_clientindex` (0-based client, `None` = free).
     labels: [Option<usize>; MAX_SPEAKERS],
+    /// The label's text (`"%s   "` of the name) and background colour, set when it was given out.
+    label_text: [(Vec<u8>, [i32; 3]); MAX_SPEAKERS],
     /// `m_bTalking`, `m_bServerAcked`.
     local_talking: bool,
     server_acked: bool,
@@ -351,7 +355,17 @@ pub fn update_speaker_status(entindex: i32, talking: bool) {
         // Talking turns voice on for this mod.
         e.client_cmd("voice_modenable 1");
     }
-    with(|v| speaker_status(v, entindex, talking));
+    if let Some(c) = with(|v| speaker_status(v, entindex, talking)) {
+        // The label's text and colour (`0x100181e0`: `"%s   "` and `GetPlayerTextColor`).
+        let mut text = hud::saytext::bytes(&e.player_info(c as i32 + 1).name);
+        text.extend_from_slice(b"   ");
+        let color = player_color(c as i32 + 1);
+        with(|v| {
+            if let Some(i) = v.labels.iter().position(|l| *l == Some(c)) {
+                v.label_text[i] = (text, color);
+            }
+        });
+    }
 }
 
 /// `CVoiceStatus::IsInSquelchMode` (100188b0): the scoreboard has the cursor for muting.
@@ -379,11 +393,12 @@ pub fn is_player_audible(player: i32) -> bool {
     player >= 1 && with(|v| v.audible & bit(player as usize - 1) != 0)
 }
 
-/// Icon for a scoreboard row (`UpdateBanButton` 100185f0).
-pub fn speaker_icon(player: i32) -> SpeakerIcon {
-    let Some(id) = (player >= 1).then(|| engine().player_unique_id(player)).flatten() else { return SpeakerIcon::None };
+/// Icon state for a scoreboard row (`UpdateBanButton` 100185f0); `None` while the engine has no
+/// unique id for the player (TS then leaves the row's image as it was).
+pub fn speaker_icon(player: i32) -> Option<SpeakerIcon> {
+    let id = (player >= 1).then(|| engine().player_unique_id(player)).flatten()?;
     let c = player as usize - 1;
-    with(|v| {
+    Some(with(|v| {
         if v.audible & bit(c) == 0 {
             SpeakerIcon::None
         } else if v.bans.contains(&id) {
@@ -395,7 +410,29 @@ pub fn speaker_icon(player: i32) -> SpeakerIcon {
         } else {
             SpeakerIcon::NotTalking
         }
-    })
+    }))
+}
+
+/// `UpdateBanButton`'s image (`VidInit` `0x10017af0`: `640_voiceblocked` through `vgui_LoadTGA`,
+/// the `640_speaker*` through `vgui_LoadTGANoInvertAlpha`) and the label foreground it sets:
+/// orange while talking (blinking between `640_speaker4` and `640_speaker3`), grey for a player
+/// never heard. The scoreboard draws the image in the label's foreground.
+pub fn icon_image(icon: SpeakerIcon) -> (Option<Rc<Image>>, Option<Color>) {
+    match icon {
+        SpeakerIcon::None => (None, None),
+        SpeakerIcon::Banned => (vgui::image("gfx/vgui/640_voiceblocked.tga", true), None),
+        SpeakerIcon::Talking { bright } => {
+            let path = if bright { "gfx/vgui/640_speaker4.tga" } else { "gfx/vgui/640_speaker3.tga" };
+            (vgui::image(path, false), Some(Color::new(255, 170, 0, 1)))
+        }
+        SpeakerIcon::NeverSpoken => (vgui::image("gfx/vgui/640_speaker1.tga", false), Some(Color::new(100, 100, 100, 1))),
+        SpeakerIcon::NotTalking => (vgui::image("gfx/vgui/640_speaker2.tga", false), None),
+    }
+}
+
+/// The scoreboard's voice column for `player` (see [`speaker_icon`], [`icon_image`]).
+pub fn scoreboard_icon(player: i32) -> Option<(Option<Rc<Image>>, Option<Color>)> {
+    speaker_icon(player).map(icon_image)
 }
 
 /// `CVoiceStatus::~CVoiceStatus` (`0x100177e0`, the static `g_VoiceStatus` torn down when the
@@ -500,19 +537,35 @@ pub fn create_entities() {
     }
 }
 
-/// Speaker label layout (`RepositionLabels` 10018900): right-aligned boxes stacked down from
-/// mid-screen. Returns (x, y, w, h) per label; text width is capped at 2/3 of the screen.
-pub fn label_rects(screen_w: i32, screen_h: i32, text_sizes: &[(i32, i32)], icon: (i32, i32)) -> Vec<(i32, i32, i32, i32)> {
+/// One speaker label's geometry (`RepositionLabels` 10018900): the background label's bounds,
+/// then the text label's and the icon's inside it, each (x, y, w, h).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelRects {
+    pub bg: (i32, i32, i32, i32),
+    pub text: (i32, i32, i32, i32),
+    pub icon: (i32, i32, i32, i32),
+}
+
+/// `RepositionLabels`: from mid-screen down the right edge, each label's text label sized to its
+/// content (`getContentSize`: the text plus 4 pixels of VGUI padding each side), capped at 2/3 of
+/// the screen width, with the icon after it, 2 pixels of border and 2 between labels. `icon` is
+/// `speaker4.tga`'s size (8×8 without it).
+pub fn label_rects(screen_w: i32, screen_h: i32, text_sizes: &[(i32, i32)], icon: (i32, i32)) -> Vec<LabelRects> {
     let border = 2;
     let mut y = screen_h / 2;
     text_sizes
         .iter()
         .map(|&(tw, th)| {
-            let tw = tw.min(screen_w * 2 / 3);
-            let w = tw + icon.0 + border * 3;
-            let h = th.max(icon.1) + border * 2;
-            let r = (screen_w - w - 8, y, w, h);
-            y += h + 2;
+            let (cw, ch) = vgui::label_content_size(tw, th);
+            let cw = cw.min(screen_w * 2 / 3);
+            let bw = cw + icon.0 + border * 3;
+            let bh = ch.max(icon.1) + border * 2;
+            let r = LabelRects {
+                bg: (screen_w - bw - 8, y, bw, bh),
+                text: (border, (bh - ch) / 2, cw, ch),
+                icon: (border + cw + border, (bh - icon.1) / 2, icon.0, icon.1),
+            };
+            y += bh + 2;
             r
         })
         .collect()
@@ -524,63 +577,53 @@ fn player_color(player: i32) -> [i32; 3] {
     hud::team_color(team)
 }
 
-/// A 16×16 speaker glyph drawn with fills (TS used `speaker4.tga` and the `640_speaker*` TGAs,
-/// which the engine API can't draw).
-pub fn draw_speaker(dc: &Dc, x: i32, y: i32, icon: SpeakerIcon) {
-    let (rgb, waves) = match icon {
-        SpeakerIcon::None => return,
-        SpeakerIcon::Banned => ([255, 40, 40], 0),
-        SpeakerIcon::Talking { bright: true } => ([255, 170, 0], 2),
-        SpeakerIcon::Talking { bright: false } => ([255, 170, 0], 1),
-        SpeakerIcon::NeverSpoken => ([100, 100, 100], 0),
-        SpeakerIcon::NotTalking => ([200, 200, 200], 0),
-    };
-    let a = 255;
-    dc.fill(x + 1, y + 6, 3, 4, rgb, a);
-    dc.fill(x + 4, y + 4, 2, 8, rgb, a);
-    dc.fill(x + 6, y + 2, 2, 12, rgb, a);
-    for w in 0..waves {
-        dc.fill(x + 10 + w * 3, y + 5 - w * 2, 1, 6 + w * 4, rgb, a);
-    }
-    if icon == SpeakerIcon::Banned {
-        for i in 0..12 {
-            dc.fill(x + 2 + i, y + 2 + i, 1, 1, rgb, a);
-            dc.fill(x + 13 - i, y + 2 + i, 1, 1, rgb, a);
-        }
-    }
-}
-
-/// The VGUI-panel part of `CVoiceStatus`, drawn after the HUD: speaker labels (hidden while the
-/// scoreboard is up, `CanShowSpeakerLabels` 1001fd60) and the local talk icon at
-/// `GetAckIconHeight` (1001fd40: screen height − 3 font heights − 6).
+/// The VGUI-panel part of `CVoiceStatus`, painted after the HUD: the speaker labels (hidden while
+/// the scoreboard is up, `CanShowSpeakerLabels` 1001fd60, applied by `Frame`) and the local talk
+/// icon. A label is a `Label` in the player's team colour at VGUI alpha 100, holding the name in
+/// white "Scoreboard Text" (`Scheme::sf_primary2`), east-aligned, and `speaker4.tga` (loaded
+/// without alpha inversion, drawn in white at VGUI alpha 1). The talk icon is `icntlk_pl.tga`
+/// (`icntlk_sv.tga` once the server acknowledged, with `voice_clientdebug` on), white at VGUI
+/// alpha 1, right-aligned 10 pixels from the edge above `GetAckIconHeight` (1001fd40: screen
+/// height − 3 font heights − 6).
 pub fn redraw() {
-    let (labels, local, acked, sprite) = with(|v| (v.labels, v.local_talking, v.server_acked, v.head_sprite));
+    let (labels, texts, local, acked) = with(|v| (v.labels, v.label_text.clone(), v.local_talking, v.server_acked));
     let show_labels = !crate::menus::scores_visible();
     let dbg = debug();
-    hud::with_dc(|dc| {
-        let e = engine();
+    let screen = hud::screen();
+    let (w, h) = (screen.width, screen.height);
+    let root = Panel::root(w, h);
+    let s = &mut vgui::EngineSurface;
+    let icon = vgui::image("gfx/vgui/speaker4.tga", false);
+    vgui::with_schemes(|sb| {
+        let font = sb.font_of("Scoreboard Text");
+        let shown: Vec<usize> = (0..MAX_SPEAKERS).filter(|&i| labels[i].is_some()).collect();
+        let sizes: Vec<(i32, i32)> = shown.iter().map(|&i| font.map_or((0, 0), |f| f.text_size(&texts[i].0))).collect();
+        let isize = icon.as_ref().map_or((8, 8), |i| (i.wide, i.tall));
         if show_labels {
-            let shown: Vec<usize> = labels.iter().flatten().copied().collect();
-            let names: Vec<String> = shown.iter().map(|&c| format!("{}   ", e.player_info(c as i32 + 1).name)).collect();
-            let sizes: Vec<(i32, i32)> = names.iter().map(|n| e.console_string_size(n)).collect();
-            let icon = (16, 16);
-            for ((rect, name), &c) in label_rects(dc.w(), dc.h(), &sizes, icon).into_iter().zip(&names).zip(&shown) {
-                let (x, y, w, h) = rect;
-                dc.fill(x, y, w, h, player_color(c as i32 + 1), 100);
-                let th = e.console_string_size(name).1;
-                e.draw_console_string(x + 2, y + (h - th) / 2, [1.0; 3], name);
-                draw_speaker(dc, x + w - 2 - icon.0, y + (h - icon.1) / 2, SpeakerIcon::Talking { bright: true });
+            for (r, &i) in label_rects(w, h, &sizes, isize).iter().zip(&shown) {
+                let c = texts[i].1;
+                let bg = root.child(r.bg.0, r.bg.1, r.bg.2, r.bg.3);
+                bg.paint_background(s, Color::new(c[0] as u8, c[1] as u8, c[2] as u8, 100));
+                if let Some(f) = font {
+                    let t = bg.child(r.text.0, r.text.1, r.text.2, r.text.3);
+                    let (tw, th) = f.text_size(&texts[i].0);
+                    let (x, y) = vgui::label_text_pos(Align::East, t.w, t.h, tw, th);
+                    t.text(s, f, x, y, Color::new(255, 255, 255, 0), &texts[i].0, tw);
+                }
+                if let Some(img) = &icon {
+                    bg.child(r.icon.0, r.icon.1, r.icon.2, r.icon.3).image(s, img, 0, 0, Color::new(255, 255, 255, 1));
+                }
             }
         }
-        // The engine's "you are talking" icon (TS `icntlk_pl.tga`; `icntlk_sv.tga` when the server
-        // acknowledged and voice_clientdebug is on).
-        if (local || acked) && sprite != 0 {
-            let (sw, sh) = (e.spr_width(sprite, 0), e.spr_height(sprite, 0));
-            let ack_height = dc.h() - (dc.g.screen.char_height * 3 + 6);
-            let rgb = if acked && dbg { [100, 255, 100] } else { [255, 255, 255] };
-            dc.spr(sprite, dc.w() - sw - 10, ack_height - sh, rgb);
-        }
     });
+    let (pl, sv) = (vgui::image("gfx/vgui/icntlk_pl.tga", true), vgui::image("gfx/vgui/icntlk_sv.tga", true));
+    if let (Some(pl), Some(sv)) = (pl, sv)
+        && (local || acked)
+    {
+        let img = if acked && dbg { &sv } else { &pl };
+        let ack_height = h - (screen.char_height * 3 + 6);
+        root.image(s, img, w - pl.wide - 10, ack_height - pl.tall, Color::new(255, 255, 255, 1));
+    }
 }
 
 #[cfg(test)]
@@ -662,8 +705,9 @@ mod tests {
     #[test]
     fn label_layout() {
         let r = label_rects(640, 480, &[(100, 12), (900, 12)], (16, 16));
-        assert_eq!(r[0], (640 - (100 + 16 + 6) - 8, 240, 122, 20));
-        assert_eq!(r[1].1, 240 + 20 + 2);
-        assert_eq!(r[1].2, 426 + 16 + 6, "text capped at 2/3 of the screen");
+        assert_eq!(r[0].bg, (640 - (108 + 16 + 6) - 8, 240, 130, 24));
+        assert_eq!((r[0].text, r[0].icon), ((2, 2, 108, 20), (112, 4, 16, 16)));
+        assert_eq!(r[1].bg.1, 240 + 24 + 2);
+        assert_eq!(r[1].bg.2, 426 + 16 + 6, "text capped at 2/3 of the screen");
     }
 }

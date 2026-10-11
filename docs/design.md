@@ -184,7 +184,7 @@ viewport to call `VGui_ViewportPaintBackground` as TS's does (issue #62); FWGS i
 |---|---|---|
 | `input` | kbuttons (`+alt1` = stunt `IN_ALT1`, `+alt2` = 0x40), `CL_CreateMove`, the anti-script gate | HUD/UI |
 | `hud` | message hooks (all 64 must be hooked), HUD state, one immediate-mode draw pass in TS order | HUD/UI |
-| `menus` | buy menu (TS's own immediate-mode menu, `tsbuylist.tsa`), team select, scoreboard, MOTD | HUD/UI |
+| `menus` | buy menu (TS's own immediate-mode menu, `tsbuylist.tsa`); TS's VGUI1 team menu, scoreboard and MOTD window, painted with engine fills through `hud::vgui` | HUD/UI |
 | `voice` | `CVoiceStatus`: talking players' head icons and labels, the talk icon, scoreboard voice icons and squelch-mode muting, `voice_ban.dt`, `VModEnable`/`vban` | HUD/UI |
 | `joystick` | the SDK joystick code TS ships (`IN_JoyMove`, `IN_Commands`), Steam GoldSrc only; devices are read by `goldsrc::joystick` (WinMM / SDL2) | HUD/UI |
 | `view` | `V_CalcRefdef`: bob, punch, client-side recoil through `cl_viewangles`, slow-motion tint and `TSFade` | rendering |

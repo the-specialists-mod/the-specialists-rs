@@ -211,6 +211,10 @@ impl ClEngine {
         let s = to_cstring(cmd);
         cl_eng!(pfnClientCmd(s.as_ptr()));
     }
+    /// `Con_IsVisible`: the console is down.
+    pub fn con_is_visible(&self) -> bool {
+        cl_eng!(Con_IsVisible()) != 0
+    }
     pub fn center_print(&self, text: &str) {
         let s = to_cstring(text);
         cl_eng!(pfnCenterPrint(s.as_ptr()));

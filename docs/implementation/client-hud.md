@@ -17,8 +17,9 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `crates/client/src/hud/{draw,text}.rs` | hud.txt sprites, `DrawHudNumberTS`, `DrawHudString`, `ftol`, the `Canvas` the SDK elements draw through, titles.txt localisation (`LocaliseTextString` with its step budget for the status bar), mini printf |
 | `crates/client/src/hud/saytext.rs` | `CHudSayText`: chat lines, wrap, scroll, console print on scroll-off |
 | `crates/client/src/hud/icons.rs` | `CHudStatusIcons` (`StatusIcon`, `Concuss`'s `dmg_concuss`) |
-| `crates/client/src/hud/vgui.rs` | `CSchemeManager` (text schemes, VGUI1 bitmap fonts from `gfx/vgui/fonts/*.tga`) and VGUI1 label text painting with engine fills |
-| `crates/client/src/menus/{mod,buy,scoreboard}.rs` | buy menu (`CTSBuyMenu`), scoreboard, team select, MOTD, mouse routing |
+| `crates/client/src/hud/vgui.rs` | `CSchemeManager` (text schemes with all their colours, VGUI1 bitmap fonts from `gfx/vgui/fonts/*.tga`), VGUI1 `BitmapTGA` images, and VGUI1 panel painting with engine fills (clipping, insets, `LineBorder`, label alignment, `TextImage` text, modulated images) |
+| `crates/client/src/menus/{mod,buy}.rs` | buy menu (`CTSBuyMenu`), the viewport's VGUI menu queue, key and mouse routing |
+| `crates/client/src/menus/{team,motd,scoreboard,widgets}.rs` | `CTeamMenuPanel`, the MOTD's `CMessageWindowPanel`, `ScorePanel` (with `g_TeamInfo`), and the shared `CommandButton`, `CTransparentPanel`, team colours and viewport scheme colours |
 | `crates/client/src/voice.rs` | `CVoiceStatus`/`CVoiceBanMgr`: speaker state, head icons, speaker labels, talk icon, scoreboard voice icons and squelch mode, `voice_ban.dt`, `VModEnable`/`vban` |
 | `crates/client/src/joystick.rs` | the SDK joystick code TS ships (`IN_JoyMove`, `IN_Commands`, `Joy_AdvancedUpdate_f`), Steam GoldSrc only |
 | `crates/client/src/state.rs` | fields added for other packages (see Integration) |
@@ -59,25 +60,29 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CHudSayText` 1002eb40, `CHudMenu` 100285f0 | `hud::saytext`, `hud::notice::draw_menu` |
 | `CTSBuyMenu` 10036200..100398e0 (Init, Load/Save file, Open, Close, Draw pages, HandleKey 10038840, Add 10038f60, Remove 10038e40, ammo fill 100392b0, Submit 10039400, Random 100398e0, restriction 100365e0/1000b6d0, cost 10012ad0, slots 10038dc0) | `menus::buy::BuyMenu::*`, `menus::draw_buy`, `menus::save_file` |
 | `CTSBuyMenu::MouseEvent` 10038360 | `menus::mouse_buttons` / `click` |
-| `ScorePanel` 1005ce70/1005db70 | `menus::scoreboard` |
-| `CTeamMenuPanel` 100655d0 (VGUIMenu 2; opened only when `GameMode` said teamplay, `0x10064280`, since the server sends it for `changeteam` in any mode) | `menus::draw_team_menu`, `team_menu_key` |
+| `ScorePanel` 1005ce70 (`CreateScoreBoard` 10063a50), `Update` 1005d5f0, `SortTeams` 1005d6a0, `SortPlayers` 1005d8f0, `RebuildTeams` 1005da20, `FillGrid` 1005db70, `DeathMsg` 1005e5d0, `Open` 1005e630, `CLabelHeader` paint 1005e930/1005e9b0, `ShowScoreBoard` 10063710 (multiplayer only) | `menus::scoreboard::ScoreBoard::*`, `scoreboard::layout`, `menus::show_scores` |
+| Viewport `TeamNames` 10064df0, `ScoreInfo` 10065090 (`UpdateOnPlayerInfo` 10064750), `TeamScore` 10065120, `TeamInfo` 100651c0; `gViewPort->DeathMsg` from 1001b360 | `menus::on_message` (called from `hud::on_message` after the HUD state took the message) |
+| `CTeamMenuPanel` 100655d0 (VGUIMenu 2; opened only when `GameMode` said teamplay, `0x10064280`, since the server sends it for `changeteam` in any mode), `Update` 10066020, `SlotInput` 100665a0, `SetActiveInfo` 10066690, `Open` 10066610, `paintBackground` 10066640; `CMenuHandler_StringCommandWatch` 10064a20 | `menus::team::TeamMenu::*`, `menus::team_menu_key` |
+| `CommandButton` 1005a0b0 (`Init` 1005a170, `RecalculateText` 1005a1f0, `paint` 1005a2f0, `paintBackground` 1005a370), `CTransparentPanel`, `iTeamColors` 10096974, viewport scheme colours 100607f0 | `menus::widgets` |
+| `ShowVGUIMenu` 10064050, `HideTopMenu` 10064200, `SetCurrentMenu` 10063bd0, `KeyInput` 10064b90 | `menus::show_vgui_menu`, `hide_top_menu`, `key_event` |
 | `CVoiceStatus::Init` 100178c0 / `VidInit` 10017af0 / `Frame` 10017ea0 | `voice::init`, `vid_init`, `frame` |
 | `CVoiceStatus::CreateEntities` 10017f30 (`HUD_CreateEntities`) | `voice::create_entities` |
 | `UpdateSpeakerStatus` 100180c0 (`HUD_VoiceStatus` 1001ab40) | `voice::update_speaker_status` |
 | `UpdateServerState` 10018360, `HandleVoiceMaskMsg` 10018780, `HandleReqStateMsg` 10018830 | `voice::update_server_state`, `msg_voice_mask`, `msg_req_state` |
-| `RepositionLabels` 10018900, `UpdateBanButton` 100185f0 | `voice::redraw`/`label_rects`, `voice::speaker_icon`/`draw_speaker` (scoreboard voice column) |
+| `RepositionLabels` 10018900, `UpdateBanButton` 100185f0 (`UpdateSpeakerImage` 100185d0) | `voice::redraw`/`label_rects`, `voice::speaker_icon`/`icon_image`/`scoreboard_icon` (scoreboard voice column) |
 | `Start/StopSquelchMode` 10018870/10018890, `IsInSquelchMode` 100188b0, `IsPlayerBlocked` 10018c80, `IsPlayerAudible` 10018cc0, `SetPlayerBlockedState` 10018cf0 | `voice::start_squelch_mode` … `voice::toggle_block` |
-| `ScorePanel::mousePressed` 1005e660, `MouseOverCell` 1005e870, `HideScoreBoard` 10063760 | `menus::scoreboard_press`, `menus::mouse_buttons`/`squelch_row`, `menus::show_scores(false)` |
+| `ScorePanel::mousePressed` 1005e660, `cursorMoved` 1005e7f0, `MouseOverCell` 1005e870, `HideScoreBoard` 10063760 | `menus::scoreboard_press`, `menus::mouse_buttons`, `ScoreBoard::cursor_moved`, `menus::show_scores(false)` |
 | `CVoiceBanMgr` (`voice_ban.dt`), `voice_showbanned` 10017660 | `voice::BanList`, `voice::show_banned` |
 | `SayTextPrint` 1002ed00 (muted players' chat dropped) | `hud::on_message` (SayText) |
 | `IN_StartupJoystick` 10027960, `IN_ReadJoystick` 10027de0 | `goldsrc::joystick::startup`/`read` |
 | `Joy_AdvancedUpdate_f` 10027b00, `IN_Commands` 10027ca0, `IN_JoyMove` 10027e40 | `joystick::axis_map`/`joy_advanced_update`, `joystick::commands`, `joystick::joy_move`/`apply_axes` |
-| `CMessageWindowPanel` (MOTD, VGUIMenu 5) | `menus::draw_motd` |
+| `CMessageWindowPanel` 1005bb90 (MOTD, VGUIMenu 5), `CreateTextWindow` 10063c00 | `menus::motd::Motd` |
 | `CHud::MsgFunc_Concuss` 10021a40 (hooked at 1001fe40), `MsgFunc_Logo` 100209c0, `MsgFunc_ResetHUD` 100219a0, logo draw 10021bcd | `hud::msg_concuss` (`m_iConcuss` → `hud::concussion` → `v_idlescale` in `view::update_client_data`, as `0x10024b63`), `hud::msg_logo`/`draw_logo`, `Hud::apply` (ResetHUD) |
 | `CHudStatusIcons` 1002f0e0 (Init), `MsgFunc_StatusIcon` 1002f1a0, `EnableIcon` 1002f210, `DisableIcon` 1002f330, `Draw` 1002f130, `Reset` 1002f110 | `hud::icons::StatusIcons`, `hud::msg_status_icon` |
 | `CHudSayText` `SayTextPrint` 1002ed00, `MsgFunc_SayText` 1002ecc0, `Draw` 1002eb40, `ScrollTextUp` 1002ead0, `EnsureTextFitsInOneLineAndWrapIfHaveTo` 1002ee90, `InitHUDData` 1002eaa0; `GetClientColor` 1001af40 | `hud::say_text_print`, `hud::saytext::SayText`, `hud::draw_say_text` |
 | `TeamFortressViewport::AllowedToPrintText` 10064240 | `menus::allowed_to_print_text` |
 | `CSchemeManager` 1005c300, `LoadFileByResolution` 1005caf0 | `hud::vgui::Schemes::load`, `hud::vgui::BitmapFont` |
+| `vgui_LoadTGA` 1005b8d0, `vgui_LoadTGANoInvertAlpha` 1005ba50 (VGUI1 `BitmapTGA`) | `hud::vgui::Image::from_tga`, `hud::vgui::image` |
 | `CHudSpectator` 10022c70 (Init), 10022fe0 (VidInit), `DirectorMessage` 10023380, `SetModes` 100234d0, `specmode` 10022c10, map camera 10022da0, `Draw` (HLTV name tags) 10023080, `ParseOverviewFile` 10023720, `LoadMapSprites` 10023c60 | `spectator::{init, vid_init, director_event, set_modes, redraw}`, `spectator::overview::{draw_names, Overview::reset, parse_overview}`; `HUD_DirectorEvent` 1001ab60 and `HUD_DirectorMessage` exports. `VidInit` also zeroes the 0.2 s click timer (`+0xc94`, `input::reset_key_tap`): the client clock restarts with each map, and a timer left from the old map blocked click-to-spawn after a `changelevel` |
 
 ## 2. Message table
@@ -241,14 +246,19 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   on), -2 the server's acknowledgement, else a player (TS's check is `< 32`, so player 32 is never
   shown). Talking players get `sprites/voiceicon.spr` (scale 0.5, additive) 45 units above their
   origin when in the PVS and drawn (the local player only in third person), and a name label on the
-  right half of the screen (up to 7, stacked down from mid-screen, team-coloured background,
-  hidden while the scoreboard shows). The local talk icon sits at screen height − 3 font heights − 6.
+  right half of the screen (up to 7, stacked down from mid-screen: a team-coloured label at VGUI
+  alpha 100 with the name in white "Scoreboard Text" and `gfx/vgui/speaker4.tga`; hidden while the
+  scoreboard shows). The local talk icon (`gfx/vgui/icntlk_pl.tga`, `icntlk_sv.tga` once the server
+  acknowledged with `voice_clientdebug` on) sits at screen height − 3 font heights − 6.
 * `VoiceMask` gives the audible (game rules) and server ban masks; `ReqState` makes the client
   resend `VModEnable` and `vban`. Every second the client sends `vban` if its ban mask for the
   connected players differs from what the server last reported.
-* Scoreboard: a voice column shows, for players the rules let you hear, banned / talking
-  (blinking every 0.3 s) / never spoken / not talking. With the scoreboard up, a mouse press enters
-  squelch mode (cursor, no `+attack`); a press on an audible player's row toggles their mute (saved
+* Scoreboard: a voice column shows, for players the rules let you hear, banned
+  (`640_voiceblocked.tga`) / talking (`640_speaker4`/`640_speaker3`, blinking every 0.3 s, orange)
+  / never spoken (`640_speaker1`, grey) / not talking (`640_speaker2`), in the row's colour; the
+  local player's row has none unless spectate-only. With the scoreboard up, a mouse press enters
+  squelch mode (cursor, no `+attack`); the cursor lights an audible player's row and a press on a
+  player row toggles the lit player's mute (saved
   to `<gamedir>/voice_ban.dt` at shutdown; SDK format: version 1, then 16-byte unique ids) and prints
   `** #Muted #No_longer_hear_that_player` / `** #Unmuted` (titles.txt, `%s` = name) in the chat.
   Hiding the scoreboard ends squelch mode. Chat (`SayText`) from muted players is dropped.
@@ -260,8 +270,8 @@ Train → HudText (`CHudMessage`) → status bar → death notices (`nohud` gate
 element (laser dots, drawn even with `nohud`; equipment/slot menu, kung-fu label or weapon info,
 crosshair or wire panel) → status element (round timer, TS messages, objective text, teammate
 markers, crosshair ID, status panel, power-up, objective markers) → say text → `CHudMenu` → the
-logo → (VGUI pass) spectator panel, voice labels, (menus module) buy menu, team menu, MOTD,
-scoreboard, cursor. As in `CHud::Redraw` (`10021aa0`), `HIDEHUD_ALL` hides every element, and
+logo → (VGUI pass) spectator panel, voice labels, (menus module) buy menu, then the viewport's
+children in their order: team menu, scoreboard, MOTD; then the cursor. As in `CHud::Redraw` (`10021aa0`), `HIDEHUD_ALL` hides every element, and
 during intermission only the say text (`HUD_INTERMISSION`) and the logo draw. TS messages fade
 over their last second: each channel is `__ftol(base × min(expire − now, 1))`, the base being the
 message colour or, for a black message, the `hud_r/g/b` cvar values (`0x1004afc9`). Colours from
@@ -397,25 +407,38 @@ Drawing that TS leaves to the engine's VGUI1 surface:
   `gfx\vgui\fonts\<screen width>_<scheme>.tga` is missing (every width but 640, 800, 1024,
   1152, 1280 and 1600, or `bitmapfonts 0`); the port can't use system fonts, so it draws the
   bitmap rendered from the same scheme file (`<scheme res>_<scheme>.tga`, the same Arial size).
-* Team select, MOTD and scoreboard are immediate-mode replacements for the VGUI1 panels
-  (`CTeamMenuPanel`, `CMessageWindowPanel`, `ScorePanel`): the same commands and data, but their
-  own layout and the console font. Matching them needs those panels' VGUI1 layouts ported onto
-  `hud::vgui` like the spectator panel. Their keys follow `TeamFortressViewport::KeyInput`
-  (`0x10064b90`) where the port has the menu: Escape closes the team menu once the player has a
-  team; Enter, keypad Enter, Space or Escape close the MOTD. The team menu's digit keys
-  (`SlotInput`) still reach it through the `slot` commands.
-* Voice UI: TS drew the speaker labels, talk icon and scoreboard icons as VGUI1 panels with
-  `gfx/vgui/*.tga` images. The port draws them in immediate mode: labels with the console font,
-  `sprites/voiceicon.spr` as the local talk icon (green-tinted for the debug "server acked"
-  icon), and a 16 px speaker glyph made of fills for the label and scoreboard icons (banned: red
-  with a cross). Squelch mode centres the virtual cursor. The first scoreboard press (entering
-  squelch mode) isn't passed to the engine as a key.
+* Team menu, MOTD window, scoreboard and voice labels/icons (`CTeamMenuPanel`,
+  `CMessageWindowPanel`, `ScorePanel`, `CVoiceStatus`'s labels) are the same VGUI1 panels painted
+  with engine fills (`hud::vgui`, `menus::{team,motd,scoreboard}`, `voice::redraw`): TS's
+  geometry (`XRES`/`YRES` with TS's float constants, which sit a hair above 1/640 and 1/480, so a
+  few sizes come out one pixel short of the 640×480 numbers, as in TS; the few values TS spills to a
+  `float` are rounded the same way), colours, scheme fonts, `gfx/vgui/*.tga` images, texts,
+  sorting, hover/arm and click behaviour, keys (`KeyInput` `0x10064b90`) and the viewport's menu
+  queue. Images follow VGUI1's TGA alpha rules (Valve's `vgui.so`, `BitmapTGA::loadTGA` at
+  `0x23880`, as freevgui documents them): uncompressed 32-bit images keep their alpha with
+  `vgui_LoadTGA` and are inverted with `vgui_LoadTGANoInvertAlpha`, RLE ones the other way round.
+  So the speaker label's `speaker4.tga` (uncompressed, loaded without inversion) draws as a white
+  square with the speaker cut out, in TS as in the port. What remains different:
+  * **No scroll bars.** TS's `CTFScrollPanel` (team menu briefing, MOTD text) and the scoreboard's
+    `CListBox` show VGUI scroll bars (arrow buttons, a slider) when their content overflows; the
+    port clips the content and can't scroll it. Long map briefings (most TS maps), long MOTDs and
+    scoreboards with more rows than fit are affected.
+  * The engine's VGUI surface draws bitmap-font glyphs and images as textured quads; the port
+    draws the same pixels as fills (glyph ink opaque in the text colour's opacity), and VGUI's own
+    cursor is the TS sprite cursor the port already draws.
+  * Squelch mode centres the virtual cursor, and the first scoreboard press (entering squelch mode)
+    isn't passed to the engine as a key. Panels are laid out from the current screen size each
+    frame (TS builds them once with the viewport).
+  * `jointeam` from the team menu doesn't set the local `g_iTeamNumber` (TS does, `0x10064a82`,
+    until the next player state); Escape's "has a team" test reads the player state only.
 
 Checks that only matter on input TS mishandles (TS writes or reads out of bounds):
 * `Objective`/`ShowObj` indexes outside 0..31 (TS's check `i >= 0 || i < 32` is always true and
   writes past the 32 objectives) and labels over 63 characters (TS copies them into a 64-byte
   stack buffer unbounded) are dropped or cut.
-* Scoreboard rows are a `Vec` capped at 72 (TS can write 74 entries into its 72).
+* The scoreboard's sorted rows stop at its 74 grids (TS writes on past its `m_iSortedRows` with
+  more rows than that); its 74-byte `m_bHasBeenSorted` clear, which runs 2 bytes past TS's object
+  (the ts-patcher crash fix), is a plain array.
 * Buy menu: an add with all sixteen entries in use is refused (TS writes past them); key 11 (`a`)
   on the save and load pages is ignored (TS reads config 10, past the nine); a click on a path
   where `FUN_10038410` leaves the page unwritten (a full sixteen-entry remove list) does nothing
@@ -498,6 +521,14 @@ Notes (no observable difference):
   (`hud::message::tests`); status-bar messages, parsing, caps and layout
   (`hud::statusbar::tests`); `LocaliseTextString`'s budget (`hud::text::tests`); the TFC and
   `SecAmmo*` values (`hud::tfc::tests`); `HudText`/`ResetHUD` through `Hud::apply`.
+  The VGUI panels have their own: scheme parsing and colour defaults,
+  bitmap-font metrics and wrapping, TGA alpha rules (also on the shipped `gfx/vgui` icons when
+  installed), panel clipping/insets/borders, label alignment and `XRES`/`YRES` truncation;
+  `ScorePanel` sorting (`SortTeams`/`SortPlayers`, game-mode score rule, `TeamScore` overrides,
+  `RebuildTeams` slot reuse), `FillGrid` cells (colours, fonts, status column, killer fade, voice
+  column), layout at 640/1024/512/400 and squelch highlighting; the team menu's `Update` layout,
+  info text, map briefing, slots, hover and clicks; the MOTD window's layout and OK button; the
+  speaker label layout.
 * Builds: x86_64 Linux (dev), `i686-unknown-linux-gnu`, `i686-pc-windows-gnu`,
   `x86_64-pc-windows-gnu`. The Windows DLL imports only system DLLs (`USER32` added for the
   mouse); both exports `IN_ClientLookEvent`/`IN_ClientMoveEvent`.
@@ -514,7 +545,8 @@ Notes (no observable difference):
   `img/client-hud-buymenu.jpg` (the tiling WM resized the window, hence the odd aspect).
 * Not tested in engine: physical keys/mouse (no input device in the automated run: the gate,
   mouse look, clicks and the virtual cursor are untested live), Steam GoldSrc mouse paths
-  (Windows cursor / SDL2), team menu, MOTD, ShowMenu, death cam, effects queue consumers.
+  (Windows cursor / SDL2), team menu, MOTD, ShowMenu, death cam, effects queue consumers. The
+  VGUI panel ports (issue #93) have unit tests only.
 * Steam Half-Life 25th anniversary client (Linux, build 10211, `docs/validation.md` §5): the
   scripted `xtask play` scenes draw the world, HUD, buy menu, MOTD, view model, slow-motion indicator
   and bot fights. Under `gdb`, opening the console (`CBaseUI::ActivateGameUI`) reaches

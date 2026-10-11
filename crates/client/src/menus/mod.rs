@@ -1,37 +1,65 @@
-//! Immediate-mode menus drawn with the engine: TS's buy menu (which TS also draws this way), and
-//! replacements for the VGUI1 viewport panels TS used: scoreboard, team select and the MOTD
-//! window. Owner: HUD/UI work package. Reference: decomp docs/client/architecture-hud.md §6.
+//! TS's menus: the buy menu (`CTSBuyMenu`, which TS draws in immediate mode too) and the VGUI1
+//! viewport panels (team menu, MOTD window, scoreboard), which the port paints with engine fills
+//! through [`crate::hud::vgui`]. Owner: HUD/UI work package. Reference: decomp
+//! docs/client/architecture-hud.md §6.
+//!
+//! The VGUI menus queue as TS's viewport queues them (`ShowVGUIMenu` `0x10064050`): the first is
+//! shown, the others open in turn as the shown one closes (`HideTopMenu` `0x10064200`).
 //!
 //! The mouse: while a menu shows the cursor, `input` moves a virtual cursor instead of the view
-//! and routes clicks here (TS: `IN_MouseEvent` → `CTSBuyMenu::MouseEvent`).
+//! and routes clicks here (TS: VGUI's input, or `IN_MouseEvent` → `CTSBuyMenu::MouseEvent`).
 
 pub mod buy;
+mod motd;
 mod scoreboard;
+mod team;
+mod widgets;
 
+use crate::hud::vgui::{self, EngineSurface};
 use crate::hud::{self, Dc, draw::half, text::localise};
 use buy::{Action, BuyMenu, Rng, Rules, page};
 use goldsrc::Global;
 use goldsrc::client::{Cvar, engine};
-use std::cell::{Cell, RefCell};
+use scoreboard::{PlayerSlot, ScoreBoard};
+use shared::protocol::Msg;
+use std::cell::RefCell;
 use std::ffi::CStr;
+
+/// A queued VGUI menu (`CMenuPanel`, by its `VGUIMenu` id).
+#[derive(Debug, Clone, PartialEq)]
+enum Menu {
+    /// 2: `CTeamMenuPanel` (the viewport's one instance).
+    Team,
+    /// 5: the MOTD's `CMessageWindowPanel`, made when it was asked for.
+    Motd(Box<motd::Motd>),
+}
+
+impl Menu {
+    fn id(&self) -> i32 {
+        match self {
+            Menu::Team => 2,
+            Menu::Motd(_) => 5,
+        }
+    }
+}
 
 #[derive(Default)]
 struct Menus {
     buy: BuyMenu,
     /// Clickable rows from the last draw: (x, y, w, h, page, key).
     rows: Vec<(i32, i32, i32, i32, i32, i32)>,
-    team_open: bool,
-    team_rows: Vec<(i32, i32, i32, i32, i32)>,
-    motd_open: bool,
-    motd_ok: (i32, i32, i32, i32),
+    /// `m_pCurrentMenu` and its `m_pNextMenu` chain.
+    queue: Vec<Menu>,
+    team: Option<team::TeamMenu>,
+    /// The screen size the team menu was made for.
+    team_size: (i32, i32),
+    /// The scoreboard is shown (`+showscores`).
     scores: bool,
+    board: ScoreBoard,
     path: String,
-    /// Scoreboard player rows from the last draw: (x, y, w, h, player index).
-    score_rows: Vec<(i32, i32, i32, i32, i32)>,
 }
 
 static MENUS: Global<RefCell<Option<Menus>>> = Global(RefCell::new(None));
-static INTERMISSION: Global<Cell<bool>> = Global(Cell::new(false));
 
 fn with<R>(f: impl FnOnce(&mut Menus) -> R) -> R {
     let mut m = MENUS.0.borrow_mut();
@@ -54,8 +82,8 @@ fn rules() -> Rules {
 }
 
 pub fn init() {
-    // `Scheme_Init` (1005c2a0), right after CHud::Init. TS's VGUI scheme manager reads it to pick
-    // bitmap fonts; the port draws its menus without VGUI, so it's registered only.
+    // `Scheme_Init` (1005c2a0), right after CHud::Init: the scheme manager (`hud::vgui`) picks
+    // bitmap fonts by it.
     Cvar::register(c"bitmapfonts", c"1", 0);
     // `FUN_10036480`: <gamedir>/tsbuylist.tsa (nine saved configs), created if missing.
     let path = format!("{}/tsbuylist.tsa", engine().game_directory());
@@ -66,12 +94,19 @@ pub fn init() {
     });
 }
 
+/// The viewport's `ReInitialize` (`0x10060aa0`, every `VidInit`): menus hidden, the team menu's
+/// map name and the scoreboard's data reset, the scoreboard hidden.
 pub fn vid_init(_first: bool) {
     with(|m| {
         m.buy.close();
-        m.team_open = false;
-        m.motd_open = false;
+        m.queue.clear();
+        if let Some(t) = &mut m.team {
+            t.initialize();
+        }
+        m.board.initialize();
+        m.scores = false;
     });
+    crate::voice::stop_squelch_mode();
 }
 
 /// `FUN_10036560`: write the nine configs. Written to a temporary file and renamed, so a
@@ -151,48 +186,250 @@ pub fn buy_key(key: i32) {
     run_actions(actions);
 }
 
-// ---- team menu (VGUIMenu 2 → CTeamMenuPanel) -------------------------------------------------
+// ---- engine data for the VGUI menus ----------------------------------------------------------
 
-pub fn open_team_menu() {
-    with(|m| m.team_open = true);
+/// `GetAllPlayersInfo` (`0x10064880`): the engine's player list for clients 1..63.
+fn player_slots() -> Vec<PlayerSlot> {
+    let e = engine();
+    let mut v = vec![PlayerSlot::default(); 65];
+    for (i, slot) in v.iter_mut().enumerate().take(64).skip(1) {
+        let info = e.player_info(i as i32);
+        *slot = PlayerSlot {
+            name: (!info.name.is_empty()).then(|| hud::saytext::bytes(&info.name)),
+            ping: info.ping as i16,
+            packetloss: info.packetloss as u8,
+            this_player: info.this_player,
+            entity: e.entity(i as i32).is_some(),
+        };
+    }
+    v
+}
+
+fn screen_size() -> (i32, i32) {
+    let s = hud::screen();
+    (s.width, s.height)
+}
+
+/// Runs the scoreboard's `f` with its inputs and the schemes.
+fn with_board_inputs(f: impl FnOnce(&mut ScoreBoard, &scoreboard::Inputs, &vgui::Schemes)) {
+    let players = player_slots();
+    let (w, h) = screen_size();
+    let (extra, teamplay, server, names) = hud::with(|h| (h.players.clone(), h.gamemode, h.server_name.clone(), team_names(h)));
+    let inp = scoreboard::Inputs {
+        players: &players,
+        extra: &extra,
+        teamplay,
+        server_name: &server,
+        team_names: &names,
+        lookup: &hud::text::lookup,
+        time: hud::now(),
+        spectate_only: goldsrc::ext::spectator::is_spectate_only(),
+        squelch: crate::voice::in_squelch_mode(),
+        screen_h: h,
+        screen_w: w,
+    };
+    vgui::with_schemes(|sb| with(|m| f(&mut m.board, &inp, sb)));
+}
+
+/// The viewport's team names: `TeamNames` stores at most four, localised (`0x10064e33`).
+fn team_names(h: &hud::state::Hud) -> Vec<String> {
+    h.team_names.iter().map(|n| localise(n)).collect()
+}
+
+/// The team menu's `Update` (`0x10066020`).
+fn update_team_menu() {
+    let players = player_slots();
+    let (w, h) = screen_size();
+    let (extra, names) = hud::with(|h| (h.players.clone(), team_names(h)));
+    let frags: Vec<i16> = with(|m| m.board.teams.iter().map(|t| t.frags).collect());
+    let team_frags = |i: usize| frags.get(i).copied().unwrap_or(0);
+    let level = format!("maps/{}.bsp", goldsrc::ext::render::level_name());
+    let level = if goldsrc::ext::render::level_name().is_empty() { String::new() } else { level };
+    let size = |t: &[u8]| vgui::with_schemes(|s| s.font_of("Briefing Text").map(|f| f.text_size(t))).flatten().unwrap_or((0, 0));
+    let inp = team::Inputs {
+        team_names: &names,
+        players: &players,
+        extra: &extra,
+        team_frags: &team_frags,
+        level: &level,
+        load: &goldsrc::ext::render::load_file,
+        briefing_size: &size,
+        w,
+        h,
+    };
+    with(|m| team_menu(m, w, h).update(&inp));
+}
+
+/// The viewport's team menu, made for the screen size.
+fn team_menu(m: &mut Menus, w: i32, h: i32) -> &mut team::TeamMenu {
+    if m.team.is_none() || m.team_size != (w, h) {
+        m.team = Some(team::TeamMenu::new(w, h, &hud::text::lookup));
+        m.team_size = (w, h);
+    }
+    m.team.as_mut().expect("just made")
+}
+
+/// The viewport's message handlers that feed its menus (`TeamNames` `0x10064df0`, `ScoreInfo`
+/// `0x10065090`, `TeamScore` `0x10065120`, `TeamInfo` `0x100651c0`) and the death notice's
+/// `gViewPort->DeathMsg` (`0x1001b360`). The HUD state has already taken the message.
+pub fn on_message(m: Msg, buf: &[u8]) {
+    use shared::protocol::hud as ph;
+    match m {
+        // `TeamNames` updates the team menu.
+        Msg::TeamNames => update_team_menu(),
+        // `UpdateOnPlayerInfo` (`0x10064750`): the team menu and the scoreboard.
+        Msg::ScoreInfo => {
+            update_team_menu();
+            with_board_inputs(|b, inp, sb| b.update(inp, sb));
+        }
+        Msg::TeamInfo => with_board_inputs(|b, inp, sb| b.rebuild_teams(inp, sb)),
+        Msg::TeamScore => {
+            if let Some(t) = ph::TeamScore::decode(buf) {
+                with(|mm| mm.board.team_score(&t.team, t.frags, t.deaths));
+            }
+        }
+        Msg::DeathMsg => {
+            if let Some(d) = ph::DeathMsg::decode(buf) {
+                let players = player_slots();
+                let me = (1..64).rev().find(|&i| players[i].this_player).map_or(0, |i| i as i32);
+                let now = hud::now();
+                with(|mm| {
+                    if me != 0 {
+                        mm.board.player_num = me;
+                    }
+                    mm.board.death_msg(d.killer as i32, d.victim as i32, now);
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---- VGUI menu queue -------------------------------------------------------------------------
+
+/// `ShowVGUIMenu` (`0x10064050`): refused during demo playback and (but for the MOTD) at
+/// intermission, and when the menu is already queued; the team menu only in teamplay
+/// (`0x10064280`). The first menu opens at once; later ones wait their turn.
+pub fn show_vgui_menu(id: i32) {
+    let e = engine();
+    if e.demo_playing() || (hud::intermission() && id != 5) || with(|m| m.queue.iter().any(|q| q.id() == id)) {
+        return;
+    }
+    let (w, h) = screen_size();
+    let menu = match id {
+        2 => {
+            if hud::with(|h| h.gamemode) < 1 {
+                return;
+            }
+            with(|m| team_menu(m, w, h).reset());
+            Menu::Team
+        }
+        5 => {
+            let (server, text) = hud::with(|h| (h.server_name.clone(), h.motd.clone()));
+            let class = e.local_player().map_or(0, |p| p.curstate.playerclass);
+            let ok = hud::text::lookup("#Menu_OK");
+            Menu::Motd(Box::new(motd::Motd::new(&server, &text, &ok, class == 0, w, h)))
+        }
+        _ => return,
+    };
+    let first = with(|m| {
+        m.queue.push(menu);
+        m.queue.len() == 1
+    });
+    if first {
+        open_top();
+    }
+}
+
+/// `CMenuPanel::Open` for the shown menu: the team menu updates first (`0x10066610`).
+fn open_top() {
+    if with(|m| m.queue.first() == Some(&Menu::Team)) {
+        update_team_menu();
+    }
     crate::input::center_cursor();
 }
 
-/// Team menu keys: 1..4 `jointeam n`, 5 `jointeam 5` (auto assign), 10 cancel.
+/// `HideTopMenu` (`0x10064200`): close the shown menu and open the next (not during demo
+/// playback, `0x10063bd0`).
+fn hide_top_menu() {
+    let next = with(|m| {
+        if !m.queue.is_empty() {
+            m.queue.remove(0);
+        }
+        !m.queue.is_empty()
+    });
+    if next && !engine().demo_playing() {
+        open_top();
+    }
+}
+
+fn current_menu() -> Option<i32> {
+    with(|m| m.queue.first().map(Menu::id))
+}
+
+pub fn open_team_menu() {
+    show_vgui_menu(2);
+}
+
+pub fn open_motd() {
+    show_vgui_menu(5);
+}
+
+/// The team menu's digit keys through the `slot` commands: `SlotInput` of the shown menu.
 pub fn team_menu_key(n: i32) -> bool {
-    if !with(|m| m.team_open) {
+    if current_menu() != Some(2) {
         return false;
     }
-    let teams = hud::with(|h| h.team_names.len().clamp(2, 4)) as i32;
-    match n {
-        1..=4 if n <= teams => engine().server_cmd(&format!("jointeam {n}")),
-        5 => engine().server_cmd("jointeam 5"),
-        10 => {}
-        _ => return true,
-    }
-    with(|m| m.team_open = false);
+    team_slot(n);
     true
 }
 
-// ---- MOTD ------------------------------------------------------------------------------------
+/// `CTeamMenuPanel::SlotInput` (`0x100665a0`), firing the button's action.
+fn team_slot(n: i32) -> bool {
+    let teams = hud::with(|h| h.team_names.len());
+    let action = with(|m| m.team.as_ref().and_then(|t| t.slot_input(n, teams)));
+    match action {
+        Some(a) => {
+            run_team_action(a);
+            true
+        }
+        None => false,
+    }
+}
 
-pub fn open_motd() {
-    with(|m| m.motd_open = true);
+/// A team menu button's action: `CMenuHandler_StringCommandWatch` (`0x10064a20`) runs the command
+/// and closes the menu; cancel closes it.
+fn run_team_action(a: team::Action) {
+    if let team::Action::Command(c) = a {
+        engine().client_cmd(&c);
+    }
+    hide_top_menu();
 }
 
 // ---- scoreboard ------------------------------------------------------------------------------
 
+/// `ShowScoreBoard` (`0x10063710`, multiplayer only) opens it (`ScorePanel::Open` `0x1005e630`:
+/// rebuild the teams); `HideScoreBoard` (`0x10063760`, not at intermission) hides it and ends
+/// squelch mode.
 pub fn show_scores(on: bool) {
-    with(|m| m.scores = on);
-    if !on {
-        // `HideScoreBoard` (10063760) ends squelch mode.
+    if on {
+        if engine().max_clients() > 1 {
+            open_scores();
+        }
+    } else if !hud::intermission() {
+        with(|m| m.scores = false);
         crate::voice::stop_squelch_mode();
     }
 }
 
+fn open_scores() {
+    with_board_inputs(|b, inp, sb| b.rebuild_teams(inp, sb));
+    with(|m| m.scores = true);
+}
+
 /// A mouse press while the scoreboard is up and has no cursor (`ScorePanel::mousePressed`
-/// 1005e660): the first press enters squelch mode, which shows the cursor. Returns true if the
-/// press was taken (it doesn't reach the engine as a key).
+/// 1005e660, through its hit-test panel): the first press enters squelch mode, which shows the
+/// cursor. Returns true if the press was taken (it doesn't reach the engine as a key).
 pub fn scoreboard_press() -> bool {
     if !scores_visible() || wants_cursor() || hud::intermission() {
         return false;
@@ -202,34 +439,28 @@ pub fn scoreboard_press() -> bool {
     true
 }
 
-/// The scoreboard player row under the cursor that can be muted (`MouseOverCell` 1005e870: only
-/// players the server lets us hear).
-fn squelch_row(m: &Menus, x: i32, y: i32) -> Option<(i32, i32, i32, i32, i32)> {
-    m.score_rows.iter().copied().find(|r| hit((r.0, r.1, r.2, r.3), x, y) && crate::voice::is_player_audible(r.4))
-}
-
 pub fn scores_visible() -> bool {
-    with(|m| m.scores) || INTERMISSION.0.get()
+    with(|m| m.scores)
 }
 
-/// Intermission: TS hides VGUI menus and shows the scoreboard; leaving hides it.
+/// Intermission starts or ends (`CHud::Redraw` `0x10021aa0`): TS hides the VGUI menus
+/// (`HideAllVGUIMenus` `0x100641e0`) and shows the scoreboard; leaving hides it.
 pub fn intermission(on: bool) {
-    INTERMISSION.0.set(on);
     if on {
         with(|m| {
             m.buy.close();
-            m.team_open = false;
-            m.motd_open = false;
+            m.queue.clear();
         });
     }
+    show_scores(on);
 }
 
 /// `TeamFortressViewport::AllowedToPrintText` (`0x10064240`): false while the team menu or the
 /// MOTD (VGUI menus 2 and 5; TS also lists the class and class-help menus 3 and 6, which the
-/// port doesn't have) is up and the local player has no class (`g_iPlayerClass`, `0x10190a10`,
+/// port doesn't have) is shown and the local player has no class (`g_iPlayerClass`, `0x10190a10`,
 /// from the local player's state). Chat then goes to the console only.
 pub fn allowed_to_print_text() -> bool {
-    if !with(|m| m.team_open || m.motd_open) {
+    if !matches!(current_menu(), Some(2 | 5)) {
         return true;
     }
     engine().local_player().map_or(0, |p| p.curstate.playerclass) != 0
@@ -237,9 +468,9 @@ pub fn allowed_to_print_text() -> bool {
 
 // ---- input -----------------------------------------------------------------------------------
 
-/// A menu owns the mouse (virtual cursor, clicks).
+/// A menu owns the mouse (virtual cursor, clicks): `UpdateCursorState` (`0x10064790`).
 pub fn wants_cursor() -> bool {
-    with(|m| m.buy.active || m.team_open || m.motd_open) || squelching()
+    with(|m| m.buy.active || !m.queue.is_empty()) || squelching()
 }
 
 /// Squelch mode with the scoreboard showing: the scoreboard owns the cursor.
@@ -253,66 +484,89 @@ const K_SPACE: i32 = 32;
 /// GoldSrc keydefs.h `K_KP_ENTER` (169, `0xa9` in `0x10064b90`).
 const K_KP_ENTER: i32 = 169;
 
-/// The parts of `TeamFortressViewport::KeyInput` (`0x10064b90`, from `HUD_Key_Event`) for the
-/// port's menus: with the team menu up, Escape closes it once the player has a team
-/// (`g_iTeamNumber`, `0x10190b24`, the local player's state); with the MOTD up, Enter, keypad
-/// Enter, Space or Escape close it. The buy menu takes no keys here (Escape doesn't close it).
-/// Returns true if a menu consumed the key.
-pub fn key_event(down: bool, key: i32, _binding: &CStr) -> bool {
-    let (motd, team) = with(|m| (m.motd_open, m.team_open));
-    if team && key == K_ESCAPE && engine().local_player().is_some_and(|p| p.curstate.team != 0) {
-        with(|m| m.team_open = false);
+/// `TeamFortressViewport::KeyInput` (`0x10064b90`, from `HUD_Key_Event`), with the console up:
+/// * Enter (or keypad Enter) while spectating asks for the team menu;
+/// * with the team menu shown, Escape closes it once the player has a team (`g_iTeamNumber`,
+///   `0x10190b24`, the local player's state), a digit goes to its `SlotInput` and `+jump`
+///   auto-assigns;
+/// * with the MOTD shown, Enter, keypad Enter, Space or Escape close it.
+///
+/// The buy menu takes no keys here (Escape doesn't close it). Returns true if a menu consumed
+/// the key.
+pub fn key_event(down: bool, key: i32, binding: &CStr) -> bool {
+    let e = engine();
+    if down && matches!(key, K_ENTER | K_KP_ENTER) && crate::state::with(|s| s.spec_mode) != 0 && !e.con_is_visible() {
+        show_vgui_menu(2);
+    }
+    let Some(cur) = current_menu() else { return false };
+    if e.con_is_visible() {
+        return false;
+    }
+    if cur == 2 {
+        if key == K_ESCAPE && e.local_player().is_some_and(|p| p.curstate.team != 0) {
+            hide_top_menu();
+            return true;
+        }
+        if down && (b'0' as i32..=b'9' as i32).contains(&key) {
+            team_slot(key - b'0' as i32);
+            return true;
+        }
+    }
+    if down && matches!(key, K_ENTER | K_KP_ENTER | K_SPACE | K_ESCAPE) && cur == 5 {
+        hide_top_menu();
         return true;
     }
-    if down && motd && matches!(key, K_ENTER | K_ESCAPE | K_SPACE | K_KP_ENTER) {
-        with(|m| m.motd_open = false);
+    if down && cur == 2 && binding.to_bytes() == b"+jump" {
+        team_slot(5);
         return true;
     }
     false
 }
 
-/// Mouse buttons while a menu has the cursor. The buy menu gets them only while no VGUI menu is
-/// up (`IN_MouseEvent` `0x100273d0`): `CTSBuyMenu::MouseEvent` (10038360) runs the row under the
-/// cursor on a left release (key 1 of the current page when there is none) and key 10 (back) on
-/// a right release.
+/// Mouse buttons while a menu has the cursor. VGUI's buttons fire on a left release over them;
+/// the buy menu gets the buttons only while no VGUI menu is up (`IN_MouseEvent` `0x100273d0`):
+/// `CTSBuyMenu::MouseEvent` (10038360) runs the row under the cursor on a left release (key 1 of
+/// the current page when there is none) and key 10 (back) on a right release.
 pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
     let pressed = state & !old;
-    if squelching() && !with(|m| m.buy.active || m.team_open || m.motd_open) {
-        // `ScorePanel::mousePressed`: any button toggles the highlighted player's mute.
+    let released = old & !state;
+    let (w, h) = screen_size();
+    match with(|m| m.queue.first().cloned()) {
+        Some(Menu::Motd(motd)) => {
+            if released & 1 != 0 && motd.click(w, h, x, y) {
+                hide_top_menu();
+            }
+            return;
+        }
+        Some(Menu::Team) => {
+            if released & 1 != 0
+                && let Some(a) = with(|m| m.team.as_ref().and_then(|t| t.click(w, h, x, y)))
+            {
+                run_team_action(a);
+            }
+            return;
+        }
+        None => {}
+    }
+    if squelching() && !buy_open() {
+        // `ScorePanel::mousePressed` from a player-entry label: any button toggles the
+        // highlighted player's mute.
         if pressed != 0
             && !hud::intermission()
-            && let Some(r) = with(|m| squelch_row(m, x, y))
+            && let Some(p) = with(|m| m.board.on_entry(x, y).then(|| m.board.highlighted_player()).flatten())
         {
-            crate::voice::scoreboard_toggle(r.4);
+            crate::voice::scoreboard_toggle(p);
         }
         return;
     }
-    let released = old & !state;
     if released & 1 != 0 {
         click(x, y);
-    } else if released & 2 != 0 && buy_open() && !with(|m| m.team_open || m.motd_open) {
+    } else if released & 2 != 0 && buy_open() {
         buy_key(10);
     }
 }
 
-fn hit(r: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
-    x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3
-}
-
 fn click(x: i32, y: i32) {
-    let (motd_ok, motd) = with(|m| (m.motd_ok, m.motd_open));
-    if motd {
-        if hit(motd_ok, x, y) {
-            with(|m| m.motd_open = false);
-        }
-        return;
-    }
-    if with(|m| m.team_open) {
-        if let Some(key) = with(|m| m.team_rows.iter().find(|r| hit((r.0, r.1, r.2, r.3), x, y)).map(|r| r.4)) {
-            team_menu_key(key);
-        }
-        return;
-    }
     if !buy_open() {
         return;
     }
@@ -552,66 +806,62 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
     }
 }
 
-fn draw_team_menu(dc: &Dc, rows: &mut Vec<(i32, i32, i32, i32, i32)>) {
-    let (names, brief) = hud::with(|h| (h.team_names.clone(), h.map_briefing.clone()));
-    let names = if names.is_empty() { vec!["Specialists".to_owned(), "Mercenaries".to_owned()] } else { names };
-    let (w, h) = (300, 40 + 24 * (names.len() as i32 + 2));
-    let (x, mut y) = ((dc.w() - w) / 2, (dc.h() - h) / 2);
-    dc.fill(x, y, w, h, [0; 3], 160);
-    dc.string(x + 10, y + 8, "Select Team", dc.hud);
-    if !brief.is_empty() {
-        dc.string(x + 10, y + h + 4, &brief, half(dc.hud));
+/// The viewport's per-frame work (`paintBackground` `0x100648c0`) and the VGUI paint pass: the
+/// scoreboard follows the cursor and updates every half second while shown; the shown menu
+/// follows the cursor; then the team menu, the scoreboard and the MOTD paint in the viewport's
+/// child order.
+fn paint_vgui() {
+    let (w, h) = screen_size();
+    let (cx, cy) = crate::input::cursor();
+    let now = hud::now();
+    let squelch = crate::voice::in_squelch_mode();
+    let audible = |p: i32| {
+        let info = engine().player_info(p);
+        let blocked_self = info.this_player && !goldsrc::ext::spectator::is_spectate_only();
+        (!info.name.is_empty(), blocked_self, crate::voice::is_player_audible(p))
+    };
+    let shown = scores_visible();
+    if shown {
+        with(|m| m.board.cursor_moved(cx, cy, squelch, &audible));
+        if with(|m| m.board.next_update < now) {
+            with_board_inputs(|b, inp, sb| b.update(inp, sb));
+            with(|m| m.board.next_update = now + 0.5);
+        }
     }
-    y += 36;
-    let mut entries: Vec<(String, i32)> =
-        names.iter().take(4).enumerate().map(|(i, n)| (format!("{} {}", i + 1, localise(n)), i as i32 + 1)).collect();
-    entries.push(("5 Auto assign".into(), 5));
-    entries.push(("0 Cancel".into(), 10));
-    for (text, key) in entries {
-        dc.fill(x + 10, y, w - 20, 20, half(dc.hud), 60);
-        dc.string(x + 14, y + 2, &text, dc.hud);
-        rows.push((x + 10, y, w - 20, 20, key));
-        y += 24;
-    }
-}
-
-/// MOTD window (`CMessageWindowPanel`): server name, the concatenated `MOTD` text, OK.
-fn draw_motd(dc: &Dc) -> (i32, i32, i32, i32) {
-    let e = engine();
-    let (title, text) = hud::with(|h| (h.server_name.clone(), h.motd.clone()));
-    let (w, h) = ((dc.w() * 3 / 4).min(640), (dc.h() * 3 / 4).min(480));
-    let (x, y) = ((dc.w() - w) / 2, (dc.h() - h) / 2);
-    dc.fill(x, y, w, h, [0; 3], 180);
-    dc.fill(x, y, w, 22, half(dc.hud), 80);
-    e.draw_console_string(x + 8, y + 4, [1.0, 1.0, 1.0], if title.is_empty() { "Message of the day" } else { &title });
-    let lh = e.console_string_size("M").1.max(12);
-    let mut yy = y + 30;
-    'outer: for para in text.replace('\r', "").split('\n') {
-        let mut line = String::new();
-        for word in para.split(' ') {
-            let cand = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
-            if e.console_string_size(&cand).0 > w - 16 && !line.is_empty() {
-                e.draw_console_string(x + 8, yy, [0.9, 0.9, 0.9], &line);
-                yy += lh;
-                line = word.to_owned();
-                if yy > y + h - 40 {
-                    break 'outer;
+    let cur = with(|m| m.queue.first().map(Menu::id));
+    if wants_cursor() {
+        with(|m| match m.queue.first_mut() {
+            Some(Menu::Motd(motd)) => motd.hover(w, h, cx, cy),
+            Some(Menu::Team) => {
+                if let Some(t) = &mut m.team {
+                    t.hover(w, h, cx, cy);
                 }
-            } else {
-                line = cand;
             }
-        }
-        e.draw_console_string(x + 8, yy, [0.9, 0.9, 0.9], &line);
-        yy += lh;
-        if yy > y + h - 40 {
-            break;
-        }
+            None => {}
+        });
     }
-    let ok = (x + w / 2 - 40, y + h - 30, 80, 22);
-    dc.fill(ok.0, ok.1, ok.2, ok.3, half(dc.hud), 120);
-    let tw = e.console_string_size("OK").0;
-    e.draw_console_string(ok.0 + (80 - tw) / 2, ok.1 + 4, [1.0, 1.0, 1.0], "OK");
-    ok
+    if cur == Some(2) && with(|m| m.team.as_ref().is_some_and(|t| !t.updated_map)) {
+        update_team_menu();
+    }
+    vgui::with_schemes(|sb| {
+        let s = &mut EngineSurface;
+        with(|m| {
+            if cur == Some(2)
+                && let Some(t) = &m.team
+            {
+                t.paint(s, sb, w, h);
+            }
+        });
+        if shown {
+            let mut voice = |p: i32| crate::voice::scoreboard_icon(p);
+            with(|m| m.board.paint(s, sb, w, h, &mut voice));
+        }
+        with(|m| {
+            if let Some(Menu::Motd(motd)) = m.queue.first() {
+                motd.paint(s, sb, w, h);
+            }
+        });
+    });
 }
 
 pub fn redraw(time: f32) {
@@ -625,31 +875,17 @@ pub fn redraw(time: f32) {
         let nohud = crate::input::cvars().nohud.value() != 0.0;
         with(|m| {
             m.rows.clear();
-            m.team_rows.clear();
             if m.buy.active && !nohud {
                 draw_buy(dc, &m.buy, &r, &mut m.rows);
             }
-            if m.team_open {
-                draw_team_menu(dc, &mut m.team_rows);
-            }
-            if m.motd_open {
-                m.motd_ok = draw_motd(dc);
-            }
         });
-        if scores_visible() {
-            let hover = if squelching() {
-                let (cx, cy) = crate::input::cursor();
-                with(|m| squelch_row(m, cx, cy)).map(|r| r.4)
-            } else {
-                None
-            };
-            let rows = scoreboard::draw(dc, hover);
-            with(|m| m.score_rows = rows);
-        } else {
-            with(|m| m.score_rows.clear());
-            // Squelch mode ends with the scoreboard (also when intermission hid it).
-            crate::voice::stop_squelch_mode();
-        }
+    });
+    paint_vgui();
+    if !scores_visible() {
+        // Squelch mode ends with the scoreboard (also when intermission hid it).
+        crate::voice::stop_squelch_mode();
+    }
+    hud::with_dc(|dc| {
         if wants_cursor() {
             let (cx, cy) = crate::input::cursor();
             if dc.g.ts.cursor != 0 {
