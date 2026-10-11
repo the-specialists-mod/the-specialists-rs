@@ -94,14 +94,16 @@ pub fn debug(f: impl FnOnce() -> String) {
 
 /// The weapon restriction mask (1 knives, 2 pistols, 4 SMGs, 8 rifles, 16 shotguns): the rules'
 /// `allowed_weapons` (`TSGameRules+0x5870`, set by `ts_mapglobals` and `weaponrestriction`, sent
-/// as `SrvSett 3`).
+/// as `SrvSett 3`). `BuyWeapon` (0x945bc) passes the whole int to `IsRestrictedWeapon`, so higher
+/// bits (a `ts_mapglobals` with spawnflags above 0x1f) count: the mask isn't 0 then, and weapon
+/// types outside the five categories stay buyable.
 pub fn restriction() -> u32 {
-    crate::rules::state::with(|g| g.allowed_weapons) as u32 & 0x1f
+    crate::rules::state::with(|g| g.allowed_weapons) as u32
 }
 
 /// Sets the restriction mask (the rules broadcast it as `SrvSett 3` on change).
 pub fn set_restriction(mask: u32) {
-    crate::rules::state::with(|g| g.allowed_weapons = (mask & 0x1f) as i32);
+    crate::rules::state::with(|g| g.allowed_weapons = mask as i32);
 }
 
 pub fn grenade_buys() -> bool {
@@ -253,5 +255,21 @@ pub fn precache() {
         if !super::custom::load(&f) {
             e.print(&format!("customweapons: can't read {f}\n"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use shared::weapons::{id, is_restricted};
+
+    #[test]
+    fn restriction_mask_keeps_high_bits() {
+        // `ts_mapglobals` spawnflags 0x3f leave 0x1f ^ 0x3f = 0x20. TS passes it whole: every
+        // category is closed, but the mask isn't 0, so a grenade is still allowed. Masked with
+        // 0x1f it would be 0 and close everything.
+        let mask = 0x1f ^ 0x3f;
+        assert!(is_restricted(id::BERETTA, mask));
+        assert!(!is_restricted(id::M61, mask));
+        assert!(is_restricted(id::M61, mask & 0x1f));
     }
 }

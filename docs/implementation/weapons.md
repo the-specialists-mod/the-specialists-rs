@@ -48,7 +48,7 @@ addresses of `ts_i386.so`.
 | `CTSGun::KatanaFire` 0x833f0 / `KatanaThrow` 0x83b68 / `KnifeFire` 0x84044 | same names |
 | `CTSGun::ReloadWeapon` 0x84a14 / `ShotgunReload` 0x84aac / `Reload` 0x84d5c | same names |
 | `CTSGun::WeaponIdle` 0x854dc / `HolsterWeapon` 0x85698 | same names |
-| `CTSGun::UpdateClientData` 0x858c8 | `net::update_client` (`WStatus`, `WeaponInfo`, 10 Hz) |
+| `CTSGun::UpdateClientData` 0x858c8 | `weapons::update_client_data` → `net::update_client` (`WStatus`, `WeaponInfo`, 10 Hz), called at the end of the player's `UpdateClientData` (`player::hud::update_client_data`, from PreThink) |
 | `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` |
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
 | `CBasePlayer::PostThink` timer tail 0x91610 | `Gun::decrement_timers`, `Gun::timer_dt` |
@@ -106,7 +106,8 @@ addresses of `ts_i386.so`.
   decrement by `frametime * fuser1 * (DFR ? 1.5 : 1)`, speed, messages.
 * `on_killed`: holster, ammo pack, drop every weapon as `WorldGun` (a corpse's grenades become
   grenade power-ups), clear inventory, slots, kevlar flag, loadout (TS `ResetArmament`),
-  `CurWeapon 0,0,0`. `ActItems 0` is the rules' (sent once, later in `Killed`).
+  `CurWeapon 0,0,0`. `ActItems 0` is the rules' (sent once, later in `Killed`); the player's
+  `UpdateClientData` sends `ActItems` only while alive (`player::hud`).
 * `client_command`: `weapon_<n>`, `lastinv`, `drop`, `drop_<n>`, `firemode`, `useitems`,
   `lasclr_<n>` (`PlInfo`), `rst_cfg`, `tkw id_att ...`, `tki item ...`, `tka type_count ...`;
   test helpers (need `sv_cheats`): `ts_give id_att ...` (weapon + full ammo),
@@ -221,8 +222,8 @@ kung fu / 0x12, an index into that weapon's set A).
 
 Messages: `WeaponInfo` (B id, B clip, S reserve, B mode, B items; kung fu: B 0, B bar, 0,0,0),
 `WStatus` (B id, B owned, B clip; when the owned flag changes and for the akimbo/single twin
-with each `WeaponInfo`), `ActItems` (ALL: B entindex, B active | 0x40 akimbo), `TSSpace`
-(B free), `KFuPower` (C round(bar)), `CurWeapon` (0,0,0 on death), `PlInfo` (ALL: B entindex,
+with each `WeaponInfo`), `ActItems` (ALL: B entindex, B active | 0x40 akimbo) and `TSSpace`
+(B free; both sent by `player::hud`, from `CBasePlayer::UpdateClientData`), `KFuPower` (C round(bar)), `CurWeapon` (0,0,0 on death), `PlInfo` (ALL: B entindex,
 B 0, B colour), `CustomWP` (string), `TSMBlur` (PVS, kung fu), `TSFrags` (explosion),
 `ScreenShake`, `TSFade`, `TSMessage` (custom weapons notice).
 
@@ -362,11 +363,13 @@ How the port maps TS where the structure differs (not deviations):
   kung fu sets `Player::kungfu` (x2 melee), DFR/slow-mo are read from `Player::active_powerup`
   and `pev->fuser1`.
 * `rules::on_killed` must call `weapons::on_killed(p, cx)` (drops, loadout reset, `CurWeapon`
-  reset) and send `ActItems 0` itself. `StartObserver` / disconnect: `weapons::strip_all`
-  (TS `RemoveAllItems`); a spawn without either keeps the gun, as in TS.
+  reset) and send `ActItems 0` itself. `StartObserver` / disconnect: `weapons::strip_all` and
+  `weapons::remove_all_items_tail` (TS `RemoveAllItems(TRUE)`, with its inline
+  `UpdateClientData`); a spawn without either keeps the gun, as in TS.
 * `pfnStartFrame` calls `weapons::start_frame` after the rules' frame (the simulated bullets).
 * Restrictions: `weapons::set_restriction(mask)` (`ts_mapglobals` spawnflags: `0x1f ^ flags`),
-  `weapons::restriction()`; broadcast it as `SrvSett 3`, `realbullet` as `SrvSett 0`,
+  `weapons::restriction()` (the whole int, as `BuyWeapon` 0x945bc passes it to
+  `IsRestrictedWeapon`; not masked to 0x1f); broadcast it as `SrvSett 3`, `realbullet` as `SrvSett 0`,
   `ammocount` as `SrvSett 2` (cvars registered here).
 * Armour absorb: read `shared::weapons::tables().combat.armor_absorb` (a weapons file may
   change it).

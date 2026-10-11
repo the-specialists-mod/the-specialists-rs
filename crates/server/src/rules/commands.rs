@@ -48,28 +48,26 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
         }
         "motd" => send_motd(cx.edict),
         "fullupdate" => force_client_dll_update(p, cx),
-        "lasclr" => {}
-        // CHalfLifeMultiplay::ClientCommand (0xceee8): the voice manager first, then menuselect.
-        "vban" | "vmodenable" if super::voice::client_command(cx.edict, p.respawn_at, cmd, args) => {}
-        "menuselect" => {}
-        c if c.starts_with("lasclr_") => {
-            let n: i32 = c["lasclr_".len()..].parse().unwrap_or(0);
-            let idx = cx.index();
-            crate::messages::all(Msg::PlInfo).byte(idx).byte(0).byte(n).end();
-        }
         c if c.starts_with("cutwire_") => {} // bomb wires: objective modes are dead in 3.0
+        // Past `ClientCommand`'s own names, `CHalfLifeMultiplay::ClientCommand` (0xceee8): the voice
+        // manager (`vban`/`VModEnable` by `strcasecmp`, the only case-insensitive names), then
+        // `menuselect`.
+        _ if super::voice::client_command(cx.edict, p.respawn_at, cmd, args) => {}
+        "menuselect" => {}
         _ => return false,
     }
     true
 }
 
-/// `CBasePlayer::ForceClientDllUpdate` (0x92594), the `fullupdate` command: forget every "last
-/// sent" HUD and weapon value, run the HUD update now, then tell the player whether it is an
-/// observer. Unlike the SDK, TS doesn't set `m_fInitHUD`, so no `ResetHUD` goes out.
-fn force_client_dll_update(p: &mut Player, cx: &mut Cx) {
-    crate::player::hud::reset(p);
-    p.inv.sv.reset_net();
-    crate::player::hud::update(p, cx);
+/// `CBasePlayer::ForceClientDllUpdate` (0x92594), the `fullupdate` command and impulse 204:
+/// forget the player's "last sent" HUD values (not `TSPAward`, nor the gun's own caches), flag a
+/// new train HUD, reset the throttle and run `UpdateClientData` now, then tell the player whether
+/// it is an observer. Unlike the SDK, TS doesn't set `m_fInitHUD`, so no `ResetHUD` goes out
+/// unless one was already pending.
+pub fn force_client_dll_update(p: &mut Player, cx: &mut Cx) {
+    crate::player::hud::force_reset(p);
+    p.drive.train |= crate::entities::stock::drive::TRAIN_NEW;
+    crate::player::hud::update_client_data(p, cx);
     let s = fullupdate_spectator(cx.index(), cx.pev().deadflag);
     msg::one(Msg::Spectator, cx.edict, |w| s.write(w));
 }

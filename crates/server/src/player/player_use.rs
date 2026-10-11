@@ -13,6 +13,7 @@ use goldsrc::ext::entities::ATTN_NORM;
 use goldsrc::server::{IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use shared::weapons::spread::{self, Vec3};
+use std::cell::Cell;
 
 /// `PLAYER_SEARCH_RADIUS`.
 const SEARCH_RADIUS: f32 = 64.0;
@@ -124,9 +125,46 @@ pub fn clamp_to_box(v: Vec3, half: Vec3) -> Vec3 {
     spread::normalize(out)
 }
 
+/// `CBasePlayer::ImpulseCommands` (0xdb780): `PlayerUse`, then `pev->impulse`: 99 toggles the
+/// `Logo` message, 204 is `ForceClientDllUpdate`; the impulse is cleared whatever it was.
+pub fn impulse_commands(p: &mut Player, cx: &mut Cx, pressed: i32, released: i32) {
+    player_use(p, cx, pressed, released);
+    match cx.pev().impulse {
+        99 => logo(cx.edict),
+        204 => crate::rules::commands::force_client_dll_update(p, cx),
+        // 201 (spray, `CSprayCan`) and `CheatImpulseCommands` aren't ported.
+        _ => {}
+    }
+    cx.pev().impulse = 0;
+}
+
+/// `gmsgLogo`: 0 until impulse 99 registers the message, and 0 again after the next one. It lives
+/// for the process, as the engine's message table does.
+static LOGO_MSG: goldsrc::Global<Cell<i32>> = goldsrc::Global(Cell::new(0));
+
+/// Impulse 99: when `gmsgLogo` is 0, `REG_USER_MSG("Logo", 1)` (the engine returns the old
+/// number if it was registered before) and `Logo 1`; otherwise `Logo 0` and `gmsgLogo = 0`.
+fn logo(e: *mut edict_t) {
+    let (id, on) = logo_toggle(LOGO_MSG.0.get(), || engine().reg_user_msg(c"Logo", 1));
+    goldsrc::server::MsgWriter::begin(MSG_ONE as i32, id, None, e).byte(on as i32).end();
+    LOGO_MSG.0.set(if on { id } else { 0 });
+}
+
+/// The message number and byte `logo` sends for the current `gmsgLogo`.
+fn logo_toggle(current: i32, register: impl FnOnce() -> i32) -> (i32, bool) {
+    if current == 0 { (register(), true) } else { (current, false) }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::clamp_to_box;
+    use super::{clamp_to_box, logo_toggle};
+
+    #[test]
+    fn logo_impulse_toggles() {
+        // First press registers the message and sends 1; the next sends 0 and forgets the number.
+        assert_eq!(logo_toggle(0, || 140), (140, true));
+        assert_eq!(logo_toggle(140, || panic!("registered twice")), (140, false));
+    }
 
     #[test]
     fn clamp_vector_to_box() {

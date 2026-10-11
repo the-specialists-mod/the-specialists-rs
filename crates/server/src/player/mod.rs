@@ -133,7 +133,6 @@ impl Player {
             crate::stunt::post_think(self, cx);
         }
         crate::rules::post_think(self, cx);
-        hud::update(self, cx);
     }
 
     pub fn is_alive(cx: &mut Cx) -> bool {

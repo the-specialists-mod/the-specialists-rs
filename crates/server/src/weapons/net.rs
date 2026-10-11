@@ -1,6 +1,7 @@
 //! What the client learns about weapons: `CTSGun::UpdateClientData` 0x858c8 (`WStatus`,
-//! `WeaponInfo`, 10 Hz, on change), `ActItems` and `TSSpace` (`CBasePlayer::UpdateClientData`),
-//! `KFuPower` (`UpdateMeleeBar`), and the `clientdata_t` / `weapon_data_t` packing.
+//! `WeaponInfo`, 10 Hz, on change), `KFuPower` (`UpdateMeleeBar`), and the `clientdata_t` /
+//! `weapon_data_t` packing. `ActItems` and `TSSpace` are `CBasePlayer::UpdateClientData`'s
+//! (`player::hud`).
 
 use super::SLOTS;
 use crate::messages::{self, Msg};
@@ -55,13 +56,6 @@ pub fn send_kfu_power(to: *mut edict_t, bar: f32) {
     s.end();
 }
 
-pub fn send_act_items(player: *mut edict_t, items: u8) {
-    let idx = engine().index_of(player);
-    let mut s = Sink::new(messages::all(Msg::ActItems));
-    proto::ActItems { entindex: idx as u8, items }.write(&mut s);
-    s.end();
-}
-
 /// `CurWeapon` 0,0,0 (TS only sends this reset, from `RemoveAllItems`).
 pub fn send_cur_weapon_reset(to: *mut edict_t) {
     if bot(to) {
@@ -83,24 +77,13 @@ pub fn force_update(p: &mut Player) {
     p.inv.sv.reset_net();
 }
 
-/// Called every post-think.
+/// `CTSGun::UpdateClientData` (0x858c8), from the end of `CBasePlayer::UpdateClientData`
+/// (`player::hud::update_client_data`): `WStatus` and `WeaponInfo` on change, 10 Hz on the gun's
+/// own timer. `ActItems` and `TSSpace` are the player's part, sent from there.
 pub fn update_client(p: &mut Player, cx: &mut Cx) {
     let me = cx.edict;
-    // ActItems (to everyone) and TSSpace, on change.
-    let act = p.inv.gun.active_items() as u8;
-    if p.inv.sv.sent_act_items != Some(act) {
-        p.inv.sv.sent_act_items = Some(act);
-        send_act_items(me, act);
-    }
     if bot(me) {
         return;
-    }
-    let free = p.inv.sv.free_slots;
-    if p.inv.sv.sent_space != Some(free) {
-        p.inv.sv.sent_space = Some(free);
-        let mut s = Sink::new(messages::one(Msg::TsSpace, me));
-        proto::write_ts_space(&mut s, free.clamp(0, 255));
-        s.end();
     }
 
     // CTSGun::UpdateClientData, 10 Hz.

@@ -74,8 +74,6 @@ pub struct SvState {
     pub sent_status: Status,
     pub sent_reserve: i32,
     pub sent_owned: [bool; MAX_WEAPONS],
-    pub sent_act_items: Option<u8>,
-    pub sent_space: Option<i32>,
     /// Free-slot count the move speed was last computed for.
     pub speed_for: Option<i32>,
     /// `CustomWP` sent to this client.
@@ -105,8 +103,6 @@ impl Default for SvState {
             sent_status: Status::default(),
             sent_reserve: -1,
             sent_owned: [false; MAX_WEAPONS],
-            sent_act_items: None,
-            sent_space: None,
             speed_for: None,
             custom_informed: false,
         }
@@ -120,8 +116,6 @@ impl SvState {
         self.sent_id = None;
         self.sent_reserve = -1;
         self.sent_owned = [false; MAX_WEAPONS];
-        self.sent_act_items = None;
-        self.sent_space = None;
         self.speed_for = None;
     }
 }
@@ -241,11 +235,12 @@ pub fn use_by_player(ent: &mut dyn std::any::Any, icx: &mut Cx, p: &mut Player, 
 /// runs the timers down.
 pub fn post_think(p: &mut Player, cx: &mut Cx, active: bool) {
     // `CBasePlayer::ItemPostFrame` (0xdc4d0) does nothing while a tank is in use. Otherwise, once
-    // the gun is ready, `ImpulseCommands` runs `PlayerUse` (0xd9848) and then the weapon frame.
+    // the gun is ready, `ImpulseCommands` (0xdb780: `PlayerUse` 0xd9848 and the impulses) and then
+    // the weapon frame.
     if active {
         if !p.drive.tank.is_valid() && p.inv.gun.post_frame_ready(cx.pev().button as u32) {
             let (buttons, last) = (cx.pev().button, p.inv.sv.last_buttons as i32);
-            crate::player::player_use::player_use(p, cx, buttons & !last, last & !buttons);
+            crate::player::player_use::impulse_commands(p, cx, buttons & !last, last & !buttons);
             host::with_host(p, cx, |gun, h| gun.weapon_post_frame(h));
             p.inv.sv.seed = engine().random_long(0, 32000) as u32;
         }
@@ -255,6 +250,11 @@ pub fn post_think(p: &mut Player, cx: &mut Cx, active: bool) {
     let dt = Gun::timer_dt(engine().globals().frametime, pev.fuser1.max(0.0), p.active_powerup);
     p.inv.gun.decrement_timers(dt);
     inventory::sync_speed(p, cx);
+}
+
+/// `m_pActiveItem->UpdateClientData` (`CTSGun::UpdateClientData` 0x858c8), run at the end of
+/// `CBasePlayer::UpdateClientData` (`player::hud::update_client_data`).
+pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
     net::update_client(p, cx);
 }
 
@@ -333,13 +333,14 @@ pub fn strip_all(p: &mut Player, cx: &mut Cx) {
 
 /// The tail of `CBasePlayer::RemoveAllItems(TRUE)` (0xd8cec) that [`strip_all`] leaves out:
 /// no view or weapon model, `pev->weapons = 0` (the HEV suit bit too, so the geiger counter
-/// stops), and `CurWeapon 0,0,0` to the player. `StartObserver` (0x99986) is TS's only
-/// `RemoveAllItems(TRUE)` caller.
-pub fn remove_all_items_tail(cx: &mut Cx) {
+/// stops), `UpdateClientData` inline (0xd8eb5, throttled as usual), and `CurWeapon 0,0,0` to the
+/// player. Callers: `StartObserver` (0x99986) and `ClientDisconnected` (0xcf960).
+pub fn remove_all_items_tail(p: &mut Player, cx: &mut Cx) {
     let v = cx.pev();
     v.viewmodel = 0;
     v.weaponmodel = 0;
     v.weapons = 0;
+    crate::player::hud::update_client_data(p, cx);
     net::send_cur_weapon_reset(cx.edict);
 }
 

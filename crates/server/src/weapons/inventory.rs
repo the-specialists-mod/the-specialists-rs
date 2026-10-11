@@ -431,8 +431,6 @@ pub fn on_killed(p: &mut Player, cx: &mut Cx) {
     p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
     p.inv.sv.armament.clear();
     p.inv.sv.armament_ammo = [0; MAX_AMMO];
-    // `ActItems 0` goes out once, from the rest of `Killed` (rules).
-    p.inv.sv.sent_act_items = Some(0);
     net::send_cur_weapon_reset(cx.edict);
     sync_speed(p, cx);
 }

@@ -18,6 +18,7 @@ pub mod commands;
 pub mod cvars;
 pub mod frame;
 pub mod lifecycle;
+pub mod mapcycle;
 pub mod msg;
 pub mod powerup;
 pub mod scoring;

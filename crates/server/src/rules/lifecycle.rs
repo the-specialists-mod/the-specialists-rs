@@ -77,7 +77,9 @@ fn client_disconnected(e: *mut edict_t, idx: i32) {
     let tail = if state::teamplay() { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
     msg::log(&format!("\"{}<{uid}><{auth}><{tail}>\" disconnected\n", netname(e)));
     crate::player::with_player(e, |p, cx| {
+        // `RemoveAllItems(TRUE)`, `UpdateClientData` inline included.
         crate::weapons::strip_all(p, cx);
+        crate::weapons::remove_all_items_tail(p, cx);
         // TSPlayerDisconnect.
         crate::entities::ts::drop_flag(p, cx, false);
         if (idx as u32) < 0x20 {
@@ -99,6 +101,10 @@ fn client_disconnected(e: *mut edict_t, idx: i32) {
         p.respawn_at = -1.0;
         teams::clear_team(p, cx.edict);
         p.ts.is_the_one = false;
+        // `m_fGameHUDInitialized` (`+0x9b8`) off, and `UpdateClientData` off for good (`+0x534`
+        // = -1).
+        p.ts.game_hud_initialized = false;
+        p.hud.next_update = -1.0;
         // Port-only bot bookkeeping.
         p.bot = None;
         p.joined = false;
@@ -331,9 +337,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
 
     // PreThink order: WaterMove, UpdateClientData (InitHUD), CheckTimeBasedDamage, CheckSuitUpdate.
     crate::player::water::water_move(p, cx);
-    if p.ts.init_hud {
-        init_hud(p, cx);
-    }
+    crate::player::hud::update_client_data(p, cx);
     crate::player::water::check_time_based_damage(p, cx);
 
     // CheckSuitUpdate (0xda2d0): the geiger counter (suit sentences never play in multiplayer).
@@ -422,16 +426,13 @@ fn health_regen(p: &mut Player, cx: &mut Cx, now: f32) {
     }
 }
 
-/// `UpdateClientData`'s init block: ResetHUD every spawn, InitHUD and the rules InitHUD once.
-fn init_hud(p: &mut Player, cx: &mut Cx) {
+/// `UpdateClientData`'s init block (0x91d40), inside its 0.1 s throttle: ResetHUD every spawn
+/// and observer start, InitHUD and the rules InitHUDs once. Nothing is reset for a resend here:
+/// the spawn already did that (`Spawn`/`TSInit`), and the values follow in the same update.
+pub fn init_hud_block(p: &mut Player, cx: &mut Cx) {
     p.ts.init_hud = false;
     let e = cx.edict;
     messages::one(Msg::ResetHUD, e).byte(0).end();
-    // The client clears its status and weapon elements on ResetHUD: resend everything (SDK:
-    // m_iClientHealth = -1 etc. with m_fInitHUD). Without this a value sent before ResetHUD in
-    // the spawn frame (health 100) is never sent again and the HUD stays hidden.
-    crate::player::hud::reset(p);
-    p.inv.sv.reset_net();
     if !p.ts.game_hud_initialized {
         messages::one(Msg::InitHUD, e).end();
         rules_init_hud(p, cx);
@@ -628,9 +629,10 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     p.ts.init_hud = true;
     let team = teams::team_name_of(e);
     msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team }.write(w));
-    // `RemoveAllItems(TRUE)`: the gun's `Holster` again, the inventory cleared, then the tail.
+    // `RemoveAllItems(TRUE)`: the gun's `Holster` again, the inventory cleared, then the tail
+    // (with `UpdateClientData` inline, which sends ResetHUD now if the throttle allows).
     crate::weapons::strip_all(p, cx);
-    crate::weapons::remove_all_items_tail(cx);
+    crate::weapons::remove_all_items_tail(p, cx);
     engine().set_origin(e, origin);
     let mode = if p.ts.obs_mode == 0 { obs::CHASE_FREE } else { p.ts.obs_mode };
     observer_set_mode(p, cx, mode);
