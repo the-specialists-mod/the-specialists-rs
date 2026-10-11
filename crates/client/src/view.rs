@@ -312,6 +312,16 @@ impl Ring {
 
     /// The newest sample at or before `t`, the one after it and the fraction of the way to it.
     fn sample_pair(&self, t: f32) -> Option<(Vec3, Vec3, f32)> {
+        let (a, b) = self.pair(t)?;
+        let dt = self.time[b] - self.time[a];
+        if dt <= 0.0 {
+            return None;
+        }
+        Some((self.pos[a], self.pos[b], ((t - self.time[a]) / dt).min(1.0)))
+    }
+
+    /// The slots of the newest sample at or before `t` (with a nonzero time) and the one after it.
+    fn pair(&self, t: f32) -> Option<(usize, usize)> {
         let mut idx = self.cur.wrapping_sub(2);
         for _ in 1..RING_MASK {
             let a = (idx & RING_MASK) as usize;
@@ -319,16 +329,23 @@ impl Ring {
                 if self.time[a] == 0.0 {
                     return None;
                 }
-                let b = (idx.wrapping_add(1) & RING_MASK) as usize;
-                let dt = self.time[b] - self.time[a];
-                if dt <= 0.0 {
-                    return None;
-                }
-                return Some((self.pos[a], self.pos[b], ((t - self.time[a]) / dt).min(1.0)));
+                return Some((a, (idx.wrapping_add(1) & RING_MASK) as usize));
             }
             idx = idx.wrapping_sub(1);
         }
         None
+    }
+
+    /// The angle ring's lagged view angles (`0x10067bed..0x10067c69`): `InterpolateAngles`
+    /// between the two samples around `t`, which (as in TS) normalises both ring entries in place,
+    /// with the fraction in `double`s ([`crate::spectator::angle_ring_frac`]).
+    fn interpolate_angles(&mut self, t: f32) -> Option<Vec3> {
+        let (a, b) = self.pair(t)?;
+        let frac = crate::spectator::angle_ring_frac(self.time[a], self.time[b], t)?;
+        let (mut x, mut y) = (self.pos[a], self.pos[b]);
+        let out = crate::spectator::interpolate_angles(&mut x, &mut y, frac);
+        (self.pos[a], self.pos[b]) = (x, y);
+        Some(out)
     }
 }
 
@@ -1190,21 +1207,23 @@ fn calc_normal(p: &mut ref_params_t) {
     if let Some(a) = ov.angles {
         p.cl_viewangles = a;
     }
-    let vsmoothing = cv(|c| c.vsmoothing);
-    let ang_sample = with(|w| {
-        if v::len(v::sub(p.cl_viewangles, w.last_cl_angles)) != 0.0 {
+    let mut vsmoothing = cv(|c| c.vsmoothing);
+    with(|w| {
+        // `0x10067aaf`: the unrounded `Length` of the change, a NaN counting as none.
+        if !crate::spectator::x87_eq0(crate::spectator::length(v::sub(p.cl_viewangles, w.last_cl_angles))) {
             w.ang_ring.push(p.cl_viewangles, p.time);
             w.last_cl_angles = p.cl_viewangles;
         }
-        let smooth = vsmoothing != 0.0 && ov.smooth_flags & crate::spectator::smooth::ANGLES != 0;
-        smooth.then(|| w.ang_ring.sample_pair(p.time - vsmoothing))
     });
-    if let Some(sample) = ang_sample {
+    if !crate::spectator::x87_eq0(vsmoothing as f64) && ov.smooth_flags & crate::spectator::smooth::ANGLES != 0 {
+        // A negative `cl_vsmoothing` is reset to 0, and TS reads the cvar again for the lag
+        // (`0x10067b96..0x10067ba8`), so this frame then lags by 0.
         if vsmoothing < 0.0 {
             e.cvar_set(c"cl_vsmoothing", 0.0);
+            vsmoothing = 0.0;
         }
-        if let Some((a, b, frac)) = sample {
-            p.cl_viewangles = crate::spectator::interpolate_angles(a, b, frac);
+        if let Some(a) = with(|w| w.ang_ring.interpolate_angles(p.time - vsmoothing)) {
+            p.cl_viewangles = a;
             crate::spectator::store_smoothed_angles(p.cl_viewangles);
         }
     }

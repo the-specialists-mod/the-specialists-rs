@@ -57,9 +57,9 @@ impl Ring {
         self.next = self.next.wrapping_add(1);
     }
 
-    /// The pair of samples around `t` (SDK `V_CalcNormalRefdef` ring search) and the fraction
-    /// between them, or `None` when the history doesn't reach back that far.
-    fn sample(&self, t: f32) -> Option<(Vec3, Vec3, f32)> {
+    /// The slots of the samples around `t` (SDK `V_CalcNormalRefdef` ring search), or `None`
+    /// when the history doesn't reach back that far.
+    fn pair(&self, t: f32) -> Option<(usize, usize)> {
         let mut i = 1;
         let mut found = self.next.wrapping_sub(2);
         while i < RING - 1 {
@@ -73,9 +73,34 @@ impl Ring {
         if i >= RING - 1 || self.time[a] == 0.0 {
             return None;
         }
+        Some((a, b))
+    }
+
+    /// The pair of samples around `t` and the fraction between them.
+    fn sample(&self, t: f32) -> Option<(Vec3, Vec3, f32)> {
+        let (a, b) = self.pair(t)?;
         let dt = self.time[b] - self.time[a];
         (dt > 0.0).then(|| (self.v[a], self.v[b], ((t - self.time[a]) / dt).min(1.0)))
     }
+
+    /// The angle ring's fraction ([`angle_ring_frac`]).
+    fn angle_frac(&self, a: usize, b: usize, t: f32) -> Option<f32> {
+        angle_ring_frac(self.time[a], self.time[b], t)
+    }
+}
+
+/// The fraction both angle rings hand `InterpolateAngles` (this view's `0x10069291..0x100692e4`,
+/// the normal view's `0x10067c09..0x10067c48`): `t − ta` over `tb − ta`, unrounded until the
+/// `float` argument, `None` unless the span is > 0 (`test ah, 0x41`), and capped at 1 (`fcomp`
+/// with C0, so a NaN becomes 1 too).
+pub(crate) fn angle_ring_frac(ta: f32, tb: f32, t: f32) -> Option<f32> {
+    let (ta, tb) = (ta as f64, tb as f64);
+    let dt = tb - ta;
+    if dt <= 0.0 || dt.is_nan() {
+        return None;
+    }
+    let frac = (t as f64 - ta) / dt;
+    Some(if 1.0 < frac || frac.is_nan() { 1.0 } else { frac as f32 })
 }
 
 #[derive(Default)]
@@ -468,18 +493,32 @@ fn inset_view(p: &mut ref_params_t) {
 fn smooth(p: &mut ref_params_t) {
     let amount = crate::input::cvars().cl_vsmoothing.value();
     let time = p.time;
+    // `cl_vsmoothing->value` is tested with `fcomp`/`test ah, 0x40`: a NaN counts as 0.
+    let smoothing = !x87_eq0(amount as f64);
     with(|s| {
-        if v::len(v::sub(p.viewangles, s.last_angles)) != 0.0 {
+        // `0x10069122`: the unrounded `Length` of the change, a NaN counting as none.
+        if !x87_eq0(length(v::sub(p.viewangles, s.last_angles))) {
             s.angles.push(p.viewangles, time);
             s.last_angles = p.viewangles;
         }
-        if amount != 0.0
+        let t = time - amount;
+        if smoothing
             && s.smooth_flags & movement::smooth::ANGLES != 0
-            && let Some((a, b, frac)) = s.angles.sample(time - amount)
-            && angle_between(v::angle_vectors(a).0, v::angle_vectors(b).0) < 22.5
+            && let Some((a, b)) = s.angles.pair(t)
         {
-            s.saved_angles = interpolate_angles(a, b, frac);
-            p.viewangles = s.saved_angles;
+            // The engine's `AngleVectors` (`0x10069255`), as TS calls it.
+            let e = engine();
+            let between = angle_between(e.angle_vectors(s.angles.v[a]).0, e.angle_vectors(s.angles.v[b]).0);
+            // `< 22.5` with C0 (`0x100692bb`): a NaN angle passes.
+            if let Some(frac) = s.angles.angle_frac(a, b, t)
+                && (between < 22.5 || between.is_nan())
+            {
+                // `InterpolateAngles` normalises the two ring entries in place.
+                let (mut x, mut y) = (s.angles.v[a], s.angles.v[b]);
+                s.saved_angles = interpolate_angles(&mut x, &mut y, frac);
+                (s.angles.v[a], s.angles.v[b]) = (x, y);
+                p.viewangles = s.saved_angles;
+            }
         }
         // TS compares against the last *smoothed* origin.
         if v::len(v::sub(p.vieworg, s.last_origin)) != 0.0 {
@@ -511,28 +550,58 @@ pub fn draw_hltv_names() {
     overview::draw_names();
 }
 
-/// `0x10029d70`: angle between two vectors in degrees (0 if either is zero).
-fn angle_between(a: Vec3, b: Vec3) -> f32 {
-    let (la, lb) = (v::len(a), v::len(b));
-    if la == 0.0 || lb == 0.0 {
-        return 0.0;
-    }
-    (v::dot(a, b) / (la * lb)).clamp(-1.0, 1.0).acos().to_degrees()
+/// An x87 `fcomp` against 0 tested with `test ah, 0x40` (C3): equal, or a NaN.
+pub(crate) fn x87_eq0(x: f64) -> bool {
+    x == 0.0 || x.is_nan()
 }
 
-/// `InterpolateAngles` (`0x10029cf0`): per-axis shortest-way blend of normalised angles.
-pub(crate) fn interpolate_angles(a: Vec3, b: Vec3, frac: f32) -> Vec3 {
+/// client.dll's `Length` (`0x10058390`): `((0 + x²) + y²) + z²` and `fsqrt` at 53 bits, returned
+/// unrounded.
+pub(crate) fn length(a: Vec3) -> f64 {
+    let (x, y, z) = (a[0] as f64, a[1] as f64, a[2] as f64);
+    (((0.0 + x * x) + y * y) + z * z).sqrt()
+}
+
+/// `0x10029d70`: the angle between two vectors in degrees, 0 if either length is 0 (or NaN). TS
+/// divides *after* the arc cosine, `acos(a·b) / (|a||b|) · 180 · (1/π)`, with no clamp: a dot
+/// product past ±1 gives `_CIacos`'s NaN (`0x1006c74f`). The lengths are stored as `float`s, the
+/// dot product (z first) and the rest stay `double`s until the caller's store. `1/π` is the
+/// `double` at `0x1007d530`, bit for bit `FRAC_1_PI`.
+fn angle_between(a: Vec3, b: Vec3) -> f32 {
+    let (la, lb) = (length(a) as f32, length(b) as f32);
+    if x87_eq0(la as f64) || x87_eq0(lb as f64) {
+        return 0.0;
+    }
+    let d = |i: usize| a[i] as f64 * b[i] as f64;
+    let dot = (d(2) + d(1)) + d(0);
+    (dot.acos() / (la as f64 * lb as f64) * 180.0 * std::f64::consts::FRAC_1_PI) as f32
+}
+
+/// client.dll's `NormalizeAngles` (`0x10029cb0`) on a vector, in place.
+fn normalize_angles(a: &mut Vec3) {
+    for x in a.iter_mut() {
+        *x = v::norm_angle(*x);
+    }
+}
+
+/// `InterpolateAngles` (`0x10029cf0`): per-axis shortest-way blend. Like TS it normalises
+/// `start` and `end` in place first. The difference stays a `double` (53-bit x87) through
+/// `± 360`, `× frac` and `+ start` until the `float` store; `> 180` subtracts 360 and the
+/// `< −180` test uses C0, so a NaN takes the `+ 360` branch. The result is normalised again.
+pub(crate) fn interpolate_angles(start: &mut Vec3, end: &mut Vec3, frac: f32) -> Vec3 {
+    normalize_angles(start);
+    normalize_angles(end);
     let mut out = [0.0; 3];
     for i in 0..3 {
-        let (x, y) = (v::norm_angle(a[i]), v::norm_angle(b[i]));
-        let mut d = y - x;
+        let mut d = end[i] as f64 - start[i] as f64;
         if d > 180.0 {
             d -= 360.0;
-        } else if d < -180.0 {
+        } else if d < -180.0 || d.is_nan() {
             d += 360.0;
         }
-        out[i] = v::norm_angle(x + d * frac);
+        out[i] = (d * frac as f64 + start[i] as f64) as f32;
     }
+    normalize_angles(&mut out);
     out
 }
 
@@ -654,9 +723,50 @@ mod tests {
         assert_eq!((a[0], b[0]), (5.0, 6.0));
         assert!((f - 0.5).abs() < 1e-3);
         assert!(r.sample(0.5).is_none(), "history doesn't reach back");
-        let i = interpolate_angles([0.0, 170.0, 0.0], [0.0, -170.0, 0.0], 0.5);
-        assert!((i[1].abs() - 180.0).abs() < 1e-3, "blends across ±180");
+        let (a, b) = r.pair(1.55).unwrap();
+        assert!((r.angle_frac(a, b, 1.55).unwrap() - 0.5).abs() < 1e-3);
+        assert_eq!(r.angle_frac(a, b, 9.0), Some(1.0), "capped at 1");
+        r.time[b] = r.time[a];
+        assert_eq!(r.angle_frac(a, b, 1.55), None, "no span");
+        // The span and offset stay `double`s: one rounding at the end.
+        r.time[a] = 1.1;
+        r.time[b] = 1.3;
+        let want = ((1.2f32 as f64 - 1.1f32 as f64) / (1.3f32 as f64 - 1.1f32 as f64)) as f32;
+        assert_eq!(r.angle_frac(a, b, 1.2), Some(want));
+    }
+
+    #[test]
+    fn interpolate_angles_is_ts() {
+        let (mut a, mut b) = ([0.0, 170.0, 0.0], [0.0, -170.0, 0.0]);
+        let i = interpolate_angles(&mut a, &mut b, 0.5);
+        assert_eq!(i[1], 180.0, "blends across ±180; 180 stays 180");
+        let (mut a, mut b) = ([0.0, -170.0, 0.0], [0.0, 170.0, 0.0]);
+        assert_eq!(interpolate_angles(&mut a, &mut b, 0.5)[1], -180.0, "and -180 stays -180");
+        // Both inputs are normalised in place, one step each (no modulo).
+        let (mut a, mut b) = ([350.0, 600.0, -190.0], [10.0, 0.0, 0.0]);
+        interpolate_angles(&mut a, &mut b, 0.0);
+        assert_eq!(a, [-10.0, 240.0, 170.0]);
+        // The difference isn't rounded to `float` before `× frac + start`.
+        let (x, y, f) = (0.1f32, 123.456f32, 0.1f32);
+        let want = ((y as f64 - x as f64) * f as f64 + x as f64) as f32;
+        let (mut a, mut b) = ([x; 3], [y; 3]);
+        assert_eq!(interpolate_angles(&mut a, &mut b, f), [want; 3]);
+        // A NaN difference takes the `+ 360` branch and stays NaN.
+        let (mut a, mut b) = ([f32::NAN, 0.0, 0.0], [0.0; 3]);
+        assert!(interpolate_angles(&mut a, &mut b, 0.5)[0].is_nan());
+    }
+
+    #[test]
+    fn angle_between_is_ts() {
         assert!((angle_between([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]) - 90.0).abs() < 1e-3);
+        assert_eq!(angle_between([0.0; 3], [1.0, 0.0, 0.0]), 0.0);
+        assert_eq!(angle_between([f32::NAN, 0.0, 0.0], [1.0, 0.0, 0.0]), 0.0, "a NaN length counts as 0");
+        // The arc cosine comes before the division by the lengths.
+        assert!((angle_between([2.0, 0.0, 0.0], [0.0, 2.0, 0.0]) - 22.5).abs() < 1e-4);
+        // No clamp: past ±1 the arc cosine is NaN (which the smoothing test lets through).
+        assert!(angle_between([2.0, 0.0, 0.0], [2.0, 0.0, 0.0]).is_nan());
+        assert!(length([3.0, 4.0, 0.0]) == 5.0);
+        assert!(x87_eq0(f64::NAN) && x87_eq0(0.0) && !x87_eq0(1e-30));
     }
 
     #[test]

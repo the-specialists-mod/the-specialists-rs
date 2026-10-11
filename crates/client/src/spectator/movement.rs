@@ -112,7 +112,7 @@ fn follow(s: &mut Spectator, pm: &mut playermove_t, runfuncs: bool) {
                     let to = pm.physents[sec].origin;
                     let a = locked_view_angles(v::sub(to, from), s.director_flags);
                     let cam = shared::pm::chase_origin(pm, shared::pm::Arith::CLIENT, a, target);
-                    let blocked = pm.trace_line(cam, to, PM_STUDIO_IGNORE as i32, 2, -1).is_some_and(|tr| tr.fraction != 1.0);
+                    let blocked = pm.trace_line(cam, to, PM_STUDIO_IGNORE as i32, 2, -1).is_some_and(|tr| line_blocked(tr.fraction));
                     if blocked { swing_round(a, s.director_flags) } else { a }
                 }
                 Some(None) => s.saved_angles,
@@ -121,7 +121,10 @@ fn follow(s: &mut Spectator, pm: &mut playermove_t, runfuncs: bool) {
             };
             if runfuncs {
                 s.smooth_flags |= smooth::ANGLES | smooth::ORIGIN;
-                s.locked_angles = interpolate_angles(s.locked_angles, angles, 0.1);
+                // `InterpolateAngles(locked, angles, angles, 0.1)` (`0x1002caf2`), then copied
+                // back into the locked angles: both inputs it normalises are overwritten.
+                let (mut start, mut end) = (s.locked_angles, angles);
+                s.locked_angles = interpolate_angles(&mut start, &mut end, 0.1);
                 s.locked_angles
             } else {
                 angles
@@ -150,6 +153,12 @@ fn locked_view_angles(dir: Vec3, flags: i32) -> Vec3 {
     a
 }
 
+/// The locked view's line test (`0x1002ca94`): `fraction == 1.0` with `fcomp`/`test ah, 0x40`, so
+/// a NaN fraction is not blocked.
+fn line_blocked(fraction: f32) -> bool {
+    !(fraction == 1.0 || fraction.is_nan())
+}
+
 /// When the line from the chase camera to the secondary target is blocked, TS swings the camera
 /// 45° back the other way.
 fn swing_round(mut a: Vec3, flags: i32) -> Vec3 {
@@ -169,5 +178,15 @@ mod tests {
         assert_eq!((a[0], a[1]), (-12.5, 22.5));
         assert_eq!(swing_round([0.0, 10.0, 0.0], DRC_FLAG_SIDE)[1], -35.0);
         assert_eq!(swing_round([0.0, 10.0, 0.0], 0)[1], 55.0);
+        // Looking straight down the axis from below: VectorAngles' pitch wraps to 270 first.
+        let a = locked_view_angles([0.0, 0.0, -1.0], 0);
+        assert_eq!((a[0], a[1]), (-257.5, -22.5));
+    }
+
+    #[test]
+    fn blocked_trace() {
+        assert!(line_blocked(0.25));
+        assert!(!line_blocked(1.0));
+        assert!(!line_blocked(f32::NAN), "TS treats a NaN fraction as clear");
     }
 }

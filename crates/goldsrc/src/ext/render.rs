@@ -345,30 +345,40 @@ pub mod vec3 {
         let u = [cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp];
         (f, r, u)
     }
-    /// Quake `VectorAngles` (pitch is positive up, as the engine returns it).
+    /// TS client.dll's `VectorAngles` (`0x10029e90`; pitch positive up). MSVC runs the x87 at
+    /// 53-bit precision (see `shared::pm::fpu`), so the maths is `f64`: `fpatan`'s result goes
+    /// unrounded into `× 57.29577951308232` (a `double`), the 2D length stays on the stack, and
+    /// only the stores round to `f32`. The zero test is `fcomp`/`test ah, 0x40`, so a NaN
+    /// component counts as zero; the `< 0` tests (`test ah, 1`) send a NaN into `+ 360`.
     pub fn vector_angles(f: Vec3) -> Vec3 {
-        if f[0] == 0.0 && f[1] == 0.0 {
+        let zero = |x: f32| x == 0.0 || x.is_nan();
+        if zero(f[1]) && zero(f[0]) {
             return [if f[2] > 0.0 { 90.0 } else { 270.0 }, 0.0, 0.0];
         }
-        let mut yaw = f[1].atan2(f[0]).to_degrees();
-        if yaw < 0.0 {
+        const DEG: f64 = 57.29577951308232;
+        let (x, y, z) = (f[0] as f64, f[1] as f64, f[2] as f64);
+        let mut yaw = y.atan2(x) * DEG;
+        if yaw < 0.0 || yaw.is_nan() {
             yaw += 360.0;
         }
-        let mut pitch = f[2].atan2(len2d(f)).to_degrees();
-        if pitch < 0.0 {
+        let mut pitch = z.atan2((x * x + y * y).sqrt()) * DEG;
+        if pitch < 0.0 || pitch.is_nan() {
             pitch += 360.0;
         }
-        [pitch, yaw, 0.0]
+        [pitch as f32, yaw as f32, 0.0]
     }
-    /// Normalises an angle to (-180, 180].
-    pub fn norm_angle(mut a: f32) -> f32 {
-        a %= 360.0;
-        if a > 180.0 {
-            a -= 360.0;
-        } else if a <= -180.0 {
-            a += 360.0;
+    /// One component of TS client.dll's `NormalizeAngles` (`0x10029cb0`), in `double`s:
+    /// `a > 180 ? a − 360 : a < −180 ? a + 360 : a`. A single step, not a modulo, and −180 stays
+    /// −180.
+    pub fn norm_angle(a: f32) -> f32 {
+        let x = a as f64;
+        if x > 180.0 {
+            (x - 360.0) as f32
+        } else if x < -180.0 || x.is_nan() {
+            (x + 360.0) as f32
+        } else {
+            a
         }
-        a
     }
 
     #[cfg(test)]
@@ -384,6 +394,34 @@ pub mod vec3 {
             assert!((a[1] - 45.0).abs() < 1e-4);
             assert_eq!(norm_angle(350.0), -10.0);
             assert_eq!(cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), [0.0, 0.0, 1.0]);
+        }
+
+        #[test]
+        fn ts_vector_angles() {
+            assert_eq!(vector_angles([0.0, 0.0, 1.0]), [90.0, 0.0, 0.0]);
+            assert_eq!(vector_angles([0.0, 0.0, -1.0]), [270.0, 0.0, 0.0]);
+            // A NaN compares equal to zero, and a NaN z isn't > 0.
+            assert_eq!(vector_angles([f32::NAN, 0.0, 1.0]), [90.0, 0.0, 0.0]);
+            assert_eq!(vector_angles([0.0, f32::NAN, f32::NAN]), [270.0, 0.0, 0.0]);
+            assert_eq!(vector_angles([0.0, -1.0, 0.0]), [0.0, 270.0, 0.0]);
+            assert_eq!(vector_angles([1.0, 0.0, -1.0]), [315.0, 0.0, 0.0]);
+            // Rounded once from the unrounded `double` chain, not step by step in `f32`.
+            let f = [0.3f32, 0.7, -0.2];
+            let (x, y, z) = (0.3f32 as f64, 0.7f32 as f64, -0.2f32 as f64);
+            let yaw = (y.atan2(x) * 57.29577951308232) as f32;
+            let pitch = (z.atan2((x * x + y * y).sqrt()) * 57.29577951308232 + 360.0) as f32;
+            assert_eq!(vector_angles(f), [pitch, yaw, 0.0]);
+        }
+
+        #[test]
+        fn ts_norm_angle() {
+            assert_eq!(norm_angle(180.0), 180.0);
+            assert_eq!(norm_angle(-180.0), -180.0, "TS keeps -180");
+            assert_eq!(norm_angle(180.5), -179.5);
+            assert_eq!(norm_angle(-190.0), 170.0);
+            assert_eq!(norm_angle(600.0), 240.0, "one step, no modulo");
+            assert_eq!(norm_angle(-600.0), -240.0);
+            assert!(norm_angle(f32::NAN).is_nan());
         }
     }
 }
