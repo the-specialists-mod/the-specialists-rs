@@ -19,12 +19,12 @@ on Linux and Windows. The latest release is
 | Player movement (shared, predicted) | The TS `pm_shared` port: ladders, water, duck, step-up, the TS jump, friction and acceleration, the `fuser1` time scale. 27 unit tests. |
 | Stunts and animation | Dives, rolls, flips, cartwheels, wall jump and climb, slide and prone, super jump, bullet-time dodge. TS animation selection. |
 | Weapons | All 37 TS weapons from the decoded tables. One shared `Gun` state machine for server and client prediction: fire modes, akimbo, burst, pump, zoom, attachments. Penetration, simulated bullets, grenades, thrown blades, kung fu with blocks, dropped guns, loadouts. |
-| Game rules | DM, team DM, LMS, The One. Spawn selection, scoring and awards, power-ups (slow motion, slow pause, double fire rate, infinite clip, kung fu, health, armour, super jump), slow-motion propagation, chat, MOTD, the TS cvars, bots. |
+| Game rules | DM, team DM, LMS, The One. Spawn selection, scoring and awards, power-ups (slow motion, slow pause, double fire rate, infinite clip, kung fu, health, armour, super jump), slow-motion propagation, chat and chat votes (`vote map`/`stats`/`reset`), MOTD, the TS cvars, bots, HLTV director messages. |
 | Map entities | 72 stock classnames with TS's changes (respawning breakables and doors, …) plus the TS entities. All 97 shipped maps load, and 88.8 % of map entities have a class. |
 | Client HUD and UI | Every server message hooked. TS HUD in draw order, the loadout/buy menu, scoreboard, team select, MOTD, `ShowMenu`. TS input with `+alt1`/`+alt2`, the anti-script gate, and mouse look for FWGS and Steam GoldSrc. |
 | Client view and effects | TS view (bob, client-side recoil, third person, slow-mo tint and fades), all 11 weapon events, the TS particle system and map emitters, lasers, flashlights, shadows, the TS studio renderer (split torso/legs bones) and motion-blur ghosts. |
 | Save games | Save/restore of every linked class against TS's save tables. Unit tests only: no in-engine save, load or level transition yet. |
-| Not yet | Map votes, HLTV director messages. |
+| Open work | Validation on setups not covered yet ([issues](https://github.com/the-specialists-mod/the-specialists-rs/issues)), scripted Steam client checks in xtask ([#5](https://github.com/the-specialists-mod/the-specialists-rs/issues/5)). |
 
 Per-subsystem details, decomp mappings and gaps: [docs/implementation/](docs/implementation/).
 
@@ -47,7 +47,11 @@ release libraries, and the 663 unit tests pass.
 Not validated yet: native Windows (only Wine so far), the Steam client on Windows, real keyboard
 and mouse (every client run is scripted), joysticks, voice chat with microphones, long sessions
 with many players and real latency, save games and level transitions, drowning and time-based
-damage in-engine. Details: [docs/validation.md](docs/validation.md#32-not-validated).
+damage in-engine. Details: [docs/validation.md](docs/validation.md#32-not-validated); open issues:
+[#1](https://github.com/the-specialists-mod/the-specialists-rs/issues/1) (real keyboard and mouse),
+[#2](https://github.com/the-specialists-mod/the-specialists-rs/issues/2) (native Windows),
+[#3](https://github.com/the-specialists-mod/the-specialists-rs/issues/3) (long sessions, latency),
+[#4](https://github.com/the-specialists-mod/the-specialists-rs/issues/4) (remaining map features).
 
 ## Requirements
 
@@ -137,6 +141,7 @@ Setting up the roots (steamcmd, ReHLDS, Wine) and the latest results: [docs/vali
 | [AGENTS.md](AGENTS.md) | Working in this repo (people and coding agents): crate layout, the `unsafe` boundary, build and test commands, conventions, pitfalls |
 | [docs/design.md](docs/design.md) | Goals, the wire-compatibility contract, architecture (server, client, shared), module ownership, build targets, deviations from TS |
 | [docs/validation.md](docs/validation.md) | Engine roots and how to set them up, test commands, results, setup pitfalls |
+| [docs/issues/](docs/issues/README.md) | The original repository's 112 issues; issue numbers in the code and docs refer to these |
 | [docs/implementation/movement.md](docs/implementation/movement.md) | Player movement and stunts |
 | [docs/implementation/weapons.md](docs/implementation/weapons.md) | Weapons, combat, wire formats |
 | [docs/implementation/rules.md](docs/implementation/rules.md) | Game rules, power-ups, TS entities, HUD sync, bots |

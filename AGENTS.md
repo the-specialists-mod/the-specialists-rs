@@ -16,7 +16,7 @@ testing is in [docs/validation.md](docs/validation.md).
 | How TS behaves (numbers, timings, payloads, rules) | The decompilation, [the-specialists-decomp](https://github.com/CrunchyMonkies/the-specialists-decomp), checked out at `../ts30-decomp`. Start at its `docs/README.md`; server addresses use the Ghidra numbering described there. |
 | What the engine does | `../xash3d-fwgs` (FWGS source; the bindings are generated from its headers), `../ReHLDS` (Steam dedicated server reimplementation), `../halflife-sdk` (Valve's C++ game code). |
 | How this port is organised | `docs/design.md`, `docs/implementation/*.md`. |
-| Known gaps | GitHub issues labelled `integration` (and `validation` for untested platforms). |
+| Known gaps | GitHub issues labelled `integration` (and `validation` for untested platforms). Issue numbers in code, commits and docs written before the move to this repository (`#23`, `issue #62`) are the original repository's: see `docs/issues/<number>.md`. |
 
 Port behaviour from the decomp, not from memory of the game. When the port deliberately differs
 from TS, say so in the relevant `docs/implementation/*.md` "Deviations" section.
