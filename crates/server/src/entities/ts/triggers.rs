@@ -130,7 +130,12 @@ impl Entity for Trigger {
         if !self.funcs.touch || now < self.ready_at || !rules::has_player(other) || !rules::alive(other.v()) {
             return;
         }
-        let team_ok = self.team == -1 || state::with(|g| g.team_index(&teams::team_name_of(other))) == self.team;
+        // The name is read first: `team_name_of` borrows the rules itself, and a nested
+        // `state::with` would be a double borrow (an abort).
+        let team_ok = self.team == -1 || {
+            let name = teams::team_name_of(other);
+            state::with(|g| g.team_index(&name)) == self.team
+        };
         if cx.pev().spawnflags & 8 != 0 && !super::has_flag(other) {
             return;
         }

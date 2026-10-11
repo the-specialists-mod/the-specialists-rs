@@ -336,6 +336,10 @@ mod tests {
         let mut g3 = Gun::default();
         unpack_clientdata(&cd, &mut g3);
         assert_eq!((g3.status[8].left, g3.status[8].right), (15, 0), "right clip clamped at 0");
+        // Out-of-range networked values wrap instead of overflowing.
+        (cd.vuser4[1], cd.ammo_nails) = (i32::MAX as f32, i32::MIN);
+        unpack_clientdata(&cd, &mut g3);
+        assert_eq!(g3.status[8].right, 0);
         let mut wd = weapon_data_t::default();
         g.next_primary = -0.5;
         pack_weapon_data(&g, &mut wd);

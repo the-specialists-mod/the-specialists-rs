@@ -526,7 +526,7 @@ pub fn round_refund(gun: &Gun) -> i32 {
     }
     for (ty, &rounds) in gun.reserve.iter().enumerate() {
         if let Some(a) = t.ammo(ty as u8).filter(|a| a.per_buy > 0 && rounds > a.per_buy) {
-            total += a.price * rounds / a.per_buy;
+            total = total.wrapping_add(a.price.wrapping_mul(rounds) / a.per_buy);
         }
     }
     total

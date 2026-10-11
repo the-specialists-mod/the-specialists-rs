@@ -517,11 +517,12 @@ impl Gun {
             let info = self.info();
             let ammo = (info.ammo as usize).min(MAX_AMMO - 1);
             let s = self.status[self.current as usize];
-            let j = (info.clip - s.clip).min(self.reserve[ammo]);
+            // C int arithmetic throughout (wrapping): the client predicts on networked values.
+            let j = info.clip.wrapping_sub(s.clip).min(self.reserve[ammo]);
             let s = self.cur();
-            s.clip += j;
+            s.clip = s.clip.wrapping_add(j);
             s.left = s.clip / 2;
-            s.right = s.clip - s.left;
+            s.right = s.clip.wrapping_sub(s.left);
             let (clip, left) = (s.clip, s.left);
             if kind_of(self.current) == kind::AKIMBO {
                 if info.single >= 0 {
@@ -529,11 +530,11 @@ impl Gun {
                 }
             } else if info.akimbo != -1 {
                 let tw = &mut self.status[info.akimbo as usize];
-                tw.clip += j;
+                tw.clip = tw.clip.wrapping_add(j);
                 tw.left = clip;
             }
             self.clip_mirror = clip;
-            self.reserve[ammo] -= j;
+            self.reserve[ammo] = self.reserve[ammo].wrapping_sub(j);
             self.cur().in_reload = 0;
         }
         let contender_empty = self.current == id::CONTENDER && self.status[self.current as usize].clip == 0;
@@ -777,11 +778,12 @@ impl Gun {
             self.vkickback(info.view_kick, k, silenced, host);
         }
         if !Self::infinite_clip(host) {
-            self.cur().clip -= 1;
+            let s = self.cur();
+            s.clip = s.clip.wrapping_sub(1);
             if info.akimbo != -1 {
                 let clip = self.status[self.current as usize].clip;
                 let tw = &mut self.status[info.akimbo as usize];
-                tw.clip -= 1;
+                tw.clip = tw.clip.wrapping_sub(1);
                 tw.left = clip;
                 if tw.clip < 0 {
                     tw.clip = 0;
@@ -1069,7 +1071,7 @@ impl Gun {
             }
             let st = self.cur();
             st.state = if force { 0 } else { 2 };
-            st.clip -= 1;
+            st.clip = st.clip.wrapping_sub(1);
             done = force;
         } else if s.state == 2 {
             self.cur().state = 0;
@@ -1159,7 +1161,8 @@ impl Gun {
         if thrown {
             if !Self::infinite_clip(host) {
                 host.slots_changed(info.slots);
-                self.cur().clip -= 1;
+                let s = self.cur();
+                s.clip = s.clip.wrapping_sub(1);
             }
             if self.status[self.current as usize].clip < 1 {
                 self.remove_weapon(self.current, true, host);
@@ -1544,7 +1547,7 @@ impl Gun {
         if !self.has_slot() || self.current_reserve() <= 0 {
             return false;
         }
-        let j = (clip_size - self.status[self.current as usize].clip).min(self.current_reserve());
+        let j = clip_size.wrapping_sub(self.status[self.current as usize].clip).min(self.current_reserve());
         if j > 0 {
             self.cur().in_reload = 1;
             self.next_attack = time;
@@ -1686,7 +1689,7 @@ impl Gun {
             }
             m += 1;
         }
-        self.mode_memory[self.current as usize] = self.status[self.current as usize].mode + 1;
+        self.mode_memory[self.current as usize] = self.status[self.current as usize].mode.wrapping_add(1);
     }
 
     /// `CTSGun::SwitchItems` 0x8155c (`useitems`): laser -> flashlight -> both -> off.
@@ -1770,7 +1773,7 @@ impl Gun {
         host.player_anim(0x34);
         let mem = &mut self.mode_memory[id as usize];
         if *mem < 1 {
-            *mem = self.status[id as usize].mode + 1;
+            *mem = self.status[id as usize].mode.wrapping_add(1);
         } else {
             self.status[id as usize].mode = *mem - 1;
         }
@@ -1864,7 +1867,7 @@ impl Gun {
         let t = target as usize;
         let tw = info(target)?;
         if tw.stack && self.status[t].owned {
-            self.status[t].clip += 1;
+            self.status[t].clip = self.status[t].clip.wrapping_add(1);
             return Some(target);
         }
         let mask = mode_mask(tw);
@@ -1907,9 +1910,9 @@ impl Gun {
                 s.in_reload = 0;
                 if is_akimbo(target) {
                     let single = tw.single.max(0) as usize;
-                    s.clip += self.status[single].clip;
+                    s.clip = s.clip.wrapping_add(self.status[single].clip);
                     s.left = self.status[single].clip;
-                    s.right = s.clip - s.left;
+                    s.right = s.clip.wrapping_sub(s.left);
                     let items = attachments | self.status[single].items | s.items;
                     s.items = items;
                     self.status[single].items = items;
@@ -1957,7 +1960,7 @@ impl Gun {
         if a >= MAX_AMMO || n <= 0 || self.reserve[a] >= max_carry {
             return false;
         }
-        self.reserve[a] = (self.reserve[a] + n).min(max_carry);
+        self.reserve[a] = self.reserve[a].saturating_add(n).min(max_carry);
         true
     }
 
@@ -1990,10 +1993,11 @@ impl Gun {
             }
             Some(0)
         } else {
-            let want = (info.pellets * 2 - self.status[self.current as usize].clip) * info.slots;
+            let want = info.pellets.wrapping_mul(2).wrapping_sub(self.status[self.current as usize].clip).wrapping_mul(info.slots);
             let used = want.min(free_slots);
             if info.slots > 0 {
-                self.cur().clip += used / info.slots;
+                let s = self.cur();
+                s.clip = s.clip.wrapping_add(used / info.slots);
             }
             Some(used)
         }

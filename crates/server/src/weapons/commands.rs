@@ -31,7 +31,8 @@ fn scan_int(s: &str) -> Option<(i32, &str)> {
         return if radix == 8 { Some((0, &rest[1..])) } else { None };
     }
     let v = i64::from_str_radix(&digits[..end], radix).ok()? as i32;
-    Some((if neg { -v } else { v }, &digits[end..]))
+    // `-2147483648` (or a bigger value wrapped to i32::MIN) negates past i32: wrap like C.
+    Some((if neg { v.wrapping_neg() } else { v }, &digits[end..]))
 }
 
 /// `sscanf("%i_%i")`. The second value defaults to 0 when missing.
@@ -182,5 +183,9 @@ mod tests {
         assert_eq!(scan_pair("x"), None);
         assert_eq!(scan_int("12abc"), Some((12, "abc")));
         assert_eq!(scan_int("0"), Some((0, "")));
+        // Client-supplied extremes wrap like C instead of overflowing the negation.
+        assert_eq!(scan_int("-2147483648"), Some((i32::MIN, "")));
+        assert_eq!(scan_int("-0x80000000"), Some((i32::MIN, "")));
+        assert_eq!(scan_pair("-2147483648_-2147483648"), Some((i32::MIN, i32::MIN)));
     }
 }

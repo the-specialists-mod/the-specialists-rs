@@ -185,7 +185,8 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
         }
         return;
     }
-    let w = info(target).expect("owned weapon has a table entry");
+    // Guard: every id 1..=37 a gun can own has a table entry; one without (29) is never dropped.
+    let Some(w) = info(target) else { return };
     let mut thrown: *mut edict_t = std::ptr::null_mut();
     if target == id::M61 {
         let st = p.inv.gun.status[id::M61 as usize];
@@ -377,10 +378,10 @@ fn buy_weapon(p: &mut Player, cx: &mut Cx, wid: i32, attachments: u32) {
 }
 
 /// `CBasePlayer::BuyAmmo(type)`: one purchase (`per_buy` rounds); -1 = held weapon's type,
-/// -2 = every owned weapon's type until full.
-pub fn buy_ammo(p: &mut Player, cx: &mut Cx, t: i32) {
+/// -2 = every owned weapon's type until full. Returns whether any ammo was added.
+pub fn buy_ammo(p: &mut Player, cx: &mut Cx, t: i32) -> bool {
     if !super::gun_active(p) {
-        return;
+        return false;
     }
     let per_buy = |t: u8| tables().ammo(t).map(|a| a.per_buy).unwrap_or(0);
     let mut sound = false;
@@ -399,17 +400,18 @@ pub fn buy_ammo(p: &mut Player, cx: &mut Cx, t: i32) {
         }
     } else {
         if p.inv.gun.current == 0 {
-            return;
+            return false;
         }
         let ammo = if t == -1 { info(p.inv.gun.current).map(|w| w.ammo).unwrap_or(0) } else { t as u8 };
         if ammo == 0 || ammo as usize >= MAX_AMMO {
-            return;
+            return false;
         }
         sound = p.inv.gun.add_ammo(ammo, per_buy(ammo), assets::max_carry(ammo));
     }
     if sound {
         emit(cx.edict, CHAN_ITEM, c"items/9mmclip1.wav", 1.0, 0.8, 100);
     }
+    sound
 }
 
 /// `CBasePlayer::BuyArmament` (from `PlayerSpawn` when the map has no `game_player_equip`).
@@ -425,10 +427,15 @@ pub fn buy_armament(p: &mut Player, cx: &mut Cx) {
             buy_weapon(p, cx, a.id, a.attachments);
         }
     }
+    // Guard: `tka` takes any purchase count from the client, and TS loops that many times. A
+    // purchase that adds nothing leaves everything as it was, so every later one would too: stop
+    // there instead of spinning through billions of no-ops at spawn.
     let ammo = p.inv.sv.armament_ammo;
     for (t, &n) in ammo.iter().enumerate() {
         for _ in 0..n.max(0) {
-            buy_ammo(p, cx, t as i32);
+            if !buy_ammo(p, cx, t as i32) {
+                break;
+            }
         }
     }
 }

@@ -46,6 +46,11 @@ pub fn shared_random_long(seed: u32, low: i32, high: i32) -> i32 {
         return low;
     }
     let rnum = g.next();
+    // Guard: the full 32-bit range wraps `range` to 0, a division by zero in TS (`rnum % 0`);
+    // `rnum % 2^32` is `rnum` itself.
+    if range == 0 {
+        return low.wrapping_add(rnum as i32);
+    }
     low.wrapping_add((rnum % range) as i32)
 }
 
@@ -143,6 +148,11 @@ mod tests {
         let mut g = 27138u32.wrapping_mul(69069);
         g = g.wrapping_add(SEED_TABLE[(g & 0xff) as usize]).wrapping_add(1);
         assert_eq!(shared_random_long(0, 0, 1), ((g & 0x0fff_ffff) % 2) as i32);
+        // The full i32 range wraps the range to 0 (a division by zero in TS): low + rnum.
+        for seed in 0..64u32 {
+            let v = shared_random_long(seed, i32::MIN, i32::MAX);
+            assert!((i32::MIN..i32::MIN + 0x1000_0000).contains(&v), "{v}");
+        }
     }
 
     #[test]

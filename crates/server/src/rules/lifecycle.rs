@@ -312,9 +312,10 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     spawnpoint::place(p, cx);
 }
 
-/// `CBasePlayer::GiveCash`: clamped to 0..30000.
+/// `CBasePlayer::GiveCash`: clamped to 0..30000 (the sum wraps like TS's C int first: a map's
+/// `buy_price` can be anything).
 pub fn give_cash(p: &mut Player, n: i32) {
-    p.cash = (p.cash + n).clamp(0, 30000);
+    p.cash = p.cash.wrapping_add(n).clamp(0, 30000);
 }
 
 // ---- think --------------------------------------------------------------------------------------

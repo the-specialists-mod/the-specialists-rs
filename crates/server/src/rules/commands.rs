@@ -46,7 +46,7 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
         // to observer. Outside teamplay `CGameRules::ChangePlayerTeam` (0xc632c) is empty.
         "jointeam" if args.argc() > 1 => {
             if state::teamplay() {
-                let name = state::with(|g| g.indexed_team_name(args.int(1) - 1));
+                let name = state::with(|g| g.indexed_team_name(args.int(1).wrapping_sub(1)));
                 teams::change_team(p, cx, &name, false, false);
             }
         }

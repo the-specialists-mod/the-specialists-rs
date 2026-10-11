@@ -8,6 +8,13 @@ version = "0.1.0"
 
 [profile.dev]
 panic = "abort"        # unwinding across the C ABI is UB; be explicit
+# The installed default (`cargo xtask install` without --release) is this profile, and with
+# `panic = "abort"` an overflow check kills the whole engine. Integers wrap as in TS's C (and as
+# in release builds); unit tests keep the checks (`profile.test` below).
+overflow-checks = false
+
+[profile.test]
+overflow-checks = true
 
 [profile.release]
 panic = "abort"

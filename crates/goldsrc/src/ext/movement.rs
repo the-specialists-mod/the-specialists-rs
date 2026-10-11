@@ -32,6 +32,11 @@ const SEQ_NUMEVENTS: usize = 48;
 const SEQ_EVENTINDEX: usize = 52;
 const EVENT_SIZE: usize = 76;
 const SEQ_BBMIN: usize = 96;
+/// Port guard: a malformed model's event / bone controller count is capped here instead of
+/// sizing an allocation from it (`studiomdl` allows 8 controllers; real sequences have a handful
+/// of events).
+const MAX_EVENTS: usize = 1024;
+const MAX_BONECONTROLLERS: usize = 8;
 
 /// One `mstudioevent_t` (frame and event number; the options string isn't needed server-side).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,12 +69,12 @@ impl StudioHdr {
 
     fn i32_at(&self, off: usize) -> i32 {
         // SAFETY: `off` lies inside the engine-loaded studio header (header offsets from the studio format); the header outlives `self` per `from_ptr`.
-        unsafe { self.0.add(off).cast::<i32>().read_unaligned() }
+        unsafe { self.0.wrapping_add(off).cast::<i32>().read_unaligned() }
     }
 
     fn f32_at(&self, off: usize) -> f32 {
         // SAFETY: `off` lies inside the engine-loaded studio header (header offsets from the studio format); the header outlives `self` per `from_ptr`.
-        unsafe { self.0.add(off).cast::<f32>().read_unaligned() }
+        unsafe { self.0.wrapping_add(off).cast::<f32>().read_unaligned() }
     }
 
     pub fn num_sequences(&self) -> i32 {
@@ -80,14 +85,15 @@ impl StudioHdr {
         if seq < 0 || seq >= self.num_sequences() {
             return None;
         }
-        Some(self.i32_at(HDR_SEQINDEX) as usize + seq as usize * SEQDESC_SIZE)
+        // Offsets from the file wrap like the C pointer arithmetic instead of overflowing.
+        Some((self.i32_at(HDR_SEQINDEX) as usize).wrapping_add((seq as usize).wrapping_mul(SEQDESC_SIZE)))
     }
 
     /// The sequence's label (`char[32]`).
     pub fn sequence_name(&self, seq: i32) -> Option<&[u8]> {
         let off = self.seq_offset(seq)?;
         // SAFETY: `off` lies inside the engine-loaded studio header (header offsets from the studio format); the header outlives `self` per `from_ptr`.
-        let label = unsafe { std::slice::from_raw_parts(self.0.add(off), 32) };
+        let label = unsafe { std::slice::from_raw_parts(self.0.wrapping_add(off), 32) };
         let len = label.iter().position(|&c| c == 0).unwrap_or(32);
         Some(&label[..len])
     }
@@ -100,13 +106,13 @@ impl StudioHdr {
     pub fn sequence_info(&self, seq: i32) -> Option<SeqInfo> {
         let off = self.seq_offset(seq)?;
         Some(SeqInfo {
-            fps: self.f32_at(off + SEQ_FPS),
-            flags: self.i32_at(off + SEQ_FLAGS),
-            numframes: self.i32_at(off + SEQ_NUMFRAMES),
+            fps: self.f32_at(off.wrapping_add(SEQ_FPS)),
+            flags: self.i32_at(off.wrapping_add(SEQ_FLAGS)),
+            numframes: self.i32_at(off.wrapping_add(SEQ_NUMFRAMES)),
             linear_movement: [
-                self.f32_at(off + SEQ_LINEARMOVEMENT),
-                self.f32_at(off + SEQ_LINEARMOVEMENT + 4),
-                self.f32_at(off + SEQ_LINEARMOVEMENT + 8),
+                self.f32_at(off.wrapping_add(SEQ_LINEARMOVEMENT)),
+                self.f32_at(off.wrapping_add(SEQ_LINEARMOVEMENT + 4)),
+                self.f32_at(off.wrapping_add(SEQ_LINEARMOVEMENT + 8)),
             ],
         })
     }
@@ -116,32 +122,40 @@ impl StudioHdr {
     /// The sequence's (`activity`, `actweight`), for SDK `LookupActivity`.
     pub fn sequence_activity(&self, seq: i32) -> Option<(i32, i32)> {
         let off = self.seq_offset(seq)?;
-        Some((self.i32_at(off + SEQ_ACTIVITY), self.i32_at(off + SEQ_ACTWEIGHT)))
+        Some((self.i32_at(off.wrapping_add(SEQ_ACTIVITY)), self.i32_at(off.wrapping_add(SEQ_ACTWEIGHT))))
     }
 
     /// The sequence's animation events, in file order (SDK `GetAnimationEvent` walks them).
     pub fn sequence_events(&self, seq: i32) -> Vec<StudioEvent> {
         let Some(off) = self.seq_offset(seq) else { return Vec::new() };
-        let (n, base) = (self.i32_at(off + SEQ_NUMEVENTS), self.i32_at(off + SEQ_EVENTINDEX) as usize);
-        (0..n.max(0) as usize)
-            .map(|i| StudioEvent { frame: self.i32_at(base + i * EVENT_SIZE), event: self.i32_at(base + i * EVENT_SIZE + 4) })
+        let (n, base) = (self.i32_at(off.wrapping_add(SEQ_NUMEVENTS)), self.i32_at(off.wrapping_add(SEQ_EVENTINDEX)) as usize);
+        (0..(n.max(0) as usize).min(MAX_EVENTS))
+            .map(|i| {
+                let o = base.wrapping_add(i * EVENT_SIZE);
+                StudioEvent { frame: self.i32_at(o), event: self.i32_at(o.wrapping_add(4)) }
+            })
             .collect()
     }
 
     /// The sequence's bounding box (`bbmin`, `bbmax`), for SDK `ExtractBbox`.
     pub fn sequence_bbox(&self, seq: i32) -> Option<([f32; 3], [f32; 3])> {
         let off = self.seq_offset(seq)?;
-        let v = |o: usize| [self.f32_at(off + o), self.f32_at(off + o + 4), self.f32_at(off + o + 8)];
+        let v = |o: usize| [self.f32_at(off.wrapping_add(o)), self.f32_at(off.wrapping_add(o + 4)), self.f32_at(off.wrapping_add(o + 8))];
         Some((v(SEQ_BBMIN), v(SEQ_BBMIN + 12)))
     }
 
     /// The model's bone controllers, in file order (SDK `SetController` searches them).
     pub fn bone_controllers(&self) -> Vec<BoneController> {
         let (n, base) = (self.i32_at(HDR_NUMBONECONTROLLERS), self.i32_at(HDR_BONECONTROLLERINDEX) as usize);
-        (0..n.max(0) as usize)
+        (0..(n.max(0) as usize).min(MAX_BONECONTROLLERS))
             .map(|i| {
-                let o = base + i * BONECONTROLLER_SIZE;
-                BoneController { kind: self.i32_at(o + 4), start: self.f32_at(o + 8), end: self.f32_at(o + 12), index: self.i32_at(o + 20) }
+                let o = base.wrapping_add(i * BONECONTROLLER_SIZE);
+                BoneController {
+                    kind: self.i32_at(o.wrapping_add(4)),
+                    start: self.f32_at(o.wrapping_add(8)),
+                    end: self.f32_at(o.wrapping_add(12)),
+                    index: self.i32_at(o.wrapping_add(20)),
+                }
             })
             .collect()
     }
