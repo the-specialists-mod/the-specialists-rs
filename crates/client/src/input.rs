@@ -619,7 +619,8 @@ fn take_mouse_delta() -> [f32; 2] {
 /// The mouse motion since the last read, in raw counts (cursor pixels with the Windows cursor),
 /// for the camera's mouse modes. TS's `CAM_Think` reads the Win32 cursor's offset from the window
 /// centre and re-centres it; with mouse look stood down (`camera::mouse_in_use`), the motion
-/// pending here is that offset on every back end.
+/// pending here is that offset on every back end. The camera also drains it where TS only
+/// re-centres, which throws the motion away before mouse look sees it.
 pub(crate) fn take_cursor_offset() -> [f32; 2] {
     take_mouse_delta()
 }
