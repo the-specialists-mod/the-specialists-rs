@@ -167,9 +167,11 @@ comment on each says what it saves. What matters across classes:
   `CFuncTrackChange::Find` (0xd5ff4), which `Spawn` never does (§7.3), so its train logic
   (`Find`, `EvaluateTrain`, `UpdateTrain`, `UpdateAutoTargets`, both `Use`s, `CPathTrack::Nearest`)
   is ported for that path.
-* **`Activate` after a load.** TS's `ServerActivate` runs every entity's `Activate` after a restore;
-  the port has no such hook, so `func_train`, `func_guntarget`, `func_tanklaser` and `env_beam` queue
-  it through their next think (0.1 s for the trains).
+* **`Activate` after a load.** The engine calls `ServerActivate` after a restore as on a new map,
+  so every entity's `Activate` runs again (`Entity::activate`, §6 item 2): a `func_train` that
+  hadn't activated does (`m_activated` is saved), a `func_guntarget` jumps to the corner its
+  `target` names, `path_track`s link again, a laser tank turns its laser off, and a server-side
+  `env_beam` finds its ends.
 * **Not saved by TS**, so lost on a restore as in TS: `func_breakable`'s `CBaseDelay` part and its
   respawn state (`CBreakable` saves straight from `CBaseEntity`), the breakable-door state,
   `game_player_equip`'s item list, `game_team_master`'s team index, `cycler_weapon`'s model,
@@ -186,7 +188,8 @@ Deviations: `CFuncTankRocket::Precache`'s `UTIL_PrecacheOther("rpg_rocket")` (a 
 link) is skipped, so its "NULL Ent" console line is missing; a dropped `weapon_tsgun` saved in the
 0.1 s before its removal writes its own spawn-time timers, not the player's (the player is
 mid-dispatch); `game_team_master` resets its index on a global restore too (TS keeps the live
-one); `env_message`'s think state is read from `nextthink != 0` (only the chapter title sets it).
+one), and its index lives in a per-map side table (cleared by `CWorld::Precache`) so a master can be
+read while it is mid-dispatch; `env_message`'s think state is read from `nextthink != 0` (only the chapter title sets it).
 The track change that its own train fires reads the train's path through a side channel
 (`tracktrain::FIRING`), since the train is taken out of the world during its think.
 
@@ -197,11 +200,11 @@ The track change that its own train fires reads the train's path through a side 
 
 | Classname | Source | Notes |
 |---|---|---|
-| `worldspawn` | `CWorld::KeyValue` 0xf4a18, `CWorld::Precache` 0xf449c | Keys: `skyname` (`sv_skyname`), `sounds` (CD track), `WaveHeight` (`pev.scale` = v/8, `sv_wateramp`), `MaxRange` (`pev.speed`), `chaptertitle`, `startdark`/`gametitle`/`defaultteam` (spawnflags 1/2/4), `newunit` (`sv_newunit 1`); `gamemode`, `mapteams`, `teammodels` go to `rules::world_key_value`. Spawn first forces `sv_gravity 800`, `sv_stepsize 18`, `room_type 0`, then follows `CWorld::Precache`: installs the rules (`rules::install`; the multiplayer rules precache the voice icon), creates the soundent and the body queue, loads sentences and the texture types, issues TS's map-wide precaches in TS's order (§1.1), then sets `sv_zmax` (`MaxRange`, or 4096 when ≤ 0), shows the chapter title through an `env_message` 0.3 s in, and sets `v_dark` and `mp_defaultteam` from the spawnflags. Light styles 0–12 and 63. Resets the masters, path links and env_sound rooms on each map. |
+| `worldspawn` | `CWorld::KeyValue` 0xf4a18, `CWorld::Precache` 0xf449c | Keys: `skyname` (`sv_skyname`), `sounds` (CD track), `WaveHeight` (`pev.scale` = v/8, `sv_wateramp`), `MaxRange` (`pev.speed`), `chaptertitle`, `startdark`/`gametitle`/`defaultteam` (spawnflags 1/2/4), `newunit` (`sv_newunit 1`); `gamemode`, `mapteams`, `teammodels` go to `rules::world_key_value`. Spawn first forces `sv_gravity 800`, `sv_stepsize 18`, `room_type 0`, then follows `CWorld::Precache`: installs the rules (`rules::install`; the multiplayer rules precache the voice icon), creates the soundent and the body queue, loads sentences and the texture types, issues TS's map-wide precaches in TS's order (§1.1), then sets `sv_zmax` (`MaxRange`, or 4096 when ≤ 0), shows the chapter title through an `env_message` 0.3 s in, and sets `v_dark` and `mp_defaultteam` from the spawnflags. Light styles 0–12 and 63. Resets the masters, the `game_team_master` indexes and env_sound rooms on each map. |
 | `func_wall`, `func_illusionary` | SDK bmodels.cpp | `func_wall` now sets `FL_WORLDBRUSH` and toggles its texture frame on Use. `func_illusionary` is `MOVETYPE_NONE`, and `skin` sets its contents. |
 | `func_wall_toggle`, `func_conveyor` | SDK | The conveyor speed is sent in `rendercolor`. |
 | `func_rotating` | SDK | Fan sounds, spin-up/down, hurt touch. Uses `fabs` where gcc 2.95 used the integer `abs`. |
-| `func_pendulum` | SDK | The INSTANT flag thinks on `ltime` (the SDK compares global time against `ltime`). |
+| `func_pendulum` | SDK | The INSTANT flag (`CPendulum::Spawn` 0xa67f0) schedules its first swing at `time + 0.1`, which the engine compares against the pusher's `ltime`, so it starts that much later. |
 | `func_breakable` | **TS** `CBreakable` | See §3.1. |
 | `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use. A breakable pushable uses the TS breakable code. |
 | `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sounds and sentences as in §3.5. `movesnd`/`stopsnd` are BYTEs set like `func_plat`'s (`CBaseDoor::KeyValue` 0xb51a0, 16-bit `fistp`), `common/null.wav` isn't precached. |
@@ -209,20 +212,20 @@ The track change that its own train fires reads the train's path through a side 
 | `momentary_door` | SDK 2.3 doors.cpp (TS `CMomentaryDoor` 0xb7d98..0xb87f4) | A `CBaseToggle`, so none of TS's `CBaseDoor` changes (§3.2) apply. Keys `movesnd` (`doors/doormove1..8.wav`, else `common/null.wav`; a BYTE via a 16-bit `fistp`), `stopsnd` and `healthvalue` (ignored), `lip`. Only `USE_SET` moves it: `value` (clamped to ≤ 1, no lower clamp) places it between closed and open, at 10 × the distance per second; the move sound (`CHAN_STATIC`, TS slow-motion pitch) starts when it isn't already moving. No stop sound, touch, `Blocked` or +use (`ObjectCaps` 0); `dmg` defaults to 2 unread. |
 | `momentary_rot_button` | SDK 2.3 buttons.cpp (TS `CMomentaryRotButton` 0xa948c..0xaa9d8) | Continuous +use (`ObjectCaps` 0x10) unless spawnflag 1, which also makes it solid. Each use turns it 0.1 s more at `speed` (default 100), reversing after every stop, moves every `momentary_rot_button` with the same `target`, and sends `USE_SET` with its position (`AxisDelta / distance`, from before this turn: the SDK 2.3 latency, not HL25's prediction) to the entities named by `target`. Spawnflag 16 with `returnspeed` > 0 turns it back on release, still updating the targets while above 0. A negative `distance` swaps the ends. `sounds` (`ButtonSound`) on the first turn after a stop, `CHAN_VOICE` with TS slow-motion pitch. |
 | `button_target`, `multisource` | SDK | |
-| `func_train`, `path_corner` | SDK plats.cpp | `Activate` is emulated (see §6). `movesnd`/`stopsnd` are `CBasePlatTrain::KeyValue`'s (0xd1f80): the low byte of the `strtod` truncated to a short, as for `func_plat`; `common/null.wav` for any other number is only allocated (worldspawn precached it). |
+| `func_train`, `path_corner` | SDK plats.cpp | `CFuncTrain::Activate` (0xd3b44) runs from `ServerActivate` (§6 item 2): once, to the first corner; an unnamed train starts 0.1 s (local time) on, a named one waits for a use. `Use` (0xd34d8) doesn't activate. Every sound (`Next`, `Wait`, `Use`) uses TS slow-motion pitch (0.5). `movesnd`/`stopsnd` are `CBasePlatTrain::KeyValue`'s (0xd1f80): the low byte of the `strtod` truncated to a short, as for `func_plat`; `common/null.wav` for any other number is only allocated (worldspawn precached it). |
 | `func_plat` | **TS** `CFuncPlat` | Adds the TS keys `targettop` and `targetbot`, which fire when the plat reaches the top or bottom. Spawns its own trigger volume. Sounds use TS slow-motion pitch (0.5). `movesnd`/`stopsnd` keep the low byte of the truncated short (`CBasePlatTrain::KeyValue` 0xd1f80: 257 is sound 1). `Blocked` (0xd2e64) logs "`<class>` Blocked by `<class>`" (`at_aiconsole`). |
 | `func_platrot` | SDK `CFuncPlatRot` (TS 0xd3010..0xd3294) | A `func_plat` that also turns `rotation` degrees about its `AxisDir` axis (spawnflag 64 Z, 128 X, else Y), from 0 at the bottom to `rotation` at the top, over the move's duration (`RotMove`: under 0.1 s, the whole turn becomes the angular velocity with a think 1 s on). Starts at the top angles with a targetname. |
 | `func_trackchange` | **TS** `CFuncTrackChange` (0xd5d84..0xd6a98) | A toggle `func_platrot` that never carries a train in TS (§7.3). Any use at the top goes down, at the bottom goes up; moving, it ignores uses. Spawnflag 8 starts at the bottom, 16 only turns (`AngularMove`, bottom at the spawn height). A 2 s think runs `CFuncTrainControls::Find` on it. |
 | `func_trackautochange` | **TS** `CFuncTrackAuto` (0xd6b60, 0xd6c48) | The same platform; its `Use` does nothing reachable in TS (§7.3), so it never moves. |
-| `func_guntarget` | **TS** `CGunTarget` (0xd6e48..0xd7da8) | A shootable brush (`FL_MONSTER`, `takedamage` 0 until used). `Activate` puts it on its first `path_corner` (emulated, §6). A use that passes `ShouldToggle` against `m_on` (never set, as in the SDK) restores `max_health`, sets `DAMAGE_AIM` and follows the corners at `speed` (default 100), firing each corner's `message` (once with flag 4) and waiting its `wait`; spawnflag 1 starts it 0.3 s in. Damage wears `health` down; at 0 it stops (`takedamage` 0) and fires its own `message`. Traced hits go through `CBaseMonster::TraceAttack` (0xb3848): no blood, and hitgroups 1–7 scale by TS's never-set (0) `gSkillData.mon*` (a brush hit is always hitgroup 0). `Killed` is never called. |
-| `func_tracktrain`, `path_track` | SDK | Includes branches, alternate paths, banking, dead ends, and the `events/train.sc` pitch updates. Players drive it (see §3.5). |
+| `func_guntarget` | **TS** `CGunTarget` (0xd6e48..0xd7da8) | A shootable brush (`FL_MONSTER`, `takedamage` 0 until used). `Activate` (0xd6f38, from `ServerActivate`, §6 item 2) puts it on its first `path_corner`. A use that passes `ShouldToggle` against `m_on` (never set, as in the SDK) restores `max_health`, sets `DAMAGE_AIM` and follows the corners at `speed` (default 100), firing each corner's `message` (once with flag 4) and waiting its `wait`; spawnflag 1 starts it 0.3 s in. Damage wears `health` down; at 0 it stops (`takedamage` 0) and fires its own `message`. Traced hits go through `CBaseMonster::TraceAttack` (0xb3848): no blood, and hitgroups 1–7 scale by TS's never-set (0) `gSkillData.mon*` (a brush hit is always hitgroup 0). `Killed` is never called. |
+| `func_tracktrain`, `path_track` | SDK | Includes branches, alternate paths, banking, dead ends, and the `events/train.sc` pitch updates. `UpdateSound` (0xd46bc) uses integer pitch maths (`60 + |(int)speed| * 140 / 1000`) and every train sound TS slow-motion pitch (0.5). A named `path_track` links in its `Activate` (`CPathTrack::Link` 0xd1274). Players drive it (see §3.5). |
 | `func_traincontrols` | SDK `CFuncTrainControls` | Hands its box to the named train as the control volume (`SetControls`), then removes itself. |
 | `func_tank`, `func_tanklaser`, `func_tankrocket`, `func_tankmortar` | SDK func_tank.cpp + **TS** | Automatic (tracks a player in its PVS) and player-controlled tanks. See §3.5 for what TS changes. |
 | `func_tankcontrols` | SDK | +use passes on to the first `func_tank*` named by `target` (found 0.3 s after spawn). |
 | `trigger_multiple`, `trigger_once`, `trigger_teleport`, `trigger_push`, `trigger_gravity` | SDK triggers.cpp | `UTIL_ShowMessage` → `HudText`. |
 | `trigger_hurt` | SDK 2.3 | Negative damage heals with TS `TakeHealth`, with no dead-player check (2.3). The per-player bitmask in `impulse` is kept (multiplayer only: with `deathmatch` 0, `CHalfLifeRules`, nothing is hurt again before `dmgtime` except in the same frame). With `DMG_RADIATION` in `damagetype`, **TS** `RadiationThink` (0xe703c) lowers the geiger range of the player who can see the trigger's centre, every 0.25 s; `update_geiger_counter` (`UpdateGeigerCounter` 0xda1f0, from the player's PreThink) sends `Geiger` (range / 4) to suited players when it changes. |
 | `trigger_auto`, `trigger_relay`, `trigger_changetarget` | SDK | |
-| `trigger_camera` | SDK | `SET_VIEW`, `FL_FROZEN` for TAKECONTROL, `path_corner` moves. |
+| `trigger_camera` | SDK | `SET_VIEW`, `FL_FROZEN` for TAKECONTROL, `path_corner` moves. A non-player activator falls back to slot 1's edict (`Use` 0xe9c08), none when the slot is empty. |
 | `multi_manager` | SDK | Includes thread clones. |
 | `func_ladder`, `func_friction` | SDK | |
 | `trigger` | **TS** `CBaseTrigger` (link 0xe67c8) | Spawn is `CBaseEntity::Spawn`: no model, not solid, no touch or use. Only `CBaseTrigger::KeyValue` (0xe68bc) runs. |
@@ -234,18 +237,19 @@ The track change that its own train fires reads the train's path through a side 
 | `player_loadsaved` | **TS** `CRevertSaved` 0xddd0c..0xddf38 | Use: `TSFade` out to everyone (`rendercolor`, `duration`, `holdtime`, `renderamt`), `message` to every player after `messagetime`, `reload` after `loadtime` when `deathmatch` is 0. |
 | `player_weaponstrip` | **TS** `CStripWeapons::Use` 0xddbb0 | `RemoveAllItems(FALSE)` (`weapons::remove_all_items_keep_suit`: the TS gun holstered and destroyed with its inventory and reserve ammo, view/weapon models cleared, HEV suit bit kept, `UpdateClientData`, `CurWeapon 0,0,0`) on a player activator, or on slot 1 when not under the multiplayer rules. Inside the `Use`, also for a player whose own +use fired it (lent, `world::run_now_or_defer`). |
 | `func_monsterclip` | **TS** `CFuncMonsterClip` 0xa55d0 | `func_wall` with `FL_MONSTERCLIP`; `effects` is set to `EF_NODRAW` (not or-ed) unless `showtriggers`; Use does nothing. |
-| `info_target`, `info_teleport_destination`, `info_intermission`, `info_landmark`, `info_null` | SDK | `info_null` removes itself. |
+| `info_target`, `info_teleport_destination`, `info_landmark`, `info_null` | SDK | `info_null` removes itself. |
+| `info_intermission` | SDK `CInfoIntermission` (0xddf80, 0xddff8) | Hidden and not solid; 2 s after spawning its `v_angle` turns toward its `target` (pitch negated). |
 | `env_global`, `env_message` | SDK | Global states persist across maps, like `gGlobalState`. |
-| `ambient_generic` | SDK sound.cpp | The TS preset table is byte-identical. `!NAME` sentences aren't precached and are sent as `!<index>` (§3.5). |
+| `ambient_generic` | SDK sound.cpp | The TS preset table is byte-identical. `!NAME` sentences aren't precached and are sent as `!<index>` (§3.5). `Precache` (0xdec90) precaches only samples longer than one character, but plays `message` whatever its length. |
 | `env_sound` | SDK | Per-player room state lives in a side table in `sound.rs`. |
 | `light`, `light_spot`, `light_environment` | SDK lights.cpp | Lights without a targetname are removed. Switchable styles are 32 and up. `light_environment` sets `sv_skycolor_*` and `sv_skyvec_*`. |
 | `env_sprite`, `env_glow`, `env_render`, `env_spark`, `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite` | SDK effects.cpp / world.cpp / h_cycler.cpp | A sprite with an `aiment` follows that entity's attachment `body` (`MOVETYPE_FOLLOW`, skin = entity index), as `CSprite::Precache` / `SetAttachment` do; maps can't set `aiment`, so this is for code-created sprites (the `xen_plantlight` glow). `cycler_sprite` is +usable (TS impulse cap). |
 | `env_shake` | SDK + **TS** shake | Duration and frequency are divided by each player's time scale (`fuser1`). |
-| `env_fade` | **TS** `CFade` | Sent as `TSFade` with durations divided by the time scale. TS spawns it as a brush. New spawnflag 8 fades only the clients inside the brush. |
+| `env_fade` | **TS** `CFade` | Sent as `TSFade` with durations divided by the time scale. TS spawns it as a brush (`Spawn` 0xbd68c: `SET_MODEL` even without a model). New spawnflag 8 fades only the clients inside the brush. |
 | `env_explosion`, `spark_shower` | SDK explode.cpp | TS doesn't route these through `TSExplosion`. Uses SDK `RadiusDamage`, scorch decals, fireball and smoke temp entities. `CEnvExplosion` is a `CBaseMonster`, so its `TakeDamage` is `CBaseMonster::TakeDamage` (§6 item 7), reachable when a map sets `takedamage`. |
-| `env_beam` | SDK `CLightning` | Server-side beams work as `FL_CUSTOMENTITY` beam entities: `BeamUpdateVars` runs on the first think. Strike beams use temp entities. Damage and decals are included. |
-| `env_laser` | SDK `CLaser` | Includes the end sprite and damage. |
-| `env_shooter`, `gibshooter`, `gib` | SDK | Gib bounce sounds use TS slow-motion pitch. `gibshooter` gibs bleed red: up to 5 blood decals, one per airborne bounce (`BounceGibTouch` 0xb1ebc, `violence_hblood`); `env_shooter` gibs don't bleed. |
+| `env_beam` | SDK `CLightning` | Server-side beams work as `FL_CUSTOMENTITY` beam entities: `BeamUpdateVars` runs from `Activate` (0xb9778). Strike beams use temp entities. Damage and decals are included. Without a texture `Spawn` (0xb9580) sets `SUB_Remove` but no `nextthink`, so the entity stays. |
+| `env_laser` | SDK `CLaser` | Includes the end sprite and damage. Without a model `Spawn` (0xbb104) sets `SUB_Remove` but no `nextthink`, so the entity stays. |
+| `env_shooter`, `gibshooter`, `gib` | SDK | Gib bounce sounds use TS slow-motion pitch. A non-repeatable shooter's last gib leaves `SUB_Remove` for the next frame (`ShootThink` 0xbc4c4). `gibshooter` gibs bleed red: up to 5 blood decals, one per airborne bounce (`BounceGibTouch` 0xb1ebc, `violence_hblood`); `env_shooter` gibs don't bleed. |
 | `cycler_prdroid` | SDK `CCyclerProbe` (TS 0xc752c) | A `cycler` 16 units up with `models/prdroid.mdl` and a ±16 box; renamed `cycler` like every `GenericCyclerSpawn` cycler, so it is +usable as one. |
 | `cycler_wreckage` | SDK `CWreckage` (TS 0xc7fe4..0xc8118) | Its model (no collision), animated with `StudioFrameAdvance`; every 0.2 s a `TE_SMOKE` (`sprites/steam1.spr`, scale 50–99, framerate 8–11) at a random point of its box. With `dmgtime` set it smokes ever less often until then (`RandomFloat(0, dmgtime − (int)spawn time)` against the time left) and is removed after it. `TakeDamage` is `CBaseMonster`'s, which refuses: `Spawn` clears `takedamage`. |
 | `beam` | SDK `CBeam` (TS 0xb8cb4 / 0xb8cd4) | A map-placed one is just `SOLID_NOT` and takes its end entities from `owner`/`aiment`. |
@@ -259,6 +263,7 @@ The track change that its own train fires reads the train's path through a side 
 | `shrapnel` | **TS** `CTSShrapnel` (0x7c0a0..0x7f09c), `entities::ts::shrapnel` | Nothing in TS calls `CTSShrapnel::Create`, so only a map places one: invisible (`EF_NODRAW`), bouncing, slowed like the other `CTSPhysicObject`s. It hits a player for 100 (`DMG_NEVERGIB | DMG_SLASH`, traced), sticks 6 units back into `worldspawn` / `func_wall`, otherwise bounces back at a quarter speed with `knife_hit.wav`; loses 1 u/s per think, is removed under 100 u/s unless stuck, and 30 s after spawning (10 s after its last hit). Continuous +use caps, no `Use`. |
 | `cycler` | SDK h_cycler.cpp | Server-side studio animation (`CCycler::Think` 0xc778c): bone controllers zeroed, `frame` advanced, one-shot sequences restart. +use toggles the animation. Damage steps to the next sequence (wrapping to 0) while animating, or one 0.1 s frame step while paused. |
 | `env_blood` | SDK effects.cpp `CBlood` | `color` 1 = yellow, else red; `amount`. Drips (`TE_BLOODSPRITE`, amount doubled for multiplayer) or, with spawnflag 2, a stream (red becomes colour 70). Spawnflags 1 random direction, 4 at the activator's (or player 1's) eyes, 8 blood decal along the direction. |
+| `game_text` | SDK maprules.cpp (TS `CGameText` 0xcc770, 0xcca2c) | A `CRulePointEntity` (`Spawn` 0xcc42c clears `model`): `TE_TEXTMESSAGE` to the activator or, with flag 1, every player, gated by `master`. It has no `CBaseDelay`: `delay` and `killtarget` aren't its keys, and `Use` fires no targets. |
 | `game_score` | SDK maprules.cpp (same in TS 0xcc4d8..0xcc568) | `points` (`strtol`, into `frags`) to the activating player (`IsPlayer`: any slot player; `AddPoints` 0xd9e18, `ScoreInfo` to all), or with spawnflag 2 to each other slot player who is a teammate (`AddPointsToTeam` 0xd9f68, `PlayerRelationship`: never outside teamplay); without spawnflag 1 a score isn't taken below 0 (the floor is `(int)-frags`). `frags` is read with a C `(int)` cast (`maprules::x87_int`: truncation, 0x80000000 for NaN/out of range). `master` gates it. |
 | `game_end` | SDK maprules.cpp (TS 0xcc668) | `EndMultiplayerGame`: the intermission (`frame::go_to_intermission`); nothing when `deathmatch` was 0 (TS's `CHalfLifeRules`). `master` gates it. |
 | `game_zone_player` | SDK maprules.cpp (TS 0xcce90..0xcd148) | Brush (`CRuleBrushEntity::Spawn`: model set, invisible, not solid). Keys `intarget`, `outtarget`, `incount`, `outcount`, `master`. On use, each slot player (`UTIL_PlayerByIndex`, players who left included) is inside when `pfnTraceModel` from its origin to its origin with the human hull (head hull when `FL_DUCKING`) against the brush starts solid; it fires `intarget`/`outtarget` with the player as activator, our activator as caller and our use type and value. Then `incount`/`outcount` get `USE_SET` with the counts (activator, us as caller). |
@@ -360,7 +365,10 @@ The track change that its own train fires reads the train's path through a side 
   `TimeBasedDamage::antidotes`), which cures nerve gas or poison (`CheckTimeBasedDamage`). The
   count is never reset, so it survives death. None of the 97 shipped maps place one.
 * **Chargers.** The health charger refills to max in one use. The HEV charger calls
-  `TakeArmor(100)` in one use. They recharge after 60 s and 30 s.
+  `TakeArmor(100)` in one use. They recharge after 60 s and 30 s. Both refuse players without the
+  HEV suit bit (`CWallHealth::Use` 0xc8d08, `CRecharge::Use` 0xc6fd0). Only the health charger
+  plays a sound when it recharges (`CRecharge::Recharge` 0xc7234 is silent). Every charger sound
+  uses TS slow-motion pitch (0.5).
 * **Items** respawn after 30 s unless `SF_NORESPAWN` (1 << 30) is set, with the `suitchargeok1`
   materialise sound.
 * **Dead players.** `CItem::ItemTouch` (0xcaf8c) checks only `IsPlayer` and `CanHaveItem` (always
@@ -447,8 +455,8 @@ Port notes:
   A player held by a dispatch that didn't lend it gets its half once that returns.
 * `PlayerUse` is `player::player_use`, run as in TS from `PostThink` → `ItemPostFrame` →
   `ImpulseCommands` (`weapons::post_think`, once the gun's `m_flNextAttack` has run out).
-* `CFuncTankLaser::Activate` (find the laser, turn it off; no laser removes the tank) runs from the
-  tank's first think instead of `ServerActivate`.
+* `CFuncTankLaser::Activate` (0xc428c: find the laser, turn it off; no laser removes the tank)
+  runs from `ServerActivate` (§6 item 2).
 * A tank whose controller disconnects lets go on its next think (port addition; the SDK keeps a
   dangling pointer).
 * `FireBullets` for tanks sends a tracer for every shot and a `{shot1..5}` decal on brush
@@ -583,6 +591,9 @@ covers:
     value), `Q_log2`, `Length` (`shared::pm::math`), and `Server_GetBlendingInterface`'s version
     check and constant 0 (`ts_server::studio`). The export lists were compared with
     `nm -D --defined-only` / `objdump -p` (§7.5).
+  * #109: `ServerActivate`'s edict range, `func_tracktrain`'s integer sound pitch, the
+    `info_intermission` pitch flip, the HL remaps' `RANDOM_LONG` order and re-picking classes,
+    `ts_emitter`'s `||` checks, the shared particle table and the corpse fade.
 * **Builds.** `cargo build -p ts-server` passes for the host target, `i686-unknown-linux-gnu` and
   `i686-pc-windows-gnu`. Windows prints the existing stdcall-fixup linker note.
 * **Dedicated server, all maps.**
@@ -645,13 +656,13 @@ covers:
      `szClassName`. So `multi_manager` and `game_player_equip` treat every other key as a
      target/item without filtering, and the class `skin` branches (`func_door`,
      `func_illusionary`) and `func_pushable`'s `size` presets are gone: they are dead in TS too.
-2. **`Activate`.** `ServerActivate` should call an `Entity::activate` hook on every entity, as
-   `CBaseEntity::Activate` does in the SDK. Until then, four classes emulate it:
-   * `func_train` runs `Activate` from a think 0.1 s after spawning.
-   * `func_tracktrain` links all `path_track`s on its first think.
-   * `env_beam` runs `BeamUpdateVars` 0.05 s after spawning.
-   * `func_guntarget` runs `CGunTarget::Activate` 0.1 s after spawning (or on its first use if
-     that comes first); spawnflag 1's `Start` keeps the `ltime + 0.3` `Spawn` gave it.
+2. **`Activate`.** `ServerActivate` (0xae928, `entities::server_activate`, called from the
+   server-dll's `ServerActivate` through `rules::server_activate`) runs `Entity::activate` on every
+   edict in use from index `clientMax` on that has private data (the SDK's off-by-one includes the
+   last player slot, whose `Activate` is a no-op); a dormant one logs "Can't instance". The engine
+   calls it on a new map and after a restore. The classes with their own `Activate` (TS vtable
+   +0x3c): `func_train`, `func_guntarget`, `func_tanklaser`, `env_beam` (`CLightning`) and
+   `path_track`.
 3. **+use.** The `Entity` trait has no `ObjectCaps`.
    * `stock::object_caps(e)` returns the stock classes' use caps.
    * `player::player_use(player, cx, pressed, released)` implements `CBasePlayer::PlayerUse`
@@ -669,7 +680,7 @@ covers:
      charger is used from the player's own `PlayerUse`, which lends the player to its slot, so
      the armour lands inside the `Use` (`world::run_now`), as in TS. `DropArmor` (0x93a3c) has no callers in TS and isn't ported.
    * The HEV suit bit (`pev->weapons & 1<<31`) is set on spawn (rules package). The battery and
-     the HEV charger refuse players without it, as in TS.
+     both chargers refuse players without it, as in TS.
 6. **`trigger_camera` on death or respawn.** TS `CBasePlayer::Killed` and `Spawn` call
    `SET_VIEW(self, self)` and clear `FL_FROZEN`. The player package must do this too, or a camera
    active when the player dies keeps the view.
@@ -829,7 +840,6 @@ writes out of bounds, or where the port lacks save/restore:
 * **`GetDelay`.** `CGunTarget::Wait` takes the corner's `GetDelay()`; the port reads a
   `path_corner`'s `wait` and uses 0 for anything else, as `func_train` does (in TS a
   `CBaseToggle` target would give its own `wait`).
-* **`func_guntarget` `Activate`** is emulated by a think (§6).
 * **Crushers** (`CFuncPlat::Blocked` 0xd2e64 and the doors', trains' and rotators'
   `Blocked`) call the victim's `TakeDamage` directly, which decides itself whether `takedamage`
   matters: a stopped `func_guntarget` with health left loses it when crushed, a shootable
@@ -884,6 +894,23 @@ everywhere) lacked.
   **`Q_log2`** never returns for a negative argument, as in TS. Nothing calls either.
 * **`CreateInterface`** (mp.dll 0x10028f70): nothing in mp.dll registers an interface, so it
   always sets `IFACE_FAILED` (when the return-code pointer isn't NULL) and returns NULL.
+
+### 7.6 Guards in the #109 classes
+
+Where TS goes on through NULL, the port stops instead:
+
+* `CFuncTrain::Activate` with no entity named by `target` (TS reads its `target` and origin
+  through NULL): the train stays put and stays activated.
+* `trigger_camera` `Use` with neither a player activator nor a client in slot 1 (TS calls
+  `EnableControl`, copies the position and `SET_VIEW`s through NULL): the camera turns on, sets
+  its speeds and target, and stops there.
+* `CPathTrack::Link` stores any entity `target` / `altpath` names and calls `SetPrevious` on it as
+  a `CPathTrack` (a write into a foreign object): the port links `path_track`s only.
+* `CLightning::BeamUpdateVars` with a missing start or end entity (TS uses the world, then reads
+  through NULL or links the beam to edict 0): the port leaves the beam as it was.
+* `game_text` with a NULL activator (TS calls `IsNetClient` through it): only the all-players
+  form sends.
+* `TSCreateDeadCorpse` when `CBaseEntity::Create` fails (TS writes through NULL): no corpse.
 
 ## 8. Census script
 

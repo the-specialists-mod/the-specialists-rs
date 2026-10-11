@@ -24,11 +24,12 @@ use std::ffi::CStr;
 
 pub const SF_ENVTEXT_ALLPLAYERS: i32 = 1;
 
+/// `game_text` (`CGameText`, a `CRulePointEntity`): no `CBaseDelay`, so `delay` and `killtarget`
+/// are plain unclaimed keys, and `Use` (0xcca2c) fires no targets.
 #[derive(Default)]
 pub struct GameText {
     parms: HudTextParms,
     master: string_t,
-    delay: Delay,
 }
 
 /// `UTIL_StringToIntArray` for up to 4 values (missing ones are 0).
@@ -79,8 +80,7 @@ fn parms_from_bytes(b: &[u8; 40]) -> HudTextParms {
 }
 
 impl Entity for GameText {
-    /// `CGameText::Save` (0xcc6d0): `CRuleEntity`'s master, then `m_textParms` as 40 bytes. The
-    /// port's delay keys have no TS field (TS's `CGameText` is no `CBaseDelay`).
+    /// `CGameText::Save` (0xcc6d0): `CRuleEntity`'s master, then `m_textParms` as 40 bytes.
     fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
         save_rule(cx, f, &mut self.master);
         f.table(&crate::save::tables::CGameText);
@@ -89,6 +89,7 @@ impl Entity for GameText {
         self.parms = parms_from_bytes(&b);
     }
 
+    /// `CGameText::KeyValue` (0xcc770), then `CRuleEntity::KeyValue` (`master` only).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let p = &mut self.parms;
         match key.to_bytes() {
@@ -108,22 +109,19 @@ impl Entity for GameText {
             b"fadeout" => p.fade_out = kv_f(value),
             b"holdtime" => p.hold = kv_f(value),
             b"fxtime" => p.fx_time = kv_f(value),
-            b"master" => self.master = alloc(value),
-            _ => return self.delay.key_value(key, value),
+            _ => return rule_key_value(&mut self.master, key, value),
         }
         true
     }
 
+    /// `CRulePointEntity::Spawn` (0xcc42c).
     fn spawn(&mut self, cx: &mut Cx) {
-        let v = cx.pev();
-        v.solid = SOLID_NOT as i32;
-        v.movetype = MOVETYPE_NONE as i32;
-        v.effects = EF_NODRAW as i32;
-        v.frame = 0.0;
+        rule_point_spawn(cx);
     }
 
+    /// `CGameText::Use` (0xcca2c): the message only; no targets fire.
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
-        if self.master != 0 && !is_master_triggered(self.master, activator) {
+        if !can_fire_for_activator(self.master, activator) {
             return;
         }
         let msg = s(cx.pev().message);
@@ -138,8 +136,6 @@ impl Entity for GameText {
         } else if is_player(activator) && activator.v().flags & FL_FAKECLIENT as i32 == 0 {
             te_text_message(activator, &self.parms, msg);
         }
-        let me = cx.edict;
-        self.delay.use_targets(me, me, UseType::Toggle, 0.0);
     }
 }
 
@@ -682,9 +678,16 @@ fn team_id(e: *mut edict_t) -> String {
     String::new()
 }
 
-/// `m_teamIndex` of every `game_team_master` (`+0x68`), kept outside the entity so a master can
-/// be read while it is itself mid-dispatch (its targets can reach `game_player_team`).
+/// `m_teamIndex` of every spawned `game_team_master` (`+0x68`), kept outside the entity so a
+/// master can be read while it is itself mid-dispatch (its targets can reach
+/// `game_player_team`). Keyed by edict address: each master publishes its own value from `Spawn`
+/// (or its restore), and a new map starts empty ([`reset`]), so no entry outlives its map.
 static TEAM_MASTERS: Global<RefCell<Option<HashMap<usize, i32>>>> = Global(RefCell::new(None));
+
+/// New map (`CWorld::Precache`): the previous map's masters are gone.
+pub fn reset() {
+    *TEAM_MASTERS.0.borrow_mut() = None;
+}
 
 fn team_index_of(e: *mut edict_t) -> i32 {
     TEAM_MASTERS.0.borrow().as_ref().and_then(|m| m.get(&(e as usize)).copied()).unwrap_or(0)
@@ -735,6 +738,9 @@ pub fn team_master_triggered(e: *mut edict_t, activator: *mut edict_t) -> Option
 pub struct GameTeamMaster {
     master: string_t,
     trigger_type: i32,
+    /// `m_teamIndex` as `KeyValue` set it (0 in TS's zeroed object), published to
+    /// [`TEAM_MASTERS`] by `Spawn`, which holds the live value after that.
+    team_index: i32,
 }
 
 impl Entity for GameTeamMaster {
@@ -748,9 +754,9 @@ impl Entity for GameTeamMaster {
     }
 
     /// `CGameTeamMaster::KeyValue` (0xccae8).
-    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
-            b"teamindex" => set_team_index(cx.edict, kv_i(value)),
+            b"teamindex" => self.team_index = kv_i(value),
             b"triggerstate" => {
                 self.trigger_type = match kv_i(value) {
                     0 => UseType::Off as i32,
@@ -764,11 +770,9 @@ impl Entity for GameTeamMaster {
         true
     }
 
+    /// `CRulePointEntity::Spawn` (0xcc42c); the master's team from its `teamindex` key.
     fn spawn(&mut self, cx: &mut Cx) {
-        // The object starts zeroed in TS: team 0 until a `teamindex` key says otherwise.
-        if TEAM_MASTERS.0.borrow().as_ref().is_none_or(|m| !m.contains_key(&(cx.edict as usize))) {
-            set_team_index(cx.edict, 0);
-        }
+        set_team_index(cx.edict, self.team_index);
         rule_point_spawn(cx);
     }
 

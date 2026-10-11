@@ -100,7 +100,7 @@ link_entities! {
     // subs.cpp / world.cpp point entities
     info_target               => PointEntity,
     info_teleport_destination => PointEntity,
-    info_intermission         => PointEntity,
+    info_intermission         => InfoIntermission,
     info_landmark             => PointEntity,
     info_null                 => NullEntity,
     // sound.cpp / lights.cpp
@@ -305,7 +305,7 @@ impl World {
         set_client_cvar(c"room_type", 0.0);
         // A new map: per-map registries (masters, env_global states) start empty.
         base::reset_registries();
-        tracktrain::reset();
+        maprules::reset();
         sound::reset_rooms();
         // CWorld::Precache (0xf449c) in TS's order: InstallGameRules (the multiplayer rules
         // precache the voice icon), then the soundent and the body queue, the first edicts after

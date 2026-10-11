@@ -1393,6 +1393,8 @@ impl Entity for TriggerCamera {
         }
     }
 
+    /// `CTriggerCamera::Use` (0xe9c08). Without a player activator the camera takes slot 1's
+    /// edict, null when that slot is empty.
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, _value: f32) {
         let eng = engine();
         let now = eng.time();
@@ -1404,18 +1406,21 @@ impl Entity for TriggerCamera {
             self.return_time = now;
             return;
         }
-        let activator = if is_player(activator) { activator } else { eng.entity_of_index(1) };
-        if !is_player(activator) {
-            self.state = false;
-            return;
-        }
+        let activator = if is_player(activator) {
+            activator
+        } else {
+            let first = eng.entity_of_index(1);
+            if first.is_null() || !first.has_private_data() { std::ptr::null_mut() } else { first }
+        };
         self.player = EHandle::new(activator);
         self.return_time = now + self.wait;
         cx.pev().speed = self.initial_speed;
         self.target_speed = self.initial_speed;
         let sf = cx.pev().spawnflags;
         self.target = if sf & SF_CAMERA_PLAYER_TARGET != 0 { self.player } else { EHandle::new(next_target(cx.edict)) };
-        if !self.target.is_valid() {
+        // Guard: with no player TS goes on through NULL (`EnableControl`, the position copy,
+        // `SET_VIEW`).
+        if !self.target.is_valid() || activator.is_null() {
             return;
         }
         if sf & SF_CAMERA_PLAYER_TAKECONTROL != 0 {
@@ -1453,7 +1458,7 @@ impl Entity for TriggerCamera {
 
 // ---- info_teleport_destination / info_target / info_null etc. --------------------------------------------------
 
-/// `CPointEntity` (info_target, info_teleport_destination, info_intermission...): just keeps its
+/// `CPointEntity` (info_target, info_teleport_destination, info_landmark...): just keeps its
 /// origin/angles. `info_teleport_destination` and `info_target` are found by targetname.
 #[derive(Default)]
 pub struct PointEntity;
@@ -1462,6 +1467,42 @@ impl Entity for PointEntity {
     fn spawn(&mut self, cx: &mut Cx) {
         cx.pev().solid = SOLID_NOT as i32;
     }
+}
+
+/// `info_intermission` (`CInfoIntermission`): a point entity that, two seconds after spawning,
+/// turns its `v_angle` toward its `target` (pitch negated, as `UTIL_VecToAngles` gives it for
+/// models).
+#[derive(Default)]
+pub struct InfoIntermission;
+
+impl Entity for InfoIntermission {
+    /// `CInfoIntermission::Spawn` (0xddf80).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let org = cx.pev().origin;
+        engine().set_origin(cx.edict, org);
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.effects = EF_NODRAW as i32;
+        v.v_angle = [0.0; 3];
+        v.nextthink = engine().time() + 2.0;
+    }
+
+    /// `CInfoIntermission::Think` (0xddff8): a virtual `Think`, so it also runs for a restored
+    /// `nextthink`.
+    fn think(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let t = eng.find_by_string(std::ptr::null_mut(), c"targetname", s(cx.pev().target));
+        if t.is_null() {
+            return;
+        }
+        let dir = crate::damage::normalize(vec::sub(t.v().origin, cx.pev().origin));
+        cx.pev().v_angle = intermission_angles(eng.vec_to_angles(dir));
+    }
+}
+
+/// `CInfoIntermission::Think`'s `v_angle`: the angles with the pitch's sign flipped.
+fn intermission_angles(a: [f32; 3]) -> [f32; 3] {
+    [-a[0], a[1], a[2]]
 }
 
 /// `info_null`: removes itself.
@@ -1476,6 +1517,13 @@ impl Entity for NullEntity {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn intermission_pitch_sign_flips() {
+        assert_eq!(super::intermission_angles([10.0, 90.0, 0.0]), [-10.0, 90.0, 0.0]);
+        // The sign bit flips even for zero (TS XORs it).
+        assert!(super::intermission_angles([0.0, 0.0, 0.0])[0].is_sign_negative());
+    }
+
     #[test]
     fn cd_command() {
         assert_eq!(super::cd_command(-1).as_deref(), Some("cd pause\n"));

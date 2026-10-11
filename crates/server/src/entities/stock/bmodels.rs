@@ -578,7 +578,10 @@ impl Entity for Pendulum {
         self.center = vec::mad(v.angles, v.movedir, self.distance * 0.5);
         if v.spawnflags & SF_BRUSH_ROTATE_INSTANT != 0 {
             self.think = PendulumThink::UseToggle;
-            v.nextthink = v.ltime + 0.1;
+            // `CPendulum::Spawn` (0xa67f0) uses the global time, not `ltime`, although the
+            // engine compares a pusher's `nextthink` against `ltime`: the first swing waits that
+            // much longer.
+            v.nextthink = engine().time() + 0.1;
         }
         v.speed = 0.0;
         self.usable = true;

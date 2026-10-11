@@ -1,9 +1,10 @@
 //! Small TS entities: `ts_model`, `ts_mapglobals`, `ts_wind`, the client-side effect entities
-//! (`ts_fog`, `ts_emitter`, `ts_particle`: validated, then removed; the client reads the BSP entity
-//! lump), `deadcorpse`, team spawn points, and harmless stubs for the dead objective classes.
+//! (`ts_fog` and `ts_emitter` are validated, then removed; `ts_particle` stays; the client reads
+//! the BSP entity lump), `deadcorpse`, team spawn points, and harmless stubs for the dead
+//! objective classes.
 
 use crate::entities::stock::animating::{Animating, init_bone_controllers};
-use crate::entities::stock::base::{Toggle, ToggleState, alloc, kv_i};
+use crate::entities::stock::base::{Toggle, ToggleState, alloc, create_entity, kv_f, kv_i};
 use crate::messages::Msg;
 use crate::rules::{msg, state};
 use crate::save::{BaseFuncs, Fields, tables};
@@ -196,44 +197,79 @@ impl Entity for Fog {
 
 /// `ts_emitter` (CTSEmitter): validates the emission rates, then removes itself. TS's `Spawn`
 /// (0x741d4) sets `InitThink` before its `UTIL_Remove`, so the object never reaches a save: the
-/// default (`CBaseEntity`, no pointers) `save_fields` stands.
+/// default (`CBaseEntity`, no pointers) `save_fields` stands. Its "Too many emitters" branch
+/// can't run: the emitter index (`+0x64`) is only set by `CTSSharedEmitter::AddEmitter`, which
+/// nothing calls.
 #[derive(Default)]
 pub struct Emitter {
+    /// `epslow` / `epshigh` (`strtod`).
     eps: [f32; 2],
-    ppe: [f32; 2],
+    /// `ppelow` / `ppehigh` (`strtol`).
+    ppe: [i32; 2],
 }
 
 impl Entity for Emitter {
+    /// `CTSEmitter::KeyValue` (0x73e3c) → `CTSSharedEmitter::EmitterKeyValue` (0xf840c):
+    /// `strcasecmp` keys; it claims only its own (the client reads the rest from the BSP).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v: f32 = value.to_str().unwrap_or("").split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        match key.to_bytes() {
-            b"epslow" => self.eps[0] = v,
-            b"epshigh" => self.eps[1] = v,
-            b"ppelow" => self.ppe[0] = v,
-            b"ppehigh" => self.ppe[1] = v,
-            _ => {}
+        let k = key.to_bytes();
+        let is = |name: &[u8]| k.eq_ignore_ascii_case(name);
+        if is(b"epslow") {
+            self.eps[0] = kv_f(value);
+        } else if is(b"epshigh") {
+            self.eps[1] = kv_f(value);
+        } else if is(b"ppelow") {
+            self.ppe[0] = kv_i(value);
+        } else if is(b"ppehigh") {
+            self.ppe[1] = kv_i(value);
+        } else {
+            return [&b"particle"[..], b"variancelow", b"variancehigh", b"cameradensity", b"cameraradius", b"origin"].iter().any(|n| is(n));
         }
         true
     }
+
+    /// `CTSEmitter::Spawn` (0x741d4): `CheckValues` (0x740ac), then `UTIL_Remove`.
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
-        if self.eps[0] <= 0.0 && self.eps[1] <= 0.0 {
-            eng.alert(ALERT_TYPE::at_console, "ts_emitter: Emits per second <= 0!\n");
+        let (eps, ppe) = emitter_complaints(self.eps, self.ppe);
+        if eps {
+            eng.alert(ALERT_TYPE::at_error, "Emits per second <= 0! Should be greater then zero.\n");
         }
-        if self.ppe[0] <= 0.0 && self.ppe[1] <= 0.0 {
-            eng.alert(ALERT_TYPE::at_console, "ts_emitter: Particles per emit <= 0!\n");
+        if ppe {
+            eng.alert(ALERT_TYPE::at_error, "Particles per emit <= 0! Should be greater then zero.\n");
         }
         crate::entities::remove(cx.edict);
     }
 }
 
-/// `ts_particle` (CTSParticle): precaches `soundonemit`, then removes itself.
+/// `CTSEmitter::CheckValues` (0x740ac): either rate at or below zero is an error.
+fn emitter_complaints(eps: [f32; 2], ppe: [i32; 2]) -> (bool, bool) {
+    (eps[0] <= 0.0 || eps[1] <= 0.0, ppe[0] < 1 || ppe[1] < 1)
+}
+
+/// `CTSSharedEmitter`'s particle table size (`AddParticle` 0xf8178).
+const MAX_PARTICLES: u32 = 512;
+
+/// `ts_particle` (CTSParticle): takes a slot in the shared emitter and stays (the client reads
+/// the BSP; the server keeps the entity), precaching `soundonemit`.
 #[derive(Default)]
 pub struct Particle {
     sound: Option<String>,
 }
 
+/// The shared emitter's used particle slots. `AddParticle` takes the first free one and only
+/// `KillAll` frees them, so a count stands for the table.
 pub static PARTICLES: goldsrc::Global<std::cell::Cell<u32>> = goldsrc::Global(std::cell::Cell::new(0));
+
+/// `CTSSharedEmitter::AddParticle` (0xf8178): the slot taken, or `None` when all are used.
+fn add_particle() -> Option<u32> {
+    let n = PARTICLES.0.get();
+    if n >= MAX_PARTICLES {
+        return None;
+    }
+    PARTICLES.0.set(n + 1);
+    Some(n)
+}
 
 impl Entity for Particle {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
@@ -243,27 +279,45 @@ impl Entity for Particle {
         }
         true
     }
+
+    /// `CTSParticle::Spawn` (0x74134): removed only when the shared emitter is full; the sound
+    /// is precached either way.
     fn spawn(&mut self, cx: &mut Cx) {
-        let n = PARTICLES.0.get() + 1;
-        PARTICLES.0.set(n);
-        if n > 512 {
-            engine().alert(ALERT_TYPE::at_console, "Too many particles!\n");
+        let eng = engine();
+        cx.pev().classname = eng.alloc_string(c"ts_particle");
+        if add_particle().is_none() {
+            eng.alert(ALERT_TYPE::at_error, &format!("Too many particles! Particle limit is {MAX_PARTICLES} particles.\n"));
+            crate::entities::remove(cx.edict);
         }
         if let Some(s) = self.sound.as_deref().filter(|s| !s.is_empty()) {
-            engine().precache_sound(intern(s));
+            eng.precache_sound(intern(s));
         }
-        crate::entities::remove(cx.edict);
     }
 }
 
 // ---- deadcorpse ------------------------------------------------------------------------------------
 
-/// `CTSDeadCorpse`: a copy of a dead player's model left behind when they become an observer.
+/// `CTSDeadCorpse`: a copy of a dead player's model left behind when they become an observer,
+/// fading out over the last two thirds of its life.
 #[derive(Default)]
 pub struct DeadCorpse {
-    pub until: f32,
+    /// `+0x64`: when it goes.
+    die_time: f32,
+    /// `+0x68`: its life.
+    life: f32,
     /// `m_pfnThink` (`WaitThink`, from `Spawn`).
     funcs: BaseFuncs,
+}
+
+/// `CTSDeadCorpse::WaitThink`'s `renderamt`: the time left over two thirds of the life (at least
+/// a second), as a share of 255.
+fn corpse_amount(die_time: f32, life: f32, now: f32) -> f32 {
+    let mut span = (life as f64 * 0.6666667f32 as f64) as f32;
+    if span < 1.0 {
+        span = 1.0;
+    }
+    let amt = ((die_time as f64 - now as f64) / span as f64 * 255.0) as f32;
+    if amt > 255.0 { 255.0 } else { amt }
 }
 
 impl Entity for DeadCorpse {
@@ -273,51 +327,70 @@ impl Entity for DeadCorpse {
         super::save_base(cx, f, &mut self.funcs);
     }
 
+    /// `CTSDeadCorpse::Spawn` (0x7040c): `WaitThink` in half a second.
+    fn spawn(&mut self, cx: &mut Cx) {
+        self.funcs.think = true;
+        cx.think_in(0.5);
+    }
+
+    /// `CTSDeadCorpse::WaitThink` (0x70460): every half second, fade, and go once past
+    /// `die_time`.
     fn think(&mut self, cx: &mut Cx) {
         if !self.funcs.think {
             return;
         }
-        if cx.time() >= self.until {
-            crate::entities::remove(cx.edict);
+        cx.think_in(0.5);
+        let now = cx.time();
+        if now <= self.die_time {
+            cx.pev().renderamt = corpse_amount(self.die_time, self.life, now);
         } else {
-            cx.think_in(1.0);
+            crate::entities::remove(cx.edict);
         }
     }
 }
 
-/// `TSCreateDeadCorpse(player, life)`.
+/// `TSCreateDeadCorpse(player, life)` (0x70234): a visible player leaves a `deadcorpse`
+/// (`CBaseEntity::Create`) wearing their model, frame and sequence, drawn as the dead player
+/// (`kRenderFxDeadPlayer`, `rendercolor[0]` their index) through `kRenderTransColor` at 255.
 pub fn create_dead_corpse(player: *mut edict_t, life: f32) {
     let eng = engine();
-    let e = eng.create_named_entity(c"deadcorpse");
+    let src = player.v();
+    if src.effects & EF_NODRAW as i32 != 0 {
+        return;
+    }
+    let e = create_entity(c"deadcorpse", src.origin, src.angles, std::ptr::null_mut());
+    // Guard: TS writes through a failed `Create`'s NULL.
     if e.is_null() {
         return;
     }
+    let now = eng.time();
+    crate::world::with::<DeadCorpse, ()>(e, |c| {
+        c.die_time = life + now;
+        c.life = life;
+    });
     let src = player.v();
     let idx = eng.index_of(player);
     {
         let v = e.v();
-        v.classname = eng.alloc_string(c"deadcorpse");
         v.angles = src.angles;
-        v.sequence = src.sequence;
+        v.model = src.model;
+        v.modelindex = src.modelindex;
         v.frame = src.frame;
-        v.velocity = src.velocity;
+        v.colormap = src.colormap;
         v.movetype = MOVETYPE_TOSS as i32;
-        v.solid = SOLID_NOT as i32;
-        v.renderfx = kRenderFxDeadPlayer as i32;
-        v.rendercolor[0] = idx as f32;
-        v.renderamt = idx as f32;
-        v.effects = src.effects | EF_NOINTERP;
+        v.velocity = src.velocity;
         v.flags = 0;
-        v.nextthink = eng.time() + 1.0;
+        v.deadflag = src.deadflag;
+        v.rendermode = kRenderTransColor as i32;
+        v.rendercolor = [idx as f32, 0.0, 0.0];
+        v.renderfx = kRenderFxDeadPlayer as i32;
+        v.renderamt = 255.0;
+        v.effects = src.effects | EF_NOINTERP;
+        v.sequence = src.sequence;
+        v.animtime = src.animtime;
     }
-    eng.set_model(e, crate::player::PLAYER_MODEL);
-    eng.set_size(e, src.mins, src.maxs);
     eng.set_origin(e, src.origin);
-    let until = eng.time() + life;
-    crate::world::with::<DeadCorpse, ()>(e, |c| {
-        c.until = until;
-        c.funcs.think = true;
-    });
+    eng.set_size(e, src.mins, src.maxs);
 }
 
 const EF_NOINTERP: i32 = 32;
@@ -561,5 +634,42 @@ impl Entity for SellZone {
 
     fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
         super::save_base(cx, f, &mut self.funcs);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emitter_checks_use_or() {
+        // Either bound at or below zero complains (`||`), not only both.
+        assert_eq!(emitter_complaints([1.0, 2.0], [1, 3]), (false, false));
+        assert_eq!(emitter_complaints([0.0, 2.0], [1, 3]), (true, false));
+        assert_eq!(emitter_complaints([1.0, -1.0], [0, 3]), (true, true));
+        assert_eq!(emitter_complaints([1.0, 2.0], [4, 0]), (false, true));
+    }
+
+    #[test]
+    fn particles_fill_the_shared_table() {
+        PARTICLES.0.set(0);
+        assert_eq!(add_particle(), Some(0));
+        PARTICLES.0.set(MAX_PARTICLES - 1);
+        assert_eq!(add_particle(), Some(MAX_PARTICLES - 1));
+        // Full: the 513th is refused and takes no slot.
+        assert_eq!(add_particle(), None);
+        assert_eq!(PARTICLES.0.get(), MAX_PARTICLES);
+        PARTICLES.0.set(0);
+    }
+
+    #[test]
+    fn corpse_fades_over_two_thirds_of_its_life() {
+        // A 10 s corpse (span 6.666667 s): opaque until the last two thirds, then linear.
+        assert_eq!(corpse_amount(110.0, 10.0, 100.0), 255.0);
+        assert_eq!(corpse_amount(110.0, 10.0, 110.0), 0.0);
+        let half = corpse_amount(110.0, 10.0, 110.0 - 10.0 / 3.0);
+        assert!((half - 127.5).abs() < 0.01, "{half}");
+        // A short life fades over at least a second.
+        assert_eq!(corpse_amount(100.5, 0.5, 100.0), 127.5);
     }
 }

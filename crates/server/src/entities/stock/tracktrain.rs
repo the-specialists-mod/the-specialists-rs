@@ -2,10 +2,12 @@
 //! keeps the SDK code, including the `events/train.sc` pitch updates).
 //!
 //! Players drive a train by standing inside its control volume (`func_traincontrols`, or the
-//! train's own box) and pressing +use; the player side is in `drive.rs`. `path_track` linking
-//! (SDK `Activate`) happens on the first train think after the map has spawned.
+//! train's own box) and pressing +use; the player side is in `drive.rs`. Each `path_track`
+//! links to its neighbours in `Activate`, which `ServerActivate` runs once the map has spawned
+//! (and again after a restore).
 
 use super::base::*;
+use super::explode::emit_sound_slow;
 use super::trains::ent_handle;
 use crate::entities::fire_targets;
 use crate::save::{BaseFuncs, Fields, tables};
@@ -39,13 +41,6 @@ pub struct PathTrack {
     alt_name: string_t,
 }
 
-static PATHS_LINKED: Global<Cell<bool>> = Global(Cell::new(false));
-
-/// New map: path_tracks need linking again.
-pub fn reset() {
-    PATHS_LINKED.0.set(false);
-}
-
 fn is_path(e: *mut edict_t) -> bool {
     !e.is_null() && s(e.v().classname) == c"path_track"
 }
@@ -62,54 +57,50 @@ fn data(e: *mut edict_t) -> (EHandle, EHandle, EHandle) {
     world::with::<PathTrack, _>(e, |p| (p.next, p.prev, p.alt)).unwrap_or_default()
 }
 
-/// `CPathTrack::SetPrevious`.
-fn set_previous(e: *mut edict_t, prev: *mut edict_t) {
-    if prev.is_null() {
-        return;
-    }
-    let prev_name = s(prev.v().targetname);
-    world::with::<PathTrack, _>(e, |p| {
-        if prev_name != s(p.alt_name) {
-            p.prev = EHandle::new(prev);
+impl PathTrack {
+    /// `CPathTrack::SetPrevious` (0xd1620): `prev` becomes the previous node unless it's the
+    /// node's alternate path.
+    fn set_previous(&mut self, prev: *mut edict_t) {
+        if prev.is_null() {
+            return;
         }
-    });
-}
+        if s(prev.v().targetname) != s(self.alt_name) {
+            self.prev = EHandle::new(prev);
+        }
+    }
 
-/// `CPathTrack::Link` for every path_track (the SDK does it from each one's `Activate`).
-fn link_all() {
-    if PATHS_LINKED.0.get() {
-        return;
+    /// `CPathTrack::Link` (0xd1274): `m_pnext` from `target` and `m_paltpath` from `altpath`, each
+    /// telling the node it links to that this one comes before it. Guard: TS stores any entity
+    /// (and calls `SetPrevious` on it as a `CPathTrack`); the port links `path_track`s only.
+    fn link(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let me = cx.edict;
+        let target = cx.pev().target;
+        if target != 0 {
+            let t = eng.find_by_target_name(std::ptr::null_mut(), s(target));
+            if t.is_null() || eng.index_of(t) == 0 {
+                eng.alert(ALERT_TYPE::at_console, &format!("Dead end link {}\n", s(target).to_string_lossy()));
+            } else if is_path(t) {
+                self.next = EHandle::new(t);
+                self.link_previous(t, me);
+            }
+        }
+        if self.alt_name != 0 {
+            let t = eng.find_by_target_name(std::ptr::null_mut(), s(self.alt_name));
+            if !t.is_null() && eng.index_of(t) != 0 && is_path(t) {
+                self.alt = EHandle::new(t);
+                self.link_previous(t, me);
+            }
+        }
     }
-    PATHS_LINKED.0.set(true);
-    let eng = engine();
-    let mut e = std::ptr::null_mut();
-    loop {
-        e = eng.find_by_string(e, c"classname", c"path_track");
-        if e.is_null() {
-            break;
-        }
-        let v = e.v();
-        if v.targetname == 0 {
-            continue;
-        }
-        if v.target != 0 {
-            let t = eng.find_by_target_name(std::ptr::null_mut(), s(v.target));
-            if !t.is_null() {
-                if is_path(t) {
-                    world::with::<PathTrack, _>(e, |p| p.next = EHandle::new(t));
-                    set_previous(t, e);
-                }
-            } else {
-                eng.alert(ALERT_TYPE::at_console, &format!("Dead end link {}\n", s(v.target).to_string_lossy()));
-            }
-        }
-        let alt_name = world::with::<PathTrack, _>(e, |p| p.alt_name).unwrap_or(0);
-        if alt_name != 0 {
-            let t = eng.find_by_target_name(std::ptr::null_mut(), s(alt_name));
-            if is_path(t) {
-                world::with::<PathTrack, _>(e, |p| p.alt = EHandle::new(t));
-                set_previous(t, e);
-            }
+
+    /// `SetPrevious` on node `t`, which is this one (taken out for the call) when a node links to
+    /// itself.
+    fn link_previous(&mut self, t: *mut edict_t, me: *mut edict_t) {
+        if t == me {
+            self.set_previous(me);
+        } else {
+            world::with::<PathTrack, _>(t, |p| p.set_previous(me));
         }
     }
 }
@@ -280,6 +271,13 @@ impl Entity for PathTrack {
         self.prev = EHandle::NULL;
     }
 
+    /// `CPathTrack::Activate` (0xd143c): a named node links to its neighbours.
+    fn activate(&mut self, cx: &mut Cx) {
+        if cx.pev().targetname != 0 {
+            self.link(cx);
+        }
+    }
+
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, kind: UseType, _v: f32) {
         let v = cx.pev();
         let bit = if self.alt.is_valid() { SF_PATH_ALTERNATE } else { SF_PATH_DISABLED };
@@ -296,9 +294,23 @@ impl Entity for PathTrack {
 
 // ---- func_tracktrain ------------------------------------------------------------------------------------
 
-const TRAIN_STARTPITCH: f32 = 60.0;
-const TRAIN_MAXPITCH: f32 = 200.0;
-const TRAIN_MAXSPEED: f32 = 1000.0;
+const TRAIN_STARTPITCH: i32 = 60;
+const TRAIN_MAXPITCH: i32 = 200;
+const TRAIN_MAXSPEED: i32 = 1000;
+/// `EMIT_SOUND_DYN`'s slow-motion pitch factor in every `CFuncTrackTrain` sound.
+const TRAIN_SLOW: f32 = 0.5;
+
+/// `CFuncTrackTrain::UpdateSound` (0xd46bc)'s pitch: integer maths on the truncated speed,
+/// `60 + |speed| * 140 / 1000` (C's wrapping `int` arithmetic).
+fn train_pitch(speed: f32) -> i32 {
+    let speed = (speed as i32).wrapping_abs();
+    speed.wrapping_mul(TRAIN_MAXPITCH - TRAIN_STARTPITCH) / TRAIN_MAXSPEED + TRAIN_STARTPITCH
+}
+
+/// The pitch byte of the `events/train.sc` update: `(int)(pitch * 0.1)`, 6 bits.
+fn train_event_pitch(pitch: i32) -> i32 {
+    (pitch as f64 * 0.1) as i32 & 0x3f
+}
 const FEV_RELIABLE: i32 = 1 << 1;
 const FEV_UPDATE: i32 = 1 << 6;
 
@@ -592,24 +604,25 @@ impl TrackTrain {
                 true,
                 false,
             );
-            emit(cx.edict, CHAN_ITEM, c"plats/ttrain_brake1.wav", self.volume, ATTN_NORM, 0, 100);
+            emit_sound_slow(cx.edict, CHAN_ITEM, c"plats/ttrain_brake1.wav", self.volume, ATTN_NORM, 0, 100, TRAIN_SLOW);
         }
         self.sound_playing = false;
     }
 
+    /// `CFuncTrackTrain::UpdateSound` (0xd46bc).
     fn update_sound(&mut self, cx: &mut Cx) {
         let noise = cx.pev().noise;
         if noise == 0 {
             return;
         }
-        let pitch = TRAIN_STARTPITCH + (cx.pev().speed.abs() as i32 as f32) * (TRAIN_MAXPITCH - TRAIN_STARTPITCH) / TRAIN_MAXSPEED;
+        let pitch = train_pitch(cx.pev().speed);
         if !self.sound_playing {
-            emit(cx.edict, CHAN_ITEM, c"plats/ttrain_start1.wav", self.volume, ATTN_NORM, 0, 100);
-            emit(cx.edict, CHAN_STATIC, s(noise), self.volume, ATTN_NORM, 0, pitch as i32);
+            emit_sound_slow(cx.edict, CHAN_ITEM, c"plats/ttrain_start1.wav", self.volume, ATTN_NORM, 0, 100, TRAIN_SLOW);
+            emit_sound_slow(cx.edict, CHAN_STATIC, s(noise), self.volume, ATTN_NORM, 0, pitch, TRAIN_SLOW);
             self.sound_playing = true;
         } else {
             let us_sound = (self.sounds & 7) << 12;
-            let us_pitch = (((pitch / 10.0) as i32) & 0x3f) << 6;
+            let us_pitch = train_event_pitch(pitch) << 6;
             let us_volume = ((self.volume * 40.0) as i32) & 0x3f;
             engine().playback_event(
                 FEV_RELIABLE | FEV_UPDATE,
@@ -738,7 +751,6 @@ impl TrackTrain {
     }
 
     fn find(&mut self, cx: &mut Cx) {
-        link_all();
         let eng = engine();
         let t = eng.find_by_target_name(std::ptr::null_mut(), s(cx.pev().target));
         if t.is_null() {
@@ -967,5 +979,18 @@ mod tests {
         assert_eq!(train_speed(150, 300), 3);
         assert_eq!(train_speed(225, 300), 4);
         assert_eq!(train_speed(300, 300), 4);
+    }
+
+    #[test]
+    fn sound_pitch_is_integer_maths() {
+        // 60 + |speed| * 140 / 1000, truncating at each step.
+        assert_eq!(train_pitch(0.0), 60);
+        assert_eq!(train_pitch(7.9), 60, "7 * 140 / 1000 = 0");
+        assert_eq!(train_pitch(-8.0), 61);
+        assert_eq!(train_pitch(150.0), 81);
+        assert_eq!(train_pitch(1000.0), 200);
+        assert_eq!(train_event_pitch(81), 8);
+        assert_eq!(train_event_pitch(200), 20);
+        assert_eq!(train_event_pitch(70), 7);
     }
 }

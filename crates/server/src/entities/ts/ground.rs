@@ -14,14 +14,15 @@ use std::ffi::CStr;
 const BRIEFCASE: i32 = 29;
 const ON_WALL: i32 = 16;
 
-/// HL classname → TS weapon ids it picks from (`Random<Kind>`).
+/// HL classname → TS weapon ids it picks from, in `Random<Kind>`'s `RANDOM_LONG(1, n)` order.
 pub fn hl_weapon_ids(class: &CStr) -> Option<&'static [i32]> {
     Some(match class.to_bytes() {
         b"weapon_crossbow" => &[18],
         b"weapon_shotgun" => &[4, 26, 33, 20, 11],
         b"weapon_gauss" | b"weapon_egon" => &[13, 5, 27, 15],
         b"weapon_rpg" => &[23, 7, 6, 19, 17, 3],
-        b"weapon_9MMAR" => &[31, 12, 36],
+        // `RandomBigPistol` (0xc9d5c): 1 → 12, 2 → 31, 3 → 36.
+        b"weapon_9MMAR" => &[12, 31, 36],
         b"weapon_hornetgun" => &[32],
         b"weapon_satchel" | b"ammo_ARgrenades" => &[25, 35],
         b"weapon_snark" => &[34],
@@ -29,6 +30,20 @@ pub fn hl_weapon_ids(class: &CStr) -> Option<&'static [i32]> {
         _ => return None,
     })
 }
+
+/// The HL classnames whose TS class re-picks its weapon after each pickup (`GetWeapon` of
+/// `CTSShotgunWeapon` 0xc95ac, `CTSRifleWeapon` 0xc974c, `CTSSMGWeapon` 0xc9918,
+/// `CTSBigPistolWeapon` 0xc9cd0, `CTSKnifeWeapon` 0xc9e1c). The sniper, MG, katana and grenade
+/// classes have one weapon and `CTSGroundWeapon`'s `GetWeapon`.
+pub fn hl_weapon_repicks(class: &CStr) -> bool {
+    matches!(
+        class.to_bytes(),
+        b"weapon_shotgun" | b"weapon_gauss" | b"weapon_egon" | b"weapon_rpg" | b"weapon_9MMAR" | b"weapon_satchel" | b"ammo_ARgrenades"
+    )
+}
+
+/// `CTSMGWeapon::Spawn` (0xc9dac), `weapon_hornetgun`: `wextraclip` is 100 whatever the key said.
+const MG_EXTRA_CLIP: i32 = 100;
 
 /// HL ammo classname → the weapon class whose ammo types it carries.
 pub fn hl_ammo_weapons(class: &CStr) -> Option<&'static [i32]> {
@@ -76,7 +91,6 @@ fn round_mode() -> bool {
 #[derive(Default)]
 struct Ground {
     landed: bool,
-    waiting: bool,
     /// TS's member pointers: `m_pfnThink` `Fall` from `Spawn` until `OnGround`, and again after a
     /// pickup unless the item stays hidden; `m_pfnTouch` `WaitTouch` from `OnGround` until a pickup.
     funcs: BaseFuncs,
@@ -115,7 +129,6 @@ impl Ground {
         self.funcs.touch = true;
         self.funcs.think = false;
         self.landed = true;
-        self.waiting = true;
     }
 
     /// `Spawn`'s pointers (touch none, think `Fall`) and `iuser4` (`= 0; |= 2`).
@@ -124,13 +137,12 @@ impl Ground {
         cx.pev().iuser4 = 2;
     }
 
-    /// Hide after a pickup and schedule the respawn.
+    /// Hide after a pickup and schedule the respawn. `solid` stays as it was (`SOLID_TRIGGER`
+    /// once landed): only the touch goes.
     fn taken(&mut self, cx: &mut Cx, respawn: i32) {
-        self.waiting = false;
         self.funcs.touch = false;
         let v = cx.pev();
         v.effects |= EF_NODRAW as i32;
-        v.solid = SOLID_NOT as i32;
         // A null think (`nextthink` left as it was) keeps it hidden until `RespawnEntities`.
         self.funcs.think = !(respawn < 1 && round_mode());
         if self.funcs.think {
@@ -183,8 +195,9 @@ pub struct GroundWeapon {
 impl GroundWeapon {
     /// `GetWeapon` (0xa2328): in cash mode a `buyable` one checks `attackerteam` (round modes) and
     /// the price first; then give the weapon (attachments from spawnflags) and extra magazines.
+    /// Any visible weapon can be taken, falling or landed.
     fn give(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) -> bool {
-        if !self.ground.waiting || !rules::alive(pcx.pev()) || pcx.pev().effects & EF_NODRAW as i32 != 0 {
+        if !rules::alive(pcx.pev()) || pcx.pev().effects & EF_NODRAW as i32 != 0 {
             return false;
         }
         if cx.pev().effects & EF_NODRAW as i32 != 0 {
@@ -245,11 +258,45 @@ impl GroundWeapon {
         self.ground.fall(cx, false);
     }
 
-    /// +use from the player's own think (the player is the dispatched entity).
-    pub fn player_use(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
+    /// The class's `GetWeapon` (vtable +0x118), which `Use` calls: `CTSGroundWeapon`'s, and for
+    /// the re-picking HL classes ([`hl_weapon_repicks`]) a new weapon once taken and its model
+    /// set again (even when the pickup failed).
+    fn get_weapon(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
         if self.give(cx, p, pcx) {
             self.after_give(cx, pcx.edict);
         }
+        let eng = engine();
+        if !hl_weapon_repicks(eng.string(cx.pev().classname)) {
+            return;
+        }
+        if cx.pev().effects & EF_NODRAW as i32 != 0 {
+            self.pick(cx);
+        }
+        if let Some(model) = self.model() {
+            eng.set_model(cx.edict, model);
+        }
+    }
+
+    /// The weapon id an HL classname's TS class sets in `Spawn`: `Random<Kind>`'s
+    /// `RANDOM_LONG(1, n)` pick, or the one weapon of a class without one (no random draw).
+    fn pick(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        match hl_weapon_ids(eng.string(cx.pev().classname)) {
+            Some(&[id]) => self.id = id,
+            Some(ids) => self.id = ids[eng.random_long(1, ids.len() as i32) as usize - 1],
+            None => {}
+        }
+    }
+
+    /// The world model of the weapon id (`get_weapon_info(id) + 0x1f2`).
+    fn model(&self) -> Option<&'static CStr> {
+        let asset = u8::try_from(self.id).ok().and_then(|id| tables().asset(id))?;
+        Some(intern(&format!("models/w_{}.mdl", asset.w_model)))
+    }
+
+    /// +use from the player's own think (the player is the dispatched entity).
+    pub fn player_use(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
+        self.get_weapon(cx, p, pcx);
     }
 }
 
@@ -284,19 +331,15 @@ impl Entity for GroundWeapon {
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let e = cx.edict;
-        if let Some(ids) = hl_weapon_ids(eng.string(cx.pev().classname)) {
-            self.id = ids[eng.random_long(0, ids.len() as i32 - 1) as usize];
+        self.pick(cx);
+        if eng.string(cx.pev().classname) == c"weapon_hornetgun" {
+            self.extra_clip = MG_EXTRA_CLIP;
         }
-        let Some(asset) = u8::try_from(self.id)
-            .ok()
-            .and_then(|id| tables().asset(id))
-            .filter(|_| self.id != BRIEFCASE && tables().weapon(self.id as u8).is_some())
-        else {
+        let Some(model) = self.model().filter(|_| self.id != BRIEFCASE && tables().weapon(self.id as u8).is_some()) else {
             eng.print(&format!("[ts] ts_groundweapon: unknown weapon id {}, removed\n", self.id));
             crate::entities::remove(e);
             return;
         };
-        let model = intern(&format!("models/w_{}.mdl", asset.w_model));
         eng.precache_model(model);
         eng.set_model(e, model);
         let wall = cx.pev().spawnflags & ON_WALL != 0;
@@ -320,10 +363,7 @@ impl Entity for GroundWeapon {
         if !rules::is_player(activator) {
             return;
         }
-        let took = with_player(activator, |p, pcx| self.give(cx, p, pcx)).unwrap_or(false);
-        if took {
-            self.after_give(cx, activator);
-        }
+        let _ = with_player(activator, |p, pcx| self.get_weapon(cx, p, pcx));
     }
 }
 
@@ -397,7 +437,7 @@ impl Entity for GroundAmmo {
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.ground.funcs.touch || !self.ground.waiting || cx.pev().effects & EF_NODRAW as i32 != 0 || !rules::is_player(other) {
+        if !self.ground.funcs.touch || cx.pev().effects & EF_NODRAW as i32 != 0 || !rules::is_player(other) {
             return;
         }
         let rounds = self.rounds;
@@ -440,6 +480,23 @@ mod tests {
             }
         }
         assert!(hl_weapon_ids(c"weapon_crowbar").is_none());
+    }
+
+    #[test]
+    fn repicking_classes() {
+        // The classes with a `Random<Kind>` re-pick after each pickup.
+        for c in [c"weapon_shotgun", c"weapon_gauss", c"weapon_egon", c"weapon_rpg", c"weapon_9MMAR", c"weapon_satchel", c"ammo_ARgrenades"]
+        {
+            assert!(hl_weapon_repicks(c), "{c:?}");
+            assert!(hl_weapon_ids(c).unwrap().len() > 1, "{c:?}");
+        }
+        // RANDOM_LONG(1, n) order of the Random<Kind> switches.
+        assert_eq!(hl_weapon_ids(c"weapon_9MMAR"), Some(&[12, 31, 36][..]));
+        assert_eq!(hl_weapon_ids(c"weapon_rpg"), Some(&[23, 7, 6, 19, 17, 3][..]));
+        // One weapon each, CTSGroundWeapon's GetWeapon.
+        for c in [c"weapon_crossbow", c"weapon_hornetgun", c"weapon_snark", c"weapon_handgrenade", c"ts_groundweapon"] {
+            assert!(!hl_weapon_repicks(c), "{c:?}");
+        }
     }
 
     #[test]

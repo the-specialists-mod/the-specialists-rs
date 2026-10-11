@@ -305,6 +305,36 @@ pub fn dispatch_spawn(e: *mut edict_t) -> i32 {
     0
 }
 
+/// `ServerActivate` (0xae928)'s entity loop: `Activate` on every edict in use from index
+/// `client_max` on (the SDK's off-by-one: edict `client_max` is the last player slot, whose
+/// `Activate` is `CBaseEntity`'s no-op) that has private data; a dormant one gets "Can't
+/// instance" instead. The engine calls `ServerActivate` on a new map and after a
+/// restore.
+pub fn server_activate(edict_count: i32, client_max: i32) {
+    let eng = engine();
+    for i in 0..edict_count {
+        let e = eng.entity_of_index(i);
+        if e.is_null() || e.is_free() {
+            continue;
+        }
+        if !activates(i, client_max, e.has_private_data()) {
+            continue;
+        }
+        let v = e.v();
+        if v.flags & FL_DORMANT as i32 != 0 {
+            eng.alert(ALERT_TYPE::at_console, &format!("Can't instance {}\n", eng.string(v.classname).to_string_lossy()));
+            continue;
+        }
+        world::dispatch(e, |ent, cx| ent.activate(cx));
+    }
+}
+
+/// Whether `ServerActivate`'s loop looks at edict `index` (in use): past the first `client_max`
+/// edicts, with private data.
+fn activates(index: i32, client_max: i32, has_private_data: bool) -> bool {
+    index >= client_max && has_private_data
+}
+
 /// `CBaseEntity::MakeDormant` (0xac270).
 pub fn make_dormant(e: *mut edict_t) {
     let v = e.v();
@@ -394,6 +424,20 @@ mod tests {
         // Capped at 1000.
         let v = base_push([0.0, 0.0, 5.0], [0.0; 3], ([-1.0, -1.0, -11.0], [1.0, 1.0, -9.0]), [1.0, 1.0, 1.0], 100.0);
         assert_eq!(v, [0.0, 0.0, 1005.0]);
+    }
+
+    #[test]
+    fn server_activate_skips_the_first_client_max_edicts() {
+        // Edicts 0..client_max (the world and all but the last player slot) are skipped.
+        assert!(!activates(0, 32, true));
+        assert!(!activates(31, 32, true));
+        assert!(activates(32, 32, true));
+        assert!(activates(100, 32, true));
+        // No private data.
+        assert!(!activates(100, 32, false));
+        // A listen server with one slot: the world's index 0 is still skipped.
+        assert!(!activates(0, 1, true));
+        assert!(activates(1, 1, true));
     }
 
     #[test]
