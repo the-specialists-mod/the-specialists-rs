@@ -112,11 +112,12 @@ pub fn unknown_sentence(sample: &CStr) {
     engine().alert(ALERT_TYPE::at_aiconsole, &format!("Unable to find {} in sentences.txt\n", sample.to_string_lossy()));
 }
 
-/// `CBaseEntity::SUB_Remove` (0xe2d40): an entity removed with health left gets it zeroed and a
-/// developer message first, then `REMOVE_ENTITY` frees the edict at once (unlike `UTIL_Remove`,
+/// `CBaseEntity::SUB_Remove` (0xe2d40): `UpdateOnRemove` ([`update_on_remove`]), then an entity
+/// removed with health left gets it zeroed and a developer message, then `REMOVE_ENTITY` frees the edict at once (unlike `UTIL_Remove`,
 /// `entities::remove`, which waits for the end of the frame). Call it last: the edict is free
 /// when it returns.
 pub fn sub_remove(e: *mut edict_t) {
+    update_on_remove(e);
     let v = e.v();
     if v.health > 0.0 {
         v.health = 0.0;
@@ -138,7 +139,8 @@ pub fn next_think(cx: &mut Cx, delay: f32) {
     v.nextthink = if v.movetype == MOVETYPE_PUSH as i32 { v.ltime } else { now } + delay;
 }
 
-/// `CBaseEntity::Create(classname, origin, angles, owner)`: create, place and spawn an entity.
+/// `CBaseEntity::Create(classname, origin, angles, owner)` (0xac480): create, place and
+/// `DispatchSpawn` an entity (its result is ignored).
 pub fn create_entity(classname: &CStr, origin: Vec3, angles: Vec3, owner: *mut edict_t) -> *mut edict_t {
     let eng = engine();
     let e = eng.create_named_entity(classname);
@@ -153,20 +155,24 @@ pub fn create_entity(classname: &CStr, origin: Vec3, angles: Vec3, owner: *mut e
     v.origin = origin;
     v.angles = angles;
     v.owner = owner;
-    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    crate::entities::dispatch_spawn(e);
     e
 }
 
-/// `UTIL_PrecacheOther`: spawn a throwaway instance so its class precaches, then free it.
-/// (The `Entity` trait has no separate precache; spawning precaches as a side effect.)
+/// `UTIL_PrecacheOther` (0xeeaf0): create an entity of the class, run only its `Precache`, and
+/// free it (`REMOVE_ENTITY`). Its only caller is `func_breakable`'s `spawnobject`; of those classes
+/// only the items precache anything (`items::precache_class`): the ground weapons and ammo
+/// TS re-points the HL names at have an empty `Precache` (0xa1cd4, 0xa28f0), and a class
+/// neither library exports gets the console message.
 pub fn precache_other(classname: &CStr) {
     let eng = engine();
     let e = eng.create_named_entity(classname);
-    if e.is_null() {
+    if e.is_null() || eng.index_of(e) == 0 {
+        eng.alert(ALERT_TYPE::at_console, "NULL Ent in UTIL_PrecacheOther\n");
         return;
     }
     if e.has_private_data() {
-        world::dispatch(e, |ent, cx| ent.spawn(cx));
+        super::items::precache_class(classname);
     }
     eng.remove_entity(e);
 }
@@ -575,13 +581,67 @@ pub fn global_exists(name: &CStr) -> bool {
 pub fn set_global_state(name: &CStr, st: GlobalState) {
     let n = kv_str(name);
     let mut g = GLOBALS.0.borrow_mut();
-    match g.iter_mut().find(|(k, _, _)| k == n) {
-        Some(e) => e.2 = st,
-        None => {
-            let eng = engine();
-            let level = eng.string(eng.globals().mapname).to_string_lossy().into_owned();
-            g.push((n.to_owned(), level, st));
+    if !entity_set_state(&mut g, n, st) {
+        g.push((n.to_owned(), map_name(), st));
+    }
+}
+
+fn map_name() -> String {
+    let eng = engine();
+    eng.string(eng.globals().mapname).to_string_lossy().into_owned()
+}
+
+/// `CGlobalState::EntitySetState` (0xf3f60): only a name already in the table changes; returns
+/// whether it was found.
+fn entity_set_state(g: &mut [(String, String, GlobalState)], name: &str, st: GlobalState) -> bool {
+    match g.iter_mut().find(|(k, _, _)| k == name) {
+        Some(e) => {
+            e.2 = st;
+            true
         }
+        None => false,
+    }
+}
+
+/// `CBaseEntity::UpdateOnRemove` (0xe2ccc), which `UTIL_Remove` (0xeea90) and `SUB_Remove`
+/// (0xe2d40) run first (no TS class overrides it): an entity with a `globalname` marks its global
+/// entry dead, so `DispatchSpawn` won't spawn it again on a later map. The first half, clearing
+/// `WorldGraph` links to an `FL_GRAPHED` entity, has nothing to clear: the port has no node graph.
+pub fn update_on_remove(e: *mut edict_t) {
+    let g = e.v().globalname;
+    if g != 0 {
+        entity_set_state(&mut GLOBALS.0.borrow_mut(), kv_str(s(g)), GlobalState::Dead);
+    }
+}
+
+/// What `DispatchSpawn` (0xaab8c) does with a spawned entity's `globalname`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GlobalSpawn {
+    /// Not in the table: `EntityAdd(globalname, mapname, GLOBAL_ON)`, spawned.
+    Added,
+    /// In the table and dead: the spawn fails (-1).
+    Dead,
+    /// Added by another map: `MakeDormant`.
+    Dormant,
+    /// Added by this map: spawned as is.
+    Spawned,
+}
+
+/// `DispatchSpawn`'s `gGlobalState` step for `globalname`.
+pub fn global_spawn(name: &CStr) -> GlobalSpawn {
+    let level = map_name();
+    global_spawn_in(&mut GLOBALS.0.borrow_mut(), kv_str(name), level)
+}
+
+fn global_spawn_in(g: &mut Vec<(String, String, GlobalState)>, name: &str, level: String) -> GlobalSpawn {
+    match g.iter().find(|(k, _, _)| k == name) {
+        None => {
+            g.push((name.to_owned(), level, GlobalState::On));
+            GlobalSpawn::Added
+        }
+        Some((_, _, GlobalState::Dead)) => GlobalSpawn::Dead,
+        Some((_, l, _)) if *l != level => GlobalSpawn::Dormant,
+        Some(_) => GlobalSpawn::Spawned,
     }
 }
 
@@ -609,6 +669,34 @@ pub fn reset_global_state() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn table() -> Vec<(String, String, GlobalState)> {
+        vec![("a".into(), "map1".into(), GlobalState::On), ("b".into(), "map2".into(), GlobalState::Off)]
+    }
+
+    #[test]
+    fn entity_set_state_only_changes_known_names() {
+        let mut g = table();
+        assert!(entity_set_state(&mut g, "b", GlobalState::Dead));
+        assert_eq!(g[1].2, GlobalState::Dead);
+        // UpdateOnRemove's EntitySetState never adds a name.
+        assert!(!entity_set_state(&mut g, "c", GlobalState::Dead));
+        assert_eq!(g.len(), 2);
+    }
+
+    #[test]
+    fn dispatch_spawn_global_rules() {
+        let mut g = table();
+        assert_eq!(global_spawn_in(&mut g, "a", "map1".into()), GlobalSpawn::Spawned);
+        assert_eq!(global_spawn_in(&mut g, "a", "map3".into()), GlobalSpawn::Dormant);
+        assert_eq!(global_spawn_in(&mut g, "new", "map3".into()), GlobalSpawn::Added);
+        assert_eq!(g.last(), Some(&("new".to_owned(), "map3".to_owned(), GlobalState::On)));
+        assert_eq!(global_spawn_in(&mut g, "new", "map3".into()), GlobalSpawn::Spawned);
+        // A removed global entity (marked dead) doesn't spawn again, on any map.
+        entity_set_state(&mut g, "a", GlobalState::Dead);
+        assert_eq!(global_spawn_in(&mut g, "a", "map1".into()), GlobalSpawn::Dead);
+        assert_eq!(global_spawn_in(&mut g, "a", "map3".into()), GlobalSpawn::Dead);
+    }
 
     #[test]
     fn toggle_rules() {

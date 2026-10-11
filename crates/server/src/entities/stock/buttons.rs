@@ -101,11 +101,12 @@ pub struct LockSounds {
 impl LockSounds {
     pub fn key_value(&mut self, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
-            b"locked_sound" => self.locked_n = kv_f(value) as i32,
-            b"unlocked_sound" => self.unlocked_n = kv_f(value) as i32,
-            // `m_bLockedSentence` / `m_bUnlockedSentence` are BYTE members.
-            b"locked_sentence" => self.locked_sentence_n = (kv_f(value) as i32) as u8 as i32,
-            b"unlocked_sentence" => self.unlocked_sentence_n = (kv_f(value) as i32) as u8 as i32,
+            b"locked_sound" => self.locked_n = fistp16_low_byte(kv_d(value)) as i32,
+            b"unlocked_sound" => self.unlocked_n = fistp16_low_byte(kv_d(value)) as i32,
+            // All four are BYTE members set like `movesnd` (`CBaseDoor::KeyValue` 0xb51a0,
+            // `CBaseButton::KeyValue` 0xa8184): 256 is 0, 270 is 14.
+            b"locked_sentence" => self.locked_sentence_n = fistp16_low_byte(kv_d(value)) as i32,
+            b"unlocked_sentence" => self.unlocked_sentence_n = fistp16_low_byte(kv_d(value)) as i32,
             _ => return false,
         }
         true
@@ -919,6 +920,21 @@ impl Entity for MultiSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_keys_are_bytes() {
+        let mut l = LockSounds::default();
+        for (k, v) in
+            [(c"locked_sound", c"256"), (c"unlocked_sound", c"270.9"), (c"locked_sentence", c"-1"), (c"unlocked_sentence", c"70000")]
+        {
+            assert!(l.key_value(k, v));
+        }
+        // 256 wraps to 0 (no sound precached), 270.9 truncates to 270 = 14.
+        assert_eq!((l.locked_n, l.unlocked_n), (0, 14));
+        // -1 is 0xff; past the short's range the x87 store gives 0x8000, low byte 0.
+        assert_eq!((l.locked_sentence_n, l.unlocked_sentence_n), (255, 0));
+        assert!(!l.key_value(c"sounds", c"1"));
+    }
 
     #[test]
     fn momentary_fraction() {

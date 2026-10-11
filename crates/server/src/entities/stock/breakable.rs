@@ -228,11 +228,16 @@ impl<const PUSH: bool> Breakable<PUSH> {
         !PUSH || cx.pev().spawnflags & SF_PUSH_BREAKABLE != 0
     }
 
-    fn precache(&mut self, _cx: &mut Cx) {
+    /// `CBreakable::Precache` (0xc0820), or `CPushable::Precache` (0xc1894): the push sounds,
+    /// then the breakable's only with `SF_PUSH_BREAKABLE`.
+    fn precache(&mut self, cx: &mut Cx) {
         if PUSH {
             for s in PUSH_SOUNDS {
                 engine().precache_sound(s);
             }
+        }
+        if !Self::breakable_flag(cx) {
+            return;
         }
         self.gib_index = precache_material(self.material, self.gib_model);
         if !self.spawn_object.is_empty() {

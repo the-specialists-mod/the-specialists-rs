@@ -34,7 +34,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `animating.rs` | `CBaseAnimating` / `CActAnimating` for stock model entities: `ResetSequenceInfo`, `StudioFrameAdvance`, `DispatchAnimEvents`, `SetActivity` / `LookupActivity`, `InitBoneControllers`, `SetSequenceBox` |
 | `blood.rs` | `UTIL_ShouldShowBlood`, `UTIL_BloodStream`, `UTIL_BloodDrips`, `UTIL_BloodDecalTrace`, `UTIL_RandomBloodVector`, the blood sprite indices and `g_Language` (`sv_language`, from `crate::precache`), `env_blood` |
 | `xen.rs` | `xen_plantlight`, `xen_hair`, `xen_tree` (+ `xen_ttrigger`), `xen_spore_small/medium/large` (+ `xen_hull`) |
-| `monsters.rs` | `monster_hevsuit_dead` (with the `CBaseMonster` corpse code: fall, `DeadTakeDamage`, gibbing, fade) |
+| `monsters.rs` | `monster_hevsuit_dead`, and `MonsterBase`: the `CBaseMonster` damage and death code (`TakeDamage`, `DeadTakeDamage`, `Killed`, gibbing, fade) that it, `env_explosion` and `cycler_wreckage` share |
 | `items.rs` | `item_healthkit`, `item_battery`, `item_antidote`, `item_suit`, `item_security`, `world_items`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins, `EMIT_SOUND_SUIT` |
 | `playeritem.rs` | weapons.cpp classes a map can place: `weaponbox`, `weapon_tsgun` and `cycler_weapon` (`CBasePlayerItem`: fall / touch / respawn / attach / drop), and the items' `SetObjectCollisionBox` boxes |
 | `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`), `game_score` (+ `AddPoints` / `AddPointsToTeam`), `game_end`, `game_zone_player`, `game_player_hurt`, `game_counter`, `game_counter_set`, `game_team_master`, `game_team_set`, `game_player_team` |
@@ -86,8 +86,36 @@ The engine numbers models, sounds and events in precache order, so `crate::preca
 
 `UTIL_PrecacheOther` creates and removes an entity; the freed edict is reused by the next
 allocation, so the port lists the class precaches directly. Entity classes precache the rest in
-their `Spawn`, as in TS (the classes touched in #102 were checked: `func_door`'s gib table and
-`common/null.wav`, `func_plat`/`func_train` sounds, `gibshooter`, `cycler_weapon`).
+their `Spawn`, as in TS.
+
+Every class the port links was audited against its TS `Precache` (vtable slot 8) and the
+precaches its `Spawn`, `KeyValue` and helpers issue (#104): set and order of first occurrence,
+which is what decides the indices (the engine gives a repeated name its first index, and models,
+sounds and events are numbered separately). The audit changed:
+
+* `func_healthcharger`: `medshot4`, `medshotno1`, `medcharge4` (`CWallHealth::Precache`
+  0xc8cc4); `func_recharge` in `CRecharge::Precache`'s order (0xc6f8c).
+* `func_pushable` without `SF_PUSH_BREAKABLE` precaches only its push sounds
+  (`CPushable::Precache` 0xc1894), not the breakable's material sounds, gibs and `spawnobject`.
+* `locked_sound`/`unlocked_sound` (and the sentences) of doors and buttons are BYTEs from the
+  16-bit `fistp` (`CBaseDoor::KeyValue` 0xb51a0, `CBaseButton::KeyValue` 0xa8184), so 256
+  precaches nothing.
+* `ts_particle`'s `soundonemit` key matches in any case (`strcasecmp`, 0xf8644).
+* `UTIL_PrecacheOther` (`base::precache_other`, for `func_breakable`'s `spawnobject`) runs only
+  the class's `Precache` (`items::precache_class`; the ground weapons and ammo have an empty one)
+  instead of a whole `Spawn`, and logs "NULL Ent in UTIL_PrecacheOther" for a class neither
+  library exports (`weapon_9mmhandgun`, `ammo_9mmclip`, `weapon_9mmAR` (the export is
+  `weapon_9MMAR`), `weapon_357`, `ammo_357`,
+  `weapon_tripmine`).
+* Precaches TS doesn't issue were dropped, though their names were already precached: the items'
+  `items/suitchargeok1.wav` and the battery's `weapons/items.wav`, `func_tracktrain`'s
+  `plats/train_use1.wav`; `env_shooter` precaches its model before the material sounds.
+
+Left as they are, all repeats of names the world precached: `env_explosion` and
+`cycler_wreckage` precache `zerogxplode.spr`/`steam1.spr` (and `grenade.mdl`) to get the indices
+TS keeps in `g_sModelIndexFireball`/`g_sModelIndexSmoke`, and a map's `weapon_tsgun` precaches
+`w_glock18.mdl`. Guards: the `precache_model_s`/`precache_sound_s` helpers skip an empty name,
+and `ts_model` with an empty `model` is removed; TS would pass "" to the engine.
 
 `goldsrc::ext::entities` adds the following:
 
@@ -152,12 +180,12 @@ their `Spawn`, as in TS (the classes touched in #102 were checked: `func_door`'s
 | `env_sprite`, `env_glow`, `env_render`, `env_spark`, `env_debris`, `env_bubbles`, `infodecal`, `cycler_sprite` | SDK effects.cpp / world.cpp / h_cycler.cpp | A sprite with an `aiment` follows that entity's attachment `body` (`MOVETYPE_FOLLOW`, skin = entity index), as `CSprite::Precache` / `SetAttachment` do; maps can't set `aiment`, so this is for code-created sprites (the `xen_plantlight` glow). `cycler_sprite` is +usable (TS impulse cap). |
 | `env_shake` | SDK + **TS** shake | Duration and frequency are divided by each player's time scale (`fuser1`). |
 | `env_fade` | **TS** `CFade` | Sent as `TSFade` with durations divided by the time scale. TS spawns it as a brush. New spawnflag 8 fades only the clients inside the brush. |
-| `env_explosion`, `spark_shower` | SDK explode.cpp | TS doesn't route these through `TSExplosion`. Uses SDK `RadiusDamage`, scorch decals, fireball and smoke temp entities. |
+| `env_explosion`, `spark_shower` | SDK explode.cpp | TS doesn't route these through `TSExplosion`. Uses SDK `RadiusDamage`, scorch decals, fireball and smoke temp entities. `CEnvExplosion` is a `CBaseMonster`, so its `TakeDamage` is `CBaseMonster::TakeDamage` (§6 item 7), reachable when a map sets `takedamage`. |
 | `env_beam` | SDK `CLightning` | Server-side beams work as `FL_CUSTOMENTITY` beam entities: `BeamUpdateVars` runs on the first think. Strike beams use temp entities. Damage and decals are included. |
 | `env_laser` | SDK `CLaser` | Includes the end sprite and damage. |
 | `env_shooter`, `gibshooter`, `gib` | SDK | Gib bounce sounds use TS slow-motion pitch. `gibshooter` gibs bleed red: up to 5 blood decals, one per airborne bounce (`BounceGibTouch` 0xb1ebc, `violence_hblood`); `env_shooter` gibs don't bleed. |
 | `cycler_prdroid` | SDK `CCyclerProbe` (TS 0xc752c) | A `cycler` 16 units up with `models/prdroid.mdl` and a ±16 box; renamed `cycler` like every `GenericCyclerSpawn` cycler, so it is +usable as one. |
-| `cycler_wreckage` | SDK `CWreckage` (TS 0xc7fe4..0xc8118) | Its model (no collision), animated with `StudioFrameAdvance`; every 0.2 s a `TE_SMOKE` (`sprites/steam1.spr`, scale 50–99, framerate 8–11) at a random point of its box. With `dmgtime` set it smokes ever less often until then (`RandomFloat(0, dmgtime − (int)spawn time)` against the time left) and is removed after it. |
+| `cycler_wreckage` | SDK `CWreckage` (TS 0xc7fe4..0xc8118) | Its model (no collision), animated with `StudioFrameAdvance`; every 0.2 s a `TE_SMOKE` (`sprites/steam1.spr`, scale 50–99, framerate 8–11) at a random point of its box. With `dmgtime` set it smokes ever less often until then (`RandomFloat(0, dmgtime − (int)spawn time)` against the time left) and is removed after it. `TakeDamage` is `CBaseMonster`'s, which refuses: `Spawn` clears `takedamage`. |
 | `beam` | SDK `CBeam` (TS 0xb8cb4 / 0xb8cd4) | A map-placed one is just `SOLID_NOT` and takes its end entities from `owner`/`aiment`. |
 | `env_lightning` | SDK `CLightning` | The same class as `env_beam`. |
 | `test_effect` | SDK `CTestEffect` (TS 0xbcbc8..0xbcf4c) | On use, one `sprites/lgtning.spr` beam (`BeamCreate` width 100, colour 255/180/100, scroll 12) every 0.1 s to where a 128-unit trace in a random direction ends, up to 24; each brightens with its share of the 3 s (truncated to an int); 3 s after the use all are removed. |
@@ -199,6 +227,7 @@ their `Spawn`, as in TS (the classes touched in #102 were checked: `func_door`'s
   * `respawntarget`: fired on respawn when spawnflag 8 is set. Without it, `target` is fired. The
     delay is respected.
   * `gibmodel` and `spawnobject`. The `spawnobject` table matches the SDK, checked against the binary.
+    `Precache` runs `UTIL_PrecacheOther(spawnobject)` (§1.1).
   * `explodemagnitude` (`pev->impulse`).
   * `material` ≥ 10 becomes wood.
 * **Respawn (`BreakableRespawn`).** When the timer runs out, the breakable is rebuilt if no client
@@ -472,6 +501,10 @@ covers:
     refuse dead players, the `fistp` sound bytes (`strtod` as a double), TS's `ObjectCaps` table,
     `ChangeList`'s flags and transition-list dedupe, the save-table helpers
     (`goldsrc::ext::saverestore`), the precache lists' TS order and the gib models per language
+  * #104: `UpdateOnRemove`'s `EntitySetState` (only known names) and `DispatchSpawn`'s
+    `globalname` rules (added, dead, dormant), `MonsterBase`'s gib type, `ShouldGibMonster` and
+    gibs per `Classify`, the chargers' precache order, the lock keys as bytes, the German build's
+    skipped blood splat
   * #95: the soundent free/active lists and expiry, `speaker` presets and toggle use,
     `test_effect` brightness, the item touch boxes and weapon respawn time, the CD audio
     command, counter messages, transition box overlap, weaponstrip targeting, the momentary
@@ -585,12 +618,38 @@ covers:
      `takedamage` key). Guards: TS reads the inflictor's origin and the attacker's `solid`
      through NULL; the port skips the direction and push without an inflictor and pushes for a
      NULL attacker.
-   * `monster_hevsuit_dead`'s `DeadTakeDamage` (0xb2a10) writes `g_vecAttackDir` like a live
-     monster (from a real inflictor only), and its gibs fly against the global.
+   * `TakeDamage` follows each class's TS vtable slot (`vtables.tsv`, vptr index 22). Besides
+     `CBaseEntity`'s, TS has `CBasePlayer`, `CBaseButton` (`func_button`, `func_rot_button`),
+     `CButtonTarget`, `CBreakable`, `CPushable`, `CCycler` (`cycler`, `cycler_prdroid`),
+     `CCyclerSprite`, `CGunTarget`, `CXenTree` and `CXenSpore`, and `CBaseMonster::TakeDamage`
+     (0xb2430) for `monster_hevsuit_dead`, `env_explosion` and `cycler_wreckage`.
+     `monsters::MonsterBase` ports that one for these AI-less classes: refused with `takedamage`
+     off; dead (`deadflag` `DEAD_DEAD`) → `DeadTakeDamage` (0xb2a10); otherwise
+     `g_vecAttackDir` from a real inflictor (`inflictor->Center() - (0,0,10) - Center()`), the
+     health drops and at 0 `Killed` (0xb1b74, gib type from `DMG_ALWAYSGIB`/`DMG_NEVERGIB`):
+     the first time `common/null.wav`, and without a gib an `FL_MONSTER` entity `BecomeDead`s;
+     a gib (`GIB_ALWAYS`, or `GIB_NORMAL` below -30 health) runs `CallGibMonster`. With
+     `Classify` 0 (`env_explosion`, `cycler_wreckage`) that is `EF_NODRAW`, the
+     `common/bodysplat.wav` splat and `FadeMonster` (`SUB_StartFadeOut`, then `SUB_FadeOut` and
+     `SUB_Remove` replace `env_explosion`'s think until its next use; `CWreckage` overrides
+     `Think`, so it keeps smoking); the HEV corpse (`Classify` 4) gibs as a human. TS dropped
+     the SDK's push of a `MOVETYPE_WALK` victim, and `MakeIdealYaw` is empty, so nothing else is
+     visible. The gibs fly against `g_vecAttackDir`.
    * `SUB_Remove` (`base::sub_remove`: `speaker`, `env_funnel`, `item_sodacan`, a fired
      `trigger_once`, the dead HEV corpse, impulse 202's blood splat) frees the edict at once
      (`REMOVE_ENTITY`); `UTIL_Remove` (`entities::remove`) waits for the end of the frame
-     (`FL_KILLME`), as in TS.
+     (`FL_KILLME`), as in TS. Both first run `UpdateOnRemove` (0xe2ccc, `base::update_on_remove`;
+     no TS class overrides it): an entity with a `globalname` marks its `gGlobalState` entry
+     dead (`EntitySetState`, which never adds a name). Its `FL_GRAPHED` half clears node-graph
+     links, which the port doesn't have.
+   * `DispatchSpawn` (0xaab8c, `entities::dispatch_spawn`, also run by `CBaseEntity::Create`
+     and `ChangeLevelNow`'s `fireanddie`) starts the bounds one unit around the origin, spawns,
+     fails (-1) for an `FL_KILLME` entity (the rules' `IsAllowedToSpawn` is always 1), then for a
+     `globalname`: a new name is added as on with the current map, a dead one fails the spawn
+     (a removed global entity never comes back), and one another map added makes the entity
+     dormant (`MakeDormant` 0xac270: `FL_DORMANT`, not solid, `MOVETYPE_NONE`, `EF_NODRAW`, no
+     think, relinked). Guard: `CGlobalState::EntityAdd` (0xf3ee4) `strcpy`s the name and map
+     into 64- and 32-byte fields, overflowing on longer ones; the port keeps whole strings.
    * The SDK `DamageDecal` for glass (`{bproof`-style decals 0x19–0x1b, 0x23 for unbreakable glass)
      is for the weapons package to apply when it hits a `func_breakable`.
 8. **Explosions.** `stock::explode::ts_explosion` is TS's `TSExplosion` for both the grenade and
@@ -625,15 +684,17 @@ covers:
   targets).
 * **German gibs** (`sv_language 1`, `g_Language`) follow TS: `germangibs.mdl` for head and
   random gibs, `germanygibs.mdl` for `gibshooter`, no gib blood decals and red blood drawn in
-  colour 0. `CGib::SpawnStickyGibs` isn't ported (nothing in TS calls it). Still missing:
-  `CBloodSplat::Spray` (impulse 202, `player/impulse.rs`) draws its decal with `sv_language 1`,
-  where TS skips it.
+  colour 0. `CGib::SpawnStickyGibs` isn't ported (nothing in TS calls it).
+  `CBloodSplat::Spray` (0xdb428, impulse 202, `player/impulse.rs`) draws no decal with
+  `g_Language` 1 but still removes itself 0.1 s later.
 * **worldspawn client cvars.** `v_dark` and `room_type` exist only on clients, so a dedicated
   server skips setting them (FWGS would print "variable not found" each map); the result is the
   same. TS sets `gDisplayTitle` from the `gametitle` flag but never reads it, and the
   `GameTitle` message is never sent, so the port keeps only the spawnflag.
 * **`cycler` spawn** skips `ChangeYaw(360)`, a no-op because `ideal_yaw` was just set to the yaw.
-* **`monster_hevsuit_dead`** keeps only the corpse half of `CBaseMonster` (TS has no live monsters).
+* **`monster_hevsuit_dead`**, `env_explosion` and `cycler_wreckage` keep only the parts of
+  `CBaseMonster` that can show without AI (`MonsterBase`, §6 item 7): `m_bitsDamageType`, the
+  conditions, `m_vecEnemyLKP` and the monster states aren't kept, since nothing reads them.
 
 ### 7.2 Deviations in the #95 trigger classes
 

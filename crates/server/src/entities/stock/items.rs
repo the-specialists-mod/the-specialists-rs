@@ -185,21 +185,39 @@ impl<const KIND: u8> Item<KIND> {
     }
 }
 
-impl<const KIND: u8> Entity for Item<KIND> {
-    fn spawn(&mut self, cx: &mut Cx) {
+impl<const KIND: u8> Item<KIND> {
+    /// The class's `Precache`: `CHealthKit` (0xc8930) and `CItemBattery` (0xcb714) add their
+    /// pickup sound; `CItemAntidote` (0xcb940), `CItemSuit` (0xcb5e4) and `CItemSecurity`
+    /// (0xcba30) only precache the model.
+    fn precache() {
         let eng = engine();
         eng.precache_model(Self::model());
         match Self::kind() {
             Kind::HealthKit => eng.precache_sound(c"items/smallmedkit1.wav"),
-            Kind::Battery => {
-                eng.precache_sound(c"weapons/items.wav");
-                eng.precache_sound(c"items/gunpickup2.wav")
-            }
-            // `CItemAntidote::Precache` (0xcb940), `CItemSuit::Precache` (0xcb5e4) and
-            // `CItemSecurity::Precache` (0xcba30) only precache the model.
+            Kind::Battery => eng.precache_sound(c"items/gunpickup2.wav"),
             Kind::Antidote | Kind::Suit | Kind::Security => 0,
         };
-        eng.precache_sound(c"items/suitchargeok1.wav");
+    }
+}
+
+/// `Precache` of an item class, for `UTIL_PrecacheOther` (`base::precache_other`); false for
+/// any other class.
+pub fn precache_class(class: &CStr) -> bool {
+    match class.to_bytes() {
+        b"item_healthkit" => HealthKit::precache(),
+        b"item_battery" => Battery::precache(),
+        b"item_antidote" => Antidote::precache(),
+        b"item_suit" => Suit::precache(),
+        b"item_security" => Security::precache(),
+        _ => return false,
+    }
+    true
+}
+
+impl<const KIND: u8> Entity for Item<KIND> {
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        Self::precache();
         eng.set_model(cx.edict, Self::model());
         // CItem::Spawn
         let v = cx.pev();
@@ -340,6 +358,15 @@ impl<const ARMOR: bool> Charger<ARMOR> {
         }
     }
 
+    /// `CRecharge::Precache` (0xc6f8c) / `CWallHealth::Precache` (0xc8cc4), in TS's order.
+    fn precaches() -> [&'static CStr; 3] {
+        if ARMOR {
+            [c"items/suitcharge1.wav", c"items/suitchargeno1.wav", c"items/suitchargeok1.wav"]
+        } else {
+            [c"items/medshot4.wav", c"items/medshotno1.wav", c"items/medcharge4.wav"]
+        }
+    }
+
     fn off(&mut self, cx: &mut Cx) {
         let (_, charge, _, _) = Self::sounds();
         if self.on > 1 {
@@ -374,8 +401,7 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
 
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
-        let (a, b, c, _) = Self::sounds();
-        for snd in [a, b, c] {
+        for snd in Self::precaches() {
             eng.precache_sound(snd);
         }
         let v = cx.pev();
@@ -451,6 +477,22 @@ pub type ArmorCharger = Charger<true>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn charger_precaches_follow_ts() {
+        // CWallHealth::Precache (0xc8cc4): medshotno1 before medcharge4.
+        assert_eq!(Charger::<false>::precaches(), [c"items/medshot4.wav", c"items/medshotno1.wav", c"items/medcharge4.wav"]);
+        // CRecharge::Precache (0xc6f8c).
+        assert_eq!(Charger::<true>::precaches(), [c"items/suitcharge1.wav", c"items/suitchargeno1.wav", c"items/suitchargeok1.wav"]);
+        // The use sounds are the same set.
+        for armor in [false, true] {
+            let (a, b, c, _) = if armor { Charger::<true>::sounds() } else { Charger::<false>::sounds() };
+            let p = if armor { Charger::<true>::precaches() } else { Charger::<false>::precaches() };
+            for s in [a, b, c] {
+                assert!(p.contains(&s));
+            }
+        }
+    }
 
     #[test]
     fn only_healthkit_and_battery_refuse_the_dead() {

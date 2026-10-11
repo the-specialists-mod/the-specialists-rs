@@ -23,8 +23,11 @@ impl Entity for Model {
         let e = cx.edict;
         cx.pev().classname = eng.alloc_string(c"ts_model");
         let m = cx.pev().model;
+        // `CTSModel::Spawn` (0x722e8) frees the edict at once (`REMOVE_ENTITY`, no
+        // `UpdateOnRemove`). Guard: an empty model string is removed too; TS would precache and
+        // set "" (an engine error).
         if m == 0 || eng.string(m).is_empty() {
-            crate::entities::remove(e);
+            eng.remove_entity(e);
             return;
         }
         let name = intern(&eng.string(m).to_string_lossy());
@@ -169,7 +172,8 @@ pub static PARTICLES: goldsrc::Global<std::cell::Cell<u32>> = goldsrc::Global(st
 
 impl Entity for Particle {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        if key.to_bytes() == b"soundonemit" {
+        // `CTSSharedEmitter::ParticleKeyValue` (0xf8644) matches keys with `strcasecmp`.
+        if key.to_bytes().eq_ignore_ascii_case(b"soundonemit") {
             self.sound = Some(value.to_string_lossy().into_owned());
         }
         true

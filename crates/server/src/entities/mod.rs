@@ -264,10 +264,57 @@ fn base_collision_box(solid: i32, origin: [f32; 3], angles: [f32; 3], mins: [f32
     (lo, hi)
 }
 
+/// `DispatchSpawn` (0xaab8c): the engine's spawn callback, and what `CBaseEntity::Create`
+/// (0xac480) runs. The bounds start one unit around the origin, the class spawns, and an entity
+/// that marked itself `FL_KILLME` fails (-1; the rules' `IsAllowedToSpawn` is always 1 in TS).
+/// Then the `globalname` step: a new name is added to `gGlobalState` as on, a dead one fails the
+/// spawn, and one another map added makes the entity dormant (`MakeDormant` 0xac270).
+pub fn dispatch_spawn(e: *mut edict_t) -> i32 {
+    if e.is_null() || !e.has_private_data() {
+        return 0;
+    }
+    let v = e.v();
+    v.absmin = v.origin.map(|o| o - 1.0);
+    v.absmax = v.origin.map(|o| o + 1.0);
+    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    // A class that `REMOVE_ENTITY`s itself in its spawn leaves no private data: TS's re-read
+    // `pvPrivateData` is NULL and it returns 0.
+    if e.is_free() || !e.has_private_data() {
+        return 0;
+    }
+    if e.v().flags & FL_KILLME as i32 != 0 {
+        return -1;
+    }
+    let global = e.v().globalname;
+    if global != 0 {
+        match stock::base::global_spawn(stock::base::s(global)) {
+            stock::base::GlobalSpawn::Dead => return -1,
+            stock::base::GlobalSpawn::Dormant => make_dormant(e),
+            stock::base::GlobalSpawn::Added | stock::base::GlobalSpawn::Spawned => {}
+        }
+    }
+    0
+}
+
+/// `CBaseEntity::MakeDormant` (0xac270).
+pub fn make_dormant(e: *mut edict_t) {
+    let v = e.v();
+    v.flags |= FL_DORMANT as i32;
+    v.solid = SOLID_NOT as i32;
+    v.movetype = MOVETYPE_NONE as i32;
+    v.effects |= EF_NODRAW as i32;
+    v.nextthink = 0.0;
+    let origin = v.origin;
+    engine().set_origin(e, origin);
+}
+
+/// `UTIL_Remove` (0xeea90): `UpdateOnRemove`, then `FL_KILLME` (the engine frees the edict at
+/// the end of the frame) and no `targetname`.
 pub fn remove(e: *mut edict_t) {
     if e.is_null() {
         return;
     }
+    stock::base::update_on_remove(e);
     let v = e.v();
     v.flags |= FL_KILLME as i32;
     v.targetname = 0;

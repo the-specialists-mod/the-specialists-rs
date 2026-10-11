@@ -218,7 +218,7 @@ fn spawn_fire_and_die(target: string_t, delay: f32, origin: [f32; 3]) {
     let v = e.v();
     v.target = target;
     v.origin = origin;
-    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    crate::entities::dispatch_spawn(e);
 }
 
 impl Entity for FireAndDie {

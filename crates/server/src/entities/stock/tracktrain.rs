@@ -732,8 +732,7 @@ impl Entity for TrackTrain {
         };
         eng.precache_sound(c"plats/ttrain_brake1.wav");
         eng.precache_sound(c"plats/ttrain_start1.wav");
-        // Played by the player taking the controls (TS precaches it in ClientPrecache).
-        eng.precache_sound(c"plats/train_use1.wav");
+        // `plats/train_use1.wav`, played by the player taking the controls, is ClientPrecache's.
         self.adjust_pitch_event = eng.precache_event(c"events/train.sc");
     }
 

@@ -149,9 +149,7 @@ unsafe extern "C" fn game_init() {
 }
 
 unsafe extern "C" fn spawn(e: *mut edict_t) -> c_int {
-    world::dispatch(e, |ent, cx| ent.spawn(cx));
-    // The class may have marked itself for removal (FL_KILLME) during spawn.
-    if e.v().flags & FL_KILLME as i32 != 0 { -1 } else { 0 }
+    entities::dispatch_spawn(e)
 }
 
 unsafe extern "C" fn think(e: *mut edict_t) {

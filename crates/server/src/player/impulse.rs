@@ -60,11 +60,6 @@ pub fn update_player_sound(p: &mut Player, cx: &mut Cx) {
     update_player_sound(idx, &mut p.impulse.weapon_volume, &inp);
 }
 
-/// The spray sound (`ClientPrecache` 0xaeafc).
-pub fn precache() {
-    engine().precache_sound(c"player/sprayer.wav");
-}
-
 /// `CBasePlayer::SetCustomDecalFrames` (0xdd488): 1..=7 frames are kept, anything else is -1.
 pub fn custom_decal_frames(frames: i32) -> i32 {
     if (1..=7).contains(&frames) { frames } else { -1 }
@@ -228,7 +223,7 @@ fn player_decal_trace(tr: &TraceResult, playernum: i32, decal: i32) {
 }
 
 /// `CBloodSplat` (0xdb360, 0xdb428): impulse 202's red blood decal, sprayed one think after it
-/// spawns, then removed one think later.
+/// spawns (not with `g_Language` 1, German), then removed one think later.
 #[derive(Default)]
 pub struct BloodSplat {
     sprayed: bool,
@@ -241,18 +236,26 @@ impl Entity for BloodSplat {
             crate::entities::stock::base::sub_remove(cx.edict);
             return;
         }
-        // `CBloodSplat::Spray`: no German build (`g_Language` is never 1 in the port).
-        let eng = engine();
-        let (owner, origin, angles) = {
-            let v = cx.pev();
-            (v.owner, v.origin, v.angles)
-        };
-        let (fwd, _, _) = eng.make_vectors(angles);
-        let tr = eng.trace_line(origin, spread::add(origin, spread::scale(fwd, 128.0)), IGNORE_MONSTERS, owner);
-        blood_decal_trace(&tr, BLOOD_COLOR_RED);
+        // `CBloodSplat::Spray` (0xdb428).
+        if splat_sprays(crate::entities::stock::blood::german()) {
+            let eng = engine();
+            let (owner, origin, angles) = {
+                let v = cx.pev();
+                (v.owner, v.origin, v.angles)
+            };
+            let (fwd, _, _) = eng.make_vectors(angles);
+            let tr = eng.trace_line(origin, spread::add(origin, spread::scale(fwd, 128.0)), IGNORE_MONSTERS, owner);
+            blood_decal_trace(&tr, BLOOD_COLOR_RED);
+        }
         self.sprayed = true;
         cx.think_in(0.1);
     }
+}
+
+/// `CBloodSplat::Spray`'s `g_Language != 1` test: the German build (`sv_language 1` at map
+/// start) draws no blood splat, but the entity still removes itself 0.1 s later.
+fn splat_sprays(german: bool) -> bool {
+    !german
 }
 
 /// `FindEntityForward` (0xdb5f4): what the player looks at within 8192 units (monsters
@@ -375,6 +378,12 @@ pub fn cheat_impulse_commands(p: &mut Player, cx: &mut Cx, impulse: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blood_splat_skips_the_german_build() {
+        assert!(splat_sprays(false));
+        assert!(!splat_sprays(true));
+    }
 
     #[test]
     fn set_custom_decal_frames_keeps_one_to_seven() {

@@ -389,6 +389,9 @@ pub struct EnvExplosion {
     fireball: i32,
     smoke: i32,
     smoking: bool,
+    /// `CEnvExplosion` is a `CBaseMonster`: TS's vtable has `CBaseMonster::TakeDamage` and
+    /// `Killed`, reachable when a map sets `takedamage`.
+    monster: super::monsters::MonsterBase,
 }
 
 impl Entity for EnvExplosion {
@@ -435,7 +438,9 @@ impl Entity for EnvExplosion {
             let m = self.magnitude as f32;
             radius_damage(org, me, me, m, m * 2.5, crate::damage::bits::BLAST);
         }
+        // SetThink(&CEnvExplosion::Smoke) replaces a death think.
         self.smoking = true;
+        self.monster.think = super::monsters::MonsterThink::None;
         cx.pev().nextthink = eng.time() + 0.3;
         if sf & SF_ENVEXPLOSION_NOSPARKS == 0 {
             for _ in 0..eng.random_long(0, 3) {
@@ -445,7 +450,7 @@ impl Entity for EnvExplosion {
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        if !self.smoking {
+        if self.monster.run_think(cx) || !self.smoking {
             return;
         }
         self.smoking = false;
@@ -456,6 +461,11 @@ impl Entity for EnvExplosion {
         if cx.pev().spawnflags & SF_ENVEXPLOSION_REPEATABLE == 0 {
             remove(cx.edict);
         }
+    }
+
+    /// `CBaseMonster::TakeDamage` (0xb2430), with `CBaseEntity::Classify` (0) and no gibs.
+    fn take_damage(&mut self, cx: &mut Cx, info: &DamageInfo) -> bool {
+        self.monster.take_damage(cx, info, 0, 0)
     }
 }
 
@@ -1341,8 +1351,10 @@ impl<const ENV: bool> Entity for GibShooter<ENV> {
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         self.model_index = if ENV {
+            // CEnvShooter::Precache (0xbca44): the model, then the material sounds.
+            let index = precache_model_s(cx.pev().model);
             material_sound_precache(self.material);
-            precache_model_s(cx.pev().model)
+            index
         } else if super::blood::german() {
             // CGibShooter::Precache (0xbc1c4): TS's (misspelt) German gib model.
             eng.precache_model(c"models/germanygibs.mdl")
@@ -1999,6 +2011,9 @@ pub struct Wreckage {
     start_time: i32,
     /// `g_sModelIndexSmoke` (`sprites/steam1.spr`, precached by TS's `W_Precache`).
     smoke: i32,
+    /// `CWreckage` is a `CBaseMonster` (`TakeDamage`, `Killed`); its own `Think` override means a
+    /// death's `SetThink` never runs.
+    monster: super::monsters::MonsterBase,
 }
 
 impl Entity for Wreckage {
@@ -2048,6 +2063,11 @@ impl Entity for Wreckage {
         let scale = eng.random_long(0, 49) + 50;
         let rate = eng.random_long(0, 3) + 8;
         te_begin(MSG_PVS, Some(pos), te::SMOKE).vec3(pos).short(self.smoke).byte(scale).byte(rate).end();
+    }
+
+    /// `CBaseMonster::TakeDamage` (0xb2430). `Spawn` clears `takedamage`, so it refuses.
+    fn take_damage(&mut self, cx: &mut Cx, info: &DamageInfo) -> bool {
+        self.monster.take_damage(cx, info, 0, 0)
     }
 }
 
