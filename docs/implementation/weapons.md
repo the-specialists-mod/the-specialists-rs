@@ -301,7 +301,15 @@ How the port maps TS where the structure differs (not deviations):
   one's sum); the pierce shot, each simulated bullet (`UpdateBullet`) and every other caller
   (melee, explosions, thrown and falling objects, `func_tank`, beams) is its own
   Clear/TraceAttack/Apply. `glast_headshot` (any head hit since the last Apply) picks the
-  `#TS_Headshot` message.
+  `#TS_Headshot` message. The buffer holds only TS's entity, amount and type, and `TakeDamage`
+  gets TS's four arguments (`DamageInfo::new(inflictor, attacker, sum, type)`): hitgroup,
+  direction and impact point only reach `TraceAttack`, and there is no weapon id in `DamageInfo`.
+  What a kill reads besides those are TS's globals (`damage::glast`): `glast_closecombat` around
+  the hit of `CloseCombatAttack` (kung fu, `melee::attack`) and the stored kung-fu hit of
+  `CheckForBreakables` (`melee::pending_hit`), `glast_coldcock` around an unblocked
+  `ColdCockAttack`, `glast_weaponid` around a simulated bullet's hit (`bullets.rs`); knife and
+  katana slashes set none of them. `g_vecAttackDir` (`damage::attack_dir`) is set by the
+  victim's `TakeDamage` (rules.md).
 * The loadout is cleared at death (TS `Killed` -> `ResetArmament`); the TS client resends
   `rst_cfg` + `tkw/tki/tka` from its buy menu.
 * M61 buys and stealth shoes are refused, as in TS 3.0 (only allowed when
@@ -349,7 +357,8 @@ How the port maps TS where the structure differs (not deviations):
   hit pitch (`hit_pitch`), the gunless `clientdata_t` packing
   (`clientdata_without_the_gun_stops_after_the_weapon_id`), and the multi-damage
   (`damage::multi::tests`: pellets summed into one `TakeDamage`, a new victim flushing the old one
-  with the accumulated bits, no victim no apply, `glast_headshot` reset).
+  with the accumulated bits, no victim no apply, `glast_headshot` reset, `TakeDamage` getting only
+  the four arguments) and the `glast_*` set-then-reset (`damage::glast::tests`).
 * **Not yet tested in engine**: slowed projectiles (power-up slow motion / `globalslow` with a
   grenade, thrown knife and dropped gun in sight), bullet-time simulated bullets (slow pause),
   bubble trails under water, `dmgreport 2` with `sv_cheats 1`, +use on a flying/landed gun, on a
@@ -406,8 +415,9 @@ How the port maps TS where the structure differs (not deviations):
   worn. Stealth shoes are `items & 0x20` plus `iuser4` bit 0x200 (`stunt::STEALTH_SHOES`, which
   the decomp docs call `HAS_KEVLAR`).
 
-**Damage package**: `DamageInfo.hitgroup` = trace hitgroup, `weapon` = TS id, bits as listed in
-§3 (0x2000000 = shotgun headshot x1.5, 0x8000000 = thrown blade, 0x4000000 = close combat).
+**Damage package**: `DamageInfo.hitgroup` = trace hitgroup, bits as listed in §3 (0x2000000 =
+shotgun headshot x1.5, 0x8000000 = thrown blade, 0x4000000 = close combat, which breakable
+doors test; kills read `glast_closecombat` instead, see the multi-damage note above).
 `PTakeDam` is yours.
 
 **net.rs (AddToFullPack)**: `weapons::glow_for_host(ent, host)` says when TS forces

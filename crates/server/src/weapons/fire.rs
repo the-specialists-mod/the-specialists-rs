@@ -57,7 +57,7 @@ pub fn gun_position(v: &entvars_t) -> Vec3 {
 /// `pEntity->TraceAttack(shooter, dmg, dir, &tr, bits)` for a bullet that hit something: the
 /// hitgroup the trace reports, the damage going into the multi-damage (`damage::multi`). The
 /// caller applies it.
-pub fn bullet_trace_attack(shooter: *mut edict_t, tr: &TraceResult, dmg: f32, dir: Vec3, bits: i32, weapon: u8) {
+pub fn bullet_trace_attack(shooter: *mut edict_t, tr: &TraceResult, dmg: f32, dir: Vec3, bits: i32) {
     let hit = tr.pHit;
     if hit.is_null() {
         return; // the world: `CBaseEntity::TraceAttack` with `takedamage` off does nothing
@@ -66,7 +66,6 @@ pub fn bullet_trace_attack(shooter: *mut edict_t, tr: &TraceResult, dmg: f32, di
     info.hitgroup = tr.iHitgroup;
     info.dir = dir;
     info.pos = tr.vecEndPos;
-    info.weapon = weapon as i32;
     damage::trace_attack(hit, &info);
     assets::debug(|| {
         let e = engine();
@@ -124,7 +123,7 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
         if tr.flFraction != 1.0 {
             let dist = spread::length(spread::sub(src, tr.vecEndPos));
             let amount = range_multiplier(spread::range_index(dist, unit)) * shot.damage;
-            bullet_trace_attack(shooter, &tr, amount * adjust, dir, bits, shot.weapon);
+            bullet_trace_attack(shooter, &tr, amount * adjust, dir, bits);
             projectiles::report_damage(|| format!("damage:{:.6}\n", amount * adjust));
             left = amount * pierce;
             if e.is_player_edict(tr.pHit) {
@@ -145,13 +144,13 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
     let step = (left + left).min(48.0);
     let p = spread::ma(tr.vecEndPos, step, dir);
     if e.point_contents(p) != CONTENTS_SOLID {
-        pierce_shot(shooter, p, dir, left * adjust, shot.weapon);
+        pierce_shot(shooter, p, dir, left * adjust);
     }
 }
 
 /// The recursion with `btype 2`: a straight 4096-unit trace from the exit point, range falloff
 /// with a fixed 30-unit index unit, no further penetration.
-fn pierce_shot(shooter: *mut edict_t, src: Vec3, dir: Vec3, dmg: f32, weapon: u8) {
+fn pierce_shot(shooter: *mut edict_t, src: Vec3, dir: Vec3, dmg: f32) {
     damage::multi::clear();
     damage::multi::set_type(DMG_BULLET_TS);
     let end = spread::ma(src, 4096.0, dir);
@@ -161,7 +160,7 @@ fn pierce_shot(shooter: *mut edict_t, src: Vec3, dir: Vec3, dmg: f32, weapon: u8
         let dist = spread::length(spread::sub(src, tr.vecEndPos));
         let idx = (dist * 0.003_333_333_4 * 10.0).round_ties_even() as i32;
         let amount = range_multiplier(idx) * dmg;
-        bullet_trace_attack(shooter, &tr, amount, dir, DMG_BULLET_TS, weapon);
+        bullet_trace_attack(shooter, &tr, amount, dir, DMG_BULLET_TS);
         projectiles::report_damage(|| format!("damage(piercing):{amount:.6}\n"));
     }
     bubble_trail(src, tr.vecEndPos, (tr.flFraction * 4096.0 / 64.0).round_ties_even() as i32);

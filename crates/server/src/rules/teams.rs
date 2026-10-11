@@ -11,7 +11,7 @@ use crate::world::Cx;
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use shared::protocol::rules::{ScoreInfo, TeamInfo, TeamNames, TeamScore};
+use shared::protocol::rules::{TeamInfo, TeamNames, TeamScore};
 
 fn idx(e: *mut edict_t) -> usize {
     if e.is_null() { 0 } else { engine().index_of(e).clamp(0, 32) as usize }
@@ -211,7 +211,7 @@ pub fn change_team(p: &mut Player, cx: &mut Cx, name: &str, kill: bool, gib: boo
     recount(false);
     let idx = cx.index();
     msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team: name.clone() }.write(w));
-    let s = ScoreInfo { idx: idx as u8, frags: cx.pev().frags as i16, deaths: p.deaths as i16, class: 0, team: score_team(idx) };
+    let s = super::lifecycle::score_info_of(p, cx.pev(), idx);
     msg::all(Msg::ScoreInfo, |w| s.write(w));
     if change_team_observes(kill, the_one) {
         let (o, a) = (cx.pev().origin, cx.pev().v_angle);
