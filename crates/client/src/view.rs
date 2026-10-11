@@ -50,7 +50,8 @@ struct View {
     // kick (`0x10191d10` target, `0x101914f8` current) and the view-shake spring
     kick_target: [f32; 2],
     kick_cur: [f32; 2],
-    last_shot: f64,
+    /// `CTSGun+0x8c0`: the prediction time of the last kick, a float as in TS.
+    last_shot: f32,
     shake: Shake,
     // `V_DriftPitch` state (SDK `pd`, `0x10191460..0x10191470`)
     drift: Drift,
@@ -436,7 +437,7 @@ extern "C" fn cmd_test_fade() {
 extern "C" fn cmd_test_kick() {
     let e = goldsrc::client::engine();
     let n = |i: i32| e.cmd_argv(i).to_str().unwrap_or("").parse::<f32>().unwrap_or(0.0);
-    kick(if n(1) == 0.0 { 5.5 } else { n(1) }, n(2) as u8, false, false);
+    kick(if n(1) == 0.0 { 5.5 } else { n(1) }, n(2) as u8, false, false, e.client_time());
 }
 
 extern "C" fn cmd_thirdperson() {
@@ -627,8 +628,9 @@ pub fn update_client_data(cd: &mut r::ClientData) -> bool {
 }
 
 /// `CTSGun::VKickback` client half (`0x10008230`) for a client weapon class (development
-/// command `ts_test_kick`). Prediction calls [`kick_angles`] with the shared `VKickback` result.
-pub fn kick(view_kick: f32, class: u8, silenced: bool, double_rate: bool) {
+/// command `ts_test_kick`, at `now`). Prediction calls [`kick_angles`] with the shared
+/// `VKickback` result.
+pub fn kick(view_kick: f32, class: u8, silenced: bool, double_rate: bool, now: f32) {
     let mut pitch = view_kick * 0.85;
     let mut yaw = pitch
         * match class {
@@ -647,24 +649,31 @@ pub fn kick(view_kick: f32, class: u8, silenced: bool, double_rate: bool) {
         pitch *= 2.0 / 3.0;
         yaw *= 2.0 / 3.0;
     }
-    kick_angles(pitch, yaw, silenced);
+    kick_angles(pitch, yaw, silenced, now);
 }
 
 /// Queues one shot's view kick (`pitch` up, `yaw` right, degrees) and starts the shake spring.
-/// Call once per shot, with `runfuncs` only.
-pub fn kick_angles(pitch: f32, yaw: f32, silenced: bool) {
+/// Call once per shot, with `runfuncs` only. `now` is the command's prediction time: TS times the
+/// shake with `*0x10099114`, which `HUD_WeaponsPostThink` sets to `HUD_PostRunCmd`'s `time` as a
+/// float, not with the client clock.
+pub fn kick_angles(pitch: f32, yaw: f32, silenced: bool, now: f32) {
     let ts = state::with(|s| s.time_scale);
-    let now = engine().client_time() as f64;
     with(|w| {
         w.kick_target[0] -= pitch;
         w.kick_target[1] += yaw;
-        let ts = if ts == 0.0 { 1.0 } else { ts };
-        let amp = (0.15 - (now - w.last_shot) as f32 * ts) * 15.0;
-        if amp > 0.001 {
-            w.shake.start(amp.min(1.0) * if silenced { 0.775 } else { 1.0 }, 0.1, 35.0);
+        if let Some(amp) = shake_amplitude(now, w.last_shot, ts) {
+            w.shake.start(amp * if silenced { 0.775 } else { 1.0 }, 0.1, 35.0);
         }
         w.last_shot = now;
     });
+}
+
+/// `VKickback`'s shake strength (`0x10008346..0x100083ad`): `(0.15 - (now - last) * ts) * 15`,
+/// capped at 1, or `None` at or below 0.001. A time scale of 0 counts as 1.
+fn shake_amplitude(now: f32, last: f32, ts: f32) -> Option<f32> {
+    let ts = if ts == 0.0 { 1.0 } else { ts };
+    let amp = (0.15 - (now - last) * ts) * 15.0;
+    (amp > 0.001).then_some(amp.min(1.0))
 }
 
 /// The client gun's Spawn (`0x100083f0`) zeroes `CTSGun+0x8c0`, the time of the last kick that
@@ -1202,6 +1211,21 @@ fn write_screen_fade(_time: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `VKickback`'s shake: full strength for back-to-back shots, fading over 0.15 s of
+    /// prediction time (scaled by the time scale, 0 = 1), none after.
+    #[test]
+    fn kick_shake_amplitude() {
+        assert_eq!(shake_amplitude(10.0, 10.0, 1.0), Some(1.0));
+        assert_eq!(shake_amplitude(10.1, 10.0, 0.0), shake_amplitude(10.1, 10.0, 1.0));
+        let a = shake_amplitude(10.1, 10.0, 1.0).unwrap();
+        assert!((a - 0.75).abs() < 1e-3, "{a}");
+        let slow = shake_amplitude(10.1, 10.0, 0.5).unwrap();
+        assert!(slow == 1.0, "slow motion stretches the window: {slow}");
+        assert_eq!(shake_amplitude(10.2, 10.0, 1.0), None);
+        // After a gun Spawn (last kick 0) any later time gives no shake.
+        assert_eq!(shake_amplitude(10.0, 0.0, 1.0), None);
+    }
 
     #[test]
     fn move_toward_matches_sdk() {

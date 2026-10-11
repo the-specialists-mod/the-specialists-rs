@@ -378,7 +378,11 @@ players, motion-blur ghosts) and shows in-eye as the spectated player's view mod
 `unpack_clientdata` + `unpack_weapon_data` before the command, `Gun::pre_frame`,
 `item_post_frame`, `decrement_timers(Gun::timer_dt(msec/1000, fuser1, powerups))`; host events
 go to the local event handlers, `shoot` can be a no-op (the `fire` event re-traces with
-`spread::pellet_dir` and the same seed), `kick` feeds the view kick. Messages decode with
+`spread::pellet_dir` and the same seed), `kick` feeds the view kick (timed with the prediction
+time, as TS's client `VKickback`). The client keeps the weapon records between commands (only the
+current one is rebuilt from `from`) until its gun's Spawn on a respawn or after `HUD_VidInit`, and
+never deploys on a networked weapon change: the draw animation is the server's `svc_weaponanim`
+(`Deploy` -> `DefaultDeploy` skiplocal 0), as in TS (see `client-rendering.md`). Messages decode with
 `shared::protocol::weapons::{WeaponInfo, WStatus, ActItems}::read`, `read_kfu_power`,
 `parse_custom_wp` (apply with `shared::weapons::table::set_weapon_params`). View-model sequences:
 `shared::weapons::anim(id, alt, index)`.

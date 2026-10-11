@@ -18,7 +18,7 @@ use goldsrc::sys::*;
 use shared::protocol::weapons::{pack_clientdata, pack_weapon_data, unpack_clientdata, unpack_weapon_data};
 use shared::weapons::gun::{MeleeHit, MeleeResult, Shot, Sound};
 use shared::weapons::spread::Vec3;
-use shared::weapons::{Event, EventArgs, Gun, GunHost, MAX_AMMO, MAX_WEAPONS, Status, anim, att, body_by_items, info, models};
+use shared::weapons::{Event, EventArgs, Gun, GunHost, MAX_AMMO, MAX_WEAPONS, Status, att, body_by_items, info, models};
 use std::cell::RefCell;
 
 #[derive(Default)]
@@ -30,7 +30,8 @@ struct Pred {
     /// State that isn't networked (recoil penalty, last shot time, kung-fu bar, combos, mode
     /// memory), carried from one first-time prediction to the next.
     gun: Option<Gun>,
-    last_id: Option<u8>,
+    /// `0x100d5cb8`: the last view animation `HUD_SendWeaponAnim` (`0x1001ace0`) played.
+    last_anim: i32,
     /// The local weapon's alternate grip (`0x10189f9d`, a byte): `(int)vuser2[2]` from
     /// `HUD_WeaponsPostThink`, or the demo's record type 1 during playback.
     alt_grip: u8,
@@ -94,14 +95,54 @@ pub fn vid_init() {
 /// and info pointers (`+0xb8..+0xc0`), the `UpdateClientData` send caches (`+0x83a`, `+0x83c`,
 /// `+0x86c`, `+0x870`), `+0x89c` (written nowhere else, read nowhere), the last shot time
 /// (`+0x8a0`, `Gun::last_shot`) and the last view-kick time (`+0x8c0`, `view::reset_kick_time`),
-/// and sets `m_iClip` (`+0xa4`) and `m_iDefaultAmmo` (`+0xb4`) to 1 and `m_iId` to 16. Only the
-/// two times have port state that outlives a command: the inventory, reserve, current id and
-/// `m_iClip` are rebuilt from the networked state on every command ([`gun_from`]). The combo
+/// and sets `m_iClip` (`+0xa4`) and `m_iDefaultAmmo` (`+0xb4`) to 1 and `m_iId` to 16. The
+/// records and reserve are otherwise kept from command to command: [`gun_from`] only rebuilds the
+/// current record. The send caches have no port state (the client never reads them). The combo
 /// counters (`+0x8b4..+0x8bc`) and the grenade-pin time (`+0x8c4`) are left alone, as are the
 /// player's fields (melee bar, windows, mode memory).
 fn spawn_gun(g: &mut Gun) {
-    g.last_shot = 0.0;
+    reset_gun(g);
     view::reset_kick_time();
+}
+
+/// The [`Gun`] part of [`spawn_gun`].
+fn reset_gun(g: &mut Gun) {
+    g.status = [Status::default(); MAX_WEAPONS];
+    g.reserve = [0; MAX_AMMO];
+    g.current = 0;
+    g.clip_mirror = 1;
+    g.last_shot = 0.0;
+}
+
+/// `CTSGun::Deploy` on the client gun (`0x10008720`, vtable `+0x120`), which only the client
+/// player's Spawn (`0x100036d0`) reaches. Kung fu runs `HolsterWeapon` ([`holster`]). Otherwise it
+/// resets the current record's body (`+0x18`, also `pev->body`), state (`+0x8`) and alternate grip
+/// (`+0x2c`), clears `+0x898` (written nowhere else, read nowhere), runs `DefaultDeploy`
+/// (`0x100035f0`: view model, `m_flNextAttack` 0.5, idle 3.0; unlike the SDK's it plays no view
+/// animation), plays the `draw` event (`FEV_NOTHOST`, id, attachments), and syncs the fire-mode
+/// memory (`pl+0x486+id`) as the server's Deploy does. The gun's Spawn runs straight after and
+/// wipes the records, and `from` overwrites the timers, so the mode memory is what lasts. Returns
+/// the draw event's id and attachments.
+fn deploy(g: &mut Gun) -> Option<(u8, u32)> {
+    let id = g.current;
+    if id == 0 {
+        holster(g);
+        return None;
+    }
+    let s = &mut g.status[id as usize];
+    s.body = body_by_items(id, s.items);
+    s.state = 0;
+    s.alt_grip = false;
+    let items = s.items;
+    g.next_attack = 0.5;
+    g.idle = 3.0;
+    let mem = &mut g.mode_memory[id as usize];
+    if *mem < 1 {
+        *mem = g.status[id as usize].mode + 1;
+    } else {
+        g.status[id as usize].mode = *mem - 1;
+    }
+    Some((id, items))
 }
 
 /// The client player's `Killed` (`0x100036b0`): `m_pActiveItem->Holster()` (vtable `+0x128` =
@@ -126,13 +167,13 @@ fn holster(g: &mut Gun) {
 /// a `HUD_VidInit` (`0x100036f0`, the call at `0x10003713`, on every call) and, for `runfuncs`
 /// commands, the SDK's `lasthealth` check (`0x10003877..0x100038e2`, int `0x100991a4`). These
 /// act on the state carried from the last first-time prediction, which [`gun_from`] then
-/// overlays with the networked fields. Returns true on a respawn.
-fn spawn_and_death(c: &clientdata_t, runfuncs: bool) -> bool {
+/// overlays with the networked fields.
+fn spawn_and_death(c: &clientdata_t, runfuncs: bool) {
     if !with(|p| std::mem::replace(&mut p.gun_spawned, true)) {
         with(|p| spawn_gun(p.gun.get_or_insert_with(Gun::default)));
     }
     if !runfuncs {
-        return false;
+        return;
     }
     let (died, spawned, active) = with(|p| {
         let alive = c.health > 0.0;
@@ -146,12 +187,16 @@ fn spawn_and_death(c: &clientdata_t, runfuncs: bool) -> bool {
     }
     if spawned {
         // health <= 0 -> > 0: the client player's Spawn (0x100036d0), i.e. the active item's
-        // Deploy (the draw animation in `post_think`) and the spread reset 0x1000b9d0, then the
-        // gun's Spawn (0x100038c8).
+        // Deploy (vtable +0x120, only with an active item) and the spread reset 0x1000b9d0, then
+        // the gun's Spawn (0x100038c8). The view model's draw animation comes from the server's
+        // Deploy (`DefaultDeploy` with skiplocal 0 sends svc_weaponanim).
+        if active && let Some((id, items)) = with(|p| deploy(p.gun.get_or_insert_with(Gun::default))) {
+            let ev = event_index(Event::Draw);
+            r::playback_event(FEV_NOTHOST as i32, ev, 0.0, 0.0, id as i32, items as i32, false, 0);
+        }
         reset_spread();
         with(|p| spawn_gun(p.gun.get_or_insert_with(Gun::default)));
     }
-    spawned
 }
 
 /// The alternate-grip update in `HUD_WeaponsPostThink` (`0x10003bc4..0x10003c0c`), on every call
@@ -193,6 +238,15 @@ fn view_model_index(id: u8) -> i32 {
     idx
 }
 
+/// `HUD_SendWeaponAnim` (`0x1001ace0`): the local view model, on a command's first prediction or
+/// when forced. Remembers the animation for the replay at the end of [`post_think`].
+fn send_weapon_anim(anim: i32, body: i32, runfuncs: bool, force: bool) {
+    if runfuncs || force {
+        with(|p| p.last_anim = anim);
+        r::weapon_animation(anim, body);
+    }
+}
+
 /// The client side of the gun's side effects for one usercmd.
 struct ClientHost<'a> {
     from: &'a local_state_t,
@@ -205,6 +259,8 @@ struct ClientHost<'a> {
     fov: f32,
     viewmodel: i32,
     iuser4: i32,
+    /// The player's `pev->weaponanim` (`+0x218`), copied to `to` after the gun's frame.
+    weaponanim: i32,
     /// "Silenced" for the current shot's view shake (`VKickback` passes the multiplier only).
     silenced: bool,
 }
@@ -282,16 +338,16 @@ impl GunHost for ClientHost<'_> {
         }
     }
     fn weapon_anim(&mut self, anim: i32, _skip_local: bool, body: i32) {
-        // HUD_SendWeaponAnim: the local view model, first prediction only.
-        if self.runfuncs {
-            r::weapon_animation(anim, body);
-        }
+        // The client `CBasePlayerWeapon::SendWeaponAnim` (0x10003680): pev->weaponanim, then
+        // HUD_SendWeaponAnim (first prediction only).
+        self.weaponanim = anim;
+        send_weapon_anim(anim, body, self.runfuncs, false);
     }
     fn player_anim(&mut self, _anim: i32) {}
     fn kick(&mut self, pitch: f32, yaw: f32) {
         // VKickback: once per predicted shot.
         if self.runfuncs {
-            view::kick_angles(pitch, yaw, self.silenced);
+            view::kick_angles(pitch, yaw, self.silenced, self.time);
         }
     }
     fn sound(&mut self, _s: Sound) {}
@@ -308,26 +364,46 @@ impl GunHost for ClientHost<'_> {
     }
 }
 
-/// Builds the gun for this command: non-networked state from the last first-time prediction,
-/// everything networked from `from`. Only the current weapon's record is known on the client.
+/// Builds the gun for this command: the state carried from the last first-time prediction, with
+/// the networked fields from `from`. As in TS (`0x10003965..0x10003bbe`), only the current record,
+/// its akimbo/single twin's clip and its reserve ammo are rebuilt; the other records keep their
+/// values until the gun's Spawn ([`spawn_gun`]).
 fn gun_from(from: &local_state_t) -> (Gun, u16) {
     let mut g = with(|p| p.gun.clone()).unwrap_or_default();
-    g.status = [Status::default(); MAX_WEAPONS];
-    g.reserve = [0; MAX_AMMO];
-    let powerups = unpack_clientdata(&from.client, &mut g);
-    unpack_weapon_data(&from.weapondata[TS_GUN_SLOT], &mut g);
-    g.next_alt = from.weapondata[TS_GUN_SLOT].fuser4;
+    let powerups = rebuild(&mut g, from);
     (g, powerups)
 }
 
+/// The networked part of [`gun_from`]. Returns the power-up bits.
+fn rebuild(g: &mut Gun, from: &local_state_t) -> u16 {
+    let powerups = unpack_clientdata(&from.client, g);
+    // TS's rebuild never writes a record's owned byte, so its client DropWeapon (0x100085d0) and
+    // GetBetterWeapon (0x10008660) never find a weapon. The port marks the current record owned
+    // (`unpack_clientdata`) and only that one, so a kept record can't become a predicted switch.
+    let cur = g.current as usize;
+    for (i, s) in g.status.iter_mut().enumerate() {
+        if i != cur {
+            s.owned = false;
+        }
+    }
+    unpack_weapon_data(&from.weapondata[TS_GUN_SLOT], g);
+    g.next_alt = from.weapondata[TS_GUN_SLOT].fuser4;
+    powerups
+}
+
+/// `HUD_WeaponsPostThink` (`0x10003830`) for one usercmd.
 pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t, runfuncs: bool, time: f64, seed: u32) {
     let c = &from.client;
-    let dead = c.deadflag != 0 || c.health <= 0.0;
-    let spawned = spawn_and_death(c, runfuncs);
-    // 0x10003d40, inside the `m_iId == 16` part of HUD_WeaponsPostThink, after the check above.
-    if c.m_iId == TS_GUN_SLOT as i32 {
-        with(|p| p.active_gun = true);
+    spawn_and_death(c, runfuncs);
+    // `local_68` (set at 0x1000385c, tested at 0x10003965, which jumps to the epilogue): everything
+    // else, including writing `to`, needs `from`'s weapon to be the TS gun. Otherwise `to` keeps
+    // the engine's copy of `from` (FWGS `CL_RunUsercmd`: `*to = *from`, then pmove).
+    if c.m_iId != TS_GUN_SLOT as i32 {
+        return;
     }
+    let dead = c.deadflag != 0 || c.health <= 0.0;
+    // 0x10003d40: the client player's m_pActiveItem is the gun from now on.
+    with(|p| p.active_gun = true);
     update_alt_grip(c);
     let (mut gun, powerups) = gun_from(from);
     // HUD_PostRunCmd (0x10003830) keeps the active items for DrawLaserDots, cleared while the
@@ -338,22 +414,10 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         st.local_velocity = c.velocity;
     });
 
-    // Weapon switches come from the server (`weapon_<n>`); show the draw animation when the
-    // networked weapon changes (Deploy / HolsterWeapon view animation).
-    if runfuncs {
-        let id = gun.current;
-        let items = gun.slot().map(|s| s.items).unwrap_or(0);
-        // A respawn ([`spawn_and_death`]) runs the active weapon's Deploy: the draw animation.
-        let changed = with(|p| {
-            let ch = p.last_id != Some(id) || spawned;
-            p.last_id = Some(id);
-            ch
-        });
-        if changed && !dead && c.m_iId == TS_GUN_SLOT as i32 {
-            r::weapon_animation(anim(id, false, 2), if id == 0 { 0 } else { body_by_items(id, items) });
-        }
-    }
-
+    // A networked weapon change plays nothing here: the server's Deploy/HolsterWeapon send the
+    // view animation with svc_weaponanim (`DefaultDeploy` skiplocal 0). TS's own check after
+    // ItemPostFrame (0x10003d8d..0x10003dc1) passes `SelectWeapon` (0x100086b0) the gun's current
+    // id, which it rejects, so its Deploy there never runs.
     let silenced = gun.slot().is_some_and(|s| s.items & att::SILENCER != 0) && info(gun.current).is_some_and(|w| w.att_default & 1 == 0);
     let mut host = ClientHost {
         from,
@@ -365,18 +429,19 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         fov: c.fov,
         viewmodel: c.viewmodel,
         iuser4: c.iuser4,
+        weaponanim: c.weaponanim,
         silenced,
     };
     // Same order as the server: PreThink (windows, penalty decay, bar), PostThink
     // (ItemPostFrame while alive, then the timers).
     let dt = Gun::timer_dt(cmd.msec as f32 * 0.001, c.fuser1.max(0.0), powerups);
     gun.pre_frame(dt, !dead);
-    if !dead && c.m_iId == TS_GUN_SLOT as i32 {
+    if !dead {
         gun.item_post_frame(&mut host);
     }
     gun.decrement_timers(dt);
 
-    let (fov, viewmodel, iuser4) = (host.fov, host.viewmodel, host.iuser4);
+    let (fov, viewmodel, iuser4, weaponanim) = (host.fov, host.viewmodel, host.iuser4, host.weaponanim);
     pack_clientdata(&gun, powerups, &mut to.client);
     pack_weapon_data(&gun, &mut to.weapondata[TS_GUN_SLOT]);
     to.weapondata[TS_GUN_SLOT].fuser4 = gun.next_alt;
@@ -384,9 +449,15 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     to.client.fov = fov;
     to.client.viewmodel = viewmodel;
     to.client.iuser4 = iuser4;
-    to.client.weaponanim = from.client.weaponanim;
+    to.client.weaponanim = weaponanim;
     to.client.maxspeed = from.client.maxspeed;
     to.client.fuser1 = from.client.fuser1;
+    // 0x10003e5f: a first prediction whose predicted animation isn't the one last played (it was
+    // set by a re-predicted command) forces it, with the gun's body or 2 without a record.
+    if runfuncs && with(|p| p.last_anim) != weaponanim {
+        let body = gun.slot().map_or(2, |s| body_by_items(gun.current, s.items));
+        send_weapon_anim(weaponanim, body, runfuncs, true);
+    }
 
     if runfuncs {
         let s = gun.slot().copied().unwrap_or_default();
@@ -425,7 +496,8 @@ mod tests {
         let mut ls = local_state_t::default();
         pack_clientdata(&server, 0x10, &mut ls.client);
         pack_weapon_data(&server, &mut ls.weapondata[TS_GUN_SLOT]);
-        let (g, powerups) = gun_from(&ls);
+        let mut g = Gun::default();
+        let powerups = rebuild(&mut g, &ls);
         assert_eq!(powerups, 0x10);
         assert_eq!(g.current, id::AK47);
         let c = g.slot().unwrap();
@@ -443,5 +515,54 @@ mod tests {
         let mut g = Gun { melee_window: 0.2, melee_damage: 40.0, melee_source: 0, ..Default::default() };
         holster(&mut g);
         assert_eq!((g.melee_window, g.melee_damage, g.melee_source), (0.2, 40.0, 0));
+    }
+
+    /// Records other than the current one, and other ammo types' reserve, survive a command's
+    /// rebuild (TS keeps them until the gun's Spawn); only the current record counts as owned.
+    #[test]
+    fn rebuild_keeps_other_records() {
+        let mut server = Gun { current: id::AK47, ..Default::default() };
+        server.status[id::AK47 as usize] = Status { owned: true, clip: 30, ..Default::default() };
+        let mut ls = local_state_t::default();
+        pack_clientdata(&server, 0, &mut ls.client);
+        pack_weapon_data(&server, &mut ls.weapondata[TS_GUN_SLOT]);
+
+        let mut g = Gun { current: id::BERETTA, ..Default::default() };
+        g.status[id::BERETTA as usize] = Status { owned: true, clip: 7, mode: 1, items: att::SILENCER, ..Default::default() };
+        let other_ammo = info(id::BERETTA).unwrap().ammo as usize;
+        assert_ne!(other_ammo, info(id::AK47).unwrap().ammo as usize);
+        g.reserve[other_ammo] = 45;
+        rebuild(&mut g, &ls);
+        assert_eq!(g.current, id::AK47);
+        assert_eq!(g.slot().unwrap().clip, 30);
+        assert!(g.status[id::AK47 as usize].owned);
+        let kept = g.status[id::BERETTA as usize];
+        assert_eq!((kept.owned, kept.clip, kept.mode, kept.items), (false, 7, 1, att::SILENCER));
+        assert_eq!(g.reserve[other_ammo], 45);
+
+        reset_gun(&mut g);
+        assert_eq!(g.status, [Status::default(); MAX_WEAPONS]);
+        assert_eq!((g.reserve, g.current, g.clip_mirror, g.last_shot), ([0; MAX_AMMO], 0, 1, 0.0));
+    }
+
+    /// The respawn Deploy resets the record's state and grip, plays no animation and syncs the
+    /// fire-mode memory both ways; kung fu runs the (early) holster instead.
+    #[test]
+    fn respawn_deploy() {
+        let mut g = Gun { current: id::AK47, ..Default::default() };
+        g.status[id::AK47 as usize] = Status { owned: true, mode: 2, state: 3, alt_grip: true, items: att::SCOPE, ..Default::default() };
+        assert_eq!(deploy(&mut g), Some((id::AK47, att::SCOPE)));
+        let s = g.status[id::AK47 as usize];
+        assert_eq!((s.state, s.alt_grip, s.body), (0, false, body_by_items(id::AK47, att::SCOPE)));
+        assert_eq!((g.next_attack, g.idle), (0.5, 3.0));
+        assert_eq!(g.mode_memory[id::AK47 as usize], 3, "unset memory takes the record's mode");
+
+        g.status[id::AK47 as usize].mode = 0;
+        deploy(&mut g);
+        assert_eq!(g.status[id::AK47 as usize].mode, 2, "set memory restores the mode");
+
+        let mut g = Gun { melee_window: 0.2, melee_damage: 40.0, melee_source: 1, ..Default::default() };
+        assert_eq!(deploy(&mut g), None);
+        assert_eq!(g.melee_window, 0.0);
     }
 }
