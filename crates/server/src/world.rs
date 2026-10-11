@@ -9,8 +9,8 @@
 //! skip it, or [`defer`] work on it until then. A callback that holds the object as `&mut T` can
 //! [`lend`] it back to its slot around a call that must reach it at once, the way TS calls into
 //! the player inside its own think (`game_player_team` changing the team of the player whose
-//! +use fired it). The lent object stays closed to ordinary dispatch and `defer` still queues;
-//! only [`run_now_or_defer`] opens it.
+//! +use fired it, or shot the button that fired it). The lent object stays closed to ordinary
+//! dispatch and `defer` still queues; only [`run_now_or_defer`] and [`run_now`] open it.
 
 use goldsrc::Global;
 use goldsrc::edict::{EdictPtr, private_tag, set_private_tag};
@@ -305,6 +305,20 @@ impl Store {
         }
     }
 
+    fn run_now<R>(&self, h: Handle, job: impl FnOnce() -> R) -> Option<R> {
+        match self.open_lent(h) {
+            Some(opened) => {
+                let r = job();
+                if opened {
+                    self.close_lent(h);
+                }
+                Some(r)
+            }
+            None if self.is_taken_out(h) => None,
+            None => Some(job()),
+        }
+    }
+
     fn with<T: Entity, R>(&self, h: Handle, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         let mut w = self.world.borrow_mut();
         match &mut w.slot(h)?.state {
@@ -398,6 +412,15 @@ pub fn run_now_or_defer(e: *const edict_t, job: impl FnOnce() + 'static) {
     if let Some(h) = handle_of(e) {
         STORE.0.run_now_or_defer(h, job);
     }
+}
+
+/// Runs `job` now when `e`'s object can be reached meanwhile: it is in its slot, or lent
+/// ([`lend`], opened for the call as [`run_now_or_defer`] does). `None`, without running `job`,
+/// while a dispatch further up the stack holds it without lending it (or `e` isn't game-owned).
+/// For callers that need the answer at once, as TS gets it (`GiveNamedItem`'s item touching a
+/// player whose own `Use` is on the stack).
+pub fn run_now<R>(e: *const edict_t, job: impl FnOnce() -> R) -> Option<R> {
+    STORE.0.run_now(handle_of(e)?, job)
 }
 
 /// Short, non-reentrant access to a concrete entity type. Never call the engine inside `f`.
@@ -498,6 +521,33 @@ mod tests {
         let s2 = s.clone();
         s.run_now_or_defer(h, move || s2.with::<Thing, _>(h, |t| t.value = 6).unwrap());
         assert_eq!(value(&s, h), Some(6));
+    }
+
+    #[test]
+    fn run_now_reaches_free_and_lent_objects_only() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 1 }));
+        let s2 = s.clone();
+        assert_eq!(s.run_now(h, || s2.with::<Thing, _>(h, |t| t.value)), Some(Some(1)), "in its slot");
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            assert_eq!(s2.run_now(h, || 9), None, "taken out and not lent: nothing runs");
+            s2.lend(Some(h), me, || {
+                let s3 = s2.clone();
+                assert_eq!(s2.run_now(h, || s3.with::<Thing, _>(h, |t| std::mem::replace(&mut t.value, 3))), Some(Some(1)));
+                assert!(s2.is_taken_out(h), "closed again");
+                // Already open (nested): stays open for the outer call.
+                let s3 = s2.clone();
+                s2.run_now_or_defer(h, move || {
+                    let s4 = s3.clone();
+                    assert_eq!(s3.run_now(h, || s4.with::<Thing, _>(h, |t| t.value)), Some(Some(3)));
+                    assert_eq!(s3.with::<Thing, _>(h, |t| t.value), Some(3), "still open");
+                });
+            });
+            assert_eq!(me.value, 3);
+        });
+        assert_eq!(value(&s, h), Some(3));
     }
 
     #[test]

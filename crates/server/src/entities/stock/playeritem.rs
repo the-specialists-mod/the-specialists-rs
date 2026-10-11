@@ -207,7 +207,10 @@ impl PlayerItem {
     }
 
     /// `CBasePlayerItem::AttachToPlayer` (0xf1d80): the item follows the player, hidden, until the
-    /// player loses it (`Drop`). The think function stays as it was (none after `Materialize`).
+    /// player loses it (`Drop`). The think function stays as it was: none after `Materialize`,
+    /// but `FallThink` for an item taken before it landed, which `GiveNamedItem`'s always is
+    /// (spawned and touched at once). That one keeps thinking every 0.1 s as long as it is held,
+    /// never landing (`MOVETYPE_FOLLOW` sets no `FL_ONGROUND`).
     fn attach_to_player(&mut self, cx: &mut Cx, player: *mut edict_t) {
         self.touchable = false;
         let now = engine().time();
@@ -256,14 +259,14 @@ fn with_cycler_item(e: *mut edict_t, f: &mut dyn FnMut(&mut PlayerItem)) {
     world::with::<WeaponCycler, _>(e, |c| f(&mut c.item));
 }
 
-/// `weapon_tsgun` placed by a map: a TS gun lying in the world. A living player without a gun
-/// picks it up (the gun TS's `PlayerSpawn` would otherwise give, empty, with kung fu); under the
-/// multiplayer rules and without `SF_NORESPAWN` a copy reappears at the same spot 20 s later
+/// `weapon_tsgun` (`CTSGun`): the TS gun as an entity, placed by a map or created by
+/// `GiveNamedItem` (`PlayerSpawn`, `game_player_equip`: spawned at the player's feet with
+/// `SF_NORESPAWN`, then touched). A living player without a gun picks it up (empty, kung fu);
+/// a player who already holds one leaves it lying there for anyone else. Under the multiplayer
+/// rules and without `SF_NORESPAWN` a copy reappears at the same spot 20 s later
 /// (`mp_weaponstay 0`). The picked-up entity stays, hidden and following the player, until
-/// `RemoveAllItems` drops the gun (`weapons::SvState::gun_item`).
-///
-/// `game_player_equip` doesn't create one: the port's gun has no entity, and
-/// `maprules::give_named_item` gives it directly.
+/// `RemoveAllItems` drops the gun (`weapons::SvState::gun_item`); the gun's state is the
+/// player's (`weapons::Inventory`).
 #[derive(Default)]
 pub struct WorldTsGun {
     item: PlayerItem,
@@ -297,7 +300,9 @@ impl Entity for WorldTsGun {
         self.item.think(cx);
     }
 
-    /// `CBasePlayerItem::DefaultTouch` (0xf1b40).
+    /// `CBasePlayerItem::DefaultTouch` (0xf1b40). The player is reached even while its own call
+    /// is on the stack and lent it (`with_player_now`: an equip it used, its spawn's
+    /// `GiveNamedItem`), as TS's touch reaches it.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         if !self.item.touchable || !is_player(other) {
             return;
@@ -308,15 +313,18 @@ impl Entity for WorldTsGun {
         if other.v().deadflag != DEAD_NO as i32 {
             return;
         }
-        let Some(has_gun) = crate::player::with_player(other, |p, _| crate::weapons::has_gun(p)) else { return };
-        if has_gun {
+        let Some(holds) = crate::player::with_player_now(other, |p, _| crate::weapons::holds_gun(p)) else { return };
+        if holds {
             return;
         }
-        // AddPlayerItem → AddToPlayer, then CheckRespawn (0xf19fc) inside it.
-        crate::weapons::give_gun_item(other, cx.edict);
+        // AddPlayerItem: AddToPlayer, CheckRespawn (0xf19fc), then FShouldSwitchWeapon /
+        // SwitchWeapon.
+        let me = cx.edict;
+        crate::player::with_player_now(other, |p, pcx| crate::weapons::add_gun(p, pcx, me));
         if PlayerItem::should_respawn(cx) {
             PlayerItem::respawn(cx, with_tsgun_item);
         }
+        crate::player::with_player_now(other, crate::weapons::switch_to_gun);
         self.item.attach_to_player(cx, other);
         emit_sound_slow(other, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         self.item.delay.use_targets(cx.edict, other, UseType::Toggle, 0.0);
@@ -327,13 +335,11 @@ impl Entity for WorldTsGun {
 
 /// `cycler_weapon` (`CWeaponCycler`): a model lying in the world as a player weapon. A living
 /// player without one picks it up into HL item slot 1 (`DefaultTouch`, `weapons::add_cycler`);
-/// it is deployed only when the player has no active item (no TS gun), as the multiplayer rules'
-/// `FShouldSwitchWeapon` decides. TS's `ItemPostFrame` (0xa03d4) returns at once for any item but
-/// the gun, so its `PrimaryAttack` / `SecondaryAttack` never run.
-///
-/// Deviation (single player only): `CHalfLifeRules::FShouldSwitchWeapon` (0xde74c) switches away
-/// from a held TS gun too; the port's gun can't be holstered while held, so it keeps the gun
-/// deployed there (weapons.md).
+/// `FShouldSwitchWeapon` then deploys it (`weapons::deploy_cycler`): under the multiplayer rules
+/// only when the player has no active item, in single player always, holstering a held TS gun.
+/// `use cycler_weapon` / `use weapon_tsgun` switch between them later (`weapons::select_item`).
+/// TS's `ItemPostFrame` (0xa03d4) returns at once for any item but the gun, so its
+/// `PrimaryAttack` / `SecondaryAttack` never run.
 #[derive(Default)]
 pub struct WeaponCycler {
     item: PlayerItem,
@@ -377,18 +383,17 @@ impl Entity for WeaponCycler {
         if !self.item.touchable || !is_player(other) {
             return;
         }
-        let Some(can_have) = crate::player::with_player(other, |p, pcx| crate::weapons::can_have_cycler(p, pcx)) else { return };
+        let Some(can_have) = crate::player::with_player_now(other, |p, pcx| crate::weapons::can_have_cycler(p, pcx)) else { return };
         if !can_have {
             return;
         }
-        let me = cx.edict;
+        let (me, model, model_index) = (cx.edict, self.model, self.model_index);
         // AddToPlayer (bit 0, slot list 1), CheckRespawn, then FShouldSwitchWeapon / Deploy.
-        crate::player::with_player(other, |p, pcx| crate::weapons::add_cycler(p, pcx, me));
+        crate::player::with_player_now(other, |p, pcx| crate::weapons::add_cycler(p, pcx, me, model, model_index));
         if PlayerItem::should_respawn(cx) {
             PlayerItem::respawn(cx, with_cycler_item);
         }
-        let (model, body) = (self.model, cx.pev().body);
-        crate::player::with_player(other, |p, pcx| crate::weapons::deploy_cycler(p, pcx, model, body));
+        crate::player::with_player_now(other, crate::weapons::deploy_cycler);
         self.item.attach_to_player(cx, other);
         emit_sound_slow(other, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         self.item.delay.use_targets(cx.edict, other, UseType::Toggle, 0.0);

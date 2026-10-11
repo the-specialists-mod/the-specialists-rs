@@ -16,6 +16,10 @@ use std::ffi::CStr;
 pub struct ServerHost<'a> {
     pub edict: *mut edict_t,
     pub sv: &'a mut SvState,
+    /// The player, its [`Inventory`] moved out for the call (the gun and `sv` are borrowed from
+    /// it): [`reach_player`](Self::reach_player) puts them back and lends the player around the
+    /// calls that reach the world.
+    player: &'a mut Player,
     pub powerups: u16,
     pub kungfu: bool,
     /// The time scale thrown grenades and blades start with (`projectiles::thrower_time_scale`).
@@ -33,17 +37,23 @@ pub struct ServerHost<'a> {
 
 /// Runs `f` with the player's gun and a host for it, then applies the third-person animation
 /// requests (`set_anim_ext`, `Animate`) to the movement package's state.
+///
+/// The inventory is moved out of `p` for the call, so the host can hold the rest of the player
+/// and lend it, inventory and all, to its slot around a shot or swing
+/// ([`ServerHost::reach_player`]).
 pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut ServerHost) -> R) -> R {
     let throw_scale = projectiles::thrower_time_scale(p, cx.pev());
+    let (powerups, kungfu) = (p.active_powerup, p.kungfu);
+    let mut inv = std::mem::take(&mut p.inv);
     let (r, anims, ext_changed, recover, close_cd) = {
-        let Player { inv, active_powerup, kungfu, .. } = p;
-        let Inventory { gun, sv } = inv;
+        let Inventory { gun, sv } = &mut inv;
         sv.atk_block = gun.block_kungfu;
         let mut h = ServerHost {
             edict: cx.edict,
             sv,
-            powerups: *active_powerup,
-            kungfu: *kungfu,
+            player: &mut *p,
+            powerups,
+            kungfu,
             throw_scale,
             anims: Vec::new(),
             ext_changed: false,
@@ -53,6 +63,7 @@ pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut S
         let r = f(gun, &mut h);
         (r, h.anims, h.ext_changed, h.stunt_recover, h.close_attack_cd)
     };
+    p.inv = inv;
     // TS writes these before its `Animate` call (`KatanaFire` 0x736bf, `CCombatAttack` 0x7653e).
     if let Some(t) = recover {
         p.stunt.recover = t;
@@ -85,6 +96,21 @@ fn idle_override(id: u8) -> &'static str {
 impl ServerHost<'_> {
     fn pev(&self) -> &mut entvars_t {
         self.edict.v()
+    }
+
+    /// Runs `f`, a call that reaches other entities (a shot's or swing's `TakeDamage`), with the
+    /// player whole again (`gun` and `sv` back in its inventory) and lent to its slot
+    /// (`world::lend`): TS's weapon frame runs inside the player, so whatever the hit sets off can
+    /// change that player at once, `game_player_team` included (a shot `func_breakable` or
+    /// button targeting it), even killing it, which holsters and empties the very gun that is
+    /// firing. The gun and `sv` come back with those changes and the attack carries on with them.
+    fn reach_player<R>(&mut self, gun: &mut Gun, f: impl FnOnce() -> R) -> R {
+        std::mem::swap(&mut self.player.inv.gun, gun);
+        std::mem::swap(&mut self.player.inv.sv, self.sv);
+        let r = crate::world::lend(self.edict, &mut *self.player, f);
+        std::mem::swap(&mut self.player.inv.gun, gun);
+        std::mem::swap(&mut self.player.inv.sv, self.sv);
+        r
     }
 }
 
@@ -237,13 +263,15 @@ impl GunHost for ServerHost<'_> {
         }
     }
 
-    fn shoot(&mut self, shot: &Shot) {
-        fire::shoot_bullets(self.edict, shot);
+    fn shoot(&mut self, shot: &Shot, gun: &mut Gun) {
+        let me = self.edict;
+        self.reach_player(gun, || fire::shoot_bullets(me, shot));
     }
-    fn melee(&mut self, hit: &MeleeHit) -> MeleeResult {
+    fn melee(&mut self, hit: &MeleeHit, gun: &mut Gun) -> MeleeResult {
         // CloseCombatAttack / ColdCockAttack start with Animate(anim) (-1 = none).
         self.player_anim(hit.player_anim);
-        melee::attack(self.edict, hit, self.sv.atk_block)
+        let (me, block) = (self.edict, self.sv.atk_block);
+        self.reach_player(gun, || melee::attack(me, hit, block))
     }
     fn throw_grenade(&mut self, origin: Vec3, velocity: Vec3, roll: bool) {
         assets::debug(|| format!("throw grenade roll={roll} vel={velocity:?}"));

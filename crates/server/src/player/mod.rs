@@ -162,6 +162,13 @@ pub fn with_player<R>(e: *mut edict_t, f: impl FnOnce(&mut Player, &mut Cx) -> R
     crate::world::dispatch(e, |ent, cx| (ent as &mut dyn std::any::Any).downcast_mut::<Player>().map(|p| f(p, cx))).flatten()
 }
 
+/// [`with_player`] that also reaches a player lent to its slot by a call further up the stack
+/// (`world::run_now`): its own +use, spawn or shot set off what calls this, and TS reaches the
+/// player at once. `None` when the player is held by a dispatch that didn't lend it.
+pub fn with_player_now<R>(e: *mut edict_t, f: impl FnOnce(&mut Player, &mut Cx) -> R) -> Option<R> {
+    crate::world::run_now(e, || with_player(e, f)).flatten()
+}
+
 /// `ClientPutInServer` (0xacf44): a `Player` for the edict (the engine may hand back one from the
 /// last map, which keeps its object), `SetCustomDecalFrames(-1)`, then `Spawn`.
 pub fn client_put_in_server(e: *mut edict_t) {

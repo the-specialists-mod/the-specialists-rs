@@ -197,8 +197,13 @@ pub trait GunHost {
     fn view_shake(&mut self, _amp: f32) {}
     fn sound(&mut self, s: Sound);
 
-    fn shoot(&mut self, shot: &Shot);
-    fn melee(&mut self, hit: &MeleeHit) -> MeleeResult;
+    /// Fires `shot` (`FireBullets` and its hits). `gun` is the calling gun: what the hits set off
+    /// can reach the shooter's own `CTSGun` mid-call in TS (a shot `func_breakable` firing a
+    /// `game_player_team` that kills the shooter), so the server lends it to the player meanwhile
+    /// and the attack carries on with whatever the world left in it.
+    fn shoot(&mut self, shot: &Shot, gun: &mut Gun);
+    /// A melee swing; `gun` as for [`shoot`](Self::shoot).
+    fn melee(&mut self, hit: &MeleeHit, gun: &mut Gun) -> MeleeResult;
     /// Throws the M61 (`CM61Grenade::CreateGrenade`, fuse 3 s of the thrower's time).
     fn throw_grenade(&mut self, origin: Vec3, velocity: Vec3, roll: bool);
     /// Throws a knife/seal knife/katana (`CTSKnife::CreateKnife`, `btype` 6/7/8).
@@ -744,7 +749,7 @@ impl Gun {
             seed,
             right_offset,
         };
-        host.shoot(&shot);
+        host.shoot(&shot, self);
         self.last_dir = spread::last_pellet_spread(seed, shot.pellets, [spread, spread], spread::RADIAL_SPREAD);
     }
 
@@ -964,18 +969,21 @@ impl Gun {
         if stunting {
             dmg *= 0.666_666_7;
         }
-        let r = host.melee(&MeleeHit {
-            kind: MeleeKind::ColdCock,
-            weapon: self.current,
-            reach: 35.0,
-            hull: 3,
-            damage: dmg,
-            bits: 0x0400_1080,
-            player_anim: if stunting { -1 } else { 0x27 },
-            disarm: false,
-            knockback: false,
-            zero_roll: false,
-        });
+        let r = host.melee(
+            &MeleeHit {
+                kind: MeleeKind::ColdCock,
+                weapon: self.current,
+                reach: 35.0,
+                hull: 3,
+                damage: dmg,
+                bits: 0x0400_1080,
+                player_anim: if stunting { -1 } else { 0x27 },
+                disarm: false,
+                knockback: false,
+                zero_roll: false,
+            },
+            self,
+        );
         // `ColdCockAttack` returns the target even when it blocks (0x9678c is only reached for no
         // target), so the hit sound (0x7204a) plays for a block too.
         match r {
@@ -1101,18 +1109,21 @@ impl Gun {
             // constants 0x1007a894 / 0x1007a898).
             host.view_shake(dmg * 0.15);
             dmg *= spread::melee_multiplier(self.melee_bar);
-            let res = host.melee(&MeleeHit {
-                kind: MeleeKind::Knife,
-                weapon: self.current,
-                reach: 35.0,
-                hull: 3,
-                damage: dmg,
-                bits: 0x1004,
-                player_anim: -1,
-                disarm: false,
-                knockback: false,
-                zero_roll: false,
-            });
+            let res = host.melee(
+                &MeleeHit {
+                    kind: MeleeKind::Knife,
+                    weapon: self.current,
+                    reach: 35.0,
+                    hull: 3,
+                    damage: dmg,
+                    bits: 0x1004,
+                    player_anim: -1,
+                    disarm: false,
+                    knockback: false,
+                    zero_roll: false,
+                },
+                self,
+            );
             match res {
                 MeleeResult::Hit { player } => {
                     if player {
@@ -1202,18 +1213,21 @@ impl Gun {
         let dmg = strength * spread::melee_multiplier(self.melee_bar);
         // A negative strength swings behind with the human hull (0x7386b, 0x738cf).
         let behind = dmg < 0.0;
-        let res = host.melee(&MeleeHit {
-            kind: MeleeKind::Katana,
-            weapon: self.current,
-            reach: if behind { -reach } else { reach },
-            hull: if behind { 1 } else { 3 },
-            damage: dmg.abs(),
-            bits: 0x1080,
-            player_anim: -1,
-            disarm: false,
-            knockback: false,
-            zero_roll: false,
-        });
+        let res = host.melee(
+            &MeleeHit {
+                kind: MeleeKind::Katana,
+                weapon: self.current,
+                reach: if behind { -reach } else { reach },
+                hull: if behind { 1 } else { 3 },
+                damage: dmg.abs(),
+                bits: 0x1080,
+                player_anim: -1,
+                disarm: false,
+                knockback: false,
+                zero_roll: false,
+            },
+            self,
+        );
         match res {
             MeleeResult::Hit { player } => {
                 if player {
@@ -1406,18 +1420,21 @@ impl Gun {
             if host.kungfu() {
                 dmg += dmg;
             }
-            let res = host.melee(&MeleeHit {
-                kind: MeleeKind::KungFu,
-                weapon: 0,
-                reach: if back { -reach } else { reach },
-                hull: if back { 1 } else { 3 },
-                damage: dmg,
-                bits: 0x0400_1080,
-                player_anim: move_id,
-                disarm: true,
-                knockback: true,
-                zero_roll: back,
-            });
+            let res = host.melee(
+                &MeleeHit {
+                    kind: MeleeKind::KungFu,
+                    weapon: 0,
+                    reach: if back { -reach } else { reach },
+                    hull: if back { 1 } else { 3 },
+                    damage: dmg,
+                    bits: 0x0400_1080,
+                    player_anim: move_id,
+                    disarm: true,
+                    knockback: true,
+                    zero_roll: back,
+                },
+                self,
+            );
             match res {
                 MeleeResult::Hit { .. } => {}
                 MeleeResult::Blocked { next_attack, bar_cost } => {

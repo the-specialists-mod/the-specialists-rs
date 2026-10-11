@@ -109,10 +109,10 @@ impl GunHost for Mock {
         self.shakes.push(amp);
     }
     fn sound(&mut self, _s: Sound) {}
-    fn shoot(&mut self, shot: &Shot) {
+    fn shoot(&mut self, shot: &Shot, _gun: &mut Gun) {
         self.shots.push(*shot);
     }
-    fn melee(&mut self, hit: &MeleeHit) -> MeleeResult {
+    fn melee(&mut self, hit: &MeleeHit, _gun: &mut Gun) -> MeleeResult {
         self.melee.push(*hit);
         self.melee_result.unwrap_or(MeleeResult::Miss)
     }

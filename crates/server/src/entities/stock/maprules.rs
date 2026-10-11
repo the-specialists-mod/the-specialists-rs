@@ -169,14 +169,10 @@ impl Entity for GamePlayerEquip {
 }
 
 /// `CBasePlayer::GiveNamedItem` (0xdb524): create the item at the player's feet (never
-/// respawning), spawn it and let it touch the player.
+/// respawning), `DispatchSpawn` it and let it touch the player (`DispatchTouch`, which skips an
+/// item that removed itself or is `FL_KILLME`). `weapon_tsgun` is TS's gun entity
+/// (`playeritem::WorldTsGun`): taken by a player without one, otherwise left lying there.
 pub fn give_named_item(player: *mut edict_t, class: &CStr) {
-    // The port's TS gun isn't an entity: giving it is `weapons::give_gun` (a new empty gun, or the
-    // duplicate absorbed when the player already holds one).
-    if class == c"weapon_tsgun" {
-        crate::weapons::give_gun_to(player);
-        return;
-    }
     let eng = engine();
     let e = eng.create_named_entity(class);
     if e.is_null() || !e.has_private_data() {
@@ -190,6 +186,12 @@ pub fn give_named_item(player: *mut edict_t, class: &CStr) {
     let v = e.v();
     v.origin = origin;
     v.spawnflags |= SF_NORESPAWN;
+    // TODO(#104 merge): `crate::entities::dispatch_spawn(e)` (DispatchSpawn 0xaab8c, from the
+    // parallel #104 branch, b79337a) replaces these lines: it also runs the globalname step.
+    // Until then, its starting bounds (origin ±1) and the spawn.
+    let v = e.v();
+    v.absmin = v.origin.map(|o| o - 1.0);
+    v.absmax = v.origin.map(|o| o + 1.0);
     world::dispatch(e, |ent, cx| ent.spawn(cx));
     if !e.is_free() && e.v().flags & FL_KILLME as i32 == 0 {
         world::dispatch(e, |ent, cx| ent.touch(cx, player));
@@ -198,8 +200,8 @@ pub fn give_named_item(player: *mut edict_t, class: &CStr) {
 
 /// `CHalfLifeMultiplay::PlayerSpawn` (0x890ac): when the map has `game_player_equip`s, each one
 /// touches the spawning player instead of the TS loadout being bought. Returns false when there
-/// are none. The touches run once the player's own spawn dispatch has returned, so the items can
-/// reach the `Player` (TS runs them inside `PlayerSpawn`).
+/// are none. The caller (`weapons::on_spawn`) lends the spawning player to its slot meanwhile,
+/// so the items reach it inside `PlayerSpawn`, as in TS.
 pub fn equip_on_spawn(player: *mut edict_t) -> bool {
     let eng = engine();
     let mut equips = Vec::new();
@@ -214,13 +216,11 @@ pub fn equip_on_spawn(player: *mut edict_t) -> bool {
     if equips.is_empty() {
         return false;
     }
-    world::defer(player, move || {
-        for e in equips {
-            if !e.is_free() {
-                world::dispatch(e, |ent, cx| ent.touch(cx, player));
-            }
+    for e in equips {
+        if !e.is_free() {
+            world::dispatch(e, |ent, cx| ent.touch(cx, player));
         }
-    });
+    }
     true
 }
 
