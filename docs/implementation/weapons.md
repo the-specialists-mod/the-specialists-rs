@@ -153,6 +153,12 @@ addresses of `ts_i386.so`.
   `clamp(speed*0.1538,15,45)` (1.0 s), combo kick 25 (0.5 s), quick kick 15 (0.3 s), speed kick
   `clamp(speed*0.1,15,30)` (0.75 s); stunting 15 (0.55 s). x meleemult, x2 with the kung-fu
   power-up. Bits 0x4001080, disarm + knockback (`v.vel += |a.vel|*dir`, `z = 235` above 30).
+  Each attack picks two numbers: the event's `i2`, an index into kung fu's set A that the client
+  plays (stack slot `0x8(%esp)`, objdump `0x762d7..0x76997`, pushed at `0x76daa`; the client copy
+  `0x1000b0b0..0x1000b4ea` picks the same), and a move id kept in `gun+0xa04`
+  (`Gun::last_melee_anim`) that the kick combos chain on. Jab 3 / move 22, press 4 / 23, combo end
+  11 / 25, air punch 5 / 24, stunting 4 / -1, uppercut 6 / 20, back kick 7 / 17, flying kick
+  8 / 16, quick kick 9 / 11-12, combo kick 10 / 10, 13-15, speed kick 10 / 15, 18, 19.
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
   `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target,
@@ -183,7 +189,8 @@ Events (all `FEV_NOTHOST`, invoker = player, zero origin/angles), exactly weapon
 `firelinked`, `pump`, `empty` (none for the Contender), `reload` (f1 0 or 8/9/10), `draw`,
 `coldcock` (f1/f2 last spread offset), `knife` (i2 hit flag), `katana` (i1 swing = anim index
 15/16/17, i2 hit flag), `grenade` (i1 0x13/0x14/0x15), `closecombat` (attack: i1 type 1 punch /
-2 kick / 3 back kick, i2 view anim index; block: f1 weapon id, i1 0, i2 1 kung fu / 0x12).
+2 kick / 3 back kick, f1 0, i2 index into kung fu's anim set A; block: f1 weapon id, i1 0, i2 1
+kung fu / 0x12, an index into that weapon's set A).
 `bparam2` is passed as the raw seed int (the engine only transmits its low bit, like TS).
 
 Messages: `WeaponInfo` (B id, B clip, S reserve, B mode, B items; kung fu: B 0, B bar, 0,0,0),

@@ -224,11 +224,11 @@ and W§6.1 disagree, the handler accepts both.
 | grenade | 0 | 0 | 19/20/21 | 0 | 0 | 0 | in-eye only: M61 set[i1], body 1 |
 | knife | 0 | 0 | id | hit flag | 0 | 0 | trace 35: sparks + `knife_hit` on hard surfaces, else `knife_miss`; then set A[15 + r(0,2)], body `i2` (1 on flesh), first person only |
 | katana | 0 | 0 | anim index (15 = back swing) | hit flag | 0 | 0 | trace 50 / -55: sparks + `katana/hit[1]`, else `miss[1]`; then set A[i1], body as the knife |
-| closecombat | weapon id (block) | 0 | 0 block / 1-3 attack | anim index | 0 | 0 | `player/block.wav` or `player/closecombat.wav` + material sound + puff (anim: see gaps) |
+| closecombat | weapon id (block), 0 (attack) | 0 | 0 block / 1-3 attack | set A index | 0 | 0 | view owner: set A of weapon `f1` at `i2`, body 0, blocks included (`0x100433bb..0x10043401`); then `player/block.wav`, or `player/closecombat.wav` + material sound + puff |
 | coldcock | dir.x (unused) | - | id | attachments | 0 | 0 | set A[28], trace 30, material sound + puff |
 
 The "view owner" (`0x1001c5e0`) is the local player or the player spectated in-eye: the fire,
-pump, reload and coldcock anims play for both, and the fire/pump events' first-person branch runs
+pump, reload, closecombat and coldcock anims play for both, and the fire/pump events' first-person branch runs
 for the owner outside third person. Everyone else, and the owner in third person, gets the
 player-model effects only if `HUD_AddEntity` marked them visible this frame. `r(a,b)` is
 `RandomLong`; "set" is `GetActiveAnimSet`'s, "set A" the normal set (`info+0x252`) the melee
@@ -493,13 +493,6 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   blocking and akimbo linked shots are not predicted (the server plays those; the shooter only
   sees them once prediction moves to `shared::weapons`).
 * Particle `termvelocity` unused (TS doesn't read it either).
-* **Close-combat view animation.** TS's `EV_TS_CloseCombat` plays set A of the weapon `f1`
-  (`info(ftol(f1))+0x252`) at index `i2`, body 0, for the view owner, blocks included
-  (`0x100433bb..0x10043401`). The TS server's `CCombatAttack` sends `i2` as that index (kung-fu
-  set-A indices 0..11, the stack slot written at objdump `0x762d7..0x76997` in `ts_i386.so` and
-  pushed at `0x76daa`), but the port's `Gun::ccombat_attack` sends `view_anim` (-1, 10..25), so
-  the port's handler still plays `i2` as a raw sequence, for the local player's attacks only.
-  Fixing it needs the server and the handler changed together.
 
 ## Integration notes
 
