@@ -41,10 +41,12 @@ are Ghidra addresses.
 | `ClientKill` 0xacec8 | `lifecycle::client_kill` + `pre_think` | suicide 1 s later, not while observing. |
 | `ClientPutInServer` 0xacf44 | first `on_spawn` | cash = `initial_cash` "1200", `EF_NOINTERP` (`server-dll` creates the Player and spawns it). |
 | `ClientUserInfoChanged` 0xae638 + 0x8b244 | `lifecycle::userinfo_changed` | name change (% → space) broadcast/log; HLDM models refused. |
-| `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team, spawn spot. A map's `game_player_equip`s replace the loadout (`stock::maprules::equip_on_spawn` from `weapons::on_spawn`). |
+| `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team (`SetDefaultPlayerTeam`, name only), spawn spot. A map's `game_player_equip`s replace the loadout (`stock::maprules::equip_on_spawn` from `weapons::on_spawn`). |
 | `UpdateClientData` init block 0x91d00 | `lifecycle::init_hud` | `ResetHUD` every spawn; first time `InitHUD`, rules InitHUD, TS InitHUD, `game_playerjoin`; `game_playerspawn`; RoundTime; super jump PwUp. |
-| `CHalfLifeMultiplay::InitHUD` 0xcf618 / Teamplay 0xe45d8 | `lifecycle::rules_init_hud`, `teams::init_hud` | join TextMsg, log, `GameMode`, own ScoreInfo, MOTD, everyone's ScoreInfo; teamplay: TeamNames, assignment SayText (after `ChangePlayerTeam`, so a teamplay joiner already starts observer here, before `CTSGameRules::InitHUD` does it again), TeamInfo. |
-| `CHalfLifeTeamplay::ChangePlayerTeam` 0xe488c, `GetIndexedTeamName` 0xe54a0 | `teams::change_team`, `GameRules::indexed_team_name` | `jointeam <n>` (team `n - 1`, `""` out of range) and the teamplay InitHUD: The One mode puts The One on the first team and everyone else on the second; an empty or unknown name goes to the smallest team; with kill set, `TakeDamage(900)` (never/always gib) whether or not the player is alive, with `PlayerKilled` and the death notice off for the call (`+0x20c`/`+0x210`, `GameRules::death_suppressed`); **always** the `model` key (with a team limit `+0x214`, i.e. two or more listed teams, `GetPlayerModel` 0x79a08: a random team model or `""`; without one the team name) and the `team` key, RecountTeams, TeamInfo + ScoreInfo to all, then **unless it's a kill or The One mode, always** `StartObserver` + `SetPlayerRespawnTime(5)` (0xe4c38..0xe4ca1; respawn award 11), even for the same team or an observer; TeamNames to all. Unit tested (`teams::tests`). Outside teamplay `CGameRules::ChangePlayerTeam` (0xc632c) is empty, so `jointeam` does nothing. |
+| `CHalfLifeMultiplay::InitHUD` 0xcf618 / Teamplay 0xe45d8 | `lifecycle::rules_init_hud`, `teams::init_hud` | join TextMsg, log, `GameMode`, own ScoreInfo, MOTD, everyone's ScoreInfo; teamplay: `SetDefaultPlayerTeam` first, TeamNames, assignment SayText (`* you are on team '%s'` when the `model` key equals the team, case-sensitive `strcmp`; sent after `ChangePlayerTeam`, so a teamplay joiner already starts observer here, before `CTSGameRules::InitHUD` does it again), then the TeamInfo of every player on a valid team (`IsValidTeam`, so every player without a team limit). |
+| Teamplay constructor 0xe3e48 (team part), `RecountTeams` 0xe5608, `GetTeamIndex` 0xe5434, `IsValidTeam` 0xe54d4, `TeamWithFewestPlayers` 0xe5510 | `GameRules::{init_teamplay_list, recount_teams, tp_team_index, is_valid_team, team_with_fewest}`, `teams::{recount, score_team}` | Two team lists, as in TS. The `TSGameRules` teams (`GameRules::teams`, `CTSGameRules::GetTeamIndex` 0x79b04 = `team_index`) hold names, models, spawn classes and CTB scores. The Teamplay list (`team_names`/`num_teams`/`team_scores`, `tp_names`/`num_teams`/`tp_scores`) is rebuilt by every `RecountTeams` from `m_szTeamList` (the non-empty `TSGameRules` names, deduplicated). Fewer than two listed teams mean no teams and no team limit (`+0x214`, cleared for good): every player's team that isn't listed yet is then added, `""` included (one empty slot per teamless player, since `GetTeamIndex("")` is -1), and `IsValidTeam` accepts any name. `TeamNames`, `jointeam`, the smallest team, the teamplay fraglimit (`team_scores`) and the `ScoreInfo` team (`GetTeamIndex + 1` at send time, `teams::score_team`) use this list. `RecountTeams(true)` (from `SetDefaultPlayerTeam`) also sends every player on a valid team to all as `TeamInfo`, and in CTB that player the `TeamScore` of each listed team. Unit tested (`state::tests`). |
+| `CHalfLifeTeamplay::SetDefaultPlayerTeam` 0xe44ac | `teams::set_default_team` | Every teamplay spawn and InitHUD: `m_szTeamName` = the `team` key (The One mode: `TSGameRules` team 0 for The One, team 1 for the rest), `RecountTeams(true)`, then unless it is non-empty, valid and `mp_defaultteam` is off: `team_names[0]` under `mp_defaultteam` (slot 0 whatever `num_teams` says, so without a team limit a player's team or the stale listed name), else the smallest team. Only the name is stored: the `model` and `team` keys come from `ChangePlayerTeam` (InitHUD, `jointeam`), so after a respawn the keys keep what the last team change set. |
+| `CHalfLifeTeamplay::ChangePlayerTeam` 0xe488c, `GetIndexedTeamName` 0xe54a0 | `teams::change_team`, `GameRules::indexed_team_name` | `jointeam <n>` (team `n - 1`, `""` out of range) and the teamplay InitHUD: The One mode puts The One on the first `TSGameRules` team and everyone else on the second; an empty name or one `IsValidTeam` refuses goes to the smallest team (without a team limit any other name is kept); with kill set, `TakeDamage(900)` (never/always gib) whether or not the player is alive, with `PlayerKilled` and the death notice off for the call (`+0x20c`/`+0x210`, `GameRules::death_suppressed`); **always** the `model` key (with a team limit `+0x214`, i.e. two or more listed teams, `GetPlayerModel` 0x79a08: a random team model or `""`; without one the team name) and the `team` key, RecountTeams, TeamInfo + ScoreInfo to all, then **unless it's a kill or The One mode, always** `StartObserver` + `SetPlayerRespawnTime(5)` (0xe4c38..0xe4ca1; respawn award 11), even for the same team or an observer; TeamNames to all. Unit tested (`teams::tests`). Outside teamplay `CGameRules::ChangePlayerTeam` (0xc632c) is empty, so `jointeam` does nothing. |
 | `CBasePlayer::ForceClientDllUpdate` 0x92594 | `commands::force_client_dll_update` (`fullupdate`) | resend every HUD and weapon value, the HUD update at once, then `Spectator` (own index, observer = `deadflag == DEAD_RESPAWNABLE`, 0x9267b) to the player; no `m_fInitHUD`, so no `ResetHUD`. |
 | `CTSGameRules::CallCheckDeads` 0x79bc0 | `GameRules::call_check_deads` | `CheckDeads` in 1 s, only while no round restart is pending; from `PlayerKilled`, the LMS join deadline in `PreThink` and `TSPlayerDisconnect`. Unit tested. |
 | `SendMOTDToClient` 0xd0ae4 | `lifecycle::send_motd` | `ServerName` = hostname, `motdfile` (default `motd.txt`) in ≤60-char chunks, ≤0x600 bytes. |
@@ -63,7 +65,7 @@ are Ghidra addresses.
 | `TheOneIsDead` 0x7b258, `SetPlayerTheOne` 0x7b078, `SelectRandomTheOne` 0x7af28 | `scoring::{the_one_is_dead, set_the_one_other, apply_the_one, announce_the_one}`, `frame::the_one_check` | hp 150, kung fu, super jump, speed 330, stored slow pause 3 s, award 10, "%s is The One!" (100,150,255), team split. |
 | `EntSelectSpawnPoint` 0x76128 / `TSSelectSpawnSpot` 0x76244 | `spawnpoint::{select, spot_score, place}` | up to 32 spots scored by enemy/teammate visibility and nearest player; telefrag (300, ALWAYSGIB) within 128 when the best score < 128; fires the spot's target. Unit tested. |
 | `CTSGameRules::Think` 0x77204 | `frame::ts_think` | global slow expiry/apply, CheckDeads, auto power-ups, The One every 10 s, LMS restart/checks, SrvSett 0–2 on change. |
-| `CHalfLifeMultiplay::Think` 0xcf038 | `frame::multiplay_think` | `mp_timelimit`, `mp_fraglimit` (team frags; CTB team captures), `mp_fragsleft`/`mp_timeleft`, intermission (`SVC_INTERMISSION`), `mp_chattime` clamped 10..120; after it the level changes once a player has pressed a button (`PlayerThink`) or 120 s after the intermission started, then `changelevel` to the next `mapcyclefile` map. |
+| `CHalfLifeMultiplay::Think` 0xcf038 | `frame::multiplay_think` | `mp_timelimit`, `mp_fraglimit` (teamplay: `team_scores` of the Teamplay list, `CHalfLifeTeamplay::Think` 0xe412c; CTB team captures), `mp_fragsleft`/`mp_timeleft`, intermission (`SVC_INTERMISSION`), `mp_chattime` clamped 10..120; after it the level changes once a player has pressed a button (`PlayerThink`) or 120 s after the intermission started, then `changelevel` to the next `mapcyclefile` map. |
 | `PutPowerUp` 0x9797c, `GetRandomPosition` 0x974f4, `GetRandomPowerup` 0x97894 | `frame::{put_powerup, random_position}`, `GameRules::random_powerup` | 20 s after success, 1 s after failure; only on maps without their own `ts_powerup` (spawner byte). |
 | `CheckDeads` 0x79c00, `RestartRound` 0x77920, `ResetRestartRound` | `frame::{check_deads, restart_round, reset_restart_round}` | LMS: last man +10 frags, "%d men standing!", "Round over", RoundTime; restart: round time, refunds (`frame::round_refund`: owned weapons' cost + attachments, and `price × rounds / per_buy` for ammo types above one purchase, into `GiveCash`; unit tested), forced observer, respawn in 3 s, map items back. |
 | `SetGlobalSlowMotion` 0x7961c, `GlobalSlowMotion2` 0x79720 | `frame::{set_global_slow, global_slow2}` | every 0.5 s, players and grenade/knife/WorldGun. |
@@ -203,16 +205,12 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * `fullupdate`: TS runs the whole `UpdateClientData` inline, so the weapon messages go out
   before `Spectator`; the port sends the HUD status messages at once and the weapon messages
   (`SvState::reset_net`) from the next `PostThink`, after `Spectator`.
-* `ChangePlayerTeam` checks a requested name against the team list; TS's `IsValidTeam`
-  (0xe54d4) accepts any name when no team limit is set. Only `jointeam` (always a listed name or
-  `""`) and the teamplay InitHUD (already resolved by `SetDefaultPlayerTeam`) reach it, so the
-  choice is the same.
-* `SetDefaultPlayerTeam` (0xe44ac) only stores `m_szTeamName`; the port's
-  `teams::set_default_team` also sets the `team` key and, when the team or that key changed, a
-  random team `model` (it runs on every teamplay spawn and InitHUD, as in TS).
-* A team list with fewer than two teams: TS's `RecountTeams` (0xe5608) then sets `num_teams` to 0
-  and drops the team limit, so team names come from the players' own teams; the port keeps the
-  single listed team. Only the `model` key in `ChangePlayerTeam` follows the missing limit.
+* `RecountTeams` and `TeamWithFewestPlayers` count connected players only (`rules::players()`);
+  TS walks every client slot with private data, so a player who left still counts with the team
+  they had. `TeamWithFewestPlayers` with no teams at all gives `""` (TS copies from NULL; it
+  can't happen, because the player being placed is always counted).
+* The fraglimit check recounts the teams every frame; TS's `CHalfLifeTeamplay::Think` reads
+  `team_scores` as the last `RecountTeams` left them (kills, team changes, spawns).
 * `PlayerSpawn` with a `game_player_equip`: TS gives no `weapon_tsgun` (no gun at all unless
   the equip lists it) and doesn't copy the stored cash; the port's TS gun is part of the player,
   so the kung fu gun is kept. The equip touches run right after the player's spawn instead of
@@ -241,7 +239,14 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * Observer code (audited against `ts_i386.so` for issue #7; the `Observer_*` functions,
   `StartObserver`/`StopObserver`, the PreThink observer block and `PlayerDeathThink` match;
   `jointeam`/`ChangePlayerTeam`, `fullupdate` and `CallCheckDeads` were aligned for issue #81;
-  `changeteam`, the `ChangePlayerTeam` `model` key and its kill path for issue #84).
+  `changeteam`, the `ChangePlayerTeam` `model` key and its kill path for issue #84;
+  `SetDefaultPlayerTeam`, `RecountTeams`' team list and limit, `IsValidTeam` and the `ScoreInfo`
+  team index for issue #86).
+* `CHalfLifeTeamplay::ClientUserInfoChanged` (0xe4d18) isn't ported: in TS a `model` change
+  re-rolls `GetPlayerModel` with a team limit and, without one, is a team change ("* %s has
+  changed to team '%s'", `ChangePlayerTeam`, `RecountTeams(true)`), or under `mp_defaultteam`
+  puts the `model` and `team` keys back. `lifecycle::userinfo_changed` only does the name change
+  and an HLDM model check that isn't `CHalfLifeMultiplay::ClientUserInfoChanged` (0x8b244).
 * Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client,
   `item_antidote` (no shipped map places one).
@@ -249,7 +254,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 ## 8. Tests
 
 * `cargo test`: payload encoders (sizes match registration), `decide_gameplay`, team lists,
-  `ChangePlayerTeam` team choice, observer rule and `model` key (`teams::tests`), the team limit (`state::tests::team_lists`), the client's team menu only in teamplay (`hud::state::tests::team_menu_only_in_teamplay`), `GetIndexedTeamName`, `CallCheckDeads`, the
+  `ChangePlayerTeam` team choice (with and without a team limit), observer rule and `model` key, `SetDefaultPlayerTeam`'s keep rule (`teams::tests`), `RecountTeams` with and without a team limit, `IsValidTeam` and `TeamWithFewestPlayers` (`state::tests`), the client's team menu only in teamplay (`hud::state::tests::team_menu_only_in_teamplay`), `GetIndexedTeamName`, `CallCheckDeads`, the
   `fullupdate` `Spectator` flag,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
   clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, `DoSpectacularNess` rounding/clamping, power-up bodies/respawn clamps, HL remaps, drowning/time-based damage (`player::water::tests`: drown ramp, wade sounds, 2 s tick gate, poison ticks and restart, antidote, drown recovery 10/10/2 and its stop underwater), the HLTV

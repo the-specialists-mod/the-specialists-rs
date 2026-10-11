@@ -27,9 +27,6 @@ pub struct Team {
     pub cash: i32,
     /// Round wins and captures (`TeamScore`); unused in continuous TDM.
     pub score: i32,
-    /// Teamplay frags (SDK `team_scores`), used by the fraglimit.
-    pub frags: i32,
-    pub players: i32,
 }
 
 /// Global slow motion (`TSGameRules +0x560..+0x56c`).
@@ -94,7 +91,24 @@ pub struct GameRules {
     /// `m_DisableDeathMessage` / `m_DisableDeathPenalty` (`+0x20c`/`+0x210`), always set together:
     /// on while `ChangePlayerTeam` kills the player, so `PlayerKilled` does nothing.
     pub death_suppressed: bool,
+    /// `m_szTeamList` (`+0xc`): the listed teams, which the Teamplay constructor rebuilds from the
+    /// `TSGameRules` team names.
+    pub team_list: Vec<String>,
+    /// `m_teamLimit` (`+0x214`): only listed teams are valid. The constructor sets it and
+    /// `RecountTeams` (0xe5608) clears it for good when the list holds fewer than two teams.
+    pub team_limit: bool,
+    /// `team_names` (0x19e760): the teams `RecountTeams` found, the first `num_teams` (0x120540)
+    /// of 32 slots. The slots past `num_teams` keep stale names, and `SetDefaultPlayerTeam` reads
+    /// slot 0 for `mp_defaultteam` whatever the count.
+    pub tp_names: Vec<String>,
+    pub num_teams: usize,
+    /// `team_scores` (0x19e960): frags per `team_names` slot, summed by `RecountTeams` and used by
+    /// the fraglimit (`CHalfLifeTeamplay::Think` 0xe412c).
+    pub tp_scores: Vec<i32>,
 }
+
+/// Slots in `team_names` / `team_scores`.
+const MAX_TP_TEAMS: usize = 32;
 
 pub static RULES: Global<RefCell<Option<GameRules>>> = Global(RefCell::new(None));
 
@@ -172,6 +186,7 @@ impl GameRules {
             if !list.is_empty() {
                 self.set_team_list(&list);
             }
+            self.init_teamplay_list();
             let models = if !map_models.is_empty() { map_models.clone() } else { cvars::s(c"mp_teammodels") };
             if !models.is_empty() {
                 self.set_team_model_lists(&models);
@@ -255,23 +270,109 @@ impl GameRules {
         }
     }
 
-    /// Valid team names (non-empty), in order.
-    pub fn team_names(&self) -> Vec<String> {
-        self.teams.iter().filter(|t| !t.name.is_empty()).map(|t| t.name.clone()).collect()
+    /// The Teamplay constructor's team setup after `SetTeamList` (0xe3e48): `m_szTeamList` from
+    /// the non-empty `TSGameRules` names, `m_teamLimit` on, then `RecountTeams` with no players.
+    pub fn init_teamplay_list(&mut self) {
+        self.team_list = self.teams.iter().filter(|t| !t.name.is_empty()).map(|t| t.name.clone()).collect();
+        self.team_limit = true;
+        self.recount_teams(&[]);
     }
 
-    /// `CTSGameRules::GetTeamIndex` (case-insensitive), -1 if none.
+    /// The bookkeeping of `CHalfLifeTeamplay::RecountTeams` (0xe5608), given every player's team
+    /// name and frags in index order. The listed teams come first, deduplicated; fewer than two
+    /// mean none at all and no team limit, and then every player's team that isn't known yet is
+    /// added, `""` included (`GetTeamIndex("")` is -1, so each teamless player adds a slot).
+    pub fn recount_teams(&mut self, players: &[(String, f32)]) {
+        self.tp_names.resize(MAX_TP_TEAMS, String::new());
+        self.tp_scores = vec![0; MAX_TP_TEAMS];
+        self.num_teams = 0;
+        for name in &self.team_list {
+            if self.tp_team_index(name) < 0 && self.num_teams < MAX_TP_TEAMS {
+                self.tp_names[self.num_teams] = name.clone();
+                self.num_teams += 1;
+            }
+        }
+        if self.num_teams < 2 {
+            self.num_teams = 0;
+            self.team_limit = false;
+        }
+        for (name, frags) in players {
+            let mut i = self.tp_team_index(name);
+            if i < 0 && !self.team_limit && self.num_teams < MAX_TP_TEAMS {
+                i = self.num_teams as i32;
+                self.tp_names[self.num_teams] = name.clone();
+                self.num_teams += 1;
+            }
+            if i >= 0 {
+                let s = &mut self.tp_scores[i as usize];
+                *s = (*s as f32 + frags).round_ties_even() as i32;
+            }
+        }
+    }
+
+    /// `team_names[0..num_teams]`: what `TeamNames` sends and `jointeam` indexes.
+    pub fn team_names(&self) -> Vec<String> {
+        self.tp_names.iter().take(self.num_teams).cloned().collect()
+    }
+
+    /// `team_scores[0..num_teams]`.
+    pub fn team_scores(&self) -> &[i32] {
+        &self.tp_scores[..self.num_teams.min(self.tp_scores.len())]
+    }
+
+    /// `CHalfLifeTeamplay::GetTeamIndex` (0xe5434): the `team_names` slot (case-insensitive), -1
+    /// for none or `""`. `ScoreInfo` sends it + 1.
+    pub fn tp_team_index(&self, name: &str) -> i32 {
+        if name.is_empty() {
+            return -1;
+        }
+        self.tp_names.iter().take(self.num_teams).position(|t| t.eq_ignore_ascii_case(name)).map_or(-1, |i| i as i32)
+    }
+
+    /// `CHalfLifeTeamplay::IsValidTeam` (0xe54d4): any name without a team limit (`""` too).
+    pub fn is_valid_team(&self, name: &str) -> bool {
+        !self.team_limit || self.tp_team_index(name) != -1
+    }
+
+    /// `CHalfLifeTeamplay::TeamWithFewestPlayers` (0xe5510), given every player's team name: the
+    /// first team with the fewest players, `""` when there is none (TS would copy from NULL).
+    pub fn team_with_fewest(&self, players: &[String]) -> String {
+        let mut count = [0; MAX_TP_TEAMS];
+        for name in players {
+            if let Ok(i) = usize::try_from(self.tp_team_index(name)) {
+                count[i] += 1;
+            }
+        }
+        let mut best = None;
+        let mut min = MAX_TP_TEAMS as i32;
+        for (i, &c) in count.iter().enumerate().take(self.num_teams) {
+            if c < min {
+                min = c;
+                best = Some(i);
+            }
+        }
+        best.and_then(|i| self.tp_names.get(i).cloned()).unwrap_or_default()
+    }
+
+    /// `team_names[0]`, which `SetDefaultPlayerTeam` takes under `mp_defaultteam` without looking
+    /// at `num_teams`: with no team limit it can be a player's team or a stale listed name.
+    pub fn first_team_slot(&self) -> String {
+        self.tp_names.first().cloned().unwrap_or_default()
+    }
+
+    /// `TSGameRules` teams 0 and 1 (`0x1781c8`/`0x178254`), The One's and everyone else's in The
+    /// One mode (`SetDefaultPlayerTeam`, `ChangePlayerTeam`).
+    pub fn the_one_team_names(&self) -> [String; 2] {
+        [0, 1].map(|i| self.teams.get(i).map(|t| t.name.clone()).unwrap_or_default())
+    }
+
+    /// `CTSGameRules::GetTeamIndex` (0x79b04): the `TSGameRules` team (case-insensitive), -1 if
+    /// none. Models, spawn points, CTB and triggers use it; `ScoreInfo` uses `tp_team_index`.
     pub fn team_index(&self, name: &str) -> i32 {
         if name.is_empty() {
             return -1;
         }
         self.teams.iter().position(|t| !t.name.is_empty() && t.name.eq_ignore_ascii_case(name)).map_or(-1, |i| i as i32)
-    }
-
-    /// `m_teamLimit` (`+0x214`): the Teamplay constructor sets it and `RecountTeams` (0xe5608)
-    /// clears it when the list holds fewer than two teams.
-    pub fn team_limit(&self) -> bool {
-        self.team_names().len() >= 2
     }
 
     /// `CHalfLifeTeamplay::GetIndexedTeamName` (0xe54a0): the team at `index`, or `""` when it is
@@ -330,14 +431,13 @@ mod tests {
         let mut g = GameRules::default();
         g.init_teams();
         g.set_team_list("hitman;gordon");
+        g.init_teamplay_list();
         assert_eq!(g.team_names(), ["hitman", "gordon"]);
         assert_eq!(g.team_index("GORDON"), 1);
         assert_eq!(g.team_index("seal"), -1);
-        assert!(g.team_limit());
-        g.set_team_list("hitman");
-        assert!(!g.team_limit(), "RecountTeams drops the limit below two teams");
         g.the_one = true;
         g.set_team_list("hitman;gordon;agent");
+        g.init_teamplay_list();
         assert_eq!(g.team_names(), ["The ONE", "gordon"]);
         g.set_team_model_lists("a;b|c");
         assert_eq!(g.teams[0].models, ["a", "b"]);
@@ -345,11 +445,84 @@ mod tests {
         assert!(g.teams[2].models.is_empty());
     }
 
-    #[test]
-    fn indexed_team_name_is_empty_out_of_range() {
+    /// The rules after the Teamplay constructor for `list`.
+    fn teamplay(list: &str) -> GameRules {
         let mut g = GameRules::default();
         g.init_teams();
+        g.set_team_list(list);
+        g.init_teamplay_list();
+        g
+    }
+
+    fn players(list: &[(&str, f32)]) -> Vec<(String, f32)> {
+        list.iter().map(|&(n, f)| (n.to_owned(), f)).collect()
+    }
+
+    #[test]
+    fn recount_with_a_team_limit_keeps_the_listed_teams() {
+        let mut g = teamplay("hitman;gordon;HITMAN");
+        assert!(g.team_limit);
+        assert_eq!(g.team_names(), ["hitman", "gordon"], "duplicates are dropped");
+        g.recount_teams(&players(&[("gordon", 3.0), ("seal", 5.0), ("GORDON", 2.0), ("", 1.0)]));
+        assert_eq!(g.team_names(), ["hitman", "gordon"]);
+        assert_eq!(g.team_scores(), [0, 5]);
+        assert_eq!(g.tp_team_index("Gordon"), 1);
+        assert!(g.is_valid_team("HITMAN"));
+        assert!(!g.is_valid_team("seal"));
+        assert!(!g.is_valid_team(""));
+    }
+
+    #[test]
+    fn recount_without_a_team_limit_takes_the_players_teams() {
+        let mut g = teamplay("hitman");
+        assert!(!g.team_limit, "RecountTeams drops the limit below two teams");
+        assert!(g.team_names().is_empty());
+        // team_names[0] still holds the listed team until a player's team overwrites it.
+        assert_eq!(g.first_team_slot(), "hitman");
+        assert!(g.is_valid_team("anything") && g.is_valid_team(""));
+        g.recount_teams(&players(&[("seal", 2.0), ("", 1.0), ("SEAL", 3.0), ("", 4.0), ("merc", 1.0)]));
+        // Each teamless player adds an empty team: GetTeamIndex("") is -1.
+        assert_eq!(g.team_names(), ["seal", "", "", "merc"]);
+        assert_eq!(g.team_scores(), [5, 1, 4, 1]);
+        assert_eq!(g.first_team_slot(), "seal");
+        assert_eq!(g.tp_team_index("seal"), 0);
+        assert_eq!(g.tp_team_index(""), -1);
+        assert_eq!(g.indexed_team_name(3), "merc");
+        // The limit never comes back, and the TSGameRules list is untouched.
+        g.recount_teams(&[]);
+        assert!(!g.team_limit && g.team_names().is_empty());
+        assert_eq!(g.team_index("hitman"), 0);
+        assert_eq!(g.team_index("seal"), -1);
+    }
+
+    #[test]
+    fn team_with_fewest_players() {
+        let g = teamplay("hitman;gordon;agent");
+        let names = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(g.team_with_fewest(&names(&[])), "hitman");
+        assert_eq!(g.team_with_fewest(&names(&["hitman", "GORDON", "seal", ""])), "agent");
+        assert_eq!(g.team_with_fewest(&names(&["hitman", "agent"])), "gordon");
+        // No teams at all (TS would copy from a NULL pointer).
+        let mut g = teamplay("hitman");
+        assert_eq!(g.team_with_fewest(&names(&["seal"])), "");
+        g.recount_teams(&players(&[("seal", 0.0), ("merc", 0.0), ("seal", 0.0)]));
+        assert_eq!(g.team_with_fewest(&names(&["seal", "merc", "seal"])), "merc");
+    }
+
+    #[test]
+    fn the_one_team_names_come_from_the_ts_list() {
+        let mut g = GameRules::default();
+        g.init_teams();
+        g.the_one = true;
         g.set_team_list("hitman;gordon");
+        g.init_teamplay_list();
+        assert_eq!(g.the_one_team_names(), ["The ONE", "gordon"]);
+        assert_eq!(g.team_names(), ["The ONE", "gordon"]);
+    }
+
+    #[test]
+    fn indexed_team_name_is_empty_out_of_range() {
+        let g = teamplay("hitman;gordon");
         assert_eq!(g.indexed_team_name(0), "hitman");
         assert_eq!(g.indexed_team_name(1), "gordon");
         assert_eq!(g.indexed_team_name(2), "");

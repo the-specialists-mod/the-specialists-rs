@@ -74,9 +74,12 @@ fn multiplay_think(now: f32) -> bool {
         frags_left = 9999;
         let (teamplay, ctb) = state::with(|g| (g.teamplay, g.mode == Mode::TeamDm && g.is_ctb()));
         if teamplay {
-            teams::recount();
-            let scores: Vec<i32> =
-                state::with(|g| g.teams.iter().filter(|t| !t.name.is_empty()).map(|t| if ctb { t.score } else { t.frags }).collect());
+            teams::recount(false);
+            // `CHalfLifeTeamplay::Think` (0xe412c): `team_scores` of the `RecountTeams` list, which
+            // without a team limit holds the players' own teams; CTB counts the listed teams' captures.
+            let scores: Vec<i32> = state::with(|g| {
+                if ctb { g.teams.iter().filter(|t| !t.name.is_empty()).map(|t| t.score).collect() } else { g.team_scores().to_vec() }
+            });
             for s in scores {
                 if s as f32 >= fraglimit {
                     go_to_intermission();
@@ -424,7 +427,7 @@ pub fn restart_round(now: f32) {
             }
         });
     }
-    teams::recount();
+    teams::recount(false);
     crate::entities::ts::respawn_entities();
 }
 
