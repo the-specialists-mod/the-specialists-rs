@@ -30,6 +30,8 @@ pub trait PlayerMoveExt {
     fn load_file(&self, path: &CStr) -> Option<Vec<u8>>;
     /// `Con_DPrintf("%s", msg)`; nothing without the callback.
     fn dprint(&self, msg: &str);
+    /// `Con_Printf("%s", msg)`; nothing without the callback.
+    fn con_printf(&self, msg: &str);
     /// `Sys_FloatTime`; 0 without the callback.
     fn float_time(&self) -> f64;
     /// `PM_StuckTouch(hitent, trace)`; nothing without the callback.
@@ -127,6 +129,14 @@ impl PlayerMoveExt for playermove_t {
 
     fn dprint(&self, msg: &str) {
         if let Some(print) = self.Con_DPrintf {
+            let m = CString::new(msg.replace('\0', "")).unwrap_or_default();
+            // SAFETY: engine printf with a "%s" format and one NUL-terminated argument.
+            unsafe { print(c"%s".as_ptr(), m.as_ptr()) };
+        }
+    }
+
+    fn con_printf(&self, msg: &str) {
+        if let Some(print) = self.Con_Printf {
             let m = CString::new(msg.replace('\0', "")).unwrap_or_default();
             // SAFETY: engine printf with a "%s" format and one NUL-terminated argument.
             unsafe { print(c"%s".as_ptr(), m.as_ptr()) };
