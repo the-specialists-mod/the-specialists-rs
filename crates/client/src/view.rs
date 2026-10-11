@@ -67,9 +67,10 @@ struct View {
     /// Eased additions to the camera's up (`0x10191da4`) and back (`0x10191da8`) offsets.
     cam_up_ofs: f32,
     cam_back_ofs: f32,
-    /// Smoothed z of the local player model in third person (`0x10191d94`); `None` while in
-    /// first person.
-    model_z: Option<f32>,
+    /// Smoothed z of the local player model in third person (`0x10191d94`). A BSS static in TS:
+    /// it starts at 0 and only changes in third person, so the model slides in from wherever it
+    /// was when third person was last left (from z 0 the first time).
+    model_z: f32,
     /// `cam_ofs` (`0x100df318`): the camera's (pitch, yaw, distance) from [`cam_think`]. `None`
     /// while in first person; TS's `thirdperson` toggle (`0x1004fe00`) seeds it with the view
     /// angles and distance 30, which [`cam_think`] does when third person starts.
@@ -164,6 +165,17 @@ impl Drift {
         self.pitchvel = 0.0;
     }
 
+    /// `V_StartPitchDrift` (`0x10067290`, the `centerview` command, and inlined in
+    /// `V_DriftPitch`): starts drifting at `v_centerspeed`, unless something stopped the drift in
+    /// this same frame (`now` equals the last stop) or it is already drifting.
+    fn start(&mut self, now: f32, centerspeed: f32) {
+        if now != self.laststop && (self.nodrift || self.pitchvel == 0.0) {
+            self.pitchvel = centerspeed;
+            self.nodrift = false;
+            self.driftmove = 0.0;
+        }
+    }
+
     /// `V_DriftPitch` (`0x10067320`, SDK): eases `pitch` toward the ideal pitch once the player
     /// has walked forward for `v_centermove` seconds without looking around.
     fn update(&mut self, i: &DriftInput, pitch: &mut f32) {
@@ -178,11 +190,8 @@ impl Drift {
             } else {
                 self.driftmove += i.frametime;
             }
-            // `V_StartPitchDrift`, inlined: blocked while something stopped it this frame.
-            if self.driftmove > i.centermove && i.now != self.laststop {
-                self.pitchvel = i.centerspeed;
-                self.nodrift = false;
-                self.driftmove = 0.0;
+            if self.driftmove > i.centermove {
+                self.start(i.now, i.centerspeed);
             }
             return;
         }
@@ -391,10 +400,18 @@ pub fn init() {
     Cvar::register(c"scr_ofsy", c"0", 0);
     Cvar::register(c"scr_ofsz", c"0", 0);
     let e = goldsrc::client::engine();
+    e.add_command(c"centerview", cmd_centerview);
     e.add_command(c"ts_test_fade", cmd_test_fade);
     e.add_command(c"ts_test_kick", cmd_test_kick);
     e.add_command(c"ts_test_view", cmd_test_view);
     e.add_command(c"ts_test_angles", cmd_test_angles);
+}
+
+/// `centerview` (`V_StartPitchDrift` `0x10067290`, registered first in `V_Init` `0x10069e90`).
+extern "C" fn cmd_centerview() {
+    let now = engine().client_time();
+    let speed = cv(|c| c.centerspeed);
+    with(|w| w.drift.start(now, speed));
 }
 
 /// `ts_test_angles <pitch> <yaw>`: sets the view angles (developer aid for scripted screenshots).
@@ -409,7 +426,7 @@ extern "C" fn cmd_test_angles() {
 extern "C" fn cmd_test_view() {
     let s = with(|w| {
         format!(
-            "third {} cam_back {:.1} cam_up {:.1} model_z {:?} amt {:.0} origin {:?} eye {:?} angles {:?}\n",
+            "third {} cam_back {:.1} cam_up {:.1} model_z {:.1} amt {:.0} origin {:?} eye {:?} angles {:?}\n",
             w.third, w.cam_back_ofs, w.cam_up_ofs, w.model_z, w.local_amt, w.cam.origin, w.eye, w.cam.angles
         )
     });
@@ -775,10 +792,12 @@ pub fn calc_refdef(p: &mut ref_params_t) {
     p.nextView = 0;
 }
 
-fn finish(w: &mut View, p: &mut ref_params_t) {
-    let (f, r_, u) = v::angle_vectors(p.viewangles);
+/// Stores the camera the effects, HUD and events read (`v_origin` `0x10190b28` and `v_angles`
+/// `0x101914d0`). `angles` is `v_angles`: the view angles before the third-person override.
+fn finish(w: &mut View, p: &mut ref_params_t, angles: Vec3) {
+    let (f, r_, u) = v::angle_vectors(angles);
     (p.forward, p.right, p.up) = (f, r_, u);
-    w.cam = Camera { origin: p.vieworg, angles: p.viewangles, forward: f, right: r_, up: u, fov: 90.0 };
+    w.cam = Camera { origin: p.vieworg, angles, forward: f, right: r_, up: u, fov: 90.0 };
     w.hardware = p.hardware != 0;
 }
 
@@ -805,15 +824,17 @@ fn calc_intermission(p: &mut ref_params_t) {
         vm.model = std::ptr::null_mut();
     }
     add_idle(&mut p.viewangles, p.time, 1.0);
-    with(|w| finish(w, p));
+    let angles = p.viewangles;
+    with(|w| finish(w, p, angles));
 }
 
 /// `V_CalcSpectatorRefdef` (`0x10068f70`): see `crate::spectator::calc_refdef`.
 fn calc_spectator(p: &mut ref_params_t) {
     crate::spectator::calc_refdef(p);
+    let angles = p.viewangles;
     with(|w| {
         w.eye = p.vieworg;
-        finish(w, p)
+        finish(w, p, angles)
     });
 }
 
@@ -928,10 +949,12 @@ fn calc_normal(p: &mut ref_params_t) {
     let translucent = !state::with(|s| s.dead) || e.demo_playing() || e.demo_recording();
     let on_player = crate::hud::with(|h| h.crosshair_id.is_some());
     let transparency = cv(|c| c.thirdtransparency) as i32 != 0;
+    // TS tests `gHUD.m_flTimeDelta` (`0x10067930`), the last HUD redraw's frame time.
+    let hud_dt = crate::hud::time_delta();
     engine().with_local_player_mut(|ent| {
         if translucent {
             let amt = with(|w| {
-                w.local_amt = local_amt_step(w.local_amt, on_player, transparency, ft != 0.0);
+                w.local_amt = local_amt_step(w.local_amt, on_player, transparency, hud_dt != 0.0);
                 w.local_amt
             });
             ent.curstate.rendermode = kRenderTransColor as i32;
@@ -1015,10 +1038,15 @@ fn calc_normal(p: &mut ref_params_t) {
     // `V_AddIdle` would follow, scaled by the HUD's concussion level. Only the TFC `Concuss`
     // message sets that and TS never sends it, so the scale is always 0 here.
     let mut eye = p.vieworg;
+    // The gun is placed at this eye (`0x10068547`), so it follows the smoothed view height and
+    // stairs (and a stunt's `NO_VIEW` descent) with the view.
+    let gun_org = p.vieworg;
     let (fwd, right, up) = v::angle_vectors(p.viewangles);
     (p.forward, p.right, p.up) = (fwd, right, up);
 
-    // Third-person camera (§7.4).
+    // Third-person camera (§7.4). `CL_CameraOffset`'s pitch and yaw with roll 0 (`camAngles`)
+    // become the view angles at the end (`0x100689ef`).
+    let mut third_angles = None;
     if third {
         let ent_org = engine().local_player().map_or(p.simorg, |e| e.origin);
         let vh = p.viewheight[2];
@@ -1042,28 +1070,26 @@ fn calc_normal(p: &mut ref_params_t) {
             if r::point_contents(start) == CONTENTS_SOLID {
                 start = ent_org;
             }
-            let tr = r::player_trace(start, want, 2, (PM_STUDIO_IGNORE | PM_WORLD_ONLY) as i32, -1);
+            // `PM_TraceLine(start, vieworg, PM_TRACELINE_PHYSENTSONLY, 2, -1)` (`0x10068410`).
+            let tr = r::pm_trace_line(start, want, 0, 2, -1);
             p.vieworg = if tr.fraction != 1.0 { v::add(v::ma(tr.endpos, 4.0, tr.plane.normal), [0.0, 0.0, 1.0]) } else { want };
         }
-        p.viewangles = view_angles;
+        third_angles = Some(cam_angles);
         engine().with_local_player_mut(|e| {
             // The model's z eases at rate 16 (TS `0x10191d94`) so stair steps and landings don't
             // jerk the body in front of the camera.
             let z = with(|w| {
-                let z = smooth_model_z(w.model_z.unwrap_or(e.origin[2]), e.origin[2], ft);
-                w.model_z = Some(z);
-                z
+                w.model_z = smooth_model_z(w.model_z, e.origin[2], ft);
+                w.model_z
             });
             e.origin[2] = z;
             eye = v::add(e.origin, p.viewheight);
-            let pitch = -v::norm_angle(view_angles[0]) / 3.0;
+            let pitch = model_pitch(cam_angles[0]);
             e.angles[0] = pitch;
             e.curstate.angles[0] = pitch;
             e.prevstate.angles[0] = pitch;
             e.latched.prevangles[0] = pitch;
         });
-    } else {
-        with(|w| w.model_z = None);
     }
 
     // View model (`V_CalcGunAngle` + TS bob offset and fov push).
@@ -1071,7 +1097,7 @@ fn calc_normal(p: &mut ref_params_t) {
     if let Some(vm) = vm_ent.as_deref_mut() {
         let base_angles = p.cl_viewangles;
         vm.angles = [-base_angles[0] + p.crosshairangle[0] * 0.25, base_angles[1] + p.crosshairangle[1], base_angles[2]];
-        let mut org = v::add(v::add(p.simorg, p.viewheight), [0.0, 0.0, water_ofs]);
+        let mut org = gun_org;
         let mut ang = vm.angles;
         goldsrc::ext::spectator::apply_shake(&mut org, &mut ang, 0.9);
         vm.angles = ang;
@@ -1093,10 +1119,10 @@ fn calc_normal(p: &mut ref_params_t) {
         vm.latched.prevangles = vm.angles;
     }
 
-    // Punch (the server never sets it in TS, but keep the SDK add).
-    if !third {
-        p.viewangles = v::add(p.viewangles, p.punchangle);
-    }
+    // Punch (`0x10068654`; the server never sets it in TS). TS also adds `ev_punchangle`
+    // (`0x10191480`) and decays it with `V_DropPunchAngle` (`0x10069e40`), but nothing in the TS
+    // client ever makes it non-zero (its only store is the zeroing at `0x1000b9e4`).
+    p.viewangles = v::add(p.viewangles, p.punchangle);
 
     // `cl_vsmoothing` (step 14, SDK `ViewInterp`): in multiplayer with the server's `pushmsec`
     // smoothing request, the view lags `cl_vsmoothing` seconds behind along the recorded simorg
@@ -1122,10 +1148,39 @@ fn calc_normal(p: &mut ref_params_t) {
         }
     }
 
+    // `v_angles` keeps the angles from before the third-person and view-entity overrides
+    // (`0x100689d5`).
+    let mut v_angles = p.viewangles;
+    if let Some(a) = third_angles {
+        p.viewangles = a;
+    }
+    // A view entity other than a player (`SET_VIEW`, e.g. `trigger_camera`) takes over the view
+    // (`0x10068a73`), `v_angles` included.
+    if p.viewentity > p.maxclients
+        && let Some(ent) = engine().entity(p.viewentity)
+    {
+        p.vieworg = ent.origin;
+        p.viewangles = ent.angles;
+        v_angles = ent.angles;
+    }
+
     with(|w| {
         w.eye = eye;
-        finish(w, p);
+        finish(w, p, v_angles);
     });
+}
+
+/// The local model's pitch in third person (`0x100689ef..0x10068a64`): the camera pitch brought
+/// into [-180, 180] by one turn (not a modulo), inverted and divided by 3.
+fn model_pitch(pitch: f32) -> f32 {
+    let pitch = if pitch > 180.0 {
+        pitch - 360.0
+    } else if pitch < -180.0 {
+        pitch + 360.0
+    } else {
+        pitch
+    };
+    pitch * (-1.0 / 3.0)
 }
 
 /// TS `StudioDrawModel` change (§2.3): the view model animates at the time scale, faster with the
@@ -1330,6 +1385,34 @@ mod tests {
         blocked.blocked = true;
         d.update(&blocked, &mut pitch);
         assert_eq!(d.pitchvel, 0.0);
+    }
+
+    #[test]
+    fn centerview_starts_drift() {
+        // `centerview` restarts a stopped drift at once, but not in the frame it was stopped.
+        let mut d = Drift::default();
+        d.stop(3.0);
+        d.start(3.0, 500.0);
+        assert!(d.nodrift && d.pitchvel == 0.0);
+        d.start(3.1, 500.0);
+        assert!(!d.nodrift && d.pitchvel == 500.0 && d.driftmove == 0.0);
+        // Already drifting with some speed: left alone.
+        d.pitchvel = 700.0;
+        d.start(3.2, 500.0);
+        assert_eq!(d.pitchvel, 700.0);
+        let mut pitch = 30.0;
+        for _ in 0..20 {
+            d.update(&drift_input(0.0, 3.3), &mut pitch);
+        }
+        assert_eq!(pitch, 0.0);
+    }
+
+    #[test]
+    fn third_person_model_pitch() {
+        assert_eq!(model_pitch(30.0), -10.0);
+        assert_eq!(model_pitch(330.0), 10.0, "one turn down");
+        assert_eq!(model_pitch(-300.0), -20.0, "one turn up");
+        assert_eq!(model_pitch(-180.0), 60.0, "-180 is kept");
     }
 
     #[test]

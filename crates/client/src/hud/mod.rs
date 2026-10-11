@@ -731,6 +731,12 @@ pub fn with_dc(f: impl FnOnce(&Dc)) {
     f(&dc);
 }
 
+/// `gHUD.m_flTimeDelta` (`0x100cf950`): the time between the last two `HUD_Redraw`s, never
+/// negative (the port also caps it at 1 s, which only matters for the HUD's own timers).
+pub fn time_delta() -> f32 {
+    TIME.0.get().1
+}
+
 pub fn redraw(time: f32, intermission: bool) {
     let e = engine();
     let (old, _) = TIME.0.get();

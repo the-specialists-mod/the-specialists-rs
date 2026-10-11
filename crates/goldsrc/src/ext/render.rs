@@ -94,6 +94,17 @@ pub fn player_trace(start: Vec3, end: Vec3, hull: i32, flags: i32, ignore_pe: i3
     tr
 }
 
+/// The client engine's `PM_TraceLine(start, end, flags, usehull, ignore_pe)`: a trace against the
+/// client player-move physents (the world, brush entities and whatever else the last prediction
+/// left there), copied out. The single wrapper for it; a missing result reads as no hit.
+pub fn pm_trace_line(start: Vec3, end: Vec3, flags: i32, usehull: i32, ignore_pe: i32) -> pmtrace_s {
+    let (mut s, mut e) = (start, end);
+    let tr = cl_eng!(PM_TraceLine(s.as_mut_ptr(), e.as_mut_ptr(), flags, usehull, ignore_pe));
+    // SAFETY: the engine returns null or a pointer to its static trace result, valid until the
+    // next trace; it is copied out at once.
+    unsafe { tr.as_ref() }.copied().unwrap_or(pmtrace_s { fraction: 1.0, endpos: end, ..Default::default() })
+}
+
 /// Makes the other players solid for traces (`EV_SetUpPlayerPrediction` + `EV_PushPMStates` +
 /// `EV_SetSolidPlayers`), runs `f`, and restores the pmove state (`EV_PopPMStates`). The single
 /// wrapper for that sequence; `player_index0` is the 0-based player left out (-1 for none).
