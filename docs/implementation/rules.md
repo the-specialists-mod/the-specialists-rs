@@ -43,7 +43,10 @@ are Ghidra addresses.
 | `ClientUserInfoChanged` 0xae638 + 0x8b244 | `lifecycle::userinfo_changed` | name change (% → space) broadcast/log; HLDM models refused. |
 | `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team, spawn spot. A map's `game_player_equip`s replace the loadout (`stock::maprules::equip_on_spawn` from `weapons::on_spawn`). |
 | `UpdateClientData` init block 0x91d00 | `lifecycle::init_hud` | `ResetHUD` every spawn; first time `InitHUD`, rules InitHUD, TS InitHUD, `game_playerjoin`; `game_playerspawn`; RoundTime; super jump PwUp. |
-| `CHalfLifeMultiplay::InitHUD` 0xcf618 / Teamplay 0xe45d8 | `lifecycle::rules_init_hud`, `teams::init_hud` | join TextMsg, log, `GameMode`, own ScoreInfo, MOTD, everyone's ScoreInfo; teamplay: TeamNames, assignment SayText, TeamInfo. |
+| `CHalfLifeMultiplay::InitHUD` 0xcf618 / Teamplay 0xe45d8 | `lifecycle::rules_init_hud`, `teams::init_hud` | join TextMsg, log, `GameMode`, own ScoreInfo, MOTD, everyone's ScoreInfo; teamplay: TeamNames, assignment SayText (after `ChangePlayerTeam`, so a teamplay joiner already starts observer here, before `CTSGameRules::InitHUD` does it again), TeamInfo. |
+| `CHalfLifeTeamplay::ChangePlayerTeam` 0xe488c, `GetIndexedTeamName` 0xe54a0 | `teams::change_team`, `GameRules::indexed_team_name` | `jointeam <n>` (team `n - 1`, `""` out of range) and the teamplay InitHUD: The One mode puts The One on the first team and everyone else on the second; an empty or unknown name goes to the smallest team; `team`/`model` keys, RecountTeams, TeamInfo + ScoreInfo to all, then **unless it's a kill or The One mode, always** `StartObserver` + `SetPlayerRespawnTime(5)` (0xe4c38..0xe4ca1; respawn award 11), even for the same team or an observer; TeamNames to all. Unit tested (`teams::tests`). Outside teamplay `CGameRules::ChangePlayerTeam` (0xc632c) is empty, so `jointeam` does nothing. |
+| `CBasePlayer::ForceClientDllUpdate` 0x92594 | `commands::force_client_dll_update` (`fullupdate`) | resend every HUD and weapon value, the HUD update at once, then `Spectator` (own index, observer = `deadflag == DEAD_RESPAWNABLE`, 0x9267b) to the player; no `m_fInitHUD`, so no `ResetHUD`. |
+| `CTSGameRules::CallCheckDeads` 0x79bc0 | `GameRules::call_check_deads` | `CheckDeads` in 1 s, only while no round restart is pending; from `PlayerKilled`, the LMS join deadline in `PreThink` and `TSPlayerDisconnect`. Unit tested. |
 | `SendMOTDToClient` 0xd0ae4 | `lifecycle::send_motd` | `ServerName` = hostname, `motdfile` (default `motd.txt`) in ≤60-char chunks, ≤0x600 bytes. |
 | `CTSGameRules::InitHUD` 0x79134 | `lifecycle::ts_init_hud` | cheat notices, `SrvSett` 0–3, RoundTime, `Spectator` of everyone, **joiner starts as observer** with `respawntime` (5..30 s). |
 | `SetPlayerRespawnTime` 0x75ff4 | `lifecycle::set_respawn_time` | LMS respawn budget (`respawnnumber` → 1), join deadline; award 1 / 11. |
@@ -197,7 +200,13 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 * `ts_mapglobals` masks the weapon set to 5 bits (TS XORs the whole spawnflags).
 * Round modes 2/3, objectives, buy zones, cash-based buying stay off (dead in 3.0); `TeamWin`
   exists only as the score/win giver path.
-* `jointeam` (voluntary, not The One) puts the player in observer with a 5 s respawn.
+* `fullupdate`: TS runs the whole `UpdateClientData` inline, so the weapon messages go out
+  before `Spectator`; the port sends the HUD status messages at once and the weapon messages
+  (`SvState::reset_net`) from the next `PostThink`, after `Spectator`.
+* `ChangePlayerTeam` checks a requested name against the team list; TS's `IsValidTeam`
+  (0xe54d4) accepts any name when no team limit is set. Only `jointeam` (always a listed name or
+  `""`) and the teamplay InitHUD (already resolved by `SetDefaultPlayerTeam`) reach it, so the
+  choice is the same.
 * `PlayerSpawn` with a `game_player_equip`: TS gives no `weapon_tsgun` (no gun at all unless
   the equip lists it) and doesn't copy the stored cash; the port's TS gun is part of the player,
   so the kung fu gun is kept. The equip touches run right after the player's spawn instead of
@@ -224,17 +233,8 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 * `loadweapons`/`saveweapons`, `CustomWP`.
 * Observer code (audited against `ts_i386.so` for issue #7; the `Observer_*` functions,
-  `StartObserver`/`StopObserver`, the PreThink observer block and `PlayerDeathThink` match).
-  Still different, outside those functions:
-  * `jointeam`: TS's `ChangePlayerTeam` (0xe488c) always starts observer and calls
-    `SetPlayerRespawnTime(5)` (0xe4c38..0xe4ca1) unless it's a kill or The One mode; the port
-    (`commands.rs` `jointeam`) skips a change to the same team, only starts observer when not
-    observing, and sets `respawn_at` directly (no respawn award 11). TS's teamplay InitHUD
-    (0xe45d8) also goes through `ChangePlayerTeam`; `teams::init_hud` doesn't start observer.
-  * `fullupdate`: TS's `ForceClientDllUpdate` (0x92594) sends `Spectator` (observer = deadflag 3)
-    and doesn't set the InitHUD flag; the port sends no `Spectator` and does set it.
-  * `CallCheckDeads` (0x79bc0) only schedules a check while no round restart is pending; the
-    port's callers schedule it unconditionally (`check_deads` returns during a restart anyway).
+  `StartObserver`/`StopObserver`, the PreThink observer block and `PlayerDeathThink` match;
+  `jointeam`/`ChangePlayerTeam`, `fullupdate` and `CallCheckDeads` were aligned for issue #81).
 * Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client,
   `item_antidote` (no shipped map places one).
@@ -242,6 +242,8 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 ## 8. Tests
 
 * `cargo test`: payload encoders (sizes match registration), `decide_gameplay`, team lists,
+  `ChangePlayerTeam` team choice and observer rule, `GetIndexedTeamName`, `CallCheckDeads`, the
+  `fullupdate` `Spectator` flag,
   spawn scoring, easing, damage multipliers/kevlar/PTakeDam byte, chat formatting, globalslow
   clamps, weapon restriction, mapcycle, map vote parsing/tally, round refunds, `DoSpectacularNess` rounding/clamping, power-up bodies/respawn clamps, HL remaps, drowning/time-based damage (`player::water::tests`: drown ramp, wade sounds, 2 s tick gate, poison ticks and restart, antidote, drown recovery 10/10/2 and its stop underwater), the HLTV
   director event layout (`hud_wire::director_event_layout`), in-eye spectator movement at mode 5

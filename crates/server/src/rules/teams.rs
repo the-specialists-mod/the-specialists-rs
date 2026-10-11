@@ -121,22 +121,44 @@ fn apply_team(p: &mut Player, cx: &mut Cx, name: &str) {
     }
 }
 
-/// `CHalfLifeTeamplay::ChangePlayerTeam` (0xe488c).
+/// The team `ChangePlayerTeam` (0xe488c) settles on: in The One mode The One goes to the first
+/// team and everyone else to the second, whatever was asked; otherwise an empty or unknown name
+/// means the smallest team (`None`).
+fn change_team_choice(requested: &str, the_one: bool, is_the_one: bool, names: &[String]) -> Option<String> {
+    if the_one {
+        return names.get(if is_the_one { 0 } else { 1 }).cloned();
+    }
+    names.iter().find(|n| !requested.is_empty() && n.eq_ignore_ascii_case(requested)).map(|_| requested.to_owned())
+}
+
+/// Whether `ChangePlayerTeam` sends the player to observer with a 5 s respawn (0xe4c38..0xe4ca1):
+/// every change that isn't a kill, outside The One mode, even to the same team or while already
+/// observing.
+fn change_team_observes(kill: bool, the_one: bool) -> bool {
+    !kill && !the_one
+}
+
+/// `CHalfLifeTeamplay::ChangePlayerTeam` (0xe488c): `jointeam` and the teamplay `InitHUD`.
 pub fn change_team(p: &mut Player, cx: &mut Cx, name: &str, kill: bool, gib: bool) {
-    let e = cx.edict;
     if kill && alive(cx.pev()) {
         let world = engine().entity_of_index(0);
         let b = if gib { bits::ALWAYSGIB } else { bits::NEVERGIB };
         crate::player::damage::take_damage(p, cx, &DamageInfo::new(world, world, 900.0, b));
     }
-    apply_team(p, cx, name);
+    let (the_one, names) = state::with(|g| (g.the_one, g.team_names()));
+    let name = change_team_choice(name, the_one, p.ts.is_the_one, &names).unwrap_or_else(fewest);
+    apply_team(p, cx, &name);
+    recount();
     let idx = cx.index();
-    msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team: name.to_owned() }.write(w));
+    msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team: name.clone() }.write(w));
     let s = ScoreInfo { idx: idx as u8, frags: cx.pev().frags as i16, deaths: p.deaths as i16, class: 0, team: p.team as i16 };
     msg::all(Msg::ScoreInfo, |w| s.write(w));
+    if change_team_observes(kill, the_one) {
+        let (o, a) = (cx.pev().origin, cx.pev().v_angle);
+        super::lifecycle::start_observer(p, cx, o, a);
+        super::lifecycle::set_respawn_time(p, cx, 5.0);
+    }
     send_team_names(std::ptr::null_mut());
-    recount();
-    let _ = e;
 }
 
 /// `TeamNames` to one player (or everyone with a null edict).
@@ -204,4 +226,35 @@ pub fn the_one_teams() {
         }
     }
     let _ = netname;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{change_team_choice, change_team_observes};
+
+    fn names() -> Vec<String> {
+        vec!["hitman".to_owned(), "gordon".to_owned()]
+    }
+
+    #[test]
+    fn change_team_picks_a_listed_team_or_the_smallest() {
+        assert_eq!(change_team_choice("GORDON", false, false, &names()).as_deref(), Some("GORDON"));
+        assert_eq!(change_team_choice("hitman", false, false, &names()).as_deref(), Some("hitman"));
+        // `jointeam` out of range: GetIndexedTeamName gives "" and TS picks the smallest team.
+        assert_eq!(change_team_choice("", false, false, &names()), None);
+        assert_eq!(change_team_choice("seal", false, false, &names()), None);
+    }
+
+    #[test]
+    fn change_team_in_the_one_mode_ignores_the_request() {
+        assert_eq!(change_team_choice("gordon", true, true, &names()).as_deref(), Some("hitman"));
+        assert_eq!(change_team_choice("hitman", true, false, &names()).as_deref(), Some("gordon"));
+    }
+
+    #[test]
+    fn change_team_observes_unless_kill_or_the_one() {
+        assert!(change_team_observes(false, false));
+        assert!(!change_team_observes(true, false));
+        assert!(!change_team_observes(false, true));
+    }
 }

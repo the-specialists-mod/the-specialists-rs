@@ -263,6 +263,20 @@ impl GameRules {
         self.teams.iter().position(|t| !t.name.is_empty() && t.name.eq_ignore_ascii_case(name)).map_or(-1, |i| i as i32)
     }
 
+    /// `CHalfLifeTeamplay::GetIndexedTeamName` (0xe54a0): the team at `index`, or `""` when it is
+    /// out of range (`ChangePlayerTeam` then picks the smallest team).
+    pub fn indexed_team_name(&self, index: i32) -> String {
+        usize::try_from(index).ok().and_then(|i| self.team_names().get(i).cloned()).unwrap_or_default()
+    }
+
+    /// `CTSGameRules::CallCheckDeads` (0x79bc0): runs `CheckDeads` in 1 s, but only while no round
+    /// restart is pending.
+    pub fn call_check_deads(&mut self, now: f32) {
+        if self.round_restart == 0.0 {
+            self.check_deads_at = now + 1.0;
+        }
+    }
+
     /// `IsCTB()`: continuous TDM with a `ts_briefcase` on the map.
     pub fn is_ctb(&self) -> bool {
         self.mode == Mode::TeamDm && !engine().find_by_string(std::ptr::null_mut(), c"classname", c"ts_briefcase").is_null()
@@ -315,5 +329,27 @@ mod tests {
         assert_eq!(g.teams[0].models, ["a", "b"]);
         assert_eq!(g.teams[1].models, ["c"]);
         assert!(g.teams[2].models.is_empty());
+    }
+
+    #[test]
+    fn indexed_team_name_is_empty_out_of_range() {
+        let mut g = GameRules::default();
+        g.init_teams();
+        g.set_team_list("hitman;gordon");
+        assert_eq!(g.indexed_team_name(0), "hitman");
+        assert_eq!(g.indexed_team_name(1), "gordon");
+        assert_eq!(g.indexed_team_name(2), "");
+        assert_eq!(g.indexed_team_name(-1), "");
+    }
+
+    #[test]
+    fn call_check_deads_waits_for_a_pending_restart() {
+        let mut g = GameRules::default();
+        g.call_check_deads(10.0);
+        assert_eq!(g.check_deads_at, 11.0);
+        g.check_deads_at = 0.0;
+        g.round_restart = 12.0;
+        g.call_check_deads(10.0);
+        assert_eq!(g.check_deads_at, 0.0);
     }
 }

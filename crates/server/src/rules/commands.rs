@@ -12,7 +12,7 @@ use crate::world::Cx;
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use shared::protocol::hud_wire::PwUp;
+use shared::protocol::hud_wire::{PwUp, Spectator};
 use shared::protocol::rules::{SrvSett, VguiMenu, hud_dest};
 use shared::ts::powerup as pw;
 
@@ -39,27 +39,17 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
                 msg::one(Msg::VguiMenu, cx.edict, |w| VguiMenu { menu: 2 }.write(w));
             }
         }
+        // `ChangePlayerTeam(GetIndexedTeamName(n - 1), 0, 0)` with no other checks: rejoining
+        // the same team, or an out-of-range number (the smallest team), still sends the player
+        // to observer. Outside teamplay `CGameRules::ChangePlayerTeam` (0xc632c) is empty.
         "jointeam" if args.argc() > 1 => {
             if state::teamplay() {
-                let n = args.int(1) - 1;
-                let name = state::with(|g| g.team_names().get(n.max(0) as usize).cloned().unwrap_or_default());
-                if !name.is_empty() && !name.eq_ignore_ascii_case(&p.ts.team_name) {
-                    teams::change_team(p, cx, &name, false, false);
-                    // A voluntary change outside The One mode sends the player to observer
-                    // with a 5 s respawn.
-                    if !state::the_one_mode() && cx.pev().iuser1 == 0 {
-                        let (o, a) = (cx.pev().origin, cx.pev().v_angle);
-                        super::lifecycle::start_observer(p, cx, o, a);
-                        p.respawn_at = cx.time() + 5.0;
-                    }
-                }
+                let name = state::with(|g| g.indexed_team_name(args.int(1) - 1));
+                teams::change_team(p, cx, &name, false, false);
             }
         }
         "motd" => send_motd(cx.edict),
-        "fullupdate" => {
-            crate::player::hud::reset(p);
-            p.ts.init_hud = true;
-        }
+        "fullupdate" => force_client_dll_update(p, cx),
         "lasclr" => {}
         // CHalfLifeMultiplay::ClientCommand (0xceee8): the voice manager first, then menuselect.
         "vban" | "vmodenable" if super::voice::client_command(cx.edict, cmd, args) => {}
@@ -73,6 +63,23 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
         _ => return false,
     }
     true
+}
+
+/// `CBasePlayer::ForceClientDllUpdate` (0x92594), the `fullupdate` command: forget every "last
+/// sent" HUD and weapon value, run the HUD update now, then tell the player whether it is an
+/// observer. Unlike the SDK, TS doesn't set `m_fInitHUD`, so no `ResetHUD` goes out.
+fn force_client_dll_update(p: &mut Player, cx: &mut Cx) {
+    crate::player::hud::reset(p);
+    p.inv.sv.reset_net();
+    crate::player::hud::update(p, cx);
+    let s = fullupdate_spectator(cx.index(), cx.pev().deadflag);
+    msg::one(Msg::Spectator, cx.edict, |w| s.write(w));
+}
+
+/// The `Spectator` that ends `ForceClientDllUpdate`: observer is `deadflag == DEAD_RESPAWNABLE`
+/// (0x9267b), which `StartObserver` sets, not `iuser1`.
+fn fullupdate_spectator(idx: i32, deadflag: i32) -> Spectator {
+    Spectator { entindex: idx as u8, observer: (deadflag == DEAD_RESPAWNABLE as i32) as u8 }
 }
 
 /// `powerup <n>` (cheat): 1 slow pause, 2 grenade, 3 kung fu + super jump, 4 multiply clip,
@@ -463,6 +470,15 @@ pub fn restriction_by_id(n: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fullupdate_spectator_follows_deadflag() {
+        let s = fullupdate_spectator(3, DEAD_RESPAWNABLE as i32);
+        assert_eq!((s.entindex, s.observer), (3, 1));
+        assert_eq!(fullupdate_spectator(3, DEAD_NO as i32).observer, 0);
+        // A corpse that hasn't become an observer yet (DEAD_DEAD) isn't one.
+        assert_eq!(fullupdate_spectator(3, DEAD_DEAD as i32).observer, 0);
+    }
 
     #[test]
     fn say_format() {

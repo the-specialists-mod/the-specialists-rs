@@ -71,7 +71,7 @@ pub fn client_disconnect(e: *mut edict_t) {
     for o in super::players() {
         other(o, |q| q.ts.slowed &= !(1u64 << idx.clamp(0, 63)));
     }
-    state::with(|g| g.check_deads_at = engine().time() + 1.0);
+    state::with(|g| g.call_check_deads(engine().time()));
     // The engines leave FL_CLIENT/FL_FAKECLIENT on a dropped client's edict, and FWGS still maps
     // it to the freed slot: pfnGetPlayerUserId returns the old id, and pfnSetClientMaxspeed then
     // dereferences the slot's NULL edict (the "kick a bot" crash). Clearing the flags takes the
@@ -648,7 +648,7 @@ fn observer_think(p: &mut Player, cx: &mut Cx, now: f32) {
             p.respawn_at = -1.0;
             p.ts.award = 1;
             ts_message_one(e, [195, 45, 45], 16, 20, "You have to wait until the next round.");
-            state::with(|g| g.check_deads_at = now + 1.0);
+            state::with(|g| g.call_check_deads(now));
         }
     }
 

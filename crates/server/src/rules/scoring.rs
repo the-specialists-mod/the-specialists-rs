@@ -322,7 +322,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
             msg::all(Msg::ScoreInfo, |w| s.write(w));
         }
     }
-    state::with(|g| g.check_deads_at = now + 1.0);
+    state::with(|g| g.call_check_deads(now));
 }
 
 /// `DoSpectacularNess` (0x76b48): whether a frag or an explosion creates the "spectacular"
