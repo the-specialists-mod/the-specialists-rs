@@ -18,7 +18,6 @@ pub mod worldgun;
 use crate::commands::Args;
 use crate::player::Player;
 use crate::world::Cx;
-use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::EHandle;
 use goldsrc::server::engine;
 use goldsrc::sys::{clientdata_t, edict_t, usercmd_t, weapon_data_t};
