@@ -276,8 +276,11 @@ pub fn katana(a: &Args) {
 }
 
 /// `EV_TS_CloseCombat` (`0x10043200`): block (`i1` 0, `f1` the weapon id) or kung-fu attack (`i1`
-/// 1..3, `f1` 0). For both, the view owner plays set A of weapon `f1` at index `i2`, body 0
-/// (`0x100433bb..0x10043401`), before the block sound or the attack's trace.
+/// 1 punch, 2 kick, 3 back kick; `f1` 0). For both, the view owner plays set A of weapon `f1` at
+/// index `i2`, body 0 (`0x100433bb..0x10043401`). A block then plays `player/block.wav`
+/// (`0x100436fa`). An attack plays `player/closecombat.wav` first (`0x100435b6..0x10043619`), then
+/// traces from the gun position along `forward` by [`close_combat_reach`] (`0x1004342c..0x100435b0`)
+/// and on a hit plays the material sound and, except on flesh, the puff (`0x10043667..0x100436e3`).
 pub fn close_combat(a: &Args) {
     if a.is_view_owner() {
         r::weapon_animation(close_combat_seq(&set_a(a.f1 as i32), a.i2), 0);
@@ -286,13 +289,24 @@ pub fn close_combat(a: &Args) {
         sound(a, CHAN_WEAPON, "player/block.wav", melee_vol());
         return;
     }
-    if let Some((pos, n, tex)) = melee_trace(a, 48.0) {
+    sound(a, CHAN_WEAPON, "player/closecombat.wav", melee_vol());
+    if let Some((pos, n, tex)) = melee_trace(a, close_combat_reach(a.i1)) {
         melee_material_sound(tex, pos);
         if tex != b'F' {
             puff(pos, n, tex);
         }
     }
-    sound(a, CHAN_WEAPON, "player/closecombat.wav", melee_vol());
+}
+
+/// The close-combat trace length by attack type (`0x10043427..0x100434ab`): a back kick (3) traces
+/// 55 behind (-55.0 at `0x1007d6fc`), a kick (2) 45 ahead (`0x1007a900`), anything else 35 ahead
+/// (`0x1007a8d8`).
+fn close_combat_reach(i1: i32) -> f32 {
+    match i1 {
+        3 => -55.0,
+        2 => 45.0,
+        _ => 35.0,
+    }
 }
 
 /// The close-combat view sequence: `set[i2]`. TS reads it unchecked (`movswl 0x252(%ebx,%edi,2)`);
@@ -302,18 +316,18 @@ fn close_combat_seq(set: &[i16; 29], i2: i32) -> i32 {
 }
 
 /// `EV_TS_ColdCock` (`0x10043800`): stock hit, set A `[28]` for the view owner (`0x10043a30`),
-/// trace 30 ahead.
+/// `player/closecombat.wav` (`0x10043b1f`), then a trace 30 ahead (`0x10043b69`).
 pub fn coldcock(a: &Args) {
     if a.is_view_owner() {
         r::weapon_animation(set_a(a.i1)[28] as i32, weapon_body(a.i1, a.i2));
     }
+    sound(a, CHAN_WEAPON, "player/closecombat.wav", melee_vol());
     if let Some((pos, n, tex)) = melee_trace(a, 30.0) {
         melee_material_sound(tex, pos);
         if tex != b'F' {
             puff(pos, n, tex);
         }
     }
-    sound(a, CHAN_WEAPON, "player/closecombat.wav", melee_vol());
 }
 
 #[cfg(test)]
@@ -333,5 +347,12 @@ mod tests {
         // Out of range (the port's old 10..25 move ids, -1) falls back to sequence 0.
         assert_eq!(close_combat_seq(&kf, -1), 0);
         assert_eq!(close_combat_seq(&kf, 29), 0);
+    }
+
+    #[test]
+    fn close_combat_reach_by_attack_type() {
+        assert_eq!(close_combat_reach(1), 35.0); // punch
+        assert_eq!(close_combat_reach(2), 45.0); // kick
+        assert_eq!(close_combat_reach(3), -55.0); // back kick: behind the player
     }
 }

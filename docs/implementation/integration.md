@@ -85,8 +85,7 @@ switched off in 3.0, or an SDK constant kept for completeness:
   come from TS's per-frame cache (`0x10056be0`), as TS reads them. In first person on FWGS that
   cache holds the local player's origin, so the muzzle flash and pellet spray start there as in
   TS; Steam GoldSrc's behaviour is unverified (`client-rendering.md`, "Event parameters"). The
-  close-combat view animation still differs (server and client must change together; see
-  `client-rendering.md` "Missing pieces").
+  close-combat event plays TS's set-A index (#83) and traces 35/45/-55 by attack type (#85).
 * The TS studio renderer (issue #2) and motion-blur ghosts (issue #3) are fully ported and were
   audited slot by slot against the asm (`client-rendering.md`); the view-model slow-motion rate
   now lives in the renderer as in TS. They are unit-tested but not yet checked in an engine
