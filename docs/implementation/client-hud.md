@@ -9,8 +9,12 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `crates/client/src/input.rs` | kbuttons, `CL_CreateMove`, anti-script gate, input cvars, mouse back ends, virtual cursor, `IN_ClientLookEvent`/`IN_ClientMoveEvent` exports |
 | `crates/client/src/hud/mod.rs` | hooks for every message, HUD cvars/commands, per-frame think, FOV/zoom sensitivity, slow-mo easing, draw pass, `ts_hud_selftest` |
 | `crates/client/src/hud/state.rs` | `Hud` state and the pure message handlers (return `Effect`s) |
-| `crates/client/src/hud/{status,weapons,notice}.rs` | `CHudTSStatus`, `CHudTSWeapons`, SDK elements (HudText, death notices, say text, `CHudMenu`) |
-| `crates/client/src/hud/{draw,text}.rs` | hud.txt sprites, `DrawHudNumberTS`, `DrawHudString`, titles.txt localisation, mini printf |
+| `crates/client/src/hud/{status,weapons}.rs` | `CHudTSStatus`, `CHudTSWeapons` |
+| `crates/client/src/hud/notice.rs` | `CHudDeathNotice` (TS's text weapon names), `GetClientColor`, `CHudMenu` |
+| `crates/client/src/hud/message.rs` | `CHudMessage`: `HudText` titles.txt messages (fade, flicker, write-out effects) and the `GameTitle` sprites |
+| `crates/client/src/hud/statusbar.rs` | `CHudStatusBar` (`StatusText`/`StatusValue`) |
+| `crates/client/src/hud/tfc.rs` | the TFC messages TS still hooks: the viewport's `ValClass`/`Feign`/`Detpack`/`BuildSt`/`RandomPC`/`AllowSpec`, `CHudAmmoSecondary` (`SecAmmoVal`/`SecAmmoIcon`) |
+| `crates/client/src/hud/{draw,text}.rs` | hud.txt sprites, `DrawHudNumberTS`, `DrawHudString`, `ftol`, the `Canvas` the SDK elements draw through, titles.txt localisation (`LocaliseTextString` with its step budget for the status bar), mini printf |
 | `crates/client/src/hud/saytext.rs` | `CHudSayText`: chat lines, wrap, scroll, console print on scroll-off |
 | `crates/client/src/hud/icons.rs` | `CHudStatusIcons` (`StatusIcon`, `Concuss`'s `dmg_concuss`) |
 | `crates/client/src/hud/vgui.rs` | `CSchemeManager` (text schemes, VGUI1 bitmap fonts from `gfx/vgui/fonts/*.tga`) and VGUI1 label text painting with engine fills |
@@ -33,7 +37,8 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CL_CreateMove` 10026570, `CL_AdjustAngles` 10026330 | `input::create_move`, `adjust_angles` |
 | `+attack2` 10025f40 / `+alt2` 10026110 (`cl_attackswitch`) | `input::attack_switched` + the two command bodies |
 | `HUD_Key_Event` 10025a80 gate, `HUD_Frame` gate clear | `input::key_event`, `input::frame` |
-| `KB_Find` 10025880 | `input::find` |
+| `KB_Find` 10025880, `KB_Add` 100258c0, `KB_Init` 10025930 (end of `InitInput`, before `V_Init`) | `input::find`, `kb_add`, `kb_init`: the list holds only `in_graph`, `in_mlook`, `in_jlook` (newest first), matched with `_stricmp`; any other name is null |
+| `HUD_Shutdown` 10027250 → `ShutdownInput` 10027240: `IN_Shutdown` (on Windows only `IN_DeactivateMouse` 100272a0), `KB_Shutdown` 10025970 | `client-dll` `HUD_Shutdown` → `input::shutdown` (mouse deactivated, kbutton list emptied, so `KB_Find` answers null afterwards), then `voice::shutdown` (see Deviations) |
 | `IN_MouseMove` 100274d0 / `IN_MouseEvent` 100273d0 / `IN_Accumulate` 100278b0 | `input::apply_mouse`, `mouse_event`, `accumulate` (+ `native`, `win`, `sdl`); all three stand down while `camera::mouse_in_use` (`iMouseInUse` 0x100df394), leaving the motion to `CAM_Think` (`input::take_cursor_offset`) |
 | `InterpolateSlowMotion` 10055ae0 | `hud::approach_timescale` (from `HUD_Frame`, `hud::frame`; TS's only time-scale easer) |
 | `CHud::Think` 10049760 (from `CHud::UpdateClientData` 10024b00), `UTIL_ApproachFOV` 10049620, `HUD_GetFOV` 100209f0, `SetFOV` 10049570 | `hud::think_fov` (from `view::update_client_data`), `view::ease_fov`, `hud::get_fov` (demo record type 0), `hud::set_fov` (ignored while `cl_lw` is on; sets the target and `m_iFOV`, and the sensitivity `fov·0.0125·sensitivity·zoom_sensitivity_ratio`) |
@@ -45,8 +50,13 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `Draw` 1004d3f0, `DrawWirePanel` 1004d550, `DrawKungFuBar` 1004d5f0, `DrawKungFuLabel` 1004d700, `DrawWeaponInfo` 1004d7e0, `DrawWeaponList` 1004e030, `DrawLaserDots` 1004e6f0, `DrawCrosshair` 1004e9f0 + 1004ef50 | `hud::weapons::*` |
 | `SelectSlot` 1004f220, `SelectNextPrev` 1004f500, `CmdBuy` 1004fda0 | `hud::select_slot` → `weapons::select_slot`; `weapons::select_next_prev`; `hud::cmd_buy` |
 | `DrawHudNumberTS` 1004c290, `DrawHudString` 10021ce0, `DrawHudStringLen` 10021ca0 | `draw::draw_number`/`number_cells`, `text::draw_string`, `text::string_len` |
-| `LocaliseTextString` 100348d0, `LookupString` 100349c0 | `text::localise`, `text::lookup` |
-| `CHudDeathNotice` 1001b020, `CHudSayText` 1002eb40, `CHudMenu` 100285f0, `CHudMessage` 100290b0 | `hud::notice::*` |
+| `LocaliseTextString` 100348d0, `LookupString` 100349c0 | `text::localise`, `text::lookup`; `text::localise_text_string` (the status bar's, with TS's step budget) |
+| `CHudDeathNotice` Init 1001afa0, VidInit 1001b000 (`d_skull`), InitHUDData 1001afe0, `Draw` 1001b020, `MsgFunc_DeathMsg` 1001b360; `GetClientColor` 1001af40 | `hud::notice::DeathNotices` (`add`, `draw`, `clear`), `notice::on_death_msg`, `notice::client_color` |
+| `CHudMessage` Init 10028900, VidInit 10028940, Reset 10028980, `FadeBlend` 100289b0, `XPosition`/`YPosition` 10028a50/10028ad0, `MessageScanNextChar` 10028b60, `MessageScanStart` 10028d40, `MessageDrawScan` 10028eb0, `Draw` 100290b0, `MessageAdd` 100293f0, `MsgFunc_HudText` 100295c0, `MsgFunc_GameTitle` 10029610 | `hud::message::HudMessage` and its helpers |
+| `CHudStatusBar` Init 1002f3c0, Reset 1002f430, `ParseStatusString` 1002f480, `Draw` 1002f6f0, `MsgFunc_StatusText` 1002f850, `MsgFunc_StatusValue` 1002f8d0 | `hud::statusbar::StatusBar` |
+| `CHudAmmoSecondary` Init 1001a5e0, Reset 1001a640, `MsgFunc_SecAmmoIcon` 1001a650, `MsgFunc_SecAmmoVal` 1001a690 (`Draw` is the stub 1001f8d0) | `hud::tfc::AmmoSecondary` |
+| `ValClass`/`Feign`/`Detpack`/`BuildSt`/`RandomPC`/`AllowSpec` hooks (`CHud::Init` 10020170) → viewport 10064da0/10064ea0/10064ed0/10064ff0/10065020/100653a0; `Initialize` 10060aa0 | `hud::tfc::ViewportTfc` (`apply`, `initialize` from `hud::vid_init`) |
+| `CHudSayText` 1002eb40, `CHudMenu` 100285f0 | `hud::saytext`, `hud::notice::draw_menu` |
 | `CTSBuyMenu` 10036200..100398e0 (Init, Load/Save file, Open, Close, Draw pages, HandleKey 10038840, Add 10038f60, Remove 10038e40, ammo fill 100392b0, Submit 10039400, Random 100398e0, restriction 100365e0/1000b6d0, cost 10012ad0, slots 10038dc0) | `menus::buy::BuyMenu::*`, `menus::draw_buy`, `menus::save_file` |
 | `CTSBuyMenu::MouseEvent` 10038360 | `menus::mouse_buttons` / `click` |
 | `ScorePanel` 1005ce70/1005db70 | `menus::scoreboard` |
@@ -75,8 +85,14 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 Every message in `shared::protocol::MESSAGES` is hooked except `ScreenShake` and `ScreenFade`
 (FWGS and GoldSrc parse those two in the engine before client hooks are consulted) and `SelAmmo`,
 none of which TS hooks. The client-only hooks `Logo` (`m_iLogo`, the animated
-`sprites/%d_logo.spr`), `Concuss` (`m_iConcuss` and the `dmg_concuss` icon) and `StatusIcon`
-(`CHudStatusIcons`) are registered as TS registers them; no TS server sends them. The voice module
+`sprites/%d_logo.spr`), `Concuss` (`m_iConcuss` and the `dmg_concuss` icon), `StatusIcon`
+(`CHudStatusIcons`), `StatusText`/`StatusValue` (`CHudStatusBar`), `SecAmmoVal`/`SecAmmoIcon`
+(`CHudAmmoSecondary`) and the viewport's `ValClass`, `Feign`, `Detpack`, `BuildSt`, `RandomPC`
+and `AllowSpec` are registered as TS registers them. Neither TS's server (`mp.dll`/`ts_i386.so`
+contain none of these names except `Logo`) nor the port's registers them, so they never arrive
+and the server's message table and order are unchanged. The TFC handlers only store their
+values (`-1` past the end of a short message, as the SDK's `READ_*` give it); their readers are
+the command menu's buttons, which the port doesn't have. The voice module
 hooks `VoiceMask` (audible and server-side ban masks) and `ReqState` (answers `VModEnable` +
 `vban`). Malformed payloads are logged and ignored (see Deviations).
 
@@ -106,12 +122,14 @@ hooks `VoiceMask` (audible and server-side ban masks) and `ReqState` (answers `V
 | WeaponInfo | B id, B clip, S reserve, B mode, B att | current gun, grid. Every id byte is a weapon, 0xff included: TS's `READ_BYTE` (`0x10029a10`) zero-extends and the handler keeps the old id only on -1, a read past the end (`0x1004f822`; the port drops a short message). An id outside 0..38 takes entry 0's ammo type and grid slot, as `GetWeaponInfo` (`0x100071c0`) answers it with kung fu; `cl_thirdpersonswitch` 1 (TS `1004f93b`, the only reader): kung fu (id < 1) toggles to third person if not already there; a gun toggles back to first person only when the weapon before the message was kung fu (id 0) |
 | ClipInfo / WStatus / ActItems / NextStunt / Wires / KFuPower / CustomWP | §3.3 | grid, active items, stunt cooldown, wires, kung-fu power, custom weapon params |
 | ScoreInfo / TeamInfo / TeamScore / TeamNames | stock | scoreboard data |
-| DeathMsg | B, B, Str | kill feed + TS console line |
+| DeathMsg | B, B, Str | `CHudSpectator::DeathMessage(victim)`, then a kill-feed entry (TS `1001b360`): names from `GetPlayerInfo` (31 bytes) with `GetClientColor` colours fixed at message time; victim 0xff is a non-player kill (the weapon string is the object's name); suicide = killer 0 or killer = victim; team kill = weapon `teammate`; the display time is `(int)hud_deathnotice_time` s. TS's change from the SDK: no weapon sprite. A plain kill keeps the weapon name and draws it as text in (1, 0.5, 0.2) between the names; suicides, team kills and non-player kills draw `d_skull`, white (green 10,240,10 for a team kill; the SDK's 255,80,0 is gone). Up to four, right-aligned, from y 20 in 20 px steps, only while `AllowedToPrintText`. Console: `<k> killed <v>`, `<v> killed self` / `<v> died` (weapon `world`), `<k> killed his teammate <v>`, `<k> killed a <object>`, then ` with <weapon>` unless `world` or a team kill (`egon`/`gauss` become `gluon gun`/`tau cannon`) |
+| HudText / GameTitle | Str / – | `CHudMessage` as the SDK ships it: up to 16 titles.txt messages (the `#` dropped for the lookup), each replacing any message at the same position and skipped when the same text already shows; an unknown name becomes the single shared custom message (write-out, centred at 0.7, the name as text, so a second custom message rewrites the first). Drawn a character at a time with `pfnDrawCharacter`: effect 0 fade in/out, 1 the same with a 10 % chance per draw (CRT `rand`) of the second colour drawn under it, 2 write-out per `fadein` with an `fxtime` colour sweep. Start times in the future (level change) move back with 0.2 s of grace. `GameTitle` draws `title_half`+`title_life` faded by `FadeBlend` |
 | SayText | B client, Str | `SayTextPrint(text, client)` (TS `1002ecc0`): dropped for a muted player; console only while `AllowedToPrintText` is false (team menu or MOTD up and no player class); otherwise a chat line (`\x02` lines colour the speaker's name with `GetClientColor`: white for the local player, else the team colour of teams 1-4, the rest in the default text colour), wrapped at the screen width − 40, `misc/talk.wav`. Lines reach the console only as they scroll off. `TextMsg` HUD_PRINTTALK goes the same way with client −1, and every `TextMsg` is skipped while `AllowedToPrintText` is false |
-| TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2. ResetHUD resets every element (status icons too), then `m_flMouseSensitivity` and `m_iConcuss` (TS `100219a0`) (Spectator, TS `10065250`, for the local player on every message: observer is `observer == 1`; an observer leaves third person and gets the buy menu, otherwise `cl_thirdperson` 1 or 0 picks the camera and other values keep it, so the death cam doesn't outlive the respawn. This handler is the only reader of `cl_thirdperson`. Then, observer or not, `0x100652fd` runs `0x1000b9d0` on the client `player`: the predicted spread penalty (`player+0x764`) and the crosshair's copy (`0x1018d188`) go to 0 (`prediction::reset_spread`); the other fields it zeroes, `player+0x768..0x770` and `ev_punchangle` (`0x10191480`), are never read or never non-zero in the TS client. The per-player flag is stored as `observer != 0`: TS keeps the raw byte (`0x101900ec[i]`, `0x101901f5`), but `HUD_AddEntity` (`0x10044846`) and the scoreboard (`0x1005e3e8`) only test it for zero) |
+| StatusText / StatusValue (never sent) | B line, Str / B index, S value | `CHudStatusBar`: line 0 or 1 (cut to 127 bytes, turns the element on), values 1..7. On the next draw each line is localised (`LocaliseTextString` into 128 bytes, whose step budget cuts long lines at `128 − steps − 1`), split at `\n`, and the parts whose leading number names a non-zero value are kept with `%pN` (player name, its `GetClientColor` for the line; `******` without one), `%iN` and `%%` substituted. Line 0 at (5, h − 55) (h − 45 below 480 px), line 1 a text height higher, or with `hud_centerid` centred at h/2 + `hud_centerid` text heights |
+| TextMsg / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2. ResetHUD resets every element (status icons, `CHudMessage`, the status bar and `CHudAmmoSecondary` too), then `m_flMouseSensitivity` and `m_iConcuss` (TS `100219a0`) (Spectator, TS `10065250`, for the local player on every message: observer is `observer == 1`; an observer leaves third person and gets the buy menu, otherwise `cl_thirdperson` 1 or 0 picks the camera and other values keep it, so the death cam doesn't outlive the respawn. This handler is the only reader of `cl_thirdperson`. Then, observer or not, `0x100652fd` runs `0x1000b9d0` on the client `player`: the predicted spread penalty (`player+0x764`) and the crosshair's copy (`0x1018d188`) go to 0 (`prediction::reset_spread`); the other fields it zeroes, `player+0x768..0x770` and `ev_punchangle` (`0x10191480`), are never read or never non-zero in the TS client. The per-player flag is stored as `observer != 0`: TS keeps the raw byte (`0x101900ec[i]`, `0x101901f5`), but `HUD_AddEntity` (`0x10044846`) and the scoreboard (`0x1005e3e8`) only test it for zero) |
 | Train | B notch | `CHudTrain`: `sprites/%d_train.spr` frame `notch - 1` in (255,160,0), x = w/3 + sprite w/4, y = h - sprite h - font height; hidden at 0 |
 | HideWeapon | B bits | `hide_hud`; HIDEHUD_ALL (4) hides the train element. TS only resets the engine crosshair, which it doesn't use |
-| CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Geiger, Health, Battery, Damage, GameTitle, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
+| CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Geiger, Health, Battery, Damage, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing; see Missing for Geiger) |
 
 ## 3. Cvars and commands
 
@@ -238,7 +256,7 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
 
 ## 5. HUD draw pass (TS order)
 
-Train → HudText → death notices (`nohud` gate) → status icons → HLTV name tags → weapons
+Train → HudText (`CHudMessage`) → status bar → death notices (`nohud` gate) → status icons → HLTV name tags → weapons
 element (laser dots, drawn even with `nohud`; equipment/slot menu, kung-fu label or weapon info,
 crosshair or wire panel) → status element (round timer, TS messages, objective text, teammate
 markers, crosshair ID, status panel, power-up, objective markers) → say text → `CHudMenu` → the
@@ -407,7 +425,36 @@ Checks that only matter on input TS mishandles (TS writes or reads out of bounds
 * Chat: overlong wrap appends are cut at the 256-byte line (TS's `strcat` runs into the next
   line), and a wrap at a line's first character breaks at 0 (TS reads the byte before the line).
 * Malformed (short) user messages are logged and ignored; TS's `READ_*` return −1 past the end
-  and its handlers carry on with those values. `WeaponInfo` likewise drops a short message.
+  and its handlers carry on with those values. `WeaponInfo` likewise drops a short message, and
+  so does `DeathMsg` (TS would index the player list with −1). `HudText`, `StatusText`,
+  `StatusValue` and the TFC messages follow TS instead (−1 values, empty strings).
+* Death notices: the weapon name is cut at 29 bytes (`"d_" + strncat(.., 32)` runs over TS's
+  32-byte buffer); a killer or victim number outside 1..63 has no name (TS reads past
+  `g_PlayerInfoList`, refreshed only for 1..63, and `GetClientColor` past `g_PlayerExtraInfo`);
+  with no `d_skull` in hud.txt no sprite is drawn and it has no width (TS uses index −1's
+  rectangle).
+* `CHudMessage`: a custom message's text is cut at 1023 bytes (`strcpy` into the 1024-byte
+  `g_pCustomText`); a line longer than 79 characters is drawn whole (TS copies it into an
+  80-byte stack buffer); the line-width count uses the byte's width for bytes 0x80..0xff (TS
+  indexes `charWidths` with a signed `char`, reading before the table); a null `pMessage` reads
+  as empty; a `GameTitle` that found no `GAMETITLE` entry while an earlier title still runs skips
+  the title (TS dereferences the null pointer); missing `title_half`/`title_life` sprites have
+  empty rectangles and aren't drawn.
+* Status bar: output past 128 bytes is dropped (TS writes plain characters unchecked into the
+  next line's buffer or past the last into the values); reads past the source (a line ending in
+  `%`) and past a 32-byte name stop; a `%p` value outside 0..64 has no name (TS calls
+  `GetPlayerInfo` into `g_PlayerInfoList[value]`, out of bounds); `LocaliseTextString`'s output
+  is bounded and its `[-1]` terminator (written when the step budget runs out) is skipped.
+
+Undefined in TS:
+* `CHudMessage::Draw` keeps each message's end time in a stack slot that only effects 0-2 write;
+  a titles.txt effect outside 0..2 reuses the previous message's end time from the same draw, or
+  for the first such message, uninitialised stack. The port uses 0 there (the message ends).
+* The flicker (effect 1) draws from MSVC's CRT `rand` (seed 1). TS shares that generator with
+  `CHudGeiger`'s sounds, which the port doesn't have, so the sequence matches TS only while no
+  Geiger sound plays.
+* The viewport is allocated without clearing; `Initialize` zeroes the valid classes and
+  `RandomPC`. The port starts `Feign`/`Detpack`/`BuildSt`/`AllowSpec` at 0 too.
 
 Notes (no observable difference):
 * HLTV name tags (`CHudSpectator::Draw` `0x10023080`) use the console font like TS; TS's
@@ -420,7 +467,15 @@ Notes (no observable difference):
 * Spectating (issue #7) is complete; what remains is HLTV-only and unverified in game (it needs
   an HLTV proxy on a Steam server): the overview map, name tags and director view are ported but
   have only unit tests, and the inset view is unreachable in TS itself (see client-rendering.md).
-* Server browser, command menu, TFC panels (dropped as allowed by §7).
+* Server browser, command menu, TFC panels (dropped as allowed by §7). The TFC message values
+  (`hud::tfc::ViewportTfc`) are kept for a command menu; `UpdateCommandMenu` (`0x10063840`),
+  which the TFC handlers call, has nothing to update.
+* `CHudGeiger::Draw` (`0x1001f4e0`, `player/geiger%d.wav` by range with CRT `rand`) isn't
+  ported; `Geiger` is parsed and ignored.
+* The scoreboard's `DeathMsg` (`ScorePanel::DeathMsg` `0x1005e5d0`, from the viewport at
+  `0x10065230`: who last killed the local player, and when) isn't ported.
+* Player names come from `goldsrc`'s `player_info` (`to_string_lossy`), so bytes that aren't
+  UTF-8 show as `?` in the kill feed, status bar and chat.
 * `HUD_UpdateClientData` runs `CHud::Think`'s zoom easing and writes the eased FOV
   (`view::update_client_data` → `hud::think_fov`), as TS's `CHud::UpdateClientData` does.
 * The death-cam / `cl_thirdpersonswitch` / `Spectator` camera switches run TS's `thirdperson`
@@ -435,7 +490,14 @@ Notes (no observable difference):
   next/prev skipping owned akimbos; buy menu file round trip on the shipped `tsbuylist.tsa`,
   add/cost/slot rules, restrictions, submit protocol strings, page machine, random config;
   scoreboard grouping; gate bindings; mouse acceleration; key-state fractions) and 6 protocol
-  tests in `shared`. All pass.
+  tests in `shared`. All pass. Issue #92 added: the kbutton list and its shutdown
+  (`input::tests::kb_list_holds_only_ts_buttons_until_shutdown`); death-notice console lines,
+  entries, layout, expiry and clamping (`hud::notice::tests`); `CHudMessage` positions,
+  `FadeBlend`, `MessageAdd` replacement/duplicates/the shared custom message, fade and
+  write-out colours per character, level-transition fix-up, game title sprites
+  (`hud::message::tests`); status-bar messages, parsing, caps and layout
+  (`hud::statusbar::tests`); `LocaliseTextString`'s budget (`hud::text::tests`); the TFC and
+  `SecAmmo*` values (`hud::tfc::tests`); `HudText`/`ResetHUD` through `Hud::apply`.
 * Builds: x86_64 Linux (dev), `i686-unknown-linux-gnu`, `i686-pc-windows-gnu`,
   `x86_64-pc-windows-gnu`. The Windows DLL imports only system DLLs (`USER32` added for the
   mouse); both exports `IN_ClientLookEvent`/`IN_ClientMoveEvent`.

@@ -8,11 +8,14 @@
 
 pub mod draw;
 mod icons;
+mod message;
 mod notice;
 pub mod saytext;
 pub mod state;
 mod status;
+mod statusbar;
 pub mod text;
+mod tfc;
 pub mod vgui;
 mod weapons;
 
@@ -267,18 +270,8 @@ fn on_message(m: Msg, buf: &[u8]) {
         // `0x100219c7`: `m_flMouseSensitivity` (`+0x18`) = 0 after the elements' `Reset`.
         ZOOM_SENS.0.set(0.0);
     }
-    if m == Msg::DeathMsg
-        && let Some(d) = shared::protocol::hud::DeathMsg::decode(buf)
-    {
-        let name = |i: u8| if i > 0 { e.player_info(i as i32).name } else { String::new() };
-        let (k, v) = (name(d.killer), name(d.victim));
-        let teamkill = d.killer != d.victim
-            && with(|h| {
-                h.gamemode != 0 && h.players.get(d.killer as usize).map(|p| p.team) == h.players.get(d.victim as usize).map(|p| p.team)
-            });
-        e.print(&notice::death_console_line(&k, &v, &d.weapon, d.killer == d.victim || d.killer == 0, teamkill));
-        // TS's handler ends with `CHudSpectator::DeathMessage` (the overview's dead icon).
-        crate::spectator::death_notice(d.victim as i32);
+    if m == Msg::DeathMsg {
+        notice::on_death_msg(buf);
     }
 }
 
@@ -502,6 +495,8 @@ pub fn init() {
     e.hook_user_msg(c"Logo", msg_logo);
     e.hook_user_msg(c"Concuss", msg_concuss);
     e.hook_user_msg(c"StatusIcon", msg_status_icon);
+    tfc::hook();
+    statusbar::hook();
     register_commands();
     with(|h| *h = Hud::default());
 }
@@ -537,6 +532,8 @@ pub fn vid_init() {
         h.observer = false;
         h.kfu_power = 100.0;
         h.kfu_prev = 100.0;
+        // `HUD_VidInit`'s `TeamFortressViewport::Initialize` (`0x10060aa0`).
+        h.tfc.initialize();
     });
     crate::menus::vid_init(first);
 }
@@ -859,10 +856,16 @@ pub fn redraw(time: f32, intermission: bool) {
     } else if !hide_all {
         let nohud = input::cvars().nohud.value() != 0.0;
         // TS element order (§4.1), each needing `HUD_ACTIVE` and no `HIDEHUD_ALL`: CHudTrain,
-        // CHudMessage, CHudDeathNotice, CHudStatusIcons, CHudSpectator (HLTV name tags),
-        // CHudTSWeapons, CHudTSStatus, CHudSayText, CHudMenu.
+        // CHudMessage, CHudStatusBar, CHudDeathNotice, CHudStatusIcons, CHudSpectator (HLTV
+        // name tags), CHudTSWeapons, CHudTSStatus, CHudSayText, CHudMenu.
         draw_train(&dc);
-        notice::draw_hud_text(&dc);
+        let mut canvas = draw::EngineCanvas(&g.sprites);
+        with(|h| {
+            if h.message.active {
+                h.message.draw(time, &g.screen, &g.sprites, &mut canvas)
+            }
+        });
+        statusbar::draw(&dc);
         if !nohud {
             notice::draw_death_notices(&dc);
         }
@@ -969,18 +972,7 @@ pub fn say_text_print(text: &[u8], client: i32) {
     let h = h.get_or_insert_with(Hud::default);
     let name = (text.first() == Some(&2) && client > 0).then(|| saytext::bytes(&e.player_info(client).name));
     // `GetClientColor` reads the scoreboard teams, which live in the state borrowed here.
-    let color = name.as_ref().and_then(|_| {
-        if client == local_index() {
-            return Some([1.0, 1.0, 1.0]);
-        }
-        match h.players.get(client as usize).map_or(0, |p| p.team) {
-            1 => Some([0.6, 0.8, 1.0]),
-            2 => Some([1.0, 0.25, 0.25]),
-            3 => Some(saytext::SAY_COLOR),
-            4 => Some([0.6, 1.0, 0.6]),
-            _ => None,
-        }
-    });
+    let color = name.as_ref().and_then(|_| notice::client_color(&h.players, local_index(), client));
     // `ScreenWidth`/`ScreenHeight` (the HUD's screen info); the draw pass may hold it.
     let screen = match GFX.0.try_borrow() {
         Ok(g) => g.as_ref().map(|g| (g.screen.width, g.screen.height)),
