@@ -284,8 +284,9 @@ pub fn commands() {
     if !avail {
         return;
     }
-    // A failed read leaves TS's zeroed JOYINFOEX: no buttons (the POV is treated as centred).
-    let (buttons, pov) = last.map_or((0, POV_CENTERED), |r| (r.buttons, r.pov));
+    // Before the first read, and after a failed one, TS's JOYINFOEX (`0x100df6b0`, zeroed by
+    // `IN_ReadJoystick` before `joyGetPosEx`) holds zeros: no buttons, and POV 0, which is "up".
+    let (buttons, pov) = last.map_or((0, 0), |r| (r.buttons, r.pov));
     let e = engine();
     for (key, down) in button_events(old, buttons, count) {
         e.key_event(key, down);

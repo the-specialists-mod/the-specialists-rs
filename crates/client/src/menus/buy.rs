@@ -3,7 +3,7 @@
 //! `IN_MouseEvent`. Saved loadouts live in `<gamedir>/tsbuylist.tsa` (nine 0x408-byte configs).
 //! Reference: architecture-hud.md §6.2; decomp `unnamed_100337f0.c` 10036200..100398e0.
 
-use shared::weapons::{WeaponKind, tables};
+use shared::weapons::tables;
 
 pub const CONFIG_SIZE: usize = 0x408;
 pub const SAVED_CONFIGS: usize = 9;
@@ -125,46 +125,18 @@ pub struct Rules {
 
 impl Default for Rules {
     fn default() -> Self {
-        Rules { gamemode: 0, restriction: 0x1f, ammocount: 0, buy_kevlar: true }
+        // The mask (`0x1018d174`) is zero until `SrvSett 3` arrives, so every weapon starts
+        // restricted, as in TS.
+        Rules { gamemode: 0, restriction: 0, ammocount: 0, buy_kevlar: true }
     }
 }
 
-/// Weapon type for the restriction system (`FUN_1000b670`): katana → knife, sawed-off →
-/// shotgun, akimbo uzi/skorpion → SMG, other akimbos → pistol.
-fn restriction_kind(id: i32) -> i32 {
-    let Some(w) = tables().weapon(id as u8) else { return 0 };
-    match (id, w.kind) {
-        (34, _) => 3,
-        (33, _) => 1,
-        (16 | 37, _) => 9,
-        (_, WeaponKind::Akimbo) => 8,
-        (_, WeaponKind::Shotgun) => 1,
-        (_, WeaponKind::Knife) => 3,
-        (_, WeaponKind::Rifle) => 6,
-        (_, WeaponKind::Sniper) => 7,
-        (_, WeaponKind::Pistol) => 8,
-        (_, WeaponKind::Smg) => 9,
-        // Grenade, Golden Colts and kung fu are never restricted (server weapons.md §7.2).
-        _ => 0,
-    }
-}
-
-/// `FUN_1000b6d0`: is the weapon blocked by the restriction mask?
+/// `FUN_1000b6d0`: is the weapon blocked by the restriction mask? Ids 1..37 only; mask 0 blocks
+/// all of them. The weapon type is `FUN_1000b670`'s: katana → knife, sawed-off → shotgun, akimbo
+/// Uzi/Skorpion → SMG, the other akimbos and the Golden Colts → pistol, else the weapon table's
+/// kind, which is the server's `GetWeaponType`/`IsRestrictedWeapon` too.
 pub fn weapon_restricted(id: i32, mask: i32) -> bool {
-    if !(1..38).contains(&id) {
-        return false;
-    }
-    if mask == 0 {
-        return true;
-    }
-    match restriction_kind(id) {
-        1 => mask & 0x10 == 0,
-        3 => mask & 0x01 == 0,
-        6 | 7 => mask & 0x08 == 0,
-        8 => mask & 0x02 == 0,
-        9 => mask & 0x04 == 0,
-        _ => false,
-    }
+    (1..38).contains(&id) && shared::weapons::is_restricted(id as u8, mask as u32)
 }
 
 /// `FUN_100365e0`: restricted for buying.
@@ -242,6 +214,19 @@ pub enum Action {
 
 const RED: [i32; 3] = [195, 45, 45];
 
+/// What [`BuyMenu::hit_test`] found under the mouse.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Hit {
+    /// A row: `HandleKey(page, key)`.
+    Row(i32, i32),
+    /// No row (`-1`): TS's left click then acts as key 1 on the current page.
+    Miss,
+    /// A path where TS returns without writing the page, leaving an uninitialised stack value
+    /// (a full sixteen-entry remove list, or a weapon column with no end marker). The port does
+    /// nothing.
+    Unset,
+}
+
 /// Pages (`+0x04`).
 pub mod page {
     pub const MAIN: i32 = 0;
@@ -272,7 +257,7 @@ pub const TABLE: [[i32; 5]; 12] = {
     t
 };
 
-/// Category names. TS stores `Buy_SMGs` without the `#` so it shows raw; the port adds it.
+/// Category names (`Init` 10036200; `#Buy_SMGs` is at `0x10094dd0`).
 pub const CATEGORIES: [&str; 5] = ["#Buy_Handguns", "#Buy_SMGs", "#Buy_Rifles", "#Buy_Shotguns", "#Buy_SpecialPurpose"];
 
 pub struct BuyMenu {
@@ -657,6 +642,108 @@ impl BuyMenu {
         }
     }
 
+    /// `FUN_10038410`: the menu row under the mouse. Columns are 128 px wide from x 8, rows 20 px
+    /// high from mid-screen; each column answers for its page whatever page is showing.
+    pub fn hit_test(&self, x: i32, y: i32, screen_h: i32, r: &Rules) -> Hit {
+        if x < 8 || y < screen_h / 2 {
+            return Hit::Miss;
+        }
+        let row = (y - screen_h / 2) / 20;
+        let cur = self.page;
+        match (x - 8) / 128 {
+            0 => {
+                if row > 7 || (cur != page::MAIN && row == 7) {
+                    return Hit::Miss;
+                }
+                Hit::Row(page::MAIN, if row == 7 { 10 } else { row + 1 })
+            }
+            1 => match cur {
+                page::CATEGORY..=page::ITEMS => {
+                    if row > 6 || (cur != page::CATEGORY && row == 6) {
+                        return Hit::Miss;
+                    }
+                    Hit::Row(page::CATEGORY, if row == 6 { 10 } else { row + 1 })
+                }
+                page::REMOVE => {
+                    let mut i = 0;
+                    while self.current.entries[i].id != 0 {
+                        if row == i as i32 {
+                            return Hit::Row(page::REMOVE, row + 1);
+                        }
+                        i += 1;
+                        if i > 15 {
+                            return Hit::Unset;
+                        }
+                    }
+                    if row == i as i32 { Hit::Row(page::REMOVE, 10) } else { Hit::Miss }
+                }
+                page::SAVE | page::LOAD if row < 11 => Hit::Row(cur, row),
+                _ => Hit::Miss,
+            },
+            2 => match cur {
+                page::WEAPONS | page::OPTIONS => {
+                    let (mut i, mut skipped) = (0i32, 0i32);
+                    loop {
+                        let Some(&id) = TABLE.get(i as usize).map(|t| &t[self.category.clamp(0, 4) as usize]) else {
+                            return Hit::Unset;
+                        };
+                        if id == -1 {
+                            break;
+                        }
+                        if !restricted(id, false, r) {
+                            if row == i - skipped {
+                                let key = skipped + 1 + row;
+                                return Hit::Row(page::WEAPONS, if key < 10 { key } else { key + 1 });
+                            }
+                        } else {
+                            skipped += 1;
+                        }
+                        i += 1;
+                    }
+                    if row == i - skipped { Hit::Row(page::WEAPONS, 10) } else { Hit::Miss }
+                }
+                page::ITEMS if row < 3 => {
+                    let item = match row {
+                        0 => ITEM_KEVLAR,
+                        1 => ITEM_STEALTH,
+                        _ => 0,
+                    };
+                    let row = if restricted(item, true, r) { row + 1 } else { row };
+                    Hit::Row(page::ITEMS, if row == 2 { 10 } else { row + 1 })
+                }
+                _ => Hit::Miss,
+            },
+            3 if cur == page::OPTIONS => {
+                if row == 0 {
+                    return Hit::Row(page::OPTIONS, 1);
+                }
+                let mut skipped = 0;
+                for i in 0..4 {
+                    if self.attachment_allowed(1 << i) {
+                        if row == i - skipped + 1 {
+                            return Hit::Row(page::OPTIONS, skipped + 1 + row);
+                        }
+                    } else {
+                        skipped += 1;
+                    }
+                }
+                // The akimbo / full-load row (key 6) exists for guns with an akimbo version and
+                // for stackables; "back" follows the last row.
+                let w = tables().weapon(self.pending_weapon.max(0) as u8);
+                let full_row = w.is_some_and(|w| w.akimbo != -1 || w.stack);
+                let mut n = 4;
+                if full_row {
+                    n = 5;
+                    if row == 4 - skipped + 1 {
+                        return Hit::Row(page::OPTIONS, 6);
+                    }
+                }
+                if row == n - skipped + 1 { Hit::Row(page::OPTIONS, 10) } else { Hit::Miss }
+            }
+            _ => Hit::Miss,
+        }
+    }
+
     /// `HandleKey(page, key)` (10038840). Keys 1..11 (10 = "0"/back, 11 = the `a` key).
     pub fn handle_key(&mut self, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
         let mut out = Vec::new();
@@ -916,6 +1003,39 @@ mod tests {
         assert_eq!(a[3], Action::ServerCmd("tka 2_15 6_3 ".into()));
         assert_eq!(a[4], Action::Message("#Buy_UsingNewConfig".into(), [0; 3]));
         assert_eq!(m.last, m.current);
+    }
+
+    #[test]
+    fn mouse_hit_test() {
+        let r = rules();
+        let mut b = BuyMenu::default();
+        let at = |col: i32, row: i32| (8 + col * 128 + 5, 240 + row * 20 + 3);
+        let hit = |b: &BuyMenu, (x, y): (i32, i32)| b.hit_test(x, y, 480, &r);
+        assert_eq!(hit(&b, at(0, 0)), Hit::Row(page::MAIN, 1));
+        assert_eq!(hit(&b, at(0, 7)), Hit::Row(page::MAIN, 10), "the last main row is back");
+        assert_eq!(hit(&b, at(0, 8)), Hit::Miss);
+        assert_eq!(hit(&b, (4, 300)), Hit::Miss);
+        assert_eq!(hit(&b, (100, 200)), Hit::Miss, "above mid-screen");
+        assert_eq!(hit(&b, at(1, 0)), Hit::Miss, "no category column on the main page");
+        b.page = page::CATEGORY;
+        assert_eq!(hit(&b, at(1, 6)), Hit::Row(page::CATEGORY, 10));
+        assert_eq!(hit(&b, at(0, 7)), Hit::Miss, "a parent column has no back row");
+        assert_eq!(hit(&b, at(0, 2)), Hit::Row(page::MAIN, 3), "parent columns stay clickable");
+        b.page = page::WEAPONS;
+        b.category = 0;
+        // Handguns: ten weapons, none restricted under 0x1f; the 11th row is back.
+        assert_eq!(hit(&b, at(2, 9)), Hit::Row(page::WEAPONS, 11), "keys skip 10");
+        assert_eq!(hit(&b, at(2, 10)), Hit::Row(page::WEAPONS, 10));
+        b.page = page::SAVE;
+        assert_eq!(hit(&b, at(1, 3)), Hit::Row(page::SAVE, 3), "save/load rows are the key itself");
+        b.page = page::REMOVE;
+        b.current.entries[0].id = 13;
+        assert_eq!(hit(&b, at(1, 0)), Hit::Row(page::REMOVE, 1));
+        assert_eq!(hit(&b, at(1, 1)), Hit::Row(page::REMOVE, 10));
+        for e in b.current.entries.iter_mut() {
+            e.id = 13;
+        }
+        assert_eq!(hit(&b, at(1, 16)), Hit::Unset, "TS leaves the page unwritten");
     }
 
     #[test]

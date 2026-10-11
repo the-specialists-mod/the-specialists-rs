@@ -164,15 +164,25 @@ pub fn select_next_prev(h: &mut Hud, next: bool, fastswitch: bool) -> Option<Str
 static HEART: goldsrc::Global<Cell<(i32, f32)>> = goldsrc::Global(Cell::new((0, 0.0)));
 static BREATH: goldsrc::Global<Cell<(i32, f32)>> = goldsrc::Global(Cell::new((0, 0.0)));
 
-/// `Think` (1004ce10) sound part: `sound/player/heartbeat1.wav` while the time scale is below 1,
-/// `sound/player/breathe2.wav` while kung-fu power is below 50; both fade out when the cause
-/// ends (volume −0.01 / −0.005 per frame with `SND_CHANGE_VOL`).
+/// `Think` (1004ce10) sound part (`0x1004cf8b..`): `sound/player/heartbeat1.wav` (channel 501)
+/// while the time scale is below 1, `sound/player/breathe2.wav` (502, volume 0.7) while kung-fu
+/// power is below 50. Starting (or restarting while fading) plays it, with `SND_CHANGE_VOL` when
+/// fading; once the cause ends it fades by 0.01 / 0.005 a frame with `SND_CHANGE_VOL` and stops
+/// being updated at 0 (no last call). Every call's pitch is `RandomLong(-5, 5) + 25 +
+/// trunc(75 * timescale)` (`25 - __ftol(timescale * -75)`), attenuation 0.8, on the local player.
+/// The sample names keep TS's `sound/` prefix.
 pub fn think_sounds(_dt: f32) {
     let e = engine();
-    let Some(me) = e.local_player() else { return };
     let (ts, power) = (crate::state::with(|s| s.time_scale), super::with(|h| h.kfu_power));
-    let origin = me.curstate.origin;
-    let run = |cell: &Cell<(i32, f32)>, active: bool, start_vol: f32, fade: f32, ch: i32, sample: &str| {
+    let play = |ch: i32, sample: &str, vol: f32, flags: i32| {
+        let r = goldsrc::ext::render::random_long(-5, 5);
+        let pitch = r + (25 - (ts as f64 * -75.0) as i32);
+        if let Some(me) = e.local_player() {
+            let (index, origin) = (me.index, me.curstate.origin);
+            e.ev_play_sound(index, origin, ch, sample, vol, 0.8, flags, pitch);
+        }
+    };
+    let run = |cell: &Cell<(i32, f32)>, active: bool, start_vol: f32, fade: f64, ch: i32, sample: &str| {
         let (mut st, mut vol) = cell.get();
         if !active {
             if st == 2 {
@@ -180,22 +190,22 @@ pub fn think_sounds(_dt: f32) {
             }
         } else if st == 0 || st == 1 {
             vol = start_vol;
-            e.ev_play_sound(me.index, origin, ch, sample, vol, 0.8, if st == 1 { SND_CHANGE_VOL } else { 0 }, 100);
+            play(ch, sample, vol, if st == 1 { SND_CHANGE_VOL } else { 0 });
             st = 2;
         }
         if st == 1 {
-            vol -= fade;
+            // `fsubl` of a double constant, stored back as a float.
+            vol = (vol as f64 - fade) as f32;
             if vol <= 0.0 {
                 st = 0;
-                e.ev_play_sound(me.index, origin, ch, sample, 0.0, 0.8, SND_CHANGE_VOL, 100);
             } else {
-                e.ev_play_sound(me.index, origin, ch, sample, vol, 0.8, SND_CHANGE_VOL, 100);
+                play(ch, sample, vol, SND_CHANGE_VOL);
             }
         }
         cell.set((st, vol));
     };
-    run(&HEART.0, ts < 1.0, 1.0, 0.01, 501, "player/heartbeat1.wav");
-    run(&BREATH.0, power < 50.0, 0.7, 0.005, 502, "player/breathe2.wav");
+    run(&HEART.0, ts < 1.0, 1.0, 0.01, 501, "sound/player/heartbeat1.wav");
+    run(&BREATH.0, power < 50.0, 0.7, 0.005, 502, "sound/player/breathe2.wav");
 }
 
 // ---------------------------------------------------------------------------------------------

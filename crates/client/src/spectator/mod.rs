@@ -501,12 +501,14 @@ fn smooth(p: &mut ref_params_t) {
 /// element: not in intermission or with `HIDEHUD_ALL`), then the spectator panel, which the
 /// viewport refreshes first.
 pub fn redraw() {
-    let (intermission, hide_all) = crate::hud::with(|h| (h.intermission, h.hide_hud & 4 != 0));
-    if !intermission && !hide_all {
-        overview::draw_names();
-    }
     panel::think();
     panel::draw();
+}
+
+/// `CHudSpectator::Draw` (`0x10023080`, the HLTV name tags), called from the HUD's element pass
+/// in TS's element order.
+pub fn draw_hltv_names() {
+    overview::draw_names();
 }
 
 /// `0x10029d70`: angle between two vectors in degrees (0 if either is zero).

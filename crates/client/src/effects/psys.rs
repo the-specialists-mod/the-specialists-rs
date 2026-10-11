@@ -310,8 +310,9 @@ impl PSys {
         let h = engine().spr_load(name);
         let model = if h != 0 { r::sprite_model(h) } else { std::ptr::null() };
         if model.is_null() {
-            // TS prints this through `CHudSayText::SayTextPrint` (0x10050a69: chat and console).
-            engine().print(&format!("WARNING! cannot found {name}\n"));
+            // `SayTextPrint(text, 1, -1)` (0x10050a69): a chat line. The HUD queues it if its state
+            // is borrowed at the time.
+            crate::hud::say_text_print(&crate::hud::saytext::bytes(&format!("WARNING! cannot found {name}\n")), -1);
             return None;
         }
         self.sprites.push(Sprite { name: name.to_owned(), model, frames: r::spr_frames(h).max(1) });

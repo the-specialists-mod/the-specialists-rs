@@ -7,10 +7,13 @@
 //! text and `CHudMenu`.
 
 pub mod draw;
+mod icons;
 mod notice;
+pub mod saytext;
 pub mod state;
 mod status;
 pub mod text;
+pub mod vgui;
 mod weapons;
 
 use crate::input::{self, Cvar};
@@ -62,8 +65,15 @@ static PREV_BITS: Global<Cell<u32>> = Global(Cell::new(0));
 
 /// Borrow the HUD state. Don't call into the engine in ways that re-enter the client inside `f`.
 pub fn with<R>(f: impl FnOnce(&mut Hud) -> R) -> R {
-    let mut h = HUD.0.borrow_mut();
-    f(h.get_or_insert_with(Hud::default))
+    let r = {
+        let mut h = HUD.0.borrow_mut();
+        f(h.get_or_insert_with(Hud::default))
+    };
+    let pending = std::mem::take(&mut *PENDING_SAY.0.borrow_mut());
+    for (text, client) in pending {
+        say_text_print(&text, client);
+    }
+    r
 }
 
 fn gfx<R>(f: impl FnOnce(&mut Gfx) -> R) -> R {
@@ -203,11 +213,8 @@ pub fn team_color(team: i32) -> [i32; 3] {
 }
 
 fn on_message(m: Msg, buf: &[u8]) {
-    // `SayTextPrint` (1002ed00) drops chat from players the local player muted.
-    if m == Msg::SayText
-        && let Some(t) = shared::protocol::hud::SayText::decode(buf)
-        && crate::voice::is_player_blocked(t.client as i32)
-    {
+    // `MsgFunc_TextMsg` (`0x10034a60`) prints nothing while `AllowedToPrintText` says no.
+    if m == Msg::TextMsg && !crate::menus::allowed_to_print_text() {
         return;
     }
     // Effect messages: the render modules own their effect state and parse the raw payload.
@@ -255,6 +262,10 @@ fn on_message(m: Msg, buf: &[u8]) {
     }
     for f in fx {
         apply_effect(f);
+    }
+    if m == Msg::ResetHUD {
+        // `0x100219c7`: `m_flMouseSensitivity` (`+0x18`) = 0 after the elements' `Reset`.
+        ZOOM_SENS.0.set(0.0);
     }
     if m == Msg::DeathMsg
         && let Some(d) = shared::protocol::hud::DeathMsg::decode(buf)
@@ -314,13 +325,78 @@ fn apply_effect(f: Effect) {
             crate::state::with(|s| s.ts_fade = Some(st));
         }
         Effect::ConsolePrint(t) => e.print(&t),
+        Effect::SayText(t, client) => say_text_print(&saytext::bytes(&t), client),
         // SDK CHudTextMessage sends HUD_PRINTCENTER to the engine's centre print.
         Effect::CenterPrint(t) => e.center_print(&t),
     }
 }
 
-/// `Logo` (impulse 99): the animated logo; TS never ships `sprites/%d_logo.spr`, so ignore.
-fn msg_logo(_buf: &[u8]) {}
+/// `CHud::MsgFunc_Logo` (`0x100209c0`): `m_iLogo` (`+0x8`) = the byte. While it is set,
+/// `CHud::Redraw` draws the animated `sprites/%d_logo.spr` ([`draw_logo`]).
+fn msg_logo(buf: &[u8]) {
+    let v = shared::protocol::hud::Reader::new(buf).byte();
+    with(|h| h.logo = v as i32);
+}
+
+/// `CHud::MsgFunc_Concuss` (`0x10021a40`, hooked at `0x1001fe40`): `m_iConcuss` (`+0x1c`) = the
+/// byte, which `CHud::UpdateClientData` copies to `v_idlescale`; non-zero shows the `dmg_concuss`
+/// status icon in (255, 160, 0), zero hides it. TS servers never send it (a TFC message).
+fn msg_concuss(buf: &[u8]) {
+    let v = shared::protocol::hud::Reader::new(buf).byte() as i32;
+    let icon = with(|h| {
+        h.concuss = v;
+        if v != 0 {
+            return true;
+        }
+        h.icons.disable(b"dmg_concuss");
+        false
+    });
+    if icon {
+        let grenade = gfx(|g| with(|h| h.icons.enable(b"dmg_concuss", [255, 160, 0], &g.sprites)));
+        if grenade {
+            play_timer_sound();
+        }
+    }
+}
+
+/// `CHudStatusIcons::MsgFunc_StatusIcon` (`0x1002f1a0`): byte on/off, string sprite name, and
+/// when on the colour bytes; turning one on also sets the element's `HUD_ACTIVE`.
+fn msg_status_icon(buf: &[u8]) {
+    let mut r = shared::protocol::hud::Reader::new(buf);
+    let on = r.byte();
+    let name = saytext::bytes(&r.string());
+    if on == 0 {
+        with(|h| h.icons.disable(&name));
+        return;
+    }
+    let rgb = [r.byte(), r.byte(), r.byte()];
+    let grenade = gfx(|g| {
+        with(|h| {
+            let gren = h.icons.enable(&name, rgb, &g.sprites);
+            h.icons.active = true;
+            gren
+        })
+    });
+    if grenade {
+        play_timer_sound();
+    }
+}
+
+/// `EnableIcon`'s grenade-timer cue: `weapons/timer.wav` on the local player, `CHAN_STATIC`,
+/// volume 1, attenuation 0.8, pitch 100.
+fn play_timer_sound() {
+    let e = engine();
+    if let Some(p) = e.local_player() {
+        let (index, origin) = (p.index, p.origin);
+        e.ev_play_sound(index, origin, 6, "weapons/timer.wav", 1.0, 0.8, 0, 100);
+    }
+}
+
+/// `CHud::m_iConcuss` (`+0x1c`): `CHud::UpdateClientData` (`0x10024b63`) sets `v_idlescale` from
+/// it.
+pub fn concussion() -> f32 {
+    with(|h| h.concuss) as f32
+}
 
 // ---------------------------------------------------------------------------------------------
 // Init
@@ -333,9 +409,13 @@ fn register_cvars() -> HudCvars {
         classautokill: Cvar::register(c"hud_classautokill", c"1", 3),
         takesshots: Cvar::register(c"hud_takesshots", c"0", 1),
         zoom_sensitivity_ratio: Cvar::register(c"zoom_sensitivity_ratio", c"1.2", 0),
-        // TS registers "80" then forces the value to 80 (overriding configs); the port keeps the
-        // user's value and defaults to 90 like ts-patcher (docs/design.md §10).
-        default_fov: Cvar::register(c"default_fov", c"90", 1),
+        // `0x100203de`: registered as `sprintf("%i", 80)`, flags 0, then `value = 80` written
+        // directly (the string is left as it is).
+        default_fov: {
+            let c = Cvar::register(c"default_fov", c"80", 0);
+            c.set_value(80.0);
+            c
+        },
         capturemouse: Cvar::register(c"hud_capturemouse", c"1", 1),
         saytext_time: Cvar::register(c"hud_saytext_time", c"5", 0),
         centerid: Cvar::register(c"hud_centerid", c"0", 1),
@@ -412,14 +492,16 @@ pub fn init() {
     CVARS.0.set(Some(register_cvars()));
     let e = engine();
     for (m, name, _) in MESSAGES {
-        // The engine parses these two itself (FWGS cl_parse.c; GoldSrc likewise); TS doesn't
-        // hook them either.
-        if matches!(m, Msg::ScreenShake | Msg::ScreenFade) {
+        // The engine parses ScreenShake and ScreenFade itself (FWGS cl_parse.c; GoldSrc
+        // likewise); TS hooks neither, nor SelAmmo.
+        if matches!(m, Msg::ScreenShake | Msg::ScreenFade | Msg::SelAmmo) {
             continue;
         }
         e.hook_user_msg(name, hook_for(*m));
     }
     e.hook_user_msg(c"Logo", msg_logo);
+    e.hook_user_msg(c"Concuss", msg_concuss);
+    e.hook_user_msg(c"StatusIcon", msg_status_icon);
     register_commands();
     with(|h| *h = Hud::default());
 }
@@ -438,6 +520,8 @@ pub fn vid_init() {
         g.train = train;
         g.loaded = true;
     });
+    LOGO.0.set(0);
+    vgui::vid_init();
     // `CHud::VidInit` (`0x100208a9`) resets only the current scale (`0x100963e8`). The `TSSlowMo`
     // target (`0x1009ff04`) is left alone, so slow motion still active eases back in.
     crate::state::with(|st| st.time_scale = 1.0);
@@ -755,6 +839,7 @@ pub fn redraw(time: f32, intermission: bool) {
         }
     }
     with(|h| h.intermission = intermission);
+    let hide_all = with(|h| h.hide_hud & 4 != 0);
 
     let s = e.screen();
     gfx(|g| {
@@ -765,26 +850,150 @@ pub fn redraw(time: f32, intermission: bool) {
     });
     think(dt);
     with(|h| sync_shared(h));
-    if intermission {
-        return;
-    }
     let g = GFX.0.borrow();
     let Some(g) = g.as_ref() else { return };
     let dc = Dc { g, now: time, hud: input::hud_rgb() };
-    let nohud = input::cvars().nohud.value() != 0.0;
-
-    // TS element order (§4.1): CHudTrain, CHudMessage, death notices, CHudTSWeapons,
-    // CHudTSStatus, say text, CHudMenu. Centre text (TextMsg HUD_PRINTCENTER) is engine-drawn in
-    // TS; drawn with the HudText pass here.
-    draw_train(&dc);
-    notice::draw_hud_text(&dc);
-    if !nohud {
-        notice::draw_death_notices(&dc);
+    if intermission {
+        // Only `HUD_INTERMISSION` elements draw: TS sets it on the say text alone.
+        draw_say_text(&dc);
+    } else if !hide_all {
+        let nohud = input::cvars().nohud.value() != 0.0;
+        // TS element order (§4.1), each needing `HUD_ACTIVE` and no `HIDEHUD_ALL`: CHudTrain,
+        // CHudMessage, CHudDeathNotice, CHudStatusIcons, CHudSpectator (HLTV name tags),
+        // CHudTSWeapons, CHudTSStatus, CHudSayText, CHudMenu.
+        draw_train(&dc);
+        notice::draw_hud_text(&dc);
+        if !nohud {
+            notice::draw_death_notices(&dc);
+        }
+        let icons = with(|h| h.icons.active.then(|| h.icons.clone()));
+        if let Some(icons) = icons {
+            icons.draw(dc.h());
+        }
+        crate::spectator::draw_hltv_names();
+        weapons::draw(&dc, nohud);
+        status::draw(&dc, nohud);
+        draw_say_text(&dc);
+        notice::draw_menu(&dc);
     }
-    weapons::draw(&dc, nohud);
-    status::draw(&dc, nohud);
-    notice::draw_say_text(&dc);
-    notice::draw_menu(&dc);
+    draw_logo(g, time);
+}
+
+/// The end of `CHud::Redraw` (`0x10021bcd`): while `m_iLogo` is set, frame
+/// `grgLogoFrame[(int)(time * 20) % 56] - 1` of `sprites/%d_logo.spr` (loaded on first use, and
+/// tried again every frame while missing) in (250, 250, 250) at the top right, half its height
+/// down. Drawn in intermission and under `HIDEHUD_ALL` too.
+fn draw_logo(g: &Gfx, time: f32) {
+    /// `grgLogoFrame` (`0x10093990`).
+    const FRAMES: [i32; 56] = [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 13, 13, 13, 13, 13, 12, 11, 10, 9, 8, 14, 15, 16, 17, 18, 19, 20, 20, 20, 20, 20, 20,
+        21, 22, 23, 24, 25, 26, 27, 28, 29, 29, 29, 29, 29, 29, 28, 27, 26, 25, 24, 30, 31,
+    ];
+    if with(|h| h.logo) == 0 {
+        return;
+    }
+    let e = engine();
+    let mut spr = LOGO.0.get();
+    if spr == 0 {
+        // `0x10058450`: `sprites/%d_logo.spr` with 640 from 640 px wide, else 320.
+        spr = e.spr_load(&format!("sprites/{}_logo.spr", if g.screen.width >= 640 { 640 } else { 320 }));
+        LOGO.0.set(spr);
+    }
+    e.spr_set(spr, [250, 250, 250]);
+    let x = g.screen.width - e.spr_width(spr, 0);
+    let y = e.spr_height(spr, 0) / 2;
+    let i = ((time * 20.0) as i32 % 56).unsigned_abs() as usize;
+    e.spr_draw_additive(FRAMES[i] - 1, x, y, None);
+}
+
+/// `CHud::m_hsprLogo` (`+0x4`), zeroed by `VidInit`.
+static LOGO: Global<Cell<goldsrc::sys::HSPRITE>> = Global(Cell::new(0));
+
+/// The say text element, when active (`HUD_ACTIVE`).
+fn draw_say_text(dc: &Dc) {
+    if !with(|h| h.say_text.active) {
+        return;
+    }
+    // `Draw` (`0x1002eb40`) draws nothing while `AllowedToPrintText` says no.
+    if !crate::menus::allowed_to_print_text() {
+        return;
+    }
+    let plan = with(|h| h.say_text.draw_plan(dc.now, &mut EngineSay));
+    let e = engine();
+    for l in plan {
+        match l {
+            saytext::DrawLine::Name { y, name, color, rest } => {
+                let x = e.draw_console_bytes(10, y, Some(color), &name);
+                e.draw_console_bytes(x, y, None, &rest);
+            }
+            saytext::DrawLine::Plain { y, text } => {
+                e.draw_console_bytes(10, y, Some(saytext::SAY_COLOR), &text);
+            }
+        }
+    }
+}
+
+/// The engine half of [`saytext::SayEnv`].
+struct EngineSay;
+impl saytext::SayEnv for EngineSay {
+    fn string_size(&self, text: &[u8]) -> (i32, i32) {
+        engine().console_bytes_size(text)
+    }
+    fn console_print(&mut self, text: &[u8]) {
+        engine().print_bytes(text);
+    }
+}
+
+/// Lines [`say_text_print`] couldn't add because the HUD state was borrowed (an effect that
+/// warns from inside a HUD callback); [`with`] adds them when the borrow ends.
+static PENDING_SAY: Global<RefCell<Vec<PendingSay>>> = Global(RefCell::new(Vec::new()));
+/// A deferred `SayTextPrint`: (text, client).
+type PendingSay = (Vec<u8>, i32);
+
+/// `CHudSayText::SayTextPrint` (`0x1002ed00`): drops text from a muted player; while
+/// `AllowedToPrintText` says no it goes to the console only; otherwise it becomes a chat line
+/// (the speaker's name coloured when the text starts with `\x02`) and `misc/talk.wav` plays.
+pub fn say_text_print(text: &[u8], client: i32) {
+    if crate::voice::is_player_blocked(client) {
+        return;
+    }
+    let e = engine();
+    if !crate::menus::allowed_to_print_text() {
+        e.print_bytes(text);
+        return;
+    }
+    let Ok(mut h) = HUD.0.try_borrow_mut() else {
+        PENDING_SAY.0.borrow_mut().push((text.to_vec(), client));
+        return;
+    };
+    let h = h.get_or_insert_with(Hud::default);
+    let name = (text.first() == Some(&2) && client > 0).then(|| saytext::bytes(&e.player_info(client).name));
+    // `GetClientColor` reads the scoreboard teams, which live in the state borrowed here.
+    let color = name.as_ref().and_then(|_| {
+        if client == local_index() {
+            return Some([1.0, 1.0, 1.0]);
+        }
+        match h.players.get(client as usize).map_or(0, |p| p.team) {
+            1 => Some([0.6, 0.8, 1.0]),
+            2 => Some([1.0, 0.25, 0.25]),
+            3 => Some(saytext::SAY_COLOR),
+            4 => Some([0.6, 1.0, 0.6]),
+            _ => None,
+        }
+    });
+    // `ScreenWidth`/`ScreenHeight` (the HUD's screen info); the draw pass may hold it.
+    let screen = match GFX.0.try_borrow() {
+        Ok(g) => g.as_ref().map(|g| (g.screen.width, g.screen.height)),
+        Err(_) => None,
+    }
+    .unwrap_or_else(|| {
+        let s = e.screen();
+        (s.width, s.height)
+    });
+    let speaker = name.as_deref().filter(|n| !n.is_empty()).map(|n| (n, color));
+    let saytime = || cvars().saytext_time.value();
+    h.say_text.print(text, speaker, now(), saytime, screen, &mut EngineSay);
+    e.play_sound("misc/talk.wav", 1.0);
 }
 
 /// `CHudTrain::Draw` (10034d40): the speed notch frame of the train sprite, yellowish, a third of

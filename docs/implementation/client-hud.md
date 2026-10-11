@@ -11,6 +11,9 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `crates/client/src/hud/state.rs` | `Hud` state and the pure message handlers (return `Effect`s) |
 | `crates/client/src/hud/{status,weapons,notice}.rs` | `CHudTSStatus`, `CHudTSWeapons`, SDK elements (HudText, death notices, say text, `CHudMenu`) |
 | `crates/client/src/hud/{draw,text}.rs` | hud.txt sprites, `DrawHudNumberTS`, `DrawHudString`, titles.txt localisation, mini printf |
+| `crates/client/src/hud/saytext.rs` | `CHudSayText`: chat lines, wrap, scroll, console print on scroll-off |
+| `crates/client/src/hud/icons.rs` | `CHudStatusIcons` (`StatusIcon`, `Concuss`'s `dmg_concuss`) |
+| `crates/client/src/hud/vgui.rs` | `CSchemeManager` (text schemes, VGUI1 bitmap fonts from `gfx/vgui/fonts/*.tga`) and VGUI1 label text painting with engine fills |
 | `crates/client/src/menus/{mod,buy,scoreboard}.rs` | buy menu (`CTSBuyMenu`), scoreboard, team select, MOTD, mouse routing |
 | `crates/client/src/voice.rs` | `CVoiceStatus`/`CVoiceBanMgr`: speaker state, head icons, speaker labels, talk icon, scoreboard voice icons and squelch mode, `voice_ban.dt`, `VModEnable`/`vban` |
 | `crates/client/src/joystick.rs` | the SDK joystick code TS ships (`IN_JoyMove`, `IN_Commands`, `Joy_AdvancedUpdate_f`), Steam GoldSrc only |
@@ -60,15 +63,22 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `IN_StartupJoystick` 10027960, `IN_ReadJoystick` 10027de0 | `goldsrc::joystick::startup`/`read` |
 | `Joy_AdvancedUpdate_f` 10027b00, `IN_Commands` 10027ca0, `IN_JoyMove` 10027e40 | `joystick::axis_map`/`joy_advanced_update`, `joystick::commands`, `joystick::joy_move`/`apply_axes` |
 | `CMessageWindowPanel` (MOTD, VGUIMenu 5) | `menus::draw_motd` |
+| `CHud::MsgFunc_Concuss` 10021a40 (hooked at 1001fe40), `MsgFunc_Logo` 100209c0, `MsgFunc_ResetHUD` 100219a0, logo draw 10021bcd | `hud::msg_concuss` (`m_iConcuss` → `hud::concussion` → `v_idlescale` in `view::update_client_data`, as `0x10024b63`), `hud::msg_logo`/`draw_logo`, `Hud::apply` (ResetHUD) |
+| `CHudStatusIcons` 1002f0e0 (Init), `MsgFunc_StatusIcon` 1002f1a0, `EnableIcon` 1002f210, `DisableIcon` 1002f330, `Draw` 1002f130, `Reset` 1002f110 | `hud::icons::StatusIcons`, `hud::msg_status_icon` |
+| `CHudSayText` `SayTextPrint` 1002ed00, `MsgFunc_SayText` 1002ecc0, `Draw` 1002eb40, `ScrollTextUp` 1002ead0, `EnsureTextFitsInOneLineAndWrapIfHaveTo` 1002ee90, `InitHUDData` 1002eaa0; `GetClientColor` 1001af40 | `hud::say_text_print`, `hud::saytext::SayText`, `hud::draw_say_text` |
+| `TeamFortressViewport::AllowedToPrintText` 10064240 | `menus::allowed_to_print_text` |
+| `CSchemeManager` 1005c300, `LoadFileByResolution` 1005caf0 | `hud::vgui::Schemes::load`, `hud::vgui::BitmapFont` |
 | `CHudSpectator` 10022c70 (Init), 10022fe0 (VidInit), `DirectorMessage` 10023380, `SetModes` 100234d0, `specmode` 10022c10, map camera 10022da0, `Draw` (HLTV name tags) 10023080, `ParseOverviewFile` 10023720, `LoadMapSprites` 10023c60 | `spectator::{init, vid_init, director_event, set_modes, redraw}`, `spectator::overview::{draw_names, Overview::reset, parse_overview}`; `HUD_DirectorEvent` 1001ab60 and `HUD_DirectorMessage` exports. `VidInit` also zeroes the 0.2 s click timer (`+0xc94`, `input::reset_key_tap`): the client clock restarts with each map, and a timer left from the old map blocked click-to-spawn after a `changelevel` |
 
 ## 2. Message table
 
-Every message in `shared::protocol::MESSAGES` is hooked except `ScreenShake` and `ScreenFade`:
-FWGS (and GoldSrc) parse those two in the engine before client hooks are consulted, and TS
-doesn't hook them either. `Logo` is also hooked (ignored), and the voice module hooks `VoiceMask`
-(audible and server-side ban masks) and `ReqState` (answers `VModEnable` + `vban`). Malformed
-payloads are logged and ignored.
+Every message in `shared::protocol::MESSAGES` is hooked except `ScreenShake` and `ScreenFade`
+(FWGS and GoldSrc parse those two in the engine before client hooks are consulted) and `SelAmmo`,
+none of which TS hooks. The client-only hooks `Logo` (`m_iLogo`, the animated
+`sprites/%d_logo.spr`), `Concuss` (`m_iConcuss` and the `dmg_concuss` icon) and `StatusIcon`
+(`CHudStatusIcons`) are registered as TS registers them; no TS server sends them. The voice module
+hooks `VoiceMask` (audible and server-side ban masks) and `ReqState` (answers `VModEnable` +
+`vban`). Malformed payloads are logged and ignored (see Deviations).
 
 | Message | Read order | Effect |
 |---|---|---|
@@ -97,7 +107,8 @@ payloads are logged and ignored.
 | ClipInfo / WStatus / ActItems / NextStunt / Wires / KFuPower / CustomWP | §3.3 | grid, active items, stunt cooldown, wires, kung-fu power, custom weapon params |
 | ScoreInfo / TeamInfo / TeamScore / TeamNames | stock | scoreboard data |
 | DeathMsg | B, B, Str | kill feed + TS console line |
-| SayText / TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2 (Spectator, TS `10065250`, for the local player on every message: observer is `observer == 1`; an observer leaves third person and gets the buy menu, otherwise `cl_thirdperson` 1 or 0 picks the camera and other values keep it, so the death cam doesn't outlive the respawn. This handler is the only reader of `cl_thirdperson`. Then, observer or not, `0x100652fd` runs `0x1000b9d0` on the client `player`: the predicted spread penalty (`player+0x764`) and the crosshair's copy (`0x1018d188`) go to 0 (`prediction::reset_spread`); the other fields it zeroes, `player+0x768..0x770` and `ev_punchangle` (`0x10191480`), are never read or never non-zero in the TS client. The per-player flag is stored as `observer != 0`: TS keeps the raw byte (`0x101900ec[i]`, `0x101901f5`), but `HUD_AddEntity` (`0x10044846`) and the scoreboard (`0x1005e3e8`) only test it for zero) |
+| SayText | B client, Str | `SayTextPrint(text, client)` (TS `1002ecc0`): dropped for a muted player; console only while `AllowedToPrintText` is false (team menu or MOTD up and no player class); otherwise a chat line (`\x02` lines colour the speaker's name with `GetClientColor`: white for the local player, else the team colour of teams 1-4, the rest in the default text colour), wrapped at the screen width − 40, `misc/talk.wav`. Lines reach the console only as they scroll off. `TextMsg` HUD_PRINTTALK goes the same way with client −1, and every `TextMsg` is skipped while `AllowedToPrintText` is false |
+| TextMsg / HudText / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2. ResetHUD resets every element (status icons too), then `m_flMouseSensitivity` and `m_iConcuss` (TS `100219a0`) (Spectator, TS `10065250`, for the local player on every message: observer is `observer == 1`; an observer leaves third person and gets the buy menu, otherwise `cl_thirdperson` 1 or 0 picks the camera and other values keep it, so the death cam doesn't outlive the respawn. This handler is the only reader of `cl_thirdperson`. Then, observer or not, `0x100652fd` runs `0x1000b9d0` on the client `player`: the predicted spread penalty (`player+0x764`) and the crosshair's copy (`0x1018d188`) go to 0 (`prediction::reset_spread`); the other fields it zeroes, `player+0x768..0x770` and `ev_punchangle` (`0x10191480`), are never read or never non-zero in the TS client. The per-player flag is stored as `observer != 0`: TS keeps the raw byte (`0x101900ec[i]`, `0x101901f5`), but `HUD_AddEntity` (`0x10044846`) and the scoreboard (`0x1005e3e8`) only test it for zero) |
 | Train | B notch | `CHudTrain`: `sprites/%d_train.spr` frame `notch - 1` in (255,160,0), x = w/3 + sprite w/4, y = h - sprite h - font height; hidden at 0 |
 | HideWeapon | B bits | `hide_hud`; HIDEHUD_ALL (4) hides the train element. TS only resets the engine crosshair, which it doesn't use |
 | CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Geiger, Health, Battery, Damage, GameTitle, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
@@ -129,8 +140,8 @@ Cvars, names/defaults/flags as TS registers them (§2.1):
   * CHud::Init cvars that `effects` reads (`effects::init`): `r_paintball` and `gl_fog` (0,
     archived), `gl_fog_start` 0, `gl_fog_end` 2048, `gl_fog_red/green/blue` .5 (flags 0; the
     `gl_fog 2` user fog).
-  * Scheme_Init (`menus::init`, right after the HUD): `bitmapfonts` 1, flags 0. TS's VGUI scheme
-    manager reads it; the port's menus don't use VGUI, so it's only registered.
+  * Scheme_Init (`menus::init`, right after the HUD): `bitmapfonts` 1, flags 0. The scheme
+    manager (`hud::vgui`) reads it when it loads the fonts.
 * Engine-owned names: FWGS's `ref_gl` registers `gl_fog` itself (client-rendering.md,
   Deviations); none of the other names above are engine cvars in FWGS.
 
@@ -219,18 +230,23 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   connected players differs from what the server last reported.
 * Scoreboard: a voice column shows, for players the rules let you hear, banned / talking
   (blinking every 0.3 s) / never spoken / not talking. With the scoreboard up, a mouse press enters
-  squelch mode (cursor, no `+attack`); a press on an audible player's row toggles their mute, saves
-  `<gamedir>/voice_ban.dt` (SDK format: version 1, then 16-byte unique ids) and prints
+  squelch mode (cursor, no `+attack`); a press on an audible player's row toggles their mute (saved
+  to `<gamedir>/voice_ban.dt` at shutdown; SDK format: version 1, then 16-byte unique ids) and prints
   `** #Muted #No_longer_hear_that_player` / `** #Unmuted` (titles.txt, `%s` = name) in the chat.
   Hiding the scoreboard ends squelch mode. Chat (`SayText`) from muted players is dropped.
   `voice_showbanned` lists the bans.
 
 ## 5. HUD draw pass (TS order)
 
-HudText → death notices (`nohud` gate) → weapons element (laser dots, drawn even with `nohud`;
-equipment/slot menu, kung-fu label or weapon info, crosshair or wire panel) → status element (round timer, TS messages, objective
-text, teammate markers, crosshair ID, status panel, power-up, objective markers) → say text →
-`CHudMenu` → (menus module) buy menu, team menu, MOTD, scoreboard, cursor. Colours from
+Train → HudText → death notices (`nohud` gate) → status icons → HLTV name tags → weapons
+element (laser dots, drawn even with `nohud`; equipment/slot menu, kung-fu label or weapon info,
+crosshair or wire panel) → status element (round timer, TS messages, objective text, teammate
+markers, crosshair ID, status panel, power-up, objective markers) → say text → `CHudMenu` → the
+logo → (VGUI pass) spectator panel, voice labels, (menus module) buy menu, team menu, MOTD,
+scoreboard, cursor. As in `CHud::Redraw` (`10021aa0`), `HIDEHUD_ALL` hides every element, and
+during intermission only the say text (`HUD_INTERMISSION`) and the logo draw. TS messages fade
+over their last second: each channel is `__ftol(base × min(expire − now, 1))`, the base being the
+message colour or, for a black message, the `hud_r/g/b` cvar values (`0x1004afc9`). Colours from
 `hud_r/g/b`, halved where TS halves them, red (195,45,45). Sprites: hud.txt `number_0..9`,
 `d_*`; `sprites/player/*.spr`, `sprites/weapons/*.spr`, `cross_e/cross2/cross_t`, `divestep*`,
 `wires/*`, `compass/uparrow/downarrow/cursor`. The crosshair gap is `22 (12 with the laser on) +
@@ -312,20 +328,18 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   0x10039620..0x10039810 (format strings `%i_%i `, `%i `, `tkw `/`tki `/`tka `).
 * Opens only when dead or observing (`buy`, or automatically on each local `Spectator` message with observer 1); closes
   when alive again (except the team page); first open of the session random-buys like TS.
+* Mouse (`MouseEvent` 10038360, only while no VGUI menu is up): a left release runs
+  `FUN_10038410`'s hit test (`BuyMenu::hit_test`: 128 px columns from x 8, 20 px rows from
+  mid-screen, each column answering for its own page) and a miss is key 1 of the current page; a
+  right release is key 10. Escape doesn't close it: TS's key handler (`0x10064b90`) never looks
+  at the buy menu.
+* The restriction mask starts at 0 (every weapon restricted) until `SrvSett 3`, and the weapon
+  type is `FUN_1000b670`'s, Golden Colts counting as pistols (`shared::weapons::is_restricted`).
 
 ## 7. Deviations
 
-* Fixed TS bugs: always-true `Objective`/`ShowObj` bounds; `Buy_SMGs` missing `#`; scoreboard rows
-  are a `Vec` capped at 72 (no 74-entry overrun); `default_fov` registered as "90" (archived) and
-  not forced to 80; buy-menu entry overflow and save/load slot 10/11 out-of-range reads guarded.
-* Restriction mask starts at 0x1f instead of 0 until `SrvSett 3` arrives (0 would show every
-  weapon as restricted).
-* TS messages fade over their last second (TS fades too; the exact curve is hidden behind
-  `__ftol` in the decompile). Heartbeat/breath
-  sounds use pitch 100.
-* Clicking outside any buy-menu row does nothing (TS treats it as key 1 on the current page).
-* Team select, MOTD and scoreboard are immediate-mode replacements for the VGUI1 panels (same
-  commands and data, different look). Escape closes the buy/team menu, Enter/Space/Escape the MOTD.
+Port-only aids and engine requirements:
+* `ts_hud_selftest [dead]` is port-only.
 * **No VGUI1 viewport; the client presents itself as a VGUI2 client instead** (issue #62). TS is
   a VGUI1 client: its viewport panel's `paintBackground` (`0x1005b3c0`) calls
   `VGui_ViewportPaintBackground`, and that engine call is what draws the 3D view and calls
@@ -341,36 +355,65 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   `IN_DeactivateMouse`/`IN_ActivateMouse` when the game UI opens and closes, so `HideClientUI`
   (from `CBaseUI::ActivateGameUI`) and `ActivateClientUI` (from `CBaseUI::HideGameUI`) forward
   to them. FWGS calls neither export and draws the world itself.
-* Spectator panel (`TeamFortressViewport` `+0x884`, created by `0x10064410`, filled by
-  `UpdateSpectatorPanel` `0x10063870`): TS's VGUI1 bar is drawn in immediate mode
-  (`spectator::panel`, after the HUD elements) with the same geometry (full width, the bottom
-  `YRES(40)`, the mode line at the top and the help line at `YRES(25)`), the same texts
-  (`#Spec_Mode%d[ : name]`, `#Directed ` in the locked view, `#Spec_TSHelp%d` or
-  `#Spec_Only_Help`, localised by `#word`), the same refresh rule (mode, target or `nohud`
-  changed, or a `SetModes`) and the same visibility (observing, `nohud 0`). The look differs: a
-  black fill at alpha 155 (VGUI's 100 is inverted) and the console font in the schemes' orange
-  (255, 170, 0), centred, instead of the Arial "Primary Button Text"/"Briefing Text" fonts.
-* HLTV name tags (`CHudSpectator::Draw` `0x10023080`) use the console font like TS; TS's
-  overview zoom and pan deltas (`+0xc98`/`+0xc9c`) are never set, so that code isn't ported.
-* Golden Colts are never restricted (server rule) where the client's own remap would treat them as
-  pistols.
-* `ts_hud_selftest [dead]` is port-only.
-* Voice UI: TS drew the speaker labels, talk icon and scoreboard icons as VGUI1 panels with
-  `gfx/vgui/*.tga` images, which the engine API can't draw. The port draws them in immediate mode:
-  labels with the console font, `sprites/voiceicon.spr` as the local talk icon (green-tinted for
-  the debug "server acked" icon), and a 16 px speaker glyph made of fills for the label and
-  scoreboard icons (banned: red with a cross). Squelch mode centres the virtual cursor. The first
-  scoreboard press (entering squelch mode) isn't passed to the engine as a key.
-* `voice_ban.dt` is written whenever a mute changes (the SDK writes it when the library unloads).
-  TS reads `scripts/voicemodel.txt` but never uses the height, so the port doesn't read it.
-* Joystick on Linux uses an SDL2 game controller (TS only has the Windows WinMM code). The SDL
-  rescan uses the client clock (`GetAbsoluteTime` isn't in the 2007 engine table). A failed device read releases
-  the joystick buttons (TS's zeroed `JOYINFOEX` reads as POV "up"; the port treats it as centred).
 * Director messages: TS exports only the old `HUD_DirectorEvent(command, primary, secondary,
   flags)`, which current engines (FWGS, Steam GoldSrc) never call. The port also handles
   `HUD_DirectorMessage`: `DRC_CMD_START` (1) becomes TS's `DRC_ACTIVE` reset and `DRC_CMD_EVENT`
   (2, the same `short, short, long` layout) TS's `DRC_CAMERA`; other commands are ignored, as TS
   ignores everything but those two.
+* Joystick on Linux uses an SDL2 game controller (TS only has the Windows WinMM code); its rescan
+  uses the client clock (`GetAbsoluteTime` isn't in the 2007 engine table).
+* `voice_ban.dt` is saved from `HUD_Shutdown`: TS saves it in `g_VoiceStatus`'s static destructor
+  (`0x100177e0`) when the library unloads, which Rust has no equivalent for; the engine calls
+  `HUD_Shutdown` just before unloading the library.
+
+Drawing that TS leaves to the engine's VGUI1 surface:
+* Spectator panel (`TeamFortressViewport` `+0x884`, created by `0x10064410`, filled by
+  `UpdateSpectatorPanel` `0x10063870`): the same panel and labels painted with engine fills: the
+  `CTransparentPanel` background (black, VGUI alpha 100), the "Primary Button Text" mode label
+  (`YRES(25)`) and "Briefing Text" help label (`YRES(15)` at `YRES(25)`), each `a_north`
+  (centred, top) in its scheme's foreground colour and font, clipped to the label, with VGUI1's
+  `TextImage` rules (`hud::vgui`). Two engine limits remain. The fills are alpha-blended with
+  `pfnFillRGBABlend`, which only engines from the 2013 update on have (FWGS, current Steam); on
+  an older engine the port falls back to the additive `pfnFillRGBA`, under which the black
+  background vanishes. And TS draws a scheme with the system's Arial when its
+  `gfx\vgui\fonts\<screen width>_<scheme>.tga` is missing (every width but 640, 800, 1024,
+  1152, 1280 and 1600, or `bitmapfonts 0`); the port can't use system fonts, so it draws the
+  bitmap rendered from the same scheme file (`<scheme res>_<scheme>.tga`, the same Arial size).
+* Team select, MOTD and scoreboard are immediate-mode replacements for the VGUI1 panels
+  (`CTeamMenuPanel`, `CMessageWindowPanel`, `ScorePanel`): the same commands and data, but their
+  own layout and the console font. Matching them needs those panels' VGUI1 layouts ported onto
+  `hud::vgui` like the spectator panel. Their keys follow `TeamFortressViewport::KeyInput`
+  (`0x10064b90`) where the port has the menu: Escape closes the team menu once the player has a
+  team; Enter, keypad Enter, Space or Escape close the MOTD. The team menu's digit keys
+  (`SlotInput`) still reach it through the `slot` commands.
+* Voice UI: TS drew the speaker labels, talk icon and scoreboard icons as VGUI1 panels with
+  `gfx/vgui/*.tga` images. The port draws them in immediate mode: labels with the console font,
+  `sprites/voiceicon.spr` as the local talk icon (green-tinted for the debug "server acked"
+  icon), and a 16 px speaker glyph made of fills for the label and scoreboard icons (banned: red
+  with a cross). Squelch mode centres the virtual cursor. The first scoreboard press (entering
+  squelch mode) isn't passed to the engine as a key.
+
+Checks that only matter on input TS mishandles (TS writes or reads out of bounds):
+* `Objective`/`ShowObj` indexes outside 0..31 (TS's check `i >= 0 || i < 32` is always true and
+  writes past the 32 objectives) and labels over 63 characters (TS copies them into a 64-byte
+  stack buffer unbounded) are dropped or cut.
+* Scoreboard rows are a `Vec` capped at 72 (TS can write 74 entries into its 72).
+* Buy menu: an add with all sixteen entries in use is refused (TS writes past them); key 11 (`a`)
+  on the save and load pages is ignored (TS reads config 10, past the nine); a click on a path
+  where `FUN_10038410` leaves the page unwritten (a full sixteen-entry remove list) does nothing
+  (TS uses the uninitialised stack value).
+* `StatusIcon` names over 23 characters are cut (TS's `strcpy` runs over its 24-byte slot), and an
+  unknown sprite name gets an empty rectangle (TS copies the one at index −1).
+* Chat: overlong wrap appends are cut at the 256-byte line (TS's `strcat` runs into the next
+  line), and a wrap at a line's first character breaks at 0 (TS reads the byte before the line).
+* Malformed (short) user messages are logged and ignored; TS's `READ_*` return −1 past the end
+  and its handlers carry on with those values. `WeaponInfo` likewise drops a short message.
+
+Notes (no observable difference):
+* HLTV name tags (`CHudSpectator::Draw` `0x10023080`) use the console font like TS; TS's
+  overview zoom and pan deltas (`+0xc98`/`+0xc9c`) are never set, so that code isn't ported.
+* TS reads `scripts/voicemodel.txt` into `m_VoiceHeadModelHeight` (`+0x177e0`), which nothing
+  reads (`CreateEntities` uses a constant 45, `0x10018053`), so the port doesn't read it.
 
 ## 8. Missing / not done
 

@@ -70,9 +70,14 @@ fn draw_ts_messages(dc: &Dc, h: &mut Hud) {
         if m.expire - dc.now > 10.0 {
             m.expire = dc.now + 10.0;
         }
-        let base = if m.rgb == [0; 3] { dc.hud } else { m.rgb };
-        let f = (m.expire - dc.now).min(1.0);
-        let rgb = base.map(|c| (c as f32 * f) as i32);
+        // `0x1004afc9..0x1004b085`: each channel is `__ftol(base * min(expire - now, 1))`, the
+        // base being the message colour, or for a black message the `hud_r/g/b` cvar values
+        // themselves (floats, not rounded first).
+        let ic = crate::input::cvars();
+        let base = if m.rgb == [0; 3] { [ic.hud_r.value(), ic.hud_g.value(), ic.hud_b.value()] } else { m.rgb.map(|c| c as f32) };
+        // x87 keeps the difference and the product unrounded; f64 is as close as Rust gets.
+        let f = (m.expire as f64 - dc.now as f64).min(1.0);
+        let rgb = base.map(|c| (c as f64 * f) as i32);
         dc.string(m.x, m.y, &m.text, rgb);
     }
 }

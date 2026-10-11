@@ -13,12 +13,13 @@
 //!   `#Spec_TSHelp%d` for the mode, or `#Spec_Only_Help` for HLTV spectators.
 //!
 //! Both lines are localised with `#word` substitution and centred at the top of their label. The
-//! port has no VGUI1 (see client-hud.md §7), so the panel is drawn in immediate mode: a black fill
-//! at VGUI alpha 100 (`CTransparentPanel`) and the console font in the schemes' orange
-//! (255, 170, 0) instead of the scheme's Arial bitmap fonts.
+//! port has no VGUI1, so the panel is painted with engine fills: the `CTransparentPanel`
+//! background (black at VGUI alpha 100) and the labels' texts in the schemes' bitmap fonts and
+//! foreground colours ([`crate::hud::vgui`]).
 
 use super::with;
 use crate::hud::text::localise;
+use crate::hud::vgui;
 use crate::state;
 use goldsrc::client::engine;
 use goldsrc::ext::spectator as spec;
@@ -82,7 +83,16 @@ fn yres(h: i32, n: f32) -> i32 {
     (h as f32 * (1.0 / 480.0) * n) as i32
 }
 
-/// Paints the panel (the VGUI pass, after the HUD).
+/// Where a VGUI1 label with `setContentAlignment(a_north)` puts text `tw` wide in a label `w`
+/// wide: horizontally centred (`w / 2 - tw / 2`, each halved separately), at the top.
+fn north_x(w: i32, tw: i32) -> i32 {
+    w / 2 - tw / 2
+}
+
+/// Paints the panel (the VGUI pass, after the HUD): `CTransparentPanel::paintBackground` (black,
+/// VGUI alpha 100 = 155/255 opaque), then the two labels' texts in their scheme fonts and
+/// foreground colours, each clipped to its label (`0x10064410`: "Primary Button Text" for the
+/// `YRES(25)` mode label, "Briefing Text" for the `YRES(15)` help label at `YRES(25)`).
 pub(super) fn draw() {
     let (visible, top, help) = with(|s| (s.panel.visible, s.panel.mode_text.clone(), s.panel.help_text.clone()));
     if !visible {
@@ -93,12 +103,20 @@ pub(super) fn draw() {
     let (w, h) = (sc.width, sc.height);
     let tall = yres(h, 40.0);
     let y = (h as f32 - h as f32 * (1.0 / 480.0) * 40.0) as i32;
-    e.fill(0, y, w, tall, [0, 0, 0], 255 - 100);
-    let fg = [1.0, 170.0 / 255.0, 0.0];
-    for (text, ly) in [(top, y), (help, y + yres(h, 25.0))] {
-        let text = text.trim_end_matches(['\r', '\n']);
-        let (tw, _) = e.console_string_size(text);
-        e.draw_console_string((w - tw) / 2, ly, fg, text);
+    e.fill_blend(0, y, w, tall, [0, 0, 0], 255 - 100);
+    let labels = [(top, "Primary Button Text", y, yres(h, 25.0)), (help, "Briefing Text", y + yres(h, 25.0), yres(h, 15.0))];
+    for (text, scheme, ly, lh) in labels {
+        let bytes = crate::hud::saytext::bytes(&text);
+        let fg = vgui::fg(scheme);
+        let drawn = vgui::text_size(scheme, &bytes)
+            .is_some_and(|(tw, _)| vgui::draw_text_clipped(scheme, north_x(w, tw), ly, fg, &bytes, (0, ly, w, lh)));
+        if !drawn {
+            // No bitmap font at all (the game files are missing): the console font, centred.
+            let text = text.trim_end_matches(['\r', '\n']);
+            let (tw, _) = e.console_string_size(text);
+            let c = [fg[0] as f32 / 255.0, fg[1] as f32 / 255.0, fg[2] as f32 / 255.0];
+            e.draw_console_string(north_x(w, tw), ly, c, text);
+        }
     }
 }
 
