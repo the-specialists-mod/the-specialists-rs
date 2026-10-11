@@ -109,12 +109,13 @@ sounds and events are numbered separately). The audit changed:
   `weapon_tripmine`).
 * Precaches TS doesn't issue were dropped, though their names were already precached: the items'
   `items/suitchargeok1.wav` and the battery's `weapons/items.wav`, `func_tracktrain`'s
-  `plats/train_use1.wav`; `env_shooter` precaches its model before the material sounds.
+  `plats/train_use1.wav`, `weapon_tsgun`'s `models/w_glock18.mdl` (`CTSGun::Spawn` 0x8053c only
+  sets it; `TSPrecache`'s weapon loop precaches it with every world model); `env_shooter`
+  precaches its model before the material sounds.
 
 Left as they are, all repeats of names the world precached: `env_explosion` and
 `cycler_wreckage` precache `zerogxplode.spr`/`steam1.spr` (and `grenade.mdl`) to get the indices
-TS keeps in `g_sModelIndexFireball`/`g_sModelIndexSmoke`, and a map's `weapon_tsgun` precaches
-`w_glock18.mdl`. Guards: the `precache_model_s`/`precache_sound_s` helpers skip an empty name,
+TS keeps in `g_sModelIndexFireball`/`g_sModelIndexSmoke`. Guards: the `precache_model_s`/`precache_sound_s` helpers skip an empty name,
 and `ts_model` with an empty `model` is removed; TS would pass "" to the engine.
 
 `goldsrc::ext::entities` adds the following:
@@ -170,7 +171,7 @@ and `ts_model` with an empty `model` is removed; TS would pass "" to the engine.
 | `trigger_changelevel`, `trigger_transition` | **TS** `CChangeLevel` 0xe7da0..0xe865c, `CTriggerVolume::Spawn` 0xe7bc0 | Keys `map`, `landmark` (32+ characters log "too long"), `changetarget`, `changedelay`, plus `CBaseTrigger`'s. Touch by a `player` (not with spawnflag 2) or use (with a targetname). `ChangeLevelNow` does nothing under the multiplayer rules; otherwise once per frame: slot 1 (or the world) must overlap one of the `trigger_transition`s named like the landmark (if any exist), then a `fireanddie` is created for `changetarget`, the targets fire, `vecLandmarkOffset` is set from the `info_landmark` and `pfnChangeLevel(map, landmark)` runs. `trigger_transition` only keeps its brush box (model dropped). |
 | `trigger_monsterjump` | **TS** `CTriggerMonsterJump` 0xe6a0c..0xe6ae4 | `SetMovedir` + brush; speed 200, height 150. A `FL_MONSTER` toucher is lifted 1 unit and thrown along `movedir`·speed + 150 up; the trigger goes non-solid on the next think. With a targetname it starts off and toggles on use. TS has no monsters, so nothing triggers it. |
 | `player_loadsaved` | **TS** `CRevertSaved` 0xddd0c..0xddf38 | Use: `TSFade` out to everyone (`rendercolor`, `duration`, `holdtime`, `renderamt`), `message` to every player after `messagetime`, `reload` after `loadtime` when `deathmatch` is 0. |
-| `player_weaponstrip` | **TS** `CStripWeapons::Use` 0xddbb0 | `RemoveAllItems(FALSE)` (`weapons::remove_all_items_keep_suit`: the TS gun holstered and destroyed with its inventory and reserve ammo, view/weapon models cleared, HEV suit bit kept, `UpdateClientData`, `CurWeapon 0,0,0`) on a player activator, or on slot 1 when not under the multiplayer rules. |
+| `player_weaponstrip` | **TS** `CStripWeapons::Use` 0xddbb0 | `RemoveAllItems(FALSE)` (`weapons::remove_all_items_keep_suit`: the TS gun holstered and destroyed with its inventory and reserve ammo, view/weapon models cleared, HEV suit bit kept, `UpdateClientData`, `CurWeapon 0,0,0`) on a player activator, or on slot 1 when not under the multiplayer rules. Inside the `Use`, also for a player whose own +use fired it (lent, `world::run_now_or_defer`). |
 | `func_monsterclip` | **TS** `CFuncMonsterClip` 0xa55d0 | `func_wall` with `FL_MONSTERCLIP`; `effects` is set to `EF_NODRAW` (not or-ed) unless `showtriggers`; Use does nothing. |
 | `info_target`, `info_teleport_destination`, `info_intermission`, `info_landmark`, `info_null` | SDK | `info_null` removes itself. |
 | `env_global`, `env_message` | SDK | Global states persist across maps, like `gGlobalState`. |
@@ -200,7 +201,7 @@ and `ts_model` with an empty `model` is removed; TS would pass "" to the engine.
 | `game_score` | SDK maprules.cpp (same in TS 0xcc4d8..0xcc568) | `points` (`strtol`, into `frags`) to the activating player (`IsPlayer`: any slot player; `AddPoints` 0xd9e18, `ScoreInfo` to all), or with spawnflag 2 to each other slot player who is a teammate (`AddPointsToTeam` 0xd9f68, `PlayerRelationship`: never outside teamplay); without spawnflag 1 a score isn't taken below 0 (the floor is `(int)-frags`). `frags` is read with a C `(int)` cast (`maprules::x87_int`: truncation, 0x80000000 for NaN/out of range). `master` gates it. |
 | `game_end` | SDK maprules.cpp (TS 0xcc668) | `EndMultiplayerGame`: the intermission (`frame::go_to_intermission`); nothing when `deathmatch` was 0 (TS's `CHalfLifeRules`). `master` gates it. |
 | `game_zone_player` | SDK maprules.cpp (TS 0xcce90..0xcd148) | Brush (`CRuleBrushEntity::Spawn`: model set, invisible, not solid). Keys `intarget`, `outtarget`, `incount`, `outcount`, `master`. On use, each slot player (`UTIL_PlayerByIndex`, players who left included) is inside when `pfnTraceModel` from its origin to its origin with the human hull (head hull when `FL_DUCKING`) against the brush starts solid; it fires `intarget`/`outtarget` with the player as activator, our activator as caller and our use type and value. Then `incount`/`outcount` get `USE_SET` with the counts (activator, us as caller). |
-| `game_player_hurt` | SDK maprules.cpp (TS 0xcd16c) | A player activator takes `dmg` (`DMG_GENERIC`, the entity as inflictor and attacker), or `-dmg` health (`TakeHealth`) when `dmg` is negative; then the targets fire with our use type and value; removed after firing with flag 1. `master` gates it. |
+| `game_player_hurt` | SDK maprules.cpp (TS 0xcd16c) | A player activator takes `dmg` (`DMG_GENERIC`, the entity as inflictor and attacker), or `-dmg` health (`TakeHealth`) when `dmg` is negative, inside the `Use` even for a player whose own +use fired it (lent, `world::run_now_or_defer`); then the targets fire with our use type and value; removed after firing with flag 1. `master` gates it. |
 | `game_counter` | SDK maprules.cpp (TS 0xcd24c..0xce510) | Spawn keeps `(int)frags` in `dmg`. `USE_OFF` counts down, `USE_ON`/`USE_TOGGLE` up, `USE_SET` sets `(int)value`. When `(int)frags == (int)health` the targets get `USE_TOGGLE`; flag 1 removes it, flag 2 resets the count to `dmg`. `master` gates it. |
 | `game_counter_set` | SDK maprules.cpp (TS 0xcd418) | `USE_SET` with its `frags` to its targets; removed after firing with flag 1. `master` gates it. |
 | `monster_hevsuit_dead` | SDK `CDeadHEV` | `models/player.mdl`, body 1, sequence from `pose` (0–3: `deadback`, `deadsitting`, `deadstomach`, `deadtable`; a missing sequence logs "Dead hevsuit with bad pose" and gets `EF_BRIGHTFIELD`). Falls (`MOVETYPE_TOSS`) and takes its sequence box on landing. Crush/fall/blast/sonic/club damage wears it down (10 %) and gibs it when a hit reaches its health: head gib + 4 human gibs with blood, `common/bodysplat.wav`; with `violence_hgibs 0` it fades out instead. |
@@ -212,7 +213,7 @@ and `ts_model` with an empty `model` is removed; TS would pass "" to the engine.
 | `weaponbox` | SDK `CWeaponBox` (TS 0xf2868..0xf320c) | `models/w_weaponbox.mdl`, toss, trigger, zero size but a ±16 × 0..16 touch box (`SetObjectCollisionBox`). Every key that isn't an entity field is an ammo name (`PackAmmo`; after 32, "WeaponBox too full!"), but TS's `MaxAmmoCarry` (0xf0c0c) knows no ammo (the only `ItemInfoArray` entry, `weapon_tsgun`, names none), so each logs "MaxAmmoCarry() doesn't recognize" and nothing is packed. A living player touching it once it is on the ground hears `items/gunpickup2.wav` and it is removed. |
 | `weapon_tsgun` | **TS** `CTSGun::Spawn` 0x8053c + `CBasePlayerItem` 0xf1698..0xf1d80 | Placed by a map or created by `GiveNamedItem` (`PlayerSpawn`, `game_player_equip`). `models/w_glock18.mdl`, falls (`FallInit`/`FallThink`; `weapondrop1.wav` only with an owner), then a trigger with a ±24 × 0..16 touch box. A living player without a gun takes it (`DefaultTouch`, reaching a player lent by its own call: `player::with_player_now`): `weapons::add_gun` (empty, kung fu, weapon bit 16), `CheckRespawn`, `weapons::switch_to_gun` (holstering an active cycler), `AttachToPlayer`, `items/gunpickup2.wav`, its `target` fires (`delay`/`killtarget` honoured). A player who already holds a gun leaves it lying (a `GiveNamedItem` one at its feet, for anyone else). A `GiveNamedItem` gun is taken in the air, so it keeps its `FallThink` (every 0.1 s, never landing) while held. Under the multiplayer rules and without `SF_NORESPAWN` a hidden copy appears at the same spot and materialises (`suitchargeok1.wav`) 20 s later, or at once with `mp_weaponstay`. The taken entity stays as the player's gun item (`AttachToPlayer`: following, hidden, no model) until `RemoveAllItems` drops it (removed 0.1 s later). |
 | `cycler_weapon` | SDK `CWeaponCycler` (TS 0xc7c78..0xc8840) | The map's `model` as a slidebox with a ±24 × 0..16 touch box. A living player without one takes it (`DefaultTouch`): HL item slot 1, weapon bit 0, `gunpickup2.wav`, `target` fired, then attached like the gun. Under the multiplayer rules and without `SF_NORESPAWN` a copy respawns, which has no model: TS precaches an empty name there (GoldSrc stops with "Bad string", FWGS warns), and so does the port. It is deployed (view model = its model, `m_flNextAttack` 1, weapon anim 0) as `FShouldSwitchWeapon` decides: under the multiplayer rules only with no active item (no TS gun), in single player always, holstering a held gun to kung fu; a gun given later holsters it. `use cycler_weapon` / `use weapon_tsgun` switch between them (`weapons::select_item`). Its attacks never run (TS's `ItemPostFrame` returns for anything but the gun). Dropped with the gun by `RemoveAllItems` (death think, observer, disconnect, `player_weaponstrip`). |
-| `game_player_equip` | SDK maprules.cpp (same in TS 0xcd494) | Unknown keys are items (`name#n` stripped, count ≥ 1, max 32), given through `GiveNamedItem` (item spawned at the player's feet with `SF_NORESPAWN`, then touched). Touch (master, not `USEONLY`) / use (no master). TS `PlayerSpawn` touches every one on spawn instead of giving the gun and buying the loadout (`maprules::equip_on_spawn`, called from `weapons::on_spawn`; deferred until the player's spawn dispatch returns). `weapon_tsgun` is TS's gun entity: a new, empty gun for a player without one, otherwise left lying at its feet. The item touches reach a player whose own +use or spawn is on the stack (`player::with_player_now`), as in TS. |
+| `game_player_equip` | SDK maprules.cpp (same in TS 0xcd494) | Unknown keys are items (`name#n` stripped, count ≥ 1, max 32), given through `GiveNamedItem` (item spawned at the player's feet with `SF_NORESPAWN`, then touched). Touch (master, not `USEONLY`) / use (no master). TS `PlayerSpawn` touches every one on spawn instead of giving the gun and buying the loadout (`maprules::equip_on_spawn`, called from `weapons::on_spawn` inside the spawn, the player lent to its slot). `weapon_tsgun` is TS's gun entity: a new, empty gun for a player without one, otherwise left lying at its feet. The item touches reach a player whose own +use or spawn is on the stack (`player::with_player_now`), as in TS. |
 | `game_team_master` | TS 0xccae8..0xccd40 | `teamindex` (-1 none), `triggerstate` (0 off, 2 toggle, else on), master. `USE_SET` takes the activator's team (`GetTeamIndex(TeamID)`) or none for a negative value; other uses fire the targets when the activator's team matches (`UTIL_TeamsMatch`: always outside teamplay; `ANYTEAM` with no team), once with flag 1. It is also a master (`IsTriggered` = `TeamMatch`), for spawn points, doors and the rest. |
 | `game_team_set` | TS 0xccd64 | `USE_SET` to its targets with 0, or -1 with `CLEARTEAM` (2); once with flag 1. |
 | `game_player_team` | TS 0xcd740..0xce658 | A player activator moves to the team of the targeted `game_team_master` (`ChangePlayerTeam(team, kill = flag 2, gib = flag 4)`; nothing outside teamplay); once with flag 1. The change happens inside the `Use`, as in TS: a player whose +use, `game_playerdie`, `game_playerjoin` or `game_playerspawn` fired it, or whose own shot or swing did (a shot button or `func_breakable`), is lent back to its slot meanwhile (`world::lend`, `world::run_now_or_defer`; rules.md §7). |
@@ -378,8 +379,11 @@ The classes are the SDK's. TS changes nothing in them, but the TS data around th
 Port notes:
 
 * The player's half of `StartControl` / `StopControl` (holster or deploy, `HideWeapon` bits) runs
-  through `world::defer` once the player object is back in its slot, because +use and `PostThink`
-  reach the tank from inside the player's own dispatch. It runs in the same server frame.
+  inside the tank's `Use`, as in TS: +use (`player_use`), `PostThink` (`drive::post_think`) and
+  `Killed` / `StartObserver` (`drive::release_tank`) reach the tank from inside the player's own
+  dispatch and lend the player to its slot meanwhile (`world::lend`, `world::run_now_or_defer`).
+  So `StartObserver`'s `StopControl` redeploys the emptied gun (kung fu) before `RemoveAllItems`.
+  A player held by a dispatch that didn't lend it gets its half once that returns.
 * `PlayerUse` is `player::player_use`, run as in TS from `PostThink` → `ItemPostFrame` →
   `ImpulseCommands` (`weapons::post_think`, once the gun's `m_flNextAttack` has run out).
 * `CFuncTankLaser::Activate` (find the laser, turn it off; no laser removes the tank) runs from the
@@ -593,8 +597,8 @@ covers:
    * The health decay above `max_health` (PreThink, `+0x73c`) belongs to the rules package.
    * Kevlar: `items::player_take_armor` calls the one `TakeArmor` port, `weapons::take_armor`
      (vest in `SvState::items & 0x10`, its 10 slots taken from the shared `free_slots`). The HEV
-     charger is used from the player's own `PlayerUse`, so the call is deferred until the player
-     is back in its slot (same frame). `DropArmor` (0x93a3c) has no callers in TS and isn't ported.
+     charger is used from the player's own `PlayerUse`, which lends the player to its slot, so
+     the armour lands inside the `Use` (`world::run_now`), as in TS. `DropArmor` (0x93a3c) has no callers in TS and isn't ported.
    * The HEV suit bit (`pev->weapons & 1<<31`) is set on spawn (rules package). The battery and
      the HEV charger refuse players without it, as in TS.
 6. **`trigger_camera` on death or respawn.** TS `CBasePlayer::Killed` and `Spawn` call
@@ -673,12 +677,13 @@ covers:
 
 ### 7.1 Deviations in the #22 classes
 
-* **Map rules and a mid-dispatch activator.** When the activator is the entity being dispatched
-  (its own +use fired the button that fired us), its object is taken out: `game_score`'s
-  `ScoreInfo` (it reads the deaths from the player object) and `game_player_hurt`'s damage go out
-  as soon as that dispatch returns, in the same frame; TS does both inside the `Use`, so the
-  hurt's targets fire before the damage here. `frags` and `game_player_hurt`'s healing change at
-  once.
+* **Map rules and a mid-dispatch activator.** A player whose own +use, shot or swing, spawn or
+  `game_playerdie`/`game_playerjoin`/`game_playerspawn` fired us is lent back to its slot
+  (`world::lend`), so `game_score`'s `ScoreInfo` (it reads the deaths from the player object),
+  `game_player_hurt`'s damage (before its targets fire) and healing decay timer, and
+  `player_weaponstrip`'s `RemoveAllItems(FALSE)` all happen inside the `Use`, as in TS
+  (`world::run_now_or_defer`). Only a player held by a dispatch that didn't lend it (no TS path
+  is known to reach one) gets them once that dispatch returns, in the same frame.
 * **NULL activator.** TS's `game_score` and `game_player_hurt` call `IsPlayer()` through the
   activator and crash on a NULL one; the port treats it as not a player (the hurt still fires its
   targets).

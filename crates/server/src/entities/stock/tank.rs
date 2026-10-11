@@ -164,8 +164,9 @@ impl<const K: u8> FuncTank<K> {
         cx.pev().spawnflags &= !SF_TANK_SOUNDON;
     }
 
-    /// `CFuncTank::StartControl` (0xc2a24). The player's half (holster, hide the weapon HUD) runs
-    /// in `drive::tank_started` once the player is back from its own dispatch.
+    /// `CFuncTank::StartControl` (0xc2a24). The player's half (holster, hide the weapon HUD) is
+    /// `drive::tank_started`, run from `Use` inside the call as in TS when the player lent itself
+    /// (`player_use`).
     fn start_control(&mut self, cx: &mut Cx, player: *mut edict_t) -> bool {
         if self.controller.is_valid() {
             return false;
@@ -187,7 +188,9 @@ impl<const K: u8> FuncTank<K> {
         if player.is_null() {
             return;
         }
-        world::defer(player, move || drive::tank_stopped(player));
+        // `m_pController->m_pActiveItem->Deploy()` at once, as in TS: every caller holding the
+        // player lends it (`drive`); a held, unlent one redeploys once its dispatch returns.
+        world::run_now_or_defer(player, move || drive::tank_stopped(player));
         engine().alert(ALERT_TYPE::at_console, "stopped using TANK\n");
         self.controller = EHandle::NULL;
         let v = cx.pev();
@@ -575,7 +578,7 @@ impl<const K: u8> Entity for FuncTank<K> {
                 // `pActivator->m_pTank = this` happens even when StartControl refuses.
                 let started = self.start_control(cx, activator);
                 let tank = cx.edict;
-                world::defer(activator, move || drive::tank_started(activator, tank, started));
+                world::run_now_or_defer(activator, move || drive::tank_started(activator, tank, started));
             } else {
                 self.stop_control(cx);
             }

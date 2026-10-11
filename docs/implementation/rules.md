@@ -59,7 +59,7 @@ are Ghidra addresses.
 | `SendMOTDToClient` 0xd0ae4 | `lifecycle::send_motd` | `ServerName` = hostname, `motdfile` (default `motd.txt`) in ≤60-char chunks, ≤0x600 bytes. |
 | `CTSGameRules::InitHUD` 0x79134 | `lifecycle::ts_init_hud` | cheat notices (`g_flWeaponCheat`), `SrvSett` 0–3, RoundTime, `Spectator` of everyone, **joiner starts as observer** with `respawntime` (5..30 s). |
 | `SetPlayerRespawnTime` 0x75ff4 | `lifecycle::set_respawn_time` | LMS respawn budget (`respawnnumber` → 1), join deadline; award 1 / 11. |
-| `StartObserver` 0x99634 / `StopObserver` 0x99a14 | `lifecycle::{start_observer, stop_observer}` | TSCash resend, TE_KILLPLAYERATTACHMENTS (at `pev->origin`), the CTB case dropped before the inventory is cleared, ActItems 0, SetFOV 0, `EF_NODRAW`, deadflag 3, health 1, velocity left as it was, TeamInfo, then the `RemoveAllItems(TRUE)` tail (no view/weapon model, `pev->weapons = 0` so the HEV suit bit and its geiger counter go, `UpdateClientData` inline, so ResetHUD goes out here when the 0.1 s throttle allows, then `CurWeapon 0,0,0`), `Spectator 1`, starts in the saved mode (chase free the first time); stop saves the mode. |
+| `StartObserver` 0x99634 / `StopObserver` 0x99a14 | `lifecycle::{start_observer, stop_observer}` | TSCash resend, TE_KILLPLAYERATTACHMENTS (at `pev->origin`), the active item holstered as TS does (`weapons::observer_holster`: for the gun `CTSGun::Reset`, `HolsterWeapon`, then `Holster`, i.e. `HolsterWeapon` again, 0x9971e..0x9974f; a cycler's `Holster`), so the gun is emptied before either holster runs (a primed grenade isn't thrown) and a living player gets two kung-fu holster animations and draw events, the CTB case dropped before the inventory is cleared, a tank let go (its `StopControl` redeploys the emptied gun at once: the player is lent, `drive::release_tank`), ActItems 0, SetFOV 0, `EF_NODRAW`, deadflag 3, health 1, velocity left as it was, TeamInfo, then the `RemoveAllItems(TRUE)` (the active item's third `Holster`, after `deadflag` is set so it sends nothing; then the tail: no view/weapon model, `pev->weapons = 0` so the HEV suit bit and its geiger counter go, `UpdateClientData` inline, so ResetHUD goes out here when the 0.1 s throttle allows, then `CurWeapon 0,0,0`)), `Spectator 1`, starts in the saved mode (chase free the first time); stop saves the mode. |
 | `Observer_SetMode` 0x99e44 / `Observer_FindNextPlayer` 0x99b0c / `Observer_HandleButtons` 0x99d34 / `Observer_Idle` 0x99ca4 | `lifecycle::{observer_set_mode, observer_find_next_player, observer_handle_buttons, observer_idle}` | TS observer modes (`shared::ts::obs`): 1 chase locked, 2 chase free, 3 roaming (maxspeed 420), **5 in-eye**; there are no map modes and 4 is HLTV-only. Jump cycles 3 → 2 → 1 → 5 → 3, forward/back pick the next/previous target (not while roaming), 0.2 s apart. The target (`m_hObserverTarget`, `PlayerRules::obs_target`) is the killer (last inflictor if a player), kept across lives; the next one is a living, visible, non-observing player, only teammates in LMS while a respawn is pending. Twice a second a dead or observing target is replaced. No target → roaming. The camera position is `PM_SpectatorMove`'s. |
 | `respawn` client command (ClientCommand) | `lifecycle::respawn_command` | only while observing and after `respawn_at`; "You have to wait until the next round." |
 | `CHalfLifeMultiplay::PlayerThink` 0xcfb60 | `lifecycle::player_think` | from the head of `PreThink`, after the button edges: during intermission a newly pressed attack/attack2/jump/duck/use (0x827, against `m_afButtonLast`, which PostThink no longer updates) sets `end_intermission_button_hit`, and the edges and `pev->button` are cleared. It returns true then and `Player::pre_think` stops, as TS returns on `g_fGameOver`: no water, time-based damage, stunt, weapon timers or train controls in intermission. |
@@ -262,7 +262,7 @@ Where TS reads garbage or crashes on input it never gets in practice:
 Port structure:
 * `PlayerSpawn` with a `game_player_equip`: as in TS no `weapon_tsgun` (no gun at all, kung fu
   included, unless the equip lists it: `weapons::has_gun`, weapons.md §2) and no `BuyArmament`.
-  The equip touches run right after the player's spawn instead of inside it.
+  The equip touches run inside the spawn, as in TS, with the player lent to its slot.
 * `game_player_team` changes the activator's team inside the `Use`, as TS does, when the
   activator's own call fired it: `player_use` (+use), `game_playerdie` (`PlayerKilled`) and
   `game_playerjoin`/`game_playerspawn` (`UpdateClientData`'s InitHUD block) lend the player back to
@@ -274,6 +274,13 @@ Port structure:
   targets `game_player_team` changes the team mid-shot, as in TS. A change with flag 2 kills the
   shooter there, holstering and emptying the gun that is firing; the attack then carries on with
   that gun, as TS's carries on with its changed `CTSGun`.
+* The same lend lets every other call TS makes on a busy player happen at once: `game_player_hurt`
+  (damage before its targets fire, healing), `game_score`'s `ScoreInfo`, `player_weaponstrip`'s
+  `RemoveAllItems(FALSE)`, the HEV charger's `TakeArmor`, the antidote count, `func_tank`'s
+  `StartControl`/`StopControl` player half (`drive` lends the player around its tank `Use`s), and
+  `PlayerKilled`'s scoring of a killer whose own shot, swing or +use killed (`world::run_now` on the
+  lent killer, `scoring::player_killed`). Only a player held by a dispatch that didn't lend it gets
+  the work once that dispatch returns (`world::run_now_or_defer`, same frame).
 * `deathmatch 0` (`CHalfLifeRules`, §2.1): `CBulletManager::Reset` still runs on every map from
   the weapons' precache (TS resets only from `CTSGameRules::Init`; no bullet moves in single
   player either way).

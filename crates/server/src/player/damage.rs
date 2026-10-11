@@ -97,16 +97,16 @@ pub fn take_health(p: &mut Player, cx: &mut Cx, amount: f32) -> bool {
 }
 
 /// `CBasePlayer::TakeHealth` (0xd8760) for entities healing a player edict (healthkits, chargers,
-/// doors, negative `trigger_hurt`). The health changes at once; when the player is taken out
-/// further up the stack (its own `+use` opening a healing door), the decay timer is set as soon
-/// as it is back.
+/// doors, negative `trigger_hurt`, `game_player_hurt`). The health changes at once, and so does
+/// the decay timer when the player is lent to its slot (its own `+use` opening a healing door,
+/// `player_use`); one held by a dispatch that didn't lend it gets the timer once that returns.
 pub fn take_health_edict(e: *mut edict_t, amount: f32) -> bool {
     let timer = engine().time() + 1.0;
     let Some(over) = add_health(e.v(), amount) else {
         return false;
     };
     if over {
-        crate::world::defer(e, move || {
+        crate::world::run_now_or_defer(e, move || {
             super::with_player(e, |p, _| p.ts.health_timer = timer);
         });
     }

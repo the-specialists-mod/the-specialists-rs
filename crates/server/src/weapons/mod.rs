@@ -304,6 +304,37 @@ pub fn holster_for_tank(p: &mut Player, cx: &mut Cx) {
     holster_active(p, cx);
 }
 
+/// The item part at the top of `CBasePlayer::StartObserver` (0x9971e..0x9974f): when
+/// `m_pActiveItem` is the TS gun (`m_iId == 16`), `CTSGun::Reset` (0x805e0, [`gun_reset`]) and
+/// `CTSGun::HolsterWeapon` (0x85698); then, for any active item, its `Holster` (`CTSGun::Holster`
+/// 0x85674, which is `HolsterWeapon` again, or `CWeaponCycler::Holster` 0xc7dd4). The reset comes
+/// first, so neither holster finds a record: a primed grenade is not thrown and a reload is not
+/// cancelled, the weapon is simply gone. Each gun holster of a living player sends the kung-fu
+/// holster animation and the draw event; `RemoveAllItems` holsters a third time later, after
+/// `deadflag` is set, so that one sends neither.
+pub fn observer_holster(p: &mut Player, cx: &mut Cx) {
+    if matches!(active_item(p), Active::Gun) {
+        gun_reset(&mut p.inv);
+        host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
+    }
+    holster_active(p, cx);
+}
+
+/// `CTSGun::Reset` (0x805e0): the records, reserve ammo, current weapon (with its cached
+/// record and info pointers, +0xc8..+0xd0) and the `UpdateClientData` caches (+0x97a..+0x9de: last
+/// `WeaponInfo` id 0, its status and reserve, the `WStatus` owned flags) are zeroed. Timers, the
+/// kung-fu bar and the gun entity's `pev` are left alone.
+fn gun_reset(inv: &mut Inventory) {
+    let body = inv.gun.body;
+    inv.gun.reset_inventory();
+    inv.gun.body = body;
+    let sv = &mut inv.sv;
+    sv.sent_id = Some(0);
+    sv.sent_status = Status::default();
+    sv.sent_reserve = 0;
+    sv.sent_owned = [false; MAX_WEAPONS];
+}
+
 /// `CFuncTank::StopControl` (0xc2b1c): `m_pActiveItem->Deploy()` (`CTSGun::Deploy` 0x81030, or
 /// `CWeaponCycler::Deploy`), when there is an active item.
 pub fn deploy_after_tank(p: &mut Player, cx: &mut Cx) {
@@ -820,6 +851,33 @@ mod tests {
         assert!(!gun_active(&p) && holds_gun(&p));
         p.inv.sv.has_gun = false;
         assert_eq!(active_item(&p), Active::Cycler);
+    }
+
+    #[test]
+    fn tsgun_reset_empties_the_gun_and_its_send_caches() {
+        use shared::weapons::id;
+        let mut inv = Inventory::default();
+        assert_eq!(inv.gun.take_weapon(id::AK47, None, 0), Some(id::AK47));
+        inv.gun.current = id::AK47;
+        inv.gun.reserve[3] = 90;
+        inv.gun.body = 1;
+        inv.gun.melee_bar = 42.0;
+        inv.sv.sent_id = Some(id::AK47);
+        inv.sv.sent_reserve = 90;
+        inv.sv.sent_owned[id::AK47 as usize] = true;
+        gun_reset(&mut inv);
+        // CTSGun::Reset (0x805e0): records, reserve, current (so no record for the holsters that
+        // follow it in StartObserver), and +0x97a..+0x9de zeroed.
+        assert!(inv.gun.status.iter().all(|s| !s.owned));
+        assert_eq!(inv.gun.reserve, [0; MAX_AMMO]);
+        assert_eq!(inv.gun.current, 0);
+        assert!(inv.gun.slot().is_none());
+        assert_eq!(inv.sv.sent_id, Some(0));
+        assert_eq!(inv.sv.sent_reserve, 0);
+        assert_eq!(inv.sv.sent_owned, [false; MAX_WEAPONS]);
+        // The gun entity's pev (body) and the player-side fields stay.
+        assert_eq!(inv.gun.body, 1);
+        assert_eq!(inv.gun.melee_bar, 42.0);
     }
 
     #[test]

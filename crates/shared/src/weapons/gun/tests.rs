@@ -28,6 +28,8 @@ struct Mock {
     blocks: Vec<f32>,
     crouches: Vec<i32>,
     cooldowns: Vec<f32>,
+    /// `IsAlive()` false (`HolsterWeapon` stops before its animation and event).
+    dead: bool,
 }
 
 impl GunHost for Mock {
@@ -44,7 +46,7 @@ impl GunHost for Mock {
         false
     }
     fn alive(&self) -> bool {
-        true
+        !self.dead
     }
     fn buttons(&self) -> u32 {
         self.buttons
@@ -411,6 +413,38 @@ fn grenade_pull_and_throw_on_release() {
     assert_eq!(h.slots, 7);
     let pins: Vec<i32> = h.events.iter().filter(|e| e.0 == Event::Grenade).map(|e| e.1.i1).collect();
     assert_eq!(pins, vec![0x13, 0x14]);
+}
+
+/// `CBasePlayer::StartObserver` (0x9971e..0x9974f) on a living player with a primed grenade:
+/// `CTSGun::Reset`, `HolsterWeapon`, `Holster` (`HolsterWeapon` again), then `RemoveAllItems`'
+/// `Holster` once `deadflag` is set.
+#[test]
+fn observer_reset_then_holsters_throws_nothing() {
+    let (mut g, mut h) = armed(id::M61);
+    let mut last = 0;
+    frame(&mut g, &mut h, 1, &mut last, 0.01);
+    assert_eq!(g.status[id::M61 as usize].state, 1, "pin pulled");
+    h.events.clear();
+    h.anims.clear();
+    g.reset_inventory();
+    g.holster_weapon(&mut h);
+    g.holster_weapon(&mut h);
+    h.dead = true;
+    g.holster_weapon(&mut h);
+    assert!(h.grenades.is_empty(), "the reset took the primed grenade: nothing thrown");
+    assert!(!h.events.iter().any(|e| e.0 == Event::Grenade));
+    // Two kung-fu holster animations and draw events (current 0), none from the dead holster.
+    let draws: Vec<i32> = h.events.iter().filter(|e| e.0 == Event::Draw).map(|e| e.1.i1).collect();
+    assert_eq!(draws, vec![0, 0]);
+    assert_eq!(h.anims.len(), 2);
+    assert_eq!(g.current, 0);
+
+    // Without the reset (what a holster alone does) the grenade would go.
+    let (mut g, mut h) = armed(id::M61);
+    let mut last = 0;
+    frame(&mut g, &mut h, 1, &mut last, 0.01);
+    g.holster_weapon(&mut h);
+    assert_eq!(h.grenades.len(), 1);
 }
 
 #[test]

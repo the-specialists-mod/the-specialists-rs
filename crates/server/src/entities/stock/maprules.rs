@@ -272,9 +272,10 @@ pub fn add_points(player: *mut edict_t, points: i32, allow_negative: bool) {
     let v = player.v();
     let Some(points) = clamp_points(v.frags, points, allow_negative) else { return };
     v.frags += points as f32;
-    // The message reads the deaths from the player object, which is taken out when the player's
-    // own +use fired us: it then goes out as soon as that dispatch returns (same frame).
-    world::defer(player, move || crate::rules::scoring::broadcast_score(player));
+    // The message reads the deaths from the player object. A player whose own +use fired us lent
+    // itself back (`player_use`), so it goes out inside the `Use` as in TS; one held by a dispatch
+    // that didn't lend it gets it once that returns.
+    world::run_now_or_defer(player, move || crate::rules::scoring::broadcast_score(player));
 }
 
 /// `AddPoints`' floor: without `allow_negative` a score can't be taken below zero (and an
@@ -359,9 +360,10 @@ impl Entity for GamePlayerHurt {
             let me = cx.edict;
             let dmg = cx.pev().dmg;
             if 0.0 <= dmg {
-                // The activator is usually mid-dispatch (its +use fired us): the damage lands as
-                // soon as that returns (same frame); TS deals it inside the `Use`.
-                world::defer(activator, move || {
+                // Inside the `Use`, before the targets fire, as in TS: a player whose +use fired
+                // us lent itself back (`player_use`); one held by a dispatch that didn't lend it
+                // takes the damage once that returns.
+                world::run_now_or_defer(activator, move || {
                     crate::damage::apply(activator, &world::DamageInfo::new(me, me, dmg, 0));
                 });
             } else {

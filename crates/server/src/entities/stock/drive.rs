@@ -89,8 +89,9 @@ pub fn player_use(p: &mut Player, cx: &mut Cx, pressed: i32) -> bool {
     let me = cx.edict;
     let tank = p.drive.tank.get();
     if !tank.is_null() {
-        // Stop controlling the tank.
-        world::dispatch(tank, |ent, tcx| ent.use_(tcx, me, me, UseType::Off, 0.0));
+        // Stop controlling the tank. The player is lent to its slot so `StopControl` redeploys
+        // its gun inside the call, as in TS (`world::run_now_or_defer`).
+        world::lend(me, p, || world::dispatch(tank, |ent, tcx| ent.use_(tcx, me, me, UseType::Off, 0.0)));
         p.drive.tank = EHandle::NULL;
         return true;
     }
@@ -174,10 +175,12 @@ pub fn post_think(p: &mut Player, cx: &mut Cx) {
     }
     let me = cx.edict;
     let pv = cx.pev();
+    // Lent to its slot meanwhile, as in `player_use`: `StopControl` redeploys the gun inside the
+    // call, as in TS.
     if tank::on_controls(tank, pv) && pv.weaponmodel == 0 {
-        world::dispatch(tank, |ent, tcx| ent.use_(tcx, me, me, UseType::Set, 2.0));
+        world::lend(me, p, || world::dispatch(tank, |ent, tcx| ent.use_(tcx, me, me, UseType::Set, 2.0)));
     } else {
-        world::dispatch(tank, |ent, tcx| ent.use_(tcx, me, me, UseType::Off, 0.0));
+        world::lend(me, p, || world::dispatch(tank, |ent, tcx| ent.use_(tcx, me, me, UseType::Off, 0.0)));
         p.drive.tank = EHandle::NULL;
     }
 }
@@ -189,7 +192,9 @@ pub fn release_tank(p: &mut Player, cx: &mut Cx) {
         return;
     }
     let me = cx.edict;
-    world::dispatch(tank, |ent, tcx| ent.use_(tcx, me, me, UseType::Off, 0.0));
+    // Lent, so `StopControl` redeploys the gun here (before `StartObserver`'s `RemoveAllItems`), as
+    // in TS.
+    world::lend(me, p, || world::dispatch(tank, |ent, tcx| ent.use_(tcx, me, me, UseType::Off, 0.0)));
     p.drive.tank = EHandle::NULL;
 }
 

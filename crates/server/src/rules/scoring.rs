@@ -160,8 +160,22 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
     let close = g.close_combat;
 
     // The killer's own think (its weapon frame) is usually what killed: its Player is taken
-    // out further up the stack. Score as soon as that call returns.
+    // out further up the stack. TS scores inside the `Killed`; the weapon frame, a tank shot and
+    // a +use lend the killer to its slot (`world::lend`), so it is reached now. A killer held by
+    // a dispatch that didn't lend it is scored as soon as that call returns.
     if killer_is_player && crate::world::is_taken_out(attacker) {
+        // Opened only if it was parked: a lent killer whose own object is dispatched again (opened
+        // further up and taken out once more) stays out of reach, and waits like an unlent one.
+        let scored = crate::world::run_now(attacker, || {
+            let open = !crate::world::is_taken_out(attacker);
+            if open {
+                player_killed(p, cx, d, g);
+            }
+            open
+        });
+        if scored == Some(true) {
+            return;
+        }
         let d = *d;
         crate::world::defer(attacker, move || {
             crate::player::with_player(victim, |p, cx| player_killed(p, cx, &d, g));

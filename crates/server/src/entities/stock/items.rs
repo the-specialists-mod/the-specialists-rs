@@ -42,21 +42,26 @@ pub fn take_health(e: *mut edict_t, amount: f32) -> bool {
 }
 
 /// TS `CBasePlayer::TakeArmor(amount)` (0x93da4, `weapons::take_armor`) for an edict. An HEV
-/// charger is used from the player's own `PlayerUse`, so the player is taken out for a dispatch
-/// further up the stack; the armour then lands as soon as that returns (same frame) and this
+/// charger is used from the player's own `PlayerUse`, which lends the player to its slot
+/// (`player_use`), so the armour lands inside the `Use` as in TS (`world::run_now`). A player
+/// held by a dispatch that didn't lend it gets the armour once that returns, and this then
 /// reports success, which both callers ignore anyway, as TS does.
 pub fn player_take_armor(p: *mut edict_t, amount: f32) -> bool {
     if !is_player(p) {
         return false;
     }
     let n = amount as i32;
+    let take = move || crate::player::with_player(p, |pl, cx| crate::weapons::take_armor(pl, cx, n));
+    if let Some(Some(took)) = crate::world::run_now(p, take) {
+        return took;
+    }
     if crate::world::is_taken_out(p) {
         crate::world::defer(p, move || {
-            crate::player::with_player(p, |pl, cx| crate::weapons::take_armor(pl, cx, n));
+            take();
         });
         return true;
     }
-    crate::player::with_player(p, |pl, cx| crate::weapons::take_armor(pl, cx, n)).unwrap_or(false)
+    false
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -138,9 +143,9 @@ impl<const KIND: u8> Item<KIND> {
             Kind::Antidote => {
                 // `CItemAntidote::MyTouch` (0xcb968): no pickup message or sound, always taken.
                 super::sentences::set_suit_update(p, c"!HEV_DET4", false, 60);
-                // `m_rgItems[ITEM_ANTIDOTE]++` (+0x834). The player can be taken out further up
-                // the stack (a trigger touched from its own think), so wait until it is back.
-                crate::world::defer(p, move || {
+                // `m_rgItems[ITEM_ANTIDOTE]++` (+0x834), at once when the player is reachable or
+                // lent; one held by a dispatch that didn't lend it counts it once that returns.
+                crate::world::run_now_or_defer(p, move || {
                     crate::player::with_player(p, |pl, _| pl.tbd.antidotes += 1);
                 });
             }

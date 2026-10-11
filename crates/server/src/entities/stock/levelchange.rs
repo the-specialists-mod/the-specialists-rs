@@ -378,9 +378,10 @@ impl Entity for StripWeapons {
         if player.is_null() {
             return;
         }
-        // The activator may be the player being dispatched (its +use fired us): strip it once its
-        // object is back in its slot, in the same frame.
-        world::defer(player, move || {
+        // `RemoveAllItems(FALSE)` inside the `Use`, as in TS: a player whose +use fired us lent
+        // itself back (`player_use`); one held by a dispatch that didn't lend it is stripped once
+        // that returns.
+        world::run_now_or_defer(player, move || {
             crate::player::with_player(player, crate::weapons::remove_all_items_keep_suit);
         });
     }

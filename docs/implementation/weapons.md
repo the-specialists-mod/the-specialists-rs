@@ -149,7 +149,15 @@ addresses of `ts_i386.so`.
   `Drop`ped (removed 0.1 s later), the gun destroyed with what's left in it (reserve, records),
   then `remove_all_items_tail`: no view/weapon model, `pev->weapons = 0`, `UpdateClientData`
   inline (0xd8eb5), `CurWeapon 0,0,0`. `StartObserver` does the same through `strip_all` +
-  `remove_all_items_tail`; `player_weaponstrip` through `remove_all_items_keep_suit`.
+  `remove_all_items_tail`, after its own holsters (`observer_holster`, 0x9971e..0x9974f): with
+  the gun active, `CTSGun::Reset` (`gun_reset`: records, reserve, current weapon and the
+  `UpdateClientData` caches +0x97a..+0x9de zeroed), `HolsterWeapon`, then `Holster`
+  (`HolsterWeapon` again); a cycler gets its `Holster`. So the gun holsters three times in all,
+  the third from `RemoveAllItems` after `deadflag` is set; a living player gets the kung-fu
+  holster animation and draw event (iparam1 0) from each of the first two, a dead one from none,
+  and no holster finds a record (a primed grenade is not thrown). `player_weaponstrip` uses
+  `remove_all_items_keep_suit`, inside its `Use` even for a player whose own +use fired it
+  (lent, `world::run_now_or_defer`).
 * Weapon bits (`pev->weapons`, sent as `clientdata_t::weapons`): `AddToPlayer` sets bit 16 when
   the gun is added (`give_gun` without a gun: `PlayerSpawn`, an equip, a map `weapon_tsgun`) and
   bit 0 for a `cycler_weapon`; bit 31 is the HEV suit (`PlayerSpawn`). Only `RemoveAllItems`

@@ -278,12 +278,13 @@ impl Entity for WorldTsGun {
     }
 
     /// `CTSGun::Spawn` (0x8053c) and `CBasePlayerItem::FallInit` (0xf175c). `CTSGun::Precache`
-    /// only precaches the gun events, which `W_Precache` already did for the map.
+    /// only precaches the gun events, which `W_Precache` already did for the map, and `Spawn`
+    /// sets `models/w_glock18.mdl` without precaching it: `TSPrecache`'s weapon loop did
+    /// (`weapons::precache_weapon_assets`, the Glock's world model).
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let me = cx.edict;
         cx.pev().classname = eng.alloc_string(c"weapon_tsgun");
-        eng.precache_model(c"models/w_glock18.mdl");
         eng.set_model(me, c"models/w_glock18.mdl");
         let v = cx.pev();
         v.movetype = MOVETYPE_TOSS as i32;

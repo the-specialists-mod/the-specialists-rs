@@ -590,6 +590,43 @@ mod tests {
         assert_eq!(read(&s), Some(5));
     }
 
+    /// The `game_player_hurt` / `player_weaponstrip` shape: a player's +use (its dispatch, lending
+    /// it) fires another entity, whose `Use` changes the player before it goes on, as TS's direct
+    /// `TakeDamage` / `RemoveAllItems` calls do. The scoring shape: inside a third dispatch (the
+    /// victim's `Killed`) `run_now` reaches the lent killer for the rest of the call.
+    #[test]
+    fn a_lent_player_is_changed_inside_another_entitys_call() {
+        let s = store();
+        let player = s.insert(Box::new(Thing { value: 100 }));
+        let rule = s.insert(Box::new(Thing { value: 0 }));
+        let victim = s.insert(Box::new(Thing { value: 0 }));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let (s2, log2) = (s.clone(), log.clone());
+        s.dispatch(player, std::ptr::null_mut(), |ent, _| {
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            s2.lend(Some(player), me, || {
+                let (s3, log3) = (s2.clone(), log2.clone());
+                s2.dispatch(rule, std::ptr::null_mut(), |_, _| {
+                    let (s4, log4) = (s3.clone(), log3.clone());
+                    s3.run_now_or_defer(player, move || {
+                        s4.with::<Thing, _>(player, |t| t.value -= 30).unwrap();
+                        log4.borrow_mut().push("hurt");
+                    });
+                    log3.borrow_mut().push("targets");
+                    let s4 = s3.clone();
+                    s3.dispatch(victim, std::ptr::null_mut(), |_, _| {
+                        let s5 = s4.clone();
+                        let scored = s4.run_now(player, || s5.with::<Thing, _>(player, |t| t.value += 1));
+                        assert_eq!(scored, Some(Some(())), "the lent killer is reached inside the victim's call");
+                    });
+                });
+            });
+            assert_eq!(me.value, 71, "both changes came back with the lent object");
+        });
+        assert_eq!(*log.borrow(), vec!["hurt", "targets"], "the damage lands before the targets fire");
+        assert_eq!(value(&s, player), Some(71));
+    }
+
     #[test]
     fn lend_without_dispatch_just_runs() {
         let s = store();

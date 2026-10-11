@@ -637,11 +637,12 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
         .byte(TE_KILLPLAYERATTACHMENTS)
         .byte(idx & 0xff)
         .end();
-    // The gun is holstered first (`CTSGun::Reset`/`HolsterWeapon`, then its `Holster`), the case
-    // dropped, then a tank let go (`Use(USE_OFF)`, which re-deploys the gun). `DropFlag(false)`
-    // (0x9975f) comes before `RemoveAllItems` (0x99986): dropping the case after the reset would
-    // leave `free_slots` 20 above the 81 maximum.
-    crate::weapons::holster_for_tank(p, cx);
+    // The gun is emptied and holstered first (`CTSGun::Reset`, `HolsterWeapon`, then its
+    // `Holster`), the case dropped, then a tank let go (`Use(USE_OFF)`, which re-deploys the
+    // emptied gun: kung fu). `DropFlag(false)` (0x9975f) comes before `RemoveAllItems`
+    // (0x99986): dropping the case after `strip_all` would leave `free_slots` 20 above the 81
+    // maximum.
+    crate::weapons::observer_holster(p, cx);
     crate::entities::ts::drop_flag(p, cx, false);
     crate::entities::stock::drive::release_tank(p, cx);
     msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
