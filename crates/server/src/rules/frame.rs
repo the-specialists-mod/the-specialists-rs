@@ -127,7 +127,8 @@ fn teamplay_think(now: f32) {
 
 /// The game-over part of `CHalfLifeMultiplay::Think`: `mp_chattime` kept in 10..120 (compared
 /// rounded), then `ChangeLevel` once the chat time is over and a player pressed a button
-/// (`PlayerThink`), or 120 s into the intermission.
+/// (`PlayerThink`), or 120 s into the intermission. TS calls it every frame from then on; the
+/// engine runs only the first `changelevel` of a map (`last_spawncount` in both FWGS and HLDS).
 fn intermission_think(now: f32) {
     let eng = engine();
     let chat = cvars::f(c"mp_chattime").round_ties_even() as i32;
@@ -138,17 +139,13 @@ fn intermission_think(now: f32) {
     }
     let start = state::with(|g| g.intermission_start);
     let end = start + cvars::f(c"mp_chattime");
-    // The engine runs one `changelevel` per map, so the port asks once.
-    let changed = state::with(|g| {
-        if g.intermission_end == 0.0 && now > end && (g.end_intermission_button_hit || now > start + 120.0) {
-            g.intermission_end = now;
-            true
-        } else {
-            false
-        }
+    // `m_flIntermissionEndTime` (`+4`), rewritten every frame.
+    let go = state::with(|g| {
+        g.intermission_end = end;
+        now > end && (g.end_intermission_button_hit || now > start + 120.0)
     });
-    if changed {
-        change_level();
+    if go {
+        super::mapcycle::change_level();
     }
 }
 
@@ -170,40 +167,6 @@ pub fn go_to_intermission() {
     });
     MsgWriter::begin(MSG_ALL as i32, SVC_INTERMISSION, None, std::ptr::null_mut()).end();
     engine().print("[ts] intermission\n");
-}
-
-/// `ChangeLevel` (0xd0784): the map a vote chose, else the next map from `mapcyclefile`
-/// (after the current one), else the same map.
-fn change_level() {
-    let eng = engine();
-    let current = eng.string(eng.globals().mapname).to_string_lossy().into_owned();
-    let file = {
-        let f = eng.cvar_string(c"mapcyclefile").to_string_lossy().into_owned();
-        if f.is_empty() { "mapcycle.txt".to_owned() } else { f }
-    };
-    let maps: Vec<String> = eng
-        .load_file(&file)
-        .map(|d| {
-            String::from_utf8_lossy(&d).lines().filter_map(|l| l.split("//").next()?.split_whitespace().next().map(str::to_owned)).collect()
-        })
-        .unwrap_or_default();
-    let mut next = next_map(&maps, &current, |m| eng.is_map_valid(m));
-    // A passed map vote wins over the cycle (an invalid one falls back to the current map).
-    if let Some(voted) = state::with(|g| g.votes.override_map().map(str::to_owned)) {
-        next = if eng.is_map_valid(&voted) { voted } else { current.clone() };
-    }
-    state::with(|g| g.votes.chosen.clear());
-    eng.print(&format!("[ts] changing level to {next}\n"));
-    eng.change_level(&next);
-}
-
-/// Picks the entry after `current` in the cycle (wrapping), skipping invalid maps.
-pub fn next_map(cycle: &[String], current: &str, valid: impl Fn(&str) -> bool) -> String {
-    if cycle.is_empty() {
-        return current.to_owned();
-    }
-    let start = cycle.iter().position(|m| m.eq_ignore_ascii_case(current)).map_or(0, |i| i + 1);
-    (0..cycle.len()).map(|k| &cycle[(start + k) % cycle.len()]).find(|m| valid(m)).cloned().unwrap_or_else(|| current.to_owned())
 }
 
 fn ts_think(now: f32) {
@@ -575,18 +538,6 @@ fn unused() -> MsgWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::next_map;
-
-    #[test]
-    fn mapcycle() {
-        let c: Vec<String> = ["ts_a", "ts_b", "ts_c"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(next_map(&c, "ts_a", |_| true), "ts_b");
-        assert_eq!(next_map(&c, "ts_c", |_| true), "ts_a");
-        assert_eq!(next_map(&c, "other", |_| true), "ts_a");
-        assert_eq!(next_map(&c, "ts_a", |m| m != "ts_b"), "ts_c");
-        assert_eq!(next_map(&[], "ts_x", |_| true), "ts_x");
-    }
-
     #[test]
     fn refund() {
         use super::round_refund;

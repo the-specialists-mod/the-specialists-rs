@@ -32,14 +32,18 @@ impl Args {
     }
 }
 
+/// `ClientCommand` (0xad838). Command names are matched as typed: TS compares them with `strcmp`
+/// and `strstr(..) == argv(0)` prefixes, so `Say` or `WEAPON_13` are unknown commands. Only the
+/// voice manager's `vban`/`VModEnable` use `strcasecmp`. Without private data (no `Player`) TS
+/// returns at once.
 pub fn client_command(e: *mut edict_t) {
     let args = Args;
-    let cmd = args.str(0).to_ascii_lowercase();
+    let cmd = args.str(0);
     let handled = world::dispatch(e, |ent, cx| {
         let Some(p) = (ent as &mut dyn std::any::Any).downcast_mut::<Player>() else { return false };
-        dispatch_player(p, cx, &cmd, &args)
+        dispatch_player(p, cx, cmd, &args)
     });
-    if handled != Some(true) {
+    if handled == Some(false) {
         // ClientCommand's tail (0xae5de): `argv(0)` as typed, cut to 127 bytes, through
         // `ClientPrint(HUD_PRINTCONSOLE)` (a `TextMsg`). The TS client sends `_special` on every
         // +attack2, and TS answers it with this too.

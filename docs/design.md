@@ -116,8 +116,8 @@ Fields several subsystems read live on `Player` itself: `slow_target`, `active_p
 Hook order, fixed in `player/mod.rs`:
 
 * **spawn:** base player setup, then `rules::on_spawn` (spawn point, loadout), `weapons::on_spawn`, `stunt::on_spawn`, `drive::on_spawn`, `hud::reset`.
-* **pre_think:** as in TS `PreThink` (0x908cc), `rules::player_think` first (button edges, `PlayerThink`); during intermission PreThink stops there. Otherwise `drive::pre_think` (train speed control), then `rules`, `stunt`, `weapons`.
-* **post_think:** as in TS `PostThink` (0x91610), during intermission or while dead only the weapon timers run down (plus `rules` and `hud::update`); otherwise `drive::post_think` (tank firing / letting go), `weapons` (item post frame, skipped while a tank is in use; once the gun is ready it first runs `player::player_use`, TS's single `PlayerUse` for every usable entity: stock, TS items, dropped guns), `stunt`, `rules`, then `hud::update` (sends changed HUD values, including `Train` and `HideWeapon`).
+* **pre_think:** as in TS `PreThink` (0x908cc), `rules::player_think` first (button edges, `PlayerThink`); during intermission PreThink stops there. Otherwise `drive::pre_think` (train speed control), then `rules` (which runs `hud::update_client_data`, TS's `UpdateClientData`, right after `WaterMove`), `stunt`, `weapons`.
+* **post_think:** as in TS `PostThink` (0x91610), during intermission or while dead only the weapon timers run down (plus `rules`); otherwise `drive::post_think` (tank firing / letting go), `weapons` (item post frame, skipped while a tank is in use; once the gun is ready it first runs `player::player_use::impulse_commands`, TS's `ImpulseCommands`: the single `PlayerUse` for every usable entity (stock, TS items, dropped guns), then impulses 99 and 204), `stunt`, `rules`.
 * **fill_client_data:** `stunt`, `weapons`, `rules`.
 * **take_damage:** `player::damage::take_damage`, which on death calls `rules::on_killed`. That in turn calls `weapons::on_killed`. Self-inflicted damage from inside the player's own callbacks (fall, drowning, slime/lava, poison) calls `take_damage` directly, since `damage::apply` can't reach the dispatched entity.
 
@@ -135,7 +135,7 @@ Hook order, fixed in `player/mod.rs`:
 ### 4.6 Messages
 
 * `messages::{one, one_unreliable, all, pvs, pas}(Msg, …)` return a `MsgWriter`; call `.byte()`, `.short()`, …, then `.end()`.
-* HUD values are sent from `hud::update` when they change, like TS's shadow-copy approach.
+* HUD values are sent from `hud::update_client_data` (TS `CBasePlayer::UpdateClientData`, 0.1 s throttle, InitHUD block included) when they change, like TS's shadow-copy approach; it ends with the gun's own `UpdateClientData` (`weapons::update_client_data`). `fullupdate` and `RemoveAllItems` (`StartObserver`, disconnect) run it inline, as TS does.
 
 ### 4.7 Time scale (slow motion)
 
