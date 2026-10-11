@@ -33,7 +33,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `KB_Find` 10025880 | `input::find` |
 | `IN_MouseMove` 100274d0 / `IN_MouseEvent` 100273d0 / `IN_Accumulate` 100278b0 | `input::apply_mouse`, `mouse_event`, `accumulate` (+ `native`, `win`, `sdl`); all three stand down while `camera::mouse_in_use` (`iMouseInUse` 0x100df394), leaving the motion to `CAM_Think` (`input::take_cursor_offset`) |
 | `TS_ApproachTimescale` 10055ae0 | `hud::approach_timescale` (called from `HUD_Frame`) |
-| `CHud::Think` 10049760, `UTIL_ApproachFOV` 10049620, `SetFOV` 10049570 | `hud::think_fov`, `Msg::SetFov` handler |
+| `CHud::Think` 10049760 (from `CHud::UpdateClientData` 10024b00), `UTIL_ApproachFOV` 10049620, `HUD_GetFOV` 100209f0, `SetFOV` 10049570 | `hud::think_fov` (from `view::update_client_data`), `view::ease_fov`, `hud::get_fov` (demo record type 0), `hud::set_fov` (ignored while `cl_lw` is on; sets the target and `m_iFOV`, and the sensitivity `fov·0.0125·sensitivity·zoom_sensitivity_ratio`) |
 | `CHudTSStatus` handlers 1004b730..1004c1e0 | `Hud::apply` (status arms) |
 | `AddTSMessage` 1004b520 | `Hud::add_ts_message` |
 | `CHudTSStatus::Draw` 10049ea0 and `DrawRoundTimer` 1004a130, `DrawPowerup` 1004a2e0, `DrawStatusPanel` 1004a3e0, `DrawTeammateMarkers` 1004ab40, `DrawCrosshairID` 1004acc0, `DrawTSMessages` 1004af40, `DrawObjectiveText` 1004b0e0, `DrawObjectiveMarkers` 10049fc0 | `hud::status::*` |
@@ -72,7 +72,7 @@ payloads are logged and ignored.
 
 | Message | Read order | Effect |
 |---|---|---|
-| TSHealth | B hp | health; hp 0 → third-person toggle request (death cam) |
+| TSHealth | B hp | health; hp 0, not observing and not already in third person → `thirdperson` toggle request (TS `1004b730`). This toggle is the whole death cam: TS has no other dead-camera flag, and everything that checks third person reads `cam_thirdperson` |
 | TSArmor / TSState / TSSpace | B | kevlar / stance / free slots |
 | TSCash | S | credits |
 | PwUp | S flags, B value | flags & 0x104 → kung-fu / movement icon, else timed power-up |
@@ -320,7 +320,7 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
 * Restriction mask starts at 0x1f instead of 0 until `SrvSett 3` arrives (0 would show every
   weapon as restricted).
 * TS messages fade over their last second (TS fades too; the exact curve is hidden behind
-  `__ftol` in the decompile). FOV smoothing rate is a guess for the same reason. Heartbeat/breath
+  `__ftol` in the decompile). Heartbeat/breath
   sounds use pitch 100.
 * Clicking outside any buy-menu row does nothing (TS treats it as key 1 on the current page).
 * Team select, MOTD and scoreboard are immediate-mode replacements for the VGUI1 panels (same
@@ -368,7 +368,8 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   `specmode`, `SetModes` (crosshair, `#Spec_Mode%d`), the director-reset map camera. The VGUI
   spectator panel (`#Spec_TSHelp%d`) is not ported either.
 * Server browser, command menu, TFC panels (dropped as allowed by §7).
-* `HUD_UpdateClientData` writes the eased FOV (`view::update_client_data`, wired at integration).
+* `HUD_UpdateClientData` runs `CHud::Think`'s zoom easing and writes the eased FOV
+  (`view::update_client_data` → `hud::think_fov`), as TS's `CHud::UpdateClientData` does.
 * Death-cam / `cl_thirdpersonswitch` / observer third-person changes are only *requested*
   (`state.thirdperson_*`); the view package owns `cam_thirdperson` and runs each request through
   TS's `thirdperson` toggle (`view::toggle_third_person`, with its observer and demo checks).
@@ -411,7 +412,8 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   penalty), `ts_fade` (view applies TSFade), `active_items`/`laser_color` (effects: laser and
   flashlight), `ts_effects` queue (effects drains `PlayerHit`, `Frags`, `Wind`, `MotionBlur`),
   `thirdperson_toggles`/`thirdperson_leave`/`thirdperson_restore` (view consumes), `menu_open`.
-  The HUD writes `health`, `dead`, `weapon`, `fov` (smoothed zoom FOV, default `default_fov`),
+  The HUD writes `health`, `dead`, `weapon`, `fov` (smoothed zoom FOV, default `default_fov`;
+  `fov_target` from `SetFOV`/prediction),
   `time_scale_target` (TSSlowMo) and eases `time_scale` in `HUD_Frame` (TS does it there).
 * The FWGS `IN_ClientLookEvent`/`IN_ClientMoveEvent` exports are in `client-dll` and call
   `input::look_event`/`move_event`.

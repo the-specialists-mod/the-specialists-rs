@@ -31,7 +31,9 @@ struct Pred {
     /// memory), carried from one first-time prediction to the next.
     gun: Option<Gun>,
     last_id: Option<u8>,
-    alt_grip: bool,
+    /// The local weapon's alternate grip (`0x10189f9d`, a byte): `(int)vuser2[2]` from
+    /// `HUD_WeaponsPostThink`, or the demo's record type 1 during playback.
+    alt_grip: u8,
     was_dead: bool,
 }
 
@@ -42,9 +44,36 @@ fn with<R>(f: impl FnOnce(&mut Pred) -> R) -> R {
     f(g.get_or_insert_with(Pred::default))
 }
 
-/// Alternate grip (anim set B) of the local weapon. Server sends it in `vuser2[2]`.
+/// Alternate grip (anim set B) of the local weapon, the flag `GetActiveAnimSet` (`0x1003df60`)
+/// tests. During demo playback it first takes the demo's last type 1 record, as TS does there.
 pub fn alt_grip() -> bool {
-    PRED.0.try_borrow().ok().and_then(|g| g.as_ref().map(|p| p.alt_grip)).unwrap_or(false)
+    if goldsrc::client::engine().demo_playing() {
+        let rec = crate::demo::recorded_alt_grip();
+        if let Ok(mut g) = PRED.0.try_borrow_mut() {
+            g.get_or_insert_with(Pred::default).alt_grip = rec;
+        }
+        return rec != 0;
+    }
+    PRED.0.try_borrow().ok().and_then(|g| g.as_ref().map(|p| p.alt_grip)).unwrap_or(0) != 0
+}
+
+/// `CHudTSWeapons::VidInit` (`0x1004cb50`) clears the alternate grip.
+pub fn reset_alt_grip() {
+    with(|p| p.alt_grip = 0);
+}
+
+/// The alternate-grip update in `HUD_WeaponsPostThink` (`0x10003bc4..0x10003c0c`), on every call
+/// whose `from` weapon is the TS gun (prediction or not): while recording, a change from the
+/// stored byte writes demo record type 1 with the new `int`.
+fn update_alt_grip(c: &clientdata_t) {
+    if c.m_iId != TS_GUN_SLOT as i32 {
+        return;
+    }
+    let alt = c.vuser2[2] as i32;
+    if with(|p| p.alt_grip as i32 != alt) && goldsrc::client::engine().demo_recording() {
+        crate::demo::write_buffer(crate::demo::ALT_GRIP, &alt.to_le_bytes());
+    }
+    with(|p| p.alt_grip = alt as u8);
 }
 
 fn event_index(ev: Event) -> u16 {
@@ -202,6 +231,7 @@ fn gun_from(from: &local_state_t) -> (Gun, u16) {
 pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t, runfuncs: bool, time: f64, seed: u32) {
     let c = &from.client;
     let dead = c.deadflag != 0 || c.health <= 0.0;
+    update_alt_grip(c);
     let (mut gun, powerups) = gun_from(from);
     // HUD_PostRunCmd (0x10003830) keeps the active items for DrawLaserDots, cleared while the
     // next attack is pending (TS `0x1018a628`).
@@ -217,7 +247,6 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         let id = gun.current;
         let items = gun.slot().map(|s| s.items).unwrap_or(0);
         let changed = with(|p| {
-            p.alt_grip = gun.slot().is_some_and(|s| s.alt_grip);
             let ch = p.last_id != Some(id) || (p.was_dead && !dead);
             p.last_id = Some(id);
             p.was_dead = dead;

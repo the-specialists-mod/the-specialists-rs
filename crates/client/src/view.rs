@@ -24,7 +24,6 @@ struct Cvars {
     cam_up: Cvar,
     thirdperson: Cvar,
     thirdpersonswitch: Cvar,
-    default_fov: Cvar,
     thirdtransparency: Cvar,
     vsmoothing: Cvar,
     centermove: Cvar,
@@ -36,6 +35,9 @@ struct View {
     // clocks
     last_frame: f64,
     frametime: f32,
+    /// `pparams->frametime` of the last `V_CalcRefdef` (`0x10191478`), which `UTIL_ApproachFOV`
+    /// steps the zoom by.
+    refdef_frametime: f32,
     // bob
     bob_phase: f32,
     bob_amp: f32,
@@ -60,8 +62,9 @@ struct View {
     org_ring: Ring,
     last_simorg: Vec3,
     // third person
+    /// `cam_thirdperson` (`0x100df390`), the `thirdperson` toggle's state. TS has no separate
+    /// death cam: `TSHealth` 0 runs the toggle.
     third: bool,
-    forced_dead: bool,
     /// Eased additions to the camera's up (`0x10191da4`) and back (`0x10191da8`) offsets.
     cam_up_ofs: f32,
     cam_back_ofs: f32,
@@ -366,11 +369,10 @@ fn cv(f: impl FnOnce(&Cvars) -> Cvar) -> f32 {
 }
 
 /// `V_Init`: registers the view cvars TS registers there; the camera, third-person and
-/// smoothing cvars are `InitInput`'s and `default_fov` is `CHud::Init`'s, so this shares those
-/// handles rather than registering the names again (see [`Cvar`]). Runs after `input::init` and
-/// `hud::init`.
+/// smoothing cvars are `InitInput`'s, so this shares those handles rather than registering the
+/// names again (see [`Cvar`]). Runs after `input::init`.
 pub fn init() {
-    let (i, h) = (crate::input::cvars(), crate::hud::cvars());
+    let i = crate::input::cvars();
     *CVARS.0.borrow_mut() = Some(Cvars {
         bob: Cvar::register(c"cl_bob", c"4.0", r::FCVAR_ARCHIVE),
         waterdist: Cvar::register(c"cl_waterdist", c"4", 0),
@@ -381,7 +383,6 @@ pub fn init() {
         cam_up: i.cam_up,
         thirdperson: i.cl_thirdperson,
         thirdpersonswitch: i.cl_thirdpersonswitch,
-        default_fov: h.default_fov,
         thirdtransparency: i.cl_thirdtransparency,
         vsmoothing: i.cl_vsmoothing,
         centermove: Cvar::register(c"v_centermove", c"0.15", 0),
@@ -413,8 +414,8 @@ extern "C" fn cmd_test_angles() {
 extern "C" fn cmd_test_view() {
     let s = with(|w| {
         format!(
-            "third {} dead {} cam_back {:.1} cam_up {:.1} model_z {:?} amt {:.0} origin {:?} eye {:?} angles {:?}\n",
-            w.third, w.forced_dead, w.cam_back_ofs, w.cam_up_ofs, w.model_z, w.local_amt, w.cam.origin, w.eye, w.cam.angles
+            "third {} cam_back {:.1} cam_up {:.1} model_z {:?} amt {:.0} origin {:?} eye {:?} angles {:?}\n",
+            w.third, w.cam_back_ofs, w.cam_up_ofs, w.model_z, w.local_amt, w.cam.origin, w.eye, w.cam.angles
         )
     });
     let ts = state::with(|st| format!("ts {:.3}/{:.3} fov {:.1}/{:.1}\n", st.time_scale, st.time_scale_target, st.fov, st.fov_target));
@@ -482,12 +483,6 @@ pub fn toggle_third_person() {
     }
 }
 
-/// `cam_thirdperson` (`0x100df390`): the `thirdperson` toggle's state, without the port's
-/// death-cam override (see [`is_third_person`]).
-pub fn cam_thirdperson() -> bool {
-    with(|w| w.third)
-}
-
 /// `firstperson` (`CAM_ToFirstPerson` `0x10025320`): clears `cam_thirdperson` and `cam_command`.
 extern "C" fn cmd_firstperson() {
     with(|w| w.third = false);
@@ -508,14 +503,20 @@ pub fn ease_time_scale(cur: f32, target: f32, ft: f32) -> f32 {
     if d.abs() > 0.05 { cur + d * (7.0 * ft).min(1.0) } else { target }
 }
 
-/// `CHud::Think` FOV easing: integer steps of `max(1, |d|/2 * ft * 50)`.
+/// `UTIL_ApproachFOV` (`0x10049620`), from `CHud::Think`: `m_iFOV` (an `int`) moves toward
+/// `target` by `max(1, (|d| / 2) * ft * 50)` (integer halving), truncated, without passing it.
+/// An unset FOV (below 0.001) snaps.
 pub fn ease_fov(cur: f32, target: f32, ft: f32) -> f32 {
-    let d = target - cur;
-    if d.abs() < 0.5 {
-        return target;
+    let (cur, target) = (cur as i32, target as i32);
+    if (cur as f32) < 0.001 {
+        return target as f32;
     }
-    let step = (d.abs() / 2.0 * ft * 50.0).max(1.0).floor().min(d.abs());
-    cur + step * d.signum()
+    if cur == target {
+        return cur as f32;
+    }
+    let step = (((target - cur).abs() / 2) as f64 * (ft as f64) * 50.0).max(1.0);
+    let next = if cur < target { ((cur as f64 + step) as i32).min(target) } else { ((cur as f64 - step) as i32).max(target) };
+    next as f32
 }
 
 /// Called from `HUD_Frame`. The engine passes the frame time (FWGS `host.frametime`, as the
@@ -527,15 +528,7 @@ pub fn frame(frametime: f64) {
         w.last_frame = time;
         w.frametime = ft;
     });
-    let default_fov = {
-        let d = cv(|c| c.default_fov);
-        if d == 0.0 { 80.0 } else { d.clamp(70.0, 110.0) }
-    };
-    state::with(|s| {
-        s.time_scale = ease_time_scale(s.time_scale, s.time_scale_target.max(0.0), ft);
-        let target = if s.fov_target > 0.0 { s.fov_target } else { default_fov };
-        s.fov = if s.fov <= 0.0 { target } else { ease_fov(s.fov, target, ft) };
-    });
+    state::with(|s| s.time_scale = ease_time_scale(s.time_scale, s.time_scale_target.max(0.0), ft));
     // Camera requests from the HUD (death cam on TSHealth 0, cl_thirdpersonswitch, observer).
     let (toggles, leave, restore) = state::with(|s| {
         (std::mem::take(&mut s.thirdperson_toggles), std::mem::take(&mut s.thirdperson_leave), std::mem::take(&mut s.thirdperson_restore))
@@ -546,10 +539,10 @@ pub fn frame(frametime: f64) {
     for _ in 0..toggles {
         toggle_third_person();
     }
-    if leave && cam_thirdperson() {
+    if leave && is_third_person() {
         toggle_third_person();
     }
-    if restore && third_after_observer(cam_thirdperson(), tp) != cam_thirdperson() {
+    if restore && third_after_observer(is_third_person(), tp) != is_third_person() {
         toggle_third_person();
     }
     let sw = cv(|c| c.thirdpersonswitch);
@@ -655,8 +648,13 @@ fn move_toward(mut cur: f32, goal: f32) -> f32 {
     }
 }
 
+/// `CL_IsThirdPerson` (`0x1004fec0`): `cam_thirdperson`, the `thirdperson` toggle's state, and
+/// nothing else. Every TS reader of third person (`CAM_Think`, `V_CalcNormalRefdef`, the bob,
+/// events, cull origin, occlusion, lasers, motion-blur ghosts, the voice icon, the crosshair, and
+/// the `TSHealth`/`PwUp`/`Spectator` camera switches) uses this flag or `cam_thirdperson`
+/// directly; the death cam is the `TSHealth` 0 toggle, so it counts only through the flag.
 pub fn is_third_person() -> bool {
-    with(|w| w.third || w.forced_dead)
+    with(|w| w.third)
 }
 
 /// View origin of the last refdef (`v_origin`).
@@ -675,10 +673,11 @@ pub fn hardware() -> bool {
     with(|w| w.hardware)
 }
 
-/// Writes the eased FOV into `clientdata` (TS `CHud::UpdateClientData`). Returns true (the
+/// `CHud::UpdateClientData` (`0x10024b00`): runs `CHud::Think` (the zoom easing,
+/// [`crate::hud::think_fov`]) and writes the eased FOV into `clientdata`. Returns true (the
 /// engine's "changed" flag), as `HUD_UpdateClientData` must.
 pub fn update_client_data(cd: &mut r::ClientData) -> bool {
-    cd.fov = state::with(|s| s.fov);
+    cd.fov = crate::hud::think_fov(with(|w| w.refdef_frametime));
     true
 }
 
@@ -802,6 +801,7 @@ fn refdef_path(intermission: bool, spectating: bool, paused: bool) -> RefdefPath
 
 /// `V_CalcRefdef` (`0x10069b90`).
 pub fn calc_refdef(p: &mut ref_params_t) {
+    with(|w| w.refdef_frametime = p.frametime);
     let spectating = p.spectator != 0 || state::with(|s| s.spec_mode) != 0;
     match refdef_path(p.intermission != 0, spectating, p.paused != 0) {
         RefdefPath::Intermission => calc_intermission(p),
@@ -982,12 +982,7 @@ fn calc_normal(p: &mut ref_params_t) {
         }
     });
 
-    let third = with(|w| {
-        // Death forces third person (TS: `TSHealth` 0); leaving death returns.
-        w.forced_dead = dead;
-        state::with(|s| s.third_person = w.third || dead);
-        w.third || dead
-    });
+    let third = is_third_person();
 
     let (gun_ofs, bob_pitch_step, kick_step, shake_step) = with(|w| {
         let old_pitch = w.bob_pitch;
@@ -1310,6 +1305,14 @@ mod tests {
         }
         assert_eq!(f, 20.0);
         assert!(n > 3, "zoom is animated");
+        // `UTIL_ApproachFOV`: half the gap (integer), times ft * 50, at least 1, truncated.
+        // 0.016f is a hair above 0.016, so 90 - 28.000001 truncates to 61, as on the x87.
+        assert_eq!(ease_fov(90.0, 20.0, 0.016), 61.0);
+        assert_eq!(ease_fov(20.0, 90.0, 0.016), 48.0);
+        assert_eq!(ease_fov(21.0, 20.0, 0.016), 20.0, "at least one degree");
+        assert_eq!(ease_fov(22.0, 20.0, 0.0), 21.0);
+        assert_eq!(ease_fov(0.0, 35.0, 0.016), 35.0, "unset snaps");
+        assert_eq!(ease_fov(85.0, 20.0, 1.0), 20.0, "never passes the target");
     }
 
     #[test]
