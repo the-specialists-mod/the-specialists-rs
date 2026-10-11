@@ -16,8 +16,8 @@ permissions:
 
 jobs:
   build:
-    # The oldest supported runner: the Linux libraries need the glibc they were linked against.
-    runs-on: ubuntu-22.04
+    # 24.04 for its clang 18: bindgen with 22.04's clang 14 fails on the MinGW intrinsics headers.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
