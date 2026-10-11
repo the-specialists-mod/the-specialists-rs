@@ -21,6 +21,7 @@ pub mod player;
 pub mod precache;
 pub mod rules;
 pub mod save;
+pub mod studio;
 pub mod stunt;
 pub mod weapons;
 pub mod world;

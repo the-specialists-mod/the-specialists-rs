@@ -11,6 +11,8 @@
 // headers document, so they carry no Rust-side `# Safety` docs.
 #![allow(clippy::missing_safety_doc)]
 
+mod exports;
+
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::saverestore::{EngineHost, SaveData, raw};
 use goldsrc::server::{self as sv, engine};

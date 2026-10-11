@@ -31,6 +31,9 @@ fn main() {
         .header_contents("studio_ext.h", "#include \"com_model.h\"\n#include \"r_studioint.h\"\n")
         .allowlist_type("(engine_studio_api_t|r_studio_interface_t|player_info_t|alight_t|cache_user_t)")
         .allowlist_var("(STUDIO_INTERFACE_VERSION|STUDIO_RENDER|STUDIO_EVENTS)")
+        // the server's `Server_GetBlendingInterface` export (same header)
+        .allowlist_type("(sv_blending_interface_t|server_studio_api_t)")
+        .allowlist_var("SV_BLENDING_INTERFACE_VERSION")
         .opaque_type("glpoly2_s") // a flexible array member; only reached through pointers
         .rustified_enum("(ALERT_TYPE|PRINT_TYPE)")
         .derive_default(true)

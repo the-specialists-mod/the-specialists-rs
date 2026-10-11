@@ -29,6 +29,8 @@ mod tests;
 pub use fpu::Arith;
 pub use math::Vec3;
 use math::*;
+/// `ts_i386.so`'s exported mathlib helpers; `server-dll` exports them under their C names.
+pub use math::{anglemod, length, q_log2};
 use std::marker::PhantomData;
 
 // Spectator modes (`iuser1`) in TS's numbering.

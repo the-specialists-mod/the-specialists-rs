@@ -151,10 +151,32 @@ pub trait FpuMath: Fpu {
 
 impl<F: Fpu> FpuMath for F {}
 
-/// [`FpuMath::length`] in `ts_i386.so`'s arithmetic, rounded to a `float`.
-#[cfg(test)]
+/// `Length` (server 0xfbcbc), which `ts_i386.so` also exports: [`FpuMath::length`] in GCC's
+/// arithmetic, rounded to a `float`.
 pub fn length(a: Vec3) -> f32 {
     Gcc::length(a).f()
+}
+
+/// `anglemod` (server 0xfb3d8), exported by `ts_i386.so` and called by nothing in TS or the
+/// engines: `(360.0/65536) * ((int)(a*(65536/360.0)) & 65535)`. Both constants are `double`s
+/// (0x100bd8, 0x100be0), the product is truncated by a dword `fistp` (0x80000000 when out of
+/// range or NaN, which masks to 0) and the result is stored to a `float`.
+pub fn anglemod(a: f32) -> f32 {
+    let i = (Gcc::xd(65536.0 / 360.0) * Gcc::x(a)).trunc_i32() & 0xffff;
+    (Gcc::xd(360.0 / 65536.0) * Gcc::xi(i)).f()
+}
+
+/// `Q_log2` (server 0xfbd8c), exported by `ts_i386.so` and called by nothing: the number of
+/// arithmetic right shifts before `val` reaches 0. As in TS, a negative `val` never reaches 0, so
+/// the loop doesn't end.
+pub fn q_log2(val: i32) -> i32 {
+    let mut answer: i32 = 0;
+    let mut v = val >> 1;
+    while v != 0 {
+        answer = answer.wrapping_add(1);
+        v >>= 1;
+    }
+    answer
 }
 
 #[cfg(test)]
@@ -169,5 +191,41 @@ mod tests {
             assert!((u[2] - 1.0).abs() < 1e-6);
             assert!(Gcc::dot_in(f, r, [0, 1, 2]).f().abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn anglemod_quantises_to_65536_steps() {
+        assert_eq!(anglemod(0.0), 0.0);
+        assert_eq!(anglemod(90.0), 90.0);
+        assert_eq!(anglemod(360.0), 0.0);
+        assert_eq!(anglemod(450.0), 90.0);
+        // (int) truncates toward zero, then the mask wraps negatives into [0, 360).
+        assert_eq!(anglemod(-90.0), 270.0);
+        // One step is 360/65536 (0.00549...): less than a step truncates to 0.
+        assert_eq!(anglemod(0.005), 0.0);
+        assert_eq!(anglemod(0.006), (360.0f64 / 65536.0) as f32);
+        // 10 * 182.0444... = 1820.44 -> 1820 steps.
+        assert_eq!(anglemod(10.0), (1820.0f64 * 360.0 / 65536.0) as f32);
+        // fistp's 0x80000000 for an out-of-range or NaN product masks to 0.
+        assert_eq!(anglemod(1e30), 0.0);
+        assert_eq!(anglemod(f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn q_log2_counts_shifts() {
+        assert_eq!(q_log2(0), 0);
+        assert_eq!(q_log2(1), 0);
+        assert_eq!(q_log2(2), 1);
+        assert_eq!(q_log2(3), 1);
+        assert_eq!(q_log2(256), 8);
+        assert_eq!(q_log2(511), 8);
+        assert_eq!(q_log2(i32::MAX), 30);
+    }
+
+    #[test]
+    fn length_rounds_to_float() {
+        assert_eq!(length([3.0, 4.0, 0.0]), 5.0);
+        assert_eq!(length(ZERO), 0.0);
+        assert_eq!(length([1.0, 1.0, 1.0]), 3f64.sqrt() as f32);
     }
 }

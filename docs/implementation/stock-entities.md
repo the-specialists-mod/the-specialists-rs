@@ -575,6 +575,10 @@ covers:
     command, counter messages, transition box overlap, weaponstrip targeting, the momentary
     door/wheel maths and the plat/track change helpers. The #95 classes haven't been run
     in-engine (no shipped map places them).
+  * #107: `anglemod` (65536-step quantisation, the truncating `fistp` and its out-of-range
+    value), `Q_log2`, `Length` (`shared::pm::math`), and `Server_GetBlendingInterface`'s version
+    check and constant 0 (`ts_server::studio`). The export lists were compared with
+    `nm -D --defined-only` / `objdump -p` (§7.5).
 * **Builds.** `cargo build -p ts-server` passes for the host target, `i686-unknown-linux-gnu` and
   `i686-pc-windows-gnu`. Windows prints the existing stdcall-fixup linker note.
 * **Dedicated server, all maps.**
@@ -857,10 +861,25 @@ everywhere) lacked.
   pointer; the port plays nothing and logs the "bad sentence group name" error with an empty
   name.
 * **`item_security`'s count** (`m_rgItems[ITEM_SECURITY]`) isn't kept: nothing reads it.
-* **Exports.** Against `ts_i386.so` the port exports every entity class; TS's remaining lowercase
-  dynamic symbols are global variables (cvars and tables). Against `mp.dll` the port lacks only
-  `CreateInterface` and `Server_GetBlendingInterface` (not entity classes) and the C++-mangled
-  member functions MSVC exported.
+* **Exports.** Against `ts_i386.so` the port exports every entity class, plus (#107)
+  `Server_GetBlendingInterface` and the `pm_math.c` helpers `anglemod`, `Length` and `Q_log2`
+  (`server-dll/src/exports.rs`, design.md §4.1). TS's remaining defined dynamic symbols are
+  global variables (cvars and tables), GCC 2.95-mangled C++ functions, `_init`/`_fini`/`_rotr`,
+  and the other C functions of `pm_shared.c`/`pm_math.c` (`PM_*`, `TS*`, `PseudoClimb`,
+  `Vector*`, `Angle*`, `CrossProduct`, ...; the port's movement is `shared::pm` and nothing looks
+  those up). Against `mp.dll` the port has every plain-name export, including (#107)
+  `Server_GetBlendingInterface` and `CreateInterface`, and lacks only the 159 C++-mangled member
+  functions MSVC exported.
+* **`Server_GetBlendingInterface`** (0xa3f80, mp.dll 0x10008850) is ported as TS has it: it
+  returns 0, so the engines use their own server bone setup, as they do with TS. TS has no
+  server-side bone maths (its `SV_StudioSetupBones`, 0xa3fdc, only logs "SV_StudioSetupBones
+  called."), so player hitboxes on the server don't use the client's torso/legs split in TS
+  either. Guard: TS writes through the interface out-pointer and reads the studio API without
+  NULL checks; the port skips a NULL one.
+* **`Length`**: TS reads the vector without a NULL check; the port returns 0 for NULL.
+  **`Q_log2`** never returns for a negative argument, as in TS. Nothing calls either.
+* **`CreateInterface`** (mp.dll 0x10028f70): nothing in mp.dll registers an interface, so it
+  always sets `IFACE_FAILED` (when the return-code pointer isn't NULL) and returns NULL.
 
 ## 8. Census script
 

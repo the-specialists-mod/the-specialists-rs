@@ -82,6 +82,19 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | `SaveWriteFields`/`SaveReadFields` | `goldsrc::ext::saverestore` (the engine's own structs, through `raw`) |
 | `ParmsChangeLevel` | `entities::stock::levelchange::parms_change_level` (the transition list) |
 
+`server-dll/src/exports.rs` holds the rest of TS's non-entity exports, so the plain-name export
+lists match `ts_i386.so` and `mp.dll` (`implementation/stock-entities.md` §7.5):
+
+* `Server_GetBlendingInterface` (both builds), routed to `ts_server::studio`. TS's version
+  (0xa3f80) fills in its `svBlending` (whose `SV_StudioSetupBones` only logs "SV_StudioSetupBones
+  called.") and stores the engine's studio API and bone matrices, but returns 0, so every engine
+  keeps its own server bone setup. There's no server-side bone maths in TS to port; hitboxes and
+  studio traces use the engine's.
+* `CreateInterface` (Windows only): mp.dll's tier1 factory has nothing registered, so it reports
+  `IFACE_FAILED` and returns NULL.
+* `anglemod`, `Length`, `Q_log2` (Linux only): GCC exported these `pm_math.c` helpers. They call
+  `shared::pm::{anglemod, length, q_log2}`, in `ts_i386.so`'s x87 arithmetic.
+
 ### 4.2 Entity framework (`world.rs`, `entities/`)
 
 * One Rust object per game-owned edict, kept in a generational slab. The edict's private data
