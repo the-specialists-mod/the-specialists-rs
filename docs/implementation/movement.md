@@ -64,7 +64,8 @@ one with `shared::pm::Arith`:
   instruction sequence (addresses aside) except `PM_PlayerMove` (the client clears three
   spectator-camera globals; the floating point is the same), `PM_Move` (the client caches
   `physents[0].model`) and `PM_SpectatorMove` (the client's is its own; its roaming part is
-  mp.dll's, instruction for instruction). So the Windows server build follows `mp.dll`, where
+  mp.dll's, instruction for instruction; the rest, in `crates/client/src/spectator/`, uses
+  client.dll's angle helpers in the same 53-bit arithmetic, see `client-rendering.md`). So the Windows server build follows `mp.dll`, where
   an original TS client agrees with it, and the Linux build follows `ts_i386.so`, as TS's own
   Linux server did.
 
@@ -249,16 +250,6 @@ the same as the GCC build once the stack is 53 bits wide.
 * **Super-jump roll landing** also sets `m_flNextAttack = 0.75` (weapons timer): not applied.
 * `SetPlayerGravity` (temp gravity timer, pl+0x4ec), `InterpolateSlowMotion`, power-ups,
   `GoSlow` (rules).
-* **The client's own `PM_SpectatorMove` (0x1002c790) outside roaming** lives in
-  `crates/client/src/spectator/` and still computes in `f32` with Rust's compares. Against
-  client.dll: the locked view's blocked test is `fraction != 1.0` where TS uses `eq87`
-  (`movement.rs`, asm 0x1002ca94); `VectorAngles` (0x10029e90) takes `fpatan`'s result
-  unrounded into `× 57.29577951308232` (a `double`) and tests `eq87`, where `render.rs`'s
-  `vector_angles` rounds each step to `f32`; `InterpolateAngles` (0x10029cf0) keeps the
-  difference unrounded and tests `-180` with C0, and `NormalizeAngles` (0x10029cb0) is
-  `a > 180 ? a - 360 : a < -180 ? a + 360 : a` in doubles with no `%` (`spectator/mod.rs`
-  `interpolate_angles`, `render.rs` `norm_angle`). Its `GetChaseOrigin` and roaming part already
-  use `Msvc` through `shared::pm`.
 
 ## Tests
 

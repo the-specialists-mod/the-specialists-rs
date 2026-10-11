@@ -6,11 +6,13 @@ use super::random::shared_random_float;
 use super::{Args, fire_pitch, first_person_view_model, info, slow_pitch};
 use crate::effects::psys::{self, Camera, heron_height};
 use crate::{effects, state, view};
+use goldsrc::Global;
 use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::ext::tri;
 use goldsrc::sys::*;
 use shared::weapons::tables;
+use std::cell::Cell;
 
 pub fn fire(a: &Args) {
     match info::class(a.i1) {
@@ -425,8 +427,8 @@ pub fn fire_bullets(b: &Bullets) {
         let end = v::ma(b.src, 4096.0, b.dir);
         r::with_solid_players(b.shooter - 1, || {
             let mut tr = r::player_trace(b.src, end, 2, PM_STUDIO_BOX as i32, -1);
-            if tr.fraction < 1.0 {
-                impact::texture_sound(b.dmg, &mut tr, b.src, end, 2);
+            if trace_hit(tr.fraction) {
+                impact::texture_sound(&mut tr, b.src, end, 2);
                 impact::decal_gunshot(&mut tr);
             }
         });
@@ -443,9 +445,10 @@ pub fn fire_bullets(b: &Bullets) {
         ps.push_along_line(b.src, end, push, swirl);
     });
 
-    let mut remaining = 0.0f32;
+    // TS's shared trace (`0x1018a110`) last ended at the whizz trace's end; each pellet trace
+    // moves it on, hit or miss.
+    let mut last_end = end;
     let mut last_dir = b.dir;
-    let mut last_hit = None;
     for i in 1..=b.pellets.max(1) {
         let d = pellet_dir(b.dir, b.right, b.up, b.spread, b.seed, i);
         last_dir = d;
@@ -457,35 +460,52 @@ pub fn fire_bullets(b: &Bullets) {
         }
         r::with_solid_players(b.shooter - 1, || {
             let mut tr = r::player_trace(b.src, end, 2, PM_STUDIO_BOX as i32, -1);
-            if tr.fraction < 1.0 {
-                remaining = impact::range_mult(range_index(v::dist(b.src, tr.endpos), unit)) * b.dmg;
+            last_end = tr.endpos;
+            if trace_hit(tr.fraction) {
+                let remaining = impact::range_mult(range_index(v::dist(b.src, tr.endpos), unit)) * b.dmg;
                 let bt = if b.bullet_type == 1 { 1 } else { b.bullet_type };
-                impact::texture_sound(b.dmg, &mut tr, b.src, end, bt);
+                impact::texture_sound(&mut tr, b.src, end, bt);
                 impact::decal_gunshot(&mut tr);
-                remaining *= pierce;
-                last_hit = Some(tr.endpos);
-            } else {
-                last_hit = None;
+                REMAINING.0.set(remaining * pierce);
             }
         });
     }
 
-    // Penetration of the last pellet's hit (bullet type 0 only on the client: TS skips buckshot).
-    if slow || b.bullet_type == 1 || remaining <= 5.0 {
+    // Penetration (bullet type 0 only on the client: TS skips buckshot) from wherever the last
+    // pellet's trace ended, with whatever damage the last hit, in this event or an earlier one,
+    // left.
+    let remaining = REMAINING.0.get();
+    if slow || b.bullet_type == 1 || !penetrates(remaining) {
         return;
     }
-    let Some(hit) = last_hit else { return };
     let step = remaining.min(48.0);
-    let p = v::ma(hit, step, last_dir);
+    let p = v::ma(last_end, step, last_dir);
     if r::point_contents(p) == CONTENTS_SOLID {
         return;
     }
+    let hit = last_end;
     let mut tr = r::player_trace(p, hit, 2, 0, -1);
-    if tr.fraction < 1.0 {
-        impact::texture_sound(b.dmg, &mut tr, p, hit, 2);
+    if trace_hit(tr.fraction) {
+        impact::texture_sound(&mut tr, p, hit, 2);
         impact::decal_gunshot(&mut tr);
     }
     fire_bullets(&Bullets { pellets: 1, src: p, dir: last_dir, spread: [0.0; 2], dmg: remaining, bullet_type: 2, ..*b });
+}
+
+/// `DAT_1018a164`: the damage the last pellet hit left for penetration. Only a pellet that hits
+/// writes it and nothing resets it, so a later event that misses (or only queues client bullets)
+/// penetrates with an earlier event's damage, as in TS.
+static REMAINING: Global<Cell<f32>> = Global(Cell::new(0.0));
+
+/// A trace hit something: TS tests `fraction == 1.0` with `fcomp`/`test ah, 0x40`, so a NaN
+/// counts as a miss (`0x1004527b`, `0x10045aec`, `0x10045d0f`).
+fn trace_hit(fraction: f32) -> bool {
+    !(fraction == 1.0 || fraction.is_nan())
+}
+
+/// The penetration test, `remaining > 5.0` (`0x10045bff`: `test ah, 0x41`, so a NaN fails).
+fn penetrates(remaining: f32) -> bool {
+    remaining > 5.0
 }
 
 /// `FUN_100071f0(ammo)`: the ammo table's (pierce `+0x18`, range unit `+0x20`, velocity in metres
@@ -659,9 +679,8 @@ fn client_bullet_impact(s: &mut ClientBullet, frametime: f32) {
         // Exit bullets fall off on a fixed 30-unit scale (`0x10035f44`).
         let idx = if s.bullet_type == 2 { ftol(dist * 0.003_333_333_4f32 as f64 * 10.0) } else { range_index(dist as f32, unit) };
         let mut left = impact::range_mult(idx) * s.dmg;
-        // TS passes its shooter index first, which `TS_PlayTextureSound` never reads; the port's
-        // `texture_sound` takes the damage there, as `fire_bullets` passes it.
-        impact::texture_sound(s.dmg, &mut tr, s.pos, v::add(step, s.pos), s.bullet_type);
+        // TS passes its shooter index first, which `TS_PlayTextureSound` never reads.
+        impact::texture_sound(&mut tr, s.pos, v::add(step, s.pos), s.bullet_type);
         impact::decal_gunshot(&mut tr);
         left *= pierce;
         if s.bullet_type == 2 || s.bullet_type == 1 || left <= 5.0 {
@@ -678,7 +697,7 @@ fn client_bullet_impact(s: &mut ClientBullet, frametime: f32) {
         s.bullet_type = 2;
         let mut tr = r::player_trace(p, hit, 2, 0, -1);
         if tr.fraction != 1.0 {
-            impact::texture_sound(s.dmg, &mut tr, p, hit, 2);
+            impact::texture_sound(&mut tr, p, hit, 2);
             impact::decal_gunshot(&mut tr);
         }
         false
@@ -786,6 +805,17 @@ fn slow_time(ts: f32, x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hit_and_penetration_tests_follow_the_x87_compares() {
+        assert!(trace_hit(0.5));
+        assert!(!trace_hit(1.0));
+        assert!(!trace_hit(f32::NAN), "fcomp sets C3 for a NaN: a miss");
+        assert!(penetrates(5.5));
+        assert!(!penetrates(5.0));
+        assert!(!penetrates(f32::NAN));
+        assert_eq!(REMAINING.0.get(), 0.0, "TS's global starts at zero (.bss)");
+    }
 
     #[test]
     fn pellet_spread_is_seeded_and_bounded() {
