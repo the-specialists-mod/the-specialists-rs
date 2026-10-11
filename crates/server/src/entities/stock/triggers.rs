@@ -1,7 +1,9 @@
 //! Brush triggers and logic entities (SDK triggers.cpp; TS keeps them as in SDK 2.3):
 //! `trigger_multiple`, `trigger_once`, `trigger_hurt`, `trigger_teleport`, `trigger_push`,
 //! `trigger_gravity`, `trigger_auto`, `trigger_relay`, `trigger_changetarget`, `trigger_camera`,
-//! `multi_manager`, `func_ladder`, `func_friction`.
+//! `multi_manager`, `func_ladder`, `func_friction`; and the #95 `CBaseTrigger` kinds `trigger`,
+//! `trigger_autosave`, `trigger_cdaudio`, `trigger_counter`, `trigger_endsection`,
+//! `trigger_monsterjump`, plus `target_cdaudio`.
 
 use super::base::*;
 use crate::entities::{fire_targets, remove};
@@ -32,8 +34,8 @@ fn show_triggers() -> bool {
     engine().cvar_float(c"showtriggers") != 0.0
 }
 
-/// `CBaseTrigger::InitTrigger`.
-fn init_trigger(cx: &mut Cx) {
+/// `CBaseTrigger::InitTrigger` (0xe67ec).
+pub(super) fn init_trigger(cx: &mut Cx) {
     let v = cx.pev();
     if v.angles != [0.0; 3] {
         set_movedir(v);
@@ -46,7 +48,7 @@ fn init_trigger(cx: &mut Cx) {
     }
 }
 
-/// `CBaseTrigger::ToggleUse`.
+/// `CBaseTrigger::ToggleUse` (0xe7368).
 fn toggle_use(cx: &mut Cx) {
     let eng = engine();
     let v = cx.pev();
@@ -127,10 +129,11 @@ pub fn show_message(text: &CStr, player: *mut edict_t) {
 #[derive(Default)]
 pub struct Trigger<const KIND: u8> {
     t: Toggle<Self>,
+    /// `m_cTriggersLeft` (+0xcc), the `count` key.
     triggers_left: i32,
     damage_inflict: i32,
-    /// SetUse(ToggleUse) for hurt/push.
-    toggle_usable: bool,
+    /// `m_pfnUse`: `ToggleUse` (hurt, push, monsterjump), `CounterUse`, `EndSectionUse`.
+    use_fn: Option<fn(&mut Self, &mut Cx, *mut edict_t)>,
 }
 
 pub const K_MULTIPLE: u8 = 0;
@@ -139,6 +142,39 @@ pub const K_HURT: u8 = 2;
 pub const K_TELEPORT: u8 = 3;
 pub const K_PUSH: u8 = 4;
 pub const K_GRAVITY: u8 = 5;
+/// `trigger`: a bare `CBaseTrigger` (its Spawn is `CBaseEntity::Spawn`, which does nothing).
+pub const K_BASE: u8 = 6;
+/// `trigger_autosave` (`CTriggerSave`).
+pub const K_AUTOSAVE: u8 = 7;
+/// `trigger_cdaudio` (`CTriggerCDAudio`).
+pub const K_CDAUDIO: u8 = 8;
+/// `trigger_counter` (`CTriggerCounter`).
+pub const K_COUNTER: u8 = 9;
+/// `trigger_endsection` (`CTriggerEndSection`).
+pub const K_ENDSECTION: u8 = 10;
+/// `trigger_monsterjump` (`CTriggerMonsterJump`).
+pub const K_MONSTERJUMP: u8 = 11;
+
+pub const SF_COUNTER_NOMESSAGE: i32 = 1;
+pub const SF_ENDSECTION_USEONLY: i32 = 1;
+
+/// `g_pGameRules->IsDeathmatch()`: false only for `CHalfLifeRules`, which `InstallGameRules`
+/// (0xc6050) builds when `deathmatch` is 0.
+pub(super) fn rules_deathmatch() -> bool {
+    !crate::rules::state::with(|g| g.single_player)
+}
+
+/// The console text `CBaseTrigger::CounterUse` (0xe79b0) prints with `left` triggers still to
+/// go (no newline, as in TS).
+fn counter_message(left: i32) -> &'static str {
+    match left {
+        0 => "Sequence completed!",
+        1 => "Only 1 more to go...",
+        2 => "Only 2 more to go...",
+        3 => "Only 3 more to go...",
+        _ => "There are more to go...",
+    }
+}
 
 impl<const KIND: u8> Mover for Trigger<KIND> {
     fn toggle(&mut self) -> &mut Toggle<Self> {
@@ -193,6 +229,102 @@ impl<const KIND: u8> Trigger<KIND> {
 
     fn sub_remove(&mut self, cx: &mut Cx) {
         remove(cx.edict);
+    }
+
+    fn toggle_use_fn(&mut self, cx: &mut Cx, _activator: *mut edict_t) {
+        toggle_use(cx);
+    }
+
+    /// `CBaseTrigger::CounterUse` (0xe79b0): counts `m_cTriggersLeft` down and runs
+    /// `ActivateMultiTrigger` when it reaches 0. A `player` activator gets the progress text on
+    /// the server console unless `SF_COUNTER_NOMESSAGE`.
+    fn counter_use(&mut self, cx: &mut Cx, activator: *mut edict_t) {
+        self.triggers_left = self.triggers_left.wrapping_sub(1);
+        self.t.activator = EHandle::new(activator);
+        if self.triggers_left < 0 {
+            return;
+        }
+        // TS reads the classname through `m_hActivator->` and crashes on a NULL (or object-less)
+        // activator; the port treats it as not a player.
+        let a = self.t.activator.get();
+        let message =
+            !a.is_null() && a.has_private_data() && s(a.v().classname) == c"player" && cx.pev().spawnflags & SF_COUNTER_NOMESSAGE == 0;
+        if message {
+            engine().alert(ALERT_TYPE::at_console, counter_message(self.triggers_left));
+        }
+        if self.triggers_left == 0 {
+            self.activate_multi_trigger(cx, a);
+        }
+    }
+
+    /// `CTriggerSave::SaveTouch` (0xe94c8).
+    fn save_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if !is_master_triggered(self.t.master, other) || !is_player(other) {
+            return;
+        }
+        self.t.touch = None;
+        remove(cx.edict);
+        engine().server_command("autosave\n");
+    }
+
+    /// `CTriggerCDAudio::PlayTrack` (0xe6cd8): the track is `(int)health`.
+    fn play_track(&mut self, cx: &mut Cx) {
+        play_cd_track(cx.pev().health as i32);
+        self.t.touch = None;
+        remove(cx.edict);
+    }
+
+    /// `CTriggerEndSection::EndSectionUse` (0xe9560): a net client (player) or no activator.
+    fn end_section_use(&mut self, cx: &mut Cx, activator: *mut edict_t) {
+        if !activator.is_null() && !is_player(activator) {
+            return;
+        }
+        self.use_fn = None;
+        Self::end_section(cx);
+    }
+
+    /// `CTriggerEndSection::EndSectionTouch` (0xe967c).
+    fn end_section_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if !is_player(other) {
+            return;
+        }
+        self.t.touch = None;
+        Self::end_section(cx);
+    }
+
+    /// `pfnEndSection(section)` when there is one, then `UTIL_Remove`.
+    fn end_section(cx: &mut Cx) {
+        let section = cx.pev().message;
+        if section != 0 {
+            engine().end_section(s(section));
+        }
+        remove(cx.edict);
+    }
+
+    /// `CTriggerMonsterJump::Touch` (0xe6ae4; a virtual override, so `SetTouch` doesn't matter):
+    /// a monster is lifted 1 unit (no `SetOrigin`) and thrown along `movedir` at `speed`, plus
+    /// `m_flHeight` up; the trigger turns itself off on its next think.
+    fn monster_jump_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        let ov = other.v();
+        if ov.flags & FL_MONSTER as i32 == 0 {
+            return;
+        }
+        ov.origin[2] += 1.0;
+        if ov.flags & FL_ONGROUND as i32 != 0 {
+            ov.flags &= !(FL_ONGROUND as i32);
+        }
+        let v = cx.pev();
+        ov.velocity = vec::scale(v.movedir, v.speed);
+        ov.velocity[2] += self.t.height;
+        v.nextthink = engine().time();
+    }
+
+    /// `CTriggerMonsterJump::Think` (0xe6a9c; a virtual override).
+    fn monster_jump_think(&mut self, cx: &mut Cx) {
+        cx.pev().solid = SOLID_NOT as i32;
+        let org = cx.pev().origin;
+        engine().set_origin(cx.edict, org);
+        self.t.think = None;
     }
 
     /// `CTriggerHurt::RadiationThink` (0xe703c): the nearest player who can see the trigger's
@@ -357,8 +489,11 @@ impl<const KIND: u8> Trigger<KIND> {
 }
 
 impl<const KIND: u8> Entity for Trigger<KIND> {
+    /// `CBaseTrigger::KeyValue` (0xe68bc); `CTriggerEndSection::KeyValue` (0xe96fc) takes
+    /// `section` first.
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
+            b"section" if KIND == K_ENDSECTION => cx.pev().message = alloc(value),
             b"damage" => cx.pev().dmg = kv_f(value),
             b"count" => self.triggers_left = kv_f(value) as i32,
             b"damagetype" => self.damage_inflict = kv_i(value),
@@ -383,7 +518,9 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
             K_HURT => {
                 init_trigger(cx);
                 self.t.touch = Some(Self::hurt_touch);
-                self.toggle_usable = cx.pev().targetname != 0;
+                if cx.pev().targetname != 0 {
+                    self.use_fn = Some(Self::toggle_use_fn);
+                }
                 if self.damage_inflict & DMG_RADIATION != 0 {
                     self.t.think = Some(Self::radiation_think);
                     cx.pev().nextthink = eng.time() + eng.random_float(0.0, 0.5);
@@ -410,30 +547,177 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
                 if v.spawnflags & SF_TRIGGER_PUSH_START_OFF != 0 {
                     v.solid = SOLID_NOT as i32;
                 }
-                self.toggle_usable = true;
+                self.use_fn = Some(Self::toggle_use_fn);
                 self.t.touch = Some(Self::push_touch);
                 let org = cx.pev().origin;
                 eng.set_origin(cx.edict, org);
             }
-            _ => {
+            K_GRAVITY => {
                 init_trigger(cx);
                 self.t.touch = Some(Self::gravity_touch);
             }
+            // CTriggerSave::Spawn (0xe945c): REMOVE_ENTITY under the multiplayer rules.
+            K_AUTOSAVE => {
+                if rules_deathmatch() {
+                    remove(cx.edict);
+                    return;
+                }
+                init_trigger(cx);
+                self.t.touch = Some(Self::save_touch);
+            }
+            // CTriggerCDAudio::Spawn (0xe6bec).
+            K_CDAUDIO => init_trigger(cx),
+            // CTriggerCounter::Spawn (0xe7b54): no InitTrigger, so no model and not solid.
+            K_COUNTER => {
+                self.t.wait = -1.0;
+                if self.triggers_left == 0 {
+                    self.triggers_left = 2;
+                }
+                self.use_fn = Some(Self::counter_use);
+            }
+            // CTriggerEndSection::Spawn (0xe95e4): REMOVE_ENTITY under the multiplayer rules.
+            K_ENDSECTION => {
+                if rules_deathmatch() {
+                    remove(cx.edict);
+                    return;
+                }
+                init_trigger(cx);
+                self.use_fn = Some(Self::end_section_use);
+                if cx.pev().spawnflags & SF_ENDSECTION_USEONLY == 0 {
+                    self.t.touch = Some(Self::end_section_touch);
+                }
+            }
+            // CTriggerMonsterJump::Spawn (0xe6a0c): SetMovedir even for zero angles, then
+            // InitTrigger (which then sees zero angles and leaves movedir alone).
+            K_MONSTERJUMP => {
+                set_movedir(cx.pev());
+                init_trigger(cx);
+                let v = cx.pev();
+                v.nextthink = 0.0;
+                v.speed = 200.0;
+                self.t.height = 150.0;
+                if v.targetname != 0 {
+                    v.solid = SOLID_NOT as i32;
+                    let org = v.origin;
+                    eng.set_origin(cx.edict, org);
+                    self.use_fn = Some(Self::toggle_use_fn);
+                }
+            }
+            // `trigger` (K_BASE): CBaseEntity::Spawn.
+            _ => {}
         }
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        run_think(self, cx);
+        if KIND == K_MONSTERJUMP {
+            self.monster_jump_think(cx);
+        } else {
+            run_think(self, cx);
+        }
     }
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        run_touch(self, cx, other);
+        match KIND {
+            // CTriggerCDAudio::Touch (0xe6bb0), a virtual override.
+            K_CDAUDIO => {
+                if is_player(other) {
+                    self.play_track(cx);
+                }
+            }
+            K_MONSTERJUMP => self.monster_jump_touch(cx, other),
+            _ => run_touch(self, cx, other),
+        }
     }
 
-    fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
-        if self.toggle_usable {
-            toggle_use(cx);
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        if KIND == K_CDAUDIO {
+            // CTriggerCDAudio::Use (0xe6c10), a virtual override.
+            self.play_track(cx);
+        } else if let Some(f) = self.use_fn {
+            f(self, cx, activator);
         }
+    }
+}
+
+// ---- PlayCDTrack / target_cdaudio ------------------------------------------------------------------------
+
+/// The client command `PlayCDTrack` (0xe6c34) sends for `track`: -1 pauses, 0..=30 plays,
+/// anything else is out of range (`None`).
+fn cd_command(track: i32) -> Option<String> {
+    if (track as u32).wrapping_add(1) >= 0x20 {
+        return None;
+    }
+    Some(if track == -1 { "cd pause\n".to_owned() } else { format!("cd play {track:3}\n") })
+}
+
+/// `PlayCDTrack` (0xe6c34): a `cd` command to the client in slot 1 (single-player code: other
+/// players hear nothing).
+pub fn play_cd_track(track: i32) {
+    let eng = engine();
+    let client = eng.entity_of_index(1);
+    if client.is_null() {
+        return;
+    }
+    match cd_command(track) {
+        Some(cmd) => eng.client_command(client, &goldsrc::util::to_cstring(&cmd)),
+        // TS passes no argument for the %d, so it prints whatever is on the stack; the port
+        // prints the track.
+        None => eng.alert(ALERT_TYPE::at_console, &format!("TriggerCDAudio - Track {track} out of range\n")),
+    }
+}
+
+/// `target_cdaudio` (`CTargetCDAudio`, 0xe6d60..0xe6f08): plays its CD track (`health`) when
+/// used, or once the client in slot 1 is within `radius` (checked every 0.5 s), then removes
+/// itself.
+#[derive(Default)]
+pub struct TargetCdAudio;
+
+impl TargetCdAudio {
+    /// `CTargetCDAudio::Play` (0xe6f08).
+    fn play(cx: &mut Cx) {
+        play_cd_track(cx.pev().health as i32);
+        remove(cx.edict);
+    }
+}
+
+impl Entity for TargetCdAudio {
+    /// `CTargetCDAudio::KeyValue` (0xe6d60): only `radius` (`pev->scale`).
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key == c"radius" {
+            cx.pev().scale = kv_f(value);
+            return true;
+        }
+        false
+    }
+
+    /// `CTargetCDAudio::Spawn` (0xe6dc8).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        v.solid = SOLID_NOT as i32;
+        v.movetype = MOVETYPE_NONE as i32;
+        if v.scale > 0.0 {
+            v.nextthink = engine().time() + 1.0;
+        }
+    }
+
+    /// `CTargetCDAudio::Think` (0xe6e48): stops thinking while slot 1 has no edict.
+    fn think(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let client = eng.entity_of_index(1);
+        if client.is_null() {
+            return;
+        }
+        let org = client.v().origin;
+        let v = cx.pev();
+        v.nextthink = eng.time() + 0.5;
+        if vec::length(vec::sub(org, v.origin)) <= v.scale {
+            Self::play(cx);
+        }
+    }
+
+    /// `CTargetCDAudio::Use` (0xe6e24).
+    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+        Self::play(cx);
     }
 }
 
@@ -1003,6 +1287,26 @@ impl Entity for NullEntity {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cd_command() {
+        assert_eq!(super::cd_command(-1).as_deref(), Some("cd pause\n"));
+        assert_eq!(super::cd_command(0).as_deref(), Some("cd play   0\n"));
+        assert_eq!(super::cd_command(7).as_deref(), Some("cd play   7\n"));
+        assert_eq!(super::cd_command(30).as_deref(), Some("cd play  30\n"));
+        assert_eq!(super::cd_command(31), None);
+        assert_eq!(super::cd_command(-2), None);
+        assert_eq!(super::cd_command(i32::MIN), None);
+    }
+
+    #[test]
+    fn counter_message() {
+        assert_eq!(super::counter_message(0), "Sequence completed!");
+        assert_eq!(super::counter_message(1), "Only 1 more to go...");
+        assert_eq!(super::counter_message(2), "Only 2 more to go...");
+        assert_eq!(super::counter_message(3), "Only 3 more to go...");
+        assert_eq!(super::counter_message(4), "There are more to go...");
+    }
+
     #[test]
     fn strip_token() {
         assert_eq!(super::strip_token("door1#2"), "door1");

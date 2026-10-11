@@ -95,6 +95,17 @@ pub fn unknown_sentence(sample: &CStr) {
     engine().alert(ALERT_TYPE::at_aiconsole, &format!("Unable to find {} in sentences.txt\n", sample.to_string_lossy()));
 }
 
+/// `CBaseEntity::SUB_Remove` (0xe2d40): an entity removed with health left gets it zeroed and a
+/// developer message first.
+pub fn sub_remove(e: *mut edict_t) {
+    let v = e.v();
+    if v.health > 0.0 {
+        v.health = 0.0;
+        engine().alert(ALERT_TYPE::at_aiconsole, "SUB_Remove called on entity with health > 0\n");
+    }
+    remove(e);
+}
+
 /// `pev->nextthink = pev->ltime + delay` (MOVETYPE_PUSH entities think on local time).
 pub fn think_ltime(cx: &mut Cx, delay: f32) {
     let v = cx.pev();
@@ -185,6 +196,14 @@ pub fn axis_delta(flags: i32, a: Vec3, b: Vec3) -> f32 {
     axis_value(flags, a) - axis_value(flags, b)
 }
 
+/// `a + dir * k` the way TS's x87 code evaluates it in `CMomentaryDoor::Spawn` (0xb7e38) and
+/// `CMomentaryRotButton::Spawn` (0xa9550): the y and z products are stored as floats before the
+/// add, but the x product stays on the FPU stack, so x is rounded to float only once. `f64` holds
+/// the exact float × float product.
+pub fn mad_x87(a: Vec3, dir: Vec3, k: f32) -> Vec3 {
+    [(a[0] as f64 + k as f64 * dir[0] as f64) as f32, a[1] + k * dir[1], a[2] + k * dir[2]]
+}
+
 // ---- CBaseDelay ------------------------------------------------------------------------------------
 
 /// `CBaseDelay`: `delay` and `killtarget`, and `SUB_UseTargets`.
@@ -233,7 +252,10 @@ pub fn sub_use_targets(
             return;
         }
         world::create::<DelayedUse>(e.v());
-        world::with::<DelayedUse, _>(e, |d| d.kill_target = kill_target);
+        world::with::<DelayedUse, _>(e, |d| {
+            d.kill_target = kill_target;
+            d.armed = true;
+        });
         let v = e.v();
         v.classname = eng.alloc_string(c"DelayedUse");
         v.nextthink = eng.time() + delay;
@@ -256,14 +278,32 @@ pub fn sub_use_targets(
     }
 }
 
-/// `DelayedUse`: a `CBaseDelay` created by `SUB_UseTargets` to fire after a delay.
+/// `DelayedUse`: a `CBaseDelay` created by `SUB_UseTargets` to fire after a delay. A map can
+/// place one too (the `DelayedUse` export, 0xe3050), but without `SetThink(DelayThink)` it never
+/// does anything.
 #[derive(Default)]
 pub struct DelayedUse {
     kill_target: string_t,
+    /// `SetThink(&CBaseDelay::DelayThink)`, only from `SUB_UseTargets`.
+    armed: bool,
 }
 
 impl crate::world::Entity for DelayedUse {
+    /// `CBaseDelay::KeyValue`: `delay` / `killtarget` (the delay is unused without the think).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"delay" => {}
+            b"killtarget" => self.kill_target = alloc(value),
+            _ => return false,
+        }
+        true
+    }
+
+    /// `CBaseDelay::DelayThink`.
     fn think(&mut self, cx: &mut Cx) {
+        if !self.armed {
+            return;
+        }
         let v = cx.pev();
         let (owner, button, target) = (v.owner, v.button, v.target);
         let kind = use_type(button);
@@ -562,5 +602,14 @@ mod tests {
         assert_eq!(axis_value(SF_DOOR_ROTATE_Z, [1.0, 2.0, 3.0]), 3.0);
         assert_eq!(axis_value(SF_DOOR_ROTATE_X, [1.0, 2.0, 3.0]), 1.0);
         assert_eq!(axis_delta(0, [0.0, 90.0, 0.0], [0.0, 30.0, 0.0]), 60.0);
+    }
+
+    #[test]
+    fn x87_mad() {
+        assert_eq!(mad_x87([1.0, 2.0, 3.0], [0.0, 0.0, 1.0], 64.0), [1.0, 2.0, 67.0]);
+        // x keeps the exact product: 1 + 3 × 0.1f rounds once.
+        let k = 0.1f32;
+        assert_eq!(mad_x87([1.0, 1.0, 0.0], [3.0, 3.0, 0.0], k)[0], (1.0f64 + 3.0 * k as f64) as f32);
+        assert_eq!(mad_x87([1.0, 1.0, 0.0], [3.0, 3.0, 0.0], k)[1], 1.0 + 3.0 * k);
     }
 }

@@ -204,6 +204,29 @@ impl Engine {
     pub fn set_origin_v(&self, e: *mut edict_t, org: Vec3) {
         self.set_origin(e, org)
     }
+
+    /// `pfnClientCommand(e, "%s", cmd)`: stuffs `cmd` into a client's command buffer
+    /// (`CLIENT_COMMAND`, e.g. `PlayCDTrack`'s `cd play`).
+    pub fn client_command(&self, e: *mut edict_t, cmd: &CStr) {
+        eng!(pfnClientCommand(e, c"%s".as_ptr().cast_mut(), cmd.as_ptr()))
+    }
+
+    /// `pfnChangeLevel(map, landmark)` with a landmark (`CHANGE_LEVEL`; `trigger_changelevel`).
+    pub fn change_level_landmark(&self, map: &CStr, landmark: &CStr) {
+        eng!(pfnChangeLevel(map.as_ptr(), landmark.as_ptr()))
+    }
+
+    /// `pfnEndSection` (`trigger_endsection`).
+    pub fn end_section(&self, name: &CStr) {
+        eng!(pfnEndSection(name.as_ptr()))
+    }
+
+    /// Sets `gpGlobals->vecLandmarkOffset` (`CChangeLevel::ChangeLevelNow`).
+    pub fn set_landmark_offset(&self, v: Vec3) {
+        // SAFETY: `globals` points at the engine's globalvars_t, which lives for the process and
+        // is only written from the game thread.
+        unsafe { (*self.globals).vecLandmarkOffset = v };
+    }
 }
 
 // ---- sounds -------------------------------------------------------------------------------------------

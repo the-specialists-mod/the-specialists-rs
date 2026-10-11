@@ -13,12 +13,16 @@ pub mod drive;
 pub mod effects;
 pub mod explode;
 pub mod items;
+pub mod levelchange;
 pub mod lights;
 pub mod maprules;
 pub mod monsters;
+pub mod playeritem;
 pub mod sentences;
 pub mod sound;
+pub mod soundent;
 pub mod tank;
+pub mod trackchange;
 pub mod tracktrain;
 pub mod trains;
 pub mod triggers;
@@ -122,7 +126,7 @@ link_entities! {
     env_bubbles               => Bubbling,
     infodecal                 => Decal,
     cycler_sprite             => CyclerSprite,
-    cycler                    => Cycler,
+    cycler                    => GenericCycler,
     // items.cpp / healthkit.cpp / maprules.cpp
     item_healthkit            => HealthKit,
     item_battery              => Battery,
@@ -142,6 +146,49 @@ link_entities! {
     func_recharge             => ArmorCharger,
     env_global                => EnvGlobal,
     env_message               => EnvMessage,
+    // #95: effects.cpp / h_cycler.cpp / items.cpp / sound.cpp / soundent.cpp / weapons.cpp / world.cpp
+    beam                      => Beam,
+    env_lightning             => Lightning,
+    test_effect               => TestEffect,
+    env_funnel                => EnvFunnel,
+    env_beverage              => EnvBeverage,
+    item_sodacan              => ItemSoda,
+    cycler_prdroid            => CyclerProbe,
+    cycler_wreckage           => Wreckage,
+    cycler_weapon             => playeritem::WeaponCycler,
+    item_suit                 => items::Suit,
+    item_security             => items::Security,
+    world_items               => items::WorldItem,
+    speaker                   => sound::Speaker,
+    soundent                  => soundent::SoundEnt,
+    bodyque                   => Corpse,
+    weaponbox                 => playeritem::WeaponBox,
+    weapon_tsgun              => playeritem::WorldTsGun,
+    info_breakable            => breakable::InfoBreakable,
+    // #95: triggers.cpp / player.cpp extras
+    trigger                   => Trigger<K_BASE>,
+    trigger_autosave          => Trigger<K_AUTOSAVE>,
+    trigger_cdaudio           => Trigger<K_CDAUDIO>,
+    target_cdaudio            => TargetCdAudio,
+    trigger_changelevel       => levelchange::ChangeLevel,
+    trigger_transition        => levelchange::TriggerVolume,
+    trigger_counter           => Trigger<K_COUNTER>,
+    trigger_endsection        => Trigger<K_ENDSECTION>,
+    trigger_monsterjump       => Trigger<K_MONSTERJUMP>,
+    player_loadsaved          => levelchange::RevertSaved,
+    player_weaponstrip        => levelchange::StripWeapons,
+    func_monsterclip          => FuncMonsterClip,
+    // #95: plats.cpp track changes / platrot / guntarget
+    func_platrot              => trains::FuncPlatRot,
+    func_trackchange          => trackchange::FuncTrackChange<false>,
+    func_trackautochange      => trackchange::FuncTrackChange<true>,
+    func_guntarget            => trains::GunTarget,
+    // #95: momentary door / rot button
+    momentary_door            => doors::MomentaryDoor,
+    momentary_rot_button      => buttons::MomentaryRotButton,
+    // #95: subs.cpp / triggers.cpp helpers TS also exports
+    DelayedUse                => base::DelayedUse,
+    fireanddie                => levelchange::FireAndDie,
 }
 
 /// `worldspawn` spawnflags (SDK `SF_WORLD_*`); `CWorld::KeyValue` sets them from keys.
@@ -245,6 +292,10 @@ impl Entity for World {
         base::reset_registries();
         tracktrain::reset();
         sound::reset_rooms();
+        // CWorld::Precache (0xf449c), right after the rules: the soundent and the body queue
+        // are the first edicts after the clients, so map entities get TS's edict numbers.
+        soundent::create_world_soundent();
+        init_body_que();
         // CWorld::Precache (0xf449c): sentences.txt, once per process.
         sentences::init();
         blood::precache_world();
@@ -331,6 +382,30 @@ const LIGHT_STYLES: [&CStr; 12] = [
     c"mmnnmmnnnmmnn",
 ];
 
+/// `InitBodyQue` (0xf3ba4): four `bodyque` corpses linked into a ring through `owner`. TS's
+/// only user, `CopyToBodyQue` (0xf3c70, from `CBasePlayer::StartDeathCam`), is never called,
+/// so they stay empty.
+fn init_body_que() {
+    let eng = engine();
+    let head = eng.create_named_entity(c"bodyque");
+    let mut prev = head;
+    for _ in 0..3 {
+        let e = eng.create_named_entity(c"bodyque");
+        if !prev.is_null() {
+            prev.v().owner = e;
+        }
+        prev = e;
+    }
+    if !prev.is_null() {
+        prev.v().owner = head;
+    }
+}
+
+/// `bodyque` (`CCorpse`): no behaviour of its own (`CBaseEntity::Spawn`), only `ObjectCaps`.
+#[derive(Default)]
+pub struct Corpse;
+impl Entity for Corpse {}
+
 /// Spawn points (`CBaseDMStart`: `info_player_deathmatch`, `info_player_start`,
 /// `info_player_team1..4`) keep their origin/angles in pev; the rules pick among them.
 #[derive(Default)]
@@ -383,6 +458,14 @@ pub fn object_caps(e: *mut edict_t) -> i32 {
             }
         }
         b"func_pushable" | b"func_healthcharger" | b"func_recharge" => FCAP_CONTINUOUS_USE,
+        // CMomentaryRotButton::ObjectCaps (0xaa9b4); momentary_door's (0xb87f4) is 0.
+        b"momentary_rot_button" => {
+            if v.spawnflags & buttons::SF_MOMENTARY_DOOR != 0 {
+                0
+            } else {
+                FCAP_CONTINUOUS_USE
+            }
+        }
         // CFuncTankControls::ObjectCaps (0xc4bc8); trains are driven through `drive`.
         b"func_tankcontrols" => FCAP_IMPULSE_USE,
         b"func_tracktrain" => FCAP_DIRECTIONAL_USE,

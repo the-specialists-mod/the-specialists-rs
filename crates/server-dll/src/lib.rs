@@ -186,13 +186,9 @@ unsafe extern "C" fn restore(_: *mut edict_t, _: *mut SAVERESTOREDATA, _: c_int)
 unsafe extern "C" fn save_fields(_: *mut SAVERESTOREDATA, _: *const c_char, _: *mut c_void, _: *mut TYPEDESCRIPTION, _: c_int) {}
 unsafe extern "C" fn save_global_state(_: *mut SAVERESTOREDATA) {}
 
-/// Same as the SDK: grow brush model boxes by one unit so touching works on the edges.
+/// `DispatchObjectCollsionBox`: the class's collision box (`entities::set_object_collision_box`).
 unsafe extern "C" fn set_abs_box(e: *mut edict_t) {
-    let v = e.v();
-    for i in 0..3 {
-        v.absmin[i] = v.origin[i] + v.mins[i] - 1.0;
-        v.absmax[i] = v.origin[i] + v.maxs[i] + 1.0;
-    }
+    entities::set_object_collision_box(e);
 }
 
 unsafe extern "C" fn client_connect(e: *mut edict_t, name: *const c_char, addr: *const c_char, _reject: *mut c_char) -> qboolean {

@@ -8,6 +8,7 @@ pub mod ctb;
 pub mod ground;
 pub mod misc;
 pub mod powerup;
+pub mod shrapnel;
 pub mod triggers;
 
 use super::link_entities;
@@ -72,6 +73,8 @@ link_entities! {
     ts_hack => misc::Stub,
     ts_teamescape => misc::Stub,
     ts_sellzone => misc::Stub,
+    // #95: CTSShrapnel (only a map can place one: nothing calls CTSShrapnel::Create)
+    shrapnel => shrapnel::Shrapnel,
 }
 
 /// Models and sounds the TS entities need even when created at runtime.
@@ -133,8 +136,8 @@ pub fn is_usable(class: &CStr) -> bool {
 /// all of them are `FCAP_CONTINUOUS_USE` (0x10). Ground weapons (`CTSGroundWeapon::ObjectCaps`
 /// 0xa34a0), ground ammo (0xa34f4, whose `Use` 0xa2f3c is empty: it is picked up on touch, but
 /// still takes the +use search), dropped guns (`CTSWorldGun` 0xa3404), thrown blades (`CTSKnife`
-/// 0x7f04c), grenades (`CM61Grenade` 0x7effc; classname `grenade`), the CTB case (`CTSFlag`
-/// 0x9e704) and the dead hidden objectives (`CTSBomb` 0x8e738, `CTSHack` 0x8e788,
+/// 0x7f04c), grenades (`CM61Grenade` 0x7effc; classname `grenade`), shrapnel (`CTSShrapnel`
+/// 0x7f09c, no `Use`), the CTB case (`CTSFlag` 0x9e704) and the dead hidden objectives (`CTSBomb` 0x8e738, `CTSHack` 0x8e788,
 /// `CTSTeamEscape` 0x8e820). 0 for anything else.
 pub fn object_caps(class: &CStr) -> i32 {
     let usable = matches!(
@@ -144,6 +147,7 @@ pub fn object_caps(class: &CStr) -> i32 {
             | b"WorldGun"
             | b"knife"
             | b"grenade"
+            | b"shrapnel"
             | b"ts_flag"
             | b"ts_bomb"
             | b"ts_hack"

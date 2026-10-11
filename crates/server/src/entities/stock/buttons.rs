@@ -1,8 +1,9 @@
-//! `func_button`, `func_rot_button`, `button_target`, `multisource` (SDK buttons.cpp; identical in
-//! TS apart from TS's slow-motion pitch on spark sounds), and the lock sounds and sentences doors
-//! share (`PlayLockSounds`, 0xb4f50).
+//! `func_button`, `func_rot_button`, `momentary_rot_button`, `button_target`, `multisource` (SDK
+//! buttons.cpp; identical in TS apart from TS's slow-motion pitch on spark and wheel sounds), and
+//! the lock sounds and sentences doors share (`PlayLockSounds`, 0xb4f50).
 
 use super::base::*;
+use super::bmodels::SF_PENDULUM_AUTO_RETURN;
 use super::explode::{emit_sound_slow, sparks};
 use crate::world::{Cx, DamageInfo, Entity, UseType};
 use goldsrc::edict::EdictPtr;
@@ -520,6 +521,264 @@ impl<const ROT: bool> Button<ROT> {
     }
 }
 
+// ---- momentary_rot_button ---------------------------------------------------------------------------
+
+/// `SF_MOMENTARY_DOOR`: solid, and not +usable (`CMomentaryRotButton::ObjectCaps` 0xaa9b4).
+pub const SF_MOMENTARY_DOOR: i32 = 1;
+
+/// `CBaseToggle::AxisDelta(flags, a, b) / m_flMoveDistance` as TS computes it (`Use` 0xa9850,
+/// `Return` 0xa9cb0): the long-double difference divided by the float distance, rounded to float
+/// once. A zero distance gives ±inf or NaN, as in TS.
+fn axis_fraction(flags: i32, a: Vec3, b: Vec3, distance: f32) -> f32 {
+    ((axis_value(flags, a) as f64 - axis_value(flags, b) as f64) / distance as f64) as f32
+}
+
+/// `t + 0.1` with TS's double constant (`fldl 0.1; fadds t; fstps`).
+fn plus_tenth(t: f32) -> f32 {
+    (t as f64 + 0.1) as f32
+}
+
+/// What `CMomentaryRotButton::UpdateSelf` (0xa99c0) does with the turned direction and the
+/// position.
+#[derive(Debug, PartialEq, Eq)]
+enum RotStep {
+    /// Turning forward and at (or past) the end: stop there.
+    End,
+    /// Turning back and at (or before) the start: stop there.
+    Start,
+    /// Keep turning.
+    Turn,
+}
+
+/// The x87 compares (0xa9a1e, 0xa9a59): a NaN position keeps turning forward but stops at the
+/// start when turning back.
+fn rot_step(direction: i32, value: f32) -> RotStep {
+    if direction > 0 && value >= 1.0 {
+        RotStep::End
+    } else if direction < 0 && (value <= 0.0 || value.is_nan()) {
+        RotStep::Start
+    } else {
+        RotStep::Turn
+    }
+}
+
+/// `momentary_rot_button` (`CMomentaryRotButton`): a wheel that turns while a player holds +use
+/// and sends its position (0..1) as `USE_SET` to its targets, usually a `momentary_door`. The SDK
+/// 2.3 class (no HL25 destination prediction in `Use`), with TS's slow-motion sound pitch.
+#[derive(Default)]
+pub struct MomentaryRotButton {
+    t: Toggle<Self>,
+    /// `m_lastUsed`.
+    last_used: bool,
+    /// `m_direction`: +1 or -1.
+    direction: i32,
+    /// `m_returnSpeed`.
+    return_speed: f32,
+    /// `m_start` / `m_end`.
+    start: Vec3,
+    end: Vec3,
+    /// `m_sounds`.
+    sounds: i32,
+}
+
+impl Mover for MomentaryRotButton {
+    fn toggle(&mut self) -> &mut Toggle<Self> {
+        &mut self.t
+    }
+}
+
+impl MomentaryRotButton {
+    fn fraction(&self, cx: &mut Cx) -> f32 {
+        let v = cx.pev();
+        axis_fraction(v.spawnflags, v.angles, self.start, self.t.move_distance)
+    }
+
+    /// `CMomentaryRotButton::PlaySound` (0xa97fc).
+    fn play_sound(cx: &mut Cx) {
+        let n = s(cx.pev().noise);
+        emit_sound_slow(cx.edict, CHAN_VOICE, n, 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
+    }
+
+    /// `CMomentaryRotButton::UpdateAllButtons` (0xa98bc): every `momentary_rot_button` whose
+    /// `target` is ours (this one included, in entity order) follows. There's no empty-target
+    /// check, so the engine's string search decides what an empty `target` matches.
+    fn update_all_buttons(&mut self, cx: &mut Cx, value: f32, start: bool) {
+        let eng = engine();
+        let me = cx.edict;
+        let mut e = std::ptr::null_mut();
+        loop {
+            e = eng.find_by_string(e, c"target", s(cx.pev().target));
+            if e.is_null() {
+                break;
+            }
+            if s(e.v().classname) != c"momentary_rot_button" {
+                continue;
+            }
+            if e == me {
+                self.update_one(cx, value, start);
+            } else {
+                crate::world::dispatch(e, |ent, ecx| {
+                    if let Some(b) = (ent as &mut dyn std::any::Any).downcast_mut::<Self>() {
+                        b.update_one(ecx, value, start);
+                    }
+                });
+            }
+        }
+    }
+
+    fn update_one(&mut self, cx: &mut Cx, value: f32, start: bool) {
+        if start { self.update_self(cx, value) } else { self.update_self_return(cx, value) }
+    }
+
+    /// `CMomentaryRotButton::UpdateSelf` (0xa99c0): the first use after a stop reverses the
+    /// direction and plays the sound; each use keeps it turning for another 0.1 s.
+    fn update_self(&mut self, cx: &mut Cx, value: f32) {
+        let first = !self.last_used;
+        if first {
+            self.direction = -self.direction;
+        }
+        self.last_used = true;
+        let v = cx.pev();
+        v.nextthink = plus_tenth(v.ltime);
+        match rot_step(self.direction, value) {
+            RotStep::End => {
+                v.avelocity = [0.0; 3];
+                v.angles = self.end;
+                return;
+            }
+            RotStep::Start => {
+                v.avelocity = [0.0; 3];
+                v.angles = self.start;
+                return;
+            }
+            RotStep::Turn => {}
+        }
+        if first {
+            Self::play_sound(cx);
+        }
+        let v = cx.pev();
+        // SDK "HACKHACK": several +use packets in one frame each add 0.1 s. Always the second
+        // branch here, since nextthink was just set to ltime + 0.1.
+        v.nextthink = if v.nextthink >= v.ltime { plus_tenth(v.nextthink) } else { plus_tenth(v.ltime) };
+        v.avelocity = vec::scale(v.movedir, self.direction as f32 * v.speed);
+        self.t.think = Some(Self::off);
+    }
+
+    /// `CMomentaryRotButton::UpdateTarget` (0xa9b3c): `USE_SET` with the position to every entity
+    /// named by `target`, with this button as activator and caller.
+    fn update_target(&mut self, cx: &mut Cx, value: f32) {
+        if cx.pev().target == 0 {
+            return;
+        }
+        let eng = engine();
+        let me = cx.edict;
+        let mut e = std::ptr::null_mut();
+        loop {
+            e = eng.find_by_string(e, c"targetname", s(cx.pev().target));
+            if e.is_null() {
+                break;
+            }
+            // A button that targets itself recursed until TS crashed; here the re-entrant
+            // dispatch is skipped.
+            crate::world::dispatch(e, |ent, ecx| ent.use_(ecx, me, me, UseType::Set, value));
+        }
+    }
+
+    /// `CMomentaryRotButton::Off` (0xa9c10): +use was let go. With `SF_PENDULUM_AUTO_RETURN` and a
+    /// return speed (the x87 compare also takes a NaN one), it starts turning back.
+    fn off(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        v.avelocity = [0.0; 3];
+        self.last_used = false;
+        if v.spawnflags & SF_PENDULUM_AUTO_RETURN != 0 && (self.return_speed > 0.0 || self.return_speed.is_nan()) {
+            self.t.think = Some(Self::return_);
+            v.nextthink = plus_tenth(v.ltime);
+            self.direction = -1;
+        } else {
+            self.t.think = None;
+        }
+    }
+
+    /// `CMomentaryRotButton::Return` (0xa9cb0).
+    fn return_(&mut self, cx: &mut Cx) {
+        let value = self.fraction(cx);
+        self.update_all_buttons(cx, value, false);
+        if value > 0.0 {
+            self.update_target(cx, value);
+        }
+    }
+
+    /// `CMomentaryRotButton::UpdateSelfReturn` (0xa9d24): a NaN position stops at the start.
+    fn update_self_return(&mut self, cx: &mut Cx, value: f32) {
+        let v = cx.pev();
+        if value > 0.0 {
+            v.avelocity = vec::scale(v.movedir, -self.return_speed);
+            v.nextthink = plus_tenth(v.ltime);
+        } else {
+            v.avelocity = [0.0; 3];
+            v.angles = self.start;
+            v.nextthink = -1.0;
+            self.t.think = None;
+        }
+    }
+}
+
+impl Entity for MomentaryRotButton {
+    /// `CMomentaryRotButton::KeyValue` (0xa9758).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"returnspeed" => self.return_speed = kv_f(value),
+            b"sounds" => self.sounds = kv_i(value),
+            _ => return self.t.key_value(key, value),
+        }
+        true
+    }
+
+    /// `CMomentaryRotButton::Spawn` (0xa9550). A negative `distance` swaps the ends (the wheel
+    /// starts at its end); a NaN one is taken as positive.
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        axis_dir(v);
+        if v.speed == 0.0 {
+            v.speed = 100.0;
+        }
+        let d = self.t.move_distance;
+        if d < 0.0 {
+            self.start = mad_x87(v.angles, v.movedir, d);
+            self.end = v.angles;
+            self.direction = 1;
+            self.t.move_distance = -d;
+        } else {
+            self.start = v.angles;
+            self.end = mad_x87(v.angles, v.movedir, d);
+            self.direction = -1;
+        }
+        v.solid = if v.spawnflags & SF_MOMENTARY_DOOR != 0 { SOLID_BSP } else { SOLID_NOT } as i32;
+        v.movetype = MOVETYPE_PUSH as i32;
+        let org = v.origin;
+        engine().set_origin(cx.edict, org);
+        set_own_model(cx);
+        let snd = button_sound(self.sounds);
+        engine().precache_sound(snd);
+        cx.pev().noise = alloc(snd);
+        self.last_used = false;
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        run_think(self, cx);
+    }
+
+    /// `CMomentaryRotButton::Use` (0xa9850): any use type. The targets get the position from
+    /// before this use's turn (the SDK's "BUGBUG" latency).
+    fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        let value = self.fraction(cx);
+        cx.pev().ideal_yaw = value;
+        self.update_all_buttons(cx, value, true);
+        let value = cx.pev().ideal_yaw;
+        self.update_target(cx, value);
+    }
+}
+
 // ---- button_target ----------------------------------------------------------------------------------
 
 pub const SF_BTARGET_USE: i32 = 1;
@@ -654,5 +913,31 @@ impl Entity for MultiSource {
             let kind = if self.globalstate != 0 { UseType::On } else { UseType::Toggle };
             self.delay.use_targets(cx.edict, std::ptr::null_mut(), kind, 0.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn momentary_fraction() {
+        assert_eq!(axis_fraction(0, [0.0, 45.0, 0.0], [0.0; 3], 90.0), 0.5);
+        assert_eq!(axis_fraction(SF_DOOR_ROTATE_Z, [0.0, 45.0, 30.0], [0.0, 0.0, 0.0], 60.0), 0.5);
+        assert!(axis_fraction(0, [0.0; 3], [0.0; 3], 0.0).is_nan());
+        assert_eq!(axis_fraction(0, [0.0, 1.0, 0.0], [0.0; 3], 0.0), f32::INFINITY);
+        assert_eq!(plus_tenth(1.0), 1.1);
+    }
+
+    #[test]
+    fn momentary_steps() {
+        assert_eq!(rot_step(1, 1.0), RotStep::End);
+        assert_eq!(rot_step(1, 0.5), RotStep::Turn);
+        assert_eq!(rot_step(1, f32::NAN), RotStep::Turn);
+        assert_eq!(rot_step(-1, 0.0), RotStep::Start);
+        assert_eq!(rot_step(-1, -0.1), RotStep::Start);
+        assert_eq!(rot_step(-1, f32::NAN), RotStep::Start);
+        assert_eq!(rot_step(-1, 1.5), RotStep::Turn);
+        assert_eq!(rot_step(1, -1.0), RotStep::Turn);
     }
 }

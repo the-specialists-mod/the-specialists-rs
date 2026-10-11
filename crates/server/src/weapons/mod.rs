@@ -347,6 +347,24 @@ pub fn remove_all_items(p: &mut Player, cx: &mut Cx) {
     remove_all_items_tail(p, cx);
 }
 
+/// `CBasePlayer::RemoveAllItems(FALSE)` (0xd8cec), from `player_weaponstrip`
+/// (`CStripWeapons::Use` 0xddbb0): [`remove_all_items`] except that `pev->weapons` keeps the HEV
+/// suit bit (`&= 0x80000000`, set before `UpdateClientData` and `CurWeapon 0,0,0`).
+pub fn remove_all_items_keep_suit(p: &mut Player, cx: &mut Cx) {
+    if p.inv.sv.has_gun {
+        host::with_host(p, cx, |gun, h| gun.holster_weapon(h));
+    }
+    p.inv.sv.has_gun = false;
+    p.inv.gun.reset_inventory();
+    p.inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
+    let v = cx.pev();
+    v.viewmodel = 0;
+    v.weaponmodel = 0;
+    v.weapons &= i32::MIN;
+    crate::player::hud::update_client_data(p, cx);
+    net::send_cur_weapon_reset(cx.edict);
+}
+
 pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bool {
     commands::client_command(p, cx, cmd, args)
 }

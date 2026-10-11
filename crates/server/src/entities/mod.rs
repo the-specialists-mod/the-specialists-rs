@@ -219,6 +219,51 @@ pub fn use_targets(pev: &entvars_t, activator: *mut edict_t, caller: *mut edict_
 }
 
 /// Removes an entity at the end of the frame (SDK `UTIL_Remove`): safe from inside callbacks.
+/// `pfnSetAbsBox` (`DispatchObjectCollsionBox` → the class's `SetObjectCollisionBox`): `absmin`
+/// and `absmax` for the engine's touch links. Player items take a fixed box around their origin
+/// (`stock::playeritem::object_collision_box`); everything else gets the base box.
+pub fn set_object_collision_box(e: *mut edict_t) {
+    let v = e.v();
+    let classname = if v.classname == 0 { c"" } else { engine().string(v.classname) };
+    if let Some((mins, maxs)) = stock::playeritem::object_collision_box(classname, v.origin) {
+        v.absmin = mins;
+        v.absmax = maxs;
+        return;
+    }
+    (v.absmin, v.absmax) = base_collision_box(v.solid, v.origin, v.angles, v.mins, v.maxs);
+}
+
+/// `::SetObjectCollisionBox` (0xabf9c): a rotated BSP model gets a cube as wide as its largest
+/// extent, anything else its size; then one unit more on every side so touching works on the
+/// edges.
+fn base_collision_box(solid: i32, origin: [f32; 3], angles: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let (mut lo, mut hi) = ([0.0; 3], [0.0; 3]);
+    if solid == SOLID_BSP as i32 && angles != [0.0; 3] {
+        let mut max = 0.0f32;
+        for i in 0..3 {
+            for x in [mins[i].abs(), maxs[i].abs()] {
+                if max < x {
+                    max = x;
+                }
+            }
+        }
+        for i in 0..3 {
+            lo[i] = origin[i] - max;
+            hi[i] = origin[i] + max;
+        }
+    } else {
+        for i in 0..3 {
+            lo[i] = origin[i] + mins[i];
+            hi[i] = origin[i] + maxs[i];
+        }
+    }
+    for i in 0..3 {
+        lo[i] -= 1.0;
+        hi[i] += 1.0;
+    }
+    (lo, hi)
+}
+
 pub fn remove(e: *mut edict_t) {
     if e.is_null() {
         return;
@@ -232,6 +277,16 @@ pub fn remove(e: *mut edict_t) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn collision_boxes() {
+        let (o, mins, maxs) = ([100.0, 0.0, 0.0], [-10.0, -40.0, 0.0], [10.0, 40.0, 64.0]);
+        // Unrotated (or not a BSP model): the size plus one unit.
+        assert_eq!(base_collision_box(SOLID_BSP as i32, o, [0.0; 3], mins, maxs), ([89.0, -41.0, -1.0], [111.0, 41.0, 65.0]));
+        assert_eq!(base_collision_box(SOLID_BBOX as i32, o, [0.0, 90.0, 0.0], mins, maxs), ([89.0, -41.0, -1.0], [111.0, 41.0, 65.0]));
+        // A rotated BSP model: a cube of the largest extent (64).
+        assert_eq!(base_collision_box(SOLID_BSP as i32, o, [0.0, 90.0, 0.0], mins, maxs), ([35.0, -65.0, -65.0], [165.0, 65.0, 65.0]));
+    }
 
     /// Runs `key_value_order` and returns which parsers were asked, in order, and `fHandled`.
     fn order(entvars_claims: bool, has_class: bool, class_claims: bool) -> (Vec<&'static str>, bool) {

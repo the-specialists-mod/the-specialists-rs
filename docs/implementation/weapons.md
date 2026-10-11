@@ -335,8 +335,8 @@ How the port maps TS where the structure differs (not deviations):
 * The briefcase/flag (rules).
 * `DropArmor` 0x93a3c armour packs (`CTSAmmoPack` with `armorvalue`) aren't ported. They're dead
   in TS: nothing calls `DropArmor`, so ammo packs never carry armour there either.
-* Shrapnel (`CTSShrapnel`) and the flag (`CTSFlag`), the other `CTSPhysicObject`s, aren't
-  ported. Nothing in the decomp calls `CTSShrapnel::Create` 0x7bf9c directly.
+* `CTSShrapnel::Create` 0x7bf9c isn't ported: nothing in the decomp calls it. A map-placed
+  `shrapnel` is (`entities::ts::shrapnel`, #95; see stock-entities.md §2).
 
 ## 7. Tests
 
