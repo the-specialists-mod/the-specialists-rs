@@ -234,11 +234,12 @@ fn muzzle_light(a: &Args, s: &Shot) {
     effects::with_psys(|ps| effects::fx::muzzle_dlight(ps, now, pos));
 }
 
-/// The weapon fire sound (`0x1003de90`).
+/// The weapon fire sound (`0x1003de90`): `fire_pitch() + rand(-5, 5)`, rolled before the volume.
 fn fire_sound(a: &Args, id: i32, silenced: bool) {
     let Some(asset) = tables().asset(id as u8) else { return };
     let ammo = tables().weapon(id as u8).map_or(0, |w| w.ammo) as usize;
     let atten = AMMO_ATTENUATION.get(ammo).copied().unwrap_or(0.4);
+    let pitch = r::random_long(-5, 5) + fire_pitch();
     let (sample, vol, attn) = if silenced && !asset.sound2.is_empty() {
         (&asset.sound2, r::random_float(0.84, 0.92), atten * 2.0)
     } else {
@@ -247,7 +248,7 @@ fn fire_sound(a: &Args, id: i32, silenced: bool) {
     if sample.is_empty() {
         return;
     }
-    engine().ev_play_sound(a.entindex, a.origin, CHAN_WEAPON as i32, &format!("weapons/{sample}"), vol, attn, 0, fire_pitch());
+    engine().ev_play_sound(a.entindex, a.origin, CHAN_WEAPON as i32, &format!("weapons/{sample}"), vol, attn, 0, pitch);
 }
 
 fn bullets_for(a: &Args, s: &Shot, src: Vec3, seed: i32, f1: f32, f2: f32) {

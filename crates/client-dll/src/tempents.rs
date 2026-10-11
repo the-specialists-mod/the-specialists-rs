@@ -19,14 +19,7 @@ fn shell_sound(t: &mut TEMPENTITY) {
     let kind = t.entity.curstate.iuser1;
     let sample = match kind {
         1 => "weapons/shell.wav",
-        // TS names `weapons/sshell.wav`, which TS 3.0 doesn't ship; it has sshell1/2.
-        2 => {
-            if r::random_long(0, 1) == 0 {
-                "weapons/sshell1.wav"
-            } else {
-                "weapons/sshell2.wav"
-            }
-        }
+        2 => "weapons/sshell.wav",
         _ => return,
     };
     t.entity.curstate.iuser1 = 0;

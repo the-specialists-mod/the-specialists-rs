@@ -26,26 +26,22 @@ pub struct MotionBlur {
 const GHOST_ALPHA: f32 = 120.0;
 
 impl MotionBlur {
-    /// `MotionBlur_Reset` (`0x10029660`).
-    pub fn reset(&mut self) {
-        *self = MotionBlur::default();
-    }
-
     /// `MotionBlur_Add` (`0x10029680`, from `TSMBlur` `0x1004bf90`): start a trail on `ent`, or
     /// lengthen a running one by 5 ghosts. The level is capped by `cl_fx`: 1 -> 10 ghosts,
     /// 2 -> 15, anything else 5. `now` is `gHUD.m_flTime` (`0x100cf944`).
-    pub fn add(&mut self, ent: usize, level: u8, cl_motionblur: f32, cl_fx: f32, now: f32) {
+    pub fn add(&mut self, ent: usize, level: i8, cl_motionblur: f32, cl_fx: f32, now: f32) {
         if cl_motionblur as i32 == 0 {
             return;
         }
-        // TS indexes its 32-entry table without a check; player 32 would land past it.
+        // TS indexes its 32-entry table without a check: entity 32 and up would write past it,
+        // so they are dropped.
         let Some(t) = self.trails.get_mut(ent) else { return };
         if t.active {
             t.max += 5;
             return;
         }
         // The handler sign-extends the level byte (`movsx edx, al` at `0x1004bfaf`).
-        let lvl = (level as i8 as f32).min(cl_fx) as i32;
+        let lvl = (level as f32).min(cl_fx) as i32;
         t.max = match lvl {
             1 => 10,
             2 => 15,
@@ -93,12 +89,10 @@ impl MotionBlur {
 /// The spawning half of `MotionBlur_Update`: a temp entity copying the player's latest state,
 /// angles and gait (`iuser1` gaitsequence, `iuser2` renderframe, `fuser3` gaitframe, `fuser4`
 /// gaityaw), frozen (`framerate 0`), translucent (`rendermode 1`, `renderamt 120`). True when the
-/// ghost was completed (TS only counts those).
+/// ghost was completed (TS only counts those). A trail on entity 0 allocates a temp entity with
+/// the world model and stops at `GetPlayerState(-1)`, which the engine refuses, as in TS.
 pub fn spawn_ghost(ent: usize) -> bool {
     let idx = ent as i32;
-    if idx < 1 {
-        return false;
-    }
     let Some(e) = engine().entity(idx) else { return false };
     let Some(model) = Model::from_ptr(e.model) else { return false };
     let (origin, angles) = (e.origin, e.angles);
@@ -163,7 +157,7 @@ mod tests {
         m.add(6, 1, 0.0, 2.0, 0.0);
         assert!(!m.trails[6].active, "cl_motionblur 0");
         m.add(32, 1, 1.0, 1.0, 0.0); // out of the table: ignored
-        m.add(7, 200, 1.0, 2.0, 0.0); // the level byte is signed: -56 -> 5 ghosts
+        m.add(7, 200u8 as i8, 1.0, 2.0, 0.0); // the level byte is signed: -56 -> 5 ghosts
         assert_eq!(m.trails[7].max, 5);
     }
 

@@ -117,12 +117,12 @@ pub fn slow_pitch() -> i32 {
     25 - (ts * -75.0) as i32 + r::random_long(-5, 5)
 }
 
-/// Weapon fire, ricochet and explosion pitch. TS computes `100 - (int)(ts * -300)` here
-/// (`0x1003eeed`, constant `0x1007d6f4` = -300.0), i.e. ~400 at normal speed, which neither engine
-/// clamps (FWGS `S_StartSound` passes any pitch > 1 through). That can't be what players heard,
-/// so this port uses the same curve as every other TS event sound. See the implementation doc.
+/// Weapon fire, ricochet and explosion pitch: `100 - (int)(ts * -300)` (`0x1003eeed`,
+/// `0x10044dbd`, `0x100481e4`; constant `0x1007d6f4` = -300.0), i.e. 400 at normal speed, as TS
+/// passes it (FWGS `S_StartSound` doesn't clamp it either). No random part: only the fire sound
+/// adds one (`0x1003de90`).
 pub fn fire_pitch() -> i32 {
-    slow_pitch()
+    100 - (time_scale() * -300.0) as i32
 }
 
 /// Whether the local view currently shows a first-person view model (`g_pViewModel`: not in

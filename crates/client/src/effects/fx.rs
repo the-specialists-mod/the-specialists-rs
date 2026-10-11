@@ -25,7 +25,10 @@ fn rl(a: i32, b: i32) -> i32 {
 }
 
 /// `0x100509a0`: a random frame of `sprite`.
-fn random_frame(ps: &PSys, sprite: u16) -> f32 {
+fn random_frame(ps: &PSys, sprite: i16) -> f32 {
+    if sprite < 0 {
+        return 0.0;
+    }
     rl(0, ps.frames(sprite) - 1) as f32
 }
 
@@ -60,12 +63,11 @@ pub fn muzzle_flash(
     fwdofs: f32,
     third: bool,
 ) {
-    let Some(s1) = ps.sprite("sprites/ts_muzzleflash1h.spr") else { return };
+    let Some(s1) = ps.sprite("sprites/ts_muzzleflash1h.spr", ADD) else { return };
     let radius = if third { (info.radius as f64 * 1.3) as i32 } else { info.radius } as f32;
     let count = ((n as f32 * ps.tuning.mult) as i32).max(3);
     let sprite = |i: i32, count: i32, size: f32, color: f32, scalespeed: f32, spin: f32| Particle {
         sprite: s1,
-        rendermode: ADD,
         origin: v::ma(org, fwdofs + info.length * i as f32 / count as f32, fwd),
         vel: v::add(vel, [0.0, 0.0, rf(-3.0, 3.0) * TS]),
         radius: size,
@@ -103,14 +105,17 @@ pub fn muzzle_flash(
         ps.add(p, now);
         k *= 0.909;
     }
-    let core = if info.kind == 1 { ps.sprite("sprites/ts_muzzleflash6.spr") } else { Some(s1) };
-    let Some(core) = core else { return };
+    // The core (`0x100477dc..0x10047a1c`). TS doesn't check the `ts_muzzleflash6.spr` lookup
+    // (0x100477f3): a missing sprite still adds the particle, with no sprite (never drawn).
+    let core = if info.kind == 1 { ps.sprite("sprites/ts_muzzleflash6.spr", ADD).unwrap_or(-1) } else { s1 };
+    // TS rolls a spin, the size, then a second spin over the first (0x10047861, 0x100478c7).
+    let _ = rl(-10, 10);
     let (size, color) = if info.kind == 1 { (rf(1.4, 1.7) * radius, 0.6) } else { (rf(1.1, 1.4) * radius, 0.7) };
+    let spin = rl(-10, 10) as f32;
     let frame = random_frame(ps, core);
     ps.add(
         Particle {
             sprite: core,
-            rendermode: ADD,
             origin: v::ma(org, fwdofs - 2.0, fwd),
             vel,
             radius: size,
@@ -120,7 +125,7 @@ pub fn muzzle_flash(
             drag: 3.3,
             frame,
             orient: psys::ORIENT_ROLL,
-            avel: [0.0, 0.0, rl(-10, 10) as f32 * TS],
+            avel: [0.0, 0.0, spin * TS],
             ..Default::default()
         },
         now,
@@ -157,7 +162,7 @@ pub fn gun_smoke(ps: &mut PSys, now: f64, radius: f32, framerate: i32, org: Vec3
     if !ps.tuning.smoke || !ps.visible(org) {
         return;
     }
-    let Some(s) = ps.sprite("sprites/gun_smoke_add.spr") else { return };
+    let Some(s) = ps.sprite("sprites/gun_smoke_add.spr", ADD) else { return };
     let mut r = radius;
     for (j, k) in (1..=5).rev().enumerate() {
         let origin = if j == 0 { v::ma(org, r * 0.5, dir) } else { v::ma(org, r * (j - 1) as f32, dir) };
@@ -166,7 +171,6 @@ pub fn gun_smoke(ps: &mut PSys, now: f64, radius: f32, framerate: i32, org: Vec3
         ps.add(
             Particle {
                 sprite: s,
-                rendermode: ADD,
                 origin,
                 vel: v::add(v::ma(vel, speed / k as f32 * TS, dir), jitter),
                 radius: r,
@@ -213,7 +217,7 @@ pub fn sprite_debris(
             return;
         }
     }
-    let Some(s) = ps.sprite(sprite) else { return };
+    let Some(s) = ps.sprite(sprite, rendermode) else { return };
     let count = (rl(cnt / 2, cnt) as f32 * ps.tuning.mult.min(1.0)) as i32;
     for _ in 0..count {
         let spin = rl(-180, 180) as f32;
@@ -222,7 +226,6 @@ pub fn sprite_debris(
         ps.add(
             Particle {
                 sprite: s,
-                rendermode,
                 origin: v::ma(pos, 2.0, n),
                 vel: v::scale(v::add(v::scale(n, 16.0), jitter), TS),
                 gravity,
@@ -260,13 +263,12 @@ pub fn surface_mark(
     if !psys::in_view_cone(&ps.cam, ps.cull_origin, pos) {
         return;
     }
-    let Some(s) = ps.sprite(sprite) else { return };
+    let Some(s) = ps.sprite(sprite, rendermode) else { return };
     let a = vec_to_angles(n);
     let frame = random_frame(ps, s);
     ps.add(
         Particle {
             sprite: s,
-            rendermode,
             origin: v::ma(pos, 0.1, n),
             radius,
             color,
@@ -285,7 +287,7 @@ pub fn surface_mark(
 /// TS's `VecToAngles` (`0x10046110`): the SDK `VectorAngles` with each angle truncated to whole
 /// degrees *before* a negative one gets 360 added, and the pitch negated (AngleVectors'
 /// convention). Straight up/down is (-90 / -270, 0, 0).
-fn vec_to_angles(f: Vec3) -> Vec3 {
+pub(super) fn vec_to_angles(f: Vec3) -> Vec3 {
     if f[0] == 0.0 && f[1] == 0.0 {
         return [if f[2] > 0.0 { -90.0 } else { -270.0 }, 0.0, 0.0];
     }
@@ -310,7 +312,7 @@ pub fn sparks(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, n: i32, scale: f32,
     if v::dist(org, ps.cull_origin) >= max || !psys::in_view_cone(&ps.cam, ps.cull_origin, org) {
         return;
     }
-    let Some(s) = ps.sprite("sprites/sparks.spr") else { return };
+    let Some(s) = ps.sprite("sprites/sparks.spr", ADD) else { return };
     let count = (rl(n / 2, n) as f32 * ps.tuning.mult.min(1.0)) as i32;
     for _ in 0..count {
         let life = rf(0.1, 1.0);
@@ -319,7 +321,6 @@ pub fn sparks(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, n: i32, scale: f32,
         ps.add(
             Particle {
                 sprite: s,
-                rendermode: ADD,
                 origin: org,
                 vel: v::scale(v::add(v::scale(dir, 17.0), jitter), TS),
                 radius: rf(0.5, 1.15) * scale,
@@ -341,14 +342,13 @@ pub fn sparks(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, n: i32, scale: f32,
 /// `TS_Scintille(org, dir, sprite, rendermode, size)` (`0x10046f50`): a flash off a surface, two
 /// billboards (the second one growing) for sizes up to 24, else one, `size/2` apart along `dir`.
 pub fn scintille(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, sprite: &str, rendermode: i32, size: f32) {
-    let Some(s) = ps.sprite(sprite) else { return };
+    let Some(s) = ps.sprite(sprite, rendermode) else { return };
     let count = if size <= 24.0 { 2 } else { 1 };
     for i in 0..count {
         let frame = random_frame(ps, s);
         ps.add(
             Particle {
                 sprite: s,
-                rendermode,
                 origin: v::ma(org, (i + 1) as f32 * size * 0.5, dir),
                 vel: v::scale(dir, 2.0 * TS),
                 radius: size - i as f32,
@@ -391,7 +391,7 @@ pub fn impact_smoke(
     if !ps.visible(pos) {
         return;
     }
-    let Some(s) = ps.sprite(sprite) else { return };
+    let Some(s) = ps.sprite(sprite, rendermode) else { return };
     let half = (framerate as f32 * 0.5) as i32;
     let mut r = size;
     for j in 0..count {
@@ -400,7 +400,6 @@ pub fn impact_smoke(
         ps.add(
             Particle {
                 sprite: s,
-                rendermode,
                 origin,
                 vel,
                 radius: r,
@@ -426,11 +425,10 @@ pub fn small_puff(ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, sprite: &str, ren
     if !ps.cooldown_ready(0, now, ps.slow(ps.tuning.puff_interval)) || !ps.visible(pos) {
         return;
     }
-    let Some(s) = ps.sprite(sprite) else { return };
+    let Some(s) = ps.sprite(sprite, rendermode) else { return };
     ps.add(
         Particle {
             sprite: s,
-            rendermode,
             origin: v::ma(pos, radius * 0.5, n),
             vel: [0.0, 0.0, -2.0 * TS],
             radius,
@@ -538,7 +536,7 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32, kevlar:
     };
     let radius = (a as f32 * 0.075).clamp(1.0, 5.0);
     let n = blood_count(a, kevlar, gore);
-    let Some(s) = ps.sprite("sprites/bloodfrag2.spr") else { return };
+    let Some(s) = ps.sprite("sprites/bloodfrag2.spr", kRenderTransColor as i32) else { return };
     d[2] += rf(0.5, 1.0);
     let dn = v::normalize(d);
     let (mut at, mut acc) = (pos, 0.0f32);
@@ -555,7 +553,6 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32, kevlar:
         ps.add(
             Particle {
                 sprite: s,
-                rendermode: kRenderTransColor as i32,
                 origin,
                 vel,
                 radius,
@@ -598,7 +595,7 @@ fn glass_axes(size: Vec3) -> (usize, usize, usize) {
 /// otherwise they scatter around `dir·force`.
 #[allow(clippy::too_many_arguments)]
 pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec3, dmg_bits: i32, force: f32) {
-    let Some(s) = ps.sprite("sprites/glassfrag.spr") else { return };
+    let Some(s) = ps.sprite("sprites/glassfrag.spr", ADD) else { return };
     let (_, a1, a2) = glass_axes(size);
     let radius = ((size[a1] + size[a2]) * (1.0 / 18.0) * 0.7).min(20.0);
     for k1 in 0..9 {
@@ -616,7 +613,6 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec
             ps.add(
                 Particle {
                     sprite: s,
-                    rendermode: ADD,
                     origin: p,
                     vel: v::scale(vel, TS),
                     gravity: 1.0,
@@ -640,7 +636,7 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec
 /// `TS_Explosion(org, radius)` (`0x100481b0`, `TSFrags` type 1): sound, particle push, a
 /// `grenade_asplode.spr` fireball and `gun_smoke_add.spr` smoke (24 and 48 particles × the
 /// quality scale, each living for one run of its animation), the muzzle light and a growing flash.
-/// The pitch follows the port's fire-sound deviation (see `docs/implementation/client-rendering.md`).
+/// The sound plays at TS's fire pitch (`events::fire_pitch`, 400 at normal speed).
 pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
     const SOUNDS: [&str; 5] = ["explo/explode.wav", "explo/explode1.wav", "explo/explode2.wav", "explo/explode3.wav", "explo/explode4.wav"];
     let snd = SOUNDS[rl(0, 4).clamp(0, 4) as usize];
@@ -649,12 +645,11 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
     let scale = ps.tuning.scale;
     // A sprite that fails to load ends the whole effect (`je 0x100486e7`): no smoke, light or flash.
     let cloud = |ps: &mut PSys, sprite: &str, count: f32, size: f32, rise: f32, speed: f32, fr: (i32, i32)| -> bool {
-        let Some(s) = ps.sprite(sprite) else { return false };
+        let Some(s) = ps.sprite(sprite, ADD) else { return false };
         for _ in 0..(scale * count) as i32 {
             ps.add(
                 Particle {
                     sprite: s,
-                    rendermode: ADD,
                     origin: v::add(org, [0.0, 0.0, radius * rise]),
                     vel: v::scale([rf(-speed, speed), rf(-speed, speed), rf(0.0, speed)], TS),
                     radius: radius * size,
@@ -677,12 +672,11 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
         return;
     }
     muzzle_dlight(ps, now, v::add(org, [0.0, 0.0, 32.0]));
-    if let Some(s) = ps.sprite("sprites/scintille_metal.spr") {
+    if let Some(s) = ps.sprite("sprites/scintille_metal.spr", ADD) {
         let frame = random_frame(ps, s);
         ps.add(
             Particle {
                 sprite: s,
-                rendermode: ADD,
                 origin: v::add(org, [0.0, 0.0, radius]),
                 radius: radius * 2.0,
                 color: 1.0,
@@ -702,12 +696,11 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
 /// `TS_BulletTrail(p1, p2, w1, w2, alpha)` (`0x10046240`): a `bullet_trail.spr` quad from the
 /// last trail point `p2` to the bullet at `p1`, `w` wide along `v_up`, colour `alpha·0.75`.
 pub fn bullet_trail(ps: &mut PSys, now: f64, p1: Vec3, p2: Vec3, w: f32, alpha: f32) {
-    let Some(s) = ps.sprite("sprites/bullet_trail.spr") else { return };
+    let Some(s) = ps.sprite("sprites/bullet_trail.spr", ADD) else { return };
     let up = v::scale(ps.cam.up, w);
     ps.add(
         Particle {
             sprite: s,
-            rendermode: ADD,
             origin: p1,
             radius: w,
             color: alpha * 0.75,

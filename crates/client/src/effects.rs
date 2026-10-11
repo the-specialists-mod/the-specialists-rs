@@ -30,8 +30,6 @@ struct Fx {
     map: MapFx,
     level: String,
     fog: Option<emitters::Fog>,
-    /// [`fog_begin`] turned fog on this frame, so [`fog_end`] turns it off.
-    fog_on: bool,
     bullets: Vec<ClientBullet>,
     visible: [bool; 33],
     /// `CachePlayerAttachments` (`0x10056e70`, `0x1018caf8`): attachments 0-3 of every player
@@ -45,7 +43,6 @@ struct Fx {
     /// The emitters' own clock (`0x10189478`): `HUD_Frame`'s frame times summed since the map
     /// loaded, which emission is scheduled against.
     emit_clock: f64,
-    sprites: Option<laser::Sprites>,
     quality: Quality,
     blur: mblur::MotionBlur,
     draws: u64,
@@ -100,7 +97,6 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         map: MapFx::default(),
         level: String::new(),
         fog: None,
-        fog_on: false,
         bullets: Vec::new(),
         visible: [false; 33],
         attachments: [[v::ZERO; 4]; 33],
@@ -109,7 +105,6 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         time: 0.0,
         frametime: 0.0,
         emit_clock: 0.0,
-        sprites: None,
         quality: Quality::default(),
         blur: mblur::MotionBlur::default(),
         draws: 0,
@@ -319,16 +314,14 @@ extern "C" fn cmd_test_fx() {
     }
 }
 
+/// The effects side of `HUD_VidInit`: only the TS panel's reset (`HUD_VidInit -> VGui_Startup`,
+/// `0x1006600f`) clears the "started" flag, so the next `TS_DrawEffects` rebuilds the pool and
+/// sprite cache. Until then the old pool, sprite cache, client bullets, map emitters (the level
+/// name is kept, so reloading the same map doesn't reparse them) and motion-blur trails stay, as
+/// in TS (`MotionBlur_Reset` `0x10029660` has no caller).
 pub fn vid_init() {
     with(|fx| {
-        fx.psys.reset_sprites();
-        fx.sprites = None;
-        fx.level.clear();
-        fx.bullets.clear();
         fx.shell_seq = 0;
-        fx.blur.reset();
-        // HUD_VidInit -> VGui_Startup -> the TS panel's reset (0x1006600f). The pool pointer that
-        // gates emitters is untouched, so they keep emitting until the next `TS_DrawEffects`.
         fx.quality.started = false;
     });
 }
@@ -376,12 +369,15 @@ pub fn on_tsfrags(b: &[u8]) {
 }
 
 /// `TSMBlur` (`0x1004bf90` -> `MotionBlur_Add` `0x10029680`): start or lengthen a ghost trail.
+/// The handler reads two bytes without checking the length; a missing byte reads as -1
+/// (`READ_BYTE` `0x10029a10`), so a one-byte message has level -1 (5 ghosts). An empty message
+/// (entity -1) is dropped: TS would write before its trail table.
 pub fn on_tsmblur(b: &[u8]) {
-    if let Some(m) = msg::TsMBlur::decode(b) {
-        let (blur, fxq) = (cvar(|c| c.motionblur), cvar(|c| c.fx));
-        let now = crate::hud::now();
-        with(|fx| fx.blur.add(m.entindex as usize, m.level, blur, fxq, now));
-    }
+    let Some(&ent) = b.first() else { return };
+    let level = b.get(1).map_or(-1, |&l| l as i8);
+    let (blur, fxq) = (cvar(|c| c.motionblur), cvar(|c| c.fx));
+    let now = crate::hud::now();
+    with(|fx| fx.blur.add(ent as usize, level, blur, fxq, now));
 }
 
 /// `TSBTime` (`0x1004b8e0`).
@@ -417,12 +413,12 @@ pub fn frame(time: f64, frametime: f64) {
                 if fxmap.fog.is_some() { ", fog" } else { "" }
             ));
         }
+        // TS resets the emitters, templates, fog and the emitter clock here (0x1003ab8e..0x1003abc3), not
+        // the particle pool or the client bullets.
         with(|fx| {
-            fx.psys.clear();
             fx.fog = fxmap.fog;
             fx.map = fxmap;
             fx.level = level;
-            fx.bullets.clear();
             fx.emit_clock = 0.0;
         });
     }
@@ -433,6 +429,7 @@ pub fn frame(time: f64, frametime: f64) {
         fx.psys.cam = cam;
         fx.psys.cull_origin = cull_origin;
         fx.psys.time_scale = ts;
+        fx.psys.hardware = view::hardware();
         // 0x1003abef: no emission, and no emitter clock, until the first `TS_DrawEffects` has
         // allocated the particle pool (0x10056bc0). TS tests the pool pointer, not 0x1018d16a,
         // so this does not wait again after a `HUD_VidInit`.
@@ -452,11 +449,6 @@ pub fn frame(time: f64, frametime: f64) {
 /// value last applied (`0x1018cac4`).
 fn apply_cvar(fx: &mut Fx, cl_fx: f32) {
     let startup = !fx.quality.started;
-    if startup {
-        fx.psys.reset_sprites();
-        fx.psys.clear();
-        fx.bullets.clear();
-    }
     let q = &mut fx.quality;
     q.ready = true;
     q.started = true;
@@ -477,6 +469,11 @@ fn apply_cvar(fx: &mut Fx, cl_fx: f32) {
         q.n = 0;
         q.next = 0.0;
         q.next_adapt = 0.0;
+    }
+    // `PSys_Startup` with the pool size `FX_ApplyCvar` just chose, then the client bullet reset.
+    if startup {
+        fx.psys.init();
+        fx.bullets.clear();
     }
     fx.psys.tuning.smoke = cl_fx != 0.0;
 }
@@ -583,7 +580,8 @@ pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
 }
 
 /// `ThirdPersonOcclusionVisible` (`0x10057330`): in third person the camera may not reveal
-/// players the eye can't see.
+/// players the eye can't see: `PointVisible` from the eye to the origin and four points 32 units
+/// off it.
 fn occlusion_visible(e: &cl_entity_t, cam: &Camera) -> bool {
     if !view::is_third_person() {
         return true;
@@ -592,8 +590,7 @@ fn occlusion_visible(e: &cl_entity_t, cam: &Camera) -> bool {
     let (_, right, up) = v::angle_vectors(cam.angles);
     for ofs in [[0.0f32, 0.0], [32.0, 32.0], [-32.0, 32.0], [32.0, -32.0], [-32.0, -32.0]] {
         let p = v::ma(v::ma(e.origin, ofs[0], right), ofs[1], up);
-        let tr = r::player_trace(eye, p, 2, (PM_GLASS_IGNORE | PM_WORLD_ONLY) as i32, -1);
-        if tr.fraction >= 1.0 {
+        if psys::point_visible(eye, p) {
             return true;
         }
     }
@@ -635,44 +632,40 @@ pub fn draw_transparent() {
     let ts = state::with(|s| s.time_scale);
     let third = view::is_third_person();
     let (laser_mode, color, shadow) = (cvar(|c| c.laser), cvar(|c| c.lasercolor) as i32, cvar(|c| c.shadow));
-    let (visible, has_sprites) = with(|fx| (fx.visible, fx.sprites.is_some()));
-    if !has_sprites {
-        let s = laser::Sprites::load();
-        with(|fx| fx.sprites = Some(s));
-    }
-    let sprites = with(|fx| fx.sprites.take()).unwrap();
+    let visible = with(|fx| fx.visible);
     if cam_hardware() {
-        laser::draw_shadows(&sprites, &cam, &visible, shadow, third);
+        laser::draw_shadows(&cam, &visible, shadow, third);
     }
+    // `0x1003de00` (local laser, other lasers), then `0x1003bad0` (local flashlight, others').
     let now = now();
-    laser::draw_local(&sprites, &cam, now, laser_mode, color);
-    laser::draw_others(&sprites, &cam, &visible);
-    let scope_sprite = sprites.scope;
-    with(|fx| fx.sprites = Some(sprites));
+    laser::draw_local_laser(&cam, now, laser_mode, color);
+    laser::draw_other_lasers(&cam, &visible);
+    laser::draw_local_flashlight(&cam);
+    laser::draw_other_flashlights(&visible);
 
     let players = react_players();
-    let (dt, requests, blood_hits) = with(|fx| {
+    with(|fx| {
         let dt = fx.frametime * ts;
         fx.draws += 1;
         let t = fx.time;
-        fx.psys.update(t, dt, &cam, &players);
-        (dt, std::mem::take(&mut fx.psys.spawn_requests), std::mem::take(&mut fx.psys.blood_hits))
-    });
-    blood_decals(&blood_hits);
-    with(|fx| {
-        let t = fx.time;
-        for (tmpl, pos) in requests {
-            fx.map.spawn_one(&mut fx.psys, tmpl, pos, t);
-        }
-        fx.psys.draw(t, dt, &cam);
+        let Fx { psys, map, .. } = fx;
+        psys.update_draw(dt, &cam, &players, &mut |ps, c| match c {
+            psys::Collision::Spawn { target, origin, parent_vel } => map.spawn_one(ps, target, origin, parent_vel, t),
+            psys::Collision::Blood(tr) => blood_hit(tr),
+        });
     });
     if cam_hardware() {
-        scope::draw(scope_sprite, &cam, third);
+        scope::draw(&cam, third);
     }
     let fxq = cvar(|c| c.fx);
     with(|fx| {
         fx.visible = [false; 33];
         adapt_quality(fx, fxq);
+        // `ClientBullets_Draw` (`0x10034e60` -> `0x10035b50`) looks its sprite up every pass
+        // while bullets are in flight.
+        if !fx.bullets.is_empty() {
+            fx.psys.sprite("sprites/shotgun_pellets.spr", kRenderTransAdd as i32);
+        }
     });
     fog_end();
 }
@@ -700,20 +693,21 @@ fn react_players() -> Vec<(Vec3, Vec3)> {
     players
 }
 
-/// `TS_BloodImpact`'s collision callback (`0x10048710`): a `{blood1..8}` decal where a drop hit
-/// (with `r_decals`), and `player/splat.wav` one time in ten.
-fn blood_decals(hits: &[Vec3]) {
-    for &pos in hits {
-        let name = format!("{{blood{}", r::random_long(1, 8));
-        if goldsrc::client::engine().cvar_float(c"r_decals") != 0.0 {
-            let idx = r::decal_index(&name);
-            if idx != 0 {
-                r::decal_shoot(idx, 0, 0, pos, 0);
-            }
-        }
-        if r::random_long(0, 100) > 90 {
-            engine().ev_play_sound(-1, pos, CHAN_AUTO as i32, "player/splat.wav", 1.0, 0.99, 0, crate::events::slow_pitch());
-        }
+/// `TS_BloodImpact`'s collision callback (`0x10048710`), for the trace that hit: a `{bloodN`
+/// decal (N rolled first, 1..8) on the entity the trace hit when that is a BSP model or a
+/// `MOVETYPE_PUSHSTEP` entity and `r_decals` is on, then `player/splat.wav` one time in ten at
+/// the slow-motion pitch. The particle pass then clears the drop's in-use byte.
+fn blood_hit(mut tr: pmtrace_s) {
+    let name = format!("{{blood{}", r::random_long(1, 8));
+    let pe = r::physent(tr.ent);
+    if pe.is_some_and(|pe| pe.solid == SOLID_BSP as i32 || pe.movetype == MOVETYPE_PUSHSTEP as i32)
+        && goldsrc::client::engine().cvar_float(c"r_decals") != 0.0
+    {
+        let entity = r::index_from_trace(&mut tr);
+        r::decal_shoot(r::decal_index(&name), entity, 0, tr.endpos, 0);
+    }
+    if r::random_long(0, 100) > 90 {
+        engine().ev_play_sound(-1, tr.endpos, CHAN_AUTO as i32, "player/splat.wav", 1.0, 0.99, 0, crate::events::slow_pitch());
     }
 }
 
@@ -731,29 +725,31 @@ pub fn fog_begin() {
     let single = engine().max_clients() == 1;
     if let Some((color, start, end)) = fog_params(single, cvar(|c| c.gl_fog), with(|fx| fx.fog), user) {
         goldsrc::ext::tri::fog(color, start, end, true);
-        with(|fx| fx.fog_on = true);
     }
 }
 
 /// `V_SetFog`'s choice: in single player with `gl_fog 2` the user's `gl_fog_red/green/blue`
 /// (`user.0`) and `gl_fog_start/end`; otherwise the map's `ts_fog` while `gl_fog` is on.
-/// Returns (colour 0..255 for TriAPI, start, end). Both colour sources are 0..1, as TS feeds
-/// them to `glFogfv`; a `ts_fog` colour above 1 is taken as already 0..255.
+/// Returns (colour 0..255 for TriAPI, start, end). TS feeds both colours to `glFogfv`, which
+/// clamps them to 0..1.
 fn fog_params(single: bool, gl_fog: f32, map: Option<emitters::Fog>, user: (Vec3, f32, f32)) -> Option<(Vec3, f32, f32)> {
     if single && gl_fog == 2.0 {
-        Some((user.0.map(|x| x * 255.0), user.1, user.2))
+        Some((user.0.map(gl_color), user.1, user.2))
     } else if gl_fog != 0.0 {
-        map.map(|f| (f.color.map(|x| if x <= 1.0 { x * 255.0 } else { x }), f.near, f.far))
+        map.map(|f| (f.color.map(gl_color), f.near, f.far))
     } else {
         None
     }
 }
 
-/// TS disables `GL_FOG` at the end of the transparent pass (`0x10056e5e`).
+/// A `glFogfv` colour component (clamped to 0..1 by GL) as TriAPI's 0..255.
+fn gl_color(x: f32) -> f32 {
+    x.clamp(0.0, 1.0) * 255.0
+}
+
+/// TS disables `GL_FOG` at the end of every transparent pass (`0x10056e5e`), whatever was drawn.
 fn fog_end() {
-    if with(|fx| std::mem::take(&mut fx.fog_on)) {
-        goldsrc::ext::tri::fog([0.0; 3], 0.0, 0.0, false);
-    }
+    goldsrc::ext::tri::fog([0.0; 3], 0.0, 0.0, false);
 }
 
 /// `HUD_StudioEvent` (`0x10044b50`): only 5002 (sparks) and 5004 (sound) remain.
@@ -780,6 +776,9 @@ mod tests {
         assert_eq!(fog_params(true, 2.0, None, user), Some(([127.5; 3], 0.0, 2048.0)), "...even without ts_fog");
         assert_eq!(fog_params(false, 2.0, map, user), Some(([51.0, 102.0, 255.0], 100.0, 900.0)), "multiplayer: the map's");
         assert_eq!(fog_params(false, 2.0, None, user), None);
+        // GL clamps `glFogfv` colours to 0..1.
+        let bright = Some(emitters::Fog { near: 0.0, far: 1.0, color: [128.0, -1.0, 0.5] });
+        assert_eq!(fog_params(false, 1.0, bright, user), Some(([255.0, 0.0, 127.5], 0.0, 1.0)));
     }
 
     #[test]

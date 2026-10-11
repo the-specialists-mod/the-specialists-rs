@@ -84,13 +84,13 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `EV_TS_Empty`, `Pump`, `Reload`, `Draw`, `Grenade`, `Knife`, `Katana`, `CloseCombat`, `ColdCock` | §4.1 | `events::misc::*` | done |
 | `TS_MeleeMaterialSound` | `0x10045df0` | `misc::melee_material_sound` | done |
 | `CachePlayerAttachments` / getter | `0x10056e70` / `0x10056be0` | `effects::{cache_player_attachments, player_attachment}` | done (filled in `draw_transparent`, read by every weapon event) |
-| particle system `g_PSys` (`PSys_*`, `Particle_*`, `Quad_*`) | §5.2-5.4 | `effects::psys` | done (see deviations) |
-| `PSys_PushRadial` / `PushAlongLine` / `BlastPush` | `0x100524c0` / `0x10052720` / `0x10052c80` | `PSys::push_radial` / `push_along_line` / `blast_push` | done (from the disassembly) |
+| particle system `g_PSys` (`PSys_*`, `Particle_*`, `Quad_*`) | §5.2-5.4 | `effects::psys` | done. TS's slot pool: `PSys_Init` (`0x100507e0`) allocates `max` (256..4096) slots on the first `TS_DrawEffects` after `HUD_VidInit`, a later `cl_fx` change keeps the size until then; `PSys_Add` (`0x10050b60`) takes the first free slot and drops the particle when there is none (or before the pool exists, or for a TransColor sprite slot on a software renderer); `PSys_UpdateDraw` (`0x100520d0`) walks the slots in order up to the highest live one, moving, colliding and drawing each particle in turn (`PSys::update_draw`) |
+| `PSys_PushRadial` / `PushAlongLine` / `BlastPush` | `0x100524c0` / `0x10052720` / `0x10052c80` | `PSys::push_radial` / `push_along_line` / `blast_push` | done (from the disassembly). They walk the push list the last particle pass built (`+0xc14`: live slots with `react > 0`), skipping slots that have died since |
 | `CTS_CL_Emitter::Frame`, `LoadMap`, `LoadEntityLump`, `ProcessEnts`, keyvalue parsers | §5.1-5.3 | `effects::frame`, `effects::emitters` | done, unit-tested, verified in game (ts_frigid snow). Emission runs on the emitters' own clock (`0x10189478`): `HUD_Frame`'s frame times, unclamped, summed since the map loaded. Nothing is emitted, and the clock doesn't run, until the first `TS_DrawEffects` has allocated the particle pool (`0x1003abef` tests `g_PSys+8`, `0x1018bdf0`); the pool is never freed, so emitters don't wait again after a level change. The count is `RandomLong(ppelow, ppehigh)` on the raw keyvalues (`0x1003ac54`; the engine returns `ppelow` when it is above `ppehigh`), divided by the integer `cl_fx` divisor and rounded up with `idiv` + `inc` (`0x1003ae29`). Particles of an emitter with `cameradensity` and `cameraradius` above 0.01 and the camera inside spawn at the camera ± `cameraradius × (2 − min(cameradensity, 1))` on x and y, then 1.5 × the local player's `curstate.velocity` x/y (`GetLocalPlayer`, `0x1003b0a0..0x1003b0cb`, 1.5 at `0x1007a860`) is added so rain and snow lead a moving player (`emitters::camera_xy`). The camera is inside an emitter when it is strictly between `origin + variancelow` and `origin + variancehigh` on x and y, not normalised (`0x1003ac75..0x1003acce`). Outside, the camera test is horizontal (`0x1003ace9..0x1003ae25`): the direction to the box centre has z = 0 and the XY distance is floored at 1e-4; the emitter is skipped for that frame without rescheduling when forward · direction < 0.1 (`0x1003ad96`), otherwise the LOD factor is `clamp(distance / |high − low|, 1, 10)`, with the 3D box size unfloored (a zero-size box gives 10). Only a random particle count of exactly 0 is rejected (`0x1003ac6d`); a negative one still plays the emit sound (at the world origin, the zeroed scratch particle's) and reschedules, and with a divisor above 1 a small negative count rounds up to one particle. The template sprite is looked up after the count and the camera test (`0x1003ae5f`), so a missing sprite doesn't change the random sequence; it prints `Sprite '<name>' is not a valid sprite.` and the emitter is retried next frame without rescheduling (`0x1003ae69..0x1003ae78`) |
 | wind (`MsgFunc_TSPSys`, `CosineLerp`) | `0x1004bfd0`, `0x10050760` | `effects::on_tspsys`, `psys::Wind` | done, unit-tested |
 | `TS_MuzzleFlash`, `TS_MuzzleDlight`, `TS_GunSmoke`, `TS_SpriteDebris` (debris and the muzzle pellet spray), `TS_Sparks`, `TS_Scintille`, `TS_ImpactSmoke`, `TS_SmallPuff`, surface mark `0x10046a70` | §4.4-4.5 | `effects::fx::*` | done (numbers from the disassembly) |
 | `FX_ApplyCvar` / `FX_AdaptQuality` (`cl_fx`) | `0x10057d50` / `0x10057a70` | `effects::apply_cvar` / `effects::adapt_quality`, `psys::FxTuning` | done; both run from `effects::draw_transparent` (`TS_DrawEffects` `0x10056dd0`): `FX_ApplyCvar` first, `FX_AdaptQuality` (`cl_fx` exactly 1) after the particle pass, so its result takes effect next frame. `HUD_VidInit` clears "`TS_DrawEffects` has run" (`0x1018d16a`, cleared at `0x1006600f` by the TS panel's reset); the next `TS_DrawEffects` then re-runs `FX_ApplyCvar` whatever `cl_fx` is, `PSys_Startup` (`0x10056bc0` -> `PSys_Init` `0x100507e0`: the particles, sprite cache and cooldowns are cleared) and the client bullet reset (`0x10034eb0`) |
-| `PSys_LoadSprite` | `0x100509d0` | `PSys::sprite` | done. A sprite that fails to load takes no slot, so every lookup of it calls `SPR_Load` again and prints `WARNING! cannot found <name>`, as in TS. Lookups are once per effect or per emission, never per particle; a map emitter with a missing sprite is retried every frame (see the emitter row), so like TS it prints both warnings every frame |
+| `PSys_LoadSprite` | `0x100509d0` | `PSys::sprite` | done. 64 slots keyed by name (case-insensitive) and render mode; the particle pass draws with the slot's mode. Once all 64 are taken a new sprite is silently "no sprite". The laser, flashlight, shadow, scope and client-bullet sprites share the cache, looked up each time TS draws them. A sprite that fails to load takes no slot, so every lookup of it calls `SPR_Load` again and prints `WARNING! cannot found <name>`, as in TS. Lookups are once per effect or per emission, never per particle; a map emitter with a missing sprite is retried every frame (see the emitter row), so like TS it prints both warnings every frame |
 | `TS_ImpactParticles` | `0x10048f60` | `fx::impact` | done |
 | `TS_BloodImpact` (`PTakeDam`) | `0x10048840`, `0x1004bcd0` | `fx::blood`, `effects::on_ptakedam` | done |
 | `TS_GlassShatter`, `TS_Explosion` (`TSFrags`) | `0x10047cb0`, `0x100481b0`, `0x1004bd50` | `fx::glass`, `fx::explosion`, `effects::on_tsfrags` | done, verified in game |
@@ -110,11 +110,11 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `StudioSaveBones` / `StudioMergeBones` / `StudioCalcAttachments` | `0x100317b0` / `0x10031890` / `0x10034560` | `save_bones` / `merge_bones` / `calc_attachments` | done |
 | `StudioRenderModel` (glow shell) / `RenderFinal_Hardware` / `_Software` | `0x100345f0` / `0x10034750` / `0x10034690` | `render` / `render_final` | done |
 | `AngleQuaternion`, `QuaternionSlerp`, `QuaternionMatrix`, `MatrixAngles`, TS `QuaternionAngles`, `AngleMatrix`, `ConcatTransforms`, `VectorTransform` | `0x1002fbd0`, `0x1002fc70`, `0x1002fdf0`, `0x1002fef0`, `0x1002ffe0`, `0x1002f920`, `0x1002fa90`, `0x1002fa30` | `studio::math` | done, unit-tested |
-| `MotionBlur_Reset` / `_Add` / `_Update` / ghost callback | `0x10029660` / `0x10029680` / `0x10029780` / `0x10029710` | `effects::mblur` (`reset`, `add`, `due` + `spawn_ghost`, `ghost_think`) | done, unit-tested. Clock is `gHUD.m_flTime` (`0x100cf944`, `hud::now`); the `TSMBlur` level byte is sign-extended (`0x1004bfaf`), so levels above 127 give 5 ghosts |
+| `MotionBlur_Add` / `_Update` / ghost callback | `0x10029680` / `0x10029780` / `0x10029710` | `effects::mblur` (`add`, `due` + `spawn_ghost`, `ghost_think`) | done, unit-tested. Clock is `gHUD.m_flTime` (`0x100cf944`, `hud::now`); the `TSMBlur` level byte is sign-extended (`0x1004bfaf`), so levels above 127 give 5 ghosts, and a missing level byte reads as -1 (5 ghosts). `MotionBlur_Reset` (`0x10029660`) has no caller in TS, so trails survive `HUD_VidInit`. A trail on entity 0 allocates a world-model temp entity and stops at `GetPlayerState(-1)`, as in TS |
 | `HUD_TempEntUpdate` | `0x1001bd00`, `0x100569a0` | `effects::tempents::update` | done (SDK loop, ts-scaled, TS shell sounds) |
 | `HUD_StudioEvent` | `0x10044b50` | `effects::studio_event` | done (5002, 5004) |
-| `DrawLocalLaser` / `DrawOtherLasers` / flashlights | `0x1003bb00` / `0x1003d600` / `0x1003b250` / `0x1003b750` | `effects::laser` | done (untested: needs server state) |
-| `DrawPlayerShadows` | `0x10055760` | `laser::draw_shadows` | done, verified in game |
+| `DrawLocalLaser` / `DrawOtherLasers` / flashlights | `0x1003bb00` / `0x1003d600` / `0x1003b250` / `0x1003b750` | `effects::laser` | done (untested: needs server state). Drawn in TS's order (local laser, other lasers, local flashlight, other flashlights); other players' lasers need both `laserdot.spr` and `laserbeam.spr` |
+| `DrawPlayerShadows` / `DrawPlayerShadow` | `0x10055760` / `0x10055500` | `laser::draw_shadows` | done. Any non-zero `cl_shadow` (negative too) draws them, in one TransAlpha batch: under the view in first person (not observing, `cl_shadow` exactly 1; distance less 12) and under every player `HUD_AddEntity` found visible; each a `PM_NORMAL` point-hull trace 8192 down ignoring physent = the player's index, a 24-unit quad facing `VecToAngles(normal)` one unit off the floor, alpha `1 − d·0.005` below 200 units |
 | `DrawScopeOverlay` | `0x10054510` | `effects::scope` | done (not yet checked in engine) |
 | `FX_ApplyCvar` / `FX_AdaptQuality` | `0x10057d50` / `0x10057a70` | `effects::apply_cvar` / `effects::adapt_quality` (from `draw_transparent`) | done |
 | view-model framerate x time scale | `StudioDrawModel` `0x10031b44..0x10031bf4` | `studio::view_model_rate`, `Renderer::latch_view_model_rate` (in `draw_model`, as TS) | done, unit-tested |
@@ -276,13 +276,10 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   (kept) record; a stale record never becomes a predicted switch. Throwing the last grenade or
   blade still predicts the drop to kung fu as before, where TS predicts nothing until the server's
   state arrives.
-* **Fire/ricochet/explosion pitch.** TS computes `100 - (int)(ts * -300)` (verified: constant at
-  `0x1007d6f4` is -300.0, `0x1003eeed`), i.e. **400** at normal speed. FWGS's `S_StartSound` passes
-  any pitch > 1 through unclamped, so copying it would play every gunshot at 4x speed. These use
-  the TS curve of every other event sound instead (`events::fire_pitch` = `slow_pitch`).
-* **Local-player translucency**: the crosshair-on-player flag is the HUD's `crosshair_id` from the
-  previous HUD draw, as in TS (`0x1018a60c`, set to 1 or 2 by `DrawCrosshairID` for a named
-  player).
+* **Melee view shakes** run inside the shared `Gun`, so they follow its branch choice. The client
+  `KatanaFire`/`CCombatAttack` test `FL_DUCKING` on the *weapon's* `pev` (`[esi+0x4]+0x1a4`,
+  `0x1000a052`, `0x1000b1c1`) where the shared code reads the player's flags; only a crouch without
+  `+duck` held picks a different katana strength (65 instead of 45) or kung-fu branch.
 * **Camera mouse modes read the mouse motion, not the Win32 cursor.** TS's `CAM_Think` reads
   `GetCursorPos`, takes the offset from `GetWindowCenterX/Y` and re-centres with `SetCursorPos`,
   while `iMouseInUse` keeps `IN_MouseMove`/`IN_Accumulate` off the cursor. The port takes the
@@ -296,25 +293,60 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   re-centre (`0x10025138`) throws away the motion meant for mouse look (`camera::adjust_ideal`
   drains it). The sensitivity-scaled `cam_old_mouse_x/y` TS stores are never read and are left
   out.
+* **`TSFrags` type 2 direction.** TS passes the scintille and sparks a direction from stack
+  memory the handler never writes (`[esp+0x3c]` at `0x1004be15`/`0x1004be3b`; the message's
+  second vector, read into `[esp+0x18]`, is unused), so its value is whatever an earlier call
+  left there. The port uses the message's vector. No server sends type 2.
+* **Fog goes through TriAPI `Fog`** (FWGS) instead of raw OpenGL (both linear); colours are
+  clamped to 0..1 as `glFogfv` does and converted to 0..255. TS disables `GL_FOG` itself at the end
+  of every transparent pass (`0x10056e5e`); the port calls TriAPI `Fog(off)` there every pass too,
+  which FWGS ignores while its own fog is active (`RI.fogEnabled`, e.g. under water) or `gl_fog`
+  is 0, so where TS's raw `glDisable` would also switch off the engine's underwater fog for the
+  rest of the frame, the port leaves it on. Matching that needs raw OpenGL calls behind FWGS's
+  tracked GL state (a `goldsrc` wrapper the client doesn't have). TS's map-fog branch also requires
+  the hardware renderer; FWGS's software TriAPI `Fog` does nothing anyway. FWGS's `TriFog` also
+  turns fog off when end <= start.
+* **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
+  the evicted shell's `die`. The port tags each shell with a sequence number in
+  `curstate.iuser2` (`effects::track_shell`), and the temp-entity loop (`client-dll/src/tempents.rs`)
+  kills shells older than the newest 64. When the engine has already freed an evicted shell and
+  reused its slot, TS's write kills the unrelated temp entity now there; the port can't hold
+  pointers into the engine's temp-entity pool across frames (FWGS reallocates it), so that case
+  differs.
+* **Defensive checks where TS would read out of bounds or stop the game.** The studio renderer
+  parses the model from the bytes the engine loaded (`studio::model`, bounds-checked), so a
+  corrupt model draws a bind pose instead of reading out of bounds. Out-of-range (and negative)
+  `curstate.sequence`, `gaitsequence` and `latched.prevsequence` are treated as 0 (TS dropped the
+  SDK's gait check in `StudioProcessGait` and never checks for negatives); a bone whose parent
+  isn't an earlier bone is treated as a root; an attachment's bone index is clamped; a missing
+  sequence-group file reads as the bind pose; a ghost's `PlayerInfo` is only asked for valid
+  player numbers (FWGS returns its menu player for -1). A model with more than 4 attachments draws
+  the first 4: TS prints `Too many attachments on %s` and calls `exit(-1)` (`0x10034560`), which
+  would quit the game. `TSMBlur` for entity 32 or above, or an empty message (entity -1), is
+  ignored: TS's 32-entry trail table would be written out of bounds. A map particle whose
+  `oncollide` 2/3 target names no template doesn't spawn (TS indexes the template table with -1).
+  Cooldown slots wrap at 128.
+
+## TS behaviour worth knowing (not deviations)
+
+* **Fire/ricochet/explosion pitch** is TS's `100 - (int)(ts * -300)` (`0x1003eeed`, `0x10044dbd`,
+  `0x100481e4`; constant `0x1007d6f4` = -300.0), i.e. **400** at normal speed; the fire sound adds
+  `RandomLong(-5, 5)` before rolling its volume (`0x1003de90`), the ricochet and explosion add
+  nothing. FWGS's `S_StartSound` passes any pitch > 1 through unclamped, so these play at 4x
+  speed, as with the original TS client on FWGS.
+* **Local-player translucency**: the crosshair-on-player flag is the HUD's `crosshair_id` from the
+  previous HUD draw, as in TS (`0x1018a60c`, set to 1 or 2 by `DrawCrosshairID` for a named
+  player).
 * **`snapto` and `CAM_Think` write `cvar->value` directly** (`Cvar::set_value`), as TS does, so
   `cam_snapto`/`cam_ideal*` printed at the console can show a stale string, as in TS.
-* **Particle numbers** in `effects::fx` are read from the TS client's disassembly (the decompile
-  hides float arguments behind `__ftol`), including every call site's arguments, the `cl_fx`
-  tuning globals (`0x1018ca40..0x1018ca60`) and the cooldown slots. Notable corrections: the
-  `TS_GunSmoke` "45-55" argument is the animation frame rate (always 5 puffs); the muzzle flash
-  spreads `max(3, 9·fxmul)` sprites over `info+0x354` with base radius `info+0x358`, and silenced
-  shots draw a dim flash that fades out by 512 units; the shotgun's muzzle spray is
-  `TS_SpriteDebris`; glass is always 81 shards on a 9×9 grid; the explosion has no sparks, 24/48
-  fireball/smoke particles × the quality scale, and uses the muzzle light. Smoke-like particles
-  (life 0, no fade) live for one run of their animation, as in TS. Still to compare visually: the
-  sprite frame counts (they set those lifetimes) and the quad width of stretched particles (TS
-  scales it by the unnormalised view cross product; the port keeps `radius`).
 * **Particle numbers** in `effects::fx` and the fire/melee event call sites are read from the TS
   client's disassembly (the decompile hides float arguments behind `__ftol`), including every call
   site's arguments, the `cl_fx` tuning globals (`0x1018ca40..0x1018ca60`) and the cooldown slots.
   Notable corrections: the `TS_GunSmoke` "45-55" argument is the animation frame rate (always 5
   puffs, `0x10047130`); the muzzle flash spreads `max(3, 9·fxmul)` sprites over `info+0x354` with
   base radius `info+0x358`, and silenced shots draw a dim flash that fades out by 512 units; the
+  muzzle flash core rolls a spin, its size and a second spin (`0x10047861..0x100478c7`) and is
+  added even when `ts_muzzleflash6.spr` is missing (then with no sprite); the
   shotgun's muzzle spray is `TS_SpriteDebris`, from attachment 3 in third person (`0x1003ed21`);
   the silenced shot's second wisp sits `muzzle − fwd·ofs` back along the barrel (`0x1003e54b`);
   akimbo flashes from attachment 0 (`b1` set) or 2, both for a linked shot, and smokes once at the
@@ -326,68 +358,66 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   particle); the surface mark's angles are truncated before a negative angle is wrapped
   (`VecToAngles` `0x10046110`). Smoke-like particles (life 0, no fade) live for one run of their
   animation, which comes from the sprite file's own frame count (`SPR_Frames`), as in TS.
+* **Map particle templates** (`ParticleKeyValue` `0x10055f90`) keep the map's raw values: the
+  client has no copy of the server's `CTSParticle::CheckValues` clamps, so a colour above 1 or a
+  negative life reaches the particles. `follow_view` keeps its low byte (4 and up act as 0, and
+  can stretch), `oncollide` other than 1-3 has no callback. A particle is rolled as
+  `Particle_RandomizeFromTemplate` (`0x1003a9b0`) does: `RandomFloat(low, high)` with the raw
+  bounds (the frame `RandomLong`), in TS's order. The `oncollide` 2/3 spawn (`0x10039d50`,
+  `0x10039f60`) inherits the colliding particle's velocity unless the template's spawn flag 1 asks
+  for a fresh roll, and reports a sprite that won't load.
 * Melee events: the knife and katana play the material sound on every hit (`0x10043f63`,
   `0x10044585`) and add metal sparks plus `knife_hit`/`hit`/`hit1` on every texture type except
   none, `'D'`, `'W'` and `'F'` (byte tables `0x10044140`/`0x10044708`; slosh sparks too). Only a
   miss plays `knife_miss`.
 * Stretch lengths use TS's speed (units per 0.1 s): `stretchspeed` is a TS-unit factor in both
   the map templates and the effects.
-* TSFrags type 2 passes an uninitialised direction to its scintille/sparks in TS (`0x1004be0c`);
-  the port uses the message's direction. No server sends type 2.
-* The explosion sound uses the port's fire pitch curve (see the first bullet), not TS's 400.
 * `EV_TS_Pump`'s wisp blows along `v_right` (`0x10189e10`, the right vector of the
   `AngleVectors` call at `0x10041b09`).
-* `PointVisible` traces from the cull origin with `PM_GLASS_IGNORE`, ignoring no entity; TS passes
-  the local player's entity index as the physent to ignore.
-* `PSys_LoadSprite`'s `WARNING! cannot found <name>` goes through `SayTextPrint` (`0x10050a69`)
-  as in TS (`hud::say_text_print`, which queues it if the HUD state is borrowed at the time).
-  The cache has no 64-slot limit (TS returns "no sprite" silently once 64 sprites are loaded), and
-  is keyed by name only (TS also keys by render mode, which only matters for that limit).
+* `PointVisible` (`0x100572a0`) traces the point hull from the cull origin with
+  `PM_GLASS_IGNORE`, ignoring the local player, against whatever physents the engine has set up.
 * Particles follow `PSys_UpdateDraw` (`0x100520d0`), `Particle_Move` (`0x10050ce0`),
   `Particle_Think` (`0x10051270`) and `Particle_Collide` (`0x10051d50`): the four-way death test
-  with TS's 0.001 thresholds; fading (clamped to 0..1) only after the life ends; gravity from the
-  engine's `cl_gravity` (`0x100963ec`, stored by `HUD_TempEntUpdate` at `0x1001bd25`); think
-  before move; nothing moves, thinks or collides while resting; collision traces the whole path
-  since the last trace, only inside the view cone (which also hides the particle), at
-  `max(d·zoom/8192 (×2 beyond 1024), 0.016)` s from the cull origin; a trace stuck from the start
-  kills a particle younger than 0.5 s and rests an older one, a start inside a solid kills it
-  after the bounce; the hit lands exactly on the surface, damps by `0.3·max(1 − 7·iv, 0)` and
-  rests once `ts·travelled < 3·drag` (`Particle_Rest` also clears the roll and its spin); frames
-  advance only after the life ends and aren't clamped (`(int)min(frame, frames − 1)` is drawn);
-  only collision culls (`InViewCone` from the cull origin, fixed 0.9 threshold, no FOV term).
-  Random drift steers an accumulator (`+0x68`) by at most `randomdelta` and adds it times the
-  think interval; react moves the particle's *origin* by `(128 − d)·|v|·dot/128·T·react` for
-  every solid player within 128 units (local: predicted velocity, others: velocity between their
-  last two updates); wind is ×10 (TS units), physics-gated, steps its seeded segment inside a wind
-  particle's think and interpolates speed and direction; `TSPSys` eases from the old gust to the
-  new base speed over the old segment length (`0x1004c00b..0x1004c082`). Think and trace
-  distances halve when zoomed (FOV < 40). Port differences: the pool replaces the oldest particle
-  at the cap (TS drops the new one), collision is world-only (`PM_WORLD_ONLY`), a particle killed
-  during its collision isn't drawn that frame, TS's per-frame callback slot (`+0x118`, always
-  null) and the attached-entity particles (`+0x06`/`+0x07`, never set in 3.0) aren't ported, and
-  the pushes see every live reacting particle where TS walks the list built by the previous
-  frame.
+  with TS's 0.001 thresholds (no sprite counts as a finished animation); the push-list entry;
+  fading (clamped to 0..1) only after the life ends; gravity from the engine's `cl_gravity`
+  (`0x100963ec`, stored by `HUD_TempEntUpdate` at `0x1001bd25`); think before move (the think and
+  trace times start at 0, so a new particle thinks on its first pass); nothing moves, thinks or
+  collides while resting; collision is `EV_PlayerTrace(prev, origin, PM_STUDIO_BOX, -1)` with the
+  point hull and covers the whole path since the last trace, only inside the view cone (which also
+  hides the particle), at `max(d·zoom/8192 (×2 beyond 1024), 0.016)` s from the cull origin; a
+  trace stuck from the start kills a particle younger than 0.5 s and rests an older one, a start
+  inside a solid kills it after the bounce; the hit lands exactly on the surface, damps by
+  `0.3·max(1 − 7·iv, 0)` and rests once `ts·travelled < 3·drag` (`Particle_Rest` also clears the
+  roll and its spin); the collision callback runs right there (`oncollide` 2 kills, then spawns
+  into the first free slot, possibly the same one, and the rest of the pass works on the new
+  particle; blood leaves its decal and clears the drop's in-use byte); a particle killed in its
+  collision is still drawn and stepped that frame; the draw uses the frame before this pass's
+  step, `(int)min(frame, frames − 1)`, frames advance only after the life ends and aren't
+  clamped; only collision culls (`InViewCone` from the cull origin, fixed 0.9 threshold, no FOV
+  term). Random drift steers an accumulator (`+0x68`) by at most `randomdelta` and adds it times
+  the think interval (`divisor · 0.033333335`, at least the frame time); react moves the
+  particle's *origin* by `(128 − d)·|v|·dot/128·T·react` for every solid player within 128 units
+  (local: predicted velocity, others: velocity between their last two updates); wind is ×10 (TS
+  units), physics-gated, steps its seeded segment inside a wind particle's think and interpolates
+  speed and direction; `TSPSys` eases from the old gust to the new base speed over the old segment
+  length (`0x1004c00b..0x1004c082`). Think and trace distances halve when zoomed (FOV < 40). The
+  spawn, think, trace and cooldown times are client-time floats (`GetClientTime`), as TS stores
+  them. TS's per-frame callback slot (`+0x118`) and attached-entity particles (`+0x06`/`+0x07`)
+  are never set in 3.0 and aren't ported. The pool, sprite cache, client bullets, emitters and
+  motion-blur trails are not reset by `HUD_VidInit` or a level change; the first `TS_DrawEffects`
+  after `HUD_VidInit` rebuilds the pool and the sprite cache, and a level change only reloads the
+  emitters, templates and fog and restarts the emitter clock (`0x1003ab8e..0x1003abc3`).
 * **Quads** (`Quad_Build` `0x10050080`): a resting particle is a screen billboard whatever its
   `follow_view`. A stretched quad runs head (v = 0) to tail, `radius·(toCam̂ × vel̂)` wide, so it
   narrows as the velocity turns toward the camera; `follow_view` 3 uses `followaxis` unnormalised
   (no default: a template without one draws nothing, as in TS) and `toCam̂ × followaxis` across.
-* **Melee view shakes** run inside the shared `Gun`, so they follow its branch choice. The client
-  `KatanaFire`/`CCombatAttack` test `FL_DUCKING` on the *weapon's* `pev` (`[esi+0x4]+0x1a4`,
-  `0x1000a052`, `0x1000b1c1`) where the shared code reads the player's flags; only a crouch without
-  `+duck` held picks a different katana strength (65 instead of 45) or kung-fu branch.
 * **First-person flash origin follows TS on FWGS.** The muzzle flashes
   and pellet spray read the per-player attachment cache, which on FWGS holds the local player's
   origin in first person (see "Player attachments come from a per-frame cache" above), so they
   start below the view rather than at the gun. This is TS's behaviour on FWGS; the Steam GoldSrc
   result is unverified.
-* `weapons/sshell.wav` (TS shotgun-shell bounce) isn't shipped with TS 3.0; `sshell1/2.wav` are used.
-* Fog goes through TriAPI `Fog` (FWGS) instead of raw OpenGL (both linear); colours are
-  converted from 0..1 to 0..255. TS sets `GL_FOG` itself and turns it off at the end of the
-  transparent pass whatever was drawn; the port turns it off only in frames it turned it on, so
-  it leaves engine fog alone. TS's map-fog branch also requires the hardware renderer; FWGS's
-  software TriAPI `Fog` does nothing anyway. FWGS's `TriFog` also returns early while the
-  engine's own fog is active (`RI.fogEnabled`, e.g. under water) or `gl_fog` is 0, and turns fog
-  off when end <= start.
+* The TS shotgun shell bounce plays `weapons/sshell.wav` (`TempEnt_PlayShellSound` `0x100569a0`),
+  which TS 3.0 ships.
 * **`gl_fog` is an engine cvar on FWGS.** `ref_gl` registers `gl_fog` ("1", `FCVAR_GLCONFIG`)
   and gates its own fog and `TriFog` on it. The client registers it again, as TS's `CHud::Init`
   does, so on FWGS the client's default 0 overwrites the engine's 1 (`Cvar_Get` resets an
@@ -402,6 +432,9 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   culling, white) as mirrored quads of half-size `max(fov·0.1, 1)·0.5` around `v_origin +
   v_forward·10`. The decomp doc's "frame 2" is the sprite-cache render-mode argument; the call
   passes frame 0 (`0x1005457e`) and the sprite has one frame.
+* **`pparams->forward/right/up`** are written only by the normal view, from `cl_viewangles`
+  (`0x10067eee`); the intermission (`0x100676e0`) and spectator (`0x10068f70`) views leave the
+  engine's values. The effects' own vectors are `AngleVectors(v_angles)` every pass (`0x10056f74`).
 * **Observer modes use TS's numbering: in-eye is 5, not the SDK's 4** (`shared::ts::obs`). The
   server's `Observer_SetMode`/`Observer_HandleButtons` only ever set 1, 2, 3 and 5,
   `PM_SpectatorMove` places mode 5 at the target, and `HUD_AddEntity` (`0x100447f0`), the draw and
@@ -424,21 +457,16 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   camera icon are ported, but TS never sets an inset mode (`specmode` and the director reset
   both pass 0), so neither runs, there or here. Like TS, `view::calc_refdef` never writes
   `nextView` itself (the engine zeroes it before the first pass).
-* Overview entities are kept by entity index (TS stores the `cl_entity_t*`) and looked up when
-  drawn. The name-tag offset uses `WorldToScreen`'s x and y (TS's z is 0 too).
+* Overview entities (`AddOverviewEntityToList` `0x10024ab0`) are kept by entity index where TS
+  stores the `cl_entity_t*`; `GetEntityByIndex` returns that same engine record when drawn, so
+  the icons are the same. The name-tag offset uses `WorldToScreen`'s x and y (TS's z is 0 too).
 * In-eye gun: as in TS, the gun offset is whatever `V_CalcBob` last left in the normal view
   (`0x10069a70`), and the pitch takes a bob global nothing writes (`0x10191dac`, so 0). TS's `V_GetInEyePos` scales the pitch by -π (the SDK
   uses -3); kept.
-
-* **Studio renderer safety checks.** The renderer parses the model from the bytes the engine
-  loaded (`studio::model`, bounds-checked), so a corrupt model draws a bind pose instead of reading
-  out of bounds. Where TS would index past a table it clamps or skips: gait sequences out of range
-  are treated as 0 (TS dropped the SDK's check in `StudioProcessGait`), more than 4 attachments
-  are ignored (TS prints "Too many attachments" and calls `exit(-1)`), a bone whose parent isn't
-  an earlier bone is treated as a root, `PlayerInfo` is only asked for valid player numbers, and a
-  missing sequence-group file reads as the bind pose. `player_info_t` is copied in and written
-  back where TS keeps the engine pointer (same result; the engine doesn't touch it mid-draw), and
-  `StudioDrawPlayer`'s engine state is a copy with `renderamt`/`gaitsequence` written back.
+* **Studio state copies.** `player_info_t` is copied in and written back where TS keeps the
+  engine pointer, and `StudioDrawPlayer`'s engine state (`GetPlayerState`, not the entity's
+  `curstate`, on FWGS) is a copy with the only two fields the renderer writes (`renderamt`,
+  `gaitsequence`) written back; nothing reads either between, so the result is TS's.
 * **View-model framerate (decomp correction).** R§2.3 says the rate is latched "once per
   animation restart". The asm (`0x10031bb0..0x10031bf4`) latches it on the first view-model draw
   of a frame whose `latched.prevframe` is more than 0.001 past the one the previous draw saw,
@@ -459,17 +487,6 @@ client ammo table (`impact::AMMO_ATTENUATION`, decoded from `FUN_10007480`).
   the ghost's first frame. That's TS's behaviour, kept.
 * **Spectator hide.** `StudioDrawPlayer` hides the player spectated with `g_iUser1 == 5` (in-eye,
   `shared::ts::obs`) as TS does.
-* **Motion blur.** `MotionBlur_Reset` has no caller in the TS image; the port resets the trails on
-  `HUD_VidInit`. `TSMBlur` for entity index 32 or above is ignored (TS's 32-entry table would
-  overflow), and a short `TSMBlur` is dropped (TS reads -1 for the missing bytes). A trail on
-  entity 0 makes no ghosts (TS would allocate one with the world model and ask for player -1).
-* **Renderer index checks.** TS's `StudioProcessGait` and `StudioSetupBones` don't range-check
-  `curstate.sequence`/`gaitsequence`; the port treats out-of-range (and negative) values as 0.
-* **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
-  the evicted shell's `die`. The port tags each shell with a sequence number in
-  `curstate.iuser2` (`effects::track_shell`), and the temp-entity loop (`client-dll/src/tempents.rs`)
-  kills shells older than the newest 64. That's the same result without keeping pointers to engine
-  memory, and it can't write to a tempent the engine already freed.
 
 ## Missing pieces
 
