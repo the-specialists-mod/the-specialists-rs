@@ -38,8 +38,14 @@ pub fn set_crosshair(hspr: HSPRITE, rect: [i32; 4], rgb: [i32; 3]) {
 
 /// `LoadMapSprite`: loads an overview image (`overviews/*.bmp`/`.tga`) as a sprite model for
 /// TriAPI [`sprite_texture`](crate::ext::tri::sprite_texture); null if it can't be loaded. The
-/// engine owns the model.
+/// engine owns the model. Guarded on Steam GoldSrc, which `Sys_Error`s on an image that isn't a
+/// `.bmp` or `.tga` (the name comes from the map's overview file): null.
 pub fn load_map_sprite(name: &str) -> *const model_s {
+    let e = crate::client::engine();
+    if !e.is_xash() && !crate::cl_guard::map_sprite_name_ok(name.as_bytes()) {
+        e.port_guard(&format!("LoadMapSprite {name}"), || format!("LoadMapSprite \"{name}\": not a .bmp or .tga image; skipped"));
+        return std::ptr::null();
+    }
     let s = crate::util::to_cstring(name);
     cl_eng!(LoadMapSprite(s.as_ptr()))
 }

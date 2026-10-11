@@ -29,6 +29,8 @@ pub mod pmove;
 pub mod util;
 
 #[cfg(feature = "client")]
+pub mod cl_guard;
+#[cfg(feature = "client")]
 pub mod client;
 #[cfg(feature = "server")]
 pub mod guard;

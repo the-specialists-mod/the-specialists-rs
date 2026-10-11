@@ -347,9 +347,17 @@ keeps the game running and logs it ("(port guard)"):
   missing-file or over-limit precaches, unprecached `SET_MODEL`/`MODEL_INDEX`, out-of-range
   sound parameters, backwards `SET_SIZE`, too-long or mis-sized user messages, `MSG_ONE`/`SET_VIEW`
   to a non-client) and those every engine stops on (light styles past 63, no free edict, a bad
-  `WRITE_ENTITY`) are checked in `goldsrc` (`guard.rs`) first; on FWGS, which only warns about
-  the former, they are made as TS makes them. The list is in `implementation/integration.md` §6;
-  the respawned `cycler_weapon`'s empty precache is one TS reaches.
+  `WRITE_ENTITY`, a `*n` brush model the map's BSP doesn't have) are checked in `goldsrc`
+  (`guard.rs`) first; on FWGS, which only warns about the former, they are made as TS makes them.
+  The list is in `implementation/integration.md` §6; the respawned `cycler_weapon`'s empty
+  precache is one TS reaches.
+* Client engine calls that stop or crash the client engine (Steam GoldSrc, read from the HL25
+  `hw.so`, and FWGS): the 257th HUD sprite, sound names over 63 bytes, TriAPI on a null sprite,
+  overview images that aren't `.bmp`/`.tga`, negative model indices, studio body parts the
+  renderer would read out of bounds or divide by zero with, missing sequence group files, bad
+  event indices, decals on unknown entities and user-message hooks past FWGS's limit. They are
+  checked in `goldsrc` (`cl_guard.rs`) and logged to the console once each:
+  `implementation/integration.md` §6.1.
 * Entity states the physics stops on (a `SOLID_BSP` entity that isn't a pusher with a brush
   model, a map `movetype` without a physics case), `Use` chains that recurse back into
   themselves, and `Q_log2` of a negative number, which never returns in TS:

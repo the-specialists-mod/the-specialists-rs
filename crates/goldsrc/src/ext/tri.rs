@@ -45,6 +45,11 @@ pub fn vertex3fv(p: &[f32; 3]) {
 
 /// `SpriteTexture`: binds `frame` of a sprite model (a handle from
 /// [`sprite_model`](crate::ext::render::sprite_model)). False when the engine can't bind it.
+/// Guarded: Steam GoldSrc's `R_TriangleSpriteTexture` dereferences the model unchecked, so a
+/// null one (a sprite that didn't load) binds nothing, FWGS's answer.
 pub fn sprite_texture(model: *const model_s, frame: i32) -> bool {
+    if model.is_null() {
+        return false;
+    }
     tri!(SpriteTexture(model.cast_mut(), frame)) != 0
 }

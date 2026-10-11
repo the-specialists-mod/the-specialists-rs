@@ -1068,7 +1068,11 @@ impl Renderer {
             es::draw_hulls();
         } else {
             for i in 0..self.studio().numbodyparts() {
-                es::setup_model(i);
+                // A body part the engine can't set up (a malformed model or body) isn't drawn
+                // (port guard in `goldsrc`).
+                if !es::setup_model(i) {
+                    continue;
+                }
                 if hw {
                     if self.do_interp {
                         // interpolation messes up bounding boxes (SDK)
