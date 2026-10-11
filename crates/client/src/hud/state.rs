@@ -133,7 +133,13 @@ pub struct Ctx<'a> {
 #[derive(Debug, Clone)]
 pub struct Hud {
     // ---- CHudTSStatus
+    /// `CHudTSStatus::m_iHealth` (`+0x20`), drawn by the status panel; its `Reset` clears it.
     pub health: u8,
+    /// `0x100cf9d8`: the last `TSHealth` value as an int. Only the `TSHealth` handler writes it
+    /// (`0x1004b747`; `ResetHUD` leaves it), and `0x10026860` (`<= 0`) reads it for
+    /// `CL_ButtonBits`' forced +score (`0x10026936`) and the prediction's `ItemPostFrame` gate
+    /// (`0x10003d54`).
+    pub last_hp: i32,
     pub armor: u8,
     pub stance: u8,
     pub cash: i32,
@@ -207,6 +213,7 @@ impl Default for Hud {
     fn default() -> Self {
         let mut h = Hud {
             health: 0,
+            last_hp: 0,
             armor: 0,
             stance: 0,
             cash: 0,
@@ -397,6 +404,7 @@ impl Hud {
             Msg::TsHealth => {
                 let v = dec!(p::TsHealth);
                 self.health = v.hp;
+                self.last_hp = v.hp as i32;
                 if !self.observer && v.hp == 0 && !ctx.third_person {
                     fx.push(Effect::ToggleThirdPerson);
                 }
@@ -864,8 +872,11 @@ mod tests {
         assert!(h.apply(Msg::TsState, &TsState { stance: 2 }.encode(), &c, &mut fx));
         assert_eq!((h.health, h.cash, h.slots, h.stance), (73, 1200, 61, 2));
         assert!(fx.is_empty());
+        h.reset();
+        assert_eq!((h.health, h.last_hp), (0, 73), "ResetHUD leaves 0x100cf9d8");
         assert!(h.apply(Msg::TsHealth, &TsHealth { hp: 0 }.encode(), &c, &mut fx));
         assert_eq!(fx, [Effect::ToggleThirdPerson], "death cam");
+        assert_eq!(h.last_hp, 0);
         assert!(!h.apply(Msg::TsCash, &[1], &c, &mut fx), "short payload rejected");
     }
 

@@ -199,7 +199,10 @@ B 0, B colour), `CustomWP` (string), `TSMBlur` (PVS, kung fu), `TSFrags` (explos
 record clip, `vuser2 = (state counter, reserve, alt grip)`, `vuser1[2]` active attachments,
 `viewmodel` = model index of `pev->viewmodel`. `weapon_data_t[16]`: `m_iClip` (clip mirror),
 NPA/NSA/idle clamped at -0.001, `fuser1` = the gun's own timer, the rest 0.
-`shared::protocol::weapons::{unpack_clientdata, unpack_weapon_data}` are the client side.
+`shared::protocol::weapons::{unpack_clientdata, unpack_weapon_data}` are the client side (only the
+client calls them). The client rebuilds the akimbo right clip as `clip - left`, 0 when below 1
+(`0x10003ae1..0x10003aed`). The client prediction runs `Gun::weapon_post_frame` behind TS's client
+gate (`deadflag != 5`, last `TSHealth` > 0, `m_flNextAttack <= 0`), not `Gun::post_frame_ready`.
 
 ## 5. Deviations and decisions
 

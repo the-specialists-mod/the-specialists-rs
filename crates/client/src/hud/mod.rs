@@ -272,7 +272,7 @@ fn on_message(m: Msg, buf: &[u8]) {
 /// Mirror the values other modules read into `crate::state`.
 fn sync_shared(h: &Hud) {
     crate::state::with(|s| {
-        s.health = h.health as i32;
+        s.health = h.last_hp;
         s.dead = h.health == 0;
         s.observer = h.observer;
         s.weapon = h.weapon;

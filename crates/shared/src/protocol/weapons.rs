@@ -241,7 +241,9 @@ pub fn unpack_clientdata(cd: &clientdata_t, gun: &mut Gun) -> u16 {
         s.toggle = cd.vuser4[0] != 0.0;
         s.clip = cd.vuser4[1] as i32;
         s.left = cd.ammo_nails;
-        s.right = s.clip - s.left;
+        // `clip - left`, 0 when below 1 (client `0x10003ae1..0x10003aed`: `setle`/`dec`/`and`).
+        // Only the client unpacks; the server keeps its own records.
+        s.right = (s.clip - s.left).max(0);
         s.in_reload = cd.vuser4[2] as i32;
         s.state = cd.vuser2[0] as i32;
         s.alt_grip = cd.vuser2[2] != 0.0;
@@ -328,6 +330,11 @@ mod tests {
         assert_eq!(g2.status[8].clip, 30);
         assert!(g2.status[8].toggle);
         assert_eq!(g2.reserve[1], 77);
+        assert_eq!((g2.status[8].left, g2.status[8].right), (15, 15));
+        cd.vuser4[1] = 10.0;
+        let mut g3 = Gun::default();
+        unpack_clientdata(&cd, &mut g3);
+        assert_eq!((g3.status[8].left, g3.status[8].right), (15, 0), "right clip clamped at 0");
         let mut wd = weapon_data_t::default();
         g.next_primary = -0.5;
         pack_weapon_data(&g, &mut wd);

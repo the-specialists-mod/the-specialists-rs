@@ -3,8 +3,8 @@
 //! The client runs the same `shared::weapons::Gun` state machine as the server, through a client
 //! [`GunHost`]: the networked state (`clientdata` `vuser*`/`ammo_*`/`m_flNextAttack` and
 //! `weapon_data[16]`) is unpacked with `shared::protocol::weapons`, the gun runs one usercmd
-//! (`pre_frame`, `item_post_frame`, `decrement_timers`, as in the server's PreThink/PostThink)
-//! and the result is packed into `to`.
+//! (`pre_frame`, `weapon_post_frame` behind TS's client gate, `decrement_timers`) and the result
+//! is packed into `to`.
 //!
 //! The server plays every weapon event with `FEV_NOTHOST`, so the shooter only sees and hears
 //! its own shots through these predicted events (`runfuncs` only). Traces, damage, projectiles
@@ -32,6 +32,11 @@ struct Pred {
     gun: Option<Gun>,
     /// `0x100d5cb8`: the last view animation `HUD_SendWeaponAnim` (`0x1001ace0`) played.
     last_anim: i32,
+    /// The client gun's `pev->body` (`0x1009f23c+0x114`), the body every predicted view animation
+    /// uses. Only two places write it: each command's rebuild of a current record
+    /// (`0x10003a8b..0x10003a99`, [`rebuilt_body`]) and the respawn `Deploy` (`0x100087a5`). The
+    /// gun's Spawn leaves it, and it starts at 0.
+    pev_body: i32,
     /// The local weapon's alternate grip (`0x10189f9d`, a byte): `(int)vuser2[2]` from
     /// `HUD_WeaponsPostThink`, or the demo's record type 1 during playback.
     alt_grip: u8,
@@ -190,7 +195,18 @@ fn spawn_and_death(c: &clientdata_t, runfuncs: bool) {
         // Deploy (vtable +0x120, only with an active item) and the spread reset 0x1000b9d0, then
         // the gun's Spawn (0x100038c8). The view model's draw animation comes from the server's
         // Deploy (`DefaultDeploy` with skiplocal 0 sends svc_weaponanim).
-        if active && let Some((id, items)) = with(|p| deploy(p.gun.get_or_insert_with(Gun::default))) {
+        let deployed = active.then(|| {
+            with(|p| {
+                let g = p.gun.get_or_insert_with(Gun::default);
+                let r = deploy(g);
+                if r.is_some() {
+                    // 0x100087a5: pev->body = the record's new body.
+                    p.pev_body = g.status[g.current as usize].body;
+                }
+                r
+            })
+        });
+        if let Some(Some((id, items))) = deployed {
             let ev = event_index(Event::Draw);
             r::playback_event(FEV_NOTHOST as i32, ev, 0.0, 0.0, id as i32, items as i32, false, 0);
         }
@@ -261,6 +277,8 @@ struct ClientHost<'a> {
     iuser4: i32,
     /// The player's `pev->weaponanim` (`+0x218`), copied to `to` after the gun's frame.
     weaponanim: i32,
+    /// The gun's `pev->body` ([`Pred::pev_body`]); nothing in the gun's frame changes it.
+    body: i32,
     /// "Silenced" for the current shot's view shake (`VKickback` passes the multiplier only).
     silenced: bool,
 }
@@ -337,11 +355,12 @@ impl GunHost for ClientHost<'_> {
             r::playback_event(FEV_NOTHOST as i32, event_index(ev), a.f1, a.f2, a.i1, a.i2, a.b1 != 0, a.b2);
         }
     }
-    fn weapon_anim(&mut self, anim: i32, _skip_local: bool, body: i32) {
+    fn weapon_anim(&mut self, anim: i32, _skip_local: bool, _body: i32) {
         // The client `CBasePlayerWeapon::SendWeaponAnim` (0x10003680): pev->weaponanim, then
-        // HUD_SendWeaponAnim (first prediction only).
+        // HUD_SendWeaponAnim (first prediction only) with the gun's pev->body (0x10003695), not
+        // the body argument.
         self.weaponanim = anim;
-        send_weapon_anim(anim, body, self.runfuncs, false);
+        send_weapon_anim(anim, self.body, self.runfuncs, false);
     }
     fn player_anim(&mut self, _anim: i32) {}
     fn kick(&mut self, pitch: f32, yaw: f32) {
@@ -374,6 +393,12 @@ fn gun_from(from: &local_state_t) -> (Gun, u16) {
     (g, powerups)
 }
 
+/// The `pev->body` the rebuild writes (`0x10003a8b`: `GetBodyByItems(id, record items)`), or
+/// `None` for kung fu, whose rebuild (`0x10003a0a` -> `0x10003a0c`) leaves it.
+fn rebuilt_body(g: &Gun) -> Option<i32> {
+    g.slot().map(|s| body_by_items(g.current, s.items))
+}
+
 /// The networked part of [`gun_from`]. Returns the power-up bits.
 fn rebuild(g: &mut Gun, from: &local_state_t) -> u16 {
     let powerups = unpack_clientdata(&from.client, g);
@@ -391,6 +416,15 @@ fn rebuild(g: &mut Gun, from: &local_state_t) -> u16 {
     powerups
 }
 
+/// The gate on the gun's own `ItemPostFrame` (vtable `+0x134` = `0x1000b7b0`) in
+/// `HUD_WeaponsPostThink` (`0x10003d4b..0x10003d76`): the player's `deadflag` (from `from`) isn't 5,
+/// `0x10026860` is false (the last `TSHealth`, `0x100cf9d8`, is above 0) and `from`'s
+/// `m_flNextAttack` <= 0. Unlike the server's `CBasePlayer::ItemPostFrame`
+/// ([`Gun::post_frame_ready`]) there is no pass for kung fu or for +cancel during a reload.
+fn post_frame_gate(c: &clientdata_t, hud_health: i32) -> bool {
+    c.deadflag != 5 && hud_health > 0 && c.m_flNextAttack <= 0.0
+}
+
 /// `HUD_WeaponsPostThink` (`0x10003830`) for one usercmd.
 pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t, runfuncs: bool, time: f64, seed: u32) {
     let c = &from.client;
@@ -406,6 +440,14 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     with(|p| p.active_gun = true);
     update_alt_grip(c);
     let (mut gun, powerups) = gun_from(from);
+    let body = with(|p| {
+        if let Some(b) = rebuilt_body(&gun) {
+            p.pev_body = b;
+        }
+        p.pev_body
+    });
+    // The rebuild's record pointer (`0x1009f2f4`), null for kung fu.
+    let has_record = gun.current != 0;
     // HUD_PostRunCmd (0x10003830) keeps the active items for DrawLaserDots, cleared while the
     // next attack is pending (TS `0x1018a628`).
     let ready = if c.m_flNextAttack > 0.0 { 0 } else { gun.slot().map_or(0, |s| s.active as i32) };
@@ -430,14 +472,15 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         viewmodel: c.viewmodel,
         iuser4: c.iuser4,
         weaponanim: c.weaponanim,
+        body,
         silenced,
     };
-    // Same order as the server: PreThink (windows, penalty decay, bar), PostThink
-    // (ItemPostFrame while alive, then the timers).
+    // Same order as the server: PreThink (windows, penalty decay, bar), the weapon frame, then
+    // the timers.
     let dt = Gun::timer_dt(cmd.msec as f32 * 0.001, c.fuser1.max(0.0), powerups);
     gun.pre_frame(dt, !dead);
-    if !dead {
-        gun.item_post_frame(&mut host);
+    if post_frame_gate(c, state::with(|s| s.health)) {
+        gun.weapon_post_frame(&mut host);
     }
     gun.decrement_timers(dt);
 
@@ -455,8 +498,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     // 0x10003e5f: a first prediction whose predicted animation isn't the one last played (it was
     // set by a re-predicted command) forces it, with the gun's body or 2 without a record.
     if runfuncs && with(|p| p.last_anim) != weaponanim {
-        let body = gun.slot().map_or(2, |s| body_by_items(gun.current, s.items));
-        send_weapon_anim(weaponanim, body, runfuncs, true);
+        send_weapon_anim(weaponanim, if has_record { body } else { 2 }, runfuncs, true);
     }
 
     if runfuncs {
@@ -543,6 +585,28 @@ mod tests {
         reset_gun(&mut g);
         assert_eq!(g.status, [Status::default(); MAX_WEAPONS]);
         assert_eq!((g.reserve, g.current, g.clip_mirror, g.last_shot), ([0; MAX_AMMO], 0, 1, 0.0));
+    }
+
+    /// TS's client gate: deadflag 5, the HUD's last health and `m_flNextAttack` only.
+    #[test]
+    fn post_frame_gate_matches_ts() {
+        let c = clientdata_t { m_flNextAttack: 0.0, ..Default::default() };
+        assert!(post_frame_gate(&c, 100));
+        assert!(!post_frame_gate(&c, 0), "0x10026860: TSHealth <= 0");
+        assert!(post_frame_gate(&clientdata_t { deadflag: 2, ..c }, 1), "only deadflag 5 stops it");
+        assert!(!post_frame_gate(&clientdata_t { deadflag: 5, ..c }, 1));
+        let busy = clientdata_t { m_flNextAttack: 0.2, ..c };
+        assert!(!post_frame_gate(&busy, 100), "no kung-fu or +cancel pass");
+    }
+
+    /// The rebuild writes pev->body from the current record; kung fu leaves it.
+    #[test]
+    fn rebuild_body() {
+        let mut g = Gun { current: id::AK47, ..Default::default() };
+        g.status[id::AK47 as usize] = Status { owned: true, items: att::SCOPE, body: 0, ..Default::default() };
+        assert_eq!(rebuilt_body(&g), Some(body_by_items(id::AK47, att::SCOPE)));
+        g.current = 0;
+        assert_eq!(rebuilt_body(&g), None);
     }
 
     /// The respawn Deploy resets the record's state and grip, plays no animation and syncs the

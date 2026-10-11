@@ -372,11 +372,13 @@ impl MapFx {
                 i += 1;
                 let mut p = tmpl.roll(&mut |a, b| r::random_float(a, b));
                 p.sprite = spr;
-                // XY around the camera (0x1003b024..0x1003b09d) or `origin + RandomFloat(low,
-                // high)` (0x1003b0cd..0x1003b101); z always from the box (0x1003b104).
+                // XY around the camera (0x1003b024..0x1003b0cb), led by the local player's
+                // velocity, or `origin + RandomFloat(low, high)` (0x1003b0cd..0x1003b101); z always
+                // from the box (0x1003b104).
                 let (x, y) = if em.cameradensity > 0.01 && em.cameraradius > 0.01 && inside {
                     let rad = em.cameraradius * (2.0 - em.cameradensity.min(1.0));
-                    (cam.origin[0] + r::random_float(-rad, rad), cam.origin[1] + r::random_float(-rad, rad))
+                    let (dx, dy) = (r::random_float(-rad, rad), r::random_float(-rad, rad));
+                    camera_xy(cam.origin, dx, dy, engine().local_player().map(|e| e.curstate.velocity))
                 } else {
                     (em.origin[0] + r::random_float(low[0], high[0]), em.origin[1] + r::random_float(low[1], high[1]))
                 };
@@ -410,6 +412,18 @@ impl MapFx {
             p.vel = v::ZERO;
         }
         ps.add(p, now);
+    }
+}
+
+/// A camera-centred particle's XY: the camera plus the random offsets, then, when there is a
+/// local player (`GetLocalPlayer` at 0x1003b0a0), 1.5 (`0x1007a860`) times its
+/// `curstate.velocity` x/y (`+0x320`/`+0x324`), so the particles land where a moving player is
+/// heading.
+fn camera_xy(cam: Vec3, dx: f32, dy: f32, local_velocity: Option<Vec3>) -> (f32, f32) {
+    let (x, y) = (cam[0] + dx, cam[1] + dy);
+    match local_velocity {
+        Some(vel) => (vel[0] * 1.5 + x, vel[1] * 1.5 + y),
+        None => (x, y),
     }
 }
 
@@ -533,6 +547,13 @@ mod tests {
         assert_eq!(parse_entities("{ \"a\" \"b\" } junk { \"c\" \"d\" }").len(), 1);
         assert!(parse_entities("").is_empty());
         assert_eq!(parse_entities("{ \"a\" ").len(), 0);
+    }
+
+    #[test]
+    fn camera_spawn_leads_the_player() {
+        let cam = [100.0, -50.0, 0.0];
+        assert_eq!(camera_xy(cam, 10.0, 20.0, None), (110.0, -30.0));
+        assert_eq!(camera_xy(cam, 10.0, 20.0, Some([200.0, -100.0, 999.0])), (410.0, -180.0));
     }
 
     #[test]

@@ -41,6 +41,8 @@ pub struct Shared {
     pub time_scale: f32,
     /// Local player is dead / spectating.
     pub dead: bool,
+    /// The last `TSHealth` value (`0x100cf9d8`, [`crate::hud::state::Hud::last_hp`]): `<= 0` is
+    /// `0x10026860`, which forces +score and stops the predicted `ItemPostFrame`.
     pub health: i32,
     /// Current weapon id (TS ids).
     pub weapon: i32,

@@ -72,7 +72,7 @@ payloads are logged and ignored.
 
 | Message | Read order | Effect |
 |---|---|---|
-| TSHealth | B hp | health; hp 0, not observing and not already in third person → `thirdperson` toggle (TS `1004b730`). This toggle is the whole death cam: TS has no other dead-camera flag, and everything that checks third person reads `cam_thirdperson` |
+| TSHealth | B hp | health; also the int `0x100cf9d8` (`Hud::last_hp`, mirrored to `state.health`), which only this handler writes (`ResetHUD` leaves it) and which `0x10026860` (`<= 0`) reads for `CL_ButtonBits`' forced +score (`0x10026936`) and the predicted `ItemPostFrame` gate (`0x10003d54`); hp 0, not observing and not already in third person → `thirdperson` toggle (TS `1004b730`). This toggle is the whole death cam: TS has no other dead-camera flag, and everything that checks third person reads `cam_thirdperson` |
 | TSArmor / TSState / TSSpace | B | kevlar / stance / free slots |
 | TSCash | S | credits |
 | PwUp | S flags, B value | flags & 0x104 → kung-fu / movement icon, else timed power-up |
