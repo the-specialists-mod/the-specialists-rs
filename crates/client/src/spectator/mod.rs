@@ -18,6 +18,7 @@ mod movement;
 mod overview;
 mod panel;
 
+pub(crate) use movement::smooth;
 pub use movement::{begin_player_move, spectator_move};
 pub use overview::{add_entity as add_overview_entity, death as death_notice, draw as draw_overview};
 
@@ -350,6 +351,34 @@ pub fn in_eye() -> bool {
     state::with(|s| s.spec_mode == obs::IN_EYE)
 }
 
+/// What the client `PM_SpectatorMove` (or the director reset) left for `V_CalcNormalRefdef`
+/// (`0x10067890`): the `cl_vsmoothing` flags ([`smooth`]) and the camera origin and angles it
+/// says to use (`0x101914f0`/`0x101913e4`, `0x1019149c`/`0x10190b6c`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViewOverrides {
+    pub smooth_flags: i32,
+    pub origin: Option<Vec3>,
+    pub angles: Option<Vec3>,
+}
+
+pub fn view_overrides() -> ViewOverrides {
+    with(|s| ViewOverrides {
+        smooth_flags: s.smooth_flags,
+        origin: s.origin_override.then_some(s.saved_origin),
+        angles: s.angles_override.then_some(s.saved_angles),
+    })
+}
+
+/// The normal view's smoothed origin becomes the saved camera origin (`0x10068974`).
+pub fn store_smoothed_origin(origin: Vec3) {
+    with(|s| s.saved_origin = origin);
+}
+
+/// The normal view's smoothed angles become the saved camera angles (`0x10067c73`).
+pub fn store_smoothed_angles(angles: Vec3) {
+    with(|s| s.saved_angles = angles);
+}
+
 // ---- view ---------------------------------------------------------------------------------------
 
 /// `V_CalcSpectatorRefdef` (`0x10068f70`). The camera starts at `simorg` with the mouse angles,
@@ -490,7 +519,7 @@ fn angle_between(a: Vec3, b: Vec3) -> f32 {
 }
 
 /// `InterpolateAngles` (`0x10029cf0`): per-axis shortest-way blend of normalised angles.
-fn interpolate_angles(a: Vec3, b: Vec3, frac: f32) -> Vec3 {
+pub(crate) fn interpolate_angles(a: Vec3, b: Vec3, frac: f32) -> Vec3 {
     let mut out = [0.0; 3];
     for i in 0..3 {
         let (x, y) = (v::norm_angle(a[i]), v::norm_angle(b[i]));
@@ -534,8 +563,8 @@ fn weapon_for_model(weaponmodel: i32) -> Option<u8> {
 }
 
 /// The in-eye half of `V_CalcSpectatorRefdef`: the view model shows the target's gun (with its
-/// attachments' body groups), placed at the in-eye view. TS adds its bob and gun offset globals
-/// here, which keep the last values `V_CalcNormalRefdef` left; the port uses none.
+/// attachments' body groups), placed at the in-eye view plus the gun offset `V_CalcBob` last left
+/// in the normal view, as in TS.
 fn in_eye_gun(p: &ref_params_t, target: i32, weaponmodel: i32) {
     let Some(vm) = r::view_model() else { return };
     let gun = with(|s| {
@@ -560,14 +589,16 @@ fn in_eye_gun(p: &ref_params_t, target: i32, weaponmodel: i32) {
     vm.curstate.colormap = 0;
     vm.curstate.body = crate::events::fire::weapon_body(id as i32, items as i32);
     vm.index = target;
-    let mut angles = [-p.viewangles[0], p.viewangles[1], p.viewangles[2]];
+    // `V_CalcGunAngle` with a bob global (`0x10191dac`) nothing writes, so 0.
+    crate::view::calc_gun_angle(vm, p.viewangles, 0.0);
+    let mut angles = vm.angles;
     let mut origin = p.vieworg;
     spec::apply_shake(&mut origin, &mut angles, 0.9);
+    // The gun offset `V_CalcBob` last left in the normal view (`0x10069a70`).
+    origin = v::add(origin, crate::view::gun_offset());
     origin[2] -= 1.0;
     vm.origin = origin;
     vm.angles = angles;
-    vm.curstate.angles = angles;
-    vm.latched.prevangles = angles;
 }
 
 #[cfg(test)]
