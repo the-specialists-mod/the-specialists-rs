@@ -47,7 +47,8 @@ fn max_players() -> usize {
 }
 
 /// `CVoiceGameMgr::Init` (0xf7438): `VoiceMask` (8 bytes: two longs) and `ReqState` (0). TS calls
-/// it from the `CHalfLifeMultiplay` constructor; the port registers once in `GameInit` (the
+/// it from the `CHalfLifeMultiplay` constructor on the first map, before `LinkUserMessages`; the
+/// port registers once in `GameInit`, before the rest of the table, so the numbers match (the
 /// engines keep user messages for the process). The cvars are in `cvars::CVARS`.
 pub fn register_messages() {
     let e = engine();
@@ -71,7 +72,7 @@ pub fn update(frametime: f64) {
         m.update_interval >= UPDATE_INTERVAL
     });
     if due {
-        update_masks();
+        update_masks(None);
     }
 }
 
@@ -90,8 +91,10 @@ pub fn client_connected(e: *mut edict_t) {
 }
 
 /// `CVoiceGameMgr::ClientCommand` (0xf770c): `vban <hex mask>` and `VModEnable <0|1>`. Returns
-/// false for anything else so the other handlers see it.
-pub fn client_command(e: *mut edict_t, cmd: &str, args: &Args) -> bool {
+/// false for anything else so the other handlers see it. `respawn_at` is the sender's
+/// `m_flRespawnTime` (`+0x770`): its `Player` is the one being dispatched, so the mask update
+/// can't read it from there.
+pub fn client_command(e: *mut edict_t, respawn_at: f32, cmd: &str, args: &Args) -> bool {
     let client = engine().index_of(e) - 1;
     let debug = cvars::on(c"voice_serverdebug");
     if client < 0 || client >= max_players() as i32 {
@@ -129,7 +132,7 @@ pub fn client_command(e: *mut edict_t, cmd: &str, args: &Args) -> bool {
     } else {
         return false;
     }
-    update_masks();
+    update_masks(Some((e, respawn_at)));
     true
 }
 
@@ -142,15 +145,20 @@ pub fn parse_hex(s: &str) -> u32 {
 }
 
 /// `CMultiplayGameMgrHelper::CanPlayerHearPlayer` (0xd0ed0). Teamplay: teammates only. Round
-/// modes and LMS: a talker who is dead for the rest of the round (respawn time -1) is heard only
-/// by listeners in the same state.
-fn can_player_hear_player(listener: *mut edict_t, talker: *mut edict_t) -> bool {
+/// modes and LMS: a talker who is dead for the rest of the round (respawn time below 0) is heard
+/// only by listeners in the same state. `known` gives the respawn time of the player being
+/// dispatched.
+fn can_player_hear_player(listener: *mut edict_t, talker: *mut edict_t, known: Option<(*mut edict_t, f32)>) -> bool {
     let (mode, teamplay, lms, _) = state::mode();
     if teamplay && !teams::same_team(listener, talker) {
         return false;
     }
     if matches!(mode, Mode::RoundTdm | Mode::Objective) || lms {
-        let out_of_round = |e: *mut edict_t| !alive(e.v()) && other(e, |p| p.respawn_at < 0.0).unwrap_or(false);
+        let respawn_at = |e: *mut edict_t| match known {
+            Some((k, r)) if k == e => Some(r),
+            _ => other(e, |p| p.respawn_at),
+        };
+        let out_of_round = |e: *mut edict_t| !alive(e.v()) && respawn_at(e).is_some_and(|r| r < 0.0 || r.is_nan());
         if out_of_round(talker) {
             return out_of_round(listener);
         }
@@ -169,14 +177,15 @@ pub fn rules_mask(listener: usize, players: &[bool], all_talk: bool, can_hear: &
     mask
 }
 
-/// `CVoiceGameMgr::UpdateMasks` (0xf79bc).
-fn update_masks() {
+/// `CVoiceGameMgr::UpdateMasks` (0xf79bc). Every slot with a player counts (`UTIL_PlayerByIndex`
+/// + `IsPlayer`), players who left included.
+fn update_masks(known: Option<(*mut edict_t, f32)>) {
     with(|m| m.update_interval = 0.0);
     let e = engine();
     let n = max_players();
     let all_talk = cvars::on(c"sv_alltalk");
     let edicts: Vec<*mut edict_t> = (1..=n as i32).map(|i| e.player(i)).collect();
-    let present: Vec<bool> = edicts.iter().map(|&p| super::is_player(p)).collect();
+    let present: Vec<bool> = edicts.iter().map(|&p| super::has_player(p)).collect();
     let (msg_mask, msg_req) = with(|m| (m.msg_mask, m.msg_request_state));
     for c in 0..n {
         if !present[c] {
@@ -187,7 +196,8 @@ fn update_masks() {
         if want {
             MsgWriter::begin(MSG_ONE as i32, msg_req, None, ed).end();
         }
-        let mask = if mod_enable { rules_mask(c, &present, all_talk, &|l, t| can_player_hear_player(edicts[l], edicts[t])) } else { 0 };
+        let mask =
+            if mod_enable { rules_mask(c, &present, all_talk, &|l, t| can_player_hear_player(edicts[l], edicts[t], known)) } else { 0 };
         let changed = with(|m| {
             let changed = m.sent_rules_masks[c] != mask || m.sent_ban_masks[c] != ban;
             m.sent_rules_masks[c] = mask;

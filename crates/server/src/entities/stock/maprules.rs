@@ -10,10 +10,13 @@
 use super::base::*;
 use super::items::SF_NORESPAWN;
 use crate::world::{self, Cx, Entity, UseType};
+use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{HudTextParms, is_player, te_text_message};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::CStr;
 
 pub const SF_ENVTEXT_ALLPLAYERS: i32 = 1;
@@ -295,6 +298,251 @@ pub fn add_points_to_team(player: *mut edict_t, points: i32, allow_negative: boo
     for other in crate::rules::players() {
         if other != player && crate::rules::teams::same_team(player, other) {
             add_points(other, points, allow_negative);
+        }
+    }
+}
+
+/// `CRulePointEntity::Spawn` (0xcc42c).
+fn rule_point_spawn(cx: &mut Cx) {
+    let v = cx.pev();
+    v.solid = SOLID_NOT as i32;
+    v.movetype = MOVETYPE_NONE as i32;
+    v.effects = EF_NODRAW as i32;
+    v.frame = 0.0;
+    v.model = 0;
+}
+
+/// `CRuleEntity::CanFireForActivator` (0xcc3e4).
+fn can_fire_for_activator(master: string_t, activator: *mut edict_t) -> bool {
+    master == 0 || is_master_triggered(master, activator)
+}
+
+/// `SUB_UseTargets` of a rule entity (a `CBaseEntity`: no delay or killtarget).
+fn rule_use_targets(cx: &mut Cx, activator: *mut edict_t, kind: UseType, value: f32) {
+    let target = s(cx.pev().target);
+    crate::entities::fire_targets(target, activator, cx.edict, kind, value);
+}
+
+/// `TeamID()` of any entity: a player's team name, a `game_team_master`'s team, `""` otherwise.
+fn team_id(e: *mut edict_t) -> String {
+    if e.is_null() {
+        return String::new();
+    }
+    if is_player(e) || crate::rules::has_player(e) {
+        return crate::rules::teams::team_name_of(e);
+    }
+    if s(e.v().classname) == c"game_team_master" {
+        return team_master_id(e);
+    }
+    String::new()
+}
+
+/// `m_teamIndex` of every `game_team_master` (`+0x68`), kept outside the entity so a master can
+/// be read while it is itself mid-dispatch (its targets can reach `game_player_team`).
+static TEAM_MASTERS: Global<RefCell<Option<HashMap<usize, i32>>>> = Global(RefCell::new(None));
+
+fn team_index_of(e: *mut edict_t) -> i32 {
+    TEAM_MASTERS.0.borrow().as_ref().and_then(|m| m.get(&(e as usize)).copied()).unwrap_or(0)
+}
+
+fn set_team_index(e: *mut edict_t, i: i32) {
+    TEAM_MASTERS.0.borrow_mut().get_or_insert_with(HashMap::new).insert(e as usize, i);
+}
+
+/// `CGameTeamMaster::TeamID` (0xccc94): `GetIndexedTeamName(m_teamIndex)`, `""` below 0.
+fn team_master_id(e: *mut edict_t) -> String {
+    let i = team_index_of(e);
+    if i < 0 {
+        return String::new();
+    }
+    if crate::rules::state::teamplay() { crate::rules::state::with(|g| g.indexed_team_name(i)) } else { String::new() }
+}
+
+/// `UTIL_TeamsMatch` (0xee2b8): always outside teamplay; otherwise two non-empty names equal
+/// ignoring case.
+fn teams_match(a: &str, b: &str) -> bool {
+    !crate::rules::state::teamplay() || (!a.is_empty() && !b.is_empty() && a.eq_ignore_ascii_case(b))
+}
+
+pub const SF_TEAMMASTER_FIREONCE: i32 = 1;
+pub const SF_TEAMMASTER_ANYTEAM: i32 = 2;
+
+/// `CGameTeamMaster::TeamMatch` (0xcccd4): any activator when the master has no team and
+/// `ANYTEAM` is set, else the activator's team must match the master's.
+fn team_match(master: *mut edict_t, activator: *mut edict_t) -> bool {
+    if team_index_of(master) < 0 && master.v().spawnflags & SF_TEAMMASTER_ANYTEAM != 0 {
+        return true;
+    }
+    !activator.is_null() && teams_match(&team_id(activator), &team_master_id(master))
+}
+
+/// `CGameTeamMaster::IsTriggered` (0xccc6c) for `UTIL_IsMasterTriggered` (`FCAP_MASTER` is in its
+/// `ObjectCaps` 0x82): `None` when `e` isn't a `game_team_master`.
+pub fn team_master_triggered(e: *mut edict_t, activator: *mut edict_t) -> Option<bool> {
+    (s(e.v().classname) == c"game_team_master").then(|| team_match(e, activator))
+}
+
+/// `game_team_master` (`CGameTeamMaster` 0xccae8..0xccd40): a master (and relay) that passes only
+/// for activators on its team (`teamindex`, -1 = none). `USE_SET` sets its team: the activator's
+/// with a value ≥ 0, none with a negative one. Other uses fire its targets with `triggerstate`
+/// (0 off, 2 toggle, anything else on) when the activator matches.
+#[derive(Default)]
+pub struct GameTeamMaster {
+    master: string_t,
+    trigger_type: i32,
+}
+
+impl Entity for GameTeamMaster {
+    /// `CGameTeamMaster::KeyValue` (0xccae8).
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"teamindex" => set_team_index(cx.edict, kv_i(value)),
+            b"triggerstate" => {
+                self.trigger_type = match kv_i(value) {
+                    0 => UseType::Off as i32,
+                    2 => UseType::Toggle as i32,
+                    _ => UseType::On as i32,
+                }
+            }
+            b"master" => self.master = alloc(value),
+            _ => return false,
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        // The object starts zeroed in TS: team 0 until a `teamindex` key says otherwise.
+        if TEAM_MASTERS.0.borrow().as_ref().is_none_or(|m| !m.contains_key(&(cx.edict as usize))) {
+            set_team_index(cx.edict, 0);
+        }
+        rule_point_spawn(cx);
+    }
+
+    /// `CGameTeamMaster::Use` (0xccba8).
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, value: f32) {
+        if !can_fire_for_activator(self.master, activator) {
+            return;
+        }
+        let me = cx.edict;
+        if kind == UseType::Set {
+            let i = if value < 0.0 {
+                -1
+            } else {
+                let team = team_id(activator);
+                if crate::rules::state::teamplay() { crate::rules::state::with(|g| g.tp_team_index(&team)) } else { -1 }
+            };
+            set_team_index(me, i);
+            return;
+        }
+        if team_match(me, activator) {
+            let kind = match self.trigger_type {
+                0 => UseType::Off,
+                3 => UseType::Toggle,
+                _ => UseType::On,
+            };
+            rule_use_targets(cx, activator, kind, value);
+            if cx.pev().spawnflags & SF_TEAMMASTER_FIREONCE != 0 {
+                crate::entities::remove(me);
+            }
+        }
+    }
+}
+
+pub const SF_TEAMSET_FIREONCE: i32 = 1;
+pub const SF_TEAMSET_CLEARTEAM: i32 = 2;
+
+/// `game_team_set` (`CGameTeamSet::Use` 0xccd64): `USE_SET` to its targets (a `game_team_master`
+/// takes the activator's team, or none with `CLEARTEAM`).
+#[derive(Default)]
+pub struct GameTeamSet {
+    master: string_t,
+}
+
+impl Entity for GameTeamSet {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"master" => self.master = alloc(value),
+            _ => return false,
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        rule_point_spawn(cx);
+    }
+
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        if !can_fire_for_activator(self.master, activator) {
+            return;
+        }
+        let value = if cx.pev().spawnflags & SF_TEAMSET_CLEARTEAM != 0 { -1.0 } else { 0.0 };
+        rule_use_targets(cx, activator, UseType::Set, value);
+        if cx.pev().spawnflags & SF_TEAMSET_FIREONCE != 0 {
+            crate::entities::remove(cx.edict);
+        }
+    }
+}
+
+pub const SF_PTEAM_FIREONCE: i32 = 1;
+pub const SF_PTEAM_KILL: i32 = 2;
+pub const SF_PTEAM_GIB: i32 = 4;
+
+/// `game_player_team` (`CGamePlayerTeam` 0xcd740..0xce658): moves the activating player to the
+/// team of the `game_team_master` it targets, through `g_pGameRules->ChangePlayerTeam(player,
+/// team, kill, gib)` (empty outside teamplay).
+#[derive(Default)]
+pub struct GamePlayerTeam {
+    master: string_t,
+}
+
+/// `CGamePlayerTeam::TargetTeamName` (0xcd764): the `TeamID` of the first entity named `target`
+/// whose classname is exactly `game_team_master`, `None` when there is none.
+fn target_team_name(target: &CStr) -> Option<String> {
+    let eng = engine();
+    let mut it = std::ptr::null_mut();
+    loop {
+        it = eng.find_by_target_name(it, target);
+        if it.is_null() {
+            return None;
+        }
+        if s(it.v().classname) == c"game_team_master" {
+            return Some(team_master_id(it));
+        }
+    }
+}
+
+impl Entity for GamePlayerTeam {
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        match key.to_bytes() {
+            b"master" => self.master = alloc(value),
+            _ => return false,
+        }
+        true
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        rule_point_spawn(cx);
+    }
+
+    /// `CGamePlayerTeam::Use` (0xcd7d8).
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {
+        if !can_fire_for_activator(self.master, activator) {
+            return;
+        }
+        let sf = cx.pev().spawnflags;
+        if crate::rules::has_player(activator)
+            && let Some(team) = target_team_name(s(cx.pev().target))
+            && crate::rules::state::teamplay()
+        {
+            let (kill, gib) = (sf & SF_PTEAM_KILL != 0, sf & SF_PTEAM_GIB != 0);
+            // The player is usually mid-dispatch (its +use or touch fired us): change its team
+            // as soon as that returns.
+            world::defer(activator, move || {
+                crate::player::with_player(activator, |p, pcx| crate::rules::teams::change_team(p, pcx, &team, kill, gib));
+            });
+        }
+        if sf & SF_PTEAM_FIREONCE != 0 {
+            crate::entities::remove(cx.edict);
         }
     }
 }

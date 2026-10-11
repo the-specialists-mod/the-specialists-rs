@@ -98,17 +98,22 @@ fn lookup(cx: &mut Cx, name: &str) -> i32 {
 /// SDK `ResetSequenceInfo`.
 pub fn reset_sequence_info(p: &mut Player, cx: &mut Cx) {
     let seq = cx.pev().sequence;
-    let info = studio::model_ptr(cx.edict).and_then(|h| h.sequence_info(seq));
+    let hdr = studio::model_ptr(cx.edict);
+    let info = hdr.as_ref().and_then(|h| h.sequence_info(seq));
     let a = &mut p.stunt.anim;
     match info {
         Some(i) => {
             (a.frame_rate, a.ground_speed) = i.rates();
             a.seq_loops = i.flags & STUDIO_LOOPING != 0;
         }
-        None => {
+        // SDK `GetSequenceInfo`: without studio data it returns before writing the rates (they
+        // keep their old values); a sequence past the model's last one gets 0. (A negative one
+        // would make TS read before the sequence table; the port treats it as past the end.)
+        None if hdr.is_some() => {
             (a.frame_rate, a.ground_speed) = (0.0, 0.0);
             a.seq_loops = false;
         }
+        None => a.seq_loops = false,
     }
     let time = cx.time();
     let pev = cx.pev();

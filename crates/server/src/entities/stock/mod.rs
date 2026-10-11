@@ -129,6 +129,9 @@ link_entities! {
     item_antidote             => Antidote,
     game_text                 => GameText,
     game_player_equip         => GamePlayerEquip,
+    game_team_master          => maprules::GameTeamMaster,
+    game_team_set             => maprules::GameTeamSet,
+    game_player_team          => maprules::GamePlayerTeam,
     func_healthcharger        => HealthCharger,
     func_recharge             => ArmorCharger,
     env_global                => EnvGlobal,
@@ -320,10 +323,21 @@ const LIGHT_STYLES: [&CStr; 12] = [
     c"mmnnmmnnnmmnn",
 ];
 
-/// Spawn points keep their origin/angles in pev; the rules pick among them.
+/// Spawn points (`CBaseDMStart`: `info_player_deathmatch`, `info_player_start`,
+/// `info_player_team1..4`) keep their origin/angles in pev; the rules pick among them.
 #[derive(Default)]
 pub struct SpawnPoint;
-impl Entity for SpawnPoint {}
+impl Entity for SpawnPoint {
+    /// `CBaseDMStart::KeyValue` (0xe2bb8): `master` goes to `pev->netname`, which
+    /// `CBaseDMStart::IsTriggered` (0xe2c20) hands to `UTIL_IsMasterTriggered`.
+    fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key != c"master" {
+            return false;
+        }
+        cx.pev().netname = base::alloc(value);
+        true
+    }
+}
 
 /// SDK `FCAP_*` object caps for +use (the `Entity` trait has no `ObjectCaps`).
 pub const FCAP_IMPULSE_USE: i32 = 0x0000_0008;

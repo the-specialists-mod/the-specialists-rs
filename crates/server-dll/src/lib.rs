@@ -132,6 +132,9 @@ unsafe extern "C" fn reset_global_state() {
 unsafe extern "C" fn noop_e(_: *mut edict_t) {}
 
 unsafe extern "C" fn game_init() {
+    // TS registers `VoiceMask`/`ReqState` in the `CHalfLifeMultiplay` constructor, before
+    // `LinkUserMessages` registers the rest, so they take the first two message numbers.
+    rules::voice::register_messages();
     messages::register_all();
     rules::game_init();
     weapons::game_init();

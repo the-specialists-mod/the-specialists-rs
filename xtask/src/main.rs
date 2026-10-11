@@ -696,7 +696,8 @@ impl Ctx {
     /// dedicated-server checks can't reach.
     /// 1. Join: the buy menu opens; reset its random first loadout, buy an AK47 with a scope
     ///    (`slotN`, as the number keys do), click `+attack` after the respawn wait to spawn.
-    /// 2. `addbot` (with `ts_bot_stop 1`, so the bot holds still): the quota rises to cover it.
+    /// 2. `ts_bot_quota 1` (with `ts_bot_stop 1`, so the bot holds still) adds a bot (TS's
+    ///    `addbot` only prints "Bots only in listen servers.").
     /// 3. With the bot in view, step onto the slow-motion power-up (`0 -672 48`, pwuptype 1) and
     ///    double-tap `+use`: the host runs at 0.6 and slows the bot to 0.35.
     /// 4. Take an M61, aim at a 1-HP wooden pillar (`*15`) and throw: the explosion breaks it.
@@ -711,7 +712,7 @@ impl Ctx {
         let mut cfg = script_start("ts_dojo") + &script_join_and_spawn() + &status("spawned");
 
         // 2. a stopped bot; it joins as an observer and respawns after the 5 s wait
-        cfg += &format!("ts_bot_stop 1\naddbot\n{}ts_bot_quota\n{}", secs(1.0), secs(8.0));
+        cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}ts_bot_quota\n{}", secs(1.0), secs(8.0));
 
         // 3. power-up with the bot in view
         cfg += &format!("ts_tp 1 0 -672 60 90 0\n{}ts_tp 2 0 -480 60 270 0\n{}", secs(0.5), secs(1.5));
@@ -804,7 +805,7 @@ impl Ctx {
         let spawn_line = spawns.first().copied().unwrap_or("");
         let checks = [
             ("join: bought an AK47 and clicked to spawn", spawn_line.split_once(" with ").is_some_and(|(_, w)| w.contains("13"))),
-            ("addbot raised the quota to 1", text.contains("\"ts_bot_quota\" is \"1\"")),
+            ("ts_bot_quota 1 added a bot", text.contains("\"ts_bot_quota\" is \"1\"") && text.contains("[ts] bots: added")),
             ("picked up the slow-motion power-up", host("picked up").is_some_and(|p| p.held == "0x1")),
             ("+use double tap: host at 0.6, the bot in view at 0.35", {
                 let d = dump("power-up used");

@@ -49,7 +49,11 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
         if it.is_null() {
             break;
         }
-        // (`IsTriggered` master check: spawn points carry no master in the port.)
+        // `CBaseDMStart::IsTriggered` (0xe2c20): a spot whose `master` (in `netname`) isn't
+        // triggered for this player is skipped without taking one of the 32 places.
+        if !crate::entities::stock::base::is_master_triggered(it.v().netname, self_e) {
+            continue;
+        }
         let sv = it.v();
         let mut enemy_sees = false;
         let mut teammate_sees = false;

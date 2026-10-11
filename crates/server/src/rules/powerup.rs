@@ -196,6 +196,18 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
     }
 }
 
+/// `RemoveEntityFromSlowedArray` (0x9fb4c): every player's slowed-entity entries for `e` are
+/// cleared (the count stays, as in TS).
+pub fn remove_from_slowed(e: *mut edict_t) {
+    for o in super::slot_players() {
+        other(o, |q| {
+            for s in q.ts.slowed_ents.iter_mut().filter(|s| **s == e) {
+                *s = std::ptr::null_mut();
+            }
+        });
+    }
+}
+
 /// `DeactivateSlowMotionFlow`: back to normal time for us and everything we slowed.
 pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
     go_slow_self(p, cx, 1.0, false);
@@ -222,7 +234,7 @@ pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
     }
     for e in std::mem::take(&mut p.ts.slowed_ents) {
         // The entity may be gone; only touch edicts that are still in use.
-        if !e.is_free() {
+        if !e.is_null() && !e.is_free() {
             go_slow(e, 1.0, false);
         }
     }

@@ -3,7 +3,7 @@
 //! any code can read them without dispatching to the player.
 
 use super::msg;
-use super::{netname, other, state};
+use super::{netname, state};
 use crate::damage::{DamageInfo, bits};
 use crate::messages::Msg;
 use crate::player::Player;
@@ -54,9 +54,24 @@ pub fn model_for(team: &str) -> String {
     models[engine().random_long(0, models.len() as i32 - 1) as usize].clone()
 }
 
-/// Every player's team name and frags, in index order (`UTIL_PlayerByIndex` + `IsPlayer`).
+/// Every player's team name and frags, in index order (`UTIL_PlayerByIndex` + `IsPlayer`, which
+/// is always true for a player). Players who left count too, with the empty team and zero frags
+/// `TSPlayerDisconnect` gave them.
 fn player_teams() -> Vec<(*mut edict_t, String, f32)> {
-    super::players().into_iter().map(|e| (e, team_name_of(e), e.v().frags)).collect()
+    super::slot_players().into_iter().map(|e| (e, team_name_of(e), e.v().frags)).collect()
+}
+
+/// `m_szTeamName` is a 16-byte field filled with `strncpy(.., 16)`: longer names keep their
+/// first 16 bytes. (TS leaves such a name unterminated, so its reads run on into the next field,
+/// the animation extension at `+0xb58`; the port stops at 16 bytes.)
+fn team_field(name: &str) -> String {
+    let b = name.as_bytes();
+    String::from_utf8_lossy(&b[..b.len().min(16)]).into_owned()
+}
+
+/// `TSPlayerDisconnect` clears `m_szTeamName`.
+pub fn clear_team(p: &mut Player, e: *mut edict_t) {
+    store_team(p, e, "");
 }
 
 /// `CHalfLifeTeamplay::RecountTeams` (0xe5608): rebuilds the team list and team frags. With
@@ -85,12 +100,6 @@ pub fn recount(send: bool) {
                 msg::one(Msg::TeamScore, e, |w| m.write(w));
             }
         }
-    }
-}
-
-pub fn update_team_scores() {
-    if state::teamplay() {
-        recount(false);
     }
 }
 
@@ -140,8 +149,9 @@ pub fn set_default_team(p: &mut Player, cx: &mut Cx) {
 
 /// Stores the team name on the player (`m_szTeamName`).
 fn store_team(p: &mut Player, e: *mut edict_t, name: &str) {
-    set_team_name(e, name);
-    p.ts.team_name = name.to_owned();
+    let name = team_field(name);
+    set_team_name(e, &name);
+    p.ts.team_name = name;
 }
 
 /// The `model` key `ChangePlayerTeam` always sets (0xe4a0f..0xe4b28): with a team limit
@@ -190,6 +200,7 @@ pub fn change_team(p: &mut Player, cx: &mut Cx, name: &str, kill: bool, gib: boo
     let name = change_team_choice(name, the_one, p.ts.is_the_one, &one, valid).unwrap_or_else(fewest);
     let e = cx.edict;
     store_team(p, e, &name);
+    let name = p.ts.team_name.clone();
     let (limit, models) = state::with(|g| {
         let i = g.team_index(&name);
         (g.team_limit, if i < 0 { Vec::new() } else { g.teams[i as usize].models.clone() })
@@ -234,9 +245,10 @@ pub fn init_hud(p: &mut Player, cx: &mut Cx) {
     msg::say_one(e, cx.index(), &text);
     recount(false);
     let eng = engine();
+    // `UTIL_PlayerByIndex`: players who left are listed too (with no team, valid without a limit).
     for i in 1..=eng.max_clients() {
-        let o = eng.client(i);
-        if o.is_null() || !super::is_player(o) {
+        let o = eng.player(i);
+        if !super::has_player(o) {
             continue;
         }
         let t = team_name_of(o);
@@ -256,29 +268,73 @@ pub fn send_team_scores() {
     }
 }
 
-/// The One mode: The One is on team 0, everyone else on team 1.
-pub fn the_one_teams() {
-    let names = state::with(|g| g.team_names());
-    if names.len() < 2 {
+/// The One's team switch in `SelectRandomTheOne` and `TheOneIsDead` (`CTSGameRules.c:2189`,
+/// `:2270-2275`): `g_pGameRules->SetDefaultPlayerTeam(p)`, then
+/// `g_pGameRules->ChangePlayerTeam(p, p->TeamID(), FALSE, FALSE)`, which in The One mode puts The
+/// One on the first team and everyone else on the second, sets the `model` and `team` keys and
+/// sends `TeamInfo`, `ScoreInfo` and `TeamNames` (no observer: The One mode).
+pub fn the_one_switch(p: &mut Player, cx: &mut Cx) {
+    if !state::teamplay() {
         return;
     }
-    for e in super::players() {
-        let one = other(e, |p| p.ts.is_the_one).unwrap_or(false);
-        let want = &names[if one { 0 } else { 1 }];
-        if !team_name_of(e).eq_ignore_ascii_case(want) {
-            set_team_name(e, want);
-            let t = want.clone();
-            other(e, |p| p.ts.team_name = t.clone());
-            let i = engine().index_of(e);
-            msg::all(Msg::TeamInfo, |w| TeamInfo { idx: i as u8, team: want.clone() }.write(w));
-        }
+    set_default_team(p, cx);
+    let name = p.ts.team_name.clone();
+    change_team(p, cx, &name, false, false);
+}
+
+/// `the_one_switch` for a player other than the one being dispatched.
+pub fn the_one_switch_other(e: *mut edict_t) {
+    crate::player::with_player(e, the_one_switch);
+}
+
+/// `CHalfLifeTeamplay::ClientUserInfoChanged` (0xe4d18), after the Multiplay part: a `model` key
+/// that differs (case-insensitively) from the team name. With a team limit (or in the unreachable
+/// round modes) it is replaced by a random team model (`GetPlayerModel`). Without one it is a team
+/// change, or under `mp_defaultteam` both keys are put back.
+pub fn userinfo_changed(p: &mut Player, cx: &mut Cx) {
+    let e = cx.edict;
+    let eng = engine();
+    let model = eng.info_key(e, c"model").to_string_lossy().into_owned();
+    let team = p.ts.team_name.clone();
+    if model.eq_ignore_ascii_case(&team) {
+        return;
     }
-    let _ = netname;
+    let (mode, limit) = state::with(|g| (g.mode, g.team_limit));
+    let idx = cx.index();
+    if matches!(mode, state::Mode::RoundTdm | state::Mode::Objective) || limit {
+        eng.set_client_key(e, "model", &model_for(&team));
+        return;
+    }
+    if super::cvars::on(c"mp_defaultteam") {
+        eng.set_client_key(e, "model", &team);
+        eng.set_client_key(e, "team", &team);
+        msg::say_one(e, idx, "* Not allowed to change teams in this game!\n");
+        return;
+    }
+    if !state::with(|g| g.is_valid_team(&model)) {
+        // Unreachable: without a team limit every name is valid.
+        eng.set_client_key(e, "model", &team);
+        msg::say_one(e, idx, &format!("* Can't change team to '{model}'\n"));
+        let list: String = state::with(|g| g.team_list.iter().map(|t| format!("{t};")).collect());
+        msg::say_one(e, idx, &format!("* Server limits teams to '{list}'\n"));
+        return;
+    }
+    msg::say_all(idx, &format!("* {} has changed to team '{model}'\n", netname(e)));
+    msg::log(&format!("\"{}<{}><{}><{team}>\" joined team \"{model}\"\n", netname(e), eng.user_id(e), eng.auth_id(e).to_string_lossy()));
+    change_team(p, cx, &model, false, false);
+    recount(true);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{change_team_choice, change_team_model, change_team_observes, default_team_kept};
+    use super::{change_team_choice, change_team_model, change_team_observes, default_team_kept, team_field};
+
+    #[test]
+    fn team_names_keep_sixteen_bytes() {
+        // strncpy(m_szTeamName, name, 16).
+        assert_eq!(team_field("hitman"), "hitman");
+        assert_eq!(team_field("abcdefghijklmnopqrst"), "abcdefghijklmnop");
+    }
     use crate::rules::state::GameRules;
 
     fn one() -> [String; 2] {

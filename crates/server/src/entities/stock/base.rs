@@ -465,13 +465,13 @@ fn master_triggered(e: *mut edict_t) -> Option<bool> {
 }
 
 /// `UTIL_IsMasterTriggered`: true when there is no master or it's satisfied.
-pub fn is_master_triggered(master: string_t, _activator: *mut edict_t) -> bool {
+pub fn is_master_triggered(master: string_t, activator: *mut edict_t) -> bool {
     if master == 0 {
         return true;
     }
     let e = engine().find_by_target_name(std::ptr::null_mut(), s(master));
     if !e.is_null()
-        && let Some(t) = master_triggered(e)
+        && let Some(t) = master_triggered(e).or_else(|| super::maprules::team_master_triggered(e, activator))
     {
         return t;
     }

@@ -185,6 +185,13 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
     if p.ts.is_the_one {
         the_one_is_dead(p, cx, killer.as_ref().map(|k| k.e));
         p.ts.spree = 0;
+        // `SetPlayerTheOne` may have just changed the killer (award, stored slow pause): the spree
+        // rewards below read and write those fields after it, as TS does.
+        if let Some(k) = killer.as_mut()
+            && let Some((award, held, held_secs, active)) = other(k.e, |kp| (kp.ts.award, kp.ts.held, kp.ts.held_secs, kp.active_powerup))
+        {
+            (k.award, k.held, k.held_secs, k.active) = (award, held, held_secs, active);
+        }
     }
 
     if suicide || !killer_is_player {
@@ -280,9 +287,8 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
             give_cash(p, 900);
         }
 
-        // Frags (the killer's pev->frags) and team scores.
+        // Frags (the killer's pev->frags).
         super::add_frags(k.e, None, points as f32);
-        teams::update_team_scores();
         crate::entities::fire_targets(c"game_playerkill", k.e, k.e, UseType::Toggle, 0.0);
 
         // slowmatch: each kill stores a second of slow motion (max 3).
@@ -328,6 +334,11 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo) {
         }
     }
     state::with(|g| g.call_check_deads(now));
+    // `CHalfLifeTeamplay::PlayerKilled` (0xe51b8): `RecountTeams(false)` after every kill, so the
+    // team frags the fraglimit reads are those of the last recount.
+    if state::teamplay() {
+        teams::recount(false);
+    }
 }
 
 /// `DoSpectacularNess` (0x76b48): whether a frag or an explosion creates the "spectacular"
@@ -492,59 +503,66 @@ fn team_kill_punish(killer: *mut edict_t, victim: *mut edict_t) {
     }
 }
 
-/// `CTSGameRules::TheOneIsDead` (0x7b258): whoever killed The One becomes the new One.
+/// `CTSGameRules::TheOneIsDead` (0x7b258) for the victim `p`; `killer` is the killing player
+/// (`Classify() == CLASS_PLAYER`, `None` otherwise or for a suicide). In The One mode a kill by
+/// another player makes the killer the new One: the victim's team switch, `SetPlayerTheOne` on
+/// the killer, then the killer's team switch.
 fn the_one_is_dead(p: &mut Player, cx: &mut Cx, killer: Option<*mut edict_t>) {
-    p.ts.is_the_one = false;
-    p.ts.award = 0;
     state::with(|g| g.the_one_exists = false);
-    let _ = cx;
-    if let Some(k) = killer {
-        set_the_one_other(k);
-    }
-}
-
-/// `SetPlayerTheOne` (0x7b078) on another (not dispatched) player.
-pub fn set_the_one_other(e: *mut edict_t) {
-    let v = e.v();
-    if !super::alive(v) || v.iuser1 != 0 {
+    p.ts.is_the_one = false;
+    if !state::the_one_mode() {
         return;
     }
-    let ok = other(e, |p| {
-        apply_the_one(p);
-    })
-    .is_some();
-    if ok {
-        announce_the_one(e);
+    match killer.filter(|&k| k != cx.edict) {
+        None => ts_message_all(THE_ONE_RGB, 1, 30, "The One is dead."),
+        Some(k) => {
+            ts_message_all(THE_ONE_RGB, 1, 30, &format!("The One was killed by {}!", netname(k)));
+            teams::the_one_switch(p, cx);
+            set_player_the_one_other(k);
+            teams::the_one_switch_other(k);
+        }
     }
 }
 
-/// The state part of `SetPlayerTheOne`.
-pub fn apply_the_one(p: &mut Player) {
+const THE_ONE_RGB: [u8; 3] = [100, 150, 255];
+
+/// `CTSGameRules::SetPlayerTheOne` (0x7b078) on a player other than the one being dispatched.
+pub fn set_player_the_one_other(e: *mut edict_t) {
+    crate::player::with_player(e, set_player_the_one);
+}
+
+/// `CTSGameRules::SetPlayerTheOne` (0x7b078): only a living, non-observing player. Health 150,
+/// kung fu and super jump, speed 330, a stored 3 s slow pause when nothing is held or active,
+/// award 10, the announcement and the log line. The team switch is the caller's.
+pub fn set_player_the_one(p: &mut Player, cx: &mut Cx) {
+    if !super::alive(cx.pev()) || cx.pev().iuser1 != 0 {
+        return;
+    }
+    let e = cx.edict;
+    let eng = engine();
+    let now = cx.time();
     p.ts.is_the_one = true;
+    cx.pev().health = 150.0;
+    p.ts.health_timer = now + 1.0;
     p.kungfu = true;
     p.superjump = true;
-    if p.ts.held == 0 && p.active_powerup == 0 {
+    eng.set_physics_key(e, c"mj", c"1");
+    // SetPlayerSpeed(330).
+    cx.pev().maxspeed = 330.0;
+    eng.set_client_maxspeed(e, 330.0);
+    msg::one(Msg::PwUp, e, |w| PwUp { bits: pw::KUNGFU as i16, secs: 0 }.write(w));
+    msg::one(Msg::PwUp, e, |w| PwUp { bits: pw::SUPERJUMP as i16, secs: 0 }.write(w));
+    if p.active_powerup == 0 && p.ts.held == 0 {
+        p.active_powerup = 0;
         p.ts.held = pw::SLOWPAUSE;
+        p.powerup_until = 0.0;
         p.ts.held_secs = 3;
     }
     p.ts.award = 10;
-    p.ts.health_timer = engine().time() + 1.0;
     state::with(|g| g.the_one_exists = true);
-}
-
-/// The engine part of `SetPlayerTheOne`: hp 150, super jump, speed 330, PwUp, announcement,
-/// team switch to team 0.
-pub fn announce_the_one(e: *mut edict_t) {
-    let eng = engine();
-    let v = e.v();
-    v.health = v.health.max(150.0);
-    v.maxspeed = 330.0;
-    eng.set_client_maxspeed(e, 330.0);
-    eng.set_physics_key(e, c"mj", c"1");
-    msg::one(Msg::PwUp, e, |w| PwUp { bits: pw::KUNGFU as i16, secs: 0 }.write(w));
-    msg::one(Msg::PwUp, e, |w| PwUp { bits: pw::SUPERJUMP as i16, secs: 0 }.write(w));
-    ts_message_all([100, 150, 255], 1, 30, &format!("{} is The One!", netname(e)));
-    teams::the_one_teams();
+    let name = netname(e);
+    ts_message_all(THE_ONE_RGB, 1, 30, &format!("{name} is The One!"));
+    msg::log(&format!("Player \"{name}\" triggered \"the_one\"\n"));
 }
 
 /// ScoreInfo for any player edict (dispatched or not is handled by the caller).

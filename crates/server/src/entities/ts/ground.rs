@@ -177,6 +177,8 @@ impl GroundWeapon {
             return false;
         }
         let flags = cx.pev().spawnflags;
+        // A negative `wextraclip` is clamped to 0 for good.
+        self.extra_clip = self.extra_clip.max(0);
         let mut cost = 0;
         if state::cash_based() && self.buyable {
             if round_mode() && self.attacker_team != -1 {
@@ -197,14 +199,15 @@ impl GroundWeapon {
             return false;
         }
         rules::lifecycle::give_cash(p, -cost);
-        // TS tops up only an empty reserve, checked after the pickup (0xa2328: `reserve[ammo] < 1`).
-        let extra = self.extra_clip.max(0);
+        // TS tops up only an empty reserve, checked after the pickup (0xa2328: `reserve[ammo] < 1`),
+        // with `CTSGun::AddAmmo(ammo, wextraclip)`: the key's raw number of rounds.
+        let extra = self.extra_clip;
         if extra != 0
             && let Some(w) = tables().weapon(self.id as u8)
         {
             let empty = p.inv.gun.reserve.get(w.ammo as usize).is_some_and(|&r| r < 1);
-            if w.ammo != 0 && empty && crate::weapons::give_ammo(p, pcx, w.ammo, extra * w.clip.max(1)) > 0 {
-                engine().emit_sound(pcx.edict, CHAN_ITEM as i32, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100);
+            if empty && crate::weapons::give_ammo(p, pcx, w.ammo, extra) > 0 {
+                crate::entities::stock::explode::emit_sound_slow(pcx.edict, CHAN_ITEM, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100, 0.5);
             }
         }
         true

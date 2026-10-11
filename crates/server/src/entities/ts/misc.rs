@@ -62,7 +62,9 @@ impl Entity for MapGlobals {
         state::with(|g| {
             g.round_timer = flags & 32 == 0;
             g.superjump_map = flags & 64 != 0;
-            g.base_weapons = (0x1f ^ flags) & 0x1f;
+            // `get_weapon_restriction` (0x7263c): `InitWeaponRestriction() ^ spawnflags` on the
+            // whole int, so the round-timer and super-jump bits land in the mask too (SrvSett 3).
+            g.base_weapons = 0x1f ^ flags;
             g.allowed_weapons = g.base_weapons;
         });
     }
@@ -238,12 +240,6 @@ pub fn create_dead_corpse(player: *mut edict_t, life: f32) {
 const EF_NOINTERP: i32 = 32;
 
 // ---- spawn points and stubs -----------------------------------------------------------------------
-
-/// `info_player_team1..4` (CBaseDMStart) and `info_player_teamspawn` (not exported by TS; kept as
-/// an inert point so maps that use it keep their edicts quiet).
-#[derive(Default)]
-pub struct TeamSpawn;
-impl Entity for TeamSpawn {}
 
 /// Dead 3.0 objective entities (`ts_objective_manager`, `ts_objective_ptr`, `ts_bomb`, `ts_hack`,
 /// `ts_teamescape`, `ts_sellzone`): spawn hidden and do nothing. Brushes keep their model so the

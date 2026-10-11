@@ -37,45 +37,76 @@ pub fn client_connect(e: *mut edict_t, _name: &CStr, _addr: &CStr) -> bool {
     true
 }
 
-/// `ClientDisconnect` + `CHalfLifeMultiplay::ClientDisconnected` + `TSPlayerDisconnect`.
+/// `ClientDisconnect` (0xacd4c): `ts_playeramount`, then, unless the game is over, the leave
+/// notice and `CHalfLifeMultiplay::ClientDisconnected` (0xcf960). The engine keeps the edict and
+/// its `Player` until the slot's next client spawns, so the rules keep seeing the player through
+/// `slot_players()` (`UTIL_PlayerByIndex`) with what `TSPlayerDisconnect` left.
 pub fn client_disconnect(e: *mut edict_t) {
     crate::entities::ts::player_amount_changed(false);
     let game_over = state::with(|g| g.game_over);
-    let idx = engine().index_of(e);
+    let eng = engine();
+    let idx = eng.index_of(e);
     if !game_over {
         let name = netname(e);
         msg::say_all(idx, &format!("- {name} has left the game\n"));
         let v = e.v();
         v.takedamage = DAMAGE_NO as f32;
         v.solid = SOLID_NOT as i32;
-        engine().set_origin(e, v.origin);
+        eng.set_origin(e, v.origin);
+        client_disconnected(e, idx);
+    }
+    // Port addition (engine safety): the engines leave FL_CLIENT on a dropped client's edict, and
+    // FWGS still maps it to the freed slot: pfnGetPlayerUserId returns the old id, and
+    // pfnSetClientMaxspeed then dereferences the slot's NULL edict (the "kick a bot" crash).
+    // Clearing the flags takes the edict out of players(), is_player() and the bot list until a
+    // client connects to the slot; `slot_players()` still finds it, as `UTIL_PlayerByIndex` does.
+    (e.v().flags &= !((FL_CLIENT | FL_FAKECLIENT) as i32));
+}
+
+/// `CHalfLifeMultiplay::ClientDisconnected` (0xcf960): `game_playerleave`, the log line,
+/// `RemoveAllItems(TRUE)`, `TSPlayerDisconnect` (0x9f94c), and the next The One check at once
+/// (`+0x587c = 0`). TS neither stops the player's slow-motion flow nor frees the players it slowed.
+fn client_disconnected(e: *mut edict_t, idx: i32) {
+    if !e.has_private_data() {
+        return;
     }
     crate::entities::fire_targets(c"game_playerleave", e, e, crate::world::UseType::Toggle, 0.0);
-    msg::log(&format!("\"{}<{}><{}><>\" disconnected\n", netname(e), engine().user_id(e), engine().auth_id(e).to_string_lossy()));
+    let eng = engine();
+    let (uid, auth) = (eng.user_id(e), eng.auth_id(e).to_string_lossy().into_owned());
+    // The fourth field is the user id again outside teamplay, the `model` key in teamplay.
+    let tail = if state::teamplay() { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
+    msg::log(&format!("\"{}<{uid}><{auth}><{tail}>\" disconnected\n", netname(e)));
     crate::player::with_player(e, |p, cx| {
-        powerup::deactivate_flow(p, cx);
         crate::weapons::strip_all(p, cx);
+        // TSPlayerDisconnect.
         crate::entities::ts::drop_flag(p, cx, false);
-        if p.ts.is_the_one {
-            state::with(|g| g.the_one_exists = false);
+        if (idx as u32) < 0x20 {
+            state::with(|g| g.votes.reset(idx as usize));
         }
-        p.joined = false;
-        p.bot = None;
-        p.ts = PlayerRules::default();
-        p.cash = 0;
+        {
+            let v = cx.pev();
+            v.solid = SOLID_NOT as i32;
+            v.deadflag = DEAD_DEAD as i32;
+            v.takedamage = DAMAGE_NO as f32;
+            v.flags &= !(FL_FAKECLIENT as i32);
+            v.flags |= FL_DORMANT as i32;
+            v.frags = 0.0;
+            v.effects = EF_NODRAW as i32;
+            v.health = 0.0;
+        }
         p.frags = 0;
         p.deaths = 0;
+        p.respawn_at = -1.0;
+        teams::clear_team(p, cx.edict);
+        p.ts.is_the_one = false;
+        // Port-only bot bookkeeping.
+        p.bot = None;
+        p.joined = false;
     });
-    // Nobody keeps slowing this slot.
-    for o in super::players() {
-        other(o, |q| q.ts.slowed &= !(1u64 << idx.clamp(0, 63)));
-    }
-    state::with(|g| g.call_check_deads(engine().time()));
-    // The engines leave FL_CLIENT/FL_FAKECLIENT on a dropped client's edict, and FWGS still maps
-    // it to the freed slot: pfnGetPlayerUserId returns the old id, and pfnSetClientMaxspeed then
-    // dereferences the slot's NULL edict (the "kick a bot" crash). Clearing the flags takes the
-    // edict out of players(), is_player() and the bot list until a client connects to the slot.
-    (e.v().flags &= !((FL_CLIENT | FL_FAKECLIENT) as i32));
+    state::with(|g| {
+        g.call_check_deads(eng.time());
+        g.next_the_one_check = 0.0;
+    });
 }
 
 /// `ClientKill`: suicide one second later (handled in `pre_think`), not while observing.
@@ -88,31 +119,87 @@ pub fn client_kill(e: *mut edict_t) {
     });
 }
 
-/// `ClientUserInfoChanged`: name changes (`%` sanitised, announced, logged) and the HLDM model
-/// check (`CHalfLifeMultiplay::ClientUserInfoChanged`).
+/// `ClientUserInfoChanged` (0xae638): a name change (`%` turned into spaces, announced, logged),
+/// then the rules' `ClientUserInfoChanged`.
 pub fn userinfo_changed(e: *mut edict_t) {
     if e.is_null() || !e.has_private_data() {
         return;
     }
     let eng = engine();
     let old = netname(e);
-    let new = eng.info_key(e, c"name").to_string_lossy().into_owned();
-    if !old.is_empty() && old != new {
-        let clean = new.replace('%', " ");
-        if clean != new {
-            eng.set_client_key(e, "name", &clean);
+    if !old.is_empty() && eng.string(e.v().netname).to_bytes() != eng.info_key(e, c"name").to_bytes() {
+        let clean = eng.info_key(e, c"name").to_string_lossy().replace('%', " ");
+        let idx = eng.index_of(e);
+        eng.set_client_key(e, "name", &clean);
+        let new = eng.info_key(e, c"name").to_string_lossy().into_owned();
+        msg::say_all(idx, &format!("* {old} changed name to {new}\n"));
+        // The fourth field is the user id outside teamplay and the `model` key in teamplay.
+        let uid = eng.user_id(e);
+        let tail = if state::teamplay() { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
+        msg::log(&format!("\"{old}<{uid}><{}><{tail}>\" changed name to \"{new}\"\n", eng.auth_id(e).to_string_lossy()));
+    }
+    crate::player::with_player(e, |p, cx| {
+        multiplay_userinfo_changed(p, cx);
+        if state::teamplay() {
+            teams::userinfo_changed(p, cx);
         }
-        msg::say_all(eng.index_of(e), &format!("* {old} changed name to {clean}\n"));
-        msg::log(&format!("\"{old}<{}><{}><>\" changed name to \"{clean}\"\n", eng.user_id(e), eng.auth_id(e).to_string_lossy()));
+    });
+}
+
+/// `CHalfLifeMultiplay::ClientUserInfoChanged` (0x8b244): a client not running weapon prediction
+/// gets `cl_lw 1` (`PlayerIsCheating`); otherwise a `model` key that differs from the team name
+/// (`""` outside teamplay) is put back to the team name when it is an HLDM model or
+/// `mp_defaultteam` is on.
+fn multiplay_userinfo_changed(p: &mut Player, cx: &mut Cx) {
+    let e = cx.edict;
+    let eng = engine();
+    if player_is_cheating(&eng.info_key(e, c"cl_lw").to_string_lossy()) {
+        eng.set_client_key(e, "cl_lw", "1");
+        return;
     }
-    let model = eng.info_key(e, c"model").to_string_lossy().to_ascii_lowercase();
-    if HLDM_MODELS.contains(&model.as_str()) {
-        let fallback = if state::teamplay() { teams::team_name_of(e) } else { String::new() };
-        let fallback = if fallback.is_empty() { "gordon".to_owned() } else { teams::model_for(&fallback) };
-        eng.set_client_key(e, "model", &fallback);
-        msg::say_one(e, eng.index_of(e), &format!("* Can't change team to '{model}'\n"));
-        msg::say_one(e, eng.index_of(e), "* HLDM models not allowed.\n");
+    let model = eng.info_key(e, c"model").to_string_lossy().into_owned();
+    let team = p.ts.team_name.clone();
+    if model.eq_ignore_ascii_case(&team) {
+        return;
     }
+    if !cvars::on(c"mp_defaultteam") && !HLDM_MODELS.iter().any(|m| m.eq_ignore_ascii_case(&model)) {
+        return;
+    }
+    eng.set_client_key(e, "model", &team);
+    let idx = cx.index();
+    msg::say_one(e, idx, &format!("* Can't change team to '{model}'\n"));
+    msg::say_one(e, idx, "* HLDM models not allowed.\n");
+}
+
+/// `PlayerIsCheating` (0x9fae0): `sscanf(cl_lw, "%i") != 1` (its bot flag `+0x160` is never set).
+/// A value `%i` can't read leaves TS comparing an uninitialised stack word; the port treats it as
+/// not 1.
+fn player_is_cheating(cl_lw: &str) -> bool {
+    scan_c_int(cl_lw) != Some(1)
+}
+
+/// `sscanf("%i")`: optional whitespace and sign, then a hex (`0x`), octal (leading `0`) or decimal
+/// number, read up to the first character that doesn't fit.
+fn scan_c_int(s: &str) -> Option<i64> {
+    let s = s.trim_start();
+    let (neg, s) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let (radix, digits) = if (s.starts_with("0x") || s.starts_with("0X")) && s[2..].starts_with(|c: char| c.is_ascii_hexdigit()) {
+        (16, &s[2..])
+    } else if s.starts_with('0') {
+        (8, s)
+    } else {
+        (10, s)
+    };
+    let end = digits.find(|c: char| !c.is_digit(radix)).unwrap_or(digits.len());
+    if end == 0 {
+        return None;
+    }
+    let v = i64::from_str_radix(&digits[..end], radix).ok()?;
+    Some(if neg { -v } else { v })
 }
 
 // ---- spawn -------------------------------------------------------------------------------------
@@ -301,8 +388,9 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     if p.ts.suicide_at > 0.001 && p.ts.suicide_at < now {
         p.ts.suicide_at = 0.0;
         cx.pev().health = 0.0;
+        // `Killed(pev, GIB_NEVER)` straight from PreThink: no inflictor.
         let me = cx.edict;
-        let info = DamageInfo::new(me, me, 0.0, crate::damage::bits::NEVERGIB);
+        let info = DamageInfo::new(std::ptr::null_mut(), me, 0.0, crate::damage::bits::NEVERGIB);
         killed(p, cx, &info);
     }
 }
@@ -370,10 +458,13 @@ fn rules_init_hud(p: &mut Player, cx: &mut Cx) {
     if teamplay {
         teams::set_default_team(p, cx);
     }
-    let name = netname(e);
-    let name = if name.is_empty() { "unconnected".to_owned() } else { name };
+    let raw = netname(e);
+    let name = if raw.is_empty() { "unconnected" } else { raw.as_str() };
     msg::text_all(hud_dest::NOTIFY, &format!("{name} has joined the game\n"));
-    msg::log(&format!("\"{name}<{}><{}><>\" entered the game\n", eng.user_id(e), eng.auth_id(e).to_string_lossy()));
+    // The log has the raw `netname`, and the user id (DM) or the `model` key (teamplay) last.
+    let uid = eng.user_id(e);
+    let tail = if teamplay { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
+    msg::log(&format!("\"{raw}<{uid}><{}><{tail}>\" entered the game\n", eng.auth_id(e).to_string_lossy()));
     // UpdateGameMode
     let gm = GameMode { teamplay: teamplay as u8 };
     msg::one(Msg::GameMode, e, |w| gm.write(w));
@@ -381,9 +472,10 @@ fn rules_init_hud(p: &mut Player, cx: &mut Cx) {
     let me = ScoreInfo { idx: cx.index() as u8, ..Default::default() };
     msg::one(Msg::ScoreInfo, e, |w| me.write(w));
     send_motd(e);
+    // `UTIL_PlayerByIndex`: players who left are listed too.
     for i in 1..=eng.max_clients() {
-        let o = eng.client(i);
-        if o.is_null() || !super::is_player(o) {
+        let o = eng.player(i);
+        if !super::has_player(o) {
             continue;
         }
         let s = if o == e { score_info_of(p, cx.pev(), i) } else { other(o, |q| score_info_of(q, o.v(), i)).unwrap_or_default() };
@@ -444,9 +536,10 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
         msg::one(Msg::RoundTime, e, |w| rt.write(w));
     }
     let eng = engine();
+    // `UTIL_PlayerByIndex` + `IsPlayer`: players who left are listed too.
     for i in 1..=eng.max_clients() {
-        let o = eng.client(i);
-        if o.is_null() || !super::is_player(o) {
+        let o = eng.player(i);
+        if !super::has_player(o) {
             continue;
         }
         let s = Spectator { entindex: i as u8, observer: (o.v().iuser1 != 0) as u8 };
@@ -492,7 +585,6 @@ pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
 pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f32; 3]) {
     let e = cx.edict;
     let idx = cx.index();
-    crate::entities::stock::drive::release_tank(p, cx);
     p.hud.cash = Some(p.cash);
     messages::one(Msg::TsCash, e).short(p.cash).end();
     p.ts.obs_next_idle = 0.0;
@@ -509,10 +601,13 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
         .byte(TE_KILLPLAYERATTACHMENTS)
         .byte(idx & 0xff)
         .end();
-    // `DropFlag(false)` (0x9975f) comes before `RemoveAllItems` (0x99986): dropping the case
-    // after the reset would leave `free_slots` 20 above the 81 maximum.
+    // The gun is holstered first (`CTSGun::Reset`/`HolsterWeapon`, then its `Holster`), the case
+    // dropped, then a tank let go (`Use(USE_OFF)`, which re-deploys the gun). `DropFlag(false)`
+    // (0x9975f) comes before `RemoveAllItems` (0x99986): dropping the case after the reset would
+    // leave `free_slots` 20 above the 81 maximum.
+    crate::weapons::holster_for_tank(p, cx);
     crate::entities::ts::drop_flag(p, cx, false);
-    crate::weapons::strip_all(p, cx);
+    crate::entities::stock::drive::release_tank(p, cx);
     msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
     msg::one(Msg::SetFov, e, |w| SetFov { fov: 0 }.write(w));
     {
@@ -533,6 +628,8 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     p.ts.init_hud = true;
     let team = teams::team_name_of(e);
     msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team }.write(w));
+    // `RemoveAllItems(TRUE)`: the gun's `Holster` again, the inventory cleared, then the tail.
+    crate::weapons::strip_all(p, cx);
     crate::weapons::remove_all_items_tail(cx);
     engine().set_origin(e, origin);
     let mode = if p.ts.obs_mode == 0 { obs::CHASE_FREE } else { p.ts.obs_mode };
@@ -573,9 +670,11 @@ fn observer_set_mode(p: &mut Player, cx: &mut Cx, mode: i32) {
     v.iuser2 = p.ts.obs_target;
 }
 
-/// `m_hObserverTarget` is an `EHANDLE` in TS: it goes null when the player leaves.
+/// `m_hObserverTarget` (`+0x75c`) is a raw `CBasePlayer*` in TS: a player who left is still a
+/// target (dead, invisible, dormant) until `Observer_Idle` replaces it, as long as the slot keeps
+/// its player.
 fn obs_handle_valid(idx: i32) -> bool {
-    idx > 0 && super::is_player(engine().client(idx))
+    idx > 0 && super::has_player(engine().player(idx))
 }
 
 /// `CBasePlayer::Observer_FindNextPlayer` (0x99b0c): steps from the current target (or from us)
@@ -700,7 +799,7 @@ fn observer_idle(p: &mut Player, cx: &mut Cx, now: f32) {
     if cx.pev().iuser1 == obs::ROAMING || p.ts.obs_target == 0 {
         return;
     }
-    let t = engine().client(p.ts.obs_target);
+    let t = engine().player(p.ts.obs_target);
     if !obs_handle_valid(p.ts.obs_target) || !alive(t.v()) || t.v().iuser1 != 0 {
         observer_find_next_player(p, cx, false);
     }
@@ -781,14 +880,18 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     crate::entities::stock::drive::release_tank(p, cx);
     p.ts.respawns_used = p.ts.respawns_used.saturating_add(1);
     p.ts.suicide_at = 0.0;
-    // The spectator target is the last inflictor when it's a player (TS: `g_pevLastInflictor`);
-    // otherwise only iuser2 is cleared and `m_hObserverTarget` keeps its old value.
-    if super::is_player(dmg.inflictor) && dmg.inflictor != e {
-        let k = eng.index_of(dmg.inflictor);
-        cx.pev().iuser2 = k;
-        p.ts.obs_target = k;
-    } else {
-        cx.pev().iuser2 = 0;
+    // `g_pevLastInflictor`, the inflictor while `TakeDamage` kills (NULL for the `kill` command's
+    // direct `Killed`): a player inflictor, the victim included, becomes `iuser2` and the
+    // spectator target; another one only clears `iuser2`; without one both are left alone.
+    let inflictor = dmg.inflictor;
+    if !inflictor.is_null() {
+        if super::has_player(inflictor) {
+            let k = eng.index_of(inflictor);
+            cx.pev().iuser2 = k;
+            p.ts.obs_target = k;
+        } else {
+            cx.pev().iuser2 = 0;
+        }
     }
     set_respawn_time(p, cx, cvars::respawn_time());
 
@@ -861,10 +964,10 @@ fn death_think(p: &mut Player, cx: &mut Cx, now: f32) {
         }
     }
     // Stay dying until the death animation finishes, advancing it at the animation rate
-    // (`framerate` is the player's time scale, so slow motion stretches it). Port addition: a
-    // sequence without studio data (frame rate 0) would never finish, so it ends at once.
+    // (`framerate` is the player's time scale, so slow motion stretches it). A sequence with a
+    // frame rate of 0 never finishes, as in TS.
     let anim = &p.stunt.anim;
-    if cx.pev().modelindex != 0 && !anim.seq_finished && anim.frame_rate > 0.0 && cx.pev().deadflag == DEAD_DYING as i32 {
+    if cx.pev().modelindex != 0 && !anim.seq_finished && cx.pev().deadflag == DEAD_DYING as i32 {
         crate::stunt::anim::studio_frame_advance(p, cx);
         return;
     }
@@ -893,7 +996,23 @@ pub fn send_award(idx: i32, award: u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::respawn_countdown_text;
+    use super::{player_is_cheating, respawn_countdown_text, scan_c_int};
+
+    #[test]
+    fn cl_lw_is_read_like_sscanf_i() {
+        assert_eq!(scan_c_int("1"), Some(1));
+        assert_eq!(scan_c_int("  +1abc"), Some(1));
+        assert_eq!(scan_c_int("0x1"), Some(1));
+        assert_eq!(scan_c_int("01"), Some(1));
+        assert_eq!(scan_c_int("010"), Some(8));
+        assert_eq!(scan_c_int("-2"), Some(-2));
+        assert_eq!(scan_c_int(""), None);
+        assert_eq!(scan_c_int("x"), None);
+        // PlayerIsCheating (0x9fae0): anything but 1 forces cl_lw 1.
+        assert!(!player_is_cheating("1"));
+        assert!(player_is_cheating("0"));
+        assert!(player_is_cheating(""));
+    }
 
     #[test]
     fn respawn_countdown_truncates_like_ts() {

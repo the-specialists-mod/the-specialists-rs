@@ -34,13 +34,14 @@ are Ghidra addresses.
 | TS (address) | Rust | Notes |
 |---|---|---|
 | `DecideGamePlay` 0x767ac | `state::decide_gameplay` | worldspawn `gamemode` 1–4 wins over cvars; The One > LMS > `mp_teamplay`. Unit tested. |
-| `InstallGameRules` 0xc6050, `CTSGameRules::Init` 0x77d6c, Teamplay ctor 0xe…, `InitTeams`/`SetTeamList`/`SetTeamModelList` | `rules::precache` → `GameRules::install` | `exec game.cfg` + `ServerExecute` first, like TS. Then, as the `CHalfLifeMultiplay` ctor (0xcedd0) does, queues `exec <servercfgfile>` (`lservercfgfile` on a listen server) without executing it, so the server config runs after every map load and overrides what `CWorld::Precache` forced (`sv_gravity 800`, `mp_defaultteam`). This also resets a quota raised by `addbot` to the config's `ts_bot_quota` on a map change. The One renames team 0 "The ONE" and skips the first listed name (TS quirk kept). |
+| `InstallGameRules` 0xc6050, `CTSGameRules::Init` 0x77d6c, Teamplay ctor 0xe…, `InitTeams`/`SetTeamList`/`SetTeamModelList` | `rules::precache` → `GameRules::install` | `exec game.cfg` + `ServerExecute` first, like TS. Then, as the `CHalfLifeMultiplay` ctor (0xcedd0) does, queues `exec <servercfgfile>` (`lservercfgfile` on a listen server) without executing it, so the server config runs after every map load and overrides what `CWorld::Precache` forced (`sv_gravity 800`, `mp_defaultteam`). The One renames team 0 "The ONE" and skips the first listed name (TS quirk kept). |
 | `GameDLLInit` 0xc5aa0 | `rules::game_init` | cvars + 7 TS server commands (+3 test commands). |
+| `GetGameDescription` 0xaee84 | `rules::game_description` | "Half-Life" before the rules exist, "The Specialists" when `deathmatch` was 0, else "The Specialists (The One/LMS/Teamplay/DM)". |
 | `ClientConnect` 0xacce8 | `lifecycle::client_connect` | `ts_playeramount` connect hook, accepts. |
-| `ClientDisconnect` 0xacd4c, `ClientDisconnected` 0xcf960, `TSPlayerDisconnect` | `lifecycle::client_disconnect` | "- %s has left the game", `game_playerleave`, log, strip weapons, drop flag, end slow flow. |
+| `ClientDisconnect` 0xacd4c, `ClientDisconnected` 0xcf960, `TSPlayerDisconnect` 0x9f94c | `lifecycle::{client_disconnect, client_disconnected}` | `ts_playeramount`; then only while the game isn't over: "- %s has left the game", not solid, and `ClientDisconnected`: `game_playerleave`, the log line (`<uid>` again in DM, the `model` key in teamplay), `RemoveAllItems(TRUE)` (strip weapons), `TSPlayerDisconnect` (drop the case, the vote record cleared for slots < 32, not solid, `DEAD_DEAD`, no damage, `FL_FAKECLIENT` off, `FL_DORMANT` on, frags/deaths 0, respawn time -1, no team, `EF_NODRAW`, health 0, not The One, `CallCheckDeads`), and the next The One check at once (`+0x587c = 0`). The slow-motion flow isn't stopped and the players it slowed stay slowed, as in TS. The engine keeps the edict and its `Player` until the slot's next client spawns, so every TS `UTIL_PlayerByIndex` loop (`rules::slot_players`) still finds the player: `RecountTeams` (one `""` team without a team limit), `TeamWithFewestPlayers`, the InitHUD `ScoreInfo`/`TeamInfo`/`Spectator` loops, the multiplay fraglimit, `CountPlayers` (CTB), `CheckVotes`, the voice masks and The One. |
 | `ClientKill` 0xacec8 | `lifecycle::client_kill` + `pre_think` | suicide 1 s later, not while observing. |
 | `ClientPutInServer` 0xacf44 | first `on_spawn` | cash = `initial_cash` "1200", `EF_NOINTERP` (`server-dll` creates the Player and spawns it). |
-| `ClientUserInfoChanged` 0xae638 + 0x8b244 | `lifecycle::userinfo_changed` | name change (% → space) broadcast/log; HLDM models refused. |
+| `ClientUserInfoChanged` 0xae638, `CHalfLifeMultiplay::ClientUserInfoChanged` 0x8b244, `CHalfLifeTeamplay::ClientUserInfoChanged` 0xe4d18 | `lifecycle::{userinfo_changed, multiplay_userinfo_changed}`, `teams::userinfo_changed` | Name change (`%` → space, the key always rewritten, "* %s changed name to %s" SayText to all, log with `<uid>` in DM or the `model` key in teamplay). Then Multiplay: `PlayerIsCheating` (0x9fae0: `sscanf(cl_lw, "%i") != 1`) sets `cl_lw 1` and skips the model check; otherwise a `model` key that differs (case-insensitively) from the team name (`""` in DM) is put back to it, with "* Can't change team to '%s'" and "* HLDM models not allowed.", when it is an HLDM model (`IsValidTeam(char*)` 0x8b140) or `mp_defaultteam` is on. Teamplay, for a `model` still different from the team: with a team limit `GetPlayerModel` (a random team model); without one, under `mp_defaultteam` the `model` and `team` keys are put back ("* Not allowed to change teams in this game!"), otherwise the model is a team change: "* %s has changed to team '%s'" to all, `joined team` log, `ChangePlayerTeam(model, 0, 0)` (observer, 5 s) and `RecountTeams(true)`. |
 | `CBasePlayer::Spawn` / `TSInit` 0x92a4c / `PlayerSpawn` 0x890ac | `lifecycle::on_spawn` | fuser1/slow reset, speed 330, `slj`/`hl`/`mj` physinfo, spawn protection 1 s (transparent, `TSFade` 200,200,250), power-ups reset, `weapons |= 0x80000000`, default team (`SetDefaultPlayerTeam`, name only), spawn spot. A map's `game_player_equip`s replace the loadout (`stock::maprules::equip_on_spawn` from `weapons::on_spawn`). |
 | `UpdateClientData` init block 0x91d00 | `lifecycle::init_hud` | `ResetHUD` every spawn; first time `InitHUD`, rules InitHUD, TS InitHUD, `game_playerjoin`; `game_playerspawn`; RoundTime; super jump PwUp. |
 | `CHalfLifeMultiplay::InitHUD` 0xcf618 / Teamplay 0xe45d8 | `lifecycle::rules_init_hud`, `teams::init_hud` | join TextMsg, log, `GameMode`, own ScoreInfo, MOTD, everyone's ScoreInfo; teamplay: `SetDefaultPlayerTeam` first, TeamNames, assignment SayText (`* you are on team '%s'` when the `model` key equals the team, case-sensitive `strcmp`; sent after `ChangePlayerTeam`, so a teamplay joiner already starts observer here, before `CTSGameRules::InitHUD` does it again), then the TeamInfo of every player on a valid team (`IsValidTeam`, so every player without a team limit). |
@@ -62,10 +63,10 @@ are Ghidra addresses.
 | `CHalfLifeMultiplay::PlayerKilled` 0x895e4 | `scoring::player_killed` | points (stock/kung fu/knife 2, stunt/slide +1), sprees 3/6/9/10+ (hp, kung fu, super jump, stored slow pause, awards 2/3/4/10), double kill ×2, killed-specialist +5, suicide −1 (−5 more at spree > 8), cash `points×500+400` / victim +900, spectacular slow-motion point (`DoSpectacularNess` 0x76b48 = `scoring::do_spectacularness`, shared with explosions: `spectacularness` clamped 0..100 and rounded, 0 never fires), `slowmatch` stored slow-mo (max 3 s), TK kick/ban (`banfortk`), all `#TS_*` TSMessage lines, log lines with TS suffixes, `game_playerdie`/`game_playerkill`, ScoreInfo, CheckDeads in 1 s. |
 | `TSGetPointsForFrag` 0x89140 | `scoring::points_for_frag` | `#TS_KungFu`, `Throwing`, `#TS_StStl`, `#TS_SlStl`, `#TS_Stl`. |
 | `DeathNotice` 0x88f7c | `scoring::death_notice` | `DeathMsg`; weapon name rules (strip prefixes, Throwing Knife, Shrapnel, M61 Grenade, Kung Fu); HLTV director event (victim, inflictor or killer, 0x27). |
-| `TheOneIsDead` 0x7b258, `SetPlayerTheOne` 0x7b078, `SelectRandomTheOne` 0x7af28 | `scoring::{the_one_is_dead, set_the_one_other, apply_the_one, announce_the_one}`, `frame::the_one_check` | hp 150, kung fu, super jump, speed 330, stored slow pause 3 s, award 10, "%s is The One!" (100,150,255), team split. |
-| `EntSelectSpawnPoint` 0x76128 / `TSSelectSpawnSpot` 0x76244 | `spawnpoint::{select, spot_score, place}` | up to 32 spots scored by enemy/teammate visibility and nearest player; telefrag (300, ALWAYSGIB) within 128 when the best score < 128; fires the spot's target. Unit tested. |
+| `TheOneIsDead` 0x7b258, `SetPlayerTheOne` 0x7b078, `SelectRandomTheOne` 0x7af28, The One part of `CTSGameRules::Think` | `scoring::{the_one_is_dead, set_player_the_one}`, `frame::{the_one_check, select_random_the_one}`, `teams::the_one_switch` | Every 10 s Think counts the non-dormant players other than The One (`+0x5876`, the regeneration rate; TS loops slots 0..maxClients-1, so the last slot never counts) and, with no One, `SelectRandomTheOne` picks a living non-observer. `SetPlayerTheOne` (living, not observing): health 150, kung fu, super jump, speed 330, PwUp ×2, a stored 3 s slow pause when nothing is held or active, award 10, "%s is The One!" (100,150,255), `the_one` log. The team switch is `SetDefaultPlayerTeam` + `ChangePlayerTeam(TeamID, 0, 0)` (keys, TeamInfo, ScoreInfo, TeamNames, no observer). The One's death: "The One is dead." (suicide or no player killer), or "The One was killed by %s!", the victim's team switch, `SetPlayerTheOne(killer)` and the killer's switch, before the killer's spree rewards. |
+| `EntSelectSpawnPoint` 0x76128 / `TSSelectSpawnSpot` 0x76244 | `spawnpoint::{select, spot_score, place}` | spots whose `master` (`CBaseDMStart::KeyValue` 0xe2bb8 → `netname`, `IsTriggered` 0xe2c20) isn't triggered are skipped; up to 32 spots scored by enemy/teammate visibility and nearest player; telefrag (300, ALWAYSGIB) within 128 when the best score < 128; fires the spot's target. Unit tested. |
 | `CTSGameRules::Think` 0x77204 | `frame::ts_think` | global slow expiry/apply, CheckDeads, auto power-ups, The One every 10 s, LMS restart/checks, SrvSett 0–2 on change. |
-| `CHalfLifeMultiplay::Think` 0xcf038 | `frame::multiplay_think` | `mp_timelimit`, `mp_fraglimit` (teamplay: `team_scores` of the Teamplay list, `CHalfLifeTeamplay::Think` 0xe412c; CTB team captures), `mp_fragsleft`/`mp_timeleft`, intermission (`SVC_INTERMISSION`), `mp_chattime` clamped 10..120; after it the level changes once a player has pressed a button (`PlayerThink`) or 120 s after the intermission started, then `changelevel` to the next `mapcyclefile` map. |
+| `CHalfLifeMultiplay::Think` 0xcf038, `CHalfLifeTeamplay::Think` 0xe412c | `frame::{multiplay_think, teamplay_think, intermission_think}` | Voice update first (teamplay in intermission runs the Multiplay Think too, so twice). `mp_timelimit`; `mp_fraglimit`: DM every slot's frags (players who left included); teamplay `team_scores` as the last `RecountTeams` left them (kills, team changes, spawns), CTB the four `TSGameRules` teams' captures (unnamed teams still lower `mp_fragsleft`); differences rounded. `mp_fragsleft` on change; `mp_timeleft` when the last value differs from the cvar (one frame late, as TS compares `last_time` with `timeleft.value`); both `last_*` statics live for the process (two pairs). Intermission (`SVC_INTERMISSION`), `mp_chattime` kept in 10..120 (compared rounded); after it the level changes once a player has pressed a button (`PlayerThink`) or 120 s after the intermission started, then `changelevel` to the next `mapcyclefile` map. |
 | `PutPowerUp` 0x9797c, `GetRandomPosition` 0x974f4, `GetRandomPowerup` 0x97894 | `frame::{put_powerup, random_position}`, `GameRules::random_powerup` | 20 s after success, 1 s after failure; only on maps without their own `ts_powerup` (spawner byte). |
 | `CheckDeads` 0x79c00, `RestartRound` 0x77920, `ResetRestartRound` | `frame::{check_deads, restart_round, reset_restart_round}` | LMS: last man +10 frags, "%d men standing!", "Round over", RoundTime; restart: round time, refunds (`frame::round_refund`: owned weapons' cost + attachments, and `price × rounds / per_buy` for ammo types above one purchase, into `GiveCash`; unit tested), forced observer, respawn in 3 s, map items back. |
 | `SetGlobalSlowMotion` 0x7961c, `GlobalSlowMotion2` 0x79720 | `frame::{set_global_slow, global_slow2}` | every 0.5 s, players and grenade/knife/WorldGun. |
@@ -83,7 +84,7 @@ are Ghidra addresses.
 | `Host_Say` 0xad02c | `commands::host_say` / `format_say` | `\x02name: `, `(TEAM)`, `%a`/`%h`, 0.5 s flood gate, LMS dead chat rule, `timeleft` (reply to the sender only; like a handled vote the line is not broadcast: both exits of the branch reach 0xad4dc, which clears the broadcast flag), log. Unit tested. |
 | `PlayerVote` 0x7a1c8, `CheckVotes` 0x7a5c4, `CalcMiniminVotants` 0x7a1b0 | `votes::{player_vote, check_votes, min_votes}`, `Votes` in `GameRules` | `vote map <name>` (current/invalid map refused, "%s vote for map %s" to all), `vote stats` (last tally, "(n/need) votes for map"), `vote reset`; handled votes aren't broadcast. Every 10 s every player is counted and votes are grouped by map; the leader passes at `max(1, players/2)`. A passed vote sends `multiplay_think` to intermission and `change_level` loads the voted map. A joiner's vote is cleared in TS InitHUD. Unit tested. |
 | `cmd_globalslow` 0xc5580, `cmd_restartround` 0xc5748, `cmd_weaponrestriction` 0xc58a0 | `commands::cmd_*` | clamps unit tested. |
-| `CVoiceGameMgr::Init` 0xf7438, `Update` 0xf750c, `ClientConnected` 0xf7548 (via `CHalfLifeMultiplay::ClientConnected` 0xcf59c), `ClientCommand` 0xf770c (via `CHalfLifeMultiplay::ClientCommand` 0xceee8), `UpdateMasks` 0xf79bc | `voice::{register_messages, precache, update, client_connected, client_command, update_masks}` | Every 0.3 s (from the start of the Multiplay `Think`, intermission included) and after each `vban`/`VModEnable`: `ReqState` to clients that haven't answered `VModEnable`; for clients with voice enabled, the audible mask = players the rules allow (`sv_alltalk` ignores the rules); `VoiceMask` (`L audible, L banned`) when either mask changed; then `Voice_SetClientListening(client, other, audible && !banned)` for every pair. Steam HLDS starts every stream closed, so without this nobody hears anybody there. `vban <hex>` takes one mask (32 players); `VModEnable <n>`. |
+| `CVoiceGameMgr::Init` 0xf7438 (`VoiceMask`/`ReqState` registered first, as the `CHalfLifeMultiplay` constructor does before `LinkUserMessages`), `Update` 0xf750c, `ClientConnected` 0xf7548 (via `CHalfLifeMultiplay::ClientConnected` 0xcf59c), `ClientCommand` 0xf770c (via `CHalfLifeMultiplay::ClientCommand` 0xceee8), `UpdateMasks` 0xf79bc | `voice::{register_messages, precache, update, client_connected, client_command, update_masks}` | Every 0.3 s (from the start of the Multiplay `Think`, intermission included) and after each `vban`/`VModEnable`: `ReqState` to clients that haven't answered `VModEnable`; for clients with voice enabled, the audible mask = players the rules allow (`sv_alltalk` ignores the rules); `VoiceMask` (`L audible, L banned`) when either mask changed; then `Voice_SetClientListening(client, other, audible && !banned)` for every pair. Every slot with a player counts, players who left included; the sender of `vban`/`VModEnable` is mid-dispatch, so its respawn time is passed in. Steam HLDS starts every stream closed, so without this nobody hears anybody there. `vban <hex>` takes one mask (32 players); `VModEnable <n>`. |
 | `CMultiplayGameMgrHelper::CanPlayerHearPlayer` 0xd0ed0 | `voice::can_player_hear_player` | teamplay: teammates only; round modes 2/3 or LMS: a talker who is dead for the rest of the round (`respawn_at` −1) is heard only by listeners in the same state. |
 | `AddToFullPack` 0xaf180 | `net::add_to_full_pack` | `iuser4` for all entities, `playerclass` for non-players, glow shell on the viewer's own `WorldGun`/`knife` (`weapons::glow_for_host`: the private dropper +0xd0 / thrower +0x8c, not `pev->owner`), `FL_SPECTATOR` culling. Entities are skipped for `modelindex == 0` only: TS's other model test (`pStringBase + pev->model == NULL`) can't fail, so a model index with an empty `model` string is still sent. Players' `spectator` is 0/1 where TS stores `flags & FL_SPECTATOR` (0x4000000); delta.lst gives it 1 bit and every engine clamps an over-range unsigned delta integer to its maximum (FWGS `Delta_ClampIntegerField`, HLDS/ReHLDS `MSG_WriteBits`), so both put 1 on the wire. Neither client reads it beyond copying it in `HUD_ProcessPlayerState` (pmove's `spectator` comes from the engine's HLTV flag). Hidden only when `effects == EF_NODRAW` exactly (other bits with it still send). A host with `groupinfo` sets the group trace and skips entities whose `groupinfo` doesn't share a bit (TS returns without `UTIL_UnsetGroupTrace` there, and so does the port). EFLAG_SLERP for an animating (`animtime != 0`) non-player with zero velocity (the older SDK test, not `FL_FLY`). `impacttime`/`starttime` copied. Render values truncate like TS's x87 `fistp` (the decomp's `ROUND`), colour through a short so out-of-range channels wrap. Players send `weaponmodel = pfnModelIndex(pev->weaponmodel)` (the p_ model the client's `StudioDrawPlayer` merges onto the player and in-eye spectating shows as the view model). |
 | `CmdStart` 0xb067c / `CmdEnd` 0xb06f4, `UTIL_SetGroupTrace` 0xebecc / `UTIL_UnsetGroupTrace` 0xebf0c | `net::{cmd_start, cmd_end, set_group_trace, unset_group_trace}` | a player with `groupinfo` runs its usercmd with that group mask (`pfnSetGroupMask`, op AND). Nothing in TS sets `groupinfo` (it isn't a keyvalue), so this is dormant with TS content. |
@@ -107,8 +108,8 @@ they are constants (`cvars::INITIAL_CASH` 1200 etc., respawnnumber 1). The weapo
 registers `dmgreport` (default 0, port addition) so its cheat output can be switched on.
 
 Server commands: `globalslow`, `restartround`, `weaponrestriction`, `addbot`/`addcustombot`
-(TS: "Bots only in listen servers."; here they add a bot), `loadweapons`/`saveweapons` (print
-"not supported yet"), and test helpers `ts_status`, `ts_hurt <#> <dmg> [hitgroup] [attacker#]`,
+(print "Bots only in listen servers.", as TS; the port's bots come from `ts_bot_quota`),
+`loadweapons`/`saveweapons` (the weapons package, `weapons::custom`), and test helpers `ts_status`, `ts_hurt <#> <dmg> [hitgroup] [attacker#]`,
 `ts_givepowerup <#> <bits>`.
 
 Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `powerup <n>` (cheat),
@@ -120,16 +121,16 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 | Class | Status |
 |---|---|
 | `ts_powerup`, `item_longjump` | Full: keys `pwuptype`/`pwupduration`/`pwupmult`, random set from spawnflags, bodies/durations, fall → ground (bbox ±16×64), pickup rules (single slot, +use swap, instant set 0x1e6), message/target, respawn clamps (<1 → 60, ≤10 → 10, ≤180), hidden with `nopowerup 1`. Temporary ones (auto spawner, drops) live 60 s and fade over the last 30 s. A map power-up disables the automatic spawner; `item_longjump` re-enables it (TS). |
-| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (× clip size via `give_ammo`, only when the reserve for that ammo type is empty after the pickup, as in `GetWeapon` 0xa2328), respawn (<1 → 60, 1 → 1, ≤180), message/target. `buyable`/`attackerteam` (`GetWeapon` 0xa2328) are ported behind `state::cash_based()`, which is false as in TS: the team check (round modes, `attackerteam` ≠ -1), the price (`ground::buy_price`: cost + spawnflag attachments + ammo price × `wextraclip`; unit tested), "You don't have enough money…", and the charge after the pickup. Unknown/briefcase ids are removed. |
+| `ts_groundweapon` + `weapon_crossbow/shotgun/gauss/egon/rpg/9MMAR/9mmAR/hornetgun/satchel/snark/handgrenade`, `ammo_ARgrenades` | Full: random ids per HL class, `w_` model, attachments from spawnflags, flag 16 = on wall (`PutOnWall`), pickup with **+use** (`weapons::give_weapon`), `wextraclip` (clamped to ≥ 0 for good, then that many rounds through `AddAmmo` when the reserve for that ammo type is empty after the pickup, with the time-scaled `9mmclip1` sound, as in `GetWeapon` 0xa2328), respawn (<1 → 60, 1 → 1, ≤180), message/target. `buyable`/`attackerteam` (`GetWeapon` 0xa2328) are ported behind `state::cash_based()`, which is false as in TS: the team check (round modes, `attackerteam` ≠ -1), the price (`ground::buy_price`: cost + spawnflag attachments + ammo price × `wextraclip`; unit tested), "You don't have enough money…", and the charge after the pickup. Unknown/briefcase ids are removed. |
 | `ts_groundammo` + `ammo_9mmAR/buckshot/crossbow/gaussclip/rpgclip` | Full: `magsN` = N × per-buy rounds, HL ones give half max carry of their class's ammo types; picked up on touch via `weapons::give_ammo`. |
 | `ts_model` | Full. |
-| `ts_mapglobals` | Full: weapon mask (SrvSett 3), round timer flag, super jump map flag. |
+| `ts_mapglobals` | Full: weapon mask `0x1f ^ spawnflags` on the whole int (`get_weapon_restriction` 0x7263c; SrvSett 3 carries the higher bits too), round timer flag, super jump map flag. |
 | `ts_wind` | Full: `TSPSys` type 3. |
 | `ts_fog`, `ts_emitter`, `ts_particle` | Validated (emitter rates, 512 particles, `soundonemit` precached) and removed: the client reads the BSP lump. |
 | `ts_trigger`, `ts_dmhill`, `ts_timer`, `ts_customtarget`, `ts_playeramount`, `ts_slowmotion`, `ts_slowmotionpoint` | Full per §5 (TS quirks kept: `ts_trigger` team defaults to index 0 and always prints its message; `ts_timer` flag 2 ignored). |
-| `ts_briefcase`, `ts_flag`, `ts_scoregiver`, `ts_wingiver` | CTB: case falls at home 1 s after spawn (`FlagFall` 0x8da00, TSFlag 0); a flying case (`Fall` 0x9df10 every 0.1 s: landing sound, impact damage `|v|·30·0.001` through TraceAttack on non-players with health ≤ `|v|·30`; `BounceTouch` 0x9dbbc) is taken only with +use, a landed one (32×32×48 trigger) also by touch. Taking (`TakeFlag` 0x93830): 20 free slots and speed, `items/gunpickup2.wav`, TSFlag 1, "%s picked up a briefcase containing %s!" unless the taker was the case's last holder, `aquired_briefcase` log with contents; a case taken from home closes its zone for captures until it is back. Thrown (`DropFlag` 0x9334c) on death/observer/disconnect, or with `drop` and no gun in hand (`DropWeapon` 0x94a87): from eye + forward·16, along `v_angle` at (90 − pitch)·2 while alive, random (pitch ±60, yaw ±180, speed 60..160) when dead, plus 0.9 × player velocity and speed·0.33 up, passing through the thrower until it lands; `dropped_briefcase` log, TSFlag 2. 20 s return (`RespawnFlag` 0x9de58: "<owning team> briefcase returned", none for a case any team may take; new case at home 1 s later), owner return +5 (only with 2+ players, "returned the briefcase! 5 #TS_Frg"; new case at home 1 s later), capture +10 and team score (`captured_briefcase` log), TSHVoice/TeamScore; owner return and capture send no TSFlag 0 until the case reappears. Flag logs repeat the user id in the team slot (`"name<uid><auth><uid>"`), as TS does. Score/win givers: team score, "%s Score!/Win!", TSHVoice, TeamScore (scoregiver flag 1 restarts the round). |
+| `ts_briefcase`, `ts_flag`, `ts_scoregiver`, `ts_wingiver` | CTB: the case's `s_flag_status` (`ctb::FlagStatus`: contents, id, team, last holder, home) lives on the case entity or, while carried, on the player (`PlayerRules::flag`); taking destroys the entity (`Destroy` 0x9de24: out of the slowed lists, `UTIL_Remove`) and a drop creates a new one (`CreateFlag` 0x9d874, spawned at the world origin, then `pev->origin` set without relinking). The zone's think is `FlagFall` or `WaitThink` (every 1 s), scheduled exactly. Case falls at home 1 s after spawn (`FlagFall` 0x8da00, at the centre of the zone's `mins`/`maxs`, TSFlag 0); a flying case (`Fall` 0x9df10 every 0.1 s: landing sound, impact damage `|v|·30·0.001` through TraceAttack on non-players with health ≤ `|v|·30`; `BounceTouch` 0x9dbbc) is taken only with +use, a landed one (32×32×48 trigger) also by touch. Taking (`TakeFlag` 0x93830): 20 free slots and speed, `items/gunpickup2.wav`, TSFlag 1, "%s picked up a briefcase containing %s!" unless the taker was the case's last holder, `aquired_briefcase` log with contents; a case taken from home closes its zone for captures until it is back. Thrown (`DropFlag` 0x9334c) on death/observer/disconnect, or with `drop` and no gun in hand (`DropWeapon` 0x94a87): from eye + forward·16, along `v_angle` at (90 − pitch)·2 while alive, random (pitch ±60, yaw ±180, speed 60..160) when dead, plus 0.9 × player velocity and speed·0.33 up, passing through the thrower until it lands; `dropped_briefcase` log, TSFlag 2. 20 s return (`RespawnFlag` 0x9de58: "<owning team> briefcase returned", none for a case any team may take; new case at home 1 s later), owner return +5 (only with 2+ players, "returned the briefcase! 5 #TS_Frg"; new case at home 1 s later), capture +10 and team score (`captured_briefcase` log), TSHVoice/TeamScore; owner return and capture send no TSFlag 0 until the case reappears. Flag logs repeat the user id in the team slot (`"name<uid><auth><uid>"`), as TS does. Score/win givers: team score, "%s Score!/Win!", TSHVoice, TeamScore (scoregiver flag 1 restarts the round). |
 | `deadcorpse` | Created by the death think (player model, `kRenderFxDeadPlayer`, index in `renderamt` and `rendercolor.x`), removed after 10 s. |
-| `info_player_team1..4`, `info_player_teamspawn` | Inert points (team spawns are found by classname). TS doesn't export `info_player_teamspawn`; kept inert. |
+| `info_player_team1..4` | `CBaseDMStart` points like `info_player_deathmatch` (`master` key; team spawns are found by classname). TS doesn't export `info_player_teamspawn`, so the engine frees it ("No spawn function"), as with TS. |
 | `ts_objective_manager`, `ts_objective_ptr`, `ts_bomb`, `ts_hack`, `ts_teamescape`, `ts_sellzone` | Stubs: hidden, non-solid (dead in 3.0). |
 
 ## 5. Messages sent (payloads in `shared::protocol`)
@@ -174,79 +175,64 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 
 ## 6. Deviations from TS 3.0
 
-* `addbot`/`addcustombot` add a fake client; `ts_bot_quota` is new (dedicated-server testing).
-  On a full server (e.g. `maxplayers 1`) `addbot` says `no free client slot` once and leaves
-  the quota alone; a quota above the free slots retries quietly every 0.5 s.
-* `GetGameDescription` returns `rules::game_description()` (wired at integration).
-* Map votes: `CheckVotes` also tallies slow-match / teamplay / friendly-fire toggle votes, but
-  nothing in TS ever sets them (and the slow-match one writes the non-existent `mp_slowmatch`), so
-  only map votes are ported.
-* `PlayerIsCheating` / forced `cl_lw 1` is not implemented.
-* Spawn points: the `IsTriggered` master check is skipped (stock spawn points store no master).
-* A death sequence without studio data (frame rate 0) ends the dying state at once; in TS it
-  would never finish. The death/flinch sequences are left to the stunt package (`CTSAnimation`).
-* `+use` on TS items goes through the one `PlayerUse` (`player::player_use`, see
-  stock-entities.md §3.7): ground weapons and ammo, dropped guns, knives, grenades, the
-  CTB case and the hidden objectives all compete as `FCAP_CONTINUOUS_USE` users, as in TS, so a
-  taken (hidden) ground weapon or a ground ammo box (empty `Use`) can still win the search.
-* The CTB case: TS destroys the `ts_flag` when it's taken and keeps its data on the player; the
-  port keeps the entity, hidden and following the carrier, so `player_use` leaves a carried case
-  out of the search. Touch (`WaitTouch` 0x9e604) and +use (`Use` 0x9e5dc) both run
-  `Flag::player_take_flag` (`PlayerTakeFlag` 0x9e330). A thrown case re-runs `Spawn` on that
-  entity instead of `CreateFlag`, and its origin goes through `SET_ORIGIN` (TS assigns
-  `pev->origin`).
-* Bots (port-only) look down at an item before pressing +use, since `PlayerUse`'s 0.7 view cone
-  doesn't reach a weapon on the floor at eye level.
-* `wextraclip` gives `extra × clip` rounds (TS passes the raw number to `AddAmmo`). Like TS, it
-  is only given when the reserve is empty after the pickup.
-* `ts_mapglobals` masks the weapon set to 5 bits (TS XORs the whole spawnflags).
-* Round modes 2/3, objectives, buy zones, cash-based buying stay off (dead in 3.0); `TeamWin`
-  exists only as the score/win giver path.
-* `fullupdate`: TS runs the whole `UpdateClientData` inline, so the weapon messages go out
-  before `Spectator`; the port sends the HUD status messages at once and the weapon messages
-  (`SvState::reset_net`) from the next `PostThink`, after `Spectator`.
-* `RecountTeams` and `TeamWithFewestPlayers` count connected players only (`rules::players()`);
-  TS walks every client slot with private data, so a player who left still counts with the team
-  they had. `TeamWithFewestPlayers` with no teams at all gives `""` (TS copies from NULL; it
-  can't happen, because the player being placed is always counted).
-* The fraglimit check recounts the teams every frame; TS's `CHalfLifeTeamplay::Think` reads
-  `team_scores` as the last `RecountTeams` left them (kills, team changes, spawns).
-* `PlayerSpawn` with a `game_player_equip`: TS gives no `weapon_tsgun` (no gun at all unless
-  the equip lists it) and doesn't copy the stored cash; the port's TS gun is part of the player,
-  so the kung fu gun is kept. The equip touches run right after the player's spawn instead of
-  inside it.
-* `VoiceMask`/`ReqState` are registered once in `GameInit` after the TS table (TS registers them
-  in the `CHalfLifeMultiplay` constructor, before `LinkUserMessages`), so their message numbers
-  differ; clients look messages up by name, so this doesn't affect compatibility.
-* When a `vban`/`VModEnable` arrives, the sender's own `Player` is checked out for the command,
-  so the immediate mask update treats that player as in-round for the LMS dead-talk rule; the
-  next 0.3 s update corrects it.
-* A suicide doesn't make the player its own spectator target (TS sets `m_hObserverTarget` to
-  the dead player and `Observer_Idle` replaces it within 0.5 s).
-* `m_hObserverTarget` (`+0x75c`) is a raw `CBasePlayer*` in TS, not an `EHANDLE`; the port
-  checks that `obs_target` is still a connected player before using it, so a target that left
-  is treated as no target.
-* `StartObserver`: the port releases a tank first and holsters and clears the gun
-  (`weapons::strip_all`) before `ActItems`/`SetFOV`/`TeamInfo`. TS holsters at the top, uses the
-  tank off after `DropFlag`, and runs `RemoveAllItems(TRUE)` after `TeamInfo`. Only the order of
-  the weapon messages differs. TS's `RemoveAllItems` also calls `UpdateClientData` inline, so
-  `ResetHUD` can go out inside `StartObserver` when the 0.1 s throttle allows. The port sends it
-  from the next `PreThink`.
+Port additions (TS has no bots):
+* `ts_bot_quota` and the fake-client bots (dedicated-server testing). On a full server the quota
+  retries quietly every 0.5 s. Bots look down at an item before pressing +use, since
+  `PlayerUse`'s 0.7 view cone doesn't reach a weapon on the floor at eye level.
+* `ClientDisconnect` clears `FL_CLIENT`/`FL_FAKECLIENT` (engine safety: FWGS keeps mapping a
+  dropped client's edict to its freed slot and `pfnSetClientMaxspeed` then dereferences a NULL
+  edict). TS keeps `FL_CLIENT`; the port's `UTIL_PlayerByIndex` loops (`slot_players`) don't look
+  at the flags, so they still see players who left, as TS does.
+
+Where TS reads garbage or crashes on input it never gets in practice:
+* `m_szTeamName` is filled with `strncpy(.., 16)`; a team name of 16 bytes or more (a `team` or
+  `model` key without a team limit) stays unterminated in TS, whose reads then run on into the
+  animation extension at `+0xb58`. The port keeps the first 16 bytes.
+* `PlayerIsCheating` with a `cl_lw` that `sscanf("%i")` can't read compares an uninitialised
+  stack word with 1; the port treats it as not 1 (cheating, so `cl_lw 1` is set).
+* `TeamWithFewestPlayers` with no teams gives `""` (TS copies from NULL; it can't happen, because
+  the player being placed is always counted).
+* `CreateFlag` failing (no free edict): TS dereferences NULL in `DropFlag`/`FlagFall`; the port
+  skips the case. A `ts_briefcase` without a model isn't given `SetModel("")`.
+* `ResetSequenceInfo` on a negative sequence: TS reads before the sequence table; the port gives
+  frame rate 0 (as for a sequence past the end), so such a death animation never ends, like any
+  sequence with frame rate 0 in TS.
+
+Port structure:
+* `fullupdate` and `StartObserver`: TS runs the whole `UpdateClientData` inline (in
+  `ForceClientDllUpdate` and in `RemoveAllItems`), so the weapon messages (and, from
+  `StartObserver`, `ResetHUD` when the 0.1 s throttle allows) go out there; the port sends the HUD
+  status messages at once and the weapon messages (`SvState::reset_net`) and `ResetHUD` from the
+  next think. Matching needs one throttled `UpdateClientData` spanning the rules, HUD and weapons
+  packages.
+* `PlayerSpawn` with a `game_player_equip`: TS gives no `weapon_tsgun` (no gun at all unless the
+  equip lists it) and doesn't copy the stored cash; the port's TS gun is part of the player, so
+  the kung fu gun is kept (a weapons-package change). The equip touches run right after the
+  player's spawn instead of inside it.
+* `game_player_team` changes the activator's team once the activator's own dispatch returns (it
+  is usually mid-think: its +use or touch fired the entity); TS does it inside the `Use`.
+* The intermission's `ChangeLevel` is asked for once; TS calls it every frame until the engine
+  changes the level (the engine runs one `changelevel` per map).
+* `GetGameDescription` says "The Specialists" when `deathmatch` is 0, but the port still runs the
+  multiplayer rules then (TS builds `CHalfLifeRules`).
+
+Not deviations, for the record: round modes 2/3 and objectives can't be reached in TS 3.0
+(`InitObjectives` 0x785d8 only keeps a mode that is already 2/3), `CashBased()` is hard-wired off,
+and `CheckVotes`' slow-match / teamplay / friendly-fire tallies can't pass (nothing sets those
+votes and the minimum is `max(1, n/2)`), so only map votes are live. `+use` on TS items goes
+through the one `PlayerUse` (`player::player_use`, see stock-entities.md §3.7): ground weapons and
+ammo, dropped guns, knives, grenades, the CTB case and the hidden objectives all compete as
+`FCAP_CONTINUOUS_USE` users, as in TS.
 
 ## 7. Missing / partial
 
-* `loadweapons`/`saveweapons`, `CustomWP`.
 * Observer code (audited against `ts_i386.so` for issue #7; the `Observer_*` functions,
   `StartObserver`/`StopObserver`, the PreThink observer block and `PlayerDeathThink` match;
   `jointeam`/`ChangePlayerTeam`, `fullupdate` and `CallCheckDeads` were aligned for issue #81;
   `changeteam`, the `ChangePlayerTeam` `model` key and its kill path for issue #84;
   `SetDefaultPlayerTeam`, `RecountTeams`' team list and limit, `IsValidTeam` and the `ScoreInfo`
-  team index for issue #86).
-* `CHalfLifeTeamplay::ClientUserInfoChanged` (0xe4d18) isn't ported: in TS a `model` change
-  re-rolls `GetPlayerModel` with a team limit and, without one, is a team change ("* %s has
-  changed to team '%s'", `ChangePlayerTeam`, `RecountTeams(true)`), or under `mp_defaultteam`
-  puts the `model` and `team` keys back. `lifecycle::userinfo_changed` only does the name change
-  and an HLDM model check that isn't `CHalfLifeMultiplay::ClientUserInfoChanged` (0x8b244).
+  team index for issue #86; `ClientUserInfoChanged`, The One's team switch, `game_player_team`,
+  disconnects and the deviations list for issue #87).
 * Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,
   `ts_wind`, ground ammo pickup (weapons stubs give nothing), chat from a real client,
   `item_antidote` (no shipped map places one).

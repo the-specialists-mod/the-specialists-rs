@@ -41,6 +41,9 @@ pub struct GlobalSlow {
 #[derive(Debug, Default)]
 pub struct GameRules {
     pub installed: bool,
+    /// `deathmatch` was 0 at install: TS builds `CHalfLifeRules` then (the port only reports it
+    /// in `GetGameDescription`).
+    pub single_player: bool,
     pub mode: Mode,
     /// `g_teamplay`: the CHalfLifeTeamplay object is in use.
     pub teamplay: bool,
@@ -84,8 +87,6 @@ pub struct GameRules {
     pub intermission_end: f32,
     /// `m_iEndIntermissionButtonHit` (`+8`): a player pressed a button during intermission.
     pub end_intermission_button_hit: bool,
-    pub last_frags_left: i32,
-    pub last_time_left: i32,
 
     // CHalfLifeTeamplay
     /// `m_DisableDeathMessage` / `m_DisableDeathPenalty` (`+0x20c`/`+0x210`), always set together:
@@ -175,6 +176,7 @@ impl GameRules {
         let (map_teams, map_models) = (std::mem::take(&mut self.map_teams), std::mem::take(&mut self.map_team_models));
         *self = GameRules::default();
         self.installed = true;
+        self.single_player = engine().globals().deathmatch == 0.0;
         self.teamplay = teamplay;
         self.lms = lms;
         self.the_one = the_one;
@@ -206,8 +208,6 @@ impl GameRules {
         self.next_the_one_check = now + 10.0;
         self.votes.next_check = now + 10.0;
         self.last_srvsett = [-1; 4];
-        self.last_frags_left = -1;
-        self.last_time_left = -1;
         engine().print(&format!(
             "[ts] game rules: {} ({})\n",
             match (self.teamplay, self.lms, self.the_one) {

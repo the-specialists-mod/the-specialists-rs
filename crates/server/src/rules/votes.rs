@@ -174,7 +174,9 @@ pub fn check_votes(now: f32) {
         return;
     }
     let eng = engine();
-    let voters: Vec<usize> = super::players().into_iter().map(|e| eng.index_of(e) as usize).collect();
+    // `UTIL_FindEntityByClassname("player")` + `IsNetClient`: players who left still count (with
+    // their vote cleared), and index 32 never does (`< 0x20`).
+    let voters: Vec<usize> = super::slot_players().into_iter().map(|e| eng.index_of(e) as usize).filter(|&i| i < 0x20).collect();
     state::with(|g| g.votes.tally(voters));
 }
 

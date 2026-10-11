@@ -7,106 +7,149 @@ use super::powerup::{entity_in_slow, go_slow};
 use super::state::{self, Mode};
 use super::{alive, cvars, other, scoring, teams, votes};
 use crate::messages::{self, Msg};
+use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::rules::SVC_INTERMISSION;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
 use shared::protocol::rules::{RoundTime, SrvSett};
 use shared::weapons::{Gun, att, id, tables};
+use std::cell::Cell;
 
 pub fn think() {
     if !state::with(|g| g.installed) {
         return;
     }
-    // CHalfLifeMultiplay::Think starts with CVoiceGameMgr::Update, even during intermission.
-    super::voice::update(engine().globals().frametime as f64);
     let now = engine().time();
-    if multiplay_think(now) {
-        return;
-    }
-    ts_think(now);
-    // CHalfLifeMultiplay::Think: a passed map vote ends the map now.
-    if votes::vote_passed() {
-        go_to_intermission();
-    }
+    if state::teamplay() { teamplay_think(now) } else { multiplay_think(now) }
 }
 
-/// Returns true while the game is over (intermission).
-fn multiplay_think(now: f32) -> bool {
-    let eng = engine();
-    if state::with(|g| g.game_over) {
-        let chat = cvars::f(c"mp_chattime");
-        if chat < 10.0 {
-            eng.set_cvar_string(c"mp_chattime", "10");
-        } else if chat > 120.0 {
-            eng.set_cvar_string(c"mp_chattime", "120");
-        }
-        let start = state::with(|g| g.intermission_start);
-        let end = start + cvars::f(c"mp_chattime").clamp(10.0, 120.0);
-        // After the chat time the level changes once someone presses a button
-        // (`PlayerThink`), or at the latest 120 s into the intermission.
-        let changed = state::with(|g| {
-            if g.intermission_end == 0.0 && now > end && (g.end_intermission_button_hit || now > start + 120.0) {
-                g.intermission_end = now;
-                true
-            } else {
-                false
-            }
-        });
-        if changed {
-            change_level();
-        }
-        return true;
-    }
+/// `last_frags`/`last_time` statics of `CHalfLifeMultiplay::Think` (0x1911c0) and
+/// `CHalfLifeTeamplay::Think` (0x19e740): `.bss`, so 0 at load and never reset by a map change.
+static LAST_LIMITS: Global<Cell<[[i32; 2]; 2]>> = Global(Cell::new([[0; 2]; 2]));
 
+/// The `mp_fragsleft` / `mp_timeleft` update shared by both Thinks. `mp_timeleft` is rewritten
+/// when the last frame's value differs from the cvar (TS compares `last_time` with
+/// `timeleft.value`, not with the new value), so it follows one frame late.
+fn update_limit_cvars(which: usize, frags_left: i32, time_left: i32) {
+    let mut all = LAST_LIMITS.0.get();
+    let [last_frags, last_time] = all[which];
+    if frags_left != last_frags {
+        set_cvar_direct(c"mp_fragsleft", frags_left);
+    }
+    if last_time as f32 != cvars::f(c"mp_timeleft") {
+        set_cvar_direct(c"mp_timeleft", time_left);
+    }
+    all[which] = [frags_left, time_left];
+    LAST_LIMITS.0.set(all);
+}
+
+/// `CHalfLifeMultiplay::Think` (0xcf038): voice, intermission, `mp_timelimit`, `mp_fraglimit`
+/// (every slot's `pev->frags`, players who left included), the limit cvars, `CTSGameRules::Think`
+/// and a passed map vote.
+fn multiplay_think(now: f32) {
+    super::voice::update(engine().globals().frametime as f64);
+    if state::with(|g| g.game_over) {
+        intermission_think(now);
+        return;
+    }
     let timelimit = cvars::f(c"mp_timelimit") * 60.0;
     let mut time_left = 0;
     if timelimit != 0.0 {
-        time_left = (timelimit - now).round() as i32;
+        time_left = (timelimit - now).round_ties_even() as i32;
         if timelimit <= now {
             go_to_intermission();
-            return true;
+            return;
         }
     }
     let fraglimit = cvars::f(c"mp_fraglimit");
     let mut frags_left = 0;
     if fraglimit != 0.0 {
         frags_left = 9999;
-        let (teamplay, ctb) = state::with(|g| (g.teamplay, g.mode == Mode::TeamDm && g.is_ctb()));
-        if teamplay {
-            teams::recount(false);
-            // `CHalfLifeTeamplay::Think` (0xe412c): `team_scores` of the `RecountTeams` list, which
-            // without a team limit holds the players' own teams; CTB counts the listed teams' captures.
-            let scores: Vec<i32> = state::with(|g| {
-                if ctb { g.teams.iter().filter(|t| !t.name.is_empty()).map(|t| t.score).collect() } else { g.team_scores().to_vec() }
-            });
-            for s in scores {
-                if s as f32 >= fraglimit {
-                    go_to_intermission();
-                    return true;
-                }
-                frags_left = frags_left.min((fraglimit - s as f32) as i32);
+        for e in super::slot_players() {
+            let f = e.v().frags;
+            if fraglimit <= f {
+                go_to_intermission();
+                return;
             }
-        } else {
-            for e in super::players() {
-                let f = e.v().frags;
-                if f >= fraglimit {
-                    go_to_intermission();
-                    return true;
-                }
-                frags_left = frags_left.min((fraglimit - f).round() as i32);
-            }
+            frags_left = frags_left.min((fraglimit - f).round_ties_even() as i32);
         }
     }
-    let (lf, lt) =
-        state::with(|g| (std::mem::replace(&mut g.last_frags_left, frags_left), std::mem::replace(&mut g.last_time_left, time_left)));
-    if lf != frags_left {
-        set_cvar_direct(c"mp_fragsleft", frags_left);
+    update_limit_cvars(0, frags_left, time_left);
+    ts_think(now);
+    if votes::vote_passed() {
+        go_to_intermission();
     }
-    if lt != time_left {
-        set_cvar_direct(c"mp_timeleft", time_left);
+}
+
+/// `CHalfLifeTeamplay::Think` (0xe412c). In intermission it runs `CHalfLifeMultiplay::Think`,
+/// so the voice manager is updated twice a frame then. The fraglimit reads `team_scores` as the
+/// last `RecountTeams` left them (kills, team changes, spawns); in CTB it reads the four
+/// `TSGameRules` teams' captures, and every team, named or not, lowers `mp_fragsleft`.
+fn teamplay_think(now: f32) {
+    super::voice::update(engine().globals().frametime as f64);
+    if state::with(|g| g.game_over) {
+        multiplay_think(now);
+        return;
     }
-    false
+    let timelimit = cvars::f(c"mp_timelimit") * 60.0;
+    let time_left = if timelimit == 0.0 { 0 } else { (timelimit - now).round_ties_even() as i32 };
+    if timelimit != 0.0 && now >= timelimit {
+        go_to_intermission();
+        return;
+    }
+    let fraglimit = cvars::f(c"mp_fraglimit");
+    let mut frags_left = 0;
+    if fraglimit != 0.0 {
+        frags_left = 9999;
+        let ctb = state::with(|g| g.is_ctb());
+        let scores: Vec<(bool, i32)> = state::with(|g| {
+            if ctb {
+                g.teams.iter().map(|t| (!t.name.is_empty(), t.score)).collect()
+            } else {
+                g.team_scores().iter().map(|&s| (true, s)).collect()
+            }
+        });
+        for (counts, s) in scores {
+            if counts && fraglimit <= s as f32 {
+                go_to_intermission();
+                return;
+            }
+            frags_left = frags_left.min((fraglimit - s as f32).round_ties_even() as i32);
+        }
+    }
+    update_limit_cvars(1, frags_left, time_left);
+    ts_think(now);
+    if votes::vote_passed() {
+        go_to_intermission();
+    }
+}
+
+/// The game-over part of `CHalfLifeMultiplay::Think`: `mp_chattime` kept in 10..120 (compared
+/// rounded), then `ChangeLevel` once the chat time is over and a player pressed a button
+/// (`PlayerThink`), or 120 s into the intermission.
+fn intermission_think(now: f32) {
+    let eng = engine();
+    let chat = cvars::f(c"mp_chattime").round_ties_even() as i32;
+    if chat < 10 {
+        eng.set_cvar_string(c"mp_chattime", "10");
+    } else if chat > 120 {
+        eng.set_cvar_string(c"mp_chattime", "120");
+    }
+    let start = state::with(|g| g.intermission_start);
+    let end = start + cvars::f(c"mp_chattime");
+    // The engine runs one `changelevel` per map, so the port asks once.
+    let changed = state::with(|g| {
+        if g.intermission_end == 0.0 && now > end && (g.end_intermission_button_hit || now > start + 120.0) {
+            g.intermission_end = now;
+            true
+        } else {
+            false
+        }
+    });
+    if changed {
+        change_level();
+    }
 }
 
 fn set_cvar_direct(name: &std::ffi::CStr, v: i32) {
@@ -473,32 +516,56 @@ pub fn reset_restart_round() {
     }
 }
 
-/// The One: every 10 s, if nobody is The One, pick a random living player.
+/// The One block of `CTSGameRules::Think` (0x77204): counts the players other than The One
+/// (`+0x5876`, The One's regeneration rate) and, when there is no One, `SelectRandomTheOne`. TS
+/// loops `i = 0 .. maxClients - 1`, so slot 0 (never a player) is tried and the last slot is never
+/// counted; dormant players (those who left) are skipped.
 fn the_one_check(now: f32) {
+    let eng = engine();
     let mut exists = false;
-    let mut others = 0;
-    let mut candidates = Vec::new();
-    for e in super::players() {
-        let one = other(e, |p| p.ts.is_the_one).unwrap_or(false);
-        let v = e.v();
-        if one {
+    let mut others = 0u8;
+    for i in 0..eng.max_clients() {
+        let e = eng.player(i);
+        if !super::has_player(e) || e.v().flags & FL_DORMANT as i32 != 0 {
+            continue;
+        }
+        if other(e, |p| p.ts.is_the_one).unwrap_or(false) {
             exists = true;
         } else {
-            others += 1;
+            others = others.wrapping_add(1);
         }
-        if alive(v) && v.iuser1 == 0 {
+    }
+    state::with(|g| g.the_one_others = others as i32);
+    if !exists {
+        select_random_the_one(now);
+    }
+    state::with(|g| g.next_the_one_check = now + 10.0);
+}
+
+/// `CTSGameRules::SelectRandomTheOne` (0x7af28): at most every 10 s; nothing while someone is The
+/// One; otherwise a random living, non-observing player (at most 33 candidates) becomes The One and
+/// changes team.
+fn select_random_the_one(now: f32) {
+    if state::with(|g| g.next_the_one_check > now) {
+        return;
+    }
+    state::with(|g| g.next_the_one_check = now + 10.0);
+    let mut candidates = Vec::new();
+    for e in super::slot_players() {
+        if other(e, |p| p.ts.is_the_one).unwrap_or(false) {
+            return;
+        }
+        let v = e.v();
+        if alive(v) && v.iuser1 == 0 && candidates.len() < 0x21 {
             candidates.push(e);
         }
     }
-    state::with(|g| {
-        g.the_one_others = others;
-        g.the_one_exists = exists;
-    });
-    if !exists && !candidates.is_empty() {
-        let pick = candidates[engine().random_long(0, candidates.len() as i32 - 1) as usize];
-        scoring::set_the_one_other(pick);
+    if candidates.is_empty() {
+        return;
     }
-    state::with(|g| g.next_the_one_check = now + 10.0);
+    let pick = candidates[engine().random_long(0, candidates.len() as i32 - 1) as usize];
+    scoring::set_player_the_one_other(pick);
+    teams::the_one_switch_other(pick);
 }
 
 #[allow(dead_code)]

@@ -98,17 +98,6 @@ fn fake_clients() -> Vec<*mut edict_t> {
     eng.clients().filter(|&e| e.v().flags & FL_FAKECLIENT as i32 != 0 && eng.user_id(e) != -1).collect()
 }
 
-/// The `addbot` server command: one more bot, with `ts_bot_quota` raised to cover it. Otherwise
-/// the quota (default 0) kicks the new bot half a second later. A full server (`maxplayers 1`)
-/// leaves the quota alone, so it doesn't keep retrying.
-pub fn add_bot_command() {
-    let want = fake_clients().len() + 1;
-    MGR.0.borrow_mut().full = false; // an explicit addbot always reports a full server
-    if add_bot() && (cvars::f(c"ts_bot_quota").max(0.0) as usize) < want {
-        engine().set_cvar_float(c"ts_bot_quota", want as f32);
-    }
-}
-
 /// Adds one bot. False when the server has no free client slot (reported once per streak of
 /// failed adds: the quota retries every half second).
 pub fn add_bot() -> bool {

@@ -50,7 +50,7 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
         "fullupdate" => force_client_dll_update(p, cx),
         "lasclr" => {}
         // CHalfLifeMultiplay::ClientCommand (0xceee8): the voice manager first, then menuselect.
-        "vban" | "vmodenable" if super::voice::client_command(cx.edict, cmd, args) => {}
+        "vban" | "vmodenable" if super::voice::client_command(cx.edict, p.respawn_at, cmd, args) => {}
         "menuselect" => {}
         c if c.starts_with("lasclr_") => {
             let n: i32 = c["lasclr_".len()..].parse().unwrap_or(0);
@@ -385,9 +385,10 @@ extern "C" fn cmd_givepowerup() {
     });
 }
 
-/// TS prints "Bots only in listen servers." here; the port adds a bot (bots/mod.rs).
+/// `addbot` / `addcustombot` (0xc5520, 0xc5550): TS has no bots and only says so. The port's bots
+/// come from `ts_bot_quota` (a port addition, bots/mod.rs).
 extern "C" fn cmd_addbot() {
-    crate::bots::add_bot_command();
+    engine().alert(ALERT_TYPE::at_console, "Bots only in listen servers.\n");
 }
 
 /// `globalslow [percent]` (0xc5580).

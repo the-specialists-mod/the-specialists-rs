@@ -50,11 +50,10 @@ link_entities! {
     ts_emitter => misc::Emitter,
     ts_particle => misc::Particle,
     deadcorpse => misc::DeadCorpse,
-    info_player_team1 => misc::TeamSpawn,
-    info_player_team2 => misc::TeamSpawn,
-    info_player_team3 => misc::TeamSpawn,
-    info_player_team4 => misc::TeamSpawn,
-    info_player_teamspawn => misc::TeamSpawn,
+    info_player_team1 => crate::entities::stock::SpawnPoint,
+    info_player_team2 => crate::entities::stock::SpawnPoint,
+    info_player_team3 => crate::entities::stock::SpawnPoint,
+    info_player_team4 => crate::entities::stock::SpawnPoint,
     // logic
     ts_trigger => triggers::Trigger,
     ts_dmhill => triggers::DmHill,
@@ -194,5 +193,18 @@ pub fn respawn_entities() {
                 v.nextthink = eng.time() + 0.1;
             }
         }
+    }
+    // Every case goes home (`CTSFlag::RespawnFlag`).
+    let mut it = std::ptr::null_mut();
+    loop {
+        it = eng.find_by_string(it, c"classname", c"ts_flag");
+        if it.is_null() {
+            break;
+        }
+        crate::world::dispatch(it, |ent, cx| {
+            if let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<ctb::Flag>() {
+                f.round_respawn(cx);
+            }
+        });
     }
 }

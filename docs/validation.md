@@ -83,7 +83,7 @@ results from `ts_status` dumps, kill notices and developer log lines:
 | Scene | How | Passes when |
 |---|---|---|
 | Join | The buy menu opens with a random first loadout: reset it, pick an AK47 with a scope and confirm (`slotN`, as the number keys do), click `+attack` after the respawn wait | `[ts] <host> spawned (#1) with [13]` |
-| `addbot` | `ts_bot_stop 1` (the bot stands still and holds fire), `addbot` | The quota reads 1 (so the quota doesn't kick the new bot) |
+| Bot | `ts_bot_stop 1` (the bot stands still and holds fire), `ts_bot_quota 1` (TS's `addbot` only prints "Bots only in listen servers.") | The quota reads 1 and a bot was added |
 | Power-up | Stand on the slow-motion `ts_powerup` (`0 -672 48`, pwuptype 1) with the bot in view, double-tap `+use` | Held `0x1` after the pickup. Then active `0x1`, host time scale 0.6, bot 0.35 |
 | Grenade | `ts_give 24`, `weapon_24`, aim at the 1-HP pillar `*15`, throw (`+attack`, release), move away | `func_breakable ... broken by <host> (grenade, ...)`: the explosion (bits `0x1040`) or the grenade still in flight (`0x1080`), which credits the thrower too (issue #1) |
 | Kill | Put the bot in front of the host, aim and fire the AK47 | `<host> killed Bot ...` and a frag |
@@ -216,7 +216,7 @@ the HUD), and the Windows client library loaded in FWGS win32.
 | Bots never join on GoldSrc; fine on FWGS | Command-line `+cvar` runs before GameInit registers the game's cvars | xtask writes the quota into `xtask_server.cfg` and passes `+servercfgfile`. |
 | HL25 crashes after the last human leaves | HL25 drops every bot then; driving a dropped bot with `pfnRunPlayerMove` crashes `SV_RunCmd` | Bots are driven only while they have a live user id. |
 | Crash in `pfnSetClientMaxspeed` (FWGS) after a bot is kicked; the Windows dialog shows `Host_Shutdown (xash.dll)` under `mp.dll` frames | A dropped client keeps `FL_CLIENT`/`FL_FAKECLIENT`, and FWGS still maps its edict to the freed slot: `pfnGetPlayerUserId` returns the old id, and `pfnSetClientMaxspeed` dereferences the slot's NULL edict when the bot respawns | `ClientDisconnect` clears both flags, so dropped players drop out of `players()`, `is_player()` and the bot list |
-| `addbot` bot kicked half a second later | `ts_bot_quota` (default 0) kicked bots above the quota | `addbot` raises the quota to cover its bot |
+| `addbot` bot kicked half a second later | `ts_bot_quota` (default 0) kicked bots above the quota | Superseded: `addbot` now does what TS's does (prints "Bots only in listen servers."); bots come only from `ts_bot_quota` |
 | Quota kicks never happen in a scripted test | `pfnServerCommand("kick ...")` is appended to the console buffer behind the rest of the running `wait` script | The listen script ends right after `ts_bot_quota 0`; xtask stops the game 10 s later |
 | `SteamAPI_Init() failed` in HLDS logs | Normal for dedicated servers (they use the game-server API) | none |
 | Steam HL25 client: the game runs, but the world is black and the "Loading… Parsing game info" dialog never goes away (issue #62) | A client without `IClientVGUI` is treated as VGUI1, and the engine then only draws the world when the client's VGUI1 viewport calls `VGui_ViewportPaintBackground` (TS's does). The port has no VGUI1 viewport, so `V_CalcRefdef` and `HUD_Redraw` were never called and the screen kept the dialog's last frame | `client-dll` exports `ClientFactory`/`CreateInterface` and an `IClientVGUI` with `UseVGUI1() == false` (`implementation/client-hud.md` §7) |
@@ -224,7 +224,7 @@ the HUD), and the Windows client library loaded in FWGS win32.
 | Steam client on a dedicated server: after `changelevel` the player stays an observer, clicks do nothing | The 0.2 s click timer (`respawn` on `+attack`) is in client time, which restarts with the map, so the old map's timer blocked every click | `spectator::vid_init` zeroes it, as TS's `CHudSpectator::VidInit` does |
 | Third person after every death and respawn | Entering observer mode saved the death cam's third person and leaving restored it | Leaving re-applies `cl_thirdperson` (TS `Spectator` handler `10065250`) |
 | `rcon changelevel` from the Steam client changes the map twice; the client then stalls on "Retrying" (`Skipping reconnect ..., no pvPrivateData` in the server log) | The HL25 client sometimes sends an `rcon` twice (seen for `ts_bot_quota` and `changelevel`) | Drive the dedicated server's console through its stdin (§5), not `rcon` |
-| `addbot` on `maxplayers 1` prints `[ts] bots: no free client slot` every 0.5 s | `addbot` raised the quota before trying, and the quota retried with a message each time | The quota is only raised when the bot was added; a failed add is reported once per streak |
+| `ts_bot_quota` on `maxplayers 1` prints `[ts] bots: no free client slot` every 0.5 s | The quota retried with a message each time | A failed add is reported once per streak |
 | Steam client can't join an FWGS dedicated server (`Retrying 127.0.0.1:...`, nothing in the server log) | FWGS servers speak protocol 49 only; the Steam client is protocol 48 | none (engine limitation) |
 | `PF_MessageEnd_I: Unknown User Msg 114` ×3 on a Steam listen server (`developer 1`) | Message 114 is `SrvSett`. The first `CTSGameRules::Think` broadcasts keys 0–2 (`realbullet`, `usecash`, `ammocount`) before any client has received the user-message table, and the engine drops a message it hasn't registered with a client yet | Harmless: each client gets all four `SrvSett` values in `InitHUD` |
 
@@ -333,8 +333,8 @@ room_type not found` and the Steam API lines. No voice errors (voice itself was 
 The HUD's additive sprites vanish over the white `ts_dojo` sky (expected).
 
 **`maxplayers 1` listen server** (`maxplayers 1`, `map ts_dojo`): join, buy, spawn, walk, fire,
-`ts_hurt` death and respawn all work; the rules are deathmatch, as in TS. `addbot` reports `no
-free client slot` once. The game does not pause while the game menu or the console is open:
+`ts_hurt` death and respawn all work; the rules are deathmatch, as in TS. (Then, `addbot` reported
+`no free client slot` once; it now only prints TS's "Bots only in listen servers.") The game does not pause while the game menu or the console is open:
 server time keeps running. Stock Half-Life (`-game valve`, `map crossfire`, `maxplayers 1`) with
 the menu opened the same way doesn't pause either, so this is the engine's behaviour.
 

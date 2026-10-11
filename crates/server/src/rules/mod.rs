@@ -116,13 +116,12 @@ pub struct PlayerRules {
     pub slowed_ents: Vec<*mut edict_t>,
 
     // ---- capture the briefcase ---------------------------------------------------------------------
-    /// The `ts_flag` this player carries.
-    pub flag: Option<*mut edict_t>,
+    /// The case this player carries (`s_flag_status` at `+0x7d0`).
+    pub flag: Option<crate::entities::ts::ctb::FlagStatus>,
 }
 
 pub fn game_init() {
     cvars::register();
-    voice::register_messages();
     commands::register_server_commands();
 }
 
@@ -187,8 +186,17 @@ pub fn start_frame() {
     frame::think();
 }
 
-/// `GetGameDescription` text for the current mode (lib.rs may return it).
+/// `GetGameDescription` (0xaee84): `"Half-Life"` before the rules exist, `"The Specialists"`
+/// for `CHalfLifeRules` (`deathmatch` 0 when they were installed), otherwise the multiplayer
+/// rules' text for the mode (`CHalfLifeMultiplay` 0xd0c68, `CHalfLifeTeamplay` 0xe5a04).
 pub fn game_description() -> &'static CStr {
+    let (installed, single) = state::with(|g| (g.installed, g.single_player));
+    if !installed {
+        return c"Half-Life";
+    }
+    if single {
+        return c"The Specialists";
+    }
     let (_, teamplay, lms, the_one) = state::mode();
     match (teamplay, lms, the_one) {
         (_, _, true) => c"The Specialists (The One)",
@@ -274,6 +282,20 @@ pub fn other<R>(e: *mut edict_t, f: impl FnOnce(&mut Player) -> R) -> Option<R> 
 /// Client edicts that have a `Player` object.
 pub fn players() -> Vec<*mut edict_t> {
     engine().clients().filter(|&e| is_player(e)).collect()
+}
+
+/// `UTIL_PlayerByIndex` (0xec694) over slots 1..=maxClients: every client edict with a `Player`,
+/// including players who left. The engine never frees a dropped client's edict or its private
+/// data before the slot's next client spawns, so TS's loops still find them (with what
+/// `TSPlayerDisconnect` left: no team, no frags, dead, `EF_NODRAW`, `FL_DORMANT`).
+pub fn slot_players() -> Vec<*mut edict_t> {
+    let eng = engine();
+    (1..=eng.max_clients()).map(|i| eng.player(i)).filter(|&e| has_player(e)).collect()
+}
+
+/// A non-free edict with a `Player` attached, connected or not.
+pub fn has_player(e: *mut edict_t) -> bool {
+    !e.is_null() && !e.is_free() && e.has_private_data() && engine().string(e.v().classname) == c"player"
 }
 
 /// True if `e` is a client edict with a Player attached (works for the dispatched one too).

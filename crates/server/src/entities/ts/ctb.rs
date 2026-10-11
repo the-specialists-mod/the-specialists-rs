@@ -10,12 +10,12 @@ use crate::weapons::{SlowPhysics, bounce_ground_damping, give_slow_mul};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
-use goldsrc::ext::entities::ATTN_NORM;
+use goldsrc::ext::entities::{ATTN_NORM, EHandle};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use shared::protocol::rules::{ScoreInfo, TsFlag, TsHVoice};
 use shared::weapons::spread::{self, Vec3};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 
 pub const MODEL: &CStr = c"models/briefcase.mdl";
@@ -57,44 +57,102 @@ fn score_info_of(e: *mut edict_t, p: &Player) {
 
 // ---- ts_briefcase ----------------------------------------------------------------------------------
 
+/// `s_flag_status` (0x1c bytes): what a case carries from its home zone to the case entity, to
+/// the carrier (`CBasePlayer +0x7d0`) and back. `Some` on the player plays the part of its
+/// `have` byte.
+#[derive(Clone, Debug, Default)]
+pub struct FlagStatus {
+    /// `contents` of the home zone (TS points at the zone's own string).
+    pub contents: String,
+    pub id: i32,
+    /// 0-based team that owns the case (-1 = any team may take it).
+    pub team: i32,
+    /// Entity index of the last player to take this case (0 for a case the zone just dropped),
+    /// so retaking your own drop isn't announced again.
+    pub last_holder: i32,
+    /// The home `ts_briefcase` (`EHANDLE`).
+    pub home: EHandle,
+}
+
+/// `ts_briefcase` think: `FlagFall` once (true) or `WaitThink` (false). TS swaps the think
+/// pointer (`SetThink`) from other entities' code, which may run while the zone is itself
+/// mid-dispatch (a capture schedules the carried case's home), so it is kept outside the object.
+static FALL_PENDING: Global<RefCell<Vec<usize>>> = Global(RefCell::new(Vec::new()));
+
+/// `SetThink(FlagFall); pev->nextthink = time + delay` on a `ts_briefcase`.
+fn schedule_flag_fall(home: *mut edict_t, delay: f32) {
+    let mut pending = FALL_PENDING.0.borrow_mut();
+    if !pending.contains(&(home as usize)) {
+        pending.push(home as usize);
+    }
+    home.v().nextthink = engine().time() + delay;
+}
+
+fn take_flag_fall(home: *mut edict_t) -> bool {
+    let mut pending = FALL_PENDING.0.borrow_mut();
+    let before = pending.len();
+    pending.retain(|&e| e != home as usize);
+    pending.len() != before
+}
+
 pub struct Briefcase {
     pub id: i32,
     /// 0-based team that may capture here (-1 = any).
     owner_team: i32,
     contents: String,
+    /// `+0x64`: captures are accepted (`FlagFall` sets it; a case taken from home clears it).
     active: bool,
-    /// Pending `FlagFall` (create the case at home).
-    fall_at: f32,
 }
 
 impl Default for Briefcase {
+    /// `CTSBriefcase::CTSBriefcase` (0x8d788): ids 1..15, wrapping.
     fn default() -> Self {
         let mut id = NEXT_FLAG_ID.0.get() + 1;
         if id > 15 {
             id = 1;
         }
         NEXT_FLAG_ID.0.set(id);
-        Self { id, owner_team: -1, contents: String::new(), active: false, fall_at: 0.0 }
+        Self { id, owner_team: -1, contents: String::new(), active: false }
     }
 }
 
 impl Briefcase {
-    /// Schedule the case to reappear at home.
-    pub fn respawn_flag(&mut self, delay: f32) {
-        self.fall_at = engine().time() + delay;
+    /// The zone's `s_flag_status` (`+0x90`, set in `Spawn`).
+    fn status(&self, me: *mut edict_t) -> FlagStatus {
+        FlagStatus { contents: self.contents.clone(), id: self.id, team: self.owner_team, last_holder: 0, home: EHandle::new(me) }
+    }
+
+    /// `CTSBriefcase::FlagFall` (0x8da00): a new case (`CreateFlag` without a player: no owner,
+    /// time scale 1) with no return time, put at the centre of the zone's `mins`/`maxs` without
+    /// relinking it; captures open; `TSFlag` 0; then `WaitThink` every second.
+    fn flag_fall(&mut self, cx: &mut Cx) {
+        let me = cx.edict;
+        let flag = create_flag(None, self.status(me));
+        if !flag.is_null() {
+            crate::world::with::<Flag, _>(flag, |f| f.return_at = 0.0);
+            let v = cx.pev();
+            let center = [(v.mins[0] + v.maxs[0]) * 0.5, (v.mins[1] + v.maxs[1]) * 0.5, (v.mins[2] + v.maxs[2]) * 0.5];
+            flag.v().origin = center;
+        }
+        self.active = true;
+        send_flag(0, self.id, self.owner_team, 0);
+        cx.think_in(1.0);
     }
 }
 
 impl Entity for Briefcase {
+    /// `CTSBriefcase::KeyValue` (0x8d7f4).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
-            b"contents" => self.contents = value.to_string_lossy().chars().take(31).collect(),
-            b"ownerteam" => self.owner_team = value.to_str().unwrap_or("").trim().parse::<i32>().unwrap_or(0) - 1,
+            b"contents" => self.contents = String::from_utf8_lossy(&value.to_bytes()[..value.to_bytes().len().min(31)]).into_owned(),
+            b"ownerteam" => self.owner_team = crate::entities::stock::base::kv_i(value) - 1,
             _ => return false,
         }
         true
     }
 
+    /// `CTSBriefcase::Spawn` (0x8d88c): an invisible `MOVETYPE_FLY` trigger; the first case falls
+    /// a second later.
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let e = cx.edict;
@@ -105,36 +163,33 @@ impl Entity for Briefcase {
         }
         let v = cx.pev();
         let (mins, maxs, org) = (v.mins, v.maxs, v.origin);
+        eng.set_size(e, mins, maxs);
+        eng.set_origin(e, org);
+        let v = cx.pev();
         v.effects = EF_NODRAW as i32;
         v.solid = SOLID_TRIGGER as i32;
         v.flags = 0;
         v.movetype = MOVETYPE_FLY as i32;
-        eng.set_size(e, mins, maxs);
-        eng.set_origin(e, org);
+        self.active = false;
         if self.contents.is_empty() {
             self.contents = "a flag".into();
         }
-        self.active = false;
-        self.fall_at = eng.time() + 1.0;
-        cx.think_in(0.1);
+        schedule_flag_fall(e, 1.0);
     }
 
     fn think(&mut self, cx: &mut Cx) {
-        cx.think_in(0.25);
-        if self.fall_at == 0.0 || cx.time() < self.fall_at {
-            return;
+        if take_flag_fall(cx.edict) {
+            self.flag_fall(cx);
+        } else {
+            // `CTSBriefcase::WaitThink` (0x8db14).
+            cx.think_in(1.0);
         }
-        self.fall_at = 0.0;
-        // FlagFall: the case appears at the centre of the zone.
-        let v = cx.pev();
-        let center = [(v.absmin[0] + v.absmax[0]) * 0.5, (v.absmin[1] + v.absmax[1]) * 0.5, (v.absmin[2] + v.absmax[2]) * 0.5];
-        create_flag(center, self.id, self.owner_team, &self.contents, cx.edict);
-        self.active = true;
-        send_flag(0, self.id, self.owner_team, 0);
     }
 
+    /// `CTSBriefcase::CaptureTouch` (0x8db9c): open, a living player who carries a case and may
+    /// use this zone (`CanInteract`: any team, or the zone's).
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.active || !rules::is_player(other) || !rules::alive(other.v()) || !has_flag(other) {
+        if !self.active || !rules::has_player(other) || !rules::alive(other.v()) || !has_flag(other) {
             return;
         }
         if self.owner_team != -1 && self.owner_team != team_index_of(other) {
@@ -144,11 +199,19 @@ impl Entity for Briefcase {
     }
 }
 
-/// `CaptureTouch` (0x8db9c).
+/// The capture of `CaptureTouch` (0x8db9c): the log line, the carried case's home drops a new one
+/// in 0.25 s, `DropFlag(true)`, the zone's target and message, then with two or more players
+/// (`CountPlayers`, players who left included) +10 frags, `ScoreInfo`, the team's score and
+/// `TSHVoice`, otherwise every team's score is cleared; `TeamScore` of every named team.
 fn capture(cx: &mut Cx, player: *mut edict_t) {
     let eng = engine();
     let name = rules::netname(player);
-    log_flag(player, "captured_briefcase", &carried_contents(player));
+    let status = rules::other(player, |p| p.ts.flag.clone()).flatten().unwrap_or_default();
+    log_flag(player, "captured_briefcase", &status.contents);
+    let home = status.home.get();
+    if !home.is_null() {
+        schedule_flag_fall(home, 0.25);
+    }
     crate::player::with_player(player, |p, pcx| drop_flag(p, pcx, true));
     let (target, message) = (cx.pev().target, cx.pev().message);
     if target != 0 {
@@ -157,8 +220,7 @@ fn capture(cx: &mut Cx, player: *mut edict_t) {
     if message != 0 {
         msg::ts_message_all([0, 255, 0], 8, 30, &eng.string(message).to_string_lossy());
     }
-    let n = rules::players().len();
-    if n < 2 {
+    if rules::slot_players().len() < 2 {
         state::with(|g| {
             for t in &mut g.teams {
                 t.score = 0;
@@ -173,7 +235,7 @@ fn capture(cx: &mut Cx, player: *mut edict_t) {
         if team >= 0 {
             state::with(|g| g.teams[team as usize].score += 1);
         }
-        for o in rules::players() {
+        for o in rules::slot_players() {
             let lost = (team != team_index_of(o)) as u8;
             msg::one(Msg::TsHVoice, o, |w| TsHVoice { lost }.write(w));
         }
@@ -183,25 +245,20 @@ fn capture(cx: &mut Cx, player: *mut edict_t) {
 
 // ---- ts_flag -------------------------------------------------------------------------------------
 
-/// `CTSFlag`. TS destroys the case when a player takes it and creates a new one (`CreateFlag`
-/// 0x9d874) when it is dropped; the port keeps one entity per case and hides it on the carrier
-/// (`MOVETYPE_FOLLOW`) instead, re-running `Spawn` when it is thrown.
+/// `CTSFlag`: a case lying around or flying. Taking it destroys the entity and moves its
+/// `s_flag_status` to the player (`CBasePlayer::TakeFlag` 0x93830); dropping it creates a new
+/// one (`CTSFlag::CreateFlag` 0x9d874).
 #[derive(Default)]
 pub struct Flag {
-    pub id: i32,
-    pub team: i32,
-    pub contents: String,
-    pub home: Option<*mut edict_t>,
-    pub holder: Option<*mut edict_t>,
-    /// `s_flag_status+0x10`: entity index of the last player to take this case. It travels with
-    /// the case through drops and resets when the home zone drops a new one, so retaking your
-    /// own drop isn't announced again.
-    last_holder: i32,
+    /// `+0x90`.
+    status: FlagStatus,
     /// `+0x8c` set: a player threw this case (`DropFlag`), rather than the home zone dropping it
     /// (`FlagFall`). Only a thrown case can be returned by its own team.
-    dropped: bool,
+    thrown: bool,
     /// `+0x88`: return home after this time (0 = never, the case at home).
     return_at: f32,
+    /// `+0xac`: `Destroy` ran (the entity is going away this frame).
+    destroyed: bool,
     /// `OnGround` (0x9e21c) has run: touch `WaitTouch`, think `WaitThink`. Before it the case is
     /// flying: touch `BounceTouch`, think `Fall`.
     on_ground: bool,
@@ -244,29 +301,28 @@ fn log_flag(e: *mut edict_t, event: &str, contents: &str) {
 }
 
 impl Flag {
-    /// `CTSFlag::RespawnFlag` (0x9de58), when a dropped case's time is up: the home zone drops
-    /// a new case 1 s later (`FlagFall`, which sends `TSFlag` 0), and the owning team's name is
-    /// announced. A case any team may capture (team -1) returns silently, as TS only names
-    /// teams 0..3.
-    fn respawn_flag(&mut self, cx: &mut Cx) {
-        if let Ok(team) = usize::try_from(self.team)
-            && let Some(name) = state::with(|g| g.teams.get(team).map(|t| t.name.clone()))
-        {
-            msg::ts_message_all([0, 255, 0], 4, 30, &format!("{name} briefcase returned"));
-        }
-        self.go_home(cx, 1.0);
+    /// `CTSFlag::Destroy` (0x9de24): out of every player's slowed list, then `UTIL_Remove`.
+    fn destroy(&mut self, cx: &mut Cx) {
+        self.destroyed = true;
+        rules::powerup::remove_from_slowed(cx.edict);
+        crate::entities::remove(cx.edict);
     }
 
-    /// Removes the case; its `ts_briefcase` drops a new one (`FlagFall`) after `delay`.
-    fn go_home(&mut self, cx: &mut Cx, delay: f32) {
-        if let Some(home) = self.home {
-            crate::world::dispatch(home, |ent, _| {
-                if let Some(b) = (ent as &mut dyn std::any::Any).downcast_mut::<Briefcase>() {
-                    b.respawn_flag(delay);
-                }
-            });
+    /// `CTSFlag::RespawnFlag` (0x9de58), when the case's time is up (or a round restarts): its
+    /// home drops a new case 1 s later, the owning team's name is announced (a case any team may
+    /// take, team -1, returns silently: TS only names teams 0..3), and the case goes.
+    fn respawn_flag(&mut self, cx: &mut Cx) {
+        let home = self.status.home.get();
+        if !home.is_null() {
+            schedule_flag_fall(home, 1.0);
+            if let Ok(team) = usize::try_from(self.status.team)
+                && team < 4
+            {
+                let name = state::with(|g| g.teams.get(team).map(|t| t.name.clone()).unwrap_or_default());
+                msg::ts_message_all([0, 255, 0], 4, 30, &format!("{name} briefcase returned"));
+            }
         }
-        crate::entities::remove(cx.edict);
+        self.destroy(cx);
     }
 
     /// `CTSFlag::Fall` (0x9df10), every 0.1 s while flying: lands when it rests on the ground
@@ -301,7 +357,7 @@ impl Flag {
         let (origin, velocity) = (cx.pev().origin, cx.pev().velocity);
         let tr = e.trace_line(origin, spread::ma(origin, 0.1, velocity), DONT_IGNORE_MONSTERS, me);
         // A null hit is the world in TS, which takes no damage.
-        if tr.flFraction >= 1.0 || tr.pHit.is_null() || rules::is_player(tr.pHit) {
+        if tr.flFraction >= 1.0 || tr.pHit.is_null() || rules::has_player(tr.pHit) {
             return;
         }
         let (threshold, dmg) = impact(spread::length(velocity));
@@ -347,34 +403,18 @@ impl Flag {
         e.set_origin(me, origin);
         e.set_size(me, [-16.0, -16.0, 0.0], [16.0, 16.0, 48.0]);
     }
-
-    /// The `CreateFlag` + `Spawn` half of `DropFlag(false)` (0x9334c) on the carried case: it
-    /// flies again from `origin` at `velocity`, spinning at random, in the thrower's time scale,
-    /// passing through the thrower until it lands, and returns home after 20 s.
-    fn thrown(&mut self, cx: &mut Cx, thrower: *mut edict_t, time_scale: f32, origin: Vec3, velocity: Vec3) {
-        let e = engine();
-        self.holder = None;
-        self.spawn(cx);
-        self.dropped = true;
-        let v = cx.pev();
-        v.effects &= !(EF_NODRAW as i32);
-        v.aiment = std::ptr::null_mut();
-        v.owner = thrower;
-        v.fuser1 = time_scale;
-        v.angles = [0.0; 3];
-        v.avelocity = [0.0, e.random_long(-300, 300) as f32, e.random_long(-300, 300) as f32];
-        v.velocity = velocity;
-        e.set_origin(cx.edict, origin);
-    }
 }
 
 impl Entity for Flag {
     /// `CTSFlag::Spawn` (0x9d978): a flying, zero-size `SOLID_BBOX` case with the team's glow,
-    /// due home in 20 s (`FlagFall` clears that for a case at home).
+    /// due home in 20 s (`FlagFall` clears that for a case at home). It is linked where it is
+    /// (the world origin for a new case: `CreateFlag`'s callers then set `pev->origin` without
+    /// relinking).
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
         let e = cx.edict;
         self.phys = SlowPhysics::default();
+        eng.precache_model(MODEL);
         eng.set_model(e, MODEL);
         let v = cx.pev();
         v.movetype = MOVETYPE_BOUNCE as i32;
@@ -386,22 +426,20 @@ impl Entity for Flag {
         eng.set_origin(e, org);
         eng.set_size(e, [0.0; 3], [0.0; 3]);
         self.return_at = eng.time() + 20.0;
-        self.dropped = false;
+        self.thrown = false;
         self.on_ground = false;
         cx.think_in(0.1);
         let v = cx.pev();
         v.iuser4 = 2;
         v.renderamt = 5.0;
         v.renderfx = kRenderFxGlowShell as i32;
-        v.rendercolor = team_color(self.team);
+        v.rendercolor = team_color(self.status.team);
+        self.destroyed = false;
     }
 
     /// `Fall` while flying, `CTSFlag::WaitThink` (0x9e1b8) once landed; both every 0.1 s.
     fn think(&mut self, cx: &mut Cx) {
         cx.think_in(0.1);
-        if self.holder.is_some() {
-            return;
-        }
         if !self.on_ground {
             self.fall(cx);
         } else if self.return_at != 0.0 && self.return_at < cx.time() {
@@ -412,9 +450,6 @@ impl Entity for Flag {
     /// `BounceTouch` while flying (a flying case is only taken with +use), `CTSFlag::WaitTouch`
     /// (0x9e604) once landed.
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if self.holder.is_some() {
-            return;
-        }
         if self.on_ground {
             self.player_take_flag(cx, other, None);
         } else {
@@ -431,41 +466,45 @@ impl Flag {
         self.player_take_flag(cx, other, Some((p, pcx)));
     }
 
+    /// `CTSGameRules::RespawnEntities` (0x77764) on a round restart.
+    pub fn round_respawn(&mut self, cx: &mut Cx) {
+        self.respawn_flag(cx);
+    }
+
     /// `CTSFlag::PlayerTakeFlag` (0x9e330), shared by the touch and +use. `p` is the player's
     /// object when the caller already holds it; otherwise it is looked up.
     fn player_take_flag(&mut self, cx: &mut Cx, other: *mut edict_t, p: Option<(&mut Player, &mut Cx)>) {
-        // A live, visible player (TS: `pev->effects` sign bit, EF_NODRAW, e.g. observers).
-        if self.holder.is_some() || !rules::is_player(other) || !rules::alive(other.v()) || other.v().effects & EF_NODRAW as i32 != 0 {
+        // A live, visible player (TS: the low byte of `pev->effects` taken as signed, so
+        // EF_NODRAW 0x80, e.g. observers).
+        if self.destroyed || !rules::has_player(other) || !rules::alive(other.v()) || other.v().effects & EF_NODRAW as i32 != 0 {
             return;
         }
         let team = team_index_of(other);
-        if self.team == -1 || team != self.team {
-            let me = cx.edict;
+        if self.status.team == -1 || team != self.status.team {
             let took = match p {
-                Some((p, pcx)) => self.take_by(me, p, pcx),
-                None => crate::player::with_player(other, |p, pcx| self.take_by(me, p, pcx)).unwrap_or(false),
+                Some((p, pcx)) => take_flag(p, pcx, &self.status),
+                None => crate::player::with_player(other, |p, pcx| take_flag(p, pcx, &self.status)).unwrap_or(false),
             };
             if !took {
                 return;
             }
             // A case taken from home closes its zone for captures until it is back (`FlagFall`).
-            if !self.dropped
-                && let Some(home) = self.home
-            {
+            let home = self.status.home.get();
+            if !self.thrown && !home.is_null() {
                 crate::world::with::<Briefcase, _>(home, |b| b.active = false);
             }
-            self.holder = Some(other);
-            self.return_at = 0.0;
-            let v = cx.pev();
-            v.effects |= EF_NODRAW as i32;
-            v.solid = SOLID_NOT as i32;
-            v.movetype = MOVETYPE_FOLLOW as i32;
-            v.aiment = other;
-        } else if self.dropped && self.home.is_some() {
-            // The owning team returns its thrown case; the bonus needs a second player. No
-            // `TSFlag` here: the home zone's `FlagFall` sends state 0 when the case reappears.
+            self.destroy(cx);
+        } else {
+            let home = self.status.home.get();
+            if !self.thrown || home.is_null() {
+                return;
+            }
+            // The owning team returns its thrown case: its home drops a new one 1 s later (which
+            // sends `TSFlag` 0); the bonus needs a second player.
+            schedule_flag_fall(home, 1.0);
+            self.destroy(cx);
             emit_sound_slow(other, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
-            if rules::players().len() > 1 {
+            if rules::slot_players().len() > 1 {
                 let mut p = p.map(|(p, _)| p);
                 rules::add_frags(other, p.as_deref_mut(), 5.0);
                 msg::ts_message_all([0, 255, 0], 4, 30, &format!("{} returned the briefcase! 5 #TS_Frg", rules::netname(other)));
@@ -474,109 +513,107 @@ impl Flag {
                     None => score_info(other),
                 }
             }
-            // FlagFall at home 1 s later (0x9e330).
-            self.go_home(cx, 1.0);
         }
-    }
-
-    /// `CBasePlayer::TakeFlag` (0x93830): the case needs 20 free slots and one case at most. It
-    /// slows the carrier, plays the pickup sound, sends `TSFlag` 1, announces the pickup unless
-    /// the taker was the case's last holder, and logs it.
-    fn take_by(&mut self, me: *mut edict_t, p: &mut Player, pcx: &mut Cx) -> bool {
-        if p.inv.sv.free_slots < FLAG_SLOTS || p.ts.flag.is_some() {
-            return false;
-        }
-        p.ts.flag = Some(me);
-        p.inv.sv.free_slots -= FLAG_SLOTS;
-        crate::weapons::sync_speed(p, pcx);
-        let e = pcx.edict;
-        emit_sound_slow(e, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
-        let idx = engine().index_of(e);
-        send_flag(1, self.id, self.team, idx);
-        if idx != self.last_holder {
-            let name = rules::netname(e);
-            msg::ts_message_all([0, 255, 0], 4, 30, &format!("{name} picked up a briefcase containing {}!", self.contents));
-        }
-        self.last_holder = idx;
-        log_flag(e, "aquired_briefcase", &self.contents);
-        true
     }
 }
 
-/// `CTSBriefcase::FlagFall` (0x8da00): a new case (`CreateFlag` without a player: no owner, time
-/// scale 1, no return time) falls from the centre of its zone.
-fn create_flag(origin: [f32; 3], id: i32, team: i32, contents: &str, home: *mut edict_t) {
+/// `CBasePlayer::TakeFlag` (0x93830): the case needs 20 free slots and one case at most. Its
+/// status moves to the player, which is slowed, plays the pickup sound, sends `TSFlag` 1,
+/// announces the pickup unless it was the case's last holder, and logs it.
+fn take_flag(p: &mut Player, pcx: &mut Cx, status: &FlagStatus) -> bool {
+    if p.inv.sv.free_slots < FLAG_SLOTS || p.ts.flag.is_some() {
+        return false;
+    }
+    let mut st = status.clone();
+    p.inv.sv.free_slots -= FLAG_SLOTS;
+    crate::weapons::sync_speed(p, pcx);
+    let e = pcx.edict;
+    emit_sound_slow(e, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
+    let idx = engine().index_of(e);
+    send_flag(1, st.id, st.team, idx);
+    if idx != st.last_holder {
+        let name = rules::netname(e);
+        msg::ts_message_all([0, 255, 0], 4, 30, &format!("{name} picked up a briefcase containing {}!", st.contents));
+    }
+    st.last_holder = idx;
+    log_flag(e, "aquired_briefcase", &st.contents);
+    p.ts.flag = Some(st);
+    true
+}
+
+/// `CTSFlag::CreateFlag` (0x9d874): a new `ts_flag` with `status`, spawned where the fresh
+/// entity is (the world origin). With a thrower it is owned by it (so it passes through it until
+/// it lands) and runs in its time scale; without one (`FlagFall`) no owner and scale 1.
+fn create_flag(thrower: Option<(*mut edict_t, f32)>, status: FlagStatus) -> *mut edict_t {
     let eng = engine();
     let e = eng.create_named_entity(c"ts_flag");
-    if e.is_null() {
-        return;
+    if e.is_null() || !e.has_private_data() {
+        msg::text_all(shared::protocol::rules::hud_dest::TALK, "WARNING:cannot create flag!\n");
+        return std::ptr::null_mut();
     }
-    (e.v().origin = origin);
-    let contents = contents.to_owned();
     crate::world::dispatch(e, |ent, cx| {
         let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<Flag>() else { return };
-        f.id = id;
-        f.team = team;
-        f.contents = contents;
-        f.home = Some(home);
+        f.status = status;
         f.spawn(cx);
-        f.return_at = 0.0;
+        f.thrown = thrower.is_some();
         let v = cx.pev();
-        v.owner = std::ptr::null_mut();
-        v.fuser1 = 1.0;
+        match thrower {
+            Some((owner, time_scale)) => {
+                v.owner = owner;
+                v.fuser1 = time_scale;
+            }
+            None => {
+                v.owner = std::ptr::null_mut();
+                v.fuser1 = 1.0;
+            }
+        }
     });
+    e
 }
 
-/// True if the player carries a case.
+/// `HaveFlag`: the player carries a case.
 pub fn has_flag(e: *mut edict_t) -> bool {
     rules::other(e, |p| p.ts.flag.is_some()).unwrap_or(false)
 }
 
-/// What the case `e` carries holds, for the capture log.
-fn carried_contents(e: *mut edict_t) -> String {
-    let flag = rules::other(e, |p| p.ts.flag).flatten();
-    flag.and_then(|f| crate::world::with::<Flag, _>(f, |f| f.contents.clone())).unwrap_or_default()
-}
-
-/// `CBasePlayer::DropFlag(captured)` (0x9334c). Either way the carrier gets its 20 slots back.
-/// A captured case is removed; the capture already scheduled its home's `FlagFall`, which sends
-/// `TSFlag` 0, so nothing is sent here. Otherwise the case is thrown from the eyes: along
-/// `v_angle` at [`aimed_throw_speed`] while alive, or in a random direction (pitch −60..60, yaw
-/// −180..180) at 60..160 when dead ([`throw`]), then logged and announced with `TSFlag` 2.
+/// `CBasePlayer::DropFlag(captured)` (0x9334c). Either way the carrier gets its 20 slots back and
+/// loses the status. A captured case just goes (the capture scheduled its home's `FlagFall`).
+/// Otherwise a new case is created (`CreateFlag`) and thrown from the eyes: along `v_angle` at
+/// [`aimed_throw_speed`] while alive, or in a random direction (pitch −60..60, yaw −180..180) at
+/// 60..160 when dead ([`throw`]); its origin is set without relinking. Then the log line and
+/// `TSFlag` 2.
 pub fn drop_flag(p: &mut Player, cx: &mut Cx, captured: bool) {
-    let Some(flag) = p.ts.flag.take() else { return };
+    let Some(status) = p.ts.flag.clone() else { return };
     p.inv.sv.free_slots += FLAG_SLOTS;
     crate::weapons::sync_speed(p, cx);
-    if captured {
-        crate::world::dispatch(flag, |ent, fcx| {
-            if let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<Flag>() {
-                f.holder = None;
-                f.go_home(fcx, 0.25);
-            }
-        });
-        return;
+    if !captured {
+        let e = engine();
+        let thrower = cx.edict;
+        let time_scale = crate::weapons::thrower_time_scale(p, cx.pev());
+        let flag = create_flag(Some((thrower, time_scale)), status.clone());
+        let (angles, speed) = if rules::alive(cx.pev()) {
+            let a = cx.pev().v_angle;
+            (a, aimed_throw_speed(a[0]))
+        } else {
+            let pitch = e.random_long(-60, 60) as f32;
+            let yaw = e.random_long(-180, 180) as f32;
+            ([pitch, yaw, 0.0], e.random_long(60, 160) as f32)
+        };
+        let (forward, _, _) = spread::angle_vectors(angles);
+        let v = cx.pev();
+        let (origin, velocity) = throw(spread::add(v.origin, v.view_ofs), forward, v.velocity, speed);
+        if !flag.is_null() {
+            let fv = flag.v();
+            fv.origin = origin;
+            fv.angles = [0.0; 3];
+            fv.avelocity[1] = e.random_long(-300, 300) as f32;
+            fv.avelocity[2] = e.random_long(-300, 300) as f32;
+            fv.velocity = velocity;
+        }
+        log_flag(thrower, "dropped_briefcase", &status.contents);
+        send_flag(2, status.id, status.team, cx.index());
     }
-    let e = engine();
-    let (angles, speed) = if rules::alive(cx.pev()) {
-        let a = cx.pev().v_angle;
-        (a, aimed_throw_speed(a[0]))
-    } else {
-        let pitch = e.random_long(-60, 60) as f32;
-        let yaw = e.random_long(-180, 180) as f32;
-        ([pitch, yaw, 0.0], e.random_long(60, 160) as f32)
-    };
-    let (forward, _, _) = spread::angle_vectors(angles);
-    let v = cx.pev();
-    let (origin, velocity) = throw(spread::add(v.origin, v.view_ofs), forward, v.velocity, speed);
-    let time_scale = crate::weapons::thrower_time_scale(p, cx.pev());
-    let thrower = cx.edict;
-    let holder = cx.index();
-    crate::world::dispatch(flag, |ent, fcx| {
-        let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<Flag>() else { return };
-        f.thrown(fcx, thrower, time_scale, origin, velocity);
-        log_flag(thrower, "dropped_briefcase", &f.contents);
-        send_flag(2, f.id, f.team, holder);
-    });
+    p.ts.flag = None;
 }
 
 // ---- ts_wingiver / ts_scoregiver --------------------------------------------------------------------
@@ -634,7 +671,7 @@ impl<const SCORE: bool> Entity for WinGiver<SCORE> {
 
 /// `CTSGameRules::TeamWin` (score part): team score, announcement, `TSHVoice`, `TeamScore`.
 fn team_win(team: i32, is_score: bool) {
-    if rules::players().len() < 2 {
+    if rules::slot_players().len() < 2 {
         state::with(|g| {
             for t in &mut g.teams {
                 t.score = 0;
@@ -655,7 +692,7 @@ fn team_win(team: i32, is_score: bool) {
             msg::ts_message_all([0, 255, 0], 8, 30, &format!("{name} {}", if is_score { "Score!" } else { "Win!" }));
         }
     }
-    for o in rules::players() {
+    for o in rules::slot_players() {
         let lost = (team != team_index_of(o)) as u8;
         msg::one(Msg::TsHVoice, o, |w| TsHVoice { lost }.write(w));
     }

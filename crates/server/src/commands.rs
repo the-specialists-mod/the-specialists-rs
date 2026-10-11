@@ -35,17 +35,17 @@ impl Args {
 pub fn client_command(e: *mut edict_t) {
     let args = Args;
     let cmd = args.str(0).to_ascii_lowercase();
-    // The TS client sends `_special` on +attack2 (a TFC viewport leftover). TS's server answers
-    // "Unknown command" every time; accept it silently instead (docs/design.md §10).
-    if cmd == "_special" {
-        return;
-    }
     let handled = world::dispatch(e, |ent, cx| {
         let Some(p) = (ent as &mut dyn std::any::Any).downcast_mut::<Player>() else { return false };
         dispatch_player(p, cx, &cmd, &args)
     });
     if handled != Some(true) {
-        engine().client_print(e, PRINT_TYPE::print_console, &format!("Unknown command: {cmd}\n"));
+        // ClientCommand's tail (0xae5de): `argv(0)` as typed, cut to 127 bytes, through
+        // `ClientPrint(HUD_PRINTCONSOLE)` (a `TextMsg`). The TS client sends `_special` on every
+        // +attack2, and TS answers it with this too.
+        let typed = args.argv(0).to_bytes();
+        let typed = String::from_utf8_lossy(&typed[..typed.len().min(127)]).into_owned();
+        crate::rules::msg::text_one(e, shared::protocol::rules::hud_dest::CONSOLE, &format!("Unknown command: {typed}\n"));
     }
 }
 

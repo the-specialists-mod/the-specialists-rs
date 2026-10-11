@@ -33,7 +33,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `xen.rs` | `xen_plantlight`, `xen_hair`, `xen_tree` (+ `xen_ttrigger`), `xen_spore_small/medium/large` (+ `xen_hull`) |
 | `monsters.rs` | `monster_hevsuit_dead` (with the `CBaseMonster` corpse code: fall, `DeadTakeDamage`, gibbing, fade) |
 | `items.rs` | `item_healthkit`, `item_battery`, `item_antidote`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins |
-| `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`), `game_score` (+ `AddPoints` / `AddPointsToTeam`) |
+| `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`), `game_score` (+ `AddPoints` / `AddPointsToTeam`), `game_team_master`, `game_team_set`, `game_player_team` |
 
 How the SDK patterns map to Rust:
 
@@ -116,6 +116,9 @@ How the SDK patterns map to Rust:
 | `func_healthcharger`, `func_recharge` | **TS** `CWallHealth` / `CRecharge` | One-shot: the first use refills fully, then the charger recharges after 60 s (health) or 30 s (armour). |
 | `game_text` | SDK maprules.cpp | `TE_TEXTMESSAGE` per client, master check. |
 | `game_player_equip` | SDK maprules.cpp (same in TS 0xcd494) | Unknown keys are items (`name#n` stripped, count ≥ 1, max 32), given through `GiveNamedItem` (item spawned at the player's feet with `SF_NORESPAWN`, then touched). Touch (master, not `USEONLY`) / use (no master). TS `PlayerSpawn` touches every one on spawn instead of buying the loadout (`maprules::equip_on_spawn`, called from `weapons::on_spawn`; deferred until the player's spawn dispatch returns). `weapon_tsgun` is a no-op: the TS gun is built into every player. |
+| `game_team_master` | TS 0xccae8..0xccd40 | `teamindex` (-1 none), `triggerstate` (0 off, 2 toggle, else on), master. `USE_SET` takes the activator's team (`GetTeamIndex(TeamID)`) or none for a negative value; other uses fire the targets when the activator's team matches (`UTIL_TeamsMatch`: always outside teamplay; `ANYTEAM` with no team), once with flag 1. It is also a master (`IsTriggered` = `TeamMatch`), for spawn points, doors and the rest. |
+| `game_team_set` | TS 0xccd64 | `USE_SET` to its targets with 0, or -1 with `CLEARTEAM` (2); once with flag 1. |
+| `game_player_team` | TS 0xcd740..0xce658 | A player activator moves to the team of the targeted `game_team_master` (`ChangePlayerTeam(team, kill = flag 2, gib = flag 4)`; nothing outside teamplay); once with flag 1. |
 
 ## 3. TS deviations from the SDK (ported)
 
