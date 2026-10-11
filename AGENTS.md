@@ -82,12 +82,14 @@ cargo xtask build [--release]             # all four targets; must build with no
 cargo xtask lint                          # clippy --workspace --all-targets -D warnings, all four targets
                                           # (~40 s cold), plus the engine-macro check
 cargo xtask install <root>|all            # assemble <root>/ts and install the libraries
-cargo xtask all                           # test + play (meck included), about 3.5 min
+cargo xtask all                           # test + play (meck and bots included), about 4.5 min
 cargo xtask test [--map M]                # dedicated server + bots on every engine root, in parallel (~25 s)
 cargo xtask play [fwgs fwgs-win]          # listen-server gameplay on ts_dojo: join/buy/spawn, wall shots, lasers,
                                           # akimbo, power-up, grenade, kill, kick, death/respawn, bot fights, addbot,
-                                          # Escape; then meck; both roots in parallel (~3 min)
+                                          # Escape; then meck and bots; both roots in parallel (~4 min)
 cargo xtask meck [fwgs fwgs-win]          # grenades on MecklenburgV_Rain_Final: a grenade kill and broken func_breakables
+cargo xtask bots [fwgs fwgs-win]          # TS's bot AI on ts_dojo: testpath, four addbot bots roaming the node graph
+                                          # and fighting, botlearn
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask dist --release                # dist/<platform>/ts/: libraries + game files (stripped)
 cargo xtask dist --release-debug          # the same release build, libraries with debug info
@@ -120,7 +122,9 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - `ts_dev_scriptinput 1` lets scripted `+attack` through the client's anti-script gate.
 - `ts_dev_touch <file>` writes the end-of-script marker.
 - `ts_tp` teleports, and `ts_face` aims a player's view.
-- `ts_bot_stop 1` freezes bots.
+- `ts_bot_stop 1` freezes living bots (dead ones still buy and respawn). Bots run TS's AI
+  (`crates/server/src/bots`, decomp `docs/server/bots.md`); the `ts_bot_quota` bots think on
+  dedicated servers too, `addbot` bots exist only on listen servers, as in TS.
 - `ts_observe` sets an observer's mode and target; `ts_dev_fxlog 1` (client) logs each predicted
   shot's flash, bullet, impact and decal, akimbo shots and laser beams as `[ts fx]` lines.
 - `ts_dev_keylog 1` (client) logs Escape's `HUD_Key_Event` answer and `cancelselect` as `[ts key]`.
@@ -162,6 +166,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - **Server commands the game queues run late in scripted tests.** `pfnServerCommand` text (e.g.
   the bot quota's `kick`) goes to the end of the console buffer, behind a running `wait` script.
   End the script; don't `quit` from it.
+- **The roots link the content's `maps` directory.** Never run `savenodes` (or anything that
+  writes `maps/`) from a scripted test: it would overwrite `../ts_custom/maps`.
 - **The FWGS engine log is buffered under Wine**, so don't wait for a line in it while the game
   runs. Scripts end with `ts_dev_touch` and xtask polls for that file.
 - **FWGS's console buffer is 32 KB.** Long `wait` chains overflow it and the whole cfg is skipped

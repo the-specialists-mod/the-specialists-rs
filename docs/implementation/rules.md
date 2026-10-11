@@ -28,7 +28,7 @@ are Ghidra addresses.
 | `player/hud.rs` | `CBasePlayer::UpdateClientData`: the 0.1 s throttle, the InitHUD block, HUD shadow copies, the gun's update. |
 | `player/impulse.rs` | The spray (impulse 201, `CSprayCan`), `CheatImpulseCommands` (`CBloodSplat`, `FindEntityForward`), `PlayerCustomization` and the spray state (`Player::impulse`). |
 | `entities/ts/*` | TS map entities (§4). |
-| `bots/mod.rs` | fake clients. |
+| `bots/*` | TS's bot AI (`mp.dll` only) and the port's `ts_bot_quota`: §10. |
 | `net.rs` | `AddToFullPack` TS changes (CreateBaseline/UpdateClientData were already stock-correct). |
 | `shared/protocol/{hud,rules}.rs` | payload structs (`write`/`read` over `Wire`/`WireRead`, `Bytes` for tests). |
 
@@ -126,7 +126,9 @@ Registered in TS order with TS defaults and flags (0x4 = FCVAR_SERVER, 0x100 = U
 `weaponstay 15`, `mp_theonemode 0`, `mp_theone gordon`, `mp_theothers seal`,
 `lastmanstanding 0`, `spectacularness 1`, `customweapons ""`, `banfortk 0`, `botarmor 0`,
 `voice_serverdebug 0`, `sv_alltalk 0` (FWGS already has it; the engine refuses the duplicate),
-and the port's `ts_bot_quota 0`.
+and the port's `ts_bot_quota 0` and `ts_bot_stop 0`. The three bot cvars are read as TS reads
+them: `botlearn` (> 0 learns nodes, 2 adds debug output), `bottalk` (bot chat), `botarmor` (the
+buy module's kevlar), §10.
 
 `g_flWeaponCheat` (`cvars::cheats`) is `sv_cheats` as `CWorld::Spawn` (0xf4450) found it, so a new
 value counts from the next map: the `fov`/`powerup`/`cashala` commands, `CheatImpulseCommands` and
@@ -154,11 +156,11 @@ Server commands: `globalslow`, `restartround`, `weaponrestriction`, `addbot [mod
 `addcustombot [name] [model] [skill]` (as TS's Windows `mp.dll`, `0x10026110`/`0x100261a0`: on a
 dedicated server they only print "Bots only in listen servers.", which is all the Linux
 `ts_i386.so` has; on a listen server `help` prints the usage and anything else adds a bot:
-`bots::add_listen_bot`, TS's `CreateBot`/`CreateCustomBot` with a `bots.txt` name, one of TS's seven
-models outside teamplay, "<name> connected with skill <f>", and `botlearn 1`. TS's bot AI isn't
-ported, so these bots run the port's quota AI and ignore the skill; the quota neither counts nor
-kicks them. TS's shipped `listenserver.cfg` runs four `addbot`s on every map, so "Create Server"
-starts with four bots, as in TS),
+`bots::add_bot`/`add_custom_bot`, TS's `BotCreate`/`BotCreateCustom` with TS's AI (§10): the
+`addbot` argument is the model, the name comes from `bots.txt`, "<name> connected with skill <f>",
+and `botlearn 1` when the node graph is empty; the quota neither counts nor kicks them. TS's
+shipped `listenserver.cfg` runs four `addbot`s on every map, so "Create Server" starts with four
+bots, as in TS),
 `loadweapons`/`saveweapons` (the weapons package, `weapons::custom`), and test helpers `ts_status`, `ts_hurt <#> <dmg> [hitgroup] [attacker#]`,
 `ts_givepowerup <#> <bits>`.
 
@@ -259,10 +261,9 @@ TS keeps constant are written as such (`m_bitsHUDDamage` -1, the rest 0). `Resto
 
 ## 6. Deviations from TS 3.0
 
-Port additions (TS has no bots):
-* `ts_bot_quota` and the fake-client bots (dedicated-server testing). On a full server the quota
-  retries quietly every 0.5 s. Bots look down at an item before pressing +use, since
-  `PlayerUse`'s 0.7 view cone doesn't reach a weapon on the floor at eye level.
+Port additions:
+* `ts_bot_quota` (TS's bots on dedicated servers too) and `ts_bot_stop`: §10.1. On a full server
+  the quota retries quietly every 0.5 s.
 * `ClientDisconnect` clears `FL_CLIENT`/`FL_FAKECLIENT` (engine safety, still needed: FWGS's
   `pfnSetClientMaxspeed` (`sv_game.c`) looks the client up with `SV_ClientFromEdict(e, false)`,
   which still returns a dropped client's slot, and then writes `cl->edict->v.maxspeed`, but
@@ -442,3 +443,105 @@ ammo, dropped guns, knives, grenades, the CTB case and the hidden objectives all
 
 **Server entry points (`server-dll/src/lib.rs`)**
 * `GetGameDescription` returns `rules::game_description()` (done at integration).
+
+## 10. Bots (`bots/**`)
+
+TS's bot AI exists only in the Windows server `mp.dll` (the Linux `ts_i386.so` keeps only the
+`addbot` stubs). The port follows the decomp's `docs/server/bots.md`; addresses in this section
+are `mp.dll` ones (Ghidra = objdump), player offsets are the `.so` ones (`mp.dll` + 0x14,
+bots.md §14.1) like the rest of this page.
+
+| Rust | TS (bots.md) |
+|---|---|
+| `bots/mod.rs` | `addbot`/`addcustombot` (`BotCreate` 0x1006b7c0, `BotCreateCustom` 0x1006b590, `BotSetup` 0x1006b3b0; §2), `CTSGameRules::Init`'s node load and `BotLoadFiles` (`bots::ts_init`), the `pfnStartFrame` driver (0x10010e00, before the rules' `Think`), the `CBot` overrides (`Spawn` 0x1006bb40: brain reset first, random laser colour last; `TraceAttack` 0x1006bac0: look at a player attacker; `Killed` 0x1006ba00 and `OnKill` 0x1006b970: kill chat), PreThink's node learning (0x1005fed2, `bots::learn`), the node client commands, and the port's quota. |
+| `bots/brain.rs` | `CBotBrain` (§5): `Reset`, `Think` (module order state, 0x10, 0x100 respawn inline, 0x40, 4, 0x80, 8, 0x200, 0x400, 1; skipped while `fuser1 <= 0.1`), `PressButtons`/`UpdateButtons` (presses show a frame late), `UpdateView` (turn rate `10 × clamp(skill, 0.5, 2)`/s, punch low-pass), `RunMove` (msec `450 / frames per 0.5 s`, 5..100), `LookAt`, `UTIL_AngleMod` (0x10076250). |
+| `bots/states.rs` | `CBotStateDM` (0x1006e900, modes 0/1) with `PickRoamGoal` (hill / power-up / spawn point, `TSFoundRandomEntity` 0x10073a30), and the unreachable `CBotStateTeamRounds` (0x1006ed00) and `CBotStateObjective` (0x1006f0c0). |
+| `bots/modules.rs` | vision (0x1006dc10), buy (0x1006d630, `BotRandomAttachments` 0x1006d560, `AddItemToArmament`/`AddAmmoToArmament` semantics), stunt (0x1006e130), look around (0x1006dde0/0x1006dea0), power-up (0x1006e280), chat (0x1006e330) and `BotSay` (0x1006e7a0). |
+| `bots/attack.rs` | `CBotModuleAttack` (§8): tracking with the knife lead, `SelectEnemy`, `ComputeAimOffset`, `FindCoverSpot`, `FireWeapon` per weapon kind, the close-range jump / stock hit (button 0x40), the dodge roll. |
+| `bots/nav.rs` | `CBotNav` (§11.7): `Navigate`, `Replan`, `RandomWanderPoint`, `GetSteerPoint`, the ladder block. |
+| `bots/nodes.rs` | `CNodeGraph` (§11.1–11.6): `.ndm` I/O, `AddNode`/`LinkNewNode`/`IsReachable`/`IsGroundContinuous`, `FindPath`, `FindPathBetweenPoints`, the debug beams (`sprites/lgtning.spr`, precached first in `W_Precache`'s tail as `mp.dll` does) and printouts; behind a `NodeWorld` trait so it's unit tested. |
+| `bots/files.rs` | `bots.txt` (`Name//skill`, 64 names) and `bot_say.txt` (`offense`/`freetime`/`killed`), kept in TS's `char[64]` slot layout so the overflow quirks come out the same; `BotPickName` (0x1006c150); the chat line as a `printf` format. |
+
+Player state the bots read, added to `Player`: `bot` (the `CBot` part: `Box<Brain>`), `cbot` (the
+object is a `CBot`: `IsNetClient()` false; never cleared), `is_bot` (`m_bIsBot` `pl+0x160`: set by
+`BotSetup`, cleared by `TSPlayerDisconnect`, turned into `FL_FAKECLIENT` by `Spawn`; only bots
+with it think), `next_node_learn` (`pl+0x788`, zeroed by `TSInit`) and `player_speed`
+(`m_flPlayerSpeed` `pl+0x550`, set wherever `SetPlayerSpeed` is: `TSInit`, the slot speed, The
+One). The rest is the port's existing state: the loadout (`inv.sv.armament`, `pl+0x594`), held
+and active power-ups (`ts.held`, `active_powerup`), the respawn time (`respawn_at`, `pl+0x770`),
+the kung-fu bar (`inv.gun.melee_bar`, `pl+0x774`), the gun's status, kind, reserve and stock damage.
+
+What changes for every player: `IsNetClient()` is false for bots (`rules::is_net_client`), so
+`Host_Say` doesn't send chat to them and map votes don't count them; `BotSetup` skips
+`ClientPutInServer`'s starting cash and `EF_NOINTERP` and the rules' `ClientConnected`.
+
+Kept on purpose (bots.md §15): the `fabs(dot) > 0.9` aim cone (a bot fires at an enemy behind
+it), the dead enemy kept until the 1–3 s retarget, the cover search caching the enemy's origin,
+the attack think reading the enemy before re-targeting, `FindPath`'s backtrack popping the
+current node (paths may skip a node) and its other tie and limit rules, `Load` rejecting exactly
+512 nodes, `addbot`'s argument being the model, the `bot_say.txt` trim at byte 63, chat lines as
+`printf` formats, bots chatting to everyone, `m_bIsBot` tested `== 1` (think) and `!= 0` (kill
+taunt), no access check on the node commands, no automatic save. Every random draw is in TS's
+order (bots.md §13.2).
+
+### 10.1 Deviations
+
+Port additions:
+* **`ts_bot_quota`** bots ("Bot Neo", "Bot Trinity", ...) are TS bots: created like `addbot`'s
+  (random model outside teamplay, random skill 0.1..1, no "connected with skill" line, so the
+  dedicated-server test can tell them from an `addbot`), with `[ts] bots: added ...` in the log.
+  **They also think on dedicated servers**, where TS thinks no bot: the quota exists to test
+  dedicated servers. On a listen server every `m_bIsBot == 1` player thinks, as in TS. The
+  quota counts and kicks only its own bots; a quota bot the engine kept across a level change
+  without its brain gets a new one.
+* **`ts_bot_stop 1`** freezes living bots: no AI, buttons or movement (the view still settles).
+  Dead and observing bots still buy and respawn.
+* `addbot`/`addcustombot` on a dedicated server print TS's "Bots only in listen servers." and do
+  nothing, as TS (the Linux build has no more than that).
+
+Paths: `Load` reads `<gamedir>/maps/<map>.ndm` and `BotLoadFiles` `<gamedir>/bots.txt` and
+`<gamedir>/bot_say.txt` as TS does (plain file reads relative to the engine's working directory,
+not the engine's search path; each map start logs `[ts] bots: <names> names, chat lines [..],
+<n> nodes`). TS's `Save` writes the hard-coded
+`TS\maps\<map>.ndm`, which on Windows' case-insensitive file system is the shipped mod's game
+dir, i.e. the file `Load` reads; the port writes `<gamedir>/maps/<map>.ndm`, the portable
+equivalent (on Linux `TS/maps` would be another, usually missing, directory).
+
+Guards where TS corrupts memory, reads garbage or hangs (behaviour otherwise kept):
+* A `bots.txt` line long enough to spill past the last name slot is cut at the end of the skill
+  table (TS runs on into the count and the used flags). A `%` conversion other than the first
+  `%s` in a chat line prints nothing (TS reads garbage); formatted chat is cut at 127 bytes.
+* `LinkNewNode`'s trace through doors gives up after 32 doors (TS loops forever between two
+  overlapping doors). A negative node count from `Load` stays (so `addbot` still turns
+  `botlearn` on) but `AddNode` drops the node TS would write before the array. `FindPath`'s
+  `path:` printout has no 512-byte limit.
+* The brain's enemy is an edict handle; it's only used while the edict still has a player (TS
+  keeps a `CBaseEntity *` that a reused slot leaves dangling). `TraceAttack` doesn't allocate a
+  `CBaseEntity` for an attacker without private data (TS's `GetClassPtr` does). An out-of-range
+  `RANDOM_LONG` never indexes outside a table.
+* Bots are driven only while they have a live user id (HL25 drops every bot when the last human
+  leaves; `pfnRunPlayerMove` on a dropped client crashes the engine).
+
+Not modelled: TS's PreThink returns early on the frame a player lets go of a train's controls
+(the SDK's train block), before the node-learning block; the port's PreThink runs its later
+hooks on that frame, so `botlearn` can offer one node there that TS wouldn't. Whether the
+engines keep fake clients (and their `CBot` objects) across `changelevel` is engine behaviour
+(bots.md §15); the port keeps a kept client's `Player`, brain included.
+
+### 10.2 Tests
+
+* `cargo test -p ts-server bots`: the node graph against all 43 shipped `.ndm` files (counts,
+  links and ladders as bots.md §11.4, byte-for-byte re-save), the load quirks (512 rejected, 511
+  accepted, negative, truncated), `FindPath` against `scripts/ndm.py`'s replica (reference data
+  in `bots/testdata`, regenerated by `testdata/gen.py`: all pairs of ts_dojo and ts_japa, 3000 /
+  2000 / 2000 sampled pairs on ts_fall, ts_central and ts_cave_of_fear, 341 full paths including
+  backtrack-bug cases; every one matches), `AddNode`/linking with a fake world (spacing 128 / 32
+  / 8, in-air rejection, floor gaps, ladder shortcuts, walls, doors, the 512 limit),
+  `find_path_between_points`' tie rules; `bots.txt`/`bot_say.txt` parsing (the shipped files:
+  64 of 70 names, 25/29/42 lines, the joined freetime line), the name picker, chat formatting,
+  the brain's clamps, delays, angle wrap and button timers. The replica rounds `FindPath`'s
+  heuristic to a float, which `mp.dll`'s x87 code doesn't; the reference data is generated with
+  that rounding removed (it changes ts_dojo's 89 → 25 and 90 → 25, and the original TS prints
+  `path:89,88,25` as the port does).
+* `cargo xtask bots` (also part of `play`): TS bots on a ts_dojo listen server (see
+  `docs/validation.md`).

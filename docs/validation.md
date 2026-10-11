@@ -66,10 +66,11 @@ cargo xtask lint                        # no engine-call macros in game crates; 
 cargo xtask roots                       # which roots exist
 cargo xtask install all                 # assemble <root>/ts and install libraries
 cargo xtask server rehlds-linux --map ts_awaken --bots 4 --seconds 60
-cargo xtask all                         # everything below, about 3.5 min
+cargo xtask all                         # everything below, about 4.5 min
 cargo xtask test                        # dedicated server + 2 bots, 15 s, every root in parallel (~25 s)
-cargo xtask play                        # gameplay on a listen server, fwgs and fwgs-win in parallel (~3 min, meck included)
+cargo xtask play                        # gameplay on a listen server, fwgs and fwgs-win in parallel (~4 min, meck and bots included)
 cargo xtask meck                        # grenades on MecklenburgV_Rain_Final only (~30 s fwgs, ~1 min fwgs-win)
+cargo xtask bots                        # TS's bot AI on ts_dojo only: testpath, four addbot bots, botlearn (~45 s)
 ```
 
 `cargo xtask lint` runs `cargo clippy --workspace --all-targets -- -D warnings` for each of the
@@ -109,7 +110,7 @@ results from `ts_status` dumps, kill notices and developer log lines:
 |---|---|---|
 | Join | The buy menu opens with a random first loadout: reset it, pick an AK47 with a scope and confirm (`slotN`, as the number keys do), click `+attack` after the respawn wait | `[ts] <host> spawned (#1) with [13]` |
 | Wall | `ts_dev_fxlog 1`, stand in front of the dojo's front wall (`100 -760 60`, yaw 70) and fire three single shots | From the `[ts fx]` lines: every first-person flash is more ahead of the eye than off the view axis, within 8 units of the view model's muzzle, and spreads along the view (direction dot > 0.95); three bullets start within 64 units of the shooter and hit within 400; at least three impacts and three decals, all on the wall in front |
-| Bot | `ts_bot_stop 1` (the bot stands still and holds fire), `ts_bot_quota 1` (`addbot` bots get `bots.txt` names, so the scenes use a quota bot) | The quota reads 1 and a bot was added |
+| Bot | `ts_bot_stop 1` (the bot stands still and holds fire), `ts_bot_quota 1` (`addbot` bots get `bots.txt` names, so the scenes use a quota bot; it runs TS's AI like an `addbot` bot) | The quota reads 1 and a bot was added |
 | Lasers | The host and the bot get akimbo Berettas with a laser (`ts_give 2_2` twice, `ts_as 2 ...` for the bot), the host switches to free semi and looks at the bot from the side, `ts_dev_fxlog 1` | From the `[ts fx] laser` lines: two first-person beams, each starting at its gun's muzzle in front of the eye (the right gun right of the left one); the bot's beam starts 16 units along it from its `p_` model's gun hand, which is 4–64 units from its origin (attachments from the drawn model, not the origin FWGS resets them to) |
 | Akimbo | Free semi: `+attack` and `+attack2` in one frame, then 0.3 s apart | From the `[ts fx] akimbo shot` lines: a linked double shot, then the `b0` gun, then the `b1` gun |
 | Power-up | Stand on the slow-motion `ts_powerup` (`0 -672 48`, pwuptype 1) with the bot in view, double-tap `+use` | Held `0x1` after the pickup. Then active `0x1`, host time scale 0.6, bot 0.35 |
@@ -117,7 +118,7 @@ results from `ts_status` dumps, kill notices and developer log lines:
 | Kill | Put the bot in front of the host, aim and fire the AK47 | `<host> killed Bot ...` and a frag |
 | Kick | `kick` the bot the host just killed | No crash (a dropped bot used to crash the engine on its "respawn"), and the quota adds a replacement |
 | Death and respawn | `ts_hurt 1 500`, click through the death cam, click after the wait | Dead with a death, then a second spawn line and alive |
-| Bots | Host suicides and stays observer; `ts_bot_stop 0`, `ts_bot_quota 4`, 70 s of play | Four bots. Within one life, all but at most one of the bots measured (at least two) move over 64 units between dumps 5 s apart. At least 2 `Bot ... killed Bot ...` lines |
+| Bots | Host suicides and stays observer; `ts_bot_stop 0`, `ts_bot_quota 4`, 70 s of play (TS's AI: the shipped ts_dojo node graph, TS's random loadouts) | Four bots. Within one life, all but at most one of the bots measured (at least two) move over 64 units between dumps 5 s apart. At least 2 `Bot ... killed Bot ...` lines |
 | Quota down | `ts_bot_quota 0` | The bots are kicked |
 | addbot | `addbot` on the listen server | "<name> connected with skill", a player with a `bots.txt` name in `ts_status`, no "Bots only in listen servers.", and the quota (0) doesn't kick it |
 | Escape | `ts_dev_keylog 1`, `cancelselect` twice (Escape's binding; the first may close the weapon menu) | `[ts key] cancelselect: escape`: the client sent `escape`, which opens the engine's main menu |
@@ -148,6 +149,21 @@ The map's doors exposed a bug in the `SOLID_BSP` guard (`stock-entities.md` §7.
 entities link before `SET_MODEL`, and the guard had turned every door into `SOLID_BBOX`. The
 "no port guard" check catches a regression.
 
+Then `play` runs the TS bot check (`cargo xtask bots` runs it on its own): TS's bot AI (`mp.dll`
+only; `implementation/rules.md` §10) on its own ts_dojo listen server. It needs a server of its
+own: the play scene's quota kicks wait behind its script (below), and `maxplayers 8` then leaves
+no room for four more bots. The host joins, spawns and suicides, so it watches as an observer.
+Screenshot in `target/bots-<root>-1.png`.
+
+| Scene | How | Passes when |
+|---|---|---|
+| testpath | `botlearn 2` (TS prints `FindPath`'s result only then), `testpath 0 50`, `testpath 10 100`, `testpath 89 25` on the shipped ts_dojo graph | `path:0,47,50`, `path:10,15,63,84,100` and `path:89,88,25`, which is what the original TS 3.0 prints (checked under FWGS win32 with TS's own `mp.dll`; `scripts/ndm.py` gives the first two, see `implementation/rules.md` §10.2) |
+| TS bots | Four `addbot`s (TS's `BotCreate`: `bots.txt` names, random models and skills, TS's random loadouts), 40 s of play with `botlearn 2`, `ts_status` every 5 s | Four bots. At least two `(debug)arrived` lines: TS's print for each node path a bot plans to a roam goal, so the bots navigate over the graph. All but at most one of the bots measured move over 64 units within a life, and at least one kill between the bots |
+| botlearn | `resetnodes`, 6 s with `botlearn 2`, then `loadnodes` and `botlearn 0` | `(debug)1 nodes`, `(debug)2 nodes`, `(debug)3 nodes`: the bots' walk builds a new graph (each new node prints the count). `savenodes` isn't run: the roots link the content's `maps` directory |
+
+The `path:` replies can show in the client's console after the bots have joined, so the check
+searches the whole scene for them.
+
 How the scripts run:
 * Game time runs at 2x (`sys_timescale 2`, with `fps_max 100`), and waits are written in game
   seconds (`secs()` in xtask).
@@ -166,7 +182,8 @@ Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`)
 * `ts_tp <player#> <x> <y> <z> [yaw] [pitch]` teleports a player, drops them to the floor and
   can set their view.
 * `ts_face <player#> <target#>` or `ts_face <player#> <x> <y> <z>` aims a player's view.
-* `ts_bot_stop 1` makes bots stand still and hold fire. They still respawn.
+* `ts_bot_stop 1` makes living bots stand still and hold fire (their AI is skipped). Dead and
+  observing bots still buy their loadout and respawn.
 * `ts_dev_touch <file>` creates an empty file in the game directory (the end-of-script marker).
 * `ts_observe <player#> <mode> [target#]` puts an observer in a spectator mode (5 is in-eye) on a
   target, for clients whose input a script can't drive (the original TS client, below).
@@ -294,6 +311,30 @@ original client's own cfg takes a screenshot every few frames. Findings:
 * Seen on both clients, not investigated: the in-eye view pitches up, away from where the host
   aims, after `ts_tp` set the host's view.
 
+### 3.5 TS's bot AI
+
+The port of TS's bot AI (`implementation/rules.md` §10) was checked three ways:
+
+* **Unit tests** (`cargo test -p ts-server bots`): the node graph against all 43 shipped `.ndm`
+  files and `FindPath` against the decomp's replica on 30,809 node pairs over five maps (all
+  pairs of ts_dojo and ts_japa), every one matching; the text files, name picker and brain
+  helpers.
+* **In engine** (`cargo xtask bots`, part of `play`), on both FWGS roots: `testpath` prints
+  TS's paths; four `addbot` bots roam ts_dojo over the node graph (TS's `(debug)arrived` print
+  for every path they plan: 15–20 in 40 s), move 450–1350 units within a life and kill each
+  other (2–4 kills); with `resetnodes` and `botlearn 2` their walk learns a new graph. The play
+  scene's four quota bots (now TS bots too) scored 9 bot-on-bot kills in 70 s with TS's random
+  loadouts (Benelli, Glock-20C, knives, ...), and bot chat from `bot_say.txt` appears. The
+  dedicated-server matrix passes with TS bots thinking on all six roots (port addition), and
+  each root logs `[ts] bots: 64 names, chat lines [25, 29, 42], <n> nodes` at map start.
+* **Against the original** TS 3.0 (FWGS win32 under Wine with TS's own `mp.dll` and client,
+  `~/games/xash_win_orig`, a temporary cfg only): `addbot` bots fight there too, and with
+  `botlearn 2` its `testpath 89 25`, `testpath 0 50` and `testpath 10 100` print
+  `path:89,88,25`, `path:0,47,50` and `path:10,15,63,84,100` (read from screenshots: the
+  original client shows those lines on the HUD only). The port prints the same three.
+  `scripts/ndm.py` gives `89,87,25` for the first: it rounds the walk heuristic to a float,
+  which the x87 code (`fsqrt` straight into `__ftol`, 0x100719eb) doesn't.
+
 ## 4. Pitfalls found during setup
 
 | Symptom | Cause | Fix |
@@ -320,6 +361,11 @@ original client's own cfg takes a screenshot every few frames. Findings:
 | `ts_bot_quota` on `maxplayers 1` prints `[ts] bots: no free client slot` every 0.5 s | The quota retried with a message each time | A failed add is reported once per streak |
 | Steam client can't join an FWGS dedicated server (`Retrying 127.0.0.1:...`, nothing in the server log) | FWGS servers speak protocol 49 only; the Steam client is protocol 48 | none (engine limitation) |
 | `PF_MessageEnd_I: Unknown User Msg 114` ×3 on a Steam listen server (`developer 1`) | Message 114 is `SrvSett`. The first `CTSGameRules::Think` broadcasts keys 0–2 (`realbullet`, `usecash`, `ammocount`) before any client has received the user-message table, and the engine drops a message it hasn't registered with a client yet | Harmless: each client gets all four `SrvSett` values in `InitHUD` |
+| Four more `addbot`s in the play scene: two fail with "Could not find any free client slots" | The quota's kicks of its four bots wait behind the script (above), and `maxplayers 8` | The TS bot check runs as its own listen server (`cargo xtask bots`) |
+| `testpath`'s `path:` lines show up after later lines (the bots' joins) in the client's console | The client's say-text display, not the server (it prints at once) | The check searches the whole scene |
+| `testpath 89 25` on ts_dojo: the port prints `path:89,88,25`, the decomp's `scripts/ndm.py` replica `89,87,25` | The replica rounds `FindPath`'s walk heuristic to a float before truncating it; `mp.dll` keeps it on the x87 stack (and the original TS 3.0 prints `89,88,25`) | The unit tests' reference data (`bots/testdata/gen.py`) is generated with that rounding removed |
+| The original TS client shows `testpath`'s and `botlearn 2`'s replies on the HUD only, not in the console log | Its say-text print doesn't echo `TextMsg` talk lines to the console | Read them from a `screenshot` (the original's MOTD and buy menu cover the chat: `motdfile` to a missing file, `slot10`) |
+| `savenodes` in a scripted test would overwrite the content's `.ndm` | The roots' `ts/maps` is a symlink to the content directory | The scripts never run `savenodes`; `resetnodes` is followed by `loadnodes` |
 
 ## 5. Steam Half-Life client (HL25, issue #23)
 

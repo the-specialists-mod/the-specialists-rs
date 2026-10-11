@@ -31,6 +31,7 @@ use crate::rules::{self, cvars};
 use crate::world::{self, Cx, DamageInfo};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
+use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::cell::RefCell;
@@ -99,11 +100,15 @@ pub fn game_init() {
 
 /// The bot part of `CTSGameRules::Init` (0x1004d910, from both rules constructors and
 /// `ChangeLevel`): reset and load the node graph, then `BotLoadFiles` (0x1006bee0).
+/// The files are read as TS's `fopen(<gamedir>\bots.txt)` does: from the game directory itself,
+/// relative to the engine's working directory (not through the engine's search path).
 pub fn ts_init() {
     nodes::map_init();
-    let eng = engine();
-    let names = files::BotNames::parse(eng.load_file("bots.txt").as_deref());
-    let say = files::BotSay::parse(eng.load_file("bot_say.txt").as_deref());
+    let dir = std::path::PathBuf::from(engine().game_dir());
+    let names = files::BotNames::parse(std::fs::read(dir.join("bots.txt")).ok().as_deref());
+    let say = files::BotSay::parse(std::fs::read(dir.join("bot_say.txt")).ok().as_deref());
+    let (count, lines) = (names.count, say.count);
+    engine().print(&format!("[ts] bots: {count} names, chat lines {lines:?}, {} nodes\n", nodes::with(|g| g.count())));
     with_files(|f| *f = Files { names, say });
 }
 

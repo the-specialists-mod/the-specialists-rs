@@ -74,7 +74,7 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | `ClientPutInServer` | creates the `Player` entity and spawns it |
 | `ClientCommand` | `commands::client_command`: weapons, stunt, rules, bots, in that order |
 | `PlayerPreThink`/`PostThink` | `Player::pre_think`/`post_think` (hook order in §4.3) |
-| `StartFrame` | `rules::start_frame`, `bots::start_frame` |
+| `StartFrame` | `bots::start_frame` (the quota, then each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), `rules::start_frame` |
 | `PM_Move`/`PM_Init`/`PM_FindTextureType` | `shared::pm` |
 | `UpdateClientData`/`AddToFullPack`/`CreateBaseline` | `net` (+ `Player::fill_client_data`) |
 | `GetWeaponData`/`CmdStart` | `weapons` |
@@ -131,12 +131,12 @@ lists match `ts_i386.so` and `mp.dll` (`implementation/stock-entities.md` §7.5)
 | `hud` | `player::hud::HudCache` | rules package |
 | `tbd` | `player::water::TimeBasedDamage` | rules package (damage types taken, time-based damage, drown recovery) |
 | `suit` | `player::suit::SuitQueue` | rules package (the HEV suit's sentence queue, single player only) |
-| `bot` | `Option<bots::Bot>` | rules package |
+| `bot`, `cbot`, `is_bot`, `next_node_learn` | `Option<Box<bots::Brain>>` (TS's `CBot` part), the class flag, `m_bIsBot`, the node-learning timer | rules package (bots) |
 | `drive` | `entities::stock::drive::DriveState` | stock entities (train/tank driving) |
 
 Fields several subsystems read live on `Player` itself: `slow_target`, `active_powerup`,
 `powerup_until`, `kungfu`, `superjump`, `slots_used`, `cash`, `team`, `frags`, `deaths`,
-`respawn_at`, `joined`. The current time scale is `pev->fuser1` and the stunt state is
+`respawn_at`, `joined`, `player_speed` (`m_flPlayerSpeed`, the bots' walking speed). The current time scale is `pev->fuser1` and the stunt state is
 `pev->iuser4`, because both are networked.
 
 Hook order, fixed in `player/mod.rs`:
@@ -155,7 +155,7 @@ The player's save data (`CBasePlayer::m_playerSaveData`) is mapped in `player/sa
 * **`stunt`**: `CTSStunt`/`CTSAnimation`. It sets `iuser4` bits and impulses, and picks `sequence`/`gaitsequence`. The physics they trigger runs in `shared::pm`.
 * **`weapons`**: the per-player TS gun (one container, 38 weapon records), firing, hit resolution, penetration, `CBulletManager`, grenades, knives, kung fu. API for other subsystems: `give_weapon`, `give_ammo`, `ts_init`, `multiply_clip`, and TS's `weapon_tsgun` item itself (`has_gun`, `give_gun`, `remove_all_items`).
 * **`rules`**: game modes, spawn selection, scoring and awards, death and respawn, power-ups (held slot, activation), slow-motion propagation, chat (`say`), cvars, TS map entities (`entities/ts`), HUD sync (`player/hud.rs`), player damage (`player/damage.rs`), drowning and time-based damage (`player/water.rs`).
-* **`bots`**: fake clients driven by `pfnRunPlayerMove`. They let a dedicated server be exercised without a human. Controlled by the `ts_bot_quota` cvar.
+* **`bots`**: TS's bot AI, which only the Windows `mp.dll` has (decomp `server/bots.md`; `docs/implementation/rules.md` §10): fake clients created by `addbot`/`addcustombot` (listen servers only, as TS) or the port's `ts_bot_quota` (also on dedicated servers, for testing), each with a `CBotBrain` (`bots::brain`: strategy state, modules for vision, attack, buy, stunt, look around, power-up and chat, a node-graph navigator) that presses buttons and sends one `pfnRunPlayerMove` per frame, like a human's usercmd. `bots::nodes` is TS's `CNodeGraph`: the shipped `maps/*.ndm` waypoint files, node learning from every player's walk (`botlearn`), and `FindPath`; it talks to the engine through a trait, so it is unit tested against the shipped files and the decomp's replica.
 
 ### 4.5 Damage
 

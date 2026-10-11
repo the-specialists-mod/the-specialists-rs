@@ -19,7 +19,7 @@ on Linux and Windows. The latest release is
 | Player movement (shared, predicted) | The TS `pm_shared` port: ladders, water, duck, step-up, the TS jump, friction and acceleration, the `fuser1` time scale. 27 unit tests. |
 | Stunts and animation | Dives, rolls, flips, cartwheels, wall jump and climb, slide and prone, super jump, bullet-time dodge. TS animation selection. |
 | Weapons | All 37 TS weapons from the decoded tables. One shared `Gun` state machine for server and client prediction: fire modes, akimbo, burst, pump, zoom, attachments. Penetration, simulated bullets, grenades, thrown blades, kung fu with blocks, dropped guns, loadouts. |
-| Game rules | DM, team DM, LMS, The One. Spawn selection, scoring and awards, power-ups (slow motion, slow pause, double fire rate, infinite clip, kung fu, health, armour, super jump), slow-motion propagation, chat and chat votes (`vote map`/`stats`/`reset`), MOTD, the TS cvars, bots, HLTV director messages. |
+| Game rules | DM, team DM, LMS, The One. Spawn selection, scoring and awards, power-ups (slow motion, slow pause, double fire rate, infinite clip, kung fu, health, armour, super jump), slow-motion propagation, chat and chat votes (`vote map`/`stats`/`reset`), MOTD, the TS cvars, TS's bots (the Windows server's AI: `addbot`, the `.ndm` node graph, `botlearn`), HLTV director messages. |
 | Map entities | 72 stock classnames with TS's changes (respawning breakables and doors, …) plus the TS entities. All 97 shipped maps load, and 88.8 % of map entities have a class. |
 | Client HUD and UI | Every server message hooked. TS HUD in draw order, the loadout/buy menu, scoreboard, team select, MOTD, `ShowMenu`. TS input with `+alt1`/`+alt2`, the anti-script gate, and mouse look for FWGS and Steam GoldSrc. |
 | Client view and effects | TS view (bob, client-side recoil, third person, slow-mo tint and fades), all 11 weapon events, the TS particle system and map emitters, lasers, flashlights, shadows, the TS studio renderer (split torso/legs bones) and motion-blur ghosts. |
@@ -33,7 +33,7 @@ Per-subsystem details, decomp mappings and gaps: [docs/implementation/](docs/imp
 Every change is checked with `cargo xtask all`: a dedicated server with bots on all six engine
 roots, then scripted listen-server gameplay on both FWGS roots (join, buy, spawn, wall shots,
 lasers, akimbo, power-ups, grenades, kills, kick, death and respawn, bot fights, the Escape menu,
-grenade kills and breakables on `MecklenburgV_Rain_Final`). v0.1.0 passed it with the stripped
+grenade kills and breakables on `MecklenburgV_Rain_Final`, TS's bot AI and node graph on `ts_dojo`). v0.1.0 passed it with the stripped
 release libraries, and the 663 unit tests pass.
 
 | Engine | Server | Client |
@@ -116,7 +116,7 @@ Dedicated server, e.g. ReHLDS or HLDS on Linux:
 ```sh
 ./hlds_linux -game ts +maxplayers 16 +map ts_lobby
 # bots: put `ts_bot_quota N` in ts/server.cfg (GoldSrc runs command-line +cvars before the
-# game registers its cvars)
+# game registers its cvars). TS's own `addbot` works on listen servers only, as in TS.
 ```
 
 ## Development and validation
