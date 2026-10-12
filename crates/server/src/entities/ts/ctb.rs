@@ -14,7 +14,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
-use shared::protocol::rules::{ScoreInfo, TsFlag, TsHVoice};
+use shared::protocol::rules::{RoundTime, ScoreInfo, TsFlag, TsHVoice};
 use shared::weapons::spread::{self, Vec3};
 use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
@@ -258,8 +258,10 @@ fn capture(cx: &mut Cx, player: *mut edict_t) {
         msg::ts_message_all([0, 255, 0], 8, 30, &eng.string(message).to_string_lossy());
     }
     if rules::slot_players().len() < 2 {
+        // TS zeroes each team's cash (and an unused counter) too.
         state::with(|g| {
             for t in &mut g.teams {
+                t.cash = 0;
                 t.score = 0;
             }
         });
@@ -726,7 +728,11 @@ impl<const SCORE: bool> Entity for WinGiver<SCORE> {
         cx.think_in(10.0);
     }
 
-    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+    /// `CTSWinGiver::Use` (0x8bfb0; latched until `EnableObjective`, which nothing calls in the
+    /// port) / `CTSScoreGiver::Use` (0x8c158): after `callsnumber` calls, `TeamWin(winnerteam,
+    /// (int)value, restart, isScore)` (a wingiver always asks for a restart, a scoregiver with
+    /// flag 1), then `message`.
+    fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, value: f32) {
         if self.used && !SCORE {
             return;
         }
@@ -734,49 +740,89 @@ impl<const SCORE: bool> Entity for WinGiver<SCORE> {
         if self.calls < self.calls_needed {
             return;
         }
-        self.calls = 0;
-        if !SCORE {
-            self.used = true;
-        }
-        team_win(self.winner, SCORE);
+        let restart = !SCORE || cx.pev().spawnflags & 1 != 0;
+        team_win(self.winner, super::c_int(f64::from(value)), restart, SCORE);
         let m = cx.pev().message;
         if m != 0 {
             msg::ts_message_all([0, 255, 0], 8, 30, &engine().string(m).to_string_lossy());
         }
-        if SCORE && cx.pev().spawnflags & 1 != 0 {
-            crate::rules::frame::restart_round(engine().time());
+        self.calls = 0;
+        if !SCORE {
+            self.used = true;
         }
     }
 }
 
-/// `CTSGameRules::TeamWin` (score part): team score, announcement, `TSHVoice`, `TeamScore`.
-fn team_win(team: i32, is_score: bool) {
-    if rules::slot_players().len() < 2 {
+/// What `TeamWin` gives each player: the winners `cash` (`cashforwin` when 0), everyone else
+/// `cashforlose`; and whether they lost (`TSHVoice`).
+fn team_win_cash(winner: i32, player_team: i32, cash: i32) -> (i32, bool) {
+    let win = if cash == 0 { crate::rules::cvars::CASH_FOR_WIN } else { cash };
+    if winner != player_team { (crate::rules::cvars::CASH_FOR_LOSE, true) } else { (win, false) }
+}
+
+/// `CTSGameRules::TeamWin(team, cash, restart, isScore)` (0x78a08). With the round timer on and
+/// not a score, `RoundTime` (`(int)(end - time)`, state 2); a restart sets the round restart in
+/// 3 s and clears the round end (only LMS DM's `Think` acts on it). Fewer than two players
+/// (`CountPlayers`): every team back to `initial_cash` and score 0, "Waiting for other
+/// players.". Otherwise each `UTIL_PlayerByIndex` + `IsPlayer()` player gets its cash and
+/// `TSHVoice`, then `team` 2 is a draw, any other team scores ("%s Win!" / "%s Score!") and the
+/// log line. `TeamScore` only in round modes 2/3.
+fn team_win(team: i32, cash: i32, restart: bool, is_score: bool) {
+    let eng = engine();
+    let now = eng.time();
+    let (timer, end, mode) = state::with(|g| (g.round_timer, g.round_end, g.mode));
+    if timer && !is_score {
+        let rt = RoundTime { secs: crate::rules::frame::round_time_byte(f64::from(end) - f64::from(now)), state: 2 };
+        msg::all(Msg::RoundTime, |w| rt.write(w));
+    }
+    if restart {
+        state::with(|g| {
+            g.round_restart = now + 3.0;
+            g.round_end = 0.0;
+        });
+    }
+    let players = rules::slot_players();
+    if players.len() < 2 {
         state::with(|g| {
             for t in &mut g.teams {
+                t.cash = crate::rules::cvars::INITIAL_CASH;
                 t.score = 0;
             }
         });
-        msg::ts_message_all([0, 255, 0], 8, 30, "Waiting for other players.");
-        return;
-    }
-    if team == 2 {
-        msg::ts_message_all([0, 255, 0], 8, 30, "Game Draw");
+        msg::ts_message_all([0, 0, 0], 8, 30, "Waiting for other players.");
     } else {
-        let name = state::with(|g| {
-            let t = g.teams.get_mut(team.max(0) as usize)?;
-            t.score += 1;
-            Some(t.name.clone())
-        });
-        if let Some(name) = name {
-            msg::ts_message_all([0, 255, 0], 8, 30, &format!("{name} {}", if is_score { "Score!" } else { "Win!" }));
+        for o in players {
+            let (amount, lost) = team_win_cash(team, team_index_of(o), cash);
+            // A player whose own call fired the giver gets it at once (lent), any other one held
+            // by a dispatch once that returns.
+            crate::world::run_now_or_defer(o, move || {
+                rules::other(o, |p| lifecycle::give_cash(p, amount));
+            });
+            msg::one(Msg::TsHVoice, o, |w| TsHVoice { lost: lost as u8 }.write(w));
+        }
+        if team == 2 {
+            msg::ts_message_all([0, 0, 0], 8, 30, "Game Draw");
+            msg::log("Round draw\n");
+        } else {
+            // Guard: TS indexes its four-team table with any `winnerteam`, writing outside it for
+            // one that isn't 0..3; the port scores and announces only a real team.
+            let won = state::with(|g| {
+                let t = usize::try_from(team).ok().and_then(|i| g.teams.get_mut(i))?;
+                t.score += 1;
+                Some((t.name.clone(), t.score))
+            });
+            if let Some((name, score)) = won {
+                msg::ts_message_all([0, 0, 0], 8, 30, &format!("{name} {}", if is_score { "Score!" } else { "Win!" }));
+                // TS's format has two `%d`s it passes nothing for; the port logs the score and the
+                // team's player count.
+                let members = rules::slot_players().into_iter().filter(|&p| team_index_of(p) == team).count();
+                msg::log(&format!("Team \"{name}\" scored \"{score}\" with \"{members}\" players\n"));
+            }
         }
     }
-    for o in rules::slot_players() {
-        let lost = (team != team_index_of(o)) as u8;
-        msg::one(Msg::TsHVoice, o, |w| TsHVoice { lost }.write(w));
+    if matches!(mode, state::Mode::RoundTdm | state::Mode::Objective) {
+        teams::send_team_scores();
     }
-    teams::send_team_scores();
 }
 
 #[cfg(test)]
@@ -821,6 +867,17 @@ mod tests {
             flag_log_line("Neo", 7, "STEAM_0:1:2", "aquired_briefcase", "two elephants"),
             "\"Neo<7><STEAM_0:1:2><7>\" triggered \"aquired_briefcase\" (contents \"two elephants\")\n"
         );
+    }
+
+    #[test]
+    fn team_win_cash_goes_to_both_sides() {
+        // The Use value for the winners, cashforwin when it is 0; cashforlose for the rest.
+        assert_eq!(team_win_cash(1, 1, 500), (500, false));
+        assert_eq!(team_win_cash(1, 1, 0), (10000, false));
+        assert_eq!(team_win_cash(1, 0, 500), (1200, true));
+        // A draw (2) has no winners in a two-team game.
+        assert_eq!(team_win_cash(2, 0, 0), (1200, true));
+        assert_eq!(team_win_cash(2, -1, 0), (1200, true));
     }
 
     #[test]
