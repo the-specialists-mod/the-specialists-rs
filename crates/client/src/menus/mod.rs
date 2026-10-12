@@ -653,6 +653,8 @@ fn click(x: i32, y: i32) {
 // ---- drawing ---------------------------------------------------------------------------------
 
 /// A TS menu column (`FUN_1004fed0` / `FUN_1004ff10`): rows of 128×20, a translucent box per row.
+/// `FUN_1004ff10` takes a brightness scale, 1.0 or 0.5 (`dim`): the box is the row colour at
+/// alpha `ftol(50·scale)` and the text the row colour times the scale.
 struct Column<'a> {
     dc: &'a Dc<'a>,
     x: i32,
@@ -664,11 +666,17 @@ struct Column<'a> {
 
 impl Column<'_> {
     fn row(&mut self, text: &str, rgb: [i32; 3], key: i32) {
+        let dim = self.dim;
+        self.row_scaled(text, rgb, key, dim);
+    }
+
+    /// A row with its own brightness: TS draws the chosen category and weapon at full
+    /// brightness in a dimmed column.
+    fn row_scaled(&mut self, text: &str, rgb: [i32; 3], key: i32, dim: bool) {
         let (w, h) = (128, 20);
-        let a = if self.dim { 25 } else { 50 };
-        self.dc.fill(self.x, self.y, w - 1, h - 1, rgb, a);
-        let t = rgb.map(|c| (c * 2).min(255));
-        let t = if self.dim { half(t) } else { t };
+        let scale = if dim { 0.5 } else { 1.0 };
+        self.dc.fill(self.x, self.y, w - 1, h - 1, rgb, hud::draw::ftol(50.0 * scale));
+        let t = rgb.map(|c| hud::draw::ftol(c as f64 * scale));
         self.dc.string(self.x, self.y, &localise(text), t);
         if key > 0 {
             self.rows.push((self.x, self.y, w, h, self.page, key));
@@ -688,7 +696,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     use hud::text::Arg::I;
     if b.page == page::TEAM {
         let mut c = Column { dc, x: 8, y: y0, page: page::TEAM, dim: false, rows };
-        c.row("#Chg_ChangeTeam", RED, 0);
+        c.row("#Chg_ChangeTeam", GREEN, 0);
         c.row("1 #Chg_Join Specialists", hud2, 1);
         c.row("2 #Chg_Join Mercenaries", hud2, 2);
         c.row("0 #Chg_Cancel", BACK, 10);
@@ -709,8 +717,9 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
         let prices = [900, 800, 500, 1800];
         for bit in 0..4 {
             if b.attachment_allowed(1 << bit) {
+                // The label shows the attachment's own price; the colour tests base + attachment.
                 let price = base.wrapping_add(prices[bit]);
-                let text = fmt(&format!("%i {}  %i", labels[bit]), &[I(bit as i64 + 2), I(price as i64)]);
+                let text = fmt(&format!("%i {}  %i", labels[bit]), &[I(bit as i64 + 2), I(prices[bit] as i64)]);
                 c.row(&text, if price.wrapping_add(cur.total) <= buy::CASH { hud2 } else { RED }, bit as i32 + 2);
             }
         }
@@ -733,9 +742,11 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
                 continue;
             }
             let Some(w) = shared::weapons::tables().weapon(id as u8) else { continue };
-            let (key, ch) = if row < 9 { (row as i32 + 1, (b'1' + row as u8) as char) } else { (11, 'a') };
+            let (key, ch) = if row < 9 { (row as i32 + 1, (b'1' + row as u8) as char) } else { (11, 'A') };
             let ok = affordable(w.cost, w.slots);
-            c.row(&format!("{ch} {}", w.name), if ok { hud2 } else { RED }, key);
+            // `0x10037ad4`: full brightness on the weapon page and for the chosen weapon.
+            let dim = b.page != page::WEAPONS && id != b.pending_weapon;
+            c.row_scaled(&format!("{ch} {}", w.name), if ok { hud2 } else { RED }, key, dim);
         }
         if b.page == page::WEAPONS {
             c.row("0 #Buy_GoBack", BACK, 10);
@@ -760,7 +771,9 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     if matches!(b.page, page::CATEGORY | page::WEAPONS | page::OPTIONS | page::ITEMS) {
         let mut c = Column { dc, x: 0x88, y: y0, page: page::CATEGORY, dim: b.page != page::CATEGORY, rows };
         for (i, name) in buy::CATEGORIES.iter().enumerate() {
-            c.row(&format!("{} {name}", i + 1), hud2, i as i32 + 1);
+            // `0x1003788c`: the chosen category keeps full brightness.
+            let dim = b.page != page::CATEGORY && i as i32 != b.category;
+            c.row_scaled(&format!("{} {name}", i + 1), hud2, i as i32 + 1, dim);
         }
         c.row("6 #Buy_PlayerAccessory", hud2, 6);
         if b.page == page::CATEGORY {
@@ -777,7 +790,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     if matches!(b.page, page::SAVE | page::LOAD) {
         let save = b.page == page::SAVE;
         let mut c = Column { dc, x: 0x88, y: y0, page: b.page, dim: false, rows };
-        c.row(if save { "#Buy_SaveEquipment" } else { "#Buy_LoadEquipment" }, RED, 0);
+        c.row(if save { "#Buy_SaveEquipment" } else { "#Buy_LoadEquipment" }, GREEN, 0);
         for (i, s) in b.saved.iter().enumerate() {
             let key = if s.total < 1 { "#Buy_SlotEmpty" } else { "#Buy_SlotAvailable" };
             let text = fmt(&localise(key), &[I(i as i64 + 1)]);
@@ -845,13 +858,13 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
                 y += 0x30;
                 continue;
             }
-            let mut ids = vec![e.id];
-            if e.akimbo
-                && let Some(a) = t.weapon(e.id as u8).map(|w| w.akimbo).filter(|&a| a >= 0)
-            {
-                ids = vec![a];
-            }
-            for id in ids {
+            // `FUN_10036af0`: the gun in its own bucket, then for an akimbo entry the akimbo
+            // weapon in its bucket too, always with the gun's ammo (flags 5) and the same
+            // attachments.
+            let Some(base) = t.weapon(e.id as u8) else { continue };
+            let rounds = cur.ammo[base.ammo as usize & 15].0;
+            let akimbo = (e.akimbo && base.akimbo >= 0).then_some(base.akimbo);
+            for (id, second) in std::iter::once((e.id, false)).chain(akimbo.map(|a| (a, true))) {
                 let Some(w) = t.weapon(id as u8) else { continue };
                 if w.hud[0] as i32 != bucket {
                     continue;
@@ -860,10 +873,12 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
                 if let Some(&s) = dc.g.ts.weapons.get(id as usize) {
                     dc.spr(s, x, y, rgb);
                 }
-                if e.count != 0 {
+                if second {
+                    dc.number(x, y + 5, hud::draw::num::DIGITS_3 | hud::draw::num::DRAW_ZERO, rounds, dc.hud);
+                } else if e.count != 0 {
                     dc.number(x, y + 5, hud::draw::num::DIGITS_2, e.count, dc.hud);
                 } else if w.ammo != 0 {
-                    dc.number(x, y + 5, hud::draw::num::DIGITS_3 | hud::draw::num::DRAW_ZERO, cur.ammo[w.ammo as usize & 15].0, dc.hud);
+                    dc.number(x, y + 5, hud::draw::num::DIGITS_3 | hud::draw::num::DRAW_ZERO, rounds, dc.hud);
                 }
                 let s = buy::attachment_summary(e.att, &|k| localise(k));
                 if !s.is_empty() {
@@ -936,22 +951,25 @@ fn paint_vgui() {
     });
 }
 
-pub fn redraw(time: f32) {
-    let _ = time;
-    // CHudTSWeapons::Draw closes the buy menu once you're alive again (except the team page).
+/// The buy menu's part of `CHudTSWeapons::Draw` (`0x1004d3f0`), which runs only with `nohud` 0
+/// and, like every element, not under `HIDEHUD_ALL` or in intermission: the menu is drawn
+/// (right after the laser dots, under the rest of the weapons element), then closed once you're
+/// alive again (except the team page). Hidden, it stays open and keeps its keys and cursor.
+pub fn draw_buy_menu(dc: &Dc) {
+    let r = rules();
+    with(|m| {
+        m.rows.clear();
+        if m.buy.active {
+            draw_buy(dc, &m.buy, &r, &mut m.rows);
+        }
+    });
     if buy_open() && !hud::dead_or_observer() && with(|m| m.buy.page != page::TEAM) {
         with(|m| m.buy.close());
     }
-    let r = rules();
-    hud::with_dc(|dc| {
-        let nohud = crate::input::cvars().nohud.value() != 0.0;
-        with(|m| {
-            m.rows.clear();
-            if m.buy.active && !nohud {
-                draw_buy(dc, &m.buy, &r, &mut m.rows);
-            }
-        });
-    });
+}
+
+pub fn redraw(time: f32) {
+    let _ = time;
     paint_vgui();
     if !scores_visible() {
         // Squelch mode ends with the scoreboard (also when intermission hid it).

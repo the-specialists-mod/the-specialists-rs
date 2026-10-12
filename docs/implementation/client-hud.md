@@ -280,10 +280,11 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
 ## 5. HUD draw pass (TS order)
 
 Train → HudText (`CHudMessage`) → status bar → death notices (`nohud` gate) → status icons → HLTV name tags → weapons
-element (laser dots, drawn even with `nohud`; equipment/slot menu, kung-fu label or weapon info,
+element (laser dots, drawn even with `nohud`; then without `nohud` the buy menu, which is also
+closed here once you're alive; equipment/slot menu, kung-fu label or weapon info,
 crosshair or wire panel) → status element (round timer, TS messages, objective text, teammate
 markers, crosshair ID, status panel, power-up, objective markers) → say text → `CHudMenu` → the
-logo → (VGUI pass) spectator panel, voice labels, (menus module) buy menu, then the viewport's
+logo → (VGUI pass) spectator panel, voice labels, then the viewport's
 children in their order: team menu, scoreboard, MOTD; then the cursor. As in `CHud::Redraw` (`10021aa0`), `HIDEHUD_ALL` hides every element, and
 during intermission only the say text (`HUD_INTERMISSION`) and the logo draw. TS messages fade
 over their last second: each channel is `__ftol(base × min(expire − now, 1))`, the base being the
@@ -368,7 +369,21 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   bubble sort (melee/grenades first, then ascending price). Verified against the disassembly at
   0x10039620..0x10039810 (format strings `%i_%i `, `%i `, `tkw `/`tki `/`tka `).
 * Opens only when dead or observing (`buy`, or automatically on each local `Spectator` message with observer 1); closes
-  when alive again (except the team page); first open of the session random-buys like TS.
+  when alive again (except the team page), from `CHudTSWeapons::Draw` (`0x1004d3f0`), so not
+  while `nohud`, `HIDEHUD_ALL` or intermission hides the HUD (it stays open, unseen, with its keys
+  and cursor); first open of the session random-buys like TS, and every random config
+  (`100398e0`, also key 7) becomes the last config, so the next open shows it again.
+* Drawing (`FUN_1004ff10`): each row is a 127×19 box in the row colour at alpha `50·scale` with the
+  text in the row colour × `scale`, the scale 1.0 for the page's own column and 0.5 for the parent
+  columns, except the chosen category (`0x1003788c`) and the chosen weapon (`0x10037ad4`), which
+  keep 1.0. Ordinary rows are the HUD colour / 2, affordable "Buy"/akimbo rows green (45,195,45),
+  the save/load and team headers green, unaffordable rows red (195,45,45), "Go back" (100,100,205).
+  Weapon rows are keyed `1`..`9`, `A`; attachment rows show the attachment's own price (the
+  colour tests the gun plus it). The loadout bar shows an akimbo entry as the gun in its bucket
+  and the akimbo weapon in its own, both with the gun's ammo. **Was** (issue #82): text at twice
+  the row colour, whole parent columns dimmed, red headers, base + attachment prices, `a`, the
+  akimbo weapon alone; random configs not kept as the last one; the menu drawn after the HUD
+  and closed whatever `nohud`.
 * Mouse (`MouseEvent` 10038360, only while no VGUI menu is up): a left release runs
   `FUN_10038410`'s hit test (`BuyMenu::hit_test`: 128 px columns from x 8, 20 px rows from
   mid-screen, each column answering for its own page) and a miss is key 1 of the current page; a
