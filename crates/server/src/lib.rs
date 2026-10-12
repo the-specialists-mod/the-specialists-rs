@@ -19,6 +19,7 @@ pub mod entities;
 pub mod messages;
 pub mod net;
 pub mod player;
+pub mod plugin_api;
 pub mod precache;
 pub mod rules;
 pub mod save;

@@ -15,7 +15,7 @@ are Ghidra addresses.
 | `rules/lifecycle.rs` | connect / disconnect / kill / userinfo, `TSInit` + spawn, InitHUD (both rules objects), observer, `respawn`, `Killed`, `PlayerDeathThink`, fall damage, the `+use` double tap (`TSUse`; using objects is `player::player_use`). |
 | `rules/scoring.rs` | `PlayerKilled`, `TSGetPointsForFrag`, `DeathNotice`, The One handover. |
 | `rules/spawnpoint.rs` | `EntSelectSpawnPoint` + `TSSelectSpawnSpot` + `GetPlayerSpawnSpot`. |
-| `rules/powerup.rs` | held/active power-ups, `SlowMotionFlow`, `GoSlow`, `InterpolateSlowMotion`, `TakeArmor`. |
+| `rules/powerup.rs` | held/active power-ups, `SlowMotionFlow`, `GoSlow`, `InterpolateSlowMotion`, `TakeArmor`; the plugin API's power-up runs, time scale and `TSSlowMo` override (port additions, `plugin-api.md`). |
 | `rules/frame.rs` | `StartFrame`: Multiplay `Think` (limits, intermission) and `CTSGameRules::Think` (global slow, auto power-ups, LMS rounds, The One, SrvSett). |
 | `rules/mapcycle.rs` | `ChangeLevel` and the SDK map cycle (`ReloadMapCycleFile`, min/max players, rule commands). |
 | `rules/teams.rs` | teamplay assignment, `ChangePlayerTeam`, TeamInfo/TeamNames/TeamScore. |
@@ -276,6 +276,11 @@ TS keeps constant are written as such (`m_bitsHUDDamage` -1, the rest 0). `Resto
 ## 6. Deviations from TS 3.0
 
 Port additions:
+* The plugin API (`plugin-api.md`) reaches into the power-up and slow-motion code: a power-up a
+  plugin runs (`PlayerRules::plugin_powerup`) goes through `UpdatePowerUpState` without a held
+  one and leaves the held one alone when it ends; a pickup doesn't clear it. A plugin's time scale
+  (`PlayerRules::plugin_speed`) makes the player an activator limited to an aura in
+  `SlowMotionFlow`, and `set_physics_speed` overrides the `TSSlowMo` amount.
 * `ts_bot_quota` (TS's bots on dedicated servers too) and `ts_bot_stop`: §10.1. On a full server
   the quota retries quietly every 0.5 s.
 * `ts_pm_arith` (`msvc` default, or `gcc`): the server's movement and shared weapon arithmetic, `mp.dll`'s or

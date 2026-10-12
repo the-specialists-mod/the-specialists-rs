@@ -52,6 +52,7 @@ crates/
     data/        weapons.toml, ammo.toml, combat.toml, assets.toml (decoded from the decomp)
   server/        ts-server: server game logic (rlib, no unsafe)
   server-dll/    ts-server-dll: cdylib -> dlls/ts_i386.so, ts_amd64.so, mp.dll (exports, callbacks)
+  plugin-api/    ts-plugin-api: the C ABI table server plugins (AMX Mod X tsx) get from CreateInterface
   client/        ts-client: client game logic (rlib, no unsafe)
   client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll
 xtask/           build, dist, install, server tests
@@ -76,7 +77,7 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | `ClientPutInServer` | creates the `Player` entity and spawns it |
 | `ClientCommand` | `commands::client_command`: weapons, stunt, rules, bots, in that order |
 | `PlayerPreThink`/`PostThink` | `Player::pre_think`/`post_think` (hook order in §4.3) |
-| `StartFrame` | `bots::start_frame` (the quota, then each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), `rules::start_frame` |
+| `StartFrame` | `bots::start_frame` (the quota, then each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), `rules::start_frame`, then `plugin_api::start_frame` (the plugin API's player snapshots) |
 | `PM_Move`/`PM_Init`/`PM_FindTextureType` | `shared::pm` |
 | `UpdateClientData`/`AddToFullPack`/`CreateBaseline` | `net` (+ `Player::fill_client_data`) |
 | `GetWeaponData`/`CmdStart` | `weapons` |
@@ -92,15 +93,20 @@ lists match `ts_i386.so` and `mp.dll` (`implementation/stock-entities.md` §7.5)
   called.") and stores the engine's studio API and bone matrices, but returns 0, so every engine
   keeps its own server bone setup. There's no server-side bone maths in TS to port; hitboxes and
   studio traces use the engine's.
-* `CreateInterface` (Windows only): mp.dll's tier1 factory has nothing registered, so it reports
-  `IFACE_FAILED` and returns NULL.
+* `CreateInterface`: mp.dll's tier1 factory has nothing registered, so TS reports `IFACE_FAILED`
+  and returns NULL. The port's answers one name, `TSRS_PluginApi001`, with the plugin API table
+  (`ts-plugin-api`, `ts_server::plugin_api`; `implementation/plugin-api.md`), and is exported on
+  every platform: on Linux it is the one export `ts_i386.so` doesn't have (port addition).
 * `anglemod`, `Length`, `Q_log2` (Linux only): GCC exported these `pm_math.c` helpers. They call
   `shared::pm::{anglemod, length, q_log2}`, in `ts_i386.so`'s x87 arithmetic.
 
 ### 4.2 Entity framework (`world.rs`, `entities/`)
 
 * One Rust object per game-owned edict, kept in a generational slab. The edict's private data
-  holds the handle. `OnFreeEntPrivateData` drops the object.
+  holds the handle, at offset 8 of a zeroed block of at least 0x80 bytes (TS-sized for players,
+  `weapon_tsgun` and thrown knives), so AMX Mod X's fakemeta and hamsandwich, which take the block
+  for TS's C++ object, neither overflow it nor follow a vtable pointer
+  (`implementation/plugin-api.md` §3). `OnFreeEntPrivateData` drops the object.
 * **Take-out dispatch:** during a callback the object is moved out of its slot. Engine calls that
   re-enter the game (touch, remove, create, damage to *another* entity) therefore work. Damage to
   *yourself* can't be dispatched; handle it with the `&mut self` you hold. Work for a taken-out
@@ -366,6 +372,11 @@ keeps the game running and logs it ("(port guard)"):
   `implementation/stock-entities.md` §7.8.
 * The client's `exit(-1)` on a model with more than 4 attachments
   (`implementation/client-rendering.md`).
+
+Server plugins get a port-only API instead of TS's object layout: `CreateInterface` hands AMX Mod
+X's TS module a table of functions over the port's player state, and the private-data block only
+looks like TS's object as far as keeping old `get_pdata`/`set_pdata` offsets in bounds
+(`implementation/plugin-api.md`).
 
 One behaviour follows TS's Windows build on every platform:
 

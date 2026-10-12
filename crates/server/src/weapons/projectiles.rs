@@ -182,6 +182,7 @@ pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: b
     spawn_entity::<Grenade>(c"m61_grenade", |g, cx| {
         g.owner = Some(owner);
         g.thrower = Thrower::new(owner);
+        note_thrower(cx.edict, g.thrower);
         g.fuse = 3.0;
         let pev = cx.pev();
         pev.origin = origin;
@@ -368,6 +369,42 @@ impl Thrower {
     }
 }
 
+/// Port addition (plugin API `projectile_owner`, `crate::plugin_api`): the [`Thrower`] of every
+/// grenade, thrown knife and thrown gun, by edict index with the edict's serial number. It
+/// answers while the projectile's own call is on the stack (its object out of the slab), and a
+/// reused slot doesn't match the old serial. Never cleared: entries go stale with their edict.
+#[derive(Default)]
+pub(crate) struct Throwers(Vec<Option<(i32, Thrower)>>);
+
+impl Throwers {
+    fn note(&mut self, index: usize, serial: i32, t: Thrower) {
+        if self.0.len() <= index {
+            self.0.resize(index + 1, None);
+        }
+        self.0[index] = Some((serial, t));
+    }
+
+    fn get(&self, index: usize, serial: i32) -> Option<Thrower> {
+        self.0.get(index).copied().flatten().filter(|&(s, _)| s == serial).map(|(_, t)| t)
+    }
+}
+
+static THROWERS: goldsrc::Global<std::cell::RefCell<Throwers>> = goldsrc::Global(std::cell::RefCell::new(Throwers(Vec::new())));
+
+/// Records the thrower of a new projectile (see [`Throwers`]).
+pub(crate) fn note_thrower(e: *mut edict_t, t: Thrower) {
+    let (index, serial) = (engine().index_of(e), e.serial_number());
+    THROWERS.0.borrow_mut().note(index as usize, serial, t);
+}
+
+/// The player who threw the grenade, knife or gun `e`: `Some(null)` once they left (as
+/// [`Thrower::get`]), `None` when `e` isn't one of those.
+pub fn thrower_of(e: *mut edict_t) -> Option<*mut edict_t> {
+    let (index, serial) = (engine().index_of(e), e.serial_number());
+    let t = THROWERS.0.borrow().get(index as usize, serial);
+    t.map(|t| t.get())
+}
+
 /// Whether a flying impact of `dmg` calls the target's `TraceAttack`: when it is at least the
 /// target's health. TS tests nothing else (`CM61Grenade::WaitThink` 0x7cacc, `CTSKnife::WaitThink`
 /// 0x7ea30, `CTSWorldGun::Fall` 0xa0d84), not `takedamage` either: a target that takes no damage
@@ -448,6 +485,7 @@ pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
     spawn_entity::<Knife>(c"knife", |k, cx| {
         k.owner = Some(owner);
         k.thrower = Thrower::new(owner);
+        note_thrower(cx.edict, k.thrower);
         k.btype = btype;
         let pev = cx.pev();
         pev.origin = src;
@@ -750,6 +788,18 @@ impl Knife {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn throwers_match_the_edict_serial() {
+        let mut t = Throwers::default();
+        assert!(t.get(40, 1).is_none());
+        t.note(40, 3, Thrower::NONE);
+        assert!(t.get(40, 3).is_some(), "a projectile whose thrower is gone still is one");
+        assert!(t.get(40, 4).is_none(), "the slot's next entity");
+        assert!(t.get(39, 3).is_none());
+        t.note(2, 1, Thrower::NONE);
+        assert!(t.get(40, 3).is_some(), "growing keeps the others");
+    }
 
     #[test]
     fn knife_descriptions_follow_the_blade_type() {

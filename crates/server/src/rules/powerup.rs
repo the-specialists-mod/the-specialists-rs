@@ -61,8 +61,14 @@ pub fn entity_in_slow(e: *mut edict_t) -> bool {
 }
 
 /// `UpdatePowerUpState`: activator amounts, expiry, dropping on death.
+///
+/// Port addition: a power-up a plugin runs ([`run_powerup`], `PlayerRules::plugin_powerup`) runs
+/// through the same code although nothing is held, and its end clears only the running one: the
+/// held power-up and its seconds stay, and nothing drops.
 pub fn update_state(p: &mut Player, cx: &mut Cx) {
-    if p.ts.held == 0 {
+    // Whatever cleared the running power-up (a spawn, an LMS round) ended the plugin's run too.
+    p.ts.plugin_powerup &= p.active_powerup != 0;
+    if p.ts.held == 0 && !p.ts.plugin_powerup {
         return;
     }
     let now = cx.time();
@@ -92,11 +98,16 @@ pub fn update_state(p: &mut Player, cx: &mut Cx) {
         if now <= p.powerup_until && is_alive {
             return;
         }
-        if !is_alive && continuous && drop_worthy(active, p.ts.held_secs) {
+        if !is_alive && continuous && !p.ts.plugin_powerup && drop_worthy(active, p.ts.held_secs) {
             drop_powerup(cx.pev().origin, active, p.ts.held_secs);
         }
         if active & pw::SUPERJUMP != 0 {
             cx.pev().gravity = 1.0;
+        }
+        if std::mem::take(&mut p.ts.plugin_powerup) {
+            p.powerup_until = 0.0;
+            p.active_powerup = 0;
+            return;
         }
     }
     p.powerup_until = 0.0;
@@ -121,6 +132,7 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
     let me = cx.edict;
     let my_eye = eye(cx.pev());
     let mine = p.ts.slow_others;
+    let aura = p.ts.plugin_speed.map(|s| s.aura);
     let mut abort = false;
     // `UTIL_PlayerByIndex` and `IsPlayer()`: players who left are slowed too (TS keeps their
     // object; the slowed list holds the slot).
@@ -136,6 +148,10 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
             p.ts.slowed &= !(1 << i);
         }
         if o.is_null() || o == me || !super::has_player(o) {
+            continue;
+        }
+        // Port addition: a plugin's slow reaches only as far as its aura (`plugin_speed_think`).
+        if aura.is_some_and(|a| super::dist(my_eye, eye(o.v())) > a) {
             continue;
         }
         let Some((oself, oothers)) = other(o, |q| (q.ts.slow_self, q.ts.slow_others)) else { continue };
@@ -186,7 +202,7 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
             if class != c"grenade" && v.velocity == [0.0; 3] {
                 continue;
             }
-            if p.ts.slowed_ents.contains(&it) {
+            if p.ts.slowed_ents.contains(&it) || aura.is_some_and(|a| super::dist(my_eye, v.origin) > a) {
                 continue;
             }
             let tr = eng.trace_line(my_eye, v.origin, IGNORE_MONSTERS, me);
@@ -303,9 +319,13 @@ pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32) -> bool {
             return false;
         }
     } else {
-        p.active_powerup = 0;
+        // Port addition: a power-up a plugin runs carries on (TS never reaches this with one
+        // running: the held one is the running one, and a full slot refuses pickups).
+        if !p.ts.plugin_powerup {
+            p.active_powerup = 0;
+            p.powerup_until = 0.0;
+        }
         p.ts.held = bits;
-        p.powerup_until = 0.0;
         p.ts.held_secs = secs;
     }
     // `EMIT_SOUND_DYN(..., 0.5)` (call at 0x97de1): the pickup's pitch drops with the player's time scale.
@@ -314,13 +334,123 @@ pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32) -> bool {
 }
 
 /// The `TSSlowMo` value: 0.225 under slow pause, 0.35 under slow motion, else the display amount.
+/// Port addition: a plugin's `set_physics_speed` (`PlayerRules::physics_speed`) replaces it.
 pub fn hud_slow_amount(p: &Player) -> f32 {
-    if p.active_powerup & pw::SLOWPAUSE != 0 {
+    if let Some(v) = p.ts.physics_speed {
+        v
+    } else if p.active_powerup & pw::SLOWPAUSE != 0 {
         0.225
     } else if p.active_powerup & pw::SLOWMO != 0 {
         0.35
     } else {
         p.ts.slow_display
+    }
+}
+
+// ---- server plugins (port additions, `crate::plugin_api`) ---------------------------------------
+
+/// A plugin's time scale for a player and everyone within `aura` units of them, until `until`
+/// (`PlayerRules::plugin_speed`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PluginSpeed {
+    /// The time scale (`fuser1` target), 0.01 to 2.
+    pub amount: f32,
+    pub aura: f32,
+    pub until: f32,
+}
+
+/// Port addition (`set_speed`): the player becomes a slow-motion activator, as a slow-motion
+/// power-up makes it (`UpdatePowerUpState` 0x95748), with `amount` for itself and for the others
+/// (`pl+0x17c` / `pl+0x180`), but only for players and projectiles within `aura` units
+/// ([`slow_flow`]). `secs` 0 ends a running one at the next think.
+pub fn set_plugin_speed(p: &mut Player, now: f32, amount: f32, aura: f32, secs: f32) {
+    if secs == 0.0 {
+        if let Some(s) = p.ts.plugin_speed.as_mut() {
+            s.until = 0.0;
+        }
+        return;
+    }
+    // `FixedSlowAmt` (0x990bc): TS never scales time below 0.01, and 0 means "no activator".
+    p.ts.plugin_speed = Some(PluginSpeed { amount: amount.max(0.01), aura, until: now + secs });
+    p.ts.next_flow = 0.0; // the first `SlowMotionFlow` on the next think, not up to 0.5 s later
+}
+
+/// Port addition: keeps a plugin's [`PluginSpeed`] going, between `UpdatePowerUpState` and
+/// `SlowMotionFlow` in PreThink, so it wins over a slow-motion power-up's amounts while it lasts.
+/// At its end (or the player's death) everything it slowed goes back to normal time, as
+/// `DeactivateSlowMotionFlow` (0x96a9c) does for a power-up.
+pub fn plugin_speed_think(p: &mut Player, cx: &mut Cx) {
+    let Some(s) = p.ts.plugin_speed else { return };
+    if s.until <= cx.time() || !alive(cx.pev()) {
+        p.ts.plugin_speed = None;
+        deactivate_flow(p, cx);
+        return;
+    }
+    p.ts.slow_self = s.amount;
+    p.ts.slow_others = s.amount;
+    p.ts.btime = false;
+}
+
+/// The power-ups that run for a time once used: the stored ones (`STORED`), infinite clip and
+/// superjump, whose running bits TS also reads (`InfiniteClips` 0x75fa8.., the 0.15 gravity of
+/// `UpdatePowerUpState`).
+pub const RUNNABLE: u16 = pw::STORED | pw::INFINITE_CLIP | pw::SUPERJUMP;
+
+/// The seconds a power-up runs for when used: `SetupPowerUp`'s base duration (0x98014) with
+/// `pwupmult` 1, as the automatic spawner's power-ups have. `None` for those without one.
+pub fn normal_secs(bits: u16) -> Option<f32> {
+    let secs = crate::entities::ts::powerup::body_and_secs(bits).1;
+    (runnable(bits) && secs > 0).then_some(secs as f32)
+}
+
+/// `bits` is one [`RUNNABLE`] power-up.
+pub fn runnable(bits: u16) -> bool {
+    RUNNABLE & bits == bits && bits.count_ones() == 1
+}
+
+/// Port addition (`run_powerup`): runs `bits` for `secs` seconds as `UsePowerUp` (0x95980) runs
+/// the held one, without taking it: the held power-up stays for later. A power-up that was
+/// running ends first (a used one is gone, as when it runs out). `bits` 0 ends the running
+/// power-up at the next think; anything else that isn't one [`RUNNABLE`] bit does nothing.
+pub fn run_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: f32) {
+    let now = cx.time();
+    if bits == 0 {
+        if p.active_powerup != 0 {
+            p.powerup_until = 0.0;
+        }
+        return;
+    }
+    if !runnable(bits) {
+        return;
+    }
+    let old = p.active_powerup;
+    if old != 0 && !p.ts.plugin_powerup {
+        // A used power-up is the held one: it's spent, as `UpdatePowerUpState` would end it.
+        p.ts.held = 0;
+        p.ts.held_secs = 0;
+    }
+    if old & (pw::SLOWMO | pw::SLOWPAUSE) != 0 && bits & (pw::SLOWMO | pw::SLOWPAUSE) == 0 {
+        deactivate_flow(p, cx);
+    }
+    if old & pw::SUPERJUMP != 0 && bits & pw::SUPERJUMP == 0 {
+        cx.pev().gravity = 1.0;
+    }
+    p.active_powerup = bits;
+    p.powerup_until = now + secs;
+    p.ts.plugin_powerup = true;
+    // `UsePowerUp`'s messages: the HUD timer, and the motion blur of the slow ones.
+    let secs = super::x87_trunc(p.powerup_until as f64 - now as f64) as u8;
+    msg::one(Msg::PwUpTime, cx.edict, |w| PwUpTime { secs }.write(w));
+    let mode = if bits & pw::SLOWMO != 0 {
+        1
+    } else if bits & pw::SLOWPAUSE != 0 {
+        2
+    } else {
+        0
+    };
+    if mode != 0 {
+        let b = TsMBlur { entindex: cx.index() as u8, mode };
+        msg::pvs(Msg::TsMBlur, cx.pev().origin, |w| b.write(w));
     }
 }
 

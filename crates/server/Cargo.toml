@@ -10,3 +10,4 @@ name = "ts_server"
 [dependencies]
 goldsrc = { path = "../goldsrc", features = ["server"] }
 shared  = { path = "../shared" }
+ts-plugin-api = { path = "../plugin-api" }

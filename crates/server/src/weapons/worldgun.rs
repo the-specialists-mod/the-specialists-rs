@@ -58,6 +58,7 @@ pub fn create(
         w.status = status;
         w.original_owner = (!original_owner.is_null()).then_some(original_owner);
         w.thrower = projectiles::Thrower::new(owner);
+        projectiles::note_thrower(cx.edict, w.thrower);
         let e = engine();
         let pev = cx.pev();
         pev.origin = origin;

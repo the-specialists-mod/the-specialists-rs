@@ -966,7 +966,10 @@ everywhere) lacked.
   which would hang the caller. The port shifts the argument as unsigned: the same answer for
   every non-negative value, 31 for a negative one (§7.8). Nothing calls either.
 * **`CreateInterface`** (mp.dll 0x10028f70): nothing in mp.dll registers an interface, so it
-  always sets `IFACE_FAILED` (when the return-code pointer isn't NULL) and returns NULL.
+  always sets `IFACE_FAILED` (when the return-code pointer isn't NULL) and returns NULL. The
+  port's answers `TSRS_PluginApi001` with the plugin API table (`IFACE_OK`) and fails every other
+  name as TS does; it is also exported from the Linux libraries, the one export `ts_i386.so`
+  lacks (port addition, `plugin-api.md`).
 
 ### 7.6 Guards in the #109 classes
 

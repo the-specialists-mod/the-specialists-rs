@@ -1,9 +1,12 @@
 //! The server library's exports outside the engine's function tables, so the export lists match
-//! TS's (`nm -D --defined-only ts_i386.so`, `objdump -p mp.dll`):
+//! TS's (`nm -D --defined-only ts_i386.so`, `objdump -p mp.dll`), plus the port's plugin API:
 //!
 //! * `Server_GetBlendingInterface` (both builds): TS's dead server studio blending interface
 //!   (`ts_server::studio`).
-//! * `CreateInterface` (`mp.dll` only): the tier1 interface factory with nothing registered.
+//! * `CreateInterface` (both builds): the tier1 interface factory. `mp.dll`'s has nothing
+//!   registered; the port's knows one name, the plugin API (`ts_plugin_api::INTERFACE_NAME`), and
+//!   is also exported by the Linux libraries, where TS has no `CreateInterface` (port addition:
+//!   the one deliberate difference from `ts_i386.so`'s export list).
 //! * `anglemod`, `Length`, `Q_log2` (`ts_i386.so` only): `pm_math.c` helpers GCC exported.
 //!   Nothing calls them.
 
@@ -73,22 +76,27 @@ unsafe extern "C" fn sv_studio_setup_bones(
     ts_server::studio::sv_studio_setup_bones();
 }
 
-/// `IFACE_FAILED` (tier1 interface.h).
-#[cfg(windows)]
+/// `IFACE_OK` / `IFACE_FAILED` (tier1 interface.h).
+const IFACE_OK: c_int = 0;
 const IFACE_FAILED: c_int = 1;
 
 /// `CreateInterface(name, returnCode)` (mp.dll 0x10028f70): tier1's factory. It walks
 /// `InterfaceReg::s_pInterfaceRegs` (0x100ae738), but nothing in mp.dll registers an interface
-/// (that is the only reference to the list head), so every lookup fails: `IFACE_FAILED` and NULL.
-/// `ts_i386.so` doesn't have it.
-#[cfg(windows)]
+/// (that is the only reference to the list head), so in TS every lookup fails: `IFACE_FAILED`
+/// and NULL. `ts_i386.so` doesn't have it.
+///
+/// Port addition: `ts_plugin_api::INTERFACE_NAME` gives the plugin API table
+/// ([`crate::plugin_api::PLUGIN_API`]) and `IFACE_OK`, on every platform. Guard: a NULL name fails
+/// (TS's `strcmp` loop never reads it, having no entries).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn CreateInterface(_name: *const std::ffi::c_char, return_code: *mut c_int) -> *mut c_void {
+pub unsafe extern "C" fn CreateInterface(name: *const std::ffi::c_char, return_code: *mut c_int) -> *mut c_void {
+    // SAFETY: a non-NULL name is the caller's NUL-terminated string, read for this call only.
+    let found = !name.is_null() && ts_server::plugin_api::interface(unsafe { std::ffi::CStr::from_ptr(name) });
     if !return_code.is_null() {
         // SAFETY: a non-NULL return code is the caller's writable int (TS checks NULL too).
-        unsafe { *return_code = IFACE_FAILED };
+        unsafe { *return_code = if found { IFACE_OK } else { IFACE_FAILED } };
     }
-    std::ptr::null_mut()
+    if found { (&raw const crate::plugin_api::PLUGIN_API).cast_mut().cast() } else { std::ptr::null_mut() }
 }
 
 /// `anglemod` (TS 0xfb3d8, `shared::pm::anglemod`).
