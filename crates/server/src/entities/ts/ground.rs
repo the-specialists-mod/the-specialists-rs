@@ -234,9 +234,10 @@ fn put_on_wall(cx: &mut Cx) {
 }
 
 /// `PutOnWall`'s distance bookkeeping: a hit at `d` wins if it is closer than the kept int (9999
-/// to start with), and is kept rounded (x87 `fistp`: half to even).
+/// to start with), and is kept as an `(int)` cast (truncated: the `fldcw` before the `fistpl` at
+/// 0x91fe2 selects round-toward-zero).
 fn wall_distance(d: f32, kept: Option<i32>) -> Option<i32> {
-    (d < kept.unwrap_or(9999) as f32).then(|| d.round_ties_even() as i32)
+    (d < kept.unwrap_or(9999) as f32).then(|| super::c_int(f64::from(d)))
 }
 
 /// `PutOnWall`'s test of what the trace hit (a NULL `pHit` is the world): anything without a game
@@ -671,9 +672,11 @@ mod tests {
     #[test]
     fn wall_distance_is_kept_as_an_int() {
         assert_eq!(wall_distance(100.4, None), Some(100));
-        // Closer than the first hit, but not than its rounded distance.
+        assert_eq!(wall_distance(100.9, None), Some(100));
+        // Closer than the first hit, but not than its truncated distance.
         assert_eq!(wall_distance(100.2, Some(100)), None);
-        assert_eq!(wall_distance(99.9, Some(100)), Some(100));
+        assert_eq!(wall_distance(99.9, Some(100)), Some(99));
+        assert_eq!(wall_distance(99.5, Some(99)), None);
         assert_eq!(wall_distance(98.5, Some(100)), Some(98));
         assert_eq!(wall_distance(9999.0, None), None);
     }

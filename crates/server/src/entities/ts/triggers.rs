@@ -2,6 +2,7 @@
 //! `ts_playeramount`, `ts_slowmotion`, `ts_slowmotionpoint` (gamerules-entities.md §5,
 //! player-movement.md §5.4–5.5).
 
+use crate::entities::stock::base::{kv_d, kv_f};
 use crate::messages::Msg;
 use crate::rules::{self, msg, state, teams};
 use crate::save::{BaseFuncs, Fields};
@@ -109,11 +110,12 @@ impl Entity for Trigger {
     }
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v: f32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0.0);
+        // `CTSTrigger::KeyValue` (0x70890): `strtod` for each, the teams `(int)` (truncated).
+        let team = || super::c_int(kv_d(value));
         match key.to_bytes() {
-            b"nextcheck" => self.next_check = v,
-            b"attackerteam" => self.team = v.round() as i32,
-            b"allowedteam" => self.team = if v.round() as i32 == 2 { -1 } else { v.round() as i32 },
+            b"nextcheck" => self.next_check = kv_f(value),
+            b"attackerteam" => self.team = team(),
+            b"allowedteam" => self.team = if team() == 2 { -1 } else { team() },
             _ => return false,
         }
         true
@@ -250,13 +252,27 @@ impl Entity for DmHill {
             }
         }
         if let Some(t) = text {
-            let hold = (step * 10.0).min(30.0).round() as u8;
+            let hold = dmhill_hold(self.next_check);
             msg::ts_message_all([0, 255, 0], 8, hold, &t);
         }
         self.award_at = now + step;
         fire_own_target(cx);
         self.last_touch = now;
     }
+}
+
+/// The message hold of `CTSDMHill::WaitTouch` (0x71be8): `(int)min(max(nextcheck, 0.5) * 10, 30)`
+/// in doubles, truncated.
+fn dmhill_hold(next_check: f32) -> u8 {
+    let mut d = f64::from(next_check);
+    if d < 0.5 {
+        d = 0.5;
+    }
+    d *= 10.0;
+    if 30.0 < d {
+        d = 30.0;
+    }
+    super::c_int(d) as u8
 }
 
 fn send_score(e: *mut edict_t) {
@@ -572,7 +588,8 @@ impl Entity for SlowMotion {
         trigger_brush(cx, c"ts_slowmotion");
         let v = cx.pev();
         let d = [v.absmax[0] - v.absmin[0], v.absmax[1] - v.absmin[1], v.absmax[2] - v.absmin[2]];
-        self.radius = (rules::len3(d) * 0.5).round();
+        // `(int)` of the half diagonal: truncated.
+        self.radius = super::c_int(f64::from(rules::len3(d)) * 0.5) as f32;
         self.global = v.spawnflags & 2 != 0;
         self.btime = v.spawnflags & 4 != 0;
         let start_on = v.spawnflags & 1 != 0;
@@ -715,6 +732,14 @@ pub fn create_slow_motion_point(origin: [f32; 3], amount: f32, duration: f32, bt
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dmhill_hold_truncates() {
+        assert_eq!(super::dmhill_hold(0.75), 7);
+        assert_eq!(super::dmhill_hold(1.25), 12);
+        assert_eq!(super::dmhill_hold(0.0), 5);
+        assert_eq!(super::dmhill_hold(10.0), 30);
+    }
+
     #[test]
     fn printf_name() {
         assert_eq!(super::format_name("%s reached the top", "bob"), "bob reached the top");

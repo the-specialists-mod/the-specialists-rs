@@ -171,7 +171,8 @@ impl Entity for Wind {
         let m = TsPSysWind {
             kind: 3,
             seed: eng.random_long(0, 30000),
-            yaw: (eng.random_long(-45, 45) as f32 + yaw).round() as i32,
+            // `(int)` of the extended sum: truncated.
+            yaw: super::c_int(f64::from(eng.random_long(-45, 45)) + f64::from(yaw)),
             strength: self.base + eng.random_float(-self.variance, self.variance),
         };
         msg::all(Msg::TsPSys, |w| m.write(w));

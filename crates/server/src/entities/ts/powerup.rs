@@ -96,6 +96,12 @@ pub fn body_and_secs(kind: u16) -> (i32, i32) {
     }
 }
 
+/// `SetupPowerUp`'s duration of a stored type: `(int)(base * pwupmult)`, the x87 product truncated
+/// (0x881f4..0x88215).
+pub fn duration(base: i32, mult: f32) -> i32 {
+    super::c_int(f64::from(base) * f64::from(mult))
+}
+
 /// Respawn delay from `pwupduration`: < 1 → 60 s, 1..10 → 10 s, else min(v, 180).
 pub fn respawn_delay(v: i32) -> f32 {
     if v < 1 {
@@ -127,7 +133,7 @@ impl PowerUp {
         }
         let (body, base) = body_and_secs(self.kind);
         cx.pev().body = body;
-        self.secs = if secs < 1 { (base as f32 * self.mult).round() as i32 } else { secs };
+        self.secs = if secs < 1 { duration(base, self.mult) } else { secs };
         self.expire = life + cx.time();
         self.permanent = permanent;
     }
@@ -358,6 +364,15 @@ mod tests {
         assert_eq!(body_and_secs(pw::DOUBLE_FIRERATE), (1, 3));
         assert_eq!(body_and_secs(pw::SUPERJUMP), (8, 0));
         assert_eq!(body_and_secs(pw::KUNGFU), (0, 0));
+    }
+
+    #[test]
+    fn durations_truncate() {
+        assert_eq!(duration(3, 1.0), 3);
+        assert_eq!(duration(3, 1.5), 4);
+        assert_eq!(duration(3, 0.9), 2);
+        assert_eq!(duration(2, 1.75), 3);
+        assert_eq!(duration(3, f32::NAN), i32::MIN);
     }
 
     #[test]
