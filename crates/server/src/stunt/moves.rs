@@ -706,7 +706,8 @@ pub(super) fn super_jump_landing(p: &mut Player, cx: &mut Cx) {
 /// `CTSStunt::CheckForBreakables` (0x9bd9c): diving through glass and delayed kicks.
 ///
 /// With a close-combat window open (pl+0x79c, armed by weapons or the backflip kick) the
-/// delayed hit is resolved by `weapons::pending_melee_hit` (blocks, disarm, knockback). Without
+/// delayed hit is resolved by `weapons::pending_melee_hit` (blocks, disarm, knockback), alive or
+/// not. Without
 /// one, the head hull is traced 64 units along the velocity and non-player victims take `|vel|`
 /// damage (`|vel| * 0.1` while the diver is alive, as TS does).
 pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
@@ -716,9 +717,10 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
     }
     p.stunt.breakable_check = time;
     if p.inv.gun.melee_window != 0.0 {
-        if is_alive(cx) {
-            crate::weapons::pending_melee_hit(p, cx);
-        }
+        // Alive or not: `PreThink` runs this before its `deadflag` return and death doesn't
+        // close the window, so a hit armed just before dying still lands (`IsAlive` only picks
+        // the stunt impact's damage below).
+        crate::weapons::pending_melee_hit(p, cx);
         return;
     }
     if on_ground(cx) {

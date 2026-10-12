@@ -33,6 +33,8 @@ pub struct ServerHost<'a> {
     /// applied with the animations once the gun is released.
     stunt_recover: Option<f32>,
     close_attack_cd: Option<f32>,
+    /// `BlockPlayer`'s time (`pl+0x4dc`, `StuntState::block_timer`).
+    block_timer: Option<f32>,
 }
 
 /// Runs `f` with the player's gun and a host for it, then applies the third-person animation
@@ -45,7 +47,7 @@ pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut S
     let throw_scale = projectiles::thrower_time_scale(p, cx.pev());
     let (powerups, kungfu) = (p.active_powerup, p.kungfu);
     let mut inv = std::mem::take(&mut p.inv);
-    let (r, anims, ext_changed, recover, close_cd) = {
+    let (r, anims, ext_changed, recover, close_cd, block) = {
         let Inventory { gun, sv } = &mut inv;
         sv.atk_block = gun.block_kungfu;
         let mut h = ServerHost {
@@ -59,9 +61,10 @@ pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut S
             ext_changed: false,
             stunt_recover: None,
             close_attack_cd: None,
+            block_timer: None,
         };
         let r = f(gun, &mut h);
-        (r, h.anims, h.ext_changed, h.stunt_recover, h.close_attack_cd)
+        (r, h.anims, h.ext_changed, h.stunt_recover, h.close_attack_cd, h.block_timer)
     };
     p.inv = inv;
     // TS writes these before its `Animate` call (`KatanaFire` 0x736bf, `CCombatAttack` 0x7653e).
@@ -70,6 +73,9 @@ pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut S
     }
     if let Some(t) = close_cd {
         p.stunt.close_attack_cd = t;
+    }
+    if let Some(t) = block {
+        p.stunt.block_timer = t;
     }
     if ext_changed {
         let ext2 = p.inv.sv.anim_ext.clone();
@@ -292,8 +298,10 @@ impl GunHost for ServerHost<'_> {
     fn melee_bar_changed(&mut self, bar: f32) {
         net::send_kfu_power(self.edict, bar);
     }
+    /// `CBasePlayer::BlockPlayer` (0x95b58): one timer with the stunts' (`stunt::block_player`),
+    /// so `CTSStunt::Play`'s resets and `PreThink`'s expiry apply to it.
     fn block_player(&mut self, t: f32) {
-        self.sv.block_timer = t;
+        self.block_timer = Some(t);
         self.pev().iuser4 |= 1;
     }
     fn set_close_combat_cooldown(&mut self, t: f32) {

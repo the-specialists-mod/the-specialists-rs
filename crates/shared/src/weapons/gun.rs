@@ -484,14 +484,21 @@ impl Gun {
 
     /// `CBasePlayer::UpdateMeleeBar(cost)` 0x9650c.
     pub fn update_melee_bar(&mut self, cost: f32, host: &mut impl GunHost) {
+        self.charge_melee_bar(cost);
+        host.melee_bar_changed(self.melee_bar);
+    }
+
+    /// The state part of `UpdateMeleeBar(cost)` (0x9650c), without the `KFuPower` message: an
+    /// empty bar (below 0.01, or NaN: TS tests `0.01 <= v`) becomes 0 with a 1.5 s
+    /// `m_flNextAttack`.
+    pub fn charge_melee_bar(&mut self, cost: f32) {
         let v = self.melee_bar - cost;
-        if v < 0.01 {
+        if v >= 0.01 {
+            self.melee_bar = v;
+        } else {
             self.melee_bar = 0.0;
             self.next_attack = 1.5;
-        } else {
-            self.melee_bar = v;
         }
-        host.melee_bar_changed(self.melee_bar);
     }
 
     // ---- frame entry --------------------------------------------------------------------------

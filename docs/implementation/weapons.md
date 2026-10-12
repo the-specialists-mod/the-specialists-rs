@@ -53,7 +53,7 @@ addresses of `ts_i386.so`.
 | `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` |
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
 | `CBasePlayer::PostThink` timer tail 0x91610 | `Gun::decrement_timers`, `Gun::timer_dt` |
-| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `Gun::pre_frame`, `weapons::pre_think` (BlockPlayer expiry, disarm decay) |
+| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `Gun::pre_frame`, `weapons::pre_think` (disarm decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
 | `CBasePlayer::UpdateMeleeBar` 0x9650c / `GetMeleeMultiplier` 0x965d0 | `Gun::update_melee_bar` / `spread::melee_multiplier` |
 | `CBasePlayer::ShootBulletsPlayer` 0x6f69c, `UTIL_TraceLine_Expanded` 0x6f4f4 | `fire::shoot_bullets`, `fire::trace_expanded` |
 | `compile_range_damage` 0x7f1f4 | `range_multiplier` (pure function) |
@@ -129,7 +129,8 @@ addresses of `ts_i386.so`.
   `cycler_weapon` counts as no gun there too (`gun_active`); holding it (`holds_gun`) matters only
   to `CanHavePlayerItem`, `HasWeapons`, `SelectItem` and `RemoveAllItems`.
 * `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
-  melee windows), `BlockPlayer` expiry, the delayed melee hit.
+  melee windows), disarm decay. The delayed melee hit lands from the stunt hook
+  (`CheckForBreakables`).
 * `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
   tank (dead or game over, `PostThink` skips to the timer tail): once the active item is ready
   (`item_post_frame_ready`: the gun's `Gun::post_frame_ready`; a cycler's `m_flNextAttack` run
@@ -259,7 +260,11 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   Knife, katana and kung fu store their delay in `pl+0x4f8` (the stunts' close-combat cooldown).
   Targets: knife/katana need `IsAlive` and no `EF_NODRAW`; kung fu and the stock need
   `takedamage`, no `FL_WORLDBRUSH`/`EF_NODRAW`, and not a teammate under `mp_friendlyfire 0`.
-  Thrown: 1900 u/s, 100 / 50 / 150, bits 0x8001000. Block windows 0.5 s, cost 33.
+  Thrown: knives 1900 u/s, the katana 1000 u/s (`KatanaThrow` 0x73dc1), 100 / 50 / 150, bits
+  0x8001000. Block windows 0.5 s, cost 33. A kung-fu block either way round (`VictimKungfuHold`:
+  the victim blocking, or the attacker blocking a victim that is mid-attack) gives the loser 0.5 s
+  and `UpdateMeleeBar(33)` (`Gun::charge_melee_bar`: 1.5 s when that empties the bar), the
+  blocker 0.25 s.
 * Kung fu (`CCombatAttack`, decoded from the disassembly 0x76078..0x76e19; damage, delay,
   delayed-hit window, reach): punches 10 / 0.25 s / 0.1 / 35 u (held jab), 20 / 0.35 / 0.15 / 35
   (press), 30 / 0.65 / 0.15 / 35 (combo end or duck), air 25 / 0.5 / 0.15 / 35; kicks: uppercut
@@ -282,9 +287,20 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   stunting 4 / -1, uppercut 6 / 20, back kick 7 / 17, flying kick 8 / 16, quick kick 9 / 11-12,
   combo kick 10 / 10, 13-15, speed kick 10 / 15, 18, 19. The client copies never block, crouch
   or touch the stunt timers.
+* Delayed hit (`CTSStunt::CheckForBreakables` 0x9bd9c while `pl+0x79c` is open, alive or dead:
+  `PreThink` calls it before its `deadflag` return and death doesn't close the window): a hull-3
+  trace from the origin 32 u along `v_angle` (behind for a negative stored damage); no
+  `takedamage`, `FL_WORLDBRUSH` or `EF_NODRAW` targets, nor the last one hit (`pl+0x798`, cleared
+  on the ground without a window). The stored damage is halved after each hit and zeroed below 5
+  with a signed test, so a negative (backward) one lands once. Players: the teammate test, then the
+  source's `Victim*Hold` (blocked: no damage), kung fu disarms (not during spawn protection),
+  knocks back above 30 and plays `kungfuhit`, blades their hit-body sound; blocked or friendly,
+  the victim still becomes the last one hit. `TraceAttack` gets `g_vecZero` as the direction.
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
-  `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target,
+  `TSExplosion(110, 0x1040, 300, 1024)` only while `IsInWorld()` (origin inside ±4096 and
+  velocity inside ±2000 on each axis; no sky test, so a grenade in the sky explodes, one outside
+  the box is removed silently); flying impact `speed*0.1` if it would kill the target,
   credited to the thrower (deviation, §5).
 * Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`rules::scoring::do_spectacularness`; `spectacularness`
   clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a
@@ -611,5 +627,7 @@ never deploys on a networked weapon change: the draw animation is the server's `
 `shared::weapons::anim(id, alt, index)`.
 
 **Movement package**: `Inventory::anim_extension()`, `Inventory::current()`; the weapons code
-sets `iuser4 & 1` through `BlockPlayer` (and clears it when its timer runs out) and clears
+sets `iuser4 & 1` through `BlockPlayer`, whose time (`pl+0x4dc`) is written into
+`StuntState::block_timer` after the gun call (`with_host`), the one timer `stunt::pre_think` runs
+and expires and `CTSStunt::Play` resets, and clears
 `0x20000|0x4` when a kung-fu attack ends a wall climb.

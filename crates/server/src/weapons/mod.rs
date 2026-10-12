@@ -66,8 +66,6 @@ pub struct SvState {
     pub grenades_bought: u8,
     /// Accumulated disarm damage (`pl+0x7b4`, decays 5/s).
     pub disarm: f32,
-    /// `BlockPlayer` timer (`pl+0x4dc`): clears `iuser4 & 1` when it runs out.
-    pub block_timer: f32,
     /// Previous weapon for `lastinv` (`pl+0xa1c`).
     pub last_inv: u8,
     /// usercmd random seed (`pl+0x7ec`, set in CmdStart, rerolled after each weapon frame).
@@ -129,7 +127,6 @@ impl Default for SvState {
             items: 0,
             grenades_bought: 0,
             disarm: 0.0,
-            block_timer: 0.0,
             last_inv: 0,
             seed: 0,
             last_buttons: 0,
@@ -246,7 +243,6 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     sv.last_item = Active::None;
     sv.grenades_bought = 0;
     sv.disarm = 0.0;
-    sv.block_timer = 0.0;
     sv.pressed = 0;
     sv.last_buttons = 0;
     cx.pev().fov = 0.0;
@@ -279,16 +275,8 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         p.inv.gun.decay_spread(arith, dt);
     }
     p.inv.sv.disarm = (p.inv.sv.disarm - dt * 5.0).max(0.0);
-    // BlockPlayer expiry (PreThink: clears iuser4 bit 1 when the timer runs out).
-    let sv = &mut p.inv.sv;
-    if sv.block_timer != 0.0 {
-        sv.block_timer = (sv.block_timer - dt).max(0.001);
-        if sv.block_timer < 0.01 {
-            let pev = cx.pev();
-            pev.iuser4 &= !1;
-            sv.block_timer = 0.0;
-        }
-    }
+    // `BlockPlayer`'s timer (`pl+0x4dc`) is the stunt package's (`StuntState::block_timer`): it
+    // runs and expires in `stunt::pre_think`, and `CTSStunt::Play` resets it.
     // The delayed melee hit lands from the stunt hook (`CheckForBreakables`), which calls
     // `pending_melee_hit`.
 }
