@@ -16,7 +16,7 @@ use goldsrc::Global;
 use goldsrc::ext::render as r;
 use goldsrc::sys::*;
 use shared::pm::Arith;
-use shared::protocol::weapons::{pack_clientdata, pack_weapon_data, unpack_clientdata, unpack_weapon_data};
+use shared::protocol::weapons::{pack_clientdata, unpack_clientdata, unpack_weapon_data};
 use shared::weapons::gun::{MeleeHit, MeleeResult, Shot, Sound};
 use shared::weapons::spread::{self, Vec3};
 use shared::weapons::{Event, EventArgs, Gun, GunHost, MAX_AMMO, MAX_WEAPONS, Status, att, body_by_items, info, models};
@@ -467,6 +467,34 @@ fn post_frame_gate(c: &clientdata_t, hud_health: i32) -> bool {
     c.deadflag != 5 && hud_health > 0 && c.m_flNextAttack <= 0.0
 }
 
+/// The slot-16 `weapon_data_t` written back to `to` (`0x10003f13..0x1000407b`). TS copies the
+/// gun's clip mirror, next attacks, idle, `fuser1` and `fuser4` and runs them down in `to`
+/// (here [`Gun::decrement_timers`] already has, with the same clamps: -1 for the next primary
+/// attack, -0.001 for the rest; the server's `GetWeaponData` clamps the primary at -0.001 too).
+/// Its `m_fInReload`, `m_fInSpecialReload` and `iuser3` only the rebuild writes (from `from`,
+/// `0x10003991`), so they pass through. It also runs down `m_flNextReload` (clamped at -0.001)
+/// and `m_fNextAimBonus` (at -1), which it never unpacks, in `to` itself. Everything else keeps
+/// the engine's copy of `from`.
+fn write_weapon_data(gun: &Gun, from: &weapon_data_t, dt: f32, to: &mut weapon_data_t) {
+    to.m_iClip = gun.clip_mirror;
+    to.m_flNextPrimaryAttack = gun.next_primary;
+    to.m_flNextSecondaryAttack = gun.next_secondary;
+    to.m_flTimeWeaponIdle = gun.idle;
+    to.fuser1 = gun.fuser1;
+    to.fuser4 = gun.next_alt;
+    to.m_fInReload = from.m_fInReload;
+    to.m_fInSpecialReload = from.m_fInSpecialReload;
+    to.iuser3 = from.iuser3;
+    to.m_flNextReload -= dt;
+    if to.m_flNextReload < -0.001 {
+        to.m_flNextReload = -0.001;
+    }
+    to.m_fNextAimBonus -= dt;
+    if to.m_fNextAimBonus < -1.0 {
+        to.m_fNextAimBonus = -1.0;
+    }
+}
+
 /// `HUD_WeaponsPostThink` (`0x10003830`) for one usercmd.
 /// The command's frame time as `HUD_WeaponsPostThink` computes it: `(float)(msec * 0.001)` with
 /// the `double` constant (`fild; fmul qword; fstp dword` at `0x10003eb7`), which is also the
@@ -543,9 +571,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
 
     let (fov, viewmodel, iuser4, weaponanim) = (host.fov, host.viewmodel, host.iuser4, host.weaponanim);
     pack_clientdata(&gun, powerups, &mut to.client);
-    pack_weapon_data(&gun, &mut to.weapondata[TS_GUN_SLOT]);
-    to.weapondata[TS_GUN_SLOT].fuser4 = gun.next_alt;
-    to.weapondata[TS_GUN_SLOT].m_fInReload = gun.slot().map(|s| s.in_reload).unwrap_or(0);
+    write_weapon_data(&gun, &from.weapondata[TS_GUN_SLOT], dt, &mut to.weapondata[TS_GUN_SLOT]);
     to.client.fov = fov;
     to.client.viewmodel = viewmodel;
     to.client.iuser4 = iuser4;
@@ -573,7 +599,24 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shared::protocol::weapons::pack_weapon_data;
     use shared::weapons::id;
+
+    /// The `to` weapon data: the gun's timers as run down (the primary attack down to -1, not the
+    /// server's -0.001), the reload flags and `iuser3` passed through from `from`, and the never
+    /// unpacked `m_flNextReload`/`m_fNextAimBonus` run down in place.
+    #[test]
+    fn weapon_data_write_back() {
+        let gun =
+            Gun { clip_mirror: 1, next_primary: -0.5, next_secondary: 0.2, idle: -0.001, fuser1: 0.3, next_alt: 0.4, ..Default::default() };
+        let from = weapon_data_t { m_fInReload: 1, m_fInSpecialReload: 2, iuser3: 3, fuser2: 5.0, ..Default::default() };
+        let mut to = weapon_data_t { m_flNextReload: 0.005, m_fNextAimBonus: -0.995, ..from };
+        write_weapon_data(&gun, &from, 0.01, &mut to);
+        assert_eq!((to.m_iClip, to.m_flNextPrimaryAttack, to.m_flNextSecondaryAttack, to.m_flTimeWeaponIdle), (1, -0.5, 0.2, -0.001));
+        assert_eq!((to.fuser1, to.fuser4, to.fuser2), (0.3, 0.4, 5.0));
+        assert_eq!((to.m_fInReload, to.m_fInSpecialReload, to.iuser3), (1, 2, 3));
+        assert_eq!((to.m_flNextReload, to.m_fNextAimBonus), (-0.001, -1.0));
+    }
 
     /// Server pack -> client unpack keeps what the predictor needs.
     #[test]

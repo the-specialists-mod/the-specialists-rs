@@ -364,6 +364,15 @@ cells (the weapon's and its twins' clips), but not the reserve (`Hud::predicted_
 server sends `WeaponInfo` only on a weapon or reserve change, so this is how a predicted mode
 switch reaches the HUD (and its `switch.wav`). **Was**: a separate predicted overlay on the
 weapon box only, with the predicted reserve (issue #12). Fixed.
+The prediction writes slot 16 of `to.weapondata` as `client.dll` does (`0x10003f13..0x1000407b`,
+`prediction::gun::write_weapon_data`), not with the server's `pack_weapon_data`: the run-down
+timers with the client's clamps (the next primary attack down to -1), `m_fInReload`,
+`m_fInSpecialReload` and `iuser3` passed through from `from`, `m_flNextReload` (-0.001) and
+`m_fNextAimBonus` (-1) run down in place, the rest left as the engine copied it. **Was** the
+server's pack (primary clamped at -0.001, those fields zeroed, the record's reload flag in
+`m_fInReload`); nothing read the difference (issue #24). Fixed. The client has no `!= 1000`
+exception for the idle and `fuser1` that `Gun::decrement_timers` keeps; the gun never sets
+1000, so it can't matter.
 
 ## 5. Deviations and decisions
 
