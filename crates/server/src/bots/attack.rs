@@ -5,7 +5,7 @@
 //! retarget; the cover search caches the enemy's origin instead of its result; and the think
 //! reads the enemy before re-targeting, so the first think after spotting one only selects it.
 
-use super::brain::{Brain, add, bit, btn, delay, gun_position, length, normalize, scale, slow, sub};
+use super::brain::{Brain, add, bit, btn, delay, diff_x87, gun_position, len_x87, normalize, order, scale, slow, sub};
 use crate::player::Player;
 use crate::weapons::{self, Drop};
 use crate::world::Cx;
@@ -69,12 +69,8 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     if let Some(e) = live(e)
         && b.num_enemies() != 0
     {
-        let target = add(add(e.v().origin, b.attack.aim_off), b.attack.lead);
-        let mut k = eng.globals().frametime * 5.0;
-        if 1.0 <= k {
-            k = 1.0;
-        }
-        b.attack.lead = sub(b.attack.lead, scale(b.attack.lead, k));
+        let target = track_point(e.v().origin, b.attack.aim_off, b.attack.lead);
+        b.attack.lead = decay_lead(b.attack.lead, eng.globals().frametime);
         b.look_at(cx.pev(), target);
     }
     // (b) the throttled decisions.
@@ -85,7 +81,7 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     select_enemy(b, cx);
     let Some(e) = live(e) else { return };
     let eorg = e.v().origin;
-    let dist = length(sub(eorg, cx.pev().origin));
+    let dist = len_x87(diff_x87(eorg, cx.pev().origin), order::XZY) as f32;
     if b.num_enemies() == 0 {
         // Lost sight: chase where it was, unless it died.
         b.disable(bit::ATTACK);
@@ -130,7 +126,7 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     let aim = add(eorg, b.attack.aim_off);
     let d = normalize(sub(aim, gun_position(cx.pev())));
     let (f, _, _) = eng.angle_vectors(cx.pev().v_angle);
-    let dot = d[0] as f64 * f[0] as f64 + d[2] as f64 * f[2] as f64 + d[1] as f64 * f[1] as f64;
+    let dot = (d[1] as f64 * f[1] as f64 + d[2] as f64 * f[2] as f64) + d[0] as f64 * f[0] as f64;
     if dot.abs() > 0.9f32 as f64 || melee {
         fire_weapon(b, p, cx, dist);
     } else {
@@ -145,6 +141,25 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     if p.ts.held != 0 {
         b.enable(bit::POWERUP);
     }
+}
+
+/// The tracked point of the attack think (0x1006c551..0x1006c588): the enemy's origin plus the
+/// aim offset plus the knife lead. mp.dll stores `aim + origin` as a float for y and z but keeps
+/// it on the x87 stack for x.
+fn track_point(origin: [f32; 3], aim: [f32; 3], lead: [f32; 3]) -> [f32; 3] {
+    let x = ((aim[0] as f64 + origin[0] as f64) + lead[0] as f64) as f32;
+    [x, (aim[1] + origin[1]) + lead[1], (aim[2] + origin[2]) + lead[2]]
+}
+
+/// The knife lead's decay (0x1006c58c..0x1006c5e9): `lead -= min(frametime * 5, 1) * lead`, with
+/// the factor unrounded, the x/y products stored as floats and the z product kept on the stack.
+fn decay_lead(lead: [f32; 3], ft: f32) -> [f32; 3] {
+    let mut k = ft as f64 * 5.0;
+    if 1.0 <= k {
+        k = 1.0;
+    }
+    let step = |l: f32| l - (k * l as f64) as f32;
+    [step(lead[0]), step(lead[1]), (lead[2] as f64 - k * lead[2] as f64) as f32]
 }
 
 /// `SelectEnemy` (0x1006cec0): every 1–3 s (or with no enemy), the nearest visible enemy by
@@ -162,10 +177,10 @@ fn select_enemy(b: &mut Brain, cx: &mut Cx) {
         if let Some(&e) = b.visible_enemies.get(i as usize)
             && let Some(e) = live(e)
         {
-            let d = length(sub(e.v().origin, me));
-            if d < best {
+            let d = len_x87(diff_x87(e.v().origin, me), order::ZYX);
+            if d < best as f64 {
                 b.enemy = e;
-                best = d;
+                best = d as f32;
             }
         }
         i += 1;
@@ -223,7 +238,7 @@ fn find_cover_spot(b: &mut Brain, cx: &mut Cx, enemy_org: [f32; 3], enemy: *mut 
                 return p;
             }
         } else if reach {
-            let d = length(sub(p, org)) as i32; // __ftol
+            let d = len_x87(diff_x87(p, org), order::ZYX) as i32; // __ftol of the unrounded length
             if best_dist < d {
                 best_dist = d;
                 best = p;
@@ -340,5 +355,27 @@ fn fire_weapon(b: &mut Brain, p: &mut Player, cx: &mut Cx, dist: f32) {
         let h = eng.random_float(0.3, 1.0);
         b.press(btn::ATTACK, h, now);
         b.attack.next_fire = ((h + now) as f64 + 0.3) as f32;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracking_rounds_as_mp_dll() {
+        // x keeps `aim + origin` on the x87 stack before adding the lead; y and z store it.
+        let (org, aim, lead) = ([1000.1f32, 1000.1, 1000.1], [0.000_031_f32; 3], [0.000_02f32; 3]);
+        let p = track_point(org, aim, lead);
+        assert_eq!(p[0], ((aim[0] as f64 + org[0] as f64) + lead[0] as f64) as f32);
+        assert_eq!(p[1], (aim[1] + org[1]) + lead[1]);
+        // The lead decays at 5/s with the factor unrounded; a long frame clears it.
+        let ft = 0.013f32;
+        let k = ft as f64 * 5.0;
+        let l = [37.3f32, -12.9, 101.7];
+        let n = decay_lead(l, ft);
+        assert_eq!(n[0], l[0] - (k * l[0] as f64) as f32);
+        assert_eq!(n[2], (l[2] as f64 - k * l[2] as f64) as f32);
+        assert_eq!(decay_lead(l, 0.5), [0.0; 3]);
     }
 }
