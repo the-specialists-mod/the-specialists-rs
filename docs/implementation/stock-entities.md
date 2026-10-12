@@ -347,7 +347,9 @@ The track change that its own train fires reads the train's path through a side 
 * **Activation.** `DoorActivate` refuses while the door is loosened or hidden.
 * **Moves.** The SDK 2.3 `LinearMoveDone` is used, without HL25's re-move on small errors.
 * **Sounds.** The move and stop sounds (`DoorGoUp`, `DoorHitTop`, `DoorGoDown`, `DoorHitBottom`,
-  including the `SND_STOP` of the move sound) use TS slow-motion pitch (0.5).
+  including the `SND_STOP` of the move sound) use TS slow-motion pitch (0.5). `DoorGoUp` and
+  `DoorGoDown` start the move sound whatever the toggle state (no HL `TS_GOING_UP/DOWN` check),
+  so a blocked door that reverses plays it again.
 
 ### 3.3 Items and chargers
 

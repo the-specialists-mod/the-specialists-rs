@@ -191,8 +191,10 @@ impl Door {
         true
     }
 
+    /// `CBaseDoor::DoorGoUp` (0xb6e54). Unlike HL's SDK, TS plays the move sound whatever the
+    /// toggle state, so a door reversing after `Blocked` starts it again.
     fn door_go_up(&mut self, cx: &mut Cx) {
-        if !Self::silent(cx) && self.t.state != ToggleState::GoingUp && self.t.state != ToggleState::GoingDown {
+        if !Self::silent(cx) {
             let n = s(cx.pev().noise1);
             emit_sound_slow(cx.edict, CHAN_STATIC, n, 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         }
@@ -250,8 +252,10 @@ impl Door {
         self.t.use_targets(me, act, UseType::Toggle, 0.0);
     }
 
+    /// `CBaseDoor::DoorGoDown` (0xb7284): the move sound whatever the toggle state, as in
+    /// `door_go_up`.
     fn door_go_down(&mut self, cx: &mut Cx) {
-        if !Self::silent(cx) && self.t.state != ToggleState::GoingUp && self.t.state != ToggleState::GoingDown {
+        if !Self::silent(cx) {
             let n = s(cx.pev().noise1);
             emit_sound_slow(cx.edict, CHAN_STATIC, n, 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         }
