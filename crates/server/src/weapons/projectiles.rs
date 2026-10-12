@@ -368,10 +368,20 @@ impl Thrower {
     }
 }
 
-/// The "flying impact" of grenades, knives and world guns: if the projectile is fast, the
-/// entity 64 u ahead takes `speed * k` when that is at least its health (breaks glass, doesn't
-/// chip players). Not players for knives (`any_entity` false). `attacker` is
-/// [`Thrower::or`] (port deviation, issue #1; TS: the projectile).
+/// Whether a flying impact of `dmg` calls the target's `TraceAttack`: when it is at least the
+/// target's health. TS tests nothing else (`CM61Grenade::WaitThink` 0x7cacc, `CTSKnife::WaitThink`
+/// 0x7ea30, `CTSWorldGun::Fall` 0xa0d84), not `takedamage` either: a target that takes no damage
+/// still gets the TraceAttack's hit effects (a breakable's sparks and ricochets), which leaves the
+/// damage out itself (issues #25, #26).
+pub(crate) fn impact_hits(target: &entvars_t, dmg: f32) -> bool {
+    target.health <= dmg
+}
+
+/// The "flying impact" of grenades and knives (`CM61Grenade::WaitThink` 0x7cacc,
+/// `CTSKnife::WaitThink` 0x7ea30): if the projectile is faster than 64 u/s, the entity 64 u
+/// ahead gets its `TraceAttack` for `speed * k` when that is at least its health (breaks glass,
+/// doesn't chip players; see [`impact_hits`]). Not players for knives (`any_entity` false).
+/// `attacker` is [`Thrower::or`] (port deviation, issue #1; TS: the projectile).
 fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
     let e = engine();
     let v = me.v();
@@ -387,9 +397,8 @@ fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, k: f32, bits: i32, an
     if !any_entity && crate::rules::has_player(tr.pHit) {
         return;
     }
-    let target = tr.pHit.v();
     let dmg = s * k;
-    if target.takedamage != 0.0 && target.health <= dmg {
+    if impact_hits(tr.pHit.v(), dmg) {
         let mut info = DamageInfo::new(me, attacker, dmg, bits).traced();
         info.dir = spread::scale(dir, 64.0);
         info.pos = tr.vecEndPos;
@@ -748,6 +757,18 @@ mod tests {
         assert_eq!(knife_description(7), "Throwing Seal Knife");
         assert_eq!(knife_description(8), "Throwing Katana");
         assert_eq!(knife_description(5), "");
+    }
+
+    #[test]
+    fn flying_impact_ignores_takedamage() {
+        // TS compares health alone (issue #26): an unbreakable target still gets the TraceAttack.
+        let target = |takedamage: f32, health: f32| entvars_t { takedamage, health, ..Default::default() };
+        assert!(impact_hits(&target(0.0, 0.0), 190.0));
+        assert!(impact_hits(&target(0.0, 190.0), 190.0));
+        assert!(impact_hits(&target(1.0, 100.0), 190.0));
+        assert!(!impact_hits(&target(1.0, 190.5), 190.0));
+        assert!(!impact_hits(&target(0.0, 200.0), 190.0));
+        assert!(!impact_hits(&target(0.0, f32::NAN), 190.0));
     }
 
     #[test]

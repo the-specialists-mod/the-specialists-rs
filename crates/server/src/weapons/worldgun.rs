@@ -220,10 +220,7 @@ impl Entity for WorldGun {
         if tr.flFraction < 1.0 && !tr.pHit.is_null() && !crate::rules::has_player(tr.pHit) {
             let slots = info(self.id).map(|w| w.slots).unwrap_or(10) as f32;
             let s = spread::length(pev.velocity) * slots;
-            let target = tr.pHit.v();
-            // No `takedamage` test: TS calls the TraceAttack (a breakable's sparks and ricochets
-            // included), which leaves the damage out itself without `takedamage`.
-            if target.health <= s {
+            if projectiles::impact_hits(tr.pHit.v(), s) {
                 let mut d = DamageInfo::new(me, self.thrower.or(me), s * 0.001, 0x1080).traced();
                 d.dir = pev.velocity;
                 d.pos = tr.vecEndPos;

@@ -310,6 +310,13 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   velocity inside ±2000 on each axis; no sky test, so a grenade in the sky explodes, one outside
   the box is removed silently); flying impact `speed*0.1` if it would kill the target,
   credited to the thrower (deviation, §5).
+* Flying impact (`CM61Grenade::WaitThink` 0x7cacc while the fuse runs, `CTSKnife::WaitThink`
+  0x7ea30 until the blade expires; `projectiles::impact_damage`): above 64 u/s, a trace 64 u
+  along the velocity; the entity it hits (not a player, for a blade) whose `health <=
+  speed*0.1` gets its `TraceAttack` (direction `64*dir`; bits 0x1080 grenade, 0x8001000 blade)
+  and `ApplyMultiDamage`, whatever its `takedamage` (issue #26): one that takes no damage still
+  runs its hit effects, e.g. `CBreakable::TraceAttack`'s sparks and ricochet on unbreakable glass
+  or computer material, and their random draws.
 * Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`rules::scoring::do_spectacularness`; `spectacularness`
   clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a
   `ts_slowmotionpoint` at the blast (amount 0.25, 1 s, no bullet time).
@@ -574,7 +581,7 @@ How the port maps TS where the structure differs (not deviations):
   restore, TS's gravity compounding at rest), ammo pack contents (`take_ammo`), the explosion's
   `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and damage falloff (`falloff_damage`),
   the thrown blade's ground slide (`ground_slide`), glance-or-stick test (`glances_off`) and
-  hit pitch (`hit_pitch`), the gunless `clientdata_t` packing
+  hit pitch (`hit_pitch`), the flying impact's health-only test (`flying_impact_ignores_takedamage`), the gunless `clientdata_t` packing
   (`clientdata_without_the_gun_stops_after_the_weapon_id`), and the multi-damage
   (`damage::multi::tests`: pellets summed into one `TakeDamage`, a new victim flushing the old one
   with the accumulated bits, no victim no apply, `glast_headshot` reset, `TakeDamage` getting only
