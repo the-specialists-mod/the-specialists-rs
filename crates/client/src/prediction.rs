@@ -98,6 +98,7 @@ pub fn txfer_prediction_data(
     pcd.tfstate = ppcd.tfstate;
     pcd.maxspeed = ppcd.maxspeed;
     pcd.deadflag = ppcd.deadflag;
+    crate::input::set_alive(ppcd.iuser1, ppcd.deadflag);
     // Spectator: keep the server's values for spectate-only clients (SDK behaviour).
     if goldsrc::ext::spectator::is_spectate_only() {
         state::with(|s| {

@@ -627,52 +627,69 @@ pub fn is_fwgs() -> bool {
     mouse(|m| m.is_fwgs)
 }
 
-/// TS mouse acceleration (`IN_MouseMove` 100274d0 via 1006c490):
-/// `delta += sign * min(|delta|^m_accelexp * m_accel, m_accelmax)`; m_accelmax 0 = no cap.
-pub fn accelerate(d: f32, accel: f32, exp: f32, max: f32) -> f32 {
-    if accel <= 0.0 || d == 0.0 {
-        return d;
+/// TS mouse acceleration (`IN_MouseMove` `0x100276b9..0x100277c8`, `pow` at `0x1006c490`):
+/// `d += sign · min(|raw|^m_accelexp · m_accel, m_accelmax)`. The power is of the raw (unfiltered)
+/// count and the sign is +1 only for a raw count above 0, while `d` is the filtered value; a cap
+/// of 0 means none, and the cap applies once the sum reaches it. Unrounded until the store.
+pub fn accelerate(d: f32, raw: f32, accel: f32, exp: f32, max: f32) -> f32 {
+    let mut add = (raw.abs() as f64).powf(exp as f64) * accel as f64;
+    if max != 0.0 && max as f64 <= add {
+        add = max as f64;
     }
-    let mut add = d.abs().powf(exp) * accel;
-    if max > 0.0 {
-        add = add.min(max);
+    let sign = if raw > 0.0 { 1.0 } else { -1.0 };
+    (sign * add + d as f64) as f32
+}
+
+/// `m_filter` (`0x10027586..0x10027614`): the mean of this count and the previous *output*
+/// (TS keeps the filtered value as the old one, unlike the SDK's raw one), a filtered x within
+/// ±0.01 becoming 0. Returns the new (and next old) values.
+fn filter_mouse(raw: [f32; 2], old: [f32; 2], on: bool) -> [f32; 2] {
+    if !on {
+        return raw;
     }
-    d + d.signum() * add
+    let x = raw[0] as f64 + old[0] as f64;
+    let x = if x * 0.5 < 0.01 && x * 0.5 > -0.01 { 0.0 } else { (x * 0.5) as f32 };
+    [x, ((raw[1] as f64 + old[1] as f64) * 0.5) as f32]
 }
 
 /// Scale raw mouse counts to view-angle deltas and apply them (or move the virtual cursor).
+/// `IN_MouseMove` (`0x100274d0`): filter, then the zoom sensitivity alone or the acceleration
+/// and `sensitivity` (unclamped), then `yaw -= x·m_yaw`, `pitch += y·m_pitch` clamped to ±89.
 fn apply_mouse(raw: [f32; 2], view: &mut [f32; 3]) {
     let c = cvars();
-    let (mut mx, mut my) = (raw[0], raw[1]);
     if crate::menus::wants_cursor() {
         let s = crate::hud::screen();
         mouse(|m| {
-            m.cursor[0] = (m.cursor[0] + mx).clamp(0.0, cursor_max(s.width));
-            m.cursor[1] = (m.cursor[1] + my).clamp(0.0, cursor_max(s.height));
+            m.cursor[0] = (m.cursor[0] + raw[0]).clamp(0.0, cursor_max(s.width));
+            m.cursor[1] = (m.cursor[1] + raw[1]).clamp(0.0, cursor_max(s.height));
         });
         return;
     }
-    if c.m_filter.value() != 0.0 {
-        let old = mouse(|m| std::mem::replace(&mut m.old, [mx, my]));
-        mx = (mx + old[0]) * 0.5;
-        my = (my + old[1]) * 0.5;
-    } else {
-        mouse(|m| m.old = [mx, my]);
-    }
+    let [mut mx, mut my] = mouse(|m| {
+        m.old = filter_mouse(raw, m.old, c.m_filter.value() != 0.0);
+        m.old
+    });
     let zoom = crate::hud::zoom_sensitivity();
     if zoom != 0.0 {
-        mx *= zoom;
-        my *= zoom;
+        mx = (zoom as f64 * mx as f64) as f32;
+        my = (zoom as f64 * my as f64) as f32;
     } else {
         let (a, e, x) = (c.m_accel.value(), c.m_accelexp.value(), c.m_accelmax.value());
-        mx = accelerate(mx, a, e, x);
-        my = accelerate(my, a, e, x);
-        let sens = c.sensitivity.value().clamp(0.01, 10000.0);
+        mx = accelerate(mx, raw[0], a, e, x);
+        my = accelerate(my, raw[1], a, e, x);
+        let sens = c.sensitivity.value();
         mx *= sens;
         my *= sens;
     }
-    view[YAW] -= c.m_yaw.value() * mx;
-    view[PITCH] = (view[PITCH] + c.m_pitch.value() * my).clamp(-89.0, 89.0);
+    view[YAW] = (view[YAW] as f64 - mx as f64 * c.m_yaw.value() as f64) as f32;
+    view[PITCH] = (my as f64 * c.m_pitch.value() as f64 + view[PITCH] as f64) as f32;
+    view[PITCH] = if view[PITCH] > 89.0 {
+        89.0
+    } else if view[PITCH] < -89.0 {
+        -89.0
+    } else {
+        view[PITCH]
+    };
 }
 
 /// The last cursor pixel on a screen `size` wide (or high). Before `VidInit` fills the screen
@@ -901,26 +918,46 @@ pub fn key_event(down: bool, key: i32, binding: &CStr) {
     }
 }
 
-/// TS `CL_AdjustAngles` (10026330): keyboard turning with the anti-turn-bind clamps.
+/// `CL_AdjustAngles`' turn-speed clamp (`0x10026330..0x100263c1`): `cl_pitchspeed` ≤ 220 and
+/// `cl_yawspeed` ≤ 200, and anything not above 0 (NaN included) is 0.
+fn turn_speed(v: f32, max: f32) -> f32 {
+    if v > max || v > 0.0 { v.min(max) } else { 0.0 }
+}
+
+/// SDK `anglemod` (`0x10029b80`): the angle truncated to 1/65536 of a turn, in [0, 360).
+/// `__ftol` truncates toward zero, so a negative angle wraps through the mask.
+pub fn anglemod(a: f32) -> f32 {
+    let i = (a as f64 * (65536.0 / 360.0)) as i64 as i32;
+    ((i & 0xffff) as f64 * (360.0 / 65536.0)) as f32
+}
+
+/// TS `CL_AdjustAngles` (`0x10026330`): keyboard turning with the anti-turn-bind clamps. The
+/// yaw goes through `anglemod` every call unless `in_strafe` is held, which quantises the mouse
+/// yaw of the previous frame too. Products on the x87 at 53 bits (`f64`), rounded at each store.
 fn adjust_angles(frametime: f32, view: &mut [f32; 3]) {
     let c = cvars();
-    let speed = if IN_SPEED.held() { frametime * c.cl_anglespeedkey.value().max(0.67) } else { frametime };
-    let yawspeed = c.cl_yawspeed.value().min(200.0);
-    let pitchspeed = c.cl_pitchspeed.value().min(220.0);
+    let speed = if IN_SPEED.held() {
+        let k = c.cl_anglespeedkey.value();
+        (frametime as f64 * if k <= 0.67 { 0.67f32 } else { k } as f64) as f32
+    } else {
+        frametime
+    };
+    let yawspeed = turn_speed(c.cl_yawspeed.value(), 200.0) as f64;
+    let pitchspeed = turn_speed(c.cl_pitchspeed.value(), 220.0) as f64;
+    let step = |key: f32, rate: f64| key as f64 * speed as f64 * rate;
     if !IN_STRAFE.held() {
-        view[YAW] -= speed * yawspeed * IN_RIGHTB.key_state();
-        view[YAW] += speed * yawspeed * IN_LEFTB.key_state();
-        view[YAW] = view[YAW].rem_euclid(360.0);
+        view[YAW] = (view[YAW] as f64 - step(IN_RIGHTB.key_state(), yawspeed)) as f32;
+        view[YAW] = (step(IN_LEFTB.key_state(), yawspeed) + view[YAW] as f64) as f32;
+        view[YAW] = anglemod(view[YAW]);
     }
     if IN_KLOOK.held() {
         crate::view::stop_pitch_drift();
-        view[PITCH] -= speed * pitchspeed * IN_FWD.key_state();
-        view[PITCH] += speed * pitchspeed * IN_BK.key_state();
+        view[PITCH] = (view[PITCH] as f64 - step(IN_FWD.key_state(), pitchspeed)) as f32;
+        view[PITCH] = (step(IN_BK.key_state(), pitchspeed) + view[PITCH] as f64) as f32;
     }
     let up = IN_LOOKUP.key_state();
     let down = IN_LOOKDOWN.key_state();
-    view[PITCH] -= speed * pitchspeed * up;
-    view[PITCH] += speed * pitchspeed * down;
+    view[PITCH] = (step(down, pitchspeed) + (view[PITCH] as f64 - step(up, pitchspeed))) as f32;
     if up != 0.0 || down != 0.0 {
         crate::view::stop_pitch_drift();
     }
@@ -928,7 +965,7 @@ fn adjust_angles(frametime: f32, view: &mut [f32; 3]) {
     view[ROLL] = view[ROLL].clamp(-50.0, 50.0);
 }
 
-/// Last view angles while alive: TS freezes the view when dead (`0x100df578`).
+/// The command's view angles while `g_iAlive` (`0x100df578`), sent instead while it isn't.
 static LIVE_ANGLES: Global<Cell<[f32; 3]>> = Global(Cell::new([0.0; 3]));
 /// View angles held while a menu owns the mouse.
 static MENU_ANGLES: Global<Cell<Option<[f32; 3]>>> = Global(Cell::new(None));
@@ -1008,7 +1045,8 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
             cmd.sidemove *= s;
             cmd.upmove *= s;
         }
-        // Joystick/touch movement from FWGS.
+        clamp_to_maxspeed(cmd, e.client_maxspeed());
+        // Joystick/touch movement from FWGS (TS's `IN_Move` joystick comes after the clamp too).
         let mv = mouse(|m| std::mem::take(&mut m.move_accum));
         cmd.forwardmove += mv[0] * c.cl_forwardspeed.value();
         cmd.sidemove += mv[1] * c.cl_sidespeed.value();
@@ -1049,14 +1087,9 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
     if crate::voice::in_squelch_mode() {
         bits &= !IN_ATTACK;
     }
+    bits |= joystick_move_bits(c.joystick.value(), cmd.forwardmove);
     cmd.buttons = bits as u16;
 
-    // Frozen angles while dead (TS: g_iAlive == 0 keeps the last live angles).
-    if crate::state::with(|s| s.dead) && !hud::observer() {
-        view = LIVE_ANGLES.0.get();
-    } else {
-        LIVE_ANGLES.0.set(view);
-    }
     if crate::menus::wants_cursor()
         && let Some(a) = MENU_ANGLES.0.get()
     {
@@ -1064,7 +1097,60 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
     }
     e.set_view_angles(view);
     LAST_SET_ANGLES.0.set(Some(view));
-    cmd.viewangles = view;
+    cmd.viewangles = command_angles(view);
+}
+
+/// `g_iAlive` (`0x100936a4`, initially 1): `HUD_TxferPredictionData` (`0x1001bb9a`) sets it to
+/// `iuser1 != 0 || deadflag == 0`. TS's server never writes `deadflag`, so against it this stays 1.
+static ALIVE: Global<Cell<bool>> = Global(Cell::new(true));
+
+/// `HUD_TxferPredictionData`'s `g_iAlive` update, from the server's client data.
+pub fn set_alive(iuser1: i32, deadflag: i32) {
+    ALIVE.0.set(iuser1 != 0 || deadflag == 0);
+}
+
+/// The end of `CL_CreateMove` (`0x100267e0..0x10026840`): the command carries the engine's view
+/// angles, saved while `g_iAlive` (`0x100df578`); otherwise the saved ones. Only the command's
+/// angles freeze: the engine's view angles keep following the mouse.
+fn command_angles(view: [f32; 3]) -> [f32; 3] {
+    if ALIVE.0.get() {
+        LIVE_ANGLES.0.set(view);
+        view
+    } else {
+        LIVE_ANGLES.0.get()
+    }
+}
+
+/// `CL_CreateMove` (`0x100266f2..0x1002674f`, SDK): a movement vector longer than the client's
+/// `maxspeed` (when that isn't 0) is scaled down to it. The length is taken unrounded on the
+/// x87 and the factor `maxspeed / length` is kept unrounded for the three products.
+fn clamp_to_maxspeed(cmd: &mut usercmd_t, maxspeed: f32) {
+    if maxspeed == 0.0 {
+        return;
+    }
+    let (f, s, u) = (cmd.forwardmove as f64, cmd.sidemove as f64, cmd.upmove as f64);
+    let len = (f * f + s * s + u * u).sqrt();
+    // `fcoms maxspeed; test ah, 0x41`: scaled only when the length is above it (not NaN).
+    if len > maxspeed as f64 {
+        let k = maxspeed as f64 / len;
+        cmd.forwardmove = (k * f) as f32;
+        cmd.sidemove = (k * s) as f32;
+        cmd.upmove = (k * u) as f32;
+    }
+}
+
+/// `CL_CreateMove` (`0x100267a0..0x100267dc`): with the `joystick` cvar set, a forward move adds
+/// `IN_FORWARD` and a backward one `IN_BACK`, whatever moved it.
+fn joystick_move_bits(joystick: f32, forwardmove: f32) -> u32 {
+    if joystick == 0.0 {
+        0
+    } else if forwardmove > 0.0 {
+        IN_FORWARD
+    } else if forwardmove < 0.0 {
+        IN_BACK
+    } else {
+        0
+    }
 }
 
 /// The view angles to hold while a menu owns the mouse. The hold is against the player's own
@@ -1235,11 +1321,80 @@ mod tests {
 
     #[test]
     fn ts_acceleration() {
-        assert_eq!(accelerate(5.0, 0.0, 1.2, 0.0), 5.0);
-        let a = accelerate(4.0, 0.5, 1.0, 0.0);
+        assert_eq!(accelerate(5.0, 5.0, 0.0, 1.2, 0.0), 5.0);
+        let a = accelerate(4.0, 4.0, 0.5, 1.0, 0.0);
         assert!((a - 6.0).abs() < 1e-5);
-        let a = accelerate(-4.0, 0.5, 1.0, 1.0);
+        let a = accelerate(-4.0, -4.0, 0.5, 1.0, 1.0);
         assert!((a + 5.0).abs() < 1e-5, "capped by m_accelmax");
+        // The power is of the raw count, the sign is the raw count's (0 counts as negative),
+        // and it is added to the filtered value.
+        let a = accelerate(3.0, 0.0, 0.5, 1.0, 0.0);
+        assert_eq!(a, 3.0);
+        let a = accelerate(1.0, 4.0, 0.5, 1.0, 0.0);
+        assert!((a - 3.0).abs() < 1e-5);
+        // A negative m_accel decelerates.
+        let a = accelerate(4.0, 4.0, -0.5, 1.0, 0.0);
+        assert!((a - 2.0).abs() < 1e-5);
+    }
+
+    /// `m_filter` keeps the filtered value as the next old one and zeroes a tiny x.
+    #[test]
+    fn mouse_filter_is_recursive() {
+        assert_eq!(filter_mouse([4.0, 6.0], [9.0, 9.0], false), [4.0, 6.0]);
+        let a = filter_mouse([4.0, 6.0], [0.0, 0.0], true);
+        assert_eq!(a, [2.0, 3.0]);
+        let b = filter_mouse([0.0, 0.0], a, true);
+        assert_eq!(b, [1.0, 1.5], "the old value is the previous output, not the raw count");
+        assert_eq!(filter_mouse([0.01, 0.01], [0.0, 0.0], true), [0.0, 0.005]);
+    }
+
+    /// `anglemod` truncates to 1/65536 of a turn and wraps negatives.
+    #[test]
+    fn anglemod_quantises() {
+        assert_eq!(anglemod(90.0), 90.0);
+        assert_eq!(anglemod(360.0), 0.0);
+        assert_eq!(anglemod(-90.0), 270.0);
+        let a = anglemod(10.003);
+        assert!(a < 10.003 && 10.003 - a < 360.0 / 65536.0, "{a}");
+        assert_eq!(anglemod(a), a);
+    }
+
+    #[test]
+    fn turn_speed_clamps() {
+        assert_eq!(turn_speed(500.0, 220.0), 220.0);
+        assert_eq!(turn_speed(100.0, 220.0), 100.0);
+        assert_eq!(turn_speed(-100.0, 220.0), 0.0);
+        assert_eq!(turn_speed(f32::NAN, 200.0), 0.0);
+    }
+
+    /// `CL_CreateMove`'s maxspeed clamp and the joystick's forward/back bits.
+    #[test]
+    fn create_move_clamp_and_joystick_bits() {
+        let mut cmd = usercmd_t { forwardmove: 400.0, sidemove: 400.0, ..Default::default() };
+        clamp_to_maxspeed(&mut cmd, 300.0);
+        let len = (cmd.forwardmove * cmd.forwardmove + cmd.sidemove * cmd.sidemove).sqrt();
+        assert!((len - 300.0).abs() < 1e-3, "{len}");
+        let mut cmd = usercmd_t { forwardmove: 400.0, ..Default::default() };
+        clamp_to_maxspeed(&mut cmd, 0.0);
+        assert_eq!(cmd.forwardmove, 400.0, "maxspeed 0: no clamp");
+        clamp_to_maxspeed(&mut cmd, 400.0);
+        assert_eq!(cmd.forwardmove, 400.0, "at the limit: no clamp");
+        assert_eq!(joystick_move_bits(0.0, 100.0), 0);
+        assert_eq!(joystick_move_bits(1.0, 100.0), IN_FORWARD);
+        assert_eq!(joystick_move_bits(1.0, -1.0), IN_BACK);
+        assert_eq!(joystick_move_bits(1.0, 0.0), 0);
+    }
+
+    /// `g_iAlive`: only the command's angles freeze, at the last ones sent alive.
+    #[test]
+    fn dead_freezes_command_angles_only() {
+        set_alive(0, 0);
+        assert_eq!(command_angles([1.0, 2.0, 0.0]), [1.0, 2.0, 0.0]);
+        set_alive(0, 2);
+        assert_eq!(command_angles([5.0, 6.0, 0.0]), [1.0, 2.0, 0.0]);
+        set_alive(4, 2);
+        assert_eq!(command_angles([5.0, 6.0, 0.0]), [5.0, 6.0, 0.0], "an observer isn't frozen");
+        set_alive(0, 0);
     }
 
     /// The virtual cursor's bound before `VidInit` (screen 0×0) and for nonsense sizes: never
