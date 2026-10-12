@@ -255,8 +255,10 @@ impl GunHost for ServerHost<'_> {
         let ed = self.edict;
         match s {
             Sound::Switch => {
+                // `SwitchItems` 0x81638: the pitch is drawn before the volume.
+                let pitch = 98 + e.random_long(0, 3);
                 let vol = e.random_float(0.92, 1.0);
-                emit(ed, CHAN_ITEM, c"weapons/switch.wav", vol, 1.25, 98 + e.random_long(0, 3));
+                emit(ed, CHAN_ITEM, c"weapons/switch.wav", vol, 1.25, pitch);
             }
             Sound::KevlarHit => emit(ed, CHAN_BODY, c"player/kevlarhit.wav", 1.0, 0.8, 60 + e.random_long(0, 31)),
             Sound::KnifeHitBody => emit(ed, CHAN_BODY, c"weapons/knife/knife_hitbody.wav", 1.0, 0.8, 95 + e.random_long(0, 31)),
@@ -285,6 +287,21 @@ impl GunHost for ServerHost<'_> {
     }
     fn deploy_update_now(&mut self) {
         self.sv.next_update = 0.0;
+    }
+    /// `CBasePlayerWeapon::DefaultDeploy` 0xa0178 (disassembly 0x902f0..0x903be; `mp.dll`
+    /// 0x10073c50 the same): no attack until spawn protection (`pl+0x71c`) is over, else 0.5 s;
+    /// idle 0.75 s for the Contender, else 3 s; then `weapons/draw.wav` on `CHAN_VOICE` (pitch
+    /// drawn before the volume, as TS calls them).
+    fn default_deploy(&mut self, id: u8) -> (f32, f32) {
+        let e = engine();
+        let now = e.time();
+        let protect = self.player.ts.protect_until;
+        let next_attack = if protect <= now { 0.5 } else { protect - now };
+        let idle = if id == shared::weapons::id::CONTENDER { 0.75 } else { 3.0 };
+        let pitch = 98 + e.random_long(0, 3);
+        let vol = e.random_float(0.92, 1.0);
+        emit(self.edict, CHAN_VOICE, c"weapons/draw.wav", vol, 1.25, pitch);
+        (next_attack, idle)
     }
     fn slots_changed(&mut self, delta_free: i32) {
         self.sv.free_slots += delta_free;

@@ -211,6 +211,12 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   floor of 0.01 (`FixedSlowAmt`, `spread::fixed_slow_amt`); NPA clamps at -1, the others at
   -0.001; `UTIL_WeaponTimeBase() = 0`. The frame time is the engine's `(float)(msec * 0.001)` on
   the server and the same expression in client prediction (§5, floating point).
+* Deploy (`CBasePlayerWeapon::DefaultDeploy` 0xa0178, `GunHost::default_deploy`): on the
+  server `m_flNextAttack` is 0.5 s, or what is left of the spawn protection (`pl+0x71c`, 1 s from
+  `TSInit`) while it lasts, so the spawn weapon fires only once the protection ends; the idle
+  timer is 3 s (Contender 0.75 s); then `weapons/draw.wav` (`CHAN_VOICE`, volume 0.92..1, attn
+  1.25, pitch 98..101, pitch drawn first). `client.dll`'s (`0x100035f0`, the trait default): 0.5 s
+  and 3 s, no sound. (Issue #20: the port had 0.5 s / 1 s and no sound.)
 * Spread = `accuracy` (+ `pl.spread_penalty` via `ScaleSpread`), x0.875 silenced; growth
   `(1 - (slowmul*dt >= 1 ? 0.5 : slowmul*dt)) * acc_kick * (DFR ? 1 : 2) * (silenced ? 0.775 : 1)`
   for shots at least 1 ms apart, cap 0.1 (`double`), decay 0.1/s. Barrett: penalty 0.3 above

@@ -203,6 +203,15 @@ pub trait GunHost {
     /// `CTSGun::Deploy` (0x81030) with a weapon zeroes the gun's `UpdateClientData` timer
     /// (+0x9e0), so the new weapon's `WeaponInfo` goes out on the next update. Server only.
     fn deploy_update_now(&mut self) {}
+    /// The timer tail of `CBasePlayerWeapon::DefaultDeploy` for weapon `id`: returns
+    /// `(m_flNextAttack, m_flTimeWeaponIdle)`. The default is `client.dll`'s (`0x100035f0`: 0.5,
+    /// 3.0, no sound). The server's (`ts_i386.so` 0xa0178, `mp.dll` 0x10073c50) holds the attack
+    /// until spawn protection (`pl+0x71c`) ends, gives the Contender a 0.75 s idle, and plays
+    /// `weapons/draw.wav`.
+    fn default_deploy(&mut self, id: u8) -> (f32, f32) {
+        let _ = id;
+        (0.5, 3.0)
+    }
     /// `SendWeaponAnim(anim, skiplocal, body)`.
     fn weapon_anim(&mut self, anim: i32, skip_local: bool, body: i32);
     /// `CTSAnimation::Animate(n)` (third-person sequence; owned by the movement package).
@@ -1786,8 +1795,7 @@ impl Gun {
         host.set_weapon_model(Some((id, items & att::SILENCER != 0)));
         host.set_anim_extension(tables().asset(id).map(|a| a.anim_ext.as_str()).unwrap_or(""));
         host.weapon_anim(draw, false, body);
-        self.next_attack = 0.5;
-        self.idle = 1.0;
+        (self.next_attack, self.idle) = host.default_deploy(id);
         host.event(Event::Draw, EventArgs { i1: id as i32, i2: items as i32, ..Default::default() });
         host.player_anim(0x34);
         let mem = &mut self.mode_memory[id as usize];

@@ -38,6 +38,11 @@ struct Mock {
     repredict: bool,
     /// The client's HUD kung-fu power (`0x1018a718`); `None` = the server.
     kfu_power: Option<f32>,
+    /// `default_deploy`'s answer (`None`: client.dll's 0.5 / 3.0) and the ids it was asked for.
+    deploy_timers: Option<(f32, f32)>,
+    deployed: Vec<u8>,
+    /// The body passed with each `weapon_anim`.
+    anim_bodies: Vec<i32>,
 }
 
 impl GunHost for Mock {
@@ -120,8 +125,13 @@ impl GunHost for Mock {
     fn deploy_update_now(&mut self) {
         self.update_now += 1;
     }
-    fn weapon_anim(&mut self, anim: i32, _skip_local: bool, _body: i32) {
+    fn default_deploy(&mut self, id: u8) -> (f32, f32) {
+        self.deployed.push(id);
+        self.deploy_timers.unwrap_or((0.5, 3.0))
+    }
+    fn weapon_anim(&mut self, anim: i32, _skip_local: bool, body: i32) {
         self.anims.push(anim);
+        self.anim_bodies.push(body);
     }
     fn player_anim(&mut self, _anim: i32) {}
     fn kick(&mut self, pitch: f32, yaw: f32) {
@@ -843,4 +853,28 @@ fn katana_swings() {
     assert_eq!((h.melee[0].reach, h.melee[0].damage), (50.0, 65.0));
     assert_eq!(h.crouches, vec![5]);
     assert!(h.blocks.is_empty());
+}
+
+#[test]
+fn deploy_takes_its_timers_from_default_deploy() {
+    // client.dll's DefaultDeploy (0x100035f0): 0.5 s before attacking, 3 s idle (not the SDK's 1).
+    let mut g = Gun::default();
+    let mut h = Mock::default();
+    g.take_weapon(id::AK47, None, 0).unwrap();
+    assert!(g.switch_to(id::AK47, &mut h));
+    assert_eq!((g.next_attack, g.idle), (0.5, 3.0));
+    assert_eq!(h.deployed, [id::AK47]);
+
+    // The server's: what the host says (spawn protection left, the Contender's 0.75 s idle).
+    let mut g = Gun::default();
+    let mut h = Mock { deploy_timers: Some((0.8, 0.75)), ..Default::default() };
+    g.take_weapon(id::CONTENDER, None, 0).unwrap();
+    assert!(g.switch_to(id::CONTENDER, &mut h));
+    assert_eq!((g.next_attack, g.idle), (0.8, 0.75));
+
+    // Kung fu is HolsterWeapon, not DefaultDeploy.
+    h.deployed.clear();
+    assert!(g.switch_to(0, &mut h));
+    assert!(h.deployed.is_empty());
+    assert_eq!((g.next_attack, g.idle), (0.5, 3.0));
 }
