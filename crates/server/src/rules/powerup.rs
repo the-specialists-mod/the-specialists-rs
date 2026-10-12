@@ -242,7 +242,8 @@ pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
     }
 }
 
-/// `UsePowerUp`: activate the held power-up (`usepowerup`, or +use double tap).
+/// `UsePowerUp` (0x95980): activate the held power-up. Only the `usepowerup` command (which the
+/// client sends for a +use double tap) and the bots call it; TS's server-side `TSUse` is dead.
 pub fn use_powerup(p: &mut Player, cx: &mut Cx) -> bool {
     if cx.pev().iuser1 != 0 || !alive(cx.pev()) || p.ts.held == 0 || p.active_powerup != 0 {
         return false;
@@ -323,6 +324,25 @@ pub fn hud_slow_amount(p: &Player) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #49: `UsePowerUp` is reached only from `usepowerup` (`ClientCommand`) and the bots'
+    /// power-up module, never from a server-side +use double tap (TS's `TSUse` is dead code).
+    #[test]
+    fn use_powerup_callers_are_the_command_and_the_bots() {
+        let call = concat!("use_", "powerup(p, cx)");
+        let callers: Vec<&str> = [
+            ("rules/commands.rs", include_str!("commands.rs")),
+            ("rules/lifecycle.rs", include_str!("lifecycle.rs")),
+            ("bots/modules.rs", include_str!("../bots/modules.rs")),
+            ("player/mod.rs", include_str!("../player/mod.rs")),
+            ("stunt/mod.rs", include_str!("../stunt/mod.rs")),
+        ]
+        .into_iter()
+        .filter(|(_, src)| src.contains(call))
+        .map(|(name, _)| name)
+        .collect();
+        assert_eq!(callers, ["rules/commands.rs", "bots/modules.rs"]);
+    }
+
     #[test]
     fn easing() {
         let mut v = 1.0;

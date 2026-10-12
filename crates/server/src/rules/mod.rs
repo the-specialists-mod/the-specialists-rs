@@ -102,8 +102,6 @@ pub struct PlayerRules {
     pub held_secs: i32,
     /// Health decay / The One regen timer (`+0x73c`).
     pub health_timer: f32,
-    /// `+use` double tap (`+0x164`).
-    pub use_tap_until: f32,
     /// Displayed slow amount (`+0x170`) and bullet-time flag (`+0x175`).
     pub slow_display: f32,
     pub btime: bool,

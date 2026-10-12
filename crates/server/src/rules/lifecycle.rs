@@ -392,14 +392,9 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         p.ts.fall_velocity = -cx.pev().velocity[2];
     }
 
-    // +use: double tap activates the held power-up (`TSUse`). Using objects (ground weapons
-    // included) is `player::player_use`, from the weapons' PostThink.
-    if p.ts.buttons_pressed & IN_USE as i32 != 0 {
-        if now <= p.ts.use_tap_until {
-            powerup::use_powerup(p, cx);
-        }
-        p.ts.use_tap_until = now + 0.3;
-    }
+    // No +use double tap here: TS's `CBasePlayer::TSUse` (0x956e0) is never called. The client
+    // sends `usepowerup` for a double tap when `cl_usepowerup` is on (issue #49). Using objects
+    // is `player::player_use`, from the weapons' PostThink.
 
     // End of spawn protection.
     if p.ts.protect_until < now && cx.pev().rendermode != 0 {
