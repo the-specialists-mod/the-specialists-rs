@@ -509,6 +509,10 @@ How the port maps TS where the structure differs (not deviations):
   `frame_time_is_the_servers` (every msec equals FWGS's frame time; an AK-47's 0.08 s takes the
   server's 9 commands at 10 ms, 8 with the old `float` 0.001).
 
+* Audit fixes (#20-#28): `deploy_takes_its_timers_from_default_deploy`,
+  `stock_hit_event_sends_no_spread`, `weapon_anims_carry_the_guns_body` (shared gun tests),
+  `no_drop_sound_for_a_primed_or_empty_grenade` (server inventory),
+  `id_zero_armament_entries_take_no_slot` (server commands).
 * `cargo test -p shared`: weapon tests pass (x86_64 and `--target i686-unknown-linux-gnu`). Includes `random::matches_sdk_c_bit_for_bit` (43 seeds
   compared against the SDK C `util.cpp` compiled with `gcc -m32 -O0 -mfpmath=387`), fire rates
   (auto, semi, DFR x1.5, slow motion), burst (3 / UMP 2), pump alternation, magazine and
