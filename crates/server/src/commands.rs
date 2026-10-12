@@ -82,6 +82,10 @@ pub fn client_command(e: *mut edict_t) {
 }
 
 fn dispatch_player(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bool {
+    // Port addition: a gameplay ruleset decides its own commands first.
+    if let Some(handled) = crate::gameplay::active().server.client_command(p, cx, cmd, args) {
+        return handled;
+    }
     crate::weapons::client_command(p, cx, cmd, args)
         || crate::stunt::client_command(p, cx, cmd, args)
         || crate::rules::client_command(p, cx, cmd, args)

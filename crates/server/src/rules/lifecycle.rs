@@ -310,11 +310,12 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
         p.ts.put_in_server = true;
         // `BotSetup` (0x1006b3b0), TS's put-in-server for bots, gives neither.
         if !p.cbot {
-            give_cash(p, cvars::INITIAL_CASH);
+            give_cash(p, crate::gameplay::active().server.put_in_server_cash());
             cx.pev().effects |= EF_NOINTERP;
         }
     }
 
+    crate::gameplay::active().server.on_spawn(p, cx);
     if state::teamplay() {
         teams::set_default_team(p, cx);
     }
@@ -379,7 +380,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     powerup::update_state(p, cx);
     powerup::plugin_speed_think(p, cx);
     powerup::slow_flow(p, cx);
-    health_regen(p, cx, now);
+    crate::gameplay::active().server.health_regen(p, cx, now);
 
     if cx.pev().iuser1 != 0 {
         observer_think(p, cx, now);
@@ -424,8 +425,8 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
 /// module's PostThink together with the landing logic, so nothing to do here yet.
 pub fn post_think(_p: &mut Player, _cx: &mut Cx) {}
 
-/// Health above max decays 1/s; The One regenerates (`PreThink`, `+0x73c`).
-fn health_regen(p: &mut Player, cx: &mut Cx, now: f32) {
+/// TS 3.0's overheal: health above max decays 1/s; The One regenerates (`PreThink`, `+0x73c`).
+pub fn health_regen_core(p: &mut Player, cx: &mut Cx, now: f32) {
     if p.ts.health_timer == 0.0 {
         return;
     }
@@ -613,10 +614,17 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     set_respawn_time(p, cx, cvars::respawn_time());
     let idx = cx.index() as usize;
     state::with(|g| g.votes.reset(idx));
+    crate::gameplay::active().server.on_init_hud(p, cx);
 }
 
-/// `SetPlayerRespawnTime` (0x75ff4).
+/// `SetPlayerRespawnTime` as the ruleset has it
+/// ([`ServerRules::set_respawn_time`](crate::gameplay::ServerRules::set_respawn_time)).
 pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
+    crate::gameplay::active().server.set_respawn_time(p, cx, secs);
+}
+
+/// TS 3.0's `SetPlayerRespawnTime` (0x75ff4).
+pub fn set_respawn_time_core(p: &mut Player, cx: &mut Cx, secs: f32) {
     let now = cx.time();
     let (mode, _, lms, _) = state::mode();
     let round_end = state::with(|g| g.round_end);
@@ -640,6 +648,7 @@ pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
 /// TS leaves `pev->velocity` alone, clears the HEV suit bit through `RemoveAllItems(TRUE)` and
 /// sends `CurWeapon 0,0,0` from there.
 pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f32; 3]) {
+    crate::gameplay::active().server.on_start_observer(p, cx);
     let e = cx.edict;
     let idx = cx.index();
     p.hud.cash = Some(p.cash);
@@ -985,6 +994,7 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         }
     }
     set_respawn_time(p, cx, cvars::respawn_time());
+    crate::gameplay::active().server.on_killed(p, cx);
 
     // Headshot death: slow the victim a little unless global slow is on.
     if p.ts.last_hitgroup == hitgroup::HEAD && !state::with(|g| g.global_slow.active) {

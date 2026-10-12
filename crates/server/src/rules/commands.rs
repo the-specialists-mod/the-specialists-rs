@@ -95,7 +95,7 @@ fn fullupdate_spectator(idx: i32, deadflag: i32) -> Spectator {
 /// jump, 4 multiply clip, 5 double fire rate, other slow motion; +5 s if the same is held. Unlike
 /// a pickup (`PlayerAddPowerUp`) it plays no sound, and 3 sets both and sends both `PwUp`s even
 /// when the player already has them.
-fn cheat_powerup(p: &mut Player, cx: &mut Cx, n: i32) {
+pub fn cheat_powerup(p: &mut Player, cx: &mut Cx, n: i32) {
     if !alive(cx.pev()) || cx.pev().iuser1 != 0 {
         return;
     }
@@ -522,6 +522,9 @@ extern "C" fn cmd_addcustombot() {
 
 /// `globalslow [percent]` (0xc5580).
 extern "C" fn cmd_globalslow() {
+    if crate::gameplay::active().server.server_command("globalslow") {
+        return;
+    }
     let e = engine();
     let cur = state::with(|g| if g.global_slow.active { g.global_slow.amount } else { 0.0 });
     if e.cmd_argc() < 2 {
@@ -556,12 +559,18 @@ pub fn globalslow_amount(pct: f32) -> f32 {
 }
 
 extern "C" fn cmd_restartround() {
+    if crate::gameplay::active().server.server_command("restartround") {
+        return;
+    }
     frame::reset_restart_round();
 }
 
 /// `weaponrestriction [n]`: 1 none, 2 knives, 3 knives+pistols, 4 knives+pistols+shotguns,
 /// 5 reset, other everything; masked by the map's base set and broadcast as SrvSett 3.
 extern "C" fn cmd_weaponrestriction() {
+    if crate::gameplay::active().server.server_command("weaponrestriction") {
+        return;
+    }
     let e = engine();
     if e.cmd_argc() >= 2 {
         let n: i32 = e.cmd_argv(1).to_string_lossy().trim().parse().unwrap_or(0);

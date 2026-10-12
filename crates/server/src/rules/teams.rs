@@ -132,18 +132,25 @@ fn default_team_kept(name: &str, valid: bool, defaultteam: bool) -> bool {
 /// (`m_szTeamName`); the `model` and `team` keys are `ChangePlayerTeam`'s.
 pub fn set_default_team(p: &mut Player, cx: &mut Cx) {
     let e = cx.edict;
-    let (the_one, one) = state::with(|g| (g.the_one, g.the_one_team_names()));
-    let name = if the_one {
-        one[if p.ts.is_the_one { 0 } else { 1 }].clone()
-    } else {
-        engine().info_key(e, c"team").to_string_lossy().into_owned()
-    };
+    let name = crate::gameplay::active().server.default_team(p, cx);
     store_team(p, e, &name);
     recount(true);
     let defaultteam = super::cvars::on(c"mp_defaultteam");
     if !default_team_kept(&name, state::with(|g| g.is_valid_team(&name)), defaultteam) {
         let name = if defaultteam { state::with(|g| g.first_team_slot()) } else { fewest() };
         store_team(p, e, &name);
+    }
+}
+
+/// The team `SetDefaultPlayerTeam` reads first in TS 3.0
+/// ([`ServerRules::default_team`](crate::gameplay::ServerRules::default_team)): in The One mode
+/// The One's team or the other one, otherwise the `team` key.
+pub fn default_team_core(p: &Player, cx: &mut Cx) -> String {
+    let (the_one, one) = state::with(|g| (g.the_one, g.the_one_team_names()));
+    if the_one {
+        one[if p.ts.is_the_one { 0 } else { 1 }].clone()
+    } else {
+        engine().info_key(cx.edict, c"team").to_string_lossy().into_owned()
     }
 }
 
