@@ -1,0 +1,10 @@
+[package]
+name = "ts21-client"
+edition.workspace = true
+version.workspace = true
+
+# The client half of the TS 2.1 gameplay plugin (docs/implementation/ts21.md): `ClientRules` and
+# the client's plugin object. Only `client-dll` links it, behind its `ts21` feature.
+[dependencies]
+ts21-gameplay = { path = ".." }
+ts-client     = { path = "../../client" }

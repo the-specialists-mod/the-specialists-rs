@@ -1,0 +1,10 @@
+# Second guard for the unsafe boundary (AGENTS.md, rule 2), next to the source check in
+# xtask/src/lint.rs: goldsrc's engine-call macros expand to `unsafe` at the call site, which this
+# crate's `deny(unsafe_code)` doesn't see. `cargo xtask lint` runs clippy with `-D warnings`.
+disallowed-macros = [
+    { path = "goldsrc::eng", reason = "expands to unsafe; add a safe wrapper to goldsrc (AGENTS.md rule 2)", allow-invalid = true },
+    { path = "goldsrc::cl_eng", reason = "expands to unsafe; add a safe wrapper to goldsrc (AGENTS.md rule 2)", allow-invalid = true },
+    { path = "goldsrc::ev", reason = "expands to unsafe; add a safe wrapper to goldsrc (AGENTS.md rule 2)", allow-invalid = true },
+    { path = "goldsrc::efx", reason = "expands to unsafe; add a safe wrapper to goldsrc (AGENTS.md rule 2)", allow-invalid = true },
+    { path = "goldsrc::tri", reason = "expands to unsafe; add a safe wrapper to goldsrc (AGENTS.md rule 2)", allow-invalid = true },
+]

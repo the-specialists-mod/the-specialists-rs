@@ -14,3 +14,10 @@ goldsrc   = { path = "../goldsrc", features = ["server"] }
 shared    = { path = "../shared" }
 ts-server = { path = "../server" }
 ts-plugin-api = { path = "../plugin-api" }
+# The TS 2.1 gameplay plugin (docs/implementation/ts21.md), registered at `GameDLLInit`.
+ts21-gameplay = { path = "../ts21", optional = true }
+ts21-server = { path = "../ts21/server", optional = true }
+
+[features]
+default = ["ts21"]
+ts21 = ["dep:ts21-gameplay", "dep:ts21-server"]

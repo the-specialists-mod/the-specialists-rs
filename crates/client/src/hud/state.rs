@@ -102,6 +102,9 @@ pub enum Effect {
     /// `Spectator` for the local player (`0x100652fd` -> `0x1000b9d0`): clear the predicted spread
     /// penalty ([`crate::prediction::reset_spread`]).
     ResetSpread,
+    /// The server switched gameplay rulesets (`SrvSett` 4 changed): reset the client to a
+    /// brand-new state ([`crate::gameplay::reset_client`]).
+    GameplayReset(i16),
     /// Forward to the effects package (`crate::state::Shared::ts_effects`).
     Fx(crate::state::TsEffect),
     Fade(p::TsFade),
@@ -196,6 +199,10 @@ pub struct Hud {
     pub cashbased: i32,
     pub ammocount: i32,
     pub restriction: i32,
+    /// `SrvSett` key 4 (port addition): the server's gameplay ruleset id, `None` from each
+    /// `InitHUD` until the server sends one ([`crate::gameplay::hud_rules`]). A change resets the
+    /// client (`Effect::GameplayReset`).
+    pub gameplay: Option<i16>,
     pub bullettime: bool,
     pub players: Vec<PlayerExtra>,
     pub team_scores: Vec<TeamScore>,
@@ -289,6 +296,7 @@ impl Default for Hud {
             // `0x1018d174` is zero (`.bss`) until the server's `SrvSett 3` (sent in `InitHUD`),
             // which blocks every weapon in the buy menu until then, as in TS.
             restriction: 0,
+            gameplay: None,
             bullettime: false,
             players: vec![PlayerExtra::default(); MAX_CLIENTS + 1],
             team_scores: Vec::new(),
@@ -565,6 +573,14 @@ impl Hud {
                     1 => self.cashbased = v.value as i32,
                     2 => self.ammocount = v.value as i32,
                     3 => self.restriction = v.value as i32,
+                    ts_gameplay::SRVSETT_KEY => {
+                        // The first value after an `InitHUD` only records the ruleset; a different
+                        // one later is a switch, which starts the game over.
+                        let old = self.gameplay.replace(v.value);
+                        if old.is_some_and(|old| old != v.value) {
+                            fx.push(Effect::GameplayReset(v.value));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -681,7 +697,13 @@ impl Hud {
                 self.sec_ammo.reset();
                 self.concuss = 0;
             }
-            Msg::InitHUD => self.init_hud_data(),
+            Msg::InitHUD => {
+                self.init_hud_data();
+                // Port addition: a new game on this server (a connect, a map, or the fresh join
+                // after a ruleset switch), whose `SrvSett` 4 follows and only records the ruleset.
+                // Not `HUD_VidInit`: the engine also calls that on a video mode change.
+                self.gameplay = None;
+            }
             Msg::GameMode => {
                 let mut r = p::Reader::new(buf);
                 self.gamemode = r.byte() as i32;
@@ -987,6 +1009,36 @@ mod tests {
         assert_eq!(fx, [Effect::ToggleThirdPerson], "death cam");
         assert_eq!(h.last_hp, 0);
         assert!(!h.apply(Msg::TsCash, &[1], &c, &mut fx), "short payload rejected");
+    }
+
+    /// `SrvSett` 4 (port addition): the value after an `InitHUD` records the server's ruleset; a
+    /// different one later is a switch, which resets the client. A video mode change
+    /// (`HUD_VidInit`) doesn't forget it.
+    #[test]
+    fn gameplay_ruleset_switch() {
+        use shared::protocol::hud::SrvSett;
+        let s = Screen::default();
+        let c = ctx(&s);
+        let mut h = Hud::default();
+        let mut fx = Vec::new();
+        let ruleset = |value: i16| SrvSett { key: ts_gameplay::SRVSETT_KEY, value }.encode();
+        h.apply(Msg::InitHUD, &[], &c, &mut fx);
+        h.apply(Msg::SrvSett, &ruleset(30), &c, &mut fx);
+        assert_eq!((h.gameplay, fx.len()), (Some(30), 0), "connect: recorded");
+        h.reset();
+        h.apply(Msg::SrvSett, &ruleset(30), &c, &mut fx);
+        assert!(fx.is_empty(), "the same ruleset again is no switch");
+        h.apply(Msg::SrvSett, &ruleset(21), &c, &mut fx);
+        assert_eq!(fx, [Effect::GameplayReset(21)], "a switch");
+        assert_eq!(h.gameplay, Some(21));
+        fx.clear();
+        // The fresh join after the switch, then a map change to a server on another ruleset.
+        h.apply(Msg::InitHUD, &[], &c, &mut fx);
+        h.apply(Msg::SrvSett, &ruleset(21), &c, &mut fx);
+        h.apply(Msg::InitHUD, &[], &c, &mut fx);
+        h.apply(Msg::SrvSett, &ruleset(30), &c, &mut fx);
+        assert!(fx.is_empty(), "after an InitHUD, a value is only recorded");
+        assert_eq!(h.gameplay, Some(30));
     }
 
     #[test]

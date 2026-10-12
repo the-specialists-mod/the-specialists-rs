@@ -26,6 +26,7 @@ pub mod ts;
 #[allow(unsafe_code)]
 mod tests;
 
+use crate::gameplay::PmRules;
 pub use fpu::Arith;
 pub use math::Vec3;
 use math::*;
@@ -215,9 +216,11 @@ pub fn angle_vectors(arith: Arith, angles: Vec3) -> (Vec3, Vec3, Vec3) {
 /// Runs one usercmd of movement (`PM_Move`: server 0x101188, client 0x1002e990) with the
 /// arithmetic of a TS build: the server's `ts_pm_arith` selection (default
 /// [`Arith::SERVER_DEFAULT`], `mp.dll`'s) for `pfnPM_Move`, [`Arith::CLIENT`] for
-/// `HUD_PlayerMove`. `pmove->server` is set by the engine.
-pub fn player_move(p: &mut playermove_t, arith: Arith) {
-    player_move_with(p, arith, None);
+/// `HUD_PlayerMove`. `pmove->server` is set by the engine. `rules` are the gameplay plugin's
+/// movement hooks, which each side resolves once per call from the player's physinfo key `gp`
+/// (`crate::gameplay`).
+pub fn player_move(p: &mut playermove_t, arith: Arith, rules: &'static dyn PmRules) {
+    player_move_with(p, arith, rules, None);
 }
 
 /// A side's own spectator move, run in place of the shared [`PM_SpectatorMove`] step; it returns
@@ -247,10 +250,10 @@ fn chase_origin_in<F: Fpu>(p: &playermove_t, angles: Vec3, target: usize) -> Vec
 }
 
 /// [`player_move`] with an optional [`SpectatorMove`] override.
-pub fn player_move_with(p: &mut playermove_t, arith: Arith, spectator: Option<SpectatorMove>) {
+pub fn player_move_with(p: &mut playermove_t, arith: Arith, rules: &'static dyn PmRules, spectator: Option<SpectatorMove>) {
     let p = match arith {
-        Arith::Gcc => run::<Gcc>(p, spectator),
-        Arith::Msvc => run::<Msvc>(p, spectator),
+        Arith::Gcc => run::<Gcc>(p, rules, spectator),
+        Arith::Msvc => run::<Msvc>(p, rules, spectator),
     };
     if p.onground == -1 {
         p.flags &= !FL_ONGROUND_;
@@ -262,8 +265,8 @@ pub fn player_move_with(p: &mut playermove_t, arith: Arith, spectator: Option<Sp
     }
 }
 
-fn run<F: Fpu>(p: &mut playermove_t, spectator: Option<SpectatorMove>) -> &mut playermove_t {
-    let mut pm = Pm::<F> { p, onladder: false, spectator, fpu: PhantomData };
+fn run<'a, F: Fpu>(p: &'a mut playermove_t, rules: &'static dyn PmRules, spectator: Option<SpectatorMove>) -> &'a mut playermove_t {
+    let mut pm = Pm::<F> { p, onladder: false, spectator, rules, fpu: PhantomData };
     pm.player_move();
     pm.p
 }
@@ -277,6 +280,8 @@ pub(crate) struct Pm<'a, F: Fpu> {
     pub(crate) onladder: bool,
     /// The caller's spectator move, if any ([`player_move_with`]).
     pub(crate) spectator: Option<SpectatorMove>,
+    /// The gameplay rules for this command, resolved once by the caller.
+    pub(crate) rules: &'static dyn PmRules,
     pub(crate) fpu: PhantomData<F>,
 }
 

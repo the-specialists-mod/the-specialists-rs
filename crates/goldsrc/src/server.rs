@@ -535,6 +535,14 @@ impl Engine {
         eng!(pfnSetPhysicsKeyValue(e, key.as_ptr(), value.as_ptr()))
     }
 
+    /// `pfnGetPhysicsKeyValue`: a client's physinfo value for `key` (empty when absent or `e`
+    /// isn't a client), copied.
+    pub fn physics_key(&self, e: *mut edict_t, key: &CStr) -> String {
+        let v = eng!(pfnGetPhysicsKeyValue(e, key.as_ptr()));
+        // SAFETY: the engine returns null or a NUL-terminated string it owns; it's copied at once.
+        unsafe { cstr(v) }.to_string_lossy().into_owned()
+    }
+
     pub fn info_key(&self, e: *mut edict_t, key: &CStr) -> &'static CStr {
         let buf = eng!(pfnGetInfoKeyBuffer(e));
         let v = eng!(pfnInfoKeyValue(buf, key.as_ptr()));

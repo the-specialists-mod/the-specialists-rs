@@ -1,0 +1,16 @@
+[package]
+name = "ts21-gameplay"
+edition.workspace = true
+version.workspace = true
+
+# The TS 2.1 gameplay plugin (issue #100, docs/implementation/ts21.md). All 2.1 code lives under
+# crates/ts21: nothing else names it except the two libraries, which register it behind their
+# default-on `ts21` feature (`cargo xtask lint` checks both).
+#
+# This package is the part both sides run (movement and gun hooks, the id). Each side's hooks
+# are a package of their own, `server/` (ts21-server) and `client/` (ts21-client), not features
+# of this one: a build of both libraries unifies features, which would link the server crate
+# into the client library and the client crate into the server library.
+[dependencies]
+ts-gameplay = { path = "../gameplay" }
+shared      = { path = "../shared" }

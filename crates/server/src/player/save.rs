@@ -194,5 +194,6 @@ fn restore_tail(p: &mut Player, cx: &mut Cx, long_jump: bool) {
     eng.set_size(cx.edict, mins, maxs);
     eng.set_physics_key(cx.edict, c"hl", c"1");
     eng.set_physics_key(cx.edict, c"slj", if long_jump { c"1" } else { c"0" });
+    crate::gameplay::set_physinfo(cx.edict);
     p.inv.gun.next_attack = 0.0;
 }

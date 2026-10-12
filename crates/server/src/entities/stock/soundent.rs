@@ -197,6 +197,23 @@ pub fn create_world_soundent() {
     crate::ham::spawn(e);
 }
 
+/// The world's soundent (`pSoundEnt`), null before the first map.
+pub fn world_soundent() -> *mut edict_t {
+    SOUND_ENT.0.get()
+}
+
+/// The world's soundent for a gameplay switch's reset (`crate::gameplay`): the one the map made,
+/// spawned again (`CSoundEnt::Spawn`: an empty list with the clients' reserve), so it keeps its
+/// edict, the first after the clients, as at map start. Players' sounds have a slot throughout.
+pub fn restart_world_soundent() {
+    let e = SOUND_ENT.0.get();
+    if e.is_null() || e.is_free() || !e.has_private_data() {
+        create_world_soundent();
+    } else {
+        crate::ham::spawn(e);
+    }
+}
+
 /// `CSoundEnt::InsertSound` (0xe238c): a sound of `kind` and `volume` at `origin` for `duration`
 /// seconds in the world's soundent.
 pub fn insert_sound(kind: i32, origin: Vec3, volume: i32, duration: f32) {

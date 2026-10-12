@@ -236,6 +236,7 @@ dependencies = [
  "goldsrc-sys",
  "serde",
  "toml",
+ "ts-gameplay",
 ]
 
 [[package]]
@@ -292,6 +293,7 @@ version = "3.0.1"
 dependencies = [
  "goldsrc",
  "shared",
+ "ts-gameplay",
 ]
 
 [[package]]
@@ -301,7 +303,13 @@ dependencies = [
  "goldsrc",
  "shared",
  "ts-client",
+ "ts21-client",
+ "ts21-gameplay",
 ]
+
+[[package]]
+name = "ts-gameplay"
+version = "3.0.1"
 
 [[package]]
 name = "ts-plugin-api"
@@ -313,6 +321,7 @@ version = "3.0.1"
 dependencies = [
  "goldsrc",
  "shared",
+ "ts-gameplay",
  "ts-plugin-api",
 ]
 
@@ -324,6 +333,32 @@ dependencies = [
  "shared",
  "ts-plugin-api",
  "ts-server",
+ "ts21-gameplay",
+ "ts21-server",
+]
+
+[[package]]
+name = "ts21-client"
+version = "3.0.1"
+dependencies = [
+ "ts-client",
+ "ts21-gameplay",
+]
+
+[[package]]
+name = "ts21-gameplay"
+version = "3.0.1"
+dependencies = [
+ "shared",
+ "ts-gameplay",
+]
+
+[[package]]
+name = "ts21-server"
+version = "3.0.1"
+dependencies = [
+ "ts-server",
+ "ts21-gameplay",
 ]
 
 [[package]]

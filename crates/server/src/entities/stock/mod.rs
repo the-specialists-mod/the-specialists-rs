@@ -322,13 +322,7 @@ impl World {
         crate::precache::client_precache();
         crate::precache::ts_precache();
         crate::precache::world_sounds_and_gibs();
-        // Style 0 is normal light; without it the whole map renders black. Styles 1-12 are the
-        // SDK's animated presets (world.cpp), 63 is the testing style.
-        eng.light_style(0, c"m");
-        for (i, s) in LIGHT_STYLES.iter().enumerate() {
-            eng.light_style(i as i32 + 1, s);
-        }
-        eng.light_style(63, c"a");
+        light_styles();
 
         // The rest of CWorld::Precache.
         let (speed, netname, flags) = {
@@ -353,6 +347,33 @@ impl World {
         // message is registered and never sent), so the port keeps only the spawnflag.
         eng.set_cvar_float(c"mp_defaultteam", if flags & SF_WORLD_FORCETEAM != 0 { 1.0 } else { 0.0 });
     }
+}
+
+/// The light styles `CWorld::Precache` sets. Style 0 is normal light; without it the whole map
+/// renders black. Styles 1-12 are the SDK's animated presets (world.cpp), 63 is the testing style.
+fn light_styles() {
+    let eng = engine();
+    eng.light_style(0, c"m");
+    for (i, s) in LIGHT_STYLES.iter().enumerate() {
+        eng.light_style(i as i32 + 1, s);
+    }
+    eng.light_style(63, c"a");
+}
+
+/// The world's part of a new game on the loaded map, for a gameplay switch's reset
+/// (`crate::gameplay`): what [`World`]'s `CWorld::Precache` resets and creates, in its order, without
+/// the precaches (the engine has them already), the forced movement cvars and the configs (a
+/// switch keeps the server's settings), or the chapter title. Worldspawn itself stays, with its
+/// keyvalues, and so does the world's soundent, spawned again in place.
+pub fn restart_world() {
+    set_client_cvar(c"room_type", 0.0);
+    base::reset_registries();
+    maprules::reset();
+    sound::reset_rooms();
+    crate::rules::start_rules();
+    soundent::restart_world_soundent();
+    init_body_que();
+    light_styles();
 }
 
 #[cfg(test)]

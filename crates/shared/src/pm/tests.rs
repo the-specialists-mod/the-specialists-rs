@@ -153,11 +153,16 @@ impl Fixture {
 
     /// Runs `frames` usercmds of `msec` each.
     fn run(&mut self, frames: usize) {
+        self.run_with(frames, &crate::gameplay::CORE);
+    }
+
+    /// [`run`](Self::run) under a gameplay plugin's movement rules.
+    fn run_with(&mut self, frames: usize, rules: &'static dyn crate::gameplay::PmRules) {
         self.p.movevars = &mut *self.mv;
         CURRENT.with(|c| c.set(&*self.p));
         for _ in 0..frames {
             self.p.cmd.msec = 10;
-            player_move(&mut self.p, self.arith);
+            player_move(&mut self.p, self.arith, rules);
         }
     }
 
@@ -365,6 +370,36 @@ fn wall_jump_and_climb() {
     assert_eq!(f.p.iuser4 & stunt::WALLCLIMB_IMPULSE, 0);
 }
 
+/// The movement runs the rules it is given: a plugin's wall climb and recovery scale replace the
+/// core's, and the core's are TS 3.0's constants.
+#[test]
+fn movement_hooks_follow_the_plugin() {
+    use crate::gameplay::{CORE, PmRules};
+    struct Other;
+    impl PmRules for Other {
+        fn recover_input_scale(&self) -> f32 {
+            0.25
+        }
+        fn wall_climb_velocity(&self) -> f32 {
+            300.0
+        }
+    }
+    static OTHER: Other = Other;
+    assert_eq!((CORE.recover_input_scale(), CORE.wall_climb_velocity()), (0.5, ts::WALLCLIMB_VELOCITY));
+
+    let mut f = Fixture::new();
+    f.p.origin = [0.0, 0.0, 200.0];
+    f.p.iuser4 = stunt::GO_DUCK | stunt::WALLCLIMBING | stunt::WALLCLIMB_IMPULSE;
+    f.run_with(1, &OTHER);
+    assert!((f.p.velocity[2] - (300.0 - 12.0)).abs() < 0.05, "vz = {}", f.p.velocity[2]);
+
+    let mut f = Fixture::standing();
+    f.p.iuser4 = stunt::RECOVER;
+    f.p.cmd.forwardmove = 400.0;
+    f.run_with(1, &OTHER);
+    assert_eq!(f.p.cmd.forwardmove, 100.0);
+}
+
 #[test]
 fn stunt_blocks_jump_without_latching() {
     let mut f = Fixture::standing();
@@ -464,11 +499,11 @@ fn command_is_not_clamped_for_players() {
     f.p.cmd.msec = 10;
     f.p.movevars = &mut *f.mv;
     CURRENT.with(|c| c.set(&*f.p));
-    player_move(&mut f.p, Arith::Gcc);
+    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::CORE);
     assert_eq!(f.p.cmd.forwardmove, 1000.0);
     f.p.iuser1 = 3; // roaming spectator
     f.p.cmd.forwardmove = 1000.0;
-    player_move(&mut f.p, Arith::Gcc);
+    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::CORE);
     assert!((f.p.cmd.forwardmove - 320.0).abs() < 1e-3);
 }
 
@@ -498,12 +533,12 @@ fn in_eye_spectator_is_mode_5() {
     f.p.physents[1].angles = [4.0, 90.0, 0.0];
     f.p.iuser1 = crate::ts::obs::IN_EYE;
     f.p.iuser2 = 2;
-    player_move(&mut f.p, Arith::Gcc);
+    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::CORE);
     assert_eq!(f.p.origin, [50.0, 60.0, 70.0], "in-eye sits at the target's origin");
     assert_eq!(f.p.angles, [4.0, 90.0, 0.0]);
 
     f.p.iuser1 = crate::ts::obs::CHASE_LOCKED;
-    player_move(&mut f.p, Arith::Gcc);
+    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::CORE);
     assert_eq!(f.p.angles, [6.0, 90.0, 0.0], "locked chase pitches to 10 - pitch");
     assert!(f.p.origin[1] < 60.0, "locked chase sits behind the target");
 }
@@ -559,9 +594,9 @@ fn arith_per_side() {
 /// The server's default run is the client's prediction, command for command.
 #[test]
 fn server_default_trajectory_is_the_clients() {
-    let server = trajectory_hash(|p| player_move(p, Arith::SERVER_DEFAULT));
-    assert_eq!(server, trajectory_hash(|p| player_move(p, Arith::CLIENT)));
-    assert_ne!(server, trajectory_hash(|p| player_move(p, Arith::from_cvar(b"gcc"))));
+    let server = trajectory_hash(|p| player_move(p, Arith::SERVER_DEFAULT, &crate::gameplay::CORE));
+    assert_eq!(server, trajectory_hash(|p| player_move(p, Arith::CLIENT, &crate::gameplay::CORE)));
+    assert_ne!(server, trajectory_hash(|p| player_move(p, Arith::from_cvar(b"gcc"), &crate::gameplay::CORE)));
 }
 
 /// MSVC's `_ftol` keeps the low dword of a 64-bit `fistp`; GCC's `fistpl` gives 0x80000000.
@@ -578,8 +613,8 @@ fn int_casts_per_build() {
 /// client's run is pinned like the server's.
 #[test]
 fn msvc_trajectory_is_pinned() {
-    let msvc = trajectory_hash(|p| player_move(p, Arith::Msvc));
-    assert_ne!(msvc, trajectory_hash(|p| player_move(p, Arith::Gcc)));
+    let msvc = trajectory_hash(|p| player_move(p, Arith::Msvc, &crate::gameplay::CORE));
+    assert_ne!(msvc, trajectory_hash(|p| player_move(p, Arith::Gcc, &crate::gameplay::CORE)));
     assert_eq!(msvc, 0xb197_b0b5_2fa8_d4e3, "{msvc:#x}");
 }
 
@@ -596,7 +631,7 @@ fn locked_view_reads_stale_calc_roll_args() {
     f.p.physents[1].origin = [50.0, 60.0, 70.0];
     f.p.iuser1 = crate::ts::obs::LOCKED_VIEW;
     f.p.iuser2 = 2;
-    player_move(&mut f.p, Arith::Gcc);
+    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::CORE);
     assert_eq!(f.p.angles[2], 2.0);
 }
 
@@ -761,7 +796,7 @@ fn trajectory_hash(mv: fn(&mut playermove_t)) -> u64 {
 /// generic over the build.
 #[test]
 fn server_trajectory_is_unchanged() {
-    let h = trajectory_hash(|p| player_move(p, Arith::Gcc));
+    let h = trajectory_hash(|p| player_move(p, Arith::Gcc, &crate::gameplay::CORE));
     assert_eq!(h, 0x3bb0_c84b_4c23_562f, "{h:#x}");
 }
 
@@ -959,8 +994,12 @@ fn msvc_friction_matches_client_dll() {
             f.p.movevars = &mut *f.mv;
             CURRENT.with(|c| c.set(&*f.p));
             match arith {
-                Arith::Gcc => Pm::<Gcc> { p: &mut f.p, onladder: false, spectator: None, fpu: PhantomData }.friction(),
-                Arith::Msvc => Pm::<Msvc> { p: &mut f.p, onladder: false, spectator: None, fpu: PhantomData }.friction(),
+                Arith::Gcc => {
+                    Pm::<Gcc> { p: &mut f.p, onladder: false, spectator: None, rules: &crate::gameplay::CORE, fpu: PhantomData }.friction()
+                }
+                Arith::Msvc => {
+                    Pm::<Msvc> { p: &mut f.p, onladder: false, spectator: None, rules: &crate::gameplay::CORE, fpu: PhantomData }.friction()
+                }
             }
             f.p.velocity
         };

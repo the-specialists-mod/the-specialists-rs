@@ -125,20 +125,32 @@ fn points_for_kill(attacker: *mut edict_t, victim: *mut edict_t) -> i32 {
 }
 
 /// Snapshot of the killer's Rust state we need (read through `other`).
-struct Killer {
-    e: *mut edict_t,
-    idx: i32,
-    spree: u8,
-    last_kill: f32,
-    is_the_one: bool,
-    award: u8,
-    held: u16,
-    held_secs: i32,
-    active: u16,
+pub struct Killer {
+    pub e: *mut edict_t,
+    pub idx: i32,
+    pub spree: u8,
+    pub last_kill: f32,
+    pub is_the_one: bool,
+    pub award: u8,
+    pub held: u16,
+    pub held_secs: i32,
+    pub active: u16,
     /// [`active_gun`].
-    gun: Option<u8>,
+    pub gun: Option<u8>,
     /// The killer's current weapon record was first owned by the victim ([`victims_gun`]).
-    victims_gun: bool,
+    pub victims_gun: bool,
+}
+
+/// A kill by a player, as `TSGetPointsForFrag` sees it
+/// ([`ServerRules::points_for_frag`](crate::gameplay::ServerRules::points_for_frag)).
+pub struct Frag<'a> {
+    pub damage: &'a DamageInfo,
+    /// TS's damage globals as the kill left them.
+    pub glast: &'a Snapshot,
+    pub killer: &'a Killer,
+    /// [`points_for_kill`]: 1, or -1 for a team kill or a suicide.
+    pub base: i32,
+    pub now: f32,
 }
 
 /// The `PlayerKilled` body. `p`/`cx` are the victim; `g` holds TS's damage globals as the kill
@@ -213,7 +225,8 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
     let (mut is_killer, mut is_demolition, mut is_specialist, mut is_unstoppable) = (false, false, false, false);
 
     if let Some(k) = killer.as_mut() {
-        points = points_for_frag(d, &g, k, points, &mut sliding, &mut diving, now);
+        let frag = Frag { damage: d, glast: &g, killer: k, base: points, now };
+        points = crate::gameplay::active().server.points_for_frag(&frag, &mut sliding, &mut diving);
         double_kill = now - k.last_kill < 2.0;
         if p.ts.spree > 2 {
             stopped_fury = true;
@@ -464,7 +477,8 @@ fn kung_fu_frag(g: &Snapshot, killer_gun: Option<u8>) -> bool {
 /// knife's name for a thrown knife. Any other inflictor returns the base points at once (no
 /// stunt bonus, no message). Then +1 for a stunt or a slide above 80 u/s (not under
 /// `glast_closecombat`), and the frag message, which names the killer.
-fn points_for_frag(d: &DamageInfo, g: &Snapshot, k: &Killer, base: i32, sliding: &mut bool, diving: &mut bool, now: f32) -> i32 {
+pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -> i32 {
+    let Frag { damage: d, glast: g, killer: k, base, now } = *frag;
     if base < 0 {
         return base;
     }

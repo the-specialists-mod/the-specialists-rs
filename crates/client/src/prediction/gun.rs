@@ -304,6 +304,8 @@ struct ClientHost<'a> {
     body: i32,
     /// "Silenced" for the current shot's view shake (`VKickback` passes the multiplier only).
     silenced: bool,
+    /// The gameplay rules of this command, from `from`'s physinfo ([`crate::gameplay::gun_rules`]).
+    rules: &'static dyn shared::gameplay::GunRules,
 }
 
 impl GunHost for ClientHost<'_> {
@@ -315,6 +317,9 @@ impl GunHost for ClientHost<'_> {
     }
     fn arith(&self) -> Arith {
         Arith::CLIENT
+    }
+    fn rules(&self) -> &'static dyn shared::gameplay::GunRules {
+        self.rules
     }
     fn first_prediction(&self) -> bool {
         self.runfuncs
@@ -556,6 +561,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         weaponanim: c.weaponanim,
         body,
         silenced,
+        rules: crate::gameplay::gun_rules(c),
     };
     // The weapon frame, then the timers. There is no PreThink part ([`Gun::pre_frame`]): the
     // windows are never decremented and the HUD keeps the kung-fu power. The penalty decays after
@@ -673,6 +679,7 @@ mod tests {
             weaponanim: 3,
             body: 0,
             silenced: false,
+            rules: &shared::gameplay::CORE,
         }
     }
 

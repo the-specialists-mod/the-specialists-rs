@@ -8,6 +8,8 @@
 // No `unsafe` here: engine callbacks go through goldsrc (see AGENTS.md).
 #![deny(unsafe_code)]
 
+pub mod bsp;
+pub mod gameplay;
 pub mod pm;
 pub mod protocol;
 pub mod ts;

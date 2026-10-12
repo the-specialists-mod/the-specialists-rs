@@ -29,7 +29,16 @@ pub unsafe extern "C" fn Initialize(funcs: *mut cl_enginefunc_t, version: c_int)
     // SAFETY: the engine passes its function table (and globals) here, before any other call into the library.
     unsafe { cl::init(funcs) };
     goldsrc::panic::install("ts_client_panic.log", |m| engine().print(m));
+    register_gameplay();
     1
+}
+
+/// The gameplay plugins (`docs/implementation/gameplay-plugins.md`): the core (TS 3.0) and,
+/// with the `ts21` feature, the TS 2.1 plugin.
+fn register_gameplay() {
+    ts_client::gameplay::register(shared::gameplay::DEFAULT_ID, &ts_client::gameplay::CORE_PLUGIN);
+    #[cfg(feature = "ts21")]
+    ts_client::gameplay::register(ts21_gameplay::ID, &ts21_client::PLUGIN);
 }
 
 #[unsafe(no_mangle)]
@@ -95,7 +104,8 @@ pub unsafe extern "C" fn HUD_PlayerMove(pm: *mut playermove_t, server: c_int) {
     // TS (`0x1002e990` -> `0x1002e330`) stores `server != 0` in `pmove->server` first.
     pm.server = (server != 0) as c_int;
     spectator::begin_player_move(pm);
-    shared::pm::player_move_with(pm, shared::pm::Arith::CLIENT, Some(spectator::spectator_move));
+    let rules = ts_client::gameplay::pm_rules(pm);
+    shared::pm::player_move_with(pm, shared::pm::Arith::CLIENT, rules, Some(spectator::spectator_move));
 }
 
 #[unsafe(no_mangle)]

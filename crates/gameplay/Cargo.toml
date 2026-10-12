@@ -1,0 +1,10 @@
+[package]
+name = "ts-gameplay"
+edition.workspace = true
+version.workspace = true
+
+# The gameplay-plugin plumbing every side shares: plugin ids, the channels that carry the active
+# one (cvar, physinfo key, SrvSett key), and the registry. No dependencies, so it sits below
+# `shared`, whose movement and weapon code take the active rules
+# (docs/implementation/gameplay-plugins.md).
+[dependencies]

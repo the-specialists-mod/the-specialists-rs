@@ -147,15 +147,24 @@ pub fn install() {
     let e = engine();
     e.server_command("exec game.cfg\n");
     e.server_execute();
+    start_rules();
+    if !state::single_player() {
+        voice::precache();
+    }
+    exec_server_config();
+    // Port addition: the gameplay plugin `ts_gameplay` selects takes over the new game.
+    crate::gameplay::map_start();
+}
+
+/// The rules of a new game, without the configs and precaches of a map start: the rules decided
+/// and built, and `CTSGameRules::Init`'s node graph and bot texts. [`install`] runs it, and so does
+/// a gameplay switch's reset (`crate::gameplay`), which keeps the cvars as they are.
+pub fn start_rules() {
     state::with(|g| g.install());
     // mp.dll's `CTSGameRules::Init` (from the rules' constructor) also loads the node graph and
     // the bot texts.
     crate::bots::ts_init();
     crate::entities::ts::map_init();
-    if !state::single_player() {
-        voice::precache();
-    }
-    exec_server_config();
 }
 
 /// The tail of the `CHalfLifeMultiplay` constructor (0xcedd0): queue `exec <servercfgfile>` on a
@@ -190,6 +199,11 @@ pub fn server_deactivate() {
 
 /// Called every server frame (`pfnStartFrame`).
 pub fn start_frame() {
+    // Port addition: a `ts_gameplay` change resets the game before the frame runs, and the rules
+    // wait while the map is being put back.
+    if state::with(|g| g.installed) && !crate::gameplay::frame() {
+        return;
+    }
     frame::think();
 }
 

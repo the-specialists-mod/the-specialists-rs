@@ -1,0 +1,258 @@
+# Gameplay plugins
+
+The port can run more than one ruleset and switch between them mid-game (issue #100). TS 3.0's
+rules are the **core plugin** (`"30"`). Each other ruleset is a separate in-process Rust plugin.
+The first is TS 2.1 ([ts21.md](ts21.md)). The server cvar `ts_gameplay` picks the active one.
+
+The plugins keep each ruleset's code apart from 3.0's. The 3.0 crates (`shared`, `ts-server`,
+`ts-client`) contain no code, constants or `if`s for another ruleset. They call **hooks** at the
+points where a ruleset can differ, and each hook's default body is the 3.0 behaviour.
+
+The C plugin API ([plugin-api.md](plugin-api.md), for AMX Mod X) is a different thing. It is a
+narrow table of player setters, and it can't reach movement, prediction or the HUD.
+
+## 1. Layout
+
+```
+crates/
+  gameplay/   ts-gameplay: ids, the channels that carry them, the generic Registry<P>,
+              info-string lookup. No dependencies, so it sits below shared.
+  shared/src/gameplay/
+    mod.rs    Core (the 3.0 plugin object, CORE), re-exports
+    pm.rs     PmRules: movement hooks (shared::pm)
+    gun.rs    GunRules: gun hooks (shared::weapons::gun, through GunHost::rules)
+  server/src/gameplay/
+    mod.rs    ServerPlugin { pm, gun, server } and CORE_PLUGIN, the server registry, active(),
+              the per-call resolvers, the switch (frame, map_start)
+    server.rs ServerRules: server-only hooks
+    reset.rs  the reset a switch runs (§4)
+  client/src/gameplay/
+    mod.rs    ClientPlugin { pm, gun, client } and CORE_PLUGIN, the client registry, resolvers,
+              reset_client
+    client.rs ClientRules: client-only hooks (HUD, input)
+  ts21/       the TS 2.1 plugin (ts21.md)
+    src/shared/  ts21-gameplay: Ts21 (impl PmRules, GunRules), ID "21"
+    server/      ts21-server: impl ServerRules, the server's PLUGIN
+    client/      ts21-client: impl ClientRules, the client's PLUGIN
+  server-dll/, client-dll/   register "30" (CORE_PLUGIN) and, with the default-on feature `ts21`,
+                             "21" (ts21_server::PLUGIN / ts21_client::PLUGIN)
+```
+
+**Why each trait lives with its types.** Issue #100 §1.0 first put all four traits in
+`ts-gameplay`. That can't work with a one-way dependency:
+
+* `shared`'s movement and gun code call `PmRules` and `GunRules`, so those traits must be in
+  `shared` or below it.
+* A hook's 3.0 body is the code it replaces, and that code takes the owning crate's types. For
+  example, `ServerRules::points_for_frag` takes the server's `DamageInfo` and damage snapshot,
+  and its default calls `rules::scoring::points_for_frag`.
+
+So each trait is defined in the crate that owns its types, with default methods holding the 3.0
+behaviour. `ts-gameplay` keeps what every side shares and what names no game type: the ids and
+the registry. `Core` implements every trait with the defaults. A plugin implements the same
+traits and overrides only what its ruleset changes. Each trait has its own module file, so work on
+different areas touches different files.
+
+**Why a plugin is a struct of hook objects, in one package per side.** On each side a plugin is
+`ServerPlugin { pm, gun, server }` or `ClientPlugin { pm, gun, client }`. A plugin's server
+hooks and client hooks are separate packages (`ts21-server`, `ts21-client`), not features of one
+package. Cargo unifies a package's features across a build of both libraries (`cargo xtask build`
+builds them together). With features, the plugin would get both, and the server crate would be
+linked into `client.so` (which then exported the server's 189 entity classes) and the client
+crate into the server library. Separate packages need separate types for the side hooks (the
+orphan rule), and the struct lets them share the one `Ts21` object for the shared hooks without
+delegation.
+
+`Registry<P>` is generic over the plugin type, so another independent axis can be added later
+with its own registry and cvar. One example is a bot plugin, chosen apart from the gameplay
+ruleset. Bots aren't part of a gameplay ruleset, so `ServerRules` has no bot hooks. The reset
+(§4) only replays what a map start does for them.
+
+Every plugin object is a `&'static` value, `Sync`, and stateless. Plugin state goes in the
+plugin's own statics (`goldsrc::Global` with a `Cell`/`RefCell`, as the game crates do), and
+`on_activate` sets it up (§4).
+
+## 2. Selection and the channels
+
+| What | Server | Client |
+|---|---|---|
+| The choice | `ts_gameplay` (`FCVAR_SERVER`, default `"30"`, port addition). It is read every frame, like `ts_pm_arith`. | — |
+| Shared code (movement, gun) | Physinfo key `gp`, set at every spawn next to `mj`/`hl` (`rules/lifecycle.rs`, `stunt/mod.rs`, `player/save.rs`) and for every client on a switch | `pmove->physinfo` / `clientdata_t::physinfo` (`gp`) |
+| HUD | — | `SrvSett` key 4, value = the id as a number. Sent in `InitHUD` after keys 0..3, and on a switch. TS 3.0's client ignores key 4. |
+
+Ids are short decimal numbers (`ts_gameplay::srvsett_value`), because the HUD channel is a
+`short`. `Registry::add` refuses any other id. An empty id resolves silently to the core
+plugin. So does every id when the server is TS 3.0's or an older port, since neither sends `gp`
+nor key 4. An **unknown** id resolves to the core plugin, and the console gets a warning once per
+value: `[ts] gameplay: unknown ruleset "99" ...` on the server, or "the server's ruleset ... isn't
+in this client" on the client.
+
+## 3. Where the hot paths resolve the rules
+
+Each path resolves the rules once per call and passes a `&'static dyn` trait object down. No
+helper looks them up again.
+
+| Path | Resolved by | From |
+|---|---|---|
+| Server `pfnPM_Move` (`server-dll`) | `ts_server::gameplay::pm_rules(pm)`, then passed to `shared::pm::player_move(pm, arith, rules)`, which keeps it in `Pm::rules` | the moving player's `gp` |
+| Client `HUD_PlayerMove` (`client-dll`) | `ts_client::gameplay::pm_rules(pm)`, then `player_move_with(pm, arith, rules, spectator)` | `gp` |
+| Server gun | `weapons::host::with_host` sets `ServerHost::rules` from `gameplay::gun_rules(e)`, and the gun reads `GunHost::rules()` | the player's `gp` (`pfnGetPhysicsKeyValue`) |
+| Client weapon prediction | `prediction::gun::post_think` sets `ClientHost::rules` from `gameplay::gun_rules(&from.client)` | `from`'s `gp`, per command |
+| Server frame, rules, scoring | `ts_server::gameplay::active().server` (a `Cell` read). `gameplay::frame()` runs at the start of `rules::start_frame` | `ts_gameplay` |
+| Client HUD | `ts_client::gameplay::hud_rules(h.gameplay)` | `SrvSett` 4 (`Hud::gameplay`) |
+
+Movement and the gun read physinfo instead of the cvar so that the server and the client's
+prediction run the same rules for the same command, as they must.
+
+## 4. Switching: the reset
+
+When `ts_gameplay` changes, `gameplay::frame()` sees a different plugin at the start of the next
+frame. It resets the game to a **brand-new state, as if the map had just started**, without
+reloading the map. Then it calls the new plugin's `ServerRules::on_activate()`. Nothing carries
+over, so no state is ever converted between rulesets. The reset is core code
+(`server/src/gameplay/reset.rs`) and knows no plugin.
+
+The reset runs in two halves 0.6 s apart. The engines don't hand out a freed edict again for
+0.5 s (FWGS `SV_AllocEdict`, ReHLDS `ED_Alloc`), and re-spawning a large map into fresh edicts
+could run out of them. `reset::begin` runs steps 1-3 on the switch frame, and `reset::finish`
+runs steps 4-6 once the wait is over. In between, the map is empty and the players are frozen
+and can't be hurt. The rules' Think doesn't run then, because `gameplay::frame()` returns false.
+The reset replays a map start in this order:
+
+1. **Clients.** `SrvSett` 4 with the new id goes to everyone, and physinfo `gp` is set on every
+   client.
+2. **Players.** Each player's items are destroyed (`remove_all_items`). Each player then gets a
+   brand-new `Player` object and a zero score. Only the connection's identity stays: the bot flags,
+   a fresh bot `Brain` with the same skill, and the spray frames. Until step 6 the players
+   are frozen (`FL_FROZEN`), can't be hurt, and count as alive (`DEAD_NO`), so a dead player's
+   `PlayerDeathThink` doesn't make a corpse or start observing in the empty map.
+3. **Entities.** Every entity past the client slots is removed at once (`UpdateOnRemove`, then
+   `pfnRemoveEntity`), so the map's entities get their edicts back. Thrown knives, grenades,
+   dropped guns, spawned power-ups and the corpses go with them. The world's soundent stays,
+   like worldspawn, and is spawned again in step 4. It keeps its edict, the first after the
+   clients, and the players' sound slots exist throughout.
+
+   When the wait is over, `finish` first drops whatever the players' think did in the empty
+   map: every player is made brand new again, and any entity created meanwhile is removed.
+4. **The world.** `entities::stock::restart_world` runs what `CWorld::Precache` resets and
+   creates, in its order: the per-map registries (masters, `env_global` states, sound rooms),
+   then `rules::start_rules` (`GameRules::install`: game mode, rounds, teams, The One, slow
+   motion, votes; the node graph and bot texts), the soundent (`CSoundEnt::Spawn` again), the
+   body queue and the light styles. It leaves out the precaches (the engine has them), the forced `sv_gravity`/
+   `sv_stepsize`, the configs and the chapter title.
+5. **Map entities.** They are spawned again from the BSP entity lump as FWGS's
+   `SV_LoadFromFile`/`SV_ParseEdict` do it, worldspawn excepted. That means `classname` and the
+   private data first, then the other keyvalues in order (empty ones and `wad` skipped, trailing
+   spaces trimmed from keys, `angle` given as `angles`), then `Spawn`. An entity whose spawn
+   returns -1 is freed. After that comes `ServerActivate`'s `Activate` pass, and the bot
+   manager's restart.
+6. **Players spawn as fresh joins** (`ClientPutInServer`'s spawn). Everyone gets `InitHUD`,
+   the score and team broadcasts, the buy menu and the respawn wait again. In teamplay, a bot
+   made with a model joins that team again, as `BotSetup` does after the spawn. Like a new bot,
+   it starts with no cash.
+
+The server logs
+`[ts] gameplay: ruleset 30 -> 21: game reset (N players, N entities removed, N spawned from the map)`.
+
+On the client, a `SrvSett` 4 value that differs from the one it holds is a switch.
+`gameplay::reset_client` runs what `HUD_VidInit` resets (HUD, prediction, effects, spectator)
+before the server's fresh state arrives, and logs `[ts] gameplay: the server switched to
+ruleset N; HUD reset`. Each `InitHUD` clears the value the HUD holds (a connect, a map change, or
+the fresh join after a switch), and the `SrvSett` 4 after it only records the ruleset. The value
+isn't cleared in `HUD_VidInit`, which the engine also calls on a video mode change (FWGS
+`SCR_VidInit`, e.g. a window resize).
+TS 3.0's own client ignores key 4. It still gets the fresh join's `ResetHUD`/`InitHUD` and the
+re-sent state, but it can't predict another ruleset (issue #100 §1.1).
+
+At map start, `rules::install` calls `gameplay::map_start()`, which makes the plugin `ts_gameplay`
+selects active and calls `on_activate()` with no reset. The server config runs after the map has
+loaded. If it changes `ts_gameplay`, the first frame resets the game once.
+
+### Differences from a real map start
+
+* The configs (`game.cfg`, the server config) aren't run again, and the cvars keep their values:
+  a switch keeps the server's settings.
+* `SF_NOT_DEATHMATCH` entities are spawned, as FWGS spawns them by default. FWGS skips them
+  only with `BUGCOMP_SPAWNFLAG_NOT_DEATHMATCH`.
+* Clients aren't reconnected, so client-side state the server never resets stays. For example,
+  the voice settings stay.
+
+The reset is tested in-engine only on FWGS listen servers on `ts_dojo` (`cargo xtask play`).
+Dedicated servers on the Steam engines, large maps and team modes are still to be tested
+(issue #103).
+
+## 5. The hook contract
+
+* **The default body is TS 3.0's exact behaviour.** That includes the floating point: a hook
+  whose result feeds the movement's `Arith` maths returns the value the 3.0 code used as a
+  constant (`PmRules::recover_input_scale` returns `0.5f32`, which the code multiplies as
+  before). Adding a hook must not change 3.0 behaviour. `cargo xtask all` has to pass unchanged.
+* **Hook at the level where rulesets differ.** Hook a whole function where another ruleset runs
+  a different algorithm, and a value or table where only constants change (issue #100 §1.0).
+* **Neutral names.** A hook names what it decides (`semi_auto_delay`, `divestep_limits`), never
+  a ruleset. Doc comments cite the TS 3.0 function and address, as everywhere else.
+* **Arguments.** Shared hooks take plain values or `shared` types, because the movement code is
+  generic over `Arith` and a trait object can't be. Server and client hooks may take their own
+  crate's types. Make those types `pub` (for example `rules::scoring::Frag`), so a plugin can
+  implement the hook.
+
+The hooks so far:
+
+| Trait | Hook | 3.0 default | Called from |
+|---|---|---|---|
+| `PmRules` | `recover_input_scale()` | 0.5 | `pm/ts.rs` `ts_handle` |
+| `PmRules` | `wall_climb_velocity()` | `WALLCLIMB_VELOCITY` (334.664) | `pm/ts.rs` `ts_wall_jump_climb` |
+| `GunRules` | `semi_auto_delay(rate)` | 0.1 | `weapons/gun.rs` `standard_fire` |
+| `ServerRules` | `on_activate()` | nothing | `gameplay::map_start`, `gameplay::frame` |
+| `ServerRules` | `points_for_frag(frag, sliding, diving)` | `rules::scoring::points_for_frag` | `rules/scoring.rs` `player_killed` |
+| `ClientRules` | `divestep_limits()` | `[42, 52, 62]` | `hud/weapons.rs` `draw_divesteps` |
+
+## 6. Adding a hook
+
+1. Add a method to the trait's file with the 3.0 behaviour as its default body:
+   `shared/src/gameplay/pm.rs` (`PmRules`), `shared/src/gameplay/gun.rs` (`GunRules`),
+   `server/src/gameplay/server.rs` (`ServerRules`) or `client/src/gameplay/client.rs`
+   (`ClientRules`). Move the 3.0 code into the default, or have the default call it (make the
+   3.0 function and its argument types `pub`).
+2. Call it where the 3.0 code was, through the rules the path already resolved (§3):
+   * movement: `self.rules` in `Pm`
+   * gun: `host.rules()`
+   * server: `crate::gameplay::active().server`
+   * HUD: `crate::gameplay::hud_rules(h.gameplay)`
+
+   Don't resolve again inside a helper. Pass the rules down instead.
+3. Override it in the plugin. For TS 2.1, the shared hooks go in `crates/ts21/src/shared/` (on
+   `Ts21`), the server hooks in `crates/ts21/server/src/` (`Ts21Server`) and the client hooks in
+   `crates/ts21/client/src/` (`Ts21Client`).
+4. Add a row to §5's table, and a unit test where the behaviour can be tested without the engine
+   (e.g. `shared/src/pm/tests.rs` `movement_hooks_follow_the_plugin`).
+5. Check: `cargo test`, `cargo xtask lint` (isolation, the 3.0-only build), `cargo xtask all`.
+
+## 7. Adding a ruleset
+
+1. Create three packages, as `crates/ts21` does. The shared one depends on `ts-gameplay` and
+   `shared`, implements `PmRules` and `GunRules` on a unit struct with a `static`, and defines the
+   id (a new number). The server one depends on it and `ts-server`, implements `ServerRules`, and
+   defines `pub static PLUGIN: ServerPlugin`. The client one does the same with `ts-client`,
+   `ClientRules` and `ClientPlugin`. Add the side packages to the workspace members.
+2. Register it in `server-dll` (`register_gameplay`, from `GameDLLInit`) and `client-dll`
+   (`register_gameplay`, from `Initialize`), behind a default-on cargo feature named after it.
+   Each library depends only on its own side's package.
+3. Extend the isolation check in `xtask/src/lint.rs` (`RULESET_CRATE`, `RULESET_TOKENS`) to
+   cover the new crate, and add its docs.
+
+## 8. Isolation checks
+
+`cargo xtask lint` (and `cargo xtask build` and `cargo test`, through `xtask`'s unit test)
+checks the isolation:
+
+* **Isolation.** It fails if a source, manifest or config outside `crates/ts21/` names TS 2.1
+  (`ts21`, `v21`, `ts_2_1`, `gp21`, ...: `lint::RULESET_TOKENS`). The two libraries may name the
+  plugin crate and the `ts21` feature to register it. A crate that depends on the plugin has to
+  name it in its manifest, so the same check finds those.
+* **3.0 on its own.** `cargo test -p ts-server-dll -p ts-client-dll -p ts-server -p ts-client -p
+  shared -p ts-gameplay --no-default-features`: the libraries build without the TS 2.1 plugin,
+  and the 3.0 tests pass.
+
+`cargo xtask play` switches the ruleset mid-game ([validation.md](../validation.md) §2, "Gameplay
+switch").

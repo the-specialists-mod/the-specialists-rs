@@ -332,6 +332,7 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     let e = engine();
     e.set_physics_key(cx.edict, c"slj", c"0");
     e.set_physics_key(cx.edict, c"hl", c"1");
+    crate::gameplay::set_physinfo(cx.edict);
     sync_superjump(p, cx);
 }
 

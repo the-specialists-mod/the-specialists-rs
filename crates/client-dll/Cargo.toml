@@ -13,3 +13,10 @@ crate-type = ["cdylib"]
 goldsrc   = { path = "../goldsrc", features = ["client"] }
 shared    = { path = "../shared" }
 ts-client = { path = "../client" }
+# The TS 2.1 gameplay plugin (docs/implementation/ts21.md), registered at `Initialize`.
+ts21-gameplay = { path = "../ts21", optional = true }
+ts21-client = { path = "../ts21/client", optional = true }
+
+[features]
+default = ["ts21"]
+ts21 = ["dep:ts21-gameplay", "dep:ts21-client"]

@@ -337,6 +337,14 @@ impl Ctx {
             }
             exit(1);
         }
+        let leaks = lint::ruleset_leaks(&self.repo);
+        if !leaks.is_empty() {
+            eprintln!("TS 2.1 named outside crates/ts21 (issue #100: keep 2.1 in its plugin):");
+            for h in leaks {
+                eprintln!("  {h}");
+            }
+            exit(1);
+        }
         for t in targets {
             let mut c = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
             c.current_dir(&self.repo).args(["build", "-p", "ts-server-dll", "-p", "ts-client-dll", "--target", t.triple]);
@@ -782,6 +790,62 @@ fn akimbo_checks(text: &str) -> Vec<(&'static str, bool)> {
     vec![("akimbo free semi: both triggers fire both guns (linked), then each trigger its own gun", kinds == ["linked", "b0", "b1"])]
 }
 
+/// The gameplay switch (issue #100 §1.3, `docs/implementation/gameplay-plugins.md`), with the four
+/// quota bots playing: `ts_gameplay 21` resets the game to brand new (scores, players, map
+/// entities, the client's HUD), the bots join and spawn again, then `ts_gameplay 30` resets it
+/// once more and the host joins through the buy menu as at the start.
+fn script_gameplay_switch() -> String {
+    let mut s = status("before switch");
+    // The reset's second half runs 0.6 s after the switch.
+    s += &format!("echo XTASK: gameplay 21\nts_gameplay 21\n{}", secs(1.5));
+    s += &status("switched");
+    s += &secs(10.0);
+    s += &status("after switch");
+    s += &format!("echo XTASK: gameplay 30\nts_gameplay 30\n{}", secs(1.5));
+    s += &status("switched back");
+    s += &script_join_and_spawn();
+    s + &status("rejoined")
+}
+
+fn gameplay_switch_checks(text: &str, dumps: &[(String, Vec<PlayerStatus>)]) -> Vec<(&'static str, bool)> {
+    let dump = |tag: &str| dumps.iter().find(|d| d.0 == tag).map(|d| d.1.clone()).unwrap_or_default();
+    // `[ts] gameplay: ruleset 30 -> 21: game reset (5 players, 120 entities removed, 98 spawned from the map)`
+    let reset = |from: &str, to: &str| {
+        let needle = format!("[ts] gameplay: ruleset {from} -> {to}: game reset (");
+        text.lines().find_map(|l| l.split_once(needle.as_str()).map(|(_, r)| r.to_owned())).and_then(|r| {
+            let n = |key: &str| r.split_once(key).and_then(|(a, _)| a.rsplit([' ', '(']).next()?.parse::<i32>().ok());
+            Some((n(" players")?, n(" spawned")?))
+        })
+    };
+    let (to21, to30) = (reset("30", "21"), reset("21", "30"));
+    let before = dump("before switch");
+    let scored = before.iter().any(|p| p.frags != 0 || p.deaths != 0);
+    let fresh = |tag: &str| {
+        let d = dump(tag);
+        d.len() >= 5 && d.iter().all(|p| p.frags == 0 && p.deaths == 0 && p.state != "alive")
+    };
+    let bots_back = dump("after switch").iter().filter(|p| p.idx != 1 && p.state == "alive").count();
+    let hud_reset = text.contains("[ts] gameplay: the server switched to ruleset 21; HUD reset")
+        && text.contains("[ts] gameplay: the server switched to ruleset 30; HUD reset");
+    say!(
+        "   gameplay switch: 30->21 {to21:?}, 21->30 {to30:?} (players, map entities); scored before {scored}; bots alive after {bots_back}"
+    );
+    vec![
+        (
+            "ts_gameplay 21 mid-game: the game reset to brand new (scores zeroed, everyone a fresh join, map entities respawned)",
+            scored && to21.is_some_and(|(p, n)| p >= 5 && n > 0) && fresh("switched"),
+        ),
+        ("the client reset its HUD on each switch (SrvSett 4)", hud_reset),
+        ("after the switch the bots joined and spawned again", bots_back >= 3),
+        (
+            "ts_gameplay 30: reset again, and the host joined and spawned through the buy menu",
+            to30.is_some_and(|(p, n)| p >= 5 && n > 0)
+                && fresh("switched back")
+                && dump("rejoined").iter().any(|p| p.idx == 1 && p.state == "alive"),
+        ),
+    ]
+}
+
 /// The `addbot` scene (after the quota bots are gone): a listen server adds a bot named from
 /// `bots.txt`, as TS's Windows server does, and the quota (0) leaves it alone.
 fn script_addbot() -> String {
@@ -1134,6 +1198,10 @@ impl Ctx {
             cfg += &status(&format!("bots {i}"));
         }
         cfg += &shot("bots");
+
+        // 8b. switch the gameplay ruleset mid-game and back: each switch resets the game to brand
+        // new, and play goes on (the bots respawn, the host joins again)
+        cfg += &script_gameplay_switch();
         cfg += "ts_bot_quota 0\n";
 
         // 9. `addbot` (TS's listen-server bots), then Escape last: its `escape` opens the menu
@@ -1208,7 +1276,8 @@ impl Ctx {
         let at = checks.iter().position(|c| c.0 == "ts_bot_quota 1 added a bot").map_or(checks.len(), |i| i + 1);
         checks.splice(at..at, laser_checks(text).into_iter().chain(akimbo_checks(text)));
         let at = checks.len() - 1;
-        checks.splice(at..at, addbot_checks(text, &dumps).into_iter().chain(escape_checks(text)));
+        checks
+            .splice(at..at, gameplay_switch_checks(text, &dumps).into_iter().chain(addbot_checks(text, &dumps)).chain(escape_checks(text)));
         self.report(root, "play", &run, &checks)
     }
 

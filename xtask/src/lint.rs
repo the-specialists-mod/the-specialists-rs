@@ -7,6 +7,12 @@
 //! below fail on any hit. Each game crate's `clippy.toml` also lists the macros under
 //! `disallowed-macros`, a second guard that sees through renamed imports and local macros.
 //!
+//! The gameplay plugins keep TS 2.1 apart from the 3.0 code (issue #100,
+//! `docs/implementation/gameplay-plugins.md`): [`ruleset_leaks`] finds 2.1 identifiers outside
+//! `crates/ts21/`, other than the two libraries' registration of the plugin, and any other crate
+//! that depends on it. `cargo xtask lint` also builds and tests the libraries without their
+//! default features ([`NO_DEFAULT_FEATURES`]), so 3.0 builds and passes on its own.
+//!
 //! `cargo xtask lint` runs the whole clippy set with warnings as errors on every build target,
 //! including the `undocumented_unsafe_blocks` lint that `goldsrc` and the `*-dll` crates enable
 //! (AGENTS.md, rule 4). The Windows-only code (`goldsrc::platform::win`, the WinMM joystick) is
@@ -21,7 +27,8 @@ use std::process::Command;
 pub const ENGINE_MACROS: [&str; 5] = ["eng", "cl_eng", "ev", "efx", "tri"];
 
 /// The crates that must reach the engine only through `goldsrc`'s safe API.
-pub const GAME_CRATES: [&str; 3] = ["crates/server", "crates/client", "crates/shared"];
+pub const GAME_CRATES: [&str; 7] =
+    ["crates/server", "crates/client", "crates/shared", "crates/gameplay", "crates/ts21", "crates/ts21/server", "crates/ts21/client"];
 
 /// Every `file:line: text` in the game crates' sources that invokes (`tri!(...)`) or names
 /// (`use goldsrc::tri;`, `goldsrc::eng!`) an engine-call macro. Line comments are skipped.
@@ -44,16 +51,108 @@ pub fn engine_macro_uses(repo: &Path) -> Vec<String> {
     hits
 }
 
-/// `cargo xtask lint`: the engine-macro check, then `cargo clippy --workspace --all-targets
-/// -- -D warnings` for every target. A workspace build unifies `goldsrc`'s features, so both its
-/// `client` and `server` halves are linted. `xtask` is host tooling (it uses `std::os::unix`), so
-/// it's linted on the Linux targets only. Returns false on any failure.
+/// The TS 2.1 plugin's directory (`ts21-gameplay` and its `server/` and `client/` packages): the
+/// only one that may name 2.1.
+pub const RULESET_CRATE: &str = "crates/ts21";
+
+/// The libraries that register the plugin (behind their `ts21` feature): they may name the
+/// plugin's crate and the feature, nothing else of 2.1.
+pub const REGISTERING_CRATES: [&str; 2] = ["crates/server-dll", "crates/client-dll"];
+
+/// Identifier fragments that name TS 2.1 or a 2.1 mode (lower case, matched after a
+/// non-alphanumeric character, so `rules_v21` counts and `tests21` or `dev21` don't).
+pub const RULESET_TOKENS: [&str; 7] = ["ts21", "ts_21", "ts2_1", "ts_2_1", "v21", "v2_1", "gp21"];
+
+/// Every `file:line: text` outside [`RULESET_CRATE`] (sources, manifests and configs under
+/// `crates/`, and xtask's manifest) that names TS 2.1 ([`RULESET_TOKENS`]), except the registering
+/// libraries' references to the plugin crate and its feature. A crate that depends on the
+/// plugin has to name it in its manifest, so this also finds those.
+pub fn ruleset_leaks(repo: &Path) -> Vec<String> {
+    let mut files = vec![repo.join("xtask/Cargo.toml")];
+    text_files(&repo.join("crates"), &mut files);
+    files.sort();
+    let mut hits = Vec::new();
+    for f in files {
+        let rel = f.strip_prefix(repo).unwrap_or(&f).to_string_lossy().replace('\\', "/");
+        if rel.starts_with(&format!("{RULESET_CRATE}/")) || rel.contains("/target/") {
+            continue;
+        }
+        let registering = REGISTERING_CRATES.iter().any(|c| rel.starts_with(&format!("{c}/")));
+        let Ok(text) = fs::read_to_string(&f) else { continue };
+        for (i, line) in text.lines().enumerate() {
+            if names_ruleset(line, registering) {
+                hits.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    hits
+}
+
+/// True if `line` names TS 2.1 ([`RULESET_TOKENS`]). With `registering`, the references a
+/// library needs to register the plugin are allowed: the plugin's packages (`ts21_gameplay::ID`,
+/// `ts21-server`, `ts21_client::PLUGIN`, ..., their paths `../ts21`, `../ts21/server` and the doc
+/// `ts21.md`) and the `ts21` feature (`"ts21"`, `` `ts21` ``, `ts21 = [...]`).
+fn names_ruleset(line: &str, registering: bool) -> bool {
+    let l = line.to_ascii_lowercase();
+    RULESET_TOKENS.iter().any(|t| {
+        l.match_indices(t).any(|(at, _)| {
+            if l[..at].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric()) {
+                return false;
+            }
+            !(registering && *t == "ts21" && registration(&l[..at], &l[at + t.len()..]))
+        })
+    })
+}
+
+/// Whether a `ts21` between `before` and `after` is one of a registering library's references
+/// ([`names_ruleset`]).
+fn registration(before: &str, after: &str) -> bool {
+    let package = ["gameplay", "server", "client"]
+        .iter()
+        .any(|p| after.strip_prefix(['_', '-']).is_some_and(|a| a.starts_with(p)) || before.ends_with(&format!("ts21_{p}::")));
+    let path = (before.ends_with("../") && (after.starts_with('"') || after.starts_with('/'))) || after.starts_with(".md");
+    let quoted = |q: char| before.ends_with(q) && after.starts_with(q);
+    let feature = quoted('"') || quoted('`') || (before.trim().is_empty() && after.trim_start().starts_with('='));
+    package || path || feature
+}
+
+/// The 3.0-only check: the two libraries without their default features (so without the TS 2.1
+/// plugin) build, and their tests and the 3.0 crates' pass.
+pub const NO_DEFAULT_FEATURES: [&str; 13] = [
+    "-p",
+    "ts-server-dll",
+    "-p",
+    "ts-client-dll",
+    "-p",
+    "ts-server",
+    "-p",
+    "ts-client",
+    "-p",
+    "shared",
+    "-p",
+    "ts-gameplay",
+    "--no-default-features",
+];
+
+/// `cargo xtask lint`: the engine-macro and ruleset-isolation checks, `cargo test` of the 3.0
+/// crates and libraries without default features ([`NO_DEFAULT_FEATURES`]), then `cargo clippy
+/// --workspace --all-targets -- -D warnings` for every target. A workspace build unifies
+/// `goldsrc`'s features, so both its `client` and `server` halves are linted. `xtask` is host
+/// tooling (it uses `std::os::unix`), so it's linted on the Linux targets only. Returns false on
+/// any failure.
 pub fn run(repo: &Path) -> bool {
     let hits = engine_macro_uses(repo);
     for h in &hits {
         eprintln!("engine-call macro in a game crate: {h}");
     }
-    let mut ok = hits.is_empty();
+    let leaks = ruleset_leaks(repo);
+    for h in &leaks {
+        eprintln!("TS 2.1 named outside crates/ts21 (keep 2.1 in its plugin): {h}");
+    }
+    let mut ok = hits.is_empty() && leaks.is_empty();
+    crate::say!("== cargo test {} (3.0 without the TS 2.1 plugin)", NO_DEFAULT_FEATURES.join(" "));
+    let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));
+    ok &= c.current_dir(repo).arg("test").args(NO_DEFAULT_FEATURES).status().expect("cargo test").success();
     for t in &Target::ALL {
         crate::say!("== cargo clippy --workspace --all-targets --target {} -- -D warnings", t.triple);
         let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));
@@ -64,6 +163,19 @@ pub fn run(repo: &Path) -> bool {
         ok &= c.args(["--", "-D", "warnings"]).status().expect("cargo clippy").success();
     }
     ok
+}
+
+/// The sources, manifests and configs under `dir` (`.rs`, `.toml`).
+fn text_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            text_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rs" || x == "toml") {
+            out.push(p);
+        }
+    }
 }
 
 fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
@@ -131,6 +243,39 @@ mod tests {
         ] {
             assert!(!uses_engine_macro(ok), "{ok}");
         }
+    }
+
+    #[test]
+    fn detects_ruleset_names() {
+        for bad in ["use ts21_gameplay::TS21;", "if v21 {", "let gp21 = 1;", "fn rules_ts_2_1() {}", "// a TS21 rule"] {
+            assert!(names_ruleset(bad, false), "{bad}");
+        }
+        for bad in ["if v21 {", "const TS21_SPEED: f32 = 310.0;", "let ts21 = true;"] {
+            assert!(names_ruleset(bad, true), "registering crate: {bad}");
+        }
+        for ok in [
+            "ts21-gameplay = { path = \"../ts21\", optional = true }",
+            "ts21-server = { path = \"../ts21/server\", optional = true }",
+            "ts21 = [\"dep:ts21-gameplay\", \"dep:ts21-client\"]",
+            "    ts_client::gameplay::register(ts21_gameplay::ID, &ts21_client::PLUGIN);",
+            "default = [\"ts21\"]",
+            "    #[cfg(feature = \"ts21\")]",
+            "    ts_server::gameplay::register(ts21_gameplay::ID, &ts21_gameplay::TS21);",
+        ] {
+            assert!(!names_ruleset(ok, true), "registering crate: {ok}");
+            assert!(names_ruleset(ok, false), "other crate: {ok}");
+        }
+        for ok in ["fn tests21() {}", "let dev21 = 0;", "x = 2.1;", "assert_eq!(n, 21);"] {
+            assert!(!names_ruleset(ok, false), "{ok}");
+        }
+    }
+
+    /// Issue #100: TS 2.1 lives only in its plugin crate.
+    #[test]
+    fn ruleset_stays_in_its_plugin() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let hits = ruleset_leaks(repo);
+        assert!(hits.is_empty(), "TS 2.1 named outside crates/ts21 (keep 2.1 in its plugin):\n{}", hits.join("\n"));
     }
 
     /// AGENTS.md rule 2: game crates reach the engine only through goldsrc's safe wrappers.

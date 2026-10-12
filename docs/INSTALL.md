@@ -128,6 +128,10 @@ The port also adds `ts_pm_arith` (default `msvc`): player movement and the weapo
 clients predict them exactly. `ts_pm_arith gcc` makes a server compute them as TS's Linux server
 did instead.
 
+`ts_gameplay` (default `30`, port addition) picks the gameplay ruleset: `30` is TS 3.0 and `21`
+is TS 2.1, which is still being built and plays like 3.0 for now. Changing it mid-game restarts
+the game from scratch on the same map. Scores, players and map items are all reset.
+
 ## 6. Check that the port is running
 
 * The mod is listed as "The Specialists (Rust)", and the console shows

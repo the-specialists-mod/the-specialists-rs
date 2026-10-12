@@ -68,7 +68,8 @@ and a CRLF `README-RUST-PORT.txt` naming the commit. `TS_PACKAGE_OUT` changes th
 the system `tar` writes it. The path rules are unit-tested (`xtask/src/package.rs`).
 
 ```sh
-cargo xtask lint                        # no engine-call macros in game crates; clippy -D warnings on every target
+cargo xtask lint                        # no engine-call macros in game crates; TS 2.1 only in crates/ts21; the 3.0 tests
+                                        # without the ts21 feature; clippy -D warnings on every target
 cargo xtask roots                       # which roots exist
 cargo xtask install all                 # assemble <root>/ts and install libraries
 cargo xtask server rehlds-linux --map ts_awaken --bots 4 --seconds 60
@@ -125,6 +126,7 @@ results from `ts_status` dumps, kill notices and developer log lines:
 | Kick | `kick` the bot the host just killed | No crash (a dropped bot used to crash the engine on its "respawn"), and the quota adds a replacement |
 | Death and respawn | `ts_hurt 1 500`, click through the death cam, click after the wait | Dead with a death, then a second spawn line and alive |
 | Bots | Host suicides and stays observer; `ts_bot_stop 0`, `ts_bot_quota 4`, 70 s of play (TS's AI: the shipped ts_dojo node graph, TS's random loadouts) | Four bots. Within one life, all but at most one of the bots measured (at least two) move over 64 units between dumps 5 s apart. At least 2 `Bot ... killed Bot ...` lines |
+| Gameplay switch | With the four bots playing: `ts_gameplay 21`, 10 s, `ts_gameplay 30`, then the host joins through the buy menu as in Join (`implementation/gameplay-plugins.md` §4) | Each switch logs `[ts] gameplay: ruleset A -> B: game reset (...)` with every player and map entities spawned again. 1.5 s later (the reset's second half runs after 0.6 s) every player has 0 frags and 0 deaths and none is alive (fresh joins), where someone had scored before. The client logs a HUD reset for each switch. The bots are alive again after 10 s, and the host is alive after rejoining |
 | Quota down | `ts_bot_quota 0` | The bots are kicked |
 | addbot | `addbot` on the listen server | "<name> connected with skill", a player with a `bots.txt` name in `ts_status`, no "Bots only in listen servers.", and the quota (0) doesn't kick it |
 | Escape | `ts_dev_keylog 1`, `cancelselect` twice (Escape's binding; the first may close the weapon menu) | `[ts key] cancelselect: escape`: the client sent `escape`, which opens the engine's main menu |

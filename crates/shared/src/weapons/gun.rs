@@ -154,6 +154,10 @@ pub trait GunHost {
     /// The TS build whose floating point this side reproduces ([`spread`]): the server's
     /// `ts_pm_arith` selection, `Arith::CLIENT` for the prediction.
     fn arith(&self) -> Arith;
+    /// The active gameplay rules for this command, resolved once from the player's physinfo key
+    /// (`crate::gameplay::PHYSINFO_KEY`) when the host is built: the server's from its own
+    /// physinfo, the prediction's from `clientdata_t::physinfo`.
+    fn rules(&self) -> &'static dyn crate::gameplay::GunRules;
     /// The client's `g_runfuncs` (`0x100d5cbc`): this command is predicted for the first time.
     /// `client.dll`'s `ScaleSpread` (`0x10008100`) only adds and grows the recoil penalty then.
     /// Always true on the server.
@@ -834,7 +838,7 @@ impl Gun {
         let rate = if s.mode == mode::BURST {
             if s.state == 1 { 0.2 } else { 0.03 }
         } else if s.mode == mode::SEMI && mode_mask(info) & 1 != 0 {
-            0.1
+            host.rules().semi_auto_delay(info.rate)
         } else {
             info.rate
         };

@@ -35,6 +35,8 @@ pub struct ServerHost<'a> {
     close_attack_cd: Option<f32>,
     /// `BlockPlayer`'s time (`pl+0x4dc`, `StuntState::block_timer`).
     block_timer: Option<f32>,
+    /// The gameplay rules of this call, from the player's physinfo ([`crate::gameplay::gun_rules`]).
+    rules: &'static dyn shared::gameplay::GunRules,
 }
 
 /// Runs `f` with the player's gun and a host for it, then applies the third-person animation
@@ -62,6 +64,7 @@ pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut S
             stunt_recover: None,
             close_attack_cd: None,
             block_timer: None,
+            rules: crate::gameplay::gun_rules(cx.edict),
         };
         let r = f(gun, &mut h);
         (r, h.anims, h.ext_changed, h.stunt_recover, h.close_attack_cd, h.block_timer)
@@ -152,6 +155,9 @@ impl GunHost for ServerHost<'_> {
     }
     fn arith(&self) -> shared::pm::Arith {
         crate::rules::cvars::pm_arith()
+    }
+    fn rules(&self) -> &'static dyn shared::gameplay::GunRules {
+        self.rules
     }
     fn powerups(&self) -> u16 {
         self.powerups

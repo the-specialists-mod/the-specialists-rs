@@ -268,6 +268,8 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     e.set_physics_key(cx.edict, c"slj", c"0");
     e.set_physics_key(cx.edict, c"hl", c"1");
     e.set_physics_key(cx.edict, c"mj", if superjump_map { c"1" } else { c"0" });
+    // Port addition: the gameplay ruleset both sides' movement and guns run.
+    crate::gameplay::set_physinfo(cx.edict);
     super::set_client_maxspeed(cx.edict, 330.0);
     crate::entities::stock::triggers::geiger_spawn(cx.edict);
     {
@@ -575,7 +577,10 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     // truncated, and the weapon mask.
     let (rb, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0], g.allowed_weapons, g.round_end, g.round_timer));
     let cash = !super::frame::x87_eq(cvars::f(c"usecash") as f64, 0.0);
-    let sets = [(0u8, rb), (1, cash as i32), (2, super::frame::ammocount()), (3, mask)];
+    // Port addition: key 4, the gameplay ruleset for the HUD (`crate::gameplay`); TS's client
+    // ignores it.
+    let ruleset = (ts_gameplay::SRVSETT_KEY, crate::gameplay::srvsett_value() as i32);
+    let sets = [(0u8, rb), (1, cash as i32), (2, super::frame::ammocount()), (3, mask), ruleset];
     for (key, value) in sets {
         let s = SrvSett { key, value: value as i16 };
         msg::one(Msg::SrvSett, e, |w| s.write(w));

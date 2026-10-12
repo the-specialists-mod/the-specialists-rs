@@ -48,8 +48,12 @@ crates/
   goldsrc-sys/   bindgen output from the FWGS headers (per target)
   goldsrc/       safe engine wrappers: server (traces, sounds, events, MsgWriter, cvars, bots),
                  client, edicts (edict.rs), player-move callbacks (pmove.rs), native mouse (platform.rs)
-  shared/        runs on both sides: pm (movement), weapons (tables + predicted logic), protocol, ts
+  gameplay/      ts-gameplay: gameplay-plugin ids, channels and registry (implementation/gameplay-plugins.md)
+  shared/        runs on both sides: pm (movement), weapons (tables + predicted logic), protocol, ts,
+                 gameplay (the PmRules/GunRules hooks and the core plugin), bsp (entity lumps)
     data/        weapons.toml, ammo.toml, combat.toml, assets.toml (decoded from the decomp)
+  ts21/          the TS 2.1 gameplay plugin: ts21-gameplay (shared hooks), server/ ts21-server,
+                 client/ ts21-client; linked only by the two libraries (implementation/ts21.md)
   server/        ts-server: server game logic (rlib, no unsafe)
   server-dll/    ts-server-dll: cdylib -> dlls/ts_i386.so, ts_amd64.so, mp.dll (exports, callbacks)
   plugin-api/    ts-plugin-api: the C ABI table server plugins (AMX Mod X tsx) get from CreateInterface
@@ -283,6 +287,8 @@ renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::st
 * `weapons`: `tables()` parses the embedded TOML once. The predicted gun state machine (fire modes, timers × `fuser1`, spread penalty, seeded pellets) goes here.
 * `protocol`: the message table and per-area payload encoders and decoders.
 * `ts`: stunt bits, power-up bits, observer modes (TS numbering: in-eye is 5), `IN_ALT1`, the slot/speed formula.
+* `gameplay`: the movement and gun hooks (`PmRules`, `GunRules`) of the gameplay plugins, and `Core`, TS 3.0's rules. Movement takes the active rules as it takes `Arith`, and the gun reads them from `GunHost::rules`. The server and client crates define their own hook traits (`ServerRules`, `ClientRules`), and `ts_gameplay` switches the ruleset mid-game with a full reset. See `docs/implementation/gameplay-plugins.md`.
+* `bsp`: the BSP entity lump and its keyvalue blocks (the client's map effects, the server's re-spawn on a gameplay switch).
 
 ## 8. Build targets and binary compatibility
 

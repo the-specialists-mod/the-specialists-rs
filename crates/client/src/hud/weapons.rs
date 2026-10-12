@@ -582,7 +582,8 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
 /// Divestep sprites around the crosshair (1004ef50): top/centre/bottom dive indicators plus a
 /// pitch dot. See [`divestep_layout`].
 fn draw_divesteps(dc: &Dc, h: &Hud, cx: i32, cy: i32) {
-    let (sprites, (dx, dy), dot) = divestep_layout(h.next_stunt >= 0.01, h.slots, engine().view_angles()[0], dc.hud, (cx, cy));
+    let limits = crate::gameplay::hud_rules(h.gameplay).divestep_limits();
+    let (sprites, (dx, dy), dot) = divestep_layout(h.next_stunt >= 0.01, h.slots, limits, engine().view_angles()[0], dc.hud, (cx, cy));
     for (i, rgb) in sprites.into_iter().enumerate() {
         dc.spr(dc.g.ts.divestep[i], cx - 40, cy - 40, rgb);
     }
@@ -592,7 +593,8 @@ fn draw_divesteps(dc: &Dc, h: &Hud, cx: i32, cy: i32) {
 /// Colours of the three divestep sprites, and the pitch dot's position and colour (pure, from the
 /// TS binary at 1004ef50 and the threshold helpers 1004eec0/1004eef0/1004ef20).
 ///
-/// Sprite `i` is red when the load is too heavy for that dive (`81 − free slots` ≥ 42, 52, 62).
+/// Sprite `i` is red when the load is too heavy for that dive (`81 − free slots` ≥ `limits[i]`:
+/// 42, 52, 62 in TS 3.0, [`ClientRules::divestep_limits`](crate::gameplay::ClientRules::divestep_limits)).
 /// Otherwise it has the base colour (red while the stunt cooldown runs, else the HUD colour), at
 /// full strength for the band the view pitch points at (< −10°, −10..10°, > 10°) and halved for
 /// the other two. The dot sits 32 px from the centre at angle `clamp(3·pitch, ±90°)`, on the left:
@@ -600,6 +602,7 @@ fn draw_divesteps(dc: &Dc, h: &Hud, cx: i32, cy: i32) {
 fn divestep_layout(
     cooldown: bool,
     free_slots: u8,
+    limits: [i32; 3],
     pitch: f32,
     hud: [i32; 3],
     (cx, cy): (i32, i32),
@@ -613,7 +616,6 @@ fn divestep_layout(
     } else {
         1
     };
-    let limits = [42, 52, 62];
     let sprites = [0, 1, 2].map(|i| {
         if used >= limits[i] {
             RED
@@ -662,19 +664,22 @@ mod tests {
         assert!(!crosshair_scoped(90.0, false));
     }
 
+    /// TS 3.0's divestep limits ([`crate::gameplay::ClientRules::divestep_limits`]).
+    const LIMITS: [i32; 3] = [42, 52, 62];
+
     #[test]
     fn divesteps_follow_ts_binary() {
         let hud = [100, 200, 60];
         let c = (320, 240);
         // Level view, light load: centre band full, the others halved; dot 32 px left.
-        let (s, dot, base) = divestep_layout(false, 70, 0.0, hud, c);
+        let (s, dot, base) = divestep_layout(false, 70, LIMITS, 0.0, hud, c);
         assert_eq!(s, [half(hud), hud, half(hud)]);
         assert_eq!((dot, base), ((288, 240), hud));
         // Looking down 30° (clamped to 90°): bottom band, dot straight below.
-        let (s, dot, _) = divestep_layout(false, 70, 30.0, hud, c);
+        let (s, dot, _) = divestep_layout(false, 70, LIMITS, 30.0, hud, c);
         assert_eq!((s[2], dot), (hud, (320, 272)));
         // 81 - 25 = 56 used: top and centre dives too heavy; cooldown turns the rest red.
-        let (s, _, base) = divestep_layout(true, 25, -20.0, hud, c);
+        let (s, _, base) = divestep_layout(true, 25, LIMITS, -20.0, hud, c);
         assert_eq!((s, base), ([RED, RED, half(RED)], RED));
     }
 
@@ -698,7 +703,7 @@ mod tests {
                 let _ = laser_dot_positions(items, false, (0, 0), (0, 0), wild, size);
             }
         }
-        let _ = divestep_layout(true, u8::MAX, f32::NAN, [0; 3], (i32::MAX, i32::MIN));
+        let _ = divestep_layout(true, u8::MAX, LIMITS, f32::NAN, [0; 3], (i32::MAX, i32::MIN));
         assert!(!crosshair_scoped(f32::NAN, true));
     }
 

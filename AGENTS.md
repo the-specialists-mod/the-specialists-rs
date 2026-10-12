@@ -28,6 +28,7 @@ crates/
   goldsrc-sys/   bindgen output from the FWGS headers (generated per target)
   goldsrc/       safe wrappers over the engine: server/client function tables, edicts
                  (edict.rs), player-move callbacks (pmove.rs), native mouse (platform.rs), ...
+  gameplay/      ts-gameplay: gameplay-plugin ids and registry (docs/implementation/gameplay-plugins.md)
   shared/        game logic both sides run: movement, weapons, protocol, TS constants
   server/        ts-server: server game logic (rlib)
   server-dll/    ts-server-dll: the server library the engine loads (cdylib "ts")
@@ -35,12 +36,16 @@ crates/
                  shared with the AMX Mod X module; append-only, see its module docs)
   client/        ts-client: client game logic (rlib)
   client-dll/    ts-client-dll: the client library the engine loads (cdylib "client")
+  ts21/          the TS 2.1 gameplay plugin: ts21-gameplay (shared hooks), server/ (ts21-server)
+                 and client/ (ts21-client). All 2.1 code goes here; only the two *-dll crates
+                 link it (feature `ts21`), and `cargo xtask lint` checks that nothing else
+                 names 2.1 (docs/implementation/ts21.md)
 xtask/           build, package, install and test tooling (`cargo xtask ...`)
 game/ts/         liblist.gam, gameinfo.txt, delta.lst
 ```
 
 **`unsafe` code lives only in `goldsrc`, `server-dll` and `client-dll`.** `ts-server`,
-`ts-client` and `shared` are `#![deny(unsafe_code)]`. The rules:
+`ts-client`, `shared`, `ts-gameplay` and the `ts21-*` packages are `#![deny(unsafe_code)]`. The rules:
 
 1. **Never add `unsafe` to a game crate, and never weaken the lint.** The only `allow`s are the
    `goldsrc::export_entity_class!` macro (`#[no_mangle]` is an unsafe attribute in Rust 2024) and

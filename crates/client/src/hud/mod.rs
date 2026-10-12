@@ -323,6 +323,7 @@ fn sync_shared(h: &Hud) {
 fn apply_effect(f: Effect) {
     let e = engine();
     match f {
+        Effect::GameplayReset(id) => crate::gameplay::reset_client(id),
         Effect::Sound(name) => e.play_sound(name, 1.0),
         // `gHUD.m_vecOrigin` is the client data origin, the local player's.
         Effect::GoSlow => {

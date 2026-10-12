@@ -197,7 +197,16 @@ unsafe extern "C" fn game_init() {
     weapons::game_init();
     stunt::game_init();
     bots::game_init();
+    register_gameplay();
     engine().print("[ts] GameInit: Rust TS server library loaded\n");
+}
+
+/// The gameplay plugins (`docs/implementation/gameplay-plugins.md`): the core (TS 3.0) and,
+/// with the `ts21` feature, the TS 2.1 plugin.
+fn register_gameplay() {
+    ts_server::gameplay::register(shared::gameplay::DEFAULT_ID, &ts_server::gameplay::CORE_PLUGIN);
+    #[cfg(feature = "ts21")]
+    ts_server::gameplay::register(ts21_gameplay::ID, &ts21_server::PLUGIN);
 }
 
 unsafe extern "C" fn spawn(e: *mut edict_t) -> c_int {
@@ -408,7 +417,8 @@ unsafe extern "C" fn pm_move(pm: *mut playermove_t, server: qboolean) {
     let pm = unsafe { &mut *pm };
     // TS's `PM_Move` (0x101188) hands `server != 0` to `PM_PlayerMove`, which stores it.
     pm.server = (server != 0) as qboolean;
-    shared::pm::player_move(pm, rules::cvars::pm_arith());
+    let gameplay = ts_server::gameplay::pm_rules(pm);
+    shared::pm::player_move(pm, rules::cvars::pm_arith(), gameplay);
 }
 
 unsafe extern "C" fn pm_init(pm: *mut playermove_t) {

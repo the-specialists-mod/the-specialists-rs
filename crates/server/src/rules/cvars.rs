@@ -82,6 +82,20 @@ pub fn register() {
     }
     // Port addition. Not in `CVARS`: `pm_arith` keeps the pointer, as it reads it every command.
     PM_ARITH.0.set(Some(e.register_cvar("ts_pm_arith", "msvc", SERVER)));
+    // Port addition, kept like `ts_pm_arith`: read every frame (`crate::gameplay::frame`).
+    GAMEPLAY.0.set(Some(e.register_cvar(ts_gameplay::CVAR, ts_gameplay::DEFAULT_ID, SERVER)));
+}
+
+/// `ts_gameplay` (port addition; TS has no such cvar).
+static GAMEPLAY: goldsrc::Global<Cell<Option<&'static cvar_t>>> = goldsrc::Global(Cell::new(None));
+
+/// `ts_gameplay` (port addition): the id of the gameplay plugin the server runs
+/// (`crate::gameplay`), read on every use so a change applies from the next frame.
+pub fn gameplay() -> String {
+    match GAMEPLAY.0.get() {
+        Some(c) => goldsrc::server::cvar_string(c).to_string_lossy().into_owned(),
+        None => ts_gameplay::DEFAULT_ID.to_owned(),
+    }
 }
 
 /// `ts_pm_arith` (port addition; TS has no such cvar).

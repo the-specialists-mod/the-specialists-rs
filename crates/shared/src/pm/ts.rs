@@ -33,9 +33,10 @@ impl<F: Fpu> Pm<'_, F> {
         }
         let c = &mut self.p.cmd;
         if self.p.iuser4 & RECOVER != 0 {
-            c.forwardmove *= 0.5;
-            c.sidemove *= 0.5;
-            c.upmove *= 0.5;
+            let k = self.rules.recover_input_scale();
+            c.forwardmove *= k;
+            c.sidemove *= k;
+            c.upmove *= k;
         }
         if self.p.iuser4 & PRONE != 0 {
             c.forwardmove = 0.0;
@@ -109,7 +110,7 @@ impl<F: Fpu> Pm<'_, F> {
     fn ts_wall_jump_climb(&mut self) {
         self.p.onground = -1;
         if self.p.iuser4 & WALLCLIMB_IMPULSE != 0 {
-            self.p.velocity[2] = WALLCLIMB_VELOCITY;
+            self.p.velocity[2] = self.rules.wall_climb_velocity();
             self.p.iuser4 &= !WALLCLIMB_IMPULSE;
         }
         self.fixup_gravity_velocity();
