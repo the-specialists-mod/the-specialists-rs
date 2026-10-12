@@ -103,6 +103,11 @@ impl ClEngine {
         a
     }
 
+    /// `GetClientMaxspeed`: the local player's `maxspeed` from the last client data.
+    pub fn client_maxspeed(&self) -> f32 {
+        cl_eng!(GetClientMaxspeed())
+    }
+
     pub fn cmd_argv(&self, i: i32) -> &'static CStr {
         let p = cl_eng!(Cmd_Argv(i));
         // SAFETY: the engine returns null or a NUL-terminated string it owns; it's used or copied before the next engine call.

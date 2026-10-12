@@ -182,7 +182,7 @@ pub unsafe extern "C" fn CL_CameraOffset(ofs: *mut f32) {
         return;
     }
     // SAFETY: the engine passes a valid out-pointer for this call (null-checked).
-    unsafe { ofs.cast::<[f32; 3]>().write([0.0; 3]) };
+    unsafe { ofs.cast::<[f32; 3]>().write(view::camera_offset()) };
 }
 
 #[unsafe(no_mangle)]

@@ -36,6 +36,8 @@ the original.
   * `pev->fuser1` / `clientdata.fuser1` / `weapon_data.fuser1`: per-entity time scale.
   * `clientdata.vuser1..4` and `ammo_*`: TS weapon state (decomp `server/architecture.md` §7.2).
   * `weapon_data_t`: a single entry for the TS gun (decomp `server/architecture.md` §7.3).
+  * The `gamedll` conditional encoders `delta.lst` names (`Entity_Encode`, `Player_Encode`,
+    `Custom_Encode`) are registered as TS's `RegisterEncoders` does (`ts_server::delta`).
 * **Client commands:** TS's own (`tkw`/`tki`/`tka` loadout lists, `weapon_<n>`, `drop_*`, …; decomp
   `server/architecture.md` §4).
 

@@ -211,12 +211,27 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   score 0x8000 (also forced while health < 1 or in intermission); `+speed` scales movement but
   isn't sent.
 * `cl_attackswitch`: with a gun of kind other than grenade/knife/katana/briefcase held, `+attack2`
-  drives 0x40 and `+alt2` drives `IN_ATTACK2`. `+attack2` also sends `_special`.
+  drives 0x40 and `+alt2` drives `IN_ATTACK2`. `+attack2` also sends `_special`. The `-` commands
+  release only the kbutton the current mapping picks (`0x10025fc0`, `0x10026180`), so switching
+  weapons while the key is held can leave the other one down, as in TS. Key numbers come from
+  `Cmd_Argv(1)` through MSVC `atoi` (none: -1).
 * Gate: `+attack +attack2 +alt2 +reload +forward +back +moveleft +moveright +jump` only act when
   the same frame saw a physical key bound to exactly that command (FWGS order checked:
   input events → `Cbuf_Execute` → `HUD_Frame`). So `autotest.cfg` can't press them, like TS.
-* Turn clamps: `cl_yawspeed ≤ 200`, `cl_pitchspeed ≤ 220`, `cl_anglespeedkey ≥ 0.67`, pitch ±89,
-  roll ±50. View angles frozen at the last live value while dead (not observing).
+* Turn clamps (`CL_AdjustAngles` 0x10026330): `cl_yawspeed` in [0, 200], `cl_pitchspeed` in
+  [0, 220] (not above 0 → 0), `cl_anglespeedkey ≥ 0.67`, pitch ±89, roll ±50. The yaw goes
+  through the SDK's `anglemod` (truncated to 1/65536 of a turn) on every command unless
+  `in_strafe` is held, so the previous frame's mouse yaw is quantised too.
+* `CL_CreateMove` (0x10026570): the movement vector is scaled down to `GetClientMaxspeed` before
+  `IN_Move` (the joystick and FWGS move events come after the clamp); with the `joystick` cvar set
+  a forward/backward move adds `IN_FORWARD`/`IN_BACK`. `g_iAlive` (0x100936a4, set in
+  `HUD_TxferPredictionData` to `iuser1 != 0 || deadflag == 0`) freezes only the *command's* view
+  angles at the last live ones; the engine's view angles keep following the mouse. TS's server
+  never writes `deadflag`, so in practice nothing freezes.
+* `IN_MouseMove` (0x100274d0): `m_filter` averages with the previous *filtered* value (a filtered
+  x within ±0.01 is 0); the acceleration adds `sign(raw) · min(|raw|^m_accelexp · m_accel,
+  m_accelmax)` (power and sign of the raw count, sign −1 for 0, any `m_accel`); `sensitivity` is
+  not clamped.
 * **Mouse (two back ends).** FWGS is detected by its `host_ver` cvar. The client exports
   `IN_ClientLookEvent`/`IN_ClientMoveEvent` (FWGS extensions; same scheme as hlsdk-portable's
   `input_xash3d.cpp`). When they are exported FWGS stops adding mouse look itself
