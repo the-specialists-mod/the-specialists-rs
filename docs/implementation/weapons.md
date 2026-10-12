@@ -286,6 +286,15 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   stunting 4 / -1, uppercut 6 / 20, back kick 7 / 17, flying kick 8 / 16, quick kick 9 / 11-12,
   combo kick 10 / 10, 13-15, speed kick 10 / 15, 18, 19. The client copies never block, crouch
   or touch the stunt timers.
+* Delayed hit (`CTSStunt::CheckForBreakables` 0x9bd9c while `pl+0x79c` is open, alive or dead:
+  `PreThink` calls it before its `deadflag` return and death doesn't close the window): a hull-3
+  trace from the origin 32 u along `v_angle` (behind for a negative stored damage); no
+  `takedamage`, `FL_WORLDBRUSH` or `EF_NODRAW` targets, nor the last one hit (`pl+0x798`, cleared
+  on the ground without a window). The stored damage is halved after each hit and zeroed below 5
+  with a signed test, so a negative (backward) one lands once. Players: the teammate test, then the
+  source's `Victim*Hold` (blocked: no damage), kung fu disarms (not during spawn protection),
+  knocks back above 30 and plays `kungfuhit`, blades their hit-body sound; blocked or friendly,
+  the victim still becomes the last one hit. `TraceAttack` gets `g_vecZero` as the direction.
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
   `TSExplosion(110, 0x1040, 300, 1024)` only while `IsInWorld()` (origin inside ±4096 and

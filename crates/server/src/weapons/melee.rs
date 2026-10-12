@@ -239,8 +239,9 @@ fn knockback(attacker: *mut edict_t, victim: *mut edict_t) {
     v.velocity[2] = 235.0;
 }
 
-/// The delayed hit of a missed melee attack: while the window is open, a head-hull trace 32 u
-/// ahead (behind for the running back kick) lands the stored damage, halving it each time.
+/// The delayed hit of a missed melee attack (`CTSStunt::CheckForBreakables` 0x9bd9c with
+/// `pl+0x79c` open, alive or not): while the window is open, a head-hull trace 32 u ahead (behind
+/// for a negative damage) lands the stored damage, halving it each time.
 pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     let g = &mut p.inv.gun;
     if g.melee_window == 0.0 || g.melee_damage == 0.0 {
@@ -262,16 +263,13 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
         return;
     }
     let v = victim.v();
-    if v.takedamage == 0.0 || v.effects & EF_NODRAW as i32 != 0 {
+    if v.takedamage == 0.0 || v.flags & FL_WORLDBRUSH as i32 != 0 || v.effects & EF_NODRAW as i32 != 0 {
         return;
     }
     let source = g.melee_source;
     let bits = if source == 0 { 0x0400_1080 } else { 0x1080 };
-    let dmg = g.melee_damage.abs();
-    g.melee_damage *= 0.5;
-    if g.melee_damage.abs() < 5.0 {
-        g.melee_damage = 0.0;
-    }
+    let dmg;
+    (dmg, g.melee_damage) = spend_delayed_damage(g.melee_damage);
     if dmg <= 0.0 {
         return;
     }
@@ -294,17 +292,21 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
             g.melee_damage = 0.0;
             g.next_attack = next_attack;
             if bar_cost > 0.0 {
-                g.melee_bar = (g.melee_bar - bar_cost).max(0.0);
-                if g.melee_bar < 0.01 {
-                    g.melee_bar = 0.0;
-                    g.next_attack = 1.5;
-                }
+                g.charge_melee_bar(bar_cost);
                 net::send_kfu_power(me, g.melee_bar);
             }
+            // A blocked hit still makes the victim the last one hit.
+            p.inv.sv.lunge_victim = victim;
             return;
         }
         if source == 0 {
-            crate::player::with_player(victim, |vp, vcx| inventory::drop_weapon(vp, vcx, Drop::Disarm(dmg)));
+            // No disarm while the victim's spawn protection (`pl+0x71c`) runs.
+            let now = e.time();
+            crate::player::with_player(victim, |vp, vcx| {
+                if vp.ts.protect_until < now {
+                    inventory::drop_weapon(vp, vcx, Drop::Disarm(dmg));
+                }
+            });
             if dmg > 30.0 {
                 knockback(me, victim);
             }
@@ -315,10 +317,9 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
         }
     }
     p.inv.sv.lunge_victim = victim;
-    let pev = cx.pev();
+    // TS passes `g_vecZero` as the direction (`TraceAttack(attacker, dmg, g_vecZero, tr, bits)`).
     let mut info = DamageInfo::new(me, me, dmg, bits).traced();
     info.hitgroup = tr.iHitgroup;
-    info.dir = spread::normalize(spread::sub(v.origin, pev.origin));
     info.pos = tr.vecEndPos;
     // `glast_closecombat` only for a stored kung-fu attack (`pl+0x7a4 == 0`, set at 0x9c19d).
     // The hit runs inside the attacker in TS, so it is lent meanwhile (a kicked button's
@@ -330,7 +331,29 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     }
 }
 
+/// One delayed hit's damage and what stays stored: `|stored|` now, half of it kept, zeroed below 5
+/// with a signed test (0x9c1d6..0x9c1e7, no `fabs`), so a negative (behind) damage is spent after
+/// its first hit.
+fn spend_delayed_damage(stored: f32) -> (f32, f32) {
+    let rest = stored * 0.5;
+    (stored.abs(), if rest < 5.0 { 0.0 } else { rest })
+}
+
 /// `friendlyfire 0` and the rules say teammates (team play only).
 fn same_team(me: *mut edict_t, victim: *mut edict_t) -> bool {
     engine().cvar_float(c"mp_friendlyfire") == 0.0 && crate::rules::teams::same_team(me, victim)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spend_delayed_damage;
+
+    #[test]
+    fn delayed_damage_halves_and_a_backward_one_is_spent_at_once() {
+        assert_eq!(spend_delayed_damage(40.0), (40.0, 20.0));
+        assert_eq!(spend_delayed_damage(10.0), (10.0, 5.0));
+        assert_eq!(spend_delayed_damage(9.0), (9.0, 0.0));
+        // the running back kick / backward katana store a negative damage
+        assert_eq!(spend_delayed_damage(-80.0), (80.0, 0.0));
+    }
 }
