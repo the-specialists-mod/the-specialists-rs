@@ -527,7 +527,8 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
     // ×0.7 with a player under it, else ×0.5; 8 px higher while scoped (1004ee02).
     if active & 2 != 0 {
         let k = if id_team.is_some() { 0.7 } else { 0.5 };
-        let y = cy - if scoped { 8 } else { 0 } - dc.g.screen.char_height / 2;
+        // `m_iFontHeight / 2` (`0x1004ee65`), the `number_0` height.
+        let y = cy - if scoped { 8 } else { 0 } - dc.g.sprites.font_height() / 2;
         let range = crate::state::with(|s| s.laser_range);
         dc.number(cx + 28, y, num::DRAW_ZERO, range, rgb.map(|c| (c as f32 * k) as i32));
     }

@@ -39,6 +39,14 @@ impl HudSprites {
         s
     }
 
+    /// `CHud::m_iFontHeight` (`0x100cf988`, set in `CHud::VidInit` at `0x100208a3`): the height
+    /// of hud.txt's `number_0` rectangle (16 in TS's hud.txt), not the engine's character height.
+    /// The train, the laser range and the voice talk icon are placed with it. Guarded: with no
+    /// `number_0`, TS reads the rectangle before the table; the port answers 0.
+    pub fn font_height(&self) -> i32 {
+        self.number_0.and_then(|i| self.rects.get(i)).map_or(0, |r| r.bottom.wrapping_sub(r.top))
+    }
+
     /// `CHud::GetSpriteIndex` (strncmp over 24 chars).
     pub fn index(&self, name: &str) -> Option<usize> {
         let n: String = name.chars().take(24).collect();
@@ -255,6 +263,20 @@ pub fn draw_number(s: &HudSprites, x: i32, y: i32, flags: u8, n: i32, rgb: [i32;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_height_is_number_0s() {
+        use goldsrc::sys::wrect_t;
+        let mut s = HudSprites {
+            names: vec!["d_skull".into(), "number_0".into()],
+            handles: vec![],
+            rects: vec![wrect_t { left: 0, right: 32, top: 0, bottom: 40 }, wrect_t { left: 0, right: 11, top: 4, bottom: 20 }],
+            number_0: None,
+        };
+        assert_eq!(s.font_height(), 0, "guarded without number_0");
+        s.number_0 = s.index("number_0");
+        assert_eq!(s.font_height(), 16, "bottom - top of number_0, as CHud::VidInit sets m_iFontHeight");
+    }
 
     #[test]
     fn number_layout() {

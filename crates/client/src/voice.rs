@@ -626,7 +626,8 @@ pub fn redraw() {
         && (local || acked)
     {
         let img = if acked && dbg { &sv } else { &pl };
-        let ack_height = h - (screen.char_height * 3 + 6);
+        // `GetAckIconHeight` uses `m_iFontHeight`, the `number_0` height.
+        let ack_height = h - (hud::font_height() * 3 + 6);
         root.image(s, img, w - pl.wide - 10, ack_height - pl.tall, Color::new(255, 255, 255, 1));
     }
 }

@@ -95,6 +95,11 @@ pub fn screen() -> Screen {
     }
 }
 
+/// `CHud::m_iFontHeight` (see [`HudSprites::font_height`]), 0 before the first `vid_init`.
+pub fn font_height() -> i32 {
+    gfx_ref(|g| g.sprites.font_height())
+}
+
 /// Runs `f` with a shared borrow of the graphics, or with empty ones before the first
 /// `vid_init` (or, defensively, while they are mutably borrowed).
 fn gfx_ref<R>(f: impl FnOnce(&Gfx) -> R) -> R {
@@ -1053,7 +1058,8 @@ fn draw_train(dc: &Dc) {
     }
     let e = engine();
     e.spr_set(spr, [255, 160, 0]);
-    let y = dc.h() - e.spr_height(spr, 0) - dc.g.screen.char_height;
+    // `m_iFontHeight`, the `number_0` height (`0x10034d8f`).
+    let y = dc.h() - e.spr_height(spr, 0) - dc.g.sprites.font_height();
     let x = dc.w() / 3 + e.spr_width(spr, 0) / 4;
     e.spr_draw_additive(pos as i32 - 1, x, y, None);
 }
