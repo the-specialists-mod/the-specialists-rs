@@ -385,12 +385,19 @@ pub struct CustomTarget {
     next: usize,
 }
 
+/// `CTSCustomTarget::GetTargets` (0x73104): `strtok(.., ";")`, which skips empty fields, up to 64
+/// names. Guard: TS `strcpy`s each into a `char[32]` slot, so a longer name runs into the next
+/// slot; the port keeps its first 31 characters.
+fn parse_targets(v: &str) -> Vec<String> {
+    v.split(';').filter(|s| !s.is_empty()).take(64).map(|s| s.chars().take(31).collect()).collect()
+}
+
 impl Entity for CustomTarget {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v = value.to_str().unwrap_or("");
         match key.to_bytes() {
             b"targets" => {
-                self.targets = v.split(';').take_while(|s| !s.is_empty()).take(64).map(|s| s.chars().take(31).collect()).collect();
+                self.targets = parse_targets(v);
             }
             b"triggermethod" => self.method = strtol(value),
             b"accumulate" => self.accumulate = strtol(value),
@@ -744,6 +751,14 @@ mod tests {
         assert_eq!(super::strtol(c" -5 frags"), -5);
         assert_eq!(super::strtol(c"x"), 0);
         assert_eq!(crate::entities::stock::base::kv_f(c"0.5s"), 0.5);
+    }
+
+    #[test]
+    fn custom_targets_skip_empty_fields() {
+        assert_eq!(super::parse_targets("a;;b"), ["a", "b"]);
+        assert_eq!(super::parse_targets(";a;b;"), ["a", "b"]);
+        assert!(super::parse_targets(";;").is_empty());
+        assert_eq!(super::parse_targets(&"t;".repeat(70)).len(), 64);
     }
 
     #[test]
