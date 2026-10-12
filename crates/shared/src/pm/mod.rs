@@ -27,13 +27,18 @@ pub mod ts;
 mod tests;
 
 use crate::gameplay::PmRules;
+use crate::gameplay::pm::{GroundAccel, Jump};
 pub use fpu::Arith;
 pub use math::Vec3;
+pub(crate) use math::below87;
 use math::*;
-/// The two builds' arithmetic, for the weapon code both sides share (`weapons::spread`).
-pub(crate) use math::{Fpu, Gcc, Msvc, Num};
+/// The two builds' arithmetic, for the weapon code both sides share (`weapons::spread`) and for
+/// gameplay plugins whose movement hooks compute in the build they are given
+/// (`crate::gameplay::PmRules`, docs/implementation/gameplay-plugins.md §5).
+pub use math::{Fpu, FpuMath, Gcc, Msvc, Num};
 /// `ts_i386.so`'s exported mathlib helpers; `server-dll` exports them under their C names.
 pub use math::{anglemod, length, q_log2};
+pub(crate) use sound::step_interval;
 use std::marker::PhantomData;
 
 // Spectator modes (`iuser1`) in TS's numbering.
@@ -342,7 +347,7 @@ impl<F: Fpu> Pm<'_, F> {
         self.p.numtouch = 0;
         // TS: frametime is scaled by the per-player time scale and frozen below 0.1 (or NaN).
         self.p.frametime = (F::xd(0.001) * F::xi(self.p.cmd.msec as i32)).f();
-        self.p.frametime = if below87(self.p.fuser1, crate::ts::TIME_SCALE_FREEZE) { 0.0 } else { self.p.frametime * self.p.fuser1 };
+        self.p.frametime = self.rules.scaled_frametime(self.p.frametime, self.p.fuser1);
         // Duck, step, swim and water-jump timers still run on the unscaled msec.
         self.reduce_timers();
         let (f, r, u) = F::angle_vectors(self.p.angles);
@@ -529,7 +534,7 @@ impl<F: Fpu> Pm<'_, F> {
         // The outgoing argument of `PM_DropPunchAngle(pmove->punchangle)`; see `StaleArgs`.
         let mut stale = STALE_ARGS.get();
         stale[0] = std::ptr::addr_of!(self.p.punchangle) as usize as u32;
-        self.drop_punch_angle();
+        self.p.punchangle = self.rules.drop_punch_angle(F::ARITH, self.p.punchangle, self.p.dead != 0, self.p.fuser1, self.p.frametime);
 
         if self.p.dead == 0 && self.p.iuser4 & stunt::DEAD_LOCK == 0 {
             let v_angle = add(self.p.cmd.viewangles, self.p.punchangle);
@@ -555,26 +560,6 @@ impl<F: Fpu> Pm<'_, F> {
         if self.p.angles[1] > 180.0 {
             self.p.angles[1] -= 360.0;
         }
-    }
-
-    /// `PM_DropPunchAngle` (0x100760, client 0x1002e1c0). TS scales by `fuser1` on top of the
-    /// already-scaled frametime, and zeroes the punch while dead. MSVC multiplies by `fuser1`
-    /// first and clamps the unrounded length (a NaN or a -0 becomes +0).
-    fn drop_punch_angle(&mut self) {
-        let mut punch = self.p.punchangle;
-        let len = if self.p.dead == 0 {
-            let len = F::normalize(&mut punch);
-            if F::MSVC {
-                let d = len - (len * F::xd(0.5) + F::xd(10.0)) * F::x(self.p.fuser1) * F::x(self.p.frametime);
-                if d > F::xd(0.0) { d.f() } else { 0.0 }
-            } else {
-                let len = (len - (len * F::xd(0.5) + F::xd(10.0)) * F::x(self.p.frametime) * F::x(self.p.fuser1)).f();
-                if 0.0 > len { 0.0 } else { len }
-            }
-        } else {
-            0.0
-        };
-        self.p.punchangle = scale(punch, len);
     }
 
     fn reduce_timers(&mut self) {
@@ -792,7 +777,8 @@ impl<F: Fpu> Pm<'_, F> {
 
     // ---- acceleration and friction ------------------------------------------------------------------
 
-    /// `PM_Accelerate` (0xfdd08, client 0x1002b830) with TS's `PM_GetAccelBySpeed` factor. The
+    /// `PM_Accelerate` (0xfdd08, client 0x1002b830) with TS's `PM_GetAccelBySpeed` factor (or the
+    /// rules' constant, [`PmRules::ground_accel`]). The
     /// add speed is tested unrounded, then stored. GCC stores the acceleration before and after
     /// the factor; MSVC multiplies in the other order, keeps the product on the stack (the
     /// factor multiplies a stored copy) and steps the velocity with the unrounded result.
@@ -806,9 +792,15 @@ impl<F: Fpu> Pm<'_, F> {
         }
         let addspeed = addspeed.f();
         let factor = self.p.iuser4 & crate::ts::stunt::PRONE == 0 && self.p.flags & FL_DUCKING_ == 0;
+        let rule = self.rules.ground_accel();
         if F::MSVC {
             let prod = F::x(self.p.friction) * F::x(self.p.frametime) * F::x(wishspeed) * F::x(accel);
-            let mut accelspeed = if factor { accel_by_speed_x::<F>(self.p.maxspeed) * F::x(prod.f()) } else { prod };
+            let mut accelspeed = match rule {
+                _ if !factor => prod,
+                // The call to `PM_GetAccelBySpeed` spills the product.
+                GroundAccel::BySpeed => accel_by_speed_x::<F>(self.p.maxspeed) * F::x(prod.f()),
+                GroundAccel::Constant(k) => prod * F::xd(k),
+            };
             if accelspeed > F::x(addspeed) {
                 accelspeed = F::x(addspeed);
             }
@@ -817,7 +809,11 @@ impl<F: Fpu> Pm<'_, F> {
         }
         let mut accelspeed = (F::x(accel) * F::x(self.p.frametime) * F::x(wishspeed) * F::x(self.p.friction)).f();
         if factor {
-            accelspeed = (accel_by_speed_x::<F>(self.p.maxspeed) * F::x(accelspeed)).f();
+            let k = match rule {
+                GroundAccel::BySpeed => accel_by_speed_x::<F>(self.p.maxspeed),
+                GroundAccel::Constant(k) => F::xd(k),
+            };
+            accelspeed = (k * F::x(accelspeed)).f();
         }
         if accelspeed > addspeed {
             accelspeed = addspeed;
@@ -1715,10 +1711,13 @@ impl<F: Fpu> Pm<'_, F> {
                     && (self.p.bInDuck != 0 || self.p.flags & FL_DUCKING_ != 0)
                     && self.p.cmd.buttons & IN_DUCK_ != 0
                     && self.p.flDuckTime > 0.0;
+                let (buttons, maxspeed) = (self.p.cmd.buttons, self.p.maxspeed);
                 if can_high_jump {
+                    self.rules.jump_push(F::ARITH, Jump::High, buttons, maxspeed, &mut self.p.velocity);
                     self.p.velocity[2] = ts::HIGH_JUMP_VELOCITY;
                     self.p.iuser4 |= stunt::SUPERJUMP_START;
                 } else {
+                    self.rules.jump_push(F::ARITH, Jump::Normal, buttons, maxspeed, &mut self.p.velocity);
                     self.p.velocity[2] = ts::JUMP_VELOCITY;
                 }
                 self.fixup_gravity_velocity();
@@ -1827,6 +1826,27 @@ fn calc_roll<F: Fpu>(angles: Vec3, velocity: Vec3, rollangle: f32, rollspeed: f3
     let value = F::x(rollangle);
     let side = if side >= F::x(rollspeed) { value } else { side * value / F::x(rollspeed) };
     side * sign
+}
+
+/// `PM_DropPunchAngle` (0x100760, client 0x1002e1c0), the default of
+/// [`PmRules::drop_punch_angle`]. TS scales by `fuser1` on top of the already-scaled frametime,
+/// and zeroes the punch while dead. MSVC multiplies by `fuser1` first and clamps the unrounded
+/// length (a NaN or a -0 becomes +0).
+pub(crate) fn drop_punch_angle<F: Fpu>(punch: Vec3, dead: bool, fuser1: f32, frametime: f32) -> Vec3 {
+    let mut punch = punch;
+    let len = if !dead {
+        let len = F::normalize(&mut punch);
+        if F::MSVC {
+            let d = len - (len * F::xd(0.5) + F::xd(10.0)) * F::x(fuser1) * F::x(frametime);
+            if d > F::xd(0.0) { d.f() } else { 0.0 }
+        } else {
+            let len = (len - (len * F::xd(0.5) + F::xd(10.0)) * F::x(frametime) * F::x(fuser1)).f();
+            if 0.0 > len { 0.0 } else { len }
+        }
+    } else {
+        0.0
+    };
+    scale(punch, len)
 }
 
 /// `PM_GetAccelBySpeed` (0xfdcc4, client 0x1002b7f0): ground acceleration factor from the

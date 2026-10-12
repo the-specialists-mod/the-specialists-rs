@@ -33,13 +33,17 @@ impl<F: Fpu> Pm<'_, F> {
         }
         let c = &mut self.p.cmd;
         if self.p.iuser4 & RECOVER != 0 {
-            let k = self.rules.recover_input_scale();
-            c.forwardmove *= k;
-            c.sidemove *= k;
-            c.upmove *= k;
+            // A `double` multiplying each move on the FPU stack (mp.dll 0x10089180).
+            let k = F::xd(self.rules.recover_input_scale());
+            c.forwardmove = (F::x(c.forwardmove) * k).f();
+            c.sidemove = (F::x(c.sidemove) * k).f();
+            c.upmove = (F::x(c.upmove) * k).f();
         }
         if self.p.iuser4 & PRONE != 0 {
-            c.forwardmove = 0.0;
+            c.forwardmove = match self.rules.prone_forward_scale() {
+                None => 0.0,
+                Some(k) => (F::x(c.forwardmove) * F::xd(k)).f(),
+            };
             if F::MSVC {
                 // A `double` 0.3 in client.dll / mp.dll.
                 c.sidemove = (F::x(c.sidemove) * F::xd(0.3)).f();
@@ -80,7 +84,8 @@ impl<F: Fpu> Pm<'_, F> {
         };
         let mut dir = self.p.velocity;
         F::normalize(&mut dir);
-        if self.p.iuser4 & WALLDIVE != 0 {
+        let wall_dive = self.rules.wall_dive();
+        if wall_dive && self.p.iuser4 & WALLDIVE != 0 {
             dir = scale(self.p.forward, 3.0);
         }
         let ds = F::xi(divespeed);
@@ -88,22 +93,33 @@ impl<F: Fpu> Pm<'_, F> {
         self.p.velocity[1] = (ds * F::x(dir[1]) + F::x(self.p.velocity[1])).f();
         self.p.velocity[2] = F::xi(upspeed * 1600).sqrt().f();
         self.p.onground = -1;
-        self.p.iuser4 &= !WALLDIVE;
+        if wall_dive {
+            self.p.iuser4 &= !WALLDIVE;
+        }
         self.fixup_gravity_velocity();
+        self.fix_velocity_to_twice_maxspeed();
+    }
+
+    /// `FixVelocity(pmove->velocity, maxspeed + maxspeed)` after a stunt impulse
+    /// ([`PmRules::fix_velocity`](crate::gameplay::PmRules::fix_velocity)).
+    fn fix_velocity_to_twice_maxspeed(&mut self) {
+        let limit = self.p.maxspeed + self.p.maxspeed;
+        self.rules.fix_velocity(F::ARITH, &mut self.p.velocity, limit);
     }
 
     /// `TSWallJump` (0xf9444).
     fn ts_wall_jump(&mut self) {
         self.p.onground = -1;
         if self.p.iuser4 & WALLJUMP_IMPULSE != 0 {
-            let speed = WALLJUMP_SPEED;
+            let speed = self.rules.wall_jump_speed();
             for i in 0..2 {
                 self.p.velocity[i] = -self.p.forward[i] * speed;
             }
-            self.p.velocity[2] = JUMP_VELOCITY;
+            self.p.velocity[2] = self.rules.wall_jump_up_velocity();
             self.p.iuser4 &= !WALLJUMP_IMPULSE;
         }
         self.fixup_gravity_velocity();
+        self.fix_velocity_to_twice_maxspeed();
     }
 
     /// `TSWallJumpClimb` (0xf94e0).
@@ -114,6 +130,7 @@ impl<F: Fpu> Pm<'_, F> {
             self.p.iuser4 &= !WALLCLIMB_IMPULSE;
         }
         self.fixup_gravity_velocity();
+        self.fix_velocity_to_twice_maxspeed();
     }
 
     /// `TSGoDuck` (0xf93a8): instant duck hull while a stunt runs (no 0.4 s transition).

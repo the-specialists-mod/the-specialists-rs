@@ -37,6 +37,14 @@ pub fn map_texture_type_step_type(t: u8) -> i32 {
     }
 }
 
+/// The slow-motion footstep interval of `PM_UpdateStepSound` (0xfe2d4), the default of
+/// [`PmRules::step_interval`](crate::gameplay::PmRules::step_interval): the interval times
+/// `1 / max(fuser1, 0.1)` (a NaN time scale counts as 0.1), the reciprocal unrounded, truncated.
+pub(crate) fn step_interval<F: Fpu>(interval: i32, fuser1: f32) -> i32 {
+    let ts = if fuser1 >= 0.1 { fuser1 } else { 0.1 };
+    (F::x(1.0) / F::x(ts) * F::xi(interval)).trunc_i32()
+}
+
 impl<F: Fpu> Pm<'_, F> {
     pub(crate) fn play_step_sound(&mut self, step: i32, fvol: f32) {
         self.p.iStepLeft = (self.p.iStepLeft == 0) as i32;
@@ -167,9 +175,8 @@ impl<F: Fpu> Pm<'_, F> {
         }
         // `(int)` casts: GCC switches the FPU to truncation for the `fistp`.
         self.p.flTimeStepSound = (F::x(flduck) + F::xi(self.p.flTimeStepSound)).trunc_i32();
-        // TS: footsteps get sparser in slow motion; 1 / fuser1 isn't rounded.
-        let ts = if self.p.fuser1 >= 0.1 { self.p.fuser1 } else { 0.1 };
-        self.p.flTimeStepSound = (F::x(1.0) / F::x(ts) * F::xi(self.p.flTimeStepSound)).trunc_i32();
+        // TS: footsteps get sparser in slow motion.
+        self.p.flTimeStepSound = self.rules.step_interval(F::ARITH, self.p.flTimeStepSound, self.p.fuser1);
         if self.p.flags & goldsrc_sys::FL_DUCKING as i32 != 0 {
             fvol = (F::xd(0.35) * F::x(fvol)).f();
         }

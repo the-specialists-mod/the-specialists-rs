@@ -192,16 +192,30 @@ Dedicated servers on the Steam engines, large maps and team modes are still to b
 * **Neutral names.** A hook names what it decides (`semi_auto_delay`, `divestep_limits`), never
   a ruleset. Doc comments cite the TS 3.0 function and address, as everywhere else.
 * **Arguments.** Shared hooks take plain values or `shared` types, because the movement code is
-  generic over `Arith` and a trait object can't be. Server and client hooks may take their own
-  crate's types. Make those types `pub` (for example `rules::scoring::Frag`), so a plugin can
-  implement the hook.
+  generic over `Arith` and a trait object can't be. A hook that replaces a calculation, not a
+  value, takes the command's `Arith` (`Fpu::ARITH` in the movement) and computes in that build
+  with the public `shared::pm::{Fpu, FpuMath, Num, Gcc, Msvc}`: a default dispatches to the 3.0
+  function (`PmRules::drop_punch_angle` calls `pm::drop_punch_angle::<F>`), and a plugin matches
+  on the `Arith` the same way. Server and client hooks may take their own crate's types. Make
+  those types `pub` (for example `rules::scoring::Frag`), so a plugin can implement the hook.
 
 The hooks so far:
 
 | Trait | Hook | 3.0 default | Called from |
 |---|---|---|---|
-| `PmRules` | `recover_input_scale()` | 0.5 | `pm/ts.rs` `ts_handle` |
+| `PmRules` | `ground_accel()` | `GroundAccel::BySpeed` (`PM_GetAccelBySpeed`); `Constant(k)` multiplies by the `double` k | `pm/mod.rs` `accelerate` |
+| `PmRules` | `recover_input_scale()` | 0.5 (a `double`) | `pm/ts.rs` `ts_handle` |
+| `PmRules` | `prone_forward_scale()` | `None`: the forward move is set to 0 while prone; `Some(k)` multiplies it | `pm/ts.rs` `ts_handle` |
+| `PmRules` | `wall_jump_speed()`, `wall_jump_up_velocity()` | `WALLJUMP_SPEED` (210), `JUMP_VELOCITY` (236.64319) | `pm/ts.rs` `ts_wall_jump` |
 | `PmRules` | `wall_climb_velocity()` | `WALLCLIMB_VELOCITY` (334.664) | `pm/ts.rs` `ts_wall_jump_climb` |
+| `PmRules` | `wall_dive()` | true: `WALLDIVE` dives along `forward × 3` and clears the bit | `pm/ts.rs` `ts_dive` |
+| `PmRules` | `fix_velocity(arith, velocity, limit)` | nothing (TS 3.0's `FixVelocity` is empty) | `pm/ts.rs`, after the dive, wall jump and wall climb impulses, `limit = 2 × maxspeed` |
+| `PmRules` | `jump_push(arith, jump, buttons, maxspeed, velocity)` | nothing | `pm/mod.rs` `jump`, before the upward speed of a normal or super jump |
+| `PmRules` | `scaled_frametime(frametime, fuser1)` | `fuser1 < 0.1` (or NaN) ? 0 : `frametime × fuser1` | `pm/mod.rs` `player_move` |
+| `PmRules` | `drop_punch_angle(arith, punch, dead, fuser1, frametime)` | `pm::drop_punch_angle` (zeroed while dead) | `pm/mod.rs` `check_parameters` |
+| `PmRules` | `step_interval(arith, interval, fuser1)` | `pm::step_interval`: `1/max(fuser1, 0.1) × interval`, truncated | `pm/sound.rs` `update_step_sound` |
+| `PmRules` | `speed_by_slots(free, the_one)` | `ts::speed_by_slots` | server `weapons/inventory.rs` `sync_speed` (the active plugin's) |
+| `PmRules` | `max_player_speed()` | 330: `SetPlayerSpeed`'s clamp and `TSInit`'s speed | server `inventory.rs` `sync_speed`, `rules/lifecycle.rs` `on_spawn` |
 | `GunRules` | `semi_auto_delay(rate)` | 0.1 | `weapons/gun.rs` `standard_fire` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start`, `gameplay::frame` |
 | `ServerRules` | `points_for_frag(frag, sliding, diving)` | `rules::scoring::points_for_frag` | `rules/scoring.rs` `player_killed` |
@@ -216,6 +230,7 @@ The hooks so far:
    3.0 function and its argument types `pub`).
 2. Call it where the 3.0 code was, through the rules the path already resolved (§3):
    * movement: `self.rules` in `Pm`
+   * server code outside the movement and the gun (the move speed): `crate::gameplay::active().pm`
    * gun: `host.rules()`
    * server: `crate::gameplay::active().server`
    * HUD: `crate::gameplay::hud_rules(h.gameplay)`
@@ -225,7 +240,8 @@ The hooks so far:
    `Ts21`), the server hooks in `crates/ts21/server/src/` (`Ts21Server`) and the client hooks in
    `crates/ts21/client/src/` (`Ts21Client`).
 4. Add a row to §5's table, and a unit test where the behaviour can be tested without the engine
-   (e.g. `shared/src/pm/tests.rs` `movement_hooks_follow_the_plugin`).
+   (e.g. `shared/src/pm/tests.rs` `movement_hooks_follow_the_plugin` and
+   `every_movement_hook_reaches_the_movement`, which run the movement in a fake world).
 5. Check: `cargo test`, `cargo xtask lint` (isolation, the 3.0-only build), `cargo xtask all`.
 
 ## 7. Adding a ruleset

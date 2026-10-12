@@ -377,7 +377,7 @@ fn movement_hooks_follow_the_plugin() {
     use crate::gameplay::{CORE, PmRules};
     struct Other;
     impl PmRules for Other {
-        fn recover_input_scale(&self) -> f32 {
+        fn recover_input_scale(&self) -> f64 {
             0.25
         }
         fn wall_climb_velocity(&self) -> f32 {
@@ -398,6 +398,135 @@ fn movement_hooks_follow_the_plugin() {
     f.p.cmd.forwardmove = 400.0;
     f.run_with(1, &OTHER);
     assert_eq!(f.p.cmd.forwardmove, 100.0);
+}
+
+/// Every other movement hook reaches the movement: a plugin's values and functions replace the
+/// core's where the 3.0 code had its constants and helpers.
+#[test]
+fn every_movement_hook_reaches_the_movement() {
+    use crate::gameplay::PmRules;
+    use crate::gameplay::pm::{GroundAccel, Jump};
+    thread_local!(static CALLS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) });
+    let take = || CALLS.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    struct Other;
+    impl PmRules for Other {
+        fn ground_accel(&self) -> GroundAccel {
+            GroundAccel::Constant(0.5)
+        }
+        fn prone_forward_scale(&self) -> Option<f64> {
+            Some(0.0)
+        }
+        fn wall_jump_speed(&self) -> f32 {
+            170.0
+        }
+        fn wall_jump_up_velocity(&self) -> f32 {
+            250.0
+        }
+        fn wall_dive(&self) -> bool {
+            false
+        }
+        fn fix_velocity(&self, arith: Arith, _velocity: &mut Vec3, limit: f32) {
+            CALLS.with(|c| c.borrow_mut().push(format!("fix {arith:?} {limit}")));
+        }
+        fn jump_push(&self, arith: Arith, jump: Jump, buttons: u16, maxspeed: f32, velocity: &mut Vec3) {
+            CALLS.with(|c| c.borrow_mut().push(format!("jump {arith:?} {jump:?} {buttons:#x} {maxspeed}")));
+            velocity[0] += 50.0;
+        }
+        fn step_interval(&self, _arith: Arith, _interval: i32, _fuser1: f32) -> i32 {
+            1234
+        }
+    }
+    static OTHER: Other = Other;
+    struct Scales;
+    impl PmRules for Scales {
+        fn scaled_frametime(&self, frametime: f32, _fuser1: f32) -> f32 {
+            frametime * 2.0
+        }
+        fn drop_punch_angle(&self, _arith: Arith, _punch: Vec3, _dead: bool, _fuser1: f32, _frametime: f32) -> Vec3 {
+            [1.0, 2.0, 3.0]
+        }
+    }
+    static SCALES: Scales = Scales;
+
+    for arith in [Arith::Gcc, Arith::Msvc] {
+        // A constant ground factor: 0.01 s * 320 * accelerate 10 * 0.5 from rest (3.0's at 320
+        // u/s is 1.058).
+        let mut f = Fixture::standing();
+        f.arith = arith;
+        f.p.cmd.forwardmove = 320.0;
+        f.run_with(1, &OTHER);
+        assert!((f.p.velocity[0] - 16.0).abs() < 1e-4, "{arith:?}: vx = {}", f.p.velocity[0]);
+        let mut core = Fixture::standing();
+        core.arith = arith;
+        core.p.cmd.forwardmove = 320.0;
+        core.run(1);
+        assert!((core.p.velocity[0] - 32.0 * accel_by_speed(320.0)).abs() < 1e-3, "{arith:?}: core vx = {}", core.p.velocity[0]);
+
+        // Wall jump: the plugin's speeds, then FixVelocity to twice maxspeed.
+        let mut f = Fixture::new();
+        f.arith = arith;
+        f.p.origin = [0.0, 0.0, 200.0];
+        f.p.iuser4 = stunt::GO_DUCK | stunt::WALLJUMPING | stunt::WALLJUMP_IMPULSE;
+        take();
+        f.run_with(1, &OTHER);
+        assert!((f.p.velocity[0] + 170.0).abs() < 1e-3, "vx = {}", f.p.velocity[0]);
+        assert!((f.p.velocity[2] - (250.0 - 12.0)).abs() < 0.05, "vz = {}", f.p.velocity[2]);
+        assert_eq!(take(), [format!("fix {arith:?} 640")]);
+
+        // Wall climb and dive call it too; without the wall dive the dive follows the velocity
+        // and keeps the bit.
+        let mut f = Fixture::new();
+        f.arith = arith;
+        f.p.origin = [0.0, 0.0, 200.0];
+        f.p.iuser4 = stunt::GO_DUCK | stunt::WALLCLIMBING | stunt::WALLCLIMB_IMPULSE;
+        f.run_with(1, &OTHER);
+        assert_eq!(take(), [format!("fix {arith:?} 640")]);
+        let mut f = Fixture::standing();
+        f.arith = arith;
+        f.p.velocity = [0.0, 50.0, 0.0];
+        f.p.iuser4 = stunt::GO_DUCK | stunt::DIVING | stunt::DIVE_HIGH | stunt::WALLDIVE;
+        take();
+        f.run_with(1, &OTHER);
+        assert!(f.p.velocity[0].abs() < 1e-3 && (f.p.velocity[1] - 140.0).abs() < 1e-3, "v = {:?}", f.p.velocity);
+        assert_ne!(f.p.iuser4 & stunt::WALLDIVE, 0);
+        assert_eq!(take(), [format!("fix {arith:?} 640")]);
+
+        // Prone: the forward move is multiplied (a -0 stays), not stored as 0.
+        for (rules, bits) in [(&OTHER as &'static dyn PmRules, (-0.0f32).to_bits()), (&crate::gameplay::CORE, 0)] {
+            let mut f = Fixture::standing();
+            f.arith = arith;
+            f.p.iuser4 = stunt::PRONE;
+            f.p.cmd.forwardmove = -320.0;
+            f.run_with(1, rules);
+            assert_eq!(f.p.cmd.forwardmove.to_bits(), bits);
+        }
+
+        // The jump push runs before the upward speed, with the command's buttons and maxspeed.
+        let mut f = Fixture::standing();
+        f.arith = arith;
+        f.p.cmd.buttons = IN_JUMP as u16 | IN_MOVELEFT as u16;
+        take();
+        f.run_with(1, &OTHER);
+        assert_eq!(take(), [format!("jump {arith:?} Normal {:#x} 320", IN_JUMP | IN_MOVELEFT)]);
+        assert!((f.p.velocity[0] - 50.0).abs() < 1e-3 && f.p.velocity[2] > 200.0, "v = {:?}", f.p.velocity);
+
+        // The footstep interval.
+        let mut f = Fixture::standing();
+        f.arith = arith;
+        f.p.cmd.forwardmove = 320.0;
+        f.run_with(30, &OTHER);
+        f.p.flTimeStepSound = 0;
+        f.run_with(1, &OTHER);
+        assert_eq!(f.p.flTimeStepSound, 1234);
+
+        // The frame time and the punch.
+        let mut f = Fixture::new();
+        f.arith = arith;
+        f.p.origin = [0.0, 0.0, 500.0];
+        f.run_with(1, &SCALES);
+        assert_eq!(f.p.frametime, 0.02);
+        assert_eq!(f.p.punchangle, [1.0, 2.0, 3.0]);
+    }
 }
 
 #[test]

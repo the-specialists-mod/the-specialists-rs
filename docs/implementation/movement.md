@@ -143,7 +143,8 @@ the same as the GCC build once the stack is 53 bits wide.
 | `PM_NoClip` / `PM_Physics_Toss` / `PM_PushEntity` / `PM_AddToTouched` | 0x10000c / 0xffce8 / 0xffc24 / 0xfcfdc | same names |
 | `PM_UpdateStepSound` / `PM_PlayStepSound` / `PM_MapTextureTypeStepType` / `PM_CatagorizeTextureType` | 0xfcc20 / 0xfc344 / 0xfca90 / 0xfcb40 | `sound.rs`, `categorize_texture_type` |
 | `AngleVectors` / `VectorMA` / `VectorNormalize` / `Length` / `CrossProduct` / `VectorScale` | 0xfb430 / 0xfbbc4 / 0xfbcf8 / 0xfbcbc / 0xfbc80 / 0xfbd68 | `pm/math.rs` |
-| `FixVelocity` (empty), `CanJumpHigh` (no callers), debug `PM_Draw*` | | not ported (dead) |
+| `FixVelocity` (empty, no callers) | 0xf8fc4 | `PmRules::fix_velocity`'s default (empty); the movement calls the hook after the dive, wall jump and wall climb impulses, where another ruleset clamps ([gameplay-plugins.md](gameplay-plugins.md) §5) |
+| `CanJumpHigh` (no callers), debug `PM_Draw*` | | not ported (dead) |
 
 ### Server stunts (`stunt/moves.rs`, `stunt/mod.rs`)
 
@@ -332,8 +333,8 @@ the same as the GCC build once the stack is 53 bits wide.
   `glast_closecombat`, `damage::glast`) as spectacular.
 * **rules or weapons** must set the move speed (`SetPlayerSpeed`: `set_client_maxspeed` with
   `shared::ts::speed_by_slots`, TS's `GetSpeedBySlots` 0x76bd4: `210 + free * 120 / 81`
-  **truncated**, 330 for The One or an empty inventory; 330 at spawn): PM's accel factor depends
-  on it. `weapons::inventory::sync_speed` does this (issue #9: it used to round, one u/s fast for
+  **truncated**, 330 for The One or an empty inventory; 330 at spawn; through the gameplay
+  rules' `PmRules::speed_by_slots` and `max_player_speed`): PM's accel factor depends on it. `weapons::inventory::sync_speed` does this (issue #9: it used to round, one u/s fast for
   39 of the 81 slot counts, and ignored The One).
 * **weapons** must: keep `Player::slots_used` current (stunt ability); call
   `stunt::set_anim_ext(p, ext, ext2)` on deploy (`ext2`: "onehanded", "twohanded", "akimbo",

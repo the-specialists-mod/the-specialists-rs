@@ -119,6 +119,9 @@ pub trait Fpu: 'static {
     type N: Num;
     /// True for the MSVC builds (`client.dll`, `mp.dll`).
     const MSVC: bool;
+    /// The [`Arith`] that selects this build, for hooks that compute in it
+    /// (`crate::gameplay::PmRules`).
+    const ARITH: Arith;
     const ZERO: Self::N;
 
     /// `fld dword`: a `float` operand.
@@ -146,6 +149,7 @@ pub enum Gcc {}
 impl Fpu for Gcc {
     type N = Ext;
     const MSVC: bool = false;
+    const ARITH: Arith = Arith::Gcc;
     const ZERO: Ext = Ext::ZERO;
 }
 
@@ -155,6 +159,7 @@ pub enum Msvc {}
 impl Fpu for Msvc {
     type N = f64;
     const MSVC: bool = true;
+    const ARITH: Arith = Arith::Msvc;
     const ZERO: f64 = 0.0;
 }
 
