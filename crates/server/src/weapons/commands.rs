@@ -42,9 +42,12 @@ fn scan_pair(s: &str) -> Option<(i32, i32)> {
     Some((a, b))
 }
 
-fn add_armament(p: &mut Player, e: ArmamentEntry) {
-    if p.inv.sv.armament.len() < 32 {
-        p.inv.sv.armament.push(e);
+/// `CBasePlayer::AddItemToArmament` (0x93ea4): the entry goes into the first of the 32 slots whose
+/// id is 0. An id-0 entry therefore leaves that slot free for the next one (and `BuyArmament`
+/// skips it), so it takes no room.
+fn add_armament(armament: &mut Vec<ArmamentEntry>, e: ArmamentEntry) {
+    if e.id != 0 && armament.len() < 32 {
+        armament.push(e);
     }
 }
 
@@ -92,12 +95,12 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
                 let Some((id, n)) = scan_pair(args.str(i)) else { continue };
                 let stack = (0..38).contains(&id) && info(id as u8).map(|w| w.stack).unwrap_or(false);
                 if !stack {
-                    add_armament(p, ArmamentEntry { id, attachments: n as u32, item: false });
+                    add_armament(&mut p.inv.sv.armament, ArmamentEntry { id, attachments: n as u32, item: false });
                 } else {
                     let max = info(id as u8).map(|w| w.pellets).unwrap_or(1);
                     let count = if max < 2 { 1 } else { n.clamp(1, max) };
                     for _ in 0..count {
-                        add_armament(p, ArmamentEntry { id, attachments: 0, item: false });
+                        add_armament(&mut p.inv.sv.armament, ArmamentEntry { id, attachments: 0, item: false });
                     }
                 }
             }
@@ -106,7 +109,7 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
         "tki" => {
             for i in 1..args.argc() {
                 if let Some((id, _)) = scan_int(args.str(i)) {
-                    add_armament(p, ArmamentEntry { id, attachments: 0, item: true });
+                    add_armament(&mut p.inv.sv.armament, ArmamentEntry { id, attachments: 0, item: true });
                 }
             }
             true
@@ -174,6 +177,21 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn id_zero_armament_entries_take_no_slot() {
+        let mut a = Vec::new();
+        let e = |id| ArmamentEntry { id, attachments: 0, item: false };
+        for _ in 0..40 {
+            add_armament(&mut a, e(0));
+        }
+        assert!(a.is_empty(), "AddItemToArmament leaves the slot it wrote id 0 into free");
+        for i in 1..=40 {
+            add_armament(&mut a, e(i));
+        }
+        assert_eq!(a.len(), 32);
+        assert_eq!(a[31].id, 32);
+    }
 
     #[test]
     fn scanf_like_parsing() {

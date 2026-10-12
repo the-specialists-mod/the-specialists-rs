@@ -182,7 +182,9 @@ addresses of `ts_i386.so`.
   `UpdateClientData` and every gun path test `m_iId == 16` first (or read it as a `CTSGun`, see
   `gun_active`).
 * `client_command`: `weapon_<n>`, `lastinv`, `drop`, `drop_<n>`, `firemode`, `useitems`,
-  `lasclr_<n>` (`PlInfo`), `rst_cfg`, `tkw id_att ...`, `tki item ...`, `tka type_count ...`;
+  `lasclr_<n>` (`PlInfo`), `rst_cfg`, `tkw id_att ...`, `tki item ...`, `tka type_count ...`
+  (32 loadout entries; an id-0 one takes no slot, as `AddItemToArmament` 0x93ea4 writes into the
+  first id-0 slot: issue #27);
   test helpers (need `sv_cheats`): `ts_give id_att ...` (weapon + full ammo),
   `ts_weapons_debug n` (sets the cvar when typed in a listen server console).
 * `fill_client_data` / `get_weapon_data` / `cmd_start`: TS packing (below), seed.
