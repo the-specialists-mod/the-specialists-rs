@@ -253,11 +253,12 @@ impl Entity for PowerUp {
     }
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v = value.to_str().unwrap_or("").trim();
+        // `CTSPowerUp::KeyValue` (0x97ebc): `strtol`, `strtol`, `strtod`.
+        let strtol = || crate::rules::mapcycle::atoi(&value.to_string_lossy());
         match key.to_bytes() {
-            b"pwuptype" => self.kind_key = v.parse().unwrap_or(0),
-            b"pwupduration" => self.respawn = v.parse().unwrap_or(0),
-            b"pwupmult" => self.mult = v.parse().unwrap_or(0.0),
+            b"pwuptype" => self.kind_key = strtol(),
+            b"pwupduration" => self.respawn = strtol(),
+            b"pwupmult" => self.mult = crate::entities::stock::base::kv_f(value),
             _ => return self.delay.key_value(key, value),
         }
         true

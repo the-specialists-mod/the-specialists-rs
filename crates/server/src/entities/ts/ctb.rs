@@ -692,7 +692,8 @@ pub struct WinGiver<const SCORE: bool> {
 impl<const SCORE: bool> Entity for WinGiver<SCORE> {
     /// `CTSWinGiver::KeyValue` (0x8bdfc; `CTSScoreGiver::KeyValue` 0x8c090 calls it).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v: i32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0);
+        // `strtol(value, 0, 10)` for each.
+        let v = crate::rules::mapcycle::atoi(&value.to_string_lossy());
         match key.to_bytes() {
             b"winnerteam" => self.winner = v,
             b"callsnumber" => self.calls_needed = v,

@@ -139,7 +139,8 @@ pub struct Wind {
 
 impl Entity for Wind {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v: f32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0.0);
+        // `CTSWind::KeyValue` (0x73ec4): `strcasecmp`, `strtod`.
+        let v = kv_f(value);
         let k = key.to_str().unwrap_or("").to_ascii_lowercase();
         match k.as_str() {
             "base" => self.base = v,

@@ -17,6 +17,11 @@ use std::ffi::CStr;
 /// `fNoMonsters` of SDK `UTIL_TraceLine(.., ignore_monsters, ignore_glass, ..)` (0xed4b0).
 const IGNORE_MONSTERS_GLASS: i32 = IGNORE_MONSTERS | 0x100;
 
+/// `strtol(value, 0, 10)`: the leading integer, 0 for none.
+fn strtol(value: &CStr) -> i32 {
+    crate::rules::mapcycle::atoi(&value.to_string_lossy())
+}
+
 fn fire(target: &str, cx: &mut Cx) {
     if !target.is_empty() {
         let t = to_cstring(target);
@@ -182,11 +187,11 @@ impl Entity for DmHill {
     }
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v = value.to_str().unwrap_or("").trim();
+        // `CTSDMHill::KeyValue` (0x719b8): `strtod`, `strtol`.
         match key.to_bytes() {
-            b"nextcheck" => self.next_check = v.parse().unwrap_or(0.0),
-            b"fragamt" => self.frags = v.parse().unwrap_or(0),
-            b"fragamtteam" => self.frags_team = v.parse().unwrap_or(0),
+            b"nextcheck" => self.next_check = kv_f(value),
+            b"fragamt" => self.frags = strtol(value),
+            b"fragamtteam" => self.frags_team = strtol(value),
             _ => return false,
         }
         true
@@ -327,7 +332,8 @@ impl Entity for Timer {
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key.to_bytes() == b"duration" {
-            self.duration = value.to_str().unwrap_or("").trim().parse().unwrap_or(0);
+            // `CTSTimer::KeyValue` (0x72d50): `strtol`.
+            self.duration = strtol(value);
             return true;
         }
         false
@@ -386,8 +392,8 @@ impl Entity for CustomTarget {
             b"targets" => {
                 self.targets = v.split(';').take_while(|s| !s.is_empty()).take(64).map(|s| s.chars().take(31).collect()).collect();
             }
-            b"triggermethod" => self.method = v.trim().parse().unwrap_or(0),
-            b"accumulate" => self.accumulate = v.trim().parse().unwrap_or(0),
+            b"triggermethod" => self.method = strtol(value),
+            b"accumulate" => self.accumulate = strtol(value),
             _ => return false,
         }
         true
@@ -482,7 +488,7 @@ impl Entity for PlayerAmount {
         match key.to_bytes() {
             b"connecttarget" => self.connect = v,
             b"disconnecttarget" => self.disconnect = v,
-            b"clients" => self.clients = v.trim().parse().unwrap_or(0),
+            b"clients" => self.clients = strtol(value),
             _ => return false,
         }
         true
@@ -575,10 +581,10 @@ impl Entity for SlowMotion {
     }
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v: f32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0.0);
+        // `CTSSlowMotion::KeyValue` (0x70d74): `strtod`.
         match key.to_bytes() {
-            b"duration" => self.duration = v,
-            b"slowamt" => self.amount = v,
+            b"duration" => self.duration = kv_f(value),
+            b"slowamt" => self.amount = kv_f(value),
             _ => return false,
         }
         true
@@ -732,6 +738,14 @@ pub fn create_slow_motion_point(origin: [f32; 3], amount: f32, duration: f32, bt
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn number_keys_read_a_leading_number() {
+        assert_eq!(super::strtol(c"30.0"), 30);
+        assert_eq!(super::strtol(c" -5 frags"), -5);
+        assert_eq!(super::strtol(c"x"), 0);
+        assert_eq!(crate::entities::stock::base::kv_f(c"0.5s"), 0.5);
+    }
+
     #[test]
     fn dmhill_hold_truncates() {
         assert_eq!(super::dmhill_hold(0.75), 7);
