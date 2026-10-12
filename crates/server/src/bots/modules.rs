@@ -2,7 +2,7 @@
 //! and chat. The respawn module is inline in [`super::brain`], navigation is [`super::nav`] and
 //! attack [`super::attack`].
 
-use super::brain::{Brain, add, bit, btn, delay, gun_position, length, scale, slow, sub};
+use super::brain::{Brain, add, bit, btn, delay, gun_position, len_f32, order, scale, slow, sub};
 use crate::player::Player;
 use crate::rules::cvars;
 use crate::weapons::ArmamentEntry;
@@ -288,9 +288,10 @@ fn find_look_point(cx: &mut Cx) -> [f32; 3] {
         if tr.flFraction == 1.0 {
             return tr.vecEndPos;
         }
-        let len = length(sub(tr.vecEndPos, cx.pev().origin));
-        if len > best {
-            best = len;
+        // The difference is stored as floats; the length stays on the x87 stack for the compare.
+        let len = len_f32(sub(tr.vecEndPos, cx.pev().origin), order::ZYX);
+        if len > best as f64 {
+            best = len as f32;
             best_pos = tr.vecEndPos;
         }
         yaw += 45.0;

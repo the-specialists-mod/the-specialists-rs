@@ -3,7 +3,7 @@
 //! reached in TS 3.0, so only the DM state runs in practice; the other two are ported for
 //! completeness.
 
-use super::brain::{Brain, StateKind, bit, delay, is_zero, length, slow, sub};
+use super::brain::{Brain, StateKind, bit, delay, diff_x87, is_zero, len_x87, order, slow};
 use crate::player::Player;
 use crate::rules::state;
 use crate::world::Cx;
@@ -113,7 +113,7 @@ fn pick_dm(b: &mut Brain, cx: &mut Cx) {
         let e = random_entity("ts_dmhill");
         if !e.is_null() {
             let c = center(e);
-            if length(sub(cx.pev().origin, c)) > 64.0 {
+            if len_x87(diff_x87(cx.pev().origin, c), order::ZXY) > 64.0 {
                 set_goal(b, c);
             }
             return;

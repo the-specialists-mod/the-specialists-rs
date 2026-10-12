@@ -329,18 +329,45 @@ pub fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 pub fn scale(a: [f32; 3], k: f32) -> [f32; 3] {
     [a[0] * k, a[1] * k, a[2] * k]
 }
-/// `Vector::Length()`: the sum of squares in the x87's precision, stored as a float.
-pub fn length(a: [f32; 3]) -> f32 {
-    let (x, y, z) = (a[0] as f64, a[1] as f64, a[2] as f64);
-    (x * x + y * y + z * z).sqrt() as f32
+/// Orders in which mp.dll's inlined distance code sums the squares (`len_x87`): `XYZ` is
+/// `(x² + y²) + z²` (`Vector::Length` 0x1000e920), and so on.
+pub mod order {
+    pub const XYZ: [usize; 3] = [0, 1, 2];
+    pub const XZY: [usize; 3] = [0, 2, 1];
+    pub const ZXY: [usize; 3] = [2, 0, 1];
+    pub const ZYX: [usize; 3] = [2, 1, 0];
 }
+
+/// `a - b` per axis as mp.dll's distance code computes it (`flds a; fsubs b`): on the x87 stack,
+/// not stored as floats.
+pub fn diff_x87(a: [f32; 3], b: [f32; 3]) -> [f64; 3] {
+    [a[0] as f64 - b[0] as f64, a[1] as f64 - b[1] as f64, a[2] as f64 - b[2] as f64]
+}
+
+/// `sqrt` of the squares of `d`, summed in `order` (see [`order`]), unrounded as the x87 leaves
+/// it (MSVC's 53-bit precision). Callers compare it, truncate it or store it as mp.dll does there.
+pub fn len_x87(d: [f64; 3], order: [usize; 3]) -> f64 {
+    let [a, b, c] = order.map(|i| d[i] * d[i]);
+    ((a + b) + c).sqrt()
+}
+
+/// [`len_x87`] of a float vector.
+pub fn len_f32(a: [f32; 3], order: [usize; 3]) -> f64 {
+    len_x87(a.map(|c| c as f64), order)
+}
+
 pub fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     (a[0] as f64 * b[0] as f64 + a[1] as f64 * b[1] as f64 + a[2] as f64 * b[2] as f64) as f32
 }
-/// `Vector::Normalize()`: (0, 0, 1) for a zero vector.
+/// `Vector::Normalize()` as mp.dll inlines it: `Length()` (unrounded) of the float vector, then
+/// each component times `1 / length`, stored as floats; (0, 0, 1) for a zero vector.
 pub fn normalize(a: [f32; 3]) -> [f32; 3] {
-    let l = length(a);
-    if l == 0.0 { [0.0, 0.0, 1.0] } else { [a[0] / l, a[1] / l, a[2] / l] }
+    let l = len_f32(a, order::XYZ);
+    if l == 0.0 {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = 1.0 / l;
+    a.map(|c| (c as f64 * inv) as f32)
 }
 pub fn is_zero(a: [f32; 3]) -> bool {
     a == [0.0; 3]
@@ -545,6 +572,26 @@ mod tests {
         assert_eq!(out[2], ((punch[2] as f64 - k * acc[2] as f64) + acc[2] as f64) as f32);
         assert_eq!(turn_fraction(10.0, 0.2), 1.0);
         assert_eq!(turn_fraction(10.0, ft), 10.0 * ft as f64);
+    }
+
+    #[test]
+    fn x87_distances() {
+        // The differences aren't rounded to floats: 1000.1 - 0.000123 isn't a float.
+        let (a, b) = ([1000.1f32, 0.0, 0.0], [0.000_123f32, 0.0, 0.0]);
+        let d = diff_x87(a, b);
+        assert_eq!(d[0], 1000.1f32 as f64 - 0.000_123f32 as f64);
+        assert_ne!(d[0], (a[0] - b[0]) as f64);
+        assert_eq!(len_x87(d, order::ZYX), d[0].abs());
+        // A length just under an integer stays under it for `__ftol` (a float would round up).
+        let l = len_x87([511.999_999_99, 0.0, 0.0], order::XYZ);
+        assert_eq!(l as i32, 511);
+        assert_eq!((l as f32) as i32, 512);
+        assert_eq!(len_x87([3.0, 4.0, 12.0], order::XZY), 13.0);
+        // Normalize multiplies by the unrounded reciprocal.
+        let v = [3.0f32, -4.0, 12.0];
+        let inv = 1.0 / 13.0f64;
+        assert_eq!(normalize(v), v.map(|c| (c as f64 * inv) as f32));
+        assert_eq!(normalize([0.0; 3]), [0.0, 0.0, 1.0]);
     }
 
     #[test]

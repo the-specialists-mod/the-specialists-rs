@@ -5,7 +5,7 @@
 //! retarget; the cover search caches the enemy's origin instead of its result; and the think
 //! reads the enemy before re-targeting, so the first think after spotting one only selects it.
 
-use super::brain::{Brain, add, bit, btn, delay, gun_position, length, normalize, scale, slow, sub};
+use super::brain::{Brain, add, bit, btn, delay, diff_x87, gun_position, len_x87, normalize, order, scale, slow, sub};
 use crate::player::Player;
 use crate::weapons::{self, Drop};
 use crate::world::Cx;
@@ -81,7 +81,7 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     select_enemy(b, cx);
     let Some(e) = live(e) else { return };
     let eorg = e.v().origin;
-    let dist = length(sub(eorg, cx.pev().origin));
+    let dist = len_x87(diff_x87(eorg, cx.pev().origin), order::XZY) as f32;
     if b.num_enemies() == 0 {
         // Lost sight: chase where it was, unless it died.
         b.disable(bit::ATTACK);
@@ -126,7 +126,7 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     let aim = add(eorg, b.attack.aim_off);
     let d = normalize(sub(aim, gun_position(cx.pev())));
     let (f, _, _) = eng.angle_vectors(cx.pev().v_angle);
-    let dot = d[0] as f64 * f[0] as f64 + d[2] as f64 * f[2] as f64 + d[1] as f64 * f[1] as f64;
+    let dot = (d[1] as f64 * f[1] as f64 + d[2] as f64 * f[2] as f64) + d[0] as f64 * f[0] as f64;
     if dot.abs() > 0.9f32 as f64 || melee {
         fire_weapon(b, p, cx, dist);
     } else {
@@ -177,10 +177,10 @@ fn select_enemy(b: &mut Brain, cx: &mut Cx) {
         if let Some(&e) = b.visible_enemies.get(i as usize)
             && let Some(e) = live(e)
         {
-            let d = length(sub(e.v().origin, me));
-            if d < best {
+            let d = len_x87(diff_x87(e.v().origin, me), order::ZYX);
+            if d < best as f64 {
                 b.enemy = e;
-                best = d;
+                best = d as f32;
             }
         }
         i += 1;
@@ -238,7 +238,7 @@ fn find_cover_spot(b: &mut Brain, cx: &mut Cx, enemy_org: [f32; 3], enemy: *mut 
                 return p;
             }
         } else if reach {
-            let d = length(sub(p, org)) as i32; // __ftol
+            let d = len_x87(diff_x87(p, org), order::ZYX) as i32; // __ftol of the unrounded length
             if best_dist < d {
                 best_dist = d;
                 best = p;

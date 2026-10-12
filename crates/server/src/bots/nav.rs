@@ -3,7 +3,7 @@
 //! ladders. Movement is relative to the body yaw, so the bot can strafe or back up while it looks
 //! elsewhere.
 
-use super::brain::{Brain, add, bit, btn, is_zero, length, scale, slow, sub};
+use super::brain::{Brain, add, bit, btn, diff_x87, is_zero, len_x87, order, scale, slow, sub};
 use super::nodes;
 use crate::player::Player;
 use crate::world::Cx;
@@ -96,7 +96,7 @@ pub fn navigate(b: &mut Brain, p: &mut Player, cx: &mut Cx, goal: [f32; 3]) -> i
     let origin = cx.pev().origin;
     if is_zero(b.nav.detour) {
         let wp = b.nav.waypoint;
-        if length(sub(wp, origin)) < 48.0 && clear(origin, wp, me) {
+        if len_x87(diff_x87(wp, origin), order::XZY) < 48.0 && clear(origin, wp, me) {
             b.nav.path_index += 1;
             if b.nav.path_count <= b.nav.path_index {
                 b.set_move(0.0, 0.0);
@@ -111,13 +111,13 @@ pub fn navigate(b: &mut Brain, p: &mut Player, cx: &mut Cx, goal: [f32; 3]) -> i
                 return FAILED;
             }
         }
-    } else if length(sub(b.nav.detour, origin)) < 48.0 && clear(origin, b.nav.detour, me) {
+    } else if len_x87(diff_x87(b.nav.detour, origin), order::XZY) < 48.0 && clear(origin, b.nav.detour, me) {
         b.nav.detour = [0.0; 3]; // reached; no waypoint advance this tick
     }
 
     if b.nav.stuck_time < now {
         b.nav.stuck_time = stuck_window(now, slow(cx.pev()));
-        if length(sub(b.nav.stuck_pos, origin)) < 96.0 {
+        if len_x87(diff_x87(b.nav.stuck_pos, origin), order::XZY) < 96.0 {
             b.nav.waypoint = [0.0; 3];
             b.set_move(0.0, 0.0);
             b.nav.detour = [0.0; 3];

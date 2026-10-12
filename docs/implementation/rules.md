@@ -492,8 +492,12 @@ Floating point follows mp.dll's x87 code (MSVC, 53-bit precision): values it sto
 values it keeps on the stack are `f64`. That covers the node graph's distances (`nodes.rs`), the
 module delays (`brain::delay`), `UpdateView` (the punch factor `k`, the turn fraction and the
 ideal yaw straight from `UTIL_AngleMod`, `brain::angle_mod_x87`; the x/y punch products stored as
-floats), `Navigate`'s move direction (the steer yaw's unrounded `UTIL_AngleMod`) and the attack
-think's tracking (the x aim point and the knife lead's decay). Unit tested.
+floats), `Navigate`'s move direction (the steer yaw's unrounded `UTIL_AngleMod`), the attack
+think's tracking (the x aim point and the knife lead's decay), and the inlined distances
+(`brain::len_x87`: unrounded differences and `sqrt`, squares summed in each site's order, then
+compared, truncated or stored as mp.dll does: the attack range, `SelectEnemy`, the cover search,
+`Navigate`'s 48/96-unit tests, the hill's 64 units, `FindLookPoint`) and `Vector::Normalize`
+(times the unrounded reciprocal). Unit tested.
 
 ### 10.1 Deviations
 
