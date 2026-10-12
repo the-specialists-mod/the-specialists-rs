@@ -263,55 +263,42 @@ pub fn draw_death_notices(dc: &Dc) {
     super::with(|h| h.deaths.draw(dc.now, allowed, dc.w(), &dc.g.sprites, &mut canvas));
 }
 
-/// Parsed span of a `ShowMenu` line (SDK menu.cpp escapes `\w \d \y \r \R`).
-#[derive(Debug, PartialEq)]
-pub struct Span {
-    pub text: String,
-    pub rgb: [i32; 3],
-    pub right: bool,
-    pub line: usize,
-}
+/// `g_szMenuString`'s 512 bytes: `CHudMenu::Draw` scans no further.
+const MENU_STRING_LEN: usize = 0x200;
 
-pub fn parse_menu(text: &str) -> Vec<Span> {
+/// `CHudMenu::Draw`'s layout (`0x100285f0`): the start of each line and its y. TS counts the
+/// `\n`s (up to the NUL or 512 bytes), starts at `h/2 - (lines/2)·12 - 40` and steps 12 px per
+/// line, whatever the font. Each line is drawn whole by `DrawHudString`, so a byte past 512 still
+/// shows if its line started before. There are no colour or alignment escapes: TS's `CHudMenu`
+/// predates Half-Life's `\w \d \y \r \R`, which it would draw as text.
+pub fn menu_lines(text: &[u8], screen_height: i32) -> Vec<(usize, i32)> {
+    let at = |i: usize| text.get(i).copied().unwrap_or(0);
+    let lines = (0..MENU_STRING_LEN).take_while(|&i| at(i) != 0).filter(|&i| at(i) == b'\n').count() as i32;
+    let mut y = screen_height / 2 - (lines / 2) * 12 - 40;
     let mut out = Vec::new();
-    let (mut rgb, mut right, mut line) = ([255, 255, 255], false, 0);
-    let mut cur = String::new();
-    let mut it = text.chars().peekable();
-    let flush = |cur: &mut String, out: &mut Vec<Span>, rgb, right, line| {
-        if !cur.is_empty() {
-            out.push(Span { text: std::mem::take(cur), rgb, right, line });
+    let mut i = 0;
+    loop {
+        if at(i) == 0 {
+            return out;
         }
-    };
-    while let Some(c) = it.next() {
-        match c {
-            '\\' => {
-                flush(&mut cur, &mut out, rgb, right, line);
-                match it.next() {
-                    Some('w') => rgb = [255, 255, 255],
-                    Some('d') => rgb = [100, 100, 100],
-                    Some('y') => rgb = [255, 210, 64],
-                    Some('r') => rgb = [210, 24, 0],
-                    Some('R') => right = true,
-                    _ => {}
-                }
-            }
-            '\n' => {
-                flush(&mut cur, &mut out, rgb, right, line);
-                right = false;
-                line += 1;
-            }
-            c => cur.push(c),
+        out.push((i, y));
+        y += 12;
+        while i < MENU_STRING_LEN && at(i) != 0 && at(i) != b'\n' {
+            i += 1;
+        }
+        if at(i) == b'\n' {
+            i += 1;
+        }
+        if i >= MENU_STRING_LEN {
+            return out;
         }
     }
-    flush(&mut cur, &mut out, rgb, right, line);
-    out
 }
 
-/// `CHudMenu::Draw` (100285f0): left side, vertically centred above the say text.
+/// `CHudMenu::Draw` (`0x100285f0`): the menu expires at its shutoff time, hides under the
+/// scoreboard, and otherwise draws each line in white at x 20, clipped at x 320
+/// (`DrawHudString(20, y, 320, line, 255, 255, 255)`).
 pub fn draw_menu(dc: &Dc) {
-    if crate::menus::scores_visible() {
-        return;
-    }
     let menu = super::with(|h| {
         if h.menu.displayed && h.menu.shutoff > 0.0 && h.menu.shutoff <= dc.now {
             h.menu.displayed = false;
@@ -319,20 +306,13 @@ pub fn draw_menu(dc: &Dc) {
         h.menu.displayed.then(|| h.menu.text.clone())
     });
     let Some(text) = menu else { return };
-    let fh = dc.g.screen.char_height.max(12);
-    let nlc = text.matches('\n').count() as i32;
-    let y0 = dc.h() / 2 - (nlc / 2) * fh - (3 * fh + fh / 3);
-    let mut x_line = (usize::MAX, 20);
-    for s in parse_menu(&text) {
-        let y = y0 + s.line as i32 * fh;
-        if x_line.0 != s.line {
-            x_line = (s.line, 20);
-        }
-        let x = if s.right { dc.w() / 2 - dc.string_len(&s.text) } else { x_line.1 };
-        let end = dc.string(x, y, &s.text, s.rgb);
-        if !s.right {
-            x_line.1 = end;
-        }
+    if crate::menus::scores_visible() {
+        return;
+    }
+    let bytes = saytext::bytes(&text);
+    for (start, y) in menu_lines(&bytes, dc.h()) {
+        let line: String = text.chars().skip(start).collect();
+        super::text::draw_string(&dc.g.screen, 20, y, 320, &line, [255, 255, 255]);
     }
 }
 
@@ -342,11 +322,17 @@ mod tests {
     use goldsrc::sys::wrect_t;
 
     #[test]
-    fn menu_escapes() {
-        let s = parse_menu("\\yTitle\n\\w1. A\\R\\d$5");
-        assert_eq!(s[0], Span { text: "Title".into(), rgb: [255, 210, 64], right: false, line: 0 });
-        assert_eq!(s[1].text, "1. A");
-        assert_eq!(s[2], Span { text: "$5".into(), rgb: [100, 100, 100], right: true, line: 1 });
+    fn menu_lines_follow_ts() {
+        // 480 px, three lines (two `\n`s): 240 - 1·12 - 40 = 188, then 12 px steps.
+        let t = b"\\yTitle\n1. A\n2. B";
+        assert_eq!(menu_lines(t, 480), vec![(0, 188), (8, 200), (13, 212)], "escapes are plain text");
+        assert_eq!(menu_lines(b"", 480), vec![]);
+        assert_eq!(menu_lines(b"a\n", 600), vec![(0, 260)], "a trailing newline starts no line");
+        // Only the first 512 bytes are scanned, for the count and for the line starts.
+        let mut long = vec![b'x'; 600];
+        long[100] = b'\n';
+        long[550] = b'\n';
+        assert_eq!(menu_lines(&long, 480), vec![(0, 200), (101, 212)]);
     }
 
     fn names(i: u8) -> Option<Vec<u8>> {
@@ -498,7 +484,7 @@ mod tests {
         }
         assert_eq!(client_color(&[], 3, -1), None);
         assert_eq!(client_color(&[], 3, i32::MAX), None);
-        assert!(parse_menu("\\\\\\").is_empty());
+        assert_eq!(menu_lines(b"\n\n\n", i32::MIN).len(), 3);
     }
 
     #[test]
