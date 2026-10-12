@@ -487,7 +487,6 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     if c.m_iId != TS_GUN_SLOT as i32 {
         return;
     }
-    let dead = c.deadflag != 0 || c.health <= 0.0;
     // 0x10003d40: the client player's m_pActiveItem is the gun from now on.
     with(|p| p.active_gun = true);
     update_alt_grip(c);
@@ -560,17 +559,13 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     }
 
     if runfuncs {
-        let s = gun.slot().copied().unwrap_or_default();
         state::with(|st| {
             st.powerups = powerups as i32;
-            st.attachments = s.items as i32;
-            st.local_items = s.active as i32;
-            st.firemode = s.mode as i32;
-            st.clip = s.clip;
-            st.reserve_ammo = if gun.current == 0 { 0 } else { gun.current_reserve() };
             st.spread = gun.spread_penalty;
-            st.predicted_weapon = (!dead).then_some(gun.current as i32);
         });
+        // 0x100040dc..0x100040ef: the predicted record goes straight into the HUD's weapon
+        // element (clip, fire mode, attachments, menu cells), dead or alive.
+        crate::hud::with(|h| h.predicted_weapon(&gun));
         with(|p| p.gun = Some(gun));
     }
 }

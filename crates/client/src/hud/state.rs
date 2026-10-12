@@ -320,6 +320,29 @@ pub fn grid_pos(id: i32) -> Option<(usize, usize)> {
 }
 
 impl Hud {
+    /// `0x100581c0`, which the prediction runs through `0x1000acd0` at the end of a first
+    /// prediction with a weapon record (`0x100040dc..0x100040ef`): the record's clip (`+0x78c`),
+    /// fire mode (`+0x78a`) and attachments (`+0x798`) go straight into the element, the weapon's
+    /// menu cell becomes `{id, clip}` and its akimbo and single twins' cells take their records'
+    /// clips. The reserve (`+0x748`) is left to `WeaponInfo`. Kung fu (no record) writes nothing.
+    pub fn predicted_weapon(&mut self, gun: &shared::weapons::Gun) {
+        let Some(s) = gun.slot() else { return };
+        let id = gun.current;
+        self.clip = s.clip;
+        self.firemode = s.mode;
+        self.attachments = s.items;
+        if let Some((r, b)) = grid_pos(id as i32) {
+            self.grid[r][b] = Slot { id: id as i32, clip: s.clip };
+        }
+        let Some(w) = shared::weapons::info(id) else { return };
+        // `0x1005824d`: the akimbo twin as it is; `0x1005829a`: the single one unless it's `id`.
+        for twin in [w.akimbo, if w.single == id as i32 { -1 } else { w.single }] {
+            if let Some((r, b)) = (0..MAX_WEAPONS as i32).contains(&twin).then(|| grid_pos(twin)).flatten() {
+                self.grid[r][b].clip = gun.status[twin as usize].clip;
+            }
+        }
+    }
+
     /// `CHudTSWeapons::Reset` (1004cd60): empty grid, kung fu in its slot.
     pub fn reset_weapons(&mut self) {
         self.grid = [[EMPTY; GRID_BUCKETS]; GRID_ROWS];
@@ -980,6 +1003,31 @@ mod tests {
         assert_eq!(h.grid[r][b].id, -1);
         h.apply(Msg::KFuPower, &KFuPower { power: -120 }.encode(), &c, &mut fx);
         assert_eq!(h.kfu_power, -100.0);
+    }
+
+    /// `0x100581c0`: the predicted record's clip, mode and attachments go into the element and the
+    /// menu, the reserve and the weapon id don't; the twin's cell takes its clip; kung fu writes
+    /// nothing. A mode change then plays the switch sound from `Think` (`h.firemode`).
+    #[test]
+    fn predicted_weapon_writes_the_element() {
+        use shared::weapons::{Gun, Status, id, info};
+        let mut h = Hud::default();
+        h.weapon = id::BERETTA as i32;
+        h.reserve[info(id::BERETTA).unwrap().ammo as usize] = 45;
+        let mut g = Gun { current: id::BERETTA, ..Default::default() };
+        g.status[id::BERETTA as usize] = Status { clip: 11, mode: 1, items: 3, ..Default::default() };
+        g.status[id::BERETTA_AKIMBO as usize].clip = 24;
+        h.predicted_weapon(&g);
+        assert_eq!((h.weapon, h.clip, h.firemode, h.attachments), (id::BERETTA as i32, 11, 1, 3));
+        assert_eq!(h.reserve[info(id::BERETTA).unwrap().ammo as usize], 45);
+        let (r, b) = grid_pos(id::BERETTA as i32).unwrap();
+        assert_eq!(h.grid[r][b], Slot { id: id::BERETTA as i32, clip: 11 });
+        let (ar, ab) = grid_pos(id::BERETTA_AKIMBO as i32).unwrap();
+        assert_eq!(h.grid[ar][ab], Slot { id: -1, clip: 24 }, "the twin's clip only");
+
+        let before = (h.clip, h.firemode, h.attachments, h.grid);
+        h.predicted_weapon(&Gun::default());
+        assert_eq!((h.clip, h.firemode, h.attachments, h.grid), before, "kung fu: no record");
     }
 
     #[test]

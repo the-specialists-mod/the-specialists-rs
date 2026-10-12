@@ -609,7 +609,7 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
 | `fov_target` (`0x100df1a4`) | HUD `SetFOV` handler (`cl_lw` 0) and `prediction` (`to.client.fov`, every `HUD_PostRunCmd`); `hud::get_fov` during demo playback | `hud::think_fov` eases `fov` |
 | `fov` (`m_iFOV`) | `hud::think_fov` (eased, from `HUD_UpdateClientData`); `SetFOV` sets it outright | HUD (sensitivity, scope), `view`, effects |
 | `bullet_time` | render (`TSBTime`) | client bullets (`GetBulletVelocityMult`) |
-| `powerups`, `attachments`, `active_items`, `firemode`, `clip`, `reserve_ammo` | prediction (from clientdata) | HUD may read; lasers |
+| `powerups` | prediction (from clientdata) | view-model frame rate (`studio`) |
 | `active_items[65]` | HUD `ActItems` handler (index = entity number) | `effects::laser::draw_others`, HUD |
 | `laser_color[65]` | HUD `PlInfo` handler (key 0, index = entity number) | lasers, HUD `DrawLaserDots` |
 | `spectator[32]` | HUD `Spectator` handler | `effects::add_entity` |

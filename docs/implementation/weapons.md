@@ -358,6 +358,12 @@ the view angles the last refdef stored (punch included, before the third-person 
 the command's: the client `KatanaFire` (`0x10009efe`) and `CCombatAttack` (`0x1000afb1`) pick
 their backward swing from it. `ClientHost::v_angle` is `view::v_angles()`. **Was**
 `cmd.viewangles` (issue #13). Fixed.
+A first prediction with a weapon record ends with `0x1000acd0` -> `0x100581c0`, which writes the
+record's clip, fire mode and attachments straight into the HUD's weapon element and its menu
+cells (the weapon's and its twins' clips), but not the reserve (`Hud::predicted_weapon`). The
+server sends `WeaponInfo` only on a weapon or reserve change, so this is how a predicted mode
+switch reaches the HUD (and its `switch.wav`). **Was**: a separate predicted overlay on the
+weapon box only, with the predicted reserve (issue #12). Fixed.
 
 ## 5. Deviations and decisions
 
