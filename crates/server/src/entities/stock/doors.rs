@@ -440,9 +440,8 @@ impl Door {
         v.effects = EF_NODRAW as i32;
         v.takedamage = DAMAGE_NO as f32;
         v.deadflag = DEAD_DEAD as i32;
-        // The hidden door must not keep sliding while its respawn timer runs.
-        v.velocity = [0.0; 3];
-        v.avelocity = [0.0; 3];
+        // TS leaves `velocity`/`avelocity` alone and drops the think, so a door broken mid-move
+        // keeps moving, hidden and not solid, until `BreakableRespawn` puts it back.
         self.t.touch = None;
         let t = if self.respawn_time == 0.0 { 30.0 } else { self.respawn_time };
         self.t.think = Some(Self::respawn_think);

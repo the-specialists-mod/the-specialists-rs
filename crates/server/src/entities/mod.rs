@@ -233,6 +233,8 @@ pub fn fire_targets(target: &CStr, activator: *mut edict_t, caller: *mut edict_t
     if target.is_empty() {
         return;
     }
+    let name = target.to_string_lossy();
+    engine().alert(ALERT_TYPE::at_aiconsole, &format!("Firing: ({name})\n"));
     let mut e = std::ptr::null_mut();
     loop {
         e = engine().find_by_string(e, c"targetname", target);
@@ -242,6 +244,8 @@ pub fn fire_targets(target: &CStr, activator: *mut edict_t, caller: *mut edict_t
         if e.v().flags & FL_KILLME as i32 != 0 {
             continue; // already removed this frame
         }
+        let cls = engine().string(e.v().classname).to_string_lossy();
+        engine().alert(ALERT_TYPE::at_aiconsole, &format!("Found: {cls}, firing ({name})\n"));
         world::dispatch(e, |ent, cx| ent.use_(cx, activator, caller, kind, value));
     }
 }

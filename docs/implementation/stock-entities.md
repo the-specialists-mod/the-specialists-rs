@@ -344,6 +344,8 @@ The track change that its own train fires reads the train's path through a side 
 * **Touch.** `DoorTouch` opens at `max(speed, toucher speed)`.
 * **Direction.** Rotating doors choose their direction from the activator's velocity, not from its
   view angles.
+* **Broken mid-move.** The door keeps its velocity (TS drops only the think), so it goes on
+  moving, hidden, until it respawns; the respawn's client test uses the box where it is then.
 * **Activation.** `DoorActivate` refuses while the door is loosened or hidden.
 * **Moves.** The SDK 2.3 `LinearMoveDone` is used, without HL25's re-move on small errors.
 * **Sounds.** The move and stop sounds (`DoorGoUp`, `DoorHitTop`, `DoorGoDown`, `DoorHitBottom`,
@@ -935,6 +937,10 @@ everywhere) lacked.
 * **`speaker` preset outside 1–12.** TS's switch has no default and reads an uninitialised
   pointer; the port plays nothing and logs the "bad sentence group name" error with an empty
   name.
+* **Door respawn timer.** TS creates an `info_breakable` helper edict for every door (`Spawn`
+  0xb60cc / 0xb79b8, `respawntime` ≥ 0 after the clamp) and runs the respawn timer on it at
+  `gpGlobals->time`. The port runs it on the door's own `ltime` with the same timings and creates
+  no edict, so later edict numbers differ by one per door (as for `func_breakable`, §3.1).
 * **`item_security`'s count** (`m_rgItems[ITEM_SECURITY]`) isn't kept: nothing reads it.
 * **Exports.** Against `ts_i386.so` the port exports every entity class, plus (#107)
   `Server_GetBlendingInterface` and the `pm_math.c` helpers `anglemod`, `Length` and `Q_log2`
