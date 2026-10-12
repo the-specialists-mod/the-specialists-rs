@@ -978,12 +978,8 @@ impl Entity for TrackTrain {
             return;
         }
         ov.velocity = vec::scale(vec::normalize(vec::sub(ov.origin, v.origin)), v.dmg);
-        let msg = format!(
-            "TRAIN({}): Blocked by {} (dmg:{:.2})\n",
-            s(v.targetname).to_string_lossy(),
-            s(ov.classname).to_string_lossy(),
-            v.dmg
-        );
+        let msg =
+            format!("TRAIN({}): Blocked by {} (dmg:{:.2})\n", s(v.targetname).to_string_lossy(), s(ov.classname).to_string_lossy(), v.dmg);
         engine().alert(ALERT_TYPE::at_aiconsole, &msg);
         let v = cx.pev();
         if v.dmg <= 0.0 {
