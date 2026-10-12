@@ -16,7 +16,7 @@ use goldsrc::Global;
 use goldsrc::edict::{EdictPtr, private_tag, set_private_tag};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::ffi::CStr;
 
@@ -128,6 +128,8 @@ struct Slot {
     /// The dispatch that took the object out is suspended in [`lend`]. While set, only that
     /// dispatch releases the slot, and the object's deferred work waits for it.
     lent: bool,
+    /// The object's Rust type, readable while it is out (`crate::ham`'s classes).
+    ty: TypeId,
 }
 
 struct World {
@@ -151,12 +153,13 @@ impl World {
         let index = match self.free.pop() {
             Some(i) => i,
             None => {
-                self.slots.push(Slot { serial: 0, state: State::Empty, lent: false });
+                self.slots.push(Slot { serial: 0, state: State::Empty, lent: false, ty: TypeId::of::<()>() });
                 self.slots.len() as u32 - 1
             }
         };
         let slot = &mut self.slots[index as usize];
         slot.serial = slot.serial.wrapping_add(1);
+        slot.ty = (&*ent as &dyn Any).type_id();
         slot.state = State::Present(ent);
         Handle { index, serial: slot.serial }
     }
@@ -233,6 +236,20 @@ impl Store {
             }
         }
         Some(r)
+    }
+
+    /// In its slot: ordinary dispatch reaches it.
+    fn is_present(&self, h: Handle) -> bool {
+        self.world.borrow_mut().slot(h).is_some_and(|s| matches!(s.state, State::Present(_)))
+    }
+
+    /// Taken out by a dispatch that hasn't lent it: [`lend`] would park it.
+    fn can_lend(&self, h: Handle) -> bool {
+        self.world.borrow_mut().slot(h).is_some_and(|s| !s.lent && matches!(s.state, State::TakenOut))
+    }
+
+    fn type_of(&self, h: Handle) -> Option<TypeId> {
+        self.world.borrow_mut().slot(h).filter(|s| !matches!(s.state, State::Empty | State::FreedWhileOut)).map(|s| s.ty)
     }
 
     fn is_taken_out(&self, h: Handle) -> bool {
@@ -474,6 +491,40 @@ pub fn run_now<R>(e: *const edict_t, job: impl FnOnce() -> R) -> Option<R> {
     STORE.0.run_now(handle_of(e)?, job)
 }
 
+/// True while `e`'s object is in its slot, so [`dispatch`] reaches it (not taken out, not lent).
+pub fn is_present(e: *const edict_t) -> bool {
+    handle_of(e).is_some_and(|h| STORE.0.is_present(h))
+}
+
+/// True while a dispatch further up the stack holds `e`'s object without having lent it: the
+/// holder can [`lend`] it.
+pub fn can_lend(e: *const edict_t) -> bool {
+    handle_of(e).is_some_and(|h| STORE.0.can_lend(h))
+}
+
+/// The Rust type of `e`'s object, also while it is out. `None` if `e` isn't game-owned (or its
+/// object was freed).
+pub fn type_of(e: *const edict_t) -> Option<TypeId> {
+    STORE.0.type_of(handle_of(e)?)
+}
+
+/// Runs `f` once with `obj`, the object of `e` that the caller's dispatch holds, back in its slot
+/// and open to ordinary dispatch ([`lend`], then [`run_now`]): a plugin's entity hook reaching the
+/// entity whose function is running (`crate::ham`). `f` still runs, with the object out of reach,
+/// when it can't be put back (lent further up the stack, or freed).
+pub fn lend_open<T: Entity + Default>(e: *const edict_t, obj: &mut T, f: &mut dyn FnMut()) {
+    let mut ran = false;
+    lend(e, obj, || {
+        run_now(e, || {
+            ran = true;
+            f();
+        });
+    });
+    if !ran {
+        f();
+    }
+}
+
 /// Short, non-reentrant access to a concrete entity type. Never call the engine inside `f`.
 pub fn with<T: Entity, R>(e: *const edict_t, f: impl FnOnce(&mut T) -> R) -> Option<R> {
     STORE.0.with(handle_of(e)?, f)
@@ -676,6 +727,35 @@ mod tests {
         });
         assert_eq!(*log.borrow(), vec!["hurt", "targets"], "the damage lands before the targets fire");
         assert_eq!(value(&s, player), Some(71));
+    }
+
+    #[derive(Default)]
+    struct Other;
+    impl Entity for Other {}
+
+    /// What `crate::ham` asks before running a hook: the type is known in every state, and only a
+    /// present object is reachable by dispatch, only a held and unlent one can be lent.
+    #[test]
+    fn type_presence_and_lendability_follow_the_slot() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 1 }));
+        let o = s.insert(Box::new(Other));
+        assert_eq!(s.type_of(h), Some(TypeId::of::<Thing>()));
+        assert_eq!(s.type_of(o), Some(TypeId::of::<Other>()));
+        assert!(s.is_present(h) && !s.can_lend(h));
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            assert_eq!(s2.type_of(h), Some(TypeId::of::<Thing>()), "known while out");
+            assert!(!s2.is_present(h) && s2.can_lend(h));
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            s2.lend(Some(h), me, || {
+                assert!(!s2.is_present(h) && !s2.can_lend(h), "lent: closed, and not lent twice");
+                s2.run_now(h, || assert!(s2.is_present(h), "opened"));
+            });
+        });
+        s.free(h);
+        assert_eq!(s.type_of(h), None);
+        assert!(!s.is_present(h));
     }
 
     #[test]
