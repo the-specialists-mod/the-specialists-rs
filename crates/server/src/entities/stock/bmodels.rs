@@ -196,6 +196,11 @@ pub struct FuncRotating {
     usable: bool,
 }
 
+/// C's `abs((int)x)` as TS compiles it: an x87 truncating `fistp`, then the wrapping `abs`.
+fn int_abs(x: f32) -> i32 {
+    super::maprules::x87_int(x).wrapping_abs()
+}
+
 fn first_nonzero(a: [f32; 3]) -> f32 {
     if a[0] != 0.0 {
         a[0]
@@ -214,11 +219,14 @@ impl FuncRotating {
         s(cx.pev().noise3)
     }
 
+    /// `CFuncRotating::RampPitchVol` (0xa5e68): the speeds go through the integer `abs`
+    /// (`abs((int)x)`), as TS's SDK wrote `abs` of a float.
     fn ramp_pitch_vol(&mut self, cx: &mut Cx) {
         let v = cx.pev();
-        let cur = first_nonzero(v.avelocity).abs();
-        let fin = (first_nonzero(v.movedir) * v.speed).abs();
-        let pct = if fin != 0.0 { cur / fin } else { 0.0 };
+        let cur = int_abs(first_nonzero(v.avelocity));
+        let fin = int_abs(first_nonzero(v.movedir) * v.speed);
+        // Guard: TS divides by 0 when the speed truncates to 0 and sends a NaN volume and pitch.
+        let pct = if fin != 0 { cur as f32 / fin as f32 } else { 0.0 };
         let vol = self.volume * pct;
         let mut pitch = (FANPITCHMIN + (FANPITCHMAX - FANPITCHMIN) * pct) as i32;
         if pitch == PITCH_NORM as i32 {
@@ -232,7 +240,8 @@ impl FuncRotating {
         let v = cx.pev();
         v.avelocity = vec::mad(v.avelocity, v.movedir, v.speed * self.fan_friction);
         let (av, md, sp) = (v.avelocity, v.movedir, v.speed);
-        if (0..3).all(|i| av[i].abs() >= (md[i] * sp).abs()) {
+        // `SpinUp` (0xa5fd8): integer `abs` of each truncated component, like `RampPitchVol`.
+        if (0..3).all(|i| int_abs(av[i]) >= int_abs(md[i] * sp)) {
             v.avelocity = vec::scale(md, sp);
             emit_sound_slow(
                 cx.edict,
@@ -651,5 +660,20 @@ impl Entity for Pendulum {
         crate::damage::apply(other, &DamageInfo::new(me, me, damage, dmg::CRUSH));
         let ov = other.v();
         ov.velocity = vec::scale(vec::normalize(vec::sub(ov.origin, center)), damage);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotating_speeds_use_integer_abs() {
+        assert_eq!(int_abs(100.7), 100);
+        assert_eq!(int_abs(-100.7), 100);
+        assert_eq!(int_abs(0.9), 0);
+        // SpinUp reaches full speed once the truncated speeds match.
+        assert!(int_abs(100.2) >= int_abs(100.7));
+        assert_eq!(int_abs(f32::NAN), i32::MIN);
     }
 }
