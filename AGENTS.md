@@ -190,7 +190,7 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - Work on `main` unless told otherwise. Commit or push only when asked.
 - If git has no HTTPS credentials, push with
   `git -c credential.helper='!gh auth git-credential' push`.
-- Releases: push a `v*` tag; `.github/workflows/release.yml` builds and publishes the release and
+- Releases: push a `v*` tag, numbered after the TS version it ports (`v3.0.0`, then `v3.0.1`, ...); `.github/workflows/release.yml` builds and publishes the release and
   `-debug` archives. The workflow pins the FWGS commit the bindings are generated from.
   Each asset is named `the-specialists-rs-<tag>-<platform>.zip` (Windows) or `.tar.gz` (Linux),
   plus the `-debug` variants, for `linux-i686`, `linux-x86_64`, `windows-i686` and
