@@ -483,7 +483,8 @@ How the port maps TS where the structure differs (not deviations):
 ## 6. Missing / partial
 
 * `SVC_WEAPONANIM` is sent only to clients that don't predict weapons (TS behaviour); the client
-  package plays view animations from events.
+  package plays view animations from events. Its body byte is always the gun's `pev->body`
+  (`Gun::body`): `SendWeaponAnim` (0xa00d0) ignores its body argument (issue #23).
 * The briefcase/flag (rules).
 * `DropArmor` 0x93a3c armour packs (`CTSAmmoPack` with `armorvalue`) aren't ported. They're dead
   in TS: nothing calls `DropArmor`, so ammo packs never carry armour there either.

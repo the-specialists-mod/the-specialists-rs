@@ -870,6 +870,29 @@ fn stock_hit_event_sends_no_spread() {
 }
 
 #[test]
+fn weapon_anims_carry_the_guns_body() {
+    // A knife slash that hits a player sets pev->body 1 (the bloody blade); SendWeaponAnim sends
+    // pev->body whatever the caller passed, so the draw after a throw keeps it.
+    let (mut g, mut h) = armed(id::KNIFE);
+    g.status[id::KNIFE as usize].clip = 2;
+    h.melee_result = Some(MeleeResult::Hit { player: true });
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    assert_eq!(g.body, 1);
+    g.next_primary = 0.0;
+    g.next_secondary = 0.0;
+    h.anim_bodies.clear();
+    frame(&mut g, &mut h, IN_ATTACK2, &mut last, 0.01);
+    assert_eq!(h.blades.len(), 1);
+    assert!(!h.anim_bodies.is_empty() && h.anim_bodies.iter().all(|&b| b == 1), "the draw after the throw: {:?}", h.anim_bodies);
+    // Holstering to kung fu doesn't touch pev->body either.
+    h.anim_bodies.clear();
+    assert!(g.switch_to(0, &mut h));
+    // (SelectWeapon's holster, then Deploy's on kung fu.)
+    assert_eq!(h.anim_bodies, [1, 1]);
+}
+
+#[test]
 fn deploy_takes_its_timers_from_default_deploy() {
     // client.dll's DefaultDeploy (0x100035f0): 0.5 s before attacking, 3 s idle (not the SDK's 1).
     let mut g = Gun::default();

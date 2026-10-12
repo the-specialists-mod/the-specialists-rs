@@ -212,7 +212,9 @@ pub trait GunHost {
         let _ = id;
         (0.5, 3.0)
     }
-    /// `SendWeaponAnim(anim, skiplocal, body)`.
+    /// `SendWeaponAnim(anim, skiplocal, body)`. `body` is always the gun's own `pev->body`
+    /// ([`Gun::body`]): TS's `CBasePlayerWeapon::SendWeaponAnim` (0xa00d0) ignores its body
+    /// argument and writes `pev->body`, and so does `client.dll`'s (0x10003680).
     fn weapon_anim(&mut self, anim: i32, skip_local: bool, body: i32);
     /// `CTSAnimation::Animate(n)` (third-person sequence; owned by the movement package).
     fn player_anim(&mut self, anim: i32);
@@ -1039,7 +1041,7 @@ impl Gun {
         if !self.has_slot() || s.state != 0 || s.clip <= 0 {
             return;
         }
-        host.weapon_anim(self.seq(19), true, 0);
+        host.weapon_anim(self.seq(19), true, self.body);
         host.event(Event::Grenade, EventArgs { i1: 0x13, ..Default::default() });
         self.cur().state = 1;
         self.next_secondary = 0.7;
@@ -1079,7 +1081,7 @@ impl Gun {
             if self.info().bullet == 4 {
                 host.throw_grenade(src, vel, s.toggle);
             }
-            host.weapon_anim(self.seq(if s.toggle { 21 } else { 20 }), true, 0);
+            host.weapon_anim(self.seq(if s.toggle { 21 } else { 20 }), true, self.body);
             host.event(Event::Grenade, EventArgs { i1: 0x14 + s.toggle as i32, ..Default::default() });
             host.player_anim(0x35);
             self.next_secondary = 0.5;
@@ -1103,7 +1105,7 @@ impl Gun {
             if self.status[self.current as usize].clip < 1 {
                 self.remove_weapon(self.current, true, host);
             } else {
-                host.weapon_anim(self.seq(2), true, 0);
+                host.weapon_anim(self.seq(2), true, self.body);
                 self.idle = 2.0;
             }
         }
@@ -1186,7 +1188,7 @@ impl Gun {
             if self.status[self.current as usize].clip < 1 {
                 self.remove_weapon(self.current, true, host);
             } else {
-                host.weapon_anim(self.seq(20), true, 0);
+                host.weapon_anim(self.seq(20), true, self.body);
                 let items = self.status[self.current as usize].items as i32;
                 host.event(Event::Draw, EventArgs { i1: self.current as i32, i2: items, ..Default::default() });
                 self.idle = 2.0;
@@ -1528,7 +1530,7 @@ impl Gun {
     pub fn ccombat_idle(&mut self, host: &mut impl GunHost) {
         if self.idle <= 0.0 {
             self.idle = 3.0;
-            host.weapon_anim(anim(0, false, 0), false, 0);
+            host.weapon_anim(anim(0, false, 0), false, self.body);
         }
     }
 
@@ -1829,7 +1831,7 @@ impl Gun {
         }
         self.current = 0;
         host.set_view_model(Some(0));
-        host.weapon_anim(anim(0, false, 2), false, 0);
+        host.weapon_anim(anim(0, false, 2), false, self.body);
         host.event(Event::Draw, EventArgs::default());
         self.kick_combo = 0;
         self.punch_combo = 0;
