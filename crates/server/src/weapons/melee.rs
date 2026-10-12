@@ -92,10 +92,11 @@ fn hold(kind: MeleeKind, attacker: *mut edict_t, victim: *mut edict_t, atk_block
                     g.next_attack = 0.25;
                     Some((MeleeResult::Blocked { next_attack: 0.5, bar_cost: 33.0 }, None))
                 } else if atk_block > 0.0 && g.melee_source == 0 && g.melee_window > 0.0 {
-                    // the attacker was blocking while the victim was mid-attack
+                    // the attacker was blocking while the victim was mid-attack: the victim gets
+                    // 0.5 s, then `UpdateMeleeBar(33)` (an emptied bar makes that 1.5 s)
                     g.melee_damage = 0.0;
                     g.next_attack = 0.5;
-                    g.melee_bar = (g.melee_bar - 33.0).max(0.0);
+                    g.charge_melee_bar(33.0);
                     let bar = g.melee_bar;
                     Some((MeleeResult::Blocked { next_attack: 0.25, bar_cost: 0.0 }, Some(bar)))
                 } else {

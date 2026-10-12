@@ -844,3 +844,21 @@ fn katana_swings() {
     assert_eq!(h.crouches, vec![5]);
     assert!(h.blocks.is_empty());
 }
+
+#[test]
+fn charging_the_melee_bar_empties_it_with_a_lockout() {
+    let mut g = Gun { melee_bar: 50.0, next_attack: 0.5, ..Gun::default() };
+    g.charge_melee_bar(33.0);
+    assert_eq!((g.melee_bar, g.next_attack), (17.0, 0.5));
+    // 17 - 33 < 0.01: empty, and `UpdateMeleeBar` overrides the caller's 0.5 s with 1.5 s
+    g.charge_melee_bar(33.0);
+    assert_eq!((g.melee_bar, g.next_attack), (0.0, 1.5));
+    // a remainder below 0.01 empties it too
+    let mut g = Gun { melee_bar: 33.005, ..Gun::default() };
+    g.charge_melee_bar(33.0);
+    assert_eq!((g.melee_bar, g.next_attack), (0.0, 1.5));
+    // TS tests `0.01 <= v`, so a NaN bar empties
+    let mut g = Gun { melee_bar: f32::NAN, ..Gun::default() };
+    g.charge_melee_bar(33.0);
+    assert_eq!((g.melee_bar, g.next_attack), (0.0, 1.5));
+}
