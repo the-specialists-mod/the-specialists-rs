@@ -260,8 +260,12 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   shown). Talking players get `sprites/voiceicon.spr` (scale 0.5, additive) 45 units above their
   origin when in the PVS and drawn (the local player only in third person), and a name label on the
   right half of the screen (up to 7, stacked down from mid-screen: a team-coloured label at VGUI
-  alpha 100 with the name in white "Scoreboard Text" and `gfx/vgui/speaker4.tga`; hidden while the
-  scoreboard shows). The local talk icon (`gfx/vgui/icntlk_pl.tga`, `icntlk_sv.tga` once the server
+  alpha 100 with the name in white "Scoreboard Text" and `gfx/vgui/speaker4.tga`). While the
+  scoreboard shows, `Frame` (`0x10017ea0`) hides only the names; the box and icon (the name's
+  siblings) get their visibility once, when the label is given out (`0x10018240`), so a label
+  already up keeps its box and icon over the scoreboard, and one given out under the scoreboard
+  stays hidden until that player stops and starts talking again (**was**: the whole label hidden
+  with the scoreboard, issue #95). The local talk icon (`gfx/vgui/icntlk_pl.tga`, `icntlk_sv.tga` once the server
   acknowledged with `voice_clientdebug` on) sits at screen height − 3 × `m_iFontHeight` (the `number_0` height) − 6.
 * `VoiceMask` gives the audible (game rules) and server ban masks; `ReqState` makes the client
   resend `VModEnable` and `vban`. Every second the client sends `vban` if its ban mask for the

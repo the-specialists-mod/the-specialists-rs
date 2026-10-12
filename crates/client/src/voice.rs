@@ -149,6 +149,9 @@ struct Voice {
     labels: [Option<usize>; MAX_SPEAKERS],
     /// The label's text (`"%s   "` of the name) and background colour, set when it was given out.
     label_text: [(Vec<u8>, [i32; 3]); MAX_SPEAKERS],
+    /// The label's background (and with it the speaker icon, its child) visibility, set once
+    /// when the label is given out (`0x10018240`: `setVisible(CanShowSpeakerLabels())`).
+    label_bg: [bool; MAX_SPEAKERS],
     /// `m_bTalking`, `m_bServerAcked`.
     local_talking: bool,
     server_acked: bool,
@@ -365,9 +368,11 @@ pub fn update_speaker_status(entindex: i32, talking: bool) {
         let mut text = e.player_info(c as i32 + 1).name_bytes;
         text.extend_from_slice(b"   ");
         let color = player_color(c as i32 + 1);
+        let bg = !crate::menus::scores_visible();
         with(|v| {
             if let Some(i) = v.labels.iter().position(|l| *l == Some(c)) {
                 v.label_text[i] = (text, color);
+                v.label_bg[i] = bg;
             }
         });
     }
@@ -582,8 +587,8 @@ fn player_color(player: i32) -> [i32; 3] {
     hud::team_color(team)
 }
 
-/// The VGUI-panel part of `CVoiceStatus`, painted after the HUD: the speaker labels (hidden while
-/// the scoreboard is up, `CanShowSpeakerLabels` 1001fd60, applied by `Frame`) and the local talk
+/// The VGUI-panel part of `CVoiceStatus`, painted after the HUD: the speaker labels (names hidden
+/// while the scoreboard is up, `CanShowSpeakerLabels` 1001fd60, applied by `Frame`; box and icon as given out) and the local talk
 /// icon. A label is a `Label` in the player's team colour at VGUI alpha 100, holding the name in
 /// white "Scoreboard Text" (`Scheme::sf_primary2`), east-aligned, and `speaker4.tga` (loaded
 /// without alpha inversion, drawn in white at VGUI alpha 1). The talk icon is `icntlk_pl.tga`
@@ -591,7 +596,10 @@ fn player_color(player: i32) -> [i32; 3] {
 /// alpha 1, right-aligned 10 pixels from the edge above `GetAckIconHeight` (1001fd40: screen
 /// height − 3 font heights − 6).
 pub fn redraw() {
-    let (labels, texts, local, acked) = with(|v| (v.labels, v.label_text.clone(), v.local_talking, v.server_acked));
+    let (labels, texts, bgs, local, acked) = with(|v| (v.labels, v.label_text.clone(), v.label_bg, v.local_talking, v.server_acked));
+    // `Frame` (`0x10017ea0`) shows or hides only the names with the scoreboard; the background
+    // and icon keep the visibility they got when the label was given out, so a label handed
+    // out under the scoreboard stays hidden, and one already up keeps its box and icon there.
     let show_labels = !crate::menus::scores_visible();
     let dbg = debug();
     let screen = hud::screen();
@@ -604,20 +612,21 @@ pub fn redraw() {
         let shown: Vec<usize> = (0..MAX_SPEAKERS).filter(|&i| labels[i].is_some()).collect();
         let sizes: Vec<(i32, i32)> = shown.iter().map(|&i| font.map_or((0, 0), |f| f.text_size(&texts[i].0))).collect();
         let isize = icon.as_ref().map_or((8, 8), |i| (i.wide, i.tall));
-        if show_labels {
-            for (r, &i) in label_rects(w, h, &sizes, isize).iter().zip(&shown) {
-                let c = texts[i].1;
-                let bg = root.child(r.bg.0, r.bg.1, r.bg.2, r.bg.3);
-                bg.paint_background(s, Color::new(c[0] as u8, c[1] as u8, c[2] as u8, 100));
-                if let Some(f) = font {
-                    let t = bg.child(r.text.0, r.text.1, r.text.2, r.text.3);
-                    let (tw, th) = f.text_size(&texts[i].0);
-                    let (x, y) = vgui::label_text_pos(Align::East, t.w, t.h, tw, th);
-                    t.text(s, f, x, y, Color::new(255, 255, 255, 0), &texts[i].0, tw);
-                }
-                if let Some(img) = &icon {
-                    bg.child(r.icon.0, r.icon.1, r.icon.2, r.icon.3).image(s, img, 0, 0, Color::new(255, 255, 255, 1));
-                }
+        for (r, &i) in label_rects(w, h, &sizes, isize).iter().zip(&shown) {
+            if !bgs[i] {
+                continue;
+            }
+            let c = texts[i].1;
+            let bg = root.child(r.bg.0, r.bg.1, r.bg.2, r.bg.3);
+            bg.paint_background(s, Color::new(c[0] as u8, c[1] as u8, c[2] as u8, 100));
+            if show_labels && let Some(f) = font {
+                let t = bg.child(r.text.0, r.text.1, r.text.2, r.text.3);
+                let (tw, th) = f.text_size(&texts[i].0);
+                let (x, y) = vgui::label_text_pos(Align::East, t.w, t.h, tw, th);
+                t.text(s, f, x, y, Color::new(255, 255, 255, 0), &texts[i].0, tw);
+            }
+            if let Some(img) = &icon {
+                bg.child(r.icon.0, r.icon.1, r.icon.2, r.icon.3).image(s, img, 0, 0, Color::new(255, 255, 255, 1));
             }
         }
     });
