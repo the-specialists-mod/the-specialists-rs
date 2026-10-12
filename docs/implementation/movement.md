@@ -192,6 +192,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | Glide (`0x100000`) | cmd ×(0.5, 0.25, 0.25); gravity 0.3 rising / 0.75 falling with jump held, else 1.0 |
 | Friction | `friction * pmove->friction * 0.75 * control * frametime`; edge friction unchanged |
 | Accel factor | `maxspeed >= 330 ? 1.1 : (maxspeed-210)*0.008333334*0.5+0.6`, not while prone or ducked |
+| Move speed (`GetSpeedBySlots`) | `(int)(free * 0.012345679 * 120 + 210)` (truncated: 212 at 2 free slots, 328 at 80); 330 with nothing carried or for The One |
 | Backpedal | `forwardmove *= 0.8` in `PM_WalkMove` |
 | Time scale | `frametime = (float)(msec*0.001)*fuser1`, 0 if `fuser1 < 0.1`; timers use raw msec; step interval `(int)((1/max(fuser1, 0.1)) * t)` (truncated); punch decay ×`fuser1` again |
 | View heights | stand 28, duck 16 (transition `(1-f)*28 + (16-18)*f`, `TIME_TO_DUCK` 0.4), dead -8 |
@@ -333,7 +334,10 @@ the same as the GCC build once the stack is 53 bits wide.
   bullets while `cx.time() < p.stunt.dodge_until`; count kills during `in_airborne_stunt` (or
   `glast_closecombat`, `damage::glast`) as spectacular.
 * **rules or weapons** must set the move speed (`SetPlayerSpeed`: `set_client_maxspeed` with
-  `shared::ts::speed_for_free_slots`, 330 at spawn): PM's accel factor depends on it.
+  `shared::ts::speed_by_slots`, TS's `GetSpeedBySlots` 0x76bd4: `210 + free * 120 / 81`
+  **truncated**, 330 for The One or an empty inventory; 330 at spawn): PM's accel factor depends
+  on it. `weapons::inventory::sync_speed` does this (issue #9: it used to round, one u/s fast for
+  39 of the 81 slot counts, and ignored The One).
 * **weapons** must: keep `Player::slots_used` current (stunt ability); call
   `stunt::set_anim_ext(p, ext, ext2)` on deploy (`ext2`: "onehanded", "twohanded", "akimbo",
   "onehanded_case"; `ext`: idle-gait override like "knife_idle", usually ""); call

@@ -24,9 +24,9 @@ pub enum Drop {
 }
 
 /// Updates `Player::slots_used` and the move speed from the free slots
-/// (`210 + free * 120 / 81`, rounded, 330 when nothing is carried).
-/// Only acts when the free slots changed (or after a spawn), so other subsystems may adjust
-/// `maxspeed` in between.
+/// (`GetSpeedBySlots`: `210 + free * 120 / 81` truncated, 330 when nothing is carried or for
+/// The One). Only acts when the free slots changed (or after a spawn), so other subsystems may
+/// adjust `maxspeed` in between.
 pub fn sync_speed(p: &mut Player, cx: &mut Cx) {
     let free = p.inv.sv.free_slots;
     p.slots_used = SLOTS - free;
@@ -34,8 +34,8 @@ pub fn sync_speed(p: &mut Player, cx: &mut Cx) {
         return;
     }
     p.inv.sv.speed_for = Some(free);
-    let speed = if free < SLOTS { shared::ts::speed_for_free_slots(free).round_ties_even() } else { 330.0 };
-    let speed = speed.clamp(0.0, 330.0);
+    // `SetPlayerSpeed` clamps; its `ROUND` is a no-op on the whole number `GetSpeedBySlots` gives.
+    let speed = shared::ts::speed_by_slots(free, p.ts.is_the_one).clamp(0.0, 330.0);
     p.player_speed = speed; // `m_flPlayerSpeed`
     let pev = cx.pev();
     if pev.maxspeed != speed {
