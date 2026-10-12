@@ -6,6 +6,7 @@
 //! `trigger_monsterjump`, plus `target_cdaudio`.
 
 use super::base::*;
+use super::explode::emit_sound_slow;
 use super::trains::{ent_handle, ts_toggle};
 use crate::entities::{fire_targets, remove};
 use crate::messages::{self, Msg};
@@ -231,7 +232,7 @@ impl<const KIND: u8> Trigger<KIND> {
         let me = cx.edict;
         let noise = cx.pev().noise;
         if noise != 0 {
-            emit(me, CHAN_VOICE, s(noise), 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_sound_slow(me, CHAN_VOICE, s(noise), 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         }
         self.t.activator = EHandle::new(activator);
         self.t.use_targets(me, activator, UseType::Toggle, 0.0);
@@ -1700,7 +1701,7 @@ impl Entity for EnvMessage {
         let v = cx.pev();
         let (noise, vol, attn) = (v.noise, v.scale, v.speed);
         if noise != 0 {
-            emit(cx.edict, CHAN_BODY, s(noise), vol, attn, 0, PITCH_NORM as i32);
+            emit_sound_slow(cx.edict, CHAN_BODY, s(noise), vol, attn, 0, PITCH_NORM as i32, 0.5);
         }
         let me = cx.edict;
         if cx.pev().spawnflags & SF_MESSAGE_ONCE != 0 {

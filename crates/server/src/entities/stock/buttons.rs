@@ -279,7 +279,7 @@ impl<const ROT: bool> Button<ROT> {
         self.t.activator = EHandle::new(activator);
         if st == ToggleState::AtTop {
             if !self.stay_pushed && cx.pev().spawnflags & SF_BUTTON_TOGGLE != 0 {
-                emit(cx.edict, CHAN_VOICE, Self::noise(cx), 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+                emit_sound_slow(cx.edict, CHAN_VOICE, Self::noise(cx), 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
                 self.button_return(cx);
             }
         } else {
@@ -304,7 +304,7 @@ impl<const ROT: bool> Button<ROT> {
         }
         self.t.touch = None;
         if code == Code::Return {
-            emit(cx.edict, CHAN_VOICE, Self::noise(cx), 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_sound_slow(cx.edict, CHAN_VOICE, Self::noise(cx), 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
             self.t.use_targets(cx.edict, other, UseType::Toggle, 0.0);
             self.button_return(cx);
         } else {
@@ -313,7 +313,7 @@ impl<const ROT: bool> Button<ROT> {
     }
 
     fn button_activate(&mut self, cx: &mut Cx) {
-        emit(cx.edict, CHAN_VOICE, Self::noise(cx), 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+        emit_sound_slow(cx.edict, CHAN_VOICE, Self::noise(cx), 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         if !is_master_triggered(self.t.master, self.t.activator.get()) {
             self.ls.play(cx.edict, true, true);
             return;
@@ -536,7 +536,7 @@ impl<const ROT: bool> Entity for Button<ROT> {
             return false;
         }
         if code == Code::Return {
-            emit(cx.edict, CHAN_VOICE, Self::noise(cx), 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_sound_slow(cx.edict, CHAN_VOICE, Self::noise(cx), 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
             if cx.pev().spawnflags & SF_BUTTON_TOGGLE == 0 {
                 self.t.use_targets(cx.edict, info.attacker, UseType::Toggle, 0.0);
             }

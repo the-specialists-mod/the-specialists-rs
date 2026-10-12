@@ -305,7 +305,8 @@ pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32) -> bool {
         p.powerup_until = 0.0;
         p.ts.held_secs = secs;
     }
-    engine().emit_sound(e, CHAN_ITEM as i32, c"items/gunpickup2.wav", 1.0, 0.8, 0, 100);
+    // `EMIT_SOUND_DYN(..., 0.5)` (call at 0x97de1): the pickup's pitch drops with the player's time scale.
+    crate::entities::stock::explode::emit_sound_slow(e, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, 0.8, 0, 100, 0.5);
     true
 }
 

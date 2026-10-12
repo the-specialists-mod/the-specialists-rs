@@ -328,4 +328,33 @@ mod tests {
         assert_eq!(slow_pitch(101, 0.5, 0.5), 75, "75.75 truncates");
         assert_eq!(slow_pitch(126, 0.25, 0.5), 78, "78.75 truncates");
     }
+
+    /// Every TS server sound that reaches `pfnEmitSound` goes through `EMIT_SOUND_DYN` (0xe0a8c)
+    /// and its slow-motion factor (issue #33), so in the port only [`super::emit_sound_slow`]
+    /// may call `emit_sound`. Ambient sounds (`emit_ambient_sound`) go straight to the engine,
+    /// as `UTIL_EmitAmbientSound` does in TS.
+    #[test]
+    fn only_emit_sound_slow_calls_the_engine() {
+        // Split so this test's own source doesn't match.
+        const CALL: &str = concat!(".emit", "_sound(");
+        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    for (i, line) in text.lines().enumerate() {
+                        if line.contains(CALL) {
+                            out.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+                        }
+                    }
+                }
+            }
+        }
+        let mut hits = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut hits);
+        hits.retain(|h| !h.contains("engine().emit_sound(e, chan as i32, &sample, vol, attn, flags, pitch)"));
+        assert!(hits.is_empty(), "sounds that skip EMIT_SOUND_DYN's slow-motion pitch:\n{}", hits.join("\n"));
+    }
 }

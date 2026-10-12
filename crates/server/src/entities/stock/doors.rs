@@ -194,7 +194,7 @@ impl Door {
     fn door_go_up(&mut self, cx: &mut Cx) {
         if !Self::silent(cx) && self.t.state != ToggleState::GoingUp && self.t.state != ToggleState::GoingDown {
             let n = s(cx.pev().noise1);
-            emit(cx.edict, CHAN_STATIC, n, 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_sound_slow(cx.edict, CHAN_STATIC, n, 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         }
         self.t.state = ToggleState::GoingUp;
         self.t.move_done = Some(Self::door_hit_top);
@@ -225,8 +225,8 @@ impl Door {
         if !Self::silent(cx) {
             let v = cx.pev();
             let (n1, n2) = (s(v.noise1), s(v.noise2));
-            emit(me, CHAN_STATIC, n1, 0.0, 0.0, snd::STOP, PITCH_NORM as i32);
-            emit(me, CHAN_STATIC, n2, 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_sound_slow(me, CHAN_STATIC, n1, 0.0, 0.0, snd::STOP, PITCH_NORM as i32, 0.5);
+            emit_sound_slow(me, CHAN_STATIC, n2, 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         }
         self.t.state = ToggleState::AtTop;
         let sf = cx.pev().spawnflags;
@@ -253,7 +253,7 @@ impl Door {
     fn door_go_down(&mut self, cx: &mut Cx) {
         if !Self::silent(cx) && self.t.state != ToggleState::GoingUp && self.t.state != ToggleState::GoingDown {
             let n = s(cx.pev().noise1);
-            emit(cx.edict, CHAN_STATIC, n, 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_sound_slow(cx.edict, CHAN_STATIC, n, 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         }
         self.t.state = ToggleState::GoingDown;
         self.t.move_done = Some(Self::door_hit_bottom);
@@ -272,8 +272,8 @@ impl Door {
         if !Self::silent(cx) {
             let v = cx.pev();
             let (n1, n2) = (s(v.noise1), s(v.noise2));
-            emit(me, CHAN_STATIC, n1, 0.0, 0.0, snd::STOP, PITCH_NORM as i32);
-            emit(me, CHAN_STATIC, n2, 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+            emit_sound_slow(me, CHAN_STATIC, n1, 0.0, 0.0, snd::STOP, PITCH_NORM as i32, 0.5);
+            emit_sound_slow(me, CHAN_STATIC, n2, 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
         }
         self.t.state = ToggleState::AtBottom;
         let sf = cx.pev().spawnflags;

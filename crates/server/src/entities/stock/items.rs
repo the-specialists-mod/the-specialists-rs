@@ -10,6 +10,7 @@
 //! unless spawnflag `SF_NORESPAWN` (1 << 30) is set.
 
 use super::base::*;
+use super::explode::emit_sound_slow;
 use crate::entities::remove;
 use crate::messages::{self, Msg};
 use crate::rules::has_player;
@@ -125,7 +126,7 @@ impl<const KIND: u8> Item<KIND> {
                     return false;
                 }
                 messages::one(Msg::ItemPickup, p).string(cls).end();
-                emit(p, CHAN_ITEM, c"items/smallmedkit1.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+                emit_sound_slow(p, CHAN_ITEM, c"items/smallmedkit1.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
             }
             Kind::Battery => {
                 // `CItemBattery::MyTouch` (0xcb74c): a living player with the HEV suit bit
@@ -136,7 +137,7 @@ impl<const KIND: u8> Item<KIND> {
                 }
                 // TS ignores TakeArmor's result: the battery is used up either way.
                 player_take_armor(p, 50.0);
-                emit(p, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32);
+                emit_sound_slow(p, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
                 messages::one(Msg::ItemPickup, p).string(cls).end();
                 // The suit's charge report, "!HEV_<n>P" (n = armour / 5 - 1).
                 let mut pct = ((p.v().armorvalue * 100.0 * 0.01 + 0.5) as i32) / 5;
@@ -192,7 +193,7 @@ impl<const KIND: u8> Item<KIND> {
     /// `CItem::Materialize`.
     fn materialize(&mut self, cx: &mut Cx) {
         if cx.pev().effects & EF_NODRAW as i32 != 0 {
-            emit(cx.edict, CHAN_WEAPON, c"items/suitchargeok1.wav", 1.0, ATTN_NORM, 0, 150);
+            emit_sound_slow(cx.edict, CHAN_WEAPON, c"items/suitchargeok1.wav", 1.0, ATTN_NORM, 0, 150, 0.5);
             let v = cx.pev();
             v.effects &= !(EF_NODRAW as i32);
             v.effects |= EF_MUZZLEFLASH as i32;
@@ -321,7 +322,7 @@ pub fn emit_sound_suit(p: *mut edict_t, sample: &CStr) {
     let vol = eng.cvar_float(c"suitvolume");
     let pitch = if eng.random_long(0, 1) != 0 { eng.random_long(0, 6) + 98 } else { PITCH_NORM as i32 };
     if vol > 0.05 {
-        super::explode::emit_sound_slow(p, CHAN_STATIC, sample, vol, ATTN_NORM, 0, pitch, 0.5);
+        emit_sound_slow(p, CHAN_STATIC, sample, vol, ATTN_NORM, 0, pitch, 0.5);
     }
 }
 
@@ -568,7 +569,7 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
 
 /// The chargers' `EMIT_SOUND_DYN`: pitch 100 with the slow-motion factor 0.5.
 fn emit_slow(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn: f32, flags: i32) {
-    super::explode::emit_sound_slow(e, chan, sample, vol, attn, flags, PITCH_NORM as i32, 0.5);
+    emit_sound_slow(e, chan, sample, vol, attn, flags, PITCH_NORM as i32, 0.5);
 }
 
 pub type HealthCharger = Charger<false>;

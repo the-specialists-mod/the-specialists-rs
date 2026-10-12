@@ -573,16 +573,17 @@ impl<const PUSH: bool> Breakable<PUSH> {
                 self.push.sound_time = now;
                 if length > 0.0 && v.flags & FL_ONGROUND as i32 != 0 {
                     self.push.last_sound = engine().random_long(0, 2) as usize;
-                    emit(me, CHAN_WEAPON, PUSH_SOUNDS[self.push.last_sound], 0.5, ATTN_NORM, 0, PITCH_NORM as i32);
+                    emit_sound_slow(me, CHAN_WEAPON, PUSH_SOUNDS[self.push.last_sound], 0.5, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
                 } else {
-                    engine().emit_sound(
+                    emit_sound_slow(
                         me,
-                        CHAN_WEAPON as i32,
+                        CHAN_WEAPON,
                         PUSH_SOUNDS[self.push.last_sound],
                         0.0,
                         0.0,
                         goldsrc::ext::entities::snd::STOP,
                         PITCH_NORM as i32,
+                        0.5,
                     );
                 }
             }

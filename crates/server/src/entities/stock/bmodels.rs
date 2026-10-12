@@ -2,6 +2,7 @@
 //! `func_wall_toggle`, `func_conveyor`, `func_rotating`, `func_monsterclip`.
 
 use super::base::*;
+use super::explode::emit_sound_slow;
 use crate::damage::bits as dmg;
 use crate::world::{Cx, DamageInfo, Entity, UseType};
 use goldsrc::edict::EdictPtr;
@@ -205,6 +206,9 @@ fn first_nonzero(a: [f32; 3]) -> f32 {
     }
 }
 
+/// The fan sounds are TS's `EMIT_SOUND_DYN(..., 0.5)`, so their pitch drops with the fan's own
+/// time scale (`fuser1`): `RampPitchVol` 0xa5e68, `SpinUp` 0xa5fd8, `SpinDown` 0xa6254 and both
+/// calls in `RotatingUse` 0xa6474 push 0.5.
 impl FuncRotating {
     fn noise(cx: &mut Cx) -> &'static CStr {
         s(cx.pev().noise3)
@@ -220,15 +224,7 @@ impl FuncRotating {
         if pitch == PITCH_NORM as i32 {
             pitch = PITCH_NORM as i32 - 1;
         }
-        engine().emit_sound(
-            cx.edict,
-            CHAN_STATIC as i32,
-            Self::noise(cx),
-            vol,
-            self.attenuation,
-            snd::CHANGE_PITCH | snd::CHANGE_VOL,
-            pitch,
-        );
+        emit_sound_slow(cx.edict, CHAN_STATIC, Self::noise(cx), vol, self.attenuation, snd::CHANGE_PITCH | snd::CHANGE_VOL, pitch, 0.5);
     }
 
     fn spin_up(&mut self, cx: &mut Cx) {
@@ -238,14 +234,15 @@ impl FuncRotating {
         let (av, md, sp) = (v.avelocity, v.movedir, v.speed);
         if (0..3).all(|i| av[i].abs() >= (md[i] * sp).abs()) {
             v.avelocity = vec::scale(md, sp);
-            engine().emit_sound(
+            emit_sound_slow(
                 cx.edict,
-                CHAN_STATIC as i32,
+                CHAN_STATIC,
                 Self::noise(cx),
                 self.volume,
                 self.attenuation,
                 snd::CHANGE_PITCH | snd::CHANGE_VOL,
                 FANPITCHMAX as i32,
+                0.5,
             );
             self.think = Some(Self::rotate);
             self.rotate(cx);
@@ -262,7 +259,7 @@ impl FuncRotating {
         let dir = first_nonzero(v.movedir);
         if (dir > 0.0 && av.iter().all(|a| *a <= 0.0)) || (dir < 0.0 && av.iter().all(|a| *a >= 0.0)) {
             v.avelocity = [0.0; 3];
-            engine().emit_sound(cx.edict, CHAN_STATIC as i32, Self::noise(cx), 0.0, 0.0, snd::STOP, self.pitch as i32);
+            emit_sound_slow(cx.edict, CHAN_STATIC, Self::noise(cx), 0.0, 0.0, snd::STOP, self.pitch as i32, 0.5);
             self.think = Some(Self::rotate);
             self.rotate(cx);
         } else {
@@ -288,14 +285,14 @@ impl FuncRotating {
                 think_ltime(cx, 0.1);
             } else {
                 self.think = Some(Self::spin_up);
-                engine().emit_sound(cx.edict, CHAN_STATIC as i32, Self::noise(cx), 0.01, self.attenuation, 0, FANPITCHMIN as i32);
+                emit_sound_slow(cx.edict, CHAN_STATIC, Self::noise(cx), 0.01, self.attenuation, 0, FANPITCHMIN as i32, 0.5);
                 think_ltime(cx, 0.1);
             }
         } else if moving {
             self.think = Some(Self::spin_down);
             think_ltime(cx, 0.1);
         } else {
-            engine().emit_sound(cx.edict, CHAN_STATIC as i32, Self::noise(cx), self.volume, self.attenuation, 0, FANPITCHMAX as i32);
+            emit_sound_slow(cx.edict, CHAN_STATIC, Self::noise(cx), self.volume, self.attenuation, 0, FANPITCHMAX as i32, 0.5);
             let v = cx.pev();
             v.avelocity = vec::scale(v.movedir, v.speed);
             self.think = Some(Self::rotate);

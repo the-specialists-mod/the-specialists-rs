@@ -203,12 +203,12 @@ The track change that its own train fires reads the train's path through a side 
 | `worldspawn` | `CWorld::KeyValue` 0xf4a18, `CWorld::Precache` 0xf449c | Keys: `skyname` (`sv_skyname`), `sounds` (CD track), `WaveHeight` (`pev.scale` = v/8, `sv_wateramp`), `MaxRange` (`pev.speed`), `chaptertitle`, `startdark`/`gametitle`/`defaultteam` (spawnflags 1/2/4), `newunit` (`sv_newunit 1`); `gamemode`, `mapteams`, `teammodels` go to `rules::world_key_value`. Spawn first forces `sv_gravity 800`, `sv_stepsize 18`, `room_type 0`, then follows `CWorld::Precache`: installs the rules (`rules::install`; the multiplayer rules precache the voice icon), creates the soundent and the body queue, loads sentences and the texture types, issues TS's map-wide precaches in TS's order (§1.1), then sets `sv_zmax` (`MaxRange`, or 4096 when ≤ 0), shows the chapter title through an `env_message` 0.3 s in, and sets `v_dark` and `mp_defaultteam` from the spawnflags. Light styles 0–12 and 63. Resets the masters, the `game_team_master` indexes and env_sound rooms on each map. |
 | `func_wall`, `func_illusionary` | SDK bmodels.cpp | `func_wall` now sets `FL_WORLDBRUSH` and toggles its texture frame on Use. `func_illusionary` is `MOVETYPE_NONE`, and `skin` sets its contents. |
 | `func_wall_toggle`, `func_conveyor` | SDK | The conveyor speed is sent in `rendercolor`. |
-| `func_rotating` | SDK | Fan sounds, spin-up/down, hurt touch. Uses `fabs` where gcc 2.95 used the integer `abs`. |
+| `func_rotating` | SDK | Fan sounds, spin-up/down, hurt touch. Uses `fabs` where gcc 2.95 used the integer `abs`. The fan sounds use TS slow-motion pitch (0.5). |
 | `func_pendulum` | SDK | The INSTANT flag (`CPendulum::Spawn` 0xa67f0) schedules its first swing at `time + 0.1`, which the engine compares against the pusher's `ltime`, so it starts that much later. |
 | `func_breakable` | **TS** `CBreakable` | See §3.1. |
-| `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use. A breakable pushable uses the TS breakable code. |
+| `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use. The push and stop sounds use TS slow-motion pitch (0.5). A breakable pushable uses the TS breakable code. |
 | `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sounds and sentences as in §3.5. `movesnd`/`stopsnd` are BYTEs set like `func_plat`'s (`CBaseDoor::KeyValue` 0xb51a0, 16-bit `fistp`), `common/null.wav` isn't precached. |
-| `func_button`, `func_rot_button` | SDK buttons.cpp | Spark sounds use TS slow-motion pitch. Shootable buttons (health > 0) work through `take_damage`. Lock sounds and sentences as in §3.5. |
+| `func_button`, `func_rot_button` | SDK buttons.cpp | Button and spark sounds use TS slow-motion pitch (0.5). Shootable buttons (health > 0) work through `take_damage`. Lock sounds and sentences as in §3.5. |
 | `momentary_door` | SDK 2.3 doors.cpp (TS `CMomentaryDoor` 0xb7d98..0xb87f4) | A `CBaseToggle`, so none of TS's `CBaseDoor` changes (§3.2) apply. Keys `movesnd` (`doors/doormove1..8.wav`, else `common/null.wav`; a BYTE via a 16-bit `fistp`), `stopsnd` and `healthvalue` (ignored), `lip`. Only `USE_SET` moves it: `value` (clamped to ≤ 1, no lower clamp) places it between closed and open, at 10 × the distance per second; the move sound (`CHAN_STATIC`, TS slow-motion pitch) starts when it isn't already moving. No stop sound, touch, `Blocked` or +use (`ObjectCaps` 0); `dmg` defaults to 2 unread. |
 | `momentary_rot_button` | SDK 2.3 buttons.cpp (TS `CMomentaryRotButton` 0xa948c..0xaa9d8) | Continuous +use (`ObjectCaps` 0x10) unless spawnflag 1, which also makes it solid. Each use turns it 0.1 s more at `speed` (default 100), reversing after every stop, moves every `momentary_rot_button` with the same `target`, and sends `USE_SET` with its position (`AxisDelta / distance`, from before this turn: the SDK 2.3 latency, not HL25's prediction) to the entities named by `target`. Spawnflag 16 with `returnspeed` > 0 turns it back on release, still updating the targets while above 0. A negative `distance` swaps the ends. `sounds` (`ButtonSound`) on the first turn after a stop, `CHAN_VOICE` with TS slow-motion pitch. |
 | `button_target`, `multisource` | SDK | |
@@ -222,7 +222,7 @@ The track change that its own train fires reads the train's path through a side 
 | `func_traincontrols` | SDK `CFuncTrainControls` | Hands its box to the named train as the control volume (`SetControls`), then removes itself. |
 | `func_tank`, `func_tanklaser`, `func_tankrocket`, `func_tankmortar` | SDK func_tank.cpp + **TS** | Automatic (tracks a player in its PVS) and player-controlled tanks. See §3.5 for what TS changes. |
 | `func_tankcontrols` | SDK | +use passes on to the first `func_tank*` named by `target` (found 0.3 s after spawn). |
-| `trigger_multiple`, `trigger_once`, `trigger_teleport`, `trigger_push`, `trigger_gravity` | SDK triggers.cpp | `UTIL_ShowMessage` → `HudText`. |
+| `trigger_multiple`, `trigger_once`, `trigger_teleport`, `trigger_push`, `trigger_gravity` | SDK triggers.cpp | `UTIL_ShowMessage` → `HudText`. The multiple/once `noise` uses TS slow-motion pitch (0.5). |
 | `trigger_hurt` | SDK 2.3 | Negative damage heals with TS `TakeHealth`, with no dead-player check (2.3). The per-player bitmask in `impulse` is kept (multiplayer only: with `deathmatch` 0, `CHalfLifeRules`, nothing is hurt again before `dmgtime` except in the same frame). With `DMG_RADIATION` in `damagetype`, **TS** `RadiationThink` (0xe703c) lowers the geiger range of the player who can see the trigger's centre, every 0.25 s; `update_geiger_counter` (`UpdateGeigerCounter` 0xda1f0, from the player's PreThink) sends `Geiger` (range / 4) to suited players when it changes. |
 | `trigger_auto`, `trigger_relay`, `trigger_changetarget` | SDK | |
 | `trigger_camera` | SDK | `SET_VIEW`, `FL_FROZEN` for TAKECONTROL, `path_corner` moves. A non-player activator falls back to slot 1's edict (`Use` 0xe9c08), none when the slot is empty. |
@@ -239,7 +239,7 @@ The track change that its own train fires reads the train's path through a side 
 | `func_monsterclip` | **TS** `CFuncMonsterClip` 0xa55d0 | `func_wall` with `FL_MONSTERCLIP`; `effects` is set to `EF_NODRAW` (not or-ed) unless `showtriggers`; Use does nothing. |
 | `info_target`, `info_teleport_destination`, `info_landmark`, `info_null` | SDK | `info_null` removes itself. |
 | `info_intermission` | SDK `CInfoIntermission` (0xddf80, 0xddff8) | Hidden and not solid; 2 s after spawning its `v_angle` turns toward its `target` (pitch negated). |
-| `env_global`, `env_message` | SDK | Global states persist across maps, like `gGlobalState`. |
+| `env_global`, `env_message` | SDK | Global states persist across maps, like `gGlobalState`. The message's `noise` uses TS slow-motion pitch (0.5). |
 | `ambient_generic` | SDK sound.cpp | The TS preset table is byte-identical. `!NAME` sentences aren't precached and are sent as `!<index>` (§3.5). `Precache` (0xdec90) precaches only samples longer than one character, but plays `message` whatever its length. |
 | `env_sound` | SDK | Per-player room state lives in a side table in `sound.rs`. |
 | `light`, `light_spot`, `light_environment` | SDK lights.cpp | Lights without a targetname are removed. Switchable styles are 32 and up. `light_environment` sets `sv_skycolor_*` and `sv_skyvec_*`. |
@@ -346,6 +346,8 @@ The track change that its own train fires reads the train's path through a side 
   view angles.
 * **Activation.** `DoorActivate` refuses while the door is loosened or hidden.
 * **Moves.** The SDK 2.3 `LinearMoveDone` is used, without HL25's re-move on small errors.
+* **Sounds.** The move and stop sounds (`DoorGoUp`, `DoorHitTop`, `DoorGoDown`, `DoorHitBottom`,
+  including the `SND_STOP` of the move sound) use TS slow-motion pitch (0.5).
 
 ### 3.3 Items and chargers
 
@@ -372,7 +374,7 @@ The track change that its own train fires reads the train's path through a side 
   plays a sound when it recharges (`CRecharge::Recharge` 0xc7234 is silent). Every charger sound
   uses TS slow-motion pitch (0.5).
 * **Items** respawn after 30 s unless `SF_NORESPAWN` (1 << 30) is set, with the `suitchargeok1`
-  materialise sound.
+  materialise sound. The healthkit, battery and materialise sounds use TS slow-motion pitch (0.5).
 * **Dead players.** `CItem::ItemTouch` (0xcaf8c) checks only `IsPlayer` and `CanHaveItem` (always
   1). Only the healthkit's and the battery's `MyTouch` refuse a dead player (`deadflag`), so a
   dead player touching an antidote, a suit or a security card takes it.
@@ -386,10 +388,25 @@ The track change that its own train fires reads the train's path through a side 
 * **`UTIL_ScreenFade`** (0xecdec). Always sent as `TSFade` (`short dur, short hold, short flags,
   byte r,g,b,a`) to net clients, with the fixed-point durations divided by the time scale the same
   way. The stock `ScreenFade` message is never sent.
-* **`EMIT_SOUND_DYN`.** It has an extra factor `s`: pitch becomes `(s*fuser1 + 1 - s) * pitch`,
-  truncated (0xe0b1e; `explode::slow_pitch`, unit tested). This is used for break sounds
-  (s = 0.9), damage, spark, gib and stunt sounds (0.5). Every port caller goes through
-  `explode::emit_sound_slow`, which also resolves `!NAME` sentences.
+* **`EMIT_SOUND_DYN`** (0xe0a8c). It has an extra factor `s`: pitch becomes
+  `(s*fuser1 + 1 - s) * pitch`, the factor stored as a float and the product truncated (0xe0b1e;
+  `explode::slow_pitch`, unit tested), with `fuser1` the emitting entity's time scale (no change
+  when it is 0 or 1). It is the only way `ts_i386.so` reaches `pfnEmitSound`, and every caller
+  pushes 0.5 except the breakable's break sounds (`CBreakable::Die`, 0.9) and the player's pain
+  sounds (`CBasePlayer::TraceAttack` 0x90828, 0.15). In the port `explode::emit_sound_slow` is
+  that call (it also resolves `!NAME` sentences) and the only caller of the engine's
+  `emit_sound`; the unit test `only_emit_sound_slow_calls_the_engine` keeps it so. Until issue
+  #33 these skipped the factor: the player's hit and pain sounds, the power-up pickup
+  (`PlayerAddPowerUp` 0x97bc8), the healthkit (`CHealthKit::MyTouch` 0xc8968), battery
+  (`CItemBattery::MyTouch` 0xcb74c) and item respawn (`CItem::Materialize` 0xcb0f8) sounds,
+  `func_button` (`ButtonUse` 0xa8b04, `ButtonTouch` 0xa8c24, `ButtonActivate` 0xa8d4c,
+  `TakeDamage` 0xa83a8), `trigger_multiple`/`trigger_once` (`ActivateMultiTrigger` 0xe778c),
+  `env_message` (`CMessage::Use` 0xbdbd4), the door move and stop sounds (`DoorGoUp` 0xb6e54,
+  `DoorHitTop` 0xb7108, `DoorGoDown` 0xb7284, `DoorHitBottom` 0xb739c), `func_rotating`
+  (`RampPitchVol` 0xa5e68, `SpinUp` 0xa5fd8, `SpinDown` 0xa6254, `RotatingUse` 0xa6474) and
+  `func_pushable` (`CPushable::Move` 0xc1c50). `ambient_generic`, `speaker` and the stunts'
+  texture sounds use `UTIL_EmitAmbientSound`, which goes straight to the engine, unscaled in TS
+  too (`sentences::emit_ambient`).
 * **`TSExplosion`** (0x7d01c) is in `explode::ts_explosion`, the only port of it: the M61 grenade
   and exploding breakables both call it. With the blast point `origin + 1z`:
   * A screen shake with amplitude dmg, frequency 80, duration 1, radius 2·rMax.
@@ -479,7 +496,7 @@ Port notes:
   (`memfgets`).
 * **Playing.** TS's `EMIT_SOUND_DYN` and `UTIL_EmitAmbientSound` turn `!NAME` into `!<index>`
   (case-insensitive); an unknown name logs "Unable to find … in sentences.txt" (`at_aiconsole`)
-  and isn't played. In this port that's `base::emit`, `explode::emit_sound_slow` and
+  and isn't played. In this port that's `explode::emit_sound_slow` and
   `sentences::emit_ambient`, so map-provided sounds starting with `!` work wherever those are used.
 * **Lock sentences.** `locked_sentence` 1–9 maps to the groups `NA ND NF NFIRE NCHEM NRAD NCON NH NG`
   and `unlocked_sentence` 1–8 to `EA ED EF EFIRE ECHEM ERAD ECON EH` (doors and buttons share the
@@ -621,6 +638,10 @@ covers:
     command, counter messages, transition box overlap, weaponstrip targeting, the momentary
     door/wheel maths and the plat/track change helpers. The #95 classes haven't been run
     in-engine (no shipped map places them).
+  * #33: `only_emit_sound_slow_calls_the_engine` (no server source calls the engine's
+    `emit_sound` except `explode::emit_sound_slow`) and
+    `hit_and_pain_sounds_drop_pitch_with_the_time_scale` (`player::damage`: 0.5 and 0.15).
+    Not heard in engine yet: these sounds under the slow-motion power-up or `globalslow`.
   * #107: `anglemod` (65536-step quantisation, the truncating `fistp` and its out-of-range
     value), `Q_log2`, `Length` (`shared::pm::math`), and `Server_GetBlendingInterface`'s version
     check and constant 0 (`ts_server::studio`). The export lists were compared with

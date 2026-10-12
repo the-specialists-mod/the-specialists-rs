@@ -10,6 +10,7 @@
 
 use super::Player;
 use crate::damage::{bits, hitgroup};
+use crate::entities::stock::explode::emit_sound_slow;
 use crate::messages::Msg;
 use crate::rules::{self, msg};
 use crate::world::{Cx, DamageInfo};
@@ -22,6 +23,15 @@ use std::ffi::CStr;
 
 /// TS: shotgun pellets (headshot ×1.5 instead of ×2, `PTakeDam` amount ×8).
 pub const DMG_SHOTGUN: i32 = 0x0200_0000;
+
+/// `EMIT_SOUND_DYN`'s slow-motion factor for `TraceAttack`'s hit sound (headshot, kevlar or
+/// body hit; the call at 0x9079a pushes the 0.5 at 0xf71e4).
+pub const HIT_SLOW: f32 = 0.5;
+
+/// `EMIT_SOUND_DYN`'s slow-motion factor for `TraceAttack`'s pain sound (`pain2..4.wav`; the
+/// call at 0x90828 pushes the 0.15 at 0xf7f10), so a slowed player's pain pitch only drops to
+/// `0.85 + 0.15 * fuser1` of normal.
+pub const PAIN_SLOW: f32 = 0.15;
 
 /// Hitgroup multiplier from TraceAttack (head ×2 / ×1.5 for shotguns with bullet or thrown
 /// damage, legs ×0.5).
@@ -186,7 +196,8 @@ pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
                 [c"player/bodyhit1.wav", c"player/bodyhit2.wav", c"player/bodyhit3.wav", c"player/bodyhit4.wav"]
                     [eng.random_long(0, 3) as usize]
             };
-            eng.emit_sound(e, CHAN_BODY as i32, sample, 1.0, 1.25, 0, 95 + eng.random_long(0, 31));
+            let pitch = 95 + eng.random_long(0, 31);
+            emit_sound_slow(e, CHAN_BODY, sample, 1.0, 1.25, 0, pitch, HIT_SLOW);
         }
         if is_alive {
             let pain = match eng.random_long(1, 7) {
@@ -196,7 +207,7 @@ pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
                 _ => None,
             };
             if let Some(s) = pain {
-                eng.emit_sound(e, CHAN_VOICE as i32, s, 1.0, 1.25, 0, 100);
+                emit_sound_slow(e, CHAN_VOICE, s, 1.0, 1.25, 0, 100, PAIN_SLOW);
             }
         }
     }
@@ -419,6 +430,21 @@ mod tests {
 
     /// `armor_absorb` as `CTSGameRules::Init` sets it.
     const ABSORB: f32 = crate::rules::state::INIT_ARMOR_ABSORB;
+
+    /// `TraceAttack`'s sounds in slow motion (issue #33): the hit sound drops by
+    /// `0.5 + 0.5 * fuser1`, the pain sound only by `0.85 + 0.15 * fuser1`.
+    #[test]
+    fn hit_and_pain_sounds_drop_pitch_with_the_time_scale() {
+        use crate::entities::stock::explode::slow_pitch;
+        assert_eq!((HIT_SLOW, PAIN_SLOW), (0.5, 0.15));
+        assert_eq!(slow_pitch(100, 1.0, PAIN_SLOW), 100, "normal speed");
+        assert_eq!(slow_pitch(100, 0.0, PAIN_SLOW), 100, "no time scale");
+        assert_eq!(slow_pitch(100, 0.5, PAIN_SLOW), 92, "pain at half speed: 92.5 truncates");
+        // 0.85 + 0.15 * 0.2 rounds to the float just under 0.88, so TS's `fistp` gives 87.
+        assert_eq!(slow_pitch(100, 0.2, PAIN_SLOW), 87, "pain at 0.2");
+        assert_eq!(slow_pitch(100, 0.5, HIT_SLOW), 75, "hit at half speed");
+        assert_eq!(slow_pitch(126, 0.5, HIT_SLOW), 94, "the hit's top pitch (95 + 31): 94.5 truncates");
+    }
 
     #[test]
     fn multipliers() {
