@@ -347,8 +347,8 @@ pub fn create(kind: u16, secs: i32, origin: [f32; 3]) -> *mut edict_t {
         return e;
     }
     (e.v().origin = origin);
+    crate::ham::spawn(e);
     crate::world::dispatch(e, |ent, cx| {
-        ent.spawn(cx);
         if let Some(pu) = (ent as &mut dyn std::any::Any).downcast_mut::<PowerUp>() {
             pu.setup(cx, kind as i32, secs, 60.0, false);
         }

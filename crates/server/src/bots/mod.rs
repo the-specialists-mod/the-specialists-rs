@@ -200,7 +200,7 @@ fn create(name: &[u8], model: &str, skill: f32, announce: bool) -> Option<*mut e
     if announce {
         eng.alert(ALERT_TYPE::at_console, &format!("{} connected with skill {:.6}\n", cname.to_string_lossy(), skill));
     }
-    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    crate::ham::spawn(e);
     eng.set_client_key(e, "model", if model.is_empty() { "seal" } else { model });
     eng.set_client_key(e, "team", model);
     eng.set_client_key(e, "cl_lw", "1");

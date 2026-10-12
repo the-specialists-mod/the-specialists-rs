@@ -95,8 +95,13 @@ fn add_health(v: &mut entvars_t, amount: f32) -> Option<bool> {
     Some(v.health > v.max_health)
 }
 
-/// `CBasePlayer::TakeHealth` (0xd8760) for code that holds the player.
+/// `CBasePlayer::TakeHealth` (0xd8760) for code that holds the player (time-based healing).
 pub fn take_health(p: &mut Player, cx: &mut Cx, amount: f32) -> bool {
+    crate::ham::player_take_health(p, cx, amount, take_health_plain)
+}
+
+/// [`take_health`] without the plugins' hooks.
+fn take_health_plain(p: &mut Player, cx: &mut Cx, amount: f32) -> bool {
     let now = cx.time();
     let Some(over) = add_health(cx.pev(), amount) else {
         return false;
@@ -112,6 +117,11 @@ pub fn take_health(p: &mut Player, cx: &mut Cx, amount: f32) -> bool {
 /// the decay timer when the player is lent to its slot (its own `+use` opening a healing door,
 /// `player_use`); one held by a dispatch that didn't lend it gets the timer once that returns.
 pub fn take_health_edict(e: *mut edict_t, amount: f32) -> bool {
+    crate::ham::take_health(e, amount, take_health_edict_plain)
+}
+
+/// [`take_health_edict`] without the plugins' hooks.
+pub fn take_health_edict_plain(e: *mut edict_t, amount: f32) -> bool {
     let timer = engine().time() + 1.0;
     let Some(over) = add_health(e.v(), amount) else {
         return false;

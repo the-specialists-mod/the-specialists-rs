@@ -1,7 +1,6 @@
 //! Damage plumbing shared by every subsystem. Weapons build a `DamageInfo` and call `apply`;
 //! the victim's `Entity::take_damage` decides what happens (players: player/damage.rs).
 
-use crate::world;
 use goldsrc::edict::EdictPtr;
 use goldsrc::sys::*;
 
@@ -119,7 +118,7 @@ pub fn apply(victim: *mut edict_t, info: &DamageInfo) -> bool {
         trace_attack(victim, info);
         return multi::apply(info.inflictor, info.attacker);
     }
-    world::dispatch(victim, |e, cx| e.take_damage(cx, info)).unwrap_or(false)
+    crate::ham::take_damage(victim, info).unwrap_or(false)
 }
 
 /// `victim->TraceAttack(info.attacker, info.damage, info.dir, &tr, info.bits)` (vtable +0x54):
@@ -129,7 +128,7 @@ pub fn trace_attack(victim: *mut edict_t, info: &DamageInfo) {
     if victim.is_null() {
         return;
     }
-    world::dispatch(victim, |e, cx| e.trace_attack(cx, info));
+    crate::ham::trace_attack(victim, info);
 }
 
 /// TS's multi-damage (`gMultiDamage` 0x19f250: entity, amount, type, and `glast_headshot`):
@@ -137,7 +136,6 @@ pub fn trace_attack(victim: *mut edict_t, info: &DamageInfo) {
 /// pellets of one shotgun shot that hit the same victim in a row become one hit.
 pub mod multi {
     use super::DamageInfo;
-    use crate::world;
     use goldsrc::Global;
     use goldsrc::edict::EdictPtr;
     use goldsrc::sys::edict_t;
@@ -237,7 +235,7 @@ pub mod multi {
         apply_from(&MULTI.0, &LAST_HEADSHOT.0, inflictor, attacker, |victim, info| {
             // Guard: TS keeps a raw `CBaseEntity *`; an edict freed since its TraceAttack has no
             // object to call.
-            !victim.is_free() && world::dispatch(victim, |e, cx| e.take_damage(cx, info)).unwrap_or(false)
+            !victim.is_free() && crate::ham::take_damage(victim, info).unwrap_or(false)
         })
     }
 

@@ -752,7 +752,7 @@ impl Entity for TankControls {
     fn use_(&mut self, _cx: &mut Cx, activator: *mut edict_t, caller: *mut edict_t, kind: UseType, value: f32) {
         let t = self.tank.get();
         if !t.is_null() {
-            world::dispatch(t, |ent, tcx| ent.use_(tcx, activator, caller, kind, value));
+            crate::ham::use_(t, activator, caller, kind, value);
         }
     }
 }

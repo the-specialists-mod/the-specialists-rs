@@ -111,12 +111,12 @@ impl Sprite {
         let v = e.v();
         v.model = alloc(name);
         v.origin = origin;
-        world::dispatch(e, |ent, cx| ent.spawn(cx));
+        crate::ham::spawn(e);
         let v = e.v();
         v.solid = SOLID_NOT as i32;
         v.movetype = MOVETYPE_NOCLIP as i32;
         if animate {
-            world::dispatch(e, |ent, cx| ent.use_(cx, std::ptr::null_mut(), std::ptr::null_mut(), UseType::On, 0.0));
+            crate::ham::use_(e, std::ptr::null_mut(), std::ptr::null_mut(), UseType::On, 0.0);
         }
         e
     }
@@ -588,10 +588,8 @@ pub fn explosion_create(center: Vec3, angles: Vec3, owner: *mut edict_t, magnitu
     if !damage {
         e.v().spawnflags |= SF_ENVEXPLOSION_NODAMAGE;
     }
-    world::dispatch(e, |ent, cx| {
-        ent.spawn(cx);
-        ent.use_(cx, std::ptr::null_mut(), std::ptr::null_mut(), UseType::Toggle, 0.0);
-    });
+    crate::ham::spawn(e);
+    crate::ham::use_(e, std::ptr::null_mut(), std::ptr::null_mut(), UseType::Toggle, 0.0);
 }
 
 /// `spark_shower` (CShower): an invisible bouncing spark emitter.
@@ -1263,7 +1261,7 @@ impl Laser {
         v.nextthink = 0.0;
         let sp = self.sprite.get();
         if !sp.is_null() {
-            world::dispatch(sp, |e, c| e.use_(c, std::ptr::null_mut(), std::ptr::null_mut(), UseType::Off, 0.0));
+            crate::ham::use_(sp, std::ptr::null_mut(), std::ptr::null_mut(), UseType::Off, 0.0);
         }
     }
 
@@ -1273,7 +1271,7 @@ impl Laser {
         v.effects &= !(EF_NODRAW as i32);
         let sp = self.sprite.get();
         if !sp.is_null() {
-            world::dispatch(sp, |e, c| e.use_(c, std::ptr::null_mut(), std::ptr::null_mut(), UseType::On, 0.0));
+            crate::ham::use_(sp, std::ptr::null_mut(), std::ptr::null_mut(), UseType::On, 0.0);
         }
         let v = cx.pev();
         v.dmgtime = now;

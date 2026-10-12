@@ -740,7 +740,7 @@ pub fn dispatch_restore(pent: *mut edict_t, sd: &mut SaveData, global_entity: bo
         if alive {
             let origin = pent.v().origin;
             eng.set_origin(pent, origin);
-            world::dispatch(pent, |ent, cx| ent.override_reset(cx));
+            crate::ham::override_reset(pent);
         }
     }
     0

@@ -610,10 +610,12 @@ fn create_flag(thrower: Option<(*mut edict_t, f32)>, status: FlagStatus) -> *mut
         msg::text_all(shared::protocol::rules::hud_dest::TALK, "WARNING:cannot create flag!\n");
         return std::ptr::null_mut();
     }
+    if crate::world::with::<Flag, _>(e, |f| f.status = status).is_none() {
+        return e;
+    }
+    crate::ham::spawn(e);
     crate::world::dispatch(e, |ent, cx| {
         let Some(f) = (ent as &mut dyn std::any::Any).downcast_mut::<Flag>() else { return };
-        f.status = status;
-        f.spawn(cx);
         f.thrown = thrower.is_some();
         let v = cx.pev();
         match thrower {
@@ -750,6 +752,18 @@ impl<const SCORE: bool> Entity for WinGiver<SCORE> {
         if !SCORE {
             self.used = true;
         }
+    }
+}
+
+/// `CTSWinGiver::EnableObjective` on `ent` if it is a wingiver or scoregiver: the call counter and
+/// the latch start over (gamerules-entities.md §3.2). Nothing in the port calls it; plugins can
+/// (`crate::ham`).
+pub fn enable_objective(ent: &mut dyn Entity) {
+    let any = ent as &mut dyn std::any::Any;
+    if let Some(w) = any.downcast_mut::<WinGiver<false>>() {
+        (w.calls, w.used) = (0, false);
+    } else if let Some(w) = any.downcast_mut::<WinGiver<true>>() {
+        (w.calls, w.used) = (0, false);
     }
 }
 

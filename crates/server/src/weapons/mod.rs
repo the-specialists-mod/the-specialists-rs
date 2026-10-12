@@ -23,6 +23,13 @@ pub(crate) fn linked_entities() -> Vec<crate::world::Linked> {
     v
 }
 
+/// The classnames the weapons modules link, with their Rust types (`crate::ham`'s classes).
+pub(crate) fn linked_classes() -> Vec<(&'static str, std::any::TypeId)> {
+    let mut v = worldgun::linked_classes();
+    v.extend(projectiles::linked_classes());
+    v
+}
+
 use crate::commands::Args;
 use crate::player::Player;
 use crate::world::Cx;

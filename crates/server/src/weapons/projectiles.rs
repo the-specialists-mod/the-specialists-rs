@@ -33,8 +33,8 @@ pub fn spawn_entity<T: Entity + Default>(classname: &CStr, init: impl FnOnce(&mu
         if let Some(t) = (ent as &mut dyn std::any::Any).downcast_mut::<T>() {
             init(t, cx);
         }
-        ent.spawn(cx);
     });
+    crate::ham::spawn(e);
     e
 }
 

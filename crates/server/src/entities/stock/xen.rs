@@ -8,7 +8,7 @@ use super::effects::{Sprite, sprite_set_attachment, sprite_set_transparency};
 use super::explode::emit_sound_slow;
 use crate::damage::{self, DamageInfo, bits};
 use crate::rules::has_player;
-use crate::world::{self, Cx, Entity, UseType};
+use crate::world::{Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, vec};
 use goldsrc::server::engine;
@@ -226,7 +226,7 @@ impl Entity for XenTreeTrigger {
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let owner = cx.pev().owner;
         if !owner.is_null() {
-            world::dispatch(owner, |ent, ocx| ent.touch(ocx, other));
+            crate::ham::touch(owner, other);
         }
     }
 }

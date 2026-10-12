@@ -9,7 +9,7 @@ use super::{PlayerRules, alive, cvars, netname, other, powerup, scoring, spawnpo
 use crate::damage::{DamageInfo, hitgroup};
 use crate::messages::{self, Msg};
 use crate::player::Player;
-use crate::world::{Cx, Entity};
+use crate::world::Cx;
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
@@ -924,7 +924,7 @@ pub fn stop_observer(p: &mut Player, cx: &mut Cx) {
     if g.coop == 0.0 && g.deathmatch == 0.0 {
         engine().server_command("reload\n");
     } else {
-        p.spawn(cx);
+        crate::ham::player_spawn(p, cx);
     }
     cx.pev().nextthink = -1.0;
     if engine().cvar_float(c"developer") != 0.0 {

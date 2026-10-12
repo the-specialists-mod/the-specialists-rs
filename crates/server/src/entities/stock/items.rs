@@ -35,6 +35,16 @@ pub fn take_health(e: *mut edict_t, amount: f32) -> bool {
     if has_player(e) {
         return player_take_health(e, amount);
     }
+    crate::ham::take_health(e, amount, base_take_health)
+}
+
+/// [`take_health`] without the plugins' hooks (`crate::ham`'s `ExecuteHam`).
+pub fn take_health_plain(e: *mut edict_t, amount: f32) -> bool {
+    if has_player(e) { crate::player::damage::take_health_edict_plain(e, amount) } else { base_take_health(e, amount) }
+}
+
+/// `CBaseEntity::TakeHealth` (SDK cbase.cpp): refused with `takedamage` off or full health.
+fn base_take_health(e: *mut edict_t, amount: f32) -> bool {
     let v = e.v();
     if v.takedamage == 0.0 || v.health >= v.max_health {
         return false;
@@ -292,7 +302,7 @@ impl<const KIND: u8> Entity for Item<KIND> {
             self.touchable = false;
             // `ItemShouldRespawn`: `CHalfLifeRules` (0xde8a0) never respawns.
             if cx.pev().spawnflags & SF_NORESPAWN == 0 && !crate::rules::state::single_player() {
-                self.respawn(cx);
+                crate::ham::respawn_item(self, cx, Self::respawn);
             } else {
                 remove(me);
             }
@@ -308,6 +318,27 @@ pub type Antidote = Item<2>;
 pub type Suit = Item<3>;
 /// `item_security` (`CItemSecurity`, 0xcb1e4; Spawn 0xcb9e8).
 pub type Security = Item<4>;
+
+/// `CItem::Respawn` (0xcb064) on `ent` if it is one of the HL items (`crate::ham`'s
+/// `ExecuteHam(Ham_Respawn)`); false for any other class.
+pub fn respawn_item(ent: &mut dyn Entity, cx: &mut Cx) -> bool {
+    fn one<T: std::any::Any>(ent: &mut dyn std::any::Any, f: impl FnOnce(&mut T)) -> bool {
+        ent.downcast_mut::<T>().map(f).is_some()
+    }
+    let any = ent as &mut dyn std::any::Any;
+    one::<HealthKit>(&mut *any, |i| i.respawn(cx))
+        || one::<Battery>(&mut *any, |i| i.respawn(cx))
+        || one::<Antidote>(&mut *any, |i| i.respawn(cx))
+        || one::<Suit>(&mut *any, |i| i.respawn(cx))
+        || one::<Security>(any, |i| i.respawn(cx))
+}
+
+/// The classes [`respawn_item`] runs on.
+pub fn is_item(ty: std::any::TypeId) -> bool {
+    use std::any::TypeId;
+    [TypeId::of::<HealthKit>(), TypeId::of::<Battery>(), TypeId::of::<Antidote>(), TypeId::of::<Suit>(), TypeId::of::<Security>()]
+        .contains(&ty)
+}
 
 /// `item_suit` spawnflag: the short logon sentence.
 pub const SF_SUIT_SHORTLOGON: i32 = 1;

@@ -16,6 +16,11 @@ macro_rules! link_entities {
     ($($class:ident => $ty:ty),* $(,)?) => {
         $(goldsrc::export_entity_class!($class, $crate::world::create::<$ty>);)*
 
+        /// The classnames this module links, each with its Rust type (`crate::ham`'s classes).
+        pub(crate) fn linked_classes() -> Vec<(&'static str, std::any::TypeId)> {
+            vec![$((stringify!($class), std::any::TypeId::of::<$ty>())),*]
+        }
+
         /// The classnames this module links, each with a constructor (the save-table tests).
         #[cfg(test)]
         pub(crate) fn linked_entities() -> Vec<$crate::world::Linked> {
@@ -29,15 +34,11 @@ macro_rules! link_entities {
 pub(crate) use link_entities;
 
 /// `DispatchKeyValue` (0xaad4c, the SDK's cbase.cpp unchanged): the entvars table first, and the
-/// class's `KeyValue` only for keys it didn't claim. `has_class` is the engine's
-/// `szClassName != NULL`; without it (or without a game object on the edict) the class isn't asked.
+/// class's `KeyValue` only for keys it didn't claim. `class` is the engine's `szClassName`;
+/// without it (or without a game object on the edict) the class isn't asked.
 /// Returns `fHandled`.
-pub fn dispatch_key_value(e: *mut edict_t, has_class: bool, key: &CStr, value: &CStr) -> bool {
-    key_value_order(
-        || entvars_key_value(e.v(), key, value),
-        has_class,
-        || world::dispatch(e, |ent, cx| ent.key_value(cx, key, value)) == Some(true),
-    )
+pub fn dispatch_key_value(e: *mut edict_t, class: Option<&CStr>, key: &CStr, value: &CStr) -> bool {
+    key_value_order(|| entvars_key_value(e.v(), key, value), class.is_some(), || crate::ham::key_value(e, class, key, value))
 }
 
 /// The order `DispatchKeyValue` asks the two parsers in. Split out so it can be tested without an
@@ -246,7 +247,7 @@ pub fn fire_targets(target: &CStr, activator: *mut edict_t, caller: *mut edict_t
         }
         let cls = engine().string(e.v().classname).to_string_lossy();
         engine().alert(ALERT_TYPE::at_aiconsole, &format!("Found: {cls}, firing ({name})\n"));
-        world::dispatch(e, |ent, cx| ent.use_(cx, activator, caller, kind, value));
+        crate::ham::use_(e, activator, caller, kind, value);
     }
 }
 
@@ -333,7 +334,7 @@ pub fn dispatch_spawn(e: *mut edict_t) -> i32 {
     let v = e.v();
     v.absmin = v.origin.map(|o| o - 1.0);
     v.absmax = v.origin.map(|o| o + 1.0);
-    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    crate::ham::spawn(e);
     // A class that `REMOVE_ENTITY`s itself in its spawn leaves no private data: TS's re-read
     // `pvPrivateData` is NULL and it returns 0.
     if e.is_free() || !e.has_private_data() {
@@ -373,7 +374,7 @@ pub fn server_activate(edict_count: i32, client_max: i32) {
             eng.alert(ALERT_TYPE::at_console, &format!("Can't instance {}\n", eng.string(v.classname).to_string_lossy()));
             continue;
         }
-        world::dispatch(e, |ent, cx| ent.activate(cx));
+        crate::ham::activate(e);
     }
 }
 

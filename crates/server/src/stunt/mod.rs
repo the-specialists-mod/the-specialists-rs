@@ -342,6 +342,17 @@ fn sync_superjump(p: &mut Player, cx: &mut Cx) {
     }
 }
 
+/// `CBasePlayer::Jump` (vtable slot 84), which `PreThink` calls while +jump is held (through
+/// `crate::ham` for plugins' hooks).
+pub fn jump(p: &mut Player, cx: &mut Cx) {
+    moves::jump(p, cx);
+}
+
+/// `CBasePlayer::Duck` (vtable slot 85), as [`jump`].
+pub fn duck(p: &mut Player, cx: &mut Cx) {
+    moves::duck(p, cx);
+}
+
 /// The stunt parts of `CBasePlayer::PreThink` (0x908cc), in order. `tail` is false on the frame
 /// a train is lost: TS's PreThink returns before `Jump`/`Duck` then (issue #60).
 pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
@@ -403,10 +414,10 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
 
     let button = cx.pev().button;
     if button & IN_JUMP as i32 != 0 {
-        moves::jump(p, cx);
+        crate::ham::jump(p, cx);
     }
     if button & IN_DUCK as i32 != 0 || cx.pev().flags & FL_DUCKING as i32 != 0 || p.stunt.pflag_ducking {
-        moves::duck(p, cx);
+        crate::ham::duck(p, cx);
     }
     if !on_ground(cx) {
         p.stunt.fall_velocity = -cx.pev().velocity[2];

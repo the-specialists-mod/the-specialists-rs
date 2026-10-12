@@ -37,9 +37,21 @@
 //! * The server calls the hook only for functions turned on with [`PluginApi::ham_watch`].
 //! * The hook runs before the function (`post` = 0) and after it (`post` = 1). `this` is in
 //!   reach during both (not taken out), so plugins may call the API and `ham_execute` on it.
-//!   Before: argument changes in the [`HamCall`] are used, [`ham::action::SUPERCEDE`] skips the
-//!   function and returns [`HamCall::ret`]. After: [`HamCall::orig_ret`] is what the function
-//!   returned. Either way [`ham::action::OVERRIDE`] makes the server return [`HamCall::ret`].
+//!   Before: argument changes in the [`HamCall`] are used, and [`ham::action::SUPERCEDE`] skips
+//!   the function.
+//! * Every call before is followed by exactly one call after, also when the function was
+//!   superseded (or `this` was removed meanwhile: the API then answers [`NOT_PLAYER`] for it).
+//!   After: [`HamCall::orig_ret`] is what the function returned, the zero value of its return
+//!   kind if it didn't run. **The post call's action decides the return value**:
+//!   [`ham::action::OVERRIDE`] returns [`HamCall::ret`], anything else returns `orig_ret`. A
+//!   pre call's `OVERRIDE` or `SUPERCEDE` value in `ret` is still there for the post call, which
+//!   must return `OVERRIDE` itself to keep it.
+//! * Hooks may nest: a hook may call `ham_execute`, deal damage or remove entities, and the
+//!   functions that run call the hook again. Hooks nested 8 deep are not called (the function
+//!   runs without them), and `ham_execute` at that depth gives [`BUSY`].
+//! * `Ham_Keyvalue`'s argument (hamsandwich's int) is kind [`ham::kind::INT`] with `p` the
+//!   `KeyValueData *` (valid for the call, strings read-only; `i` is the pointer's low 32 bits).
+//!   A pre hook that supersedes it decides `fHandled`.
 
 #![no_std]
 
@@ -62,7 +74,7 @@ pub const INVALID: c_int = -2;
 /// TS 3.0 has no such state; nothing changed.
 pub const UNSUPPORTED: c_int = -3;
 /// [`PluginApi::ham_execute`]: `this` is inside one of its own callbacks (not a hook) and out of
-/// reach; nothing ran.
+/// reach, or hooks are nested too deep (module docs); nothing ran.
 pub const BUSY: c_int = -4;
 
 /// Entity hook types (version 2): see the module docs.
@@ -99,9 +111,11 @@ pub mod ham {
         use core::ffi::c_int;
         /// Carry on; the function's own result stands.
         pub const CONTINUE: c_int = 0;
-        /// Before the function only: skip it and return [`HamCall::ret`](super::super::HamCall::ret).
+        /// Before the function only: skip it. The call after still follows, with a zero
+        /// `orig_ret`; its action decides the return value.
         pub const SUPERCEDE: c_int = 1;
-        /// Return [`HamCall::ret`](super::super::HamCall::ret) instead of the function's result.
+        /// After the function: return [`HamCall::ret`](super::super::HamCall::ret) instead of
+        /// the function's result. Before it, only the `ret` it leaves counts (for the call after).
         pub const OVERRIDE: c_int = 2;
     }
 
@@ -248,7 +262,9 @@ pub struct PluginApi {
     pub entity_class_id: extern "C" fn(entity: c_int) -> c_int,
     /// Runs `call.ham` on `call.this` with `call.args`, putting the result in `call.ret`. With
     /// `run_hooks` non-zero the hook runs around it as for a call by the game (hamsandwich's
-    /// ExecuteHamB); otherwise it doesn't (ExecuteHam). [`OK`], [`NOT_PLAYER`] (not a game
-    /// entity), [`INVALID`] (wrong arguments), [`UNSUPPORTED`] or [`BUSY`].
+    /// ExecuteHamB); otherwise it doesn't (ExecuteHam), for this call only: the calls it makes
+    /// (a `Killed` from `TakeDamage`) run the hook as usual. `call.class` is ignored. [`OK`],
+    /// [`NOT_PLAYER`] (not a game entity), [`INVALID`] (wrong arguments, or an `ENTITY` argument
+    /// that is neither -1 nor an entity in use), [`UNSUPPORTED`] or [`BUSY`].
     pub ham_execute: unsafe extern "C" fn(call: *mut HamCall, run_hooks: c_int) -> c_int,
 }

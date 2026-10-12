@@ -383,7 +383,7 @@ impl<const ROT: bool> Button<ROT> {
                     continue;
                 }
                 let me = cx.edict;
-                crate::world::dispatch(e, |ent, ecx| ent.use_(ecx, act, me, UseType::Toggle, 0.0));
+                crate::ham::use_(e, act, me, UseType::Toggle, 0.0);
             }
         }
         self.t.touch = if sf & SF_BUTTON_TOUCH_ONLY == 0 { None } else { Some(Self::button_touch) };
@@ -714,7 +714,7 @@ impl MomentaryRotButton {
             }
             // A button that targets itself recursed until TS crashed; here the re-entrant
             // dispatch is skipped.
-            crate::world::dispatch(e, |ent, ecx| ent.use_(ecx, me, me, UseType::Set, value));
+            crate::ham::use_(e, me, me, UseType::Set, value);
         }
     }
 

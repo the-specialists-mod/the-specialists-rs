@@ -740,13 +740,11 @@ pub fn create_slow_motion_point(origin: [f32; 3], amount: f32, duration: f32, bt
     }
     (e.v().origin = origin);
     let now = eng.time();
-    crate::world::dispatch(e, |ent, cx| {
-        ent.spawn(cx);
-        if let Some(p) = (ent as &mut dyn std::any::Any).downcast_mut::<SlowMotionPoint>() {
-            p.until = now + duration;
-            p.amount = amount;
-            p.btime = btime;
-        }
+    crate::ham::spawn(e);
+    crate::world::with::<SlowMotionPoint, _>(e, |p| {
+        p.until = now + duration;
+        p.amount = amount;
+        p.btime = btime;
     });
 }
 

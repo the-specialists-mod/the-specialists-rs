@@ -234,12 +234,8 @@ pub fn with_player_now<R>(e: *mut edict_t, f: impl FnOnce(&mut Player, &mut Cx) 
 /// last map, which keeps its object), `SetCustomDecalFrames(-1)`, then `Spawn`.
 pub fn client_put_in_server(e: *mut edict_t) {
     crate::world::create::<Player>(goldsrc::edict::EdictPtr::v(e));
-    crate::world::dispatch(e, |ent, cx| {
-        if let Some(p) = (&mut *ent as &mut dyn std::any::Any).downcast_mut::<Player>() {
-            p.impulse.custom_decal_frames = impulse::custom_decal_frames(-1);
-        }
-        ent.spawn(cx);
-    });
+    with_player(e, |p, _| p.impulse.custom_decal_frames = impulse::custom_decal_frames(-1));
+    crate::ham::spawn(e);
 }
 
 #[cfg(test)]

@@ -39,6 +39,12 @@ pub fn go_slow(e: *mut edict_t, amount: f32, btime: bool) {
     if e.is_null() {
         return;
     }
+    crate::ham::go_slow(e, amount, btime, go_slow_plain);
+}
+
+/// [`go_slow`] without the plugins' hooks: `CBasePlayer::GoSlow` (0x929d0) or `CBaseEntity`'s
+/// (0xac5e0).
+pub fn go_slow_plain(e: *mut edict_t, amount: f32, btime: bool) {
     let observer = e.v().iuser1 != 0;
     let done = other(e, |p| {
         p.slow_target = if observer { 1.0 } else { amount };

@@ -261,7 +261,7 @@ pub fn post_think(p: &mut Player, cx: &mut Cx) {
 
 /// The player died (health ≤ 0 in `player::damage`): `CBasePlayer::Killed` + `PlayerKilled`.
 pub fn on_killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
-    lifecycle::killed(p, cx, dmg)
+    crate::ham::killed(p, cx, dmg, lifecycle::killed)
 }
 
 pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bool {

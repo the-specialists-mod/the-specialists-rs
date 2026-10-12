@@ -792,21 +792,47 @@ pub fn respawn_all(force: bool) {
         if e.is_null() || e.is_free() || !e.has_private_data() {
             continue;
         }
-        world::dispatch(e, |ent, cx| {
-            let any = ent as &mut dyn std::any::Any;
-            if let Some(b) = any.downcast_mut::<FuncBreakable>() {
-                if b.respawn_time >= 0.0 && b.helper {
-                    b.breakable_respawn(cx, force);
-                }
-            } else if let Some(b) = any.downcast_mut::<FuncPushable>() {
-                if FuncPushable::breakable_flag(cx) && b.respawn_time >= 0.0 && b.helper {
-                    b.breakable_respawn(cx, force);
-                }
-            } else if let Some(d) = any.downcast_mut::<super::doors::Door>() {
-                d.breakable_respawn(cx, force);
-            }
-        });
+        if world::dispatch(e, has_respawn_helper) == Some(true) {
+            crate::ham::breakable_respawn(e, force, |ent, cx, force| {
+                breakable_respawn(ent, cx, force);
+            });
+        }
     }
+}
+
+/// Whether TS gives the entity an `info_breakable` helper, so `RespawnEntities` reaches it.
+fn has_respawn_helper(ent: &mut dyn Entity, cx: &mut Cx) -> bool {
+    let any = ent as &mut dyn std::any::Any;
+    if let Some(b) = any.downcast_mut::<FuncBreakable>() {
+        b.respawn_time >= 0.0 && b.helper
+    } else if let Some(b) = any.downcast_mut::<FuncPushable>() {
+        FuncPushable::breakable_flag(cx) && b.respawn_time >= 0.0 && b.helper
+    } else {
+        any.is::<super::doors::Door>()
+    }
+}
+
+/// The class's `BreakableRespawn(force)`: `CBreakable` (0x74e84, also `func_pushable`'s) and
+/// `CBaseDoor` / `CRotDoor` (0xb5604 / 0xb7838). False for the rest, whose `CBaseEntity`
+/// version (0xac5ac) is empty.
+pub fn breakable_respawn(ent: &mut dyn Entity, cx: &mut Cx, force: bool) -> bool {
+    let any = ent as &mut dyn std::any::Any;
+    if let Some(b) = any.downcast_mut::<FuncBreakable>() {
+        b.breakable_respawn(cx, force);
+    } else if let Some(b) = any.downcast_mut::<FuncPushable>() {
+        b.breakable_respawn(cx, force);
+    } else if let Some(d) = any.downcast_mut::<super::doors::Door>() {
+        d.breakable_respawn(cx, force);
+    } else {
+        return false;
+    }
+    true
+}
+
+/// The classes with their own `BreakableRespawn` ([`breakable_respawn`]).
+pub fn has_breakable_respawn(ty: std::any::TypeId) -> bool {
+    use std::any::TypeId;
+    ty == TypeId::of::<FuncBreakable>() || ty == TypeId::of::<FuncPushable>() || ty == TypeId::of::<super::doors::Door>()
 }
 
 /// `info_breakable` (`CInfoBreakable`) placed by a map. TS's breakables create these as their

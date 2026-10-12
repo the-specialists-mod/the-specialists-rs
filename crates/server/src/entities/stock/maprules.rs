@@ -248,7 +248,7 @@ pub fn give_named_item(player: *mut edict_t, class: &CStr) {
     // `DispatchSpawn` (0xaab8c); TS ignores its result here.
     crate::entities::dispatch_spawn(e);
     if !e.is_free() && e.v().flags & FL_KILLME as i32 == 0 {
-        world::dispatch(e, |ent, cx| ent.touch(cx, player));
+        crate::ham::touch(e, player);
     }
 }
 
@@ -272,7 +272,7 @@ pub fn equip_on_spawn(player: *mut edict_t) -> bool {
     }
     for e in equips {
         if !e.is_free() {
-            world::dispatch(e, |ent, cx| ent.touch(cx, player));
+            crate::ham::touch(e, player);
         }
     }
     true

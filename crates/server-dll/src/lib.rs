@@ -21,7 +21,7 @@ use goldsrc::sys::*;
 use goldsrc::util::cstr;
 use std::ffi::{CStr, c_char, c_int, c_uchar, c_uint, c_void};
 use ts_server::world::{self, UseType};
-use ts_server::{bots, commands, entities, messages, net, player, rules, save, stunt, weapons};
+use ts_server::{bots, commands, entities, ham, messages, net, player, rules, save, stunt, weapons};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn GiveFnptrsToDll(funcs: *const enginefuncs_t, globals: *mut globalvars_t) {
@@ -214,19 +214,19 @@ fn level_start_on_world(e: *mut edict_t) {
 }
 
 unsafe extern "C" fn think(e: *mut edict_t) {
-    world::dispatch(e, |ent, cx| ent.think(cx));
+    ham::think(e);
 }
 
 unsafe extern "C" fn touch(e: *mut edict_t, other: *mut edict_t) {
-    world::dispatch(e, |ent, cx| ent.touch(cx, other));
+    ham::touch(e, other);
 }
 
 unsafe extern "C" fn use_(e: *mut edict_t, other: *mut edict_t) {
-    world::dispatch(e, |ent, cx| ent.use_(cx, other, other, UseType::Toggle, 0.0));
+    ham::use_(e, other, other, UseType::Toggle, 0.0);
 }
 
 unsafe extern "C" fn blocked(e: *mut edict_t, other: *mut edict_t) {
-    world::dispatch(e, |ent, cx| ent.blocked(cx, other));
+    ham::blocked(e, other);
 }
 
 /// `DispatchKeyValue` (0xaad4c): entvars fields first, then the class (`entities::dispatch_key_value`).
@@ -239,7 +239,9 @@ unsafe extern "C" fn key_value(e: *mut edict_t, kvd: *mut KeyValueData) {
     let kvd = unsafe { &mut *kvd };
     // SAFETY: the engine passes null or a NUL-terminated string valid for this call.
     let (key, value) = unsafe { (cstr(kvd.szKeyName), cstr(kvd.szValue)) };
-    kvd.fHandled = entities::dispatch_key_value(e, !kvd.szClassName.is_null(), key, value) as c_int;
+    // SAFETY: as above.
+    let class = (!kvd.szClassName.is_null()).then(|| unsafe { cstr(kvd.szClassName) });
+    kvd.fHandled = entities::dispatch_key_value(e, class, key, value) as c_int;
 }
 
 /// `DispatchSave` (TS 0xaaf18).
@@ -371,11 +373,11 @@ unsafe extern "C" fn server_deactivate() {
 }
 
 unsafe extern "C" fn player_pre_think(e: *mut edict_t) {
-    player::with_player(e, |p, cx| p.pre_think(cx));
+    ham::player_pre_think(e);
 }
 
 unsafe extern "C" fn player_post_think(e: *mut edict_t) {
-    player::with_player(e, |p, cx| p.post_think(cx));
+    ham::player_post_think(e);
 }
 
 unsafe extern "C" fn start_frame() {
@@ -520,5 +522,5 @@ unsafe extern "C" fn on_free_private_data(e: *mut edict_t) {
 unsafe extern "C" fn game_shutdown() {}
 
 unsafe extern "C" fn should_collide(touched: *mut edict_t, other: *mut edict_t) -> c_int {
-    world::dispatch(touched, |ent, cx| ent.should_collide(cx, other)).unwrap_or(true) as c_int
+    ham::should_collide(touched, other) as c_int
 }

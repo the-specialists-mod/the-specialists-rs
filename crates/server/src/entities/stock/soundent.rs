@@ -194,7 +194,7 @@ pub fn create_world_soundent() {
         return;
     }
     world::create::<SoundEnt>(e.v());
-    world::dispatch(e, |ent, cx| ent.spawn(cx));
+    crate::ham::spawn(e);
 }
 
 /// `CSoundEnt::InsertSound` (0xe238c): a sound of `kind` and `volume` at `origin` for `duration`

@@ -26,7 +26,7 @@ use super::explode::emit_sound_slow;
 use super::tracktrain::{nearest, path_links, path_next, set_train_path, train_next_think, train_path_length};
 use super::trains::*;
 use crate::save::{Fields, tables};
-use crate::world::{self, Cx, Entity, UseType};
+use crate::world::{Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, vec};
 use goldsrc::server::engine;
@@ -241,7 +241,7 @@ impl<const AUTO: bool> FuncTrackChange<AUTO> {
             if self.code == TRAIN_FOLLOWING && !train.is_null() && train.v().speed == 0.0 {
                 // `m_train->Use(this, this, USE_ON, 0)`; `this` is the caller's edict, which
                 // the train's `Use` doesn't read.
-                world::dispatch(train, |ent, tcx| ent.use_(tcx, std::ptr::null_mut(), std::ptr::null_mut(), UseType::On, 0.0));
+                crate::ham::use_(train, std::ptr::null_mut(), std::ptr::null_mut(), UseType::On, 0.0);
             }
         }
         if !next_target.is_null() {
