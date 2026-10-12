@@ -14,6 +14,7 @@
 pub mod bots;
 pub mod commands;
 pub mod damage;
+pub mod delta;
 pub mod entities;
 pub mod messages;
 pub mod net;

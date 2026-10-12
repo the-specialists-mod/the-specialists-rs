@@ -115,7 +115,7 @@ fn dll_functions() -> DLL_FUNCTIONS {
         pfnUpdateClientData: Some(update_client_data),
         pfnAddToFullPack: Some(add_to_full_pack),
         pfnCreateBaseline: Some(create_baseline),
-        pfnRegisterEncoders: Some(noop),
+        pfnRegisterEncoders: Some(register_encoders),
         pfnGetWeaponData: Some(get_weapon_data),
         pfnCmdStart: Some(cmd_start),
         pfnCmdEnd: Some(cmd_end),
@@ -128,6 +128,53 @@ fn dll_functions() -> DLL_FUNCTIONS {
 }
 
 unsafe extern "C" fn noop() {}
+
+/// `RegisterEncoders` (TS 0xb004c): binds `delta.lst`'s three conditional encoders.
+unsafe extern "C" fn register_encoders() {
+    let e = engine();
+    e.delta_add_encoder(c"Entity_Encode", entity_encode);
+    e.delta_add_encoder(c"Custom_Encode", custom_encode);
+    e.delta_add_encoder(c"Player_Encode", player_encode);
+}
+
+/// Turns a conditional encoder's arguments into the delta handle and the two states, or `None`
+/// for a null pointer.
+///
+/// # Safety
+/// The engine's arguments to the running encoder: a delta description and two `entity_state_t`
+/// (passed as bytes) valid for the call.
+unsafe fn encoder_args<'a>(d: *mut delta_s, from: *const u8, to: *const u8) -> Option<(sv::Delta, &'a entity_state_t, &'a entity_state_t)> {
+    if d.is_null() {
+        return None;
+    }
+    // SAFETY: the engine passes the delta it is encoding with, and `from`/`to` point at the
+    // entity states (or custom entity states, which share `entity_state_t`) for this call.
+    unsafe { Some((sv::Delta::from_raw(d), from.cast::<entity_state_t>().as_ref()?, to.cast::<entity_state_t>().as_ref()?)) }
+}
+
+/// `Entity_Encode` (TS 0xafaa4).
+unsafe extern "C" fn entity_encode(d: *mut delta_s, from: *const u8, to: *const u8) {
+    // SAFETY: called by the engine with its encoder arguments.
+    if let Some((d, f, t)) = unsafe { encoder_args(d, from, to) } {
+        ts_server::delta::entity_encode(d, f, t);
+    }
+}
+
+/// `Player_Encode` (TS 0xafcbc).
+unsafe extern "C" fn player_encode(d: *mut delta_s, from: *const u8, to: *const u8) {
+    // SAFETY: called by the engine with its encoder arguments.
+    if let Some((d, f, t)) = unsafe { encoder_args(d, from, to) } {
+        ts_server::delta::player_encode(d, f, t);
+    }
+}
+
+/// `Custom_Encode` (TS 0xafec4).
+unsafe extern "C" fn custom_encode(d: *mut delta_s, from: *const u8, to: *const u8) {
+    // SAFETY: called by the engine with its encoder arguments.
+    if let Some((d, f, t)) = unsafe { encoder_args(d, from, to) } {
+        ts_server::delta::custom_encode(d, f, t);
+    }
+}
 
 /// `ParmsChangeLevel` (TS 0xaea68): the transition list for the save the engine is writing.
 unsafe extern "C" fn parms_change_level() {

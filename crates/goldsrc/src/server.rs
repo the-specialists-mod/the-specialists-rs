@@ -63,6 +63,18 @@ impl Engine {
         eng!(pfnSetGroupMask(mask, op))
     }
 
+    /// `pfnDeltaAddEncoder`: binds a `delta.lst` "gamedll <name>" conditional encoder. The
+    /// callback goes in a `*-dll` crate and wraps the `delta_s *` in a [`Delta`].
+    pub fn delta_add_encoder(&self, name: &CStr, f: unsafe extern "C" fn(*mut delta_s, *const u8, *const u8)) {
+        // The engine copies the name; the slot takes a mutable pointer only by its C signature.
+        eng!(pfnDeltaAddEncoder(name.as_ptr().cast_mut(), Some(f)))
+    }
+
+    /// `pfnGetCurrentPlayer`: the 0-based slot of the client whose packet is being built.
+    pub fn current_player(&self) -> i32 {
+        eng!(pfnGetCurrentPlayer())
+    }
+
     /// The client's physics info string (`pfnGetPhysicsInfoString`).
     pub fn physics_info(&self, e: *const edict_t) -> &'static CStr {
         let p = eng!(pfnGetPhysicsInfoString(e));
@@ -748,5 +760,33 @@ impl MsgWriter {
             }
         }
         eng!(pfnMessageEnd());
+    }
+}
+
+/// The delta description (`delta_t *`) the engine hands a conditional encoder. Only valid during
+/// that encoder call, so the `*-dll` crate builds it and the game code uses it there and then.
+#[derive(Clone, Copy, Debug)]
+pub struct Delta(*mut delta_s);
+
+impl Delta {
+    /// # Safety
+    /// `p` must be the description the engine passed to the encoder now running.
+    pub unsafe fn from_raw(p: *mut delta_s) -> Self {
+        Delta(p)
+    }
+
+    /// `pfnDeltaFindField`: the field's index, or -1.
+    pub fn find_field(self, name: &CStr) -> i32 {
+        eng!(pfnDeltaFindField(self.0, name.as_ptr()))
+    }
+
+    /// `pfnDeltaSetFieldByIndex`: force the field to be sent.
+    pub fn set_field(self, index: i32) {
+        eng!(pfnDeltaSetFieldByIndex(self.0, index))
+    }
+
+    /// `pfnDeltaUnsetFieldByIndex`: don't send the field.
+    pub fn unset_field(self, index: i32) {
+        eng!(pfnDeltaUnsetFieldByIndex(self.0, index))
     }
 }
