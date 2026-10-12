@@ -139,7 +139,8 @@ pub struct Wind {
 
 impl Entity for Wind {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v: f32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0.0);
+        // `CTSWind::KeyValue` (0x73ec4): `strcasecmp`, `strtod`.
+        let v = kv_f(value);
         let k = key.to_str().unwrap_or("").to_ascii_lowercase();
         match k.as_str() {
             "base" => self.base = v,
@@ -171,12 +172,16 @@ impl Entity for Wind {
         let m = TsPSysWind {
             kind: 3,
             seed: eng.random_long(0, 30000),
-            yaw: (eng.random_long(-45, 45) as f32 + yaw).round() as i32,
+            // `(int)` of the extended sum: truncated.
+            yaw: super::c_int(f64::from(eng.random_long(-45, 45)) + f64::from(yaw)),
             strength: self.base + eng.random_float(-self.variance, self.variance),
         };
         msg::all(Msg::TsPSys, |w| m.write(w));
+        // `time + frequency + RandomFloat(-f/2, f/2)` in extended precision, with no lower bound:
+        // a wind without a `frequency` blows every frame.
         let f = self.frequency;
-        cx.think_in((f + eng.random_float(-f * 0.5, f * 0.5)).max(0.1));
+        let r = eng.random_float(-f * 0.5, f * 0.5);
+        cx.pev().nextthink = (f64::from(eng.time()) + f64::from(f) + f64::from(r)) as f32;
     }
 }
 

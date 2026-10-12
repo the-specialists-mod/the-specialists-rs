@@ -2,6 +2,7 @@
 //! `ts_playeramount`, `ts_slowmotion`, `ts_slowmotionpoint` (gamerules-entities.md §5,
 //! player-movement.md §5.4–5.5).
 
+use crate::entities::stock::base::{kv_d, kv_f};
 use crate::messages::Msg;
 use crate::rules::{self, msg, state, teams};
 use crate::save::{BaseFuncs, Fields};
@@ -12,6 +13,14 @@ use goldsrc::sys::*;
 use goldsrc::util::to_cstring;
 use shared::protocol::rules::ScoreInfo;
 use std::ffi::CStr;
+
+/// `fNoMonsters` of SDK `UTIL_TraceLine(.., ignore_monsters, ignore_glass, ..)` (0xed4b0).
+const IGNORE_MONSTERS_GLASS: i32 = IGNORE_MONSTERS | 0x100;
+
+/// `strtol(value, 0, 10)`: the leading integer, 0 for none.
+fn strtol(value: &CStr) -> i32 {
+    crate::rules::mapcycle::atoi(&value.to_string_lossy())
+}
 
 fn fire(target: &str, cx: &mut Cx) {
     if !target.is_empty() {
@@ -106,11 +115,12 @@ impl Entity for Trigger {
     }
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v: f32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0.0);
+        // `CTSTrigger::KeyValue` (0x70890): `strtod` for each, the teams `(int)` (truncated).
+        let team = || super::c_int(kv_d(value));
         match key.to_bytes() {
-            b"nextcheck" => self.next_check = v,
-            b"attackerteam" => self.team = v.round() as i32,
-            b"allowedteam" => self.team = if v.round() as i32 == 2 { -1 } else { v.round() as i32 },
+            b"nextcheck" => self.next_check = kv_f(value),
+            b"attackerteam" => self.team = team(),
+            b"allowedteam" => self.team = if team() == 2 { -1 } else { team() },
             _ => return false,
         }
         true
@@ -177,11 +187,11 @@ impl Entity for DmHill {
     }
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v = value.to_str().unwrap_or("").trim();
+        // `CTSDMHill::KeyValue` (0x719b8): `strtod`, `strtol`.
         match key.to_bytes() {
-            b"nextcheck" => self.next_check = v.parse().unwrap_or(0.0),
-            b"fragamt" => self.frags = v.parse().unwrap_or(0),
-            b"fragamtteam" => self.frags_team = v.parse().unwrap_or(0),
+            b"nextcheck" => self.next_check = kv_f(value),
+            b"fragamt" => self.frags = strtol(value),
+            b"fragamtteam" => self.frags_team = strtol(value),
             _ => return false,
         }
         true
@@ -247,13 +257,27 @@ impl Entity for DmHill {
             }
         }
         if let Some(t) = text {
-            let hold = (step * 10.0).min(30.0).round() as u8;
+            let hold = dmhill_hold(self.next_check);
             msg::ts_message_all([0, 255, 0], 8, hold, &t);
         }
         self.award_at = now + step;
         fire_own_target(cx);
         self.last_touch = now;
     }
+}
+
+/// The message hold of `CTSDMHill::WaitTouch` (0x71be8): `(int)min(max(nextcheck, 0.5) * 10, 30)`
+/// in doubles, truncated.
+fn dmhill_hold(next_check: f32) -> u8 {
+    let mut d = f64::from(next_check);
+    if d < 0.5 {
+        d = 0.5;
+    }
+    d *= 10.0;
+    if 30.0 < d {
+        d = 30.0;
+    }
+    super::c_int(d) as u8
 }
 
 fn send_score(e: *mut edict_t) {
@@ -308,7 +332,8 @@ impl Entity for Timer {
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key.to_bytes() == b"duration" {
-            self.duration = value.to_str().unwrap_or("").trim().parse().unwrap_or(0);
+            // `CTSTimer::KeyValue` (0x72d50): `strtol`.
+            self.duration = strtol(value);
             return true;
         }
         false
@@ -360,15 +385,22 @@ pub struct CustomTarget {
     next: usize,
 }
 
+/// `CTSCustomTarget::GetTargets` (0x73104): `strtok(.., ";")`, which skips empty fields, up to 64
+/// names. Guard: TS `strcpy`s each into a `char[32]` slot, so a longer name runs into the next
+/// slot; the port keeps its first 31 characters.
+fn parse_targets(v: &str) -> Vec<String> {
+    v.split(';').filter(|s| !s.is_empty()).take(64).map(|s| s.chars().take(31).collect()).collect()
+}
+
 impl Entity for CustomTarget {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         let v = value.to_str().unwrap_or("");
         match key.to_bytes() {
             b"targets" => {
-                self.targets = v.split(';').take_while(|s| !s.is_empty()).take(64).map(|s| s.chars().take(31).collect()).collect();
+                self.targets = parse_targets(v);
             }
-            b"triggermethod" => self.method = v.trim().parse().unwrap_or(0),
-            b"accumulate" => self.accumulate = v.trim().parse().unwrap_or(0),
+            b"triggermethod" => self.method = strtol(value),
+            b"accumulate" => self.accumulate = strtol(value),
             _ => return false,
         }
         true
@@ -463,7 +495,7 @@ impl Entity for PlayerAmount {
         match key.to_bytes() {
             b"connecttarget" => self.connect = v,
             b"disconnecttarget" => self.disconnect = v,
-            b"clients" => self.clients = v.trim().parse().unwrap_or(0),
+            b"clients" => self.clients = strtol(value),
             _ => return false,
         }
         true
@@ -556,10 +588,10 @@ impl Entity for SlowMotion {
     }
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v: f32 = value.to_str().unwrap_or("").trim().parse().unwrap_or(0.0);
+        // `CTSSlowMotion::KeyValue` (0x70d74): `strtod`.
         match key.to_bytes() {
-            b"duration" => self.duration = v,
-            b"slowamt" => self.amount = v,
+            b"duration" => self.duration = kv_f(value),
+            b"slowamt" => self.amount = kv_f(value),
             _ => return false,
         }
         true
@@ -569,7 +601,8 @@ impl Entity for SlowMotion {
         trigger_brush(cx, c"ts_slowmotion");
         let v = cx.pev();
         let d = [v.absmax[0] - v.absmin[0], v.absmax[1] - v.absmin[1], v.absmax[2] - v.absmin[2]];
-        self.radius = (rules::len3(d) * 0.5).round();
+        // `(int)` of the half diagonal: truncated.
+        self.radius = super::c_int(f64::from(rules::len3(d)) * 0.5) as f32;
         self.global = v.spawnflags & 2 != 0;
         self.btime = v.spawnflags & 4 != 0;
         let start_on = v.spawnflags & 1 != 0;
@@ -678,7 +711,9 @@ impl Entity for SlowMotionPoint {
             if rules::powerup::entity_in_slow(p) {
                 continue;
             }
-            let tr = eng.trace_line(org, rules::eye(p.v()), IGNORE_MONSTERS, std::ptr::null_mut());
+            // `UTIL_TraceLine(.., ignore_monsters, ignore_glass, NULL, ..)` (0xed4b0): glass
+            // doesn't block it.
+            let tr = eng.trace_line(org, rules::eye(p.v()), IGNORE_MONSTERS_GLASS, std::ptr::null_mut());
             if tr.flFraction >= 1.0 {
                 rules::powerup::go_slow(p, self.amount, self.btime);
                 if !self.slowed.contains(&p) {
@@ -710,6 +745,30 @@ pub fn create_slow_motion_point(origin: [f32; 3], amount: f32, duration: f32, bt
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn number_keys_read_a_leading_number() {
+        assert_eq!(super::strtol(c"30.0"), 30);
+        assert_eq!(super::strtol(c" -5 frags"), -5);
+        assert_eq!(super::strtol(c"x"), 0);
+        assert_eq!(crate::entities::stock::base::kv_f(c"0.5s"), 0.5);
+    }
+
+    #[test]
+    fn custom_targets_skip_empty_fields() {
+        assert_eq!(super::parse_targets("a;;b"), ["a", "b"]);
+        assert_eq!(super::parse_targets(";a;b;"), ["a", "b"]);
+        assert!(super::parse_targets(";;").is_empty());
+        assert_eq!(super::parse_targets(&"t;".repeat(70)).len(), 64);
+    }
+
+    #[test]
+    fn dmhill_hold_truncates() {
+        assert_eq!(super::dmhill_hold(0.75), 7);
+        assert_eq!(super::dmhill_hold(1.25), 12);
+        assert_eq!(super::dmhill_hold(0.0), 5);
+        assert_eq!(super::dmhill_hold(10.0), 30);
+    }
+
     #[test]
     fn printf_name() {
         assert_eq!(super::format_name("%s reached the top", "bob"), "bob reached the top");

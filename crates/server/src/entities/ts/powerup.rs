@@ -71,9 +71,10 @@ impl Default for PowerUp {
     }
 }
 
-/// Model body and base duration per type (`SetupPowerUp` 0x98014), first matching bit wins.
-pub fn body_and_secs(kind: u16) -> (i32, i32) {
-    if kind & pw::SLOWMO != 0 {
+/// Model body and base duration per type (`SetupPowerUp` 0x98014), first matching bit wins. With
+/// no known bit TS leaves `pev->body` as it was (`None`) and the duration 0.
+pub fn body_and_secs(kind: u16) -> (Option<i32>, i32) {
+    let (body, secs) = if kind & pw::SLOWMO != 0 {
         (4, 3)
     } else if kind & pw::INFINITE_CLIP != 0 {
         (2, 3)
@@ -92,8 +93,15 @@ pub fn body_and_secs(kind: u16) -> (i32, i32) {
     } else if kind & pw::SUPERJUMP != 0 {
         (8, 0)
     } else {
-        (0, 0)
-    }
+        return (None, 0);
+    };
+    (Some(body), secs)
+}
+
+/// `SetupPowerUp`'s duration of a stored type: `(int)(base * pwupmult)`, the x87 product truncated
+/// (0x881f4..0x88215).
+pub fn duration(base: i32, mult: f32) -> i32 {
+    super::c_int(f64::from(base) * f64::from(mult))
 }
 
 /// Respawn delay from `pwupduration`: < 1 → 60 s, 1..10 → 10 s, else min(v, 180).
@@ -126,8 +134,10 @@ impl PowerUp {
             self.random = false;
         }
         let (body, base) = body_and_secs(self.kind);
-        cx.pev().body = body;
-        self.secs = if secs < 1 { (base as f32 * self.mult).round() as i32 } else { secs };
+        if let Some(body) = body {
+            cx.pev().body = body;
+        }
+        self.secs = if secs < 1 { duration(base, self.mult) } else { secs };
         self.expire = life + cx.time();
         self.permanent = permanent;
     }
@@ -208,8 +218,8 @@ impl PowerUp {
         self.funcs.touch = false;
         self.funcs.think = true;
         let v = cx.pev();
+        // `solid` stays as `OnGround` left it (`SOLID_TRIGGER`): only the touch goes.
         v.effects |= EF_NODRAW as i32;
-        v.solid = SOLID_NOT as i32;
         v.nextthink = engine().time() + respawn_delay(self.respawn);
         let (message, target) = (v.message, v.target);
         if message != 0 {
@@ -247,11 +257,12 @@ impl Entity for PowerUp {
     }
 
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let v = value.to_str().unwrap_or("").trim();
+        // `CTSPowerUp::KeyValue` (0x97ebc): `strtol`, `strtol`, `strtod`.
+        let strtol = || crate::rules::mapcycle::atoi(&value.to_string_lossy());
         match key.to_bytes() {
-            b"pwuptype" => self.kind_key = v.parse().unwrap_or(0),
-            b"pwupduration" => self.respawn = v.parse().unwrap_or(0),
-            b"pwupmult" => self.mult = v.parse().unwrap_or(0.0),
+            b"pwuptype" => self.kind_key = strtol(),
+            b"pwupduration" => self.respawn = strtol(),
+            b"pwupmult" => self.mult = crate::entities::stock::base::kv_f(value),
             _ => return self.delay.key_value(key, value),
         }
         true
@@ -353,11 +364,22 @@ mod tests {
 
     #[test]
     fn bodies() {
-        assert_eq!(body_and_secs(pw::SLOWMO), (4, 3));
-        assert_eq!(body_and_secs(pw::SLOWPAUSE), (9, 2));
-        assert_eq!(body_and_secs(pw::DOUBLE_FIRERATE), (1, 3));
-        assert_eq!(body_and_secs(pw::SUPERJUMP), (8, 0));
-        assert_eq!(body_and_secs(pw::KUNGFU), (0, 0));
+        assert_eq!(body_and_secs(pw::SLOWMO), (Some(4), 3));
+        assert_eq!(body_and_secs(pw::SLOWPAUSE), (Some(9), 2));
+        assert_eq!(body_and_secs(pw::DOUBLE_FIRERATE), (Some(1), 3));
+        assert_eq!(body_and_secs(pw::SUPERJUMP), (Some(8), 0));
+        assert_eq!(body_and_secs(pw::KUNGFU), (Some(0), 0));
+        // No known bit: the body is left alone.
+        assert_eq!(body_and_secs(0x200), (None, 0));
+    }
+
+    #[test]
+    fn durations_truncate() {
+        assert_eq!(duration(3, 1.0), 3);
+        assert_eq!(duration(3, 1.5), 4);
+        assert_eq!(duration(3, 0.9), 2);
+        assert_eq!(duration(2, 1.75), 3);
+        assert_eq!(duration(3, f32::NAN), i32::MIN);
     }
 
     #[test]

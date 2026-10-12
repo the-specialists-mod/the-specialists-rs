@@ -131,6 +131,12 @@ pub fn save_unused_toggle(f: &mut crate::save::Fields) {
     }
 }
 
+/// A C `(int)` cast as GCC 2.95 compiles it (`fldcw` round-toward-zero, `fistpl`) on the x87's
+/// extended value: truncation, and the integer indefinite (`i32::MIN`) for NaN or out of range.
+pub fn c_int(v: f64) -> i32 {
+    if (-2_147_483_648.0..2_147_483_648.0).contains(&v) { v as i32 } else { i32::MIN }
+}
+
 /// Per-map state of the TS entities (the `ts_particle` count). Their map-wide models
 /// (`ts_powerup`, `ts_flag`, the ammo pack) are precached by `crate::precache` where TS's
 /// `W_Precache` / `TSPrecache` do.
