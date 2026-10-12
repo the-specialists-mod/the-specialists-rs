@@ -89,6 +89,9 @@ pub struct TextMenu {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Sound(&'static str),
+    /// `goslow.wav` as `MsgFunc_TSSlowMo` plays it (`0x1004bf53..0x1004bf75`):
+    /// `EV_PlaySound(-1, gHUD.m_vecOrigin, 0, "goslow.wav", 1.0, 0.8, 0, 100)`.
+    GoSlow,
     /// Run the `thirdperson` toggle (`0x1004fe00`) now, as TS's handlers do: the death cam
     /// (`TSHealth`), `cl_thirdpersonswitch` (`WeaponInfo`) and `Spectator`.
     ToggleThirdPerson,
@@ -150,6 +153,8 @@ pub struct Hud {
     pub slots: u8,
     pub pw_flags: u32,
     pub pw_value: i32,
+    /// `DrawPowerup`'s name buffer (`0x1018a5e0`), never cleared.
+    pub pw_label: String,
     pub pw_expire: f32,
     pub kungfu_icon: bool,
     pub move_icon: bool,
@@ -244,6 +249,7 @@ impl Default for Hud {
             slots: 0,
             pw_flags: 0,
             pw_value: 0,
+            pw_label: String::new(),
             pw_expire: 0.0,
             kungfu_icon: false,
             move_icon: false,
@@ -542,7 +548,7 @@ impl Hud {
                     c
                 });
                 if current == 1.0 && target != 1.0 {
-                    fx.push(Effect::Sound("goslow.wav"));
+                    fx.push(Effect::GoSlow);
                 }
             }
             Msg::TsFrags => fx.push(Effect::Fx(crate::state::TsEffect::Frags(dec!(p::TsFrags)))),

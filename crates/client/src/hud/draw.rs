@@ -207,20 +207,24 @@ pub mod num {
 }
 
 /// Digit layout of `DrawHudNumberTS`: for each of the five positions (10000s .. 1s), `Some(d)` to
-/// draw digit `d`, `None` to leave a blank cell, or skipped entirely. Pure, for tests.
-pub fn number_cells(n: i32, flags: u8) -> Vec<Option<u8>> {
+/// draw the sprite `number_0 + d`, `None` to leave a blank cell, or skipped entirely. Pure, for
+/// tests. The top place is `n / 10000` without `% 10` (`0x1004c290`), so from 100000 on TS draws
+/// the hud.txt entry that many places after `number_0` (whatever follows `number_9`); the
+/// drawing skips an index past the table.
+pub fn number_cells(n: i32, flags: u8) -> Vec<Option<u32>> {
     let mut cells = Vec::new();
     // (divisor, threshold, reserve mask)
     let places = [(10000, 10000, 0x10u8), (1000, 1000, 0x18), (100, 100, 0x0c), (10, 10, 0x06)];
     if n > 0 {
         for (div, thr, mask) in places {
             if n >= thr {
-                cells.push(Some(((n / div) % 10) as u8));
+                let d = if div == 10000 { n / div } else { (n / div) % 10 };
+                cells.push(Some(d as u32));
             } else if flags & mask != 0 {
                 cells.push(if flags & num::LEADING_ZEROS != 0 { Some(0) } else { None });
             }
         }
-        cells.push(Some((n % 10) as u8));
+        cells.push(Some((n % 10) as u32));
         return cells;
     }
     if flags & num::DRAW_ZERO == 0 {
@@ -283,7 +287,8 @@ mod tests {
         assert_eq!(number_cells(7, num::DIGITS_3), [None, None, Some(7)]);
         assert_eq!(number_cells(45, num::DIGITS_2 | num::LEADING_ZEROS), [Some(4), Some(5)]);
         assert_eq!(number_cells(5, num::DIGITS_2 | num::LEADING_ZEROS | num::DRAW_ZERO), [Some(0), Some(5)]);
-        assert_eq!(number_cells(0, num::DIGITS_3), Vec::<Option<u8>>::new());
+        assert_eq!(number_cells(0, num::DIGITS_3), Vec::<Option<u32>>::new());
+        assert_eq!(number_cells(123456, 0), [Some(12), Some(3), Some(4), Some(5), Some(6)], "TS's top place has no % 10");
         assert_eq!(number_cells(0, num::DIGITS_2 | num::DRAW_ZERO), [None, Some(0)]);
         assert_eq!(number_cells(12345, 0), [Some(1), Some(2), Some(3), Some(4), Some(5)]);
         assert_eq!(number_cells(i32::MIN, 0xff), [Some(0); 5], "negatives draw as zero");

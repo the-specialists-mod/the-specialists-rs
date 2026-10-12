@@ -50,7 +50,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CHudTSWeapons::Reset` 1004cd60, `Think` 1004ce10 | `Hud::reset_weapons`; `hud::think`, `weapons::think_sounds`, `hud::weapon_menu_buttons` |
 | `Draw` 1004d3f0, `DrawWirePanel` 1004d550, `DrawKungFuBar` 1004d5f0, `DrawKungFuLabel` 1004d700, `DrawWeaponInfo` 1004d7e0, `DrawWeaponList` 1004e030, `DrawLaserDots` 1004e6f0, `DrawCrosshair` 1004e9f0 + 1004ef50 | `hud::weapons::*` |
 | `SelectSlot` 1004f220, `SelectNextPrev` 1004f500, `CmdBuy` 1004fda0 | `hud::select_slot` → `weapons::select_slot`; `weapons::select_next_prev`; `hud::cmd_buy` |
-| `DrawHudNumberTS` 1004c290, `DrawHudString` 10021ce0, `DrawHudStringLen` 10021ca0 | `draw::draw_number`/`number_cells`, `text::draw_string`, `text::string_len` |
+| `DrawHudNumberTS` 1004c290, `DrawHudString` 10021ce0, `DrawHudStringLen` 10021ca0 | `draw::draw_number`/`number_cells` (the top place is `n / 10000` without `% 10`, as TS, so from 100000 on it draws the hud.txt entry that many after `number_0`; an index past the table draws nothing), `text::draw_string`, `text::string_len` |
 | `LocaliseTextString` 100348d0, `BufferedLocaliseTextString` 100349a0, `LookupString` 100349c0 | `text::localise_text_string(_in)` (TS's word bytes `A`..`z` and digits, its step budget, the unterminated unknown `#`), `text::buffered_localise` / `localise_with` / `localise` (the shared 0x400-byte buffer: `AddTSMessage`, `ShowMenu`, buy menu, HUD labels), `text::lookup_string` (`TextMsg`: whole-string keys, a negative `effect` picks the destination), `text::lookup` |
 | `MsgFunc_TextMsg` 10034a60 (`StripEndNewlineFromString` 10034a10, `ConvertCRtoNL` 10034a40) | `Hud::apply` (`Msg::TextMsg`) |
 | `CHudMenu::MsgFunc_ShowMenu` 10028760 | `Hud::apply` (`Msg::ShowMenu`) |
@@ -113,13 +113,13 @@ hooks `VoiceMask` (audible and server-side ban masks) and `ReqState` (answers `V
 | TSArmor / TSState / TSSpace | B | kevlar / stance / free slots |
 | TSCash | S | credits |
 | PwUp | S flags, B value | flags & 0x104 → kung-fu / movement icon, else timed power-up |
-| PwUpTime | B secs | expiry = now + secs, value 0 |
+| PwUpTime | B secs | expiry = now + secs, value 0. `DrawPowerup`'s name sits in a static buffer rewritten only for flags 1/2/8/0x10, so another bit shows the last name again (`Hud::pw_label`, issue #96) |
 | RoundTime | B secs, B mode | timer (mode 0: 1 s, 1: 0.1 s, 2: frozen) |
 | Objective | Co×3, B idx, Str | idx 0 clears; bounds fixed (< 32) |
 | ShowObj | B idx, B visible | |
 | TSMessage | B r,g,b, B flags, B time (tenths, ≤100), Str | `AddTSMessage` (positions, stacking, 0x10 replace, grey if it names you) |
 | PTakeDam | Co×6, B | queued `TsEffect::PlayerHit` |
-| TSSlowMo | Co (×0.01, 0 → 1) | `state.time_scale_target`; `goslow.wav` when slow-mo starts |
+| TSSlowMo | Co (×0.01, 0 → 1) | `state.time_scale_target`; `goslow.wav` when slow-mo starts, through `EV_PlaySound(-1, local origin, 0, …, 1.0, 0.8, 0, 100)` (`0x1004bf53`; **was** `PlaySoundByName`, issue #96) |
 | TSFrags | Co×6, B type [+Co×6, L, Co] | queued `TsEffect::Frags` |
 | TSPAward | B cl, B award | scoreboard status |
 | SrvSett | B key, S value | realbullet / cashbased / ammocount / restriction mask |
@@ -194,7 +194,10 @@ attack attack2 use jump klook jlook duck reload alt1 alt2 score showscores graph
 `slot1..slot10`, `invnext`, `invprev`, `buy`, `cancelselect` (`UserCmd_Close` `0x1001a4e0`: closes the
 weapon menu with `common/wpn_hudoff.wav`, else sends `escape`; Escape's hard binding, which Steam
 GoldSrc and FWGS 0.21 run for Escape in game, so this is how Escape opens the main menu there),
-`special`, `specmode` (HLTV only),
+`special`, `+commandmenu`/`-commandmenu`, `ForceCloseCommandMenu` and `togglebrowser` (registered as
+TS's `CHud::Init` does, but no-ops: TS's command menu opens only for a player with a class, which
+TS's server never gives, and has no `commandmenu.txt`; the server browser isn't ported; issue
+#88), `specmode` (HLTV only),
 `voice_showbanned`, `joyadvancedupdate`, and `ts_hud_selftest` (port-only development aid).
 Server-side commands (`lastinv`, `drop`, `firemode`, `useitems`,
 `jointeam`, `changeteam`) are forwarded to the server by the engine, as in TS.
@@ -355,7 +358,7 @@ the three sprites at `(cx − 40, cy − 40)`. Sprite i is red (195, 45, 45) whe
 `(cx − 32·cos a, cy + 32·sin a)`, `a = clamp(3·pitch, ±90°)`.
 
 Laser HUD (read from the TS binary, since the decompile hides the `__ftol` arguments):
-* `DrawLaserDots` (1004e6f0): 2×2 fills, alpha 255, in the local player's `PlInfo` laser colour.
+* `DrawLaserDots` (1004e6f0) runs before `Draw` writes `+0x14`, so the dots use the previous frame's items (issue #96). 2×2 fills, alpha 255, in the local player's `PlInfo` laser colour.
   When `state.items_ready` (TS `0x1018a628`: the `from` state's switched-on items, 0 while
   `m_flNextAttack > 0`, set in `HUD_PostRunCmd`) is non-zero and `cl_laser < 1`, the dot is
   pinned to the crosshair centre at `(cx−1+jx, cy−1+jy)`; akimbo dots at `(cx+3+jx, cy−1+jy)` and

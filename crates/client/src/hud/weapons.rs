@@ -216,8 +216,10 @@ pub fn think_sounds(_dt: f32) {
 pub fn draw(dc: &Dc, nohud: bool) {
     let hidden = super::dead_or_observer();
     let items = super::with(|h| items_flags(h, nohud, hidden));
-    crate::state::with(|s| s.hud_items = items);
-    draw_laser_dots(dc, items);
+    // `DrawLaserDots` runs first and reads `+0x14` as the previous `Draw` left it; `Draw` then
+    // writes this frame's value.
+    let previous = crate::state::with(|s| std::mem::replace(&mut s.hud_items, items));
+    draw_laser_dots(dc, previous);
     if nohud {
         return;
     }
@@ -247,7 +249,7 @@ pub fn draw(dc: &Dc, nohud: bool) {
 
 /// `CHudTSWeapons+0x14` as `Draw` sets it: the local player's `ActItems` bits while a weapon is
 /// held and the HUD draws it (with `nohud`, whenever a weapon is held), otherwise 0. TS sets it
-/// after drawing the dots, so its dots use last frame's value; this uses the current one.
+/// after drawing the dots, so the dots use last frame's value, as here.
 fn items_flags(h: &Hud, nohud: bool, hidden: bool) -> i32 {
     if h.weapon == 0 || (!nohud && hidden) {
         return 0;
