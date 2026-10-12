@@ -2,6 +2,9 @@
 #   the-specialists-rs-<tag>-<platform>.{zip,tar.gz}        optimized, stripped (cargo xtask --release dist)
 #   the-specialists-rs-<tag>-<platform>-debug.{zip,tar.gz}  the same libraries with debug info
 #                                                            (--release-debug), for symbolizing crashes
+# The names are a contract: the TS launcher (the-specialists-mod/ts-installer) takes the latest
+# release's asset ending in `-<platform>.zip` or `-<platform>.tar.gz`, so keep the prefix, the
+# platform names and the extensions; the "Check asset names" step fails the run otherwise.
 # Each archive holds a ts/ directory to copy over a TS 3.0 install's ts/. A manual run
 # (workflow_dispatch) builds the archives as a workflow artifact without publishing a release.
 name: release
@@ -68,6 +71,22 @@ jobs:
             done
           done
           ls -l out
+
+      # The launcher finds a release's archives by these exact names (see the header).
+      - name: Check asset names
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          [[ "$GITHUB_REF_TYPE" == tag ]] || version="${GITHUB_SHA::7}"
+          expected=()
+          for suffix in "" -debug; do
+            for platform in linux-i686 linux-x86_64; do expected+=("the-specialists-rs-$version-$platform$suffix.tar.gz"); done
+            for platform in windows-i686 windows-x86_64; do expected+=("the-specialists-rs-$version-$platform$suffix.zip"); done
+          done
+          diff <(printf '%s\n' "${expected[@]}" | sort) <(ls out | sort) || {
+            echo "release assets don't match the names the launcher expects" >&2
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         with:

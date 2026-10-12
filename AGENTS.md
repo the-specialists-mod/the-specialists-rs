@@ -192,7 +192,12 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   `git -c credential.helper='!gh auth git-credential' push`.
 - Releases: push a `v*` tag; `.github/workflows/release.yml` builds and publishes the release and
   `-debug` archives. The workflow pins the FWGS commit the bindings are generated from.
-- Track gaps and bugs as GitHub issues (`gh issue create -R the-specialists-mod/the-specialists-rs`).
+  Each asset is named `the-specialists-rs-<tag>-<platform>.zip` (Windows) or `.tar.gz` (Linux),
+  plus the `-debug` variants, for `linux-i686`, `linux-x86_64`, `windows-i686` and
+  `windows-x86_64`. The launcher picks the latest release's asset by that ending, so keep these
+  names even though the repository is now `the-specialistsmod-rs`. The workflow's "Check asset
+  names" step fails the release if they change.
+- Track gaps and bugs as GitHub issues (`gh issue create -R the-specialists-mod/the-specialistsmod-rs`).
   Integration work uses the `integration` label.
 
 ## Lodging what you find
