@@ -902,16 +902,22 @@ pub fn gun_offset() -> Vec3 {
     with(|w| w.bob.ofs)
 }
 
-/// `V_CalcViewRoll` (`0x100675b0`): stunt roll from the `iuser4` bits.
-fn calc_view_roll(w: &mut View, p: &mut ref_params_t, iuser4: i32) {
-    if p.health <= 0 && p.viewheight[2] != 0.0 {
-        p.viewangles[2] = 80.0;
-        return;
-    }
-    if p.spectator != 0 {
-        return;
-    }
-    let (target, rate) = if p.onground != 0 {
+/// What `V_CalcViewRoll` reads from the view entity (`GetEntityByIndex(pparams->viewentity)`).
+/// TS reads `prevstate` here (`+0x260`, `+0x26c`), not `curstate` (`+0x3c0`), so the stunt bits
+/// lag the latest packet by one.
+#[derive(Clone, Copy, Debug, Default)]
+struct RollEntity {
+    angles: Vec3,
+    /// `prevstate.iuser1`: the observer mode.
+    iuser1: i32,
+    /// `prevstate.iuser4`: the stunt bits.
+    iuser4: i32,
+}
+
+/// `V_CalcViewRoll`'s roll target and easing rate (`0x100675e8..0x10067632`): 0 at 15 on the
+/// ground; in the air a dive 35 at 7.5, a flip -10 at 5, anything else -5.5 at 15.
+fn view_roll_target(on_ground: bool, iuser4: i32) -> (f32, f32) {
+    if on_ground {
         (0.0, 15.0)
     } else if iuser4 & stunt::DIVING != 0 {
         (35.0, 7.5)
@@ -919,13 +925,40 @@ fn calc_view_roll(w: &mut View, p: &mut ref_params_t, iuser4: i32) {
         (-10.0, 5.0)
     } else {
         (-5.5, 15.0)
-    };
-    w.roll += (target - w.roll) * (rate * p.frametime).min(1.0);
-    // SDK V_CalcRoll with TS's side*0.01, rollspeed 10.
-    let (_, right, _) = v::angle_vectors(p.viewangles);
-    let side = v::dot(p.simvel, right) * 0.01;
-    let strafe = side.signum() * if side.abs() < 10.0 { side.abs() * 2.0 / 10.0 } else { 2.0 };
-    p.viewangles[2] += w.roll * if p.onground != 0 { 1.0 } else { 0.25 } + strafe;
+    }
+}
+
+/// `V_CalcRoll` (`0x100671f0`, SDK): `side = right(angles)·velocity`, then
+/// `|side|·0.01 < rollspeed ? |side|·0.01·rollangle/rollspeed : rollangle`, with side's sign
+/// (a side of 0 counts as positive). On the x87, with the 0.01 a double; returned unrounded.
+fn calc_roll(angles: Vec3, vel: Vec3, rollangle: f32, rollspeed: f32) -> f64 {
+    let (_, right, _) = v::angle_vectors(angles);
+    let side = right[0] as f64 * vel[0] as f64 + right[1] as f64 * vel[1] as f64 + right[2] as f64 * vel[2] as f64;
+    let sign = if side >= 0.0 { 1.0 } else { -1.0 };
+    let side = if side > 0.0 { side } else { -side } * 0.01;
+    if side < rollspeed as f64 { side * rollangle as f64 / rollspeed as f64 * sign } else { rollangle as f64 * sign }
+}
+
+/// `V_CalcViewRoll` (`0x100675b0`): the stunt roll. Nothing without a view entity; an observer
+/// (`prevstate.iuser1 > 0`) gets roll 0. Otherwise the eased roll (`0x10191d80`) follows
+/// `V_CalcRoll(ent->angles, simvel, target, 10)` at `min(rate·ft, 1)` and is added to the view
+/// roll, so it scales with sideways speed and is 0 on the ground. Dead with a view height, the
+/// roll is then set to 80 (after the easing has run).
+fn calc_view_roll(roll: &mut f32, p: &mut ref_params_t, ent: Option<RollEntity>) {
+    let Some(ent) = ent else { return };
+    if ent.iuser1 > 0 {
+        p.viewangles[2] = 0.0;
+        return;
+    }
+    let (target, rate) = view_roll_target(p.onground != 0, ent.iuser4);
+    let r = calc_roll(ent.angles, p.simvel, target, 10.0);
+    let k = rate as f64 * p.frametime as f64;
+    let k = if k > 1.0 { 1.0 } else { k };
+    *roll = ((r - *roll as f64) * k + *roll as f64) as f32;
+    p.viewangles[2] += *roll;
+    if p.health < 1 && p.viewheight[2] != 0.0 {
+        p.viewangles[2] = 80.0;
+    }
 }
 
 /// Which view `V_CalcRefdef` computes this frame.
@@ -1136,7 +1169,8 @@ fn calc_normal(p: &mut ref_params_t) {
     // `g_flTimeScale` (`0x100963e8`), unclamped: `V_CalcBob` and `ViewShake::Update` scale by it.
     let ts = state::with(|s| s.time_scale);
     let dead = p.health <= 0;
-    let iuser4 = engine().local_player().map_or(0, |e| e.curstate.iuser4);
+    // The stunt camera's `iuser4` is the local player's `prevstate` one (`0x100681c0`, `+0x26c`).
+    let iuser4 = engine().local_player().map_or(0, |e| e.prevstate.iuser4);
     let bob_level = cv(|c| c.bob);
     let waterdist = cv(|c| c.waterdist);
     let (camtype, cb, cr, cu) = (cv(|c| c.camtype) as i32, cv(|c| c.cam_back), cv(|c| c.cam_right), cv(|c| c.cam_up));
@@ -1292,7 +1326,9 @@ fn calc_normal(p: &mut ref_params_t) {
     }
     p.vieworg[2] += water_ofs;
 
-    with(|w| calc_view_roll(w, p, iuser4));
+    let roll_ent =
+        engine().entity(p.viewentity).map(|e| RollEntity { angles: e.angles, iuser1: e.prevstate.iuser1, iuser4: e.prevstate.iuser4 });
+    with(|w| calc_view_roll(&mut w.roll, p, roll_ent));
     // `V_AddIdle` (`0x10067eba`) at `v_idlescale`, the HUD's concussion level (0 in TS games).
     let idlescale = with(|w| w.idlescale);
     add_idle(&mut p.viewangles, p.time, idlescale);
@@ -1500,6 +1536,51 @@ fn write_screen_fade(_time: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `V_CalcRoll`: proportional to the sideways speed below `rollspeed / 0.01`, the full
+    /// `rollangle` above it, with the side's sign.
+    #[test]
+    fn calc_roll_scales_with_side_speed() {
+        // Yaw 0: right is -y, so moving toward -y is moving right.
+        assert!((calc_roll(v::ZERO, [0.0, -300.0, 0.0], 35.0, 10.0) - 10.5).abs() < 1e-4);
+        assert!((calc_roll(v::ZERO, [0.0, 300.0, 0.0], 35.0, 10.0) + 10.5).abs() < 1e-4);
+        assert_eq!(calc_roll(v::ZERO, [0.0, -2000.0, 0.0], -5.5, 10.0), -5.5);
+        assert_eq!(calc_roll(v::ZERO, [300.0, 0.0, 0.0], 35.0, 10.0), 0.0, "straight ahead");
+    }
+
+    /// `V_CalcViewRoll`: no roll on the ground, a speed-scaled eased roll in the air, 0 for an
+    /// observer, 80 when dead after the easing has run, nothing without a view entity.
+    #[test]
+    fn view_roll_follows_ts() {
+        let ent = RollEntity::default();
+        let mut p = ref_params_t { frametime: 0.01, onground: 1, health: 100, simvel: [0.0, -300.0, 0.0], ..Default::default() };
+        let mut roll = 0.0;
+        calc_view_roll(&mut roll, &mut p, Some(ent));
+        assert_eq!((roll, p.viewangles[2]), (0.0, 0.0), "no strafe roll on the ground");
+
+        p.onground = 0;
+        calc_view_roll(&mut roll, &mut p, Some(RollEntity { iuser4: stunt::DIVING, ..ent }));
+        // Target 10.5 (see above) at min(7.5 · 0.01, 1).
+        assert!((roll - 10.5 * 0.075).abs() < 1e-4, "{roll}");
+        assert_eq!(p.viewangles[2], roll);
+
+        p.viewangles[2] = 3.0;
+        calc_view_roll(&mut roll, &mut p, Some(RollEntity { iuser1: 4, ..ent }));
+        assert_eq!(p.viewangles[2], 0.0, "observer");
+
+        let before = roll;
+        p.health = 0;
+        p.viewheight = [0.0, 0.0, 8.0];
+        calc_view_roll(&mut roll, &mut p, Some(ent));
+        assert_eq!(p.viewangles[2], 80.0);
+        assert_ne!(roll, before, "the easing still runs when dead");
+
+        p.viewangles[2] = 3.0;
+        calc_view_roll(&mut roll, &mut p, None);
+        assert_eq!(p.viewangles[2], 3.0);
+        assert_eq!(view_roll_target(false, stunt::FLIP_LOW), (-10.0, 5.0));
+        assert_eq!(view_roll_target(false, 0), (-5.5, 15.0));
+    }
 
     /// `VKickback`'s shake: full strength for back-to-back shots, fading over 0.15 s of
     /// prediction time (scaled by the time scale, 0 = 1), none after.
