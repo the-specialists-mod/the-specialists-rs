@@ -162,7 +162,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | `CBasePlayer::Jump` / `Duck` | 0x92864 / 0x927fc | `moves::jump`, `moves::duck` |
 | `CBasePlayer::PreThink` (stunt parts) | 0x908cc | `stunt::pre_think` (not during intermission: `Player::pre_think` stops after `rules::player_think`, as TS returns on `g_fGameOver`): button edges, `framerate = slowmul`, last-ground time, close-combat/block timers, `Play`, `UpdateTimers`, `NO_VIEW` bit, `BlockPlayer` expiry, breakables, `Jump()`/`Duck()`, `m_flFallVelocity`, `UpdatePlayerState` + `TSState` |
 | `CBasePlayer::PostThink` (stunt parts) | 0x91610 | `stunt::post_think`: frozen angles, fall damage, gravity reset, super-jump landing, `Animate(1/6)`, `StudioFrameAdvance`, `m_afButtonLast`; only while alive and not in intermission (`Player::post_think` skips it otherwise, as TS does) |
-| `CBasePlayer::BlockPlayer` | 0x95b58 | `stunt::block_player` |
+| `CBasePlayer::BlockPlayer` | 0x95b58 | `stunt::block_player`; the weapons' `GunHost::block_player` writes the same `StuntState::block_timer` |
 | `UpdatePlayerState` | 0x92a08 | in `stunt::pre_think` |
 | `GetDirection` | 0x6b008 | `stunt::get_direction` |
 | `EMIT_SOUND_DYN` (TS: pitch × time scale) | 0xe0a8c | `entities::stock::explode::emit_sound_slow` |

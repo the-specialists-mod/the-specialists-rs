@@ -53,7 +53,7 @@ addresses of `ts_i386.so`.
 | `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` |
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
 | `CBasePlayer::PostThink` timer tail 0x91610 | `Gun::decrement_timers`, `Gun::timer_dt` |
-| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `Gun::pre_frame`, `weapons::pre_think` (BlockPlayer expiry, disarm decay) |
+| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `Gun::pre_frame`, `weapons::pre_think` (disarm decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
 | `CBasePlayer::UpdateMeleeBar` 0x9650c / `GetMeleeMultiplier` 0x965d0 | `Gun::update_melee_bar` / `spread::melee_multiplier` |
 | `CBasePlayer::ShootBulletsPlayer` 0x6f69c, `UTIL_TraceLine_Expanded` 0x6f4f4 | `fire::shoot_bullets`, `fire::trace_expanded` |
 | `compile_range_damage` 0x7f1f4 | `range_multiplier` (pure function) |
@@ -129,7 +129,8 @@ addresses of `ts_i386.so`.
   `cycler_weapon` counts as no gun there too (`gun_active`); holding it (`holds_gun`) matters only
   to `CanHavePlayerItem`, `HasWeapons`, `SelectItem` and `RemoveAllItems`.
 * `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
-  melee windows), `BlockPlayer` expiry, the delayed melee hit.
+  melee windows), disarm decay. The delayed melee hit lands from the stunt hook
+  (`CheckForBreakables`).
 * `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
   tank (dead or game over, `PostThink` skips to the timer tail): once the active item is ready
   (`item_post_frame_ready`: the gun's `Gun::post_frame_ready`; a cycler's `m_flNextAttack` run
@@ -626,5 +627,7 @@ never deploys on a networked weapon change: the draw animation is the server's `
 `shared::weapons::anim(id, alt, index)`.
 
 **Movement package**: `Inventory::anim_extension()`, `Inventory::current()`; the weapons code
-sets `iuser4 & 1` through `BlockPlayer` (and clears it when its timer runs out) and clears
+sets `iuser4 & 1` through `BlockPlayer`, whose time (`pl+0x4dc`) is written into
+`StuntState::block_timer` after the gun call (`with_host`), the one timer `stunt::pre_think` runs
+and expires and `CTSStunt::Play` resets, and clears
 `0x20000|0x4` when a kung-fu attack ends a wall climb.
