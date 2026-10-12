@@ -142,7 +142,7 @@ pub fn info_remove(buf: &str, key: &str) -> String {
 }
 
 /// `atoi` (`__strtol_internal(s, 0, 10)`): white space, a sign, digits; saturates.
-pub(crate) fn atoi(s: &str) -> i32 {
+pub fn atoi(s: &str) -> i32 {
     let s = s.trim_start();
     let (neg, digits) = match s.as_bytes().first() {
         Some(b'-') => (true, &s[1..]),

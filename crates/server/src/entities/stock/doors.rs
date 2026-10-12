@@ -443,9 +443,14 @@ impl Door {
         // TS leaves `velocity`/`avelocity` alone and drops the think, so a door broken mid-move
         // keeps moving, hidden and not solid, until `BreakableRespawn` puts it back.
         self.t.touch = None;
-        let t = if self.respawn_time == 0.0 { 30.0 } else { self.respawn_time };
-        self.t.think = Some(Self::respawn_think);
-        think_ltime(cx, t);
+        match crate::gameplay::active().server.broken_respawn_delay(self.respawn_time) {
+            Some(t) => {
+                self.t.think = Some(Self::respawn_think);
+                think_ltime(cx, t);
+            }
+            // Kept broken without a think until `RespawnEntities`.
+            None => self.t.think = None,
+        }
     }
 
     fn respawn_think(&mut self, cx: &mut Cx) {
@@ -459,7 +464,9 @@ impl Door {
             return;
         }
         let (absmin, absmax) = (v.absmin, v.absmax);
-        if !crate::rules::entities_in_box(absmin, absmax, (FL_CLIENT | FL_FAKECLIENT) as i32, 1).is_empty() {
+        if crate::gameplay::active().server.breakable_respawn_guarded()
+            && !crate::rules::entities_in_box(absmin, absmax, (FL_CLIENT | FL_FAKECLIENT) as i32, 1).is_empty()
+        {
             self.t.think = Some(Self::respawn_think);
             think_ltime(cx, 5.0);
             return;

@@ -617,7 +617,20 @@ pub fn think(e: *mut edict_t) {
 
 /// `Touch(pOther)` (`DispatchTouch` and the game's own touches).
 pub fn touch(e: *mut edict_t, other: *mut edict_t) {
-    outer(id::TOUCH, e, &mut (Ent(other),), |(o,)| world::dispatch(e, |ent, cx| ent.touch(cx, o.0)));
+    outer(id::TOUCH, e, &mut (Ent(other),), |(o,)| world::dispatch(e, |ent, cx| class_touch(ent, cx, o.0)));
+}
+
+/// The class's `Touch`, unless the gameplay plugin runs its own (`ServerRules::entity_touch`).
+fn class_touch(ent: &mut dyn Entity, cx: &mut Cx, other: *mut edict_t) {
+    if !crate::gameplay::active().server.entity_touch(ent, cx, other) {
+        ent.touch(cx, other);
+    }
+}
+
+/// The class's `KeyValue`, unless the gameplay plugin parses or refuses the key first
+/// (`ServerRules::entity_key_value`).
+fn class_key_value(ent: &mut dyn Entity, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+    crate::gameplay::active().server.entity_key_value(ent, cx, key, value).unwrap_or_else(|| ent.key_value(cx, key, value))
 }
 
 /// `Use(pActivator, pCaller, useType, value)` (`DispatchUse` and every target fired).
@@ -645,12 +658,12 @@ pub fn override_reset(e: *mut edict_t) {
 /// the key (`fHandled`). A hook that supersedes it decides `fHandled`.
 pub fn key_value(e: *mut edict_t, class: Option<&CStr>, key: &CStr, value: &CStr) -> bool {
     let run = |kvd: &mut Kvd| {
-        let handled = world::dispatch(e, |ent, cx| ent.key_value(cx, key, value))?;
+        let handled = world::dispatch(e, |ent, cx| class_key_value(ent, cx, key, value))?;
         kvd.0.fHandled = handled as c_int;
         Some(handled)
     };
     if !HOOKS.0.armed(id::KEYVALUE) {
-        return world::dispatch(e, |ent, cx| ent.key_value(cx, key, value)) == Some(true);
+        return world::dispatch(e, |ent, cx| class_key_value(ent, cx, key, value)) == Some(true);
     }
     let kvd = KeyValueData {
         szClassName: class.map_or(std::ptr::null_mut(), |c| c.as_ptr().cast_mut()),

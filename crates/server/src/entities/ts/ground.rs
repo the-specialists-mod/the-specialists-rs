@@ -162,7 +162,7 @@ impl Ground {
         // OnGround (0xa226c / 0xa2e88): touch `WaitTouch`, no think (`nextthink` keeps Fall's).
         let e = cx.edict;
         let v = cx.pev();
-        if ammo {
+        if ammo || crate::gameplay::active().server.ground_weapon_lands_flying() {
             v.movetype = MOVETYPE_FLY as i32;
             v.effects |= 2;
         }
@@ -256,8 +256,10 @@ fn wall_surface(hit: *mut edict_t) -> bool {
 #[derive(Default)]
 pub struct GroundWeapon {
     pub id: i32,
-    respawn: i32,
-    extra_clip: i32,
+    /// `wduration`: the respawn delay after a pickup ([`respawn_delay`]).
+    pub respawn: i32,
+    /// `wextraclip`: rounds given with it when the player's reserve is empty.
+    pub extra_clip: i32,
     buyable: bool,
     attacker_team: i32,
     ground: Ground,
@@ -268,8 +270,9 @@ impl GroundWeapon {
     /// a visible weapon (falling or landed). In cash mode a `buyable` one checks `attackerteam`
     /// (round modes) and the price first; then `PickUpWeapon(id, NULL, spawnflags, id != 29,
     /// false)`, and on success the cash, the hide/respawn, the extra magazines, `message` and
-    /// `target`, in TS's order.
-    fn give(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
+    /// `target`, in TS's order. The gameplay plugin's `ServerRules::give_ground_weapon` runs in
+    /// its place; this is TS 3.0's.
+    pub fn give(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
         if !rules::alive(pcx.pev()) || hidden(pcx) || hidden(cx) {
             return;
         }
@@ -341,7 +344,7 @@ impl GroundWeapon {
             return;
         }
         if let Some((p, pcx)) = player {
-            self.give(cx, p, pcx);
+            crate::gameplay::active().server.give_ground_weapon(self, cx, p, pcx);
         }
         if !repicks {
             return;
@@ -356,7 +359,7 @@ impl GroundWeapon {
 
     /// [`get_weapon`](Self::get_weapon) for an entity: `GetWeapon` goes on only for `IsPlayer()`
     /// (vtable 50), which every `CBasePlayer` answers, connected or not (`rules::has_player`).
-    fn get_weapon_for(&mut self, cx: &mut Cx, other: *mut edict_t) {
+    pub fn get_weapon_for(&mut self, cx: &mut Cx, other: *mut edict_t) {
         if rules::has_player(other) && with_player_now(other, |p, pcx| self.get_weapon(cx, Some((p, pcx)))).is_some() {
             return;
         }
@@ -380,6 +383,18 @@ impl GroundWeapon {
     fn model(&self) -> Option<&'static CStr> {
         let asset = u8::try_from(self.id).ok().and_then(|id| tables().asset(id))?;
         Some(intern(&format!("models/w_{}.mdl", asset.w_model)))
+    }
+
+    /// Whether `m_pfnTouch` is `WaitTouch`: landed and not taken.
+    pub fn touchable(&self) -> bool {
+        self.ground.funcs.touch
+    }
+
+    /// The pickup's hide and respawn schedule (`GetWeapon` after `PickUpWeapon` succeeds): no
+    /// touch, `EF_NODRAW`, and `Fall` again after [`respawn_delay`] unless a round mode keeps
+    /// it for `RespawnEntities`.
+    pub fn taken(&mut self, cx: &mut Cx) {
+        self.ground.taken(cx, self.respawn);
     }
 
     /// +use from the player's own think (the player is the dispatched entity).
