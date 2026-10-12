@@ -300,6 +300,10 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   is removed whether or not anything fitted. Without the gun nothing happens and it stays.
 * Slots: 81 free at spawn, speed `round(210 + free*120/81)` (330 with nothing carried).
 * Disarm threshold: katana 30, knives 25, weapons with < 21 slots 20, else `min(slots, 50)`.
+* A falling `WorldGun` (`CTSWorldGun::Fall` 0xa0d84) lands first (`weapondrop1.wav`, level
+  angles, `OnGround`), and the same think still checks its lifetime, traces 0.1 s ahead and runs
+  the slow-motion physics. The trace hurts a non-player whose `health <= speed * slots` (×0.001,
+  bits 0x1080) through its `TraceAttack`, whatever its `takedamage` (issue #25).
 * `DropWeapon` plays `weapons/weapondrop.wav` (0x951c0) except for a primed M61 (thrown by
   `GrenadeIdle(1)`) or one with no grenades left, which jump past it (issue #21).
 * Dropped guns live `clamp(weaponstay, 5, 60)` s; `drop`/disarm drops `clamp(2*weaponstay, 10,
