@@ -962,11 +962,12 @@ Where TS goes on through NULL, the port stops instead:
 
 * `CFuncTrain::Activate` with no entity named by `target` (TS reads its `target` and origin
   through NULL): the train stays put and stays activated.
+* `CFuncTrackTrain::Use` (0xd437c) `USE_SET` divides `(int)(speed * 4)` by `(int)m_speed`; a
+  `speed` key that truncates to 0 traps in TS (as does `INT_MIN / -1`). The port divides by 1
+  there; a negative `speed` divides as in TS.
 * `trigger_camera` `Use` with neither a player activator nor a client in slot 1 (TS calls
   `EnableControl`, copies the position and `SET_VIEW`s through NULL): the camera turns on, sets
   its speeds and target, and stops there.
-* `CPathTrack::Link` stores any entity `target` / `altpath` names and calls `SetPrevious` on it as
-  a `CPathTrack` (a write into a foreign object): the port links `path_track`s only.
 * `CLightning::BeamUpdateVars` with a missing start or end entity (TS uses the world, then reads
   through NULL or links the beam to edict 0): the port leaves the beam as it was.
 * `game_text` with a NULL activator (TS calls `IsNetClient` through it): only the all-players
