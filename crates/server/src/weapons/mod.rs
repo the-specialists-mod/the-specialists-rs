@@ -38,9 +38,17 @@ use goldsrc::server::engine;
 use goldsrc::sys::{clientdata_t, edict_t, usercmd_t, weapon_data_t};
 use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 
+pub use assets::max_carry;
 #[allow(unused_imports)]
 pub use assets::{cvars, dmgreport, restriction, set_restriction};
-pub use inventory::Drop;
+pub use host::emit;
+pub use inventory::{Drop, buy_armament, pick_up_weapon};
+
+/// `CTSGun::AddItem(bits)` on the held weapon (the attachments a `tki` buys): false when the
+/// weapon can't take them.
+pub fn add_gun_item(p: &mut Player, cx: &mut Cx, bits: u32) -> bool {
+    host::with_host(p, cx, |gun, h| gun.add_item(bits, h))
+}
 pub use projectiles::{SlowPhysics, bounce_ground_damping, give_slow_mul, thrower_time_scale, thrown_knife_description};
 
 /// Free inventory slots at spawn (`TSInit`: `pl+0x548 = 81`).
@@ -329,7 +337,7 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
         let me = cx.edict;
         if !crate::world::lend(me, p, || crate::entities::stock::maprules::equip_on_spawn(me)) {
             give_named_gun(p, cx);
-            inventory::buy_armament(p, cx);
+            crate::gameplay::active().server.buy_armament(p, cx);
         }
     }
     inventory::sync_speed(p, cx);

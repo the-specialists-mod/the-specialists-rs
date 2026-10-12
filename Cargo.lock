@@ -357,6 +357,8 @@ dependencies = [
 name = "ts21-server"
 version = "3.0.1"
 dependencies = [
+ "goldsrc",
+ "shared",
  "ts-server",
  "ts21-gameplay",
 ]

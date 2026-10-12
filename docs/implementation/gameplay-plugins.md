@@ -164,8 +164,9 @@ isn't cleared in `HUD_VidInit`, which the engine also calls on a video mode chan
 TS 3.0's own client ignores key 4. It still gets the fresh join's `ResetHUD`/`InitHUD` and the
 re-sent state, but it can't predict another ruleset (issue #100 §1.1).
 
-At map start, `rules::install` calls `gameplay::map_start()`, which makes the plugin `ts_gameplay`
-selects active and calls `on_activate()` with no reset. The server config runs after the map has
+At map start, `rules::install` calls `gameplay::map_select()`, which makes the plugin `ts_gameplay`
+selects active before the rules are built (so its `ServerRules::install` decides them), and
+after them `gameplay::map_start()`, which calls `on_activate()`, with no reset. The server config runs after the map has
 loaded. If it changes `ts_gameplay`, the first frame resets the game once.
 
 ### Differences from a real map start
@@ -204,7 +205,24 @@ The hooks so far:
 | `PmRules` | `wall_climb_velocity()` | `WALLCLIMB_VELOCITY` (334.664) | `pm/ts.rs` `ts_wall_jump_climb` |
 | `GunRules` | `semi_auto_delay(rate)` | 0.1 | `weapons/gun.rs` `standard_fire` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start`, `gameplay::frame` |
-| `ServerRules` | `points_for_frag(frag, sliding, diving)` | `rules::scoring::points_for_frag` | `rules/scoring.rs` `player_killed` |
+| `ServerRules` | `cvars()` | none | `gameplay::register` (registered after 3.0's, skipping existing names) |
+| `ServerRules` | `server_command(name)` | false (3.0's command runs) | `rules/commands.rs` `globalslow`, `restartround`, `weaponrestriction` |
+| `ServerRules` | `client_command(p, cx, cmd, args)` | `None` (3.0's handlers run) | `commands.rs` `dispatch_player`, before the weapons' |
+| `ServerRules` | `install(g)` | `GameRules::install_multiplayer` | `rules/state.rs` `GameRules::install` (multiplayer maps) |
+| `ServerRules` | `think(now)` | `rules::frame::ts_think` | `rules/frame.rs` multiplay and teamplay `Think` |
+| `ServerRules` | `set_player_the_one(p, cx)` | `rules::scoring::set_player_the_one_core` | `rules/scoring.rs` `set_player_the_one` |
+| `ServerRules` | `default_team(p, cx)` | `rules::teams::default_team_core` (the `team` key) | `rules/teams.rs` `set_default_team` |
+| `ServerRules` | `on_spawn(p, cx)` | nothing | `rules/lifecycle.rs` `on_spawn`, end of `TSInit` |
+| `ServerRules` | `put_in_server_cash()` | `cvars::INITIAL_CASH` (1200) | `rules/lifecycle.rs` `on_spawn` (first spawn) |
+| `ServerRules` | `on_start_observer(p, cx)` | nothing | `rules/lifecycle.rs` `start_observer`, before `TSCash` |
+| `ServerRules` | `on_init_hud(p, cx)` | nothing | `rules/lifecycle.rs` `ts_init_hud`, at its end |
+| `ServerRules` | `set_respawn_time(p, cx, secs)` | `rules::lifecycle::set_respawn_time_core` | `rules/lifecycle.rs` `set_respawn_time` |
+| `ServerRules` | `on_killed(p, cx)` | nothing | `rules/lifecycle.rs` `killed`, after the respawn time |
+| `ServerRules` | `health_regen(p, cx, now)` | `rules::lifecycle::health_regen_core` | `rules/lifecycle.rs` `pre_think` |
+| `ServerRules` | `points_for_frag(frag, sliding, diving)` | `rules::scoring::points_for_frag` | `rules/scoring.rs` `player_killed_core` (and a plugin's own `player_killed`) |
+| `ServerRules` | `player_killed(p, cx, d, g)` | `rules::scoring::player_killed_core` | `rules/scoring.rs` `player_killed`, once the killer can be reached |
+| `ServerRules` | `cash_based()` | false | `rules/state.rs` `cash_based` |
+| `ServerRules` | `buy_armament(p, cx)` | `weapons::buy_armament` | `weapons/mod.rs` spawn, without a `game_player_equip` |
 | `ClientRules` | `divestep_limits()` | `[42, 52, 62]` | `hud/weapons.rs` `draw_divesteps` |
 
 ## 6. Adding a hook

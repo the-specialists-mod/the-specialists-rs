@@ -79,7 +79,7 @@ fn multiplay_think(now: f32) {
         }
     }
     update_limit_cvars(0, frags_left, time_left);
-    ts_think(now);
+    crate::gameplay::active().server.think(now);
     if votes::vote_passed() {
         go_to_intermission();
     }
@@ -123,7 +123,7 @@ fn teamplay_think(now: f32) {
         }
     }
     update_limit_cvars(1, frags_left, time_left);
-    ts_think(now);
+    crate::gameplay::active().server.think(now);
     if votes::vote_passed() {
         go_to_intermission();
     }
@@ -173,7 +173,9 @@ pub fn go_to_intermission() {
     engine().print("[ts] intermission\n");
 }
 
-fn ts_think(now: f32) {
+/// `CTSGameRules::Think` (0x77204), TS 3.0's
+/// ([`ServerRules::think`](crate::gameplay::ServerRules::think)).
+pub fn ts_think(now: f32) {
     // Global slow motion.
     let (active, amount, until) = state::with(|g| (g.global_slow.active, g.global_slow.amount, g.global_slow.until));
     if until != 0.0 && until < now {
@@ -218,7 +220,7 @@ fn ts_think(now: f32) {
 /// The end of `CTSGameRules::Think`: the `realbullet` copy (0x775b3..0x77632), the simulated
 /// bullets (0x77635), the `usecash` copy (0x77650..0x776d5) and `ammocount` (0x776d8..0x7775b),
 /// each broadcast as `SrvSett` when it changes.
-fn srvsett_think() {
+pub fn srvsett_think() {
     let rb = cvars::f(c"realbullet");
     if let Some(v) = state::with(|g| refresh_copy(&mut g.last_srvsett[0], rb)) {
         msg::all(Msg::SrvSett, |w| SrvSett { key: 0, value: v as i16 }.write(w));
@@ -251,20 +253,20 @@ pub(crate) fn refresh_copy(stored: &mut i32, cvar: f32) -> Option<i32> {
 }
 
 /// An x87 `fcom` tested with `test ah,0x40` (C3): equal, or unordered when either side is NaN.
-pub(crate) fn x87_eq(a: f64, b: f64) -> bool {
+pub fn x87_eq(a: f64, b: f64) -> bool {
     a == b || a.is_nan() || b.is_nan()
 }
 
 /// A `RoundTime` byte as TS computes it: `(int)` of the extended-precision `m_flRoundEnd - time`
 /// (truncated; NaN or out of range the integer indefinite), of which `WriteByte` sends the low byte.
-pub(crate) fn round_time_byte(secs: f64) -> u8 {
+pub fn round_time_byte(secs: f64) -> u8 {
     let i = if (-2_147_483_648.0..2_147_483_648.0).contains(&secs) { secs as i32 } else { i32::MIN };
     i as u8
 }
 
 /// `fVar < 0 ? 0 : fVar` as `RestartRound` (0x779b6) and `InitHUD` (0x79375) compile it: `fldz;
 /// fcom st(1); jbe`, so a NaN is kept.
-pub(crate) fn x87_max0(v: f64) -> f64 {
+pub fn x87_max0(v: f64) -> f64 {
     if v < 0.0 { 0.0 } else { v }
 }
 
@@ -336,7 +338,7 @@ pub fn global_slow2(amount: f32, btime: bool) {
 }
 
 /// Automatic power-up spawner (DM/TDM, `nopowerup != 1`, maps without their own power-ups).
-fn auto_powerups(now: f32) {
+pub fn auto_powerups(now: f32) {
     let enabled = state::with(|g| {
         if g.powerup_spawner == 0xff {
             g.powerup_spawner = 1;
@@ -552,7 +554,7 @@ pub fn reset_restart_round() {
 /// (`+0x5876`, The One's regeneration rate) and, when there is no One, `SelectRandomTheOne`. TS
 /// loops `i = 0 .. maxClients - 1`, so slot 0 (never a player) is tried and the last slot is never
 /// counted; dormant players (those who left) are skipped.
-fn the_one_check(now: f32) {
+pub fn the_one_check(now: f32) {
     let eng = engine();
     let mut exists = false;
     let mut others = 0u8;

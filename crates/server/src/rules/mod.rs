@@ -147,12 +147,14 @@ pub fn install() {
     let e = engine();
     e.server_command("exec game.cfg\n");
     e.server_execute();
+    // Port addition: the gameplay plugin `ts_gameplay` selects decides the new game's rules.
+    crate::gameplay::map_select();
     start_rules();
     if !state::single_player() {
         voice::precache();
     }
     exec_server_config();
-    // Port addition: the gameplay plugin `ts_gameplay` selects takes over the new game.
+    // Port addition: the selected gameplay plugin takes over the new game.
     crate::gameplay::map_start();
 }
 

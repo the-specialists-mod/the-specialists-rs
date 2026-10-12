@@ -57,8 +57,14 @@ static WARNED: Global<RefCell<String>> = Global(RefCell::new(String::new()));
 
 /// Registers a plugin (the server library's `GameDLLInit`). False for an id that isn't a short
 /// number.
+/// The plugin's own cvars ([`ServerRules::cvars`]) are registered with it, after TS 3.0's (the
+/// rules' `game_init` runs first), each unless the name exists already.
 pub fn register(id: &'static str, plugin: &'static ServerPlugin) -> bool {
-    REGISTRY.write().unwrap_or_else(PoisonError::into_inner).add(id, plugin)
+    let added = REGISTRY.write().unwrap_or_else(PoisonError::into_inner).add(id, plugin);
+    if added {
+        cvars::register_extra(plugin.server.cvars());
+    }
+    added
 }
 
 /// The registered ids, for the cvar's help and warnings.
@@ -119,13 +125,17 @@ pub fn srvsett_value() -> i16 {
     ts_gameplay::srvsett_value(active_id()).unwrap_or(30)
 }
 
-/// A map has installed its rules (`rules::install`, from worldspawn): the plugin `ts_gameplay`
-/// selects becomes active on the brand-new game, with no reset.
-pub fn map_start() {
+/// A map is installing its rules (`rules::install`, from worldspawn): the plugin `ts_gameplay`
+/// selects becomes active on the brand-new game, with no reset, before the rules are built
+/// ([`ServerRules::install`]).
+pub fn map_select() {
     PENDING.0.set(None);
-    let (id, plugin) = resolve(&cvars::gameplay());
-    ACTIVE.0.set(Some((id, plugin)));
-    plugin.server.on_activate();
+    ACTIVE.0.set(Some(resolve(&cvars::gameplay())));
+}
+
+/// A map has installed its rules ([`map_select`] chose the plugin): the plugin sets up its state.
+pub fn map_start() {
+    active().server.on_activate();
 }
 
 /// Once a frame (`StartFrame`, while rules are installed): `ts_gameplay` is read, and a change of
@@ -149,6 +159,7 @@ pub fn frame() -> bool {
     }
     let (id, plugin) = resolve(&cvars::gameplay());
     let Some((old, _)) = ACTIVE.0.get() else {
+        map_select();
         map_start();
         return true;
     };

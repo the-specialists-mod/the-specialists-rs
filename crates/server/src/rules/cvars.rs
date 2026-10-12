@@ -70,20 +70,27 @@ pub const CASH_FOR_LOSE: i32 = 1200;
 pub const RESPAWN_NUMBER: f32 = 1.0;
 
 pub fn register() {
+    register_extra(CVARS);
+    // Port addition. Not in `CVARS`: `pm_arith` keeps the pointer, as it reads it every command.
+    let e = engine();
+    PM_ARITH.0.set(Some(e.register_cvar("ts_pm_arith", "msvc", SERVER)));
+    // Port addition, kept like `ts_pm_arith`: read every frame (`crate::gameplay::frame`).
+    GAMEPLAY.0.set(Some(e.register_cvar(ts_gameplay::CVAR, ts_gameplay::DEFAULT_ID, SERVER)));
+}
+
+/// Registers `list` in order, skipping a name already registered: TS 3.0's (`CVARS`) at
+/// `GameDLLInit`, then each gameplay plugin's own (`ServerRules::cvars`).
+pub fn register_extra(list: &[(&str, &str, i32)]) {
     // Skip cvars the engine already defines (FWGS and newer engines have sv_alltalk; old HLDS
     // leaves it to the game DLL, like TS's CVoiceGameMgr), so nothing is registered twice.
     let e = engine();
-    for &(name, value, flags) in CVARS {
+    for &(name, value, flags) in list {
         let cname = goldsrc::util::to_cstring(name);
         if !e.cvar_ptr(&cname).is_null() {
             continue;
         }
         e.register_cvar(name, value, flags);
     }
-    // Port addition. Not in `CVARS`: `pm_arith` keeps the pointer, as it reads it every command.
-    PM_ARITH.0.set(Some(e.register_cvar("ts_pm_arith", "msvc", SERVER)));
-    // Port addition, kept like `ts_pm_arith`: read every frame (`crate::gameplay::frame`).
-    GAMEPLAY.0.set(Some(e.register_cvar(ts_gameplay::CVAR, ts_gameplay::DEFAULT_ID, SERVER)));
 }
 
 /// `ts_gameplay` (port addition; TS has no such cvar).

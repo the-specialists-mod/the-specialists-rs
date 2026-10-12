@@ -192,9 +192,9 @@ pub(crate) fn ammo_column_of(applied: i32) -> usize {
 }
 
 /// `CashBased()` (0x76abc): hard-wired off in TS 3.0, so nothing is ever charged. The cash code
-/// paths are ported behind it.
+/// paths are ported behind it. A ruleset decides ([`ServerRules::cash_based`](crate::gameplay::ServerRules::cash_based)).
 pub fn cash_based() -> bool {
-    false
+    crate::gameplay::active().server.cash_based()
 }
 
 /// `DecideGamePlay` (0x767ac): returns (teamplay, lms, the_one).
@@ -228,6 +228,12 @@ impl GameRules {
             self.install_single_player();
             return;
         }
+        crate::gameplay::active().server.install(self);
+    }
+
+    /// TS 3.0's multiplayer install ([`ServerRules::install`](crate::gameplay::ServerRules::install)):
+    /// `DecideGamePlay`, the rules' constructors and `CTSGameRules::Init`.
+    pub fn install_multiplayer(&mut self) {
         let forced = self.forced_gamemode;
         let (teamplay, lms, the_one) =
             decide_gameplay(forced, cvars::on(c"mp_teamplay"), cvars::on(c"lastmanstanding"), cvars::on(c"mp_theonemode"));
@@ -329,7 +335,7 @@ impl GameRules {
     }
 
     /// `CTSGameRules::InitTeams`.
-    fn init_teams(&mut self) {
+    pub fn init_teams(&mut self) {
         self.teams = (0..4)
             .map(|i| Team {
                 name: format!("Team{}", i + 1),

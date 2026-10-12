@@ -22,7 +22,7 @@ const GREEN: [u8; 3] = [0, 255, 0];
 /// `iuser4` bits that count as "stunting" for scoring and damage (dive, flips, wall jump).
 pub const STUNTING: i32 = 0x10c10;
 
-fn classname(e: *mut edict_t) -> String {
+pub fn classname(e: *mut edict_t) -> String {
     if e.is_null() {
         return String::new();
     }
@@ -44,7 +44,7 @@ fn weapon_info_name(id: i32) -> String {
 /// The killer's active `weapon_tsgun` as `PlayerKilled` reads it (`pl+0xa10`, item id 0x10):
 /// `Some(gun+0xc8)`, the current weapon id (0 = kung fu, `gun+0xcc` NULL), or `None` without the
 /// gun active (a `game_player_equip` map, weapons.md §2, or a `cycler_weapon` switched to).
-fn active_gun(p: &Player) -> Option<u8> {
+pub fn active_gun(p: &Player) -> Option<u8> {
     crate::weapons::gun_active(p).then_some(p.inv.gun.current)
 }
 
@@ -114,7 +114,7 @@ fn rename_weapon(name: String) -> String {
 }
 
 /// `IPointsForKill`: 1, or -1 for a team kill.
-fn points_for_kill(attacker: *mut edict_t, victim: *mut edict_t) -> i32 {
+pub fn points_for_kill(attacker: *mut edict_t, victim: *mut edict_t) -> i32 {
     if attacker.is_null() {
         return 0;
     }
@@ -163,16 +163,12 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
         return;
     }
     let eng = engine();
-    let now = cx.time();
-    let victim = cx.edict;
-    let vidx = cx.index();
-    let vname = netname(victim);
     let attacker = if d.attacker.is_null() { eng.entity_of_index(0) } else { d.attacker };
+    let victim = cx.edict;
     let suicide = attacker == victim;
     // `IsPlayer()` (0x896dc): any `CBasePlayer`, so a killer who has left (its grenade still
     // flying) is scored as one.
     let killer_is_player = !suicide && super::has_player(attacker);
-    let close = g.close_combat;
 
     // The killer's own think (its weapon frame) is usually what killed: its Player is taken
     // out further up the stack. TS scores inside the `Killed`; the weapon frame, a tank shot and
@@ -197,6 +193,21 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
         });
         return;
     }
+    crate::gameplay::active().server.player_killed(p, cx, d, g);
+}
+
+/// TS 3.0's `PlayerKilled` body once the killer can be reached
+/// ([`ServerRules::player_killed`](crate::gameplay::ServerRules::player_killed)).
+pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
+    let eng = engine();
+    let now = cx.time();
+    let victim = cx.edict;
+    let vidx = cx.index();
+    let vname = netname(victim);
+    let attacker = if d.attacker.is_null() { eng.entity_of_index(0) } else { d.attacker };
+    let suicide = attacker == victim;
+    let killer_is_player = !suicide && super::has_player(attacker);
+    let close = g.close_combat;
 
     let mut killer = if killer_is_player {
         other(attacker, |k| Killer {
@@ -542,7 +553,7 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
 /// (victim, then the inflictor or else the killer, priority 0x27). In teamplay
 /// `CHalfLifeTeamplay::DeathNotice` (0xe509c) comes first: a kill by a teammate (`FL_CLIENT`,
 /// `PlayerRelationship == GR_TEAMMATE`) is only `DeathMsg(killer, victim, "teammate")`.
-fn death_notice(attacker: *mut edict_t, inflictor: *mut edict_t, victim: *mut edict_t, weapon: &str) {
+pub fn death_notice(attacker: *mut edict_t, inflictor: *mut edict_t, victim: *mut edict_t, weapon: &str) {
     let eng = engine();
     let attacker_client = !attacker.is_null() && super::ts_flags(attacker) & FL_CLIENT as i32 != 0;
     if state::teamplay() && attacker_client && attacker != victim && teams::same_team(victim, attacker) {
@@ -607,6 +618,11 @@ fn log_weapon(weapon: &str) -> String {
 
 /// `PlayerKilled`'s log line (0x89c61..0x8a2bb): a suicide, a death by something that isn't a
 /// client (" (world)"), or the kill with its tags.
+/// [`log_kill`] without any tags.
+pub fn log_kill_untagged(attacker: *mut edict_t, victim: *mut edict_t, weapon: &str, suicide: bool) {
+    log_kill(attacker, victim, weapon, suicide, &KillTags::default());
+}
+
 fn log_kill(attacker: *mut edict_t, victim: *mut edict_t, weapon: &str, suicide: bool, tags: &KillTags) {
     let eng = engine();
     let teamplay = state::teamplay();
@@ -636,7 +652,7 @@ fn victims_gun(cur: Option<u8>, owner_of: impl FnOnce(u8) -> *mut edict_t, victi
     owner_of(cur) == victim && !matches!(restriction_type(cur), kind::GRENADE | kind::KNIFE | kind::FLAG)
 }
 
-fn team_kill_punish(killer: *mut edict_t, victim: *mut edict_t) {
+pub fn team_kill_punish(killer: *mut edict_t, victim: *mut edict_t) {
     let eng = engine();
     let name = netname(killer);
     let ban = cvars::f(c"banfortk");
@@ -662,7 +678,7 @@ fn team_kill_punish(killer: *mut edict_t, victim: *mut edict_t) {
 /// (`Classify() == CLASS_PLAYER`, `None` otherwise or for a suicide). In The One mode a kill by
 /// another player makes the killer the new One: the victim's team switch, `SetPlayerTheOne` on
 /// the killer, then the killer's team switch.
-fn the_one_is_dead(p: &mut Player, cx: &mut Cx, killer: Option<*mut edict_t>) {
+pub fn the_one_is_dead(p: &mut Player, cx: &mut Cx, killer: Option<*mut edict_t>) {
     state::with(|g| g.the_one_exists = false);
     p.ts.is_the_one = false;
     if !state::the_one_mode() {
@@ -686,10 +702,16 @@ pub fn set_player_the_one_other(e: *mut edict_t) {
     crate::player::with_player(e, set_player_the_one);
 }
 
-/// `CTSGameRules::SetPlayerTheOne` (0x7b078): only a living, non-observing player. Health 150,
+/// `CTSGameRules::SetPlayerTheOne` as the ruleset has it
+/// ([`ServerRules::set_player_the_one`](crate::gameplay::ServerRules::set_player_the_one)).
+pub fn set_player_the_one(p: &mut Player, cx: &mut Cx) {
+    crate::gameplay::active().server.set_player_the_one(p, cx);
+}
+
+/// TS 3.0's `CTSGameRules::SetPlayerTheOne` (0x7b078): only a living, non-observing player. Health 150,
 /// kung fu and super jump, speed 330, a stored 3 s slow pause when nothing is held or active,
 /// award 10, the announcement and the log line. The team switch is the caller's.
-pub fn set_player_the_one(p: &mut Player, cx: &mut Cx) {
+pub fn set_player_the_one_core(p: &mut Player, cx: &mut Cx) {
     if !super::alive(cx.pev()) || cx.pev().iuser1 != 0 {
         return;
     }
