@@ -260,8 +260,9 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     p.respawn_at = 0.0;
     p.slots_used = 0;
     p.next_node_learn = 0.0;
-    // `SetPlayerSpeed(330)`.
-    p.player_speed = 330.0;
+    // `SetPlayerSpeed(330)` (the gameplay rules' `PmRules::max_player_speed`).
+    let speed = crate::gameplay::active().pm.max_player_speed();
+    p.player_speed = speed;
     crate::weapons::ts_init(p);
     p.ts.protect_until = now + 1.0;
     p.ts.init_hud = true;
@@ -270,11 +271,11 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     e.set_physics_key(cx.edict, c"mj", if superjump_map { c"1" } else { c"0" });
     // Port addition: the gameplay ruleset both sides' movement and guns run.
     crate::gameplay::set_physinfo(cx.edict);
-    super::set_client_maxspeed(cx.edict, 330.0);
+    super::set_client_maxspeed(cx.edict, speed);
     crate::entities::stock::triggers::geiger_spawn(cx.edict);
     {
         let v = cx.pev();
-        v.maxspeed = 330.0;
+        v.maxspeed = speed;
         v.fuser1 = 1.0;
         v.iuser4 = 0;
         v.renderamt = 125.0;

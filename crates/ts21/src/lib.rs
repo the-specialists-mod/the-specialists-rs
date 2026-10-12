@@ -12,7 +12,7 @@
 //! * `ts21-client` (`crates/ts21/client`): the client's hooks (`ClientRules`) and the client's
 //!   plugin object.
 //!
-//! The plugin is a skeleton so far: no hook is overridden, so it plays exactly like 3.0.
+//! Done so far: movement and the move speed (`shared::pm`). Every other hook keeps TS 3.0's body.
 
 #![deny(unsafe_code)]
 
