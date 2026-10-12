@@ -364,7 +364,8 @@ ammo, dropped guns, knives, grenades, the CTB case and the hidden objectives all
   team index for issue #86; `ClientUserInfoChanged`, The One's team switch, `game_player_team`,
   disconnects and the deviations list for issue #87).
 * Objective classes (`ts_objective_manager`, `ts_bomb`, `ts_hack`, `ts_teamescape`,
-  `ts_sellzone`, `ts_objective_ptr`): only their saved fields and spawn flags are ported (§4.1).
+  `ts_sellzone`, `ts_objective_ptr`): only their saved fields and spawn flags are ported (§4.1);
+  `ts_objective_ptr` can enable objectives in any mode in TS (issue #66).
 * Save/restore is unit-tested only (byte layout, every class against TS's tables, round trips);
   no save from TS's server has been loaded in-engine yet.
 * Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,
