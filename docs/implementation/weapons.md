@@ -284,7 +284,9 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   or touch the stunt timers.
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
-  `TSExplosion(110, 0x1040, 300, 1024)`; flying impact `speed*0.1` if it would kill the target,
+  `TSExplosion(110, 0x1040, 300, 1024)` only while `IsInWorld()` (origin inside ±4096 and
+  velocity inside ±2000 on each axis; no sky test, so a grenade in the sky explodes, one outside
+  the box is removed silently); flying impact `speed*0.1` if it would kill the target,
   credited to the thrower (deviation, §5).
 * Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`rules::scoring::do_spectacularness`; `spectacularness`
   clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a

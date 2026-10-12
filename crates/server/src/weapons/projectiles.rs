@@ -250,8 +250,10 @@ impl Entity for Grenade {
         let pev = cx.pev();
         let origin = pev.origin;
         let attacker = self.owner.unwrap_or(std::ptr::null_mut());
-        if e.point_contents(origin) != CONTENTS_SKY {
-            // 0x7cacc: `TSExplosion(origin, pev, owner, 110, DMG_BLAST | DMG_NEVERGIB, 300, 1024)`.
+        // 0x7cacc: only `IsInWorld()` (vtable slot 49); no sky test, so a grenade in the sky
+        // explodes too.
+        if is_in_world(pev) {
+            // `TSExplosion(origin, pev, owner, 110, DMG_BLAST | DMG_NEVERGIB, 300, 1024)`.
             crate::entities::stock::explode::ts_explosion(origin, me, attacker, 110.0, 0x1040, 300.0, 1024.0);
         }
         entities::remove(me);
@@ -281,6 +283,25 @@ impl Entity for Grenade {
             }
         }
     }
+}
+
+/// `CBaseEntity::IsInWorld` (0xac2ec): the origin strictly inside ±4096 and the velocity strictly
+/// inside ±2000 on every axis. The tests are TS's, in its order, so NaNs fall through the same way
+/// (only the last one, `-2000 < velocity.z`, rejects a NaN).
+fn is_in_world(v: &entvars_t) -> bool {
+    let (o, s) = (v.origin, v.velocity);
+    let out = 4096.0 <= o[0]
+        || 4096.0 <= o[1]
+        || 4096.0 <= o[2]
+        || o[0] <= -4096.0
+        || o[1] <= -4096.0
+        || o[2] <= -4096.0
+        || 2000.0 <= s[0]
+        || 2000.0 <= s[1]
+        || 2000.0 <= s[2]
+        || s[0] <= -2000.0
+        || s[1] <= -2000.0;
+    !out && -2000.0 < s[2]
 }
 
 impl Grenade {
@@ -721,6 +742,19 @@ mod tests {
         assert_eq!(knife_description(7), "Throwing Seal Knife");
         assert_eq!(knife_description(8), "Throwing Katana");
         assert_eq!(knife_description(5), "");
+    }
+
+    #[test]
+    fn grenade_explodes_only_in_the_world_box() {
+        let at = |origin: Vec3, velocity: Vec3| is_in_world(&entvars_t { origin, velocity, ..Default::default() });
+        assert!(at([4095.9, -4095.9, 0.0], [1999.9, -1999.9, 0.0]));
+        assert!(!at([4096.0, 0.0, 0.0], [0.0; 3]));
+        assert!(!at([0.0, 0.0, -4096.0], [0.0; 3]));
+        assert!(!at([0.0; 3], [0.0, 2000.0, 0.0]));
+        assert!(!at([0.0; 3], [0.0, 0.0, -2000.0]));
+        // NaNs pass every test but the last one, as in TS
+        assert!(at([f32::NAN, 0.0, 0.0], [f32::NAN, 0.0, 0.0]));
+        assert!(!at([0.0; 3], [0.0, 0.0, f32::NAN]));
     }
 
     #[test]
