@@ -1486,50 +1486,48 @@ fn cl_calc_shake(p: &mut ref_params_t) {
 
 /// Slow-motion tint + `TSFade` blend (end of `V_CalcRefdef`).
 pub fn fade_color(ts: f32, slowfade: bool, fade: Option<(f32, state_fade::Fade)>, t: f32) -> [u8; 4] {
-    let tint = if slowfade && ts < 1.0 { [0.0, 100.0, 125.0, (1.0 - ts) * 50.0] } else { [0.0; 4] };
+    // `__ftol` keeps the low byte of the truncated value (`0x10069c32`, `0x10069d5f`..).
+    let byte = |x: f64| (x as i64) as u8;
+    let tint_a = if slowfade && ts < 1.0 { byte((1.0 - ts as f64) * 50.0) } else { 0 };
+    let tint = if slowfade && ts < 1.0 { [0u8, 100, 125, tint_a] } else { [0; 4] };
+    // `0x10069c97..0x10069cbd`: after the start and before start + duration (no clamps on the
+    // durations: TS divides by the ramp even when it is 0 or negative).
     if let Some((start, f)) = fade
-        && start < t
-        && t < start + f.duration
+        && t > start
+        && start as f64 + f.duration as f64 > t as f64
     {
-        let half = ((f.duration - f.hold) / 2.0).max(1e-3);
+        let half = ((f.duration - f.hold) as f64 * 0.5) as f32;
         let e = t - start;
         let k = if e < half {
-            e / half
-        } else if e < half + f.hold {
-            1.0
+            e as f64 / half as f64
+        } else if (half as f64 + f.hold as f64) < e as f64 {
+            1.0 - (e as f64 - f.hold as f64 - half as f64) / half as f64
         } else {
-            ((f.duration - e) / half).max(0.0)
-        }
-        .clamp(0.0, 1.0);
-        let c = f.rgba.map(|x| x as f32);
+            1.0
+        };
+        let [r, g, b, a] = f.rgba.map(f64::from);
+        let a_scaled = a * f64::from(1.0f32 / 255.0);
         return [
-            (c[0] * k) as u8, // red has no tint
-            (c[1] * k + tint[1] * (1.0 - k)) as u8,
-            (c[2] * k + tint[2] * (1.0 - k)) as u8,
-            (c[3] * k + tint[3] * (1.0 - k)) as u8,
+            byte(r * k), // red has no tint
+            byte(g * k + tint[1] as f64 * (1.0 - k)),
+            byte(b * k + tint[2] as f64 * (1.0 - k)),
+            byte(tint[3] as f64 * (1.0 - k) + k * a_scaled * 255.0),
         ];
     }
-    tint.map(|x| x as u8)
+    tint
 }
 
-/// Rewritten every frame, as TS does (so it overrides engine `ScreenFade` messages).
-fn write_screen_fade(_time: f32) {
+/// The end of `V_CalcRefdef` (`0x10069bd8..0x10069e20`), every frame: the engine's fade is read
+/// back (`pfnGetScreenFade`) and only its colour and flags (`FFADE_OUT | FFADE_STAYOUT`) are
+/// replaced, so its speed and end times stay the engine's.
+fn write_screen_fade(time: f32) {
     let ts = state::with(|s| s.time_scale);
     let slowfade = cv(|c| c.slowfade) != 0.0;
-    let t = engine().client_time();
     let fade = with(|w| w.fade);
-    let c = fade_color(ts, slowfade, fade, t);
-    let mut sf = screenfade_s {
-        fadeSpeed: 0.0,
-        fadeEnd: t,
-        fadeTotalEnd: 0.0,
-        fadeReset: t,
-        fader: c[0],
-        fadeg: c[1],
-        fadeb: c[2],
-        fadealpha: c[3],
-        fadeFlags: (FFADE_OUT | FFADE_STAYOUT) as i32,
-    };
+    let c = fade_color(ts, slowfade, fade, time);
+    let mut sf = r::get_screen_fade();
+    (sf.fader, sf.fadeg, sf.fadeb, sf.fadealpha) = (c[0], c[1], c[2], c[3]);
+    sf.fadeFlags = (FFADE_OUT | FFADE_STAYOUT) as i32;
     r::set_screen_fade(&mut sf);
 }
 
@@ -1815,6 +1813,13 @@ mod tests {
         let mid = fade_color(0.5, true, Some((10.0, f)), 10.25);
         assert_eq!(mid[0], 127);
         assert_eq!(fade_color(1.0, true, Some((10.0, f)), 13.0), [0; 4]);
+        // Ramp out: 1 - ((e - hold) - half) / half.
+        assert_eq!(fade_color(1.0, true, Some((10.0, f)), 11.75)[0], 127);
+        // No ramps (hold = duration): full colour from the start, no clamped ramp.
+        let held = state_fade::Fade { duration: 1.0, hold: 1.0, rgba: [40, 50, 60, 70] };
+        assert_eq!(fade_color(1.0, true, Some((10.0, held)), 10.0005), [40, 50, 60, 70]);
+        // Mid-fade the slow-motion tint shows through the other channels, not red.
+        assert_eq!(fade_color(0.5, true, Some((10.0, f)), 10.25), [127, 177, 190, 112]);
     }
 
     fn drift_input(forwardmove: f32, now: f32) -> DriftInput {

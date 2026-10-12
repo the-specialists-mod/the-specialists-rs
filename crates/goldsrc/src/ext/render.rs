@@ -200,6 +200,13 @@ pub fn spark_effect(pos: Vec3, count: i32, vmin: i32, vmax: i32) {
     efx!(R_SparkEffect(pos.as_ptr(), count, vmin, vmax));
 }
 
+/// `pfnGetScreenFade`: the engine's current screen fade.
+pub fn get_screen_fade() -> screenfade_s {
+    let mut f = screenfade_s::default();
+    cl_eng!(pfnGetScreenFade(&mut f));
+    f
+}
+
 pub fn set_screen_fade(f: &mut screenfade_s) {
     cl_eng!(pfnSetScreenFade(f));
 }
