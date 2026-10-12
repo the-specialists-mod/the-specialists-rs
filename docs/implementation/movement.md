@@ -120,7 +120,7 @@ the same as the GCC build once the stack is 53 bits wide.
 
 | TS function | Address | Rust |
 |---|---|---|
-| `PM_Move` | 0x101188 | `pm::player_move` (sets `FL_ONGROUND`, SP friction reset) |
+| `PM_Move` | 0x101188 | `pm::player_move` (sets `FL_ONGROUND`, SP friction reset); the `pfnPM_Move` and `HUD_PlayerMove` exports first store their `server` argument in `pmove->server`, as TS does (issue #11) |
 | `PM_PlayerMove` | 0x1008d8 | `Pm::player_move`, `Pm::walk_physics` (an unknown movetype prints TS's "Bogus pmove player movetype" developer message) |
 | `PM_Init` / `PM_CreateStuckTable` / `PM_InitTextureTypes` | 0x101280 / 0x100d74 / 0xfc050 | `pm::init`, `create_stuck_table`, `textures::load` |
 | `PM_FindTextureType` / `PM_SortTextures` | 0xfc28c / 0xfbfc8 | `pm::find_texture_type`, `textures::find`, `textures::parse` |

@@ -89,9 +89,11 @@ pub unsafe extern "C" fn HUD_Shutdown() {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn HUD_PlayerMove(pm: *mut playermove_t, _server: c_int) {
+pub unsafe extern "C" fn HUD_PlayerMove(pm: *mut playermove_t, server: c_int) {
     // SAFETY: the engine passes its playermove_t (or null) for the duration of this call.
     let Some(pm) = (unsafe { pm.as_mut() }) else { return };
+    // TS (`0x1002e990` -> `0x1002e330`) stores `server != 0` in `pmove->server` first.
+    pm.server = (server != 0) as c_int;
     spectator::begin_player_move(pm);
     shared::pm::player_move_with(pm, shared::pm::Arith::CLIENT, Some(spectator::spectator_move));
 }

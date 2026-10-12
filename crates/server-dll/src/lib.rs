@@ -351,9 +351,12 @@ unsafe extern "C" fn sys_error(msg: *const c_char) {
     eprintln!("[ts] Sys_Error: {}", unsafe { cstr(msg) }.to_string_lossy());
 }
 
-unsafe extern "C" fn pm_move(pm: *mut playermove_t, _server: qboolean) {
+unsafe extern "C" fn pm_move(pm: *mut playermove_t, server: qboolean) {
     // SAFETY: the engine passes valid pointers (null-checked where it may pass null) for the duration of this call.
-    shared::pm::player_move(unsafe { &mut *pm }, rules::cvars::pm_arith());
+    let pm = unsafe { &mut *pm };
+    // TS's `PM_Move` (0x101188) hands `server != 0` to `PM_PlayerMove`, which stores it.
+    pm.server = (server != 0) as qboolean;
+    shared::pm::player_move(pm, rules::cvars::pm_arith());
 }
 
 unsafe extern "C" fn pm_init(pm: *mut playermove_t) {
