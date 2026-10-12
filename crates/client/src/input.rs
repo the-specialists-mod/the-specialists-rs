@@ -44,9 +44,11 @@ impl Button {
         self.0.get()
     }
 
+    /// The key number `KeyDown`/`KeyUp` (`0x100259a0`/`0x10025a10`) take from `Cmd_Argv(1)`:
+    /// -1 when there is none, else MSVC `atoi` (`0x1006c042`), so text that isn't a number is key
+    /// 0.
     fn key_arg() -> c_int {
-        let c = engine().cmd_argv(1);
-        if c.is_empty() { -1 } else { c.to_str().ok().and_then(|s| s.parse().ok()).unwrap_or(-1) }
+        key_number(engine().cmd_argv(1).to_bytes())
     }
 
     /// SDK `KeyDown`.
@@ -516,10 +518,10 @@ fn register_commands() {
             key_tap(0);
         }
     });
-    cmd!(c"-attack2", {
-        IN_ATK2.key_up();
-        IN_ALT2B.key_up();
-    });
+    // The `-` handlers (`0x10025fc0`, `0x10026180`) release only the kbutton the current
+    // `cl_attackswitch` state picks, so a weapon switch while the key is held leaves the other
+    // one down until the next press and release under the same mapping, as in TS.
+    cmd!(c"-attack2", if attack_switched() { IN_ALT2B.key_up() } else { IN_ATK2.key_up() });
     cmd!(c"+use", IN_USEK.key_down());
     cmd!(c"-use", IN_USEK.key_up());
     cmd!(c"+jump", {
@@ -556,10 +558,7 @@ fn register_commands() {
             if attack_switched() { IN_ATK2.key_down() } else { IN_ALT2B.key_down() }
         }
     });
-    cmd!(c"-alt2", {
-        IN_ALT2B.key_up();
-        IN_ATK2.key_up();
-    });
+    cmd!(c"-alt2", if attack_switched() { IN_ATK2.key_up() } else { IN_ALT2B.key_up() });
     cmd!(c"+score", {
         IN_SCOREB.key_down();
         crate::menus::show_scores(true);
@@ -963,6 +962,11 @@ fn adjust_angles(frametime: f32, view: &mut [f32; 3]) {
     }
     view[PITCH] = view[PITCH].clamp(-89.0, 89.0);
     view[ROLL] = view[ROLL].clamp(-50.0, 50.0);
+}
+
+/// [`Button::key_arg`] on the argument's bytes.
+fn key_number(arg: &[u8]) -> c_int {
+    if arg.is_empty() { -1 } else { crate::hud::statusbar::atoi(arg) }
 }
 
 /// The command's view angles while `g_iAlive` (`0x100df578`), sent instead while it isn't.
@@ -1383,6 +1387,12 @@ mod tests {
         assert_eq!(joystick_move_bits(1.0, 100.0), IN_FORWARD);
         assert_eq!(joystick_move_bits(1.0, -1.0), IN_BACK);
         assert_eq!(joystick_move_bits(1.0, 0.0), 0);
+    }
+
+    /// `KeyDown`/`KeyUp`'s key number: none is -1, anything else is `atoi`.
+    #[test]
+    fn key_number_is_atoi() {
+        assert_eq!((key_number(b""), key_number(b"241"), key_number(b"foo"), key_number(b"12x")), (-1, 241, 0, 12));
     }
 
     /// `g_iAlive`: only the command's angles freeze, at the last ones sent alive.

@@ -14,7 +14,7 @@ mod notice;
 pub mod saytext;
 pub mod state;
 mod status;
-mod statusbar;
+pub(crate) mod statusbar;
 pub mod text;
 mod tfc;
 pub mod vgui;

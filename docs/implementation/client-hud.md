@@ -211,7 +211,10 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   score 0x8000 (also forced while health < 1 or in intermission); `+speed` scales movement but
   isn't sent.
 * `cl_attackswitch`: with a gun of kind other than grenade/knife/katana/briefcase held, `+attack2`
-  drives 0x40 and `+alt2` drives `IN_ATTACK2`. `+attack2` also sends `_special`.
+  drives 0x40 and `+alt2` drives `IN_ATTACK2`. `+attack2` also sends `_special`. The `-` commands
+  release only the kbutton the current mapping picks (`0x10025fc0`, `0x10026180`), so switching
+  weapons while the key is held can leave the other one down, as in TS. Key numbers come from
+  `Cmd_Argv(1)` through MSVC `atoi` (none: -1).
 * Gate: `+attack +attack2 +alt2 +reload +forward +back +moveleft +moveright +jump` only act when
   the same frame saw a physical key bound to exactly that command (FWGS order checked:
   input events → `Cbuf_Execute` → `HUD_Frame`). So `autotest.cfg` can't press them, like TS.
