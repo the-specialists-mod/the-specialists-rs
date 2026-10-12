@@ -177,8 +177,11 @@ impl Entity for Wind {
             strength: self.base + eng.random_float(-self.variance, self.variance),
         };
         msg::all(Msg::TsPSys, |w| m.write(w));
+        // `time + frequency + RandomFloat(-f/2, f/2)` in extended precision, with no lower bound:
+        // a wind without a `frequency` blows every frame.
         let f = self.frequency;
-        cx.think_in((f + eng.random_float(-f * 0.5, f * 0.5)).max(0.1));
+        let r = eng.random_float(-f * 0.5, f * 0.5);
+        cx.pev().nextthink = (f64::from(eng.time()) + f64::from(f) + f64::from(r)) as f32;
     }
 }
 
