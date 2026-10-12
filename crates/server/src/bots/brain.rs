@@ -300,17 +300,23 @@ pub fn gun_position(pev: &entvars_t) -> [f32; 3] {
 }
 
 /// `UTIL_AngleMod` (0x10076250): into [0, 360) by whole turns (`a + 360 * (1 - (int)(a / 360))`
-/// below 0, `a - 360 * (int)(a / 360)` from 360).
+/// below 0, `a - 360 * (int)(a / 360)` from 360), stored as a float.
 pub fn angle_mod(a: f32) -> f32 {
+    angle_mod_x87(a) as f32
+}
+
+/// [`angle_mod`] as the function returns it, on the x87 stack (MSVC's 53-bit precision): the
+/// callers that use it before storing it see more than a float's bits.
+pub fn angle_mod_x87(a: f32) -> f64 {
     let inv = (1.0f32 / 360.0) as f64;
     if a < 0.0 {
         let n = (a as f64 * inv).trunc() as i32;
-        ((1 - n) as f64 * 360.0 + a as f64) as f32
+        (1 - n) as f64 * 360.0 + a as f64
     } else if a >= 360.0 {
         let n = (a as f64 * inv).trunc() as i32;
-        (a as f64 - (n as f64 * 360.0)) as f32
+        a as f64 - (n as f64 * 360.0)
     } else {
-        a
+        a as f64
     }
 }
 
@@ -444,44 +450,60 @@ fn run_move(b: &mut Brain, _p: &mut Player, cx: &mut Cx) -> Usercmd {
 
 /// `CBotBrain::UpdateView` (0x1006e500): turn toward the wanted angles by `frametime *
 /// turnRate` of the way, with the punch angle through a low-pass. Nothing while dead.
+///
+/// The x87 values mp.dll keeps unrounded stay `f64` here: `k`, the turn fraction, the z punch
+/// step and the ideal yaw from `UTIL_AngleMod`; the x/y punch products and steps are stored as
+/// floats, as mp.dll does.
 pub fn update_view(b: &mut Brain, v: &mut entvars_t, turn_rate: f32) {
     if v.deadflag != 0 {
         return;
     }
     let ft = engine().globals().frametime;
-    let mut k = ft * 15.0;
-    if 1.0 <= k {
-        k = 1.0;
-    }
-    let mut d = [0.0f32; 3];
-    for ((d, acc), punch) in d.iter_mut().zip(b.punch_accum.iter_mut()).zip(v.punchangle) {
-        *d = (punch as f64 - k as f64 * *acc as f64) as f32;
-        *acc = (*d as f64 + *acc as f64) as f32;
-    }
+    let (d, accum) = punch_step(b.punch_accum, v.punchangle, ft);
+    b.punch_accum = accum;
     let cur = angle_mod(v.angles[1]);
-    let ideal = angle_mod(b.ideal[1]);
-    let mut dy = ideal as f64 - cur as f64;
-    if ideal <= cur {
+    let ideal = angle_mod_x87(b.ideal[1]);
+    let mut dy = ideal - cur as f64;
+    if ideal as f32 <= cur {
         if dy <= -180.0 {
             dy += 360.0;
         }
     } else if 180.0 <= dy {
         dy -= 360.0;
     }
-    let mut t = turn_rate as f64 * ft as f64;
-    if 1.0 <= t {
-        t = 1.0;
-    }
+    let t = turn_fraction(turn_rate, ft);
     v.angles[1] = angle_mod((t * dy + d[1] as f64 + cur as f64) as f32);
     v.v_angle[1] = v.angles[1];
-    let mut t = turn_rate * ft;
-    if 1.0 <= t {
-        t = 1.0;
-    }
     let pitch = v.v_angle[0];
-    v.v_angle[0] = (t as f64 * (b.ideal[0] as f64 - pitch as f64) + d[0] as f64 + pitch as f64) as f32;
+    v.v_angle[0] = (t * (b.ideal[0] as f64 - pitch as f64) + d[0] as f64 + pitch as f64) as f32;
     v.angles[0] = v.v_angle[0] * -0.333_333_34;
     v.angles[2] = 0.0;
+}
+
+/// `min(turnRate * frametime, 1)`, unrounded (0x1006e623 / 0x1006e677).
+fn turn_fraction(turn_rate: f32, ft: f32) -> f64 {
+    let t = turn_rate as f64 * ft as f64;
+    if 1.0 <= t { 1.0 } else { t }
+}
+
+/// `UpdateView`'s punch low-pass (0x1006e524..0x1006e5bf): `k = min(frametime * 15, 1)`, then per
+/// axis `d = punch - k * accum` and `accum += d`. Returns the x/y steps the view adds (as the
+/// floats mp.dll stores; the z step is never used) and the new accumulator. x and y store
+/// `k * accum` and `d` as floats; z keeps both on the stack.
+fn punch_step(accum: [f32; 3], punch: [f32; 3], ft: f32) -> ([f32; 2], [f32; 3]) {
+    let mut k = ft as f64 * 15.0;
+    if 1.0 <= k {
+        k = 1.0;
+    }
+    let mut d = [0.0f32; 2];
+    let mut out = accum;
+    for i in 0..2 {
+        let p = (k * accum[i] as f64) as f32;
+        d[i] = (punch[i] as f64 - p as f64) as f32;
+        out[i] = (d[i] as f64 + accum[i] as f64) as f32;
+    }
+    out[2] = ((punch[2] as f64 - k * accum[2] as f64) + accum[2] as f64) as f32;
+    (d, out)
 }
 
 #[cfg(test)]
@@ -495,6 +517,34 @@ mod tests {
         assert_eq!(angle_mod(-370.0), 350.0);
         assert_eq!(angle_mod(360.0), 0.0);
         assert_eq!(angle_mod(725.0), 5.0);
+    }
+
+    #[test]
+    fn angle_mod_keeps_x87_bits() {
+        // mp.dll's `UTIL_AngleMod` returns `360 + a` unrounded; the float copy loses bits.
+        let a = -10.123457f32;
+        assert_eq!(angle_mod_x87(a), 360.0 + a as f64);
+        assert_ne!(angle_mod_x87(a), angle_mod(a) as f64);
+        assert_eq!(angle_mod_x87(725.0), 5.0);
+    }
+
+    #[test]
+    fn punch_low_pass_rounds_as_mp_dll() {
+        // k = frametime * 15 stays unrounded (0.15000000223517418 for 0.01, not 0.15f).
+        let ft = 0.01f32;
+        let k = ft as f64 * 15.0;
+        assert_ne!(k, (ft * 15.0) as f64);
+        let (acc, punch) = ([1.3f32, -2.7, 3.1], [0.5f32, 0.25, -1.0]);
+        let (d, out) = punch_step(acc, punch, ft);
+        for i in 0..2 {
+            let p = (k * acc[i] as f64) as f32; // stored as a float
+            assert_eq!(d[i], punch[i] - p);
+            assert_eq!(out[i], d[i] + acc[i]);
+        }
+        // z: neither the product nor the step is stored.
+        assert_eq!(out[2], ((punch[2] as f64 - k * acc[2] as f64) + acc[2] as f64) as f32);
+        assert_eq!(turn_fraction(10.0, 0.2), 1.0);
+        assert_eq!(turn_fraction(10.0, ft), 10.0 * ft as f64);
     }
 
     #[test]

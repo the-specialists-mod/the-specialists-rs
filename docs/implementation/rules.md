@@ -488,6 +488,13 @@ current node (paths may skip a node) and its other tie and limit rules, `Load` r
 taunt), no access check on the node commands, no automatic save. Every random draw is in TS's
 order (bots.md §13.2).
 
+Floating point follows mp.dll's x87 code (MSVC, 53-bit precision): values it stores are `f32`,
+values it keeps on the stack are `f64`. That covers the node graph's distances (`nodes.rs`), the
+module delays (`brain::delay`), `UpdateView` (the punch factor `k`, the turn fraction and the
+ideal yaw straight from `UTIL_AngleMod`, `brain::angle_mod_x87`; the x/y punch products stored as
+floats), `Navigate`'s move direction (the steer yaw's unrounded `UTIL_AngleMod`) and the attack
+think's tracking (the x aim point and the knife lead's decay). Unit tested.
+
 ### 10.1 Deviations
 
 Port additions:

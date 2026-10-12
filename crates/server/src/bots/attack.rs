@@ -69,12 +69,8 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     if let Some(e) = live(e)
         && b.num_enemies() != 0
     {
-        let target = add(add(e.v().origin, b.attack.aim_off), b.attack.lead);
-        let mut k = eng.globals().frametime * 5.0;
-        if 1.0 <= k {
-            k = 1.0;
-        }
-        b.attack.lead = sub(b.attack.lead, scale(b.attack.lead, k));
+        let target = track_point(e.v().origin, b.attack.aim_off, b.attack.lead);
+        b.attack.lead = decay_lead(b.attack.lead, eng.globals().frametime);
         b.look_at(cx.pev(), target);
     }
     // (b) the throttled decisions.
@@ -145,6 +141,25 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     if p.ts.held != 0 {
         b.enable(bit::POWERUP);
     }
+}
+
+/// The tracked point of the attack think (0x1006c551..0x1006c588): the enemy's origin plus the
+/// aim offset plus the knife lead. mp.dll stores `aim + origin` as a float for y and z but keeps
+/// it on the x87 stack for x.
+fn track_point(origin: [f32; 3], aim: [f32; 3], lead: [f32; 3]) -> [f32; 3] {
+    let x = ((aim[0] as f64 + origin[0] as f64) + lead[0] as f64) as f32;
+    [x, (aim[1] + origin[1]) + lead[1], (aim[2] + origin[2]) + lead[2]]
+}
+
+/// The knife lead's decay (0x1006c58c..0x1006c5e9): `lead -= min(frametime * 5, 1) * lead`, with
+/// the factor unrounded, the x/y products stored as floats and the z product kept on the stack.
+fn decay_lead(lead: [f32; 3], ft: f32) -> [f32; 3] {
+    let mut k = ft as f64 * 5.0;
+    if 1.0 <= k {
+        k = 1.0;
+    }
+    let step = |l: f32| l - (k * l as f64) as f32;
+    [step(lead[0]), step(lead[1]), (lead[2] as f64 - k * lead[2] as f64) as f32]
 }
 
 /// `SelectEnemy` (0x1006cec0): every 1–3 s (or with no enemy), the nearest visible enemy by
@@ -340,5 +355,27 @@ fn fire_weapon(b: &mut Brain, p: &mut Player, cx: &mut Cx, dist: f32) {
         let h = eng.random_float(0.3, 1.0);
         b.press(btn::ATTACK, h, now);
         b.attack.next_fire = ((h + now) as f64 + 0.3) as f32;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracking_rounds_as_mp_dll() {
+        // x keeps `aim + origin` on the x87 stack before adding the lead; y and z store it.
+        let (org, aim, lead) = ([1000.1f32, 1000.1, 1000.1], [0.000_031_f32; 3], [0.000_02f32; 3]);
+        let p = track_point(org, aim, lead);
+        assert_eq!(p[0], ((aim[0] as f64 + org[0] as f64) + lead[0] as f64) as f32);
+        assert_eq!(p[1], (aim[1] + org[1]) + lead[1]);
+        // The lead decays at 5/s with the factor unrounded; a long frame clears it.
+        let ft = 0.013f32;
+        let k = ft as f64 * 5.0;
+        let l = [37.3f32, -12.9, 101.7];
+        let n = decay_lead(l, ft);
+        assert_eq!(n[0], l[0] - (k * l[0] as f64) as f32);
+        assert_eq!(n[2], (l[2] as f64 - k * l[2] as f64) as f32);
+        assert_eq!(decay_lead(l, 0.5), [0.0; 3]);
     }
 }

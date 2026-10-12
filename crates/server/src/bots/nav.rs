@@ -163,16 +163,24 @@ pub fn navigate(b: &mut Brain, p: &mut Player, cx: &mut Cx, goal: [f32; 3]) -> i
     let steer = steer_point(b, cx);
     let eng = engine();
     let yaw = eng.vec_to_angles(sub(steer, cx.pev().origin))[1];
-    let a = super::brain::angle_mod(cx.pev().angles[1]);
-    let bb = super::brain::angle_mod(yaw);
-    let mut d = (bb as f64 - a as f64).abs();
-    if bb <= a {
+    let speed = p.player_speed as f64;
+    let (forward, side) = move_toward(cx.pev().angles[1], yaw, speed);
+    b.set_move(forward, side);
+    WALKING
+}
+
+/// `Navigate`'s move (0x10070381..0x100703e8): full speed toward `yaw` relative to the body yaw.
+/// The steer yaw's `UTIL_AngleMod` stays on the x87 stack for the difference; the comparison
+/// uses the float copies.
+fn move_toward(body_yaw: f32, yaw: f32, speed: f64) -> (f32, f32) {
+    let a = super::brain::angle_mod(body_yaw);
+    let bb = super::brain::angle_mod_x87(yaw);
+    let mut d = (bb - a as f64).abs();
+    if bb as f32 <= a {
         d = (360.0 - d).abs();
     }
     let rad = d * 0.017_453_292_519_943_295;
-    let speed = p.player_speed as f64;
-    b.set_move((rad.cos() * speed) as f32, -(rad.sin() * speed) as f32);
-    WALKING
+    ((rad.cos() * speed) as f32, -(rad.sin() * speed) as f32)
 }
 
 /// `CBotNav::Replan` (0x1006fa40): a fresh plan for `goal`. The attack module's goals go straight
@@ -268,4 +276,31 @@ fn steer_point(b: &mut Brain, cx: &mut Cx) -> [f32; 3] {
         return b.nav.detour;
     }
     wp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn move_is_relative_to_the_body_yaw() {
+        // Target to the left (counter-clockwise): forward ~0, full speed left (negative side).
+        let (f, s) = move_toward(0.0, 90.0, 300.0);
+        assert!(f.abs() < 1e-3 && s == -300.0, "{f} {s}");
+        // Target to the right: 360 - 90 = 270 degrees, so full speed right.
+        let (f, s) = move_toward(90.0, 0.0, 300.0);
+        assert!(f.abs() < 1e-3 && s == 300.0, "{f} {s}");
+        // Straight ahead: equal yaws take the `360 - d` branch, so a full turn (sin ~ -2e-16).
+        let (f, s) = move_toward(45.0, 45.0, 250.0);
+        assert!(f == 250.0 && s > 0.0 && s < 1e-12, "{f} {s}");
+    }
+
+    #[test]
+    fn move_uses_the_unrounded_angle_mod() {
+        // The steer yaw's `UTIL_AngleMod` (360 + yaw) is used unrounded in the difference.
+        let (body, yaw) = (10.0f32, -0.123_456_79f32);
+        let d = ((360.0 + yaw as f64) - 10.0).abs();
+        let rad = d * 0.017_453_292_519_943_295;
+        assert_eq!(move_toward(body, yaw, 300.0), ((rad.cos() * 300.0) as f32, -(rad.sin() * 300.0) as f32));
+    }
 }
