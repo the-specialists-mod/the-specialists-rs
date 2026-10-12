@@ -2,18 +2,18 @@
 //! markers, crosshair ID, status panel, power-up, objective markers (§4.3, `Draw` 10049ea0).
 
 use super::Dc;
-use super::draw::{GREEN, RED, half, num};
+use super::draw::{GREEN, RED, ftol, half, num};
 use super::state::Hud;
 use super::text::localise;
 use crate::input;
 use goldsrc::client::engine;
 
-/// TS team colours (`0x10096974`, RGB per team number).
-const TEAM_COLORS: [[i32; 3]; 5] = [[150, 175, 255], [100, 150, 255], [255, 100, 100], [255, 255, 100], [100, 255, 100]];
-
-/// The voice helper's lookup (`GetPlayerTextColor` 1001fcd0): negative teams are 0, then modulo.
+/// The voice helper's lookup (`GetPlayerTextColor` 1001fcd0): negative teams are 0, then modulo
+/// into `iTeamColors` (`0x10096974`, the scoreboard's table: (255,170,0), (125,165,210),
+/// (200,90,70), (225,205,45), (145,215,140)), which the status panel's team bar uses too.
 pub fn team_color(team: i32) -> [i32; 3] {
-    TEAM_COLORS[team.max(0) as usize % TEAM_COLORS.len()]
+    let t = crate::menus::widgets::TEAM_COLORS;
+    t[team.max(0) as usize % t.len()].map(i32::from)
 }
 
 pub fn draw(dc: &Dc, nohud: bool) {
@@ -28,7 +28,7 @@ pub fn draw(dc: &Dc, nohud: bool) {
             draw_round_timer(dc, h);
         }
         draw_ts_messages(dc, h);
-        draw_objective_text(dc, h);
+        draw_flag_panel(dc, h);
         if dead_or_obs {
             return;
         }
@@ -50,10 +50,11 @@ pub fn draw(dc: &Dc, nohud: bool) {
     });
 }
 
-/// `DrawRoundTimer` (1004a130): top-right `MM:SS`, red under a minute.
+/// `DrawRoundTimer` (1004a130): top-right `MM:SS`, red under a minute, else the HUD colour × 0.5
+/// (`0x1004a1c5`).
 fn draw_round_timer(dc: &Dc, h: &mut Hud) {
     let secs = h.tick_round_timer(dc.now);
-    let rgb = if secs < 60 { RED } else { dc.hud };
+    let rgb = if secs < 60 { RED } else { half(dc.hud) };
     let mut x = dc.w() - 0x48;
     x = dc.number(x, 0xc, num::DIGITS_2 | num::DRAW_ZERO, secs / 60, rgb);
     x = dc.string(x, 12, ":", rgb);
@@ -82,30 +83,76 @@ fn draw_ts_messages(dc: &Dc, h: &mut Hud) {
     }
 }
 
-/// `DrawObjectiveText` (1004b0e0): the objective labels as wrapped text, bottom centre.
-fn draw_objective_text(dc: &Dc, h: &Hud) {
-    if h.gamemode < 2 {
+/// `DrawHudStringLen(0, max, text)` (`0x10021ca0`): the width up to the first character that
+/// would pass `max`.
+fn string_len_to(dc: &Dc, max: i32, text: &str) -> i32 {
+    let mut x = 0i32;
+    for c in text.chars().take_while(|&c| c != '\n') {
+        let w = dc.g.screen.char_widths[(c as u32 & 0xff) as usize] as i32;
+        if x.wrapping_add(w) > max {
+            break;
+        }
+        x = x.wrapping_add(w);
+    }
+    x
+}
+
+/// The flag panel (`0x1004b0e0`, run while `TSFlag` has set the count): two blink timers tick
+/// by frame time × time scale (0.1 s and 0.5 s, each toggling a phase); each of the first
+/// `count` (≤ 16) flags with a state and a team 1..4 draws the flag sprite at
+/// `(w − 56, team·48 + 40)` in the team colour (`iTeamColors`) × (1 or 0.5 by the fast phase
+/// while carried, else × 0.75 × (1 or 0.5 by the slow phase)). A carrier 1..64 gets their name
+/// (24 bytes) right-aligned against the flag, red (175, 40, 40) for the other team, green
+/// (40, 175, 40) for yours; if the carrier is you, "Take the Briefcase to the base!" at
+/// y 320, right-aligned 32 px from the edge, in the HUD colour with 35 more red. The count
+/// becomes one past the last flag drawn.
+fn draw_flag_panel(dc: &Dc, h: &mut Hud) {
+    if h.flag_count < 1 {
         return;
     }
-    let mut y = dc.h() - 96;
-    for o in h.objectives.iter().take(h.obj_max.max(0) as usize + 1).filter(|o| o.visible && !o.label.is_empty()) {
-        let text = localise(&o.label);
-        let max = dc.w() - 64;
-        let mut line = String::new();
-        let mut lines = Vec::new();
-        for word in text.split(' ') {
-            let candidate = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
-            if dc.string_len(&candidate) > max && !line.is_empty() {
-                lines.push(std::mem::replace(&mut line, word.to_owned()));
-            } else {
-                line = candidate;
+    let hud = dc.hud;
+    let e = engine();
+    let local = e.local_player().map_or(0, |p| p.index);
+    let team_of = |h: &Hud, i: i32| usize::try_from(i).ok().and_then(|i| h.players.get(i)).map_or(0, |p| p.team);
+    let my_team = team_of(h, local);
+    // `m_flTimeDelta / (1 / max(ts, 0.01))`.
+    let ts = crate::state::with(|s| s.time_scale).max(0.01);
+    let step = super::time_delta() as f64 * ts as f64;
+    for (blink, reset) in h.flag_blink.iter_mut().zip([0.1f32, 0.5]) {
+        blink.0 = (blink.0 as f64 - step) as f32;
+        if blink.0 < 0.0 {
+            blink.0 = reset;
+            blink.1 = !blink.1;
+        }
+    }
+    let (fast, slow) = (h.flag_blink[0].1, h.flag_blink[1].1);
+    let n = h.flag_count.min(16) as usize;
+    h.flag_count = 0;
+    let (w, x) = (dc.w(), dc.w() - 0x38);
+    for i in 0..n {
+        let f = h.flags[i];
+        if f.state == 0 || !(1..=4).contains(&f.team) {
+            continue;
+        }
+        let y = f.team as i32 * 0x30 + 0x28;
+        let k: f64 = if f.state == 1 { if fast { 1.0 } else { 0.5 } } else { (if slow { 1.0 } else { 0.5 }) * 0.75 };
+        let c = crate::menus::widgets::TEAM_COLORS[f.team as usize].map(|v| ftol(v as f64 * k));
+        dc.spr(dc.g.ts.flag, x, y, c);
+        let carrier = f.carrier as i32;
+        if (1..=64).contains(&carrier) {
+            if carrier == local {
+                let msg = "Take the Briefcase to the base!";
+                let rgb = [(hud[0] + 0x23).min(0xff), hud[1], hud[2]];
+                super::text::draw_string(&dc.g.screen, w - string_len_to(dc, w, msg) - 0x20, 0x140, w, msg, rgb);
             }
+            let mut name = e.player_info(carrier).name_bytes;
+            name.truncate(0x18);
+            let name = super::saytext::string(&name);
+            // `0x1004b3b6..`: (195, 45) or (45, 195) × 0.9f, blue 40.
+            let rgb = if team_of(h, carrier) != my_team { [175, 40, 40] } else { [40, 175, 40] };
+            super::text::draw_string(&dc.g.screen, x - string_len_to(dc, w, &name), y, w, &name, rgb);
         }
-        lines.push(line);
-        for l in lines {
-            dc.string((dc.w() - dc.string_len(&l)) / 2, y, &l, half(dc.hud));
-            y -= 16;
-        }
+        h.flag_count = i as i32 + 1;
     }
 }
 
@@ -117,14 +164,14 @@ fn player_screen_pos(dc: &Dc, index: i32) -> Option<(i32, i32)> {
     e.world_to_screen([o[0], o[1], o[2] + 40.0], &dc.g.screen)
 }
 
-/// `DrawTeammateMarkers` (1004ab40): a green dot over visible teammates, flag sprite over
-/// carriers (green own team, red enemy). TS's visibility flags come from `HUD_AddEntity`; the
-/// port uses "updated in the last packet".
+/// `DrawTeammateMarkers` (1004ab40): a green dot over visible teammates. TS also has a branch
+/// that draws the flag sprite over carriers, but its test reads a `g_PlayerExtraInfo` field
+/// nothing writes (`0x101901f0`, only zeroed at `0x1005d5c0`), so it never runs. TS's
+/// visibility flags come from `HUD_AddEntity`; the port uses "updated in the last packet".
 fn draw_teammate_markers(dc: &Dc, h: &Hud) {
     let e = engine();
     let Some(me) = e.local_player() else { return };
     let my_team = h.players.get(me.index as usize).map_or(0, |p| p.team);
-    let carriers: Vec<i32> = h.flags.iter().filter(|f| f.state == 1).map(|f| f.carrier as i32).collect();
     for i in 1..=e.max_clients().min(64) {
         if i == me.index {
             continue;
@@ -135,10 +182,7 @@ fn draw_teammate_markers(dc: &Dc, h: &Hud) {
         }
         let team = h.players[i as usize].team;
         let Some((x, y)) = player_screen_pos(dc, i) else { continue };
-        if carriers.contains(&i) {
-            let rgb = if team == my_team { [15, 65, 15] } else { [65, 15, 15] };
-            dc.spr(dc.g.ts.flag, x - 24, y - 48, rgb);
-        } else if team == my_team {
+        if team == my_team {
             dc.fill(x - 2, y - 2, 4, 4, GREEN, 0x75);
         }
     }
@@ -149,9 +193,10 @@ fn draw_teammate_markers(dc: &Dc, h: &Hud) {
 fn crosshair_trace() -> Option<(i32, u8, String)> {
     let e = engine();
     let me = e.local_player()?;
-    let vh = e.local_view_height();
-    let start = [me.origin[0] + vh[0], me.origin[1] + vh[1], me.origin[2] + vh[2]];
-    let (f, _, _) = e.angle_vectors(e.view_angles());
+    // `GetCullOrigin` (`0x10057270`: the eye in third person, else `v_origin`) along the last
+    // refdef's forward (`0x1018bd90`, punch and bob included).
+    let start = if crate::view::is_third_person() { crate::view::eye() } else { crate::view::origin() };
+    let f = crate::view::camera().forward;
     let end = [start[0] + f[0] * 8192.0, start[1] + f[1] * 8192.0, start[2] + f[2] * 8192.0];
     let (_, _, idx) = e.crosshair_trace(start, end, me.index)?;
     let ent = e.entity(idx)?;
@@ -185,13 +230,13 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
         let sh = e.spr_height(stance, 0);
         let sw = e.spr_width(stance, 0);
         let hp = (h.health as i32).min(100);
-        if h.health < 100 {
-            // Red silhouette under the filled part.
-            e.spr_set(stance, RED);
-            e.spr_draw_additive(0, 8, y - 4, None);
-        }
         // C int arithmetic: the sprite's height is file data.
         let top = sh.wrapping_sub(hp.wrapping_mul(sh) / 100);
+        if h.health < 100 {
+            // Red over the part health doesn't fill (`0x1004a4d5..0x1004a518`: rows 0..top).
+            e.spr_set(stance, RED);
+            e.spr_draw_additive(0, 8, y - 4, Some(&goldsrc::sys::wrect_t { left: 0, right: sw, top: 0, bottom: top }));
+        }
         let rc = goldsrc::sys::wrect_t { left: 0, right: sw, top, bottom: sh };
         e.spr_set(stance, half(hud));
         e.spr_draw_additive(0, 8, (y - 4).wrapping_add(top), Some(&rc));
@@ -209,7 +254,9 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
         && let Some(me) = e.local_player()
         && let Some(p) = usize::try_from(me.index).ok().and_then(|i| h.players.get(i))
     {
-        let c = TEAM_COLORS[(p.team.max(0) as usize).min(TEAM_COLORS.len() - 1)];
+        // `iTeamColors[team]` (`0x1004a748`); guarded: TS indexes past the five entries.
+        let t = crate::menus::widgets::TEAM_COLORS;
+        let c = t[(p.team.max(0) as usize).min(t.len() - 1)].map(i32::from);
         dc.fill(8, y, 0x7f, 0x13, c, 0x23);
         dc.string(10, y, &p.teamname, c);
     }
@@ -218,7 +265,7 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
     let x = 0x88;
     dc.fill(x, y, 0x7f, 0x13, hud, 0xf);
     let rgb = if h.slots == 0 { RED } else { half(hud) };
-    let nx = dc.number(x + 8, y + 2, num::DIGITS_3 | num::DRAW_ZERO, h.slots as i32, rgb);
+    let nx = dc.number(x + 8, y + 2, num::DIGITS_2 | num::DRAW_ZERO, h.slots as i32, rgb);
     dc.string(nx + 8, y, &localise("#HUD_FreeSlots"), rgb);
     if h.gamemode > 1 || h.cashbased != 0 {
         y -= 0x14;
@@ -227,11 +274,13 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
         let nx = dc.number(x, y + 2, num::DIGITS_5 | num::DRAW_ZERO, h.cash, rgb);
         dc.string(nx + 8, y, &localise("#HUD_Credits"), rgb);
     }
+    // `0x1004aa4e`, `0x1004aad2`: the HUD colour × 2/3.
+    let icon = hud.map(|c| ftol(c as f64 * 0.666_666_666_666_666_6));
     if h.kungfu_icon {
-        dc.spr(dc.g.ts.kungfu, w / 2 - 0x30, ht - 0x38, half(hud));
+        dc.spr(dc.g.ts.kungfu, w / 2 - 0x30, ht - 0x38, icon);
     }
     if h.move_icon {
-        dc.spr(dc.g.ts.movement, w / 2, ht - 0x38, half(hud));
+        dc.spr(dc.g.ts.movement, w / 2, ht - 0x38, icon);
     }
 }
 
@@ -250,9 +299,11 @@ fn draw_powerup(dc: &Dc, h: &Hud) {
         ""
     };
     let x = dc.string(8, 8, &localise(label), GREEN);
-    let n = if h.pw_expire > dc.now { (h.pw_expire - dc.now) as i32 } else { h.pw_value };
-    if n != 0 {
-        dc.number(x + 4, 8, num::DIGITS_3, n, GREEN);
+    // `0x1004a38b..0x1004a3d3`: the seconds left while timed (0 included), else the stored
+    // value when it isn't 0; flags 3.
+    let n = if h.pw_expire > dc.now { Some(ftol(h.pw_expire as f64 - dc.now as f64)) } else { (h.pw_value != 0).then_some(h.pw_value) };
+    if let Some(n) = n {
+        dc.number(x + 4, 8, num::DIGITS_2 | num::DRAW_ZERO, n, GREEN);
     }
 }
 
@@ -273,6 +324,7 @@ fn draw_objective_markers(dc: &Dc, h: &Hud) {
         } else if o.pos[2] < my_z - 72.0 {
             dc.spr(dc.g.ts.downarrow, x - 16, y + 16, c);
         }
-        dc.string(x + 16, y - 8, &localise(&o.label), c);
+        // Drawn as stored: TS doesn't localise the label (`0x10049fc0`).
+        dc.string(x + 16, y - 8, &o.label, c);
     }
 }

@@ -14,7 +14,7 @@ mod motd;
 mod scoreboard;
 mod scroll;
 mod team;
-mod widgets;
+pub(crate) mod widgets;
 
 use crate::hud::vgui::{self, EngineSurface};
 use crate::hud::{self, Dc, draw::half, text::localise};

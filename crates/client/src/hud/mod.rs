@@ -574,6 +574,10 @@ pub fn vid_init() {
         h.obj_max = 0;
         h.flags = Default::default();
         h.flag_count = 0;
+        h.flag_blink = [(0.0, false); 2];
+        // `0x10049d10` also zeroes the credits (`+0x24`) and free slots (`+0x28`).
+        h.cash = 0;
+        h.slots = 0;
         h.observer = false;
         h.kfu_power = 100.0;
         h.kfu_prev = 100.0;

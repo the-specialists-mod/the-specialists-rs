@@ -162,6 +162,9 @@ pub struct Hud {
     pub obj_max: i32,
     pub flags: [FlagState; 16],
     pub flag_count: i32,
+    /// The flag panel's blink timers and phases (`+0x1530`/`+0x152c` every 0.1 s,
+    /// `+0x1534`/`+0x152d` every 0.5 s).
+    pub flag_blink: [(f32, bool); 2],
     // ---- CHudTSWeapons
     pub grid: [[Slot; GRID_BUCKETS]; GRID_ROWS],
     pub menu_open: bool,
@@ -253,6 +256,7 @@ impl Default for Hud {
             obj_max: 0,
             flags: [FlagState::default(); 16],
             flag_count: 0,
+            flag_blink: [(0.0, false); 2],
             grid: [[EMPTY; GRID_BUCKETS]; GRID_ROWS],
             menu_open: false,
             menu_row: 0,
@@ -362,6 +366,7 @@ impl Hud {
     }
 
     /// `CHudTSStatus::Reset` (10049e70).
+    /// `CHudTSStatus::Reset`.
     pub fn reset_status(&mut self) {
         self.stance = 0;
         self.health = 0;
@@ -398,7 +403,12 @@ impl Hud {
     /// `AddTSMessage` (1004b520).
     pub fn add_ts_message(&mut self, ctx: &Ctx, text: &str, rgb: [i32; 3], tenths: i32, flags: u8) {
         let now = ctx.now;
-        let Some(i) = self.messages.iter().take(15).position(|m| m.expire < now) else { return };
+        // `0x1004b52d..0x1004b559`: the first of slots 0..14 that has expired, else slot 15 if it
+        // isn't still showing.
+        let i = self.messages.iter().take(15).position(|m| m.expire < now).unwrap_or(15);
+        if self.messages.get(i).is_none_or(|m| m.expire > now) {
+            return;
+        }
         let mut line = TsLine { text: localise_with(ctx.titles, text).chars().take(127).collect(), flags, ..Default::default() };
         line.rgb = if !ctx.local_name.is_empty() && line.text.contains(&ctx.local_name) { [155; 3] } else { rgb };
         let (w, h) = (ctx.screen.width, ctx.screen.height);
@@ -429,7 +439,9 @@ impl Hud {
                 }
                 line.y += if line.flags & 1 != 0 { 16 } else { -16 };
                 moved += 1;
-                j = 0;
+                // `0x1004b6e6..0x1004b6ef`: TS resets the index to 0 and then increments it, so
+                // the rescan starts at slot 1.
+                j = 1;
                 continue;
             }
             j += 1;
@@ -1059,6 +1071,30 @@ mod tests {
         let mine = TsMessage { flags: 0, text: "hello me".into(), ..m };
         h.apply(Msg::TsMessage, &mine.encode(), &c, &mut fx);
         assert!(h.messages.iter().any(|l| l.text == "hello me" && l.rgb == [155; 3]), "grey when it contains your name");
+    }
+
+    /// `AddTSMessage` (`0x1004b520`): slot 15 is the fallback, and after moving a message the
+    /// rescan starts at slot 1.
+    #[test]
+    fn ts_message_slots_follow_ts() {
+        let s = Screen::default();
+        let c = ctx(&s);
+        let mut fx = Vec::new();
+        let m = TsMessage { r: 1, g: 2, b: 3, flags: 1, time: 30, text: "x".into() };
+        let mut h = Hud::default();
+        for (k, l) in h.messages.iter_mut().enumerate().take(15) {
+            *l = TsLine { expire: 100.0, y: 1000 + k as i32, flags: 2, ..Default::default() };
+        }
+        h.apply(Msg::TsMessage, &m.encode(), &c, &mut fx);
+        assert_eq!((h.messages[15].text.as_str(), h.messages[15].y), ("x", 32), "slot 15 when 0..14 are busy");
+        h.apply(Msg::TsMessage, &m.encode(), &c, &mut fx);
+        assert_eq!(h.messages.iter().filter(|l| l.text == "x").count(), 1, "dropped with all sixteen busy");
+
+        let mut h = Hud::default();
+        h.messages[0] = TsLine { expire: 100.0, y: 48, flags: 1, ..Default::default() };
+        h.messages[1] = TsLine { expire: 100.0, y: 32, flags: 1, ..Default::default() };
+        h.apply(Msg::TsMessage, &m.encode(), &c, &mut fx);
+        assert_eq!(h.messages[2].y, 48, "moved below slot 1, then slot 0 isn't checked again");
     }
 
     #[test]

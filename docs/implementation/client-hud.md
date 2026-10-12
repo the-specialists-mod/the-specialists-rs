@@ -45,7 +45,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CHud::Think` 10049760 (from `CHud::UpdateClientData` 10024b00), `UTIL_ApproachFOV` 10049620, `HUD_GetFOV` 100209f0, `SetFOV` 10049570 | `hud::think_fov` (from `view::update_client_data`), `view::ease_fov`, `hud::get_fov` (demo record type 0), `hud::set_fov` (ignored while `cl_lw` is on; sets the target and `m_iFOV`, and the sensitivity `fov·0.0125·sensitivity·zoom_sensitivity_ratio`) |
 | `CHudTSStatus` handlers 1004b730..1004c1e0 | `Hud::apply` (status arms) |
 | `AddTSMessage` 1004b520 | `Hud::add_ts_message` |
-| `CHudTSStatus::Draw` 10049ea0 and `DrawRoundTimer` 1004a130, `DrawPowerup` 1004a2e0, `DrawStatusPanel` 1004a3e0, `DrawTeammateMarkers` 1004ab40, `DrawCrosshairID` 1004acc0, `DrawTSMessages` 1004af40, `DrawObjectiveText` 1004b0e0, `DrawObjectiveMarkers` 10049fc0 | `hud::status::*` |
+| `CHudTSStatus::Draw` 10049ea0 and `DrawRoundTimer` 1004a130, `DrawPowerup` 1004a2e0, `DrawStatusPanel` 1004a3e0, `DrawTeammateMarkers` 1004ab40, `DrawCrosshairID` 1004acc0, `DrawTSMessages` 1004af40, the flag panel 1004b0e0, `DrawObjectiveMarkers` 10049fc0 | `hud::status::*` |
 | `CHudTSWeapons` handlers 1004f6f0..1004fb50 | `Hud::apply` (weapon arms) |
 | `CHudTSWeapons::Reset` 1004cd60, `Think` 1004ce10 | `Hud::reset_weapons`; `hud::think`, `weapons::think_sounds`, `hud::weapon_menu_buttons` |
 | `Draw` 1004d3f0, `DrawWirePanel` 1004d550, `DrawKungFuBar` 1004d5f0, `DrawKungFuLabel` 1004d700, `DrawWeaponInfo` 1004d7e0, `DrawWeaponList` 1004e030, `DrawLaserDots` 1004e6f0, `DrawCrosshair` 1004e9f0 + 1004ef50 | `hud::weapons::*` |
@@ -125,7 +125,7 @@ hooks `VoiceMask` (audible and server-side ban masks) and `ReqState` (answers `V
 | SrvSett | B key, S value | realbullet / cashbased / ammocount / restriction mask |
 | TSBTime | B | bullet time |
 | TSHVoice | B | `misc/successful.wav` / `misc/failed.wav` |
-| TSFlag | B state, B idx, B team, B carrier | flag table |
+| TSFlag | B state, B idx, B team, B carrier | flag table, drawn by the flag panel (`0x1004b0e0`): each flag with a state and team 1..4 at `(w − 56, team·48 + 40)` in `iTeamColors[team]`, blinking (× 1 / 0.5 every 0.1 s while carried, else × 0.75 × 1 / 0.5 every 0.5 s, timers on frame time × time scale); the carrier's name (24 bytes) right-aligned against it, red (175,40,40) for the other team and green (40,175,40) for yours, and "Take the Briefcase to the base!" at y 320 (HUD colour, red + 35) when you carry it. TS has no objective-text block and never draws flags over carriers (its test reads a field nothing writes). **Was**: an invented wrapped objective-label block at the bottom, flags over carriers, no panel (issue #94) |
 | TSMBlur | B ent, B mode | queued `TsEffect::MotionBlur` |
 | TSPSys | B type [type 3: L, L, Co] | queued `TsEffect::Wind` |
 | PlInfo | B cl, B key, B value | laser colour (key 0) |
@@ -282,7 +282,7 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
 Train → HudText (`CHudMessage`) → status bar → death notices (`nohud` gate) → status icons → HLTV name tags → weapons
 element (laser dots, drawn even with `nohud`; then without `nohud` the buy menu, which is also
 closed here once you're alive; equipment/slot menu, kung-fu label or weapon info,
-crosshair or wire panel) → status element (round timer, TS messages, objective text, teammate
+crosshair or wire panel) → status element (round timer, TS messages, flag panel, teammate
 markers, crosshair ID, status panel, power-up, objective markers) → say text → `CHudMenu` → the
 logo → (VGUI pass) spectator panel, voice labels, then the viewport's
 children in their order: team menu, scoreboard, MOTD; then the cursor. As in `CHud::Redraw` (`10021aa0`), `HIDEHUD_ALL` hides every element, and
