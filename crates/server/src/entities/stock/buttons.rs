@@ -831,16 +831,13 @@ impl Entity for MomentaryRotButton {
 pub const SF_BTARGET_USE: i32 = 1;
 pub const SF_BTARGET_ON: i32 = 2;
 
+/// `button_target` (`CButtonTarget`, 0xaa254..0xaa394): a `CBaseEntity`, so it has no
+/// `delay`/`killtarget` keys and its targets fire through `CBaseEntity::SUB_UseTargets`
+/// (0xe2efc), a plain `FireTargets`.
 #[derive(Default)]
-pub struct ButtonTarget {
-    delay: Delay,
-}
+pub struct ButtonTarget;
 
 impl Entity for ButtonTarget {
-    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        self.delay.key_value(key, value)
-    }
-
     fn spawn(&mut self, cx: &mut Cx) {
         let v = cx.pev();
         v.movetype = MOVETYPE_PUSH as i32;
@@ -860,7 +857,10 @@ impl Entity for ButtonTarget {
         }
         v.frame = 1.0 - v.frame;
         let k = if v.frame != 0.0 { UseType::On } else { UseType::Off };
-        self.delay.use_targets(cx.edict, activator, k, 0.0);
+        let target = v.target;
+        if target != 0 {
+            crate::entities::fire_targets(s(target), activator, cx.edict, k, 0.0);
+        }
     }
 
     fn take_damage(&mut self, cx: &mut Cx, info: &DamageInfo) -> bool {
@@ -877,7 +877,6 @@ const MS_MAX_TARGETS: usize = 32;
 
 #[derive(Default)]
 pub struct MultiSource {
-    delay: Delay,
     entities: Vec<EHandle>,
     triggered: Vec<bool>,
     globalstate: string_t,
@@ -885,6 +884,12 @@ pub struct MultiSource {
     /// TS's `m_pfnThink`: `Register` from `Spawn` (0xa7a28), then `SUB_DoNothing`; a restore
     /// clears it, so a restored multisource never registers.
     think_set: bool,
+}
+
+/// The input `CMultiSource::Use` (0xa7a90) toggles: the first entry whose handle is `caller`
+/// (a NULL caller matches a member that's gone), else the last one.
+fn member_index(entities: &[EHandle], caller: *mut edict_t) -> Option<usize> {
+    entities.iter().position(|h| h.get() == caller).or(entities.len().checked_sub(1))
 }
 
 impl MultiSource {
@@ -984,19 +989,26 @@ impl Entity for MultiSource {
         self.publish(cx);
     }
 
+    /// `CMultiSource::Use` (0xa7a90). TS keeps the SDK's search bug: its "Used by non member"
+    /// test (`i > m_iTotal`) can't be true, so a caller that isn't a member (a `DelayedUse`, say)
+    /// toggles the last input. With no members TS toggles `m_rgTriggered[-1]`, which lies in
+    /// `m_rgEntities[31]` (nothing reads it); the port toggles nothing.
     fn use_(&mut self, cx: &mut Cx, _activator: *mut edict_t, caller: *mut edict_t, _kind: UseType, _value: f32) {
-        let Some(i) = self.entities.iter().position(|h| h.get() == caller && !caller.is_null()) else {
-            let cls = if caller.is_null() { c"" } else { s(caller.v().classname) };
-            engine().alert(ALERT_TYPE::at_console, &format!("MultiSrc:Used by non member {}.\n", cls.to_string_lossy()));
-            return;
-        };
-        self.triggered[i] ^= true;
+        if let Some(i) = member_index(&self.entities, caller) {
+            self.triggered[i] ^= true;
+        }
         self.publish(cx);
         let all = self.triggered.iter().all(|t| *t);
         let global_ok = self.globalstate == 0 || global_state(s(self.globalstate)) == GlobalState::On;
         if cx.pev().spawnflags & SF_MULTI_INIT == 0 && all && global_ok {
+            let msg = format!("Multisource {} enabled ({} inputs)\n", s(cx.pev().targetname).to_string_lossy(), self.entities.len());
+            engine().alert(ALERT_TYPE::at_aiconsole, &msg);
             let kind = if self.globalstate != 0 { UseType::On } else { UseType::Toggle };
-            self.delay.use_targets(cx.edict, std::ptr::null_mut(), kind, 0.0);
+            // `CBaseEntity::SUB_UseTargets` (0xe2efc): no activator.
+            let target = cx.pev().target;
+            if target != 0 {
+                crate::entities::fire_targets(s(target), std::ptr::null_mut(), cx.edict, kind, 0.0);
+            }
         }
     }
 }
@@ -1004,6 +1016,18 @@ impl Entity for MultiSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multisource_non_member_toggles_last_input() {
+        let fake = std::ptr::dangling_mut::<edict_t>();
+        let none: [EHandle; 0] = [];
+        assert_eq!(member_index(&none, fake), None);
+        // Members that are gone read as NULL: a NULL caller matches the first of them.
+        let gone = [EHandle::NULL, EHandle::NULL, EHandle::NULL];
+        assert_eq!(member_index(&gone, std::ptr::null_mut()), Some(0));
+        // A caller that isn't a member (`fake` is never dereferenced: the handles are NULL).
+        assert_eq!(member_index(&gone, fake), Some(2));
+    }
 
     #[test]
     fn lock_keys_are_bytes() {
