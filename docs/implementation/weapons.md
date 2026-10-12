@@ -358,6 +358,37 @@ instead, `0.01 <= 0x1018a718`, the copy the TS weapon element's `Think` (`0x1004
 the networked, locally regenerated `KFuPower` value on each `Think` (`state::Shared::kfu_power`), and
 charges nothing (no `UpdateMeleeBar`, so no 1.5 s `m_flNextAttack` for an empty bar):
 `GunHost::kfu_power`, `None` on the server, which gates on and charges its own bar.
+The client gun's records never carry the owned byte (the rebuild `0x10003965..0x10003bbe` never
+writes `record+0`; the gun's Spawn zeroes it), and the client player's `IsAlive` (`0x10004700`)
+reads a `pev->health` nothing writes, so it is always false. So `DropWeapon` (`0x100085d0`)
+finds no weapon: throwing the last grenade, knife or katana predicts no record clear and no switch
+to kung fu, `SelectWeapon` (`0x100086b0`) takes only id 0, and `HolsterWeapon` stops before its
+living part. The prediction's `rebuild` clears every owned flag, `ClientHost::alive` is false, and
+`GunHost::tracks_owned` (false on the client) lets `ColdCock`'s event through without the owned
+test, as the client copy (`0x10008dc8`) has none and the server's (`0x81dd0`) has one. **Was**: the
+current record counted as owned and the host as alive, so the last throw predicted a kung-fu
+switch (view model, two draw animations and `Draw` events, `m_flNextAttack` 0.5) and packed the
+cleared record into `to` (issue #14). Fixed.
+The client player's `pev->v_angle` is `v_angles` (`0x101914d0`, copied at `0x100038e7..0x10003906`),
+the view angles the last refdef stored (punch included, before the third-person override), not
+the command's: the client `KatanaFire` (`0x10009efe`) and `CCombatAttack` (`0x1000afb1`) pick
+their backward swing from it. `ClientHost::v_angle` is `view::v_angles()`. **Was**
+`cmd.viewangles` (issue #13). Fixed.
+A first prediction with a weapon record ends with `0x1000acd0` -> `0x100581c0`, which writes the
+record's clip, fire mode and attachments straight into the HUD's weapon element and its menu
+cells (the weapon's and its twins' clips), but not the reserve (`Hud::predicted_weapon`). The
+server sends `WeaponInfo` only on a weapon or reserve change, so this is how a predicted mode
+switch reaches the HUD (and its `switch.wav`). **Was**: a separate predicted overlay on the
+weapon box only, with the predicted reserve (issue #12). Fixed.
+The prediction writes slot 16 of `to.weapondata` as `client.dll` does (`0x10003f13..0x1000407b`,
+`prediction::gun::write_weapon_data`), not with the server's `pack_weapon_data`: the run-down
+timers with the client's clamps (the next primary attack down to -1), `m_fInReload`,
+`m_fInSpecialReload` and `iuser3` passed through from `from`, `m_flNextReload` (-0.001) and
+`m_fNextAimBonus` (-1) run down in place, the rest left as the engine copied it. **Was** the
+server's pack (primary clamped at -0.001, those fields zeroed, the record's reload flag in
+`m_fInReload`); nothing read the difference (issue #24). Fixed. The client has no `!= 1000`
+exception for the idle and `fuser1` that `Gun::decrement_timers` keeps; the gun never sets
+1000, so it can't matter.
 
 ## 5. Deviations and decisions
 

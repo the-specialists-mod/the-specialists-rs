@@ -324,13 +324,6 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
 
 ## Deviations from TS 3.0
 
-* **Owned weapon records in prediction.** TS's per-command rebuild never writes a record's owned
-  byte, so on its client every record stays unowned and the client `DropWeapon` (`0x100085d0`) and
-  `GetBetterWeapon` (`0x10008660`) never find a weapon. The shared `Gun` needs the current record
-  owned, so `unpack_clientdata` marks it and `prediction::gun` clears the flag on every other
-  (kept) record; a stale record never becomes a predicted switch. Throwing the last grenade or
-  blade still predicts the drop to kung fu as before, where TS predicts nothing until the server's
-  state arrives.
 * **Melee view shakes** run inside the shared `Gun`, so they follow its branch choice (which, like
   the client `KatanaFire`/`CCombatAttack`, reads `FL_DUCKING` on the gun's own `pev`,
   `0x1000a052`/`0x1000b1c1`, so only `+duck` counts).
@@ -616,7 +609,7 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
 | `fov_target` (`0x100df1a4`) | HUD `SetFOV` handler (`cl_lw` 0) and `prediction` (`to.client.fov`, every `HUD_PostRunCmd`); `hud::get_fov` during demo playback | `hud::think_fov` eases `fov` |
 | `fov` (`m_iFOV`) | `hud::think_fov` (eased, from `HUD_UpdateClientData`); `SetFOV` sets it outright | HUD (sensitivity, scope), `view`, effects |
 | `bullet_time` | render (`TSBTime`) | client bullets (`GetBulletVelocityMult`) |
-| `powerups`, `attachments`, `active_items`, `firemode`, `clip`, `reserve_ammo` | prediction (from clientdata) | HUD may read; lasers |
+| `powerups` | prediction (from clientdata) | view-model frame rate (`studio`) |
 | `active_items[65]` | HUD `ActItems` handler (index = entity number) | `effects::laser::draw_others`, HUD |
 | `laser_color[65]` | HUD `PlInfo` handler (key 0, index = entity number) | lasers, HUD `DrawLaserDots` |
 | `spectator[32]` | HUD `Spectator` handler | `effects::add_entity` |

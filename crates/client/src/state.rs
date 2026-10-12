@@ -59,20 +59,11 @@ pub struct Shared {
     /// Local power-up bits from `clientdata.vuser1[1]` (1 slow-mo, 2 infinite clip, 8 slow-pause,
     /// 0x10 double fire rate). Written by prediction.
     pub powerups: i32,
-    /// Local weapon state from clientdata (prediction): attachments `vuser3[2]` (1 silencer,
-    /// 2 laser, 4 flashlight, 8 scope), active items `vuser1[2]` (`local_items`), firemode `vuser3[1]`, clip.
-    pub attachments: i32,
-    pub local_items: i32,
     /// `CHudTSWeapons+0x14` (`0x100d0cb4`) as the last HUD draw left it: the local player's
     /// `ActItems` bits (0x40 = akimbo) while a weapon is held, else 0. TS's local laser and
-    /// flashlight read this, not the predicted `local_items` (which has no akimbo bit). Written by
+    /// flashlight read this, not the predicted active items (which have no akimbo bit). Written by
     /// `hud::weapons::draw`, read by `effects::laser` in the next frame's transparent pass.
     pub hud_items: i32,
-    pub firemode: i32,
-    pub clip: i32,
-    pub reserve_ammo: i32,
-    /// Weapon id the predicted values above belong to (`None` before the first prediction).
-    pub predicted_weapon: Option<i32>,
     /// `Spectator` flag per player (index = entindex - 1): not drawn when set. Filled by the HUD.
     pub spectator: [bool; 32],
     /// Local laser dot(s) this frame (second = akimbo) as TriAPI `WorldToScreen` output (−1..1,

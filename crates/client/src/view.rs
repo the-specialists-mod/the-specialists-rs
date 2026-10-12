@@ -663,6 +663,12 @@ pub fn origin() -> Vec3 {
 pub fn eye() -> Vec3 {
     with(|w| w.eye)
 }
+/// `v_angles` (`0x101914d0`): the view angles the last refdef stored ([`finish`]), punch
+/// included and before the third-person override. `HUD_WeaponsPostThink` copies them into the
+/// client player's `pev->v_angle` for every predicted command (`0x100038e7..0x10003906`).
+pub fn v_angles() -> Vec3 {
+    with(|w| w.cam.angles)
+}
 /// The angles the predicted weapon events are played back with ([`View::playback_angles`]).
 pub fn playback_angles() -> Vec3 {
     with(|w| w.playback_angles)

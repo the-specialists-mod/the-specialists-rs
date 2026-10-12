@@ -16,7 +16,7 @@ use goldsrc::Global;
 use goldsrc::ext::render as r;
 use goldsrc::sys::*;
 use shared::pm::Arith;
-use shared::protocol::weapons::{pack_clientdata, pack_weapon_data, unpack_clientdata, unpack_weapon_data};
+use shared::protocol::weapons::{pack_clientdata, unpack_clientdata, unpack_weapon_data};
 use shared::weapons::gun::{MeleeHit, MeleeResult, Shot, Sound};
 use shared::weapons::spread::{self, Vec3};
 use shared::weapons::{Event, EventArgs, Gun, GunHost, MAX_AMMO, MAX_WEAPONS, Status, att, body_by_items, info, models};
@@ -284,6 +284,10 @@ struct ClientHost<'a> {
     /// the predicted events (`g_finalstate`).
     final_origin: Vec3,
     cmd: &'a usercmd_t,
+    /// The player's `pev->v_angle`: `v_angles` (`0x101914d0`, [`view::v_angles`]), the last
+    /// refdef's view angles, not the command's (`0x100038e7..0x10003906`). The client `KatanaFire`
+    /// (`0x10009efe`) and `CCombatAttack` (`0x1000afb1`) pick a backward swing from it.
+    v_angle: Vec3,
     runfuncs: bool,
     time: f32,
     seed: u32,
@@ -324,9 +328,14 @@ impl GunHost for ClientHost<'_> {
     fn kungfu(&self) -> bool {
         false // only scales melee damage (server)
     }
+    fn tracks_owned(&self) -> bool {
+        false
+    }
     fn alive(&self) -> bool {
-        let c = &self.from.client;
-        c.deadflag == 0 && c.health > 0.0
+        // The client player's IsAlive (0x10004700) reads `pev->health` (+0x160), which nothing on
+        // the client writes: always false, so HolsterWeapon stops early and DropWeapon (were it to
+        // find a weapon) switches nothing.
+        false
     }
     fn buttons(&self) -> u32 {
         self.cmd.buttons as u32
@@ -344,7 +353,7 @@ impl GunHost for ClientHost<'_> {
         self.from.client.velocity
     }
     fn v_angle(&self) -> Vec3 {
-        self.cmd.viewangles
+        self.v_angle
     }
     fn flags(&self) -> i32 {
         self.from.client.flags
@@ -437,14 +446,12 @@ fn rebuilt_body(g: &Gun) -> Option<i32> {
 /// The networked part of [`gun_from`]. Returns the power-up bits.
 fn rebuild(g: &mut Gun, from: &local_state_t) -> u16 {
     let powerups = unpack_clientdata(&from.client, g);
-    // TS's rebuild never writes a record's owned byte, so its client DropWeapon (0x100085d0) and
-    // GetBetterWeapon (0x10008660) never find a weapon. The port marks the current record owned
-    // (`unpack_clientdata`) and only that one, so a kept record can't become a predicted switch.
-    let cur = g.current as usize;
-    for (i, s) in g.status.iter_mut().enumerate() {
-        if i != cur {
-            s.owned = false;
-        }
+    // TS's rebuild never writes a record's owned byte (the gun's Spawn zeroes it), so its client
+    // DropWeapon (0x100085d0), GetBetterWeapon (0x10008660) and SelectWeapon (0x100086b0) never
+    // find a weapon: throwing the last grenade, knife or katana predicts no switch. The host's
+    // `tracks_owned` lets the ColdCock event through without it, as the client copy does.
+    for s in g.status.iter_mut() {
+        s.owned = false;
     }
     unpack_weapon_data(&from.weapondata[TS_GUN_SLOT], g);
     g.next_alt = from.weapondata[TS_GUN_SLOT].fuser4;
@@ -458,6 +465,34 @@ fn rebuild(g: &mut Gun, from: &local_state_t) -> u16 {
 /// ([`Gun::post_frame_ready`]) there is no pass for kung fu or for +cancel during a reload.
 fn post_frame_gate(c: &clientdata_t, hud_health: i32) -> bool {
     c.deadflag != 5 && hud_health > 0 && c.m_flNextAttack <= 0.0
+}
+
+/// The slot-16 `weapon_data_t` written back to `to` (`0x10003f13..0x1000407b`). TS copies the
+/// gun's clip mirror, next attacks, idle, `fuser1` and `fuser4` and runs them down in `to`
+/// (here [`Gun::decrement_timers`] already has, with the same clamps: -1 for the next primary
+/// attack, -0.001 for the rest; the server's `GetWeaponData` clamps the primary at -0.001 too).
+/// Its `m_fInReload`, `m_fInSpecialReload` and `iuser3` only the rebuild writes (from `from`,
+/// `0x10003991`), so they pass through. It also runs down `m_flNextReload` (clamped at -0.001)
+/// and `m_fNextAimBonus` (at -1), which it never unpacks, in `to` itself. Everything else keeps
+/// the engine's copy of `from`.
+fn write_weapon_data(gun: &Gun, from: &weapon_data_t, dt: f32, to: &mut weapon_data_t) {
+    to.m_iClip = gun.clip_mirror;
+    to.m_flNextPrimaryAttack = gun.next_primary;
+    to.m_flNextSecondaryAttack = gun.next_secondary;
+    to.m_flTimeWeaponIdle = gun.idle;
+    to.fuser1 = gun.fuser1;
+    to.fuser4 = gun.next_alt;
+    to.m_fInReload = from.m_fInReload;
+    to.m_fInSpecialReload = from.m_fInSpecialReload;
+    to.iuser3 = from.iuser3;
+    to.m_flNextReload -= dt;
+    if to.m_flNextReload < -0.001 {
+        to.m_flNextReload = -0.001;
+    }
+    to.m_fNextAimBonus -= dt;
+    if to.m_fNextAimBonus < -1.0 {
+        to.m_fNextAimBonus = -1.0;
+    }
 }
 
 /// `HUD_WeaponsPostThink` (`0x10003830`) for one usercmd.
@@ -480,7 +515,6 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     if c.m_iId != TS_GUN_SLOT as i32 {
         return;
     }
-    let dead = c.deadflag != 0 || c.health <= 0.0;
     // 0x10003d40: the client player's m_pActiveItem is the gun from now on.
     with(|p| p.active_gun = true);
     update_alt_grip(c);
@@ -510,6 +544,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         from,
         final_origin,
         cmd,
+        v_angle: view::v_angles(),
         runfuncs,
         time: time as f32,
         seed,
@@ -536,9 +571,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
 
     let (fov, viewmodel, iuser4, weaponanim) = (host.fov, host.viewmodel, host.iuser4, host.weaponanim);
     pack_clientdata(&gun, powerups, &mut to.client);
-    pack_weapon_data(&gun, &mut to.weapondata[TS_GUN_SLOT]);
-    to.weapondata[TS_GUN_SLOT].fuser4 = gun.next_alt;
-    to.weapondata[TS_GUN_SLOT].m_fInReload = gun.slot().map(|s| s.in_reload).unwrap_or(0);
+    write_weapon_data(&gun, &from.weapondata[TS_GUN_SLOT], dt, &mut to.weapondata[TS_GUN_SLOT]);
     to.client.fov = fov;
     to.client.viewmodel = viewmodel;
     to.client.iuser4 = iuser4;
@@ -552,17 +585,13 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     }
 
     if runfuncs {
-        let s = gun.slot().copied().unwrap_or_default();
         state::with(|st| {
             st.powerups = powerups as i32;
-            st.attachments = s.items as i32;
-            st.local_items = s.active as i32;
-            st.firemode = s.mode as i32;
-            st.clip = s.clip;
-            st.reserve_ammo = if gun.current == 0 { 0 } else { gun.current_reserve() };
             st.spread = gun.spread_penalty;
-            st.predicted_weapon = (!dead).then_some(gun.current as i32);
         });
+        // 0x100040dc..0x100040ef: the predicted record goes straight into the HUD's weapon
+        // element (clip, fire mode, attachments, menu cells), dead or alive.
+        crate::hud::with(|h| h.predicted_weapon(&gun));
         with(|p| p.gun = Some(gun));
     }
 }
@@ -570,7 +599,24 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shared::protocol::weapons::pack_weapon_data;
     use shared::weapons::id;
+
+    /// The `to` weapon data: the gun's timers as run down (the primary attack down to -1, not the
+    /// server's -0.001), the reload flags and `iuser3` passed through from `from`, and the never
+    /// unpacked `m_flNextReload`/`m_fNextAimBonus` run down in place.
+    #[test]
+    fn weapon_data_write_back() {
+        let gun =
+            Gun { clip_mirror: 1, next_primary: -0.5, next_secondary: 0.2, idle: -0.001, fuser1: 0.3, next_alt: 0.4, ..Default::default() };
+        let from = weapon_data_t { m_fInReload: 1, m_fInSpecialReload: 2, iuser3: 3, fuser2: 5.0, ..Default::default() };
+        let mut to = weapon_data_t { m_flNextReload: 0.005, m_fNextAimBonus: -0.995, ..from };
+        write_weapon_data(&gun, &from, 0.01, &mut to);
+        assert_eq!((to.m_iClip, to.m_flNextPrimaryAttack, to.m_flNextSecondaryAttack, to.m_flTimeWeaponIdle), (1, -0.5, 0.2, -0.001));
+        assert_eq!((to.fuser1, to.fuser4, to.fuser2), (0.3, 0.4, 5.0));
+        assert_eq!((to.m_fInReload, to.m_fInSpecialReload, to.iuser3), (1, 2, 3));
+        assert_eq!((to.m_flNextReload, to.m_fNextAimBonus), (-0.001, -1.0));
+    }
 
     /// Server pack -> client unpack keeps what the predictor needs.
     #[test]
@@ -609,28 +655,34 @@ mod tests {
         assert_eq!((g.melee_window, g.melee_damage, g.melee_source), (0.2, 40.0, 0));
     }
 
+    /// A re-prediction host (`runfuncs` false, so nothing reaches the engine).
+    fn test_host<'a>(from: &'a local_state_t, cmd: &'a usercmd_t, kfu_power: f32) -> ClientHost<'a> {
+        ClientHost {
+            from,
+            final_origin: [0.0; 3],
+            cmd,
+            v_angle: [0.0; 3],
+            runfuncs: false,
+            time: 0.0,
+            seed: 0,
+            powerups: 0,
+            kfu_power,
+            fov: 0.0,
+            viewmodel: 7,
+            iuser4: 0,
+            weaponanim: 3,
+            body: 0,
+            silenced: false,
+        }
+    }
+
     /// The predicted kung-fu block (`0x1000adc0`) gates on the HUD's power (`0x1018a718`), not
     /// the gun's bar, and charges none.
     #[test]
     fn block_gates_on_hud_power() {
         let (from, cmd) = (local_state_t::default(), usercmd_t::default());
         let block = |kfu_power: f32, bar: f32| {
-            let mut host = ClientHost {
-                from: &from,
-                final_origin: [0.0; 3],
-                cmd: &cmd,
-                runfuncs: false,
-                time: 0.0,
-                seed: 0,
-                powerups: 0,
-                kfu_power,
-                fov: 0.0,
-                viewmodel: 0,
-                iuser4: 0,
-                weaponanim: 0,
-                body: 0,
-                silenced: false,
-            };
+            let mut host = test_host(&from, &cmd, kfu_power);
             let mut g = Gun { melee_bar: bar, ..Default::default() };
             g.ccombat_block(&mut host);
             g
@@ -641,8 +693,54 @@ mod tests {
         assert_eq!((g.block_kungfu, g.next_primary, g.melee_bar), (0.0, 0.0, 100.0));
     }
 
+    /// Throwing the last grenade, knife or katana (`DropWeapon` 0x100085d0) predicts nothing: the
+    /// rebuilt records are never owned, so the record stays and there is no switch to kung fu
+    /// (no view model, animation or `Draw` event, `m_flNextAttack` untouched).
+    #[test]
+    fn drop_weapon_predicts_no_switch() {
+        for id in [id::M61, id::KNIFE, id::KATANA] {
+            let mut server = Gun { current: id, ..Default::default() };
+            server.status[id as usize] = Status { owned: true, clip: 1, mode: 1, items: 0, ..Default::default() };
+            let mut ls = local_state_t::default();
+            pack_clientdata(&server, 0, &mut ls.client);
+            pack_weapon_data(&server, &mut ls.weapondata[TS_GUN_SLOT]);
+            let mut g = Gun::default();
+            rebuild(&mut g, &ls);
+            assert!(g.status.iter().all(|s| !s.owned));
+            let cmd = usercmd_t::default();
+            let mut host = test_host(&ls, &cmd, 0.0);
+            assert!(!g.remove_weapon(id, true, &mut host));
+            assert_eq!((g.current, g.status[id as usize].clip, g.status[id as usize].mode, g.next_attack), (id, 1, 1, 0.0));
+            assert_eq!((host.viewmodel, host.weaponanim), (7, 3));
+        }
+    }
+
+    /// The predicted katana swing reads `v_angles`, not the command's angles: running forward
+    /// along +x with the last view facing -x is a backward swing (negative strength) even though
+    /// the command faces +x.
+    #[test]
+    fn katana_direction_uses_v_angles() {
+        let from = local_state_t { client: clientdata_t { velocity: [200.0, 0.0, 0.0], ..Default::default() }, ..Default::default() };
+        let cmd = usercmd_t { viewangles: [0.0, 0.0, 0.0], ..Default::default() };
+        let mut host = test_host(&from, &cmd, 0.0);
+        host.v_angle = [0.0, 180.0, 0.0];
+        let mut g = Gun { current: id::KATANA, ..Default::default() };
+        g.katana_fire(&mut host);
+        assert!(g.melee_damage < 0.0, "backward swing");
+    }
+
+    /// The client host's records have no owned flag and its player is never alive (0x10004700).
+    #[test]
+    fn client_host_owned_and_alive() {
+        let (from, cmd) =
+            (local_state_t { client: clientdata_t { health: 100.0, ..Default::default() }, ..Default::default() }, usercmd_t::default());
+        let host = test_host(&from, &cmd, 0.0);
+        assert!(!host.tracks_owned());
+        assert!(!host.alive());
+    }
+
     /// Records other than the current one, and other ammo types' reserve, survive a command's
-    /// rebuild (TS keeps them until the gun's Spawn); only the current record counts as owned.
+    /// rebuild (TS keeps them until the gun's Spawn); none counts as owned.
     #[test]
     fn rebuild_keeps_other_records() {
         let mut server = Gun { current: id::AK47, ..Default::default() };
@@ -659,7 +757,7 @@ mod tests {
         rebuild(&mut g, &ls);
         assert_eq!(g.current, id::AK47);
         assert_eq!(g.slot().unwrap().clip, 30);
-        assert!(g.status[id::AK47 as usize].owned);
+        assert!(!g.status[id::AK47 as usize].owned);
         let kept = g.status[id::BERETTA as usize];
         assert_eq!((kept.owned, kept.clip, kept.mode, kept.items), (false, 7, 1, att::SILENCER));
         assert_eq!(g.reserve[other_ammo], 45);

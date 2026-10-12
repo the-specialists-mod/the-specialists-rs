@@ -361,15 +361,9 @@ fn draw_weapon_info(dc: &Dc, h: &Hud) {
     y -= row;
     dc.fill(x, y, 128, row - 1, dc.hud, 15);
     // The server sends WeaponInfo only when the weapon or the reserve changes (CTSGun::
-    // UpdateClientData); the clip, reserve and fire mode in between come from the predicted
-    // weapon state (prediction writes them every command).
-    let (clip, reserve, firemode) = crate::state::with(|s| {
-        if s.predicted_weapon == Some(h.weapon) {
-            (s.clip, s.reserve_ammo, s.firemode)
-        } else {
-            (h.clip, h.reserve[info.ammo as usize & 15], h.firemode as i32)
-        }
-    });
+    // UpdateClientData); the prediction writes the clip and fire mode in between
+    // (`Hud::predicted_weapon`, 0x100581c0). The reserve is WeaponInfo's alone.
+    let (clip, reserve, firemode) = (h.clip, h.reserve[info.ammo as usize & 15], h.firemode as i32);
     if info.ammo == 0 {
         draw_kungfu_bar(dc, h, x, y);
         y -= row;

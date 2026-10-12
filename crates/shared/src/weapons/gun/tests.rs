@@ -38,6 +38,8 @@ struct Mock {
     repredict: bool,
     /// The client's HUD kung-fu power (`0x1018a718`); `None` = the server.
     kfu_power: Option<f32>,
+    /// The prediction's records, which never carry the owned flag (`tracks_owned` false).
+    client_records: bool,
 }
 
 impl GunHost for Mock {
@@ -55,6 +57,9 @@ impl GunHost for Mock {
     }
     fn kfu_power(&self) -> Option<f32> {
         self.kfu_power
+    }
+    fn tracks_owned(&self) -> bool {
+        !self.client_records
     }
     fn powerups(&self) -> u16 {
         self.powerups
@@ -861,4 +866,18 @@ fn charging_the_melee_bar_empties_it_with_a_lockout() {
     let mut g = Gun { melee_bar: f32::NAN, ..Gun::default() };
     g.charge_melee_bar(33.0);
     assert_eq!((g.melee_bar, g.next_attack), (0.0, 1.5));
+}
+
+/// `ColdCock`'s event: the server's (0x81dd0) needs the record's owned flag; the prediction's
+/// records never have it and its copy (0x10008dc8) plays the event regardless.
+#[test]
+fn cold_cock_event_owned_gate() {
+    let gun = (1..MAX_WEAPONS as u8).find(|&i| info(i).is_some_and(|w| w.stock > 0 && kind_of(i) != kind::GRENADE)).unwrap();
+    for (client, owned, plays) in [(false, true, true), (false, false, false), (true, false, true)] {
+        let (mut g, mut h) = armed(gun);
+        g.status[gun as usize].owned = owned;
+        h.client_records = client;
+        g.cold_cock(&mut h);
+        assert_eq!(h.events.iter().any(|e| e.0 == Event::ColdCock), plays, "client {client}, owned {owned}");
+    }
 }
