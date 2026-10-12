@@ -232,7 +232,10 @@ impl Entity for DmHill {
             return;
         }
         let teamplay = state::teamplay();
-        let mut text = message_of(cx).map(|m| {
+        // Built whenever `pev->message` is set, even to "": the name and frag count make it
+        // non-empty, so `TSHudMessageAll` sends it.
+        let message = cx.pev().message;
+        let mut text = (message != 0).then(|| engine().string(message).to_string_lossy().into_owned()).map(|m| {
             let who = if teamplay { format!("Team {}", teams::team_name_of(other)) } else { rules::netname(other) };
             format!("{who} {m}")
         });
@@ -562,12 +565,16 @@ impl SlowMotion {
         self.slowed.clear();
     }
 
-    /// `CheckPlayersDistance`: release players that left the area.
+    /// `CheckPlayersDistance` (0x7118c): release players that left the area. Only a player still
+    /// `InSlow()` is looked at; one whose slow motion already ended stays listed, untouched.
     fn check_distance(&mut self, cx: &mut Cx) {
         let v = cx.pev();
         let c = [(v.absmin[0] + v.absmax[0]) * 0.5, (v.absmin[1] + v.absmax[1]) * 0.5, (v.absmin[2] + v.absmax[2]) * 0.5];
         let r = self.radius;
         self.slowed.retain(|&e| {
+            if !rules::powerup::entity_in_slow(e) {
+                return true;
+            }
             let inside = rules::dist(e.v().origin, c) <= r;
             if !inside {
                 rules::powerup::go_slow(e, 1.0, false);
