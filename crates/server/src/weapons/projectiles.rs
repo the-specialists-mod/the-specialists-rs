@@ -418,8 +418,14 @@ pub struct Knife {
     funcs: BaseFuncs,
 }
 
-/// `KnifeFire`/`KatanaThrow` throw: from the eyes + 32 forward + 1 right (traced), 1900 u/s.
-/// `time_scale` comes from [`thrower_time_scale`].
+/// The speed of a thrown blade: `KnifeFire` throws knives at 1900 u/s (objdump 0x7465b /
+/// 0x746a7), `KatanaThrow` the katana at 1000 u/s (0x73dc1, the float at 0xf7f64).
+fn throw_speed(btype: i32) -> f32 {
+    if btype == 8 { 1000.0 } else { 1900.0 }
+}
+
+/// `KnifeFire`/`KatanaThrow` throw: from the eyes + 32 forward + 1 right (traced), at
+/// [`throw_speed`]. `time_scale` comes from [`thrower_time_scale`].
 pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
     let e = engine();
     let v = owner.v();
@@ -428,7 +434,7 @@ pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
     let from = spread::add(eye, right);
     let to = spread::add(spread::ma(eye, 32.0, fwd), right);
     let tr = e.trace_line(from, to, DONT_IGNORE_MONSTERS, owner);
-    let velocity = spread::scale(fwd, 1900.0);
+    let velocity = spread::scale(fwd, throw_speed(btype));
     let src = tr.vecEndPos;
     spawn_entity::<Knife>(c"knife", |k, cx| {
         k.owner = Some(owner);
@@ -742,6 +748,13 @@ mod tests {
         assert_eq!(knife_description(7), "Throwing Seal Knife");
         assert_eq!(knife_description(8), "Throwing Katana");
         assert_eq!(knife_description(5), "");
+    }
+
+    #[test]
+    fn katana_is_thrown_slower_than_knives() {
+        assert_eq!(throw_speed(6), 1900.0);
+        assert_eq!(throw_speed(7), 1900.0);
+        assert_eq!(throw_speed(8), 1000.0);
     }
 
     #[test]

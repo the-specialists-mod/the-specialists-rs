@@ -259,7 +259,8 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   Knife, katana and kung fu store their delay in `pl+0x4f8` (the stunts' close-combat cooldown).
   Targets: knife/katana need `IsAlive` and no `EF_NODRAW`; kung fu and the stock need
   `takedamage`, no `FL_WORLDBRUSH`/`EF_NODRAW`, and not a teammate under `mp_friendlyfire 0`.
-  Thrown: 1900 u/s, 100 / 50 / 150, bits 0x8001000. Block windows 0.5 s, cost 33.
+  Thrown: knives 1900 u/s, the katana 1000 u/s (`KatanaThrow` 0x73dc1), 100 / 50 / 150, bits
+  0x8001000. Block windows 0.5 s, cost 33.
 * Kung fu (`CCombatAttack`, decoded from the disassembly 0x76078..0x76e19; damage, delay,
   delayed-hit window, reach): punches 10 / 0.25 s / 0.1 / 35 u (held jab), 20 / 0.35 / 0.15 / 35
   (press), 30 / 0.65 / 0.15 / 35 (combo end or duck), air 25 / 0.5 / 0.15 / 35; kicks: uppercut
