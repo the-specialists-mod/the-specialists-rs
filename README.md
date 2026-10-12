@@ -8,7 +8,7 @@ client speaks the same protocol.
 
 It runs on Xash3D FWGS, ReHLDS (pre-anniversary HLDS) and post-anniversary (HL25) Valve HLDS,
 on Linux and Windows. The latest release is
-[v0.1.0](https://github.com/the-specialists-mod/the-specialists-rs/releases/tag/v0.1.0).
+[v0.2.0](https://github.com/the-specialists-mod/the-specialists-rs/releases/tag/v0.2.0).
 
 ![The Rust client and server on Xash3D FWGS: ts_dojo, AK47 against a bot](docs/img/ts-dojo-fwgs.png)
 
@@ -33,8 +33,8 @@ Per-subsystem details, decomp mappings and gaps: [docs/implementation/](docs/imp
 Every change is checked with `cargo xtask all`: a dedicated server with bots on all six engine
 roots, then scripted listen-server gameplay on both FWGS roots (join, buy, spawn, wall shots,
 lasers, akimbo, power-ups, grenades, kills, kick, death and respawn, bot fights, the Escape menu,
-grenade kills and breakables on `MecklenburgV_Rain_Final`, TS's bot AI and node graph on `ts_dojo`). v0.1.0 passed it with the stripped
-release libraries, and the 663 unit tests pass.
+grenade kills and breakables on `MecklenburgV_Rain_Final`, TS's bot AI and node graph on `ts_dojo`). v0.2.0 passed it with the stripped
+release libraries, and the 770 unit tests pass.
 
 | Engine | Server | Client |
 |---|---|---|
