@@ -132,6 +132,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
   shot's flash, bullet, impact and decal, akimbo shots and laser beams as `[ts fx]` lines.
 - `ts_dev_keylog 1` (client) logs Escape's `HUD_Key_Event` answer and `cancelselect` as `[ts key]`.
 - `ts_as <player#> <command> ...` runs a client command as another player (e.g. a bot's `ts_give`).
+- `ts_dev_hamlog 1` logs the plugin entity hooks (Spawn, TakeDamage, Killed) as `[ts ham]` lines
+  (`docs/implementation/plugin-api.md` §7).
 - `ts_status`, `ts_hurt` and `ts_give` are also available.
 
 ## Conventions

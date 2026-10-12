@@ -185,6 +185,9 @@ Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`)
 * `ts_bot_stop 1` makes living bots stand still and hold fire (their AI is skipped). Dead and
   observing bots still buy their loadout and respawn.
 * `ts_dev_touch <file>` creates an empty file in the game directory (the end-of-script marker).
+* `ts_dev_hamlog 1|0` installs the server's own entity hook and prints a `[ts ham]` line before and
+  after every Spawn, TakeDamage and Killed (`implementation/plugin-api.md` §7.6). Refused while a
+  plugin's hook is installed.
 * `ts_observe <player#> <mode> [target#]` puts an observer in a spectator mode (5 is in-eye) on a
   target, for clients whose input a script can't drive (the original TS client, below).
 * `ts_dev_fxlog 1` (client) prints a `[ts fx]` line for each predicted shot's flash, bullet,
@@ -286,7 +289,9 @@ win32 under Wine (listen server, `ts_arena`).
 
 * The plugin API's setters in a running game (`implementation/plugin-api.md`): unit tests cover
   the logic, and `CreateInterface` was called outside the engine. No AMX Mod X module has driven
-  them in-engine yet; that is for the `tsmod-amxx-rs` modules. The private-data guard was checked
+  them in-engine yet; that is for the `tsmod-amxx-rs` modules. The entity hooks (version 2) ran
+  in-engine only with `ts_dev_hamlog` on a FWGS dedicated server with bots (§7 of that doc); the
+  hamsandwich port in `tsmod-amxx-rs` is to drive them under AMX Mod X. The private-data guard was checked
   under AMX Mod X on ReHLDS Linux and Windows (`ref/amxx-testenv`: hamsandwich fails cleanly,
   fakemeta pdata reads zeroed padding), not under xtask.
 

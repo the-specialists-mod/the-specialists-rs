@@ -71,12 +71,12 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 | Callback | Goes to |
 |---|---|
 | `GameInit` | `messages::register_all`, then `rules`, `weapons`, `stunt`, `bots` `game_init` (cvars, server commands) |
-| `Spawn`/`Think`/`Touch`/`Use`/`Blocked`/`KeyValue` | the edict's `Entity` (world dispatch). Keyvalues go to `entities::entvars_key_value` first and only the rest reach the class, as TS `DispatchKeyValue` does. |
+| `Spawn`/`Think`/`Touch`/`Use`/`Blocked`/`KeyValue` | the edict's `Entity` (world dispatch), through `ham` (the plugins' entity hooks, `implementation/plugin-api.md` §7). Keyvalues go to `entities::entvars_key_value` first and only the rest reach the class, as TS `DispatchKeyValue` does. |
 | worldspawn spawn | `CWorld::Precache` order: force `sv_gravity`/`sv_stepsize`, `rules::install` (installs the rules, the multiplayer voice icon, queues the server config), soundent and body queue, sentences and texture types, then `precache::{w_precache, client_precache, ts_precache, world_sounds_and_gibs}` (TS's map-wide precaches in TS's order, so model/sound/event indices match), light styles, `sv_zmax`, chapter title, `v_dark`, `mp_defaultteam` |
 | `ClientConnect`/`Disconnect`/`Kill`/`UserInfoChanged` | `rules` |
 | `ClientPutInServer` | creates the `Player` entity and spawns it |
 | `ClientCommand` | `commands::client_command`: weapons, stunt, rules, bots, in that order |
-| `PlayerPreThink`/`PostThink` | `Player::pre_think`/`post_think` (hook order in §4.3) |
+| `PlayerPreThink`/`PostThink` | `Player::pre_think`/`post_think` (hook order in §4.3), through `ham` |
 | `StartFrame` | `bots::start_frame` (the quota, then each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), `rules::start_frame`, then `plugin_api::start_frame` (the plugin API's player snapshots) |
 | `PM_Move`/`PM_Init`/`PM_FindTextureType` | `shared::pm` |
 | `UpdateClientData`/`AddToFullPack`/`CreateBaseline` | `net` (+ `Player::fill_client_data`) |
@@ -97,6 +97,7 @@ lists match `ts_i386.so` and `mp.dll` (`implementation/stock-entities.md` §7.5)
   and returns NULL. The port's answers one name, `TSRS_PluginApi001`, with the plugin API table
   (`ts-plugin-api`, `ts_server::plugin_api`; `implementation/plugin-api.md`), and is exported on
   every platform: on Linux it is the one export `ts_i386.so` doesn't have (port addition).
+  Version 2 of the table adds entity hooks (`ts_server::ham`, below).
 * `anglemod`, `Length`, `Q_log2` (Linux only): GCC exported these `pm_math.c` helpers. They call
   `shared::pm::{anglemod, length, q_log2}`, in `ts_i386.so`'s x87 arithmetic.
 
@@ -376,7 +377,13 @@ keeps the game running and logs it ("(port guard)"):
 Server plugins get a port-only API instead of TS's object layout: `CreateInterface` hands AMX Mod
 X's TS module a table of functions over the port's player state, and the private-data block only
 looks like TS's object as far as keeping old `get_pdata`/`set_pdata` offsets in bounds
-(`implementation/plugin-api.md`).
+(`implementation/plugin-api.md`). Version 2 of the table adds entity hooks for a port of AMX Mod
+X's hamsandwich, which can't patch vtables the port doesn't have: the game's entity functions go
+through `ts_server::ham`, which calls the plugin's hook before and after each watched one
+(numbered by hamsandwich's `Ham` enum; the pre hook with the object still in its slot, the post
+hook once it is back, or around a lend for calls inside the object's own dispatch) and runs
+them on request (`ExecuteHam`/`ExecuteHamB`). Unwatched, each entry point costs one bit test
+(`implementation/plugin-api.md` §7).
 
 One behaviour follows TS's Windows build on every platform:
 

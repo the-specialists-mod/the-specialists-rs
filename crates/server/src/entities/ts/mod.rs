@@ -215,7 +215,7 @@ pub fn object_caps(class: &CStr) -> i32 {
     if usable { crate::entities::stock::FCAP_CONTINUOUS_USE } else { 0 }
 }
 
-/// `CanUsedTroughWalls()` (vtable slot 3; `CBaseEntity` 0xac5b0 returns 1): false for ground
+/// `CanUsedTroughWalls()` (vtable slot 1; `CBaseEntity` 0xac5b0 returns 1): false for ground
 /// weapons (0xa34a8), ground ammo (0xa34fc), dropped guns (0xa340c) and the CTB case (0x9e70c),
 /// which `PlayerUse` only reaches with a clear line from the eyes.
 pub fn can_use_through_walls(class: &CStr) -> bool {

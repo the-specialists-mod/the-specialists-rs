@@ -18,6 +18,8 @@ plugins get from `CreateInterface`. The AMX Mod X modules in
 | Free slots, weapon ammo | `crates/server/src/weapons/mod.rs` |
 | Projectile throwers | `crates/server/src/weapons/projectiles.rs` (`Throwers`) |
 | Private-data guard | `crates/goldsrc/src/edict.rs`, `crates/server/src/world.rs` (`private_size`) |
+| Entity hooks (version 2, §7): numbering, marshalling, pre/post calls, `ham_execute` | `crates/server/src/ham/` (`mod.rs`, `table.rs`, `classes.rs`, `names.rs`; tests in `tests.rs`) |
+| Calling the plugin's hook (FFI), `ham_execute`'s pointer arguments | `crates/server-dll/src/plugin_api.rs` (`call_hook`, `ham_execute`) |
 
 ## 1. Getting the table
 
@@ -104,9 +106,10 @@ reads 0 or whatever a plugin last wrote. Use the plugin API for TS state. Writes
 would break the entity's link to its object; no TS offset a plugin has a reason to write lies
 there (it is `CBaseEntity`'s first members after `pev`/the vtable).
 
-**hamsandwich is unsupported.** The port's entities have no C++ vtables. `RegisterHam` fails
-cleanly with `[HAMSANDWICH] Failed to retrieve vtable for "player"` and a native error in the
-plugin, and the server keeps running.
+**Stock hamsandwich is unsupported.** The port's entities have no C++ vtables. `RegisterHam`
+fails cleanly with `[HAMSANDWICH] Failed to retrieve vtable for "player"` and a native error in
+the plugin, and the server keeps running. Version 2 of the table offers the same hooks without
+vtables (§7), for the `tsmod-amxx-rs` port of hamsandwich.
 
 Save and restore only compare `pvPrivateData` pointers (`goldsrc::ext::saverestore`), so the
 block's size and layout don't matter to them.
@@ -133,6 +136,7 @@ block's size and layout don't matter to them.
 * `set_free_slots` doesn't change the weapons carried. The speed follows the new value as TS's
   `GetSpeedBySlots` computes it (330 for The One or an empty inventory).
 * `set_weapon_ammo` on a grenade or blade stack sets the count but not the free weight it takes.
+* Entity hooks: §7.6.
 
 ## 6. Tests
 
@@ -143,11 +147,191 @@ block's size and layout don't matter to them.
   the thrower table, and compile-time checks that the private blocks cover TS's objects and keep
   hamsandwich's slots clear.
 * `CreateInterface` out of the engine (ctypes on `ts_amd64.so`): `TSRS_PluginApi001` gives
-  `IFACE_OK`, size 88 (64-bit), version 1, and all function pointers set. Other names and a NULL
+  `IFACE_OK`, size 88 (64-bit), version 1, and all function pointers set (version 2 makes it
+  136). Other names and a NULL
   name give NULL and `IFACE_FAILED`.
 * AMX Mod X 1.10 on ReHLDS 3.15 with Metamod-R, Linux and Windows (`ref/amxx-testenv`,
   `ham_test.sma` and `pdata_test.sma`): `RegisterHam(Ham_Spawn, "player")` fails cleanly on both
   (previously a crash on Windows). `get_pdata_int(id, 100)` and `get_pdata_int(id, 0)` read 0
   (previously heap garbage and the tag). Both servers keep running with their bots.
 * Export lists: `nm -D --defined-only` of `ts_i386.so` / `ts_amd64.so` gains only
-  `CreateInterface`. `objdump -p` of `mp.dll` / `ts_amd64.dll` is unchanged.
+  `CreateInterface`. `objdump -p` of `mp.dll` / `ts_amd64.dll` is unchanged. Version 2 adds no
+  export.
+* Entity hooks (`cargo test -p ts-server ham`): the 481 `Ham` names and their numbers, and every
+  supported function's argument and return kinds against `hooklist`'s signature (and both lists
+  against `ref/amxmodx`'s `ham_const.inc` / `hook_native.cpp` when that is checked out next to
+  the repository); marshalling of each kind (NaN and unknown entities ignored, NULL as -1, the
+  `TraceResult` and `KeyValueData` pointers); watch gating (armed only with a hook installed);
+  pre-hook argument changes reaching the function and the post hook; SUPERCEDE with the post call
+  still made and a zero `orig_ret`; the post call's action deciding the return; hooks run inside
+  `reach` (the lend); the nesting limit for a hook re-running its own function and for
+  `ham_execute` from a hook (`BUSY` at depth 8, every level's function run, the stack unwound);
+  `ham_execute`'s statuses and their order (`NOT_PLAYER`, `UNSUPPORTED`, `INVALID` for the count,
+  a kind, an entity not in use or a missing pointer, `BUSY` for an object held further up);
+  ExecuteHam skipping hooks for its own call only; the class registry (one id per type, link
+  order, case-sensitive names). `world.rs`: a slot's type, presence and lendability in every state.
+* In engine (FWGS dedicated server, `ts_dojo`, four bots, `sv_cheats 1`, `ts_dev_hamlog 1`): the
+  log shows Spawn before and after for every map entity and for each player's first spawn and
+  respawn (the inner path), TakeDamage with its inflictor, attacker, damage, bits and return, and
+  Killed nested inside the killing TakeDamage. Hooks under the AMX Mod X module are for
+  `tsmod-amxx-rs` to test.
+
+## 7. Entity hooks (version 2)
+
+AMX Mod X's hamsandwich hooks C++ virtual functions by patching vtables (`RegisterHam`) and calls
+them through the vtable (`ExecuteHam`, `ExecuteHamB`). The port's entities are Rust objects in a
+slab (design.md §4.2), so the server calls the plugin's one hook around each function it has, and
+runs functions on request. The contract is `ts-plugin-api`'s module docs ("Entity hooks").
+
+### 7.1 Numbering and arguments
+
+Functions are numbered by AMX Mod X 1.10's `Ham` enum (`ham_const.inc`, `Ham_Spawn` = 0 through
+`Ham_SC_Player_IsObserver` = 480; `ham::NAMES`), and their arguments and return value follow the
+signature `hook_native.cpp`'s `hooklist` gives that number (`ham::SIGS`): Entvar, Cbase and Edict
+are `ENTITY` (an index, -1 for NULL), Bool and Short are `INT`, pVector and pFloat are
+`VECTOR_OUT` / `FLOAT_OUT`, Trace is `TRACE` (a pointer to a real `TraceResult`), Str is `STRING`.
+`Ham_Keyvalue`'s int is the `KeyValueData *` (`p`, and `i` its low 32 bits, as hamsandwich hands
+plugins the pointer).
+
+### 7.2 Where the hooks run
+
+Each function's callers go through `ts_server::ham` instead of `world::dispatch`:
+
+* **Outer calls** reach the object through its edict (`ham::spawn`, `think`, `touch`, `use_`,
+  `take_damage`, ...). If the function is watched and a hook installed, the pre hook runs while
+  the object is still in its slot, then `world::dispatch` takes it out and runs the function, and
+  the post hook runs once the object is back. They fire only for an object in its slot: one that
+  a dispatch further up the stack holds is skipped by `world::dispatch` as well (no call), so
+  there is nothing to hook. `TakeHealth` and `TS_GoSlow` don't take the object out (they change
+  entvars, or reach a player lent to its slot through `world::run_now`), so they also fire for a
+  lent player.
+* **Inner calls** happen inside the object's own dispatch, on the `&mut` its caller holds:
+  `Player_Jump` and `Player_Duck` from `PreThink`, `Killed` from `CBasePlayer::TakeDamage`, the
+  player's respawn `Spawn`, its time-based `TakeHealth`, the HL items' `Respawn`. Each hook call
+  lends the object back to its slot and opens it (`world::lend_open`: `lend`, then `run_now`), so
+  the hook reaches the entity exactly as for an outer call, and the function goes on with the
+  object as the hook left it.
+* **Unwatched**, every entry point is the plain call after one test of a bit (`Hooks::armed`, set
+  only while a hook is installed and the plugin watches that function).
+* The pre hook's argument changes are decoded back into the native arguments (an entity index
+  not in use, a NaN or infinite float or vector component, or an unknown use type is ignored,
+  with a `[ts] ham error` line for the entity). `ham`, `this`, `class` and `argc` are restored
+  after it. The post hook sees the arguments as the function got them.
+* The post hook always follows the pre hook, also when the pre hook superseded the function or
+  the function could no longer reach its object (removed by the pre hook). `orig_ret` is then
+  the zero value. The post call's action alone decides the return value (`OVERRIDE`: `ret`,
+  otherwise `orig_ret`); `ret` keeps what the pre hook set, so a module that folds the pre result
+  into its post action keeps it.
+
+### 7.3 Re-entrancy
+
+Hooks run with no `RefCell` borrow held and their object in its slot, so a hook may use the
+whole API on it, run functions on it or on others (`ham_execute`, which goes through the same
+entry points), deal damage, and create or remove entities. A function whose object was removed
+by its pre hook doesn't run. `ham_execute` copies the `HamCall` (and a `TraceResult` /
+`KeyValueData`) in and writes `ret` back, so passing the hook's own `HamCall` is fine.
+`run_hooks = 0` (ExecuteHam) skips the hooks for that call only: a `Killed` that its
+`TakeDamage` causes runs them as usual.
+
+Hook calls nest at most `ham::MAX_DEPTH` = 8 deep. Deeper, functions run without hooks and
+`ham_execute` refuses with `BUSY`, each with a `[ts] ham error` line, so a plugin that re-runs a
+function from its own hook (`ExecuteHamB(Ham_Spawn, id)` in a Spawn hook) stops with an error
+instead of overflowing the stack. Calling the plugin's hook is FFI: `ts-server-dll`'s `call_hook`
+is the one `unsafe` call, behind the safe `HookFn` the game crate holds.
+
+### 7.4 Classes
+
+`class_id(classname)` gives the class of a classname linked with `link_entities!` (the names
+the engine creates through exports), and `entity_class_id` that of a live game entity: one id
+per Rust type, numbered in link order from 1 when first asked and stable for the server process
+(`ham/classes.rs`). Classnames sharing a type share a class, as hamsandwich's hook on one vtable
+covers every name of that C++ class: `func_door` / `func_door_rotating` / `func_water`, the HL
+weapon names and `ts_groundweapon`, the four `info_player_team*`. An entity of a type nothing
+links gets the next id the first time it is asked about. `world.rs` keeps each object's type in
+its slot, so the class is known while the object is out.
+
+### 7.5 The functions
+
+"Fires" is `ham_supported` = 1: the hook runs when the game calls it, and `ham_execute` runs it.
+"Execute" is 0: TS has it, the port computes it on request but never calls it as a hookable unit,
+so hooks don't fire. Everything else is `UNSUPPORTED`. Addresses are `ts_i386.so`.
+
+| # | `Ham_` | Signature | Fires | Execute | Port |
+|---|---|---|---|---|---|
+| 0 | `Spawn` | `Void_Void` | all | | `DispatchSpawn`, `ClientPutInServer`, a player's respawn (inner), bots, the game's create helpers (projectiles, `ExplosionCreate`, power-ups, slow-motion points, the CTB case, the sound list) |
+| 2 | `Keyvalue` | `Void_Int` | all | | `DispatchKeyValue`'s class part, after the entvars parser (SDK order). A superseding hook's `fHandled` counts. |
+| 3 | `ObjectCaps` | `Int_Void` | | all | `levelchange::ts_object_caps` (TS's caps by class, 0 for a name TS doesn't know) |
+| 4 | `Activate` | `Void_Void` | all | | `ServerActivate` |
+| 6 | `Classify` | `Int_Void` | | all | 2 (`CLASS_PLAYER`) for players, else 0 |
+| 8 | `TraceAttack` | `Void_Entvar_Float_Vector_Trace_Int` | all | | `damage::trace_attack` (bullets, melee, explosions, thrown and falling objects). The trace carries `iHitgroup`, `vecEndPos` and `pHit`; changes to the attacker, damage, direction, bits, hit group and end position are used. |
+| 9 | `TakeDamage` | `Int_Entvar_Entvar_Float_Int` | all | | `damage::apply`, `ApplyMultiDamage` (`damage::multi::apply`) |
+| 10 | `TakeHealth` | `Int_Float_Int` | all | | `items::take_health` (kits, chargers, healing doors, negative `trigger_hurt`, `game_player_hurt`), a player's time-based healing (inner) |
+| 11 | `Killed` | `Void_Entvar_Int` | player | others | `rules::on_killed` from `CBasePlayer::TakeDamage` (inner); `iGib` is `DMG_NEVERGIB` / `DMG_ALWAYSGIB` (1 / 2) and back. Others: `CBaseEntity::Killed` (0xabd4c). |
+| 12 | `BloodColor` | `Int_Void` | | all | 247 for players, -1 (`DONT_BLEED`) else |
+| 25 | `OverrideReset` | `Void_Void` | all | | a global entity restored over this one |
+| 32 | `IsAlive` | `Int_Void` | | all | `deadflag == DEAD_NO && health > 0` |
+| 33 | `IsBSPModel` | `Int_Void` | | all | `SOLID_BSP` or `MOVETYPE_PUSHSTEP` |
+| 36 | `IsInWorld` | `Int_Void` | | all | inside ±4096, slower than 2000 |
+| 37 | `IsPlayer` | `Int_Void` | | all | the player class |
+| 38 | `IsNetClient` | `Int_Void` | | all | false for `mp.dll`'s `CBot`s (`Player::cbot`) and non-players |
+| 41 | `Think` | `Void_Void` | all | | `DispatchThink` |
+| 42 | `Touch` | `Void_Cbase` | all | | `DispatchTouch`, `game_zone_player`, the Xen tree |
+| 43 | `Use` | `Void_Cbase_Cbase_Int_Float` | all | | `DispatchUse`, every target fired (`fire_targets`), buttons, trains, tanks and their controls, effects |
+| 44 | `Blocked` | `Void_Cbase` | all | | `DispatchBlocked` |
+| 45 | `Respawn` | `Cbase_Void` | HL items | | `CItem::ItemTouch` (inner); returns the item |
+| 48 | `Center` | `Vector_Void` | | all | `(absmin + absmax) / 2` |
+| 49 | `EyePosition` | `Vector_Void` | | all | `origin + view_ofs` |
+| 55 | `Player_Jump` | `Void_Void` | player | | `stunt::jump` from PreThink while +jump is held (inner) |
+| 56 | `Player_Duck` | `Void_Void` | player | | `stunt::duck` from PreThink (inner) |
+| 57 | `Player_PreThink` | `Void_Void` | player | | `PlayerPreThink` |
+| 58 | `Player_PostThink` | `Void_Void` | player | | `PlayerPostThink` |
+| 59 | `Player_GetGunPosition` | `Vector_Void` | | player | `origin + view_ofs` |
+| 94 | `TS_BreakableRespawn` | `Int_Int` | `func_breakable`, `func_pushable`, the doors | others (empty, 0xac5ac) | `RespawnEntities` on a round restart (0x77764) |
+| 95 | `TS_CanUsedThroughWalls` | `Int_Void` | | all | `entities::ts::can_use_through_walls` (0 for ground weapons, ammo, dropped guns, the case) |
+| 123 | `TS_GiveSlowMul` | `Void_Void` | | all | nothing: hamsandwich declares it void, so its `max(fuser1, 0.01)` can't be returned |
+| 124 | `TS_GoSlow` | `Void_Float_Int` | all | | `rules::powerup::go_slow` (slow-motion activators, `globalslow`, the slow-motion triggers) |
+| 125 | `TS_InSlow` | `Int_Void` | | all | `rules::powerup::entity_in_slow` |
+| 126 | `TS_IsObjective` | `Int_Void` | | all | true for `ts_wingiver` / `ts_scoregiver` |
+| 127 | `TS_EnableObjective` | `Void_Int` | | all | a wingiver's counter and latch start over; nothing else |
+| 128 | `TS_OnFreeEntPrivateData` | `Void_Void` | | all | nothing (TS's is empty, 0xac650) |
+| 129 | `TS_ShouldCollide` | `Int_Cbase` | all | | `pfnShouldCollide` |
+
+The rest of TS's gamedata (`virtual.games/ts/offsets-common.txt`) is `UNSUPPORTED`:
+
+* `Precache`, `SetObjectCollisionBox`: the port runs them inside the class's spawn or restore
+  and the engine's own bounds code, never as a call of their own.
+* The monster, AI and helper virtuals (`DeathNotice`, `TraceBleed`, `IsTriggered`,
+  `MyMonsterPointer`, `GetToggleState`, `AddPoints`, `AddPlayerItem`, `GiveAmmo`, `GetDelay`,
+  `IsMoving`, `DamageDecal`, `TeamId`, `GetNextTarget`, `FVisible`, `BodyTarget`, ...): the port
+  has no function for them, or inlines TS's call where it ports it.
+* `Player_ShouldFadeOnDeath`, `Player_ImpulseCommands`, `Player_UpdateClientData`: plain code
+  inside PreThink, PostThink and `UpdateClientData`, not yet split out as hookable units.
+* Every `Item_*` and `Weapon_*` function, and `TS_Weapon_AlternateAttack`: TS's weapons are one
+  `CTSGun` per player, whose state the port keeps in the player's inventory (`weapons::Inventory`),
+  not in an entity with its own dispatch.
+* `TS_RespawnWait` is `Deprecated` in hamsandwich itself.
+
+### 7.6 Deviations and limits
+
+* The hooks and `ham_execute` are a port addition with hamsandwich's semantics; TS has no plugin
+  interface.
+* A class is a Rust type, not a C++ class: classnames TS builds from different classes but the
+  port from one type share hooks (`info_player_team1..4` with `info_player_deathmatch`), and the
+  port's generic types are one class per parameter (`item_healthkit` and `item_battery` differ, as
+  in TS).
+* Calls the port makes without the hook: a breakable's or door's `Spawn` inside its own
+  `BreakableRespawn`, `CTestEffect`'s restore `Spawn`, and `Use` calls the game makes on an object
+  it already holds. In TS each would be a virtual call hamsandwich sees.
+* Outer hooks don't fire for an object a dispatch further up the stack holds (a `Touch` of a
+  player during its own think); the port doesn't run the function then either.
+* `TakeHealth`'s bits are always `DMG_GENERIC`, as in every TS caller; changes are ignored.
+  `Keyvalue`'s strings are read-only.
+* `ham_execute(Ham_TraceAttack)` only adds to the multi-damage, as TS's `TraceAttack` does;
+  nothing applies it unless the plugin deals the damage. Of the trace, the port uses `iHitgroup`
+  and `vecEndPos`; `flFraction` is 0 and the plane fields are empty.
+* `ham_execute(Ham_Killed)` on a non-player runs `CBaseEntity::Killed`, which removes it, also
+  for classes whose TS `Killed` does more (the dead monsters).
+* `Ham_TS_GiveSlowMul` returns nothing (hamsandwich's signature), so plugins read `fuser1`.
+* `ts_dev_hamlog 1|0` (sv_cheats) is a dev aid that installs the server's own hook and logs
+  Spawn, TakeDamage and Killed (`[ts ham]` lines). It is refused while a plugin's hook is
+  installed, and a plugin's `ham_set_hook` replaces it.
