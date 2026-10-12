@@ -9,12 +9,18 @@ each root was set up, how to run the checks, and the latest results.
 |---|---|---|---|---|
 | `fwgs` | Xash3D FWGS (built from `../xash3d-fwgs`, `--64bits`) | 0.21 (2026) | Linux, native | `x86_64-unknown-linux-gnu` |
 | `fwgs-win` | Xash3D FWGS 0.21 win32 (from `../xash3d-ts`) | 0.21 | Windows, Wine | `i686-pc-windows-gnu` |
+| `fwgs-win64` | Xash3D FWGS `win32-amd64` (the FWGS `continuous` release) | 0.21 | Windows, Wine | `x86_64-pc-windows-gnu` |
 | `rehlds-linux` | ReHLDS built from `../ReHLDS` on HLDS `steam_legacy` | 3.x / HLDS 8684 | Linux | `i686-unknown-linux-gnu` |
 | `rehlds-win` | ReHLDS 3.15.0.896 release on HLDS `steam_legacy` | HLDS 8684 | Windows, Wine | `i686-pc-windows-gnu` |
 | `hlds25-linux` | Stock Valve HLDS, `public` branch (post-anniversary) | 10211 | Linux | `i686-unknown-linux-gnu` |
 | `hlds25-win` | Stock Valve HLDS, `public` branch (post-anniversary) | 10210 | Windows, Wine | `i686-pc-windows-gnu` |
 
 ### 1.1 Setting the roots up
+
+`fwgs-win64` is the FWGS `continuous` release's `xash3d-fwgs-win32-amd64.7z` unpacked into
+`~/games/xash_win64`, with `valve/` filled from the `fwgs-win` root (`cargo xtask install
+fwgs-win64` links the TS content into `ts/`). Before it existed the windows-x86_64 server library
+had the wrong name (issue #101).
 
 ```sh
 # steamcmd (one instance per install: steamcmd remembers -beta per app, see Pitfalls)

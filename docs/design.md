@@ -291,7 +291,7 @@ renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::st
 | `i686-unknown-linux-gnu` | `dlls/ts_i386.so`, `cl_dlls/client.so` | ReHLDS, HLDS (Linux), Steam HL Linux |
 | `i686-pc-windows-gnu` | `dlls/mp.dll`, `cl_dlls/client.dll` | ReHLDS, HLDS (Windows), Steam HL Windows |
 | `x86_64-unknown-linux-gnu` | `dlls/ts_amd64.so`, `cl_dlls/client_amd64.so` | FWGS 64-bit |
-| `x86_64-pc-windows-gnu` | `dlls/ts_amd64.dll`, `cl_dlls/client_amd64.dll` | FWGS 64-bit Windows |
+| `x86_64-pc-windows-gnu` | `dlls/mp_amd64.dll`, `cl_dlls/client_amd64.dll` | FWGS 64-bit Windows |
 
 * **Bindings** are generated per target from the FWGS headers, which `_Static_assert` the 32-bit layouts.
 * **Windows** builds use MinGW-w64 (UCRT). `GiveFnptrsToDll` is exported undecorated, and the only imports are system DLLs (`api-ms-win-crt-*`, present on Windows 10+ and Wine).

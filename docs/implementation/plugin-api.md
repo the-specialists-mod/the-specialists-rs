@@ -155,7 +155,7 @@ block's size and layout don't matter to them.
   (previously a crash on Windows). `get_pdata_int(id, 100)` and `get_pdata_int(id, 0)` read 0
   (previously heap garbage and the tag). Both servers keep running with their bots.
 * Export lists: `nm -D --defined-only` of `ts_i386.so` / `ts_amd64.so` gains only
-  `CreateInterface`. `objdump -p` of `mp.dll` / `ts_amd64.dll` is unchanged. Version 2 adds no
+  `CreateInterface`. `objdump -p` of `mp.dll` / `mp_amd64.dll` is unchanged. Version 2 adds no
   export.
 * Entity hooks (`cargo test -p ts-server ham`): the 481 `Ham` names and their numbers, and every
   supported function's argument and return kinds against `hooklist`'s signature (and both lists

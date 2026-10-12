@@ -1,5 +1,5 @@
-// Read by Xash3D FWGS. Same libraries as liblist.gam; FWGS on amd64 loads dlls/ts_amd64.so and
-// cl_dlls/client_amd64.so.
+// Read by Xash3D FWGS. Same libraries as liblist.gam; FWGS on amd64 loads dlls/ts_amd64.so on
+// Linux, dlls/mp_amd64.dll on Windows (the gamedll name plus _amd64) and cl_dlls/client_amd64.*.
 basedir         "valve"
 gamedir         "ts"
 title           "The Specialists (Rust)"

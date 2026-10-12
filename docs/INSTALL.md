@@ -44,7 +44,7 @@ directory:
 | `linux-i686` (Steam HL, HLDS, ReHLDS) | `dlls/ts_i386.so` and `dlls/ts.so` | `cl_dlls/client.so` |
 | `windows-i686` (Steam HL, HLDS, ReHLDS, FWGS 0.21 win32) | `dlls/mp.dll` | `cl_dlls/client.dll` |
 | `linux-x86_64` (FWGS 64-bit) | `dlls/ts_amd64.so` | `cl_dlls/client_amd64.so` |
-| `windows-x86_64` (FWGS 64-bit) | `dlls/ts_amd64.dll` | `cl_dlls/client_amd64.dll` |
+| `windows-x86_64` (FWGS 64-bit) | `dlls/mp_amd64.dll` | `cl_dlls/client_amd64.dll` |
 
 The `-debug` archives hold the same libraries with debug info. Use them only to symbolize crash
 reports.

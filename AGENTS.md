@@ -105,7 +105,7 @@ e.g. `MecklenburgV_Rain_Final`; found from the checkout's parents, so worktrees 
 `package-xash-win`; `TS_PACKAGE_OUT` overrides the archive path.
 
 Engine roots (`cargo xtask roots`) default to `~/games/<dir>`: `fwgs` (native amd64 FWGS),
-`fwgs-win` (FWGS 0.21 win32 under Wine), `rehlds-linux`, `rehlds-win`, `hlds25-linux` and
+`fwgs-win` (FWGS 0.21 win32 under Wine), `fwgs-win64` (FWGS win32-amd64 under Wine), `rehlds-linux`, `rehlds-win`, `hlds25-linux` and
 `hlds25-win`. Setup steps are in `docs/validation.md` §1.
 
 Before calling a change done:

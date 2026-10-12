@@ -26,7 +26,8 @@ pub struct Target {
     pub triple: &'static str,
     pub os: Os,
     pub platform: &'static str,
-    /// Installed names (engine naming rules: FWGS appends _amd64 on 64-bit).
+    /// Installed names. FWGS on 64-bit takes the gamedll name from gameinfo.txt minus any _i?86 and
+    /// appends _amd64: dlls/ts_i386.so -> ts_amd64.so on Linux, dlls\mp.dll -> mp_amd64.dll on Windows.
     pub server_name: &'static str,
     pub client_name: &'static str,
 }
@@ -57,7 +58,7 @@ impl Target {
         triple: "x86_64-pc-windows-gnu",
         os: Os::Windows,
         platform: "windows-x86_64",
-        server_name: "ts_amd64.dll",
+        server_name: "mp_amd64.dll",
         client_name: "client_amd64.dll",
     };
     pub const ALL: [Target; 4] = [Self::LINUX_I686, Self::WINDOWS_I686, Self::LINUX_X86_64, Self::WINDOWS_X86_64];
@@ -69,6 +70,8 @@ pub struct Root {
     pub os: Os,
     pub engine: Engine,
     pub path: PathBuf,
+    /// The libraries it loads.
+    pub target: Target,
 }
 
 fn home() -> PathBuf {
@@ -93,18 +96,19 @@ pub fn wineprefix() -> PathBuf {
 
 impl Root {
     pub fn all() -> Vec<Root> {
-        let mk = |name: &'static str, os, engine, dir: &str| {
+        let mk = |name: &'static str, target: Target, engine, dir: &str| {
             let var = format!("TS_ROOT_{}", name.to_ascii_uppercase().replace('-', "_"));
             let path = env::var_os(var).map(PathBuf::from).unwrap_or_else(|| home().join("games").join(dir));
-            Root { name, os, engine, path }
+            Root { name, os: target.os, engine, path, target }
         };
         vec![
-            mk("fwgs", Os::Linux, Engine::Fwgs, "xash"),
-            mk("fwgs-win", Os::Windows, Engine::Fwgs, "xash_win"),
-            mk("rehlds-linux", Os::Linux, Engine::ReHlds, "hlds_linux"),
-            mk("rehlds-win", Os::Windows, Engine::ReHlds, "hlds_win"),
-            mk("hlds25-linux", Os::Linux, Engine::Hlds25, "hlds25_linux"),
-            mk("hlds25-win", Os::Windows, Engine::Hlds25, "hlds25_win"),
+            mk("fwgs", Target::LINUX_X86_64, Engine::Fwgs, "xash"),
+            mk("fwgs-win", Target::WINDOWS_I686, Engine::Fwgs, "xash_win"),
+            mk("fwgs-win64", Target::WINDOWS_X86_64, Engine::Fwgs, "xash_win64"),
+            mk("rehlds-linux", Target::LINUX_I686, Engine::ReHlds, "hlds_linux"),
+            mk("rehlds-win", Target::WINDOWS_I686, Engine::ReHlds, "hlds_win"),
+            mk("hlds25-linux", Target::LINUX_I686, Engine::Hlds25, "hlds25_linux"),
+            mk("hlds25-win", Target::WINDOWS_I686, Engine::Hlds25, "hlds25_win"),
         ]
     }
 
@@ -120,11 +124,7 @@ impl Root {
     }
 
     pub fn target(&self) -> Target {
-        match (self.engine, self.os) {
-            (Engine::Fwgs, Os::Linux) => Target::LINUX_X86_64,
-            (_, Os::Linux) => Target::LINUX_I686,
-            (_, Os::Windows) => Target::WINDOWS_I686,
-        }
+        self.target
     }
 
     /// Where the console log ends up (Windows hlds writes it with -condebug).
@@ -148,7 +148,8 @@ impl Root {
         };
         match (self.engine, self.os) {
             (Engine::Fwgs, Os::Windows) => {
-                // FWGS 0.21 win32 (as shipped with xash3d-ts): one exe, -dedicated for servers.
+                // FWGS 0.21 win32 (as shipped with xash3d-ts) or win32-amd64 (the FWGS continuous
+                // build): one exe, -dedicated for servers.
                 let mut c = Command::new("wine");
                 c.env("WINEPREFIX", wineprefix()).env("WINEDEBUG", "-all");
                 c.arg("xash3d.exe").args(["-dedicated", "-dev", "1", "-log"]);
