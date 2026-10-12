@@ -620,7 +620,16 @@ fn get_fov() -> f32 {
     fov
 }
 
-/// `CHud::Think` (`0x10049760`), from `CHud::UpdateClientData` (`0x10024b00`, i.e.
+/// The element loop at the start of `CHud::Think` (`0x10049760`): every `HUD_ACTIVE` element's
+/// `Think`, with `m_flTimeDelta` (the last redraw's, [`time_delta`]). Of TS's elements only the
+/// weapon element's has a body ([`think`]); its Init and Reset set `HUD_ACTIVE` and nothing
+/// clears it. Runs before [`think_fov`], from `HUD_UpdateClientData`.
+pub fn think_elements() {
+    think(time_delta());
+    with(|h| sync_shared(h));
+}
+
+/// The rest of `CHud::Think` (`0x10049760`), from `CHud::UpdateClientData` (`0x10024b00`, i.e.
 /// `HUD_UpdateClientData`): eases `m_iFOV` (`state.fov`) toward `HUD_GetFOV` (or `default_fov`
 /// while that is 0) with `UTIL_ApproachFOV` ([`crate::view::ease_fov`]) and sets the zoom
 /// sensitivity. `ft` is the last refdef's frame time. Returns the eased FOV.
@@ -660,11 +669,8 @@ fn set_fov(fov: u8) {
 }
 
 /// The TS weapon element's `Think` (1004ce10), the parts that need no key bits: laser colour,
-/// kung-fu regeneration, heartbeat/breathing sounds, fire-mode switch sound. TS runs it from
-/// `HUD_UpdateClientData` (`CHud::Think` 0x10049760, gated on `HUD_ACTIVE`, which the element's
-/// Init and Reset set and nothing clears) with the previous redraw's `m_flTimeDelta`; running it
-/// at the end of the redraw with that redraw's delta gives the prediction (between the two) the
-/// same power.
+/// kung-fu regeneration, heartbeat/breathing sounds, fire-mode switch sound. Run from
+/// [`think_elements`].
 fn think(dt: f32) {
     let e = engine();
     let ic = input::cvars();
@@ -891,7 +897,6 @@ pub fn redraw(time: f32, intermission: bool) {
         }
         g.screen = s;
     });
-    think(dt);
     with(|h| sync_shared(h));
     let g = GFX.0.borrow();
     let Some(g) = g.as_ref() else { return };

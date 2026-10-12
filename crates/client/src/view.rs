@@ -675,10 +675,11 @@ pub fn hardware() -> bool {
     with(|w| w.hardware)
 }
 
-/// `CHud::UpdateClientData` (`0x10024b00`): runs `CHud::Think` (the zoom easing,
-/// [`crate::hud::think_fov`]) and writes the eased FOV into `clientdata`. Returns true (the
+/// `CHud::UpdateClientData` (`0x10024b00`): runs `CHud::Think` (the elements' `Think`s,
+/// [`crate::hud::think_elements`], then the zoom easing, [`crate::hud::think_fov`]) and writes the eased FOV into `clientdata`. Returns true (the
 /// engine's "changed" flag), as `HUD_UpdateClientData` must.
 pub fn update_client_data(cd: &mut r::ClientData) -> bool {
+    crate::hud::think_elements();
     cd.fov = crate::hud::think_fov(with(|w| w.refdef_frametime));
     // `v_idlescale = m_iConcuss` (`0x10024b63`, after `CHud::Think`).
     let concuss = crate::hud::concussion();
