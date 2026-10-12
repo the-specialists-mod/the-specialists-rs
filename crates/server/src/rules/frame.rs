@@ -48,18 +48,19 @@ fn update_limit_cvars(which: usize, frags_left: i32, time_left: i32) {
 
 /// `CHalfLifeMultiplay::Think` (0xcf038): voice, intermission, `mp_timelimit`, `mp_fraglimit`
 /// (every slot's `pev->frags`, players who left included), the limit cvars, `CTSGameRules::Think`
-/// and a passed map vote.
+/// and a passed map vote. `mp_timelimit × 60` stays in an x87 register (extended, so exact in
+/// `f64`), and the time and frags left are `(int)` casts: truncated (0xcf1a8, 0xcf252).
 fn multiplay_think(now: f32) {
     super::voice::update(engine().globals().frametime as f64);
     if state::with(|g| g.game_over) {
         intermission_think(now);
         return;
     }
-    let timelimit = cvars::f(c"mp_timelimit") * 60.0;
+    let timelimit = cvars::f(c"mp_timelimit") as f64 * 60.0;
     let mut time_left = 0;
     if timelimit != 0.0 {
-        time_left = (timelimit - now).round_ties_even() as i32;
-        if timelimit <= now {
+        time_left = super::x87_trunc(timelimit - now as f64);
+        if timelimit <= now as f64 {
             go_to_intermission();
             return;
         }
@@ -74,7 +75,7 @@ fn multiplay_think(now: f32) {
                 go_to_intermission();
                 return;
             }
-            frags_left = frags_left.min((fraglimit - f).round_ties_even() as i32);
+            frags_left = frags_left.min(super::x87_trunc(fraglimit as f64 - f as f64));
         }
     }
     update_limit_cvars(0, frags_left, time_left);
@@ -88,15 +89,16 @@ fn multiplay_think(now: f32) {
 /// so the voice manager is updated twice a frame then. The fraglimit reads `team_scores` as the
 /// last `RecountTeams` left them (kills, team changes, spawns); in CTB it reads the four
 /// `TSGameRules` teams' captures, and every team, named or not, lowers `mp_fragsleft`.
+/// The time and frags left are truncated as in the Multiplay `Think` (0xe41d1, 0xe428a, 0xe42e8).
 fn teamplay_think(now: f32) {
     super::voice::update(engine().globals().frametime as f64);
     if state::with(|g| g.game_over) {
         multiplay_think(now);
         return;
     }
-    let timelimit = cvars::f(c"mp_timelimit") * 60.0;
-    let time_left = if timelimit == 0.0 { 0 } else { (timelimit - now).round_ties_even() as i32 };
-    if timelimit != 0.0 && now >= timelimit {
+    let timelimit = cvars::f(c"mp_timelimit") as f64 * 60.0;
+    let time_left = if timelimit == 0.0 { 0 } else { super::x87_trunc(timelimit - now as f64) };
+    if timelimit != 0.0 && now as f64 >= timelimit {
         go_to_intermission();
         return;
     }
@@ -117,7 +119,7 @@ fn teamplay_think(now: f32) {
                 go_to_intermission();
                 return;
             }
-            frags_left = frags_left.min((fraglimit - s as f32).round_ties_even() as i32);
+            frags_left = frags_left.min(super::x87_trunc(fraglimit as f64 - s as f64));
         }
     }
     update_limit_cvars(1, frags_left, time_left);
@@ -128,12 +130,12 @@ fn teamplay_think(now: f32) {
 }
 
 /// The game-over part of `CHalfLifeMultiplay::Think`: `mp_chattime` kept in 10..120 (compared
-/// rounded), then `ChangeLevel` once the chat time is over and a player pressed a button
+/// as `(int)`, truncated: 0xcf0ac), then `ChangeLevel` once the chat time is over and a player pressed a button
 /// (`PlayerThink`), or 120 s into the intermission. TS calls it every frame from then on; the
 /// engine runs only the first `changelevel` of a map (`last_spawncount` in both FWGS and HLDS).
 fn intermission_think(now: f32) {
     let eng = engine();
-    let chat = cvars::f(c"mp_chattime").round_ties_even() as i32;
+    let chat = super::x87_trunc(cvars::f(c"mp_chattime") as f64);
     if chat < 10 {
         eng.set_cvar_string(c"mp_chattime", "10");
     } else if chat > 120 {

@@ -26,11 +26,14 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
         }
         "powerup" if cvars::cheats() && args.argc() > 1 => cheat_powerup(p, cx, args.int(1)),
         "cashala" if cvars::cheats() => give_cash(p, 30000),
+        // The cheat sets `m_iFOV` (+0x9f0) and `pev->fov`; the reply prints `m_iFOV`, which only
+        // this command sets (a scope zooms `pev->fov` alone, so it prints 0 then).
         "fov" => {
             if cvars::cheats() && args.argc() > 1 {
-                cx.pev().fov = args.int(1) as f32;
+                p.ts.ifov = args.int(1);
+                cx.pev().fov = p.ts.ifov as f32;
             } else {
-                let fov = cx.pev().fov as i32;
+                let fov = p.ts.ifov;
                 engine().client_print(cx.edict, PRINT_TYPE::print_console, &format!("\"fov\" is \"{fov}\"\n"));
             }
         }
@@ -88,8 +91,10 @@ fn fullupdate_spectator(idx: i32, deadflag: i32) -> Spectator {
     Spectator { entindex: idx as u8, observer: (deadflag == DEAD_RESPAWNABLE as i32) as u8 }
 }
 
-/// `powerup <n>` (cheat): 1 slow pause, 2 grenade, 3 kung fu + super jump, 4 multiply clip,
-/// 5 double fire rate, other slow motion; +5 s if the same is held.
+/// `powerup <n>` (cheat, `ClientCommand` 0xad838): 1 slow pause, 2 grenade, 3 kung fu + super
+/// jump, 4 multiply clip, 5 double fire rate, other slow motion; +5 s if the same is held. Unlike
+/// a pickup (`PlayerAddPowerUp`) it plays no sound, and 3 sets both and sends both `PwUp`s even
+/// when the player already has them.
 fn cheat_powerup(p: &mut Player, cx: &mut Cx, n: i32) {
     if !alive(cx.pev()) || cx.pev().iuser1 != 0 {
         return;
@@ -97,12 +102,17 @@ fn cheat_powerup(p: &mut Player, cx: &mut Cx, n: i32) {
     let bits = match n {
         1 => pw::SLOWPAUSE,
         2 => {
-            add_powerup(p, cx, pw::GRENADE, 0);
+            // `PickUpWeapon(24, NULL, 0, 1, 0)`.
+            crate::weapons::give_weapon(p, cx, 24, 0);
             return;
         }
         3 => {
-            add_powerup(p, cx, pw::KUNGFU, 0);
-            add_powerup(p, cx, pw::SUPERJUMP, 0);
+            let e = cx.edict;
+            p.kungfu = true;
+            msg::one(Msg::PwUp, e, |w| PwUp { bits: pw::KUNGFU as i16, secs: 0 }.write(w));
+            p.superjump = true;
+            engine().set_physics_key(e, c"mj", c"1");
+            msg::one(Msg::PwUp, e, |w| PwUp { bits: pw::SUPERJUMP as i16, secs: 0 }.write(w));
             return;
         }
         4 => {
@@ -120,36 +130,81 @@ fn cheat_powerup(p: &mut Player, cx: &mut Cx, n: i32) {
     }
 }
 
-/// Builds the chat line: `\x02name: text` / `\x02(TEAM) name: text`, `%a`/`%h` expanded,
-/// truncated so the line fits TS's 128-byte buffer.
-pub fn format_say(name: &str, team: bool, text: &str, armor: f32, health: f32) -> String {
-    let prefix = if team { format!("\x02(TEAM) {name}: ") } else { format!("\x02{name}: ") };
-    let room = 127usize.saturating_sub(prefix.len());
-    let mut t: String = text.to_owned();
-    while t.len() > room {
-        t.pop();
+/// `Host_Say`'s prefix, `"%c%s: "` or `"%c(TEAM) %s: "` with `\x02` and the sender's name.
+pub fn say_prefix(name: &str, team: bool) -> String {
+    if team { format!("\x02(TEAM) {name}: ") } else { format!("\x02{name}: ") }
+}
+
+/// The text as `Host_Say` cuts it, in place, so that it fits a 127-byte line after `prefix`
+/// (`p[0x7f - strlen(prefix)] = 0`). The log line shows the cut text too.
+pub fn clip_say_text<'a>(prefix: &str, text: &'a str) -> &'a str {
+    let mut room = 127usize.saturating_sub(prefix.len()).min(text.len());
+    while !text.is_char_boundary(room) {
+        room -= 1;
     }
-    let mut out = prefix;
-    let mut chars = t.chars().peekable();
+    &text[..room]
+}
+
+/// The longest chat line (before its `\n`) that fits `Host_Say`'s 140-byte buffer with the `\n`
+/// and the terminator.
+const SAY_LINE_MAX: usize = 138;
+
+/// Builds the chat line from [`say_prefix`] and the [`clip_say_text`] text: `%a` becomes
+/// "no kevlar"/"with kevlar", `%h` the health as `(int)` truncates it (GCC's `fistp` under a
+/// truncating control word, 0x9d2a8), any other `%` stays, then `\n`.
+///
+/// Guard (stack overflow in TS): TS `strcat`s the expansions into a 140-byte stack buffer
+/// without a bound, so enough `%a`s overrun it. The port stops at the buffer's size, which also
+/// keeps the `SayText` under the engines' 192-byte user-message limit (ReHLDS/HLDS `Host_Error`
+/// on a longer one).
+pub fn format_say(prefix: &str, text: &str, armor: f32, health: f32) -> String {
+    let mut out = prefix.to_owned();
+    let mut chars = text.chars().peekable();
+    let push = |out: &mut String, s: &str| {
+        for c in s.chars() {
+            if out.len() + c.len_utf8() > SAY_LINE_MAX {
+                return;
+            }
+            out.push(c);
+        }
+    };
     while let Some(c) = chars.next() {
         if c == '%' {
             match chars.peek() {
                 Some('a') => {
                     chars.next();
-                    out.push_str(if armor == 0.0 { "no kevlar" } else { "with kevlar" });
+                    push(&mut out, if armor == 0.0 { "no kevlar" } else { "with kevlar" });
                 }
                 Some('h') => {
                     chars.next();
-                    out.push_str(&(health.round() as i32).to_string());
+                    push(&mut out, &crate::entities::stock::maprules::x87_int(health).to_string());
                 }
-                _ => out.push('%'),
+                _ => push(&mut out, "%"),
             }
         } else {
-            out.push(c);
+            push(&mut out, c.encode_utf8(&mut [0; 4]));
         }
     }
     out.push('\n');
     out
+}
+
+/// `Host_Say`'s chat text from `Cmd_Args`: a leading `"` is dropped together with the last
+/// character, whatever it is (`p[strlen(p) - 1] = 0` on the original string).
+pub fn say_text(raw: &str) -> &str {
+    match raw.strip_prefix('"') {
+        Some(t) => match t.char_indices().last() {
+            Some((i, _)) => &t[..i],
+            None => t,
+        },
+        None => raw,
+    }
+}
+
+/// `Host_Say`'s empty-line test: the text needs a printable, non-space character
+/// (`__ctype_b[c] & (_ISprint | _ISspace) == _ISprint`, C locale, so bytes from 0x80 don't count).
+pub fn say_has_text(text: &str) -> bool {
+    text.bytes().any(|b| b.is_ascii_graphic())
 }
 
 /// `Host_Say` (0xad02c). `vote …` lines go to `PlayerVote` first.
@@ -159,30 +214,40 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
         return;
     }
     let raw = args.rest().to_string_lossy().into_owned();
-    let mut text = raw.as_str();
-    if let Some(t) = text.strip_prefix('"') {
-        text = t.strip_suffix('"').unwrap_or(t);
-    }
-    if text.trim().is_empty() {
+    let text = say_text(&raw);
+    if !say_has_text(text) {
         return;
     }
     let e = cx.edict;
     let idx = cx.index();
     let name = netname(e);
+    let prefix = say_prefix(&name, team);
+    let mut text = clip_say_text(&prefix, text).to_owned();
     let line = {
         let v = cx.pev();
-        format_say(&name, team, text, v.armorvalue, v.health)
+        format_say(&prefix, &text, v.armorvalue, v.health)
     };
-    p.ts.next_say = now + 0.5;
 
-    if text.starts_with("timeleft") {
+    // `IsNetClient()` of the sender gates the `timeleft` reply and the vote: a bot's vote line is
+    // broadcast as chat.
+    let net_client = !p.cbot;
+    let broadcast = if text.starts_with("timeleft") {
         // Not broadcast: in TS both exits of this branch jump to 0xad4dc, which clears the
-        // broadcast flag, the same as a handled vote.
-        let left = cvars::f(c"mp_timeleft").round() as i32;
-        msg::text_one(e, hud_dest::TALK, &format!("Time left: {}:{:02}\n", left / 60, left % 60));
-    } else if text.starts_with("vote") && votes::player_vote(e, idx, &text[4..]) {
-        // A handled vote isn't broadcast as chat.
+        // broadcast flag, the same as a handled vote. `(int)mp_timeleft` truncates (0x9d3eb).
+        if net_client {
+            let left = crate::entities::stock::maprules::x87_int(cvars::f(c"mp_timeleft"));
+            msg::text_one(e, hud_dest::TALK, &format!("Time left: {}:{:02}\n", left / 60, left % 60));
+        }
+        false
+    } else if text.starts_with("vote") {
+        // `strlwr(text + 4)` lowers the text in place, so the log line shows it lowered too; the
+        // chat line was built before.
+        text = format!("vote{}", text[4..].to_ascii_lowercase());
+        !(net_client && votes::player_vote(e, idx, &text[4..]))
     } else {
+        true
+    };
+    if broadcast {
         let lms = state::lms();
         let me_alive = alive(cx.pev());
         let my_respawn = p.respawn_at;
@@ -204,12 +269,16 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
         msg::say_one(e, idx, &line);
         engine().print(&line);
     }
+    // `"name<uid><authid><uid>"`, the `model` key instead of the second user id in teamplay.
+    let eng = engine();
+    let uid = eng.user_id(e);
+    let tail = if state::teamplay() { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
     msg::log(&format!(
-        "\"{name}<{}><{}><>\" {} \"{text}\"\n",
-        engine().user_id(e),
-        engine().auth_id(e).to_string_lossy(),
+        "\"{name}<{uid}><{}><{tail}>\" {} \"{text}\"\n",
+        eng.auth_id(e).to_string_lossy(),
         if team { "say_team" } else { "say" }
     ));
+    p.ts.next_say = now + 0.5;
 }
 
 // ---- server commands -------------------------------------------------------------------------
@@ -540,10 +609,37 @@ mod tests {
 
     #[test]
     fn say_format() {
-        assert_eq!(format_say("bob", false, "hi", 0.0, 100.0), "\x02bob: hi\n");
-        assert_eq!(format_say("bob", true, "hp %h %a 100%", 50.0, 87.4), "\x02(TEAM) bob: hp 87 with kevlar 100%\n");
+        let say = |name: &str, team: bool, text: &str, armor: f32, health: f32| {
+            let prefix = say_prefix(name, team);
+            format_say(&prefix, clip_say_text(&prefix, text), armor, health)
+        };
+        assert_eq!(say("bob", false, "hi", 0.0, 100.0), "\x02bob: hi\n");
+        assert_eq!(say("bob", true, "hp %h %a 100%", 50.0, 87.4), "\x02(TEAM) bob: hp 87 with kevlar 100%\n");
+        // `(int)health` truncates: 87.6 is 87, -0.5 is 0.
+        assert_eq!(say("bob", false, "%h", 0.0, 87.6), "\x02bob: 87\n");
+        assert_eq!(say("bob", false, "%h", 0.0, -0.5), "\x02bob: 0\n");
+        // The text is cut so the unexpanded line is 127 bytes.
         let long = "x".repeat(300);
-        assert!(format_say("bob", false, &long, 0.0, 0.0).len() <= 128);
+        let prefix = say_prefix("bob", false);
+        assert_eq!(prefix.len() + clip_say_text(&prefix, &long).len(), 127);
+        assert_eq!(say("bob", false, &long, 0.0, 0.0).len(), 128);
+        // Guard: expansions stop at TS's 140-byte buffer, well under the 192-byte message limit.
+        let line = say("bob", false, &"%a".repeat(60), 1.0, 0.0);
+        assert_eq!(line.len(), SAY_LINE_MAX + 1);
+        assert!(line.ends_with('\n') && line.starts_with("\x02bob: with kevlarwith kevlar"));
+    }
+
+    #[test]
+    fn say_text_parsing() {
+        // A leading quote takes the last character with it, quote or not.
+        assert_eq!(say_text("\"hello\""), "hello");
+        assert_eq!(say_text("\"hello"), "hell");
+        assert_eq!(say_text("\""), "");
+        assert_eq!(say_text("hello\""), "hello\"");
+        // Only printable non-space ASCII counts as text.
+        assert!(!say_has_text(" \t\x01"));
+        assert!(!say_has_text("\u{e9}"));
+        assert!(say_has_text(" a "));
     }
 
     #[test]

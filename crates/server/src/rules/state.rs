@@ -413,7 +413,8 @@ impl GameRules {
             }
             if i >= 0 {
                 let s = &mut self.tp_scores[i as usize];
-                *s = (*s as f32 + frags).round_ties_even() as i32;
+                // `(int)(score + frags)`, truncated (0xe57e9).
+                *s = super::x87_trunc(*s as f64 + *frags as f64);
             }
         }
     }

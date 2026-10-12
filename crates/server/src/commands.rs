@@ -24,8 +24,10 @@ impl Args {
     pub fn str(&self, i: i32) -> &'static str {
         self.argv(i).to_str().unwrap_or("")
     }
+    /// `strtol(argv(i), NULL, 10)`, as TS reads its numeric client-command arguments (`jointeam`,
+    /// `powerup`, `fov`, `VModEnable`): leading white space and digits, so `2abc` is 2.
     pub fn int(&self, i: i32) -> i32 {
-        self.str(i).trim().parse().unwrap_or(0)
+        crate::rules::mapcycle::atoi(&self.argv(i).to_string_lossy())
     }
     pub fn float(&self, i: i32) -> f32 {
         self.str(i).trim().parse().unwrap_or(0.0)

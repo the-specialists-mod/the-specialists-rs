@@ -16,11 +16,11 @@ const UNLOGGED: i32 = 0x100; // FCVAR_UNLOGGED
 /// The port's `ts_pm_arith` is registered after them ([`pm_arith`]).
 pub const CVARS: &[(&str, &str, i32)] = &[
     ("displaysoundlist", "0", 0),
-    ("mp_fragsleft", "0", SERVER | UNLOGGED),
-    ("mp_timeleft", "0", SERVER | UNLOGGED),
     ("mp_teamplay", "0", SERVER),
     ("mp_fraglimit", "0", SERVER),
     ("mp_timelimit", "0", SERVER),
+    ("mp_fragsleft", "0", SERVER | UNLOGGED),
+    ("mp_timeleft", "0", SERVER | UNLOGGED),
     ("mp_friendlyfire", "0", SERVER),
     ("mp_falldamage", "0", SERVER),
     ("mp_weaponstay", "0", SERVER),
@@ -37,8 +37,8 @@ pub const CVARS: &[(&str, &str, i32)] = &[
     ("respawntime", "3", SERVER),
     ("damagemult", "0.0", SERVER),
     ("slowmatch", "1.0", SERVER),
-    ("nopowerup", "0.0", SERVER),
     ("botlearn", "0.0", SERVER),
+    ("nopowerup", "0.0", SERVER),
     ("realbullet", "0.0", SERVER),
     ("usecash", "0.0", SERVER),
     ("ammocount", "0", SERVER),

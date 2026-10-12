@@ -295,11 +295,11 @@ pub fn ts_precache() {
 }
 
 /// The rest of `CWorld::Precache`'s precaches: its sounds, then the gib models for
-/// `sv_language` (`g_Language`, rounded to an int: 1 = German).
+/// `sv_language` (`g_Language`, `(int)`, truncated: 0xf45f7; 1 = German).
 pub fn world_sounds_and_gibs() {
     precache_list(WORLD_SOUNDS);
     let eng = engine();
-    let language = eng.cvar_float(c"sv_language").round_ties_even() as i32;
+    let language = crate::rules::x87_trunc(eng.cvar_float(c"sv_language") as f64);
     crate::entities::stock::blood::set_language(language);
     for m in gib_models(language) {
         eng.precache_model(m);

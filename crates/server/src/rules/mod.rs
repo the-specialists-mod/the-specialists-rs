@@ -76,6 +76,9 @@ pub struct PlayerRules {
     pub obs_target: i32,
     /// Chat flood control (`+0x7c0`).
     pub next_say: f32,
+    /// `m_iFOV` (`+0x9f0`): set only by the `fov` cheat, zeroed by `Spawn`, `Killed` and
+    /// `StartObserver`; the `fov` reply prints it.
+    pub ifov: i32,
 
     // ---- scoring -------------------------------------------------------------------------------
     /// Kill spree (`+0x744`), time of the last kill (`+0x748`).
@@ -121,9 +124,12 @@ pub struct PlayerRules {
     pub flag: Option<crate::entities::ts::ctb::FlagStatus>,
 }
 
+/// The rules' part of `GameDLLInit` (0xc5aa0): the cvars, the server commands, and the
+/// `exec skill.cfg` it queues last (TS registers no `sk_*` cvars, but the command still goes out).
 pub fn game_init() {
     cvars::register();
     commands::register_server_commands();
+    engine().server_command("exec skill.cfg\n");
 }
 
 /// `InstallGameRules` (0xc6050), from `CWorld::Precache` (worldspawn's keyvalues are parsed by
@@ -351,6 +357,15 @@ pub fn netname(e: *mut edict_t) -> String {
     engine().string(e.v().netname).to_string_lossy().into_owned()
 }
 
+/// A C `(int)` cast as GCC 2.95 compiles it for `ts_i386.so`: `fnstcw`, the rounding control set
+/// to truncate (`movb $0xc`), `fistp`, `fldcw`. The decomp shows every such cast as `ROUND()`,
+/// but it truncates toward zero; NaN and anything out of range give the x87 "integer indefinite"
+/// `0x80000000`. Takes the value as the x87 register held it: sums and products of `f32`s are
+/// exact in `f64` here.
+pub fn x87_trunc(v: f64) -> i32 {
+    if (-2_147_483_648.0..2_147_483_648.0).contains(&v) { v as i32 } else { i32::MIN }
+}
+
 pub fn eye(v: &entvars_t) -> [f32; 3] {
     [v.origin[0] + v.view_ofs[0], v.origin[1] + v.view_ofs[1], v.origin[2] + v.view_ofs[2]]
 }
@@ -382,8 +397,21 @@ pub fn add_frags(e: *mut edict_t, p: Option<&mut Player>, n: f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::ts_flags_of;
+    use super::{ts_flags_of, x87_trunc};
     use goldsrc::sys::*;
+
+    #[test]
+    fn int_casts_truncate_like_gcc() {
+        // `mp_timeleft` 0.6 s before a whole second shows the lower one, as TS's (int) does.
+        assert_eq!(x87_trunc(29.6), 29);
+        assert_eq!(x87_trunc(-29.6), -29);
+        assert_eq!(x87_trunc(2.5), 2);
+        assert_eq!(x87_trunc(f64::NAN), i32::MIN);
+        assert_eq!(x87_trunc(3.0e9), i32::MIN);
+        // `mp_timelimit 1` at time 30.4: 29 s left.
+        let left = 1.0f32 as f64 * 60.0 - 30.4f32 as f64;
+        assert_eq!(x87_trunc(left), 29);
+    }
 
     #[test]
     fn ts_flags_keep_fl_client_on_a_player_who_left() {

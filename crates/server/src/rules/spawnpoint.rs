@@ -79,7 +79,8 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
                     }
                 }
             }
-            min_dist = min_dist.min(d.round() as i32);
+            // `(int)Length()`, truncated (0x764b8).
+            min_dist = min_dist.min(super::x87_trunc(d as f64));
         }
         let score = spot_score(enemy_sees, teammate_sees, min_dist, |a, b| eng.random_long(a, b));
         spots.push((it, score));
