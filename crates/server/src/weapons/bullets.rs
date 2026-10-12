@@ -77,7 +77,7 @@ pub fn start_frame() {
 fn think() {
     let e = engine();
     let now = e.time();
-    let rb = assets::realbullet();
+    let rb = crate::gameplay::active().server.weapon_realbullet(assets::realbullet());
     MANAGER.0.borrow_mut().count = 0;
     for i in 0..MAX_BULLETS {
         let b = MANAGER.0.borrow().slots[i];
@@ -99,6 +99,7 @@ fn think() {
 /// (`DestroyBullet`).
 fn update(b: &mut Bullet, now: f32) -> bool {
     let e = engine();
+    let rules = crate::gameplay::active().server;
     // Port addition: TS reads the owner without a check; a freed edict can't be read here.
     if b.owner.is_null() || b.owner.is_free() {
         return false;
@@ -115,25 +116,29 @@ fn update(b: &mut Bullet, now: f32) -> bool {
     let fuser1 = owner.fuser1;
     let (slow, btime) = crate::world::with::<Player, _>(b.owner, |p| (p.ts.slow_others, p.ts.btime)).unwrap_or((0.0, false));
     let slowmul = if slow != 0.0 { slow } else { fuser1.max(0.01) };
-    let mult = spread::bullet_velocity_mult(slowmul, btime);
+    let mult = rules.bullet_velocity_mult(slowmul, btime);
     // `mult * (dt * (velocity * 40) * dir)`, in TS's order (0x6f038..).
     let v40 = velocity * spread::UNITS_PER_METER;
     let step = [mult * (dt * v40 * b.dir[0]), mult * (dt * v40 * b.dir[1]), mult * (dt * v40 * b.dir[2])];
     let end = spread::add(b.pos, step);
-    let tr = fire::trace_expanded(b.pos, end, b.owner);
+    let tr = rules.bullet_trace(b.pos, end, b.owner);
     if tr.flFraction == 1.0 {
         b.pos = end;
         return true;
     }
     b.pos = tr.vecEndPos;
     let dist = spread::length(spread::sub(b.start, b.pos));
+    // The update's own damage multiplier, from 1.0 (`bullet_damage_multiplier`); a penetration
+    // (btype 2) has none.
     let mut adjust = 1.0;
     let amount = if b.btype == 2 {
-        range_multiplier((dist * 0.003_333_333_4 * 10.0).round_ties_even() as i32) * b.damage
+        range_multiplier(rules.bullet_range_index(fire::pierce_range_scaled(dist))) * b.damage
     } else {
-        adjust = assets::damage_adjust();
         let unit = ammo.map(|a| a.range_unit).unwrap_or(80.0);
-        range_multiplier(spread::range_index(dist, unit)) * b.damage
+        let falloff = range_multiplier(rules.bullet_range_index(fire::range_scaled(dist, unit)));
+        let amount = rules.bullet_damage(b.ammo, b.weapon, b.damage, falloff, true);
+        adjust = rules.bullet_damage_multiplier(&mut 1.0, assets::damage_cheat());
+        amount
     };
     let bits = if b.btype == 1 { fire::DMG_SHOTGUN_TS } else { fire::DMG_BULLET_TS };
     // `glast_weaponid` names the bullet's weapon for a kill it causes (DeathMsg, logs).

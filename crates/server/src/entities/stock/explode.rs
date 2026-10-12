@@ -203,8 +203,13 @@ mod explosion_tests {
 ///   trace back from the target measures the obstacle and only `d − thickness` gets through;
 /// - every `WorldGun` in the sphere is knocked away ([`worldgun::blast`]);
 /// - then the "spectacular" slow-motion point at the blast (0.25 for 1 s).
+///
+/// The ruleset decides the world-gun push and what follows the damage
+/// (`ServerRules::explosion_pushes_world_guns`, `explosion_aftermath`).
 pub fn ts_explosion(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t, dmg: f32, bits: i32, r_full: f32, r_max: f32) {
     let eng = engine();
+    let rules = crate::gameplay::active().server;
+    let push_guns = rules.explosion_pushes_world_guns();
     let mut org = origin;
     org[2] += 1.0;
     // 0x7d04a: WorldGuns are pushed away from 50 u above the blast point.
@@ -228,11 +233,16 @@ pub fn ts_explosion(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_
             explosion_damage(e, org, inflictor, attacker, dmg, bits, r_full, r_max);
         }
         // 0x7d651: the WorldGun check runs for everything but the inflictor, damaged or not.
-        if !e.is_free() && eng.string(e.v().classname).to_bytes() == b"WorldGun" {
+        if push_guns && !e.is_free() && eng.string(e.v().classname).to_bytes() == b"WorldGun" {
             worldgun::blast(e, push_from, r_max);
         }
     }
-    // 0x7d964/0x7d9ab: `DoSpectacularNess()`, then `CreateSlowMotionPoint(origin + 1z, 0.25, 1.0, 0)`.
+    rules.explosion_aftermath(org, inflictor, attacker);
+}
+
+/// The end of [`ts_explosion`] (0x7d964/0x7d9ab): `DoSpectacularNess()`, then
+/// `CreateSlowMotionPoint(origin + 1z, 0.25, 1.0, 0)`.
+pub fn explosion_slow_point(org: Vec3) {
     if crate::rules::scoring::do_spectacularness() {
         crate::entities::ts::create_slow_motion_point(org, 0.25, 1.0, false);
     }

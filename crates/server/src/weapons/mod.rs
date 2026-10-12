@@ -7,13 +7,16 @@ mod assets;
 mod bullets;
 mod commands;
 mod custom;
-mod fire;
+pub(crate) mod fire;
 mod host;
 mod inventory;
 mod melee;
 mod net;
 pub(crate) mod projectiles;
 pub mod worldgun;
+
+pub use fire::trace_expanded;
+pub use projectiles::ThrownBlade;
 
 /// The classnames the weapons modules link (the save-table tests).
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! `shrapnel` (`CTSShrapnel`, a `CTSPhysicObject`). Nothing in TS 3.0 calls
-//! `CTSShrapnel::Create` (0x7bf9c), so the only shrapnel is one a map places: an invisible
-//! (`EF_NODRAW`) bouncing piece that hits players for 100, sticks in the world, and is gone
-//! after 30 s (10 s after its last hit).
+//! `CTSShrapnel::Create` (0x7bf9c, ported as [`create`] for rulesets that do), so the only
+//! shrapnel is one a map places: an invisible (`EF_NODRAW`) bouncing piece that hits players for
+//! 100, sticks in the world, and is gone after 30 s (10 s after its last hit).
 
 use crate::damage::{self, DamageInfo};
 use crate::entities::remove;
@@ -39,6 +39,34 @@ fn normalize_or_up(v: Vec3) -> Vec3 {
     }
     let k = 1.0 / len;
     [k * v[0], k * v[1], k * v[2]]
+}
+
+/// `CTSShrapnel::Create(owner, origin, velocity)` (0x7bf9c): a spawned piece at `origin`, flying
+/// at `velocity` plus the owner's, with a random body (0..2), the owner as its thrower (the
+/// attacker of its hits) and the owner's time scale (`GoSlow(owner->fuser1)`, which only writes
+/// `fuser1`). As in TS, the fields are set after `Spawn` and the origin without `SET_ORIGIN`.
+/// Returns the edict (null if none was free).
+pub fn create(owner: *mut edict_t, origin: Vec3, velocity: Vec3) -> *mut edict_t {
+    let eng = engine();
+    let e = eng.create_named_entity(c"shrapnel");
+    if e.is_null() {
+        return e;
+    }
+    crate::ham::spawn(e);
+    // Port addition: TS reads the owner unchecked; without one the piece keeps `Spawn`'s state.
+    let (owner_velocity, owner_time) = if owner.is_null() { ([0.0; 3], 1.0) } else { (owner.v().velocity, owner.v().fuser1) };
+    let body = eng.random_long(0, 2);
+    crate::world::dispatch(e, |ent, cx| {
+        if let Some(s) = (ent as &mut dyn std::any::Any).downcast_mut::<Shrapnel>() {
+            s.thrower = (!owner.is_null()).then_some(owner);
+        }
+        let v = cx.pev();
+        v.origin = origin;
+        v.velocity = vec::add(velocity, owner_velocity);
+        v.body = body;
+        v.fuser1 = owner_time;
+    });
+    e
 }
 
 impl Entity for Shrapnel {

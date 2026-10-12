@@ -293,6 +293,21 @@ The hooks so far:
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11 | `menus/buy.rs`, `menus/mod.rs` |
+| `ServerRules` | `bullet_trace(start, end, shooter)` | `weapons::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |
+| `ServerRules` | `bullet_damage(ammo, weapon, damage, falloff, simulated)` | `falloff × damage` | `shoot_bullets`, `bullets.rs` `update` (first hit) |
+| `ServerRules` | `bullet_range_index(scaled)` | rounded to nearest | the same three |
+| `ServerRules` | `bullet_damage_multiplier(acc, cheat)` | `cheat` (`damagemult` with `sv_cheats`) or 1; `acc` unused | `shoot_bullets` (per hit, `acc` per call), `bullets.rs` `update` |
+| `ServerRules` | `pierce_step(left)` | `min(2·left, 48)` | `shoot_bullets` |
+| `ServerRules` | `weapon_realbullet(realbullet)` | `realbullet` | `shoot_bullets`, `bullets.rs` `think` |
+| `ServerRules` | `bullet_velocity_mult(slowmul, bullet_time)` | `spread::bullet_velocity_mult` | `bullets.rs` `update` |
+| `ServerRules` | `player_hit(&PlayerHit) -> HitDamage` | `player::damage::hit_damage` (stunt and dodge ×0.7, head ×2 / ×1.5 shotgun, legs ×0.5) | `player/damage.rs` `trace_attack` |
+| `ServerRules` | `armor_damage(armor, amount, hitgroup, bits)` | `player::damage::after_kevlar` (absorb `armor_absorb`, armour kept) | `player/damage.rs` `take_damage` |
+| `ServerRules` | `damage_punch()` | 0 | `player/damage.rs` `take_damage` |
+| `ServerRules` | `grenade_explosion()` | (110, 300, 1024) | `weapons/projectiles.rs` grenade `think` |
+| `ServerRules` | `explosion_pushes_world_guns()` | true | `entities/stock/explode.rs` `ts_explosion` |
+| `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
+| `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `projectiles::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
+| `ServerRules` | `thrown_blade_damage(btype, flown)` | `projectiles::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
 
 **Weapon tables.** A ruleset's tables (`GunRules::tables`) are installed as the ones
 `shared::weapons::tables()` returns (`table::set_ruleset_tables`): by the server when a plugin

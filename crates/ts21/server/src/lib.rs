@@ -10,13 +10,18 @@
 //! * [`protocol`]: 2.1 on TS 3.0's wire (§1.2).
 //! * [`powerup`]: power-ups and slow motion (§3.7).
 //! * [`stunt`]: the server stunts and their slot limits (§3.8, §3.5).
+//! * [`damage`]: bullets and what a hit does to a player (§3.1).
+//! * [`explode`], [`blades`]: explosions, shrapnel and thrown knives (§3.2).
 
 #![deny(unsafe_code)]
 
+pub mod blades;
 pub mod cash;
 pub mod commands;
 pub mod cvars;
+pub mod damage;
 pub mod entities;
+pub mod explode;
 pub mod players;
 pub mod powerup;
 pub mod protocol;
@@ -25,7 +30,9 @@ pub mod scoring;
 pub mod stunt;
 
 use goldsrc::server::MsgWriter;
-use goldsrc::sys::edict_t;
+use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
+use goldsrc::sys::{TraceResult, edict_t};
+use shared::weapons::spread::Vec3;
 use std::ffi::CStr;
 use ts_server::commands::Args;
 use ts_server::damage::DamageInfo;
@@ -36,10 +43,12 @@ use ts_server::gameplay::server::CvarDef;
 use ts_server::gameplay::{ServerPlugin, ServerRules};
 use ts_server::messages::Msg;
 use ts_server::player::Player;
+use ts_server::player::damage::{HitDamage, PlayerHit};
 use ts_server::rules::powerup::PowerupRules;
 use ts_server::rules::scoring::Frag;
 use ts_server::rules::state::{self, GameRules, Mode};
 use ts_server::stunt::rules::{Dive, StuntClock, StuntRules};
+use ts_server::weapons::ThrownBlade;
 use ts_server::world::{Cx, Entity};
 use ts21_gameplay::TS21;
 
@@ -215,6 +224,72 @@ impl ServerRules for Ts21Server {
 
     fn bullet_time_allowed(&self, time_scale: f32) -> bool {
         stunt::bullet_time_allowed(time_scale)
+    }
+
+    /// `ShootBulletsPlayer` (0x1003ff56, 0x10040319) and the bullet update (0x1003fa21) trace
+    /// with the plain `UTIL_TraceLine` (`FUN_10067850`, ignoring the shooter): no 32-unit growth
+    /// of the players' boxes, so hitboxes outside a player's box can't be hit.
+    fn bullet_trace(&self, start: Vec3, end: Vec3, shooter: *mut edict_t) -> TraceResult {
+        engine().trace_line(start, end, DONT_IGNORE_MONSTERS, shooter)
+    }
+
+    fn bullet_damage(&self, ammo: u8, weapon: u8, damage: f32, falloff: f32, simulated: bool) -> f32 {
+        damage::bullet_damage(ammo, weapon, damage, falloff, simulated)
+    }
+
+    fn bullet_range_index(&self, scaled: f32) -> i32 {
+        damage::range_index(scaled)
+    }
+
+    fn bullet_damage_multiplier(&self, acc: &mut f32, cheat: Option<f32>) -> f32 {
+        damage::accumulate(acc, cheat, engine().random_float(0.0, 0.05))
+    }
+
+    fn pierce_step(&self, left: f32) -> f32 {
+        damage::pierce_step(left)
+    }
+
+    /// `ShootBulletsPlayer` (0x1003fe17) reads a global (`DAT_100aca80`) that nothing writes:
+    /// only the shooter's slow motion fires simulated bullets, and they always step every 0.1 s.
+    fn weapon_realbullet(&self, _realbullet: i32) -> i32 {
+        0
+    }
+
+    fn bullet_velocity_mult(&self, slowmul: f32, bullet_time: bool) -> f32 {
+        damage::bullet_velocity_mult(slowmul, bullet_time)
+    }
+
+    fn player_hit(&self, hit: &PlayerHit) -> HitDamage {
+        damage::player_hit(hit)
+    }
+
+    fn armor_damage(&self, armor: &mut f32, amount: f32, hitgroup: i32, bits: i32) -> f32 {
+        damage::armor_damage(armor, amount, hitgroup, bits)
+    }
+
+    fn damage_punch(&self) -> f32 {
+        damage::DAMAGE_PUNCH
+    }
+
+    fn grenade_explosion(&self) -> (f32, f32, f32) {
+        explode::GRENADE_EXPLOSION
+    }
+
+    /// `TSExplosion` (0x10047aa0) has no `WorldGun` knock-around.
+    fn explosion_pushes_world_guns(&self) -> bool {
+        false
+    }
+
+    fn explosion_aftermath(&self, org: Vec3, _inflictor: *mut edict_t, attacker: *mut edict_t) {
+        explode::aftermath(org, attacker);
+    }
+
+    fn thrown_blade(&self, btype: i32) -> ThrownBlade {
+        blades::thrown_blade(btype)
+    }
+
+    fn thrown_blade_damage(&self, btype: i32, flown: f32) -> f32 {
+        blades::thrown_blade_damage(btype, flown)
     }
 }
 

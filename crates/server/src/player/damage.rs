@@ -134,6 +134,47 @@ pub fn take_health_edict_plain(e: *mut edict_t, amount: f32) -> bool {
     true
 }
 
+/// A traced hit on a player, as `CBasePlayer::TraceAttack` (0x901cc) sees it for its damage
+/// multipliers ([`ServerRules::player_hit`](crate::gameplay::ServerRules::player_hit)).
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerHit {
+    /// The damage the attack passed.
+    pub damage: f32,
+    pub bits: i32,
+    pub hitgroup: i32,
+    /// The victim is stunting (`iuser4 & 0x10c10`).
+    pub stunting: bool,
+    /// The victim's dodge window is open (`pl+0x524`, `stunt.dodge_until`).
+    pub dodging: bool,
+}
+
+/// What `TraceAttack` makes of a [`PlayerHit`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HitDamage {
+    /// The damage added to the multi-damage.
+    pub amount: f32,
+    /// A headshot: the headshot hit sound.
+    pub headshot: bool,
+    /// The headshot is recorded for the kill (`glast_headshot`, the "headshot" message).
+    pub record_headshot: bool,
+}
+
+/// TS 3.0's `TraceAttack` multipliers (0x901cc): stunting ×0.7, bullets in the dodge window ×0.7,
+/// then [`hitgroup_scale`]; a bullet or thrown hit in the head is a headshot.
+pub fn hit_damage(hit: &PlayerHit) -> HitDamage {
+    let c = &tables().combat;
+    let mut amount = hit.damage;
+    if hit.stunting {
+        amount *= c.stunt_damage_taken;
+    }
+    if hit.dodging && hit.bits & bits::BULLET != 0 {
+        amount *= c.stunt_damage_taken;
+    }
+    let headshot = hit.hitgroup == hitgroup::HEAD && hit.bits & (bits::BULLET | bits::THROWN) != 0;
+    amount *= hitgroup_scale(hit.hitgroup, hit.bits);
+    HitDamage { amount, headshot, record_headshot: headshot }
+}
+
 /// `CBasePlayer::TakeDamage` (0x8fa94): a hit arms the bullet dance when it does at most 80
 /// damage, the victim's horizontal speed is under 80 u/s, and it isn't in the legs.
 pub fn arms_bullet_dance(group: i32, speed2d: f32, dmg: f32) -> bool {
@@ -147,17 +188,18 @@ pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     let eng = engine();
     let now = cx.time();
     let e = cx.edict;
-    let mut amount = dmg.damage;
 
     if now < p.ts.protect_until {
         return;
     }
-    if cx.pev().iuser4 & rules::scoring::STUNTING != 0 {
-        amount *= tables().combat.stunt_damage_taken;
-    }
-    if now < p.stunt.dodge_until && dmg.bits & bits::BULLET != 0 {
-        amount *= tables().combat.stunt_damage_taken;
-    }
+    // The multipliers, which TS applies around the checks below (they don't read the damage).
+    let hit = crate::gameplay::active().server.player_hit(&PlayerHit {
+        damage: dmg.damage,
+        bits: dmg.bits,
+        hitgroup: dmg.hitgroup,
+        stunting: cx.pev().iuser4 & rules::scoring::STUNTING != 0,
+        dodging: now < p.stunt.dodge_until,
+    });
     if trace_attack_refused(dmg.attacker, e) {
         return;
     }
@@ -165,11 +207,10 @@ pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         return;
     }
     p.ts.last_hitgroup = dmg.hitgroup;
-    let headshot = dmg.hitgroup == hitgroup::HEAD && dmg.bits & (bits::BULLET | bits::THROWN) != 0;
-    if headshot {
+    let (amount, headshot) = (hit.amount, hit.headshot);
+    if hit.record_headshot {
         crate::damage::multi::set_headshot();
     }
-    amount *= hitgroup_scale(dmg.hitgroup, dmg.bits);
     let is_alive = Player::is_alive(cx);
     let kevlar_hit = cx.pev().armorvalue != 0.0
         && dmg.bits & bits::BULLET != 0
@@ -269,7 +310,10 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     }
     // Truncated, like the kevlar-scaled damage below (0x8fbd0).
     p.ts.last_damage = amount as i32;
-    let after = after_kevlar(amount, cx.pev().armorvalue, p.ts.last_hitgroup, dmg.bits, crate::rules::state::armor_absorb());
+    let rules = crate::gameplay::active().server;
+    let mut armor = cx.pev().armorvalue;
+    let after = rules.armor_damage(&mut armor, amount, p.ts.last_hitgroup, dmg.bits);
+    cx.pev().armorvalue = armor;
 
     let took = monster_take_damage(p, cx, dmg, after);
 
@@ -287,6 +331,10 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
         for (name, no_repeat) in damage_reports(dmg.bits, severity, p.ts.last_damage) {
             super::suit::set_suit_update(p, cx, Some(name), false, no_repeat);
         }
+    }
+    let punch = rules.damage_punch();
+    if punch != 0.0 {
+        cx.pev().punchangle[0] -= punch;
     }
     if after >= 1.0 {
         let f = TsFade::new([150, 10, 10], 0x4b, 0.3, 0.15, fade::IN);

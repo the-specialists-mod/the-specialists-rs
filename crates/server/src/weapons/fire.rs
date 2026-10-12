@@ -86,8 +86,9 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
     assets::debug(|| {
         format!("shoot weapon={} pellets={} spread={:.5} dmg={} seed={}", shot.weapon, shot.pellets, shot.spread, shot.damage, shot.seed)
     });
+    let rules = crate::gameplay::active().server;
     let pev = shooter.v();
-    let real = assets::realbullet() != 0 || pev.fuser1.max(0.01) < 0.99;
+    let real = rules.weapon_realbullet(assets::realbullet()) != 0 || pev.fuser1.max(0.01) < 0.99;
     let (fwd, right, up) = spread::angle_vectors(pev.v_angle);
     let mut src = gun_position(pev);
     if shot.right_offset != 0.0 {
@@ -96,7 +97,10 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
     let ammo = tables().ammo(shot.ammo);
     let unit = ammo.map(|a| a.range_unit).unwrap_or(80.0);
     let pierce = ammo.map(|a| a.pierce).unwrap_or(0.0);
-    let adjust = assets::damage_adjust();
+    let cheat = assets::damage_cheat();
+    // `ShootBulletsPlayer`'s damage multiplier, reset once per call (`bullet_damage_multiplier`).
+    let mut acc = 1.0f32;
+    let mut adjust = 1.0f32;
     let bits = if shot.btype == 1 { DMG_SHOTGUN_TS } else { DMG_BULLET_TS };
     // Every pellet's TraceAttack adds to one multi-damage, applied once after the loop: the
     // pellets that hit one victim in a row reach its TakeDamage as one hit. Simulated bullets
@@ -109,13 +113,13 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
     let mut left = 0.0f32;
     let mut last: Option<(TraceResult, Vec3)> = None;
     // The pellet pattern is the ruleset's; a bot's may use the engine's `RandomFloat`.
-    let rules = crate::gameplay::gun_rules(shooter);
+    let gun_rules = crate::gameplay::gun_rules(shooter);
     let bot = pev.flags & FL_FAKECLIENT as i32 != 0;
     let mut random_float = |lo: f32, hi: f32| e.random_float(lo, hi);
     for i in 1..=shot.pellets {
         let bot_random: Option<&mut dyn FnMut(f32, f32) -> f32> = if bot { Some(&mut random_float) } else { None };
         let offset =
-            rules.pellet_offset(shot.seed, i, bot_random).unwrap_or_else(|| spread::pellet_offset(shot.seed, i, spread::RADIAL_SPREAD));
+            gun_rules.pellet_offset(shot.seed, i, bot_random).unwrap_or_else(|| spread::pellet_offset(shot.seed, i, spread::RADIAL_SPREAD));
         let dir = spread::pellet_dir_at(fwd, right, up, [shot.spread, shot.spread], offset);
         if real {
             bullets::fire(shooter, src, dir, shot.damage, shot.ammo, shot.weapon, shot.btype);
@@ -124,11 +128,13 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
             continue;
         }
         let end = spread::ma(src, spread::MAX_RANGE, dir);
-        let tr = trace_expanded(src, end, shooter);
+        let tr = rules.bullet_trace(src, end, shooter);
         LAST_TRACE.0.set((tr.vecEndPos, tr.flFraction));
         if tr.flFraction != 1.0 {
             let dist = spread::length(spread::sub(src, tr.vecEndPos));
-            let amount = range_multiplier(spread::range_index(dist, unit)) * shot.damage;
+            let falloff = range_multiplier(rules.bullet_range_index(range_scaled(dist, unit)));
+            let amount = rules.bullet_damage(shot.ammo, shot.weapon, shot.damage, falloff, false);
+            adjust = rules.bullet_damage_multiplier(&mut acc, cheat);
             bullet_trace_attack(shooter, &tr, amount * adjust, dir, bits);
             projectiles::report_damage(|| format!("damage:{:.6}\n", amount * adjust));
             left = amount * pierce;
@@ -147,11 +153,25 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
         return;
     }
     let Some((tr, dir)) = last else { return };
-    let step = (left + left).min(48.0);
+    let step = rules.pierce_step(left);
     let p = spread::ma(tr.vecEndPos, step, dir);
     if e.point_contents(p) != CONTENTS_SOLID {
         pierce_shot(shooter, p, dir, left * adjust);
     }
+}
+
+/// A hit's distance in tenths of the ammo's range unit, `dist / (unit·10)·10`, as
+/// `ShootBulletsPlayer` and `UpdateBullet` compute it before the conversion to an index
+/// ([`ServerRules::bullet_range_index`](crate::gameplay::ServerRules::bullet_range_index)).
+pub fn range_scaled(dist: f32, unit: f32) -> f32 {
+    let d = dist / (unit * 10.0);
+    d * 10.0
+}
+
+/// The same for a penetration's straight trace: a fixed 30-unit range unit, as
+/// `dist·0.0033333334·10`.
+pub fn pierce_range_scaled(dist: f32) -> f32 {
+    dist * 0.003_333_333_4 * 10.0
 }
 
 /// The recursion with `btype 2`: a straight 4096-unit trace from the exit point, range falloff
@@ -159,12 +179,13 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
 fn pierce_shot(shooter: *mut edict_t, src: Vec3, dir: Vec3, dmg: f32) {
     damage::multi::clear();
     damage::multi::set_type(DMG_BULLET_TS);
+    let rules = crate::gameplay::active().server;
     let end = spread::ma(src, 4096.0, dir);
-    let tr = trace_expanded(src, end, shooter);
+    let tr = rules.bullet_trace(src, end, shooter);
     LAST_TRACE.0.set((tr.vecEndPos, tr.flFraction));
     if tr.flFraction != 1.0 {
         let dist = spread::length(spread::sub(src, tr.vecEndPos));
-        let idx = (dist * 0.003_333_333_4 * 10.0).round_ties_even() as i32;
+        let idx = rules.bullet_range_index(pierce_range_scaled(dist));
         let amount = range_multiplier(idx) * dmg;
         bullet_trace_attack(shooter, &tr, amount, dir, DMG_BULLET_TS);
         projectiles::report_damage(|| format!("damage(piercing):{amount:.6}\n"));
