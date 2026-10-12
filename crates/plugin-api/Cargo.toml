@@ -1,0 +1,7 @@
+[package]
+name = "ts-plugin-api"
+description = "C ABI the TS server library offers server plugins (the AMX Mod X tsx module)"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]

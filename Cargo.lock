@@ -304,6 +304,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ts-plugin-api"
+version = "0.2.0"
+
+[[package]]
 name = "ts-server"
 version = "0.2.0"
 dependencies = [
