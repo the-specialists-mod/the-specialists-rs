@@ -384,7 +384,8 @@ impl Entity for AmmoPack {
         self.expire = e.time() + assets::cvars().weaponstay.clamp(5.0, 60.0);
         let pev = cx.pev();
         pev.nextthink = e.time() + 0.1;
-        pev.iuser4 = 0;
+        // `iuser4 = 0; |= 2` (0x9150c, 0x91518): the client fades and culls the pack past 1024 u.
+        pev.iuser4 = 2;
         pev.armorvalue = 0.0;
         pev.owner = std::ptr::null_mut();
         self.funcs = BaseFuncs { think: true, ..BaseFuncs::default() };

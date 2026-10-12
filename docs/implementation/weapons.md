@@ -297,6 +297,8 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
 * Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`rules::scoring::do_spectacularness`; `spectacularness`
   clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a
   `ts_slowmotionpoint` at the blast (amount 0.25, 1 s, no bullet time).
+* Ammo packs spawn with `iuser4 = 2` (`CTSAmmoPack::Spawn` 0xa13f4), the client's 1024-unit
+  item fade, like dropped guns (issue #28).
 * Ammo pack touch (alive player holding the gun): every type goes through `AddAmmo` (whole
   amount clamped to the max carry, if the reserve is below it; no weapon needed), then the pack
   is removed whether or not anything fitted. Without the gun nothing happens and it stays.
