@@ -1011,8 +1011,7 @@ mod tests {
     #[test]
     fn predicted_weapon_writes_the_element() {
         use shared::weapons::{Gun, Status, id, info};
-        let mut h = Hud::default();
-        h.weapon = id::BERETTA as i32;
+        let mut h = Hud { weapon: id::BERETTA as i32, ..Default::default() };
         h.reserve[info(id::BERETTA).unwrap().ammo as usize] = 45;
         let mut g = Gun { current: id::BERETTA, ..Default::default() };
         g.status[id::BERETTA as usize] = Status { clip: 11, mode: 1, items: 3, ..Default::default() };
