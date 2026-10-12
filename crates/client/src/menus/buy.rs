@@ -517,8 +517,15 @@ impl BuyMenu {
     }
 
     /// `RandomConfig` (100398e0): a melee weapon, then by `p`: a pistol (0.1 < p < 0.9), an SMG
-    /// (0.3 < p < 0.7) or a rifle/shotgun (p ≥ 0.7). `p <= 0` picks `p` at random.
+    /// (0.3 < p < 0.7) or a rifle/shotgun (p ≥ 0.7). `p <= 0` picks `p` at random. The result
+    /// also becomes the last config (`+0x14` copied to `+0x41c` at the end), so the next open
+    /// brings it back even if it was never bought.
     pub fn random_config(&mut self, p: f32, r: &Rules, rng: &mut dyn Rng) {
+        self.random_config_entries(p, r, rng);
+        self.last = self.current.clone();
+    }
+
+    fn random_config_entries(&mut self, p: f32, r: &Rules, rng: &mut dyn Rng) {
         self.reset_config(r);
         let (melee, full) = match rng.long(0, 5) {
             2 => (35, rng.long(0, 2) == 0),
@@ -884,7 +891,8 @@ impl BuyMenu {
             }
             page::TEAM => {
                 if key < 3 {
-                    out.push(Action::ServerCmd(format!("chgteam {key}")));
+                    // `0x10038cf9`: `chgteam key - 1`.
+                    out.push(Action::ServerCmd(format!("chgteam {}", key - 1)));
                     self.close();
                     out.push(Action::Close);
                 } else if key == 10 {
@@ -1088,6 +1096,7 @@ mod tests {
         let ids: Vec<i32> = m.current.entries.iter().filter(|e| e.id != 0).map(|e| e.id).collect();
         assert_eq!(ids, [ITEM_KEVLAR, 25, 12, 13]);
         assert!(m.current.slots <= SLOTS);
+        assert_eq!(m.last, m.current, "RandomConfig ends by copying the config to the last one");
     }
 
     /// A tiny xorshift for the fuzz tests.

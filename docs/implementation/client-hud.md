@@ -45,7 +45,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CHud::Think` 10049760 (from `CHud::UpdateClientData` 10024b00), `UTIL_ApproachFOV` 10049620, `HUD_GetFOV` 100209f0, `SetFOV` 10049570 | `hud::think_fov` (from `view::update_client_data`), `view::ease_fov`, `hud::get_fov` (demo record type 0), `hud::set_fov` (ignored while `cl_lw` is on; sets the target and `m_iFOV`, and the sensitivity `fov·0.0125·sensitivity·zoom_sensitivity_ratio`) |
 | `CHudTSStatus` handlers 1004b730..1004c1e0 | `Hud::apply` (status arms) |
 | `AddTSMessage` 1004b520 | `Hud::add_ts_message` |
-| `CHudTSStatus::Draw` 10049ea0 and `DrawRoundTimer` 1004a130, `DrawPowerup` 1004a2e0, `DrawStatusPanel` 1004a3e0, `DrawTeammateMarkers` 1004ab40, `DrawCrosshairID` 1004acc0, `DrawTSMessages` 1004af40, `DrawObjectiveText` 1004b0e0, `DrawObjectiveMarkers` 10049fc0 | `hud::status::*` |
+| `CHudTSStatus::Draw` 10049ea0 and `DrawRoundTimer` 1004a130, `DrawPowerup` 1004a2e0, `DrawStatusPanel` 1004a3e0, `DrawTeammateMarkers` 1004ab40, `DrawCrosshairID` 1004acc0, `DrawTSMessages` 1004af40, the flag panel 1004b0e0, `DrawObjectiveMarkers` 10049fc0 | `hud::status::*` |
 | `CHudTSWeapons` handlers 1004f6f0..1004fb50 | `Hud::apply` (weapon arms) |
 | `CHudTSWeapons::Reset` 1004cd60, `Think` 1004ce10 | `Hud::reset_weapons`; `hud::think`, `weapons::think_sounds`, `hud::weapon_menu_buttons` |
 | `Draw` 1004d3f0, `DrawWirePanel` 1004d550, `DrawKungFuBar` 1004d5f0, `DrawKungFuLabel` 1004d700, `DrawWeaponInfo` 1004d7e0, `DrawWeaponList` 1004e030, `DrawLaserDots` 1004e6f0, `DrawCrosshair` 1004e9f0 + 1004ef50 | `hud::weapons::*` |
@@ -125,25 +125,25 @@ hooks `VoiceMask` (audible and server-side ban masks) and `ReqState` (answers `V
 | SrvSett | B key, S value | realbullet / cashbased / ammocount / restriction mask |
 | TSBTime | B | bullet time |
 | TSHVoice | B | `misc/successful.wav` / `misc/failed.wav` |
-| TSFlag | B state, B idx, B team, B carrier | flag table |
+| TSFlag | B state, B idx, B team, B carrier | flag table, drawn by the flag panel (`0x1004b0e0`): each flag with a state and team 1..4 at `(w − 56, team·48 + 40)` in `iTeamColors[team]`, blinking (× 1 / 0.5 every 0.1 s while carried, else × 0.75 × 1 / 0.5 every 0.5 s, timers on frame time × time scale); the carrier's name (24 bytes) right-aligned against it, red (175,40,40) for the other team and green (40,175,40) for yours, and "Take the Briefcase to the base!" at y 320 (HUD colour, red + 35) when you carry it. TS has no objective-text block and never draws flags over carriers (its test reads a field nothing writes). **Was**: an invented wrapped objective-label block at the bottom, flags over carriers, no panel (issue #94) |
 | TSMBlur | B ent, B mode | queued `TsEffect::MotionBlur` |
 | TSPSys | B type [type 3: L, L, Co] | queued `TsEffect::Wind` |
 | PlInfo | B cl, B key, B value | laser colour (key 0) |
 | TSFade | S, S, S, B×4 | `state.ts_fade` (seconds = value/4096) |
 | WeaponInfo | B id, B clip, S reserve, B mode, B att | current gun, grid. Every id byte is a weapon, 0xff included: TS's `READ_BYTE` (`0x10029a10`) zero-extends and the handler keeps the old id only on -1, a read past the end (`0x1004f822`; the port drops a short message). An id outside 0..38 takes entry 0's ammo type and grid slot, as `GetWeaponInfo` (`0x100071c0`) answers it with kung fu; `cl_thirdpersonswitch` 1 (TS `1004f93b`, the only reader): kung fu (id < 1) toggles to third person if not already there; a gun toggles back to first person only when the weapon before the message was kung fu (id 0). Between messages the prediction writes the clip, fire mode, attachments and menu cells (`Hud::predicted_weapon`, TS `0x100581c0` from `0x1000acd0`, on first predictions with a record), so a mode switch plays `switch.wav` from `Think` straight away; the reserve is this message's alone. **Was**: a predicted overlay on the weapon box only, with the predicted reserve, and no switch sound until the next `WeaponInfo` (issue #12) |
-| ClipInfo / WStatus / ActItems / NextStunt / Wires / KFuPower / CustomWP | §3.3 | grid, active items, stunt cooldown, wires, kung-fu power, custom weapon params |
+| ClipInfo / WStatus / ActItems / NextStunt / Wires / KFuPower / CustomWP | §3.3 | grid, active items, stunt cooldown, wires, kung-fu power, custom weapon params. `Think` (`0x1004ce10`) runs the stunt cooldown and the kung-fu regeneration (15/s, 1/s while negative) on `frame time × max(time scale, 0.01)`, so both slow down in slow motion (**was** ÷, issue #90). `CustomWP` (`0x1004fb50`) writes accuracy, view kick, accuracy kick, damage and cost into the client's weapon table for the rest of the session (`shared::weapons::table::set_weapon_params`), which prediction, the events and the buy menu read (**was** stored only, issue #91). A fire-mode change plays `weapons/switch.wav` through `EV_PlaySound` on the local player (channel 3, volume `RandomFloat(0.92, 1)`, attenuation 1.25, pitch `RandomLong(−5, 5) + 25 − ftol(ts × −75)`); while dead or observing the change isn't taken, so it clicks on respawn |
 | ScoreInfo / TeamInfo / TeamScore / TeamNames | stock | scoreboard data |
 | DeathMsg | B, B, Str | `CHudSpectator::DeathMessage(victim)`, then a kill-feed entry (TS `1001b360`): names from `GetPlayerInfo` (31 bytes) with `GetClientColor` colours fixed at message time; victim 0xff is a non-player kill (the weapon string is the object's name); suicide = killer 0 or killer = victim; team kill = weapon `teammate`; the display time is `(int)hud_deathnotice_time` s. TS's change from the SDK: no weapon sprite. A plain kill keeps the weapon name and draws it as text in (1, 0.5, 0.2) between the names; suicides, team kills and non-player kills draw `d_skull`, white (green 10,240,10 for a team kill; the SDK's 255,80,0 is gone). Up to four, right-aligned, from y 20 in 20 px steps, only while `AllowedToPrintText`. Console: `<k> killed <v>`, `<v> killed self` / `<v> died` (weapon `world`), `<k> killed his teammate <v>`, `<k> killed a <object>`, then ` with <weapon>` unless `world` or a team kill (`egon`/`gauss` become `gluon gun`/`tau cannon`) |
 | HudText / GameTitle | Str / – | `CHudMessage` as the SDK ships it: up to 16 titles.txt messages (the `#` dropped for the lookup), each replacing any message at the same position and skipped when the same text already shows; an unknown name becomes the single shared custom message (write-out, centred at 0.7, the name as text, so a second custom message rewrites the first). Drawn a character at a time with `pfnDrawCharacter`: effect 0 fade in/out, 1 the same with a 10 % chance per draw (CRT `rand`) of the second colour drawn under it, 2 write-out per `fadein` with an `fxtime` colour sweep. Start times in the future (level change) move back with 0.2 s of grace. `GameTitle` draws `title_half`+`title_life` faded by `FadeBlend` |
 | SayText | B client, Str | `SayTextPrint(text, client)` (TS `1002ecc0`): dropped for a muted player; console only while `AllowedToPrintText` is false (team menu or MOTD up and no player class); otherwise a chat line (`\x02` lines colour the speaker's name with `GetClientColor`: white for the local player, else the team colour of teams 1-4, the rest in the default text colour), wrapped at the screen width − 40, `misc/talk.wav`. Lines reach the console only as they scroll off. `TextMsg` HUD_PRINTTALK goes the same way with client −1, and every `TextMsg` is skipped while `AllowedToPrintText` is false |
 | StatusText / StatusValue (never sent) | B line, Str / B index, S value | `CHudStatusBar`: line 0 or 1 (cut to 127 bytes, turns the element on), values 1..7. On the next draw each line is localised (`LocaliseTextString` into 128 bytes, whose step budget cuts long lines at `128 − steps − 1`), split at `\n`, and the parts whose leading number names a non-zero value are kept with `%pN` (player name, its `GetClientColor` for the line; `******` without one), `%iN` and `%%` substituted. Line 0 at (5, h − 55) (h − 45 below 480 px), line 1 a text height higher, or with `hud_centerid` centred at h/2 + `hud_centerid` text heights |
 | TextMsg / ShowMenu / MOTD / ServerName / GameMode / Spectator / VGUIMenu / ResetHUD / InitHUD / SetFOV | stock (TS-modified Spectator/VGUIMenu) | as in the SDK/§3.2. ResetHUD resets every element (status icons, `CHudMessage`, the status bar and `CHudAmmoSecondary` too), then `m_flMouseSensitivity` and `m_iConcuss` (TS `100219a0`) (Spectator, TS `10065250`, for the local player on every message: observer is `observer == 1`; an observer leaves third person and gets the buy menu, otherwise `cl_thirdperson` 1 or 0 picks the camera and other values keep it, so the death cam doesn't outlive the respawn. This handler is the only reader of `cl_thirdperson`. Then, observer or not, `0x100652fd` runs `0x1000b9d0` on the client `player`: the predicted spread penalty (`player+0x764`) and the crosshair's copy (`0x1018d188`) go to 0 (`prediction::reset_spread`); the other fields it zeroes, `player+0x768..0x770` and `ev_punchangle` (`0x10191480`), are never read or never non-zero in the TS client. The per-player flag is stored as `observer != 0`: TS keeps the raw byte (`0x101900ec[i]`, `0x101901f5`), but `HUD_AddEntity` (`0x10044846`) and the scoreboard (`0x1005e3e8`) only test it for zero) |
-| Train | B notch | `CHudTrain`: `sprites/%d_train.spr` frame `notch - 1` in (255,160,0), x = w/3 + sprite w/4, y = h - sprite h - font height; hidden at 0 |
+| Train | B notch | `CHudTrain`: `sprites/%d_train.spr` frame `notch - 1` in (255,160,0), x = w/3 + sprite w/4, y = h - sprite h - `m_iFontHeight`; hidden at 0. `m_iFontHeight` (`0x100cf988`, `CHud::VidInit` `0x100208a3`) is the height of hud.txt's `number_0` (16 in TS's), not the engine's character height; its only other readers are the laser range and the talk icon (issue #37) |
 | HideWeapon | B bits | `hide_hud`; HIDEHUD_ALL (4) hides the train element. TS only resets the engine crosshair, which it doesn't use |
 | CurWeapon, WeaponList, AmmoPickup, WeapPickup, ItemPickup, AmmoX, Health, Battery, Damage, SelAmmo | stock | parsed by hook, no effect (TS's elements draw nothing) |
 | Geiger | B | `CHudGeiger`: range = byte × 4, element on for good. Each frame (before `CHudTrain`, not at intermission or under `HIDEHUD_ALL`), with the range in 1..999: CRT `rand` gives the volume (`(r & 127) × scale / 255 + 0.25`), a click when either of two more `rand`s (`& 127`) is under the range's chance (0 past 800, then 2, 4, 8, 8, 28, 40, 60, 80, 90, 95 out of 128 as it falls), and one or two more choose `player/geiger1..3.wav` (`PlaySoundByName`). The CRT `rand` is the one the HudText flicker uses, seeded by `srand(time(NULL))` in `CHudGeiger::Init` |
 | TextMsg | B dest, Str × 5 | `LookupString` on each (a whole-string `#key`; a negative titles `effect` on the first sets the destination), one trailing `\n`/`\r` off each argument, `sprintf(msg, a1..a4)`, `\r` → `\n`; 1 notify console (leading `\x01`), 2 console, 3 chat (`SayTextPrint(…, -1)`), 4 centre print, others nothing; all skipped while `AllowedToPrintText` is false |
-| ShowMenu | S slots, C time, B more, Str | slots and shutoff at once; no slots hides the menu (keeping the "more" flag); otherwise the text starts (or after a "more" chunk extends) the 511-byte prelocalised string, the last chunk localises it whole (`BufferedLocaliseTextString`) and swaps each `+command` for `[key]`, the key bound to it (`KB_ConvertString`; unbound commands stay as written), and the menu shows after every chunk |
+| ShowMenu | S slots, C time, B more, Str | slots and shutoff at once; no slots hides the menu (keeping the "more" flag); otherwise the text starts (or after a "more" chunk extends) the 511-byte prelocalised string, the last chunk localises it whole (`BufferedLocaliseTextString`) and swaps each `+command` for `[key]`, the key bound to it (`KB_ConvertString`; unbound commands stay as written), and the menu shows after every chunk. `CHudMenu::Draw` (`0x100285f0`) draws it plain: each line white at x 20 (clipped at x 320), 12 px apart from `h/2 − (newlines/2)·12 − 40`, with no `\w \d \y \r \R` escapes (TS's menu predates them; they show as text), and not while the scoreboard is up. **Was**: escapes parsed into colours and right alignment, font-height lines (issue #34) |
 | VGUIMenu | B id [, Str map] | menu 4's map name goes to `m_sMapName` (63 bytes); every id to `ShowVGUIMenu`: 2 team menu (teamplay only), 4 map briefing (`maps/<m_sMapName>.txt`, or the level's when the name is empty, which then fills it; nothing without the file), 5 MOTD |
 
 ## 3. Cvars and commands
@@ -275,9 +275,13 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   shown). Talking players get `sprites/voiceicon.spr` (scale 0.5, additive) 45 units above their
   origin when in the PVS and drawn (the local player only in third person), and a name label on the
   right half of the screen (up to 7, stacked down from mid-screen: a team-coloured label at VGUI
-  alpha 100 with the name in white "Scoreboard Text" and `gfx/vgui/speaker4.tga`; hidden while the
-  scoreboard shows). The local talk icon (`gfx/vgui/icntlk_pl.tga`, `icntlk_sv.tga` once the server
-  acknowledged with `voice_clientdebug` on) sits at screen height − 3 font heights − 6.
+  alpha 100 with the name in white "Scoreboard Text" and `gfx/vgui/speaker4.tga`). While the
+  scoreboard shows, `Frame` (`0x10017ea0`) hides only the names; the box and icon (the name's
+  siblings) get their visibility once, when the label is given out (`0x10018240`), so a label
+  already up keeps its box and icon over the scoreboard, and one given out under the scoreboard
+  stays hidden until that player stops and starts talking again (**was**: the whole label hidden
+  with the scoreboard, issue #95). The local talk icon (`gfx/vgui/icntlk_pl.tga`, `icntlk_sv.tga` once the server
+  acknowledged with `voice_clientdebug` on) sits at screen height − 3 × `m_iFontHeight` (the `number_0` height) − 6.
 * `VoiceMask` gives the audible (game rules) and server ban masks; `ReqState` makes the client
   resend `VModEnable` and `vban`. Every second the client sends `vban` if its ban mask for the
   connected players differs from what the server last reported.
@@ -295,10 +299,11 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
 ## 5. HUD draw pass (TS order)
 
 Train → HudText (`CHudMessage`) → status bar → death notices (`nohud` gate) → status icons → HLTV name tags → weapons
-element (laser dots, drawn even with `nohud`; equipment/slot menu, kung-fu label or weapon info,
-crosshair or wire panel) → status element (round timer, TS messages, objective text, teammate
+element (laser dots, drawn even with `nohud`; then without `nohud` the buy menu, which is also
+closed here once you're alive; equipment/slot menu, kung-fu label or weapon info,
+crosshair or wire panel) → status element (round timer, TS messages, flag panel, teammate
 markers, crosshair ID, status panel, power-up, objective markers) → say text → `CHudMenu` → the
-logo → (VGUI pass) spectator panel, voice labels, (menus module) buy menu, then the viewport's
+logo → (VGUI pass) spectator panel, voice labels, then the viewport's
 children in their order: team menu, scoreboard, MOTD; then the cursor. As in `CHud::Redraw` (`10021aa0`), `HIDEHUD_ALL` hides every element, and
 during intermission only the say text (`HUD_INTERMISSION`) and the logo draw. TS messages fade
 over their last second: each channel is `__ftol(base × min(expire − now, 1))`, the base being the
@@ -360,10 +365,24 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   (±4 units along `v_right` per akimbo gun) along the beam direction; the projected point is the
   hit − `2·v_forward`, and `state.laser_range` = first hit distance × 0.025 (`0x1003d15f`).
 * `DrawCrosshair` with the laser on draws `laser_range` (`DrawHudNumberTS` flag 1) at
-  `(cx + 28, cy − fontHeight/2 − (8 when scoped in first person))`, in the crosshair colour ×0.7
+  `(cx + 28, cy − m_iFontHeight/2 − (8 when scoped in first person))` (`m_iFontHeight` = the `number_0` height), in the crosshair colour ×0.7
   when the crosshair is on a player, ×0.5 otherwise (`0x1004ee02`).
 * `DrawWeaponInfo` ends with `sprintf("%ix", 80 / m_iFOV)` at (24, 24) in the HUD colour when the
   FOV is below 40 (`0x1004dfbe`: `mov eax, 80; idiv fov`).
+
+Weapon element colours (issue #92; read from the TS binary). Many are `ftol(colour × k)`:
+* `DrawWeaponInfo`: the clip and reserve numbers (flags 5) are HUD × 2/3 (`0x1007d770`), red
+  (195, 45, 45) at 0 or less; the reserve, and a stackable melee weapon's count, sit at
+  `ftol(x + 94.8148)`. Fire mode, ammo name and weapon name are HUD × 2/3; attachment labels
+  HUD / 2, the `|` HUD / 4. `DrawKungFuLabel` writes "Kung-Fu" in HUD × 2/3, and
+  `DrawKungFuBar` fills `p − 2` px with `p = ftol(power × 1.28f)` in (r·128/255, p·g/255,
+  p·b/255) at alpha 255 − p.
+* `DrawWeaponList`: colours are `ScaleColors(c, a)` (`c × a/255`) then × `m` (1 with the menu
+  open, 0.25/0.5/1 for `cl_showequipment` 1/2/3). Bucket numbers `a` = 200 selected / 100; the
+  selection's name and `clip/clip size` text `a` = 200; sprites red with an empty clip, `a` =
+  255 selected / 100; the clip bar in the sprite's colour. Closed, kung fu isn't drawn but keeps
+  its 48 px.
+* `DrawCrosshair`: `cross_t` × 0.7, `cross_e` × 0.75, `cross2` as is.
 
 ## 6. Buy menu
 
@@ -383,7 +402,21 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   bubble sort (melee/grenades first, then ascending price). Verified against the disassembly at
   0x10039620..0x10039810 (format strings `%i_%i `, `%i `, `tkw `/`tki `/`tka `).
 * Opens only when dead or observing (`buy`, or automatically on each local `Spectator` message with observer 1); closes
-  when alive again (except the team page); first open of the session random-buys like TS.
+  when alive again (except the team page), from `CHudTSWeapons::Draw` (`0x1004d3f0`), so not
+  while `nohud`, `HIDEHUD_ALL` or intermission hides the HUD (it stays open, unseen, with its keys
+  and cursor); first open of the session random-buys like TS, and every random config
+  (`100398e0`, also key 7) becomes the last config, so the next open shows it again.
+* Drawing (`FUN_1004ff10`): each row is a 127×19 box in the row colour at alpha `50·scale` with the
+  text in the row colour × `scale`, the scale 1.0 for the page's own column and 0.5 for the parent
+  columns, except the chosen category (`0x1003788c`) and the chosen weapon (`0x10037ad4`), which
+  keep 1.0. Ordinary rows are the HUD colour / 2, affordable "Buy"/akimbo rows green (45,195,45),
+  the save/load and team headers green, unaffordable rows red (195,45,45), "Go back" (100,100,205).
+  Weapon rows are keyed `1`..`9`, `A`; attachment rows show the attachment's own price (the
+  colour tests the gun plus it). The loadout bar shows an akimbo entry as the gun in its bucket
+  and the akimbo weapon in its own, both with the gun's ammo. **Was** (issue #82): text at twice
+  the row colour, whole parent columns dimmed, red headers, base + attachment prices, `a`, the
+  akimbo weapon alone; random configs not kept as the last one; the menu drawn after the HUD
+  and closed whatever `nohud`.
 * Mouse (`MouseEvent` 10038360, only while no VGUI menu is up): a left release runs
   `FUN_10038410`'s hit test (`BuyMenu::hit_test`: 128 px columns from x 8, 20 px rows from
   mid-screen, each column answering for its own page) and a miss is key 1 of the current page; a

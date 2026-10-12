@@ -95,6 +95,11 @@ pub fn screen() -> Screen {
     }
 }
 
+/// `CHud::m_iFontHeight` (see [`HudSprites::font_height`]), 0 before the first `vid_init`.
+pub fn font_height() -> i32 {
+    gfx_ref(|g| g.sprites.font_height())
+}
+
 /// Runs `f` with a shared borrow of the graphics, or with empty ones before the first
 /// `vid_init` (or, defensively, while they are mutably borrowed).
 fn gfx_ref<R>(f: impl FnOnce(&Gfx) -> R) -> R {
@@ -569,6 +574,10 @@ pub fn vid_init() {
         h.obj_max = 0;
         h.flags = Default::default();
         h.flag_count = 0;
+        h.flag_blink = [(0.0, false); 2];
+        // `0x10049d10` also zeroes the credits (`+0x24`) and free slots (`+0x28`).
+        h.cash = 0;
+        h.slots = 0;
         h.observer = false;
         h.kfu_power = 100.0;
         h.kfu_prev = 100.0;
@@ -675,13 +684,18 @@ fn think(dt: f32) {
     let e = engine();
     let ic = input::cvars();
     let laser = ic.cl_lasercolor.value() as i32;
-    let ts = crate::state::with(|s| s.time_scale.max(0.01));
+    let ts = crate::state::with(|s| s.time_scale);
+    // `0x1004ce58`: `m_flTimeDelta / (1 / max(ts, 0.01))`, so both run slower in slow motion.
+    let step = dt * ts.max(0.01);
+    let alive = !dead_or_observer();
     let (send_laser, firemode_changed, kfu_power) = with(|h| {
         let send = h.last_laser_color != laser;
         h.last_laser_color = laser;
-        h.next_stunt = (h.next_stunt - dt / ts).max(0.0);
-        h.regen_kungfu(dt / ts);
-        let fm = h.weapon > 0 && h.last_firemode != h.firemode;
+        h.next_stunt = (h.next_stunt - step).max(0.0);
+        h.regen_kungfu(step);
+        // `0x1004d25d`: dead or observing skips the check without taking the new mode, so a
+        // change made meanwhile still clicks on respawn.
+        let fm = alive && h.weapon > 0 && h.last_firemode != h.firemode;
         if fm {
             h.last_firemode = h.firemode;
         }
@@ -692,8 +706,16 @@ fn think(dt: f32) {
     if send_laser {
         e.server_cmd(&format!("lasclr_{laser}"));
     }
-    if firemode_changed && !dead_or_observer() {
-        e.play_sound("weapons/switch.wav", e.client_time().fract() * 0.08 + 0.92);
+    if firemode_changed {
+        // `0x1004d35e..0x1004d3cd`: on the local player, channel 3 (`CHAN_ITEM`), volume
+        // `RandomFloat(0.92, 1)`, attenuation 1.25, pitch `RandomLong(-5, 5) + 25 - ftol(ts × -75)`.
+        let r = goldsrc::ext::render::random_long(-5, 5);
+        let pitch = r.wrapping_add(25i32.wrapping_sub(draw::ftol(ts as f64 * -75.0)));
+        let vol = goldsrc::ext::render::random_float(0.92, 1.0);
+        if let Some(me) = e.local_player() {
+            let (index, origin) = (me.index, me.curstate.origin);
+            e.ev_play_sound(index, origin, 3, "weapons/switch.wav", vol, 1.25, 0, pitch);
+        }
     }
     weapons::think_sounds(dt);
 }
@@ -731,25 +753,32 @@ pub fn weapon_menu_buttons(bits: u32) -> u32 {
     if dead_or_observer() || crate::menus::buy_open() {
         return 0;
     }
-    let cmd = with(|h| {
+    // `0x1004d263..0x1004d339`: with the menu open, attack and attack2 are each tested (and
+    // taken) on their own, so both can go out in the same frame.
+    let cmds = with(|h| {
+        let mut out = Vec::new();
         if !h.menu_open {
-            return None;
+            return out;
         }
         let slot = h.grid.get(h.menu_row as usize).and_then(|r| r.get(h.menu_bucket as usize)).copied();
         let id = slot.map_or(-1, |s| s.id);
         if bits & IN_ATTACK != 0 {
             consumed |= IN_ATTACK;
             h.menu_open = false;
-            return (id >= 0).then(|| format!("weapon_{id}"));
+            if id >= 0 {
+                out.push(format!("weapon_{id}"));
+            }
         }
         if bits & IN_ATTACK2 != 0 {
             consumed |= IN_ATTACK2;
             h.menu_open = false;
-            return (id >= 0).then(|| format!("drop_{id}"));
+            if id >= 0 {
+                out.push(format!("drop_{id}"));
+            }
         }
-        None
+        out
     });
-    if let Some(c) = cmd {
+    for c in cmds {
         e.server_cmd(&c);
     }
     if consumed & IN_ATTACK != 0 {
@@ -764,11 +793,12 @@ pub fn weapon_menu_consumed_attack() -> bool {
 
 /// `slot1..10` → `TSWeapons::SelectSlot` (1004f220).
 pub fn select_slot(n: i32) {
-    // An open CHudMenu takes the key first.
-    if (1..=10).contains(&n)
-        && let Some(cmd) = with(|h| h.menu_select(n))
-    {
-        engine().server_cmd(cmd.trim_end());
+    // An open CHudMenu takes keys 1..10 first (`0x1004f220`), whether or not the slot is one of
+    // its options: `SelectMenuItem` ignores an invalid one and the key goes no further.
+    if (1..=10).contains(&n) && with(|h| h.menu.displayed) {
+        if let Some(cmd) = with(|h| h.menu_select(n)) {
+            engine().server_cmd(cmd.trim_end());
+        }
         return;
     }
     if crate::menus::buy_open() {
@@ -1053,7 +1083,8 @@ fn draw_train(dc: &Dc) {
     }
     let e = engine();
     e.spr_set(spr, [255, 160, 0]);
-    let y = dc.h() - e.spr_height(spr, 0) - dc.g.screen.char_height;
+    // `m_iFontHeight`, the `number_0` height (`0x10034d8f`).
+    let y = dc.h() - e.spr_height(spr, 0) - dc.g.sprites.font_height();
     let x = dc.w() / 3 + e.spr_width(spr, 0) / 4;
     e.spr_draw_additive(pos as i32 - 1, x, y, None);
 }

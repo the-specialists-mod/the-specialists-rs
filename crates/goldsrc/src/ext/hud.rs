@@ -468,14 +468,17 @@ impl ClEngine {
         (clipped == 0).then_some([out[0], out[1]])
     }
 
-    /// TS `WorldToScreen` (100579c0): screen pixel position of a world point, or `None` when it
-    /// is behind the view or off screen.
+    /// TS `WorldToScreen` (100579c0): screen pixel position of a world point,
+    /// `ftol((1 + nx) · w · 0.5)` and `ftol((1 − ny) · h · 0.5)` on the x87, or `None` when it is
+    /// behind the view (TS's −1, −1). Not bounds-checked, as in TS: a point just off screen still
+    /// gives a position, so a marker centred there shows its visible part.
     pub fn world_to_screen(&self, world: [f32; 3], screen: &Screen) -> Option<(i32, i32)> {
         let [nx, ny] = self.world_to_screen_ndc(world)?;
-        let x = ((1.0 + nx) * screen.width as f32 * 0.5) as i32;
-        let y = ((1.0 - ny) * screen.height as f32 * 0.5) as i32;
-        (0..screen.width).contains(&x).then_some(())?;
-        (0..screen.height).contains(&y).then_some((x, y))
+        // MSVC `__ftol`: truncation, the integer indefinite value out of range.
+        let ftol = |v: f64| if (-2147483648.0..2147483648.0).contains(&v) { v.trunc() as i32 } else { i32::MIN };
+        let x = ftol((nx as f64 + 1.0) * screen.width as f64 * 0.5);
+        let y = ftol((1.0 - ny as f64) * screen.height as f64 * 0.5);
+        Some((x, y))
     }
 }
 
