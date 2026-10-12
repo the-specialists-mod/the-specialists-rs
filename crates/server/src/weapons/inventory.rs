@@ -128,6 +128,14 @@ fn throw_weapon(p: &mut Player, cx: &mut Cx, id: u8, status: Status, pos_offset:
     worldgun::create(cx.edict, id, status, origin, vel, owner, time_scale)
 }
 
+/// Whether `DropWeapon` plays `weapons/weapondrop.wav` (0x951c0) for an owned `id` with record
+/// `st`: every path does but two of the M61's, a primed grenade (thrown by `GrenadeIdle(1)`) and
+/// one with none left, which jump straight past it to the lifetime check (0x84bac and 0x84bd9 to
+/// 0x851ed).
+fn drop_plays_sound(id: u8, st: &Status) -> bool {
+    id != id::M61 || (st.state != 1 && st.clip > 0)
+}
+
 /// `CBasePlayer::DropWeapon(id | -1 current | -2 disarm, dmg)`.
 pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
     // Nothing at all without the gun (0x94900 returns first), not even the CTB case.
@@ -189,6 +197,7 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
     // Guard: every id 1..=37 a gun can own has a table entry; one without (29) is never dropped.
     let Some(w) = info(target) else { return };
     let mut thrown: *mut edict_t = std::ptr::null_mut();
+    let sound = drop_plays_sound(target, &p.inv.gun.status[target as usize]);
     if target == id::M61 {
         let st = p.inv.gun.status[id::M61 as usize];
         if st.state == 1 {
@@ -262,7 +271,9 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
             with_host(p, cx, |gun, h| gun.remove_weapon(target, better, h));
         }
     }
-    emit(cx.edict, CHAN_ITEM, c"weapons/weapondrop.wav", 1.0, 0.8, 100);
+    if sound {
+        emit(cx.edict, CHAN_ITEM, c"weapons/weapondrop.wav", 1.0, 0.8, 100);
+    }
     assets::debug(|| format!("dropped {target} ({which:?}), free slots {}", p.inv.sv.free_slots));
     // 0x95265: `drop`/disarm (id < 0) gives the last gun thrown the longer lifetime and the
     // dropper's glow (`WorldGun` +0xc4 / +0xd0), except the CTB briefcase.
@@ -486,6 +497,16 @@ mod tests {
         let stack = (0..MAX_WEAPONS as u8).find(|&i| info(i).is_some_and(|w| w.stack)).unwrap();
         owned[stack as usize] = true;
         assert_eq!(copied_record(stack, &owned), None);
+    }
+
+    #[test]
+    fn no_drop_sound_for_a_primed_or_empty_grenade() {
+        let st = |state, clip| Status { owned: true, state, clip, ..Default::default() };
+        assert!(drop_plays_sound(id::M61, &st(0, 2)));
+        assert!(!drop_plays_sound(id::M61, &st(1, 2)), "primed: GrenadeIdle(1) throws it, silently");
+        assert!(!drop_plays_sound(id::M61, &st(0, 0)), "nothing to throw");
+        // Every other weapon, whatever its record says.
+        assert!(drop_plays_sound(id::AK47, &st(1, 0)));
     }
 
     #[test]

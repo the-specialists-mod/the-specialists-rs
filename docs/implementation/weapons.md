@@ -183,7 +183,9 @@ addresses of `ts_i386.so`.
   `UpdateClientData` and every gun path test `m_iId == 16` first (or read it as a `CTSGun`, see
   `gun_active`).
 * `client_command`: `weapon_<n>`, `lastinv`, `drop`, `drop_<n>`, `firemode`, `useitems`,
-  `lasclr_<n>` (`PlInfo`), `rst_cfg`, `tkw id_att ...`, `tki item ...`, `tka type_count ...`;
+  `lasclr_<n>` (`PlInfo`), `rst_cfg`, `tkw id_att ...`, `tki item ...`, `tka type_count ...`
+  (32 loadout entries; an id-0 one takes no slot, as `AddItemToArmament` 0x93ea4 writes into the
+  first id-0 slot: issue #27);
   test helpers (need `sv_cheats`): `ts_give id_att ...` (weapon + full ammo),
   `ts_weapons_debug n` (sets the cvar when typed in a listen server console).
 * `fill_client_data` / `get_weapon_data` / `cmd_start`: TS packing (below), seed.
@@ -212,6 +214,12 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   floor of 0.01 (`FixedSlowAmt`, `spread::fixed_slow_amt`); NPA clamps at -1, the others at
   -0.001; `UTIL_WeaponTimeBase() = 0`. The frame time is the engine's `(float)(msec * 0.001)` on
   the server and the same expression in client prediction (§5, floating point).
+* Deploy (`CBasePlayerWeapon::DefaultDeploy` 0xa0178, `GunHost::default_deploy`): on the
+  server `m_flNextAttack` is 0.5 s, or what is left of the spawn protection (`pl+0x71c`, 1 s from
+  `TSInit`) while it lasts, so the spawn weapon fires only once the protection ends; the idle
+  timer is 3 s (Contender 0.75 s); then `weapons/draw.wav` (`CHAN_VOICE`, volume 0.92..1, attn
+  1.25, pitch 98..101, pitch drawn first). `client.dll`'s (`0x100035f0`, the trait default): 0.5 s
+  and 3 s, no sound. (Issue #20: the port had 0.5 s / 1 s and no sound.)
 * Spread = `accuracy` (+ `pl.spread_penalty` via `ScaleSpread`), x0.875 silenced; growth
   `(1 - (slowmul*dt >= 1 ? 0.5 : slowmul*dt)) * acc_kick * (DFR ? 1 : 2) * (silenced ? 0.775 : 1)`
   for shots at least 1 ms apart, cap 0.1 (`double`), decay 0.1/s. Barrett: penalty 0.3 above
@@ -305,11 +313,19 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
 * Explosion slow-motion point: after the damage, `DoSpectacularNess()` (`rules::scoring::do_spectacularness`; `spectacularness`
   clamped 0..100 and rounded, 0 = never, else `RandomLong(0,100) <= it`) creates a
   `ts_slowmotionpoint` at the blast (amount 0.25, 1 s, no bullet time).
+* Ammo packs spawn with `iuser4 = 2` (`CTSAmmoPack::Spawn` 0xa13f4), the client's 1024-unit
+  item fade, like dropped guns (issue #28).
 * Ammo pack touch (alive player holding the gun): every type goes through `AddAmmo` (whole
   amount clamped to the max carry, if the reserve is below it; no weapon needed), then the pack
   is removed whether or not anything fitted. Without the gun nothing happens and it stays.
 * Slots: 81 free at spawn, speed `round(210 + free*120/81)` (330 with nothing carried).
 * Disarm threshold: katana 30, knives 25, weapons with < 21 slots 20, else `min(slots, 50)`.
+* A falling `WorldGun` (`CTSWorldGun::Fall` 0xa0d84) lands first (`weapondrop1.wav`, level
+  angles, `OnGround`), and the same think still checks its lifetime, traces 0.1 s ahead and runs
+  the slow-motion physics. The trace hurts a non-player whose `health <= speed * slots` (×0.001,
+  bits 0x1080) through its `TraceAttack`, whatever its `takedamage` (issue #25).
+* `DropWeapon` plays `weapons/weapondrop.wav` (0x951c0) except for a primed M61 (thrown by
+  `GrenadeIdle(1)`) or one with no grenades left, which jump past it (issue #21).
 * Dropped guns live `clamp(weaponstay, 5, 60)` s; `drop`/disarm drops `clamp(2*weaponstay, 10,
   120)` s and glow for the dropper (`WorldGun` +0xc4 / +0xd0, `DropWeapon` 0x94ed9, 0x94fad,
   0x95265): both halves of a split akimbo pair, never the CTB briefcase.
@@ -326,7 +342,7 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
 Events (all `FEV_NOTHOST`, invoker = player, zero origin/angles), exactly weapons.md §6.1:
 `fire` (f1=f2=spread, i1 id, i2 attachments, b1 clip==0 / akimbo toggle / pump mode, b2 seed),
 `firelinked`, `pump`, `empty` (none for the Contender), `reload` (f1 0 or 8/9/10), `draw`,
-`coldcock` (f1/f2 last spread offset), `knife` (i2 hit flag), `katana` (i1 swing = anim index
+`coldcock` (f1/f2 0: `ColdCock`'s static `vecDir`, which nothing writes, in all three binaries; issue #22), `knife` (i2 hit flag), `katana` (i1 swing = anim index
 15/16/17, i2 hit flag), `grenade` (i1 0x13/0x14/0x15), `closecombat` (attack: i1 type 1 punch /
 2 kick / 3 back kick, f1 0, i2 index into kung fu's anim set A; block: f1 weapon id, i1 0, i2 1
 kung fu / 0x12, an index into that weapon's set A).
@@ -522,7 +538,8 @@ How the port maps TS where the structure differs (not deviations):
 ## 6. Missing / partial
 
 * `SVC_WEAPONANIM` is sent only to clients that don't predict weapons (TS behaviour); the client
-  package plays view animations from events.
+  package plays view animations from events. Its body byte is always the gun's `pev->body`
+  (`Gun::body`): `SendWeaponAnim` (0xa00d0) ignores its body argument (issue #23).
 * The briefcase/flag (rules).
 * `DropArmor` 0x93a3c armour packs (`CTSAmmoPack` with `armorvalue`) aren't ported. They're dead
   in TS: nothing calls `DropArmor`, so ammo packs never carry armour there either.
@@ -539,6 +556,10 @@ How the port maps TS where the structure differs (not deviations):
   `frame_time_is_the_servers` (every msec equals FWGS's frame time; an AK-47's 0.08 s takes the
   server's 9 commands at 10 ms, 8 with the old `float` 0.001).
 
+* Audit fixes (#20-#28): `deploy_takes_its_timers_from_default_deploy`,
+  `stock_hit_event_sends_no_spread`, `weapon_anims_carry_the_guns_body` (shared gun tests),
+  `no_drop_sound_for_a_primed_or_empty_grenade` (server inventory),
+  `id_zero_armament_entries_take_no_slot` (server commands).
 * `cargo test -p shared`: weapon tests pass (x86_64 and `--target i686-unknown-linux-gnu`). Includes `random::matches_sdk_c_bit_for_bit` (43 seeds
   compared against the SDK C `util.cpp` compiled with `gcc -m32 -O0 -mfpmath=387`), fire rates
   (auto, semi, DFR x1.5, slow motion), burst (3 / UMP 2), pump alternation, magazine and

@@ -40,6 +40,11 @@ struct Mock {
     kfu_power: Option<f32>,
     /// The prediction's records, which never carry the owned flag (`tracks_owned` false).
     client_records: bool,
+    /// `default_deploy`'s answer (`None`: client.dll's 0.5 / 3.0) and the ids it was asked for.
+    deploy_timers: Option<(f32, f32)>,
+    deployed: Vec<u8>,
+    /// The body passed with each `weapon_anim`.
+    anim_bodies: Vec<i32>,
 }
 
 impl GunHost for Mock {
@@ -125,8 +130,13 @@ impl GunHost for Mock {
     fn deploy_update_now(&mut self) {
         self.update_now += 1;
     }
-    fn weapon_anim(&mut self, anim: i32, _skip_local: bool, _body: i32) {
+    fn default_deploy(&mut self, id: u8) -> (f32, f32) {
+        self.deployed.push(id);
+        self.deploy_timers.unwrap_or((0.5, 3.0))
+    }
+    fn weapon_anim(&mut self, anim: i32, _skip_local: bool, body: i32) {
         self.anims.push(anim);
+        self.anim_bodies.push(body);
     }
     fn player_anim(&mut self, _anim: i32) {}
     fn kick(&mut self, pitch: f32, yaw: f32) {
@@ -880,4 +890,65 @@ fn cold_cock_event_owned_gate() {
         g.cold_cock(&mut h);
         assert_eq!(h.events.iter().any(|e| e.0 == Event::ColdCock), plays, "client {client}, owned {owned}");
     }
+}
+
+#[test]
+fn stock_hit_event_sends_no_spread() {
+    // Fire a spread shot first: TS's coldcock f1/f2 are ColdCock's never-written static vecDir.
+    let (mut g, mut h) = armed(id::M4);
+    h.seed = 1234;
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    assert_eq!(h.shots.len(), 1);
+    g.cold_cock(&mut h);
+    let (ev, a) = *h.events.last().unwrap();
+    assert_eq!(ev, Event::ColdCock);
+    assert_eq!((a.f1, a.f2, a.i1, a.b1, a.b2), (0.0, 0.0, id::M4 as i32, 0, 0));
+}
+
+#[test]
+fn weapon_anims_carry_the_guns_body() {
+    // A knife slash that hits a player sets pev->body 1 (the bloody blade); SendWeaponAnim sends
+    // pev->body whatever the caller passed, so the draw after a throw keeps it.
+    let (mut g, mut h) = armed(id::KNIFE);
+    g.status[id::KNIFE as usize].clip = 2;
+    h.melee_result = Some(MeleeResult::Hit { player: true });
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    assert_eq!(g.body, 1);
+    g.next_primary = 0.0;
+    g.next_secondary = 0.0;
+    h.anim_bodies.clear();
+    frame(&mut g, &mut h, IN_ATTACK2, &mut last, 0.01);
+    assert_eq!(h.blades.len(), 1);
+    assert!(!h.anim_bodies.is_empty() && h.anim_bodies.iter().all(|&b| b == 1), "the draw after the throw: {:?}", h.anim_bodies);
+    // Holstering to kung fu doesn't touch pev->body either.
+    h.anim_bodies.clear();
+    assert!(g.switch_to(0, &mut h));
+    // (SelectWeapon's holster, then Deploy's on kung fu.)
+    assert_eq!(h.anim_bodies, [1, 1]);
+}
+
+#[test]
+fn deploy_takes_its_timers_from_default_deploy() {
+    // client.dll's DefaultDeploy (0x100035f0): 0.5 s before attacking, 3 s idle (not the SDK's 1).
+    let mut g = Gun::default();
+    let mut h = Mock::default();
+    g.take_weapon(id::AK47, None, 0).unwrap();
+    assert!(g.switch_to(id::AK47, &mut h));
+    assert_eq!((g.next_attack, g.idle), (0.5, 3.0));
+    assert_eq!(h.deployed, [id::AK47]);
+
+    // The server's: what the host says (spawn protection left, the Contender's 0.75 s idle).
+    let mut g = Gun::default();
+    let mut h = Mock { deploy_timers: Some((0.8, 0.75)), ..Default::default() };
+    g.take_weapon(id::CONTENDER, None, 0).unwrap();
+    assert!(g.switch_to(id::CONTENDER, &mut h));
+    assert_eq!((g.next_attack, g.idle), (0.8, 0.75));
+
+    // Kung fu is HolsterWeapon, not DefaultDeploy.
+    h.deployed.clear();
+    assert!(g.switch_to(0, &mut h));
+    assert!(h.deployed.is_empty());
+    assert_eq!((g.next_attack, g.idle), (0.5, 3.0));
 }

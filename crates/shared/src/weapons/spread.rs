@@ -66,15 +66,6 @@ pub fn pellet_dir(aim: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], seed: u32,
     [aim[0] + sx * right[0] + sy * up[0], aim[1] + sx * right[1] + sy * up[1], aim[2] + sx * right[2] + sy * up[2]]
 }
 
-/// What `ShootBulletsPlayer` returns: `(x * spread_x, y * spread_y, 0)` of the last pellet.
-pub fn last_pellet_spread(seed: u32, pellets: u32, spread: [f32; 2], radial: f32) -> Vec3 {
-    if pellets == 0 {
-        return [0.0; 3];
-    }
-    let (x, y) = pellet_offset(seed, pellets, radial);
-    [x * spread[0], y * spread[1], 0.0]
-}
-
 // ---- the TS builds' arithmetic -----------------------------------------------------------------
 //
 // The server (`ts_i386.so`: GCC, x87 extended precision; `mp.dll`: MSVC, 53-bit) and the client

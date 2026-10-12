@@ -210,7 +210,18 @@ pub trait GunHost {
     /// `CTSGun::Deploy` (0x81030) with a weapon zeroes the gun's `UpdateClientData` timer
     /// (+0x9e0), so the new weapon's `WeaponInfo` goes out on the next update. Server only.
     fn deploy_update_now(&mut self) {}
-    /// `SendWeaponAnim(anim, skiplocal, body)`.
+    /// The timer tail of `CBasePlayerWeapon::DefaultDeploy` for weapon `id`: returns
+    /// `(m_flNextAttack, m_flTimeWeaponIdle)`. The default is `client.dll`'s (`0x100035f0`: 0.5,
+    /// 3.0, no sound). The server's (`ts_i386.so` 0xa0178, `mp.dll` 0x10073c50) holds the attack
+    /// until spawn protection (`pl+0x71c`) ends, gives the Contender a 0.75 s idle, and plays
+    /// `weapons/draw.wav`.
+    fn default_deploy(&mut self, id: u8) -> (f32, f32) {
+        let _ = id;
+        (0.5, 3.0)
+    }
+    /// `SendWeaponAnim(anim, skiplocal, body)`. `body` is always the gun's own `pev->body`
+    /// ([`Gun::body`]): TS's `CBasePlayerWeapon::SendWeaponAnim` (0xa00d0) ignores its body
+    /// argument and writes `pev->body`, and so does `client.dll`'s (0x10003680).
     fn weapon_anim(&mut self, anim: i32, skip_local: bool, body: i32);
     /// `CTSAnimation::Animate(n)` (third-person sequence; owned by the movement package).
     fn player_anim(&mut self, anim: i32);
@@ -325,8 +336,6 @@ pub struct Gun {
     pub block_katana: f32,
     /// `pl+0x49a + id`: remembered fire mode + 1.
     pub mode_memory: [u8; MAX_WEAPONS],
-    /// Last spread offset returned by `ShootBulletsPlayer` (stale, sent with `coldcock.sc`).
-    pub last_dir: Vec3,
     /// The gun entity's own `pev->body`: `Deploy` sets it to the record's body (+0x18), and a
     /// knife or katana slash that hits a player sets it to 1 (0x73a17, `KnifeFire`). The
     /// alternate-grip switch (`SecondaryAttack`) and `WeaponIdle` send it with their view
@@ -360,7 +369,6 @@ impl Default for Gun {
             block_knife: 0.0,
             block_katana: 0.0,
             mode_memory: [0; MAX_WEAPONS],
-            last_dir: [0.0; 3],
             body: 0,
         }
     }
@@ -783,7 +791,6 @@ impl Gun {
             right_offset,
         };
         host.shoot(&shot, self);
-        self.last_dir = spread::last_pellet_spread(seed, shot.pellets, [spread, spread], spread::RADIAL_SPREAD);
     }
 
     /// `CTSGun::StandardFire` 0x824a4.
@@ -1034,11 +1041,10 @@ impl Gun {
         }
         // The server tests the record's owned flag (0x81dd0); the client copy doesn't.
         if self.has_slot() && (self.status[self.current as usize].owned || !host.tracks_owned()) {
+            // f1/f2 are ColdCock's own static `vecDir` (ts_i386.so 0x17da6c, mp.dll 0x100c6358,
+            // client.dll 0x1009ff90), which nothing writes: always 0.
             let items = self.status[self.current as usize].items as i32;
-            host.event(
-                Event::ColdCock,
-                EventArgs { f1: self.last_dir[0], f2: self.last_dir[1], i1: self.current as i32, i2: items, b1: 0, b2: 0 },
-            );
+            host.event(Event::ColdCock, EventArgs { i1: self.current as i32, i2: items, ..Default::default() });
         }
     }
 
@@ -1050,7 +1056,7 @@ impl Gun {
         if !self.has_slot() || s.state != 0 || s.clip <= 0 {
             return;
         }
-        host.weapon_anim(self.seq(19), true, 0);
+        host.weapon_anim(self.seq(19), true, self.body);
         host.event(Event::Grenade, EventArgs { i1: 0x13, ..Default::default() });
         self.cur().state = 1;
         self.next_secondary = 0.7;
@@ -1090,7 +1096,7 @@ impl Gun {
             if self.info().bullet == 4 {
                 host.throw_grenade(src, vel, s.toggle);
             }
-            host.weapon_anim(self.seq(if s.toggle { 21 } else { 20 }), true, 0);
+            host.weapon_anim(self.seq(if s.toggle { 21 } else { 20 }), true, self.body);
             host.event(Event::Grenade, EventArgs { i1: 0x14 + s.toggle as i32, ..Default::default() });
             host.player_anim(0x35);
             self.next_secondary = 0.5;
@@ -1114,7 +1120,7 @@ impl Gun {
             if self.status[self.current as usize].clip < 1 {
                 self.remove_weapon(self.current, true, host);
             } else {
-                host.weapon_anim(self.seq(2), true, 0);
+                host.weapon_anim(self.seq(2), true, self.body);
                 self.idle = 2.0;
             }
         }
@@ -1197,7 +1203,7 @@ impl Gun {
             if self.status[self.current as usize].clip < 1 {
                 self.remove_weapon(self.current, true, host);
             } else {
-                host.weapon_anim(self.seq(20), true, 0);
+                host.weapon_anim(self.seq(20), true, self.body);
                 let items = self.status[self.current as usize].items as i32;
                 host.event(Event::Draw, EventArgs { i1: self.current as i32, i2: items, ..Default::default() });
                 self.idle = 2.0;
@@ -1539,7 +1545,7 @@ impl Gun {
     pub fn ccombat_idle(&mut self, host: &mut impl GunHost) {
         if self.idle <= 0.0 {
             self.idle = 3.0;
-            host.weapon_anim(anim(0, false, 0), false, 0);
+            host.weapon_anim(anim(0, false, 0), false, self.body);
         }
     }
 
@@ -1801,8 +1807,7 @@ impl Gun {
         host.set_weapon_model(Some((id, items & att::SILENCER != 0)));
         host.set_anim_extension(tables().asset(id).map(|a| a.anim_ext.as_str()).unwrap_or(""));
         host.weapon_anim(draw, false, body);
-        self.next_attack = 0.5;
-        self.idle = 1.0;
+        (self.next_attack, self.idle) = host.default_deploy(id);
         host.event(Event::Draw, EventArgs { i1: id as i32, i2: items as i32, ..Default::default() });
         host.player_anim(0x34);
         let mem = &mut self.mode_memory[id as usize];
@@ -1841,7 +1846,7 @@ impl Gun {
         }
         self.current = 0;
         host.set_view_model(Some(0));
-        host.weapon_anim(anim(0, false, 2), false, 0);
+        host.weapon_anim(anim(0, false, 2), false, self.body);
         host.event(Event::Draw, EventArgs::default());
         self.kick_combo = 0;
         self.punch_combo = 0;

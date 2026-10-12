@@ -179,9 +179,9 @@ impl Entity for WorldGun {
         self.funcs = BaseFuncs { think: true, touch: true, ..BaseFuncs::default() };
     }
 
-    /// `Fall` (0xa0d84) until it lands, then `WaitThink`. TS adds no friction here: a sliding
-    /// gun is slowed only by `BounceTouch`'s ground damping, which the engine runs on every frame
-    /// it scrapes the floor.
+    /// `Fall` (0xa0d84) until it lands, then `WaitThink` (0xa104c). TS adds no friction here: a
+    /// sliding gun is slowed only by `BounceTouch`'s ground damping, which the engine runs on
+    /// every frame it scrapes the floor.
     fn think(&mut self, cx: &mut Cx) {
         if !self.funcs.think {
             return;
@@ -190,13 +190,16 @@ impl Entity for WorldGun {
         let me = cx.edict;
         let now = e.time();
         cx.pev().nextthink = now + 0.1;
-        if now > self.expire {
-            entities::remove(me);
-            return;
-        }
         if self.on_ground {
+            // WaitThink.
+            if self.expire < now {
+                entities::remove(me);
+            }
             return;
         }
+        // Fall: landing (`OnGround`, which only switches the think and touch) comes first, and
+        // the rest of this think still runs: the expiry check, the impact trace and the
+        // slow-motion physics.
         let pev = cx.pev();
         if pev.flags & FL_ONGROUND as i32 != 0 && spread::length(pev.velocity) < give_slow_mul(pev.fuser1) * 3.0 {
             emit(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, 0.8, 100);
@@ -204,6 +207,9 @@ impl Entity for WorldGun {
             pev.angles[0] = 0.0;
             pev.angles[2] = 0.0;
             self.land(cx);
+        }
+        if now > self.expire {
+            entities::remove(me);
             return;
         }
         // Falling guns hurt what they hit (breakables). The attacker is the thrower (port
@@ -215,7 +221,9 @@ impl Entity for WorldGun {
             let slots = info(self.id).map(|w| w.slots).unwrap_or(10) as f32;
             let s = spread::length(pev.velocity) * slots;
             let target = tr.pHit.v();
-            if target.takedamage != 0.0 && target.health <= s {
+            // No `takedamage` test: TS calls the TraceAttack (a breakable's sparks and ricochets
+            // included), which leaves the damage out itself without `takedamage`.
+            if target.health <= s {
                 let mut d = DamageInfo::new(me, self.thrower.or(me), s * 0.001, 0x1080).traced();
                 d.dir = pev.velocity;
                 d.pos = tr.vecEndPos;
@@ -376,7 +384,8 @@ impl Entity for AmmoPack {
         self.expire = e.time() + assets::cvars().weaponstay.clamp(5.0, 60.0);
         let pev = cx.pev();
         pev.nextthink = e.time() + 0.1;
-        pev.iuser4 = 0;
+        // `iuser4 = 0; |= 2` (0x9150c, 0x91518): the client fades and culls the pack past 1024 u.
+        pev.iuser4 = 2;
         pev.armorvalue = 0.0;
         pev.owner = std::ptr::null_mut();
         self.funcs = BaseFuncs { think: true, ..BaseFuncs::default() };
