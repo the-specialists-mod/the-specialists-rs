@@ -300,6 +300,8 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   is removed whether or not anything fitted. Without the gun nothing happens and it stays.
 * Slots: 81 free at spawn, speed `round(210 + free*120/81)` (330 with nothing carried).
 * Disarm threshold: katana 30, knives 25, weapons with < 21 slots 20, else `min(slots, 50)`.
+* `DropWeapon` plays `weapons/weapondrop.wav` (0x951c0) except for a primed M61 (thrown by
+  `GrenadeIdle(1)`) or one with no grenades left, which jump past it (issue #21).
 * Dropped guns live `clamp(weaponstay, 5, 60)` s; `drop`/disarm drops `clamp(2*weaponstay, 10,
   120)` s and glow for the dropper (`WorldGun` +0xc4 / +0xd0, `DropWeapon` 0x94ed9, 0x94fad,
   0x95265): both halves of a split akimbo pair, never the CTB briefcase.
