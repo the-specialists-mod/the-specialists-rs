@@ -324,9 +324,14 @@ impl GunHost for ClientHost<'_> {
     fn kungfu(&self) -> bool {
         false // only scales melee damage (server)
     }
+    fn tracks_owned(&self) -> bool {
+        false
+    }
     fn alive(&self) -> bool {
-        let c = &self.from.client;
-        c.deadflag == 0 && c.health > 0.0
+        // The client player's IsAlive (0x10004700) reads `pev->health` (+0x160), which nothing on
+        // the client writes: always false, so HolsterWeapon stops early and DropWeapon (were it to
+        // find a weapon) switches nothing.
+        false
     }
     fn buttons(&self) -> u32 {
         self.cmd.buttons as u32
@@ -437,14 +442,12 @@ fn rebuilt_body(g: &Gun) -> Option<i32> {
 /// The networked part of [`gun_from`]. Returns the power-up bits.
 fn rebuild(g: &mut Gun, from: &local_state_t) -> u16 {
     let powerups = unpack_clientdata(&from.client, g);
-    // TS's rebuild never writes a record's owned byte, so its client DropWeapon (0x100085d0) and
-    // GetBetterWeapon (0x10008660) never find a weapon. The port marks the current record owned
-    // (`unpack_clientdata`) and only that one, so a kept record can't become a predicted switch.
-    let cur = g.current as usize;
-    for (i, s) in g.status.iter_mut().enumerate() {
-        if i != cur {
-            s.owned = false;
-        }
+    // TS's rebuild never writes a record's owned byte (the gun's Spawn zeroes it), so its client
+    // DropWeapon (0x100085d0), GetBetterWeapon (0x10008660) and SelectWeapon (0x100086b0) never
+    // find a weapon: throwing the last grenade, knife or katana predicts no switch. The host's
+    // `tracks_owned` lets the ColdCock event through without it, as the client copy does.
+    for s in g.status.iter_mut() {
+        s.owned = false;
     }
     unpack_weapon_data(&from.weapondata[TS_GUN_SLOT], g);
     g.next_alt = from.weapondata[TS_GUN_SLOT].fuser4;
@@ -611,26 +614,31 @@ mod tests {
 
     /// The predicted kung-fu block (`0x1000adc0`) gates on the HUD's power (`0x1018a718`), not
     /// the gun's bar, and charges none.
+    /// A re-prediction host (`runfuncs` false, so nothing reaches the engine).
+    fn test_host<'a>(from: &'a local_state_t, cmd: &'a usercmd_t, kfu_power: f32) -> ClientHost<'a> {
+        ClientHost {
+            from,
+            final_origin: [0.0; 3],
+            cmd,
+            runfuncs: false,
+            time: 0.0,
+            seed: 0,
+            powerups: 0,
+            kfu_power,
+            fov: 0.0,
+            viewmodel: 7,
+            iuser4: 0,
+            weaponanim: 3,
+            body: 0,
+            silenced: false,
+        }
+    }
+
     #[test]
     fn block_gates_on_hud_power() {
         let (from, cmd) = (local_state_t::default(), usercmd_t::default());
         let block = |kfu_power: f32, bar: f32| {
-            let mut host = ClientHost {
-                from: &from,
-                final_origin: [0.0; 3],
-                cmd: &cmd,
-                runfuncs: false,
-                time: 0.0,
-                seed: 0,
-                powerups: 0,
-                kfu_power,
-                fov: 0.0,
-                viewmodel: 0,
-                iuser4: 0,
-                weaponanim: 0,
-                body: 0,
-                silenced: false,
-            };
+            let mut host = test_host(&from, &cmd, kfu_power);
             let mut g = Gun { melee_bar: bar, ..Default::default() };
             g.ccombat_block(&mut host);
             g
@@ -641,8 +649,40 @@ mod tests {
         assert_eq!((g.block_kungfu, g.next_primary, g.melee_bar), (0.0, 0.0, 100.0));
     }
 
+    /// Throwing the last grenade, knife or katana (`DropWeapon` 0x100085d0) predicts nothing: the
+    /// rebuilt records are never owned, so the record stays and there is no switch to kung fu
+    /// (no view model, animation or `Draw` event, `m_flNextAttack` untouched).
+    #[test]
+    fn drop_weapon_predicts_no_switch() {
+        for id in [id::M61, id::KNIFE, id::KATANA] {
+            let mut server = Gun { current: id, ..Default::default() };
+            server.status[id as usize] = Status { owned: true, clip: 1, mode: 1, items: 0, ..Default::default() };
+            let mut ls = local_state_t::default();
+            pack_clientdata(&server, 0, &mut ls.client);
+            pack_weapon_data(&server, &mut ls.weapondata[TS_GUN_SLOT]);
+            let mut g = Gun::default();
+            rebuild(&mut g, &ls);
+            assert!(g.status.iter().all(|s| !s.owned));
+            let cmd = usercmd_t::default();
+            let mut host = test_host(&ls, &cmd, 0.0);
+            assert!(!g.remove_weapon(id, true, &mut host));
+            assert_eq!((g.current, g.status[id as usize].clip, g.status[id as usize].mode, g.next_attack), (id, 1, 1, 0.0));
+            assert_eq!((host.viewmodel, host.weaponanim), (7, 3));
+        }
+    }
+
+    /// The client host's records have no owned flag and its player is never alive (0x10004700).
+    #[test]
+    fn client_host_owned_and_alive() {
+        let (from, cmd) =
+            (local_state_t { client: clientdata_t { health: 100.0, ..Default::default() }, ..Default::default() }, usercmd_t::default());
+        let host = test_host(&from, &cmd, 0.0);
+        assert!(!host.tracks_owned());
+        assert!(!host.alive());
+    }
+
     /// Records other than the current one, and other ammo types' reserve, survive a command's
-    /// rebuild (TS keeps them until the gun's Spawn); only the current record counts as owned.
+    /// rebuild (TS keeps them until the gun's Spawn); none counts as owned.
     #[test]
     fn rebuild_keeps_other_records() {
         let mut server = Gun { current: id::AK47, ..Default::default() };
@@ -659,7 +699,7 @@ mod tests {
         rebuild(&mut g, &ls);
         assert_eq!(g.current, id::AK47);
         assert_eq!(g.slot().unwrap().clip, 30);
-        assert!(g.status[id::AK47 as usize].owned);
+        assert!(!g.status[id::AK47 as usize].owned);
         let kept = g.status[id::BERETTA as usize];
         assert_eq!((kept.owned, kept.clip, kept.mode, kept.items), (false, 7, 1, att::SILENCER));
         assert_eq!(g.reserve[other_ammo], 45);

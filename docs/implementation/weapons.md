@@ -342,6 +342,17 @@ instead, `0.01 <= 0x1018a718`, the copy the TS weapon element's `Think` (`0x1004
 the networked, locally regenerated `KFuPower` value on each `Think` (`state::Shared::kfu_power`), and
 charges nothing (no `UpdateMeleeBar`, so no 1.5 s `m_flNextAttack` for an empty bar):
 `GunHost::kfu_power`, `None` on the server, which gates on and charges its own bar.
+The client gun's records never carry the owned byte (the rebuild `0x10003965..0x10003bbe` never
+writes `record+0`; the gun's Spawn zeroes it), and the client player's `IsAlive` (`0x10004700`)
+reads a `pev->health` nothing writes, so it is always false. So `DropWeapon` (`0x100085d0`)
+finds no weapon: throwing the last grenade, knife or katana predicts no record clear and no switch
+to kung fu, `SelectWeapon` (`0x100086b0`) takes only id 0, and `HolsterWeapon` stops before its
+living part. The prediction's `rebuild` clears every owned flag, `ClientHost::alive` is false, and
+`GunHost::tracks_owned` (false on the client) lets `ColdCock`'s event through without the owned
+test, as the client copy (`0x10008dc8`) has none and the server's (`0x81dd0`) has one. **Was**: the
+current record counted as owned and the host as alive, so the last throw predicted a kung-fu
+switch (view model, two draw animations and `Draw` events, `m_flNextAttack` 0.5) and packed the
+cleared record into `to` (issue #14). Fixed.
 
 ## 5. Deviations and decisions
 

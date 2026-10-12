@@ -167,6 +167,13 @@ pub trait GunHost {
     fn kfu_power(&self) -> Option<f32> {
         None
     }
+    /// The records carry their owned flag (`s_weapon_status+0`), as the server's do. The
+    /// prediction's never do: `client.dll`'s rebuild (`0x10003965..0x10003bbe`) never writes it,
+    /// so its `DropWeapon` (`0x100085d0`) and `SelectWeapon` (`0x100086b0`) find no weapon, and
+    /// its `ColdCock` plays the event without testing it (`0x10008dc8`).
+    fn tracks_owned(&self) -> bool {
+        true
+    }
     /// Active power-up bits (`pl+0x724`, `shared::ts::powerup`).
     fn powerups(&self) -> u16;
     /// Permanent kung-fu power-up (x2 melee damage).
@@ -1018,7 +1025,8 @@ impl Gun {
             }
             MeleeResult::Miss => {}
         }
-        if self.has_slot() && self.status[self.current as usize].owned {
+        // The server tests the record's owned flag (0x81dd0); the client copy doesn't.
+        if self.has_slot() && (self.status[self.current as usize].owned || !host.tracks_owned()) {
             let items = self.status[self.current as usize].items as i32;
             host.event(
                 Event::ColdCock,

@@ -324,13 +324,6 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
 
 ## Deviations from TS 3.0
 
-* **Owned weapon records in prediction.** TS's per-command rebuild never writes a record's owned
-  byte, so on its client every record stays unowned and the client `DropWeapon` (`0x100085d0`) and
-  `GetBetterWeapon` (`0x10008660`) never find a weapon. The shared `Gun` needs the current record
-  owned, so `unpack_clientdata` marks it and `prediction::gun` clears the flag on every other
-  (kept) record; a stale record never becomes a predicted switch. Throwing the last grenade or
-  blade still predicts the drop to kung fu as before, where TS predicts nothing until the server's
-  state arrives.
 * **Melee view shakes** run inside the shared `Gun`, so they follow its branch choice (which, like
   the client `KatanaFire`/`CCombatAttack`, reads `FL_DUCKING` on the gun's own `pev`,
   `0x1000a052`/`0x1000b1c1`, so only `+duck` counts).
