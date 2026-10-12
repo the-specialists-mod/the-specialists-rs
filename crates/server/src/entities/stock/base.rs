@@ -279,10 +279,12 @@ pub fn sub_use_targets(
     }
     if kill_target != 0 {
         let name = s(kill_target);
+        eng.alert(ALERT_TYPE::at_aiconsole, &format!("KillTarget: {}\n", name.to_string_lossy()));
         let mut k = eng.find_by_target_name(std::ptr::null_mut(), name);
         while !k.is_null() {
             let next = eng.find_by_target_name(k, name);
             remove(k);
+            eng.alert(ALERT_TYPE::at_aiconsole, &format!("killing {}\n", s(k.v().classname).to_string_lossy()));
             k = next;
         }
     }

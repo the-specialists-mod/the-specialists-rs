@@ -70,8 +70,8 @@ impl PathTrack {
     }
 
     /// `CPathTrack::Link` (0xd1274): `m_pnext` from `target` and `m_paltpath` from `altpath`, each
-    /// telling the node it links to that this one comes before it. Guard: TS stores any entity
-    /// (and calls `SetPrevious` on it as a `CPathTrack`); the port links `path_track`s only.
+    /// telling the node it links to that this one comes before it. Both go through
+    /// `CPathTrack::Instance` (0xd1c30), so only `path_track`s are linked.
     fn link(&mut self, cx: &mut Cx) {
         let eng = engine();
         let me = cx.edict;
@@ -311,8 +311,15 @@ fn train_pitch(speed: f32) -> i32 {
 fn train_event_pitch(pitch: i32) -> i32 {
     (pitch as f64 * 0.1) as i32 & 0x3f
 }
+/// `event_flags.h`: `PLAYBACK_EVENT_FULL(10, ...)` in `StopSound` (0xd4610) and `UpdateSound` (0xd46bc).
+/// `(int)(pev->speed * 4) / (int)m_speed` from `CFuncTrackTrain::Use` (0xd437c). Guard: TS
+/// traps (SIGFPE) dividing by 0 or `INT_MIN / -1`; the port divides by 1 instead.
+fn speed_notch(n: i32, max: i32) -> i32 {
+    n.checked_div(max).unwrap_or(n)
+}
+
 const FEV_RELIABLE: i32 = 1 << 1;
-const FEV_UPDATE: i32 = 1 << 6;
+const FEV_UPDATE: i32 = 1 << 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum TrainThink {
@@ -645,11 +652,15 @@ impl TrackTrain {
         let eng = engine();
         let mut time = 0.5;
         if cx.pev().speed == 0.0 {
+            let msg = format!("TRAIN({}): Speed is 0\n", s(cx.pev().targetname).to_string_lossy());
+            eng.alert(ALERT_TYPE::at_aiconsole, &msg);
             self.stop_sound(cx);
             return;
         }
         let path = self.path.get();
         if path.is_null() {
+            let msg = format!("TRAIN({}): Lost path\n", s(cx.pev().targetname).to_string_lossy());
+            eng.alert(ALERT_TYPE::at_aiconsole, &msg);
             self.stop_sound(cx);
             return;
         }
@@ -703,6 +714,8 @@ impl TrackTrain {
                 }
                 if v.spawnflags & SF_TRACKTRAIN_NOCONTROL != 0 && fv.speed != 0.0 {
                     v.speed = fv.speed;
+                    let msg = format!("TrackTrain {} speed to {:4.2}\n", s(v.targetname).to_string_lossy(), v.speed);
+                    eng.alert(ALERT_TYPE::at_aiconsole, &msg);
                 }
             }
             self.think = TrainThink::Next;
@@ -728,7 +741,11 @@ impl TrackTrain {
         }
     }
 
+    /// `CFuncTrackTrain::DeadEnd` (0xd4ec8).
     fn dead_end(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        let msg = format!("TRAIN({}): Dead end ", s(cx.pev().targetname).to_string_lossy());
+        eng.alert(ALERT_TYPE::at_aiconsole, &msg);
         let mut track = self.path.get();
         if !track.is_null() {
             loop {
@@ -742,7 +759,11 @@ impl TrackTrain {
         let v = cx.pev();
         v.velocity = [0.0; 3];
         v.avelocity = [0.0; 3];
-        if !track.is_null() {
+        if track.is_null() {
+            eng.alert(ALERT_TYPE::at_aiconsole, "\n");
+        } else {
+            let msg = format!("at {}\n", s(track.v().targetname).to_string_lossy());
+            eng.alert(ALERT_TYPE::at_aiconsole, &msg);
             let net = track.v().netname;
             if net != 0 {
                 self.fire(cx.edict, s(net));
@@ -756,8 +777,9 @@ impl TrackTrain {
         if t.is_null() {
             return;
         }
+        // `CPathTrack::Instance` (0xd1c30) gives NULL for anything but a `path_track`, so TS's
+        // "func_track_train must be on a path of path_track" branch is unreachable.
         if !is_path(t) {
-            eng.alert(ALERT_TYPE::at_error, "func_track_train must be on a path of path_track\n");
             self.path = EHandle::NULL;
             return;
         }
@@ -807,6 +829,12 @@ impl TrackTrain {
             self.think = TrainThink::None;
             return;
         }
+        let msg = format!(
+            "TRAIN: {}, Nearest track is {}\n",
+            s(cx.pev().targetname).to_string_lossy(),
+            s(nearest.v().targetname).to_string_lossy()
+        );
+        eng.alert(ALERT_TYPE::at_aiconsole, &msg);
         let n = get_next(nearest);
         if !n.is_null() && vec::length(vec::sub(org, origin(n))) < vec::length(vec::sub(org, origin(nearest))) {
             nearest = n;
@@ -925,7 +953,7 @@ impl Entity for TrackTrain {
                 self.think = TrainThink::None;
             }
         } else {
-            let mut delta = ((v.speed * 4.0) as i32 / (self.speed as i32).max(1)) as f32 * 0.25 + 0.25 * value;
+            let mut delta = (speed_notch((v.speed * 4.0) as i32, self.speed as i32)) as f32 * 0.25 + 0.25 * value;
             delta = delta.clamp(-1.0, 1.0);
             if v.spawnflags & SF_TRACKTRAIN_FORWARDONLY != 0 && delta < 0.0 {
                 delta = 0.0;
@@ -950,6 +978,10 @@ impl Entity for TrackTrain {
             return;
         }
         ov.velocity = vec::scale(vec::normalize(vec::sub(ov.origin, v.origin)), v.dmg);
+        let msg =
+            format!("TRAIN({}): Blocked by {} (dmg:{:.2})\n", s(v.targetname).to_string_lossy(), s(ov.classname).to_string_lossy(), v.dmg);
+        engine().alert(ALERT_TYPE::at_aiconsole, &msg);
+        let v = cx.pev();
         if v.dmg <= 0.0 {
             return;
         }
@@ -969,6 +1001,23 @@ mod tests {
         assert_eq!(approach_angle(90.0, 0.0, 10.0), 10.0);
         assert_eq!(approach_angle(0.0, 350.0, 20.0), 0.0);
         assert_eq!(fixup([-10.0, 370.0, 5.0]), [350.0, 10.0, 5.0]);
+    }
+
+    #[test]
+    fn pitch_event_flags() {
+        // TS passes 10 (`FEV_RELIABLE | FEV_UPDATE`); `FEV_CLIENT` (1 << 6) makes the engines drop it.
+        assert_eq!(FEV_RELIABLE | FEV_UPDATE, 10);
+    }
+
+    #[test]
+    fn use_set_notch() {
+        assert_eq!(speed_notch(400, 100), 4);
+        assert_eq!(speed_notch(-200, 100), -2);
+        // A negative `speed` key divides as TS does.
+        assert_eq!(speed_notch(400, -100), -4);
+        // Guards where TS traps.
+        assert_eq!(speed_notch(400, 0), 400);
+        assert_eq!(speed_notch(i32::MIN, -1), i32::MIN);
     }
 
     #[test]

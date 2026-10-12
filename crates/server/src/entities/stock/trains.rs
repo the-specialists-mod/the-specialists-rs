@@ -210,7 +210,10 @@ impl FuncTrain {
         if self.current_valid() {
             let cs = self.current.get().v().speed;
             if cs != 0.0 {
-                cx.pev().speed = cs;
+                let v = cx.pev();
+                v.speed = cs;
+                let msg = format!("Train {} speed to {:4.2}\n", s(v.targetname).to_string_lossy(), v.speed);
+                engine().alert(ALERT_TYPE::at_aiconsole, &msg);
             }
         }
         self.current = EHandle::new(targ);

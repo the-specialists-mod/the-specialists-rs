@@ -203,15 +203,15 @@ The track change that its own train fires reads the train's path through a side 
 | `worldspawn` | `CWorld::KeyValue` 0xf4a18, `CWorld::Precache` 0xf449c | Keys: `skyname` (`sv_skyname`), `sounds` (CD track), `WaveHeight` (`pev.scale` = v/8, `sv_wateramp`), `MaxRange` (`pev.speed`), `chaptertitle`, `startdark`/`gametitle`/`defaultteam` (spawnflags 1/2/4), `newunit` (`sv_newunit 1`); `gamemode`, `mapteams`, `teammodels` go to `rules::world_key_value`. Spawn first forces `sv_gravity 800`, `sv_stepsize 18`, `room_type 0`, then follows `CWorld::Precache`: installs the rules (`rules::install`; the multiplayer rules precache the voice icon), creates the soundent and the body queue, loads sentences and the texture types, issues TS's map-wide precaches in TS's order (§1.1), then sets `sv_zmax` (`MaxRange`, or 4096 when ≤ 0), shows the chapter title through an `env_message` 0.3 s in, and sets `v_dark` and `mp_defaultteam` from the spawnflags. Light styles 0–12 and 63. Resets the masters, the `game_team_master` indexes and env_sound rooms on each map. |
 | `func_wall`, `func_illusionary` | SDK bmodels.cpp | `func_wall` now sets `FL_WORLDBRUSH` and toggles its texture frame on Use. `func_illusionary` is `MOVETYPE_NONE`, and `skin` sets its contents. |
 | `func_wall_toggle`, `func_conveyor` | SDK | The conveyor speed is sent in `rendercolor`. |
-| `func_rotating` | SDK | Fan sounds, spin-up/down, hurt touch. Uses `fabs` where gcc 2.95 used the integer `abs`. The fan sounds use TS slow-motion pitch (0.5). |
+| `func_rotating` | SDK | Fan sounds, spin-up/down, hurt touch. `SpinUp` (0xa5fd8) and `RampPitchVol` (0xa5e68) compare and scale the speeds through the integer `abs((int)x)`, as TS's SDK did (guard: a target speed that truncates to 0, where TS divides by zero, ramps at 0 %). The fan sounds use TS slow-motion pitch (0.5). |
 | `func_pendulum` | SDK | The INSTANT flag (`CPendulum::Spawn` 0xa67f0) schedules its first swing at `time + 0.1`, which the engine compares against the pusher's `ltime`, so it starts that much later. |
 | `func_breakable` | **TS** `CBreakable` | See §3.1. |
-| `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use. The push and stop sounds use TS slow-motion pitch (0.5). A breakable pushable uses the TS breakable code. |
+| `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use (applied before every use of the player's velocity, the standing-on-top float push included). `buoyancy` is truncated into `pev->skin` (the `skin` key sets the same field), and `Spawn` scales `skin` in place by the box area × 0.0005, again on every respawn of a breakable pushable. The push and stop sounds use TS slow-motion pitch (0.5). A breakable pushable uses the TS breakable code. |
 | `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sounds and sentences as in §3.5. `movesnd`/`stopsnd` are BYTEs set like `func_plat`'s (`CBaseDoor::KeyValue` 0xb51a0, 16-bit `fistp`), `common/null.wav` isn't precached. |
 | `func_button`, `func_rot_button` | SDK buttons.cpp | Button and spark sounds use TS slow-motion pitch (0.5). Shootable buttons (health > 0) work through `take_damage`. Lock sounds and sentences as in §3.5. |
 | `momentary_door` | SDK 2.3 doors.cpp (TS `CMomentaryDoor` 0xb7d98..0xb87f4) | A `CBaseToggle`, so none of TS's `CBaseDoor` changes (§3.2) apply. Keys `movesnd` (`doors/doormove1..8.wav`, else `common/null.wav`; a BYTE via a 16-bit `fistp`), `stopsnd` and `healthvalue` (ignored), `lip`. Only `USE_SET` moves it: `value` (clamped to ≤ 1, no lower clamp) places it between closed and open, at 10 × the distance per second; the move sound (`CHAN_STATIC`, TS slow-motion pitch) starts when it isn't already moving. No stop sound, touch, `Blocked` or +use (`ObjectCaps` 0); `dmg` defaults to 2 unread. |
 | `momentary_rot_button` | SDK 2.3 buttons.cpp (TS `CMomentaryRotButton` 0xa948c..0xaa9d8) | Continuous +use (`ObjectCaps` 0x10) unless spawnflag 1, which also makes it solid. Each use turns it 0.1 s more at `speed` (default 100), reversing after every stop, moves every `momentary_rot_button` with the same `target`, and sends `USE_SET` with its position (`AxisDelta / distance`, from before this turn: the SDK 2.3 latency, not HL25's prediction) to the entities named by `target`. Spawnflag 16 with `returnspeed` > 0 turns it back on release, still updating the targets while above 0. A negative `distance` swaps the ends. `sounds` (`ButtonSound`) on the first turn after a stop, `CHAN_VOICE` with TS slow-motion pitch. |
-| `button_target`, `multisource` | SDK | |
+| `button_target`, `multisource` | SDK (TS 0xaa254..0xaa394, 0xa7a90) | `button_target` is a `CBaseEntity`: no `delay`/`killtarget`, its targets fire straight away. `multisource` keeps the SDK's search bug: a caller that isn't a member (e.g. a `DelayedUse`) toggles the last input, and "Used by non member" never prints. |
 | `func_train`, `path_corner` | SDK plats.cpp | `CFuncTrain::Activate` (0xd3b44) runs from `ServerActivate` (§6 item 2): once, to the first corner; an unnamed train starts 0.1 s (local time) on, a named one waits for a use. `Use` (0xd34d8) doesn't activate. Every sound (`Next`, `Wait`, `Use`) uses TS slow-motion pitch (0.5). `movesnd`/`stopsnd` are `CBasePlatTrain::KeyValue`'s (0xd1f80): the low byte of the `strtod` truncated to a short, as for `func_plat`; `common/null.wav` for any other number is only allocated (worldspawn precached it). |
 | `func_plat` | **TS** `CFuncPlat` | Adds the TS keys `targettop` and `targetbot`, which fire when the plat reaches the top or bottom. Spawns its own trigger volume. Sounds use TS slow-motion pitch (0.5). `movesnd`/`stopsnd` keep the low byte of the truncated short (`CBasePlatTrain::KeyValue` 0xd1f80: 257 is sound 1). `Blocked` (0xd2e64) logs "`<class>` Blocked by `<class>`" (`at_aiconsole`). |
 | `func_platrot` | SDK `CFuncPlatRot` (TS 0xd3010..0xd3294) | A `func_plat` that also turns `rotation` degrees about its `AxisDir` axis (spawnflag 64 Z, 128 X, else Y), from 0 at the bottom to `rotation` at the top, over the move's duration (`RotMove`: under 0.1 s, the whole turn becomes the angular velocity with a think 1 s on). Starts at the top angles with a targetname. |
@@ -344,10 +344,14 @@ The track change that its own train fires reads the train's path through a side 
 * **Touch.** `DoorTouch` opens at `max(speed, toucher speed)`.
 * **Direction.** Rotating doors choose their direction from the activator's velocity, not from its
   view angles.
+* **Broken mid-move.** The door keeps its velocity (TS drops only the think), so it goes on
+  moving, hidden, until it respawns; the respawn's client test uses the box where it is then.
 * **Activation.** `DoorActivate` refuses while the door is loosened or hidden.
 * **Moves.** The SDK 2.3 `LinearMoveDone` is used, without HL25's re-move on small errors.
 * **Sounds.** The move and stop sounds (`DoorGoUp`, `DoorHitTop`, `DoorGoDown`, `DoorHitBottom`,
-  including the `SND_STOP` of the move sound) use TS slow-motion pitch (0.5).
+  including the `SND_STOP` of the move sound) use TS slow-motion pitch (0.5). `DoorGoUp` and
+  `DoorGoDown` start the move sound whatever the toggle state (no HL `TS_GOING_UP/DOWN` check),
+  so a blocked door that reverses plays it again.
 
 ### 3.3 Items and chargers
 
@@ -934,6 +938,13 @@ everywhere) lacked.
 * **`speaker` preset outside 1–12.** TS's switch has no default and reads an uninitialised
   pointer; the port plays nothing and logs the "bad sentence group name" error with an empty
   name.
+* **`func_breakable` removal.** TS's `Die` and `BreakableRespawn` end with `SUB_Remove`, which
+  frees the edict at once, while `BreakTouch` and `TakeDamage` go on reading the freed object.
+  The port removes it at the end of the frame (`UTIL_Remove`) instead.
+* **Door respawn timer.** TS creates an `info_breakable` helper edict for every door (`Spawn`
+  0xb60cc / 0xb79b8, `respawntime` ≥ 0 after the clamp) and runs the respawn timer on it at
+  `gpGlobals->time`. The port runs it on the door's own `ltime` with the same timings and creates
+  no edict, so later edict numbers differ by one per door (as for `func_breakable`, §3.1).
 * **`item_security`'s count** (`m_rgItems[ITEM_SECURITY]`) isn't kept: nothing reads it.
 * **Exports.** Against `ts_i386.so` the port exports every entity class, plus (#107)
   `Server_GetBlendingInterface` and the `pm_math.c` helpers `anglemod`, `Length` and `Q_log2`
@@ -963,11 +974,12 @@ Where TS goes on through NULL, the port stops instead:
 
 * `CFuncTrain::Activate` with no entity named by `target` (TS reads its `target` and origin
   through NULL): the train stays put and stays activated.
+* `CFuncTrackTrain::Use` (0xd437c) `USE_SET` divides `(int)(speed * 4)` by `(int)m_speed`; a
+  `speed` key that truncates to 0 traps in TS (as does `INT_MIN / -1`). The port divides by 1
+  there; a negative `speed` divides as in TS.
 * `trigger_camera` `Use` with neither a player activator nor a client in slot 1 (TS calls
   `EnableControl`, copies the position and `SET_VIEW`s through NULL): the camera turns on, sets
   its speeds and target, and stops there.
-* `CPathTrack::Link` stores any entity `target` / `altpath` names and calls `SetPrevious` on it as
-  a `CPathTrack` (a write into a foreign object): the port links `path_track`s only.
 * `CLightning::BeamUpdateVars` with a missing start or end entity (TS uses the world, then reads
   through NULL or links the beam to edict 0): the port leaves the beam as it was.
 * `game_text` with a NULL activator (TS calls `IsNetClient` through it): only the all-players
