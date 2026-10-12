@@ -374,6 +374,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     }
 
     powerup::update_state(p, cx);
+    powerup::plugin_speed_think(p, cx);
     powerup::slow_flow(p, cx);
     health_regen(p, cx, now);
 

@@ -393,7 +393,40 @@ pub fn create<T: Entity + Default>(pev: *mut entvars_t) {
         return; // already game-owned (e.g. a client edict reused across maps)
     }
     let h = STORE.0.insert(Box::new(T::default()));
-    set_private_tag(e, [h.index, h.serial]);
+    set_private_tag(e, [h.index, h.serial], private_size::<T>());
+}
+
+/// Port addition (private-data guard): the private block of a player. TS's object is
+/// `CBasePlayer` (`sizeof` 0xb8c in `ts_i386.so`, 0xb78 in `mp.dll`; player-movement.md §8,
+/// bots.md §1) or, for `mp.dll`'s bots, `CBot` (0x25f0 bytes, `GetClassPtr<CBot>` 0x1006c240), so
+/// AMX Mod X plugins read and write TS offsets up to there through fakemeta's `get_pdata_*` /
+/// `set_pdata_*` (5 ints further on Linux). The port's object lives in the slab, so the block holds
+/// only the tag and zeroed padding the game never reads: the writes land harmlessly instead of
+/// past the end of a small allocation. Rounded up from 0x2604 (`CBot` plus the Linux shift).
+pub const PLAYER_PRIVATE_SIZE: usize = 0x3000;
+/// Port addition (private-data guard): `weapon_tsgun` (`CTSGun`, `sizeof` 0xa10 in `ts_i386.so`;
+/// weapons.md §4). Old plugins (`tsxaddon.inc`'s `ts_setuserammo`) write ints 41, 50-62, 839 and
+/// 850 of it (up to byte 3420 with the Linux shift), so it gets a whole 4 KiB.
+pub const TSGUN_PRIVATE_SIZE: usize = 0x1000;
+/// Port addition (private-data guard): a thrown `knife` (`CTSKnife`, `sizeof` 0xa4; weapons.md
+/// §5). AMX Mod X's stock `tsx` module read its thrower at int 31 (35 on Linux).
+pub const KNIFE_PRIVATE_SIZE: usize = 0x100;
+
+/// The private-data size [`create`] allocates for `T`: the smallest block
+/// (`goldsrc::edict::MIN_PRIVATE_SIZE`, zero where hamsandwich looks for a vtable), or a TS-sized
+/// one for the classes plugins poke at (see [`PLAYER_PRIVATE_SIZE`]).
+fn private_size<T: 'static>() -> usize {
+    use std::any::TypeId;
+    let t = TypeId::of::<T>();
+    if t == TypeId::of::<crate::player::Player>() {
+        PLAYER_PRIVATE_SIZE
+    } else if t == TypeId::of::<crate::entities::stock::playeritem::WorldTsGun>() {
+        TSGUN_PRIVATE_SIZE
+    } else if t == TypeId::of::<crate::weapons::projectiles::Knife>() {
+        KNIFE_PRIVATE_SIZE
+    } else {
+        goldsrc::edict::MIN_PRIVATE_SIZE
+    }
 }
 
 /// Runs `f` on the edict's object, with the object taken out of the slab during the call.

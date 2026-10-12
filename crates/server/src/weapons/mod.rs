@@ -190,6 +190,72 @@ impl Inventory {
     }
 }
 
+// ---- server plugins (port additions, `crate::plugin_api`) ---------------------------------------
+
+/// Port addition (`set_free_slots`): the free inventory weight (`pl+0x548`) and the walking speed
+/// that follows it (`GetSpeedBySlots` 0x76bd4 / `SetPlayerSpeed` 0x93068, as after a pickup). The
+/// weapons carried don't change: later pickups and drops count from the new value. `TSSpace`
+/// goes out with the next `UpdateClientData` (`player::hud`).
+pub fn set_free_slots(p: &mut Player, cx: &mut Cx, free: i32) {
+    p.inv.sv.free_slots = free;
+    inventory::sync_speed(p, cx);
+}
+
+/// Port addition (`set_weapon_ammo`): the clip and/or the reserve of owned weapon `id`. The
+/// reserve is per ammo type in TS (`gun+0xd4`), so it is that of every weapon sharing the type.
+/// A clip is split between an akimbo pair's guns, and carried to the single or akimbo twin, as a
+/// reload does (`CTSGun::Reload`'s finish in `Gun::item_post_frame`). Updates the client as
+/// `CTSGun::UpdateClientData` (0x858c8) does, on its next run: `WStatus` for each record
+/// changed, and `WeaponInfo` when `id` is in hand. False, with nothing changed, when the weapon
+/// isn't owned, or a reserve is given for a weapon without an ammo type (blades, grenades).
+pub fn set_weapon_ammo(inv: &mut Inventory, id: u8, clip: Option<i32>, reserve: Option<i32>) -> bool {
+    let Some(w) = shared::weapons::info(id) else { return false };
+    let i = id as usize;
+    let ammo = w.ammo as usize;
+    if id == 0 || i >= MAX_WEAPONS || !inv.gun.status[i].owned || (reserve.is_some() && (ammo == 0 || ammo >= MAX_AMMO)) {
+        return false;
+    }
+    let gun = &mut inv.gun;
+    let mut changed = vec![id];
+    if let Some(clip) = clip {
+        let old = gun.status[i].clip;
+        let s = &mut gun.status[i];
+        s.clip = clip;
+        s.left = clip / 2;
+        s.right = clip - s.left;
+        let left = s.left;
+        let twin = if shared::weapons::kind_of(id) == shared::weapons::kind::AKIMBO { w.single } else { w.akimbo };
+        if let Ok(t) = usize::try_from(twin)
+            && t < MAX_WEAPONS
+        {
+            let tw = &mut gun.status[t];
+            if w.single == twin {
+                tw.clip = left;
+            } else {
+                tw.clip = tw.clip.wrapping_add(clip.wrapping_sub(old));
+                tw.left = clip;
+            }
+            changed.push(t as u8);
+        }
+        if gun.current == id {
+            gun.clip_mirror = clip;
+        }
+    }
+    if let Some(r) = reserve {
+        gun.reserve[ammo] = r;
+    }
+    let sv = &mut inv.sv;
+    sv.next_update = 0.0;
+    for c in changed {
+        // An owned record whose flag reads "not sent" goes out again as `WStatus(id, 1, clip)`.
+        sv.sent_owned[c as usize] = false;
+        if inv.gun.current == c {
+            sv.sent_id = None;
+        }
+    }
+    true
+}
+
 pub fn game_init() {
     assets::register_cvars();
 }

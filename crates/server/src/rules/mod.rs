@@ -115,6 +115,17 @@ pub struct PlayerRules {
     pub slowed: u64,
     pub slowed_ents: Vec<*mut edict_t>,
 
+    // ---- server plugins (port additions, `crate::plugin_api`) ------------------------------------
+    /// The running power-up (`Player::active_powerup`) was started by a plugin
+    /// (`powerup::run_powerup`), not by `UsePowerUp`: it isn't the held one, so its end leaves
+    /// [`held`](Self::held) alone and drops nothing.
+    pub plugin_powerup: bool,
+    /// A plugin's time scale for the player and the players around it (`powerup::plugin_speed_think`).
+    pub plugin_speed: Option<powerup::PluginSpeed>,
+    /// A plugin's override of the `TSSlowMo` amount (`powerup::hud_slow_amount`): the time scale of
+    /// the player's client-side effects.
+    pub physics_speed: Option<f32>,
+
     // ---- capture the briefcase ---------------------------------------------------------------------
     /// The case this player carries (`s_flag_status` at `+0x7d0`).
     pub flag: Option<crate::entities::ts::ctb::FlagStatus>,

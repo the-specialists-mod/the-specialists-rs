@@ -12,6 +12,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod exports;
+mod plugin_api;
 
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::saverestore::{EngineHost, SaveData, raw};
@@ -381,6 +382,8 @@ unsafe extern "C" fn start_frame() {
     // mp.dll's `pfnStartFrame` (0x10010e00) thinks the bots before the rules' `Think`.
     bots::start_frame();
     rules::start_frame();
+    // Port addition: the plugin API's per-frame snapshot of every player.
+    ts_server::plugin_api::start_frame();
 }
 
 unsafe extern "C" fn get_game_description() -> *const c_char {

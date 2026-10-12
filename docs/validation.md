@@ -284,6 +284,12 @@ win32 under Wine (listen server, `ts_arena`).
   a poison `trigger_hurt` (`ts_gpc` has a nerve-gas one, which only counts down), so poison
   needs a test map.
 
+* The plugin API's setters in a running game (`implementation/plugin-api.md`): unit tests cover
+  the logic, and `CreateInterface` was called outside the engine. No AMX Mod X module has driven
+  them in-engine yet; that is for the `tsmod-amxx-rs` modules. The private-data guard was checked
+  under AMX Mod X on ReHLDS Linux and Windows (`ref/amxx-testenv`: hamsandwich fails cleanly,
+  fakemeta pdata reads zeroed padding), not under xtask.
+
 ### 3.3 Skeleton milestone (before the gameplay packages)
 
 The server library loaded on all six roots. The FWGS client joined ReHLDS (`TSHealth` shown in

@@ -193,6 +193,8 @@ impl Player {
             impulse::update_player_sound(self, cx);
         }
         crate::rules::post_think(self, cx);
+        // Port addition: what server plugins read while this player is out of the slab.
+        crate::plugin_api::refresh(self, cx.edict);
     }
 
     pub fn is_alive(cx: &mut Cx) -> bool {

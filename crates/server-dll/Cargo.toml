@@ -13,3 +13,4 @@ crate-type = ["cdylib"]
 goldsrc   = { path = "../goldsrc", features = ["server"] }
 shared    = { path = "../shared" }
 ts-server = { path = "../server" }
+ts-plugin-api = { path = "../plugin-api" }

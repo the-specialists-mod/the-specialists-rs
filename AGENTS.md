@@ -31,6 +31,8 @@ crates/
   shared/        game logic both sides run: movement, weapons, protocol, TS constants
   server/        ts-server: server game logic (rlib)
   server-dll/    ts-server-dll: the server library the engine loads (cdylib "ts")
+  plugin-api/    ts-plugin-api: the C ABI table server plugins get from CreateInterface (no_std,
+                 shared with the AMX Mod X module; append-only, see its module docs)
   client/        ts-client: client game logic (rlib)
   client-dll/    ts-client-dll: the client library the engine loads (cdylib "client")
 xtask/           build, package, install and test tooling (`cargo xtask ...`)

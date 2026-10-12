@@ -152,6 +152,7 @@ Setting up the roots (steamcmd, ReHLDS, Wine) and the latest results: [docs/vali
 | [docs/implementation/client-hud.md](docs/implementation/client-hud.md) | Client input, HUD, menus |
 | [docs/implementation/client-rendering.md](docs/implementation/client-rendering.md) | Client view, events, effects, prediction |
 | [docs/implementation/integration.md](docs/implementation/integration.md) | How the packages were joined, decisions, unused API, known gaps |
+| [docs/implementation/plugin-api.md](docs/implementation/plugin-api.md) | The server plugin API (`CreateInterface`, for AMX Mod X's TS module) and the private-data guard |
 
 ## Origin
 
