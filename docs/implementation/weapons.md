@@ -54,11 +54,12 @@ addresses of `ts_i386.so`.
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
 | `CBasePlayer::PostThink` timer tail 0x91610 | `Gun::decrement_timers`, `Gun::timer_dt` |
 | `CBasePlayer::PreThink` 0x908cc (weapon parts) | `Gun::pre_frame`, `weapons::pre_think` (disarm decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
-| `CBasePlayer::UpdateMeleeBar` 0x9650c / `GetMeleeMultiplier` 0x965d0 | `Gun::update_melee_bar` / `spread::melee_multiplier` |
+| `CBasePlayer::UpdateMeleeBar` 0x9650c / `GetMeleeMultiplier` 0x965d0 | `Gun::update_melee_bar` (outside the weapon frame: `weapons::update_melee_bar`) / `spread::melee_multiplier` |
 | `CBasePlayer::ShootBulletsPlayer` 0x6f69c, `UTIL_TraceLine_Expanded` 0x6f4f4 | `fire::shoot_bullets`, `fire::trace_expanded` |
 | `compile_range_damage` 0x7f1f4 | `range_multiplier` (pure function) |
 | `CBulletManager` 0x6ebe0.. | `bullets.rs` (256 slots, run from `CTSGameRules::Think` between its `realbullet` and `usecash` updates) |
-| `CBasePlayer::CheckHull` 0x95e28, `CloseCombatAttack` 0x95f88 | `melee::check_hull`, `melee::attack` |
+| `CBasePlayer::CheckHull` 0x95e28, `CloseCombatAttack` 0x95f88 | `melee::check_hull`, `melee::attack` (trace along `v_angle`) → `melee::trace_attack` (given trace, the jump kick's never-a-teammate flag) |
+| `CTSStunt::CloseAttack` 0x9c630 (the jump kick) | `stunt::moves::close_attack` (gate, move, cooldown, sound) → `weapons::jump_kick` (the `CloseCombatAttack`, a block's cost) and `weapons::update_melee_bar` |
 | `VictimKungfuHold/KnifeHold/KatanaHold` 0x76f50/0x76de4/0x76c8c | `melee::hold` |
 | `CTSStunt::CheckForBreakables` (melee-window part) | `melee::pending_hit` |
 | `CM61Grenade` 0x7c850.. + `CTSGrenade::BounceTouch` 0x7be28 | `projectiles::Grenade` (link `m61_grenade`, classname `grenade`) |
@@ -295,6 +296,25 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   stunting 4 / -1, uppercut 6 / 20, back kick 7 / 17, flying kick 8 / 16, quick kick 9 / 11-12,
   combo kick 10 / 10, 13-15, speed kick 10 / 15, 18, 19. The client copies never block, crouch
   or touch the stunt timers.
+* Jump kick (`CTSStunt::CloseAttack` 0x9c630, from `CBasePlayer::Jump` every frame jump is held,
+  `mp.dll` 0x1006a740): only with a weapon in hand (the TS gun active with no weapon record, i.e.
+  kung fu or holstered, means no kick; no active item or a `cycler_weapon` passes), no stunt
+  recover lock or close-combat cooldown, no `0x30c30` stunt bits, not ducking. Strength
+  `clamp(|vel| / 15, 10, 20)` (`spread::jump_kick_strength`: GCC rounds `|vel|` to a `float` first,
+  MSVC doesn't), damage ×2 with Kung Fu (no `GetMeleeMultiplier`). The attacker's kung-fu block
+  window (`pl+0x7a8`) closes, then `CloseCombatAttack` from `GetGunPosition()` to 48 u along
+  `v_forward` (`UTIL_MakeVectors(v_angle)`, `spread::jump_kick_end`: MSVC rounds `v_forward * 48`
+  before the add), hull 3, no animation, disarm, knockback above 30, any target (not only players),
+  bits 0x4001080, direction `v_forward`, and a teammate is never a target, friendly fire or not
+  (its last flag; the kung-fu attack's is 0). A block (`VictimKungfuHold`, the victim blocking) is
+  no hit: the attacker's stored delayed damage 0, `m_flNextAttack` 0.5, `UpdateMeleeBar(33)`, and
+  `Jump` goes on to `GoWheel`. A hit: move 14/13/10 for `RandomLong(0, 2)` = 1/2/0, close-combat
+  cooldown 0.7, `m_flNextAttack` 0.35 if it had run out (`UTIL_WeaponTimeBase()` is 0),
+  `player/closecombat.wav` (body, pitch 95..126, slow-motion factor 0.5),
+  `UpdateMeleeBar(strength * 1.5)` (the undoubled strength), and nothing else in `Jump`. TS plays
+  no event for it. As in TS, every frame the kick is tried, a miss included, `CloseCombatAttack`
+  rolls its motion blur first (`TSMBlur` when `RandomLong(10, 80) < damage`), so holding jump with
+  a weapon drawn blurs now and then.
 * Delayed hit (`CTSStunt::CheckForBreakables` 0x9bd9c while `pl+0x79c` is open, alive or dead:
   `PreThink` calls it before its `deadflag` return and death doesn't close the window): a hull-3
   trace from the origin 32 u along `v_angle` (behind for a negative stored damage); no
@@ -304,6 +324,9 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   source's `Victim*Hold` (blocked: no damage), kung fu disarms (not during spawn protection),
   knocks back above 30 and plays `kungfuhit`, blades their hit-body sound; blocked or friendly,
   the victim still becomes the last one hit. `TraceAttack` gets `g_vecZero` as the direction.
+* The melee hit and block sounds (`CloseCombatAttack`, `ColdCockAttack`, the `Victim*Hold`s, the
+  delayed hit) go through TS's `EMIT_SOUND_DYN` with slow-motion factor 0.5
+  (`explode::emit_sound_slow`: a slowed player's pitch drops; issue #31).
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
   `TSExplosion(110, 0x1040, 300, 1024)` only while `IsInWorld()` (origin inside ±4096 and
@@ -577,6 +600,9 @@ How the port maps TS where the structure differs (not deviations):
   message layouts, `CustomWP` round trip, clientdata/weapon_data packing, the kung-fu and
   katana reach / damage / window / block / forced crouch per move (`kungfu_reach_anim_window_and_block`,
   `katana_swings`).
+* Jump kick (#30): `jump_kick_strength_is_speed_over_15_clamped_to_10_20`, `jump_kick_strength_gcc_rounds_the_length_first`,
+  `jump_kick_end_is_48_units_ahead` (shared `spread` tests), `jump_kick_gate` and `jump_kick_anims` (`ts-server`,
+  `stunt::moves::tests`).
 * `cargo test -p ts-server`: command argument parsing (`%i_%i`), `SlowPhysics` (scale, rescale,
   restore, TS's gravity compounding at rest), ammo pack contents (`take_ammo`), the explosion's
   `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and damage falloff (`falloff_damage`),
@@ -597,6 +623,9 @@ How the port maps TS where the structure differs (not deviations):
 * **Not yet tested in engine**: a thrown knife's kill naming the blade in `DeathMsg` and the log,
   ` (victims_weapon)` after picking up a victim's dropped gun, `loadweapons` then a map change
   (no notice for new joiners, kevlar back at 0.2125).
+* **Not yet tested in engine**: the jump kick (#30): a running jump into a player with a weapon
+  drawn (hit, move, cooldown, `closecombat.wav`, the bar), a blocking victim, a teammate, and
+  none with kung fu out.
 * **Not yet tested in engine**: slowed projectiles (power-up slow motion / `globalslow` with a
   grenade, thrown knife and dropped gun in sight), bullet-time simulated bullets (slow pause),
   bubble trails under water, `dmgreport 2` with `sv_cheats 1`, +use on a flying/landed gun, on a

@@ -156,6 +156,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | `CheckForWallJump` / `CheckForWallDive` / `CheckForWallClimb` | 0x9ac14 / 0x9ad44 / 0x9ae6c | `check_for_wall_jump`, `check_for_wall_dive`, `check_for_wall_climb` |
 | `HandleStunt` / `HandleDive` / `Landing` / `HandleWheel` / `HandleSlide` / `HandleWallJump` / `HandleWallClimb` | 0x9b000 ... 0x9b9f8 | same names (snake case); wall landings share `land_wall_stunt` |
 | `GoWheel` / `GoRoll` | 0x9c9bc / 0x9cfe8 | `go_wheel`, `go_roll` |
+| `CloseAttack` (jump kick) | 0x9c630 | `moves::close_attack` (gate `close_attack_allowed`, move `close_attack_anim`); the kick itself is `weapons::jump_kick` (weapons.md), its strength `spread::jump_kick_strength` |
 | `TEXTURETYPE_PlaySound` (roll with `FREEZE_ANGLES`, dead in TS) | 0xe1330 | `moves::texture_type_play_sound` |
 | `TEXTURETYPE_Init` / `LoadStandardMaterials` / `LoadMapMaterials` / `Find` | 0xe1244 / 0xe0e14 / 0xe1014 / 0xe12c4 | `textures::texturetype::{init, find}` (`init` from `stunt::texture_type_init`, as TS's `CWorld::Precache`) |
 | `CheckForBreakables` | 0x9bd9c | `check_for_breakables` |
@@ -213,6 +214,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | Motion blur | `RandomLong(0,10) + 10*slowmul > T`: dive 8, flips 7, wall jump 5, roll 9; bullet time always |
 | Fall damage | above 680: `(v-680)*100*0.0022522523`, bodysplat if fatal, `DMG_FALL|DMG_NEVERGIB` from the world |
 | Super-jump landing | `UTIL_ScreenShake(origin, 20, 30, 0.3, 512)`; duck held → forced roll (and `m_flNextAttack = 0.75`), else `superjump-land.wav`, `RECOVER|GO_DUCK`, view 16, recover 0.75, anim 0x3a |
+| Jump kick (`CloseAttack`, every frame jump is held, before `GoWheel`) | needs no recover lock, no close-combat cooldown, no `0x30c30` stunt bits, not ducking, and a weapon in hand (with the TS gun active, kung fu or holstered means no kick; no active item is fine); strength `clamp(|vel| / 15, 10, 20)` (GCC stores `|vel|` as a `float` first), damage ×2 with Kung Fu; `CloseCombatAttack` from the eyes 48 u along `v_forward`, hull 3, disarm, knockback, never a teammate. Hit: move 14/13/10 (`RandomLong(0,2)` 1/2/0), cooldown 0.7, `m_flNextAttack = 0.35` if it had run out, `closecombat.wav`, `UpdateMeleeBar(strength * 1.5)`, and `Jump` stops. Blocked: no hit, attacker `m_flNextAttack` 0.5 and bar −33 |
 | Breakables | 64 u head-hull trace along velocity in the air; `|vel|` damage (`|vel|*0.1` while alive, as TS); with a melee window ±32 u along `v_forward`, damage `|pending|`, halved per hit (0 below 5), knockback above 30 (`+|vel|*dir`, z 235) |
 
 ## Deviations from TS 3.0
@@ -256,14 +258,6 @@ the same as the GCC build once the stack is 53 bits wide.
 
 ## Not done / owned elsewhere
 
-* **Jump kick (`CTSStunt::CloseAttack` 0x9c630)**: needs `CBasePlayer::CloseCombatAttack`, the
-  melee bar and kung fu (weapons). `moves::jump` is where it plugs in: TS calls it first and
-  skips `GoWheel` if it hit.
-* **Melee details in `CheckForBreakables`** with an attack window: the block checks
-  (`VictimKungfuHold/KnifeHold/KatanaHold`), disarm (`DropWeapon(-2, dmg)`), the melee-bar cost
-  of the backflip kick (22.5). (`glast_closecombat` is set around the kung-fu hit:
-  `weapons::melee::pending_hit`, `damage::glast`.) The team check approximates `PlayerRelationship` with `mp_friendlyfire` and
-  `Player::team`.
 * `SetPlayerGravity` (temp gravity timer, pl+0x4ec), `InterpolateSlowMotion`, power-ups,
   `GoSlow` (rules).
 
@@ -293,6 +287,10 @@ the same as the GCC build once the stack is 53 bits wide.
   `TEXTURETYPE` table (unsorted, first match); plus
   texture-table parsing/sorting/lookup, `AngleVectors`, and message decoders.
   `cargo test -p goldsrc --features server`: studio header lookup on a synthetic header.
+* `cargo test -p ts-server`: the jump kick's gate (`jump_kick_gate`: bare-handed with the gun
+  active, timers, ducking, the stunt bits) and moves (`jump_kick_anims`); `cargo test -p shared`:
+  its strength per build (`jump_kick_strength_*`, a GCC/MSVC ulp case) and trace end
+  (`jump_kick_end_is_48_units_ahead`).
 * Builds: `cargo build -p ts-server -p ts-client` (native), `--target i686-unknown-linux-gnu`,
   `--target i686-pc-windows-gnu`: all compile (Windows prints the pre-existing stdcall-fixup
   linker note).
@@ -314,8 +312,8 @@ the same as the GCC build once the stack is 53 bits wide.
   * `cl_showerror 1` printed no prediction errors (listen server, so latency ~0);
   * `PM_Init` loaded 1024 material types on both the server and the client.
 * **Not tested in-engine:** bullet time (needs slow motion from rules), super jump (needs `mj`
-  from a power-up), ladders, water, PseudoClimb, breakables, fall damage, the original TS client
-  against this server, network latency effects on impulse prediction.
+  from a power-up), ladders, water, PseudoClimb, breakables, fall damage, the jump kick, the
+  original TS client against this server, network latency effects on impulse prediction.
 
 ## Integration notes
 
@@ -342,8 +340,8 @@ the same as the GCC build once the stack is 53 bits wide.
   "onehanded_case"; `ext`: idle-gait override like "knife_idle", usually ""); call
   `stunt::animate` with 0/8/9 (fire), 0x33/0x34 (reload/draw), 0x35 (grenade), 0x26 (block),
   10-39 (melee); arm delayed hits through `p.stunt.melee` (window, damage, kind) — they land in
-  `CheckForBreakables`; use `p.stunt.close_attack_cd` for the jump kick; use
-  `stunt::block_player` for the post-attack slowdown; respect TS's "no attack while
+  `CheckForBreakables`; write `p.stunt.close_attack_cd` (the jump kick and the other stunts wait
+  for it); use `stunt::block_player` for the post-attack slowdown; respect TS's "no attack while
   `iuser4 & 0x30c30`".
 * **client (rendering/HUD)**: `NextStunt` and `TSState` are hooked in `hud::state`, `TSMBlur` in
   `effects`, and `+alt1` sets `shared::ts::IN_ALT1` (`input`). The view during stunts is done

@@ -621,11 +621,63 @@ fn texture_type_play_sound(tr: &TraceResult, src: Vec3, end: Vec3) -> f32 {
     volbar
 }
 
-/// The stunt parts of `CBasePlayer::Jump` (0x92864). TS first tries `CTSStunt::CloseAttack`
-/// (jump kick), which belongs to the weapons package (close combat) and isn't wired here.
+/// `CloseAttack`'s gate (0x9c630..0x9c6b5): no recovery lock (`+0x04`) or close-combat cooldown
+/// (`+0x08`) running, no stunt bits `0x30c30`, not ducking (`FL_DUCKING`), and not bare-handed:
+/// with the TS gun active (`m_pActiveItem`, `m_iId == 16`) its weapon record (`gun+0xcc`) must be
+/// set, which it isn't on kung fu (or holstered, both id 0). No active item at all (a
+/// `cycler_weapon` has id 0 too) passes.
+fn close_attack_allowed(recover: f32, close_attack_cd: f32, iuser4: i32, flags: i32, gun_active: bool, weapon: u8) -> bool {
+    !(recover > 0.0 || iuser4 & 0x30c30 != 0 || flags & FL_DUCKING as i32 != 0 || close_attack_cd > 0.0 || (gun_active && weapon == 0))
+}
+
+/// The jump kick's third-person move for `RandomLong(0, 2)` (0x8c8df): 14, 13 or 10.
+fn close_attack_anim(r: i32) -> i32 {
+    match r {
+        1 => 14,
+        2 => 13,
+        _ => 10,
+    }
+}
+
+/// `CTSStunt::CloseAttack` (0x9c630; `mp.dll` 0x1006a740), the jump kick: a kung-fu kick 48 u
+/// ahead of the eyes ([`crate::weapons::jump_kick`]) as strong as the speed allows
+/// ([`shared::weapons::spread::jump_kick_strength`], 10..20, doubled with Kung Fu). On a hit:
+/// move 10/13/14, a 0.7 s close-combat cooldown, `m_flNextAttack` 0.35 unless it is still
+/// running, `closecombat.wav` and `UpdateMeleeBar(strength * 1.5)`; then `Jump` stops there.
+fn close_attack(p: &mut Player, cx: &mut Cx) -> bool {
+    let pev = cx.pev();
+    let (iuser4, flags) = (pev.iuser4, pev.flags);
+    let gun_active = crate::weapons::gun_active(p);
+    if !close_attack_allowed(p.stunt.recover, p.stunt.close_attack_cd, iuser4, flags, gun_active, p.inv.gun.current) {
+        return false;
+    }
+    let strength = shared::weapons::spread::jump_kick_strength(crate::rules::cvars::pm_arith(), cx.pev().velocity);
+    let damage = if p.kungfu { strength + strength } else { strength };
+    if !crate::weapons::jump_kick(p, cx, damage) {
+        return false;
+    }
+    let anim = close_attack_anim(engine().random_long(0, 2));
+    p.stunt.close_attack_cd = 0.7;
+    anim::animate(p, cx, anim);
+    // `UTIL_WeaponTimeBase()` is 0: only a run-out `m_flNextAttack` (it rests at -0.001) is set.
+    if p.inv.gun.next_attack < 0.0 {
+        p.inv.gun.next_attack = 0.35;
+    }
+    stunt_sound(cx, c"player/closecombat.wav");
+    crate::weapons::update_melee_bar(p, cx, strength * 1.5);
+    true
+}
+
+/// `CBasePlayer::Jump` (0x92864), every frame jump is held: out of deep water and not water
+/// jumping, the jump kick ([`close_attack`]) first; if it hit, nothing else. Else a fresh press
+/// tries `GoWheel`, then plays the jump animation on the ground (conveyors add their speed).
 pub(super) fn jump(p: &mut Player, cx: &mut Cx) {
     let pev = cx.pev();
     if pev.flags & FL_WATERJUMP as i32 != 0 || pev.waterlevel >= 2 {
+        return;
+    }
+    // Every frame jump is held, pressed or not, as TS.
+    if close_attack(p, cx) {
         return;
     }
     let pressed = p.stunt.button_pressed & IN_JUMP as i32 != 0;
@@ -772,5 +824,32 @@ mod tests {
         p.slots_used = 81;
         p.ts.is_the_one = true;
         assert!(can_dive_high(&p) && can_dive_medium(&p) && can_dive_low(&p));
+    }
+
+    /// `CTSStunt::CloseAttack`'s gate (0x9c630..0x9c6b5).
+    #[test]
+    fn jump_kick_gate() {
+        let ok = |recover, cd, iuser4, flags, gun, weapon| close_attack_allowed(recover, cd, iuser4, flags, gun, weapon);
+        // a weapon in hand
+        assert!(ok(0.0, 0.0, 0, 0, true, shared::weapons::id::AK47));
+        // bare-handed (kung fu or holstered) with the gun active: no kick
+        assert!(!ok(0.0, 0.0, 0, 0, true, 0));
+        // no active item (or a cycler_weapon): the kick is allowed
+        assert!(ok(0.0, 0.0, 0, 0, false, 0));
+        assert!(!ok(0.001, 0.0, 0, 0, false, 0));
+        assert!(!ok(0.0, 0.7, 0, 0, false, 0));
+        assert!(!ok(0.0, 0.0, 0, FL_DUCKING as i32, false, 0));
+        for bit in [0x10, 0x20, 0x400, 0x800, 0x10000, 0x20000] {
+            assert!(!ok(0.0, 0.0, bit, 0, false, 0), "{bit:#x}");
+        }
+        // the other stunt bits don't stop it (0x100000 is GoWheel's extra bit)
+        assert!(ok(0.0, 0.0, 0x100001, FL_ONGROUND as i32, false, 0));
+        // a negative timer has run out
+        assert!(ok(-0.5, -0.5, 0, 0, false, 0));
+    }
+
+    #[test]
+    fn jump_kick_anims() {
+        assert_eq!([0, 1, 2].map(close_attack_anim), [10, 14, 13]);
     }
 }

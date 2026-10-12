@@ -818,10 +818,59 @@ pub fn pending_melee_hit(p: &mut Player, cx: &mut Cx) {
     melee::pending_hit(p, cx);
 }
 
+/// `CBasePlayer::UpdateMeleeBar(cost)` (0x9650c) from outside the weapon frame: the bar
+/// ([`Gun::charge_melee_bar`]: an emptied bar gives a 1.5 s `m_flNextAttack`) and `KFuPower`.
+pub fn update_melee_bar(p: &mut Player, cx: &mut Cx, cost: f32) {
+    p.inv.gun.charge_melee_bar(cost);
+    net::send_kfu_power(cx.edict, p.inv.gun.melee_bar);
+}
+
+/// The kick of `CTSStunt::CloseAttack` (0x9c630, from 0x8c7ea; `mp.dll` 0x1006a740):
+/// `CloseCombatAttack(GetGunPosition(), + v_forward * 48, v_forward, hull 3, damage, no anim,
+/// disarm, players or not, knockback, never a teammate)`, `v_forward` from
+/// `UTIL_MakeVectors(v_angle)`. First the attacker's own kung-fu block window (`pl+0x7a8`)
+/// closes, so `VictimKungfuHold` can only find the victim blocking. True when something was hit;
+/// a block is no hit, and charges the attacker as `VictimKungfuHold` does (stored delayed damage
+/// 0, `m_flNextAttack` 0.5, `UpdateMeleeBar(33)`).
+pub fn jump_kick(p: &mut Player, cx: &mut Cx, damage: f32) -> bool {
+    use shared::weapons::gun::{MeleeHit, MeleeKind, MeleeResult};
+    use shared::weapons::spread;
+    let me = cx.edict;
+    let (fwd, _, _) = engine().make_vectors(cx.pev().v_angle);
+    let pev = cx.pev();
+    let src = spread::add(pev.origin, pev.view_ofs);
+    let end = spread::jump_kick_end(crate::rules::cvars::pm_arith(), src, fwd);
+    p.inv.gun.block_kungfu = 0.0;
+    let hit = MeleeHit {
+        kind: MeleeKind::KungFu,
+        weapon: 0,
+        reach: 48.0,
+        hull: 3,
+        damage,
+        bits: 0x0400_1080,
+        player_anim: -1,
+        disarm: true,
+        knockback: true,
+        zero_roll: false,
+    };
+    // The hit runs inside the attacker in TS: lend it to its slot, as the weapon frame does
+    // (`ServerHost::reach_player`).
+    match crate::world::lend(me, p, || melee::trace_attack(me, &hit, src, end, fwd, 0.0, true)) {
+        MeleeResult::Hit { .. } => true,
+        MeleeResult::Blocked { next_attack, bar_cost } => {
+            p.inv.gun.melee_damage = 0.0;
+            p.inv.gun.next_attack = next_attack;
+            update_melee_bar(p, cx, bar_cost);
+            false
+        }
+        MeleeResult::Miss => false,
+    }
+}
+
 /// The backflip kick (`CTSStunt::GoWheel`): `UpdateMeleeBar(cost)`, then a 0.3 s kung-fu hit
 /// window with `damage`.
 pub fn arm_kick(p: &mut Player, cx: &mut Cx, cost: f32, damage: f32) {
-    host::with_host(p, cx, |gun, h| gun.update_melee_bar(cost, h));
+    update_melee_bar(p, cx, cost);
     let g = &mut p.inv.gun;
     g.melee_window = 0.3;
     g.melee_damage = damage;
