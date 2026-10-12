@@ -361,7 +361,7 @@ ammo, dropped guns, knives, grenades, the CTB case and the hidden objectives all
   `changeteam`, the `ChangePlayerTeam` `model` key and its kill path for issue #84;
   `SetDefaultPlayerTeam`, `RecountTeams`' team list and limit, `IsValidTeam` and the `ScoreInfo`
   team index for issue #86; `ClientUserInfoChanged`, The One's team switch, `game_player_team`,
-  disconnects and the deviations list for issue #87).
+  disconnects and the deviations list for issue #60).
 * Objective classes (`ts_objective_manager`, `ts_bomb`, `ts_hack`, `ts_teamescape`,
   `ts_sellzone`, `ts_objective_ptr`): only their saved fields and spawn flags are ported (§4.1).
 * Save/restore is unit-tested only (byte layout, every class against TS's tables, round trips);
@@ -528,9 +528,10 @@ Guards where TS corrupts memory, reads garbage or hangs (behaviour otherwise kep
 * Bots are driven only while they have a live user id (HL25 drops every bot when the last human
   leaves; `pfnRunPlayerMove` on a dropped client crashes the engine).
 
-Not modelled: TS's PreThink returns early on the frame a player lets go of a train's controls
-(the SDK's train block), before the node-learning block; the port's PreThink runs its later
-hooks on that frame, so `botlearn` can offer one node there that TS wouldn't. Whether the
+TS's PreThink returns early on the frame a player loses a train's controls (the SDK's train
+block), before the node-learning block; `drive::pre_think` reports that and `Player::pre_think`
+skips the tail then (`Jump`/`Duck`, fall speed, stance, node learning, end of spawn
+protection, delayed suicide; issue #60). Whether the
 engines keep fake clients (and their `CBot` objects) across `changelevel` is engine behaviour
 (bots.md §15); the port keeps a kept client's `Player`, brain included.
 

@@ -354,7 +354,7 @@ pub fn player_think(p: &mut Player, cx: &mut Cx) -> bool {
 }
 
 /// The rules part of `CBasePlayer::PreThink` (0x908cc) after `player_think`.
-pub fn pre_think(p: &mut Player, cx: &mut Cx) {
+pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     let now = cx.time();
 
     // PreThink order: WaterMove, UpdateClientData (InitHUD), CheckTimeBasedDamage, CheckSuitUpdate.
@@ -390,6 +390,11 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     // No +use double tap here: TS's `CBasePlayer::TSUse` (0x956e0) is never called. The client
     // sends `usepowerup` for a double tap when `cl_usepowerup` is on (issue #49). Using objects
     // is `player::player_use`, from the weapons' PostThink.
+
+    // TS's PreThink has returned already on the frame the train is lost (issue #60).
+    if !tail {
+        return;
+    }
 
     // End of spawn protection.
     if p.ts.protect_until < now && cx.pev().rendermode != 0 {

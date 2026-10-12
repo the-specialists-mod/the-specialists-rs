@@ -166,11 +166,16 @@ impl Player {
         if crate::rules::player_think(self, cx) {
             return;
         }
-        crate::entities::stock::drive::pre_think(self, cx, buttons & !last);
-        crate::rules::pre_think(self, cx);
-        crate::stunt::pre_think(self, cx);
+        // Losing the train ends TS's PreThink for this frame (both libraries), before
+        // `Jump`/`Duck`, the fall speed, `UpdatePlayerState`, the node learning, the end of spawn
+        // protection and the delayed suicide (issue #60).
+        let tail = !crate::entities::stock::drive::pre_think(self, cx, buttons & !last);
+        crate::rules::pre_think(self, cx, tail);
+        crate::stunt::pre_think(self, cx, tail);
         // mp.dll's node learning, between `UpdatePlayerState` and `CheckForWires` (0x1005fed2).
-        crate::bots::learn(self, cx);
+        if tail {
+            crate::bots::learn(self, cx);
+        }
         crate::weapons::pre_think(self, cx);
     }
 

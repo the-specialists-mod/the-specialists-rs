@@ -342,8 +342,9 @@ fn sync_superjump(p: &mut Player, cx: &mut Cx) {
     }
 }
 
-/// The stunt parts of `CBasePlayer::PreThink` (0x908cc), in order.
-pub fn pre_think(p: &mut Player, cx: &mut Cx) {
+/// The stunt parts of `CBasePlayer::PreThink` (0x908cc), in order. `tail` is false on the frame
+/// a train is lost: TS's PreThink returns before `Jump`/`Duck` then (issue #60).
+pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     let mut last = p.stunt.debug_last;
     debug_log(p, cx, &mut last);
     p.stunt.debug_last = last;
@@ -396,7 +397,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         return; // observer
     }
     moves::check_for_breakables(p, cx);
-    if cx.pev().deadflag > 0 {
+    if cx.pev().deadflag > 0 || !tail {
         return;
     }
 
