@@ -299,6 +299,7 @@ pub fn register_server_commands() {
     e.add_server_command(c"ts_observe", cmd_observe);
     e.add_server_command(c"ts_as", crate::commands::cmd_as);
     e.add_server_command(c"ts_dev_touch", cmd_dev_touch);
+    e.add_server_command(c"ts_dev_hamlog", crate::ham::cmd_dev_hamlog);
 }
 
 /// `ts_dev_touch <file>` (sv_cheats): creates an empty file in the game directory. Scripted

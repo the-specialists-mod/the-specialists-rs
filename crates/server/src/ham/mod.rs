@@ -811,9 +811,59 @@ pub fn should_collide(e: *mut edict_t, other: *mut edict_t) -> bool {
 
 // ---- the plugin's calls -------------------------------------------------------------------------
 
-/// `PluginApi::ham_set_hook`.
+/// `PluginApi::ham_set_hook`. A plugin's hook replaces `ts_dev_hamlog`'s.
 pub fn set_hook(hook: Option<HookFn>) {
+    DEV_LOG.0.set(false);
     HOOKS.0.set_hook(hook);
+}
+
+// ---- ts_dev_hamlog ------------------------------------------------------------------------------
+
+/// `ts_dev_hamlog`'s hook is installed.
+static DEV_LOG: Global<Cell<bool>> = Global(Cell::new(false));
+
+/// The functions `ts_dev_hamlog` watches.
+const DEV_LOGGED: [usize; 3] = [id::SPAWN, id::TAKEDAMAGE, id::KILLED];
+
+/// `ts_dev_hamlog 1|0` (sv_cheats; port addition, a dev aid): installs a hook of the server's own
+/// that prints every Spawn, TakeDamage and Killed before and after (`[ts ham]` lines), the way a
+/// plugin's hook sees them; 0 removes it. Refused while a plugin's hook is installed.
+pub extern "C" fn cmd_dev_hamlog() {
+    let eng = engine();
+    if !crate::rules::cvars::dev_cheats() || eng.cmd_argc() < 2 {
+        eng.print("usage (sv_cheats 1): ts_dev_hamlog 1|0\n");
+        return;
+    }
+    let on = eng.cmd_argv(1).to_bytes() != b"0";
+    let h = &HOOKS.0;
+    if on && !DEV_LOG.0.get() && h.hook.get().is_some() {
+        eng.print("ts_dev_hamlog: a plugin's hook is installed\n");
+        return;
+    }
+    if on || DEV_LOG.0.get() {
+        h.set_hook(on.then_some(dev_log_hook as HookFn));
+        for ham in DEV_LOGGED {
+            h.watch(ham, on);
+        }
+        DEV_LOG.0.set(on);
+    }
+}
+
+fn dev_log_hook(call: &mut HamCall, post: bool) -> c_int {
+    let show = |a: &HamArg| match a.kind {
+        kind::ENTITY => format!("#{}", a.i),
+        kind::FLOAT => format!("{}", a.f),
+        kind::VECTOR => format!("{:?}", a.v),
+        kind::TRACE | kind::STRING | kind::ITEMINFO => "ptr".to_owned(),
+        _ => format!("{}", a.i),
+    };
+    let n = usize::try_from(call.argc).unwrap_or(0).min(call.args.len());
+    let args: Vec<String> = call.args[..n].iter().map(show).collect();
+    let ret = if post { format!(" -> {}", show(&call.orig_ret)) } else { String::new() };
+    let name = usize::try_from(call.ham).ok().and_then(|i| NAMES.get(i)).copied().unwrap_or("?");
+    let when = if post { "post" } else { "pre" };
+    engine().print(&format!("[ts ham] {when} {name} this #{} class {} ({}){ret}\n", call.this, call.class, args.join(", ")));
+    action::CONTINUE
 }
 
 /// `PluginApi::ham_watch`.
