@@ -387,11 +387,6 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         return;
     }
 
-    // Fall velocity for PostThink.
-    if cx.pev().flags & FL_ONGROUND as i32 == 0 {
-        p.ts.fall_velocity = -cx.pev().velocity[2];
-    }
-
     // No +use double tap here: TS's `CBasePlayer::TSUse` (0x956e0) is never called. The client
     // sends `usepowerup` for a double tap when `cl_usepowerup` is on (issue #49). Using objects
     // is `player::player_use`, from the weapons' PostThink.

@@ -60,8 +60,6 @@ pub struct PlayerRules {
     pub observer_at: f32,
     /// Delayed suicide (`kill`, +1 s, `+0x84c`).
     pub suicide_at: f32,
-    /// Fall speed while airborne (`+0x828`).
-    pub fall_velocity: f32,
     /// Last model accepted (HLDM model check) and the team name (`m_szTeamName`).
     pub team_name: String,
     /// Spawn protection end (`+0x71c`).

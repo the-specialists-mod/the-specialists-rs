@@ -131,7 +131,6 @@ impl Player {
         f.float(&mut fall);
         self.stunt.fall_velocity = fall;
         if f.restoring() {
-            self.ts.fall_velocity = fall;
             self.ts.buttons_last = self.stunt.button_last;
             self.ts.buttons_pressed = self.stunt.button_pressed;
         }

@@ -706,6 +706,10 @@ pub(super) fn duck(p: &mut Player, cx: &mut Cx) {
     }
 }
 
+/// The fatal-fall splat's channel: `CHAN_ITEM` (the push of 3 at 0x917b2), so it doesn't cut
+/// pmove's `CHAN_VOICE` fall pain of the same landing (issue #40).
+const FALL_SPLAT_CHANNEL: u32 = CHAN_ITEM;
+
 /// Fall damage from `CBasePlayer::PostThink` (decomp §6.6): above 680 u/s,
 /// `(v - 680) * 100 / 444` (fatal at 1124).
 pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
@@ -718,7 +722,7 @@ pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
         p.stunt.fall_velocity = fallvel - 680.0;
         let dmg = (fallvel - 680.0) * 100.0 * 0.002_252_252_3;
         if pev.health < dmg {
-            emit_sound_slow(cx.edict, CHAN_VOICE, c"common/bodysplat.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
+            emit_sound_slow(cx.edict, FALL_SPLAT_CHANNEL, c"common/bodysplat.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
         }
         if dmg > 0.0 {
             let world = engine().entity_of_index(0);
@@ -827,6 +831,11 @@ mod tests {
     }
 
     /// `CTSStunt::CloseAttack`'s gate (0x9c630..0x9c6b5).
+    #[test]
+    fn fall_splat_is_on_the_item_channel() {
+        assert_eq!(FALL_SPLAT_CHANNEL, 3);
+    }
+
     #[test]
     fn jump_kick_gate() {
         let ok = |recover, cd, iuser4, flags, gun, weapon| close_attack_allowed(recover, cd, iuser4, flags, gun, weapon);
