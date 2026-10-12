@@ -368,8 +368,8 @@ pub fn auto_powerups(now: f32) {
 }
 
 /// `PutPowerUp` (0x9797c): a random deathmatch spot, a random clear position near it, no other
-/// power-up within 128 units.
-fn put_powerup(kind: u16) -> bool {
+/// power-up within 128 units. False when no spot was clear.
+pub fn put_powerup(kind: u16) -> bool {
     if kind == 0 {
         return false;
     }

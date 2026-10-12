@@ -166,7 +166,7 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
         let m = PwUp { bits: bits as i16, secs: pwup_secs_byte(secs) };
         msg::one(Msg::PwUp, e, |w| m.write(w));
     }
-    let slow = powerup::hud_slow_amount(p);
+    let slow = powerup::hud_slow_amount(p, crate::gameplay::active().server.powerups());
     if slow != p.hud.slowmo {
         p.hud.slowmo = slow;
         msg::one(Msg::TsSlowMo, e, |w| TsSlowMo { factor_x100: slow * 100.0 }.write(w));

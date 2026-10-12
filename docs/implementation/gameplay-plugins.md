@@ -192,6 +192,14 @@ Dedicated servers on the Steam engines, large maps and team modes are still to b
   a different algorithm, and a value or table where only constants change (issue #100 §1.0).
 * **Neutral names.** A hook names what it decides (`semi_auto_delay`, `divestep_limits`), never
   a ruleset. Doc comments cite the TS 3.0 function and address, as everywhere else.
+* **Value tables.** Where a ruleset changes only numbers, the hook returns a `&'static` table
+  (`PowerupRules`, `StuntRules`) whose 3.0 instance is a `const` next to the code that reads it,
+  pinned by a unit test to the literals it replaced.
+* **Stunt timers.** The stunt code never does arithmetic on its timers (`StuntState::next_stunt`,
+  `recover`, `close_attack_cd`, `prone_lock`, `block_timer`) itself: it stores what
+  `stunt_clock().start(now, fuser1, secs)` returns and asks `running`/`done`, so a ruleset can
+  keep end times instead of countdowns. Code outside the stunt module that writes them (the gun's
+  `ServerHost`, `stunt::block_player`) passes seconds of the player's time through the clock too.
 * **Arguments.** Shared hooks take plain values or `shared` types, because the movement code is
   generic over `Arith` and a trait object can't be. A hook that replaces a calculation, not a
   value, takes the command's `Arith` (`Fpu::ARITH` in the movement) and computes in that build
@@ -237,6 +245,16 @@ The hooks so far:
 | `ServerRules` | `player_killed(p, cx, d, g)` | `rules::scoring::player_killed_core` | `rules/scoring.rs` `player_killed`, once the killer can be reached |
 | `ServerRules` | `cash_based()` | false | `rules/state.rs` `cash_based` |
 | `ServerRules` | `buy_armament(p, cx)` | `weapons::buy_armament` | `weapons/mod.rs` spawn, without a `game_player_equip` |
+| `ServerRules` | `powerups()` | `rules::powerup::CORE` (`PowerupRules`: base durations 3/3/2/3, `pwupmult`, instant mask 0x1e6, top-up < 3, swap > 2, no swap on instant types, drop > 2, slow amounts 0.6/0.35 and 0.8/0.225, `TSSlowMo` 0.35/0.225) | `entities/ts/powerup.rs` `setup`/`pickup_plan`, `rules/powerup.rs` `update_state`/`add_powerup`/`hud_slow_amount`/`normal_secs`, `rules/commands.rs` `ts_givepowerup` |
+| `ServerRules` | `powerup_kind(key, spawnflags)` | `entities::ts::powerup::kind_for` (`GetRandomPowerup`, never armour) | `entities/ts/powerup.rs` `setup` |
+| `ServerRules` | `armor_powerup(p, cx, armor)` | `TakeArmor(100)` (`armor`: `PowerUp::armor`, 100; `entities::ts::powerup::set_armor`) | `rules/powerup.rs` `add_powerup` |
+| `ServerRules` | `time_scale_eases()` | `true` (`InterpolateSlowMotion`) | `rules/powerup.rs` `go_slow*`/`deactivate_flow`, `rules/lifecycle.rs` `pre_think` |
+| `ServerRules` | `motion_blur()` | `true` | `stunt/mod.rs` `maybe_blur`, `stunt/moves.rs` `go_bullet_time`, `rules/powerup.rs` `use_powerup`/`run_powerup`, `rules/lifecycle.rs` `killed`, `weapons/melee.rs` |
+| `ServerRules` | `sound_pitch(pitch, time_scale, s)` | `entities::stock::explode::slow_pitch` | `entities/stock/explode.rs` `emit_sound_slow` |
+| `ServerRules` | `stunts()` | `stunt::rules::CORE` (`StuntRules`: recoveries 0.5625/0.375/0.75/0.2625/0.75, get-up keys 0x4006, wall dive, glide climb, ...) | `stunt/moves.rs` |
+| `ServerRules` | `stunt_clock()` | `stunt::rules::RELATIVE` (`StuntClock`: seconds left, counted down in the player's time) | `stunt/mod.rs`, `stunt/moves.rs`, `weapons/host.rs` (every stunt timer write and test) |
+| `ServerRules` | `can_dive(p, armor, dive)` | `stunt::rules::can_dive` (used < 42/52/62, The One bypasses) | `stunt/moves.rs` `can` |
+| `ServerRules` | `bullet_time_allowed(time_scale)` | `max(fuser1, 0.01) <= 0.99` | `stunt/moves.rs` `go_bullet_time` |
 | `ClientRules` | `divestep_limits()` | `[42, 52, 62]` | `hud/weapons.rs` `draw_divesteps` |
 
 ## 6. Adding a hook

@@ -8,9 +8,11 @@ use crate::commands::Args;
 use crate::damage::DamageInfo;
 use crate::damage::glast::Snapshot;
 use crate::player::Player;
+use crate::rules::powerup::{self, PowerupRules};
 use crate::rules::scoring::{self, Frag};
 use crate::rules::state::GameRules;
 use crate::rules::{cvars, frame, lifecycle, teams};
+use crate::stunt::rules::{self as stunt, Dive, StuntClock, StuntRules};
 use crate::world::Cx;
 
 /// A server cvar: (name, default, flags), as [`cvars::CVARS`] lists TS 3.0's.
@@ -132,6 +134,70 @@ pub trait ServerRules: Sync {
     /// the loadout the client sent (`tkw`/`tki`/`tka`).
     fn buy_armament(&self, p: &mut Player, cx: &mut Cx) {
         crate::weapons::buy_armament(p, cx);
+    }
+
+    // ---- power-ups and slow motion ----------------------------------------------------------
+
+    /// The power-up values: durations, the instant types, the pickup thresholds, the slow-motion
+    /// amounts (`SetupPowerUp` 0x98014, `WaitTouch`, `UpdatePowerUpState` 0x95748).
+    fn powerups(&self) -> &'static PowerupRules {
+        &powerup::CORE
+    }
+
+    /// `SetupPowerUp`'s type for a `ts_powerup` with the type `key` (`pwuptype`, < 1 random)
+    /// and `spawnflags`: the type, and whether it is drawn again on each respawn.
+    fn powerup_kind(&self, key: i32, spawnflags: i32) -> (u16, bool) {
+        crate::entities::ts::powerup::kind_for(key, spawnflags)
+    }
+
+    /// `PlayerAddPowerUp` (0x97bc8) for an armour power-up worth `armor` (100 unless a ruleset
+    /// makes it otherwise): `TakeArmor(100)`, which costs slots.
+    fn armor_powerup(&self, p: &mut Player, cx: &mut Cx, armor: f32) {
+        let _ = armor;
+        crate::weapons::take_armor(p, cx, 100);
+    }
+
+    /// `GoSlow` (0x929d0) sets a target time scale that `InterpolateSlowMotion` (0x9910c) eases
+    /// `pev->fuser1` toward each PreThink. False: `GoSlow` writes `fuser1` at once.
+    fn time_scale_eases(&self) -> bool {
+        true
+    }
+
+    /// The ruleset sends `TSMBlur` (stunts, power-ups, kills, kung fu), and draws the random
+    /// numbers deciding it.
+    fn motion_blur(&self) -> bool {
+        true
+    }
+
+    /// `EMIT_SOUND_DYN`'s pitch (0xe0aa7) for an entity whose time scale is `time_scale`, with
+    /// the slow factor `s` ([`slow_pitch`](crate::entities::stock::explode::slow_pitch)).
+    fn sound_pitch(&self, pitch: i32, time_scale: f32, s: f32) -> i32 {
+        crate::entities::stock::explode::slow_pitch(pitch, time_scale, s)
+    }
+
+    // ---- stunts (CTSStunt) ------------------------------------------------------------------
+
+    /// The stunt values (recoveries, keys, which moves exist).
+    fn stunts(&self) -> &'static StuntRules {
+        &stunt::CORE
+    }
+
+    /// How the stunt timers keep time.
+    fn stunt_clock(&self) -> &'static dyn StuntClock {
+        &stunt::RELATIVE
+    }
+
+    /// `CanDiveHigh/Medium/Low`: the player can do a stunt of this height. `armor` is
+    /// `pev->armorvalue`.
+    fn can_dive(&self, p: &Player, armor: f32, dive: Dive) -> bool {
+        let _ = armor;
+        stunt::can_dive(p, dive)
+    }
+
+    /// `GoBulletTime` (0x9a5b4): bullet time is possible at the time scale `time_scale`
+    /// (`pev->fuser1`): `GiveSlowMul() <= 0.99`.
+    fn bullet_time_allowed(&self, time_scale: f32) -> bool {
+        time_scale.max(0.01) <= 0.99
     }
 }
 

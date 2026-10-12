@@ -25,7 +25,7 @@ pub fn emit_sound_slow(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn
         super::base::unknown_sentence(sample);
         return;
     };
-    let pitch = slow_pitch(pitch, e.v().fuser1, s);
+    let pitch = crate::gameplay::active().server.sound_pitch(pitch, e.v().fuser1, s);
     engine().emit_sound(e, chan as i32, &sample, vol, attn, flags, pitch);
 }
 

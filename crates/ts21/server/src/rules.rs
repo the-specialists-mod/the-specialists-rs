@@ -250,7 +250,7 @@ pub fn think(now: f32) {
     });
     if matches!(mode, Mode::Dm | Mode::TeamDm) {
         // The spawner itself (the map's `ts_powerup` test, the type) is the power-up rules'.
-        frame::auto_powerups(now);
+        crate::powerup::auto_powerups(now);
         if the_one && !the_one_exists {
             select_random_the_one(now);
         }

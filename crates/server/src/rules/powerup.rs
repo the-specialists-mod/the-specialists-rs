@@ -14,9 +14,67 @@ use goldsrc::sys::*;
 use shared::protocol::hud_wire::{PwUp, PwUpTime, TsMBlur};
 use shared::ts::powerup as pw;
 
-/// Slow amounts while a power-up is active: (self, others, bullet-time flag).
-pub const SLOWMO: (f32, f32, bool) = (0.6, 0.35, false);
-pub const SLOWPAUSE: (f32, f32, bool) = (0.8, 0.225, true);
+/// The power-up values a gameplay ruleset sets (`ServerRules::powerups`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PowerupRules {
+    /// `SetupPowerUp` (0x98014): the base duration of each type, by bit (`1 << i`, the lowest
+    /// set bit counts), and whether a map power-up's `pwupmult` scales it.
+    pub base_secs: [i32; 9],
+    pub multiplier: bool,
+    /// `WaitTouch`: the types picked up whatever is held or running (`0x1e6`).
+    pub instant: u16,
+    /// `PlayerAddPowerUp` (0x97bc8): infinite clip is used at once (`CTSGun::MultiplyClips`);
+    /// otherwise it is held and used like slow motion, and the gun reads the running bit.
+    pub infinite_clip_instant: bool,
+    /// `WaitTouch`: a slow motion tops up a held one with fewer seconds than this.
+    pub slowmo_top_up_below: i32,
+    /// `WaitTouch`: +use swaps a held slow motion for the pickup only above these seconds.
+    pub slowmo_swap_above: i32,
+    /// `WaitTouch`: +use swaps the held power-up for an instant one too (the held one drops,
+    /// and the player keeps it).
+    pub swap_on_instant: bool,
+    /// `UpdatePowerUpState`: a dead player's slow motion drops only above these seconds.
+    pub slowmo_drop_above: i32,
+    /// `UpdatePowerUpState`: (self, others, bullet-time flag) while slow motion / slow pause runs.
+    pub slowmo: (f32, f32, bool),
+    pub slowpause: (f32, f32, bool),
+    /// `UpdateClientData`: the `TSSlowMo` amount while slow motion / slow pause runs.
+    pub hud_slowmo: f32,
+    pub hud_slowpause: f32,
+}
+
+impl PowerupRules {
+    /// The base duration of `kind`: its lowest known bit's, 0 for none.
+    pub fn base(&self, kind: u16) -> i32 {
+        (0..9).find(|i| kind & (1 << i) != 0).map_or(0, |i| self.base_secs[i])
+    }
+}
+
+/// TS 3.0's power-up values.
+pub const CORE: PowerupRules = PowerupRules {
+    // slow motion 3, infinite clip 3, slow pause 2, double firerate 3
+    base_secs: [3, 3, 0, 2, 3, 0, 0, 0, 0],
+    multiplier: true,
+    instant: 0x1e6,
+    infinite_clip_instant: true,
+    slowmo_top_up_below: 3,
+    slowmo_swap_above: 2,
+    swap_on_instant: false,
+    slowmo_drop_above: 2,
+    slowmo: (0.6, 0.35, false),
+    slowpause: (0.8, 0.225, true),
+    hud_slowmo: 0.35,
+    hud_slowpause: 0.225,
+};
+
+/// Sets a player's time scale target (`GoSlow`); a ruleset whose time scale doesn't ease writes
+/// `fuser1` at once ([`ServerRules::time_scale_eases`](crate::gameplay::ServerRules::time_scale_eases)).
+fn set_slow_target(p: &mut Player, e: *mut edict_t, target: f32) {
+    p.slow_target = target;
+    if !crate::gameplay::active().server.time_scale_eases() {
+        (e.v().fuser1 = target);
+    }
+}
 
 /// `InterpolateSlowMotion`: exponential approach at ~7/s, snapping within 0.05.
 pub fn interpolate(frametime: f32, cur: &mut f32, target: f32) {
@@ -29,7 +87,8 @@ pub fn interpolate(frametime: f32, cur: &mut f32, target: f32) {
 
 /// `CBasePlayer::GoSlow` on the dispatched player.
 pub fn go_slow_self(p: &mut Player, cx: &mut Cx, amount: f32, btime: bool) {
-    p.slow_target = if cx.pev().iuser1 != 0 { 1.0 } else { amount };
+    let target = if cx.pev().iuser1 != 0 { 1.0 } else { amount };
+    set_slow_target(p, cx.edict, target);
     p.ts.slow_display = amount;
     p.ts.btime = btime;
 }
@@ -47,7 +106,7 @@ pub fn go_slow(e: *mut edict_t, amount: f32, btime: bool) {
 pub fn go_slow_plain(e: *mut edict_t, amount: f32, btime: bool) {
     let observer = e.v().iuser1 != 0;
     let done = other(e, |p| {
-        p.slow_target = if observer { 1.0 } else { amount };
+        set_slow_target(p, e, if observer { 1.0 } else { amount });
         p.ts.slow_display = amount;
         p.ts.btime = btime;
     });
@@ -80,7 +139,8 @@ pub fn update_state(p: &mut Player, cx: &mut Cx) {
     let now = cx.time();
     let is_alive = alive(cx.pev());
     let continuous = matches!(state::with(|g| g.mode), state::Mode::Dm | state::Mode::TeamDm);
-    let drop_worthy = |bits: u16, secs: i32| bits & pw::SLOWMO == 0 || secs > 2;
+    let rules = crate::gameplay::active().server.powerups();
+    let drop_worthy = |bits: u16, secs: i32| bits & pw::SLOWMO == 0 || secs > rules.slowmo_drop_above;
     if p.active_powerup == 0 {
         if is_alive {
             return;
@@ -97,9 +157,9 @@ pub fn update_state(p: &mut Player, cx: &mut Cx) {
         } else if p.powerup_until < now || !is_alive {
             deactivate_flow(p, cx);
         } else if active & pw::SLOWPAUSE != 0 {
-            (p.ts.slow_self, p.ts.slow_others, p.ts.btime) = SLOWPAUSE;
+            (p.ts.slow_self, p.ts.slow_others, p.ts.btime) = rules.slowpause;
         } else {
-            (p.ts.slow_self, p.ts.slow_others, p.ts.btime) = SLOWMO;
+            (p.ts.slow_self, p.ts.slow_others, p.ts.btime) = rules.slowmo;
         }
         if now <= p.powerup_until && is_alive {
             return;
@@ -250,7 +310,7 @@ pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
         }
         other(o, |q| {
             if q.ts.slow_self == 0.0 {
-                q.slow_target = 1.0;
+                set_slow_target(q, o, 1.0);
                 q.ts.slow_display = 1.0;
                 q.ts.btime = false;
             }
@@ -288,19 +348,21 @@ pub fn use_powerup(p: &mut Player, cx: &mut Cx) -> bool {
     } else {
         0
     };
-    if mode != 0 {
+    if mode != 0 && crate::gameplay::active().server.motion_blur() {
         let b = TsMBlur { entindex: cx.index() as u8, mode };
         msg::pvs(Msg::TsMBlur, cx.pev().origin, |w| b.write(w));
     }
     true
 }
 
-/// `PlayerAddPowerUp`: apply a pickup. `secs` is the power-up entity's duration. Returns false
-/// when the pickup failed (no gun to multiply, grenade didn't fit).
-pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32) -> bool {
+/// `PlayerAddPowerUp`: apply a pickup. `secs` is the power-up entity's duration and `armor` the
+/// armour it gives (100; [`ServerRules::armor_powerup`](crate::gameplay::ServerRules::armor_powerup)).
+/// Returns false when the pickup failed (no gun to multiply, grenade didn't fit).
+pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32, armor: f32) -> bool {
     let e = cx.edict;
+    let r = crate::gameplay::active().server;
     if bits & pw::ARMOR != 0 {
-        crate::weapons::take_armor(p, cx, 100);
+        r.armor_powerup(p, cx, armor);
     } else if bits & pw::KUNGFU != 0 {
         if !p.kungfu {
             p.kungfu = true;
@@ -320,7 +382,7 @@ pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32) -> bool {
         if !crate::weapons::give_weapon(p, cx, 24, 0) {
             return false;
         }
-    } else if bits & pw::INFINITE_CLIP != 0 {
+    } else if bits & pw::INFINITE_CLIP != 0 && r.powerups().infinite_clip_instant {
         if !crate::weapons::multiply_clip(p, cx) {
             return false;
         }
@@ -339,15 +401,16 @@ pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32) -> bool {
     true
 }
 
-/// The `TSSlowMo` value: 0.225 under slow pause, 0.35 under slow motion, else the display amount.
-/// Port addition: a plugin's `set_physics_speed` (`PlayerRules::physics_speed`) replaces it.
-pub fn hud_slow_amount(p: &Player) -> f32 {
+/// The `TSSlowMo` value: 0.225 under slow pause, 0.35 under slow motion (`rules`), else the
+/// display amount. Port addition: a plugin's `set_physics_speed` (`PlayerRules::physics_speed`)
+/// replaces it.
+pub fn hud_slow_amount(p: &Player, rules: &PowerupRules) -> f32 {
     if let Some(v) = p.ts.physics_speed {
         v
     } else if p.active_powerup & pw::SLOWPAUSE != 0 {
-        0.225
+        rules.hud_slowpause
     } else if p.active_powerup & pw::SLOWMO != 0 {
-        0.35
+        rules.hud_slowmo
     } else {
         p.ts.slow_display
     }
@@ -403,9 +466,10 @@ pub fn plugin_speed_think(p: &mut Player, cx: &mut Cx) {
 pub const RUNNABLE: u16 = pw::STORED | pw::INFINITE_CLIP | pw::SUPERJUMP;
 
 /// The seconds a power-up runs for when used: `SetupPowerUp`'s base duration (0x98014) with
-/// `pwupmult` 1, as the automatic spawner's power-ups have. `None` for those without one.
+/// `pwupmult` 1, as the automatic spawner's power-ups have, in the active ruleset. `None` for
+/// those without one.
 pub fn normal_secs(bits: u16) -> Option<f32> {
-    let secs = crate::entities::ts::powerup::body_and_secs(bits).1;
+    let secs = crate::gameplay::active().server.powerups().base(bits);
     (runnable(bits) && secs > 0).then_some(secs as f32)
 }
 
@@ -454,7 +518,7 @@ pub fn run_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: f32) {
     } else {
         0
     };
-    if mode != 0 {
+    if mode != 0 && crate::gameplay::active().server.motion_blur() {
         let b = TsMBlur { entindex: cx.index() as u8, mode };
         msg::pvs(Msg::TsMBlur, cx.pev().origin, |w| b.write(w));
     }
@@ -479,6 +543,24 @@ mod tests {
         .map(|(name, _)| name)
         .collect();
         assert_eq!(callers, ["rules/commands.rs", "bots/modules.rs"]);
+    }
+
+    /// TS 3.0's values, as the code had them before the hook (`SetupPowerUp` 0x98014,
+    /// `UpdatePowerUpState` 0x95748).
+    #[test]
+    fn core_values() {
+        use shared::ts::powerup as pw;
+        let r = super::CORE;
+        assert_eq!(
+            [pw::SLOWMO, pw::INFINITE_CLIP, pw::KUNGFU, pw::SLOWPAUSE, pw::DOUBLE_FIRERATE, pw::GRENADE, pw::ARMOR].map(|k| r.base(k)),
+            [3, 3, 0, 2, 3, 0, 0]
+        );
+        assert_eq!(r.base(pw::SLOWPAUSE | pw::SLOWMO), 3, "the lowest bit counts");
+        assert_eq!(r.base(0x200), 0);
+        assert_eq!((r.slowmo, r.slowpause), ((0.6, 0.35, false), (0.8, 0.225, true)));
+        assert_eq!((r.hud_slowmo, r.hud_slowpause), (0.35, 0.225));
+        assert_eq!((r.instant, r.slowmo_top_up_below, r.slowmo_swap_above, r.slowmo_drop_above), (0x1e6, 3, 2, 2));
+        assert!(r.multiplier && r.infinite_clip_instant && !r.swap_on_instant);
     }
 
     #[test]
