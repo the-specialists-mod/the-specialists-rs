@@ -419,15 +419,33 @@ pub struct HudTextParms {
     pub channel: i32,
 }
 
-/// `UTIL_HudMessage`: `TE_TEXTMESSAGE` to one client (`to` non-null) or everyone.
+/// `(int)(v * scale)` as GCC 2.95 compiles it for TS: truncated, with the x87 "integer
+/// indefinite" 0x80000000 for NaN and anything out of range.
+fn x87_trunc(v: f32, scale: f32) -> i32 {
+    let f = v * scale;
+    if (-2_147_483_648.0..2_147_483_648.0).contains(&f) { f as i32 } else { i32::MIN }
+}
+
+/// TS `FixedSigned16` (0xec930): clamped to -32768..=32767.
+pub fn fixed_signed16(v: f32, scale: f32) -> i32 {
+    x87_trunc(v, scale).clamp(-0x8000, 0x7fff)
+}
+
+/// TS `FixedUnsigned16` (0xec8e8): clamped to 0..=0xffff.
+pub fn fixed_unsigned16(v: f32, scale: f32) -> i32 {
+    x87_trunc(v, scale).clamp(0, 0xffff)
+}
+
+/// `UTIL_HudMessage` (TS 0xece34): `TE_TEXTMESSAGE` to one client (`to` non-null) or everyone.
+/// Positions go through `FixedSigned16`, times through `FixedUnsigned16`, so out-of-range values
+/// saturate instead of wrapping.
 pub fn te_text_message(to: *mut edict_t, p: &HudTextParms, text: &CStr) {
     let (dest, ed) = if to.is_null() { (MSG_BROADCAST, std::ptr::null_mut()) } else { (MSG_ONE, to) };
-    let fixed = |v: f32, bits: i32| (v * (1 << bits) as f32) as i32;
     let mut w = MsgWriter::begin(dest as i32, SVC_TEMPENTITY, None, ed)
         .byte(te::TEXTMESSAGE)
         .byte(p.channel & 0xff)
-        .short(fixed(p.x, 13))
-        .short(fixed(p.y, 13))
+        .short(fixed_signed16(p.x, 8192.0))
+        .short(fixed_signed16(p.y, 8192.0))
         .byte(p.effect)
         .byte(p.r1 as i32)
         .byte(p.g1 as i32)
@@ -437,11 +455,11 @@ pub fn te_text_message(to: *mut edict_t, p: &HudTextParms, text: &CStr) {
         .byte(p.g2 as i32)
         .byte(p.b2 as i32)
         .byte(p.a2 as i32)
-        .short(fixed(p.fade_in, 8))
-        .short(fixed(p.fade_out, 8))
-        .short(fixed(p.hold, 8));
+        .short(fixed_unsigned16(p.fade_in, 256.0))
+        .short(fixed_unsigned16(p.fade_out, 256.0))
+        .short(fixed_unsigned16(p.hold, 256.0));
     if p.effect == 2 {
-        w = w.short(fixed(p.fx_time, 8));
+        w = w.short(fixed_unsigned16(p.fx_time, 256.0));
     }
     // TS (old SDK `UTIL_HudMessage`) truncates at 511 characters.
     let bytes = text.to_bytes();
@@ -464,5 +482,20 @@ mod tests {
         assert_eq!(normalize([0.0, 3.0, 0.0]), [0.0, 1.0, 0.0]);
         assert_eq!(length([3.0, 4.0, 0.0]), 5.0);
         assert_eq!(mid([0.0, 0.0, 0.0], [2.0, 4.0, 6.0]), [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn hud_fixed_point_saturates() {
+        use super::{fixed_signed16, fixed_unsigned16};
+        assert_eq!(fixed_signed16(-1.0, 8192.0), -8192);
+        assert_eq!(fixed_signed16(0.49999, 8192.0), 4095);
+        assert_eq!(fixed_signed16(5.0, 8192.0), 0x7fff);
+        assert_eq!(fixed_signed16(-5.0, 8192.0), -0x8000);
+        assert_eq!(fixed_unsigned16(2.5, 256.0), 640);
+        // A 300 s hold saturates at 0xffff (TS) rather than wrapping to 44 s.
+        assert_eq!(fixed_unsigned16(300.0, 256.0), 0xffff);
+        assert_eq!(fixed_unsigned16(-1.0, 256.0), 0);
+        assert_eq!(fixed_unsigned16(f32::NAN, 256.0), 0);
+        assert_eq!(fixed_signed16(f32::NAN, 8192.0), -0x8000);
     }
 }

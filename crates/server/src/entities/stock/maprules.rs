@@ -33,11 +33,18 @@ pub struct GameText {
     master: string_t,
 }
 
-/// `UTIL_StringToIntArray` for up to 4 values (missing ones are 0).
+/// `UTIL_StringToIntArray` (0xee400) for 4 values: `atoi` at the start of the string and after
+/// each single space (so a doubled space starts the next value at the second one, which `atoi`
+/// skips: `"1  2"` is 1, 2, 2), the rest 0 once the string ends.
 pub fn int_array4(v: &str) -> [i32; 4] {
     let mut out = [0; 4];
-    for (o, t) in out.iter_mut().zip(v.split_whitespace()) {
-        *o = t.parse::<f32>().map(|f| f as i32).unwrap_or(0);
+    let mut rest = v;
+    for o in out.iter_mut() {
+        *o = crate::rules::mapcycle::atoi(rest);
+        match rest.find(' ') {
+            Some(i) => rest = &rest[i + 1..],
+            None => break,
+        }
     }
     out
 }
@@ -965,5 +972,10 @@ mod tests {
     fn colors() {
         assert_eq!(super::int_array4("255 128 0"), [255, 128, 0, 0]);
         assert_eq!(super::int_array4("1 2 3 4 5"), [1, 2, 3, 4]);
+        // `atoi` per value: no exponents, trailing junk ignored.
+        assert_eq!(super::int_array4("1e3 12abc 7.9 -4"), [1, 12, 7, -4]);
+        // TS steps one character past each space, so a doubled space repeats the next value.
+        assert_eq!(super::int_array4("255 128  64"), [255, 128, 64, 64]);
+        assert_eq!(super::int_array4(""), [0, 0, 0, 0]);
     }
 }

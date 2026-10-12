@@ -288,7 +288,7 @@ impl Entity for Grenade {
 /// `CBaseEntity::IsInWorld` (0xac2ec): the origin strictly inside ±4096 and the velocity strictly
 /// inside ±2000 on every axis. The tests are TS's, in its order, so NaNs fall through the same way
 /// (only the last one, `-2000 < velocity.z`, rejects a NaN).
-fn is_in_world(v: &entvars_t) -> bool {
+pub(crate) fn is_in_world(v: &entvars_t) -> bool {
     let (o, s) = (v.origin, v.velocity);
     let out = 4096.0 <= o[0]
         || 4096.0 <= o[1]

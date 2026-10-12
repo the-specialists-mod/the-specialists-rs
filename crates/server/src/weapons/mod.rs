@@ -12,7 +12,7 @@ mod host;
 mod inventory;
 mod melee;
 mod net;
-mod projectiles;
+pub(crate) mod projectiles;
 pub mod worldgun;
 
 /// The classnames the weapons modules link (the save-table tests).

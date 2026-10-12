@@ -560,7 +560,8 @@ impl Entity for EnvExplosion {
         if self.monster.run_think(cx) || !self.smoking {
             return;
         }
-        self.smoking = false;
+        // `CEnvExplosion::Smoke` (0xc0024) leaves `m_pfnThink` set, so a repeatable explosion
+        // saves its think as `Smoke` (with `nextthink` 0 nothing runs it).
         let v = cx.pev();
         if v.spawnflags & SF_ENVEXPLOSION_NOSMOKE == 0 {
             te_smoke(v.origin, self.smoke, self.sprite_scale as u8 as i32, 12);
@@ -868,6 +869,13 @@ enum BeamUse {
     Strike,
 }
 
+/// `(int)(m_life * 10.0)` in `CLightning::Zap` (0xba3d0) / `StrikeThink` (0xb9c78): the double
+/// 10.0 times the float on the x87 (`fldl; fmuls`), exact, then truncated. An `f32` product would
+/// round 0.7 * 10 up to 7; TS sends 6.
+fn life_byte(life: f32) -> i32 {
+    (life as f64 * 10.0) as i32
+}
+
 impl Lightning {
     /// `ServerSide()`: a persistent beam entity rather than repeated temp-entity strikes.
     fn server_side(cx: &mut Cx, life: f32) -> bool {
@@ -879,7 +887,7 @@ impl Lightning {
         w.short(self.sprite_texture)
             .byte(self.frame_start)
             .byte(v.framerate as i32)
-            .byte((self.life * 10.0) as i32)
+            .byte(life_byte(self.life))
             .byte(self.bolt_width)
             .byte(self.noise)
             .byte(v.rendercolor[0] as i32)
@@ -1310,7 +1318,8 @@ impl Entity for Laser {
         let v = cx.pev();
         match key.to_bytes() {
             b"LaserTarget" => v.message = alloc(value),
-            b"width" => v.scale = kv_f(value),
+            // CLaser::KeyValue (0xbb388): `(float)(int)strtod`, truncated.
+            b"width" => v.scale = laser_width(value),
             b"NoiseAmplitude" => v.body = kv_i(value),
             b"TextureScroll" => v.animtime = kv_i(value) as f32,
             b"texture" => v.model = alloc(value),
@@ -1333,13 +1342,10 @@ impl Entity for Laser {
         self.precache(cx);
         self.thinking = true;
         cx.pev().flags |= FL_CUSTOMENTITY as i32;
-        // PointsInit(origin, origin)
-        let v = cx.pev();
-        beam::set_type(v, BEAM_POINTS);
-        v.angles = v.origin;
-        v.frame = 0.0;
-        v.animtime = 0.0;
-        beam::relink(cx);
+        // PointsInit(origin, origin): keeps `framestart` (`frame`) and `TextureScroll`
+        // (`animtime`).
+        let org = cx.pev().origin;
+        beam_points_init(cx.edict, org, org);
         if !self.sprite.is_valid() && self.sprite_name != 0 {
             let org = cx.pev().origin;
             let sp = Sprite::create(s(self.sprite_name), org, true);
@@ -1504,11 +1510,16 @@ impl<const ENV: bool> GibShooter<ENV> {
         let eng = engine();
         let now = eng.time();
         cx.pev().nextthink = now + self.delay.delay;
-        let (fwd, right, up) = eng.make_vectors(cx.pev().angles);
+        // TS (0xbc4c4) calls no `MakeVectors`: the spread follows whatever vectors the last
+        // `MakeVectors` left in the globals. Each term is `v * RANDOM_FLOAT(-1, 1)` rounded to a
+        // float, then times the variance.
+        let g = eng.globals();
+        let (fwd, right, up) = (g.v_forward, g.v_right, g.v_up);
         let mut dir = cx.pev().movedir;
-        dir = vec::mad(dir, right, eng.random_float(-1.0, 1.0) * self.variance);
-        dir = vec::mad(dir, fwd, eng.random_float(-1.0, 1.0) * self.variance);
-        dir = vec::mad(dir, up, eng.random_float(-1.0, 1.0) * self.variance);
+        for axis in [right, fwd, up] {
+            let r = eng.random_float(-1.0, 1.0);
+            dir = vec::add(dir, vec::scale(vec::scale(axis, r), self.variance));
+        }
         dir = vec::normalize(dir);
         let gib = self.create_gib(cx);
         if !gib.is_null() {
@@ -1793,9 +1804,10 @@ impl Entity for Gib {
         let now = engine().time();
         match self.state {
             GibState::WaitTillLand => {
+                // `CGib::WaitTillLand` (0xb1dd4): `IsInWorld()` (the origin within ±4096 and the
+                // velocity within ±2000), so a gib still falling at 2000 u/s is removed.
                 let v = cx.pev();
-                let out = (0..3).any(|i| v.absmin[i] < -4096.0 || v.absmax[i] > 4096.0);
-                if out {
+                if !crate::weapons::projectiles::is_in_world(v) {
                     remove(cx.edict);
                 } else if v.velocity == [0.0; 3] {
                     self.state = GibState::StartFade;
@@ -2554,6 +2566,12 @@ fn beam_create(sprite: &'static CStr, width: i32) -> *mut edict_t {
     e
 }
 
+/// `env_laser`'s `width`: `(float)(int)strtod(value)` (0x80000000 out of range, as the x87 gives).
+fn laser_width(value: &CStr) -> f32 {
+    let d = kv_d(value).trunc();
+    (if (-2_147_483_648.0..2_147_483_648.0).contains(&d) { d as i32 } else { i32::MIN }) as f32
+}
+
 /// `CBeam::PointsInit` (0xb8ff0).
 fn beam_points_init(e: *mut edict_t, start: Vec3, end: Vec3) {
     let v = e.v();
@@ -2885,6 +2903,23 @@ impl Entity for ItemSoda {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn beam_life_byte_truncates_the_exact_product() {
+        // 0.7f32 is 0.699999988: TS sends 6, an f32 product would round to 7.
+        assert_eq!(life_byte(0.7), 6);
+        assert_eq!(life_byte(0.9), 8);
+        assert_eq!(life_byte(0.5), 5);
+        assert_eq!(life_byte(2.0), 20);
+    }
+
+    #[test]
+    fn laser_width_truncates() {
+        assert_eq!(laser_width(c"2.5"), 2.0);
+        assert_eq!(laser_width(c"-3.9"), -3.0);
+        assert_eq!(laser_width(c"20"), 20.0);
+        assert_eq!(laser_width(c"1e10"), i32::MIN as f32);
+    }
 
     #[test]
     fn test_effect_brightness() {
