@@ -496,8 +496,9 @@ floats), `Navigate`'s move direction (the steer yaw's unrounded `UTIL_AngleMod`)
 think's tracking (the x aim point and the knife lead's decay), and the inlined distances
 (`brain::len_x87`: unrounded differences and `sqrt`, squares summed in each site's order, then
 compared, truncated or stored as mp.dll does: the attack range, `SelectEnemy`, the cover search,
-`Navigate`'s 48/96-unit tests, the hill's 64 units, `FindLookPoint`) and `Vector::Normalize`
-(times the unrounded reciprocal). Unit tested.
+`Navigate`'s 48/96-unit tests, the hill's 64 units, `FindLookPoint`), `Vector::Normalize`
+(times the unrounded reciprocal) and vision's `FInViewCone` (unrounded flat length, the dot
+compared unrounded with the 0.5 field of view). Unit tested.
 
 ### 10.1 Deviations
 

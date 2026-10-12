@@ -70,11 +70,17 @@ pub fn vision(b: &mut Brain, _p: &mut Player, cx: &mut Cx) {
 /// flat forward of `pev->angles` (the model angles: pitch is a third of the view's).
 pub fn in_view_cone(v: &entvars_t, point: [f32; 3]) -> bool {
     let (f, _, _) = engine().angle_vectors(v.angles);
-    let d = [point[0] - v.origin[0], point[1] - v.origin[1]];
-    let l = ((d[0] as f64).powi(2) + (d[1] as f64).powi(2)).sqrt() as f32;
-    let d = if l == 0.0 { [0.0, 0.0] } else { [d[0] / l, d[1] / l] };
-    let dot = (d[0] as f64 * f[0] as f64 + d[1] as f64 * f[1] as f64) as f32;
-    dot > PLAYER_FOV
+    cone_dot(v.origin, point, f) > PLAYER_FOV as f64
+}
+
+/// `FInViewCone`'s dot product as mp.dll computes it (0x10014acf..0x10014b5b): the flat
+/// differences and their length stay on the x87 stack, the direction (times `1 / length`) is
+/// stored as floats, and the dot `y·fy + x·fx` is compared unrounded.
+fn cone_dot(origin: [f32; 3], point: [f32; 3], forward: [f32; 3]) -> f64 {
+    let (dx, dy) = (point[0] as f64 - origin[0] as f64, point[1] as f64 - origin[1] as f64);
+    let l = (dy * dy + dx * dx).sqrt();
+    let d = if l == 0.0 { [0.0f32; 2] } else { [(dx * (1.0 / l)) as f32, (dy * (1.0 / l)) as f32] };
+    d[1] as f64 * forward[1] as f64 + d[0] as f64 * forward[0] as f64
 }
 
 /// `CBaseEntity::FVisible(const Vector &)` (0x10014cb0): one eye-to-point trace that ignores
@@ -359,5 +365,27 @@ pub fn bot_say(me: *mut edict_t, text: &[u8]) {
             continue;
         }
         crate::messages::one(shared::protocol::Msg::SayText, o).byte(idx).string(&msg).end();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_cone_dot() {
+        let fwd = [1.0f32, 0.0, 0.0];
+        assert_eq!(cone_dot([0.0; 3], [100.0, 0.0, 50.0], fwd), 1.0);
+        // 60 degrees off is the edge of the 0.5 cone; the height doesn't count.
+        let d = cone_dot([10.0, 10.0, 0.0], [10.5, 10.0 + 0.75f32.sqrt(), -40.0], fwd);
+        assert!((d - 0.5).abs() < 1e-6, "{d}");
+        // Directly on top: no direction.
+        assert_eq!(cone_dot([5.0, 5.0, 0.0], [5.0, 5.0, 90.0], fwd), 0.0);
+        // The direction is stored as floats and the dot is `y·fy + x·fx`, unrounded.
+        let (o, p, f) = ([1000.1f32, -3.3, 0.0], [1777.7f32, 555.5, 0.0], [0.6f32, 0.8, 0.0]);
+        let (dx, dy) = (p[0] as f64 - o[0] as f64, p[1] as f64 - o[1] as f64);
+        let inv = 1.0 / (dy * dy + dx * dx).sqrt();
+        let want = ((dy * inv) as f32) as f64 * f[1] as f64 + ((dx * inv) as f32) as f64 * f[0] as f64;
+        assert_eq!(cone_dot(o, p, f), want);
     }
 }
