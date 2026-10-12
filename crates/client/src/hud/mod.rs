@@ -660,7 +660,11 @@ fn set_fov(fov: u8) {
 }
 
 /// The TS weapon element's `Think` (1004ce10), the parts that need no key bits: laser colour,
-/// kung-fu regeneration, heartbeat/breathing sounds, fire-mode switch sound.
+/// kung-fu regeneration, heartbeat/breathing sounds, fire-mode switch sound. TS runs it from
+/// `HUD_UpdateClientData` (`CHud::Think` 0x10049760, gated on `HUD_ACTIVE`, which the element's
+/// Init and Reset set and nothing clears) with the previous redraw's `m_flTimeDelta`; running it
+/// at the end of the redraw with that redraw's delta gives the prediction (between the two) the
+/// same power.
 fn think(dt: f32) {
     let e = engine();
     let ic = input::cvars();
