@@ -3,7 +3,6 @@
 //! 0x76f50, `VictimKnifeHold` 0x76de4, `VictimKatanaHold` 0x76c8c) and the delayed "lunge" hit
 //! of a missed melee attack (the melee-window part of `CTSStunt::CheckForBreakables`).
 
-use super::host::emit;
 use super::inventory::{self, Drop};
 use super::net;
 use crate::damage::{self, DamageInfo};
@@ -129,7 +128,7 @@ fn hold(kind: MeleeKind, attacker: *mut edict_t, victim: *mut edict_t, atk_block
     match kind {
         MeleeKind::KungFu | MeleeKind::ColdCock => {
             let who = if victim_bar.is_some() { victim } else { attacker };
-            emit(who, CHAN_BODY, c"player/kungfuhit.wav", 1.0, 0.8, 100);
+            slow_emit(who, c"player/kungfuhit.wav", 100);
         }
         MeleeKind::Knife | MeleeKind::Katana => {
             let a = attacker.v();
@@ -137,7 +136,7 @@ fn hold(kind: MeleeKind, attacker: *mut edict_t, victim: *mut edict_t, atk_block
             let mut mid = spread::scale(spread::add(a.origin, v.origin), 0.5);
             mid[2] += 20.0;
             sparks(mid);
-            emit(attacker, CHAN_BODY, c"weapons/knife/knife_hit.wav", 1.0, 0.8, 100);
+            slow_emit(attacker, c"weapons/knife/knife_hit.wav", 100);
         }
     }
     Some(result)
@@ -155,13 +154,10 @@ pub fn sparks(pos: Vec3) {
         .end();
 }
 
-/// One melee attack by `attacker` (the player whose gun asked for it).
+/// One melee attack by `attacker` (the player whose gun asked for it): the trace runs `hit.reach`
+/// from the gun position along `v_angle`.
 pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeResult {
-    let e = engine();
     let pev = attacker.v();
-    if hit.kind == MeleeKind::KungFu && (e.random_long(10, 80) as f32) < hit.damage {
-        messages::pvs(Msg::TsMBlur, pev.origin).byte(e.index_of(attacker)).byte(if hit.damage > 50.0 { 2 } else { 1 }).end();
-    }
     let mut ang = pev.v_angle;
     if hit.zero_roll {
         ang[2] = 0.0;
@@ -169,6 +165,29 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
     let (fwd, _, _) = spread::angle_vectors(ang);
     let start = spread::add(pev.origin, pev.view_ofs);
     let end = spread::ma(start, hit.reach, fwd);
+    trace_attack(attacker, hit, start, end, fwd, atk_block, false)
+}
+
+/// `CloseCombatAttack(start, end, dir, hull, dmg, ...)` 0x95f88 / `ColdCockAttack` 0x96610 / the
+/// blade slashes from a given trace (`hit.reach` and `hit.zero_roll` are not used). `dir` is the
+/// damage direction. `never_teammates` is `CloseCombatAttack`'s last flag, which only the jump
+/// kick sets (`CTSStunt::CloseAttack` 0x8c8a5): a teammate is no target even with
+/// `mp_friendlyfire 1`.
+pub fn trace_attack(
+    attacker: *mut edict_t,
+    hit: &MeleeHit,
+    start: Vec3,
+    end: Vec3,
+    dir: Vec3,
+    atk_block: f32,
+    never_teammates: bool,
+) -> MeleeResult {
+    let e = engine();
+    if hit.kind == MeleeKind::KungFu && (e.random_long(10, 80) as f32) < hit.damage {
+        let origin = attacker.v().origin;
+        messages::pvs(Msg::TsMBlur, origin).byte(e.index_of(attacker)).byte(if hit.damage > 50.0 { 2 } else { 1 }).end();
+    }
+    let fwd = dir;
     let tr = check_hull(start, end, hit.hull, attacker);
     if tr.flFraction >= 1.0 || tr.pHit.is_null() {
         return MeleeResult::Miss;
@@ -179,12 +198,14 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
     match hit.kind {
         // `CloseCombatAttack` 0x95f88 / `ColdCockAttack` 0x96610: no damage taken, a world brush
         // (`FL_WORLDBRUSH`) or an invisible entity is no target, and neither is a teammate with
-        // `mp_friendlyfire 0` (`PlayerRelationship` == GR_TEAMMATE).
+        // `mp_friendlyfire 0` (`PlayerRelationship` == GR_TEAMMATE), or any teammate for the jump
+        // kick.
         MeleeKind::KungFu | MeleeKind::ColdCock => {
             if v.takedamage == 0.0 || v.flags & FL_WORLDBRUSH as i32 != 0 || v.effects & EF_NODRAW as i32 != 0 {
                 return MeleeResult::Miss;
             }
-            if is_player && same_team(attacker, victim) {
+            let teammate = if never_teammates { crate::rules::teams::same_team(attacker, victim) } else { same_team(attacker, victim) };
+            if is_player && teammate {
                 return MeleeResult::Miss;
             }
         }
@@ -212,7 +233,7 @@ pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeRe
             if hit.knockback && hit.damage > 30.0 {
                 knockback(attacker, victim);
             }
-            emit(victim, CHAN_BODY, c"player/kungfuhit.wav", 1.0, 0.8, 95 + e.random_long(0, 31));
+            slow_emit(victim, c"player/kungfuhit.wav", 95 + e.random_long(0, 31));
         }
     }
     let mut info = DamageInfo::new(attacker, attacker, hit.damage, hit.bits).traced();
@@ -310,10 +331,10 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
             if dmg > 30.0 {
                 knockback(me, victim);
             }
-            emit(victim, CHAN_BODY, c"player/kungfuhit.wav", 1.0, 0.8, 95 + e.random_long(0, 31));
+            slow_emit(victim, c"player/kungfuhit.wav", 95 + e.random_long(0, 31));
         } else {
             let s: &std::ffi::CStr = if source == 1 { c"weapons/knife/knife_hitbody.wav" } else { c"weapons/katana/hit-body.wav" };
-            emit(victim, CHAN_BODY, s, 1.0, 0.8, 95 + e.random_long(0, 31));
+            slow_emit(victim, s, 95 + e.random_long(0, 31));
         }
     }
     p.inv.sv.lunge_victim = victim;
@@ -337,6 +358,13 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
 fn spend_delayed_damage(stored: f32) -> (f32, f32) {
     let rest = stored * 0.5;
     (stored.abs(), if rest < 5.0 { 0.0 } else { rest })
+}
+
+/// The melee sounds: TS's `EMIT_SOUND_DYN` (0xe0a8c) on `CHAN_BODY`, volume 1, attenuation 0.8,
+/// slow-motion factor 0.5 (the emitting player's time scale lowers the pitch): `CloseCombatAttack`
+/// 0x863b3, `ColdCockAttack`, the `Victim*Hold`s and `CheckForBreakables` 0x8c4dd all pass 0.5.
+fn slow_emit(e: *mut edict_t, sample: &std::ffi::CStr, pitch: i32) {
+    crate::entities::stock::explode::emit_sound_slow(e, CHAN_BODY, sample, 1.0, 0.8, 0, pitch, 0.5);
 }
 
 /// `friendlyfire 0` and the rules say teammates (team play only).

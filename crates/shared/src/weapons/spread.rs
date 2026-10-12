@@ -220,6 +220,47 @@ pub fn melee_damage(arith: Arith, dmg: f32, bar: f32) -> f32 {
     by_arith!(arith, go(dmg, bar))
 }
 
+/// The `double` `1/15` both builds scale the speed by in `CTSStunt::CloseAttack` (`ts_i386.so`
+/// 0xf9b10, `mp.dll` 0x10094a90).
+const ONE_FIFTEENTH: f64 = 0.066_666_666_666_666_67;
+
+/// The jump kick's strength (`CTSStunt::CloseAttack` 0x9c630, 0x8c6e7..0x8c7e6; `mp.dll`
+/// 0x1006a7e5..0x1006a8bb): `|velocity| / 15` clamped to 10..20, tested against the `double`s
+/// 10 and 20 and stored as a `float`. GCC stores the length as a `float` before scaling it; MSVC
+/// keeps it on the FPU. A NaN speed is 10 in both builds (the `< 10` test is `jb`/`test ah,1`).
+/// The kick's damage is this, doubled with the Kung Fu power-up; the melee bar pays 1.5 times it.
+pub fn jump_kick_strength(arith: Arith, velocity: Vec3) -> f32 {
+    fn go<F: Fpu>(v: Vec3) -> f32 {
+        let (x, y, z) = (F::x(v[0]), F::x(v[1]), F::x(v[2]));
+        let len = (x * x + y * y + z * z).sqrt();
+        let len = if F::MSVC { len } else { F::x(len.f()) };
+        let t = len * F::xd(ONE_FIFTEENTH);
+        if t > F::xd(20.0) {
+            20.0
+        } else if t >= F::xd(10.0) {
+            t.f()
+        } else {
+            10.0
+        }
+    }
+    by_arith!(arith, go(velocity))
+}
+
+/// The end of the jump kick's trace, `GetGunPosition() + v_forward * 48` (`CloseAttack`
+/// 0x8c836..0x8c873; `mp.dll` 0x1006a913..0x1006a935): GCC adds the unrounded product and stores
+/// once; MSVC's `Vector::operator*` stores the product as `float`s before `operator+`.
+pub fn jump_kick_end(arith: Arith, src: Vec3, fwd: Vec3) -> Vec3 {
+    fn go<F: Fpu>(src: Vec3, fwd: Vec3) -> Vec3 {
+        let c = |i: usize| {
+            let d = F::x(48.0) * F::x(fwd[i]);
+            let d = if F::MSVC { F::x(d.f()) } else { d };
+            (F::x(src[i]) + d).f()
+        };
+        [c(0), c(1), c(2)]
+    }
+    by_arith!(arith, go(src, fwd))
+}
+
 /// `GetBulletVelocityMult(slowmul, bullet_time)` 0x99160 for simulated bullets.
 pub fn bullet_velocity_mult(slowmul: f32, bullet_time: bool) -> f32 {
     if slowmul >= 0.99 {
@@ -269,6 +310,50 @@ mod tests {
         }
         let d = pellet_dir([1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0], 5, 1, 1.0);
         assert_eq!(d, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn jump_kick_strength_is_speed_over_15_clamped_to_10_20() {
+        // the `double` constant as both binaries store it
+        assert_eq!(ONE_FIFTEENTH.to_bits(), 0x3fb1_1111_1111_1111);
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            let s = |v: Vec3| jump_kick_strength(arith, v);
+            assert_eq!(s([0.0; 3]), 10.0);
+            assert_eq!(s([149.0, 0.0, 0.0]), 10.0);
+            assert_eq!(s([150.0, 0.0, 0.0]), 10.0);
+            assert_eq!(s([0.0, 180.0, -135.0]), 15.0);
+            assert_eq!(s([300.0, 0.0, 0.0]), 20.0);
+            assert_eq!(s([0.0, 0.0, -1000.0]), 20.0);
+            assert_eq!(s([f32::NAN, 0.0, 0.0]), 10.0);
+            assert_eq!(s([250.0, 0.0, 0.0]), (250.0f64 * ONE_FIFTEENTH) as f32);
+        }
+    }
+
+    #[test]
+    fn jump_kick_strength_gcc_rounds_the_length_first() {
+        // MSVC scales the unrounded length, GCC the stored `float`: one ulp apart here
+        let v = [150.0, 7.0, 0.0];
+        let len = (22_549.0f64).sqrt();
+        assert_eq!(jump_kick_strength(Arith::Msvc, v), (len * ONE_FIFTEENTH) as f32);
+        assert_eq!(jump_kick_strength(Arith::Gcc, v), (len as f32 as f64 * ONE_FIFTEENTH) as f32);
+        assert_eq!(jump_kick_strength(Arith::Gcc, v), 10.010_882);
+        assert_eq!(jump_kick_strength(Arith::Msvc, v), 10.010_883);
+    }
+
+    #[test]
+    fn jump_kick_end_is_48_units_ahead() {
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            assert_eq!(jump_kick_end(arith, [10.0, 20.0, 64.0], [1.0, 0.0, 0.0]), [58.0, 20.0, 64.0]);
+            assert_eq!(jump_kick_end(arith, [0.0, 0.0, 0.0], [0.0, 0.0, -1.0]), [0.0, 0.0, -48.0]);
+        }
+        // MSVC rounds `fwd * 48` before the add, GCC rounds once
+        let (src, fwd) = ([1000.1, -3.3, 0.7], [0.123_456_79, 0.987_654_3, -0.1]);
+        for i in 0..3 {
+            let gcc = (src[i] as f64 + 48.0 * fwd[i] as f64) as f32;
+            let msvc = (src[i] as f64 + (48.0 * fwd[i] as f64) as f32 as f64) as f32;
+            assert_eq!(jump_kick_end(Arith::Gcc, src, fwd)[i], gcc);
+            assert_eq!(jump_kick_end(Arith::Msvc, src, fwd)[i], msvc);
+        }
     }
 
     // Reference bits below are exact models of the x87 at 64 bits (`ts_i386.so`) and 53 bits
