@@ -212,7 +212,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | Wall chain | +0.35 per wall jump; +0.3/0.5/0.75 per climb (high/med/low ability); next stunt `max(0.5, chain)` |
 | Motion blur | `RandomLong(0,10) + 10*slowmul > T`: dive 8, flips 7, wall jump 5, roll 9; bullet time always |
 | Fall damage | above 680: `(v-680)*100*0.0022522523`, bodysplat if fatal, `DMG_FALL|DMG_NEVERGIB` from the world |
-| Super-jump landing | `UTIL_ScreenShake(origin, 20, 30, 0.3, 512)`; duck held → forced roll, else `superjump-land.wav`, `RECOVER|GO_DUCK`, view 16, recover 0.75, anim 0x3a |
+| Super-jump landing | `UTIL_ScreenShake(origin, 20, 30, 0.3, 512)`; duck held → forced roll (and `m_flNextAttack = 0.75`), else `superjump-land.wav`, `RECOVER|GO_DUCK`, view 16, recover 0.75, anim 0x3a |
 | Breakables | 64 u head-hull trace along velocity in the air; `|vel|` damage (`|vel|*0.1` while alive, as TS); with a melee window ±32 u along `v_forward`, damage `|pending|`, halved per hit (0 below 5), knockback above 30 (`+|vel|*dir`, z 235) |
 
 ## Deviations from TS 3.0
@@ -264,7 +264,6 @@ the same as the GCC build once the stack is 53 bits wide.
   of the backflip kick (22.5). (`glast_closecombat` is set around the kung-fu hit:
   `weapons::melee::pending_hit`, `damage::glast`.) The team check approximates `PlayerRelationship` with `mp_friendlyfire` and
   `Player::team`.
-* **Super-jump roll landing** also sets `m_flNextAttack = 0.75` (weapons timer): not applied.
 * `SetPlayerGravity` (temp gravity timer, pl+0x4ec), `InterpolateSlowMotion`, power-ups,
   `GoSlow` (rules).
 
