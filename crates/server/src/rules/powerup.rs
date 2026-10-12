@@ -254,7 +254,9 @@ pub fn use_powerup(p: &mut Player, cx: &mut Cx) -> bool {
     }
     p.active_powerup = p.ts.held;
     p.powerup_until = now + p.ts.held_secs as f32;
-    let secs = (p.powerup_until - now).round().clamp(0.0, 255.0) as u8;
+    // `(int)(m_flPowerUpTime - time)`, truncated (0x95a88), of which `WriteByte` sends the low
+    // byte: the `f32` end time can make it a second short of the held seconds.
+    let secs = super::x87_trunc(p.powerup_until as f64 - now as f64) as u8;
     msg::one(Msg::PwUpTime, cx.edict, |w| PwUpTime { secs }.write(w));
     let mode = if p.ts.held & pw::SLOWMO != 0 {
         1

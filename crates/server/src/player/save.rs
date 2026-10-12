@@ -143,8 +143,8 @@ impl Player {
         f.float(&mut self.tbd.prev);
         f.ehandle(&mut self.drive.tank);
         f.int(&mut self.drive.hide_hud);
-        // m_iFOV: every write is 0.
-        f.zero();
+        // m_iFOV: only the `fov` cheat sets it.
+        f.int(&mut self.ts.ifov);
         if f.live() {
             restore_tail(self, cx, long_jump != 0);
         }

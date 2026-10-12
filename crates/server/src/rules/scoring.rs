@@ -440,10 +440,10 @@ pub fn do_spectacularness() -> bool {
     spectacular_roll(roll, cvars::f(c"spectacularness"))
 }
 
-/// The `DoSpectacularNess` test: `spectacularness` is clamped to 0..100 and rounded (x87
-/// `fistp`, ties to even). 0 never fires; otherwise it fires when `roll <= spectacularness`.
+/// The `DoSpectacularNess` test: `spectacularness` is clamped to 0..100 and truncated (`(int)`,
+/// 0x76bb6). 0 never fires; otherwise it fires when `roll <= spectacularness`.
 fn spectacular_roll(roll: i32, spectacularness: f32) -> bool {
-    let pct = spectacularness.clamp(0.0, 100.0).round_ties_even() as i32;
+    let pct = super::x87_trunc(spectacularness.clamp(0.0, 100.0) as f64);
     pct != 0 && roll <= pct
 }
 
@@ -632,7 +632,8 @@ fn team_kill_punish(killer: *mut edict_t, victim: *mut edict_t) {
         eng.server_command(&format!("kick #{uid}\n"));
         msg::text_all(shared::protocol::rules::hud_dest::TALK, &format!("{name} kicked for teamkilling\n"));
     } else {
-        let m = ban.round() as i32;
+        // `(int)banfortk.value`, truncated (0x8ad5a, 0x8adbc, 0x8ae04).
+        let m = super::x87_trunc(ban as f64);
         msg::text_one(
             victim,
             shared::protocol::rules::hud_dest::CONSOLE,
@@ -820,18 +821,17 @@ mod tests {
 
     #[test]
     fn spectacularness_zero_never_fires() {
-        for v in [0.0, 0.4, 0.5, -3.0] {
+        for v in [0.0, 0.4, 0.5, 0.99, -3.0] {
             assert!((0..=100).all(|roll| !spectacular_roll(roll, v)), "spectacularness {v}");
         }
     }
 
     #[test]
-    fn spectacularness_rounds_and_clamps() {
-        // 0.6 rounds to 1: rolls 0 and 1 fire.
-        assert!(spectacular_roll(1, 0.6) && !spectacular_roll(2, 0.6));
-        // 2.5 rounds to 2 (ties to even), 3.5 to 4.
+    fn spectacularness_truncates_and_clamps() {
+        // `(int)` truncates: 1.9 is 1 (rolls 0 and 1 fire), 2.5 is 2, 3.5 is 3.
+        assert!(spectacular_roll(1, 1.9) && !spectacular_roll(2, 1.9));
         assert!(spectacular_roll(2, 2.5) && !spectacular_roll(3, 2.5));
-        assert!(spectacular_roll(4, 3.5) && !spectacular_roll(5, 3.5));
+        assert!(spectacular_roll(3, 3.5) && !spectacular_roll(4, 3.5));
         // Above 100 behaves as 100: every roll fires.
         assert!((0..=100).all(|roll| spectacular_roll(roll, 250.0)));
     }

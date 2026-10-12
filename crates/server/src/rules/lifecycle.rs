@@ -662,6 +662,7 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     crate::player::suit::set_suit_update(p, cx, None, false, 0);
     msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
     msg::one(Msg::SetFov, e, |w| SetFov { fov: 0 }.write(w));
+    p.ts.ifov = 0;
     {
         let v = cx.pev();
         v.fov = 0.0;
@@ -1024,6 +1025,7 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     p.hud.health = Some(0);
     msg::one(Msg::TsHealth, e, |w| TsHealth { hp: 0 }.write(w));
     msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
+    p.ts.ifov = 0;
     cx.pev().fov = 0.0;
     msg::one(Msg::SetFov, e, |w| SetFov { fov: 0 }.write(w));
 

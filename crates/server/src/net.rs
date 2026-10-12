@@ -235,8 +235,8 @@ pub fn update_client_data(ent: *const edict_t, cd: &mut clientdata_t) {
     cd.flTimeStepSound = v.flTimeStepSound;
     cd.flDuckTime = v.flDuckTime as _;
     cd.flSwimTime = v.flSwimTime as _;
-    // `ROUND` (0xb0294 rounds to nearest, the x87 default mode).
-    cd.waterjumptime = v.teleport_time.round_ties_even() as i32;
+    // `(int)teleport_time`: the decomp's `ROUND` is GCC's truncating cast (0xb0396).
+    cd.waterjumptime = crate::rules::x87_trunc(v.teleport_time as f64);
     cd.maxspeed = v.maxspeed;
     cd.fov = v.fov;
     cd.weaponanim = v.weaponanim;
