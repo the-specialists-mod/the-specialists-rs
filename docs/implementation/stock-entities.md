@@ -206,7 +206,7 @@ The track change that its own train fires reads the train's path through a side 
 | `func_rotating` | SDK | Fan sounds, spin-up/down, hurt touch. `SpinUp` (0xa5fd8) and `RampPitchVol` (0xa5e68) compare and scale the speeds through the integer `abs((int)x)`, as TS's SDK did (guard: a target speed that truncates to 0, where TS divides by zero, ramps at 0 %). The fan sounds use TS slow-motion pitch (0.5). |
 | `func_pendulum` | SDK | The INSTANT flag (`CPendulum::Spawn` 0xa67f0) schedules its first swing at `time + 0.1`, which the engine compares against the pusher's `ltime`, so it starts that much later. |
 | `func_breakable` | **TS** `CBreakable` | See §3.1. |
-| `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use. The push and stop sounds use TS slow-motion pitch (0.5). A breakable pushable uses the TS breakable code. |
+| `func_pushable` | SDK 2.3 + **TS** | 2.3 `Move` plus TS's 0.3 factor when pulling with +use (applied before every use of the player's velocity, the standing-on-top float push included). `buoyancy` is truncated into `pev->skin` (the `skin` key sets the same field), and `Spawn` scales `skin` in place by the box area × 0.0005, again on every respawn of a breakable pushable. The push and stop sounds use TS slow-motion pitch (0.5). A breakable pushable uses the TS breakable code. |
 | `func_door`, `func_door_rotating`, `func_water` | **TS** `CBaseDoor` / `CRotDoor` | See §3.2. Lock sounds and sentences as in §3.5. `movesnd`/`stopsnd` are BYTEs set like `func_plat`'s (`CBaseDoor::KeyValue` 0xb51a0, 16-bit `fistp`), `common/null.wav` isn't precached. |
 | `func_button`, `func_rot_button` | SDK buttons.cpp | Button and spark sounds use TS slow-motion pitch (0.5). Shootable buttons (health > 0) work through `take_damage`. Lock sounds and sentences as in §3.5. |
 | `momentary_door` | SDK 2.3 doors.cpp (TS `CMomentaryDoor` 0xb7d98..0xb87f4) | A `CBaseToggle`, so none of TS's `CBaseDoor` changes (§3.2) apply. Keys `movesnd` (`doors/doormove1..8.wav`, else `common/null.wav`; a BYTE via a 16-bit `fistp`), `stopsnd` and `healthvalue` (ignored), `lip`. Only `USE_SET` moves it: `value` (clamped to ≤ 1, no lower clamp) places it between closed and open, at 10 × the distance per second; the move sound (`CHAN_STATIC`, TS slow-motion pitch) starts when it isn't already moving. No stop sound, touch, `Blocked` or +use (`ObjectCaps` 0); `dmg` defaults to 2 unread. |
@@ -937,6 +937,9 @@ everywhere) lacked.
 * **`speaker` preset outside 1–12.** TS's switch has no default and reads an uninitialised
   pointer; the port plays nothing and logs the "bad sentence group name" error with an empty
   name.
+* **`func_breakable` removal.** TS's `Die` and `BreakableRespawn` end with `SUB_Remove`, which
+  frees the edict at once, while `BreakTouch` and `TakeDamage` go on reading the freed object.
+  The port removes it at the end of the frame (`UTIL_Remove`) instead.
 * **Door respawn timer.** TS creates an `info_breakable` helper edict for every door (`Spawn`
   0xb60cc / 0xb79b8, `respawntime` ≥ 0 after the clamp) and runs the respawn timer on it at
   `gpGlobals->time`. The port runs it on the door's own `ltime` with the same timings and creates

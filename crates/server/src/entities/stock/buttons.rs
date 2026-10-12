@@ -852,7 +852,7 @@ impl Entity for ButtonTarget {
 
     fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _caller: *mut edict_t, kind: UseType, _value: f32) {
         let v = cx.pev();
-        if !should_toggle(kind, v.frame != 0.0) {
+        if !should_toggle(kind, super::maprules::x87_int(v.frame) != 0) {
             return;
         }
         v.frame = 1.0 - v.frame;

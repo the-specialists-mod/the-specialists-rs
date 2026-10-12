@@ -168,7 +168,16 @@ struct PushState {
     max_speed: f32,
     sound_time: f32,
     last_sound: usize,
-    buoyancy: f32,
+}
+
+/// A C `(int)` of a double as GCC 2.95 compiles it: truncation, 0x80000000 for NaN or out of range.
+fn x87_int_f64(d: f64) -> i32 {
+    if (-2_147_483_648.0..2_147_483_648.0).contains(&d) { d as i32 } else { i32::MIN }
+}
+
+/// `CPushable::Spawn`'s `(int)((maxs.y - mins.y) * (maxs.x - mins.x) * (float)skin * 0.0005)`.
+fn pushable_buoyancy(skin: i32, dx: f32, dy: f32) -> i32 {
+    x87_int_f64(dy as f64 * dx as f64 * (skin as f32) as f64 * 0.0005)
 }
 
 /// `func_breakable` (`PUSH = false`) and `func_pushable` (`PUSH = true`).
@@ -329,14 +338,19 @@ impl<const PUSH: bool> Breakable<PUSH> {
         }
         if sf & SF_BREAK_PRESSURE != 0 && oabsmin_z >= cx.pev().maxs[2] - 2.0 {
             self.damage_sound(cx);
-            self.think = Some(Self::die_think);
-            self.die_think = true;
             self.touch = None;
             if self.delay.delay == 0.0 {
                 self.delay.delay = 0.1;
             }
-            let d = self.delay.delay;
-            next_think(cx, d);
+            // When the touch branch above just broke it, TS still sets `Die` as the think, which
+            // returns at once (already dead); its respawn timer runs on the `info_breakable`
+            // helper, so the port keeps its own respawn think here.
+            if cx.pev().deadflag != DEAD_DEAD as i32 {
+                self.think = Some(Self::die_think);
+                self.die_think = true;
+                let d = self.delay.delay;
+                next_think(cx, d);
+            }
         }
     }
 
@@ -533,13 +547,16 @@ impl<const PUSH: bool> Breakable<PUSH> {
         let me = cx.edict;
         let tv = other.v();
         let v = cx.pev();
+        let player = has_player(other);
+        // `CPushable::Move` (0xc1c50): pulling (+use) takes 30% of the player's velocity, before
+        // every use of it, the standing-on-top case included.
+        let input = if player && tv.button & IN_USE as i32 != 0 { vec::scale(tv.velocity, 0.3) } else { tv.velocity };
         if tv.flags & FL_ONGROUND as i32 != 0 && tv.groundentity == me {
             if v.waterlevel > 0 {
-                v.velocity[2] += tv.velocity[2] * 0.1;
+                v.velocity[2] += input[2] * 0.1;
             }
             return;
         }
-        let player = has_player(other);
         if player && push && tv.button & (IN_FORWARD | IN_USE) as i32 == 0 {
             return;
         }
@@ -555,8 +572,6 @@ impl<const PUSH: bool> Breakable<PUSH> {
         } else {
             0.25
         };
-        // TS: pulling (+use) moves the crate at 30%.
-        let input = if player && tv.button & IN_USE as i32 != 0 { vec::scale(tv.velocity, 0.3) } else { tv.velocity };
         v.velocity[0] += input[0] * factor;
         v.velocity[1] += input[1] * factor;
         let length = vec::length2d(v.velocity);
@@ -598,7 +613,8 @@ impl<const PUSH: bool> Entity for Breakable<PUSH> {
         // `CPushable::KeyValue` (0xc18f4) also has a `size` branch (hull presets), but `size` is an
         // entvars field that `DispatchKeyValue` parses first, so it never runs; the model sets the size.
         if PUSH && key == c"buoyancy" {
-            self.push.buoyancy = kv_f(value);
+            // `pev->skin = (int)strtod(...)`: the same field the `skin` key sets.
+            cx.pev().skin = x87_int_f64(kv_d(value));
             return true;
         }
         match key.to_bytes() {
@@ -649,8 +665,9 @@ impl<const PUSH: bool> Entity for Breakable<PUSH> {
         let org = v.origin;
         engine().set_origin(cx.edict, org);
         let v = cx.pev();
-        // The SDK multiplies `skin` in place; keeping the keyvalue avoids compounding on respawn.
-        v.skin = (self.push.buoyancy * (v.maxs[0] - v.mins[0]) * (v.maxs[1] - v.mins[1]) * 0.0005) as i32;
+        // `CPushable::Spawn` (0xc174c) scales `skin` (the buoyancy) in place, so each respawn of
+        // a breakable pushable (which re-runs `Spawn`) scales it again, as in TS.
+        v.skin = pushable_buoyancy(v.skin, v.maxs[0] - v.mins[0], v.maxs[1] - v.mins[1]);
         self.push.sound_time = 0.0;
     }
 
@@ -798,3 +815,19 @@ pub fn respawn_all(force: bool) {
 #[derive(Default)]
 pub struct InfoBreakable;
 impl Entity for InfoBreakable {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pushable_buoyancy_scales_skin_in_place() {
+        // 64 x 64 box, buoyancy 20: 20 * 4096 * 0.0005 = 40.96, truncated.
+        assert_eq!(pushable_buoyancy(20, 64.0, 64.0), 40);
+        // A respawn re-runs `Spawn` on the scaled value.
+        assert_eq!(pushable_buoyancy(40, 64.0, 64.0), 81);
+        assert_eq!(x87_int_f64(-2.9), -2);
+        assert_eq!(x87_int_f64(f64::NAN), i32::MIN);
+        assert_eq!(x87_int_f64(1e12), i32::MIN);
+    }
+}

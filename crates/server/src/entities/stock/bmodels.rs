@@ -21,10 +21,10 @@ fn wall_spawn(cx: &mut Cx) {
     cx.pev().flags |= FL_WORLDBRUSH as i32;
 }
 
-/// `CFuncWall::Use`: toggles the texture frame.
+/// `CFuncWall::Use` (0xa5130): toggles the texture frame; `ShouldToggle` gets `(int)frame`.
 fn wall_use(cx: &mut Cx, kind: UseType) {
     let v = cx.pev();
-    if should_toggle(kind, v.frame != 0.0) {
+    if should_toggle(kind, super::maprules::x87_int(v.frame) != 0) {
         v.frame = 1.0 - v.frame;
     }
 }
@@ -502,6 +502,19 @@ pub struct Pendulum {
     rope: bool,
 }
 
+/// `CPendulum::Swing` (0xa6b90)'s clamps: `speed > max` gives `max`, else `speed < -max` gives
+/// `-max`. Plain compares, so a negative `speed` key (a negative `max`) or a NaN goes through as
+/// in TS, where `f32::clamp` would panic.
+fn clamp_swing(speed: f32, max: f32) -> f32 {
+    if speed > max {
+        max
+    } else if speed < -max {
+        -max
+    } else {
+        speed
+    }
+}
+
 impl Pendulum {
     fn pendulum_use(&mut self, cx: &mut Cx) {
         let now = engine().time();
@@ -536,7 +549,7 @@ impl Pendulum {
         } else {
             v.speed += self.accel * dt;
         }
-        v.speed = v.speed.clamp(-self.max_speed, self.max_speed);
+        v.speed = clamp_swing(v.speed, self.max_speed);
         v.avelocity = vec::scale(v.movedir, v.speed);
         v.nextthink = v.ltime + 0.1;
         if self.damp != 0.0 {
@@ -547,7 +560,7 @@ impl Pendulum {
                 self.think = PendulumThink::None;
                 v.avelocity = [0.0; 3];
             } else {
-                v.speed = v.speed.clamp(-self.damp_speed, self.damp_speed);
+                v.speed = clamp_swing(v.speed, self.damp_speed);
             }
         }
     }
@@ -666,6 +679,18 @@ impl Entity for Pendulum {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pendulum_clamp_is_plain_compares() {
+        assert_eq!(clamp_swing(150.0, 100.0), 100.0);
+        assert_eq!(clamp_swing(-150.0, 100.0), -100.0);
+        assert_eq!(clamp_swing(50.0, 100.0), 50.0);
+        // A negative `speed` key: TS's compares, no panic.
+        assert_eq!(clamp_swing(0.0, -100.0), -100.0);
+        assert_eq!(clamp_swing(-150.0, -100.0), 100.0);
+        assert!(clamp_swing(f32::NAN, 100.0).is_nan());
+        assert!(clamp_swing(50.0, f32::NAN) == 50.0);
+    }
 
     #[test]
     fn rotating_speeds_use_integer_abs() {
