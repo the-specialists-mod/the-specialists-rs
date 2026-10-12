@@ -131,7 +131,7 @@ hooks `VoiceMask` (audible and server-side ban masks) and `ReqState` (answers `V
 | PlInfo | B cl, B key, B value | laser colour (key 0) |
 | TSFade | S, S, S, B×4 | `state.ts_fade` (seconds = value/4096) |
 | WeaponInfo | B id, B clip, S reserve, B mode, B att | current gun, grid. Every id byte is a weapon, 0xff included: TS's `READ_BYTE` (`0x10029a10`) zero-extends and the handler keeps the old id only on -1, a read past the end (`0x1004f822`; the port drops a short message). An id outside 0..38 takes entry 0's ammo type and grid slot, as `GetWeaponInfo` (`0x100071c0`) answers it with kung fu; `cl_thirdpersonswitch` 1 (TS `1004f93b`, the only reader): kung fu (id < 1) toggles to third person if not already there; a gun toggles back to first person only when the weapon before the message was kung fu (id 0). Between messages the prediction writes the clip, fire mode, attachments and menu cells (`Hud::predicted_weapon`, TS `0x100581c0` from `0x1000acd0`, on first predictions with a record), so a mode switch plays `switch.wav` from `Think` straight away; the reserve is this message's alone. **Was**: a predicted overlay on the weapon box only, with the predicted reserve, and no switch sound until the next `WeaponInfo` (issue #12) |
-| ClipInfo / WStatus / ActItems / NextStunt / Wires / KFuPower / CustomWP | §3.3 | grid, active items, stunt cooldown, wires, kung-fu power, custom weapon params |
+| ClipInfo / WStatus / ActItems / NextStunt / Wires / KFuPower / CustomWP | §3.3 | grid, active items, stunt cooldown, wires, kung-fu power, custom weapon params. `Think` (`0x1004ce10`) runs the stunt cooldown and the kung-fu regeneration (15/s, 1/s while negative) on `frame time × max(time scale, 0.01)`, so both slow down in slow motion (**was** ÷, issue #90). `CustomWP` (`0x1004fb50`) writes accuracy, view kick, accuracy kick, damage and cost into the client's weapon table for the rest of the session (`shared::weapons::table::set_weapon_params`), which prediction, the events and the buy menu read (**was** stored only, issue #91). A fire-mode change plays `weapons/switch.wav` through `EV_PlaySound` on the local player (channel 3, volume `RandomFloat(0.92, 1)`, attenuation 1.25, pitch `RandomLong(−5, 5) + 25 − ftol(ts × −75)`); while dead or observing the change isn't taken, so it clicks on respawn |
 | ScoreInfo / TeamInfo / TeamScore / TeamNames | stock | scoreboard data |
 | DeathMsg | B, B, Str | `CHudSpectator::DeathMessage(victim)`, then a kill-feed entry (TS `1001b360`): names from `GetPlayerInfo` (31 bytes) with `GetClientColor` colours fixed at message time; victim 0xff is a non-player kill (the weapon string is the object's name); suicide = killer 0 or killer = victim; team kill = weapon `teammate`; the display time is `(int)hud_deathnotice_time` s. TS's change from the SDK: no weapon sprite. A plain kill keeps the weapon name and draws it as text in (1, 0.5, 0.2) between the names; suicides, team kills and non-player kills draw `d_skull`, white (green 10,240,10 for a team kill; the SDK's 255,80,0 is gone). Up to four, right-aligned, from y 20 in 20 px steps, only while `AllowedToPrintText`. Console: `<k> killed <v>`, `<v> killed self` / `<v> died` (weapon `world`), `<k> killed his teammate <v>`, `<k> killed a <object>`, then ` with <weapon>` unless `world` or a team kill (`egon`/`gauss` become `gluon gun`/`tau cannon`) |
 | HudText / GameTitle | Str / – | `CHudMessage` as the SDK ships it: up to 16 titles.txt messages (the `#` dropped for the lookup), each replacing any message at the same position and skipped when the same text already shows; an unknown name becomes the single shared custom message (write-out, centred at 0.7, the name as text, so a second custom message rewrites the first). Drawn a character at a time with `pfnDrawCharacter`: effect 0 fade in/out, 1 the same with a 10 % chance per draw (CRT `rand`) of the second colour drawn under it, 2 write-out per `fadein` with an `fxtime` colour sweep. Start times in the future (level change) move back with 0.2 s of grace. `GameTitle` draws `title_half`+`title_life` faded by `FadeBlend` |
@@ -350,6 +350,20 @@ Laser HUD (read from the TS binary, since the decompile hides the `__ftol` argum
   when the crosshair is on a player, ×0.5 otherwise (`0x1004ee02`).
 * `DrawWeaponInfo` ends with `sprintf("%ix", 80 / m_iFOV)` at (24, 24) in the HUD colour when the
   FOV is below 40 (`0x1004dfbe`: `mov eax, 80; idiv fov`).
+
+Weapon element colours (issue #92; read from the TS binary). Many are `ftol(colour × k)`:
+* `DrawWeaponInfo`: the clip and reserve numbers (flags 5) are HUD × 2/3 (`0x1007d770`), red
+  (195, 45, 45) at 0 or less; the reserve, and a stackable melee weapon's count, sit at
+  `ftol(x + 94.8148)`. Fire mode, ammo name and weapon name are HUD × 2/3; attachment labels
+  HUD / 2, the `|` HUD / 4. `DrawKungFuLabel` writes "Kung-Fu" in HUD × 2/3, and
+  `DrawKungFuBar` fills `p − 2` px with `p = ftol(power × 1.28f)` in (r·128/255, p·g/255,
+  p·b/255) at alpha 255 − p.
+* `DrawWeaponList`: colours are `ScaleColors(c, a)` (`c × a/255`) then × `m` (1 with the menu
+  open, 0.25/0.5/1 for `cl_showequipment` 1/2/3). Bucket numbers `a` = 200 selected / 100; the
+  selection's name and `clip/clip size` text `a` = 200; sprites red with an empty clip, `a` =
+  255 selected / 100; the clip bar in the sprite's colour. Closed, kung fu isn't drawn but keeps
+  its 48 px.
+* `DrawCrosshair`: `cross_t` × 0.7, `cross_e` × 0.75, `cross2` as is.
 
 ## 6. Buy menu
 

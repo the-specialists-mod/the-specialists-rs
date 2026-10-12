@@ -2,7 +2,7 @@
 //! wire panel, slot selection and the Think sounds. Reference: architecture-hud.md §4.2.
 
 use super::Dc;
-use super::draw::{RED, half, num};
+use super::draw::{RED, ftol, half, num};
 use super::state::{GRID_ROWS, Hud};
 use super::text::localise;
 use crate::input;
@@ -314,26 +314,49 @@ fn realhud() -> bool {
     input::cvars().cl_realhud.value() != 0.0
 }
 
-/// `DrawKungFuBar` (1004d5f0): 128×19 frame plus a fill proportional to `KFuPower`.
+/// `0x1007d770`, the double 2/3 most of the weapon box's text and numbers are scaled by.
+const TWO_THIRDS: f64 = 0.666_666_666_666_666_6;
+
+/// `ftol(c × k)` per channel, as TS's `fild; fmul; __ftol` sequences compute it.
+fn scaled(c: [i32; 3], k: f64) -> [i32; 3] {
+    c.map(|v| ftol(v as f64 * k))
+}
+
+/// `ScaleColors` (`0x10021c60`): `ftol(c × (a × (1/255)f))`.
+fn scale_colors(c: [i32; 3], a: i32) -> [i32; 3] {
+    let k = a as f64 * (1.0f32 / 255.0) as f64;
+    scaled(c, k)
+}
+
+/// `DrawKungFuBar` (1004d5f0): 128×19 frame plus a fill proportional to `KFuPower`:
+/// `p = ftol(power × 1.28f)` (`0x1007d78c`), `FillRGBA(x+2, y+2, p−2, 16, r·128/255, p·g/255,
+/// p·b/255, 255−p)`.
 fn draw_kungfu_bar(dc: &Dc, h: &Hud, x: i32, y: i32) {
     let mut rgb = dc.hud;
     if h.kfu_power <= 0.01 {
         rgb = RED;
     } else {
-        let p = h.kfu_power as i32;
-        let w = p * 124 / 100;
-        dc.fill(x + 2, y + 2, w.max(0), 16, [rgb[0] * 128 / 255, p * rgb[1] / 255, p * rgb[2] / 255], 255 - p);
+        let p = ftol(h.kfu_power as f64 * 1.28f32 as f64);
+        // Guarded: below 2 TS passes a negative width; the port draws nothing there.
+        let fill = [rgb[0].wrapping_mul(128) / 255, p.wrapping_mul(rgb[1]) / 255, p.wrapping_mul(rgb[2]) / 255];
+        dc.fill(x + 2, y + 2, (p - 2).max(0), 16, fill, 255 - p);
     }
     dc.fill(x, y, 128, 19, rgb, 30);
 }
 
-/// `DrawKungFuLabel` (1004d700).
+/// `DrawKungFuLabel` (1004d700): "Kung-Fu" in the HUD colour × 2/3.
 fn draw_kungfu_label(dc: &Dc, h: &Hud) {
     let (w, ht) = (dc.w(), dc.h());
     let x = w - 136;
     draw_kungfu_bar(dc, h, x, ht - 28);
     dc.fill(x, ht - 48, 128, 19, dc.hud, 35);
-    dc.string(w - 134, ht - 48, "Kung-Fu", dc.hud);
+    dc.string(w - 134, ht - 48, "Kung-Fu", scaled(dc.hud, TWO_THIRDS));
+}
+
+/// `DrawWeaponInfo`'s ammo numbers (`0x1004dac4..`): the HUD colour × 2/3, or red
+/// (195, 45, 45) when the value is 0 or less.
+fn ammo_rgb(hud: [i32; 3], n: i32) -> [i32; 3] {
+    if n > 0 { scaled(hud, TWO_THIRDS) } else { RED }
 }
 
 const FIREMODE_LABELS: [&str; 6] = ["#HUD_FullAuto", "#HUD_SemiAuto", "#HUD_Burst", "#HUD_PumpAction", "#HUD_FreeSemi", "#HUD_FreeFull"];
@@ -368,28 +391,31 @@ fn draw_weapon_info(dc: &Dc, h: &Hud) {
     // UpdateClientData); the prediction writes the clip and fire mode in between
     // (`Hud::predicted_weapon`, 0x100581c0). The reserve is WeaponInfo's alone.
     let (clip, reserve, firemode) = (h.clip, h.reserve[info.ammo as usize & 15], h.firemode as i32);
+    // `ftol(x + 94.8148…)` (`0x1007d790`): the right-hand number column.
+    let right = ftol(x as f64 + 94.814_814_814_814_81);
+    let two_thirds = scaled(dc.hud, TWO_THIRDS);
     if info.ammo == 0 {
         draw_kungfu_bar(dc, h, x, y);
         y -= row;
         if info.stack {
-            dc.number(x + 2, y, num::DIGITS_3 | num::DRAW_ZERO, clip, dc.hud);
+            dc.number(right, y, num::DIGITS_3 | num::DRAW_ZERO, clip, ammo_rgb(dc.hud, clip));
         }
     } else {
-        dc.number(x + 2, y, num::DIGITS_3 | num::DRAW_ZERO, clip, dc.hud);
+        dc.number(x + 2, y, num::DIGITS_3 | num::DRAW_ZERO, clip, ammo_rgb(dc.hud, clip));
         dc.string(x + 0x40, y, "|", [dc.hud[0] / 4, dc.hud[1] / 4, dc.hud[2] / 4]);
-        dc.number(x + 0x48, y, num::DIGITS_3 | num::DRAW_ZERO, reserve, half(dc.hud));
+        dc.number(right, y, num::DIGITS_3 | num::DRAW_ZERO, reserve, ammo_rgb(dc.hud, reserve));
         y -= row;
         dc.fill(x, y, 128, row - 1, dc.hud, 15);
         let label = FIREMODE_LABELS.get(firemode as usize).copied().unwrap_or(FIREMODE_LABELS[0]);
-        dc.string(x + 2, y, &localise(label), dc.hud);
+        dc.string(x + 2, y, &localise(label), two_thirds);
         y -= row;
         dc.fill(x, y, 128, row - 1, dc.hud, 15);
         let ammo = tables().ammo(info.ammo).map_or("", |a| a.name.as_str());
-        dc.string(x + 2, y, ammo, half(dc.hud));
+        dc.string(x + 2, y, ammo, two_thirds);
     }
     y -= row;
     dc.fill(x, y, 128, row - 1, dc.hud, 35);
-    dc.string(x + 2, y, &info.name, dc.hud);
+    dc.string(x + 2, y, &info.name, two_thirds);
     // Zoom factor while scoped: `sprintf("%ix", 80 / m_iFOV)` at (24, 24) (1004dfbe).
     let fov = crate::state::with(|s| s.fov) as i32;
     if (1..40).contains(&fov) {
@@ -398,22 +424,29 @@ fn draw_weapon_info(dc: &Dc, h: &Hud) {
 }
 
 /// `DrawWeaponList` (1004e030): the slot menu (header row per bucket, weapon sprites, name and
-/// `clip/reserve` of the selection, clip bar) or, with the menu closed, the equipment list when
-/// `cl_showequipment` is 1..3.
+/// `clip/clip size` of the selection, clip bar) or, with the menu closed, the equipment list
+/// when `cl_showequipment` is 1..3. Every colour goes through `ScaleColors` (`0x10021c60`) and
+/// then × `m`: 1 with the menu open, else 0.25, 0.5 or 1 for `cl_showequipment` 1, 2, 3
+/// (`0x1004e03d..0x1004e07d`).
 fn draw_weapon_list(dc: &Dc, h: &Hud, closed: bool) {
-    if closed {
-        let v = input::cvars().cl_showequipment.value() as i32;
-        if !(1..=3).contains(&v) {
-            return;
+    let m: f64 = if closed {
+        match ftol(input::cvars().cl_showequipment.value() as f64) {
+            1 => 0.25,
+            2 => 0.5,
+            3 => 1.0,
+            _ => return,
         }
-    }
+    } else {
+        1.0
+    };
     let t = tables();
     for bucket in 1..=5i32 {
         let x = bucket * 128 - 120;
         if !closed {
             let sel = bucket == h.menu_bucket;
-            dc.fill(x, 8, 128, 20, dc.hud, if sel { 100 } else { 50 });
-            dc.number(x, 8, num::DIGITS_2, bucket, half(dc.hud));
+            dc.fill(x, 8, 128, 20, scaled(dc.hud, m), if sel { 100 } else { 50 });
+            let rgb = scaled(scale_colors(dc.hud, if sel { 200 } else { 100 }), m);
+            dc.number(x, 8, num::DIGITS_2, bucket, rgb);
         }
         let mut y = 28;
         for row in 0..GRID_ROWS {
@@ -421,40 +454,44 @@ fn draw_weapon_list(dc: &Dc, h: &Hud, closed: bool) {
             if slot.id == -1 {
                 continue;
             }
-            if closed && slot.id == 0 {
+            let id = slot.id;
+            // Closed, kung fu isn't drawn but still takes its 48 px (`0x1004e207`).
+            if closed && id == 0 {
+                y += 48;
                 continue;
             }
-            let id = slot.id;
-            if !closed
-                && row as i32 == h.menu_row
-                && bucket == h.menu_bucket
-                && let Some(info) = t.weapon(id as u8)
-            {
-                dc.string(x + 128, y, &info.name, dc.hud);
+            let selected = !closed && row as i32 == h.menu_row && bucket == h.menu_bucket;
+            if selected && let Some(info) = t.weapon(id as u8) {
+                let rgb = scaled(scale_colors(dc.hud, 200), m);
+                dc.string(x + 128, y, &info.name, rgb);
+                // `0x1004e324`: `"%d/%d"` of the cell's clip and the weapon's clip size.
                 let ammo = match id {
                     24 | 25 | 35 => Some(format!("{}", slot.clip)),
                     0 | 29 | 34 => None,
-                    _ => Some(format!("{}/{}", slot.clip, h.reserve[info.ammo as usize & 15])),
+                    _ => Some(format!("{}/{}", slot.clip, info.clip)),
                 };
                 if let Some(a) = ammo {
-                    dc.string(x + 128, y + 16, &a, half(dc.hud));
+                    dc.string(x + 128, y + 16, &a, rgb);
                 }
             }
-            let rgb = if slot.clip < 1 && id != 0 { RED } else { dc.hud };
+            let base = if slot.clip < 1 { RED } else { dc.hud };
+            let rgb = scaled(scale_colors(base, if selected { 255 } else { 100 }), m);
             if let Some(&spr) = dc.g.ts.weapons.get(id as usize) {
-                dc.spr(spr, x, y, if !closed && row as i32 == h.menu_row && bucket == h.menu_bucket { rgb } else { half(rgb) });
+                dc.spr(spr, x, y, rgb);
             }
-            // Clip bar: 5 px wide at x+123, 44 px tall.
+            // Clip bar (`0x1004e534..`): 5 px wide at x+123, 44 px tall, in the sprite's
+            // colour; the clip is the weapon's own grid cell's.
             if !matches!(id, 0 | 29 | 34)
                 && let Some(info) = t.weapon(id as u8)
             {
-                let max = if info.stack { info.pellets } else { info.clip };
-                if max > 0 {
-                    let filled = (slot.clip.max(0) * 44 / max).clamp(0, 44);
-                    dc.fill(x + 0x7b, y + 46 - filled, 5, filled, dc.hud, 100);
-                    if slot.clip < max {
-                        dc.fill(x + 0x7b, y + 2, 5, 44 - filled, RED, 50);
-                    }
+                let own = h.grid.get(info.hud[1] as usize).and_then(|r| r.get(info.hud[0] as usize)).map_or(0, |s| s.clip) as f32;
+                let max = (if info.stack { info.pellets } else { info.clip }) as f32;
+                let filled = ftol(own as f64 * 44.0 / max as f64).max(0);
+                if max > 0.0 {
+                    dc.fill(x + 0x7b, y - filled + 46, 5, filled, rgb, 100);
+                }
+                if own < max {
+                    dc.fill(x + 0x7b, y + 2, 5, 44 - filled, rgb, 50);
                 }
             }
             y += 48;
@@ -512,7 +549,8 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
         // are far off screen anyway.
         let gap = ((base as f32 + spread * 160.0) as i32).clamp(-0x10000, 0x10000);
         if id_team == Some(1) {
-            dc.spr(dc.g.ts.cross_t, cx - 32, cy - 32, rgb);
+            // `0x1004ebc2`: × 0.7.
+            dc.spr(dc.g.ts.cross_t, cx - 32, cy - 32, scaled(rgb, 0.7));
         } else {
             dc.fill(cx - gap, cy - 1, 5, 2, rgb, 75);
             dc.fill(cx + gap - 5, cy - 1, 5, 2, rgb, 75);
@@ -523,7 +561,8 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
                 e.spr_set(dc.g.ts.cross2, if solid > 1.0 { [0; 3] } else { rgb });
                 e.spr_draw_holes(0, cx - 32, cy - 32, None);
             } else {
-                dc.spr(dc.g.ts.cross_e, cx - 32, cy - 32, rgb);
+                // `0x1004ed93`: × 0.75.
+                dc.spr(dc.g.ts.cross_e, cx - 32, cy - 32, scaled(rgb, 0.75));
             }
         }
     }
@@ -534,7 +573,7 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
         // `m_iFontHeight / 2` (`0x1004ee65`), the `number_0` height.
         let y = cy - if scoped { 8 } else { 0 } - dc.g.sprites.font_height() / 2;
         let range = crate::state::with(|s| s.laser_range);
-        dc.number(cx + 28, y, num::DRAW_ZERO, range, rgb.map(|c| (c as f32 * k) as i32));
+        dc.number(cx + 28, y, num::DRAW_ZERO, range, scaled(rgb, k));
     }
 }
 
@@ -591,6 +630,21 @@ fn divestep_layout(
 mod tests {
     use super::super::state::{Slot, grid_pos};
     use super::*;
+
+    #[test]
+    fn colour_scaling_follows_ts() {
+        // 2/3 of the default HUD colour (`0x1007d770`), and red for an empty clip.
+        assert_eq!(scaled([255, 160, 0], TWO_THIRDS), [170, 106, 0]);
+        assert_eq!(ammo_rgb([255, 160, 0], 0), RED);
+        assert_eq!(ammo_rgb([255, 160, 0], 7), [170, 106, 0]);
+        // `ScaleColors` with the slot menu's 100 / 200 / 255.
+        assert_eq!(scale_colors([255, 160, 0], 255), [255, 160, 0]);
+        assert_eq!(scale_colors([255, 160, 0], 200), [200, 125, 0]);
+        assert_eq!(scale_colors([255, 160, 0], 100), [100, 62, 0]);
+        // `DrawKungFuBar`: full power is ftol(100 × 1.28f) = 127, not 128.
+        assert_eq!(ftol(100.0f32 as f64 * 1.28f32 as f64), 127);
+        assert_eq!(ftol(50.0f32 as f64 * 1.28f32 as f64), 63);
+    }
 
     fn give(h: &mut Hud, id: i32) {
         let (r, b) = grid_pos(id).unwrap();

@@ -636,7 +636,15 @@ impl Hud {
                 self.wires = [v.w0, v.w1, v.w2];
             }
             Msg::CustomWp => {
+                // `0x1004fb50`: `sscanf("%i %f %f %f %f %i")` into the client's own weapon table
+                // (`GetWeaponInfo(id)` +0x28 accuracy, +0x30 view kick, +0x34 accuracy kick,
+                // +0x1c damage, +0xd8 cost), which prediction, the events and the buy menu read.
+                // The client keeps the values for the rest of the session, as TS's static table
+                // does. Guarded: an id outside the table is ignored.
                 let v = dec!(p::CustomWp);
+                if let Ok(id) = u8::try_from(v.id) {
+                    shared::weapons::table::set_weapon_params(id, v.accuracy, v.view_kick, v.acc_kick, v.damage, v.cost);
+                }
                 self.custom_weapons.retain(|c| c.id != v.id);
                 self.custom_weapons.push(v);
             }
@@ -881,7 +889,7 @@ impl Hud {
     }
 
     /// Kung-fu power regenerates client-side between `KFuPower` updates (`Think` 1004ce10):
-    /// 15/s when non-negative, 1/s while negative, scaled by frame time / time scale.
+    /// 15/s when non-negative, 1/s while negative, over frame time × time scale.
     pub fn regen_kungfu(&mut self, dt: f32) {
         if self.kfu_power < 100.0 {
             let step = if self.kfu_power >= -0.001 { dt * 15.0 } else { dt };
