@@ -707,7 +707,8 @@ pub(super) fn duck(p: &mut Player, cx: &mut Cx) {
 }
 
 /// Fall damage from `CBasePlayer::PostThink` (decomp §6.6): above 680 u/s,
-/// `(v - 680) * 100 / 444` (fatal at 1124).
+/// `(v - 680) * 100 / 444` (fatal at 1124). A fatal fall splats on `CHAN_ITEM` (channel 3), so it
+/// doesn't cut off pmove's `pl_fallpain3.wav` on `CHAN_VOICE`.
 pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
     let pev = cx.pev();
     let fallvel = p.stunt.fall_velocity;
@@ -718,7 +719,7 @@ pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
         p.stunt.fall_velocity = fallvel - 680.0;
         let dmg = (fallvel - 680.0) * 100.0 * 0.002_252_252_3;
         if pev.health < dmg {
-            emit_sound_slow(cx.edict, CHAN_VOICE, c"common/bodysplat.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
+            emit_sound_slow(cx.edict, CHAN_ITEM, c"common/bodysplat.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
         }
         if dmg > 0.0 {
             let world = engine().entity_of_index(0);

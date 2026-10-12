@@ -127,11 +127,8 @@ impl Player {
         f.int(&mut self.drive.train);
         // m_bitsHUDDamage: `Spawn`, `Precache` and `TakeDamage` all set -1.
         let _ = f.int_val(-1);
-        let mut fall = self.stunt.fall_velocity;
-        f.float(&mut fall);
-        self.stunt.fall_velocity = fall;
+        f.float(&mut self.stunt.fall_velocity);
         if f.restoring() {
-            self.ts.fall_velocity = fall;
             self.ts.buttons_last = self.stunt.button_last;
             self.ts.buttons_pressed = self.stunt.button_pressed;
         }

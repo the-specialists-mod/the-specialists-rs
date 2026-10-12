@@ -387,11 +387,6 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         return;
     }
 
-    // Fall velocity for PostThink.
-    if cx.pev().flags & FL_ONGROUND as i32 == 0 {
-        p.ts.fall_velocity = -cx.pev().velocity[2];
-    }
-
     // +use: double tap activates the held power-up (`TSUse`). Using objects (ground weapons
     // included) is `player::player_use`, from the weapons' PostThink.
     if p.ts.buttons_pressed & IN_USE as i32 != 0 {
