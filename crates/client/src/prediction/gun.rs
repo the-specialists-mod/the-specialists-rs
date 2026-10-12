@@ -284,6 +284,10 @@ struct ClientHost<'a> {
     /// the predicted events (`g_finalstate`).
     final_origin: Vec3,
     cmd: &'a usercmd_t,
+    /// The player's `pev->v_angle`: `v_angles` (`0x101914d0`, [`view::v_angles`]), the last
+    /// refdef's view angles, not the command's (`0x100038e7..0x10003906`). The client `KatanaFire`
+    /// (`0x10009efe`) and `CCombatAttack` (`0x1000afb1`) pick a backward swing from it.
+    v_angle: Vec3,
     runfuncs: bool,
     time: f32,
     seed: u32,
@@ -349,7 +353,7 @@ impl GunHost for ClientHost<'_> {
         self.from.client.velocity
     }
     fn v_angle(&self) -> Vec3 {
-        self.cmd.viewangles
+        self.v_angle
     }
     fn flags(&self) -> i32 {
         self.from.client.flags
@@ -513,6 +517,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         from,
         final_origin,
         cmd,
+        v_angle: view::v_angles(),
         runfuncs,
         time: time as f32,
         seed,
@@ -612,14 +617,13 @@ mod tests {
         assert_eq!((g.melee_window, g.melee_damage, g.melee_source), (0.2, 40.0, 0));
     }
 
-    /// The predicted kung-fu block (`0x1000adc0`) gates on the HUD's power (`0x1018a718`), not
-    /// the gun's bar, and charges none.
     /// A re-prediction host (`runfuncs` false, so nothing reaches the engine).
     fn test_host<'a>(from: &'a local_state_t, cmd: &'a usercmd_t, kfu_power: f32) -> ClientHost<'a> {
         ClientHost {
             from,
             final_origin: [0.0; 3],
             cmd,
+            v_angle: [0.0; 3],
             runfuncs: false,
             time: 0.0,
             seed: 0,
@@ -634,6 +638,8 @@ mod tests {
         }
     }
 
+    /// The predicted kung-fu block (`0x1000adc0`) gates on the HUD's power (`0x1018a718`), not
+    /// the gun's bar, and charges none.
     #[test]
     fn block_gates_on_hud_power() {
         let (from, cmd) = (local_state_t::default(), usercmd_t::default());
@@ -669,6 +675,20 @@ mod tests {
             assert_eq!((g.current, g.status[id as usize].clip, g.status[id as usize].mode, g.next_attack), (id, 1, 1, 0.0));
             assert_eq!((host.viewmodel, host.weaponanim), (7, 3));
         }
+    }
+
+    /// The predicted katana swing reads `v_angles`, not the command's angles: running forward
+    /// along +x with the last view facing -x is a backward swing (negative strength) even though
+    /// the command faces +x.
+    #[test]
+    fn katana_direction_uses_v_angles() {
+        let from = local_state_t { client: clientdata_t { velocity: [200.0, 0.0, 0.0], ..Default::default() }, ..Default::default() };
+        let cmd = usercmd_t { viewangles: [0.0, 0.0, 0.0], ..Default::default() };
+        let mut host = test_host(&from, &cmd, 0.0);
+        host.v_angle = [0.0, 180.0, 0.0];
+        let mut g = Gun { current: id::KATANA, ..Default::default() };
+        g.katana_fire(&mut host);
+        assert!(g.melee_damage < 0.0, "backward swing");
     }
 
     /// The client host's records have no owned flag and its player is never alive (0x10004700).

@@ -353,6 +353,11 @@ test, as the client copy (`0x10008dc8`) has none and the server's (`0x81dd0`) ha
 current record counted as owned and the host as alive, so the last throw predicted a kung-fu
 switch (view model, two draw animations and `Draw` events, `m_flNextAttack` 0.5) and packed the
 cleared record into `to` (issue #14). Fixed.
+The client player's `pev->v_angle` is `v_angles` (`0x101914d0`, copied at `0x100038e7..0x10003906`),
+the view angles the last refdef stored (punch included, before the third-person override), not
+the command's: the client `KatanaFire` (`0x10009efe`) and `CCombatAttack` (`0x1000afb1`) pick
+their backward swing from it. `ClientHost::v_angle` is `view::v_angles()`. **Was**
+`cmd.viewangles` (issue #13). Fixed.
 
 ## 5. Deviations and decisions
 
