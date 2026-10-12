@@ -103,8 +103,6 @@ pub struct PlayerRules {
     pub held_secs: i32,
     /// Health decay / The One regen timer (`+0x73c`).
     pub health_timer: f32,
-    /// `+use` double tap (`+0x164`).
-    pub use_tap_until: f32,
     /// Displayed slow amount (`+0x170`) and bullet-time flag (`+0x175`).
     pub slow_display: f32,
     pub btime: bool,
@@ -241,8 +239,9 @@ pub fn player_think(p: &mut Player, cx: &mut Cx) -> bool {
     lifecycle::player_think(p, cx)
 }
 
-pub fn pre_think(p: &mut Player, cx: &mut Cx) {
-    lifecycle::pre_think(p, cx)
+/// `tail` is false on the frame a train is lost (TS's PreThink returns before its tail).
+pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
+    lifecycle::pre_think(p, cx, tail)
 }
 
 pub fn post_think(p: &mut Player, cx: &mut Cx) {

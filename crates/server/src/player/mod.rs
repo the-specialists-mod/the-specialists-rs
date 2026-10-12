@@ -90,9 +90,7 @@ impl Entity for Player {
         pev.takedamage = DAMAGE_AIM as f32;
         pev.solid = SOLID_SLIDEBOX as i32;
         pev.movetype = MOVETYPE_WALK as i32;
-        // `flags |= FL_FAKECLIENT` when `m_bIsBot` is set (0x8f604); the engine's own fake-client
-        // flag is kept too.
-        pev.flags = FL_CLIENT as i32 | (pev.flags & FL_FAKECLIENT as i32) | if self.is_bot != 0 { FL_FAKECLIENT as i32 } else { 0 };
+        pev.flags = spawn_flags(pev.flags, self.is_bot != 0);
         pev.deadflag = DEAD_NO as i32;
         pev.friction = 1.0;
         pev.gravity = 1.0;
@@ -168,11 +166,16 @@ impl Player {
         if crate::rules::player_think(self, cx) {
             return;
         }
-        crate::entities::stock::drive::pre_think(self, cx, buttons & !last);
-        crate::rules::pre_think(self, cx);
-        crate::stunt::pre_think(self, cx);
+        // Losing the train ends TS's PreThink for this frame (both libraries), before
+        // `Jump`/`Duck`, the fall speed, `UpdatePlayerState`, the node learning, the end of spawn
+        // protection and the delayed suicide (issue #60).
+        let tail = !crate::entities::stock::drive::pre_think(self, cx, buttons & !last);
+        crate::rules::pre_think(self, cx, tail);
+        crate::stunt::pre_think(self, cx, tail);
         // mp.dll's node learning, between `UpdatePlayerState` and `CheckForWires` (0x1005fed2).
-        crate::bots::learn(self, cx);
+        if tail {
+            crate::bots::learn(self, cx);
+        }
         crate::weapons::pre_think(self, cx);
     }
 
@@ -205,6 +208,14 @@ impl Player {
     }
 }
 
+/// `CBasePlayer::Spawn`'s flags (0x8f5f7..0x8f61a): `flags &= FL_PROXY` (an HLTV proxy keeps
+/// the engine's mark, issue #50), `|= FL_CLIENT`, and `FL_FAKECLIENT` when `m_bIsBot` is set.
+/// The engine's own fake-client flag is kept too (port choice: TS drops it for a fake client
+/// that isn't one of its bots).
+fn spawn_flags(old: i32, is_bot: bool) -> i32 {
+    (old & (FL_PROXY | FL_FAKECLIENT) as i32) | FL_CLIENT as i32 | if is_bot { FL_FAKECLIENT as i32 } else { 0 }
+}
+
 /// Runs `f` on the `Player` attached to `e`, if any (take-out dispatch).
 pub fn with_player<R>(e: *mut edict_t, f: impl FnOnce(&mut Player, &mut Cx) -> R) -> Option<R> {
     crate::world::dispatch(e, |ent, cx| (ent as &mut dyn std::any::Any).downcast_mut::<Player>().map(|p| f(p, cx))).flatten()
@@ -227,4 +238,18 @@ pub fn client_put_in_server(e: *mut edict_t) {
         }
         ent.spawn(cx);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_keeps_only_proxy_and_fake_client() {
+        assert_eq!(spawn_flags(!0, false), (FL_PROXY | FL_FAKECLIENT | FL_CLIENT) as i32);
+        let proxy = (FL_PROXY | FL_DUCKING | FL_FROZEN) as i32;
+        assert_eq!(spawn_flags(proxy, false), (FL_PROXY | FL_CLIENT) as i32, "HLTV proxy");
+        assert_eq!(spawn_flags(FL_ONGROUND as i32, true), (FL_CLIENT | FL_FAKECLIENT) as i32, "TS bot");
+        assert_eq!(spawn_flags(0, false), FL_CLIENT as i32);
+    }
 }

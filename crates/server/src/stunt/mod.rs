@@ -8,7 +8,7 @@
 //! original client predicts our server correctly and vice versa.
 //!
 //! Hooks (fixed order, player/mod.rs): `pre_think` runs the CBasePlayer::PreThink stunt parts
-//! (button edges, `CTSStunt::Play`, breakables, `Jump()`/`Duck()`, fall speed, `TSState`);
+//! (button edges, `CTSStunt::Play`, breakables, `Jump()`/`Duck()`, fall speed);
 //! `post_think` runs the PostThink parts (frozen angles, fall damage, super-jump landing,
 //! idle/move animation, frame advance).
 
@@ -73,9 +73,10 @@ pub struct StuntState {
     /// set, but nothing in TS sets it: `Spawn` zeroes the flags and `StartObserver` (0x99634)
     /// clears the bit, so it stays false. Ported for the `PreThink` test.
     pub pflag_ducking: bool,
-    /// pl+0x498/0x499 `TSState` stance (0 stand, 1 crouch, 2 prone/diving) and last sent.
+    /// pl+0x498: the `TSState` stance (0 stand, 1 crouch, 2 prone/diving) `UpdatePlayerState`
+    /// (0x92a08) last set. Only a living player's PreThink updates it, and `TSInit` zeroes it;
+    /// `player::hud` sends it when it changes.
     pub stance: u8,
-    stance_sent: Option<u8>,
     /// Last physinfo `mj` value written (mirrors `Player::superjump`).
     mj_sent: Option<bool>,
 
@@ -115,7 +116,6 @@ impl Default for StuntState {
             fall_velocity: 0.0,
             pflag_ducking: false,
             stance: 0,
-            stance_sent: None,
             mj_sent: None,
             debug_last: 0,
             debug_alt1: 0,
@@ -342,8 +342,9 @@ fn sync_superjump(p: &mut Player, cx: &mut Cx) {
     }
 }
 
-/// The stunt parts of `CBasePlayer::PreThink` (0x908cc), in order.
-pub fn pre_think(p: &mut Player, cx: &mut Cx) {
+/// The stunt parts of `CBasePlayer::PreThink` (0x908cc), in order. `tail` is false on the frame
+/// a train is lost: TS's PreThink returns before `Jump`/`Duck` then (issue #60).
+pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     let mut last = p.stunt.debug_last;
     debug_log(p, cx, &mut last);
     p.stunt.debug_last = last;
@@ -396,7 +397,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         return; // observer
     }
     moves::check_for_breakables(p, cx);
-    if cx.pev().deadflag > 0 {
+    if cx.pev().deadflag > 0 || !tail {
         return;
     }
 
@@ -410,20 +411,9 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     if !on_ground(cx) {
         p.stunt.fall_velocity = -cx.pev().velocity[2];
     }
-
-    // UpdatePlayerState; TS sends TSState from UpdateClientData when it changes.
-    let pev = cx.pev();
-    p.stunt.stance = if pev.iuser4 & (DIVING | PRONE) != 0 {
-        2
-    } else if pev.flags & FL_DUCKING as i32 != 0 {
-        1
-    } else {
-        0
-    };
-    if p.stunt.stance_sent != Some(p.stunt.stance) {
-        p.stunt.stance_sent = Some(p.stunt.stance);
-        messages::one(Msg::TsState, cx.edict).byte(p.stunt.stance as i32).end();
-    }
+    // `UpdatePlayerState` (0x92a08). TS sends the stance only from `UpdateClientData`
+    // (`player::hud`), never from here (issue #48).
+    p.stunt.stance = crate::player::hud::stance(cx.pev());
 }
 
 /// The stunt parts of `CBasePlayer::PostThink` (0x91610), in order.

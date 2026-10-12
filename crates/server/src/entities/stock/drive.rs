@@ -114,13 +114,14 @@ pub fn player_use(p: &mut Player, cx: &mut Cx, pressed: i32) -> bool {
 
 /// The train block of `CBasePlayer::PreThink` (0x908cc): keep `FL_ONTRAIN` in step, drop the
 /// controls when the player leaves them, jumps or strafes, and turn +forward / +back presses into
-/// speed changes. `pressed` is this frame's newly pressed buttons.
-pub fn pre_think(p: &mut Player, cx: &mut Cx, pressed: i32) {
+/// speed changes. `pressed` is this frame's newly pressed buttons. Returns true when the train
+/// was lost this frame: TS returns from `PreThink` there (issue #60), skipping its tail.
+pub fn pre_think(p: &mut Player, cx: &mut Cx, pressed: i32) -> bool {
     let me = cx.edict;
     let pv = cx.pev();
     // PreThink returns before this for observers and the dying.
     if pv.iuser1 != 0 || pv.deadflag > DEAD_NO as i32 {
-        return;
+        return false;
     }
     let d = &mut p.drive;
     if d.on_train {
@@ -132,7 +133,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, pressed: i32) {
         if d.train & TRAIN_ACTIVE != 0 {
             d.train = TRAIN_NEW; // turn off train
         }
-        return;
+        return false;
     }
     let mut train = ground_instance(pv);
     let keep = if train.is_null() {
@@ -150,7 +151,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, pressed: i32) {
     if !keep {
         d.on_train = false;
         d.train = TRAIN_NEW | TRAIN_OFF;
-        return;
+        return true;
     }
     pv.velocity = [0.0; 3];
     let vel = if pressed & IN_FORWARD as i32 != 0 {
@@ -164,6 +165,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, pressed: i32) {
         world::dispatch(train, |ent, tcx| ent.use_(tcx, me, me, UseType::Set, vel));
         p.drive.train = train_notch(train) | TRAIN_ACTIVE | TRAIN_NEW;
     }
+    false
 }
 
 /// The tank block of `CBasePlayer::PostThink` (0x91610): fire the tank while still on its

@@ -354,7 +354,7 @@ pub fn player_think(p: &mut Player, cx: &mut Cx) -> bool {
 }
 
 /// The rules part of `CBasePlayer::PreThink` (0x908cc) after `player_think`.
-pub fn pre_think(p: &mut Player, cx: &mut Cx) {
+pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     let now = cx.time();
 
     // PreThink order: WaterMove, UpdateClientData (InitHUD), CheckTimeBasedDamage, CheckSuitUpdate.
@@ -387,13 +387,13 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
         return;
     }
 
-    // +use: double tap activates the held power-up (`TSUse`). Using objects (ground weapons
-    // included) is `player::player_use`, from the weapons' PostThink.
-    if p.ts.buttons_pressed & IN_USE as i32 != 0 {
-        if now <= p.ts.use_tap_until {
-            powerup::use_powerup(p, cx);
-        }
-        p.ts.use_tap_until = now + 0.3;
+    // No +use double tap here: TS's `CBasePlayer::TSUse` (0x956e0) is never called. The client
+    // sends `usepowerup` for a double tap when `cl_usepowerup` is on (issue #49). Using objects
+    // is `player::player_use`, from the weapons' PostThink.
+
+    // TS's PreThink has returned already on the frame the train is lost (issue #60).
+    if !tail {
+        return;
     }
 
     // End of spawn protection.
@@ -960,6 +960,8 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     p.ts.observer_at = now + 3.0;
     p.hud.cash = None;
     eng.set_view(e, e);
+    // `EnableControl(TRUE)` (0x8eee0): a player frozen by a camera or trigger is let go.
+    cx.pev().flags &= !(FL_FROZEN as i32);
     p.ts.respawns_used = p.ts.respawns_used.saturating_add(1);
     p.ts.suicide_at = 0.0;
     // `g_pevLastInflictor`, the inflictor while `TakeDamage` kills (NULL for the `kill` command's
@@ -1032,11 +1034,13 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     let gib = dmg.bits & crate::damage::bits::ALWAYSGIB != 0 || (cx.pev().health < -40.0 && dmg.bits & crate::damage::bits::NEVERGIB == 0);
     // `takedamage` stays on (TS's Killed never clears it; `StartObserver` does), so the body
     // still takes TraceAttacks (the bullet dance twitch).
-    let v = cx.pev();
     if gib {
-        v.solid = SOLID_NOT as i32;
-        v.effects |= EF_NODRAW as i32;
+        cx.pev().solid = SOLID_NOT as i32;
+        // `GibMonster()` (0x8f501): the splat and the human gibs.
+        crate::entities::stock::monsters::gib_player(e);
+        cx.pev().effects |= EF_NODRAW as i32;
     } else {
+        let v = cx.pev();
         v.angles[0] = 0.0;
         v.angles[2] = 0.0;
         // `SetThink(&CBasePlayer::PlayerDeathThink)`, `nextthink = time + 0.1` (a double

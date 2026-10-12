@@ -73,7 +73,7 @@ pub fn force_reset(p: &mut Player) {
     p.hud = HudCache { award, ..HudCache::default() };
 }
 
-/// `UpdatePlayerState`: 2 prone/stunt (`iuser4 & 0x30`), 1 ducked, 0 standing.
+/// `UpdatePlayerState` (0x92a08): 2 prone/stunt (`iuser4 & 0x30`), 1 ducked, 0 standing.
 pub fn stance(v: &entvars_t) -> u8 {
     if v.iuser4 & (stunt::DIVING | stunt::PRONE) != 0 {
         2
@@ -128,10 +128,11 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
     }
     let e = cx.edict;
     crate::entities::stock::drive::update_client_hide_weapon(p, cx);
-    let (health, armor, state, alive) = {
+    let (health, armor, alive) = {
         let v = cx.pev();
-        (v.health, v.armorvalue, stance(v), crate::rules::alive(v))
+        (v.health, v.armorvalue, crate::rules::alive(v))
     };
+    let state = p.stunt.stance;
     if changed(p.hud.health.unwrap_or(-1), health) {
         let hp = health_byte(health);
         msg::one(Msg::TsHealth, e, |w| TsHealth { hp }.write(w));
@@ -200,6 +201,26 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_player_state_stance() {
+        let mut v = entvars_t::default();
+        assert_eq!(stance(&v), 0);
+        v.flags = FL_DUCKING as i32;
+        assert_eq!(stance(&v), 1);
+        v.iuser4 = stunt::DIVING;
+        assert_eq!(stance(&v), 2, "a dive or prone wins over ducking");
+        v.iuser4 = stunt::PRONE;
+        v.flags = 0;
+        assert_eq!(stance(&v), 2);
+    }
+
+    /// Issue #48: `TSState` goes out only from `UpdateClientData`, never from the stunt code.
+    #[test]
+    fn tsstate_is_sent_only_from_update_client_data() {
+        let src = include_str!("../stunt/mod.rs");
+        assert!(!src.contains(concat!("Msg::", "TsState")), "stunt::pre_think must not send TSState");
+    }
 
     #[test]
     fn health_and_armor_bytes_truncate_like_ts() {

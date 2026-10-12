@@ -53,6 +53,21 @@ fn should_gib(gib: GibType, health: f32) -> bool {
     (gib == GibType::Normal && health < -30.0) || gib == GibType::Always
 }
 
+/// `CBaseMonster::GibMonster` (0xb14e0) on a player, from `CBasePlayer::Killed`'s gib branch
+/// (0x8f501): the splat, then, with `violence_hgibs` on, a head and four human gibs
+/// (`CBasePlayer::Classify` is 2, so `HasHumanGibs`) in `m_bloodColor` red (`Spawn` sets 247).
+/// `IsPlayer()` skips the `SUB_Remove`/`FadeMonster` that ends it for other monsters.
+pub fn gib_player(e: *mut edict_t) {
+    emit_sound_slow(e, CHAN_WEAPON, c"common/bodysplat.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
+    if engine().cvar_float(c"violence_hgibs") != 0.0 {
+        Gib::spawn_head_gib(e, BLOOD_COLOR_RED);
+        Gib::spawn_random_gibs(e, 4, true, BLOOD_COLOR_RED, crate::damage::attack_dir());
+    }
+}
+
+/// `CBasePlayer::Classify` (0xd9e10): `CLASS_PLAYER`.
+const PLAYER_CLASSIFY: i32 = 2;
+
 /// `CBaseMonster::HasHumanGibs` (0xb13e0) / `HasAlienGibs` (0xb1418) by `Classify`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Gibs {
@@ -386,6 +401,13 @@ mod tests {
         assert_eq!(GibType::from_bits(bits::ALWAYSGIB), GibType::Always);
         // DMG_ALWAYSGIB is tested first.
         assert_eq!(GibType::from_bits(bits::ALWAYSGIB | bits::NEVERGIB), GibType::Always);
+    }
+
+    /// `CBasePlayer::Killed`'s `GibMonster` throws human gibs: `Classify` 2 is in
+    /// `HasHumanGibs`' list (issue #47).
+    #[test]
+    fn players_have_human_gibs() {
+        assert_eq!(gibs_of(PLAYER_CLASSIFY), Gibs::Human);
     }
 
     #[test]
