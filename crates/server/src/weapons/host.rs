@@ -120,9 +120,17 @@ impl ServerHost<'_> {
     }
 }
 
-/// `EMIT_SOUND_DYN` with TS's usual parameters.
+/// The slow-motion factor every weapon and item sound passes to TS's `EMIT_SOUND_DYN`
+/// (`ts_i386.so` 0xe0a8c): `SwitchItems`, `ColdCock`, `KatanaFire`, `KatanaThrow`, `KnifeFire`,
+/// `DefaultDeploy`, `PickUpWeapon`, `DropWeapon`, `TakeArmor`, `AddItem`, `BuyAmmo`, the
+/// grenade's, thrown blade's and `WorldGun`'s `BounceTouch`, `CTSWorldGun::Fall` and
+/// `CTSAmmoPack::WaitTouch` all push 0.5.
+pub const SLOW: f32 = 0.5;
+
+/// TS's `EMIT_SOUND_DYN(e, chan, sample, vol, attn, 0, pitch, 0.5)`: the pitch drops with the
+/// emitting entity's time scale (`fuser1`), as for the melee sounds (issue #32).
 pub fn emit(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn: f32, pitch: i32) {
-    engine().emit_sound(e, chan as i32, sample, vol, attn, 0, pitch);
+    crate::entities::stock::explode::emit_sound_slow(e, chan, sample, vol, attn, 0, pitch, SLOW);
 }
 
 /// `PLAYBACK_EVENT_FULL(FEV_NOTHOST, player, ev, 0, zero, zero, ...)`. `bparam`s are passed as
@@ -335,5 +343,24 @@ impl GunHost for ServerHost<'_> {
         pev.view_ofs = [0.0, 0.0, if pev.flags & FL_DUCKING as i32 != 0 { 16.0 } else { 28.0 }];
         pev.gravity = 1.0;
         pev.friction = 1.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SLOW;
+    use crate::entities::stock::explode::slow_pitch;
+
+    /// The weapon and item sounds' pitch in slow motion (issue #32): `(1 - 0.5) + 0.5 * fuser1`
+    /// of TS's pitch, truncated; unchanged at normal speed or with no time scale.
+    #[test]
+    fn weapon_sounds_drop_pitch_with_the_time_scale() {
+        assert_eq!(SLOW, 0.5);
+        assert_eq!(slow_pitch(100, 1.0, SLOW), 100, "normal speed");
+        assert_eq!(slow_pitch(100, 0.0, SLOW), 100, "no time scale");
+        assert_eq!(slow_pitch(100, 0.5, SLOW), 75, "draw.wav, items, drops at half speed");
+        assert_eq!(slow_pitch(101, 0.5, SLOW), 75, "switch.wav's top pitch: 75.75 truncates");
+        assert_eq!(slow_pitch(110, 0.2, SLOW), 66, "weapondrop1.wav's top pitch at 0.2");
+        assert_eq!(slow_pitch(90, 0.5, SLOW), 67, "kevlarhit.wav's top pitch: 67.5 truncates");
     }
 }

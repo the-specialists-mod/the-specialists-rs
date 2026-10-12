@@ -364,7 +364,7 @@ fn spend_delayed_damage(stored: f32) -> (f32, f32) {
 /// slow-motion factor 0.5 (the emitting player's time scale lowers the pitch): `CloseCombatAttack`
 /// 0x863b3, `ColdCockAttack`, the `Victim*Hold`s and `CheckForBreakables` 0x8c4dd all pass 0.5.
 fn slow_emit(e: *mut edict_t, sample: &std::ffi::CStr, pitch: i32) {
-    crate::entities::stock::explode::emit_sound_slow(e, CHAN_BODY, sample, 1.0, 0.8, 0, pitch, 0.5);
+    super::host::emit(e, CHAN_BODY, sample, 1.0, 0.8, pitch);
 }
 
 /// `friendlyfire 0` and the rules say teammates (team play only).

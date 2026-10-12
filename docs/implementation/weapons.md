@@ -324,9 +324,24 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   source's `Victim*Hold` (blocked: no damage), kung fu disarms (not during spawn protection),
   knocks back above 30 and plays `kungfuhit`, blades their hit-body sound; blocked or friendly,
   the victim still becomes the last one hit. `TraceAttack` gets `g_vecZero` as the direction.
-* The melee hit and block sounds (`CloseCombatAttack`, `ColdCockAttack`, the `Victim*Hold`s, the
-  delayed hit) go through TS's `EMIT_SOUND_DYN` with slow-motion factor 0.5
-  (`explode::emit_sound_slow`: a slowed player's pitch drops; issue #31).
+* Every server sound the weapons code plays goes through TS's `EMIT_SOUND_DYN` (0xe0a8c) with
+  slow-motion factor 0.5: the pitch becomes `((1 - 0.5) + 0.5 * fuser1) * pitch`, truncated, from
+  the emitting entity's `fuser1` (no change when it is 0 or 1). `ts_i386.so` has no other path
+  to `pfnEmitSound` for them, and each caller pushes 0.5 (`$0x3f000000` or the 0.5 constant at
+  0xf71e4). The port's `host::emit` is that call (`host::SLOW`, `explode::emit_sound_slow`):
+  * the melee hit and block sounds (`CloseCombatAttack`, `ColdCockAttack`, the `Victim*Hold`s,
+    the delayed hit; issue #31);
+  * the gun's own (`Sound`, issue #32): `switch.wav` (`SwitchItems` 0x8155c), `kevlarhit.wav`
+    (`ColdCock` 0x81dd0), the katana's `hit-body.wav` (`KatanaFire` 0x833f0) and `miss.wav`
+    (`KatanaThrow` 0x83b68), the knife's `knife_hitbody.wav` and `knife_miss.wav` (`KnifeFire`
+    0x84044), and `draw.wav` (`DefaultDeploy` 0xa0178);
+  * the player's inventory: `gunpickup2.wav` (`PickUpWeapon` 0x9314c), `weapondrop.wav`
+    (`DropWeapon` 0x94900), `items.wav` (`TakeArmor` 0x93da4, `AddItem` 0x9440c),
+    `9mmclip1.wav` (`BuyAmmo` 0x941e8, `CTSAmmoPack::WaitTouch` 0xa16c0, on the player);
+  * the entities: the grenade's `grenbounce1..4.wav` (`CTSGrenade::BounceTouch` 0x7be28), the
+    thrown blade's `knife_hit.wav` / `knife_hitbody.wav` (`CTSKnife::BounceTouch` 0x7decc, all
+    three calls), and the `WorldGun`'s `weapondrop1.wav` (`BounceTouch` 0xa0b0c, `Fall`
+    0xa0d84), each on the projectile, whose own `fuser1` is its time scale.
 * Grenade: pitch `p*(p>=0 ? 10/9 : 8/9) - 10`, speed `min(750, (90-p')*7)` (roll x2/3, from the
   feet, friction 0.4, spin (-100, 600, 0)); fuse 3 s of `max(fuser1, 0.01)` time;
   `TSExplosion(110, 0x1040, 300, 1024)` only while `IsInWorld()` (origin inside ±4096 and
@@ -590,6 +605,9 @@ How the port maps TS where the structure differs (not deviations):
   `stock_hit_event_sends_no_spread`, `weapon_anims_carry_the_guns_body` (shared gun tests),
   `no_drop_sound_for_a_primed_or_empty_grenade` (server inventory),
   `id_zero_armament_entries_take_no_slot` (server commands).
+* Slow-motion sound pitch (#32): `weapon_sounds_drop_pitch_with_the_time_scale` (server
+  `weapons::host`, factor 0.5 through `explode::slow_pitch`). Not heard in engine yet: draw,
+  switch, drop and pickup sounds under the slow-motion power-up or `globalslow`.
 * `cargo test -p shared`: weapon tests pass (x86_64 and `--target i686-unknown-linux-gnu`). Includes `random::matches_sdk_c_bit_for_bit` (43 seeds
   compared against the SDK C `util.cpp` compiled with `gcc -m32 -O0 -mfpmath=387`), fire rates
   (auto, semi, DFR x1.5, slow motion), burst (3 / UMP 2), pump alternation, magazine and
