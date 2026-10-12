@@ -318,7 +318,7 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
 Events (all `FEV_NOTHOST`, invoker = player, zero origin/angles), exactly weapons.md §6.1:
 `fire` (f1=f2=spread, i1 id, i2 attachments, b1 clip==0 / akimbo toggle / pump mode, b2 seed),
 `firelinked`, `pump`, `empty` (none for the Contender), `reload` (f1 0 or 8/9/10), `draw`,
-`coldcock` (f1/f2 last spread offset), `knife` (i2 hit flag), `katana` (i1 swing = anim index
+`coldcock` (f1/f2 0: `ColdCock`'s static `vecDir`, which nothing writes, in all three binaries; issue #22), `knife` (i2 hit flag), `katana` (i1 swing = anim index
 15/16/17, i2 hit flag), `grenade` (i1 0x13/0x14/0x15), `closecombat` (attack: i1 type 1 punch /
 2 kick / 3 back kick, f1 0, i2 index into kung fu's anim set A; block: f1 weapon id, i1 0, i2 1
 kung fu / 0x12, an index into that weapon's set A).

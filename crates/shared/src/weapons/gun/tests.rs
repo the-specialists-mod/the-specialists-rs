@@ -856,6 +856,20 @@ fn katana_swings() {
 }
 
 #[test]
+fn stock_hit_event_sends_no_spread() {
+    // Fire a spread shot first: TS's coldcock f1/f2 are ColdCock's never-written static vecDir.
+    let (mut g, mut h) = armed(id::M4);
+    h.seed = 1234;
+    let mut last = 0;
+    frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
+    assert_eq!(h.shots.len(), 1);
+    g.cold_cock(&mut h);
+    let (ev, a) = *h.events.last().unwrap();
+    assert_eq!(ev, Event::ColdCock);
+    assert_eq!((a.f1, a.f2, a.i1, a.b1, a.b2), (0.0, 0.0, id::M4 as i32, 0, 0));
+}
+
+#[test]
 fn deploy_takes_its_timers_from_default_deploy() {
     // client.dll's DefaultDeploy (0x100035f0): 0.5 s before attacking, 3 s idle (not the SDK's 1).
     let mut g = Gun::default();

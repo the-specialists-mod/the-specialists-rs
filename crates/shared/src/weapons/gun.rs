@@ -327,8 +327,6 @@ pub struct Gun {
     pub block_katana: f32,
     /// `pl+0x49a + id`: remembered fire mode + 1.
     pub mode_memory: [u8; MAX_WEAPONS],
-    /// Last spread offset returned by `ShootBulletsPlayer` (stale, sent with `coldcock.sc`).
-    pub last_dir: Vec3,
     /// The gun entity's own `pev->body`: `Deploy` sets it to the record's body (+0x18), and a
     /// knife or katana slash that hits a player sets it to 1 (0x73a17, `KnifeFire`). The
     /// alternate-grip switch (`SecondaryAttack`) and `WeaponIdle` send it with their view
@@ -362,7 +360,6 @@ impl Default for Gun {
             block_knife: 0.0,
             block_katana: 0.0,
             mode_memory: [0; MAX_WEAPONS],
-            last_dir: [0.0; 3],
             body: 0,
         }
     }
@@ -778,7 +775,6 @@ impl Gun {
             right_offset,
         };
         host.shoot(&shot, self);
-        self.last_dir = spread::last_pellet_spread(seed, shot.pellets, [spread, spread], spread::RADIAL_SPREAD);
     }
 
     /// `CTSGun::StandardFire` 0x824a4.
@@ -1028,11 +1024,10 @@ impl Gun {
             MeleeResult::Miss => {}
         }
         if self.has_slot() && self.status[self.current as usize].owned {
+            // f1/f2 are ColdCock's own static `vecDir` (ts_i386.so 0x17da6c, mp.dll 0x100c6358,
+            // client.dll 0x1009ff90), which nothing writes: always 0.
             let items = self.status[self.current as usize].items as i32;
-            host.event(
-                Event::ColdCock,
-                EventArgs { f1: self.last_dir[0], f2: self.last_dir[1], i1: self.current as i32, i2: items, b1: 0, b2: 0 },
-            );
+            host.event(Event::ColdCock, EventArgs { i1: self.current as i32, i2: items, ..Default::default() });
         }
     }
 
