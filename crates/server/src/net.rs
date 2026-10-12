@@ -235,12 +235,13 @@ pub fn update_client_data(ent: *const edict_t, cd: &mut clientdata_t) {
     cd.flTimeStepSound = v.flTimeStepSound;
     cd.flDuckTime = v.flDuckTime as _;
     cd.flSwimTime = v.flSwimTime as _;
-    cd.waterjumptime = v.teleport_time as i32;
+    // `ROUND` (0xb0294 rounds to nearest, the x87 default mode).
+    cd.waterjumptime = v.teleport_time.round_ties_even() as i32;
     cd.maxspeed = v.maxspeed;
     cd.fov = v.fov;
     cd.weaponanim = v.weaponanim;
     cd.pushmsec = v.pushmsec;
-    cd.deadflag = v.deadflag;
+    // TS never writes `deadflag`: the engine's zeroed clientdata keeps 0.
     cd.iuser1 = v.iuser1;
     cd.iuser2 = v.iuser2;
 
