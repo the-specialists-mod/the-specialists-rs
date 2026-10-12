@@ -194,7 +194,10 @@ attack attack2 use jump klook jlook duck reload alt1 alt2 score showscores graph
 `slot1..slot10`, `invnext`, `invprev`, `buy`, `cancelselect` (`UserCmd_Close` `0x1001a4e0`: closes the
 weapon menu with `common/wpn_hudoff.wav`, else sends `escape`; Escape's hard binding, which Steam
 GoldSrc and FWGS 0.21 run for Escape in game, so this is how Escape opens the main menu there),
-`special`, `specmode` (HLTV only),
+`special`, `+commandmenu`/`-commandmenu`, `ForceCloseCommandMenu` and `togglebrowser` (registered as
+TS's `CHud::Init` does, but no-ops: TS's command menu opens only for a player with a class, which
+TS's server never gives, and has no `commandmenu.txt`; the server browser isn't ported; issue
+#88), `specmode` (HLTV only),
 `voice_showbanned`, `joyadvancedupdate`, and `ts_hud_selftest` (port-only development aid).
 Server-side commands (`lastinv`, `drop`, `firemode`, `useitems`,
 `jointeam`, `changeteam`) are forwarded to the server by the engine, as in TS.

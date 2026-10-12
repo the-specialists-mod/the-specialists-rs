@@ -475,9 +475,26 @@ macro_rules! cmd {
     }};
 }
 
+/// The viewport commands `CHud::Init` registers (`0x1001a710` area, `+commandmenu` `0x1001fe80`,
+/// `-commandmenu` `0x1001fea0`, `ForceCloseCommandMenu` `0x1001feb0`, `togglebrowser`
+/// `0x1001fec0`). They are registered so configs that bind them don't print "Unknown command",
+/// but do nothing:
+/// * `ShowCommandMenu` (`0x100635e0`) acts only when the local player has a class
+///   (`g_iPlayerClass`, the client data's `playerclass`), which TS's server never sets for a
+///   player (only `CBreakable` writes `pev->playerclass`), and TS ships no `commandmenu.txt`, so
+///   its menu would be empty anyway. `-commandmenu` and `ForceCloseCommandMenu`
+///   (`0x100636a0`, `0x100636d0`) only close that menu.
+/// * `togglebrowser` (`ToggleServerBrowser` `0x10063590`) shows or hides TS's VGUI1 server
+///   browser panel, which the port doesn't have (see client-hud.md §8).
+fn viewport_command_stub() {}
+
 fn register_commands() {
     cmd!(c"cancelselect", cancel_select());
+    cmd!(c"+commandmenu", viewport_command_stub());
+    cmd!(c"-commandmenu", viewport_command_stub());
+    cmd!(c"ForceCloseCommandMenu", viewport_command_stub());
     cmd!(c"special", engine().server_cmd("_special"));
+    cmd!(c"togglebrowser", viewport_command_stub());
     cmd!(c"slot1", select_slot(1));
     cmd!(c"slot2", select_slot(2));
     cmd!(c"slot3", select_slot(3));
