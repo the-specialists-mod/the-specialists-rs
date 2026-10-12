@@ -324,6 +324,13 @@ fn apply_effect(f: Effect) {
     let e = engine();
     match f {
         Effect::Sound(name) => e.play_sound(name, 1.0),
+        // `gHUD.m_vecOrigin` is the client data origin, the local player's.
+        Effect::GoSlow => {
+            if let Some(me) = e.local_player() {
+                let origin = me.origin;
+                e.ev_play_sound(-1, origin, 0, "goslow.wav", 1.0, 0.8, 0, 100);
+            }
+        }
         Effect::ToggleThirdPerson => crate::view::toggle_third_person(),
         Effect::OpenBuyMenu => crate::menus::open_buy(),
         Effect::VguiMenu(id, map_name) => crate::menus::vgui_menu_message(id, map_name),

@@ -285,20 +285,26 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
 }
 
 /// `DrawPowerup` (1004a2e0): top-left power-up name and seconds left (green).
-fn draw_powerup(dc: &Dc, h: &Hud) {
+/// The name lives in the static buffer `0x1018a5e0`, rewritten only for flags 1, 2, 8 and 0x10
+/// (`0x1004a32e` jumps straight to the draw otherwise), so any other bit shows the last name
+/// again (`Hud::pw_label`, which nothing else clears, as nothing clears the buffer).
+fn draw_powerup(dc: &Dc, h: &mut Hud) {
     let f = h.pw_flags;
     let label = if f & 1 != 0 {
-        "#Pwr_SlowMotion"
+        Some("#Pwr_SlowMotion")
     } else if f & 2 != 0 {
-        "#Pwr_InfiniteAmmo"
+        Some("#Pwr_InfiniteAmmo")
     } else if f & 8 != 0 {
-        "#Pwr_SlowPause"
+        Some("#Pwr_SlowPause")
     } else if f & 0x10 != 0 {
-        "#Pwr_DoubleFireRate"
+        Some("#Pwr_DoubleFireRate")
     } else {
-        ""
+        None
     };
-    let x = dc.string(8, 8, &localise(label), GREEN);
+    if let Some(label) = label {
+        h.pw_label = localise(label);
+    }
+    let x = dc.string(8, 8, &h.pw_label, GREEN);
     // `0x1004a38b..0x1004a3d3`: the seconds left while timed (0 included), else the stored
     // value when it isn't 0; flags 3.
     let n = if h.pw_expire > dc.now { Some(ftol(h.pw_expire as f64 - dc.now as f64)) } else { (h.pw_value != 0).then_some(h.pw_value) };
