@@ -13,6 +13,9 @@ use goldsrc::util::to_cstring;
 use shared::protocol::rules::ScoreInfo;
 use std::ffi::CStr;
 
+/// `fNoMonsters` of SDK `UTIL_TraceLine(.., ignore_monsters, ignore_glass, ..)` (0xed4b0).
+const IGNORE_MONSTERS_GLASS: i32 = IGNORE_MONSTERS | 0x100;
+
 fn fire(target: &str, cx: &mut Cx) {
     if !target.is_empty() {
         let t = to_cstring(target);
@@ -678,7 +681,9 @@ impl Entity for SlowMotionPoint {
             if rules::powerup::entity_in_slow(p) {
                 continue;
             }
-            let tr = eng.trace_line(org, rules::eye(p.v()), IGNORE_MONSTERS, std::ptr::null_mut());
+            // `UTIL_TraceLine(.., ignore_monsters, ignore_glass, NULL, ..)` (0xed4b0): glass
+            // doesn't block it.
+            let tr = eng.trace_line(org, rules::eye(p.v()), IGNORE_MONSTERS_GLASS, std::ptr::null_mut());
             if tr.flFraction >= 1.0 {
                 rules::powerup::go_slow(p, self.amount, self.btime);
                 if !self.slowed.contains(&p) {
