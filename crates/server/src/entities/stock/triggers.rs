@@ -529,7 +529,8 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
 
     /// `CBaseToggle::Save` / `Restore` (every `CBaseTrigger` kind's chain ends there). The
     /// member pointers are the `think` / `touch` slots and `use_fn`; `trigger_cdaudio`'s
-    /// `Touch` / `Use` and `trigger_monsterjump`'s `Think` / `Touch` are virtuals. Every kind's
+    /// `Touch` / `Use`, `trigger_push`'s `Touch` and `trigger_monsterjump`'s `Think` / `Touch`
+    /// are virtuals. Every kind's
     /// `Precache` is `CBaseEntity`'s.
     fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
         if self.t.save_chain(cx, f, &mut Animating::default(), self.use_fn.is_some(), false).use_ {
@@ -582,8 +583,10 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
                 if v.spawnflags & SF_TRIGGER_PUSH_START_OFF != 0 {
                     v.solid = SOLID_NOT as i32;
                 }
+                // CTriggerPush::Spawn (0xe8f48) sets only the use; its touch is the virtual
+                // `CTriggerPush::Touch` (0xe9010), so a save holds no touch pointer and a
+                // restored push keeps pushing.
                 self.use_fn = Some(Self::toggle_use_fn);
-                self.t.touch = Some(Self::push_touch);
                 let org = cx.pev().origin;
                 eng.set_origin(cx.edict, org);
             }
@@ -660,6 +663,8 @@ impl<const KIND: u8> Entity for Trigger<KIND> {
                 }
             }
             K_MONSTERJUMP => self.monster_jump_touch(cx, other),
+            // CTriggerPush::Touch (0xe9010), a virtual override.
+            K_PUSH => self.push_touch(cx, other),
             _ => run_touch(self, cx, other),
         }
     }
@@ -812,6 +817,12 @@ impl Entity for Ladder {
 
 // ---- func_friction -------------------------------------------------------------------------------------
 
+/// `CFrictionModifier::KeyValue` (0xe5be4): `(float)(strtod(modifier) * 0.01)`, the product in
+/// double (not `f32 / 100`, which differs in the last bit for values like 0.7).
+fn friction_fraction(value: &CStr) -> f32 {
+    (kv_d(value) * 0.01) as f32
+}
+
 /// `func_friction`: sets the toucher's friction (`modifier` percent).
 #[derive(Default)]
 pub struct FrictionModifier {
@@ -824,7 +835,7 @@ pub struct FrictionModifier {
 impl Entity for FrictionModifier {
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key == c"modifier" {
-            self.friction = kv_f(value) / 100.0;
+            self.friction = friction_fraction(value);
             return true;
         }
         false
@@ -1428,8 +1439,15 @@ impl Entity for TriggerCamera {
         if sf & SF_CAMERA_PLAYER_TAKECONTROL != 0 {
             enable_control(activator, false);
         }
-        let path =
-            if self.path_name != 0 { eng.find_by_target_name(std::ptr::null_mut(), s(self.path_name)) } else { std::ptr::null_mut() };
+        // TS takes `FIND_ENTITY_BY_TARGETNAME`'s result as is (`INDEXENT(0)` for NULL), so a
+        // `moveto` that names nothing makes the world the path: its `speed` (`MaxRange`) becomes
+        // the target speed and the first `Move` fires its `message` and stops the camera.
+        let path = if self.path_name == 0 {
+            std::ptr::null_mut()
+        } else {
+            let p = eng.find_by_target_name(std::ptr::null_mut(), s(self.path_name));
+            if p.is_null() { eng.entity_of_index(0) } else { p }
+        };
         self.path = EHandle::new(path);
         self.stop_time = now;
         if !path.is_null() {
@@ -1519,6 +1537,13 @@ impl Entity for NullEntity {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn friction_modifier_rounds_from_double() {
+        assert_eq!(super::friction_fraction(c"0.7").to_bits(), 1_004_888_130);
+        assert_eq!(super::friction_fraction(c"2.9").to_bits(), 1_022_202_216);
+        assert_eq!(super::friction_fraction(c"50"), 0.5);
+    }
+
     #[test]
     fn intermission_pitch_sign_flips() {
         assert_eq!(super::intermission_angles([10.0, 90.0, 0.0]), [-10.0, 90.0, 0.0]);
