@@ -7,9 +7,10 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, HEAD_HULL, IGNORE_MONSTERS};
 
 /// `CanDiveHigh/Medium/Low` (0x9a494...): used slots (`81 - TSSpace`) must be below 42/52/62
-/// ("40 for high, 50 for medium, 60 for low"); The One ignores the limits. `SlotBonus()` is 0.
+/// ("40 for high, 50 for medium, 60 for low"); The One (pl+0x7b9, `Player::ts.is_the_one`, set
+/// by `SetPlayerTheOne`) ignores the limits. `SlotBonus()` is 0.
 fn can_dive(p: &Player, limit: i32) -> bool {
-    p.stunt.the_one || p.slots_used < limit
+    p.ts.is_the_one || p.slots_used < limit
 }
 fn can_dive_high(p: &Player) -> bool {
     can_dive(p, 42)
@@ -753,4 +754,21 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
     info.pos = tr.vecEndPos;
     crate::damage::apply(victim, &info);
     p.inv.sv.lunge_victim = victim;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `CanDiveHigh/Medium/Low` (0x9a494...): used slots below 42/52/62, or The One (issue #10).
+    #[test]
+    fn can_dive_limits_and_the_one() {
+        let mut p = Player { slots_used: 60, ..Player::default() };
+        assert!(!can_dive_high(&p) && !can_dive_medium(&p) && can_dive_low(&p));
+        p.slots_used = 41;
+        assert!(can_dive_high(&p));
+        p.slots_used = 81;
+        p.ts.is_the_one = true;
+        assert!(can_dive_high(&p) && can_dive_medium(&p) && can_dive_low(&p));
+    }
 }

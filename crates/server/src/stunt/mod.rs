@@ -76,8 +76,6 @@ pub struct StuntState {
     /// pl+0x498/0x499 `TSState` stance (0 stand, 1 crouch, 2 prone/diving) and last sent.
     pub stance: u8,
     stance_sent: Option<u8>,
-    /// pl+0x7b9 "is The One" (rules sets it): ignores slot limits.
-    pub the_one: bool,
     /// Last physinfo `mj` value written (mirrors `Player::superjump`).
     mj_sent: Option<bool>,
 
@@ -118,7 +116,6 @@ impl Default for StuntState {
             pflag_ducking: false,
             stance: 0,
             stance_sent: None,
-            the_one: false,
             mj_sent: None,
             debug_last: 0,
             debug_alt1: 0,
@@ -319,11 +316,10 @@ pub fn texture_type_init() {
 
 /// `TSInit` (0x92a4c), the stunt and animation parts.
 pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
-    // Keep what other packages set earlier in the spawn order (rules: The One; weapons: the
-    // animation extensions of the spawn loadout).
-    let the_one = p.stunt.the_one;
+    // Keep what weapons set earlier in the spawn order: the animation extensions of the spawn
+    // loadout.
     let (ext, ext2) = (std::mem::take(&mut p.stunt.anim.ext), std::mem::take(&mut p.stunt.anim.ext2));
-    p.stunt = StuntState { the_one, ..StuntState::default() };
+    p.stunt = StuntState::default();
     p.stunt.anim.ext = ext;
     p.stunt.anim.ext2 = ext2;
     let pev = cx.pev();

@@ -151,7 +151,7 @@ the same as the GCC build once the stack is 53 bits wide.
 |---|---|---|
 | `CTSStunt::Init` | 0x99fbc | `StuntState::default`, `stunt::on_spawn` |
 | `CTSStunt::Play` | 0x9a014 | `moves::play` |
-| `CanDiveHigh/Medium/Low`, `SlotBonus`, `NextDive` | 0x9a494-0x9a59c | `can_dive_*` (used slots < 42/52/62, The One bypasses), `NEXT_DIVE` = 0 |
+| `CanDiveHigh/Medium/Low`, `SlotBonus`, `NextDive` | 0x9a494-0x9a59c | `can_dive_*` (used slots < 42/52/62; The One, `p.ts.is_the_one` = pl+0x7b9, bypasses: issue #10, the port used to read a flag nothing set), `NEXT_DIVE` = 0 |
 | `GoBulletTime` / `GoWallJump` / `GoWallClimb` / `GoDive` | 0x9a5b4 / 0x9a7d4 / 0x9aa1c / 0x9b1a0 | `go_bullet_time`, `go_wall_jump`, `go_wall_climb`, `go_dive` |
 | `CheckForWallJump` / `CheckForWallDive` / `CheckForWallClimb` | 0x9ac14 / 0x9ad44 / 0x9ae6c | `check_for_wall_jump`, `check_for_wall_dive`, `check_for_wall_climb` |
 | `HandleStunt` / `HandleDive` / `Landing` / `HandleWheel` / `HandleSlide` / `HandleWallJump` / `HandleWallClimb` | 0x9b000 ... 0x9b9f8 | same names (snake case); wall landings share `land_wall_stunt` |
@@ -329,7 +329,7 @@ the same as the GCC build once the stack is 53 bits wide.
   `last_hitgroup`, `attack_dir`; arm the bullet dance in `TakeDamage`
   (`stunt::anim::enable_`/`disable_bullet_dance`) and call `stunt::anim::bullet_dance` when a
   dead body is shot (both wired in `player/damage.rs`); while dying, run
-  `stunt::anim::studio_frame_advance` until `anim.seq_finished` (`death_think`); set `p.stunt.the_one`; set `Player::superjump` (the physinfo `mj` key is
+  `stunt::anim::studio_frame_advance` until `anim.seq_finished` (`death_think`); set `p.ts.is_the_one` (The One, read by the stunt limits and `GetSpeedBySlots`); set `Player::superjump` (the physinfo `mj` key is
   synced from it every PreThink); apply ×0.7 to damage while `stunt::in_airborne_stunt(cx)` and to
   bullets while `cx.time() < p.stunt.dodge_until`; count kills during `in_airborne_stunt` (or
   `glast_closecombat`, `damage::glast`) as spectacular.
