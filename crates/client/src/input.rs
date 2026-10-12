@@ -681,14 +681,7 @@ fn apply_mouse(raw: [f32; 2], view: &mut [f32; 3]) {
         my *= sens;
     }
     view[YAW] = (view[YAW] as f64 - mx as f64 * c.m_yaw.value() as f64) as f32;
-    view[PITCH] = (my as f64 * c.m_pitch.value() as f64 + view[PITCH] as f64) as f32;
-    view[PITCH] = if view[PITCH] > 89.0 {
-        89.0
-    } else if view[PITCH] < -89.0 {
-        -89.0
-    } else {
-        view[PITCH]
-    };
+    view[PITCH] = ((my as f64 * c.m_pitch.value() as f64 + view[PITCH] as f64) as f32).clamp(-89.0, 89.0);
 }
 
 /// The last cursor pixel on a screen `size` wide (or high). Before `VidInit` fills the screen
