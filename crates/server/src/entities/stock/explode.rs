@@ -43,9 +43,10 @@ fn slow_of(e: *mut edict_t) -> f32 {
     e.v().fuser1.max(0.01)
 }
 
-/// `FixedUnsigned16` (0xec8e8): `v * scale` truncated and clamped to 0..=0xffff.
+/// `FixedUnsigned16` (0xec8e8): `v * scale` truncated and clamped to 0..=0xffff (an x87
+/// out-of-range conversion gives 0).
 fn fixed_u16(v: f32, scale: f32) -> i32 {
-    ((v * scale) as i32).clamp(0, 0xffff)
+    goldsrc::ext::entities::fixed_unsigned16(v, scale)
 }
 
 /// The slow-motion step of TS's `UTIL_ScreenShake`/`UTIL_ScreenFadeWrite`: the already fixed-point
@@ -185,6 +186,8 @@ mod explosion_tests {
         // No clamp after the division: `WriteShort` keeps the low 16 bits.
         assert_eq!(slowed(fixed_u16(1.0, 4096.0), 0.01), 409_600);
         assert_eq!(fixed_u16(20.0, 4096.0), 0xffff);
+        // Past i32's range x87 gives 0x80000000, which the clamp takes to 0.
+        assert_eq!(fixed_u16(1.0e6, 4096.0), 0);
     }
 }
 
