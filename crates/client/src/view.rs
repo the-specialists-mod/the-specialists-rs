@@ -655,6 +655,12 @@ pub fn is_third_person() -> bool {
     with(|w| w.third)
 }
 
+/// `CL_CameraOffset` (`0x10025720`): `cam_ofs`, the camera's (pitch, yaw, distance) that
+/// [`cam_think`] keeps (zero until the first `thirdperson`, stale in first person).
+pub fn camera_offset() -> Vec3 {
+    with(|w| w.cam_ofs)
+}
+
 /// View origin of the last refdef (`v_origin`).
 pub fn origin() -> Vec3 {
     with(|w| w.cam.origin)
