@@ -37,8 +37,9 @@ pub struct Player {
     pub impulse: impulse::ImpulseState,
     /// The HEV suit's sentence queue (`suit.rs`).
     pub suit: suit::SuitQueue,
-    /// TS's `CBot` part (`CBotBrain` at `bot+0xb78`): the bot AI, `None` for a plain player.
-    pub bot: Option<Box<crate::bots::Brain>>,
+    /// TS's `CBot` part: the bot backend's state of this bot (the native backend's `CBotBrain`,
+    /// `bot+0xb78`; `crate::bot_backend`), `None` for a plain player.
+    pub bot: Option<crate::bot_backend::BotState>,
     /// The object is a `CBot` (its class: `IsNetClient()` is false). Never cleared, unlike
     /// [`is_bot`](Self::is_bot).
     pub cbot: bool,
@@ -79,7 +80,7 @@ pub struct Player {
 impl Entity for Player {
     fn spawn(&mut self, cx: &mut Cx) {
         // `CBot::Spawn` (0x1006bb40) resets the brain before `CBasePlayer::Spawn`.
-        crate::bots::spawn_pre(self, cx);
+        crate::bot_backend::spawn_pre(self, cx);
         let e = engine();
         let edict = cx.edict;
         let pev = cx.pev();
@@ -121,7 +122,9 @@ impl Entity for Player {
         crate::entities::stock::drive::on_spawn(self, cx);
         impulse::on_spawn(self);
         hud::reset(self);
-        crate::bots::spawn_post(self, cx);
+        crate::bot_backend::spawn_post(self, cx);
+        // Port addition: plugins hear of the spawn once the player is back in reach.
+        crate::plugins::player_spawned(cx.edict);
     }
 
     /// `CBaseEntity::Think` (0xe2c50; `CBasePlayer` doesn't override it): `m_pfnThink`, if set.
@@ -136,11 +139,14 @@ impl Entity for Player {
 
     fn trace_attack(&mut self, cx: &mut Cx, dmg: &DamageInfo) {
         damage::trace_attack(self, cx, dmg);
-        crate::bots::trace_attack(self, cx, dmg); // `CBot::TraceAttack` (0x1006bac0)
+        crate::bot_backend::trace_attack(self, cx, dmg); // `CBot::TraceAttack` (0x1006bac0)
     }
 
     fn take_damage(&mut self, cx: &mut Cx, dmg: &DamageInfo) -> bool {
-        damage::take_damage(self, cx, dmg)
+        let r = damage::take_damage(self, cx, dmg);
+        // Port addition: plugins hear of the damage once the player is back in reach.
+        crate::plugins::player_damaged(cx.edict, dmg, cx.pev().health);
+        r
     }
 
     /// `CBasePlayer::Save` / `Restore` (0xda9d8 / 0xdaa2c): `save.rs`.
@@ -174,7 +180,7 @@ impl Player {
         crate::stunt::pre_think(self, cx, tail);
         // mp.dll's node learning, between `UpdatePlayerState` and `CheckForWires` (0x1005fed2).
         if tail {
-            crate::bots::learn(self, cx);
+            crate::bot_backend::pre_think(self, cx);
         }
         crate::weapons::pre_think(self, cx);
     }
@@ -236,6 +242,8 @@ pub fn client_put_in_server(e: *mut edict_t) {
     crate::world::create::<Player>(goldsrc::edict::EdictPtr::v(e));
     with_player(e, |p, _| p.impulse.custom_decal_frames = impulse::custom_decal_frames(-1));
     crate::ham::spawn(e);
+    let bot = goldsrc::edict::EdictPtr::v(e).flags & FL_FAKECLIENT as i32 != 0;
+    crate::plugins::client_put_in_server(e, bot);
 }
 
 #[cfg(test)]

@@ -16,6 +16,12 @@
 //! Nothing here sends a message while the plugin's call is running, except `set_award`'s
 //! `TSPAward` and `run_powerup`'s `PwUpTime` / `TSMBlur`, as TS's own code paths do (`PlayerKilled`,
 //! `UsePowerUp`); the rest goes out with the player's next `UpdateClientData` (`player::hud`).
+//!
+//! Version 3 (issue #104) added the host services ([`crate::plugins::host`]), the bot functions
+//! ([`bots`]), and the entity and game state ([`world_info`]).
+
+pub mod bots;
+pub mod world_info;
 
 use crate::player::Player;
 use crate::rules::{self, powerup};
@@ -26,7 +32,7 @@ use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::cell::RefCell;
 use std::ffi::{CStr, c_int};
-use ts_plugin_api::{DEFERRED, INVALID, NOT_PLAYER, OK, PlayerInfo, UNSUPPORTED};
+use ts_plugin_api::{DEFERRED, INVALID, NOT_PLAYER, OK, PlayerInfo, UNSUPPORTED, WeaponEntry};
 
 /// `CreateInterface`'s test: `name` is this server's table.
 pub fn interface(name: &CStr) -> bool {
@@ -269,11 +275,16 @@ impl Host for Game {
 
 /// The last state of each player slot, with the user id it belongs to (a slot's next client
 /// doesn't see the last one's).
-#[derive(Default)]
-pub struct Snapshots(Vec<Option<(i32, PlayerInfo)>>);
+pub struct Snapshots<T = PlayerInfo>(Vec<Option<(i32, T)>>);
 
-impl Snapshots {
-    fn put(&mut self, player: c_int, uid: i32, info: PlayerInfo) {
+impl<T> Default for Snapshots<T> {
+    fn default() -> Self {
+        Snapshots(Vec::new())
+    }
+}
+
+impl<T: Clone> Snapshots<T> {
+    fn put(&mut self, player: c_int, uid: i32, info: T) {
         let Ok(i) = usize::try_from(player) else { return };
         if self.0.len() <= i {
             self.0.resize(i + 1, None);
@@ -281,13 +292,35 @@ impl Snapshots {
         self.0[i] = Some((uid, info));
     }
 
-    fn get(&self, player: c_int, uid: i32) -> Option<PlayerInfo> {
+    fn get(&self, player: c_int, uid: i32) -> Option<T> {
         let i = usize::try_from(player).ok()?;
-        self.0.get(i).copied().flatten().filter(|&(u, _)| u == uid).map(|(_, info)| info)
+        self.0.get(i).cloned().flatten().filter(|(u, _)| *u == uid).map(|(_, info)| info)
     }
 }
 
 static SNAPSHOTS: Global<RefCell<Snapshots>> = Global(RefCell::new(Snapshots(Vec::new())));
+static INVENTORIES: Global<RefCell<Snapshots<Vec<WeaponEntry>>>> = Global(RefCell::new(Snapshots(Vec::new())));
+/// What plugins were last told of each player's weapon: (weapon, clip, ammo).
+static TOLD: Global<RefCell<Snapshots<(c_int, c_int, c_int)>>> = Global(RefCell::new(Snapshots(Vec::new())));
+
+/// The weapons a player owns, by id, as `player_inventory` lists them.
+pub fn inventory(p: &Player) -> Vec<WeaponEntry> {
+    let gun = &p.inv.gun;
+    (1..shared::weapons::MAX_WEAPONS as u8)
+        .filter(|&id| gun.status[id as usize].owned)
+        .map(|id| {
+            let s = &gun.status[id as usize];
+            let ammo = shared::weapons::info(id).map_or(0, |w| w.ammo);
+            WeaponEntry {
+                weapon: id as c_int,
+                clip: s.clip,
+                ammo: if ammo != 0 { gun.reserve.get(ammo as usize).copied().unwrap_or(0) } else { 0 },
+                fire_mode: s.mode as c_int,
+                attachments: s.items as c_int,
+            }
+        })
+        .collect()
+}
 
 /// The player's state as the API reports it. `v` is the player's `entvars_t`.
 pub fn snapshot(p: &Player, v: &entvars_t) -> PlayerInfo {
@@ -297,8 +330,13 @@ pub fn snapshot(p: &Player, v: &entvars_t) -> PlayerInfo {
         Some(s) => (s.clip, gun.current_reserve(), s.mode as c_int, s.items as c_int),
         None => (gun.melee_bar.round_ties_even().clamp(0.0, 255.0) as c_int, 0, 0, 0),
     };
+    let team = if rules::state::teamplay() { rules::state::with(|g| g.team_index(&p.ts.team_name)) + 1 } else { 0 };
     PlayerInfo {
         joined: p.joined as c_int,
+        alive: (rules::alive(v) && v.iuser1 == 0) as c_int,
+        is_bot: (p.is_bot != 0) as c_int,
+        team: team.max(0),
+        has_flag: p.ts.flag.is_some() as c_int,
         cash: p.cash,
         free_slots: p.inv.sv.free_slots,
         award: p.ts.award as c_int,
@@ -325,13 +363,31 @@ pub fn refresh(p: &Player, e: *mut edict_t) {
     let (player, uid) = (eng.index_of(e), eng.user_id(e));
     let info = snapshot(p, e.v());
     SNAPSHOTS.0.borrow_mut().put(player, uid, info);
+    INVENTORIES.0.borrow_mut().put(player, uid, inventory(p));
 }
 
-/// StartFrame: the snapshot of every player that can be reached.
+/// StartFrame: the snapshot of every player that can be reached, then the plugins' weapon and
+/// ammo callbacks for what changed since they were last told (port addition: TS 3.0 never sends
+/// bots their weapon messages, so plugins can't sniff them).
 pub fn start_frame() {
+    let tell = crate::plugins::any();
     for player in 1..=engine().max_clients() {
-        if let (Some(uid), Some(info)) = (Game.user_id(player), Game.read(player)) {
+        let Some(uid) = Game.user_id(player) else { continue };
+        let e = Game::edict(player);
+        if let Some((info, inv)) = world::with_lent::<Player, _>(e, |p| (snapshot(p, e.v()), inventory(p))) {
             SNAPSHOTS.0.borrow_mut().put(player, uid, info);
+            INVENTORIES.0.borrow_mut().put(player, uid, inv);
+        }
+        if tell && let Some(info) = SNAPSHOTS.0.borrow().get(player, uid) {
+            let now = (info.weapon, info.clip, info.ammo);
+            let before = TOLD.0.borrow().get(player, uid);
+            if before != Some(now) {
+                TOLD.0.borrow_mut().put(player, uid, now);
+                if before.is_none_or(|b| b.0 != now.0) {
+                    crate::plugins::weapon_changed(player, now.0);
+                }
+                crate::plugins::ammo_changed(player, now.0, now.1, now.2);
+            }
         }
     }
 }
@@ -341,6 +397,50 @@ pub fn start_frame() {
 /// `PluginApi::player_info`.
 pub fn player_info(player: c_int) -> Result<PlayerInfo, c_int> {
     info(&Game, &SNAPSHOTS.0, player)
+}
+
+/// `PluginApi::player_inventory`: the live inventory, else the snapshot's (empty before the
+/// first).
+pub fn player_inventory(player: c_int) -> Result<Vec<WeaponEntry>, c_int> {
+    let uid = Game.user_id(player).ok_or(NOT_PLAYER)?;
+    let e = Game::edict(player);
+    if let Some(inv) = world::with_lent::<Player, _>(e, inventory) {
+        INVENTORIES.0.borrow_mut().put(player, uid, inv.clone());
+        return Ok(inv);
+    }
+    Ok(INVENTORIES.0.borrow().get(player, uid).unwrap_or_default())
+}
+
+/// The connected player at index `player`, or a null pointer (for the other API modules).
+pub(crate) fn player_edict(player: c_int) -> *mut edict_t {
+    Game::edict(player)
+}
+
+/// Runs `job` on the connected player `player` now if it can be reached, else when the callback
+/// holding it returns (as the setters do): `OK`, `DEFERRED`, `NOT_PLAYER`, or `INVALID` when `job`
+/// returns false (it found the change impossible).
+pub(crate) fn on_player(player: c_int, job: impl FnOnce(&mut Player, &mut Cx) -> bool + 'static) -> c_int {
+    let e = Game::edict(player);
+    if e.is_null() {
+        return NOT_PLAYER;
+    }
+    let mut job = Some(job);
+    let now = world::run_now(e, || crate::player::with_player(e, |p, cx| (job.take().expect("once"))(p, cx)));
+    match now {
+        Some(Some(true)) => OK,
+        Some(Some(false)) => INVALID,
+        Some(None) => NOT_PLAYER,
+        None => {
+            let job = job.take().expect("not run");
+            world::defer(e, move || {
+                // The player may have left meanwhile; the slot's next client isn't theirs.
+                if rules::is_player(e) {
+                    crate::player::with_player(e, job);
+                }
+            });
+            DEFERRED
+        }
+    }
 }
 
 /// `PluginApi::set_cash`.

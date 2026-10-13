@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 #![deny(unsafe_code)]
 
+pub mod bot_backend;
 pub mod bots;
 pub mod commands;
 pub mod damage;
@@ -22,6 +23,7 @@ pub mod messages;
 pub mod net;
 pub mod player;
 pub mod plugin_api;
+pub mod plugins;
 pub mod precache;
 pub mod rules;
 pub mod save;

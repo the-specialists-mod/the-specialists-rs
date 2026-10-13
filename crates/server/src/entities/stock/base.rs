@@ -612,7 +612,16 @@ pub fn is_master_triggered(master: string_t, activator: *mut edict_t) -> bool {
     if master == 0 {
         return true;
     }
-    let e = engine().find_by_target_name(std::ptr::null_mut(), s(master));
+    is_master_triggered_name(s(master), activator)
+}
+
+/// [`is_master_triggered`] for a master named by a string (the plugin API's `master_triggered`):
+/// an empty name is no master.
+pub fn is_master_triggered_name(master: &CStr, activator: *mut edict_t) -> bool {
+    if master.is_empty() {
+        return true;
+    }
+    let e = engine().find_by_target_name(std::ptr::null_mut(), master);
     if !e.is_null()
         && let Some(t) = master_triggered(e).or_else(|| super::maprules::team_master_triggered(e, activator))
     {

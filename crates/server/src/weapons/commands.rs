@@ -45,7 +45,7 @@ fn scan_pair(s: &str) -> Option<(i32, i32)> {
 /// `CBasePlayer::AddItemToArmament` (0x93ea4): the entry goes into the first of the 32 slots whose
 /// id is 0. An id-0 entry therefore leaves that slot free for the next one (and `BuyArmament`
 /// skips it), so it takes no room.
-fn add_armament(armament: &mut Vec<ArmamentEntry>, e: ArmamentEntry) {
+pub(crate) fn add_armament(armament: &mut Vec<ArmamentEntry>, e: ArmamentEntry) {
     if e.id != 0 && armament.len() < 32 {
         armament.push(e);
     }

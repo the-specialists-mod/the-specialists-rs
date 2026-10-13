@@ -5,3 +5,5 @@ version.workspace = true
 publish = false
 
 [dependencies]
+# The `tsmod_*` library suffixes (`library_suffix`), for the plugin fixtures.
+ts-plugin-api = { path = "../crates/plugin-api" }

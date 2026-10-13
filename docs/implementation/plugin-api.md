@@ -5,15 +5,26 @@ TS 3.0 kept player state in its C++ `CBasePlayer`. AMX Mod X's TS module (`tsx`,
 plugins used fakemeta's `get_pdata_*` / `set_pdata_*` the same way. Those offsets were for TS 2.x
 and are wrong for 3.0 anyway. The port keeps the state in Rust objects (`player::Player`,
 `rules::PlayerRules`, `weapons::Inventory`), and an edict's private data holds only a slab handle
-(design.md §4.2). So the port adds an API that TS doesn't have: a C table of functions that
-plugins get from `CreateInterface`. The AMX Mod X modules in
-`the-specialists-mod/tsmod-amxx-rs` use it.
+(design.md §4.2). So the port adds an API that TS doesn't have: a C table of functions. Two kinds
+of plugin use it:
+
+* **metamod plugins** get it from `CreateInterface`: the AMX Mod X modules in
+  `the-specialists-mod/tsmod-amxx-rs`;
+* **`tsmod_*` libraries** that the server itself loads from its `dlls/` directory (§1.2) get it
+  from their `TSRS_PluginLoad` and hand back callbacks. Bot backends are such plugins
+  ([bot-plugins.md](bot-plugins.md)).
+
+The current version is **3** (issue #104). Versions don't stay compatible: a break bumps
+`VERSION` and the interface name, so a stale plugin finds nothing (§8).
 
 | Part | Where |
 |---|---|
 | The table, constants and contract (append-only, `no_std`) | `crates/plugin-api` (`ts-plugin-api`) |
 | `CreateInterface` and the table's `extern "C"` functions | `crates/server-dll/src/exports.rs`, `plugin_api.rs` |
-| The logic: argument checks, deferral, snapshots | `crates/server/src/plugin_api.rs` (tests in `plugin_api/tests.rs`) |
+| The logic: argument checks, deferral, snapshots | `crates/server/src/plugin_api.rs` (tests in `plugin_api/tests.rs`); bots `plugin_api/bots.rs`; entities and game state `plugin_api/world_info.rs` |
+| The `tsmod_*` loader: naming rule, header check, descriptor checks | `crates/server/src/plugins/loader.rs` (pure, unit tested); opening the library and calling it: `crates/server-dll/src/plugins.rs` |
+| Plugin callbacks (when they run), log, data directory, commands, cvars | `crates/server/src/plugins/mod.rs`, `plugins/host.rs` |
+| The stub plugin | `crates/tsmod-test` (`cargo xtask plugins`) |
 | Power-up runs, time scale, `TSSlowMo` override | `crates/server/src/rules/powerup.rs` |
 | Free slots, weapon ammo | `crates/server/src/weapons/mod.rs` |
 | Projectile throwers | `crates/server/src/weapons/projectiles.rs` (`Throwers`) |
@@ -23,16 +34,78 @@ plugins get from `CreateInterface`. The AMX Mod X modules in
 
 ## 1. Getting the table
 
+### 1.1 Metamod plugins: `CreateInterface`
+
 The server library exports tier1's `CreateInterface(name, return_code)` on every platform.
 `mp.dll` always had it, with nothing registered (0x10028f70). On Linux it is the one export the
-port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi001`
-(`ts_plugin_api::INTERFACE_NAME`) it returns a pointer to the static `PluginApi` and writes 0
-(`IFACE_OK`) to a non-NULL `return_code`. Any other name, or a NULL name, returns NULL and writes 1
-(`IFACE_FAILED`).
+port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi003`
+(`ts_plugin_api::INTERFACE_NAME`) it returns a pointer to the `PluginApi` and writes 0
+(`IFACE_OK`) to a non-NULL `return_code`. Any other name, the earlier versions' `TSRS_PluginApi001`
+included, or a NULL name, returns NULL and writes 1 (`IFACE_FAILED`).
 
 A plugin looks the export up in the game library that is already loaded: metamod's
 `GINFO_REALDLL_FULLPATH`, then `dlopen(RTLD_NOLOAD)` / `GetModuleHandle`. It checks
-`PluginApi::size` before it uses a field added after version 1.
+`PluginApi::version` (3) and `size`. Such a plugin has no plugin id: it passes `NO_PLUGIN` (0)
+where one is asked, so it can't use `data_dir`, `register_bot_backend` or `create_bot`.
+
+The table is built on first use after `GiveFnptrsToDll` (it carries the engine's table and
+globals pointers, `engine_funcs` / `globals`).
+
+### 1.2 `tsmod_*` libraries: the loader
+
+At `GameDLLInit`, after the game's own init, the server loads plugins from `<gamedir>/dlls/`
+(the engine's game directory, where the server library itself is). Once per process; libraries
+are never unloaded. The rule (`plugins/loader.rs`):
+
+* The file name is **`tsmod_<name>` + the server library's platform suffix**
+  (`ts_plugin_api::library_suffix`):
+
+  | Server library | Plugin |
+  |---|---|
+  | `mp.dll` (Windows i686) | `tsmod_<name>.dll` |
+  | `mp_amd64.dll` (Windows x86-64) | `tsmod_<name>_amd64.dll` |
+  | `ts_i386.so` (Linux i686; stock HLDS loads it as `ts.so`) | `tsmod_<name>_i386.so` |
+  | `ts_amd64.so` (Linux x86-64) | `tsmod_<name>_amd64.so` |
+
+  `<name>` is 1-32 letters, digits, `_` or `-`. The longest matching suffix decides, so
+  `tsmod_x_amd64.dll` is a win64 plugin, not a win32 one named `x_amd64`. Windows compares
+  names case-insensitively. Files load in name order.
+* A `tsmod_` file with **another platform's suffix** is skipped with a warning, without opening
+  it. A file with this platform's name whose **ELF/PE header** says another machine (or isn't an
+  image) is skipped with a warning before the system loader sees it.
+* The library is opened and its export **`TSRS_PluginLoad(api, api_size, info, out, out_size)`**
+  (`ts_plugin_api::LoadFn`) called with the table, a `LoadInfo` (the plugin id, `<name>`, the
+  path) and a descriptor whose `size` is set and everything else zero. The plugin may call the
+  API already (register cvars, commands, its bot backend). It fills the `Plugin` descriptor
+  (name, version, callbacks) and returns `OK`.
+* Skipped with a warning, never a crash: a library that can't be opened, has **no
+  `TSRS_PluginLoad`**, returns anything but `OK`, or leaves a **descriptor `size`** other than
+  the server's or an **`api_version`** other than 3. What a refused plugin registered is dropped
+  (its commands then do nothing; its bot backend is gone). A library whose load function ran
+  stays mapped.
+
+Log lines: `[ts] plugins: loaded tsmod_rcbot_i386.so (RCBot 0.1)`, `[ts] plugins:
+tsmod_x_amd64.so: built for linux-i386 (this server is linux-amd64), skipped`, `[ts] plugins:
+tsmod_y.dll: has no TSRS_PluginLoad export, skipped`, ...
+
+### 1.3 Plugin callbacks
+
+All optional, on the engine's thread (`ts_plugin_api::Plugin`): `game_init` (after every plugin
+loaded), `precache` (after the game's world precache), `server_activate(map)`,
+`server_deactivate`, `start_frame` (after the bots, before the rules: plugin bots run here),
+`shutdown` (`GameShutdown`), `client_connect` / `client_put_in_server` / `client_disconnect`
+(with `is_bot`; bots made by any backend get `client_put_in_server` only, as TS's `BotSetup`
+skips `ClientConnect`), `client_command` (before the game's commands; non-zero swallows it),
+`player_spawned`, `player_damaged`, `player_killed`, `on_kill` (a kill a player scored, with its
+points), `round_start` / `round_end` (last man standing), `sound` (every `EmitSound` /
+`EmitAmbientSound` the game plays, through `goldsrc::server::set_sound_hook`; installed only
+when a plugin has the callback), `weapon_changed` / `ammo_changed` (from the per-frame
+snapshot's weapon, clip and reserve, at most once a frame: TS sends bots no weapon messages).
+
+The player callbacks the game reaches inside a player's own dispatch (spawn, damage, death,
+kill) are **deferred** until every player they name is back in its slot (`world::defer`), so a
+callback can use the whole API on them. The others run at once; `sound` can run inside another
+entity's call (the API's snapshot rules apply).
 
 ## 2. Rules: snapshots and deferral
 
@@ -78,6 +151,30 @@ Addresses are `ts_i386.so` (Ghidra numbering). "pl+" offsets are `CBasePlayer` f
 | `set_bullet_trail` | None in 3.0 (see Deviations). | `UNSUPPORTED` (after the `NOT_PLAYER` check). |
 | `set_weapon_ammo` | `CTSGun` records (`s_weapon_status`, gun+0xd4 reserve per ammo type). `WStatus` / `WeaponInfo` from `CTSGun::UpdateClientData` (0x858c8). | Weapon 1..37 with a table entry (not 29), clip 0..255, reserve 0..32767. Negative leaves that count alone. Out of range: `INVALID`. Not owned, or a reserve for a weapon without an ammo type (blades, grenade): `INVALID` when it runs (`OK` path) or nothing (deferred path). `weapons::set_weapon_ammo`: sets the clip with the akimbo split and the single/akimbo twin as a reload's finish does, and the reserve of the weapon's ammo type (shared with every weapon of that type, as in TS). Then the client gets `WStatus` for each changed record and `WeaponInfo` if the weapon is in hand, on the next update. |
 | `projectile_owner` | Grenade `pev->owner`, thrown knife `CTSKnife+0x8c` (`CreateKnife` 0x7d9e4), thrown gun `CTSWorldGun` (dropper). | `weapons::projectiles::thrower_of`: the thrower of a grenade, knife or thrown gun, from a table filled when they are created (by edict index and serial number, so it answers while the projectile's own call is on the stack). The answer is 0 once the thrower has left or the slot holds someone else (`Thrower::get`). Any other game entity: its `pev->owner` if that is a connected player (a held `weapon_tsgun`), else 0. `NOT_PLAYER` for an index that is out of range, free, or has no game private data. |
+
+### 3.1 Version 3: host, players, entities, game, bots
+
+| Function | Port state and behaviour |
+|---|---|
+| `engine_funcs`, `globals` | The engine's `enginefuncs_t` (the FWGS headers' layout; the server's copy, don't write it) and `globalvars_t`. Traces, PVS, beams, menus, entity searches go straight to the engine. |
+| `log(plugin, level, msg)` | `[tsmod_<name>] msg` on the console; `warning:` / `error:` tags; debug only with `developer`. |
+| `data_dir(plugin, buf, len)` | `<gamedir>/tsmod/<name>/` (trailing separator), created on first use. `INVALID` for `NO_PLUGIN`. Strings out: NUL-terminated, cut to fit, the full length returned. |
+| `map_name(buf, len)` | `gpGlobals->mapname`. |
+| `register_command(plugin, name, f)` | A server command; `f(argc, argv)`. One trampoline is registered with the engine per name and finds the callback by `argv[0]`. `EXISTS` if a plugin has it; the engine warns about its own names. |
+| `register_cvar(plugin, name, value, flags)` | `pfnCVarRegister` of a leaked `cvar_t`, or the existing one; returns the `cvar_t *`. |
+| `register_bot_backend(plugin, name, backend)` | Only loaded plugins; a plugin name, not `native`; `EXISTS` if taken. [bot-plugins.md](bot-plugins.md). |
+| `player_info` | As in §3, plus `alive` (alive and not observing), `is_bot` (`m_bIsBot`, any backend), `team` (the rules team from 1 in teamplay, 0 none) and `has_flag` (carries the CTB case). |
+| `player_inventory(player, out, max)` | Every owned weapon id 1..37: clip, the reserve of its ammo type, fire mode, owned attachments. Returns the count. Snapshot like `player_info` when the player is out of reach. |
+| `entity_info(entity, out)` | By the object's Rust type (`world::type_of`): player (team, `available` = alive), `GROUND_WEAPON` (`ts_groundweapon` and the HL names: TS id), `POWERUP` (bits), `GUN` (a dropped `WorldGun` with its id and dropper/thrower, or a `weapon_tsgun` and its holder), `CTB_FLAG` (`ts_flag`, its team), `CTB_BASE` (`ts_briefcase`: capture team, `available` = captures accepted), `OBJECTIVE` (`ts_wingiver`, `ts_scoregiver`), `PROJECTILE` (thrower known), else `OTHER` (with `projectile_owner`'s owner). `available` is "not `EF_NODRAW`" unless said otherwise. This replaces RCBot's classname guesses and its `Classify()` virtual call. |
+| `master_triggered(master, activator)` | `UTIL_IsMasterTriggered` by name (`entities::stock::base::is_master_triggered_name`): what RCBot did with `CMasterEntity::IsTriggered` through a vtable the port doesn't have. As in TS, a name that isn't a master counts as triggered (and logs "Master was null or not a master!"). |
+| `game_state(out)` | `m_mode`, teamplay, LMS, The One, a CTB map (a `ts_briefcase` exists), team count, round state (`OVER` while `round_restart` is pending, `RUNNING` in a round mode with an end time), intermission, time, `maxClients`. |
+| `create_bot(plugin, name, model, skill)` | Only for the active backend's plugin. The host's `BotSetup` (`bot_backend::create_player`): fake client, `Player` with `cbot`/`is_bot`, spawn, `model`/`team`/`cl_lw` keys, teamplay team from the model, `ts_playeramount`. Index, `FULL` or `INVALID`. |
+| `kick_bot(player)` | `kick #<userid>` (queued). `INVALID` for a human. |
+| `run_cmd(player, cmd)` | `pfnRunPlayerMove`. `BUSY` inside the bot's own callbacks; `INVALID` for a human or `msec` outside 1..255. `ts_bot_stop 1` clears a living bot's movement, buttons and impulse (it still turns), as the native frozen think. |
+| `bot_command(player, line)` | `commands::run` with the line tokenized as the engine does (quotes group): plugins' `client_command`, then the game's commands, as if typed. `DEFERRED` when out of reach. |
+| `select_weapon(player, id)` | `weapon_<id>` (`CmdStart` ignores `weaponselect` in TS 3.0, which is why RCBot never switched). `INVALID` if not owned. |
+| `buy`, `buy_item`, `clear_loadout` | The loadout (`tkw`/`tka`, `tki`, `rst_cfg`: `AddItemToArmament`, `AddAmmoToArmament`), which `BuyArmament` applies at the next spawn under the server's restrictions and free slots. TS 3.0 charges nothing (`CashBased() == 0`). `akimbo` adds the second copy that makes the pair. |
+| `drop_weapon(player, id)` | `drop` (negative id) / `drop_<id>`. |
 
 ## 4. The private-data guard
 
@@ -139,6 +236,15 @@ block's size and layout don't matter to them.
 * Entity hooks: §7.6.
 
 ## 6. Tests
+
+* Version 3 (`cargo test -p ts-server plugins`, `plugin_api`, `bot_backend`; `-p tsmod-test`;
+  `-p xtask`): the naming rule on all four platforms (longest suffix, case on Windows, bad
+  names, other files), ELF/PE machine detection, a directory scan (order, other platforms,
+  junk, directories), the descriptor checks (refusal, size, version, the blank descriptor), the
+  log lines, data directories, command names, `run_cmd`'s `ts_bot_stop` and argument checks,
+  `buy`'s checks, rounds, `Args` tokenizing, backend selection, quota names.
+* `cargo xtask plugins` (all roots): the stub and the loader's fixtures on a dedicated server
+  (bot-plugins.md §6).
 
 * Unit tests (`cargo test -p ts-server plugin_api`, `throwers`): status codes and their order,
   deferral, the snapshot fallback and its user-id check, every argument range, the power-ups that
@@ -335,3 +441,19 @@ The rest of TS's gamedata (`virtual.games/ts/offsets-common.txt`) is `UNSUPPORTE
 * `ts_dev_hamlog 1|0` (sv_cheats) is a dev aid that installs the server's own hook and logs
   Spawn, TakeDamage and Killed (`[ts ham]` lines). It is refused while a plugin's hook is
   installed, and a plugin's `ham_set_hook` replaces it.
+
+## 8. Version 2 → 3
+
+Version 3 (issue #104) is a break: `CreateInterface` answers only `TSRS_PluginApi003`, and the
+table is laid out anew (host section first). Every version-2 function is still there, with the
+same arguments and results:
+
+| Version 2 | Version 3 |
+|---|---|
+| `TSRS_PluginApi001`, `version` 1/2, "check `size` for fields after version 1" | `TSRS_PluginApi003`, `version` 3; check `version == 3` and `size` |
+| `player_info` (`PlayerInfo` 18 fields) | `player_info`; `PlayerInfo` gains `alive`, `is_bot`, `team`, `has_flag` (after `joined`), the rest unchanged |
+| `set_cash`, `set_free_slots`, `set_award`, `run_powerup`, `set_speed`, `set_physics_speed`, `set_bullet_trail`, `set_weapon_ammo` | unchanged, in the players section |
+| `projectile_owner` | unchanged, in the entities section |
+| `ham_set_hook`, `ham_watch`, `ham_supported`, `class_id`, `entity_class_id`, `ham_execute`, `HamCall`, `HamArg` | unchanged, last in the table |
+| `BUSY` "ham_execute only" | also `run_cmd` |
+| — | new: `engine_funcs`, `globals`, `log`, `data_dir`, `map_name`, `register_command`, `register_cvar`, `register_bot_backend`, `player_inventory`, `entity_info`, `master_triggered`, `game_state`, `create_bot`, `kick_bot`, `run_cmd`, `bot_command`, `select_weapon`, `buy`, `buy_item`, `clear_loadout`, `drop_weapon`; codes `FULL`, `EXISTS`; `TSRS_PluginLoad` and the `Plugin` / `BotBackend` / `LoadInfo` descriptors |

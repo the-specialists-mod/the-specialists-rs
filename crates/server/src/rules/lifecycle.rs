@@ -1066,7 +1066,9 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         v.nextthink = (now as f64 + 0.1) as f32;
     }
     // `CBot::Killed` (0x1006ba00) after `CBasePlayer::Killed`: the bot's answer to its killer.
-    crate::bots::killed(p, cx, dmg.attacker);
+    crate::bot_backend::killed(p, cx, dmg.attacker);
+    // Port addition: plugins hear of the death once the player is back in reach.
+    crate::plugins::player_killed(cx.edict, dmg);
 }
 
 /// `Killed`'s roll for the killer's TSMBlur (0x8ed73..0x8ede1): `RandomLong(0, 100) <= 0x31`;

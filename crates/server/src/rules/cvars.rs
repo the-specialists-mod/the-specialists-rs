@@ -59,6 +59,9 @@ pub const CVARS: &[(&str, &str, i32)] = &[
     ("ts_bot_quota", "0", 0),
     // Port addition: 1 = bots stand still and hold fire (they still respawn), for scripted tests.
     ("ts_bot_stop", "0", 0),
+    // Port addition: the bot backend, read at map start (`bot_backend::map_start`): `native` (TS's
+    // bots) or a name a `tsmod_*` plugin registered.
+    ("ts_bot_backend", "native", 0),
 ];
 
 /// TS defines these `cvar_t`s but never registers them, so they're constants (architecture.md

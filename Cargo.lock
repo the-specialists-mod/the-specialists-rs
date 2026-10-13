@@ -330,6 +330,7 @@ name = "ts-server-dll"
 version = "3.0.1"
 dependencies = [
  "goldsrc",
+ "libloading",
  "shared",
  "ts-plugin-api",
  "ts-server",
@@ -366,6 +367,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tsmod-test"
+version = "3.0.1"
+dependencies = [
+ "goldsrc-sys",
+ "ts-plugin-api",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -392,3 +401,6 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 [[package]]
 name = "xtask"
 version = "3.0.1"
+dependencies = [
+ "ts-plugin-api",
+]

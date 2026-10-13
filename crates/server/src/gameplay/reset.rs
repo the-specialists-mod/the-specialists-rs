@@ -69,7 +69,7 @@ pub fn finish(p: Pending) {
     entities::stock::restart_world();
     let spawned = spawn_map_entities();
     entities::server_activate(eng.max_entities(), eng.max_clients());
-    crate::bots::server_activate();
+    crate::bot_backend::server_activate();
     let players = rules::players();
     for &e in &players {
         crate::ham::spawn(e);
@@ -105,8 +105,8 @@ fn fresh_player(p: &mut Player, cx: &mut crate::world::Cx) {
     let old = std::mem::take(p);
     p.cbot = old.cbot;
     p.is_bot = old.is_bot;
-    // A fresh brain with the bot's skill: `BotCreate` made it, and no state of the old game stays.
-    p.bot = old.bot.map(|b| Box::new(crate::bots::Brain::new(b.skill)));
+    // The bot's backend state for the new game (native: a fresh brain with the bot's skill).
+    p.bot = crate::bot_backend::reset_state(old.bot);
     p.impulse.custom_decal_frames = old.impulse.custom_decal_frames;
     let v = cx.pev();
     v.frags = 0.0;

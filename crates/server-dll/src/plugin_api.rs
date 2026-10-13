@@ -1,37 +1,176 @@
-//! The plugin API table (`ts_plugin_api::PluginApi`) that `CreateInterface` hands out: a port
-//! addition. Each function converts its arguments and calls `ts_server::plugin_api` or, for the
-//! entity hooks, `ts_server::ham`, where the logic is (docs/implementation/plugin-api.md). Calling
-//! the plugin's hook is FFI, so it is here too ([`call_hook`]).
+//! The plugin API table (`ts_plugin_api::PluginApi`) that `CreateInterface` and the `tsmod_*`
+//! loader (`crate::plugins`) hand out: a port addition. Each function converts its arguments and
+//! calls `ts_server::plugin_api`, `ts_server::plugins::host` or, for the entity hooks,
+//! `ts_server::ham`, where the logic is (docs/implementation/plugin-api.md). Calling the plugin's
+//! hook and command functions is FFI, so it is here too ([`call_hook`]).
 
 use goldsrc::Global;
 use goldsrc::sys::{KeyValueData, TraceResult};
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int};
-use ts_plugin_api::{HamCall, INVALID, NOT_PLAYER, OK, PlayerInfo, PluginApi, VERSION, ham};
+use std::ffi::{CStr, c_char, c_int, c_void};
+use std::rc::Rc;
+use std::sync::OnceLock;
+use ts_plugin_api::{
+    BotBackend, BotCmd, EntityInfo, GameState, HamCall, INVALID, NOT_PLAYER, OK, PlayerInfo, PluginApi, PluginId, VERSION, WeaponEntry, ham,
+};
 use ts_server::ham as hooks;
 use ts_server::plugin_api as api;
+use ts_server::plugins::host;
 
-/// The one table. Plugins only read it.
-pub static PLUGIN_API: PluginApi = PluginApi {
-    size: size_of::<PluginApi>() as u32,
-    version: VERSION,
-    player_info,
-    set_cash,
-    set_free_slots,
-    set_award,
-    run_powerup,
-    set_speed,
-    set_physics_speed,
-    set_bullet_trail,
-    set_weapon_ammo,
-    projectile_owner,
-    ham_set_hook,
-    ham_watch,
-    ham_supported,
-    class_id,
-    entity_class_id,
-    ham_execute,
-};
+/// The table, built once the engine has given the game its tables (the plugins read the engine's
+/// pointers from it).
+struct Table(PluginApi);
+// SAFETY: the table holds function pointers and the engine's table and globals pointers, which
+// the engine owns for the process; plugins only read it, on the engine's thread.
+unsafe impl Sync for Table {}
+// SAFETY: as above; it never leaves that thread in practice, and nothing in it is thread-bound.
+unsafe impl Send for Table {}
+
+static TABLE: OnceLock<Table> = OnceLock::new();
+/// The table for a `CreateInterface` before `GiveFnptrsToDll` (no engine pointers); never in
+/// practice, as metamod and the engine give the game its tables first.
+static EARLY: OnceLock<Table> = OnceLock::new();
+
+/// The one table.
+pub fn table() -> &'static PluginApi {
+    match goldsrc::server::try_engine() {
+        Some(e) => &TABLE.get_or_init(|| Table(build(e.raw_tables()))).0,
+        None => &EARLY.get_or_init(|| Table(build((std::ptr::null(), std::ptr::null_mut())))).0,
+    }
+}
+
+fn build((funcs, globals): (*const goldsrc::sys::enginefuncs_t, *mut goldsrc::sys::globalvars_t)) -> PluginApi {
+    PluginApi {
+        size: size_of::<PluginApi>() as u32,
+        version: VERSION,
+        engine_funcs: funcs.cast(),
+        globals: globals.cast(),
+        log,
+        data_dir,
+        map_name,
+        register_command,
+        register_cvar,
+        register_bot_backend,
+        player_info,
+        player_inventory,
+        set_cash,
+        set_free_slots,
+        set_award,
+        run_powerup,
+        set_speed,
+        set_physics_speed,
+        set_bullet_trail,
+        set_weapon_ammo,
+        projectile_owner,
+        entity_info,
+        master_triggered,
+        game_state,
+        create_bot,
+        kick_bot,
+        run_cmd,
+        bot_command,
+        select_weapon,
+        buy,
+        buy_item,
+        clear_loadout,
+        drop_weapon,
+        ham_set_hook,
+        ham_watch,
+        ham_supported,
+        class_id,
+        entity_class_id,
+        ham_execute,
+    }
+}
+
+/// A caller's string argument: `None` for NULL.
+///
+/// # Safety
+/// A non-NULL `p` is a NUL-terminated string that lives for the call (the table's contract).
+unsafe fn arg<'a>(p: *const c_char) -> Option<&'a CStr> {
+    // SAFETY: the caller's guarantee.
+    (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) })
+}
+
+/// Writes `s` into the caller's buffer, NUL-terminated and cut to fit, and returns its full
+/// length. Guard: a NULL buffer or a length below 1 only gives the length.
+///
+/// # Safety
+/// A non-NULL `buf` is writable for `len` bytes (the table's contract).
+unsafe fn put_str(buf: *mut c_char, len: c_int, s: &str) -> c_int {
+    if !buf.is_null() && len > 0 {
+        let n = s.len().min(len as usize - 1);
+        // SAFETY: `buf` is writable for `len` bytes and `n + 1 <= len`; `s` doesn't overlap it.
+        unsafe {
+            std::ptr::copy_nonoverlapping(s.as_ptr(), buf.cast::<u8>(), n);
+            *buf.add(n) = 0;
+        }
+    }
+    s.len().min(c_int::MAX as usize) as c_int
+}
+
+// ---- the host -------------------------------------------------------------------------------------
+
+unsafe extern "C" fn log(plugin: PluginId, level: c_int, msg: *const c_char) {
+    // SAFETY: the table's contract for string arguments.
+    if let Some(m) = unsafe { arg(msg) } {
+        host::log(plugin, level, &m.to_string_lossy());
+    }
+}
+
+unsafe extern "C" fn data_dir(plugin: PluginId, buf: *mut c_char, len: c_int) -> c_int {
+    match host::data_dir(plugin) {
+        // SAFETY: the table's contract for buffers.
+        Ok(d) => unsafe { put_str(buf, len, &d) },
+        Err(e) => e,
+    }
+}
+
+unsafe extern "C" fn map_name(buf: *mut c_char, len: c_int) -> c_int {
+    let eng = goldsrc::server::engine();
+    let name = eng.string(eng.globals().mapname).to_string_lossy().into_owned();
+    // SAFETY: the table's contract for buffers.
+    unsafe { put_str(buf, len, &name) }
+}
+
+unsafe extern "C" fn register_command(plugin: PluginId, name: *const c_char, f: ts_plugin_api::CommandFn) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
+    let call = move |argv: &[&CStr]| {
+        let ptrs: Vec<*const c_char> = argv.iter().map(|a| a.as_ptr()).collect();
+        // SAFETY: `f` is the plugin's command function, callable on the engine's thread for the
+        // process (libraries stay loaded); `ptrs` holds `argc` NUL-terminated strings that live
+        // for the call.
+        unsafe { f(ptrs.len() as c_int, ptrs.as_ptr()) }
+    };
+    host::register_command(plugin, name, Rc::new(call))
+}
+
+unsafe extern "C" fn register_cvar(_plugin: PluginId, name: *const c_char, value: *const c_char, flags: c_int) -> *mut c_void {
+    // SAFETY: the table's contract for string arguments.
+    let (Some(name), value) = (unsafe { arg(name) }, unsafe { arg(value) }) else { return std::ptr::null_mut() };
+    let value = value.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
+    host::register_cvar(&name.to_string_lossy(), &value, flags).cast()
+}
+
+unsafe extern "C" fn register_bot_backend(plugin: PluginId, name: *const c_char, backend: *const BotBackend) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let Some(name) = (unsafe { arg(name) }).and_then(|n| n.to_str().ok()) else { return INVALID };
+    if backend.is_null() {
+        return INVALID;
+    }
+    // SAFETY: a non-NULL `backend` points to a `BotBackend` the caller owns for the call; only
+    // its `size` is read first, then as many bytes as both sides know.
+    let size = unsafe { (&raw const (*backend).size).read_unaligned() } as usize;
+    if size < size_of::<BotBackend>() {
+        return INVALID;
+    }
+    // SAFETY: as above, `size_of::<BotBackend>()` bytes are readable.
+    let b = unsafe { backend.read_unaligned() };
+    crate::plugins::register_bot_backend(plugin, name, b)
+}
+
+// ---- players ------------------------------------------------------------------------------------
 
 /// Guard: a NULL `out` gives `NOT_PLAYER` (the contract asks for a valid pointer); nothing is
 /// written on failure.
@@ -45,6 +184,22 @@ unsafe extern "C" fn player_info(player: c_int, out: *mut PlayerInfo) -> c_int {
             // `write_unaligned` doesn't rely on its alignment.
             unsafe { out.write_unaligned(info) };
             OK
+        }
+        Err(code) => code,
+    }
+}
+
+unsafe extern "C" fn player_inventory(player: c_int, out: *mut WeaponEntry, max: c_int) -> c_int {
+    match api::player_inventory(player) {
+        Ok(list) => {
+            if !out.is_null() {
+                for (i, w) in list.iter().take(max.max(0) as usize).enumerate() {
+                    // SAFETY: the caller passes `out` writable for `max` entries (the table's
+                    // contract), and `i < max`.
+                    unsafe { out.add(i).write_unaligned(*w) };
+                }
+            }
+            list.len() as c_int
         }
         Err(code) => code,
     }
@@ -82,11 +237,90 @@ extern "C" fn set_weapon_ammo(player: c_int, weapon: c_int, clip: c_int, ammo: c
     api::set_weapon_ammo(player, weapon, clip, ammo)
 }
 
+// ---- entities and the game ---------------------------------------------------------------------
+
 extern "C" fn projectile_owner(entity: c_int) -> c_int {
     api::projectile_owner(entity)
 }
 
-// ---- version 2: entity hooks --------------------------------------------------------------------
+unsafe extern "C" fn entity_info(entity: c_int, out: *mut EntityInfo) -> c_int {
+    if out.is_null() {
+        return INVALID;
+    }
+    match api::world_info::entity_info(entity) {
+        Ok(info) => {
+            // SAFETY: the caller passes an `EntityInfo` valid for writes (the table's contract).
+            unsafe { out.write_unaligned(info) };
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
+unsafe extern "C" fn master_triggered(master: *const c_char, activator: c_int) -> c_int {
+    // SAFETY: the table's contract for string arguments; NULL is no master.
+    let name = unsafe { arg(master) }.unwrap_or(c"");
+    api::world_info::master_triggered(name, activator)
+}
+
+unsafe extern "C" fn game_state(out: *mut GameState) -> c_int {
+    if out.is_null() {
+        return INVALID;
+    }
+    let s = api::world_info::game_state();
+    // SAFETY: the caller passes a `GameState` valid for writes (the table's contract).
+    unsafe { out.write_unaligned(s) };
+    OK
+}
+
+// ---- bots -----------------------------------------------------------------------------------------
+
+unsafe extern "C" fn create_bot(plugin: PluginId, name: *const c_char, model: *const c_char, skill: f32) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let (Some(name), model) = (unsafe { arg(name) }, unsafe { arg(model) }) else { return INVALID };
+    api::bots::create_bot(plugin, name, model.unwrap_or(c""), skill)
+}
+
+extern "C" fn kick_bot(player: c_int) -> c_int {
+    api::bots::kick_bot(player)
+}
+
+unsafe extern "C" fn run_cmd(player: c_int, cmd: *const BotCmd) -> c_int {
+    if cmd.is_null() {
+        return INVALID;
+    }
+    // SAFETY: the caller passes a `BotCmd` valid for reads (the table's contract).
+    let c = unsafe { cmd.read_unaligned() };
+    api::bots::run_cmd(player, &c)
+}
+
+unsafe extern "C" fn bot_command(player: c_int, line: *const c_char) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let Some(line) = (unsafe { arg(line) }) else { return INVALID };
+    api::bots::bot_command(player, &line.to_string_lossy())
+}
+
+extern "C" fn select_weapon(player: c_int, weapon: c_int) -> c_int {
+    api::bots::select_weapon(player, weapon)
+}
+
+extern "C" fn buy(player: c_int, weapon: c_int, attachments: c_int, akimbo: c_int, ammo: c_int) -> c_int {
+    api::bots::buy(player, weapon, attachments, akimbo, ammo)
+}
+
+extern "C" fn buy_item(player: c_int, item: c_int) -> c_int {
+    api::bots::buy_item(player, item)
+}
+
+extern "C" fn clear_loadout(player: c_int) -> c_int {
+    api::bots::clear_loadout(player)
+}
+
+extern "C" fn drop_weapon(player: c_int, weapon: c_int) -> c_int {
+    api::bots::drop_weapon(player, weapon)
+}
+
+// ---- entity hooks ---------------------------------------------------------------------------------
 
 /// The plugin's hook, as `ham_set_hook` installed it.
 static HOOK: Global<Cell<Option<ham::Hook>>> = Global(Cell::new(None));

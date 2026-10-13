@@ -33,6 +33,24 @@ pub fn engine() -> &'static Engine {
     ENGINE.get().expect("GiveFnptrsToDll not called yet")
 }
 
+/// [`engine`], or `None` before `GiveFnptrsToDll`.
+pub fn try_engine() -> Option<&'static Engine> {
+    ENGINE.get()
+}
+
+/// A function told of every sound the game plays through [`Engine::emit_sound`] (position
+/// `None`: the entity's) and [`Engine::emit_ambient_sound`] (its position), after the engine call:
+/// the entity, the position, the sample, the volume and the attenuation. Port addition, for the
+/// plugins' hearing (`ts_server::plugins`).
+pub type SoundHook = fn(*mut edict_t, Option<[f32; 3]>, &CStr, f32, f32);
+
+static SOUND_HOOK: crate::Global<std::cell::Cell<Option<SoundHook>>> = crate::Global(std::cell::Cell::new(None));
+
+/// Installs (or with `None` removes) the [`SoundHook`].
+pub fn set_sound_hook(f: Option<SoundHook>) {
+    SOUND_HOOK.0.set(f);
+}
+
 /// Calls an engine slot, panicking with its name if the engine left it null.
 #[macro_export]
 macro_rules! eng {
@@ -48,6 +66,12 @@ macro_rules! eng {
 }
 
 impl Engine {
+    /// The engine's function table as the game got it (this copy) and its globals, for plugins
+    /// that call the engine themselves (`ts_plugin_api::PluginApi::engine_funcs`).
+    pub fn raw_tables(&self) -> (*const enginefuncs_t, *mut globalvars_t) {
+        (&raw const self.f, self.globals)
+    }
+
     pub fn globals(&self) -> &globalvars_t {
         // SAFETY: `globals` points at the engine's globalvars_t, which lives for the process.
         unsafe { &*self.globals }
@@ -412,13 +436,19 @@ impl Engine {
             (volume, attn) = (guard::clamp_nan_kept(volume, 1.0), guard::clamp_nan_kept(attn, 4.0));
             (channel, pitch) = (channel.clamp(0, 7), pitch.clamp(0, 255));
         }
-        eng!(pfnEmitSound(e, channel, sample.as_ptr(), volume, attn, flags, pitch))
+        eng!(pfnEmitSound(e, channel, sample.as_ptr(), volume, attn, flags, pitch));
+        if let Some(hook) = SOUND_HOOK.0.get() {
+            hook(e, None, sample, volume, attn);
+        }
     }
 
     #[allow(clippy::too_many_arguments)] // mirrors pfnEmitAmbientSound
     pub fn emit_ambient_sound(&self, e: *mut edict_t, pos: [f32; 3], sample: &CStr, volume: f32, attn: f32, flags: i32, pitch: i32) {
         let mut pos = pos;
-        eng!(pfnEmitAmbientSound(e, pos.as_mut_ptr(), sample.as_ptr(), volume, attn, flags, pitch))
+        eng!(pfnEmitAmbientSound(e, pos.as_mut_ptr(), sample.as_ptr(), volume, attn, flags, pitch));
+        if let Some(hook) = SOUND_HOOK.0.get() {
+            hook(e, Some(pos), sample, volume, attn);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

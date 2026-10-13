@@ -260,7 +260,8 @@ impl Asset {
             Asset::Bubbles => crate::weapons::set_bubbles_model(eng.precache_model(c"sprites/bubble.spr")),
             Asset::BloodSpray => crate::entities::stock::blood::set_spray_sprite(eng.precache_model(c"sprites/bloodspray.spr")),
             Asset::BloodDrop => crate::entities::stock::blood::set_drop_sprite(eng.precache_model(c"sprites/blood.spr")),
-            Asset::Lightning => crate::bots::nodes::set_lightning_sprite(eng.precache_model(c"sprites/lgtning.spr")),
+            // mp.dll's node display (the native bot backend's).
+            Asset::Lightning => crate::bot_backend::precache(),
         }
     }
 }
