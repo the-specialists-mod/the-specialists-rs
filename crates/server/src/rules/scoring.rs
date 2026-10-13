@@ -399,8 +399,10 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
         }
         // mp.dll (0x1005b18a): a bot that scored the kill may taunt the victim (`CBot::OnKill`).
         if points > 0 {
-            other(k.e, |kp| crate::bots::on_kill(kp, victim, now));
+            other(k.e, |kp| crate::bot_backend::on_kill(kp, victim, now));
         }
+        // Port addition: plugins hear of every kill a player scored.
+        crate::plugins::on_kill(k.e, victim, points);
 
         // Team kills: 3 within rolling 30 s windows → kick or ban.
         let mut kick = false;

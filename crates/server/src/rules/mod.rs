@@ -147,6 +147,8 @@ pub fn install() {
     let e = engine();
     e.server_command("exec game.cfg\n");
     e.server_execute();
+    // Port addition: `ts_bot_backend` picks the bot backend for the map (game.cfg has run).
+    crate::bot_backend::map_start();
     start_rules();
     if !state::single_player() {
         voice::precache();
@@ -163,7 +165,7 @@ pub fn start_rules() {
     state::with(|g| g.install());
     // mp.dll's `CTSGameRules::Init` (from the rules' constructor) also loads the node graph and
     // the bot texts.
-    crate::bots::ts_init();
+    crate::bot_backend::map_init();
     crate::entities::ts::map_init();
 }
 
@@ -190,11 +192,13 @@ fn exec_server_config() {
 /// then the port's bot manager.
 pub fn server_activate(edict_count: i32, client_max: i32) {
     crate::entities::server_activate(edict_count, client_max);
-    crate::bots::server_activate();
+    crate::bot_backend::server_activate();
+    crate::plugins::server_activate();
 }
 
 pub fn server_deactivate() {
-    crate::bots::server_deactivate();
+    crate::bot_backend::server_deactivate();
+    crate::plugins::server_deactivate();
 }
 
 /// Called every server frame (`pfnStartFrame`).
@@ -242,9 +246,16 @@ pub fn world_key_value(key: &CStr, value: &CStr) -> bool {
 }
 
 pub fn client_connect(e: *mut edict_t, name: &CStr, addr: &CStr) -> bool {
-    lifecycle::client_connect(e, name, addr)
+    let ok = lifecycle::client_connect(e, name, addr);
+    if ok {
+        crate::plugins::client_connect(e);
+    }
+    ok
 }
+/// `ClientDisconnect`: plugins hear of it first, while the client is still a player.
 pub fn client_disconnect(e: *mut edict_t) {
+    crate::plugins::client_disconnect(e);
+    crate::bot_backend::client_disconnect(e);
     lifecycle::client_disconnect(e)
 }
 pub fn client_kill(e: *mut edict_t) {

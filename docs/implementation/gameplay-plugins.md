@@ -123,7 +123,8 @@ The reset replays a map start in this order:
    client.
 2. **Players.** Each player's items are destroyed (`remove_all_items`). Each player then gets a
    brand-new `Player` object and a zero score. Only the connection's identity stays: the bot flags,
-   a fresh bot `Brain` with the same skill, and the spray frames. Until step 6 the players
+   the bot backend's state for the new game (`BotBackend::reset_state`; native: a fresh `Brain`
+   with the same skill), and the spray frames. Until step 6 the players
    are frozen (`FL_FROZEN`), can't be hurt, and count as alive (`DEAD_NO`), so a dead player's
    `PlayerDeathThink` doesn't make a corpse or start observing in the empty map.
 3. **Entities.** Every entity past the client slots is removed at once (`UpdateOnRemove`, then

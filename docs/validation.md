@@ -211,6 +211,11 @@ Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`)
 * With `developer` on, each broken `func_breakable` is logged with its attacker, inflictor class
   and damage bits.
 
+### 2.x Plugins
+
+`cargo xtask plugins [roots...]`: a dedicated server per root with the stub plugin `tsmod_test`
+and the loader's fixtures; see implementation/bot-plugins.md §6 for what it checks.
+
 ## 3. Results
 
 ### 3.1 Final run (all work packages merged)
@@ -262,6 +267,10 @@ and the chase camera on a bot, with no user-message errors in its log
 win32 under Wine (listen server, `ts_arena`).
 
 ### 3.2 Not validated
+
+* `cargo xtask plugins` (the `tsmod_*` loader and the `tsmod_test` bot backend on all seven roots,
+  [implementation/bot-plugins.md](implementation/bot-plugins.md) §6) was added with issue #104 and
+  not yet run in this document's runs; its checks are unit tested against a synthetic log.
 
 * **Save games and level transitions** (#104): the save/restore code is covered by unit tests
   only (`cargo test`: the codec's byte layout, every linked class walked against TS's save tables,

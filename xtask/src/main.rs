@@ -28,6 +28,9 @@
 //! cargo xtask bots    [--release] [<fwgs-root>...]
 //!                                                 TS's bot AI on ts_dojo: testpath, four addbot bots
 //!                                                 roaming the node graph and fighting, botlearn
+//! cargo xtask plugins [--release] [<root>...]     the `tsmod_*` loader (stub plugin + fixtures it
+//!                                                 must skip) and the stub's bot backend on a
+//!                                                 dedicated server, every root in parallel
 //!                                                 (also run by play)
 //! cargo xtask all     [--release]                 test, then play
 //! cargo xtask client  [--release] <server-root> [--map M] [--port P]
@@ -46,6 +49,7 @@
 mod a2s;
 mod lint;
 mod package;
+mod plugins;
 mod roots;
 
 use roots::{Engine, Os, Root, Target};
@@ -112,6 +116,11 @@ fn main() {
                 exit(1);
             }
         }
+        "plugins" => {
+            if !ctx.plugins_all(&select_roots(&args)) {
+                exit(1);
+            }
+        }
         "play" => {
             if !ctx.play_all(&play_roots(&args)) {
                 exit(1);
@@ -160,7 +169,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|all|client|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|all|client|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }
@@ -347,7 +356,18 @@ impl Ctx {
         }
         for t in targets {
             let mut c = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
-            c.current_dir(&self.repo).args(["build", "-p", "ts-server-dll", "-p", "ts-client-dll", "--target", t.triple]);
+            // `tsmod-test` is the stub plugin (`cargo xtask plugins`); dist/ never ships it.
+            c.current_dir(&self.repo).args([
+                "build",
+                "-p",
+                "ts-server-dll",
+                "-p",
+                "ts-client-dll",
+                "-p",
+                "tsmod-test",
+                "--target",
+                t.triple,
+            ]);
             if self.profile != Profile::Dev {
                 c.arg("--release");
             }
@@ -413,6 +433,8 @@ impl Ctx {
         link_ts_content(&ts_dir(&self.repo), &gamedir);
         copy_dir(&self.repo.join("game/ts"), &gamedir);
         self.install_libs(&t, &gamedir);
+        // A `plugins` run cut short may have left its stub and fixtures: other runs go without.
+        plugins::remove_fixtures(&gamedir.join("dlls"));
         say!("== {}: installed into {}", root.name, gamedir.display());
     }
 

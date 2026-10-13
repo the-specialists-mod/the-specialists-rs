@@ -492,8 +492,8 @@ extern "C" fn cmd_givepowerup() {
 }
 
 /// `addbot [model]` (Windows `mp.dll` `0x10026110`): `addbot help` prints the usage and anything
-/// else adds a bot (`BotCreate`, [`crate::bots::add_bot`]: the argument is the model, not the
-/// name). Deviation (chosen): TS refuses on a dedicated server with "Bots only in listen
+/// else adds a bot (`BotCreate`, [`crate::bots::add_bot`] for the native backend, through
+/// [`crate::bot_backend::add_bot`]: the argument is the model, not the name). Deviation (chosen): TS refuses on a dedicated server with "Bots only in listen
 /// servers." (all the Linux `ts_i386.so`, which is dedicated-only, has: 0xc5520); the port adds
 /// the bot there too. As a server command it only runs from the server's console, command line
 /// and configs, or `rcon`: a client's command goes to `ClientCommand`, which doesn't have it.
@@ -502,13 +502,14 @@ extern "C" fn cmd_addbot() {
     if e.cmd_argv(1) == c"help" {
         e.alert(ALERT_TYPE::at_console, "Usage: addbot [botname]\n");
     } else {
-        crate::bots::add_bot(&e.cmd_argv(1).to_string_lossy());
+        let model = e.cmd_argv(1).to_string_lossy().into_owned();
+        crate::bot_backend::add_bot(crate::bot_backend::AddBot::Addbot { model });
     }
 }
 
 /// `addcustombot [name] [model] [skill]` (Windows `mp.dll` `0x100261a0`; Linux 0xc5550 as
 /// `addbot`): as [`cmd_addbot`], dedicated servers included, with `BotCreateCustom`'s name, model
-/// and skill ([`crate::bots::add_custom_bot`]). The arguments are read last to first, as TS does.
+/// and skill ([`crate::bots::add_custom_bot`] for the native backend). The arguments are read last to first, as TS does.
 extern "C" fn cmd_addcustombot() {
     let e = engine();
     if e.cmd_argv(1) == c"help" {
@@ -516,7 +517,8 @@ extern "C" fn cmd_addcustombot() {
     } else {
         let skill = crate::bots::files::scan_f32(e.cmd_argv(3).to_bytes()).unwrap_or(0.0); // (float)atof
         let model = e.cmd_argv(2).to_string_lossy().into_owned();
-        crate::bots::add_custom_bot(e.cmd_argv(1).to_bytes(), &model, skill);
+        let name = e.cmd_argv(1).to_bytes().to_vec();
+        crate::bot_backend::add_bot(crate::bot_backend::AddBot::Custom { name, model, skill });
     }
 }
 

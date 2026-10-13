@@ -1,21 +1,27 @@
 //! TS's bots (Windows `mp.dll` only; decomp `docs/server/bots.md`). Owner: rules work package.
 //!
+//! These are the **native** bot backend (`ts_bot_backend native`, the default): the server
+//! reaches them only through [`crate::bot_backend::BotBackend`], which [`backend::Native`]
+//! implements (docs/implementation/bot-plugins.md). The fake client itself (`BotSetup`), the
+//! port's `ts_bot_quota` and the bot manager's timing are the host's, in [`crate::bot_backend`].
+//!
 //! Layout (bots.md §16):
-//! * this module: `addbot`/`addcustombot` (`BotCreate`/`BotCreateCustom`/`BotSetup`, §2), the
+//! * this module: `addbot`/`addcustombot` (`BotCreate`/`BotCreateCustom`, §2), the
 //!   `CBot` hooks (`Spawn`, `TraceAttack`, `Killed`, the kill taunt; §4, §10.1), the per-frame
-//!   driver (`pfnStartFrame`, §5.3), node learning and the node commands (§11.2–11.3), and the
-//!   port's `ts_bot_quota`.
+//!   driver (`pfnStartFrame`, §5.3), node learning and the node commands (§11.2–11.3).
+//! * [`backend`]: the [`BotBackend`](crate::bot_backend::BotBackend) implementation.
 //! * [`brain`]: `CBotBrain` (buttons, module mask and order, view turning, usercmd; §5).
 //! * [`states`] (§6), [`modules`] (vision, buy, stunt, look around, power-up, chat; §7, §9,
 //!   §10), [`attack`] (§8), [`nav`] (`CBotNav`, §11.7), [`nodes`] (`CNodeGraph`, §11.1–11.6),
 //!   [`files`] (`bots.txt`, `bot_say.txt`; §3).
 //!
-//! A bot is a `Player` with a brain (`Player::bot`, TS's `CBot` object) and `Player::is_bot`
-//! (`m_bIsBot`, `pl+0x160`). TS has bots only on listen servers. Deviation (chosen): `addbot`,
+//! A bot is a `Player` with a brain (the backend state in `Player::bot`, TS's `CBot` object: see
+//! [`brain_of`]) and `Player::is_bot` (`m_bIsBot`, `pl+0x160`). TS has bots only on listen servers. Deviation (chosen): `addbot`,
 //! `addcustombot` and the port's `ts_bot_quota` bots also run on dedicated servers. Port addition:
 //! `ts_bot_stop 1` freezes living bots.
 
 pub mod attack;
+pub mod backend;
 pub mod brain;
 pub mod files;
 pub mod modules;
@@ -28,34 +34,13 @@ pub use brain::Brain;
 use crate::commands::Args;
 use crate::player::{Player, with_player};
 use crate::rules::{self, cvars};
-use crate::world::{self, Cx, DamageInfo};
+use crate::world::{Cx, DamageInfo};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::cell::RefCell;
-use std::ffi::CString;
-
-/// Names of the port's quota bots ("Bot Neo", ...; the xtask scenes look for the `Bot ` prefix).
-const QUOTA_NAMES: &[&str] = &[
-    "Bot Neo",
-    "Bot Trinity",
-    "Bot Morpheus",
-    "Bot Niobe",
-    "Bot Ghost",
-    "Bot Switch",
-    "Bot Apoc",
-    "Bot Tank",
-    "Bot Dozer",
-    "Bot Mouse",
-    "Bot Cypher",
-    "Bot Link",
-    "Bot Seraph",
-    "Bot Sati",
-    "Bot Rama",
-    "Bot Kid",
-];
 
 /// The player models `BotCreate` picks from outside teamplay (jump table 0x1006b94c).
 const BOT_MODELS: [&str; 7] = ["seal", "merc", "gordon", "hitman", "castor", "agent", "laurence"];
@@ -67,34 +52,18 @@ pub struct Files {
     pub say: files::BotSay,
 }
 
-#[derive(Default)]
-struct Manager {
-    active: bool,
-    start_at: f32,
-    next_add: f32,
-    added: u32,
-    /// The last add found the server full (the quota then retries quietly).
-    full: bool,
-    /// User ids of the quota's bots: it counts and kicks only these.
-    quota: Vec<i32>,
-}
-
-static MGR: Global<RefCell<Option<Manager>>> = Global(RefCell::new(None));
 static FILES: Global<RefCell<Option<Files>>> = Global(RefCell::new(None));
 
-fn mgr<R>(f: impl FnOnce(&mut Manager) -> R) -> R {
-    let mut m = MGR.0.borrow_mut();
-    f(m.get_or_insert_with(Manager::default))
+/// The native backend's state of a bot player: its brain. `None` for a player that isn't a native
+/// bot (a human, or another backend's bot).
+pub fn brain_of(p: &mut Player) -> Option<&mut Brain> {
+    p.bot.as_mut()?.downcast_mut::<Brain>()
 }
 
 /// The loaded text files (no engine calls inside `f`).
 pub fn with_files<R>(f: impl FnOnce(&mut Files) -> R) -> R {
     let mut m = FILES.0.borrow_mut();
     f(m.get_or_insert_with(Files::default))
-}
-
-pub fn game_init() {
-    // `addbot`/`addcustombot` and the bot cvars are registered with the rules commands and cvars.
 }
 
 /// The bot part of `CTSGameRules::Init` (0x1004d910, from both rules constructors and
@@ -111,38 +80,27 @@ pub fn ts_init() {
     with_files(|f| *f = Files { names, say });
 }
 
-pub fn server_activate() {
-    let now = engine().time();
-    mgr(|m| {
-        m.active = true;
-        m.start_at = now + 1.0;
-        m.next_add = now + 1.0;
-    });
-}
-
-pub fn server_deactivate() {
-    mgr(|m| m.active = false);
-}
-
 // ---- creation ------------------------------------------------------------------------------------
 
 /// `addbot [model]`: `BotCreate` (0x1006b7c0). The argument is the model/team
 /// (despite the usage text); the name always comes from `bots.txt`. Afterwards `botlearn 1`
 /// when the node graph is empty.
-pub fn add_bot(model: &str) {
+pub fn add_bot(model: &str) -> Option<*mut edict_t> {
     let eng = engine();
     let model = pick_model(model);
     let mut skill = eng.random_float(0.1, 1.0);
     let name = with_files(|f| f.names.pick(|lo, hi| eng.random_long(lo, hi), &mut skill));
-    if create(&name, &model, skill, true).is_some() && nodes::with(|g| g.count()) < 1 {
+    let e = create(&name, &model, skill, true);
+    if e.is_some() && nodes::with(|g| g.count()) < 1 {
         eng.server_command("botlearn 1\n");
     }
+    e
 }
 
 /// `addcustombot [name] [model] [skill]`: `BotCreateCustom` (0x1006b590). The
 /// skill is random in 0.1..1 when not positive, else kept in 0.1..3; an empty name is picked from
 /// `bots.txt` (whose per-name skill then wins).
-pub fn add_custom_bot(name: &[u8], model: &str, skill: f32) {
+pub fn add_custom_bot(name: &[u8], model: &str, skill: f32) -> Option<*mut edict_t> {
     let eng = engine();
     let model = pick_model(model);
     let mut skill = if skill <= 0.0 {
@@ -155,7 +113,7 @@ pub fn add_custom_bot(name: &[u8], model: &str, skill: f32) {
         skill
     };
     let name = if name.is_empty() { with_files(|f| f.names.pick(|lo, hi| eng.random_long(lo, hi), &mut skill)) } else { name.to_vec() };
-    create(&name, &model, skill, true);
+    create(&name, &model, skill, true)
 }
 
 /// The model argument, else outside teamplay one of TS's seven (`RANDOM_LONG(0, 6)`).
@@ -169,110 +127,31 @@ fn pick_model(arg: &str) -> String {
     }
 }
 
-/// `CREATE_FAKE_CLIENT` and `BotSetup` (0x1006b3b0), TS's `ClientPutInServer` for bots: the
-/// `CBot` object with its skill, "<name> connected with skill <f>" (`announce`; the unclamped
-/// skill), `SetCustomDecalFrames(-1)`, `Spawn` (before the keys, so the first spawn sees no
-/// model), the `model`/`team`/`cl_lw` keys, the team change for a given model, the rules'
-/// `PlayerThink` and the `ts_playeramount` count. No `ClientConnected`, starting cash or
-/// `EF_NOINTERP`, as in TS.
+/// `BotCreate`'s tail: the bot player (`BotSetup`, the host's
+/// [`crate::bot_backend::create_player`]) with a fresh brain of `skill`, announced as TS does
+/// ("<name> connected with skill <f>", the unclamped skill) when `announce` is set.
 fn create(name: &[u8], model: &str, skill: f32, announce: bool) -> Option<*mut edict_t> {
-    let eng = engine();
-    let cname = CString::new(name.iter().copied().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default();
-    let e = eng.create_fake_client(&cname);
-    if e.is_null() {
-        if announce {
-            eng.alert(ALERT_TYPE::at_console, "Could not find any free client slots. Try setting maxplayers to a higher value.\n");
-        }
-        return None;
-    }
-    // `g_botNetnames[ENTINDEX(ed)]`: the netname stays this string for the bot's life.
-    e.v().netname = eng.alloc_string(&cname);
-    {
-        e.v().flags |= FL_FAKECLIENT as i32;
-        world::create::<Player>(e.v());
-    }
-    world::with::<Player, ()>(e, |p| {
-        p.bot = Some(Box::new(Brain::new(skill)));
-        p.cbot = true;
-        p.is_bot = 1;
-        p.impulse.custom_decal_frames = crate::player::impulse::custom_decal_frames(-1);
-    });
-    if announce {
-        eng.alert(ALERT_TYPE::at_console, &format!("{} connected with skill {:.6}\n", cname.to_string_lossy(), skill));
-    }
-    crate::ham::spawn(e);
-    eng.set_client_key(e, "model", if model.is_empty() { "seal" } else { model });
-    eng.set_client_key(e, "team", model);
-    eng.set_client_key(e, "cl_lw", "1");
-    if !model.is_empty() && rules::state::teamplay() {
-        // `CHalfLifeMultiplay::ChangePlayerTeam` is empty; teamplay's changes the team.
-        with_player(e, |p, cx| rules::teams::change_team(p, cx, model, false, false));
-    }
-    // `g_pGameRules->PlayerThink(pl)` (0x1002c370): in intermission the new bot's button state is
-    // cleared (it has pressed nothing, so the intermission isn't ended).
-    if rules::state::with(|g| g.game_over) {
-        with_player(e, |p, cx| {
-            p.ts.buttons_pressed = 0;
-            p.stunt.button_pressed = 0;
-            p.stunt.button_released = 0;
-            cx.pev().button = 0;
-        });
-    }
-    crate::entities::ts::player_amount_changed(true);
-    Some(e)
+    crate::bot_backend::create_player(name, model, Box::new(Brain::new(skill)), announce.then_some(skill))
 }
 
-/// The port's quota bot ("Bot Neo", ...): created like `addbot`'s (a random model outside
-/// teamplay, a random skill in 0.1..1), but without TS's announcement, so the dedicated-server
-/// tests can tell it from an `addbot`. False when the server has no free client slot (reported
-/// once per streak of failed adds: the quota retries every half second).
-fn add_quota_bot() -> bool {
-    let eng = engine();
-    let n = mgr(|m| m.added) + 1;
-    let base = QUOTA_NAMES[(n as usize - 1) % QUOTA_NAMES.len()];
-    let name = if n as usize > QUOTA_NAMES.len() { format!("{base} {n}") } else { base.to_owned() };
+/// The native backend's quota bot ("Bot Neo", ...; the host picks the name): created like
+/// `addbot`'s (a random model outside teamplay, a random skill in 0.1..1), but without TS's
+/// announcement, so the dedicated-server tests can tell it from an `addbot`. Returns the bot and
+/// its skill.
+pub fn add_quota_bot(name: &str) -> Option<(*mut edict_t, f32)> {
     let model = pick_model("");
-    let skill = eng.random_float(0.1, 1.0);
-    let Some(e) = create(name.as_bytes(), &model, skill, false) else {
-        if !mgr(|m| std::mem::replace(&mut m.full, true)) {
-            eng.print("[ts] bots: no free client slot\n");
-        }
-        return false;
-    };
-    let uid = eng.user_id(e);
-    mgr(|m| {
-        m.added = n;
-        m.full = false;
-        m.quota.push(uid);
-    });
-    eng.print(&format!("[ts] bots: added \"{name}\" (#{}) skill {skill:.2}\n", eng.index_of(e)));
-    true
+    let skill = engine().random_float(0.1, 1.0);
+    create(name.as_bytes(), &model, skill, false).map(|e| (e, skill))
 }
 
 // ---- per frame -----------------------------------------------------------------------------------
 
-/// Connected fake clients with a live user id. Guard: HL25 drops every bot when the last human
-/// leaves, and driving a dropped client with `pfnRunPlayerMove` crashes the engine.
-fn live_fake_clients() -> Vec<*mut edict_t> {
-    let eng = engine();
-    eng.clients().filter(|&e| e.v().flags & FL_FAKECLIENT as i32 != 0 && eng.user_id(e) != -1).collect()
-}
-
-/// The quota's bots that are still connected.
-fn quota_bots() -> Vec<*mut edict_t> {
-    let eng = engine();
-    let ids = mgr(|m| m.quota.clone());
-    live_fake_clients().into_iter().filter(|&e| ids.contains(&eng.user_id(e))).collect()
-}
-
 /// The bot part of `pfnStartFrame` (0x10010e00), which runs before the rules' `Think`: on a
 /// listen server every player whose `m_bIsBot == 1` thinks, in entity order (`BotPlayerByIndex`
-/// 0x1006b360: `FL_FAKECLIENT` or `FL_CLIENT`, with private data). Port: the quota first, and
-/// bots think on dedicated servers too.
+/// 0x1006b360: `FL_FAKECLIENT` or `FL_CLIENT`, with private data). Port: bots think on dedicated
+/// servers too, after the host's quota (`bot_backend::start_frame`).
 pub fn start_frame() {
     let eng = engine();
-    let now = eng.time();
-    quota_think(now);
     let frozen = cvars::f(c"ts_bot_stop") != 0.0;
     for i in 1..=eng.max_clients() {
         let e = eng.player(i);
@@ -290,46 +169,13 @@ pub fn start_frame() {
     }
 }
 
-/// `ts_bot_quota N` (port): keep N quota bots, adding or kicking one every half second. A quota
-/// bot that lost its brain (a client the engine kept across a level change) gets a new one.
-fn quota_think(now: f32) {
-    let eng = engine();
-    let (active, start_at, next_add) = mgr(|m| (m.active, m.start_at, m.next_add));
-    if !active || now < start_at {
-        return;
-    }
-    let want = cvars::f(c"ts_bot_quota").max(0.0) as usize;
-    let bots = quota_bots();
-    for &e in &bots {
-        world::with::<Player, ()>(e, |p| {
-            if p.bot.is_none() {
-                p.bot = Some(Box::new(Brain::new(1.0)));
-                p.cbot = true;
-                p.is_bot = 1;
-            }
-        });
-    }
-    if now < next_add {
-        return;
-    }
-    if bots.len() < want {
-        mgr(|m| m.next_add = now + 0.5);
-        add_quota_bot();
-    } else if bots.len() > want {
-        mgr(|m| m.next_add = now + 0.5);
-        if let Some(&e) = bots.last() {
-            eng.server_command(&format!("kick #{}\n", eng.user_id(e)));
-        }
-    }
-}
-
 // ---- CBot overrides and hooks -------------------------------------------------------------------
 
 /// The head of `CBot::Spawn` (0x1006bb40): `CBotBrain::Reset`, before `CBasePlayer::Spawn`.
 pub fn spawn_pre(p: &mut Player, cx: &mut Cx) {
     let now = cx.time();
     let mode = rules::state::with(|g| g.mode);
-    if let Some(b) = p.bot.as_mut() {
+    if let Some(b) = brain_of(p) {
         b.reset(now, mode);
     }
 }
@@ -360,7 +206,7 @@ pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         return;
     }
     let target = a.v().origin;
-    if let Some(b) = p.bot.as_mut() {
+    if let Some(b) = brain_of(p) {
         b.look_at(cx.pev(), target);
     }
 }
@@ -380,7 +226,7 @@ pub fn killed(p: &mut Player, cx: &mut Cx, attacker: *mut edict_t) {
     if eng.random_long(0, 100) > 90 {
         let name = eng.string(a.v().netname).to_bytes().to_vec();
         let now = cx.time();
-        if let Some(b) = p.bot.as_mut() {
+        if let Some(b) = brain_of(p) {
             b.chat_name = name;
             b.chat_section = files::KILLED;
             b.next_chat = (eng.random_float(0.5, 2.0) as f64 + now as f64) as f32;
@@ -399,7 +245,7 @@ pub fn on_kill(killer: &mut Player, victim: *mut edict_t, now: f32) {
     if eng.random_long(0, 100) > 90 {
         let name = eng.string(victim.v().netname).to_bytes().to_vec();
         // Guard: the `CBot` members exist only on a bot; TS's flag and class always agree.
-        if let Some(b) = killer.bot.as_mut() {
+        if let Some(b) = brain_of(killer) {
             b.chat_name = name;
             b.chat_section = files::OFFENSE;
             b.next_chat = (eng.random_float(0.5, 2.0) as f64 + now as f64) as f32;

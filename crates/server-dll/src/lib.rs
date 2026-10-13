@@ -13,6 +13,7 @@
 
 mod exports;
 mod plugin_api;
+mod plugins;
 
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::saverestore::{EngineHost, SaveData, raw};
@@ -21,7 +22,7 @@ use goldsrc::sys::*;
 use goldsrc::util::cstr;
 use std::ffi::{CStr, c_char, c_int, c_uchar, c_uint, c_void};
 use ts_server::world::{self, UseType};
-use ts_server::{bots, commands, entities, ham, messages, net, player, rules, save, stunt, weapons};
+use ts_server::{bot_backend, commands, entities, ham, messages, net, player, rules, save, stunt, weapons};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn GiveFnptrsToDll(funcs: *const enginefuncs_t, globals: *mut globalvars_t) {
@@ -196,9 +197,12 @@ unsafe extern "C" fn game_init() {
     rules::game_init();
     weapons::game_init();
     stunt::game_init();
-    bots::game_init();
+    // The bot backends: TS's own (native) first, then the `tsmod_*` plugins' (issue #104).
+    bot_backend::game_init();
     register_gameplay();
     engine().print("[ts] GameInit: Rust TS server library loaded\n");
+    plugins::load_all();
+    ts_server::plugins::game_init();
 }
 
 /// The gameplay plugins (`docs/implementation/gameplay-plugins.md`): the core (TS 3.0) and,
@@ -391,7 +395,9 @@ unsafe extern "C" fn player_post_think(e: *mut edict_t) {
 
 unsafe extern "C" fn start_frame() {
     // mp.dll's `pfnStartFrame` (0x10010e00) thinks the bots before the rules' `Think`.
-    bots::start_frame();
+    bot_backend::start_frame();
+    // Port addition: the `tsmod_*` plugins' frame (their bots run here, as the native ones do).
+    ts_server::plugins::start_frame();
     rules::start_frame();
     // Port addition: the plugin API's per-frame snapshot of every player.
     ts_server::plugin_api::start_frame();
@@ -529,7 +535,9 @@ unsafe extern "C" fn on_free_private_data(e: *mut edict_t) {
     world::free(e);
 }
 
-unsafe extern "C" fn game_shutdown() {}
+unsafe extern "C" fn game_shutdown() {
+    ts_server::plugins::shutdown();
+}
 
 unsafe extern "C" fn should_collide(touched: *mut edict_t, other: *mut edict_t) -> c_int {
     ham::should_collide(touched, other) as c_int

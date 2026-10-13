@@ -86,7 +86,7 @@ const IFACE_FAILED: c_int = 1;
 /// and NULL. `ts_i386.so` doesn't have it.
 ///
 /// Port addition: `ts_plugin_api::INTERFACE_NAME` gives the plugin API table
-/// ([`crate::plugin_api::PLUGIN_API`]) and `IFACE_OK`, on every platform. Guard: a NULL name fails
+/// ([`crate::plugin_api::table`]) and `IFACE_OK`, on every platform. Guard: a NULL name fails
 /// (TS's `strcmp` loop never reads it, having no entries).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn CreateInterface(name: *const std::ffi::c_char, return_code: *mut c_int) -> *mut c_void {
@@ -96,7 +96,7 @@ pub unsafe extern "C" fn CreateInterface(name: *const std::ffi::c_char, return_c
         // SAFETY: a non-NULL return code is the caller's writable int (TS checks NULL too).
         unsafe { *return_code = if found { IFACE_OK } else { IFACE_FAILED } };
     }
-    if found { (&raw const crate::plugin_api::PLUGIN_API).cast_mut().cast() } else { std::ptr::null_mut() }
+    if found { std::ptr::from_ref(crate::plugin_api::table()).cast_mut().cast() } else { std::ptr::null_mut() }
 }
 
 /// `anglemod` (TS 0xfb3d8, `shared::pm::anglemod`).

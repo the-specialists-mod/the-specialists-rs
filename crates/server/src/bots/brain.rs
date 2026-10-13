@@ -387,7 +387,16 @@ pub struct Usercmd {
 /// which is returned. `frozen` is the port's `ts_bot_stop 1`: a living bot then skips the AI
 /// and sends no movement or buttons (dead and observing bots still buy and respawn).
 pub fn think(p: &mut Player, cx: &mut Cx, frozen: bool) -> Option<Usercmd> {
-    let mut b = p.bot.take()?;
+    // The brain is taken out of the player for the think, so the hooks the think sets off for
+    // this player (its own death) see no brain, as before the backend split.
+    let state = p.bot.take()?;
+    let mut b = match state.downcast::<Brain>() {
+        Ok(b) => b,
+        Err(other) => {
+            p.bot = Some(other);
+            return None;
+        }
+    };
     let cmd = think_with(&mut b, p, cx, frozen);
     p.bot = Some(b);
     Some(cmd)
@@ -415,9 +424,9 @@ fn think_with(b: &mut Box<Brain>, p: &mut Player, cx: &mut Cx, frozen: bool) -> 
             // `StopObserver` respawns the bot, and `CBot::Spawn` resets this brain.
             if p.respawn_at > 0.0 && p.respawn_at < now {
                 p.respawn_at = 0.0;
-                p.bot = Some(std::mem::replace(b, Box::new(Brain::new(0.1))));
+                p.bot = Some(std::mem::replace(b, Box::new(Brain::new(0.1))) as crate::bot_backend::BotState);
                 crate::rules::lifecycle::stop_observer(p, cx);
-                if let Some(back) = p.bot.take() {
+                if let Some(back) = p.bot.take().and_then(|s| s.downcast::<Brain>().ok()) {
                     *b = back;
                 }
                 cx.pev().impulse = 0;

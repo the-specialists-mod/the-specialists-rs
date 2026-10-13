@@ -123,6 +123,14 @@ pub struct Briefcase {
     funcs: BaseFuncs,
 }
 
+impl Briefcase {
+    /// The 0-based team that may capture here (-1 any), and whether captures are accepted now
+    /// (the plugin API's `entity_info`).
+    pub fn capture_team(&self) -> (i32, bool) {
+        (self.owner_team, self.active)
+    }
+}
+
 impl Default for Briefcase {
     /// `CTSBriefcase::CTSBriefcase` (0x8d788): ids 1..15, wrapping.
     fn default() -> Self {
@@ -305,6 +313,13 @@ pub struct Flag {
     /// TS's member pointers: `m_pfnThink` (`Fall` / `WaitThink`) and `m_pfnTouch` (`BounceTouch` /
     /// `WaitTouch`), both set from `Spawn` on.
     funcs: BaseFuncs,
+}
+
+impl Flag {
+    /// The 0-based team that owns the case (-1 any), for the plugin API's `entity_info`.
+    pub fn team(&self) -> i32 {
+        self.status.team
+    }
 }
 
 /// `DropFlag` 0x9334c, alive: thrown along `v_angle` at `(90 - pitch) * 2`, so looking down

@@ -56,7 +56,9 @@ crates/
                  client/ ts21-client; linked only by the two libraries (implementation/ts21.md)
   server/        ts-server: server game logic (rlib, no unsafe)
   server-dll/    ts-server-dll: cdylib -> dlls/ts_i386.so, ts_amd64.so, mp.dll (exports, callbacks)
-  plugin-api/    ts-plugin-api: the C ABI table server plugins (AMX Mod X tsx) get from CreateInterface
+  plugin-api/    ts-plugin-api: the C ABI table server plugins get from CreateInterface (AMX Mod X
+                 modules) or from the server's `tsmod_*` loader (bot backends; issue #104)
+  tsmod-test/    the stub `tsmod_test` plugin (a test fixture: loader checks, a trivial bot backend)
   client/        ts-client: client game logic (rlib, no unsafe)
   client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll
 xtask/           build, dist, install, server tests
@@ -74,14 +76,14 @@ raw pointers and is routed to a module of `ts-server` (§4.8 explains the split)
 
 | Callback | Goes to |
 |---|---|
-| `GameInit` | `messages::register_all`, then `rules`, `weapons`, `stunt`, `bots` `game_init` (cvars, server commands) |
+| `GameInit` | `messages::register_all`, then `rules`, `weapons`, `stunt`, `bot_backend` `game_init` (cvars, server commands, the native bot backend), then the `tsmod_*` plugins load (`server-dll/src/plugins.rs`, `implementation/plugin-api.md` §1.2) and get their `game_init` |
 | `Spawn`/`Think`/`Touch`/`Use`/`Blocked`/`KeyValue` | the edict's `Entity` (world dispatch), through `ham` (the plugins' entity hooks, `implementation/plugin-api.md` §7). Keyvalues go to `entities::entvars_key_value` first and only the rest reach the class, as TS `DispatchKeyValue` does. |
 | worldspawn spawn | `CWorld::Precache` order: force `sv_gravity`/`sv_stepsize`, `rules::install` (installs the rules, the multiplayer voice icon, queues the server config), soundent and body queue, sentences and texture types, then `precache::{w_precache, client_precache, ts_precache, world_sounds_and_gibs}` (TS's map-wide precaches in TS's order, so model/sound/event indices match), light styles, `sv_zmax`, chapter title, `v_dark`, `mp_defaultteam` |
 | `ClientConnect`/`Disconnect`/`Kill`/`UserInfoChanged` | `rules` |
 | `ClientPutInServer` | creates the `Player` entity and spawns it |
-| `ClientCommand` | `commands::client_command`: weapons, stunt, rules, bots, in that order |
+| `ClientCommand` | `commands::client_command`: the `tsmod_*` plugins first (one may swallow it), then weapons, stunt, rules, the active bot backend, in that order |
 | `PlayerPreThink`/`PostThink` | `Player::pre_think`/`post_think` (hook order in §4.3), through `ham` |
-| `StartFrame` | `bots::start_frame` (the quota, then each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), `rules::start_frame`, then `plugin_api::start_frame` (the plugin API's player snapshots) |
+| `StartFrame` | `bot_backend::start_frame` (the quota, then the active backend's bots: for native, each bot's brain and its `pfnRunPlayerMove`, before the rules as in `mp.dll`), the `tsmod_*` plugins' `start_frame` (a plugin backend runs its bots here), `rules::start_frame`, then `plugin_api::start_frame` (the plugin API's player snapshots, and the plugins' weapon/ammo callbacks) |
 | `PM_Move`/`PM_Init`/`PM_FindTextureType` | `shared::pm` |
 | `UpdateClientData`/`AddToFullPack`/`CreateBaseline` | `net` (+ `Player::fill_client_data`) |
 | `GetWeaponData`/`CmdStart` | `weapons` |
@@ -144,7 +146,7 @@ lists match `ts_i386.so` and `mp.dll` (`implementation/stock-entities.md` §7.5)
 | `hud` | `player::hud::HudCache` | rules package |
 | `tbd` | `player::water::TimeBasedDamage` | rules package (damage types taken, time-based damage, drown recovery) |
 | `suit` | `player::suit::SuitQueue` | rules package (the HEV suit's sentence queue, single player only) |
-| `bot`, `cbot`, `is_bot`, `next_node_learn` | `Option<Box<bots::Brain>>` (TS's `CBot` part), the class flag, `m_bIsBot`, the node-learning timer | rules package (bots) |
+| `bot`, `cbot`, `is_bot`, `next_node_learn` | `Option<bot_backend::BotState>` (TS's `CBot` part: the bot backend's state, the native backend's `bots::Brain`), the class flag, `m_bIsBot`, the node-learning timer | rules package (bots) |
 | `drive` | `entities::stock::drive::DriveState` | stock entities (train/tank driving) |
 
 Fields several subsystems read live on `Player` itself: `slow_target`, `active_powerup`,
@@ -168,7 +170,8 @@ The player's save data (`CBasePlayer::m_playerSaveData`) is mapped in `player/sa
 * **`stunt`**: `CTSStunt`/`CTSAnimation`. It sets `iuser4` bits and impulses, and picks `sequence`/`gaitsequence`. The physics they trigger runs in `shared::pm`.
 * **`weapons`**: the per-player TS gun (one container, 38 weapon records), firing, hit resolution, penetration, `CBulletManager`, grenades, knives, kung fu. API for other subsystems: `give_weapon`, `give_ammo`, `ts_init`, `multiply_clip`, and TS's `weapon_tsgun` item itself (`has_gun`, `give_gun`, `remove_all_items`).
 * **`rules`**: game modes, spawn selection, scoring and awards, death and respawn, power-ups (held slot, activation), slow-motion propagation, chat (`say`), cvars, TS map entities (`entities/ts`), HUD sync (`player/hud.rs`), player damage (`player/damage.rs`), drowning and time-based damage (`player/water.rs`).
-* **`bots`**: TS's bot AI, which only the Windows `mp.dll` has (decomp `server/bots.md`; `docs/implementation/rules.md` §10): fake clients created by `addbot`/`addcustombot` or the port's `ts_bot_quota` (on listen and, a chosen deviation, dedicated servers; TS has bots on listen servers only), each with a `CBotBrain` (`bots::brain`: strategy state, modules for vision, attack, buy, stunt, look around, power-up and chat, a node-graph navigator) that presses buttons and sends one `pfnRunPlayerMove` per frame, like a human's usercmd. `bots::nodes` is TS's `CNodeGraph`: the shipped `maps/*.ndm` waypoint files, node learning from every player's walk (`botlearn`), and `FindPath`; it talks to the engine through a trait, so it is unit tested against the shipped files and the decomp's replica.
+* **`bot_backend`** (port addition, issue #104; `implementation/bot-plugins.md`): the `BotBackend` trait the server reaches bots through, `ts_bot_backend` (read at map start), the quota and the fake client's join. **`plugins`**: the `tsmod_*` libraries' registry, loader rule and event callbacks.
+* **`bots`**: the native bot backend, TS's bot AI, which only the Windows `mp.dll` has (decomp `server/bots.md`; `docs/implementation/rules.md` §10): fake clients created by `addbot`/`addcustombot` or the port's `ts_bot_quota` (on listen and, a chosen deviation, dedicated servers; TS has bots on listen servers only), each with a `CBotBrain` (`bots::brain`: strategy state, modules for vision, attack, buy, stunt, look around, power-up and chat, a node-graph navigator) that presses buttons and sends one `pfnRunPlayerMove` per frame, like a human's usercmd. `bots::nodes` is TS's `CNodeGraph`: the shipped `maps/*.ndm` waypoint files, node learning from every player's walk (`botlearn`), and `FindPath`; it talks to the engine through a trait, so it is unit tested against the shipped files and the decomp's replica.
 
 ### 4.5 Damage
 

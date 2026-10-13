@@ -14,6 +14,8 @@ goldsrc   = { path = "../goldsrc", features = ["server"] }
 shared    = { path = "../shared" }
 ts-server = { path = "../server" }
 ts-plugin-api = { path = "../plugin-api" }
+# Loads the `tsmod_*` plugins (`plugins.rs`); already in the build through bindgen's clang-sys.
+libloading = "0.8"
 # The TS 2.1 gameplay plugin (docs/implementation/ts21.md), registered at `GameDLLInit`.
 ts21-gameplay = { path = "../ts21", optional = true }
 ts21-server = { path = "../ts21/server", optional = true }

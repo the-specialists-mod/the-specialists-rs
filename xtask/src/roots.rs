@@ -136,15 +136,20 @@ impl Root {
     }
 
     pub fn server_command(&self, map: &str, port: u16, bots: u32) -> Command {
+        // Game cvars don't exist yet when command-line `+cvar` runs on GoldSrc, so set them
+        // from the per-map server config instead (the engine runs it after GameInit).
+        // `addbot` checks that a dedicated server adds a bot for it (a port deviation: TS refuses).
+        let cfg = format!("// Written by cargo xtask server.\nexec server.cfg\nts_bot_quota {bots}\naddbot\n");
+        std::fs::write(self.path.join("ts").join("xtask_server.cfg"), cfg).unwrap();
+        self.server_command_with(map, port, "xtask_server.cfg", bots)
+    }
+
+    /// A dedicated server on `map` that runs the server config `cfg` (in `<root>/ts`) on every map.
+    pub fn server_command_with(&self, map: &str, port: u16, cfg: &str, bots: u32) -> Command {
         let common = |c: &mut Command| {
             c.current_dir(&self.path).args(["-game", "ts", "-port", &port.to_string(), "+maxplayers", "8", "+sv_lan", "1"]);
-            // Game cvars don't exist yet when command-line `+cvar` runs on GoldSrc, so set them
-            // from the per-map server config instead (the engine runs it after GameInit).
-            // `addbot` checks that a dedicated server adds a bot for it (a port deviation: TS refuses).
-            let cfg = format!("// Written by cargo xtask server.\nexec server.cfg\nts_bot_quota {bots}\naddbot\n");
-            std::fs::write(self.path.join("ts").join("xtask_server.cfg"), cfg).unwrap();
             // FWGS applies command-line cvars after GameInit, GoldSrc reads the config: pass both.
-            c.args(["+ts_bot_quota", &bots.to_string(), "+servercfgfile", "xtask_server.cfg", "+map", map]);
+            c.args(["+ts_bot_quota", &bots.to_string(), "+servercfgfile", cfg, "+map", map]);
         };
         match (self.engine, self.os) {
             (Engine::Fwgs, Os::Windows) => {

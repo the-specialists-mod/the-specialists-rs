@@ -455,6 +455,7 @@ fn check_deads(now: f32) {
             msg::log(&format!("Player \"{name}\" triggered \"last_man_standing\"\n"));
         }
         state::with(|g| g.round_restart = now + 3.0);
+        crate::plugins::round_end();
         if timer {
             // 0x79e89: no clamp here, so an overrun round sends the low byte of a negative count.
             let rt = RoundTime { secs: round_time_byte(round_end as f64 - now as f64), state: 2 };
@@ -465,6 +466,7 @@ fn check_deads(now: f32) {
     } else {
         ts_message_all([0, 255, 0], 8, 30, "Round over");
         state::with(|g| g.round_restart = now + 3.0);
+        crate::plugins::round_end();
     }
 }
 
@@ -504,6 +506,8 @@ pub fn restart_round(now: f32) {
     }
     teams::recount(false);
     crate::entities::ts::respawn_entities();
+    // Port addition: plugins hear of the new round.
+    crate::plugins::round_start();
 }
 
 /// `RestartRound`'s refund of what a player carries: the price of every owned weapon (not kung fu

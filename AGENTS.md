@@ -32,8 +32,12 @@ crates/
   shared/        game logic both sides run: movement, weapons, protocol, TS constants
   server/        ts-server: server game logic (rlib)
   server-dll/    ts-server-dll: the server library the engine loads (cdylib "ts")
-  plugin-api/    ts-plugin-api: the C ABI table server plugins get from CreateInterface (no_std,
-                 shared with the AMX Mod X module; append-only, see its module docs)
+  plugin-api/    ts-plugin-api: the C ABI table server plugins get from CreateInterface (metamod
+                 plugins: the AMX Mod X modules) or from the server's `tsmod_*` loader (bot
+                 backends). no_std, versioned: a break bumps VERSION and the interface name
+                 (docs/implementation/plugin-api.md, bot-plugins.md)
+  tsmod-test/    tsmod_test, the stub `tsmod_*` plugin (a test fixture for `cargo xtask plugins`;
+                 FFI from end to end, so it may use `unsafe` like the *-dll crates; never in dist/)
   client/        ts-client: client game logic (rlib)
   client-dll/    ts-client-dll: the client library the engine loads (cdylib "client")
   ts21/          the TS 2.1 gameplay plugin: ts21-gameplay (shared hooks), server/ (ts21-server)
@@ -44,7 +48,8 @@ xtask/           build, package, install and test tooling (`cargo xtask ...`)
 game/ts/         liblist.gam, gameinfo.txt, delta.lst
 ```
 
-**`unsafe` code lives only in `goldsrc`, `server-dll` and `client-dll`.** `ts-server`,
+**`unsafe` code lives only in `goldsrc`, `server-dll` and `client-dll`** (and the test fixture
+`tsmod-test`, a plugin library that is nothing but FFI). `ts-server`,
 `ts-client`, `shared`, `ts-gameplay` and the `ts21-*` packages are `#![deny(unsafe_code)]`. The rules:
 
 1. **Never add `unsafe` to a game crate, and never weaken the lint.** The only `allow`s are the
@@ -97,6 +102,8 @@ cargo xtask play [fwgs fwgs-win]          # listen-server gameplay on ts_dojo: j
 cargo xtask meck [fwgs fwgs-win]          # grenades on MecklenburgV_Rain_Final: a grenade kill and broken func_breakables
 cargo xtask bots [fwgs fwgs-win]          # TS's bot AI on ts_dojo: testpath, four addbot bots roaming the node graph
                                           # and fighting, botlearn
+cargo xtask plugins [<root>...]           # the tsmod_* loader (stub plugin + fixtures it must skip) and the stub's
+                                          # bot backend (ts_bot_backend test) on a dedicated server, all roots
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask dist --release                # dist/<platform>/ts/: libraries + game files (stripped)
 cargo xtask dist --release-debug          # the same release build, libraries with debug info
@@ -129,7 +136,9 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - `ts_dev_scriptinput 1` lets scripted `+attack` through the client's anti-script gate.
 - `ts_dev_touch <file>` writes the end-of-script marker.
 - `ts_tp` teleports, and `ts_face` aims a player's view.
-- `ts_bot_stop 1` freezes living bots (dead ones still buy and respawn). Bots run TS's AI
+- `ts_bot_stop 1` freezes living bots (dead ones still buy and respawn); plugin bots too (`run_cmd`).
+- `ts_bot_backend native|<name>` picks the bot backend at the next map start
+  (docs/implementation/bot-plugins.md). Bots run TS's AI
   (`crates/server/src/bots`, decomp `docs/server/bots.md`). Deviation (user's choice): `addbot`,
   `addcustombot` and `ts_bot_quota` bots run on dedicated servers too (server console, configs
   and rcon only); TS has bots only on listen servers.

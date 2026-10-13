@@ -40,6 +40,7 @@ use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 
 #[allow(unused_imports)]
 pub use assets::{cvars, dmgreport, restriction, set_restriction};
+pub(crate) use commands::add_armament;
 pub use inventory::Drop;
 pub use projectiles::{SlowPhysics, bounce_ground_damping, give_slow_mul, thrower_time_scale, thrown_knife_description};
 
