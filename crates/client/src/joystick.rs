@@ -336,10 +336,10 @@ pub fn joy_move(frametime: f32, view: &mut [f32; 3], forward: &mut f32, side: &m
     with(|j| j.last = Some(r));
     let p = MoveParams {
         frametime,
-        speed_key: input::IN_SPEED.held(),
+        speed_key: input::IN_SPEED.down(),
         movespeedkey: c.cl_movespeedkey.value(),
-        jlook: input::IN_JLOOK.held(),
-        strafe: input::IN_STRAFE.held(),
+        jlook: input::IN_JLOOK.down(),
+        strafe: input::IN_STRAFE.down(),
         advanced: c.joyadvanced.value() != 0.0,
         lookstrafe: c.lookstrafe.value() != 0.0,
         lookspring: c.lookspring.value() != 0.0,

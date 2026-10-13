@@ -93,9 +93,17 @@ impl Button {
         b.state = (b.state & !1) | 4;
     }
 
-    /// Down at any point since the last `CL_ButtonBits` reset.
+    /// Down at any point since the last `CL_ButtonBits` reset. Only for the buttons
+    /// [`button_bits`] reports, since it is what clears the pressed edge (bit 1).
     pub(crate) fn held(&self) -> bool {
         self.get().state & 3 != 0
+    }
+
+    /// Down right now (`state & 1`): how TS tests the buttons `CL_ButtonBits` doesn't report
+    /// (`in_speed`, `in_strafe`, `in_klook`, `in_jlook`). Nothing clears their pressed edge, so
+    /// [`held`](Self::held) would stay true after the first release.
+    pub(crate) fn down(&self) -> bool {
+        self.get().state & 1 != 0
     }
 
     /// SDK `CL_KeyState`: fraction of the frame the key was down (0, 0.25, 0.5, 0.75 or 1).
@@ -934,7 +942,7 @@ pub fn anglemod(a: f32) -> f32 {
 /// yaw of the previous frame too. Products on the x87 at 53 bits (`f64`), rounded at each store.
 fn adjust_angles(frametime: f32, view: &mut [f32; 3]) {
     let c = cvars();
-    let speed = if IN_SPEED.held() {
+    let speed = if IN_SPEED.down() {
         let k = c.cl_anglespeedkey.value();
         (frametime as f64 * if k <= 0.67 { 0.67f32 } else { k } as f64) as f32
     } else {
@@ -943,12 +951,12 @@ fn adjust_angles(frametime: f32, view: &mut [f32; 3]) {
     let yawspeed = turn_speed(c.cl_yawspeed.value(), 200.0) as f64;
     let pitchspeed = turn_speed(c.cl_pitchspeed.value(), 220.0) as f64;
     let step = |key: f32, rate: f64| key as f64 * speed as f64 * rate;
-    if !IN_STRAFE.held() {
+    if !IN_STRAFE.down() {
         view[YAW] = (view[YAW] as f64 - step(IN_RIGHTB.key_state(), yawspeed)) as f32;
         view[YAW] = (step(IN_LEFTB.key_state(), yawspeed) + view[YAW] as f64) as f32;
         view[YAW] = anglemod(view[YAW]);
     }
-    if IN_KLOOK.held() {
+    if IN_KLOOK.down() {
         crate::view::stop_pitch_drift();
         view[PITCH] = (view[PITCH] as f64 - step(IN_FWD.key_state(), pitchspeed)) as f32;
         view[PITCH] = (step(IN_BK.key_state(), pitchspeed) + view[PITCH] as f64) as f32;
@@ -1029,7 +1037,7 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
     *cmd = usercmd_t { ..Default::default() };
     if active {
         adjust_angles(frametime, &mut view);
-        let strafe = IN_STRAFE.held();
+        let strafe = IN_STRAFE.down();
         if strafe {
             cmd.sidemove += c.cl_sidespeed.value() * IN_RIGHTB.key_state();
             cmd.sidemove -= c.cl_sidespeed.value() * IN_LEFTB.key_state();
@@ -1038,11 +1046,11 @@ pub fn create_move(frametime: f32, cmd: &mut usercmd_t, active: bool) {
         cmd.sidemove -= c.cl_sidespeed.value() * IN_MOVELEFTB.key_state();
         cmd.upmove += c.cl_upspeed.value() * IN_UPK.key_state();
         cmd.upmove -= c.cl_upspeed.value() * IN_DOWNK.key_state();
-        if !IN_KLOOK.held() {
+        if !IN_KLOOK.down() {
             cmd.forwardmove += c.cl_forwardspeed.value() * IN_FWD.key_state();
             cmd.forwardmove -= c.cl_backspeed.value() * IN_BK.key_state();
         }
-        if IN_SPEED.held() {
+        if IN_SPEED.down() {
             let s = c.cl_movespeedkey.value();
             cmd.forwardmove *= s;
             cmd.sidemove *= s;
@@ -1448,6 +1456,17 @@ mod tests {
         assert_eq!(b.key_state(), 1.0);
         b.get().state = 4;
         assert_eq!(b.key_state(), 0.0);
+    }
+
+    /// A press and release of `+speed` leaves `state` 6 (pressed and released edges, not down):
+    /// TS tests `state & 1`, so walking ends with the release.
+    #[test]
+    fn released_speed_key_is_not_down() {
+        let b = Button::new();
+        b.get().state = 2 | 4;
+        assert!(!b.down());
+        b.get().state = 1 | 2;
+        assert!(b.down());
     }
 
     #[test]

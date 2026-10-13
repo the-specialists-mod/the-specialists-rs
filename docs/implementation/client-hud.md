@@ -213,6 +213,10 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   0x80, right 0x100, moveleft 0x200, moveright 0x400, attack2 0x800, reload 0x2000, alt1 0x4000,
   score 0x8000 (also forced while health < 1 or in intermission); `+speed` scales movement but
   isn't sent.
+* The buttons that aren't sent (`in_speed`, `in_strafe`, `in_klook`, `in_jlook`) count as down
+  only while `state & 1`, as TS tests them (`CL_CreateMove`, `CL_AdjustAngles`, `IN_JoyMove`).
+  Nothing clears their pressed edge (bit 1), so testing `state & 3` like the sent buttons kept
+  walking (`cl_movespeedkey`) on forever after the first Shift press.
 * `cl_attackswitch`: with a gun of kind other than grenade/knife/katana/briefcase held, `+attack2`
   drives 0x40 and `+alt2` drives `IN_ATTACK2`. `+attack2` also sends `_special`. The `-` commands
   release only the kbutton the current mapping picks (`0x10025fc0`, `0x10026180`), so switching
