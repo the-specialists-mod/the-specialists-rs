@@ -11,8 +11,8 @@ use crate::weapons::spread;
 use crate::weapons::table::{Tables, WeaponInfo, base_tables};
 
 /// Gun rules. Every default body is TS 3.0's (`Core`); the gun code calls these where a ruleset
-/// can differ.
-pub trait GunRules: Sync {
+/// can differ. The melee attacks are in the supertrait [`MeleeRules`].
+pub trait GunRules: MeleeRules + Sync {
     /// The ruleset's weapon, ammo, asset, sequence and combat tables. Both sides make them the
     /// tables `weapons::tables()` returns while the ruleset is active
     /// ([`set_ruleset_tables`](crate::weapons::table::set_ruleset_tables)), so everything that
@@ -123,6 +123,41 @@ pub struct Predicted {
 impl Predicted {
     /// Everything, as the server runs it.
     pub const ALL: Predicted = Predicted { reload_finish: true, alt_attack: true, kungfu_reload: true };
+}
+
+/// Whole melee attacks a ruleset may run its own way (issue #100 §1.0: hook a whole function
+/// where a ruleset runs a different algorithm). Each returns true when it handled the attack;
+/// the default returns false and TS 3.0's [`Gun`] method runs.
+pub trait MeleeRules {
+    /// `CTSGun::KnifeFire` (0x84044): the knife's slash or throw.
+    fn knife_fire(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+        let _ = (gun, host);
+        false
+    }
+
+    /// `CTSGun::KatanaFire` (0x833f0): a katana swing.
+    fn katana_fire(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+        let _ = (gun, host);
+        false
+    }
+
+    /// `CTSGun::CCombatAttack` (0x86078): a kung-fu punch or kick.
+    fn ccombat_attack(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+        let _ = (gun, host);
+        false
+    }
+
+    /// `CTSGun::CCombatBlock` (0x85ebc): the reload key with kung fu or a blade.
+    fn ccombat_block(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+        let _ = (gun, host);
+        false
+    }
+
+    /// `CTSGun::ColdCock` (0x81dd0): the stock hit (`+alt2`).
+    fn cold_cock(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+        let _ = (gun, host);
+        false
+    }
 }
 
 #[cfg(test)]

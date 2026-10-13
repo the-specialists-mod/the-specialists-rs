@@ -254,8 +254,10 @@ impl Entity for Grenade {
         // 0x7cacc: only `IsInWorld()` (vtable slot 49); no sky test, so a grenade in the sky
         // explodes too.
         if is_in_world(pev) {
-            // `TSExplosion(origin, pev, owner, 110, DMG_BLAST | DMG_NEVERGIB, 300, 1024)`.
-            crate::entities::stock::explode::ts_explosion(origin, me, attacker, 110.0, 0x1040, 300.0, 1024.0);
+            // `TSExplosion(origin, pev, owner, 110, DMG_BLAST | DMG_NEVERGIB, 300, 1024)`
+            // (`ServerRules::grenade_explosion`).
+            let (dmg, r_full, r_max) = crate::gameplay::active().server.grenade_explosion();
+            crate::entities::stock::explode::ts_explosion(origin, me, attacker, dmg, 0x1040, r_full, r_max);
         }
         entities::remove(me);
     }
@@ -454,6 +456,9 @@ pub struct Knife {
     owner: Option<*mut edict_t>,
     thrower: Thrower,
     btype: i32,
+    /// Where it was thrown from (`CreateKnife`'s origin), for a ruleset whose damage falls off
+    /// with the distance flown.
+    thrown_from: Vec3,
     expire: f32,
     flying: bool,
     needs_kungfu: bool,
@@ -470,6 +475,39 @@ fn throw_speed(btype: i32) -> f32 {
     if btype == 8 { 1000.0 } else { 1900.0 }
 }
 
+/// What a ruleset decides about a thrown blade
+/// ([`ServerRules::thrown_blade`](crate::gameplay::ServerRules::thrown_blade)).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThrownBlade {
+    /// Throw speed in u/s.
+    pub speed: f32,
+    /// `pev->gravity` from `Spawn` (it becomes 0.75 once the blade has hit something).
+    pub gravity: f32,
+    /// Damage bits of its hit on a player and of its flying impact.
+    pub bits: i32,
+}
+
+/// TS 3.0's thrown blades: [`throw_speed`]; gravity 0.85 katana, 0.75 combat knife, 0.3 seal
+/// knife (`CTSKnife::Spawn` 0x7db54); bits `0x08001000` (thrown: the ×2 headshot).
+pub fn thrown_blade(btype: i32) -> ThrownBlade {
+    let gravity = match btype {
+        8 => 0.85,
+        6 => 0.75,
+        _ => 0.3,
+    };
+    ThrownBlade { speed: throw_speed(btype), gravity, bits: 0x0800_1000 }
+}
+
+/// TS 3.0's thrown-blade damage (`CTSKnife::BounceTouch` 0x7decc): 150 katana, 100 combat
+/// knife, 50 seal knife, however far it flew.
+pub fn thrown_blade_damage(btype: i32) -> f32 {
+    match btype {
+        8 => 150.0,
+        6 => 100.0,
+        _ => 50.0,
+    }
+}
+
 /// `KnifeFire`/`KatanaThrow` throw: from the eyes + 32 forward + 1 right (traced), at
 /// [`throw_speed`]. `time_scale` comes from [`thrower_time_scale`].
 pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
@@ -480,13 +518,14 @@ pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
     let from = spread::add(eye, right);
     let to = spread::add(spread::ma(eye, 32.0, fwd), right);
     let tr = e.trace_line(from, to, DONT_IGNORE_MONSTERS, owner);
-    let velocity = spread::scale(fwd, throw_speed(btype));
+    let velocity = spread::scale(fwd, crate::gameplay::active().server.thrown_blade(btype).speed);
     let src = tr.vecEndPos;
     spawn_entity::<Knife>(c"knife", |k, cx| {
         k.owner = Some(owner);
         k.thrower = Thrower::new(owner);
         note_thrower(cx.edict, k.thrower);
         k.btype = btype;
+        k.thrown_from = src;
         let pev = cx.pev();
         pev.origin = src;
         pev.velocity = velocity;
@@ -531,12 +570,15 @@ impl Knife {
         }
     }
 
-    fn damage(&self) -> f32 {
-        match self.btype {
-            8 => 150.0,
-            6 => 100.0,
-            _ => 50.0,
-        }
+    /// What the blade deals the player it hits from where it is now
+    /// ([`ServerRules::thrown_blade_damage`](crate::gameplay::ServerRules::thrown_blade_damage)).
+    fn damage(&self, origin: Vec3) -> f32 {
+        let flown = spread::length(spread::sub(self.thrown_from, origin));
+        crate::gameplay::active().server.thrown_blade_damage(self.btype, flown)
+    }
+
+    fn bits(&self) -> i32 {
+        crate::gameplay::active().server.thrown_blade(self.btype).bits
     }
 
     /// Becomes a pickup (`WaitTouch`) for 10 s.
@@ -603,11 +645,12 @@ impl Entity for Knife {
         let e = engine();
         let edict = cx.edict;
         let origin = cx.pev().origin;
-        let (model, gravity): (&CStr, f32) = match self.btype {
-            8 => (c"models/w_katana.mdl", 0.85),
-            6 => (c"models/w_knife.mdl", 0.75),
-            _ => (c"models/w_sealknife.mdl", 0.3),
+        let model = match self.btype {
+            8 => c"models/w_katana.mdl",
+            6 => c"models/w_knife.mdl",
+            _ => c"models/w_sealknife.mdl",
         };
+        let gravity = crate::gameplay::active().server.thrown_blade(self.btype).gravity;
         e.set_model(edict, model);
         let pev = cx.pev();
         pev.classname = e.alloc_string(c"knife");
@@ -645,8 +688,8 @@ impl Entity for Knife {
         // too. It has no ground friction: that is `WaitTouch`, which the engine runs on every
         // frame a sliding blade is pushed into the floor (see `ground_slide`).
         // Lent back for the hit, so the kill it scores can name the blade.
-        let (me, thrower) = (cx.edict, self.thrower.or(cx.edict));
-        world::lend(me, self, || impact_damage(me, thrower, 0.1, 0x0800_1000, false));
+        let (me, thrower, bits) = (cx.edict, self.thrower.or(cx.edict), self.bits());
+        world::lend(me, self, || impact_damage(me, thrower, 0.1, bits, false));
         // A blade stuck in a wall (MOVETYPE_FLY) stays put.
         let pev = cx.pev();
         if pev.movetype != MOVETYPE_FLY as i32 {
@@ -687,14 +730,14 @@ impl Knife {
         if speed(cx.pev()) < 700.0 {
             self.flying = false;
         }
-        let dmg = self.damage();
+        let dmg = self.damage(cx.pev().origin);
         report_damage(|| format!("(debug){dmg:.6}\n"));
         self.needs_kungfu = false;
         if ov.takedamage != 0.0 && crate::rules::has_player(other) {
             let gt = e.globals();
             let pev = cx.pev();
             let attacker = self.owner.unwrap_or(me);
-            let mut info = DamageInfo::new(me, attacker, self.damage(), 0x0800_1000).traced();
+            let mut info = DamageInfo::new(me, attacker, dmg, self.bits()).traced();
             info.hitgroup = gt.trace_hitgroup;
             info.dir = spread::normalize(pev.velocity);
             info.pos = gt.trace_endpos;

@@ -52,8 +52,13 @@ pub fn cvars() -> CvarValues {
 /// `damagemult` applies only with `g_flWeaponCheat` (`sv_cheats` latched at map load,
 /// `rules::cvars::cheats`; `CBulletManager.c:316`, `CBasePlayer.c:221`).
 pub fn damage_adjust() -> f32 {
+    damage_cheat().unwrap_or(1.0)
+}
+
+/// `damagemult` when it applies (see [`damage_adjust`]), else `None`.
+pub fn damage_cheat() -> Option<f32> {
     let m = cvars().damagemult;
-    if m > 0.0 && crate::rules::cvars::cheats() { m } else { 1.0 }
+    (m > 0.0 && crate::rules::cvars::cheats()).then_some(m)
 }
 
 /// Max carry of ammo type `t` (`get_ammo_info(t)+0x0c`) in the column `Set_ammo_count` (0x7f2cc)

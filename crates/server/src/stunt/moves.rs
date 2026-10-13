@@ -508,8 +508,7 @@ fn go_wheel(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
             if dirn == 3 {
                 // Backflip kick: costs 22.5 kung-fu power and arms a delayed hit (15, 30 with
                 // Kung Fu) in the gun's close-combat window.
-                let dmg = if p.kungfu { 30.0 } else { 15.0 };
-                crate::weapons::arm_kick(p, cx, 22.5, dmg);
+                crate::gameplay::active().server.backflip_kick(p, cx);
             }
             return true;
         }
@@ -684,13 +683,27 @@ fn close_attack(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
     let anim = close_attack_anim(engine().random_long(0, 2));
     p.stunt.close_attack_cd = timer(cx, r, 0.7);
     anim::animate(p, cx, anim);
-    // `UTIL_WeaponTimeBase()` is 0: only a run-out `m_flNextAttack` (it rests at -0.001) is set.
+    stunt_sound(cx, c"player/closecombat.wav");
+    crate::gameplay::active().server.jump_kick_hit(p, cx, strength);
+    true
+}
+
+/// The end of a jump kick that hit (`CTSStunt::CloseAttack` 0x9c630): `UTIL_WeaponTimeBase()` is
+/// 0, so only a run-out `m_flNextAttack` (it rests at -0.001) is set, to 0.35; then
+/// `UpdateMeleeBar(strength * 1.5)`. (TS sets the attack time before the sound; nothing reads it
+/// in between.)
+pub fn jump_kick_hit_core(p: &mut Player, cx: &mut Cx, strength: f32) {
     if p.inv.gun.next_attack < 0.0 {
         p.inv.gun.next_attack = 0.35;
     }
-    stunt_sound(cx, c"player/closecombat.wav");
     crate::weapons::update_melee_bar(p, cx, strength * 1.5);
-    true
+}
+
+/// The backflip kick (`CTSStunt::GoWheel` backward): 22.5 kung-fu power and a delayed hit of 15
+/// (30 with Kung Fu) in the gun's close-combat window.
+pub fn backflip_kick_core(p: &mut Player, cx: &mut Cx) {
+    let dmg = if p.kungfu { 30.0 } else { 15.0 };
+    crate::weapons::arm_kick(p, cx, 22.5, dmg);
 }
 
 /// `CBasePlayer::Jump` (0x92864), every frame jump is held: out of deep water and not water

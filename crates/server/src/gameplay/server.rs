@@ -11,14 +11,18 @@ use crate::entities::ts::ground::GroundWeapon;
 use crate::entities::ts::misc::MapFlags;
 use crate::messages::Msg;
 use crate::player::Player;
+use crate::player::damage::{self as player_damage, HitDamage, PlayerHit};
 use crate::rules::powerup::{self, PowerupRules};
 use crate::rules::scoring::{self, Frag};
 use crate::rules::state::GameRules;
 use crate::rules::{cvars, frame, lifecycle, teams};
 use crate::stunt::rules::{self as stunt, Dive, StuntClock, StuntRules};
+use crate::weapons::{fire, melee, projectiles};
 use crate::world::{Cx, Entity};
 use goldsrc::server::MsgWriter;
-use goldsrc::sys::edict_t;
+use goldsrc::sys::{TraceResult, edict_t};
+use shared::weapons::gun::{MeleeKind, MeleeResult};
+use shared::weapons::spread::{self, Vec3};
 use std::ffi::CStr;
 
 /// A server cvar: (name, default, flags), as [`cvars::CVARS`] lists TS 3.0's.
@@ -281,12 +285,169 @@ pub trait ServerRules: Sync {
     fn bullet_time_allowed(&self, time_scale: f32) -> bool {
         time_scale.max(0.01) <= 0.99
     }
+
+    // ---- bullets (`weapons::fire`, `weapons::bullets`) ------------------------------------------
+
+    /// The trace a bullet flies along (`ShootBulletsPlayer` 0x6f69c and its penetration,
+    /// `CBulletManager::UpdateBullet` 0x6ef5c): `UTIL_TraceLine_Expanded` (0x6f4f4), which grows
+    /// every player's box by 32 units, ignoring the shooter.
+    fn bullet_trace(&self, start: Vec3, end: Vec3, shooter: *mut edict_t) -> TraceResult {
+        fire::trace_expanded(start, end, shooter)
+    }
+
+    /// A bullet's range-falloff index from `scaled`, the distance in tenths of the ammo's range
+    /// unit (`dist / (unit·10)·10`, or `dist·0.0033333334·10` after a penetration). The port's
+    /// 3.0 rounds it to the nearest (`spread::range_index`); issue #80 has TS 3.0 truncating
+    /// too, and fixing that here fixes every bullet path.
+    fn bullet_range_index(&self, scaled: f32) -> i32 {
+        scaled.round_ties_even() as i32
+    }
+
+    /// A bullet's damage where it hits, before [`bullet_damage_multiplier`](Self::bullet_damage_multiplier):
+    /// the gun's `damage` (`WeaponInfo::damage` of `weapon`, firing ammo type `ammo`) times the
+    /// range falloff `falloff`, for a hitscan pellet or a `simulated` bullet's first hit (a
+    /// penetration's carried damage is scaled by the falloff alone). TS 3.0: `falloff × damage`.
+    fn bullet_damage(&self, ammo: u8, weapon: u8, damage: f32, falloff: f32, simulated: bool) -> f32 {
+        let _ = (ammo, weapon, simulated);
+        falloff * damage
+    }
+
+    /// The multiplier of a bullet's damage where it hits. `acc` starts at 1.0 for each
+    /// `ShootBulletsPlayer` call and each simulated-bullet update and persists over the
+    /// pellets of the call; `cheat` is `damagemult` when it applies (`sv_cheats`). The value
+    /// also scales the damage a penetration carries on. TS 3.0: `cheat` or 1
+    /// (`assets::damage_adjust`).
+    fn bullet_damage_multiplier(&self, acc: &mut f32, cheat: Option<f32>) -> f32 {
+        let _ = acc;
+        cheat.unwrap_or(1.0)
+    }
+
+    /// How far past the hit point `ShootBulletsPlayer` (0x6f69c) looks for the far side of a
+    /// wall, from the damage `left` to carry through: `min(2·left, 48)`. (The simulated bullets
+    /// use `min(left, 48)` in every ruleset.)
+    fn pierce_step(&self, left: f32) -> f32 {
+        (left + left).min(48.0)
+    }
+
+    /// The weapons' `realbullet` (`TSGameRules + 0x578`, `rules::state::realbullet`): non-zero
+    /// fires simulated bullets for everyone (2+: stepped every frame). The shooter's slow motion
+    /// fires them too, whatever this says.
+    fn weapon_realbullet(&self, realbullet: i32) -> i32 {
+        realbullet
+    }
+
+    /// `GetBulletVelocityMult` (`CBulletManager::UpdateBullet` 0x6ef5c): a simulated bullet's
+    /// speed factor from the shooter's time scale (`slowmul`: its slow-motion "others" amount,
+    /// else its own time scale) and bullet time.
+    fn bullet_velocity_mult(&self, slowmul: f32, bullet_time: bool) -> f32 {
+        spread::bullet_velocity_mult(slowmul, bullet_time)
+    }
+
+    // ---- the victim (`player::damage`, `rules::lifecycle`) --------------------------------------
+
+    /// `CBasePlayer::TraceAttack` (0x901cc): the damage a traced hit adds to the multi-damage
+    /// after the stunt and dodge ×0.7 and the hitgroup multipliers, and whether it is a
+    /// headshot (the hit sound; `glast_headshot` when [`HitDamage::record_headshot`]).
+    fn player_hit(&self, hit: &PlayerHit) -> HitDamage {
+        player_damage::hit_damage(hit)
+    }
+
+    /// `CBasePlayer::TakeDamage` (0x8fa94): the damage that reaches `CBaseMonster::TakeDamage`
+    /// after armour, truncated to an int (`player::damage::after_kevlar`), changing `armor` if
+    /// the ruleset uses it up. TS 3.0's kevlar absorbs `armor_absorb` and is never depleted.
+    fn armor_damage(&self, armor: &mut f32, amount: f32, hitgroup: i32, bits: i32) -> f32 {
+        player_damage::after_kevlar(amount, *armor, hitgroup, bits, crate::rules::state::armor_absorb())
+    }
+
+    /// `CBasePlayer::TakeDamage` (0x8fa94): how far a hit the player takes kicks its view up
+    /// (`punchangle.x -= ...`). TS 3.0: none.
+    fn damage_punch(&self) -> f32 {
+        0.0
+    }
+
+    // ---- melee (`weapons::melee`) -----------------------------------------------------------------
+
+    /// The victim's block of a melee hit (`VictimKungFuHold`, `VictimKnifeHold`,
+    /// `VictimKatanaHold`; `weapons::melee::hold`): `None` if `victim` doesn't block, else what the
+    /// attacker gets ([`MeleeResult::Blocked`]), the victim's side applied here. `damage` is the
+    /// hit's; `atk_block` the attacker's own kung-fu block window (the attacker is the player
+    /// being dispatched). Called for every hit on a player, the delayed ones too.
+    fn melee_block(
+        &self,
+        kind: MeleeKind,
+        attacker: *mut edict_t,
+        victim: *mut edict_t,
+        damage: f32,
+        atk_block: f32,
+    ) -> Option<MeleeResult> {
+        let _ = damage;
+        melee::hold(kind, attacker, victim, atk_block)
+    }
+
+    /// A jump kick (`CTSStunt::CloseAttack` 0x9c630) has hit; `strength` is its damage before
+    /// Kung Fu's doubling. TS 3.0: `m_flNextAttack` 0.35 if it had run out, and
+    /// `UpdateMeleeBar(strength × 1.5)` (`stunt::moves::jump_kick_hit_core`).
+    fn jump_kick_hit(&self, p: &mut Player, cx: &mut Cx, strength: f32) {
+        crate::stunt::moves::jump_kick_hit_core(p, cx, strength);
+    }
+
+    /// The backflip kick (`CTSStunt::GoWheel` backward): TS 3.0 charges 22.5 kung-fu power and
+    /// arms a delayed hit of 15 (30 with Kung Fu) (`stunt::moves::backflip_kick_core`).
+    fn backflip_kick(&self, p: &mut Player, cx: &mut Cx) {
+        crate::stunt::moves::backflip_kick_core(p, cx);
+    }
+
+    /// A melee hit that may disarm (`MeleeHit::disarm`, and every delayed kung-fu hit): the
+    /// damage it adds to the victim's disarm count (`DropWeapon(-2, dmg)`, dropped at a
+    /// per-weapon threshold), or `None` for no disarm. TS 3.0: the damage, whoever the victim.
+    fn melee_disarm(&self, damage: f32, victim_is_the_one: bool) -> Option<f32> {
+        let _ = victim_is_the_one;
+        Some(damage)
+    }
+
+    // ---- explosions and thrown blades ------------------------------------------------------------
+
+    /// `CM61Grenade::WaitThink` (0x7cacc): the grenade's `TSExplosion` damage, full-damage
+    /// radius and maximum radius: 110, 300, 1024.
+    fn grenade_explosion(&self) -> (f32, f32, f32) {
+        (110.0, 300.0, 1024.0)
+    }
+
+    /// `TSExplosion` (0x7d01c): whether the blast knocks the dropped guns (`WorldGun`) in its
+    /// sphere away. TS 3.0: yes.
+    fn explosion_pushes_world_guns(&self) -> bool {
+        true
+    }
+
+    /// The end of `TSExplosion` (0x7d964), after the damage: `org` is the blast point (the
+    /// origin, 1 unit up), `attacker` the attacker or else the inflictor. TS 3.0: the
+    /// "spectacular" slow-motion point (0.25 for 1 s).
+    fn explosion_aftermath(&self, org: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t) {
+        let _ = (inflictor, attacker);
+        crate::entities::stock::explode::explosion_slow_point(org);
+    }
+
+    /// A thrown blade of type `btype` (6 combat knife, 7 seal knife, 8 katana): its speed
+    /// (`KnifeFire` 0x84044 / `KatanaThrow` 0x83b68), its gravity (`CTSKnife::Spawn` 0x7db54) and
+    /// its damage bits (`CTSKnife::BounceTouch` 0x7decc and `WaitThink` 0x7ea30).
+    fn thrown_blade(&self, btype: i32) -> projectiles::ThrownBlade {
+        projectiles::thrown_blade(btype)
+    }
+
+    /// `CTSKnife::BounceTouch` (0x7decc): what a thrown blade deals the player it hits, `flown`
+    /// units from where it was thrown. TS 3.0: 150 katana, 100 combat knife, 50 seal knife.
+    fn thrown_blade_damage(&self, btype: i32, flown: f32) -> f32 {
+        let _ = flown;
+        projectiles::thrown_blade_damage(btype)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ServerRules;
+    use super::*;
+    use crate::damage::{bits, hitgroup};
     use crate::rules::cvars;
+    use shared::gameplay::CORE;
 
     /// The core plugin's hooks that need no engine keep TS 3.0's values.
     #[test]
@@ -298,5 +459,50 @@ mod tests {
         assert!(!core.server_command("globalslow"), "3.0 runs its server commands");
         assert!(!core.server_command("restartround"));
         assert!(!core.server_command("weaponrestriction"));
+    }
+
+    fn hit(damage: f32, bits: i32, hitgroup: i32) -> PlayerHit {
+        PlayerHit { damage, bits, hitgroup, stunting: false, dodging: false }
+    }
+
+    /// The damage hooks' defaults are TS 3.0's.
+    #[test]
+    fn damage_defaults_are_3_0() {
+        let r: &dyn ServerRules = &CORE;
+        assert_eq!(r.bullet_range_index(9.5), 10, "rounded");
+        assert_eq!(r.bullet_range_index(9.4), 9);
+        let mut acc = 1.0;
+        assert_eq!(r.bullet_damage_multiplier(&mut acc, None), 1.0);
+        assert_eq!(r.bullet_damage_multiplier(&mut acc, None), 1.0, "nothing accumulates");
+        assert_eq!(r.bullet_damage_multiplier(&mut acc, Some(3.0)), 3.0);
+        assert_eq!(r.bullet_damage(1, 5, 33.0, 0.5, false), 16.5);
+        assert_eq!(r.pierce_step(10.0), 20.0);
+        assert_eq!(r.pierce_step(30.0), 48.0);
+        assert_eq!(r.weapon_realbullet(2), 2);
+        assert_eq!(r.bullet_velocity_mult(0.35, true), spread::bullet_velocity_mult(0.35, true));
+        assert_eq!(r.damage_punch(), 0.0);
+        assert_eq!(r.grenade_explosion(), (110.0, 300.0, 1024.0));
+        assert!(r.explosion_pushes_world_guns());
+        assert_eq!(r.thrown_blade(6), projectiles::ThrownBlade { speed: 1900.0, gravity: 0.75, bits: 0x0800_1000 });
+        assert_eq!(r.thrown_blade(7), projectiles::ThrownBlade { speed: 1900.0, gravity: 0.3, bits: 0x0800_1000 });
+        assert_eq!(r.thrown_blade(8), projectiles::ThrownBlade { speed: 1000.0, gravity: 0.85, bits: 0x0800_1000 });
+        assert_eq!([6, 7, 8].map(|t| r.thrown_blade_damage(t, 2000.0)), [100.0, 50.0, 150.0]);
+    }
+
+    #[test]
+    fn hit_defaults_are_3_0() {
+        let r: &dyn ServerRules = &CORE;
+        let h = r.player_hit(&hit(30.0, bits::BULLET, hitgroup::HEAD));
+        assert_eq!(h, HitDamage { amount: 60.0, headshot: true, record_headshot: true });
+        assert_eq!(r.player_hit(&hit(10.0, 0x0200_1002, hitgroup::HEAD)).amount, 15.0, "shotgun ×1.5");
+        assert!(r.player_hit(&hit(100.0, 0x0800_1000, hitgroup::HEAD)).headshot, "thrown");
+        assert_eq!(r.player_hit(&hit(30.0, bits::BULLET, hitgroup::RIGHTLEG)).amount, 15.0);
+        let mut d = hit(100.0, bits::BULLET, hitgroup::CHEST);
+        d.dodging = true;
+        assert!((r.player_hit(&d).amount - 70.0).abs() < 1e-4, "dodge ×0.7 for bullets");
+        d.bits = bits::CLUB;
+        assert_eq!(r.player_hit(&d).amount, 100.0, "not for melee");
+        d.stunting = true;
+        assert!((r.player_hit(&d).amount - 70.0).abs() < 1e-4);
     }
 }

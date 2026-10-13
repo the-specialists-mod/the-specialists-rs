@@ -10,7 +10,7 @@
 pub mod gun;
 pub mod pm;
 
-pub use gun::{GunRules, Predicted, SpreadDecay};
+pub use gun::{GunRules, MeleeRules, Predicted, SpreadDecay};
 pub use pm::PmRules;
 pub use ts_gameplay::{DEFAULT_ID, PHYSINFO_KEY, PHYSINFO_KEY_C};
 
@@ -24,3 +24,4 @@ pub static CORE: Core = Core;
 
 impl PmRules for Core {}
 impl GunRules for Core {}
+impl MeleeRules for Core {}

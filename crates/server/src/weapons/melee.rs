@@ -74,7 +74,7 @@ fn alive(e: *mut edict_t) -> bool {
 /// Victim-side effects (its next attack, its bar) are applied here.
 /// `atk_block` is the attacker's own kung-fu block window (the attacker is the player being
 /// dispatched, so the caller passes it; victims are other players, reachable with world::with).
-fn hold(kind: MeleeKind, attacker: *mut edict_t, victim: *mut edict_t, atk_block: f32) -> Option<MeleeResult> {
+pub fn hold(kind: MeleeKind, attacker: *mut edict_t, victim: *mut edict_t, atk_block: f32) -> Option<MeleeResult> {
     if !crate::rules::has_player(victim) {
         return None;
     }
@@ -183,7 +183,8 @@ pub fn trace_attack(
     never_teammates: bool,
 ) -> MeleeResult {
     let e = engine();
-    if hit.kind == MeleeKind::KungFu && crate::gameplay::active().server.motion_blur() && (e.random_long(10, 80) as f32) < hit.damage {
+    let rules = crate::gameplay::active().server;
+    if hit.kind == MeleeKind::KungFu && rules.motion_blur() && (e.random_long(10, 80) as f32) < hit.damage {
         let origin = attacker.v().origin;
         messages::pvs(Msg::TsMBlur, origin).byte(e.index_of(attacker)).byte(if hit.damage > 50.0 { 2 } else { 1 }).end();
     }
@@ -217,7 +218,7 @@ pub fn trace_attack(
         }
     }
     if is_player {
-        if let Some(blocked) = hold(hit.kind, attacker, victim, atk_block) {
+        if let Some(blocked) = rules.melee_block(hit.kind, attacker, victim, hit.damage, atk_block) {
             return blocked;
         }
         if matches!(hit.kind, MeleeKind::KungFu | MeleeKind::ColdCock) {
@@ -225,8 +226,10 @@ pub fn trace_attack(
             let now = e.time();
             if hit.disarm {
                 crate::player::with_player(victim, |vp, vcx| {
-                    if vp.ts.protect_until < now {
-                        inventory::drop_weapon(vp, vcx, Drop::Disarm(hit.damage));
+                    if vp.ts.protect_until < now
+                        && let Some(d) = rules.melee_disarm(hit.damage, vp.ts.is_the_one)
+                    {
+                        inventory::drop_weapon(vp, vcx, Drop::Disarm(d));
                     }
                 });
             }
@@ -307,7 +310,10 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
             1 => MeleeKind::Knife,
             _ => MeleeKind::Katana,
         };
-        let blocked = hold(kind, me, victim, g.block_kungfu);
+        let rules = crate::gameplay::active().server;
+        // Lent for the block, so a ruleset's block can reach the attacker as in a direct hit.
+        let atk_block = g.block_kungfu;
+        let blocked = crate::world::lend(me, p, || rules.melee_block(kind, me, victim, dmg, atk_block));
         if let Some(MeleeResult::Blocked { next_attack, bar_cost }) = blocked {
             let g = &mut p.inv.gun;
             g.melee_damage = 0.0;
@@ -324,8 +330,10 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
             // No disarm while the victim's spawn protection (`pl+0x71c`) runs.
             let now = e.time();
             crate::player::with_player(victim, |vp, vcx| {
-                if vp.ts.protect_until < now {
-                    inventory::drop_weapon(vp, vcx, Drop::Disarm(dmg));
+                if vp.ts.protect_until < now
+                    && let Some(d) = rules.melee_disarm(dmg, vp.ts.is_the_one)
+                {
+                    inventory::drop_weapon(vp, vcx, Drop::Disarm(d));
                 }
             });
             if dmg > 30.0 {
