@@ -108,8 +108,15 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
 
     let mut left = 0.0f32;
     let mut last: Option<(TraceResult, Vec3)> = None;
+    // The pellet pattern is the ruleset's; a bot's may use the engine's `RandomFloat`.
+    let rules = crate::gameplay::gun_rules(shooter);
+    let bot = pev.flags & FL_FAKECLIENT as i32 != 0;
+    let mut random_float = |lo: f32, hi: f32| e.random_float(lo, hi);
     for i in 1..=shot.pellets {
-        let dir = spread::pellet_dir(fwd, right, up, [shot.spread, shot.spread], shot.seed, i, spread::RADIAL_SPREAD);
+        let bot_random: Option<&mut dyn FnMut(f32, f32) -> f32> = if bot { Some(&mut random_float) } else { None };
+        let offset =
+            rules.pellet_offset(shot.seed, i, bot_random).unwrap_or_else(|| spread::pellet_offset(shot.seed, i, spread::RADIAL_SPREAD));
+        let dir = spread::pellet_dir_at(fwd, right, up, [shot.spread, shot.spread], offset);
         if real {
             bullets::fire(shooter, src, dir, shot.damage, shot.ammo, shot.weapon, shot.btype);
             let (end, fraction) = LAST_TRACE.0.get();

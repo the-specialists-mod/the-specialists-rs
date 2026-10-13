@@ -349,7 +349,9 @@ dependencies = [
 name = "ts21-gameplay"
 version = "3.0.1"
 dependencies = [
+ "serde",
  "shared",
+ "toml",
  "ts-gameplay",
 ]
 

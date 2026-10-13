@@ -153,6 +153,9 @@ impl GunHost for ServerHost<'_> {
     fn slow_mul(&self) -> f32 {
         shared::weapons::spread::fixed_slow_amt(self.pev().fuser1)
     }
+    fn time_scale(&self) -> f32 {
+        self.pev().fuser1
+    }
     fn arith(&self) -> shared::pm::Arith {
         crate::rules::cvars::pm_arith()
     }
@@ -215,7 +218,7 @@ impl GunHost for ServerHost<'_> {
         self.pev().fov = fov;
     }
     fn set_view_model(&mut self, id: Option<u8>) {
-        let s = id.and_then(|id| assets::with(|a| a.v_model[id as usize])).unwrap_or(0);
+        let s = id.and_then(|id| assets::with_models(|m| m.v_model[id as usize])).unwrap_or(0);
         self.pev().viewmodel = s;
     }
     fn view_model_hidden(&self) -> bool {
@@ -224,9 +227,9 @@ impl GunHost for ServerHost<'_> {
     fn set_weapon_model(&mut self, model: Option<(u8, bool)>) {
         let s = model
             .and_then(|(id, sil)| {
-                assets::with(|a| {
-                    let ps = a.p_model_sil[id as usize];
-                    if sil && ps != 0 { ps } else { a.p_model[id as usize] }
+                assets::with_models(|m| {
+                    let ps = m.p_model_sil[id as usize];
+                    if sil && ps != 0 { ps } else { m.p_model[id as usize] }
                 })
             })
             .unwrap_or(0);
@@ -261,9 +264,9 @@ impl GunHost for ServerHost<'_> {
             self.anims.push(anim);
         }
     }
-    fn kick(&mut self, pitch: f32, yaw: f32) {
+    fn kick(&mut self, pitch: f32, yaw: f32, _shake: bool) {
         // VKickback: the server writes pev->punchangle (pev+0x68) only for bots; humans get the
-        // same kick from their client's fire-event handler.
+        // same kick from their client's fire-event handler. The view shake is the client's.
         let pev = self.pev();
         if pev.flags & FL_FAKECLIENT as i32 != 0 {
             pev.punchangle[0] -= pitch;

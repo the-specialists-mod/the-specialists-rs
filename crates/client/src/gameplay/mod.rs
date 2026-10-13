@@ -4,7 +4,8 @@
 //! * Movement prediction (`HUD_PlayerMove`): [`pm_rules`], from `pmove->physinfo`.
 //! * Weapon prediction (`HUD_PostRunCmd`): [`gun_rules`], from `clientdata_t::physinfo`, per
 //!   command.
-//! * HUD: [`hud_rules`], from the server's `SrvSett` key 4 (the HUD's `gameplay`).
+//! * HUD: [`hud_rules`], from the server's `SrvSett` key 4 (the HUD's `gameplay`); the weapon
+//!   events: [`hud_gun_rules`], from the same.
 //!
 //! When the server switches rulesets it re-sends `SrvSett` 4, and a changed value resets the
 //! client to a brand-new state ([`reset_client`]) before the server's fresh state arrives. The
@@ -80,6 +81,15 @@ pub fn gun_rules(cd: &clientdata_t) -> &'static dyn GunRules {
 pub fn hud_rules(id: Option<i16>) -> &'static dyn ClientRules {
     match id {
         Some(v) => resolve(v.to_string().as_bytes()).client,
+        None => &CORE,
+    }
+}
+
+/// The gun rules outside a predicted command, for the weapon events (`EV_TS_Fire*`): the HUD's
+/// ruleset (`SrvSett` 4), as [`hud_rules`].
+pub fn hud_gun_rules() -> &'static dyn GunRules {
+    match crate::hud::with(|h| h.gameplay) {
+        Some(v) => resolve(v.to_string().as_bytes()).gun,
         None => &CORE,
     }
 }

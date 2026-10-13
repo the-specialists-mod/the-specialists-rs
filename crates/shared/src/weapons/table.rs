@@ -178,15 +178,29 @@ pub struct Combat {
     pub attachment_price: AttachmentPrice,
 }
 
+/// A weapon's view-model sequence tables A (normal) and B (alternate grip; `B[0] == -1` when it
+/// has none), 29 entries each ([`super::anims`]).
+pub type SeqTables = ([i16; 29], [i16; 29]);
+
+/// One ruleset's weapon data: weapons, ammo, client assets, view-model sequences and the combat
+/// constants. TS 3.0's are embedded ([`base_tables`]); a gameplay plugin brings its own
+/// ([`crate::gameplay::GunRules::tables`]).
 #[derive(Clone)]
 pub struct Tables {
     weapons: Vec<Option<WeaponInfo>>,
     ammo: Vec<Option<AmmoInfo>>,
     assets: Vec<Option<Asset>>,
+    anims: Vec<SeqTables>,
     pub combat: Combat,
 }
 
 impl Tables {
+    /// Tables from their parts, each entry at its `id`. `anims` is indexed by weapon id
+    /// (`MAX_WEAPONS` entries; an id past the end uses the last).
+    pub fn new(weapons: Vec<WeaponInfo>, ammo: Vec<AmmoInfo>, assets: Vec<Asset>, anims: Vec<SeqTables>, combat: Combat) -> Tables {
+        assert!(!anims.is_empty(), "sequence tables");
+        Tables { weapons: by_id(weapons, |w| w.id), ammo: by_id(ammo, |a| a.id), assets: by_id(assets, |a| a.id), anims, combat }
+    }
     pub fn weapon(&self, id: u8) -> Option<&WeaponInfo> {
         self.weapons.get(id as usize)?.as_ref()
     }
@@ -195,6 +209,16 @@ impl Tables {
     }
     pub fn asset(&self, id: u8) -> Option<&Asset> {
         self.assets.get(id as usize)?.as_ref()
+    }
+    /// The view-model sequence tables of weapon `id`.
+    pub fn anims(&self, id: u8) -> &SeqTables {
+        &self.anims[(id as usize).min(self.anims.len() - 1)]
+    }
+    pub fn ammos(&self) -> impl Iterator<Item = &AmmoInfo> {
+        self.ammo.iter().flatten()
+    }
+    pub fn assets(&self) -> impl Iterator<Item = &Asset> {
+        self.assets.iter().flatten()
     }
     pub fn weapons(&self) -> impl Iterator<Item = &WeaponInfo> {
         self.weapons.iter().flatten()
@@ -234,25 +258,48 @@ pub fn parse() -> Result<Tables, toml::de::Error> {
     let a: AmmoFile = toml::from_str(include_str!("../../data/ammo.toml"))?;
     let s: AssetFile = toml::from_str(include_str!("../../data/assets.toml"))?;
     let combat: Combat = toml::from_str(include_str!("../../data/combat.toml"))?;
-    Ok(Tables { weapons: by_id(w.weapon, |w| w.id), ammo: by_id(a.ammo, |a| a.id), assets: by_id(s.asset, |a| a.id), combat })
+    Ok(Tables::new(w.weapon, a.ammo, s.asset, super::anims::ANIMS.to_vec(), combat))
 }
 
-fn base() -> &'static Tables {
+/// The embedded TS 3.0 tables, parsed once; panics on a malformed embedded table (caught by
+/// `cargo test`). The core plugin's [`GunRules::tables`](crate::gameplay::GunRules::tables).
+pub fn base_tables() -> &'static Tables {
     static T: OnceLock<Tables> = OnceLock::new();
     T.get_or_init(|| parse().expect("embedded weapon tables"))
 }
 
-/// Custom weapon parameters (`loadweapons` / `CustomWP`) replace the base tables.
+/// The active ruleset's tables ([`set_ruleset_tables`]); `None` is TS 3.0's.
+static RULESET: RwLock<Option<&'static Tables>> = RwLock::new(None);
+
+/// Custom weapon parameters (`loadweapons` / `CustomWP`) replace the ruleset's tables.
 static CUSTOM: RwLock<Option<&'static Tables>> = RwLock::new(None);
 
-/// The weapon tables: the embedded TS 3.0 values, or the custom ones when a server loaded a
-/// weapons file (`CustomWP`). Parsed once; panics on a malformed embedded table (caught by
-/// `cargo test`).
+/// The weapon tables: the active ruleset's ([`set_ruleset_tables`], TS 3.0's until one is set),
+/// or the custom ones when a server loaded a weapons file (`CustomWP`).
 pub fn tables() -> &'static Tables {
     if let Some(t) = *CUSTOM.read().unwrap() {
         return t;
     }
-    base()
+    ruleset_tables()
+}
+
+/// The active ruleset's own tables, without custom parameters.
+pub fn ruleset_tables() -> &'static Tables {
+    RULESET.read().unwrap().unwrap_or_else(base_tables)
+}
+
+/// Makes `t` (a gameplay plugin's [`GunRules::tables`](crate::gameplay::GunRules::tables)) the
+/// tables [`tables`] returns: the server when a ruleset becomes active, the client from the
+/// ruleset of each predicted command. A different ruleset also drops the custom parameters,
+/// which were made from the old one's tables: nothing carries over a switch. Returns true when
+/// the tables changed.
+pub fn set_ruleset_tables(t: &'static Tables) -> bool {
+    if std::ptr::eq(ruleset_tables(), t) {
+        return false;
+    }
+    *RULESET.write().unwrap() = Some(t);
+    *CUSTOM.write().unwrap() = None;
+    true
 }
 
 impl Tables {
@@ -286,7 +333,7 @@ pub fn set_weapon_params(id: u8, accuracy: f32, view_kick: f32, acc_kick: f32, d
     }
 }
 
-/// Back to the embedded TS 3.0 values.
+/// Back to the ruleset's own values.
 pub fn reset_custom_tables() {
     *CUSTOM.write().unwrap() = None;
 }

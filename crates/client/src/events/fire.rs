@@ -401,11 +401,12 @@ fn fire_akimbo(a: &Args, linked: bool) {
     }
     fire_sound(a, s.id, s.silenced);
     let src = a.gun_position();
-    if linked {
-        bullets_for(a, &s, v::ma(src, -5.0, s.right), a.b2, a.f1, a.f2);
-        bullets_for(a, &s, v::ma(src, 5.0, s.right), a.b2.wrapping_add(0x21), a.f1, a.f2);
-    } else {
-        bullets_for(a, &s, src, a.b2, a.f1, a.f2);
+    // The guns' offsets along `v_right` are the ruleset's (TS 3.0: -5 and +5 linked, none for one).
+    let (first, second) = crate::gameplay::hud_gun_rules().akimbo_event_offsets(linked, a.b1 != 0);
+    let at = |off: f32| if off == 0.0 { src } else { v::ma(src, off, s.right) };
+    bullets_for(a, &s, at(first), a.b2, a.f1, a.f2);
+    if let Some(off) = second {
+        bullets_for(a, &s, at(off), a.b2.wrapping_add(0x21), a.f1, a.f2);
     }
 }
 
@@ -425,13 +426,22 @@ pub struct Bullets {
     pub seed: i32,
 }
 
-/// Pellet `i` direction (1-based), as both server and client compute it.
+/// Pellet `i` direction (1-based), as both server and client compute it: TS 3.0's pattern.
 pub fn pellet_dir(dir: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], seed: i32, i: i32) -> Vec3 {
+    pellet_dir_at(dir, right, up, spread, pellet_offset(seed, i))
+}
+
+/// TS 3.0's pellet offset, in units of the spread, as the client computes it (single precision).
+fn pellet_offset(seed: i32, i: i32) -> (f32, f32) {
     let s = (seed as u32).wrapping_add(i as u32);
     let ang = shared_random_float(s, -std::f32::consts::PI, std::f32::consts::PI);
     let r = shared_random_float(s.wrapping_add(1), 0.0, SPREAD_RADIUS);
     let m = 1.0 - r * r * r;
-    let (x, y) = (ang.cos() * m, ang.sin() * m);
+    (ang.cos() * m, ang.sin() * m)
+}
+
+/// The direction of a pellet at offset `(x, y)`.
+fn pellet_dir_at(dir: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], (x, y): (f32, f32)) -> Vec3 {
     v::add(v::add(dir, v::scale(right, x * spread[0])), v::scale(up, y * spread[1]))
 }
 
@@ -493,8 +503,11 @@ pub fn fire_bullets(b: &Bullets) {
     // moves it on, hit or miss.
     let mut last_end = end;
     let mut last_dir = b.dir;
+    // The pellet pattern is the ruleset's ([`GunRules::pellet_offset`]).
+    let rules = crate::gameplay::hud_gun_rules();
     for i in 1..=b.pellets.max(1) {
-        let d = pellet_dir(b.dir, b.right, b.up, b.spread, b.seed, i);
+        let offset = rules.pellet_offset(b.seed as u32, i as u32, None).unwrap_or_else(|| pellet_offset(b.seed, i));
+        let d = pellet_dir_at(b.dir, b.right, b.up, b.spread, offset);
         last_dir = d;
         let end = v::ma(b.src, MAX_RANGE, d);
         if slow {

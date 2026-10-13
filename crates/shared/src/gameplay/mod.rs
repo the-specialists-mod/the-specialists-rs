@@ -10,7 +10,7 @@
 pub mod gun;
 pub mod pm;
 
-pub use gun::GunRules;
+pub use gun::{GunRules, Predicted, SpreadDecay};
 pub use pm::PmRules;
 pub use ts_gameplay::{DEFAULT_ID, PHYSINFO_KEY, PHYSINFO_KEY_C};
 

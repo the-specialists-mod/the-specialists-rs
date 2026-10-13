@@ -14,3 +14,5 @@ version.workspace = true
 [dependencies]
 ts-gameplay = { path = "../gameplay" }
 shared      = { path = "../shared" }
+serde       = { version = "1", features = ["derive"] }
+toml        = { version = "0.9", default-features = false, features = ["parse", "serde"] }

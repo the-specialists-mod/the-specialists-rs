@@ -220,10 +220,15 @@ pub fn body_by_items(id: u8, items: u32) -> i32 {
 /// `v_melee.mdl`. TS's `models/p_pdw_sil.mdl` is shipped as `p_pdw_Sil.mdl` (see
 /// [`MP7_SIL_ON_DISK`]).
 pub fn models(id: u8) -> (String, Option<String>, Option<String>, Option<String>) {
+    models_in(tables(), id)
+}
+
+/// [`models`] from the tables `t` (a ruleset's, active or not).
+pub fn models_in(t: &Tables, id: u8) -> (String, Option<String>, Option<String>, Option<String>) {
     if id == id::KUNGFU {
         return ("models/v_melee.mdl".into(), None, None, None);
     }
-    match tables().asset(id) {
+    match t.asset(id) {
         Some(a) => {
             let sil = (!a.p_model_sil.is_empty()).then(|| format!("models/{}", a.p_model_sil));
             (
@@ -252,13 +257,13 @@ pub fn range_multiplier(idx: i32) -> f32 {
 
 /// Player view model sequence for weapon `id`, table A or B, index `i` (0 when out of range).
 pub fn anim(id: u8, alt: bool, i: usize) -> i32 {
-    let (a, b) = &anims::ANIMS[(id as usize).min(37)];
+    let (a, b) = tables().anims(id.min(37));
     *(if alt { b } else { a }).get(i).unwrap_or(&0) as i32
 }
 
 /// The weapon has an alternate grip (sequence table B exists).
 pub fn has_alt_grip(id: u8) -> bool {
-    anims::ANIMS[(id as usize).min(37)].1[0] != -1
+    tables().anims(id.min(37)).1[0] != -1
 }
 
 #[cfg(test)]

@@ -1,0 +1,79 @@
+# TS 2.1's weapon table (`s_weapon_info`, 64 x 0x3f4 bytes at mp.dll 0x100bbea8), decoded from
+# the 33 writers `FUN_10049890` (compile_weapons_info, from W_Precache) calls; 2.1 has no Sparta()
+# pass. Each entry cites its writer. Fields as in crates/shared/data/weapons.toml, except:
+#   mult   `info+0x1c`, the damage multiplier: a bullet does the ammo type's integer damage
+#          (ammo21.toml `damage`) times this (3.0 stores the damage itself)
+#   stock  `info+0x10`, a flag: the weapon has the stock hit (+alt2), which always does 20
+#          (3.0: the stock damage per weapon)
+# Missing in 2.1: 2 (Beretta 92F), 36 (Contender), 37 (Akimbo Skorpions). 17 is the STEYR-TMP.
+# `key` is the port's (3.0's, "tmp" for 17). Entry 0 is zeroed apart from its name.
+weapon = [
+# `FUN_10049890` copies the name only
+{ id = 0, key = "melee", name = "Kung-fu", kind = "kungfu", hud = [0, 0], ammo = 0, clip = 0, modes = [], rate = 0, reload = 0, mult = 0, pellets = 0, bullet = 0, accuracy = 0, scale_spread = false, acc_kick = 0, view_kick = 0, kick = false, stock = false, zoom = [0, 0], slots = 0, cost = 0, stack = false, att_allowed = 0, att_default = 0, akimbo = 0, single = 0 },
+# `Write_glock18` 100025f0
+{ id = 1, key = "glock18", name = "Glock-18", kind = "pistol", hud = [2, 1], ammo = 1, clip = 17, modes = ["auto", "semi"], rate = 0.054, reload = 2, mult = 0.675, pellets = 1, bullet = 0, accuracy = 0.032, scale_spread = true, acc_kick = 0.007, view_kick = 2.5, kick = true, stock = false, zoom = [0, 0], slots = 10, cost = 850, stack = false, att_allowed = 7, att_default = 0, akimbo = -1, single = 1 },
+# `Write_uzi` 10005b50
+{ id = 3, key = "uzi", name = "Mini-Uzi", kind = "smg", hud = [3, 1], ammo = 1, clip = 32, modes = ["auto", "semi"], rate = 0.06, reload = 2.2, mult = 0.6, pellets = 1, bullet = 0, accuracy = 0.031, scale_spread = true, acc_kick = 0.006, view_kick = 2.9, kick = true, stock = false, zoom = [0, 0], slots = 20, cost = 1300, stack = false, att_allowed = 1, att_default = 0, akimbo = 16, single = 3 },
+# `Write_benellim3` 10001700
+{ id = 4, key = "benellim3", name = "Benelli M3", kind = "shotgun", hud = [4, 1], ammo = 3, clip = 7, modes = ["semi", "pump"], rate = 0.2, reload = 0.3, mult = 0.64, pellets = 8, bullet = 1, accuracy = 0.051, scale_spread = false, acc_kick = 0, view_kick = 11.5, kick = true, stock = false, zoom = [40, 0], slots = 40, cost = 3000, stack = false, att_allowed = 14, att_default = 0, akimbo = -1, single = 4 },
+# `Write_m4` 100032c0
+{ id = 5, key = "m4", name = "M4A1", kind = "rifle", hud = [4, 2], ammo = 4, clip = 30, modes = ["auto", "semi"], rate = 0.07, reload = 2.8, mult = 0.7, pellets = 1, bullet = 0, accuracy = 0.0075, scale_spread = true, acc_kick = 0.001, view_kick = 4, kick = true, stock = true, zoom = [26, 0], slots = 40, cost = 4500, stack = false, att_allowed = 15, att_default = 0, akimbo = -1, single = 5 },
+# `Write_mp5sd` 10004670
+{ id = 6, key = "mp5sd", name = "MP5SD", kind = "smg", hud = [3, 2], ammo = 1, clip = 30, modes = ["auto", "semi", "burst"], rate = 0.074, reload = 2.3, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.01, scale_spread = true, acc_kick = 0.015, view_kick = 1.75, kick = true, stock = false, zoom = [32, 0], slots = 25, cost = 2500, stack = false, att_allowed = 15, att_default = 1, akimbo = -1, single = 6 },
+# `Write_mp5k` 100043f0
+{ id = 7, key = "mp5k", name = "MP5K", kind = "smg", hud = [3, 3], ammo = 1, clip = 30, modes = ["auto", "semi", "burst"], rate = 0.066, reload = 2.3, mult = 0.7, pellets = 1, bullet = 0, accuracy = 0.029, scale_spread = true, acc_kick = 0.005, view_kick = 3.25, kick = true, stock = false, zoom = [32, 0], slots = 20, cost = 1500, stack = false, att_allowed = 15, att_default = 0, akimbo = -1, single = 7 },
+# `Write_beretta_akimbo` 10001950
+{ id = 8, key = "beretta_akimbo", name = "Akimbo Berettas", kind = "akimbo_only", hud = [5, 1], ammo = 1, clip = 30, modes = ["semi", "ak_semi"], rate = 0.1, reload = 2.4, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.028, scale_spread = true, acc_kick = 0, view_kick = 2.5, kick = true, stock = false, zoom = [0, 0], slots = 20, cost = 1800, stack = false, att_allowed = 7, att_default = 0, akimbo = -1, single = -1 },
+# `Write_mk23` 10003bc0
+{ id = 9, key = "mk23", name = "SOCOM-MK23", kind = "pistol", hud = [2, 2], ammo = 2, clip = 12, modes = ["semi"], rate = 0.1, reload = 1.5, mult = 0.715, pellets = 1, bullet = 0, accuracy = 0.025, scale_spread = true, acc_kick = 0, view_kick = 3, kick = true, stock = false, zoom = [0, 0], slots = 10, cost = 700, stack = false, att_allowed = 7, att_default = 0, akimbo = 10, single = 9 },
+# `Write_mk23akimbo` 10003e70
+{ id = 10, key = "mk23akimbo", name = "Akimbo MK23", kind = "akimbo", hud = [5, 2], ammo = 2, clip = 24, modes = ["semi", "ak_semi"], rate = 0.1, reload = 2.5, mult = 0.715, pellets = 1, bullet = 0, accuracy = 0.03, scale_spread = true, acc_kick = 0, view_kick = 3.5, kick = true, stock = false, zoom = [0, 0], slots = 10, cost = 700, stack = false, att_allowed = 7, att_default = 0, akimbo = -1, single = 9 },
+# `Write_usas12` 10005920
+{ id = 11, key = "usas12", name = "USAS-12", kind = "rifle", hud = [4, 3], ammo = 3, clip = 20, modes = ["auto"], rate = 0.166, reload = 3, mult = 0.3, pellets = 8, bullet = 1, accuracy = 0.08, scale_spread = false, acc_kick = 0, view_kick = 9.5, kick = true, stock = false, zoom = [0, 0], slots = 50, cost = 5100, stack = false, att_allowed = 6, att_default = 0, akimbo = -1, single = 11 },
+# `Write_desert` 10001ea0
+{ id = 12, key = "desert", name = "Desert Eagle", kind = "pistol", hud = [2, 3], ammo = 5, clip = 7, modes = ["semi"], rate = 0.1, reload = 2.1, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.0225, scale_spread = true, acc_kick = 0.015, view_kick = 9, kick = true, stock = false, zoom = [60, 0], slots = 15, cost = 1050, stack = false, att_allowed = 11, att_default = 0, akimbo = -1, single = 12 },
+# `Write_ak47` 10001000
+{ id = 13, key = "ak47", name = "AK47", kind = "rifle", hud = [4, 3], ammo = 6, clip = 30, modes = ["auto", "semi"], rate = 0.08, reload = 2.5, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.003, scale_spread = true, acc_kick = 0, view_kick = 6, kick = true, stock = false, zoom = [32, 13], slots = 40, cost = 3000, stack = false, att_allowed = 8, att_default = 0, akimbo = -1, single = 13 },
+# `Write_fnh` 10002160
+{ id = 14, key = "fnh", name = "Five-seveN", kind = "pistol", hud = [2, 4], ammo = 7, clip = 20, modes = ["semi"], rate = 0.1, reload = 1.5, mult = 0.7, pellets = 1, bullet = 0, accuracy = 0.01, scale_spread = true, acc_kick = 0, view_kick = 1.5, kick = true, stock = false, zoom = [0, 0], slots = 10, cost = 1250, stack = false, att_allowed = 7, att_default = 0, akimbo = 30, single = 14 },
+# `Write_aug` 10001280
+{ id = 15, key = "aug", name = "STEYR-AUG", kind = "rifle", hud = [4, 4], ammo = 4, clip = 30, modes = ["auto", "semi"], rate = 0.092, reload = 2.4, mult = 0.7, pellets = 1, bullet = 0, accuracy = 0.005, scale_spread = true, acc_kick = 0.02, view_kick = 3.52, kick = true, stock = false, zoom = [40, 0], slots = 40, cost = 5000, stack = false, att_allowed = 11, att_default = 8, akimbo = -1, single = 15 },
+# `Write_uzi_akimbo` 10005dc0
+{ id = 16, key = "uzi_akimbo", name = "Akimbo Mini-Uzi", kind = "akimbo", hud = [5, 3], ammo = 1, clip = 64, modes = ["auto", "ak_auto"], rate = 0.06, reload = 3, mult = 0.525, pellets = 1, bullet = 0, accuracy = 0.035, scale_spread = true, acc_kick = 0.00581, view_kick = 3.2, kick = true, stock = false, zoom = [0, 0], slots = 20, cost = 1300, stack = false, att_allowed = 1, att_default = 0, akimbo = -1, single = 3 },
+# `Write_skorpion` 100056b0
+{ id = 17, key = "tmp", name = "STEYR-TMP", kind = "smg", hud = [3, 4], ammo = 1, clip = 30, modes = ["auto", "semi"], rate = 0.05, reload = 1.8, mult = 0.6, pellets = 1, bullet = 0, accuracy = 0.027, scale_spread = true, acc_kick = 0.01, view_kick = 2.25, kick = true, stock = false, zoom = [0, 0], slots = 20, cost = 1600, stack = false, att_allowed = 3, att_default = 0, akimbo = -1, single = 17 },
+# `Write_barrett` 100014c0
+{ id = 18, key = "barrett", name = "Barrett M82A1", kind = "sniper", hud = [4, 5], ammo = 8, clip = 5, modes = ["semi"], rate = 0.7, reload = 2, mult = 1, pellets = 1, bullet = 0, accuracy = 0.001, scale_spread = true, acc_kick = 0.1, view_kick = 10, kick = true, stock = false, zoom = [32, 8], slots = 70, cost = 9000, stack = false, att_allowed = 10, att_default = 8, akimbo = -1, single = 18 },
+# `Write_pdw` 100048b0
+{ id = 19, key = "pdw", name = "MP7-PDW", kind = "smg", hud = [3, 5], ammo = 7, clip = 40, modes = ["auto", "semi"], rate = 0.063, reload = 2.5, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.0225, scale_spread = true, acc_kick = 0.015, view_kick = 2.6, kick = true, stock = false, zoom = [40, 0], slots = 30, cost = 2800, stack = false, att_allowed = 11, att_default = 0, akimbo = -1, single = 19 },
+# `Write_spas12` 100051e0
+{ id = 20, key = "spas12", name = "SPAS-12", kind = "shotgun", hud = [4, 6], ammo = 3, clip = 8, modes = ["semi", "pump"], rate = 0.2, reload = 0.3, mult = 0.54, pellets = 8, bullet = 1, accuracy = 0.04, scale_spread = false, acc_kick = 0, view_kick = 7, kick = true, stock = false, zoom = [0, 0], slots = 40, cost = 2100, stack = false, att_allowed = 6, att_default = 0, akimbo = -1, single = 20 },
+# `Write_gold` 10002a50
+{ id = 21, key = "gold", name = "Golden Colts", kind = "akimbo_only", hud = [5, 4], ammo = 2, clip = 16, modes = ["semi", "ak_semi"], rate = 0.1, reload = 2.8, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.0225, scale_spread = true, acc_kick = 0, view_kick = 4.75, kick = true, stock = false, zoom = [0, 0], slots = 20, cost = 2600, stack = false, att_allowed = 0, att_default = 0, akimbo = -1, single = -1 },
+# `Write_glock22` 10002820
+{ id = 22, key = "glock22", name = "Glock-20C", kind = "pistol", hud = [2, 5], ammo = 9, clip = 15, modes = ["semi"], rate = 0.1, reload = 2, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.0325, scale_spread = true, acc_kick = 0, view_kick = 4.5, kick = true, stock = false, zoom = [0, 0], slots = 10, cost = 1300, stack = false, att_allowed = 7, att_default = 0, akimbo = -1, single = 22 },
+# `Write_mac10` 10003980
+{ id = 23, key = "mac10", name = "UMP", kind = "smg", hud = [3, 6], ammo = 2, clip = 25, modes = ["auto", "semi"], rate = 0.092, reload = 2.8, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.032, scale_spread = true, acc_kick = 0.0075, view_kick = 5.25, kick = true, stock = false, zoom = [40, 0], slots = 25, cost = 2300, stack = false, att_allowed = 15, att_default = 0, akimbo = -1, single = 23 },
+# `Write_m61` 100037a0
+{ id = 24, key = "m61", name = "M61 Grenade", kind = "grenade", hud = [1, 2], ammo = 0, clip = 1, modes = ["auto"], rate = 1, reload = 1, mult = 1, pellets = 2, bullet = 4, accuracy = 0.1, scale_spread = false, acc_kick = 0, view_kick = 1, kick = false, stock = false, zoom = [0, 0], slots = 15, cost = 1000, stack = true, att_allowed = 0, att_default = 0, akimbo = -1, single = 24 },
+# `FUN_10002e50` 10002e50
+{ id = 25, key = "knife", name = "Combat Knife", kind = "knife", hud = [1, 1], ammo = 0, clip = 1, modes = ["auto"], rate = 0.4, reload = 1, mult = 1, pellets = 5, bullet = 6, accuracy = 0.1, scale_spread = false, acc_kick = 0, view_kick = 1, kick = false, stock = false, zoom = [0, 0], slots = 1, cost = 100, stack = true, att_allowed = 0, att_default = 0, akimbo = -1, single = 25 },
+# `Write_mossberg` 10004130
+{ id = 26, key = "mossberg", name = "Mossberg 500", kind = "shotgun", hud = [4, 7], ammo = 3, clip = 8, modes = ["pump"], rate = 0.2, reload = 0.3, mult = 0.74, pellets = 8, bullet = 1, accuracy = 0.071, scale_spread = false, acc_kick = 0, view_kick = 14.5, kick = true, stock = false, zoom = [0, 0], slots = 40, cost = 2500, stack = false, att_allowed = 6, att_default = 0, akimbo = -1, single = 26 },
+# `Write_m16` 10003040
+{ id = 27, key = "m16", name = "M16A4", kind = "rifle", hud = [4, 8], ammo = 4, clip = 18, modes = ["semi", "burst"], rate = 0.07, reload = 2.8, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.001, scale_spread = true, acc_kick = 0.001, view_kick = 5.5, kick = true, stock = false, zoom = [32, 8], slots = 40, cost = 2500, stack = false, att_allowed = 14, att_default = 0, akimbo = -1, single = 27 },
+# `Write_ruger` 10004af0
+{ id = 28, key = "ruger", name = "Ruger-MK1", kind = "pistol", hud = [2, 6], ammo = 10, clip = 17, modes = ["semi"], rate = 0.1, reload = 1.3, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.01, scale_spread = true, acc_kick = 0, view_kick = 0.7, kick = true, stock = false, zoom = [0, 0], slots = 5, cost = 1500, stack = false, att_allowed = 3, att_default = 1, akimbo = -1, single = 28 },
+# `Write_fnhakimbo` 10002390
+{ id = 30, key = "fnhakimbo", name = "Akimbo Five-seveN", kind = "akimbo", hud = [5, 5], ammo = 7, clip = 40, modes = ["semi", "ak_semi"], rate = 0.1, reload = 3, mult = 0.7, pellets = 1, bullet = 0, accuracy = 0.02, scale_spread = true, acc_kick = 0.015, view_kick = 2.1, kick = true, stock = false, zoom = [0, 0], slots = 10, cost = 1250, stack = false, att_allowed = 7, att_default = 0, akimbo = -1, single = 14 },
+# `Write_bull` 10001c10
+{ id = 31, key = "bull", name = "Raging Bull", kind = "pistol", hud = [2, 7], ammo = 12, clip = 5, modes = ["semi"], rate = 0.15, reload = 2, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.01, scale_spread = true, acc_kick = 0, view_kick = 18.5, kick = true, stock = false, zoom = [40, 0], slots = 15, cost = 2100, stack = false, att_allowed = 10, att_default = 0, akimbo = -1, single = 31 },
+# `Write_m60` 10003560
+{ id = 32, key = "m60", name = "M60E3", kind = "rifle", hud = [4, 9], ammo = 4, clip = 100, modes = ["auto"], rate = 0.109, reload = 3, mult = 0.75, pellets = 1, bullet = 0, accuracy = 0.015, scale_spread = true, acc_kick = 0.009, view_kick = 2, kick = true, stock = false, zoom = [0, 0], slots = 70, cost = 8000, stack = false, att_allowed = 0, att_default = 0, akimbo = -1, single = 32 },
+# `Write_sawedoff` 10004d20
+{ id = 33, key = "sawedoff", name = "Sawed-off", kind = "pistol", hud = [4, 10], ammo = 3, clip = 2, modes = ["semi"], rate = 0.1, reload = 1.7, mult = 0.7, pellets = 8, bullet = 1, accuracy = 0.062, scale_spread = false, acc_kick = 0, view_kick = 9.5, kick = true, stock = true, zoom = [0, 0], slots = 20, cost = 1900, stack = false, att_allowed = 2, att_default = 0, akimbo = -1, single = 33 },
+# `Write_katana` 10002c70
+{ id = 34, key = "katana", name = "Katana", kind = "katana", hud = [1, 3], ammo = 0, clip = 1, modes = ["auto"], rate = 0.7, reload = 1, mult = 1, pellets = 0, bullet = 0, accuracy = 0.1, scale_spread = false, acc_kick = 0, view_kick = 1, kick = false, stock = false, zoom = [0, 0], slots = 10, cost = 2900, stack = false, att_allowed = 0, att_default = 0, akimbo = -1, single = 34 },
+# `Write_sealknife` 10004ff0
+{ id = 35, key = "sealknife", name = "Seal Knife", kind = "knife", hud = [1, 4], ammo = 0, clip = 1, modes = ["auto"], rate = 0.3, reload = 1, mult = 1, pellets = 10, bullet = 7, accuracy = 0.1, scale_spread = false, acc_kick = 0, view_kick = 1, kick = false, stock = false, zoom = [0, 0], slots = 1, cost = 100, stack = true, att_allowed = 0, att_default = 0, akimbo = -1, single = 35 }
+]

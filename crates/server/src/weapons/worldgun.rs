@@ -161,7 +161,7 @@ impl Entity for WorldGun {
         let e = engine();
         let edict = cx.edict;
         let origin = cx.pev().origin;
-        let model = assets::with(|a| a.w_model[self.id as usize]).flatten().unwrap_or(c"models/w_glock18.mdl");
+        let model = assets::with_models(|m| m.w_model[self.id as usize]).flatten().unwrap_or(c"models/w_glock18.mdl");
         e.set_model(edict, model);
         let pev = cx.pev();
         pev.classname = e.alloc_string(c"WorldGun");

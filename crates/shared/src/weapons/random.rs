@@ -61,16 +61,23 @@ pub fn shared_random_long(seed: u32, low: i32, high: i32) -> i32 {
 /// `unsigned int`), so `(-pi, pi)` really yields `[-pi, -pi + 6)`. The offset is rounded to a
 /// float before the multiply, as in the binary; the multiply-add is exact in f64 and rounded once.
 pub fn shared_random_float(seed: u32, low: f32, high: f32) -> f32 {
+    shared_random_float_unrounded(seed, low, high) as f32
+}
+
+/// [`shared_random_float`] as it leaves the FPU, before a caller stores it as a `float`: the
+/// multiply-add (`offset * range + low`) unrounded. MSVC builds return it on the x87 stack and
+/// some callers keep computing with it.
+pub fn shared_random_float_unrounded(seed: u32, low: f32, high: f32) -> f64 {
     let mut g = Gen::srand(seed.wrapping_add(low.to_bits()).wrapping_add(high.to_bits()));
     g.next();
     g.next();
     let range = (high as f64 - low as f64).trunc() as i64 as u32;
     if range == 0 {
-        return low;
+        return low as f64;
     }
     let tensixrand = g.next() & 65535;
     let offset = (tensixrand as f64 / 65536.0) as f32;
-    (offset as f64 * range as f64 + low as f64) as f32
+    offset as f64 * range as f64 + low as f64
 }
 
 #[cfg(test)]
