@@ -2,7 +2,8 @@
 //! and chat. The respawn module is inline in [`super::brain`], navigation is [`super::nav`] and
 //! attack [`super::attack`].
 
-use super::brain::{Brain, add, bit, btn, delay, gun_position, len_f32, order, scale, slow, sub};
+use super::brain::{Brain, add, bit, btn, gun_position, len_f32, order, scale, sub};
+use super::rules::delay;
 use crate::player::Player;
 use crate::rules::cvars;
 use crate::weapons::ArmamentEntry;
@@ -30,7 +31,7 @@ pub fn vision(b: &mut Brain, _p: &mut Player, cx: &mut Cx) {
     if b.vision_next > now {
         return;
     }
-    b.vision_next = delay(now, 0.1, slow(cx.pev()), b.skill, 0.7);
+    b.vision_next = delay(now, 0.1, cx.pev(), b.skill, 0.7);
     b.visible_enemies = [std::ptr::null_mut(); 16];
     b.visible_mates = [std::ptr::null_mut(); 16];
     b.num_visible_enemies = 0;
@@ -94,7 +95,7 @@ pub fn visible(v: &entvars_t, me: *mut edict_t, point: [f32; 3]) -> bool {
 
 /// `CBasePlayer::AddItemToArmament(id, attachments, isItem)` (0x93ea4): into the first entry
 /// whose id is 0, at most 32.
-fn add_item(p: &mut Player, id: i32, attachments: u32, item: bool) {
+pub fn add_item(p: &mut Player, id: i32, attachments: u32, item: bool) {
     let list = &mut p.inv.sv.armament;
     let e = ArmamentEntry { id, attachments, item };
     match list.iter().position(|a| a.id == 0) {
@@ -105,15 +106,21 @@ fn add_item(p: &mut Player, id: i32, attachments: u32, item: bool) {
 }
 
 /// `CBasePlayer::AddAmmoToArmament(type, count)` (0x93ef4).
-fn add_ammo(p: &mut Player, ammo: i32, count: i32) {
+pub fn add_ammo(p: &mut Player, ammo: i32, count: i32) {
     if (0..MAX_AMMO as i32).contains(&ammo) {
         p.inv.sv.armament_ammo[ammo as usize] = count;
     }
 }
 
+/// `CBasePlayer::ResetArmament` (0x93e88): an empty loadout.
+pub fn reset_armament(p: &mut Player) {
+    p.inv.sv.armament.clear();
+    p.inv.sv.armament_ammo = [0; MAX_AMMO];
+}
+
 /// `BotRandomAttachments(id)` (0x1006d560): silencer and laser each 50/101, scope 25/101, if the
 /// weapon allows them and doesn't have them built in. Always three draws.
-fn random_attachments(id: u8) -> u32 {
+pub fn random_attachments(id: u8) -> u32 {
     let eng = engine();
     let (allowed, builtin) = info(id).map_or((0, 0), |w| (w.att_allowed as u32, w.att_default as u32));
     let mut att = 0;
@@ -127,7 +134,7 @@ fn random_attachments(id: u8) -> u32 {
 
 /// One table entry: the weapon with random attachments, a second copy without attachments half
 /// of the time for `akimbo` ones (two singles make the pair), then 10 purchases of `ammo`.
-fn buy_weapon(p: &mut Player, id: u8, akimbo: bool, ammo: i32) {
+pub fn buy_weapon(p: &mut Player, id: u8, akimbo: bool, ammo: i32) {
     let att = random_attachments(id);
     add_item(p, id as i32, att, false);
     if akimbo && engine().random_long(0, 1) != 0 {
@@ -143,9 +150,7 @@ pub fn buy(b: &mut Brain, p: &mut Player, _cx: &mut Cx) {
     use shared::weapons::id::*;
     let eng = engine();
     let f = eng.random_float(0.0, 1.0);
-    // ResetArmament (0x93e88).
-    p.inv.sv.armament.clear();
-    p.inv.sv.armament_ammo = [0; MAX_AMMO];
+    reset_armament(p);
     let armor = cvars::f(c"botarmor");
     if (f > 0.3 || armor != 0.0) && armor != -1.0 {
         add_item(p, 0x10, 0, true); // kevlar
@@ -221,7 +226,7 @@ pub fn buy(b: &mut Brain, p: &mut Player, _cx: &mut Cx) {
 // ---- stunt (bit 8) -------------------------------------------------------------------------------
 
 /// `CBotModuleStunt::Think` (0x1006e130): a dive (75/101, the stunt key) or a flip (26/101, two
-/// jump presses), then a jump to get up once prone. It only stops (mode 4) after getting up from
+/// jump presses; the odds are [`NativeBotRules::stunt_mode`](super::rules::NativeBotRules::stunt_mode)), then a jump to get up once prone. It only stops (mode 4) after getting up from
 /// lying down, so a stunt that doesn't end prone keeps it going.
 pub fn stunt(b: &mut Brain, _p: &mut Player, cx: &mut Cx) {
     use shared::ts::stunt::{DIVING, FLIP_HIGH, FLIP_LOW, PRONE};
@@ -229,9 +234,9 @@ pub fn stunt(b: &mut Brain, _p: &mut Player, cx: &mut Cx) {
     if b.stunt_next > now {
         return;
     }
-    b.stunt_next = delay(now, 0.5, slow(cx.pev()), b.skill, 1.0);
+    b.stunt_next = delay(now, 0.5, cx.pev(), b.skill, 1.0);
     if b.stunt_mode == 0 {
-        b.stunt_mode = if engine().random_long(0, 100) <= 25 { 2 } else { 1 };
+        b.stunt_mode = super::rules::current().stunt_mode();
         b.stunt_jumps = 0;
     }
     let (s, flags) = (cx.pev().iuser4, cx.pev().flags);
@@ -272,7 +277,7 @@ pub fn look_around(b: &mut Brain, _p: &mut Player, cx: &mut Cx) {
     }
     let point = find_look_point(cx);
     b.look_at(cx.pev(), point);
-    b.look_next = delay(now, 0.5, slow(cx.pev()), b.skill, 5.0);
+    b.look_next = delay(now, 0.5, cx.pev(), b.skill, 5.0);
 }
 
 /// `FindLookPoint` (0x1006dea0): from a random yaw, eight directions 45° apart, each with a random
@@ -314,7 +319,7 @@ pub fn powerup(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     if b.powerup_next > now {
         return;
     }
-    b.powerup_next = delay(now, 0.5, slow(cx.pev()), b.skill, 3.0);
+    b.powerup_next = delay(now, 0.5, cx.pev(), b.skill, 3.0);
     if p.ts.held != 0 && p.active_powerup == 0 {
         crate::rules::powerup::use_powerup(p, cx);
     }

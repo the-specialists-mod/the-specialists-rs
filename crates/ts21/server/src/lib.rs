@@ -13,10 +13,14 @@
 //! * [`damage`]: bullets and what a hit does to a player (§3.1).
 //! * [`explode`], [`blades`]: explosions, shrapnel and thrown knives (§3.2).
 //! * [`melee`]: blocks and disarms on the victim (§3.2; the attacks are the shared gun hooks).
+//! * [`bots`]: the native bot backend's rules for 2.1 (§3.10): `server-dll` registers [`bots::BOTS`]
+//!   with `ts_server::bots::rules` under the plugin's id (the bots are a layer of their own, so
+//!   they aren't part of [`PLUGIN`]).
 
 #![deny(unsafe_code)]
 
 pub mod blades;
+pub mod bots;
 pub mod cash;
 pub mod commands;
 pub mod cvars;

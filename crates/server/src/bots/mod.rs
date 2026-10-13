@@ -27,13 +27,14 @@ pub mod files;
 pub mod modules;
 pub mod nav;
 pub mod nodes;
+pub mod rules;
 pub mod states;
 
 pub use brain::Brain;
 
 use crate::commands::Args;
 use crate::player::{Player, with_player};
-use crate::rules::{self, cvars};
+use crate::rules::cvars;
 use crate::world::{Cx, DamageInfo};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
@@ -54,6 +55,9 @@ pub struct Files {
 
 static FILES: Global<RefCell<Option<Files>>> = Global(RefCell::new(None));
 
+/// The texts [`FILES`] holds: `None` for the game directory's, else the rules' own.
+static TEXTS_FROM: Global<RefCell<Option<Option<rules::BotTexts>>>> = Global(RefCell::new(None));
+
 /// The native backend's state of a bot player: its brain. `None` for a player that isn't a native
 /// bot (a human, or another backend's bot).
 pub fn brain_of(p: &mut Player) -> Option<&mut Brain> {
@@ -72,12 +76,35 @@ pub fn with_files<R>(f: impl FnOnce(&mut Files) -> R) -> R {
 /// relative to the engine's working directory (not through the engine's search path).
 pub fn ts_init() {
     nodes::map_init();
-    let dir = std::path::PathBuf::from(engine().game_dir());
-    let names = files::BotNames::parse(std::fs::read(dir.join("bots.txt")).ok().as_deref());
-    let say = files::BotSay::parse(std::fs::read(dir.join("bot_say.txt")).ok().as_deref());
+    load_texts(rules::current().texts());
+}
+
+/// `BotLoadFiles` (0x1006bee0) from `texts` (`None`: the game directory's files).
+fn load_texts(texts: Option<rules::BotTexts>) {
+    let (names, say) = match texts {
+        Some(t) => (files::BotNames::parse(Some(t.names)), files::BotSay::parse(Some(t.say))),
+        None => {
+            let dir = std::path::PathBuf::from(engine().game_dir());
+            (
+                files::BotNames::parse(std::fs::read(dir.join("bots.txt")).ok().as_deref()),
+                files::BotSay::parse(std::fs::read(dir.join("bot_say.txt")).ok().as_deref()),
+            )
+        }
+    };
     let (count, lines) = (names.count, say.count);
     engine().print(&format!("[ts] bots: {count} names, chat lines {lines:?}, {} nodes\n", nodes::with(|g| g.count())));
     with_files(|f| *f = Files { names, say });
+    *TEXTS_FROM.0.borrow_mut() = Some(texts);
+}
+
+/// A gameplay switch's reset replays `ServerActivate`, not `Init`: load the texts again when
+/// the new ruleset's bots use other ones (a fresh table, as at a map start).
+pub fn texts_for_ruleset() {
+    let want = rules::current().texts();
+    let loaded = *TEXTS_FROM.0.borrow();
+    if loaded != Some(want) {
+        load_texts(want);
+    }
 }
 
 // ---- creation ------------------------------------------------------------------------------------
@@ -91,7 +118,7 @@ pub fn add_bot(model: &str) -> Option<*mut edict_t> {
     let mut skill = eng.random_float(0.1, 1.0);
     let name = with_files(|f| f.names.pick(|lo, hi| eng.random_long(lo, hi), &mut skill));
     let e = create(&name, &model, skill, true);
-    if e.is_some() && nodes::with(|g| g.count()) < 1 {
+    if e.is_some() && rules::current().learn_on_empty_graph() && nodes::with(|g| g.count()) < 1 {
         eng.server_command("botlearn 1\n");
     }
     e
@@ -116,11 +143,12 @@ pub fn add_custom_bot(name: &[u8], model: &str, skill: f32) -> Option<*mut edict
     create(&name, &model, skill, true)
 }
 
-/// The model argument, else outside teamplay one of TS's seven (`RANDOM_LONG(0, 6)`).
+/// The model argument, else outside teamplay one of TS's seven (`RANDOM_LONG(0, 6)`; also in
+/// teamplay when [`rules::NativeBotRules::random_model_in_teamplay`]).
 fn pick_model(arg: &str) -> String {
     if !arg.is_empty() {
         arg.to_owned()
-    } else if !rules::state::teamplay() {
+    } else if rules::current().random_model_in_teamplay() || !crate::rules::state::teamplay() {
         BOT_MODELS[engine().random_long(0, 6).clamp(0, 6) as usize].to_owned()
     } else {
         String::new()
@@ -131,7 +159,9 @@ fn pick_model(arg: &str) -> String {
 /// [`crate::bot_backend::create_player`]) with a fresh brain of `skill`, announced as TS does
 /// ("<name> connected with skill <f>", the unclamped skill) when `announce` is set.
 fn create(name: &[u8], model: &str, skill: f32, announce: bool) -> Option<*mut edict_t> {
-    crate::bot_backend::create_player(name, model, Box::new(Brain::new(skill)), announce.then_some(skill))
+    let r = rules::current();
+    let brain = Box::new(Brain::new(r.stored_skill(skill)));
+    crate::bot_backend::create_player(name, model, brain, announce.then_some(skill), r.team_key())
 }
 
 /// The native backend's quota bot ("Bot Neo", ...; the host picks the name): created like
@@ -174,15 +204,20 @@ pub fn start_frame() {
 /// The head of `CBot::Spawn` (0x1006bb40): `CBotBrain::Reset`, before `CBasePlayer::Spawn`.
 pub fn spawn_pre(p: &mut Player, cx: &mut Cx) {
     let now = cx.time();
-    let mode = rules::state::with(|g| g.mode);
+    let mode = crate::rules::state::with(|g| g.mode);
     if let Some(b) = brain_of(p) {
         b.reset(now, mode);
     }
 }
 
-/// The tail of `CBot::Spawn`: a random laser-sight colour (`PlInfo` key 0: 0 for 76/101, 1 for
-/// 15/101, 2 for 10/101), as the `lasclr_<n>` command sends it.
+/// The tail of `CBot::Spawn` ([`rules::NativeBotRules::spawn_post`]).
 pub fn spawn_post(p: &mut Player, cx: &mut Cx) {
+    rules::current().spawn_post(p, cx);
+}
+
+/// TS 3.0's tail of `CBot::Spawn`: a random laser-sight colour (`PlInfo` key 0: 0 for 76/101, 1
+/// for 15/101, 2 for 10/101), as the `lasclr_<n>` command sends it.
+pub fn laser_colour(p: &mut Player, cx: &mut Cx) {
     if !p.cbot {
         return;
     }
@@ -197,12 +232,18 @@ pub fn spawn_post(p: &mut Player, cx: &mut Cx) {
     crate::messages::all(shared::protocol::Msg::PlInfo).byte(cx.index()).byte(0).byte(laser).end();
 }
 
-/// `CBot::TraceAttack` (0x1006bac0), after `CBasePlayer::TraceAttack`: a player's hit turns the
-/// wanted view toward the attacker's origin (no enemy or goal is set). TS's `GetClassPtr` would
-/// allocate a `CBaseEntity` for an attacker without private data; the port only looks.
+/// `CBot::TraceAttack` (0x1006bac0), after `CBasePlayer::TraceAttack`:
+/// [`rules::NativeBotRules::trace_attack`].
 pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
+    rules::current().trace_attack(p, cx, dmg);
+}
+
+/// TS 3.0's `CBot::TraceAttack` body: a player's hit turns the wanted view toward the attacker's
+/// origin (no enemy or goal is set). TS's `GetClassPtr` would allocate a `CBaseEntity` for an
+/// attacker without private data; the port only looks.
+pub fn turn_to_attacker(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     let a = dmg.attacker;
-    if !p.cbot || a.is_null() || !rules::has_player(a) {
+    if !p.cbot || a.is_null() || !crate::rules::has_player(a) {
         return;
     }
     let target = a.v().origin;
@@ -219,7 +260,7 @@ pub fn killed(p: &mut Player, cx: &mut Cx, attacker: *mut edict_t) {
         return;
     }
     let a = if attacker.is_null() { engine().entity_of_index(0) } else { attacker };
-    if a.is_null() || !rules::has_player(a) {
+    if a.is_null() || !crate::rules::has_player(a) {
         return;
     }
     let eng = engine();
@@ -272,7 +313,7 @@ pub fn client_command(_p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> b
     }
     let argv: Vec<String> = (0..args.argc()).map(|i| args.argv(i).to_string_lossy().into_owned()).collect();
     let v = cx.pev();
-    let playing = rules::alive(v) && v.iuser1 == 0;
+    let playing = crate::rules::alive(v) && v.iuser1 == 0;
     let (origin, ladder) = (v.origin, nav::on_ladder(v));
     nodes::client_command(cmd, &argv, playing, origin, ladder)
 }
