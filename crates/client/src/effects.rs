@@ -29,6 +29,9 @@ struct Fx {
     psys: PSys,
     map: MapFx,
     level: String,
+    /// Whether [`Fx::map`] was built with the map's effects: the ruleset's answer when the map
+    /// was last read (true before any, as TS 3.0's).
+    map_effects: bool,
     fog: Option<emitters::Fog>,
     /// `0x100eb678`.
     bullets: ClientBullets,
@@ -97,6 +100,7 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         psys: PSys::default(),
         map: MapFx::default(),
         level: String::new(),
+        map_effects: true,
         fog: None,
         bullets: ClientBullets::default(),
         visible: [false; 33],
@@ -409,11 +413,14 @@ pub fn frame(time: f64, frametime: f64) {
         fx.frametime = frametime as f32;
     });
     let level = r::level_name();
-    let changed = with(|fx| fx.level != level);
+    // A ruleset switch mid-map rebuilds them too: with or without the map's effects
+    // ([`ClientRules::map_effects`](crate::gameplay::ClientRules::map_effects)).
+    let map_effects = crate::gameplay::current().map_effects();
+    let changed = with(|fx| fx.level != level || fx.map_effects != map_effects);
     if changed {
-        let map = if level.is_empty() { None } else { r::load_file(&level) };
+        let map = if level.is_empty() || !map_effects { None } else { r::load_file(&level) };
         let fxmap = map.as_deref().and_then(emitters::entity_lump).map(MapFx::from_lump).unwrap_or_default();
-        if !level.is_empty() {
+        if !level.is_empty() && map_effects {
             goldsrc::client::engine().print(&format!(
                 "[ts] effects: {} emitters, {} particle templates{} from {level}\n",
                 fxmap.emitters.len(),
@@ -427,6 +434,7 @@ pub fn frame(time: f64, frametime: f64) {
             fx.fog = fxmap.fog;
             fx.map = fxmap;
             fx.level = level;
+            fx.map_effects = map_effects;
             fx.emit_clock = 0.0;
         });
     }

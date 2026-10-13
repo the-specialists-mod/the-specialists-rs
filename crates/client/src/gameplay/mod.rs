@@ -4,7 +4,8 @@
 //! * Movement prediction (`HUD_PlayerMove`): [`pm_rules`], from `pmove->physinfo`.
 //! * Weapon prediction (`HUD_PostRunCmd`): [`gun_rules`], from `clientdata_t::physinfo`, per
 //!   command.
-//! * HUD: [`hud_rules`], from the server's `SrvSett` key 4 (the HUD's `gameplay`).
+//! * HUD and input: [`hud_rules`] (or [`current`] outside the HUD's borrow), from the server's
+//!   `SrvSett` key 4 (the HUD's `gameplay`).
 //!
 //! When the server switches rulesets it re-sends `SrvSett` 4, and a changed value resets the
 //! client to a brand-new state ([`reset_client`]) before the server's fresh state arrives. The
@@ -13,7 +14,7 @@
 
 pub mod client;
 
-pub use client::ClientRules;
+pub use client::{ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
 
 use goldsrc::client::engine;
 use goldsrc::pmove::PlayerMoveExt;
@@ -82,6 +83,12 @@ pub fn hud_rules(id: Option<i16>) -> &'static dyn ClientRules {
         Some(v) => resolve(v.to_string().as_bytes()).client,
         None => &CORE,
     }
+}
+
+/// The HUD's rules for code that doesn't hold the HUD's borrow (input commands, the FOV and
+/// effects frames). Inside [`crate::hud::with`], use [`hud_rules`] with `h.gameplay`.
+pub fn current() -> &'static dyn ClientRules {
+    hud_rules(crate::hud::gameplay_id())
 }
 
 /// The client's part of a ruleset switch: everything a new map resets (`HUD_VidInit`), so no HUD,

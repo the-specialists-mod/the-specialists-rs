@@ -16,6 +16,7 @@
 
 mod movement;
 mod overview;
+pub(crate) use overview::atof;
 mod panel;
 
 pub(crate) use movement::smooth;

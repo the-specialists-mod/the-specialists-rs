@@ -37,6 +37,10 @@ pub struct Shared {
     /// `TSSlowMo` handler (`0x1004bf10`) writes it, so until the first message `HUD_Frame` eases
     /// the scale toward 0.
     pub time_scale_target: f32,
+    /// The last `TSSlowMo` value as sent (the factor × 100, 0 = normal speed), before the
+    /// handler maps 0 to 1.0; 0 until the first message. For a ruleset's own slow-motion rules
+    /// ([`crate::gameplay::KungfuRegen`], the slow-motion icon).
+    pub slowmo_factor100: f32,
     /// The eased scale, `g_flTimescale` (`0x100963e8`, initialised to 1.0).
     pub time_scale: f32,
     /// Local player is dead / spectating.
@@ -113,6 +117,7 @@ pub fn with<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
     let mut s = SHARED.0.borrow_mut();
     let s = s.get_or_insert_with(|| Shared {
         time_scale_target: 0.0,
+        slowmo_factor100: 0.0,
         time_scale: 1.0,
         fov: 90.0,
         active_items: vec![0; 65],

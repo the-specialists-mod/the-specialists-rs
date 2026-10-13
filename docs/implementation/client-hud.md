@@ -705,6 +705,14 @@ Notes (no observable difference):
   client update, which hides this in play; on a server that never sends it, or playing back a
   demo recorded after it was sent (in a fresh client), the scale stays near 0 (most readers clamp
   it to 0.01), in TS and in the port alike.
+* Gameplay rulesets (issue #100): where another ruleset can differ, the HUD, input, FOV, map
+  effects and buy menu ask `ClientRules` hooks whose defaults are the TS 3.0 behaviour described
+  here (crosshair parts and gap, divestep limits and cooldown, `default_fov` pin and FOV snap, key
+  gate, `cl_attackswitch`, `respawn` on `+attack`, map effects, kung-fu bar, slow-motion icon,
+  `CashBased()`, buy-menu lists and item rules). The table is in
+  [gameplay-plugins.md](gameplay-plugins.md) §5, and the TS 2.1 overrides in [ts21.md](ts21.md).
+  `state::Shared::slowmo_factor100` keeps the raw `TSSlowMo` value; `Hud::next_stunt_msg` and
+  `Hud::think_time` are for those hooks.
 * The FWGS `IN_ClientLookEvent`/`IN_ClientMoveEvent` exports are in `client-dll` and call
   `input::look_event`/`move_event`.
 * The server should send `SrvSett 3` (restriction) and `GameMode` in `InitHUD` like TS, and

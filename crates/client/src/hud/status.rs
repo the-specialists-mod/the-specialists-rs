@@ -6,7 +6,20 @@ use super::draw::{GREEN, RED, ftol, half, num};
 use super::state::Hud;
 use super::text::localise;
 use crate::input;
+use goldsrc::Global;
 use goldsrc::client::engine;
+use goldsrc::sys::HSPRITE;
+use std::cell::Cell;
+
+/// `sprites/slowmotion.spr`, loaded the first time a ruleset shows the slow-motion icon
+/// ([`draw_slowmo_icon`]), so TS 3.0's sprite list stays as its own. Sprite handles die with the
+/// video mode, so [`vid_init`] forgets it.
+static SLOWMO_SPR: Global<Cell<Option<HSPRITE>>> = Global(Cell::new(None));
+
+/// Forget the sprite handles this module loads on demand (`HUD_VidInit`).
+pub fn vid_init() {
+    SLOWMO_SPR.0.set(None);
+}
 
 /// The voice helper's lookup (`GetPlayerTextColor` 1001fcd0): negative teams are 0, then modulo
 /// into `iTeamColors` (`0x10096974`, the scoreboard's table: (255,170,0), (125,165,210),
@@ -282,6 +295,36 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
     if h.move_icon {
         dc.spr(dc.g.ts.movement, w / 2, ht - 0x38, icon);
     }
+    if crate::gameplay::hud_rules(h.gameplay).slowmo_icon() {
+        draw_slowmo_icon(dc);
+    }
+}
+
+/// The slow-motion icon, for a ruleset that has one
+/// ([`ClientRules::slowmo_icon`](crate::gameplay::ClientRules::slowmo_icon)): while the last
+/// `TSSlowMo` is non-zero, `sprites/slowmotion.spr` additive at (w / 2 − 16, 16) in the HUD colour
+/// / 1.5, truncated. TS 2.1's status `Draw` tail (`0x10086651`; its other trigger, the
+/// `GloSlow` flag, is never sent).
+fn draw_slowmo_icon(dc: &Dc) {
+    if crate::state::with(|s| s.slowmo_factor100) == 0.0 {
+        return;
+    }
+    let e = engine();
+    let spr = SLOWMO_SPR.0.get().unwrap_or_else(|| {
+        let spr = e.spr_load("sprites/slowmotion.spr");
+        SLOWMO_SPR.0.set(Some(spr));
+        spr
+    });
+    if spr == 0 {
+        return;
+    }
+    e.spr_set(spr, slowmo_icon_rgb(dc.hud));
+    e.spr_draw_additive(0, dc.w() / 2 - 0x10, 0x10, None);
+}
+
+/// The slow-motion icon's colour: each HUD channel / 1.5, truncated (`0x1008668f`).
+fn slowmo_icon_rgb(hud: [i32; 3]) -> [i32; 3] {
+    hud.map(|c| ftol(c as f64 / 1.5))
 }
 
 /// `DrawPowerup` (1004a2e0): top-left power-up name and seconds left (green).

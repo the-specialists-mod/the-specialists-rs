@@ -548,10 +548,11 @@ pub fn on_tsfade(b: &[u8]) {
 
 /// `UTIL_ApproachFOV` (`0x10049620`), from `CHud::Think`: `m_iFOV` (an `int`) moves toward
 /// `target` by `max(1, (|d| / 2) * ft * 50)` (integer halving), truncated, without passing it.
-/// An unset FOV (below 0.001) snaps.
-pub fn ease_fov(cur: f32, target: f32, ft: f32) -> f32 {
+/// With `snap` it jumps to the target: [`ClientRules::fov_snaps`](crate::gameplay::ClientRules::fov_snaps)
+/// decides, which in TS 3.0 is an unset FOV (below 0.001).
+pub fn ease_fov(cur: f32, target: f32, ft: f32, snap: bool) -> f32 {
     let (cur, target) = (cur as i32, target as i32);
-    if (cur as f32) < 0.001 {
+    if snap {
         return target as f32;
     }
     if cur == target {
@@ -1783,28 +1784,34 @@ mod tests {
         assert_eq!(cam_ofs_step([-10.0, 100.0, 30.0], [-10.0, 100.0, 0.0], [0.0; 3], false), [-10.0, 100.0, 0.0]);
     }
 
+    /// [`ease_fov`] with TS 3.0's snap rule.
+    fn ease30(cur: f32, target: f32, ft: f32) -> f32 {
+        use crate::gameplay::ClientRules;
+        ease_fov(cur, target, ft, shared::gameplay::CORE.fov_snaps(cur as i32))
+    }
+
     #[test]
     fn fov_easing() {
         let mut f = 90.0;
         let mut n = 0;
         while f != 20.0 && n < 1000 {
-            f = ease_fov(f, 20.0, 0.016);
+            f = ease30(f, 20.0, 0.016);
             n += 1;
         }
         assert_eq!(f, 20.0);
         assert!(n > 3, "zoom is animated");
         // `UTIL_ApproachFOV`: half the gap (integer), times ft * 50, at least 1, truncated.
         // 0.016f is a hair above 0.016, so 90 - 28.000001 truncates to 61, as on the x87.
-        assert_eq!(ease_fov(90.0, 20.0, 0.016), 61.0);
-        assert_eq!(ease_fov(20.0, 90.0, 0.016), 48.0);
-        assert_eq!(ease_fov(21.0, 20.0, 0.016), 20.0, "at least one degree");
-        assert_eq!(ease_fov(22.0, 20.0, 0.0), 21.0);
-        assert_eq!(ease_fov(0.0, 35.0, 0.016), 35.0, "unset snaps");
-        assert_eq!(ease_fov(85.0, 20.0, 1.0), 20.0, "never passes the target");
+        assert_eq!(ease30(90.0, 20.0, 0.016), 61.0);
+        assert_eq!(ease30(20.0, 90.0, 0.016), 48.0);
+        assert_eq!(ease30(21.0, 20.0, 0.016), 20.0, "at least one degree");
+        assert_eq!(ease30(22.0, 20.0, 0.0), 21.0);
+        assert_eq!(ease30(0.0, 35.0, 0.016), 35.0, "unset snaps");
+        assert_eq!(ease30(85.0, 20.0, 1.0), 20.0, "never passes the target");
         // A server FOV of any value (the `int` difference wraps as in C, no overflow).
         for (cur, target) in [(90.0, -3e9), (90.0, 3e9), (3e9, -3e9), (-3e9, 3e9), (90.0, f32::NAN), (f32::INFINITY, f32::NEG_INFINITY)] {
             for ft in [0.0, 0.016, f32::NAN, f32::INFINITY, -1.0] {
-                ease_fov(cur, target, ft);
+                ease30(cur, target, ft);
             }
         }
     }

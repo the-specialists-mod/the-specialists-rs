@@ -158,7 +158,7 @@ fn tokens(text: &str) -> Vec<String> {
 }
 
 /// C `atof`/`atoi` on a token (leading number, 0 when there is none).
-fn atof(s: &str) -> f32 {
+pub(crate) fn atof(s: &str) -> f32 {
     let s = s.trim_start();
     let end = s
         .char_indices()

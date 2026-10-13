@@ -100,6 +100,7 @@ helper looks them up again.
 | Client weapon prediction | `prediction::gun::post_think` sets `ClientHost::rules` from `gameplay::gun_rules(&from.client)` | `from`'s `gp`, per command |
 | Server frame, rules, scoring | `ts_server::gameplay::active().server` (a `Cell` read). `gameplay::frame()` runs at the start of `rules::start_frame` | `ts_gameplay` |
 | Client HUD | `ts_client::gameplay::hud_rules(h.gameplay)` | `SrvSett` 4 (`Hud::gameplay`) |
+| Client input, FOV, map effects, buy menu | `ts_client::gameplay::current()` (reads `Hud::gameplay` without holding the HUD's borrow) | `SrvSett` 4 |
 
 Movement and the gun read physinfo instead of the cvar so that the server and the client's
 prediction run the same rules for the same command, as they must.
@@ -205,7 +206,22 @@ The hooks so far:
 | `GunRules` | `semi_auto_delay(rate)` | 0.1 | `weapons/gun.rs` `standard_fire` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start`, `gameplay::frame` |
 | `ServerRules` | `points_for_frag(frag, sliding, diving)` | `rules::scoring::points_for_frag` | `rules/scoring.rs` `player_killed` |
-| `ClientRules` | `divestep_limits()` | `[42, 52, 62]` | `hud/weapons.rs` `draw_divesteps` |
+| `ClientRules` | `crosshair_parts(weapon, fov)` | divesteps first for every weapon, then the crosshair unless weapon 0/24/25/34/35 | `hud/weapons.rs` `draw_crosshair` |
+| `ClientRules` | `crosshair_gap(base, spread, accuracy)` | `base + spread × 160` (f32), clamped to ±0x10000 | `hud/weapons.rs` `draw_crosshair` |
+| `ClientRules` | `divesteps_blocked(used, armor, teamplay)` | `used ≥ 42 / 52 / 62` | `hud/weapons.rs` `draw_divesteps` |
+| `ClientRules` | `stunt_cooldown(cooldown, now)` | the `NextStunt` countdown is ≥ 0.01 | `hud/weapons.rs` `draw_divesteps` |
+| `ClientRules` | `pinned_default_fov()` | none (`default_fov` clamped to 70..110) | `hud/mod.rs` `think_fov` |
+| `ClientRules` | `fov_snaps(cur)` | `m_iFOV` below 0.001 | `hud/mod.rs` `think_fov` → `view::ease_fov` |
+| `ClientRules` | `input_gate()` | true (the anti-script real-key gate) | `input.rs` `gate_open` |
+| `ClientRules` | `attack_switch()` | true (`cl_attackswitch` works) | `input.rs` `attack_switched` |
+| `ClientRules` | `attack_sends_respawn()` | true | `input.rs` `key_tap` |
+| `ClientRules` | `map_effects()` | true (`ts_particle`/`ts_emitter`/`ts_fog` from the BSP) | `effects.rs` `frame` |
+| `ClientRules` | `kungfu_exhausted(power)` | `power ≤ 0.01` (empty red frame) | `hud/weapons.rs` `draw_kungfu_bar` |
+| `ClientRules` | `kungfu_regen(r)` | +15 per step (1 while negative), up to 100 | `hud/state.rs` `regen_kungfu` (weapon `Think`) |
+| `ClientRules` | `kungfu_power_on_reset()` | none (only `VidInit` refills the bar) | `hud/state.rs` `reset_weapons` |
+| `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
+| `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
+| `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11 | `menus/buy.rs`, `menus/mod.rs` |
 
 ## 6. Adding a hook
 
@@ -218,7 +234,8 @@ The hooks so far:
    * movement: `self.rules` in `Pm`
    * gun: `host.rules()`
    * server: `crate::gameplay::active().server`
-   * HUD: `crate::gameplay::hud_rules(h.gameplay)`
+   * HUD: `crate::gameplay::hud_rules(h.gameplay)`; client code outside the HUD's borrow
+     (input commands, the FOV and effects frames): `crate::gameplay::current()`
 
    Don't resolve again inside a helper. Pass the rules down instead.
 3. Override it in the plugin. For TS 2.1, the shared hooks go in `crates/ts21/src/shared/` (on
