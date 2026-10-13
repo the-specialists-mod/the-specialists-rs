@@ -5,6 +5,7 @@
 use crate::entities::stock::animating::Animating;
 use crate::entities::stock::base::Delay;
 use crate::player::{Player, with_player};
+use crate::rules::powerup::PowerupRules;
 use crate::rules::{self, cvars, msg, state};
 use crate::save::{BaseFuncs, Fields};
 use crate::world::{Cx, Entity, UseType};
@@ -15,9 +16,6 @@ use shared::ts::powerup as pw;
 use std::ffi::CStr;
 
 pub const MODEL: &CStr = c"models/powerup.mdl";
-
-/// Instant power-ups (always picked up): infinite clip, kung fu, grenade, health, armour, super jump.
-pub const INSTANT: u16 = 0x1e6;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {
@@ -36,6 +34,8 @@ pub struct PowerUp {
     permanent: bool,
     /// Duration given to the player (stored types).
     pub secs: i32,
+    /// The armour an armour power-up gives (`ServerRules::armor_powerup`): 100.
+    pub armor: f32,
     /// Temporary power-ups vanish at this time.
     expire: f32,
     /// `pwupduration` (respawn delay key) and `pwupmult`.
@@ -60,6 +60,7 @@ impl Default for PowerUp {
             random: false,
             permanent: true,
             secs: 0,
+            armor: 100.0,
             expire: 0.0,
             respawn: 0,
             mult: 1.0,
@@ -71,31 +72,51 @@ impl Default for PowerUp {
     }
 }
 
-/// Model body and base duration per type (`SetupPowerUp` 0x98014), first matching bit wins. With
-/// no known bit TS leaves `pev->body` as it was (`None`) and the duration 0.
-pub fn body_and_secs(kind: u16) -> (Option<i32>, i32) {
-    let (body, secs) = if kind & pw::SLOWMO != 0 {
-        (4, 3)
-    } else if kind & pw::INFINITE_CLIP != 0 {
-        (2, 3)
-    } else if kind & pw::KUNGFU != 0 {
-        (0, 0)
-    } else if kind & pw::SLOWPAUSE != 0 {
-        (9, 2)
-    } else if kind & pw::DOUBLE_FIRERATE != 0 {
-        (1, 3)
-    } else if kind & pw::GRENADE != 0 {
-        (5, 0)
-    } else if kind & pw::HEALTH != 0 {
-        (6, 0)
-    } else if kind & pw::ARMOR != 0 {
-        (7, 0)
-    } else if kind & pw::SUPERJUMP != 0 {
-        (8, 0)
+/// Model body per type (`SetupPowerUp` 0x98014), first matching bit wins. With no known bit TS
+/// leaves `pev->body` as it was (`None`). The base durations are the ruleset's
+/// (`rules::powerup::PowerupRules::base`).
+pub fn body(kind: u16) -> Option<i32> {
+    // slow motion, infinite clip, kung fu, slow pause, double firerate, grenade, health, armour,
+    // super jump
+    const BODIES: [i32; 9] = [4, 2, 0, 9, 1, 5, 6, 7, 8];
+    (0..9).find(|i| kind & (1 << i) != 0).map(|i| BODIES[i])
+}
+
+/// `SetupPowerUp`'s type (0x98014) for the type key `key` (`pwuptype`) and `spawnflags`, and
+/// whether it is drawn again on each respawn: a key below 1 draws from the spawnflags' types
+/// (all when none), never armour; armour, and the super jump on a map that gives it to everyone,
+/// are drawn from all.
+pub fn kind_for(key: i32, spawnflags: i32) -> (u16, bool) {
+    let flags = spawnflags as u16;
+    let superjump_map = state::with(|g| g.superjump_map);
+    if key < 1 {
+        let mut k = state::with(|g| g.random_powerup(flags & 0x1ff));
+        if k == 0 {
+            k = state::with(|g| g.random_powerup(0x1ff));
+        }
+        (k, true)
     } else {
-        return (None, 0);
-    };
-    (Some(body), secs)
+        let k = key as u16;
+        let k = if (superjump_map && k & pw::SUPERJUMP != 0) || k & pw::ARMOR != 0 { state::with(|g| g.random_powerup(0x1ff)) } else { k };
+        (k, false)
+    }
+}
+
+/// `WaitTouch`'s pickup rules (single held slot, +use swaps) for a power-up of type `kind`
+/// touched by a player holding `held` (`held_secs` seconds) with `active` running and +use
+/// (`using`) or not: `None` leaves it, `Some(drop)` takes it and drops `drop` (0: nothing).
+pub fn pickup_plan(r: &PowerupRules, kind: u16, held: u16, held_secs: i32, active: u16, using: bool) -> Option<u16> {
+    let can_store = held == 0 || (held == pw::SLOWMO && kind == pw::SLOWMO && held_secs < r.slowmo_top_up_below);
+    let instant = kind & r.instant != 0;
+    let take = ((can_store || using) && active == 0) || instant;
+    if !take {
+        return None;
+    }
+    let mut swap = using && held != 0 && (r.swap_on_instant || !instant);
+    if held == pw::SLOWMO && swap {
+        swap = held_secs > r.slowmo_swap_above;
+    }
+    Some(if swap { held } else { 0 })
 }
 
 /// `SetupPowerUp`'s duration of a stored type: `(int)(base * pwupmult)`, the x87 product truncated
@@ -118,26 +139,22 @@ pub fn respawn_delay(v: i32) -> f32 {
 impl PowerUp {
     /// `SetupPowerUp(type, secs, life, permanent)`.
     fn setup(&mut self, cx: &mut Cx, kind: i32, secs: i32, life: f32, permanent: bool) {
-        let flags = cx.pev().spawnflags as u16;
-        let superjump_map = state::with(|g| g.superjump_map);
-        if kind < 1 {
-            let mut k = state::with(|g| g.random_powerup(flags & 0x1ff));
-            if k == 0 {
-                k = state::with(|g| g.random_powerup(0x1ff));
-            }
-            self.kind = k;
-            self.random = true;
-        } else {
-            let k = kind as u16;
-            self.kind =
-                if (superjump_map && k & pw::SUPERJUMP != 0) || k & pw::ARMOR != 0 { state::with(|g| g.random_powerup(0x1ff)) } else { k };
-            self.random = false;
-        }
-        let (body, base) = body_and_secs(self.kind);
-        if let Some(body) = body {
+        let r = crate::gameplay::active().server;
+        let flags = cx.pev().spawnflags;
+        (self.kind, self.random) = r.powerup_kind(kind, flags);
+        if let Some(body) = body(self.kind) {
             cx.pev().body = body;
         }
-        self.secs = if secs < 1 { duration(base, self.mult) } else { secs };
+        let rules = r.powerups();
+        let base = rules.base(self.kind);
+        self.secs = if secs >= 1 {
+            secs
+        } else if rules.multiplier {
+            duration(base, self.mult)
+        } else {
+            base
+        };
+        self.armor = 100.0;
         self.expire = life + cx.time();
         self.permanent = permanent;
     }
@@ -184,19 +201,11 @@ impl PowerUp {
             return false;
         }
         let using = pcx.pev().button & IN_USE as i32 != 0;
-        let (held, held_secs, active) = (p.ts.held, p.ts.held_secs, p.active_powerup);
-        let can_store = held == 0 || (held == pw::SLOWMO && self.kind == pw::SLOWMO && held_secs < 3);
-        let instant = self.kind & INSTANT != 0;
-        let take = ((can_store || using) && active == 0) || instant;
-        if !take {
+        let r = crate::gameplay::active().server.powerups();
+        let Some(drop) = pickup_plan(r, self.kind, p.ts.held, p.ts.held_secs, p.active_powerup, using) else {
             return false;
-        }
-        let mut swap = using && held != 0 && !instant;
-        if held == pw::SLOWMO && swap {
-            swap = held_secs > 2;
-        }
-        let drop = if swap { held } else { 0 };
-        if !rules::powerup::add_powerup(p, pcx, self.kind, self.secs) {
+        };
+        if !rules::powerup::add_powerup(p, pcx, self.kind, self.secs, self.armor) {
             return false;
         }
         if drop != 0 {
@@ -358,19 +367,59 @@ pub fn create(kind: u16, secs: i32, origin: [f32; 3]) -> *mut edict_t {
     e
 }
 
+/// Sets the armour a power-up gives ([`PowerUp::armor`], e.g. a dying player's armour on the one
+/// a ruleset drops). Nothing for anything but a power-up.
+pub fn set_armor(e: *mut edict_t, armor: f32) {
+    if e.is_null() {
+        return;
+    }
+    crate::world::dispatch(e, |ent, _cx| {
+        if let Some(pu) = (ent as &mut dyn std::any::Any).downcast_mut::<PowerUp>() {
+            pu.armor = armor;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn bodies() {
-        assert_eq!(body_and_secs(pw::SLOWMO), (Some(4), 3));
-        assert_eq!(body_and_secs(pw::SLOWPAUSE), (Some(9), 2));
-        assert_eq!(body_and_secs(pw::DOUBLE_FIRERATE), (Some(1), 3));
-        assert_eq!(body_and_secs(pw::SUPERJUMP), (Some(8), 0));
-        assert_eq!(body_and_secs(pw::KUNGFU), (Some(0), 0));
+        assert_eq!(body(pw::SLOWMO), Some(4));
+        assert_eq!(body(pw::INFINITE_CLIP), Some(2));
+        assert_eq!(body(pw::SLOWPAUSE), Some(9));
+        assert_eq!(body(pw::DOUBLE_FIRERATE), Some(1));
+        assert_eq!(body(pw::GRENADE), Some(5));
+        assert_eq!(body(pw::HEALTH), Some(6));
+        assert_eq!(body(pw::ARMOR), Some(7));
+        assert_eq!(body(pw::SUPERJUMP), Some(8));
+        assert_eq!(body(pw::KUNGFU), Some(0));
+        assert_eq!(body(pw::SLOWPAUSE | pw::GRENADE), Some(9), "first matching bit");
         // No known bit: the body is left alone.
-        assert_eq!(body_and_secs(0x200), (None, 0));
+        assert_eq!(body(0x200), None);
+    }
+
+    /// `WaitTouch` (0x98600..) with TS 3.0's values.
+    #[test]
+    fn pickup_rules() {
+        let r = &crate::rules::powerup::CORE;
+        let plan = |kind, held, secs, active, using| pickup_plan(r, kind, held, secs, active, using);
+        // An empty slot takes anything; a held one refuses a second stored type.
+        assert_eq!(plan(pw::SLOWPAUSE, 0, 0, 0, false), Some(0));
+        assert_eq!(plan(pw::SLOWPAUSE, pw::SLOWMO, 2, 0, false), None);
+        // Slow motion tops up a held one below 3 s.
+        assert_eq!(plan(pw::SLOWMO, pw::SLOWMO, 2, 0, false), Some(0));
+        assert_eq!(plan(pw::SLOWMO, pw::SLOWMO, 3, 0, false), None);
+        // +use swaps, slow motion only above 2 s; never while one runs.
+        assert_eq!(plan(pw::SLOWPAUSE, pw::DOUBLE_FIRERATE, 3, 0, true), Some(pw::DOUBLE_FIRERATE));
+        assert_eq!(plan(pw::SLOWPAUSE, pw::SLOWMO, 2, 0, true), Some(0));
+        assert_eq!(plan(pw::SLOWPAUSE, pw::SLOWMO, 3, 0, true), Some(pw::SLOWMO));
+        assert_eq!(plan(pw::SLOWPAUSE, 0, 0, pw::SLOWMO, true), None);
+        // Instant types: always, and +use doesn't drop the held one. Infinite clip is one.
+        for k in [pw::INFINITE_CLIP, pw::KUNGFU, pw::GRENADE, pw::HEALTH, pw::ARMOR, pw::SUPERJUMP] {
+            assert_eq!(plan(k, pw::SLOWMO, 3, pw::SLOWMO, true), Some(0), "{k:#x}");
+        }
     }
 
     #[test]

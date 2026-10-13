@@ -183,7 +183,7 @@ pub fn trace_attack(
     never_teammates: bool,
 ) -> MeleeResult {
     let e = engine();
-    if hit.kind == MeleeKind::KungFu && (e.random_long(10, 80) as f32) < hit.damage {
+    if hit.kind == MeleeKind::KungFu && crate::gameplay::active().server.motion_blur() && (e.random_long(10, 80) as f32) < hit.damage {
         let origin = attacker.v().origin;
         messages::pvs(Msg::TsMBlur, origin).byte(e.index_of(attacker)).byte(if hit.damage > 50.0 { 2 } else { 1 }).end();
     }

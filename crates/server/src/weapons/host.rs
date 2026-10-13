@@ -71,14 +71,17 @@ pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut S
     };
     p.inv = inv;
     // TS writes these before its `Animate` call (`KatanaFire` 0x736bf, `CCombatAttack` 0x7653e).
+    // They are seconds of the player's time, kept by the ruleset's stunt clock.
+    let clock = crate::gameplay::active().server.stunt_clock();
+    let (now, time_scale) = (cx.time(), cx.pev().fuser1);
     if let Some(t) = recover {
-        p.stunt.recover = t;
+        p.stunt.recover = clock.start(now, time_scale, f64::from(t));
     }
     if let Some(t) = close_cd {
-        p.stunt.close_attack_cd = t;
+        p.stunt.close_attack_cd = clock.start(now, time_scale, f64::from(t));
     }
     if let Some(t) = block {
-        p.stunt.block_timer = t;
+        p.stunt.block_timer = clock.start(now, time_scale, f64::from(t));
     }
     if ext_changed {
         let ext2 = p.inv.sv.anim_ext.clone();

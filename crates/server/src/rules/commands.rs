@@ -486,8 +486,8 @@ extern "C" fn cmd_givepowerup() {
     let p = e.client(e.cmd_argv(1).to_string_lossy().trim().parse().unwrap_or(0));
     let bits: u16 = e.cmd_argv(2).to_string_lossy().trim().parse().unwrap_or(0);
     crate::player::with_player(p, |pl, cx| {
-        let secs = crate::entities::ts::powerup::body_and_secs(bits).1;
-        add_powerup(pl, cx, bits, secs);
+        let secs = crate::gameplay::active().server.powerups().base(bits);
+        add_powerup(pl, cx, bits, secs, 100.0);
     });
 }
 

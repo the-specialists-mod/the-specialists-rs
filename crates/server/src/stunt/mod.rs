@@ -14,6 +14,7 @@
 
 pub mod anim;
 mod moves;
+pub mod rules;
 
 use crate::commands::Args;
 use crate::entities::stock::explode::emit_sound_slow;
@@ -127,6 +128,10 @@ impl Default for StuntState {
 
 // ---- small helpers shared by the submodules ------------------------------------------------------
 
+/// The active ruleset's server hooks, resolved once per entry point and passed down
+/// (`ServerRules::stunts`, `stunt_clock`, `can_dive`, `motion_blur`...).
+type Rules = &'static dyn crate::gameplay::ServerRules;
+
 pub(crate) const IN_ALT1: i32 = shared::ts::IN_ALT1 as i32;
 const ATTN_NORM: f32 = 0.8;
 
@@ -157,9 +162,9 @@ fn stunt_sound(cx: &mut Cx, sample: &CStr) {
     emit_sound_slow(cx.edict, CHAN_BODY, sample, 1.0, ATTN_NORM, 0, pitch, 0.5);
 }
 
-/// `gmsgTSNextStunt`: the cooldown in tenths of a second.
-fn send_next_stunt(p: &mut Player, cx: &mut Cx) {
-    let v = shared::protocol::stunt::encode_next_stunt(p.stunt.next_stunt);
+/// `gmsgTSNextStunt`: the cooldown in tenths of a second ([`rules::StuntClock::next_stunt_byte`]).
+fn send_next_stunt(p: &mut Player, cx: &mut Cx, r: Rules) {
+    let v = r.stunt_clock().next_stunt_byte(cx.time(), p.stunt.next_stunt);
     messages::one(Msg::NextStunt, cx.edict).byte(v as i32).end();
 }
 
@@ -170,8 +175,12 @@ pub fn motion_blur(cx: &mut Cx, level: i32) {
     messages::pvs(Msg::TsMBlur, origin).byte(idx).byte(level).end();
 }
 
-/// Blur when `RandomLong(0,10) + 10*slowmul > threshold` (stunt starts).
-fn maybe_blur(cx: &mut Cx, threshold: f32) {
+/// Blur when `RandomLong(0,10) + 10*slowmul > threshold` (stunt starts). A ruleset without
+/// motion blur draws no number either.
+fn maybe_blur(cx: &mut Cx, rules: Rules, threshold: f32) {
+    if !rules.motion_blur() {
+        return;
+    }
     let r = engine().random_long(0, 10);
     if slow_mul(cx) * 10.0 + r as f32 > threshold {
         motion_blur(cx, 2);
@@ -210,9 +219,11 @@ pub use crate::entities::stock::explode::screen_shake;
 
 // ---- API for other packages -------------------------------------------------------------------------
 
-/// `CBasePlayer::BlockPlayer(t)` (0x95b58): half speed (`RECOVER`) for `t` seconds.
+/// `CBasePlayer::BlockPlayer(t)` (0x95b58): half speed (`RECOVER`) for `t` seconds of the
+/// player's time (kept by the ruleset's [`rules::StuntClock`]).
 pub fn block_player(p: &mut Player, cx: &mut Cx, t: f32) {
-    p.stunt.block_timer = t;
+    let clock = crate::gameplay::active().server.stunt_clock();
+    p.stunt.block_timer = clock.start(cx.time(), cx.pev().fuser1, f64::from(t));
     cx.pev().iuser4 |= RECOVER;
 }
 
@@ -346,12 +357,12 @@ fn sync_superjump(p: &mut Player, cx: &mut Cx) {
 /// `CBasePlayer::Jump` (vtable slot 84), which `PreThink` calls while +jump is held (through
 /// `crate::ham` for plugins' hooks).
 pub fn jump(p: &mut Player, cx: &mut Cx) {
-    moves::jump(p, cx);
+    moves::jump(p, cx, crate::gameplay::active().server);
 }
 
 /// `CBasePlayer::Duck` (vtable slot 85), as [`jump`].
 pub fn duck(p: &mut Player, cx: &mut Cx) {
-    moves::duck(p, cx);
+    moves::duck(p, cx, crate::gameplay::active().server);
 }
 
 /// The stunt parts of `CBasePlayer::PreThink` (0x908cc), in order. `tail` is false on the frame
@@ -366,6 +377,8 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
         cx.pev().button |= IN_ALT1;
     }
     let time = cx.time();
+    let r: Rules = crate::gameplay::active().server;
+    let clock = r.stunt_clock();
     {
         let button = cx.pev().button;
         let changed = p.stunt.button_last ^ button;
@@ -386,11 +399,9 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     }
     // The close-combat window and block timers (pl+0x79c..0x7b0) live in the gun
     // (`Gun::pre_frame`, weapons pre_think).
-    if p.stunt.block_timer != 0.0 {
-        p.stunt.block_timer = (p.stunt.block_timer - dt).max(0.001);
-    }
+    clock.tick_block(&mut p.stunt, dt);
 
-    moves::play(p, cx);
+    moves::play(p, cx, r);
     anim::update_timers(p, cx);
 
     let pev = cx.pev();
@@ -401,7 +412,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     }
 
     // BlockPlayer expiry.
-    if p.stunt.block_timer != 0.0 && cx.pev().iuser4 & RECOVER != 0 && p.stunt.block_timer < 0.01 {
+    if p.stunt.block_timer != 0.0 && cx.pev().iuser4 & RECOVER != 0 && clock.done(time, p.stunt.block_timer) {
         cx.pev().iuser4 &= !RECOVER;
         p.stunt.block_timer = 0.0;
     }
@@ -439,7 +450,7 @@ pub fn post_think(p: &mut Player, cx: &mut Cx) {
             cx.pev().gravity = 1.0;
             p.stunt.fall_velocity = 0.0;
             if cx.pev().iuser4 & SUPERJUMP_GLIDE != 0 {
-                moves::super_jump_landing(p, cx);
+                moves::super_jump_landing(p, cx, crate::gameplay::active().server);
             }
         }
         if is_alive(cx) {

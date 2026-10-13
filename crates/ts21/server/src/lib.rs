@@ -8,6 +8,8 @@
 //! * [`cvars`] and [`commands`]: 2.1's extra cvars, the polled cvars and the client commands.
 //! * [`entities`]: the map entities (§3.9).
 //! * [`protocol`]: 2.1 on TS 3.0's wire (§1.2).
+//! * [`powerup`]: power-ups and slow motion (§3.7).
+//! * [`stunt`]: the server stunts and their slot limits (§3.8, §3.5).
 
 #![deny(unsafe_code)]
 
@@ -16,9 +18,11 @@ pub mod commands;
 pub mod cvars;
 pub mod entities;
 pub mod players;
+pub mod powerup;
 pub mod protocol;
 pub mod rules;
 pub mod scoring;
+pub mod stunt;
 
 use goldsrc::server::MsgWriter;
 use goldsrc::sys::edict_t;
@@ -32,8 +36,10 @@ use ts_server::gameplay::server::CvarDef;
 use ts_server::gameplay::{ServerPlugin, ServerRules};
 use ts_server::messages::Msg;
 use ts_server::player::Player;
+use ts_server::rules::powerup::PowerupRules;
 use ts_server::rules::scoring::Frag;
 use ts_server::rules::state::{self, GameRules, Mode};
+use ts_server::stunt::rules::{Dive, StuntClock, StuntRules};
 use ts_server::world::{Cx, Entity};
 use ts21_gameplay::TS21;
 
@@ -96,8 +102,10 @@ impl ServerRules for Ts21Server {
         cash::cash_floor(p);
         let armor = cx.pev().armorvalue;
         if state::with(|g| matches!(g.mode, Mode::Dm | Mode::TeamDm)) && armor > 0.0 {
-            // `CreatePowerUp(0x80, -1)`, then `pev->origin` and `+0x7c = (int)armorvalue`.
-            ts_server::entities::ts::create_powerup(shared::ts::powerup::ARMOR, cvars::trunc(armor), cx.pev().origin);
+            // `CreatePowerUp(0x80, -1)`, then `pev->origin` and `+0x7c = (int)armorvalue`: the
+            // armour it gives (`PlayerAddPowerUp`, `powerup::armor`), not its seconds.
+            let e = ts_server::entities::ts::powerup::create(shared::ts::powerup::ARMOR, -1, cx.pev().origin);
+            ts_server::entities::ts::powerup::set_armor(e, cvars::trunc(armor) as f32);
         }
     }
 
@@ -164,6 +172,50 @@ impl ServerRules for Ts21Server {
     fn outgoing_message(&self, m: Msg, w: MsgWriter, send: &mut dyn FnMut(MsgWriter)) {
         protocol::outgoing_message(m, w, send);
     }
+
+    fn powerups(&self) -> &'static PowerupRules {
+        &powerup::POWERUPS
+    }
+
+    fn powerup_kind(&self, key: i32, spawnflags: i32) -> (u16, bool) {
+        powerup::kind(key, spawnflags)
+    }
+
+    fn armor_powerup(&self, _p: &mut Player, cx: &mut Cx, armor: f32) {
+        powerup::armor(cx, armor)
+    }
+
+    /// `GoSlow` (0x10055220) writes `pev->fuser1` directly; 2.1 has no `InterpolateSlowMotion`.
+    fn time_scale_eases(&self) -> bool {
+        false
+    }
+
+    /// 2.1 has no `TSMBlur` message.
+    fn motion_blur(&self) -> bool {
+        false
+    }
+
+    /// 2.1's `EMIT_SOUND_DYN` (0x10036300) is the SDK's: no time-scaled pitch.
+    fn sound_pitch(&self, pitch: i32, time_scale: f32, s: f32) -> i32 {
+        let _ = (time_scale, s);
+        pitch
+    }
+
+    fn stunts(&self) -> &'static StuntRules {
+        &stunt::STUNTS
+    }
+
+    fn stunt_clock(&self) -> &'static dyn StuntClock {
+        &stunt::ABSOLUTE
+    }
+
+    fn can_dive(&self, p: &Player, armor: f32, dive: Dive) -> bool {
+        stunt::can_dive(p, armor, dive)
+    }
+
+    fn bullet_time_allowed(&self, time_scale: f32) -> bool {
+        stunt::bullet_time_allowed(time_scale)
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.
@@ -205,5 +257,23 @@ mod tests {
         assert_eq!(p.broken_respawn_delay(12.0), None);
         assert!(!p.breakable_respawn_guarded());
         assert!(p.ground_weapon_lands_flying());
+    }
+
+    /// The 2.1 hooks differ where 2.1 does, and the core plugin keeps 3.0's.
+    #[test]
+    fn hooks_follow_the_plugin() {
+        let core: &dyn ServerRules = &shared::gameplay::CORE;
+        let v21: &dyn ServerRules = &Ts21Server;
+        assert!(core.time_scale_eases() && !v21.time_scale_eases());
+        assert!(core.motion_blur() && !v21.motion_blur());
+        assert_eq!(core.sound_pitch(100, 0.5, 0.5), 75);
+        assert_eq!(v21.sound_pitch(100, 0.5, 0.5), 100);
+        assert_eq!(core.powerups().base(shared::ts::powerup::SLOWMO), 3);
+        assert_eq!(v21.powerups().base(shared::ts::powerup::SLOWMO), 5);
+        assert!(core.stunts().wall_dive && !v21.stunts().wall_dive);
+        assert_eq!(core.stunt_clock().start(10.0, 1.0, 0.5), 0.5);
+        assert_eq!(v21.stunt_clock().start(10.0, 1.0, 0.5), 10.5);
+        assert!(core.bullet_time_allowed(0.99) && !core.bullet_time_allowed(0.995));
+        assert!(v21.bullet_time_allowed(0.995) && !v21.bullet_time_allowed(1.0));
     }
 }

@@ -372,8 +372,13 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     // Time scale easing toward the target, and animation rate = time scale.
     let ft = engine().globals().frametime;
     {
+        let eases = crate::gameplay::active().server.time_scale_eases();
         let v = cx.pev();
-        powerup::interpolate(ft, &mut v.fuser1, p.slow_target);
+        if eases {
+            powerup::interpolate(ft, &mut v.fuser1, p.slow_target);
+        } else {
+            v.fuser1 = p.slow_target;
+        }
         v.framerate = v.fuser1.max(0.01);
     }
 
@@ -963,12 +968,13 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     // Motion blur trails on the killer and off on the victim (50 %). Guard: TS doesn't test
     // for a NULL attacker.
     let attacker = dmg.attacker;
-    if !attacker.is_null() && killer_blur(globals.close_combat, || eng.random_long(0, 100)) {
+    let blur = crate::gameplay::active().server.motion_blur();
+    if blur && !attacker.is_null() && killer_blur(globals.close_combat, || eng.random_long(0, 100)) {
         let org = attacker.v().origin;
         let b = TsMBlur { entindex: eng.index_of(attacker) as u8, mode: 1 };
         msg::pvs(Msg::TsMBlur, org, |w| b.write(w));
     }
-    if eng.random_long(0, 100) < 0x32 {
+    if blur && eng.random_long(0, 100) < 0x32 {
         let b = TsMBlur { entindex: idx as u8, mode: 0 };
         msg::pvs(Msg::TsMBlur, cx.pev().origin, |w| b.write(w));
     }
