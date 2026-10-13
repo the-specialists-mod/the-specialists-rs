@@ -60,7 +60,12 @@ pub fn pellet_offset(seed: u32, i: u32, radial: f32) -> (f32, f32) {
 /// Direction of pellet `i`: `aim + right * x * spread_x + up * y * spread_y` (not normalised,
 /// as in TS).
 pub fn pellet_dir(aim: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], seed: u32, i: u32, radial: f32) -> Vec3 {
-    let (x, y) = pellet_offset(seed, i, radial);
+    pellet_dir_at(aim, right, up, spread, pellet_offset(seed, i, radial))
+}
+
+/// [`pellet_dir`] for the pellet offset `(x, y)` (in units of the spread) a ruleset picked
+/// ([`GunRules::pellet_offset`](crate::gameplay::GunRules::pellet_offset)).
+pub fn pellet_dir_at(aim: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], (x, y): (f32, f32)) -> Vec3 {
     let sx = x * spread[0];
     let sy = y * spread[1];
     [aim[0] + sx * right[0] + sy * up[0], aim[1] + sx * right[1] + sy * up[1], aim[2] + sx * right[2] + sy * up[2]]

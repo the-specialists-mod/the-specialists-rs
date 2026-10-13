@@ -290,7 +290,7 @@ pub fn client_precache() {
 /// (`weapons::precache_weapon_assets`), then the shared weapon sounds and models.
 pub fn ts_precache() {
     precache_list(TS_PRECACHE_HEAD);
-    crate::weapons::precache_weapon_assets();
+    crate::weapons::precache_weapon_assets(&crate::gameplay::ruleset_tables());
     precache_list(TS_PRECACHE_TAIL);
 }
 

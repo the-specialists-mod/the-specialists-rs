@@ -36,6 +36,7 @@ use crate::world::Cx;
 use goldsrc::ext::entities::EHandle;
 use goldsrc::server::engine;
 use goldsrc::sys::{clientdata_t, edict_t, usercmd_t, weapon_data_t};
+use shared::gameplay::{GunRules, SpreadDecay};
 use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 
 pub use assets::max_carry;
@@ -280,9 +281,10 @@ pub fn precache_events() {
     assets::precache_events();
 }
 
-/// `TSPrecache`'s weapon loop (`crate::precache`).
-pub fn precache_weapon_assets() {
-    assets::precache_weapon_assets();
+/// `TSPrecache`'s weapon loop (`crate::precache`), for the tables of every ruleset
+/// (`crate::gameplay::ruleset_tables`).
+pub fn precache_weapon_assets(rulesets: &[&'static shared::weapons::Tables]) {
+    assets::precache_weapon_assets(rulesets);
 }
 
 /// `g_sModelIndexBubbles`, from `W_Precache` (`crate::precache`).
@@ -349,12 +351,12 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     let buttons = pev.button as u32;
     p.inv.sv.pressed = buttons & !p.inv.sv.last_buttons;
     let arith = crate::rules::cvars::pm_arith();
-    let dt = Gun::timer_dt(arith, engine().globals().frametime, shared::weapons::spread::fixed_slow_amt(pev.fuser1), p.active_powerup);
+    let fuser1 = pev.fuser1;
+    let dt = Gun::timer_dt(arith, engine().globals().frametime, shared::weapons::spread::fixed_slow_amt(fuser1), p.active_powerup);
     let alive = Player::is_alive(cx);
     p.inv.gun.pre_frame(arith, dt, alive);
-    if alive {
-        p.inv.gun.decay_spread(arith, dt);
-    }
+    let decay = SpreadDecay { arith, step: dt, time: engine().time(), time_scale: fuser1, alive };
+    crate::gameplay::gun_rules(cx.edict).decay_spread(&mut p.inv.gun, &decay);
     p.inv.sv.disarm = (p.inv.sv.disarm - dt * 5.0).max(0.0);
     // `BlockPlayer`'s timer (`pl+0x4dc`) is the stunt package's (`StuntState::block_timer`): it
     // runs and expires in `stunt::pre_think`, and `CTSStunt::Play` resets it.
@@ -387,7 +389,7 @@ pub fn post_think(p: &mut Player, cx: &mut Cx, active: bool) {
     // the gun is ready, `ImpulseCommands` (0xdb780: `PlayerUse` 0xd9848 and the impulses) and then
     // the weapon frame.
     if active {
-        if !p.drive.tank.is_valid() && item_post_frame_ready(p, cx.pev().button as u32) {
+        if !p.drive.tank.is_valid() && item_post_frame_ready(p, cx.pev().button as u32, crate::gameplay::gun_rules(cx.edict)) {
             let (buttons, last) = (cx.pev().button, p.inv.sv.last_buttons as i32);
             crate::player::player_use::impulse_commands(p, cx, buttons & !last, last & !buttons);
             // `m_pActiveItem->ItemPostFrame()` and the reseed, for whichever item is active once
@@ -404,10 +406,10 @@ pub fn post_think(p: &mut Player, cx: &mut Cx, active: bool) {
         }
         p.inv.sv.last_buttons = cx.pev().button as u32;
     }
-    let pev = cx.pev();
+    let fuser1 = cx.pev().fuser1;
     let arith = crate::rules::cvars::pm_arith();
-    let dt = Gun::timer_dt(arith, engine().globals().frametime, shared::weapons::spread::fixed_slow_amt(pev.fuser1), p.active_powerup);
-    p.inv.gun.decrement_timers(dt);
+    let rules = crate::gameplay::gun_rules(cx.edict);
+    p.inv.gun.decrement_timers(rules.timer_step(arith, engine().globals().frametime as f64, fuser1, p.active_powerup));
     inventory::sync_speed(p, cx);
 }
 
@@ -549,10 +551,10 @@ pub fn should_switch_weapon(single_player: bool, active: Active, new: Item) -> b
 /// [`Gun::post_frame_ready`], with its +cancel clause). For a cycler `+0xcc` is `m_iModel`; the
 /// +cancel clause would then read through that model index as a pointer, which TS can't survive
 /// (an out-of-bounds read): the port leaves that clause out for a cycler.
-fn item_post_frame_ready(p: &Player, buttons: u32) -> bool {
+fn item_post_frame_ready(p: &Player, buttons: u32, rules: &dyn GunRules) -> bool {
     match active_item(p) {
         Active::None => true,
-        Active::Gun => p.inv.gun.post_frame_ready(buttons),
+        Active::Gun => p.inv.gun.post_frame_ready(buttons, rules),
         Active::Cycler => cycler_post_frame_ready(p.inv.gun.next_attack, p.inv.sv.cycler_model_index),
     }
 }

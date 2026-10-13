@@ -219,6 +219,15 @@ The hooks so far:
 | `PmRules` | `speed_by_slots(free, the_one)` | `ts::speed_by_slots` | server `weapons/inventory.rs` `sync_speed` (the active plugin's) |
 | `PmRules` | `max_player_speed()` | 330: `SetPlayerSpeed`'s clamp and `TSInit`'s speed | server `inventory.rs` `sync_speed`, `rules/lifecycle.rs` `on_spawn` |
 | `GunRules` | `semi_auto_delay(rate)` | 0.1 | `weapons/gun.rs` `standard_fire` |
+| `GunRules` | `tables()` | `table::base_tables()` | made the active `weapons::tables()` (below) |
+| `GunRules` | `fire(gun, host)` | `Gun::fire_core` (`CTSGun::Fire` and the three shot functions) | `weapons/gun.rs` `Gun::fire` |
+| `GunRules` | `timer_step(arith, frametime, fuser1, powerups)` | `Gun::timer_dt` (`frametime x GiveSlowMul x DFR 1.5`) | server `weapons/mod.rs` `post_think`, client `prediction/gun.rs` `post_think` |
+| `GunRules` | `command_frame_time(msec)` | `(float)(msec * 0.001)` | client `prediction/gun.rs` `post_think` |
+| `GunRules` | `decay_spread(gun, decay)` | `Gun::decay_spread` by the step, while alive | server `weapons/mod.rs` `pre_think`, client `post_think` (first prediction) |
+| `GunRules` | `pellet_offset(seed, i, bot_random)` | `None`: the polar pattern as each side computes it | server `weapons/fire.rs` `shoot_bullets`, client `events/fire.rs` `fire_bullets` |
+| `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked -5/+5, one gun none | client `events/fire.rs` `fire_akimbo` |
+| `GunRules` | `predicted()` | `Predicted::ALL` | `weapons/gun.rs` `weapon_post_frame` (client prediction only) |
+| `GunRules` | `cancel_runs_frame_in_reload(info)` | `info.stock != 0` | `weapons/gun.rs` `post_frame_ready` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start`, `gameplay::frame` |
 | `ServerRules` | `cvars()` | none | `gameplay::register` (registered after 3.0's, skipping existing names) |
 | `ServerRules` | `server_command(name)` | false (3.0's command runs) | `rules/commands.rs` `globalslow`, `restartround`, `weaponrestriction` |
@@ -265,6 +274,17 @@ The hooks so far:
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11 | `menus/buy.rs`, `menus/mod.rs` |
+
+**Weapon tables.** A ruleset's tables (`GunRules::tables`) are installed as the ones
+`shared::weapons::tables()` returns (`table::set_ruleset_tables`): by the server when a plugin
+becomes active (`gameplay::set_active`), by the client from each predicted command's rules. So
+everything that reads weapon data (the gun, inventory, buying, the HUD, damage, the events)
+follows the ruleset without a hook of its own; a change of tables drops custom weapon parameters
+(`loadweapons`, `CustomWP`). The map precaches the weapon assets of every registered ruleset's
+tables, TS 3.0's first so its precache order is unchanged (`weapons::precache_weapon_assets`),
+and the server keeps one set of model strings per ruleset. The gun's `GunHost` also tells the
+rules the raw time scale (`time_scale`) and whether it is the client's prediction
+(`prediction`), where TS's two copies differ.
 
 ## 6. Adding a hook
 

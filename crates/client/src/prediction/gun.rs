@@ -15,6 +15,7 @@ use crate::{state, view};
 use goldsrc::Global;
 use goldsrc::ext::render as r;
 use goldsrc::sys::*;
+use shared::gameplay::SpreadDecay;
 use shared::pm::Arith;
 use shared::protocol::weapons::{pack_clientdata, unpack_clientdata, unpack_weapon_data};
 use shared::weapons::gun::{MeleeHit, MeleeResult, Shot, Sound};
@@ -315,6 +316,12 @@ impl GunHost for ClientHost<'_> {
     fn slow_mul(&self) -> f32 {
         spread::fixed_slow_amt(self.from.client.fuser1)
     }
+    fn time_scale(&self) -> f32 {
+        self.from.client.fuser1
+    }
+    fn prediction(&self) -> bool {
+        true
+    }
     fn arith(&self) -> Arith {
         Arith::CLIENT
     }
@@ -405,10 +412,10 @@ impl GunHost for ClientHost<'_> {
         send_weapon_anim(anim, self.body, self.runfuncs, false);
     }
     fn player_anim(&mut self, _anim: i32) {}
-    fn kick(&mut self, pitch: f32, yaw: f32) {
+    fn kick(&mut self, pitch: f32, yaw: f32, shake: bool) {
         // VKickback: once per predicted shot.
         if self.runfuncs {
-            view::kick_angles(pitch, yaw, self.silenced, self.time);
+            view::kick_angles(pitch, yaw, shake.then_some(self.silenced), self.time);
         }
     }
     fn view_shake(&mut self, amp: f32) {
@@ -480,7 +487,7 @@ fn post_frame_gate(c: &clientdata_t, hud_health: i32) -> bool {
 /// `0x10003991`), so they pass through. It also runs down `m_flNextReload` (clamped at -0.001)
 /// and `m_fNextAimBonus` (at -1), which it never unpacks, in `to` itself. Everything else keeps
 /// the engine's copy of `from`.
-fn write_weapon_data(gun: &Gun, from: &weapon_data_t, dt: f32, to: &mut weapon_data_t) {
+fn write_weapon_data(gun: &Gun, from: &weapon_data_t, dt: f64, to: &mut weapon_data_t) {
     to.m_iClip = gun.clip_mirror;
     to.m_flNextPrimaryAttack = gun.next_primary;
     to.m_flNextSecondaryAttack = gun.next_secondary;
@@ -490,29 +497,30 @@ fn write_weapon_data(gun: &Gun, from: &weapon_data_t, dt: f32, to: &mut weapon_d
     to.m_fInReload = from.m_fInReload;
     to.m_fInSpecialReload = from.m_fInSpecialReload;
     to.iuser3 = from.iuser3;
-    to.m_flNextReload -= dt;
+    to.m_flNextReload = (to.m_flNextReload as f64 - dt) as f32;
     if to.m_flNextReload < -0.001 {
         to.m_flNextReload = -0.001;
     }
-    to.m_fNextAimBonus -= dt;
+    to.m_fNextAimBonus = (to.m_fNextAimBonus as f64 - dt) as f32;
     if to.m_fNextAimBonus < -1.0 {
         to.m_fNextAimBonus = -1.0;
     }
 }
 
-/// `HUD_WeaponsPostThink` (`0x10003830`) for one usercmd.
-/// The command's frame time as `HUD_WeaponsPostThink` computes it: `(float)(msec * 0.001)` with
-/// the `double` constant (`fild; fmul qword; fstp dword` at `0x10003eb7`), which is also the
-/// engine's `gpGlobals->frametime` for the server's `PostThink` (ReHLDS `SV_RunCmd`, FWGS
-/// `msec / 1000.0`). A `float` 0.001 differs for 141 of the 256 msec values, 10 ms among them,
-/// and would run the predicted timers out a frame before the server's.
-fn frame_time(msec: u8) -> f32 {
-    (msec as f64 * 0.001) as f32
-}
-
+/// `HUD_WeaponsPostThink` (`0x10003830`) for one usercmd. The command's frame time is the
+/// ruleset's ([`GunRules::command_frame_time`](shared::gameplay::GunRules::command_frame_time)):
+/// in TS 3.0 `(float)(msec * 0.001)` with the `double` constant (`fild; fmul qword; fstp dword`
+/// at `0x10003eb7`), which is also the engine's `gpGlobals->frametime` for the server's
+/// `PostThink` (ReHLDS `SV_RunCmd`, FWGS `msec / 1000.0`). A `float` 0.001 differs for 141 of the
+/// 256 msec values, 10 ms among them, and would run the predicted timers out a frame before the
+/// server's.
 pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t, runfuncs: bool, time: f64, seed: u32) {
     let c = &from.client;
     let final_origin = to.playerstate.origin;
+    // The command's ruleset (physinfo `gp`) also picks the weapon tables everything on the client
+    // reads (`shared::weapons::tables`).
+    let rules = crate::gameplay::gun_rules(c);
+    shared::weapons::table::set_ruleset_tables(rules.tables());
     spawn_and_death(c, final_origin, runfuncs);
     // `local_68` (set at 0x1000385c, tested at 0x10003965, which jumps to the epilogue): everything
     // else, including writing `to`, needs `from`'s weapon to be the TS gun. Otherwise `to` keeps
@@ -561,18 +569,25 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         weaponanim: c.weaponanim,
         body,
         silenced,
-        rules: crate::gameplay::gun_rules(c),
+        rules,
     };
     // The weapon frame, then the timers. There is no PreThink part ([`Gun::pre_frame`]): the
     // windows are never decremented and the HUD keeps the kung-fu power. The penalty decays after
     // the timers, on a first prediction only, dead or alive (`0x100040a5`).
-    let dt = Gun::timer_dt(Arith::CLIENT, frame_time(cmd.msec), spread::fixed_slow_amt(c.fuser1), powerups);
+    let dt = rules.timer_step(Arith::CLIENT, rules.command_frame_time(cmd.msec), c.fuser1, powerups);
     if post_frame_gate(c, state::with(|s| s.health)) {
         gun.weapon_post_frame(&mut host);
     }
     gun.decrement_timers(dt);
     if runfuncs {
-        gun.decay_spread(Arith::CLIENT, dt);
+        let decay = SpreadDecay {
+            arith: Arith::CLIENT,
+            step: dt as f32,
+            time: time as f32,
+            time_scale: state::with(|s| s.time_scale),
+            alive: true,
+        };
+        rules.decay_spread(&mut gun, &decay);
     }
 
     let (fov, viewmodel, iuser4, weaponanim) = (host.fov, host.viewmodel, host.iuser4, host.weaponanim);
@@ -847,6 +862,8 @@ mod tests {
     /// frames takes 9 commands on both (with `msec as f32 * 0.001` it took 8).
     #[test]
     fn frame_time_is_the_servers() {
+        use shared::gameplay::GunRules;
+        let frame_time = |msec: u8| shared::gameplay::CORE.command_frame_time(msec) as f32;
         assert_eq!(frame_time(10).to_bits(), 0x3c23_d70a);
         for msec in 0..=255u8 {
             assert_eq!(frame_time(msec), (msec as f64 / 1000.0) as f32, "FWGS's frametime for {msec} ms");
@@ -854,7 +871,7 @@ mod tests {
         let frames = |dt: f32| {
             let mut g = Gun { next_primary: 0.08, ..Gun::default() };
             (1..).find(|_| {
-                g.decrement_timers(dt);
+                g.decrement_timers(dt as f64);
                 g.next_primary <= 0.0
             })
         };

@@ -5,7 +5,7 @@
 //! * Weapon prediction (`HUD_PostRunCmd`): [`gun_rules`], from `clientdata_t::physinfo`, per
 //!   command.
 //! * HUD and input: [`hud_rules`] (or [`current`] outside the HUD's borrow), from the server's
-//!   `SrvSett` key 4 (the HUD's `gameplay`).
+//!   `SrvSett` key 4 (the HUD's `gameplay`); the weapon events: [`hud_gun_rules`], from the same.
 //!
 //! When the server switches rulesets it re-sends `SrvSett` 4, and a changed value resets the
 //! client to a brand-new state ([`reset_client`]) before the server's fresh state arrives. The
@@ -89,6 +89,15 @@ pub fn hud_rules(id: Option<i16>) -> &'static dyn ClientRules {
 /// effects frames). Inside [`crate::hud::with`], use [`hud_rules`] with `h.gameplay`.
 pub fn current() -> &'static dyn ClientRules {
     hud_rules(crate::hud::gameplay_id())
+}
+
+/// The gun rules outside a predicted command, for the weapon events (`EV_TS_Fire*`): the HUD's
+/// ruleset (`SrvSett` 4), as [`hud_rules`].
+pub fn hud_gun_rules() -> &'static dyn GunRules {
+    match crate::hud::with(|h| h.gameplay) {
+        Some(v) => resolve(v.to_string().as_bytes()).gun,
+        None => &CORE,
+    }
 }
 
 /// The client's part of a ruleset switch: everything a new map resets (`HUD_VidInit`), so no HUD,

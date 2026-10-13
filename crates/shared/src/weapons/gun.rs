@@ -11,6 +11,7 @@
 
 use super::spread::{self, Vec3};
 use super::*;
+use crate::gameplay::{GunRules, Predicted};
 use crate::pm::Arith;
 use crate::ts::powerup;
 use std::ffi::CStr;
@@ -151,6 +152,16 @@ pub trait GunHost {
     fn time(&self) -> f32;
     /// `GiveSlowMul()`: the player's time scale (`pev->fuser1`, [`spread::fixed_slow_amt`]).
     fn slow_mul(&self) -> f32;
+    /// The player's time scale as it is (`pev->fuser1`, no floor), for rules that scale by it
+    /// themselves. The default is [`slow_mul`](Self::slow_mul).
+    fn time_scale(&self) -> f32 {
+        self.slow_mul()
+    }
+    /// This is the client's weapon prediction, not the server. The two copies of some TS
+    /// functions differ (the view kick, rounding), and rules that follow them need to know.
+    fn prediction(&self) -> bool {
+        false
+    }
     /// The TS build whose floating point this side reproduces ([`spread`]): the server's
     /// `ts_pm_arith` selection, `Arith::CLIENT` for the prediction.
     fn arith(&self) -> Arith;
@@ -230,8 +241,8 @@ pub trait GunHost {
     /// `CTSAnimation::Animate(n)` (third-person sequence; owned by the movement package).
     fn player_anim(&mut self, anim: i32);
     /// `VKickback` result. TS writes it to `v_angle` only for bots; the client applies it to the
-    /// local view.
-    fn kick(&mut self, pitch: f32, yaw: f32);
+    /// local view and, with `shake`, starts the view shake (TS 3.0's client `VKickback`).
+    fn kick(&mut self, pitch: f32, yaw: f32, shake: bool);
     /// The client's melee view shake, `ViewShake::Start(amp, 0.2, 10)`: the client copies of
     /// `ColdCock` (`0x10008da1`), `KatanaFire` (`0x1000a156`), `KnifeFire` (`0x1000a327`) and
     /// `CCombatAttack` (`0x1000b5c7`) start it on the first prediction of the command. The server
@@ -322,6 +333,10 @@ pub struct Gun {
     pub last_shot: f32,
     /// `pl+0x778`: recoil spread penalty (max 0.1).
     pub spread_penalty: f32,
+    /// The game time the recoil penalty last decayed, for rules whose decay runs on the time
+    /// elapsed since ([`GunRules::decay_spread`](crate::gameplay::GunRules::decay_spread)).
+    /// TS 3.0 decays by the frame's timer step and never reads it.
+    pub decay_time: f32,
     /// `gun+0x9fc` / `+0xa00` / `+0xa04`: punch combo, kick combo, last melee move (the kung-fu
     /// move id 10..25 or -1 that chains the kick combos, not the event's anim index).
     pub punch_combo: i32,
@@ -362,6 +377,7 @@ impl Default for Gun {
             fuser1: 0.0,
             last_shot: 0.0,
             spread_penalty: 0.0,
+            decay_time: 0.0,
             punch_combo: 0,
             kick_combo: 0,
             last_melee_anim: 0,
@@ -414,14 +430,14 @@ impl Gun {
     fn kind(&self) -> u8 {
         kind_of(self.current)
     }
-    pub fn double_fire_rate(host: &impl GunHost) -> bool {
+    pub fn double_fire_rate(host: &(impl GunHost + ?Sized)) -> bool {
         host.powerups() & powerup::DOUBLE_FIRERATE != 0
     }
-    pub fn infinite_clip(host: &impl GunHost) -> bool {
+    pub fn infinite_clip(host: &(impl GunHost + ?Sized)) -> bool {
         host.powerups() & powerup::INFINITE_CLIP != 0
     }
     /// "silenced" = silencer owned and not built in.
-    fn silenced(&self) -> bool {
+    pub fn silenced(&self) -> bool {
         self.has_slot() && self.status[self.current as usize].items & att::SILENCER != 0 && self.info().att_default & 1 == 0
     }
     /// Current sequence table entry `i` (table B when the alternate grip is on).
@@ -429,7 +445,8 @@ impl Gun {
         let alt = self.slot().map(|s| s.alt_grip).unwrap_or(false);
         anim(self.current, alt, i)
     }
-    fn speed(host: &impl GunHost) -> f32 {
+    /// The player's speed, `|pev->velocity|`.
+    pub fn speed(host: &(impl GunHost + ?Sized)) -> f32 {
         spread::length(host.velocity())
     }
 
@@ -446,18 +463,22 @@ impl Gun {
         }
     }
 
-    /// Lowers every weapon timer by `dt` (`CBasePlayer::PostThink` 0x91610 tail).
-    pub fn decrement_timers(&mut self, dt: f32) {
-        self.next_primary = (self.next_primary - dt).max(-1.0);
-        self.next_secondary = (self.next_secondary - dt).max(-0.001);
-        self.next_alt = (self.next_alt - dt).max(-0.001);
+    /// Lowers every weapon timer by `dt` (`CBasePlayer::PostThink` 0x91610 tail). `dt` is the
+    /// step as the build subtracts it: each timer is `(float)(t - dt)`, which for a `float` step
+    /// is the plain `float` subtraction; some builds subtract an unrounded `double`
+    /// ([`GunRules::timer_step`](crate::gameplay::GunRules::timer_step)).
+    pub fn decrement_timers(&mut self, dt: f64) {
+        let sub = |t: f32| (t as f64 - dt) as f32;
+        self.next_primary = sub(self.next_primary).max(-1.0);
+        self.next_secondary = sub(self.next_secondary).max(-0.001);
+        self.next_alt = sub(self.next_alt).max(-0.001);
         if self.idle != 1000.0 {
-            self.idle = (self.idle - dt).max(-0.001);
+            self.idle = sub(self.idle).max(-0.001);
         }
         if self.fuser1 != 1000.0 {
-            self.fuser1 = (self.fuser1 - dt).max(-0.001);
+            self.fuser1 = sub(self.fuser1).max(-0.001);
         }
-        self.next_attack -= dt;
+        self.next_attack = sub(self.next_attack);
         if self.next_attack < -0.001 {
             self.next_attack = -0.001;
         }
@@ -525,7 +546,7 @@ impl Gun {
     /// `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4.
     /// Returns true if the weapon frame ran (the server then rerolls the seed).
     pub fn item_post_frame(&mut self, host: &mut impl GunHost) -> bool {
-        if !self.post_frame_ready(host.buttons()) {
+        if !self.post_frame_ready(host.buttons(), host.rules()) {
             return false;
         }
         self.weapon_post_frame(host);
@@ -533,31 +554,36 @@ impl Gun {
     }
 
     /// The gate of `CBasePlayer::ItemPostFrame` 0xdc4d0 (the tank check aside): `m_flNextAttack`
-    /// has run out, there's no weapon, or +cancel interrupts a reload. TS runs `ImpulseCommands`
-    /// (and with it `PlayerUse`) and then the weapon frame only when this holds.
-    pub fn post_frame_ready(&self, buttons: u32) -> bool {
+    /// has run out, there's no weapon, or +cancel interrupts a reload (for the weapons `rules`
+    /// let it, [`GunRules::cancel_runs_frame_in_reload`]). TS runs `ImpulseCommands` (and with
+    /// it `PlayerUse`) and then the weapon frame only when this holds.
+    pub fn post_frame_ready(&self, buttons: u32, rules: &dyn GunRules) -> bool {
         self.next_attack <= 0.0
             || !self.has_slot()
-            || (buttons & IN_CANCEL != 0 && self.status[self.current as usize].in_reload == 1 && self.info().stock != 0)
+            || (buttons & IN_CANCEL != 0
+                && self.status[self.current as usize].in_reload == 1
+                && rules.cancel_runs_frame_in_reload(self.info()))
     }
 
     /// `CBasePlayerWeapon::ItemPostFrame` 0xa03d4: the weapon frame, once
     /// [`post_frame_ready`](Self::post_frame_ready) passed.
     pub fn weapon_post_frame(&mut self, host: &mut impl GunHost) {
         let buttons = host.buttons();
+        // What the client's copy runs (all of it in TS 3.0, `GunRules::predicted`).
+        let predicted = if host.prediction() { host.rules().predicted() } else { Predicted::ALL };
         if !self.has_slot() {
             if buttons & IN_ATTACK2 != 0 && self.next_secondary <= 0.0 {
                 self.secondary_attack(host);
             } else if buttons & IN_ATTACK != 0 && self.next_primary <= 0.0 {
                 self.primary_attack(host);
-            } else if buttons & IN_RELOAD != 0 {
+            } else if buttons & IN_RELOAD != 0 && predicted.kungfu_reload {
                 self.reload(host);
             }
             self.weapon_idle(host);
             return;
         }
         // Finish a magazine reload.
-        if self.status[self.current as usize].in_reload != 0 && self.next_attack <= 0.0 {
+        if self.status[self.current as usize].in_reload != 0 && self.next_attack <= 0.0 && predicted.reload_finish {
             let info = self.info();
             let ammo = (info.ammo as usize).min(MAX_AMMO - 1);
             let s = self.status[self.current as usize];
@@ -586,7 +612,7 @@ impl Gun {
             self.secondary_attack(host);
         } else if buttons & IN_ATTACK != 0 && self.next_primary <= 0.0 && !contender_empty {
             self.primary_attack(host);
-        } else if buttons & IN_CANCEL != 0 && self.next_alt <= 0.0 {
+        } else if buttons & IN_CANCEL != 0 && self.next_alt <= 0.0 && predicted.alt_attack {
             self.alternate_attack(host);
         } else if buttons & IN_RELOAD != 0
             && self.has_slot()
@@ -716,7 +742,7 @@ impl Gun {
     }
 
     /// `CTSGun::EmptySound` 0x81be4 (silent for the Contender).
-    pub fn empty_sound(&mut self, host: &mut impl GunHost) {
+    pub fn empty_sound(&mut self, host: &mut (impl GunHost + ?Sized)) {
         if self.current != id::CONTENDER {
             host.event(Event::Empty, EventArgs::default());
             self.next_secondary = 0.1;
@@ -725,8 +751,15 @@ impl Gun {
         }
     }
 
-    /// `CTSGun::Fire` 0x81c78.
+    /// `CTSGun::Fire` 0x81c78, as the active rules have it ([`GunRules::fire`]; TS 3.0's is
+    /// [`fire_core`](Self::fire_core)).
     pub fn fire(&mut self, host: &mut impl GunHost) {
+        host.rules().fire(self, host);
+    }
+
+    /// TS 3.0's `CTSGun::Fire` 0x81c78, the default [`GunRules::fire`]: the empty and underwater
+    /// clicks, then the akimbo, shotgun or standard shot and the third-person animation.
+    pub fn fire_core(&mut self, host: &mut (impl GunHost + ?Sized)) {
         if !self.has_slot() {
             return;
         }
@@ -757,7 +790,7 @@ impl Gun {
 
     /// `CTSGun::ScaleSpread` 0x802a8: adds the recoil penalty to `spread` and grows it. The
     /// client's (`0x10008100`) does both, and the last-shot update, on a first prediction only.
-    pub fn scale_spread(&mut self, spread: &mut f32, akick: f32, silenced: bool, host: &impl GunHost) {
+    pub fn scale_spread(&mut self, spread: &mut f32, akick: f32, silenced: bool, host: &(impl GunHost + ?Sized)) {
         if silenced {
             *spread *= 0.875;
         }
@@ -777,12 +810,14 @@ impl Gun {
     }
 
     /// `CTSGun::VKickback` 0x80414.
-    pub fn vkickback(&self, view_kick: f32, k: u8, silenced: bool, host: &mut impl GunHost) {
+    pub fn vkickback(&self, view_kick: f32, k: u8, silenced: bool, host: &mut (impl GunHost + ?Sized)) {
         let (p, y) = spread::view_kick(host.arith(), view_kick, k, silenced, Self::double_fire_rate(host));
-        host.kick(p, y);
+        host.kick(p, y, true);
     }
 
-    fn shoot(&mut self, host: &mut impl GunHost, spread: f32, damage: f32, seed: u32, right_offset: f32) {
+    /// One `ShootBulletsPlayer` call for the current weapon ([`GunHost::shoot`]): its pellets,
+    /// bullet type and ammo with this spread, damage, seed and offset along `v_right`.
+    pub fn shoot(&mut self, host: &mut (impl GunHost + ?Sized), spread: f32, damage: f32, seed: u32, right_offset: f32) {
         let info = self.info();
         let shot = Shot {
             weapon: self.current,
@@ -798,7 +833,7 @@ impl Gun {
     }
 
     /// `CTSGun::StandardFire` 0x824a4.
-    pub fn standard_fire(&mut self, host: &mut impl GunHost) {
+    pub fn standard_fire(&mut self, host: &mut (impl GunHost + ?Sized)) {
         let info = self.info();
         let silenced = self.silenced();
         let mut spread = info.accuracy;
@@ -847,7 +882,7 @@ impl Gun {
     }
 
     /// `CTSGun::ShotgunFire` 0x82108 (fire / pump alternation in pump mode).
-    pub fn shotgun_fire(&mut self, host: &mut impl GunHost) {
+    pub fn shotgun_fire(&mut self, host: &mut (impl GunHost + ?Sized)) {
         let s = self.status[self.current as usize];
         if s.state != 0 {
             // firing interrupts a shotgun reload
@@ -888,7 +923,7 @@ impl Gun {
 
     /// `CTSGun::AkimboFire` 0x829c0: one timer pair, the toggle picks the gun; modes 4/5 with
     /// both triggers (and akimbo auto mode 0) fire a linked double shot.
-    pub fn akimbo_fire(&mut self, host: &mut impl GunHost) -> bool {
+    pub fn akimbo_fire(&mut self, host: &mut (impl GunHost + ?Sized)) -> bool {
         let info = self.info();
         let s = self.status[self.current as usize];
         let free_mode = s.mode == mode::AKIMBO_SEMI || s.mode == mode::AKIMBO_AUTO;

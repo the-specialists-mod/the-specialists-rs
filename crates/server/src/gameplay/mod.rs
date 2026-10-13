@@ -130,12 +130,34 @@ pub fn srvsett_value() -> i16 {
 /// ([`ServerRules::install`]).
 pub fn map_select() {
     PENDING.0.set(None);
-    ACTIVE.0.set(Some(resolve(&cvars::gameplay())));
+    let (id, plugin) = resolve(&cvars::gameplay());
+    set_active(id, plugin);
 }
 
 /// A map has installed its rules ([`map_select`] chose the plugin): the plugin sets up its state.
 pub fn map_start() {
     active().server.on_activate();
+}
+
+/// Makes a plugin the active one, with its weapon tables
+/// ([`GunRules::tables`](shared::gameplay::GunRules::tables)).
+fn set_active(id: &'static str, plugin: &'static ServerPlugin) {
+    ACTIVE.0.set(Some((id, plugin)));
+    shared::weapons::table::set_ruleset_tables(plugin.gun.tables());
+}
+
+/// The weapon tables of every registered plugin, the core plugin's first and each once: what the
+/// map precaches (`weapons::precache_weapon_assets`), so any of them can become active mid-map.
+pub fn ruleset_tables() -> Vec<&'static shared::weapons::Tables> {
+    let r = REGISTRY.read().unwrap_or_else(PoisonError::into_inner);
+    let mut out: Vec<&'static shared::weapons::Tables> = vec![CORE_PLUGIN.gun.tables()];
+    for id in r.ids() {
+        let t = r.resolve(id).plugin.gun.tables();
+        if !out.iter().any(|o| std::ptr::eq(*o, t)) {
+            out.push(t);
+        }
+    }
+    out
 }
 
 /// Once a frame (`StartFrame`, while rules are installed): `ts_gameplay` is read, and a change of
@@ -166,7 +188,7 @@ pub fn frame() -> bool {
     if old == id {
         return true;
     }
-    ACTIVE.0.set(Some((id, plugin)));
+    set_active(id, plugin);
     PENDING.0.set(Some(reset::begin(old, id, now)));
     false
 }

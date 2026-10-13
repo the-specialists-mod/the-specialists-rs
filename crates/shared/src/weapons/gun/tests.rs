@@ -66,6 +66,9 @@ impl GunHost for Mock {
     fn kfu_power(&self) -> Option<f32> {
         self.kfu_power
     }
+    fn prediction(&self) -> bool {
+        self.kfu_power.is_some()
+    }
     fn tracks_owned(&self) -> bool {
         !self.client_records
     }
@@ -142,7 +145,8 @@ impl GunHost for Mock {
         self.anim_bodies.push(body);
     }
     fn player_anim(&mut self, _anim: i32) {}
-    fn kick(&mut self, pitch: f32, yaw: f32) {
+    fn kick(&mut self, pitch: f32, yaw: f32, shake: bool) {
+        assert!(shake, "TS 3.0's VKickback shakes the view");
         self.kicks.push((pitch, yaw));
     }
     fn view_shake(&mut self, amp: f32) {
@@ -197,7 +201,7 @@ fn frame(g: &mut Gun, h: &mut Mock, buttons: u32, last: &mut u32, dt: f32) {
     h.pressed = buttons & !*last;
     *last = buttons;
     g.item_post_frame(h);
-    g.decrement_timers(Gun::timer_dt(h.arith(), dt, h.slow_mul(), h.powerups));
+    g.decrement_timers(h.rules().timer_step(h.arith(), dt as f64, h.slow_mul(), h.powerups));
     h.time += dt;
 }
 

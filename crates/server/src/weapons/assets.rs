@@ -6,7 +6,8 @@ use goldsrc::Global;
 use goldsrc::ext::weapons::WeaponsEngine;
 use goldsrc::server::{cvar_value, engine, intern};
 use goldsrc::sys::*;
-use shared::weapons::{Event, MAX_WEAPONS, models, tables};
+use shared::weapons::table::{Tables, ruleset_tables};
+use shared::weapons::{Event, MAX_WEAPONS, models_in, tables};
 use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 
@@ -117,16 +118,36 @@ pub fn set_grenade_buys(v: bool) {
 /// Per-map engine handles (strings and indices are reset on every level change).
 pub struct Assets {
     pub events: [u16; 11],
+    /// The weapons' model strings of each ruleset's tables, TS 3.0's first
+    /// ([`precache_weapon_assets`]); the address of the tables they were made from is the key.
+    sets: Vec<(usize, Models)>,
+}
+
+/// One ruleset's weapon model strings, by weapon id.
+pub struct Models {
     pub v_model: [string_t; MAX_WEAPONS],
     pub p_model: [string_t; MAX_WEAPONS],
     pub p_model_sil: [string_t; MAX_WEAPONS],
     pub w_model: [Option<&'static CStr>; MAX_WEAPONS],
 }
 
+impl Assets {
+    /// The model strings of the active ruleset's tables (`shared::weapons::table::ruleset_tables`).
+    pub fn models(&self) -> &Models {
+        let key = ruleset_tables() as *const Tables as usize;
+        self.sets.iter().find(|(k, _)| *k == key).map_or(&self.sets[0].1, |(_, m)| m)
+    }
+}
+
 static ASSETS: Global<RefCell<Option<Assets>>> = Global(RefCell::new(None));
 
 pub fn with<R>(f: impl FnOnce(&Assets) -> R) -> Option<R> {
     ASSETS.0.borrow().as_ref().map(f)
+}
+
+/// The active ruleset's weapon model strings ([`Assets::models`]).
+pub fn with_models<R>(f: impl FnOnce(&Models) -> R) -> Option<R> {
+    with(|a| f(a.models()))
 }
 
 pub fn event_index(ev: Event) -> u16 {
@@ -155,17 +176,25 @@ pub fn set_bubbles_model(index: i32) {
 /// The weapon loop of `TSPrecache` (0x9f320): for each weapon id 0..=37 with an info entry, its
 /// non-empty shell model (`info+0xe8`), `v_`, `p_`, silenced `p_` and `w_` models, then its two
 /// sounds (`info+0x2c6`, `+0x306`). The per-map model strings are kept for the weapon code.
-pub fn precache_weapon_assets() {
+///
+/// `rulesets` are the tables of every registered gameplay ruleset, TS 3.0's first. TS 3.0's
+/// loop runs first and alone decides the precache order TS has; each other ruleset's loop
+/// follows and only adds what its tables name that TS 3.0's don't (the engine hands back the
+/// index of a name it already has), so a switch mid-map never sets an unprecached model.
+pub fn precache_weapon_assets(rulesets: &[&'static Tables]) {
     super::bullets::reset();
+    let sets = rulesets.iter().map(|t| (*t as *const Tables as usize, precache_tables(t))).collect();
+    let a = Assets { events: EVENTS.0.get(), sets };
+    *ASSETS.0.borrow_mut() = Some(a);
+    // `customweapons` is registered but, as in TS, never read: weapons files load with
+    // `loadweapons` only.
+}
+
+/// One ruleset's part of [`precache_weapon_assets`]: the loop over the tables `t`.
+fn precache_tables(t: &Tables) -> Models {
     let e = engine();
-    let mut a = Assets {
-        events: EVENTS.0.get(),
-        v_model: [0; MAX_WEAPONS],
-        p_model: [0; MAX_WEAPONS],
-        p_model_sil: [0; MAX_WEAPONS],
-        w_model: [None; MAX_WEAPONS],
-    };
-    let t = tables();
+    let mut m =
+        Models { v_model: [0; MAX_WEAPONS], p_model: [0; MAX_WEAPONS], p_model_sil: [0; MAX_WEAPONS], w_model: [None; MAX_WEAPONS] };
     for id in 0..MAX_WEAPONS as u8 {
         if id != 0 && t.weapon(id).is_none() {
             continue;
@@ -176,12 +205,12 @@ pub fn precache_weapon_assets() {
         {
             e.precache_model_str(&format!("models/{}.mdl", asset.shell));
         }
-        let (v, p, psil, w) = models(id);
+        let (v, p, psil, w) = models_in(t, id);
         e.precache_model_str(&v);
-        a.v_model[id as usize] = e.alloc_string(intern(&v));
+        m.v_model[id as usize] = e.alloc_string(intern(&v));
         if let Some(p) = p {
             e.precache_model_str(&p);
-            a.p_model[id as usize] = e.alloc_string(intern(&p));
+            m.p_model[id as usize] = e.alloc_string(intern(&p));
         }
         if let Some(mut ps) = psil {
             // Port addition (defensive): TS precaches `p_pdw_sil.mdl` whatever the file's case,
@@ -190,11 +219,11 @@ pub fn precache_weapon_assets() {
                 ps = shared::weapons::MP7_SIL_ON_DISK.to_owned();
             }
             e.precache_model_str(&ps);
-            a.p_model_sil[id as usize] = e.alloc_string(intern(&ps));
+            m.p_model_sil[id as usize] = e.alloc_string(intern(&ps));
         }
         if let Some(w) = w {
             e.precache_model_str(&w);
-            a.w_model[id as usize] = Some(intern(&w));
+            m.w_model[id as usize] = Some(intern(&w));
         }
         if let Some(asset) = asset {
             for s in [&asset.sound, &asset.sound2] {
@@ -204,9 +233,7 @@ pub fn precache_weapon_assets() {
             }
         }
     }
-    *ASSETS.0.borrow_mut() = Some(a);
-    // `customweapons` is registered but, as in TS, never read: weapons files load with
-    // `loadweapons` only.
+    m
 }
 
 #[cfg(test)]

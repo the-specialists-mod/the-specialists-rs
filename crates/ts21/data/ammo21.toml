@@ -1,0 +1,20 @@
+# TS 2.1's ammo table (`s_ammo_info`, 16 x 0x38 bytes at mp.dll 0x100b1e98), decoded from
+# `compile_ammo_info` (0x10049420) and `Set_ammo_count` (0x100492a0). Fields as in
+# crates/shared/data/ammo.toml, plus:
+#   damage  `+0x1c`, the bullet's integer base damage (weapons21.toml `mult` scales it; 3.0 keeps
+#           its radial spread scale 1.0 there)
+# 2.1 has 11 types: no 11 (3.0's .454 Casull, which is 12 here), no .32ACP or 7.62x51. The range
+# (`+0x14`) is 8192 for all, as in 3.0. `max_carry` is `Set_ammo_count`'s four `ammocount` columns.
+ammo = [
+  { id = 1,  name = "9 x 19mm",    price = 50,  per_buy = 30, max_carry = [210, 90, 30, 0], pierce = 0.2,  range_unit = 80,  velocity = 330,  damage = 45 },
+  { id = 2,  name = ".45Acp",      price = 60,  per_buy = 12, max_carry = [200, 48, 16, 0], pierce = 0.2,  range_unit = 90,  velocity = 280,  damage = 55 },
+  { id = 3,  name = "SHELLS",      price = 120, per_buy = 8,  max_carry = [60, 32, 16, 0],  pierce = 0.0,  range_unit = 90,  velocity = 350,  damage = 18 },
+  { id = 4,  name = "5.56 Nato",   price = 80,  per_buy = 30, max_carry = [90, 60, 30, 0],  pierce = 0.9,  range_unit = 150, velocity = 900,  damage = 60 },
+  { id = 5,  name = ".50AE",       price = 70,  per_buy = 10, max_carry = [70, 21, 7, 0],   pierce = 0.5,  range_unit = 90,  velocity = 480,  damage = 77 },
+  { id = 6,  name = "7.62 x 39mm", price = 100, per_buy = 30, max_carry = [90, 60, 30, 0],  pierce = 0.7,  range_unit = 170, velocity = 790,  damage = 70 },
+  { id = 7,  name = "5.7 x 28",    price = 120, per_buy = 20, max_carry = [200, 40, 20, 0], pierce = 1.0,  range_unit = 100, velocity = 730,  damage = 35 },
+  { id = 8,  name = "50BMG",       price = 500, per_buy = 5,  max_carry = [20, 10, 5, 0],   pierce = 1.0,  range_unit = 200, velocity = 1000, damage = 150 },
+  { id = 9,  name = "10mm AUTO",   price = 70,  per_buy = 15, max_carry = [100, 30, 15, 0], pierce = 0.5,  range_unit = 90,  velocity = 450,  damage = 60 },
+  { id = 10, name = ".22 LR",      price = 100, per_buy = 17, max_carry = [150, 34, 17, 0], pierce = 0.05, range_unit = 70,  velocity = 350,  damage = 23 },
+  { id = 12, name = ".454 Casull", price = 150, per_buy = 5,  max_carry = [50, 15, 5, 0],   pierce = 0.75, range_unit = 20,  velocity = 400,  damage = 160 },
+]

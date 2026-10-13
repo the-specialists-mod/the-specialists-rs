@@ -722,18 +722,20 @@ pub fn kick(view_kick: f32, class: u8, silenced: bool, double_rate: bool, now: f
         pitch *= 2.0 / 3.0;
         yaw *= 2.0 / 3.0;
     }
-    kick_angles(pitch, yaw, silenced, now);
+    kick_angles(pitch, yaw, Some(silenced), now);
 }
 
-/// Queues one shot's view kick (`pitch` up, `yaw` right, degrees) and starts the shake spring.
-/// Call once per shot, with `runfuncs` only. `now` is the command's prediction time: TS times the
-/// shake with `*0x10099114`, which `HUD_WeaponsPostThink` sets to `HUD_PostRunCmd`'s `time` as a
-/// float, not with the client clock.
-pub fn kick_angles(pitch: f32, yaw: f32, silenced: bool, now: f32) {
+/// Queues one shot's view kick (`pitch` up, `yaw` right, degrees) and, with `shake` =
+/// `Some(silenced)`, starts the shake spring as TS 3.0's `VKickback` does (`None`: the kick
+/// alone, for rulesets without the shake). Call once per shot, with `runfuncs` only. `now` is the
+/// command's prediction time: TS times the shake with `*0x10099114`, which
+/// `HUD_WeaponsPostThink` sets to `HUD_PostRunCmd`'s `time` as a float, not with the client clock.
+pub fn kick_angles(pitch: f32, yaw: f32, shake: Option<bool>, now: f32) {
     let ts = state::with(|s| s.time_scale);
     with(|w| {
         w.kick_target[0] -= pitch;
         w.kick_target[1] += yaw;
+        let Some(silenced) = shake else { return };
         if let Some(amp) = shake_amplitude(now, w.last_shot, ts) {
             w.shake.start(amp * if silenced { 0.775 } else { 1.0 }, 0.1, 35.0);
         }

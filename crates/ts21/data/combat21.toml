@@ -1,0 +1,30 @@
+# TS 2.1's combat constants, in the shape of crates/shared/data/combat.toml. mp.dll 2.1 sources:
+#   silencer        StandardFire 0x1004b400 / AkimboFire 0x1004b8c0: spread x1.2 (`double`),
+#                   damage x0.8; VKickback 0x10049b80: yaw x0.8 (the client's pitch too)
+#   headshot, leg   CBasePlayer::TraceAttack 0x10053310: head x2 for any DMG_BULLET (shotguns
+#                   included), hitgroups 6/7 x0.5, x0.7 while `iuser4 & 0x10c10`
+#   spread_penalty  ScaleSpread 0x10049a50 (cap 0.1), PreThink 0x100537e0 (decay 0.1/s)
+#   semi_delay      the akimbo and shotgun semi delay (0.1); a single gun's semi is its rate
+#   burst           StandardFire: 3 rounds 0.03 s apart, 0.2 s after the last
+#   pierce          ShootBulletsPlayer 0x1003fd40: more than 5 left, step min(left, 48), x0.5
+#                   through a player, the continuation's range index dist / 30
+#   grenade         CM61Grenade::WaitThink 0x100477e0 (100, 128, 1024); GrenadeIdle 0x1004d260
+#                   (fuse 3 s, 750 u/s); two a life in round modes, as in 3.0
+#   thrown          KnifeFire 0x1004c6c0 (1300 u/s), CTSKnife::BounceTouch 0x10048380 (combat
+#                   knife 80 up to 512 u, 50 for the seal knife); no katana throw in 2.1
+#   slots           81 at spawn (0x10055363); kevlar costs none (FUN_10055c30); no flag in 2.1;
+#                   speed 170..310 (FUN_100436e0)
+#   attachment_price  FUN_10055c30 / FUN_10055e00: 900, 800, 500, 1800
+silencer = { damage = 0.8, spread = 1.2, kick = 0.8 }
+headshot = 2.0
+headshot_shotgun = 2.0
+leg = 0.5
+stunt_damage_taken = 0.7
+spread_penalty = { max = 0.1, decay_per_s = 0.1 }
+semi_delay = 0.1
+burst = { shots = 3, gap = 0.03, end = 0.2 }
+pierce = { min_left = 5.0, max_step = 48.0, player_factor = 0.5, unit = 30.0 }
+grenade = { fuse = 3.0, damage = 100, r_full = 128, r_max = 1024, max_speed = 750, per_life = 2 }
+thrown = { speed = 1300, knife = 80, seal = 50, katana = 0 }
+slots = { total = 81, kevlar = 0, flag = 0, speed_min = 170, speed_max = 310 }
+attachment_price = { silencer = 900, laser = 800, flashlight = 500, scope = 1800 }
