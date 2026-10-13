@@ -21,6 +21,7 @@ The whole layer is a port addition: TS has one hard-wired bot AI, on listen serv
 | `BotBackend` trait, registry, `ts_bot_backend`, the bot player (`BotSetup`), the owners table | `crates/server/src/bot_backend/mod.rs` |
 | `ts_bot_quota` and the bot manager's timing | `bot_backend/quota.rs` |
 | The native backend | `crates/server/src/bots/backend.rs` (`Native`), calling the functions in `bots/` |
+| The native bots' rules per gameplay ruleset (§2.2) | `crates/server/src/bots/rules.rs` (`NativeBotRules`, `CORE`, the registry); TS 2.1's in `crates/ts21/server/src/bots/` |
 | A plugin's backend (C callbacks → `BotBackend`) | `crates/server-dll/src/plugins.rs` (`PluginBackend`) |
 | The API's bot functions | `crates/server/src/plugin_api/bots.rs` |
 
@@ -83,9 +84,36 @@ Kept as they were, because they are TS's player state and TS's cvars rather than
 it), the `FL_FAKECLIENT` from `is_bot` at spawn, and the cvars (`botlearn`, `bottalk`, `botarmor`
 are in TS's cvar list; `ts_bot_quota`, `ts_bot_stop`, `ts_bot_backend` are the host's).
 
-The TS 2.1 bot differences (#100 §3.10) are not part of this: they will be hooks on the native
-backend's functions (`bots::backend::Native` calls one function per hook), with 3.0 as the
-default.
+### 2.2 Rulesets and the native bots
+
+A gameplay ruleset can change how TS's own bots play (TS 2.1's do: #100 §3.10). That is the
+native backend's business, not the host's and not the gameplay plugin's:
+
+* **`NativeBotRules`** (`bots/rules.rs`) is the native backend's hook trait. Every method's
+  default is TS 3.0's code (`CORE` implements none), so with no other rules the bots are
+  unchanged. Hooks: creation (`random_model_in_teamplay`, `learn_on_empty_graph`,
+  `stored_skill`, `team_key`, `texts`), the `CBot` overrides (`spawn_post`, `trace_attack`), the
+  brain (`delay` for every module timer, the states and the stuck window; `runs_ai`, `turn_rate`,
+  `update_view`, `look_at`, `press` / `release` / `update_buttons`, `respawn`) and whole modules
+  (`state_think`, `vision`, `attack`, `buy`, `look_around`, `stunt_mode`). Coarse where a ruleset
+  replaces a module, fine where it changes one value inside shared code (the timers, the view,
+  the buttons). A replacement gets the same `Brain`, `Player` and `Cx` and uses the native
+  helpers, which are public; `Brain::ext` holds per-bot state of its own (Reset drops it).
+* **Its own registry, keyed by the gameplay id.** The server library registers a ruleset's rules
+  with `bots::rules::register(id, &RULES)` next to the gameplay plugin; `bots::rules::current()`
+  resolves them from `gameplay::active_id()` (cached per id), and an id without rules runs
+  `CORE`. So `ts_gameplay` picks the bots' rules and `ts_bot_backend` picks the backend,
+  independently: a plugin backend never sees these hooks, `ServerRules` keeps no bot hooks, and
+  `crates/server` names no ruleset (the isolation lint).
+* Why not a field of `ServerPlugin` or hooks in `ServerRules`: the bot layer is a separate axis
+  (this document), and putting the native AI's internals (`Brain`, its modules) into the gameplay
+  plugin's interface would tie every ruleset to one backend. Why not a backend of its own (a
+  second "native 2.1" backend): `ts_bot_backend` is the user's choice of AI, and a gameplay switch
+  must not change it (§3); the native backend also has to follow a mid-game switch, which the
+  per-call resolution does (the reset reloads the bot texts in `server_activate`).
+
+The host's `create_player` (`BotSetup`) takes `team_key`, because 2.1's `BotSetup` has no `team`
+key; the native backend passes its rules' choice and plugin bots get 3.0's.
 
 ## 3. Selection: `ts_bot_backend`
 
@@ -140,7 +168,7 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
 
 ## 6. Tests
 
-* Unit (`cargo test`): backend selection, quota names, the loader (plugin-api.md §6), the API's
+* Unit (`cargo test`): the native rules' 3.0 defaults (`bots::rules`) and TS 2.1's overrides (`ts21_server::bots::tests`: timers, gate, view, button slots, texts, buy and state helpers), backend selection, quota names, the loader (plugin-api.md §6), the API's
   bot checks, the stub's descriptor.
 * `cargo xtask plugins [roots...]` (all seven roots by default, in parallel, ~1 min): installs
   `tsmod_test` and fixtures the loader must skip (`tsmod_test_badver`, `_badsize`, `_refuse`, a

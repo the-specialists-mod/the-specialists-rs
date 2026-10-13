@@ -66,7 +66,9 @@ delegation.
 `Registry<P>` is generic over the plugin type, so another independent axis can be added later
 with its own registry and cvar. One example is a bot plugin, chosen apart from the gameplay
 ruleset. Bots aren't part of a gameplay ruleset, so `ServerRules` has no bot hooks. The reset
-(§4) only replays what a map start does for them.
+(§4) only replays what a map start does for them. A ruleset that changes TS's own bots registers
+`NativeBotRules` with the native bot backend's registry under its gameplay id instead
+([bot-plugins.md](bot-plugins.md) §2.2; TS 2.1's: `ts21_server::bots::BOTS`).
 
 Every plugin object is a `&'static` value, `Sync`, and stateless. Plugin state goes in the
 plugin's own statics (`goldsrc::Global` with a `Cell`/`RefCell`, as the game crates do), and

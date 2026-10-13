@@ -6,8 +6,14 @@
 //! the frame and puts it back around the one call that can re-enter the bot (the respawn's
 //! `StopObserver` → `Spawn` → `CBotBrain::Reset`), so every module gets the brain, the player and
 //! the entity context side by side.
+//!
+//! Where a ruleset's bots differ, the brain calls the active [`NativeBotRules`] (the module
+//! order and the usercmd stay as they are): presses, releases and the per-frame button update,
+//! `LookAt` and the view turning, the turn rate, the time-scale test, the respawn and the
+//! replaceable modules.
 
-use super::{attack, modules, nav, states};
+use super::rules::{self, NativeBotRules};
+use super::{attack, nav};
 use crate::player::Player;
 use crate::world::Cx;
 use goldsrc::server::engine;
@@ -123,13 +129,15 @@ pub struct Brain {
     pub button_expire: [f32; 16],
     /// brain+0x1a70: `clamp(skill, 0.5, 2) * 10`.
     pub turn_rate: f32,
-    /// brain+0x1a74: at least 0.1.
+    /// brain+0x1a74: the skill `BotSetup` stored ([`NativeBotRules::stored_skill`]).
     pub skill: f32,
+    /// Port: per-bot state a ruleset's hooks keep (none for TS 3.0's). Dropped with the brain.
+    pub ext: Option<Box<dyn std::any::Any>>,
 }
 
 impl Brain {
-    /// The zero-filled object `GetClassPtr<CBot>` (0x1006c240) leaves, with the skill
-    /// `BotSetup` stores.
+    /// The zero-filled object `GetClassPtr<CBot>` (0x1006c240) leaves, with `skill` stored as
+    /// given (the creator applies [`NativeBotRules::stored_skill`]).
     pub fn new(skill: f32) -> Brain {
         Brain {
             msec_frames: 0,
@@ -167,7 +175,8 @@ impl Brain {
             buttons: 0,
             button_expire: [0.0; 16],
             turn_rate: 0.0,
-            skill: if skill > 0.1 { skill } else { 0.1 },
+            skill,
+            ext: None,
         }
     }
 
@@ -181,6 +190,8 @@ impl Brain {
         self.buttons = 0;
         self.button_expire = [0.0; 16];
         self.turn_rate = 0.0;
+        // Port: a ruleset's per-bot state (its buttons) goes with the memset.
+        self.ext = None;
         // memset(brain+0x1924, 0, 0x64): mask, goal, go-straight, enemy, chat.
         self.modules = 0;
         self.goal = [0.0; 3];
@@ -224,9 +235,19 @@ impl Brain {
         self.modules &= !bits;
     }
 
-    /// `PressButtons(mask, duration)` (0x1006f470): hold each bit until `time + duration`
-    /// (0 releases it now).
+    /// `PressButtons(mask, duration)` of the active rules ([`NativeBotRules::press`]).
     pub fn press(&mut self, mask: u32, duration: f32, now: f32) {
+        rules::current().press(self, mask, duration, now);
+    }
+
+    /// Lets go of `mask` ([`NativeBotRules::release`]).
+    pub fn release(&mut self, mask: u32, now: f32) {
+        rules::current().release(self, mask, now);
+    }
+
+    /// TS 3.0's `PressButtons(mask, duration)` (0x1006f470): hold each bit until
+    /// `time + duration` (0 releases it now).
+    pub fn press_bits(&mut self, mask: u32, duration: f32, now: f32) {
         for i in 0..16 {
             if mask & (1 << i) != 0 {
                 self.button_expire[i] = (duration as f64 + now as f64) as f32;
@@ -234,9 +255,9 @@ impl Brain {
         }
     }
 
-    /// `UpdateButtons` (0x1006f4b0), at the start of `Think`: a press made in frame N shows in
-    /// frame N+1.
-    fn update_buttons(&mut self, now: f32) {
+    /// TS 3.0's `UpdateButtons` (0x1006f4b0), at the start of `Think`: a press made in frame N
+    /// shows in frame N+1.
+    pub fn update_bits(&mut self, now: f32) {
         self.buttons = 0;
         for i in 0..16 {
             if now < self.button_expire[i] {
@@ -256,8 +277,14 @@ impl Brain {
         self.num_visible_enemies
     }
 
-    /// `LookAt(pl, target)` (0x1006f740): the wanted view toward `target` from the gun position.
-    pub fn look_at(&mut self, pev: &entvars_t, target: [f32; 3]) {
+    /// `LookAt(pl, target)` of the active rules ([`NativeBotRules::look_at`]).
+    pub fn look_at(&mut self, pev: &mut entvars_t, target: [f32; 3]) {
+        rules::current().look_at(self, pev, target);
+    }
+
+    /// TS 3.0's `LookAt(pl, target)` (0x1006f740): the wanted view toward `target` from the gun
+    /// position.
+    pub fn set_ideal_toward(&mut self, pev: &entvars_t, target: [f32; 3]) {
         let src = gun_position(pev);
         let mut a = engine().vec_to_angles(sub(target, src));
         if a[0] >= 180.0 {
@@ -402,10 +429,11 @@ pub fn think(p: &mut Player, cx: &mut Cx, frozen: bool) -> Option<Usercmd> {
     Some(cmd)
 }
 
-fn think_with(b: &mut Box<Brain>, p: &mut Player, cx: &mut Cx, frozen: bool) -> Usercmd {
+fn think_with(b: &mut Brain, p: &mut Player, cx: &mut Cx, frozen: bool) -> Usercmd {
+    let r = rules::current();
     let now = cx.time();
-    b.update_buttons(now);
-    b.turn_rate = (clamp_skill(b.skill, 2.0) as f64 * 10.0) as f32;
+    r.update_buttons(b, now);
+    b.turn_rate = r.turn_rate(b.skill);
     let playing = {
         let v = cx.pev();
         crate::rules::alive(v) && v.iuser1 == 0
@@ -414,42 +442,31 @@ fn think_with(b: &mut Box<Brain>, p: &mut Player, cx: &mut Cx, frozen: bool) -> 
     if frozen {
         b.buttons = 0;
         b.set_move(0.0, 0.0);
-    } else if slow(cx.pev()) > 0.1 {
-        states::think(b, p, cx);
+    } else if r.runs_ai(cx.pev()) {
+        r.state_think(b, p, cx);
         if b.test(bit::BUY) {
-            modules::buy(b, p, cx);
+            r.buy(b, p, cx);
         }
         if b.test(bit::RESPAWN) {
-            // The respawn module, inline (0x1006f5b8): what the `respawn` command does. Its
-            // `StopObserver` respawns the bot, and `CBot::Spawn` resets this brain.
-            if p.respawn_at > 0.0 && p.respawn_at < now {
-                p.respawn_at = 0.0;
-                p.bot = Some(std::mem::replace(b, Box::new(Brain::new(0.1))) as crate::bot_backend::BotState);
-                crate::rules::lifecycle::stop_observer(p, cx);
-                if let Some(back) = p.bot.take().and_then(|s| s.downcast::<Brain>().ok()) {
-                    *b = back;
-                }
-                cx.pev().impulse = 0;
-            }
-            b.set_move(0.0, 0.0);
+            r.respawn(b, p, cx);
         }
         if b.test(bit::VISION) {
-            modules::vision(b, p, cx);
+            r.vision(b, p, cx);
         }
         if b.test(bit::ATTACK) {
-            attack::think(b, p, cx);
+            r.attack(b, p, cx);
         }
         if b.test(bit::LOOK_AROUND) {
-            modules::look_around(b, p, cx);
+            r.look_around(b, p, cx);
         }
         if b.test(bit::STUNT) {
-            modules::stunt(b, p, cx);
+            super::modules::stunt(b, p, cx);
         }
         if b.test(bit::POWERUP) {
-            modules::powerup(b, p, cx);
+            super::modules::powerup(b, p, cx);
         }
         if b.test(bit::CHAT) {
-            modules::chat(b, p, cx);
+            super::modules::chat(b, p, cx);
         }
         if b.test(bit::NAVIGATE) {
             let goal = b.goal;
@@ -461,14 +478,31 @@ fn think_with(b: &mut Box<Brain>, p: &mut Player, cx: &mut Cx, frozen: bool) -> 
         }
     }
     cx.pev().button = b.buttons as i32;
-    run_move(b, p, cx)
+    run_move(r, b, cx)
 }
 
-/// `CBotBrain::RunMove` (0x1006e6d0): `UpdateView`, then the msec estimate, `450 / frames` over
-/// half-second windows (0.9 of the frame time) kept in 5..100.
-fn run_move(b: &mut Brain, _p: &mut Player, cx: &mut Cx) -> Usercmd {
-    let turn_rate = b.turn_rate;
-    update_view(b, cx.pev(), turn_rate);
+/// The respawn module of TS 3.0 (inline at 0x1006f5b8): what the `respawn` command does. Its
+/// `StopObserver` respawns the bot, and `CBot::Spawn` resets this brain, so the brain goes back
+/// into the player around the call.
+pub fn respawn_now(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
+    let now = cx.time();
+    if p.respawn_at > 0.0 && p.respawn_at < now {
+        p.respawn_at = 0.0;
+        p.bot = Some(Box::new(std::mem::replace(b, Brain::new(0.1))) as crate::bot_backend::BotState);
+        crate::rules::lifecycle::stop_observer(p, cx);
+        if let Some(back) = p.bot.take().and_then(|s| s.downcast::<Brain>().ok()) {
+            *b = *back;
+        }
+        cx.pev().impulse = 0;
+    }
+    b.set_move(0.0, 0.0);
+}
+
+/// `CBotBrain::RunMove` (0x1006e6d0): the view ([`NativeBotRules::update_view`], 3.0's
+/// `UpdateView`), then the msec estimate, `450 / frames` over half-second windows (0.9 of the
+/// frame time) kept in 5..100.
+fn run_move(r: &dyn NativeBotRules, b: &mut Brain, cx: &mut Cx) -> Usercmd {
+    r.update_view(b, cx.pev());
     let now = cx.time();
     if now < b.msec_next {
         b.msec_frames += 1;
@@ -623,14 +657,15 @@ mod tests {
     #[test]
     fn buttons_hold_and_show_a_frame_late() {
         let mut b = Brain::new(1.0);
-        b.press(btn::ATTACK | btn::DUCK, 0.5, 10.0);
-        b.update_buttons(10.0);
+        b.press_bits(btn::ATTACK | btn::DUCK, 0.5, 10.0);
+        b.update_bits(10.0);
         assert_eq!(b.buttons, btn::ATTACK | btn::DUCK);
-        b.press(btn::DUCK, 0.0, 10.2);
-        b.update_buttons(10.2);
+        b.press_bits(btn::DUCK, 0.0, 10.2);
+        b.update_bits(10.2);
         assert_eq!(b.buttons, btn::ATTACK);
-        b.update_buttons(10.5);
+        b.update_bits(10.5);
         assert_eq!(b.buttons, 0);
-        assert_eq!(Brain::new(0.01).skill, 0.1);
+        // The brain keeps the skill it is given; `BotSetup`'s floor is the rules'.
+        assert_eq!(Brain::new(0.01).skill, 0.01);
     }
 }

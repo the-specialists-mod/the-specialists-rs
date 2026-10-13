@@ -3,7 +3,7 @@
 //! ladders. Movement is relative to the body yaw, so the bot can strafe or back up while it looks
 //! elsewhere.
 
-use super::brain::{Brain, add, bit, btn, diff_x87, is_zero, len_x87, order, scale, slow, sub};
+use super::brain::{Brain, add, bit, btn, diff_x87, is_zero, len_x87, order, scale, sub};
 use super::nodes;
 use crate::player::Player;
 use crate::world::Cx;
@@ -69,9 +69,9 @@ fn clear(from: [f32; 3], to: [f32; 3], me: *mut edict_t) -> bool {
 }
 
 /// `min(3 / slow, 9)`: the stuck check window.
-fn stuck_window(now: f32, slow: f32) -> f32 {
-    let x = 3.0 / slow as f64;
-    (now as f64 + if x >= 9.0 { 9.0 } else { x }) as f32
+fn stuck_window(now: f32, pev: &entvars_t) -> f32 {
+    // `min(3 / slow, 9)`: the modules' timer without the skill (dividing by 1 is exact).
+    super::rules::delay(now, 3.0, pev, 1.0, 9.0)
 }
 
 /// `CBasePlayer::IsOnLadder` (0x10033670): `movetype == MOVETYPE_FLY`.
@@ -116,7 +116,7 @@ pub fn navigate(b: &mut Brain, p: &mut Player, cx: &mut Cx, goal: [f32; 3]) -> i
     }
 
     if b.nav.stuck_time < now {
-        b.nav.stuck_time = stuck_window(now, slow(cx.pev()));
+        b.nav.stuck_time = stuck_window(now, cx.pev());
         if len_x87(diff_x87(b.nav.stuck_pos, origin), order::XZY) < 96.0 {
             b.nav.waypoint = [0.0; 3];
             b.set_move(0.0, 0.0);
@@ -189,7 +189,7 @@ fn move_toward(body_yaw: f32, yaw: f32, speed: f64) -> (f32, f32) {
 fn replan(b: &mut Brain, cx: &mut Cx, goal: [f32; 3]) {
     let now = cx.time();
     b.nav.stuck_pos = [0.0; 3];
-    b.nav.stuck_time = stuck_window(now, slow(cx.pev()));
+    b.nav.stuck_time = stuck_window(now, cx.pev());
     b.nav.probe_time = (now as f64 + 0.5) as f32;
     b.nav.path.clear();
     b.nav.path_index = 0;

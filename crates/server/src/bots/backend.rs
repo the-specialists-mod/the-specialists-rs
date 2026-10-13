@@ -1,7 +1,7 @@
 //! The native backend: TS's own bots behind [`BotBackend`]. Every hook calls the function that
 //! ran at that point before the backend split (issue #104), so the bots behave exactly as
-//! before. The TS 2.1 bot rules (#100 §3.10) can hook these functions later without touching the
-//! host.
+//! before. A gameplay ruleset's bot behaviour comes in through [`super::rules`] (the native
+//! backend's own hooks), never through the host.
 
 use super::{Brain, add_bot, add_custom_bot, add_quota_bot, nodes};
 use crate::bot_backend::{AddBot, BotBackend, BotState, NATIVE};
@@ -47,7 +47,12 @@ impl BotBackend for Native {
     }
 
     fn new_state(&self, skill: f32) -> BotState {
-        Box::new(Brain::new(skill))
+        Box::new(Brain::new(super::rules::current().stored_skill(skill)))
+    }
+
+    /// A gameplay switch's reset: the bot texts of the new ruleset.
+    fn server_activate(&self) {
+        super::texts_for_ruleset();
     }
 
     /// A fresh brain with the bot's skill: `BotCreate` made it, and no state of the old game

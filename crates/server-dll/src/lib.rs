@@ -206,11 +206,15 @@ unsafe extern "C" fn game_init() {
 }
 
 /// The gameplay plugins (`docs/implementation/gameplay-plugins.md`): the core (TS 3.0) and,
-/// with the `ts21` feature, the TS 2.1 plugin.
+/// with the `ts21` feature, the TS 2.1 plugin and its native bot rules (the bot layer's own
+/// registry, docs/implementation/bot-plugins.md §2.2; the core's are the default).
 fn register_gameplay() {
     ts_server::gameplay::register(shared::gameplay::DEFAULT_ID, &ts_server::gameplay::CORE_PLUGIN);
     #[cfg(feature = "ts21")]
-    ts_server::gameplay::register(ts21_gameplay::ID, &ts21_server::PLUGIN);
+    {
+        ts_server::gameplay::register(ts21_gameplay::ID, &ts21_server::PLUGIN);
+        ts_server::bots::rules::register(ts21_gameplay::ID, &ts21_server::bots::BOTS);
+    }
 }
 
 unsafe extern "C" fn spawn(e: *mut edict_t) -> c_int {

@@ -313,11 +313,12 @@ pub fn reset_state(old: Option<BotState>) -> Option<BotState> {
 /// `CREATE_FAKE_CLIENT` and `BotSetup` (0x1006b3b0), TS's `ClientPutInServer` for bots: the
 /// `CBot` object with its backend `state`, "<name> connected with skill <f>" (`announce`, the
 /// unclamped skill), `SetCustomDecalFrames(-1)`, `Spawn` (before the keys, so the first spawn
-/// sees no model), the `model`/`team`/`cl_lw` keys, the team change for a given model, the rules'
+/// sees no model), the `model`/`team`/`cl_lw` keys (`team` only with `team_key`, which the
+/// backend chooses), the team change for a given model, the rules'
 /// `PlayerThink` and the `ts_playeramount` count. No `ClientConnected`, starting cash or
 /// `EF_NOINTERP`, as in TS. The bot is recorded as the active backend's, and plugins hear of it
 /// (`client_put_in_server`).
-pub fn create_player(name: &[u8], model: &str, state: BotState, announce: Option<f32>) -> Option<*mut edict_t> {
+pub fn create_player(name: &[u8], model: &str, state: BotState, announce: Option<f32>, team_key: bool) -> Option<*mut edict_t> {
     let eng = engine();
     let cname = CString::new(name.iter().copied().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default();
     let e = eng.create_fake_client(&cname);
@@ -344,7 +345,9 @@ pub fn create_player(name: &[u8], model: &str, state: BotState, announce: Option
     }
     crate::ham::spawn(e);
     eng.set_client_key(e, "model", if model.is_empty() { "seal" } else { model });
-    eng.set_client_key(e, "team", model);
+    if team_key {
+        eng.set_client_key(e, "team", model);
+    }
     eng.set_client_key(e, "cl_lw", "1");
     if !model.is_empty() && rules::state::teamplay() {
         // `CHalfLifeMultiplay::ChangePlayerTeam` is empty; teamplay's changes the team.

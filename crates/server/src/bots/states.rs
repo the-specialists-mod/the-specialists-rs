@@ -3,7 +3,8 @@
 //! reached in TS 3.0, so only the DM state runs in practice; the other two are ported for
 //! completeness.
 
-use super::brain::{Brain, StateKind, bit, delay, diff_x87, is_zero, len_x87, order, slow};
+use super::brain::{Brain, StateKind, bit, diff_x87, is_zero, len_x87, order};
+use super::rules::delay;
 use crate::player::Player;
 use crate::rules::state;
 use crate::world::Cx;
@@ -57,7 +58,7 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
         return;
     }
     // `min(0.1 / slow, 1.0)`: not scaled by skill.
-    b.states[i].next_think = delay(now, 0.1, slow(cx.pev()), 1.0, 1.0);
+    b.states[i].next_think = delay(now, 0.1, cx.pev(), 1.0, 1.0);
     let v = cx.pev();
     if !crate::rules::alive(v) || v.iuser1 != 0 {
         // Dead or observing: buy a loadout, then respawn; chat stays on.

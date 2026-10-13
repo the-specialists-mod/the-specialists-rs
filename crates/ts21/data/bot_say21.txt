@@ -1,0 +1,55 @@
+offense 
+You suck, %s! 
+Hey, %s, are you a bot? 
+You're easy to kill, %s... 
+Hahahah 
+:)
+%s is such a lamer! 
+I'm the best. 
+%s, fuck off! 
+Let's go play, %s... 
+chiudi quel CAZZO di bocca %s! 
+
+freetime 
+How do you flip? 
+How do you use slowmo stuff? 
+Where do you come from, guys? 
+This map sucks.. 
+The lasersight sucks.. 
+zzzZZzzZzz.. 
+Any admins here? 
+Is anybody gonna kill me out here?!? 
+Is anybody playing windowed? 
+Is anybody using 3rd person view? 
+Laggggg! 
+
+killed 
+Fuck you, %s! 
+hp, %s? 
+Nice frag, %s! 
+All luck, %s.. 
+:(
+%s is a cheater! 
+Fuck! 
+Please ban %s! 
+Oh, fuck you.. 
+%s, you jackass! 
+Lucky headshot, %s... 
+Good kill, %s! 
+GG 
+Did you have kevlar, %s? 
+What the FUCK? 
+Sprayer!! 
+Lag.. 
+MULTIPLE CONTACTS!!! 
+WINCHESTER! 
+Affanculo..
+
+
+
+
+
+
+
+
+

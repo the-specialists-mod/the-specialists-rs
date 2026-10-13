@@ -5,7 +5,8 @@
 //! retarget; the cover search caches the enemy's origin instead of its result; and the think
 //! reads the enemy before re-targeting, so the first think after spotting one only selects it.
 
-use super::brain::{Brain, add, bit, btn, delay, diff_x87, gun_position, len_x87, normalize, order, scale, slow, sub};
+use super::brain::{Brain, add, bit, btn, diff_x87, gun_position, len_x87, normalize, order, scale, slow, sub};
+use super::rules::delay;
 use crate::player::Player;
 use crate::weapons::{self, Drop};
 use crate::world::Cx;
@@ -35,13 +36,13 @@ pub struct Attack {
 
 /// A player edict the brain points at, if it still has a player (guard: TS keeps a raw
 /// `CBaseEntity *`; the port's edict handle may outlive the player).
-fn live(e: *mut edict_t) -> Option<*mut edict_t> {
+pub fn live(e: *mut edict_t) -> Option<*mut edict_t> {
     (!e.is_null() && crate::rules::has_player(e)).then_some(e)
 }
 
 /// `BotHoldingMelee` (0x1006cfc0): the gun is the active item and holds kung fu (no weapon
 /// status), a knife or a katana.
-fn holding_melee(p: &Player) -> bool {
+pub fn holding_melee(p: &Player) -> bool {
     if !weapons::gun_active(p) {
         return false;
     }
@@ -77,7 +78,7 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     if now < b.attack.next_think {
         return;
     }
-    b.attack.next_think = delay(now, 0.1, slow(cx.pev()), b.skill, 1.0);
+    b.attack.next_think = delay(now, 0.1, cx.pev(), b.skill, 1.0);
     select_enemy(b, cx);
     let Some(e) = live(e) else { return };
     let eorg = e.v().origin;
@@ -136,7 +137,7 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
     if !melee && dist < 128.0 && b.attack.next_melee < now {
         let button = if dist < 96.0 && can_stock_hit(p) { btn::ALT2 } else { btn::JUMP };
         b.press(button, 0.6, now);
-        b.attack.next_melee = delay(now, 1.5, slow(cx.pev()), b.skill, 10.0);
+        b.attack.next_melee = delay(now, 1.5, cx.pev(), b.skill, 10.0);
     }
     if p.ts.held != 0 {
         b.enable(bit::POWERUP);
@@ -219,7 +220,7 @@ fn find_cover_spot(b: &mut Brain, cx: &mut Cx, enemy_org: [f32; 3], enemy: *mut 
     if now < b.attack.next_cover {
         return b.attack.cover_cache;
     }
-    b.attack.next_cover = delay(now, 3.0, slow(cx.pev()), b.skill, 7.0);
+    b.attack.next_cover = delay(now, 3.0, cx.pev(), b.skill, 7.0);
     let eng = engine();
     let me = cx.edict;
     let mut ang = eng.random_long(0, 8) * 45;
