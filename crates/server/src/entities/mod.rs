@@ -37,8 +37,17 @@ pub(crate) use link_entities;
 /// class's `KeyValue` only for keys it didn't claim. `class` is the engine's `szClassName`;
 /// without it (or without a game object on the edict) the class isn't asked.
 /// Returns `fHandled`.
+///
+/// A class the gameplay plugin refuses ([`spawns_class`]) parses nothing.
 pub fn dispatch_key_value(e: *mut edict_t, class: Option<&CStr>, key: &CStr, value: &CStr) -> bool {
-    key_value_order(|| entvars_key_value(e.v(), key, value), class.is_some(), || crate::ham::key_value(e, class, key, value))
+    let has_class = class.is_some_and(spawns_class);
+    key_value_order(|| entvars_key_value(e.v(), key, value), has_class, || crate::ham::key_value(e, class, key, value))
+}
+
+/// Whether the active gameplay plugin lets an entity of `class` spawn
+/// (`ServerRules::spawns_entity`).
+pub fn spawns_class(class: &CStr) -> bool {
+    crate::gameplay::active().server.spawns_entity(class)
 }
 
 /// The order `DispatchKeyValue` asks the two parsers in. Split out so it can be tested without an
@@ -327,9 +336,20 @@ fn base_collision_box(solid: i32, origin: [f32; 3], angles: [f32; 3], mins: [f32
 /// that marked itself `FL_KILLME` fails (-1; the rules' `IsAllowedToSpawn` is always 1 in TS).
 /// Then the `globalname` step: a new name is added to `gGlobalState` as on, a dead one fails the
 /// spawn, and one another map added makes the entity dormant (`MakeDormant` 0xac270).
+///
+/// First, a class the gameplay plugin refuses ([`spawns_class`]) fails at once, as the engine
+/// fails a classname the game library doesn't export.
 pub fn dispatch_spawn(e: *mut edict_t) -> i32 {
     if e.is_null() || !e.has_private_data() {
         return 0;
+    }
+    let v = e.v();
+    if v.classname != 0 {
+        let class = engine().string(v.classname);
+        if !spawns_class(class) {
+            engine().alert(ALERT_TYPE::at_aiconsole, &format!("Can't init {} (not in this ruleset)\n", class.to_string_lossy()));
+            return -1;
+        }
     }
     let v = e.v();
     v.absmin = v.origin.map(|o| o - 1.0);

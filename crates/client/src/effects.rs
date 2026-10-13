@@ -431,6 +431,7 @@ pub fn frame(time: f64, frametime: f64) {
         });
     }
     let ts = state::with(|s| s.time_scale);
+    let map_effects = map_effects();
     let cam = view::camera();
     let cull_origin = if view::is_third_person() { view::eye() } else { cam.origin };
     with(|fx| {
@@ -441,7 +442,7 @@ pub fn frame(time: f64, frametime: f64) {
         // 0x1003abef: no emission, and no emitter clock, until the first `TS_DrawEffects` has
         // allocated the particle pool (0x10056bc0). TS tests the pool pointer, not 0x1018d16a,
         // so this does not wait again after a `HUD_VidInit`.
-        if fx.level.is_empty() || !fx.quality.ready {
+        if fx.level.is_empty() || !fx.quality.ready || !map_effects {
             return;
         }
         fx.emit_clock += frametime;
@@ -717,6 +718,12 @@ fn cam_hardware() -> bool {
     view::hardware()
 }
 
+/// Whether the server's ruleset runs the map's emitters and fog (`ClientRules::map_effects`).
+/// Asked each frame, so a switch takes effect at once; the map is parsed either way.
+fn map_effects() -> bool {
+    crate::gameplay::hud_rules(crate::hud::with(|h| h.gameplay)).map_effects()
+}
+
 /// `V_SetFog` (`0x10056c20`, from `V_CalcRefdef`): linear fog through raw OpenGL, as TS calls
 /// `opengl32.dll` itself ([`goldsrc::ext::gl`], which does nothing unless the engine draws with
 /// OpenGL). The map's fog also needs `IEngineStudio.IsHardware()` to be exactly 1
@@ -729,7 +736,8 @@ pub fn fog_begin() {
         .map_or(([0.0; 3], 0.0, 0.0), |c| (c.fog_color.map(|v| v.value()), c.fog_range[0].value(), c.fog_range[1].value()));
     let single = engine().max_clients() == 1;
     let hardware = goldsrc::ext::studio::hardware_kind;
-    if let Some((color, start, end)) = fog_params(single, cvar(|c| c.gl_fog), with(|fx| fx.fog), user, hardware) {
+    let map = with(|fx| fx.fog).filter(|_| map_effects());
+    if let Some((color, start, end)) = fog_params(single, cvar(|c| c.gl_fog), map, user, hardware) {
         use goldsrc::ext::gl;
         gl::fogi(gl::GL_FOG_MODE, gl::GL_LINEAR);
         gl::fogfv(gl::GL_FOG_COLOR, &color);

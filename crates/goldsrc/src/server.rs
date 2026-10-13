@@ -1,5 +1,6 @@
 //! Server-side engine handle (`enginefuncs_t` + `globalvars_t`) and helpers.
 
+use crate::Global;
 use crate::edict::EdictPtr;
 use crate::guard::{self, Kind};
 use crate::sys::*;
@@ -647,7 +648,8 @@ pub fn cvar_string(c: &cvar_t) -> &CStr {
 // ---- user messages ---------------------------------------------------------------------------------
 
 /// One `WRITE_*` call held by [`MsgWriter`].
-enum Op {
+#[derive(Clone, Debug, PartialEq)]
+pub enum MsgOp {
     Byte(i32),
     Char(i32),
     Short(i32),
@@ -658,66 +660,107 @@ enum Op {
     Entity(i32),
 }
 
-impl Op {
+impl MsgOp {
     /// Size the Steam engines give the write (`MSG_WriteCoord` and `WRITE_ENTITY` are shorts).
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         match self {
-            Op::Byte(_) | Op::Char(_) | Op::Angle(_) => 1,
-            Op::Short(_) | Op::Coord(_) | Op::Entity(_) => 2,
-            Op::Long(_) => 4,
-            Op::Str(s) => s.as_bytes().len() + 1,
+            MsgOp::Byte(_) | MsgOp::Char(_) | MsgOp::Angle(_) => 1,
+            MsgOp::Short(_) | MsgOp::Coord(_) | MsgOp::Entity(_) => 2,
+            MsgOp::Long(_) => 4,
+            MsgOp::Str(s) => s.as_bytes().len() + 1,
         }
     }
 }
 
+/// The game's outgoing-message filter ([`set_outgoing_filter`]).
+pub type OutgoingFilter = fn(MsgWriter, &mut dyn FnMut(MsgWriter));
+
+static OUTGOING: Global<std::cell::Cell<Option<OutgoingFilter>>> = Global(std::cell::Cell::new(None));
+/// Set while the filter runs: a message it ends itself goes straight out.
+static IN_FILTER: Global<std::cell::Cell<bool>> = Global(std::cell::Cell::new(false));
+
+/// Installs the filter every [`MsgWriter::end`] passes its message through first: the filter
+/// hands the sink each message to send in its place (the same one, a rewritten one, several or
+/// none). Port addition: the server's gameplay plugins translate their messages here.
+pub fn set_outgoing_filter(f: Option<OutgoingFilter>) {
+    OUTGOING.0.set(f);
+}
+
 /// Builder for `pfnMessageBegin` ... `pfnMessageEnd`. Call `end()` to send.
 ///
-/// The writes are held until `end()`, which checks the message first (port guard): one that would
-/// stop the server (a `MSG_ONE` to a non-client or type 0 anywhere; on the Steam engines also a
-/// message too long or of the wrong size for its registration) is dropped and logged, as FWGS
-/// drops it. On the Steam engines a broadcast loses its target entity (a `Sys_Error` there), and
-/// everywhere a `WRITE_ENTITY` number outside the edict range is written as the short it is (FWGS
+/// The writes are held until `end()`, which passes the message through the outgoing filter
+/// ([`set_outgoing_filter`]) and checks what comes out (port guard): one that would stop the
+/// server (a `MSG_ONE` to a non-client or type 0 anywhere; on the Steam engines also a message too
+/// long or of the wrong size for its registration) is dropped and logged, as FWGS drops it. On the
+/// Steam engines a broadcast loses its target entity (a `Sys_Error` there), and everywhere a
+/// `WRITE_ENTITY` number outside the edict range is written as the short it is (FWGS
 /// `Host_Error`s on it).
 #[must_use = "call .end() to send the message"]
+#[derive(Clone, Debug)]
 pub struct MsgWriter {
     dest: c_int,
     msg_type: c_int,
     origin: Option<[f32; 3]>,
     ed: *mut edict_t,
-    ops: Vec<Op>,
+    ops: Vec<MsgOp>,
 }
 
 impl MsgWriter {
     pub fn begin(dest: c_int, msg_type: c_int, origin: Option<[f32; 3]>, ed: *mut edict_t) -> Self {
         MsgWriter { dest, msg_type, origin, ed, ops: Vec::new() }
     }
-    fn op(mut self, op: Op) -> Self {
+    fn op(mut self, op: MsgOp) -> Self {
         self.ops.push(op);
         self
     }
     pub fn byte(self, v: i32) -> Self {
-        self.op(Op::Byte(v))
+        self.op(MsgOp::Byte(v))
     }
     pub fn char(self, v: i32) -> Self {
-        self.op(Op::Char(v))
+        self.op(MsgOp::Char(v))
     }
     pub fn short(self, v: i32) -> Self {
-        self.op(Op::Short(v))
+        self.op(MsgOp::Short(v))
     }
     pub fn long(self, v: i32) -> Self {
-        self.op(Op::Long(v))
+        self.op(MsgOp::Long(v))
     }
     pub fn angle(self, v: f32) -> Self {
-        self.op(Op::Angle(v))
+        self.op(MsgOp::Angle(v))
     }
     pub fn coord(self, v: f32) -> Self {
-        self.op(Op::Coord(v))
+        self.op(MsgOp::Coord(v))
     }
     pub fn string(self, s: &CStr) -> Self {
-        self.op(Op::Str(s.to_owned()))
+        self.op(MsgOp::Str(s.to_owned()))
     }
     pub fn entity(self, v: i32) -> Self {
-        self.op(Op::Entity(v))
+        self.op(MsgOp::Entity(v))
+    }
+
+    /// The destination (`MSG_ONE`, `MSG_ALL`, ...).
+    pub fn dest(&self) -> c_int {
+        self.dest
+    }
+    /// The message type: a registered user message id, or an engine `svc_*`.
+    pub fn msg_type(&self) -> c_int {
+        self.msg_type
+    }
+    /// Sends it as another message type, with the same destination and writes.
+    pub fn set_msg_type(&mut self, msg_type: c_int) {
+        self.msg_type = msg_type;
+    }
+    /// The writes so far, in order.
+    pub fn ops(&self) -> &[MsgOp] {
+        &self.ops
+    }
+    /// The writes, to change in place.
+    pub fn ops_mut(&mut self) -> &mut Vec<MsgOp> {
+        &mut self.ops
+    }
+    /// A new message of type `msg_type` to the same destination (`dest`, origin, client).
+    pub fn sibling(&self, msg_type: c_int) -> Self {
+        MsgWriter::begin(self.dest, msg_type, self.origin, self.ed)
     }
 
     fn to_one(&self) -> bool {
@@ -739,10 +782,21 @@ impl MsgWriter {
             return None;
         }
         let user_size = guard::with(|s| s.user_msgs.get(&self.msg_type).copied());
-        guard::message_size_error(user_size, self.ops.iter().map(Op::size).sum())
+        guard::message_size_error(user_size, self.ops.iter().map(MsgOp::size).sum())
     }
 
     pub fn end(self) {
+        match OUTGOING.0.get() {
+            Some(filter) if !IN_FILTER.0.get() => {
+                IN_FILTER.0.set(true);
+                filter(self, &mut |w| w.send());
+                IN_FILTER.0.set(false);
+            }
+            _ => self.send(),
+        }
+    }
+
+    fn send(self) {
         let eng = engine();
         if let Some(why) = self.error(eng) {
             eng.alert(ALERT_TYPE::at_error, &format!("Message {} dropped: {why} (port guard)\n", self.msg_type));
@@ -755,16 +809,16 @@ impl MsgWriter {
         eng!(pfnMessageBegin(self.dest, self.msg_type, po, ed));
         for op in &self.ops {
             match *op {
-                Op::Byte(v) => eng!(pfnWriteByte(v)),
-                Op::Char(v) => eng!(pfnWriteChar(v)),
-                Op::Short(v) => eng!(pfnWriteShort(v)),
-                Op::Long(v) => eng!(pfnWriteLong(v)),
-                Op::Angle(v) => eng!(pfnWriteAngle(v)),
-                Op::Coord(v) => eng!(pfnWriteCoord(v)),
-                Op::Str(ref s) => eng!(pfnWriteString(s.as_ptr())),
-                Op::Entity(v) if (0..max_entities).contains(&v) => eng!(pfnWriteEntity(v)),
+                MsgOp::Byte(v) => eng!(pfnWriteByte(v)),
+                MsgOp::Char(v) => eng!(pfnWriteChar(v)),
+                MsgOp::Short(v) => eng!(pfnWriteShort(v)),
+                MsgOp::Long(v) => eng!(pfnWriteLong(v)),
+                MsgOp::Angle(v) => eng!(pfnWriteAngle(v)),
+                MsgOp::Coord(v) => eng!(pfnWriteCoord(v)),
+                MsgOp::Str(ref s) => eng!(pfnWriteString(s.as_ptr())),
+                MsgOp::Entity(v) if (0..max_entities).contains(&v) => eng!(pfnWriteEntity(v)),
                 // `WRITE_ENTITY` is `MSG_WriteShort` on every engine; FWGS stops on a bad number.
-                Op::Entity(v) => eng!(pfnWriteShort(v)),
+                MsgOp::Entity(v) => eng!(pfnWriteShort(v)),
             }
         }
         eng!(pfnMessageEnd());

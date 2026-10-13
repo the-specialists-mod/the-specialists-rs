@@ -237,7 +237,19 @@ The hooks so far:
 | `ServerRules` | `player_killed(p, cx, d, g)` | `rules::scoring::player_killed_core` | `rules/scoring.rs` `player_killed`, once the killer can be reached |
 | `ServerRules` | `cash_based()` | false | `rules/state.rs` `cash_based` |
 | `ServerRules` | `buy_armament(p, cx)` | `weapons::buy_armament` | `weapons/mod.rs` spawn, without a `game_player_equip` |
+| `ServerRules` | `spawns_entity(class)` | true | `entities/mod.rs` `dispatch_spawn` (-1 when refused; the map load and the reset's re-spawn both go through it) and `dispatch_key_value` (a refused class parses no key) |
+| `ServerRules` | `entity_key_value(ent, cx, key, value)` | `None` (the class parses it) | `ham/mod.rs` `class_key_value` (`DispatchKeyValue`'s class part and AMXX's `ExecuteHam`) |
+| `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
+| `ServerRules` | `broken_respawn_delay(respawntime)` | `Some(30 s if 0, else the key)` | `entities/stock/breakable.rs` `die`, `doors.rs` (break) |
+| `ServerRules` | `breakable_respawn_guarded()` | true (wait for clients in the box, fire `respawntarget`) | `breakable.rs`, `doors.rs` `breakable_respawn` |
+| `ServerRules` | `respawn_entities()` | `entities::ts::respawn_entities` | `rules/frame.rs` `restart_round` |
+| `ServerRules` | `entities_think(now)` | nothing | `rules/frame.rs` `ts_think` (DM/TDM branch, after The One) |
+| `ServerRules` | `map_globals(e, spawnflags)` | `Some(MapFlags::from_spawnflags)` | `entities/ts/misc.rs` `MapGlobals::spawn` |
+| `ServerRules` | `ground_weapon_lands_flying()` | false | `entities/ts/ground.rs` `Ground::fall` |
+| `ServerRules` | `give_ground_weapon(g, cx, p, pcx)` | `GroundWeapon::give` | `ground.rs` `get_weapon` (+use, `Use`, touch) |
+| `ServerRules` | `outgoing_message(msg, w, send)` | `send(w)` | `messages.rs` `outgoing`, the filter `goldsrc::server::MsgWriter::end` runs every message through (`set_outgoing_filter`) |
 | `ClientRules` | `divestep_limits()` | `[42, 52, 62]` | `hud/weapons.rs` `draw_divesteps` |
+| `ClientRules` | `map_effects()` | true | `effects.rs` `frame` (emitters) and `fog_begin` (map fog), asked each frame |
 
 ## 6. Adding a hook
 
@@ -252,6 +264,9 @@ The hooks so far:
    * gun: `host.rules()`
    * server: `crate::gameplay::active().server`
    * HUD: `crate::gameplay::hud_rules(h.gameplay)`
+   * entities: `crate::gameplay::active().server` too. A hook that changes a class takes the
+     dispatched object (`&mut dyn Entity`, downcast with `Any`) or the class's type, whose
+     fields the plugin needs are `pub` (`Trigger`, `GroundWeapon`, `MapGlobals`).
 
    Don't resolve again inside a helper. Pass the rules down instead.
 3. Override it in the plugin. For TS 2.1, the shared hooks go in `crates/ts21/src/shared/` (on

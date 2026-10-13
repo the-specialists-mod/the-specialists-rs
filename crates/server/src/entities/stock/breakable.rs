@@ -488,8 +488,14 @@ impl<const PUSH: bool> Breakable<PUSH> {
         v.effects = EF_NODRAW as i32;
         v.takedamage = DAMAGE_NO as f32;
         if self.respawn_time >= 0.0 && self.helper {
-            let t = if self.respawn_time == 0.0 { 30.0 } else { self.respawn_time };
-            self.schedule_respawn(cx, t);
+            match crate::gameplay::active().server.broken_respawn_delay(self.respawn_time) {
+                Some(t) => self.schedule_respawn(cx, t),
+                // Kept broken without a think until `RespawnEntities`.
+                None => {
+                    self.think = None;
+                    self.die_think = false;
+                }
+            }
         } else {
             remove(me);
         }
@@ -514,14 +520,15 @@ impl<const PUSH: bool> Breakable<PUSH> {
             remove(cx.edict);
             return;
         }
+        let guarded = crate::gameplay::active().server.breakable_respawn_guarded();
         let (absmin, absmax) = (v.absmin, v.absmax);
-        if !crate::rules::entities_in_box(absmin, absmax, (FL_CLIENT | FL_FAKECLIENT) as i32, 1).is_empty() {
+        if guarded && !crate::rules::entities_in_box(absmin, absmax, (FL_CLIENT | FL_FAKECLIENT) as i32, 1).is_empty() {
             self.schedule_respawn(cx, 5.0);
             return;
         }
         let sf = v.spawnflags;
         let me = cx.edict;
-        if sf & SF_BREAK_RESPAWN_TARGET != 0 {
+        if guarded && sf & SF_BREAK_RESPAWN_TARGET != 0 {
             if self.respawn_target.is_empty() {
                 self.delay.use_targets(me, std::ptr::null_mut(), UseType::Toggle, 0.0);
             } else if self.delay.delay == 0.0 {

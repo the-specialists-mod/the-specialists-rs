@@ -203,6 +203,7 @@ pub fn ts_think(now: f32) {
         if the_one && state::with(|g| g.next_the_one_check < now) {
             the_one_check(now);
         }
+        crate::gameplay::active().server.entities_think(now);
         if lms && mode == Mode::Dm {
             let (restart, end) = state::with(|g| (g.round_restart, g.round_end));
             if restart != 0.0 && restart < now {
@@ -505,7 +506,7 @@ pub fn restart_round(now: f32) {
         });
     }
     teams::recount(false);
-    crate::entities::ts::respawn_entities();
+    crate::gameplay::active().server.respawn_entities();
 }
 
 /// `RestartRound`'s refund of what a player carries: the price of every owned weapon (not kung fu

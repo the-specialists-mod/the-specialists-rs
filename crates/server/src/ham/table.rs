@@ -113,7 +113,7 @@ pub(crate) static DEFS: &[Def] = &[
             let handled = if h {
                 key_value(e, kv.class, kv.key, kv.value)
             } else {
-                world::dispatch(e, |ent, cx| ent.key_value(cx, kv.key, kv.value))?
+                world::dispatch(e, |ent, cx| super::class_key_value(ent, cx, kv.key, kv.value))?
             };
             *kv.handled = handled as c_int;
             ret(c, Some(()))
@@ -287,7 +287,7 @@ pub(crate) static DEFS: &[Def] = &[
         sig: sig::<(Ent,), ()>,
         run: |e, c, _, h| {
             let mut a = args(c, (Ent(NULL),));
-            ret(c, exec(h, id::TOUCH, e, &mut a, |(o,)| world::dispatch(e, |ent, cx| ent.touch(cx, o.0))))
+            ret(c, exec(h, id::TOUCH, e, &mut a, |(o,)| world::dispatch(e, |ent, cx| super::class_touch(ent, cx, o.0))))
         },
     },
     Def {

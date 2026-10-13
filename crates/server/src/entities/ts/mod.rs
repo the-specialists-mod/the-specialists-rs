@@ -276,7 +276,7 @@ pub fn respawn_entities() {
 
 /// `UTIL_FindEntityByClassname` over `class`, dispatching each match (the next one is looked up
 /// after the call, as TS's loops do, so an entity removed by the call is still stepped past).
-fn for_each_class(class: &CStr, mut f: impl FnMut(&mut dyn std::any::Any, &mut Cx)) {
+pub fn for_each_class(class: &CStr, mut f: impl FnMut(&mut dyn std::any::Any, &mut Cx)) {
     let eng = engine();
     let mut it = std::ptr::null_mut();
     loop {

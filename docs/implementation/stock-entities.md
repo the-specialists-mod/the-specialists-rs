@@ -326,6 +326,9 @@ The track change that its own train fires reads the train's path through a side 
   the restored angles before `Die`. Use does nothing once the breakable is dead.
 * **Implementation difference.** TS keeps the timer on a hidden `info_breakable` helper entity.
   Here the breakable thinks on its own `ltime`, `MOVETYPE_PUSH` style, with the same timings.
+* **Gameplay hooks.** The respawn delay and `BreakableRespawn`'s wait and target (breakables and
+  doors alike) are `ServerRules::broken_respawn_delay` and `breakable_respawn_guarded`, with these
+  TS 3.0 rules as the defaults ([gameplay-plugins.md](gameplay-plugins.md) §5).
 
 ### 3.2 Doors (decomp `CBaseDoor.c`, `CRotDoor.c`)
 

@@ -92,15 +92,25 @@ pub fn format_name(fmt: &str, name: &str) -> String {
 /// `CTSTrigger` (0x7086c).
 #[derive(Default)]
 pub struct Trigger {
-    next_check: f32,
-    team: i32,
-    ready_at: f32,
+    /// `nextcheck`: the interval between two firings ([`check_step`]).
+    pub next_check: f32,
+    /// The team allowed to fire it: `allowedteam` or `attackerteam`, -1 for anyone.
+    pub team: i32,
+    /// The game time it may fire again.
+    pub ready_at: f32,
     /// `m_pfnTouch` (`WaitTouch`), set by `Spawn`.
     funcs: BaseFuncs,
 }
 
+impl Trigger {
+    /// Whether `m_pfnTouch` is `WaitTouch` (from `Spawn` on).
+    pub fn touchable(&self) -> bool {
+        self.funcs.touch
+    }
+}
+
 /// `max(nextcheck, 0.5)`, the interval of `ts_trigger` and `ts_dmhill`.
-fn check_step(next_check: f32) -> f32 {
+pub fn check_step(next_check: f32) -> f32 {
     if next_check < 0.5 { 0.5 } else { next_check }
 }
 

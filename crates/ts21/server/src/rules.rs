@@ -256,7 +256,7 @@ pub fn think(now: f32) {
         }
         if !lms_cvar || mode != Mode::Dm {
             if with(|r| r.next_entity_respawn < now) {
-                ts_server::entities::ts::respawn_entities();
+                crate::entities::respawn_entities(false);
                 with(|r| r.next_entity_respawn = now + 60.0);
             }
         } else {
@@ -635,7 +635,7 @@ pub fn restart_round(now: f32) {
         });
     }
     teams::recount(false);
-    ts_server::entities::ts::respawn_entities();
+    crate::entities::respawn_entities(true);
 }
 
 /// `CTSGameRules::CheckDeads` (0x10045940). "Alive" is alive or with a respawn pending

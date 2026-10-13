@@ -11,4 +11,11 @@ pub trait ClientRules: Sync {
     fn divestep_limits(&self) -> [i32; 3] {
         [42, 52, 62]
     }
+
+    /// Whether the map's own effects run: the `ts_emitter`/`ts_particle` emitters and the
+    /// `ts_fog` fog the client reads from the BSP entity lump (`CTS_CL_Emitter::Frame`
+    /// 0x1003ab40, `V_SetFog` 0x10056c20). TS 3.0: yes.
+    fn map_effects(&self) -> bool {
+        true
+    }
 }

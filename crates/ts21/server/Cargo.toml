@@ -8,5 +8,5 @@ version.workspace = true
 [dependencies]
 ts21-gameplay = { path = ".." }
 ts-server     = { path = "../../server" }
-goldsrc       = { path = "../../goldsrc" }
+goldsrc       = { path = "../../goldsrc", features = ["server"] }
 shared        = { path = "../../shared" }

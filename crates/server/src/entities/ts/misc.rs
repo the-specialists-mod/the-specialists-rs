@@ -87,17 +87,44 @@ impl Entity for Model {
 /// `CTSMapGlobals` (0x72464). Spawnflags: 1 no knives, 2 no pistols, 4 no SMGs, 8 no rifles,
 /// 16 no shotguns, 32 no round timer, 64 super jump for everyone. No keyvalues.
 #[derive(Default)]
-pub struct MapGlobals;
+pub struct MapGlobals {
+    /// `player_respawn_num` (`+0x64`): saved, never written by TS 3.0 (its `KeyValue` 0x72528
+    /// claims no key); a gameplay plugin may set it (`ServerRules::entity_key_value`).
+    pub player_respawn: i32,
+    /// `player_at_a_time_num` (`+0x68`): the same.
+    pub player_at_a_time: i32,
+}
+
+/// What a `ts_mapglobals` sets for the map (`ServerRules::map_globals`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapFlags {
+    /// The round timer runs (`GameRules::round_timer`).
+    pub round_timer: bool,
+    /// Every player has super jump (`GameRules::superjump_map`).
+    pub superjump: bool,
+    /// The weapon restriction's base mask (`GameRules::base_weapons`).
+    pub weapons: i32,
+}
+
+impl MapFlags {
+    /// TS 3.0's (`CTSMapGlobals::Spawn` 0x72534): flag 32 stops the round timer, flag 64 gives
+    /// super jump, and `get_weapon_restriction` (0x7263c) is `InitWeaponRestriction() ^
+    /// spawnflags` on the whole int, so the round-timer and super-jump bits land in the mask too
+    /// (SrvSett 3).
+    pub fn from_spawnflags(flags: i32) -> MapFlags {
+        MapFlags { round_timer: flags & 32 == 0, superjump: flags & 64 != 0, weapons: 0x1f ^ flags }
+    }
+}
 
 impl Entity for MapGlobals {
-    /// `CTSMapGlobals::Save` / `Restore` (0x72488 / 0x724d8). `player_respawn_num` (`+0x64`) and
-    /// `player_at_a_time_num` (`+0x68`) are always 0: `KeyValue` (0x72528) claims no key and nothing
-    /// writes them. No member pointers (`Spawn` clears them; `WaitThink` is never set).
+    /// `CTSMapGlobals::Save` / `Restore` (0x72488 / 0x724d8): `player_respawn_num` (`+0x64`) and
+    /// `player_at_a_time_num` (`+0x68`). No member pointers (`Spawn` clears them; `WaitThink` is
+    /// never set).
     fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
         f.base_funcs(cx, BaseFuncs::default());
         f.table(&tables::CTSMapGlobals);
-        f.zero();
-        f.zero();
+        f.int(&mut self.player_respawn);
+        f.int(&mut self.player_at_a_time);
     }
 
     // `CTSMapGlobals::Precache` (0x72664) is empty.
@@ -114,12 +141,11 @@ impl Entity for MapGlobals {
         eng.set_origin(e, org);
         eng.set_size(e, [0.0; 3], [0.0; 3]);
         cx.think_in(10.0);
+        let Some(m) = crate::gameplay::active().server.map_globals(e, flags) else { return };
         state::with(|g| {
-            g.round_timer = flags & 32 == 0;
-            g.superjump_map = flags & 64 != 0;
-            // `get_weapon_restriction` (0x7263c): `InitWeaponRestriction() ^ spawnflags` on the
-            // whole int, so the round-timer and super-jump bits land in the mask too (SrvSett 3).
-            g.base_weapons = 0x1f ^ flags;
+            g.round_timer = m.round_timer;
+            g.superjump_map = m.superjump;
+            g.base_weapons = m.weapons;
             g.allowed_weapons = g.base_weapons;
         });
     }
