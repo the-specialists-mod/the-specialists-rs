@@ -306,6 +306,14 @@ impl ServerRules for Ts21Server {
         melee::melee_block(kind, attacker, victim, damage, atk_block)
     }
 
+    fn jump_kick_hit(&self, p: &mut Player, cx: &mut Cx, _strength: f32) {
+        melee::jump_kick_hit(p, melee::player_t(cx.pev().fuser1));
+    }
+
+    fn backflip_kick(&self, p: &mut Player, cx: &mut Cx) {
+        melee::backflip_kick(p, melee::player_t(cx.pev().fuser1));
+    }
+
     fn melee_disarm(&self, damage: f32, victim_is_the_one: bool) -> Option<f32> {
         melee::melee_disarm(damage, victim_is_the_one)
     }

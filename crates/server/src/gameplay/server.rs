@@ -384,6 +384,19 @@ pub trait ServerRules: Sync {
         melee::hold(kind, attacker, victim, atk_block)
     }
 
+    /// A jump kick (`CTSStunt::CloseAttack` 0x9c630) has hit; `strength` is its damage before
+    /// Kung Fu's doubling. TS 3.0: `m_flNextAttack` 0.35 if it had run out, and
+    /// `UpdateMeleeBar(strength × 1.5)` (`stunt::moves::jump_kick_hit_core`).
+    fn jump_kick_hit(&self, p: &mut Player, cx: &mut Cx, strength: f32) {
+        crate::stunt::moves::jump_kick_hit_core(p, cx, strength);
+    }
+
+    /// The backflip kick (`CTSStunt::GoWheel` backward): TS 3.0 charges 22.5 kung-fu power and
+    /// arms a delayed hit of 15 (30 with Kung Fu) (`stunt::moves::backflip_kick_core`).
+    fn backflip_kick(&self, p: &mut Player, cx: &mut Cx) {
+        crate::stunt::moves::backflip_kick_core(p, cx);
+    }
+
     /// A melee hit that may disarm (`MeleeHit::disarm`, and every delayed kung-fu hit): the
     /// damage it adds to the victim's disarm count (`DropWeapon(-2, dmg)`, dropped at a
     /// per-weapon threshold), or `None` for no disarm. TS 3.0: the damage, whoever the victim.

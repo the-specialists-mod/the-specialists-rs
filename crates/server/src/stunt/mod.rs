@@ -13,7 +13,7 @@
 //! idle/move animation, frame advance).
 
 pub mod anim;
-mod moves;
+pub(crate) mod moves;
 pub mod rules;
 
 use crate::commands::Args;

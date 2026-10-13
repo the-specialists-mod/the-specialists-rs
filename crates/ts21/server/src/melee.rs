@@ -26,6 +26,29 @@ pub fn melee_disarm(damage: f32, victim_is_the_one: bool) -> Option<f32> {
     (damage > 15.0 && !victim_is_the_one).then_some(f32::MAX)
 }
 
+/// A jump kick that hit (`FUN_1005cd00` 0x1005d040..): no kung-fu power spent, and a run-out
+/// `m_flNextAttack` becomes `0.7·T` (3.0: 0.35).
+pub fn jump_kick_hit(p: &mut Player, t: f32) {
+    if p.inv.gun.next_attack < 0.0 {
+        p.inv.gun.next_attack = (t as f64 * 0.7) as f32;
+    }
+}
+
+/// The backflip kick (`GoWheel` `FUN_1005d0e0` 0x1005d2xx): no kung-fu power spent; a delayed
+/// hit of `15 × (Kung Fu ? 2 : 1)` (the doubles 2.0/1.0 × 15) for `0.3·T`, with no 3 s cap, and
+/// the kung-fu block left alone (3.0 closes it).
+pub fn backflip_kick(p: &mut Player, t: f32) {
+    let g = &mut p.inv.gun;
+    g.melee_window = (t as f64 * 0.3) as f32;
+    g.melee_damage = ((if p.kungfu { 2.0 } else { 1.0 }) * 15.0f64) as f32;
+    g.melee_source = 0;
+}
+
+/// A player's `T` (`FUN_100551c0`) from its time scale.
+pub fn player_t(fuser1: f32) -> f32 {
+    time_scale_inverse(shared::weapons::spread::fixed_slow_amt(fuser1))
+}
+
 /// What a kung-fu block lets through to the blocker: `(1 − bar·0.01) × dmg` (the double 0.01),
 /// stored as a float. A full bar blocks everything.
 pub fn blocked_damage(bar: f32, damage: f32) -> f32 {
@@ -148,6 +171,24 @@ fn kungfu_block(attacker: *mut edict_t, victim: *mut edict_t, damage: f32, atk_b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kicks_cost_no_power() {
+        let mut p = Player::default();
+        p.inv.gun.next_attack = -0.001;
+        p.inv.gun.melee_bar = 40.0;
+        jump_kick_hit(&mut p, 1.0);
+        assert!((p.inv.gun.next_attack - 0.7).abs() < 1e-6 && p.inv.gun.melee_bar == 40.0);
+        jump_kick_hit(&mut p, 1.0);
+        assert!((p.inv.gun.next_attack - 0.7).abs() < 1e-6, "only a run-out one");
+        p.inv.gun.block_kungfu = 0.2;
+        backflip_kick(&mut p, 2.0);
+        let g = &p.inv.gun;
+        assert_eq!((g.melee_window, g.melee_damage, g.melee_source, g.block_kungfu, g.melee_bar), (0.6, 15.0, 0, 0.2, 40.0));
+        p.kungfu = true;
+        backflip_kick(&mut p, 20.0);
+        assert_eq!((p.inv.gun.melee_window, p.inv.gun.melee_damage), (6.0, 30.0), "no cap");
+    }
 
     #[test]
     fn disarm_needs_more_than_15() {

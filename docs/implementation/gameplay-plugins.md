@@ -305,6 +305,8 @@ The hooks so far:
 | `ServerRules` | `armor_damage(armor, amount, hitgroup, bits)` | `player::damage::after_kevlar` (absorb `armor_absorb`, armour kept) | `player/damage.rs` `take_damage` |
 | `ServerRules` | `damage_punch()` | 0 | `player/damage.rs` `take_damage` |
 | `ServerRules` | `melee_block(kind, attacker, victim, damage, atk_block)` | `weapons::melee::hold` (3.0's victim holds) | `weapons/melee.rs` `trace_attack`, `pending_hit` (the attacker lent to its slot) |
+| `ServerRules` | `jump_kick_hit(p, cx, strength)` | `stunt::moves::jump_kick_hit_core` (`m_flNextAttack` 0.35 if run out, `UpdateMeleeBar(strength × 1.5)`) | `stunt/moves.rs` `close_attack` |
+| `ServerRules` | `backflip_kick(p, cx)` | `stunt::moves::backflip_kick_core` (22.5 power, a delayed 15/30 for 0.3 s) | `stunt/moves.rs` `go_wheel` backward |
 | `ServerRules` | `melee_disarm(damage, victim_is_the_one)` | `Some(damage)` (the disarm count) | `weapons/melee.rs` `trace_attack`, `pending_hit` |
 | `ServerRules` | `grenade_explosion()` | (110, 300, 1024) | `weapons/projectiles.rs` grenade `think` |
 | `ServerRules` | `explosion_pushes_world_guns()` | true | `entities/stock/explode.rs` `ts_explosion` |
