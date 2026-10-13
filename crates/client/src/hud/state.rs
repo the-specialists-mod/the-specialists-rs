@@ -3,6 +3,7 @@
 //! kept). Handlers are pure: engine side effects come back as [`Effect`]s so they can be tested.
 
 use super::text::{Titles, localise_with, lookup_string};
+use crate::gameplay::{ClientRules, KungfuRegen, StuntCooldown};
 use goldsrc::ext::hud::Screen;
 use shared::protocol::Msg;
 use shared::protocol::hud as p;
@@ -186,6 +187,13 @@ pub struct Hud {
     pub attachments: u32,
     pub active_items: u32,
     pub next_stunt: f32,
+    /// `m_flTime` when the last `NextStunt` arrived, and its tenths (0, 0 after a reset): for a
+    /// ruleset that times the cooldown from the message instead of running `next_stunt` down
+    /// ([`crate::gameplay::ClientRules::stunt_cooldown`]).
+    pub next_stunt_msg: (f32, u8),
+    /// `m_flTime` at the weapon element's last `Think` (0 after a reset), for
+    /// [`crate::gameplay::ClientRules::kungfu_regen`].
+    pub think_time: f32,
     pub wires: [u8; 3],
     pub kfu_power: f32,
     pub kfu_prev: f32,
@@ -282,6 +290,8 @@ impl Default for Hud {
             attachments: 0,
             active_items: 0,
             next_stunt: 0.0,
+            next_stunt_msg: (0.0, 0),
+            think_time: 0.0,
             wires: [0; 3],
             kfu_power: 100.0,
             kfu_prev: 100.0,
@@ -372,7 +382,12 @@ impl Hud {
             self.grid[r][b] = Slot { id: 0, clip: 1 };
         }
         self.active_items = 0;
+        if let Some(power) = crate::gameplay::hud_rules(self.gameplay).kungfu_power_on_reset() {
+            self.kfu_power = power;
+        }
         self.next_stunt = 0.0;
+        self.next_stunt_msg = (0.0, 0);
+        self.think_time = 0.0;
         self.invnext_time = 0.0;
         self.wires = [0; 3];
         self.usepowerup_time = 0.0;
@@ -553,6 +568,7 @@ impl Hud {
                 let current = crate::state::with(|s| {
                     let c = s.time_scale;
                     s.time_scale_target = target;
+                    s.slowmo_factor100 = v.factor100;
                     c
                 });
                 if current == 1.0 && target != 1.0 {
@@ -664,7 +680,11 @@ impl Hud {
                     self.players[v.client as usize].active_items = v.bits;
                 }
             }
-            Msg::NextStunt => self.next_stunt = dec!(p::NextStunt).tenths as f32 * 0.1,
+            Msg::NextStunt => {
+                let tenths = dec!(p::NextStunt).tenths;
+                self.next_stunt = tenths as f32 * 0.1;
+                self.next_stunt_msg = (now, tenths);
+            }
             Msg::Wires => {
                 let v = dec!(p::Wires);
                 self.wires = [v.w0, v.w1, v.w2];
@@ -928,13 +948,17 @@ impl Hud {
         Some(format!("menuselect {slot}\n"))
     }
 
-    /// Kung-fu power regenerates client-side between `KFuPower` updates (`Think` 1004ce10):
-    /// 15/s when non-negative, 1/s while negative, over frame time × time scale.
-    pub fn regen_kungfu(&mut self, dt: f32) {
-        if self.kfu_power < 100.0 {
-            let step = if self.kfu_power >= -0.001 { dt * 15.0 } else { dt };
-            self.kfu_power = (self.kfu_power + step).min(100.0);
-        }
+    /// The stunt cooldown state the divesteps colour by.
+    pub fn stunt_cooldown(&self) -> StuntCooldown {
+        StuntCooldown { remaining: self.next_stunt, received_at: self.next_stunt_msg.0, tenths: self.next_stunt_msg.1 }
+    }
+
+    /// Kung-fu power regenerates client-side between `KFuPower` updates (`Think` 1004ce10), by
+    /// the ruleset's rule ([`ClientRules::kungfu_regen`]): in TS 3.0 15/s when non-negative, 1/s
+    /// while negative, over frame time × time scale (`step`). `now` is `m_flTime`.
+    pub fn regen_kungfu(&mut self, rules: &dyn ClientRules, step: f32, now: f32, slowmo_factor100: f32) {
+        self.kfu_power = rules.kungfu_regen(KungfuRegen { power: self.kfu_power, step, now, last: self.think_time, slowmo_factor100 });
+        self.think_time = now;
     }
 
     /// `DrawRoundTimer` tick (1004a130): one second (or 0.1 s in mode 1) per tick; frozen in
@@ -1359,7 +1383,7 @@ mod tests {
                         }
                     }
                 }
-                h.regen_kungfu(f32::INFINITY);
+                h.regen_kungfu(crate::gameplay::CORE_PLUGIN.client, f32::INFINITY, f32::NAN, f32::NAN);
                 h.tick_round_timer(f32::NAN);
                 let _ = h.menu_select(i32::MIN);
                 let _ = h.menu_select(10);

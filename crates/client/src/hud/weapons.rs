@@ -335,7 +335,7 @@ fn scale_colors(c: [i32; 3], a: i32) -> [i32; 3] {
 /// p·b/255, 255−p)`.
 fn draw_kungfu_bar(dc: &Dc, h: &Hud, x: i32, y: i32) {
     let mut rgb = dc.hud;
-    if h.kfu_power <= 0.01 {
+    if crate::gameplay::hud_rules(h.gameplay).kungfu_exhausted(h.kfu_power) {
         rgb = RED;
     } else {
         let p = ftol(h.kfu_power as f64 * 1.28f32 as f64);
@@ -523,17 +523,23 @@ fn crosshair_scoped(fov: f32, third_person: bool) -> bool {
 
 /// `DrawCrosshair` (1004e9f0) + divestep helper (1004ef50). Everything is drawn around
 /// [`crosshair_centre`]: the screen centre, or the projected view-trace end in third person.
+/// Which parts show for the held weapon, and in what order, is the ruleset's
+/// ([`ClientRules::crosshair_parts`](crate::gameplay::ClientRules::crosshair_parts)).
 fn draw_crosshair(dc: &Dc, h: &Hud) {
     if realhud() {
         return;
     }
     let e = engine();
-    let scoped = crosshair_scoped(crate::state::with(|s| s.fov), crate::view::is_third_person());
+    let rules = crate::gameplay::hud_rules(h.gameplay);
+    let fov = crate::state::with(|s| s.fov);
+    let parts = rules.crosshair_parts(h.weapon, fov);
+    let scoped = crosshair_scoped(fov, crate::view::is_third_person());
     let (cx, cy) = crosshair_centre(dc);
-    if !scoped {
+    let divesteps = parts.divesteps && !scoped;
+    if divesteps && !parts.divesteps_last {
         draw_divesteps(dc, h, cx, cy);
     }
-    if matches!(h.weapon, 0 | 24 | 25 | 34 | 35) {
+    if !parts.crosshair {
         return;
     }
     let id_team = h.crosshair_id.map(|(_, t)| t);
@@ -547,9 +553,8 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
     if !scoped || id_team == Some(1) {
         let base = if active & 2 != 0 { 12 } else { 22 };
         let spread = crate::state::with(|s| s.spread);
-        // Guarded: a huge predicted spread would overflow `cx + gap`; at this size the lines
-        // are far off screen anyway.
-        let gap = ((base as f32 + spread * 160.0) as i32).clamp(-0x10000, 0x10000);
+        let accuracy = tables().weapon(h.weapon as u8).map_or(0.0, |w| w.accuracy);
+        let gap = rules.crosshair_gap(base, spread, accuracy);
         if id_team == Some(1) {
             // `0x1004ebc2`: × 0.7.
             dc.spr(dc.g.ts.cross_t, cx - 32, cy - 32, scaled(rgb, 0.7));
@@ -577,13 +582,18 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
         let range = crate::state::with(|s| s.laser_range);
         dc.number(cx + 28, y, num::DRAW_ZERO, range, scaled(rgb, k));
     }
+    if divesteps && parts.divesteps_last {
+        draw_divesteps(dc, h, cx, cy);
+    }
 }
 
 /// Divestep sprites around the crosshair (1004ef50): top/centre/bottom dive indicators plus a
 /// pitch dot. See [`divestep_layout`].
 fn draw_divesteps(dc: &Dc, h: &Hud, cx: i32, cy: i32) {
-    let limits = crate::gameplay::hud_rules(h.gameplay).divestep_limits();
-    let (sprites, (dx, dy), dot) = divestep_layout(h.next_stunt >= 0.01, h.slots, limits, engine().view_angles()[0], dc.hud, (cx, cy));
+    let rules = crate::gameplay::hud_rules(h.gameplay);
+    let cooldown = rules.stunt_cooldown(h.stunt_cooldown(), super::now());
+    let blocked = rules.divesteps_blocked(81 - h.slots as i32, h.armor, h.gamemode);
+    let (sprites, (dx, dy), dot) = divestep_layout(cooldown, blocked, engine().view_angles()[0], dc.hud, (cx, cy));
     for (i, rgb) in sprites.into_iter().enumerate() {
         dc.spr(dc.g.ts.divestep[i], cx - 40, cy - 40, rgb);
     }
@@ -593,22 +603,20 @@ fn draw_divesteps(dc: &Dc, h: &Hud, cx: i32, cy: i32) {
 /// Colours of the three divestep sprites, and the pitch dot's position and colour (pure, from the
 /// TS binary at 1004ef50 and the threshold helpers 1004eec0/1004eef0/1004ef20).
 ///
-/// Sprite `i` is red when the load is too heavy for that dive (`81 − free slots` ≥ `limits[i]`:
-/// 42, 52, 62 in TS 3.0, [`ClientRules::divestep_limits`](crate::gameplay::ClientRules::divestep_limits)).
+/// Sprite `i` is red when the load is too heavy for that dive (`blocked[i]`: `81 − free slots`
+/// ≥ 42, 52, 62 in TS 3.0, [`ClientRules::divesteps_blocked`](crate::gameplay::ClientRules::divesteps_blocked)).
 /// Otherwise it has the base colour (red while the stunt cooldown runs, else the HUD colour), at
 /// full strength for the band the view pitch points at (< −10°, −10..10°, > 10°) and halved for
 /// the other two. The dot sits 32 px from the centre at angle `clamp(3·pitch, ±90°)`, on the left:
 /// `(cx − 32·cos a, cy + 32·sin a)`, in the base colour.
 fn divestep_layout(
     cooldown: bool,
-    free_slots: u8,
-    limits: [i32; 3],
+    blocked: [bool; 3],
     pitch: f32,
     hud: [i32; 3],
     (cx, cy): (i32, i32),
 ) -> ([[i32; 3]; 3], (i32, i32), [i32; 3]) {
     let base = if cooldown { RED } else { hud };
-    let used = 81 - free_slots as i32;
     let band = if pitch < -10.0 {
         0
     } else if pitch > 10.0 {
@@ -617,7 +625,7 @@ fn divestep_layout(
         1
     };
     let sprites = [0, 1, 2].map(|i| {
-        if used >= limits[i] {
+        if blocked[i] {
             RED
         } else if i == band {
             base
@@ -664,22 +672,24 @@ mod tests {
         assert!(!crosshair_scoped(90.0, false));
     }
 
-    /// TS 3.0's divestep limits ([`crate::gameplay::ClientRules::divestep_limits`]).
-    const LIMITS: [i32; 3] = [42, 52, 62];
+    /// TS 3.0's divestep limits ([`crate::gameplay::ClientRules::divesteps_blocked`]).
+    fn blocked(free: u8) -> [bool; 3] {
+        crate::gameplay::CORE_PLUGIN.client.divesteps_blocked(81 - free as i32, 0, 0)
+    }
 
     #[test]
     fn divesteps_follow_ts_binary() {
         let hud = [100, 200, 60];
         let c = (320, 240);
         // Level view, light load: centre band full, the others halved; dot 32 px left.
-        let (s, dot, base) = divestep_layout(false, 70, LIMITS, 0.0, hud, c);
+        let (s, dot, base) = divestep_layout(false, blocked(70), 0.0, hud, c);
         assert_eq!(s, [half(hud), hud, half(hud)]);
         assert_eq!((dot, base), ((288, 240), hud));
         // Looking down 30° (clamped to 90°): bottom band, dot straight below.
-        let (s, dot, _) = divestep_layout(false, 70, LIMITS, 30.0, hud, c);
+        let (s, dot, _) = divestep_layout(false, blocked(70), 30.0, hud, c);
         assert_eq!((s[2], dot), (hud, (320, 272)));
         // 81 - 25 = 56 used: top and centre dives too heavy; cooldown turns the rest red.
-        let (s, _, base) = divestep_layout(true, 25, LIMITS, -20.0, hud, c);
+        let (s, _, base) = divestep_layout(true, blocked(25), -20.0, hud, c);
         assert_eq!((s, base), ([RED, RED, half(RED)], RED));
     }
 
@@ -703,7 +713,7 @@ mod tests {
                 let _ = laser_dot_positions(items, false, (0, 0), (0, 0), wild, size);
             }
         }
-        let _ = divestep_layout(true, u8::MAX, LIMITS, f32::NAN, [0; 3], (i32::MAX, i32::MIN));
+        let _ = divestep_layout(true, blocked(u8::MAX), f32::NAN, [0; 3], (i32::MAX, i32::MIN));
         assert!(!crosshair_scoped(f32::NAN, true));
     }
 

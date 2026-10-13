@@ -8,7 +8,7 @@ use shared::weapons::tables;
 pub const CONFIG_SIZE: usize = 0x408;
 pub const SAVED_CONFIGS: usize = 9;
 pub const ENTRIES: usize = 16;
-/// `FUN_10036640`: money available. `CashBased()` is hard-wired off in 3.0, so always 30000.
+/// The money a menu that isn't `CashBased()` spends (`FUN_10036640`).
 pub const CASH: i32 = 30000;
 /// `FUN_10036660`: inventory slots.
 pub const SLOTS: i32 = 0x51;
@@ -111,6 +111,64 @@ pub fn write_buylist(saved: &[Config; SAVED_CONFIGS]) -> Vec<u8> {
     saved.iter().flat_map(|c| c.to_bytes()).collect()
 }
 
+/// What the gameplay ruleset decides about the menu
+/// ([`ClientRules::buy_menu`](crate::gameplay::ClientRules::buy_menu)). The default is TS 3.0's.
+#[derive(Debug, Clone, Copy)]
+pub struct MenuRules {
+    /// The handgun category (`Init` 10036200, column 0 of [`table`]).
+    pub handguns: &'static [i32],
+    /// `RandomConfig`'s pistols (`(id, may be akimbo)`), picked with `rand(from, from + len − 1)`.
+    pub random_pistols: &'static [(i32, bool)],
+    pub random_pistols_from: i32,
+    /// Kevlar takes 10 slots, and items go through the slot check.
+    pub items_use_slots: bool,
+    /// The items page ("6 Player Accessory") only opens when `m_Teamplay > 1`.
+    pub items_need_teamplay: bool,
+    /// Stealth shoes are restricted when `m_Teamplay < 2`.
+    pub stealth_needs_teamplay: bool,
+    /// `cl_buykevlar` puts kevlar in a reset (and random) config.
+    pub kevlar_cvar: bool,
+    /// `add` buys a gun with no akimbo version (and not stackable) as a single one, whatever
+    /// `full` says.
+    pub akimbo_fixup: bool,
+    /// The highest key `HandleKey` takes (11 = the `a` key).
+    pub max_key: i32,
+}
+
+impl Default for MenuRules {
+    fn default() -> Self {
+        MenuRules {
+            handguns: &[1, 9, 12, 14, 2, 21, 22, 28, 31, 36],
+            random_pistols: &[
+                (36, false),
+                (1, false),
+                (9, true),
+                (12, false),
+                (14, true),
+                (2, true),
+                (21, false),
+                (22, false),
+                (28, false),
+                (31, false),
+            ],
+            random_pistols_from: 0,
+            items_use_slots: true,
+            items_need_teamplay: false,
+            stealth_needs_teamplay: true,
+            kevlar_cvar: true,
+            akimbo_fixup: true,
+            max_key: 11,
+        }
+    }
+}
+
+/// `FUN_10036640`: the money the menu spends, `TSCash` when `CashBased()`
+/// ([`ClientRules::buy_cash_based`](crate::gameplay::ClientRules::buy_cash_based), never in TS
+/// 3.0), else [`CASH`].
+pub fn cash(cash_based: bool, tscash: i32) -> i32 {
+    if cash_based { tscash } else { CASH }
+}
+
 /// Server settings the menu depends on.
 #[derive(Debug, Clone, Copy)]
 pub struct Rules {
@@ -122,13 +180,16 @@ pub struct Rules {
     pub ammocount: i32,
     /// `cl_buykevlar`: a reset config starts with kevlar.
     pub buy_kevlar: bool,
+    /// The money the menu spends ([`cash`]).
+    pub cash: i32,
+    pub menu: MenuRules,
 }
 
 impl Default for Rules {
     fn default() -> Self {
         // The mask (`0x1018d174`) is zero until `SrvSett 3` arrives, so every weapon starts
         // restricted, as in TS.
-        Rules { gamemode: 0, restriction: 0, ammocount: 0, buy_kevlar: true }
+        Rules { gamemode: 0, restriction: 0, ammocount: 0, buy_kevlar: true, cash: CASH, menu: MenuRules::default() }
     }
 }
 
@@ -142,7 +203,11 @@ pub fn weapon_restricted(id: i32, mask: i32) -> bool {
 
 /// `FUN_100365e0`: restricted for buying.
 pub fn restricted(id: i32, item: bool, r: &Rules) -> bool {
-    if !item { weapon_restricted(id, r.restriction) || (r.gamemode < 2 && id == 24) } else { r.gamemode < 2 && id & ITEM_STEALTH != 0 }
+    if !item {
+        weapon_restricted(id, r.restriction) || (r.gamemode < 2 && id == 24)
+    } else {
+        r.menu.stealth_needs_teamplay && r.gamemode < 2 && id & ITEM_STEALTH != 0
+    }
 }
 
 fn att_price(att: u32) -> i32 {
@@ -182,9 +247,9 @@ pub fn cost(id: i32, att: u32, full: bool, item: bool) -> i32 {
 }
 
 /// `FUN_10038dc0`: inventory slots an entry takes.
-pub fn slots_for(id: i32, full: bool, item: bool) -> i32 {
+pub fn slots_for(id: i32, full: bool, item: bool, r: &Rules) -> i32 {
     if item {
-        return if id & ITEM_KEVLAR != 0 { 10 } else { 0 };
+        return if id & ITEM_KEVLAR != 0 && r.menu.items_use_slots { 10 } else { 0 };
     }
     let Some(w) = tables().weapon(id as u8) else { return 0 };
     if !full {
@@ -241,22 +306,18 @@ pub mod page {
     pub const TEAM: i32 = 8;
 }
 
-/// Category table (`+0x2d6c`, 12 rows × 5 categories, set in `Init` 10036200).
-pub const TABLE: [[i32; 5]; 12] = {
+/// Category table (`+0x2d6c`, 12 rows × 5 categories, set in `Init` 10036200). The handguns
+/// are the ruleset's ([`MenuRules::handguns`]).
+pub fn table(m: &MenuRules) -> [[i32; 5]; 12] {
     let mut t = [[-1; 5]; 12];
-    let cols: [&[i32]; 5] =
-        [&[1, 9, 12, 14, 2, 21, 22, 28, 31, 36], &[3, 6, 7, 17, 19, 23], &[5, 13, 15, 27, 18], &[4, 11, 20, 26, 33], &[24, 25, 32, 34, 35]];
-    let mut c = 0;
-    while c < 5 {
-        let mut r = 0;
-        while r < cols[c].len() {
-            t[r][c] = cols[c][r];
-            r += 1;
+    let cols: [&[i32]; 5] = [m.handguns, &[3, 6, 7, 17, 19, 23], &[5, 13, 15, 27, 18], &[4, 11, 20, 26, 33], &[24, 25, 32, 34, 35]];
+    for (c, col) in cols.iter().enumerate() {
+        for (row, &id) in col.iter().take(12).enumerate() {
+            t[row][c] = id;
         }
-        c += 1;
     }
     t
-};
+}
 
 /// Category names (`Init` 10036200; `#Buy_SMGs` is at `0x10094dd0`).
 pub const CATEGORIES: [&str; 5] = ["#Buy_Handguns", "#Buy_SMGs", "#Buy_Rifles", "#Buy_Shotguns", "#Buy_SpecialPurpose"];
@@ -342,7 +403,7 @@ impl BuyMenu {
     pub fn reset_config(&mut self, r: &Rules) {
         self.current = Config::default();
         self.new_config = true;
-        if r.buy_kevlar {
+        if r.buy_kevlar && r.menu.kevlar_cvar {
             self.add(ITEM_KEVLAR, 0, false, true, r);
         }
     }
@@ -374,7 +435,7 @@ impl BuyMenu {
 
     /// `FUN_100392b0`: fill ammo round-robin over the guns with the money left.
     pub fn recompute_ammo(&mut self, r: &Rules) {
-        let mut budget = CASH.wrapping_sub(self.current.total);
+        let mut budget = r.cash.wrapping_sub(self.current.total);
         self.current.ammo = [(0, 0); 16];
         if budget > 0 {
             loop {
@@ -400,7 +461,7 @@ impl BuyMenu {
     }
 
     /// `FUN_10038e40`: remove entry `i` and compact the list.
-    pub fn remove(&mut self, i: usize) {
+    pub fn remove(&mut self, i: usize, r: &Rules) {
         let Some(&e) = self.current.entries.get(i) else { return };
         // A loaded `tsbuylist.tsa` can hold any numbers: C int arithmetic, which wraps.
         self.current.total = self.current.total.wrapping_sub(e.cost);
@@ -408,7 +469,7 @@ impl BuyMenu {
             let w = tables().weapon(e.id as u8).map_or(0, |w| w.slots);
             let n = if e.count == 0 { w.wrapping_mul(e.akimbo as i32 + 1) } else { w.wrapping_mul(e.count) };
             self.current.slots = self.current.slots.wrapping_sub(n);
-        } else if e.id & ITEM_KEVLAR != 0 {
+        } else if e.id & ITEM_KEVLAR != 0 && r.menu.items_use_slots {
             self.current.slots = self.current.slots.wrapping_sub(10);
         }
         self.current.entries[i] = Entry::default();
@@ -437,17 +498,18 @@ impl BuyMenu {
             return false;
         }
         let (mut att, mut full) = (att, full);
-        if let Some(w) = info
+        if r.menu.akimbo_fixup
+            && let Some(w) = info
             && w.akimbo == -1
             && !w.stack
         {
             full = false;
         }
         // `wrapping_add`: a loaded config's totals can be anything (C int arithmetic).
-        if cost(id, att, full, item).wrapping_add(self.current.total) > CASH {
+        if cost(id, att, full, item).wrapping_add(self.current.total) > r.cash {
             return false;
         }
-        if slots_for(id, full, item).wrapping_add(self.current.slots) > SLOTS {
+        if (!item || r.menu.items_use_slots) && slots_for(id, full, item, r).wrapping_add(self.current.slots) > SLOTS {
             return false;
         }
         for i in 0..ENTRIES {
@@ -481,7 +543,7 @@ impl BuyMenu {
                 att |= e.att;
                 full = true;
             }
-            self.remove(i);
+            self.remove(i, r);
             break;
         }
         let Some(j) = self.current.entries.iter().position(|e| e.id == 0) else { return false };
@@ -496,7 +558,7 @@ impl BuyMenu {
         }
         self.current.entries[j] = e;
         self.current.total = self.current.total.wrapping_add(e.cost);
-        self.current.slots = self.current.slots.wrapping_add(slots_for(id, full, item));
+        self.current.slots = self.current.slots.wrapping_add(slots_for(id, full, item, r));
         self.recompute_ammo(r);
         self.new_config = true;
         true
@@ -535,19 +597,11 @@ impl BuyMenu {
         self.add(melee, 0, full, false, r);
         let p = if p <= 0.0 { rng.float(0.0, 1.0) } else { p };
         if 0.1 < p && p < 0.9 {
-            const PISTOLS: [(i32, bool); 10] = [
-                (36, false),
-                (1, false),
-                (9, true),
-                (12, false),
-                (14, true),
-                (2, true),
-                (21, false),
-                (22, false),
-                (28, false),
-                (31, false),
-            ];
-            let (id, can_akimbo) = PISTOLS[rng.long(0, 9).clamp(0, 9) as usize];
+            let (pistols, from) = (r.menu.random_pistols, r.menu.random_pistols_from);
+            let last = pistols.len() as i32 - 1;
+            // Guarded: the RNG stays in the list.
+            let k = rng.long(from, from + last).wrapping_sub(from).clamp(0, last);
+            let (id, can_akimbo) = pistols[k as usize];
             let ak = can_akimbo && rng.long(0, 1) != 0;
             let att = Self::random_attachments(id, rng);
             self.add(id, att, ak, false, r);
@@ -571,11 +625,11 @@ impl BuyMenu {
     }
 
     /// `SubmitConfig` (10039400): `rst_cfg`, then the `tkw`, `tki` and `tka` lists.
-    pub fn submit(&mut self, actions: &mut Vec<Action>) -> bool {
+    pub fn submit(&mut self, actions: &mut Vec<Action>, r: &Rules) -> bool {
         if self.current.total < 1 {
             actions.push(Action::Message("#Buy_ConfigEmpty".into(), RED));
         }
-        if CASH < self.current.total {
+        if r.cash < self.current.total {
             actions.push(Action::Message("#Buy_NoCash".into(), RED));
             return false;
         }
@@ -698,7 +752,7 @@ impl BuyMenu {
                 page::WEAPONS | page::OPTIONS => {
                     let (mut i, mut skipped) = (0i32, 0i32);
                     loop {
-                        let Some(&id) = TABLE.get(i as usize).map(|t| &t[self.category.clamp(0, 4) as usize]) else {
+                        let Some(&id) = table(&r.menu).get(i as usize).map(|t| &t[self.category.clamp(0, 4) as usize]) else {
                             return Hit::Unset;
                         };
                         if id == -1 {
@@ -761,13 +815,13 @@ impl BuyMenu {
     /// `HandleKey(page, key)` (10038840). Keys 1..11 (10 = "0"/back, 11 = the `a` key).
     pub fn handle_key(&mut self, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
         let mut out = Vec::new();
-        if !(1..=11).contains(&key) {
+        if !(1..=r.menu.max_key).contains(&key) {
             return out;
         }
         match pg {
             page::MAIN => match key {
                 1 => {
-                    if self.submit(&mut out) {
+                    if self.submit(&mut out, r) {
                         self.close();
                         out.push(Action::Close);
                     }
@@ -789,8 +843,8 @@ impl BuyMenu {
                 _ => {}
             },
             page::CATEGORY => match key {
-                6 => self.page = page::ITEMS,
-                1..=5 if TABLE[0][key as usize - 1] != -1 => {
+                6 if !r.menu.items_need_teamplay || r.gamemode > 1 => self.page = page::ITEMS,
+                1..=5 if table(&r.menu)[0][key as usize - 1] != -1 => {
                     self.page = page::WEAPONS;
                     self.category = key - 1;
                 }
@@ -805,7 +859,7 @@ impl BuyMenu {
                     return out;
                 }
                 let row = if key > 9 { key - 2 } else { key - 1 } as usize;
-                let Some(&id) = TABLE.get(row).and_then(|r| r.get(self.category as usize)) else { return out };
+                let Some(&id) = table(&r.menu).get(row).and_then(|t| t.get(self.category as usize)) else { return out };
                 if id == -1 || restricted(id, false, r) {
                     return out;
                 }
@@ -860,7 +914,7 @@ impl BuyMenu {
                 if i < ENTRIES && self.current.entries[i].id != 0 {
                     let name = Self::entry_name(&self.current.entries[i]);
                     out.push(Action::MessageArg("#Buy_Removed".into(), name, [0; 3]));
-                    self.remove(i);
+                    self.remove(i, r);
                     self.recompute_ammo(r);
                 }
             }
@@ -936,7 +990,7 @@ mod tests {
     }
 
     fn rules() -> Rules {
-        Rules { gamemode: 0, restriction: 0x1f, ammocount: 0, buy_kevlar: true }
+        Rules { restriction: 0x1f, ..Rules::default() }
     }
 
     #[test]
@@ -1010,7 +1064,7 @@ mod tests {
         m.add(25, 0, true, false, &r);
         m.add(9, 1, true, false, &r); // akimbo MK23 with silencer
         let mut a = Vec::new();
-        assert!(m.submit(&mut a));
+        assert!(m.submit(&mut a, &rules()));
         assert_eq!(a[0], Action::ServerCmd("rst_cfg".into()));
         // Sorted: knives (no ammo) first, then by price: kevlar 1900 (item), MK23 akimbo 2300, AK 4800.
         assert_eq!(a[1], Action::ServerCmd("tkw 25_5 9_1 9_0 13_8 ".into()));
@@ -1135,7 +1189,7 @@ mod tests {
             let saved = parse_buylist(&file);
             assert_eq!(write_buylist(&saved).len(), CONFIG_SIZE * SAVED_CONFIGS);
             for gamemode in [0, 2] {
-                let r = Rules { gamemode, restriction: rng.next() as i32, ammocount: rng.next() as i32, buy_kevlar: true };
+                let r = Rules { gamemode, restriction: rng.next() as i32, ammocount: rng.next() as i32, ..Rules::default() };
                 let mut m = BuyMenu { saved: saved.clone(), ..BuyMenu::default() };
                 m.open(&r, &mut rng);
                 for _ in 0..200 {
@@ -1149,9 +1203,9 @@ mod tests {
                 for c in &saved {
                     m.current = c.clone();
                     m.recompute_ammo(&r);
-                    m.submit(&mut Vec::new());
-                    m.remove(0);
-                    m.remove(ENTRIES + 3);
+                    m.submit(&mut Vec::new(), &r);
+                    m.remove(0, &r);
+                    m.remove(ENTRIES + 3, &r);
                     m.add(25, 0, true, false, &r);
                     m.add(13, 0xffff_ffff, true, false, &r);
                 }
@@ -1165,9 +1219,9 @@ mod tests {
         let mut m = BuyMenu { current: c, ..BuyMenu::default() };
         m.add(25, 0, true, false, &r);
         m.recompute_ammo(&r);
-        m.remove(0);
-        m.remove(0);
-        m.submit(&mut Vec::new());
+        m.remove(0, &r);
+        m.remove(0, &r);
+        m.submit(&mut Vec::new(), &r);
     }
 
     #[test]

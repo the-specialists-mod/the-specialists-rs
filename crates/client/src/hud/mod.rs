@@ -64,8 +64,17 @@ static TIME: Global<Cell<(f32, f32)>> = Global(Cell::new((0.0, 0.0)));
 /// `state.fov`.
 static ZOOM_SENS: Global<Cell<f32>> = Global(Cell::new(0.0));
 static INTERMISSION: Global<Cell<bool>> = Global(Cell::new(false));
+/// A ruleset pinned `default_fov`'s value last frame ([`think_fov`]).
+static FOV_PINNED: Global<Cell<bool>> = Global(Cell::new(false));
 static ATTACK_CONSUMED: Global<Cell<bool>> = Global(Cell::new(false));
 static PREV_BITS: Global<Cell<u32>> = Global(Cell::new(0));
+
+/// The HUD's `SrvSett` 4 ruleset id ([`Hud::gameplay`]) without taking the HUD's borrow for
+/// long: `None` before the HUD exists, and (rather than a panic) when called while the HUD is
+/// already borrowed, where callers have `h.gameplay` themselves.
+pub fn gameplay_id() -> Option<i16> {
+    HUD.0.try_borrow().ok().and_then(|h| h.as_ref().and_then(|h| h.gameplay))
+}
 
 /// Borrow the HUD state. Don't call into the engine in ways that re-enter the client inside `f`.
 pub fn with<R>(f: impl FnOnce(&mut Hud) -> R) -> R {
@@ -586,6 +595,7 @@ pub fn vid_init() {
         g.loaded = true;
     });
     LOGO.0.set(0);
+    status::vid_init();
     vgui::vid_init();
     // `CHud::VidInit` (`0x100208a9`) resets only the current scale (`0x100963e8`). The `TSSlowMo`
     // target (`0x1009ff04`) is left alone, so slow motion still active eases back in.
@@ -666,14 +676,31 @@ pub fn think_elements() {
 /// The rest of `CHud::Think` (`0x10049760`), from `CHud::UpdateClientData` (`0x10024b00`, i.e.
 /// `HUD_UpdateClientData`): eases `m_iFOV` (`state.fov`) toward `HUD_GetFOV` (or `default_fov`
 /// while that is 0) with `UTIL_ApproachFOV` ([`crate::view::ease_fov`]) and sets the zoom
-/// sensitivity. `ft` is the last refdef's frame time. Returns the eased FOV.
+/// sensitivity. `ft` is the last refdef's frame time. Returns the eased FOV. A ruleset may pin
+/// `default_fov` first and choose when the easer snaps
+/// ([`ClientRules::pinned_default_fov`](crate::gameplay::ClientRules::pinned_default_fov),
+/// [`fov_snaps`](crate::gameplay::ClientRules::fov_snaps)).
 pub fn think_fov(ft: f32) -> f32 {
     let c = cvars();
+    let rules = crate::gameplay::current();
+    match rules.pinned_default_fov() {
+        Some(v) => {
+            c.default_fov.set_value(v);
+            FOV_PINNED.0.set(true);
+        }
+        // Port addition: after a switch away from a ruleset that pinned it, the cvar's value
+        // comes back from its string (the engine's `atof`), so the pin doesn't carry over.
+        None if FOV_PINNED.0.replace(false) => {
+            let s = c.default_fov.string().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            c.default_fov.set_value(crate::spectator::atof(&s));
+        }
+        None => {}
+    }
     let df = c.default_fov.value();
     let default = if df < 0.001 { 80.0 } else { df.clamp(70.0, 110.0) };
     let want = get_fov() as i32;
     let target = if (want as f32) < 0.001 { default as i32 } else { want };
-    let mut cur = crate::state::with(|s| crate::view::ease_fov(s.fov, target as f32, ft));
+    let mut cur = crate::state::with(|s| crate::view::ease_fov(s.fov, target as f32, ft, rules.fov_snaps(s.fov as i32)));
     let sens = if (cur - default).abs() >= 0.01 {
         want as f32 / default * input::cvars().sensitivity.value() * c.zoom_sensitivity_ratio.value()
     } else {
@@ -709,15 +736,16 @@ fn think(dt: f32) {
     let e = engine();
     let ic = input::cvars();
     let laser = ic.cl_lasercolor.value() as i32;
-    let ts = crate::state::with(|s| s.time_scale);
+    let (ts, slowmo) = crate::state::with(|s| (s.time_scale, s.slowmo_factor100));
     // `0x1004ce58`: `m_flTimeDelta / (1 / max(ts, 0.01))`, so both run slower in slow motion.
     let step = dt * ts.max(0.01);
     let alive = !dead_or_observer();
+    let now = now();
     let (send_laser, firemode_changed, kfu_power) = with(|h| {
         let send = h.last_laser_color != laser;
         h.last_laser_color = laser;
         h.next_stunt = (h.next_stunt - step).max(0.0);
-        h.regen_kungfu(step);
+        h.regen_kungfu(crate::gameplay::hud_rules(h.gameplay), step, now, slowmo);
         // `0x1004d25d`: dead or observing skips the check without taking the new mode, so a
         // change made meanwhile still clicks on respawn.
         let fm = alive && h.weapon > 0 && h.last_firemode != h.firemode;

@@ -216,8 +216,12 @@ pub const GATED_BINDINGS: [&str; 9] = ["+attack", "+attack2", "+alt2", "+reload"
 /// `+jump`, … work without a physical key, for automated in-engine tests.
 static DEV_SCRIPT_INPUT: Global<Cell<Cvar>> = Global(Cell::new(Cvar::NULL));
 
+/// Whether a gated `+` command may press its button: a physical key this frame, the dev aid, or a
+/// ruleset without the gate ([`ClientRules::input_gate`](crate::gameplay::ClientRules::input_gate)).
 pub fn gate_open() -> bool {
-    REAL_KEY.0.get() || (DEV_SCRIPT_INPUT.0.get().value() != 0.0 && cvar_ptr_value(c"sv_cheats") != 0.0)
+    REAL_KEY.0.get()
+        || !crate::gameplay::current().input_gate()
+        || (DEV_SCRIPT_INPUT.0.get().value() != 0.0 && cvar_ptr_value(c"sv_cheats") != 0.0)
 }
 
 /// TS `FUN_10023450`: gated `+forward`/`+back`/`+moveleft`/`+moveright`/`+attack`/`+attack2`/
@@ -235,7 +239,7 @@ pub fn reset_key_tap() {
 
 fn key_tap(bits: u8) {
     let now = engine().client_time();
-    if key_tap_step(&NEXT_KEY_TAP.0, now, bits) == Some(true) {
+    if key_tap_step(&NEXT_KEY_TAP.0, now, bits) == Some(true) && crate::gameplay::current().attack_sends_respawn() {
         engine().server_cmd("respawn");
     }
 }
@@ -414,8 +418,10 @@ pub fn hud_rgb() -> [i32; 3] {
 
 /// `cl_attackswitch` (§5.1): swap `+attack2` and `+alt2` when set and a weapon other than kung fu,
 /// grenades, knives or the katana is held (TS weapon kinds 2, 3, 10, 11 keep the direct mapping).
+/// A ruleset without the swap ([`ClientRules::attack_switch`](crate::gameplay::ClientRules::attack_switch))
+/// keeps the direct mapping whatever the cvar says.
 pub fn attack_switched() -> bool {
-    if cvars().cl_attackswitch.value() == 0.0 {
+    if cvars().cl_attackswitch.value() == 0.0 || !crate::gameplay::current().attack_switch() {
         return false;
     }
     let id = crate::state::with(|s| s.weapon);

@@ -81,8 +81,17 @@ impl Rng for EngineRng {
 }
 
 fn rules() -> Rules {
-    let (gamemode, restriction, ammocount) = hud::with(|h| (h.gamemode, h.restriction, h.ammocount));
-    Rules { gamemode, restriction, ammocount, buy_kevlar: crate::input::cvars().cl_buykevlar.value() != 0.0 }
+    let (gamemode, restriction, ammocount, cashbased, tscash, gameplay) =
+        hud::with(|h| (h.gamemode, h.restriction, h.ammocount, h.cashbased, h.cash, h.gameplay));
+    let ruleset = crate::gameplay::hud_rules(gameplay);
+    Rules {
+        gamemode,
+        restriction,
+        ammocount,
+        buy_kevlar: crate::input::cvars().cl_buykevlar.value() != 0.0,
+        cash: buy::cash(ruleset.buy_cash_based(gamemode, cashbased), tscash),
+        menu: ruleset.buy_menu(),
+    }
 }
 
 pub fn init() {
@@ -705,14 +714,14 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     draw_summary(dc, b, r);
     let cur = &b.current;
     // Wrapping: a loaded `tsbuylist.tsa` config's totals can be anything (C int arithmetic).
-    let affordable = |cost: i32, slots: i32| cost.wrapping_add(cur.total) <= buy::CASH && slots.wrapping_add(cur.slots) <= buy::SLOTS;
+    let affordable = |cost: i32, slots: i32| cost.wrapping_add(cur.total) <= r.cash && slots.wrapping_add(cur.slots) <= buy::SLOTS;
 
     // Columns are drawn child-first, parents after (each TS page function calls its parent).
     if b.page == page::OPTIONS {
         let id = b.pending_weapon;
         let base = buy::cost(id, b.pending_att, false, false);
         let mut c = Column { dc, x: 0x188, y: y0, page: page::OPTIONS, dim: false, rows };
-        c.row("1 #Buy_Buy", if affordable(base, buy::slots_for(id, false, false)) { GREEN } else { RED }, 1);
+        c.row("1 #Buy_Buy", if affordable(base, buy::slots_for(id, false, false, r)) { GREEN } else { RED }, 1);
         let labels = ["#HUD_Silencer", "#HUD_Lasersight", "#HUD_Flashlight", "#HUD_Scope"];
         let prices = [900, 800, 500, 1800];
         for bit in 0..4 {
@@ -720,7 +729,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
                 // The label shows the attachment's own price; the colour tests base + attachment.
                 let price = base.wrapping_add(prices[bit]);
                 let text = fmt(&format!("%i {}  %i", labels[bit]), &[I(bit as i64 + 2), I(prices[bit] as i64)]);
-                c.row(&text, if price.wrapping_add(cur.total) <= buy::CASH { hud2 } else { RED }, bit as i32 + 2);
+                c.row(&text, if price.wrapping_add(cur.total) <= r.cash { hud2 } else { RED }, bit as i32 + 2);
             }
         }
         if let Some(w) = shared::weapons::tables().weapon(id.max(0) as u8) {
@@ -737,7 +746,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     if matches!(b.page, page::WEAPONS | page::OPTIONS) {
         let mut c = Column { dc, x: 0x108, y: y0, page: page::WEAPONS, dim: b.page != page::WEAPONS, rows };
         for row in 0..12 {
-            let id = buy::TABLE[row][b.category.clamp(0, 4) as usize];
+            let id = buy::table(&r.menu)[row][b.category.clamp(0, 4) as usize];
             if id == -1 || buy::restricted(id, false, r) {
                 continue;
             }
@@ -757,12 +766,11 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     }
     if b.page == page::ITEMS {
         let mut c = Column { dc, x: 0x108, y: y0, page: page::ITEMS, dim: false, rows };
-        for (key, id, label, price, slots) in
-            [(1i32, buy::ITEM_KEVLAR, "Kevlar", 1900, 10), (2, buy::ITEM_STEALTH, "Stealth Shoes", 700, 0)]
-        {
+        for (key, id, label, price) in [(1i32, buy::ITEM_KEVLAR, "Kevlar", 1900), (2, buy::ITEM_STEALTH, "Stealth Shoes", 700)] {
             if buy::restricted(id, true, r) {
                 continue;
             }
+            let slots = buy::slots_for(id, false, true, r);
             let text = fmt(&format!("%i {label}  %i"), &[I(key as i64), I(price as i64)]);
             c.row(&text, if affordable(price, slots) { hud2 } else { RED }, key);
         }
@@ -775,7 +783,9 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
             let dim = b.page != page::CATEGORY && i as i32 != b.category;
             c.row_scaled(&format!("{} {name}", i + 1), hud2, i as i32 + 1, dim);
         }
-        c.row("6 #Buy_PlayerAccessory", hud2, 6);
+        if !r.menu.items_need_teamplay || r.gamemode > 1 {
+            c.row("6 #Buy_PlayerAccessory", hud2, 6);
+        }
         if b.page == page::CATEGORY {
             c.row("0 #Buy_GoBack", BACK, 10);
         }
@@ -794,7 +804,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
         for (i, s) in b.saved.iter().enumerate() {
             let key = if s.total < 1 { "#Buy_SlotEmpty" } else { "#Buy_SlotAvailable" };
             let text = fmt(&localise(key), &[I(i as i64 + 1)]);
-            let red = !save && s.total > buy::CASH;
+            let red = !save && s.total > r.cash;
             c.row(&text, if red { RED } else { hud2 }, i as i32 + 1);
         }
         c.row("0 #Buy_GoBack", BACK, 10);
@@ -805,7 +815,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
         c.row("1 #Buy_EmptyConfig", RED, 1);
     } else {
         let t = if b.new_config { "1 #Buy_UseNewConfig" } else { "1 #Buy_UseLastConfig" };
-        c.row(t, if buy::CASH.wrapping_sub(cur.total) < 0 { RED } else { GREEN }, 1);
+        c.row(t, if r.cash.wrapping_sub(cur.total) < 0 { RED } else { GREEN }, 1);
     }
     c.row("2 #Buy_Buy", hud2, 2);
     c.row("3 #Buy_RemoveItem", hud2, 3);
@@ -838,7 +848,7 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
     use hud::text::Arg::I;
     dc.fill(8, 8, 0x280, 0x13, hud2, 0x32);
     let total = hud::text::format(&localise("#Buy_Total"), &[I(cur.total as i64)]);
-    dc.string(8, 8, &total, if buy::CASH.wrapping_sub(cur.total) <= 0 { RED } else { hud2 });
+    dc.string(8, 8, &total, if r.cash.wrapping_sub(cur.total) <= 0 { RED } else { hud2 });
     let free_slots = buy::SLOTS.wrapping_sub(cur.slots);
     let free = hud::text::format(&localise("#Buy_FreeSlots"), &[I(free_slots as i64)]);
     dc.string(0x108, 8, &free, if free_slots <= 0 { RED } else { hud2 });
