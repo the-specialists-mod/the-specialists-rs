@@ -17,10 +17,11 @@ use crate::rules::scoring::{self, Frag};
 use crate::rules::state::GameRules;
 use crate::rules::{cvars, frame, lifecycle, teams};
 use crate::stunt::rules::{self as stunt, Dive, StuntClock, StuntRules};
-use crate::weapons::{fire, projectiles};
+use crate::weapons::{fire, melee, projectiles};
 use crate::world::{Cx, Entity};
 use goldsrc::server::MsgWriter;
 use goldsrc::sys::{TraceResult, edict_t};
+use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::{self, Vec3};
 use std::ffi::CStr;
 
@@ -295,8 +296,9 @@ pub trait ServerRules: Sync {
     }
 
     /// A bullet's range-falloff index from `scaled`, the distance in tenths of the ammo's range
-    /// unit (`dist / (unit·10)·10`, or `dist·0.0033333334·10` after a penetration). TS 3.0
-    /// rounds it to the nearest (`spread::range_index`).
+    /// unit (`dist / (unit·10)·10`, or `dist·0.0033333334·10` after a penetration). The port's
+    /// 3.0 rounds it to the nearest (`spread::range_index`); issue #80 has TS 3.0 truncating
+    /// too, and fixing that here fixes every bullet path.
     fn bullet_range_index(&self, scaled: f32) -> i32 {
         scaled.round_ties_even() as i32
     }
@@ -361,6 +363,33 @@ pub trait ServerRules: Sync {
     /// (`punchangle.x -= ...`). TS 3.0: none.
     fn damage_punch(&self) -> f32 {
         0.0
+    }
+
+    // ---- melee (`weapons::melee`) -----------------------------------------------------------------
+
+    /// The victim's block of a melee hit (`VictimKungFuHold`, `VictimKnifeHold`,
+    /// `VictimKatanaHold`; `weapons::melee::hold`): `None` if `victim` doesn't block, else what the
+    /// attacker gets ([`MeleeResult::Blocked`]), the victim's side applied here. `damage` is the
+    /// hit's; `atk_block` the attacker's own kung-fu block window (the attacker is the player
+    /// being dispatched). Called for every hit on a player, the delayed ones too.
+    fn melee_block(
+        &self,
+        kind: MeleeKind,
+        attacker: *mut edict_t,
+        victim: *mut edict_t,
+        damage: f32,
+        atk_block: f32,
+    ) -> Option<MeleeResult> {
+        let _ = damage;
+        melee::hold(kind, attacker, victim, atk_block)
+    }
+
+    /// A melee hit that may disarm (`MeleeHit::disarm`, and every delayed kung-fu hit): the
+    /// damage it adds to the victim's disarm count (`DropWeapon(-2, dmg)`, dropped at a
+    /// per-weapon threshold), or `None` for no disarm. TS 3.0: the damage, whoever the victim.
+    fn melee_disarm(&self, damage: f32, victim_is_the_one: bool) -> Option<f32> {
+        let _ = victim_is_the_one;
+        Some(damage)
     }
 
     // ---- explosions and thrown blades ------------------------------------------------------------

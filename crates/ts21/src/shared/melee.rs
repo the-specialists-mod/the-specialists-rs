@@ -1,0 +1,637 @@
+//! TS 2.1's melee (issue #100 §3.2, checklist item 5): kung fu, the katana, the knife slash and
+//! the stock hit, as whole-function overrides of `MeleeRules` (the gun code both sides run).
+//!
+//! Decoded from the 2.1 `mp.dll` (decomp and disassembly): `CCombatAttack` `FUN_1004de10`,
+//! `CCombatBlock` `FUN_1004dc70`, `KatanaFire` `FUN_1004c090`, `KnifeFire` `FUN_1004c6c0`,
+//! `CTSGun::AlternateAttack` 0x1004ab40 with `ColdCockAttack` `FUN_100572a0`, and their callers
+//! `CTSGun::PrimaryAttack` 0x1004aa50 / `SecondaryAttack` 0x1004a800.
+//!
+//! 2.1 keeps its weapon timers as absolute times with the delays fixed when they're set:
+//! `delay × (Double Fire Rate ? 0.5 : 1) × (own Slow Pause ? 6.6666665 : T)`, `T` the time
+//! scale's inverse ([`time_scale_inverse`]). The port's gun timers count down, so they get the
+//! same delays; how fast they count down is the gun timer model's (checklist item 3).
+//!
+//! The stunt timers (`BlockPlayer`, the `3·T` hold of the crouched moves, `pl+0x470`) are
+//! started in seconds of the player's time: the server's stunt clock applies `T`.
+//!
+//! Third-person animations use the port's (3.0's) animation ids for the same moves (the 2.1
+//! table numbers the blade swings differently); the kung-fu move ids are the same in both.
+
+use ::shared::ts::powerup;
+use ::shared::weapons::gun::{MeleeHit, MeleeKind, MeleeResult, Sound};
+use ::shared::weapons::spread;
+use ::shared::weapons::{Event, EventArgs, Gun, GunHost, kind};
+
+const IN_ATTACK: u32 = 1;
+const IN_DUCK: u32 = 4;
+const IN_ATTACK2: u32 = 0x800;
+const FL_ONGROUND: i32 = 0x200;
+
+/// `FUN_100551c0` (`FixedSlowMul`): `1 / max(s, 0.1)` for a time scale `s` (1 at normal speed;
+/// 2.1's own encoding has 0 for normal and the same value otherwise).
+pub fn time_scale_inverse(s: f32) -> f32 {
+    1.0 / s.max(0.1)
+}
+
+/// The Slow Pause owner's delay factor (0x10088928).
+const SLOW_PAUSE_DELAY: f32 = 6.666_666_5;
+
+/// A delay fixed when it's set: `base × (dfr ? 0.5 : 1)` stored as a float, then
+/// `× (slow pause ? 6.6666665 : T)` stored as a float (`KnifeFire` 0x1004c6e2..0x1004c732).
+pub fn fixed_delay(base: f32, dfr: bool, slow_pause: bool, t: f32) -> f32 {
+    let d = (base as f64 * if dfr { 0.5 } else { 1.0 }) as f32;
+    (d as f64 * if slow_pause { SLOW_PAUSE_DELAY } else { t } as f64) as f32
+}
+
+/// The delayed-hit window of a missed swing (`pl+0x718`): `min(3, 0.3·T)` (doubles 0.3 and 3).
+pub fn whiff_window(t: f32) -> f32 {
+    let w = t as f64 * 0.3;
+    if 3.0 <= w { 3.0 } else { w as f32 }
+}
+
+/// The block window a knife or katana swing opens (`pl+0x728` / `pl+0x72c`) and the kung-fu
+/// block's (`pl+0x724`): `min(hold·5, T·hold·0.5)`.
+pub fn block_window(hold: f32, t: f32) -> f32 {
+    let cap = (hold * 5.0) as f64;
+    let w = t as f64 * hold as f64 * 0.5;
+    if cap <= w { cap as f32 } else { w as f32 }
+}
+
+fn t_of(host: &dyn GunHost) -> f32 {
+    time_scale_inverse(host.slow_mul())
+}
+
+fn slow_pause(host: &dyn GunHost) -> bool {
+    host.powerups() & powerup::SLOWPAUSE != 0
+}
+
+fn on_ground(host: &dyn GunHost) -> bool {
+    host.flags() & FL_ONGROUND != 0
+}
+
+/// The speed and, above 100 u/s, `dot(normalize(velocity), v_forward)` (`MakeVectors(v_angle)`,
+/// the full view angles); a move goes backward when that is at most −0.5.
+fn speed_and_dot(host: &dyn GunHost) -> (f32, f32) {
+    let vel = host.velocity();
+    let speed = spread::length(vel);
+    if speed <= 100.0 {
+        return (speed, 0.0);
+    }
+    let (fwd, _, _) = spread::angle_vectors(host.v_angle());
+    (speed, spread::dot(spread::normalize(vel), fwd))
+}
+
+/// The rest of a melee hit's fields, as every 2.1 attack fills them.
+fn hit(kind: MeleeKind, weapon: u8, reach: f32, hull: i32, damage: f32, bits: i32, anim: i32) -> MeleeHit {
+    MeleeHit { kind, weapon, reach, hull, damage, bits, player_anim: anim, disarm: false, knockback: false, zero_roll: false }
+}
+
+// ---- the knife -----------------------------------------------------------------------------
+
+/// `KnifeFire` (`FUN_1004c6c0`).
+pub fn knife_fire(gun: &mut Gun, host: &mut dyn GunHost) {
+    if !gun.has_slot() {
+        return;
+    }
+    let info = gun.info();
+    let t = t_of(host);
+    // Both timers and the idle are set before anything else, also for a refused slash.
+    let d = fixed_delay(info.rate, Gun::double_fire_rate(host), slow_pause(host), t);
+    let next = (d as f64 * 0.7) as f32;
+    gun.next_primary = next;
+    gun.next_secondary = next;
+    gun.idle = 3.0;
+    host.set_close_combat_cooldown(next);
+    if gun.status[gun.current as usize].toggle {
+        knife_throw(gun, host);
+        return;
+    }
+    if host.iuser4() & 0x10c20 != 0 {
+        return;
+    }
+    let r = host.random_long(0, 2);
+    if on_ground(host) {
+        host.player_anim(0x1d + r);
+    }
+    // Swinging opens a block window against knives (`pl+0x728`).
+    gun.block_knife = block_window(info.rate, t);
+    // 35 for the combat knife, 15 for the seal knife (0x1004c78a: `btype == 6 ? 35 : 15`).
+    let dmg = if info.bullet == 6 { 35.0 } else { 15.0 };
+    match host.melee(&hit(MeleeKind::Knife, gun.current, 38.0, 3, dmg, 0x1080, -1), gun) {
+        MeleeResult::Hit { player } => {
+            if player {
+                gun.status[gun.current as usize].state = 1;
+                gun.body = 1;
+                host.sound(Sound::KnifeHitBody);
+            }
+        }
+        MeleeResult::Blocked { .. } => gun.melee_damage = 0.0,
+        MeleeResult::Miss => {
+            gun.melee_window = whiff_window(t);
+            gun.melee_damage = dmg;
+            gun.melee_source = 1;
+        }
+    }
+    let st = gun.status[gun.current as usize].state;
+    host.event(Event::Knife, EventArgs { i1: gun.current as i32, i2: st, ..Default::default() });
+}
+
+/// The throw half of `KnifeFire`: the blade flies (`CTSKnife::CreateKnife`; its speed and damage
+/// are the server's `thrown_blade` hooks), the stack shrinks unless Infinite Clip is on, and an
+/// empty stack switches to the best weapon (`FUN_10049fb0`).
+fn knife_throw(gun: &mut Gun, host: &mut dyn GunHost) {
+    let info = gun.info();
+    host.throw_blade(info.bullet);
+    if host.iuser4() & 0x30c30 == 0 && on_ground(host) {
+        host.player_anim(0x20);
+    }
+    host.sound(Sound::KnifeMiss);
+    if !Gun::infinite_clip(host) {
+        host.slots_changed(info.slots);
+        let s = &mut gun.status[gun.current as usize];
+        s.clip = s.clip.wrapping_sub(1);
+    }
+    if gun.status[gun.current as usize].clip < 1 {
+        gun.remove_weapon(gun.current, true, host);
+    } else {
+        host.weapon_anim(gun.seq(20), true, gun.body);
+        let items = gun.status[gun.current as usize].items as i32;
+        host.event(Event::Draw, EventArgs { i1: gun.current as i32, i2: items, ..Default::default() });
+        gun.idle = 2.0;
+    }
+}
+
+// ---- the katana ----------------------------------------------------------------------------
+
+/// One katana swing (`FUN_1004c090` 0x1004c1a0..0x1004c35d).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KatanaSwing {
+    /// The strength before `× 0.85`; negative swings behind.
+    pub base: i32,
+    pub reach: f32,
+    /// The delay before `× 0.7`, and the block window's base.
+    pub hold: f32,
+    /// The port's player animation and the event's view-animation index.
+    pub anim: i32,
+    pub view: i32,
+    /// `iuser4` bits set (held for 3 s of the player's time) and the crouched view.
+    pub bits: i32,
+    pub crouch: bool,
+}
+
+/// Picks the swing: backward above 100 u/s (`dot <= −0.5`), airborne, crouched, or the ground
+/// swings alternating (`gun+0xdb0`, re-rolled 1..2 when out of range).
+pub fn katana_swing(speed: f32, dot: f32, on_ground: bool, ducking: bool, last: &mut i32, roll: &mut dyn FnMut() -> i32) -> KatanaSwing {
+    let base = if speed > 100.0 { 35 } else { 70 };
+    let mut s = KatanaSwing { base, reach: 48.0, hold: 0.5, anim: 33, view: 0x11, bits: 0, crouch: false };
+    if !(1..=2).contains(last) {
+        *last = roll();
+    }
+    if *last == 1 {
+        *last = 2;
+    } else {
+        *last = 1;
+        (s.anim, s.view) = (34, 0x10);
+    }
+    if speed > 100.0 && dot <= -0.5 {
+        s = KatanaSwing { base: -100, reach: 54.0, hold: 1.0, anim: 35, view: 0xf, bits: 1, crouch: false };
+    } else if !on_ground {
+        (s.anim, s.view) = (36, 0x11);
+    } else if ducking {
+        s = KatanaSwing { base: 90, reach: 48.0, hold: 1.0, anim: 37, view: 0x11, bits: 4 | 1, crouch: true };
+    }
+    s
+}
+
+/// The swing's damage: `trunc(base × 0.85)` (0x10088938, `__ftol`): 29 moving, 59 standing, 76
+/// crouched, −85 backward.
+pub fn katana_damage(base: i32) -> i32 {
+    (base as f64 * 0.85) as i32
+}
+
+/// `KatanaFire` (`FUN_1004c090`): no throw and no block in 2.1.
+pub fn katana_fire(gun: &mut Gun, host: &mut dyn GunHost) {
+    if !gun.has_slot() || host.iuser4() & 0x30c20 != 0 {
+        return;
+    }
+    let t = t_of(host);
+    let (speed, dot) = speed_and_dot(host);
+    // The crouch test reads `IN_DUCK` or `FL_DUCKING` on the gun entity's own pev, which never has
+    // it, so only `+duck` counts.
+    let ducking = host.buttons() & IN_DUCK != 0;
+    let mut last = gun.last_melee_anim;
+    let ground = on_ground(host);
+    let swing = {
+        let mut roll = || host.random_long(1, 2);
+        katana_swing(speed, dot, ground, ducking, &mut last, &mut roll)
+    };
+    gun.last_melee_anim = last;
+    if swing.bits != 0 {
+        host.melee_hold(swing.bits, 3.0, swing.crouch);
+    }
+    host.player_anim(swing.anim);
+    gun.block_katana = block_window(swing.hold, t);
+    let v = katana_damage(swing.base);
+    let behind = v < 0;
+    let reach = if behind { -swing.reach } else { swing.reach };
+    match host.melee(&hit(MeleeKind::Katana, gun.current, reach, if behind { 1 } else { 3 }, v.unsigned_abs() as f32, 0x1080, -1), gun) {
+        MeleeResult::Hit { player } => {
+            if player {
+                gun.status[gun.current as usize].state = 1;
+                gun.body = 1;
+                host.sound(Sound::KatanaHitBody);
+            }
+        }
+        MeleeResult::Blocked { .. } => gun.melee_damage = 0.0,
+        MeleeResult::Miss => {
+            gun.melee_window = whiff_window(t);
+            gun.melee_damage = v as f32;
+            gun.melee_source = 2;
+        }
+    }
+    let st = gun.status[gun.current as usize].state;
+    host.event(Event::Katana, EventArgs { i1: swing.view, i2: st, ..Default::default() });
+    let d = fixed_delay(swing.hold, Gun::double_fire_rate(host), slow_pause(host), t);
+    let next = (d as f64 * 0.7) as f32;
+    gun.next_primary = next;
+    gun.next_secondary = next;
+    gun.idle = 3.0;
+    host.set_close_combat_cooldown(next);
+}
+
+// ---- kung fu -------------------------------------------------------------------------------
+
+/// A kung-fu move (`FUN_1004de10`; the table is the decomp's `docs/ts21/weapons.md` §5.4,
+/// checked against the disassembly: reaches 38/48/56 at `esp+0x18`, the clamps' floats).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KungFuMove {
+    /// 1 punch, 2 kick, 3 running back kick (`DAT_100b1e54`); 0 none.
+    pub atype: i32,
+    /// The move id (`DAT_100bbe9c`): the attack's player animation and what the combos chain on.
+    pub move_id: i32,
+    pub damage: f32,
+    pub reach: f32,
+    /// The delay before `× T` (`DAT_100b1e90`, 0.6 when nothing is done).
+    pub delay: f32,
+    /// `iuser4` bits and the crouched view, held for 3 s of the player's time (the sweep and
+    /// the flying kick).
+    pub bits: i32,
+}
+
+/// `clamp(x, lo, hi)` as the code writes it: `< lo → lo`, `> hi → hi`, on the x87 stack.
+fn clamp(x: f64, lo: f64, hi: f64) -> f32 {
+    (if x > hi {
+        hi
+    } else if x >= lo {
+        x
+    } else {
+        lo
+    }) as f32
+}
+
+/// What the 2.1 kung-fu code reads from the player for [`kungfu_move`].
+#[derive(Clone, Copy, Debug)]
+pub struct KungFuInput {
+    pub buttons: u32,
+    pub pressed: u32,
+    pub iuser4: i32,
+    pub on_ground: bool,
+    pub speed: f32,
+    /// `dot(normalize(velocity), v_forward)` above 100 u/s, else 0.
+    pub dot: f32,
+}
+
+/// Picks the move, updating the combo counters (`gun+0xda8` punches, `+0xdac` kicks) from the
+/// last move (`gun+0xdb0`). `roll(lo, hi)` is `RANDOM_LONG`.
+pub fn kungfu_move(
+    i: &KungFuInput,
+    punch_combo: &mut i32,
+    kick_combo: &mut i32,
+    last: i32,
+    roll: &mut dyn FnMut(i32, i32) -> i32,
+) -> KungFuMove {
+    let speed = i.speed as f64;
+    let back = i.speed > 100.0 && i.dot <= -0.5;
+    let mut m = KungFuMove { atype: 0, move_id: 0, damage: 0.0, reach: 0.0, delay: 0.6, bits: 0 };
+    if i.buttons & IN_ATTACK != 0 {
+        m.atype = 1;
+        m.reach = 38.0;
+        if i.iuser4 & 0x10 == 0 && i.on_ground {
+            if *punch_combo < 5 {
+                *punch_combo += 1;
+                (m.move_id, m.damage, m.delay) = (0x16, 10.0, 0.15);
+            } else {
+                *punch_combo = 0;
+                (m.move_id, m.delay) = (0x17, 0.2);
+                m.damage = clamp(speed * 0.066_666_666_666_666_67, 10.0, 20.0);
+            }
+            return m;
+        }
+        // Stunting keeps move 0; airborne is the jumping punch.
+        if i.iuser4 & 0x10 == 0 {
+            m.move_id = 0x18;
+        }
+        m.damage = clamp(speed * 0.1, 10.0, 30.0);
+        m.delay = 0.3;
+        return m;
+    }
+    if i.buttons & IN_ATTACK2 == 0 {
+        return m;
+    }
+    m.reach = 48.0;
+    if i.iuser4 & 0xc00 != 0 {
+        (m.atype, m.delay) = (2, 1.0);
+        m.damage = clamp(speed * 0.1, 10.0, 30.0);
+    } else if i.on_ground && i.buttons & IN_DUCK != 0 {
+        (m.atype, m.move_id, m.delay, m.damage, m.bits) = (2, 0x14, 1.0, 30.0, 4 | 1);
+    } else if back {
+        (m.atype, m.move_id, m.delay, m.reach) = (3, 0x11, 0.9, 56.0);
+        m.damage = clamp(speed * 0.303_030_312_061_309_8, 10.0, 90.0);
+    } else if !i.on_ground && i.speed > 270.0 && i.buttons & IN_DUCK != 0 && i.dot > 0.5 {
+        *kick_combo = 0;
+        (m.atype, m.move_id, m.delay, m.bits) = (2, 0x10, 0.9, 4);
+        m.damage = clamp(speed * 0.153_846_159_577_369_7, 10.0, 45.0);
+    } else if i.on_ground || i.speed <= 200.0 {
+        m.atype = 2;
+        // Never true in 2.1: CCombatAttack only runs on a fresh press (`pl+0x770`).
+        if i.pressed & IN_ATTACK2 == 0 && *kick_combo < 3 {
+            *kick_combo += 1;
+            (m.damage, m.delay) = (10.0, 0.25);
+            m.move_id = match last {
+                0xb => 0xc,
+                0xc => 0xb,
+                _ => [0xb, 0xc][(roll(0, 1) & 1) as usize],
+            };
+        } else {
+            *kick_combo = 0;
+            m.delay = 0.5;
+            m.move_id = match last {
+                0xf => 10,
+                10 => 0xe,
+                0xe => 0xd,
+                0xd => 0xf,
+                _ => [0xe, 0xd, 10, 0xf][roll(0, 3).clamp(0, 3) as usize],
+            };
+            m.damage = clamp(speed * 0.066_666_666_666_666_67, 10.0, 20.0);
+        }
+    } else {
+        *kick_combo = 0;
+        (m.atype, m.delay) = (2, 0.7);
+        m.damage = clamp(speed * 0.1, 10.0, 30.0);
+        m.move_id = match last {
+            0xf => 0x13,
+            0x13 => 0x12,
+            0x12 => 0xf,
+            _ => [0x13, 0x12, 0xf][roll(0, 2).clamp(0, 2) as usize],
+        };
+    }
+    m
+}
+
+/// The hit's damage and the bar's cost (0x1004e2dd..): `cost = base × 0.9` (stored as a float),
+/// `damage = base × 0.9 × bar × 0.01` on the x87 stack, so an empty bar deals nothing.
+pub fn kungfu_damage(base: f32, bar: f32) -> (f32, f32) {
+    let c = base as f64 * 0.9;
+    (((c * bar as f64) * 0.01f32 as f64) as f32, c as f32)
+}
+
+/// The 3.0 client's view-animation index for the move's event (`CloseCombat` `iparam2`), so the
+/// port and 3.0 clients show the matching move.
+fn view_anim(m: &KungFuMove) -> i32 {
+    match (m.atype, m.move_id) {
+        (_, 0x16) => 3,
+        (_, 0x17) => 11,
+        (1, _) => 5,
+        (_, 0x14) => 6,
+        (_, 0x11) => 7,
+        (_, 0x10) => 8,
+        (_, 0xb | 0xc) => 9,
+        _ => 10,
+    }
+}
+
+/// `CCombatAttack` (`FUN_1004de10`).
+pub fn ccombat_attack(gun: &mut Gun, host: &mut dyn GunHost) {
+    // `PrimaryAttack` / `SecondaryAttack` enter only on a fresh press.
+    if host.pressed() & (IN_ATTACK | IN_ATTACK2) == 0 {
+        return;
+    }
+    if gun.next_attack > 0.0 || gun.next_primary > 0.0 || gun.next_secondary > 0.0 || host.iuser4() & 0x70c30 != 0 {
+        return;
+    }
+    let t = t_of(host);
+    let (speed, dot) = speed_and_dot(host);
+    let input =
+        KungFuInput { buttons: host.buttons(), pressed: host.pressed(), iuser4: host.iuser4(), on_ground: on_ground(host), speed, dot };
+    let (mut pc, mut kc) = (gun.punch_combo, gun.kick_combo);
+    let m = {
+        let mut roll = |lo, hi| host.random_long(lo, hi);
+        kungfu_move(&input, &mut pc, &mut kc, gun.last_melee_anim, &mut roll)
+    };
+    (gun.punch_combo, gun.kick_combo) = (pc, kc);
+    if m.bits != 0 {
+        host.melee_hold(m.bits, 3.0, true);
+    }
+    if m.atype != 0 {
+        gun.last_melee_anim = m.move_id;
+        let (mut dmg, cost) = kungfu_damage(m.damage, gun.melee_bar);
+        // The One's bar isn't spent (`pl+0x731`); the bar is sent either way.
+        if !host.the_one() {
+            let b = gun.melee_bar - cost;
+            gun.melee_bar = if b < 0.0 { 0.0 } else { b };
+        }
+        host.melee_bar_changed(gun.melee_bar);
+        if host.kungfu() {
+            dmg = (dmg as f64 * 2.0) as f32;
+        }
+        let back = m.atype == 3;
+        let mut h = hit(MeleeKind::KungFu, 0, if back { -m.reach } else { m.reach }, if back { 1 } else { 3 }, dmg, 0x0400_1080, m.move_id);
+        // CloseCombatAttack's flags: disarm (the server's `melee_disarm` applies 2.1's `dmg > 15`),
+        // knockback, any target, teammates by `mp_friendlyfire`.
+        h.disarm = true;
+        h.knockback = true;
+        h.zero_roll = back;
+        match host.melee(&h, gun) {
+            MeleeResult::Hit { .. } => {}
+            MeleeResult::Blocked { next_attack, bar_cost } => blocked(gun, host, next_attack, bar_cost),
+            MeleeResult::Miss => {
+                gun.melee_window = whiff_window(t);
+                gun.melee_damage = if back { -dmg } else { dmg };
+                gun.melee_source = 0;
+            }
+        }
+        // `BlockPlayer(T × delay × 0.9)` (`FUN_10056b60`) only acts on the ground; the stunt clock
+        // applies `T` (`pl+0x460 = now + t`).
+        if host.iuser4() & 1 == 0 && on_ground(host) {
+            host.block_player((m.delay as f64 * 0.9) as f32);
+        }
+        host.event(Event::CloseCombat, EventArgs { f1: 0.0, f2: 0.0, i1: m.atype, i2: view_anim(&m), b1: 0, b2: 0 });
+    }
+    let d = (t as f64 * m.delay as f64) as f32;
+    gun.next_primary = d;
+    gun.next_secondary = d;
+    gun.idle = d;
+    host.set_close_combat_cooldown(d);
+}
+
+/// The attacker's side of a 2.1 block (the server's `melee_block`): its stored hit is dropped;
+/// when it was the one blocking (`next_attack > 0`), it is held up and its bar pays.
+fn blocked(gun: &mut Gun, host: &mut dyn GunHost, next_attack: f32, bar_cost: f32) {
+    gun.melee_damage = 0.0;
+    if next_attack > 0.0 {
+        gun.next_attack = next_attack;
+    }
+    if bar_cost > 0.0 {
+        let b = gun.melee_bar - bar_cost;
+        gun.melee_bar = if b < 0.0 { 0.0 } else { b };
+        host.melee_bar_changed(gun.melee_bar);
+    }
+}
+
+/// `CCombatBlock` (`FUN_1004dc70`), from `Reload` with kung fu only: a blade's reload key does
+/// nothing. No bar cost and no animation; block for `min(3, 0.3·T)`, and so long before the
+/// next attack.
+pub fn ccombat_block(gun: &mut Gun, host: &mut dyn GunHost) {
+    if gun.has_slot() {
+        return;
+    }
+    if gun.next_attack > 0.0 || gun.next_primary > 0.0 || gun.next_secondary > 0.0 || gun.next_alt > 0.0 || host.iuser4() & 0x70c30 != 0 {
+        return;
+    }
+    // block.wav plays when the last block ended over a second ago; the port's countdown only
+    // knows whether one is running.
+    if gun.block_kungfu <= 0.0 {
+        host.sound(Sound::Block);
+    }
+    let w = block_window(0.6, t_of(host));
+    gun.block_kungfu = w;
+    gun.next_primary = w;
+    gun.next_secondary = w;
+}
+
+// ---- the stock hit -------------------------------------------------------------------------
+
+/// `CTSGun::AlternateAttack` (0x1004ab40) with `ColdCockAttack` (`FUN_100572a0`), on the guns
+/// whose 2.1 table entry has the stock flag (`info+0x10`, the M4A1 and the Sawed-off; the table
+/// gives them `stock` = 20, [`tables::STOCK_DAMAGE`](super::tables::STOCK_DAMAGE)): 20 damage 38
+/// units ahead, no stunting penalty, no disarm or knockback; kevlarhit.wav on a hit,
+/// closecombat.wav on a miss.
+pub fn cold_cock(gun: &mut Gun, host: &mut dyn GunHost) {
+    if !gun.has_slot() || gun.info().stock == 0 {
+        return;
+    }
+    if gun.kind() == kind::GRENADE {
+        gun.grenade_idle(true, host);
+    }
+    gun.stop_reload();
+    let d = fixed_delay(0.725, false, slow_pause(host), t_of(host));
+    gun.next_primary = d;
+    gun.next_secondary = d;
+    gun.next_alt = d;
+    gun.idle = 2.0;
+    let r = host.melee(&hit(MeleeKind::ColdCock, gun.current, 38.0, 3, gun.info().stock as f32, 0x0400_1080, -1), gun);
+    host.sound(if matches!(r, MeleeResult::Miss) { Sound::CloseCombatMiss } else { Sound::KevlarHit });
+    gun.unzoom(host);
+    if gun.has_slot() {
+        let items = gun.status[gun.current as usize].items as i32;
+        host.event(Event::ColdCock, EventArgs { i1: gun.current as i32, i2: items, ..Default::default() });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delays() {
+        assert_eq!(time_scale_inverse(1.0), 1.0);
+        assert_eq!(time_scale_inverse(0.5), 2.0);
+        assert_eq!(time_scale_inverse(0.01), 10.0, "floored at 0.1");
+        // Combat knife (rate 0.4): 0.4 × 0.7 = 0.28 s.
+        assert!(((fixed_delay(0.4, false, false, 1.0) as f64 * 0.7) as f32 - 0.28).abs() < 1e-6);
+        assert_eq!(fixed_delay(0.4, true, false, 1.0), 0.2, "double fire rate");
+        assert!((fixed_delay(0.5, false, true, 1.0) - 3.333_333_3).abs() < 1e-5, "slow pause");
+        assert_eq!(whiff_window(1.0), 0.3);
+        assert_eq!(whiff_window(20.0), 3.0);
+        assert_eq!(block_window(0.6, 1.0), 0.3);
+        assert_eq!(block_window(0.5, 100.0), 2.5, "capped at hold × 5");
+    }
+
+    #[test]
+    fn katana() {
+        assert_eq!([35, 70, 90, -100].map(katana_damage), [29, 59, 76, -85]);
+        let mut last = 0;
+        let s = katana_swing(50.0, 0.0, true, false, &mut last, &mut || 1);
+        assert_eq!((s.base, s.reach, s.hold, s.anim, last), (70, 48.0, 0.5, 33, 2));
+        let s = katana_swing(50.0, 0.0, true, false, &mut last, &mut || 1);
+        assert_eq!((s.anim, s.view, last), (34, 0x10, 1), "the ground swings alternate");
+        let s = katana_swing(150.0, -0.6, true, false, &mut last, &mut || 1);
+        assert_eq!((s.base, s.reach, s.hold, s.bits), (-100, 54.0, 1.0, 1));
+        let s = katana_swing(150.0, 0.9, true, false, &mut last, &mut || 1);
+        assert_eq!(s.base, 35, "moving");
+        let s = katana_swing(0.0, 0.0, true, true, &mut last, &mut || 1);
+        assert_eq!((s.base, s.hold, s.bits, s.crouch), (90, 1.0, 5, true));
+        let s = katana_swing(0.0, 0.0, false, true, &mut last, &mut || 1);
+        assert_eq!((s.base, s.anim), (70, 36), "airborne before crouched");
+    }
+
+    #[test]
+    fn kungfu_damage_scales_with_the_bar() {
+        assert_eq!(kungfu_damage(10.0, 100.0), (9.0, 9.0));
+        assert_eq!(kungfu_damage(30.0, 0.0).0, 0.0, "an empty bar deals nothing");
+        let (d, c) = kungfu_damage(20.0, 50.0);
+        assert!((d - 9.0).abs() < 1e-5 && c == 18.0);
+    }
+
+    fn input(buttons: u32, on_ground: bool, speed: f32, dot: f32) -> KungFuInput {
+        KungFuInput { buttons, pressed: buttons, iuser4: 0, on_ground, speed, dot }
+    }
+
+    #[test]
+    fn punches() {
+        let (mut pc, mut kc) = (0, 0);
+        let i = input(IN_ATTACK, true, 0.0, 0.0);
+        for n in 1..=5 {
+            let m = kungfu_move(&i, &mut pc, &mut kc, 0, &mut |_, _| 0);
+            assert_eq!((m.move_id, m.damage, m.delay, m.reach, pc), (0x16, 10.0, 0.15, 38.0, n));
+        }
+        let m = kungfu_move(&input(IN_ATTACK, true, 300.0, 0.0), &mut pc, &mut kc, 0, &mut |_, _| 0);
+        assert_eq!((m.move_id, m.damage, m.delay, pc), (0x17, 20.0, 0.2, 0), "the sixth is the heavy punch");
+        let m = kungfu_move(&input(IN_ATTACK, false, 250.0, 0.0), &mut pc, &mut kc, 0, &mut |_, _| 0);
+        assert_eq!((m.move_id, m.damage, m.delay), (0x18, 25.0, 0.3));
+    }
+
+    #[test]
+    fn kicks() {
+        let (mut pc, mut kc) = (0, 0);
+        let m = kungfu_move(&input(IN_ATTACK2 | IN_DUCK, true, 0.0, 0.0), &mut pc, &mut kc, 0, &mut |_, _| 0);
+        assert_eq!((m.move_id, m.damage, m.delay, m.bits), (0x14, 30.0, 1.0, 5), "sweep");
+        let m = kungfu_move(&input(IN_ATTACK2, true, 300.0, -0.9), &mut pc, &mut kc, 0, &mut |_, _| 0);
+        assert_eq!((m.atype, m.move_id, m.reach, m.delay), (3, 0x11, 56.0, 0.9));
+        assert!((m.damage - 90.0).abs() < 1e-4, "{}", m.damage);
+        let m = kungfu_move(&input(IN_ATTACK2 | IN_DUCK, false, 300.0, 0.9), &mut pc, &mut kc, 0, &mut |_, _| 0);
+        assert_eq!((m.move_id, m.bits), (0x10, 4), "flying kick");
+        assert!((m.damage - 45.0).abs() < 1e-4);
+        // A fresh press on the ground: the heavy kick cycle.
+        let m = kungfu_move(&input(IN_ATTACK2, true, 0.0, 0.0), &mut pc, &mut kc, 0xf, &mut |_, _| 0);
+        assert_eq!((m.move_id, m.damage, m.delay), (10, 10.0, 0.5));
+        let m = kungfu_move(&input(IN_ATTACK2, false, 250.0, 0.0), &mut pc, &mut kc, 0x13, &mut |_, _| 0);
+        assert_eq!((m.move_id, m.damage, m.delay), (0x12, 25.0, 0.7), "airborne cycle");
+        let m = kungfu_move(&input(0, true, 0.0, 0.0), &mut pc, &mut kc, 0, &mut |_, _| 0);
+        assert_eq!((m.atype, m.delay), (0, 0.6), "nothing pressed");
+    }
+
+    #[test]
+    fn stock_hit_guns() {
+        use super::super::tables;
+        let stock = |id| tables::tables().weapon(id).map_or(0, |w| w.stock);
+        assert_eq!([stock(5), stock(33)], [20, 20], "the M4A1 and the Sawed-off");
+        assert_eq!([stock(12), stock(18), stock(13)], [0, 0, 0]);
+    }
+
+    #[test]
+    fn view_anims() {
+        let m = |atype, move_id| KungFuMove { atype, move_id, damage: 0.0, reach: 0.0, delay: 0.0, bits: 0 };
+        assert_eq!([view_anim(&m(1, 0x16)), view_anim(&m(1, 0)), view_anim(&m(2, 0)), view_anim(&m(3, 0x11))], [3, 5, 10, 7]);
+    }
+}

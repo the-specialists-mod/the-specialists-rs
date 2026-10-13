@@ -12,6 +12,7 @@
 //! * [`stunt`]: the server stunts and their slot limits (§3.8, §3.5).
 //! * [`damage`]: bullets and what a hit does to a player (§3.1).
 //! * [`explode`], [`blades`]: explosions, shrapnel and thrown knives (§3.2).
+//! * [`melee`]: blocks and disarms on the victim (§3.2; the attacks are the shared gun hooks).
 
 #![deny(unsafe_code)]
 
@@ -22,6 +23,7 @@ pub mod cvars;
 pub mod damage;
 pub mod entities;
 pub mod explode;
+pub mod melee;
 pub mod players;
 pub mod powerup;
 pub mod protocol;
@@ -32,6 +34,7 @@ pub mod stunt;
 use goldsrc::server::MsgWriter;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::{TraceResult, edict_t};
+use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::Vec3;
 use std::ffi::CStr;
 use ts_server::commands::Args;
@@ -290,6 +293,21 @@ impl ServerRules for Ts21Server {
 
     fn thrown_blade_damage(&self, btype: i32, flown: f32) -> f32 {
         blades::thrown_blade_damage(btype, flown)
+    }
+
+    fn melee_block(
+        &self,
+        kind: MeleeKind,
+        attacker: *mut edict_t,
+        victim: *mut edict_t,
+        damage: f32,
+        atk_block: f32,
+    ) -> Option<MeleeResult> {
+        melee::melee_block(kind, attacker, victim, damage, atk_block)
+    }
+
+    fn melee_disarm(&self, damage: f32, victim_is_the_one: bool) -> Option<f32> {
+        melee::melee_disarm(damage, victim_is_the_one)
     }
 }
 

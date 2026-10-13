@@ -145,6 +145,10 @@ pub enum Sound {
     KnifeMiss,
     KatanaHitBody,
     KatanaMiss,
+    /// `player/closecombat.wav` (a missed stock hit, in rulesets that play it).
+    CloseCombatMiss,
+    /// `player/block.wav` (a kung-fu block, in rulesets that play it from the gun).
+    Block,
 }
 
 /// Everything the gun needs from the player and the engine.
@@ -276,6 +280,23 @@ pub trait GunHost {
     /// the crouched katana swing (`KatanaFire` 0x73665): `iuser4 |= bits`, `view_ofs = (0, 0, 16)`
     /// and `pl+0x4f4` (the stunt recover timer) = 2. Server only: the client copies don't.
     fn melee_crouch(&mut self, _bits: i32) {}
+    /// A melee move that holds the player: `iuser4 |= bits`, the crouched view (`crouch`) and the
+    /// stunt recovery for `recover` seconds. The server implements it; the default does
+    /// [`melee_crouch`](Self::melee_crouch) for a crouch and sets the bits otherwise (TS 3.0's
+    /// moves only use `melee_crouch`, with its own 2 s recovery).
+    fn melee_hold(&mut self, bits: i32, recover: f32, crouch: bool) {
+        let _ = recover;
+        if crouch {
+            self.melee_crouch(bits);
+        } else {
+            let v = self.iuser4();
+            self.set_iuser4(v | bits);
+        }
+    }
+    /// The player is The One (`pl+0x731` in TS 2.1). The prediction doesn't know: false.
+    fn the_one(&self) -> bool {
+        false
+    }
     /// The rest of leaving a wall climb for a kung-fu attack (`CCombatAttack` 0x769ec..0x76a88,
     /// after `iuser4 &= !0x20004`): `view_ofs` (0, 0, 16) when the player is ducking, else
     /// (0, 0, 28), and gravity and friction 1. The client copy (`0x1000b4ef`) writes these to its
@@ -418,16 +439,16 @@ impl Gun {
     pub fn slot(&self) -> Option<&Status> {
         (self.current != 0).then(|| &self.status[self.current as usize])
     }
-    fn has_slot(&self) -> bool {
+    pub fn has_slot(&self) -> bool {
         self.current != 0
     }
     fn cur(&mut self) -> &mut Status {
         &mut self.status[self.current as usize]
     }
-    fn info(&self) -> &'static WeaponInfo {
+    pub fn info(&self) -> &'static WeaponInfo {
         wi(self.current)
     }
-    fn kind(&self) -> u8 {
+    pub fn kind(&self) -> u8 {
         kind_of(self.current)
     }
     pub fn double_fire_rate(host: &(impl GunHost + ?Sized)) -> bool {
@@ -441,7 +462,7 @@ impl Gun {
         self.has_slot() && self.status[self.current as usize].items & att::SILENCER != 0 && self.info().att_default & 1 == 0
     }
     /// Current sequence table entry `i` (table B when the alternate grip is on).
-    fn seq(&self, i: usize) -> i32 {
+    pub fn seq(&self, i: usize) -> i32 {
         let alt = self.slot().map(|s| s.alt_grip).unwrap_or(false);
         anim(self.current, alt, i)
     }
@@ -523,7 +544,7 @@ impl Gun {
     }
 
     /// `CBasePlayer::UpdateMeleeBar(cost)` 0x9650c.
-    pub fn update_melee_bar(&mut self, cost: f32, host: &mut impl GunHost) {
+    pub fn update_melee_bar(&mut self, cost: f32, host: &mut (impl GunHost + ?Sized)) {
         self.charge_melee_bar(cost);
         host.melee_bar_changed(self.melee_bar);
     }
@@ -1025,6 +1046,9 @@ impl Gun {
 
     /// `CTSGun::ColdCock` 0x81dd0: stock hit, 35 u ahead.
     pub fn cold_cock(&mut self, host: &mut impl GunHost) {
+        if host.rules().cold_cock(self, host) {
+            return;
+        }
         if !self.has_slot() || self.info().stock == 0 {
             return;
         }
@@ -1121,7 +1145,7 @@ impl Gun {
     }
 
     /// `CTSGun::GrenadeIdle(force)` 0x84f18: throws when the button is released (or `force`).
-    pub fn grenade_idle(&mut self, force: bool, host: &mut impl GunHost) {
+    pub fn grenade_idle(&mut self, force: bool, host: &mut (impl GunHost + ?Sized)) {
         if !self.has_slot() {
             return;
         }
@@ -1167,6 +1191,9 @@ impl Gun {
 
     /// `CTSGun::KnifeFire` 0x84044: slash (toggle off) or throw (toggle on).
     pub fn knife_fire(&mut self, host: &mut impl GunHost) {
+        if host.rules().knife_fire(self, host) {
+            return;
+        }
         if !self.has_slot() {
             return;
         }
@@ -1256,6 +1283,9 @@ impl Gun {
     /// reach (`esp+0x10`, 50 units unless stunting 35 or backward 55), the event's view-animation
     /// index (`esp+0xc`), the delay (`esp+0x1c`) and the `Animate` id (`esp+0x18`).
     pub fn katana_fire(&mut self, host: &mut impl GunHost) {
+        if host.rules().katana_fire(self, host) {
+            return;
+        }
         if !self.has_slot() {
             return;
         }
@@ -1369,6 +1399,9 @@ impl Gun {
     /// (`esp+0x18`), the delay (`esp+0x24`: next attack, `pl+0x4f8` and, x0.75, the `BlockPlayer`
     /// time) and the delayed-hit window (`esp+0x20`).
     pub fn ccombat_attack(&mut self, host: &mut impl GunHost) {
+        if host.rules().ccombat_attack(self, host) {
+            return;
+        }
         if self.next_attack > 0.0 || self.next_primary > 0.0 || self.next_secondary > 0.0 {
             return;
         }
@@ -1552,6 +1585,9 @@ impl Gun {
     /// `CTSGun::CCombatBlock` 0x85ebc (reload key with kung fu or a blade). The client's
     /// (`0x1000adc0`) gates on [`GunHost::kfu_power`] and charges no power.
     pub fn ccombat_block(&mut self, host: &mut impl GunHost) {
+        if host.rules().ccombat_block(self, host) {
+            return;
+        }
         if self.next_attack > 0.0 || self.next_primary > 0.0 || self.next_secondary > 0.0 || self.next_alt > 0.0 {
             return;
         }
@@ -1733,7 +1769,7 @@ impl Gun {
     // ---- zoom, modes, attachments ---------------------------------------------------------------
 
     /// `CTSGun::Zoom(fov)` 0x81710: FOV below 40 hides the view model.
-    pub fn zoom(&mut self, fov: i32, host: &mut impl GunHost) {
+    pub fn zoom(&mut self, fov: i32, host: &mut (impl GunHost + ?Sized)) {
         host.set_fov(fov as f32);
         if self.info().zoom[0] < 40 {
             host.set_view_model(None);
@@ -1741,7 +1777,7 @@ impl Gun {
     }
 
     /// `CTSGun::Unzoom` 0x81748.
-    pub fn unzoom(&mut self, host: &mut impl GunHost) {
+    pub fn unzoom(&mut self, host: &mut (impl GunHost + ?Sized)) {
         host.set_fov(0.0);
         if host.view_model_hidden() && self.has_slot() {
             host.set_view_model(Some(self.current));
@@ -1801,7 +1837,7 @@ impl Gun {
     // ---- inventory ----------------------------------------------------------------------------
 
     /// `CTSGun::SelectWeapon(id)` 0x80fb8. The caller deploys on success.
-    pub fn select_weapon(&mut self, id: u8, host: &mut impl GunHost) -> bool {
+    pub fn select_weapon(&mut self, id: u8, host: &mut (impl GunHost + ?Sized)) -> bool {
         if id == self.current || id as usize >= MAX_WEAPONS {
             return false;
         }
@@ -1814,7 +1850,7 @@ impl Gun {
     }
 
     /// `SelectWeapon` + `Deploy`.
-    pub fn switch_to(&mut self, id: u8, host: &mut impl GunHost) -> bool {
+    pub fn switch_to(&mut self, id: u8, host: &mut (impl GunHost + ?Sized)) -> bool {
         if self.select_weapon(id, host) {
             self.deploy(host);
             true
@@ -1824,7 +1860,7 @@ impl Gun {
     }
 
     /// `CTSGun::Deploy` 0x81030.
-    pub fn deploy(&mut self, host: &mut impl GunHost) {
+    pub fn deploy(&mut self, host: &mut (impl GunHost + ?Sized)) {
         if !self.has_slot() {
             self.holster_weapon(host);
             return;
@@ -1858,7 +1894,7 @@ impl Gun {
     }
 
     /// `CTSGun::HolsterWeapon` 0x85698: back to kung fu.
-    pub fn holster_weapon(&mut self, host: &mut impl GunHost) {
+    pub fn holster_weapon(&mut self, host: &mut (impl GunHost + ?Sized)) {
         host.set_view_model(None);
         host.set_weapon_model(None);
         // pl+0xb58 / pl+0x478 = "" (no weapon animation extension).
@@ -1893,7 +1929,7 @@ impl Gun {
     }
 
     /// `CTSGun::GetBetterWeapon(excluded)` 0x80f40: switch by `g_iWeaponPriority`.
-    pub fn get_better_weapon(&mut self, excluded: u8, host: &mut impl GunHost) {
+    pub fn get_better_weapon(&mut self, excluded: u8, host: &mut (impl GunHost + ?Sized)) {
         let mut pick = PRIORITY[MAX_WEAPONS - 1];
         for &id in PRIORITY.iter() {
             if self.status[id as usize].owned && id != excluded {
@@ -1905,7 +1941,7 @@ impl Gun {
     }
 
     /// `CTSGun::DropWeapon(id, better)` 0x8094c: removes the record. Returns true if owned.
-    pub fn remove_weapon(&mut self, id: u8, better: bool, host: &mut impl GunHost) -> bool {
+    pub fn remove_weapon(&mut self, id: u8, better: bool, host: &mut (impl GunHost + ?Sized)) -> bool {
         if !(1..=37).contains(&id) || !self.status[id as usize].owned {
             return false;
         }

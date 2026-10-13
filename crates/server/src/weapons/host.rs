@@ -291,6 +291,8 @@ impl GunHost for ServerHost<'_> {
             Sound::KnifeMiss => emit(ed, CHAN_BODY, c"weapons/knife/knife_miss.wav", 1.0, 0.8, 95 + e.random_long(0, 31)),
             Sound::KatanaHitBody => emit(ed, CHAN_BODY, c"weapons/katana/hit-body.wav", 1.0, 0.8, 95 + e.random_long(0, 31)),
             Sound::KatanaMiss => emit(ed, CHAN_BODY, c"weapons/katana/miss.wav", 1.0, 0.8, 95 + e.random_long(0, 31)),
+            Sound::CloseCombatMiss => emit(ed, CHAN_BODY, c"player/closecombat.wav", 1.0, 0.8, 95 + e.random_long(0, 31)),
+            Sound::Block => emit(ed, CHAN_VOICE, c"player/block.wav", 1.0, 0.8, 100),
         }
     }
 
@@ -345,10 +347,18 @@ impl GunHost for ServerHost<'_> {
         self.close_attack_cd = Some(t);
     }
     fn melee_crouch(&mut self, bits: i32) {
+        self.melee_hold(bits, 2.0, true);
+    }
+    fn melee_hold(&mut self, bits: i32, recover: f32, crouch: bool) {
         let pev = self.pev();
         pev.iuser4 |= bits;
-        pev.view_ofs = [0.0, 0.0, 16.0];
-        self.stunt_recover = Some(2.0);
+        if crouch {
+            pev.view_ofs = [0.0, 0.0, 16.0];
+        }
+        self.stunt_recover = Some(recover);
+    }
+    fn the_one(&self) -> bool {
+        self.player.ts.is_the_one
     }
     fn leave_wall_climb(&mut self) {
         let pev = self.pev();
