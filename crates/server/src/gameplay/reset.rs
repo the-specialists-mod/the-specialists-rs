@@ -84,16 +84,29 @@ pub fn finish(p: Pending) {
     ));
 }
 
-/// The part of a bot's join that follows its spawn (`BotSetup`, `bots::create`): in teamplay, a
-/// bot created with a model joins that team (its `team` key).
+/// The part of a bot's join that follows its spawn (`BotSetup`, `bot_backend::create_player`): in
+/// teamplay, a bot created with a model joins that team.
 fn rejoin_bot_team(e: *mut edict_t) {
-    if !rules::state::teamplay() || !crate::player::with_player(e, |p, _| p.cbot).unwrap_or(false) {
+    let Some((cbot, recorded)) = crate::player::with_player(e, |p, _| (p.cbot, p.bot_join_team.clone())) else {
         return;
-    }
-    let team = engine().info_key(e, c"team").to_string_lossy().into_owned();
-    if !team.is_empty() {
+    };
+    let team_key = || engine().info_key(e, c"team").to_string_lossy().into_owned();
+    if let Some(team) = bot_rejoin_team(rules::state::teamplay(), cbot, &recorded, team_key) {
         crate::player::with_player(e, |p, cx| rules::teams::change_team(p, cx, &team, false, false));
     }
+}
+
+/// The team a bot joins again after the reset's spawn: the model `BotSetup` joined with
+/// (`Player::bot_join_team`), which a bot has whichever ruleset made it (a ruleset's bots may have
+/// no `team` key: `NativeBotRules::team_key`). A bot the engine kept across a level change has
+/// none recorded and falls back to its `team` key, as before. `None` outside teamplay, for
+/// players, and for a bot with neither.
+fn bot_rejoin_team(teamplay: bool, cbot: bool, recorded: &str, team_key: impl FnOnce() -> String) -> Option<String> {
+    if !teamplay || !cbot {
+        return None;
+    }
+    let team = if recorded.is_empty() { team_key() } else { recorded.to_owned() };
+    (!team.is_empty()).then_some(team)
 }
 
 /// A player's part: its items destroyed (the gun entity with them), then a brand-new `Player`
@@ -105,6 +118,7 @@ fn fresh_player(p: &mut Player, cx: &mut crate::world::Cx) {
     let old = std::mem::take(p);
     p.cbot = old.cbot;
     p.is_bot = old.is_bot;
+    p.bot_join_team = old.bot_join_team;
     // The bot's backend state for the new game (native: a fresh brain with the bot's skill).
     p.bot = crate::bot_backend::reset_state(old.bot);
     p.impulse.custom_decal_frames = old.impulse.custom_decal_frames;
@@ -195,5 +209,27 @@ fn angle_to_angles(e: *mut edict_t, v: &str) -> String {
         "90 0 0".to_owned()
     } else {
         "0 0 0".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bot_rejoin_team;
+
+    #[test]
+    fn a_bot_rejoins_the_team_it_was_made_with() {
+        let key = || "merc".to_owned();
+        assert_eq!(bot_rejoin_team(true, true, "seal", key), Some("seal".to_owned()), "the recorded model wins");
+        // A ruleset whose BotSetup sets no `team` key: the recorded model still puts it back.
+        assert_eq!(bot_rejoin_team(true, true, "seal", String::new), Some("seal".to_owned()));
+        // Kept across a level change (nothing recorded): its `team` key, as before.
+        assert_eq!(bot_rejoin_team(true, true, "", key), Some("merc".to_owned()));
+        assert_eq!(bot_rejoin_team(true, true, "", String::new), None);
+    }
+
+    #[test]
+    fn only_bots_in_teamplay_rejoin() {
+        assert_eq!(bot_rejoin_team(false, true, "seal", || "seal".to_owned()), None);
+        assert_eq!(bot_rejoin_team(true, false, "seal", || "seal".to_owned()), None);
     }
 }

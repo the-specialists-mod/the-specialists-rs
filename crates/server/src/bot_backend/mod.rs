@@ -349,6 +349,8 @@ pub fn create_player(name: &[u8], model: &str, state: BotState, announce: Option
         eng.set_client_key(e, "team", model);
     }
     eng.set_client_key(e, "cl_lw", "1");
+    // Recorded in every mode: a gameplay reset replays this join, and teamplay may be on by then.
+    with_player(e, |p, _| p.bot_join_team = model.to_owned());
     if !model.is_empty() && rules::state::teamplay() {
         // `CHalfLifeMultiplay::ChangePlayerTeam` is empty; teamplay's changes the team.
         with_player(e, |p, cx| rules::teams::change_team(p, cx, model, false, false));

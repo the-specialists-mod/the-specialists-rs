@@ -102,6 +102,15 @@ pub trait ServerRules: Sync {
     /// 3.0: nothing.
     fn on_start_observer(&self, _p: &mut Player, _cx: &mut Cx) {}
 
+    /// The observer part of `CBasePlayer::PreThink` (0x908cc), run every frame while
+    /// `pev->iuser1` is set: the respawn countdown and the join deadline, then
+    /// `Observer_HandleButtons` and `Observer_Idle`. PreThink zeroes `impulse` and returns after
+    /// it, so a ruleset that respawns the observer here (`lifecycle::stop_observer`) just returns.
+    /// 3.0: [`lifecycle::observer_think_core`] (3.0 respawns with the `respawn` command instead).
+    fn observer_think(&self, p: &mut Player, cx: &mut Cx, now: f32) {
+        lifecycle::observer_think_core(p, cx, now);
+    }
+
     /// End of `CTSGameRules::InitHUD` (0x79134), once a joiner is observing with its respawn
     /// time set. 3.0: nothing.
     fn on_init_hud(&self, _p: &mut Player, _cx: &mut Cx) {}

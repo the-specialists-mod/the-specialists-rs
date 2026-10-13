@@ -152,8 +152,10 @@ The reset replays a map start in this order:
    manager's restart.
 6. **Players spawn as fresh joins** (`ClientPutInServer`'s spawn). Everyone gets `InitHUD`,
    the score and team broadcasts, the buy menu and the respawn wait again. In teamplay, a bot
-   made with a model joins that team again, as `BotSetup` does after the spawn. Like a new bot,
-   it starts with no cash.
+   made with a model joins that team again, as `BotSetup` does after the spawn. The model is
+   recorded at creation (`Player::bot_join_team`), so this works whichever ruleset made the bot
+   (TS 2.1's `BotSetup` sets no `team` key); a bot the engine kept across a level change has none
+   recorded and uses its `team` key. Like a new bot, it starts with no cash.
 
 The server logs
 `[ts] gameplay: ruleset 30 -> 21: game reset (N players, N entities removed, N spawned from the map)`.
@@ -251,6 +253,7 @@ The hooks so far:
 | `ServerRules` | `on_spawn(p, cx)` | nothing | `rules/lifecycle.rs` `on_spawn`, end of `TSInit` |
 | `ServerRules` | `put_in_server_cash()` | `cvars::INITIAL_CASH` (1200) | `rules/lifecycle.rs` `on_spawn` (first spawn) |
 | `ServerRules` | `on_start_observer(p, cx)` | nothing | `rules/lifecycle.rs` `start_observer`, before `TSCash` |
+| `ServerRules` | `observer_think(p, cx, now)` | `rules::lifecycle::observer_think_core` (countdown, join deadline, `Observer_HandleButtons`, `Observer_Idle`; 3.0 respawns with the `respawn` command) | `rules/lifecycle.rs` `pre_think`, while `iuser1` is set (PreThink zeroes `impulse` and returns after it) |
 | `ServerRules` | `on_init_hud(p, cx)` | nothing | `rules/lifecycle.rs` `ts_init_hud`, at its end |
 | `ServerRules` | `set_respawn_time(p, cx, secs)` | `rules::lifecycle::set_respawn_time_core` | `rules/lifecycle.rs` `set_respawn_time` |
 | `ServerRules` | `on_killed(p, cx)` | nothing | `rules/lifecycle.rs` `killed`, after the respawn time |

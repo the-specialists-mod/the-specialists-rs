@@ -5,6 +5,7 @@
 //! * [`scoring`]: `TSGetPointsForFrag` and `PlayerKilled`.
 //! * [`cash`]: `CashBased`, the cash floor, kill cash and buying.
 //! * [`players`]: spawn, join, death, respawn timing, overheal and The One.
+//! * [`observer`]: the observer part of `PreThink`, where fire respawns (issue #113).
 //! * [`cvars`] and [`commands`]: 2.1's extra cvars, the polled cvars and the client commands.
 //! * [`entities`]: the map entities (§3.9).
 //! * [`protocol`]: 2.1 on TS 3.0's wire (§1.2).
@@ -28,6 +29,7 @@ pub mod damage;
 pub mod entities;
 pub mod explode;
 pub mod melee;
+pub mod observer;
 pub mod players;
 pub mod powerup;
 pub mod protocol;
@@ -102,6 +104,11 @@ impl ServerRules for Ts21Server {
 
     fn on_start_observer(&self, p: &mut Player, _cx: &mut Cx) {
         cash::cash_floor(p);
+    }
+
+    /// 2.1's observer block of `PreThink` (0x100537e0): fire respawns once the time has passed.
+    fn observer_think(&self, p: &mut Player, cx: &mut Cx, now: f32) {
+        observer::observer_think(p, cx, now);
     }
 
     fn on_init_hud(&self, p: &mut Player, _cx: &mut Cx) {

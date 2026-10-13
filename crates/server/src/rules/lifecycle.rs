@@ -388,7 +388,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     crate::gameplay::active().server.health_regen(p, cx, now);
 
     if cx.pev().iuser1 != 0 {
-        observer_think(p, cx, now);
+        crate::gameplay::active().server.observer_think(p, cx, now);
         cx.pev().impulse = 0;
         return;
     }
@@ -816,12 +816,14 @@ fn observer_find_next_player(p: &mut Player, cx: &mut Cx, reverse: bool) {
     }
 }
 
-/// Observer part of `CBasePlayer::PreThink` (0x908cc): respawn countdown text,
-/// `Observer_HandleButtons`, `Observer_Idle`.
+/// TS 3.0's observer part of `CBasePlayer::PreThink` (0x908cc): respawn countdown text,
+/// `Observer_HandleButtons`, `Observer_Idle`
+/// ([`ServerRules::observer_think`](crate::gameplay::ServerRules::observer_think)). An observer
+/// leaves with the `respawn` client command ([`respawn_command`]), not from here.
 ///
 /// The countdown runs only while the respawn time is ahead. "Press Fire To Play!" (30 s hold) is
 /// sent by the tick that lands in its last second, and isn't repeated after that.
-fn observer_think(p: &mut Player, cx: &mut Cx, now: f32) {
+pub fn observer_think_core(p: &mut Player, cx: &mut Cx, now: f32) {
     let e = cx.edict;
     if p.respawn_at > 0.0 && now < p.respawn_at && p.ts.next_hud_msg < now {
         p.ts.next_hud_msg = now + 1.0;
@@ -859,7 +861,7 @@ fn respawn_countdown_text(left: f32) -> (u8, String) {
 
 /// `CBasePlayer::Observer_HandleButtons` (0x99d34): jump cycles roaming → chase free → chase
 /// locked → in-eye → roaming; forward/back pick the next/previous target. 0.2 s between actions.
-fn observer_handle_buttons(p: &mut Player, cx: &mut Cx, now: f32) {
+pub fn observer_handle_buttons(p: &mut Player, cx: &mut Cx, now: f32) {
     if p.ts.obs_next_input > now {
         return;
     }
@@ -886,7 +888,7 @@ fn observer_handle_buttons(p: &mut Player, cx: &mut Cx, now: f32) {
 
 /// `CBasePlayer::Observer_Idle` (0x99ca4): twice a second, move on when the target died or
 /// became an observer. The camera itself follows `iuser2` in `PM_SpectatorMove`.
-fn observer_idle(p: &mut Player, cx: &mut Cx, now: f32) {
+pub fn observer_idle(p: &mut Player, cx: &mut Cx, now: f32) {
     if p.ts.obs_next_idle > now {
         return;
     }

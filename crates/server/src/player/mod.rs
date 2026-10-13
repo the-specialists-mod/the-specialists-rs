@@ -46,6 +46,10 @@ pub struct Player {
     /// `m_bIsBot` (`pl+0x160`): set by `BotSetup`, cleared by `TSPlayerDisconnect`. `Spawn` turns
     /// it into `FL_FAKECLIENT`, and only bots with it think.
     pub is_bot: i32,
+    /// The team a bot's `BotSetup` joined in teamplay: the model it was created with, whatever
+    /// keys its ruleset set (port bookkeeping, so a gameplay reset can replay the join; empty for
+    /// players and for bots kept across a level change).
+    pub bot_join_team: String,
     /// `pl+0x788`: the next node-learning time (`botlearn`, mp.dll's PreThink); `TSInit` zeroes it.
     pub next_node_learn: f32,
     /// `m_flPlayerSpeed` (`pl+0x550`): what `SetPlayerSpeed` last set (the bots' walking speed).
