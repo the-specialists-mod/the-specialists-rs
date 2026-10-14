@@ -40,6 +40,9 @@ pub const STUNTS: StuntRules = StuntRules {
     stunt_ends_close_combat: false,
     // `GoWheel` (0x1005d0e0) and `GoRoll` don't read the jump kick's cooldown (`+0x0c`).
     wheel_and_roll_wait_for_kick: false,
+    // `CloseAttack` (0x1005cd00): `kickCD = time + 0.7 * slowInv` and `RandomLong(0, 2)` right
+    // after the gate (0x1005cdd8..), before `CloseCombatAttack`; a miss leaves it armed.
+    kick_cooldown_on_try: true,
     // `GoBulletTime` (0x1005b160): no dodge window (2.1 `TraceAttack` has only the stunt ×0.7),
     // and `if (m_flNextAttack < 0) m_flNextAttack = 0.55 * slowInv`.
     bullet_time_dodge: None,
@@ -208,6 +211,7 @@ mod tests {
         assert_eq!(s.recover_end_clears, 0x40005);
         assert!(s.wall_landing_sets_recover && !s.wall_dive && !s.wall_climb_while_gliding);
         assert!(!s.stunt_ends_close_combat && !s.wheel_and_roll_wait_for_kick && !s.recover_end_unblocks);
+        assert!(s.kick_cooldown_on_try, "2.1 arms the jump kick's cooldown on every try");
         assert_eq!((s.bullet_time_dodge, s.bullet_time_attack_delay), (None, Some(0.55)));
         // 3.0's stay.
         assert_eq!((CORE.get_up_buttons, CORE.wall_landing_recover), (0x4006, 0.2625));

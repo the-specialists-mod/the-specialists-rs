@@ -289,7 +289,8 @@ the same as the GCC build once the stack is 53 bits wide.
   texture-table parsing/sorting/lookup, `AngleVectors`, and message decoders.
   `cargo test -p goldsrc --features server`: studio header lookup on a synthetic header.
 * `cargo test -p ts-server`: the jump kick's gate (`jump_kick_gate`: bare-handed with the gun
-  active, timers, ducking, the stunt bits) and moves (`jump_kick_anims`); `cargo test -p shared`:
+  active, timers, ducking, the stunt bits), moves (`jump_kick_anims`) and when the cooldown is armed
+  (`jump_kick_cooldown_order`: after a hit in 3.0, before the try with `kick_cooldown_on_try`); `cargo test -p shared`:
   its strength per build (`jump_kick_strength_*`, a GCC/MSVC ulp case) and trace end
   (`jump_kick_end_is_48_units_ahead`).
 * Builds: `cargo build -p ts-server -p ts-client` (native), `--target i686-unknown-linux-gnu`,

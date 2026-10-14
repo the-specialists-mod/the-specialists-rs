@@ -661,6 +661,24 @@ fn close_attack_anim(r: i32) -> i32 {
     }
 }
 
+/// A step of the jump kick after its gate, in the order a ruleset takes them ([`kick_steps`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum KickStep {
+    /// `CloseCombatAttack`: a miss ends the kick there.
+    Hit,
+    /// `RandomLong(0, 2)` for the move ([`close_attack_anim`]).
+    Draw,
+    /// The 0.7 s cooldown (`+0x08`).
+    Arm,
+}
+
+/// TS 3.0 tries the kick first and only draws the move and arms the cooldown on a hit (0x9c630).
+/// With [`StuntRules::kick_cooldown_on_try`](super::rules::StuntRules::kick_cooldown_on_try) the
+/// cooldown is armed and the move drawn before the try, so a miss also waits out the cooldown.
+fn kick_steps(cooldown_on_try: bool) -> [KickStep; 3] {
+    if cooldown_on_try { [KickStep::Arm, KickStep::Draw, KickStep::Hit] } else { [KickStep::Hit, KickStep::Draw, KickStep::Arm] }
+}
+
 /// `CTSStunt::CloseAttack` (0x9c630; `mp.dll` 0x1006a740), the jump kick: a kung-fu kick 48 u
 /// ahead of the eyes ([`crate::weapons::jump_kick`]) as strong as the speed allows
 /// ([`shared::weapons::spread::jump_kick_strength`], 10..20, doubled with Kung Fu). On a hit:
@@ -677,11 +695,18 @@ fn close_attack(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
     }
     let strength = shared::weapons::spread::jump_kick_strength(crate::rules::cvars::pm_arith(), cx.pev().velocity);
     let damage = if p.kungfu { strength + strength } else { strength };
-    if !crate::weapons::jump_kick(p, cx, damage) {
-        return false;
+    let mut anim = 0;
+    for step in kick_steps(r.stunts().kick_cooldown_on_try) {
+        match step {
+            KickStep::Hit => {
+                if !crate::weapons::jump_kick(p, cx, damage) {
+                    return false;
+                }
+            }
+            KickStep::Draw => anim = close_attack_anim(engine().random_long(0, 2)),
+            KickStep::Arm => p.stunt.close_attack_cd = timer(cx, r, 0.7),
+        }
     }
-    let anim = close_attack_anim(engine().random_long(0, 2));
-    p.stunt.close_attack_cd = timer(cx, r, 0.7);
     anim::animate(p, cx, anim);
     stunt_sound(cx, c"player/closecombat.wav");
     crate::gameplay::active().server.jump_kick_hit(p, cx, strength);
@@ -887,6 +912,15 @@ mod tests {
         assert!(ok(0.0, 0.0, 0x100001, FL_ONGROUND as i32, false, 0));
         // a negative timer has run out
         assert!(ok(-0.5, -0.5, 0, 0, false, 0));
+    }
+
+    /// 3.0 arms the cooldown and draws the move only after a hit; a ruleset that arms it on
+    /// every try does both before the try.
+    #[test]
+    fn jump_kick_cooldown_order() {
+        use KickStep::*;
+        assert_eq!(kick_steps(super::super::rules::CORE.kick_cooldown_on_try), [Hit, Draw, Arm]);
+        assert_eq!(kick_steps(true), [Arm, Draw, Hit]);
     }
 
     #[test]

@@ -61,6 +61,10 @@ pub struct StuntRules {
     pub stunt_ends_close_combat: bool,
     /// `GoWheel` (0x9c9bc) and `GoRoll` wait for the jump kick's cooldown (`+0x08`).
     pub wheel_and_roll_wait_for_kick: bool,
+    /// `CloseAttack` (0x9c630): when the jump kick's 0.7 s cooldown is armed and its move drawn
+    /// (`RandomLong(0, 2)`). TS 3.0 does both only after a hit, so a held jump keeps trying
+    /// every frame; `true` does both before the try, so a miss waits out the cooldown too.
+    pub kick_cooldown_on_try: bool,
     /// `GoBulletTime` (0x9a5b4): bullets do ×0.7 for this many seconds (absolute, unscaled
     /// time, `+0x34`); `None` sets no dodge window.
     pub bullet_time_dodge: Option<f32>,
@@ -88,6 +92,7 @@ pub const CORE: StuntRules = StuntRules {
     wall_climb_while_gliding: true,
     stunt_ends_close_combat: true,
     wheel_and_roll_wait_for_kick: true,
+    kick_cooldown_on_try: false,
     bullet_time_dodge: Some(0.55),
     bullet_time_attack_delay: None,
     recover_end_clears: ROLLING | FREEZE_ANGLES | GO_DUCK | RECOVER | DEAD_LOCK,
@@ -195,7 +200,7 @@ mod tests {
         assert_eq!(c.get_up_buttons, 0x4006);
         assert_eq!(c.recover_end_clears, 0x40000 | 0x80000 | 0x4 | 0x1 | 0x2);
         assert!(c.wall_dive && c.wall_climb_while_gliding && c.stunt_ends_close_combat && c.wheel_and_roll_wait_for_kick);
-        assert!(!c.wall_landing_sets_recover && c.recover_end_unblocks);
+        assert!(!c.wall_landing_sets_recover && c.recover_end_unblocks && !c.kick_cooldown_on_try);
         assert_eq!((c.bullet_time_dodge, c.bullet_time_attack_delay), (Some(0.55), None));
     }
 
