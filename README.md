@@ -91,7 +91,7 @@ To build them yourself:
 
 ```sh
 cargo xtask build --release      # all four targets
-cargo xtask dist --release       # dist/<platform>/ts/: libraries + liblist.gam, gameinfo.txt, delta.lst
+cargo xtask dist --release       # dist/<platform>/ts/: libraries + liblist.gam, gameinfo.txt, delta.lst, icons
 ```
 
 `--release` installs stripped, size-optimized libraries (about 1.2-1.8 MB each).

@@ -1,5 +1,7 @@
 game "The Specialists (Rust)"
 url_info "https://github.com/the-specialists-mod/the-specialists-rs"
+developer "The Specialists Team"
+developer_url "https://tsmod.org"
 version "3.0-rs"
 size ""
 svonly "0"

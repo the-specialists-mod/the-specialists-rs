@@ -1,7 +1,7 @@
 # Installing The Specialists 3.0 (Rust port)
 
 The port replaces only TS's game libraries: the server (`dlls/`) and the client (`cl_dlls/`), plus
-`liblist.gam`, `gameinfo.txt` and `delta.lst`. Maps, models, sounds and everything else come from a
+`liblist.gam`, `gameinfo.txt`, `delta.lst` and two icons (`game.tga`, `ts_logo_big.tga`). Maps, models, sounds and everything else come from a
 normal The Specialists 3.0 install. You need:
 
 1. **An engine:** Xash3D FWGS, Steam Half-Life, or a dedicated server (Steam HLDS or ReHLDS). See
@@ -75,7 +75,7 @@ The layout:
 ```
 xash3d(.exe)  + its libraries
 valve/        Half-Life base files
-ts/           TS 3.0 content, with the port's dlls/, cl_dlls/, liblist.gam, gameinfo.txt, delta.lst
+ts/           TS 3.0 content, with the port's dlls/, cl_dlls/, liblist.gam, gameinfo.txt, delta.lst, icons
 ```
 
 ### Steam Half-Life
@@ -84,8 +84,9 @@ ts/           TS 3.0 content, with the port's dlls/, cl_dlls/, liblist.gam, game
 2. Copy the TS content into `Half-Life/ts` (Linux: `~/.local/share/Steam/steamapps/common/Half-Life/ts`;
    Windows: `C:\Program Files (x86)\Steam\steamapps\common\Half-Life\ts`), then copy the
    archive's `ts/` over it (`linux-i686` on Linux, `windows-i686` on Windows).
-3. Restart Steam. The mod is listed as "The Specialists (Rust)"; you can also start Half-Life
-   with the launch option `-game ts`.
+3. Restart Steam. The mod is listed as "The Specialists (Rust)" with the TS icon
+   (`liblist.gam`'s `icon "ts_logo"` makes Steam load `ts_logo_big.tga`; `game.tga` is the
+   window icon). You can also start Half-Life with the launch option `-game ts`.
 
 ### Dedicated server (HLDS or ReHLDS)
 
@@ -147,7 +148,8 @@ the ruleset and the client's and the server's versions.
 ## 7. Uninstall
 
 Copy TS's original `dlls/`, `cl_dlls/`, `liblist.gam`, `gameinfo.txt` and `delta.lst` back from
-the TS 3.0 content, or reinstall TS 3.0.
+the TS 3.0 content (and delete `game.tga` and `ts_logo_big.tga`, which TS doesn't have), or
+reinstall TS 3.0.
 
 ## Troubleshooting
 

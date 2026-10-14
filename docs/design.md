@@ -62,7 +62,7 @@ crates/
   client/        ts-client: client game logic (rlib, no unsafe)
   client-dll/    ts-client-dll: cdylib -> cl_dlls/client.so, client_amd64.so, client.dll
 xtask/           build, dist, install, server tests
-game/ts/         liblist.gam, gameinfo.txt, delta.lst (installed over the TS content)
+game/ts/         liblist.gam, gameinfo.txt, delta.lst, game.tga, ts_logo_big.tga (installed over the TS content)
 docs/            design.md (this), implementation/*.md (per subsystem), validation.md
 ```
 

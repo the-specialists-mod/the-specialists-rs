@@ -45,7 +45,7 @@ crates/
                  link it (feature `ts21`), and `cargo xtask lint` checks that nothing else
                  names 2.1 (docs/implementation/ts21.md)
 xtask/           build, package, install and test tooling (`cargo xtask ...`)
-game/ts/         liblist.gam, gameinfo.txt, delta.lst
+game/ts/         liblist.gam, gameinfo.txt, delta.lst, the icons (game.tga, ts_logo_big.tga)
 ```
 
 **`unsafe` code lives only in `goldsrc`, `server-dll` and `client-dll`** (and the test fixture
