@@ -140,6 +140,38 @@ fn fire_once(g: &mut Gun, h: &mut Mock) {
     crate::TS21.fire(g, h);
 }
 
+/// `GetBetterWeapon` (FUN_1004a410) draws the most expensive owned weapon, an akimbo pair at
+/// twice its cost, the lowest id on a tie; 3.0 walks its priority list.
+#[test]
+fn better_weapon_is_the_most_expensive() {
+    use crate::TS21;
+    setup();
+    let own = |ids: &[u8]| {
+        let mut g = Gun::default();
+        for &i in ids {
+            g.status[i as usize].owned = true;
+        }
+        g
+    };
+    let cost = |i: u8| info(i).unwrap().cost;
+    // Katana (2900) over the MP5SD (2500), where 3.0's list draws the MP5SD first.
+    assert!(cost(34) > cost(6));
+    let g = own(&[6, 34]);
+    assert_eq!(TS21.better_weapon(&g, 0), 34);
+    assert_eq!(CORE.better_weapon(&g, 0), 6);
+    // A tie (AK47 and Benelli at 3000): the lowest id.
+    assert_eq!(cost(4), cost(13));
+    assert_eq!(TS21.better_weapon(&own(&[4, 13]), 0), 4);
+    assert_eq!(TS21.better_weapon(&own(&[4, 13]), 4), 13);
+    // The akimbo MK23s (700 x 2) beat a weapon costing between one and two of them.
+    assert_eq!(kind_of(10), kind::AKIMBO);
+    let mid = (1..38u8).find(|&i| info(i).is_some_and(|w| w.cost > cost(10) && w.cost < 2 * cost(10))).unwrap();
+    assert_eq!(TS21.better_weapon(&own(&[mid, 10]), 0), 10);
+    // Nothing worth more than 0: kung fu.
+    assert_eq!(TS21.better_weapon(&own(&[]), 0), 0);
+    assert_eq!(TS21.better_weapon(&own(&[6]), 6), 0);
+}
+
 #[test]
 fn the_2_1_table_set() {
     setup();

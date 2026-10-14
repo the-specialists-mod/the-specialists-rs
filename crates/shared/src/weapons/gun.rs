@@ -1928,16 +1928,17 @@ impl Gun {
         self.last_melee_anim = 0;
     }
 
-    /// `CTSGun::GetBetterWeapon(excluded)` 0x80f40: switch by `g_iWeaponPriority`.
+    /// `CTSGun::GetBetterWeapon(excluded)` 0x80f40: switch to the weapon the rules pick
+    /// ([`GunRules::better_weapon`](crate::gameplay::GunRules::better_weapon)).
     pub fn get_better_weapon(&mut self, excluded: u8, host: &mut (impl GunHost + ?Sized)) {
-        let mut pick = PRIORITY[MAX_WEAPONS - 1];
-        for &id in PRIORITY.iter() {
-            if self.status[id as usize].owned && id != excluded {
-                pick = id;
-                break;
-            }
-        }
+        let pick = host.rules().better_weapon(self, excluded);
         self.switch_to(pick, host);
+    }
+
+    /// TS 3.0's pick for `GetBetterWeapon` (0x80f40): the first owned weapon in
+    /// `g_iWeaponPriority` other than `excluded`, else the list's last entry (kung fu).
+    pub fn better_weapon_core(&self, excluded: u8) -> u8 {
+        PRIORITY.iter().copied().find(|&id| self.status[id as usize].owned && id != excluded).unwrap_or(PRIORITY[MAX_WEAPONS - 1])
     }
 
     /// `CTSGun::DropWeapon(id, better)` 0x8094c: removes the record. Returns true if owned.

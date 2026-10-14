@@ -92,6 +92,13 @@ pub trait GunRules: MeleeRules + Sync {
     fn cancel_runs_frame_in_reload(&self, info: &WeaponInfo) -> bool {
         info.stock != 0
     }
+
+    /// `CTSGun::GetBetterWeapon(excluded)` (0x80f40): the weapon to draw instead (0 for kung
+    /// fu), for a gun that loses its current weapon or a bot that wants another.
+    /// 3.0: [`Gun::better_weapon_core`], the first owned one in `g_iWeaponPriority`.
+    fn better_weapon(&self, gun: &Gun, excluded: u8) -> u8 {
+        gun.better_weapon_core(excluded)
+    }
 }
 
 /// One think's recoil-penalty decay ([`GunRules::decay_spread`]).
@@ -187,6 +194,13 @@ mod tests {
         let ak = base_tables().weapon(crate::weapons::id::AK47).unwrap();
         let m4 = base_tables().weapon(crate::weapons::id::M4).unwrap();
         assert!(!CORE.cancel_runs_frame_in_reload(ak) && CORE.cancel_runs_frame_in_reload(m4));
+        let mut g = Gun::default();
+        assert_eq!(CORE.better_weapon(&g, 0), 0, "nothing owned: kung fu");
+        for id in [crate::weapons::id::AK47, crate::weapons::id::BENELLI] {
+            g.status[id as usize].owned = true;
+        }
+        assert_eq!(CORE.better_weapon(&g, 0), crate::weapons::id::AK47, "13 comes before 4 in the list");
+        assert_eq!(CORE.better_weapon(&g, crate::weapons::id::AK47), crate::weapons::id::BENELLI);
     }
 
     /// TS 3.0's decay: by the step, only while alive; the time isn't recorded.

@@ -241,6 +241,7 @@ The hooks so far:
 | `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked -5/+5, one gun none | client `events/fire.rs` `fire_akimbo` |
 | `GunRules` | `predicted()` | `Predicted::ALL` | `weapons/gun.rs` `weapon_post_frame` (client prediction only) |
 | `GunRules` | `cancel_runs_frame_in_reload(info)` | `info.stock != 0` | `weapons/gun.rs` `post_frame_ready` |
+| `GunRules` | `better_weapon(gun, excluded)` | `Gun::better_weapon_core`: the first owned id in `g_iWeaponPriority` | `weapons/gun.rs` `get_better_weapon` (`remove_weapon`, the server's `weapons::get_better_weapon` for bots) |
 | `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | false: 3.0's `Gun` method runs | the top of each `Gun` method in `weapons/gun.rs` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start`, `gameplay::frame` |
 | `ServerRules` | `cvars()` | none | `gameplay::register` (registered after 3.0's, skipping existing names) |
