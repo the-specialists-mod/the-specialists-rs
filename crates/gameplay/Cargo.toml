@@ -2,6 +2,7 @@
 name = "ts-gameplay"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 # The gameplay-plugin plumbing every side shares: plugin ids, the channels that carry the active
 # one (cvar, physinfo key, SrvSett key), and the registry. No dependencies, so it sits below

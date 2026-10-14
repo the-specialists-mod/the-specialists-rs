@@ -2,6 +2,7 @@
 name = "ts21-server"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 # The server half of the TS 2.1 gameplay plugin (docs/implementation/ts21.md): `ServerRules` and
 # the server's plugin object. Only `server-dll` links it, behind its `ts21` feature.

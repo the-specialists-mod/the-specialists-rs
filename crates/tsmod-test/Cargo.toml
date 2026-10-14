@@ -3,6 +3,7 @@ name = "tsmod-test"
 description = "The stub tsmod_* plugin: loader tests and a trivial bot backend (walks and jumps)"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 # A plugin library is FFI from end to end (its export, the API's function pointers, the engine's
 # tables), so like the *-dll crates it may use `unsafe` (AGENTS.md). It is a test fixture: xtask
