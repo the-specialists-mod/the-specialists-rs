@@ -292,8 +292,6 @@ pub fn register_server_commands() {
     e.add_server_command(c"weaponrestriction", cmd_weaponrestriction);
     // Port additions for testing dedicated servers.
     e.add_server_command(c"ts_status", cmd_status);
-    // Port addition: queued by each map start, after the server config (`crate::gameplay`).
-    e.add_server_command(crate::gameplay::CONFIG_CHECK_CMD, crate::gameplay::cmd_config_check);
     e.add_server_command(c"ts_hurt", cmd_hurt);
     e.add_server_command(c"ts_givepowerup", cmd_givepowerup);
     e.add_server_command(c"ts_tp", cmd_tp);

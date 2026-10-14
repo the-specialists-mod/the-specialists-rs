@@ -25,6 +25,7 @@ pub mod player;
 pub mod plugin_api;
 pub mod plugins;
 pub mod precache;
+pub mod reload;
 pub mod rules;
 pub mod save;
 pub mod studio;

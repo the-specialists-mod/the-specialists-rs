@@ -137,8 +137,8 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - `ts_dev_touch <file>` writes the end-of-script marker.
 - `ts_tp` teleports, and `ts_face` aims a player's view.
 - `ts_bot_stop 1` freezes living bots (dead ones still buy and respawn); plugin bots too (`run_cmd`).
-- `ts_bot_backend native|<name>` picks the bot backend at the next map start
-  (docs/implementation/bot-plugins.md). Bots run TS's AI
+- `ts_bot_backend native|<name>` picks the bot backend; like `ts_gameplay`, a change reloads the
+  map (docs/implementation/bot-plugins.md, gameplay-plugins.md §4). Bots run TS's AI
   (`crates/server/src/bots`, decomp `docs/server/bots.md`). Deviation (user's choice): `addbot`,
   `addcustombot` and `ts_bot_quota` bots run on dedicated servers too (server console, configs
   and rcon only); TS has bots only on listen servers.

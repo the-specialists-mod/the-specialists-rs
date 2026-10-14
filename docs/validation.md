@@ -130,7 +130,7 @@ results from `ts_status` dumps, kill notices and developer log lines:
 | Kick | `kick` the bot the host just killed | No crash (a dropped bot used to crash the engine on its "respawn"), and the quota adds a replacement |
 | Death and respawn | `ts_hurt 1 500`, click through the death cam, click after the wait | Dead with a death, then a second spawn line and alive |
 | Bots | Host suicides and stays observer; `ts_bot_stop 0`, `ts_bot_quota 4`, 70 s of play (TS's AI: the shipped ts_dojo node graph, TS's random loadouts) | Four bots. Within one life, all but at most one of the bots measured (at least two) move over 64 units between dumps 5 s apart. At least 2 `Bot ... killed Bot ...` lines |
-| Gameplay at a map change | With the four bots playing: `ts_gameplay 21`; 1.5 s later `changelevel ts_dojo`, 15 s; `ts_gameplay 30`, `changelevel ts_dojo`, then the host joins through the buy menu as in Join (`implementation/gameplay-plugins.md` §4) | Mid-map: the console says `ruleset 21 takes effect at the next map (this map runs 30)`, every living player still moves by `gp=30` (`ts_status`) and the scores are kept. The 2.1 map: `[ts] gameplay: ruleset 21 for this map`, 2.1's `[ts] game rules (2.1): ...`, the client's `[ts] gameplay: the server runs ruleset 21` (`SrvSett` 4), at least three bots alive and every living player at `gp=21`. The 3.0 map: the same for 30 (3.0's `[ts] game rules: ...`), and the host alive after joining |
+| Gameplay reload | With the four bots playing: `ts_gameplay 21;ts_gameplay 30` in one line and `ts_bot_backend NATIVE`, 1.5 s; `ts_gameplay 21` (no `changelevel`), 15 s; `ts_gameplay 30`, then the host joins through the buy menu as in Join (`implementation/gameplay-plugins.md` §4) | Set and back: no `reloading` line, every living player still moves by `gp=30` (`ts_status`) and the scores are kept. The 2.1 map: one `[ts] gameplay: ruleset 21: reloading ts_dojo`, `[ts] gameplay: ruleset 21 for this map`, 2.1's `[ts] game rules (2.1): ...`, the client's `[ts] gameplay: the server runs ruleset 21` (`SrvSett` 4), at least three bots alive and every living player at `gp=21`. The 3.0 map: the same for 30 (one `ruleset 30: reloading ts_dojo`, 3.0's `[ts] game rules: ...`), and the host alive after joining |
 | Quota down | `ts_bot_quota 0` | The bots are kicked |
 | addbot | `addbot` on the listen server | "<name> connected with skill", a player with a `bots.txt` name in `ts_status`, no "Bots only in listen servers.", and the quota (0) doesn't kick it |
 | Escape | `ts_dev_keylog 1`, `cancelselect` twice (Escape's binding; the first may close the weapon menu) | `[ts key] cancelselect: escape`: the client sent `escape`, which opens the engine's main menu |
@@ -393,7 +393,7 @@ window). A native FWGS dedicated server with the port (`cargo xtask install fwgs
   buy menu; the `SrvSett` keys 4..7 it ignores change nothing.
 
 The port's own client joining a 2.1 map is covered by `cargo xtask play` (the host reconnects at
-the `changelevel` to 2.1 and plays on).
+the reload under 2.1 and plays on).
 
 ## 4. Pitfalls found during setup
 

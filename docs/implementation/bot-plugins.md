@@ -118,13 +118,23 @@ key; the native backend passes its rules' choice and plugin bots get 3.0's.
 ## 3. Selection: `ts_bot_backend`
 
 Port cvar, default `native`. **Read at map start** (`rules::install`, right after the synchronous
-`exec game.cfg` and before the rules' `Init`): `bot_backend::map_start`. So:
+`exec game.cfg` and before the rules' `Init`): `bot_backend::map_start`, through
+`bot_backend::wanted`. So:
 
-* `game.cfg`, the console before `map`, or a previous map's server config select it for this
-  map. The per-map server config (`servercfgfile`) is queued and runs after the map has loaded:
-  a value set there takes effect at the next map.
+* `game.cfg` selects it for the map being loaded.
+* **A change reloads the map**, from any source (the console, rcon, the server config, a script):
+  when the backend `ts_bot_backend` resolves to differs from the running one at one frame and the
+  next, the console says `[ts] bots: backend <name>: reloading <map>` and the server changes level
+  to the same map (`crate::reload`, shared with `ts_gameplay`: one reload when both change,
+  none for a change and back, no loop; [gameplay-plugins.md](gameplay-plugins.md) §4). The
+  server config (`servercfgfile`) runs after the map has loaded, so on the Steam engines a
+  backend it sets reloads the first map once; FWGS's dedicated server also runs it before the
+  first map, which then starts with that backend and needs no reload. When it runs again on a
+  later map nothing changes.
 * Names are compared case-insensitively; empty means native. An unknown name warns once per
-  value (`[ts] bots: unknown ts_bot_backend "x", using native`) and native runs.
+  value (`[ts] bots: unknown ts_bot_backend "x", using native`) and native runs. The reload
+  compares the resolved backend, so `NATIVE` while native runs, or an unknown name, reloads
+  nothing.
 * Each change logs `[ts] bots: backend <name>`, calls the old backend's `deactivate`, **kicks
   every bot the old backend made** (`kick #<userid>`, queued) and calls the new one's
   `activate`. The quota then adds the new backend's bots. The gameplay ruleset (#100) doesn't change
@@ -174,9 +184,11 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
   `tsmod_test` and fixtures the loader must skip (`tsmod_test_badver`, `_badsize`, `_refuse`, a
   copy of the server library as `tsmod_noexport`, the other architecture's build as
   `tsmod_wrongarch`, junk, another platform's name), runs a dedicated server on ts_dojo whose
-  first config sets `ts_bot_backend test` and changes the map, and whose second adds bots with
+  first config (the server config, on the first map) sets `ts_bot_backend test` (one reload on the
+  Steam engines, none on FWGS, which ran the config before the first map; no `changelevel`) and `ts_gameplay` 21 and back (no reload), and whose second (`ts_bot_backend
+  TEST`: no reload) adds bots with
   the quota, `addbot` and `addcustombot`. Checks: each skip line, `loaded tsmod_test`, `backend
-  test`, and the stub's `check <what> ok` lines (data_dir, map_name, create_bot, run_cmd,
+  test`, at most one `reloading` line and only the backend's, and the stub's `check <what> ok` lines (data_dir, map_name, create_bot, run_cmd,
   player_info, entity_info, game_state, inventory, bot_command, client_command, spawned, buy,
   buy_item, moved more than 64 units, sound), no `FAIL`, no crash. The fixtures are removed
   afterwards and by every `install`, so other scenarios run without plugins.
@@ -186,7 +198,8 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
 
 * The layer, the cvar and the API are port additions.
 * Plugin bots count as `CBot`s (`IsNetClient()` false, no starting cash), as TS's bots do.
-* A backend switch kicks the old backend's bots at the next map start, including `addbot` ones.
+* A backend switch reloads the map and kicks the old backend's bots at its start, including
+  `addbot` ones.
 * `create_bot` is refused unless the caller's backend is active, so a backend sees only its own
   bots.
 * Licence: `ts-plugin-api` has no explicit licence yet; issue #104 §5 leaves the choice
