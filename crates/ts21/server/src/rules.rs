@@ -12,7 +12,7 @@ use ts_server::rules::frame::{round_time_byte, x87_max0};
 use ts_server::rules::lifecycle::start_observer;
 use ts_server::rules::msg::{self, ts_message_all};
 use ts_server::rules::state::{self, GameRules, Mode, Team};
-use ts_server::rules::{alive, cvars, frame, netname, other, scoring, slot_players, teams, votes};
+use ts_server::rules::{alive, cvars, frame, has_player, netname, other, scoring, slot_players, teams, votes};
 
 /// The two round-mode teams (`CHalfLifeTeamplay` 0x10038550, strings 0x10097488/0x1009747c).
 pub const SPECIALISTS: &str = "Specialists";
@@ -294,12 +294,22 @@ pub fn think(now: f32) {
     }
     // `customweapons` (a 2.1 weapons file, three values per weapon) is the weapon tables' part.
     if the_one && state::with(|g| g.next_the_one_check < now) {
-        let any = slot_players().into_iter().any(|e| other(e, |p| p.ts.is_the_one).unwrap_or(false));
+        let eng = engine();
+        let any = the_one_check_slots(eng.max_clients())
+            .map(|i| eng.player(i))
+            .any(|e| has_player(e) && other(e, |p| p.ts.is_the_one).unwrap_or(false));
         if !any {
             select_random_the_one(now);
         }
         state::with(|g| g.next_the_one_check = now + 10.0);
     }
+}
+
+/// The slots Think's The One check looks at (0x1004439c..0x100443d5): `UTIL_PlayerByIndex(i)` for
+/// `i` in `0..maxClients`. Slot 0 is never a player (0x10066db0 returns NULL), and the last slot
+/// is never checked, so while The One sits in it a random One is picked again every 10 s.
+fn the_one_check_slots(max_clients: i32) -> std::ops::Range<i32> {
+    0..max_clients
 }
 
 /// The `ts_mapglobals` read at the head of Think, once per `Init`: the weapon mask and, from the
@@ -712,6 +722,13 @@ pub fn check_deads(now: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_one_check_skips_the_last_slot() {
+        // Issue #127: `for (i = 0; i < maxClients; i++)`, so slot maxClients is never seen.
+        assert_eq!(the_one_check_slots(2).collect::<Vec<_>>(), [0, 1]);
+        assert!(!the_one_check_slots(32).any(|i| i == 32));
+    }
 
     #[test]
     fn the_map_prefix_decides_the_mode() {
