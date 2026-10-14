@@ -297,6 +297,8 @@ The hooks so far:
 | `ClientRules` | `kungfu_regen(r)` | +15 per step (1 while negative), up to 100 | `hud/state.rs` `regen_kungfu` (weapon `Think`) |
 | `ClientRules` | `kungfu_power_on_reset()` | none (only `VidInit` refills the bar) | `hud/state.rs` `reset_weapons` |
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
+| `ClientRules` | `slowmo_tint()` | true (the `cl_slowfade` tint while slowed) | `view.rs` `write_screen_fade` |
+| `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and explosions keep 3.0's `fire_pitch`) |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11 | `menus/buy.rs`, `menus/mod.rs` |
 | `ServerRules` | `bullet_trace(start, end, shooter)` | `weapons::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |

@@ -35,6 +35,20 @@ fn slowdiv(s: f32) -> f64 {
     1.0 / m as f64
 }
 
+/// The fire events' pitch (0x100738a0) for the slow-motion factor `s` (`TSSlowMo / 100`, 0 =
+/// normal speed). `s * 300` is compared at x87 precision (`<= 150`, or unordered for a NaN,
+/// gives 150) and stored as a float otherwise; `__ftol` truncates `100 + that`.
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 `fcomp`/`and 0x4100` test: a NaN takes 150
+pub fn fire_pitch(s: f32) -> i32 {
+    let x = if s == 0.0 {
+        300.0f32
+    } else {
+        let p = s as f64 * 300.0;
+        if !(p > 150.0) { 150.0 } else { p as f32 }
+    };
+    (100.0 + x as f64) as i64 as i32
+}
+
 impl ClientRules for Ts21Client {
     /// The weapons element's crosshair draw (0x1008b960) is one gate: nothing at all (no
     /// divesteps, no laser number) under `cl_realhud`, for kung fu, the M61, the knives and the
@@ -130,6 +144,21 @@ impl ClientRules for Ts21Client {
     /// The status `Draw` (0x10085d90) ends with `sprites/slowmotion.spr` while slowed.
     fn slowmo_icon(&self) -> bool {
         true
+    }
+
+    /// 2.1 has no `cl_slowfade` and writes no screen fade for slow motion: the icon is its only
+    /// slow-motion cue (issue #152).
+    fn slowmo_tint(&self) -> bool {
+        false
+    }
+
+    /// The fire events' pitch helper (0x100738a0, through thunk 0x1000367f from 0x10073b70,
+    /// 0x10075080 and 0x10076ce0): `s = TSSlowMo / 100` as the handler stores it (0x1031bee4,
+    /// not eased), `ftol(100 + (s == 0 ? 300 : (s * 300 <= 150 ? 150 : (float)(s * 300))))`.
+    /// 400 at normal speed, never below 250. The fire sound (0x10073a40) adds
+    /// `RandomLong(-5, 5)`, as 3.0's.
+    fn fire_pitch(&self, _time_scale: f32, slowmo_factor100: f32) -> i32 {
+        fire_pitch(slowmo_factor100 / 100.0)
     }
 
     /// `CashBased()` (0x1006b2f0) is `m_Teamplay ≥ 2 || SrvSett 1`, so the menu spends the live

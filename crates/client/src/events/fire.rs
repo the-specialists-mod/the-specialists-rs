@@ -3,7 +3,7 @@
 
 use super::impact::{self, AMMO_ATTENUATION, MAX_RANGE, SPREAD_RADIUS};
 use super::random::shared_random_float;
-use super::{Args, fire_pitch, first_person_view_model, info, slow_pitch};
+use super::{Args, first_person_view_model, info, slow_pitch};
 use crate::effects::psys::{self, Camera, heron_height};
 use crate::{effects, state, view};
 use goldsrc::Global;
@@ -267,7 +267,9 @@ fn muzzle_light(a: &Args, s: &Shot) {
     effects::with_psys(|ps| effects::fx::muzzle_dlight(ps, now, pos));
 }
 
-/// The weapon fire sound (`0x1003de90`): `fire_pitch() + rand(-5, 5)`, rolled before the volume.
+/// The weapon fire sound (`0x1003de90`): the ruleset's fire pitch
+/// ([`ClientRules::fire_pitch`](crate::gameplay::ClientRules::fire_pitch), 3.0's is
+/// [`super::fire_pitch`]) `+ rand(-5, 5)`, rolled before the volume.
 /// The silenced flag alone picks the sample (`0x1003de98`): `sound2` (`info+0x306`, volume
 /// 0.84-0.92, attenuation x2) or `sound` (`info+0x2c6`, `0x1003dee5`), even when that one is empty;
 /// TS then plays its empty buffer, and so does the port.
@@ -275,7 +277,8 @@ fn fire_sound(a: &Args, id: i32, silenced: bool) {
     let Some(asset) = tables().asset(id as u8) else { return };
     let ammo = tables().weapon(id as u8).map_or(0, |w| w.ammo) as usize;
     let atten = AMMO_ATTENUATION.get(ammo).copied().unwrap_or(0.4);
-    let pitch = r::random_long(-5, 5) + fire_pitch();
+    let roll = r::random_long(-5, 5);
+    let pitch = roll + super::weapon_fire_pitch();
     let (sample, vol, attn) = fire_sample(&asset.sound, &asset.sound2, silenced);
     let vol = r::random_float(vol.0, vol.1);
     engine().ev_play_sound(a.entindex, a.origin, CHAN_WEAPON as i32, &sample, vol, attn * atten, 0, pitch);
