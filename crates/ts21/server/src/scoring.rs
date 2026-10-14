@@ -256,12 +256,8 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
 
     let si = score_info_of(p, cx.pev(), vidx);
     msg::all(Msg::ScoreInfo, |w| si.write(w));
-    if killer_is_player {
-        let kidx = eng.index_of(attacker);
-        if let Some(s) = other(attacker, |k| score_info_of(k, attacker.v(), kidx)) {
-            msg::all(Msg::ScoreInfo, |w| s.write(w));
-        }
-    }
+    // The killer's, suicides included, and its decal timer (0x1005004b, 0x100500d8).
+    core::killer_score_info(p, cx, attacker, now);
     state::with(|g| g.call_check_deads(now));
 
     if state::teamplay() {

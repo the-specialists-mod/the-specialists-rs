@@ -448,17 +448,59 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
     // ScoreInfo for the victim and the killer.
     let si = score_info_of(p, cx.pev(), vidx);
     msg::all(Msg::ScoreInfo, |w| si.write(w));
-    if killer_is_player {
-        let kidx = eng.index_of(attacker);
-        if let Some(s) = other(attacker, |k| score_info_of(k, attacker.v(), kidx)) {
-            msg::all(Msg::ScoreInfo, |w| s.write(w));
-        }
-    }
+    killer_score_info(p, cx, attacker, now);
     state::with(|g| g.call_check_deads(now));
     // `CHalfLifeTeamplay::PlayerKilled` (0xe51b8): `RecountTeams(false)` after every kill, so the
     // team frags the fraglimit reads are those of the last recount.
     if state::teamplay() {
         teams::recount(false);
+    }
+}
+
+/// Who gets the killer's `ScoreInfo` at the end of `PlayerKilled`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum KillerScore {
+    Nobody,
+    /// A suicide: the victim, a second time.
+    Victim,
+    /// Another player.
+    Killer,
+}
+
+/// The test is `pKiller`'s `Classify() == CLASS_PLAYER` with no `pVictim != pKiller` check (3.0
+/// 0x7affb file address, 2.1 0x1005004b), so a suicide sends the victim's `ScoreInfo` twice.
+fn killer_score(suicide: bool, attacker_is_player: bool) -> KillerScore {
+    if suicide {
+        KillerScore::Victim
+    } else if attacker_is_player {
+        KillerScore::Killer
+    } else {
+        KillerScore::Nobody
+    }
+}
+
+/// The SDK tail of `PlayerKilled` ("killers score, if it's a player"), the same in 3.0 and 2.1:
+/// the killer's `ScoreInfo`, and `m_flNextDecalTime = time` (3.0 `pl+0xb44`, 2.1 `pl+0xa9c`), so
+/// a player may spray at once after every kill or suicide. `p`/`cx` are the victim.
+pub fn killer_score_info(p: &mut Player, cx: &mut Cx, attacker: *mut edict_t, now: f32) {
+    match killer_score(attacker == cx.edict, super::has_player(attacker)) {
+        KillerScore::Nobody => {}
+        KillerScore::Victim => {
+            let idx = cx.index();
+            let s = score_info_of(p, cx.pev(), idx);
+            msg::all(Msg::ScoreInfo, |w| s.write(w));
+            p.impulse.next_decal_time = now;
+        }
+        KillerScore::Killer => {
+            let kidx = engine().index_of(attacker);
+            let s = other(attacker, |k| {
+                k.impulse.next_decal_time = now;
+                score_info_of(k, attacker.v(), kidx)
+            });
+            if let Some(s) = s {
+                msg::all(Msg::ScoreInfo, |w| s.write(w));
+            }
+        }
     }
 }
 
@@ -791,8 +833,8 @@ pub fn broadcast_score(e: *mut edict_t) {
 #[cfg(test)]
 mod tests {
     use super::{
-        FragLoser, KillTags, Snapshot, TeamKillPunish, frag_loser, kung_fu_frag, log_id, log_weapon, own_weapon_name, rename_weapon,
-        spectacular_roll, team_kill_punishment, victims_gun, weapon_info_name,
+        FragLoser, KillTags, KillerScore, Snapshot, TeamKillPunish, frag_loser, killer_score, kung_fu_frag, log_id, log_weapon,
+        own_weapon_name, rename_weapon, spectacular_roll, team_kill_punishment, victims_gun, weapon_info_name,
     };
     use goldsrc::sys::edict_t;
     use shared::weapons::{id, tables};
@@ -897,6 +939,14 @@ mod tests {
         // Issue #118: a fall or a trigger lowers the world's frags; only a suicide the victim's.
         assert_eq!(frag_loser(false), FragLoser::Killer);
         assert_eq!(frag_loser(true), FragLoser::Victim);
+    }
+
+    #[test]
+    fn the_killer_score_info_includes_suicides() {
+        // Issue #120: `Classify() == CLASS_PLAYER` on pKiller, with no suicide test.
+        assert_eq!(killer_score(true, true), KillerScore::Victim);
+        assert_eq!(killer_score(false, true), KillerScore::Killer);
+        assert_eq!(killer_score(false, false), KillerScore::Nobody);
     }
 
     #[test]
