@@ -185,7 +185,8 @@ pub fn set_bubbles_model(index: i32) {
 /// `rulesets` are the tables of every registered gameplay ruleset, TS 3.0's first. TS 3.0's
 /// loop runs first and alone decides the precache order TS has; each other ruleset's loop
 /// follows and only adds what its tables name that TS 3.0's don't (the engine hands back the
-/// index of a name it already has), so a switch mid-map never sets an unprecached model.
+/// index of a name it already has), so whichever ruleset runs the map never sets an
+/// unprecached model.
 pub fn precache_weapon_assets(rulesets: &[&'static Tables]) {
     super::bullets::reset();
     let sets = rulesets.iter().map(|t| (*t as *const Tables as usize, precache_tables(t))).collect();

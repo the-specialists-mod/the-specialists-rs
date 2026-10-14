@@ -6,8 +6,7 @@
 //! `armor_absorb <f>` and `health_absorb <f>`; lines with `//` are comments. The weapon values
 //! live in the custom weapon tables until the next map: TS's `W_Precache` rebuilds
 //! `global_weapon_info` on every map (`compile_weapons_info` 0x7fe28,
-//! [`rebuild_weapon_info`](super::rebuild_weapon_info)), and a ruleset switch's reset does the
-//! same. The absorb values and the "custom weapons" flag are game-rules state that
+//! [`rebuild_weapon_info`](super::rebuild_weapon_info)). The absorb values and the "custom weapons" flag are game-rules state that
 //! `CTSGameRules::Init` resets at the same time (`rules::state`), so the flag and the values
 //! agree. TS registers the `customweapons` cvar but never reads
 //! it, and neither does the port.

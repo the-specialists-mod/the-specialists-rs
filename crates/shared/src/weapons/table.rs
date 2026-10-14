@@ -293,7 +293,7 @@ pub fn ruleset_tables() -> &'static Tables {
 /// Makes `t` (a gameplay plugin's [`GunRules::tables`](crate::gameplay::GunRules::tables)) the
 /// tables [`tables`] returns: the server when a ruleset becomes active, the client from the
 /// ruleset of each predicted command. A different ruleset also drops the custom parameters,
-/// which were made from the old one's tables: nothing carries over a switch. Returns true when
+/// which were made from the old one's tables: nothing carries over to another ruleset. Returns true when
 /// the tables changed.
 pub fn set_ruleset_tables(t: &'static Tables) -> bool {
     if std::ptr::eq(ruleset_tables(), t) {

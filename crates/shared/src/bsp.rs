@@ -1,6 +1,5 @@
 //! BSP entity lumps: the map's entity text and its keyvalue blocks. The client builds its map
-//! effects and spectator cameras from them; the server re-spawns the map's entities from them
-//! when a gameplay switch resets the game (`ts_server::gameplay`).
+//! effects and spectator cameras from them.
 
 /// Splits a BSP entity lump into keyvalue blocks (`COM_ParseFile` rules: quoted strings,
 /// `{`/`}`, `//` comments). Malformed text stops parsing, keeping complete blocks.

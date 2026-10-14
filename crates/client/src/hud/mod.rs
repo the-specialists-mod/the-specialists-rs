@@ -332,7 +332,7 @@ fn sync_shared(h: &Hud) {
 fn apply_effect(f: Effect) {
     let e = engine();
     match f {
-        Effect::GameplayReset(id) => crate::gameplay::reset_client(id),
+        Effect::GameplayRuleset(id) => e.print(&format!("[ts] gameplay: the server runs ruleset {id}\n")),
         Effect::Sound(name) => e.play_sound(name, 1.0),
         // `gHUD.m_vecOrigin` is the client data origin, the local player's.
         Effect::GoSlow => {
@@ -560,6 +560,9 @@ fn selftest() {
 
 pub fn init() {
     CVARS.0.set(Some(register_cvars()));
+    // Port addition: the client's version in its userinfo (`FCVAR_USERINFO`, 2), which tells the
+    // server this is the port's client (`shared::protocol::port`).
+    Cvar::register(shared::protocol::port::USERINFO_KEY_C, shared::protocol::port::VERSION_C, 2);
     let e = engine();
     for (m, name, _) in MESSAGES {
         // The engine parses ScreenShake and ScreenFade itself (FWGS cl_parse.c; GoldSrc
@@ -688,7 +691,7 @@ pub fn think_fov(ft: f32) -> f32 {
             c.default_fov.set_value(v);
             FOV_PINNED.0.set(true);
         }
-        // Port addition: after a switch away from a ruleset that pinned it, the cvar's value
+        // Port addition: after a map of a ruleset that pinned it, the cvar's value
         // comes back from its string (the engine's `atof`), so the pin doesn't carry over.
         None if FOV_PINNED.0.replace(false) => {
             let s = c.default_fov.string().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();

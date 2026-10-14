@@ -154,7 +154,7 @@ pub fn install(g: &mut GameRules) {
     // `g_theOneMode`: `mp_theonemode` as `CWorld::Spawn` (0x1006c530) reads it for the map.
     let the_one = cvars::on(c"mp_theonemode");
     let mode = decide_gameplay(&map, the_one, cvars::f(c"mp_teamplay"));
-    // The worldspawn keys TS 3.0 reads stay for a switch back (a switch doesn't parse worldspawn).
+    // The worldspawn keys TS 3.0 reads, parsed before the install, stay as they were.
     let (forced, map_teams, map_models) = (g.forced_gamemode, std::mem::take(&mut g.map_teams), std::mem::take(&mut g.map_team_models));
     *g = GameRules::default();
     (g.forced_gamemode, g.map_teams, g.map_team_models) = (forced, map_teams, map_models);

@@ -18,6 +18,7 @@ mod movement;
 mod overview;
 pub(crate) use overview::atof;
 mod panel;
+pub(crate) use panel::height as panel_height;
 
 pub(crate) use movement::smooth;
 pub use movement::{begin_player_move, spectator_move};

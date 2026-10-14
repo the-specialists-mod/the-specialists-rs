@@ -1,7 +1,7 @@
 //! [`ClientRules`]: the client-only hooks (HUD and input).
 //!
 //! The HUD resolves them from the server's `SrvSett` key [`SRVSETT_KEY`](ts_gameplay::SRVSETT_KEY)
-//! ([`hud_rules`](super::hud_rules)), which `InitHUD` sends and a switch re-sends. Code outside the
+//! ([`hud_rules`](super::hud_rules)), which `InitHUD` sends on each map. Code outside the
 //! HUD's own borrow (input commands, the FOV and effects frames) uses [`current`](super::current).
 
 use crate::effects::psys::PSys;
@@ -60,6 +60,11 @@ pub struct KungfuRegen {
 /// Client rules. Every default body is TS 3.0's (`shared::gameplay::Core`); the HUD and input code
 /// call these where a ruleset can differ.
 pub trait ClientRules: Sync {
+    /// The ruleset's name as the buy menu shows it (port addition, `menus::draw_versions`).
+    fn ruleset_name(&self) -> &'static str {
+        "TS 3.0"
+    }
+
     /// `DrawCrosshair` (1004e9f0): the divesteps first (whatever the weapon), then the crosshair
     /// unless the weapon is kung fu, the M61 grenade, a knife or the katana (0, 24, 25, 34, 35).
     /// `fov` is `m_iFOV`.

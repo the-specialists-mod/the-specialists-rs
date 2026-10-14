@@ -47,11 +47,9 @@ fn update_limit_cvars(which: usize, frags_left: i32, time_left: i32) {
 }
 
 /// The time `mp_timelimit` is checked against: TS's `gpGlobals->time`, which a map start
-/// restarts, less the time of the last gameplay switch's reset (`GameRules::time_base`, 0 after a
-/// map start), so the reset gives the new game the whole limit as a new map would (issue #100
-/// §1.3). Extended precision, as TS's x87 subtraction.
+/// restarts, in extended precision as TS's x87 code holds it.
 fn game_clock(now: f32) -> f64 {
-    now as f64 - state::with(|g| g.time_base) as f64
+    now as f64
 }
 
 /// Both Thinks' `mp_timelimit` test: `(mp_timeleft, over)`. `limit × 60` stays in an x87
@@ -662,13 +660,10 @@ mod tests {
     use super::{Mode, refresh_copy, restart_round_applies, round_time_byte, time_limit, x87_eq, x87_max0};
 
     #[test]
-    fn the_time_limit_counts_from_the_games_start() {
-        // Issue #123: 19 minutes into the map, a switch at 1140 s leaves the new game 20 minutes.
-        let switch = 1140.0f64;
-        assert_eq!(time_limit(20.0, 1150.0 - switch), (1190, false));
-        assert_eq!(time_limit(20.0, 1150.0), (50, false), "the map's clock: one minute left");
-        assert_eq!(time_limit(20.0, 2340.0 - switch), (0, true));
-        // Off at 0; a real map start (base 0) is TS's `timelimit * 60 - time`, truncated.
+    fn the_time_limit_counts_from_the_map_start() {
+        assert_eq!(time_limit(20.0, 1150.0), (50, false), "the map's clock: under a minute left");
+        assert_eq!(time_limit(20.0, 1200.0), (0, true));
+        // Off at 0; otherwise TS's `timelimit * 60 - time`, truncated.
         assert_eq!(time_limit(0.0, 1e6), (0, false));
         assert_eq!(time_limit(1.0, 30.4), (29, false));
         assert_eq!(time_limit(1.0, 60.0), (0, true));

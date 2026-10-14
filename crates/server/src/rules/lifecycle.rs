@@ -604,10 +604,12 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     // truncated, and the weapon mask.
     let (rb, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0], g.allowed_weapons, g.round_end, g.round_timer));
     let cash = !super::frame::x87_eq(cvars::f(c"usecash") as f64, 0.0);
-    // Port addition: key 4, the gameplay ruleset for the HUD (`crate::gameplay`); TS's client
-    // ignores it.
+    // Port additions: key 4, the gameplay ruleset for the HUD (`crate::gameplay`), and keys 5..7,
+    // the server library's version (`shared::protocol::port`). TS's client ignores keys past 3.
     let ruleset = (ts_gameplay::SRVSETT_KEY, crate::gameplay::srvsett_value() as i32);
-    let sets = [(0u8, rb), (1, cash as i32), (2, super::frame::ammocount()), (3, mask), ruleset];
+    let [k5, k6, k7] = shared::protocol::port::SRVSETT_VERSION_KEYS;
+    let [major, minor, patch] = shared::protocol::port::version_numbers().map(i32::from);
+    let sets = [(0u8, rb), (1, cash as i32), (2, super::frame::ammocount()), (3, mask), ruleset, (k5, major), (k6, minor), (k7, patch)];
     for (key, value) in sets {
         let s = SrvSett { key, value: value as i16 };
         msg::one(Msg::SrvSett, e, |w| s.write(w));

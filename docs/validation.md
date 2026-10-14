@@ -130,7 +130,7 @@ results from `ts_status` dumps, kill notices and developer log lines:
 | Kick | `kick` the bot the host just killed | No crash (a dropped bot used to crash the engine on its "respawn"), and the quota adds a replacement |
 | Death and respawn | `ts_hurt 1 500`, click through the death cam, click after the wait | Dead with a death, then a second spawn line and alive |
 | Bots | Host suicides and stays observer; `ts_bot_stop 0`, `ts_bot_quota 4`, 70 s of play (TS's AI: the shipped ts_dojo node graph, TS's random loadouts) | Four bots. Within one life, all but at most one of the bots measured (at least two) move over 64 units between dumps 5 s apart. At least 2 `Bot ... killed Bot ...` lines |
-| Gameplay switch | With the four bots playing: `ts_gameplay 21`, 10 s, `ts_gameplay 30`, then the host joins through the buy menu as in Join (`implementation/gameplay-plugins.md` §4) | Each switch logs `[ts] gameplay: ruleset A -> B: game reset (...)` with every player and map entities spawned again. 1.5 s later (the reset's second half runs after 0.6 s) every player has 0 frags and 0 deaths and none is alive (fresh joins), where someone had scored before. The client logs a HUD reset for each switch. The bots are alive again after 10 s, and the host is alive after rejoining |
+| Gameplay at a map change | With the four bots playing: `ts_gameplay 21`; 1.5 s later `changelevel ts_dojo`, 15 s; `ts_gameplay 30`, `changelevel ts_dojo`, then the host joins through the buy menu as in Join (`implementation/gameplay-plugins.md` §4) | Mid-map: the console says `ruleset 21 takes effect at the next map (this map runs 30)`, every living player still moves by `gp=30` (`ts_status`) and the scores are kept. The 2.1 map: `[ts] gameplay: ruleset 21 for this map`, 2.1's `[ts] game rules (2.1): ...`, the client's `[ts] gameplay: the server runs ruleset 21` (`SrvSett` 4), at least three bots alive and every living player at `gp=21`. The 3.0 map: the same for 30 (3.0's `[ts] game rules: ...`), and the host alive after joining |
 | Quota down | `ts_bot_quota 0` | The bots are kicked |
 | addbot | `addbot` on the listen server | "<name> connected with skill", a player with a `bots.txt` name in `ts_status`, no "Bots only in listen servers.", and the quota (0) doesn't kick it |
 | Escape | `ts_dev_keylog 1`, `cancelselect` twice (Escape's binding; the first may close the weapon menu) | `[ts key] cancelselect: escape`: the client sent `escape`, which opens the engine's main menu |
@@ -374,6 +374,26 @@ The port of TS's bot AI (`implementation/rules.md` §10) was checked three ways:
   original client shows those lines on the HUD only). The port prints the same three.
   `scripts/ndm.py` gives `89,87,25` for the first: it rounds the walk heuristic to a float,
   which the x87 code (`fsqrt` straight into `__ftol`, 0x100719eb) doesn't.
+
+### 3.6 The original TS client in 2.1 mode
+
+Checked by hand (no xtask command yet: it needs the Wine root `~/games/xash_win_orig` and a
+window). A native FWGS dedicated server with the port (`cargo xtask install fwgs`, then in
+`~/games/xash`: `./xash -dev 1 -game ts -port 27142 +maxplayers 8 +sv_lan 1 +servercfgfile
+<cfg> +map ts_dojo`, the cfg holding `ts_gameplay 21`), and the original TS 3.0 client
+(`wine xash3d.exe -game ts -dev 2 -log -windowed +exec <cfg>` in `~/games/xash_win_orig`, the cfg
+`connect 127.0.0.1:27142` without `gs`, then waits, `screenshot`, `quit`):
+
+* **2.1:** the client's `engine.log` shows `Server was reject the connection: Invalid Version:
+  Running 2.1 mode. Upgrade to the rust port at tsmod.org`, and the server logs `[ts] gameplay:
+  refused a client in ruleset 21 (Other): ...`. FWGS dedicated runs the server config once before
+  the first map as well, so `ts_gameplay 21` from it already applied to that map (`ruleset 21 for
+  this map`, no reload).
+* **3.0** (the cfg holding `ts_gameplay 30`): the same client joins, loads ts_dojo and shows the
+  buy menu; the `SrvSett` keys 4..7 it ignores change nothing.
+
+The port's own client joining a 2.1 map is covered by `cargo xtask play` (the host reconnects at
+the `changelevel` to 2.1 and plays on).
 
 ## 4. Pitfalls found during setup
 

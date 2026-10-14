@@ -1,8 +1,9 @@
 # Gameplay plugins
 
-The port can run more than one ruleset and switch between them mid-game (issue #100). TS 3.0's
-rules are the **core plugin** (`"30"`). Each other ruleset is a separate in-process Rust plugin.
-The first is TS 2.1 ([ts21.md](ts21.md)). The server cvar `ts_gameplay` picks the active one.
+The port can run more than one ruleset (issue #100). TS 3.0's rules are the **core plugin**
+(`"30"`). Each other ruleset is a separate in-process Rust plugin. The first is TS 2.1
+([ts21.md](ts21.md)). The server cvar `ts_gameplay` picks the one a map runs, at the map's start
+(§4).
 
 The plugins keep each ruleset's code apart from 3.0's. The 3.0 crates (`shared`, `ts-server`,
 `ts-client`) contain no code, constants or `if`s for another ruleset. They call **hooks** at the
@@ -23,12 +24,11 @@ crates/
     gun.rs    GunRules: gun hooks (shared::weapons::gun, through GunHost::rules)
   server/src/gameplay/
     mod.rs    ServerPlugin { pm, gun, server } and CORE_PLUGIN, the server registry, active(),
-              the per-call resolvers, the switch (frame, map_start)
-    server.rs ServerRules: server-only hooks
-    reset.rs  the reset a switch runs (§4)
+              the per-call resolvers, the latch at a map start (map_select, map_start,
+              exec_server_config, frame), the client check (refuse_client)
+    server.rs ServerRules: server-only hooks; ConnectingClient
   client/src/gameplay/
-    mod.rs    ClientPlugin { pm, gun, client } and CORE_PLUGIN, the client registry, resolvers,
-              reset_client
+    mod.rs    ClientPlugin { pm, gun, client } and CORE_PLUGIN, the client registry, resolvers
     client.rs ClientRules: client-only hooks (HUD, input)
   ts21/       the TS 2.1 plugin (ts21.md)
     src/shared/  ts21-gameplay: Ts21 (impl PmRules, GunRules), ID "21"
@@ -65,8 +65,7 @@ delegation.
 
 `Registry<P>` is generic over the plugin type, so another independent axis can be added later
 with its own registry and cvar. One example is a bot plugin, chosen apart from the gameplay
-ruleset. Bots aren't part of a gameplay ruleset, so `ServerRules` has no bot hooks. The reset
-(§4) only replays what a map start does for them. A ruleset that changes TS's own bots registers
+ruleset. Bots aren't part of a gameplay ruleset, so `ServerRules` has no bot hooks. A ruleset that changes TS's own bots registers
 `NativeBotRules` with the native bot backend's registry under its gameplay id instead
 ([bot-plugins.md](bot-plugins.md) §2.2; TS 2.1's: `ts21_server::bots::BOTS`).
 
@@ -78,9 +77,10 @@ plugin's own statics (`goldsrc::Global` with a `Cell`/`RefCell`, as the game cra
 
 | What | Server | Client |
 |---|---|---|
-| The choice | `ts_gameplay` (`FCVAR_SERVER`, default `"30"`, port addition). It is read every frame, like `ts_pm_arith`. | — |
-| Shared code (movement, gun) | Physinfo key `gp`, set at every spawn next to `mj`/`hl` (`rules/lifecycle.rs`, `stunt/mod.rs`, `player/save.rs`) and for every client on a switch | `pmove->physinfo` / `clientdata_t::physinfo` (`gp`) |
-| HUD | — | `SrvSett` key 4, value = the id as a number. Sent in `InitHUD` after keys 0..3, and on a switch. TS 3.0's client ignores key 4. |
+| The choice | `ts_gameplay` (`FCVAR_SERVER`, default `"30"`, port addition). Read at each map start (§4). | — |
+| Shared code (movement, gun) | Physinfo key `gp`, set at every spawn next to `mj`/`hl` (`rules/lifecycle.rs`, `stunt/mod.rs`, `player/save.rs`) | `pmove->physinfo` / `clientdata_t::physinfo` (`gp`) |
+| HUD | — | `SrvSett` key 4, value = the id as a number. Sent in `InitHUD` after keys 0..3. TS 3.0's client ignores it (its handler, client.dll 0x1004b840, switches on keys 0..3 only). |
+| Versions (port addition, `shared::protocol::port`) | The port client's userinfo key `_tsrs` (its version; §4.2) | `SrvSett` keys 5, 6, 7: the server library's major, minor and patch version, after key 4. Shown in the buy menu (§4.3). |
 
 Ids are short decimal numbers (`ts_gameplay::srvsett_value`), because the HUD channel is a
 `short`. `Registry::add` refuses any other id. An empty id resolves silently to the core
@@ -100,97 +100,95 @@ helper looks them up again.
 | Client `HUD_PlayerMove` (`client-dll`) | `ts_client::gameplay::pm_rules(pm)`, then `player_move_with(pm, arith, rules, spectator)` | `gp` |
 | Server gun | `weapons::host::with_host` sets `ServerHost::rules` from `gameplay::gun_rules(e)`, and the gun reads `GunHost::rules()` | the player's `gp` (`pfnGetPhysicsKeyValue`) |
 | Client weapon prediction | `prediction::gun::post_think` sets `ClientHost::rules` from `gameplay::gun_rules(&from.client)` | `from`'s `gp`, per command |
-| Server frame, rules, scoring | `ts_server::gameplay::active().server` (a `Cell` read). `gameplay::frame()` runs at the start of `rules::start_frame` | `ts_gameplay` |
+| Server frame, rules, scoring | `ts_server::gameplay::active().server` (a `Cell` read) | `ts_gameplay` at the map start |
 | Client HUD | `ts_client::gameplay::hud_rules(h.gameplay)` | `SrvSett` 4 (`Hud::gameplay`) |
 | Client input, FOV, map effects, buy menu | `ts_client::gameplay::current()` (reads `Hud::gameplay` without holding the HUD's borrow) | `SrvSett` 4 |
 
 Movement and the gun read physinfo instead of the cvar so that the server and the client's
 prediction run the same rules for the same command, as they must.
 
-## 4. Switching: the reset
+## 4. The ruleset is chosen at a map start
 
-When `ts_gameplay` changes, `gameplay::frame()` sees a different plugin at the start of the next
-frame. It resets the game to a **brand-new state, as if the map had just started**, without
-reloading the map. Then it calls the new plugin's `ServerRules::on_activate()`. Nothing carries
-over, so no state is ever converted between rulesets. The reset is core code
-(`server/src/gameplay/reset.rs`) and knows no plugin.
+`ts_gameplay` applies only at a map change (issue #100 §1.1, §1.3). A new map is the fresh state:
+the engine reloads the map, the rules are built again and every client goes through
+`ClientConnect`, `ClientPutInServer` and `InitHUD` again, so nothing carries over between
+rulesets and nothing is ever converted. There is no reset of a running game.
 
-The reset runs in two halves 0.6 s apart. The engines don't hand out a freed edict again for
-0.5 s (FWGS `SV_AllocEdict`, ReHLDS `ED_Alloc`), and re-spawning a large map into fresh edicts
-could run out of them. `reset::begin` runs steps 1-3 on the switch frame, and `reset::finish`
-runs steps 4-6 once the wait is over. In between, the map is empty and the players are frozen
-and can't be hurt. The rules' Think doesn't run then, because `gameplay::frame()` returns false.
-The reset replays a map start in this order:
+* **Map start.** `rules::install` (worldspawn's `InstallGameRules`, after `exec game.cfg` has run)
+  calls `gameplay::map_select()`, which makes the plugin `ts_gameplay` selects active for the
+  whole map before the rules are built (so its `ServerRules::install` decides them), with its
+  weapon tables, and logs `[ts] gameplay: ruleset N for this map`. After the rules,
+  `gameplay::map_start()` calls its `on_activate()`.
+* **Mid-map.** A change does nothing until the next map (`changelevel`, `map`, the map cycle).
+  `gameplay::frame()` (start of `rules::start_frame`) tells the console once per value:
+  `[ts] gameplay: ts_gameplay is "21"; ruleset 21 takes effect at the next map (this map runs 30)`.
+* **The server config.** The engines run the server config (`servercfgfile`, `lservercfgfile` on
+  a listen server) only once the map has loaded (TS's `CHalfLifeMultiplay` constructor queues
+  it), after `map_select`. So that a `ts_gameplay` set there applies to the map that ran it,
+  `gameplay::exec_server_config` queues the `exec` between the two halves of a port command,
+  `_ts_gameplay_mapcfg <serial> begin|end`. If the config's own commands changed `ts_gameplay` to
+  another ruleset, the map is loaded again under it (`changelevel` to the same map, before anyone
+  has joined) with `[ts] gameplay: the server config chose ruleset N; loading <map> again under
+  it`. A change made before the config ran (a running `wait` script, the console) isn't the
+  config's and waits for the next map. The serial (one per map start) makes a check left behind a
+  `wait` script from an earlier map do nothing.
 
-1. **Clients.** `SrvSett` 4 with the new id goes to everyone, and physinfo `gp` is set on every
-   client.
-2. **Players.** Each player's items are destroyed (`remove_all_items`). Each player then gets a
-   brand-new `Player` object and a zero score. Only the connection's identity stays: the bot flags,
-   the bot backend's state for the new game (`BotBackend::reset_state`; native: a fresh `Brain`
-   with the same skill), and the spray frames. Until step 6 the players
-   are frozen (`FL_FROZEN`), can't be hurt, and count as alive (`DEAD_NO`), so a dead player's
-   `PlayerDeathThink` doesn't make a corpse or start observing in the empty map.
-3. **Entities.** Every entity past the client slots is removed at once (`UpdateOnRemove`, then
-   `pfnRemoveEntity`), so the map's entities get their edicts back. Thrown knives, grenades,
-   dropped guns, spawned power-ups and the corpses go with them. The world's soundent stays,
-   like worldspawn, and is spawned again in step 4. It keeps its edict, the first after the
-   clients, and the players' sound slots exist throughout.
+So `ts_gameplay` can be set before a map starts: in `game.cfg`, in the server config (through
+`+servercfgfile`), at the console or by rcon before `map`/`changelevel`. On the command line,
+`+ts_gameplay` doesn't work, as for every game cvar (AGENTS.md pitfalls).
 
-   When the wait is over, `finish` first drops whatever the players' think did in the empty
-   map: every player is made brand new again, and any entity created meanwhile is removed.
-4. **The world.** `entities::stock::restart_world` runs what `CWorld::Precache` resets and
-   creates, in its order: the per-map registries (masters, `env_global` states, sound rooms),
-   then `rules::start_rules` (`GameRules::install`: game mode, rounds, teams, The One, slow
-   motion, votes; the node graph and bot texts), the soundent (`CSoundEnt::Spawn` again), the
-   body queue and the light styles. It leaves out the precaches (the engine has them), the forced `sv_gravity`/
-   `sv_stepsize`, the configs and the chapter title.
-5. **Map entities.** They are spawned again from the BSP entity lump as FWGS's
-   `SV_LoadFromFile`/`SV_ParseEdict` do it, worldspawn excepted. That means `classname` and the
-   private data first, then the other keyvalues in order (empty ones and `wad` skipped, trailing
-   spaces trimmed from keys, `angle` given as `angles`), then `Spawn`. An entity whose spawn
-   returns -1 is freed. After that comes `ServerActivate`'s `Activate` pass, and the bot
-   manager's restart.
-6. **Players spawn as fresh joins** (`ClientPutInServer`'s spawn). Everyone gets `InitHUD`,
-   the score and team broadcasts, the buy menu and the respawn wait again. In teamplay, a bot
-   made with a model joins that team again, as `BotSetup` does after the spawn. The model is
-   recorded at creation (`Player::bot_join_team`), so this works whichever ruleset made the bot
-   (TS 2.1's `BotSetup` sets no `team` key); a bot the engine kept across a level change has none
-   recorded and uses its `team` key. Like a new bot, it starts with no cash.
+On the client, each `InitHUD` clears the ruleset the HUD holds (`Hud::gameplay`), and the
+`SrvSett` 4 after it records the map's; a new map already resets the client (`HUD_VidInit`). The
+client logs `[ts] gameplay: the server runs ruleset N` when it differs from the last one it saw.
+The value isn't cleared in `HUD_VidInit`, which the engine also calls on a video mode change
+(FWGS `SCR_VidInit`, e.g. a window resize).
 
-The engine's clock keeps running, so step 4 records the reset's time (`GameRules::time_base`, 0
-after a map start) and both Thinks check `mp_timelimit` and set `mp_timeleft` from it
-(`frame::game_clock`): the new game gets the whole time limit, as a new map would.
+### 4.1 What a map change keeps
 
-The server logs
-`[ts] gameplay: ruleset 30 -> 21: game reset (N players, N entities removed, N spawned from the map)`.
+Cvars keep their values (a map start runs `game.cfg` and the server config again). Bots the
+engine keeps across a level change stay, and the quota picks them up (`bot_backend::quota`).
+Client-side settings that aren't game state (voice) stay.
 
-On the client, a `SrvSett` 4 value that differs from the one it holds is a switch.
-`gameplay::reset_client` runs what `HUD_VidInit` resets (HUD, prediction, effects, spectator)
-before the server's fresh state arrives, and logs `[ts] gameplay: the server switched to
-ruleset N; HUD reset`. Each `InitHUD` clears the value the HUD holds (a connect, a map change, or
-the fresh join after a switch), and the `SrvSett` 4 after it only records the ruleset. The value
-isn't cleared in `HUD_VidInit`, which the engine also calls on a video mode change (FWGS
-`SCR_VidInit`, e.g. a window resize).
-TS 3.0's own client ignores key 4. It still gets the fresh join's `ResetHUD`/`InitHUD` and the
-re-sent state, but it can't predict another ruleset (issue #100 §1.1).
-
-At map start, `rules::install` calls `gameplay::map_select()`, which makes the plugin `ts_gameplay`
-selects active before the rules are built (so its `ServerRules::install` decides them), and
-after them `gameplay::map_start()`, which calls `on_activate()`, with no reset. The server config runs after the map has
-loaded. If it changes `ts_gameplay`, the first frame resets the game once.
-
-### Differences from a real map start
-
-* The configs (`game.cfg`, the server config) aren't run again, and the cvars keep their values:
-  a switch keeps the server's settings.
-* `SF_NOT_DEATHMATCH` entities are spawned, as FWGS spawns them by default. FWGS skips them
-  only with `BUGCOMP_SPAWNFLAG_NOT_DEATHMATCH`.
-* Clients aren't reconnected, so client-side state the server never resets stays. For example,
-  the voice settings stay.
-
-The reset is tested in-engine only on FWGS listen servers on `ts_dojo` (`cargo xtask play`).
-Dedicated servers on the Steam engines, large maps and team modes are still to be tested
+Tested in-engine on FWGS listen servers on `ts_dojo` (`cargo xtask play`, "Gameplay at a map
+change"). Dedicated servers on the Steam engines and the team modes are still to be checked
 (issue #103).
+
+### 4.2 Only the port's client plays a ruleset other than 3.0
+
+TS 3.0's own client predicts 3.0's movement and weapons and ignores `SrvSett` 4, so it can't
+play another ruleset (issue #100 §1.1). The port's client registers the `FCVAR_USERINFO` cvar
+`_tsrs`, whose value is its version (`shared::protocol::port::USERINFO_KEY`), so its userinfo
+carries the key and TS 3.0's doesn't. The engines strip `_` keys only from the userinfo they send
+to other clients (FWGS `SV_FullClientUpdate`, ReHLDS `Info_RemovePrefixedKeys`), not from the
+server's copy.
+
+In `ClientConnect`, which the engines run for every client's `new` (FWGS `SV_New_f`, ReHLDS
+`SV_ConnectClient`'s continuation), again at every map change, and never for their own fake
+clients, `gameplay::refuse_client` classifies the client (`ConnectingClient::classify`):
+
+| Client | Seen as |
+|---|---|
+| A bot: `FL_FAKECLIENT` on the edict, or a `*bot` userinfo key (a bot plugin's `ClientConnect`) | `Bot` |
+| An HLTV proxy: `*hltv` (HLDS, ReHLDS) or `hltv` (FWGS) set | `Hltv` |
+| `_tsrs` set | `Port(version)` |
+| anything else (TS 3.0's client) | `Other` |
+
+and asks the active ruleset (`ServerRules::refuse_client`). TS 3.0's answer is always none. TS
+2.1's refuses `Other` with `Invalid Version: Running 2.1 mode. Upgrade to the rust port at
+tsmod.org`. A refused client gets the text through the engine's reject buffer (`szRejectReason`,
+128 bytes, written by `server-dll`'s `client_connect`; FWGS and ReHLDS print it to the client and
+drop it, HLDS `echo`es it), before TS's part of `ClientConnect` counts it. The server logs
+`[ts] gameplay: refused a client in ruleset 21 (Other): ...`.
+
+### 4.3 Versions in the buy menu
+
+While the buy menu (TS's weapon selection) is open, its bottom right corner shows three rows in
+the menu's own style (the dimmed row colour box, the HUD font): the server's ruleset
+(`ClientRules::ruleset_name`: `TS 3.0`, `TS 2.1`), `Client <version>` (this library's) and
+`Server <version>` (`SrvSett` 5..7) or `Server version unknown` (TS 3.0's server, an older port).
+The box stays right of the menu's columns (`menus::version_box`, x past `0x188 + 128`) and
+above the spectator bar (`YRES(40)`), which is always up while the menu is open (dead or
+observing).
 
 ## 5. The hook contract
 
@@ -256,7 +254,8 @@ The hooks so far:
 | `GunRules` | `infinite_clip_skips_idle_reload()` | true: `!InfiniteClips && clip < 1` reloads | `weapons/gun.rs` `weapon_idle` |
 | `GunRules` | `holster_draws_kungfu()` | true: `Unzoom`, then weapon 0's view model, draw animation and draw event | `weapons/gun.rs` `holster_weapon` |
 | `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | false: 3.0's `Gun` method runs | the top of each `Gun` method in `weapons/gun.rs` |
-| `ServerRules` | `on_activate()` | nothing | `gameplay::map_start`, `gameplay::frame` |
+| `ServerRules` | `on_activate()` | nothing | `gameplay::map_start` |
+| `ServerRules` | `refuse_client(client)` | none (everyone joins) | `gameplay::refuse_client`, from `rules::client_connect` (§4.2) |
 | `ServerRules` | `cvars()` | none | `gameplay::register` (registered after 3.0's, skipping existing names) |
 | `ServerRules` | `server_command(name)` | false (3.0's command runs) | `rules/commands.rs` `globalslow`, `restartround`, `weaponrestriction` |
 | `ServerRules` | `client_command(p, cx, cmd, args)` | `None` (3.0's handlers run) | `commands.rs` `dispatch_player`, before the weapons' |
@@ -290,7 +289,7 @@ The hooks so far:
 | `ServerRules` | `charger_charge(armor, juice, activator)` | `items::charge_once`: `TakeArmor(100)` / `TakeHealth(max - health)`, then empty | `entities/stock/items.rs` `Charger::use_` |
 | `ServerRules` | `entity_object(class)` | `None`: the type linked to the classname | `world::create_linked`, the body of every `link_entities!` export |
 | `ServerRules` | `precache()` | nothing; run for every registered ruleset at each map start | `gameplay::precache_rulesets`, from the world's precache after TS 3.0's |
-| `ServerRules` | `spawns_entity(class)` | true | `entities/mod.rs` `dispatch_spawn` (-1 when refused; the map load and the reset's re-spawn both go through it) and `dispatch_key_value` (a refused class parses no key) |
+| `ServerRules` | `spawns_entity(class)` | true | `entities/mod.rs` `dispatch_spawn` (-1 when refused; the map load goes through it) and `dispatch_key_value` (a refused class parses no key) |
 | `ServerRules` | `entity_key_value(ent, cx, key, value)` | `None` (the class parses it) | `ham/mod.rs` `class_key_value` (`DispatchKeyValue`'s class part and AMXX's `ExecuteHam`) |
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
 | `ServerRules` | `broken_respawn_delay(respawntime)` | `Some(30 s if 0, else the key)` | `entities/stock/breakable.rs` `die`, `doors.rs` (break) |
@@ -312,6 +311,7 @@ The hooks so far:
 | `ServerRules` | `can_dive(p, armor, dive)` | `stunt::rules::can_dive` (used < 42/52/62, The One bypasses) | `stunt/moves.rs` `can` |
 | `ServerRules` | `bullet_time_allowed(time_scale)` | `max(fuser1, 0.01) <= 0.99` | `stunt/moves.rs` `go_bullet_time` |
 | `ClientRules` | `map_effects()` | true | `effects.rs` `frame` (emitters) and `fog_begin` (map fog), asked each frame |
+| `ClientRules` | `ruleset_name()` | `"TS 3.0"` | `menus::draw_buy_menu` (§4.3) |
 | `ClientRules` | `crosshair_parts(weapon, fov)` | divesteps first for every weapon, then the crosshair unless weapon 0/24/25/34/35 | `hud/weapons.rs` `draw_crosshair` |
 | `ClientRules` | `crosshair_gap(base, spread, accuracy)` | `base + spread × 160` (f32), clamped to ±0x10000 | `hud/weapons.rs` `draw_crosshair` |
 | `ClientRules` | `divesteps_blocked(used, armor, teamplay)` | `used ≥ 42 / 52 / 62` | `hud/weapons.rs` `draw_divesteps` |
@@ -382,7 +382,7 @@ scales; 3.0's `melee_crouch` is `melee_hold(bits, 2, true)`) and `the_one()`, an
 becomes active (`gameplay::set_active`), by the client from each predicted command's rules. So
 everything that reads weapon data (the gun, inventory, buying, the HUD, damage, the events)
 follows the ruleset without a hook of its own; a change of tables drops custom weapon parameters
-(`loadweapons`, `CustomWP`), and so does every map start and the switch's reset
+(`loadweapons`, `CustomWP`), and so does every map start
 (`weapons::rebuild_weapon_info`, `W_Precache`'s `compile_weapons_info`). The map precaches the weapon assets of every registered ruleset's
 tables, TS 3.0's first so its precache order is unchanged (`weapons::precache_weapon_assets`),
 and the server keeps one set of model strings per ruleset. The gun's `GunHost` also tells the
@@ -441,5 +441,5 @@ checks the isolation:
   shared -p ts-gameplay --no-default-features`: the libraries build without the TS 2.1 plugin,
   and the 3.0 tests pass.
 
-`cargo xtask play` switches the ruleset mid-game ([validation.md](../validation.md) §2, "Gameplay
-switch").
+`cargo xtask play` changes the ruleset at a map change and back ([validation.md](../validation.md)
+§2, "Gameplay at a map change").

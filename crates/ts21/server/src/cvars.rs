@@ -98,7 +98,7 @@ impl Polled {
     }
 }
 
-/// The polled cvars' strings. Cvars outlive maps and gameplay switches, so these do too.
+/// The polled cvars' strings. Cvars outlive maps, so these do too.
 static POLLED: Global<RefCell<[Option<String>; 3]>> = Global(RefCell::new([None, None, None]));
 
 /// The cvar's string.

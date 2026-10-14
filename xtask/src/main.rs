@@ -812,58 +812,62 @@ fn akimbo_checks(text: &str) -> Vec<(&'static str, bool)> {
     vec![("akimbo free semi: both triggers fire both guns (linked), then each trigger its own gun", kinds == ["linked", "b0", "b1"])]
 }
 
-/// The gameplay switch (issue #100 §1.3, `docs/implementation/gameplay-plugins.md`), with the four
-/// quota bots playing: `ts_gameplay 21` resets the game to brand new (scores, players, map
-/// entities, the client's HUD), the bots join and spawn again, then `ts_gameplay 30` resets it
-/// once more and the host joins through the buy menu as at the start.
-fn script_gameplay_switch() -> String {
+/// The gameplay ruleset at a map change (issue #100 §1.1, `docs/implementation/gameplay-plugins.md`
+/// §4), with the four quota bots playing on `map`: `ts_gameplay 21` mid-map only says it waits for
+/// the next map, and the map goes on under 3.0; `changelevel` starts the map under 2.1 (the server's
+/// 2.1 rules, physinfo `gp` 21, the client's `SrvSett` 4) and the bots play it; `ts_gameplay 30` and
+/// `changelevel` bring 3.0 back, and the host joins through the buy menu as at the start.
+fn script_gameplay_switch(map: &str) -> String {
     let mut s = status("before switch");
-    // The reset's second half runs 0.6 s after the switch.
     s += &format!("echo XTASK: gameplay 21\nts_gameplay 21\n{}", secs(1.5));
-    s += &status("switched");
-    s += &secs(10.0);
-    s += &status("after switch");
-    s += &format!("echo XTASK: gameplay 30\nts_gameplay 30\n{}", secs(1.5));
-    s += &status("switched back");
+    s += &status("latched");
+    s += &format!("echo XTASK: changelevel 21\nchangelevel {map}\n{}", secs(15.0));
+    s += &status("map 21");
+    s += &format!("echo XTASK: changelevel 30\nts_gameplay 30\nchangelevel {map}\n");
     s += &script_join_and_spawn();
-    s + &status("rejoined")
+    s + &status("map 30")
 }
 
 fn gameplay_switch_checks(text: &str, dumps: &[(String, Vec<PlayerStatus>)]) -> Vec<(&'static str, bool)> {
     let dump = |tag: &str| dumps.iter().find(|d| d.0 == tag).map(|d| d.1.clone()).unwrap_or_default();
-    // `[ts] gameplay: ruleset 30 -> 21: game reset (5 players, 120 entities removed, 98 spawned from the map)`
-    let reset = |from: &str, to: &str| {
-        let needle = format!("[ts] gameplay: ruleset {from} -> {to}: game reset (");
-        text.lines().find_map(|l| l.split_once(needle.as_str()).map(|(_, r)| r.to_owned())).and_then(|r| {
-            let n = |key: &str| r.split_once(key).and_then(|(a, _)| a.rsplit([' ', '(']).next()?.parse::<i32>().ok());
-            Some((n(" players")?, n(" spawned")?))
-        })
+    let after = |marker: &str| text.split_once(marker).map_or("", |(_, a)| a);
+    // Each part of the log, up to the next scene marker.
+    let part = |from: &str, to: &str| after(from).split_once(to).map_or(after(from), |(a, _)| a);
+    let mid_map = part("XTASK: gameplay 21", "XTASK: changelevel 21");
+    let map21 = part("XTASK: changelevel 21", "XTASK: changelevel 30");
+    let map30 = after("XTASK: changelevel 30");
+    let gp = |tag: &str, id: &str| {
+        let d: Vec<PlayerStatus> = dump(tag).into_iter().filter(|p| p.state == "alive").collect();
+        !d.is_empty() && d.iter().all(|p| p.gp == id)
     };
-    let (to21, to30) = (reset("30", "21"), reset("21", "30"));
-    let before = dump("before switch");
-    let scored = before.iter().any(|p| p.frags != 0 || p.deaths != 0);
-    let fresh = |tag: &str| {
-        let d = dump(tag);
-        d.len() >= 5 && d.iter().all(|p| p.frags == 0 && p.deaths == 0 && p.state != "alive")
-    };
-    let bots_back = dump("after switch").iter().filter(|p| p.idx != 1 && p.state == "alive").count();
-    let hud_reset = text.contains("[ts] gameplay: the server switched to ruleset 21; HUD reset")
-        && text.contains("[ts] gameplay: the server switched to ruleset 30; HUD reset");
-    say!(
-        "   gameplay switch: 30->21 {to21:?}, 21->30 {to30:?} (players, map entities); scored before {scored}; bots alive after {bots_back}"
-    );
+    let (before, latched) = (dump("before switch"), dump("latched"));
+    let kept = before.iter().any(|p| p.frags != 0 || p.deaths != 0)
+        && before.iter().all(|p| latched.iter().any(|q| q.idx == p.idx && q.frags >= p.frags && q.deaths >= p.deaths));
+    let bots21 = dump("map 21").iter().filter(|p| p.idx != 1 && p.state == "alive").count();
+    say!("   gameplay at a map change: scores kept mid-map {kept}; bots alive on the 2.1 map {bots21}");
     vec![
         (
-            "ts_gameplay 21 mid-game: the game reset to brand new (scores zeroed, everyone a fresh join, map entities respawned)",
-            scored && to21.is_some_and(|(p, n)| p >= 5 && n > 0) && fresh("switched"),
+            "ts_gameplay 21 mid-map: only a console note; the map keeps running 3.0 (gp 30, scores kept)",
+            mid_map.contains("ruleset 21 takes effect at the next map (this map runs 30)")
+                && !mid_map.contains("[ts] gameplay: ruleset 21 for this map")
+                && gp("latched", "30")
+                && kept,
         ),
-        ("the client reset its HUD on each switch (SrvSett 4)", hud_reset),
-        ("after the switch the bots joined and spawned again", bots_back >= 3),
         (
-            "ts_gameplay 30: reset again, and the host joined and spawned through the buy menu",
-            to30.is_some_and(|(p, n)| p >= 5 && n > 0)
-                && fresh("switched back")
-                && dump("rejoined").iter().any(|p| p.idx == 1 && p.state == "alive"),
+            "changelevel: the map runs 2.1 (2.1's rules, physinfo gp 21, the client's SrvSett 4) and the bots play it",
+            map21.contains("[ts] gameplay: ruleset 21 for this map")
+                && map21.contains("[ts] game rules (2.1): ")
+                && map21.contains("[ts] gameplay: the server runs ruleset 21")
+                && gp("map 21", "21")
+                && bots21 >= 3,
+        ),
+        (
+            "ts_gameplay 30 + changelevel: 3.0 again, and the host joined and spawned through the buy menu",
+            map30.contains("[ts] gameplay: ruleset 30 for this map")
+                && map30.contains("[ts] game rules: ")
+                && map30.contains("[ts] gameplay: the server runs ruleset 30")
+                && gp("map 30", "30")
+                && dump("map 30").iter().any(|p| p.idx == 1 && p.state == "alive"),
         ),
     ]
 }
@@ -989,6 +993,8 @@ struct PlayerStatus {
     held: String,
     active: String,
     slow_target: f32,
+    /// Physinfo `gp`: the gameplay ruleset the player moves by (empty before its first spawn).
+    gp: String,
     org: [f32; 3],
 }
 
@@ -1013,6 +1019,7 @@ fn parse_status_line(line: &str) -> Option<PlayerStatus> {
         held: field(line, "held=")?.split('/').next()?.to_owned(),
         active: field(line, "active=")?.to_owned(),
         slow_target: field(line, "slow=")?.split("->").nth(1)?.parse().ok()?,
+        gp: field(line, "gp=").unwrap_or("").to_owned(),
         org: [*o.first()?, *o.get(1)?, *o.get(2)?],
     })
 }
@@ -1221,9 +1228,9 @@ impl Ctx {
         }
         cfg += &shot("bots");
 
-        // 8b. switch the gameplay ruleset mid-game and back: each switch resets the game to brand
-        // new, and play goes on (the bots respawn, the host joins again)
-        cfg += &script_gameplay_switch();
+        // 8b. the gameplay ruleset at a map change: 2.1 for one map, then 3.0 again (the bots play
+        // on, the host joins again)
+        cfg += &script_gameplay_switch("ts_dojo");
         cfg += "ts_bot_quota 0\n";
 
         // 9. `addbot` (TS's listen-server bots), then Escape last: its `escape` opens the menu
@@ -1508,10 +1515,13 @@ mod tests {
 
     #[test]
     fn parses_ts_status_lines() {
-        let line = "[ts]  #2 Bot Neo          alive hp=100 ar=0 frags=3 deaths=1 cash=1200 team='' held=0x1/3s active=0x1 slow=0.35->0.35 award=0 spree=0 org=(0 -480 36)";
+        let line = "[ts]  #2 Bot Neo          alive hp=100 ar=0 frags=3 deaths=1 cash=1200 team='' held=0x1/3s active=0x1 slow=0.35->0.35 award=0 spree=0 gp=21 org=(0 -480 36)";
         let p = parse_status_line(line).unwrap();
         assert_eq!((p.idx, p.name.as_str(), p.state.as_str(), p.frags, p.deaths), (2, "Bot Neo", "alive", 3, 1));
         assert_eq!((p.held.as_str(), p.active.as_str(), p.slow_target, p.org), ("0x1", "0x1", 0.35, [0.0, -480.0, 36.0]));
+        assert_eq!(p.gp, "21");
+        let old = parse_status_line(&line.replace(" gp=21", "")).unwrap();
+        assert_eq!((old.gp.as_str(), old.org), ("", [0.0, -480.0, 36.0]), "a line without gp (an older server)");
         let text = "XTASK: status a\n[ts] status: Dm\n".to_owned() + line + "\nXTASK: status b\n";
         let dumps = status_dumps(&text);
         assert_eq!((dumps.len(), dumps[0].1.len(), dumps[1].1.len()), (2, 1, 0));

@@ -7,10 +7,9 @@
 //! * HUD and input: [`hud_rules`] (or [`current`] outside the HUD's borrow), from the server's
 //!   `SrvSett` key 4 (the HUD's `gameplay`); the weapon events: [`hud_gun_rules`], from the same.
 //!
-//! When the server switches rulesets it re-sends `SrvSett` 4, and a changed value resets the
-//! client to a brand-new state ([`reset_client`]) before the server's fresh state arrives. The
-//! value the HUD holds is cleared by each `InitHUD` (a connect, a map, the fresh join after a
-//! switch), whose own `SrvSett` 4 then only records it.
+//! The server chooses its ruleset at a map start, so it changes only with a map: each `InitHUD`
+//! clears the value the HUD holds and the `SrvSett` 4 after it records the map's. A new map
+//! already resets the client (`HUD_VidInit`).
 
 pub mod client;
 
@@ -107,15 +106,4 @@ pub fn hud_gun_rules() -> &'static dyn GunRules {
         Some(v) => resolve(v.to_string().as_bytes()).gun,
         None => &CORE,
     }
-}
-
-/// The client's part of a ruleset switch: everything a new map resets (`HUD_VidInit`), so no HUD,
-/// prediction, effects or spectator state carries over. The HUD keeps the new ruleset's id.
-/// Voice settings aren't game state and stay.
-pub fn reset_client(id: i16) {
-    crate::hud::vid_init();
-    crate::prediction::vid_init();
-    crate::effects::vid_init();
-    crate::spectator::vid_init();
-    engine().print(&format!("[ts] gameplay: the server switched to ruleset {id}; HUD reset\n"));
 }

@@ -25,7 +25,7 @@ pub fn entity_object(class: &CStr) -> Option<Box<dyn Entity>> {
 }
 
 /// The map-start precache (`ServerRules::precache`): the long jump's model, which 2.1's
-/// `Spawn` precaches, so the item can spawn after a switch mid-map. The model is Half-Life's
+/// `Spawn` precaches. The model is Half-Life's
 /// (`valve`), so it is skipped where the file system has no such file.
 pub fn precache() {
     if engine().file_size(LONG_JUMP_MODEL).is_some_and(|n| n > 0) {
