@@ -571,13 +571,27 @@ fn observer_reset_then_holsters_throws_nothing() {
 
 #[test]
 fn grenade_throw_math() {
-    let (src, vel) = Gun::grenade_throw([0.0; 3], [0.0, 0.0, 28.0], [0.0; 3], [0.0, 0.0, 0.0], false);
+    let (src, vel) = Gun::grenade_throw(Arith::Msvc, [0.0; 3], [0.0, 0.0, 28.0], [0.0; 3], [0.0, 0.0, 0.0], false);
     // pitch 0 -> -10 (up), speed min(750, 100*7)=700
     assert!((spread::length(vel) - 700.0).abs() < 1e-3);
     assert!(vel[2] > 0.0);
     assert!((src[2] - (28.0 + 16.0 * (10.0f32).to_radians().sin())).abs() < 1e-3);
-    let (_, vel) = Gun::grenade_throw([0.0; 3], [0.0; 3], [0.0; 3], [0.0, 0.0, 0.0], true);
+    let (_, vel) = Gun::grenade_throw(Arith::Gcc, [0.0; 3], [0.0; 3], [0.0; 3], [0.0, 0.0, 0.0], true);
     assert!((spread::length(vel) - 700.0 * 0.6666667).abs() < 1e-2);
+}
+
+/// The throw's pitch and speed use the `double`s 10/9, 8/9, -10 and 2/3, and the builds sum the
+/// velocity differently (issue #129). At a pitch of -88.2 the port's old `float` arithmetic gave
+/// the velocity `[0x430aa2b7, 0xc1b6a2a0, 0x443d5a16]`.
+#[test]
+fn grenade_throw_rounds_as_ts() {
+    let p = f32::from_bits(0xc2b0_6666);
+    let throw = |arith| Gun::grenade_throw(arith, [100.3, -20.7, 64.1], [0.0, 0.0, 28.0], [120.5, -33.3, 7.7], [p, 30.0, 0.0], false);
+    let (src, vel) = throw(Arith::Msvc);
+    assert_eq!(src.map(f32::to_bits), [0x42c9_5fb1, 0xc1a3_d022, 0x42d8_3001]);
+    assert_eq!(vel.map(f32::to_bits), [0x430a_a2bc, 0xc1b6_a288, 0x443d_5a16]);
+    // `ts_i386.so` adds the y product unrounded where mp.dll stores it first.
+    assert_eq!(throw(Arith::Gcc).1.map(f32::to_bits), [0x430a_a2bc, 0xc1b6_a289, 0x443d_5a16]);
 }
 
 #[test]

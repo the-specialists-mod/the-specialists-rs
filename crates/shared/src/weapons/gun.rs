@@ -12,7 +12,7 @@
 use super::spread::{self, Vec3};
 use super::*;
 use crate::gameplay::{GunRules, Predicted};
-use crate::pm::Arith;
+use crate::pm::{Arith, Fpu, Num};
 use crate::ts::powerup;
 use std::ffi::CStr;
 
@@ -1136,20 +1136,50 @@ impl Gun {
         self.idle = 0.7;
     }
 
-    /// Throw origin and velocity for the M61 (`GrenadeIdle`): the pitch is remapped to
-    /// `p * (p >= 0 ? 10/9 : 8/9) - 10`, speed `min(750, (90 - p') * 7)`; a roll starts at the
-    /// feet with 2/3 speed.
-    pub fn grenade_throw(origin: Vec3, view_ofs: Vec3, velocity: Vec3, v_angle: Vec3, roll: bool) -> (Vec3, Vec3) {
-        let p = v_angle[0];
-        let pitch = (if p >= 0.0 { 1.111_111_2 } else { 0.888_888_9 }) * p - 10.0;
-        let speed = ((90.0 - pitch) * 7.0).min(750.0);
+    /// Throw origin and velocity for the M61 (`GrenadeIdle` 0x84f18, mp.dll 0x10057d80): the
+    /// pitch is remapped to `p * (p >= 0 ? 10/9 : 8/9) - 10`, speed `min(750, (90 - p') * 7)`; a
+    /// roll starts at the feet with 2/3 speed. The factors 10/9, 8/9, -10 and 2/3 are `double`s
+    /// on the x87 in every build (issue #129), so the pitch and speed are each rounded once.
+    /// The vector sums are per build (`arith`):
+    ///
+    /// * mp.dll (0x10057e4b..0x10057f2e, roll 0x10057fa0..0x1005800c): the eye's x and the
+    ///   velocity's x product stay on the FPU, y and z are stored before the add; the roll's
+    ///   `speed·2/3` stays unrounded and its z product too.
+    /// * `ts_i386.so` (0x8503a..0x850c3, 0x850d3..0x8511e, roll 0x851a4..0x85203): the eye and
+    ///   every velocity product stay on the FPU (the `16·forward` products are stored); the
+    ///   roll's `speed·2/3` is stored as a `float`.
+    pub fn grenade_throw(arith: Arith, origin: Vec3, view_ofs: Vec3, velocity: Vec3, v_angle: Vec3, roll: bool) -> (Vec3, Vec3) {
+        let p = v_angle[0] as f64;
+        // `fcom 0; test ah,1`: a NaN takes the 8/9 branch.
+        let pitch = (p * if p >= 0.0 { 10.0 / 9.0 } else { 8.0 / 9.0 } - 10.0) as f32;
+        let s = ((90.0 - pitch as f64) * 7.0) as f32;
+        let speed = if s > 750.0 { 750.0 } else { s };
         let (f, _, _) = spread::angle_vectors([pitch, v_angle[1], v_angle[2]]);
+        let d = |v: f32| v as f64;
+        let msvc = arith == Arith::Msvc;
         if !roll {
-            let src = spread::ma(spread::add(origin, view_ofs), 16.0, f);
-            (src, spread::ma(velocity, speed, f))
+            // `16·forward` is exact; the eye `origin + view_ofs` is what the builds round apart.
+            let eye = |i: usize| d(origin[i]) + d(view_ofs[i]);
+            let eye = |i: usize| if msvc && i > 0 { d(eye(i) as f32) } else { eye(i) };
+            let src = [0, 1, 2].map(|i| (eye(i) + d(f[i] * 16.0)) as f32);
+            let vel = [0, 1, 2].map(|i| {
+                let p = d(speed) * d(f[i]);
+                let p = if msvc && i > 0 { d(p as f32) } else { p };
+                (p + d(velocity[i])) as f32
+            });
+            (src, vel)
         } else {
             let src = spread::ma(origin, 16.0, f);
-            (src, spread::ma(velocity, speed * 0.666_666_7, f))
+            fn go<F: Fpu>(speed: f32, f: Vec3, velocity: Vec3) -> Vec3 {
+                let k = F::x(speed) * F::xd(2.0 / 3.0);
+                let k = if F::MSVC { k } else { F::x(k.f()) };
+                [0, 1, 2].map(|i| {
+                    let p = k * F::x(f[i]);
+                    let p = if F::MSVC && i < 2 { F::x(p.f()) } else { p };
+                    (p + F::x(velocity[i])).f()
+                })
+            }
+            (src, crate::by_arith!(arith, go(speed, f, velocity)))
         }
     }
 
@@ -1164,7 +1194,7 @@ impl Gun {
             if host.buttons() & (IN_ATTACK | IN_ATTACK2) != 0 && !force {
                 return;
             }
-            let (src, vel) = Self::grenade_throw(host.origin(), host.view_ofs(), host.velocity(), host.v_angle(), s.toggle);
+            let (src, vel) = Self::grenade_throw(host.arith(), host.origin(), host.view_ofs(), host.velocity(), host.v_angle(), s.toggle);
             if self.info().bullet == 4 {
                 host.throw_grenade(src, vel, s.toggle);
             }
