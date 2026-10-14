@@ -660,11 +660,17 @@ impl Gun {
                 return;
             }
             kind::KNIFE => {
+                if host.rules().blades_need_press() && host.pressed() & IN_ATTACK == 0 {
+                    return;
+                }
                 self.cur().toggle = false;
                 self.knife_fire(host);
                 return;
             }
             kind::KATANA => {
+                if host.rules().blades_need_press() && host.pressed() & IN_ATTACK == 0 {
+                    return;
+                }
                 self.katana_fire(host);
                 return;
             }
@@ -710,11 +716,14 @@ impl Gun {
                 return;
             }
             kind::KNIFE => {
+                if host.rules().blades_need_press() && host.pressed() & IN_ATTACK2 == 0 {
+                    return;
+                }
                 self.cur().toggle = true;
                 self.knife_fire(host);
                 return;
             }
-            kind::KATANA => {
+            kind::KATANA if host.rules().katana_throws() => {
                 self.katana_throw(host);
                 return;
             }
@@ -1758,7 +1767,9 @@ impl Gun {
         }
         if self.kind() == kind::GRENADE {
             self.grenade_idle(false, host);
-        } else if !Self::infinite_clip(host) && self.status[self.current as usize].clip < 1 {
+        } else if self.status[self.current as usize].clip < 1
+            && !(host.rules().infinite_clip_skips_idle_reload() && Self::infinite_clip(host))
+        {
             self.reload(host);
         } else if self.status[self.current as usize].clip != 0 {
             self.idle = 3.0;

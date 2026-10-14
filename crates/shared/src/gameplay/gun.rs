@@ -99,6 +99,25 @@ pub trait GunRules: MeleeRules + Sync {
     fn better_weapon(&self, gun: &Gun, excluded: u8) -> u8 {
         gun.better_weapon_core(excluded)
     }
+
+    /// Whether the knife (+attack, +attack2) and the katana (+attack) attack only on the frame
+    /// the button goes down. TS 3.0's `PrimaryAttack` (0x81a20) and `SecondaryAttack` (0x817a8)
+    /// call them while the button is held: false.
+    fn blades_need_press(&self) -> bool {
+        false
+    }
+
+    /// Whether +attack2 throws the katana (`SecondaryAttack` 0x817a8 → `KatanaThrow`); otherwise
+    /// the katana takes the generic scope / alt-grip path. 3.0: true.
+    fn katana_throws(&self) -> bool {
+        true
+    }
+
+    /// Whether Infinite Clip stops `WeaponIdle` (0x854dc) reloading an empty gun
+    /// (`!InfiniteClips(pl) && clip < 1`). 3.0: true.
+    fn infinite_clip_skips_idle_reload(&self) -> bool {
+        true
+    }
 }
 
 /// One think's recoil-penalty decay ([`GunRules::decay_spread`]).
@@ -194,6 +213,7 @@ mod tests {
         let ak = base_tables().weapon(crate::weapons::id::AK47).unwrap();
         let m4 = base_tables().weapon(crate::weapons::id::M4).unwrap();
         assert!(!CORE.cancel_runs_frame_in_reload(ak) && CORE.cancel_runs_frame_in_reload(m4));
+        assert!(!CORE.blades_need_press() && CORE.katana_throws() && CORE.infinite_clip_skips_idle_reload());
         let mut g = Gun::default();
         assert_eq!(CORE.better_weapon(&g, 0), 0, "nothing owned: kung fu");
         for id in [crate::weapons::id::AK47, crate::weapons::id::BENELLI] {

@@ -96,6 +96,23 @@ impl GunRules for Ts21 {
     fn better_weapon(&self, gun: &Gun, excluded: u8) -> u8 {
         better_weapon(gun, excluded)
     }
+
+    /// `PrimaryAttack` (0x1004aa50) calls `KnifeFire`/`KatanaFire` and `SecondaryAttack`
+    /// (0x1004a800) `KnifeFire` only when the button went down this frame (`pl+0x770`).
+    fn blades_need_press(&self) -> bool {
+        true
+    }
+
+    /// `SecondaryAttack` (0x1004a800) has no katana branch: the katana falls through to the
+    /// scope / alt-grip code, has neither, and only sets the 0.3 / 1.0 timers.
+    fn katana_throws(&self) -> bool {
+        false
+    }
+
+    /// `WeaponIdle` (0x1004d660): `clip < 1` reloads, with no `InfiniteClips` test.
+    fn infinite_clip_skips_idle_reload(&self) -> bool {
+        false
+    }
 }
 
 /// 2.1's `GetBetterWeapon` (FUN_1004a410): the owned weapon other than `excluded` with the
