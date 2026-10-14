@@ -401,6 +401,10 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             });
             give_cash(p, 900);
         }
+        // ` (victims_weapon)` is also announced, for every such kill (0x7ab45 file address).
+        if victims_weapon {
+            ts_message_all(GREEN, 1, 30, &own_weapon_message(&kname, &vname));
+        }
 
         // Frags (the killer's pev->frags).
         super::add_frags(k.e, None, points as f32);
@@ -455,6 +459,12 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
     if state::teamplay() {
         teams::recount(false);
     }
+}
+
+/// `PlayerKilled`'s announcement of a kill with the victim's own gun (string 0x108d00); the
+/// client's titles.txt resolves the keys ("X killed Y with his own weapon").
+fn own_weapon_message(killer: &str, victim: &str) -> String {
+    format!("{killer} #TS_Killed {victim} #TS_OwnWeapon")
 }
 
 /// Who gets the killer's `ScoreInfo` at the end of `PlayerKilled`.
@@ -834,7 +844,7 @@ pub fn broadcast_score(e: *mut edict_t) {
 mod tests {
     use super::{
         FragLoser, KillTags, KillerScore, Snapshot, TeamKillPunish, frag_loser, killer_score, kung_fu_frag, log_id, log_weapon,
-        own_weapon_name, rename_weapon, spectacular_roll, team_kill_punishment, victims_gun, weapon_info_name,
+        own_weapon_message, own_weapon_name, rename_weapon, spectacular_roll, team_kill_punishment, victims_gun, weapon_info_name,
     };
     use goldsrc::sys::edict_t;
     use shared::weapons::{id, tables};
@@ -939,6 +949,12 @@ mod tests {
         // Issue #118: a fall or a trigger lowers the world's frags; only a suicide the victim's.
         assert_eq!(frag_loser(false), FragLoser::Killer);
         assert_eq!(frag_loser(true), FragLoser::Victim);
+    }
+
+    #[test]
+    fn own_weapon_kills_are_announced() {
+        // Issue #121: "%s #TS_Killed %s #TS_OwnWeapon", killer then victim.
+        assert_eq!(own_weapon_message("Bob", "Al"), "Bob #TS_Killed Al #TS_OwnWeapon");
     }
 
     #[test]
