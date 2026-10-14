@@ -67,6 +67,44 @@ pub trait FpuMath: Fpu {
         if Self::MSVC { r } else { Self::x(r.f()) }
     }
 
+    /// The squares of `a` summed on the stack in the order `[i, j, k]` (`a[i]² + a[j]² + a[k]²`),
+    /// not rounded: the inline `Vector::Length` the game code uses. Each site's compiler picks its
+    /// own order ([`ORDER_XYZ`] is the most common), so ports name it.
+    #[inline]
+    fn sq_in(a: Vec3, [i, j, k]: [usize; 3]) -> Self::N {
+        Self::x(a[i]) * Self::x(a[i]) + Self::x(a[j]) * Self::x(a[j]) + Self::x(a[k]) * Self::x(a[k])
+    }
+
+    /// The inline `Vector::Length()` as the game code mostly compiles it, the squares summed in
+    /// `order`: MSVC keeps the root on the FPU (`fsqrt` with no store, mp.dll e.g. 0x100510c1), GCC
+    /// stores it as a `float` first (`fsqrt; fstps; flds`, `ts_i386.so` e.g. 0x7cbeb).
+    #[inline]
+    fn vec_length(a: Vec3, order: [usize; 3]) -> Self::N {
+        let r = Self::sq_in(a, order).sqrt();
+        if Self::MSVC { r } else { Self::x(r.f()) }
+    }
+
+    /// The inline `Vector::Normalize()`: [`FpuMath::vec_length`], `(0, 0, 1)` when it is 0 or NaN
+    /// (both builds test `fcom 0; test ah,0x40`), else each component times the unrounded `1 /
+    /// len`, rounded to a `float` (mp.dll 0x100510f9..0x1005113f, out of line at 0x100148f0;
+    /// `ts_i386.so` 0x7cc2d..0x7cc88).
+    #[inline]
+    fn vec_normalize(a: Vec3, order: [usize; 3]) -> Vec3 {
+        Self::vec_normalize_n(a, order).map(Num::f)
+    }
+
+    /// [`FpuMath::vec_normalize`] before the products are stored, for a site that uses one
+    /// unrounded (mp.dll's `Killed` push keeps x on the FPU, 0x1005e3ca).
+    #[inline]
+    fn vec_normalize_n(a: Vec3, order: [usize; 3]) -> [Self::N; 3] {
+        let len = Self::vec_length(a, order);
+        if eq87(len, Self::ZERO) {
+            return [Self::ZERO, Self::ZERO, Self::x(1.0)];
+        }
+        let inv = Self::x(1.0) / len;
+        a.map(|c| inv * Self::x(c))
+    }
+
     /// `VectorMA(a, s, b, out)` (server 0xfbbc4, client 0x10058410): `s*b + a`, rounded once.
     #[inline]
     fn ma(a: Vec3, s: f32, b: Vec3) -> Vec3 {
@@ -151,6 +189,31 @@ pub trait FpuMath: Fpu {
 
 impl<F: Fpu> FpuMath for F {}
 
+/// [`FpuMath::sq_in`] orders: `x² + y² + z²`.
+pub const ORDER_XYZ: [usize; 3] = [0, 1, 2];
+/// `z² + y² + x²`.
+pub const ORDER_ZYX: [usize; 3] = [2, 1, 0];
+
+/// `fld dword t; fadd qword d; fstp dword` in mp.dll's 53-bit arithmetic: a `float` plus a `double`
+/// constant, rounded once to a `float`. TS's think timers (`gpGlobals->time + 0.1`) are written so:
+/// the `double` 0.1 or 0.3 isn't rounded to a `float` before the add.
+#[inline]
+pub fn plus_double(t: f32, d: f64) -> f32 {
+    (t as f64 + d) as f32
+}
+
+/// Dispatches a function generic over [`Fpu`] on an [`Arith`](super::fpu::Arith):
+/// `by_arith!(arith, go(a, b))` calls `go::<Gcc>(a, b)` or `go::<Msvc>(a, b)`.
+#[macro_export]
+macro_rules! by_arith {
+    ($arith:expr, $f:ident($($a:expr),* $(,)?)) => {
+        match $arith {
+            $crate::pm::Arith::Gcc => $f::<$crate::pm::Gcc>($($a),*),
+            $crate::pm::Arith::Msvc => $f::<$crate::pm::Msvc>($($a),*),
+        }
+    };
+}
+
 /// `Length` (server 0xfbcbc), which `ts_i386.so` also exports: [`FpuMath::length`] in GCC's
 /// arithmetic, rounded to a `float`.
 pub fn length(a: Vec3) -> f32 {
@@ -225,6 +288,36 @@ mod tests {
         // TS never returns for these; the port ends (port guard).
         assert_eq!(q_log2(-1), 31);
         assert_eq!(q_log2(i32::MIN), 31);
+    }
+
+    /// The inline `Vector::Normalize` (issue #150): mp.dll's unrounded length and `1/len` against
+    /// the all-`float` arithmetic the port used before, which `ts_i386.so` happens to match here.
+    #[test]
+    fn vec_normalize_per_build() {
+        let v = [0x431b_d958, 0x4158_e140, 0x43b1_25fa].map(f32::from_bits); // (155.849, 13.555, 354.297)
+        assert_eq!(Msvc::vec_normalize(v, ORDER_XYZ).map(f32::to_bits), [0x3ece_07a3, 0x3d0f_5b17, 0x3f6a_2fed]);
+        assert_eq!(Gcc::vec_normalize(v, ORDER_XYZ).map(f32::to_bits), [0x3ece_07a2, 0x3d0f_5b17, 0x3f6a_2fed]);
+        let v = [0xc373_43ba, 0xc34e_d102, 0xc23b_51e8].map(f32::from_bits);
+        assert_eq!(Msvc::vec_normalize(v, ORDER_XYZ).map(f32::to_bits), [0xbf40_f9bc, 0xbf24_0fea, 0xbe14_989a]);
+        assert_eq!(Gcc::vec_normalize(v, ORDER_XYZ).map(f32::to_bits), [0xbf40_f9bc, 0xbf24_0feb, 0xbe14_989a]);
+        // Zero and NaN lengths give straight up in both builds (`test ah,0x40`).
+        for v in [ZERO, [f32::NAN, 1.0, 0.0]] {
+            assert_eq!(Msvc::vec_normalize(v, ORDER_ZYX), [0.0, 0.0, 1.0]);
+            assert_eq!(Gcc::vec_normalize(v, ORDER_XYZ), [0.0, 0.0, 1.0]);
+        }
+        // MSVC returns the root unrounded, GCC the stored float.
+        let v = [1.0, 1.0, 1.0];
+        assert_eq!(Msvc::vec_length(v, ORDER_XYZ), 3f64.sqrt());
+        assert_eq!(Gcc::vec_length(v, ORDER_XYZ).d(), 3f64.sqrt() as f32 as f64);
+    }
+
+    /// `time + 0.1`/`0.3` with the `double` (issue #150): in [1, 2) `t + 0.3f` is an exact tie, so a
+    /// time with its last bit set rounds the other way.
+    #[test]
+    fn plus_double_rounds_once() {
+        let t = f32::from_bits(0x3f80_0001);
+        assert_eq!(plus_double(t, 0.3).to_bits(), 0x3fa6_6667);
+        assert_eq!((t + 0.3).to_bits(), 0x3fa6_6668, "the float 0.3");
     }
 
     #[test]

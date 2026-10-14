@@ -28,14 +28,18 @@ mod tests;
 
 use crate::gameplay::PmRules;
 use crate::gameplay::pm::{GroundAccel, Jump};
+pub use ext::Ext;
 pub use fpu::Arith;
 pub use math::Vec3;
-pub(crate) use math::below87;
+pub use math::below87;
 use math::*;
 /// The two builds' arithmetic, for the weapon code both sides share (`weapons::spread`) and for
 /// gameplay plugins whose movement hooks compute in the build they are given
 /// (`crate::gameplay::PmRules`, docs/implementation/gameplay-plugins.md §5).
 pub use math::{Fpu, FpuMath, Gcc, Msvc, Num};
+/// The inline `Vector` helpers' summation orders and the `float + double` timer step, for the
+/// game code that reproduces TS's x87 rounding (docs/implementation/weapons.md §5).
+pub use math::{ORDER_XYZ, ORDER_ZYX, eq87, not_above87, plus_double};
 /// `ts_i386.so`'s exported mathlib helpers; `server-dll` exports them under their C names.
 pub use math::{anglemod, length, q_log2};
 pub(crate) use sound::step_interval;

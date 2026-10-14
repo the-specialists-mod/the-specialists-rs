@@ -45,6 +45,9 @@ pub trait Num:
     /// A C `(int)` cast: a truncating `fistp` (GCC: dword, 0x80000000 when out of range; MSVC's
     /// `_ftol`: qword, keeping the low dword).
     fn trunc_i32(self) -> i32;
+    /// The same value in extended precision (exact: a 53-bit value fits), for a hook that takes
+    /// either build's unrounded value.
+    fn ext(self) -> Ext;
 }
 
 impl Num for Ext {
@@ -74,6 +77,9 @@ impl Num for Ext {
     }
     fn trunc_i32(self) -> i32 {
         Ext::trunc_i32(self)
+    }
+    fn ext(self) -> Ext {
+        self
     }
 }
 
@@ -111,6 +117,9 @@ impl Num for f64 {
         // (Rust's `as` would saturate).
         let two63 = (1u64 << 63) as f64;
         if (-two63..two63).contains(&t) { t as i64 as i32 } else { 0 }
+    }
+    fn ext(self) -> Ext {
+        Ext::from_f64(self)
     }
 }
 
