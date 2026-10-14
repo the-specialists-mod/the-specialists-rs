@@ -203,6 +203,17 @@ Scripted in-engine tests use dev aids that need `sv_cheats 1`:
 - **Stopping engines:** use `pkill -x xash` (or `xash3d`). `pkill -f` patterns can match your
   own shell.
 
+## Licensing
+
+The workspace is MIT (`LICENSE`, `license = "MIT"` in `[workspace.package]`; every crate sets
+`license.workspace = true`, so a new crate must too). New code is MIT unless it derives from GPL
+code. Don't copy or translate code from GPL sources (Xash3D FWGS engine code, AMX Mod X,
+metamod, RCBot, ReHLDS, ReGameDLL) into this repository. Describing their behaviour, matching
+an interface (names, numbers, struct layouts) and porting from TS's own binaries and the
+Half-Life SDK are fine. If GPL-derived code is genuinely needed, it belongs in a separate GPL
+crate or repository (like `tsmod-amxx-rs`), not in an MIT crate. Ask first, and mark it in the
+crate's `license` field and the README's License section.
+
 ## Git
 
 - Work on `main` unless told otherwise. Commit or push only when asked.

@@ -2,6 +2,7 @@
 name = "ts-server-dll"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 # The engine-facing half of the server library: every exported symbol and engine callback, and
 # the only place (with goldsrc) where `unsafe` is allowed. Game logic lives in `ts-server`.

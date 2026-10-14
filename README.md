@@ -160,3 +160,24 @@ Setting up the roots (steamcmd, ReHLDS, Wine) and the latest results: [docs/vali
 
 The workspace grew from [rust-hlmod](https://github.com/CrunchyMonkies/rust-hlmod), a minimal
 GoldSrc mod in Rust. This repository keeps its history.
+
+## License
+
+Every crate in this workspace, including the server plugin API `ts-plugin-api`
+(`crates/plugin-api`), is released under the [MIT License](LICENSE).
+Copyright (c) 2026 The Specialists Mod contributors.
+
+Third-party material and interfaces:
+
+* The Specialists, Half-Life and their assets (maps, models, sounds, `.res`/`.txt` data) belong
+  to their owners. They aren't in this repository and the MIT grant doesn't cover them.
+* The engine and game ABI (struct layouts, export names, function tables) comes from the
+  Half-Life SDK. `goldsrc-sys` generates its bindings at build time from an Xash3D FWGS checkout
+  and doesn't commit them. Where code follows the SDK's own game code, that material is also
+  subject to Valve's Half-Life 1 SDK license (non-commercial, for Half-Life products only).
+* The entity-hook numbering in `crates/server/src/ham` (the `Ham_*` names and signature tags in
+  `names.rs`) follows AMX Mod X's hamsandwich, so plugins written for it keep their numbers.
+  These are interface identifiers. No AMX Mod X code is included.
+* The AMX Mod X modules (`tsmod-amxx-rs`) and the RCBot port (`tsmod-rcbot-rs`) build on GPL
+  code. They are separate repositories under the GPL, and they link `ts-plugin-api` under MIT,
+  which is compatible with the GPL.

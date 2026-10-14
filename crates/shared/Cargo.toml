@@ -2,6 +2,7 @@
 name = "shared"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 # Code that must behave identically on server and client. Plain data types from goldsrc-sys
 # (playermove_t, usercmd_t, ...) and, without features, goldsrc's `pmove` wrappers for the

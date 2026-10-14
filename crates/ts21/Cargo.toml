@@ -2,6 +2,7 @@
 name = "ts21-gameplay"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 # The TS 2.1 gameplay plugin (issue #100, docs/implementation/ts21.md). All 2.1 code lives under
 # crates/ts21: nothing else names it except the two libraries, which register it behind their

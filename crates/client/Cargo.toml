@@ -2,6 +2,7 @@
 name = "ts-client"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 # Game logic, free of `unsafe` (`#![deny(unsafe_code)]`). The exported library is `ts-client-dll`.
 [lib]
