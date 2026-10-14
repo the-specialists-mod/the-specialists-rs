@@ -48,41 +48,68 @@ pub fn active_gun(p: &Player) -> Option<u8> {
     crate::weapons::gun_active(p).then_some(p.inv.gun.current)
 }
 
+/// How a ruleset spells two kinds of kill in `DeathMsg` and the log. TS 3.0's is
+/// [`WeaponNaming::DEFAULT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeaponNaming {
+    /// A thrown blade (a `knife` inflictor) is named by its description, `CTSKnife::GetDescription`
+    /// ("Throwing Seal Knife"); otherwise by its classname, which becomes "Throwing Knife".
+    pub describe_thrown_blades: bool,
+    /// A stock hit (`glast_coldcock`) is "<weapon> Stock" (`strcat(name, " Stock")`); otherwise
+    /// just "Stock".
+    pub stock_names_weapon: bool,
+}
+
+impl WeaponNaming {
+    /// TS 3.0's `PlayerKilled` (0x895e4).
+    pub const DEFAULT: Self = Self { describe_thrown_blades: true, stock_names_weapon: true };
+}
+
 /// The `DeathMsg`/log weapon when the attacker is its own inflictor (`PlayerKilled` 0x895e4):
 /// a simulated bullet's `glast_weaponid`; else "Kung Fu" under
-/// `glast_closecombat`; else the killer's current gun weapon (with " Stock" under
-/// `glast_coldcock`); else "world" (kung fu outside `CloseCombatAttack`, no gun).
-fn own_weapon_name(g: &Snapshot, killer_gun: Option<u8>) -> String {
+/// `glast_closecombat`; else the killer's current gun weapon (a stock hit under
+/// `glast_coldcock`, spelled as `naming` says); else "world" (kung fu outside
+/// `CloseCombatAttack`, no gun).
+fn own_weapon_name(g: &Snapshot, killer_gun: Option<u8>, naming: WeaponNaming) -> String {
     if g.weapon_id != -1 {
         weapon_info_name(g.weapon_id)
     } else if g.close_combat {
         "Kung Fu".to_owned()
     } else if let Some(cur) = killer_gun.filter(|&c| c != 0) {
-        let name = weapon_info_name(cur as i32);
-        if g.coldcock { name + " Stock" } else { name }
+        match (g.coldcock, naming.stock_names_weapon) {
+            (false, _) => weapon_info_name(cur as i32),
+            (true, true) => weapon_info_name(cur as i32) + " Stock",
+            (true, false) => "Stock".to_owned(),
+        }
     } else {
         "world".to_owned()
     }
 }
 
+/// A thrown blade's name before [`rename_weapon`]: its description (without a knife object
+/// "world"), or its classname.
+fn thrown_blade_name(cls: String, naming: WeaponNaming, describe: impl FnOnce() -> Option<&'static str>) -> String {
+    if naming.describe_thrown_blades { describe().unwrap_or("world").to_owned() } else { cls }
+}
+
 /// Weapon name for `DeathMsg` and logs (gamerules-entities.md §2.3). `killer_gun` is the
 /// attacker's [`active_gun`].
 pub fn weapon_name(d: &DamageInfo, g: &Snapshot, killer_gun: Option<u8>) -> String {
+    weapon_name_with(d, g, killer_gun, WeaponNaming::DEFAULT)
+}
+
+/// [`weapon_name`] with a ruleset's spelling.
+pub fn weapon_name_with(d: &DamageInfo, g: &Snapshot, killer_gun: Option<u8>, naming: WeaponNaming) -> String {
     // TS's `FL_CLIENT` test (0x8986d): still true for an attacker who has left.
     let attacker_client = !d.attacker.is_null() && super::ts_flags(d.attacker) & FL_CLIENT as i32 != 0;
     let mut name = if attacker_client {
         if d.inflictor.is_null() {
             "world".to_owned()
         } else if d.inflictor == d.attacker {
-            own_weapon_name(g, killer_gun)
+            own_weapon_name(g, killer_gun, naming)
         } else {
             let cls = classname(d.inflictor);
-            if cls == "knife" {
-                // `CTSKnife::GetDescription`; without a knife object the name stays "world".
-                crate::weapons::thrown_knife_description(d.inflictor).unwrap_or("world").to_owned()
-            } else {
-                cls
-            }
+            if cls == "knife" { thrown_blade_name(cls, naming, || crate::weapons::thrown_knife_description(d.inflictor)) } else { cls }
         }
     } else if !d.inflictor.is_null() {
         // The netname when it is set at all (`string_t` non-zero), else the classname.
@@ -843,8 +870,9 @@ pub fn broadcast_score(e: *mut edict_t) {
 #[cfg(test)]
 mod tests {
     use super::{
-        FragLoser, KillTags, KillerScore, Snapshot, TeamKillPunish, frag_loser, killer_score, kung_fu_frag, log_id, log_weapon,
-        own_weapon_message, own_weapon_name, rename_weapon, spectacular_roll, team_kill_punishment, victims_gun, weapon_info_name,
+        FragLoser, KillTags, KillerScore, Snapshot, TeamKillPunish, WeaponNaming, frag_loser, killer_score, kung_fu_frag, log_id,
+        log_weapon, own_weapon_message, own_weapon_name, rename_weapon, spectacular_roll, team_kill_punishment, thrown_blade_name,
+        victims_gun, weapon_info_name,
     };
     use goldsrc::sys::edict_t;
     use shared::weapons::{id, tables};
@@ -907,22 +935,40 @@ mod tests {
         tables().weapon(id).unwrap().name.clone()
     }
 
+    const D: WeaponNaming = WeaponNaming::DEFAULT;
+
+    #[test]
+    fn a_ruleset_may_name_stocks_and_thrown_blades_plainly() {
+        // Issue #131: a ruleset may say "Stock" and "Throwing Knife" (the classname, renamed).
+        let plain = WeaponNaming { describe_thrown_blades: false, stock_names_weapon: false };
+        let coldcock = Snapshot { coldcock: true, ..Snapshot::default() };
+        assert_eq!(own_weapon_name(&coldcock, Some(12), plain), "Stock");
+        assert_eq!(own_weapon_name(&coldcock, Some(12), D), name(12) + " Stock");
+        // Only a stock hit changes: a plain hit and no gun read the same.
+        assert_eq!(own_weapon_name(&Snapshot::default(), Some(12), plain), name(12));
+        assert_eq!(own_weapon_name(&coldcock, None, plain), "world");
+        let seal = || Some("Throwing Seal Knife");
+        assert_eq!(rename_weapon(thrown_blade_name("knife".into(), plain, seal)), "Throwing Knife");
+        assert_eq!(rename_weapon(thrown_blade_name("knife".into(), D, seal)), "Throwing Seal Knife");
+        assert_eq!(rename_weapon(thrown_blade_name("knife".into(), D, || None)), "world");
+    }
+
     #[test]
     fn own_weapon_follows_the_ts_globals() {
         let none = Snapshot::default();
         let close = Snapshot { close_combat: true, ..none };
         let coldcock = Snapshot { coldcock: true, ..none };
         // A simulated bullet names its own weapon, whatever is held now.
-        assert_eq!(own_weapon_name(&Snapshot { weapon_id: 12, ..close }, Some(0)), name(12));
+        assert_eq!(own_weapon_name(&Snapshot { weapon_id: 12, ..close }, Some(0), D), name(12));
         // CloseCombatAttack: kung fu even with a gun out (a delayed kick after switching).
-        assert_eq!(own_weapon_name(&close, Some(12)), "Kung Fu");
-        assert_eq!(own_weapon_name(&close, None), "Kung Fu");
+        assert_eq!(own_weapon_name(&close, Some(12), D), "Kung Fu");
+        assert_eq!(own_weapon_name(&close, None, D), "Kung Fu");
         // A slash or hitscan shot: the weapon in hand; the stock hit says so.
-        assert_eq!(own_weapon_name(&none, Some(12)), name(12));
-        assert_eq!(own_weapon_name(&coldcock, Some(12)), name(12) + " Stock");
+        assert_eq!(own_weapon_name(&none, Some(12), D), name(12));
+        assert_eq!(own_weapon_name(&coldcock, Some(12), D), name(12) + " Stock");
         // Kung fu outside CloseCombatAttack (a dive through glass), or no gun: "world".
-        assert_eq!(own_weapon_name(&none, Some(0)), "world");
-        assert_eq!(own_weapon_name(&coldcock, None), "world");
+        assert_eq!(own_weapon_name(&none, Some(0), D), "world");
+        assert_eq!(own_weapon_name(&coldcock, None, D), "world");
     }
 
     #[test]

@@ -27,6 +27,11 @@ const PRONE: i32 = 0x20;
 /// and the stunt/slide labels.
 const STYLE: &str = " style!";
 
+/// 2.1's DeathNotice (`FUN_1004ede0`) names a thrown blade by its inflictor's classname (no
+/// `CTSKnife::GetDescription`), so every blade is "Throwing Knife", and a stock hit is just
+/// "Stock" (0x100989b0), not "<weapon> Stock".
+const NAMING: core::WeaponNaming = core::WeaponNaming { describe_thrown_blades: false, stock_names_weapon: false };
+
 /// The kill as `TSGetPointsForFrag` sees it, without the engine: the label and points before the
 /// stunt test.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -165,9 +170,9 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
     let suicide = attacker == victim;
     let killer_is_player = !suicide && has_player(attacker);
 
-    // DeathNotice first (2.1 `FUN_1004ede0`, the same weapon names as 3.0), with its log line.
+    // DeathNotice first (2.1 `FUN_1004ede0`), with its log line.
     let attacker_gun = if suicide { core::active_gun(p) } else { other(attacker, |k| core::active_gun(k)).flatten() };
-    let weapon = core::weapon_name(d, &g, attacker_gun);
+    let weapon = core::weapon_name_with(d, &g, attacker_gun, NAMING);
     core::death_notice(attacker, d.inflictor, victim, &weapon);
     core::log_kill_untagged(attacker, victim, &weapon, suicide);
     p.deaths += 1;
@@ -376,6 +381,13 @@ mod tests {
         assert_eq!(points(Kind::Projectile, 1, true, false, true), (1, None));
         // A stunt by a killer that isn't a player adds nothing.
         assert_eq!(points(Kind::Plain, 1, true, false, false), (1, None));
+    }
+
+    #[test]
+    fn kill_names_are_2_1s() {
+        // Issue #131: "Throwing Knife" for every blade and a bare "Stock"; 3.0 keeps its own.
+        assert!(!NAMING.describe_thrown_blades && !NAMING.stock_names_weapon);
+        assert_ne!(NAMING, core::WeaponNaming::DEFAULT);
     }
 
     #[test]
