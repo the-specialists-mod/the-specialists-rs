@@ -680,8 +680,8 @@ How the port maps TS where the structure differs (not deviations):
 * **Not yet tested in engine**: a thrown knife's kill naming the blade in `DeathMsg` and the log,
   ` (victims_weapon)` after picking up a victim's dropped gun, `loadweapons` then a map change
   (no notice for new joiners, kevlar back at 0.2125, the weapons back to the ruleset's values:
-  `W_Precache`'s `compile_weapons_info` rebuilds the table every map, `weapons::rebuild_weapon_info`,
-  also run by a ruleset switch's reset; unit test `a_new_map_drops_custom_weapon_values`).
+  `W_Precache`'s `compile_weapons_info` rebuilds the table every map, `weapons::rebuild_weapon_info`;
+  unit test `a_new_map_drops_custom_weapon_values`).
 * **Not yet tested in engine**: the jump kick (#30): a running jump into a player with a weapon
   drawn (hit, move, cooldown, `closecombat.wav`, the bar), a blocking victim, a teammate, and
   none with kung fu out.

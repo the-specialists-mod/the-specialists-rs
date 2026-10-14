@@ -129,8 +129,12 @@ clients predict them exactly. `ts_pm_arith gcc` makes a server compute them as T
 did instead.
 
 `ts_gameplay` (default `30`, port addition) picks the gameplay ruleset: `30` is TS 3.0 and `21`
-is TS 2.1, which is still being built and plays like 3.0 for now. Changing it mid-game restarts
-the game from scratch on the same map. Scores, players and map items are all reset.
+is TS 2.1, which is still being built. It applies when a map starts: set it in `game.cfg` or the
+server config (`server.cfg`, or the file `+servercfgfile` names), or at the console or by rcon
+before `map`/`changelevel`. Changed during a map, it takes effect at the next map (the console
+says so). In 2.1 mode only this port's client can join: TS 3.0's own client is refused with
+"Invalid Version: Running 2.1 mode. Upgrade to the rust port at tsmod.org". The buy menu shows
+the ruleset and the client's and the server's versions.
 
 ## 6. Check that the port is running
 

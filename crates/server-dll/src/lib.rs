@@ -351,10 +351,28 @@ unsafe extern "C" fn set_abs_box(e: *mut edict_t) {
     entities::set_object_collision_box(e);
 }
 
-unsafe extern "C" fn client_connect(e: *mut edict_t, name: *const c_char, addr: *const c_char, _reject: *mut c_char) -> qboolean {
+/// The engines' `szRejectReason` buffer (FWGS `SV_New_f`, ReHLDS `SV_ConnectClient_internal`,
+/// HLDS): 128 bytes.
+const REJECT_REASON_SIZE: usize = 128;
+
+unsafe extern "C" fn client_connect(e: *mut edict_t, name: *const c_char, addr: *const c_char, reject: *mut c_char) -> qboolean {
     // SAFETY: the engine passes null or a NUL-terminated string valid for this call.
     let (name, addr) = unsafe { (cstr(name), cstr(addr)) };
-    rules::client_connect(e, name, addr) as qboolean
+    match rules::client_connect(e, name, addr) {
+        Ok(()) => 1,
+        Err(reason) => {
+            if !reject.is_null() {
+                let n = reason.len().min(REJECT_REASON_SIZE - 1);
+                // SAFETY: every engine passes its 128-byte `szRejectReason` for the game to fill;
+                // at most 127 bytes and the NUL are written, and `reason` doesn't overlap it.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(reason.as_ptr(), reject.cast::<u8>(), n);
+                    *reject.add(n) = 0;
+                }
+            }
+            0
+        }
+    }
 }
 
 unsafe extern "C" fn client_disconnect(e: *mut edict_t) {

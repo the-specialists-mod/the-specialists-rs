@@ -54,7 +54,7 @@ use ts_server::damage::glast::Snapshot;
 use ts_server::entities::ts::ground::GroundWeapon;
 use ts_server::entities::ts::misc::MapFlags;
 use ts_server::gameplay::server::CvarDef;
-use ts_server::gameplay::{ServerPlugin, ServerRules};
+use ts_server::gameplay::{ConnectingClient, ServerPlugin, ServerRules};
 use ts_server::messages::Msg;
 use ts_server::player::Player;
 use ts_server::player::damage::{HitDamage, PlayerHit};
@@ -70,6 +70,10 @@ use ts21_gameplay::TS21;
 pub struct Ts21Server;
 
 impl ServerRules for Ts21Server {
+    fn refuse_client(&self, client: ConnectingClient) -> Option<&'static str> {
+        refuse_client(client)
+    }
+
     fn cvars(&self) -> &'static [CvarDef] {
         cvars::CVARS
     }
@@ -411,10 +415,34 @@ impl ServerRules for Ts21Server {
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.
 pub static PLUGIN: ServerPlugin = ServerPlugin { pm: &TS21, gun: &TS21, server: &Ts21Server };
 
+/// What a client that can't play 2.1 is told (port addition, issue #100: TS 3.0's own client
+/// predicts 3.0's movement and weapons, so it can't play this ruleset).
+pub const REFUSED_CLIENT: &str = "Invalid Version: Running 2.1 mode. Upgrade to the rust port at tsmod.org";
+
+/// `ClientConnect` in 2.1 mode: only the port's client may join; bots and HLTV always may.
+fn refuse_client(client: ConnectingClient) -> Option<&'static str> {
+    matches!(client, ConnectingClient::Other).then_some(REFUSED_CLIENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use shared::gameplay::CORE;
+
+    #[test]
+    fn only_the_port_client_joins() {
+        use ConnectingClient::*;
+        let s: &dyn ServerRules = &Ts21Server;
+        assert_eq!(s.refuse_client(Other), Some("Invalid Version: Running 2.1 mode. Upgrade to the rust port at tsmod.org"));
+        for ok in [Bot, Hltv, Port("3.0.2"), Port("0.0.1")] {
+            assert_eq!(s.refuse_client(ok), None, "{ok:?}");
+        }
+        assert!(REFUSED_CLIENT.len() < 128, "fits the engines' reject buffer");
+        // From the engine's view: TS 3.0's client sends no `_tsrs`; a bot with none still joins.
+        assert_eq!(s.refuse_client(ConnectingClient::classify(false, "", "", "")), Some(REFUSED_CLIENT));
+        assert_eq!(s.refuse_client(ConnectingClient::classify(true, "", "", "")), None);
+        assert_eq!(s.refuse_client(ConnectingClient::classify(false, "", "1", "")), None);
+    }
 
     #[test]
     fn overrides_without_the_engine() {

@@ -290,8 +290,9 @@ renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::st
 * `weapons`: `tables()` parses the embedded TOML once. The predicted gun state machine (fire modes, timers × `fuser1`, spread penalty, seeded pellets) goes here.
 * `protocol`: the message table and per-area payload encoders and decoders.
 * `ts`: stunt bits, power-up bits, observer modes (TS numbering: in-eye is 5), `IN_ALT1`, the slot/speed formula.
-* `gameplay`: the movement and gun hooks (`PmRules`, `GunRules`) of the gameplay plugins, and `Core`, TS 3.0's rules. Movement takes the active rules as it takes `Arith`, and the gun reads them from `GunHost::rules`. The server and client crates define their own hook traits (`ServerRules`, `ClientRules`), and `ts_gameplay` switches the ruleset mid-game with a full reset. See `docs/implementation/gameplay-plugins.md`.
-* `bsp`: the BSP entity lump and its keyvalue blocks (the client's map effects, the server's re-spawn on a gameplay switch).
+* `gameplay`: the movement and gun hooks (`PmRules`, `GunRules`) of the gameplay plugins, and `Core`, TS 3.0's rules. Movement takes the active rules as it takes `Arith`, and the gun reads them from `GunHost::rules`. The server and client crates define their own hook traits (`ServerRules`, `ClientRules`), and `ts_gameplay` picks the ruleset at each map start (a mid-map change waits for the next map). See `docs/implementation/gameplay-plugins.md`.
+* `bsp`: the BSP entity lump and its keyvalue blocks (the client's map effects and spectator cameras).
+* `protocol::port`: what tells the port's libraries from TS 3.0's on channels TS 3.0 tolerates: the client's `_tsrs` userinfo key (its version; in 2.1 mode the server refuses clients without it) and the server's version in `SrvSett` keys 5..7.
 
 ## 8. Build targets and binary compatibility
 

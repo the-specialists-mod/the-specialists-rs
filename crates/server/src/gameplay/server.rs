@@ -2,7 +2,7 @@
 //! entities...). Bots aren't part of a ruleset: they are left to a plugin axis of their own.
 //!
 //! The server's own code resolves them from the active plugin ([`active`](super::active)), which
-//! follows `ts_gameplay` once a frame; a switch resets the game first ([`super::reset`]).
+//! `ts_gameplay` selects at each map start ([`super::map_select`]).
 
 use crate::commands::Args;
 use crate::damage::DamageInfo;
@@ -31,14 +31,51 @@ use std::ffi::CStr;
 /// A server cvar: (name, default, flags), as [`cvars::CVARS`] lists TS 3.0's.
 pub type CvarDef = (&'static str, &'static str, i32);
 
+/// Who is connecting, as `ClientConnect` can tell (port addition, [`ServerRules::refuse_client`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectingClient<'a> {
+    /// A fake client (`FL_FAKECLIENT`, or a `*bot` userinfo key): a bot plugin's player.
+    Bot,
+    /// An HLTV proxy (`*hltv`, FWGS `hltv`).
+    Hltv,
+    /// The port's client, with the version it sent (`shared::protocol::port::USERINFO_KEY`).
+    Port(&'a str),
+    /// Any other client: TS 3.0's own, or another without the port's key.
+    Other,
+}
+
+impl<'a> ConnectingClient<'a> {
+    /// Classifies a connection from its edict's `FL_FAKECLIENT` and its userinfo values: `*bot`,
+    /// `*hltv` (ReHLDS, HLDS) or `hltv` (FWGS), and the port's version key.
+    pub fn classify(fake: bool, bot: &str, hltv: &str, port_version: &'a str) -> Self {
+        let set = |v: &str| !v.is_empty() && v != "0";
+        if fake || set(bot) {
+            ConnectingClient::Bot
+        } else if set(hltv) {
+            ConnectingClient::Hltv
+        } else if !port_version.trim().is_empty() {
+            ConnectingClient::Port(port_version.trim())
+        } else {
+            ConnectingClient::Other
+        }
+    }
+}
+
 /// Server rules. Every default body is TS 3.0's (`shared::gameplay::Core`); the server code calls
 /// these where a ruleset can differ. A hook needing server state takes this crate's types, so
 /// its 3.0 body can be the code it replaces.
 pub trait ServerRules: Sync {
     /// The plugin has become active on a brand-new game: at every map start (after the rules
-    /// are installed, before the map's entities spawn) and after a switch to it has reset the
-    /// game ([`super::reset`]). The place to set up the plugin's own state.
+    /// are installed, before the map's entities spawn). The place to set up the plugin's own
+    /// state.
     fn on_activate(&self) {}
+
+    /// `ClientConnect` (port addition): `Some(reason)` refuses the client, and the engine shows
+    /// the reason to it (the engines' reject buffer holds 127 bytes). Asked on each connect,
+    /// which the engines run again at every map change. 3.0: `None`, everyone may join.
+    fn refuse_client(&self, _client: ConnectingClient) -> Option<&'static str> {
+        None
+    }
 
     // ---- cvars and commands ----------------------------------------------------------------
 
@@ -255,8 +292,8 @@ pub trait ServerRules: Sync {
     }
 
     /// The ruleset's own precaches, made at every map start for every registered ruleset (after
-    /// TS 3.0's, `gameplay::precache_rulesets`), so that its entities can spawn when a switch
-    /// makes it active mid-map. Port addition. 3.0: none.
+    /// TS 3.0's, `gameplay::precache_rulesets`), so the precache list doesn't depend on the
+    /// ruleset. Port addition. 3.0: none.
     fn precache(&self) {}
 
     /// Whether an entity of `class` may spawn (`DispatchSpawn`, for the map's entities and the
@@ -571,6 +608,25 @@ mod tests {
     use crate::damage::{bits, hitgroup};
     use crate::rules::cvars;
     use shared::gameplay::CORE;
+
+    /// `ClientConnect`'s classification: bots and HLTV whatever their userinfo, then the port's
+    /// key; 3.0 refuses no one.
+    #[test]
+    fn connecting_clients() {
+        use ConnectingClient::*;
+        assert_eq!(ConnectingClient::classify(true, "", "", ""), Bot, "FL_FAKECLIENT");
+        assert_eq!(ConnectingClient::classify(false, "1", "", ""), Bot, "*bot");
+        assert_eq!(ConnectingClient::classify(true, "", "1", "3.0.2"), Bot);
+        assert_eq!(ConnectingClient::classify(false, "", "1", ""), Hltv);
+        assert_eq!(ConnectingClient::classify(false, "", "2", "3.0.2"), Hltv);
+        assert_eq!(ConnectingClient::classify(false, "0", "0", " 3.0.2 "), Port("3.0.2"));
+        assert_eq!(ConnectingClient::classify(false, "", "", ""), Other, "TS 3.0's client");
+        assert_eq!(ConnectingClient::classify(false, "", "", "  "), Other);
+        let core: &dyn ServerRules = &CORE;
+        for c in [Bot, Hltv, Port("3.0.2"), Other] {
+            assert_eq!(core.refuse_client(c), None);
+        }
+    }
 
     /// The core plugin's hooks that need no engine keep TS 3.0's values.
     #[test]

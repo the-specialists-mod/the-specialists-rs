@@ -60,6 +60,10 @@ pub fn fire_pitch(s: f32) -> i32 {
 }
 
 impl ClientRules for Ts21Client {
+    fn ruleset_name(&self) -> &'static str {
+        "TS 2.1"
+    }
+
     /// The weapons element's crosshair draw (0x1008b960) is one gate: nothing at all (no
     /// divesteps, no laser number) under `cl_realhud`, for kung fu, the M61, the knives and the
     /// katana, and for the Barrett unless `m_iFOV < 40` (tested before third person clears the

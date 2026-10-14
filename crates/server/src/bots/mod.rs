@@ -97,8 +97,8 @@ fn load_texts(texts: Option<rules::BotTexts>) {
     *TEXTS_FROM.0.borrow_mut() = Some(texts);
 }
 
-/// A gameplay switch's reset replays `ServerActivate`, not `Init`: load the texts again when
-/// the new ruleset's bots use other ones (a fresh table, as at a map start).
+/// `ServerActivate`: load the texts again when the map's ruleset's bots use other ones than those
+/// loaded (a fresh table, as at a map start).
 pub fn texts_for_ruleset() {
     let want = rules::current().texts();
     let loaded = *TEXTS_FROM.0.borrow();

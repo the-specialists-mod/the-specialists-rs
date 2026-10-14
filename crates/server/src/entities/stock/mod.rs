@@ -324,7 +324,7 @@ impl World {
         crate::precache::client_precache();
         crate::precache::ts_precache();
         crate::precache::world_sounds_and_gibs();
-        // Port addition: the gameplay rulesets' own precaches, so any can become active mid-map.
+        // Port addition: the gameplay rulesets' own precaches.
         crate::gameplay::precache_rulesets();
         // Port addition: the `tsmod_*` plugins' precaches, after the game's.
         crate::plugins::precache();
@@ -364,24 +364,6 @@ fn light_styles() {
         eng.light_style(i as i32 + 1, s);
     }
     eng.light_style(63, c"a");
-}
-
-/// The world's part of a new game on the loaded map, for a gameplay switch's reset
-/// (`crate::gameplay`): what [`World`]'s `CWorld::Precache` resets and creates, in its order, without
-/// the precaches (the engine has them already), the forced movement cvars and the configs (a
-/// switch keeps the server's settings), or the chapter title. Worldspawn itself stays, with its
-/// keyvalues, and so does the world's soundent, spawned again in place.
-pub fn restart_world() {
-    set_client_cvar(c"room_type", 0.0);
-    base::reset_registries();
-    maprules::reset();
-    sound::reset_rooms();
-    crate::rules::start_rules();
-    // `W_Precache`'s `compile_weapons_info`: no custom weapon parameters carry over.
-    crate::weapons::rebuild_weapon_info();
-    soundent::restart_world_soundent();
-    init_body_que();
-    light_styles();
 }
 
 #[cfg(test)]

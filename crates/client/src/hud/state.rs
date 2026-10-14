@@ -7,6 +7,7 @@ use crate::gameplay::{ClientRules, KungfuRegen, StuntCooldown};
 use goldsrc::ext::hud::Screen;
 use shared::protocol::Msg;
 use shared::protocol::hud as p;
+use shared::protocol::port;
 use shared::weapons::MAX_WEAPONS;
 
 pub const MAX_CLIENTS: usize = 64;
@@ -103,9 +104,9 @@ pub enum Effect {
     /// `Spectator` for the local player (`0x100652fd` -> `0x1000b9d0`): clear the predicted spread
     /// penalty ([`crate::prediction::reset_spread`]).
     ResetSpread,
-    /// The server switched gameplay rulesets (`SrvSett` 4 changed): reset the client to a
-    /// brand-new state ([`crate::gameplay::reset_client`]).
-    GameplayReset(i16),
+    /// The server runs another gameplay ruleset than the last one the client saw (`SrvSett` 4):
+    /// say so on the console.
+    GameplayRuleset(i16),
     /// Forward to the effects package (`crate::state::Shared::ts_effects`).
     Fx(crate::state::TsEffect),
     Fade(p::TsFade),
@@ -208,9 +209,15 @@ pub struct Hud {
     pub ammocount: i32,
     pub restriction: i32,
     /// `SrvSett` key 4 (port addition): the server's gameplay ruleset id, `None` from each
-    /// `InitHUD` until the server sends one ([`crate::gameplay::hud_rules`]). A change resets the
-    /// client (`Effect::GameplayReset`).
+    /// `InitHUD` until the server sends one ([`crate::gameplay::hud_rules`]). The server chooses
+    /// it at a map start, so it only changes with a map (or a server).
     pub gameplay: Option<i16>,
+    /// The last ruleset reported on the console (`Effect::GameplayRuleset`); kept across maps.
+    pub gameplay_seen: Option<i16>,
+    /// `SrvSett` keys 5..7 (port addition, `shared::protocol::port`): the server library's
+    /// version, `None` from each `InitHUD` until the server sends key 5 (TS 3.0's server never
+    /// does). Shown in the buy menu.
+    pub server_version: Option<[i16; 3]>,
     pub bullettime: bool,
     pub players: Vec<PlayerExtra>,
     pub team_scores: Vec<TeamScore>,
@@ -307,6 +314,8 @@ impl Default for Hud {
             // which blocks every weapon in the buy menu until then, as in TS.
             restriction: 0,
             gameplay: None,
+            gameplay_seen: None,
+            server_version: None,
             bullettime: false,
             players: vec![PlayerExtra::default(); MAX_CLIENTS + 1],
             team_scores: Vec::new(),
@@ -590,11 +599,20 @@ impl Hud {
                     2 => self.ammocount = v.value as i32,
                     3 => self.restriction = v.value as i32,
                     ts_gameplay::SRVSETT_KEY => {
-                        // The first value after an `InitHUD` only records the ruleset; a different
-                        // one later is a switch, which starts the game over.
-                        let old = self.gameplay.replace(v.value);
-                        if old.is_some_and(|old| old != v.value) {
-                            fx.push(Effect::GameplayReset(v.value));
+                        self.gameplay = Some(v.value);
+                        if self.gameplay_seen.replace(v.value) != Some(v.value) {
+                            fx.push(Effect::GameplayRuleset(v.value));
+                        }
+                    }
+                    k if k == port::SRVSETT_VERSION_KEYS[0] => self.server_version = Some([v.value, 0, 0]),
+                    k if k == port::SRVSETT_VERSION_KEYS[1] => {
+                        if let Some(sv) = &mut self.server_version {
+                            sv[1] = v.value;
+                        }
+                    }
+                    k if k == port::SRVSETT_VERSION_KEYS[2] => {
+                        if let Some(sv) = &mut self.server_version {
+                            sv[2] = v.value;
                         }
                     }
                     _ => {}
@@ -719,10 +737,11 @@ impl Hud {
             }
             Msg::InitHUD => {
                 self.init_hud_data();
-                // Port addition: a new game on this server (a connect, a map, or the fresh join
-                // after a ruleset switch), whose `SrvSett` 4 follows and only records the ruleset.
-                // Not `HUD_VidInit`: the engine also calls that on a video mode change.
+                // Port addition: a new game on this server (a connect or a map), whose `SrvSett`
+                // 4..7 follow. Not `HUD_VidInit`: the engine also calls that on a video mode
+                // change.
                 self.gameplay = None;
+                self.server_version = None;
             }
             Msg::GameMode => {
                 let mut r = p::Reader::new(buf);
@@ -1035,11 +1054,11 @@ mod tests {
         assert!(!h.apply(Msg::TsCash, &[1], &c, &mut fx), "short payload rejected");
     }
 
-    /// `SrvSett` 4 (port addition): the value after an `InitHUD` records the server's ruleset; a
-    /// different one later is a switch, which resets the client. A video mode change
-    /// (`HUD_VidInit`) doesn't forget it.
+    /// `SrvSett` 4 (port addition): each `InitHUD` clears the server's ruleset and the `SrvSett` 4
+    /// after it records it; a ruleset other than the last one seen is reported once. A video mode
+    /// change (`ResetHUD`/`HUD_VidInit`) doesn't forget it.
     #[test]
-    fn gameplay_ruleset_switch() {
+    fn gameplay_ruleset_per_map() {
         use shared::protocol::hud::SrvSett;
         let s = Screen::default();
         let c = ctx(&s);
@@ -1048,21 +1067,47 @@ mod tests {
         let ruleset = |value: i16| SrvSett { key: ts_gameplay::SRVSETT_KEY, value }.encode();
         h.apply(Msg::InitHUD, &[], &c, &mut fx);
         h.apply(Msg::SrvSett, &ruleset(30), &c, &mut fx);
-        assert_eq!((h.gameplay, fx.len()), (Some(30), 0), "connect: recorded");
-        h.reset();
-        h.apply(Msg::SrvSett, &ruleset(30), &c, &mut fx);
-        assert!(fx.is_empty(), "the same ruleset again is no switch");
-        h.apply(Msg::SrvSett, &ruleset(21), &c, &mut fx);
-        assert_eq!(fx, [Effect::GameplayReset(21)], "a switch");
-        assert_eq!(h.gameplay, Some(21));
+        assert_eq!((h.gameplay, &fx[..]), (Some(30), &[Effect::GameplayRuleset(30)][..]), "connect: recorded, reported");
         fx.clear();
-        // The fresh join after the switch, then a map change to a server on another ruleset.
+        h.reset();
+        assert_eq!(h.gameplay, Some(30));
+        // The next map runs 2.1, the one after it 2.1 again, then 3.0.
+        h.apply(Msg::InitHUD, &[], &c, &mut fx);
+        assert_eq!(h.gameplay, None, "InitHUD clears it");
+        h.apply(Msg::SrvSett, &ruleset(21), &c, &mut fx);
+        assert_eq!((h.gameplay, &fx[..]), (Some(21), &[Effect::GameplayRuleset(21)][..]));
+        fx.clear();
         h.apply(Msg::InitHUD, &[], &c, &mut fx);
         h.apply(Msg::SrvSett, &ruleset(21), &c, &mut fx);
+        assert!(fx.is_empty(), "the same ruleset again isn't reported");
         h.apply(Msg::InitHUD, &[], &c, &mut fx);
         h.apply(Msg::SrvSett, &ruleset(30), &c, &mut fx);
-        assert!(fx.is_empty(), "after an InitHUD, a value is only recorded");
+        assert_eq!(fx, [Effect::GameplayRuleset(30)]);
         assert_eq!(h.gameplay, Some(30));
+    }
+
+    /// `SrvSett` 5..7 (port addition): the server's version, cleared by each `InitHUD`; keys 6
+    /// and 7 without a key 5 first are ignored.
+    #[test]
+    fn server_version() {
+        use shared::protocol::hud::SrvSett;
+        let s = Screen::default();
+        let c = ctx(&s);
+        let mut h = Hud::default();
+        let mut fx = Vec::new();
+        let set = |key: u8, value: i16| SrvSett { key, value }.encode();
+        let [k5, k6, k7] = port::SRVSETT_VERSION_KEYS;
+        h.apply(Msg::InitHUD, &[], &c, &mut fx);
+        h.apply(Msg::SrvSett, &set(k6, 4), &c, &mut fx);
+        assert_eq!(h.server_version, None, "no key 5 yet");
+        for (k, v) in [(k5, 3), (k6, 1), (k7, 12)] {
+            h.apply(Msg::SrvSett, &set(k, v), &c, &mut fx);
+        }
+        assert_eq!(h.server_version, Some([3, 1, 12]));
+        // TS 3.0's own keys are untouched.
+        assert_eq!((h.realbullet, h.cashbased, h.ammocount), (0, 0, 0));
+        h.apply(Msg::InitHUD, &[], &c, &mut fx);
+        assert_eq!(h.server_version, None, "a map on TS 3.0's server sends none");
     }
 
     #[test]

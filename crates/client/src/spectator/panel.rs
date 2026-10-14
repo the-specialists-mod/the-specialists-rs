@@ -82,6 +82,11 @@ pub(super) fn think() {
     }
 }
 
+/// The bar's height on a screen `h` tall (`YRES(40)`), for what must stay clear of it.
+pub(crate) fn height(h: i32) -> i32 {
+    yres(h, 40.0)
+}
+
 /// `YRES(n)`: `n` 480ths of the screen height (TS truncates with `__ftol`).
 fn yres(h: i32, n: f32) -> i32 {
     (h as f32 * (1.0 / 480.0) * n) as i32

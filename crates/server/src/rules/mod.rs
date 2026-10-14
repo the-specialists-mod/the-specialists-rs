@@ -160,10 +160,9 @@ pub fn install() {
     crate::gameplay::map_start();
 }
 
-/// The rules of a new game, without the configs and precaches of a map start: the rules decided
-/// and built, and `CTSGameRules::Init`'s node graph and bot texts. [`install`] runs it, and so does
-/// a gameplay switch's reset (`crate::gameplay`), which keeps the cvars as they are.
-pub fn start_rules() {
+/// The rules of a new game: the rules decided and built, and `CTSGameRules::Init`'s node graph
+/// and bot texts.
+fn start_rules() {
     state::with(|g| g.install());
     // mp.dll's `CTSGameRules::Init` (from the rules' constructor) also loads the node graph and
     // the bot texts.
@@ -187,7 +186,8 @@ fn exec_server_config() {
         return;
     }
     e.alert(ALERT_TYPE::at_console, &format!("Executing {what} server config file\n"));
-    e.server_command(&format!("exec {file}\n"));
+    // Port addition: wrapped in a check, as the config may choose another gameplay ruleset.
+    crate::gameplay::exec_server_config(&format!("exec {file}\n"));
 }
 
 /// `ServerActivate` (0xae928): `Activate` on the map's entities (`entities::server_activate`),
@@ -205,10 +205,9 @@ pub fn server_deactivate() {
 
 /// Called every server frame (`pfnStartFrame`).
 pub fn start_frame() {
-    // Port addition: a `ts_gameplay` change resets the game before the frame runs, and the rules
-    // wait while the map is being put back.
-    if state::with(|g| g.installed) && !crate::gameplay::frame() {
-        return;
+    // Port addition: a `ts_gameplay` change waits for the next map; the console says so.
+    if state::with(|g| g.installed) {
+        crate::gameplay::frame();
     }
     frame::think();
 }
@@ -247,12 +246,18 @@ pub fn world_key_value(key: &CStr, value: &CStr) -> bool {
     true
 }
 
-pub fn client_connect(e: *mut edict_t, name: &CStr, addr: &CStr) -> bool {
-    let ok = lifecycle::client_connect(e, name, addr);
-    if ok {
-        crate::plugins::client_connect(e);
+/// `ClientConnect`: `Err(reason)` refuses the client, for the engine's reject buffer. Port
+/// addition: the gameplay ruleset may refuse a client first (`gameplay::refuse_client`), before
+/// TS's part counts it.
+pub fn client_connect(e: *mut edict_t, name: &CStr, addr: &CStr) -> Result<(), &'static str> {
+    if let Some(reason) = crate::gameplay::refuse_client(e) {
+        return Err(reason);
     }
-    ok
+    if !lifecycle::client_connect(e, name, addr) {
+        return Err("Connection rejected by game");
+    }
+    crate::plugins::client_connect(e);
+    Ok(())
 }
 /// `ClientDisconnect`: plugins hear of it first, while the client is still a player.
 pub fn client_disconnect(e: *mut edict_t) {

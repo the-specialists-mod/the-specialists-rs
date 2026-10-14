@@ -50,15 +50,9 @@ impl BotBackend for Native {
         Box::new(Brain::new(super::rules::current().stored_skill(skill)))
     }
 
-    /// A gameplay switch's reset: the bot texts of the new ruleset.
+    /// `ServerActivate`: the bot texts of the map's ruleset.
     fn server_activate(&self) {
         super::texts_for_ruleset();
-    }
-
-    /// A fresh brain with the bot's skill: `BotCreate` made it, and no state of the old game
-    /// stays.
-    fn reset_state(&self, old: BotState) -> Option<BotState> {
-        old.downcast::<Brain>().ok().map(|b| Box::new(Brain::new(b.skill)) as BotState)
     }
 
     fn spawn_pre(&self, p: &mut Player, cx: &mut Cx) {

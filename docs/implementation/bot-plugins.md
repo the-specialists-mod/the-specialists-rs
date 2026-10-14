@@ -37,7 +37,6 @@ pub trait BotBackend {
     fn activate(&self); fn deactivate(&self); fn think(&self);
     fn new_state(&self, skill: f32) -> BotState;          // default: the plugin marker
     fn adopted(&self, e: *mut edict_t);
-    fn reset_state(&self, old: BotState) -> Option<BotState>;
     fn spawn_pre(&self, p, cx); fn spawn_post(&self, p, cx);
     fn trace_attack(&self, p, cx, dmg); fn killed(&self, p, cx, attacker);
     fn on_kill(&self, killer, victim, now); fn pre_think(&self, p, cx);
@@ -67,7 +66,7 @@ backend through `bot_backend` (no behaviour change for native):
 | `server-dll` `StartFrame` | `bot_backend::start_frame` (the host's quota, then `think`) |
 | `rules::start_rules` (`CTSGameRules::Init`) | `bot_backend::map_init` (native: nodes and bot texts) |
 | `rules::mapcycle` (the map end's `Init`) | `bot_backend::map_init` |
-| `rules::server_activate` / `server_deactivate`, the gameplay reset | `bot_backend::server_activate` / `server_deactivate` (the quota's timing, then the backend) |
+| `rules::server_activate` / `server_deactivate` | `bot_backend::server_activate` / `server_deactivate` (the quota's timing, then the backend) |
 | `Player::bot` | `Option<BotState>` (above) |
 | `Player::spawn` head / tail | `bot_backend::spawn_pre` / `spawn_post` |
 | `Player::trace_attack` | `bot_backend::trace_attack` |
@@ -77,7 +76,6 @@ backend through `bot_backend` (no behaviour change for native):
 | `commands` (node and `testpath` commands) | `bot_backend::client_command` |
 | `rules::commands` `addbot` / `addcustombot` | `bot_backend::add_bot(AddBot::Addbot / Custom)` |
 | `precache` (`sprites/lgtning.spr`) | `bot_backend::precache`, at the same place in the precache order |
-| the gameplay reset's fresh `Player` | `bot_backend::reset_state` (native: a fresh `Brain` of the same skill) |
 
 Kept as they were, because they are TS's player state and TS's cvars rather than the AI's:
 `Player::is_bot`'s clear in `TSPlayerDisconnect`, `next_node_learn` (`pl+0x788`, `TSInit` zeroes
@@ -110,9 +108,9 @@ native backend's business, not the host's and not the gameplay plugin's:
 * Why not a field of `ServerPlugin` or hooks in `ServerRules`: the bot layer is a separate axis
   (this document), and putting the native AI's internals (`Brain`, its modules) into the gameplay
   plugin's interface would tie every ruleset to one backend. Why not a backend of its own (a
-  second "native 2.1" backend): `ts_bot_backend` is the user's choice of AI, and a gameplay switch
-  must not change it (§3); the native backend also has to follow a mid-game switch, which the
-  per-call resolution does (the reset reloads the bot texts in `server_activate`).
+  second "native 2.1" backend): `ts_bot_backend` is the user's choice of AI, and the gameplay
+  ruleset must not change it (§3); the native backend follows each map's ruleset through the
+  per-call resolution (`server_activate` loads the ruleset's bot texts if `Init` loaded others).
 
 The host's `create_player` (`BotSetup`) takes `team_key`, because 2.1's `BotSetup` has no `team`
 key; the native backend passes its rules' choice and plugin bots get 3.0's.
@@ -129,7 +127,7 @@ Port cvar, default `native`. **Read at map start** (`rules::install`, right afte
   value (`[ts] bots: unknown ts_bot_backend "x", using native`) and native runs.
 * Each change logs `[ts] bots: backend <name>`, calls the old backend's `deactivate`, **kicks
   every bot the old backend made** (`kick #<userid>`, queued) and calls the new one's
-  `activate`. The quota then adds the new backend's bots. A gameplay switch (#100) doesn't change
+  `activate`. The quota then adds the new backend's bots. The gameplay ruleset (#100) doesn't change
   the backend.
 
 ## 4. Who owns what

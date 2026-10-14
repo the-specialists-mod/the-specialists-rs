@@ -57,8 +57,8 @@ pub trait BotBackend {
     fn name(&self) -> &str;
     /// `GameDLLInit`.
     fn game_init(&self) {}
-    /// mp.dll's part of `CTSGameRules::Init` (0x1004d910): a new game's rules (map start, a
-    /// gameplay reset, and the map end's `ChangeLevel`).
+    /// mp.dll's part of `CTSGameRules::Init` (0x1004d910): a new game's rules (map start, and
+    /// the map end's `ChangeLevel`).
     fn map_init(&self) {}
     /// The map's precache (`W_Precache`'s list).
     fn precache(&self) {}
@@ -79,10 +79,6 @@ pub trait BotBackend {
     }
     /// After [`Self::new_state`] was given to the quota bot `e`.
     fn adopted(&self, _e: *mut edict_t) {}
-    /// A gameplay switch made every player new (`gameplay::reset`): the state a bot keeps.
-    fn reset_state(&self, _old: BotState) -> Option<BotState> {
-        None
-    }
     /// The head and tail of a player's `Spawn` (`CBot::Spawn` around `CBasePlayer::Spawn`).
     fn spawn_pre(&self, _p: &mut Player, _cx: &mut Cx) {}
     fn spawn_post(&self, _p: &mut Player, _cx: &mut Cx) {}
@@ -303,11 +299,6 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
     active().client_command(p, cx, cmd, args)
 }
 
-/// A gameplay reset's new `Player`: the state the backend keeps for the bot.
-pub fn reset_state(old: Option<BotState>) -> Option<BotState> {
-    old.and_then(|s| active().reset_state(s))
-}
-
 // ---- the bot player ----------------------------------------------------------------------------
 
 /// `CREATE_FAKE_CLIENT` and `BotSetup` (0x1006b3b0), TS's `ClientPutInServer` for bots: the
@@ -349,8 +340,6 @@ pub fn create_player(name: &[u8], model: &str, state: BotState, announce: Option
         eng.set_client_key(e, "team", model);
     }
     eng.set_client_key(e, "cl_lw", "1");
-    // Recorded in every mode: a gameplay reset replays this join, and teamplay may be on by then.
-    with_player(e, |p, _| p.bot_join_team = model.to_owned());
     if !model.is_empty() && rules::state::teamplay() {
         // `CHalfLifeMultiplay::ChangePlayerTeam` is empty; teamplay's changes the team.
         with_player(e, |p, cx| rules::teams::change_team(p, cx, model, false, false));

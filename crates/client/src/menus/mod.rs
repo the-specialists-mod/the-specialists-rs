@@ -828,6 +828,47 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     }
 }
 
+/// The buy menu's version box (port addition): the server's ruleset, this client library's
+/// version and the server library's (`SrvSett` 5..7; TS 3.0's server sends none).
+fn version_lines(ruleset: &str, server: Option<[i16; 3]>) -> [String; 3] {
+    let server = match server {
+        Some([a, b, c]) => format!("Server {a}.{b}.{c}"),
+        None => "Server version unknown".to_owned(),
+    };
+    [ruleset.to_owned(), format!("Client {}", shared::protocol::port::VERSION), server]
+}
+
+/// The right edge of the buy menu's columns: the options column (`0x188`, 128 wide) and the
+/// weapon box (`0x108`, `0xff` wide). The version box stays right of it.
+const COLUMNS_RIGHT: i32 = 0x188 + 128;
+
+/// Draws [`version_lines`] in the bottom right corner as rows like the menu's own (a translucent
+/// box of the row colour, dimmed, with the text), clear of the columns and the summary.
+fn draw_versions(dc: &Dc, lines: &[String]) {
+    let rgb = half(dc.hud);
+    let text_w = lines.iter().map(|l| dc.string_len(l)).max().unwrap_or(0);
+    let (x, mut y, w) = version_box(dc.w(), dc.h(), text_w, lines.len() as i32);
+    for line in lines {
+        dc.fill(x, y, w - 1, VERSION_ROW - 1, rgb, hud::draw::ftol(50.0 * 0.5));
+        dc.string(x + 4, y, line, rgb);
+        y += VERSION_ROW;
+    }
+}
+
+/// The version box's rows: the menu's row height.
+const VERSION_ROW: i32 = 20;
+
+/// The version box's left, top and width for `rows` lines of up to `text_w` pixels on a
+/// `screen_w`×`screen_h` screen: 8 pixels from the right edge and above the spectator bar (the
+/// buy menu is open only while dead or observing, under the bar), never left of the columns
+/// ([`COLUMNS_RIGHT`]; on a narrow screen the text is cut at the screen's edge instead).
+fn version_box(screen_w: i32, screen_h: i32, text_w: i32, rows: i32) -> (i32, i32, i32) {
+    let w = text_w + 8;
+    let x = (screen_w - 8 - w).max(COLUMNS_RIGHT + 8);
+    let bottom = screen_h - crate::spectator::panel_height(screen_h) - 8;
+    (x, bottom - VERSION_ROW * rows, w)
+}
+
 /// `FUN_10038180`: sprite, price and slots of the highlighted weapon.
 fn draw_weapon_box(dc: &Dc, id: i32) {
     let Some(w) = shared::weapons::tables().weapon(id as u8) else { return };
@@ -967,12 +1008,17 @@ fn paint_vgui() {
 /// alive again (except the team page). Hidden, it stays open and keeps its keys and cursor.
 pub fn draw_buy_menu(dc: &Dc) {
     let r = rules();
-    with(|m| {
+    let active = with(|m| {
         m.rows.clear();
         if m.buy.active {
             draw_buy(dc, &m.buy, &r, &mut m.rows);
         }
+        m.buy.active
     });
+    if active {
+        let (gameplay, server) = hud::with(|h| (h.gameplay, h.server_version));
+        draw_versions(dc, &version_lines(crate::gameplay::hud_rules(gameplay).ruleset_name(), server));
+    }
     if buy_open() && !hud::dead_or_observer() && with(|m| m.buy.page != page::TEAM) {
         with(|m| m.buy.close());
     }
@@ -995,4 +1041,30 @@ pub fn redraw(time: f32) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_lines_name_the_ruleset_and_both_libraries() {
+        let v = shared::protocol::port::VERSION;
+        assert_eq!(version_lines("TS 3.0", Some([3, 0, 2])), ["TS 3.0".to_owned(), format!("Client {v}"), "Server 3.0.2".to_owned()]);
+        assert_eq!(version_lines("TS 3.0", None)[2], "Server version unknown", "TS 3.0's server");
+    }
+
+    /// The box sits in the bottom right corner above the spectator bar, right of every column
+    /// and below the summary and the options column.
+    #[test]
+    fn version_box_clears_the_menu() {
+        for (sw, sh) in [(640, 480), (800, 600), (940, 924), (1920, 1080)] {
+            let (x, y, w) = version_box(sw, sh, 120, 3);
+            assert!(x > COLUMNS_RIGHT, "{sw}x{sh}: right of the columns");
+            let bar = crate::spectator::panel_height(sh);
+            assert_eq!(y + 3 * VERSION_ROW, sh - bar - 8, "{sw}x{sh}: just above the spectator bar");
+            assert!(y > 0x30, "{sw}x{sh}: below the summary");
+            assert!(sw < 700 || x + w == sw - 8, "{sw}x{sh}: in the corner");
+        }
+    }
 }

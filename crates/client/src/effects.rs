@@ -414,7 +414,7 @@ pub fn frame(time: f64, frametime: f64) {
         fx.frametime = frametime as f32;
     });
     let level = r::level_name();
-    // A ruleset switch mid-map rebuilds them too: with or without the map's effects
+    // A server on another ruleset rebuilds them too: with or without the map's effects
     // ([`ClientRules::map_effects`](crate::gameplay::ClientRules::map_effects)).
     let map_effects = crate::gameplay::current().map_effects();
     let changed = with(|fx| fx.level != level || fx.map_effects != map_effects);
@@ -733,7 +733,8 @@ fn cam_hardware() -> bool {
 }
 
 /// Whether the server's ruleset runs the map's emitters and fog (`ClientRules::map_effects`).
-/// Asked each frame, so a switch takes effect at once; the map is parsed either way.
+/// Asked each frame, so a server on another ruleset takes effect at once; the map is parsed
+/// either way.
 fn map_effects() -> bool {
     crate::gameplay::hud_rules(crate::hud::with(|h| h.gameplay)).map_effects()
 }
