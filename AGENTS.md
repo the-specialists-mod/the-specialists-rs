@@ -219,8 +219,18 @@ crate's `license` field and the README's License section.
 - Work on `main` unless told otherwise. Commit or push only when asked.
 - If git has no HTTPS credentials, push with
   `git -c credential.helper='!gh auth git-credential' push`.
-- Releases: bump `version` in the workspace `Cargo.toml` in a "Release vX.Y.Z" commit, then push a `v*` tag, numbered after the TS version it ports (`v3.0.0`, then `v3.0.1`, ...); `.github/workflows/release.yml` checks that the two match (the libraries report that version, e.g. the server browser's "The Specialists v3.0.2 (DM)"), then builds and publishes the release and
-  `-debug` archives. The workflow pins the FWGS commit the bindings are generated from.
+- Releases are numbered after the TS version they port (`v3.0.0`, then `v3.0.1`, ...). To make one:
+  1. In one commit named "Release vX.Y.Z": bump `version` in the workspace `Cargo.toml`
+     (`[workspace.package]`) to the new number, with the `Cargo.lock` a build then writes, and
+     update the README's latest-release link and its "vX.Y.Z passed it ... N unit tests" line
+     (run `cargo xtask all --release` first).
+  2. Tag that commit `vX.Y.Z` and push the tag.
+
+  **The tag must be `v` + the `Cargo.toml` version.** The libraries report that version (the
+  server browser's "The Specialists v3.0.2 (DM)" / "(DM-21)", the HUD's `SrvSett` keys, the
+  client's `_tsrs` userinfo), and `.github/workflows/release.yml` fails a tag that doesn't match.
+  The workflow then builds and publishes the release and `-debug` archives. It pins the FWGS
+  commit the bindings are generated from.
   Each asset is named `the-specialists-rs-<tag>-<platform>.zip` (Windows) or `.tar.gz` (Linux),
   plus the `-debug` variants, for `linux-i686`, `linux-x86_64`, `windows-i686` and
   `windows-x86_64`. The launcher picks the latest release's asset by that ending, so keep these
