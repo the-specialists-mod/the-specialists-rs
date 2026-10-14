@@ -287,7 +287,7 @@ pub fn surface_mark(
 /// TS's `VecToAngles` (`0x10046110`): the SDK `VectorAngles` with each angle truncated to whole
 /// degrees *before* a negative one gets 360 added, and the pitch negated (AngleVectors'
 /// convention). Straight up/down is (-90 / -270, 0, 0).
-pub(super) fn vec_to_angles(f: Vec3) -> Vec3 {
+pub fn vec_to_angles(f: Vec3) -> Vec3 {
     if f[0] == 0.0 && f[1] == 0.0 {
         return [if f[2] > 0.0 { -90.0 } else { -270.0 }, 0.0, 0.0];
     }

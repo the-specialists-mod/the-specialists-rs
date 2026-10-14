@@ -330,6 +330,7 @@ pub fn vid_init() {
     with(|fx| {
         fx.shell_seq = 0;
         fx.quality.started = false;
+        fx.bullets.models.forget();
     });
 }
 
@@ -618,6 +619,12 @@ fn occlusion_visible(e: &cl_entity_t, cam: &Camera) -> bool {
 /// are never enabled (`0x1d34d` stays 0), so it adds nothing; the bullets are stepped and drawn in
 /// [`draw_transparent`].
 pub fn create_entities() {
+    // A ruleset's bullet models (none in TS 3.0), while the client bullets run.
+    with(|fx| {
+        if fx.bullets.count != 0 {
+            fx.bullets.models.add_entities();
+        }
+    });
     let (blur, ts, now) = (cvar(|c| c.motionblur), state::with(|s| s.time_scale), crate::hud::now());
     for ent in with(|fx| fx.blur.due(blur, ts, now)) {
         if mblur::spawn_ghost(ent) {

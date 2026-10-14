@@ -18,7 +18,7 @@ use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use std::ffi::CStr;
 
-pub use fire::{BulletFrame, ClientBullets, client_bullets_frame};
+pub use fire::{BulletDraw, BulletFrame, BulletModel, BulletModels, BulletStep, ClientBullet, ClientBullets, client_bullets_frame, ftol};
 
 /// An event script name and its handler.
 pub type EventEntry = (&'static CStr, fn(&event_args_s));

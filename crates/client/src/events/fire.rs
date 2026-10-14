@@ -474,7 +474,8 @@ fn whizz(b: &Bullets, end: Vec3) {
 /// or in slow motion (`0x10045330`) the pellets are queued as client bullets instead of traced.
 pub fn fire_bullets(b: &Bullets) {
     let (pierce, unit, _) = ammo_consts(b.ammo);
-    let slow = crate::hud::with(|h| h.realbullet) != 0 || state::with(|s| s.time_scale) < 0.99;
+    let (ts, factor100) = state::with(|s| (s.time_scale, s.slowmo_factor100));
+    let slow = crate::gameplay::current().client_bullets_queue(crate::hud::with(|h| h.realbullet), ts, factor100);
 
     if b.bullet_type == 2 {
         let end = v::ma(b.src, 4096.0, b.dir);
@@ -575,12 +576,12 @@ fn ammo_consts(ammo: i32) -> (f32, f32, f32) {
 /// The range-falloff index of a hit `dist` units away with range unit `unit`:
 /// `__ftol(dist / (unit·10) · 10)`, truncating (`0x10045b2b`, `0x10035f94`). TS keeps the x87
 /// intermediates in extended precision, approximated here in f64.
-fn range_index(dist: f32, unit: f32) -> i32 {
+pub(crate) fn range_index(dist: f32, unit: f32) -> i32 {
     ftol(dist as f64 / (unit as f64 * 10.0) * 10.0)
 }
 
 /// MSVC's `__ftol` (`0x1006ad1c`): truncate to 64 bits, keep the low 32.
-fn ftol(x: f64) -> i32 {
+pub fn ftol(x: f64) -> i32 {
     x as i64 as i32
 }
 
@@ -616,6 +617,8 @@ pub struct ClientBullet {
     pub next_update: f32,
     /// `+0x54`: 0 normal, 1 buckshot, 2 exit (after a penetration).
     pub bullet_type: i32,
+    /// `+0x58`: a ruleset's trail spin, in degrees (unused in TS 3.0).
+    pub spin: f32,
 }
 
 /// The client bullet slots and their counter (`+0x5c00`, `0x100f1278`): every bullet added since
@@ -626,6 +629,75 @@ pub struct ClientBullets {
     /// Empty until the first [`ClientBullets::add`] or [`ClientBullets::reset`], then 256 slots.
     slots: Vec<ClientBullet>,
     pub count: i32,
+    /// The models a ruleset's draw queued this frame (none in TS 3.0).
+    pub models: BulletModels,
+}
+
+/// A studio model a ruleset's client-bullet draw queues ([`ClientRules::client_bullet_draw`]),
+/// drawn by the next `HUD_CreateEntities` while bullets are in flight.
+///
+/// [`ClientRules::client_bullet_draw`]: crate::gameplay::ClientRules::client_bullet_draw
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BulletModel {
+    pub name: &'static str,
+    pub origin: Vec3,
+    /// The entity's `curstate.angles`.
+    pub angles: Vec3,
+    pub body: i32,
+}
+
+/// The client-loaded bullet models (`CL_LoadModel`, once per name until the next `VidInit`) and
+/// this frame's queue.
+#[derive(Default)]
+pub struct BulletModels {
+    cache: Vec<(&'static str, Option<goldsrc::ext::models::LoadedModel>)>,
+    queued: Vec<BulletModel>,
+}
+
+impl BulletModels {
+    fn model(&mut self, name: &'static str) -> Option<goldsrc::ext::models::LoadedModel> {
+        if let Some((_, m)) = self.cache.iter().find(|(n, _)| *n == name) {
+            return *m;
+        }
+        let m = goldsrc::ext::models::load_model(name);
+        self.cache.push((name, m));
+        m
+    }
+
+    /// Whether every one of `names` loads (each is loaded once, all of them even when one fails).
+    pub fn loaded(&mut self, names: &[&'static str]) -> bool {
+        let mut ok = true;
+        for n in names {
+            ok &= self.model(n).is_some();
+        }
+        ok
+    }
+
+    /// Queues `m` for the next `HUD_CreateEntities`.
+    pub fn queue(&mut self, m: BulletModel) {
+        self.queued.push(m);
+    }
+
+    /// The models queued since the last bullet frame.
+    pub fn queued(&self) -> &[BulletModel] {
+        &self.queued
+    }
+
+    /// Adds the queued models to the frame's visible entities (`HUD_CreateEntities`).
+    pub fn add_entities(&mut self) {
+        for i in 0..self.queued.len().min(goldsrc::ext::models::MODEL_SLOTS) {
+            let q = self.queued[i];
+            if let Some(model) = self.model(q.name) {
+                let e = goldsrc::ext::models::ModelEntity { model, origin: q.origin, angles: q.angles, body: q.body };
+                goldsrc::ext::models::add_model_entity(i, &e);
+            }
+        }
+    }
+
+    /// Forgets the loaded models (`VidInit`: a new level may free them).
+    pub fn forget(&mut self) {
+        *self = BulletModels::default();
+    }
 }
 
 impl ClientBullets {
@@ -675,7 +747,7 @@ pub fn bullet_velocity_mult(ts: f32, bullet_time: bool) -> f32 {
 
 /// When a slot's next trace step is due, set when one runs at client time `now` (`0x10035b97`):
 /// every 0.1 s with `realbullet` 0, every 0.05 s with 1, otherwise every frame.
-pub fn next_update(now: f32, realbullet: i32) -> f32 {
+pub(crate) fn next_update(now: f32, realbullet: i32) -> f32 {
     if (0..2).contains(&realbullet) { 0.1 / (realbullet + 1) as f32 + now } else { now }
 }
 
@@ -689,23 +761,84 @@ pub fn step_time(next_update: f32, now: f32, frametime: f32) -> f32 {
 /// `ClientBullets_Frame` (`0x10035b50`), at the end of `TS_DrawEffects` (`0x10034e60`): looks up
 /// `sprites/shotgun_pellets.spr` (additive), then for each slot in use steps its trace when due
 /// and, in slow motion (ts < 0.99), draws it, even when the step just cleared it.
+///
+/// A ruleset can change the step period ([`ClientRules::client_bullet_next_update`]), when it
+/// draws ([`ClientRules::client_bullet_draws`]) and the draw itself
+/// ([`ClientRules::client_bullet_draw`]).
+///
+/// [`ClientRules::client_bullet_next_update`]: crate::gameplay::ClientRules::client_bullet_next_update
+/// [`ClientRules::client_bullet_draws`]: crate::gameplay::ClientRules::client_bullet_draws
+/// [`ClientRules::client_bullet_draw`]: crate::gameplay::ClientRules::client_bullet_draw
 pub fn client_bullets_frame(bullets: &mut ClientBullets, f: &BulletFrame) {
+    let rules = crate::gameplay::current();
     let sprite = effects::with_psys(|ps| ps.sprite("sprites/shotgun_pellets.spr", kRenderTransAdd as i32));
     bullets.count = 0;
+    bullets.models.queued.clear();
     for i in 0..bullets.slots.len() {
         if bullets.slots[i].shooter == 0 {
             continue;
         }
         let now = engine().client_time();
         if now > bullets.slots[i].next_update {
-            bullets.slots[i].next_update = next_update(now, crate::hud::with(|h| h.realbullet));
-            client_bullet_impact(&mut bullets.slots[i], f.frametime);
+            bullets.slots[i].next_update = rules.client_bullet_next_update(now, crate::hud::with(|h| h.realbullet));
+            client_bullet_impact(&mut bullets.slots[i], f.frametime, rules);
         }
-        if state::with(|s| s.time_scale) < 0.99 {
-            client_bullet_draw(&mut bullets.slots[i], sprite, f);
+        let (ts, factor100, bullet_time, fov) = state::with(|s| (s.time_scale, s.slowmo_factor100, s.bullet_time, s.fov));
+        if rules.client_bullet_draws(ts, factor100) {
+            let s = &mut bullets.slots[i];
+            let mut d = BulletDraw {
+                frame: f,
+                now: engine().client_time(),
+                velocity: ammo_consts(s.ammo).2,
+                slowmo_factor100: factor100,
+                bullet_time,
+                wavedetail: crate::input::cvars().cl_wavedetail.value(),
+                fov,
+                models: &mut bullets.models,
+            };
+            if !rules.client_bullet_draw(s, &mut d) {
+                client_bullet_draw(s, sprite, f);
+            }
         }
         bullets.count += 1;
     }
+}
+
+/// What a ruleset's client-bullet draw ([`ClientRules::client_bullet_draw`]) reads.
+///
+/// [`ClientRules::client_bullet_draw`]: crate::gameplay::ClientRules::client_bullet_draw
+pub struct BulletDraw<'a> {
+    pub frame: &'a BulletFrame,
+    /// The engine's client time.
+    pub now: f32,
+    /// The bullet's ammo velocity (the ammo table's `+0x24`).
+    pub velocity: f32,
+    /// The last `TSSlowMo` value as sent (the factor × 100; 0 = normal speed).
+    pub slowmo_factor100: f32,
+    /// `TSBTime`: bullet time is on.
+    pub bullet_time: bool,
+    /// `cl_wavedetail`.
+    pub wavedetail: f32,
+    /// `m_iFOV`.
+    pub fov: f32,
+    pub models: &'a mut BulletModels,
+}
+
+/// What a client bullet's trace step reads ([`ClientRules::client_bullet_step`]).
+///
+/// [`ClientRules::client_bullet_step`]: crate::gameplay::ClientRules::client_bullet_step
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BulletStep {
+    /// The bullet's ammo velocity (the ammo table's `+0x24`).
+    pub velocity: f32,
+    /// The eased time scale.
+    pub time_scale: f32,
+    /// `TSBTime`: bullet time is on.
+    pub bullet_time: bool,
+    /// The last `TSSlowMo` value as sent (the factor × 100; 0 = normal speed).
+    pub slowmo_factor100: f32,
+    /// The time this step covers ([`step_time`]).
+    pub dt: f32,
 }
 
 /// `ClientBullets_Impact` (`0x10035d40`): one trace step of `dir·(velocity·40)·dt·mult`
@@ -715,13 +848,12 @@ pub fn client_bullets_frame(bullets: &mut ClientBullets, f: &BulletFrame) {
 /// and the ammo's pierce factor: then, as `EV_TS_FireBullets`, it steps `min(left, 48)` units on,
 /// and unless that is inside a solid it carries on from there as an exit bullet (type 2) with the
 /// damage left, after the exit point's impact (traced back to the hit).
-fn client_bullet_impact(s: &mut ClientBullet, frametime: f32) {
+fn client_bullet_impact(s: &mut ClientBullet, frametime: f32, rules: &dyn crate::gameplay::ClientRules) {
     let (pierce, unit, velocity) = ammo_consts(s.ammo);
-    let (ts, bt) = state::with(|st| (st.time_scale, st.bullet_time));
-    let mult = bullet_velocity_mult(ts, bt);
+    let (ts, bt, factor100) = state::with(|st| (st.time_scale, st.bullet_time, st.slowmo_factor100));
     let dt = step_time(s.next_update, engine().client_time(), frametime);
-    let v40 = velocity * 40.0;
-    let step = s.dir.map(|d| d * v40 * dt * mult);
+    let input = BulletStep { velocity, time_scale: ts, bullet_time: bt, slowmo_factor100: factor100, dt };
+    let step = rules.client_bullet_step(s.dir, &input);
     let clear = r::with_solid_players(s.shooter.wrapping_sub(1), || {
         let end = v::add(step, s.pos);
         let mut tr = r::player_trace(s.pos, end, 2, PM_STUDIO_BOX as i32, -1);
@@ -733,8 +865,7 @@ fn client_bullet_impact(s: &mut ClientBullet, frametime: f32) {
         s.pos = hit;
         let d = v::sub(s.start, s.pos);
         let dist = ((d[2] as f64 * d[2] as f64 + d[1] as f64 * d[1] as f64) + d[0] as f64 * d[0] as f64).sqrt();
-        // Exit bullets fall off on a fixed 30-unit scale (`0x10035f44`).
-        let idx = if s.bullet_type == 2 { ftol(dist * 0.003_333_333_4f32 as f64 * 10.0) } else { range_index(dist as f32, unit) };
+        let idx = rules.client_bullet_range_index(dist, unit, s.bullet_type == 2);
         let mut left = impact::range_mult(idx) * s.dmg;
         // TS passes its shooter index first, which `TS_PlayTextureSound` never reads.
         impact::texture_sound(&mut tr, s.pos, v::add(step, s.pos), s.bullet_type);

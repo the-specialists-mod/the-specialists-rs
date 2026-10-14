@@ -177,4 +177,52 @@ pub trait ClientRules: Sync {
     fn view_bob(&self, bob: &mut crate::view::Bob, input: &crate::view::BobInput) -> f32 {
         bob.calc(input)
     }
+
+    /// Whether `EV_TS_FireBullets` queues client bullets (`ClientBullets_Add`) instead of tracing
+    /// at once. TS 3.0 (`0x10045a8b`): with `realbullet` (`SrvSett` 0) on or the eased time scale
+    /// below 0.99.
+    fn client_bullets_queue(&self, realbullet: i32, time_scale: f32, slowmo_factor100: f32) -> bool {
+        let _ = slowmo_factor100;
+        realbullet != 0 || time_scale < 0.99
+    }
+
+    /// When a client bullet's next trace step is due, set when one runs at `now`. TS 3.0:
+    /// [`next_update`](crate::events::fire::next_update) (`0x10035b97`).
+    fn client_bullet_next_update(&self, now: f32, realbullet: i32) -> f32 {
+        crate::events::fire::next_update(now, realbullet)
+    }
+
+    /// One client-bullet trace step along the (unnormalised) pellet direction `dir`. TS 3.0
+    /// (`ClientBullets_Impact` 0x10035d40): `dir·(velocity·40)·dt·GetBulletVelocityMult`.
+    fn client_bullet_step(&self, dir: [f32; 3], s: &crate::events::BulletStep) -> [f32; 3] {
+        let mult = crate::events::fire::bullet_velocity_mult(s.time_scale, s.bullet_time);
+        let v40 = s.velocity * 40.0;
+        dir.map(|d| d * v40 * s.dt * mult)
+    }
+
+    /// The range-falloff index of a client bullet's hit `dist` units from where its leg started,
+    /// `exit` for a bullet past a penetration. TS 3.0: exit bullets on a fixed 30-unit scale
+    /// (`0x10035f44`), the others by the ammo's range unit (`0x10035f94`).
+    fn client_bullet_range_index(&self, dist: f64, unit: f32, exit: bool) -> i32 {
+        if exit {
+            crate::events::ftol(dist * 0.003_333_333_4f32 as f64 * 10.0)
+        } else {
+            crate::events::fire::range_index(dist as f32, unit)
+        }
+    }
+
+    /// Whether the client bullets are drawn this frame. TS 3.0: while the eased time scale is
+    /// below 0.99.
+    fn client_bullet_draws(&self, time_scale: f32, slowmo_factor100: f32) -> bool {
+        let _ = slowmo_factor100;
+        time_scale < 0.99
+    }
+
+    /// A ruleset's own client-bullet draw (`ClientBullets_Update`): true when it drew (and moved)
+    /// the bullet. TS 3.0: false, so the core draw (the `shotgun_pellets.spr` streaks and the
+    /// `bullet_trail.spr` trail) runs.
+    fn client_bullet_draw(&self, bullet: &mut crate::events::ClientBullet, d: &mut crate::events::BulletDraw) -> bool {
+        let _ = (bullet, d);
+        false
+    }
 }

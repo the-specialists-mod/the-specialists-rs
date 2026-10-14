@@ -79,6 +79,9 @@ pub struct Particle {
     pub stretch: f32,
     /// Explicit corners (TS type 4, drawn by `Quad_Emit`): the bullet trail.
     pub corners: Option<[Vec3; 4]>,
+    /// Texture coordinates of the four corners, when not (0,0) (1,0) (1,1) (0,1): a ruleset's
+    /// trails that tile one sprite over several quads. TS 3.0 sets none.
+    pub uv: Option<[[f32; 2]; 4]>,
     /// World collision (TS: type 3 with `collide` set).
     pub collide: bool,
     /// 0 none, 1 kill, 2 kill + spawn target, 3 spawn target, [`ONCOLLIDE_BLOOD`].
@@ -126,6 +129,7 @@ impl Default for Particle {
             followaxis: [0.0, 0.0, 1.0],
             stretch: 0.0,
             corners: None,
+            uv: None,
             collide: false,
             oncollide: 0,
             drift: v::ZERO,
@@ -782,7 +786,7 @@ impl PSys {
         tri::cull_face(TRICULLSTYLE_TRI_NONE);
         tri::begin(TRI_QUADS as i32);
         tri::color4f(c, c, c, a);
-        for (uv, vtx) in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].iter().zip(quad.iter()) {
+        for (uv, vtx) in p.uv.unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]).iter().zip(quad.iter()) {
             tri::tex_coord2f(uv[0], uv[1]);
             tri::vertex3fv(vtx);
         }

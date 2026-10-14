@@ -311,3 +311,90 @@ fn view_bob() {
     d.calc(&bob_input(1.0, 200.0, 0.0));
     assert_eq!(c, d, "the core plugin runs Bob::calc");
 }
+
+/// 2.1's client bullets (issue #165): `40 × v × s` with the raw factor (÷5 in bullet time), one
+/// fixed step every 0.1 s, drawn while a factor is set; 3.0's curve, stepping and gates stay.
+#[test]
+fn client_bullet_speed_and_stepping() {
+    use ts_client::events::BulletStep;
+    let x = [1.0, 0.0, 0.0];
+    let at = |factor100: f32, bullet_time: bool, dt: f32, ts: f32| BulletStep {
+        velocity: 330.0,
+        time_scale: ts,
+        bullet_time,
+        slowmo_factor100: factor100,
+        dt,
+    };
+    // A fixed step, whatever the time since the last.
+    assert_eq!(v21().client_bullet_step(x, &at(0.0, false, 0.05, 1.0)), [1320.0, 0.0, 0.0]);
+    assert_eq!(v21().client_bullet_step(x, &at(30.0, false, 0.1, 0.3))[0], 1320.0 * (30.0f32 / 100.0));
+    assert!((v21().client_bullet_step(x, &at(30.0, true, 0.1, 0.3))[0] - 79.2).abs() < 1e-4, "bullet time ÷5");
+    // 3.0: velocity × 40 × dt × GetBulletVelocityMult on the eased scale.
+    assert_eq!(v30().client_bullet_step(x, &at(0.0, false, 0.1, 1.0))[0], 1320.0);
+    assert!((v30().client_bullet_step(x, &at(30.0, false, 0.1, 0.3))[0] - 396.0).abs() < 1e-3);
+    assert!((v30().client_bullet_step(x, &at(30.0, true, 0.1, 0.3))[0] - 1320.0 * 0.3 / 9.1).abs() < 1e-3);
+
+    assert_eq!(v21().client_bullet_next_update(10.0, 1), (10.0f64 + 0.1) as f32, "0.1 s, realbullet or not");
+    assert_eq!(v21().client_bullet_next_update(10.0, 5), (10.0f64 + 0.1) as f32);
+    assert_eq!(v30().client_bullet_next_update(10.0, 1), 0.05 + 10.0);
+    assert_eq!(v30().client_bullet_next_update(10.0, 5), 10.0, "3.0: every frame");
+
+    // Queueing: `realbullet == 1 || TSSlowMo != 0` (3.0: `realbullet != 0 || ts < 0.99`).
+    assert!(v21().client_bullets_queue(1, 1.0, 0.0) && v30().client_bullets_queue(1, 1.0, 0.0));
+    assert!(!v21().client_bullets_queue(2, 1.0, 0.0) && v30().client_bullets_queue(2, 1.0, 0.0));
+    assert!(!v21().client_bullets_queue(0, 0.5, 0.0) && v30().client_bullets_queue(0, 0.5, 0.0), "easing back");
+    assert!(v21().client_bullets_queue(0, 1.0, 30.0) && !v30().client_bullets_queue(0, 1.0, 30.0));
+    assert!(v21().client_bullet_draws(1.0, 30.0) && !v21().client_bullet_draws(0.5, 0.0));
+    assert!(v30().client_bullet_draws(0.5, 0.0) && !v30().client_bullet_draws(1.0, 30.0));
+
+    // Range falloff: the quotient goes through a float.
+    assert_eq!(v21().client_bullet_range_index(800.0, 80.0, false), 10);
+    assert_eq!(v21().client_bullet_range_index(1234.5, 90.0, false), 13);
+    assert_eq!(v21().client_bullet_range_index(330.0, 80.0, true), 11);
+    assert_eq!(v30().client_bullet_range_index(1234.5, 90.0, false), 13);
+    assert_eq!(v30().client_bullet_range_index(330.0, 80.0, true), 11);
+}
+
+/// 2.1's draw (0x10069540): the bullet models and the `cl_wavedetail` trails.
+#[test]
+fn client_bullet_looks() {
+    use crate::bullets::*;
+    assert_eq!(
+        [model_for(3), model_for(4), model_for(6), model_for(8), model_for(1)],
+        ["models/pellet.mdl", "models/long_bullet.mdl", "models/long_bullet.mdl", "models/long_bullet.mdl", "models/bullet.mdl"]
+    );
+    assert_eq!([lod_body(50.0, 90), lod_body(100.0, 90), lod_body(200.0, 90), lod_body(300.0, 90)], [3, 2, 1, 0]);
+    assert_eq!([lod_body(1000.0, 10), lod_body(400.0, 40), lod_body(400.0, 41)], [3, 2, 0], "scoped: more detail further out");
+
+    assert_eq!(trails(0.0, true), Trails::None);
+    assert_eq!(trails(1.0, true), Trails::Trail);
+    assert_eq!(trails(2.0, false), Trails::Trail, "the wave needs bullet time");
+    assert_eq!(trails(2.0, true), Trails::TrailAndWave);
+    assert_eq!(trails(3.0, true), Trails::Spiral);
+    assert_eq!(trails(f32::NAN, true), Trails::Spiral, "unordered compares count as greater");
+
+    assert_eq!(
+        [spin_step(0.0), spin_step(30.0), spin_step(10.0), spin_step(5.0)],
+        [90.0, ((30.0f32 / 100.0) as f64 * 90.0) as f32, 22.5, 22.5]
+    );
+    assert_eq!(draw_step([1.0, 0.0, 0.0], 330.0, 0.3, 0.01)[0], 330.0f32 / 0.25 * 0.3 * 0.01 * 10.0);
+
+    let up = [0.0, 0.0, 1.0];
+    let t = trail_particle(7, [10.0, 0.0, 0.0], [0.0, 0.0, 0.0], 0.5, 0.5, up);
+    assert_eq!((t.color, t.fadespeed, t.radius, t.life), (0.5, 0.02, 0.5, 0.0), "fixed width, not 3.0's 1 − ts²");
+    assert_eq!(t.corners, Some([[0.0, 0.0, -0.5], [0.0, 0.0, 0.5], [10.0, 0.0, 0.5], [10.0, 0.0, -0.5]]));
+    let w = wave_particle(7, [1.0, 2.0, 3.0], 1.5);
+    assert_eq!((w.color, w.fadespeed, w.radius, w.corners), (0.6, 0.035, 1.5, None));
+
+    let s3 = spiral_particles(7, [0.0; 3], [10.0, 0.0, 0.0], [0.0; 3], 1.0, 2.0, 3.0);
+    assert_eq!(s3.len(), 3);
+    assert_eq!(spiral_particles(7, [0.0; 3], [10.0, 0.0, 0.0], [0.0; 3], 1.0, 2.0, 3.5).len(), 5);
+    let p = &s3[0];
+    assert_eq!((p.color, p.fadespeed, p.radius), (0.7, 0.035, 1.0));
+    let c = p.corners.unwrap();
+    // Facing +x: right is −y, so t = 0 starts a radius out on −y.
+    assert_eq!(c[0], [0.0, -1.0, 0.0]);
+    assert_eq!(c[3], [10.0, -2.0, 0.0]);
+    assert_eq!(p.uv.unwrap()[1][0], 1.0 / 3.0);
+    assert_eq!(s3[2].uv.unwrap()[1][0], 1.0);
+}

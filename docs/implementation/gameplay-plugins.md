@@ -328,6 +328,12 @@ The hooks so far:
 | `ClientRules` | `slowmo_tint()` | true (the `cl_slowfade` tint while slowed) | `view.rs` `write_screen_fade` |
 | `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and explosions keep 3.0's `fire_pitch`) |
 | `ClientRules` | `view_bob(bob, input)` | `Bob::calc` (`V_CalcBob` 0x10066e70): the gun offset and bob pitch, no camera bob (`Bob::eye` stays `None`) | `view.rs` `calc_normal` (the gun offset and angle; `Bob::eye` is added to `vieworg`) |
+| `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
+| `ClientRules` | `client_bullet_next_update(now, realbullet)` | `next_update`: 0.1 s, 0.05 s or every frame by `realbullet` | `events/fire.rs` `client_bullets_frame` |
+| `ClientRules` | `client_bullet_step(dir, step)` | `dir·velocity·40·dt·GetBulletVelocityMult` | `events/fire.rs` `client_bullet_impact` |
+| `ClientRules` | `client_bullet_range_index(dist, unit, exit)` | exit `ftol(dist·0.0033333334f·10)`, else `range_index` | `events/fire.rs` `client_bullet_impact` |
+| `ClientRules` | `client_bullet_draws(time_scale, slowmo_factor100)` | `ts < 0.99` | `events/fire.rs` `client_bullets_frame` |
+| `ClientRules` | `client_bullet_draw(bullet, draw)` | false: the core `shotgun_pellets.spr` streaks and `bullet_trail.spr` trail; a ruleset may queue `BulletModels`, which `effects::create_entities` adds (`goldsrc::ext::models`) | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11 | `menus/buy.rs`, `menus/mod.rs` |
 | `ServerRules` | `bullet_trace(start, end, shooter)` | `weapons::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |

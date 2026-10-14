@@ -5,11 +5,13 @@
 #![deny(unsafe_code)]
 
 use std::cmp::Ordering;
+use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
 use ts_client::menus::buy::MenuRules;
 use ts_client::view::{Bob, BobInput};
 use ts21_gameplay::TS21;
 
+pub mod bullets;
 pub mod view;
 
 /// TS 2.1's client-only rules.
@@ -29,7 +31,7 @@ const RANDOM_PISTOLS: [(i32, bool); 9] =
 
 /// `slowdiv` (0x10095800 over 0x100957c0): 1 at normal speed (`TSSlowMo` 0), else
 /// `1 / max(s, 0.1f)`; a NaN factor stays NaN (the x87 compare is unordered).
-fn slowdiv(s: f32) -> f64 {
+pub(crate) fn slowdiv(s: f32) -> f64 {
     if s == 0.0 {
         return 1.0;
     }
@@ -167,6 +169,37 @@ impl ClientRules for Ts21Client {
     /// `V_CalcBob` (0x100b5c80) with its camera bob ([`view::calc`]).
     fn view_bob(&self, bob: &mut Bob, input: &BobInput) -> f32 {
         view::calc(bob, input)
+    }
+
+    /// `EV_TS_FireBullets` (0x1007c5e0): `SrvSett 0 == 1 || TSSlowMo != 0` ([`bullets::queues`]).
+    fn client_bullets_queue(&self, realbullet: i32, _time_scale: f32, slowmo_factor100: f32) -> bool {
+        bullets::queues(realbullet, slowmo_factor100)
+    }
+
+    /// Every 0.1 s ([`bullets::next_update`]).
+    fn client_bullet_next_update(&self, now: f32, _realbullet: i32) -> f32 {
+        bullets::next_update(now)
+    }
+
+    /// A fixed `dir × velocity / 0.25 × s` per step ([`bullets::step`]).
+    fn client_bullet_step(&self, dir: [f32; 3], s: &BulletStep) -> [f32; 3] {
+        bullets::step(dir, s)
+    }
+
+    /// The float-stored quotient ([`bullets::range_index`]).
+    fn client_bullet_range_index(&self, dist: f64, unit: f32, exit: bool) -> i32 {
+        bullets::range_index(dist, unit, exit)
+    }
+
+    /// Drawn while a `TSSlowMo` factor is set (0x1006a13b), on the raw factor.
+    fn client_bullet_draws(&self, _time_scale: f32, slowmo_factor100: f32) -> bool {
+        slowmo_factor100 / 100.0 != 0.0
+    }
+
+    /// 2.1's models and trails ([`bullets::draw`]).
+    fn client_bullet_draw(&self, bullet: &mut ClientBullet, d: &mut BulletDraw) -> bool {
+        bullets::draw(bullet, d);
+        true
     }
 
     /// `CashBased()` (0x1006b2f0) is `m_Teamplay ≥ 2 || SrvSett 1`, so the menu spends the live

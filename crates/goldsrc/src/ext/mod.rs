@@ -6,6 +6,8 @@ pub mod entities;
 pub mod gl;
 #[cfg(feature = "client")]
 pub mod hud;
+#[cfg(feature = "client")]
+pub mod models;
 pub mod movement;
 #[cfg(feature = "client")]
 pub mod render;
