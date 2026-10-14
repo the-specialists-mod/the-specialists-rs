@@ -231,6 +231,19 @@ pub trait ServerRules: Sync {
 
     // ---- map entities -------------------------------------------------------------------------
 
+    /// The ruleset's own game object for an entity of `class`, made when the engine creates the
+    /// edict's private data (the classname's export), instead of the type 3.0 links to it. For a
+    /// class that is something else in the ruleset (e.g. an HL item where 3.0 has a power-up).
+    /// Port addition. 3.0: `None`.
+    fn entity_object(&self, _class: &CStr) -> Option<Box<dyn Entity>> {
+        None
+    }
+
+    /// The ruleset's own precaches, made at every map start for every registered ruleset (after
+    /// TS 3.0's, `gameplay::precache_rulesets`), so that its entities can spawn when a switch
+    /// makes it active mid-map. Port addition. 3.0: none.
+    fn precache(&self) {}
+
     /// Whether an entity of `class` may spawn (`DispatchSpawn`, for the map's entities and the
     /// game's own): a refused one fails its spawn (-1, the engine frees it) and its class parses
     /// no keyvalue. TS 3.0 has an export for every class the port links: all spawn.

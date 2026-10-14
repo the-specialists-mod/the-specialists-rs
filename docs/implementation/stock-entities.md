@@ -35,7 +35,7 @@ diffed against the decomp. Most are the original SDK 2.3 code. The changes are l
 | `blood.rs` | `UTIL_ShouldShowBlood`, `UTIL_BloodStream`, `UTIL_BloodDrips`, `UTIL_BloodDecalTrace`, `UTIL_RandomBloodVector`, the blood sprite indices and `g_Language` (`sv_language`, from `crate::precache`), `env_blood` |
 | `xen.rs` | `xen_plantlight`, `xen_hair`, `xen_tree` (+ `xen_ttrigger`), `xen_spore_small/medium/large` (+ `xen_hull`) |
 | `monsters.rs` | `monster_hevsuit_dead`, and `MonsterBase`: the `CBaseMonster` damage and death code (`TakeDamage`, `DeadTakeDamage`, `Killed`, gibbing, fade) that it, `env_explosion` and `cycler_wreckage` share |
-| `items.rs` | `item_healthkit`, `item_battery`, `item_antidote`, `item_suit`, `item_security`, `world_items`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins, `EMIT_SOUND_SUIT` |
+| `items.rs` | `item_healthkit`, `item_battery`, `item_antidote`, `item_suit`, `item_security`, `world_items`, `func_healthcharger`, `func_recharge`, TS `TakeHealth` / `TakeArmor` stand-ins, `EMIT_SOUND_SUIT`; `RulesetItem`, a gameplay ruleset's own `CItem` class (`ServerRules::entity_object`) |
 | `playeritem.rs` | weapons.cpp classes a map can place: `weaponbox`, `weapon_tsgun` and `cycler_weapon` (`CBasePlayerItem`: fall / touch / respawn / attach / drop), and the items' `SetObjectCollisionBox` boxes |
 | `maprules.rs` | `game_text`, `game_player_equip` (+ `GiveNamedItem`), `game_score` (+ `AddPoints` / `AddPointsToTeam`), `game_end`, `game_zone_player`, `game_player_hurt`, `game_counter`, `game_counter_set`, `game_team_master`, `game_team_set`, `game_player_team` |
 

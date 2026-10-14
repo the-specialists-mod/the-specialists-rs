@@ -64,6 +64,9 @@ pub struct Player {
     /// Permanent power-ups from pickups this life.
     pub kungfu: bool,
     pub superjump: bool,
+    /// `m_fLongJump` (+0x9d4): `Spawn` zeroes it, and TS 3.0 never sets it; a ruleset's long-jump
+    /// item may (its `MyTouch`). `Restore` turns it into the physinfo key `slj`.
+    pub long_jump: bool,
     /// Inventory slots in use (weapons writes; speed = shared::ts::speed_for_free_slots).
     pub slots_used: i32,
     pub cash: i32,

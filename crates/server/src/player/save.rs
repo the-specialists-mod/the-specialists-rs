@@ -137,8 +137,9 @@ impl Player {
         // m_iExtraSoundTypes (only zeroed) and m_iWeaponFlash (only decays from 0).
         f.zero();
         f.zero();
-        // m_fLongJump: `Spawn` zeroes it and nothing sets it; `Restore` turns it into "slj".
-        let long_jump = f.int_val(0).unwrap_or(0);
+        // m_fLongJump: `Spawn` zeroes it and 3.0 never sets it; `Restore` turns it into "slj".
+        f.boolean(&mut self.long_jump);
+        let long_jump = self.long_jump;
         f.boolean(&mut self.ts.init_hud);
         f.float(&mut self.tbd.prev);
         f.ehandle(&mut self.drive.tank);
@@ -146,7 +147,7 @@ impl Player {
         // m_iFOV: only the `fov` cheat sets it.
         f.int(&mut self.ts.ifov);
         if f.live() {
-            restore_tail(self, cx, long_jump != 0);
+            restore_tail(self, cx, long_jump);
         }
     }
 

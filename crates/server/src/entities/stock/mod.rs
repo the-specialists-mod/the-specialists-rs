@@ -322,6 +322,8 @@ impl World {
         crate::precache::client_precache();
         crate::precache::ts_precache();
         crate::precache::world_sounds_and_gibs();
+        // Port addition: the gameplay rulesets' own precaches, so any can become active mid-map.
+        crate::gameplay::precache_rulesets();
         // Port addition: the `tsmod_*` plugins' precaches, after the game's.
         crate::plugins::precache();
         light_styles();

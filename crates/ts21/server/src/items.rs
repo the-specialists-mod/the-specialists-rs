@@ -1,8 +1,62 @@
 //! TS 2.1's healing and armour items (2.1 `mp.dll`): the HL SDK's `TakeHealth`, battery and wall
-//! chargers, where TS 3.0 has its own (`ts_server::entities::stock::items`).
+//! chargers, where TS 3.0 has its own (`ts_server::entities::stock::items`), and `item_longjump`,
+//! HL's long-jump item where 3.0 has a super-jump power-up.
 
 use goldsrc::edict::EdictPtr;
+use goldsrc::server::engine;
 use goldsrc::sys::{edict_t, entvars_t};
+use std::ffi::CStr;
+use ts_server::entities::stock::items::{RulesetItem, emit_sound_suit, ruleset_item};
+use ts_server::messages::{self, Msg};
+use ts_server::world::{Cx, Entity};
+
+/// `CTSSuperJump`'s model (`Spawn` 0x10021910, `Precache` 0x10021940).
+const LONG_JUMP_MODEL: &CStr = c"models/w_longjump.mdl";
+
+/// `item_longjump` in 2.1 (`CTSSuperJump`, vtable 0x10083e00): HL's long-jump `CItem`, not a
+/// power-up. `Spawn` precaches and sets `w_longjump.mdl`, then `CItem::Spawn` (0x10021170); the
+/// touch, respawn and materialise are `CItem`'s (0x10021250, 0x100212f0, 0x10021360). The
+/// classname stays `item_longjump`, so 2.1's automatic power-up spawner stays on.
+pub static LONG_JUMP: RulesetItem = RulesetItem { model: LONG_JUMP_MODEL, precache: precache_long_jump, my_touch: long_jump_touch };
+
+/// The game object 2.1 makes for `class`: [`LONG_JUMP`] for `item_longjump`.
+pub fn entity_object(class: &CStr) -> Option<Box<dyn Entity>> {
+    (class == c"item_longjump").then(|| ruleset_item(&LONG_JUMP))
+}
+
+/// The map-start precache (`ServerRules::precache`): the long jump's model, which 2.1's
+/// `Spawn` precaches, so the item can spawn after a switch mid-map. The model is Half-Life's
+/// (`valve`), so it is skipped where the file system has no such file.
+pub fn precache() {
+    if engine().file_size(LONG_JUMP_MODEL).is_some_and(|n| n > 0) {
+        precache_long_jump();
+    }
+}
+
+fn precache_long_jump() {
+    engine().precache_model(LONG_JUMP_MODEL);
+}
+
+/// `CTSSuperJump::MyTouch` (0x10021950, vtable slot 60; Ghidra names it
+/// `CBaseAnimating::HandleAnimEvent`), the SDK's `CItemLongJump::MyTouch`: a player without the
+/// long jump (`m_fLongJump`, `pl+0x92c`) and with the HEV suit bit gets it: physinfo `slj` "1"
+/// (2.1's movement doesn't read it), `ItemPickup` with the classname, and `!HEV_A1`. `Spawn`
+/// takes it away again (0x10052a73).
+fn long_jump_touch(cx: &mut Cx, p: *mut edict_t) -> bool {
+    if p.v().weapons >= 0 {
+        return false;
+    }
+    let took = ts_server::player::with_player(p, |pl, _| !std::mem::replace(&mut pl.long_jump, true));
+    if took != Some(true) {
+        return false;
+    }
+    let e = engine();
+    e.set_physics_key(p, c"slj", c"1");
+    let class = e.string(cx.pev().classname);
+    messages::one(Msg::ItemPickup, p).string(class).end();
+    emit_sound_suit(p, c"!HEV_A1");
+    true
+}
 
 /// `gSkillData.suitchargerCapacity` (0x100a2058): 2.1 reads no `sk_*` cvar (`RefreshSkillData`
 /// 0x1001eb60 reads only `skill`), and `FUN_100239c0`, from `CHalfLifeMultiplay`'s constructor,
@@ -121,6 +175,22 @@ mod tests {
         assert_eq!((juice, armor), (4, 100.0));
         hev_charge(&mut juice, &mut armor);
         assert_eq!((juice, armor), (4, 100.0), "full: nothing taken");
+    }
+
+    /// 2.1 makes `item_longjump` an HL item (`CTSSuperJump`, a `CItem`); 3.0 keeps its linked
+    /// power-up, and no other class changes.
+    #[test]
+    fn item_longjump_is_an_hl_item() {
+        let v21: &dyn ServerRules = &crate::Ts21Server;
+        let core: &dyn ServerRules = &shared::gameplay::CORE;
+        let e = v21.entity_object(c"item_longjump").expect("2.1's own object");
+        let any: &dyn std::any::Any = &*e;
+        assert!(ts_server::entities::stock::items::is_item(any.type_id()));
+        assert_eq!(LONG_JUMP.model, c"models/w_longjump.mdl");
+        assert!(core.entity_object(c"item_longjump").is_none());
+        for class in [c"ts_powerup", c"item_battery", c"item_healthkit"] {
+            assert!(v21.entity_object(class).is_none(), "{class:?}");
+        }
     }
 
     #[test]

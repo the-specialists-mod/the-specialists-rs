@@ -277,6 +277,8 @@ The hooks so far:
 | `ServerRules` | `battery_armor(p, amount)` | `items::player_take_armor` (`TakeArmor`: kevlar slots, speed) | `entities/stock/items.rs` `Item::my_touch` (battery) |
 | `ServerRules` | `charger_capacity(armor)` | 1 | `entities/stock/items.rs` `Charger::spawn`, `recharge` |
 | `ServerRules` | `charger_charge(armor, juice, activator)` | `items::charge_once`: `TakeArmor(100)` / `TakeHealth(max - health)`, then empty | `entities/stock/items.rs` `Charger::use_` |
+| `ServerRules` | `entity_object(class)` | `None`: the type linked to the classname | `world::create_linked`, the body of every `link_entities!` export |
+| `ServerRules` | `precache()` | nothing; run for every registered ruleset at each map start | `gameplay::precache_rulesets`, from the world's precache after TS 3.0's |
 | `ServerRules` | `spawns_entity(class)` | true | `entities/mod.rs` `dispatch_spawn` (-1 when refused; the map load and the reset's re-spawn both go through it) and `dispatch_key_value` (a refused class parses no key) |
 | `ServerRules` | `entity_key_value(ent, cx, key, value)` | `None` (the class parses it) | `ham/mod.rs` `class_key_value` (`DispatchKeyValue`'s class part and AMXX's `ExecuteHam`) |
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |

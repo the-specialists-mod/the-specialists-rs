@@ -266,6 +266,8 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     crate::weapons::ts_init(p);
     p.ts.protect_until = now + 1.0;
     p.ts.init_hud = true;
+    // `CBasePlayer::Spawn` (0x8f568) zeroes `m_fLongJump` (+0x9d4) before the key.
+    p.long_jump = false;
     e.set_physics_key(cx.edict, c"slj", c"0");
     e.set_physics_key(cx.edict, c"hl", c"1");
     e.set_physics_key(cx.edict, c"mj", if superjump_map { c"1" } else { c"0" });

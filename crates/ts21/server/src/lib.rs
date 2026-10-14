@@ -204,6 +204,14 @@ impl ServerRules for Ts21Server {
         items::charger_charge(armor, juice, activator);
     }
 
+    fn entity_object(&self, class: &CStr) -> Option<Box<dyn Entity>> {
+        items::entity_object(class)
+    }
+
+    fn precache(&self) {
+        items::precache();
+    }
+
     fn spawns_entity(&self, class: &CStr) -> bool {
         entities::spawns(class)
     }

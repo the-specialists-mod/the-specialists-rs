@@ -84,6 +84,24 @@ enum Kind {
     Antidote,
     Suit,
     Security,
+    /// A ruleset's own `CItem` subclass ([`RulesetItem`]).
+    Ruleset,
+}
+
+/// A gameplay ruleset's own `CItem` subclass: `CItem::Spawn`, `ItemTouch`, `Respawn` and
+/// `Materialize` as for the HL items, with the class's model, `Precache` and `MyTouch` (which
+/// gets the item and the touching player, and returns whether it was taken). A plugin hands
+/// one out with [`ruleset_item`] from
+/// [`ServerRules::entity_object`](crate::gameplay::ServerRules::entity_object).
+pub struct RulesetItem {
+    pub model: &'static CStr,
+    pub precache: fn(),
+    pub my_touch: fn(&mut Cx, *mut edict_t) -> bool,
+}
+
+/// A new item of class `def` (the game object of an edict, see [`RulesetItem`]).
+pub fn ruleset_item(def: &'static RulesetItem) -> Box<dyn Entity> {
+    Box::new(Item::<5> { def: Some(def), ..Default::default() })
 }
 
 impl Kind {
@@ -95,9 +113,12 @@ impl Kind {
     }
 }
 
-/// `CItem` subclasses: `KIND` 0 = healthkit, 1 = battery, 2 = antidote, 3 = suit, 4 = security.
+/// `CItem` subclasses: `KIND` 0 = healthkit, 1 = battery, 2 = antidote, 3 = suit, 4 = security,
+/// 5 = a ruleset's ([`RulesetItem`]).
 #[derive(Default)]
 pub struct Item<const KIND: u8> {
+    /// The class of a ruleset item (`KIND` 5).
+    def: Option<&'static RulesetItem>,
     respawning: bool,
     /// `m_pfnTouch` is `ItemTouch` (`CItem::Spawn` 0xcae8c, `Materialize`).
     touchable: bool,
@@ -113,17 +134,32 @@ impl<const KIND: u8> Item<KIND> {
             1 => Kind::Battery,
             2 => Kind::Antidote,
             3 => Kind::Suit,
-            _ => Kind::Security,
+            4 => Kind::Security,
+            _ => Kind::Ruleset,
         }
     }
 
-    fn model() -> &'static CStr {
+    /// The model of an HL item class (none for a ruleset's: [`Self::model`]).
+    fn class_model() -> &'static CStr {
         match Self::kind() {
             Kind::HealthKit => c"models/w_medkit.mdl",
             Kind::Battery => c"models/w_battery.mdl",
             Kind::Antidote => c"models/w_antidote.mdl",
             Kind::Suit => c"models/w_suit.mdl",
             Kind::Security => c"models/w_security.mdl",
+            Kind::Ruleset => c"",
+        }
+    }
+
+    fn model(&self) -> &'static CStr {
+        self.def.map_or_else(Self::class_model, |d| d.model)
+    }
+
+    /// The class's `Precache`.
+    fn precache_own(&self) {
+        match self.def {
+            Some(d) => (d.precache)(),
+            None => Self::precache(),
         }
     }
 
@@ -177,6 +213,12 @@ impl<const KIND: u8> Item<KIND> {
                 emit_sound_suit(p, sentence);
                 p.v().weapons |= WEAPON_SUIT;
             }
+            Kind::Ruleset => {
+                let Some(d) = self.def else { return false };
+                if !(d.my_touch)(cx, p) {
+                    return false;
+                }
+            }
             Kind::Security => {
                 // `CItemSecurity::MyTouch` (0xcba58): `m_rgItems[ITEM_SECURITY]++` (+0x838) and
                 // always taken. Only the player's save reads the count. As for the antidote, the
@@ -218,11 +260,14 @@ impl<const KIND: u8> Item<KIND> {
     /// (0xcba30) only precache the model.
     fn precache() {
         let eng = engine();
-        eng.precache_model(Self::model());
+        if Self::kind() == Kind::Ruleset {
+            return; // the ruleset's own ([`Self::precache_own`])
+        }
+        eng.precache_model(Self::class_model());
         match Self::kind() {
             Kind::HealthKit => eng.precache_sound(c"items/smallmedkit1.wav"),
             Kind::Battery => eng.precache_sound(c"items/gunpickup2.wav"),
-            Kind::Antidote | Kind::Suit | Kind::Security => 0,
+            Kind::Antidote | Kind::Suit | Kind::Security | Kind::Ruleset => 0,
         };
     }
 }
@@ -259,13 +304,13 @@ impl<const KIND: u8> Entity for Item<KIND> {
 
     /// The class's `Precache` (see [`Self::precache`]).
     fn restored(&mut self, _cx: &mut Cx) {
-        Self::precache();
+        self.precache_own();
     }
 
     fn spawn(&mut self, cx: &mut Cx) {
         let eng = engine();
-        Self::precache();
-        eng.set_model(cx.edict, Self::model());
+        self.precache_own();
+        eng.set_model(cx.edict, self.model());
         // CItem::Spawn
         let v = cx.pev();
         v.movetype = MOVETYPE_TOSS as i32;
@@ -330,14 +375,22 @@ pub fn respawn_item(ent: &mut dyn Entity, cx: &mut Cx) -> bool {
         || one::<Battery>(&mut *any, |i| i.respawn(cx))
         || one::<Antidote>(&mut *any, |i| i.respawn(cx))
         || one::<Suit>(&mut *any, |i| i.respawn(cx))
-        || one::<Security>(any, |i| i.respawn(cx))
+        || one::<Security>(&mut *any, |i| i.respawn(cx))
+        || one::<Item<5>>(any, |i| i.respawn(cx))
 }
 
 /// The classes [`respawn_item`] runs on.
 pub fn is_item(ty: std::any::TypeId) -> bool {
     use std::any::TypeId;
-    [TypeId::of::<HealthKit>(), TypeId::of::<Battery>(), TypeId::of::<Antidote>(), TypeId::of::<Suit>(), TypeId::of::<Security>()]
-        .contains(&ty)
+    [
+        TypeId::of::<HealthKit>(),
+        TypeId::of::<Battery>(),
+        TypeId::of::<Antidote>(),
+        TypeId::of::<Suit>(),
+        TypeId::of::<Security>(),
+        TypeId::of::<Item<5>>(),
+    ]
+    .contains(&ty)
 }
 
 /// `item_suit` spawnflag: the short logon sentence.
@@ -645,5 +698,6 @@ mod tests {
         assert!(!Kind::Antidote.refuses_dead());
         assert!(!Kind::Suit.refuses_dead());
         assert!(!Kind::Security.refuses_dead());
+        assert!(!Kind::Ruleset.refuses_dead(), "CItem::ItemTouch doesn't test it: the MyTouch decides");
     }
 }
