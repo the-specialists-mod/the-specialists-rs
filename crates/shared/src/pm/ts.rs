@@ -44,14 +44,10 @@ impl<F: Fpu> Pm<'_, F> {
                 None => 0.0,
                 Some(k) => (F::x(c.forwardmove) * F::xd(k)).f(),
             };
-            if F::MSVC {
-                // A `double` 0.3 in client.dll / mp.dll.
-                c.sidemove = (F::x(c.sidemove) * F::xd(0.3)).f();
-                c.upmove = (F::x(c.upmove) * F::xd(0.3)).f();
-            } else {
-                c.sidemove *= 0.3;
-                c.upmove *= 0.3;
-            }
+            // A `double` 0.3 in every build (ts_i386.so 0xf972f `fldl` of file 0xf7fb8,
+            // client.dll 0x100536ed, mp.dll), each product rounded once.
+            c.sidemove = (F::x(c.sidemove) * F::xd(0.3)).f();
+            c.upmove = (F::x(c.upmove) * F::xd(0.3)).f();
         }
         if self.p.iuser4 & DIVE_IMPULSE_MASK != 0 {
             self.ts_dive();

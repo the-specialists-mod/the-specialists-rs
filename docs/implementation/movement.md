@@ -104,14 +104,13 @@ The MSVC differences, function by function (client address; `mp.dll` is the same
 | `PM_LadderMove` 0x1002d1b0 | dot z, y, x |
 | `PM_PreventMegaBunnyJumping` 0x1002dba0 | `maxspeed × 1.7` tested unrounded; divides by the unrounded speed |
 | `PseudoClimb` 0x10052fd0 | eye height `fild(40 or 0) + view_ofs + origin`; speed test unrounded |
-| `TSHandle` 0x10053660 | prone ×0.3 with a `double` 0.3 |
 | `PM_PlayStepSound` 0x1002a3a0 / `PM_UpdateStepSound` 0x1002aca0 | speed tests on the unrounded `Length`; `_ftol` keeps the low dword of a 64-bit `fistp` |
 | NaN-only compare directions | `PM_PlayerMove` water-jump cancel, `PM_CheckParamters` (maxspeed clamp, glide gravity), `PM_CheckVelocity` (too low), `PM_Jump`, `PM_WaterJump`, `PM_CheckWaterJump`, `PM_PushEntity`, `PM_Physics_Toss` (`VectorCompare` counts NaN as equal), `PM_UpdateStepSound` |
 
 The rest (`CrossProduct`, `VectorMA`, `VectorScale`, `PM_SplineFraction`, the gravity functions,
 `PM_ReduceTimers`, `PM_GetAccelBySpeed`, `PM_CatagorizePosition`, `PM_Duck`, `PM_UnDuck`,
 `PM_FixPlayerCrouchStuck`, `PM_CheckFalling`, `PM_CreateStuckTable`, `TSDive`, `TSWallJump`,
-`TSWallJumpClimb`, `TSGoDuck`, `TSStandUp`, `GetChaseOrigin`, `PM_CatagorizeTextureType`) computes
+`TSWallJumpClimb`, `TSGoDuck`, `TSStandUp`, `TSHandle` (prone ×0.3: a `double` 0.3 in both builds), `GetChaseOrigin`, `PM_CatagorizeTextureType`) computes
 the same as the GCC build once the stack is 53 bits wide.
 
 ## Implemented functions

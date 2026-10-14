@@ -497,8 +497,12 @@ fn every_movement_hook_reaches_the_movement() {
             f.arith = arith;
             f.p.iuser4 = stunt::PRONE;
             f.p.cmd.forwardmove = -320.0;
+            // Side and up times a `double` 0.3 in both builds: 30 and 60, not 0.3f's
+            // 30.000002 and 60.000004 (#126).
+            (f.p.cmd.sidemove, f.p.cmd.upmove) = (100.0, 200.0);
             f.run_with(1, rules);
             assert_eq!(f.p.cmd.forwardmove.to_bits(), bits);
+            assert_eq!((f.p.cmd.sidemove.to_bits(), f.p.cmd.upmove.to_bits()), (30.0f32.to_bits(), 60.0f32.to_bits()), "{arith:?}");
         }
 
         // The jump push runs before the upward speed, with the command's buttons and maxspeed.
