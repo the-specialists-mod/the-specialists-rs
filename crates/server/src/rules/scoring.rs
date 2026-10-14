@@ -9,6 +9,7 @@ use crate::damage::DamageInfo;
 use crate::damage::glast::Snapshot;
 use crate::messages::Msg;
 use crate::player::Player;
+use crate::weapons::Active;
 use crate::world::{Cx, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
@@ -164,6 +165,8 @@ pub struct Killer {
     pub active: u16,
     /// [`active_gun`].
     pub gun: Option<u8>,
+    /// What `m_pActiveItem` is (the gun, another item such as a `cycler_weapon`, or nothing).
+    pub item: Active,
     /// The killer's current weapon record was first owned by the victim ([`victims_gun`]).
     pub victims_gun: bool,
 }
@@ -248,6 +251,7 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             held_secs: k.ts.held_secs,
             active: k.active_powerup,
             gun: active_gun(k),
+            item: crate::weapons::active_item(k),
             victims_gun: victims_gun(active_gun(k), |cur| k.inv.sv.owners[cur as usize], victim),
         })
     } else {
@@ -569,15 +573,23 @@ fn spectacular_roll(roll: i32, spectacularness: f32) -> bool {
     pct != 0 && roll <= pct
 }
 
+/// `TSGetPointsForFrag`'s kung fu test on the killer's `m_pActiveItem` (3.0 `pl+0xa10`, 2.1
+/// `pl+0x968`), the same in both versions: without an active item, `glast_closecombat`; with the
+/// gun (`m_iId == 0x10`), kung fu out (`gun+0xcc` NULL, `gun_current` 0) or `glast_closecombat`;
+/// any other item (a `cycler_weapon`) never, so its kills score the base points.
+/// `glast_closecombat` is also set by a stunt's hit (`CTSStunt::CheckForBreakables` 0x9bd9c).
+pub fn active_item_kung_fu(item: Active, gun_current: Option<u8>, close_combat: bool) -> bool {
+    match item {
+        Active::None => close_combat,
+        Active::Gun => gun_current.is_none_or(|c| c == 0) || close_combat,
+        Active::Cycler => false,
+    }
+}
+
 /// `TSGetPointsForFrag`'s `#TS_KungFu` test for a killer that is its own inflictor:
-/// `glast_weaponid == -1`, then without an active item `glast_closecombat`, with the gun
-/// kung fu out (`gun+0xcc` NULL) or `glast_closecombat`.
-fn kung_fu_frag(g: &Snapshot, killer_gun: Option<u8>) -> bool {
-    g.weapon_id == -1
-        && match killer_gun {
-            None => g.close_combat,
-            Some(cur) => cur == 0 || g.close_combat,
-        }
+/// `glast_weaponid == -1`, then [`active_item_kung_fu`].
+fn kung_fu_frag(g: &Snapshot, item: Active, killer_gun: Option<u8>) -> bool {
+    g.weapon_id == -1 && active_item_kung_fu(item, killer_gun, g.close_combat)
 }
 
 /// `TSGetPointsForFrag` (0x89140) for a killing player `k`: 2 points and `#TS_KungFu` when the
@@ -600,7 +612,7 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
     let mut desc = String::new();
     if !d.inflictor.is_null() {
         if d.inflictor == attacker {
-            if kung_fu_frag(g, k.gun) {
+            if kung_fu_frag(g, k.item, k.gun) {
                 desc = "#TS_KungFu".to_owned();
                 points = 2;
             }
@@ -870,9 +882,9 @@ pub fn broadcast_score(e: *mut edict_t) {
 #[cfg(test)]
 mod tests {
     use super::{
-        FragLoser, KillTags, KillerScore, Snapshot, TeamKillPunish, WeaponNaming, frag_loser, killer_score, kung_fu_frag, log_id,
-        log_weapon, own_weapon_message, own_weapon_name, rename_weapon, spectacular_roll, team_kill_punishment, thrown_blade_name,
-        victims_gun, weapon_info_name,
+        Active, FragLoser, KillTags, KillerScore, Snapshot, TeamKillPunish, WeaponNaming, active_item_kung_fu, frag_loser, killer_score,
+        kung_fu_frag, log_id, log_weapon, own_weapon_message, own_weapon_name, rename_weapon, spectacular_roll, team_kill_punishment,
+        thrown_blade_name, victims_gun, weapon_info_name,
     };
     use goldsrc::sys::edict_t;
     use shared::weapons::{id, tables};
@@ -982,12 +994,24 @@ mod tests {
     fn kung_fu_frag_needs_close_combat_or_bare_hands() {
         let none = Snapshot::default();
         let close = Snapshot { close_combat: true, ..none };
-        assert!(kung_fu_frag(&close, None));
-        assert!(!kung_fu_frag(&none, None), "no gun, no close combat");
-        assert!(kung_fu_frag(&none, Some(0)), "kung fu out");
-        assert!(kung_fu_frag(&close, Some(12)));
-        assert!(!kung_fu_frag(&none, Some(12)), "a knife or katana slash is no kung-fu frag");
-        assert!(!kung_fu_frag(&Snapshot { weapon_id: 12, ..close }, Some(0)), "a simulated bullet");
+        assert!(kung_fu_frag(&close, Active::None, None));
+        assert!(!kung_fu_frag(&none, Active::None, None), "no gun, no close combat");
+        assert!(kung_fu_frag(&none, Active::Gun, Some(0)), "kung fu out");
+        assert!(kung_fu_frag(&close, Active::Gun, Some(12)));
+        assert!(!kung_fu_frag(&none, Active::Gun, Some(12)), "a knife or katana slash is no kung-fu frag");
+        assert!(!kung_fu_frag(&Snapshot { weapon_id: 12, ..close }, Active::Gun, Some(0)), "a simulated bullet");
+    }
+
+    #[test]
+    fn a_cycler_in_hand_is_never_kung_fu() {
+        // Issue #148: an active item that isn't the gun scores the base points, even under
+        // `glast_closecombat` (a stunt's hit).
+        let close = Snapshot { close_combat: true, ..Snapshot::default() };
+        assert!(!kung_fu_frag(&close, Active::Cycler, None));
+        assert!(!active_item_kung_fu(Active::Cycler, None, true));
+        assert!(!active_item_kung_fu(Active::Cycler, None, false));
+        assert!(active_item_kung_fu(Active::None, None, true));
+        assert!(active_item_kung_fu(Active::Gun, Some(0), false));
     }
 
     #[test]
