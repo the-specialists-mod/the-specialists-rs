@@ -511,11 +511,25 @@ pub fn ccombat_block(gun: &mut Gun, host: &mut dyn GunHost) {
 
 // ---- the stock hit -------------------------------------------------------------------------
 
+/// The stock hit's `ColdCockAttack` (pushes at 0x1004ae80..0x1004aeb9: flags 0, 0, 0, 0, move
+/// 0x17, damage, hull 3; reach 38 at 0x1004aee2). `ColdCockAttack` plays the move first, hit or
+/// miss (`if (anim != -1) Animate`); 0x17 is the same straight punch in 3.0's ids.
+fn stock_hit(weapon: u8, damage: f32) -> MeleeHit {
+    hit(MeleeKind::ColdCock, weapon, 38.0, 3, damage, 0x0400_1080, 0x17)
+}
+
+/// The stock hit's sound (0x1004af1c): `ColdCockAttack` returns NULL on a miss and also on a
+/// kung-fu block (unlike 3.0's, which returns the target), and NULL plays closecombat.wav.
+fn stock_hit_sound(r: &MeleeResult) -> Sound {
+    if matches!(r, MeleeResult::Hit { .. }) { Sound::KevlarHit } else { Sound::CloseCombatMiss }
+}
+
 /// `CTSGun::AlternateAttack` (0x1004ab40) with `ColdCockAttack` (`FUN_100572a0`), on the guns
 /// whose 2.1 table entry has the stock flag (`info+0x10`, the M4A1 and the Sawed-off; the table
 /// gives them `stock` = 20, [`tables::STOCK_DAMAGE`](super::tables::STOCK_DAMAGE)): 20 damage 38
-/// units ahead, no stunting penalty, no disarm or knockback; kevlarhit.wav on a hit,
-/// closecombat.wav on a miss.
+/// units ahead, no stunting penalty, no disarm or knockback, the straight punch 0x17 on the
+/// attacker ([`stock_hit`]); kevlarhit.wav on a hit, closecombat.wav on a miss or a block
+/// ([`stock_hit_sound`]).
 pub fn cold_cock(gun: &mut Gun, host: &mut dyn GunHost) {
     if !gun.has_slot() || gun.info().stock == 0 {
         return;
@@ -529,8 +543,8 @@ pub fn cold_cock(gun: &mut Gun, host: &mut dyn GunHost) {
     gun.next_secondary = d;
     gun.next_alt = d;
     gun.idle = 2.0;
-    let r = host.melee(&hit(MeleeKind::ColdCock, gun.current, 38.0, 3, gun.info().stock as f32, 0x0400_1080, -1), gun);
-    host.sound(if matches!(r, MeleeResult::Miss) { Sound::CloseCombatMiss } else { Sound::KevlarHit });
+    let r = host.melee(&stock_hit(gun.current, gun.info().stock as f32), gun);
+    host.sound(stock_hit_sound(&r));
     gun.unzoom(host);
     if gun.has_slot() {
         let items = gun.status[gun.current as usize].items as i32;
@@ -627,6 +641,17 @@ mod tests {
         let stock = |id| tables::tables().weapon(id).map_or(0, |w| w.stock);
         assert_eq!([stock(5), stock(33)], [20, 20], "the M4A1 and the Sawed-off");
         assert_eq!([stock(12), stock(18), stock(13)], [0, 0, 0]);
+    }
+
+    /// #149: the stock hit plays 2.1's punch 0x17, and a blocked one sounds like a miss.
+    #[test]
+    fn stock_hit_anim_and_sound() {
+        let h = stock_hit(5, 20.0);
+        assert_eq!((h.reach, h.hull, h.damage, h.bits, h.player_anim), (38.0, 3, 20.0, 0x0400_1080, 0x17));
+        assert!(!h.disarm && !h.knockback);
+        assert!(matches!(stock_hit_sound(&MeleeResult::Hit { player: true }), Sound::KevlarHit));
+        assert!(matches!(stock_hit_sound(&MeleeResult::Miss), Sound::CloseCombatMiss));
+        assert!(matches!(stock_hit_sound(&MeleeResult::Blocked { next_attack: 0.0, bar_cost: 0.0 }), Sound::CloseCombatMiss));
     }
 
     #[test]
