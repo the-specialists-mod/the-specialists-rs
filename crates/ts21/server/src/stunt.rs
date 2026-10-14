@@ -47,6 +47,22 @@ pub const STUNTS: StuntRules = StuntRules {
     // while `!m_fSequenceFinished && alive && GO_DUCK && !ladder` against everything but the two
     // wall poses: no on-ground release and no dive exception.
     wall_jump_pose_holds_until_recovered: true,
+    // `Animate` case 0x37 (2.1's wall climb, the port's 0x38): no dive exception (#112).
+    wall_climb_pose_lets_dive_through: false,
+    // `Animate` case 5: `!m_fSequenceFinished && (button & IN_DUCK) && !FL_DUCKING`, against all
+    // but 0x2f, 0x28, 4, 0x38 (the port's 0x39), 0x14 and 0x21 (`katana_duck`, the port's 0x25).
+    goduck_holds: true,
+    // `Animate` case 0x2a/0x2b: `button & 0x600`.
+    side_roll_holds_on_strafe_keys: true,
+    // `Animate`'s close-combat branch: no `GaitCloseCombat`, `cc_flag` or on-ground condition.
+    melee_gait_follows: false,
+    // The leg tail (0x1003ea..) reads only the torso extension (`pl+0xab0`).
+    gait_idle_anim_extension: false,
+    // `Animate`/`HandleCloseCombat` (0x1003f340) write `time + 2 * slowInv` / `time + slowInv`
+    // (`FixedSlowMul`), the bullet dance (FUN_1003ee00, FUN_1003ee50) `time + 0.15/3 * slowInv`.
+    anim_end_times: true,
+    // `HandleSlide` (0x1005c1f0..0x1005c396) normalises `v_forward` inline.
+    side_roll_normalizes_forward: true,
     // `GoBulletTime` (0x1005b160): no dodge window (2.1 `TraceAttack` has only the stunt ×0.7),
     // and `if (m_flNextAttack < 0) m_flNextAttack = 0.55 * slowInv`.
     bullet_time_dodge: None,
@@ -96,6 +112,21 @@ pub static ABSOLUTE: Absolute = Absolute;
 /// `FixedSlowAmt` (0x1005a3b0): `fuser1 < 0.1f ? 0.1f : fuser1` (a NaN stays).
 fn fixed_slow_amt(time_scale: f32) -> f32 {
     if time_scale < 0.1 { 0.1 } else { time_scale }
+}
+
+/// One fuse think of 2.1's `CM61Grenade::WaitThink` (0x10047887..0x100478c3), issue #112:
+/// `FixedSlowAmt(fuser1) * 0.1 + elapsed` with the `double` 0.1 (`fmul qword`) and the 0.1 floor,
+/// rounded once. (2.1's normal `fuser1 == 0` takes `elapsed + 0.1`, the same sum as the port's
+/// normal 1.) The x87 sum is done in `f64`.
+pub fn grenade_fuse_step(elapsed: f32, time_scale: f32) -> f32 {
+    (f64::from(fixed_slow_amt(time_scale)) * 0.1 + f64::from(elapsed)) as f32
+}
+
+/// 2.1's `PreThink` animation rate (0x100537e0), issue #112: `fuser1 == 0 || fuser1 >= 0.1` (normal
+/// speed, or at least a tenth) gives `1 / FixedSlowMul(fuser1)`, anything slower (or a NaN) 0, so
+/// the model stops. The port's normal time scale is 1.
+pub fn anim_framerate(time_scale: f32) -> f32 {
+    if time_scale >= 0.1 { (1.0 / slow_inv(time_scale)) as f32 } else { 0.0 }
 }
 
 /// `FixedSlowMul` (0x1005a3d0) for the port's time scale.
@@ -166,6 +197,18 @@ impl StuntClock for Absolute {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grenade_fuse_and_animation_rate_floor_at_a_tenth() {
+        assert_eq!(grenade_fuse_step(0.0, 0.01), 0.01);
+        assert_eq!(grenade_fuse_step(0.0, 0.5), 0.05);
+        assert_eq!(grenade_fuse_step(3e-6, 1.0), (3e-6f32 as f64 + 0.1) as f32, "the double 0.1");
+        assert_ne!(grenade_fuse_step(3e-6, 1.0), 3e-6 + 0.1f32);
+        assert_eq!(anim_framerate(0.1), 0.1);
+        assert_eq!(anim_framerate(0.55), 0.55);
+        assert_eq!(anim_framerate(0.099), 0.0);
+        assert_eq!(anim_framerate(f32::NAN), 0.0);
+    }
     use ts_server::stunt::rules::{CORE, RELATIVE};
 
     #[test]
@@ -219,6 +262,8 @@ mod tests {
         assert!(!s.stunt_ends_close_combat && !s.wheel_and_roll_wait_for_kick && !s.recover_end_unblocks);
         assert!(s.kick_cooldown_on_try, "2.1 arms the jump kick's cooldown on every try");
         assert!(s.wall_jump_pose_holds_until_recovered);
+        assert!(!s.wall_climb_pose_lets_dive_through && !s.melee_gait_follows && !s.gait_idle_anim_extension);
+        assert!(s.goduck_holds && s.side_roll_holds_on_strafe_keys && s.anim_end_times && s.side_roll_normalizes_forward);
         assert_eq!((s.bullet_time_dodge, s.bullet_time_attack_delay), (None, Some(0.55)));
         // 3.0's stay.
         assert_eq!((CORE.get_up_buttons, CORE.wall_landing_recover), (0x4006, 0.2625));

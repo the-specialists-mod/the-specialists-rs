@@ -72,6 +72,31 @@ pub struct StuntRules {
     /// a recovery early when the sequence finishes, so this decides when the landing's
     /// recovery (and its `RECOVER` input lock) can end.
     pub wall_jump_pose_holds_until_recovered: bool,
+    /// `Animate` case 0x38: the wall-climb pose lets a dive (0x28) through.
+    pub wall_climb_pose_lets_dive_through: bool,
+    /// `Animate`: a playing `goduck` (5) refuses other animations while unfinished, alive, duck
+    /// held and not yet ducking, but for a roll, dive, jump, the super jump and the two ducking
+    /// melee moves. TS 3.0 has no such case.
+    pub goduck_holds: bool,
+    /// `Animate` case 0x2a/0x2b: the prone side roll holds while a strafe key is held
+    /// (`IN_MOVELEFT | IN_MOVERIGHT`). TS 3.0 holds it while the velocity isn't square to the
+    /// view's right (or is zero).
+    pub side_roll_holds_on_strafe_keys: bool,
+    /// `Animate`: while a melee move plays, the legs follow (`GaitCloseCombat`, TS 3.0) when its
+    /// close-combat flag is clear on the ground; `false` refuses every non-stunt id until it ends.
+    pub melee_gait_follows: bool,
+    /// `Animate`'s leg tail: standing still, `m_szAnimExtention` (e.g. `knife_idle`) comes before
+    /// the torso extension's idle.
+    pub gait_idle_anim_extension: bool,
+    /// `CTSAnimation`'s "recently shot" (`+0x0c`), grenade (`+0x10`) and bullet-dance timers keep
+    /// the end time `time + d` through the [`StuntClock`] instead of counting down in
+    /// `UpdateTimers` (the shot timer is tested `time <= t` for the aim poses, `t > time` for the
+    /// legs' combat idle and the whole-body follow, the dance `time <= until && next <= time`).
+    /// The `+0x08` hold timer still counts down.
+    pub anim_end_times: bool,
+    /// `HandleSlide` (0x9b9f8): the side roll's stunt direction is `v_forward` normalised
+    /// (`x² + y² + z²`) rather than `v_forward` as it is.
+    pub side_roll_normalizes_forward: bool,
     /// `GoBulletTime` (0x9a5b4): bullets do ×0.7 for this many seconds (absolute, unscaled
     /// time, `+0x34`); `None` sets no dodge window.
     pub bullet_time_dodge: Option<f32>,
@@ -101,6 +126,13 @@ pub const CORE: StuntRules = StuntRules {
     wheel_and_roll_wait_for_kick: true,
     kick_cooldown_on_try: false,
     wall_jump_pose_holds_until_recovered: false,
+    wall_climb_pose_lets_dive_through: true,
+    goduck_holds: false,
+    side_roll_holds_on_strafe_keys: false,
+    melee_gait_follows: true,
+    gait_idle_anim_extension: true,
+    anim_end_times: false,
+    side_roll_normalizes_forward: false,
     bullet_time_dodge: Some(0.55),
     bullet_time_attack_delay: None,
     recover_end_clears: ROLLING | FREEZE_ANGLES | GO_DUCK | RECOVER | DEAD_LOCK,
@@ -212,6 +244,8 @@ mod tests {
         assert!(c.wall_dive && c.wall_climb_while_gliding && c.stunt_ends_close_combat && c.wheel_and_roll_wait_for_kick);
         assert!(!c.wall_landing_sets_recover && c.recover_end_unblocks && !c.kick_cooldown_on_try);
         assert!(!c.wall_jump_pose_holds_until_recovered);
+        assert!(c.wall_climb_pose_lets_dive_through && c.melee_gait_follows && c.gait_idle_anim_extension);
+        assert!(!c.goduck_holds && !c.side_roll_holds_on_strafe_keys && !c.anim_end_times && !c.side_roll_normalizes_forward);
         assert_eq!((c.bullet_time_dodge, c.bullet_time_attack_delay), (Some(0.55), None));
     }
 

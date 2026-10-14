@@ -191,6 +191,7 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
         let m = TsPAward { entindex: cx.index() as u8, award: p.ts.award };
         msg::all(Msg::TsPAward, |w| m.write(w));
     }
+    crate::entities::ts::objective::send_wires(p, cx.edict);
     // `m_pActiveItem->UpdateClientData(this)`: `CTSGun::UpdateClientData` (0x858c8), only while
     // the gun is the active item.
     if has_gun {

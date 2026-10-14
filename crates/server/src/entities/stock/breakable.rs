@@ -164,6 +164,19 @@ pub fn send_glass_debris(center: Vec3, size: Vec3, hit_pos: Vec3, hit_dir: Vec3,
     messages::pvs(Msg::TsFrags, center).vec3(center).vec3(size).byte(0).vec3(hit_pos).vec3(hit_dir).long(bits).coord(magnitude).end();
 }
 
+/// The SDK's glass debris (`TSFrags` type 0 with only the centre, size and type, 13 bytes), for a
+/// ruleset whose breaks don't come from the hit
+/// ([`ServerRules::break_debris_from_hit`](crate::gameplay::ServerRules::break_debris_from_hit)).
+pub fn send_glass_debris_short(center: Vec3, size: Vec3) {
+    messages::pvs(Msg::TsFrags, center).vec3(center).vec3(size).byte(0).end();
+}
+
+/// The SDK's `CBreakable::Die` debris velocity: `g_vecAttackDir * 200` for `explosion directed`,
+/// otherwise none.
+pub fn sdk_debris_velocity(directed: bool, attack_dir: Vec3) -> Vec3 {
+    if directed { vec::scale(attack_dir, 200.0) } else { [0.0; 3] }
+}
+
 /// `CBreakable::TraceAttack`'s remembered hit direction (issue #150), in mp.dll's arithmetic
 /// (0x1001f2e3..0x1001f49c): the hit's direction normalised, or for a zero one the attacker's
 /// velocity normalised (zero if that is zero too). MSVC stores the direction's `x²` as a `float`
@@ -413,7 +426,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         // Guard: TS reads through a NULL inflictor; the port leaves the direction alone then.
         let dir = (!info.inflictor.is_null()).then(|| {
             let v = cx.pev();
-            vec::sub(info.inflictor.v().origin, vec::mad(v.absmin, v.size, 0.5))
+            crate::gameplay::active().server.breakable_attack_dir(info.inflictor.v().origin, v.absmin, v.size)
         });
         if info.attacker == info.inflictor && has_player(info.attacker) {
             let sf = cx.pev().spawnflags;
@@ -432,7 +445,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
         }
         // `g_vecAttackDir` (0xc1532), only for a breakable one.
         if let Some(d) = dir {
-            crate::damage::set_attack_dir(crate::damage::normalize(d));
+            crate::damage::set_attack_dir(d);
         }
         let v = cx.pev();
         v.health -= damage;
@@ -466,7 +479,8 @@ impl<const PUSH: bool> Breakable<PUSH> {
             return;
         }
         let health = cx.pev().health;
-        if !attacker.is_null() {
+        let from_hit = crate::gameplay::active().server.break_debris_from_hit();
+        if from_hit && !attacker.is_null() {
             cx.pev().fuser1 = attacker.v().fuser1;
         }
 
@@ -477,9 +491,17 @@ impl<const PUSH: bool> Breakable<PUSH> {
         let center = vec::add(v.origin, vec::mid(v.mins, v.maxs));
         let size = v.size;
         if self.material == mat::GLASS {
-            send_glass_debris(center, size, self.hit_pos, self.hit_dir, self.hit_bits, mult * self.hit_damage);
+            if from_hit {
+                send_glass_debris(center, size, self.hit_pos, self.hit_dir, self.hit_bits, mult * self.hit_damage);
+            } else {
+                send_glass_debris_short(center, size);
+            }
         } else {
-            let vel = vec::scale(self.hit_dir, self.hit_damage * mult);
+            let vel = if from_hit {
+                vec::scale(self.hit_dir, self.hit_damage * mult)
+            } else {
+                sdk_debris_velocity(self.explosion_directed, crate::damage::attack_dir())
+            };
             te_break_model(MSG_PVS, center, size, vel, 10, self.gib_index, 0, 25, flags);
         }
 
@@ -943,6 +965,12 @@ mod precision_tests {
 
     /// Poison damage times the `double` 0.1, and `g_vecAttackDir` through mp.dll's out-of-line
     /// `Normalize` (the old stored length and `1/len` gave `[0xbed7b814, 0xbf609e29, ..]`).
+    #[test]
+    fn sdk_debris_follows_the_attack_only_when_directed() {
+        assert_eq!(sdk_debris_velocity(true, [0.5, -0.25, 1.0]), [100.0, -50.0, 200.0]);
+        assert_eq!(sdk_debris_velocity(false, [0.5, -0.25, 1.0]), [0.0; 3]);
+    }
+
     #[test]
     fn poison_and_attack_dir() {
         assert_eq!(poisoned(9.0).to_bits(), 0x3f66_6666);

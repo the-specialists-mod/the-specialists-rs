@@ -206,7 +206,7 @@ pub struct Grenade {
 
 /// One fuse think: `elapsed = GiveSlowMul() * 0.1f + elapsed`, rounded once (`ts_i386.so`
 /// 0x7cbbb..0x7cbca, mp.dll 0x10051096..0x100510a5; issue #150).
-fn fuse_step(arith: Arith, elapsed: f32, slow: f32) -> f32 {
+pub fn fuse_step(arith: Arith, elapsed: f32, slow: f32) -> f32 {
     fn go<F: Fpu>(elapsed: f32, slow: f32) -> f32 {
         (F::x(slow) * F::x(0.1) + F::x(elapsed)).f()
     }
@@ -280,7 +280,7 @@ impl Entity for Grenade {
         cx.pev().nextthink = plus_double(e.time(), 0.1);
         if self.elapsed < self.fuse {
             // The fuse runs in the grenade's own time (`GiveSlowMul`).
-            self.elapsed = fuse_step(crate::rules::cvars::pm_arith(), self.elapsed, cx.pev().fuser1.max(0.01));
+            self.elapsed = crate::gameplay::active().server.grenade_fuse_step(self.elapsed, cx.pev().fuser1);
             impact_damage(me, self.thrower.or(me), 0x1080, true);
             self.phys.update(cx.pev());
             return;

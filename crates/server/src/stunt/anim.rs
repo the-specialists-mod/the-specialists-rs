@@ -8,8 +8,47 @@
 //! `PlayerDeathThink` while dying, to keep `m_fSequenceFinished`: stunts use it to end recoveries
 //! early, and the death think to end the dying state.
 
+use super::rules::StuntRules;
 use super::*;
 use goldsrc::ext::movement::{self as studio, STUDIO_LOOPING};
+
+/// The active ruleset's stunt values (the animation rules among them).
+fn stunt_rules() -> &'static StuntRules {
+    crate::gameplay::active().server.stunts()
+}
+
+/// A `CTSAnimation` timer of `secs` of the player's time: TS 3.0 stores the seconds and counts
+/// them down in [`update_timers`]; with [`StuntRules::anim_end_times`] the ruleset's
+/// [`StuntClock`](super::rules::StuntClock) gives the end time.
+fn anim_timer(cx: &mut Cx, secs: f64) -> f32 {
+    let (now, scale) = (cx.time(), cx.pev().fuser1);
+    crate::gameplay::active().server.stunt_clock().start(now, scale, secs)
+}
+
+/// The "recently shot" timer for the torso's aim poses: TS 3.0 `shot >= 0.01`; end times
+/// `time <= shot`.
+fn aiming(end_times: bool, now: f32, shot: f32) -> bool {
+    if end_times { now <= shot } else { shot >= 0.01 }
+}
+
+/// The "recently shot" timer for the legs' `combat_idle`: TS 3.0 `shot >= 0.01`; end times
+/// `shot > time`.
+fn shot_running(end_times: bool, now: f32, shot: f32) -> bool {
+    if end_times { shot > now } else { shot >= 0.01 }
+}
+
+/// The "recently shot" timer is over for the whole-body follow: TS 3.0 `shot < 0.01`; end times
+/// `shot < time || shot == time` (a NaN is neither).
+fn shot_over(end_times: bool, now: f32, shot: f32) -> bool {
+    if end_times { shot <= now } else { shot < 0.01 }
+}
+
+/// `BulletDance`'s timers allow a twitch: TS 3.0 `!(time_left < 0.01) && !(next > 0)`; end times
+/// `time <= until && next <= time`.
+fn dance_due(end_times: bool, now: f32, next: f32, until: f32) -> bool {
+    use std::cmp::Ordering::{Greater, Less};
+    if end_times { now <= until && next <= now } else { until.partial_cmp(&0.01) != Some(Less) && next.partial_cmp(&0.0) != Some(Greater) }
+}
 
 /// The name tables (16-byte slots in TS), indexed by `GetDirection`: left, right, forward, back.
 const JUMP: [&str; 4] = ["jump_left_", "jump_right_", "jump_forward_", "jump_forward_"];
@@ -182,10 +221,15 @@ fn set_anim(p: &mut Player, cx: &mut Cx, name: &str, flags: i32, frame: i32) -> 
     true
 }
 
-/// `CTSAnimation::UpdateTimers` (0x6b37c), in slowed time.
+/// `CTSAnimation::UpdateTimers` (0x6b37c), in slowed time. With
+/// [`StuntRules::anim_end_times`] only the hold timer counts down.
 pub fn update_timers(p: &mut Player, cx: &mut Cx) {
     let dt = slow_mul(cx) * frametime();
     let a = &mut p.stunt.anim;
+    if stunt_rules().anim_end_times {
+        a.hold = if a.hold >= -0.001 { (a.hold - dt).max(0.0) } else { (dt + a.hold).min(0.0) };
+        return;
+    }
     a.dance_time = (a.dance_time - dt).max(0.0);
     a.dance_next = (a.dance_next - dt).max(0.0);
     a.shot = (a.shot - dt).max(0.0);
@@ -194,11 +238,12 @@ pub fn update_timers(p: &mut Player, cx: &mut Cx) {
 }
 
 /// `CTSAnimation::EnableBulletDance` (0x6d314), from `CBasePlayer::TakeDamage`.
-pub fn enable_bullet_dance(p: &mut Player) {
+pub fn enable_bullet_dance(p: &mut Player, cx: &mut Cx) {
+    let (next, until) = (anim_timer(cx, 0.15), anim_timer(cx, 3.0));
     let a = &mut p.stunt.anim;
     a.bullet_dance = true;
-    a.dance_next = 0.15;
-    a.dance_time = 3.0;
+    a.dance_next = next;
+    a.dance_time = until;
 }
 
 /// `CTSAnimation::DisableBulletDance` (0x6d2f0), from `CBasePlayer::TakeDamage`.
@@ -214,10 +259,10 @@ pub fn disable_bullet_dance(p: &mut Player) {
 /// is still playing (`m_fSequenceFinished` clear), and each new pose restarts that animation.
 pub fn bullet_dance(p: &mut Player, cx: &mut Cx) {
     let a = &p.stunt.anim;
-    if !a.bullet_dance || a.dance_time < 0.01 || a.dance_next > 0.0 || a.seq_finished {
+    if !a.bullet_dance || !dance_due(stunt_rules().anim_end_times, cx.time(), a.dance_next, a.dance_time) || a.seq_finished {
         return;
     }
-    p.stunt.anim.dance_next = 0.15;
+    p.stunt.anim.dance_next = anim_timer(cx, 0.15);
     let name = match engine().random_long(0, 2) {
         0 => "normal_die1",
         1 => "normal_die2",
@@ -332,8 +377,9 @@ fn handle_close_combat(p: &mut Player, cx: &mut Cx, id: i32) {
     };
     let flags = if gait_close_combat(cx, id) { 0x12 } else { 0x14 };
     set_anim(p, cx, &name, flags | SA_FORCE, 0);
+    let shot = anim_timer(cx, 2.0);
     let a = &mut p.stunt.anim;
-    a.shot = 2.0;
+    a.shot = shot;
     a.hold = 3.0;
     a.cc_flag = false;
 }
@@ -348,6 +394,13 @@ fn handle_close_combat(p: &mut Player, cx: &mut Cx, id: i32) {
 fn wall_jump_pose_holds(until_recovered: bool, fin: bool, alive: bool, go_duck: bool, ladder: bool, grounded: bool, id: i32) -> bool {
     let let_through = if until_recovered { matches!(id, 0x37 | 0x38) } else { matches!(id, 0x37 | 0x38 | 0x28) || grounded };
     !fin && alive && go_duck && !ladder && !let_through
+}
+
+/// `Animate`'s `goduck` case ([`StuntRules::goduck_holds`]): the pose holds while unfinished,
+/// alive, duck held and not yet ducking, against every id but a roll (0x2f), a dive (0x28), a jump
+/// (4), the super jump (0x39), the duck kick (0x14) and `katana_duck` (0x25).
+fn goduck_holds(fin: bool, alive: bool, button: i32, flags: i32, id: i32) -> bool {
+    !fin && button & IN_DUCK as i32 != 0 && flags & FL_DUCKING as i32 == 0 && !matches!(id, 0x2f | 0x28 | 4 | 0x39 | 0x14 | 0x25) && alive
 }
 
 /// The wall-jump pose's test in `Animate` (0x6bb15..0x6bc57; mp.dll 0x10044faa..0x100450dd): the
@@ -404,6 +457,7 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
     }
 
     // Priority: a playing stunt animation refuses lower-priority ids until it finishes.
+    let rules = stunt_rules();
     let mut cc_gait = false;
     if !is_in_close_combat(cur) {
         let stunt_ids = |id: i32| matches!(id, 4 | 0x28 | 0x2f | 0x30 | 0x31 | 0x37 | 0x38 | 0x36 | 0x32);
@@ -420,6 +474,11 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
                     return;
                 }
             }
+            5 if rules.goduck_holds => {
+                if goduck_holds(fin, alive, cx.pev().button, cx.pev().flags, id) {
+                    return;
+                }
+            }
             7 => return,
             0x28 => {
                 if !fin && alive && id != 0x29 && id != 0x2e && id != 3 && !ladder {
@@ -432,8 +491,12 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
                 }
             }
             0x2a | 0x2b => {
-                let (_, right, _) = shared::pm::angle_vectors(crate::rules::cvars::pm_arith(), cx.pev().v_angle);
-                let check = shared::by_arith!(crate::rules::cvars::pm_arith(), moving_off_square(v, right));
+                let check = if rules.side_roll_holds_on_strafe_keys {
+                    cx.pev().button & (IN_MOVELEFT | IN_MOVERIGHT) as i32 != 0
+                } else {
+                    let (_, right, _) = shared::pm::angle_vectors(crate::rules::cvars::pm_arith(), cx.pev().v_angle);
+                    shared::by_arith!(crate::rules::cvars::pm_arith(), moving_off_square(v, right))
+                };
                 if check && alive && !matches!(id, 0x2a | 0x2b | 3 | 0x29) && !ladder {
                     return;
                 }
@@ -466,11 +529,13 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
                 }
             }
             0x38 => {
+                let dive_through = rules.wall_climb_pose_lets_dive_through && id == 0x28;
                 if !fin
                     && alive
                     && iuser4 & GO_DUCK != 0
                     && !ladder
-                    && !matches!(id, 0x37 | 0x38 | 0x28)
+                    && !matches!(id, 0x37 | 0x38)
+                    && !dive_through
                     && !is_in_close_combat(id)
                     && !grounded
                 {
@@ -490,17 +555,17 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
             }
             _ => {}
         }
-    } else if !fin
-        && !is_in_close_combat(id)
-        && alive
-        && !matches!(id, 0x28 | 0x2f | 0x30 | 0x36 | 0x32 | 0x31 | 0x37 | 0x38 | 0x39)
-        && (!p.stunt.anim.cc_flag || !grounded)
-    {
+    } else if !fin && !is_in_close_combat(id) && alive && !matches!(id, 0x28 | 0x2f | 0x30 | 0x36 | 0x32 | 0x31 | 0x37 | 0x38 | 0x39) {
         // A melee move is playing: keep it, but let the legs follow if it allows that.
-        if !gait_close_combat(cx, cur) {
+        if !rules.melee_gait_follows {
             return;
         }
-        cc_gait = true;
+        if !p.stunt.anim.cc_flag || !grounded {
+            if !gait_close_combat(cx, cur) {
+                return;
+            }
+            cc_gait = true;
+        }
     }
 
     let mut id = id;
@@ -537,7 +602,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
                 _ => "_left",
             };
             if iuser4 & PRONE == 0 {
-                p.stunt.anim.shot = 2.0;
+                p.stunt.anim.shot = anim_timer(cx, 2.0);
                 let mut name = format!("{}{}", if ducking { "crouch_shoot_" } else { "shoot_" }, ext2);
                 if p.stunt.anim.hold > 0.001 && !ducking && fov == 0.0 && (ext2.starts_with("one") || ext2.starts_with("two")) {
                     name.push('2');
@@ -563,7 +628,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
                 if matches!(cur, 0 | 8 | 9 | 0x34 | 0x33) && !p.stunt.anim.seq_finished {
                     *id = cur;
                 } else {
-                    let aim = p.stunt.anim.shot >= 0.01 || fov != 0.0;
+                    let aim = aiming(stunt_rules().anim_end_times, cx.time(), p.stunt.anim.shot) || fov != 0.0;
                     let base = match (ducking, aim) {
                         (true, true) => "crouch_aim_",
                         (true, false) => "duck_idle_",
@@ -647,15 +712,15 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
             }
             let name = format!("{}{}", if *id == 0x33 { "relo_" } else { "draw_" }, ext2);
             set_anim(p, cx, &name, 0x92, 0);
-            p.stunt.anim.shot = 2.0;
+            p.stunt.anim.shot = anim_timer(cx, 2.0);
         }
         0x35 => {
             if !grounded || iuser4 & (DIVING | PRONE) != 0 {
                 return false;
             }
             set_anim(p, cx, "grenade", 0x92, 0);
-            p.stunt.anim.shot = 2.0;
-            p.stunt.anim.grenade = 1.0;
+            p.stunt.anim.shot = anim_timer(cx, 2.0);
+            p.stunt.anim.grenade = anim_timer(cx, 1.0);
         }
         0x36 => {
             set_anim(p, cx, "bullettime", 0x94, 0);
@@ -721,6 +786,8 @@ fn gait(p: &mut Player, cx: &mut Cx, id: i32, speed: f32) {
     if cx.pev().iuser4 & 0x30c30 != 0 {
         return;
     }
+    let r = stunt_rules();
+    let now = cx.time();
     let a = &mut p.stunt.anim;
     let name: String = if cx.pev().flags & FL_DUCKING as i32 != 0 {
         a.duck_latch = false;
@@ -729,11 +796,11 @@ fn gait(p: &mut Player, cx: &mut Cx, id: i32, speed: f32) {
         "run2".into()
     } else if speed > 0.0 {
         "walk2".into()
-    } else if !a.ext.is_empty() {
+    } else if r.gait_idle_anim_extension && !a.ext.is_empty() {
         a.ext.clone()
     } else if !a.ext2.is_empty() {
         format!("idle_{}", a.ext2)
-    } else if a.shot >= 0.01 {
+    } else if shot_running(r.anim_end_times, now, a.shot) {
         "combat_idle".into()
     } else {
         "combat_idle_low".into()
@@ -742,7 +809,8 @@ fn gait(p: &mut Player, cx: &mut Cx, id: i32, speed: f32) {
     cx.pev().gaitsequence = gaitseq;
     // No weapon: the whole body follows the legs.
     let a = &p.stunt.anim;
-    if a.ext.is_empty() && a.ext2.is_empty() && !gait_close_combat(cx, id) && (a.shot < 0.01 || a.seq_finished) {
+    let ext_free = a.ext.is_empty() || !r.gait_idle_anim_extension;
+    if ext_free && a.ext2.is_empty() && !gait_close_combat(cx, id) && (shot_over(r.anim_end_times, now, a.shot) || a.seq_finished) {
         let pev = cx.pev();
         if pev.sequence != pev.gaitsequence {
             pev.sequence = pev.gaitsequence;
@@ -754,7 +822,38 @@ fn gait(p: &mut Player, cx: &mut Cx, id: i32, speed: f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::wall_jump_pose_holds;
+    use super::{aiming, dance_due, goduck_holds, shot_over, shot_running, wall_jump_pose_holds};
+    use goldsrc::sys::{FL_DUCKING, IN_DUCK};
+
+    /// #112: the `goduck` hold (a ruleset's), against everything but its exceptions.
+    #[test]
+    fn goduck_hold() {
+        let duck = IN_DUCK as i32;
+        assert!(goduck_holds(false, true, duck, 0, 1));
+        assert!(goduck_holds(false, true, duck, 0, 0x2a));
+        for id in [0x2f, 0x28, 4, 0x39, 0x14, 0x25] {
+            assert!(!goduck_holds(false, true, duck, 0, id), "{id:#x}");
+        }
+        assert!(!goduck_holds(true, true, duck, 0, 1), "finished");
+        assert!(!goduck_holds(false, true, 0, 0, 1), "duck released");
+        assert!(!goduck_holds(false, true, duck, FL_DUCKING as i32, 1), "already ducking");
+        assert!(!goduck_holds(false, false, duck, 0, 1), "dead");
+    }
+
+    /// #112: 3.0's countdown thresholds and the end-time tests.
+    #[test]
+    fn anim_timers() {
+        // 3.0: seconds left.
+        assert!(aiming(false, 50.0, 0.01) && !aiming(false, 50.0, 0.009));
+        assert!(shot_running(false, 50.0, 0.01) && shot_over(false, 50.0, 0.009));
+        assert!(dance_due(false, 50.0, 0.0, 0.01) && !dance_due(false, 50.0, 0.001, 3.0) && !dance_due(false, 50.0, 0.0, 0.009));
+        // End times: aiming includes the end, the legs' timer doesn't.
+        assert!(aiming(true, 50.0, 50.0) && !aiming(true, 50.0, 49.9));
+        assert!(!shot_running(true, 50.0, 50.0) && shot_running(true, 50.0, 50.1));
+        assert!(shot_over(true, 50.0, 50.0) && !shot_over(true, 50.0, 50.1));
+        assert!(!shot_over(true, 50.0, f32::NAN), "a NaN is neither");
+        assert!(dance_due(true, 50.0, 50.0, 50.0) && !dance_due(true, 50.0, 50.1, 53.0) && !dance_due(true, 50.0, 49.0, 49.9));
+    }
 
     /// #112 (the wall-landing part): 3.0 drops the wall-jump pose on landing; a ruleset that holds
     /// it until recovered keeps it on the ground while `GO_DUCK` lasts, and refuses a dive.

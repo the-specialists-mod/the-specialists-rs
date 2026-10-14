@@ -188,7 +188,7 @@ Client commands handled here: `say`, `say_team`, `respawn`, `usepowerup`, `power
 `cashala` (cheat), `fov` (the cheat sets `m_iFOV` `+0x9f0` and `pev->fov`; the query prints `m_iFOV`, which only the cheat sets, so a zoomed scope still prints 0), `use <classname>` (`SelectItem` 0xdade4, `weapons::select_item`: switches
 between `weapon_tsgun` and a picked-up `cycler_weapon`; with only the gun it changes nothing, since the gun is
 then the active item), `changeteam` (VGUIMenu 2, in every mode: TS has no teamplay check, 0xae49c; the client only opens the team menu when `GameMode` said teamplay, `ShowVGUIMenu` 0x10064050 → 0x10064280, as the port's client does), `jointeam <n>`, `motd`, `fullupdate`,
-`lasclr_<n>` (PlInfo), `menuselect`, `vban`, `VModEnable` (voice manager, §2), `cutwire_<n>` (no-op).
+`lasclr_<n>` (PlInfo), `menuselect`, `vban`, `VModEnable` (voice manager, §2), `cutwire_<n>` (the bomb's wires, §4.2).
 
 ## 4. Map entities (`entities/ts`)
 
@@ -205,7 +205,8 @@ then the active item), `changeteam` (VGUIMenu 2, in every mode: TS has no teampl
 | `ts_briefcase`, `ts_flag`, `ts_scoregiver`, `ts_wingiver` | CTB: the case's `s_flag_status` (`ctb::FlagStatus`: contents, id, team, last holder, home) lives on the case entity or, while carried, on the player (`PlayerRules::flag`); taking destroys the entity (`Destroy` 0x9de24: out of the slowed lists, `UTIL_Remove`) and a drop creates a new one (`CreateFlag` 0x9d874, spawned at the world origin, then `pev->origin` set without relinking). The zone's think is `FlagFall` or `WaitThink` (every 1 s), scheduled exactly. Case falls at home 1 s after spawn (`FlagFall` 0x8da00, at the centre of the zone's `mins`/`maxs`, TSFlag 0); a flying case (`Fall` 0x9df10 every 0.1 s: landing sound, impact damage `|v|·30·0.001` through TraceAttack on non-players with health ≤ `|v|·30`; `BounceTouch` 0x9dbbc) is taken only with +use, a landed one (32×32×48 trigger) also by touch. Taking (`TakeFlag` 0x93830): 20 free slots and speed, `items/gunpickup2.wav`, TSFlag 1, "%s picked up a briefcase containing %s!" unless the taker was the case's last holder, `aquired_briefcase` log with contents; a case taken from home closes its zone for captures until it is back. Thrown (`DropFlag` 0x9334c) on death/observer/disconnect, or with `drop` and no gun in hand (`DropWeapon` 0x94a87): from eye + forward·16, along `v_angle` at (90 − pitch)·2 while alive, random (pitch ±60, yaw ±180, speed 60..160) when dead, plus 0.9 × player velocity and speed·0.33 up, passing through the thrower until it lands; `dropped_briefcase` log, TSFlag 2. 20 s return (`RespawnFlag` 0x9de58: "<owning team> briefcase returned", none for a case any team may take; new case at home 1 s later), owner return +5 (only with 2+ players, "returned the briefcase! 5 #TS_Frg"; new case at home 1 s later), capture +10 and team score (`captured_briefcase` log), TSHVoice/TeamScore; owner return and capture send no TSFlag 0 until the case reappears. Flag logs repeat the user id in the team slot (`"name<uid><auth><uid>"`), as TS does. Score/win givers (`Use` 0x8bfb0 / 0x8c158) call `TeamWin` (0x78a08, `ctb::team_win`) with the Use value as cash and a restart (wingiver always, scoregiver with flag 1): RoundTime state 2 when the round timer is on and it isn't a score; a restart only sets the round restart in 3 s and clears the round end (LMS DM's `Think` acts on it); with fewer than 2 players every team back to `initial_cash` and score 0 and "Waiting for other players."; otherwise `GiveCash` (winners the Use value or `cashforwin`, the rest `cashforlose`) and TSHVoice for each player, then "Game Draw" (team 2, `Round draw` log) or the team's score, "%s Score!/Win!" and the `Team "%s" scored` log; messages black (0, 0, 0); TeamScore only in round modes 2/3. A capture with fewer than 2 players zeroes each team's cash and score. |
 | `deadcorpse` | `TSCreateDeadCorpse` (0x70234), from the death think, for a player not `EF_NODRAW`: `CBaseEntity::Create` at the player, then their model/modelindex, frame, sequence, animtime, colormap, deadflag and velocity, `MOVETYPE_TOSS`, `kRenderTransColor` at 255 with `kRenderFxDeadPlayer` and their index in `rendercolor.x`. `WaitThink` (0x70460) runs every 0.5 s, fading `renderamt` over the last two thirds of the 10 s (at least 1 s), and removes it after. |
 | `info_player_team1..4` | `CBaseDMStart` points like `info_player_deathmatch` (`master` key; team spawns are found by classname). TS doesn't export `info_player_teamspawn`, so the engine frees it ("No spawn function"), as with TS. |
-| `ts_objective_manager`, `ts_objective_ptr`, `ts_bomb`, `ts_hack`, `ts_teamescape`, `ts_sellzone` | Stubs: hidden, non-solid (dead in 3.0). |
+| `ts_objective_manager`, `ts_objective_ptr`, `ts_bomb`, `ts_hack`, `ts_teamescape` | The objective system, §4.2. |
+| `ts_sellzone` | Stub: hidden, non-solid (`SellTouch` is gated by `CashBased()`, always off in 3.0). |
 
 ### 4.1 Save data
 
@@ -214,10 +215,8 @@ The TS classes save TS's tables (`save_fields` in `entities/ts/*`, `weapons/worl
 `wduration`, `wextraclip`, `CTSDMHill` `fragamt` / `fragamtteam` / `nextcheck`, `CTSSlowMotion`
 `duration` / `slowamt`, `CTSWinGiver` cash, team and call count, `CTSObjectiveManager` its messages
 and targets, `CTSObjective` / `CTSBomb` / `CTSHack` / `CTSTeamEscape` theirs (always empty in TS:
-`CTSMapGlobals`, `CTSPlayerAmount`'s `CBaseDelay` part, `CTSTrigger`'s inherited tables). The
-objective classes the port doesn't otherwise implement (`ts_objective_manager`, `ts_bomb`,
-`ts_hack`, `ts_teamescape`, `ts_sellzone`) got their own types holding the saved keys; their
-`Use` / think / touch behaviour is still unported (§7). Power-ups, the CTB zone and case, world
+`CTSMapGlobals`, `CTSPlayerAmount`'s `CBaseDelay` part, `CTSTrigger`'s inherited tables).
+`ts_sellzone` is a stub type holding what TS saves. Power-ups, the CTB zone and case, world
 guns, ammo packs, grenades, knives, shrapnel, wind, the slow-motion entities, a running timer,
 `ts_trigger`, an enabled `ts_dmhill` and the objectives set a member pointer, so (as in TS) their
 restore stops after `"BASE"` and they come back inert. A power-up's type is a `u16` in the port, so
@@ -232,6 +231,55 @@ drowning from `tbd`, train / tank / hide-HUD from `drive`, the sound volumes fro
 TS keeps constant are written as such (`m_bitsHUDDamage` -1, the rest 0). `Restore`'s tail
 (spawn spot without a landmark, view angles, hull, `hl` / `slj`, `m_flNextAttack`) and `Precache`
 (`m_iTrain = TRAIN_NEW`, the armour cache, `m_bitsDamageType`, `gInitHUD` → `m_fInitHUD`) follow.
+
+### 4.2 Objectives (issue #66)
+
+`entities/ts/objective.rs`; decomp `docs/server/gamerules-entities.md` §3, the bomb, hack and
+escape checked in mp.dll. The round modes that pick a manager can't be reached in TS 3.0, but the
+objectives can: a `ts_objective_ptr` fired by anything enables its targets in any mode.
+
+* **`ts_objective_ptr`** (`Use` 0x8bbd8): every entity named by its `target` that `IsObjective()`
+  (`ts_bomb`, `ts_hack`, `ts_teamescape`, and the win and score givers, whose counters start
+  again) gets `EnableObjective(true)` and goes on the HUD list (`AddObjectiveInList`: an objective
+  already listed keeps its index and the first pointer's texts; at most 32), and every player gets
+  `Objective` (its centre, the index, the text for the player's team index: `objmsgspec`,
+  `objmsgmerc`, `objmsgteam3`, `objmsgteam4`, at most 63 characters; `objmsgall` is never sent).
+  The list is cleared by `SetObjective` (map start, the LMS restart) and resent by `InitHUD` and a
+  team change only in the round modes.
+* **`Freeze`** (a completed or expired objective): disabled, and `ShowObj(idx, 0)` to all (255
+  when it isn't listed).
+* **`ts_bomb`**: a brush, hidden and not solid until enabled (then drawn, `SOLID_BSP`,
+  `MOVETYPE_PUSH`, `FL_WORLDBRUSH`, so it thinks on `ltime`), with a countdown of the round's time
+  left. Every second (a tenth once hurried) it counts down and beeps (`misc/beep2.wav`, pitch
+  `98 + RandomLong(0, 3)`, volume `RandomFloat(0.92, 1)`, attenuation 1.25); at `!(t > 0)` it calls
+  `RoundTimeLeft`, freezes and explodes (`TSExplosion` at its centre, 300, `DMG_BLAST |
+  DMG_NEVERGIB`, radii 2048/4096). Outside a round the time left is negative, so an enabled bomb
+  explodes on its next think and `RoundTimeLeft` does nothing (no round end, `ServerRules::round_time_left`).
+  Held `+use` (`FCAP_CONTINUOUS_USE`) by a player it allows (`attackerteam` -1 or the team index)
+  defuses it in `defusetime` s: each use within 0.5 s of the last takes the gap off, "%i seconds
+  left" (centre print, truncated, not below 0); below 0 its `target` fires (`USE_TOGGLE`), its
+  `message` shows (green, effect 8, 30 s) and it freezes.
+* **Wires** (`cutwires`): three, one defusing, one hurrying and one detonating (`SetRandomWires`).
+  `cutwire_<n>` (`sscanf("%i")`) from a living, non-observing player cuts wire `n` of every
+  `ts_bomb` within 64 units while it counts: detonating ends the countdown (it explodes next
+  think), hurrying makes it think and beep ten times a second and shows the player the wires
+  (`Wires`, sent by `UpdateClientData` when they change), defusing completes it. In the objective
+  mode `PreThink` shows each player the wires of an enabled bomb within 64 units twice a second
+  (`CheckForWires` 0x92f08).
+* **`ts_hack`**: a brush like the bomb; held `+use` for `hackingtime` (1..30 s) with
+  `misc/hacking.wav` once a second, then `misc/hacked.wav`, its target and message; its own timer
+  (the round's time left, once a second) freezes it when it runs out.
+* **`ts_teamescape`**: a hidden trigger (`SOLID_TRIGGER` while enabled); the distinct players of
+  `attackerteam` touching it within the second must reach `escapepercentage`'s share of that
+  team's players alive or due to respawn (`TSCountPlayers`): 0 one, 1 a third, 2 two thirds, 3
+  all.
+* **Managers** (`ts_objective_manager`): `InitObjectives`/`SetObjective` in the round modes pick
+  one at random; its `Reset` shows `messagea..d` and fires `objptargeta..h`; the round rules fire
+  `targetontimeleft` (`RoundTimeLeft` 0x79024) and `targetonspecdead`/`targetonmercdead`. In 3.0
+  only the 2.1 plugin's round modes reach them.
+* A ruleset changes the details (`ServerRules::objectives`, `ObjectiveRules`: HUD effect, team
+  names, list style, which entities a pointer enables, the wire HUD, the timers' NaN test, the
+  list's clearing), `RoundTimeLeft` and the givers' `TeamWin` (`ServerRules::giver_team_win`).
 
 ## 5. Messages sent (payloads in `shared::protocol`)
 
@@ -384,9 +432,10 @@ ammo, dropped guns, knives, grenades, the CTB case and the hidden objectives all
   `SetDefaultPlayerTeam`, `RecountTeams`' team list and limit, `IsValidTeam` and the `ScoreInfo`
   team index for issue #86; `ClientUserInfoChanged`, The One's team switch, `game_player_team`,
   disconnects and the deviations list for issue #87).
-* Objective classes (`ts_objective_manager`, `ts_bomb`, `ts_hack`, `ts_teamescape`,
-  `ts_sellzone`, `ts_objective_ptr`): only their saved fields and spawn flags are ported (§4.1);
-  `ts_objective_ptr` can enable objectives in any mode in TS (issue #66).
+* `ts_sellzone`: only its saved fields and spawn flags are ported (§4.1); `SellTouch` does
+  nothing in 3.0 (`CashBased()`).
+* Objectives (§4.2) are unit-tested only; no map in the test content uses them. A
+  `cutwire_<n>` argument that doesn't parse cuts nothing (TS uses an uninitialised `n`).
 * Save/restore is unit-tested only (byte layout, every class against TS's tables, round trips);
   no save from TS's server has been loaded in-engine yet.
 * Untested in-engine: CTB (`ctb_deadheat` ships with two briefcases), `ts_dmhill`, `ts_slowmotion`,

@@ -7,6 +7,7 @@
 pub mod ctb;
 pub mod ground;
 pub mod misc;
+pub mod objective;
 pub mod powerup;
 pub mod shrapnel;
 pub mod triggers;
@@ -66,12 +67,12 @@ link_entities! {
     ts_flag => ctb::Flag,
     ts_wingiver => ctb::WinGiver<false>,
     ts_scoregiver => ctb::WinGiver<true>,
-    // objective entities that are dead in 3.0
-    ts_objective_manager => misc::ObjectiveManager,
-    ts_objective_ptr => misc::Stub,
-    ts_bomb => misc::Bomb,
-    ts_hack => misc::Hack,
-    ts_teamescape => misc::TeamEscape,
+    // objectives
+    ts_objective_manager => objective::ObjectiveManager,
+    ts_objective_ptr => objective::ObjectivePointer,
+    ts_bomb => objective::Bomb,
+    ts_hack => objective::Hack,
+    ts_teamescape => objective::TeamEscape,
     ts_sellzone => misc::SellZone,
     // #95: CTSShrapnel (only a map can place one: nothing calls CTSShrapnel::Create)
     shrapnel => shrapnel::Shrapnel,
@@ -195,7 +196,7 @@ pub fn is_usable(class: &CStr) -> bool {
 /// 0xa34a0), ground ammo (0xa34f4, whose `Use` 0xa2f3c is empty: it is picked up on touch, but
 /// still takes the +use search), dropped guns (`CTSWorldGun` 0xa3404), thrown blades (`CTSKnife`
 /// 0x7f04c), grenades (`CM61Grenade` 0x7effc; classname `grenade`), shrapnel (`CTSShrapnel`
-/// 0x7f09c, no `Use`), the CTB case (`CTSFlag` 0x9e704) and the dead hidden objectives (`CTSBomb` 0x8e738, `CTSHack` 0x8e788,
+/// 0x7f09c, no `Use`), the CTB case (`CTSFlag` 0x9e704) and the objectives (`CTSBomb` 0x8e738, `CTSHack` 0x8e788,
 /// `CTSTeamEscape` 0x8e820). 0 for anything else.
 pub fn object_caps(class: &CStr) -> i32 {
     let usable = matches!(

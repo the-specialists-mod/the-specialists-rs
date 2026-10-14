@@ -6,14 +6,20 @@
 //! observer buttons. 2.1's bots respawn the same way (`bots`, `Think` bit 0x100). The rest is
 //! 3.0's but for the join deadline's text, which 2.1 shows at the top (effect 0x11).
 //!
-//! The observer camera (`Observer_HandleButtons` FUN_1005aa00, `Observer_Idle` FUN_1005a930) is
-//! still TS 3.0's (see `docs/implementation/ts21.md`, Deviations).
+//! The observer camera is 2.1's own (issue #115): `Observer_HandleButtons` (FUN_1005aa00),
+//! `Observer_Idle` (FUN_1005a930), `Observer_SetMode` (FUN_1005aad0, also reached from
+//! `StartObserver` through [`ServerRules::observer_set_mode`](ts_server::gameplay::ServerRules::observer_set_mode))
+//! and `Observer_FindNextPlayer` (FUN_1005a7d0).
 
-use goldsrc::sys::IN_ATTACK;
+use goldsrc::edict::EdictPtr;
+use goldsrc::server::engine;
+use goldsrc::sys::{EF_NODRAW, IN_ATTACK, IN_BACK, IN_FORWARD, IN_JUMP};
+use shared::ts::obs;
 use ts_server::player::Player;
-use ts_server::rules::lifecycle;
+use ts_server::rules::lifecycle::{self, obs_handle_valid};
 use ts_server::rules::msg::ts_message_one;
-use ts_server::rules::state;
+use ts_server::rules::state::{self, Mode};
+use ts_server::rules::{alive, cvars, has_player, set_client_maxspeed, teams};
 use ts_server::world::Cx;
 
 /// "You have to wait until the next round." in `0xc3, 0x2d, 0x2d` (0x10099360).
@@ -108,8 +114,177 @@ pub fn observer_think(p: &mut Player, cx: &mut Cx, now: f32) {
         _ => {}
     }
 
-    lifecycle::observer_handle_buttons(p, cx, now);
-    lifecycle::observer_idle(p, cx, now);
+    handle_buttons(p, cx, now);
+    idle(p, cx, now);
+}
+
+/// `+jump`'s next mode (FUN_1005aa00): roaming → chase free → chase locked → roaming. 2.1 has no
+/// in-eye step (3.0 goes chase locked → in-eye → roaming).
+pub fn next_mode(mode: i32) -> i32 {
+    match mode {
+        obs::ROAMING => obs::CHASE_FREE,
+        obs::CHASE_FREE => obs::CHASE_LOCKED,
+        _ => obs::ROAMING,
+    }
+}
+
+/// Whether the round modes or LMS hold a waiting observer back (FUN_1005a7d0, FUN_1005aad0): mode
+/// 2 or 3, or `lastmanstanding` on in any mode.
+fn waiting_rules() -> bool {
+    matches!(state::with(|g| g.mode), Mode::RoundTdm | Mode::Objective) || cvars::on(c"lastmanstanding")
+}
+
+/// Roaming's maxspeed (FUN_1005aad0): 420, but 1 for an observer still waiting to respawn
+/// (`0.0 <= m_flRespawnTime`, so not a NaN) under [`waiting_rules`], which can't fly around.
+pub fn roaming_maxspeed(waiting_rules: bool, respawn_at: f32) -> f32 {
+    if waiting_rules && 0.0 <= respawn_at { 1.0 } else { 420.0 }
+}
+
+/// Whether a waiting observer may only watch teammates (FUN_1005a7d0): under [`waiting_rules`]
+/// unless `m_flRespawnTime < 0` (a NaN counts as waiting).
+pub fn teammates_only(waiting_rules: bool, respawn_at: f32) -> bool {
+    waiting_rules && respawn_at.partial_cmp(&0.0) != Some(std::cmp::Ordering::Less)
+}
+
+/// `Observer_SetMode` (FUN_1005aad0). As 3.0's (the view offset and view model cleared, the chase
+/// modes and in-eye need a target and fall back to roaming) but for roaming's maxspeed
+/// ([`roaming_maxspeed`]).
+pub fn set_mode(p: &mut Player, cx: &mut Cx, mut mode: i32) {
+    if mode == cx.pev().iuser1 {
+        return;
+    }
+    loop {
+        {
+            let v = cx.pev();
+            v.view_ofs = [0.0; 3];
+            v.viewmodel = 0;
+        }
+        if mode == obs::ROAMING {
+            {
+                let v = cx.pev();
+                v.iuser1 = obs::ROAMING;
+                v.iuser2 = 0;
+            }
+            set_client_maxspeed(cx.edict, 420.0);
+            let speed = roaming_maxspeed(waiting_rules(), p.respawn_at);
+            if speed != 420.0 {
+                set_client_maxspeed(cx.edict, speed);
+            }
+            return;
+        }
+        if !matches!(mode, obs::CHASE_LOCKED | obs::CHASE_FREE | obs::IN_EYE) {
+            return;
+        }
+        if !obs_handle_valid(p.ts.obs_target) {
+            find_next_player(p, cx, false);
+        }
+        if obs_handle_valid(p.ts.obs_target) {
+            let v = cx.pev();
+            v.iuser1 = mode;
+            v.iuser2 = p.ts.obs_target;
+            return;
+        }
+        mode = obs::ROAMING;
+        if cx.pev().iuser1 == obs::ROAMING {
+            return;
+        }
+    }
+}
+
+/// `Observer_FindNextPlayer` (FUN_1005a7d0): from the target (or from us) to the next player who
+/// is visible (`EF_NODRAW` clear), not observing and alive, wrapping around; a waiting observer
+/// under the round modes or LMS takes teammates only ([`teammates_only`]). Without one it roams;
+/// with one it moves to the target. The target slot keeps its player as 3.0's handle test has it
+/// (2.1 holds a raw `CBasePlayer *`, which a slot keeps).
+fn find_next_player(p: &mut Player, cx: &mut Cx, reverse: bool) {
+    let eng = engine();
+    let me = cx.index();
+    let start = if obs_handle_valid(p.ts.obs_target) { p.ts.obs_target } else { me };
+    p.ts.obs_target = 0;
+    let n = eng.max_clients();
+    let mates = teammates_only(waiting_rules(), p.respawn_at);
+    let mut i = start;
+    loop {
+        i += if reverse { -1 } else { 1 };
+        if i > n {
+            i = 1;
+        } else if i < 1 {
+            i = n;
+        }
+        let o = eng.player(i);
+        if i != me
+            && has_player(o)
+            && {
+                let v = o.v();
+                v.iuser1 == 0 && v.effects & EF_NODRAW as i32 == 0 && alive(v)
+            }
+            && (!mates || teams::same_team(cx.edict, o))
+        {
+            p.ts.obs_target = i;
+            break;
+        }
+        if i == start {
+            break;
+        }
+    }
+    if p.ts.obs_target == 0 {
+        set_mode(p, cx, obs::ROAMING);
+    } else {
+        cx.pev().iuser2 = p.ts.obs_target;
+        let org = eng.player(p.ts.obs_target).v().origin;
+        eng.set_origin(cx.edict, org);
+    }
+}
+
+/// `Observer_HandleButtons` (FUN_1005aa00): `+jump` steps [`next_mode`], forward/back pick the
+/// next/previous target outside roaming; 0.2 s between actions.
+fn handle_buttons(p: &mut Player, cx: &mut Cx, now: f32) {
+    if p.ts.obs_next_input > now {
+        return;
+    }
+    if cx.pev().button & IN_JUMP as i32 != 0 {
+        let mode = next_mode(cx.pev().iuser1);
+        set_mode(p, cx, mode);
+        p.ts.obs_next_input = shared::pm::plus_double(now, 0.2);
+    }
+    if cx.pev().button & IN_FORWARD as i32 != 0 && cx.pev().iuser1 != obs::ROAMING {
+        find_next_player(p, cx, false);
+        p.ts.obs_next_input = shared::pm::plus_double(now, 0.2);
+    }
+    if cx.pev().button & IN_BACK as i32 != 0 && cx.pev().iuser1 != obs::ROAMING {
+        find_next_player(p, cx, true);
+        p.ts.obs_next_input = shared::pm::plus_double(now, 0.2);
+    }
+}
+
+/// `Observer_Idle` (FUN_1005a930): in-eye (mode 5) copies the target's `view_ofs`, `viewmodel`
+/// and `weaponanim` (`pev+0x174`, `+0xbc`, `+0x218`) every frame, then 3.0's twice-a-second check
+/// moves on from a dead or observing target.
+fn idle(p: &mut Player, cx: &mut Cx, now: f32) {
+    if cx.pev().iuser1 == obs::IN_EYE {
+        let t = engine().player(cx.pev().iuser2);
+        if has_player(t) {
+            let (ofs, model, anim) = {
+                let v = t.v();
+                (v.view_ofs, v.viewmodel, v.weaponanim)
+            };
+            let v = cx.pev();
+            v.view_ofs = ofs;
+            v.viewmodel = model;
+            v.weaponanim = anim;
+        }
+    }
+    if p.ts.obs_next_idle > now {
+        return;
+    }
+    p.ts.obs_next_idle = now + 0.5;
+    if cx.pev().iuser1 == obs::ROAMING || p.ts.obs_target == 0 {
+        return;
+    }
+    let t = engine().player(p.ts.obs_target);
+    if !obs_handle_valid(p.ts.obs_target) || !alive(t.v()) || t.v().iuser1 != 0 {
+        find_next_player(p, cx, false);
+    }
 }
 
 #[cfg(test)]
@@ -156,6 +331,31 @@ mod tests {
         assert_eq!(deadline_over(4.0, 5.0), Some(true));
         assert_eq!(deadline_over(f32::NAN, 5.0), Some(false), "a NaN shows the line");
         assert_eq!(deadline_text(30.9, 10.0), "20 seconds left for respawn, press Fire to Play!");
+    }
+
+    #[test]
+    fn jump_cycle_has_no_in_eye() {
+        assert_eq!(next_mode(obs::ROAMING), obs::CHASE_FREE);
+        assert_eq!(next_mode(obs::CHASE_FREE), obs::CHASE_LOCKED);
+        assert_eq!(next_mode(obs::CHASE_LOCKED), obs::ROAMING, "3.0 goes to in-eye here");
+        assert_eq!(next_mode(obs::IN_EYE), obs::ROAMING);
+    }
+
+    #[test]
+    fn a_waiting_roaming_observer_is_held_still() {
+        assert_eq!(roaming_maxspeed(true, 5.0), 1.0);
+        assert_eq!(roaming_maxspeed(true, 0.0), 1.0, "0 <= respawn");
+        assert_eq!(roaming_maxspeed(true, -1.0), 420.0, "out for the round: may fly");
+        assert_eq!(roaming_maxspeed(true, f32::NAN), 420.0);
+        assert_eq!(roaming_maxspeed(false, 5.0), 420.0, "DM/TDM without LMS");
+    }
+
+    #[test]
+    fn a_waiting_observer_watches_teammates() {
+        assert!(teammates_only(true, 5.0));
+        assert!(teammates_only(true, f32::NAN), "only `respawn < 0` frees it");
+        assert!(!teammates_only(true, -1.0));
+        assert!(!teammates_only(false, 5.0));
     }
 
     #[test]

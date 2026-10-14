@@ -268,6 +268,7 @@ The hooks so far:
 | `ServerRules` | `put_in_server_cash()` | `cvars::INITIAL_CASH` (1200) | `rules/lifecycle.rs` `on_spawn` (first spawn) |
 | `ServerRules` | `on_start_observer(p, cx)` | nothing | `rules/lifecycle.rs` `start_observer`, before `TSCash` |
 | `ServerRules` | `observer_think(p, cx, now)` | `rules::lifecycle::observer_think_core` (countdown, join deadline, `Observer_HandleButtons`, `Observer_Idle`; 3.0 respawns with the `respawn` command) | `rules/lifecycle.rs` `pre_think`, while `iuser1` is set (PreThink zeroes `impulse` and returns after it) |
+| `ServerRules` | `observer_set_mode(p, cx, mode)` | `rules::lifecycle::observer_set_mode` (`Observer_SetMode`) | `rules/lifecycle.rs` `start_observer` and `dev_observe` (`ts_observe`); a ruleset with its own camera calls its own from its `observer_think` |
 | `ServerRules` | `on_init_hud(p, cx)` | nothing | `rules/lifecycle.rs` `ts_init_hud`, at its end |
 | `ServerRules` | `set_respawn_time(p, cx, secs)` | `rules::lifecycle::set_respawn_time_core` | `rules/lifecycle.rs` `set_respawn_time` |
 | `ServerRules` | `on_killed(p, cx)` | nothing | `rules/lifecycle.rs` `killed`, after the respawn time |
@@ -295,6 +296,11 @@ The hooks so far:
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
 | `ServerRules` | `broken_respawn_delay(respawntime)` | `Some(30 s if 0, else the key)` | `entities/stock/breakable.rs` `die`, `doors.rs` (break) |
 | `ServerRules` | `breakable_respawn_guarded()` | true (wait for clients in the box, fire `respawntarget`) | `breakable.rs`, `doors.rs` `breakable_respawn` |
+| `ServerRules` | `objectives()` | `entities::ts::objective::CORE` (`ObjectiveRules`: HUD effect 8, team indexes, the indexed list, givers enabled by pointers, the wire HUD, NaN timers run out, the list cleared outside rounds) | `entities/ts/objective.rs`, `ctb.rs` (the givers' message) |
+| `ServerRules` | `round_time_left(now)` | `objective::round_time_left_core` (timed round: manager's `targetontimeleft`, else a draw) | `objective.rs` `Bomb::think` |
+| `ServerRules` | `giver_team_win(&GiverWin)` | `ctb::giver_team_win_core` (`TeamWin(winnerteam, (int)value, restart, isScore)`) | `ctb.rs` `WinGiver::use_` |
+| `ServerRules` | `break_debris_from_hit()` | true (debris along the last hit, long glass `TSFrags`, attacker's `fuser1` copied) | `breakable.rs` `die`, `doors.rs` (break); false is the SDK's (`g_vecAttackDir × 200` if `explosion directed`, a door's none, 13-byte glass `TSFrags`) |
+| `ServerRules` | `breakable_attack_dir(org, absmin, size)` | `damage::normalize(org - (absmin + size × 0.5))` | `breakable.rs` `take_damage_impl` (`g_vecAttackDir`) |
 | `ServerRules` | `respawn_entities()` | `entities::ts::respawn_entities` | `rules/frame.rs` `restart_round` |
 | `ServerRules` | `entities_think(now)` | nothing | `rules/frame.rs` `ts_think` (DM/TDM branch, after The One) |
 | `ServerRules` | `map_globals(e, spawnflags)` | `Some(MapFlags::from_spawnflags)` | `entities/ts/misc.rs` `MapGlobals::spawn` |
@@ -305,9 +311,12 @@ The hooks so far:
 | `ServerRules` | `powerup_kind(key, spawnflags)` | `entities::ts::powerup::kind_for` (`GetRandomPowerup`, never armour) | `entities/ts/powerup.rs` `setup` |
 | `ServerRules` | `armor_powerup(p, cx, armor)` | `TakeArmor(100)` (`armor`: `PowerUp::armor`, 100; `entities::ts::powerup::set_armor`) | `rules/powerup.rs` `add_powerup` |
 | `ServerRules` | `time_scale_eases()` | `true` (`InterpolateSlowMotion`) | `rules/powerup.rs` `go_slow*`/`deactivate_flow`, `rules/lifecycle.rs` `pre_think` |
+| `ServerRules` | `on_go_slow(p, amount)` | nothing | `rules/powerup.rs` `go_slow_self`, `go_slow_plain` (a player's `GoSlow`) |
+| `ServerRules` | `grenade_fuse_step(elapsed, time_scale)` | `max(fuser1, 0.01) * 0.1f + elapsed` | `weapons/projectiles.rs` grenade `WaitThink` |
+| `ServerRules` | `anim_framerate(time_scale)` | `max(fuser1, 0.01)` | `rules/lifecycle.rs` `pre_think`, `stunt/mod.rs` `pre_think` |
 | `ServerRules` | `motion_blur()` | `true` | `stunt/mod.rs` `maybe_blur`, `stunt/moves.rs` `go_bullet_time`, `rules/powerup.rs` `use_powerup`/`run_powerup`, `rules/lifecycle.rs` `killed`, `weapons/melee.rs` |
 | `ServerRules` | `sound_pitch(pitch, time_scale, s)` | `entities::stock::explode::slow_pitch` | `entities/stock/explode.rs` `emit_sound_slow` |
-| `ServerRules` | `stunts()` | `stunt::rules::CORE` (`StuntRules`: recoveries 0.5625/0.375/0.75/0.2625/0.75, get-up keys 0x4006, wall dive, glide climb, ...) | `stunt/moves.rs` |
+| `ServerRules` | `stunts()` | `stunt::rules::CORE` (`StuntRules`: recoveries 0.5625/0.375/0.75/0.2625/0.75, get-up keys 0x4006, wall dive, glide climb, ..., and `CTSAnimation`'s priority rules and timer model) | `stunt/moves.rs`, `stunt/anim.rs` |
 | `ServerRules` | `stunt_clock()` | `stunt::rules::RELATIVE` (`StuntClock`: seconds left, counted down in the player's time) | `stunt/mod.rs`, `stunt/moves.rs`, `weapons/host.rs` (every stunt timer write and test) |
 | `ServerRules` | `can_dive(p, armor, dive)` | `stunt::rules::can_dive` (used < 42/52/62, The One bypasses) | `stunt/moves.rs` `can` |
 | `ServerRules` | `bullet_time_allowed(time_scale)` | `max(fuser1, 0.01) <= 0.99` | `stunt/moves.rs` `go_bullet_time` |

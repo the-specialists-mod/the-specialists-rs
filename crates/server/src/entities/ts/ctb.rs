@@ -765,10 +765,11 @@ impl<const SCORE: bool> Entity for WinGiver<SCORE> {
         cx.think_in(10.0);
     }
 
-    /// `CTSWinGiver::Use` (0x8bfb0; latched until `EnableObjective`, which nothing calls in the
-    /// port) / `CTSScoreGiver::Use` (0x8c158): after `callsnumber` calls, `TeamWin(winnerteam,
+    /// `CTSWinGiver::Use` (0x8bfb0; latched until `EnableObjective`: `InitObjectives`, an objective
+    /// pointer) / `CTSScoreGiver::Use` (0x8c158): after `callsnumber` calls, `TeamWin(winnerteam,
     /// (int)value, restart, isScore)` (a wingiver always asks for a restart, a scoregiver with
-    /// flag 1), then `message`.
+    /// flag 1; [`ServerRules::giver_team_win`](crate::gameplay::ServerRules::giver_team_win)), then
+    /// `message`.
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, value: f32) {
         if self.used && !SCORE {
             return;
@@ -778,11 +779,10 @@ impl<const SCORE: bool> Entity for WinGiver<SCORE> {
             return;
         }
         let restart = !SCORE || cx.pev().spawnflags & 1 != 0;
-        team_win(self.winner, super::c_int(f64::from(value)), restart, SCORE);
-        let m = cx.pev().message;
-        if m != 0 {
-            msg::ts_message_all([0, 255, 0], 8, 30, &engine().string(m).to_string_lossy());
-        }
+        let win =
+            GiverWin { team: self.winner, value, restart, is_score: SCORE, victory_cash: self.cash_winner, defeat_cash: self.cash_loser };
+        crate::gameplay::active().server.giver_team_win(&win);
+        super::objective::hud_line(cx.pev().message);
         self.calls = 0;
         if !SCORE {
             self.used = true;
@@ -790,9 +790,29 @@ impl<const SCORE: bool> Entity for WinGiver<SCORE> {
     }
 }
 
+/// What a win or score giver hands `TeamWin` ([`ServerRules::giver_team_win`](crate::gameplay::ServerRules::giver_team_win)).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GiverWin {
+    /// `winnerteam`.
+    pub team: i32,
+    /// The `Use` value.
+    pub value: f32,
+    pub restart: bool,
+    pub is_score: bool,
+    /// `victorycash` / `defeatcash`.
+    pub victory_cash: i32,
+    pub defeat_cash: i32,
+}
+
+/// TS 3.0's giver `TeamWin`: `TeamWin(winnerteam, (int)value, restart, isScore)`; the giver's cash
+/// keys are unused.
+pub fn giver_team_win_core(w: &GiverWin) {
+    team_win(w.team, super::c_int(f64::from(w.value)), w.restart, w.is_score);
+}
+
 /// `CTSWinGiver::EnableObjective` on `ent` if it is a wingiver or scoregiver: the call counter and
-/// the latch start over (gamerules-entities.md §3.2). Nothing in the port calls it; plugins can
-/// (`crate::ham`).
+/// the latch start over (gamerules-entities.md §3.2): `InitObjectives`, an objective pointer, or a
+/// plugin (`crate::ham`).
 pub fn enable_objective(ent: &mut dyn Entity) {
     let any = ent as &mut dyn std::any::Any;
     if let Some(w) = any.downcast_mut::<WinGiver<false>>() {
@@ -816,7 +836,7 @@ fn team_win_cash(winner: i32, player_team: i32, cash: i32) -> (i32, bool) {
 /// players.". Otherwise each `UTIL_PlayerByIndex` + `IsPlayer()` player gets its cash and
 /// `TSHVoice`, then `team` 2 is a draw, any other team scores ("%s Win!" / "%s Score!") and the
 /// log line. `TeamScore` only in round modes 2/3.
-fn team_win(team: i32, cash: i32, restart: bool, is_score: bool) {
+pub(crate) fn team_win(team: i32, cash: i32, restart: bool, is_score: bool) {
     let eng = engine();
     let now = eng.time();
     let (timer, end, mode) = state::with(|g| (g.round_timer, g.round_end, g.mode));

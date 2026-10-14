@@ -185,7 +185,13 @@ impl Player {
                 PreThinkStep::Rules => end = crate::rules::pre_think(self, cx, tail),
                 PreThinkStep::Stunt => crate::stunt::pre_think(self, cx, tail),
                 // mp.dll's node learning, between `UpdatePlayerState` and `CheckForWires` (0x1005fed2).
-                PreThinkStep::NodeLearn if tail => crate::bot_backend::pre_think(self, cx),
+                PreThinkStep::NodeLearn if tail => {
+                    crate::bot_backend::pre_think(self, cx);
+                    // `CheckForWires` follows the node learning on PreThink's living path.
+                    if end {
+                        crate::entities::ts::objective::check_for_wires(self, cx);
+                    }
+                }
                 PreThinkStep::NodeLearn => {}
                 PreThinkStep::Weapons => crate::weapons::pre_think(self, cx),
                 PreThinkStep::End if end => crate::rules::pre_think_end(self, cx),

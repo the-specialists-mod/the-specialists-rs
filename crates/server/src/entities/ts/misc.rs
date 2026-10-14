@@ -1,10 +1,10 @@
 //! Small TS entities: `ts_model`, `ts_mapglobals`, `ts_wind`, the client-side effect entities
 //! (`ts_fog` and `ts_emitter` are validated, then removed; `ts_particle` stays; the client reads
-//! the BSP entity lump), `deadcorpse`, team spawn points, and harmless stubs for the dead
-//! objective classes.
+//! the BSP entity lump), `deadcorpse`, team spawn points, and the `ts_sellzone` stub. The
+//! objective classes are in `objective`.
 
 use crate::entities::stock::animating::{Animating, init_bone_controllers};
-use crate::entities::stock::base::{Toggle, ToggleState, alloc, create_entity, kv_f, kv_i};
+use crate::entities::stock::base::{Toggle, ToggleState, create_entity, kv_f, kv_i};
 use crate::messages::Msg;
 use crate::rules::{msg, state};
 use crate::save::{BaseFuncs, Fields, tables};
@@ -428,23 +428,14 @@ const EF_NOINTERP: i32 = 32;
 
 // ---- spawn points and stubs -----------------------------------------------------------------------
 
-/// Dead 3.0 objective entities (`ts_objective_manager`, `ts_objective_ptr`, `ts_bomb`, `ts_hack`,
-/// `ts_teamescape`, `ts_sellzone`): spawn hidden and do nothing. Brushes keep their model so the
-/// engine has a valid bmodel. `ts_objective_ptr` (`CTSObjectivePointer`) is this type itself: TS
-/// saves only its `CBaseEntity` part, with no member pointers (`Spawn` 0x8bb44 clears them; `Use`
-/// is a virtual). The others are the types below, which add the fields TS saves for their class
-/// (set from the same keys as TS's `KeyValue`) and whether TS's `Spawn` set a think / touch. Not
-/// ported: their behaviour (`Use`, `WaitThink`, `WaitTouch`, `SellTouch`, `EnableObjective`, the
-/// objective list and HUD), their unsaved keys, and the entvars TS's `Spawn` sets beyond the stub's.
-#[derive(Default)]
-pub struct Stub;
-
-/// The stub's `KeyValue`: entvars keys were parsed before this; it claims every class-specific key.
+/// `ts_sellzone`'s stub `KeyValue`: entvars keys were parsed before this; it claims every
+/// class-specific key.
 fn stub_key_value() -> bool {
     true
 }
 
-/// The stub's `Spawn`.
+/// `ts_sellzone`'s stub `Spawn`: hidden and not solid; a brush keeps its model so the engine has a
+/// valid bmodel. Its `SellTouch` (gated by `CashBased()`, always off in 3.0) isn't ported.
 fn stub_spawn(cx: &mut Cx) {
     let eng = engine();
     let e = cx.edict;
@@ -457,193 +448,6 @@ fn stub_spawn(cx: &mut Cx) {
     v.solid = SOLID_NOT as i32;
     v.movetype = MOVETYPE_NONE as i32;
     v.effects |= EF_NODRAW as i32;
-}
-
-impl Entity for Stub {
-    fn key_value(&mut self, _cx: &mut Cx, _key: &CStr, _value: &CStr) -> bool {
-        stub_key_value()
-    }
-    fn spawn(&mut self, cx: &mut Cx) {
-        stub_spawn(cx);
-    }
-}
-
-/// `ts_objective_manager` (`CTSObjectiveManager`): the stub, with the strings TS saves.
-#[derive(Default)]
-pub struct ObjectiveManager {
-    /// `messages[4]` (`+0x64`): `messagea`..`messaged`.
-    messages: [string_t; 4],
-    /// `targets[8]` (`+0x74`): `objptargeta`..`objptargeth`.
-    targets: [string_t; 8],
-    /// `end_round_target` (`+0x94`): `targetontimeleft`.
-    end_round_target: string_t,
-}
-
-impl Entity for ObjectiveManager {
-    /// `CTSObjectiveManager::KeyValue` (0x8b46c) for the saved keys (`ALLOC_STRING`); the stub
-    /// claims the rest (`targetonspecdead` / `targetonmercdead` aren't saved).
-    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        let k = key.to_bytes();
-        let slot = match k {
-            b"messagea" | b"messageb" | b"messagec" | b"messaged" => Some(&mut self.messages[(k[7] - b'a') as usize]),
-            b"objptargeta" | b"objptargetb" | b"objptargetc" | b"objptargetd" | b"objptargete" | b"objptargetf" | b"objptargetg"
-            | b"objptargeth" => Some(&mut self.targets[(k[10] - b'a') as usize]),
-            b"targetontimeleft" => Some(&mut self.end_round_target),
-            _ => None,
-        };
-        if let Some(slot) = slot {
-            *slot = alloc(value);
-        }
-        stub_key_value()
-    }
-
-    fn spawn(&mut self, cx: &mut Cx) {
-        stub_spawn(cx);
-    }
-
-    /// `CTSObjectiveManager::Save` / `Restore`: no member pointers (`Spawn` 0x8b7bc clears them),
-    /// then the thirteen strings.
-    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
-        f.base_funcs(cx, BaseFuncs::default());
-        f.table(&tables::CTSObjectiveManager);
-        for m in &mut self.messages {
-            f.string(m);
-        }
-        for t in &mut self.targets {
-            f.string(t);
-        }
-        f.string(&mut self.end_round_target);
-    }
-}
-
-/// `CTSObjective`'s saved `attacker_team` (`+0x68`): `CTSObjective::KeyValue`'s `attackerteam`.
-fn objective_key(attacker_team: &mut i32, key: &CStr, value: &CStr) {
-    if key.to_bytes() == b"attackerteam" {
-        *attacker_team = kv_i(value);
-    }
-}
-
-/// `ts_bomb` (`CTSBomb`): the stub, with what TS saves.
-#[derive(Default)]
-pub struct Bomb {
-    /// `attacker_team` (`CTSObjective` `+0x68`).
-    attacker_team: i32,
-    /// `defusesec` (`+0x80`): `defusetime`.
-    defuse_sec: i32,
-    /// `cancutwire` (`+0x84`): `cutwires`.
-    can_cut_wire: i32,
-    /// `Spawn` (0x8c470) sets `m_pfnThink` (`WaitThink`).
-    funcs: BaseFuncs,
-}
-
-impl Entity for Bomb {
-    /// `CTSBomb::KeyValue` (0x8cb68), then `CTSObjective::KeyValue`.
-    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        match key.to_bytes() {
-            b"defusetime" => self.defuse_sec = kv_i(value),
-            b"cutwires" => self.can_cut_wire = kv_i(value),
-            _ => objective_key(&mut self.attacker_team, key, value),
-        }
-        stub_key_value()
-    }
-
-    fn spawn(&mut self, cx: &mut Cx) {
-        stub_spawn(cx);
-        self.funcs.think = true;
-    }
-
-    /// `CTSBomb::Save` / `Restore`: `"CTSObjective"` then `"CTSBomb"`. The set think stops TS's
-    /// restore after `"BASE"`.
-    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
-        super::save_base(cx, f, &mut self.funcs);
-        f.table(&tables::CTSObjective);
-        f.int(&mut self.attacker_team);
-        f.table(&tables::CTSBomb);
-        f.int(&mut self.defuse_sec);
-        f.int(&mut self.can_cut_wire);
-    }
-
-    /// `CTSBomb::Precache` (0x8c570).
-    fn restored(&mut self, _cx: &mut Cx) {
-        engine().precache_sound(c"misc/beep2.wav");
-    }
-}
-
-/// `ts_hack` (`CTSHack`): the stub, with what TS saves.
-#[derive(Default)]
-pub struct Hack {
-    /// `attacker_team` (`CTSObjective` `+0x68`).
-    attacker_team: i32,
-    /// `hacksec` (`+0x7c`): `hackingtime`.
-    hack_sec: i32,
-    /// `Spawn` (0x8cccc) sets `m_pfnThink` (`WaitThink`).
-    funcs: BaseFuncs,
-}
-
-impl Entity for Hack {
-    /// `CTSHack::KeyValue` (0x8d1c8), then `CTSObjective::KeyValue`.
-    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        match key.to_bytes() {
-            b"hackingtime" => self.hack_sec = kv_i(value),
-            _ => objective_key(&mut self.attacker_team, key, value),
-        }
-        stub_key_value()
-    }
-
-    fn spawn(&mut self, cx: &mut Cx) {
-        stub_spawn(cx);
-        self.funcs.think = true;
-    }
-
-    /// `CTSHack::Save` / `Restore`: `"CTSObjective"` then `"CTSHack"`.
-    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
-        super::save_base(cx, f, &mut self.funcs);
-        f.table(&tables::CTSObjective);
-        f.int(&mut self.attacker_team);
-        f.table(&tables::CTSHack);
-        f.int(&mut self.hack_sec);
-    }
-
-    // `CTSHack::Precache` (0x8cdb4) is empty.
-}
-
-/// `ts_teamescape` (`CTSTeamEscape`): the stub, with what TS saves.
-#[derive(Default)]
-pub struct TeamEscape {
-    /// `attacker_team` (`CTSObjective` `+0x68`).
-    attacker_team: i32,
-    /// `escape_percentage` (`+0xf4`): `escapepercentage`.
-    escape_percentage: i32,
-    /// `Spawn` (0x8d390) sets `m_pfnThink` (`WaitThink`) and `m_pfnTouch` (`WaitTouch`).
-    funcs: BaseFuncs,
-}
-
-impl Entity for TeamEscape {
-    /// `CTSTeamEscape::KeyValue` (0x8d700), then `CTSObjective::KeyValue`.
-    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
-        match key.to_bytes() {
-            b"escapepercentage" => self.escape_percentage = kv_i(value),
-            _ => objective_key(&mut self.attacker_team, key, value),
-        }
-        stub_key_value()
-    }
-
-    fn spawn(&mut self, cx: &mut Cx) {
-        stub_spawn(cx);
-        self.funcs.think = true;
-        self.funcs.touch = true;
-    }
-
-    /// `CTSTeamEscape::Save` / `Restore`: `"CTSObjective"` then `"CTSTeamEscape"`.
-    fn save_fields(&mut self, cx: &mut Cx, f: &mut Fields) {
-        super::save_base(cx, f, &mut self.funcs);
-        f.table(&tables::CTSObjective);
-        f.int(&mut self.attacker_team);
-        f.table(&tables::CTSTeamEscape);
-        f.int(&mut self.escape_percentage);
-    }
-
-    // `CTSTeamEscape::Precache` (0x8d49c) is empty.
 }
 
 /// `ts_sellzone` (`CTSSellZone`): the stub; TS saves its `CBaseEntity` part only (`attackerteam`

@@ -69,6 +69,16 @@ payload!(
     /// `ShowObj` (2).
     ShowObj { idx: byte, visible: byte }
 );
+payload!(
+    /// `Objective` (variable, ONE; `SendObjectiveToHud` 0x7ac80): the objective's centre, its
+    /// list index and the receiver's team text.
+    Objective { x: coord, y: coord, z: coord, idx: byte, text: string }
+);
+payload!(
+    /// `Wires` (3, ONE): the three bomb wires the player sees (0 cut, 1 defuse, 2 hurry, 3
+    /// detonate).
+    Wires { w0: byte, w1: byte, w2: byte }
+);
 
 /// `TeamNames`: `byte n, n × string`.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -138,6 +148,22 @@ pub mod style {
 mod tests {
     use super::super::hud_wire::Bytes;
     use super::*;
+
+    /// The objective encoders match the client's decoders (`protocol::hud`).
+    #[test]
+    fn objective_payloads_decode() {
+        use super::super::hud;
+        let mut b = Bytes::default();
+        Objective { x: 1.5, y: -2.0, z: 64.0, idx: 3, text: "Plant".into() }.write(&mut b);
+        assert_eq!(hud::Objective::decode(&b.buf), Some(hud::Objective { x: 1.5, y: -2.0, z: 64.0, idx: 3, label: "Plant".into() }));
+        let mut b = Bytes::default();
+        Wires { w0: 3, w1: 0, w2: 2 }.write(&mut b);
+        assert_eq!(b.buf.len(), 3, "Wires is registered with size 3");
+        assert_eq!(hud::Wires::decode(&b.buf), Some(hud::Wires { w0: 3, w1: 0, w2: 2 }));
+        let mut b = Bytes::default();
+        ShowObj { idx: 0xff, visible: 1 }.write(&mut b);
+        assert_eq!(hud::ShowObj::decode(&b.buf), Some(hud::ShowObj { idx: 0xff, visible: 1 }));
+    }
 
     #[test]
     fn scoreinfo_size() {

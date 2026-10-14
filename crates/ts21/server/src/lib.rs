@@ -120,6 +120,11 @@ impl ServerRules for Ts21Server {
         observer::observer_think(p, cx, now);
     }
 
+    /// 2.1's `Observer_SetMode` (FUN_1005aad0): a waiting roaming observer is held still.
+    fn observer_set_mode(&self, p: &mut Player, cx: &mut Cx, mode: i32) {
+        observer::set_mode(p, cx, mode);
+    }
+
     fn on_init_hud(&self, p: &mut Player, _cx: &mut Cx) {
         players::on_init_hud(p);
     }
@@ -247,6 +252,46 @@ impl ServerRules for Ts21Server {
 
     fn breakable_respawn_guarded(&self) -> bool {
         false
+    }
+
+    fn objectives(&self) -> &'static ts_server::entities::ts::objective::ObjectiveRules {
+        &rules::OBJECTIVES
+    }
+
+    /// 2.1's `RoundTimeLeft` (0x100450f0), from the exploding bomb.
+    fn round_time_left(&self, now: f32) {
+        rules::round_time_left(now);
+    }
+
+    /// 2.1's win giver pays the team cash (`CTSWinGiver::Use` 0x10050d10).
+    fn giver_team_win(&self, w: &ts_server::entities::ts::ctb::GiverWin) {
+        rules::giver_team_win(w, goldsrc::server::engine().time());
+    }
+
+    /// 2.1's `GoSlow` (0x10055220) clamps the weapon timers on the way back to normal speed.
+    fn on_go_slow(&self, p: &mut Player, amount: f32) {
+        powerup::on_go_slow(p, amount);
+    }
+
+    /// 2.1's `CM61Grenade::WaitThink` (0x100477e0): the 0.1 floor and the `double` 0.1.
+    fn grenade_fuse_step(&self, elapsed: f32, time_scale: f32) -> f32 {
+        stunt::grenade_fuse_step(elapsed, time_scale)
+    }
+
+    /// 2.1's `PreThink` stops the animation below a tenth of normal speed.
+    fn anim_framerate(&self, time_scale: f32) -> f32 {
+        stunt::anim_framerate(time_scale)
+    }
+
+    /// 2.1's `CBreakable::Die` (0x10042540) and `CBaseDoor::TraceAttack` (0x10013c50) throw the
+    /// SDK's debris (issue #109).
+    fn break_debris_from_hit(&self) -> bool {
+        false
+    }
+
+    /// 2.1's `CBreakable::TakeDamage` (0x1001b960) normalises inline.
+    fn breakable_attack_dir(&self, inflictor_origin: [f32; 3], absmin: [f32; 3], size: [f32; 3]) -> [f32; 3] {
+        entities::breakable_attack_dir(inflictor_origin, absmin, size)
     }
 
     /// `RestartRound` (0x100445d0) forces it.
@@ -489,6 +534,18 @@ mod tests {
     fn hooks_follow_the_plugin() {
         let core: &dyn ServerRules = &shared::gameplay::CORE;
         let v21: &dyn ServerRules = &Ts21Server;
+        assert!(core.break_debris_from_hit() && !v21.break_debris_from_hit());
+        assert_eq!(core.objectives(), &ts_server::entities::ts::objective::CORE);
+        assert_eq!(v21.objectives(), &rules::OBJECTIVES);
+        assert_eq!(v21.anim_framerate(0.05), 0.0, "frozen below a tenth");
+        assert_eq!(core.anim_framerate(0.05), 0.05);
+        assert_eq!(v21.anim_framerate(1.0), 1.0);
+        assert_eq!(v21.grenade_fuse_step(0.0, 0.05), 0.01, "floored at 0.1");
+        assert_eq!(v21.grenade_fuse_step(0.0, 1.0), 0.1);
+        assert_ne!(core.grenade_fuse_step(3e-6, 1.0), v21.grenade_fuse_step(3e-6, 1.0), "0.1f against the double 0.1");
+        let (org, absmin, size) = ([1.5, 16_777_218.0, 0.0], [0.0, 16_777_216.0, 0.0], [0.0, 1.0, 0.0]);
+        assert_eq!(core.breakable_attack_dir(org, absmin, size), [0.6, 0.8, 0.0], "3.0 rounds the centre: d = (1.5, 2, 0)");
+        assert_ne!(v21.breakable_attack_dir(org, absmin, size), core.breakable_attack_dir(org, absmin, size));
         assert!(core.time_scale_eases() && !v21.time_scale_eases());
         assert!(core.motion_blur() && !v21.motion_blur());
         assert_eq!(core.sound_pitch(100, 0.5, 0.5), 75);

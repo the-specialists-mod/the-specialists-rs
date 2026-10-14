@@ -10,6 +10,7 @@ use crate::damage::glast::Snapshot;
 use crate::entities::stock::items;
 use crate::entities::ts::ground::GroundWeapon;
 use crate::entities::ts::misc::MapFlags;
+use crate::entities::ts::{ctb, objective};
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::player::damage::{self as player_damage, HitDamage, PlayerHit};
@@ -149,6 +150,13 @@ pub trait ServerRules: Sync {
     /// 3.0: [`lifecycle::observer_think_core`] (3.0 respawns with the `respawn` command instead).
     fn observer_think(&self, p: &mut Player, cx: &mut Cx, now: f32) {
         lifecycle::observer_think_core(p, cx, now);
+    }
+
+    /// `CBasePlayer::Observer_SetMode` (0x99e44) as `StartObserver` and the port's `ts_observe`
+    /// call it. A ruleset with its own observer camera (see [`observer_think`](Self::observer_think))
+    /// overrides both. 3.0: [`lifecycle::observer_set_mode`].
+    fn observer_set_mode(&self, p: &mut Player, cx: &mut Cx, mode: i32) {
+        lifecycle::observer_set_mode(p, cx, mode);
     }
 
     /// End of `CTSGameRules::InitHUD` (0x79134), once a joiner is observing with its respawn
@@ -316,6 +324,44 @@ pub trait ServerRules: Sync {
         false
     }
 
+    /// The objective system's rules (`ts_objective_ptr`, `ts_bomb`, `ts_hack`, `ts_teamescape`, the
+    /// HUD list, the wires). 3.0: [`objective::CORE`].
+    fn objectives(&self) -> &'static objective::ObjectiveRules {
+        &objective::CORE
+    }
+
+    /// `CTSGameRules::RoundTimeLeft`, which an exploding `ts_bomb` calls. 3.0:
+    /// [`objective::round_time_left_core`] (only while a timed round runs: the manager's
+    /// `targetontimeleft`, else a draw).
+    fn round_time_left(&self, now: f32) {
+        objective::round_time_left_core(now);
+    }
+
+    /// The `TeamWin` of a `ts_wingiver` / `ts_scoregiver` that reached its `callsnumber`. 3.0:
+    /// [`ctb::giver_team_win_core`] (`TeamWin(winnerteam, (int)value, restart, isScore)`).
+    fn giver_team_win(&self, w: &ctb::GiverWin) {
+        ctb::giver_team_win_core(w);
+    }
+
+    /// How a break throws its debris (`CBreakable::Die` 0x752e0, `CBaseDoor::TraceAttack`
+    /// 0xb57ac). TS 3.0 (true): from the last hit, the breakable's debris velocity along the hit
+    /// direction × damage × the material's multiplier, glass as the long `TSFrags` with the hit,
+    /// the attacker's `fuser1` copied first; a door's along the attacker's direction × damage × 2
+    /// (× 8 for a shotgun). False: the SDK's, `g_vecAttackDir × 200` for an `explosion directed`
+    /// breakable and none otherwise, a door's none, glass as the 13-byte `TSFrags` (centre, size,
+    /// type), no `fuser1` copy.
+    fn break_debris_from_hit(&self) -> bool {
+        true
+    }
+
+    /// The `g_vecAttackDir` a breakable's `TakeDamage` leaves (0x75480..), from the box centre
+    /// `absmin + size × 0.5` to the inflictor's origin, normalised. 3.0: the stock entities'
+    /// `Vector::Normalize` ([`crate::damage::normalize`]).
+    fn breakable_attack_dir(&self, inflictor_origin: Vec3, absmin: Vec3, size: Vec3) -> Vec3 {
+        let centre: Vec3 = std::array::from_fn(|i| absmin[i] + size[i] * 0.5);
+        crate::damage::normalize(std::array::from_fn(|i| inflictor_origin[i] - centre[i]))
+    }
+
     /// How long a broken `func_breakable` or breakable door waits before it rebuilds itself
     /// (`CBreakable::Die` 0x752e0, `CBaseDoor::TraceAttack` 0xb57ac), given its `respawntime` key (≥ 0); `None`
     /// leaves it broken, with no think, until `RespawnEntities` restores it. TS 3.0: the key, 0
@@ -395,6 +441,24 @@ pub trait ServerRules: Sync {
     /// `pev->fuser1` toward each PreThink. False: `GoSlow` writes `fuser1` at once.
     fn time_scale_eases(&self) -> bool {
         true
+    }
+
+    /// The end of a player's `GoSlow` (0x929d0) for the time scale `amount` (1 = normal): a
+    /// ruleset whose release touches the weapon timers does it here. 3.0: nothing.
+    fn on_go_slow(&self, _p: &mut Player, _amount: f32) {}
+
+    /// One 0.1 s fuse think of a thrown grenade (`CM61Grenade::WaitThink` 0x7cb68): the fuse's
+    /// elapsed time after it, the grenade's time scale being `time_scale`. 3.0:
+    /// `GiveSlowMul() * 0.1f + elapsed` with `GiveSlowMul` at least 0.01
+    /// ([`projectiles::fuse_step`]).
+    fn grenade_fuse_step(&self, elapsed: f32, time_scale: f32) -> f32 {
+        projectiles::fuse_step(cvars::pm_arith(), elapsed, time_scale.max(0.01))
+    }
+
+    /// A player's animation `framerate`, set from the time scale every `PreThink` (0x908cc):
+    /// 3.0 `max(fuser1, 0.01)`.
+    fn anim_framerate(&self, time_scale: f32) -> f32 {
+        time_scale.max(0.01)
     }
 
     /// The ruleset sends `TSMBlur` (stunts, power-ups, kills, kung fu), and draws the random
@@ -638,6 +702,15 @@ mod tests {
         assert!(!core.server_command("globalslow"), "3.0 runs its server commands");
         assert!(!core.server_command("restartround"));
         assert!(!core.server_command("weaponrestriction"));
+        assert!(core.break_debris_from_hit(), "3.0 throws the debris along the last hit");
+        let fuse = |slow| projectiles::fuse_step(cvars::pm_arith(), 0.0, slow);
+        assert_eq!(core.grenade_fuse_step(0.0, 0.05), fuse(0.05));
+        assert_eq!(core.grenade_fuse_step(0.0, 0.001), fuse(0.01), "floored at 0.01");
+        assert_eq!(core.grenade_fuse_step(0.0, f32::NAN), fuse(0.01));
+        assert_eq!(core.anim_framerate(0.05), 0.05);
+        assert_eq!(core.anim_framerate(0.0), 0.01);
+        assert_eq!(core.anim_framerate(1.0), 1.0);
+        assert_eq!(core.breakable_attack_dir([10.0, 0.0, 0.0], [-1.0; 3], [2.0; 3]), [1.0, 0.0, 0.0]);
     }
 
     fn hit(damage: f32, bits: i32, hitgroup: i32) -> PlayerHit {

@@ -15,7 +15,7 @@
 //! `CBaseDoor` changes above reach it; it's the SDK 2.3 class plus TS's slow-motion sound pitch.
 
 use super::base::*;
-use super::breakable::{DMG_TS_KUNGFU, DMG_TS_SHOTGUN, break_sounds, mat, play_break_sound, send_glass_debris};
+use super::breakable::{DMG_TS_KUNGFU, DMG_TS_SHOTGUN, break_sounds, mat, play_break_sound, send_glass_debris, send_glass_debris_short};
 use super::buttons::LockSounds;
 use super::explode::emit_sound_slow;
 use crate::damage::bits as dmg;
@@ -436,10 +436,16 @@ impl Door {
         let center = vec::add(v.origin, vec::mid(v.mins, v.maxs));
         let from = if info.attacker.is_null() { center } else { info.attacker.v().origin };
         let scale = if info.bits & DMG_TS_SHOTGUN != 0 { 8.0 } else { 1.0 };
-        // `dir * damage * 2 * scale`: the 2 and the scale are exact (issue #171).
-        let vel = push_velocity(center, from, info.damage * 2.0 * scale, true);
+        let from_hit = crate::gameplay::active().server.break_debris_from_hit();
+        // `dir * damage * 2 * scale`: the 2 and the scale are exact (issue #171). The SDK's door
+        // debris doesn't move.
+        let vel = if from_hit { push_velocity(center, from, info.damage * 2.0 * scale, true) } else { [0.0; 3] };
         if self.material == mat::GLASS {
-            send_glass_debris(center, v.size, [0.0; 3], [0.0; 3], 0, 0.0);
+            if from_hit {
+                send_glass_debris(center, v.size, [0.0; 3], [0.0; 3], 0, 0.0);
+            } else {
+                send_glass_debris_short(center, v.size);
+            }
         } else {
             te_break_model(MSG_PVS, center, v.size, vel, 10, self.gib_index, 0, 25, flags);
         }

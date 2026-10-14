@@ -431,7 +431,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
 
     // Animation runs in the player's slowed time.
     let slow = slow_mul(cx);
-    cx.pev().framerate = slow;
+    cx.pev().framerate = r.anim_framerate(cx.pev().fuser1);
     if on_ground(cx) {
         p.stunt.last_ground_time = time;
     }
