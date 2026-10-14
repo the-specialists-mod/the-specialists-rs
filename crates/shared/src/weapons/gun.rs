@@ -12,7 +12,7 @@
 use super::spread::{self, Vec3};
 use super::*;
 use crate::gameplay::{GunRules, Predicted};
-use crate::pm::{Arith, Fpu, Num};
+use crate::pm::{Arith, Fpu, FpuMath, Num};
 use crate::ts::powerup;
 use std::ffi::CStr;
 
@@ -1329,10 +1329,14 @@ impl Gun {
             return;
         }
         let stunting = host.iuser4() & STUNTING_MELEE != 0;
-        let speed = Self::speed(host);
+        let speed = melee_speed(host.arith(), host.velocity());
         let (fwd, _, _) = spread::angle_vectors(host.v_angle());
-        let backward =
-            if speed <= 100.0 { host.buttons() & IN_BACK != 0 } else { spread::dot(fwd, spread::normalize(host.velocity())) <= -0.5 };
+        let backward = if speed <= 100.0 {
+            host.buttons() & IN_BACK != 0
+        } else {
+            let form = if host.prediction() { BackDot::Kept } else { BackDot::Stored };
+            back_dot(host.arith(), form, fwd, host.velocity()).0
+        };
         // (view anim index, strength, reach, delay, player anim, block after). The crouch test
         // reads `FL_DUCKING` on the gun entity's own pev (server 0x73624, client 0x1000a052),
         // which never has it, so only `+duck` counts.
@@ -1447,7 +1451,7 @@ impl Gun {
         let iuser4 = host.iuser4();
         let stunting = iuser4 & STUNTING_KUNGFU != 0;
         let vel = host.velocity();
-        let speed = spread::length(vel);
+        let speed = melee_speed(host.arith(), vel);
         let on_ground = host.flags() & FL_ONGROUND != 0;
         let buttons = host.buttons();
         let pressed = host.pressed();
@@ -1457,8 +1461,9 @@ impl Gun {
         } else {
             let a = host.v_angle();
             let (f, _, _) = spread::angle_vectors([0.0, a[1], a[2]]);
-            dot = spread::dot(f, spread::normalize(vel));
-            dot <= -0.5
+            let (back, stored) = back_dot(host.arith(), BackDot::Kept, f, vel);
+            dot = stored;
+            back
         };
 
         // `esp+0x14` == 3: the running back kick (reach behind, human hull, roll 0).
@@ -2189,6 +2194,48 @@ impl Gun {
         self.current = current;
         self.body = body;
     }
+}
+
+/// The player's speed as `KatanaFire` and `CCombatAttack` keep it: `x² + y² + z²` on the build's
+/// FPU, the root stored as a `float` in every build (`ts_i386.so` 0x83469 / 0x860cc, mp.dll
+/// 0x1005679a / 0x10058b74, client.dll 0x10009f32 / 0x1000af4f).
+fn melee_speed(arith: Arith, v: Vec3) -> f32 {
+    fn go<F: Fpu>(v: Vec3) -> f32 {
+        F::vec_length(v, crate::pm::ORDER_XYZ).f()
+    }
+    crate::by_arith!(arith, go(v))
+}
+
+/// How an MSVC build forms the melee back test's `DotProduct(forward, velocity.Normalize())`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BackDot {
+    /// mp.dll's `KatanaFire` (0x100567c0..0x10056858): every component stored, summed `z, y, x`.
+    Stored,
+    /// `CCombatAttack` (mp.dll 0x10058c59..0x10058c94, client.dll 0x1000b02f..0x1000b06a) and the
+    /// client's `KatanaFire` (0x10009f97..0x10009fd2): the normalised x left on the FPU,
+    /// `(z + y) + x`.
+    Kept,
+}
+
+/// The melee back test (`<= -0.5`, the `double`, on the unrounded dot) and the dot stored as a
+/// `float` (`CCombatAttack` reads it again). `ts_i386.so` normalises as usual and sums `x, y, z`
+/// (0x83527.., 0x86255..); MSVC as `form` says.
+fn back_dot(arith: Arith, form: BackDot, fwd: Vec3, vel: Vec3) -> (bool, f32) {
+    fn go<F: Fpu>(form: BackDot, f: Vec3, vel: Vec3) -> (bool, f32) {
+        use crate::pm::{ORDER_XYZ, not_above87};
+        let d = if !F::MSVC {
+            let n = F::vec_normalize(vel, ORDER_XYZ);
+            F::x(f[0]) * F::x(n[0]) + F::x(f[1]) * F::x(n[1]) + F::x(f[2]) * F::x(n[2])
+        } else if form == BackDot::Stored {
+            let n = F::vec_normalize(vel, ORDER_XYZ);
+            F::x(f[2]) * F::x(n[2]) + F::x(f[1]) * F::x(n[1]) + F::x(f[0]) * F::x(n[0])
+        } else {
+            let [nx, ny, nz] = F::vec_normalize_n(vel, ORDER_XYZ);
+            (F::x(f[2]) * F::x(nz.f()) + F::x(f[1]) * F::x(ny.f())) + F::x(f[0]) * nx
+        };
+        (not_above87(d, F::xd(-0.5)), d.f())
+    }
+    crate::by_arith!(arith, go(form, fwd, vel))
 }
 
 #[cfg(test)]

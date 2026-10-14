@@ -494,6 +494,8 @@ the prediction both compute:
 | Grenade +use kick (`CM61Grenade::Use` 0x7cf07; mp.dll 0x10051340) | `fz + 0.75` squared unrounded, `x, y, z`, length stored | `(fz + 0.75)·(float)`, `z, y, x`, length unrounded | `projectiles::kick_dir` |
 | Thrown blade angles (`KnifeFire` 0x84790; mp.dll 0x100570b3, 0x1005775d) | the inline `Normalize` | the same | `projectiles::blade_dir`. 2.1's blade distance (`(x² + z²) + y²` of unrounded differences) is the plugin's: `thrown_blade_damage` now gets the two points |
 | Stunt directions, 2D speed gates, `GetDirection`, the wall-jump pose's square test (`stunt/mod.rs`, `anim.rs`; issue #170) | stored roots; dots `x, y, z` unrounded | `HandleStunt`/`GoRoll`/`GaitCloseCombat` test the root unrounded; dots `z, y, x` | `stunt::normalized`, `hspeed_stored`, `hspeed_cmp`, `direction_in`, `anim::moving_off_square`. **Was** f32 throughout |
+| Melee back test (`KatanaFire` 0x833f0, `CCombatAttack` 0x86078; mp.dll 0x10056858, 0x10058c98; client.dll 0x10009fd2, 0x1000b06e; issue #170) | speed stored; standard `Normalize`, dot `x, y, z` unrounded against the `double` -0.5 | speed stored; mp.dll's katana: components stored, dot `z, y, x`; its kung fu and both client attacks: normalised x on the FPU, `(z + y) + x`; the kung-fu dot stored for its later `> 0.5` | `gun::melee_speed`, `gun::back_dot` (`BackDot::Stored` / `Kept`, by `GunHost::prediction`) |
+| Bullet dance `< 80`, `Killed`'s hop `> 80` (0x8fb2e, 0x8f3a2; mp.dll 0x1005ea49, 0x1005e479) | the stored 2D root | unrounded | `stunt::hspeed_cmp` |
 | Speed gates (Barrett 35, M60 175) | the stored `sqrt` | unrounded | f32: differs only exactly at the boundary. Not changed |
 
 The inline `Vector::Length` and `Normalize` these use are `shared::pm::FpuMath::vec_length` /

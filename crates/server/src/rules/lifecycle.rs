@@ -1071,7 +1071,7 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         // TS also needs `pl+0x470 == 0` for the hop. No other instruction in `ts_i386.so`
         // addresses that word (0x8f3c2 is the only one) and the engine zeroes private data, so
         // it is always 0.
-        if super::len2d(v.velocity) > 80.0 || p.ts.last_damage > 50 {
+        if crate::stunt::hspeed_cmp(v.velocity, 80.0, true) || p.ts.last_damage > 50 {
             v.velocity[2] = 180.0;
             v.gravity = 0.5;
         }

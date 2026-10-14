@@ -179,9 +179,10 @@ pub fn hit_damage(hit: &PlayerHit) -> HitDamage {
 }
 
 /// `CBasePlayer::TakeDamage` (0x8fa94): a hit arms the bullet dance when it does at most 80
-/// damage, the victim's horizontal speed is under 80 u/s, and it isn't in the legs.
-pub fn arms_bullet_dance(group: i32, speed2d: f32, dmg: f32) -> bool {
-    !matches!(group, hitgroup::LEFTLEG | hitgroup::RIGHTLEG) && speed2d < 80.0 && dmg <= 80.0
+/// damage, the victim's horizontal speed is under 80 u/s ([`crate::stunt::hspeed_cmp`]: stored in
+/// the .so, unrounded in mp.dll), and it isn't in the legs.
+pub fn arms_bullet_dance(group: i32, velocity: [f32; 3], dmg: f32) -> bool {
+    !matches!(group, hitgroup::LEFTLEG | hitgroup::RIGHTLEG) && crate::stunt::hspeed_cmp(velocity, 80.0, false) && dmg <= 80.0
 }
 
 /// `CBasePlayer::TraceAttack` (0x901cc): spawn protection, stunt and dodge ×0.7, team check,
@@ -304,7 +305,7 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     // it falls) for a light hit on a slow body, unless the hit is in the legs. TS decides this
     // before the team check, on the damage after the TraceAttack multipliers.
     let v = cx.pev().velocity;
-    if arms_bullet_dance(p.ts.last_hitgroup, (v[0] * v[0] + v[1] * v[1]).sqrt(), amount) {
+    if arms_bullet_dance(p.ts.last_hitgroup, v, amount) {
         crate::stunt::anim::enable_bullet_dance(p);
     } else {
         crate::stunt::anim::disable_bullet_dance(p);
@@ -532,12 +533,15 @@ mod tests {
 
     #[test]
     fn bullet_dance_arming() {
-        assert!(arms_bullet_dance(hitgroup::CHEST, 0.0, 80.0));
-        assert!(!arms_bullet_dance(hitgroup::CHEST, 0.0, 80.5), "heavy hit");
-        assert!(!arms_bullet_dance(hitgroup::CHEST, 80.0, 10.0), "moving body");
-        assert!(!arms_bullet_dance(hitgroup::LEFTLEG, 0.0, 10.0), "leg hit");
-        assert!(!arms_bullet_dance(hitgroup::RIGHTLEG, 0.0, 10.0), "leg hit");
-        assert!(arms_bullet_dance(hitgroup::HEAD, 79.9, 10.0));
+        assert!(arms_bullet_dance(hitgroup::CHEST, [0.0; 3], 80.0));
+        assert!(!arms_bullet_dance(hitgroup::CHEST, [0.0; 3], 80.5), "heavy hit");
+        assert!(!arms_bullet_dance(hitgroup::CHEST, [80.0, 0.0, 0.0], 10.0), "moving body");
+        assert!(!arms_bullet_dance(hitgroup::LEFTLEG, [0.0; 3], 10.0), "leg hit");
+        assert!(!arms_bullet_dance(hitgroup::RIGHTLEG, [0.0; 3], 10.0), "leg hit");
+        assert!(arms_bullet_dance(hitgroup::HEAD, [0.0, 79.9, 0.0], 10.0));
+        // mp.dll tests the unrounded root (issue #170): the old `float` speed here was exactly 80.
+        let v = [f32::from_bits(0x41aa_e8b2), f32::from_bits(0xc29a_307f), 0.0];
+        assert!(arms_bullet_dance(hitgroup::CHEST, v, 10.0));
     }
 
     #[test]

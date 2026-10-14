@@ -243,9 +243,11 @@ fn hspeed_stored(v: Vec3) -> f32 {
 }
 
 /// `Length2D() < limit` where mp.dll tests the root unrounded and `ts_i386.so` stores it first
-/// (`HandleStunt` 0x9b16a / mp.dll 0x10069457, `GoRoll` 0x9d064 / 0x1006b046), or with `above`
-/// `Length2D() > limit` (`GaitCloseCombat` 0x6dda9 / 0x1004705b).
-fn hspeed_cmp(v: Vec3, limit: f32, above: bool) -> bool {
+/// (`HandleStunt` 0x9b16a / mp.dll 0x10069457, `GoRoll` 0x9d064 / 0x1006b046,
+/// `CBasePlayer::TakeDamage`'s bullet dance 0x8fb2e / 0x1005ea49), or with `above`
+/// `Length2D() > limit` (`GaitCloseCombat` 0x6dda9 / 0x1004705b, `Killed`'s hop 0x8f3a2 /
+/// 0x1005e479).
+pub(crate) fn hspeed_cmp(v: Vec3, limit: f32, above: bool) -> bool {
     fn go<F: Fpu>(v: Vec3, limit: f32, above: bool) -> bool {
         let s = hspeed_n::<F>(v);
         let s = if F::MSVC { s } else { F::x(s.f()) };
