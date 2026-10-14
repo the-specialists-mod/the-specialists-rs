@@ -18,6 +18,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::{FpuMath, Msvc, ORDER_XYZ};
 use std::cell::RefCell;
 use std::ffi::CStr;
 
@@ -79,6 +80,13 @@ struct Geiger {
 }
 
 const GEIGER_IDLE: Geiger = Geiger { range: 1000.0, next: 0.0, last: 1000 };
+
+/// `RadiationThink`'s range update (mp.dll 0x10041654..0x10041666, issue #150): the unrounded
+/// `Vector::Length` (`x² + y² + z²`, out of line at 0x1000e920) replaces the range when it is at
+/// most the range, or NaN (`test ah,0x41`), and is stored as a `float` then.
+fn geiger_range(range: f32, len: f64) -> f32 {
+    if len > range as f64 { range } else { len as f32 }
+}
 static GEIGER: Global<RefCell<[Geiger; 33]>> = Global(RefCell::new([GEIGER_IDLE; 33]));
 
 /// Geiger state for a (re)spawned player: `CBasePlayer::Precache` (0xda90c) resets the range,
@@ -371,10 +379,10 @@ impl<const KIND: u8> Trigger<KIND> {
         v.view_ofs = view_ofs;
         if !player.is_null() {
             let pv = player.v();
-            let range = vec::length(vec::sub(center, vec::mid(pv.absmin, pv.absmax)));
+            let range = Msvc::vec_length(vec::sub(center, vec::mid(pv.absmin, pv.absmax)), ORDER_XYZ);
             let i = eng.index_of(player) as usize;
             if let Some(g) = GEIGER.0.borrow_mut().get_mut(i) {
-                g.range = g.range.min(range);
+                g.range = geiger_range(g.range, range);
             }
         }
         cx.pev().nextthink = eng.time() + 0.25;
@@ -1734,5 +1742,30 @@ impl Entity for EnvMessage {
         }
         let target = cx.pev().target;
         sub_use_targets(me, target, 0, 0.0, me, UseType::Toggle, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// The geiger range takes mp.dll's unrounded `Vector::Length` (issue #150); the old `float`
+    /// length was 0x440e5b52.
+    #[test]
+    fn geiger_range_as_mp_dll() {
+        let d = f([0x43ba_9b6e, 0x42ac_fd10, 0xc3d2_a3d4]);
+        let len = shared::pm::Msvc::vec_length(d, shared::pm::ORDER_XYZ);
+        assert_eq!(geiger_range(1000.0, len).to_bits(), 0x440e_5b51);
+        assert_eq!(geiger_range(100.0, len), 100.0, "only nearer");
+        assert!(geiger_range(100.0, f64::NAN).is_nan(), "a NaN is stored");
+        let _ = b(d);
     }
 }

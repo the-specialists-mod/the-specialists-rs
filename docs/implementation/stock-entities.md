@@ -918,6 +918,18 @@ writes out of bounds, or where the port lacks save/restore:
 * **A `momentary_rot_button` that targets itself** (its `target` is also its `targetname`)
   calls its own `Use` from `UpdateTarget` in TS, which recurses until the stack overflows. The
   port's re-entrant dispatch of the entity being dispatched is skipped, so the button just turns.
+* **x87 rounding of the damage code** (issues #89, #150). These follow mp.dll's 53-bit arithmetic
+  (`shared::pm::Msvc`), the server's default, whatever `ts_pm_arith` says: `TSExplosion`'s
+  distance (`explode::blast_distance`: stored differences, `z² + y² + x²`, the root unrounded)
+  goes into `falloff_damage` unrounded with the falloff stored as a `float`, rounded once (so 110
+  at r_max leaves 1.3e-6, as in TS); the occluder's thickness and the `TraceAttack` direction
+  (the out-of-line `Normalize`, 0x100148f0); the `WorldGun` push (`worldgun::blast_velocity`,
+  0x100519f2..); `CBreakable::TraceAttack`'s remembered direction (`breakable::hit_direction`:
+  MSVC stores the direction's `x²` as a `float`, so a direction under ~1e-23 counts as zero);
+  `RadiationThink`'s geiger range (the unrounded `Vector::Length`, stored when at most the range
+  or NaN); `CBaseMonster::TakeDamage`'s attack direction; the shrapnel's `Normalize` and speed;
+  and `FireBullets`' spread for `func_tank` (`tank::spread_dir_from`: `x` stored, `y` unrounded
+  through the `<= 1` test and `y·spread.y`).
 * **x87 rounding.** TS evaluates the door's open position, its `Use` destination and distance,
   the wheel's end angles, its position fraction and the `+ 0.1` think times on the x87 stack;
   the port does those steps in `f64` (`mad_x87`, `momentary_door_pos2`, `momentary_door_move`,

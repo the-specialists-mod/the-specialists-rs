@@ -14,6 +14,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, Vec3, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::{FpuMath, Msvc, ORDER_XYZ, below87, plus_double};
 
 /// `CTSShrapnel::BounceTouch`'s damage bits: `DMG_NEVERGIB | DMG_SLASH`.
 const SHRAPNEL_DAMAGE_BITS: i32 = 0x1004;
@@ -31,14 +32,12 @@ pub struct Shrapnel {
     funcs: BaseFuncs,
 }
 
-/// `Vector::Normalize` as TS inlines it: `(0, 0, 1)` for a zero vector.
+/// `Vector::Normalize` as TS inlines it: `(0, 0, 1)` for a zero vector. In mp.dll's arithmetic
+/// (`BounceTouch` 0x10050a0e..0x10050a6b and the out-of-line copy at 0x100148f0 it uses for a hit,
+/// `WaitThink` 0x10050c86..0x10050cf2): `x² + y² + z²`, the length and `1/len` unrounded (issue
+/// #150).
 fn normalize_or_up(v: Vec3) -> Vec3 {
-    let len = vec::length(v);
-    if len == 0.0 {
-        return [0.0, 0.0, 1.0];
-    }
-    let k = 1.0 / len;
-    [k * v[0], k * v[1], k * v[2]]
+    Msvc::vec_normalize(v, ORDER_XYZ)
 }
 
 /// `CTSShrapnel::Create(owner, origin, velocity)` (0x7bf9c): a spawned piece at `origin`, flying
@@ -115,15 +114,15 @@ impl Entity for Shrapnel {
         let eng = engine();
         let now = eng.time();
         let v = cx.pev();
-        v.nextthink = now + 0.1;
-        let speed = vec::length(v.velocity);
-        if speed <= 100.0 {
-            if speed < 100.0 && v.movetype != MOVETYPE_FLY as i32 {
-                remove(cx.edict);
-            }
-        } else {
+        v.nextthink = plus_double(now, 0.1);
+        // mp.dll (0x10050c2f..0x10050d6f): the root unrounded for both tests (a NaN speed is at
+        // most 100 and below it), stored as a `float` for the slow-down.
+        let speed = Msvc::sq_in(v.velocity, ORDER_XYZ).sqrt();
+        if speed > 100.0 {
             let dir = normalize_or_up(v.velocity);
-            v.velocity = vec::scale(dir, speed - 1.0);
+            v.velocity = vec::scale(dir, speed as f32 - 1.0);
+        } else if below87(speed, 100.0) && v.movetype != MOVETYPE_FLY as i32 {
+            remove(cx.edict);
         }
         if self.expire == 0.0 || now <= self.expire {
             let v = cx.pev();
@@ -192,5 +191,10 @@ mod tests {
     fn normalize() {
         assert_eq!(normalize_or_up([0.0; 3]), [0.0, 0.0, 1.0]);
         assert_eq!(normalize_or_up([3.0, 0.0, 4.0]), [0.6, 0.0, 0.8]);
+        // mp.dll's unrounded length and `1/len` (issue #150); the old `float` maths gave x =
+        // 0x3f27c9ab.
+        let v = [0x4427_f24a, 0x431b_b090, 0xc43d_9372].map(f32::from_bits);
+        assert_eq!(normalize_or_up(v).map(f32::to_bits), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598]);
+        assert_eq!(normalize_or_up([f32::NAN, 0.0, 0.0]), [0.0, 0.0, 1.0]);
     }
 }

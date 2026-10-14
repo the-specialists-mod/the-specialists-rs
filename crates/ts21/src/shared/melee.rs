@@ -341,7 +341,9 @@ pub fn kungfu_move(
     m.reach = 48.0;
     if i.iuser4 & 0xc00 != 0 {
         (m.atype, m.delay) = (2, 1.0);
-        m.damage = clamp(speed * 0.1, 10.0, 30.0);
+        // The `float` 0.1 here (0x1004e188 `fmul dword [0x1008018c]`; issue #150), where the
+        // punches use the `double`.
+        m.damage = clamp(speed * 0.1f32 as f64, 10.0, 30.0);
     } else if i.on_ground && i.buttons & IN_DUCK != 0 {
         (m.atype, m.move_id, m.delay, m.damage, m.bits) = (2, 0x14, 1.0, 30.0, 4 | 1);
     } else if back {
@@ -613,6 +615,20 @@ mod tests {
         assert_eq!((m.move_id, m.damage, m.delay, pc), (0x17, 20.0, 0.2, 0), "the sixth is the heavy punch");
         let m = kungfu_move(&input(IN_ATTACK, false, 250.0, 0.0), &mut pc, &mut kc, 0, &mut |_, _| 0);
         assert_eq!((m.move_id, m.damage, m.delay), (0x18, 25.0, 0.3));
+    }
+
+    /// The stunting kick multiplies by the `float` 0.1 (0x1004e188, issue #150): at 101.5 u/s that
+    /// is 10.150001, where the `double` gives 10.15.
+    #[test]
+    fn stunting_kick_uses_the_float_tenth() {
+        let (mut pc, mut kc) = (0, 0);
+        let i = KungFuInput { iuser4: 0x400, ..input(IN_ATTACK2, false, 101.5, 0.0) };
+        let m = kungfu_move(&i, &mut pc, &mut kc, 0, &mut |_, _| 0);
+        assert_eq!((m.atype, m.delay), (2, 1.0));
+        assert_eq!(m.damage.to_bits(), 0x4122_6667);
+        // The punches keep the `double`: 101.5 · 0.1 = 10.15 (jumping punch).
+        let m = kungfu_move(&input(IN_ATTACK, false, 101.5, 0.0), &mut pc, &mut kc, 0, &mut |_, _| 0);
+        assert_eq!(m.damage.to_bits(), 0x4122_6666);
     }
 
     #[test]

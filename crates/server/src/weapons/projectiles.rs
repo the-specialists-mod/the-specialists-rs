@@ -13,6 +13,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::is_player;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
+use shared::pm::{Arith, Ext, Fpu, FpuMath, Num, ORDER_XYZ, below87, not_above87, plus_double};
 use shared::weapons::id;
 use shared::weapons::spread::{self, Vec3};
 use std::ffi::CStr;
@@ -176,6 +177,15 @@ pub struct Grenade {
     funcs: BaseFuncs,
 }
 
+/// One fuse think: `elapsed = GiveSlowMul() * 0.1f + elapsed`, rounded once (`ts_i386.so`
+/// 0x7cbbb..0x7cbca, mp.dll 0x10051096..0x100510a5; issue #150).
+fn fuse_step(arith: Arith, elapsed: f32, slow: f32) -> f32 {
+    fn go<F: Fpu>(elapsed: f32, slow: f32) -> f32 {
+        (F::x(slow) * F::x(0.1) + F::x(elapsed)).f()
+    }
+    shared::by_arith!(arith, go(elapsed, slow))
+}
+
 /// `CM61Grenade::CreateGrenade(player, 3.0, origin, velocity)`, plus the throw/roll spin.
 /// `time_scale` comes from [`thrower_time_scale`].
 pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: bool, time_scale: f32) {
@@ -240,11 +250,11 @@ impl Entity for Grenade {
         }
         let e = engine();
         let me = cx.edict;
-        cx.pev().nextthink = e.time() + 0.1;
+        cx.pev().nextthink = plus_double(e.time(), 0.1);
         if self.elapsed < self.fuse {
             // The fuse runs in the grenade's own time (`GiveSlowMul`).
-            self.elapsed += 0.1 * cx.pev().fuser1.max(0.01);
-            impact_damage(me, self.thrower.or(me), 0.1, 0x1080, true);
+            self.elapsed = fuse_step(crate::rules::cvars::pm_arith(), self.elapsed, cx.pev().fuser1.max(0.01));
+            impact_damage(me, self.thrower.or(me), 0x1080, true);
             self.phys.update(cx.pev());
             return;
         }
@@ -411,24 +421,68 @@ pub fn thrower_of(e: *mut edict_t) -> Option<*mut edict_t> {
 /// target's health. TS tests nothing else (`CM61Grenade::WaitThink` 0x7cacc, `CTSKnife::WaitThink`
 /// 0x7ea30, `CTSWorldGun::Fall` 0xa0d84), not `takedamage` either: a target that takes no damage
 /// still gets the TraceAttack's hit effects (a breakable's sparks and ricochets), which leaves the
-/// damage out itself (issues #25, #26).
-pub(crate) fn impact_hits(target: &entvars_t, dmg: f32) -> bool {
-    target.health <= dmg
+/// damage out itself (issues #25, #26). `dmg` is the value TS compares, which mp.dll leaves
+/// unrounded and `ts_i386.so` stores first ([`flying_impact`]); a NaN never hits.
+pub(crate) fn impact_hits(target: &entvars_t, dmg: Ext) -> bool {
+    Ext::from_f32(target.health) <= dmg
+}
+
+/// A grenade's or knife's flying impact at `velocity` (issue #150): `None` unless the speed is
+/// over 64 (a NaN isn't), else the direction it traces along and the damage (`speed` times the
+/// `double` 0.1) as dealt and as tested against the target's health. The speed and direction are
+/// the inline `Length` and `Normalize` (`x² + y² + z²`); mp.dll (`CM61Grenade::WaitThink`
+/// 0x100510a8..0x10051245, `CTSKnife::WaitThink` 0x10052b6f..0x10052d1e) keeps the root
+/// unrounded and tests the unrounded product, `ts_i386.so` (0x7cbd8..0x7cd69, 0x7ec3b) stores
+/// the root and the product.
+pub(crate) fn flying_impact(arith: Arith, velocity: Vec3) -> Option<(Vec3, f32, Ext)> {
+    fn go<F: Fpu>(v: Vec3) -> Option<(Vec3, f32, Ext)> {
+        let s = F::vec_length(v, ORDER_XYZ);
+        // `test ah,0x41; jne`: 64 or less, or NaN, skips.
+        if not_above87(s, F::x(64.0)) {
+            return None;
+        }
+        let p = s * F::xd(0.1);
+        let dmg = p.f();
+        Some((F::vec_normalize(v, ORDER_XYZ), dmg, if F::MSVC { p.ext() } else { Ext::from_f32(dmg) }))
+    }
+    shared::by_arith!(arith, go(velocity))
+}
+
+/// The landing test of a falling `WorldGun` or flag (`CTSWorldGun::Fall` 0xa0d84, `CTSFlag::Fall`
+/// 0x9df10): `|velocity| < GiveSlowMul()·3`, the speed (`x² + y² + z²`) stored as a `float` and
+/// the product left unrounded (mp.dll 0x1007478e..0x100747c6, 0x1007269e..0x100726d6;
+/// `ts_i386.so` 0xa0dcd..0xa0dfd).
+pub(crate) fn fall_landed(arith: Arith, velocity: Vec3, slow: f32) -> bool {
+    fn go<F: Fpu>(v: Vec3, slow: f32) -> bool {
+        F::x(F::sq_in(v, ORDER_XYZ).sqrt().f()) < F::x(slow) * F::x(3.0)
+    }
+    shared::by_arith!(arith, go(velocity, slow))
+}
+
+/// The impact trace's end of a falling `WorldGun` or flag, `origin + velocity·0.1f`: the x
+/// product stays on the FPU for its add, y and z are stored first (mp.dll 0x10074837..0x1007488f,
+/// 0x1007274c..0x100727a4; `ts_i386.so` 0xa0e8f..0xa0ed5).
+pub(crate) fn fall_trace_end(arith: Arith, origin: Vec3, velocity: Vec3) -> Vec3 {
+    fn go<F: Fpu>(o: Vec3, v: Vec3) -> Vec3 {
+        let p = v.map(|c| F::x(c) * F::x(0.1));
+        [(p[0] + F::x(o[0])).f(), (F::x(p[1].f()) + F::x(o[1])).f(), (F::x(p[2].f()) + F::x(o[2])).f()]
+    }
+    shared::by_arith!(arith, go(origin, velocity))
 }
 
 /// The "flying impact" of grenades and knives (`CM61Grenade::WaitThink` 0x7cacc,
 /// `CTSKnife::WaitThink` 0x7ea30): if the projectile is faster than 64 u/s, the entity 64 u
-/// ahead gets its `TraceAttack` for `speed * k` when that is at least its health (breaks glass,
-/// doesn't chip players; see [`impact_hits`]). Not players for knives (`any_entity` false).
-/// `attacker` is [`Thrower::or`] (port deviation, issue #1; TS: the projectile).
-fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, k: f32, bits: i32, any_entity: bool) {
+/// ahead gets its `TraceAttack` for `speed * 0.1` when that is at least its health (breaks
+/// glass, doesn't chip players; see [`impact_hits`] and [`flying_impact`]). Not players for
+/// knives (`any_entity` false). `attacker` is [`Thrower::or`] (port deviation, issue #1; TS: the
+/// projectile).
+fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, bits: i32, any_entity: bool) {
     let e = engine();
     let v = me.v();
-    let s = speed(v);
-    if s <= 64.0 {
+    let Some((dir, dmg, test)) = flying_impact(crate::rules::cvars::pm_arith(), v.velocity) else {
         return;
-    }
-    let dir = spread::normalize(v.velocity);
+    };
+    // `64·dir` is exact, so the end is rounded once in either build.
     let tr = e.trace_line(v.origin, spread::ma(v.origin, 64.0, dir), DONT_IGNORE_MONSTERS, me);
     if tr.flFraction >= 1.0 || tr.pHit.is_null() {
         return;
@@ -436,8 +490,7 @@ fn impact_damage(me: *mut edict_t, attacker: *mut edict_t, k: f32, bits: i32, an
     if !any_entity && crate::rules::has_player(tr.pHit) {
         return;
     }
-    let dmg = s * k;
-    if impact_hits(tr.pHit.v(), dmg) {
+    if impact_hits(tr.pHit.v(), test) {
         let mut info = DamageInfo::new(me, attacker, dmg, bits).traced();
         info.dir = spread::scale(dir, 64.0);
         info.pos = tr.vecEndPos;
@@ -592,7 +645,7 @@ impl Knife {
         self.flying = false;
         self.stuck = true;
         let pev = cx.pev();
-        pev.nextthink = e.time() + 0.1;
+        pev.nextthink = plus_double(e.time(), 0.1);
         pev.gravity = 0.75;
         self.expire = e.time() + 10.0;
     }
@@ -618,10 +671,40 @@ fn ground_slide(pev: &mut entvars_t) {
 /// `CTSKnife::BounceTouch` 0x7decc, world hit: a blade at 100 u/s or more glances off when it
 /// meets the surface at a shallow angle (`-normal·dir < 0.4`) and the surface isn't a floor
 /// (`normal.z <= 0.98`); otherwise it sticks. The thresholds are doubles (0.4, 0.98) compared
-/// on the x87 stack.
-fn glances_off(speed: f32, dir: Vec3, normal: Vec3) -> bool {
-    let into = -(normal[0] as f64 * dir[0] as f64 + normal[1] as f64 * dir[1] as f64 + normal[2] as f64 * dir[2] as f64);
-    speed >= 100.0 && into < 0.4 && normal[2] as f64 <= 0.98
+/// on the x87 stack, and so is the dot product of the stored direction ([`knife_dir`]): mp.dll
+/// sums it `z, y, x` (0x100526f9..0x10052717), `ts_i386.so` `x, y, z` (0x7e5c5..0x7e5e8). A NaN
+/// dot glances (both branch on C0). The speed is [`knife_slower`]'s.
+fn glances_off(arith: Arith, velocity: Vec3, normal: Vec3) -> bool {
+    fn go<F: Fpu>(v: Vec3, n: Vec3) -> bool {
+        let d = F::vec_normalize(v, ORDER_XYZ);
+        let x = F::x;
+        let dot = if F::MSVC {
+            x(d[2]) * x(n[2]) + x(d[1]) * x(n[1]) + x(d[0]) * x(n[0])
+        } else {
+            x(n[0]) * x(d[0]) + x(n[1]) * x(d[1]) + x(n[2]) * x(d[2])
+        };
+        below87(-dot, F::xd(0.4)) && x(n[2]) <= F::xd(0.98)
+    }
+    !knife_slower(arith, velocity, 100.0) && shared::by_arith!(arith, go(velocity, normal))
+}
+
+/// `CTSKnife::BounceTouch`'s speed tests, `|velocity| < k` (700 for the flight, 100 for a world
+/// hit): mp.dll compares the unrounded root (0x100520f6, 0x1005246c), `ts_i386.so` the stored
+/// `float` (0x7df4b, 0x7e2d2); a NaN speed is below in both.
+fn knife_slower(arith: Arith, velocity: Vec3, k: f32) -> bool {
+    fn go<F: Fpu>(v: Vec3, k: f32) -> bool {
+        below87(F::vec_length(v, ORDER_XYZ), F::x(k))
+    }
+    shared::by_arith!(arith, go(velocity, k))
+}
+
+/// `BounceTouch`'s blade direction, the inline `Normalize` of the velocity (`x, y, z`; mp.dll
+/// 0x10052485..0x100524e4, 0x10052688..0x100526e7; `ts_i386.so` 0x7e0f9..0x7e144).
+fn knife_dir(arith: Arith, velocity: Vec3) -> Vec3 {
+    fn go<F: Fpu>(v: Vec3) -> Vec3 {
+        F::vec_normalize(v, ORDER_XYZ)
+    }
+    shared::by_arith!(arith, go(velocity))
 }
 
 /// The pitch of a blade's world hit: `100 + RANDOM_FLOAT(..)`, truncated (`fistp` with the
@@ -678,7 +761,7 @@ impl Entity for Knife {
             return;
         }
         let e = engine();
-        cx.pev().nextthink = e.time() + 0.1;
+        cx.pev().nextthink = plus_double(e.time(), 0.1);
         if self.expire != 0.0 && e.time() > self.expire {
             entities::remove(cx.edict);
             return;
@@ -689,7 +772,7 @@ impl Entity for Knife {
         // frame a sliding blade is pushed into the floor (see `ground_slide`).
         // Lent back for the hit, so the kill it scores can name the blade.
         let (me, thrower, bits) = (cx.edict, self.thrower.or(cx.edict), self.bits());
-        world::lend(me, self, || impact_damage(me, thrower, 0.1, bits, false));
+        world::lend(me, self, || impact_damage(me, thrower, bits, false));
         // A blade stuck in a wall (MOVETYPE_FLY) stays put.
         let pev = cx.pev();
         if pev.movetype != MOVETYPE_FLY as i32 {
@@ -719,7 +802,8 @@ impl Knife {
     fn bounce_touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let e = engine();
         let me = cx.edict;
-        cx.pev().nextthink = e.time() + 0.1;
+        let arith = crate::rules::cvars::pm_arith();
+        cx.pev().nextthink = plus_double(e.time(), 0.1);
         if Some(other) == self.owner || other.is_null() {
             return;
         }
@@ -727,7 +811,7 @@ impl Knife {
         if ov.effects & EF_NODRAW as i32 != 0 {
             return;
         }
-        if speed(cx.pev()) < 700.0 {
+        if knife_slower(arith, cx.pev().velocity, 700.0) {
             self.flying = false;
         }
         let dmg = self.damage(cx.pev().origin);
@@ -739,7 +823,7 @@ impl Knife {
             let attacker = self.owner.unwrap_or(me);
             let mut info = DamageInfo::new(me, attacker, dmg, self.bits()).traced();
             info.hitgroup = gt.trace_hitgroup;
-            info.dir = spread::normalize(pev.velocity);
+            info.dir = knife_dir(arith, pev.velocity);
             info.pos = gt.trace_endpos;
             // Lent back for the hit, so the kill it scores can name the blade.
             world::lend(me, self, || damage::apply(other, &info));
@@ -760,9 +844,9 @@ impl Knife {
         if cls == b"worldspawn" {
             let normal = e.globals().trace_plane_normal;
             let pev = cx.pev();
-            let s = speed(pev);
-            let dir = spread::normalize(pev.velocity);
-            if glances_off(s, dir, normal) {
+            let slow = knife_slower(arith, pev.velocity, 100.0);
+            let dir = knife_dir(arith, pev.velocity);
+            if glances_off(arith, pev.velocity, normal) {
                 if e.point_contents(pev.origin) != CONTENTS_WATER {
                     melee::sparks(pev.origin);
                 }
@@ -784,7 +868,7 @@ impl Knife {
             pev.movetype = MOVETYPE_FLY as i32;
             pev.velocity = [0.0; 3];
             pev.avelocity = [0.0; 3];
-            if s < 100.0 {
+            if slow {
                 // A slow blade sticks too, with an extra hit sound on the same channel; the
                 // `settle` sound below replaces it (0x7e4aa).
                 emit(me, CHAN_BODY, c"weapons/knife/knife_hit.wav", 1.0, 0.8, hit_pitch(e.random_float(-10.0, 0.0)));
@@ -856,12 +940,12 @@ mod tests {
     fn flying_impact_ignores_takedamage() {
         // TS compares health alone (issue #26): an unbreakable target still gets the TraceAttack.
         let target = |takedamage: f32, health: f32| entvars_t { takedamage, health, ..Default::default() };
-        assert!(impact_hits(&target(0.0, 0.0), 190.0));
-        assert!(impact_hits(&target(0.0, 190.0), 190.0));
-        assert!(impact_hits(&target(1.0, 100.0), 190.0));
-        assert!(!impact_hits(&target(1.0, 190.5), 190.0));
-        assert!(!impact_hits(&target(0.0, 200.0), 190.0));
-        assert!(!impact_hits(&target(0.0, f32::NAN), 190.0));
+        assert!(impact_hits(&target(0.0, 0.0), Ext::from_f32(190.0)));
+        assert!(impact_hits(&target(0.0, 190.0), Ext::from_f32(190.0)));
+        assert!(impact_hits(&target(1.0, 100.0), Ext::from_f32(190.0)));
+        assert!(!impact_hits(&target(1.0, 190.5), Ext::from_f32(190.0)));
+        assert!(!impact_hits(&target(0.0, 200.0), Ext::from_f32(190.0)));
+        assert!(!impact_hits(&target(0.0, f32::NAN), Ext::from_f32(190.0)));
     }
 
     #[test]
@@ -938,20 +1022,23 @@ mod tests {
 
     #[test]
     fn fast_shallow_wall_hits_glance_off() {
-        let wall = [-1.0, 0.0, 0.0];
-        let shallow = spread::normalize([1.0, 3.0, 0.0]); // -n·d ≈ 0.32
-        let steep = spread::normalize([1.0, 1.0, 0.0]); // -n·d ≈ 0.71
-        assert!(glances_off(100.0, shallow, wall));
-        assert!(!glances_off(99.9, shallow, wall));
-        assert!(!glances_off(1900.0, steep, wall));
-        // floors (normal.z > 0.98) always stick, however shallow
-        let floor = [0.0, 0.0, 1.0];
-        assert!(!glances_off(1900.0, spread::normalize([10.0, 0.0, -1.0]), floor));
-        // 0.98 is a double: a float normal.z of 0.98f (0.98000001907) is above it
-        let ramp = [(1.0f32 - 0.98 * 0.98).sqrt(), 0.0, 0.98];
-        assert!(!glances_off(1900.0, [0.0, 1.0, 0.0], ramp));
-        let ramp = [0.2, 0.0, 0.979];
-        assert!(glances_off(1900.0, [0.0, 1.0, 0.0], ramp));
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            let at = |speed: f32, d: Vec3| spread::scale(spread::normalize(d), speed);
+            let wall = [-1.0, 0.0, 0.0];
+            let shallow = [1.0, 3.0, 0.0]; // -n·d ≈ 0.32
+            let steep = [1.0, 1.0, 0.0]; // -n·d ≈ 0.71
+            assert!(glances_off(arith, at(100.5, shallow), wall));
+            assert!(!glances_off(arith, at(99.9, shallow), wall));
+            assert!(!glances_off(arith, at(1900.0, steep), wall));
+            // floors (normal.z > 0.98) always stick, however shallow
+            let floor = [0.0, 0.0, 1.0];
+            assert!(!glances_off(arith, at(1900.0, [10.0, 0.0, -1.0]), floor));
+            // 0.98 is a double: a float normal.z of 0.98f (0.98000001907) is above it
+            let ramp = [(1.0f32 - 0.98 * 0.98).sqrt(), 0.0, 0.98];
+            assert!(!glances_off(arith, [0.0, 1900.0, 0.0], ramp));
+            let ramp = [0.2, 0.0, 0.979];
+            assert!(glances_off(arith, [0.0, 1900.0, 0.0], ramp));
+        }
     }
 
     #[test]
@@ -1022,5 +1109,59 @@ mod tests {
         ph.update(&mut v);
         assert_eq!(v.gravity, 0.75 * 0.25 * 0.25 * 0.25);
         assert_eq!(v.avelocity, [0.0, 1.0, 0.0]);
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use shared::pm::Arith;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// The flying impact (issue #150): mp.dll's unrounded speed times the `double` 0.1, tested
+    /// unrounded against the health; the .so stores both (the port's old `float` maths gave the
+    /// .so's damage here).
+    #[test]
+    fn flying_impact_per_build() {
+        let v = f([0x4427_f24a, 0x431b_b090, 0xc43d_9372]);
+        let (dir, dmg, test) = flying_impact(Arith::Msvc, v).unwrap();
+        assert_eq!((b(dir), dmg.to_bits()), ([0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598], 0x42cc_fe61));
+        assert!(test > Ext::from_f32(dmg), "a target with exactly the dealt health is still hit");
+        let (dir, dmg, test) = flying_impact(Arith::Gcc, v).unwrap();
+        assert_eq!((b(dir), dmg.to_bits()), ([0x3f27_c9ab, 0x3e1b_8ae8, 0xbf3d_6598], 0x42cc_fe62));
+        assert_eq!(test, Ext::from_f32(dmg));
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            assert!(flying_impact(arith, [64.0, 0.0, 0.0]).is_none());
+            assert!(flying_impact(arith, [f32::NAN, 0.0, 0.0]).is_none());
+        }
+    }
+
+    /// The fuse step rounds once (issue #150); `elapsed + 0.1 * slow` in `float`s gave 0x3fa64a5a.
+    #[test]
+    fn fuse_step_rounds_once() {
+        let (e, s) = (f32::from_bits(0x3f9d_1368), f32::from_bits(0x3f38_4af2));
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            assert_eq!(fuse_step(arith, e, s).to_bits(), 0x3fa6_4a5b);
+        }
+    }
+
+    /// The falling objects' landing test and trace end keep the x product unrounded.
+    #[test]
+    fn fall_helpers() {
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            assert!(fall_landed(arith, [0.0, 2.9, 0.0], 1.0));
+            assert!(!fall_landed(arith, [0.0, 3.0, 0.0], 1.0));
+            // 0.1f·v.x + o.x rounds once: 1e8·0.1f = 10000000.149..., which the old `float`
+            // product lost before the add.
+            let end = fall_trace_end(arith, [0.5, 0.5, 0.5], [1e8, 1e8, 1e8]);
+            assert_eq!(end.map(f32::to_bits), [0x4b18_9681, 0x4b18_9680, 0x4b18_9680]);
+        }
     }
 }

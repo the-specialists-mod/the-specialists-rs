@@ -161,15 +161,17 @@ pub struct HitDamage {
 }
 
 /// TS 3.0's `TraceAttack` multipliers (0x901cc): stunting ×0.7, bullets in the dodge window ×0.7,
-/// then [`hitgroup_scale`]; a bullet or thrown hit in the head is a headshot.
+/// then [`hitgroup_scale`]; a bullet or thrown hit in the head is a headshot. Each ×0.7 multiplies
+/// by the `double` and stores the `float` (0x90212/0x90241; mp.dll 0x1005efe9/0x1005f00f, issue
+/// #138).
 pub fn hit_damage(hit: &PlayerHit) -> HitDamage {
     let c = &tables().combat;
     let mut amount = hit.damage;
     if hit.stunting {
-        amount *= c.stunt_damage_taken;
+        amount = (amount as f64 * c.stunt_damage_taken) as f32;
     }
     if hit.dodging && hit.bits & bits::BULLET != 0 {
-        amount *= c.stunt_damage_taken;
+        amount = (amount as f64 * c.stunt_damage_taken) as f32;
     }
     let headshot = hit.hitgroup == hitgroup::HEAD && hit.bits & (bits::BULLET | bits::THROWN) != 0;
     amount *= hitgroup_scale(hit.hitgroup, hit.bits);
@@ -228,7 +230,8 @@ pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         }
     }
     if now > p.ts.next_ptakedam {
-        p.ts.next_ptakedam = now + 0.3;
+        // `time + 0.3` with the `double` (0x90464 `fldl`, mp.dll 0x1005f1f2, 2.1 0x100534dd).
+        p.ts.next_ptakedam = shared::pm::plus_double(now, 0.3);
         let m = PTakeDam {
             x: dmg.pos[0],
             y: dmg.pos[1],
@@ -489,6 +492,19 @@ mod tests {
 
     /// `armor_absorb` as `CTSGameRules::Init` sets it.
     const ABSORB: f32 = crate::rules::state::INIT_ARMOR_ABSORB;
+
+    /// The stunt and dodge ×0.7 multiply by the `double` 0.7 (issue #138): 9 × 0.7 is
+    /// 6.3000002 (0x40c9999a), where the `float` 0.7 gave 6.2999997 (0x40c99999).
+    #[test]
+    fn stunt_and_dodge_take_the_double_seven_tenths() {
+        let hit = |stunting, dodging| {
+            hit_damage(&PlayerHit { damage: 9.0, bits: bits::BULLET, hitgroup: hitgroup::CHEST, stunting, dodging }).amount
+        };
+        assert_eq!(hit(true, false).to_bits(), 0x40c9_999a);
+        assert_eq!(hit(false, true).to_bits(), 0x40c9_999a);
+        assert_eq!(hit(true, true), ((9.0f64 * 0.7) as f32 as f64 * 0.7) as f32, "rounded after each");
+        assert_eq!(hit(false, false), 9.0);
+    }
 
     /// `TraceAttack`'s sounds in slow motion (issue #33): the hit sound drops by
     /// `0.5 + 0.5 * fuser1`, the pain sound only by `0.85 + 0.15 * fuser1`.

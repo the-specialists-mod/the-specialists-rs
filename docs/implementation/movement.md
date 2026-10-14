@@ -46,7 +46,9 @@ lookup), so a change applies from the next command. It also covers the server's 
 the movement maths: the stunt code's `AngleVectors` (`shared::pm::angle_vectors`: the dive and
 wall-check forward vector, `GetDirection`, the bullet-dance side test) and the shared weapon
 maths whose rounding differs between the builds (`GunHost::arith`: timer steps, the recoil
-penalty, `VKickback`, melee damage; `weapons.md` §5). The default makes the
+penalty, `VKickback`, melee damage, the grenade throw; and on the server the pellet direction,
+range index, simulated-bullet step, flying impacts, knock-backs, dives and falls; `weapons.md`
+§5). The default makes the
 server agree bit for bit with every client's prediction, TS's `client.dll` and the port's
 client alike, on Linux too; `gcc` reproduces TS's own Linux server exactly (and its
 mispredictions, see Deviations). The client needs no setting: it always predicts as

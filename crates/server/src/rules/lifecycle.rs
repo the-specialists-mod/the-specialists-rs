@@ -13,6 +13,7 @@ use crate::world::Cx;
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
+use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ};
 use shared::protocol::hud_wire::TsPAward;
 use shared::protocol::hud_wire::{ActItems, SetFov, Spectator, TsFade, TsHealth, TsMBlur, fade};
 use shared::protocol::rules::{GameMode, Motd, ScoreInfo, ServerName, SrvSett, hud_dest};
@@ -1066,7 +1067,7 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
         v.deadflag = DEAD_DYING as i32;
         v.movetype = MOVETYPE_TOSS as i32;
         v.flags &= !(FL_ONGROUND as i32);
-        v.velocity = death_push(v.velocity, v.size, p.ts.last_damage, attack_dir);
+        v.velocity = death_push(cvars::pm_arith(), v.velocity, v.size, p.ts.last_damage, attack_dir);
         // TS also needs `pl+0x470 == 0` for the hop. No other instruction in `ts_i386.so`
         // addresses that word (0x8f3c2 is the only one) and the engine zeroes private data, so
         // it is always 0.
@@ -1131,22 +1132,22 @@ pub fn damage_force(size: [f32; 3], damage: f32) -> f32 {
 /// `Killed`'s push (0x8f2a0..0x8f391): `velocity += F · normalize(g_vecAttackDir)`, with
 /// `F = -DamageForce(m_lastDamageAmount)`, or -500 once that reaches 500. `g_vecAttackDir`
 /// points from the body towards the inflictor, so the body flies away from it.
-fn death_push(velocity: [f32; 3], size: [f32; 3], last_damage: i32, attack_dir: [f32; 3]) -> [f32; 3] {
-    // Inline `Normalize` (0x8f2a2..0x8f2fa): the length is stored as a float, `1 / length` stays
-    // on the x87 stack, the products are stored as floats.
-    let a = attack_dir;
-    let len = (a[0] as f64 * a[0] as f64 + a[1] as f64 * a[1] as f64 + a[2] as f64 * a[2] as f64).sqrt() as f32;
-    let dir = if len == 0.0 {
-        [0.0, 0.0, 1.0]
-    } else {
-        let inv = 1.0 / len as f64;
-        a.map(|c| (c as f64 * inv) as f32)
-    };
+///
+/// The inline `Normalize` sums `x² + y² + z²` and keeps `1/len` on the FPU in both builds; the
+/// rest is per build (issue #150): `ts_i386.so` (0x8f28a..0x8f2fa) stores the length and all
+/// three components; mp.dll (0x1005e373..0x1005e3f6) keeps the length unrounded and the x
+/// component on the FPU through its product with `F` and the add. Both then keep the x product
+/// for its add (.so 0x8f352 `fsts`, mp.dll 0x1005e406) and store the y and z products first.
+fn death_push(arith: Arith, velocity: [f32; 3], size: [f32; 3], last_damage: i32, attack_dir: [f32; 3]) -> [f32; 3] {
+    fn go<F: Fpu>(velocity: [f32; 3], f: f32, a: [f32; 3]) -> [f32; 3] {
+        let [dx, dy, dz] = F::vec_normalize_n(a, ORDER_XYZ);
+        let dx = if F::MSVC { dx } else { F::x(dx.f()) };
+        let f = F::x(f);
+        [(f * dx + F::x(velocity[0])).f(), velocity[1] + (f * F::x(dy.f())).f(), velocity[2] + (f * F::x(dz.f())).f()]
+    }
     let force = damage_force(size, last_damage as f32);
-    let f = f64::from(if force >= 500.0 { -500.0 } else { -force });
-    // The x product stays on the x87 stack for its add (0x8f352 `fsts`); y and z are stored as
-    // floats first (0x8f358, 0x8f35c) and added from memory.
-    [(velocity[0] as f64 + f * dir[0] as f64) as f32, velocity[1] + (f * dir[1] as f64) as f32, velocity[2] + (f * dir[2] as f64) as f32]
+    let f = if force >= 500.0 { -500.0 } else { -force };
+    shared::by_arith!(arith, go(velocity, f, attack_dir))
 }
 
 /// `CBasePlayer::PlayerDeathThink` (0x8eaec): settle, play out the death animation, then become
@@ -1332,11 +1333,37 @@ mod tests {
         assert_eq!(damage_force(stand, 30.0), 150.0);
         assert_eq!(damage_force([32.0, 32.0, 36.0], 30.0), 300.0, "a ducked body is lighter");
         assert_eq!(damage_force(stand, 300.0), 1000.0);
-        // g_vecAttackDir points at the inflictor (+x): the body goes -x.
-        assert_eq!(death_push([10.0, 0.0, 0.0], stand, 30, [1.0, 0.0, 0.0]), [-140.0, 0.0, 0.0]);
-        // Capped at 500 from DamageForce 500 up.
-        assert_eq!(death_push([0.0; 3], stand, 100, [0.0, -2.0, 0.0]), [0.0, 500.0, 0.0]);
-        // A zero direction (no inflictor yet) normalises to straight up: pushed down.
-        assert_eq!(death_push([0.0; 3], stand, 10, [0.0; 3]), [0.0, 0.0, -50.0]);
+        for arith in [shared::pm::Arith::Gcc, shared::pm::Arith::Msvc] {
+            // g_vecAttackDir points at the inflictor (+x): the body goes -x.
+            assert_eq!(death_push(arith, [10.0, 0.0, 0.0], stand, 30, [1.0, 0.0, 0.0]), [-140.0, 0.0, 0.0]);
+            // Capped at 500 from DamageForce 500 up.
+            assert_eq!(death_push(arith, [0.0; 3], stand, 100, [0.0, -2.0, 0.0]), [0.0, 500.0, 0.0]);
+            // A zero direction (no inflictor yet) normalises to straight up: pushed down.
+            assert_eq!(death_push(arith, [0.0; 3], stand, 10, [0.0; 3]), [0.0, 0.0, -50.0]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use shared::pm::Arith;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// mp.dll keeps the length unrounded (issue #150); the .so's stored length is what the port
+    /// computed before.
+    #[test]
+    fn death_push_per_build() {
+        let (v, a) = (f([0xc35b_8748, 0x410b_0360, 0x41eb_4ca0]), f([0xbee9_5d58, 0x3d9a_3e60, 0x3dbe_a7d0]));
+        let stand = [32.0, 32.0, 72.0];
+        assert_eq!(b(death_push(Arith::Msvc, v, stand, 37, a)), [0xc222_66ae, 0xc1a7_0543, 0xc0e4_41a8]);
+        assert_eq!(b(death_push(Arith::Gcc, v, stand, 37, a)), [0xc222_66ae, 0xc1a7_0543, 0xc0e4_41b0]);
     }
 }

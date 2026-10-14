@@ -11,6 +11,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{MsgWriterExt, Vec3, te, te_begin, vec};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
+use shared::pm::{FpuMath, Msvc, ORDER_XYZ, below87};
 use std::ffi::CStr;
 
 /// TS's `EMIT_SOUND_DYN` (0xe0a8c) with its extra slow-motion factor `s`: when the entity's
@@ -143,16 +144,33 @@ fn trace_attack(victim: *mut edict_t, inflictor: *mut edict_t, attacker: *mut ed
 /// `r_full`, then `dmg − (dist − r_full) · dmg / (r_max − r_full)`, never below 0. Like TS there is
 /// no guard for `r_max == r_full` (no caller passes it): the infinite falloff zeroes everything
 /// outside `r_full`.
-pub fn falloff_damage(dmg: f32, dist: f32, r_full: f32, r_max: f32) -> f32 {
-    let falloff = dmg / (r_max - r_full);
-    let mut d = dmg;
-    if dist > r_full {
-        d = dmg - (dist - r_full) * falloff;
-        if d < 0.0 {
-            d = 0.0;
-        }
+///
+/// In mp.dll's arithmetic (issue #150): the falloff is stored as a `float` (0x1005154a..0x1005156f);
+/// `dist` (from [`blast_distance`]) stays unrounded through `dmg - (dist - r_full)·falloff`, which
+/// is rounded once (0x100516d9..0x10051715). A NaN distance deals `dmg`, a NaN result 0.
+pub fn falloff_damage(dmg: f32, dist: f64, r_full: f32, r_max: f32) -> f32 {
+    let falloff = (dmg as f64 / (r_max as f64 - r_full as f64)) as f32 as f64;
+    if dist > r_full as f64 {
+        let d = dmg as f64 - (dist - r_full as f64) * falloff;
+        // `test ah,0x41`: at most 0, or NaN, is 0.
+        if d > 0.0 { d as f32 } else { 0.0 }
+    } else {
+        dmg
     }
-    d
+}
+
+/// `TSExplosion`'s distance from the blast `org` to the target's `spot`: the differences stored
+/// as `float`s, `z² + y² + x²`, the root unrounded (mp.dll 0x100516bb..0x100516d7).
+pub fn blast_distance(org: Vec3, spot: Vec3) -> f64 {
+    let d = vec::sub(org, spot).map(f64::from);
+    (d[2] * d[2] + d[1] * d[1] + d[0] * d[0]).sqrt()
+}
+
+/// The thickness of what occludes a target: `|a - b|` from the unrounded differences
+/// (`z² + y² + x²`), stored as a `float` (mp.dll 0x100517da..0x1005180d).
+fn occluder_thickness(a: Vec3, b: Vec3) -> f32 {
+    let d = [0, 1, 2].map(|i| a[i] as f64 - b[i] as f64);
+    (d[2] * d[2] + d[1] * d[1] + d[0] * d[0]).sqrt() as f32
 }
 
 #[cfg(test)]
@@ -165,7 +183,9 @@ mod explosion_tests {
         assert_eq!(falloff_damage(110.0, 0.0, 300.0, 1024.0), 110.0);
         assert_eq!(falloff_damage(110.0, 300.0, 300.0, 1024.0), 110.0);
         assert!((falloff_damage(110.0, 662.0, 300.0, 1024.0) - 55.0).abs() < 1e-4);
-        assert_eq!(falloff_damage(110.0, 1024.0, 300.0, 1024.0), 0.0);
+        // At r_max the stored `float` falloff (110/724 rounded) leaves a trace of damage, as in
+        // mp.dll: 110 - 724·0.15193370f = 1.3113022e-6.
+        assert_eq!(falloff_damage(110.0, 1024.0, 300.0, 1024.0), 1.311_302_2e-6);
         // Centres can lie outside the sphere: clamped at 0.
         assert_eq!(falloff_damage(110.0, 1100.0, 300.0, 1024.0), 0.0);
         // A breakable with impulse 40: r_full 40, r_max 100.
@@ -269,8 +289,9 @@ fn explosion_damage(
     let mut spot = center(e);
     spot[2] += 1.0;
     let tr = eng.trace_line(org, spot, DONT_IGNORE_MONSTERS, inflictor);
-    let d = falloff_damage(dmg, vec::length(vec::sub(org, spot)), r_full, r_max);
-    let dir = vec::normalize(vec::sub(spot, org));
+    let d = falloff_damage(dmg, blast_distance(org, spot), r_full, r_max);
+    // The out-of-line `Normalize` (0x100148f0) of the stored difference, mp.dll's `x² + y² + z²`.
+    let dir = Msvc::vec_normalize(vec::sub(spot, org), ORDER_XYZ);
     if tr.flFraction == 1.0 || tr.pHit == e {
         trace_attack(e, inflictor, attacker, d, bits, dir, &tr);
         return;
@@ -282,8 +303,9 @@ fn explosion_damage(
     if back.flFraction == 1.0 {
         return;
     }
-    let thickness = vec::length(vec::sub(back.vecEndPos, entry));
-    if thickness < d {
+    let thickness = occluder_thickness(back.vecEndPos, entry);
+    // `test ah,0x1`: a NaN thickness counts as thinner (0x1005181b).
+    if below87(thickness, d) {
         trace_attack(e, inflictor, attacker, d - thickness, bits, dir, &back);
     }
 }
@@ -417,5 +439,29 @@ mod tests {
         walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut hits);
         hits.retain(|h| !h.contains("engine().emit_sound(e, chan as i32, &sample, vol, attn, flags, pitch)"));
         assert!(hits.is_empty(), "sounds that skip EMIT_SOUND_DYN's slow-motion pitch:\n{}", hits.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// `TSExplosion` keeps the distance unrounded through the falloff (issue #150): the old
+    /// `float` steps gave 0x41b28c38.
+    #[test]
+    fn falloff_from_the_unrounded_distance() {
+        let (org, spot) = (f([0x43af_fab4, 0xc413_8fd3, 0x4397_a868]), f([0xc3ac_6bb9, 0xc377_32b8, 0x4431_b77e]));
+        assert_eq!(falloff_damage(110.0, blast_distance(org, spot), 300.0, 1024.0).to_bits(), 0x41b2_8c36);
+        assert_eq!(falloff_damage(110.0, f64::NAN, 300.0, 1024.0), 110.0, "a NaN distance isn't beyond r_full");
+        assert_eq!(occluder_thickness([3.0, 0.0, 0.0], [0.0, 4.0, 0.0]), 5.0);
+        let _ = b(org);
     }
 }

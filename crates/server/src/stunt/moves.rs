@@ -11,6 +11,7 @@ use super::*;
 use crate::damage::{DamageInfo, bits};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, HEAD_HULL, IGNORE_MONSTERS};
+use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ};
 
 /// `CanDiveHigh/Medium/Low` (0x9a494...), the ruleset's ([`rules::can_dive`] in TS 3.0).
 fn can(p: &Player, cx: &mut Cx, r: Rules, dive: Dive) -> bool {
@@ -846,6 +847,37 @@ pub(super) fn super_jump_landing(p: &mut Player, cx: &mut Cx, r: Rules) {
     }
 }
 
+/// `CheckForBreakables`' speed gate, `|velocity| >= 64` (issue #150): mp.dll compares the
+/// unrounded root of `x² + y² + z²` (0x10069ffd..0x1006a029), `ts_i386.so` its stored `float`
+/// (0x9be2f..0x9be55). Both go on only when C0 is clear, so a NaN speed stops here.
+fn dive_fast_enough(arith: Arith, v: Vec3) -> bool {
+    fn go<F: Fpu>(v: Vec3) -> bool {
+        F::vec_length(v, ORDER_XYZ) >= F::x(64.0)
+    }
+    shared::by_arith!(arith, go(v))
+}
+
+/// The dive's trace direction, the inline `Normalize` of the velocity: mp.dll sums
+/// `z² + x² + y²` (0x1006a100..0x1006a121), `ts_i386.so` `x² + y² + z²` (0x9bf48..0x9bfb0).
+fn dive_dir(arith: Arith, v: Vec3) -> Vec3 {
+    fn go<F: Fpu>(v: Vec3) -> Vec3 {
+        F::vec_normalize(v, if F::MSVC { [2, 0, 1] } else { ORDER_XYZ })
+    }
+    shared::by_arith!(arith, go(v))
+}
+
+/// The damage a dive does to what it breaks into: `|velocity|`, times the `double` 0.1 while the
+/// diver is alive (issue #138). mp.dll keeps the root unrounded for the product
+/// (0x1006a2fc..0x1006a30a) and stores it for a dead diver (0x1006a2d4); `ts_i386.so` stores the
+/// root, then multiplies (0x9c13e..0x9c150).
+fn dive_impact_damage(arith: Arith, v: Vec3, alive: bool) -> f32 {
+    fn go<F: Fpu>(v: Vec3, alive: bool) -> f32 {
+        let s = F::vec_length(v, ORDER_XYZ);
+        if alive { (s * F::xd(0.1)).f() } else { s.f() }
+    }
+    shared::by_arith!(arith, go(v, alive))
+}
+
 /// `CTSStunt::CheckForBreakables` (0x9bd9c): diving through glass and delayed kicks.
 ///
 /// With a close-combat window open (pl+0x79c, armed by weapons or the backflip kick) the
@@ -871,12 +903,13 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
         return;
     }
     let v = cx.pev().velocity;
-    let speed = (v[2] * v[2] + v[1] * v[1] + v[0] * v[0]).sqrt();
-    if speed < 64.0 {
+    let arith = crate::rules::cvars::pm_arith();
+    if !dive_fast_enough(arith, v) {
         return;
     }
     let o = cx.pev().origin;
-    let d = normalized(v);
+    let d = dive_dir(arith, v);
+    // `64·dir` is exact, so adding it rounds once in either build.
     let end = [o[0] + d[0] * 64.0, o[1] + d[1] * 64.0, o[2] + d[2] * 64.0];
     let tr = engine().trace_hull(o, end, DONT_IGNORE_MONSTERS, HEAD_HULL, cx.edict);
     if tr.flFraction >= 1.0 {
@@ -893,7 +926,7 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
     if p.inv.sv.lunge_victim == victim {
         return;
     }
-    let dmg = if is_alive(cx) { speed * 0.1 } else { speed };
+    let dmg = dive_impact_damage(arith, v, is_alive(cx));
     let mut info = DamageInfo::new(cx.edict, cx.edict, dmg, bits::CLUB | bits::NEVERGIB).traced();
     info.hitgroup = tr.iHitgroup;
     info.pos = tr.vecEndPos;
@@ -971,5 +1004,37 @@ mod tests {
     #[test]
     fn jump_kick_anims() {
         assert_eq!([0, 1, 2].map(close_attack_anim), [10, 14, 13]);
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use shared::pm::Arith;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// The dive's speed, direction and damage (issues #138, #150): mp.dll keeps the root unrounded
+    /// and multiplies by the `double` 0.1; the port's old `float` maths gave 0x42ccfe62 and the
+    /// .so's direction.
+    #[test]
+    fn dive_per_build() {
+        let v = f([0x4427_f24a, 0x431b_b090, 0xc43d_9372]);
+        assert_eq!(dive_impact_damage(Arith::Msvc, v, true).to_bits(), 0x42cc_fe61);
+        assert_eq!(dive_impact_damage(Arith::Gcc, v, true).to_bits(), 0x42cc_fe62);
+        assert_eq!(dive_impact_damage(Arith::Msvc, [300.0, 0.0, 400.0], false), 500.0, "a dead diver deals the speed");
+        assert_eq!(b(dive_dir(Arith::Msvc, v)), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598]);
+        assert_eq!(b(dive_dir(Arith::Gcc, v)), [0x3f27_c9ab, 0x3e1b_8ae8, 0xbf3d_6598]);
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            assert!(dive_fast_enough(arith, [0.0, 64.0, 0.0]));
+            assert!(!dive_fast_enough(arith, [0.0, 63.99, 0.0]));
+            assert!(!dive_fast_enough(arith, [f32::NAN, 0.0, 0.0]), "a NaN speed stops");
+        }
     }
 }

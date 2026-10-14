@@ -167,7 +167,9 @@ pub struct Combat {
     pub headshot: f32,
     pub headshot_shotgun: f32,
     pub leg: f32,
-    pub stunt_damage_taken: f32,
+    /// `TraceAttack`'s stunt and dodge factor, a `double` on the x87 (mp.dll 0x1008bcf8, `ts_i386.so`
+    /// 0x90241 `fldl`), so the product is rounded once (issue #138).
+    pub stunt_damage_taken: f64,
     pub spread_penalty: SpreadPenalty,
     pub semi_delay: f32,
     pub burst: Burst,

@@ -24,6 +24,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, MsgWriterExt, Vec3, te, te_break_model, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::{FpuMath, Msvc, ORDER_XYZ, eq87};
 use std::ffi::{CStr, CString};
 
 pub const SF_BREAK_TRIGGER_ONLY: i32 = 1;
@@ -161,6 +162,27 @@ pub fn play_break_sound(e: *mut edict_t, m: i32, extra_vol: f32, s: f32) {
 #[allow(clippy::too_many_arguments)]
 pub fn send_glass_debris(center: Vec3, size: Vec3, hit_pos: Vec3, hit_dir: Vec3, bits: i32, magnitude: f32) {
     messages::pvs(Msg::TsFrags, center).vec3(center).vec3(size).byte(0).vec3(hit_pos).vec3(hit_dir).long(bits).coord(magnitude).end();
+}
+
+/// `CBreakable::TraceAttack`'s remembered hit direction (issue #150), in mp.dll's arithmetic
+/// (0x1001f2e3..0x1001f49c): the hit's direction normalised, or for a zero one the attacker's
+/// velocity normalised (zero if that is zero too). MSVC stores the direction's `x²` as a `float`
+/// first and sums `z² + y² + x²` for the zero test and `y² + z² + x²` for the normalisation; the
+/// velocity's is the usual `x² + y² + z²`. Lengths and `1/len` stay unrounded, a NaN length counts
+/// as zero.
+fn hit_direction(dir: Vec3, attacker_velocity: Vec3) -> Vec3 {
+    let d = dir.map(f64::from);
+    let x2 = (d[0] * d[0]) as f32 as f64;
+    if eq87((d[2] * d[2] + d[1] * d[1] + x2).sqrt(), 0.0) {
+        let av = attacker_velocity;
+        return if eq87(Msvc::vec_length(av, ORDER_XYZ), 0.0) { [0.0; 3] } else { Msvc::vec_normalize(av, ORDER_XYZ) };
+    }
+    let len = (d[1] * d[1] + d[2] * d[2] + x2).sqrt();
+    if eq87(len, 0.0) {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = 1.0 / len;
+    d.map(|c| (c * inv) as f32)
 }
 
 #[derive(Default)]
@@ -362,12 +384,8 @@ impl<const PUSH: bool> Breakable<PUSH> {
     fn trace_attack(&mut self, cx: &mut Cx, info: &DamageInfo) {
         let eng = engine();
         self.hit_pos = info.pos;
-        self.hit_dir = if vec::is_zero(info.dir) {
-            let av = if info.attacker.is_null() { [0.0; 3] } else { info.attacker.v().velocity };
-            if vec::is_zero(av) { [0.0; 3] } else { vec::normalize(av) }
-        } else {
-            vec::normalize(info.dir)
-        };
+        let av = if info.attacker.is_null() { [0.0; 3] } else { info.attacker.v().velocity };
+        self.hit_dir = hit_direction(info.dir, av);
         self.hit_bits = info.bits;
         self.hit_damage = if info.bits & DMG_TS_SHOTGUN != 0 { info.damage * 8.0 } else { info.damage };
         if eng.random_long(0, 1) != 0 {
@@ -862,5 +880,31 @@ mod tests {
         assert_eq!(x87_int_f64(-2.9), -2);
         assert_eq!(x87_int_f64(f64::NAN), i32::MIN);
         assert_eq!(x87_int_f64(1e12), i32::MIN);
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// `CBreakable::TraceAttack`'s remembered direction in mp.dll's arithmetic (issue #150): the
+    /// old `float` normalisation gave `[0x3f27c9ac, 0x3e1b8ae8, ..]`.
+    #[test]
+    fn hit_direction_as_mp_dll() {
+        let d = f([0x3f3f_15f2, 0x3e31_23e8, 0xbf57_b200]);
+        assert_eq!(b(hit_direction(d, [0.0; 3])), [0x3f27_c9ab, 0x3e1b_8ae7, 0xbf3d_6599]);
+        // A zero direction takes the attacker's velocity, or stays zero.
+        assert_eq!(hit_direction([0.0; 3], [0.0; 3]), [0.0; 3]);
+        assert_eq!(hit_direction([0.0; 3], [0.0, 0.0, -300.0]), [0.0, 0.0, -1.0]);
+        // x² is stored as a `float`, so a tiny x counts as zero.
+        assert_eq!(hit_direction([1e-25, 0.0, 0.0], [0.0, 5.0, 0.0]), [0.0, 1.0, 0.0]);
     }
 }

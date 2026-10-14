@@ -14,6 +14,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
+use shared::pm::{Arith, Ext, Fpu, FpuMath, Num, ORDER_XYZ, plus_double};
 use shared::protocol::rules::{RoundTime, ScoreInfo, TsFlag, TsHVoice};
 use shared::weapons::spread::{self, Vec3};
 use std::cell::{Cell, RefCell};
@@ -339,10 +340,22 @@ fn throw(eye: Vec3, forward: Vec3, player_velocity: Vec3, speed: f32) -> (Vec3, 
 }
 
 /// `Fall` 0x9df10: a flying case hits a non-player entity whose health is at most
-/// `|v| * 30`, for `|v| * 30 * 0.001` damage. Returns (health threshold, damage).
-fn impact(speed: f32) -> (f32, f32) {
-    let threshold = speed * 30.0;
-    (threshold, (threshold as f64 * 0.001f32 as f64) as f32)
+/// `|v| * 30`, for `|v| * 30 * 0.001` damage (issue #150). Returns (the value compared with the
+/// health, the damage), as each build computes them from the speed (`x² + y² + z²`):
+///
+/// * mp.dll (`CTSFlag::Fall` 0x100727ff..0x1007286e) keeps the root unrounded, compares
+///   `speed·30f`, and deals `Length()·0.03f` (MSVC folded `30·0.001f` into one `float`), rounded
+///   once.
+/// * `ts_i386.so` (0x9e0e3..0x9e183) stores the root, compares `speed·30` and deals
+///   `speed·30·0.001f` with the products unrounded.
+fn impact(arith: Arith, velocity: Vec3) -> (Ext, f32) {
+    fn go<F: Fpu>(v: Vec3) -> (Ext, f32) {
+        let s = F::vec_length(v, ORDER_XYZ);
+        let threshold = s * F::x(30.0);
+        let dmg = if F::MSVC { s * F::x(0.03) } else { threshold * F::x(0.001) };
+        (threshold.ext(), dmg.f())
+    }
+    shared::by_arith!(arith, go(velocity))
 }
 
 /// The `"name<uid><authid><uid>"` log lines of `TakeFlag` 0x93830 (`aquired_briefcase`),
@@ -389,7 +402,8 @@ impl Flag {
     fn fall(&mut self, cx: &mut Cx) {
         let me = cx.edict;
         let v = cx.pev();
-        if v.flags & FL_ONGROUND as i32 != 0 && spread::length(v.velocity) < give_slow_mul(v.fuser1) * 3.0 {
+        let arith = crate::rules::cvars::pm_arith();
+        if v.flags & FL_ONGROUND as i32 != 0 && crate::weapons::projectiles::fall_landed(arith, v.velocity, give_slow_mul(v.fuser1)) {
             emit_sound_slow(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
             let v = cx.pev();
             v.angles[0] = 0.0;
@@ -412,13 +426,15 @@ impl Flag {
         let e = engine();
         let me = cx.edict;
         let (origin, velocity) = (cx.pev().origin, cx.pev().velocity);
-        let tr = e.trace_line(origin, spread::ma(origin, 0.1, velocity), DONT_IGNORE_MONSTERS, me);
+        let arith = crate::rules::cvars::pm_arith();
+        let end = crate::weapons::projectiles::fall_trace_end(arith, origin, velocity);
+        let tr = e.trace_line(origin, end, DONT_IGNORE_MONSTERS, me);
         // A null hit is the world in TS, which takes no damage.
         if tr.flFraction >= 1.0 || tr.pHit.is_null() || rules::has_player(tr.pHit) {
             return;
         }
-        let (threshold, dmg) = impact(spread::length(velocity));
-        if tr.pHit.v().health <= threshold {
+        let (threshold, dmg) = impact(arith, velocity);
+        if crate::weapons::projectiles::impact_hits(tr.pHit.v(), threshold) {
             let mut d = DamageInfo::new(me, me, dmg, damage::bits::CLUB | damage::bits::NEVERGIB).traced();
             d.dir = velocity;
             d.pos = tr.vecEndPos;
@@ -496,7 +512,8 @@ impl Entity for Flag {
         self.thrown = false;
         self.on_ground = false;
         self.funcs = BaseFuncs { think: true, touch: true, ..BaseFuncs::default() };
-        cx.think_in(0.1);
+        // `time + 0.1` with the `double` (mp.dll 0x100721c4), as in `Fall` and `WaitThink`.
+        cx.pev().nextthink = plus_double(cx.time(), 0.1);
         let v = cx.pev();
         v.iuser4 = 2;
         v.renderamt = 5.0;
@@ -510,7 +527,9 @@ impl Entity for Flag {
         if !self.funcs.think {
             return;
         }
-        cx.think_in(0.1);
+        // `time + 0.1` with the `double` (`Fall` 0x9df38, mp.dll 0x1007267a; `WaitThink`
+        // 0x1007289a), issue #150.
+        cx.pev().nextthink = plus_double(cx.time(), 0.1);
         if !self.on_ground {
             self.fall(cx);
         } else if self.return_at != 0.0 && self.return_at < cx.time() {
@@ -885,9 +904,11 @@ mod tests {
 
     #[test]
     fn impact_scales_with_speed() {
-        let (threshold, dmg) = impact(500.0);
-        assert_eq!(threshold, 15000.0);
-        assert!((dmg - 15.0).abs() < 1e-4, "{dmg}");
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            let (threshold, dmg) = impact(arith, [300.0, 0.0, 400.0]);
+            assert_eq!(threshold.f(), 15000.0);
+            assert!((dmg - 15.0).abs() < 1e-4, "{dmg}");
+        }
     }
 
     #[test]
@@ -914,5 +935,29 @@ mod tests {
         assert_eq!(team_color(-1), [145.0, 215.0, 140.0]);
         assert_eq!(team_color(3), [145.0, 215.0, 140.0]);
         assert_eq!(team_color(1), [200.0, 90.0, 70.0]);
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use shared::pm::Arith;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// The flag's impact damage (issue #150): mp.dll's unrounded `Length() * 0.03f`, the .so's
+    /// `speed * 30 * 0.001f` (which the port computed before).
+    #[test]
+    fn flag_impact_per_build() {
+        let v = f([0x4427_f24a, 0x431b_b090, 0xc43d_9372]);
+        assert_eq!(impact(Arith::Msvc, v).1.to_bits(), 0x41f5_fe0e);
+        assert_eq!(impact(Arith::Gcc, v).1.to_bits(), 0x41f5_fe0f);
+        let _ = b(v);
     }
 }

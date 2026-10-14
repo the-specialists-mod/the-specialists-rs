@@ -12,6 +12,7 @@ use crate::world::{self, Cx};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
+use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ, eq87};
 use shared::weapons::gun::{MeleeHit, MeleeKind, MeleeResult};
 use shared::weapons::spread::{self, Vec3};
 
@@ -234,7 +235,7 @@ pub fn trace_attack(
                 });
             }
             if hit.knockback && hit.damage > 30.0 {
-                knockback(attacker, victim);
+                knockback(attacker, victim, false);
             }
             slow_emit(victim, c"player/kungfuhit.wav", 95 + e.random_long(0, 31));
         }
@@ -253,14 +254,50 @@ pub fn trace_attack(
     MeleeResult::Hit { player: is_player }
 }
 
-/// `v.vel += |a.vel| * dir(a -> v)`, `v.vel.z = 235`.
-fn knockback(attacker: *mut edict_t, victim: *mut edict_t) {
+/// `v.vel += |a.vel| * dir(a -> v)`, `v.vel.z = 235`. `delayed` is `CheckForBreakables`' delayed
+/// hit, whose inline `Normalize` mp.dll compiles differently from the attacks'.
+fn knockback(attacker: *mut edict_t, victim: *mut edict_t, delayed: bool) {
     let a = attacker.v();
     let v = victim.v();
-    let speed = spread::length(a.velocity);
-    let dir = spread::normalize(spread::sub(v.origin, a.origin));
-    v.velocity = spread::ma(v.velocity, speed, dir);
+    v.velocity = knockback_velocity(crate::rules::cvars::pm_arith(), a.velocity, a.origin, v.origin, v.velocity, delayed);
     v.velocity[2] = 235.0;
+}
+
+/// The knock-back before `velocity.z = 235` (issue #150): the attacker's speed (`x² + y² + z²`,
+/// stored as a `float` in both builds) along the normalised `victim.origin - attacker.origin`,
+/// added to the victim's velocity with the x product kept on the FPU and the y and z products
+/// stored. The direction is per build:
+///
+/// * mp.dll keeps the x difference unrounded and stores y and z. `CloseCombatAttack` /
+///   `ColdCockAttack` (0x10063bb9..0x10063c36, 0x100640bd..0x1006413f) square z as
+///   `dz·(float)dz` (an `fst` then `fmul` of the stored copy) and sum `z, y, x`; the delayed hit
+///   (`CheckForBreakables` 0x1006a494..0x1006a518) sums `x, z, y`. Length and `1/len` stay on
+///   the FPU, x is normalised from the unrounded difference.
+/// * `ts_i386.so` (0x962b8..0x96344, delayed 0x9c312..0x9c3a0) sums `x, y, z` of the unrounded
+///   differences, stores the length, and normalises the stored differences.
+pub(crate) fn knockback_velocity(arith: Arith, av: Vec3, ao: Vec3, vo: Vec3, vv: Vec3, delayed: bool) -> Vec3 {
+    fn go<F: Fpu>(av: Vec3, ao: Vec3, vo: Vec3, vv: Vec3, delayed: bool) -> Vec3 {
+        let x = F::x;
+        let speed = x(F::sq_in(av, ORDER_XYZ).sqrt().f());
+        let d = [0, 1, 2].map(|i| x(vo[i]) - x(ao[i]));
+        let ds = d.map(|e| x(e.f()));
+        let len = if !F::MSVC {
+            x((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().f())
+        } else if delayed {
+            (d[0] * d[0] + ds[2] * ds[2] + ds[1] * ds[1]).sqrt()
+        } else {
+            (d[2] * ds[2] + ds[1] * ds[1] + d[0] * d[0]).sqrt()
+        };
+        let dir = if eq87(len, F::ZERO) {
+            [0.0, 0.0, 1.0]
+        } else {
+            let inv = x(1.0) / len;
+            let dx = if F::MSVC { d[0] } else { ds[0] };
+            [(inv * dx).f(), (inv * ds[1]).f(), (inv * ds[2]).f()]
+        };
+        [(speed * x(dir[0]) + x(vv[0])).f(), vv[1] + (speed * x(dir[1])).f(), vv[2] + (speed * x(dir[2])).f()]
+    }
+    shared::by_arith!(arith, go(av, ao, vo, vv, delayed))
 }
 
 /// The delayed hit of a missed melee attack (`CTSStunt::CheckForBreakables` 0x9bd9c with
@@ -337,7 +374,7 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
                 }
             });
             if dmg > 30.0 {
-                knockback(me, victim);
+                knockback(me, victim, true);
             }
             slow_emit(victim, c"player/kungfuhit.wav", 95 + e.random_long(0, 31));
         } else {
@@ -410,5 +447,36 @@ mod tests {
         assert_eq!(spend_delayed_damage(9.0), (9.0, 0.0));
         // the running back kick / backward katana store a negative damage
         assert_eq!(spend_delayed_damage(-80.0), (80.0, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use shared::pm::Arith;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// mp.dll's knock-back keeps the x difference, the length and `1/len` unrounded and squares
+    /// differently for a direct and a delayed hit; the .so (and the port's old `float` maths, by
+    /// chance here) stores them (issue #150).
+    #[test]
+    fn knockback_per_build() {
+        let (av, ao) = (f([0x4371_ae44, 0x436e_cff0, 0xc3ac_4d57]), f([0x448a_2b8c, 0xc448_fe8c, 0x43d0_f8c0]));
+        let (vo, vv) = (f([0xc485_fde3, 0xc4a8_bf70, 0xc456_865a]), f([0x4319_edf2, 0x430b_96c6, 0xc292_e948]));
+        assert_eq!(b(knockback_velocity(Arith::Msvc, av, ao, vo, vv, false)), [0xc37e_24d9, 0x4215_059a, 0xc39c_4ea3]);
+        assert_eq!(b(knockback_velocity(Arith::Gcc, av, ao, vo, vv, false)), [0xc37e_24da, 0x4215_059a, 0xc39c_4ea3]);
+        let (av, ao) = (f([0x4310_3748, 0x43a4_2fb8, 0x4287_aa6c]), f([0x44be_a85e, 0x4493_e9ae, 0x449c_1ae8]));
+        let (vo, vv) = (f([0xc46e_57da, 0x44c2_0a52, 0x44a1_a6da]), f([0x4309_2330, 0x4250_2c30, 0xc38e_9ee3]));
+        assert_eq!(b(knockback_velocity(Arith::Msvc, av, ao, vo, vv, true)), [0xc35f_d4c8, 0x42d3_9190, 0xc38b_63ba]);
+        assert_eq!(b(knockback_velocity(Arith::Gcc, av, ao, vo, vv, true)), [0xc35f_d4ca, 0x42d3_9190, 0xc38b_63ba]);
+        // A victim on the attacker's origin is pushed straight up by its speed.
+        assert_eq!(knockback_velocity(Arith::Msvc, [3.0, 4.0, 0.0], [1.0; 3], [1.0; 3], [0.0; 3], false), [0.0, 0.0, 5.0]);
     }
 }

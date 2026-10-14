@@ -3,6 +3,7 @@
 
 use goldsrc::edict::EdictPtr;
 use goldsrc::sys::*;
+use shared::pm::{FpuMath, Msvc, ORDER_XYZ, ORDER_ZYX};
 
 /// Damage bits (SDK `DMG_*`) used by TS.
 pub mod bits {
@@ -363,12 +364,15 @@ fn center(absmin: [f32; 3], absmax: [f32; 3]) -> [f32; 3] {
 }
 
 /// The direction `CBaseMonster::TakeDamage` stores in `g_vecAttackDir`:
-/// `(inflictor->Center() - (0, 0, 10) - Center()).Normalize()`, normalised a second time.
+/// `(inflictor->Center() - (0, 0, 10) - Center()).Normalize()`, normalised a second time, in
+/// mp.dll's arithmetic (issue #150): each inline `Normalize` keeps the length and `1/len` on the
+/// FPU, the first sums `z² + y² + x²` (0x10013ff0..0x1001400c), the second `x² + y² + z²`
+/// (0x10014065..0x10014081).
 pub fn attack_dir_between(inflictor: (&[f32; 3], &[f32; 3]), victim: (&[f32; 3], &[f32; 3])) -> [f32; 3] {
     let from = center(*inflictor.0, *inflictor.1);
     let to = center(*victim.0, *victim.1);
     let d = [from[0] - to[0], from[1] - to[1], from[2] - 10.0 - to[2]];
-    normalize(normalize(d))
+    Msvc::vec_normalize(Msvc::vec_normalize(d, ORDER_ZYX), ORDER_XYZ)
 }
 
 /// The `g_vecAttackDir` update of `CBaseMonster::TakeDamage` (0xb2430) for `victim` (after its
@@ -501,5 +505,27 @@ mod tests {
         assert_eq!(normalize([0.0; 3]), [0.0, 0.0, 1.0]);
         let n = normalize([3.0, 0.0, 4.0]);
         assert!((n[0] - 0.6).abs() < 1e-7 && n[1] == 0.0 && (n[2] - 0.8).abs() < 1e-7);
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// `CBaseMonster::TakeDamage`'s attack direction in mp.dll's arithmetic (issue #150); the old
+    /// normalisations gave x = 0x3f229782.
+    #[test]
+    fn attack_dir_as_mp_dll() {
+        let inf = (f([0xc372_b68a, 0xc3b4_a9e8, 0x435e_4780]), f([0xc2af_ec14, 0x43b1_95fc, 0x4378_de60]));
+        let vic = (f([0xc397_0edc, 0xc398_98a1, 0xc210_e010]), f([0xc387_4705, 0x412a_7ae0, 0x43d6_4eae]));
+        assert_eq!(b(attack_dir_between((&inf.0, &inf.1), (&vic.0, &vic.1))), [0x3f22_9781, 0x3f41_c1bd, 0x3e1d_e57d]);
     }
 }

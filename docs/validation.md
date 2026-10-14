@@ -308,6 +308,14 @@ win32 under Wine (listen server, `ts_arena`).
   a poison `trigger_hurt` (`ts_gpc` has a nerve-gas one, which only counts down), so poison
   needs a test map.
 
+* The x87 rounding of the damage, projectile and pellet code (issues #80, #89, #129, #138, #150,
+  #161; `implementation/weapons.md` §5): unit tests pin one input per site whose bits differ
+  between the builds or from the old `float` arithmetic, worked out from the disassembly. No
+  in-engine comparison against the original binaries' outputs was made. Known limits: the pellet
+  offsets use the platform's `sin`/`cos`, which can differ from the x87's `fsin`/`fcos` in the
+  last bit, and the think timers and stock-entity damage code follow mp.dll even with
+  `ts_pm_arith gcc`.
+
 * The plugin API's setters in a running game (`implementation/plugin-api.md`): unit tests cover
   the logic, and `CreateInterface` was called outside the engine. No AMX Mod X module has driven
   them in-engine yet; that is for the `tsmod-amxx-rs` modules. The entity hooks (version 2) ran

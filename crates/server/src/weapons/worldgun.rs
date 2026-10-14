@@ -12,6 +12,7 @@ use crate::world::{Cx, Entity};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
+use shared::pm::{Arith, Ext, Fpu, FpuMath, Num, ORDER_XYZ, plus_double};
 use shared::weapons::spread::{self, Vec3};
 use shared::weapons::{MAX_AMMO, Status, id, info};
 
@@ -120,7 +121,7 @@ pub fn blast(gun: *mut edict_t, from: Vec3, r_max: f32) {
     // 0x7d85c: `get_weapon_info(this+0x88)`, byte `+0xd0` (the inventory weight).
     let slots = info(id).map_or(0, |w| w.slots) as u8;
     let pev = gun.v();
-    pev.nextthink = now + 0.1;
+    pev.nextthink = plus_double(now, 0.1);
     pev.movetype = MOVETYPE_BOUNCE as i32;
     pev.solid = SOLID_BBOX as i32;
     pev.gravity = 0.7;
@@ -138,13 +139,34 @@ pub fn blast(gun: *mut edict_t, from: Vec3, r_max: f32) {
 /// `normalize(gun − from) · (r_max − |gun − from|) / slots · 10`, so heavier guns fly less. Past
 /// `r_max` the speed goes negative (towards the blast). A weightless id gives an infinite
 /// velocity, as TS's x87 division does; the engine clamps it to `sv_maxvelocity`.
+///
+/// In mp.dll's arithmetic (0x100519f2..0x10051b3a, issue #150): the x and z differences stay on
+/// the FPU and y is stored; the length (`z² + y² + x²`) and `1/len` stay unrounded for the
+/// direction, whose components are stored; the speed `r_max - len` takes the stored length
+/// (`fst`) and stays unrounded; each `dir·speed`, `/ slots` and `· 10f` is stored.
 pub fn blast_velocity(gun: Vec3, from: Vec3, r_max: f32, slots: u8) -> Vec3 {
-    let away = spread::sub(gun, from);
-    let dist = spread::length(away);
-    let dir = if dist == 0.0 { [0.0, 0.0, 1.0] } else { spread::scale(away, 1.0 / dist) };
-    let push = spread::scale(dir, r_max - dist);
-    let w = slots as f32;
-    [push[0] / w * 10.0, push[1] / w * 10.0, push[2] / w * 10.0]
+    let f = |v: f64| v as f32 as f64;
+    let d = [0, 1, 2].map(|i| gun[i] as f64 - from[i] as f64);
+    let d = [d[0], f(d[1]), d[2]];
+    let len = (d[2] * d[2] + d[1] * d[1] + d[0] * d[0]).sqrt();
+    let dir = if shared::pm::eq87(len, 0.0) { [0.0, 0.0, 1.0] } else { d.map(|c| f(c * (1.0 / len))) };
+    let speed = r_max as f64 - f(len);
+    let w = slots as f64;
+    dir.map(|c| (f(f(c * speed) / w) * 10.0) as f32)
+}
+
+/// A falling gun's impact on what it hits (`CTSWorldGun::Fall`, issue #150): the speed
+/// (`x² + y² + z²`) stored as a `float`, times the gun's weight (`fild` of its slots), compared
+/// unrounded with the target's health (mp.dll 0x10074929..0x10074939, `ts_i386.so`
+/// 0xa0f5b..0xa0f86), and the damage `slots·speed·0.001f`, rounded once (0x10074989..0x10074997,
+/// 0xa0fd1..0xa1017). Returns (the compared value, the damage).
+pub fn fall_impact(arith: Arith, velocity: Vec3, slots: i32) -> (Ext, f32) {
+    fn go<F: Fpu>(v: Vec3, slots: i32) -> (Ext, f32) {
+        let s = F::x(F::sq_in(v, ORDER_XYZ).sqrt().f());
+        let w = F::xi(slots);
+        ((w * s).ext(), (w * s * F::x(0.001)).f())
+    }
+    shared::by_arith!(arith, go(velocity, slots))
 }
 
 /// 0x7d8cf: a gun resting on the ground (`FL_ONGROUND`) hops up: `|v.z| + 50`.
@@ -178,7 +200,7 @@ impl Entity for WorldGun {
         e.set_size(edict, [0.0; 3], [0.0; 3]);
         self.expire = e.time() + if self.id == id::BRIEFCASE { 30.0 } else { assets::cvars().weaponstay.clamp(5.0, 60.0) };
         let pev = cx.pev();
-        pev.nextthink = e.time() + 0.1;
+        pev.nextthink = plus_double(e.time(), 0.1);
         pev.iuser4 = 2;
         self.pickup_after = e.time() + 0.5;
         self.taken = false;
@@ -195,7 +217,7 @@ impl Entity for WorldGun {
         let e = engine();
         let me = cx.edict;
         let now = e.time();
-        cx.pev().nextthink = now + 0.1;
+        cx.pev().nextthink = plus_double(now, 0.1);
         if self.on_ground {
             // WaitThink.
             if self.expire < now {
@@ -206,8 +228,9 @@ impl Entity for WorldGun {
         // Fall: landing (`OnGround`, which only switches the think and touch) comes first, and
         // the rest of this think still runs: the expiry check, the impact trace and the
         // slow-motion physics.
+        let arith = crate::rules::cvars::pm_arith();
         let pev = cx.pev();
-        if pev.flags & FL_ONGROUND as i32 != 0 && spread::length(pev.velocity) < give_slow_mul(pev.fuser1) * 3.0 {
+        if pev.flags & FL_ONGROUND as i32 != 0 && projectiles::fall_landed(arith, pev.velocity, give_slow_mul(pev.fuser1)) {
             emit(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, 0.8, 100);
             let pev = cx.pev();
             pev.angles[0] = 0.0;
@@ -225,13 +248,13 @@ impl Entity for WorldGun {
             return;
         }
         let pev = cx.pev();
-        let end = spread::ma(pev.origin, 0.1, pev.velocity);
+        let end = projectiles::fall_trace_end(arith, pev.origin, pev.velocity);
         let tr = e.trace_line(pev.origin, end, DONT_IGNORE_MONSTERS, me);
         if tr.flFraction < 1.0 && !tr.pHit.is_null() && !crate::rules::has_player(tr.pHit) {
-            let slots = info(self.id).map(|w| w.slots).unwrap_or(10) as f32;
-            let s = spread::length(pev.velocity) * slots;
-            if projectiles::impact_hits(tr.pHit.v(), s) {
-                let mut d = DamageInfo::new(me, self.thrower.or(me), s * 0.001, 0x1080).traced();
+            let slots = info(self.id).map(|w| w.slots).unwrap_or(10) as i32;
+            let (test, dmg) = fall_impact(arith, pev.velocity, slots);
+            if projectiles::impact_hits(tr.pHit.v(), test) {
+                let mut d = DamageInfo::new(me, self.thrower.or(me), dmg, 0x1080).traced();
                 d.dir = pev.velocity;
                 d.pos = tr.vecEndPos;
                 damage::apply(tr.pHit, &d);
@@ -392,7 +415,7 @@ impl Entity for AmmoPack {
         e.set_size(edict, [0.0; 3], [0.0; 3]);
         self.expire = e.time() + assets::cvars().weaponstay.clamp(5.0, 60.0);
         let pev = cx.pev();
-        pev.nextthink = e.time() + 0.1;
+        pev.nextthink = plus_double(e.time(), 0.1);
         // `iuser4 = 0; |= 2` (0x9150c, 0x91518): the client fades and culls the pack past 1024 u.
         pev.iuser4 = 2;
         pev.armorvalue = 0.0;
@@ -406,7 +429,7 @@ impl Entity for AmmoPack {
         }
         let e = engine();
         let me = cx.edict;
-        cx.pev().nextthink = e.time() + 0.1;
+        cx.pev().nextthink = plus_double(e.time(), 0.1);
         if !self.on_ground && cx.pev().flags & FL_ONGROUND as i32 != 0 {
             self.on_ground = true;
             self.funcs.touch = true;
@@ -525,5 +548,44 @@ mod tests {
         assert_eq!(gun.reserve[3], 210);
         assert_eq!(pack[3], 30);
         assert!(!take_ammo(&mut pack, |t, n| gun.add_ammo(t, n, 210)));
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use shared::pm::Arith;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// A falling gun's damage, `slots·speed·0.001f`, rounded once (issue #150): the port's old
+    /// two roundings gave 0x413bc2ce.
+    #[test]
+    fn fall_impact_rounds_once() {
+        let v = f([0x43aa_9d74, 0xc3c1_f930, 0xc38b_0c86]);
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            let (test, dmg) = fall_impact(arith, v, 20);
+            assert_eq!(dmg.to_bits(), 0x413b_c2cf);
+            assert_eq!(
+                test,
+                Ext::from_f64(
+                    (v[0] as f64 * v[0] as f64 + v[1] as f64 * v[1] as f64 + v[2] as f64 * v[2] as f64).sqrt() as f32 as f64 * 20.0
+                )
+            );
+        }
+    }
+
+    /// `TSExplosion`'s push in mp.dll's arithmetic (issue #150); the old `float` maths gave
+    /// z = 0xc2c63908.
+    #[test]
+    fn blast_velocity_as_mp_dll() {
+        let (gun, from) = (f([0xc3e9_8d20, 0x444c_980a, 0xc434_6f8b]), f([0xc429_e029, 0x4316_bbe0, 0xc29e_44e8]));
+        assert_eq!(b(blast_velocity(gun, from, 1024.0, 5)), [0x4203_094c, 0x42cd_f1db, 0xc2c6_3909]);
     }
 }
