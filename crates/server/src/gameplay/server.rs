@@ -406,6 +406,14 @@ pub trait ServerRules: Sync {
         crate::stunt::moves::backflip_kick_core(p, cx);
     }
 
+    /// `CTSStunt::CheckForBreakables` (0x9bd9c): whether a delayed hit whose stored damage is
+    /// spent (0) still runs the player part on a player (the team check, the victim's block,
+    /// disarm, knockback and the hit sound) before its 0-damage `TraceAttack`. TS 3.0: no
+    /// (0x8c1f1, `dmg <= 0` goes straight to the hit).
+    fn zero_delayed_hit_reaches_player(&self) -> bool {
+        false
+    }
+
     /// A melee hit that may disarm (`MeleeHit::disarm`, and every delayed kung-fu hit): the
     /// damage it adds to the victim's disarm count (`DropWeapon(-2, dmg)`, dropped at a
     /// per-weapon threshold), or `None` for no disarm. TS 3.0: the damage, whoever the victim.

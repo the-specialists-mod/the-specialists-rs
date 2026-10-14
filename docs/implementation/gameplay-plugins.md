@@ -313,6 +313,7 @@ The hooks so far:
 | `ServerRules` | `jump_kick_hit(p, cx, strength)` | `stunt::moves::jump_kick_hit_core` (`m_flNextAttack` 0.35 if run out, `UpdateMeleeBar(strength × 1.5)`) | `stunt/moves.rs` `close_attack` |
 | `ServerRules` | `backflip_kick(p, cx)` | `stunt::moves::backflip_kick_core` (22.5 power, a delayed 15/30 for 0.3 s) | `stunt/moves.rs` `go_wheel` backward |
 | `ServerRules` | `melee_disarm(damage, victim_is_the_one)` | `Some(damage)` (the disarm count) | `weapons/melee.rs` `trace_attack`, `pending_hit` |
+| `ServerRules` | `zero_delayed_hit_reaches_player()` | `false` (a spent delayed hit goes straight to its 0-damage `TraceAttack`, 0x8c1f1) | `weapons/melee.rs` `pending_hit` |
 | `ServerRules` | `grenade_explosion()` | (110, 300, 1024) | `weapons/projectiles.rs` grenade `think` |
 | `ServerRules` | `explosion_pushes_world_guns()` | true | `entities/stock/explode.rs` `ts_explosion` |
 | `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |

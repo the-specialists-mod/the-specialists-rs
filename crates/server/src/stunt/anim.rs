@@ -342,6 +342,18 @@ fn handle_close_combat(p: &mut Player, cx: &mut Cx, id: i32) {
     a.cc_flag = false;
 }
 
+/// `Animate`'s case 0x37 (the wall-jump pose): whether it refuses `id`. TS 3.0 holds it while
+/// unfinished, alive, `GO_DUCK`, off ladders and in the air, against everything but the wall poses
+/// and the dive (0x28). With
+/// [`StuntRules::wall_jump_pose_holds_until_recovered`](super::rules::StuntRules::wall_jump_pose_holds_until_recovered)
+/// it holds on the ground too and against a dive, so after a wall-jump landing the pose plays on
+/// (and its end, `m_fSequenceFinished`, can end the recovery) until `GO_DUCK` goes with the
+/// recovery.
+fn wall_jump_pose_holds(until_recovered: bool, fin: bool, alive: bool, go_duck: bool, ladder: bool, grounded: bool, id: i32) -> bool {
+    let let_through = if until_recovered { matches!(id, 0x37 | 0x38) } else { matches!(id, 0x37 | 0x38 | 0x28) || grounded };
+    !fin && alive && go_duck && !ladder && !let_through
+}
+
 /// `CTSAnimation::Animate(player, id)` (0x6b470).
 pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
     if id < 0 {
@@ -431,7 +443,8 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
                 p.stunt.prone_lock = 0.0;
             }
             0x37 => {
-                if !fin && alive && iuser4 & GO_DUCK != 0 && !ladder && !matches!(id, 0x37 | 0x38 | 0x28) && !grounded {
+                let until_recovered = crate::gameplay::active().server.stunts().wall_jump_pose_holds_until_recovered;
+                if wall_jump_pose_holds(until_recovered, fin, alive, iuser4 & GO_DUCK != 0, ladder, grounded, id) {
                     return;
                 }
             }
@@ -719,5 +732,30 @@ fn gait(p: &mut Player, cx: &mut Cx, id: i32, speed: f32) {
             pev.frame = 0.0;
             reset_sequence_info(p, cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wall_jump_pose_holds;
+
+    /// #112 (the wall-landing part): 3.0 drops the wall-jump pose on landing; a ruleset that holds
+    /// it until recovered keeps it on the ground while `GO_DUCK` lasts, and refuses a dive.
+    #[test]
+    fn wall_jump_pose_hold() {
+        let core = |fin, go_duck, grounded, id| wall_jump_pose_holds(false, fin, true, go_duck, false, grounded, id);
+        let held = |fin, go_duck, grounded, id| wall_jump_pose_holds(true, fin, true, go_duck, false, grounded, id);
+        // In the air, both hold against the idle pose and let the wall poses through.
+        assert!(core(false, true, false, 0) && held(false, true, false, 0));
+        assert!(!core(false, true, false, 0x38) && !held(false, true, false, 0x37));
+        // Landed: 3.0 lets the ground poses in, the other keeps the pose.
+        assert!(!core(false, true, true, 0));
+        assert!(held(false, true, true, 0));
+        // The dive only gets through in 3.0.
+        assert!(!core(false, true, false, 0x28) && held(false, true, false, 0x28));
+        // A finished pose, or the recovery's end clearing GO_DUCK, lets anything in.
+        assert!(!held(true, true, true, 0) && !held(false, false, true, 0));
+        assert!(!wall_jump_pose_holds(true, false, false, true, false, true, 0), "dead");
+        assert!(!wall_jump_pose_holds(true, false, true, true, true, true, 0), "on a ladder");
     }
 }

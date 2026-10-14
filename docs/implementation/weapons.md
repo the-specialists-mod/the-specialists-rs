@@ -320,7 +320,12 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   trace from the origin 32 u along `v_angle` (behind for a negative stored damage); no
   `takedamage`, `FL_WORLDBRUSH` or `EF_NODRAW` targets, nor the last one hit (`pl+0x798`, cleared
   on the ground without a window). The stored damage is halved after each hit and zeroed below 5
-  with a signed test, so a negative (backward) one lands once. Players: the teammate test, then the
+  with a signed test, so a negative (backward) one lands once. TS never tests the stored damage
+  itself: once spent (or zeroed by a block), every new target in reach while the window is open
+  still takes a 0-damage `TraceAttack`/`TakeDamage` (blood and pain sound on a player, a
+  breakable's damage sound, a shootable button pressed) and becomes the last one hit (#135); a
+  0-damage hit on a player skips the player part below (`ServerRules::zero_delayed_hit_reaches_player`,
+  false in 3.0). Players: the teammate test, then the
   source's `Victim*Hold` (blocked: no damage), kung fu disarms (not during spawn protection),
   knocks back above 30 and plays `kungfuhit`, blades their hit-body sound; blocked or friendly,
   the victim still becomes the last one hit. `TraceAttack` gets `g_vecZero` as the direction.
