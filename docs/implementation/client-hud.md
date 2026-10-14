@@ -37,7 +37,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CL_ButtonBits` 10026870 | `input::button_bits` |
 | `CL_CreateMove` 10026570, `CL_AdjustAngles` 10026330 | `input::create_move`, `adjust_angles` |
 | `+attack2` 10025f40 / `+alt2` 10026110 (`cl_attackswitch`) | `input::attack_switched` + the two command bodies |
-| `HUD_Key_Event` 10025a80 gate, `HUD_Frame` gate clear | `input::key_event`, `input::frame` |
+| `HUD_Key_Event` 10025a80 gate, `HUD_Frame` gate clear | `input::key_event`, `input::frame`: a gated binding opens the gate on the key's press and on its release (`eventcode` guards only the `a` → slot 11 shortcut; issue #144) |
 | `KB_Find` 10025880, `KB_Add` 100258c0, `KB_Init` 10025930 (end of `InitInput`, before `V_Init`) | `input::find`, `kb_add`, `kb_init`: the list holds only `in_graph`, `in_mlook`, `in_jlook` (newest first), matched with `_stricmp`; any other name is null |
 | `HUD_Shutdown` 10027250 → `ShutdownInput` 10027240: `IN_Shutdown` (on Windows only `IN_DeactivateMouse` 100272a0), `KB_Shutdown` 10025970 | `client-dll` `HUD_Shutdown` → `input::shutdown` (mouse deactivated, kbutton list emptied, so `KB_Find` answers null afterwards), then `voice::shutdown` (see Deviations) |
 | `IN_MouseMove` 100274d0 / `IN_MouseEvent` 100273d0 / `IN_Accumulate` 100278b0 | `input::apply_mouse`, `mouse_event`, `accumulate` (+ `native`, `win`, `sdl`); all three stand down while `camera::mouse_in_use` (`iMouseInUse` 0x100df394), leaving the motion to `CAM_Think` (`input::take_cursor_offset`) |
