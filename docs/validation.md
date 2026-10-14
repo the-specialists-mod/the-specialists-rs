@@ -82,6 +82,7 @@ cargo xtask test                        # dedicated server + 2 bots, 15 s, every
 cargo xtask play                        # gameplay on a listen server, fwgs and fwgs-win in parallel (~4 min, meck and bots included)
 cargo xtask meck                        # grenades on MecklenburgV_Rain_Final only (~30 s fwgs, ~1 min fwgs-win)
 cargo xtask bots                        # TS's bot AI on ts_dojo only: testpath, four addbot bots, botlearn (~45 s)
+cargo xtask ts21                        # TS 2.1 mode on every root's dedicated server, the team modes, the clients (~6 min, §2.y)
 ```
 
 `cargo xtask lint` runs `cargo clippy --workspace --all-targets -- -D warnings` for each of the
@@ -219,6 +220,53 @@ Port-only dev aids used by the tests (all need `sv_cheats 1` except `ts_status`)
 
 `cargo xtask plugins [roots...]`: a dedicated server per root with the stub plugin `tsmod_test`
 and the loader's fixtures; see implementation/bot-plugins.md §6 for what it checks.
+
+### 2.y TS 2.1 mode (`cargo xtask ts21`)
+
+`cargo xtask ts21 [--no-clients] [roots...]` (issue #103, `xtask/src/ts21.rs`): TS 2.1 mode on a
+dedicated server per root, all roots in parallel, then the clients. Each server starts on
+`ts_dojo` with four quota bots and `+servercfgfile xtask_ts21.cfg`, which runs the root's
+`server.cfg`, sets `ts_gameplay 21`, `developer 1`, `sv_cheats 1` and an `rcon_password`, and
+names a second config for every later map (so the rcon changes below stick). ReHLDS gets
+`-num_edicts 2048` for scene 8 (§4). xtask then drives the server by **rcon** (`a2s::rcon`: FWGS
+takes `rcon <password> <command>`, the GoldSrc engines want `challenge rcon` first) and reads
+`ts_status` replies; map changes go through `exec` of a one-line config, so the map load prints to
+the console log, not into the rcon reply. From scene 3 on the bots stand still (`ts_bot_stop 1`),
+so only xtask's `ts_hurt`s (repeated while a respawned player's spawn protection lasts) end lives.
+
+With `developer` on the server prints what TS shows only on the HUD: every `TSHudMessageAll` text
+as `[ts] hud: ...` (`rules::msg::ts_message_all`), 2.1's `TeamWin` and `RestartRound` as
+`[ts] round (2.1): ...` with the team cash, scores, mode, side swap and respawns per round, and the
+round manager as `[ts] objective: ...` (its pick and each target it fires). The rcon replies are
+saved to `target/ts21-<root>.txt`.
+
+| Scene | How | Passes when |
+|---|---|---|
+| Server config | The first map, `ts_gameplay 21` from the server config | The Steam engines: `ruleset 30 for this map`, then exactly one `ruleset 21: reloading ts_dojo` (they run the config once the map has loaded); FWGS: the first map is already `ruleset 21` (it runs the config before the first map too). Four bots, every player at `gp=21`, 2.1's `[ts] game rules (2.1): DeathMatch`; all but at most one of the living bots move over 64 units in 6 s |
+| rcon reload | rcon `ts_gameplay 30`, then `ts_gameplay 21` | Each reloads ts_dojo once (every player at `gp=30`, 3.0's `[ts] game rules:`, then `gp=21`), and no other reload follows: the reload lines total one for 30 and one (FWGS) or two (Steam) for 21 |
+| LMS | `respawnnumber 0`, `lastmanstanding 1` on ts_dojo (DM); once everyone is up, all but one player killed | `lms=true`, the survivor gets 10 frags, `[ts] hud: ... is the Last Man Standing! 10 frags` |
+| The One | `mp_teamlist "gordon;seal"` (2.1 puts an unlisted team on the smallest listed one, §4), `mp_theonemode 1`, `changelevel ts_dojo`; The One killed | `[ts] game rules (2.1): The One (gordon;seal)`, `... is The One!`, one player on `gordon` and the rest on `seal`; after the kill a One is picked again |
+| Model teamplay | `mp_teamlist "hitman;gordon"`, `mp_teamplay 1`, `changelevel ts_dojo`; a player killed | `Team DeathMatch (hitman;gordon)`, every player on `hitman` or `gordon`, the killed player respawns |
+| Round TDM | `changelevel cs_krustykrab` (a CS map: `info_player_start`/`deathmatch` only), `respawnnumber 2`; a Specialist killed twice; then `respawnnumber 1` and the Mercenaries killed, three rounds | `Round Team DeathMatch (Specialists;Mercenary)`, everyone on the two teams, `Defeat the opposite team!`; the Specialist respawns once and then sits the round out (2.1 counts lives: `implementation/ts21.md`); three `Specialists Win!` with `TeamWin(0, 1500, -1000)` and the Specialists' team cash 4500, 6000, 7500 (`cashforwin`), the Mercenaries' at the 3000 floor; the fourth `RestartRound` swaps the sides |
+| Objective rounds | `roundtime 30`, `changelevel tm_avana` (`ts_objective_manager`, two `ts_hack`s, three `ts_wingiver`s, `ts_mapglobals playerrespawn 2`); a Specialist killed twice, then every Specialist out; the next round left to run out | `RestartRound: Objective, 30 s, ..., respawns per round 2` (the install line says Round TDM, as 2.1: the managers don't exist yet), the manager picked and `Specialists must hack the computers!`; the Specialist respawns once then sits out; `fires "mercwin" (SpecDead)` and `TeamWin(1, 1500, -1000)` with the Mercenaries at 4500; then `fires "drawwin" (TimeLeft)` and a `TeamWin(2, ...)` draw |
+| Large map | `developer 2`, `changelevel MecklenburgV_Rain_Final` | `Can't init <class> (not in this ruleset)` once for `ts_wind`, `ts_fog`, `ts_emitter` and twice for `ts_particle`, `ts_groundammo`; every bot spawns at `gp=21` |
+
+No panic, fatal error or segfault on any map.
+
+Then, on each Linux Steam root among the selected ones (`rehlds-linux`, `hlds25-linux`), a fresh
+2.1 server and two clients in turn:
+
+* **The port's client** (FWGS, the `fwgs` root, `connect ... gs`): it connects, the server doesn't
+  refuse it, and its log has `[ts] gameplay: the server runs ruleset 21` (`SrvSett` 4).
+* **The original TS 3.0 client** (`~/games/xash_win_orig`, `TS_ORIG_CLIENT`: FWGS 0.21 win32 with
+  TS's own `client.dll`, under Wine, `connect ... gs`; skipped when missing): the server logs
+  `[ts] gameplay: refused a client in ruleset 21 (Other)` and the client's `engine.log` holds 2.1's
+  reason. Its own `engine.log` is put back afterwards; the client opens a window for about 20 s.
+
+`--no-clients` skips them. The whole run takes about 6 minutes (the servers about 4, the slowest
+being the Wine roots; the clients about 2), which would more than double `cargo xtask all`, so
+`all` doesn't include it: run it after changes to the 2.1 plugin, the reload, the rules' round
+code or the client check.
 
 ## 3. Results
 
@@ -377,8 +425,9 @@ The port of TS's bot AI (`implementation/rules.md` §10) was checked three ways:
 
 ### 3.6 The original TS client in 2.1 mode
 
-Checked by hand (no xtask command yet: it needs the Wine root `~/games/xash_win_orig` and a
-window). A native FWGS dedicated server with the port (`cargo xtask install fwgs`, then in
+Against the Steam engines' dedicated servers `cargo xtask ts21` checks it (below, §2.y). Against
+FWGS it was checked by hand (it needs the Wine root `~/games/xash_win_orig` and a window). A native
+FWGS dedicated server with the port (`cargo xtask install fwgs`, then in
 `~/games/xash`: `./xash -dev 1 -game ts -port 27142 +maxplayers 8 +sv_lan 1 +servercfgfile
 <cfg> +map ts_dojo`, the cfg holding `ts_gameplay 21`), and the original TS 3.0 client
 (`wine xash3d.exe -game ts -dev 2 -log -windowed +exec <cfg>` in `~/games/xash_win_orig`, the cfg
@@ -394,6 +443,28 @@ window). A native FWGS dedicated server with the port (`cargo xtask install fwgs
 
 The port's own client joining a 2.1 map is covered by `cargo xtask play` (the host reconnects at
 the reload under 2.1 and plays on).
+
+**The Steam engines** (`cargo xtask ts21`, §2.y; the same client with `connect ... gs`): ReHLDS
+(`rehlds-linux`) prints `Invalid Version: Running 2.1 mode. Upgrade to the rust port at tsmod.org`
+to the client, HL25 (`hlds25-linux`) `Server issued disconnect. Reason: Server refused connection
+because:  Invalid Version: Running 2.1 mode. Upgrade to the rust port at tsmod.org`; both servers
+log the refusal. The Windows Steam roots weren't tried (the same engine code, under Wine). The
+port's FWGS client joins both and logs `[ts] gameplay: the server runs ruleset 21`.
+
+### 3.7 TS 2.1 mode on every dedicated server (issue #103)
+
+`cargo xtask ts21` (§2.y) passed on all seven roots, every scene, and both client checks on
+`rehlds-linux` and `hlds25-linux`; the full run took 5 min 46 s (the servers 233 s). Findings:
+
+* The server config's `ts_gameplay 21` reloads the first map once on the four Steam roots, and
+  FWGS (all three builds) starts it under 2.1. rcon `ts_gameplay 30` / `21` reload once each; no
+  root reloaded again.
+* Rounds, team cash and side swaps, LMS, The One, model teamplay and the objective manager behave
+  as `implementation/ts21.md` describes. Two things that look wrong and match 2.1:
+  `respawnnumber` and `playerrespawn` count lives (the default `respawnnumber 1` is no respawn in a
+  round TDM round), and in The One mode the One's and the others' teams must be in `mp_teamlist`
+  (the content's `server.cfg` lists `team1;team2;team3;team4`, which puts everyone on those).
+* `MecklenburgV_Rain_Final` doesn't load on ReHLDS at `maxplayers 8` under either ruleset (§4).
 
 ## 4. Pitfalls found during setup
 
@@ -425,6 +496,10 @@ the reload under 2.1 and plays on).
 | `testpath`'s `path:` lines show up after later lines (the bots' joins) in the client's console | The client's say-text display, not the server (it prints at once) | The check searches the whole scene |
 | `testpath 89 25` on ts_dojo: the port prints `path:89,88,25`, the decomp's `scripts/ndm.py` replica `89,87,25` | The replica rounds `FindPath`'s walk heuristic to a float before truncating it; `mp.dll` keeps it on the x87 stack (and the original TS 3.0 prints `89,88,25`) | The unit tests' reference data (`bots/testdata/gen.py`) is generated with that rounding removed |
 | The original TS client shows `testpath`'s and `botlearn 2`'s replies on the HUD only, not in the console log | Its say-text print doesn't echo `TextMsg` talk lines to the console | Read them from a `screenshot` (the original's MOTD and buy menu cover the chat: `motdfile` to a missing file, `slot10`) |
+| FWGS dedicated server: the first command after `exec server.cfg` in xtask's configs does nothing (`"sv_maxspeed" changed to "330ts_gameplay"`) | The content's `server.cfg` has no final newline, and FWGS's `exec` inserts the text without ending it, so its last line runs into ours (issue #187) | xtask's configs follow `exec server.cfg` with an empty line (`roots::EXEC_SERVER_CFG`) |
+| `rcon changelevel` on ReHLDS's Windows release: the new map's `[ts]` lines are missing from `qconsole.log` | A command run from rcon prints into the rcon reply (`SV_BeginRedirect`); a map load it starts prints there too | `cargo xtask ts21` writes `changelevel <map>` into a config and sends `rcon exec <config>`, which queues it for the next frame |
+| `MecklenburgV_Rain_Final` on ReHLDS: `ED_Alloc_internal: no free edicts`, under 3.0 too | The map has 1046 entities; ReHLDS allows `900 + 15 × (maxplayers − 1)` edicts (1005 at 8), and neither TS 3.0's `liblist.gam` nor the port's raises it (`edicts` key) | Start ReHLDS with `-num_edicts 2048` (`cargo xtask ts21` does). HL25's default is larger |
+| `ts_hurt` on a player who has just respawned does nothing (`applied=false health=100`) | Spawn protection (`protect_until`) | Scripts hurt again a second later (`ts21::Server::hurt`) |
 | `savenodes` in a scripted test would overwrite the content's `.ndm` | The roots' `ts/maps` is a symlink to the content directory | The scripts never run `savenodes`; `resetnodes` is followed by `loadnodes` |
 
 ## 5. Steam Half-Life client (HL25, issue #23)

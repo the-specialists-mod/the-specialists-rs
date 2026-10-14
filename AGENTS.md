@@ -104,6 +104,11 @@ cargo xtask bots [fwgs fwgs-win]          # TS's bot AI on ts_dojo: testpath, fo
                                           # and fighting, botlearn
 cargo xtask plugins [<root>...]           # the tsmod_* loader (stub plugin + fixtures it must skip) and the stub's
                                           # bot backend (ts_bot_backend test) on a dedicated server, all roots
+cargo xtask ts21 [--no-clients] [<root>...]
+                                          # TS 2.1 mode on every root's dedicated server, driven by rcon:
+                                          # the server config's and rcon's ts_gameplay reloads, LMS, The One,
+                                          # teamplay, round TDM, objective rounds, a large map; then the port's
+                                          # and the original client on the Linux Steam roots (~6 min, not in all)
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask dist --release                # dist/<platform>/ts/: libraries + game files (stripped)
 cargo xtask dist --release-debug          # the same release build, libraries with debug info

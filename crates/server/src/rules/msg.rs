@@ -90,13 +90,18 @@ pub fn ts_message_one(to: *mut edict_t, rgb: [u8; 3], effect: u8, hold: u8, text
     one(Msg::TsMessage, to, |w| m.write(w));
 }
 
-/// `TSHudMessageAll`.
+/// `TSHudMessageAll`. Port addition: with `developer` on, the text also goes to the server
+/// console as `[ts] hud: <text>`, so scripted tests (`cargo xtask`) can follow the rounds,
+/// wins and objectives that TS only announces on the HUD.
 pub fn ts_message_all(rgb: [u8; 3], effect: u8, hold: u8, text: &str) {
     if text.is_empty() {
         return;
     }
     let m = TsMessage { r: rgb[0], g: rgb[1], b: rgb[2], effect, hold, text: clip(text, 127) };
     all(Msg::TsMessage, |w| m.write(w));
+    if super::cvars::on(c"developer") {
+        engine().print(&format!("[ts] hud: {}\n", m.text));
+    }
 }
 
 /// SDK `ClientPrint(pev, dest, msg)` (`TextMsg` to one).

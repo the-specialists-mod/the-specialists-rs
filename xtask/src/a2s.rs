@@ -123,3 +123,53 @@ pub fn players(host: &str, port: u16) -> std::io::Result<Vec<(String, i32)>> {
     }
     Ok(out)
 }
+
+/// Runs `command` on the server by rcon and returns what it printed. FWGS takes `rcon <password>
+/// <command>` as is (`SV_RemoteCommand`); the GoldSrc engines (HLDS, ReHLDS) want a `challenge rcon`
+/// first and then `rcon <challenge> "<password>" <command>`. Each call runs one command (the
+/// engines don't split the text at `;`). The reply can be several packets; an empty string when
+/// the command printed nothing.
+pub fn rcon(host: &str, port: u16, goldsrc: bool, password: &str, command: &str) -> std::io::Result<String> {
+    let s = UdpSocket::bind("0.0.0.0:0")?;
+    s.set_read_timeout(Some(Duration::from_millis(2000)))?;
+    let mut buf = [0u8; 2048];
+    let request = if goldsrc {
+        s.send_to(b"\xff\xff\xff\xffchallenge rcon\n", (host, port))?;
+        let n = s.recv(&mut buf)?;
+        let text = String::from_utf8_lossy(&buf[4.min(n)..n]).into_owned();
+        let challenge = text
+            .strip_prefix("challenge rcon ")
+            .map(|c| c.trim_matches(|ch: char| ch.is_whitespace() || ch == '\0').to_owned())
+            .ok_or_else(|| std::io::Error::other(format!("bad rcon challenge reply {text:?}")))?;
+        format!("rcon {challenge} \"{password}\" {command}\n")
+    } else {
+        format!("rcon {password} {command}\n")
+    };
+    let mut packet = b"\xff\xff\xff\xff".to_vec();
+    packet.extend_from_slice(request.as_bytes());
+    s.send_to(&packet, (host, port))?;
+    let mut out = String::new();
+    s.set_read_timeout(Some(Duration::from_millis(700)))?;
+    while let Ok(n) = s.recv(&mut buf) {
+        out.push_str(&rcon_text(&buf[..n]));
+        s.set_read_timeout(Some(Duration::from_millis(300)))?;
+    }
+    Ok(out)
+}
+
+/// The text of an rcon reply packet: `l<text>` (GoldSrc's `A2C_PRINT`) or `print\n<text>` (FWGS).
+fn rcon_text(d: &[u8]) -> String {
+    let body = d.strip_prefix(b"\xff\xff\xff\xff").unwrap_or(d);
+    let body = body.strip_prefix(b"print\n").or_else(|| body.strip_prefix(b"l")).unwrap_or(body);
+    let end = body.iter().position(|&b| b == 0).unwrap_or(body.len());
+    String::from_utf8_lossy(&body[..end]).replace('\r', "")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rcon_replies() {
+        assert_eq!(super::rcon_text(b"\xff\xff\xff\xfflhello\n\0"), "hello\n");
+        assert_eq!(super::rcon_text(b"\xff\xff\xff\xffprint\nhello\n"), "hello\n");
+    }
+}
