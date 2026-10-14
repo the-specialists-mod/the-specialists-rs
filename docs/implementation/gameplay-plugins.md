@@ -336,7 +336,8 @@ scales; 3.0's `melee_crouch` is `melee_hold(bits, 2, true)`) and `the_one()`, an
 becomes active (`gameplay::set_active`), by the client from each predicted command's rules. So
 everything that reads weapon data (the gun, inventory, buying, the HUD, damage, the events)
 follows the ruleset without a hook of its own; a change of tables drops custom weapon parameters
-(`loadweapons`, `CustomWP`). The map precaches the weapon assets of every registered ruleset's
+(`loadweapons`, `CustomWP`), and so does every map start and the switch's reset
+(`weapons::rebuild_weapon_info`, `W_Precache`'s `compile_weapons_info`). The map precaches the weapon assets of every registered ruleset's
 tables, TS 3.0's first so its precache order is unchanged (`weapons::precache_weapon_assets`),
 and the server keeps one set of model strings per ruleset. The gun's `GunHost` also tells the
 rules the raw time scale (`time_scale`) and whether it is the client's prediction

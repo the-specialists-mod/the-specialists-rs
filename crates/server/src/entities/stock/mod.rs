@@ -373,6 +373,8 @@ pub fn restart_world() {
     maprules::reset();
     sound::reset_rooms();
     crate::rules::start_rules();
+    // `W_Precache`'s `compile_weapons_info`: no custom weapon parameters carry over.
+    crate::weapons::rebuild_weapon_info();
     soundent::restart_world_soundent();
     init_body_que();
     light_styles();

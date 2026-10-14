@@ -81,7 +81,7 @@ addresses of `ts_i386.so`.
 | `GetBodyByItems` 0x7f0a4 | `body_by_items` |
 | `ClientCommand` 0xad838 (weapon part) | `commands::client_command` |
 | `UpdateClientData` 0xb0294 (weapon part) / `GetWeaponData` 0xb00ac / `CmdStart` 0xb067c | `protocol::weapons::pack_clientdata` / `pack_weapon_data` / `weapons::cmd_start` |
-| `adjust_weapon_value` 0x9eca4, `save_weapon_value` 0x9f044, `SendWeaponParams` 0x9eb98, `InformClientsOnWeaponsParams` 0x9eb14 | `custom.rs` (`loadweapons`, `saveweapons`, `CustomWP`; TS's file format and messages, the absorb values and the custom-weapons flag in the rules state, reset by `CTSGameRules::Init`: rules.md §2) |
+| `adjust_weapon_value` 0x9eca4, `save_weapon_value` 0x9f044, `SendWeaponParams` 0x9eb98, `InformClientsOnWeaponsParams` 0x9eb14 | `custom.rs` (`loadweapons`, `saveweapons`, `CustomWP`; TS's file format and messages, the absorb values and the custom-weapons flag in the rules state, reset by `CTSGameRules::Init`: rules.md §2; the weapon values last until the next map's `W_Precache`, `rebuild_weapon_info`) |
 | `CBasePlayer::Killed` 0x8ed5c (weapon part) | `inventory::on_killed` |
 | `TSPrecache` 0x9f320 (weapon loop) | `assets::precache_weapon_assets` (from `crate::precache::ts_precache`) |
 | `CBasePlayerWeapon::AddToPlayer` 0xf1e60 (weapon bit) | `add_gun` (`TSGUN_WEAPON_BIT`, bit 16), `add_cycler` (bit 0) |
@@ -640,7 +640,9 @@ How the port maps TS where the structure differs (not deviations):
   update timer only with a weapon (shared `deploy_with_a_weapon_updates_the_client_at_once`).
 * **Not yet tested in engine**: a thrown knife's kill naming the blade in `DeathMsg` and the log,
   ` (victims_weapon)` after picking up a victim's dropped gun, `loadweapons` then a map change
-  (no notice for new joiners, kevlar back at 0.2125).
+  (no notice for new joiners, kevlar back at 0.2125, the weapons back to the ruleset's values:
+  `W_Precache`'s `compile_weapons_info` rebuilds the table every map, `weapons::rebuild_weapon_info`,
+  also run by a ruleset switch's reset; unit test `a_new_map_drops_custom_weapon_values`).
 * **Not yet tested in engine**: the jump kick (#30): a running jump into a player with a weapon
   drawn (hit, move, cooldown, `closecombat.wav`, the bar), a blocking victim, a teammate, and
   none with kung fu out.

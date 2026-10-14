@@ -696,6 +696,12 @@ pub fn cmd_start(p: &mut Player, _cx: &mut Cx, _cmd: &usercmd_t, seed: u32) {
 
 // ---- API for other subsystems (rules: loadouts, ground weapons, power-ups) -------------------
 
+/// `compile_weapons_info` (0x7fe28, from `W_Precache` on every map): the weapon table is built
+/// again from the ruleset's values, so `loadweapons`' custom parameters end with the map.
+pub fn rebuild_weapon_info() {
+    shared::weapons::table::reset_custom_tables();
+}
+
 /// Gives weapon `id` with attachment bits. Returns false if it doesn't fit.
 /// (`CBasePlayer::PickUpWeapon(id, NULL, attachments, select = id != 29, own = false)`, what a
 /// `ts_groundweapon` does with its whole spawnflags.)
@@ -1005,6 +1011,19 @@ pub fn set_round_mode_items(allowed: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `W_Precache`'s `compile_weapons_info` (0x7fe28) drops `loadweapons`' values with the map.
+    /// (The custom set here holds the same values, so concurrent tests read the same numbers.)
+    #[test]
+    fn a_new_map_drops_custom_weapon_values() {
+        use shared::weapons::{id, info, table};
+        let w = info(id::AK47).unwrap().clone();
+        assert!(table::set_weapon_params(id::AK47, w.accuracy, w.view_kick, w.acc_kick, w.damage, w.cost));
+        assert!(table::custom_tables_active());
+        rebuild_weapon_info();
+        assert!(!table::custom_tables_active());
+        assert!(std::ptr::eq(table::tables(), table::ruleset_tables()));
+    }
 
     #[test]
     fn gun_weapon_bit_is_id_16() {

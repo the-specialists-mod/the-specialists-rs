@@ -276,6 +276,9 @@ fn precache_list(list: &[Asset]) {
 /// `UTIL_PrecacheOtherWeapon("weapon_tsgun")`), `ts_powerup`'s model, then the shared sprites,
 /// models and sounds.
 pub fn w_precache() {
+    // `compile_weapons_info`, which `W_Precache` calls among its `UTIL_PrecacheOther`s (none of
+    // them reads the table, so the order doesn't matter).
+    crate::weapons::rebuild_weapon_info();
     precache_list(W_PRECACHE_OTHERS);
     crate::weapons::precache_events();
     engine().precache_model(crate::entities::ts::powerup::MODEL);
