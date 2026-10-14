@@ -124,6 +124,13 @@ pub trait ServerRules: Sync {
     /// `CBasePlayer::Killed` (0x8ed5c) right after the respawn time is set. 3.0: nothing.
     fn on_killed(&self, _p: &mut Player, _cx: &mut Cx) {}
 
+    /// The tail of `CHalfLifeTeamplay::ChangePlayerTeam` (0xe488c), after `TeamInfo`/`ScoreInfo`
+    /// and before `TeamNames`; `kill` is the call's `bKill`. 3.0: [`teams::change_team_tail_core`]
+    /// (a change that isn't a kill observes with a 5 s respawn, outside The One mode).
+    fn change_team_tail(&self, p: &mut Player, cx: &mut Cx, kill: bool) {
+        teams::change_team_tail_core(p, cx, kill);
+    }
+
     /// The overheal and The One's regeneration in `CBasePlayer::PreThink` (0x908cc, `+0x73c`).
     fn health_regen(&self, p: &mut Player, cx: &mut Cx, now: f32) {
         lifecycle::health_regen_core(p, cx, now);

@@ -261,6 +261,7 @@ The hooks so far:
 | `ServerRules` | `on_init_hud(p, cx)` | nothing | `rules/lifecycle.rs` `ts_init_hud`, at its end |
 | `ServerRules` | `set_respawn_time(p, cx, secs)` | `rules::lifecycle::set_respawn_time_core` | `rules/lifecycle.rs` `set_respawn_time` |
 | `ServerRules` | `on_killed(p, cx)` | nothing | `rules/lifecycle.rs` `killed`, after the respawn time |
+| `ServerRules` | `change_team_tail(p, cx, kill)` | `rules::teams::change_team_tail_core` (not a kill, outside The One mode: observer, respawn in 5 s) | `rules/teams.rs` `change_team`, after `TeamInfo`/`ScoreInfo` |
 | `ServerRules` | `health_regen(p, cx, now)` | `rules::lifecycle::health_regen_core` | `rules/lifecycle.rs` `pre_think` |
 | `ServerRules` | `points_for_frag(frag, sliding, diving)` | `rules::scoring::points_for_frag` | `rules/scoring.rs` `player_killed_core` (and a plugin's own `player_killed`) |
 | `ServerRules` | `player_killed(p, cx, d, g)` | `rules::scoring::player_killed_core` | `rules/scoring.rs` `player_killed`, once the killer can be reached |

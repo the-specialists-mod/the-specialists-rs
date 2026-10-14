@@ -31,11 +31,17 @@ pub fn on_init_hud(p: &mut Player) {
     p.hud.cash = None;
 }
 
-/// `SetPlayerRespawnTime(p, secs, force)` (0x10042d50) without `force` (only the team change
-/// forces). Mode 3 limits respawns to `ts_mapglobals` `playerrespawn` per round (0 = none);
+/// `SetPlayerRespawnTime(p, secs, force)` (0x10042d50) without `force` (`Killed`, `InitHUD`).
+/// Mode 3 limits respawns to `ts_mapglobals` `playerrespawn` per round (0 = none);
 /// mode 2 and LMS (DM with `lastmanstanding` on, read live) to `respawnnumber` (at least 1);
 /// a limited respawn waits at most for the round's end, and the join deadline is 25 s at most.
 pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
+    set_respawn_time_with(p, cx, secs, false);
+}
+
+/// `SetPlayerRespawnTime` with its `force` argument, which only the team change sets: in mode 2,
+/// and in mode 3 with a `playerrespawn` limit, the player waits for the next round.
+pub fn set_respawn_time_with(p: &mut Player, cx: &mut Cx, secs: f32, force: bool) {
     let now = cx.time();
     let (mode, round_end) = state::with(|g| (g.mode, g.round_end));
     let per_round = crate::rules::with(|r| r.respawns_per_round);
@@ -49,6 +55,7 @@ pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
         now,
         round_end,
     );
+    let t = if force && force_waits(mode, per_round) { Respawn::Never } else { t };
     match t {
         Respawn::At(at) => p.respawn_at = at,
         Respawn::Limited { at, deadline } => {
@@ -58,6 +65,30 @@ pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
         Respawn::Never => p.respawn_at = -1.0,
     }
     p.ts.award = if p.respawn_at < 0.0 { 1 } else { 11 };
+}
+
+/// Where `SetPlayerRespawnTime`'s `force` sends the player to the next round (`respawn = -1`):
+/// mode 2 (its `force` test sits next to the `respawnnumber` one) and mode 3 when `playerrespawn`
+/// limits the respawns. Mode 3 without a limit and LMS DM ignore it.
+fn force_waits(mode: Mode, per_round: u8) -> bool {
+    match mode {
+        Mode::RoundTdm => true,
+        Mode::Objective => per_round != 0,
+        _ => false,
+    }
+}
+
+/// The 2.1 tail of `ChangePlayerTeam` (0x10038e99..0x10038ef3): a change that isn't a kill puts
+/// the player in observer with `SetPlayerRespawnTime(5, force)`, in The One mode too; then,
+/// kill or not, the cash is set to `(int)initial_cash` and gets the floor (`FUN_10042c90`).
+pub fn change_team_tail(p: &mut Player, cx: &mut Cx, kill: bool) {
+    if !kill {
+        let (o, a) = (cx.pev().origin, cx.pev().v_angle);
+        ts_server::rules::lifecycle::start_observer(p, cx, o, a);
+        set_respawn_time_with(p, cx, 5.0, true);
+    }
+    p.cash = cv::initial_cash_int();
+    cash::cash_floor(p);
 }
 
 /// When a player may respawn.
@@ -193,5 +224,24 @@ mod tests {
         assert_eq!(respawn_time(Mode::Objective, false, 0, 1.0, 9, 5.0, 100.0, 200.0), Respawn::At(105.0), "0 = unlimited");
         assert_eq!(respawn_time(Mode::Objective, false, 2, 1.0, 1, 5.0, 100.0, 200.0), Respawn::Limited { at: 105.0, deadline: 125.0 });
         assert_eq!(respawn_time(Mode::Objective, false, 2, 1.0, 2, 5.0, 100.0, 200.0), Respawn::Never);
+    }
+
+    #[test]
+    fn a_team_change_sits_out_the_round() {
+        // Issue #142: the team change's `force` waits for the next round in mode 2, and in mode
+        // 3 with a `playerrespawn` limit; elsewhere the plain respawn time stands.
+        assert!(force_waits(Mode::RoundTdm, 0));
+        assert!(force_waits(Mode::Objective, 2));
+        assert!(!force_waits(Mode::Objective, 0));
+        assert!(!force_waits(Mode::Dm, 0), "LMS DM ignores force");
+        assert!(!force_waits(Mode::TeamDm, 0));
+    }
+
+    #[test]
+    fn a_team_change_resets_the_cash_to_initial_cash() {
+        // `m_iCash = (int)initial_cash`, then the floor: 9000 becomes 3000 (round modes then take
+        // the team's cash when more).
+        assert_eq!(cash::floor(cv::trunc(3000.0), 3000.0), 3000);
+        assert_eq!(cash::floor(cv::trunc(800.9), 800.9), 800);
     }
 }
