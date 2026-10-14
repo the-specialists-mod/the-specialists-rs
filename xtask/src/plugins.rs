@@ -103,18 +103,18 @@ impl Ctx {
         self.install_fixtures(&t, &dlls);
         let map = "ts_dojo";
         say!("== {}: tsmod_* plugins and the test bot backend, {map}, port {port}", root.name);
-        // The first map runs native; its server config selects the test backend and changes the
-        // map (`ts_bot_backend` is read at map start), and the second map's config adds bots.
+        // The first map runs native; its server config selects the test backend, which reloads
+        // the map (`ts_bot_backend` is read at map start; no `changelevel`), and sets
+        // `ts_gameplay` to 2.1 and back, which must not. The reloaded map's config (and every
+        // later map's) adds bots and names the running backend in capitals: no second reload.
         fs::write(
             gamedir.join("xtask_plugins.cfg"),
-            format!(
-                "// Written by cargo xtask plugins.\nexec server.cfg\nts_bot_quota 2\nts_bot_backend test\nservercfgfile xtask_plugins2.cfg\nchangelevel {map}\n"
-            ),
+            "// Written by cargo xtask plugins.\nexec server.cfg\nts_bot_quota 2\nts_bot_backend test\nts_gameplay 21\nts_gameplay 30\nservercfgfile xtask_plugins2.cfg\n",
         )
         .unwrap();
         fs::write(
             gamedir.join("xtask_plugins2.cfg"),
-            "// Written by cargo xtask plugins.\nts_bot_quota 2\naddbot\naddcustombot \"Custom Test\" \"\" 0.5\n",
+            "// Written by cargo xtask plugins.\nts_bot_quota 2\nts_bot_backend TEST\naddbot\naddcustombot \"Custom Test\" \"\" 0.5\n",
         )
         .unwrap();
         let log = root.log_path();
@@ -158,6 +158,18 @@ impl Ctx {
     }
 }
 
+/// The server config's `ts_bot_backend test` (and `ts_gameplay` 21 and back): the Steam engines run
+/// the config once the first map has loaded, so it reloads that map once, for the backend; FWGS's
+/// dedicated server also runs it before the first map, which then starts with the test backend and
+/// needs no reload. Never a reload for the ruleset, never a second one.
+fn server_config_reload_ok(text: &str) -> bool {
+    let reloads = text.matches(": reloading ").count();
+    let backend = text.matches("[ts] bots: backend test: reloading ts_dojo").count();
+    let first_backend = text.lines().find_map(|l| l.split_once("[ts] bots: backend ").map(|(_, b)| b.trim_end().to_owned()));
+    let no_ruleset = !text.contains("[ts] gameplay: ruleset 21");
+    no_ruleset && (reloads == 1 && backend == 1 || reloads == 0 && first_backend.as_deref() == Some("test"))
+}
+
 /// The checks on a `plugins` run's log.
 pub fn plugin_checks(text: &str, t: &Target, up: bool) -> Vec<(String, bool)> {
     let sfx = suffix(t);
@@ -174,7 +186,11 @@ pub fn plugin_checks(text: &str, t: &Target, up: bool) -> Vec<(String, bool)> {
         ("the other architecture skipped".into(), line(format!("tsmod_wrongarch{sfx}"), "built for")),
         ("junk skipped".into(), line(format!("tsmod_junk{sfx}"), "not a library")),
         ("another platform's name skipped".into(), line(format!("tsmod_otherplat{}", suffix(other_os)), "library (this server is")),
-        ("the test backend selected".into(), text.contains("[ts] bots: backend test")),
+        ("the test backend selected".into(), text.lines().any(|l| l.trim_end().ends_with("[ts] bots: backend test"))),
+        (
+            "ts_bot_backend test in the server config: at most one reload of ts_dojo, none for ts_gameplay 21 and back".into(),
+            server_config_reload_ok(text),
+        ),
         (
             "no plugin check failed".into(),
             !text.contains("check") || !text.lines().any(|l| l.contains("[tsmod_test]") && l.contains("FAIL")),
@@ -214,7 +230,7 @@ mod tests {
     #[test]
     fn a_passing_log() {
         let t = Target::LINUX_X86_64;
-        let mut log = String::from("[ts] GameInit: x\n[ts] bots: backend test\n");
+        let mut log = String::from("[ts] GameInit: x\n[ts] bots: backend test: reloading ts_dojo\n[ts] bots: backend test\n");
         for l in [
             "loaded tsmod_test_amd64.so (tsmod_test 1)",
             "tsmod_test_badver_amd64.so: built for plugin API version 4, this server has version 3, skipped",
@@ -234,5 +250,19 @@ mod tests {
         assert!(checks.iter().all(|(_, ok)| *ok), "{checks:?}");
         let bad = plugin_checks(&format!("{log}[tsmod_test] error: check moved FAIL\n"), &t, true);
         assert!(bad.iter().any(|(w, ok)| w == "no plugin check failed" && !ok));
+        let looped = plugin_checks(&format!("{log}[ts] bots: backend test: reloading ts_dojo\n"), &t, true);
+        assert!(looped.iter().any(|(w, ok)| w.contains("one reload") && !ok), "a second reload fails");
+    }
+
+    /// The server config's reload, as the Steam engines and FWGS log it.
+    #[test]
+    fn server_config_reload() {
+        let steam = "[ts] bots: backend native\n[ts] bots: backend test: reloading ts_dojo\n[ts] bots: backend test\n";
+        let fwgs = "[01:40:37] [ts] bots: backend test\r\n";
+        assert!(server_config_reload_ok(steam));
+        assert!(server_config_reload_ok(fwgs), "the config ran before the first map");
+        assert!(!server_config_reload_ok("[ts] bots: backend native\n[ts] bots: backend test\n"), "a changelevel, not a reload");
+        assert!(!server_config_reload_ok(&format!("{steam}[ts] bots: backend test: reloading ts_dojo\n")), "twice");
+        assert!(!server_config_reload_ok(&format!("{fwgs}[ts] gameplay: ruleset 21: reloading ts_dojo\n")), "the ruleset's");
     }
 }

@@ -2,8 +2,8 @@
 
 The port can run more than one ruleset (issue #100). TS 3.0's rules are the **core plugin**
 (`"30"`). Each other ruleset is a separate in-process Rust plugin. The first is TS 2.1
-([ts21.md](ts21.md)). The server cvar `ts_gameplay` picks the one a map runs, at the map's start
-(§4).
+([ts21.md](ts21.md)). The server cvar `ts_gameplay` picks the one a map runs, at the map's start;
+changing it reloads the map (§4).
 
 The plugins keep each ruleset's code apart from 3.0's. The 3.0 crates (`shared`, `ts-server`,
 `ts-client`) contain no code, constants or `if`s for another ruleset. They call **hooks** at the
@@ -25,8 +25,10 @@ crates/
   server/src/gameplay/
     mod.rs    ServerPlugin { pm, gun, server } and CORE_PLUGIN, the server registry, active(),
               the per-call resolvers, the latch at a map start (map_select, map_start,
-              exec_server_config, frame), the client check (refuse_client)
+              wanted_id), the client check (refuse_client)
     server.rs ServerRules: server-only hooks; ConnectingClient
+  server/src/reload.rs
+              the reload on a change of ts_gameplay or ts_bot_backend (§4)
   client/src/gameplay/
     mod.rs    ClientPlugin { pm, gun, client } and CORE_PLUGIN, the client registry, resolvers
     client.rs ClientRules: client-only hooks (HUD, input)
@@ -77,7 +79,7 @@ plugin's own statics (`goldsrc::Global` with a `Cell`/`RefCell`, as the game cra
 
 | What | Server | Client |
 |---|---|---|
-| The choice | `ts_gameplay` (`FCVAR_SERVER`, default `"30"`, port addition). Read at each map start (§4). | — |
+| The choice | `ts_gameplay` (`FCVAR_SERVER`, default `"30"`, port addition). Read at each map start; a change reloads the map (§4). | — |
 | Shared code (movement, gun) | Physinfo key `gp`, set at every spawn next to `mj`/`hl` (`rules/lifecycle.rs`, `stunt/mod.rs`, `player/save.rs`) | `pmove->physinfo` / `clientdata_t::physinfo` (`gp`) |
 | HUD | — | `SrvSett` key 4, value = the id as a number. Sent in `InitHUD` after keys 0..3. TS 3.0's client ignores it (its handler, client.dll 0x1004b840, switches on keys 0..3 only). |
 | Versions (port addition, `shared::protocol::port`) | The port client's userinfo key `_tsrs` (its version; §4.2) | `SrvSett` keys 5, 6, 7: the server library's major, minor and patch version, after key 4. Shown in the buy menu (§4.3). |
@@ -109,33 +111,51 @@ prediction run the same rules for the same command, as they must.
 
 ## 4. The ruleset is chosen at a map start
 
-`ts_gameplay` applies only at a map change (issue #100 §1.1, §1.3). A new map is the fresh state:
+`ts_gameplay` is read only at a map start (issue #100 §1.1, §1.3). A new map is the fresh state:
 the engine reloads the map, the rules are built again and every client goes through
 `ClientConnect`, `ClientPutInServer` and `InitHUD` again, so nothing carries over between
-rulesets and nothing is ever converted. There is no reset of a running game.
+rulesets and nothing is ever converted. There is no reset of a running game: a change reloads
+the map instead.
 
 * **Map start.** `rules::install` (worldspawn's `InstallGameRules`, after `exec game.cfg` has run)
   calls `gameplay::map_select()`, which makes the plugin `ts_gameplay` selects active for the
   whole map before the rules are built (so its `ServerRules::install` decides them), with its
   weapon tables, and logs `[ts] gameplay: ruleset N for this map`. After the rules,
   `gameplay::map_start()` calls its `on_activate()`.
-* **Mid-map.** A change does nothing until the next map (`changelevel`, `map`, the map cycle).
-  `gameplay::frame()` (start of `rules::start_frame`) tells the console once per value:
-  `[ts] gameplay: ts_gameplay is "21"; ruleset 21 takes effect at the next map (this map runs 30)`.
+* **A change reloads the map** (the user's decision, #100). `reload::frame()` (start of
+  `rules::start_frame`) compares, every frame, the ruleset `ts_gameplay` resolves to
+  (`gameplay::wanted_id`) and the backend `ts_bot_backend` resolves to (`bot_backend::wanted`,
+  [bot-plugins.md](bot-plugins.md) §3) with what the map runs. When either differs at one frame
+  and still differs at the next, the console says `[ts] gameplay: ruleset 21: reloading ts_dojo`
+  (and `[ts] bots: backend <name>: reloading <map>` for the backend) and the server changes level
+  to the same map (`pfnChangeLevel`), whose map start reads both cvars as above. It doesn't
+  matter where the change came from: the console, rcon, the server config, a script.
+  * *Debounced:* a config that sets both cvars, or sets one and then back, reloads once or not at
+    all; the reload is for the values of the second frame.
+  * *Resolved values:* an unknown id is the core plugin (with the warning of §2) and an unknown
+    backend native, so a value that falls back to what runs does nothing and can't reload in a
+    loop. `ts_bot_backend NATIVE` while native runs is no change.
+  * *One per map:* once a reload is asked for, nothing more until the next map start.
+  * *No loop through a map start:* if the map a reload started still runs something else
+    (`game.cfg`, which runs inside the map start, sets the value back), the console says
+    `[ts] the map start set ruleset 30 / bot backend native (game.cfg?), not 21 / native; not
+    reloading for that again`, and that selection isn't reloaded for until the cvars select
+    something else.
+  * *Timing:* FWGS defers `pfnChangeLevel` to the end of the host frame (`COM_ChangeLevel`), so
+    the reload happens even while a `wait` script runs. The Steam engines (HLDS, ReHLDS, HL25)
+    queue `changelevel <map>` in the console buffer (`PF_changelevel_I`), so there it runs after a
+    running `wait` script (AGENTS.md pitfalls); from the console, rcon or a config it runs at once.
 * **The server config.** The engines run the server config (`servercfgfile`, `lservercfgfile` on
   a listen server) only once the map has loaded (TS's `CHalfLifeMultiplay` constructor queues
-  it), after `map_select`. So that a `ts_gameplay` set there applies to the map that ran it,
-  `gameplay::exec_server_config` queues the `exec` between the two halves of a port command,
-  `_ts_gameplay_mapcfg <serial> begin|end`. If the config's own commands changed `ts_gameplay` to
-  another ruleset, the map is loaded again under it (`changelevel` to the same map, before anyone
-  has joined) with `[ts] gameplay: the server config chose ruleset N; loading <map> again under
-  it`. A change made before the config ran (a running `wait` script, the console) isn't the
-  config's and waits for the next map. The serial (one per map start) makes a check left behind a
-  `wait` script from an earlier map do nothing.
+  it), after `map_select`. A `ts_gameplay` it sets is a change like any other, so the first map
+  is reloaded under it before anyone has joined; when the config runs again on the reloaded map
+  (and every later one), it sets what the map already runs and nothing happens. FWGS's dedicated
+  server also runs the server config once before the first map, so there the first map already
+  starts under it and isn't reloaded (`cargo xtask plugins` sees both).
 
-So `ts_gameplay` can be set before a map starts: in `game.cfg`, in the server config (through
-`+servercfgfile`), at the console or by rcon before `map`/`changelevel`. On the command line,
-`+ts_gameplay` doesn't work, as for every game cvar (AGENTS.md pitfalls).
+So `ts_gameplay` can be set in `game.cfg` (it applies to the map being loaded), in the server
+config (through `+servercfgfile`), at the console or by rcon (each reloads the current map). On
+the command line, `+ts_gameplay` doesn't work, as for every game cvar (AGENTS.md pitfalls).
 
 On the client, each `InitHUD` clears the ruleset the HUD holds (`Hud::gameplay`), and the
 `SrvSett` 4 after it records the map's; a new map already resets the client (`HUD_VidInit`). The
@@ -149,8 +169,10 @@ Cvars keep their values (a map start runs `game.cfg` and the server config again
 engine keeps across a level change stay, and the quota picks them up (`bot_backend::quota`).
 Client-side settings that aren't game state (voice) stay.
 
-Tested in-engine on FWGS listen servers on `ts_dojo` (`cargo xtask play`, "Gameplay at a map
-change"). Dedicated servers on the Steam engines and the team modes are still to be checked
+Tested in-engine on FWGS listen servers on `ts_dojo` (`cargo xtask play`, "Gameplay reload"),
+and the server config's reload (for `ts_bot_backend`, with `ts_gameplay` set and back) on every
+engine's dedicated server (`cargo xtask plugins`). A `ts_gameplay` reload on the Steam engines'
+dedicated servers and the team modes are still to be checked
 (issue #103).
 
 ### 4.2 Only the port's client plays a ruleset other than 3.0
@@ -455,5 +477,5 @@ checks the isolation:
   shared -p ts-gameplay --no-default-features`: the libraries build without the TS 2.1 plugin,
   and the 3.0 tests pass.
 
-`cargo xtask play` changes the ruleset at a map change and back ([validation.md](../validation.md)
-§2, "Gameplay at a map change").
+`cargo xtask play` sets the ruleset to 2.1 and back, each reloading the map
+([validation.md](../validation.md) §2, "Gameplay reload").

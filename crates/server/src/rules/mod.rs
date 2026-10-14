@@ -166,6 +166,8 @@ pub fn install() {
     exec_server_config();
     // Port addition: the selected gameplay plugin takes over the new game.
     crate::gameplay::map_start();
+    // Port addition: what a reload asked for is what this map runs (or a map start set it back).
+    crate::reload::map_start();
 }
 
 /// The rules of a new game: the rules decided and built, and `CTSGameRules::Init`'s node graph
@@ -194,8 +196,8 @@ fn exec_server_config() {
         return;
     }
     e.alert(ALERT_TYPE::at_console, &format!("Executing {what} server config file\n"));
-    // Port addition: wrapped in a check, as the config may choose another gameplay ruleset.
-    crate::gameplay::exec_server_config(&format!("exec {file}\n"));
+    // A `ts_gameplay` or `ts_bot_backend` the config changes reloads the map (`crate::reload`).
+    e.server_command(&format!("exec {file}\n"));
 }
 
 /// `ServerActivate` (0xae928): `Activate` on the map's entities (`entities::server_activate`),
@@ -213,9 +215,9 @@ pub fn server_deactivate() {
 
 /// Called every server frame (`pfnStartFrame`).
 pub fn start_frame() {
-    // Port addition: a `ts_gameplay` change waits for the next map; the console says so.
+    // Port addition: a `ts_gameplay` or `ts_bot_backend` change reloads the map.
     if state::with(|g| g.installed) {
-        crate::gameplay::frame();
+        crate::reload::frame();
     }
     frame::think();
 }

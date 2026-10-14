@@ -812,58 +812,62 @@ fn akimbo_checks(text: &str) -> Vec<(&'static str, bool)> {
     vec![("akimbo free semi: both triggers fire both guns (linked), then each trigger its own gun", kinds == ["linked", "b0", "b1"])]
 }
 
-/// The gameplay ruleset at a map change (issue #100 §1.1, `docs/implementation/gameplay-plugins.md`
-/// §4), with the four quota bots playing on `map`: `ts_gameplay 21` mid-map only says it waits for
-/// the next map, and the map goes on under 3.0; `changelevel` starts the map under 2.1 (the server's
-/// 2.1 rules, physinfo `gp` 21, the client's `SrvSett` 4) and the bots play it; `ts_gameplay 30` and
-/// `changelevel` bring 3.0 back, and the host joins through the buy menu as at the start.
-fn script_gameplay_switch(map: &str) -> String {
+/// The gameplay ruleset and a reload (issues #100, #104, `docs/implementation/gameplay-plugins.md`
+/// §4), with the four quota bots playing on `map`. `ts_gameplay 21` and straight back to 30 in one
+/// line, and `ts_bot_backend NATIVE` (the running backend under another spelling), change nothing
+/// the map runs: no reload, the scores are kept. `ts_gameplay 21` alone reloads the map under 2.1
+/// (the server's 2.1 rules, physinfo `gp` 21, the client's `SrvSett` 4) without a `changelevel`,
+/// once, and the bots play it; `ts_gameplay 30` reloads it under 3.0, and the host joins through
+/// the buy menu as at the start.
+fn script_gameplay_switch() -> String {
     let mut s = status("before switch");
-    s += &format!("echo XTASK: gameplay 21\nts_gameplay 21\n{}", secs(1.5));
-    s += &status("latched");
-    s += &format!("echo XTASK: changelevel 21\nchangelevel {map}\n{}", secs(15.0));
+    s += &format!("echo XTASK: gameplay set and back\nts_gameplay 21;ts_gameplay 30\nts_bot_backend NATIVE\n{}", secs(1.5));
+    s += &status("kept");
+    s += &format!("ts_bot_backend native\necho XTASK: gameplay 21\nts_gameplay 21\n{}", secs(15.0));
     s += &status("map 21");
-    s += &format!("echo XTASK: changelevel 30\nts_gameplay 30\nchangelevel {map}\n");
+    s += "echo XTASK: gameplay 30\nts_gameplay 30\n";
     s += &script_join_and_spawn();
     s + &status("map 30")
 }
 
-fn gameplay_switch_checks(text: &str, dumps: &[(String, Vec<PlayerStatus>)]) -> Vec<(&'static str, bool)> {
+fn gameplay_switch_checks(text: &str, dumps: &[(String, Vec<PlayerStatus>)], map: &str) -> Vec<(&'static str, bool)> {
     let dump = |tag: &str| dumps.iter().find(|d| d.0 == tag).map(|d| d.1.clone()).unwrap_or_default();
     let after = |marker: &str| text.split_once(marker).map_or("", |(_, a)| a);
     // Each part of the log, up to the next scene marker.
     let part = |from: &str, to: &str| after(from).split_once(to).map_or(after(from), |(a, _)| a);
-    let mid_map = part("XTASK: gameplay 21", "XTASK: changelevel 21");
-    let map21 = part("XTASK: changelevel 21", "XTASK: changelevel 30");
-    let map30 = after("XTASK: changelevel 30");
+    let mid_map = part("XTASK: gameplay set and back", "XTASK: gameplay 21");
+    let map21 = part("XTASK: gameplay 21", "XTASK: gameplay 30");
+    let map30 = after("XTASK: gameplay 30");
     let gp = |tag: &str, id: &str| {
         let d: Vec<PlayerStatus> = dump(tag).into_iter().filter(|p| p.state == "alive").collect();
         !d.is_empty() && d.iter().all(|p| p.gp == id)
     };
-    let (before, latched) = (dump("before switch"), dump("latched"));
+    let (before, kept_dump) = (dump("before switch"), dump("kept"));
     let kept = before.iter().any(|p| p.frags != 0 || p.deaths != 0)
-        && before.iter().all(|p| latched.iter().any(|q| q.idx == p.idx && q.frags >= p.frags && q.deaths >= p.deaths));
+        && before.iter().all(|p| kept_dump.iter().any(|q| q.idx == p.idx && q.frags >= p.frags && q.deaths >= p.deaths));
     let bots21 = dump("map 21").iter().filter(|p| p.idx != 1 && p.state == "alive").count();
-    say!("   gameplay at a map change: scores kept mid-map {kept}; bots alive on the 2.1 map {bots21}");
+    let reloads = |part: &str| part.matches(": reloading ").count();
+    say!("   gameplay reload: scores kept with no change {kept}; bots alive on the 2.1 map {bots21}");
     vec![
         (
-            "ts_gameplay 21 mid-map: only a console note; the map keeps running 3.0 (gp 30, scores kept)",
-            mid_map.contains("ruleset 21 takes effect at the next map (this map runs 30)")
-                && !mid_map.contains("[ts] gameplay: ruleset 21 for this map")
-                && gp("latched", "30")
-                && kept,
+            "ts_gameplay 21 and back at once, ts_bot_backend NATIVE: no reload, the map keeps running 3.0 (gp 30, scores kept)",
+            reloads(mid_map) == 0 && !mid_map.contains("[ts] gameplay: ruleset ") && gp("kept", "30") && kept,
         ),
         (
-            "changelevel: the map runs 2.1 (2.1's rules, physinfo gp 21, the client's SrvSett 4) and the bots play it",
-            map21.contains("[ts] gameplay: ruleset 21 for this map")
+            "ts_gameplay 21: one reload of the map under 2.1 (2.1's rules, physinfo gp 21, the client's SrvSett 4), the bots play it",
+            map21.contains(&format!("[ts] gameplay: ruleset 21: reloading {map}"))
+                && reloads(map21) == 1
+                && map21.contains("[ts] gameplay: ruleset 21 for this map")
                 && map21.contains("[ts] game rules (2.1): ")
                 && map21.contains("[ts] gameplay: the server runs ruleset 21")
                 && gp("map 21", "21")
                 && bots21 >= 3,
         ),
         (
-            "ts_gameplay 30 + changelevel: 3.0 again, and the host joined and spawned through the buy menu",
-            map30.contains("[ts] gameplay: ruleset 30 for this map")
+            "ts_gameplay 30: one reload under 3.0, and the host joined and spawned through the buy menu",
+            map30.contains(&format!("[ts] gameplay: ruleset 30: reloading {map}"))
+                && reloads(map30) == 1
+                && map30.contains("[ts] gameplay: ruleset 30 for this map")
                 && map30.contains("[ts] game rules: ")
                 && map30.contains("[ts] gameplay: the server runs ruleset 30")
                 && gp("map 30", "30")
@@ -1228,9 +1232,9 @@ impl Ctx {
         }
         cfg += &shot("bots");
 
-        // 8b. the gameplay ruleset at a map change: 2.1 for one map, then 3.0 again (the bots play
-        // on, the host joins again)
-        cfg += &script_gameplay_switch("ts_dojo");
+        // 8b. the gameplay ruleset: setting ts_gameplay reloads the map, under 2.1 and then 3.0
+        // again (the bots play on, the host joins again)
+        cfg += &script_gameplay_switch();
         cfg += "ts_bot_quota 0\n";
 
         // 9. `addbot` (TS's listen-server bots), then Escape last: its `escape` opens the menu
@@ -1305,8 +1309,10 @@ impl Ctx {
         let at = checks.iter().position(|c| c.0 == "ts_bot_quota 1 added a bot").map_or(checks.len(), |i| i + 1);
         checks.splice(at..at, laser_checks(text).into_iter().chain(akimbo_checks(text)));
         let at = checks.len() - 1;
-        checks
-            .splice(at..at, gameplay_switch_checks(text, &dumps).into_iter().chain(addbot_checks(text, &dumps)).chain(escape_checks(text)));
+        checks.splice(
+            at..at,
+            gameplay_switch_checks(text, &dumps, "ts_dojo").into_iter().chain(addbot_checks(text, &dumps)).chain(escape_checks(text)),
+        );
         self.report(root, "play", &run, &checks)
     }
 

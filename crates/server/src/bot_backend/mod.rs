@@ -1,6 +1,7 @@
 //! Bot backends (port addition, issue #104; docs/implementation/bot-plugins.md). TS's bots are
 //! one backend among several: the server reaches them only through [`BotBackend`], and the
-//! server cvar `ts_bot_backend` picks the backend when a map starts ([`map_start`]).
+//! server cvar `ts_bot_backend` picks the backend when a map starts ([`map_start`]); a change
+//! mid-map reloads the map ([`crate::reload`]).
 //!
 //! * `native`: TS's own bots, the AI ported from `mp.dll` ([`crate::bots`], the default).
 //! * a name a plugin registered (`tsmod_*` libraries, [`crate::plugins`]): `ts-server-dll`
@@ -182,25 +183,34 @@ pub fn select(names: &[&str], value: &str) -> Option<usize> {
     names.iter().position(|n| n.eq_ignore_ascii_case(v))
 }
 
-/// Map start (`rules::install`, after `game.cfg` ran and before the rules' `Init`): reads
-/// `ts_bot_backend` and makes that backend active. A change deactivates the old one and kicks the
-/// bots it made (the quota adds the new backend's). An unknown name warns once and keeps native.
-pub fn map_start() {
-    let eng = engine();
-    let value = eng.cvar_string(c"ts_bot_backend").to_string_lossy().into_owned();
-    let (old, new, unknown) = {
+/// The backend `ts_bot_backend` selects now: an unknown name warns once and is native. What a map
+/// start makes active, and what [`crate::reload`] compares with [`active`].
+pub fn wanted() -> Rc<dyn BotBackend> {
+    let value = engine().cvar_string(c"ts_bot_backend").to_string_lossy().into_owned();
+    let (pick, unknown) = {
         let r = REGISTRY.0.borrow();
         let names: Vec<&str> = r.backends.iter().map(|b| b.name()).collect();
         let pick = select(&names, &value);
         let native = names.iter().position(|n| *n == NATIVE).unwrap_or(0);
-        let new = r.backends.get(pick.unwrap_or(native)).cloned();
-        (r.active.clone(), new, pick.is_none())
+        (r.backends.get(pick.unwrap_or(native)).cloned(), pick.is_none())
     };
-    let Some(new) = new else { return };
     if unknown && !REGISTRY.0.borrow().warned.contains(&value) {
         REGISTRY.0.borrow_mut().warned.push(value.clone());
-        eng.print(&format!("[ts] bots: unknown ts_bot_backend \"{value}\", using native\n"));
+        engine().print(&format!("[ts] bots: unknown ts_bot_backend \"{value}\", using native\n"));
     }
+    pick.unwrap_or_else(active)
+}
+
+/// Map start (`rules::install`, after `game.cfg` ran and before the rules' `Init`): reads
+/// `ts_bot_backend` and makes that backend active. A change deactivates the old one and kicks the
+/// bots it made (the quota adds the new backend's). A change mid-map reloads the map
+/// ([`crate::reload`]).
+pub fn map_start() {
+    if REGISTRY.0.borrow().backends.is_empty() {
+        return;
+    }
+    let new = wanted();
+    let old = REGISTRY.0.borrow().active.clone();
     let changed = old.as_ref().is_none_or(|o| !Rc::ptr_eq(o, &new));
     if !changed {
         return;
@@ -210,7 +220,7 @@ pub fn map_start() {
         kick_all_but(new.name());
     }
     REGISTRY.0.borrow_mut().active = Some(new.clone());
-    eng.print(&format!("[ts] bots: backend {}\n", new.name()));
+    engine().print(&format!("[ts] bots: backend {}\n", new.name()));
     new.activate();
 }
 

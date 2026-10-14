@@ -60,7 +60,7 @@ pub const CVARS: &[(&str, &str, i32)] = &[
     // Port addition: 1 = bots stand still and hold fire (they still respawn), for scripted tests.
     ("ts_bot_stop", "0", 0),
     // Port addition: the bot backend, read at map start (`bot_backend::map_start`): `native` (TS's
-    // bots) or a name a `tsmod_*` plugin registered.
+    // bots) or a name a `tsmod_*` plugin registered. A change mid-map reloads the map (`reload`).
     ("ts_bot_backend", "native", 0),
 ];
 
@@ -77,7 +77,7 @@ pub fn register() {
     // Port addition. Not in `CVARS`: `pm_arith` keeps the pointer, as it reads it every command.
     let e = engine();
     PM_ARITH.0.set(Some(e.register_cvar("ts_pm_arith", "msvc", SERVER)));
-    // Port addition, kept like `ts_pm_arith`: read every frame (`crate::gameplay::frame`).
+    // Port addition, kept like `ts_pm_arith`: read every frame (`crate::reload::frame`).
     GAMEPLAY.0.set(Some(e.register_cvar(ts_gameplay::CVAR, ts_gameplay::DEFAULT_ID, SERVER)));
 }
 
