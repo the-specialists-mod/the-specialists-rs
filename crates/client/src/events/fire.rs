@@ -1,7 +1,7 @@
 //! `EV_TS_Fire` (`0x1003de40`) and its variants, `EV_TS_FireBullets` (`0x100450c0`), shell
 //! ejection (`0x10056890`) and client bullets (`ClientBullets_*`, `0x10035b50`...).
 
-use super::impact::{self, AMMO_ATTENUATION, MAX_RANGE, SPREAD_RADIUS};
+use super::impact::{self, MAX_RANGE, SPREAD_RADIUS};
 use super::random::shared_random_float;
 use super::{Args, first_person_view_model, info, slow_pitch};
 use crate::effects::psys::{self, Camera, heron_height};
@@ -79,7 +79,8 @@ impl Shot {
         let (fwd, right, up) = a.vectors();
         let shell_name = tables().asset(id as u8).map(|s| s.shell.clone()).unwrap_or_default();
         let shell = if shell_name.is_empty() { 0 } else { r::model_index(&format!("models/{shell_name}.mdl")) };
-        let shell_right = if id == 17 { r::random_long(-40, 40) } else { r::random_long(120, 140) } as f32;
+        let rules = crate::gameplay::current();
+        let shell_right = rules.shell_side_speed(id) as f32;
         Shot {
             id,
             silenced: a.i2 & 1 != 0,
@@ -87,7 +88,7 @@ impl Shot {
             right,
             up,
             shell,
-            shell_snd: if id == 11 { 2 } else { 1 },
+            shell_snd: rules.shell_sound(id),
             shell_right,
             shell_r: r::random_long(50, 100) as f32,
         }
@@ -134,7 +135,7 @@ fn gun_fx(a: &Args, s: &Shot, at: &FxAt, third: bool, pump: bool, pellets: i32) 
         if pump {
             fx::gun_smoke(ps, now, if third { 24.0 } else { 16.0 }, r::random_long(5, 10), muzzle, vel, fwd, 24.0, false);
         } else if !s.silenced {
-            let rate = if s.id == 33 { r::random_long(5, 10) } else { r::random_long(45, 55) };
+            let rate = crate::gameplay::current().gun_smoke_rate(s.id);
             fx::gun_smoke(ps, now, 16.0, rate, muzzle, vel, fwd, 24.0, false);
         } else {
             fx::gun_smoke(ps, now, 8.0, r::random_long(50, 60), muzzle, vel, fwd, 24.0, false);
@@ -158,7 +159,7 @@ fn gun_fx(a: &Args, s: &Shot, at: &FxAt, third: bool, pump: bool, pellets: i32) 
                 0.5,
                 7,
                 0.0,
-                0.0,
+                crate::gameplay::current().pellet_spray_gravity(),
                 true,
                 false,
             );
@@ -277,7 +278,7 @@ fn muzzle_light(a: &Args, s: &Shot) {
 fn fire_sound(a: &Args, id: i32, silenced: bool) {
     let Some(asset) = tables().asset(id as u8) else { return };
     let ammo = tables().weapon(id as u8).map_or(0, |w| w.ammo) as usize;
-    let atten = AMMO_ATTENUATION.get(ammo).copied().unwrap_or(0.4);
+    let atten = crate::gameplay::current().ammo_attenuation(ammo);
     let roll = r::random_long(-5, 5);
     let pitch = roll + super::weapon_fire_pitch();
     let (sample, vol, attn) = fire_sample(&asset.sound, &asset.sound2, silenced);
@@ -490,14 +491,16 @@ pub fn fire_bullets(b: &Bullets) {
     }
 
     let end = r::player_trace(b.src, v::ma(b.src, 4096.0, b.dir), 2, PM_STUDIO_BOX as i32, -1).endpos;
-    whizz(b, end);
-    // Particle push: ×8 for buckshot (ammo 3), with a swirl for ammo 5, 8 and 13.
-    let push = if b.ammo == 3 { b.dmg * 8.0 } else { b.dmg };
-    let swirl = matches!(b.ammo, 5 | 8 | 13);
-    effects::with_psys(|ps| {
-        ps.push_radial(b.src, 512.0, push);
-        ps.push_along_line(b.src, end, push, swirl);
-    });
+    if crate::gameplay::current().bullet_whizz_and_push() {
+        whizz(b, end);
+        // Particle push: ×8 for buckshot (ammo 3), with a swirl for ammo 5, 8 and 13.
+        let push = if b.ammo == 3 { b.dmg * 8.0 } else { b.dmg };
+        let swirl = matches!(b.ammo, 5 | 8 | 13);
+        effects::with_psys(|ps| {
+            ps.push_radial(b.src, 512.0, push);
+            ps.push_along_line(b.src, end, push, swirl);
+        });
+    }
 
     // TS's shared trace (`0x1018a110`) last ended at the whizz trace's end; each pellet trace
     // moves it on, hit or miss.

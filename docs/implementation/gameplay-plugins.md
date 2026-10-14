@@ -334,6 +334,18 @@ The hooks so far:
 | `ClientRules` | `client_bullet_range_index(dist, unit, exit)` | exit `ftol(dist·0.0033333334f·10)`, else `range_index` | `events/fire.rs` `client_bullet_impact` |
 | `ClientRules` | `client_bullet_draws(time_scale, slowmo_factor100)` | `ts < 0.99` | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `client_bullet_draw(bullet, draw)` | false: the core `shotgun_pellets.spr` streaks and `bullet_trail.spr` trail; a ruleset may queue `BulletModels`, which `effects::create_entities` adds (`goldsrc::ext::models`) | `events/fire.rs` `client_bullets_frame` |
+| `ClientRules` | `fx_style()` | `FxStyle::TS30`: the muzzle flash, gun smoke, impact smoke, puff and debris parameters | `effects/fx.rs` builders |
+| `ClientRules` | `impact_particles(ps, now, pos, n, tex, bullet_type)` | false: `fx::impact`'s body | `effects/fx.rs` `impact` |
+| `ClientRules` | `gun_smoke_rate(id)` | `RandomLong(5, 10)` for 33, else `RandomLong(45, 55)` | `events/fire.rs` `gun_fx` |
+| `ClientRules` | `pellet_spray_gravity()` | 0 | `events/fire.rs` `gun_fx` |
+| `ClientRules` | `shell_side_speed(id)` / `shell_sound(id)` | `RandomLong(-40, 40)` for 17, else `RandomLong(120, 140)` / 2 for 11, else 1 | `events/fire.rs` `Shot::new` |
+| `ClientRules` | `ammo_attenuation(ammo)` | `AMMO_ATTENUATION`, 0.4 past it | `events/fire.rs` `fire_sound` |
+| `ClientRules` | `bullet_whizz_and_push()` | true | `events/fire.rs` `fire_bullets` |
+| `ClientRules` | `bullet_material_sound()` / `ricochet_pitch(ts, factor)` | 0.97 and `slow_pitch` / `fire_pitch` | `events/impact.rs` `texture_sound` |
+| `ClientRules` | `event_sound()` | `RandomFloat(0.92, 1)`, `ATTN_NORM`, `slow_pitch` | `events/misc.rs` (empty, pump, reload, melee) |
+| `ClientRules` | `melee_material_sound(tex)` | 0.9, `ATTN_NORM`, `slow_pitch` | `events/misc.rs` `melee_material_sound` |
+| `ClientRules` | `melee_reach(m)` | close combat -55/45/35, coldcock 30, knife 35, katana -55/50 | `events/misc.rs` |
+| `ClientRules` | `close_combat_blocks()` / `blade_hit_particles(..)` / `reload_event_phases()` | true / false (scintille + sparks) / true | `events/misc.rs` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11 | `menus/buy.rs`, `menus/mod.rs` |
 | `ServerRules` | `bullet_trace(start, end, shooter)` | `weapons::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |

@@ -3,7 +3,8 @@
 
 use super::fire::{eject_shell, weapon_body};
 use super::impact::texture_type;
-use super::{Args, first_person_view_model, info, slow_pitch};
+use super::{Args, first_person_view_model, info};
+use crate::gameplay::MeleeReach;
 use crate::{effects, view};
 use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
@@ -22,13 +23,16 @@ fn set_a(id: i32) -> [i16; 29] {
     info::info(id).map_or([0; 29], |i| i.a)
 }
 
-fn sound(a: &Args, chan: u32, sample: &str, vol: f32) {
-    engine().ev_play_sound(a.entindex, a.origin, chan as i32, sample, vol, r::ATTN_NORM, 0, slow_pitch());
+/// An event sound at the shooter, with the ruleset's volume, attenuation and pitch
+/// ([`ClientRules::event_sound`](crate::gameplay::ClientRules::event_sound)).
+fn sound(a: &Args, chan: u32, sample: &str) {
+    let (vol, attn, pitch) = crate::gameplay::current().event_sound();
+    engine().ev_play_sound(a.entindex, a.origin, chan as i32, sample, vol, attn, 0, pitch);
 }
 
 /// `EV_TS_Empty` (`0x100424e0`): `CHAN_WEAPON`, volume `RandomFloat(0.92, 1.0)` (`0x10042560..`).
 pub fn empty(a: &Args) {
-    sound(a, CHAN_WEAPON, "weapons/pistol-empty.wav", r::random_float(0.92, 1.0));
+    sound(a, CHAN_WEAPON, "weapons/pistol-empty.wav");
 }
 
 /// `EV_TS_Pump` (`0x100419a0`): pump anim; a shotgun shell and one forced smoke wisp, both
@@ -73,7 +77,8 @@ pub fn pump(a: &Args) {
     // Not attached to the shooter: entity -1 at the event origin, `CHAN_WEAPON` (`0x100423c6..`).
     if let Some(asset) = tables().asset(id as u8).filter(|s| !s.sound2.is_empty()) {
         let sample = format!("weapons/{}", asset.sound2);
-        engine().ev_play_sound(-1, a.origin, CHAN_WEAPON as i32, &sample, r::random_float(0.92, 1.0), r::ATTN_NORM, 0, slow_pitch());
+        let (vol, attn, pitch) = crate::gameplay::current().event_sound();
+        engine().ev_play_sound(-1, a.origin, CHAN_WEAPON as i32, &sample, vol, attn, 0, pitch);
     }
 }
 
@@ -81,26 +86,30 @@ pub fn pump(a: &Args) {
 /// plays `[1]` for a magazine and `[phase]` otherwise (`0x10042881..0x10042891`). Phase 9 plays
 /// `insert-shell` for everyone; phase 10's pump sound and phase 0's `generic_reload` (then, for a
 /// visible player, the dropped casings or magazine) are only for others and third person.
+///
+/// A ruleset without the view animation and phases
+/// ([`ClientRules::reload_event_phases`](crate::gameplay::ClientRules::reload_event_phases))
+/// treats every reload event as a magazine reload.
 pub fn reload(a: &Args) {
     let id = a.i1;
-    let phase = a.f1 as i32;
+    let phases = crate::gameplay::current().reload_event_phases();
+    let phase = if phases { a.f1 as i32 } else { 0 };
     let owner = a.is_view_owner();
-    if owner {
+    if owner && phases {
         let s = set(id);
         let seq = if phase == 0 { s[1] } else { s.get(phase as usize).copied().unwrap_or(0) };
         r::weapon_animation(seq as i32, weapon_body(id, a.i2));
     }
     let first_person = owner && !view::is_third_person();
-    let vol = || r::random_float(0.92, 1.0);
     match phase {
-        9 => sound(a, CHAN_WEAPON, "weapons/insert-shell.wav", vol()),
+        9 => sound(a, CHAN_WEAPON, "weapons/insert-shell.wav"),
         10 if !first_person => {
             if let Some(asset) = tables().asset(id as u8).filter(|s| !s.sound2.is_empty()) {
-                sound(a, CHAN_WEAPON, &format!("weapons/{}", asset.sound2), vol());
+                sound(a, CHAN_WEAPON, &format!("weapons/{}", asset.sound2));
             }
         }
         0 if !first_person => {
-            sound(a, CHAN_WEAPON, "weapons/generic_reload.wav", vol());
+            sound(a, CHAN_WEAPON, "weapons/generic_reload.wav");
             if effects::player_visible(a.entindex) {
                 reload_drop(a, id);
             }
@@ -174,8 +183,10 @@ fn melee_material_sound(tex: u8, pos: Vec3) {
         b'F' => &[],
         _ => &["player/pl_step1.wav", "player/pl_step2.wav"],
     };
-    if let Some(s) = list.get(r::random_long(0, list.len() as i32 - 1).max(0) as usize) {
-        engine().ev_play_sound(0, pos, CHAN_STATIC as i32, s, 0.9, r::ATTN_NORM, 0, slow_pitch());
+    if let Some(s) = list.get(r::random_long(0, list.len() as i32 - 1).max(0) as usize)
+        && let Some((vol, attn, pitch)) = crate::gameplay::current().melee_material_sound(tex)
+    {
+        engine().ev_play_sound(0, pos, CHAN_STATIC as i32, s, vol, attn, 0, pitch);
     }
 }
 
@@ -209,18 +220,23 @@ fn puff(pos: Vec3, n: Vec3, tex: u8) {
     effects::with_psys(|ps| effects::fx::small_puff(ps, now, pos, n, sprite, kRenderTransAdd as i32, 12.0, 30.0));
 }
 
-/// Metal hit: `TS_Scintille(size)` and `TS_Sparks(7, 1.15, 25)`.
-fn metal_hit(pos: Vec3, n: Vec3, size: f32) {
+/// Metal hit: `TS_Scintille(size)` and `TS_Sparks(7, 1.15, 25)`, unless the ruleset makes its own
+/// ([`ClientRules::blade_hit_particles`](crate::gameplay::ClientRules::blade_hit_particles)).
+fn metal_hit(pos: Vec3, n: Vec3, size: f32, katana: bool) {
     let now = effects::now();
+    let rules = crate::gameplay::current();
     effects::with_psys(|ps| {
+        if rules.blade_hit_particles(ps, now, pos, n, katana) {
+            return;
+        }
         effects::fx::scintille_metal(ps, now, pos, n, size);
         effects::fx::sparks(ps, now, pos, n, 7, 1.15, 25.0);
     });
 }
 
-/// The melee events' sound volume, `RandomFloat(0.92, 1.0)` (e.g. `0x10044026`, `0x10043af8`).
-fn melee_vol() -> f32 {
-    r::random_float(0.92, 1.0)
+/// The melee events' trace length under the active ruleset.
+fn reach(m: MeleeReach) -> f32 {
+    crate::gameplay::current().melee_reach(m)
 }
 
 /// The knife's and katana's view animation, played after the trace (`0x100440b0`, `0x100446b4`):
@@ -238,16 +254,16 @@ fn blade_anim(a: &Args, flesh: bool, seq: impl FnOnce() -> i16) {
 /// `[15 + RandomLong(0, 2)]` (`0x100440c8..0x1004411b`).
 pub fn knife(a: &Args) {
     let mut flesh = false;
-    match melee_trace(a, 35.0) {
+    match melee_trace(a, reach(MeleeReach::Knife)) {
         Some((pos, n, tex)) => {
             melee_material_sound(tex, pos);
             flesh = tex == b'F';
             if hard(tex) {
-                metal_hit(pos, n, 6.0);
-                sound(a, CHAN_WEAPON, "weapons/knife/knife_hit.wav", melee_vol());
+                metal_hit(pos, n, 6.0, false);
+                sound(a, CHAN_WEAPON, "weapons/knife/knife_hit.wav");
             }
         }
-        None => sound(a, CHAN_WEAPON, "weapons/knife/knife_miss.wav", melee_vol()),
+        None => sound(a, CHAN_WEAPON, "weapons/knife/knife_miss.wav"),
     }
     blade_anim(a, flesh, || set_a(a.i1)[15 + r::random_long(0, 2) as usize]);
 }
@@ -255,21 +271,20 @@ pub fn knife(a: &Args) {
 /// `EV_TS_Katana` (`0x10044230`): `i1` is the swing's index into the katana's set A (15 = back
 /// swing, trace -55), played after the trace.
 pub fn katana(a: &Args) {
-    let reach = if a.i1 == 15 { -55.0 } else { 50.0 };
     let n = if r::random_long(0, 1) == 0 { "" } else { "1" };
     let mut flesh = false;
-    match melee_trace(a, reach) {
+    match melee_trace(a, reach(MeleeReach::Katana(a.i1))) {
         // As the knife (`0x10044585`..`0x100446ad`): the material sound on every hit, sparks and
         // `hit`/`hit1` only on hard surfaces.
         Some((pos, nrm, tex)) => {
             melee_material_sound(tex, pos);
             flesh = tex == b'F';
             if hard(tex) {
-                metal_hit(pos, nrm, 12.0);
-                sound(a, CHAN_WEAPON, &format!("weapons/katana/hit{n}.wav"), melee_vol());
+                metal_hit(pos, nrm, 12.0, true);
+                sound(a, CHAN_WEAPON, &format!("weapons/katana/hit{n}.wav"));
             }
         }
-        None => sound(a, CHAN_WEAPON, &format!("weapons/katana/miss{n}.wav"), melee_vol()),
+        None => sound(a, CHAN_WEAPON, &format!("weapons/katana/miss{n}.wav")),
     }
     // TS reads `set[i1]` unchecked; the server only sends 15..18.
     blade_anim(a, flesh, || set_a(34).get(a.i1 as usize).copied().unwrap_or(0));
@@ -285,27 +300,16 @@ pub fn close_combat(a: &Args) {
     if a.is_view_owner() {
         r::weapon_animation(close_combat_seq(&set_a(a.f1 as i32), a.i2), 0);
     }
-    if a.i1 == 0 {
-        sound(a, CHAN_WEAPON, "player/block.wav", melee_vol());
+    if a.i1 == 0 && crate::gameplay::current().close_combat_blocks() {
+        sound(a, CHAN_WEAPON, "player/block.wav");
         return;
     }
-    sound(a, CHAN_WEAPON, "player/closecombat.wav", melee_vol());
-    if let Some((pos, n, tex)) = melee_trace(a, close_combat_reach(a.i1)) {
+    sound(a, CHAN_WEAPON, "player/closecombat.wav");
+    if let Some((pos, n, tex)) = melee_trace(a, reach(MeleeReach::CloseCombat(a.i1))) {
         melee_material_sound(tex, pos);
         if tex != b'F' {
             puff(pos, n, tex);
         }
-    }
-}
-
-/// The close-combat trace length by attack type (`0x10043427..0x100434ab`): a back kick (3) traces
-/// 55 behind (-55.0 at `0x1007d6fc`), a kick (2) 45 ahead (`0x1007a900`), anything else 35 ahead
-/// (`0x1007a8d8`).
-fn close_combat_reach(i1: i32) -> f32 {
-    match i1 {
-        3 => -55.0,
-        2 => 45.0,
-        _ => 35.0,
     }
 }
 
@@ -321,8 +325,8 @@ pub fn coldcock(a: &Args) {
     if a.is_view_owner() {
         r::weapon_animation(set_a(a.i1)[28] as i32, weapon_body(a.i1, a.i2));
     }
-    sound(a, CHAN_WEAPON, "player/closecombat.wav", melee_vol());
-    if let Some((pos, n, tex)) = melee_trace(a, 30.0) {
+    sound(a, CHAN_WEAPON, "player/closecombat.wav");
+    if let Some((pos, n, tex)) = melee_trace(a, reach(MeleeReach::Coldcock(a.i1))) {
         melee_material_sound(tex, pos);
         if tex != b'F' {
             puff(pos, n, tex);
@@ -349,10 +353,18 @@ mod tests {
         assert_eq!(close_combat_seq(&kf, 29), 0);
     }
 
+    /// TS 3.0's reaches (`0x10043427..0x100434ab`: -55.0 at `0x1007d6fc`, 45 at `0x1007a900`,
+    /// 35 at `0x1007a8d8`; coldcock 30 at `0x10043b69`).
     #[test]
-    fn close_combat_reach_by_attack_type() {
-        assert_eq!(close_combat_reach(1), 35.0); // punch
-        assert_eq!(close_combat_reach(2), 45.0); // kick
-        assert_eq!(close_combat_reach(3), -55.0); // back kick: behind the player
+    fn melee_reach_by_event() {
+        let core = crate::gameplay::CORE_PLUGIN.client;
+        assert_eq!(core.melee_reach(MeleeReach::CloseCombat(1)), 35.0); // punch
+        assert_eq!(core.melee_reach(MeleeReach::CloseCombat(2)), 45.0); // kick
+        assert_eq!(core.melee_reach(MeleeReach::CloseCombat(3)), -55.0); // back kick: behind the player
+        assert_eq!(core.melee_reach(MeleeReach::Coldcock(3)), 30.0);
+        assert_eq!(core.melee_reach(MeleeReach::Knife), 35.0);
+        assert_eq!(core.melee_reach(MeleeReach::Katana(15)), -55.0);
+        assert_eq!(core.melee_reach(MeleeReach::Katana(16)), 50.0);
+        assert!(core.close_combat_blocks() && core.reload_event_phases() && core.bullet_whizz_and_push());
     }
 }

@@ -7,7 +7,7 @@
 //! (`prediction::gun`), which plays the same events locally.
 
 pub(crate) mod fire;
-mod impact;
+pub(crate) mod impact;
 pub mod info;
 mod misc;
 pub mod random;
@@ -19,6 +19,7 @@ use goldsrc::sys::*;
 use std::ffi::CStr;
 
 pub use fire::{BulletDraw, BulletFrame, BulletModel, BulletModels, BulletStep, ClientBullet, ClientBullets, client_bullets_frame, ftol};
+pub use impact::AMMO_ATTENUATION;
 
 /// An event script name and its handler.
 pub type EventEntry = (&'static CStr, fn(&event_args_s));

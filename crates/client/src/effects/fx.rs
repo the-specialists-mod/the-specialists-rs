@@ -32,6 +32,75 @@ fn random_frame(ps: &PSys, sprite: i16) -> f32 {
     rl(0, ps.frames(sprite) - 1) as f32
 }
 
+/// The particle builders' parameters a ruleset can change
+/// ([`ClientRules::fx_style`](crate::gameplay::ClientRules::fx_style)); [`FxStyle::TS30`] is TS
+/// 3.0's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FxStyle {
+    /// The first muzzle-flash sprite's colour (each later one ÷1.1).
+    pub flash_color: f32,
+    /// The flash sprites' fade per unit of colour.
+    pub flash_fade: f32,
+    /// The second flash sprite's scale speed.
+    pub flash_scale_speed: f32,
+    /// The flash radius factor in third person and for other players.
+    pub third_person_flash: f64,
+    /// The muzzle blast pushes particles (`blast_push`).
+    pub muzzle_blast: bool,
+    /// An unsilenced flash ends with a `scintille_metal.spr` spark at the muzzle (radius × 3,
+    /// colour 0.5, fade 0.09).
+    pub muzzle_spark: bool,
+    /// The silenced flash's share of the sprites.
+    pub silenced_count: f32,
+    /// The silenced flash's colour per unit inside 512 units.
+    pub silenced_color: f32,
+    /// The silenced flash's first fade (÷1.1 each); `None`: `flash_fade × colour`.
+    pub silenced_fade: Option<f32>,
+    /// The silenced flash sprites' roll speed range (`RandomLong(-n, n)`; 0: none).
+    pub silenced_spin: i32,
+    /// The gun smoke's gravity.
+    pub smoke_gravity: f32,
+    /// The gun smoke has 10 puffs at `cl_fx 2` and none at `cl_fx 0` (else always 5).
+    pub smoke_puffs_by_cl_fx: bool,
+    /// The drag of the muzzle flash, gun smoke, impact smoke and small puffs.
+    pub drag: f32,
+    /// Impact smoke and small puffs stretch with their speed.
+    pub stretch: bool,
+    /// How much sprite debris reacts to bullet and blast pushes.
+    pub debris_react: f32,
+    /// Sprite debris fades (0.05) whatever its render mode, not only when additive.
+    pub debris_fade_any_mode: bool,
+    /// Sprite debris counts are scaled by the quality's particle multiplier (at most 1).
+    pub debris_count_by_quality: bool,
+}
+
+impl FxStyle {
+    pub const TS30: FxStyle = FxStyle {
+        flash_color: 0.9,
+        flash_fade: 0.2,
+        flash_scale_speed: 0.2,
+        third_person_flash: 1.3,
+        muzzle_blast: true,
+        muzzle_spark: false,
+        silenced_count: 0.7,
+        silenced_color: 0.000_585_937_5,
+        silenced_fade: None,
+        silenced_spin: 0,
+        smoke_gravity: 0.01,
+        smoke_puffs_by_cl_fx: false,
+        drag: 3.3,
+        stretch: true,
+        debris_react: 0.3,
+        debris_fade_any_mode: false,
+        debris_count_by_quality: true,
+    };
+}
+
+/// The active ruleset's builder parameters.
+fn style() -> &'static FxStyle {
+    crate::gameplay::current().fx_style()
+}
+
 /// The weapon-info fields the muzzle flash reads (client `s_weapon_info`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FlashInfo {
@@ -63,19 +132,20 @@ pub fn muzzle_flash(
     fwdofs: f32,
     third: bool,
 ) {
+    let st = style();
     let Some(s1) = ps.sprite("sprites/ts_muzzleflash1h.spr", ADD) else { return };
-    let radius = if third { (info.radius as f64 * 1.3) as i32 } else { info.radius } as f32;
+    let radius = if third { (info.radius as f64 * st.third_person_flash) as i32 } else { info.radius } as f32;
     let count = ((n as f32 * ps.tuning.mult) as i32).max(3);
-    let sprite = |i: i32, count: i32, size: f32, color: f32, scalespeed: f32, spin: f32| Particle {
+    let sprite = |i: i32, count: i32, size: f32, color: f32, fadespeed: f32, scalespeed: f32, spin: f32| Particle {
         sprite: s1,
         origin: v::ma(org, fwdofs + info.length * i as f32 / count as f32, fwd),
         vel: v::add(vel, [0.0, 0.0, rf(-3.0, 3.0) * TS]),
         radius: size,
         color,
-        fadespeed: 0.2 * color,
+        fadespeed,
         scalespeed,
         life: 0.0,
-        drag: 3.3,
+        drag: st.drag,
         orient: psys::ORIENT_ROLL,
         avel: [0.0, 0.0, spin * TS],
         ..Default::default()
@@ -85,22 +155,28 @@ pub fn muzzle_flash(
         if d > 512.0 {
             return;
         }
-        let c = (512.0 - d) * 0.000_585_937_5;
-        let count = (count as f32 * 0.7) as i32;
+        let c = (512.0 - d) * st.silenced_color;
+        let count = (count as f32 * st.silenced_count) as i32;
         let mut k = 1.0f32;
         for i in 0..count {
-            let mut p = sprite(i, count, rf(0.6, 1.0) * radius * k, c * k, if i == 1 { 0.3 } else { 0.0 }, 0.0);
+            let spin = if st.silenced_spin != 0 { rl(-st.silenced_spin, st.silenced_spin) as f32 } else { 0.0 };
+            let fade = st.silenced_fade.map_or(st.flash_fade * (c * k), |f| f * k);
+            let mut p = sprite(i, count, rf(0.6, 1.0) * radius * k, c * k, fade, if i == 1 { 0.3 } else { 0.0 }, spin);
             p.frame = random_frame(ps, s1);
             ps.add(p, now);
             k *= 0.909;
         }
         return;
     }
-    ps.blast_push(org, fwd, info.damage, rf(50.0, 60.0) * radius);
+    if st.muzzle_blast {
+        ps.blast_push(org, fwd, info.damage, rf(50.0, 60.0) * radius);
+    }
     let mut k = 1.0f32;
     for i in 0..count {
         let size = rf(0.7, 1.3) * radius * k * if i == 0 { 0.7 } else { 1.0 };
-        let mut p = sprite(i, count, size, 0.9 * k, if i == 1 { 0.2 } else { 0.0 }, rl(-90, 90) as f32);
+        let color = st.flash_color * k;
+        let mut p =
+            sprite(i, count, size, color, st.flash_fade * color, if i == 1 { st.flash_scale_speed } else { 0.0 }, rl(-90, 90) as f32);
         p.frame = random_frame(ps, s1);
         ps.add(p, now);
         k *= 0.909;
@@ -122,7 +198,7 @@ pub fn muzzle_flash(
             color,
             fadespeed: 0.13,
             life: 0.0,
-            drag: 3.3,
+            drag: st.drag,
             frame,
             orient: psys::ORIENT_ROLL,
             avel: [0.0, 0.0, spin * TS],
@@ -130,6 +206,24 @@ pub fn muzzle_flash(
         },
         now,
     );
+    if st.muzzle_spark
+        && let Some(spark) = ps.sprite("sprites/scintille_metal.spr", ADD)
+    {
+        let frame = random_frame(ps, spark);
+        ps.add(
+            Particle {
+                sprite: spark,
+                origin: org,
+                radius: radius * 3.0,
+                color: 0.5,
+                fadespeed: 0.09,
+                life: 0.0,
+                frame,
+                ..Default::default()
+            },
+            now,
+        );
+    }
 }
 
 /// `TS_MuzzleDlight` (`0x10048e60`): radius 192, colour (240, 221, 172), life 0.06/ts, at most
@@ -159,12 +253,15 @@ pub fn gun_smoke(ps: &mut PSys, now: f64, radius: f32, framerate: i32, org: Vec3
     if !force && !ps.cooldown_ready(1, now, ps.slow(0.1)) {
         return;
     }
-    if !ps.tuning.smoke || !ps.visible(org) {
+    let st = style();
+    let cl_fx = super::cvar(|c| c.fx);
+    if !ps.tuning.smoke || (st.smoke_puffs_by_cl_fx && cl_fx == 0.0) || !ps.visible(org) {
         return;
     }
     let Some(s) = ps.sprite("sprites/gun_smoke_add.spr", ADD) else { return };
+    let puffs = if st.smoke_puffs_by_cl_fx && cl_fx == 2.0 { 10 } else { 5 };
     let mut r = radius;
-    for (j, k) in (1..=5).rev().enumerate() {
+    for (j, k) in (1..=puffs).rev().enumerate() {
         let origin = if j == 0 { v::ma(org, r * 0.5, dir) } else { v::ma(org, r * (j - 1) as f32, dir) };
         let jitter = [rf(-0.2 * r, 0.2 * r) * TS, rf(-0.2 * r, 0.2 * r) * TS, 0.0];
         let half = framerate / 2;
@@ -174,11 +271,11 @@ pub fn gun_smoke(ps: &mut PSys, now: f64, radius: f32, framerate: i32, org: Vec3
                 origin,
                 vel: v::add(v::ma(vel, speed / k as f32 * TS, dir), jitter),
                 radius: r,
-                gravity: 0.01,
+                gravity: st.smoke_gravity,
                 color: 0.3,
                 life: 0.0,
                 scalespeed: 0.1,
-                drag: 3.3,
+                drag: st.drag,
                 framerate: (framerate + rl(-half, half)) as f32,
                 ..Default::default()
             },
@@ -218,7 +315,8 @@ pub fn sprite_debris(
         }
     }
     let Some(s) = ps.sprite(sprite, rendermode) else { return };
-    let count = (rl(cnt / 2, cnt) as f32 * ps.tuning.mult.min(1.0)) as i32;
+    let st = style();
+    let count = if st.debris_count_by_quality { (rl(cnt / 2, cnt) as f32 * ps.tuning.mult.min(1.0)) as i32 } else { rl(cnt / 2, cnt) };
     for _ in 0..count {
         let spin = rl(-180, 180) as f32;
         let jitter = [rl(-spread, spread) as f32, rl(-spread, spread) as f32, rl(-spread / 2, spread / 2) as f32];
@@ -231,8 +329,8 @@ pub fn sprite_debris(
                 gravity,
                 radius,
                 color: 1.0,
-                fadespeed: if rendermode == ADD { 0.05 } else { 0.0 },
-                react: 0.3,
+                fadespeed: if rendermode == ADD || st.debris_fade_any_mode { 0.05 } else { 0.0 },
+                react: st.debris_react,
                 life: life + spin * 0.001,
                 frame,
                 orient: psys::ORIENT_ROLL,
@@ -405,9 +503,9 @@ pub fn impact_smoke(
                 radius: r,
                 color: 0.5,
                 gravity: 0.1,
-                drag: 3.3,
+                drag: style().drag,
                 scalespeed: 0.1,
-                stretch: 7.0,
+                stretch: if style().stretch { 7.0 } else { 0.0 },
                 life: 0.0,
                 framerate: (framerate + rl(-half, half)) as f32,
                 ..Default::default()
@@ -435,8 +533,8 @@ pub fn small_puff(ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, sprite: &str, ren
             color: 1.0,
             framerate,
             scalespeed: 0.5,
-            drag: 3.3,
-            stretch: 7.0,
+            drag: style().drag,
+            stretch: if style().stretch { 7.0 } else { 0.0 },
             life: 0.0,
             ..Default::default()
         },
@@ -448,6 +546,9 @@ pub fn small_puff(ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, sprite: &str, ren
 /// `bullet_type` is `TS_PlayTextureSound`'s: 1 buckshot, 2 penetration exit. One shared cooldown
 /// (slot 7) that types 1 and 2 ignore; culled by the view cone and a visibility trace.
 pub fn impact(ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, tex: u8, bullet_type: i32) {
+    if crate::gameplay::current().impact_particles(ps, now, pos, n, tex, bullet_type) {
+        return;
+    }
     let ready = ps.cooldown_ready(7, now, ps.slow(ps.tuning.interval));
     if !ready && !matches!(bullet_type, 1 | 2) {
         return;

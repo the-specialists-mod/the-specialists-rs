@@ -14,7 +14,7 @@
 
 pub mod client;
 
-pub use client::{ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
+pub use client::{ClientRules, CrosshairParts, KungfuRegen, MeleeReach, StuntCooldown};
 
 use goldsrc::client::engine;
 use goldsrc::pmove::PlayerMoveExt;
@@ -89,6 +89,15 @@ pub fn hud_rules(id: Option<i16>) -> &'static dyn ClientRules {
 /// effects frames). Inside [`crate::hud::with`], use [`hud_rules`] with `h.gameplay`.
 pub fn current() -> &'static dyn ClientRules {
     hud_rules(crate::hud::gameplay_id())
+}
+
+/// The movement rules outside a predicted move, for the weapon events' material lookups: the
+/// HUD's ruleset (`SrvSett` 4), as [`hud_rules`].
+pub fn hud_pm_rules() -> &'static dyn PmRules {
+    match crate::hud::gameplay_id() {
+        Some(v) => resolve(v.to_string().as_bytes()).pm,
+        None => &CORE,
+    }
 }
 
 /// The gun rules outside a predicted command, for the weapon events (`EV_TS_Fire*`): the HUD's

@@ -398,3 +398,57 @@ fn client_bullet_looks() {
     assert_eq!(p.uv.unwrap()[1][0], 1.0 / 3.0);
     assert_eq!(s3[2].uv.unwrap()[1][0], 1.0);
 }
+
+/// 2.1's weapon events (issue #160): builder parameters, reaches, the block branch, pitches and
+/// attenuations; the core plugin keeps 3.0's.
+#[test]
+fn weapon_events() {
+    use crate::events::*;
+    use ts_client::effects::fx::FxStyle;
+    use ts_client::gameplay::MeleeReach as M;
+    assert_eq!(v30().fx_style(), &FxStyle::TS30);
+    let fx = v21().fx_style();
+    assert_eq!((fx.flash_color, fx.flash_fade, fx.flash_scale_speed, fx.third_person_flash), (1.0, 0.15, 0.1, 1.0));
+    assert!(!fx.muzzle_blast && fx.muzzle_spark && FxStyle::TS30.muzzle_blast && !FxStyle::TS30.muzzle_spark);
+    assert_eq!((fx.silenced_count, fx.silenced_color, fx.silenced_fade, fx.silenced_spin), (1.0, 1.0 / 640.0, Some(0.13), 60));
+    assert_eq!((FxStyle::TS30.silenced_count, FxStyle::TS30.silenced_color), (0.7, 0.3 / 512.0));
+    assert_eq!((fx.smoke_gravity, fx.drag, fx.debris_react), (0.1, 0.0, 0.0));
+    assert_eq!((FxStyle::TS30.smoke_gravity, FxStyle::TS30.drag, FxStyle::TS30.debris_react), (0.01, 3.3, 0.3));
+    assert!(fx.smoke_puffs_by_cl_fx && !fx.stretch && fx.debris_fade_any_mode && !fx.debris_count_by_quality);
+
+    // Reaches: close combat -56/48/38, the coldcock by its weapon id the same way, knife 38,
+    // katana -54/48 (3.0: -55/45/35, 30, 35, -55/50).
+    let reach = |r: &dyn ClientRules| {
+        [
+            M::CloseCombat(3),
+            M::CloseCombat(2),
+            M::CloseCombat(1),
+            M::Coldcock(3),
+            M::Coldcock(2),
+            M::Coldcock(9),
+            M::Knife,
+            M::Katana(15),
+            M::Katana(16),
+        ]
+        .map(|m| r.melee_reach(m))
+    };
+    assert_eq!(reach(v21()), [-56.0, 48.0, 38.0, -56.0, 48.0, 38.0, 38.0, -54.0, 48.0]);
+    assert_eq!(reach(v30()), [-55.0, 45.0, 35.0, 30.0, 30.0, 30.0, 35.0, -55.0, 50.0]);
+
+    assert!(!v21().close_combat_blocks() && v30().close_combat_blocks(), "2.1's event has no block branch");
+    assert!(!v21().reload_event_phases() && v30().reload_event_phases());
+    assert!(!v21().bullet_whizz_and_push() && v30().bullet_whizz_and_push());
+    assert_eq!((v21().pellet_spray_gravity(), v30().pellet_spray_gravity()), (2.0, 0.0));
+    assert_eq!((v21().shell_sound(11), v30().shell_sound(11), v30().shell_sound(5)), (1, 2, 1));
+
+    // The .454 Casull is 2.1's ammo 12 (0.3); 3.0's 12 is the .32 ACP (0.5).
+    assert_eq!((v21().ammo_attenuation(12), v30().ammo_attenuation(12)), (0.3, 0.5));
+    assert_eq!((v21().ammo_attenuation(6), v30().ammo_attenuation(6)), (0.2, 0.2));
+    assert_eq!((v21().ammo_attenuation(40), v30().ammo_attenuation(40)), (0.4, 0.4));
+
+    // The ricochet: `100 + 300 s` on the raw factor (400 at normal speed).
+    assert_eq!([ricochet_pitch(0.0), ricochet_pitch(50.0), ricochet_pitch(10.0)], [400, 250, 130]);
+
+    assert_eq!(b"CMTPYVW".map(material_volume), [0.9, 0.9, 0.8, 0.8, 0.8, 0.5, 0.9].map(Some));
+    assert_eq!(material_volume(b'F'), None, "flesh plays nothing");
+}

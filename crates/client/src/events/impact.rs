@@ -1,6 +1,5 @@
 //! Bullet impact helpers: texture sounds, ricochets, decals (rendering doc §4.5).
 
-use super::{fire_pitch, slow_pitch};
 use crate::effects;
 use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3};
@@ -60,7 +59,7 @@ const CEMENT: [&str; 7] = [
 ];
 
 /// Attenuation of the material sound (`0x10045034`, `0x3f7851ec`).
-const MATERIAL_ATTN: f32 = 0.97;
+pub(crate) const MATERIAL_ATTN: f32 = 0.97;
 
 /// `debris/ric1..5.wav`, picked by the ricochet roll itself: `roll % 5` (`0x10044d2e`).
 fn ricochet_sound(roll: i32) -> String {
@@ -83,7 +82,11 @@ pub fn texture_type(tr: &mut pmtrace_s, src: Vec3, end: Vec3) -> u8 {
             let n = strip_texture_name(&name);
             let mut buf: Vec<u8> = n.bytes().take(15).collect();
             buf.push(0);
-            shared::pm::find_texture_type(std::ffi::CStr::from_bytes_until_nul(&buf).unwrap_or(c""))
+            // The ruleset's material table (`PM_FindTextureType`, [`PmRules::texture_limits`]).
+            //
+            // [`PmRules::texture_limits`]: shared::gameplay::PmRules::texture_limits
+            let name = std::ffi::CStr::from_bytes_until_nul(&buf).unwrap_or(c"");
+            shared::pm::textures::find_in(name.to_bytes(), crate::gameplay::hud_pm_rules().texture_limits())
         }
         None => b'C',
     }
@@ -104,17 +107,19 @@ pub fn texture_sound(tr: &mut pmtrace_s, src: Vec3, end: Vec3, bullet_type: i32)
     }
     let ric = r::random_long(0, 0x7fff);
     if ric < 0x3fff {
-        engine().ev_play_sound(-1, tr.endpos, CHAN_AUTO as i32, &ricochet_sound(ric), 1.0, 0.99, 0, fire_pitch());
+        let factor100 = crate::state::with(|s| s.slowmo_factor100);
+        let pitch = crate::gameplay::current().ricochet_pitch(super::time_scale(), factor100);
+        engine().ev_play_sound(-1, tr.endpos, CHAN_AUTO as i32, &ricochet_sound(ric), 1.0, 0.99, 0, pitch);
     }
     super::fx_log(|| format!("impact on texture type {} at {:.1?}", tex as char, tr.endpos));
     effects::impact(tr.endpos, tr.plane.normal, tex, bullet_type);
     let (sounds, vol) = material_sounds(tex);
     if material_roll_plays(roll) {
         // The pitch's `RandomLong(-5, 5)` comes before the sample's (`0x10044ffd`, `0x10045040`).
-        let pitch = slow_pitch();
+        let (attn, pitch) = crate::gameplay::current().bullet_material_sound();
         // `get`: the engine's RandomLong is trusted to stay in range, but not to the point of a crash.
         if let Some(s) = usize::try_from(r::random_long(0, sounds.len() as i32 - 1)).ok().and_then(|i| sounds.get(i)) {
-            engine().ev_play_sound(0, tr.endpos, CHAN_STATIC as i32, s, vol, MATERIAL_ATTN, 0, pitch);
+            engine().ev_play_sound(0, tr.endpos, CHAN_STATIC as i32, s, vol, attn, 0, pitch);
         }
     }
     tex

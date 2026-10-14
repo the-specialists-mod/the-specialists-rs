@@ -4,14 +4,19 @@
 
 #![deny(unsafe_code)]
 
+use goldsrc::ext::render::{Vec3, random_long};
 use std::cmp::Ordering;
+use ts_client::effects::fx::FxStyle;
+use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
+use ts_client::gameplay::MeleeReach;
 use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
 use ts_client::menus::buy::MenuRules;
 use ts_client::view::{Bob, BobInput};
 use ts21_gameplay::TS21;
 
 pub mod bullets;
+pub mod events;
 pub mod view;
 
 /// TS 2.1's client-only rules.
@@ -200,6 +205,90 @@ impl ClientRules for Ts21Client {
     fn client_bullet_draw(&self, bullet: &mut ClientBullet, d: &mut BulletDraw) -> bool {
         bullets::draw(bullet, d);
         true
+    }
+
+    /// 2.1's builders ([`events::FX`]).
+    fn fx_style(&self) -> &'static FxStyle {
+        &events::FX
+    }
+
+    /// 0x10084240 ([`events::impact`]).
+    fn impact_particles(&self, ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, tex: u8, bullet_type: i32) -> bool {
+        events::impact(ps, now, pos, n, tex, bullet_type);
+        true
+    }
+
+    /// [`events::gun_smoke_rate`].
+    fn gun_smoke_rate(&self, id: i32) -> i32 {
+        events::gun_smoke_rate(id)
+    }
+
+    /// The standard and pump fire pass 2 as the spray's gravity (0x1007427b, 0x10077265).
+    fn pellet_spray_gravity(&self) -> f32 {
+        2.0
+    }
+
+    /// `RandomLong(120, 140)` for every gun (0x10073ec4).
+    fn shell_side_speed(&self, _id: i32) -> i32 {
+        random_long(120, 140)
+    }
+
+    /// Always 1 in the fire events.
+    fn shell_sound(&self, _id: i32) -> i32 {
+        1
+    }
+
+    /// [`events::ammo_attenuation`].
+    fn ammo_attenuation(&self, ammo: usize) -> f32 {
+        events::ammo_attenuation(ammo)
+    }
+
+    /// `EV_TS_FireBullets` (0x1007c5e0) has neither.
+    fn bullet_whizz_and_push(&self) -> bool {
+        false
+    }
+
+    /// 0x1007b820: attenuation 0.97, pitch `96 + RandomLong(0, 15)`.
+    fn bullet_material_sound(&self) -> (f32, i32) {
+        (0.97, 96 + random_long(0, 15))
+    }
+
+    /// [`events::ricochet_pitch`].
+    fn ricochet_pitch(&self, _time_scale: f32, slowmo_factor100: f32) -> i32 {
+        events::ricochet_pitch(slowmo_factor100)
+    }
+
+    /// [`events::event_sound`].
+    fn event_sound(&self) -> (f32, f32, i32) {
+        events::event_sound()
+    }
+
+    /// [`events::melee_material_sound`].
+    fn melee_material_sound(&self, tex: u8) -> Option<(f32, f32, i32)> {
+        events::melee_material_sound(tex)
+    }
+
+    /// [`events::melee_reach`].
+    fn melee_reach(&self, m: MeleeReach) -> f32 {
+        events::melee_reach(m)
+    }
+
+    /// The close-combat event (0x100792e0) has no block branch: it always plays
+    /// `closecombat.wav` and traces (2.1's prediction plays `block.wav`, 0x100245b0).
+    fn close_combat_blocks(&self) -> bool {
+        false
+    }
+
+    /// [`events::blade_hit`].
+    fn blade_hit_particles(&self, ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, katana: bool) -> bool {
+        events::blade_hit(ps, now, pos, n, katana);
+        true
+    }
+
+    /// The reload event (0x10078940) plays no view animation and ignores `fparam1`; 2.1's
+    /// prediction plays `insert-shell.wav` (0x10023660).
+    fn reload_event_phases(&self) -> bool {
+        false
     }
 
     /// `CashBased()` (0x1006b2f0) is `m_Teamplay ≥ 2 || SrvSett 1`, so the menu spends the live

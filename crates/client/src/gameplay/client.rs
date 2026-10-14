@@ -4,6 +4,21 @@
 //! ([`hud_rules`](super::hud_rules)), which `InitHUD` sends and a switch re-sends. Code outside the
 //! HUD's own borrow (input commands, the FOV and effects frames) uses [`current`](super::current).
 
+use crate::effects::psys::PSys;
+use goldsrc::ext::render::{Vec3, random_float, random_long};
+
+/// Which melee event's trace [`ClientRules::melee_reach`] sizes, with the event's `iparam1`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeleeReach {
+    /// `EV_TS_CloseCombat`: 1 punch, 2 kick, 3 back kick.
+    CloseCombat(i32),
+    /// `EV_TS_ColdCock`: the weapon id.
+    Coldcock(i32),
+    Knife,
+    /// `EV_TS_Katana`: the swing's sequence index (15 the back swing).
+    Katana(i32),
+}
+
 /// Which parts `DrawCrosshair` draws for the held weapon (before the scoped test, which the
 /// caller applies: the divesteps never show while scoped).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -224,5 +239,117 @@ pub trait ClientRules: Sync {
     fn client_bullet_draw(&self, bullet: &mut crate::events::ClientBullet, d: &mut crate::events::BulletDraw) -> bool {
         let _ = (bullet, d);
         false
+    }
+
+    /// The particle builders' parameters (muzzle flash, gun smoke, impact smoke, puffs, debris).
+    /// TS 3.0: [`FxStyle::TS30`](crate::effects::fx::FxStyle::TS30).
+    fn fx_style(&self) -> &'static crate::effects::fx::FxStyle {
+        &crate::effects::fx::FxStyle::TS30
+    }
+
+    /// A ruleset's own bullet impact particles (`TS_ImpactParticles`): true when it made them.
+    /// TS 3.0: false, so [`fx::impact`](crate::effects::fx::impact)'s body (`0x10048f60`) runs.
+    #[allow(clippy::too_many_arguments)]
+    fn impact_particles(&self, ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, tex: u8, bullet_type: i32) -> bool {
+        let _ = (ps, now, pos, n, tex, bullet_type);
+        false
+    }
+
+    /// The unsilenced gun smoke's frame rate in `EV_TS_FireStandard`/`FireAkimbo` (`0x1003e5..`):
+    /// TS 3.0 `RandomLong(5, 10)` for the sawed-off (33), else `RandomLong(45, 55)`.
+    fn gun_smoke_rate(&self, id: i32) -> i32 {
+        if id == 33 { random_long(5, 10) } else { random_long(45, 55) }
+    }
+
+    /// The shotgun pellet spray's gravity (`TS_SpriteDebris` from the standard and pump fire).
+    /// TS 3.0: 0.
+    fn pellet_spray_gravity(&self) -> f32 {
+        0.0
+    }
+
+    /// A fired shell's sideways speed. TS 3.0: `RandomLong(-40, 40)` for the 17, else
+    /// `RandomLong(120, 140)`.
+    fn shell_side_speed(&self, id: i32) -> i32 {
+        if id == 17 { random_long(-40, 40) } else { random_long(120, 140) }
+    }
+
+    /// The fire events' shell sound type (`EV_TS_EjectShell`). TS 3.0: 2 for weapon 11, else 1.
+    fn shell_sound(&self, id: i32) -> i32 {
+        if id == 11 { 2 } else { 1 }
+    }
+
+    /// The fire sound's attenuation factor for ammo type `ammo` (the client ammo table's field
+    /// 0). TS 3.0: [`AMMO_ATTENUATION`](crate::events::AMMO_ATTENUATION), 0.4 past it.
+    fn ammo_attenuation(&self, ammo: usize) -> f32 {
+        crate::events::AMMO_ATTENUATION.get(ammo).copied().unwrap_or(0.4)
+    }
+
+    /// Whether `EV_TS_FireBullets` plays the whizz-by and pushes particles along the shot.
+    /// TS 3.0: true.
+    fn bullet_whizz_and_push(&self) -> bool {
+        true
+    }
+
+    /// The bullet material sound's attenuation and pitch (`TS_PlayTextureSound` `0x10044bf0`).
+    /// TS 3.0: 0.97 and [`slow_pitch`](crate::events::slow_pitch).
+    fn bullet_material_sound(&self) -> (f32, i32) {
+        (crate::events::impact::MATERIAL_ATTN, crate::events::slow_pitch())
+    }
+
+    /// The ricochet's pitch. TS 3.0: [`fire_pitch`](crate::events::fire_pitch) of the eased
+    /// scale (`0x10044dbd`).
+    fn ricochet_pitch(&self, time_scale: f32, slowmo_factor100: f32) -> i32 {
+        let _ = (time_scale, slowmo_factor100);
+        crate::events::fire_pitch()
+    }
+
+    /// The other events' sounds (empty, pump, reload, the melee swings): volume, attenuation and
+    /// pitch, rolled in that order. TS 3.0: `RandomFloat(0.92, 1)`, `ATTN_NORM`,
+    /// [`slow_pitch`](crate::events::slow_pitch).
+    fn event_sound(&self) -> (f32, f32, i32) {
+        let vol = random_float(0.92, 1.0);
+        (vol, goldsrc::ext::render::ATTN_NORM, crate::events::slow_pitch())
+    }
+
+    /// A melee hit's material sound (`TS_MeleeMaterialSound` `0x10045df0`) on texture type `tex`:
+    /// volume, attenuation and pitch, or `None` for none. TS 3.0: 0.9, `ATTN_NORM`, `slow_pitch`
+    /// for every type (flesh's list is empty).
+    fn melee_material_sound(&self, tex: u8) -> Option<(f32, f32, i32)> {
+        let _ = tex;
+        Some((0.9, goldsrc::ext::render::ATTN_NORM, crate::events::slow_pitch()))
+    }
+
+    /// The melee events' trace length (negative: behind). TS 3.0: close combat
+    /// `-55`/`45`/`35` by attack (`0x10043427..`), coldcock 30, knife 35, katana `-55` for the
+    /// back swing (15), else 50.
+    fn melee_reach(&self, m: MeleeReach) -> f32 {
+        match m {
+            MeleeReach::CloseCombat(3) => -55.0,
+            MeleeReach::CloseCombat(2) => 45.0,
+            MeleeReach::CloseCombat(_) => 35.0,
+            MeleeReach::Coldcock(_) => 30.0,
+            MeleeReach::Knife => 35.0,
+            MeleeReach::Katana(15) => -55.0,
+            MeleeReach::Katana(_) => 50.0,
+        }
+    }
+
+    /// Whether `EV_TS_CloseCombat` with `i1` 0 is a block (`player/block.wav`, no trace).
+    /// TS 3.0: true.
+    fn close_combat_blocks(&self) -> bool {
+        true
+    }
+
+    /// A knife or katana hit on a hard surface: true when the ruleset made the particles. TS 3.0:
+    /// false, so `TS_Scintille` and `TS_Sparks(7, 1.15, 25)` run.
+    fn blade_hit_particles(&self, ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, katana: bool) -> bool {
+        let _ = (ps, now, pos, n, katana);
+        false
+    }
+
+    /// Whether `EV_TS_Reload` plays the view animation and the shotgun phases (`fparam1` 8/9/10).
+    /// TS 3.0: true.
+    fn reload_event_phases(&self) -> bool {
+        true
     }
 }
