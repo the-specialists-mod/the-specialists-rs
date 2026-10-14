@@ -811,10 +811,8 @@ pub fn weapon_menu_buttons(bits: u32) -> u32 {
     let e = engine();
     let t = now();
     // cl_usepowerup: a double tap of +use with a stored power-up sends `usepowerup`.
-    if input::cvars().cl_usepowerup.value() != 0.0 && pressed & IN_USE != 0 {
-        if with(|h| usepowerup_tap(h, t)) {
-            e.server_cmd("usepowerup");
-        }
+    if input::cvars().cl_usepowerup.value() != 0.0 && pressed & IN_USE != 0 && with(|h| usepowerup_tap(h, t)) {
+        e.server_cmd("usepowerup");
     }
     let mut consumed = 0;
     ATTACK_CONSUMED.0.set(false);
