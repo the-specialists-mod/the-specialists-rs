@@ -730,13 +730,14 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     crate::weapons::remove_all_items(p, cx);
     engine().set_origin(e, origin);
     let mode = if p.ts.obs_mode == 0 { obs::CHASE_FREE } else { p.ts.obs_mode };
-    observer_set_mode(p, cx, mode);
+    crate::gameplay::active().server.observer_set_mode(p, cx, mode);
     msg::all(Msg::Spectator, |w| Spectator { entindex: idx as u8, observer: 1 }.write(w));
 }
 
 /// `CBasePlayer::Observer_SetMode` (0x99e44). Only TS's modes 1, 2, 3 and 5 are accepted; the
 /// chase and in-eye modes need a target (`m_hObserverTarget`) and fall back to roaming.
-fn observer_set_mode(p: &mut Player, cx: &mut Cx, mode: i32) {
+/// ([`ServerRules::observer_set_mode`](crate::gameplay::ServerRules::observer_set_mode)'s default.)
+pub fn observer_set_mode(p: &mut Player, cx: &mut Cx, mode: i32) {
     if mode == cx.pev().iuser1 {
         return;
     }
@@ -781,14 +782,14 @@ pub fn dev_observe(p: &mut Player, cx: &mut Cx, mode: i32, target: i32) -> bool 
             cx.pev().iuser2 = target;
         }
     }
-    observer_set_mode(p, cx, mode);
+    crate::gameplay::active().server.observer_set_mode(p, cx, mode);
     true
 }
 
 /// `m_hObserverTarget` (`+0x75c`) is a raw `CBasePlayer*` in TS: a player who left is still a
 /// target (dead, invisible, dormant) until `Observer_Idle` replaces it, as long as the slot keeps
 /// its player.
-fn obs_handle_valid(idx: i32) -> bool {
+pub fn obs_handle_valid(idx: i32) -> bool {
     idx > 0 && super::has_player(engine().player(idx))
 }
 

@@ -120,6 +120,11 @@ impl ServerRules for Ts21Server {
         observer::observer_think(p, cx, now);
     }
 
+    /// 2.1's `Observer_SetMode` (FUN_1005aad0): a waiting roaming observer is held still.
+    fn observer_set_mode(&self, p: &mut Player, cx: &mut Cx, mode: i32) {
+        observer::set_mode(p, cx, mode);
+    }
+
     fn on_init_hud(&self, p: &mut Player, _cx: &mut Cx) {
         players::on_init_hud(p);
     }

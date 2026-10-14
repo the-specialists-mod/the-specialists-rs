@@ -151,6 +151,13 @@ pub trait ServerRules: Sync {
         lifecycle::observer_think_core(p, cx, now);
     }
 
+    /// `CBasePlayer::Observer_SetMode` (0x99e44) as `StartObserver` and the port's `ts_observe`
+    /// call it. A ruleset with its own observer camera (see [`observer_think`](Self::observer_think))
+    /// overrides both. 3.0: [`lifecycle::observer_set_mode`].
+    fn observer_set_mode(&self, p: &mut Player, cx: &mut Cx, mode: i32) {
+        lifecycle::observer_set_mode(p, cx, mode);
+    }
+
     /// End of `CTSGameRules::InitHUD` (0x79134), once a joiner is observing with its respawn
     /// time set. 3.0: nothing.
     fn on_init_hud(&self, _p: &mut Player, _cx: &mut Cx) {}

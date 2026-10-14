@@ -267,6 +267,7 @@ The hooks so far:
 | `ServerRules` | `put_in_server_cash()` | `cvars::INITIAL_CASH` (1200) | `rules/lifecycle.rs` `on_spawn` (first spawn) |
 | `ServerRules` | `on_start_observer(p, cx)` | nothing | `rules/lifecycle.rs` `start_observer`, before `TSCash` |
 | `ServerRules` | `observer_think(p, cx, now)` | `rules::lifecycle::observer_think_core` (countdown, join deadline, `Observer_HandleButtons`, `Observer_Idle`; 3.0 respawns with the `respawn` command) | `rules/lifecycle.rs` `pre_think`, while `iuser1` is set (PreThink zeroes `impulse` and returns after it) |
+| `ServerRules` | `observer_set_mode(p, cx, mode)` | `rules::lifecycle::observer_set_mode` (`Observer_SetMode`) | `rules/lifecycle.rs` `start_observer` and `dev_observe` (`ts_observe`); a ruleset with its own camera calls its own from its `observer_think` |
 | `ServerRules` | `on_init_hud(p, cx)` | nothing | `rules/lifecycle.rs` `ts_init_hud`, at its end |
 | `ServerRules` | `set_respawn_time(p, cx, secs)` | `rules::lifecycle::set_respawn_time_core` | `rules/lifecycle.rs` `set_respawn_time` |
 | `ServerRules` | `on_killed(p, cx)` | nothing | `rules/lifecycle.rs` `killed`, after the respawn time |
