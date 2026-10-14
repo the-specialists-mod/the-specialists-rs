@@ -445,10 +445,9 @@ pub fn health_regen_core(p: &mut Player, cx: &mut Cx, now: f32) {
     }
     if p.ts.is_the_one {
         if p.ts.health_timer < now {
-            let n = state::with(|g| g.the_one_others) as f32;
-            p.ts.health_timer = now + 1.0 / (n * 0.32).max(1.0);
+            let n = state::with(|g| g.the_one_others);
             let v = cx.pev();
-            v.health = (v.health + n * 0.16).min(150.0);
+            (p.ts.health_timer, v.health) = the_one_regen(n, now, v.health);
         }
         return;
     }
@@ -459,6 +458,18 @@ pub fn health_regen_core(p: &mut Player, cx: &mut Cx, now: f32) {
         p.ts.health_timer = now + 1.0;
         v.health -= 1.0;
     }
+}
+
+/// The One's regeneration tick (mp.dll `PreThink` 0x1005f8bc..0x1005f92d) with `n` other players:
+/// the next tick at `time + 1 / max(n * 0.32f, 1)` and `health + n * 0.16f` capped at 150. Each
+/// is computed on the x87 (53 bits) from `fild n` and stored to a `float` once; the cap keeps a
+/// NaN health (`fcom 150; test ah,1`).
+fn the_one_regen(n: i32, now: f32, health: f32) -> (f32, f32) {
+    let k = f64::from(n) * f64::from(0.32f32);
+    let timer = 1.0 / if 1.0 < k { k } else { 1.0 } + f64::from(now);
+    let h = f64::from(n) * f64::from(0.16f32) + f64::from(health);
+    let h = if h < 150.0 || h.is_nan() { h } else { 150.0 };
+    (timer as f32, h as f32)
 }
 
 /// `UpdateClientData`'s init block (0x91d40), inside its 0.1 s throttle: ResetHUD every spawn
@@ -835,15 +846,16 @@ pub fn observer_think_core(p: &mut Player, cx: &mut Cx, now: f32) {
     let e = cx.edict;
     if p.respawn_at > 0.0 && now < p.respawn_at && p.ts.next_hud_msg < now {
         p.ts.next_hud_msg = now + 1.0;
-        let (hold, text) = respawn_countdown_text(p.respawn_at - now);
+        let (hold, text) = respawn_countdown_text(f64::from(p.respawn_at) - f64::from(now));
         ts_message_one(e, [0, 0, 0], 16, hold, &text);
     }
     if p.ts.join_deadline != 0.0 {
         if now <= p.ts.join_deadline {
             if p.ts.next_hud_msg < now {
                 p.ts.next_hud_msg = now + 1.0;
-                // `(int)` cast: truncation (0x91063, like the countdown).
-                let left = (p.ts.join_deadline - now) as i32;
+                // `(int)(deadline - time)`: truncation of the unrounded difference (mp.dll
+                // 0x1005fc49..0x1005fc51, like the countdown).
+                let left = super::x87_trunc(f64::from(p.ts.join_deadline) - f64::from(now));
                 ts_message_one(e, [0, 0, 0], 16, 20, &format!("{left} seconds left for respawn, press Fire to Play!"));
             }
         } else {
@@ -860,11 +872,18 @@ pub fn observer_think_core(p: &mut Player, cx: &mut Cx, now: f32) {
 }
 
 /// The observer respawn countdown text and hold time for `left` seconds to go (PreThink
-/// 0x90ec4..0x90fab). TS converts with a plain `(int)` cast, which GCC emits as `fistp` under a
-/// truncating control word (`fldcw` with RC = 11), so 4.7 s shows "4" and the last second
-/// shows "Press Fire To Play!". The number is capped at 30.
-fn respawn_countdown_text(left: f32) -> (u8, String) {
-    if (left as i32) < 1 { (30, "Press Fire To Play!".to_owned()) } else { (20, format!("{}", left.min(30.0) as i32)) }
+/// 0x90ec4..0x90fab, mp.dll 0x1005fb5e..0x1005fb93). TS converts with a plain `(int)` cast
+/// (truncation: mp.dll's `__ftol`, GCC's `fistp` under RC = 11), so 4.7 s shows "4" and the
+/// last second shows "Press Fire To Play!". The number is capped at 30. `left` is
+/// `respawn - time` as the x87 holds it, never stored to a `float`: just under a whole second
+/// it doesn't round up to it.
+fn respawn_countdown_text(left: f64) -> (u8, String) {
+    use super::x87_trunc;
+    if x87_trunc(left) < 1 {
+        (30, "Press Fire To Play!".to_owned())
+    } else {
+        (20, format!("{}", x87_trunc(if left < 30.0 { left } else { 30.0 })))
+    }
 }
 
 /// `CBasePlayer::Observer_HandleButtons` (0x99d34): jump cycles roaming → chase free → chase
@@ -1139,15 +1158,7 @@ pub fn death_think(p: &mut Player, cx: &mut Cx) {
     {
         let v = cx.pev();
         if v.flags & FL_ONGROUND as i32 != 0 {
-            let speed = super::len3(v.velocity);
-            let f = speed - 20.0;
-            if f > 0.0 {
-                for i in 0..3 {
-                    v.velocity[i] = v.velocity[i] / speed * f;
-                }
-            } else {
-                v.velocity = [0.0; 3];
-            }
+            v.velocity = death_slowdown(v.velocity);
         }
     }
     // `if (HasWeapons()) RemoveAllItems(TRUE)` (0x8ec15): the gun (and a picked-up
@@ -1181,6 +1192,22 @@ pub fn death_think(p: &mut Player, cx: &mut Cx) {
     }
 }
 
+/// `PlayerDeathThink`'s slowdown on the ground (mp.dll 0x1005dd78..0x1005deb5):
+/// `v = (v.Length() - 20) * v.Normalize()`, or zero when that isn't positive. mp.dll keeps the
+/// lengths on the x87 (53 bits, `(x² + y²) + z²`), stores `f = len - 20` as a `float`, takes
+/// `1 / len` unrounded, stores each `dir_i = inv * v_i` and then each `f * dir_i`.
+fn death_slowdown(v: [f32; 3]) -> [f32; 3] {
+    use shared::pm::{FpuMath, Msvc};
+    let len = Msvc::length(v);
+    let f = len - 20.0;
+    // `fcomp 0.0; test ah,0x41; je`: only a positive `f` moves on (a NaN stops).
+    if !(f > 0.0) {
+        return [0.0; 3];
+    }
+    let (f, inv) = (f as f32, 1.0 / len);
+    v.map(|c| (inv * f64::from(c)) as f32 * f)
+}
+
 /// Broadcasts `TSPAward` for a player (used by scoring for the killer).
 pub fn send_award(idx: i32, award: u8) {
     msg::all(Msg::TsPAward, |w| TsPAward { entindex: idx as u8, award }.write(w));
@@ -1189,7 +1216,8 @@ pub fn send_award(idx: i32, award: u8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        damage_force, death_push, headshot_death_slows, killer_blur, player_is_cheating, respawn_countdown_text, scan_c_int, score_frags,
+        damage_force, death_push, death_slowdown, headshot_death_slows, killer_blur, player_is_cheating, respawn_countdown_text,
+        scan_c_int, score_frags, the_one_regen,
     };
 
     #[test]
@@ -1215,6 +1243,44 @@ mod tests {
         assert!(!player_is_cheating("1"));
         assert!(player_is_cheating("0"));
         assert!(player_is_cheating(""));
+    }
+
+    /// The difference isn't stored to a `float` first (#147): 2^-25 s before a respawn at 2.0 is
+    /// "1" (the `f32` difference rounds to 2.0).
+    #[test]
+    fn respawn_countdown_subtracts_unrounded() {
+        let now = 2f32.powi(-25);
+        assert_eq!(2.0 - now, 2.0, "the f32 difference");
+        assert_eq!(respawn_countdown_text(f64::from(2.0f32) - f64::from(now)), (20, "1".to_owned()));
+        assert_eq!(respawn_countdown_text(f64::from(1.0f32) - f64::from(now)), (30, "Press Fire To Play!".to_owned()));
+        assert_eq!(respawn_countdown_text(f64::from(31.0f32) - f64::from(now)), (20, "30".to_owned()));
+    }
+
+    /// The One's tick (mp.dll 0x1005f8bc..): computed unrounded, stored once (#147).
+    #[test]
+    fn the_one_regen_rounds_once() {
+        // 1.85 + 1/1.28: the f32 steps give 2.6312499.
+        let (timer, _) = the_one_regen(4, 1.85, 100.0);
+        assert_eq!(timer.to_bits(), 2.631_250_1f32.to_bits());
+        assert_ne!(timer, 1.85f32 + 1.0 / (4.0f32 * 0.32));
+        // 125.92 + 27 * 0.16: the f32 steps give 130.23999.
+        let (_, h) = the_one_regen(27, 0.0, 125.92);
+        assert_eq!(h.to_bits(), 130.240_005_5f32.to_bits());
+        assert_ne!(h, 125.92f32 + 27.0 * 0.16f32);
+        // n * 0.32 below 1 is raised to 1; the cap is 150; a NaN health stays NaN.
+        assert_eq!(the_one_regen(1, 10.0, 149.9), (11.0, 150.0));
+        assert!(the_one_regen(1, 10.0, f32::NAN).1.is_nan());
+    }
+
+    /// `PlayerDeathThink`'s slowdown (mp.dll 0x1005dd78..): the unrounded length and `1/len`
+    /// (#147). The `f32` steps gave x = 0x43445d1f.
+    #[test]
+    fn death_slowdown_like_mp_dll() {
+        let v = death_slowdown([211.019_7, -195.944_78, 0.0]);
+        assert_eq!(v.map(f32::to_bits), [0x4344_5d1e, 0xc336_55f9, 0]);
+        assert_eq!(death_slowdown([3.0, 4.0, 12.0]), [0.0; 3], "13 u/s: not above 20");
+        assert_eq!(death_slowdown([30.0, 0.0, 0.0]), [10.0, 0.0, 0.0]);
+        assert_eq!(death_slowdown([f32::NAN, 0.0, 0.0]), [0.0; 3]);
     }
 
     #[test]
