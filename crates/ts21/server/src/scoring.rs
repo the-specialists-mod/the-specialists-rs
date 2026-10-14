@@ -250,9 +250,13 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
                 k.held = pw::SLOWMO;
                 k.held_secs = (k.held_secs + 1).min(5);
             }
+            // `CBot::OnKill` (0x1005ddd0, from 0x1004fe02) through the active bot backend, so a
+            // plugin backend's bot taunts with its own AI, as on the 3.0 path.
             if points > 0 {
-                other(k.e, |kp| ts_server::bots::on_kill(kp, victim, now));
+                other(k.e, |kp| ts_server::bot_backend::on_kill(kp, victim, now));
             }
+            // Port addition: plugins hear of every kill a player scored, as on the 3.0 path.
+            ts_server::plugins::on_kill(k.e, victim, points);
             let kick = points == -1 && other(k.e, |kp| team_kill(kp, now)).unwrap_or(false);
             let (spree, award, held, held_secs, active, last_kill) = (k.spree, k.award, k.held, k.held_secs, k.active, k.last_kill);
             other(k.e, |kp| {
@@ -404,6 +408,16 @@ mod tests {
         assert_eq!(own_kind(Active::Gun, Some(id::KATANA), false), Kind::Katana);
         assert_eq!(own_kind(Active::Gun, Some(id::KATANA), true), Kind::KungFu);
         assert_eq!(own_kind(Active::Gun, Some(id::BERETTA), false), Kind::Plain);
+    }
+
+    #[test]
+    fn kills_reach_the_bot_backend_and_the_plugins() {
+        // Issue #157: the kill taunt goes through the active bot backend (a plugin backend's bots
+        // included), never straight to the native bots, and plugins hear of the kill.
+        let src = include_str!("scoring.rs");
+        assert!(!src.contains(concat!("ts_server::bots", "::on_kill")));
+        assert!(src.contains(concat!("ts_server::bot_backend", "::on_kill(kp, victim, now)")));
+        assert!(src.contains(concat!("ts_server::plugins", "::on_kill(k.e, victim, points)")));
     }
 
     #[test]
