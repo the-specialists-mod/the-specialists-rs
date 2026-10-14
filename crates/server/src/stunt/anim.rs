@@ -40,13 +40,14 @@ fn shot_running(end_times: bool, now: f32, shot: f32) -> bool {
 /// The "recently shot" timer is over for the whole-body follow: TS 3.0 `shot < 0.01`; end times
 /// `shot < time || shot == time` (a NaN is neither).
 fn shot_over(end_times: bool, now: f32, shot: f32) -> bool {
-    if end_times { shot < now || shot == now } else { shot < 0.01 }
+    if end_times { shot <= now } else { shot < 0.01 }
 }
 
 /// `BulletDance`'s timers allow a twitch: TS 3.0 `!(time_left < 0.01) && !(next > 0)`; end times
 /// `time <= until && next <= time`.
 fn dance_due(end_times: bool, now: f32, next: f32, until: f32) -> bool {
-    if end_times { now <= until && next <= now } else { !(until < 0.01) && !(next > 0.0) }
+    use std::cmp::Ordering::{Greater, Less};
+    if end_times { now <= until && next <= now } else { until.partial_cmp(&0.01) != Some(Less) && next.partial_cmp(&0.0) != Some(Greater) }
 }
 
 /// The name tables (16-byte slots in TS), indexed by `GetDirection`: left, right, forward, back.

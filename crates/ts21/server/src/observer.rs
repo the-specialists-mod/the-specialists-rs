@@ -143,7 +143,7 @@ pub fn roaming_maxspeed(waiting_rules: bool, respawn_at: f32) -> f32 {
 /// Whether a waiting observer may only watch teammates (FUN_1005a7d0): under [`waiting_rules`]
 /// unless `m_flRespawnTime < 0` (a NaN counts as waiting).
 pub fn teammates_only(waiting_rules: bool, respawn_at: f32) -> bool {
-    waiting_rules && !(respawn_at < 0.0)
+    waiting_rules && respawn_at.partial_cmp(&0.0) != Some(std::cmp::Ordering::Less)
 }
 
 /// `Observer_SetMode` (FUN_1005aad0). As 3.0's (the view offset and view model cleared, the chase
