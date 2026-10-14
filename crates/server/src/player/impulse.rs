@@ -146,7 +146,7 @@ fn create_sprayer<T: Entity + Default>(player: *mut edict_t) -> *mut edict_t {
     v.origin = spread::add(origin, [0.0, 0.0, 32.0]);
     v.angles = v_angle;
     v.owner = player;
-    v.nextthink = eng.time() + 0.1;
+    v.nextthink = shared::pm::plus_double(eng.time(), 0.1);
     e
 }
 

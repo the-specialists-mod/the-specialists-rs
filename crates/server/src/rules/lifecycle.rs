@@ -902,15 +902,15 @@ pub fn observer_handle_buttons(p: &mut Player, cx: &mut Cx, now: f32) {
             _ => obs::ROAMING,
         };
         observer_set_mode(p, cx, mode);
-        p.ts.obs_next_input = now + 0.2;
+        p.ts.obs_next_input = shared::pm::plus_double(now, 0.2);
     }
     if buttons & IN_FORWARD as i32 != 0 && cx.pev().iuser1 != obs::ROAMING {
         observer_find_next_player(p, cx, false);
-        p.ts.obs_next_input = now + 0.2;
+        p.ts.obs_next_input = shared::pm::plus_double(now, 0.2);
     }
     if buttons & IN_BACK as i32 != 0 && cx.pev().iuser1 != obs::ROAMING {
         observer_find_next_player(p, cx, true);
-        p.ts.obs_next_input = now + 0.2;
+        p.ts.obs_next_input = shared::pm::plus_double(now, 0.2);
     }
 }
 

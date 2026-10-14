@@ -122,7 +122,7 @@ pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
     if !(p.hud.next_update <= now && p.hud.next_update >= 0.0) {
         return;
     }
-    p.hud.next_update = now + 0.1;
+    p.hud.next_update = shared::pm::plus_double(now, 0.1);
     if p.ts.init_hud {
         crate::rules::lifecycle::init_hud_block(p, cx);
     }

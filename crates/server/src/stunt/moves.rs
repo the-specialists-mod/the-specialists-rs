@@ -11,7 +11,7 @@ use super::*;
 use crate::damage::{DamageInfo, bits};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, HEAD_HULL, IGNORE_MONSTERS};
-use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ};
+use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ, plus_double};
 
 /// `CanDiveHigh/Medium/Low` (0x9a494...), the ruleset's ([`rules::can_dive`] in TS 3.0).
 fn can(p: &Player, cx: &mut Cx, r: Rules, dive: Dive) -> bool {
@@ -204,7 +204,7 @@ fn check_for_wall_climb(p: &mut Player, cx: &mut Cx) -> bool {
         }
         let time = cx.time();
         if p.stunt.climb_tap < time {
-            p.stunt.climb_tap = time + 0.3;
+            p.stunt.climb_tap = plus_double(time, 0.3);
             return false;
         }
     }
@@ -551,7 +551,7 @@ fn go_wheel(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
             return true;
         }
     }
-    p.stunt.wheel_tap = time + 0.3;
+    p.stunt.wheel_tap = plus_double(time, 0.3);
     false
 }
 
@@ -576,7 +576,7 @@ fn go_roll(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
         roll = false;
     }
     if !roll {
-        p.stunt.roll_tap = time + 0.3;
+        p.stunt.roll_tap = plus_double(time, 0.3);
         return false;
     }
     p.stunt.dir = normalized(cx.pev().velocity);
@@ -831,7 +831,7 @@ pub(super) fn super_jump_landing(p: &mut Player, cx: &mut Cx, r: Rules) {
     cx.pev().iuser4 &= !SUPERJUMP_GLIDE;
     let mut rolled = false;
     if cx.pev().button & IN_DUCK as i32 != 0 {
-        p.stunt.roll_tap = cx.time() + 0.3;
+        p.stunt.roll_tap = plus_double(cx.time(), 0.3);
         rolled = go_roll(p, cx, r);
         if rolled {
             // m_flNextAttack = UTIL_WeaponTimeBase() + 0.75 (relative weapon timer).

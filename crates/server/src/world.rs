@@ -43,10 +43,20 @@ impl Cx {
     }
     /// Schedule `think` after `delay` seconds. For MOVETYPE_PUSH entities the engine compares
     /// `nextthink` against `ltime` instead of the global time (see entities::stock).
-    pub fn think_in(&mut self, delay: f32) {
+    ///
+    /// TS writes these as `gpGlobals->time + 0.1`: the C literal is a `double`, which the x87 adds
+    /// to the `float` time and rounds once (`fld qword 0.1; fadd dword time; fstp dword`,
+    /// `ts_i386.so` e.g. 0x88390, mp.dll 0x10066b8d), so the delay is an `f64` (issue #168). A
+    /// `float` delay passed as `f64` gives the same sum.
+    pub fn think_in(&mut self, delay: f64) {
         let now = engine().time();
-        self.pev().nextthink = now + delay;
+        self.pev().nextthink = next_think_at(now, delay);
     }
+}
+
+/// [`Cx::think_in`]'s `nextthink`: `now + delay` rounded once to a `float`.
+pub fn next_think_at(now: f32, delay: f64) -> f32 {
+    shared::pm::plus_double(now, delay)
 }
 
 /// A linked classname and a constructor for its class (the save-table tests).
@@ -573,6 +583,20 @@ mod tests {
 
     fn value(s: &Store, h: Handle) -> Option<i32> {
         s.with::<Thing, _>(h, |t| t.value)
+    }
+
+    /// Issue #168: `time + 0.1` / `time + 0.01` with the `double` constant, rounded once. Early in
+    /// a map these times round the other way from the `float` constant's sum.
+    #[test]
+    fn think_delays_add_a_double() {
+        let t = f32::from_bits(0x3e00_0001);
+        assert_eq!(next_think_at(t, 0.1).to_bits(), 0x3e66_6667);
+        assert_eq!((t + 0.1f32).to_bits(), 0x3e66_6668, "the float 0.1");
+        let t = 0.03125f32;
+        assert_eq!(next_think_at(t, 0.01).to_bits(), 0x3d28_f5c3);
+        assert_eq!((t + 0.01f32).to_bits(), 0x3d28_f5c2, "the float 0.01");
+        // A `float` delay sums as before.
+        assert_eq!(next_think_at(1.5, 0.5f32.into()), 2.0);
     }
 
     #[test]

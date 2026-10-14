@@ -141,7 +141,7 @@ impl Entity for Trigger {
         trigger_brush(cx, c"ts_trigger");
         self.funcs = BaseFuncs { touch: true, ..BaseFuncs::default() };
         let step = check_step(self.next_check);
-        cx.think_in(step);
+        cx.think_in(step.into());
         self.ready_at = cx.time() + step;
     }
 
@@ -213,7 +213,7 @@ impl Entity for DmHill {
         let enabled = if teamplay { self.frags_team > 0 } else { self.frags > 0 };
         self.funcs = BaseFuncs { touch: enabled, ..BaseFuncs::default() };
         // `CTSDMHill::Spawn` (0x71a8c) sets `nextthink` without a think.
-        cx.think_in(check_step(self.next_check));
+        cx.think_in(check_step(self.next_check).into());
         self.blocked_until = cx.time() + 1.0;
         self.king = None;
     }
@@ -332,7 +332,7 @@ impl Timer {
         self.running = !self.running;
         self.funcs.think = self.running;
         if self.running {
-            cx.think_in(self.duration as f32);
+            cx.think_in(self.duration.into());
         }
     }
 }
@@ -377,7 +377,7 @@ impl Entity for Timer {
         if cx.pev().spawnflags & 1 != 0 {
             self.funcs.think = false;
         }
-        cx.think_in(self.duration as f32);
+        cx.think_in(self.duration.into());
     }
 
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
