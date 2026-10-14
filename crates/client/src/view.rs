@@ -780,44 +780,50 @@ fn bob_levels(cl_bob: f32) -> (f32, f32) {
 
 /// What `V_CalcBob` reads.
 #[derive(Clone, Copy, Debug, Default)]
-struct BobInput {
+pub struct BobInput {
     /// Third person, `pparams->spectator`, or `PM_SpectatorMove` smoothing flags set without the
     /// "keep bobbing" bit (`0x10066e74..0x10066e9b`): return 0 and leave every static alone.
-    skip: bool,
-    cl_bob: f32,
-    on_ground: bool,
-    time: f32,
-    frametime: f32,
-    viewheight: f32,
-    simvel: Vec3,
+    pub skip: bool,
+    pub cl_bob: f32,
+    pub on_ground: bool,
+    pub time: f32,
+    pub frametime: f32,
+    pub viewheight: f32,
+    pub simvel: Vec3,
     /// `g_flTimeScale` (`0x100963e8`), unclamped.
-    ts: f32,
+    pub ts: f32,
+    /// The last `TSSlowMo` value as sent (the factor × 100; 0 = normal speed, and before any).
+    pub slowmo_factor100: f32,
     /// `pparams->forward/right/up` as the engine passes them in: the vectors of the previous
     /// frame's view angles (FWGS `V_SetRefParams`), since `V_CalcBob` runs before
     /// `V_CalcNormalRefdef` computes this frame's.
-    forward: Vec3,
-    right: Vec3,
-    up: Vec3,
+    pub forward: Vec3,
+    pub right: Vec3,
+    pub up: Vec3,
 }
 
-/// `V_CalcBob` (`0x10066e70`) and `V_SmoothBobZ` (`0x10066de0`) statics.
+/// `V_CalcBob` (`0x10066e70`) and `V_SmoothBobZ` (`0x10066de0`) statics, which a ruleset's
+/// [`ClientRules::view_bob`](crate::gameplay::ClientRules::view_bob) advances.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Bob {
+pub struct Bob {
     /// `pparams->time` of the last bobbing frame (`0x10191d70`).
-    last_time: f32,
+    pub last_time: f32,
     /// Phase in degrees (`0x10191d74`), reset to 0 once past 360.
-    phase: f32,
+    pub phase: f32,
     /// Amplitude (`0x10191d6c`), also `V_CalcBob`'s return value.
-    amp: f32,
+    pub amp: f32,
     /// The amplitude last set from the speed (`0x10191d78`); below it the amplitude eases back.
-    peak: f32,
+    pub peak: f32,
     /// Smoothed z of the gun offset (`0x1019144c`).
-    smooth_z: f32,
+    pub smooth_z: f32,
     /// World-space gun offset (`0x10191428`), added to the view model's origin. Left as it was
     /// on a skipped frame, as the in-eye gun also reads it.
-    ofs: Vec3,
+    pub ofs: Vec3,
     /// Bob pitch (`0x10190b78`); `V_CalcNormalRefdef` consumes it and zeroes it every frame.
-    pitch: f32,
+    pub pitch: f32,
+    /// A camera bob `V_CalcNormalRefdef` adds to `vieworg` every frame, right after the view
+    /// height, once a ruleset's bob has set it. TS 3.0 has none (always `None`).
+    pub eye: Option<Vec3>,
 }
 
 impl Bob {
@@ -832,7 +838,7 @@ impl Bob {
     /// * The offset mixes the previous frame's vectors in world space:
     ///   `up·sin(2φ)·amp·0.11 + forward·(0.75 − amp/2) + right·sin(φ)·amp·0.3`, scaled by the
     ///   `cl_bob` level, with `0.5 − 0.65·amp` added to z first; z then eases at `ft·20`.
-    fn calc(&mut self, i: &BobInput) -> f32 {
+    pub fn calc(&mut self, i: &BobInput) -> f32 {
         if i.skip {
             return 0.0;
         }
@@ -880,7 +886,7 @@ impl Bob {
 
     /// `V_SmoothBobZ` (`0x10066de0`): the smoothed z moves `(z_smooth − z)·ft·20` toward the
     /// offset's z, never past it, and becomes the offset's z.
-    fn smooth_z(&mut self, ft: f32) {
+    pub fn smooth_z(&mut self, ft: f32) {
         let d = self.smooth_z - self.ofs[2];
         let mut step = d * ft * 20.0;
         if step.abs() > d.abs() {
@@ -1236,13 +1242,15 @@ fn calc_normal(p: &mut ref_params_t) {
         viewheight: p.viewheight[2],
         simvel: p.simvel,
         ts,
+        slowmo_factor100: state::with(|s| s.slowmo_factor100),
         forward: p.forward,
         right: p.right,
         up: p.up,
     };
 
     // `V_CalcBob` (`0x100679a5`) runs before the spectator camera replaces `simorg`.
-    let (bob, gun_ofs) = with(|w| (w.bob.calc(&bob_in), w.bob.ofs));
+    let rules = crate::gameplay::current();
+    let (bob, gun_ofs) = with(|w| (rules.view_bob(&mut w.bob, &bob_in), w.bob.ofs));
 
     // The spectator camera origin replaces `simorg` (`0x100679aa`).
     if let Some(org) = ov.origin {
@@ -1257,6 +1265,9 @@ fn calc_normal(p: &mut ref_params_t) {
         w.vh = ease_view_height(w.vh, p.viewheight[2], ft);
         let z = w.stairs.smooth(p.simorg[2] + w.vh, on_ground, ft);
         p.vieworg = [p.simorg[0], p.simorg[1], z];
+        if let Some(eye) = w.bob.eye {
+            p.vieworg = v::add(p.vieworg, eye);
+        }
     });
 
     // The spectator camera angles replace `cl_viewangles` (`0x10067a4b`), then the angle ring
@@ -1629,6 +1640,7 @@ mod tests {
             viewheight: 28.0,
             simvel: [speed, 0.0, 0.0],
             ts: 1.0,
+            slowmo_factor100: 0.0,
             forward: [1.0, 0.0, 0.0],
             right: [0.0, -1.0, 0.0],
             up: [0.0, 0.0, 1.0],

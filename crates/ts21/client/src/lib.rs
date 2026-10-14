@@ -7,7 +7,10 @@
 use std::cmp::Ordering;
 use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
 use ts_client::menus::buy::MenuRules;
+use ts_client::view::{Bob, BobInput};
 use ts21_gameplay::TS21;
+
+pub mod view;
 
 /// TS 2.1's client-only rules.
 pub struct Ts21Client;
@@ -159,6 +162,11 @@ impl ClientRules for Ts21Client {
     /// `RandomLong(-5, 5)`, as 3.0's.
     fn fire_pitch(&self, _time_scale: f32, slowmo_factor100: f32) -> i32 {
         fire_pitch(slowmo_factor100 / 100.0)
+    }
+
+    /// `V_CalcBob` (0x100b5c80) with its camera bob ([`view::calc`]).
+    fn view_bob(&self, bob: &mut Bob, input: &BobInput) -> f32 {
+        view::calc(bob, input)
     }
 
     /// `CashBased()` (0x1006b2f0) is `m_Teamplay ≥ 2 || SrvSett 1`, so the menu spends the live

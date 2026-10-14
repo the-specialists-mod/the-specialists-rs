@@ -169,4 +169,12 @@ pub trait ClientRules: Sync {
         let _ = slowmo_factor100;
         100 - (time_scale * -300.0) as i32
     }
+
+    /// `V_CalcBob` for one `V_CalcNormalRefdef`: advances `bob` (the gun offset, its pitch and,
+    /// if the ruleset has one, the camera bob [`Bob::eye`](crate::view::Bob::eye)) and returns the
+    /// amplitude `V_CalcGunAngle` adds to the gun's pitch. TS 3.0: [`Bob::calc`](crate::view::Bob::calc)
+    /// (`0x10066e70`).
+    fn view_bob(&self, bob: &mut crate::view::Bob, input: &crate::view::BobInput) -> f32 {
+        bob.calc(input)
+    }
 }

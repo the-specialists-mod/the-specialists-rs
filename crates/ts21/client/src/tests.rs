@@ -251,3 +251,63 @@ fn buy_menu_reset_and_random() {
     assert_eq!(ids[..2], [ITEM_KEVLAR, 25]);
     assert_eq!(ids[2], 2);
 }
+
+fn bob_input(time: f32, speed: f32, slowmo_factor100: f32) -> ts_client::view::BobInput {
+    ts_client::view::BobInput {
+        on_ground: true,
+        time,
+        frametime: 0.01,
+        viewheight: 28.0,
+        simvel: [speed, 0.0, 0.0],
+        ts: 1.0,
+        cl_bob: 4.0,
+        slowmo_factor100,
+        forward: [1.0, 0.0, 0.0],
+        right: [0.0, -1.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+        ..Default::default()
+    }
+}
+
+fn near(a: f32, b: f64) -> bool {
+    (a as f64 - b).abs() < 1e-5
+}
+
+/// 2.1's `V_CalcBob` (0x100b5c80): the phase rate ignores the speed, there are no `cl_bob` levels
+/// or bob pitch, and it fills the camera bob that `V_CalcNormalRefdef` adds to `vieworg`.
+#[test]
+fn view_bob() {
+    let mut b = ts_client::view::Bob::default();
+    let amp = v21().view_bob(&mut b, &bob_input(1.0, 200.0, 0.0));
+    assert_eq!((b.phase, amp, b.peak, b.pitch), (3.5, 2.0, 2.0, 0.0), "ft × 3.5 × 100; |v| × 0.01");
+    let (s2, s1) = ((7.0f64.to_radians()).sin() * 2.0, (3.5f64.to_radians()).sin() * 2.0);
+    let eye = b.eye.expect("2.1 has a camera bob");
+    assert!(eye[0] == 0.0 && near(eye[1], s1 * 0.9) && near(eye[2], s2 * -0.9 * 1.6), "{eye:?}");
+    assert!(near(b.ofs[0], -0.25) && near(b.ofs[1], -s1 * 0.3), "{:?}", b.ofs);
+    // z: `s2·0.11 + 0.5 − 0.65·amp`, smoothed from 0 by `d × 0.2 × ft × 100`.
+    assert!(near(b.ofs[2], (s2 * 0.11 + 0.5 - 1.3) * 0.2), "{:?}", b.ofs);
+    let mut lvl0 = ts_client::view::Bob::default();
+    v21().view_bob(&mut lvl0, &ts_client::view::BobInput { cl_bob: 0.0, ..bob_input(1.0, 200.0, 0.0) });
+    assert_eq!(lvl0, b, "no cl_bob levels");
+
+    // Half speed slow motion: half the phase step.
+    v21().view_bob(&mut b, &bob_input(1.01, 200.0, 50.0));
+    assert_eq!(b.phase, 5.25);
+    let eye = b.eye;
+    // In the air the amplitude halves and the camera bob keeps its last value.
+    let air = ts_client::view::BobInput { on_ground: false, ..bob_input(1.02, 200.0, 0.0) };
+    v21().view_bob(&mut b, &air);
+    assert_eq!((b.amp, b.eye), (1.0, eye), "the camera bob is stale, not cleared");
+    // Back on the ground below the peak: `(|v| × 0.01 + amp) × 0.5`.
+    assert_eq!(v21().view_bob(&mut b, &bob_input(1.03, 200.0, 0.0)), 1.5);
+    assert_eq!(b.peak, 2.0);
+
+    // TS 3.0's bob: speed-scaled phase, a bob pitch, no camera bob.
+    let mut c = ts_client::view::Bob::default();
+    v30().view_bob(&mut c, &bob_input(1.0, 200.0, 0.0));
+    assert_eq!(c.eye, None);
+    assert!(c.phase != 3.5 && c.pitch != 0.0, "{c:?}");
+    let mut d = ts_client::view::Bob::default();
+    d.calc(&bob_input(1.0, 200.0, 0.0));
+    assert_eq!(c, d, "the core plugin runs Bob::calc");
+}
