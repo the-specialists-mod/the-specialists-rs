@@ -242,10 +242,19 @@ fn set_modes_in(s: &mut Spectator, st: &mut state::Shared, mode: i32, pip: i32, 
     Some(out)
 }
 
-/// A director target must be another, present player (`0x100236d0`).
+/// `IsActivePlayer` (`0x100236d0`; TS 2.1's `0x1004b9e0` is the same): the director's target
+/// for the locked view, and the 2.1 HLTV controls' ([`HltvHost::active_player`]).
 fn valid_player(idx: i32) -> bool {
-    let local = engine().local_player().map_or(0, |p| p.index);
-    idx > 0 && idx != local && engine().entity(idx).is_some_and(|e| e.player != 0 && !e.model.is_null())
+    let e = engine();
+    let local = e.local_player().map_or(0, |p| p.index);
+    is_active_player(e.entity(idx), local, || !e.player_info(idx).name_bytes.is_empty())
+}
+
+/// The tests of `IsActivePlayer`: an entity that is a player (`+0x4`), solid (`curstate.solid`,
+/// `+0x2ea`; a dead player or a spectator is `SOLID_NOT`), not the local player, and whose slot
+/// has a player-info name (`[0x1018fbd8 + index × 20]`). TS doesn't look at the model.
+fn is_active_player(ent: Option<&cl_entity_t>, local: i32, named: impl FnOnce() -> bool) -> bool {
+    ent.is_some_and(|e| e.player != 0 && e.curstate.solid != 0 && e.index != local) && named()
 }
 
 /// `SetModes`, from `specmode` and the director reset. A ruleset may have a `SetModes` of its own
@@ -648,10 +657,7 @@ impl HltvHost for EngineHltv {
         with(|s| s.pip = mode);
     }
     fn active_player(&self, index: i32) -> bool {
-        let e = engine();
-        let local = e.local_player().map_or(0, |p| p.index);
-        e.entity(index).is_some_and(|ent| ent.player != 0 && ent.curstate.solid != 0 && ent.index != local)
-            && !e.player_info(index).name_bytes.is_empty()
+        valid_player(index)
     }
     fn player_name(&self, index: i32) -> String {
         String::from_utf8_lossy(&engine().player_info(index).name_bytes).into_owned()
@@ -850,6 +856,22 @@ mod tests {
         in_eye_from(Some(&e), &mut org, &mut ang);
         assert_eq!(org, [10.0, 20.0, 58.0]);
         assert_eq!(ang, [-std::f32::consts::PI, 90.0, 0.0]);
+    }
+
+    #[test]
+    fn active_player_is_ts() {
+        // `IsActivePlayer` (0x100236d0): player, solid, not local, named; the model isn't tested.
+        let mut e = cl_entity_t { index: 3, player: 1, ..Default::default() };
+        e.curstate.solid = SOLID_SLIDEBOX as i16;
+        assert!(is_active_player(Some(&e), 1, || true), "a modelless solid player passes");
+        assert!(!is_active_player(Some(&e), 1, || false), "a slot without a name doesn't");
+        assert!(!is_active_player(Some(&e), 3, || true), "nor the local player");
+        assert!(!is_active_player(None, 1, || true));
+        e.curstate.solid = SOLID_NOT as i16;
+        assert!(!is_active_player(Some(&e), 1, || true), "a dead player or spectator (SOLID_NOT) doesn't");
+        e.curstate.solid = SOLID_SLIDEBOX as i16;
+        e.player = 0;
+        assert!(!is_active_player(Some(&e), 1, || true), "nor a non-player (the world for target 0)");
     }
 
     #[test]
