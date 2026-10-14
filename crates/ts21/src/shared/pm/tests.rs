@@ -43,6 +43,23 @@ fn value_hooks() {
 }
 
 #[test]
+fn sdk_movement_hooks() {
+    // Issue #145: 2.1's SDK table (512 entries, 12 characters), in-eye pitch × -2 (0x10085f14),
+    // CalcRoll dividing first (0x10033af1), Friction's edge start through 1 / speed (0x10031728).
+    let t = &crate::TS21;
+    assert_eq!(t.texture_limits(), TextureLimits { max_entries: 512, name_chars: 12 });
+    assert_eq!(IN_EYE_PITCH_SCALE.to_bits(), 0xc000_0000);
+    assert_eq!(t.in_eye_pitch(-4.5), 9.0);
+    assert_eq!(t.in_eye_pitch(10.0), -20.0);
+    assert!(t.roll_divides_first() && t.friction_edge_by_reciprocal());
+
+    // TS 3.0's, unchanged.
+    assert_eq!(CORE.texture_limits(), TextureLimits { max_entries: 1024, name_chars: 15 });
+    assert_eq!(CORE.in_eye_pitch(-4.5), -4.5);
+    assert!(!CORE.roll_divides_first() && !CORE.friction_edge_by_reciprocal());
+}
+
+#[test]
 fn speed_by_free_slots() {
     let t = &crate::TS21;
     // 170 + free * 2, truncated (1/70.f is just above 1/70, so whole steps stay whole).

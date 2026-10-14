@@ -1139,3 +1139,97 @@ fn msvc_friction_matches_client_dll() {
     }
     assert!(differs_from_gcc > 0, "the test should tell the builds apart");
 }
+
+/// A ruleset with the other SDK operation orders, in-eye pitch and texture table
+/// (`PmRules::roll_divides_first`, `friction_edge_by_reciprocal`, `in_eye_pitch`,
+/// `texture_limits`). The core keeps TS 3.0's.
+struct Reordered;
+impl crate::gameplay::PmRules for Reordered {
+    fn in_eye_pitch(&self, pitch: f32) -> f32 {
+        pitch * -2.0
+    }
+    fn roll_divides_first(&self) -> bool {
+        true
+    }
+    fn friction_edge_by_reciprocal(&self) -> bool {
+        true
+    }
+}
+static REORDERED: Reordered = Reordered;
+
+#[test]
+fn in_eye_pitch_follows_the_rules() {
+    let mut f = Fixture::standing();
+    f.p.movevars = &mut *f.mv;
+    CURRENT.with(|c| c.set(&*f.p));
+    f.p.numphysent = 2;
+    f.p.physents[1].info = 2;
+    f.p.physents[1].angles = [-4.5, 90.0, 1.0];
+    f.p.iuser1 = crate::ts::obs::IN_EYE;
+    f.p.iuser2 = 2;
+    player_move(&mut f.p, Arith::Msvc, &REORDERED);
+    assert_eq!(f.p.angles, [9.0, 90.0, 1.0]);
+    player_move(&mut f.p, Arith::Msvc, &crate::gameplay::CORE);
+    assert_eq!(f.p.angles, [-4.5, 90.0, 1.0], "3.0 copies the target's angles");
+}
+
+#[test]
+fn calc_roll_order_follows_the_rules() {
+    // Yaw 0: right is -y, so the side speed is -vy.
+    let (ra, rs) = (2.7f32, 300.0f32);
+    let mut differ = 0;
+    for i in 1..3000 {
+        let side = i as f32 * 0.0937;
+        let v = [0.0, -side, 0.0];
+        let div_first = calc_roll::<Msvc>(ZERO, v, ra, rs, true);
+        let mul_first = calc_roll::<Msvc>(ZERO, v, ra, rs, false);
+        assert_eq!(div_first, side as f64 / rs as f64 * ra as f64);
+        assert_eq!(mul_first, side as f64 * ra as f64 / rs as f64);
+        // Last-bit differences on the FPU stack; the stored `roll * 4` rarely shows them.
+        differ += (div_first != mul_first) as u32;
+    }
+    assert!(differ > 0, "the orders differ in the last bit for some speeds");
+}
+
+#[test]
+fn friction_edge_start_order_follows_the_rules() {
+    thread_local!(static START: Cell<Vec3> = const { Cell::new([0.0; 3]) });
+    unsafe extern "C" fn record(start: *mut f32, end: *mut f32, flags: i32, ig: i32) -> pmtrace_t {
+        let s = unsafe { [*start, *start.add(1), *start.add(2)] };
+        let e = unsafe { [*end, *end.add(1), *end.add(2)] };
+        if s[0] == e[0] && s[1] == e[1] && e[2] < s[2] - 30.0 {
+            START.with(|c| c.set(s));
+        }
+        unsafe { trace(start, end, flags, ig) }
+    }
+    let mut f = Fixture::standing();
+    f.p.PM_PlayerTrace = Some(record);
+    f.p.origin = [12.345_678, -98.765_43, f.p.origin[2]];
+    let origin = f.p.origin;
+    let mut differ = 0;
+    for i in 0..500 {
+        let v = [37.0 + i as f32 * 0.731, -120.0 + i as f32 * 0.377, 0.0];
+        let speed = ((v[0] as f64 * v[0] as f64 + v[1] as f64 * v[1] as f64) + 0.0).sqrt() as f32;
+        let mut run = |rules: &'static dyn crate::gameplay::PmRules| {
+            f.p.velocity = v;
+            f.p.origin = origin;
+            f.p.movevars = &mut *f.mv;
+            CURRENT.with(|c| c.set(&*f.p));
+            Pm::<Msvc> { p: &mut f.p, onladder: false, spectator: None, rules, fpu: PhantomData }.friction();
+            START.with(|c| c.get())
+        };
+        let recip = run(&REORDERED);
+        let core = run(&crate::gameplay::CORE);
+        let sp = speed as f64;
+        for k in 0..2 {
+            let r = 1.0 / sp * v[k] as f64 * 16.0 + origin[k] as f64;
+            let c = v[k] as f64 / sp * 16.0 + origin[k] as f64;
+            assert_eq!(edge_ahead::<Msvc>(v[k], sp, origin[k], true), r);
+            assert_eq!(edge_ahead::<Msvc>(v[k], sp, origin[k], false), c);
+            // The stored start: the store to a float rarely shows the last-bit difference.
+            assert_eq!((recip[k], core[k]), (r as f32, c as f32));
+            differ += (r != c) as u32;
+        }
+    }
+    assert!(differ > 0, "the orders differ in the last bit for some velocities");
+}

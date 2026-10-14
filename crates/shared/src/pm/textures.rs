@@ -3,24 +3,51 @@
 //!
 //! TS differences from the SDK: up to 1024 entries (SDK 512) and 15 significant characters per
 //! name (SDK 12). The shipped TS file has ~1140 entries, so the tail is ignored, as in TS.
+//! A ruleset picks its limits ([`TextureLimits`], `PmRules::texture_limits`); the file is read
+//! once and a table is built for each set of limits asked for.
 
 use std::cmp::Ordering;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// `CHAR_TEX_CONCRETE`: the default material.
 pub const CHAR_TEX_CONCRETE: u8 = b'C';
 
-const MAX_TEXTURES: usize = 1024;
-/// Stored name length (`char[16]`), and the `strncasecmp` length used by the lookup.
+/// Stored name length (`char[16]`), the largest slot any build uses.
 const NAME_LEN: usize = 16;
+/// TS 3.0's `strncasecmp` length (also `TEXTURETYPE_Find`'s).
 const CMP_LEN: usize = 15;
+
+/// The movement's material table limits (`PM_InitTextureTypes`, `PM_FindTextureType`,
+/// `PM_CatagorizeTextureType`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextureLimits {
+    /// Entries read from the file; the rest is ignored.
+    pub max_entries: usize,
+    /// Characters kept of a name, compared by the lookup (`strnicmp` length), and the index at
+    /// which `PM_CatagorizeTextureType` terminates the traced texture name.
+    pub name_chars: usize,
+}
+
+impl TextureLimits {
+    /// TS 3.0 (`.so` 0xfc050 / 0xfc28c, `mp.dll` 0x10036630 / 0x100368d0): 1024 entries in
+    /// 16-byte slots, 15 characters.
+    pub const TS30: Self = Self { max_entries: 1024, name_chars: CMP_LEN };
+    /// The SDK's (`CTEXTURESMAX` 512, `CBTEXTURENAMEMAX` 13): 512 entries in 13-byte slots, 12
+    /// characters.
+    pub const SDK: Self = Self { max_entries: 512, name_chars: 12 };
+}
 
 struct Table {
     names: Vec<[u8; NAME_LEN]>,
     types: Vec<u8>,
+    limits: TextureLimits,
 }
 
-static TABLE: OnceLock<Table> = OnceLock::new();
+/// The contents of `sound/materials.txt`, read once per library as TS does.
+static DATA: OnceLock<Vec<u8>> = OnceLock::new();
+/// The tables built from [`DATA`], one per set of limits (at most a couple, kept for the
+/// process).
+static TABLES: Mutex<Vec<&'static Table>> = Mutex::new(Vec::new());
 
 /// C `isspace` in the "C" locale.
 fn is_space(c: u8) -> bool {
@@ -49,10 +76,12 @@ fn lines(data: &[u8]) -> impl Iterator<Item = &[u8]> {
 }
 
 /// The line parser shared by `PM_InitTextureTypes` and `TEXTURETYPE_LoadStandardMaterials`/
-/// `TEXTURETYPE_LoadMapMaterials`: appends to the table until it holds 1024 entries.
-fn parse_into(data: &[u8], names: &mut Vec<[u8; NAME_LEN]>, types: &mut Vec<u8>) {
+/// `TEXTURETYPE_LoadMapMaterials`: appends to the table until it holds `limits.max_entries`
+/// entries, each name cut to `limits.name_chars` (the SDK's `PM_InitTextureTypes`: 512,
+/// `j = min(j, i + 12)`).
+fn parse_into(data: &[u8], names: &mut Vec<[u8; NAME_LEN]>, types: &mut Vec<u8>, limits: TextureLimits) {
     for raw in lines(data) {
-        if names.len() >= MAX_TEXTURES {
+        if names.len() >= limits.max_entries {
             break;
         }
         // memfgets copies at most 511 characters.
@@ -81,7 +110,7 @@ fn parse_into(data: &[u8], names: &mut Vec<[u8; NAME_LEN]>, types: &mut Vec<u8>)
         if at(j) == 0 {
             continue; // the name must be followed by whitespace (the line's newline)
         }
-        let j = j.min(i + CMP_LEN);
+        let j = j.min(i + limits.name_chars);
         let mut name = [0u8; NAME_LEN];
         name[..j - i].copy_from_slice(&line[i..j]);
         names.push(name);
@@ -89,11 +118,12 @@ fn parse_into(data: &[u8], names: &mut Vec<[u8; NAME_LEN]>, types: &mut Vec<u8>)
     }
 }
 
-fn parse(data: &[u8]) -> Table {
+fn parse(data: &[u8], limits: TextureLimits) -> Table {
     let mut names = Vec::new();
     let mut types = Vec::new();
-    parse_into(data, &mut names, &mut types);
-    // PM_SortTextures: for each i, swap with every later j that sorts before it.
+    parse_into(data, &mut names, &mut types, limits);
+    // PM_SortTextures: for each i, swap with every later j that sorts before it. (The SDK's
+    // `stricmp` orders the NUL-terminated names as this does.)
     let n = names.len();
     for i in 0..n {
         for j in i + 1..n {
@@ -103,26 +133,45 @@ fn parse(data: &[u8]) -> Table {
             }
         }
     }
-    Table { names, types }
+    Table { names, types, limits }
 }
 
-/// Loads the table from the contents of `sound/materials.txt`. Only the first call has an
-/// effect (TS loads it once per library). Returns the number of entries in the table.
+/// The table for `limits`, built from the file on first use; `None` before [`load`].
+fn table(limits: TextureLimits) -> Option<&'static Table> {
+    let data = DATA.get()?;
+    let mut tables = TABLES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(t) = tables.iter().find(|t| t.limits == limits) {
+        return Some(t);
+    }
+    let t: &'static Table = Box::leak(Box::new(parse(data, limits)));
+    tables.push(t);
+    Some(t)
+}
+
+/// Keeps the contents of `sound/materials.txt`. Only the first call has an effect (TS loads it
+/// once per library). Returns the number of entries in TS 3.0's table.
 pub fn load(data: &[u8]) -> usize {
-    TABLE.get_or_init(|| parse(data)).names.len()
+    DATA.get_or_init(|| data.to_vec());
+    table(TextureLimits::TS30).map_or(0, |t| t.names.len())
 }
 
 pub fn is_loaded() -> bool {
-    TABLE.get().is_some()
+    DATA.get().is_some()
 }
 
-/// Binary search, as `PM_FindTextureType`. Unknown names (or no table) are concrete.
+/// [`find_in`] TS 3.0's table.
 pub fn find(name: &[u8]) -> u8 {
-    let Some(t) = TABLE.get() else { return CHAR_TEX_CONCRETE };
+    find_in(name, TextureLimits::TS30)
+}
+
+/// Binary search, as `PM_FindTextureType`, comparing `limits.name_chars` characters (the SDK:
+/// `strnicmp(name, slot, 12)`). Unknown names (or no table) are concrete.
+pub fn find_in(name: &[u8], limits: TextureLimits) -> u8 {
+    let Some(t) = table(limits) else { return CHAR_TEX_CONCRETE };
     let (mut lo, mut hi) = (0i32, t.names.len() as i32 - 1);
     while lo <= hi {
         let mid = (lo + hi) / 2;
-        match strncasecmp(name, &t.names[mid as usize], CMP_LEN) {
+        match strncasecmp(name, &t.names[mid as usize], limits.name_chars) {
             Ordering::Equal => return t.types[mid as usize],
             Ordering::Greater => lo = mid + 1,
             Ordering::Less => hi = mid - 1,
@@ -152,8 +201,8 @@ pub mod texturetype {
         let (_, names, types) = &mut *t;
         names.clear();
         types.clear();
-        let standard = load("sound/materials.txt").map(|d| parse_into(&d, names, types)).is_some();
-        let map = load(&format!("sound/{mapname}_materials.txt")).map(|d| parse_into(&d, names, types)).is_some();
+        let standard = load("sound/materials.txt").map(|d| parse_into(&d, names, types, TextureLimits::TS30)).is_some();
+        let map = load(&format!("sound/{mapname}_materials.txt")).map(|d| parse_into(&d, names, types, TextureLimits::TS30)).is_some();
         t.0 = standard || map;
     }
 
@@ -170,13 +219,25 @@ mod tests {
 
     #[test]
     fn parse_and_lookup() {
-        let t = parse(b"// comment\n  m ae_roof04\nw BOARD03_128X128\r\nd thisnameiswaytoolongforit\n1 bad\ny last_no_newline");
+        let data = b"// comment\n  m ae_roof04\nw BOARD03_128X128\r\nd thisnameiswaytoolongforit\n1 bad\ny last_no_newline";
+        let t = parse(data, TextureLimits::TS30);
         assert_eq!(t.names.len(), 3);
         // Sorted case-insensitively.
         assert_eq!(&t.names[0][..9], b"ae_roof04");
         assert_eq!(&t.names[1][..15], b"BOARD03_128X128");
         assert_eq!(&t.names[2][..15], b"thisnameiswayto");
         assert_eq!(t.names[2][15], 0);
+        // The SDK's limits: 12 characters.
+        let t = parse(data, TextureLimits::SDK);
+        assert_eq!(&t.names[1][..13], b"BOARD03_128X\0");
+        assert_eq!(&t.names[2][..13], b"thisnameiswa\0");
+    }
+
+    #[test]
+    fn sdk_limits_keep_512_entries() {
+        let data: Vec<u8> = (0..1100).flat_map(|i| format!("m tex{i:04}\n").into_bytes()).collect();
+        assert_eq!(parse(&data, TextureLimits::SDK).names.len(), 512);
+        assert_eq!(parse(&data, TextureLimits::TS30).names.len(), 1024);
     }
 
     #[test]
@@ -193,10 +254,16 @@ mod tests {
 
     #[test]
     fn global_table() {
-        load(b"m METALFLOOR\nd grass_64\nt tile1\n");
+        load(b"m METALFLOOR\nd grass_64\nt tile1\nw woodplanks_long_a\n");
         assert_eq!(find(b"metalfloor"), b'M');
         assert_eq!(find(b"GRASS_64"), b'D');
         assert_eq!(find(b"tile1"), b'T');
         assert_eq!(find(b"nothing"), b'C');
+        // 15 characters (3.0) against the SDK's 12 (`strnicmp(.., 12)`): a name that differs only
+        // after the 12th character matches with the SDK's limits.
+        assert_eq!(find(b"woodplanks_long_b"), b'W', "same first 15");
+        assert_eq!(find(b"woodplanks_lXXX"), b'C');
+        assert_eq!(find_in(b"woodplanks_lXXX", TextureLimits::SDK), b'W');
+        assert_eq!(find_in(b"metalfloor", TextureLimits::SDK), b'M');
     }
 }

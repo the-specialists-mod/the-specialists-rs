@@ -205,7 +205,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | Falling | punch threshold 350, safe 680 (fallpain3 above), 0.85 vol above 340, bounce 200 |
 | Wall bounce (`PM_FlyMove`, walking with `onground == -1` or `friction != 1`) | overbounce `1 + (1 - friction) * 0.01`: TS hardcodes 0.01 where the SDK reads `movevars->bounce`, and reflects off every plane hit this move (no SDK `numplanes == 1` test) |
 | Footsteps | silent while `iuser4 & (0x1 | 0x200)`, attenuation 1.25, no `mp_footsteps` check |
-| Materials | `sound/materials.txt`, ≤ 1024 entries (TS file has ~1140: the tail is ignored, as in TS), 15 significant chars |
+| Materials | `sound/materials.txt`, ≤ 1024 entries (TS file has ~1140: the tail is ignored, as in TS), 15 significant chars. A ruleset picks its limits (`PmRules::texture_limits`); the file is read once and a table built per set of limits |
 | cmd lockouts | zeroed while `iuser4 & 0x10c10`; jump blocked (not latched) by `0x30c34`; `PM_Duck` off for `0x30c3c` |
 | Stunt slots | used slots < 42 high, < 52 medium, < 62 low |
 | Stunt timers | coyote 0.7/slowmul, taps 0.3 s, bullet time 0.55 (cooldown, prone lock, dodge), recover: roll 0.75, dive roll-out 0.5625, flip 0.375, wall landings 0.2625, get-up 0.75, super-jump landing 0.75 |

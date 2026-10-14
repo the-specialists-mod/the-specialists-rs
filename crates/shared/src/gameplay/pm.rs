@@ -6,6 +6,7 @@
 //! client's `HUD_PlayerMove` resolve them once per call and pass them to
 //! [`player_move`](crate::pm::player_move), which keeps them for the whole command.
 
+pub use crate::pm::textures::TextureLimits;
 use crate::pm::ts::{JUMP_VELOCITY, WALLCLIMB_VELOCITY, WALLJUMP_SPEED};
 pub use crate::pm::{Arith, Vec3};
 use crate::pm::{Gcc, Msvc};
@@ -113,6 +114,33 @@ pub trait PmRules: Sync {
             Arith::Gcc => crate::pm::step_interval::<Gcc>(interval, fuser1),
             Arith::Msvc => crate::pm::step_interval::<Msvc>(interval, fuser1),
         }
+    }
+
+    /// `PM_InitTextureTypes` / `PM_FindTextureType` / `PM_CatagorizeTextureType` (`mp.dll`
+    /// 0x10036630 / 0x100368d0): the footstep material table's size and name length. TS 3.0:
+    /// 1024 entries, 15 characters.
+    fn texture_limits(&self) -> TextureLimits {
+        TextureLimits::TS30
+    }
+
+    /// `PM_SpectatorMove` (`mp.dll` 0x10038d20) in eye: the observer's pitch from the target's
+    /// entity pitch, which TS 3.0 copies unchanged.
+    fn in_eye_pitch(&self, target_pitch: f32) -> f32 {
+        target_pitch
+    }
+
+    /// `PM_CalcRoll` (`mp.dll` 0x1003a341): below `rollspeed` the roll is
+    /// `side * rollangle / rollspeed` (TS 3.0, false) or `side / rollspeed * rollangle` (true),
+    /// both on the FPU stack.
+    fn roll_divides_first(&self) -> bool {
+        false
+    }
+
+    /// `PM_Friction`'s edge-trace start, 16 units ahead: `vel[i] / speed * 16 + origin[i]`
+    /// (TS 3.0, false) or `(1 / speed) * vel[i] * 16 + origin[i]` with the reciprocal kept on
+    /// the FPU stack (true).
+    fn friction_edge_by_reciprocal(&self) -> bool {
+        false
     }
 
     /// `GetSpeedBySlots` (0x76bd4): the move speed for `free` inventory slots. Server only: the
