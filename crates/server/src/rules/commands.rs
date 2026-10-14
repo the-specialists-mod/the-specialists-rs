@@ -564,7 +564,7 @@ extern "C" fn cmd_restartround() {
     if crate::gameplay::active().server.server_command("restartround") {
         return;
     }
-    frame::reset_restart_round();
+    frame::reset_restart_round(2);
 }
 
 /// `weaponrestriction [n]`: 1 none, 2 knives, 3 knives+pistols, 4 knives+pistols+shotguns,

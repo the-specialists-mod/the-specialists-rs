@@ -12,7 +12,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::rules::SVC_INTERMISSION;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
-use shared::protocol::rules::{RoundTime, SrvSett};
+use shared::protocol::rules::{RoundTime, SrvSett, TeamScore};
 use shared::weapons::{Gun, att, id, tables};
 use std::cell::Cell;
 
@@ -541,18 +541,50 @@ pub fn round_refund(gun: &Gun) -> i32 {
     total
 }
 
-/// `restartround` server command → `ResetRestartRound(2)`: LMS zeroes scores and restarts in 1 s.
-pub fn reset_restart_round() {
+/// Whether `ResetRestartRound` acts: in the round modes 2/3 (unreachable in 3.0) or with
+/// `g_lastManStanding`, whatever the mode.
+fn restart_round_applies(mode: Mode, lms: bool) -> bool {
+    matches!(mode, Mode::RoundTdm | Mode::Objective) || lms
+}
+
+/// `CTSGameRules::ResetRestartRound(n)` (0x78750), from the `restartround` server command with
+/// `n = 2`: the round restarts in 1 s and the round end is cleared; with the round timer on,
+/// `RoundTime` gets the time to the restart (not below 0, truncated: 0x787e4); `n > 1` also puts
+/// the four teams' score at 0 and their cash at `(int)initial_cash.value` (0: TS never registers
+/// the cvar) and sends the `TeamScore` of each named one; then "Restarting Round" to all (black,
+/// channel 8, hold 30). The team field `+0x20` it also clears isn't modelled.
+pub fn reset_restart_round(n: i32) {
     let now = engine().time();
-    let lms = state::with(|g| g.lms && g.mode == Mode::Dm);
-    if lms {
-        state::with(|g| {
-            for t in &mut g.teams {
-                t.score = 0;
-            }
-            g.round_restart = now + 1.0;
-        });
+    if !state::with(|g| restart_round_applies(g.mode, g.lms)) {
+        return;
     }
+    let (restart, timer) = state::with(|g| {
+        g.round_restart = now + 1.0;
+        g.round_end = 0.0;
+        (g.round_restart, g.round_timer)
+    });
+    if timer {
+        let secs = round_time_byte(x87_max0(restart as f64 - now as f64));
+        msg::all(Msg::RoundTime, |w| RoundTime { secs, state: 0 }.write(w));
+    }
+    if n > 1 {
+        let named: Vec<String> = state::with(|g| {
+            g.teams
+                .iter_mut()
+                .take(4)
+                .filter_map(|t| {
+                    t.score = 0;
+                    t.cash = 0;
+                    (!t.name.is_empty()).then(|| t.name.clone())
+                })
+                .collect()
+        });
+        for team in named {
+            let m = TeamScore { team, score: 0, deaths: 0 };
+            msg::all(Msg::TeamScore, |w| m.write(w));
+        }
+    }
+    ts_message_all([0, 0, 0], 8, 30, "Restarting Round");
 }
 
 /// The One block of `CTSGameRules::Think` (0x77204): counts the players other than The One
@@ -614,7 +646,21 @@ fn unused() -> MsgWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{refresh_copy, round_time_byte, x87_eq, x87_max0};
+    use super::{Mode, refresh_copy, restart_round_applies, round_time_byte, x87_eq, x87_max0};
+
+    #[test]
+    fn restartround_needs_a_round_mode_or_lms() {
+        // Issue #122: `(mode - 2) < 2 || g_lastManStanding`, so LMS in teamplay restarts too.
+        assert!(restart_round_applies(Mode::Dm, true));
+        assert!(restart_round_applies(Mode::TeamDm, true));
+        assert!(restart_round_applies(Mode::RoundTdm, false));
+        assert!(restart_round_applies(Mode::Objective, false));
+        assert!(!restart_round_applies(Mode::Dm, false));
+        assert!(!restart_round_applies(Mode::TeamDm, false));
+        // The restart 1 s ahead: `RoundTime` 1.
+        let now = 100.3f32;
+        assert_eq!(round_time_byte(x87_max0((now + 1.0) as f64 - now as f64)), 1);
+    }
 
     /// Runs `n` Thinks with the cvar at `cvar`, returning the `SrvSett` values sent.
     fn thinks(stored: &mut i32, cvar: f32, n: usize) -> Vec<i32> {
