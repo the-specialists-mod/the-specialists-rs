@@ -157,6 +157,12 @@ impl ServerRules for Ts21Server {
         cash::pick_up_cost(w)
     }
 
+    /// 2.1's `DropWeapon` (FUN_10056080) has no dead-player branch: `Killed`'s drop throws one
+    /// M61 as a world gun (with the drop sound), whatever the mode.
+    fn dead_grenades_become_powerups(&self) -> bool {
+        false
+    }
+
     fn spawns_entity(&self, class: &CStr) -> bool {
         entities::spawns(class)
     }
@@ -374,6 +380,8 @@ mod tests {
         assert_eq!(p.broken_respawn_delay(12.0), None);
         assert!(!p.breakable_respawn_guarded());
         assert!(p.ground_weapon_lands_flying());
+        assert!(!p.dead_grenades_become_powerups(), "a corpse drops one M61");
+        assert!(CORE.dead_grenades_become_powerups(), "3.0's m_mode < 2: power-ups");
     }
 
     /// The 2.1 hooks differ where 2.1 does, and the core plugin keeps 3.0's.

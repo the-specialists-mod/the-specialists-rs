@@ -166,6 +166,14 @@ pub trait ServerRules: Sync {
         crate::weapons::pick_up_cost(id, w, from)
     }
 
+    /// `CBasePlayer::DropWeapon` (0x94aaf): whether a dead player's grenades become grenade
+    /// power-ups (`CreatePowerUp(0x20, -1)` each, 5 units apart) instead of being dropped like a
+    /// living player's. 3.0: while `TSGameRules.m_mode < 2` (always in its DM/TDM: no grenade
+    /// buys, [`weapons::grenade_buys`](crate::weapons::grenade_buys)).
+    fn dead_grenades_become_powerups(&self) -> bool {
+        !crate::weapons::grenade_buys()
+    }
+
     // ---- map entities -------------------------------------------------------------------------
 
     /// Whether an entity of `class` may spawn (`DispatchSpawn`, for the map's entities and the

@@ -45,7 +45,7 @@ use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 
 pub use assets::max_carry;
 #[allow(unused_imports)]
-pub use assets::{cvars, dmgreport, restriction, set_restriction};
+pub use assets::{cvars, dmgreport, grenade_buys, restriction, set_restriction};
 pub(crate) use commands::add_armament;
 pub use host::emit;
 pub use inventory::{Drop, buy_armament, pick_up_cost, pick_up_weapon};

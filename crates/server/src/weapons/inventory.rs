@@ -190,8 +190,8 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
     }
     // 0x94aaf: a corpse's grenades become grenade power-ups (`CreatePowerUp(0x20, -1)`), 5 u
     // apart along x from its origin, outside round modes (`TSGameRules.m_mode < 2`, always in
-    // 3.0). The record stays in the gun (no `CTSGun::DropWeapon`, no drop sound or speed update).
-    if target == id::M61 && !assets::grenade_buys() && !Player::is_alive(cx) {
+    // 3.0; `ServerRules::dead_grenades_become_powerups`). The record stays in the gun (no `CTSGun::DropWeapon`, no drop sound or speed update).
+    if target == id::M61 && !Player::is_alive(cx) && crate::gameplay::active().server.dead_grenades_become_powerups() {
         if p.inv.gun.status[id::M61 as usize].state == 1 {
             with_host(p, cx, |gun, h| gun.grenade_idle(true, h));
         }

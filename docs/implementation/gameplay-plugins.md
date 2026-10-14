@@ -268,6 +268,7 @@ The hooks so far:
 | `ServerRules` | `cash_based()` | false | `rules/state.rs` `cash_based` |
 | `ServerRules` | `buy_armament(p, cx)` | `weapons::buy_armament` | `weapons/mod.rs` spawn, without a `game_player_equip` |
 | `ServerRules` | `pick_up_cost(id, w, from)` | `weapons::pick_up_cost`: `None` (refused) for the akimbo pair of a single gun, else `slots`, × the count for a dropped stack | `weapons/inventory.rs` `pick_up_weapon` |
+| `ServerRules` | `dead_grenades_become_powerups()` | `!weapons::grenade_buys()` (`m_mode < 2`: always) | `weapons/inventory.rs` `drop_weapon` |
 | `ServerRules` | `spawns_entity(class)` | true | `entities/mod.rs` `dispatch_spawn` (-1 when refused; the map load and the reset's re-spawn both go through it) and `dispatch_key_value` (a refused class parses no key) |
 | `ServerRules` | `entity_key_value(ent, cx, key, value)` | `None` (the class parses it) | `ham/mod.rs` `class_key_value` (`DispatchKeyValue`'s class part and AMXX's `ExecuteHam`) |
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
