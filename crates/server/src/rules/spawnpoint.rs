@@ -23,6 +23,18 @@ pub fn spot_score(enemy_sees: bool, teammate_sees: bool, min_dist: i32, rand: im
 }
 
 /// Picks the spot for `self_e` and returns it (null if the map has none).
+/// `TSSelectSpawnSpot`'s two `(spot - player).Length()`s: whether it is at least 128 (the
+/// teammate test) and its `(int)` (truncated). mp.dll (`FUN_1004c4a0`, 0x1004c66e..0x1004c6e0)
+/// sums the unrounded differences `z, y, x` and keeps the root (`__ftol` truncates it unrounded);
+/// `ts_i386.so` (0x76409..0x764b8) sums `x, y, z` and stores the root before both.
+fn spot_distance<F: shared::pm::Fpu>(spot: [f32; 3], player: [f32; 3]) -> (bool, i32) {
+    use shared::pm::Num;
+    let d = [0, 1, 2].map(|i| F::x(spot[i]) - F::x(player[i]));
+    let len =
+        if F::MSVC { (d[2] * d[2] + d[1] * d[1] + d[0] * d[0]).sqrt() } else { F::x((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().f()) };
+    (len >= F::x(128.0), len.trunc_i32())
+}
+
 pub fn select(self_e: *mut edict_t) -> *mut edict_t {
     let eng = engine();
     let (class, fallback) = if state::teamplay() {
@@ -68,19 +80,18 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
             if !alive(ov) || ov.effects & EF_NODRAW as i32 != 0 {
                 continue;
             }
-            let d = super::dist(sv.origin, ov.origin);
+            let (far, d) = shared::by_arith!(super::cvars::pm_arith(), spot_distance(sv.origin, ov.origin));
             if !enemy_sees {
                 let tr = eng.trace_line(sv.origin, eye(ov), IGNORE_MONSTERS, it);
                 if tr.flFraction == 1.0 {
-                    if state::teamplay() && teams::same_team(self_e, o) && d >= 128.0 {
+                    if state::teamplay() && teams::same_team(self_e, o) && far {
                         teammate_sees = true;
                     } else {
                         enemy_sees = true;
                     }
                 }
             }
-            // `(int)Length()`, truncated (0x764b8).
-            min_dist = min_dist.min(super::x87_trunc(d as f64));
+            min_dist = min_dist.min(d);
         }
         let score = spot_score(enemy_sees, teammate_sees, min_dist, |a, b| eng.random_long(a, b));
         spots.push((it, score));
@@ -154,8 +165,20 @@ pub fn place(_p: &mut Player, cx: &mut Cx) {
 
 #[cfg(test)]
 mod tests {
-    use super::{TELEFRAG_BITS, spot_score};
+    use super::{TELEFRAG_BITS, spot_distance, spot_score};
     use crate::damage::bits;
+
+    /// The spot's distance to a player (issue #171): mp.dll truncates the unrounded 740.99998 to
+    /// 740; the `.so` stores 741.0, as the port's old `float` length did.
+    #[test]
+    fn spot_distance_rounds_as_each_build() {
+        use shared::pm::{Gcc, Msvc};
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let (a, b) = (f([0xc2da_01de, 0x445a_d2ed, 0x44bd_680a]), f([0x4285_7810, 0x431b_6fc8, 0x44bd_680a]));
+        assert_eq!(spot_distance::<Msvc>(a, b), (true, 740));
+        assert_eq!(spot_distance::<Gcc>(a, b), (true, 741));
+        assert_eq!(spot_distance::<Msvc>([0.0; 3], [127.0, 0.0, 0.0]), (false, 127));
+    }
 
     #[test]
     fn spawn_telefrags_never_gib() {

@@ -411,12 +411,10 @@ pub fn eye(v: &entvars_t) -> [f32; 3] {
     [v.origin[0] + v.view_ofs[0], v.origin[1] + v.view_ofs[1], v.origin[2] + v.view_ofs[2]]
 }
 
+/// A `float` distance, for the port's plugin slow aura (`powerup::plugin_speed_think`), which has
+/// no TS arithmetic to follow. TS's own lengths go through `shared::pm::FpuMath` per build.
 pub fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
-}
-
-pub fn len3(v: [f32; 3]) -> f32 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 /// `pev->frags` and `Player::frags` kept in step (the engine reports `pev->frags`).

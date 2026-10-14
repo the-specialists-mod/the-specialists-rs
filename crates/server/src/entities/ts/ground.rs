@@ -11,6 +11,7 @@ use crate::world::{Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{engine, intern};
 use goldsrc::sys::*;
+use shared::pm::{Fpu, FpuMath, Num, ORDER_XYZ, ORDER_ZYX, below87, eq87};
 use shared::weapons::{kind, kind_of, tables};
 use std::ffi::CStr;
 
@@ -207,18 +208,16 @@ fn put_on_wall(cx: &mut Cx) {
     let eng = engine();
     let e = cx.edict;
     let org = cx.pev().origin;
+    let arith = rules::cvars::pm_arith();
     let mut best: Option<(i32, [f32; 3], [f32; 3])> = None;
     for k in 0..8 {
-        // `fcos`/`fsin` of `k * 45 * (long double)(pi / 180)`, stored as floats.
-        let a = f64::from(k * 45) * 0.017453292519943295;
-        let dir = [a.cos() as f32, a.sin() as f32, 0.0];
+        let dir = shared::by_arith!(arith, wall_dir(k));
         let end = [org[0] + dir[0] * 1024.0, org[1] + dir[1] * 1024.0, org[2] + dir[2] * 1024.0];
         let tr = eng.trace_line(org, end, goldsrc::server::IGNORE_MONSTERS, e);
         if tr.flFraction >= 1.0 || !wall_surface(tr.pHit) {
             continue;
         }
-        let d = rules::dist(org, tr.vecEndPos);
-        if let Some(kept) = wall_distance(d, best.map(|b| b.0)) {
+        if let Some(kept) = shared::by_arith!(arith, wall_hit(org, tr.vecEndPos, best.map(|b| b.0))) {
             best = Some((kept, tr.vecEndPos, tr.vecPlaneNormal));
         }
     }
@@ -233,11 +232,49 @@ fn put_on_wall(cx: &mut Cx) {
     }
 }
 
-/// `PutOnWall`'s distance bookkeeping: a hit at `d` wins if it is closer than the kept int (9999
-/// to start with), and is kept as an `(int)` cast (truncated: the `fldcw` before the `fistpl` at
-/// 0x91fe2 selects round-toward-zero).
-fn wall_distance(d: f32, kept: Option<i32>) -> Option<i32> {
-    (d < kept.unwrap_or(9999) as f32).then(|| super::c_int(f64::from(d)))
+/// `PutOnWall`'s direction `k`: `Vector(cos a, sin a, 0).Normalize()` for `a = k · 45 · (π /
+/// 180)` (the `double` constant times the int), the cosine stored. mp.dll (0x10075436..0x100754ab)
+/// keeps the sine on the FPU, sums the squares `z, y, x` and leaves the root and `1 / len`
+/// unrounded; `ts_i386.so` (0xa1d9c..0xa1e3c) stores the sine and the root, summing `x, y, z`.
+fn wall_dir<F: Fpu>(k: i32) -> [f32; 3] {
+    let rad = F::xd(0.017_453_292_519_943_295) * F::xi(k * 45);
+    let c = rad.cos().f();
+    if !F::MSVC {
+        return F::vec_normalize([c, rad.sin().f(), 0.0], ORDER_XYZ);
+    }
+    let s = rad.sin();
+    let len = (F::ZERO * F::ZERO + s * s + F::x(c) * F::x(c)).sqrt();
+    if eq87(len, F::ZERO) {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = F::x(1.0) / len;
+    [(inv * F::x(c)).f(), (inv * s).f(), (inv * F::ZERO).f()]
+}
+
+/// `(origin - tr.vecEndPos).Length()` in `PutOnWall`: mp.dll (0x100755d9..0x10075623) stores the
+/// differences and sums `z, y, x` with the root unrounded; `ts_i386.so` (0xa1f6b..0xa1fab) squares
+/// the unrounded differences `x, y, z` and stores the root.
+fn wall_length<F: Fpu>(origin: [f32; 3], end: [f32; 3]) -> F::N {
+    if F::MSVC {
+        return F::vec_length([0, 1, 2].map(|i| origin[i] - end[i]), ORDER_ZYX);
+    }
+    let d = [0, 1, 2].map(|i| F::x(origin[i]) - F::x(end[i]));
+    F::x((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().f())
+}
+
+/// `PutOnWall`'s distance bookkeeping: a hit at `len` wins if it is closer than the kept int (9999
+/// to start with), and is kept as an `(int)` cast (truncated): mp.dll compares and `__ftol`s the
+/// unrounded length (`fcompp; test ah,1`, so a NaN wins), `ts_i386.so` the stored one (`jbe`, so a
+/// NaN doesn't; the `fldcw` before the `fistpl` at 0xa1fe2 selects round-toward-zero).
+fn wall_distance<F: Fpu>(len: F::N, kept: Option<i32>) -> Option<i32> {
+    let best = F::xi(kept.unwrap_or(9999));
+    let closer = if F::MSVC { below87(len, best) } else { best > len };
+    closer.then(|| len.trunc_i32())
+}
+
+/// [`wall_distance`] of the hit at `end`.
+fn wall_hit<F: Fpu>(origin: [f32; 3], end: [f32; 3], kept: Option<i32>) -> Option<i32> {
+    wall_distance::<F>(wall_length::<F>(origin, end), kept)
 }
 
 /// `PutOnWall`'s test of what the trace hit (a NULL `pHit` is the world): anything without a game
@@ -686,14 +723,38 @@ mod tests {
 
     #[test]
     fn wall_distance_is_kept_as_an_int() {
-        assert_eq!(wall_distance(100.4, None), Some(100));
-        assert_eq!(wall_distance(100.9, None), Some(100));
-        // Closer than the first hit, but not than its truncated distance.
-        assert_eq!(wall_distance(100.2, Some(100)), None);
-        assert_eq!(wall_distance(99.9, Some(100)), Some(99));
-        assert_eq!(wall_distance(99.5, Some(99)), None);
-        assert_eq!(wall_distance(98.5, Some(100)), Some(98));
-        assert_eq!(wall_distance(9999.0, None), None);
+        use shared::pm::{Gcc, Msvc};
+        fn go<F: Fpu>() {
+            let d = |v: f32| wall_distance::<F>(F::x(v), None);
+            assert_eq!(d(100.4), Some(100));
+            assert_eq!(d(100.9), Some(100));
+            // Closer than the first hit, but not than its truncated distance.
+            assert_eq!(wall_distance::<F>(F::x(100.2), Some(100)), None);
+            assert_eq!(wall_distance::<F>(F::x(99.9), Some(100)), Some(99));
+            assert_eq!(wall_distance::<F>(F::x(99.5), Some(99)), None);
+            assert_eq!(wall_distance::<F>(F::x(98.5), Some(100)), Some(98));
+            assert_eq!(d(9999.0), None);
+        }
+        go::<Msvc>();
+        go::<Gcc>();
+        // A NaN length passes mp.dll's `test ah,1` but not the .so's `jbe`.
+        assert!(wall_distance::<Msvc>(f64::NAN, None).is_some());
+        assert_eq!(wall_distance::<Gcc>(Gcc::x(f32::NAN), None), None);
+    }
+
+    /// `PutOnWall`'s distance (issue #171): mp.dll truncates the unrounded root, 740.99998; the
+    /// .so (and the port's old `float` length) rounds it to 741.0 first.
+    #[test]
+    fn wall_distance_rounds_as_each_build() {
+        use shared::pm::{Gcc, Msvc};
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let (org, end) = (f([0xc2da_01de, 0x445a_d2ed, 0x44bd_680a]), f([0x4285_7810, 0x431b_6fc8, 0x44bd_680a]));
+        assert_eq!(wall_hit::<Msvc>(org, end, None), Some(740));
+        assert_eq!(wall_hit::<Gcc>(org, end, None), Some(741));
+        // The eight directions: mp.dll's unrounded sine normalises to the stored cos and sin.
+        assert_eq!(wall_dir::<Msvc>(1).map(f32::to_bits), [0x3f35_04f3, 0x3f35_04f3, 0]);
+        assert_eq!(wall_dir::<Msvc>(0), [1.0, 0.0, 0.0]);
+        assert_eq!(wall_dir::<Gcc>(3).map(f32::to_bits), [0xbf35_04f3, 0x3f35_04f3, 0]);
     }
 
     #[test]

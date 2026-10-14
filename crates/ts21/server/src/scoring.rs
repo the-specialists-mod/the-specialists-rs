@@ -16,7 +16,7 @@ use ts_server::rules::lifecycle::score_info_of;
 use ts_server::rules::msg::{self, ts_message_all};
 use ts_server::rules::scoring::{self as core, Frag, STUNTING};
 use ts_server::rules::state::{self, Mode};
-use ts_server::rules::{cvars, has_player, len3, netname, other, teams};
+use ts_server::rules::{cvars, has_player, netname, other, teams};
 use ts_server::weapons::Active;
 use ts_server::world::{Cx, UseType};
 
@@ -79,6 +79,13 @@ pub fn points(kind: Kind, base: i32, stunting: bool, sliding: bool, killer_is_pl
     (pts, (pts > 1).then_some(label))
 }
 
+/// 2.1's `pev->velocity.Length() > 80` (0x1004f680..0x1004f6ae): the squares `x, y, z`, the root
+/// unrounded (a NaN fails).
+fn slide_fast(v: [f32; 3]) -> bool {
+    let [x, y, z] = v.map(f64::from);
+    (x * x + y * y + z * z).sqrt() > 80.0
+}
+
 /// `TSGetPointsForFrag` (0x1004f3c0). Round modes score the plain points; a team kill keeps its
 /// -1; in The One mode only The One scores. The frag message is `"%i frags for %s, %s"` in
 /// English (3.0 uses `#TS_` keys and doubles the shown value on sprees and double kills).
@@ -97,7 +104,7 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
     let kind = kill_kind(d, g, k.item, k.gun, attacker);
     let av = attacker.v();
     let stunting = av.iuser4 & STUNTING != 0;
-    let slide = !stunting && av.iuser4 & PRONE != 0 && av.friction < 1.0 && len3(av.velocity) > 80.0;
+    let slide = !stunting && av.iuser4 & PRONE != 0 && av.friction < 1.0 && slide_fast(av.velocity);
     // The port's kill log tags (3.0's) are kept for the flags; 2.1 logs no tags.
     *diving = stunting;
     *sliding = slide;
@@ -381,6 +388,15 @@ pub fn the_one_health(health: f32, players: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The slide's speed (issue #171): 2.1's unrounded root of `80² + 0.0001²` is over 80; the
+    /// port's old `float` length was 80.0.
+    #[test]
+    fn slide_speed_keeps_the_root_unrounded() {
+        assert!(slide_fast([80.0, 0.0001, 0.0]));
+        assert!(!slide_fast([80.0, 0.0, 0.0]));
+        assert!(!slide_fast([f32::NAN, 0.0, 0.0]));
+    }
 
     #[test]
     fn stunt_kills_score_three_and_stack_on_close_combat() {

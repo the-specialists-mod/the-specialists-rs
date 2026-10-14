@@ -587,6 +587,13 @@ pub fn active_item_kung_fu(item: Active, gun_current: Option<u8>, close_combat: 
 }
 
 /// `TSGetPointsForFrag`'s `#TS_KungFu` test for a killer that is its own inflictor:
+/// `TSGetPointsForFrag`'s `pev->velocity.Length() > 80` (both tests): the squares `x, y, z`, the
+/// root unrounded in mp.dll (0x100599f3..0x10059a1c), stored in `ts_i386.so` (0x893b9..0x893de).
+fn frag_fast<F: shared::pm::Fpu>(velocity: [f32; 3]) -> bool {
+    use shared::pm::FpuMath;
+    F::vec_length(velocity, shared::pm::ORDER_XYZ) > F::x(80.0)
+}
+
 /// `glast_weaponid == -1`, then [`active_item_kung_fu`].
 fn kung_fu_frag(g: &Snapshot, item: Active, killer_gun: Option<u8>) -> bool {
     g.weapon_id == -1 && active_item_kung_fu(item, killer_gun, g.close_combat)
@@ -626,8 +633,8 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
         }
     }
     let av = attacker.v();
-    let speed = super::len3(av.velocity);
-    if av.iuser4 & STUNTING != 0 && speed > 80.0 {
+    let fast = shared::by_arith!(cvars::pm_arith(), frag_fast(av.velocity));
+    if av.iuser4 & STUNTING != 0 && fast {
         if !close {
             points += 1;
         }
@@ -635,7 +642,7 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
             desc = if desc.is_empty() { "#TS_StStl".into() } else { desc + " & #TS_StStl" };
         }
         *diving = true;
-    } else if av.iuser4 & stunt::PRONE != 0 && av.friction < 1.0 && speed > 80.0 {
+    } else if av.iuser4 & stunt::PRONE != 0 && av.friction < 1.0 && fast {
         if !close {
             points += 1;
         }
@@ -888,6 +895,17 @@ mod tests {
     };
     use goldsrc::sys::edict_t;
     use shared::weapons::{id, tables};
+
+    /// The stunt-kill speed (issue #171): mp.dll's unrounded root of `80² + 0.0001²` is just over
+    /// 80; the `.so` stores 80.0, as the port's old `float` length did.
+    #[test]
+    fn frag_speed_rounds_as_each_build() {
+        use shared::pm::{Gcc, Msvc};
+        let v = [80.0, 0.0001, 0.0];
+        assert!(super::frag_fast::<Msvc>(v));
+        assert!(!super::frag_fast::<Gcc>(v));
+        assert!(!super::frag_fast::<Msvc>([80.0, 0.0, 0.0]));
+    }
 
     #[test]
     fn weapon_names_ts_spells_out() {

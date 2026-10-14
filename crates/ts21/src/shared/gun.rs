@@ -378,7 +378,9 @@ pub fn standard_fire(rules: &Ts21, gun: &mut Gun, host: &mut dyn GunHost) {
     if silenced {
         spread = silenced_spread(spread);
     }
-    if (cur == id::M60 || cur == id::BARRETT) && Gun::speed(host) > 80.0 {
+    // 2.1's `Length() > 80` (mp.dll 0x1004b5ca..0x1004b5f2: `x, y, z`, the root unrounded; its
+    // client.dll's out-of-line `Length` 0x1001e850 returns the `double` `sqrt` unrounded too).
+    if (cur == id::M60 || cur == id::BARRETT) && shared::weapons::gun::speed_over::<shared::pm::Msvc>(host.velocity(), 80.0) {
         gun.spread_penalty = 0.1;
     }
     if w.scale_spread {

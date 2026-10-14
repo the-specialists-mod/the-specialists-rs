@@ -26,6 +26,7 @@ fn find_hull_intersection(src: Vec3, tr: &mut TraceResult, mins: Vec3, maxs: Vec
         return;
     }
     let mm = [mins, maxs];
+    let arith = crate::rules::cvars::pm_arith();
     let mut distance = 1e6f32;
     for i in 0..2 {
         for j in 0..2 {
@@ -33,8 +34,7 @@ fn find_hull_intersection(src: Vec3, tr: &mut TraceResult, mins: Vec3, maxs: Vec
                 let end = [hull_end[0] + mm[i][0], hull_end[1] + mm[j][1], hull_end[2] + mm[k][2]];
                 let t = e.trace_line(src, end, DONT_IGNORE_MONSTERS, skip);
                 if t.flFraction < 1.0 {
-                    let d = spread::length(spread::sub(t.vecEndPos, src));
-                    if d < distance {
+                    if let Some(d) = shared::by_arith!(arith, hull_closer(t.vecEndPos, src, distance)) {
                         *tr = t;
                         distance = d;
                     }
@@ -42,6 +42,21 @@ fn find_hull_intersection(src: Vec3, tr: &mut TraceResult, mins: Vec3, maxs: Vec
             }
         }
     }
+}
+
+/// `FindHullIntersection`'s `thisDistance = (tmpTrace.vecEndPos - vecSrc).Length()` and `if
+/// (thisDistance < distance)`: the new `float` distance when the corner is closer. mp.dll
+/// (`FUN_10063590`, 0x10063724..0x1006376e) sums the unrounded differences `z, y, x` and compares
+/// the root unrounded; `ts_i386.so` (0x95d7f..0x95ded) squares each unrounded difference times
+/// its stored copy (`x, y`, then `z²`) and compares the stored root. Both take a NaN as closer.
+fn hull_closer<F: Fpu>(end: Vec3, src: Vec3, distance: f32) -> Option<f32> {
+    let d = [0, 1, 2].map(|i| F::x(end[i]) - F::x(src[i]));
+    let len = if F::MSVC {
+        (d[2] * d[2] + d[1] * d[1] + d[0] * d[0]).sqrt()
+    } else {
+        F::x((d[0] * F::x(d[0].f()) + d[1] * F::x(d[1].f()) + d[2] * d[2]).sqrt().f())
+    };
+    shared::pm::below87(len, F::x(distance)).then(|| len.f())
 }
 
 fn is_bsp(e: *mut edict_t) -> bool {
@@ -457,6 +472,19 @@ mod precision_tests {
 
     fn f(b: [u32; 3]) -> [f32; 3] {
         b.map(f32::from_bits)
+    }
+
+    /// `FindHullIntersection`'s corner distance (issue #171): mp.dll's unrounded 740.99998 beats a
+    /// kept 741.0; the `.so`'s stored root (and the port's old `float` length) ties it.
+    #[test]
+    fn hull_corner_distance_rounds_as_each_build() {
+        use shared::pm::{Gcc, Msvc};
+        let (end, src) = (f([0xc2da_01de, 0x445a_d2ed, 0x44bd_680a]), f([0x4285_7810, 0x431b_6fc8, 0x44bd_680a]));
+        assert_eq!(hull_closer::<Msvc>(end, src, 741.0), Some(741.0));
+        assert_eq!(hull_closer::<Gcc>(end, src, 741.0), None);
+        assert_eq!(hull_closer::<Gcc>(end, src, 742.0), Some(741.0));
+        assert!(hull_closer::<Msvc>([f32::NAN; 3], src, 1e6).is_some_and(f32::is_nan));
+        assert!(hull_closer::<Gcc>([f32::NAN; 3], src, 1e6).is_some_and(f32::is_nan));
     }
 
     fn b(v: [f32; 3]) -> [u32; 3] {

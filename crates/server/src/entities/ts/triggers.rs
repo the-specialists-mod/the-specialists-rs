@@ -11,6 +11,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::server::{IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
 use goldsrc::util::to_cstring;
+use shared::pm::{Fpu, Num, below87, not_above87};
 use shared::protocol::rules::ScoreInfo;
 use std::ffi::CStr;
 
@@ -535,7 +536,8 @@ pub struct SlowMotion {
     until: f32,
     global: bool,
     btime: bool,
-    radius: f32,
+    /// `+0xf4` (mp.dll `+0xe4`): an int.
+    radius: i32,
     slowed: Vec<*mut edict_t>,
     /// `m_pfnThink` (`WaitThink`, from `Spawn`) and `m_pfnTouch` (`WaitTouch`, from
     /// `ActivateSlow` for an area slow, until a timed one runs out).
@@ -581,17 +583,43 @@ impl SlowMotion {
         let v = cx.pev();
         let c = [(v.absmin[0] + v.absmax[0]) * 0.5, (v.absmin[1] + v.absmax[1]) * 0.5, (v.absmin[2] + v.absmax[2]) * 0.5];
         let r = self.radius;
+        let arith = rules::cvars::pm_arith();
         self.slowed.retain(|&e| {
             if !rules::powerup::entity_in_slow(e) {
                 return true;
             }
-            let inside = rules::dist(e.v().origin, c) <= r;
+            let inside = shared::by_arith!(arith, slow_inside(e.v().origin, c, r));
             if !inside {
                 rules::powerup::go_slow(e, 1.0, false);
             }
             inside
         });
     }
+}
+
+/// `CTSSlowMotion::Spawn`'s radius, `(int)((absmax - absmin).Length() * 0.5)` (truncated):
+/// mp.dll (0x10049399..0x100493db) sums the unrounded differences `z, x, y` and `__ftol`s the
+/// unrounded product; `ts_i386.so` (0x70f2c..0x70f85) sums `x, y, z` and stores the root first.
+fn slow_radius<F: Fpu>(absmin: [f32; 3], absmax: [f32; 3]) -> i32 {
+    let d = [0, 1, 2].map(|i| F::x(absmax[i]) - F::x(absmin[i]));
+    let len =
+        if F::MSVC { (d[2] * d[2] + d[0] * d[0] + d[1] * d[1]).sqrt() } else { F::x((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().f()) };
+    (len * F::xd(0.5)).trunc_i32()
+}
+
+/// `CheckPlayersDistance`'s `(origin - Center()).Length()` against the int radius. mp.dll
+/// (`FUN_10049520`, 0x10049556..0x1004958b) sums the unrounded differences `z, x, y`, keeps the
+/// root and releases when `radius < len` (a NaN releases); `ts_i386.so` (0x71202..0x71259)
+/// squares each unrounded difference times its stored copy (`x, y`, then `z²`), stores the root
+/// and keeps the player while `len <= radius` (a NaN stays).
+fn slow_inside<F: Fpu>(origin: [f32; 3], centre: [f32; 3], radius: i32) -> bool {
+    let d = [0, 1, 2].map(|i| F::x(origin[i]) - F::x(centre[i]));
+    let r = F::xi(radius);
+    if F::MSVC {
+        return !below87(r, (d[2] * d[2] + d[0] * d[0] + d[1] * d[1]).sqrt());
+    }
+    let len = F::x((d[0] * F::x(d[0].f()) + d[1] * F::x(d[1].f()) + d[2] * d[2]).sqrt().f());
+    not_above87(len, r)
 }
 
 impl Entity for SlowMotion {
@@ -617,9 +645,7 @@ impl Entity for SlowMotion {
     fn spawn(&mut self, cx: &mut Cx) {
         trigger_brush(cx, c"ts_slowmotion");
         let v = cx.pev();
-        let d = [v.absmax[0] - v.absmin[0], v.absmax[1] - v.absmin[1], v.absmax[2] - v.absmin[2]];
-        // `(int)` of the half diagonal: truncated.
-        self.radius = super::c_int(f64::from(rules::len3(d)) * 0.5) as f32;
+        self.radius = shared::by_arith!(rules::cvars::pm_arith(), slow_radius(v.absmin, v.absmax));
         self.global = v.spawnflags & 2 != 0;
         self.btime = v.spawnflags & 4 != 0;
         let start_on = v.spawnflags & 1 != 0;
@@ -760,6 +786,25 @@ pub fn create_slow_motion_point(origin: [f32; 3], amount: f32, duration: f32, bt
 
 #[cfg(test)]
 mod tests {
+    /// `ts_slowmotion`'s radius and area test (issue #171): mp.dll's unrounded roots give 633
+    /// (1267.99997 / 2) and "left the area" (507.00001 > 507); the `.so` stores them (1268.0,
+    /// 507.0), as the port's old `float` lengths did.
+    #[test]
+    fn slow_motion_area_rounds_as_each_build() {
+        use super::{slow_inside, slow_radius};
+        use shared::pm::{Gcc, Msvc};
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let (mn, mx) = (f([0xc45a_6ae4, 0xc468_2c72, 0x443d_c851]), f([0x43b9_df90, 0xc42c_9cb6, 0x443d_c851]));
+        assert_eq!(slow_radius::<Msvc>(mn, mx), 633);
+        assert_eq!(slow_radius::<Gcc>(mn, mx), 634);
+        let (o, c) = (f([0x43b5_6076, 0xc477_61bd, 0x4417_f33d]), f([0x4431_85d7, 0xc41b_0c8a, 0x4417_f33d]));
+        assert!(!slow_inside::<Msvc>(o, c, 507));
+        assert!(slow_inside::<Gcc>(o, c, 507));
+        let nan = [f32::NAN, 0.0, 0.0];
+        assert!(!slow_inside::<Msvc>(nan, c, 507));
+        assert!(slow_inside::<Gcc>(nan, c, 507));
+    }
+
     #[test]
     fn number_keys_read_a_leading_number() {
         assert_eq!(super::strtol(c"30.0"), 30);

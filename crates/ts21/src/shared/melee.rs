@@ -69,16 +69,60 @@ fn on_ground(host: &dyn GunHost) -> bool {
     host.flags() & FL_ONGROUND != 0
 }
 
+/// The attacker's motion as a 2.1 attack sees it ([`motion`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Motion {
+    /// `velocity.Length()` stored as a `float`.
+    pub speed: f32,
+    /// Faster than 100 u/s, as the build tests it.
+    pub fast: bool,
+    /// Fast, and `dot(normalize(velocity), v_forward) <= −0.5` as the build tests it.
+    pub back: bool,
+    /// That dot stored as a `float` (0 when not fast).
+    pub dot: f32,
+}
+
 /// The speed and, above 100 u/s, `dot(normalize(velocity), v_forward)` (`MakeVectors(v_angle)`,
-/// the full view angles); a move goes backward when that is at most −0.5.
-fn speed_and_dot(host: &dyn GunHost) -> (f32, f32) {
-    let vel = host.velocity();
-    let speed = spread::length(vel);
-    if speed <= 100.0 {
-        return (speed, 0.0);
-    }
+/// the full view angles); a move goes backward when that is at most −0.5. Every sum is at 53 bits
+/// (issue #171).
+///
+/// * mp.dll's `KatanaFire` (0x1004c0cf..0x1004c192) tests the root of `x² + y² + z²` unrounded;
+///   its `CCombatAttack` (0x1004de96..0x1004dfe9) stores it first (`katana` picks which). Both
+///   normalise through the inline `Normalize`: the katana's squares `(y² + z²) + x²`, kung fu's
+///   `(x² + y²) + z²`, the root unrounded, `1 / len` stored as a `float`, the components left on
+///   the FPU; the dot sums `z, y, x` and is tested unrounded against the `double` −0.5.
+/// * client.dll (unoptimised; katana `FUN_10022cc0`, kung fu `FUN_10024890`) stores the speed
+///   from its out-of-line `Length` (0x1001e850), normalises out of line (0x100230c0: the length,
+///   `1 / len` and each component stored) and stores the `x, y, z` dot (0x10023170).
+///
+/// A fast velocity has a length of at least 100, so neither `Normalize`'s zero case arises.
+fn motion(host: &dyn GunHost, katana: bool) -> Motion {
     let (fwd, _, _) = spread::angle_vectors(host.v_angle());
-    (speed, spread::dot(spread::normalize(vel), fwd))
+    motion_of(host.velocity(), fwd, katana, host.prediction())
+}
+
+/// [`motion`] of `vel` against the view's forward vector, on mp.dll or (`client`) client.dll.
+fn motion_of(vel: spread::Vec3, fwd: spread::Vec3, katana: bool, client: bool) -> Motion {
+    let [x, y, z] = vel.map(f64::from);
+    let root = (x * x + y * y + z * z).sqrt();
+    let speed = root as f32;
+    let fast = if katana && !client { root > 100.0 } else { speed > 100.0 };
+    if !fast {
+        return Motion { speed, fast, back: false, dot: 0.0 };
+    }
+    let [fx, fy, fz] = fwd.map(f64::from);
+    let (back, dot) = if client {
+        let inv = (1.0 / f64::from(speed)) as f32;
+        let n = vel.map(|c| f64::from(inv * c));
+        let d = (n[0] * fx + n[1] * fy + n[2] * fz) as f32;
+        (d <= -0.5, d)
+    } else {
+        let len = if katana { (y * y + z * z + x * x).sqrt() } else { root };
+        let inv = f64::from((1.0 / len) as f32);
+        let d = inv * z * fz + inv * y * fy + inv * x * fx;
+        (::shared::pm::not_above87(d, -0.5), d as f32)
+    };
+    Motion { speed, fast, back, dot }
 }
 
 /// The rest of a melee hit's fields, as every 2.1 attack fills them.
@@ -181,8 +225,8 @@ pub struct KatanaSwing {
 
 /// Picks the swing: backward above 100 u/s (`dot <= −0.5`), airborne, crouched, or the ground
 /// swings alternating (`gun+0xdb0`, re-rolled 1..2 when out of range).
-pub fn katana_swing(speed: f32, dot: f32, on_ground: bool, ducking: bool, last: &mut i32, roll: &mut dyn FnMut() -> i32) -> KatanaSwing {
-    let base = if speed > 100.0 { 35 } else { 70 };
+pub fn katana_swing(fast: bool, back: bool, on_ground: bool, ducking: bool, last: &mut i32, roll: &mut dyn FnMut() -> i32) -> KatanaSwing {
+    let base = if fast { 35 } else { 70 };
     let mut s = KatanaSwing { base, reach: 48.0, hold: 0.5, anim: 33, view: 0x11, bits: 0, crouch: false };
     if !(1..=2).contains(last) {
         *last = roll();
@@ -193,7 +237,7 @@ pub fn katana_swing(speed: f32, dot: f32, on_ground: bool, ducking: bool, last: 
         *last = 1;
         (s.anim, s.view) = (34, 0x10);
     }
-    if speed > 100.0 && dot <= -0.5 {
+    if back {
         s = KatanaSwing { base: -100, reach: 54.0, hold: 1.0, anim: 35, view: 0xf, bits: 1, crouch: false };
     } else if !on_ground {
         (s.anim, s.view) = (36, 0x11);
@@ -215,7 +259,7 @@ pub fn katana_fire(gun: &mut Gun, host: &mut dyn GunHost) {
         return;
     }
     let t = t_of(host);
-    let (speed, dot) = speed_and_dot(host);
+    let m = motion(host, true);
     // The crouch test reads `IN_DUCK` or `FL_DUCKING` on the gun entity's own pev, which never has
     // it, so only `+duck` counts.
     let ducking = host.buttons() & IN_DUCK != 0;
@@ -223,7 +267,7 @@ pub fn katana_fire(gun: &mut Gun, host: &mut dyn GunHost) {
     let ground = on_ground(host);
     let swing = {
         let mut roll = || host.random_long(1, 2);
-        katana_swing(speed, dot, ground, ducking, &mut last, &mut roll)
+        katana_swing(m.fast, m.back, ground, ducking, &mut last, &mut roll)
     };
     gun.last_melee_anim = last;
     if swing.bits != 0 {
@@ -299,6 +343,8 @@ pub struct KungFuInput {
     pub speed: f32,
     /// `dot(normalize(velocity), v_forward)` above 100 u/s, else 0.
     pub dot: f32,
+    /// Above 100 u/s with that dot at most −0.5, as the build tests it ([`Motion::back`]).
+    pub back: bool,
 }
 
 /// Picks the move, updating the combo counters (`gun+0xda8` punches, `+0xdac` kicks) from the
@@ -311,7 +357,7 @@ pub fn kungfu_move(
     roll: &mut dyn FnMut(i32, i32) -> i32,
 ) -> KungFuMove {
     let speed = i.speed as f64;
-    let back = i.speed > 100.0 && i.dot <= -0.5;
+    let back = i.back;
     let mut m = KungFuMove { atype: 0, move_id: 0, damage: 0.0, reach: 0.0, delay: 0.6, bits: 0 };
     if i.buttons & IN_ATTACK != 0 {
         m.atype = 1;
@@ -422,9 +468,16 @@ pub fn ccombat_attack(gun: &mut Gun, host: &mut dyn GunHost) {
         return;
     }
     let t = t_of(host);
-    let (speed, dot) = speed_and_dot(host);
-    let input =
-        KungFuInput { buttons: host.buttons(), pressed: host.pressed(), iuser4: host.iuser4(), on_ground: on_ground(host), speed, dot };
+    let mo = motion(host, false);
+    let input = KungFuInput {
+        buttons: host.buttons(),
+        pressed: host.pressed(),
+        iuser4: host.iuser4(),
+        on_ground: on_ground(host),
+        speed: mo.speed,
+        dot: mo.dot,
+        back: mo.back,
+    };
     let (mut pc, mut kc) = (gun.punch_combo, gun.kick_combo);
     let m = {
         let mut roll = |lo, hi| host.random_long(lo, hi);
@@ -573,21 +626,39 @@ mod tests {
         assert_eq!(block_window(0.5, 100.0), 2.5, "capped at hold × 5");
     }
 
+    /// 2.1's speed and back test per build (issue #171). mp.dll's katana tests the unrounded
+    /// root (100.00000000005 is fast; its kung fu and the client store 100.0). The back test: the
+    /// first input is backward only on the client (stored components and dot), the second only on
+    /// mp.dll (the float `1/len`, an unrounded dot); the port's old `float` arithmetic had neither.
+    #[test]
+    fn motion_per_build() {
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let fast = |katana, client| motion_of([100.0, 0.0001, 0.0], [1.0, 0.0, 0.0], katana, client).fast;
+        assert!(fast(true, false));
+        assert!(!fast(false, false));
+        assert!(!fast(true, true));
+        let back = |v, w, katana, client| motion_of(f(v), f(w), katana, client).back;
+        let (v, w) = ([0xc38b_5c0a, 0xc129_4f6c, 0x3eb2_08b1], [0x3eee_fe5f, 0x3f62_6625, 0]);
+        assert_eq!([back(v, w, true, false), back(v, w, false, false), back(v, w, true, true)], [false, false, true]);
+        let (v, w) = ([0xc1dc_49f3, 0xc2f5_ab4b, 0xbda6_6318], [0xbf3c_5590, 0x3f2d_6569, 0]);
+        assert_eq!([back(v, w, true, false), back(v, w, false, false), back(v, w, true, true)], [true, true, false]);
+    }
+
     #[test]
     fn katana() {
         assert_eq!([35, 70, 90, -100].map(katana_damage), [29, 59, 76, -85]);
         let mut last = 0;
-        let s = katana_swing(50.0, 0.0, true, false, &mut last, &mut || 1);
+        let s = katana_swing(false, false, true, false, &mut last, &mut || 1);
         assert_eq!((s.base, s.reach, s.hold, s.anim, last), (70, 48.0, 0.5, 33, 2));
-        let s = katana_swing(50.0, 0.0, true, false, &mut last, &mut || 1);
+        let s = katana_swing(false, false, true, false, &mut last, &mut || 1);
         assert_eq!((s.anim, s.view, last), (34, 0x10, 1), "the ground swings alternate");
-        let s = katana_swing(150.0, -0.6, true, false, &mut last, &mut || 1);
+        let s = katana_swing(true, true, true, false, &mut last, &mut || 1);
         assert_eq!((s.base, s.reach, s.hold, s.bits), (-100, 54.0, 1.0, 1));
-        let s = katana_swing(150.0, 0.9, true, false, &mut last, &mut || 1);
+        let s = katana_swing(true, false, true, false, &mut last, &mut || 1);
         assert_eq!(s.base, 35, "moving");
-        let s = katana_swing(0.0, 0.0, true, true, &mut last, &mut || 1);
+        let s = katana_swing(false, false, true, true, &mut last, &mut || 1);
         assert_eq!((s.base, s.hold, s.bits, s.crouch), (90, 1.0, 5, true));
-        let s = katana_swing(0.0, 0.0, false, true, &mut last, &mut || 1);
+        let s = katana_swing(false, false, false, true, &mut last, &mut || 1);
         assert_eq!((s.base, s.anim), (70, 36), "airborne before crouched");
     }
 
@@ -600,7 +671,7 @@ mod tests {
     }
 
     fn input(buttons: u32, on_ground: bool, speed: f32, dot: f32) -> KungFuInput {
-        KungFuInput { buttons, pressed: buttons, iuser4: 0, on_ground, speed, dot }
+        KungFuInput { buttons, pressed: buttons, iuser4: 0, on_ground, speed, dot, back: speed > 100.0 && dot <= -0.5 }
     }
 
     #[test]

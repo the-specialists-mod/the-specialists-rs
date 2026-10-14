@@ -466,9 +466,11 @@ impl Gun {
         let alt = self.slot().map(|s| s.alt_grip).unwrap_or(false);
         anim(self.current, alt, i)
     }
-    /// The player's speed, `|pev->velocity|`.
-    pub fn speed(host: &(impl GunHost + ?Sized)) -> f32 {
-        spread::length(host.velocity())
+    /// `pev->velocity.Length() > limit` (`StandardFire`'s Barrett and M60 gates): the squares `x, y,
+    /// z`, the root unrounded in mp.dll and client.dll (0x10055b11..0x10055b3c, 0x100092e1), stored
+    /// in `ts_i386.so` (0x8257b..0x825a3). A NaN is not faster.
+    pub fn faster_than(host: &(impl GunHost + ?Sized), limit: f32) -> bool {
+        crate::by_arith!(host.arith(), speed_over(host.velocity(), limit))
     }
 
     /// Reserve ammo of the current weapon's ammo type.
@@ -867,10 +869,10 @@ impl Gun {
         let info = self.info();
         let silenced = self.silenced();
         let mut spread = info.accuracy;
-        if self.current == id::BARRETT && Self::speed(host) > 35.0 {
+        if self.current == id::BARRETT && Self::faster_than(host, 35.0) {
             self.spread_penalty = 0.3;
         }
-        if self.current == id::M60 && Self::speed(host) > 175.0 {
+        if self.current == id::M60 && Self::faster_than(host, 175.0) {
             self.scale_spread(&mut spread, info.acc_kick * 5.0, silenced, host);
         } else if info.scale_spread {
             self.scale_spread(&mut spread, info.acc_kick, silenced, host);
@@ -2204,6 +2206,11 @@ fn melee_speed(arith: Arith, v: Vec3) -> f32 {
         F::vec_length(v, crate::pm::ORDER_XYZ).f()
     }
     crate::by_arith!(arith, go(v))
+}
+
+/// [`Gun::faster_than`] in one build's arithmetic.
+pub fn speed_over<F: Fpu>(v: Vec3, limit: f32) -> bool {
+    F::vec_length(v, crate::pm::ORDER_XYZ) > F::x(limit)
 }
 
 /// How an MSVC build forms the melee back test's `DotProduct(forward, velocity.Normalize())`.

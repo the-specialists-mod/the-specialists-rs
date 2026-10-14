@@ -14,8 +14,9 @@ pub const GRENADE_EXPLOSION: (f32, f32, f32) = (100.0, 128.0, 1024.0);
 const SHRAPNEL_SPEED: f32 = 2000.0;
 
 /// A piece's direction from its three rolls `RANDOM_FLOAT(-1, 1)`, `(-1, 1)`, `(-0.3, 1)`
-/// (0x10047ec6..0x10047f6e): normalised on the x87 stack through a float `1/len`, `(0, 0, 1)` for
-/// a zero vector, then scaled by 2000.
+/// (0x10047ec6..0x10047fa6): normalised on the x87 stack through a float `1/len` (`z, y, x`),
+/// `(0, 0, 1)` for a zero vector, then scaled by 2000. The x and y components go into the product
+/// unrounded; z is stored as a `float` first (0x10047f6a, reloaded at 0x10047f93; issue #171).
 pub fn shrapnel_velocity(r: Vec3) -> Vec3 {
     let (x, y, z) = (r[0] as f64, r[1] as f64, r[2] as f64);
     let len = (z * z + y * y + x * x).sqrt();
@@ -23,7 +24,7 @@ pub fn shrapnel_velocity(r: Vec3) -> Vec3 {
         [0.0, 0.0, 1.0]
     } else {
         let inv = (1.0 / len) as f32 as f64;
-        [inv * x, inv * y, inv * z]
+        [inv * x, inv * y, f64::from((inv * z) as f32)]
     };
     dir.map(|d| (d * SHRAPNEL_SPEED as f64) as f32)
 }
@@ -68,5 +69,12 @@ mod tests {
         assert_eq!(shrapnel_velocity([1.0, 0.0, 0.0]), [2000.0, 0.0, 0.0]);
         let v = shrapnel_velocity([0.6, -0.8, 0.0]);
         assert!((v[0] - 1200.0).abs() < 1e-3 && (v[1] + 1600.0).abs() < 1e-3 && v[2] == 0.0, "{v:?}");
+    }
+
+    /// The stored z component (issue #171): scaling the unrounded `inv · z` gave 0x43dbe843.
+    #[test]
+    fn shrapnel_z_is_stored_before_the_speed() {
+        let v = shrapnel_velocity([0xbf07_24b4, 0xbf4b_2dd2, 0x3e5c_0861].map(f32::from_bits));
+        assert_eq!(v.map(f32::to_bits), [0xc487_10fa, 0xc4cb_102a, 0x43db_e844]);
     }
 }

@@ -549,3 +549,12 @@ fn prediction_and_gate() {
     assert!(g.post_frame_ready(0x40, r));
     assert!(!g.post_frame_ready(0x40, &CORE));
 }
+
+/// 2.1's Barrett/M60 gate (issue #171): both of its MSVC builds compare the unrounded root, so
+/// `80² + 0.0001²` is over 80 (the port's old `float` length was 80.0).
+#[test]
+fn speed_gate_keeps_the_root_unrounded() {
+    use shared::weapons::gun::speed_over;
+    assert!(speed_over::<shared::pm::Msvc>([80.0, 0.0001, 0.0], 80.0));
+    assert!(!speed_over::<shared::pm::Msvc>([80.0, 0.0, 0.0], 80.0));
+}

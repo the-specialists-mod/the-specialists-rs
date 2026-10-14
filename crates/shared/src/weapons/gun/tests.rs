@@ -989,3 +989,17 @@ fn deploy_takes_its_timers_from_default_deploy() {
     assert!(h.deployed.is_empty());
     assert_eq!((g.next_attack, g.idle), (0.5, 3.0));
 }
+
+/// `StandardFire`'s Barrett and M60 gates (issue #171): mp.dll and client.dll compare the unrounded
+/// root, so a speed a hair over the limit counts; `ts_i386.so` stores the root (exactly the
+/// limit), as the port's old `float` length did.
+#[test]
+fn speed_gates_per_build() {
+    use crate::pm::{Gcc, Msvc};
+    for (v, limit) in [([35.0, 0.0001, 0.0], 35.0), ([175.0, 0.0003, 0.0], 175.0)] {
+        assert!(speed_over::<Msvc>(v, limit), "{limit}");
+        assert!(!speed_over::<Gcc>(v, limit), "{limit}");
+        assert!(!speed_over::<Msvc>([limit, 0.0, 0.0], limit));
+    }
+    assert!(!speed_over::<Msvc>([f32::NAN, 0.0, 0.0], 35.0));
+}
