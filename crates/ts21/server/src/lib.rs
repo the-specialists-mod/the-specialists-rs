@@ -254,6 +254,21 @@ impl ServerRules for Ts21Server {
         false
     }
 
+    /// 2.1's `GoSlow` (0x10055220) clamps the weapon timers on the way back to normal speed.
+    fn on_go_slow(&self, p: &mut Player, amount: f32) {
+        powerup::on_go_slow(p, amount);
+    }
+
+    /// 2.1's `CM61Grenade::WaitThink` (0x100477e0): the 0.1 floor and the `double` 0.1.
+    fn grenade_fuse_step(&self, elapsed: f32, time_scale: f32) -> f32 {
+        stunt::grenade_fuse_step(elapsed, time_scale)
+    }
+
+    /// 2.1's `PreThink` stops the animation below a tenth of normal speed.
+    fn anim_framerate(&self, time_scale: f32) -> f32 {
+        stunt::anim_framerate(time_scale)
+    }
+
     /// 2.1's `CBreakable::Die` (0x10042540) and `CBaseDoor::TraceAttack` (0x10013c50) throw the
     /// SDK's debris (issue #109).
     fn break_debris_from_hit(&self) -> bool {
@@ -506,6 +521,12 @@ mod tests {
         let core: &dyn ServerRules = &shared::gameplay::CORE;
         let v21: &dyn ServerRules = &Ts21Server;
         assert!(core.break_debris_from_hit() && !v21.break_debris_from_hit());
+        assert_eq!(v21.anim_framerate(0.05), 0.0, "frozen below a tenth");
+        assert_eq!(core.anim_framerate(0.05), 0.05);
+        assert_eq!(v21.anim_framerate(1.0), 1.0);
+        assert_eq!(v21.grenade_fuse_step(0.0, 0.05), 0.01, "floored at 0.1");
+        assert_eq!(v21.grenade_fuse_step(0.0, 1.0), 0.1);
+        assert_ne!(core.grenade_fuse_step(3e-6, 1.0), v21.grenade_fuse_step(3e-6, 1.0), "0.1f against the double 0.1");
         let (org, absmin, size) = ([1.5, 16_777_218.0, 0.0], [0.0, 16_777_216.0, 0.0], [0.0, 1.0, 0.0]);
         assert_eq!(core.breakable_attack_dir(org, absmin, size), [0.6, 0.8, 0.0], "3.0 rounds the centre: d = (1.5, 2, 0)");
         assert_ne!(v21.breakable_attack_dir(org, absmin, size), core.breakable_attack_dir(org, absmin, size));

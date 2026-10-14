@@ -307,9 +307,12 @@ The hooks so far:
 | `ServerRules` | `powerup_kind(key, spawnflags)` | `entities::ts::powerup::kind_for` (`GetRandomPowerup`, never armour) | `entities/ts/powerup.rs` `setup` |
 | `ServerRules` | `armor_powerup(p, cx, armor)` | `TakeArmor(100)` (`armor`: `PowerUp::armor`, 100; `entities::ts::powerup::set_armor`) | `rules/powerup.rs` `add_powerup` |
 | `ServerRules` | `time_scale_eases()` | `true` (`InterpolateSlowMotion`) | `rules/powerup.rs` `go_slow*`/`deactivate_flow`, `rules/lifecycle.rs` `pre_think` |
+| `ServerRules` | `on_go_slow(p, amount)` | nothing | `rules/powerup.rs` `go_slow_self`, `go_slow_plain` (a player's `GoSlow`) |
+| `ServerRules` | `grenade_fuse_step(elapsed, time_scale)` | `max(fuser1, 0.01) * 0.1f + elapsed` | `weapons/projectiles.rs` grenade `WaitThink` |
+| `ServerRules` | `anim_framerate(time_scale)` | `max(fuser1, 0.01)` | `rules/lifecycle.rs` `pre_think`, `stunt/mod.rs` `pre_think` |
 | `ServerRules` | `motion_blur()` | `true` | `stunt/mod.rs` `maybe_blur`, `stunt/moves.rs` `go_bullet_time`, `rules/powerup.rs` `use_powerup`/`run_powerup`, `rules/lifecycle.rs` `killed`, `weapons/melee.rs` |
 | `ServerRules` | `sound_pitch(pitch, time_scale, s)` | `entities::stock::explode::slow_pitch` | `entities/stock/explode.rs` `emit_sound_slow` |
-| `ServerRules` | `stunts()` | `stunt::rules::CORE` (`StuntRules`: recoveries 0.5625/0.375/0.75/0.2625/0.75, get-up keys 0x4006, wall dive, glide climb, ...) | `stunt/moves.rs` |
+| `ServerRules` | `stunts()` | `stunt::rules::CORE` (`StuntRules`: recoveries 0.5625/0.375/0.75/0.2625/0.75, get-up keys 0x4006, wall dive, glide climb, ..., and `CTSAnimation`'s priority rules and timer model) | `stunt/moves.rs`, `stunt/anim.rs` |
 | `ServerRules` | `stunt_clock()` | `stunt::rules::RELATIVE` (`StuntClock`: seconds left, counted down in the player's time) | `stunt/mod.rs`, `stunt/moves.rs`, `weapons/host.rs` (every stunt timer write and test) |
 | `ServerRules` | `can_dive(p, armor, dive)` | `stunt::rules::can_dive` (used < 42/52/62, The One bypasses) | `stunt/moves.rs` `can` |
 | `ServerRules` | `bullet_time_allowed(time_scale)` | `max(fuser1, 0.01) <= 0.99` | `stunt/moves.rs` `go_bullet_time` |

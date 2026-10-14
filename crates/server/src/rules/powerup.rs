@@ -95,6 +95,7 @@ pub fn go_slow_self(p: &mut Player, cx: &mut Cx, amount: f32, btime: bool) {
     set_slow_target(p, cx.edict, target);
     p.ts.slow_display = amount;
     p.ts.btime = btime;
+    crate::gameplay::active().server.on_go_slow(p, amount);
 }
 
 /// `GoSlow` on any entity: players through their Rust state, others directly (`fuser1`).
@@ -113,6 +114,7 @@ pub fn go_slow_plain(e: *mut edict_t, amount: f32, btime: bool) {
         set_slow_target(p, e, if observer { 1.0 } else { amount });
         p.ts.slow_display = amount;
         p.ts.btime = btime;
+        crate::gameplay::active().server.on_go_slow(p, amount);
     });
     if done.is_none() && !super::has_player(e) {
         (e.v().fuser1 = amount);

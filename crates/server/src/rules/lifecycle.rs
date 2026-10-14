@@ -383,7 +383,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) -> bool {
         } else {
             v.fuser1 = p.slow_target;
         }
-        v.framerate = v.fuser1.max(0.01);
+        v.framerate = crate::gameplay::active().server.anim_framerate(v.fuser1);
     }
 
     powerup::update_state(p, cx);

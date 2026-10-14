@@ -306,7 +306,7 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     // before the team check, on the damage after the TraceAttack multipliers.
     let v = cx.pev().velocity;
     if arms_bullet_dance(p.ts.last_hitgroup, v, amount) {
-        crate::stunt::anim::enable_bullet_dance(p);
+        crate::stunt::anim::enable_bullet_dance(p, cx);
     } else {
         crate::stunt::anim::disable_bullet_dance(p);
     }

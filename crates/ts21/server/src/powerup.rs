@@ -97,6 +97,28 @@ fn spawns_slowmo(r: f32, slowmatch: f32) -> bool {
     f64::from(r) < 0.25 && slowmatch != 1.0
 }
 
+/// The end of 2.1's `GoSlow` (0x10055220), issue #112: back to normal speed (2.1's amount 0, the
+/// port's 1) clamps `m_flNextAttack` (`pl+0x118`) to 1 s (`1.0 <= t ? 1.0 : t`, a NaN stays), and
+/// with the TS gun active its two next-attack times (`gun+0x90`, `gun+0x8c`) take that value. 2.1's
+/// weapon timers count down in real time, so a long delay set in slow motion ends within a second
+/// of it.
+pub fn go_slow_release(next_attack: f32) -> f32 {
+    if 1.0 <= next_attack { 1.0 } else { next_attack }
+}
+
+/// [`go_slow_release`] on the player ([`ServerRules::on_go_slow`](ts_server::gameplay::ServerRules::on_go_slow)).
+pub fn on_go_slow(p: &mut ts_server::player::Player, amount: f32) {
+    if amount != 1.0 {
+        return;
+    }
+    let t = go_slow_release(p.inv.gun.next_attack);
+    p.inv.gun.next_attack = t;
+    if ts_server::weapons::gun_active(p) {
+        p.inv.gun.next_secondary = t;
+        p.inv.gun.next_primary = t;
+    }
+}
+
 /// `kind` is one of the types the spawner and `SetupPowerUp` draw.
 #[cfg(test)]
 fn is_type(kind: u16) -> bool {
@@ -109,6 +131,15 @@ mod tests {
     use super::*;
     use shared::ts::powerup as pw;
     use ts_server::entities::ts::powerup::pickup_plan;
+
+    #[test]
+    fn go_slow_release_clamps_to_a_second() {
+        assert_eq!(go_slow_release(3.5), 1.0);
+        assert_eq!(go_slow_release(1.0), 1.0);
+        assert_eq!(go_slow_release(0.4), 0.4);
+        assert_eq!(go_slow_release(-0.001), -0.001);
+        assert!(go_slow_release(f32::NAN).is_nan(), "a NaN stays");
+    }
 
     #[test]
     fn durations() {

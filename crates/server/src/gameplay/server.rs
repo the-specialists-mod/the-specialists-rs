@@ -423,6 +423,24 @@ pub trait ServerRules: Sync {
         true
     }
 
+    /// The end of a player's `GoSlow` (0x929d0) for the time scale `amount` (1 = normal): a
+    /// ruleset whose release touches the weapon timers does it here. 3.0: nothing.
+    fn on_go_slow(&self, _p: &mut Player, _amount: f32) {}
+
+    /// One 0.1 s fuse think of a thrown grenade (`CM61Grenade::WaitThink` 0x7cb68): the fuse's
+    /// elapsed time after it, the grenade's time scale being `time_scale`. 3.0:
+    /// `GiveSlowMul() * 0.1f + elapsed` with `GiveSlowMul` at least 0.01
+    /// ([`projectiles::fuse_step`]).
+    fn grenade_fuse_step(&self, elapsed: f32, time_scale: f32) -> f32 {
+        projectiles::fuse_step(cvars::pm_arith(), elapsed, time_scale.max(0.01))
+    }
+
+    /// A player's animation `framerate`, set from the time scale every `PreThink` (0x908cc):
+    /// 3.0 `max(fuser1, 0.01)`.
+    fn anim_framerate(&self, time_scale: f32) -> f32 {
+        time_scale.max(0.01)
+    }
+
     /// The ruleset sends `TSMBlur` (stunts, power-ups, kills, kung fu), and draws the random
     /// numbers deciding it.
     fn motion_blur(&self) -> bool {
@@ -665,6 +683,13 @@ mod tests {
         assert!(!core.server_command("restartround"));
         assert!(!core.server_command("weaponrestriction"));
         assert!(core.break_debris_from_hit(), "3.0 throws the debris along the last hit");
+        let fuse = |slow| projectiles::fuse_step(cvars::pm_arith(), 0.0, slow);
+        assert_eq!(core.grenade_fuse_step(0.0, 0.05), fuse(0.05));
+        assert_eq!(core.grenade_fuse_step(0.0, 0.001), fuse(0.01), "floored at 0.01");
+        assert_eq!(core.grenade_fuse_step(0.0, f32::NAN), fuse(0.01));
+        assert_eq!(core.anim_framerate(0.05), 0.05);
+        assert_eq!(core.anim_framerate(0.0), 0.01);
+        assert_eq!(core.anim_framerate(1.0), 1.0);
         assert_eq!(core.breakable_attack_dir([10.0, 0.0, 0.0], [-1.0; 3], [2.0; 3]), [1.0, 0.0, 0.0]);
     }
 

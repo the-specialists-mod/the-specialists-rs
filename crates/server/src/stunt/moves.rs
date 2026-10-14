@@ -481,9 +481,20 @@ fn handle_slide(p: &mut Player, cx: &mut Cx, r: Rules) {
     }
 }
 
+/// `HandleSlide`'s inline `v_forward.Normalize()` ([`StuntRules::side_roll_normalizes_forward`](super::rules::StuntRules::side_roll_normalizes_forward)):
+/// `x² + y² + z²`, the length and its inverse kept on the FPU.
+fn normalized_forward<F: Fpu>(f: Vec3) -> Vec3 {
+    F::vec_normalize(f, ORDER_XYZ)
+}
+
 fn side_roll(p: &mut Player, cx: &mut Cx, id: i32) {
     anim::animate(p, cx, id);
-    p.stunt.dir = forward(cx);
+    let f = forward(cx);
+    p.stunt.dir = if crate::gameplay::active().server.stunts().side_roll_normalizes_forward {
+        shared::by_arith!(crate::rules::cvars::pm_arith(), normalized_forward(f))
+    } else {
+        f
+    };
     cx.pev().friction = 1.0;
     p.stunt.dir_not_forward = false;
     p.stunt.anim.last_dir = 2;
@@ -870,6 +881,17 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #112: `HandleSlide`'s normalised side-roll direction keeps `1/len` on the FPU.
+    #[test]
+    fn side_roll_forward_normalised() {
+        let f = [0.6, 0.8, 0.0001];
+        let n = normalized_forward::<shared::pm::Msvc>(f);
+        let len = (0.6f32 as f64).powi(2) + (0.8f32 as f64).powi(2) + (0.0001f32 as f64).powi(2);
+        let inv = 1.0 / len.sqrt();
+        assert_eq!(n, f.map(|c| (c as f64 * inv) as f32));
+        assert_eq!(normalized_forward::<shared::pm::Msvc>([0.0; 3]), [0.0, 0.0, 1.0]);
+    }
 
     /// `CTSStunt::CloseAttack`'s gate (0x9c630..0x9c6b5).
     #[test]
