@@ -261,6 +261,27 @@ fn go_bullet_time(p: &mut Player, cx: &mut Cx, r: Rules) {
     }
 }
 
+/// The wall chain's `m_flWallChain += add`: every TS build adds a `double` constant to the
+/// `float` on the x87 and stores the sum as a `float` (`ts_i386.so` GoWallJump 0x8a8ca, mp.dll
+/// 0x10068c9b / GoWallClimb 0x10068ee6.., 2.1 mp.dll 0x1005b42a / 0x1005b67b..), under the
+/// server's arithmetic (`arith`, [`crate::rules::cvars::pm_arith`]). Returns the sum as the x87 holds it
+/// before the store (53 bits under `Msvc`); `GoWallJump` hands that on to the cooldown in the
+/// MSVC builds, `ts_i386.so` reloads the stored `float`.
+fn wall_chain_add(arith: shared::pm::Arith, chain: &mut f32, add: f64) -> f64 {
+    use shared::pm::{Arith, Fpu, Gcc, Msvc, Num};
+    match arith {
+        Arith::Msvc => {
+            let sum = Msvc::xd(add) + Msvc::x(*chain);
+            *chain = sum.f();
+            sum
+        }
+        Arith::Gcc => {
+            *chain = (Gcc::xd(add) + Gcc::x(*chain)).f();
+            f64::from(*chain)
+        }
+    }
+}
+
 /// `CTSStunt::GoWallJump` (0x9a7d4): kick off the wall in front.
 fn go_wall_jump(p: &mut Player, cx: &mut Cx, r: Rules) {
     stunt_dir_back(p, cx);
@@ -271,8 +292,8 @@ fn go_wall_jump(p: &mut Player, cx: &mut Cx, r: Rules) {
     pev.view_ofs = [0.0; 3];
     anim::animate(p, cx, 0x37);
     cx.pev().gravity = 0.75;
-    p.stunt.wall_chain += 0.35;
-    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, p.stunt.wall_chain);
+    let sum = wall_chain_add(crate::rules::cvars::pm_arith(), &mut p.stunt.wall_chain, 0.35);
+    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, sum);
     send_next_stunt(p, cx, r);
     stunt_sound(cx, c"player/airwheel.wav");
     maybe_blur(cx, r, 5.0);
@@ -295,8 +316,9 @@ fn go_wall_climb(p: &mut Player, cx: &mut Cx, r: Rules) {
     } else {
         0.75
     };
-    p.stunt.wall_chain += add;
-    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, p.stunt.wall_chain);
+    // Every build stores the sum and loads the float back for the cooldown.
+    wall_chain_add(crate::rules::cvars::pm_arith(), &mut p.stunt.wall_chain, add);
+    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, f64::from(p.stunt.wall_chain));
     send_next_stunt(p, cx, r);
     stunt_sound(cx, c"player/airwheel.wav");
     p.stunt.wall_climbs += 1;
@@ -921,6 +943,29 @@ mod tests {
         use KickStep::*;
         assert_eq!(kick_steps(super::super::rules::CORE.kick_cooldown_on_try), [Hit, Draw, Arm]);
         assert_eq!(kick_steps(true), [Arm, Draw, Hit]);
+    }
+
+    /// The chain adds a `double` constant on the x87 (#124): a wall climb with high-dive space
+    /// (+0.3) then a wall jump (+0.35) is TS's 0.65000004, not the `f32` sum 0.64999998.
+    #[test]
+    fn wall_chain_adds_doubles() {
+        use shared::pm::Arith;
+        for arith in [Arith::Msvc, Arith::Gcc] {
+            let mut chain = 0.0f32;
+            let first = wall_chain_add(arith, &mut chain, 0.3);
+            assert_eq!(first, if arith == Arith::Msvc { 0.3 } else { f64::from(0.3f32) }, "{arith:?}");
+            assert_eq!(chain.to_bits(), 0.3f32.to_bits());
+            let sum = wall_chain_add(arith, &mut chain, 0.35);
+            assert_eq!(chain.to_bits(), 0x3f26_6667, "{arith:?}: 0.65000004");
+            assert_ne!(chain, 0.3f32 + 0.35f32, "the old f32 sum");
+            // mp.dll's GoWallJump hands the 53-bit sum on; ts_i386.so reloads the float.
+            let held = if arith == Arith::Msvc { f64::from(0.3f32) + 0.35 } else { f64::from(chain) };
+            assert_eq!(sum, held, "{arith:?}");
+        }
+        // 0.5 and 0.75 are exact either way.
+        let mut chain = 0.35f32;
+        wall_chain_add(Arith::Msvc, &mut chain, 0.75);
+        assert_eq!(chain, 0.35f32 + 0.75);
     }
 
     #[test]

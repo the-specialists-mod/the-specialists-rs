@@ -138,10 +138,12 @@ impl StuntClock for Absolute {
     }
 
     /// `GoWallJump` (0x1005b320) / `GoWallClimb` (0x1005b550):
-    /// `time + min(10, slowInv * max(0.5, chain))`.
-    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, chain: f32) -> f32 {
+    /// `time + min(10, slowInv * max(0.5, chain))`. `GoWallJump` passes the unrounded sum on as
+    /// a `double` (`fst dword [esi+0x3c]` then `fstp qword`, 0x1005b436..0x1005b442);
+    /// `GoWallClimb` reloads the stored `float` (0x1005b68c).
+    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, chain: f64) -> f32 {
         let m = if chain <= 0.5 { 0.5 } else { chain };
-        let v = slow_inv(time_scale) * f64::from(m);
+        let v = slow_inv(time_scale) * m;
         let v = if 10.0 <= v { 10.0 } else { v };
         (v + f64::from(now)) as f32
     }
@@ -271,6 +273,10 @@ mod tests {
         assert_eq!(c.wall_chain_cooldown(100.0, 1.0, 30.0), 110.0, "capped at 10");
         assert_eq!(c.wall_chain_cooldown(100.0, 0.35, 4.0), 110.0, "the cap is after slowInv");
         assert_eq!(c.wall_chain_cooldown(100.0, 0.5, 2.0), 104.0);
+        // GoWallJump's unrounded sum (0.3f + 0.35) against the float GoWallClimb would reload.
+        let sum = f64::from(0.3f32) + 0.35;
+        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, sum), 1.649_999_976_158_142_1);
+        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, f64::from(sum as f32)), 1.650_000_095_367_431_6);
     }
 
     #[test]

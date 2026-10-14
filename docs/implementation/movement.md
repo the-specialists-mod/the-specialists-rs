@@ -211,7 +211,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | Stunt timers | coyote 0.7/slowmul, taps 0.3 s, bullet time 0.55 (cooldown, prone lock, dodge), recover: roll 0.75, dive roll-out 0.5625, flip 0.375, wall landings 0.2625, get-up 0.75, super-jump landing 0.75 |
 | Stunt physics on the entity | dive gravity 0.75 (low: friction 0.25; too heavy: gravity 1, friction 0.9), flips gravity 0.75 (forward cartwheel friction 0.25), roll friction 0.3, roll-out/wall landing friction 0.5, flip landing 0.25 |
 | Wall checks | 48 u forward (jump) / behind (dive), 54 u forward non-player (climb); `-0.5 < n.z < 0.5`, `vel.z > -370` |
-| Wall chain | +0.35 per wall jump; +0.3/0.5/0.75 per climb (high/med/low ability); next stunt `max(0.5, chain)` |
+| Wall chain | +0.35 per wall jump; +0.3/0.5/0.75 per climb (high/med/low ability), `double` constants added to the `float` on the x87 and stored once (so +0.3 then +0.35 is 0.65000004, not the `f32` sum 0.64999998); next stunt `max(0.5, chain)`. `NextStunt` sends `(int)(next * 10)`, truncated in both servers (mp.dll `__ftol`; the .so sets a truncating control word, Ghidra's `ROUND` notwithstanding) |
 | Motion blur | `RandomLong(0,10) + 10*slowmul > T`: dive 8, flips 7, wall jump 5, roll 9; bullet time always |
 | Fall damage | above 680: `(v-680)*100*0.0022522523`, bodysplat (`CHAN_ITEM`) if fatal, `DMG_FALL|DMG_NEVERGIB` from the world |
 | Super-jump landing | `UTIL_ScreenShake(origin, 20, 30, 0.3, 512)`; duck held → forced roll (and `m_flNextAttack = 0.75`), else `superjump-land.wav`, `RECOVER|GO_DUCK`, view 16, recover 0.75, anim 0x3a |

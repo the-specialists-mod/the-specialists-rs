@@ -152,17 +152,19 @@ pub trait StuntClock: Sync {
         }
     }
 
-    /// `NextStunt`'s byte for the cooldown `t`: tenths of a second, `ROUND(t * 10)`.
+    /// `NextStunt`'s byte for the cooldown `t`: tenths of a second, `(int)(t * 10)` (truncated).
     fn next_stunt_byte(&self, now: f32, t: f32) -> u8 {
         let _ = now;
         shared::protocol::stunt::encode_next_stunt(t)
     }
 
     /// `GoWallJump` (0x9a7d4) / `GoWallClimb` (0x9aa1c): the cooldown after a wall stunt with
-    /// the chain at `chain`: `max(0.5, chain)`.
-    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, chain: f32) -> f32 {
+    /// the chain at `chain`: `max(0.5, chain)`. `chain` is the sum as the build's x87 holds it
+    /// (`GoWallJump` under `Msvc` doesn't reload the stored `float`); 3.0 stores the result as a
+    /// `float`, and rounding after the `max` is the same as before it.
+    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, chain: f64) -> f32 {
         let _ = (now, time_scale);
-        chain.max(0.5)
+        chain.max(0.5) as f32
     }
 
     /// `HandleStunt` / `GoWheel`: the "coyote time" an air stunt is still allowed after leaving
@@ -229,8 +231,10 @@ mod tests {
         s.block_timer = 0.05;
         c.tick_block(&mut s, 0.1);
         assert_eq!(s.block_timer, 0.001);
-        assert_eq!(c.next_stunt_byte(100.0, 0.55), 6);
+        assert_eq!(c.next_stunt_byte(100.0, 0.55), 5, "truncated, as mp.dll and ts_i386.so");
         assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 0.35), 0.5);
+        // The 53-bit sum mp.dll's GoWallJump keeps is stored as the float the chain holds.
+        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, f64::from(0.3f32) + 0.35).to_bits(), 0x3f26_6667);
         assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 30.0), 30.0, "no cap");
         assert!(c.air_stunt_allowed(10.0, 1.0, 9.4) && !c.air_stunt_allowed(10.0, 1.0, 9.2));
         // Slowed to 0.5, the window is 1.4 s of real time.
