@@ -33,11 +33,11 @@ fn find_hull_intersection(src: Vec3, tr: &mut TraceResult, mins: Vec3, maxs: Vec
             for k in 0..2 {
                 let end = [hull_end[0] + mm[i][0], hull_end[1] + mm[j][1], hull_end[2] + mm[k][2]];
                 let t = e.trace_line(src, end, DONT_IGNORE_MONSTERS, skip);
-                if t.flFraction < 1.0 {
-                    if let Some(d) = shared::by_arith!(arith, hull_closer(t.vecEndPos, src, distance)) {
-                        *tr = t;
-                        distance = d;
-                    }
+                if t.flFraction < 1.0
+                    && let Some(d) = shared::by_arith!(arith, hull_closer(t.vecEndPos, src, distance))
+                {
+                    *tr = t;
+                    distance = d;
                 }
             }
         }

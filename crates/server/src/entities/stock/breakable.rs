@@ -355,8 +355,8 @@ impl<const PUSH: bool> Breakable<PUSH> {
         let (ovel, oabsmin_z) = (ov.velocity, ov.absmin[2]);
         let sf = cx.pev().spawnflags;
         if sf & SF_BREAK_TOUCH != 0 {
-            let damage = vec::length(ovel) * 0.01;
-            if cx.pev().health <= damage {
+            let (damage, breaks) = touch_damage(ovel, cx.pev().health);
+            if breaks {
                 self.touch = None;
                 let info = DamageInfo::new(other, other, damage, dmg::CRUSH);
                 self.take_damage_impl(cx, &info);
@@ -581,10 +581,12 @@ impl<const PUSH: bool> Breakable<PUSH> {
         let player = has_player(other);
         // `CPushable::Move` (0xc1c50): pulling (+use) takes 30% of the player's velocity, before
         // every use of it, the standing-on-top case included.
-        let input = if player && tv.button & IN_USE as i32 != 0 { vec::scale(tv.velocity, 0.3) } else { tv.velocity };
+        // `* 0.3` and `* 0.1` are `double`s, and each `velocity +=` adds the unrounded product
+        // (0x1001fde8..0x1001fedb; issue #171).
+        let input = if player && tv.button & IN_USE as i32 != 0 { tv.velocity.map(|c| (f64::from(c) * 0.3) as f32) } else { tv.velocity };
         if tv.flags & FL_ONGROUND as i32 != 0 && tv.groundentity == me {
             if v.waterlevel > 0 {
-                v.velocity[2] += input[2] * 0.1;
+                v.velocity[2] = (f64::from(input[2]) * 0.1 + f64::from(v.velocity[2])) as f32;
             }
             return;
         }
@@ -603,19 +605,18 @@ impl<const PUSH: bool> Breakable<PUSH> {
         } else {
             0.25
         };
-        v.velocity[0] += input[0] * factor;
-        v.velocity[1] += input[1] * factor;
-        let length = vec::length2d(v.velocity);
-        let max = self.push.max_speed;
-        if push && length > max {
-            v.velocity[0] = v.velocity[0] * max / length;
-            v.velocity[1] = v.velocity[1] * max / length;
+        let factor: f32 = factor;
+        for (vel, push) in v.velocity.iter_mut().zip(input).take(2) {
+            *vel = (f64::from(push) * f64::from(factor) + f64::from(*vel)) as f32;
         }
+        let max = self.push.max_speed;
+        let (velocity, length) = push_clamp(v.velocity, max, push);
+        v.velocity = velocity;
         if player {
             tv.velocity[0] = v.velocity[0];
             tv.velocity[1] = v.velocity[1];
             let now = engine().time();
-            if now - self.push.sound_time > 0.7 {
+            if f64::from(now) - f64::from(self.push.sound_time) > 0.7 {
                 self.push.sound_time = now;
                 if length > 0.0 && v.flags & FL_ONGROUND as i32 != 0 {
                     self.push.last_sound = engine().random_long(0, 2) as usize;
@@ -635,6 +636,27 @@ impl<const PUSH: bool> Breakable<PUSH> {
             }
         }
     }
+}
+
+/// `CPushable::Move`'s speed clamp (0x1001fee3..0x1001ff2a): the 2D length `y² + x²` stays on the
+/// FPU for the `> m_maxSpeed` test, the clamp `maxSpeed · v / length` (rounded once) and the
+/// sound's `length > 0`.
+fn push_clamp(mut velocity: Vec3, max: f32, push: bool) -> (Vec3, f64) {
+    let [x, y] = [velocity[0], velocity[1]].map(f64::from);
+    let length = (y * y + x * x).sqrt();
+    if push && length > f64::from(max) {
+        velocity[0] = (f64::from(max) * x / length) as f32;
+        velocity[1] = (f64::from(max) * y / length) as f32;
+    }
+    (velocity, length)
+}
+
+/// `CBreakable::BreakTouch`'s `flDamage = pevToucher->velocity.Length() * 0.01` (0x1001eeb9..
+/// 0x1001eeec): the unrounded root times the `double` 0.01, stored, and whether it breaks: the
+/// unrounded product is compared with the health (`fcomp; test ah,1`: a NaN breaks).
+fn touch_damage(velocity: Vec3, health: f32) -> (f32, bool) {
+    let d = Msvc::vec_length(velocity, ORDER_XYZ) * 0.01;
+    (d as f32, !shared::pm::below87(d, f64::from(health)))
 }
 
 const PUSH_SOUNDS: [&CStr; 3] = [c"debris/pushbox1.wav", c"debris/pushbox2.wav", c"debris/pushbox3.wav"];
@@ -799,9 +821,10 @@ impl<const PUSH: bool> Breakable<PUSH> {
         let from = [activator, caller].into_iter().find(|e| !e.is_null()).map(|e| vec::mid(e.v().absmin, e.v().absmax)).unwrap_or(mid);
         self.hit_pos = mid;
         let d = vec::sub(mid, from);
-        self.hit_dir = vec::normalize(d);
+        // The out-of-line `Normalize` and `Length` (0x1001f1ec, 0x1001f281; issue #171).
+        self.hit_dir = crate::damage::normalize(d);
         self.hit_bits = 0;
-        self.hit_damage = vec::length(d);
+        self.hit_damage = Msvc::vec_length(d, ORDER_XYZ) as f32;
         v.angles[1] = self.angle;
         // `g_vecAttackDir = v_forward` of the restored angles (0xc0fe9..0xc1047).
         let angles = v.angles;
@@ -898,6 +921,17 @@ mod tests {
 #[cfg(test)]
 mod precision_tests {
     use super::*;
+
+    /// `BreakTouch`'s damage and `CPushable::Move`'s clamp (issue #171): the unrounded length times
+    /// the `double` 0.01, and `max * v / length` with the 2D length unrounded.
+    #[test]
+    fn touch_damage_and_push_clamp_round_as_mp_dll() {
+        let (d, breaks) = touch_damage(f([0x4431_57ba, 0x436e_5bfa, 0x4420_5c36]), 9.8);
+        assert_eq!((d.to_bits(), breaks), (0x411d_b371, true));
+        assert!(!touch_damage([100.0, 0.0, 0.0], 1.5).1);
+        let (v, _) = push_clamp(f([0xc39a_b7b6, 0xc1c5_f546, 0]), f32::from_bits(0x4339_f0b2), true);
+        assert_eq!([v[0].to_bits(), v[1].to_bits()], [0xc339_5939, 0xc16d_2655]);
+    }
 
     fn f(b: [u32; 3]) -> [f32; 3] {
         b.map(f32::from_bits)

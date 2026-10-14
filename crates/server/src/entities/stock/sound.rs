@@ -609,8 +609,11 @@ impl EnvSound {
         if (tr.fInOpen != 0 && tr.fInWater != 0) || tr.flFraction != 1.0 {
             return None;
         }
-        let range = goldsrc::ext::entities::vec::length(goldsrc::ext::entities::vec::sub(a, b));
-        (range <= self.radius).then_some(range)
+        // mp.dll 0x1003bfc5..0x1003c011 (issue #171): the unrounded differences summed `z, y, x`, the
+        // root compared unrounded (`<=`, a NaN is in range) and stored.
+        let d = [0, 1, 2].map(|i| f64::from(a[i]) - f64::from(b[i]));
+        let range = ((d[2] * d[2] + d[1] * d[1]) + d[0] * d[0]).sqrt();
+        shared::pm::not_above87(range, f64::from(self.radius)).then_some(range as f32)
     }
 }
 

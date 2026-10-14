@@ -25,7 +25,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, snd, te_break_model, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use shared::pm::plus_double;
+use shared::pm::{FpuMath, plus_double};
 use std::ffi::CStr;
 
 pub const SF_DOOR_START_OPEN: i32 = 1;
@@ -156,8 +156,12 @@ impl Door {
         self.t.activator = EHandle::new(other);
         // TS: open at least as fast as the toucher is moving.
         let saved = cx.pev().speed;
-        let ospeed = vec::length(other.v().velocity);
-        cx.pev().speed = saved.max(ospeed);
+        // `if (pev->speed < velocity.Length()) pev->speed = velocity.Length()`: the root unrounded
+        // (0x1001742d..0x10017490; a NaN is taken).
+        let ospeed = shared::pm::Msvc::vec_length(other.v().velocity, shared::pm::ORDER_XYZ);
+        if shared::pm::below87(f64::from(saved), ospeed) {
+            cx.pev().speed = ospeed as f32;
+        }
         if self.door_activate(cx) {
             self.t.touch = None;
         }
@@ -210,8 +214,11 @@ impl Door {
                 let av = act.v();
                 let to = vec::sub(av.origin, v.origin);
                 // TS: where the activator is heading, not where it's looking.
-                let next = vec::sub(vec::mad(av.origin, vec::normalize(av.velocity), 10.0), v.origin);
-                if to[0] * next[1] - to[1] * next[0] < 0.0 {
+                let next = vec::sub(vec::mad(av.origin, crate::damage::normalize(av.velocity), 10.0), v.origin);
+                // The inline `Normalize` is `x, y, z` with `1 / len` unrounded, and the sign test runs
+                // on the FPU (0x10017707..0x10017834; issue #171).
+                let [tx, ty, nx, ny] = [to[0], to[1], next[0], next[1]].map(f64::from);
+                if tx * ny - ty * nx < 0.0 {
                     sign = -1.0;
                 }
             }
@@ -428,9 +435,9 @@ impl Door {
         let v = cx.pev();
         let center = vec::add(v.origin, vec::mid(v.mins, v.maxs));
         let from = if info.attacker.is_null() { center } else { info.attacker.v().origin };
-        let dir = vec::normalize(vec::sub(center, from));
         let scale = if info.bits & DMG_TS_SHOTGUN != 0 { 8.0 } else { 1.0 };
-        let vel = vec::scale(dir, info.damage * 2.0 * scale);
+        // `dir * damage * 2 * scale`: the 2 and the scale are exact (issue #171).
+        let vel = push_velocity(center, from, info.damage * 2.0 * scale, true);
         if self.material == mat::GLASS {
             send_glass_debris(center, v.size, [0.0; 3], [0.0; 3], 0, 0.0);
         } else {

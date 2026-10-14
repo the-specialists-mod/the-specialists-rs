@@ -209,6 +209,26 @@ pub fn axis_delta(flags: i32, a: Vec3, b: Vec3) -> f32 {
     axis_value(flags, a) - axis_value(flags, b)
 }
 
+/// `(origin - centre).Normalize() * scale` as mp.dll inlines it in `CFuncRotating::HurtTouch`
+/// (0x10009937..0x100099e9), `CPendulum::Touch` (0x1000a739..0x1000a7f4) and the breakable
+/// door's `CBaseDoor::TraceAttack` debris (0x10016694..0x10016799; issue #171): `dx` stored, `dy`
+/// left on the FPU, `dz` squared as `dz · (float)dz`; the squares summed `(dz², dx²) + dy²`, or
+/// with `dy_first` `(dz², dy²) + dx²`; the root and `1 / len` unrounded. The normalised x stays on
+/// the FPU into `× scale`; y and z are stored first. `(0, 0, 1)` for a zero length.
+pub fn push_velocity(origin: Vec3, center: Vec3, scale: f32, dy_first: bool) -> Vec3 {
+    let dx = f64::from(origin[0] - center[0]);
+    let dy = f64::from(origin[1]) - f64::from(center[1]);
+    let dz = f64::from(origin[2]) - f64::from(center[2]);
+    let dzs = dz * f64::from(dz as f32);
+    let len = if dy_first { ((dzs + dy * dy) + dx * dx).sqrt() } else { ((dzs + dx * dx) + dy * dy).sqrt() };
+    if shared::pm::eq87(len, 0.0) {
+        return [0.0, 0.0, scale];
+    }
+    let inv = 1.0 / len;
+    let (y, z) = ((inv * dy) as f32, (f64::from(dz as f32) * inv) as f32);
+    [(dx * inv * f64::from(scale)) as f32, y * scale, z * scale]
+}
+
 /// `a + dir * k` the way TS's x87 code evaluates it in `CMomentaryDoor::Spawn` (0xb7e38) and
 /// `CMomentaryRotButton::Spawn` (0xa9550): the y and z products are stored as floats before the
 /// add, but the x product stays on the FPU stack, so x is rounded to float only once. `f64` holds
@@ -770,6 +790,27 @@ pub fn global_update_level(name: &CStr, level: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The crush pushes' inline `Normalize() * damage` (issue #171), for both square orders.
+    #[test]
+    fn push_velocity_rounds_as_mp_dll() {
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let v = push_velocity(
+            f([0xc31d_38a2, 0x41d4_4cdf, 0xc29c_0dc6]),
+            f([0x4279_6879, 0x4296_dd47, 0xc382_5762]),
+            f32::from_bits(0x4067_b521),
+            false,
+        );
+        assert_eq!(v.map(f32::to_bits), [0xc02f_93ac, 0xbf1c_63db, 0x4012_0e7f]);
+        let v = push_velocity(
+            f([0x434a_7b40, 0xc310_6339, 0xc31f_66c4]),
+            f([0x4394_b186, 0xc18e_bc34, 0x4349_e07b]),
+            f32::from_bits(0x42bf_96ad),
+            true,
+        );
+        assert_eq!(v.map(f32::to_bits), [0xc1b8_6a2f, 0xc1f5_e571, 0xc2af_80f7]);
+        assert_eq!(push_velocity([1.0; 3], [1.0; 3], 5.0, true), [0.0, 0.0, 5.0]);
+    }
 
     fn table() -> Vec<(String, String, GlobalState)> {
         vec![("a".into(), "map1".into(), GlobalState::On), ("b".into(), "map2".into(), GlobalState::Off)]

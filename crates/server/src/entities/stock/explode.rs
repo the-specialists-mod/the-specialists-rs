@@ -57,6 +57,28 @@ fn slowed(fixed: i32, slow: f32) -> i32 {
     (fixed as f32 / slow) as i32
 }
 
+/// `UTIL_ScreenShake`'s reach (mp.dll 0x10076738..0x10076778; issue #171): `radius > 0` (a NaN
+/// radius shakes everyone), then `(center - origin).Length() < radius` with the unrounded
+/// differences summed `(z² + x²) + y²` and the root unrounded (a NaN length shakes).
+fn shakes(center: Vec3, origin: Vec3, radius: f32) -> bool {
+    use shared::pm::{below87, not_above87};
+    if not_above87(radius, 0.0) {
+        return true;
+    }
+    let d = [0, 1, 2].map(|i| f64::from(center[i]) - f64::from(origin[i]));
+    below87(((d[2] * d[2] + d[0] * d[0]) + d[1] * d[1]).sqrt(), f64::from(radius))
+}
+
+/// `RadiusDamage`'s `flDamage - (vecSpot - tr.vecEndPos).Length() * falloff`, at least 0 (mp.dll
+/// `FUN_100145f0` 0x1001479d..0x100147ed; issue #171): the unrounded differences summed `(z² +
+/// y²) + x²`, the root, the product and the difference on the FPU, rounded once; a negative (or
+/// NaN) result is 0.
+fn falloff_adjusted(dmg: f32, spot: Vec3, end: Vec3, falloff: f32) -> f32 {
+    let d = [0, 1, 2].map(|i| f64::from(end[i]) - f64::from(spot[i]));
+    let adjusted = f64::from(dmg) - ((d[2] * d[2] + d[1] * d[1]) + d[0] * d[0]).sqrt() * f64::from(falloff);
+    if shared::pm::below87(adjusted, 0.0) { 0.0 } else { adjusted as f32 }
+}
+
 /// TS `UTIL_ScreenShake` (0xec978): players on the ground within `radius` (0 = everyone) get a
 /// `ScreenShake`; the fixed-point duration and frequency are divided by their time scale.
 pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32, radius: f32) {
@@ -72,7 +94,7 @@ pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32,
         if v.flags & FL_ONGROUND as i32 == 0 {
             continue;
         }
-        let local = if radius <= 0.0 || vec::length(vec::sub(center, v.origin)) < radius { amplitude } else { 0.0 };
+        let local = if shakes(center, v.origin, radius) { amplitude } else { 0.0 };
         if local != 0.0 {
             let slow = slow_of(p);
             messages::one(Msg::ScreenShake, p)
@@ -375,10 +397,11 @@ pub fn radius_damage(src: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t,
                 tr.vecEndPos = src;
                 tr.flFraction = 0.0;
             }
-            let adjusted = (dmg - vec::length(vec::sub(src, tr.vecEndPos)) * falloff).max(0.0);
+            let adjusted = falloff_adjusted(dmg, src, tr.vecEndPos, falloff);
             if tr.flFraction != 1.0 {
-                // TraceAttack path (0xb3052): direction, impact point and hitgroup are known.
-                let dir = vec::normalize(vec::sub(tr.vecEndPos, src));
+                // TraceAttack path (0xb3052): direction, impact point and hitgroup are known. The
+                // out-of-line `Normalize` (mp.dll 0x10014839; issue #171).
+                let dir = damage::normalize(vec::sub(tr.vecEndPos, src));
                 trace_attack(e, inflictor, attacker, adjusted, bits, dir, &tr);
             } else {
                 // Plain TakeDamage (0xb3090).
@@ -445,6 +468,17 @@ mod tests {
 #[cfg(test)]
 mod precision_tests {
     use super::*;
+
+    /// `RadiusDamage`'s falloff and `UTIL_ScreenShake`'s reach (issue #171).
+    #[test]
+    fn falloff_and_shake_reach_round_as_mp_dll() {
+        let (spot, end) = (f([0x43c4_deef, 0xc349_360b, 0xc30a_cf60]), f([0xc3a7_05a0, 0xc3b1_2628, 0xc3d9_6e1e]));
+        assert_eq!(falloff_adjusted(f32::from_bits(0x4342_fc12), spot, end, f32::from_bits(0x3e1f_3505)).to_bits(), 0x428d_0fd5);
+        assert_eq!(falloff_adjusted(10.0, [0.0; 3], [100.0, 0.0, 0.0], 1.0), 0.0);
+        assert!(shakes([0.0; 3], [100.0, 0.0, 0.0], f32::NAN));
+        assert!(!shakes([0.0; 3], [100.0, 0.0, 0.0], 100.0));
+        assert!(shakes([0.0; 3], [99.0, 0.0, 0.0], 100.0));
+    }
 
     fn f(b: [u32; 3]) -> [f32; 3] {
         b.map(f32::from_bits)

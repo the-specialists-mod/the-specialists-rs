@@ -426,7 +426,7 @@ impl<const ROT: bool> Button<ROT> {
         let md = v.movedir;
         let dist = (md[0] * (v.size[0] - 2.0)).abs() + (md[1] * (v.size[1] - 2.0)).abs() + (md[2] * (v.size[2] - 2.0)).abs() - self.t.lip;
         self.t.pos2 = vec::mad(self.t.pos1, md, dist);
-        if vec::length(vec::sub(self.t.pos2, self.t.pos1)) < 1.0 || v.spawnflags & SF_BUTTON_DONTMOVE != 0 {
+        if button_short(self.t.pos2, self.t.pos1) || v.spawnflags & SF_BUTTON_DONTMOVE != 0 {
             self.t.pos2 = self.t.pos1;
         }
         self.stay_pushed = self.t.wait == -1.0;
@@ -564,6 +564,14 @@ pub const SF_MOMENTARY_DOOR: i32 = 1;
 /// `CBaseToggle::AxisDelta(flags, a, b) / m_flMoveDistance` as TS computes it (`Use` 0xa9850,
 /// `Return` 0xa9cb0): the long-double difference divided by the float distance, rounded to float
 /// once. A zero distance gives ±inf or NaN, as in TS.
+/// `CBaseButton::Spawn`'s `(m_vecPosition2 - m_vecPosition1).Length() < 1` (0x1000bd8a..
+/// 0x1000bdbb; issue #171): the unrounded differences summed `z, y, x`, the root unrounded; a NaN
+/// counts as short.
+fn button_short(pos2: Vec3, pos1: Vec3) -> bool {
+    let d = [0, 1, 2].map(|i| f64::from(pos2[i]) - f64::from(pos1[i]));
+    shared::pm::below87(((d[2] * d[2] + d[1] * d[1]) + d[0] * d[0]).sqrt(), 1.0)
+}
+
 fn axis_fraction(flags: i32, a: Vec3, b: Vec3, distance: f32) -> f32 {
     ((axis_value(flags, a) as f64 - axis_value(flags, b) as f64) / distance as f64) as f32
 }
@@ -1038,6 +1046,16 @@ mod tests {
         // -1 is 0xff; past the short's range the x87 store gives 0x8000, low byte 0.
         assert_eq!((l.locked_sentence_n, l.unlocked_sentence_n), (255, 0));
         assert!(!l.key_value(c"sounds", c"1"));
+    }
+
+    /// `CBaseButton::Spawn`'s `< 1` travel test (issue #171): the unrounded differences, so
+    /// `1 - 2⁻²⁶` of travel (a `float` difference rounds it to 1) stays short; a NaN is short too.
+    #[test]
+    fn button_travel_test() {
+        assert!(button_short([1.0, 0.0, 0.0], [2f32.powi(-26), 0.0, 0.0]));
+        assert_eq!(1.0f32 - 2f32.powi(-26), 1.0);
+        assert!(!button_short([1.0, 0.0, 0.0], [0.0; 3]));
+        assert!(button_short([f32::NAN, 0.0, 0.0], [0.0; 3]));
     }
 
     #[test]

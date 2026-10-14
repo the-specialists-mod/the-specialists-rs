@@ -17,7 +17,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use shared::pm::plus_double;
+use shared::pm::{FpuMath, plus_double};
 use std::cell::Cell;
 use std::ffi::CStr;
 
@@ -130,9 +130,49 @@ fn valid(e: *mut edict_t, test: bool) -> *mut edict_t {
 
 fn project(start: *mut edict_t, end: *mut edict_t, org: &mut Vec3, dist: f32) {
     if !start.is_null() && !end.is_null() {
-        let dir = vec::normalize(vec::sub(origin(end), origin(start)));
-        *org = vec::mad(origin(end), dir, dist);
+        *org = project_point(origin(start), origin(end), dist);
     }
+}
+
+/// `CPathTrack::Project`'s `end + (end - start).Normalize() * dist` as mp.dll inlines it
+/// (`FUN_1002d5f0`, 0x1002d618..0x1002d6db; issue #171): `dy` stored, `dx` and `dz` left on the
+/// FPU, the squares summed `(dz² + dy²) + dx²`, the root and `1 / len` unrounded, the direction
+/// stored; then the x product is added unrounded, y's and z's stored first. `(0, 0, 1)` for a
+/// zero length.
+fn project_point(start: Vec3, end: Vec3, dist: f32) -> Vec3 {
+    let dx = f64::from(end[0]) - f64::from(start[0]);
+    let dy = f64::from(end[1] - start[1]);
+    let dz = f64::from(end[2]) - f64::from(start[2]);
+    let len = ((dz * dz + dy * dy) + dx * dx).sqrt();
+    let dir = if shared::pm::eq87(len, 0.0) {
+        [0.0, 0.0, 1.0]
+    } else {
+        let inv = 1.0 / len;
+        [(inv * dx) as f32, (inv * dy) as f32, (dz * inv) as f32]
+    };
+    [(f64::from(dir[0]) * f64::from(dist) + f64::from(end[0])) as f32, dir[1] * dist + end[1], dir[2] * dist + end[2]]
+}
+
+/// `LookAhead`'s step `pos + dir * (dist / length)` (0x1002d95b..0x1002d99c, 0x1002db37..
+/// 0x1002db78): the ratio unrounded; the x and y products stored before the add, z's added
+/// unrounded.
+fn look_ahead_step(pos: Vec3, dir: Vec3, dist: f32, length: f64) -> Vec3 {
+    let r = f64::from(dist) / length;
+    [(f64::from(dir[0]) * r) as f32 + pos[0], (f64::from(dir[1]) * r) as f32 + pos[1], (f64::from(dir[2]) * r + f64::from(pos[2])) as f32]
+}
+
+/// `(a - b).Length()` with the differences on the FPU, summed `(z² + y²) + x²`, the root
+/// unrounded (`NearestPath`, mp.dll 0x10030dde, 0x10030eb4).
+fn len_zyx(a: Vec3, b: Vec3) -> f64 {
+    let d = [0, 1, 2].map(|i| f64::from(a[i]) - f64::from(b[i]));
+    ((d[2] * d[2] + d[1] * d[1]) + d[0] * d[0]).sqrt()
+}
+
+/// `LookAhead`'s `dir.Length()` (0x1002d837..0x1002d86d, 0x1002da33..0x1002da51): the stored
+/// differences summed `(z² + y²) + x²`, unrounded.
+fn look_ahead_length(dir: Vec3) -> f64 {
+    use shared::pm::{FpuMath, Msvc, ORDER_ZYX};
+    Msvc::vec_length(dir, ORDER_ZYX)
 }
 
 /// `CPathTrack::LookAhead`: where `dist` units along the path from `org` lands; returns the
@@ -145,9 +185,10 @@ fn look_ahead(this: *mut edict_t, org: &mut Vec3, dist: f32, mv: bool) -> *mut e
     if dist < 0.0 {
         dist = -dist;
         while dist > 0.0 {
+            // The length stays on the FPU here (a NaN counts as zero).
             let dir = vec::sub(origin(cur), pos);
-            let length = vec::length(dir);
-            if length == 0.0 {
+            let length = look_ahead_length(dir);
+            if shared::pm::eq87(length, 0.0) {
                 if valid(get_prev(cur), mv).is_null() {
                     if !mv {
                         project(get_next(cur), cur, org, dist);
@@ -155,11 +196,11 @@ fn look_ahead(this: *mut edict_t, org: &mut Vec3, dist: f32, mv: bool) -> *mut e
                     return std::ptr::null_mut();
                 }
                 cur = get_prev(cur);
-            } else if length > dist {
-                *org = vec::mad(pos, dir, dist / length);
+            } else if length > f64::from(dist) {
+                *org = look_ahead_step(pos, dir, dist, length);
                 return cur;
             } else {
-                dist -= length;
+                dist = (f64::from(dist) - length) as f32;
                 pos = origin(cur);
                 *org = pos;
                 if valid(get_prev(cur), mv).is_null() {
@@ -178,16 +219,18 @@ fn look_ahead(this: *mut edict_t, org: &mut Vec3, dist: f32, mv: bool) -> *mut e
                 }
                 return std::ptr::null_mut();
             }
+            // Forward, the length is stored (0x1002da51); only the zero test sees it unrounded.
             let dir = vec::sub(origin(next), pos);
-            let length = vec::length(dir);
-            if length == 0.0 && valid(get_next(next), mv).is_null() {
+            let unrounded = look_ahead_length(dir);
+            let length = unrounded as f32;
+            if shared::pm::eq87(unrounded, 0.0) && valid(get_next(next), mv).is_null() {
                 if dist == original {
                     return std::ptr::null_mut();
                 }
                 return cur;
             }
             if length > dist {
-                *org = vec::mad(pos, dir, dist / length);
+                *org = look_ahead_step(pos, dir, dist, f64::from(length));
                 return cur;
             }
             dist -= length;
@@ -363,7 +406,12 @@ pub fn on_controls(train: *mut edict_t, pv: &entvars_t) -> bool {
     }
     let offset = vec::sub(pv.origin, tv.origin);
     let (fwd, right, up) = engine().make_vectors(tv.angles);
-    let local = [vec::dot(offset, fwd), -vec::dot(offset, right), vec::dot(offset, up)];
+    // Each dot summed `(z + y) + x` on the FPU and stored (mp.dll 0x10030ac9..0x10030b1e; issue
+    // #171).
+    let dot = |a: Vec3, b: Vec3| {
+        ((f64::from(a[2]) * f64::from(b[2]) + f64::from(a[1]) * f64::from(b[1])) + f64::from(a[0]) * f64::from(b[0])) as f32
+    };
+    let local = [dot(offset, fwd), -dot(offset, right), dot(offset, up)];
     (0..3).all(|i| local[i] >= mins[i] && local[i] <= maxs[i])
 }
 
@@ -651,7 +699,7 @@ impl TrackTrain {
 
     fn next(&mut self, cx: &mut Cx) {
         let eng = engine();
-        let mut time = 0.5;
+        let time = 0.5;
         if cx.pev().speed == 0.0 {
             let msg = format!("TRAIN({}): Speed is 0\n", s(cx.pev().targetname).to_string_lossy());
             eng.alert(ALERT_TYPE::at_aiconsole, &msg);
@@ -727,14 +775,17 @@ impl TrackTrain {
             let v = cx.pev();
             v.velocity = vec::sub(next_pos, v.origin);
             v.avelocity = [0.0; 3];
-            let distance = vec::length(v.velocity);
+            // mp.dll 0x10030725..0x100307de (issue #171): the length stored, the time and the speed
+            // ratio unrounded (the time added to `ltime` before its one rounding).
+            let distance = shared::pm::Msvc::vec_length(v.velocity, shared::pm::ORDER_XYZ) as f32;
             self.old_speed = v.speed;
             v.speed = 0.0;
             if distance > 0.0 {
-                time = distance / self.old_speed;
-                v.velocity = vec::scale(v.velocity, self.old_speed / distance);
+                let t = f64::from(distance) / f64::from(self.old_speed);
+                let r = f64::from(self.old_speed) / f64::from(distance);
+                v.velocity = v.velocity.map(|c| (r * f64::from(c)) as f32);
                 self.think = TrainThink::DeadEnd;
-                let at = cx.pev().ltime + time;
+                let at = (t + f64::from(cx.pev().ltime)) as f32;
                 Self::next_think(cx, at, false);
             } else {
                 self.dead_end(cx);
@@ -818,9 +869,11 @@ impl TrackTrain {
             }
             let ev = e.v();
             if crate::rules::ts_flags(e) & (FL_CLIENT | FL_MONSTER) as i32 == 0 && is_path(e) {
-                let d = vec::length(vec::sub(org, ev.origin));
-                if d < closest {
-                    closest = d;
+                // mp.dll 0x10030dde..0x10030e12 (issue #171): `z, y, x` of the unrounded differences,
+                // compared unrounded (a NaN is taken) and stored.
+                let d = len_zyx(ev.origin, org);
+                if shared::pm::below87(d, f64::from(closest)) {
+                    closest = d as f32;
                     nearest = e;
                 }
             }
@@ -837,7 +890,8 @@ impl TrackTrain {
         );
         eng.alert(ALERT_TYPE::at_aiconsole, &msg);
         let n = get_next(nearest);
-        if !n.is_null() && vec::length(vec::sub(org, origin(n))) < vec::length(vec::sub(org, origin(nearest))) {
+        // Both `z, y, x` and unrounded; the second from stored differences (0x10030eb4..0x10030f27).
+        if !n.is_null() && len_zyx(org, origin(n)) < shared::pm::Msvc::vec_length(vec::sub(org, origin(nearest)), shared::pm::ORDER_ZYX) {
             nearest = n;
         }
         self.path = EHandle::new(nearest);
@@ -978,7 +1032,8 @@ impl Entity for TrackTrain {
             }
             return;
         }
-        ov.velocity = vec::scale(vec::normalize(vec::sub(ov.origin, v.origin)), v.dmg);
+        // mp.dll 0x1002fd23..0x1002fdd9 (issue #171).
+        ov.velocity = push_velocity(ov.origin, v.origin, v.dmg, false);
         let msg =
             format!("TRAIN({}): Blocked by {} (dmg:{:.2})\n", s(v.targetname).to_string_lossy(), s(ov.classname).to_string_lossy(), v.dmg);
         engine().alert(ALERT_TYPE::at_aiconsole, &msg);
@@ -994,6 +1049,21 @@ impl Entity for TrackTrain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `CPathTrack::Project` and a `LookAhead` step (issue #171).
+    #[test]
+    fn path_steps_round_as_mp_dll() {
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let p = project_point(
+            f([0xc450_0e9f, 0x4492_ee54, 0xc464_d354]),
+            f([0xc419_a54e, 0xc3a6_3049, 0xc3a0_7527]),
+            f32::from_bits(0x434d_59fe),
+        );
+        assert_eq!(p.map(f32::to_bits), [0xc412_d024, 0xc402_6e2a, 0xc376_4689]);
+        let d = f([0xc3e9_a3af, 0xc0cd_f216, 0x43a9_36f3]);
+        let s = look_ahead_step(f([0xc39c_7c46, 0xc4de_2579, 0x44d0_08e0]), d, f32::from_bits(0x4298_6afb), look_ahead_length(d));
+        assert_eq!(s.map(f32::to_bits), [0xc3bb_581e, 0xc4de_40ac, 0x44d5_9f41]);
+    }
 
     #[test]
     fn angles() {

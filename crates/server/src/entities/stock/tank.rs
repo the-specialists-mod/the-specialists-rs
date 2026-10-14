@@ -82,7 +82,10 @@ pub fn on_controls(tank: *mut edict_t, pv: &entvars_t) -> bool {
     else {
         return false;
     };
-    tank.v().spawnflags & SF_TANK_CANCONTROL != 0 && vec::length(vec::sub(use_pos, pv.origin)) < 30.0
+    // `(m_vecControllerUsePos - pevTest->origin).Length() < 30` (mp.dll 0x10020cb0..0x10020ce2;
+    // issue #171): the unrounded differences summed `z, y, x`, a NaN passes.
+    let d = [0, 1, 2].map(|i| f64::from(use_pos[i]) - f64::from(pv.origin[i]));
+    tank.v().spawnflags & SF_TANK_CANCONTROL != 0 && shared::pm::below87(((d[2] * d[2] + d[1] * d[1]) + d[0] * d[0]).sqrt(), 30.0)
 }
 
 /// `UTIL_MakeAimVectors`: pitch is negated for the brush model's angles.
@@ -272,7 +275,7 @@ impl<const K: u8> FuncTank<K> {
             barrel_end = self.barrel_position(cx);
             let tv = target.v();
             let target_pos = vec::add(tv.origin, tv.view_ofs);
-            let range = vec::length(vec::sub(target_pos, barrel_end));
+            let range = length_xzy(target_pos, barrel_end);
             if !self.in_range(range) {
                 return;
             }
@@ -286,7 +289,7 @@ impl<const K: u8> FuncTank<K> {
             }
             direction = vec::sub(self.sight_origin, cx.pev().origin);
             angles = eng.vec_to_angles(direction);
-            self.adjust_angles_for_barrel(&mut angles, vec::length(direction));
+            self.adjust_angles_for_barrel(&mut angles, length_xzy(direction, [0.0; 3]));
         }
         angles[0] = -angles[0];
         angles[1] = self.yaw_center + angle_distance(angles[1], self.yaw_center);
@@ -328,7 +331,7 @@ impl<const K: u8> FuncTank<K> {
         if self.can_fire() && ((dist_x.abs() < self.pitch_tolerance && dist_y.abs() < self.yaw_tolerance) || los) {
             let (forward, _, _) = eng.angle_vectors(cx.pev().angles);
             let fire = if los {
-                let end = vec::mad(barrel_end, forward, vec::length(direction));
+                let end = sight_end(barrel_end, forward, direction);
                 eng.trace_line(barrel_end, end, DONT_IGNORE_MONSTERS, me).pHit == target
             } else {
                 true
@@ -670,6 +673,24 @@ fn is_alive(e: *mut edict_t) -> bool {
 }
 
 /// `CFuncTank::TankTrace` (0xc3c80): a 4096-unit trace along `forward` with spread.
+/// `(a - b).Length()` as `TrackTarget` inlines it (mp.dll `FUN_10021260`; issue #171): the
+/// unrounded differences summed `(x² + z²) + y²`, the root stored as a `float` (the target range,
+/// 0x100214d3, and with `b` = 0 the barrel distance passed to `AdjustAnglesForBarrel`, 0x1002161f).
+fn length_xzy(a: Vec3, b: Vec3) -> f32 {
+    let d = [0, 1, 2].map(|i| f64::from(a[i]) - f64::from(b[i]));
+    ((d[0] * d[0] + d[2] * d[2]) + d[1] * d[1]).sqrt() as f32
+}
+
+/// The line-of-sight trace end `barrelEnd + forward * direction.Length()` (0x10021816..
+/// 0x1002186c): the length `x, y, z` unrounded; the x and y products are stored before the add,
+/// z's is added unrounded.
+fn sight_end(barrel_end: Vec3, forward: Vec3, direction: Vec3) -> Vec3 {
+    use shared::pm::{FpuMath, Msvc, ORDER_XYZ};
+    let len = Msvc::vec_length(direction, ORDER_XYZ);
+    let p = |i: usize| f64::from(forward[i]) * len;
+    [(p(0) as f32) + barrel_end[0], (p(1) as f32) + barrel_end[1], (p(2) + f64::from(barrel_end[2])) as f32]
+}
+
 fn tank_trace(me: *mut edict_t, start: Vec3, forward: Vec3, spread: Vec3, right: Vec3, up: Vec3) -> TraceResult {
     let dir = spread_dir(forward, spread, right, up);
     engine().trace_line(start, vec::mad(start, dir, 4096.0), DONT_IGNORE_MONSTERS, me)
@@ -815,6 +836,20 @@ mod tests {
 #[cfg(test)]
 mod precision_tests {
     use super::*;
+
+    /// `TrackTarget`'s range (`x, z, y`, stored) and line-of-sight end (z added unrounded; issue
+    /// #171). The old `float` steps were 0x4581a40d and a z of 0x4476a653.
+    #[test]
+    fn track_target_lengths_round_as_mp_dll() {
+        let r = length_xzy(f([0x439d_09a4, 0xc4f5_75f7, 0xc4e2_a2ee]), f([0xc49f_8a4e, 0x44e3_9707, 0xc497_bd3a]));
+        assert_eq!(r.to_bits(), 0x4581_a40e);
+        let e = sight_end(
+            f([0xc4a9_3c3b, 0xc4e1_b953, 0x44f3_597c]),
+            f([0x3df4_5c86, 0xbeab_76ee, 0xbf6f_46a4]),
+            f([0x438c_f0ba, 0x4474_b8bd, 0xc305_0134]),
+        );
+        assert_eq!(e.map(f32::to_bits), [0xc499_e9cf, 0xc506_5d44, 0x4476_a654]);
+    }
 
     fn f(b: [u32; 3]) -> [f32; 3] {
         b.map(f32::from_bits)

@@ -383,13 +383,15 @@ pub fn len_f32(a: [f32; 3], order: [usize; 3]) -> f64 {
     len_x87(a.map(|c| c as f64), order)
 }
 
-pub fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    (a[0] as f64 * b[0] as f64 + a[1] as f64 * b[1] as f64 + a[2] as f64 * b[2] as f64) as f32
-}
 /// `Vector::Normalize()` as mp.dll inlines it: `Length()` (unrounded) of the float vector, then
 /// each component times `1 / length`, stored as floats; (0, 0, 1) for a zero vector.
 pub fn normalize(a: [f32; 3]) -> [f32; 3] {
-    let l = len_f32(a, order::XYZ);
+    normalize_in(a, order::XYZ)
+}
+
+/// [`normalize`] with the squares summed in `order`, for a site that inlines it.
+pub fn normalize_in(a: [f32; 3], order: [usize; 3]) -> [f32; 3] {
+    let l = len_f32(a, order);
     if l == 0.0 {
         return [0.0, 0.0, 1.0];
     }
@@ -635,6 +637,10 @@ mod tests {
         let inv = 1.0 / 13.0f64;
         assert_eq!(normalize(v), v.map(|c| (c as f64 * inv) as f32));
         assert_eq!(normalize([0.0; 3]), [0.0, 0.0, 1.0]);
+        // The melee circle's inline Normalize sums `z, y, x` (issue #171).
+        let w = [0.3f32, -0.7, 1.9];
+        let inv = 1.0 / len_f32(w, order::ZYX);
+        assert_eq!(normalize_in(w, order::ZYX), w.map(|c| (c as f64 * inv) as f32));
     }
 
     #[test]

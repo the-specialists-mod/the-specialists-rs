@@ -947,6 +947,29 @@ writes out of bounds, or where the port lacks save/restore:
   has no `float`-constant timer in the stock code). `env_spark`'s random delays round once too,
   in mp.dll's order: `(random + 0.1) + time` in `Spawn` and `SparkStart`, `(random + time) + 0.1`
   in `SparkThink`.
+* **Lengths and normalisations** (issue #171), each checked in mp.dll. The out-of-line
+  `Vector::Length` (0x1000e920) and `Normalize` (0x100148f0, `damage::normalize`) sum `x, y, z`
+  and keep the root and `1 / len` unrounded: `env_beam`'s damage direction, `env_lightning`'s
+  `RandomArea`, `gibshooter`, `RadiusDamage`'s direction, `CBreakable::Use`, `func_door`'s
+  heading. Inline copies pick their own sums and stores: `(a - b).Length()` of unrounded
+  differences, root unrounded, for the button's `< 1`, `env_sound`'s range (stored after the
+  `<=`), the tank's `OnControls`, `trigger_cdaudio`, `UTIL_ScreenShake` (`(z² + x²) + y²`),
+  `NearestPath`, `RadiusDamage`'s falloff (subtracted unrounded, clamped on the unrounded value)
+  and the tank's range and barrel distance (`(x² + z²) + y²`, stored); `env_lightning`'s
+  `RandomPoint` and the head gib sum `z, y, x`; `HurtTouch`, `CPendulum::Touch`, the breakable
+  door's debris and `func_tracktrain`'s `Blocked` push with `dx` stored, `dy` unrounded, `dz` as
+  `dz · (float)dz` and the normalised x kept into the product (`base::push_velocity`); so do
+  `CGib::LimitVelocity` (`Normalize() * 1500`, x kept), the tank's line-of-sight end (z added
+  unrounded), `CPathTrack::Project` and `LookAhead` (unrounded `dist / length`, z added
+  unrounded; the backward walk keeps the length unrounded, the forward one stores it) and
+  `trigger_camera`'s `Move` (one length for the distance and the direction). `HurtTouch`'s
+  `/ 10` is MSVC's `* 0.1f`; `func_tracktrain`'s dead end divides and scales unrounded and adds
+  the time to `ltime` before rounding; its `OnControls` dots sum `z, y, x`. NaN compares follow
+  each site's `test ah` mask. Found with them (issue #173): `CPendulum::Touch`'s damage
+  (`speed · dmg · 0.01` with the `double`), `CPushable::Move` (the `× 0.3` pull and `× 0.1` water
+  push are `double`s, each `velocity +=` adds the unrounded product, the sound gate is
+  `(time - last) > 0.7` with the `double`) and `BeamDamage`'s `(time - dmgtime) · dmg` (unrounded
+  difference).
 * **x87 rounding.** TS evaluates the door's open position, its `Use` destination and distance,
   the wheel's end angles, its position fraction and the `+ 0.1` think times on the x87 stack;
   the port does those steps in `f64` (`mad_x87`, `momentary_door_pos2`, `momentary_door_move`,

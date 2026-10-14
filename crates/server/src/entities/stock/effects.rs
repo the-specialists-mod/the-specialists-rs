@@ -17,7 +17,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, MsgWriterExt, SVC_TEMPENTITY, Vec3, te, te_begin, te_explosion, te_smoke, vec};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, IGNORE_MONSTERS, MsgWriter, engine};
 use goldsrc::sys::*;
-use shared::pm::plus_double;
+use shared::pm::{FpuMath, Msvc, ORDER_XYZ, ORDER_ZYX, plus_double};
 use std::ffi::CStr;
 
 // ---- env_sprite ---------------------------------------------------------------------------------------
@@ -773,9 +773,12 @@ mod beam {
         let v = cx.pev();
         if tr.flFraction != 1.0 && !tr.pHit.is_null() {
             // `pHit->TraceAttack(pev, dmg, dir, tr, DMG_ENERGYBEAM)` (0xba2fb).
-            let mut info = DamageInfo::new(me, me, v.dmg * (now - v.dmgtime), DMG_ENERGYBEAM).traced();
+            // `(time - dmgtime) * dmg` on the FPU and the out-of-line `Normalize` (mp.dll
+            // `FUN_1001a130`, 0x1001a1af..0x1001a1da; issue #171).
+            let amount = ((f64::from(now) - f64::from(v.dmgtime)) * f64::from(v.dmg)) as f32;
+            let mut info = DamageInfo::new(me, me, amount, DMG_ENERGYBEAM).traced();
             info.hitgroup = tr.iHitgroup;
-            info.dir = vec::normalize(vec::sub(tr.vecEndPos, v.origin));
+            info.dir = crate::damage::normalize(vec::sub(tr.vecEndPos, v.origin));
             info.pos = tr.vecEndPos;
             let decals = v.spawnflags & SF_BEAM_DECALS != 0;
             crate::damage::apply(tr.pHit, &info);
@@ -875,6 +878,14 @@ fn life_byte(life: f32) -> i32 {
     (life as f64 * 10.0) as i32
 }
 
+/// `RandomArea`'s `DotProduct(vecDir1, vecDir2)` (0x1001a59e..0x1001a5e5): the products of the
+/// floats summed `(x + y) + z` on the FPU, unrounded.
+fn dot_x87(a: Vec3, b: Vec3) -> f64 {
+    let [ax, ay, az] = a.map(f64::from);
+    let [bx, by, bz] = b.map(f64::from);
+    (ax * bx + ay * by) + az * bz
+}
+
 impl Lightning {
     /// `ServerSide()`: a persistent beam entity rather than repeated temp-entity strikes.
     fn server_side(cx: &mut Cx, life: f32) -> bool {
@@ -909,21 +920,23 @@ impl Lightning {
         for _ in 0..10 {
             let src = cx.pev().origin;
             let rnd = || [eng.random_float(-1.0, 1.0), eng.random_float(-1.0, 1.0), eng.random_float(-1.0, 1.0)];
-            let d1 = vec::normalize(rnd());
+            // mp.dll `FUN_1001a3c0` (issue #171): the out-of-line `Length` in both `Normalize`s, the dot
+            // and the distance on the FPU.
+            let d1 = crate::damage::normalize(rnd());
             let tr1 = eng.trace_line(src, vec::mad(src, d1, self.radius), IGNORE_MONSTERS, me);
             if tr1.flFraction == 1.0 {
                 continue;
             }
             let mut d2 = rnd();
-            while vec::dot(d1, d2) > 0.0 {
+            while dot_x87(d1, d2) > 0.0 {
                 d2 = rnd();
             }
-            let d2 = vec::normalize(d2);
+            let d2 = crate::damage::normalize(d2);
             let tr2 = eng.trace_line(src, vec::mad(src, d2, self.radius), IGNORE_MONSTERS, me);
             if tr2.flFraction == 1.0 {
                 continue;
             }
-            if vec::length(vec::sub(tr1.vecEndPos, tr2.vecEndPos)) < self.radius * 0.1 {
+            if Msvc::vec_length(vec::sub(tr1.vecEndPos, tr2.vecEndPos), ORDER_XYZ) < f64::from(self.radius) * 0.1 {
                 continue;
             }
             let tr3 = eng.trace_line(tr1.vecEndPos, tr2.vecEndPos, IGNORE_MONSTERS, me);
@@ -939,9 +952,11 @@ impl Lightning {
         let eng = engine();
         let me = cx.edict;
         for _ in 0..10 {
-            let d1 = vec::normalize([eng.random_float(-1.0, 1.0), eng.random_float(-1.0, 1.0), eng.random_float(-1.0, 1.0)]);
+            // mp.dll `FUN_1001a810` (issue #171): both lengths sum `z, y, x` unrounded.
+            let d1 =
+                Msvc::vec_normalize([eng.random_float(-1.0, 1.0), eng.random_float(-1.0, 1.0), eng.random_float(-1.0, 1.0)], ORDER_ZYX);
             let tr1 = eng.trace_line(src, vec::mad(src, d1, self.radius), IGNORE_MONSTERS, me);
-            if vec::length(vec::sub(tr1.vecEndPos, src)) < self.radius * 0.1 || tr1.flFraction == 1.0 {
+            if Msvc::vec_length(vec::sub(tr1.vecEndPos, src), ORDER_ZYX) < f64::from(self.radius) * 0.1 || tr1.flFraction == 1.0 {
                 continue;
             }
             self.zap(cx, src, tr1.vecEndPos);
@@ -1519,7 +1534,8 @@ impl<const ENV: bool> GibShooter<ENV> {
             let r = eng.random_float(-1.0, 1.0);
             dir = vec::add(dir, vec::scale(vec::scale(axis, r), self.variance));
         }
-        dir = vec::normalize(dir);
+        // The out-of-line `Normalize` (0x1001bfad; issue #171).
+        dir = crate::damage::normalize(dir);
         let gib = self.create_gib(cx);
         if !gib.is_null() {
             let org = cx.pev().origin;
@@ -1684,9 +1700,7 @@ impl Gib {
     /// `CGib::LimitVelocity` (0xb089c): at most 1500 units/s.
     fn limit_velocity(e: *mut edict_t) {
         let v = e.v();
-        if vec::length(v.velocity) > 1500.0 {
-            v.velocity = vec::scale(vec::normalize(v.velocity), 1500.0);
-        }
+        v.velocity = limited_velocity(v.velocity);
     }
 
     /// The victim-health speed factor shared by the gib spawners.
@@ -1716,7 +1730,8 @@ impl Gib {
             if eng.random_long(0, 100) <= 5 && !player.is_null() {
                 let eye = vec::add(player.v().origin, player.v().view_ofs);
                 let gv = e.v();
-                gv.velocity = vec::scale(vec::normalize(vec::sub(eye, gv.origin)), 300.0);
+                // The inline `Normalize` sums `z, y, x` (mp.dll 0x10012a41; issue #171).
+                gv.velocity = vec::scale(Msvc::vec_normalize(vec::sub(eye, gv.origin), ORDER_ZYX), 300.0);
                 gv.velocity[2] += 100.0;
             } else {
                 let x = eng.random_float(-100.0, 100.0);
@@ -1892,6 +1907,17 @@ impl EnvSpark {
         self.sparking = true;
         cx.pev().nextthink = spark_start_think(engine().time(), engine().random_float(0.0, self.max_delay));
     }
+}
+
+/// `CGib::LimitVelocity` as mp.dll inlines it (`FUN_100127f0`; issue #171): the unrounded
+/// `x, y, z` length against the `double` 1500, then `Normalize() * 1500` with `1 / len`
+/// unrounded, the normalised x kept on the FPU into the product and y, z stored first.
+fn limited_velocity(v: Vec3) -> Vec3 {
+    if shared::pm::not_above87(Msvc::vec_length(v, ORDER_XYZ), 1500.0) {
+        return v;
+    }
+    let [x, y, z] = Msvc::vec_normalize_n(v, ORDER_XYZ);
+    [(x * 1500.0) as f32, (y as f32) * 1500.0, (z as f32) * 1500.0]
 }
 
 /// `CEnvSpark::Spawn` / `SparkStart`'s `gpGlobals->time + (0.1 + RANDOM_FLOAT(...))`: mp.dll adds
@@ -2915,6 +2941,14 @@ impl Entity for ItemSoda {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `CGib::LimitVelocity` (issue #171): the normalised x stays on the FPU into `* 1500`.
+    #[test]
+    fn gib_speed_limit_rounds_as_mp_dll() {
+        let v = [0xc4c4_86cb, 0x4384_b00c, 0xc443_1137].map(f32::from_bits);
+        assert_eq!(limited_velocity(v).map(f32::to_bits), [0xc4a6_10fe, 0x4360_3e80, 0xc424_d550]);
+        assert_eq!(limited_velocity([1000.0, 0.0, 0.0]), [1000.0, 0.0, 0.0]);
+    }
 
     /// env_spark's think times add the `double` 0.1 and round once (issue #169); the old
     /// `(time + 0.1f) + random` in `float` gave 0x3f6e18d4.

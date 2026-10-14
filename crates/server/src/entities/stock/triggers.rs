@@ -759,7 +759,10 @@ impl Entity for TargetCdAudio {
         let org = client.v().origin;
         let v = cx.pev();
         v.nextthink = eng.time() + 0.5;
-        if vec::length(vec::sub(org, v.origin)) <= v.scale {
+        // `(z² + x²) + y²` of the unrounded differences, `<=` (a NaN plays; mp.dll 0x1004128c..
+        // 0x100412ca; issue #171).
+        let d = [0, 1, 2].map(|i| f64::from(org[i]) - f64::from(v.origin[i]));
+        if shared::pm::not_above87(((d[2] * d[2] + d[0] * d[0]) + d[1] * d[1]).sqrt(), f64::from(v.scale)) {
             Self::play(cx);
         }
     }
@@ -1305,7 +1308,8 @@ impl TriggerCamera {
         v.avelocity[1] = dy * 40.0 * ft;
         if v.spawnflags & SF_CAMERA_PLAYER_TAKECONTROL == 0 {
             v.velocity = vec::scale(v.velocity, 0.8);
-            if vec::length(v.velocity) < 10.0 {
+            // The unrounded length against the `double` 10 (a NaN stops; mp.dll 0x10043959..0x10043985).
+            if shared::pm::below87(Msvc::vec_length(v.velocity, ORDER_XYZ), 10.0) {
                 v.velocity = [0.0; 3];
             }
         }
@@ -1342,9 +1346,7 @@ impl TriggerCamera {
                 if nv.speed != 0.0 {
                     self.target_speed = nv.speed;
                 }
-                let delta = vec::sub(nv.origin, v.origin);
-                self.move_distance = vec::length(delta);
-                v.movedir = vec::normalize(delta);
+                (self.move_distance, v.movedir) = camera_path(nv.origin, v.origin);
                 self.stop_time = now + path_delay(next);
             }
         }
@@ -1527,6 +1529,23 @@ impl Entity for InfoIntermission {
         let dir = intermission_dir(t.v().origin, cx.pev().origin);
         cx.pev().v_angle = intermission_angles(eng.vec_to_angles(dir));
     }
+}
+
+/// `CTriggerCamera::Move`'s `m_moveDistance = delta.Length(); movedir = delta.Normalize();` as
+/// mp.dll merges them (`FUN_10043a70`, 0x10043b5a..0x10043bde; issue #171): `dx` left on the FPU,
+/// `dy` stored, `dz` squared as `dz · (float)dz`; the squares summed `(dz², dy²) + dx²`; the
+/// distance is that root stored, the direction its unrounded `1 / len` times each difference.
+fn camera_path(target: [f32; 3], origin: [f32; 3]) -> (f32, [f32; 3]) {
+    let dx = f64::from(target[0]) - f64::from(origin[0]);
+    let dy = f64::from(target[1] - origin[1]);
+    let dz = f64::from(target[2]) - f64::from(origin[2]);
+    let dzs = f64::from(dz as f32);
+    let len = ((dz * dzs + dy * dy) + dx * dx).sqrt();
+    if shared::pm::eq87(len, 0.0) {
+        return (len as f32, [0.0, 0.0, 1.0]);
+    }
+    let inv = 1.0 / len;
+    (len as f32, [(dx * inv) as f32, (dy * inv) as f32, (dzs * inv) as f32])
 }
 
 /// `CInfoIntermission::Think`'s `(target - origin).Normalize()` as mp.dll inlines it
@@ -1766,6 +1785,13 @@ impl Entity for EnvMessage {
 #[cfg(test)]
 mod precision_tests {
     use super::*;
+
+    /// `trigger_camera`'s path distance and direction (issue #171).
+    #[test]
+    fn camera_path_rounds_as_mp_dll() {
+        let (d, dir) = camera_path(f([0xc4f3_6a7f, 0x44a8_bc0b, 0xc470_a55f]), f([0xc484_d5a3, 0x44f7_d28a, 0xc2ed_e456]));
+        assert_eq!((d.to_bits(), dir.map(f32::to_bits)), (0x44ac_0ec7, [0xbf24_87fb, 0xbeeb_586c, 0xbf1c_e73b]));
+    }
 
     fn f(b: [u32; 3]) -> [f32; 3] {
         b.map(f32::from_bits)

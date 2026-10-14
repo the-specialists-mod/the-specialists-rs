@@ -5,7 +5,7 @@
 //! retarget; the cover search caches the enemy's origin instead of its result; and the think
 //! reads the enemy before re-targeting, so the first think after spotting one only selects it.
 
-use super::brain::{Brain, add, bit, btn, diff_x87, gun_position, len_x87, normalize, order, scale, slow, sub};
+use super::brain::{Brain, add, bit, btn, diff_x87, gun_position, len_x87, normalize, normalize_in, order, scale, slow, sub};
 use super::rules::delay;
 use crate::player::Player;
 use crate::weapons::{self, Drop};
@@ -114,11 +114,12 @@ pub fn think(b: &mut Brain, p: &mut Player, cx: &mut Cx) {
         if r as f32 <= p.inv.gun.melee_bar {
             b.goal = eorg; // charge straight in
         } else {
-            // Circle at 128..256 units.
+            // Circle at 128..256 units: `Vector(x, y, dz).Normalize()` inline, the squares summed
+            // `z, y, x` (0x1006c86b..0x1006c886; issue #171).
             let dz = cx.pev().origin[2] - eorg[2];
             let x = eng.random_float(-1.0, 1.0);
             let y = eng.random_float(-1.0, 1.0);
-            let dir = normalize([x, y, dz]);
+            let dir = normalize_in([x, y, dz], order::ZYX);
             b.goal = add(eorg, scale(dir, eng.random_long(128, 256) as f32));
         }
         b.enable(bit::NAVIGATE);

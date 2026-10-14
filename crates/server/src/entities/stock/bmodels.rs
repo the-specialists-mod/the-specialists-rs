@@ -424,11 +424,11 @@ impl Entity for FuncRotating {
         }
         let me = cx.edict;
         let v = cx.pev();
-        v.dmg = vec::length(v.avelocity) / 10.0;
+        v.dmg = rotating_damage(v.avelocity);
         let (d, center) = (v.dmg, bmodel_origin(v));
         crate::damage::apply(other, &DamageInfo::new(me, me, d, dmg::CRUSH));
         let ov = other.v();
-        ov.velocity = vec::scale(vec::normalize(vec::sub(ov.origin, center)), d);
+        ov.velocity = push_velocity(ov.origin, center, d, false);
     }
 
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _kind: UseType, _v: f32) {
@@ -483,6 +483,20 @@ enum PendulumThink {
     UseToggle,
     Swing,
     Stop,
+}
+
+/// `CFuncRotating::HurtTouch`'s `pev->dmg = pev->avelocity.Length() / 10` as mp.dll compiles it
+/// (0x100098eb..0x10009912): the root of `x² + y² + z²` unrounded times the `float` 0.1
+/// (MSVC's rewrite of `/ 10`), stored.
+fn rotating_damage(avelocity: [f32; 3]) -> f32 {
+    use shared::pm::{FpuMath, Msvc, ORDER_XYZ};
+    (Msvc::vec_length(avelocity, ORDER_XYZ) * f64::from(0.1f32)) as f32
+}
+
+/// `CPendulum::Touch`'s `fabs(pev->dmg * pev->speed * 0.01)` (0x1000a6ef..0x1000a718): the
+/// product of the two floats times the `double` 0.01, rounded once.
+fn pendulum_damage(dmg: f32, speed: f32) -> f32 {
+    ((f64::from(speed) * f64::from(dmg)) * 0.01).abs() as f32
 }
 
 /// `func_pendulum` (CPendulum).
@@ -669,17 +683,27 @@ impl Entity for Pendulum {
         if v.dmg <= 0.0 || other.v().takedamage == 0.0 {
             return;
         }
-        let damage = (v.dmg * v.speed * 0.01).abs();
+        let damage = pendulum_damage(v.dmg, v.speed);
         let center = bmodel_origin(v);
         crate::damage::apply(other, &DamageInfo::new(me, me, damage, dmg::CRUSH));
         let ov = other.v();
-        ov.velocity = vec::scale(vec::normalize(vec::sub(ov.origin, center)), damage);
+        ov.velocity = push_velocity(ov.origin, center, damage, true);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `func_rotating`'s crush damage and `func_pendulum`'s (issue #171): the unrounded length
+    /// times the `float` 0.1, and `speed * dmg * 0.01` with the `double`; the old `float` steps
+    /// gave 0x4283674b and 0x3fb2cb49.
+    #[test]
+    fn crush_damage_rounds_as_mp_dll() {
+        let av = [0x43dd_39a3, 0x436f_e609, 0x43d3_2999].map(f32::from_bits);
+        assert_eq!(rotating_damage(av).to_bits(), 0x4283_674c);
+        assert_eq!(pendulum_damage(f32::from_bits(0x40d8_b48e), f32::from_bits(0xc1a5_02e2)).to_bits(), 0x3fb2_cb48);
+    }
 
     #[test]
     fn pendulum_clamp_is_plain_compares() {
