@@ -1004,8 +1004,9 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     set_respawn_time(p, cx, cvars::respawn_time());
     crate::gameplay::active().server.on_killed(p, cx);
 
-    // Headshot death: slow the victim a little unless global slow is on.
-    if p.ts.last_hitgroup == hitgroup::HEAD && !state::with(|g| g.global_slow.active) {
+    // Headshot death: slow the victim a little unless `TSGameRules+0x18` is set (0x7f01e file
+    // address; 2.1's `+0x14`). Nothing sets it outside `Init`, so global slow motion doesn't stop it.
+    if headshot_death_slows(p.ts.last_hitgroup, state::with(|g| g.slow_blocked)) {
         powerup::go_slow_self(p, cx, 0.33, false);
     }
     cx.pev().iuser4 = stunt::DEAD_LOCK;
@@ -1084,6 +1085,13 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
 /// test (about 90 % in all).
 fn killer_blur(close_combat: bool, mut roll: impl FnMut() -> i32) -> bool {
     (close_combat && roll() <= 0x4f) || roll() <= 0x31
+}
+
+/// `CBasePlayer::Killed`'s headshot slow (0x7f00f..0x7f032 file addresses): `m_LastHitGroup ==
+/// HITGROUP_HEAD` and `TSGameRules+0x18` clear (`GameRules::slow_blocked`). Global slow motion
+/// (`+0x560`) isn't read.
+fn headshot_death_slows(last_hitgroup: i32, slow_blocked: bool) -> bool {
+    last_hitgroup == hitgroup::HEAD && !slow_blocked
 }
 
 /// `CBaseMonster::DamageForce` (0xb2d08): `73728 / (size.x · size.y · size.z) · damage · 5`
@@ -1172,7 +1180,18 @@ pub fn send_award(idx: i32, award: u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::{damage_force, death_push, killer_blur, player_is_cheating, respawn_countdown_text, scan_c_int, score_frags};
+    use super::{
+        damage_force, death_push, headshot_death_slows, killer_blur, player_is_cheating, respawn_countdown_text, scan_c_int, score_frags,
+    };
+
+    #[test]
+    fn headshot_deaths_slow_during_global_slow_too() {
+        // Issue #139: only `TSGameRules+0x18` (never set) stops it.
+        use crate::damage::hitgroup;
+        assert!(headshot_death_slows(hitgroup::HEAD, false));
+        assert!(!headshot_death_slows(hitgroup::HEAD, true));
+        assert!(!headshot_death_slows(hitgroup::CHEST, false));
+    }
 
     #[test]
     fn cl_lw_is_read_like_sscanf_i() {
