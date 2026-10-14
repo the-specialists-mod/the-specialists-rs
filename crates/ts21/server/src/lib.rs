@@ -328,6 +328,12 @@ impl ServerRules for Ts21Server {
     fn melee_disarm(&self, damage: f32, victim_is_the_one: bool) -> Option<f32> {
         melee::melee_disarm(damage, victim_is_the_one)
     }
+
+    /// `FUN_1005c680` has no `dmg <= 0` test: a spent delayed hit still runs the team check, the
+    /// block (`FUN_100439e0` / the blade blocks) and the hit sound (0x1005c9f0..0x1005ca99).
+    fn zero_delayed_hit_reaches_player(&self) -> bool {
+        true
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.
@@ -387,5 +393,6 @@ mod tests {
         assert_eq!(v21.stunt_clock().start(10.0, 1.0, 0.5), 10.5);
         assert!(core.bullet_time_allowed(0.99) && !core.bullet_time_allowed(0.995));
         assert!(v21.bullet_time_allowed(0.995) && !v21.bullet_time_allowed(1.0));
+        assert!(!core.zero_delayed_hit_reaches_player() && v21.zero_delayed_hit_reaches_player());
     }
 }

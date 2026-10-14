@@ -265,11 +265,13 @@ fn knockback(attacker: *mut edict_t, victim: *mut edict_t) {
 
 /// The delayed hit of a missed melee attack (`CTSStunt::CheckForBreakables` 0x9bd9c with
 /// `pl+0x79c` open, alive or not): while the window is open, a head-hull trace 32 u ahead (behind
-/// for a negative damage) lands the stored damage, halving it each time.
+/// for a negative damage) lands the stored damage, halving it each time. TS never tests the stored
+/// damage: once it is spent (or a block zeroed it), each new target in reach still takes a
+/// 0-damage hit (`TraceAttack`/`TakeDamage`: blood, pain and damage sounds, a shootable button
+/// pressed) and becomes the last victim (#135).
 pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     let g = &mut p.inv.gun;
-    if g.melee_window == 0.0 || g.melee_damage == 0.0 {
-        p.inv.sv.lunge_victim = std::ptr::null_mut();
+    if g.melee_window == 0.0 {
         return;
     }
     let e = engine();
@@ -294,23 +296,21 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     let bits = if source == 0 { 0x0400_1080 } else { 0x1080 };
     let dmg;
     (dmg, g.melee_damage) = spend_delayed_damage(g.melee_damage);
-    if dmg <= 0.0 {
-        return;
-    }
+    let rules = crate::gameplay::active().server;
     let is_player = crate::rules::has_player(victim);
-    if is_player && same_team(me, victim) {
+    let player_part = delayed_player_part(is_player, dmg, rules.zero_delayed_hit_reaches_player());
+    if player_part && same_team(me, victim) {
         // TS: `friendlyfire 0` and PlayerRelationship == GR_TEAMMATE: no damage, but the
         // victim still counts as hit.
         p.inv.sv.lunge_victim = victim;
         return;
     }
-    if is_player {
+    if player_part {
         let kind = match source {
             0 => MeleeKind::KungFu,
             1 => MeleeKind::Knife,
             _ => MeleeKind::Katana,
         };
-        let rules = crate::gameplay::active().server;
         // Lent for the block, so a ruleset's block can reach the attacker as in a direct hit.
         let atk_block = g.block_kungfu;
         let blocked = crate::world::lend(me, p, || rules.melee_block(kind, me, victim, dmg, atk_block));
@@ -360,6 +360,14 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
     }
 }
 
+/// Whether a delayed hit of `dmg` runs the player part (the team check, the victim's block,
+/// disarm, knockback and the hit sound) before its `TraceAttack`: only on a player, and in TS 3.0
+/// only with some damage (0x8c1f1: `!IsPlayer || dmg <= 0` goes straight to the hit), unless the
+/// ruleset's [`zero_delayed_hit_reaches_player`](crate::gameplay::ServerRules::zero_delayed_hit_reaches_player).
+fn delayed_player_part(is_player: bool, dmg: f32, zero_reaches_player: bool) -> bool {
+    is_player && (dmg > 0.0 || zero_reaches_player)
+}
+
 /// One delayed hit's damage and what stays stored: `|stored|` now, half of it kept, zeroed below 5
 /// with a signed test (0x9c1d6..0x9c1e7, no `fabs`), so a negative (behind) damage is spent after
 /// its first hit.
@@ -382,7 +390,18 @@ fn same_team(me: *mut edict_t, victim: *mut edict_t) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::spend_delayed_damage;
+    use super::{delayed_player_part, spend_delayed_damage};
+
+    /// #135: a spent delayed hit still hits; 3.0 skips only the player part, a ruleset that
+    /// reaches the player runs it with 0 damage.
+    #[test]
+    fn a_spent_delayed_hit_skips_only_the_player_part() {
+        assert!(delayed_player_part(true, 7.5, false));
+        assert!(!delayed_player_part(true, 0.0, false), "3.0: straight to the 0-damage hit");
+        assert!(delayed_player_part(true, 0.0, true));
+        assert!(!delayed_player_part(false, 15.0, true), "not a player");
+        assert!(!crate::gameplay::CORE_PLUGIN.server.zero_delayed_hit_reaches_player());
+    }
 
     #[test]
     fn delayed_damage_halves_and_a_backward_one_is_spent_at_once() {
