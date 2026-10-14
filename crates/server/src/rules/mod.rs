@@ -129,6 +129,14 @@ pub struct PlayerRules {
     // ---- capture the briefcase ---------------------------------------------------------------------
     /// The case this player carries (`s_flag_status` at `+0x7d0`).
     pub flag: Option<crate::entities::ts::ctb::FlagStatus>,
+
+    // ---- objectives ----------------------------------------------------------------------------
+    /// The bomb wires the HUD shows (`+0x78c..+0x78e`) and the last sent (`+0x78f..+0x791`);
+    /// `TSInit` zeroes both.
+    pub wires: [u8; 3],
+    pub wires_sent: [u8; 3],
+    /// The next `CheckForWires` (`+0x794`).
+    pub next_wire_check: f32,
 }
 
 /// The rules' part of `GameDLLInit` (0xc5aa0): the cvars, the server commands, and the

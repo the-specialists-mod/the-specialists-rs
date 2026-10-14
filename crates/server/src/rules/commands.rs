@@ -60,7 +60,7 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
             }
         }
         "fullupdate" => force_client_dll_update(p, cx),
-        c if c.starts_with("cutwire_") => {} // bomb wires: objective modes are dead in 3.0
+        c if c.starts_with("cutwire_") => crate::entities::ts::objective::cut_wire_command(p, cx, &c[8..]),
         // Past `ClientCommand`'s own names, `CHalfLifeMultiplay::ClientCommand` (0xceee8): the voice
         // manager (`vban`/`VModEnable` by `strcasecmp`, the only case-insensitive names), then
         // `menuselect`. `CHalfLifeRules` keeps `CGameRules::ClientCommand`, which takes nothing.

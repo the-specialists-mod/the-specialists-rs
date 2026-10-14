@@ -76,6 +76,8 @@ pub struct GameRules {
     /// `Init`; `InitHUD` then sends them to each joiner. The parameters themselves
     /// (`shared::weapons::table`, TS's `global_weapon_info`) outlive the map.
     pub custom_weapons: bool,
+    /// The objective HUD list and the round's managers (`+0x24c..`, `+0x2d0..`, `+0x554`).
+    pub objectives: crate::entities::ts::objective::Objectives,
     /// `+0x588c`: the fraction kevlar absorbs (`armor_absorb` of a weapons file).
     pub armor_absorb: f32,
     /// `+0x5888`: `health_absorb` of a weapons file; nothing reads it.
@@ -332,6 +334,8 @@ impl GameRules {
         self.custom_weapons = false;
         self.health_absorb = INIT_HEALTH_ABSORB;
         self.armor_absorb = INIT_ARMOR_ABSORB;
+        // `InitObjectives` / `SetObjective`: no managers and an empty list.
+        self.objectives = Default::default();
     }
 
     /// `CTSGameRules::InitTeams`.

@@ -397,8 +397,8 @@ so hooks don't fire. Everything else is `UNSUPPORTED`. Addresses are `ts_i386.so
 | 123 | `TS_GiveSlowMul` | `Void_Void` | | all | nothing: hamsandwich declares it void, so its `max(fuser1, 0.01)` can't be returned |
 | 124 | `TS_GoSlow` | `Void_Float_Int` | all | | `rules::powerup::go_slow` (slow-motion activators, `globalslow`, the slow-motion triggers) |
 | 125 | `TS_InSlow` | `Int_Void` | | all | `rules::powerup::entity_in_slow` |
-| 126 | `TS_IsObjective` | `Int_Void` | | all | true for `ts_wingiver` / `ts_scoregiver` |
-| 127 | `TS_EnableObjective` | `Void_Int` | | all | a wingiver's counter and latch start over; nothing else |
+| 126 | `TS_IsObjective` | `Int_Void` | | all | true for `ts_bomb`, `ts_hack`, `ts_teamescape`, `ts_wingiver` / `ts_scoregiver` |
+| 127 | `TS_EnableObjective` | `Void_Int` | | all | the objective's `EnableObjective(on)` (a giver's counter and latch start over); nothing else |
 | 128 | `TS_OnFreeEntPrivateData` | `Void_Void` | | all | nothing (TS's is empty, 0xac650) |
 | 129 | `TS_ShouldCollide` | `Int_Cbase` | all | | `pfnShouldCollide` |
 

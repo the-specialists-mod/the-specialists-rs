@@ -10,6 +10,7 @@ use crate::damage::glast::Snapshot;
 use crate::entities::stock::items;
 use crate::entities::ts::ground::GroundWeapon;
 use crate::entities::ts::misc::MapFlags;
+use crate::entities::ts::{ctb, objective};
 use crate::messages::Msg;
 use crate::player::Player;
 use crate::player::damage::{self as player_damage, HitDamage, PlayerHit};
@@ -321,6 +322,25 @@ pub trait ServerRules: Sync {
     /// it instead of the class. TS 3.0: the class's.
     fn entity_touch(&self, _ent: &mut dyn Entity, _cx: &mut Cx, _other: *mut edict_t) -> bool {
         false
+    }
+
+    /// The objective system's rules (`ts_objective_ptr`, `ts_bomb`, `ts_hack`, `ts_teamescape`, the
+    /// HUD list, the wires). 3.0: [`objective::CORE`].
+    fn objectives(&self) -> &'static objective::ObjectiveRules {
+        &objective::CORE
+    }
+
+    /// `CTSGameRules::RoundTimeLeft`, which an exploding `ts_bomb` calls. 3.0:
+    /// [`objective::round_time_left_core`] (only while a timed round runs: the manager's
+    /// `targetontimeleft`, else a draw).
+    fn round_time_left(&self, now: f32) {
+        objective::round_time_left_core(now);
+    }
+
+    /// The `TeamWin` of a `ts_wingiver` / `ts_scoregiver` that reached its `callsnumber`. 3.0:
+    /// [`ctb::giver_team_win_core`] (`TeamWin(winnerteam, (int)value, restart, isScore)`).
+    fn giver_team_win(&self, w: &ctb::GiverWin) {
+        ctb::giver_team_win_core(w);
     }
 
     /// How a break throws its debris (`CBreakable::Die` 0x752e0, `CBaseDoor::TraceAttack`

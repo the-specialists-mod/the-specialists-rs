@@ -21,6 +21,7 @@ use ts_server::entities::stock::breakable::{self, FuncBreakable, FuncPushable};
 use ts_server::entities::stock::doors::Door;
 use ts_server::entities::ts::ground::{GroundWeapon, weapon_valid};
 use ts_server::entities::ts::misc::{MapFlags, MapGlobals};
+use ts_server::entities::ts::objective::ObjectivePointer;
 use ts_server::entities::ts::powerup::PowerUp;
 use ts_server::entities::ts::triggers::Trigger;
 use ts_server::player::Player;
@@ -126,14 +127,14 @@ fn key_rule(kind: Kind, key: &[u8]) -> Key {
         (Kind::MapGlobals, b"playerrespawn") => Key::PlayerRespawn,
         (Kind::MapGlobals, b"playeratatime") => Key::PlayerAtATime,
         (Kind::PowerUp, b"pwupmult") => Key::Refused,
-        // Two teams' messages only; 3.0's stub claims every key.
+        // Two teams' messages only.
         (Kind::ObjectivePointer, b"objmsgspec" | b"objmsgmerc") => Key::Class,
         (Kind::ObjectivePointer, _) => Key::Refused,
         _ => Key::Class,
     }
 }
 
-fn kind_of(ent: &mut dyn Entity, cx: &mut Cx) -> Option<Kind> {
+fn kind_of(ent: &mut dyn Entity, _cx: &mut Cx) -> Option<Kind> {
     let any = ent as &mut dyn Any;
     if any.is::<FuncBreakable>() || any.is::<FuncPushable>() {
         Some(Kind::Breakable)
@@ -148,9 +149,7 @@ fn kind_of(ent: &mut dyn Entity, cx: &mut Cx) -> Option<Kind> {
     } else if any.is::<PowerUp>() {
         Some(Kind::PowerUp)
     } else {
-        // 3.0's objective pointer is a stub type it shares; tell it by name.
-        let class = cx.pev().classname;
-        (class != 0 && engine().string(class) == c"ts_objective_ptr").then_some(Kind::ObjectivePointer)
+        any.is::<ObjectivePointer>().then_some(Kind::ObjectivePointer)
     }
 }
 

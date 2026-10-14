@@ -295,6 +295,9 @@ The hooks so far:
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
 | `ServerRules` | `broken_respawn_delay(respawntime)` | `Some(30 s if 0, else the key)` | `entities/stock/breakable.rs` `die`, `doors.rs` (break) |
 | `ServerRules` | `breakable_respawn_guarded()` | true (wait for clients in the box, fire `respawntarget`) | `breakable.rs`, `doors.rs` `breakable_respawn` |
+| `ServerRules` | `objectives()` | `entities::ts::objective::CORE` (`ObjectiveRules`: HUD effect 8, team indexes, the indexed list, givers enabled by pointers, the wire HUD, NaN timers run out, the list cleared outside rounds) | `entities/ts/objective.rs`, `ctb.rs` (the givers' message) |
+| `ServerRules` | `round_time_left(now)` | `objective::round_time_left_core` (timed round: manager's `targetontimeleft`, else a draw) | `objective.rs` `Bomb::think` |
+| `ServerRules` | `giver_team_win(&GiverWin)` | `ctb::giver_team_win_core` (`TeamWin(winnerteam, (int)value, restart, isScore)`) | `ctb.rs` `WinGiver::use_` |
 | `ServerRules` | `break_debris_from_hit()` | true (debris along the last hit, long glass `TSFrags`, attacker's `fuser1` copied) | `breakable.rs` `die`, `doors.rs` (break); false is the SDK's (`g_vecAttackDir × 200` if `explosion directed`, a door's none, 13-byte glass `TSFrags`) |
 | `ServerRules` | `breakable_attack_dir(org, absmin, size)` | `damage::normalize(org - (absmin + size × 0.5))` | `breakable.rs` `take_damage_impl` (`g_vecAttackDir`) |
 | `ServerRules` | `respawn_entities()` | `entities::ts::respawn_entities` | `rules/frame.rs` `restart_round` |

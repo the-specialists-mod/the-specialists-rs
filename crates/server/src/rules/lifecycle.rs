@@ -641,6 +641,8 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     set_respawn_time(p, cx, cvars::respawn_time());
     let idx = cx.index() as usize;
     state::with(|g| g.votes.reset(idx));
+    // In the round modes the objective list again (`SendObjectiveList`).
+    crate::entities::ts::objective::resend_list(cx.edict);
     crate::gameplay::active().server.on_init_hud(p, cx);
 }
 

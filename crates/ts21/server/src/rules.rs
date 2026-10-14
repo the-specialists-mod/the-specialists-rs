@@ -7,6 +7,8 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use shared::protocol::rules::{RoundTime, SrvSett, TeamScore, TsHVoice};
 use std::cell::RefCell;
+use ts_server::entities::ts::ctb::GiverWin;
+use ts_server::entities::ts::objective::{self, ManagerTarget, ObjectiveRules};
 use ts_server::messages::Msg;
 use ts_server::rules::frame::{round_time_byte, x87_max0};
 use ts_server::rules::lifecycle::start_observer;
@@ -186,16 +188,47 @@ pub fn install(g: &mut GameRules) {
     ));
 }
 
-/// `InitObjectives` (0x100449b0) in the round modes: mode 3 when the map has a
-/// `ts_objective_manager`, else mode 2. (Disabling the objectives and `SetObjective` are the
-/// objective entities' part.)
+/// `InitObjectives` (0x100449b0) in the round modes: the map's `ts_objective_manager`s (up to
+/// 32, the round's manager forgotten); mode 3 when there is one, else mode 2. In mode 3 the caller
+/// then disables the objectives ([`disable_objectives`]), outside the rules borrow.
 pub fn init_objectives(g: &mut GameRules) {
     if !matches!(g.mode, Mode::RoundTdm | Mode::Objective) {
         return;
     }
-    let any = !engine().find_by_string(std::ptr::null_mut(), c"classname", c"ts_objective_manager").is_null();
-    g.mode = if any { Mode::Objective } else { Mode::RoundTdm };
+    g.objectives.managers = objective::find_managers();
+    g.objectives.manager = std::ptr::null_mut();
+    g.mode = if g.objectives.managers.is_empty() { Mode::RoundTdm } else { Mode::Objective };
 }
+
+/// The end of `InitObjectives` in mode 3: `EnableObjective(false)` on every `ts_bomb`, `ts_hack`
+/// and `ts_teamescape`, and every `ts_wingiver` counts from 0 again (FUN_10050c90). 2.1 has no
+/// `ts_scoregiver`, so these are all its objectives.
+pub fn disable_objectives() {
+    if state::with(|g| g.mode) == Mode::Objective {
+        objective::disable_all();
+    }
+}
+
+/// 2.1's objective system (the objective entities in `ts_server::entities::ts::objective`).
+pub const OBJECTIVES: ObjectiveRules = ObjectiveRules {
+    // `TSHudMessageAll(0, 255, 0, 1, 30, ...)` (FUN_10050710, `CTSBomb::Use` 0x10051430, ...).
+    hud_effect: 1,
+    // `CanInteract` (FUN_100513d0) and the pointer's text (`CTSObjectivePointer::Use` 0x100508f0)
+    // compare the team's name (`stricmp`); the escape zone counts `TSCountPlayers` by name
+    // (FUN_10064230).
+    team_names: Some([SPECIALISTS, MERCENARY]),
+    // FUN_10046630 appends without a search and keeps no texts; `Freeze` (FUN_10050f10) sends
+    // `DelObj` (FUN_10046690) only when freezing; no `InitHUD` or team-change resend.
+    indexed_list: false,
+    // `CTSObjectivePointer::Use` enables `ts_hack`, `ts_bomb` and `ts_teamescape` by classname.
+    pointer_enables_givers: false,
+    // No `CheckForWires`: the HUD's wires change only with `cutwire_`.
+    wire_hud: false,
+    // `test ah,0x41; jp` (`CTSBomb::WaitThink` 0x1005130a, `CTSHack::WaitThink` 0x10051860).
+    nan_time_runs_out: false,
+    // `SetObjective` (0x10045150) does nothing outside the round modes.
+    clear_list_outside_rounds: false,
+};
 
 /// The `globalslow` part of Think: the cvar (a fraction) clamped to `[0, 2]` with cheats on at
 /// map load, else `[0, 1]`, and 1 means off. Returns the value Think works with.
@@ -313,7 +346,8 @@ fn the_one_check_slots(max_clients: i32) -> std::ops::Range<i32> {
 }
 
 /// The `ts_mapglobals` read at the head of Think, once per `Init`: the weapon mask and, from the
-/// entity, the respawns per round (`playerrespawn`, which the 2.1 `ts_mapglobals` keeps).
+/// first one, the respawns per round in mode 3 (`playerrespawn`, `CTSGameRules+0x54cc`; its
+/// `playeratatime` goes to `+0x54cd`, which nothing reads).
 fn read_mapglobals() {
     if with(|r| std::mem::replace(&mut r.mapglobals_read, true)) {
         return;
@@ -321,9 +355,10 @@ fn read_mapglobals() {
     let found = !engine().find_by_string(std::ptr::null_mut(), c"classname", c"ts_mapglobals").is_null();
     // The port's `ts_mapglobals` has already folded its spawnflags into `base_weapons`.
     let mask = if found { state::with(|g| g.base_weapons) } else { 0x1f };
+    let (per_round, _at_a_time) = crate::entities::map_globals_keys();
     with(|r| {
         r.map_mask = mask;
-        r.respawns_per_round = 0;
+        r.respawns_per_round = per_round as u8;
     });
 }
 
@@ -547,12 +582,38 @@ pub fn send_round_scores() {
     }
 }
 
-/// `CTSGameRules::RoundTimeLeft` (0x100450f0), mode 3's round expiry: the objective manager's
-/// `targetontimeleft`, else a draw. The port's objective managers aren't 2.1's yet (issue #100
-/// item 10), so there is no manager and it is a draw.
+/// `CTSGameRules::RoundTimeLeft` (0x100450f0), mode 3's round expiry and the bomb's explosion:
+/// while the round has an end time, the round manager's `targetontimeleft` (the manager as
+/// activator), else a draw. Think calls it every frame past the end until a `TeamWin` (a win giver
+/// the target fires, usually) ends the round.
 pub fn round_time_left(now: f32) {
-    let lose = cv::cash_for_lose();
-    team_win(2, lose, lose, now);
+    if state::with(|g| g.round_end) == 0.0 {
+        return;
+    }
+    if !objective::fire_manager_target(ManagerTarget::TimeLeft) {
+        let lose = cv::cash_for_lose();
+        team_win(2, lose, lose, now);
+    }
+}
+
+/// The win giver's `TeamWin` (`CTSWinGiver::Use` 0x10050d10): winner 0 or 1, anything else a
+/// draw; the cash is `cashforwin` / `cashforlose`, or the giver's own `victorycash` /
+/// `defeatcash` while the cvar is 0 (`fcomp 0; test ah,0x44; jnp`: a NaN cvar is used), both
+/// truncated; a draw pays the losing amount to both sides. The `Use` value is unused.
+pub fn giver_team_win(w: &GiverWin, now: f32) {
+    let (team, win, lose) = giver_cash(w, cvars::f(c"cashforwin"), cvars::f(c"cashforlose"));
+    team_win(team, win, lose, now);
+}
+
+/// [`giver_team_win`]'s `TeamWin(team, win, lose)` arguments for the cvars `cashforwin` and
+/// `cashforlose`.
+pub fn giver_cash(w: &GiverWin, cash_for_win: f32, cash_for_lose: f32) -> (i32, i32, i32) {
+    let pick = |cvar: f32, own: i32| if cvar == 0.0 { own } else { cv::trunc(cvar) };
+    let lose = pick(cash_for_lose, w.defeat_cash);
+    match w.team {
+        0 | 1 => (w.team, pick(cash_for_win, w.victory_cash), lose),
+        _ => (2, lose, lose),
+    }
 }
 
 /// `CTSGameRules::ResetRestartRound(n)` (0x10044ba0), from the `restartround` cvar: in the round
@@ -616,7 +677,10 @@ pub fn restart_round(now: f32) {
         set_spawn_classes(g, swapped);
         init_objectives(g);
     });
+    disable_objectives();
+    // `SetObjective` (0x10045150): the list cleared, a random manager's `Reset`.
     let mode = state::with(|g| g.mode);
+    objective::set_objective(matches!(mode, Mode::RoundTdm | Mode::Objective));
     if mode == Mode::RoundTdm {
         ts_message_all([0, 0, 0], 1, 30, "Defeat the opposite team!");
     }
@@ -654,8 +718,9 @@ pub fn restart_round(now: f32) {
 /// * LMS (DM with `lastmanstanding` on): one left of two or more wins 10 frags and the round; one
 ///   left alone waits for others; with the round time up or under two players, "Round over".
 /// * Mode 2: a side with nobody left loses (`TeamWin`), both empty is a draw.
-/// * Mode 3: the objective manager's `targetonspecdead`/`targetonmercdead`; with nobody left a
-///   draw. Without a manager (the port's aren't 2.1's yet) nothing happens, as in 2.1.
+/// * Mode 3: with Mercenaries but no Specialists standing the round manager's
+///   `targetonspecdead`; with Specialists but no Mercenaries its `targetonmercdead`; with nobody
+///   a draw. Without a manager nothing happens.
 pub fn check_deads(now: f32) {
     let (restart, mode, round_end) = state::with(|g| {
         g.check_deads_at = 0.0;
@@ -705,10 +770,16 @@ pub fn check_deads(now: f32) {
     }
     let (win, lose) = (cv::cash_for_win(), cv::cash_for_lose());
     if mode == Mode::Objective {
-        if !merc && !spec {
-            team_win(2, lose, lose, now);
+        match (spec, merc) {
+            (false, true) => {
+                objective::fire_manager_target(ManagerTarget::SpecDead);
+            }
+            (true, false) => {
+                objective::fire_manager_target(ManagerTarget::MercDead);
+            }
+            (false, false) => team_win(2, lose, lose, now),
+            (true, true) => {}
         }
-        // The manager's targets: see `round_time_left`.
         return;
     }
     match (spec, merc) {
@@ -722,6 +793,25 @@ pub fn check_deads(now: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn win_giver_cash() {
+        let w = GiverWin { team: 1, value: 7.0, restart: true, is_score: false, victory_cash: 2000, defeat_cash: -500 };
+        assert_eq!(giver_cash(&w, 1500.0, -1000.0), (1, 1500, -1000), "the cvars");
+        assert_eq!(giver_cash(&w, 0.0, 0.0), (1, 2000, -500), "the giver's own while a cvar is 0");
+        assert_eq!(giver_cash(&w, f32::NAN, 0.0), (1, i32::MIN, -500), "a NaN cvar is used");
+        let draw = GiverWin { team: 3, ..w };
+        assert_eq!(giver_cash(&draw, 1500.0, -1000.0), (2, -1000, -1000), "a draw pays the losing amount");
+    }
+
+    #[test]
+    fn objective_rules_are_2_1s() {
+        let r = OBJECTIVES;
+        assert_eq!(r.hud_effect, 1);
+        assert_eq!(r.team_names, Some([SPECIALISTS, MERCENARY]));
+        assert!(!r.indexed_list && !r.pointer_enables_givers && !r.wire_hud);
+        assert!(!r.nan_time_runs_out && !r.clear_list_outside_rounds);
+    }
 
     #[test]
     fn the_one_check_skips_the_last_slot() {

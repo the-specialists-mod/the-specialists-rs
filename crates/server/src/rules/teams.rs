@@ -214,6 +214,8 @@ pub fn change_team(p: &mut Player, cx: &mut Cx, name: &str, kill: bool, gib: boo
     });
     let eng = engine();
     eng.set_client_key(e, "model", &change_team_model(limit, &name, &models, |n| eng.random_long(0, n - 1)));
+    // In the round modes the objective list again (`SendObjectiveList`).
+    crate::entities::ts::objective::resend_list(e);
     eng.set_client_key(e, "team", &name);
     recount(false);
     let idx = cx.index();

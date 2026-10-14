@@ -499,6 +499,10 @@ pub fn restart_round(now: f32) {
         let secs = round_time_byte(x87_max0(end as f64 - now as f64));
         msg::all(Msg::RoundTime, |w| RoundTime { secs, state: 0 }.write(w));
     }
+    // `InitObjectives` and `SetObjective` (0x785d8, 0x790b4): outside the round modes only the
+    // objective list is cleared.
+    let round = state::with(|g| matches!(g.mode, Mode::RoundTdm | Mode::Objective));
+    crate::entities::ts::objective::set_objective(round);
     // `UTIL_PlayerByIndex` and `IsPlayer()`: a player who left (still `iuser1` 0 if it left alive)
     // is put in observer mode as well; see `rules::set_client_maxspeed`.
     for e in super::slot_players() {

@@ -4,7 +4,6 @@
 
 use super::*;
 use crate::entities::stock::{blood, breakable, items};
-use crate::entities::ts::ctb::WinGiver;
 use std::any::TypeId;
 
 /// A set of classes, by Rust type.
@@ -85,7 +84,7 @@ fn is_player(e: *mut edict_t) -> bool {
 }
 
 fn is_objective(ty: TypeId) -> bool {
-    ty == TypeId::of::<WinGiver<false>>() || ty == TypeId::of::<WinGiver<true>>()
+    crate::entities::ts::objective::is_objective(ty, true)
 }
 
 fn classname(e: *mut edict_t) -> &'static CStr {
@@ -451,13 +450,14 @@ pub(crate) static DEFS: &[Def] = &[
         fires: Classes::None,
         exec: Classes::All,
         sig: sig::<(i32,), ()>,
-        // `CTSWinGiver::EnableObjective` resets its call counter and latch; `CBaseEntity`'s
-        // (0xac62c) is empty.
+        // The objectives' `EnableObjective` (`CTSWinGiver`'s resets its call counter and latch);
+        // `CBaseEntity`'s (0xac62c) is empty.
         run: |e, c, _, _| {
+            let (on,) = args(c, (0i32,));
             if !world::type_of(e).is_some_and(is_objective) {
                 return ret(c, Some(()));
             }
-            ret(c, world::dispatch(e, |ent, _| crate::entities::ts::ctb::enable_objective(ent)))
+            ret(c, world::dispatch(e, |ent, cx| crate::entities::ts::objective::enable_objective(ent, cx, on != 0)))
         },
     },
     Def {

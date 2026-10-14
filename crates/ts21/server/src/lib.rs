@@ -254,6 +254,20 @@ impl ServerRules for Ts21Server {
         false
     }
 
+    fn objectives(&self) -> &'static ts_server::entities::ts::objective::ObjectiveRules {
+        &rules::OBJECTIVES
+    }
+
+    /// 2.1's `RoundTimeLeft` (0x100450f0), from the exploding bomb.
+    fn round_time_left(&self, now: f32) {
+        rules::round_time_left(now);
+    }
+
+    /// 2.1's win giver pays the team cash (`CTSWinGiver::Use` 0x10050d10).
+    fn giver_team_win(&self, w: &ts_server::entities::ts::ctb::GiverWin) {
+        rules::giver_team_win(w, goldsrc::server::engine().time());
+    }
+
     /// 2.1's `GoSlow` (0x10055220) clamps the weapon timers on the way back to normal speed.
     fn on_go_slow(&self, p: &mut Player, amount: f32) {
         powerup::on_go_slow(p, amount);
@@ -521,6 +535,8 @@ mod tests {
         let core: &dyn ServerRules = &shared::gameplay::CORE;
         let v21: &dyn ServerRules = &Ts21Server;
         assert!(core.break_debris_from_hit() && !v21.break_debris_from_hit());
+        assert_eq!(core.objectives(), &ts_server::entities::ts::objective::CORE);
+        assert_eq!(v21.objectives(), &rules::OBJECTIVES);
         assert_eq!(v21.anim_framerate(0.05), 0.0, "frozen below a tenth");
         assert_eq!(core.anim_framerate(0.05), 0.05);
         assert_eq!(v21.anim_framerate(1.0), 1.0);
