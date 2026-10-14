@@ -431,9 +431,41 @@ impl ClientRules for Ts21Client {
         HLTV.0.borrow_mut().reset(init);
     }
 
-    /// The deltas' use at the head of `Draw` (`0x1004a8d0`).
-    fn hltv_draw(&self, host: &mut dyn HltvHost) {
-        HLTV.0.borrow().draw(host);
+    /// `Draw` (`0x1004a8d0`): the deltas, then the name tags of the map main mode (issue #181).
+    fn hltv_draw(&self, host: &mut dyn HltvHost) -> bool {
+        let h = HLTV.0.borrow();
+        h.draw(host);
+        h.draw_names(host);
+        true
+    }
+
+    /// 2.1's `V_CalcSpectatorRefdef` mode passes (`0x100b96a0`, issue #181), on the main and
+    /// inset modes. 2.1's `V_CalcRefdef` (`0x100ba6b0`) runs this view only for
+    /// `pparams->spectator` (HLTV); players who observe get 3.0's passes until the port's 2.1
+    /// view follows that dispatch too (issue #183).
+    fn hltv_calc_refdef(&self, host: &mut dyn HltvHost, p: &mut goldsrc::sys::ref_params_t) -> bool {
+        if p.spectator == 0 {
+            return false;
+        }
+        HLTV.0.borrow().calc_refdef(host, p);
+        true
+    }
+
+    /// `DrawOverview` (`0x1004dd10`) draws in the main view only in the map main mode (5).
+    fn hltv_overview_in_main_view(&self) -> bool {
+        HLTV.0.borrow().main == 5
+    }
+
+    /// `UpdateSpectatorPanel` (`0x100af0c0`, `0x100af12d`) numbers an HLTV viewer's line by the
+    /// main mode (`ds:0x102daab4`), not the observer mode.
+    fn hltv_panel_mode(&self) -> Option<i32> {
+        Some(HLTV.0.borrow().main)
+    }
+
+    /// `0x100af194..0x100af1a7`: `fcomp 0.0; test ah, 0x44; jp hide`, so a NaN `nohud` hides the
+    /// panel too (3.0 shows it).
+    fn spectator_panel_shows(&self, nohud: f32) -> bool {
+        nohud == 0.0
     }
 
     /// The weapon element's kung-fu bar (0x1008a0f0, issue #111), 128 wide from `w - 136`: the

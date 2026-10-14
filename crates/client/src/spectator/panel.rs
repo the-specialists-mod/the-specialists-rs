@@ -36,13 +36,15 @@ pub(super) struct Panel {
 
 /// Whether `nohud` lets the panel show (`0x10063912..0x10063925`): `fcomp 0.0` on the float with
 /// `test ah, 0x40`, so only an exact 0, or a NaN (unordered sets C3), shows it (issue #185).
-fn nohud_shows(nohud: f32) -> bool {
+pub(crate) fn nohud_shows(nohud: f32) -> bool {
     nohud == 0.0 || nohud.is_nan()
 }
 
 /// The unlocalised texts of `UpdateSpectatorPanel`: (mode line, help line), or `None` when the
-/// panel is hidden. `name` is the target's name when it is a connected player.
-fn texts(mode: i32, shows: bool, spectate_only: bool, name: Option<&str>) -> (Option<String>, String) {
+/// panel is hidden. `mode` is the number the panel shows (the observer mode in TS 3.0), and the
+/// `#Directed ` prefix follows the observer mode. `name` is the target's name when it is a
+/// connected player.
+fn texts(mode: i32, observer_mode: i32, shows: bool, spectate_only: bool, name: Option<&str>) -> (Option<String>, String) {
     let help = if spectate_only { "#Spec_Only_Help".to_owned() } else { format!("#Spec_TSHelp{mode}") };
     if mode == 0 || !shows {
         return (None, help);
@@ -51,7 +53,7 @@ fn texts(mode: i32, shows: bool, spectate_only: bool, name: Option<&str>) -> (Op
         Some(n) => format!("#Spec_Mode{mode} : {n}"),
         None => format!("#Spec_Mode{mode}"),
     };
-    if mode == shared::ts::obs::LOCKED_VIEW {
+    if observer_mode == shared::ts::obs::LOCKED_VIEW {
         text = format!("#Directed {text}");
     }
     (Some(text), help)
@@ -69,7 +71,11 @@ pub(super) fn update() {
     let name = (target >= 1 && target <= e.max_clients())
         .then(|| crate::hud::saytext::string(&e.player_info(target).name_bytes))
         .filter(|n| !n.is_empty());
-    let (mode_text, help) = texts(mode, nohud_shows(nohud_value), spec::is_spectate_only(), name.as_deref());
+    let rules = crate::gameplay::current();
+    let only = spec::is_spectate_only();
+    // A ruleset may number an HLTV viewer's line by a mode of its own (TS 2.1: its main mode).
+    let number = if only { rules.hltv_panel_mode().unwrap_or(mode) } else { mode };
+    let (mode_text, help) = texts(number, mode, rules.spectator_panel_shows(nohud_value), only, name.as_deref());
     with(|s| {
         let p = &mut s.panel;
         p.key = Some((mode, target, nohud));
@@ -143,12 +149,17 @@ mod tests {
 
     #[test]
     fn panel_texts() {
-        assert_eq!(texts(1, true, false, Some("bob")), (Some("#Spec_Mode1 : bob".into()), "#Spec_TSHelp1".into()));
-        assert_eq!(texts(3, true, false, None), (Some("#Spec_Mode3".into()), "#Spec_TSHelp3".into()));
-        assert_eq!(texts(4, true, true, Some("x")).0.as_deref(), Some("#Directed #Spec_Mode4 : x"));
-        assert_eq!(texts(4, true, true, None).1, "#Spec_Only_Help");
-        assert_eq!(texts(0, true, false, None).0, None, "not observing");
-        assert_eq!(texts(5, false, false, None).0, None, "nohud");
+        assert_eq!(texts(1, 1, true, false, Some("bob")), (Some("#Spec_Mode1 : bob".into()), "#Spec_TSHelp1".into()));
+        assert_eq!(texts(3, 3, true, false, None), (Some("#Spec_Mode3".into()), "#Spec_TSHelp3".into()));
+        assert_eq!(texts(4, 4, true, true, Some("x")).0.as_deref(), Some("#Directed #Spec_Mode4 : x"));
+        assert_eq!(texts(4, 4, true, true, None).1, "#Spec_Only_Help");
+        assert_eq!(texts(0, 0, true, false, None).0, None, "not observing");
+        assert_eq!(texts(5, 5, false, false, None).0, None, "nohud");
+        // A ruleset's own number (2.1's HLTV main mode): the line and the visibility follow it,
+        // `#Directed` the observer mode (2.1's map main mode 5 is observer mode 4).
+        assert_eq!(texts(5, 4, true, true, None).0.as_deref(), Some("#Directed #Spec_Mode5"));
+        assert_eq!(texts(4, 5, true, true, None).0.as_deref(), Some("#Spec_Mode4"));
+        assert_eq!(texts(0, 4, true, true, None).0, None, "main mode 0: hidden");
         // `nohud` is compared as a float (issue #185): 0.5 hides the bar, a NaN shows it.
         assert!(nohud_shows(0.0) && nohud_shows(-0.0) && nohud_shows(f32::NAN));
         assert!(!nohud_shows(0.5) && !nohud_shows(-0.25) && !nohud_shows(1.0));

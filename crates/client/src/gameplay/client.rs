@@ -407,9 +407,36 @@ pub trait ClientRules: Sync {
         let _ = init;
     }
 
-    /// Runs at the start of `CHudSpectator::Draw` each HUD frame. TS 3.0: nothing.
-    fn hltv_draw(&self, host: &mut dyn crate::spectator::HltvHost) {
+    /// Runs at the start of `CHudSpectator::Draw` each HUD frame. Returning true replaces the
+    /// rest of 3.0's `Draw` (`0x10023080`, the HLTV name tags). TS 3.0: nothing, false.
+    fn hltv_draw(&self, host: &mut dyn crate::spectator::HltvHost) -> bool {
         let _ = host;
+        false
+    }
+
+    /// A ruleset's own mode passes of `V_CalcSpectatorRefdef`, after the camera overrides and
+    /// the `cl_vsmoothing` rings: the main view (`nextView == 0`) and the inset window. Returning
+    /// true replaces 3.0's (`0x10068f70`: in-eye, the inset modes and the in-eye gun).
+    fn hltv_calc_refdef(&self, host: &mut dyn crate::spectator::HltvHost, p: &mut goldsrc::sys::ref_params_t) -> bool {
+        let _ = (host, p);
+        false
+    }
+
+    /// Whether `DrawOverview` draws the overview map in the main view (it draws in the inset
+    /// window with inset mode 3 either way). TS 3.0 (`0x10024970`): always.
+    fn hltv_overview_in_main_view(&self) -> bool {
+        true
+    }
+
+    /// The mode number `UpdateSpectatorPanel` shows an HLTV viewer (`#Spec_Mode%d`, and hidden
+    /// at 0). `None`: the observer mode, as TS 3.0 (`0x10063870`).
+    fn hltv_panel_mode(&self) -> Option<i32> {
+        None
+    }
+
+    /// Whether `nohud` lets the spectator panel show. TS 3.0: an exact 0 or a NaN (issue #185).
+    fn spectator_panel_shows(&self, nohud: f32) -> bool {
+        crate::spectator::panel_nohud_shows(nohud)
     }
 
     /// The weapon panel the weapon element draws for a held weapon (not kung fu) while

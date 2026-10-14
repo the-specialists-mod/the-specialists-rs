@@ -357,7 +357,11 @@ The hooks so far:
 | `ClientRules` | `hltv_buttons(host, buttons, down)` | false: 3.0's key tap alone (a ruleset's own key hook gets the `IN_*` bit of `+forward`/`+back`/`+moveleft`/`+moveright`/`+attack`/`+attack2`/`+jump`/`+duck` and the four movement releases through `spectator::HltvHost`) | `input.rs` `key_tap`, `key_release` |
 | `ClientRules` | `hltv_set_modes(host, mode, inset)` | false: 3.0's `SetModes` | `spectator::set_modes` (`specmode`, director reset) |
 | `ClientRules` | `hltv_reset(init)` | nothing | `spectator::init`, `director_event` (`DRC_ACTIVE`) |
-| `ClientRules` | `hltv_draw(host)` | nothing | `spectator::draw_hltv_names` (`CHudSpectator::Draw`) |
+| `ClientRules` | `hltv_draw(host) -> bool` | nothing, false: 3.0's name tags follow | `spectator::draw_hltv_names` (`CHudSpectator::Draw`) |
+| `ClientRules` | `hltv_calc_refdef(host, pparams) -> bool` | false: 3.0's mode passes (in-eye on the observer mode, the inset modes, the in-eye gun) | `spectator::calc_refdef` (`V_CalcSpectatorRefdef`), after the camera overrides and smoothing |
+| `ClientRules` | `hltv_overview_in_main_view()` | true | `spectator::overview::draw` (`DrawOverview`) |
+| `ClientRules` | `hltv_panel_mode()` | `None`: the observer mode | `spectator::panel::update` (`UpdateSpectatorPanel`), HLTV viewers |
+| `ClientRules` | `spectator_panel_shows(nohud)` | `nohud` exactly 0 or NaN (#185) | `spectator::panel::update` |
 | `ClientRules` | `kungfu_exhausted(power)` | `power ≤ 0.01` (empty red frame) | `hud/weapons.rs` `draw_kungfu_bar` |
 | `ClientRules` | `kungfu_regen(r)` | +15 per step (1 while negative), up to 100 | `hud/state.rs` `regen_kungfu` (weapon `Think`) |
 | `ClientRules` | `kungfu_power_on_reset()` | none (only `VidInit` refills the bar) | `hud/state.rs` `reset_weapons` |

@@ -287,6 +287,11 @@ impl Overview {
         (self.map_zoom, self.map_origin, self.map_angles)
     }
 
+    /// The name tags (`+0x96c`), for [`super::HltvHost::name_tags`].
+    pub(super) fn tags(&self) -> &[[f32; 3]] {
+        &self.tags
+    }
+
     pub(super) fn set_map_view(&mut self, zoom: f32, origin: Vec3) {
         self.map_zoom = zoom;
         self.map_origin = origin;
@@ -419,8 +424,10 @@ pub fn draw() {
         return;
     }
     let pip = with(|s| s.pip);
+    // TS 3.0 draws in every main view; a ruleset may limit that (TS 2.1: its map main mode).
+    let main_view = crate::gameplay::current().hltv_overview_in_main_view();
     with(|s| {
-        if s.overview.draw_cycle == 1 && pip != 3 {
+        if (s.overview.draw_cycle == 0 && !main_view) || (s.overview.draw_cycle == 1 && pip != 3) {
             return;
         }
         draw_layer(&s.overview);

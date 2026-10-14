@@ -18,7 +18,7 @@ mod movement;
 mod overview;
 pub(crate) use overview::atof;
 mod panel;
-pub(crate) use panel::height as panel_height;
+pub(crate) use panel::{height as panel_height, nohud_shows as panel_nohud_shows};
 
 pub(crate) use movement::smooth;
 pub use movement::{begin_player_move, spectator_move};
@@ -457,6 +457,10 @@ pub fn calc_refdef(p: &mut ref_params_t) {
         smooth(p);
     }
     with(|s| s.last_origin = p.vieworg);
+    // A ruleset's own mode passes (TS 2.1's HLTV main and inset modes).
+    if crate::gameplay::current().hltv_calc_refdef(&mut EngineHltv, p) {
+        return;
+    }
     if first {
         match mode {
             obs::IN_EYE => in_eye_position(target, &mut p.vieworg, &mut p.viewangles),
@@ -568,10 +572,11 @@ pub fn redraw() {
 }
 
 /// `CHudSpectator::Draw` (`0x10023080`, the HLTV name tags), called from the HUD's element pass
-/// in TS's element order.
+/// in TS's element order. A ruleset's own `Draw` may replace the name tags.
 pub fn draw_hltv_names() {
-    crate::gameplay::current().hltv_draw(&mut EngineHltv);
-    overview::draw_names();
+    if !crate::gameplay::current().hltv_draw(&mut EngineHltv) {
+        overview::draw_names();
+    }
 }
 
 /// What a ruleset's own HLTV spectator controls read and drive
@@ -599,10 +604,15 @@ pub trait HltvHost {
     /// (`curstate.solid`, `+0x2ea`), with a name in the player info.
     fn active_player(&self, index: i32) -> bool;
     fn player_name(&self, index: i32) -> String;
+    /// The player-info name's raw bytes (`g_PlayerInfoList[index].name`, empty without one).
+    fn player_name_bytes(&self, index: i32) -> Vec<u8>;
+    /// The scoreboard team (`g_PlayerExtraInfo[index].teamnumber`).
+    fn player_team(&self, index: i32) -> i32;
     /// An entity's origin and angles (`+0xb48`, `+0xb54`).
     fn entity_camera(&self, index: i32) -> Option<(Vec3, Vec3)>;
-    /// `V_GetInEyePos`: the target's eyes, leaving `org` and `ang` alone for a bad target.
-    fn in_eye_camera(&self, target: i32, org: &mut Vec3, ang: &mut Vec3);
+    /// What `V_GetInEyePos` reads of its target, when it passes the function's tests: an entity
+    /// that is a player (`+0x4`) with a player-info name. `None` leaves the camera alone.
+    fn in_eye_target(&self, target: i32) -> Option<InEyeTarget>;
     /// The last refdef's view origin and angles (`v_origin`, `v_angles`).
     fn view_camera(&self) -> (Vec3, Vec3);
     /// `SetViewAngles(angles)` and the jump flag: the next spectator move puts a roaming camera
@@ -620,6 +630,40 @@ pub trait HltvHost {
     /// The map view's zoom, origin and angles.
     fn map_view(&self) -> (f32, Vec3, Vec3);
     fn set_map_view(&mut self, zoom: f32, origin: Vec3);
+    /// The map view's angles, which the view's map camera sets and the overview draws with.
+    fn set_map_angles(&mut self, angles: Vec3);
+    /// The overview file's inset window in 640×480 units: x, y, width, height.
+    fn overview_inset(&self) -> [i32; 4];
+    /// The HUD's screen size (`ScreenWidth`, `ScreenHeight`).
+    fn screen_size(&self) -> (i32, i32);
+    /// Which view pass the overview draws for: the main view (false) or the inset (true).
+    fn set_inset_pass(&mut self, inset: bool);
+    /// Hides the view model (`model = NULL`).
+    fn clear_view_model(&mut self);
+    /// The name tags' screen positions per player slot (index + 1): x, y, and < 0 for none.
+    fn name_tags(&self) -> Vec<[f32; 3]>;
+    /// `cl_drawnames`.
+    fn draw_names(&self) -> f32;
+    /// `pfnDrawSetTextColor` and `pfnDrawConsoleString`.
+    fn draw_text(&mut self, x: i32, y: i32, color: [f32; 3], text: &[u8]);
+}
+
+/// The fields of a `V_GetInEyePos` target ([`HltvHost::in_eye_target`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InEyeTarget {
+    /// `origin` and `angles` (`+0xb48`, `+0xb54`).
+    pub origin: Vec3,
+    pub angles: Vec3,
+    /// `curstate.solid` (`+0x2ea`) and `curstate.usehull` (`+0x378`).
+    pub solid: i16,
+    pub usehull: i32,
+}
+
+/// The [`InEyeTarget`] of `e` if it passes `V_GetInEyePos`'s tests (both TS builds): a player
+/// entity whose slot has a player-info name.
+fn in_eye_target_of(e: Option<&cl_entity_t>, named: impl FnOnce() -> bool) -> Option<InEyeTarget> {
+    let e = e.filter(|e| e.player != 0).filter(|_| named())?;
+    Some(InEyeTarget { origin: e.origin, angles: e.angles, solid: e.curstate.solid, usehull: e.curstate.usehull })
 }
 
 /// [`HltvHost`] on the engine and this module's state.
@@ -662,11 +706,18 @@ impl HltvHost for EngineHltv {
     fn player_name(&self, index: i32) -> String {
         String::from_utf8_lossy(&engine().player_info(index).name_bytes).into_owned()
     }
+    fn player_name_bytes(&self, index: i32) -> Vec<u8> {
+        engine().player_info(index).name_bytes
+    }
+    fn player_team(&self, index: i32) -> i32 {
+        crate::hud::with(|h| h.players.get(index as usize).map_or(0, |p| p.team))
+    }
     fn entity_camera(&self, index: i32) -> Option<(Vec3, Vec3)> {
         engine().entity(index).map(|e| (e.origin, e.angles))
     }
-    fn in_eye_camera(&self, target: i32, org: &mut Vec3, ang: &mut Vec3) {
-        in_eye_position(target, org, ang);
+    fn in_eye_target(&self, target: i32) -> Option<InEyeTarget> {
+        let e = engine();
+        in_eye_target_of(e.entity(target), || !e.player_info(target).name_bytes.is_empty())
     }
     fn view_camera(&self) -> (Vec3, Vec3) {
         (crate::view::origin(), crate::view::v_angles())
@@ -704,6 +755,33 @@ impl HltvHost for EngineHltv {
     }
     fn set_map_view(&mut self, zoom: f32, origin: Vec3) {
         with(|s| s.overview.set_map_view(zoom, origin));
+    }
+    fn set_map_angles(&mut self, angles: Vec3) {
+        with(|s| s.overview.map_angles = angles);
+    }
+    fn overview_inset(&self) -> [i32; 4] {
+        with(|s| s.overview.data.inset)
+    }
+    fn screen_size(&self) -> (i32, i32) {
+        let sc = crate::hud::screen();
+        (sc.width, sc.height)
+    }
+    fn set_inset_pass(&mut self, inset: bool) {
+        with(|s| s.overview.draw_cycle = inset as i32);
+    }
+    fn clear_view_model(&mut self) {
+        if let Some(vm) = r::view_model() {
+            vm.model = std::ptr::null_mut();
+        }
+    }
+    fn name_tags(&self) -> Vec<[f32; 3]> {
+        with(|s| s.overview.tags().to_vec())
+    }
+    fn draw_names(&self) -> f32 {
+        crate::hud::cvars().drawnames.value()
+    }
+    fn draw_text(&mut self, x: i32, y: i32, color: [f32; 3], text: &[u8]) {
+        engine().draw_console_bytes(x, y, Some(color), text);
     }
 }
 
@@ -856,6 +934,19 @@ mod tests {
         in_eye_from(Some(&e), &mut org, &mut ang);
         assert_eq!(org, [10.0, 20.0, 58.0]);
         assert_eq!(ang, [-std::f32::consts::PI, 90.0, 0.0]);
+    }
+
+    #[test]
+    fn in_eye_target_tests() {
+        // `V_GetInEyePos`'s tests: a player entity with a player-info name; solid isn't one.
+        let mut e = cl_entity_t { origin: [1.0, 2.0, 3.0], angles: [4.0, 5.0, 6.0], player: 1, ..Default::default() };
+        e.curstate.usehull = 1;
+        let t = in_eye_target_of(Some(&e), || true).unwrap();
+        assert_eq!((t.origin, t.angles, t.solid, t.usehull), ([1.0, 2.0, 3.0], [4.0, 5.0, 6.0], 0, 1));
+        assert_eq!(in_eye_target_of(Some(&e), || false), None, "no name");
+        e.player = 0;
+        assert_eq!(in_eye_target_of(Some(&e), || true), None, "not a player");
+        assert_eq!(in_eye_target_of(None, || true), None);
     }
 
     #[test]

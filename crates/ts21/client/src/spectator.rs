@@ -13,11 +13,14 @@
 //! * `FindNextPlayer` (`0x1004b090`) and `SetModes` (`0x1004b530`), also from `specmode` and the
 //!   director reset (`DirectorEvent` `0x1004af10`).
 //!
-//! The engine side is [`HltvHost`] (`ts_client::spectator`); the views the modes select are the
-//! port's (TS 3.0's), see `docs/implementation/ts21.md`.
+//! * `V_CalcSpectatorRefdef` (`0x100b96a0`): the views the main and inset modes select (issue
+//!   #181), `V_GetInEyePos` (`0x100b9510`, issue #184) and `GetMapPosition` (`0x1004c990`).
+//! * The rest of `Draw`: the map-mode name tags.
+//!
+//! The engine side is [`HltvHost`] (`ts_client::spectator`), see `docs/implementation/ts21.md`.
 
 use goldsrc::ext::render::{Vec3, vec3 as v};
-use goldsrc::sys::{IN_ATTACK, IN_ATTACK2, IN_BACK, IN_DUCK, IN_FORWARD, IN_JUMP, IN_MOVELEFT, IN_MOVERIGHT};
+use goldsrc::sys::{IN_ATTACK, IN_ATTACK2, IN_BACK, IN_DUCK, IN_FORWARD, IN_JUMP, IN_MOVELEFT, IN_MOVERIGHT, ref_params_t};
 use ts_client::spectator::HltvHost;
 
 /// 2.1's `CHudSpectator` fields the port's (3.0's) spectator doesn't have, and the camera jump
@@ -191,7 +194,7 @@ impl Hltv {
                     // From in-eye: to the target's eyes (`V_GetInEyePos` `0x100b9510`).
                     if self.main == 4 {
                         let (mut origin, mut angles) = (self.jump_origin, self.jump_angles);
-                        host.in_eye_camera(host.locked_target(), &mut origin, &mut angles);
+                        in_eye_pos(host, host.locked_target(), &mut origin, &mut angles);
                         self.jump(host, origin, angles);
                     }
                     host.set_locked_target(0);
@@ -246,11 +249,135 @@ impl Hltv {
         host.set_map_view(zoom, origin);
     }
 
+    /// The rest of `Draw` (`0x1004aac7..0x1004adbc`): the name tags, only in the map main mode
+    /// (5) and with `cl_drawnames` on (`test ah, 0x44`: a NaN counts as on), after
+    /// `GetAllPlayersInfo` (the port's player info is the engine's, always current). A tag at
+    /// `[2] < 0` is off (a NaN draws). With an inset mode, tags strictly inside the inset window
+    /// are skipped, the window edges `int × (ScreenWidth / 640f)` on the x87 (a NaN position
+    /// draws). The name (`sprintf("%s")`, raw bytes) goes at `ftol(x − strlen × 3)`, `ftol(y)`.
+    pub fn draw_names(&self, host: &mut dyn HltvHost) {
+        if !host.spectate_only() || self.main != 5 || host.draw_names() == 0.0 {
+            return;
+        }
+        let (w, h) = host.screen_size();
+        let (sx, sy) = (w as f64 / 640.0, h as f64 / 480.0);
+        let [ix, iy, iw, ih] = host.overview_inset();
+        for (i, t) in host.name_tags().into_iter().enumerate().take(64) {
+            if t[2] < 0.0 {
+                continue;
+            }
+            let (x, y) = (t[0] as f64, t[1] as f64);
+            if self.inset != 0
+                && ix as f64 * sx < x
+                && iy as f64 * sy < y
+                && x < ix.wrapping_add(iw) as f64 * sx
+                && y < iy.wrapping_add(ih) as f64 * sy
+            {
+                continue;
+            }
+            let index = i as i32 + 1;
+            let name = host.player_name_bytes(index);
+            let color = match host.player_team(index) {
+                1 => [0.4, 0.4, 1.0],
+                2 => [1.0, 0.4, 0.4],
+                _ => [0.8, 0.8, 0.8],
+            };
+            let n = name.len() as i32 * 3;
+            host.draw_text(ftol(x - n as f64), ftol(y), color, &name);
+        }
+    }
+
+    /// The mode passes of `V_CalcSpectatorRefdef` (`0x100b9f95..0x100ba30a`). The view model is
+    /// always hidden (no in-eye gun). The main view follows the main mode, not the observer
+    /// mode: 4 is in-eye of the spectator's own target (`+0x950`), 5 the map (`onlyClientDraw`),
+    /// anything else clears `onlyClientDraw`; any inset mode asks for the inset pass. The inset
+    /// pass takes the overview file's window, each value `ftol(int × (screen / 640f))` on the
+    /// x87, and shows in-eye (2) or the map (3).
+    pub fn calc_refdef(&self, host: &mut dyn HltvHost, p: &mut ref_params_t) {
+        host.clear_view_model();
+        if p.nextView == 0 {
+            match self.main {
+                4 => in_eye_pos(host, host.locked_target(), &mut p.vieworg, &mut p.viewangles),
+                5 => {
+                    p.onlyClientDraw = 1;
+                    map_camera(host, p);
+                }
+                _ => p.onlyClientDraw = 0,
+            }
+            if self.inset != 0 {
+                p.nextView = 1;
+            }
+            host.set_inset_pass(false);
+            return;
+        }
+        let (w, h) = host.screen_size();
+        let (sx, sy) = (w as f64 / 640.0, h as f64 / 480.0);
+        let [x, y, iw, ih] = host.overview_inset();
+        p.viewport = [ftol(x as f64 * sx), ftol(y as f64 * sy), ftol(iw as f64 * sx), ftol(ih as f64 * sy)];
+        p.nextView = 0;
+        p.onlyClientDraw = 0;
+        match self.inset {
+            2 => in_eye_pos(host, host.locked_target(), &mut p.vieworg, &mut p.viewangles),
+            3 => {
+                p.onlyClientDraw = 1;
+                map_camera(host, p);
+            }
+            _ => {}
+        }
+        host.set_inset_pass(true);
+    }
+
     fn jump(&mut self, host: &mut dyn HltvHost, origin: Vec3, angles: Vec3) {
         self.jump_origin = origin;
         self.jump_angles = angles;
         host.jump_camera(origin, angles);
     }
+}
+
+/// `V_GetInEyePos` (`0x100b9510`): the target's origin and angles, the pitch × the `double` −π
+/// (`0x10278b28`); a non-solid target rolls 80 and drops 8, a solid one rises 16 ducked
+/// (`usehull == 1`) or 28. Unlike 3.0's there is no `NO_VIEW` stunt test. A target that fails
+/// the entity tests leaves `org` and `ang` alone.
+pub fn in_eye_pos(host: &dyn HltvHost, target: i32, org: &mut Vec3, ang: &mut Vec3) {
+    let Some(t) = host.in_eye_target(target) else { return };
+    *org = t.origin;
+    *ang = t.angles;
+    ang[0] = (ang[0] as f64 * -std::f64::consts::PI) as f32;
+    if t.solid == 0 {
+        ang[2] = 80.0;
+        org[2] -= 8.0;
+    } else if t.usehull == 1 {
+        org[2] += 16.0;
+    } else {
+        org[2] += 28.0;
+    }
+}
+
+/// The map camera of both passes (`0x100b9fd8..0x100ba0d2`): `cl_viewangles` with the pitch
+/// `pitch / 90f × 38.75f + 51.25f` on the x87, which become the map angles (`+0x964`) and the
+/// view angles, and `GetMapPosition`'s origin.
+fn map_camera(host: &mut dyn HltvHost, p: &mut ref_params_t) {
+    let mut angles = p.cl_viewangles;
+    angles[0] = (angles[0] as f64 / 90.0 * 38.75 + 51.25) as f32;
+    host.set_map_angles(angles);
+    let (zoom, origin, _) = host.map_view();
+    p.vieworg = map_position(zoom, origin, angles);
+    p.viewangles = angles;
+}
+
+/// `GetMapPosition` (`0x1004c990`): the map origin with its height `(90 − pitch) / 90 × z` on the
+/// x87, plus the normalised forward of the map angles scaled by the float `−(4096f / zoom)`.
+pub fn map_position(zoom: f32, origin: Vec3, angles: Vec3) -> Vec3 {
+    let z = ((90.0 - angles[0] as f64) / 90.0 * origin[2] as f64) as f32;
+    let back = scale(normalize(v::angle_vectors(angles).0), -(4096.0 / zoom as f64) as f32);
+    [origin[0] + back[0], origin[1] + back[1], z + back[2]]
+}
+
+/// 2.1's `__ftol` (`0x100bb9e0`): `fistp qword` with truncation, keeping the low dword; NaN and
+/// values beyond the 64-bit range give the indefinite `0x8000000000000000`, so 0.
+pub fn ftol(v: f64) -> i32 {
+    let t = v.trunc();
+    if (-9.223372036854776e18..9.223372036854776e18).contains(&t) { t as i64 as i32 } else { 0 }
 }
 
 /// `VectorNormalize` (`0x100981d0`): the squared length and its root stored as floats, the
@@ -274,6 +401,7 @@ fn scale(a: Vec3, s: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ts_client::spectator::InEyeTarget;
 
     /// An HLTV viewer with players 3 and 7 active, recording what the controls did.
     struct Fake {
@@ -290,6 +418,14 @@ mod tests {
         crosshair: Option<bool>,
         panel: u32,
         map: (f32, Vec3, Vec3),
+        eye: Option<InEyeTarget>,
+        inset_window: [i32; 4],
+        screen: (i32, i32),
+        inset_pass: Option<bool>,
+        view_model_cleared: bool,
+        tags: Vec<[f32; 3]>,
+        drawnames: f32,
+        drawn: Vec<(i32, i32, [f32; 3], Vec<u8>)>,
     }
 
     impl Default for Fake {
@@ -308,6 +444,14 @@ mod tests {
                 crosshair: None,
                 panel: 0,
                 map: (1.0, [0.0; 3], [90.0, 0.0, 0.0]),
+                eye: None,
+                inset_window: [4, 4, 240, 180],
+                screen: (640, 480),
+                inset_pass: None,
+                view_model_cleared: false,
+                tags: Vec::new(),
+                drawnames: 1.0,
+                drawn: Vec::new(),
             }
         }
     }
@@ -346,14 +490,18 @@ mod tests {
         fn player_name(&self, index: i32) -> String {
             format!("p{index}")
         }
+        fn player_name_bytes(&self, index: i32) -> Vec<u8> {
+            format!("p{index}").into_bytes()
+        }
+        fn player_team(&self, index: i32) -> i32 {
+            index % 3
+        }
         fn entity_camera(&self, index: i32) -> Option<(Vec3, Vec3)> {
             Some(([index as f32, 0.0, 0.0], [0.0, index as f32, 0.0]))
         }
-        fn in_eye_camera(&self, target: i32, org: &mut Vec3, ang: &mut Vec3) {
-            if target != 0 {
-                *org = [0.0, 0.0, target as f32];
-                *ang = [1.0, 2.0, 3.0];
-            }
+        fn in_eye_target(&self, target: i32) -> Option<InEyeTarget> {
+            let solid = InEyeTarget { origin: [0.0, 0.0, target as f32], angles: [1.0, 2.0, 3.0], solid: 3, usehull: 0 };
+            self.eye.or((target != 0).then_some(solid))
         }
         fn view_camera(&self) -> (Vec3, Vec3) {
             ([5.0; 3], [6.0; 3])
@@ -382,6 +530,30 @@ mod tests {
         fn set_map_view(&mut self, zoom: f32, origin: Vec3) {
             self.map.0 = zoom;
             self.map.1 = origin;
+        }
+        fn set_map_angles(&mut self, angles: Vec3) {
+            self.map.2 = angles;
+        }
+        fn overview_inset(&self) -> [i32; 4] {
+            self.inset_window
+        }
+        fn screen_size(&self) -> (i32, i32) {
+            self.screen
+        }
+        fn set_inset_pass(&mut self, inset: bool) {
+            self.inset_pass = Some(inset);
+        }
+        fn clear_view_model(&mut self) {
+            self.view_model_cleared = true;
+        }
+        fn name_tags(&self) -> Vec<[f32; 3]> {
+            self.tags.clone()
+        }
+        fn draw_names(&self) -> f32 {
+            self.drawnames
+        }
+        fn draw_text(&mut self, x: i32, y: i32, color: [f32; 3], text: &[u8]) {
+            self.drawn.push((x, y, color, text.to_vec()));
         }
     }
 
@@ -519,8 +691,132 @@ mod tests {
         h.set_modes(&mut f, 4, 0);
         assert_eq!((f.mode, f.locked), (5, 7));
         h.set_modes(&mut f, 3, 0);
-        assert_eq!(f.jumps.last().unwrap(), &([0.0, 0.0, 7.0], [1.0, 2.0, 3.0]));
+        let pitch = (1.0f64 * -std::f64::consts::PI) as f32;
+        assert_eq!(f.jumps.last().unwrap(), &([0.0, 0.0, 7.0 + 28.0], [pitch, 2.0, 3.0]));
         assert_eq!((f.mode, f.locked, f.target), (3, 0, (0, 0)));
+    }
+
+    /// 2.1's `V_GetInEyePos` (`0x100b9510`, issue #184): no `NO_VIEW` stunt test, the pitch ×
+    /// the `double` −π, a bad target leaves the camera alone.
+    #[test]
+    fn in_eye_pos_is_21() {
+        let mut f = Fake::default();
+        let (mut org, mut ang) = ([1.0; 3], [2.0; 3]);
+        in_eye_pos(&f, 0, &mut org, &mut ang);
+        assert_eq!((org, ang), ([1.0; 3], [2.0; 3]), "no target: untouched");
+        let t = InEyeTarget { origin: [10.0, 20.0, 30.0], angles: [0.3, 90.0, 5.0], solid: 3, usehull: 0 };
+        f.eye = Some(t);
+        in_eye_pos(&f, 5, &mut org, &mut ang);
+        let pitch = (0.3f32 as f64 * -std::f64::consts::PI) as f32;
+        assert_eq!((org, ang), ([10.0, 20.0, 58.0], [pitch, 90.0, 5.0]), "standing: +28, whatever the stunt bits");
+        assert_ne!(pitch, 0.3 * -std::f32::consts::PI, "the double −π rounds once");
+        f.eye = Some(InEyeTarget { usehull: 1, ..t });
+        in_eye_pos(&f, 5, &mut org, &mut ang);
+        assert_eq!(org[2], 46.0, "ducked: +16");
+        f.eye = Some(InEyeTarget { solid: 0, ..t });
+        in_eye_pos(&f, 5, &mut org, &mut ang);
+        assert_eq!((org[2], ang[2]), (22.0, 80.0), "not solid: −8, roll 80");
+    }
+
+    /// `V_CalcSpectatorRefdef` (`0x100b96a0`, issue #181): the main view follows 2.1's main
+    /// mode, not the observer mode, and the view model is always hidden.
+    #[test]
+    fn refdef_main_pass_follows_the_main_mode() {
+        let (mut h, mut f) = (Hltv::NEW, Fake { director: (7, 0), ..Fake::default() });
+        let pass = |h: &Hltv, f: &mut Fake| {
+            let mut p = ref_params_t { vieworg: [1.0; 3], viewangles: [2.0; 3], cl_viewangles: [45.0, 30.0, 0.0], ..Default::default() };
+            p.onlyClientDraw = 7;
+            h.calc_refdef(f, &mut p);
+            p
+        };
+        // The locked view (main 2, observer mode 4): the camera stays, onlyClientDraw is cleared.
+        h.set_modes(&mut f, 2, 0);
+        let p = pass(&h, &mut f);
+        assert_eq!((p.vieworg, p.viewangles, p.onlyClientDraw, p.nextView), ([1.0; 3], [2.0; 3], 0, 0));
+        assert!(f.view_model_cleared && f.inset_pass == Some(false));
+        // In-eye (main 4) on the spectator's own target, not `g_iUser2`.
+        h.set_modes(&mut f, 4, 0);
+        f.target = (3, 0);
+        let p = pass(&h, &mut f);
+        assert_eq!((p.vieworg, p.onlyClientDraw), ([0.0, 0.0, 7.0 + 28.0], 7), "in-eye leaves onlyClientDraw");
+        // The map (main 5, observer mode 4 like the locked view): the map camera, client draw only.
+        h.set_modes(&mut f, 5, 0);
+        let p = pass(&h, &mut f);
+        let pitch = (45.0f64 / 90.0 * 38.75 + 51.25) as f32;
+        assert_eq!(f.mode, 4);
+        assert_eq!((p.viewangles, f.map.2, p.onlyClientDraw), ([pitch, 30.0, 0.0], [pitch, 30.0, 0.0], 1));
+        assert_eq!(p.vieworg, map_position(2.5, [100.0, 200.0, 0.0], [pitch, 30.0, 0.0]));
+        // An inset mode asks for the second pass.
+        h.set_modes(&mut f, 5, 1);
+        assert_eq!(pass(&h, &mut f).nextView, 1);
+    }
+
+    /// The inset pass (`0x100ba122..0x100ba300`): the overview window scaled by
+    /// `screen / 640f` on the x87, truncated by 2.1's `__ftol`; 2 in-eye, 3 the map.
+    #[test]
+    fn refdef_inset_pass() {
+        let (mut h, mut f) = (Hltv::NEW, Fake { director: (7, 0), screen: (1366, 768), ..Fake::default() });
+        h.set_modes(&mut f, 2, 0);
+        h.set_modes(&mut f, 2, 3);
+        assert_eq!(h.inset, 3);
+        let mut p = ref_params_t { nextView: 1, onlyClientDraw: 0, cl_viewangles: [0.0; 3], ..Default::default() };
+        f.inset_window = [5, 7, 241, 181];
+        h.calc_refdef(&mut f, &mut p);
+        let (sx, sy) = (1366.0f64 / 640.0, 768.0f64 / 480.0);
+        let want = [(5.0 * sx) as i32, (7.0 * sy) as i32, (241.0 * sx) as i32, (181.0 * sy) as i32];
+        assert_eq!(p.viewport, want);
+        assert_eq!((p.nextView, p.onlyClientDraw, f.inset_pass), (0, 1, Some(true)), "inset 3: the map");
+        assert_eq!(p.viewangles, [51.25, 0.0, 0.0]);
+        // Inset 2: in-eye of the spectator's target (7, from the director).
+        h.set_modes(&mut f, 5, 2);
+        let mut p = ref_params_t { nextView: 1, onlyClientDraw: 1, ..Default::default() };
+        h.calc_refdef(&mut f, &mut p);
+        assert_eq!((p.vieworg, p.onlyClientDraw), ([0.0, 0.0, 35.0], 0));
+        assert_eq!(ftol(f64::NAN), 0);
+        assert_eq!(ftol(3e9), 3_000_000_000u32 as i32, "beyond int: the low dword");
+        assert_eq!(ftol(1e20), 0, "beyond 64 bits: the indefinite's low dword");
+        assert_eq!(ftol(-2.9), -2);
+    }
+
+    /// `GetMapPosition` (`0x1004c990`): `4096 / zoom` back along the map angles, the height
+    /// scaled by the pitch; straight down (90) puts the camera at z 0 over the origin.
+    #[test]
+    fn map_position_is_21() {
+        let p = map_position(2.0, [100.0, 200.0, 50.0], [90.0, 0.0, 0.0]);
+        assert!((p[0] - 100.0).abs() < 1e-3 && (p[1] - 200.0).abs() < 1e-3);
+        assert!((p[2] - 2048.0).abs() < 1e-3);
+        let p = map_position(1.0, [0.0, 0.0, 90.0], [45.0, 0.0, 0.0]);
+        assert!((p[2] - (45.0 + 4096.0 * std::f32::consts::FRAC_1_SQRT_2)).abs() < 1e-2);
+    }
+
+    /// `Draw`'s name tags (`0x1004aac7..`): only in the map main mode with `cl_drawnames`, team
+    /// colours, `x − 3 × strlen`, and none strictly inside the inset window while one shows.
+    #[test]
+    fn name_tags_only_on_the_map() {
+        let (mut h, mut f) = (Hltv::NEW, Fake::default());
+        f.tags = vec![[300.0, 300.0, 1.0], [100.0, 100.0, 1.0], [f32::NAN, 100.0, 0.0], [50.0, 50.0, -1.0]];
+        h.set_modes(&mut f, 2, 0);
+        h.draw_names(&mut f);
+        assert!(f.drawn.is_empty(), "not the map: no tags (3.0 draws them in every mode)");
+        h.set_modes(&mut f, 5, 0);
+        f.drawnames = 0.0;
+        h.draw_names(&mut f);
+        assert!(f.drawn.is_empty(), "cl_drawnames 0");
+        f.drawnames = f32::NAN;
+        h.draw_names(&mut f);
+        let got: Vec<_> = f.drawn.iter().map(|d| (d.0, d.1, d.2)).collect();
+        assert_eq!(got, [(294, 300, [0.4, 0.4, 1.0]), (94, 100, [1.0, 0.4, 0.4]), (0, 100, [0.8; 3])]);
+        assert_eq!(f.drawn[0].3, b"p1");
+        // With an inset the tag at (100, 100) is under the window (4, 4, 240, 180); edges aren't.
+        h.set_modes(&mut f, 5, 1);
+        f.drawn.clear();
+        f.tags = vec![[300.0, 300.0, 1.0], [100.0, 100.0, 1.0], [244.0, 100.0, 1.0], [4.0, 100.0, 1.0]];
+        h.draw_names(&mut f);
+        assert_eq!(f.drawn.iter().map(|d| d.0).collect::<Vec<_>>(), [294, 238, -2]);
+        f.hltv = false;
+        f.drawn.clear();
+        h.draw_names(&mut f);
+        assert!(f.drawn.is_empty(), "players: nothing");
     }
 
     /// TS 3.0 has none of this: its key tap runs, its own `SetModes` runs, `Draw` changes nothing.
@@ -531,9 +827,36 @@ mod tests {
         assert!(!core.hltv_buttons(&mut f, IN_JUMP as i32, true));
         assert!(!core.hltv_buttons(&mut f, IN_FORWARD as i32, false));
         assert!(!core.hltv_set_modes(&mut f, 2, 0));
-        core.hltv_draw(&mut f);
+        f.tags = vec![[300.0, 300.0, 1.0]];
+        assert!(!core.hltv_draw(&mut f), "3.0's own name tags run");
         assert_eq!((f.mode, f.locked, f.inset, f.panel, f.map.0), (0, 0, 0, 0, 1.0));
-        assert!(f.log.is_empty() && f.jumps.is_empty() && f.crosshair.is_none());
+        assert!(f.log.is_empty() && f.jumps.is_empty() && f.crosshair.is_none() && f.drawn.is_empty());
+        // 3.0's spectator view runs its own passes, and the overview draws in every main view.
+        let mut p = ref_params_t { spectator: 1, onlyClientDraw: 5, ..Default::default() };
+        assert!(!core.hltv_calc_refdef(&mut f, &mut p));
+        assert_eq!((p.onlyClientDraw, p.nextView, f.view_model_cleared, f.inset_pass), (5, 0, false, None));
+        assert!(core.hltv_overview_in_main_view());
+        // The panel: the observer mode's number; `nohud` 0 or NaN shows it.
+        assert_eq!(core.hltv_panel_mode(), None);
+        assert!(core.spectator_panel_shows(0.0) && core.spectator_panel_shows(f32::NAN) && !core.spectator_panel_shows(0.5));
+    }
+
+    /// 2.1's rules run 2.1's view only for HLTV (`pparams->spectator`), and draw the overview
+    /// in the main view only on the map main mode.
+    #[test]
+    fn ts21_rules_hltv_view() {
+        let rules = crate::PLUGIN.client;
+        let mut f = Fake::default();
+        let mut p = ref_params_t { onlyClientDraw: 5, ..Default::default() };
+        assert!(!rules.hltv_calc_refdef(&mut f, &mut p), "observing players: 3.0's passes (issue #183)");
+        assert!(!f.view_model_cleared);
+        p.spectator = 1;
+        assert!(rules.hltv_calc_refdef(&mut f, &mut p));
+        assert!(f.view_model_cleared);
+        assert!(!rules.hltv_overview_in_main_view(), "main mode 0");
+        // `UpdateSpectatorPanel` (0x100af0c0): the main mode's number; a NaN `nohud` hides it.
+        assert_eq!(rules.hltv_panel_mode(), Some(0));
+        assert!(rules.spectator_panel_shows(0.0) && !rules.spectator_panel_shows(f32::NAN) && !rules.spectator_panel_shows(0.5));
     }
 
     #[test]
