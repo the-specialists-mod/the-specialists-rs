@@ -19,6 +19,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::ATTN_NORM;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 pub const SF_NORESPAWN: i32 = 1 << 30;
@@ -619,7 +620,7 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         // without the HEV suit bit.
         if self.juice < 1 || activator.v().weapons & WEAPON_SUIT == 0 {
             if self.sound_time <= now {
-                self.sound_time = now + 0.62;
+                self.sound_time = plus_double(now, 0.62);
                 emit_slow(cx.edict, CHAN_ITEM, deny, vol, ATTN_NORM, 0);
             }
             return;
@@ -633,14 +634,14 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         if self.on == 0 {
             self.on = 1;
             emit_slow(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0);
-            self.sound_time = now + 0.56;
+            self.sound_time = plus_double(now, 0.56);
         }
         if self.on == 1 && self.sound_time <= now {
             self.on = 2;
             emit_slow(cx.edict, CHAN_STATIC, charge, vol, ATTN_NORM, 0);
         }
         crate::gameplay::active().server.charger_charge(ARMOR, &mut self.juice, activator);
-        self.next_charge = now + 0.1;
+        self.next_charge = plus_double(now, 0.1);
     }
 }
 

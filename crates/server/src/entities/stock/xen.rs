@@ -13,6 +13,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 crate::entities::link_entities! {
@@ -88,7 +89,7 @@ impl Entity for XenPLight {
         v.solid = SOLID_TRIGGER as i32;
         eng.set_size(cx.edict, [-80.0, -80.0, 0.0], [80.0, 80.0, 32.0]);
         self.anim.set_activity(cx.edict, act::IDLE);
-        cx.pev().nextthink = eng.time() + 0.1;
+        cx.pev().nextthink = plus_double(eng.time(), 0.1);
         cx.pev().frame = eng.random_float(0.0, 255.0);
         let v = cx.pev();
         let org = vec::add(v.origin, [0.0, 0.0, (v.mins[2] + v.maxs[2]) * 0.5]);
@@ -106,7 +107,7 @@ impl Entity for XenPLight {
         let e = cx.edict;
         self.anim.frame_advance(e, 0.0);
         let now = engine().time();
-        cx.pev().nextthink = now + 0.1;
+        cx.pev().nextthink = plus_double(now, 0.1);
         match self.anim.activity {
             act::CROUCH if self.anim.finished => {
                 self.anim.set_activity(e, act::CROUCHIDLE);
@@ -326,7 +327,7 @@ impl Entity for XenTree {
         v.takedamage = DAMAGE_YES as f32;
         eng.set_size(cx.edict, [-30.0, -30.0, 0.0], [30.0, 30.0, 188.0]);
         self.anim.set_activity(cx.edict, act::IDLE);
-        cx.pev().nextthink = eng.time() + 0.1;
+        cx.pev().nextthink = plus_double(eng.time(), 0.1);
         cx.pev().frame = eng.random_float(0.0, 255.0);
         cx.pev().framerate = eng.random_float(0.7, 1.4);
         let (forward, _, _) = eng.angle_vectors(cx.pev().angles);
@@ -348,7 +349,7 @@ impl Entity for XenTree {
     fn think(&mut self, cx: &mut Cx) {
         let eng = engine();
         self.anim.frame_advance(cx.edict, 0.0);
-        cx.pev().nextthink = eng.time() + 0.1;
+        cx.pev().nextthink = plus_double(eng.time(), 0.1);
         for event in self.anim.anim_events(cx.edict) {
             self.handle_anim_event(cx, event);
         }
@@ -448,7 +449,7 @@ impl<const SKIN: i32> Entity for XenSpore<SKIN> {
     /// `CXenSpore::Think` (0xf6994).
     fn think(&mut self, cx: &mut Cx) {
         self.anim.frame_advance(cx.edict, 0.0);
-        cx.pev().nextthink = engine().time() + 0.1;
+        cx.pev().nextthink = plus_double(engine().time(), 0.1);
     }
 
     /// `CXenSpore::TakeDamage` (0xf7180): `Attack()` is empty.

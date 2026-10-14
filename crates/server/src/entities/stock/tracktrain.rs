@@ -17,6 +17,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::cell::Cell;
 use std::ffi::CStr;
 
@@ -797,7 +798,7 @@ impl TrackTrain {
             v.angles[0] = 0.0;
         }
         eng.set_origin(cx.edict, next_pos);
-        let at = cx.pev().ltime + 0.1;
+        let at = plus_double(cx.pev().ltime, 0.1);
         Self::next_think(cx, at, false);
         self.think = TrainThink::Next;
         cx.pev().speed = self.start_speed;
@@ -841,7 +842,7 @@ impl TrackTrain {
         }
         self.path = EHandle::new(nearest);
         if cx.pev().speed != 0.0 {
-            let at = cx.pev().ltime + 0.1;
+            let at = plus_double(cx.pev().ltime, 0.1);
             Self::next_think(cx, at, false);
             self.think = TrainThink::Next;
         }
@@ -886,7 +887,7 @@ impl Entity for TrackTrain {
         self.control_mins = v.mins;
         self.control_maxs = v.maxs;
         self.control_maxs[2] += 72.0;
-        let at = v.ltime + 0.1;
+        let at = plus_double(v.ltime, 0.1);
         Self::next_think(cx, at, false);
         self.think = TrainThink::Find;
         self.precache(cx);
@@ -921,7 +922,7 @@ impl Entity for TrackTrain {
 
     /// `CFuncTrackTrain::OverrideReset` (0xd569c): find the nearest track 0.1 s on.
     fn override_reset(&mut self, cx: &mut Cx) {
-        let at = cx.pev().ltime + 0.1;
+        let at = plus_double(cx.pev().ltime, 0.1);
         Self::next_think(cx, at, false);
         self.think = TrainThink::NearestPath;
     }

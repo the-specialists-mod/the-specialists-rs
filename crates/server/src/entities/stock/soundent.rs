@@ -9,6 +9,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::Vec3;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::cell::Cell;
 
 /// `MAX_WORLD_SOUNDS`.
@@ -174,7 +175,7 @@ impl Entity for SoundEnt {
     fn think(&mut self, cx: &mut Cx) {
         let eng = engine();
         let now = eng.time();
-        cx.pev().nextthink = now + 0.3;
+        cx.pev().nextthink = plus_double(now, 0.3);
         self.list.expire(now);
         if self.show_report {
             let active = self.list.count(self.list.active);

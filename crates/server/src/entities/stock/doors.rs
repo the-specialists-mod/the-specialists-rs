@@ -25,6 +25,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, snd, te_break_model, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 pub const SF_DOOR_START_OPEN: i32 = 1;
@@ -417,7 +418,7 @@ impl Door {
             let threshold = if info.bits & DMG_TS_SHOTGUN != 0 { 30 } else { 50 };
             if r > threshold && self.t.state == ToggleState::AtBottom {
                 self.loosened = true;
-                self.damage_cooldown = now + 0.1;
+                self.damage_cooldown = plus_double(now, 0.1);
                 return;
             }
         }

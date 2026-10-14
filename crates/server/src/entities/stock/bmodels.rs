@@ -9,6 +9,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_IDLE, ATTN_NORM, ATTN_STATIC, snd, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 /// `CFuncWall::Spawn`.
@@ -531,7 +532,7 @@ impl Pendulum {
                 v.avelocity = [0.0; 3];
             }
         } else {
-            v.nextthink = v.ltime + 0.1;
+            v.nextthink = plus_double(v.ltime, 0.1);
             self.time = now;
             self.think = PendulumThink::Swing;
             self.damp_speed = self.max_speed;
@@ -551,7 +552,7 @@ impl Pendulum {
         }
         v.speed = clamp_swing(v.speed, self.max_speed);
         v.avelocity = vec::scale(v.movedir, v.speed);
-        v.nextthink = v.ltime + 0.1;
+        v.nextthink = plus_double(v.ltime, 0.1);
         if self.damp != 0.0 {
             self.damp_speed -= self.damp * self.damp_speed * dt;
             if self.damp_speed < 30.0 {
@@ -600,7 +601,7 @@ impl Entity for Pendulum {
             // `CPendulum::Spawn` (0xa67f0) uses the global time, not `ltime`, although the
             // engine compares a pusher's `nextthink` against `ltime`: the first swing waits that
             // much longer.
-            v.nextthink = engine().time() + 0.1;
+            v.nextthink = plus_double(engine().time(), 0.1);
         }
         v.speed = 0.0;
         self.usable = true;

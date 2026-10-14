@@ -939,10 +939,16 @@ writes out of bounds, or where the port lacks save/restore:
   `CInfoIntermission::Think`'s direction (`dy` unrounded, `dz·(float)dz`); and `PlayerUse`'s
   `UTIL_ClampVectorToBox` (the clamped z unrounded) and view dot (`z, y, x`, unrounded against
   the stored best).
+* **Think timers** (issue #169). The stock entities' `gpGlobals->time + 0.1` (or `pev->ltime +`,
+  `0.05`, `0.2`, `0.3`, the chargers' `0.56` and `0.62`) add the SDK's `double` literal to the
+  `float` time and round once at the store (`shared::pm::plus_double`; checked in mp.dll, which
+  has no `float`-constant timer in the stock code). `env_spark`'s random delays round once too,
+  in mp.dll's order: `(random + 0.1) + time` in `Spawn` and `SparkStart`, `(random + time) + 0.1`
+  in `SparkThink`.
 * **x87 rounding.** TS evaluates the door's open position, its `Use` destination and distance,
   the wheel's end angles, its position fraction and the `+ 0.1` think times on the x87 stack;
   the port does those steps in `f64` (`mad_x87`, `momentary_door_pos2`, `momentary_door_move`,
-  `axis_fraction`, `plus_tenth`), which can still differ from the 80-bit result in the last bit
+  `axis_fraction`, `plus_double`), which can still differ from the 80-bit result in the last bit
   of rare values. NaN compares follow the binary (a NaN `returnspeed` counts as positive; a NaN
   position stops a returning wheel at its start).
 

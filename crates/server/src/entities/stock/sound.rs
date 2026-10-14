@@ -7,6 +7,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_IDLE, ATTN_NORM, ATTN_STATIC, snd};
 use goldsrc::server::{engine, intern};
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 pub const AMBIENT_SOUND_EVERYWHERE: i32 = 1;
@@ -235,7 +236,7 @@ impl AmbientGeneric {
         if self.active {
             let (vol, attn, pitch) = (self.dpv.vol as f32 * 0.01, self.attenuation, self.dpv.pitch);
             self.emit(cx, vol, attn, snd::SPAWNING, pitch);
-            cx.pev().nextthink = eng.time() + 0.1;
+            cx.pev().nextthink = plus_double(eng.time(), 0.1);
         }
     }
 
@@ -395,7 +396,7 @@ impl AmbientGeneric {
             let attn = self.attenuation;
             self.emit(cx, vol as f32 * 0.01, attn, flags, pitch);
         }
-        cx.pev().nextthink = eng.time() + 0.2;
+        cx.pev().nextthink = plus_double(eng.time(), 0.2);
     }
 }
 
@@ -454,7 +455,7 @@ impl Entity for AmbientGeneric {
             // Removed a tenth of a second later (SetThink(SUB_Remove)).
             let o = cx.pev().origin;
             eng.alert(ALERT_TYPE::at_error, &format!("EMPTY AMBIENT AT: {:.6}, {:.6}, {:.6}\n", o[0], o[1], o[2]));
-            cx.pev().nextthink = eng.time() + 0.1;
+            cx.pev().nextthink = plus_double(eng.time(), 0.1);
             self.think = AmbientThink::Remove;
             return;
         }
@@ -533,7 +534,7 @@ impl Entity for AmbientGeneric {
                     d.spinup = d.spinupsav;
                     d.spindown = 0;
                     d.pitchrun = (d.pitchstart + inc * d.cspincount).min(255);
-                    cx.pev().nextthink = now + 0.1;
+                    cx.pev().nextthink = plus_double(now, 0.1);
                 }
             } else {
                 self.active = false;
@@ -544,7 +545,7 @@ impl Entity for AmbientGeneric {
                     d.spinup = 0;
                     d.fadeout = d.fadeoutsav;
                     d.fadein = 0;
-                    cx.pev().nextthink = now + 0.1;
+                    cx.pev().nextthink = plus_double(now, 0.1);
                 } else {
                     self.emit(cx, 0.0, 0.0, snd::STOP, 0);
                 }
@@ -558,7 +559,7 @@ impl Entity for AmbientGeneric {
             self.init_modulation(cx);
             let (vol, attn, pitch) = (self.dpv.vol as f32 * 0.01, self.attenuation, self.dpv.pitch);
             self.emit(cx, vol, attn, 0, pitch);
-            cx.pev().nextthink = now + 0.1;
+            cx.pev().nextthink = plus_double(now, 0.1);
         }
     }
 }
@@ -719,7 +720,7 @@ fn speaker_toggle(nextthink: f32, kind: UseType, now: f32) -> Option<f32> {
     if kind != UseType::Toggle && ((active && kind == UseType::On) || (!active && kind == UseType::Off)) {
         return None;
     }
-    Some(if kind == UseType::On || (kind != UseType::Off && !active) { now + 0.1 } else { 0.0 })
+    Some(if kind == UseType::On || (kind != UseType::Off && !active) { plus_double(now, 0.1) } else { 0.0 })
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -805,7 +806,7 @@ impl Entity for Speaker {
         if self.preset == 0 && s(v.message).is_empty() {
             let o = v.origin;
             eng.alert(ALERT_TYPE::at_error, &format!("SPEAKER with no Level/Sentence! at: {:.6}, {:.6}, {:.6}\n", o[0], o[1], o[2]));
-            v.nextthink = now + 0.1;
+            v.nextthink = plus_double(now, 0.1);
             self.think = SpeakerThink::Remove;
             return;
         }

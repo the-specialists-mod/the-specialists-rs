@@ -17,6 +17,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, MsgWriterExt, SVC_TEMPENTITY, Vec3, te, te_begin, te_explosion, te_smoke, vec};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, IGNORE_MONSTERS, MsgWriter, engine};
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 // ---- env_sprite ---------------------------------------------------------------------------------------
@@ -66,7 +67,7 @@ impl Sprite {
         let now = engine().time();
         let fr = cx.pev().framerate;
         self.animate(cx, fr * (now - self.last_time));
-        cx.pev().nextthink = now + 0.1;
+        cx.pev().nextthink = plus_double(now, 0.1);
         self.last_time = now;
     }
 
@@ -263,7 +264,7 @@ impl Entity for Glow {
         let v = cx.pev();
         self.max_frame = engine().model_frames(v.modelindex) as f32 - 1.0;
         if self.max_frame > 1.0 && v.framerate != 0.0 {
-            v.nextthink = now + 0.1;
+            v.nextthink = plus_double(now, 0.1);
         }
         self.last_time = now;
     }
@@ -274,7 +275,7 @@ impl Entity for Glow {
         if self.max_frame > 0.0 {
             v.frame = (v.frame + v.framerate * (now - self.last_time)) % self.max_frame;
         }
-        v.nextthink = now + 0.1;
+        v.nextthink = plus_double(now, 0.1);
         self.last_time = now;
     }
 }
@@ -548,7 +549,7 @@ impl Entity for EnvExplosion {
         // SetThink(&CEnvExplosion::Smoke) replaces a death think.
         self.smoking = true;
         self.monster.think = super::monsters::MonsterThink::None;
-        cx.pev().nextthink = eng.time() + 0.3;
+        cx.pev().nextthink = plus_double(eng.time(), 0.3);
         if sf & SF_ENVEXPLOSION_NOSPARKS == 0 {
             for _ in 0..eng.random_long(0, 3) {
                 create_entity(c"spark_shower", org, tr.vecPlaneNormal, std::ptr::null_mut());
@@ -606,7 +607,7 @@ impl Entity for Shower {
         v.velocity[2] += if v.velocity[2] >= 0.0 { 200.0 } else { -200.0 };
         v.movetype = MOVETYPE_BOUNCE as i32;
         v.gravity = 0.5;
-        v.nextthink = eng.time() + 0.1;
+        v.nextthink = plus_double(eng.time(), 0.1);
         v.solid = SOLID_NOT as i32;
         eng.set_model(cx.edict, c"models/grenade.mdl");
         eng.set_size(cx.edict, [0.0; 3], [0.0; 3]);
@@ -621,7 +622,7 @@ impl Entity for Shower {
         sparks(v.origin);
         v.speed -= 0.1;
         if v.speed > 0.0 {
-            v.nextthink = engine().time() + 0.1;
+            v.nextthink = plus_double(engine().time(), 0.1);
         } else {
             remove(cx.edict);
         }
@@ -1010,7 +1011,7 @@ impl Lightning {
 
     fn damage_think(&mut self, cx: &mut Cx) {
         let eng = engine();
-        cx.pev().nextthink = eng.time() + 0.1;
+        cx.pev().nextthink = plus_double(eng.time(), 0.1);
         let v = cx.pev();
         let (a, b) = (beam::start_pos(v), beam::end_pos(v));
         let tr = eng.trace_line(a, b, DONT_IGNORE_MONSTERS, std::ptr::null_mut());
@@ -1109,7 +1110,7 @@ impl Entity for Lightning {
             let v = cx.pev();
             if v.dmg > 0.0 {
                 self.mode = BeamThink::Damage;
-                v.nextthink = now + 0.1;
+                v.nextthink = plus_double(now, 0.1);
             }
             // An unnamed beam leaves `m_active` 0 (only `ToggleUse` reads it).
             if v.targetname != 0 {
@@ -1219,7 +1220,7 @@ impl Entity for Lightning {
                     self.mode = BeamThink::None;
                 } else {
                     self.mode = BeamThink::Strike;
-                    cx.pev().nextthink = now + 0.1;
+                    cx.pev().nextthink = plus_double(now, 0.1);
                 }
                 if cx.pev().spawnflags & SF_BEAM_TOGGLE == 0 {
                     self.usable = BeamUse::None;
@@ -1405,7 +1406,7 @@ impl Entity for Laser {
         let org = cx.pev().origin;
         let tr = eng.trace_line(org, self.fire_position, DONT_IGNORE_MONSTERS, std::ptr::null_mut());
         self.fire_at_point(cx, &tr);
-        cx.pev().nextthink = eng.time() + 0.1;
+        cx.pev().nextthink = plus_double(eng.time(), 0.1);
     }
 
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, kind: UseType, _v: f32) {
@@ -1827,17 +1828,17 @@ impl Entity for Gib {
                 }
                 v.solid = SOLID_NOT as i32;
                 v.avelocity = [0.0; 3];
-                v.nextthink = now + 0.1;
+                v.nextthink = plus_double(now, 0.1);
                 self.state = GibState::FadeOut;
             }
             GibState::FadeOut => {
                 let v = cx.pev();
                 if v.renderamt > 7.0 {
                     v.renderamt -= 7.0;
-                    v.nextthink = now + 0.1;
+                    v.nextthink = plus_double(now, 0.1);
                 } else {
                     v.renderamt = 0.0;
-                    v.nextthink = now + 0.2;
+                    v.nextthink = plus_double(now, 0.2);
                     self.state = GibState::Remove;
                 }
             }
@@ -1889,8 +1890,21 @@ pub struct EnvSpark {
 impl EnvSpark {
     fn start(&mut self, cx: &mut Cx) {
         self.sparking = true;
-        cx.pev().nextthink = engine().time() + 0.1 + engine().random_float(0.0, self.max_delay);
+        cx.pev().nextthink = spark_start_think(engine().time(), engine().random_float(0.0, self.max_delay));
     }
+}
+
+/// `CEnvSpark::Spawn` / `SparkStart`'s `gpGlobals->time + (0.1 + RANDOM_FLOAT(...))`: mp.dll adds
+/// the `double` 0.1 to the random `float`, then the time, rounding once at the store (0x1000d241,
+/// 0x1000d4f6).
+fn spark_start_think(time: f32, random: f32) -> f32 {
+    ((f64::from(random) + 0.1) + f64::from(time)) as f32
+}
+
+/// `CEnvSpark::SparkThink`'s `gpGlobals->time + 0.1 + RANDOM_FLOAT(...)`, which mp.dll evaluates
+/// as `(random + time) + 0.1` (0x1000d4a8..0x1000d4b0), rounding once at the store.
+fn spark_next_think(time: f32, random: f32) -> f32 {
+    ((f64::from(random) + f64::from(time)) + 0.1) as f32
 }
 
 impl Entity for EnvSpark {
@@ -1916,7 +1930,7 @@ impl Entity for EnvSpark {
         } else {
             self.sparking = true;
         }
-        cx.pev().nextthink = eng.time() + 0.1 + eng.random_float(0.0, 1.5);
+        cx.pev().nextthink = spark_start_think(eng.time(), eng.random_float(0.0, 1.5));
         if self.max_delay <= 0.0 {
             self.max_delay = 1.5;
         }
@@ -1947,7 +1961,7 @@ impl Entity for EnvSpark {
             return;
         }
         let eng = engine();
-        cx.pev().nextthink = eng.time() + 0.1 + eng.random_float(0.0, self.max_delay);
+        cx.pev().nextthink = spark_next_think(eng.time(), eng.random_float(0.0, self.max_delay));
         let org = cx.pev().origin;
         do_spark(cx.edict, org);
     }
@@ -2047,7 +2061,7 @@ impl Entity for Bubbling {
             self.state = !self.state;
         }
         self.fizzing = self.state;
-        cx.pev().nextthink = if self.state { engine().time() + 0.1 } else { 0.0 };
+        cx.pev().nextthink = if self.state { plus_double(engine().time(), 0.1) } else { 0.0 };
     }
 }
 
@@ -2157,7 +2171,7 @@ impl Entity for Decal {
         let (org, skin) = (cx.pev().origin, cx.pev().skin);
         goldsrc::ext::entities::te_bsp_decal(MSG_BROADCAST, org, skin, entity, model);
         self.think = DecalThink::Remove;
-        cx.pev().nextthink = eng.time() + 0.1;
+        cx.pev().nextthink = plus_double(eng.time(), 0.1);
     }
 }
 
@@ -2192,7 +2206,7 @@ impl Entity for CyclerSprite {
         v.takedamage = DAMAGE_YES as f32;
         v.effects = 0;
         v.frame = 0.0;
-        v.nextthink = now + 0.1;
+        v.nextthink = plus_double(now, 0.1);
         self.animate = true;
         self.last_time = now;
         precache_model_s(v.model);
@@ -2206,7 +2220,7 @@ impl Entity for CyclerSprite {
             let fr = cx.pev().framerate;
             self.advance(cx, fr * (now - self.last_time));
         }
-        cx.pev().nextthink = now + 0.1;
+        cx.pev().nextthink = plus_double(now, 0.1);
         self.last_time = now;
     }
 
@@ -2338,7 +2352,7 @@ impl<const PROBE: bool> Entity for Cycler<PROBE> {
     /// `CCycler::Think` (0xc778c).
     fn think(&mut self, cx: &mut Cx) {
         let now = engine().time();
-        cx.pev().nextthink = now + 0.1;
+        cx.pev().nextthink = plus_double(now, 0.1);
         if self.animate {
             self.anim.frame_advance(cx.edict, 0.0);
         }
@@ -2456,7 +2470,7 @@ impl Entity for Wreckage {
         v.takedamage = 0.0;
         v.effects = 0;
         v.frame = 0.0;
-        v.nextthink = now + 0.1;
+        v.nextthink = plus_double(now, 0.1);
         if v.model != 0 {
             precache_model_s(v.model);
             set_own_model(cx);
@@ -2472,7 +2486,7 @@ impl Entity for Wreckage {
         self.anim.frame_advance(cx.edict, 0.0);
         let now = eng.time();
         let v = cx.pev();
-        v.nextthink = now + 0.2;
+        v.nextthink = plus_double(now, 0.2);
         if v.dmgtime != 0.0 {
             if v.dmgtime < now {
                 remove(cx.edict);
@@ -2636,7 +2650,7 @@ impl TestEffect {
                     b.v().renderamt = amt as f32;
                 }
             }
-            cx.pev().nextthink = now + 0.1;
+            cx.pev().nextthink = plus_double(now, 0.1);
         }
     }
 }
@@ -2695,7 +2709,7 @@ impl Entity for TestEffect {
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
         let now = engine().time();
         self.thinking = true;
-        cx.pev().nextthink = now + 0.1;
+        cx.pev().nextthink = plus_double(now, 0.1);
         self.start_time = now;
     }
 }
@@ -2901,6 +2915,15 @@ impl Entity for ItemSoda {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// env_spark's think times add the `double` 0.1 and round once (issue #169); the old
+    /// `(time + 0.1f) + random` in `float` gave 0x3f6e18d4.
+    #[test]
+    fn spark_think_times_round_once() {
+        let (t, rf) = (f32::from_bits(0x3efd_8be2), f32::from_bits(0x3eab_7291));
+        assert_eq!(spark_start_think(t, rf).to_bits(), 0x3f6e_18d3);
+        assert_eq!(spark_next_think(t, rf).to_bits(), 0x3f6e_18d3);
+    }
 
     #[test]
     fn beam_life_byte_truncates_the_exact_product() {

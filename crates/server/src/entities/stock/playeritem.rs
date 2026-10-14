@@ -16,6 +16,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, Vec3};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 /// `MAX_AMMO_SLOTS`: the most ammo keys a weaponbox takes.
@@ -243,7 +244,7 @@ impl PlayerItem {
             // CBasePlayerItem::FallThink (0xf1818)
             ItemThink::Fall => {
                 let eng = engine();
-                cx.pev().nextthink = eng.time() + 0.1;
+                cx.pev().nextthink = plus_double(eng.time(), 0.1);
                 let v = cx.pev();
                 if v.flags & FL_ONGROUND as i32 == 0 {
                     return;
@@ -310,14 +311,14 @@ impl PlayerItem {
         v.modelindex = 0;
         v.model = 0;
         v.owner = player;
-        v.nextthink = now + 0.1;
+        v.nextthink = plus_double(now, 0.1);
     }
 
     /// `CBasePlayerItem::Drop` (0xf1cac): no touch, `SUB_Remove` 0.1 s later.
     fn drop(&mut self, e: *mut edict_t) {
         self.touchable = false;
         self.think = ItemThink::Remove;
-        e.v().nextthink = engine().time() + 0.1;
+        e.v().nextthink = plus_double(engine().time(), 0.1);
     }
 }
 
@@ -397,7 +398,7 @@ impl Entity for WorldTsGun {
         self.item.weapon.default_ammo = 1;
         self.item.touchable = true;
         self.item.think = ItemThink::Fall;
-        cx.pev().nextthink = eng.time() + 0.1;
+        cx.pev().nextthink = plus_double(eng.time(), 0.1);
     }
 
     /// `CBasePlayerWeapon::Save` (0xf15f8). The gun a player holds keeps its timers and clip in

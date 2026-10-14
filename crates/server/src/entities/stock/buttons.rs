@@ -10,6 +10,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, Vec3, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 /// SDK `ButtonSound`.
@@ -567,11 +568,6 @@ fn axis_fraction(flags: i32, a: Vec3, b: Vec3, distance: f32) -> f32 {
     ((axis_value(flags, a) as f64 - axis_value(flags, b) as f64) / distance as f64) as f32
 }
 
-/// `t + 0.1` with TS's double constant (`fldl 0.1; fadds t; fstps`).
-fn plus_tenth(t: f32) -> f32 {
-    (t as f64 + 0.1) as f32
-}
-
 /// What `CMomentaryRotButton::UpdateSelf` (0xa99c0) does with the turned direction and the
 /// position.
 #[derive(Debug, PartialEq, Eq)]
@@ -673,7 +669,7 @@ impl MomentaryRotButton {
         }
         self.last_used = true;
         let v = cx.pev();
-        v.nextthink = plus_tenth(v.ltime);
+        v.nextthink = plus_double(v.ltime, 0.1);
         match rot_step(self.direction, value) {
             RotStep::End => {
                 v.avelocity = [0.0; 3];
@@ -693,7 +689,7 @@ impl MomentaryRotButton {
         let v = cx.pev();
         // SDK "HACKHACK": several +use packets in one frame each add 0.1 s. Always the second
         // branch here, since nextthink was just set to ltime + 0.1.
-        v.nextthink = if v.nextthink >= v.ltime { plus_tenth(v.nextthink) } else { plus_tenth(v.ltime) };
+        v.nextthink = if v.nextthink >= v.ltime { plus_double(v.nextthink, 0.1) } else { plus_double(v.ltime, 0.1) };
         v.avelocity = vec::scale(v.movedir, self.direction as f32 * v.speed);
         self.t.think = Some(Self::off);
     }
@@ -726,7 +722,7 @@ impl MomentaryRotButton {
         self.last_used = false;
         if v.spawnflags & SF_PENDULUM_AUTO_RETURN != 0 && (self.return_speed > 0.0 || self.return_speed.is_nan()) {
             self.t.think = Some(Self::return_);
-            v.nextthink = plus_tenth(v.ltime);
+            v.nextthink = plus_double(v.ltime, 0.1);
             self.direction = -1;
         } else {
             self.t.think = None;
@@ -747,7 +743,7 @@ impl MomentaryRotButton {
         let v = cx.pev();
         if value > 0.0 {
             v.avelocity = vec::scale(v.movedir, -self.return_speed);
-            v.nextthink = plus_tenth(v.ltime);
+            v.nextthink = plus_double(v.ltime, 0.1);
         } else {
             v.avelocity = [0.0; 3];
             v.angles = self.start;
@@ -943,7 +939,7 @@ impl Entity for MultiSource {
         let v = cx.pev();
         v.solid = SOLID_NOT as i32;
         v.movetype = MOVETYPE_NONE as i32;
-        v.nextthink = engine().time() + 0.1;
+        v.nextthink = plus_double(engine().time(), 0.1);
         v.spawnflags |= SF_MULTI_INIT;
         self.think_set = true;
         self.publish(cx);
@@ -1050,7 +1046,7 @@ mod tests {
         assert_eq!(axis_fraction(SF_DOOR_ROTATE_Z, [0.0, 45.0, 30.0], [0.0, 0.0, 0.0], 60.0), 0.5);
         assert!(axis_fraction(0, [0.0; 3], [0.0; 3], 0.0).is_nan());
         assert_eq!(axis_fraction(0, [0.0, 1.0, 0.0], [0.0; 3], 0.0), f32::INFINITY);
-        assert_eq!(plus_tenth(1.0), 1.1);
+        assert_eq!(plus_double(1.0, 0.1), 1.1);
     }
 
     #[test]

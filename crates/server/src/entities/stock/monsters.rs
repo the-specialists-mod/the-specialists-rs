@@ -14,6 +14,7 @@ use crate::world::{Cx, Entity};
 use goldsrc::ext::entities::ATTN_NORM;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 crate::entities::link_entities! {
@@ -249,7 +250,7 @@ impl MonsterBase {
             v.rendermode = kRenderTransTexture as i32;
         }
         v.solid = SOLID_NOT as i32;
-        v.nextthink = now + 0.1;
+        v.nextthink = plus_double(now, 0.1);
         self.think = MonsterThink::FadeOut;
     }
 
@@ -263,11 +264,11 @@ impl MonsterBase {
                 let v = cx.pev();
                 if v.renderamt <= 7.0 {
                     v.renderamt = 0.0;
-                    v.nextthink = now + 0.2;
+                    v.nextthink = plus_double(now, 0.2);
                     self.think = MonsterThink::Remove;
                 } else {
                     v.renderamt -= 7.0;
-                    v.nextthink = now + 0.1;
+                    v.nextthink = plus_double(now, 0.1);
                 }
             }
             MonsterThink::Remove => super::base::sub_remove(cx.edict),
@@ -380,7 +381,7 @@ impl Entity for DeadHev {
             let org = cx.pev().origin;
             engine().set_origin(cx.edict, org);
         } else {
-            cx.pev().nextthink = engine().time() + 0.1;
+            cx.pev().nextthink = plus_double(engine().time(), 0.1);
         }
     }
 

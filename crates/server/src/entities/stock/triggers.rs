@@ -18,6 +18,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, vec};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use shared::pm::{FpuMath, Msvc, ORDER_XYZ};
 use std::cell::RefCell;
 use std::ffi::CStr;
@@ -253,7 +254,7 @@ impl<const KIND: u8> Trigger<KIND> {
             cx.pev().nextthink = now + self.t.wait;
         } else {
             self.t.touch = None;
-            cx.pev().nextthink = now + 0.1;
+            cx.pev().nextthink = plus_double(now, 0.1);
             self.t.think = Some(Self::sub_remove);
         }
     }
@@ -939,7 +940,7 @@ impl Entity for AutoTrigger {
 
     /// `CAutoTrigger::Precache` (0xe5de8): fire 0.1 s on, so a restored one fires again.
     fn restored(&mut self, cx: &mut Cx) {
-        cx.pev().nextthink = engine().time() + 0.1;
+        cx.pev().nextthink = plus_double(engine().time(), 0.1);
     }
 
     fn think(&mut self, cx: &mut Cx) {

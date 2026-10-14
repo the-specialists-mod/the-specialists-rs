@@ -21,6 +21,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle, MsgWriterExt, Vec3, snd, te, te_begin, vec};
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 pub const SF_TANK_ACTIVE: i32 = 0x0001;
@@ -159,7 +160,7 @@ impl<const K: u8> FuncTank<K> {
     fn activate(&mut self, cx: &mut Cx) {
         let v = cx.pev();
         v.spawnflags |= SF_TANK_ACTIVE;
-        v.nextthink = v.ltime + 0.1;
+        v.nextthink = plus_double(v.ltime, 0.1);
         self.fire_last = 0.0;
     }
 
@@ -204,7 +205,7 @@ impl<const K: u8> FuncTank<K> {
         self.controller = EHandle::new(player);
         self.controller_use_pos = player.v().origin;
         let v = cx.pev();
-        v.nextthink = v.ltime + 0.1;
+        v.nextthink = plus_double(v.ltime, 0.1);
         true
     }
 
@@ -256,13 +257,13 @@ impl<const K: u8> FuncTank<K> {
             angles = controller.v().v_angle;
             angles[0] = -angles[0];
             let v = cx.pev();
-            v.nextthink = v.ltime + 0.05;
+            v.nextthink = plus_double(v.ltime, 0.05);
         } else {
             let v = cx.pev();
             if v.spawnflags & SF_TANK_ACTIVE == 0 {
                 return;
             }
-            v.nextthink = v.ltime + 0.1;
+            v.nextthink = plus_double(v.ltime, 0.1);
             if player.is_null() {
                 v.nextthink = v.ltime + 2.0;
                 return;
@@ -735,7 +736,7 @@ impl Entity for TankControls {
         eng.set_size(cx.edict, mins, maxs);
         eng.set_origin(cx.edict, org);
         // After all the func_tanks have spawned.
-        cx.pev().nextthink = eng.time() + 0.3;
+        cx.pev().nextthink = plus_double(eng.time(), 0.3);
     }
 
     /// `CFuncTankControls::Think` (0xc4c08).

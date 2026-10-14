@@ -32,6 +32,7 @@ use super::link_entities;
 use crate::world::{Cx, Entity};
 use goldsrc::server::engine;
 use goldsrc::sys::*;
+use shared::pm::plus_double;
 use std::ffi::CStr;
 
 use bmodels::*;
@@ -343,7 +344,7 @@ impl World {
                 let v = m.v();
                 v.message = netname;
                 v.spawnflags = triggers::SF_MESSAGE_ONCE;
-                v.nextthink = eng.time() + 0.3;
+                v.nextthink = plus_double(eng.time(), 0.3);
             }
         }
         set_client_cvar(c"v_dark", if flags & SF_WORLD_DARK != 0 { 1.0 } else { 0.0 });
@@ -385,6 +386,25 @@ pub fn restart_world() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stock entities' `time + 0.1` (0.2, 0.3, 0.05, 0.62, 0.56) timers add the SDK's `double`
+    /// literal and round once (issue #169; e.g. `CSprite::AnimateThink` mp.dll 0x1001b79c, `.so`
+    /// 0xbbdef). Each input rounds one ulp higher with the `float` constant.
+    #[test]
+    fn stock_timers_add_the_double_constant() {
+        for (t, c, new) in [
+            (0x3c19_2fb5, 0.1, 0x3ddf_f2c3),
+            (0x3e51_b1d6, 0.2, 0x3ecf_3f51),
+            (0x3f91_a0a1, 0.3, 0x3fb8_0707),
+            (0x3d28_faae, 0.05, 0x3dba_e3bd),
+            (0x4043_429b, 0.62, 0x406a_f0af),
+            (0x3eb1_888d, 0.56, 0x3f68_206f),
+        ] {
+            let t = f32::from_bits(t);
+            assert_eq!(plus_double(t, c).to_bits(), new, "{c}");
+            assert_eq!((t + c as f32).to_bits(), new + 1, "{c}");
+        }
+    }
 
     #[test]
     fn world_keys() {
