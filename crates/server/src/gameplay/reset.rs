@@ -67,6 +67,8 @@ pub fn finish(p: Pending) {
     }
     let removed = p.removed + remove_entities();
     entities::stock::restart_world();
+    // The new rules count `mp_timelimit` from now, as a map start's restarted clock would.
+    rules::state::with(|g| g.time_base = eng.time());
     let spawned = spawn_map_entities();
     entities::server_activate(eng.max_entities(), eng.max_clients());
     crate::bot_backend::server_activate();

@@ -46,6 +46,24 @@ fn update_limit_cvars(which: usize, frags_left: i32, time_left: i32) {
     LAST_LIMITS.0.set(all);
 }
 
+/// The time `mp_timelimit` is checked against: TS's `gpGlobals->time`, which a map start
+/// restarts, less the time of the last gameplay switch's reset (`GameRules::time_base`, 0 after a
+/// map start), so the reset gives the new game the whole limit as a new map would (issue #100
+/// §1.3). Extended precision, as TS's x87 subtraction.
+fn game_clock(now: f32) -> f64 {
+    now as f64 - state::with(|g| g.time_base) as f64
+}
+
+/// Both Thinks' `mp_timelimit` test: `(mp_timeleft, over)`. `limit × 60` stays in an x87
+/// register (exact in `f64`), the time left is a truncating `(int)`, and a limit of 0 is off.
+fn time_limit(limit_minutes: f32, clock: f64) -> (i32, bool) {
+    let limit = limit_minutes as f64 * 60.0;
+    if limit == 0.0 {
+        return (0, false);
+    }
+    (super::x87_trunc(limit - clock), limit <= clock)
+}
+
 /// `CHalfLifeMultiplay::Think` (0xcf038): voice, intermission, `mp_timelimit`, `mp_fraglimit`
 /// (every slot's `pev->frags`, players who left included), the limit cvars, `CTSGameRules::Think`
 /// and a passed map vote. `mp_timelimit × 60` stays in an x87 register (extended, so exact in
@@ -56,14 +74,10 @@ fn multiplay_think(now: f32) {
         intermission_think(now);
         return;
     }
-    let timelimit = cvars::f(c"mp_timelimit") as f64 * 60.0;
-    let mut time_left = 0;
-    if timelimit != 0.0 {
-        time_left = super::x87_trunc(timelimit - now as f64);
-        if timelimit <= now as f64 {
-            go_to_intermission();
-            return;
-        }
+    let (time_left, over) = time_limit(cvars::f(c"mp_timelimit"), game_clock(now));
+    if over {
+        go_to_intermission();
+        return;
     }
     let fraglimit = cvars::f(c"mp_fraglimit");
     let mut frags_left = 0;
@@ -96,9 +110,8 @@ fn teamplay_think(now: f32) {
         multiplay_think(now);
         return;
     }
-    let timelimit = cvars::f(c"mp_timelimit") as f64 * 60.0;
-    let time_left = if timelimit == 0.0 { 0 } else { super::x87_trunc(timelimit - now as f64) };
-    if timelimit != 0.0 && now as f64 >= timelimit {
+    let (time_left, over) = time_limit(cvars::f(c"mp_timelimit"), game_clock(now));
+    if over {
         go_to_intermission();
         return;
     }
@@ -646,7 +659,20 @@ fn unused() -> MsgWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, refresh_copy, restart_round_applies, round_time_byte, x87_eq, x87_max0};
+    use super::{Mode, refresh_copy, restart_round_applies, round_time_byte, time_limit, x87_eq, x87_max0};
+
+    #[test]
+    fn the_time_limit_counts_from_the_games_start() {
+        // Issue #123: 19 minutes into the map, a switch at 1140 s leaves the new game 20 minutes.
+        let switch = 1140.0f64;
+        assert_eq!(time_limit(20.0, 1150.0 - switch), (1190, false));
+        assert_eq!(time_limit(20.0, 1150.0), (50, false), "the map's clock: one minute left");
+        assert_eq!(time_limit(20.0, 2340.0 - switch), (0, true));
+        // Off at 0; a real map start (base 0) is TS's `timelimit * 60 - time`, truncated.
+        assert_eq!(time_limit(0.0, 1e6), (0, false));
+        assert_eq!(time_limit(1.0, 30.4), (29, false));
+        assert_eq!(time_limit(1.0, 60.0), (0, true));
+    }
 
     #[test]
     fn restartround_needs_a_round_mode_or_lms() {

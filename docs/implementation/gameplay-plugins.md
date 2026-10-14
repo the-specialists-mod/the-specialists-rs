@@ -157,6 +157,10 @@ The reset replays a map start in this order:
    (TS 2.1's `BotSetup` sets no `team` key); a bot the engine kept across a level change has none
    recorded and uses its `team` key. Like a new bot, it starts with no cash.
 
+The engine's clock keeps running, so step 4 records the reset's time (`GameRules::time_base`, 0
+after a map start) and both Thinks check `mp_timelimit` and set `mp_timeleft` from it
+(`frame::game_clock`): the new game gets the whole time limit, as a new map would.
+
 The server logs
 `[ts] gameplay: ruleset 30 -> 21: game reset (N players, N entities removed, N spawned from the map)`.
 
