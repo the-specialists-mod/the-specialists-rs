@@ -28,6 +28,20 @@ pub fn can_dive(p: &Player, dive: Dive) -> bool {
     p.ts.is_the_one || p.slots_used < limit
 }
 
+/// When `CTSAnimation::Animate`'s standing shot (ids 0/8/9, not ducking) plays the `2` variant
+/// of `shoot_<ext>` (e.g. `shoot_onehanded2`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FirePose2 {
+    /// TS 3.0 (`Animate` 0x6b470): while the hold timer (`+0x08`) is above 0.001, unzoomed
+    /// (`fov == 0`), for a one- or two-handed extension, and the shot timer is zeroed. The hold
+    /// timer is 3 s after a get-up, a dive end, a roll, a wheel, a wall pose or a melee move,
+    /// counted down in the player's time (`UpdateTimers`).
+    AfterHold,
+    /// For a one-handed extension (`strncmp(ext, "one", 3)`) while the stored horizontal speed is
+    /// below 180; the shot timer runs as for any shot. There is no hold timer.
+    SlowOneHanded,
+}
+
 /// The stunt values a ruleset sets. Seconds are the player's own (slowed) time, given to the
 /// [`StuntClock`] as `f64` so a ruleset whose binary used `double` constants gets them exactly;
 /// TS 3.0's are `float`s, which these `f64`s convert back to unchanged.
@@ -97,6 +111,17 @@ pub struct StuntRules {
     /// `HandleSlide` (0x9b9f8): the side roll's stunt direction is `v_forward` normalised
     /// (`x² + y² + z²`) rather than `v_forward` as it is.
     pub side_roll_normalizes_forward: bool,
+    /// `Animate`'s fire case: when the standing shot plays its `2` pose, and with it whether the
+    /// hold timer exists (it feeds nothing else).
+    pub fire_pose_2: FirePose2,
+    /// `Animate`'s idle refresh (ids 1/6): a set `m_szAnimExtention` (e.g. `knife_idle`) is the
+    /// torso's idle, before the torso extension's poses.
+    pub idle_anim_extension: bool,
+    /// `Animate`'s idle refresh: zoomed in (`fov != 0`) takes the aim poses as a recent shot does.
+    pub aim_pose_while_zoomed: bool,
+    /// `CTSAnimation::GaitCloseCombat` (0x6dd14): a melee move's legs follow when ducking or when
+    /// the unrounded horizontal speed is above this (a NaN isn't).
+    pub melee_gait_speed: f32,
     /// `GoBulletTime` (0x9a5b4): bullets do ×0.7 for this many seconds (absolute, unscaled
     /// time, `+0x34`); `None` sets no dodge window.
     pub bullet_time_dodge: Option<f32>,
@@ -133,6 +158,10 @@ pub const CORE: StuntRules = StuntRules {
     gait_idle_anim_extension: true,
     anim_end_times: false,
     side_roll_normalizes_forward: false,
+    fire_pose_2: FirePose2::AfterHold,
+    idle_anim_extension: true,
+    aim_pose_while_zoomed: true,
+    melee_gait_speed: 120.0,
     bullet_time_dodge: Some(0.55),
     bullet_time_attack_delay: None,
     recover_end_clears: ROLLING | FREEZE_ANGLES | GO_DUCK | RECOVER | DEAD_LOCK,
@@ -247,6 +276,9 @@ mod tests {
         assert!(c.wall_climb_pose_lets_dive_through && c.melee_gait_follows && c.gait_idle_anim_extension);
         assert!(!c.goduck_holds && !c.side_roll_holds_on_strafe_keys && !c.anim_end_times && !c.side_roll_normalizes_forward);
         assert_eq!((c.bullet_time_dodge, c.bullet_time_attack_delay), (Some(0.55), None));
+        assert_eq!(c.fire_pose_2, FirePose2::AfterHold);
+        assert!(c.idle_anim_extension && c.aim_pose_while_zoomed);
+        assert_eq!(c.melee_gait_speed, 120.0);
     }
 
     /// The 3.0 clock is the relative countdown the stunt code had before the hooks.

@@ -10,7 +10,7 @@ use shared::ts::stunt::{GO_DUCK, RECOVER, ROLLING};
 use ts_server::player::Player;
 use ts_server::rules::state::{self, Mode};
 use ts_server::stunt::StuntState;
-use ts_server::stunt::rules::{Dive, StuntClock, StuntRules};
+use ts_server::stunt::rules::{Dive, FirePose2, StuntClock, StuntRules};
 
 /// 2.1's stunt values.
 pub const STUNTS: StuntRules = StuntRules {
@@ -63,6 +63,16 @@ pub const STUNTS: StuntRules = StuntRules {
     anim_end_times: true,
     // `HandleSlide` (0x1005c1f0..0x1005c396) normalises `v_forward` inline.
     side_roll_normalizes_forward: true,
+    // `Animate` (0x1003d8b0) fire case: `2` after `strncmp(ext, "one", 3) == 0`, the stored
+    // horizontal speed below 180 and not `FL_DUCKING` (0x1003e8c9..0x1003e923); the shot timer is
+    // set as always (0x1003e96f). Nothing in `CTSAnimation` writes the hold timer (`+0x08`).
+    fire_pose_2: FirePose2::SlowOneHanded,
+    // `Animate`'s idle refresh (ids 1/6, 0x1003e9f7..): only the torso extension's poses, aiming
+    // on the shot timer alone (`fov` isn't read).
+    idle_anim_extension: false,
+    aim_pose_while_zoomed: false,
+    // FUN_1003f680 (2.1's `GaitCloseCombat`): `fcomp [80.0]` (0x1003f711).
+    melee_gait_speed: 80.0,
     // `GoBulletTime` (0x1005b160): no dodge window (2.1 `TraceAttack` has only the stunt ×0.7),
     // and `if (m_flNextAttack < 0) m_flNextAttack = 0.55 * slowInv`.
     bullet_time_dodge: None,
@@ -265,8 +275,15 @@ mod tests {
         assert!(!s.wall_climb_pose_lets_dive_through && !s.melee_gait_follows && !s.gait_idle_anim_extension);
         assert!(s.goduck_holds && s.side_roll_holds_on_strafe_keys && s.anim_end_times && s.side_roll_normalizes_forward);
         assert_eq!((s.bullet_time_dodge, s.bullet_time_attack_delay), (None, Some(0.55)));
+        // #174: the torso's choices and the melee legs' speed.
+        assert_eq!(s.fire_pose_2, FirePose2::SlowOneHanded);
+        assert!(!s.idle_anim_extension && !s.aim_pose_while_zoomed);
+        assert_eq!(s.melee_gait_speed, 80.0);
         // 3.0's stay.
         assert_eq!((CORE.get_up_buttons, CORE.wall_landing_recover), (0x4006, 0.2625));
+        let core = CORE;
+        assert_eq!((core.fire_pose_2, core.melee_gait_speed), (FirePose2::AfterHold, 120.0));
+        assert!(core.idle_anim_extension && core.aim_pose_while_zoomed);
     }
 
     #[test]

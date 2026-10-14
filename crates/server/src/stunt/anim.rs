@@ -8,7 +8,7 @@
 //! `PlayerDeathThink` while dying, to keep `m_fSequenceFinished`: stunts use it to end recoveries
 //! early, and the death think to end the dying state.
 
-use super::rules::StuntRules;
+use super::rules::{FirePose2, StuntRules};
 use super::*;
 use goldsrc::ext::movement::{self as studio, STUDIO_LOOPING};
 
@@ -26,15 +26,36 @@ fn anim_timer(cx: &mut Cx, secs: f64) -> f32 {
 }
 
 /// The "recently shot" timer for the torso's aim poses: TS 3.0 `shot >= 0.01`; end times
-/// `time <= shot`.
+/// `!(shot < time)`, so a NaN aims (2.1 mp.dll 0x1003ea36: `fcomp; test ah,0x5; jnp` idle).
 fn aiming(end_times: bool, now: f32, shot: f32) -> bool {
-    if end_times { now <= shot } else { shot >= 0.01 }
+    if end_times { shot.partial_cmp(&now) != Some(std::cmp::Ordering::Less) } else { shot >= 0.01 }
 }
 
 /// The "recently shot" timer for the legs' `combat_idle`: TS 3.0 `shot >= 0.01`; end times
-/// `shot > time`.
+/// `!(shot <= time)`, so a NaN counts as running (2.1 0x1003ebce: `test ah,0x41; jnp` low).
 fn shot_running(end_times: bool, now: f32, shot: f32) -> bool {
-    if end_times { shot > now } else { shot >= 0.01 }
+    if end_times { !matches!(shot.partial_cmp(&now), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)) } else { shot >= 0.01 }
+}
+
+/// `Animate`'s fire case: whether the standing shot plays its `2` pose, and whether that zeroes
+/// the shot timer ([`FirePose2`]). `speed` is `Animate`'s stored horizontal speed.
+fn fire_pose_2(rule: FirePose2, ext2: &str, ducking: bool, hold: f32, fov: f32, speed: f32) -> (bool, bool) {
+    match rule {
+        FirePose2::AfterHold => {
+            let two = hold > 0.001 && !ducking && fov == 0.0 && (ext2.starts_with("one") || ext2.starts_with("two"));
+            (two, two)
+        }
+        // 2.1 mp.dll 0x1003e8f2: `fcomp 180; test ah,0x5; jp` skips at or above 180 and on a NaN.
+        FirePose2::SlowOneHanded => (ext2.starts_with("one") && speed < 180.0 && !ducking, false),
+    }
+}
+
+/// Arms the hold timer (`+0x08`, 3 s) where TS 3.0 does; it exists only for
+/// [`FirePose2::AfterHold`].
+fn arm_hold(p: &mut Player) {
+    if stunt_rules().fire_pose_2 == FirePose2::AfterHold {
+        p.stunt.anim.hold = 3.0;
+    }
 }
 
 /// The "recently shot" timer is over for the whole-body follow: TS 3.0 `shot < 0.01`; end times
@@ -278,8 +299,14 @@ fn is_in_close_combat(id: i32) -> bool {
 /// `CTSAnimation::GaitCloseCombat` (0x6dd14): melee moves that keep the legs running.
 fn gait_close_combat(cx: &mut Cx, id: i32) -> bool {
     let pev = cx.pev();
-    let ducking = pev.flags & FL_DUCKING as i32 != 0;
-    if id == 0x25 && (ducking || pev.button & IN_DUCK as i32 != 0) {
+    let (ducking, duck_held) = (pev.flags & FL_DUCKING as i32 != 0, pev.button & IN_DUCK as i32 != 0);
+    melee_legs_follow(id, ducking, duck_held, pev.velocity, stunt_rules().melee_gait_speed)
+}
+
+/// [`gait_close_combat`] on its inputs: the moves that may, then ducking or the unrounded
+/// horizontal speed above `speed` ([`StuntRules::melee_gait_speed`]).
+fn melee_legs_follow(id: i32, ducking: bool, duck_held: bool, velocity: Vec3, speed: f32) -> bool {
+    if id == 0x25 && (ducking || duck_held) {
         return false;
     }
     let kinds =
@@ -287,7 +314,7 @@ fn gait_close_combat(cx: &mut Cx, id: i32) -> bool {
     if id == 0x24 || id == 0x23 || id == 0x3a || !kinds {
         return false;
     }
-    ducking || hspeed_cmp(pev.velocity, 120.0, true)
+    ducking || hspeed_cmp(velocity, speed, true)
 }
 
 fn ext2_or_akimbo(p: &Player) -> String {
@@ -378,10 +405,9 @@ fn handle_close_combat(p: &mut Player, cx: &mut Cx, id: i32) {
     let flags = if gait_close_combat(cx, id) { 0x12 } else { 0x14 };
     set_anim(p, cx, &name, flags | SA_FORCE, 0);
     let shot = anim_timer(cx, 2.0);
-    let a = &mut p.stunt.anim;
-    a.shot = shot;
-    a.hold = 3.0;
-    a.cc_flag = false;
+    p.stunt.anim.shot = shot;
+    arm_hold(p);
+    p.stunt.anim.cc_flag = false;
 }
 
 /// `Animate`'s case 0x37 (the wall-jump pose): whether it refuses `id`. TS 3.0 holds it while
@@ -572,7 +598,7 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
     if !cc_gait {
         if is_in_close_combat(id) {
             handle_close_combat(p, cx, id);
-        } else if !torso(p, cx, &mut id) {
+        } else if !torso(p, cx, &mut id, speed) {
             return;
         }
     }
@@ -584,7 +610,8 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
 }
 
 /// The torso part of `Animate` (the big switch). Returns false where TS returns early.
-fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
+fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32, speed: f32) -> bool {
+    let rules = stunt_rules();
     let grounded = on_ground(cx);
     let iuser4 = cx.pev().iuser4;
     let ducking = cx.pev().flags & FL_DUCKING as i32 != 0;
@@ -604,8 +631,11 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
             if iuser4 & PRONE == 0 {
                 p.stunt.anim.shot = anim_timer(cx, 2.0);
                 let mut name = format!("{}{}", if ducking { "crouch_shoot_" } else { "shoot_" }, ext2);
-                if p.stunt.anim.hold > 0.001 && !ducking && fov == 0.0 && (ext2.starts_with("one") || ext2.starts_with("two")) {
+                let (two, zero_shot) = fire_pose_2(rules.fire_pose_2, &ext2, ducking, p.stunt.anim.hold, fov, speed);
+                if two {
                     name.push('2');
+                }
+                if zero_shot {
                     p.stunt.anim.shot = 0.0;
                 }
                 name.push_str(side);
@@ -620,7 +650,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
             if !grounded && !on_ladder(cx) {
                 return false;
             }
-            if !p.stunt.anim.ext.is_empty() {
+            if rules.idle_anim_extension && !p.stunt.anim.ext.is_empty() {
                 let ext = p.stunt.anim.ext.clone();
                 set_anim(p, cx, &ext, 0x12, 0);
             } else if !ext2.is_empty() {
@@ -628,7 +658,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
                 if matches!(cur, 0 | 8 | 9 | 0x34 | 0x33) && !p.stunt.anim.seq_finished {
                     *id = cur;
                 } else {
-                    let aim = aiming(stunt_rules().anim_end_times, cx.time(), p.stunt.anim.shot) || fov != 0.0;
+                    let aim = aiming(rules.anim_end_times, cx.time(), p.stunt.anim.shot) || (rules.aim_pose_while_zoomed && fov != 0.0);
                     let base = match (ducking, aim) {
                         (true, true) => "crouch_aim_",
                         (true, false) => "duck_idle_",
@@ -679,7 +709,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
         0x29 => {
             let name = SLIDE_END[p.stunt.anim.last_dir.clamp(0, 3) as usize];
             set_anim(p, cx, name, 0x94, 0);
-            p.stunt.anim.hold = 3.0;
+            arm_hold(p);
         }
         // Prone side roll.
         0x2a | 0x2b => {
@@ -702,7 +732,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
             };
             set_anim(p, cx, name, 0x94, 0);
             if hold {
-                p.stunt.anim.hold = 3.0;
+                arm_hold(p);
             }
         }
         // Reload / draw (torso only, standing).
@@ -727,7 +757,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32) -> bool {
         }
         0x37 | 0x38 => {
             set_anim(p, cx, if *id == 0x37 { "walljump_end" } else { "walljump_climb" }, 0x94, 0);
-            p.stunt.anim.hold = 3.0;
+            arm_hold(p);
         }
         // Super-jump air pose.
         0x39 => {
@@ -822,8 +852,45 @@ fn gait(p: &mut Player, cx: &mut Cx, id: i32, speed: f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{aiming, dance_due, goduck_holds, shot_over, shot_running, wall_jump_pose_holds};
+    use super::{aiming, dance_due, fire_pose_2, goduck_holds, melee_legs_follow, shot_over, shot_running, wall_jump_pose_holds};
+    use crate::stunt::rules::FirePose2;
     use goldsrc::sys::{FL_DUCKING, IN_DUCK};
+
+    /// #174: TS 3.0's `2` shot pose follows the hold timer (unzoomed, one- or two-handed) and zeroes
+    /// the shot timer; the slow one-handed rule reads the speed instead and keeps the shot timer.
+    #[test]
+    fn fire_pose_two() {
+        let after = |ext, ducking, hold, fov, speed| fire_pose_2(FirePose2::AfterHold, ext, ducking, hold, fov, speed);
+        assert_eq!(after("onehanded", false, 2.0, 0.0, 300.0), (true, true));
+        assert_eq!(after("twohanded", false, 0.0011, 0.0, 0.0), (true, true));
+        assert_eq!(after("onehanded", false, 0.001, 0.0, 0.0), (false, false), "hold over");
+        assert_eq!(after("onehanded", false, 2.0, 40.0, 0.0), (false, false), "zoomed");
+        assert_eq!(after("onehanded", true, 2.0, 0.0, 0.0), (false, false), "ducking");
+        assert_eq!(after("akimbo", false, 2.0, 0.0, 0.0), (false, false));
+
+        let slow = |ext, ducking, hold, fov, speed| fire_pose_2(FirePose2::SlowOneHanded, ext, ducking, hold, fov, speed);
+        assert_eq!(slow("onehanded", false, 0.0, 40.0, 179.9), (true, false), "no hold, zoom ignored");
+        assert_eq!(slow("onehanded_case", false, 0.0, 0.0, 0.0), (true, false));
+        assert_eq!(slow("onehanded", false, 3.0, 0.0, 180.0), (false, false), "at 180");
+        assert_eq!(slow("onehanded", false, 0.0, 0.0, f32::NAN), (false, false), "NaN speed");
+        assert_eq!(slow("twohanded", false, 3.0, 0.0, 0.0), (false, false), "one-handed only");
+        assert_eq!(slow("onehanded", true, 0.0, 0.0, 0.0), (false, false), "ducking");
+    }
+
+    /// #174 (sweep): a melee move's legs follow above 120 u/s in TS 3.0; the speed is the ruleset's
+    /// (80 in the other), strictly above and on the unrounded length.
+    #[test]
+    fn melee_legs_speed() {
+        let punch = |v: [f32; 3], limit| melee_legs_follow(0x16, false, false, v, limit);
+        assert!(!punch([100.0, 0.0, 0.0], 120.0) && punch([100.0, 0.0, 0.0], 80.0));
+        assert!(!punch([80.0, 0.0, 0.0], 80.0) && punch([80.0, 0.01, 0.0], 80.0));
+        assert!(!punch([120.0, 0.0, 0.0], 120.0) && punch([0.0, 121.0, 0.0], 120.0));
+        assert!(!punch([f32::NAN, 0.0, 0.0], 80.0), "a NaN isn't above");
+        assert!(melee_legs_follow(0x16, true, false, [0.0; 3], 120.0), "ducking");
+        assert!(!melee_legs_follow(0x25, false, true, [200.0, 0.0, 0.0], 80.0), "katana_duck with duck held");
+        assert!(!melee_legs_follow(0x24, false, false, [200.0, 0.0, 0.0], 80.0), "katana_air");
+        assert!(!melee_legs_follow(0x18, false, false, [200.0, 0.0, 0.0], 80.0), "punchair");
+    }
 
     /// #112: the `goduck` hold (a ruleset's), against everything but its exceptions.
     #[test]
@@ -852,6 +919,9 @@ mod tests {
         assert!(!shot_running(true, 50.0, 50.0) && shot_running(true, 50.0, 50.1));
         assert!(shot_over(true, 50.0, 50.0) && !shot_over(true, 50.0, 50.1));
         assert!(!shot_over(true, 50.0, f32::NAN), "a NaN is neither");
+        // #174 (sweep): the x87 tests take a NaN as aiming and as running.
+        assert!(aiming(true, 50.0, f32::NAN) && shot_running(true, 50.0, f32::NAN));
+        assert!(!aiming(false, 50.0, f32::NAN) && !shot_running(false, 50.0, f32::NAN), "3.0's countdown unchanged");
         assert!(dance_due(true, 50.0, 50.0, 50.0) && !dance_due(true, 50.0, 50.1, 53.0) && !dance_due(true, 50.0, 49.0, 49.9));
     }
 
