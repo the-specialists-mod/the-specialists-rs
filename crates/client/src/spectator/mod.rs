@@ -120,6 +120,10 @@ struct Spectator {
     /// player movement has moved a roaming spectator there once.
     default_origin: Vec3,
     pin_pending: bool,
+    /// The angles the pin puts the camera at: zero after a director reset (TS 3.0's
+    /// `0x10191d2c`, never written); a ruleset's HLTV camera jump sets them
+    /// ([`HltvHost::jump_camera`]).
+    pin_angles: Vec3,
     /// `sprites/crosshairs.spr` (`+0xc8c`).
     crosshair: HSPRITE,
     // ---- client `PM_SpectatorMove` → view ----
@@ -162,6 +166,7 @@ fn with<R>(f: impl FnOnce(&mut Spectator) -> R) -> R {
 /// with the HUD cvars).
 pub fn init() {
     with(|s| *s = Spectator::default());
+    crate::gameplay::current().hltv_reset(true);
     engine().add_command(c"specmode", cmd_specmode);
 }
 
@@ -243,7 +248,12 @@ fn valid_player(idx: i32) -> bool {
     idx > 0 && idx != local && engine().entity(idx).is_some_and(|e| e.player != 0 && !e.model.is_null())
 }
 
+/// `SetModes`, from `specmode` and the director reset. A ruleset may have a `SetModes` of its own
+/// ([`ClientRules::hltv_set_modes`](crate::gameplay::ClientRules::hltv_set_modes)).
 pub fn set_modes(mode: i32, pip: i32) {
+    if crate::gameplay::current().hltv_set_modes(&mut EngineHltv, mode, pip) {
+        return;
+    }
     let change = with(|s| state::with(|st| set_modes_in(s, st, mode, pip, valid_player)));
     let Some(change) = change else {
         engine().print("Invalid spectator mode.\n");
@@ -280,6 +290,7 @@ pub fn director_event(command: u8, primary: i32, secondary: i32, flags: i32) {
                 s.overview.reset_entities();
             });
             crate::input::reset_key_tap();
+            crate::gameplay::current().hltv_reset(false);
             state::with(|st| st.spec_mode = obs::NONE);
             set_modes(2, 0);
             with(|s| s.overview.reset());
@@ -288,6 +299,7 @@ pub fn director_event(command: u8, primary: i32, secondary: i32, flags: i32) {
             let origin = map_camera();
             with(|s| {
                 s.default_origin = origin;
+                s.pin_angles = [0.0; 3];
                 s.pin_pending = true;
                 s.saved_origin = origin;
                 s.origin_override = true;
@@ -549,7 +561,144 @@ pub fn redraw() {
 /// `CHudSpectator::Draw` (`0x10023080`, the HLTV name tags), called from the HUD's element pass
 /// in TS's element order.
 pub fn draw_hltv_names() {
+    crate::gameplay::current().hltv_draw(&mut EngineHltv);
     overview::draw_names();
+}
+
+/// What a ruleset's own HLTV spectator controls read and drive
+/// ([`ClientRules::hltv_buttons`](crate::gameplay::ClientRules::hltv_buttons) and the other
+/// `hltv_*` hooks). TS 3.0 has none: its `+` commands only run the `respawn` key tap. The engine
+/// implementation is [`EngineHltv`]; tests pass their own.
+pub trait HltvHost {
+    /// `GetClientTime`, widened as `fstp qword` does.
+    fn time(&self) -> f64;
+    /// `IsSpectateOnly`: an HLTV viewer.
+    fn spectate_only(&self) -> bool;
+    /// The observer mode (`g_iUser1`).
+    fn observer_mode(&self) -> i32;
+    fn set_observer_mode(&mut self, mode: i32);
+    /// The observer target and flags (`g_iUser2`, `g_iUser3`).
+    fn set_observer_target(&mut self, target: i32, flags: i32);
+    /// The spectator's own target (TS 3.0 `+0x948`).
+    fn locked_target(&self) -> i32;
+    fn set_locked_target(&mut self, target: i32);
+    /// The last director camera's primary and secondary entity (3.0 `+0xca0`, `+0xca4`).
+    fn last_director(&self) -> (i32, i32);
+    /// The inset mode the view draws (3.0 `+0x14`).
+    fn set_inset(&mut self, mode: i32);
+    /// `IsActivePlayer` (3.0 `0x100236d0`): a player entity other than the local one, solid
+    /// (`curstate.solid`, `+0x2ea`), with a name in the player info.
+    fn active_player(&self, index: i32) -> bool;
+    fn player_name(&self, index: i32) -> String;
+    /// An entity's origin and angles (`+0xb48`, `+0xb54`).
+    fn entity_camera(&self, index: i32) -> Option<(Vec3, Vec3)>;
+    /// `V_GetInEyePos`: the target's eyes, leaving `org` and `ang` alone for a bad target.
+    fn in_eye_camera(&self, target: i32, org: &mut Vec3, ang: &mut Vec3);
+    /// The last refdef's view origin and angles (`v_origin`, `v_angles`).
+    fn view_camera(&self) -> (Vec3, Vec3);
+    /// `SetViewAngles(angles)` and the jump flag: the next spectator move puts a roaming camera
+    /// at `origin` with `angles` (`vJumpOrigin`, `vJumpAngles`, `iJumpSpectator`).
+    fn jump_camera(&mut self, origin: Vec3, angles: Vec3);
+    fn print(&mut self, text: &str);
+    /// A `TextMsg` centre print of a `titles.txt` key.
+    fn center_text(&mut self, key: &str);
+    /// The spectator crosshair (`sprites/crosshairs.spr` 24..48 × 0..24, white) or none.
+    fn set_crosshair(&mut self, on: bool);
+    /// `UpdateSpectatorPanel`.
+    fn update_panel(&mut self);
+    /// The overview file's zoom and origin (`m_OverviewData`).
+    fn overview(&self) -> (f32, Vec3);
+    /// The map view's zoom, origin and angles.
+    fn map_view(&self) -> (f32, Vec3, Vec3);
+    fn set_map_view(&mut self, zoom: f32, origin: Vec3);
+}
+
+/// [`HltvHost`] on the engine and this module's state.
+pub struct EngineHltv;
+
+impl HltvHost for EngineHltv {
+    fn time(&self) -> f64 {
+        engine().client_time() as f64
+    }
+    fn spectate_only(&self) -> bool {
+        spec::is_spectate_only()
+    }
+    fn observer_mode(&self) -> i32 {
+        state::with(|st| st.spec_mode)
+    }
+    fn set_observer_mode(&mut self, mode: i32) {
+        state::with(|st| st.spec_mode = mode);
+    }
+    fn set_observer_target(&mut self, target: i32, flags: i32) {
+        state::with(|st| {
+            st.spec_target = target;
+            st.spec_flags = flags;
+        });
+    }
+    fn locked_target(&self) -> i32 {
+        with(|s| s.locked_target)
+    }
+    fn set_locked_target(&mut self, target: i32) {
+        with(|s| s.locked_target = target);
+    }
+    fn last_director(&self) -> (i32, i32) {
+        with(|s| (s.last_primary, s.last_secondary))
+    }
+    fn set_inset(&mut self, mode: i32) {
+        with(|s| s.pip = mode);
+    }
+    fn active_player(&self, index: i32) -> bool {
+        let e = engine();
+        let local = e.local_player().map_or(0, |p| p.index);
+        e.entity(index).is_some_and(|ent| ent.player != 0 && ent.curstate.solid != 0 && ent.index != local)
+            && !e.player_info(index).name_bytes.is_empty()
+    }
+    fn player_name(&self, index: i32) -> String {
+        String::from_utf8_lossy(&engine().player_info(index).name_bytes).into_owned()
+    }
+    fn entity_camera(&self, index: i32) -> Option<(Vec3, Vec3)> {
+        engine().entity(index).map(|e| (e.origin, e.angles))
+    }
+    fn in_eye_camera(&self, target: i32, org: &mut Vec3, ang: &mut Vec3) {
+        in_eye_position(target, org, ang);
+    }
+    fn view_camera(&self) -> (Vec3, Vec3) {
+        (crate::view::origin(), crate::view::v_angles())
+    }
+    fn jump_camera(&mut self, origin: Vec3, angles: Vec3) {
+        engine().set_view_angles(angles);
+        with(|s| {
+            s.default_origin = origin;
+            s.pin_angles = angles;
+            s.pin_pending = true;
+        });
+    }
+    fn print(&mut self, text: &str) {
+        engine().print(text);
+    }
+    fn center_text(&mut self, key: &str) {
+        engine().center_print(&localise(key));
+    }
+    fn set_crosshair(&mut self, on: bool) {
+        let h = with(|s| s.crosshair);
+        if on {
+            spec::set_crosshair(h, [24, 48, 0, 24], [255, 255, 255]);
+        } else {
+            spec::set_crosshair(0, [0; 4], [0; 3]);
+        }
+    }
+    fn update_panel(&mut self) {
+        panel::update();
+    }
+    fn overview(&self) -> (f32, Vec3) {
+        with(|s| s.overview.overview())
+    }
+    fn map_view(&self) -> (f32, Vec3, Vec3) {
+        with(|s| s.overview.map_view())
+    }
+    fn set_map_view(&mut self, zoom: f32, origin: Vec3) {
+        with(|s| s.overview.set_map_view(zoom, origin));
+    }
 }
 
 /// An x87 `fcomp` against 0 tested with `test ah, 0x40` (C3): equal, or a NaN.

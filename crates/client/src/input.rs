@@ -245,11 +245,23 @@ pub fn reset_key_tap() {
     NEXT_KEY_TAP.0.set(0.0);
 }
 
-fn key_tap(bits: u8) {
+/// A `+` command's key tap: `bits` are TS 3.0's (`FUN_10023450`), `buttons` the command's `IN_*`
+/// bit for a ruleset's own key hook
+/// ([`ClientRules::hltv_buttons`](crate::gameplay::ClientRules::hltv_buttons)).
+fn key_tap(bits: u8, buttons: u32) {
+    if crate::gameplay::current().hltv_buttons(&mut crate::spectator::EngineHltv, buttons as i32, true) {
+        return;
+    }
     let now = engine().client_time();
     if key_tap_step(&NEXT_KEY_TAP.0, now, bits) == Some(true) && crate::gameplay::current().attack_sends_respawn() {
         engine().server_cmd("respawn");
     }
+}
+
+/// A movement command's release, for a ruleset's own key hook (TS 3.0's `-` commands only
+/// release the button).
+fn key_release(buttons: u32) {
+    crate::gameplay::current().hltv_buttons(&mut crate::spectator::EngineHltv, buttons as i32, false);
 }
 
 /// Pure part of `key_tap`: `None` while the timer runs, else whether to send `respawn`.
@@ -481,31 +493,43 @@ fn register_commands() {
     cmd!(c"+forward", {
         if gate_open() {
             IN_FWD.key_down();
-            key_tap(0x08);
+            key_tap(0x08, IN_FORWARD);
         }
     });
-    cmd!(c"-forward", IN_FWD.key_up());
+    cmd!(c"-forward", {
+        IN_FWD.key_up();
+        key_release(IN_FORWARD);
+    });
     cmd!(c"+back", {
         if gate_open() {
             IN_BK.key_down();
-            key_tap(0x10);
+            key_tap(0x10, IN_BACK);
         }
     });
-    cmd!(c"-back", IN_BK.key_up());
+    cmd!(c"-back", {
+        IN_BK.key_up();
+        key_release(IN_BACK);
+    });
     cmd!(c"+moveleft", {
         if gate_open() {
             IN_MOVELEFTB.key_down();
-            key_tap(0);
+            key_tap(0, IN_MOVELEFT);
         }
     });
-    cmd!(c"-moveleft", IN_MOVELEFTB.key_up());
+    cmd!(c"-moveleft", {
+        IN_MOVELEFTB.key_up();
+        key_release(IN_MOVELEFT);
+    });
     cmd!(c"+moveright", {
         if gate_open() {
             IN_MOVERIGHTB.key_down();
-            key_tap(0);
+            key_tap(0, IN_MOVERIGHT);
         }
     });
-    cmd!(c"-moveright", IN_MOVERIGHTB.key_up());
+    cmd!(c"-moveright", {
+        IN_MOVERIGHTB.key_up();
+        key_release(IN_MOVERIGHT);
+    });
     cmd!(c"+lookup", IN_LOOKUP.key_down());
     cmd!(c"-lookup", IN_LOOKUP.key_up());
     cmd!(c"+lookdown", IN_LOOKDOWN.key_down());
@@ -515,7 +539,7 @@ fn register_commands() {
     cmd!(c"+attack", {
         if gate_open() {
             IN_ATK.key_down();
-            key_tap(0x01);
+            key_tap(0x01, IN_ATTACK);
         }
     });
     cmd!(c"-attack", IN_ATK.key_up());
@@ -529,7 +553,7 @@ fn register_commands() {
                 IN_ATK2.key_down()
             }
             engine().server_cmd("_special");
-            key_tap(0);
+            key_tap(0, IN_ATTACK2);
         }
     });
     // The `-` handlers (`0x10025fc0`, `0x10026180`) release only the kbutton the current
@@ -541,7 +565,7 @@ fn register_commands() {
     cmd!(c"+jump", {
         if gate_open() {
             IN_JMP.key_down();
-            key_tap(0x02);
+            key_tap(0x02, IN_JUMP);
         }
     });
     cmd!(c"-jump", IN_JMP.key_up());
@@ -555,7 +579,7 @@ fn register_commands() {
     cmd!(c"-jlook", IN_JLOOK.key_up());
     cmd!(c"+duck", {
         IN_DCK.key_down();
-        key_tap(0x04);
+        key_tap(0x04, IN_DUCK);
     });
     cmd!(c"-duck", IN_DCK.key_up());
     cmd!(

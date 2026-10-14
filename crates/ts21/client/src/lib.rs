@@ -4,7 +4,9 @@
 
 #![deny(unsafe_code)]
 
+use goldsrc::Global;
 use goldsrc::ext::render::{Vec3, random_long};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
@@ -13,12 +15,17 @@ use ts_client::gameplay::MeleeReach;
 use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
 use ts_client::hud::draw::{HudOp, StatusLook, ftol};
 use ts_client::menus::buy::MenuRules;
+use ts_client::spectator::HltvHost;
 use ts_client::view::{Bob, BobInput, EyeZ};
 use ts21_gameplay::TS21;
 
 pub mod bullets;
 pub mod events;
+pub mod spectator;
 pub mod view;
+
+/// 2.1's own spectator state ([`spectator::Hltv`]).
+static HLTV: Global<RefCell<spectator::Hltv>> = Global(RefCell::new(spectator::Hltv::NEW));
 
 /// TS 2.1's client-only rules.
 pub struct Ts21Client;
@@ -325,6 +332,28 @@ impl ClientRules for Ts21Client {
     /// (issue #178).
     fn kungfu_weapon_info_resets_menu_selection(&self) -> bool {
         true
+    }
+
+    /// The key hook is `HandleButtonsDown` (`0x1004b200`; `-` commands `HandleButtonsUp`
+    /// `0x1004b4c0`), never the `respawn` tap (issue #177).
+    fn hltv_buttons(&self, host: &mut dyn HltvHost, buttons: i32, down: bool) -> bool {
+        HLTV.0.borrow_mut().buttons(host, buttons, down);
+        true
+    }
+
+    /// 2.1's `SetModes` (`0x1004b530`).
+    fn hltv_set_modes(&self, host: &mut dyn HltvHost, mode: i32, inset: i32) -> bool {
+        HLTV.0.borrow_mut().set_modes(host, mode, inset);
+        true
+    }
+
+    fn hltv_reset(&self, init: bool) {
+        HLTV.0.borrow_mut().reset(init);
+    }
+
+    /// The deltas' use at the head of `Draw` (`0x1004a8d0`).
+    fn hltv_draw(&self, host: &mut dyn HltvHost) {
+        HLTV.0.borrow().draw(host);
     }
 
     /// The weapon element's kung-fu bar (0x1008a0f0, issue #111), 128 wide from `w - 136`: the

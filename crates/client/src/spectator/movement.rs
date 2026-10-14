@@ -53,12 +53,13 @@ pub fn spectator_move(pm: &mut playermove_t) -> bool {
         }
         if pm.iuser1 == obs::ROAMING || pm.iuser2 == 0 {
             // After a director reset a roaming spectator is put on the map camera once
-            // (angles `0x10191d2c`, never written, so zero) and the move ends there.
+            // (angles `0x10191d2c`, never written, so zero) and the move ends there. A
+            // ruleset's HLTV camera jump uses the same pin with its own angles.
             if !s.pin_pending {
                 return false;
             }
             pm.origin = s.default_origin;
-            pm.angles = [0.0; 3];
+            pm.angles = s.pin_angles;
             pm.velocity = [0.0; 3];
             s.pin_pending = false;
             return true;

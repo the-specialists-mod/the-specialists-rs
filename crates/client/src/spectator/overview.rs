@@ -16,7 +16,8 @@
 //!
 //! TS never sets an inset mode other than 0 (`specmode` and the director reset both pass 0) nor
 //! the overview zoom/pan deltas (`+0xc98`/`+0xc9c`, only ever zeroed), so the inset-only parts
-//! (camera icon, inset exclusion, the map view) are ported but unreachable, as in TS.
+//! (camera icon, inset exclusion, the map view) are ported but unreachable, as in TS. A ruleset
+//! with its own HLTV controls (TS 2.1, [`super::HltvHost`]) sets the inset and the map view.
 
 use super::{Spectator, in_eye_position, with};
 use crate::state;
@@ -274,6 +275,21 @@ impl Overview {
                 *e = Entity::default();
             }
         }
+    }
+
+    /// The overview file's zoom and origin, for [`super::HltvHost::overview`].
+    pub(super) fn overview(&self) -> (f32, Vec3) {
+        (self.data.zoom, self.data.origin)
+    }
+
+    /// The map view's zoom, origin and angles, for [`super::HltvHost::map_view`].
+    pub(super) fn map_view(&self) -> (f32, Vec3, Vec3) {
+        (self.map_zoom, self.map_origin, self.map_angles)
+    }
+
+    pub(super) fn set_map_view(&mut self, zoom: f32, origin: Vec3) {
+        self.map_zoom = zoom;
+        self.map_origin = origin;
     }
 
     /// `GetMapPosition` (`0x100240b0`): the inset map camera, `4096 / zoom` back from the map

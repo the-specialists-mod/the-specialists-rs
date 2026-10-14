@@ -354,6 +354,10 @@ The hooks so far:
 | `ClientRules` | `input_gate()` | true (the anti-script real-key gate) | `input.rs` `gate_open` |
 | `ClientRules` | `attack_switch()` | true (`cl_attackswitch` works) | `input.rs` `attack_switched` |
 | `ClientRules` | `attack_sends_respawn()` | true | `input.rs` `key_tap` |
+| `ClientRules` | `hltv_buttons(host, buttons, down)` | false: 3.0's key tap alone (a ruleset's own key hook gets the `IN_*` bit of `+forward`/`+back`/`+moveleft`/`+moveright`/`+attack`/`+attack2`/`+jump`/`+duck` and the four movement releases through `spectator::HltvHost`) | `input.rs` `key_tap`, `key_release` |
+| `ClientRules` | `hltv_set_modes(host, mode, inset)` | false: 3.0's `SetModes` | `spectator::set_modes` (`specmode`, director reset) |
+| `ClientRules` | `hltv_reset(init)` | nothing | `spectator::init`, `director_event` (`DRC_ACTIVE`) |
+| `ClientRules` | `hltv_draw(host)` | nothing | `spectator::draw_hltv_names` (`CHudSpectator::Draw`) |
 | `ClientRules` | `kungfu_exhausted(power)` | `power ≤ 0.01` (empty red frame) | `hud/weapons.rs` `draw_kungfu_bar` |
 | `ClientRules` | `kungfu_regen(r)` | +15 per step (1 while negative), up to 100 | `hud/state.rs` `regen_kungfu` (weapon `Think`) |
 | `ClientRules` | `kungfu_power_on_reset()` | none (only `VidInit` refills the bar) | `hud/state.rs` `reset_weapons` |

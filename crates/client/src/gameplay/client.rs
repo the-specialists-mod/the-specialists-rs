@@ -385,6 +385,33 @@ pub trait ClientRules: Sync {
         None
     }
 
+    /// A ruleset's own key hook for the `+`/`-` commands that call TS 3.0's `respawn` key tap
+    /// (`+forward`, `+back`, `+moveleft`, `+moveright`, `+attack`, `+attack2`, `+jump`, `+duck`,
+    /// and the four movement releases), with the command's `IN_*` bit. Returning true replaces
+    /// 3.0's key tap for a press. TS 3.0: false (the tap alone).
+    fn hltv_buttons(&self, host: &mut dyn crate::spectator::HltvHost, buttons: i32, down: bool) -> bool {
+        let _ = (host, buttons, down);
+        false
+    }
+
+    /// A ruleset's own spectator `SetModes`, for `specmode` and the director reset. Returning
+    /// false runs TS 3.0's (`0x100234d0`).
+    fn hltv_set_modes(&self, host: &mut dyn crate::spectator::HltvHost, mode: i32, inset: i32) -> bool {
+        let _ = (host, mode, inset);
+        false
+    }
+
+    /// Resets a ruleset's own spectator state: `init` from `CHudSpectator::Init`, else from the
+    /// director reset (`DRC_ACTIVE`). TS 3.0: nothing beyond its own.
+    fn hltv_reset(&self, init: bool) {
+        let _ = init;
+    }
+
+    /// Runs at the start of `CHudSpectator::Draw` each HUD frame. TS 3.0: nothing.
+    fn hltv_draw(&self, host: &mut dyn crate::spectator::HltvHost) {
+        let _ = host;
+    }
+
     /// Whether a `WeaponInfo` for kung fu (id 0) puts the weapon menu's selection back on its
     /// first slot (`menu_row` and `menu_bucket` 0; the menu stays open). TS 3.0's
     /// `MsgFunc_WeaponInfo` doesn't touch the selection.
