@@ -41,6 +41,9 @@ pub struct PowerupRules {
     /// `UpdateClientData`: the `TSSlowMo` amount while slow motion / slow pause runs.
     pub hud_slowmo: f32,
     pub hud_slowpause: f32,
+    /// `PlayerAddPowerUp` (0x97bc8): the grenade power-up's `PickUpWeapon(0x18, NULL, 0, select,
+    /// 0)` draws the grenades (`select` 1); otherwise only a player on kung fu draws them.
+    pub grenade_selects: bool,
 }
 
 impl PowerupRules {
@@ -65,6 +68,7 @@ pub const CORE: PowerupRules = PowerupRules {
     slowpause: (0.8, 0.225, true),
     hud_slowmo: 0.35,
     hud_slowpause: 0.225,
+    grenade_selects: true,
 };
 
 /// Sets a player's time scale target (`GoSlow`); a ruleset whose time scale doesn't ease writes
@@ -379,7 +383,7 @@ pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32, armor: f32
         v.health = v.health.max(150.0);
         p.ts.health_timer = cx.time() + 1.0;
     } else if bits & pw::GRENADE != 0 {
-        if !crate::weapons::give_weapon(p, cx, 24, 0) {
+        if !crate::weapons::give_weapon_select(p, cx, 24, 0, r.powerups().grenade_selects) {
             return false;
         }
     } else if bits & pw::INFINITE_CLIP != 0 && r.powerups().infinite_clip_instant {
@@ -561,6 +565,7 @@ mod tests {
         assert_eq!((r.hud_slowmo, r.hud_slowpause), (0.35, 0.225));
         assert_eq!((r.instant, r.slowmo_top_up_below, r.slowmo_swap_above, r.slowmo_drop_above), (0x1e6, 3, 2, 2));
         assert!(r.multiplier && r.infinite_clip_instant && !r.swap_on_instant);
+        assert!(r.grenade_selects, "PickUpWeapon(0x18, NULL, 0, 1, 0)");
     }
 
     #[test]

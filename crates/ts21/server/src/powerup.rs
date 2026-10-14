@@ -33,6 +33,9 @@ pub const POWERUPS: PowerupRules = PowerupRules {
     // slow motion (`0x100890cc` / `0x100890c8`).
     hud_slowmo: 0.35,
     hud_slowpause: 0.15,
+    // `PlayerAddPowerUp` (0x100599d0): `PickUpWeapon(0x18, NULL, 0, '\0')`, so the grenades are
+    // drawn only from kung fu (`PickUpWeapon` 0x10055830: `select || current == 0`).
+    grenade_selects: false,
 };
 
 /// `SetupPowerUp`'s type (0x10059ce0): a key below 1 is `1 << RandomLong(0, 8)`, any of the nine
@@ -118,6 +121,8 @@ mod tests {
             assert_eq!(r.base(k), 0, "{k:#x}");
         }
         assert!(!r.multiplier, "no pwupmult");
+        assert!(!r.grenade_selects, "the grenade power-up keeps the held weapon");
+        assert!(ts_server::rules::powerup::CORE.grenade_selects, "3.0 draws the grenades");
     }
 
     #[test]

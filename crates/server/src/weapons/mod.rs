@@ -700,10 +700,16 @@ pub fn cmd_start(p: &mut Player, _cx: &mut Cx, _cmd: &usercmd_t, seed: u32) {
 /// (`CBasePlayer::PickUpWeapon(id, NULL, attachments, select = id != 29, own = false)`, what a
 /// `ts_groundweapon` does with its whole spawnflags.)
 pub fn give_weapon(p: &mut Player, cx: &mut Cx, id: u8, attachments: u32) -> bool {
+    give_weapon_select(p, cx, id, attachments, id != shared::weapons::id::BRIEFCASE)
+}
+
+/// [`give_weapon`] with the caller's `select`: false draws the weapon only when the player is on
+/// kung fu (`PickUpWeapon`'s `select || current == 0`).
+pub fn give_weapon_select(p: &mut Player, cx: &mut Cx, id: u8, attachments: u32, select: bool) -> bool {
     if !gun_active(p) {
         return false; // `PickUpWeapon` needs the gun
     }
-    let ok = inventory::pick_up_weapon(p, cx, id, None, attachments, id != shared::weapons::id::BRIEFCASE, false);
+    let ok = inventory::pick_up_weapon(p, cx, id, None, attachments, select, false);
     inventory::sync_speed(p, cx);
     ok
 }
