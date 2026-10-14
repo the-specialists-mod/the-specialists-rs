@@ -69,8 +69,8 @@ struct Shot {
     up: Vec3,
     shell: i32,
     shell_snd: i32,
-    shell_right: f32,
-    shell_r: f32,
+    /// The shell's speeds along `right`, `up` and `fwd`.
+    shell_speed: [f32; 3],
 }
 
 impl Shot {
@@ -79,26 +79,36 @@ impl Shot {
         let (fwd, right, up) = a.vectors();
         let shell_name = tables().asset(id as u8).map(|s| s.shell.clone()).unwrap_or_default();
         let shell = if shell_name.is_empty() { 0 } else { r::model_index(&format!("models/{shell_name}.mdl")) };
+        Shot { id, silenced: a.i2 & 1 != 0, fwd, right, up, shell, shell_snd: 0, shell_speed: [0.0; 3] }
+    }
+
+    /// `EV_TS_FireStandard`/`FireAkimbo`'s shell: the ruleset's sideways speed, `r =
+    /// RandomLong(50, 100)` up and `r + 50` forward, and the ruleset's sound.
+    fn standard(a: &Args) -> Shot {
+        let mut s = Shot::new(a);
         let rules = crate::gameplay::current();
-        let shell_right = rules.shell_side_speed(id) as f32;
-        Shot {
-            id,
-            silenced: a.i2 & 1 != 0,
-            fwd,
-            right,
-            up,
-            shell,
-            shell_snd: rules.shell_sound(id),
-            shell_right,
-            shell_r: r::random_long(50, 100) as f32,
-        }
+        let side = rules.shell_side_speed(s.id) as f32;
+        let r = r::random_long(50, 100) as f32;
+        s.shell_snd = rules.shell_sound(s.id);
+        s.shell_speed = [side, r, r + 50.0];
+        s
+    }
+
+    /// `EV_TS_FirePump`'s shell (`0x10040e43..0x10040e56`): the ruleset's two rolls, the first
+    /// both sideways and forward (`0x100410c0..0x1004118d`), and always the shotgun shell's
+    /// sound, 2 (`push 0x2` at `0x100412c8`, `0x1004146b`, `0x10041812`).
+    fn pump(a: &Args) -> Shot {
+        let mut s = Shot::new(a);
+        let [(lo1, hi1), (lo2, hi2)] = crate::gameplay::current().pump_shell_speeds();
+        let r1 = r::random_long(lo1, hi1) as f32;
+        let r2 = r::random_long(lo2, hi2) as f32;
+        s.shell_snd = 2;
+        s.shell_speed = [r1, r2, r1];
+        s
     }
 
     fn shell_velocity(&self, a: &Args) -> Vec3 {
-        let mut vel = a.velocity;
-        vel = v::ma(vel, self.shell_right, self.right);
-        vel = v::ma(vel, self.shell_r, self.up);
-        v::ma(vel, self.shell_r + 50.0, self.fwd)
+        shell_velocity(a.velocity, self.right, self.up, self.fwd, self.shell_speed)
     }
 
     fn muzzle_ofs(&self) -> f32 {
@@ -110,6 +120,14 @@ impl Shot {
         let damage = tables().weapon(self.id as u8).map_or(0.0, |w| w.damage);
         effects::fx::FlashInfo { kind: fx[1], length: fx[2] as f32, radius: fx[3], damage }
     }
+}
+
+/// A shell's velocity: the shooter's, then `right`, `up` and `fwd` at `speed`'s three speeds,
+/// summed in that order as the fire events do.
+fn shell_velocity(vel: Vec3, right: Vec3, up: Vec3, fwd: Vec3, speed: [f32; 3]) -> Vec3 {
+    let vel = v::ma(vel, speed[0], right);
+    let vel = v::ma(vel, speed[1], up);
+    v::ma(vel, speed[2], fwd)
 }
 
 /// Where one shot's effects go: the flash(es), the smoke, and the pellet spray (`None` for
@@ -313,7 +331,7 @@ fn bullets_for(a: &Args, s: &Shot, src: Vec3, seed: i32, f1: f32, f2: f32) {
 
 /// `EV_TS_FireStandard` (`0x1003dfa0`).
 fn fire_standard(a: &Args) {
-    let s = Shot::new(a);
+    let s = Shot::standard(a);
     let pellets = tables().weapon(s.id as u8).map_or(1, |w| w.pellets);
     muzzle_light(a, &s);
     let (owner, first_person, world) = branches(a);
@@ -339,7 +357,7 @@ fn fire_standard(a: &Args) {
 /// `EV_TS_FirePump` (`0x10040c20`): pump shotguns. `b1` = firemode is pump; the shell is ejected
 /// here only in semi mode (pump mode ejects it from `pump.sc`).
 fn fire_pump(a: &Args) {
-    let s = Shot::new(a);
+    let s = Shot::pump(a);
     let pellets = tables().weapon(s.id as u8).map_or(8, |w| w.pellets);
     muzzle_light(a, &s);
     let (owner, first_person, world) = branches(a);
@@ -379,7 +397,7 @@ fn fire_akimbo(a: &Args, linked: bool) {
             }
         )
     });
-    let s = Shot::new(a);
+    let s = Shot::standard(a);
     let pellets = tables().weapon(s.id as u8).map_or(1, |w| w.pellets);
     muzzle_light(a, &s);
     let sel = if a.b1 != 0 { 0 } else { 2 };
@@ -996,6 +1014,15 @@ fn slow_time(ts: f32, x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `EV_TS_FirePump`'s shell (`0x10040e43..0x1004118d`): TS 3.0 rolls 20-40 and 0-20, the
+    /// first along both `right` and `fwd`, onto the shooter's velocity.
+    #[test]
+    fn pump_shell_velocity() {
+        assert_eq!(crate::gameplay::CORE_PLUGIN.client.pump_shell_speeds(), [(20, 40), (0, 20)]);
+        let (fwd, right, up) = ([1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
+        assert_eq!(shell_velocity([10.0, 0.0, 0.0], right, up, fwd, [30.0, 5.0, 30.0]), [40.0, -30.0, 5.0]);
+    }
 
     #[test]
     fn hit_and_penetration_tests_follow_the_x87_compares() {

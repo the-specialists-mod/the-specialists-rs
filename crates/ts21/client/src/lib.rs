@@ -233,9 +233,14 @@ impl ClientRules for Ts21Client {
         random_long(120, 140)
     }
 
-    /// Always 1 in the fire events.
+    /// Always 1 in the standard and akimbo fire (the pump fire's is 2, as 3.0's).
     fn shell_sound(&self, _id: i32) -> i32 {
         1
+    }
+
+    /// 60-80 and 50-100 (0x10077031, 0x10077043).
+    fn pump_shell_speeds(&self) -> [(i32, i32); 2] {
+        [(60, 80), (50, 100)]
     }
 
     /// [`events::ammo_attenuation`].

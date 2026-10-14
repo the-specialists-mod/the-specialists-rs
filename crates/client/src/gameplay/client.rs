@@ -278,6 +278,12 @@ pub trait ClientRules: Sync {
         if id == 11 { 2 } else { 1 }
     }
 
+    /// `EV_TS_FirePump`'s shell speed ranges, `RandomLong`ed in this order: the first both
+    /// sideways and forward, the second up. TS 3.0: 20-40 and 0-20 (`0x10040e43`, `0x10040e4d`).
+    fn pump_shell_speeds(&self) -> [(i32, i32); 2] {
+        [(20, 40), (0, 20)]
+    }
+
     /// The fire sound's attenuation factor for ammo type `ammo` (the client ammo table's field
     /// 0). TS 3.0: [`AMMO_ATTENUATION`](crate::events::AMMO_ATTENUATION), 0.4 past it.
     fn ammo_attenuation(&self, ammo: usize) -> f32 {

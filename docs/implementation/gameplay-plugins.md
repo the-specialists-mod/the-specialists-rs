@@ -338,7 +338,8 @@ The hooks so far:
 | `ClientRules` | `impact_particles(ps, now, pos, n, tex, bullet_type)` | false: `fx::impact`'s body | `effects/fx.rs` `impact` |
 | `ClientRules` | `gun_smoke_rate(id)` | `RandomLong(5, 10)` for 33, else `RandomLong(45, 55)` | `events/fire.rs` `gun_fx` |
 | `ClientRules` | `pellet_spray_gravity()` | 0 | `events/fire.rs` `gun_fx` |
-| `ClientRules` | `shell_side_speed(id)` / `shell_sound(id)` | `RandomLong(-40, 40)` for 17, else `RandomLong(120, 140)` / 2 for 11, else 1 | `events/fire.rs` `Shot::new` |
+| `ClientRules` | `shell_side_speed(id)` / `shell_sound(id)` | `RandomLong(-40, 40)` for 17, else `RandomLong(120, 140)` / 2 for 11, else 1 | `events/fire.rs` `Shot::standard` |
+| `ClientRules` | `pump_shell_speeds()` | 20-40 (sideways and forward), 0-20 (up) | `events/fire.rs` `Shot::pump` |
 | `ClientRules` | `ammo_attenuation(ammo)` | `AMMO_ATTENUATION`, 0.4 past it | `events/fire.rs` `fire_sound` |
 | `ClientRules` | `bullet_whizz_and_push()` | true | `events/fire.rs` `fire_bullets` |
 | `ClientRules` | `bullet_material_sound()` / `ricochet_pitch(ts, factor)` | 0.97 and `slow_pitch` / `fire_pitch` | `events/impact.rs` `texture_sound` |

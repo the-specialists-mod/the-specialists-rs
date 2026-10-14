@@ -72,7 +72,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `EV_TS_Fire` / `FireLinked` | `0x1003de40` / `0x1003de10` | `events::fire::{fire, fire_linked}` | done |
 | `EV_TS_FireStandard` | `0x1003dfa0` | `fire::fire_standard` | done |
 | `EV_TS_FireAkimbo` | `0x1003f090` | `fire::fire_akimbo` | done |
-| `EV_TS_FirePump` | `0x10040c20` | `fire::fire_pump` | done |
+| `EV_TS_FirePump` | `0x10040c20` | `fire::fire_pump` | done; its own shell speeds (`RandomLong(20, 40)` sideways and forward, `(0, 20)` up, `0x10040e43`/`0x10040e4d`, the ruleset's `pump_shell_speeds`) and the shotgun shell's sound 2 for every gun (unit-tested) |
 | `EV_TS_FireBullets` | `0x100450c0` | `fire::fire_bullets`, `fire::pellet_dir`, `fire::range_index` | done (spread and range index unit-tested). Client bullets instead of traces while the server's `realbullet` (`SrvSett` 0, `0x1018d16c`) is non-zero or ts < 0.99 (`0x10045330`); the range index is `__ftol(dist / (unit·10) · 10)` (`0x10045b41`). Penetration (`0x10045bde..`) uses TS's global remaining damage `DAT_1018a164` (`fire::REMAINING`): only a pellet that hits writes it and nothing resets it, so an event whose pellets all miss penetrates with an earlier event's damage. It starts from the end of the last pellet's trace, hit or miss, along the last pellet's direction. Hit tests are `fraction == 1.0` with `fcomp` (a NaN is a miss), and `remaining > 5` fails on a NaN |
 | fire sound | `0x1003de90` | `fire::fire_sound`, `fire::fire_sample` | done, unit-tested: the silenced flag alone picks `sound2` (`info+0x306`) or `sound` (`info+0x2c6`), even an empty one (`0x1003de98`/`0x1003dee5`) |
 | `EV_TS_EjectShell` | `0x10056890` | `fire::eject_shell` + `effects::track_shell` | done |

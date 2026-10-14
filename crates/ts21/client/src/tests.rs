@@ -440,6 +440,8 @@ fn weapon_events() {
     assert!(!v21().bullet_whizz_and_push() && v30().bullet_whizz_and_push());
     assert_eq!((v21().pellet_spray_gravity(), v30().pellet_spray_gravity()), (2.0, 0.0));
     assert_eq!((v21().shell_sound(11), v30().shell_sound(11), v30().shell_sound(5)), (1, 2, 1));
+    // The pump fire's shells: 2.1 60-80 / 50-100 (0x10077031, 0x10077043), 3.0 20-40 / 0-20.
+    assert_eq!((v21().pump_shell_speeds(), v30().pump_shell_speeds()), ([(60, 80), (50, 100)], [(20, 40), (0, 20)]));
 
     // The .454 Casull is 2.1's ammo 12 (0.3); 3.0's 12 is the .32 ACP (0.5).
     assert_eq!((v21().ammo_attenuation(12), v30().ammo_attenuation(12)), (0.3, 0.5));
