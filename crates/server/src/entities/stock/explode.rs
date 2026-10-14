@@ -288,7 +288,44 @@ fn explosion_damage(
     }
 }
 
-/// SDK `RadiusDamage(vecSrc, inflictor, attacker, dmg, radius, CLASS_NONE, bits)` (env_explosion).
+/// Which `BodyTarget` (vtable +0x104) an entity has: only `CBasePlayer` (0x9736c; `mp.dll`
+/// 0x1000fc90) and `CGunTarget` (0xd7d84; 0x1002a3a0) override `CBaseEntity`'s (0xacc28).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BodyKind {
+    Player,
+    GunTarget,
+    Other,
+}
+
+fn body_kind(e: *mut edict_t) -> BodyKind {
+    if has_player(e) {
+        BodyKind::Player
+    } else if engine().string(e.v().classname) == c"func_guntarget" {
+        BodyKind::GunTarget
+    } else {
+        BodyKind::Other
+    }
+}
+
+/// `BodyTarget(vecSrc)`: a player's is `Center() + view_ofs * RANDOM_FLOAT(0.5, 1.1)` (each
+/// product stored as a float, then added: plain `f32` maths), drawn only for players; a gun
+/// target's its origin; anything else's `Center()`.
+fn body_target_of(kind: BodyKind, center: Vec3, origin: Vec3, view_ofs: Vec3, random: impl FnOnce() -> f32) -> Vec3 {
+    match kind {
+        BodyKind::Player => vec::mad(center, view_ofs, random()),
+        BodyKind::GunTarget => origin,
+        BodyKind::Other => center,
+    }
+}
+
+fn body_target(e: *mut edict_t) -> Vec3 {
+    let (kind, c) = (body_kind(e), center(e));
+    let v = e.v();
+    body_target_of(kind, c, v.origin, v.view_ofs, || engine().random_float(0.5, 1.1))
+}
+
+/// SDK `RadiusDamage(vecSrc, inflictor, attacker, dmg, radius, CLASS_NONE, bits)` (env_explosion;
+/// 0xb2d64): traces to and measures from the target's `BodyTarget` ([`body_target`], 0xb2e82).
 pub fn radius_damage(src: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t, dmg: f32, radius: f32, bits: i32) {
     let eng = engine();
     let falloff = if radius != 0.0 { dmg / radius } else { 1.0 };
@@ -309,7 +346,7 @@ pub fn radius_damage(src: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t,
         if in_water && v.waterlevel == 0 || !in_water && v.waterlevel == 3 {
             continue;
         }
-        let spot = center(e);
+        let spot = body_target(e);
         let mut tr = eng.trace_line(src, spot, DONT_IGNORE_MONSTERS, inflictor);
         if tr.flFraction == 1.0 || tr.pHit == e {
             if tr.fStartSolid != 0 {
@@ -331,7 +368,18 @@ pub fn radius_damage(src: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t,
 
 #[cfg(test)]
 mod tests {
-    use super::slow_pitch;
+    use super::{BodyKind, body_target_of, slow_pitch};
+
+    /// #137: `RadiusDamage` aims at `BodyTarget`, which only players draw a random number for.
+    #[test]
+    fn radius_damage_aims_at_the_body_target() {
+        let (c, o, ofs) = ([10.0, 20.0, 30.0], [1.0, 2.0, 3.0], [0.0, 0.0, 28.0]);
+        assert_eq!(body_target_of(BodyKind::Player, c, o, ofs, || 0.5), [10.0, 20.0, 44.0]);
+        assert_eq!(body_target_of(BodyKind::Player, c, o, ofs, || 1.1), [10.0, 20.0, 30.0 + 28.0 * 1.1f32]);
+        let no_draw = || -> f32 { panic!("only players draw") };
+        assert_eq!(body_target_of(BodyKind::GunTarget, c, o, ofs, no_draw), o);
+        assert_eq!(body_target_of(BodyKind::Other, c, o, ofs, no_draw), c);
+    }
 
     #[test]
     fn slow_pitch_truncates() {
