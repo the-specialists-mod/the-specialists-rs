@@ -78,6 +78,12 @@ fn home() -> PathBuf {
     PathBuf::from(env::var("HOME").unwrap())
 }
 
+/// The first lines of xtask's server configs: the root's own `server.cfg`, then an empty line.
+/// FWGS's `exec` inserts a file's text without ending it, and the content's `server.cfg` has no
+/// final newline, so its last command (`sv_maxspeed 330`) swallowed the next line of ours
+/// (`"sv_maxspeed" changed to "330ts_gameplay"`).
+pub const EXEC_SERVER_CFG: &str = "exec server.cfg\n\n";
+
 static PARALLEL: AtomicBool = AtomicBool::new(false);
 
 /// Checks are running on several roots at once (see `Root::cleanup`).
@@ -139,7 +145,7 @@ impl Root {
         // Game cvars don't exist yet when command-line `+cvar` runs on GoldSrc, so set them
         // from the per-map server config instead (the engine runs it after GameInit).
         // `addbot` checks that a dedicated server adds a bot for it (a port deviation: TS refuses).
-        let cfg = format!("// Written by cargo xtask server.\nexec server.cfg\nts_bot_quota {bots}\naddbot\n");
+        let cfg = format!("// Written by cargo xtask server.\n{EXEC_SERVER_CFG}ts_bot_quota {bots}\naddbot\n");
         std::fs::write(self.path.join("ts").join("xtask_server.cfg"), cfg).unwrap();
         self.server_command_with(map, port, "xtask_server.cfg", bots)
     }

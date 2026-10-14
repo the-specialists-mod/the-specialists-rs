@@ -32,6 +32,12 @@
 //!                                                 must skip) and the stub's bot backend on a
 //!                                                 dedicated server, every root in parallel
 //!                                                 (also run by play)
+//! cargo xtask ts21    [--release] [--no-clients] [<root>...]
+//!                                                 TS 2.1 mode on a dedicated server per root, by
+//!                                                 rcon: reloads, LMS, The One, teamplay, round
+//!                                                 TDM, objective rounds, a large map; then the
+//!                                                 port's and the original TS client on the Linux
+//!                                                 Steam roots (see ts21.rs; not in `all`)
 //! cargo xtask all     [--release]                 test, then play
 //! cargo xtask client  [--release] <server-root> [--map M] [--port P]
 //!                                                 FWGS client (Rust client library) joins a dedicated
@@ -51,6 +57,7 @@ mod lint;
 mod package;
 mod plugins;
 mod roots;
+mod ts21;
 
 use roots::{Engine, Os, Root, Target};
 use std::path::{Path, PathBuf};
@@ -121,6 +128,12 @@ fn main() {
                 exit(1);
             }
         }
+        "ts21" => {
+            let clients = !take_flag(&mut args, "--no-clients");
+            if !ctx.ts21_all(&select_roots(&args), clients) {
+                exit(1);
+            }
+        }
         "play" => {
             if !ctx.play_all(&play_roots(&args)) {
                 exit(1);
@@ -169,7 +182,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|all|client|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|ts21|all|client|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }

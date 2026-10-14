@@ -1085,6 +1085,7 @@ pub fn set_objective(round: bool) {
         return;
     }
     let m = managers[engine().random_long(0, managers.len() as i32 - 1) as usize];
+    dev_objective(&format!("the round's manager is #{} of {}", engine().index_of(m), managers.len()));
     world::dispatch(m, |ent, cx| {
         if let Some(mgr) = (ent as &mut dyn Any).downcast_mut::<ObjectiveManager>() {
             mgr.reset(cx);
@@ -1104,8 +1105,17 @@ pub fn fire_manager_target(which: ManagerTarget) -> bool {
     if t == 0 {
         return false;
     }
+    dev_objective(&format!("the round's manager fires {:?} ({which:?})", engine().string(t)));
     crate::entities::fire_targets(engine().string(t), m, m, UseType::Toggle, 0.0);
     true
+}
+
+/// Port addition: with `developer` on, an `[ts] objective: ...` console line for the round
+/// manager, for scripted tests (`cargo xtask`).
+fn dev_objective(text: &str) {
+    if crate::rules::cvars::on(c"developer") {
+        engine().print(&format!("[ts] objective: {text}\n"));
+    }
 }
 
 /// Whether there is a round manager (2.1's `CheckDeads` fires its targets with no test of the

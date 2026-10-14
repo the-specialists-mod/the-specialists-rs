@@ -171,9 +171,11 @@ Client-side settings that aren't game state (voice) stay.
 
 Tested in-engine on FWGS listen servers on `ts_dojo` (`cargo xtask play`, "Gameplay reload"),
 and the server config's reload (for `ts_bot_backend`, with `ts_gameplay` set and back) on every
-engine's dedicated server (`cargo xtask plugins`). A `ts_gameplay` reload on the Steam engines'
-dedicated servers and the team modes are still to be checked
-(issue #103).
+engine's dedicated server (`cargo xtask plugins`). `cargo xtask ts21` (issue #103,
+[validation.md](../validation.md) §2.y) checks `ts_gameplay 21` from the server config (one
+reload on the Steam engines, none on FWGS) and from rcon (one reload each way) on every engine's
+dedicated server, then 2.1's team modes, and that TS 3.0's own client is refused by ReHLDS and
+HL25 (§4.2).
 
 ### 4.2 Only the port's client plays a ruleset other than 3.0
 

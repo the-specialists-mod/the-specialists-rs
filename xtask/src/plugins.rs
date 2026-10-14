@@ -109,7 +109,10 @@ impl Ctx {
         // later map's) adds bots and names the running backend in capitals: no second reload.
         fs::write(
             gamedir.join("xtask_plugins.cfg"),
-            "// Written by cargo xtask plugins.\nexec server.cfg\nts_bot_quota 2\nts_bot_backend test\nts_gameplay 21\nts_gameplay 30\nservercfgfile xtask_plugins2.cfg\n",
+            format!(
+                "// Written by cargo xtask plugins.\n{}ts_bot_quota 2\nts_bot_backend test\nts_gameplay 21\nts_gameplay 30\nservercfgfile xtask_plugins2.cfg\n",
+                crate::roots::EXEC_SERVER_CFG
+            ),
         )
         .unwrap();
         fs::write(

@@ -35,6 +35,9 @@ pub fn on_init_hud(p: &mut Player) {
 /// Mode 3 limits respawns to `ts_mapglobals` `playerrespawn` per round (0 = none);
 /// mode 2 and LMS (DM with `lastmanstanding` on, read live) to `respawnnumber` (at least 1);
 /// a limited respawn waits at most for the round's end, and the join deadline is 25 s at most.
+/// The count is the deaths this round: `CBasePlayer::Killed` adds the current one (`+0x732`)
+/// before it calls this, so both limits are lives, not respawns: `respawnnumber 1` (the default)
+/// or `playerrespawn 1` leaves a killed player out until the next round, 2 gives one respawn.
 pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
     set_respawn_time_with(p, cx, secs, false);
 }
@@ -212,7 +215,9 @@ mod tests {
 
     #[test]
     fn lms_and_round_tdm_count_respawns() {
-        // One respawn a round (respawnnumber 1): the first death waits, the second is out.
+        // `used` is the deaths this round, the current one included (`Killed` counts it first):
+        // with respawnnumber 1 the first death is out, with 2 it waits and the second is out.
+        // (0 is `InitHUD`'s call, before any death.)
         assert_eq!(respawn_time(Mode::Dm, true, 0, 1.0, 0, 5.0, 100.0, 200.0), Respawn::Limited { at: 105.0, deadline: 125.0 });
         assert_eq!(respawn_time(Mode::Dm, true, 0, 1.0, 1, 5.0, 100.0, 200.0), Respawn::Never);
         assert_eq!(respawn_time(Mode::RoundTdm, false, 0, 2.0, 1, 5.0, 100.0, 103.0), Respawn::Limited { at: 103.0, deadline: 103.0 });

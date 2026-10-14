@@ -567,6 +567,19 @@ pub fn team_win(team: i32, win: i32, lose: i32, now: f32) {
         ts_message_all([0, 0, 0], 1, 30, result);
     }
     send_round_scores();
+    dev_round(&state::with(|g| {
+        let t = |i: usize| g.teams.get(i).map_or((0, 0), |t| (t.cash, t.score));
+        let ((sc, ss), (mc, ms)) = (t(0), t(1));
+        format!("TeamWin({team}, {win}, {lose}): {SPECIALISTS} cash {sc} score {ss}, {MERCENARY} cash {mc} score {ms}")
+    }));
+}
+
+/// Port addition: with `developer` on, a `[ts] round (2.1): ...` console line, for scripted tests
+/// (`cargo xtask ts21`); 2.1 shows the rounds on the HUD only.
+fn dev_round(text: &str) {
+    if cvars::on(c"developer") {
+        engine().print(&format!("[ts] round (2.1): {text}\n"));
+    }
 }
 
 /// The round modes' `TeamScore`s: "Specialists" and "Mercenary".
@@ -685,6 +698,7 @@ pub fn restart_round(now: f32) {
         ts_message_all([0, 0, 0], 1, 30, "Defeat the opposite team!");
     }
     let per_round = with(|r| r.respawns_per_round);
+    dev_round(&format!("RestartRound: {mode:?}, {rt} s, sides swapped {swapped}, respawns per round {per_round}"));
     for e in slot_players() {
         ts_server::player::with_player(e, |p, cx| {
             let round = matches!(mode, Mode::RoundTdm | Mode::Objective);
