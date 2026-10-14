@@ -34,11 +34,17 @@ pub(super) struct Panel {
     help_text: String,
 }
 
+/// Whether `nohud` lets the panel show (`0x10063912..0x10063925`): `fcomp 0.0` on the float with
+/// `test ah, 0x40`, so only an exact 0, or a NaN (unordered sets C3), shows it (issue #185).
+fn nohud_shows(nohud: f32) -> bool {
+    nohud == 0.0 || nohud.is_nan()
+}
+
 /// The unlocalised texts of `UpdateSpectatorPanel`: (mode line, help line), or `None` when the
 /// panel is hidden. `name` is the target's name when it is a connected player.
-fn texts(mode: i32, nohud: i32, spectate_only: bool, name: Option<&str>) -> (Option<String>, String) {
+fn texts(mode: i32, shows: bool, spectate_only: bool, name: Option<&str>) -> (Option<String>, String) {
     let help = if spectate_only { "#Spec_Only_Help".to_owned() } else { format!("#Spec_TSHelp{mode}") };
-    if mode == 0 || nohud != 0 {
+    if mode == 0 || !shows {
         return (None, help);
     }
     let mut text = match name {
@@ -54,14 +60,16 @@ fn texts(mode: i32, nohud: i32, spectate_only: bool, name: Option<&str>) -> (Opt
 /// `UpdateSpectatorPanel` (`0x10063870`).
 pub(super) fn update() {
     let (mode, target) = state::with(|s| (s.spec_mode, s.spec_target));
-    let nohud = crate::input::cvars().nohud.value() as i32;
+    let nohud_value = crate::input::cvars().nohud.value();
+    // The `ftol`'d value is only the viewport's change key (`+0x228`).
+    let nohud = nohud_value as i32;
     let e = engine();
     // 0x10063952: `g_PlayerInfoList[target].name`, the engine's raw bytes (one char per byte
     // here, as the localiser and the label draw take them).
     let name = (target >= 1 && target <= e.max_clients())
         .then(|| crate::hud::saytext::string(&e.player_info(target).name_bytes))
         .filter(|n| !n.is_empty());
-    let (mode_text, help) = texts(mode, nohud, spec::is_spectate_only(), name.as_deref());
+    let (mode_text, help) = texts(mode, nohud_shows(nohud_value), spec::is_spectate_only(), name.as_deref());
     with(|s| {
         let p = &mut s.panel;
         p.key = Some((mode, target, nohud));
@@ -135,12 +143,15 @@ mod tests {
 
     #[test]
     fn panel_texts() {
-        assert_eq!(texts(1, 0, false, Some("bob")), (Some("#Spec_Mode1 : bob".into()), "#Spec_TSHelp1".into()));
-        assert_eq!(texts(3, 0, false, None), (Some("#Spec_Mode3".into()), "#Spec_TSHelp3".into()));
-        assert_eq!(texts(4, 0, true, Some("x")).0.as_deref(), Some("#Directed #Spec_Mode4 : x"));
-        assert_eq!(texts(4, 0, true, None).1, "#Spec_Only_Help");
-        assert_eq!(texts(0, 0, false, None).0, None, "not observing");
-        assert_eq!(texts(5, 1, false, None).0, None, "nohud");
+        assert_eq!(texts(1, true, false, Some("bob")), (Some("#Spec_Mode1 : bob".into()), "#Spec_TSHelp1".into()));
+        assert_eq!(texts(3, true, false, None), (Some("#Spec_Mode3".into()), "#Spec_TSHelp3".into()));
+        assert_eq!(texts(4, true, true, Some("x")).0.as_deref(), Some("#Directed #Spec_Mode4 : x"));
+        assert_eq!(texts(4, true, true, None).1, "#Spec_Only_Help");
+        assert_eq!(texts(0, true, false, None).0, None, "not observing");
+        assert_eq!(texts(5, false, false, None).0, None, "nohud");
+        // `nohud` is compared as a float (issue #185): 0.5 hides the bar, a NaN shows it.
+        assert!(nohud_shows(0.0) && nohud_shows(-0.0) && nohud_shows(f32::NAN));
+        assert!(!nohud_shows(0.5) && !nohud_shows(-0.25) && !nohud_shows(1.0));
         assert_eq!((yres(480, 40.0), yres(600, 25.0), yres(768, 15.0)), (40, 31, 24));
     }
 }
