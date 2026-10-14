@@ -174,6 +174,31 @@ pub trait ServerRules: Sync {
         !crate::weapons::grenade_buys()
     }
 
+    /// `DropWeapon` (0x94ed9, 0x94fad, 0x95265): whether a gun thrown by `drop` or a disarm lasts
+    /// `clamp(2 × weaponstay, 10, 120)` s and glows for its dropper
+    /// ([`worldgun::set_drop_lifetime`](crate::weapons::worldgun::set_drop_lifetime)), instead of
+    /// keeping `CTSWorldGun::Spawn`'s `clamp(weaponstay, 5, 60)`. 3.0: true.
+    fn drop_lifetime_and_glow(&self) -> bool {
+        true
+    }
+
+    /// `CTSWorldGun::Fall` (0xa0d84): whether a flying dropped gun traces 0.1 s ahead and hurts a
+    /// non-player it hits for `speed × slots × 0.001` (`DMG_NEVERGIB | DMG_CLUB`) when its health
+    /// is at most `speed × slots`. 3.0: true.
+    fn world_gun_fall_impact(&self) -> bool {
+        true
+    }
+
+    /// A flying dropped gun `gun` (weapon `id`, credited to `attacker`) touched `other`
+    /// (`CTSWorldGun::BounceTouch` 0xa0b0c, after its bounce). 3.0: nothing.
+    fn world_gun_touch(&self, _gun: *mut edict_t, _attacker: *mut edict_t, _id: u8, _other: *mut edict_t) {}
+
+    /// `CTSAmmoPack::WaitTouch` (0xa16c0): whether a pack a live player touches stays when none
+    /// of its ammo fitted. 3.0: false, the touch removes it.
+    fn ammo_pack_stays_when_nothing_fits(&self) -> bool {
+        false
+    }
+
     // ---- map entities -------------------------------------------------------------------------
 
     /// Whether an entity of `class` may spawn (`DispatchSpawn`, for the map's entities and the

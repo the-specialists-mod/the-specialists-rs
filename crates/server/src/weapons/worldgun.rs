@@ -77,7 +77,12 @@ pub fn create(
 
 /// Lifetime override for weapons dropped with `drop`/disarm: `clamp(2 * weaponstay, 10, 120)`,
 /// and the dropper sees it glow.
+/// Nothing when the rules keep the spawn lifetime
+/// ([`ServerRules::drop_lifetime_and_glow`](crate::gameplay::ServerRules::drop_lifetime_and_glow)).
 pub fn set_drop_lifetime(gun: *mut edict_t, dropper: *mut edict_t) {
+    if !crate::gameplay::active().server.drop_lifetime_and_glow() {
+        return;
+    }
     let t = (assets::cvars().weaponstay * 2.0).clamp(10.0, 120.0);
     let now = engine().time();
     crate::world::with::<WorldGun, _>(gun, |w| {
@@ -215,6 +220,10 @@ impl Entity for WorldGun {
         }
         // Falling guns hurt what they hit (breakables). The attacker is the thrower (port
         // deviation, issue #1; TS `CTSWorldGun::Fall` 0xa0d84 passes the gun).
+        if !crate::gameplay::active().server.world_gun_fall_impact() {
+            self.phys.update(cx.pev());
+            return;
+        }
         let pev = cx.pev();
         let end = spread::ma(pev.origin, 0.1, pev.velocity);
         let tr = e.trace_line(pev.origin, end, DONT_IGNORE_MONSTERS, me);
@@ -262,6 +271,8 @@ impl Entity for WorldGun {
             pev.avelocity = spread::scale(pev.avelocity, k);
             pev.angles[2] = 0.0;
         }
+        // The ruleset's touch damage; the attacker is the thrower, as for `Fall`'s (issue #1).
+        crate::gameplay::active().server.world_gun_touch(me, self.thrower.or(me), self.id, other);
         // A gun still in the air is picked up with +use (`Use`, see `use_by`), not by touch.
     }
 
@@ -431,6 +442,8 @@ impl Entity for AmmoPack {
         };
         if took {
             emit(other, CHAN_ITEM, c"items/9mmclip1.wav", 1.0, 0.8, 100);
+        } else if crate::gameplay::active().server.ammo_pack_stays_when_nothing_fits() {
+            return;
         }
         // TS removes the pack on the first touch whether or not anything fitted (the armour a
         // `DropArmor` pack carries is the only thing that keeps it; not ported).
