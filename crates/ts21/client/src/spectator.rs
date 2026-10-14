@@ -327,6 +327,16 @@ impl Hltv {
         host.set_inset_pass(true);
     }
 
+    /// The camera `DrawOverviewEntities` (`0x1004cb50`) marks while an inset mode shows: with
+    /// the in-eye inset (2) or main mode (4) it is first moved to `V_GetInEyePos` (`0x100b9510`)
+    /// of the spectator's target (`+0x950`; `0x1004d6b3..0x1004d6ca`). 3.0 tests its observer
+    /// mode instead and uses its own `V_GetInEyePos`.
+    pub fn overview_camera(&self, host: &dyn HltvHost, origin: &mut Vec3, angles: &mut Vec3) {
+        if self.inset == 2 || self.main == 4 {
+            in_eye_pos(host, host.locked_target(), origin, angles);
+        }
+    }
+
     fn jump(&mut self, host: &mut dyn HltvHost, origin: Vec3, angles: Vec3) {
         self.jump_origin = origin;
         self.jump_angles = angles;
@@ -836,27 +846,61 @@ mod tests {
         assert!(!core.hltv_calc_refdef(&mut f, &mut p));
         assert_eq!((p.onlyClientDraw, p.nextView, f.view_model_cleared, f.inset_pass), (5, 0, false, None));
         assert!(core.hltv_overview_in_main_view());
+        // `V_CalcRefdef` (0x10069b90): HLTV viewers and observing players get the spectator view.
+        assert!(core.spectator_refdef(true, 0) && core.spectator_refdef(false, 4) && core.spectator_refdef(true, 5));
+        assert!(!core.spectator_refdef(false, 0));
+        // The overview's camera icon: 3.0's own in-eye refresh.
+        f.locked = 3;
+        let (mut org, mut ang) = ([1.0; 3], [2.0; 3]);
+        assert!(!core.hltv_overview_camera(&f, &mut org, &mut ang));
+        assert_eq!((org, ang), ([1.0; 3], [2.0; 3]));
         // The panel: the observer mode's number; `nohud` 0 or NaN shows it.
         assert_eq!(core.hltv_panel_mode(), None);
         assert!(core.spectator_panel_shows(0.0) && core.spectator_panel_shows(f32::NAN) && !core.spectator_panel_shows(0.5));
     }
 
-    /// 2.1's rules run 2.1's view only for HLTV (`pparams->spectator`), and draw the overview
-    /// in the main view only on the map main mode.
+    /// 2.1's rules run the spectator view only for HLTV (`pparams->spectator`) and 2.1's passes
+    /// there, and draw the overview in the main view only on the map main mode.
     #[test]
     fn ts21_rules_hltv_view() {
         let rules = crate::PLUGIN.client;
         let mut f = Fake::default();
-        let mut p = ref_params_t { onlyClientDraw: 5, ..Default::default() };
-        assert!(!rules.hltv_calc_refdef(&mut f, &mut p), "observing players: 3.0's passes (issue #183)");
-        assert!(!f.view_model_cleared);
-        p.spectator = 1;
+        // `V_CalcRefdef` (0x100ba6b0) has no `g_iUser1` test: observers get the normal view
+        // (issue #183).
+        assert!(rules.spectator_refdef(true, 0) && rules.spectator_refdef(true, 4));
+        assert!(!rules.spectator_refdef(false, 1) && !rules.spectator_refdef(false, 4) && !rules.spectator_refdef(false, 5));
+        let mut p = ref_params_t { spectator: 1, onlyClientDraw: 5, ..Default::default() };
         assert!(rules.hltv_calc_refdef(&mut f, &mut p));
         assert!(f.view_model_cleared);
         assert!(!rules.hltv_overview_in_main_view(), "main mode 0");
         // `UpdateSpectatorPanel` (0x100af0c0): the main mode's number; a NaN `nohud` hides it.
         assert_eq!(rules.hltv_panel_mode(), Some(0));
         assert!(rules.spectator_panel_shows(0.0) && !rules.spectator_panel_shows(f32::NAN) && !rules.spectator_panel_shows(0.5));
+    }
+
+    /// `DrawOverviewEntities` (0x1004cb50, `0x1004d6b3..0x1004d6ca`): the camera moves to 2.1's
+    /// `V_GetInEyePos` of the spectator's target only with the in-eye inset (2) or main mode
+    /// (4), whatever the observer mode.
+    #[test]
+    fn overview_camera_follows_the_21_modes() {
+        let mut f = Fake { locked: 5, mode: 5, ..Default::default() };
+        let start = ([1.0; 3], [2.0; 3]);
+        let pitch = |p: f64| (p * -std::f64::consts::PI) as f32;
+        for (main, inset, moves) in [(2, 3, false), (5, 1, false), (5, 2, true), (4, 3, true), (3, 0, false)] {
+            let h = Hltv { main, inset, ..Hltv::NEW };
+            let (mut org, mut ang) = start;
+            h.overview_camera(&f, &mut org, &mut ang);
+            let want = if moves { ([0.0, 0.0, 5.0 + 28.0], [pitch(1.0), 2.0, 3.0]) } else { start };
+            assert_eq!((org, ang), want, "main {main} inset {inset}");
+        }
+        // 2.1's in-eye position has no `NO_VIEW` test, and a non-solid target drops and rolls.
+        f.eye = Some(InEyeTarget { origin: [1.0, 2.0, 3.0], angles: [10.0, 20.0, 0.0], solid: 0, usehull: 0 });
+        let (mut org, mut ang) = start;
+        Hltv { main: 4, ..Hltv::NEW }.overview_camera(&f, &mut org, &mut ang);
+        assert_eq!((org, ang), ([1.0, 2.0, -5.0], [pitch(10.0), 20.0, 80.0]));
+        // The plugin hook replaces 3.0's refresh.
+        let (mut org, mut ang) = start;
+        assert!(crate::PLUGIN.client.hltv_overview_camera(&f, &mut org, &mut ang));
     }
 
     #[test]

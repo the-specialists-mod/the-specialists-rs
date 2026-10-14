@@ -360,6 +360,8 @@ The hooks so far:
 | `ClientRules` | `hltv_draw(host) -> bool` | nothing, false: 3.0's name tags follow | `spectator::draw_hltv_names` (`CHudSpectator::Draw`) |
 | `ClientRules` | `hltv_calc_refdef(host, pparams) -> bool` | false: 3.0's mode passes (in-eye on the observer mode, the inset modes, the in-eye gun) | `spectator::calc_refdef` (`V_CalcSpectatorRefdef`), after the camera overrides and smoothing |
 | `ClientRules` | `hltv_overview_in_main_view()` | true | `spectator::overview::draw` (`DrawOverview`) |
+| `ClientRules` | `spectator_refdef(spectator, observer_mode) -> bool` | `spectator \|\| observer_mode != 0`: HLTV viewers and observing players get the spectator view | `view::calc_refdef` (`V_CalcRefdef`'s dispatch) |
+| `ClientRules` | `hltv_overview_camera(host, origin, angles) -> bool` | false: 3.0's refresh (`V_GetInEyePos` with the in-eye inset or observer mode) | `spectator::overview::draw` (the camera icon of `DrawOverviewEntities`) |
 | `ClientRules` | `hltv_panel_mode()` | `None`: the observer mode | `spectator::panel::update` (`UpdateSpectatorPanel`), HLTV viewers |
 | `ClientRules` | `spectator_panel_shows(nohud)` | `nohud` exactly 0 or NaN (#185) | `spectator::panel::update` |
 | `ClientRules` | `kungfu_exhausted(power)` | `power ≤ 0.01` (empty red frame) | `hud/weapons.rs` `draw_kungfu_bar` |

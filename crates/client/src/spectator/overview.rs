@@ -423,13 +423,18 @@ pub fn draw() {
     if !spec::is_spectate_only() {
         return;
     }
-    let pip = with(|s| s.pip);
+    let (pip, cycle) = with(|s| (s.pip, s.overview.draw_cycle));
     // TS 3.0 draws in every main view; a ruleset may limit that (TS 2.1: its map main mode).
     let main_view = crate::gameplay::current().hltv_overview_in_main_view();
+    if (cycle == 0 && !main_view) || (cycle == 1 && pip != 3) {
+        return;
+    }
+    // TS moves the camera at the end of `DrawOverviewEntities`; nothing drawn before it reads
+    // the camera, and the ruleset's host borrows this state, so it moves first.
+    if pip != 0 {
+        refresh_camera(pip);
+    }
     with(|s| {
-        if (s.overview.draw_cycle == 0 && !main_view) || (s.overview.draw_cycle == 1 && pip != 3) {
-            return;
-        }
         draw_layer(&s.overview);
         draw_entities(s);
         s.overview.expire(engine().client_time() as f64);
@@ -532,11 +537,7 @@ fn draw_entities(s: &mut Spectator) {
     if s.pip == 0 {
         return;
     }
-    // The camera icon (inset modes only, so never in TS): in-eye cameras are refreshed first.
-    let mode = state::with(|st| st.spec_mode);
-    if s.pip == 2 || mode == obs::IN_EYE {
-        in_eye_position(s.locked_target, &mut s.saved_origin, &mut s.saved_angles);
-    }
+    // The camera icon (inset modes only, so never in TS 3.0), after [`refresh_camera`].
     let [x, y, cz] = s.saved_origin;
     tri::render_mode(kRenderTransAdd as i32);
     tri::sprite_texture(r::sprite_model(s.overview.sprites.camera), 0);
@@ -553,6 +554,22 @@ fn draw_entities(s: &mut Spectator) {
         tri::vertex3fv(&p);
     }
     tri::end();
+}
+
+/// The in-eye refresh of the camera icon (`0x10024160`): with the in-eye inset (2) or observer
+/// mode, `V_GetInEyePos` of the locked target, unless the ruleset has its own
+/// ([`ClientRules::hltv_overview_camera`](crate::gameplay::ClientRules::hltv_overview_camera)).
+fn refresh_camera(pip: i32) {
+    let (target, mut origin, mut angles) = with(|s| (s.locked_target, s.saved_origin, s.saved_angles));
+    if !crate::gameplay::current().hltv_overview_camera(&super::EngineHltv, &mut origin, &mut angles)
+        && (pip == 2 || state::with(|st| st.spec_mode) == obs::IN_EYE)
+    {
+        in_eye_position(target, &mut origin, &mut angles);
+    }
+    with(|s| {
+        s.saved_origin = origin;
+        s.saved_angles = angles;
+    });
 }
 
 /// `AngleMatrix((0, yaw, 0))` + `VectorTransform`: `p` turned about z.

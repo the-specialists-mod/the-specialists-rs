@@ -422,6 +422,22 @@ pub trait ClientRules: Sync {
         false
     }
 
+    /// Whether `V_CalcRefdef` runs the spectator view, from `pparams->spectator` (an HLTV viewer)
+    /// and the observer mode (`g_iUser1`); otherwise the normal view runs (unless paused). TS 3.0
+    /// (`0x10069bb2..0x10069bbd`): either, so a player who observes gets the spectator view.
+    fn spectator_refdef(&self, spectator: bool, observer_mode: i32) -> bool {
+        spectator || observer_mode != 0
+    }
+
+    /// A ruleset's own refresh of the spectator camera (`origin`, `angles`) that
+    /// `DrawOverviewEntities` marks on the overview while an inset mode shows. Returning true
+    /// replaces 3.0's (`0x10024160`: `V_GetInEyePos` `0x10068e20` of the locked target with the
+    /// in-eye inset or observer mode).
+    fn hltv_overview_camera(&self, host: &dyn crate::spectator::HltvHost, origin: &mut Vec3, angles: &mut Vec3) -> bool {
+        let _ = (host, origin, angles);
+        false
+    }
+
     /// Whether `DrawOverview` draws the overview map in the main view (it draws in the inset
     /// window with inset mode 3 either way). TS 3.0 (`0x10024970`): always.
     fn hltv_overview_in_main_view(&self) -> bool {

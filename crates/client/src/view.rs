@@ -1032,7 +1032,9 @@ fn refdef_path(intermission: bool, spectating: bool, paused: bool) -> RefdefPath
 /// `V_CalcRefdef` (`0x10069b90`).
 pub fn calc_refdef(p: &mut ref_params_t) {
     with(|w| w.refdef_frametime = p.frametime);
-    let spectating = p.spectator != 0 || state::with(|s| s.spec_mode) != 0;
+    // TS 3.0 runs the spectator view for HLTV viewers and observing players; a ruleset may
+    // limit it (TS 2.1: HLTV only, so observers get the normal view).
+    let spectating = crate::gameplay::current().spectator_refdef(p.spectator != 0, state::with(|s| s.spec_mode));
     match refdef_path(p.intermission != 0, spectating, p.paused != 0) {
         RefdefPath::Intermission => calc_intermission(p),
         RefdefPath::Spectator => calc_spectator(p),

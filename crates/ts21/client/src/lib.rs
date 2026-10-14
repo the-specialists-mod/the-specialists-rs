@@ -439,15 +439,25 @@ impl ClientRules for Ts21Client {
         true
     }
 
+    /// `V_CalcRefdef` (`0x100ba6b0`) runs the spectator view only for `pparams->spectator`
+    /// (`0x100ba6dc..0x100ba6e9`, HLTV): there is no `g_iUser1` test, so a player who observes
+    /// gets the normal view (`0x100b6c90`) at their own (movement-tracked) origin, with its bob
+    /// and view model (issue #183).
+    fn spectator_refdef(&self, spectator: bool, _observer_mode: i32) -> bool {
+        spectator
+    }
+
     /// 2.1's `V_CalcSpectatorRefdef` mode passes (`0x100b96a0`, issue #181), on the main and
-    /// inset modes. 2.1's `V_CalcRefdef` (`0x100ba6b0`) runs this view only for
-    /// `pparams->spectator` (HLTV); players who observe get 3.0's passes until the port's 2.1
-    /// view follows that dispatch too (issue #183).
+    /// inset modes. Only HLTV viewers get here ([`Self::spectator_refdef`]).
     fn hltv_calc_refdef(&self, host: &mut dyn HltvHost, p: &mut goldsrc::sys::ref_params_t) -> bool {
-        if p.spectator == 0 {
-            return false;
-        }
         HLTV.0.borrow().calc_refdef(host, p);
+        true
+    }
+
+    /// The overview's camera icon follows 2.1's in-eye inset or main mode and its
+    /// `V_GetInEyePos` (`0x1004cb50`, issue #186).
+    fn hltv_overview_camera(&self, host: &dyn HltvHost, origin: &mut Vec3, angles: &mut Vec3) -> bool {
+        HLTV.0.borrow().overview_camera(host, origin, angles);
         true
     }
 
