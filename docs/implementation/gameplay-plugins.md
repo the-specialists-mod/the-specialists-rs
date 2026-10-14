@@ -358,6 +358,7 @@ The hooks so far:
 | `ClientRules` | `kungfu_regen(r)` | +15 per step (1 while negative), up to 100 | `hud/state.rs` `regen_kungfu` (weapon `Think`) |
 | `ClientRules` | `kungfu_power_on_reset()` | none (only `VidInit` refills the bar) | `hud/state.rs` `reset_weapons` |
 | `ClientRules` | `kungfu_power_from_weapon_info(clip)` | none (`KFuPower` alone sets the bar) | `hud/state.rs` `WeaponInfo` (id 0) |
+| `ClientRules` | `kungfu_weapon_info_resets_menu_selection()` | false (the slot menu keeps its selection) | `hud/state.rs` `WeaponInfo` (id 0) |
 | `ClientRules` | `kungfu_label(power, hud, w, h)` | none: 3.0's `DrawKungFuLabel`; a ruleset returns its bar as `hud::draw::HudOp`s | `hud/weapons.rs` `draw_kungfu_label` |
 | `ClientRules` | `status_look()` | `StatusLook::default()`: 3.0's stance health fill, kevlar icon alone, team-coloured team bar, titles labels, icons × 2/3 | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |

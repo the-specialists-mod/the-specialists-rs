@@ -587,6 +587,14 @@ fn kungfu_bar_from_weapon_info() {
     assert_eq!(v30().kungfu_power_from_weapon_info(55), None);
 }
 
+/// Issue #178: 2.1's `WeaponInfo` for kung fu zeroes the slot menu's selection (0x1008d361,
+/// 0x1008d36e); 3.0's leaves it.
+#[test]
+fn kungfu_weapon_info_resets_menu_selection() {
+    assert!(v21().kungfu_weapon_info_resets_menu_selection());
+    assert!(!v30().kungfu_weapon_info_resets_menu_selection());
+}
+
 /// Issue #111: 2.1's kung-fu bar (0x1008a0f0) on a 640 x 480 screen.
 #[test]
 fn kungfu_bar_look() {

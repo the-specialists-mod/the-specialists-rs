@@ -663,10 +663,15 @@ impl Hud {
                 let info_id = if (0..MAX_WEAPONS as i32).contains(&self.weapon) { self.weapon } else { 0 };
                 let t = self.ammo_type(info_id);
                 self.reserve[t] = v.reserve as i32;
-                if v.id == 0
-                    && let Some(power) = crate::gameplay::hud_rules(self.gameplay).kungfu_power_from_weapon_info(v.clip)
-                {
-                    self.kfu_power = power;
+                if v.id == 0 {
+                    let rules = crate::gameplay::hud_rules(self.gameplay);
+                    if rules.kungfu_weapon_info_resets_menu_selection() {
+                        self.menu_row = 0;
+                        self.menu_bucket = 0;
+                    }
+                    if let Some(power) = rules.kungfu_power_from_weapon_info(v.clip) {
+                        self.kfu_power = power;
+                    }
                 }
                 self.firemode = v.mode;
                 self.attachments = v.attachments as u32;
@@ -1128,6 +1133,18 @@ mod tests {
         assert_eq!(h.pw_flags, 1, "permanent flags don't replace the timed power-up");
         h.apply(Msg::PwUpTime, &PwUpTime { secs: 12 }.encode(), &c, &mut fx);
         assert_eq!((h.pw_expire, h.pw_value), (22.0, 0));
+    }
+
+    /// TS 3.0's `MsgFunc_WeaponInfo` leaves the slot menu's selection on kung fu (2.1's resets
+    /// it, `ClientRules::kungfu_weapon_info_resets_menu_selection`).
+    #[test]
+    fn kungfu_weapon_info_keeps_menu_selection() {
+        let s = Screen::default();
+        let c = ctx(&s);
+        let mut h = Hud { menu_open: true, menu_row: 3, menu_bucket: 4, ..Hud::default() };
+        let mut fx = Vec::new();
+        h.apply(Msg::WeaponInfo, &WeaponInfo { id: 0, clip: 1, reserve: 0, mode: 0, attachments: 0 }.encode(), &c, &mut fx);
+        assert_eq!((h.menu_open, h.menu_row, h.menu_bucket), (true, 3, 4));
     }
 
     #[test]

@@ -319,6 +319,14 @@ impl ClientRules for Ts21Client {
         Some((clip as f32).min(100.0))
     }
 
+    /// `MsgFunc_WeaponInfo` for kung fu (`id` `+0x7b8` == 0, `0x1008d239` → `0x1008d35e`) zeroes
+    /// the weapons element's `+0x740` and `+0x744`, the slot menu's grid indices
+    /// (`grid[+0x740][+0x744]`, read at `0x10089b98..0x10089bd9`) but not its open flag `+0x73c`
+    /// (issue #178).
+    fn kungfu_weapon_info_resets_menu_selection(&self) -> bool {
+        true
+    }
+
     /// The weapon element's kung-fu bar (0x1008a0f0, issue #111), 128 wide from `w - 136`: the
     /// full part `ftol(1.28f × power)` wide at alpha 0x40 and the empty rest at 0x1e, both 19
     /// high at `h - 28`, both in the HUD colour (3.0: a frame and a fill scaled by the power);

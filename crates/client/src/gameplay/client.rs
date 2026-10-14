@@ -385,6 +385,13 @@ pub trait ClientRules: Sync {
         None
     }
 
+    /// Whether a `WeaponInfo` for kung fu (id 0) puts the weapon menu's selection back on its
+    /// first slot (`menu_row` and `menu_bucket` 0; the menu stays open). TS 3.0's
+    /// `MsgFunc_WeaponInfo` doesn't touch the selection.
+    fn kungfu_weapon_info_resets_menu_selection(&self) -> bool {
+        false
+    }
+
     /// The kung-fu bar and its label the weapon element draws while kung fu is the weapon, as a
     /// layout for a `w` × `h` screen with the bar at `power` in the HUD colour `hud`. `None` is
     /// TS 3.0's `DrawKungFuLabel` (1004d700).
