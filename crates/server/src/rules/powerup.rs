@@ -187,7 +187,25 @@ pub fn drop_powerup(origin: [f32; 3], bits: u16, secs: i32) {
     crate::entities::ts::create_powerup(bits, secs, origin);
 }
 
-/// `SlowMotionFlow`: every 0.5 s an activator slows every player and projectile it can see.
+/// `SlowMotionFlow`'s line-of-sight traces (0x86d4c, 0x86f63, 0x870c2, 0x87221; 2.1 the same)
+/// call the glass overload `UTIL_TraceLine(.., ignore_monsters, ignore_glass, ..)` with both
+/// set: `IGNORE_MONSTERS | 0x100`, so players and projectiles behind glass are in sight.
+const FLOW_TRACE: i32 = IGNORE_MONSTERS | 0x100;
+
+/// `m_iSlowedEnts` (`pl+0x288`): the slowed-projectile list holds 32.
+const SLOWED_ENTS_MAX: usize = 32;
+
+/// A projectile the flow has just slowed is listed only while the list has room (0x86f94: `if
+/// (count <= 31) array[count++] = ent`); past that it stays slowed but unlisted, so
+/// `DeactivateSlowMotionFlow` never resets it.
+fn list_slowed(list: &mut Vec<*mut edict_t>, e: *mut edict_t) {
+    if list.len() < SLOWED_ENTS_MAX {
+        list.push(e);
+    }
+}
+
+/// `SlowMotionFlow` (0x96bb0): every 0.5 s an activator slows every player and projectile it can
+/// see.
 pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
     let now = cx.time();
     if p.ts.slow_self == 0.0 || p.ts.next_flow > now {
@@ -224,7 +242,7 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
         if oself != 0.0 && oothers == mine {
             continue;
         }
-        let tr = eng.trace_line(my_eye, eye(o.v()), IGNORE_MONSTERS, me);
+        let tr = eng.trace_line(my_eye, eye(o.v()), FLOW_TRACE, me);
         if tr.flFraction >= 1.0 {
             if oself == 0.0 || mine <= oothers {
                 p.ts.slowed |= 1 << i;
@@ -253,13 +271,15 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
             p.ts.slowed &= !(1 << i);
         }
     }
-    // Projectiles in sight: grenades, thrown knives and dropped guns that are moving.
+    // Projectiles in sight: grenades, thrown knives and dropped guns that are moving. The list's
+    // room is checked once, before the three loops (0x86ea4); a full list doesn't stop the
+    // slowing ([`list_slowed`]).
+    if p.ts.slowed_ents.len() >= SLOWED_ENTS_MAX {
+        return;
+    }
     for class in [c"grenade", c"knife", c"WorldGun"] {
         let mut it = std::ptr::null_mut();
         loop {
-            if p.ts.slowed_ents.len() >= 32 {
-                return;
-            }
             it = eng.find_by_string(it, c"classname", class);
             if it.is_null() {
                 break;
@@ -271,10 +291,10 @@ pub fn slow_flow(p: &mut Player, cx: &mut Cx) {
             if p.ts.slowed_ents.contains(&it) || aura.is_some_and(|a| super::dist(my_eye, v.origin) > a) {
                 continue;
             }
-            let tr = eng.trace_line(my_eye, v.origin, IGNORE_MONSTERS, me);
+            let tr = eng.trace_line(my_eye, v.origin, FLOW_TRACE, me);
             if tr.flFraction >= 1.0 {
                 go_slow(it, mine, false);
-                p.ts.slowed_ents.push(it);
+                list_slowed(&mut p.ts.slowed_ents, it);
             }
         }
     }
@@ -526,6 +546,20 @@ pub fn run_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: f32) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// #132: the flow sees through glass, and a full slowed list stops only the listing.
+    #[test]
+    fn slow_flow_traces_and_list_cap() {
+        assert_eq!(FLOW_TRACE, 0x101);
+        let ent = |i: usize| (i * 4096) as *mut edict_t;
+        let mut list: Vec<*mut edict_t> = (1..=31).map(ent).collect();
+        list_slowed(&mut list, ent(32));
+        list_slowed(&mut list, ent(33));
+        assert_eq!(list.len(), 32);
+        assert_eq!(list.last(), Some(&ent(32)), "the 33rd is slowed but not listed");
+    }
+
     /// Issue #49: `UsePowerUp` is reached only from `usepowerup` (`ClientCommand`) and the bots'
     /// power-up module, never from a server-side +use double tap (TS's `TSUse` is dead code).
     #[test]
