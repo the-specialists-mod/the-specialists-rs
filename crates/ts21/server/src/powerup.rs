@@ -122,7 +122,8 @@ mod tests {
         }
         assert!(!r.multiplier, "no pwupmult");
         assert!(!r.grenade_selects, "the grenade power-up keeps the held weapon");
-        assert!(ts_server::rules::powerup::CORE.grenade_selects, "3.0 draws the grenades");
+        let core: &dyn ts_server::gameplay::ServerRules = &shared::gameplay::CORE;
+        assert!(core.powerups().grenade_selects, "3.0 draws the grenades");
     }
 
     #[test]
