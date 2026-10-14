@@ -295,6 +295,8 @@ The hooks so far:
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
 | `ServerRules` | `broken_respawn_delay(respawntime)` | `Some(30 s if 0, else the key)` | `entities/stock/breakable.rs` `die`, `doors.rs` (break) |
 | `ServerRules` | `breakable_respawn_guarded()` | true (wait for clients in the box, fire `respawntarget`) | `breakable.rs`, `doors.rs` `breakable_respawn` |
+| `ServerRules` | `break_debris_from_hit()` | true (debris along the last hit, long glass `TSFrags`, attacker's `fuser1` copied) | `breakable.rs` `die`, `doors.rs` (break); false is the SDK's (`g_vecAttackDir × 200` if `explosion directed`, a door's none, 13-byte glass `TSFrags`) |
+| `ServerRules` | `breakable_attack_dir(org, absmin, size)` | `damage::normalize(org - (absmin + size × 0.5))` | `breakable.rs` `take_damage_impl` (`g_vecAttackDir`) |
 | `ServerRules` | `respawn_entities()` | `entities::ts::respawn_entities` | `rules/frame.rs` `restart_round` |
 | `ServerRules` | `entities_think(now)` | nothing | `rules/frame.rs` `ts_think` (DM/TDM branch, after The One) |
 | `ServerRules` | `map_globals(e, spawnflags)` | `Some(MapFlags::from_spawnflags)` | `entities/ts/misc.rs` `MapGlobals::spawn` |

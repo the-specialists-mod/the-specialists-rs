@@ -337,9 +337,40 @@ pub fn map_globals_keys() -> (i8, i8) {
     ts_server::world::with::<MapGlobals, _>(first, |m| (m.player_respawn as i8, m.player_at_a_time as i8)).unwrap_or((0, 0))
 }
 
+/// The `g_vecAttackDir` 2.1's `CBreakable::TakeDamage` (0x1001b960..0x1001bad7) stores, issue
+/// #109: the box centre `size * 0.5 + absmin` is stored as a `float` for x only (y and z stay on
+/// the FPU), each difference to the inflictor's origin is stored, the length sums `z² + y² + x²`
+/// on the FPU, and a zero length (`fcom 0; test ah,0x44; jp`) gives `(0, 0, 1)` while a NaN one is
+/// normalised. 3.0's goes through `Vector::Normalize` instead.
+pub fn breakable_attack_dir(org: [f32; 3], absmin: [f32; 3], size: [f32; 3]) -> [f32; 3] {
+    let half = |i: usize| f64::from(size[i]) * 0.5 + f64::from(absmin[i]);
+    let centre = [half(0) as f32 as f64, half(1), half(2)];
+    let d: [f64; 3] = std::array::from_fn(|i| (f64::from(org[i]) - centre[i]) as f32 as f64);
+    let len = (d[2] * d[2] + d[1] * d[1] + d[0] * d[0]).sqrt();
+    if len == 0.0 {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = 1.0 / len;
+    d.map(|c| (c * inv) as f32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The centre's x is stored, its y and z aren't: with a box at 2^24 a half unit survives in y.
+    #[test]
+    fn breakable_attack_dir_keeps_the_centre_on_the_fpu() {
+        let big = 16_777_216.0;
+        // Centre y 2^24 + 0.5 (a `float` would round it to 2^24): d = (1.5, 1.5, 0).
+        let d = breakable_attack_dir([1.5, big + 2.0, 0.0], [0.0, big, 0.0], [0.0, 1.0, 0.0]);
+        let n = (1.5 / 4.5f64.sqrt()) as f32;
+        assert_eq!(d, [n, n, 0.0]);
+        // x's centre is stored, 2^24: d = (2, 1.5, 0).
+        assert_eq!(breakable_attack_dir([big + 2.0, 1.5, 0.0], [big, 0.0, 0.0], [1.0, 0.0, 0.0]), [0.8, 0.6, 0.0]);
+        assert_eq!(breakable_attack_dir([1.0; 3], [0.0; 3], [2.0; 3]), [0.0, 0.0, 1.0], "zero length");
+        assert!(breakable_attack_dir([f32::NAN, 0.0, 0.0], [0.0; 3], [2.0; 3])[0].is_nan(), "a NaN is normalised");
+    }
 
     #[test]
     fn three_0_only_classes_are_refused() {

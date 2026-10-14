@@ -254,6 +254,17 @@ impl ServerRules for Ts21Server {
         false
     }
 
+    /// 2.1's `CBreakable::Die` (0x10042540) and `CBaseDoor::TraceAttack` (0x10013c50) throw the
+    /// SDK's debris (issue #109).
+    fn break_debris_from_hit(&self) -> bool {
+        false
+    }
+
+    /// 2.1's `CBreakable::TakeDamage` (0x1001b960) normalises inline.
+    fn breakable_attack_dir(&self, inflictor_origin: [f32; 3], absmin: [f32; 3], size: [f32; 3]) -> [f32; 3] {
+        entities::breakable_attack_dir(inflictor_origin, absmin, size)
+    }
+
     /// `RestartRound` (0x100445d0) forces it.
     fn respawn_entities(&self) {
         entities::respawn_entities(true);
@@ -494,6 +505,10 @@ mod tests {
     fn hooks_follow_the_plugin() {
         let core: &dyn ServerRules = &shared::gameplay::CORE;
         let v21: &dyn ServerRules = &Ts21Server;
+        assert!(core.break_debris_from_hit() && !v21.break_debris_from_hit());
+        let (org, absmin, size) = ([1.5, 16_777_218.0, 0.0], [0.0, 16_777_216.0, 0.0], [0.0, 1.0, 0.0]);
+        assert_eq!(core.breakable_attack_dir(org, absmin, size), [0.6, 0.8, 0.0], "3.0 rounds the centre: d = (1.5, 2, 0)");
+        assert_ne!(v21.breakable_attack_dir(org, absmin, size), core.breakable_attack_dir(org, absmin, size));
         assert!(core.time_scale_eases() && !v21.time_scale_eases());
         assert!(core.motion_blur() && !v21.motion_blur());
         assert_eq!(core.sound_pitch(100, 0.5, 0.5), 75);

@@ -323,6 +323,25 @@ pub trait ServerRules: Sync {
         false
     }
 
+    /// How a break throws its debris (`CBreakable::Die` 0x752e0, `CBaseDoor::TraceAttack`
+    /// 0xb57ac). TS 3.0 (true): from the last hit, the breakable's debris velocity along the hit
+    /// direction × damage × the material's multiplier, glass as the long `TSFrags` with the hit,
+    /// the attacker's `fuser1` copied first; a door's along the attacker's direction × damage × 2
+    /// (× 8 for a shotgun). False: the SDK's, `g_vecAttackDir × 200` for an `explosion directed`
+    /// breakable and none otherwise, a door's none, glass as the 13-byte `TSFrags` (centre, size,
+    /// type), no `fuser1` copy.
+    fn break_debris_from_hit(&self) -> bool {
+        true
+    }
+
+    /// The `g_vecAttackDir` a breakable's `TakeDamage` leaves (0x75480..), from the box centre
+    /// `absmin + size × 0.5` to the inflictor's origin, normalised. 3.0: the stock entities'
+    /// `Vector::Normalize` ([`crate::damage::normalize`]).
+    fn breakable_attack_dir(&self, inflictor_origin: Vec3, absmin: Vec3, size: Vec3) -> Vec3 {
+        let centre: Vec3 = std::array::from_fn(|i| absmin[i] + size[i] * 0.5);
+        crate::damage::normalize(std::array::from_fn(|i| inflictor_origin[i] - centre[i]))
+    }
+
     /// How long a broken `func_breakable` or breakable door waits before it rebuilds itself
     /// (`CBreakable::Die` 0x752e0, `CBaseDoor::TraceAttack` 0xb57ac), given its `respawntime` key (≥ 0); `None`
     /// leaves it broken, with no think, until `RespawnEntities` restores it. TS 3.0: the key, 0
@@ -645,6 +664,8 @@ mod tests {
         assert!(!core.server_command("globalslow"), "3.0 runs its server commands");
         assert!(!core.server_command("restartround"));
         assert!(!core.server_command("weaponrestriction"));
+        assert!(core.break_debris_from_hit(), "3.0 throws the debris along the last hit");
+        assert_eq!(core.breakable_attack_dir([10.0, 0.0, 0.0], [-1.0; 3], [2.0; 3]), [1.0, 0.0, 0.0]);
     }
 
     fn hit(damage: f32, bits: i32, hitgroup: i32) -> PlayerHit {
