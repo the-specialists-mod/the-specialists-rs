@@ -220,24 +220,66 @@ pub fn start_frame() {
     frame::think();
 }
 
+/// "The Specialists v<version>", then ` (<mode>)` if given, as a `&'static CStr` constant. The
+/// version is the calling package's, which in this workspace is the workspace's and follows the
+/// release tags (`v3.0.2`), so each release names itself. Exported for the gameplay plugins'
+/// [`ServerRules::game_description`](crate::gameplay::ServerRules::game_description).
+#[macro_export]
+macro_rules! game_description {
+    ($($mode:literal)?) => {
+        match ::std::ffi::CStr::from_bytes_with_nul(
+            concat!("The Specialists v", env!("CARGO_PKG_VERSION"), $(" (", $mode, ")",)? "\0").as_bytes(),
+        ) {
+            Ok(c) => c,
+            Err(_) => panic!("the package version has a NUL"),
+        }
+    };
+}
+
+/// Which description [`game_description`] asks the active ruleset for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DescriptionMode {
+    /// `CHalfLifeRules`: `deathmatch` 0 when the rules were installed.
+    Single,
+    Dm,
+    Lms,
+    Teamplay,
+    TheOne,
+}
+
+/// TS 3.0's descriptions with the port's version: "The Specialists v3.0.2 (DM)" where TS says
+/// "The Specialists (DM)" (port change, so the server browser's Game column tells releases apart).
+pub fn core_description(mode: DescriptionMode) -> &'static CStr {
+    match mode {
+        DescriptionMode::Single => game_description!(),
+        DescriptionMode::Dm => game_description!("DM"),
+        DescriptionMode::Lms => game_description!("LMS"),
+        DescriptionMode::Teamplay => game_description!("Teamplay"),
+        DescriptionMode::TheOne => game_description!("The One"),
+    }
+}
+
 /// `GetGameDescription` (0xaee84): `"Half-Life"` before the rules exist, `"The Specialists"`
 /// for `CHalfLifeRules` (`deathmatch` 0 when they were installed), otherwise the multiplayer
-/// rules' text for the mode (`CHalfLifeMultiplay` 0xd0c68, `CHalfLifeTeamplay` 0xe5a04).
+/// rules' text for the mode (`CHalfLifeMultiplay` 0xd0c68, `CHalfLifeTeamplay` 0xe5a04). The
+/// active ruleset words it ([`core_description`] for 3.0).
 pub fn game_description() -> &'static CStr {
     let (installed, single) = state::with(|g| (g.installed, g.single_player));
     if !installed {
         return c"Half-Life";
     }
-    if single {
-        return c"The Specialists";
-    }
-    let (_, teamplay, lms, the_one) = state::mode();
-    match (teamplay, lms, the_one) {
-        (_, _, true) => c"The Specialists (The One)",
-        (_, true, _) => c"The Specialists (LMS)",
-        (true, _, _) => c"The Specialists (Teamplay)",
-        _ => c"The Specialists (DM)",
-    }
+    let mode = if single {
+        DescriptionMode::Single
+    } else {
+        let (_, teamplay, lms, the_one) = state::mode();
+        match (teamplay, lms, the_one) {
+            (_, _, true) => DescriptionMode::TheOne,
+            (_, true, _) => DescriptionMode::Lms,
+            (true, _, _) => DescriptionMode::Teamplay,
+            _ => DescriptionMode::Dm,
+        }
+    };
+    crate::gameplay::active().server.game_description(mode)
 }
 
 /// worldspawn keyvalues the rules care about (`gamemode`, `mapteams`, `teammodels`). Return true
@@ -447,6 +489,20 @@ pub fn add_frags(e: *mut edict_t, p: Option<&mut Player>, n: f32) {
 mod tests {
     use super::{ts_flags_of, x87_trunc};
     use goldsrc::sys::*;
+    use std::ffi::CStr;
+
+    #[test]
+    fn descriptions_carry_the_release_version() {
+        let v = env!("CARGO_PKG_VERSION");
+        let dm = super::core_description(super::DescriptionMode::Dm);
+        assert_eq!(dm.to_str().unwrap(), format!("The Specialists v{v} (DM)"));
+        let single = super::core_description(super::DescriptionMode::Single);
+        assert_eq!(single.to_str().unwrap(), format!("The Specialists v{v}"));
+        // Steam takes 64 bytes with the NUL (`k_cbMaxGameServerGameDescription`; ReHLDS
+        // `sv_steam3.cpp` passes the description to `SetGameDescription`).
+        let longest: &CStr = game_description!("The One-21");
+        assert!(longest.to_bytes().len() < 64);
+    }
 
     #[test]
     fn int_casts_truncate_like_gcc() {

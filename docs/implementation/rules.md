@@ -39,7 +39,7 @@ are Ghidra addresses.
 | `DecideGamePlay` 0x767ac | `state::decide_gameplay` | worldspawn `gamemode` 1–4 wins over cvars; The One > LMS > `mp_teamplay`. Unit tested. |
 | `InstallGameRules` 0xc6050, `CTSGameRules::Init` 0x77d6c, Teamplay ctor 0xe…, `InitTeams`/`SetTeamList`/`SetTeamModelList` | `rules::install` → `GameRules::install` (`ts_init` is `CTSGameRules::Init`) | `exec game.cfg` + `ServerExecute` first, like TS. With `deathmatch` 0 the rules are `CHalfLifeRules` (`install_single_player`, §2.1). Then, as the `CHalfLifeMultiplay` ctor (0xcedd0) does, queues `exec <servercfgfile>` (`lservercfgfile` on a listen server) without executing it, so the server config runs after every map load and overrides what `CWorld::Precache` forced (`sv_gravity 800`, `mp_defaultteam`). The One renames team 0 "The ONE" and skips the first listed name (TS quirk kept). |
 | `GameDLLInit` 0xc5aa0 | `rules::game_init` | cvars + 7 TS server commands (+3 test commands), then `exec skill.cfg` queued (0xc5dd0; TS registers no `sk_*` cvars, but issues it). |
-| `GetGameDescription` 0xaee84 | `rules::game_description` | "Half-Life" before the rules exist, "The Specialists" when `deathmatch` was 0, else "The Specialists (The One/LMS/Teamplay/DM)". |
+| `GetGameDescription` 0xaee84 | `rules::game_description` | "Half-Life" before the rules exist, "The Specialists" when `deathmatch` was 0, else "The Specialists (The One/LMS/Teamplay/DM)"; the port puts its version after "The Specialists" (§6). |
 | `ClientConnect` 0xacce8 | `lifecycle::client_connect` | `ts_playeramount` connect hook, accepts. |
 | `ClientDisconnect` 0xacd4c, `ClientDisconnected` 0xcf960, `TSPlayerDisconnect` 0x9f94c | `lifecycle::{client_disconnect, client_disconnected}` | `ts_playeramount`; then only while the game isn't over: "- %s has left the game", not solid, and `ClientDisconnected`: `game_playerleave`, the log line (`<uid>` again in DM, the `model` key in teamplay), `RemoveAllItems(TRUE)` (strip weapons), `TSPlayerDisconnect` (drop the case, the vote record cleared for slots < 32, not solid, `DEAD_DEAD`, no damage, `FL_FAKECLIENT` off, `FL_DORMANT` on, frags/deaths 0, respawn time -1, no team, `EF_NODRAW`, health 0, not The One, `CallCheckDeads`), and the next The One check at once (`+0x587c = 0`). The slow-motion flow isn't stopped and the players it slowed stay slowed, as in TS. The engine keeps the edict and its `Player` until the slot's next client spawns, so every TS `UTIL_PlayerByIndex` loop (`rules::slot_players`) still finds the player: `RecountTeams` (one `""` team without a team limit), `TeamWithFewestPlayers`, the InitHUD `ScoreInfo`/`TeamInfo`/`Spectator` loops, the multiplay fraglimit, `CountPlayers` (CTB), `CheckVotes`, the voice masks, The One, `GlobalSlowMotion2`, `SlowMotionFlow`, `ts_slowmotionpoint`, `CheckDeads`, `RestartRound`, `TSSelectSpawnSpot` and `Observer_FindNextPlayer`. Every TS player test (`IsPlayer()`, `IsNetClient()`, `Classify() == CLASS_PLAYER`, the classname `"player"`, `pev->flags & FL_CLIENT`) is `rules::has_player` / `rules::ts_flags` in the port, so it is still true for the player who left (§6). |
 | `ClientKill` 0xacec8 | `lifecycle::client_kill` + `pre_think` | suicide 1 s later, not while observing. |
@@ -324,6 +324,11 @@ objectives can: a `ts_objective_ptr` fired by anything enables its targets in an
 ## 6. Deviations from TS 3.0
 
 Port additions:
+* `GetGameDescription` puts the port's version (the workspace's, which the release tag follows)
+  after "The Specialists": "The Specialists v3.0.2 (DM)" where TS says "The Specialists (DM)",
+  likewise for LMS, Teamplay and The One, and "The Specialists v3.0.2" without rules. Servers show
+  it in the server browser's Game column, so players can tell releases apart. The active ruleset
+  words it (`ServerRules::game_description`): 2.1 says "(DM-21)" and so on (`ts21.md`).
 * The plugin API (`plugin-api.md`) reaches into the power-up and slow-motion code: a power-up a
   plugin runs (`PlayerRules::plugin_powerup`) goes through `UpdatePowerUpState` without a held
   one and leaves the held one alone when it ends; a pickup doesn't clear it. A plugin's time scale

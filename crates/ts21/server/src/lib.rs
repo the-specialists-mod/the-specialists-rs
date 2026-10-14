@@ -58,6 +58,7 @@ use ts_server::gameplay::{ConnectingClient, ServerPlugin, ServerRules};
 use ts_server::messages::Msg;
 use ts_server::player::Player;
 use ts_server::player::damage::{HitDamage, PlayerHit};
+use ts_server::rules::DescriptionMode;
 use ts_server::rules::powerup::PowerupRules;
 use ts_server::rules::scoring::Frag;
 use ts_server::rules::state::{self, GameRules, Mode};
@@ -76,6 +77,18 @@ impl ServerRules for Ts21Server {
 
     fn cvars(&self) -> &'static [CvarDef] {
         cvars::CVARS
+    }
+
+    /// 3.0's text with `-21` after the mode, so the server browser tells 2.1 servers apart
+    /// ("The Specialists v3.0.2 (DM-21)"; port addition).
+    fn game_description(&self, mode: DescriptionMode) -> &'static CStr {
+        match mode {
+            DescriptionMode::Single => ts_server::game_description!("21"),
+            DescriptionMode::Dm => ts_server::game_description!("DM-21"),
+            DescriptionMode::Lms => ts_server::game_description!("LMS-21"),
+            DescriptionMode::Teamplay => ts_server::game_description!("Teamplay-21"),
+            DescriptionMode::TheOne => ts_server::game_description!("The One-21"),
+        }
     }
 
     fn server_command(&self, name: &str) -> bool {
@@ -473,6 +486,15 @@ fn refuse_client(client: ConnectingClient) -> Option<&'static str> {
 mod tests {
     use super::*;
     use shared::gameplay::CORE;
+
+    #[test]
+    fn descriptions_mark_the_mode_as_2_1() {
+        let v = env!("CARGO_PKG_VERSION");
+        let d = |m| Ts21Server.game_description(m).to_str().unwrap().to_owned();
+        assert_eq!(d(DescriptionMode::Dm), format!("The Specialists v{v} (DM-21)"));
+        assert_eq!(d(DescriptionMode::TheOne), format!("The Specialists v{v} (The One-21)"));
+        assert_eq!(CORE.game_description(DescriptionMode::Dm).to_str().unwrap(), format!("The Specialists v{v} (DM)"));
+    }
 
     #[test]
     fn only_the_port_client_joins() {

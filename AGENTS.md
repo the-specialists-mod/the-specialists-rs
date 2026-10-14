@@ -219,7 +219,7 @@ crate's `license` field and the README's License section.
 - Work on `main` unless told otherwise. Commit or push only when asked.
 - If git has no HTTPS credentials, push with
   `git -c credential.helper='!gh auth git-credential' push`.
-- Releases: push a `v*` tag, numbered after the TS version it ports (`v3.0.0`, then `v3.0.1`, ...); `.github/workflows/release.yml` builds and publishes the release and
+- Releases: bump `version` in the workspace `Cargo.toml` in a "Release vX.Y.Z" commit, then push a `v*` tag, numbered after the TS version it ports (`v3.0.0`, then `v3.0.1`, ...); `.github/workflows/release.yml` checks that the two match (the libraries report that version, e.g. the server browser's "The Specialists v3.0.2 (DM)"), then builds and publishes the release and
   `-debug` archives. The workflow pins the FWGS commit the bindings are generated from.
   Each asset is named `the-specialists-rs-<tag>-<platform>.zip` (Windows) or `.tar.gz` (Linux),
   plus the `-debug` variants, for `linux-i686`, `linux-x86_64`, `windows-i686` and

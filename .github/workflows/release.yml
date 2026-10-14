@@ -24,6 +24,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The libraries report the workspace version (the HUD's SrvSett keys, the client's _tsrs
+      # userinfo, the server browser's "The Specialists v3.0.2 (DM)"), so it must be the tag's.
+      - name: Check the version matches the tag
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [[ "v$version" != "$GITHUB_REF_NAME" ]]; then
+            echo "Cargo.toml's version is $version but the tag is $GITHUB_REF_NAME: bump it in a Release commit" >&2
+            exit 1
+          fi
+
       # goldsrc-sys generates its bindings from the FWGS headers (found as ./xash3d-fwgs).
       - name: FWGS headers
         run: |

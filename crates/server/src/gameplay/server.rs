@@ -17,7 +17,7 @@ use crate::player::damage::{self as player_damage, HitDamage, PlayerHit};
 use crate::rules::powerup::{self, PowerupRules};
 use crate::rules::scoring::{self, Frag};
 use crate::rules::state::GameRules;
-use crate::rules::{cvars, frame, lifecycle, teams};
+use crate::rules::{self, cvars, frame, lifecycle, teams};
 use crate::stunt::rules::{self as stunt, Dive, StuntClock, StuntRules};
 use crate::weapons::{fire, melee, projectiles};
 use crate::world::{Cx, Entity};
@@ -76,6 +76,12 @@ pub trait ServerRules: Sync {
     /// which the engines run again at every map change. 3.0: `None`, everyone may join.
     fn refuse_client(&self, _client: ConnectingClient) -> Option<&'static str> {
         None
+    }
+
+    /// `GetGameDescription`'s text for the mode: what the server browser's Game column shows.
+    /// 3.0: "The Specialists v3.0.2 (DM)" and so on ([`rules::core_description`]).
+    fn game_description(&self, mode: rules::DescriptionMode) -> &'static CStr {
+        rules::core_description(mode)
     }
 
     // ---- cvars and commands ----------------------------------------------------------------
