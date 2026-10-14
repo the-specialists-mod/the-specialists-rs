@@ -55,6 +55,14 @@ pub fn blocked_damage(bar: f32, damage: f32) -> f32 {
     ((1.0 - bar as f64 * 0.01) * damage as f64) as f32
 }
 
+/// The blocker's bar after a kung-fu block of a `damage` hit: the full hit, not what got through
+/// (0x10043c4c: `bar - [esp+0x34]`, the damage argument; `through` is in the victim slot at
+/// `+0x30`), stopped at 0.
+pub fn block_bar_left(bar: f32, damage: f32) -> f32 {
+    let b = bar - damage;
+    if b < 0.0 { 0.0 } else { b }
+}
+
 /// The blocker's hold-up: its block time left plus `min(3, 0.3·T)` (0x10043c02..).
 pub fn block_hold(block_left: f32, t: f32) -> f32 {
     (block_left as f64 + whiff_window(t) as f64) as f32
@@ -114,8 +122,8 @@ fn blade_block(attacker: *mut edict_t, victim: *mut edict_t, blocks: impl FnOnce
 /// does, while its own block runs and the victim is in a kung-fu attack's delayed-hit window. The
 /// blocker takes `(1 − bar/100)` of the hit from the attacker (`TraceAttack`, close combat), is
 /// held up (`m_flNextAttack`), its gun's timers are cleared (2.1 writes the relative hold-up into
-/// the absolute timers, which have then passed), its bar pays what got through (not The One's),
-/// and both stored hits are dropped. kungfuhit.wav on the attacker.
+/// the absolute timers, which have then passed), its bar pays the hit's full damage (not The
+/// One's; [`block_bar_left`]), and both stored hits are dropped. kungfuhit.wav on the attacker.
 fn kungfu_block(attacker: *mut edict_t, victim: *mut edict_t, damage: f32, atk_block: f32) -> bool {
     let Some((v_block, v_source, v_window)) = gun_of(victim, |p| (p.inv.gun.block_kungfu, p.inv.gun.melee_source, p.inv.gun.melee_window))
     else {
@@ -157,8 +165,7 @@ fn kungfu_block(attacker: *mut edict_t, victim: *mut edict_t, damage: f32, atk_b
         if p.ts.is_the_one {
             return None;
         }
-        let b = g.melee_bar - through;
-        g.melee_bar = if b < 0.0 { 0.0 } else { b };
+        g.melee_bar = block_bar_left(g.melee_bar, damage);
         Some(g.melee_bar)
     })
     .flatten();
@@ -204,5 +211,14 @@ mod tests {
         assert!((blocked_damage(75.0, 40.0) - 10.0).abs() < 1e-5);
         assert!((block_hold(0.1, 1.0) - 0.4).abs() < 1e-6);
         assert_eq!(block_hold(0.0, 100.0), 3.0);
+    }
+
+    /// The bar pays the whole hit (#136): a 40 kick blocked with 75 costs 40, not the 10 let
+    /// through; a full bar still pays.
+    #[test]
+    fn a_block_costs_the_bar_the_full_hit() {
+        assert_eq!(block_bar_left(75.0, 40.0), 35.0);
+        assert_eq!(block_bar_left(100.0, 40.0), 60.0);
+        assert_eq!(block_bar_left(30.0, 40.0), 0.0);
     }
 }
