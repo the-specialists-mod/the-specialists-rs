@@ -439,7 +439,7 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             kp.ts.held_secs = held_secs;
         });
         if kick {
-            team_kill_punish(k.e, victim);
+            team_kill_punish(k.e);
         }
         // Kills by The One's victims make the killer the new One.
         let _ = k.idx;
@@ -671,26 +671,44 @@ fn victims_gun(cur: Option<u8>, owner_of: impl FnOnce(u8) -> *mut edict_t, victi
     owner_of(cur) == victim && !matches!(restriction_type(cur), kind::GRENADE | kind::KNIFE | kind::FLAG)
 }
 
-pub fn team_kill_punish(killer: *mut edict_t, victim: *mut edict_t) {
-    let eng = engine();
-    let name = netname(killer);
-    let ban = cvars::f(c"banfortk");
-    let uid = eng.user_id(killer);
+/// The three texts of a team-kill kick or ban.
+#[derive(Debug, PartialEq, Eq)]
+struct TeamKillPunish {
+    /// The `HUD_PRINTCONSOLE` line to the team killer.
+    to_killer: String,
+    /// The server command.
+    command: String,
+    /// The `HUD_PRINTTALK` line to everyone.
+    to_all: String,
+}
+
+/// The kick (`banfortk` ≤ 0) or the ban of `(int)banfortk` minutes (truncated: 0x8ad5a, 0x8adbc,
+/// 0x8ae04) for the team killer `name` with user id `uid`.
+fn team_kill_punishment(name: &str, uid: i32, ban: f32) -> TeamKillPunish {
     if ban <= 0.0 {
-        msg::text_one(victim, shared::protocol::rules::hud_dest::CONSOLE, "You have been kicked for teamkilling...\n");
-        eng.server_command(&format!("kick #{uid}\n"));
-        msg::text_all(shared::protocol::rules::hud_dest::TALK, &format!("{name} kicked for teamkilling\n"));
-    } else {
-        // `(int)banfortk.value`, truncated (0x8ad5a, 0x8adbc, 0x8ae04).
-        let m = super::x87_trunc(ban as f64);
-        msg::text_one(
-            victim,
-            shared::protocol::rules::hud_dest::CONSOLE,
-            &format!("You have been banned for teamkilling ({m} minutes)...\n"),
-        );
-        eng.server_command(&format!("banid {m} #{uid} kick\n"));
-        msg::text_all(shared::protocol::rules::hud_dest::TALK, &format!("{name} banned for teamkilling ({m} minutes)\n"));
+        return TeamKillPunish {
+            to_killer: "You have been kicked for teamkilling...\n".to_owned(),
+            command: format!("kick #{uid}\n"),
+            to_all: format!("{name} kicked for teamkilling\n"),
+        };
     }
+    let m = super::x87_trunc(ban as f64);
+    TeamKillPunish {
+        to_killer: format!("You have been banned for teamkilling ({m} minutes)...\n"),
+        command: format!("banid {m} #{uid} kick\n"),
+        to_all: format!("{name} banned for teamkilling ({m} minutes)\n"),
+    }
+}
+
+/// The team-kill kick or ban in `PlayerKilled`. The console notice goes to the team killer:
+/// `ClientPrint(pKiller, HUD_PRINTCONSOLE, ...)` (3.0 0x7ae58 and 0x7ad79 file addresses, 2.1
+/// 0x1004f7e0), before the kick takes it off the server.
+pub fn team_kill_punish(killer: *mut edict_t) {
+    let eng = engine();
+    let t = team_kill_punishment(&netname(killer), eng.user_id(killer), cvars::f(c"banfortk"));
+    msg::text_one(killer, shared::protocol::rules::hud_dest::CONSOLE, &t.to_killer);
+    eng.server_command(&t.command);
+    msg::text_all(shared::protocol::rules::hud_dest::TALK, &t.to_all);
 }
 
 /// `CTSGameRules::TheOneIsDead` (0x7b258) for the victim `p`; `killer` is the killing player
@@ -773,8 +791,8 @@ pub fn broadcast_score(e: *mut edict_t) {
 #[cfg(test)]
 mod tests {
     use super::{
-        FragLoser, KillTags, Snapshot, frag_loser, kung_fu_frag, log_id, log_weapon, own_weapon_name, rename_weapon, spectacular_roll,
-        victims_gun, weapon_info_name,
+        FragLoser, KillTags, Snapshot, TeamKillPunish, frag_loser, kung_fu_frag, log_id, log_weapon, own_weapon_name, rename_weapon,
+        spectacular_roll, team_kill_punishment, victims_gun, weapon_info_name,
     };
     use goldsrc::sys::edict_t;
     use shared::weapons::{id, tables};
@@ -879,6 +897,23 @@ mod tests {
         // Issue #118: a fall or a trigger lowers the world's frags; only a suicide the victim's.
         assert_eq!(frag_loser(false), FragLoser::Killer);
         assert_eq!(frag_loser(true), FragLoser::Victim);
+    }
+
+    #[test]
+    fn team_kill_punishment_tells_the_killer() {
+        // Issue #119: the console line is the team killer's (`ClientPrint(pKiller, ...)`).
+        assert_eq!(
+            team_kill_punishment("Bob", 7, 0.0),
+            TeamKillPunish {
+                to_killer: "You have been kicked for teamkilling...\n".into(),
+                command: "kick #7\n".into(),
+                to_all: "Bob kicked for teamkilling\n".into(),
+            }
+        );
+        let ban = team_kill_punishment("Bob", 7, 5.9);
+        assert_eq!(ban.to_killer, "You have been banned for teamkilling (5 minutes)...\n");
+        assert_eq!(ban.command, "banid 5 #7 kick\n");
+        assert_eq!(ban.to_all, "Bob banned for teamkilling (5 minutes)\n");
     }
 
     #[test]

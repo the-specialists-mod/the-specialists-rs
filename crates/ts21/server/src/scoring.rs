@@ -249,7 +249,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
                 kp.ts.last_kill = last_kill;
             });
             if kick {
-                core::team_kill_punish(k.e, victim);
+                core::team_kill_punish(k.e);
             }
         }
     }
