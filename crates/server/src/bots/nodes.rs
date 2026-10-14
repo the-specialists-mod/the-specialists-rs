@@ -103,7 +103,7 @@ pub trait NodeWorld {
 }
 
 /// MSVC `__ftol` (0x1007d310): truncation; out of range (and NaN) gives the integer indefinite.
-fn ftol(x: f64) -> i32 {
+pub fn ftol(x: f64) -> i32 {
     if x.is_nan() || x >= 2147483648.0 || x < -2147483648.0 { i32::MIN } else { x as i32 }
 }
 
@@ -343,11 +343,9 @@ impl NodeGraph {
     /// node a 2D distance under 64, or under 160 with less than 32 units of height, is enough.
     fn is_reachable(&self, w: &mut dyn NodeWorld, i: usize, j: usize) -> bool {
         let (a, b) = (&self.nodes[i], &self.nodes[j]);
+        let rules = super::rules::current();
         if (a.flags | b.flags) & NODE_LADDER != 0 {
-            // The differences are stored as floats; the squares and sqrt stay on the x87 stack.
-            let dx = (a.origin[0] - b.origin[0]) as f64;
-            let dy = (a.origin[1] - b.origin[1]) as f64;
-            let d2 = (dy * dy + dx * dx).sqrt();
+            let d2 = rules.ladder_link_distance(a.origin, b.origin);
             if d2 < 64.0 {
                 return true;
             }
@@ -355,7 +353,9 @@ impl NodeGraph {
                 return true;
             }
         }
-        is_ground_continuous(w, a.origin, b.origin)
+        let (a, b) = (a.origin, b.origin);
+        // `fraction >= 1.0`: no floor (a NaN fraction counts as one, as TS's `fcomp`).
+        rules.ground_probes(a, b, &mut |p| w.trace(p, [p[0], p[1], p[2] - FLOOR_PROBE], true, std::ptr::null_mut()).fraction >= 1.0)
     }
 
     /// `FindPath` (0x100717f0): a Dijkstra from `start`, then a greedy walk from `goal` back to
@@ -552,9 +552,18 @@ fn is_in_air(w: &mut dyn NodeWorld, n: &Node) -> bool {
     w.trace(o, [o[0], o[1], o[2] - FLOOR_PROBE], true, std::ptr::null_mut()).fraction >= 1.0
 }
 
-/// `IsGroundContinuous` (0x10070fe0, `a` = the new node): floor within 72 units below the line
-/// every 16 units (`__ftol(|b - a| / 16)` probes; none when that's 0).
-fn is_ground_continuous(w: &mut dyn NodeWorld, a: [f32; 3], b: [f32; 3]) -> bool {
+/// `IsReachable`'s ladder shortcuts (0x100711e0): the 2D distance from `a` to `b`. The
+/// differences are stored as floats; the squares and sqrt stay on the x87 stack.
+pub fn ladder_link_distance(a: [f32; 3], b: [f32; 3]) -> f64 {
+    let dx = (a[0] - b[0]) as f64;
+    let dy = (a[1] - b[1]) as f64;
+    (dy * dy + dx * dx).sqrt()
+}
+
+/// `IsGroundContinuous` (0x10070fe0, `a` = the new node): a floor within 72 units below the
+/// line every 16 units, `__ftol(|b - a| / 16)` probes (none when that's 0). `no_floor` gets
+/// each point and says whether the floor is missing under it; the first miss ends it (false).
+pub fn ground_probes(a: [f32; 3], b: [f32; 3], no_floor: &mut dyn FnMut([f32; 3]) -> bool) -> bool {
     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let (x, y, z) = (d[0] as f64, d[1] as f64, d[2] as f64);
     let steps = ftol(((x * x + y * y) + z * z).sqrt() * 0.0625);
@@ -562,8 +571,7 @@ fn is_ground_continuous(w: &mut dyn NodeWorld, a: [f32; 3], b: [f32; 3]) -> bool
     let s = d.map(|c| (c as f64 / steps as f64) as f32);
     for k in 1..=steps {
         let fk = k as f32;
-        let p = [s[0] * fk + a[0], s[1] * fk + a[1], s[2] * fk + a[2]];
-        if w.trace(p, [p[0], p[1], p[2] - FLOOR_PROBE], true, std::ptr::null_mut()).fraction >= 1.0 {
+        if no_floor([s[0] * fk + a[0], s[1] * fk + a[1], s[2] * fk + a[2]]) {
             return false;
         }
     }

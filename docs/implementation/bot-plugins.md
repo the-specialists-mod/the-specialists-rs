@@ -95,7 +95,9 @@ native backend's business, not the host's and not the gameplay plugin's:
   `stored_skill`, `team_key`, `texts`), the `CBot` overrides (`spawn_post`, `trace_attack`), the
   brain (`delay` for every module timer, the states and the stuck window; `runs_ai`, `turn_rate`,
   `update_view`, `look_at`, `press` / `release` / `update_buttons`, `respawn`), navigation (`ladder_buttons`, `wander_end`, `steer_probe_end`) and whole modules
-  (`state_think`, `vision`, `attack`, `buy`, `look_around`, `stunt_mode`). Coarse where a ruleset
+  (`state_think`, `vision`, `attack`, `buy`, `look_around`, `stunt_mode`), and the node graph's
+  link arithmetic (`ladder_link_distance`, `IsReachable`'s ladder shortcuts; `ground_probes`,
+  `IsGroundContinuous`'s floor probes). Coarse where a ruleset
   replaces a module, fine where it changes one value inside shared code (the timers, the view,
   the buttons). A replacement gets the same `Brain`, `Player` and `Cx` and uses the native
   helpers, which are public; `Brain::ext` holds per-bot state of its own (Reset drops it).

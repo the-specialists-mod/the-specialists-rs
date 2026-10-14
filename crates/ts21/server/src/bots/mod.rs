@@ -19,8 +19,11 @@
 //! * Buttons: 32 slots of `{mask, expire}` (`PressButtons` 0x100613e0, `ReleaseButton`
 //!   0x10061450, `UpdateButtons` 0x10061490), held while `time <= expire`.
 //! * The modules: [`attack`], vision, look around, buy, the stunt roll and the states.
+//! * The node graph's ladder shortcuts and floor probes keep the differences unrounded
+//!   ([`nodes`]).
 
 pub mod attack;
+pub mod nodes;
 
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
@@ -215,6 +218,14 @@ pub fn steer_probe_end(f: [f32; 3], origin: [f32; 3]) -> [f32; 3] {
 impl NativeBotRules for Bots {
     fn random_model_in_teamplay(&self) -> bool {
         true
+    }
+
+    fn ladder_link_distance(&self, a: [f32; 3], b: [f32; 3]) -> f64 {
+        nodes::ladder_link_distance(a, b)
+    }
+
+    fn ground_probes(&self, a: [f32; 3], b: [f32; 3], no_floor: &mut dyn FnMut([f32; 3]) -> bool) -> bool {
+        nodes::ground_probes(a, b, no_floor)
     }
 
     /// `BotCreate` (0x1005dc30) has no `botlearn 1`.

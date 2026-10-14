@@ -15,7 +15,7 @@
 //! `Player` and `Cx` the native one does, and the native helpers are public for it.
 
 use super::brain::{self, Brain, btn};
-use super::{attack, modules, states};
+use super::{attack, modules, nodes, states};
 use crate::player::Player;
 use crate::world::{Cx, DamageInfo};
 use goldsrc::Global;
@@ -176,6 +176,20 @@ pub trait NativeBotRules: Sync {
     /// The stunt module's choice (0x1006e130): 2 (a flip) for 26/101, else 1 (a dive).
     fn stunt_mode(&self) -> u8 {
         if goldsrc::server::engine().random_long(0, 100) <= 25 { 2 } else { 1 }
+    }
+
+    // ---- the node graph (`CNodeGraph`, `botlearn` / `addnode`) ----
+
+    /// `IsReachable`'s ladder shortcuts: the 2D distance between nodes `a` and `b`, compared with
+    /// 64 and 160 ([`nodes::ladder_link_distance`]).
+    fn ladder_link_distance(&self, a: [f32; 3], b: [f32; 3]) -> f64 {
+        nodes::ladder_link_distance(a, b)
+    }
+
+    /// `IsGroundContinuous`: the floor probes from node `a` to node `b`; `no_floor` traces below
+    /// each point, and the first one without a floor makes it false ([`nodes::ground_probes`]).
+    fn ground_probes(&self, a: [f32; 3], b: [f32; 3], no_floor: &mut dyn FnMut([f32; 3]) -> bool) -> bool {
+        nodes::ground_probes(a, b, no_floor)
     }
 }
 
