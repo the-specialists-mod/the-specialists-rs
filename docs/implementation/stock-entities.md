@@ -485,9 +485,11 @@ Port notes:
   runs from `ServerActivate` (§6 item 2).
 * A tank whose controller disconnects lets go on its next think (port addition; the SDK keeps a
   dangling pointer).
-* `FireBullets` for tanks sends a tracer for every shot and a `{shot1..5}` decal on brush
-  entities and the world. It doesn't play texture impact sounds (`TEXTURETYPE_PlaySound`) or
-  bubble trails under water.
+* `FireBullets` for tanks sends a tracer and a bubble trail (`(int)(4096 · fraction / 64)`,
+  truncated) for every shot, and a `{shot1..5}` decal on brush entities and the world. It doesn't
+  play texture impact sounds (`TEXTURETYPE_PlaySound` with the bullet type, flesh on a hit whose
+  `Classify()` isn't NONE/MACHINE) or send TS's `TE_GUNSHOTDECAL` with the hit entity's
+  `DamageDecal` (issue #89): the port has no `Classify` or `gDecals` table yet.
 * `firespread 5` reads past TS's 5-entry `gTankSpread` (the SDK resets only values above 5); the
   port uses no spread for it.
 * The train HUD is cleared on spawn (TS leaves the last notch shown after dying on a train).

@@ -707,6 +707,9 @@ fn fire_bullet(me: *mut edict_t, src: Vec3, forward: Vec3, spread: Vec3, right: 
         let n = eng.random_long(1, 5);
         decal_trace(&tr, goldsrc::server::intern(&format!("{{shot{n}")));
     }
+    // `UTIL_BubbleTrail(vecSrc, tr.vecEndPos, (int)(flDistance * tr.flFraction / 64.0))` for every
+    // shot, hit or miss (0xa42b9..0xa42f3; issue #89).
+    crate::weapons::fire::bubble_trail(src, tr.vecEndPos, crate::weapons::fire::bubble_count(4096.0, tr.flFraction));
     multi::apply(me, attacker);
 }
 

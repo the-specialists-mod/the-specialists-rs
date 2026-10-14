@@ -256,13 +256,13 @@ fn water_level(pos: Vec3, mut minz: f32, mut maxz: f32) -> f32 {
 /// simulated bullets' `(float)ammo.range` (8192 for every ammo, 0x6ffcf..0x6fffb) and the
 /// penetration's `4096.0f` (0x6fa5a..0x6fa85). The product is exact on the x87 (at most 48 bits)
 /// and `(int)` truncates (`fistp` under chop; mp.dll `__ftol`), issue #80.
-fn bubble_count(range: f32, fraction: f32) -> i32 {
+pub(crate) fn bubble_count(range: f32, fraction: f32) -> i32 {
     (f64::from(range) * f64::from(fraction) * 0.015625).trunc_i32()
 }
 
 /// `UTIL_BubbleTrail` 0xee93c: a `TE_BUBBLETRAIL` along a bullet's path when either end is at
 /// least 8 units under water. `count` is capped at 255.
-fn bubble_trail(from: Vec3, to: Vec3, count: i32) {
+pub(crate) fn bubble_trail(from: Vec3, to: Vec3, count: i32) {
     let mut height = water_level(from, from[2], from[2] + 256.0) - from[2];
     if height < 8.0 {
         let h = water_level(to, to[2], to[2] + 256.0) - to[2];
