@@ -92,14 +92,27 @@ fn aim_vectors(angles: Vec3) -> (Vec3, Vec3, Vec3) {
 /// Circular gaussian spread (`FireBullets` / `TankTrace`): `forward` jittered along `right`/`up`.
 fn spread_dir(forward: Vec3, spread: Vec3, right: Vec3, up: Vec3) -> Vec3 {
     let eng = engine();
+    let rf = || eng.random_float(-0.5, 0.5);
+    spread_dir_from(forward, spread, right, up, || (rf(), rf(), rf(), rf()))
+}
+
+/// [`spread_dir`] with the four `RANDOM_FLOAT(-0.5, 0.5)` draws of each try from `draw`, in
+/// mp.dll's arithmetic (`CBaseEntity::FireBullets` 0x10014f91..0x10015105; issue #89): `x` is
+/// stored as a `float`, `y` stays on the FPU for the `y² + x² <= 1` test (a NaN passes) and the
+/// product `y·spread.y`; the two scales are stored (`Vector::operator*` arguments), each
+/// `Vector` product and sum is stored, `(forward + right·a) + up·b`.
+fn spread_dir_from(forward: Vec3, spread: Vec3, right: Vec3, up: Vec3, mut draw: impl FnMut() -> (f32, f32, f32, f32)) -> Vec3 {
     let (x, y) = loop {
-        let x = eng.random_float(-0.5, 0.5) + eng.random_float(-0.5, 0.5);
-        let y = eng.random_float(-0.5, 0.5) + eng.random_float(-0.5, 0.5);
-        if x * x + y * y <= 1.0 {
+        let (a, b, c, d) = draw();
+        let x = a + b;
+        let y = c as f64 + d as f64;
+        if shared::pm::not_above87(y * y + x as f64 * x as f64, 1.0) {
             break (x, y);
         }
     };
-    vec::add(vec::add(forward, vec::scale(right, x * spread[0])), vec::scale(up, y * spread[1]))
+    let a = x * spread[0];
+    let b = (y * spread[1] as f64) as f32;
+    vec::add(vec::add(forward, vec::scale(right, a)), vec::scale(up, b))
 }
 
 impl<const K: u8> FuncTank<K> {
@@ -779,5 +792,33 @@ mod tests {
         assert_eq!(t.spread(), [0.0; 3]);
         let t = FuncTank::<GUN> { spread: 4, ..Default::default() };
         assert_eq!(t.spread(), [0.25; 3]);
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// `FireBullets`' spread keeps `y` unrounded (issue #89): with `c + d` not a `float`, the old
+    /// `float` sum gave z = 0x3c80a17c.
+    #[test]
+    fn spread_keeps_y_unrounded() {
+        let draws = [0x3e80_0000, 0x3e00_0000, 0x3e99_999a, 0x3316_52e8].map(f32::from_bits);
+        let mut once = Some((draws[0], draws[1], draws[2], draws[3]));
+        let d = spread_dir_from([1.0, 0.0, 0.0], [0.05234, 0.05234, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], || once.take().unwrap());
+        assert_eq!(b(d), [0x3f80_0000, 0xbca0_c9da, 0x3c80_a17d]);
+        // Outside the unit circle it draws again.
+        let mut tries = [(0.5f32, 0.5, 0.5, 0.5), (0.25, 0.0, 0.0, 0.0)].into_iter();
+        let d = spread_dir_from([1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], || tries.next().unwrap());
+        assert_eq!(d, [1.0, -0.25, 0.0]);
+        let _ = f([0; 3]);
     }
 }
