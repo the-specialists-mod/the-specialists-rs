@@ -7,6 +7,7 @@
 use crate::commands::Args;
 use crate::damage::DamageInfo;
 use crate::damage::glast::Snapshot;
+use crate::entities::stock::items;
 use crate::entities::ts::ground::GroundWeapon;
 use crate::entities::ts::misc::MapFlags;
 use crate::messages::Msg;
@@ -20,9 +21,10 @@ use crate::stunt::rules::{self as stunt, Dive, StuntClock, StuntRules};
 use crate::weapons::{fire, melee, projectiles};
 use crate::world::{Cx, Entity};
 use goldsrc::server::MsgWriter;
-use goldsrc::sys::{TraceResult, edict_t};
+use goldsrc::sys::{TraceResult, edict_t, entvars_t};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::{self, Vec3};
+use shared::weapons::{Status, WeaponInfo};
 use std::ffi::CStr;
 
 /// A server cvar: (name, default, flags), as [`cvars::CVARS`] lists TS 3.0's.
@@ -162,7 +164,92 @@ pub trait ServerRules: Sync {
         crate::weapons::buy_armament(p, cx);
     }
 
+    // ---- inventory, world guns and items ------------------------------------------------------
+
+    /// `CBasePlayer::PickUpWeapon` (0x9314c): the slots weapon `id` (info `w`, copied from
+    /// `from` when it is a dropped one) costs, or `None` when it is refused before that.
+    /// 3.0: [`weapons::pick_up_cost`](crate::weapons::pick_up_cost), which refuses
+    /// the akimbo pair of a single gun and charges a stack `slots × count`.
+    fn pick_up_cost(&self, id: u8, w: &WeaponInfo, from: Option<&Status>) -> Option<f32> {
+        crate::weapons::pick_up_cost(id, w, from)
+    }
+
+    /// `CBasePlayer::DropWeapon` (0x94aaf): whether a dead player's grenades become grenade
+    /// power-ups (`CreatePowerUp(0x20, -1)` each, 5 units apart) instead of being dropped like a
+    /// living player's. 3.0: while `TSGameRules.m_mode < 2` (always in its DM/TDM: no grenade
+    /// buys, [`weapons::grenade_buys`](crate::weapons::grenade_buys)).
+    fn dead_grenades_become_powerups(&self) -> bool {
+        !crate::weapons::grenade_buys()
+    }
+
+    /// `DropWeapon` (0x94ed9, 0x94fad, 0x95265): whether a gun thrown by `drop` or a disarm lasts
+    /// `clamp(2 × weaponstay, 10, 120)` s and glows for its dropper
+    /// ([`worldgun::set_drop_lifetime`](crate::weapons::worldgun::set_drop_lifetime)), instead of
+    /// keeping `CTSWorldGun::Spawn`'s `clamp(weaponstay, 5, 60)`. 3.0: true.
+    fn drop_lifetime_and_glow(&self) -> bool {
+        true
+    }
+
+    /// `CTSWorldGun::Fall` (0xa0d84): whether a flying dropped gun traces 0.1 s ahead and hurts a
+    /// non-player it hits for `speed × slots × 0.001` (`DMG_NEVERGIB | DMG_CLUB`) when its health
+    /// is at most `speed × slots`. 3.0: true.
+    fn world_gun_fall_impact(&self) -> bool {
+        true
+    }
+
+    /// A flying dropped gun `gun` (weapon `id`, credited to `attacker`) touched `other`
+    /// (`CTSWorldGun::BounceTouch` 0xa0b0c, after its bounce). 3.0: nothing.
+    fn world_gun_touch(&self, _gun: *mut edict_t, _attacker: *mut edict_t, _id: u8, _other: *mut edict_t) {}
+
+    /// `CTSAmmoPack::WaitTouch` (0xa16c0): whether a pack a live player touches stays when none
+    /// of its ammo fitted. 3.0: false, the touch removes it.
+    fn ammo_pack_stays_when_nothing_fits(&self) -> bool {
+        false
+    }
+
+    /// `CBasePlayer::TakeHealth` on a player's entvars (healthkits, chargers, doors, negative
+    /// `trigger_hurt`, time-based healing): `None` when refused, else whether the player is now
+    /// above `max_health` (which starts the 1/s overheal decay). 3.0:
+    /// [`player::damage::add_health`](crate::player::damage::add_health) (0xd8760), uncapped.
+    fn player_add_health(&self, v: &mut entvars_t, amount: f32) -> Option<bool> {
+        player_damage::add_health(v, amount)
+    }
+
+    /// `CItemBattery::MyTouch` (0xcb74c), once it has accepted player `p`: the battery's `amount`
+    /// of armour. 3.0: `CBasePlayer::TakeArmor` ([`items::player_take_armor`]: the first kevlar
+    /// costs its slots, the move speed is recomputed; the result is ignored).
+    fn battery_armor(&self, p: *mut edict_t, amount: f32) {
+        items::player_take_armor(p, amount);
+    }
+
+    /// `m_iJuice` a wall charger (`armor`: `func_recharge`, else `func_healthcharger`) gets from
+    /// `Spawn` and `Recharge`. 3.0: 1 (`CRecharge::Spawn` 0xc6ee4, `CWallHealth::Spawn`).
+    fn charger_capacity(&self, _armor: bool) -> i32 {
+        1
+    }
+
+    /// One charge of a wall charger for `activator` (every 0.1 s while used), taking from
+    /// `juice`. 3.0 ([`items::charge_once`]): `CRecharge::Use` (0xc6fd0) empties the charger
+    /// into `TakeArmor(100)` below 100 armour; `CWallHealth::Use` (0xc8d08) gives
+    /// `TakeHealth(max_health - health)` and empties it if that was taken.
+    fn charger_charge(&self, armor: bool, juice: &mut i32, activator: *mut edict_t) {
+        items::charge_once(armor, juice, activator);
+    }
+
     // ---- map entities -------------------------------------------------------------------------
+
+    /// The ruleset's own game object for an entity of `class`, made when the engine creates the
+    /// edict's private data (the classname's export), instead of the type 3.0 links to it. For a
+    /// class that is something else in the ruleset (e.g. an HL item where 3.0 has a power-up).
+    /// Port addition. 3.0: `None`.
+    fn entity_object(&self, _class: &CStr) -> Option<Box<dyn Entity>> {
+        None
+    }
+
+    /// The ruleset's own precaches, made at every map start for every registered ruleset (after
+    /// TS 3.0's, `gameplay::precache_rulesets`), so that its entities can spawn when a switch
+    /// makes it active mid-map. Port addition. 3.0: none.
+    fn precache(&self) {}
 
     /// Whether an entity of `class` may spawn (`DispatchSpawn`, for the map's entities and the
     /// game's own): a refused one fails its spawn (-1, the engine frees it) and its class parses

@@ -45,10 +45,10 @@ use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 
 pub use assets::max_carry;
 #[allow(unused_imports)]
-pub use assets::{cvars, dmgreport, restriction, set_restriction};
+pub use assets::{cvars, dmgreport, grenade_buys, restriction, set_restriction};
 pub(crate) use commands::add_armament;
 pub use host::emit;
-pub use inventory::{Drop, buy_armament, pick_up_weapon};
+pub use inventory::{Drop, buy_armament, pick_up_cost, pick_up_weapon};
 
 /// `CTSGun::AddItem(bits)` on the held weapon (the attachments a `tki` buys): false when the
 /// weapon can't take them.
@@ -696,14 +696,26 @@ pub fn cmd_start(p: &mut Player, _cx: &mut Cx, _cmd: &usercmd_t, seed: u32) {
 
 // ---- API for other subsystems (rules: loadouts, ground weapons, power-ups) -------------------
 
+/// `compile_weapons_info` (0x7fe28, from `W_Precache` on every map): the weapon table is built
+/// again from the ruleset's values, so `loadweapons`' custom parameters end with the map.
+pub fn rebuild_weapon_info() {
+    shared::weapons::table::reset_custom_tables();
+}
+
 /// Gives weapon `id` with attachment bits. Returns false if it doesn't fit.
 /// (`CBasePlayer::PickUpWeapon(id, NULL, attachments, select = id != 29, own = false)`, what a
 /// `ts_groundweapon` does with its whole spawnflags.)
 pub fn give_weapon(p: &mut Player, cx: &mut Cx, id: u8, attachments: u32) -> bool {
+    give_weapon_select(p, cx, id, attachments, id != shared::weapons::id::BRIEFCASE)
+}
+
+/// [`give_weapon`] with the caller's `select`: false draws the weapon only when the player is on
+/// kung fu (`PickUpWeapon`'s `select || current == 0`).
+pub fn give_weapon_select(p: &mut Player, cx: &mut Cx, id: u8, attachments: u32, select: bool) -> bool {
     if !gun_active(p) {
         return false; // `PickUpWeapon` needs the gun
     }
-    let ok = inventory::pick_up_weapon(p, cx, id, None, attachments, id != shared::weapons::id::BRIEFCASE, false);
+    let ok = inventory::pick_up_weapon(p, cx, id, None, attachments, select, false);
     inventory::sync_speed(p, cx);
     ok
 }
@@ -999,6 +1011,19 @@ pub fn set_round_mode_items(allowed: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `W_Precache`'s `compile_weapons_info` (0x7fe28) drops `loadweapons`' values with the map.
+    /// (The custom set here holds the same values, so concurrent tests read the same numbers.)
+    #[test]
+    fn a_new_map_drops_custom_weapon_values() {
+        use shared::weapons::{id, info, table};
+        let w = info(id::AK47).unwrap().clone();
+        assert!(table::set_weapon_params(id::AK47, w.accuracy, w.view_kick, w.acc_kick, w.damage, w.cost));
+        assert!(table::custom_tables_active());
+        rebuild_weapon_info();
+        assert!(!table::custom_tables_active());
+        assert!(std::ptr::eq(table::tables(), table::ruleset_tables()));
+    }
 
     #[test]
     fn gun_weapon_bit_is_id_16() {

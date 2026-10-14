@@ -92,6 +92,53 @@ impl GunRules for Ts21 {
     fn cancel_runs_frame_in_reload(&self, _info: &WeaponInfo) -> bool {
         true
     }
+
+    fn better_weapon(&self, gun: &Gun, excluded: u8) -> u8 {
+        better_weapon(gun, excluded)
+    }
+
+    /// `PrimaryAttack` (0x1004aa50) calls `KnifeFire`/`KatanaFire` and `SecondaryAttack`
+    /// (0x1004a800) `KnifeFire` only when the button went down this frame (`pl+0x770`).
+    fn blades_need_press(&self) -> bool {
+        true
+    }
+
+    /// `SecondaryAttack` (0x1004a800) has no katana branch: the katana falls through to the
+    /// scope / alt-grip code, has neither, and only sets the 0.3 / 1.0 timers.
+    fn katana_throws(&self) -> bool {
+        false
+    }
+
+    /// `WeaponIdle` (0x1004d660): `clip < 1` reloads, with no `InfiniteClips` test.
+    fn infinite_clip_skips_idle_reload(&self) -> bool {
+        false
+    }
+
+    /// 2.1's HolsterWeapon (`FUN_1004d7a0`, from `Holster`, `Deploy` of id 0 and every weapon
+    /// switch): `viewmodel = weaponmodel = fov = 0` and nothing else; 2.1 has no kung-fu view
+    /// model, draw animation or `events/draw.sc`.
+    fn holster_draws_kungfu(&self) -> bool {
+        false
+    }
+}
+
+/// 2.1's `GetBetterWeapon` (FUN_1004a410): the owned weapon other than `excluded` with the
+/// highest `cost × (akimbo ? 2 : 1)` (`info+0xd0`, the kind byte `FUN_10049a10` tests for 4),
+/// strictly greater so the lowest id wins a tie; kung fu when none is worth more than 0.
+pub fn better_weapon(gun: &Gun, excluded: u8) -> u8 {
+    let (mut best, mut pick) = (0i32, 0u8);
+    for id in 1..gun.status.len() as u8 {
+        if !gun.status[id as usize].owned || id == excluded {
+            continue;
+        }
+        let Some(w) = info(id) else { continue };
+        let worth = w.cost.wrapping_mul(if kind_of(id) == kind::AKIMBO { 2 } else { 1 });
+        if worth > best {
+            best = worth;
+            pick = id;
+        }
+    }
+    pick
 }
 
 /// The server's slow-motion divisor (`FUN_100551c0` -> `FUN_1005a3d0`, `FUN_1005a3b0`):

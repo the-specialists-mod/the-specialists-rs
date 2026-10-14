@@ -23,6 +23,14 @@ struct Mock {
     events: Vec<(Event, EventArgs)>,
     shots: Vec<Shot>,
     kicks: Vec<(f32, f32, bool)>,
+    /// Run TS 3.0's gun rules instead of 2.1's (on 2.1's tables).
+    core: bool,
+    melees: u32,
+    blades: u32,
+    anims: u32,
+    /// The last `set_view_model` and `set_fov` (`None`: never called).
+    view_model: Option<Option<u8>>,
+    fov: Option<f32>,
 }
 
 impl GunHost for Mock {
@@ -45,7 +53,7 @@ impl GunHost for Mock {
         Arith::CLIENT
     }
     fn rules(&self) -> &'static dyn GunRules {
-        &crate::TS21
+        if self.core { &CORE } else { &crate::TS21 }
     }
     fn powerups(&self) -> u16 {
         self.powerups
@@ -93,8 +101,12 @@ impl GunHost for Mock {
     fn fov(&self) -> f32 {
         0.0
     }
-    fn set_fov(&mut self, _fov: f32) {}
-    fn set_view_model(&mut self, _id: Option<u8>) {}
+    fn set_fov(&mut self, fov: f32) {
+        self.fov = Some(fov);
+    }
+    fn set_view_model(&mut self, id: Option<u8>) {
+        self.view_model = Some(id);
+    }
     fn view_model_hidden(&self) -> bool {
         false
     }
@@ -102,7 +114,9 @@ impl GunHost for Mock {
     fn event(&mut self, ev: Event, args: EventArgs) {
         self.events.push((ev, args));
     }
-    fn weapon_anim(&mut self, _anim: i32, _skip_local: bool, _body: i32) {}
+    fn weapon_anim(&mut self, _anim: i32, _skip_local: bool, _body: i32) {
+        self.anims += 1;
+    }
     fn player_anim(&mut self, _anim: i32) {}
     fn kick(&mut self, pitch: f32, yaw: f32, shake: bool) {
         self.kicks.push((pitch, yaw, shake));
@@ -112,10 +126,13 @@ impl GunHost for Mock {
         self.shots.push(*shot);
     }
     fn melee(&mut self, _hit: &MeleeHit, _gun: &mut Gun) -> MeleeResult {
+        self.melees += 1;
         MeleeResult::Miss
     }
     fn throw_grenade(&mut self, _origin: Vec3, _velocity: Vec3, _roll: bool) {}
-    fn throw_blade(&mut self, _btype: i32) {}
+    fn throw_blade(&mut self, _btype: i32) {
+        self.blades += 1;
+    }
     fn slots_changed(&mut self, _delta_free: i32) {}
     fn melee_bar_changed(&mut self, _bar: f32) {}
     fn block_player(&mut self, _t: f32) {}
@@ -138,6 +155,126 @@ fn armed(id: u8) -> (Gun, Mock) {
 
 fn fire_once(g: &mut Gun, h: &mut Mock) {
     crate::TS21.fire(g, h);
+}
+
+/// `PrimaryAttack` (0x1004aa50) and `SecondaryAttack` (0x1004a800) slash the knife and swing
+/// the katana only on a fresh press; 3.0 attacks while the button is held.
+#[test]
+fn blades_attack_on_a_fresh_press() {
+    const IN_ATTACK: u32 = 1;
+    const IN_ATTACK2: u32 = 0x800;
+    for knife in [25, 35] {
+        assert_eq!(kind_of(knife), kind::KNIFE);
+        for (button, secondary) in [(IN_ATTACK, false), (IN_ATTACK2, true)] {
+            let attack = |g: &mut Gun, h: &mut Mock| if secondary { g.secondary_attack(h) } else { g.primary_attack(h) };
+            let (mut g, mut h) = armed(knife);
+            h.buttons = button;
+            attack(&mut g, &mut h);
+            assert_eq!(g.idle, 0.0, "held: no slash ({knife}, {secondary})");
+            h.pressed = button;
+            attack(&mut g, &mut h);
+            assert_eq!(g.idle, 3.0, "pressed: KnifeFire ({knife}, {secondary})");
+            let (mut g, mut h) = armed(knife);
+            h.buttons = button;
+            h.core = true;
+            attack(&mut g, &mut h);
+            assert_ne!(g.idle, 0.0, "3.0 slashes while held");
+        }
+    }
+    let (mut g, mut h) = armed(id::KATANA);
+    h.buttons = IN_ATTACK;
+    g.primary_attack(&mut h);
+    assert_eq!(h.melees, 0, "held: no swing");
+    h.pressed = IN_ATTACK;
+    g.primary_attack(&mut h);
+    assert_eq!(h.melees, 1, "pressed: KatanaFire");
+}
+
+/// 2.1's `SecondaryAttack` (0x1004a800) has no katana branch: no throw, only the generic
+/// path's timers (the katana has no scope and no alt grip). 3.0 throws it.
+#[test]
+fn katana_attack2_does_not_throw() {
+    const IN_ATTACK2: u32 = 0x800;
+    let (mut g, mut h) = armed(id::KATANA);
+    h.buttons = IN_ATTACK2;
+    h.pressed = IN_ATTACK2;
+    g.secondary_attack(&mut h);
+    assert_eq!(h.blades, 0);
+    assert!(g.status[id::KATANA as usize].owned && g.current == id::KATANA);
+    assert_eq!((g.next_secondary, g.idle), (0.3, 1.0));
+    assert!(!g.status[id::KATANA as usize].alt_grip);
+    assert_eq!(h.anims, 0);
+    assert_eq!(h.melees, 0);
+}
+
+/// 2.1's `WeaponIdle` (0x1004d660) reloads an empty gun under Infinite Clip; 3.0's doesn't.
+#[test]
+fn idle_reloads_under_infinite_clip() {
+    for core in [false, true] {
+        let (mut g, mut h) = armed(id::MP5K);
+        let ammo = g.status[id::MP5K as usize].ammo as usize;
+        g.status[id::MP5K as usize].clip = 0;
+        g.reserve[ammo] = 60;
+        h.powerups = shared::ts::powerup::INFINITE_CLIP;
+        h.core = core;
+        g.weapon_idle(&mut h);
+        let reloaded = h.events.iter().any(|(e, _)| *e == Event::Reload);
+        assert_eq!(reloaded, !core, "core {core}");
+    }
+}
+
+/// 2.1's HolsterWeapon (`FUN_1004d7a0`) leaves no view model and plays no draw; 3.0 draws kung
+/// fu's view model with its draw animation and event.
+#[test]
+fn holster_leaves_no_view_model() {
+    for core in [false, true] {
+        let (mut g, mut h) = armed(id::MP5K);
+        h.core = core;
+        h.fov = Some(40.0);
+        g.holster_weapon(&mut h);
+        assert_eq!(g.current, 0);
+        assert_eq!(h.fov, Some(0.0));
+        let drew = h.events.iter().any(|(e, _)| *e == Event::Draw);
+        if core {
+            assert_eq!(h.view_model, Some(Some(0)));
+            assert!(drew && h.anims == 1);
+        } else {
+            assert_eq!(h.view_model, Some(None));
+            assert!(!drew && h.anims == 0);
+        }
+    }
+}
+
+/// `GetBetterWeapon` (FUN_1004a410) draws the most expensive owned weapon, an akimbo pair at
+/// twice its cost, the lowest id on a tie; 3.0 walks its priority list.
+#[test]
+fn better_weapon_is_the_most_expensive() {
+    use crate::TS21;
+    setup();
+    let own = |ids: &[u8]| {
+        let mut g = Gun::default();
+        for &i in ids {
+            g.status[i as usize].owned = true;
+        }
+        g
+    };
+    let cost = |i: u8| info(i).unwrap().cost;
+    // Katana (2900) over the MP5SD (2500), where 3.0's list draws the MP5SD first.
+    assert!(cost(34) > cost(6));
+    let g = own(&[6, 34]);
+    assert_eq!(TS21.better_weapon(&g, 0), 34);
+    assert_eq!(CORE.better_weapon(&g, 0), 6);
+    // A tie (AK47 and Benelli at 3000): the lowest id.
+    assert_eq!(cost(4), cost(13));
+    assert_eq!(TS21.better_weapon(&own(&[4, 13]), 0), 4);
+    assert_eq!(TS21.better_weapon(&own(&[4, 13]), 4), 13);
+    // The akimbo MK23s (700 x 2) beat a weapon costing between one and two of them.
+    assert_eq!(kind_of(10), kind::AKIMBO);
+    let mid = (1..38u8).find(|&i| info(i).is_some_and(|w| w.cost > cost(10) && w.cost < 2 * cost(10))).unwrap();
+    assert_eq!(TS21.better_weapon(&own(&[mid, 10]), 0), 10);
+    // Nothing worth more than 0: kung fu.
+    assert_eq!(TS21.better_weapon(&own(&[]), 0), 0);
+    assert_eq!(TS21.better_weapon(&own(&[6]), 6), 0);
 }
 
 #[test]

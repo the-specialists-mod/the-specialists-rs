@@ -322,6 +322,8 @@ impl World {
         crate::precache::client_precache();
         crate::precache::ts_precache();
         crate::precache::world_sounds_and_gibs();
+        // Port addition: the gameplay rulesets' own precaches, so any can become active mid-map.
+        crate::gameplay::precache_rulesets();
         // Port addition: the `tsmod_*` plugins' precaches, after the game's.
         crate::plugins::precache();
         light_styles();
@@ -373,6 +375,8 @@ pub fn restart_world() {
     maprules::reset();
     sound::reset_rooms();
     crate::rules::start_rules();
+    // `W_Precache`'s `compile_weapons_info`: no custom weapon parameters carry over.
+    crate::weapons::rebuild_weapon_info();
     soundent::restart_world_soundent();
     init_body_que();
     light_styles();

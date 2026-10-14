@@ -109,6 +109,14 @@ fn buy_weapon(p: &mut Player, cx: &mut Cx, wid: i32, attachments: u32) {
     }
 }
 
+/// `CBasePlayer::PickUpWeapon` (0x10055830): `free_slots - info.slots` (the byte), with no akimbo
+/// refusal and no stack multiplier. `GiveWeapon` (FUN_1004a040) then builds an akimbo id that
+/// isn't owned from its single's record (the single's clip on the left, a full one on the right),
+/// so a hand-typed `tkw` with an akimbo id buys the pair.
+pub fn pick_up_cost(w: &shared::weapons::WeaponInfo) -> Option<f32> {
+    Some(w.slots as f32)
+}
+
 /// `AddItem(bits)` (0x10055c30): kevlar (0x10) and stealth shoes (0x20) only in the round modes;
 /// otherwise attachments for the held weapon.
 fn add_item(p: &mut Player, cx: &mut Cx, bits: u32) {
@@ -226,6 +234,25 @@ fn buy_ammo(p: &mut Player, cx: &mut Cx, t: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2.1 charges the plain slots: the akimbo pair of a single gun is given, a dropped stack
+    /// costs one item's slots, and 3.0's refusal and multiplier stay 3.0's.
+    #[test]
+    fn pick_up_cost_has_no_akimbo_refusal_or_stack_multiplier() {
+        use ts_server::gameplay::ServerRules;
+        let t = ts21_gameplay::shared::tables::tables();
+        let uzis = t.weapon(16).unwrap();
+        assert_ne!(uzis.single, -1, "a single gun's pair");
+        assert_eq!(pick_up_cost(uzis), Some(uzis.slots as f32));
+        let m61 = t.weapon(id::M61).unwrap();
+        let three = shared::weapons::Status { owned: true, clip: 3, ..Default::default() };
+        let v21: &dyn ServerRules = &crate::Ts21Server;
+        assert_eq!(v21.pick_up_cost(id::M61, m61, Some(&three)), Some(m61.slots as f32));
+        let core: &dyn ServerRules = &shared::gameplay::CORE;
+        let t30 = shared::weapons::table::base_tables();
+        let uzis30 = t30.weapon(16).unwrap();
+        assert_eq!(core.pick_up_cost(16, uzis30, None), None);
+    }
 
     #[test]
     fn the_cash_floor_is_initial_cash() {

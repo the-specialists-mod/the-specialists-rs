@@ -405,11 +405,23 @@ fn handle_of(e: *const edict_t) -> Option<Handle> {
 
 /// Classname export body: attaches a new `T` to the edict that owns `pev`.
 pub fn create<T: Entity + Default>(pev: *mut entvars_t) {
+    attach::<T>(pev, || Box::new(T::default()));
+}
+
+/// A linked classname's export body (`entities::link_entities!`): attaches the active ruleset's
+/// own object for `class` ([`ServerRules::entity_object`](crate::gameplay::ServerRules::entity_object)),
+/// else a new `T`, to the edict that owns `pev`.
+pub fn create_linked<T: Entity + Default>(pev: *mut entvars_t, class: &CStr) {
+    attach::<T>(pev, || crate::gameplay::active().server.entity_object(class).unwrap_or_else(|| Box::new(T::default())));
+}
+
+/// The private data of `pev`'s edict, made by `make`, sized for `T`.
+fn attach<T: Entity + Default>(pev: *mut entvars_t, make: impl FnOnce() -> Box<dyn Entity>) {
     let e = engine().edict_of_vars(pev);
     if e.is_null() || handle_of(e).is_some() {
         return; // already game-owned (e.g. a client edict reused across maps)
     }
-    let h = STORE.0.insert(Box::new(T::default()));
+    let h = STORE.0.insert(make());
     set_private_tag(e, [h.index, h.serial], private_size::<T>());
 }
 

@@ -660,11 +660,17 @@ impl Gun {
                 return;
             }
             kind::KNIFE => {
+                if host.rules().blades_need_press() && host.pressed() & IN_ATTACK == 0 {
+                    return;
+                }
                 self.cur().toggle = false;
                 self.knife_fire(host);
                 return;
             }
             kind::KATANA => {
+                if host.rules().blades_need_press() && host.pressed() & IN_ATTACK == 0 {
+                    return;
+                }
                 self.katana_fire(host);
                 return;
             }
@@ -710,11 +716,14 @@ impl Gun {
                 return;
             }
             kind::KNIFE => {
+                if host.rules().blades_need_press() && host.pressed() & IN_ATTACK2 == 0 {
+                    return;
+                }
                 self.cur().toggle = true;
                 self.knife_fire(host);
                 return;
             }
-            kind::KATANA => {
+            kind::KATANA if host.rules().katana_throws() => {
                 self.katana_throw(host);
                 return;
             }
@@ -1758,7 +1767,9 @@ impl Gun {
         }
         if self.kind() == kind::GRENADE {
             self.grenade_idle(false, host);
-        } else if !Self::infinite_clip(host) && self.status[self.current as usize].clip < 1 {
+        } else if self.status[self.current as usize].clip < 1
+            && !(host.rules().infinite_clip_skips_idle_reload() && Self::infinite_clip(host))
+        {
             self.reload(host);
         } else if self.status[self.current as usize].clip != 0 {
             self.idle = 3.0;
@@ -1893,13 +1904,19 @@ impl Gun {
         }
     }
 
-    /// `CTSGun::HolsterWeapon` 0x85698: back to kung fu.
+    /// `CTSGun::HolsterWeapon` 0x85698: back to kung fu (whose view the rules decide,
+    /// [`GunRules::holster_draws_kungfu`](crate::gameplay::GunRules::holster_draws_kungfu)).
     pub fn holster_weapon(&mut self, host: &mut (impl GunHost + ?Sized)) {
+        let draws_kungfu = host.rules().holster_draws_kungfu();
         host.set_view_model(None);
         host.set_weapon_model(None);
         // pl+0xb58 / pl+0x478 = "" (no weapon animation extension).
         host.set_anim_extension("");
-        self.unzoom(host);
+        if draws_kungfu {
+            self.unzoom(host);
+        } else {
+            host.set_fov(0.0);
+        }
         self.next_attack = 0.5;
         self.idle = 3.0;
         if self.melee_window != 0.0 && self.melee_source != 0 {
@@ -1920,24 +1937,27 @@ impl Gun {
             }
         }
         self.current = 0;
-        host.set_view_model(Some(0));
-        host.weapon_anim(anim(0, false, 2), false, self.body);
-        host.event(Event::Draw, EventArgs::default());
+        if draws_kungfu {
+            host.set_view_model(Some(0));
+            host.weapon_anim(anim(0, false, 2), false, self.body);
+            host.event(Event::Draw, EventArgs::default());
+        }
         self.kick_combo = 0;
         self.punch_combo = 0;
         self.last_melee_anim = 0;
     }
 
-    /// `CTSGun::GetBetterWeapon(excluded)` 0x80f40: switch by `g_iWeaponPriority`.
+    /// `CTSGun::GetBetterWeapon(excluded)` 0x80f40: switch to the weapon the rules pick
+    /// ([`GunRules::better_weapon`](crate::gameplay::GunRules::better_weapon)).
     pub fn get_better_weapon(&mut self, excluded: u8, host: &mut (impl GunHost + ?Sized)) {
-        let mut pick = PRIORITY[MAX_WEAPONS - 1];
-        for &id in PRIORITY.iter() {
-            if self.status[id as usize].owned && id != excluded {
-                pick = id;
-                break;
-            }
-        }
+        let pick = host.rules().better_weapon(self, excluded);
         self.switch_to(pick, host);
+    }
+
+    /// TS 3.0's pick for `GetBetterWeapon` (0x80f40): the first owned weapon in
+    /// `g_iWeaponPriority` other than `excluded`, else the list's last entry (kung fu).
+    pub fn better_weapon_core(&self, excluded: u8) -> u8 {
+        PRIORITY.iter().copied().find(|&id| self.status[id as usize].owned && id != excluded).unwrap_or(PRIORITY[MAX_WEAPONS - 1])
     }
 
     /// `CTSGun::DropWeapon(id, better)` 0x8094c: removes the record. Returns true if owned.

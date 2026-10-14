@@ -14,7 +14,13 @@ use stock::base::{kv_f, kv_i, kv_vec};
 /// Exports `$class(entvars_t*)` for each classname, creating a `$ty` on the edict.
 macro_rules! link_entities {
     ($($class:ident => $ty:ty),* $(,)?) => {
-        $(goldsrc::export_entity_class!($class, $crate::world::create::<$ty>);)*
+        $(goldsrc::export_entity_class!($class, |pev| {
+            const CLASS: &::std::ffi::CStr = match ::std::ffi::CStr::from_bytes_with_nul(concat!(stringify!($class), "\0").as_bytes()) {
+                Ok(c) => c,
+                Err(_) => panic!("classname"),
+            };
+            $crate::world::create_linked::<$ty>(pev, CLASS)
+        });)*
 
         /// The classnames this module links, each with its Rust type (`crate::ham`'s classes).
         pub(crate) fn linked_classes() -> Vec<(&'static str, std::any::TypeId)> {

@@ -14,6 +14,8 @@
 //! * [`damage`]: bullets and what a hit does to a player (§3.1).
 //! * [`explode`], [`blades`]: explosions, shrapnel and thrown knives (§3.2).
 //! * [`melee`]: blocks and disarms on the victim (§3.2; the attacks are the shared gun hooks).
+//! * [`worldgun`]: dropped guns and ammo packs.
+//! * [`items`]: the SDK's `TakeHealth`, battery and wall chargers.
 //! * [`bots`]: the native bot backend's rules for 2.1 (§3.10): `server-dll` registers [`bots::BOTS`]
 //!   with `ts_server::bots::rules` under the plugin's id (the bots are a layer of their own, so
 //!   they aren't part of [`PLUGIN`]).
@@ -28,6 +30,7 @@ pub mod cvars;
 pub mod damage;
 pub mod entities;
 pub mod explode;
+pub mod items;
 pub mod melee;
 pub mod observer;
 pub mod players;
@@ -36,12 +39,14 @@ pub mod protocol;
 pub mod rules;
 pub mod scoring;
 pub mod stunt;
+pub mod worldgun;
 
 use goldsrc::server::MsgWriter;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
-use goldsrc::sys::{TraceResult, edict_t};
+use goldsrc::sys::{TraceResult, edict_t, entvars_t};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::Vec3;
+use shared::weapons::{Status, WeaponInfo};
 use std::ffi::CStr;
 use ts_server::commands::Args;
 use ts_server::damage::DamageInfo;
@@ -154,6 +159,61 @@ impl ServerRules for Ts21Server {
 
     fn buy_armament(&self, p: &mut Player, cx: &mut Cx) {
         cash::buy_armament(p, cx);
+    }
+
+    fn pick_up_cost(&self, _id: u8, w: &WeaponInfo, _from: Option<&Status>) -> Option<f32> {
+        cash::pick_up_cost(w)
+    }
+
+    /// 2.1's `DropWeapon` (FUN_10056080) has no dead-player branch: `Killed`'s drop throws one
+    /// M61 as a world gun (with the drop sound), whatever the mode.
+    fn dead_grenades_become_powerups(&self) -> bool {
+        false
+    }
+
+    /// `DropWeapon` (FUN_10056080) leaves every thrown gun `CTSWorldGun::Spawn`'s
+    /// `clamp(weaponstay, 5, 60)` (0x100650f0), and nothing marks the dropper.
+    fn drop_lifetime_and_glow(&self) -> bool {
+        false
+    }
+
+    /// `CTSWorldGun::Fall` (0x10065550) has no impact trace ([`worldgun::touch`] instead).
+    fn world_gun_fall_impact(&self) -> bool {
+        false
+    }
+
+    fn world_gun_touch(&self, gun: *mut edict_t, attacker: *mut edict_t, id: u8, other: *mut edict_t) {
+        worldgun::touch(gun, attacker, id, other);
+    }
+
+    /// `CTSAmmoPack::WaitTouch` (0x10065a90): `9mmclip1.wav` and `UTIL_Remove` only if something
+    /// was added; a full player leaves the pack for the next.
+    fn ammo_pack_stays_when_nothing_fits(&self) -> bool {
+        true
+    }
+
+    fn player_add_health(&self, v: &mut entvars_t, amount: f32) -> Option<bool> {
+        items::add_health(v, amount)
+    }
+
+    fn battery_armor(&self, p: *mut edict_t, amount: f32) {
+        items::battery_armor(p, amount);
+    }
+
+    fn charger_capacity(&self, armor: bool) -> i32 {
+        items::charger_capacity(armor)
+    }
+
+    fn charger_charge(&self, armor: bool, juice: &mut i32, activator: *mut edict_t) {
+        items::charger_charge(armor, juice, activator);
+    }
+
+    fn entity_object(&self, class: &CStr) -> Option<Box<dyn Entity>> {
+        items::entity_object(class)
+    }
+
+    fn precache(&self) {
+        items::precache();
     }
 
     fn spawns_entity(&self, class: &CStr) -> bool {
@@ -379,6 +439,11 @@ mod tests {
         assert_eq!(p.broken_respawn_delay(12.0), None);
         assert!(!p.breakable_respawn_guarded());
         assert!(p.ground_weapon_lands_flying());
+        assert!(!p.dead_grenades_become_powerups(), "a corpse drops one M61");
+        assert!(CORE.dead_grenades_become_powerups(), "3.0's m_mode < 2: power-ups");
+        assert!(!p.drop_lifetime_and_glow() && CORE.drop_lifetime_and_glow());
+        assert!(!p.world_gun_fall_impact() && CORE.world_gun_fall_impact());
+        assert!(p.ammo_pack_stays_when_nothing_fits() && !CORE.ammo_pack_stays_when_nothing_fits());
     }
 
     /// The 2.1 hooks differ where 2.1 does, and the core plugin keeps 3.0's.

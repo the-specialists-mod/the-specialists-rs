@@ -249,6 +249,11 @@ The hooks so far:
 | `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked -5/+5, one gun none | client `events/fire.rs` `fire_akimbo` |
 | `GunRules` | `predicted()` | `Predicted::ALL` | `weapons/gun.rs` `weapon_post_frame` (client prediction only) |
 | `GunRules` | `cancel_runs_frame_in_reload(info)` | `info.stock != 0` | `weapons/gun.rs` `post_frame_ready` |
+| `GunRules` | `better_weapon(gun, excluded)` | `Gun::better_weapon_core`: the first owned id in `g_iWeaponPriority` | `weapons/gun.rs` `get_better_weapon` (`remove_weapon`, the server's `weapons::get_better_weapon` for bots) |
+| `GunRules` | `blades_need_press()` | false: the knife and katana attack while the button is held | `weapons/gun.rs` `primary_attack`, `secondary_attack` |
+| `GunRules` | `katana_throws()` | true: +attack2 throws the katana | `weapons/gun.rs` `secondary_attack` |
+| `GunRules` | `infinite_clip_skips_idle_reload()` | true: `!InfiniteClips && clip < 1` reloads | `weapons/gun.rs` `weapon_idle` |
+| `GunRules` | `holster_draws_kungfu()` | true: `Unzoom`, then weapon 0's view model, draw animation and draw event | `weapons/gun.rs` `holster_weapon` |
 | `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | false: 3.0's `Gun` method runs | the top of each `Gun` method in `weapons/gun.rs` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start`, `gameplay::frame` |
 | `ServerRules` | `cvars()` | none | `gameplay::register` (registered after 3.0's, skipping existing names) |
@@ -271,6 +276,18 @@ The hooks so far:
 | `ServerRules` | `player_killed(p, cx, d, g)` | `rules::scoring::player_killed_core` | `rules/scoring.rs` `player_killed`, once the killer can be reached |
 | `ServerRules` | `cash_based()` | false | `rules/state.rs` `cash_based` |
 | `ServerRules` | `buy_armament(p, cx)` | `weapons::buy_armament` | `weapons/mod.rs` spawn, without a `game_player_equip` |
+| `ServerRules` | `pick_up_cost(id, w, from)` | `weapons::pick_up_cost`: `None` (refused) for the akimbo pair of a single gun, else `slots`, × the count for a dropped stack | `weapons/inventory.rs` `pick_up_weapon` |
+| `ServerRules` | `dead_grenades_become_powerups()` | `!weapons::grenade_buys()` (`m_mode < 2`: always) | `weapons/inventory.rs` `drop_weapon` |
+| `ServerRules` | `drop_lifetime_and_glow()` | true: `drop`/disarm gives `clamp(2 × weaponstay, 10, 120)` and the dropper's glow | `weapons/worldgun.rs` `set_drop_lifetime` (from `inventory.rs` `drop_weapon`) |
+| `ServerRules` | `world_gun_fall_impact()` | true: `Fall`'s 0.1 s look-ahead trace hurts what it hits | `weapons/worldgun.rs` `WorldGun::think` |
+| `ServerRules` | `world_gun_touch(gun, attacker, id, other)` | nothing | `weapons/worldgun.rs` `WorldGun::touch` (flying) |
+| `ServerRules` | `ammo_pack_stays_when_nothing_fits()` | false: the touch removes the pack | `weapons/worldgun.rs` `AmmoPack::touch` |
+| `ServerRules` | `player_add_health(v, amount)` | `player::damage::add_health` (refused above max, uncapped, starts the overheal decay) | `player/damage.rs` `take_health_plain`, `take_health_edict_plain` |
+| `ServerRules` | `battery_armor(p, amount)` | `items::player_take_armor` (`TakeArmor`: kevlar slots, speed) | `entities/stock/items.rs` `Item::my_touch` (battery) |
+| `ServerRules` | `charger_capacity(armor)` | 1 | `entities/stock/items.rs` `Charger::spawn`, `recharge` |
+| `ServerRules` | `charger_charge(armor, juice, activator)` | `items::charge_once`: `TakeArmor(100)` / `TakeHealth(max - health)`, then empty | `entities/stock/items.rs` `Charger::use_` |
+| `ServerRules` | `entity_object(class)` | `None`: the type linked to the classname | `world::create_linked`, the body of every `link_entities!` export |
+| `ServerRules` | `precache()` | nothing; run for every registered ruleset at each map start | `gameplay::precache_rulesets`, from the world's precache after TS 3.0's |
 | `ServerRules` | `spawns_entity(class)` | true | `entities/mod.rs` `dispatch_spawn` (-1 when refused; the map load and the reset's re-spawn both go through it) and `dispatch_key_value` (a refused class parses no key) |
 | `ServerRules` | `entity_key_value(ent, cx, key, value)` | `None` (the class parses it) | `ham/mod.rs` `class_key_value` (`DispatchKeyValue`'s class part and AMXX's `ExecuteHam`) |
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
@@ -282,7 +299,7 @@ The hooks so far:
 | `ServerRules` | `ground_weapon_lands_flying()` | false | `entities/ts/ground.rs` `Ground::fall` |
 | `ServerRules` | `give_ground_weapon(g, cx, p, pcx)` | `GroundWeapon::give` | `ground.rs` `get_weapon` (+use, `Use`, touch) |
 | `ServerRules` | `outgoing_message(msg, w, send)` | `send(w)` | `messages.rs` `outgoing`, the filter `goldsrc::server::MsgWriter::end` runs every message through (`set_outgoing_filter`) |
-| `ServerRules` | `powerups()` | `rules::powerup::CORE` (`PowerupRules`: base durations 3/3/2/3, `pwupmult`, instant mask 0x1e6, top-up < 3, swap > 2, no swap on instant types, drop > 2, slow amounts 0.6/0.35 and 0.8/0.225, `TSSlowMo` 0.35/0.225) | `entities/ts/powerup.rs` `setup`/`pickup_plan`, `rules/powerup.rs` `update_state`/`add_powerup`/`hud_slow_amount`/`normal_secs`, `rules/commands.rs` `ts_givepowerup` |
+| `ServerRules` | `powerups()` | `rules::powerup::CORE` (`PowerupRules`: base durations 3/3/2/3, `pwupmult`, instant mask 0x1e6, top-up < 3, swap > 2, no swap on instant types, drop > 2, slow amounts 0.6/0.35 and 0.8/0.225, `TSSlowMo` 0.35/0.225, the grenade power-up selects the grenade) | `entities/ts/powerup.rs` `setup`/`pickup_plan`, `rules/powerup.rs` `update_state`/`add_powerup`/`hud_slow_amount`/`normal_secs`, `rules/commands.rs` `ts_givepowerup` |
 | `ServerRules` | `powerup_kind(key, spawnflags)` | `entities::ts::powerup::kind_for` (`GetRandomPowerup`, never armour) | `entities/ts/powerup.rs` `setup` |
 | `ServerRules` | `armor_powerup(p, cx, armor)` | `TakeArmor(100)` (`armor`: `PowerUp::armor`, 100; `entities::ts::powerup::set_armor`) | `rules/powerup.rs` `add_powerup` |
 | `ServerRules` | `time_scale_eases()` | `true` (`InterpolateSlowMotion`) | `rules/powerup.rs` `go_slow*`/`deactivate_flow`, `rules/lifecycle.rs` `pre_think` |
@@ -342,7 +359,8 @@ scales; 3.0's `melee_crouch` is `melee_hold(bits, 2, true)`) and `the_one()`, an
 becomes active (`gameplay::set_active`), by the client from each predicted command's rules. So
 everything that reads weapon data (the gun, inventory, buying, the HUD, damage, the events)
 follows the ruleset without a hook of its own; a change of tables drops custom weapon parameters
-(`loadweapons`, `CustomWP`). The map precaches the weapon assets of every registered ruleset's
+(`loadweapons`, `CustomWP`), and so does every map start and the switch's reset
+(`weapons::rebuild_weapon_info`, `W_Precache`'s `compile_weapons_info`). The map precaches the weapon assets of every registered ruleset's
 tables, TS 3.0's first so its precache order is unchanged (`weapons::precache_weapon_assets`),
 and the server keeps one set of model strings per ruleset. The gun's `GunHost` also tells the
 rules the raw time scale (`time_scale`) and whether it is the client's prediction

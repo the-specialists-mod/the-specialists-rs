@@ -146,6 +146,20 @@ fn set_active(id: &'static str, plugin: &'static ServerPlugin) {
     shared::weapons::table::set_ruleset_tables(plugin.gun.tables());
 }
 
+/// Every registered plugin's own precaches ([`ServerRules::precache`]), each once, at the map's
+/// world precache after TS 3.0's.
+pub fn precache_rulesets() {
+    let r = REGISTRY.read().unwrap_or_else(PoisonError::into_inner);
+    let mut done: Vec<*const ServerPlugin> = Vec::new();
+    for id in r.ids() {
+        let p = r.resolve(id).plugin;
+        if !done.contains(&(p as *const ServerPlugin)) {
+            done.push(p);
+            p.server.precache();
+        }
+    }
+}
+
 /// The weapon tables of every registered plugin, the core plugin's first and each once: what the
 /// map precaches (`weapons::precache_weapon_assets`), so any of them can become active mid-map.
 pub fn ruleset_tables() -> Vec<&'static shared::weapons::Tables> {
