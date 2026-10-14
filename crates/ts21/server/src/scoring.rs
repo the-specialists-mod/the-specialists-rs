@@ -17,6 +17,7 @@ use ts_server::rules::msg::{self, ts_message_all};
 use ts_server::rules::scoring::{self as core, Frag, STUNTING};
 use ts_server::rules::state::{self, Mode};
 use ts_server::rules::{cvars, has_player, len3, netname, other, teams};
+use ts_server::weapons::Active;
 use ts_server::world::{Cx, UseType};
 
 const GREEN: [u8; 3] = [0, 255, 0];
@@ -26,6 +27,11 @@ const PRONE: i32 = 0x20;
 /// What `TSGetPointsForFrag` adds to the frag message after the label (0x100989f0, " style!"),
 /// and the stunt/slide labels.
 const STYLE: &str = " style!";
+
+/// 2.1's DeathNotice (`FUN_1004ede0`) names a thrown blade by its inflictor's classname (no
+/// `CTSKnife::GetDescription`), so every blade is "Throwing Knife", and a stock hit is just
+/// "Stock" (0x100989b0), not "<weapon> Stock".
+const NAMING: core::WeaponNaming = core::WeaponNaming { describe_thrown_blades: false, stock_names_weapon: false };
 
 /// The kill as `TSGetPointsForFrag` sees it, without the engine: the label and points before the
 /// stunt test.
@@ -88,7 +94,7 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
     if ts_server::rules::ts_flags(attacker) & FL_CLIENT as i32 == 0 {
         return base & 0xff;
     }
-    let kind = kill_kind(d, g, k.gun, attacker);
+    let kind = kill_kind(d, g, k.item, k.gun, attacker);
     let av = attacker.v();
     let stunting = av.iuser4 & STUNTING != 0;
     let slide = !stunting && av.iuser4 & PRONE != 0 && av.friction < 1.0 && len3(av.velocity) > 80.0;
@@ -104,10 +110,11 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
 
 /// The label test of `TSGetPointsForFrag`: an inflictor that isn't the killer is a projectile
 /// (a thrown knife by classname); the killer's own hit outside a simulated bullet's
-/// (`DAT_100ac81c == 0`, the port's -1) is kung fu without an active item under
-/// `glast_closecombat`, kung fu with the gun's kung fu out or under `glast_closecombat`, or the
-/// katana (weapon category 10) in the gun.
-fn kill_kind(d: &DamageInfo, g: &Snapshot, gun: Option<u8>, attacker: *mut edict_t) -> Kind {
+/// (`DAT_100ac81c == 0`, the port's -1) is kung fu by the active item
+/// ([`core::active_item_kung_fu`]: no item under `glast_closecombat`, or the gun with kung fu out
+/// or under `glast_closecombat`), or the katana (weapon category 10) in the gun. Any other
+/// active item (a `cycler_weapon`) is a plain kill.
+fn kill_kind(d: &DamageInfo, g: &Snapshot, item: Active, gun: Option<u8>, attacker: *mut edict_t) -> Kind {
     if d.inflictor.is_null() {
         return Kind::Plain;
     }
@@ -117,12 +124,17 @@ fn kill_kind(d: &DamageInfo, g: &Snapshot, gun: Option<u8>, attacker: *mut edict
     if g.weapon_id != -1 {
         return Kind::Plain;
     }
-    match gun {
-        None if g.close_combat => Kind::KungFu,
-        None => Kind::Plain,
-        Some(cur) if cur == 0 || g.close_combat => Kind::KungFu,
-        Some(cur) if tables().weapon(cur).is_some_and(|w| w.kind == WeaponKind::Katana) => Kind::Katana,
-        Some(_) => Kind::Plain,
+    own_kind(item, gun, g.close_combat)
+}
+
+/// [`kill_kind`] for the killer's own hit.
+fn own_kind(item: Active, gun: Option<u8>, close_combat: bool) -> Kind {
+    if core::active_item_kung_fu(item, gun, close_combat) {
+        Kind::KungFu
+    } else if item == Active::Gun && gun.and_then(|cur| tables().weapon(cur)).is_some_and(|w| w.kind == WeaponKind::Katana) {
+        Kind::Katana
+    } else {
+        Kind::Plain
     }
 }
 
@@ -142,6 +154,7 @@ struct Killer {
     held_secs: i32,
     active: u16,
     gun: Option<u8>,
+    item: Active,
 }
 
 /// A stored slow pause of 3 s when nothing is active or held (`+0x69c..+0x6a8`).
@@ -165,9 +178,9 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
     let suicide = attacker == victim;
     let killer_is_player = !suicide && has_player(attacker);
 
-    // DeathNotice first (2.1 `FUN_1004ede0`, the same weapon names as 3.0), with its log line.
+    // DeathNotice first (2.1 `FUN_1004ede0`), with its log line.
     let attacker_gun = if suicide { core::active_gun(p) } else { other(attacker, |k| core::active_gun(k)).flatten() };
-    let weapon = core::weapon_name(d, &g, attacker_gun);
+    let weapon = core::weapon_name_with(d, &g, attacker_gun, NAMING);
     core::death_notice(attacker, d.inflictor, victim, &weapon);
     core::log_kill_untagged(attacker, victim, &weapon, suicide);
     p.deaths += 1;
@@ -188,6 +201,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
             held_secs: k.ts.held_secs,
             active: k.active_powerup,
             gun: core::active_gun(k),
+            item: ts_server::weapons::active_item(k),
         })
     } else {
         None
@@ -214,6 +228,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
                 held_secs: k.held_secs,
                 active: k.active,
                 gun: k.gun,
+                item: k.item,
                 victims_gun: false,
             };
             let frag = Frag { damage: d, glast: &g, killer: &shim, base, now };
@@ -235,9 +250,13 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
                 k.held = pw::SLOWMO;
                 k.held_secs = (k.held_secs + 1).min(5);
             }
+            // `CBot::OnKill` (0x1005ddd0, from 0x1004fe02) through the active bot backend, so a
+            // plugin backend's bot taunts with its own AI, as on the 3.0 path.
             if points > 0 {
-                other(k.e, |kp| ts_server::bots::on_kill(kp, victim, now));
+                other(k.e, |kp| ts_server::bot_backend::on_kill(kp, victim, now));
             }
+            // Port addition: plugins hear of every kill a player scored, as on the 3.0 path.
+            ts_server::plugins::on_kill(k.e, victim, points);
             let kick = points == -1 && other(k.e, |kp| team_kill(kp, now)).unwrap_or(false);
             let (spree, award, held, held_secs, active, last_kill) = (k.spree, k.award, k.held, k.held_secs, k.active, k.last_kill);
             other(k.e, |kp| {
@@ -249,19 +268,15 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
                 kp.ts.last_kill = last_kill;
             });
             if kick {
-                core::team_kill_punish(k.e, victim);
+                core::team_kill_punish(k.e);
             }
         }
     }
 
     let si = score_info_of(p, cx.pev(), vidx);
     msg::all(Msg::ScoreInfo, |w| si.write(w));
-    if killer_is_player {
-        let kidx = eng.index_of(attacker);
-        if let Some(s) = other(attacker, |k| score_info_of(k, attacker.v(), kidx)) {
-            msg::all(Msg::ScoreInfo, |w| s.write(w));
-        }
-    }
+    // The killer's, suicides included, and its decal timer (0x1005004b, 0x100500d8).
+    core::killer_score_info(p, cx, attacker, now);
     state::with(|g| g.call_check_deads(now));
 
     if state::teamplay() {
@@ -380,6 +395,36 @@ mod tests {
         assert_eq!(points(Kind::Projectile, 1, true, false, true), (1, None));
         // A stunt by a killer that isn't a player adds nothing.
         assert_eq!(points(Kind::Plain, 1, true, false, false), (1, None));
+    }
+
+    #[test]
+    fn a_cycler_kill_is_plain() {
+        // Issue #148: an active item that isn't the gun is no kung fu, even under close combat.
+        use shared::weapons::id;
+        assert_eq!(own_kind(Active::Cycler, None, true), Kind::Plain);
+        assert_eq!(own_kind(Active::None, None, true), Kind::KungFu);
+        assert_eq!(own_kind(Active::None, None, false), Kind::Plain);
+        assert_eq!(own_kind(Active::Gun, Some(0), false), Kind::KungFu);
+        assert_eq!(own_kind(Active::Gun, Some(id::KATANA), false), Kind::Katana);
+        assert_eq!(own_kind(Active::Gun, Some(id::KATANA), true), Kind::KungFu);
+        assert_eq!(own_kind(Active::Gun, Some(id::BERETTA), false), Kind::Plain);
+    }
+
+    #[test]
+    fn kills_reach_the_bot_backend_and_the_plugins() {
+        // Issue #157: the kill taunt goes through the active bot backend (a plugin backend's bots
+        // included), never straight to the native bots, and plugins hear of the kill.
+        let src = include_str!("scoring.rs");
+        assert!(!src.contains(concat!("ts_server::bots", "::on_kill")));
+        assert!(src.contains(concat!("ts_server::bot_backend", "::on_kill(kp, victim, now)")));
+        assert!(src.contains(concat!("ts_server::plugins", "::on_kill(k.e, victim, points)")));
+    }
+
+    #[test]
+    fn kill_names_are_2_1s() {
+        // Issue #131: "Throwing Knife" for every blade and a bare "Stock"; 3.0 keeps its own.
+        assert_eq!(NAMING, core::WeaponNaming { describe_thrown_blades: false, stock_names_weapon: false });
+        assert_ne!(NAMING, core::WeaponNaming::DEFAULT);
     }
 
     #[test]

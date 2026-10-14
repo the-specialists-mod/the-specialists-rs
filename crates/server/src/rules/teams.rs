@@ -220,12 +220,20 @@ pub fn change_team(p: &mut Player, cx: &mut Cx, name: &str, kill: bool, gib: boo
     msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team: name.clone() }.write(w));
     let s = super::lifecycle::score_info_of(p, cx.pev(), idx);
     msg::all(Msg::ScoreInfo, |w| s.write(w));
-    if change_team_observes(kill, the_one) {
+    crate::gameplay::active().server.change_team_tail(p, cx, kill);
+    send_team_names(std::ptr::null_mut());
+}
+
+/// TS 3.0's tail of `ChangePlayerTeam` (0xe4c38..0xe4ca1)
+/// ([`ServerRules::change_team_tail`](crate::gameplay::ServerRules::change_team_tail)): a change
+/// that isn't a kill, outside The One mode, puts the player in observer at its origin and view
+/// angles with a 5 s respawn.
+pub fn change_team_tail_core(p: &mut Player, cx: &mut Cx, kill: bool) {
+    if change_team_observes(kill, state::with(|g| g.the_one)) {
         let (o, a) = (cx.pev().origin, cx.pev().v_angle);
         super::lifecycle::start_observer(p, cx, o, a);
         super::lifecycle::set_respawn_time(p, cx, 5.0);
     }
-    send_team_names(std::ptr::null_mut());
 }
 
 /// `TeamNames` to one player (or everyone with a null edict).

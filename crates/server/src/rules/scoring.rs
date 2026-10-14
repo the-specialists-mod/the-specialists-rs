@@ -9,6 +9,7 @@ use crate::damage::DamageInfo;
 use crate::damage::glast::Snapshot;
 use crate::messages::Msg;
 use crate::player::Player;
+use crate::weapons::Active;
 use crate::world::{Cx, UseType};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
@@ -48,41 +49,68 @@ pub fn active_gun(p: &Player) -> Option<u8> {
     crate::weapons::gun_active(p).then_some(p.inv.gun.current)
 }
 
+/// How a ruleset spells two kinds of kill in `DeathMsg` and the log. TS 3.0's is
+/// [`WeaponNaming::DEFAULT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeaponNaming {
+    /// A thrown blade (a `knife` inflictor) is named by its description, `CTSKnife::GetDescription`
+    /// ("Throwing Seal Knife"); otherwise by its classname, which becomes "Throwing Knife".
+    pub describe_thrown_blades: bool,
+    /// A stock hit (`glast_coldcock`) is "<weapon> Stock" (`strcat(name, " Stock")`); otherwise
+    /// just "Stock".
+    pub stock_names_weapon: bool,
+}
+
+impl WeaponNaming {
+    /// TS 3.0's `PlayerKilled` (0x895e4).
+    pub const DEFAULT: Self = Self { describe_thrown_blades: true, stock_names_weapon: true };
+}
+
 /// The `DeathMsg`/log weapon when the attacker is its own inflictor (`PlayerKilled` 0x895e4):
 /// a simulated bullet's `glast_weaponid`; else "Kung Fu" under
-/// `glast_closecombat`; else the killer's current gun weapon (with " Stock" under
-/// `glast_coldcock`); else "world" (kung fu outside `CloseCombatAttack`, no gun).
-fn own_weapon_name(g: &Snapshot, killer_gun: Option<u8>) -> String {
+/// `glast_closecombat`; else the killer's current gun weapon (a stock hit under
+/// `glast_coldcock`, spelled as `naming` says); else "world" (kung fu outside
+/// `CloseCombatAttack`, no gun).
+fn own_weapon_name(g: &Snapshot, killer_gun: Option<u8>, naming: WeaponNaming) -> String {
     if g.weapon_id != -1 {
         weapon_info_name(g.weapon_id)
     } else if g.close_combat {
         "Kung Fu".to_owned()
     } else if let Some(cur) = killer_gun.filter(|&c| c != 0) {
-        let name = weapon_info_name(cur as i32);
-        if g.coldcock { name + " Stock" } else { name }
+        match (g.coldcock, naming.stock_names_weapon) {
+            (false, _) => weapon_info_name(cur as i32),
+            (true, true) => weapon_info_name(cur as i32) + " Stock",
+            (true, false) => "Stock".to_owned(),
+        }
     } else {
         "world".to_owned()
     }
 }
 
+/// A thrown blade's name before [`rename_weapon`]: its description (without a knife object
+/// "world"), or its classname.
+fn thrown_blade_name(cls: String, naming: WeaponNaming, describe: impl FnOnce() -> Option<&'static str>) -> String {
+    if naming.describe_thrown_blades { describe().unwrap_or("world").to_owned() } else { cls }
+}
+
 /// Weapon name for `DeathMsg` and logs (gamerules-entities.md §2.3). `killer_gun` is the
 /// attacker's [`active_gun`].
 pub fn weapon_name(d: &DamageInfo, g: &Snapshot, killer_gun: Option<u8>) -> String {
+    weapon_name_with(d, g, killer_gun, WeaponNaming::DEFAULT)
+}
+
+/// [`weapon_name`] with a ruleset's spelling.
+pub fn weapon_name_with(d: &DamageInfo, g: &Snapshot, killer_gun: Option<u8>, naming: WeaponNaming) -> String {
     // TS's `FL_CLIENT` test (0x8986d): still true for an attacker who has left.
     let attacker_client = !d.attacker.is_null() && super::ts_flags(d.attacker) & FL_CLIENT as i32 != 0;
     let mut name = if attacker_client {
         if d.inflictor.is_null() {
             "world".to_owned()
         } else if d.inflictor == d.attacker {
-            own_weapon_name(g, killer_gun)
+            own_weapon_name(g, killer_gun, naming)
         } else {
             let cls = classname(d.inflictor);
-            if cls == "knife" {
-                // `CTSKnife::GetDescription`; without a knife object the name stays "world".
-                crate::weapons::thrown_knife_description(d.inflictor).unwrap_or("world").to_owned()
-            } else {
-                cls
-            }
+            if cls == "knife" { thrown_blade_name(cls, naming, || crate::weapons::thrown_knife_description(d.inflictor)) } else { cls }
         }
     } else if !d.inflictor.is_null() {
         // The netname when it is set at all (`string_t` non-zero), else the classname.
@@ -137,6 +165,8 @@ pub struct Killer {
     pub active: u16,
     /// [`active_gun`].
     pub gun: Option<u8>,
+    /// What `m_pActiveItem` is (the gun, another item such as a `cycler_weapon`, or nothing).
+    pub item: Active,
     /// The killer's current weapon record was first owned by the victim ([`victims_gun`]).
     pub victims_gun: bool,
 }
@@ -221,6 +251,7 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             held_secs: k.ts.held_secs,
             active: k.active_powerup,
             gun: active_gun(k),
+            item: crate::weapons::active_item(k),
             victims_gun: victims_gun(active_gun(k), |cur| k.inv.sv.owners[cur as usize], victim),
         })
     } else {
@@ -304,7 +335,10 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             super::add_frags(victim, Some(p), -5.0);
             ts_message_all(GREEN, 1, 30, &format!("{vname}, #TS_SpecialistSuicide"));
         }
-        super::add_frags(victim, Some(p), -1.0);
+        match frag_loser(suicide) {
+            FragLoser::Victim => super::add_frags(victim, Some(p), -1.0),
+            FragLoser::Killer => super::add_frags(attacker, None, -1.0),
+        }
     } else if let Some(mut k) = killer {
         let kname = netname(k.e);
         let kv = k.e.v();
@@ -398,6 +432,10 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             });
             give_cash(p, 900);
         }
+        // ` (victims_weapon)` is also announced, for every such kill (0x7ab45 file address).
+        if victims_weapon {
+            ts_message_all(GREEN, 1, 30, &own_weapon_message(&kname, &vname));
+        }
 
         // Frags (the killer's pev->frags).
         super::add_frags(k.e, None, points as f32);
@@ -436,7 +474,7 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             kp.ts.held_secs = held_secs;
         });
         if kick {
-            team_kill_punish(k.e, victim);
+            team_kill_punish(k.e);
         }
         // Kills by The One's victims make the killer the new One.
         let _ = k.idx;
@@ -445,18 +483,80 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
     // ScoreInfo for the victim and the killer.
     let si = score_info_of(p, cx.pev(), vidx);
     msg::all(Msg::ScoreInfo, |w| si.write(w));
-    if killer_is_player {
-        let kidx = eng.index_of(attacker);
-        if let Some(s) = other(attacker, |k| score_info_of(k, attacker.v(), kidx)) {
-            msg::all(Msg::ScoreInfo, |w| s.write(w));
-        }
-    }
+    killer_score_info(p, cx, attacker, now);
     state::with(|g| g.call_check_deads(now));
     // `CHalfLifeTeamplay::PlayerKilled` (0xe51b8): `RecountTeams(false)` after every kill, so the
     // team frags the fraglimit reads are those of the last recount.
     if state::teamplay() {
         teams::recount(false);
     }
+}
+
+/// `PlayerKilled`'s announcement of a kill with the victim's own gun (string 0x108d00); the
+/// client's titles.txt resolves the keys ("X killed Y with his own weapon").
+fn own_weapon_message(killer: &str, victim: &str) -> String {
+    format!("{killer} #TS_Killed {victim} #TS_OwnWeapon")
+}
+
+/// Who gets the killer's `ScoreInfo` at the end of `PlayerKilled`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum KillerScore {
+    Nobody,
+    /// A suicide: the victim, a second time.
+    Victim,
+    /// Another player.
+    Killer,
+}
+
+/// The test is `pKiller`'s `Classify() == CLASS_PLAYER` with no `pVictim != pKiller` check (3.0
+/// 0x7affb file address, 2.1 0x1005004b), so a suicide sends the victim's `ScoreInfo` twice.
+fn killer_score(suicide: bool, attacker_is_player: bool) -> KillerScore {
+    if suicide {
+        KillerScore::Victim
+    } else if attacker_is_player {
+        KillerScore::Killer
+    } else {
+        KillerScore::Nobody
+    }
+}
+
+/// The SDK tail of `PlayerKilled` ("killers score, if it's a player"), the same in 3.0 and 2.1:
+/// the killer's `ScoreInfo`, and `m_flNextDecalTime = time` (3.0 `pl+0xb44`, 2.1 `pl+0xa9c`), so
+/// a player may spray at once after every kill or suicide. `p`/`cx` are the victim.
+pub fn killer_score_info(p: &mut Player, cx: &mut Cx, attacker: *mut edict_t, now: f32) {
+    match killer_score(attacker == cx.edict, super::has_player(attacker)) {
+        KillerScore::Nobody => {}
+        KillerScore::Victim => {
+            let idx = cx.index();
+            let s = score_info_of(p, cx.pev(), idx);
+            msg::all(Msg::ScoreInfo, |w| s.write(w));
+            p.impulse.next_decal_time = now;
+        }
+        KillerScore::Killer => {
+            let kidx = engine().index_of(attacker);
+            let s = other(attacker, |k| {
+                k.impulse.next_decal_time = now;
+                score_info_of(k, attacker.v(), kidx)
+            });
+            if let Some(s) = s {
+                msg::all(Msg::ScoreInfo, |w| s.write(w));
+            }
+        }
+    }
+}
+
+/// Whose `frags` a death no player scored lowers by one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FragLoser {
+    Victim,
+    Killer,
+}
+
+/// TS takes the frag off `pKiller` (0x8aedc: `pKiller->frags -= 1`, the HL SDK's "killed by the
+/// world" branch), which is the victim only for a suicide: a fall, a `trigger_hurt`, a door or a
+/// barrel lowers the world's or the trigger's `frags`, and the victim keeps its own.
+fn frag_loser(suicide: bool) -> FragLoser {
+    if suicide { FragLoser::Victim } else { FragLoser::Killer }
 }
 
 /// `DoSpectacularNess` (0x76b48): whether a frag or an explosion creates the "spectacular"
@@ -473,15 +573,23 @@ fn spectacular_roll(roll: i32, spectacularness: f32) -> bool {
     pct != 0 && roll <= pct
 }
 
+/// `TSGetPointsForFrag`'s kung fu test on the killer's `m_pActiveItem` (3.0 `pl+0xa10`, 2.1
+/// `pl+0x968`), the same in both versions: without an active item, `glast_closecombat`; with the
+/// gun (`m_iId == 0x10`), kung fu out (`gun+0xcc` NULL, `gun_current` 0) or `glast_closecombat`;
+/// any other item (a `cycler_weapon`) never, so its kills score the base points.
+/// `glast_closecombat` is also set by a stunt's hit (`CTSStunt::CheckForBreakables` 0x9bd9c).
+pub fn active_item_kung_fu(item: Active, gun_current: Option<u8>, close_combat: bool) -> bool {
+    match item {
+        Active::None => close_combat,
+        Active::Gun => gun_current.is_none_or(|c| c == 0) || close_combat,
+        Active::Cycler => false,
+    }
+}
+
 /// `TSGetPointsForFrag`'s `#TS_KungFu` test for a killer that is its own inflictor:
-/// `glast_weaponid == -1`, then without an active item `glast_closecombat`, with the gun
-/// kung fu out (`gun+0xcc` NULL) or `glast_closecombat`.
-fn kung_fu_frag(g: &Snapshot, killer_gun: Option<u8>) -> bool {
-    g.weapon_id == -1
-        && match killer_gun {
-            None => g.close_combat,
-            Some(cur) => cur == 0 || g.close_combat,
-        }
+/// `glast_weaponid == -1`, then [`active_item_kung_fu`].
+fn kung_fu_frag(g: &Snapshot, item: Active, killer_gun: Option<u8>) -> bool {
+    g.weapon_id == -1 && active_item_kung_fu(item, killer_gun, g.close_combat)
 }
 
 /// `TSGetPointsForFrag` (0x89140) for a killing player `k`: 2 points and `#TS_KungFu` when the
@@ -504,7 +612,7 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
     let mut desc = String::new();
     if !d.inflictor.is_null() {
         if d.inflictor == attacker {
-            if kung_fu_frag(g, k.gun) {
+            if kung_fu_frag(g, k.item, k.gun) {
                 desc = "#TS_KungFu".to_owned();
                 points = 2;
             }
@@ -654,26 +762,44 @@ fn victims_gun(cur: Option<u8>, owner_of: impl FnOnce(u8) -> *mut edict_t, victi
     owner_of(cur) == victim && !matches!(restriction_type(cur), kind::GRENADE | kind::KNIFE | kind::FLAG)
 }
 
-pub fn team_kill_punish(killer: *mut edict_t, victim: *mut edict_t) {
-    let eng = engine();
-    let name = netname(killer);
-    let ban = cvars::f(c"banfortk");
-    let uid = eng.user_id(killer);
+/// The three texts of a team-kill kick or ban.
+#[derive(Debug, PartialEq, Eq)]
+struct TeamKillPunish {
+    /// The `HUD_PRINTCONSOLE` line to the team killer.
+    to_killer: String,
+    /// The server command.
+    command: String,
+    /// The `HUD_PRINTTALK` line to everyone.
+    to_all: String,
+}
+
+/// The kick (`banfortk` ≤ 0) or the ban of `(int)banfortk` minutes (truncated: 0x8ad5a, 0x8adbc,
+/// 0x8ae04) for the team killer `name` with user id `uid`.
+fn team_kill_punishment(name: &str, uid: i32, ban: f32) -> TeamKillPunish {
     if ban <= 0.0 {
-        msg::text_one(victim, shared::protocol::rules::hud_dest::CONSOLE, "You have been kicked for teamkilling...\n");
-        eng.server_command(&format!("kick #{uid}\n"));
-        msg::text_all(shared::protocol::rules::hud_dest::TALK, &format!("{name} kicked for teamkilling\n"));
-    } else {
-        // `(int)banfortk.value`, truncated (0x8ad5a, 0x8adbc, 0x8ae04).
-        let m = super::x87_trunc(ban as f64);
-        msg::text_one(
-            victim,
-            shared::protocol::rules::hud_dest::CONSOLE,
-            &format!("You have been banned for teamkilling ({m} minutes)...\n"),
-        );
-        eng.server_command(&format!("banid {m} #{uid} kick\n"));
-        msg::text_all(shared::protocol::rules::hud_dest::TALK, &format!("{name} banned for teamkilling ({m} minutes)\n"));
+        return TeamKillPunish {
+            to_killer: "You have been kicked for teamkilling...\n".to_owned(),
+            command: format!("kick #{uid}\n"),
+            to_all: format!("{name} kicked for teamkilling\n"),
+        };
     }
+    let m = super::x87_trunc(ban as f64);
+    TeamKillPunish {
+        to_killer: format!("You have been banned for teamkilling ({m} minutes)...\n"),
+        command: format!("banid {m} #{uid} kick\n"),
+        to_all: format!("{name} banned for teamkilling ({m} minutes)\n"),
+    }
+}
+
+/// The team-kill kick or ban in `PlayerKilled`. The console notice goes to the team killer:
+/// `ClientPrint(pKiller, HUD_PRINTCONSOLE, ...)` (3.0 0x7ae58 and 0x7ad79 file addresses, 2.1
+/// 0x1004f7e0), before the kick takes it off the server.
+pub fn team_kill_punish(killer: *mut edict_t) {
+    let eng = engine();
+    let t = team_kill_punishment(&netname(killer), eng.user_id(killer), cvars::f(c"banfortk"));
+    msg::text_one(killer, shared::protocol::rules::hud_dest::CONSOLE, &t.to_killer);
+    eng.server_command(&t.command);
+    msg::text_all(shared::protocol::rules::hud_dest::TALK, &t.to_all);
 }
 
 /// `CTSGameRules::TheOneIsDead` (0x7b258) for the victim `p`; `killer` is the killing player
@@ -756,8 +882,9 @@ pub fn broadcast_score(e: *mut edict_t) {
 #[cfg(test)]
 mod tests {
     use super::{
-        KillTags, Snapshot, kung_fu_frag, log_id, log_weapon, own_weapon_name, rename_weapon, spectacular_roll, victims_gun,
-        weapon_info_name,
+        Active, FragLoser, KillTags, KillerScore, Snapshot, TeamKillPunish, WeaponNaming, active_item_kung_fu, frag_loser, killer_score,
+        kung_fu_frag, log_id, log_weapon, own_weapon_message, own_weapon_name, rename_weapon, spectacular_roll, team_kill_punishment,
+        thrown_blade_name, victims_gun, weapon_info_name,
     };
     use goldsrc::sys::edict_t;
     use shared::weapons::{id, tables};
@@ -820,22 +947,40 @@ mod tests {
         tables().weapon(id).unwrap().name.clone()
     }
 
+    const D: WeaponNaming = WeaponNaming::DEFAULT;
+
+    #[test]
+    fn a_ruleset_may_name_stocks_and_thrown_blades_plainly() {
+        // Issue #131: a ruleset may say "Stock" and "Throwing Knife" (the classname, renamed).
+        let plain = WeaponNaming { describe_thrown_blades: false, stock_names_weapon: false };
+        let coldcock = Snapshot { coldcock: true, ..Snapshot::default() };
+        assert_eq!(own_weapon_name(&coldcock, Some(12), plain), "Stock");
+        assert_eq!(own_weapon_name(&coldcock, Some(12), D), name(12) + " Stock");
+        // Only a stock hit changes: a plain hit and no gun read the same.
+        assert_eq!(own_weapon_name(&Snapshot::default(), Some(12), plain), name(12));
+        assert_eq!(own_weapon_name(&coldcock, None, plain), "world");
+        let seal = || Some("Throwing Seal Knife");
+        assert_eq!(rename_weapon(thrown_blade_name("knife".into(), plain, seal)), "Throwing Knife");
+        assert_eq!(rename_weapon(thrown_blade_name("knife".into(), D, seal)), "Throwing Seal Knife");
+        assert_eq!(rename_weapon(thrown_blade_name("knife".into(), D, || None)), "world");
+    }
+
     #[test]
     fn own_weapon_follows_the_ts_globals() {
         let none = Snapshot::default();
         let close = Snapshot { close_combat: true, ..none };
         let coldcock = Snapshot { coldcock: true, ..none };
         // A simulated bullet names its own weapon, whatever is held now.
-        assert_eq!(own_weapon_name(&Snapshot { weapon_id: 12, ..close }, Some(0)), name(12));
+        assert_eq!(own_weapon_name(&Snapshot { weapon_id: 12, ..close }, Some(0), D), name(12));
         // CloseCombatAttack: kung fu even with a gun out (a delayed kick after switching).
-        assert_eq!(own_weapon_name(&close, Some(12)), "Kung Fu");
-        assert_eq!(own_weapon_name(&close, None), "Kung Fu");
+        assert_eq!(own_weapon_name(&close, Some(12), D), "Kung Fu");
+        assert_eq!(own_weapon_name(&close, None, D), "Kung Fu");
         // A slash or hitscan shot: the weapon in hand; the stock hit says so.
-        assert_eq!(own_weapon_name(&none, Some(12)), name(12));
-        assert_eq!(own_weapon_name(&coldcock, Some(12)), name(12) + " Stock");
+        assert_eq!(own_weapon_name(&none, Some(12), D), name(12));
+        assert_eq!(own_weapon_name(&coldcock, Some(12), D), name(12) + " Stock");
         // Kung fu outside CloseCombatAttack (a dive through glass), or no gun: "world".
-        assert_eq!(own_weapon_name(&none, Some(0)), "world");
-        assert_eq!(own_weapon_name(&coldcock, None), "world");
+        assert_eq!(own_weapon_name(&none, Some(0), D), "world");
+        assert_eq!(own_weapon_name(&coldcock, None, D), "world");
     }
 
     #[test]
@@ -849,12 +994,62 @@ mod tests {
     fn kung_fu_frag_needs_close_combat_or_bare_hands() {
         let none = Snapshot::default();
         let close = Snapshot { close_combat: true, ..none };
-        assert!(kung_fu_frag(&close, None));
-        assert!(!kung_fu_frag(&none, None), "no gun, no close combat");
-        assert!(kung_fu_frag(&none, Some(0)), "kung fu out");
-        assert!(kung_fu_frag(&close, Some(12)));
-        assert!(!kung_fu_frag(&none, Some(12)), "a knife or katana slash is no kung-fu frag");
-        assert!(!kung_fu_frag(&Snapshot { weapon_id: 12, ..close }, Some(0)), "a simulated bullet");
+        assert!(kung_fu_frag(&close, Active::None, None));
+        assert!(!kung_fu_frag(&none, Active::None, None), "no gun, no close combat");
+        assert!(kung_fu_frag(&none, Active::Gun, Some(0)), "kung fu out");
+        assert!(kung_fu_frag(&close, Active::Gun, Some(12)));
+        assert!(!kung_fu_frag(&none, Active::Gun, Some(12)), "a knife or katana slash is no kung-fu frag");
+        assert!(!kung_fu_frag(&Snapshot { weapon_id: 12, ..close }, Active::Gun, Some(0)), "a simulated bullet");
+    }
+
+    #[test]
+    fn a_cycler_in_hand_is_never_kung_fu() {
+        // Issue #148: an active item that isn't the gun scores the base points, even under
+        // `glast_closecombat` (a stunt's hit).
+        let close = Snapshot { close_combat: true, ..Snapshot::default() };
+        assert!(!kung_fu_frag(&close, Active::Cycler, None));
+        assert!(!active_item_kung_fu(Active::Cycler, None, true));
+        assert!(!active_item_kung_fu(Active::Cycler, None, false));
+        assert!(active_item_kung_fu(Active::None, None, true));
+        assert!(active_item_kung_fu(Active::Gun, Some(0), false));
+    }
+
+    #[test]
+    fn a_world_death_costs_the_killer_not_the_victim() {
+        // Issue #118: a fall or a trigger lowers the world's frags; only a suicide the victim's.
+        assert_eq!(frag_loser(false), FragLoser::Killer);
+        assert_eq!(frag_loser(true), FragLoser::Victim);
+    }
+
+    #[test]
+    fn own_weapon_kills_are_announced() {
+        // Issue #121: "%s #TS_Killed %s #TS_OwnWeapon", killer then victim.
+        assert_eq!(own_weapon_message("Bob", "Al"), "Bob #TS_Killed Al #TS_OwnWeapon");
+    }
+
+    #[test]
+    fn the_killer_score_info_includes_suicides() {
+        // Issue #120: `Classify() == CLASS_PLAYER` on pKiller, with no suicide test.
+        assert_eq!(killer_score(true, true), KillerScore::Victim);
+        assert_eq!(killer_score(false, true), KillerScore::Killer);
+        assert_eq!(killer_score(false, false), KillerScore::Nobody);
+    }
+
+    #[test]
+    fn team_kill_punishment_tells_the_killer() {
+        // Issue #119: the console line is the team killer's (`ClientPrint(pKiller, ...)`).
+        assert_eq!(
+            team_kill_punishment("Bob", 7, 0.0),
+            TeamKillPunish {
+                to_killer: "You have been kicked for teamkilling...\n".into(),
+                command: "kick #7\n".into(),
+                to_all: "Bob kicked for teamkilling\n".into(),
+            }
+        );
+        let ban = team_kill_punishment("Bob", 7, 5.9);
+        assert_eq!(ban.to_killer, "You have been banned for teamkilling (5 minutes)...\n");
+        assert_eq!(ban.command, "banid 5 #7 kick\n");
+        assert_eq!(ban.to_all, "Bob banned for teamkilling (5 minutes)\n");
     }
 
     #[test]

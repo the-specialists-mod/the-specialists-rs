@@ -100,7 +100,11 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
     spot
 }
 
-/// Kills every living player within 128 units of the spot (300 damage, always gib).
+/// The spawn telefrag's damage bits: `DMG_NEVERGIB` (0x1000 at 0x6675a file address in 3.0,
+/// 0x1004335e in 2.1), so the body is never gibbed.
+const TELEFRAG_BITS: i32 = bits::NEVERGIB;
+
+/// Kills every living, visible player within 128 units of the spot (300 damage, never gib).
 fn telefrag(spot: *mut edict_t, self_e: *mut edict_t) {
     let eng = engine();
     let org = spot.v().origin;
@@ -114,7 +118,7 @@ fn telefrag(spot: *mut edict_t, self_e: *mut edict_t) {
         if it == self_e || !super::has_player(it) || !alive(it.v()) || it.v().effects & EF_NODRAW as i32 != 0 {
             continue;
         }
-        crate::damage::apply(it, &DamageInfo::new(world, world, 300.0, bits::ALWAYSGIB));
+        crate::damage::apply(it, &DamageInfo::new(world, world, 300.0, TELEFRAG_BITS));
     }
 }
 
@@ -150,7 +154,15 @@ pub fn place(_p: &mut Player, cx: &mut Cx) {
 
 #[cfg(test)]
 mod tests {
-    use super::spot_score;
+    use super::{TELEFRAG_BITS, spot_score};
+    use crate::damage::bits;
+
+    #[test]
+    fn spawn_telefrags_never_gib() {
+        // Issue #128: TS passes 0x1000 to TakeDamage.
+        assert_eq!(TELEFRAG_BITS, 0x1000);
+        assert_eq!(TELEFRAG_BITS, bits::NEVERGIB);
+    }
 
     #[test]
     fn scoring_bands() {

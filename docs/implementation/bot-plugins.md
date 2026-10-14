@@ -73,7 +73,7 @@ backend through `bot_backend` (no behaviour change for native):
 | `Player::trace_attack` | `bot_backend::trace_attack` |
 | `Player::pre_think` (node learning) | `bot_backend::pre_think` |
 | `rules::lifecycle` `Killed` | `bot_backend::killed` |
-| `rules::scoring` (the kill taunt) | `bot_backend::on_kill` (still only for a kill that scored) |
+| `rules::scoring` and the 2.1 plugin's `scoring` (the kill taunt) | `bot_backend::on_kill` (still only for a kill that scored) |
 | `commands` (node and `testpath` commands) | `bot_backend::client_command` |
 | `rules::commands` `addbot` / `addcustombot` | `bot_backend::add_bot(AddBot::Addbot / Custom)` |
 | `precache` (`sprites/lgtning.spr`) | `bot_backend::precache`, at the same place in the precache order |

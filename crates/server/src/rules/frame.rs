@@ -12,7 +12,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::rules::SVC_INTERMISSION;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
-use shared::protocol::rules::{RoundTime, SrvSett};
+use shared::protocol::rules::{RoundTime, SrvSett, TeamScore};
 use shared::weapons::{Gun, att, id, tables};
 use std::cell::Cell;
 
@@ -46,6 +46,24 @@ fn update_limit_cvars(which: usize, frags_left: i32, time_left: i32) {
     LAST_LIMITS.0.set(all);
 }
 
+/// The time `mp_timelimit` is checked against: TS's `gpGlobals->time`, which a map start
+/// restarts, less the time of the last gameplay switch's reset (`GameRules::time_base`, 0 after a
+/// map start), so the reset gives the new game the whole limit as a new map would (issue #100
+/// §1.3). Extended precision, as TS's x87 subtraction.
+fn game_clock(now: f32) -> f64 {
+    now as f64 - state::with(|g| g.time_base) as f64
+}
+
+/// Both Thinks' `mp_timelimit` test: `(mp_timeleft, over)`. `limit × 60` stays in an x87
+/// register (exact in `f64`), the time left is a truncating `(int)`, and a limit of 0 is off.
+fn time_limit(limit_minutes: f32, clock: f64) -> (i32, bool) {
+    let limit = limit_minutes as f64 * 60.0;
+    if limit == 0.0 {
+        return (0, false);
+    }
+    (super::x87_trunc(limit - clock), limit <= clock)
+}
+
 /// `CHalfLifeMultiplay::Think` (0xcf038): voice, intermission, `mp_timelimit`, `mp_fraglimit`
 /// (every slot's `pev->frags`, players who left included), the limit cvars, `CTSGameRules::Think`
 /// and a passed map vote. `mp_timelimit × 60` stays in an x87 register (extended, so exact in
@@ -56,14 +74,10 @@ fn multiplay_think(now: f32) {
         intermission_think(now);
         return;
     }
-    let timelimit = cvars::f(c"mp_timelimit") as f64 * 60.0;
-    let mut time_left = 0;
-    if timelimit != 0.0 {
-        time_left = super::x87_trunc(timelimit - now as f64);
-        if timelimit <= now as f64 {
-            go_to_intermission();
-            return;
-        }
+    let (time_left, over) = time_limit(cvars::f(c"mp_timelimit"), game_clock(now));
+    if over {
+        go_to_intermission();
+        return;
     }
     let fraglimit = cvars::f(c"mp_fraglimit");
     let mut frags_left = 0;
@@ -96,9 +110,8 @@ fn teamplay_think(now: f32) {
         multiplay_think(now);
         return;
     }
-    let timelimit = cvars::f(c"mp_timelimit") as f64 * 60.0;
-    let time_left = if timelimit == 0.0 { 0 } else { super::x87_trunc(timelimit - now as f64) };
-    if timelimit != 0.0 && now as f64 >= timelimit {
+    let (time_left, over) = time_limit(cvars::f(c"mp_timelimit"), game_clock(now));
+    if over {
         go_to_intermission();
         return;
     }
@@ -541,18 +554,50 @@ pub fn round_refund(gun: &Gun) -> i32 {
     total
 }
 
-/// `restartround` server command → `ResetRestartRound(2)`: LMS zeroes scores and restarts in 1 s.
-pub fn reset_restart_round() {
+/// Whether `ResetRestartRound` acts: in the round modes 2/3 (unreachable in 3.0) or with
+/// `g_lastManStanding`, whatever the mode.
+fn restart_round_applies(mode: Mode, lms: bool) -> bool {
+    matches!(mode, Mode::RoundTdm | Mode::Objective) || lms
+}
+
+/// `CTSGameRules::ResetRestartRound(n)` (0x78750), from the `restartround` server command with
+/// `n = 2`: the round restarts in 1 s and the round end is cleared; with the round timer on,
+/// `RoundTime` gets the time to the restart (not below 0, truncated: 0x787e4); `n > 1` also puts
+/// the four teams' score at 0 and their cash at `(int)initial_cash.value` (0: TS never registers
+/// the cvar) and sends the `TeamScore` of each named one; then "Restarting Round" to all (black,
+/// channel 8, hold 30). The team field `+0x20` it also clears isn't modelled.
+pub fn reset_restart_round(n: i32) {
     let now = engine().time();
-    let lms = state::with(|g| g.lms && g.mode == Mode::Dm);
-    if lms {
-        state::with(|g| {
-            for t in &mut g.teams {
-                t.score = 0;
-            }
-            g.round_restart = now + 1.0;
-        });
+    if !state::with(|g| restart_round_applies(g.mode, g.lms)) {
+        return;
     }
+    let (restart, timer) = state::with(|g| {
+        g.round_restart = now + 1.0;
+        g.round_end = 0.0;
+        (g.round_restart, g.round_timer)
+    });
+    if timer {
+        let secs = round_time_byte(x87_max0(restart as f64 - now as f64));
+        msg::all(Msg::RoundTime, |w| RoundTime { secs, state: 0 }.write(w));
+    }
+    if n > 1 {
+        let named: Vec<String> = state::with(|g| {
+            g.teams
+                .iter_mut()
+                .take(4)
+                .filter_map(|t| {
+                    t.score = 0;
+                    t.cash = 0;
+                    (!t.name.is_empty()).then(|| t.name.clone())
+                })
+                .collect()
+        });
+        for team in named {
+            let m = TeamScore { team, score: 0, deaths: 0 };
+            msg::all(Msg::TeamScore, |w| m.write(w));
+        }
+    }
+    ts_message_all([0, 0, 0], 8, 30, "Restarting Round");
 }
 
 /// The One block of `CTSGameRules::Think` (0x77204): counts the players other than The One
@@ -614,7 +659,34 @@ fn unused() -> MsgWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{refresh_copy, round_time_byte, x87_eq, x87_max0};
+    use super::{Mode, refresh_copy, restart_round_applies, round_time_byte, time_limit, x87_eq, x87_max0};
+
+    #[test]
+    fn the_time_limit_counts_from_the_games_start() {
+        // Issue #123: 19 minutes into the map, a switch at 1140 s leaves the new game 20 minutes.
+        let switch = 1140.0f64;
+        assert_eq!(time_limit(20.0, 1150.0 - switch), (1190, false));
+        assert_eq!(time_limit(20.0, 1150.0), (50, false), "the map's clock: one minute left");
+        assert_eq!(time_limit(20.0, 2340.0 - switch), (0, true));
+        // Off at 0; a real map start (base 0) is TS's `timelimit * 60 - time`, truncated.
+        assert_eq!(time_limit(0.0, 1e6), (0, false));
+        assert_eq!(time_limit(1.0, 30.4), (29, false));
+        assert_eq!(time_limit(1.0, 60.0), (0, true));
+    }
+
+    #[test]
+    fn restartround_needs_a_round_mode_or_lms() {
+        // Issue #122: `(mode - 2) < 2 || g_lastManStanding`, so LMS in teamplay restarts too.
+        assert!(restart_round_applies(Mode::Dm, true));
+        assert!(restart_round_applies(Mode::TeamDm, true));
+        assert!(restart_round_applies(Mode::RoundTdm, false));
+        assert!(restart_round_applies(Mode::Objective, false));
+        assert!(!restart_round_applies(Mode::Dm, false));
+        assert!(!restart_round_applies(Mode::TeamDm, false));
+        // The restart 1 s ahead: `RoundTime` 1.
+        let now = 100.3f32;
+        assert_eq!(round_time_byte(x87_max0((now + 1.0) as f64 - now as f64)), 1);
+    }
 
     /// Runs `n` Thinks with the cvar at `cvar`, returning the `SrvSett` values sent.
     fn thinks(stored: &mut i32, cvar: f32, n: usize) -> Vec<i32> {

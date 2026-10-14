@@ -132,6 +132,10 @@ impl ServerRules for Ts21Server {
         }
     }
 
+    fn change_team_tail(&self, p: &mut Player, cx: &mut Cx, kill: bool) {
+        players::change_team_tail(p, cx, kill);
+    }
+
     fn health_regen(&self, p: &mut Player, cx: &mut Cx, now: f32) {
         players::health_regen(p, cx, now);
     }

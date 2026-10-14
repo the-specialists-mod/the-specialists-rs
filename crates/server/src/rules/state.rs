@@ -63,6 +63,10 @@ pub struct GameRules {
     pub next_powerup: f32,
     pub round_end: f32,
     pub round_restart: f32,
+    /// Port addition: the game time the game started at, from which `mp_timelimit` counts: 0 at a
+    /// map start (the engine's clock restarts with the map, as in TS), and the time of the gameplay
+    /// switch's reset (`gameplay::reset::finish`), which keeps the map's clock.
+    pub time_base: f32,
     pub round_timer: bool,
     /// `+0x18`: slow-motion power-ups refused while set.
     pub slow_blocked: bool,
