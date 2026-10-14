@@ -133,6 +133,17 @@ pub struct MenuRules {
     pub akimbo_fixup: bool,
     /// The highest key `HandleKey` takes (11 = the `a` key).
     pub max_key: i32,
+    /// Fixed menu text in place of `titles.txt`: each `#key` the menu draws or prints and its
+    /// text ([`FixedTitles`]). `None` (TS 3.0) localises through the engine's titles.
+    pub text: Option<&'static [(&'static str, &'static str)]>,
+    /// The items page's rows are red by money only (TS 3.0 also tests the slots).
+    pub items_red_by_cash_only: bool,
+    /// The category column's mouse rows: `(m_Teamplay != 0) + 5` category rows before "back"
+    /// (TS 3.0: always 6, the five categories and "Player Accessory").
+    pub category_rows_by_teamplay: bool,
+    /// Centre-printed when a click finds no row and leaves the page unset ([`Hit::Unset`]).
+    /// TS 3.0 prints nothing.
+    pub hole_message: Option<&'static str>,
 }
 
 impl Default for MenuRules {
@@ -158,6 +169,10 @@ impl Default for MenuRules {
             kevlar_cvar: true,
             akimbo_fixup: true,
             max_key: 11,
+            text: None,
+            items_red_by_cash_only: false,
+            category_rows_by_teamplay: false,
+            hole_message: None,
         }
     }
 }
@@ -167,6 +182,25 @@ impl Default for MenuRules {
 /// 3.0), else [`CASH`].
 pub fn cash(cash_based: bool, tscash: i32) -> i32 {
     if cash_based { tscash } else { CASH }
+}
+
+/// A ruleset's fixed menu text ([`MenuRules::text`]) as titles: a `#key` with no entry is left
+/// as it is.
+pub struct FixedTitles(pub &'static [(&'static str, &'static str)]);
+
+impl crate::hud::text::Titles for FixedTitles {
+    fn get(&self, key: &str) -> Option<String> {
+        self.0.iter().find(|(k, _)| *k == key).map(|(_, t)| (*t).to_owned())
+    }
+}
+
+/// The menu's text for `msg`, its `#key`s replaced: from the ruleset's fixed text, else from
+/// `titles` (the engine's).
+pub fn text(m: &MenuRules, titles: &dyn crate::hud::text::Titles, msg: &str) -> String {
+    match m.text {
+        Some(t) => crate::hud::text::localise_with(&FixedTitles(t), msg),
+        None => crate::hud::text::localise_with(titles, msg),
+    }
 }
 
 /// Server settings the menu depends on.
@@ -182,6 +216,8 @@ pub struct Rules {
     pub buy_kevlar: bool,
     /// The money the menu spends ([`cash`]).
     pub cash: i32,
+    /// `CashBased()`: the summary shows the money left ([`cash`]).
+    pub cash_based: bool,
     pub menu: MenuRules,
 }
 
@@ -189,7 +225,7 @@ impl Default for Rules {
     fn default() -> Self {
         // The mask (`0x1018d174`) is zero until `SrvSett 3` arrives, so every weapon starts
         // restricted, as in TS.
-        Rules { gamemode: 0, restriction: 0, ammocount: 0, buy_kevlar: true, cash: CASH, menu: MenuRules::default() }
+        Rules { gamemode: 0, restriction: 0, ammocount: 0, buy_kevlar: true, cash: CASH, cash_based: false, menu: MenuRules::default() }
     }
 }
 
@@ -261,9 +297,12 @@ pub fn slots_for(id: i32, full: bool, item: bool, r: &Rules) -> i32 {
     }
 }
 
-/// Ammo type limits under the current `ammocount`.
+/// Ammo type limits under the current `ammocount`: `FUN_100072c0` switches to column 1, 2 or 3
+/// for those values and fills column 0's for any other, 4 and above or negative included
+/// (issue #108).
 fn ammo_max(t: usize, r: &Rules) -> i32 {
-    tables().ammo(t as u8).map_or(0, |a| a.max_carry[(r.ammocount.clamp(0, 3)) as usize])
+    let column = if (1..=3).contains(&r.ammocount) { r.ammocount as usize } else { 0 };
+    tables().ammo(t as u8).map_or(0, |a| a.max_carry[column])
 }
 
 /// Things the menu asks the HUD to do.
@@ -333,8 +372,9 @@ pub struct BuyMenu {
     pub saved: [Config; SAVED_CONFIGS],
     /// `+0x2f08`: the config changed since the last submit ("Use New Config").
     pub new_config: bool,
-    /// `+0x2f0c`: money left after ammo.
-    pub leftover: i32,
+    /// `+0x2f0c`: the money the ammo fill spent ([`BuyMenu::recompute_ammo`]), which the summary
+    /// adds to the total.
+    pub ammo_spend: i32,
     /// `+0x2f10`: random loadout on the first open.
     pub random_first: bool,
 }
@@ -351,7 +391,7 @@ impl Default for BuyMenu {
             last: Config::default(),
             saved: Default::default(),
             new_config: true,
-            leftover: 0,
+            ammo_spend: 0,
             random_first: true,
         }
     }
@@ -378,7 +418,7 @@ impl BuyMenu {
         self.page = 0;
         self.category = 0;
         self.pending_att = 0;
-        self.leftover = 0;
+        self.ammo_spend = 0;
     }
 
     /// `Open` (10036670), minus the demo check and cursor centring (caller).
@@ -387,7 +427,7 @@ impl BuyMenu {
             return;
         }
         self.current = self.last.clone();
-        self.leftover = 0;
+        self.ammo_spend = 0;
         self.active = true;
         self.page = 0;
         self.new_config = false;
@@ -433,9 +473,12 @@ impl BuyMenu {
         true
     }
 
-    /// `FUN_100392b0`: fill ammo round-robin over the guns with the money left.
+    /// `FUN_100392b0`: fill ammo round-robin over the guns with the money left. With money to
+    /// spend it records what the ammo cost, `(initial - remaining) & ((initial - remaining) < 1) - 1`
+    /// (`0x10039354..0x10039365`), so at least 0; otherwise the spend keeps its value (issue #108).
     pub fn recompute_ammo(&mut self, r: &Rules) {
-        let mut budget = r.cash.wrapping_sub(self.current.total);
+        let initial = r.cash.wrapping_sub(self.current.total);
+        let mut budget = initial;
         self.current.ammo = [(0, 0); 16];
         if budget > 0 {
             loop {
@@ -456,8 +499,8 @@ impl BuyMenu {
                     break;
                 }
             }
+            self.ammo_spend = initial.wrapping_sub(budget).max(0);
         }
-        self.leftover = budget.max(0);
     }
 
     /// `FUN_10038e40`: remove entry `i` and compact the list.
@@ -727,10 +770,14 @@ impl BuyMenu {
             }
             1 => match cur {
                 page::CATEGORY..=page::ITEMS => {
-                    if row > 6 || (cur != page::CATEGORY && row == 6) {
+                    // The rows before "back": TS 3.0 always 6; with `category_rows_by_teamplay`
+                    // `(m_Teamplay != 0) + 5`, so in mode 1 the drawn "back" row (the sixth, with
+                    // no "Player Accessory" above it) is key 6.
+                    let n = if r.menu.category_rows_by_teamplay { (r.gamemode != 0) as i32 + 5 } else { 6 };
+                    if row > n || (cur != page::CATEGORY && row == n) {
                         return Hit::Miss;
                     }
-                    Hit::Row(page::CATEGORY, if row == 6 { 10 } else { row + 1 })
+                    Hit::Row(page::CATEGORY, if row == n { 10 } else { row + 1 })
                 }
                 page::REMOVE => {
                     let mut i = 0;
@@ -831,7 +878,7 @@ impl BuyMenu {
                 4 => {
                     self.reset_config(r);
                     out.push(Action::Message("#Buy_ConfigReset".into(), [0; 3]));
-                    self.leftover = 0;
+                    self.ammo_spend = 0;
                 }
                 5 => self.page = page::SAVE,
                 6 => self.page = page::LOAD,
@@ -960,6 +1007,18 @@ impl BuyMenu {
     }
 }
 
+/// `FUN_10036af0`'s header (`0x10036b64..0x10036bc1`): the total includes the ammo
+/// ([`BuyMenu::ammo_spend`]), and a `CashBased()` menu also shows the money left after it,
+/// `(cash - total - spend, total + spend)` (issue #108). The title key and its arguments.
+pub fn summary_header(b: &BuyMenu, r: &Rules) -> (&'static str, Vec<i32>) {
+    let with_ammo = b.current.total.wrapping_add(b.ammo_spend);
+    if r.cash_based {
+        ("#Buy_Total_CashBased", vec![r.cash.wrapping_sub(b.current.total).wrapping_sub(b.ammo_spend), with_ammo])
+    } else {
+        ("#Buy_Total", vec![with_ammo])
+    }
+}
+
 /// `FUN_100368f0`: `(Sil,Las,Fla,Sco)` attachment summary.
 pub fn attachment_summary(att: u32, loc: &dyn Fn(&str) -> String) -> String {
     if att == 0 {
@@ -1032,6 +1091,52 @@ mod tests {
         assert!(b.akimbo);
         assert_eq!(b.att, 3);
         assert_eq!(b.cost, 900 * 2 + 900 + 800);
+    }
+
+    /// Issue #108: the ammo fill records what the ammo cost, and only when there was money to
+    /// spend; the summary's total includes it, and a `CashBased()` menu shows the money left
+    /// after it; `ammocount` outside 1..3 takes column 0.
+    #[test]
+    fn ammo_spend_and_summary() {
+        let r = Rules { cash: 10000, ..rules() };
+        let mut m = BuyMenu::default();
+        assert!(m.add(13, 0, false, false, &r));
+        let price = tables().ammo(6).unwrap().price;
+        let (rounds, buys) = m.current.ammo[6];
+        assert_eq!((rounds, m.ammo_spend), (90, buys * price), "AK47 ammo: {buys} buys");
+        assert!(m.ammo_spend > 0);
+        assert_eq!(summary_header(&m, &r), ("#Buy_Total", vec![3000 + m.ammo_spend]));
+        let cash_based = Rules { cash_based: true, ..r };
+        assert_eq!(summary_header(&m, &cash_based), ("#Buy_Total_CashBased", vec![10000 - 3000 - m.ammo_spend, 3000 + m.ammo_spend]));
+        // No money to spend: the ammo is cleared and the spend keeps its value.
+        let spend = m.ammo_spend;
+        m.recompute_ammo(&Rules { cash: 3000, ..r });
+        assert_eq!((m.current.ammo[6], m.ammo_spend), ((0, 0), spend));
+        // `ammocount` 4 (or negative) is column 0's 90, not column 3's 0.
+        for ammocount in [4, -1] {
+            m.recompute_ammo(&Rules { ammocount, ..r });
+            assert_eq!(m.current.ammo[6].0, 90, "ammocount {ammocount}");
+        }
+        m.recompute_ammo(&Rules { ammocount: 3, ..r });
+        assert_eq!(m.current.ammo[6].0, 0, "column 3");
+    }
+
+    /// The category column's mouse rows: TS 3.0's six, or `(m_Teamplay != 0) + 5`
+    /// ([`MenuRules::category_rows_by_teamplay`]).
+    #[test]
+    fn category_mouse_rows() {
+        let m = BuyMenu { page: page::CATEGORY, ..BuyMenu::default() };
+        let at = |row: i32, r: &Rules| m.hit_test(8 + 128 + 1, 300 + row * 20 + 1, 600, r);
+        for gamemode in [0, 1, 2] {
+            let r = Rules { gamemode, ..rules() };
+            assert_eq!((at(5, &r), at(6, &r), at(7, &r)), (Hit::Row(page::CATEGORY, 6), Hit::Row(page::CATEGORY, 10), Hit::Miss));
+        }
+        let by_teamplay =
+            |gamemode| Rules { gamemode, menu: MenuRules { category_rows_by_teamplay: true, ..MenuRules::default() }, ..rules() };
+        assert_eq!((at(5, &by_teamplay(0)), at(6, &by_teamplay(0))), (Hit::Row(page::CATEGORY, 10), Hit::Miss));
+        // Mode 1: the sixth row is drawn as "back" (no accessory row) but is key 6.
+        assert_eq!((at(5, &by_teamplay(1)), at(6, &by_teamplay(1))), (Hit::Row(page::CATEGORY, 6), Hit::Row(page::CATEGORY, 10)));
+        assert_eq!(at(6, &by_teamplay(2)), Hit::Row(page::CATEGORY, 10));
     }
 
     #[test]

@@ -402,8 +402,13 @@ Weapon element colours (issue #92; read from the TS binary). Many are `ftol(colo
   save, load, team (`chgteam`). Keys via `slot1..10` (10 = back) and `a` (= key 11, 10th row);
   left click selects any visible row (parent columns too), right click = back.
 * Money is always 30000 and slots 81 (`CashBased()` is off in 3.0); ammo is auto-filled
-  round-robin to the `ammocount` maximum. Restriction mask from `SrvSett 3`; grenades/stealth shoes
-  only when `GameMode > 1`.
+  round-robin to the `ammocount` maximum (`ammocount` 1, 2 or 3 picks that column, any other
+  value column 0, `FUN_100072c0`). The fill records what the ammo cost (`+0x2f0c`, at least 0,
+  only when there was money to spend), and the summary's total adds it; a `CashBased()` menu (TS
+  2.1 mode) shows `#Buy_Total_CashBased` with the money left after it (issue #108). Restriction
+  mask from `SrvSett 3`; grenades/stealth shoes only when `GameMode > 1`. The weapon box (sprite,
+  price, slots) is drawn beside the chosen weapon's row, so an unlisted chosen weapon has none
+  (`0x10037b44`, issue #175).
 * Submit = `rst_cfg`, then `tkw <id>_<att|count> …` (akimbo = the gun twice, second copy without
   attachments), `tki <items> …`, `tka <type>_<buys> …`, each with TS's trailing space, after TS's
   bubble sort (melee/grenades first, then ascending price). Verified against the disassembly at

@@ -90,8 +90,15 @@ fn rules() -> Rules {
         ammocount,
         buy_kevlar: crate::input::cvars().cl_buykevlar.value() != 0.0,
         cash: buy::cash(ruleset.buy_cash_based(gamemode, cashbased), tscash),
+        cash_based: ruleset.buy_cash_based(gamemode, cashbased),
         menu: ruleset.buy_menu(),
     }
+}
+
+/// The buy menu's text for `msg`: the ruleset's fixed text ([`buy::MenuRules::text`]) or the
+/// engine's titles.
+fn buy_text(r: &Rules, msg: &str) -> String {
+    buy::text(&r.menu, &hud::text::EngineTitles, msg)
 }
 
 pub fn init() {
@@ -135,12 +142,13 @@ fn save_file() {
 
 fn run_actions(actions: Vec<Action>) {
     let e = engine();
+    let r = rules();
     for a in actions {
         match a {
             Action::ServerCmd(c) => e.server_cmd(&c),
-            Action::Message(t, rgb) => add_message(&localise(&t), rgb),
+            Action::Message(t, rgb) => add_message(&buy_text(&r, &t), rgb),
             Action::MessageArg(t, arg, rgb) => {
-                let f = localise(&t);
+                let f = buy_text(&r, &t);
                 let arg_i = arg.parse::<i64>().ok();
                 let s = hud::text::format(&f, &[arg_i.map_or(hud::text::Arg::S(&arg), hud::text::Arg::I)]);
                 add_message(&s, rgb)
@@ -648,14 +656,21 @@ fn click(x: i32, y: i32) {
     }
     let r = rules();
     let h = hud::screen().height;
-    let actions = with(|m| match m.buy.hit_test(x, y, h, &r) {
-        buy::Hit::Row(pg, key) => m.buy.handle_key(pg, key, &r, &mut EngineRng),
-        buy::Hit::Miss => {
-            let pg = m.buy.page;
-            m.buy.handle_key(pg, 1, &r, &mut EngineRng)
-        }
-        buy::Hit::Unset => Vec::new(),
+    let (hit, actions) = with(|m| {
+        let hit = m.buy.hit_test(x, y, h, &r);
+        let actions = match hit {
+            buy::Hit::Row(pg, key) => m.buy.handle_key(pg, key, &r, &mut EngineRng),
+            buy::Hit::Miss => {
+                let pg = m.buy.page;
+                m.buy.handle_key(pg, 1, &r, &mut EngineRng)
+            }
+            buy::Hit::Unset => Vec::new(),
+        };
+        (hit, actions)
     });
+    if let (buy::Hit::Unset, Some(msg)) = (hit, r.menu.hole_message) {
+        engine().center_print(msg);
+    }
     run_actions(actions);
 }
 
@@ -666,6 +681,7 @@ fn click(x: i32, y: i32) {
 /// alpha `ftol(50·scale)` and the text the row colour times the scale.
 struct Column<'a> {
     dc: &'a Dc<'a>,
+    r: &'a Rules,
     x: i32,
     y: i32,
     page: i32,
@@ -686,7 +702,7 @@ impl Column<'_> {
         let scale = if dim { 0.5 } else { 1.0 };
         self.dc.fill(self.x, self.y, w - 1, h - 1, rgb, hud::draw::ftol(50.0 * scale));
         let t = rgb.map(|c| hud::draw::ftol(c as f64 * scale));
-        self.dc.string(self.x, self.y, &localise(text), t);
+        self.dc.string(self.x, self.y, &buy_text(self.r, text), t);
         if key > 0 {
             self.rows.push((self.x, self.y, w, h, self.page, key));
         }
@@ -704,7 +720,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     let fmt = hud::text::format;
     use hud::text::Arg::I;
     if b.page == page::TEAM {
-        let mut c = Column { dc, x: 8, y: y0, page: page::TEAM, dim: false, rows };
+        let mut c = Column { dc, r, x: 8, y: y0, page: page::TEAM, dim: false, rows };
         c.row("#Chg_ChangeTeam", GREEN, 0);
         c.row("1 #Chg_Join Specialists", hud2, 1);
         c.row("2 #Chg_Join Mercenaries", hud2, 2);
@@ -720,7 +736,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     if b.page == page::OPTIONS {
         let id = b.pending_weapon;
         let base = buy::cost(id, b.pending_att, false, false);
-        let mut c = Column { dc, x: 0x188, y: y0, page: page::OPTIONS, dim: false, rows };
+        let mut c = Column { dc, r, x: 0x188, y: y0, page: page::OPTIONS, dim: false, rows };
         c.row("1 #Buy_Buy", if affordable(base, buy::slots_for(id, false, false, r)) { GREEN } else { RED }, 1);
         let labels = ["#HUD_Silencer", "#HUD_Lasersight", "#HUD_Flashlight", "#HUD_Scope"];
         let prices = [900, 800, 500, 1800];
@@ -744,7 +760,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
         c.row("0 #Buy_GoBack", BACK, 10);
     }
     if matches!(b.page, page::WEAPONS | page::OPTIONS) {
-        let mut c = Column { dc, x: 0x108, y: y0, page: page::WEAPONS, dim: b.page != page::WEAPONS, rows };
+        let mut c = Column { dc, r, x: 0x108, y: y0, page: page::WEAPONS, dim: b.page != page::WEAPONS, rows };
         for row in 0..12 {
             let id = buy::table(&r.menu)[row][b.category.clamp(0, 4) as usize];
             if id == -1 || buy::restricted(id, false, r) {
@@ -756,28 +772,31 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
             // `0x10037ad4`: full brightness on the weapon page and for the chosen weapon.
             let dim = b.page != page::WEAPONS && id != b.pending_weapon;
             c.row_scaled(&format!("{ch} {}", w.name), if ok { hud2 } else { RED }, key, dim);
+            // `0x10037b44..0x10037b57`: the box is drawn from the chosen weapon's row, so a
+            // weapon that isn't listed (restricted since it was chosen) has none.
+            if id == b.pending_weapon {
+                draw_weapon_box(dc, r, id);
+            }
         }
         if b.page == page::WEAPONS {
             c.row("0 #Buy_GoBack", BACK, 10);
         }
-        if b.pending_weapon >= 0 {
-            draw_weapon_box(dc, b.pending_weapon);
-        }
     }
     if b.page == page::ITEMS {
-        let mut c = Column { dc, x: 0x108, y: y0, page: page::ITEMS, dim: false, rows };
-        for (key, id, label, price) in [(1i32, buy::ITEM_KEVLAR, "Kevlar", 1900), (2, buy::ITEM_STEALTH, "Stealth Shoes", 700)] {
+        let mut c = Column { dc, r, x: 0x108, y: y0, page: page::ITEMS, dim: false, rows };
+        for (key, id, label, price) in [(1i32, buy::ITEM_KEVLAR, "Kevlar", 1900i32), (2, buy::ITEM_STEALTH, "Stealth Shoes", 700)] {
             if buy::restricted(id, true, r) {
                 continue;
             }
             let slots = buy::slots_for(id, false, true, r);
             let text = fmt(&format!("%i {label}  %i"), &[I(key as i64), I(price as i64)]);
-            c.row(&text, if affordable(price, slots) { hud2 } else { RED }, key);
+            let ok = if r.menu.items_red_by_cash_only { price.wrapping_add(cur.total) <= r.cash } else { affordable(price, slots) };
+            c.row(&text, if ok { hud2 } else { RED }, key);
         }
         c.row("0 #Buy_GoBack", BACK, 10);
     }
     if matches!(b.page, page::CATEGORY | page::WEAPONS | page::OPTIONS | page::ITEMS) {
-        let mut c = Column { dc, x: 0x88, y: y0, page: page::CATEGORY, dim: b.page != page::CATEGORY, rows };
+        let mut c = Column { dc, r, x: 0x88, y: y0, page: page::CATEGORY, dim: b.page != page::CATEGORY, rows };
         for (i, name) in buy::CATEGORIES.iter().enumerate() {
             // `0x1003788c`: the chosen category keeps full brightness.
             let dim = b.page != page::CATEGORY && i as i32 != b.category;
@@ -791,7 +810,7 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
         }
     }
     if b.page == page::REMOVE {
-        let mut c = Column { dc, x: 0x88, y: y0, page: page::REMOVE, dim: false, rows };
+        let mut c = Column { dc, r, x: 0x88, y: y0, page: page::REMOVE, dim: false, rows };
         for (i, e) in cur.entries.iter().enumerate().filter(|(_, e)| e.id != 0) {
             c.row(&format!("{} {}", i + 1, BuyMenu::entry_name(e)), hud2, i as i32 + 1);
         }
@@ -799,18 +818,18 @@ fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32,
     }
     if matches!(b.page, page::SAVE | page::LOAD) {
         let save = b.page == page::SAVE;
-        let mut c = Column { dc, x: 0x88, y: y0, page: b.page, dim: false, rows };
+        let mut c = Column { dc, r, x: 0x88, y: y0, page: b.page, dim: false, rows };
         c.row(if save { "#Buy_SaveEquipment" } else { "#Buy_LoadEquipment" }, GREEN, 0);
         for (i, s) in b.saved.iter().enumerate() {
             let key = if s.total < 1 { "#Buy_SlotEmpty" } else { "#Buy_SlotAvailable" };
-            let text = fmt(&localise(key), &[I(i as i64 + 1)]);
+            let text = fmt(&buy_text(r, key), &[I(i as i64 + 1)]);
             let red = !save && s.total > r.cash;
             c.row(&text, if red { RED } else { hud2 }, i as i32 + 1);
         }
         c.row("0 #Buy_GoBack", BACK, 10);
     }
     // Main page.
-    let mut c = Column { dc, x: 8, y: y0, page: page::MAIN, dim: b.page != page::MAIN, rows };
+    let mut c = Column { dc, r, x: 8, y: y0, page: page::MAIN, dim: b.page != page::MAIN, rows };
     if cur.total < 1 {
         c.row("1 #Buy_EmptyConfig", RED, 1);
     } else {
@@ -870,7 +889,7 @@ fn version_box(screen_w: i32, screen_h: i32, text_w: i32, rows: i32) -> (i32, i3
 }
 
 /// `FUN_10038180`: sprite, price and slots of the highlighted weapon.
-fn draw_weapon_box(dc: &Dc, id: i32) {
+fn draw_weapon_box(dc: &Dc, r: &Rules, id: i32) {
     let Some(w) = shared::weapons::tables().weapon(id as u8) else { return };
     let (x, y) = (0x108, dc.h() / 2 - 0x30);
     dc.fill(x, y, 0xff, 0x2f, dc.hud, 0x19);
@@ -878,8 +897,8 @@ fn draw_weapon_box(dc: &Dc, id: i32) {
         dc.spr(s, x, y, dc.hud);
     }
     let f = hud::text::format;
-    dc.string(x + 128, y, &f(&localise("#Buy_Credits"), &[hud::text::Arg::I(w.cost as i64)]), half(dc.hud));
-    dc.string(x + 128, y + 20, &f(&localise("#Buy_Slots"), &[hud::text::Arg::I(w.slots as i64)]), half(dc.hud));
+    dc.string(x + 128, y, &f(&buy_text(r, "#Buy_Credits"), &[hud::text::Arg::I(w.cost as i64)]), half(dc.hud));
+    dc.string(x + 128, y + 20, &f(&buy_text(r, "#Buy_Slots"), &[hud::text::Arg::I(w.slots as i64)]), half(dc.hud));
 }
 
 /// `FUN_10036af0`: totals bar and the loadout per bucket with sprites, ammo and attachments.
@@ -888,10 +907,11 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
     let cur = &b.current;
     use hud::text::Arg::I;
     dc.fill(8, 8, 0x280, 0x13, hud2, 0x32);
-    let total = hud::text::format(&localise("#Buy_Total"), &[I(cur.total as i64)]);
+    let (text, args) = buy::summary_header(b, r);
+    let total = hud::text::format(&buy_text(r, text), &args.iter().map(|&a| I(a as i64)).collect::<Vec<_>>());
     dc.string(8, 8, &total, if r.cash.wrapping_sub(cur.total) <= 0 { RED } else { hud2 });
     let free_slots = buy::SLOTS.wrapping_sub(cur.slots);
-    let free = hud::text::format(&localise("#Buy_FreeSlots"), &[I(free_slots as i64)]);
+    let free = hud::text::format(&buy_text(r, "#Buy_FreeSlots"), &[I(free_slots as i64)]);
     dc.string(0x108, 8, &free, if free_slots <= 0 { RED } else { hud2 });
     let t = shared::weapons::tables();
     for bucket in 1..=5 {
@@ -931,7 +951,7 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
                 } else if w.ammo != 0 {
                     dc.number(x, y + 5, hud::draw::num::DIGITS_3 | hud::draw::num::DRAW_ZERO, rounds, dc.hud);
                 }
-                let s = buy::attachment_summary(e.att, &|k| localise(k));
+                let s = buy::attachment_summary(e.att, &|k| buy_text(r, k));
                 if !s.is_empty() {
                     dc.string(x, y + 0x14, &s, hud2);
                 }

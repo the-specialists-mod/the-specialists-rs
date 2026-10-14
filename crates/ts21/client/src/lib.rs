@@ -322,6 +322,12 @@ impl ClientRules for Ts21Client {
     /// with no restriction of their own; no `cl_buykevlar` (a reset or random config starts
     /// empty); no akimbo fix-up, so key 6 buys any gun "akimbo" at twice the price and slots;
     /// keys 1..10 only.
+    ///
+    /// Its look (issue #111): hard-coded English text, not `titles.txt` ([`BUY_TEXT`]); the
+    /// items page red by money only (0x1006db50); the category column's mouse rows
+    /// `(m_Teamplay != 0) + 5` (0x1006e1b0), so in mode 1 the drawn "0 Go Back" is key 6; and the
+    /// centre-printed "A hole in the menu!" where the click finds no row (0x1006e1b0's end,
+    /// `pfnCenterPrint` through `FUN_10068c10`).
     fn buy_menu(&self) -> MenuRules {
         MenuRules {
             handguns: &HANDGUNS,
@@ -333,9 +339,72 @@ impl ClientRules for Ts21Client {
             kevlar_cvar: false,
             akimbo_fixup: false,
             max_key: 10,
+            text: Some(&BUY_TEXT),
+            items_red_by_cash_only: true,
+            category_rows_by_teamplay: true,
+            hole_message: Some(HOLE_MESSAGE),
         }
     }
 }
+
+/// The 2.1 buy menu's text, hard-coded in `client.dll` (the port draws title keys, so each key
+/// gets 2.1's words; the menu's numbers and `%i`s are the same): the team page (0x1006b6a0),
+/// summary (0x1006b9a0: "(Total: %i)", "Remain Cash : %i (Total: %i)", "Free Slots : %i"),
+/// attachment summary (0x1006b830), save and load (0x1006c540), main page (0x1006ca30, "7 Buy
+/// Random" where 3.0 says "Random"), categories (`Init` 0x1006aa70, 0x1006cde0), options
+/// (0x1006d470), weapon box (0x1006ddd0) and the messages (0x1006e830, 0x1006ff20).
+pub static BUY_TEXT: [(&str, &str); 47] = [
+    ("Chg_ChangeTeam", "Change Team:"),
+    ("Chg_Join", "Join"),
+    ("Chg_Cancel", "Cancel"),
+    ("Buy_Total", "(Total: %i)"),
+    ("Buy_Total_CashBased", "Remain Cash : %i (Total: %i)"),
+    ("Buy_FreeSlots", "Free Slots : %i"),
+    ("Buy_Credits", "%i Credits"),
+    ("Buy_Slots", "%i Slots"),
+    ("Buy_Sil", "Sil"),
+    ("Buy_Las", "Las"),
+    ("Buy_Fla", "Fla"),
+    ("Buy_Sco", "Sco"),
+    ("Buy_SaveEquipment", "Save Equipment"),
+    ("Buy_LoadEquipment", "Load Equipment"),
+    ("Buy_SlotEmpty", "Slot #%i (Empty)"),
+    ("Buy_SlotAvailable", "Slot #%i (Available)"),
+    ("Buy_GoBack", "Go Back"),
+    ("Buy_EmptyConfig", "Empty Config"),
+    ("Buy_UseLastConfig", "Use Last Config"),
+    ("Buy_UseNewConfig", "Use New Config"),
+    ("Buy_Buy", "Buy"),
+    ("Buy_RemoveItem", "Remove Item"),
+    ("Buy_ResetConfig", "Reset Config"),
+    ("Buy_SaveConfig", "Save Config"),
+    ("Buy_LoadConfig", "Load Config"),
+    ("Buy_Random", "Buy Random"),
+    ("Buy_Cancel", "Cancel"),
+    ("Buy_Handguns", "Handguns"),
+    ("Buy_SMGs", "SMGs"),
+    ("Buy_Rifles", "Rifles"),
+    ("Buy_Shotguns", "Shotguns"),
+    ("Buy_SpecialPurpose", "Special Purpose"),
+    ("Buy_PlayerAccessory", "Player Accessory"),
+    ("Buy_Akimbo", "Buy Akimbo"),
+    ("Buy_FullLoad", "Full Load"),
+    ("HUD_Silencer", "Silencer"),
+    ("HUD_Lasersight", "Lasersight"),
+    ("HUD_Flashlight", "Flashlight"),
+    ("HUD_Scope", "Scope"),
+    ("Buy_ConfigReset", "Config Reset"),
+    ("Buy_SavedConfig", "Saved Config on slot #%i"),
+    ("Buy_ConfigLoaded", "Config #%i Loaded"),
+    ("Buy_Removed", "%s Removed"),
+    ("Buy_ConfigEmpty", "Your config is empty!"),
+    ("Buy_NoCash", "No cash left!"),
+    ("Buy_UsingNewConfig", "Using new config."),
+    ("Buy_UsingLastConfig", "Using last config."),
+];
+
+/// `FUN_1006e1b0`'s message (0x10270cdc) when a click finds no row (a full remove list).
+pub const HOLE_MESSAGE: &str = "A hole in the menu! TELL VINO IMMEDIATELY!";
 
 #[cfg(test)]
 mod tests;

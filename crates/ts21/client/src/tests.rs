@@ -487,3 +487,92 @@ fn eye_origin() {
     assert!((org[2] - 104.2 * 0.15).abs() < 1e-4, "{}", org[2]);
     assert_eq!(e.follow_z, 0.0, "3.0 doesn't follow");
 }
+
+/// Engine titles that know nothing: the 2.1 menu mustn't need them.
+struct NoTitles;
+impl ts_client::hud::text::Titles for NoTitles {
+    fn get(&self, _key: &str) -> Option<String> {
+        None
+    }
+}
+
+/// Issue #111: 2.1's buy menu shows its hard-coded English, whatever `titles.txt` says.
+#[test]
+fn buy_menu_text() {
+    let m21 = v21().buy_menu();
+    let t = |msg: &str| buy::text(&m21, &NoTitles, msg);
+    // Every row, label and message the port's menu draws or prints.
+    let used = [
+        "0 #Buy_Cancel",
+        "0 #Buy_GoBack",
+        "0 #Chg_Cancel",
+        "1 #Buy_Buy",
+        "1 #Buy_EmptyConfig",
+        "1 #Buy_UseLastConfig",
+        "1 #Buy_UseNewConfig",
+        "1 #Chg_Join Specialists",
+        "2 #Chg_Join Mercenaries",
+        "2 #Buy_Buy",
+        "3 #Buy_RemoveItem",
+        "4 #Buy_ResetConfig",
+        "5 #Buy_SaveConfig",
+        "6 #Buy_Akimbo",
+        "6 #Buy_FullLoad",
+        "6 #Buy_LoadConfig",
+        "6 #Buy_PlayerAccessory",
+        "7 #Buy_Random",
+        "#Buy_ConfigEmpty",
+        "#Buy_ConfigLoaded",
+        "#Buy_ConfigReset",
+        "#Buy_Credits",
+        "#Buy_Fla",
+        "#Buy_FreeSlots",
+        "#Buy_Handguns",
+        "#Buy_Las",
+        "#Buy_LoadEquipment",
+        "#Buy_NoCash",
+        "#Buy_Removed",
+        "#Buy_Rifles",
+        "#Buy_SavedConfig",
+        "#Buy_SaveEquipment",
+        "#Buy_Sco",
+        "#Buy_Shotguns",
+        "#Buy_Sil",
+        "#Buy_SlotAvailable",
+        "#Buy_SlotEmpty",
+        "#Buy_Slots",
+        "#Buy_SMGs",
+        "#Buy_SpecialPurpose",
+        "#Buy_Total",
+        "#Buy_Total_CashBased",
+        "#Buy_UsingLastConfig",
+        "#Buy_UsingNewConfig",
+        "#Chg_ChangeTeam",
+        "2 #HUD_Silencer  900",
+        "3 #HUD_Lasersight  800",
+        "4 #HUD_Flashlight  500",
+        "5 #HUD_Scope  1800",
+    ];
+    for msg in used {
+        let s = t(msg);
+        assert!(!s.contains("#Buy_") && !s.contains("#Chg_") && !s.contains("#HUD_"), "{msg}: {s}");
+    }
+    // 2.1's own words (0x1026ac08, 0x1026b0e8) where 3.0's titles differ.
+    assert_eq!(t("7 #Buy_Random"), "7 Buy Random");
+    assert_eq!(t("#Buy_Total_CashBased"), "Remain Cash : %i (Total: %i)");
+    assert_eq!(t("1 #Chg_Join Specialists"), "1 Join Specialists");
+    assert_eq!(t("#Buy_SlotEmpty"), "Slot #%i (Empty)");
+    assert_eq!(t("2 #HUD_Silencer  900"), "2 Silencer  900");
+    // TS 3.0 localises through the titles.
+    assert_eq!(buy::text(&v30().buy_menu(), &NoTitles, "7 #Buy_Random"), "7 #Buy_Random");
+}
+
+/// Issue #111: the items page red by money only, the category mouse rows by `m_Teamplay`, and
+/// the hole message; TS 3.0's are unchanged.
+#[test]
+fn buy_menu_look() {
+    let (m21, m30) = (v21().buy_menu(), v30().buy_menu());
+    assert!(m21.items_red_by_cash_only && m21.category_rows_by_teamplay);
+    assert_eq!(m21.hole_message, Some("A hole in the menu! TELL VINO IMMEDIATELY!"));
+    assert!(!m30.items_red_by_cash_only && !m30.category_rows_by_teamplay && m30.hole_message.is_none() && m30.text.is_none());
+}
