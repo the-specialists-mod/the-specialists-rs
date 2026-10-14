@@ -273,6 +273,10 @@ The hooks so far:
 | `ServerRules` | `world_gun_fall_impact()` | true: `Fall`'s 0.1 s look-ahead trace hurts what it hits | `weapons/worldgun.rs` `WorldGun::think` |
 | `ServerRules` | `world_gun_touch(gun, attacker, id, other)` | nothing | `weapons/worldgun.rs` `WorldGun::touch` (flying) |
 | `ServerRules` | `ammo_pack_stays_when_nothing_fits()` | false: the touch removes the pack | `weapons/worldgun.rs` `AmmoPack::touch` |
+| `ServerRules` | `player_add_health(v, amount)` | `player::damage::add_health` (refused above max, uncapped, starts the overheal decay) | `player/damage.rs` `take_health_plain`, `take_health_edict_plain` |
+| `ServerRules` | `battery_armor(p, amount)` | `items::player_take_armor` (`TakeArmor`: kevlar slots, speed) | `entities/stock/items.rs` `Item::my_touch` (battery) |
+| `ServerRules` | `charger_capacity(armor)` | 1 | `entities/stock/items.rs` `Charger::spawn`, `recharge` |
+| `ServerRules` | `charger_charge(armor, juice, activator)` | `items::charge_once`: `TakeArmor(100)` / `TakeHealth(max - health)`, then empty | `entities/stock/items.rs` `Charger::use_` |
 | `ServerRules` | `spawns_entity(class)` | true | `entities/mod.rs` `dispatch_spawn` (-1 when refused; the map load and the reset's re-spawn both go through it) and `dispatch_key_value` (a refused class parses no key) |
 | `ServerRules` | `entity_key_value(ent, cx, key, value)` | `None` (the class parses it) | `ham/mod.rs` `class_key_value` (`DispatchKeyValue`'s class part and AMXX's `ExecuteHam`) |
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |

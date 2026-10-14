@@ -7,6 +7,7 @@
 use crate::commands::Args;
 use crate::damage::DamageInfo;
 use crate::damage::glast::Snapshot;
+use crate::entities::stock::items;
 use crate::entities::ts::ground::GroundWeapon;
 use crate::entities::ts::misc::MapFlags;
 use crate::messages::Msg;
@@ -20,7 +21,7 @@ use crate::stunt::rules::{self as stunt, Dive, StuntClock, StuntRules};
 use crate::weapons::{fire, melee, projectiles};
 use crate::world::{Cx, Entity};
 use goldsrc::server::MsgWriter;
-use goldsrc::sys::{TraceResult, edict_t};
+use goldsrc::sys::{TraceResult, edict_t, entvars_t};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::{self, Vec3};
 use shared::weapons::{Status, WeaponInfo};
@@ -197,6 +198,35 @@ pub trait ServerRules: Sync {
     /// of its ammo fitted. 3.0: false, the touch removes it.
     fn ammo_pack_stays_when_nothing_fits(&self) -> bool {
         false
+    }
+
+    /// `CBasePlayer::TakeHealth` on a player's entvars (healthkits, chargers, doors, negative
+    /// `trigger_hurt`, time-based healing): `None` when refused, else whether the player is now
+    /// above `max_health` (which starts the 1/s overheal decay). 3.0:
+    /// [`player::damage::add_health`](crate::player::damage::add_health) (0xd8760), uncapped.
+    fn player_add_health(&self, v: &mut entvars_t, amount: f32) -> Option<bool> {
+        player_damage::add_health(v, amount)
+    }
+
+    /// `CItemBattery::MyTouch` (0xcb74c), once it has accepted player `p`: the battery's `amount`
+    /// of armour. 3.0: `CBasePlayer::TakeArmor` ([`items::player_take_armor`]: the first kevlar
+    /// costs its slots, the move speed is recomputed; the result is ignored).
+    fn battery_armor(&self, p: *mut edict_t, amount: f32) {
+        items::player_take_armor(p, amount);
+    }
+
+    /// `m_iJuice` a wall charger (`armor`: `func_recharge`, else `func_healthcharger`) gets from
+    /// `Spawn` and `Recharge`. 3.0: 1 (`CRecharge::Spawn` 0xc6ee4, `CWallHealth::Spawn`).
+    fn charger_capacity(&self, _armor: bool) -> i32 {
+        1
+    }
+
+    /// One charge of a wall charger for `activator` (every 0.1 s while used), taking from
+    /// `juice`. 3.0 ([`items::charge_once`]): `CRecharge::Use` (0xc6fd0) empties the charger
+    /// into `TakeArmor(100)` below 100 armour; `CWallHealth::Use` (0xc8d08) gives
+    /// `TakeHealth(max_health - health)` and empties it if that was taken.
+    fn charger_charge(&self, armor: bool, juice: &mut i32, activator: *mut edict_t) {
+        items::charge_once(armor, juice, activator);
     }
 
     // ---- map entities -------------------------------------------------------------------------

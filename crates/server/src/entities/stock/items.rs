@@ -146,7 +146,7 @@ impl<const KIND: u8> Item<KIND> {
                     return false;
                 }
                 // TS ignores TakeArmor's result: the battery is used up either way.
-                player_take_armor(p, 50.0);
+                crate::gameplay::active().server.battery_armor(p, 50.0);
                 emit_sound_slow(p, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
                 messages::one(Msg::ItemPickup, p).string(cls).end();
                 // The suit's charge report, "!HEV_<n>P" (n = armour / 5 - 1).
@@ -407,11 +407,15 @@ impl Entity for WorldItem {
 
 /// `func_healthcharger` (`ARMOR = false`) and `func_recharge` (`ARMOR = true`), TS versions: a full
 /// charger empties in one go (full health via `TakeHealth(max - health)`, or `TakeArmor(100)`),
-/// then recharges after 60 s (health) / 30 s (armour). Continuous +use.
+/// then recharges after 60 s (health) / 30 s (armour). Continuous +use. The juice and what one
+/// charge does are the rules' ([`ServerRules::charger_capacity`], [`ServerRules::charger_charge`]).
+///
+/// [`ServerRules::charger_capacity`]: crate::gameplay::ServerRules::charger_capacity
+/// [`ServerRules::charger_charge`]: crate::gameplay::ServerRules::charger_charge
 #[derive(Default)]
 pub struct Charger<const ARMOR: bool> {
-    /// `m_iJuice` (+0x10c): 1 full, 0 empty.
-    full: bool,
+    /// `m_iJuice` (+0x10c): TS 3.0's is 1 full, 0 empty.
+    juice: i32,
     /// `m_iOn` (+0x110).
     on: i32,
     /// `m_flNextCharge` (+0x104).
@@ -454,7 +458,7 @@ impl<const ARMOR: bool> Charger<ARMOR> {
         self.think_set = true;
         // `FlHealthChargerRechargeTime` / `FlHEVChargerRechargeTime` are 0 in single player
         // (`CHalfLifeRules` 0xde934, `CGameRules`), and an empty charger then stays empty.
-        if !self.full {
+        if self.juice == 0 {
             let time = if ARMOR { 30 } else { 60 };
             self.reactivate = if crate::rules::state::single_player() { 0 } else { time };
             if self.reactivate > 0 {
@@ -474,7 +478,7 @@ impl<const ARMOR: bool> Charger<ARMOR> {
             let (start, _, _, vol) = Self::sounds();
             emit_slow(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0);
         }
-        self.full = true;
+        self.juice = crate::gameplay::active().server.charger_capacity(ARMOR);
         cx.pev().frame = 0.0;
         self.recharge_at = None;
     }
@@ -510,7 +514,7 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         f.table(if ARMOR { &crate::save::tables::CRecharge } else { &crate::save::tables::CWallHealth });
         f.float(&mut self.next_charge);
         f.int(&mut self.reactivate);
-        f.boolean(&mut self.full);
+        f.int(&mut self.juice);
         f.int(&mut self.on);
         f.float(&mut self.sound_time);
     }
@@ -530,7 +534,7 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         eng.set_origin(cx.edict, org);
         eng.set_size(cx.edict, mins, maxs);
         set_own_model(cx);
-        self.full = true;
+        self.juice = crate::gameplay::active().server.charger_capacity(ARMOR);
         cx.pev().frame = 0.0;
     }
 
@@ -554,13 +558,13 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         }
         let now = engine().time();
         let (start, charge, deny, vol) = Self::sounds();
-        if !self.full {
+        if self.juice < 1 {
             cx.pev().frame = 1.0;
             self.off(cx);
         }
         // `CWallHealth::Use` (0xc8d08) and `CRecharge::Use` (0xc6fd0) both refuse players
         // without the HEV suit bit.
-        if !self.full || activator.v().weapons & WEAPON_SUIT == 0 {
+        if self.juice < 1 || activator.v().weapons & WEAPON_SUIT == 0 {
             if self.sound_time <= now {
                 self.sound_time = now + 0.62;
                 emit_slow(cx.edict, CHAN_ITEM, deny, vol, ATTN_NORM, 0);
@@ -582,19 +586,27 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
             self.on = 2;
             emit_slow(cx.edict, CHAN_STATIC, charge, vol, ATTN_NORM, 0);
         }
-        let pv = activator.v();
-        if ARMOR {
-            if pv.armorvalue < 100.0 {
-                self.full = false;
-                player_take_armor(activator, 100.0);
-            }
-        } else if pv.health != pv.max_health {
-            let amount = pv.max_health - pv.health;
-            if player_take_health(activator, amount) {
-                self.full = false;
-            }
-        }
+        crate::gameplay::active().server.charger_charge(ARMOR, &mut self.juice, activator);
         self.next_charge = now + 0.1;
+    }
+}
+
+/// TS 3.0's charge ([`ServerRules::charger_charge`](crate::gameplay::ServerRules::charger_charge)):
+/// `CRecharge::Use` (0xc6fd0) below 100 armour sets `m_iJuice = 0` and calls `TakeArmor(100)`;
+/// `CWallHealth::Use` (0xc8d08) with health not at max calls `TakeHealth(max_health - health)` and
+/// empties the charger when it was taken.
+pub fn charge_once(armor: bool, juice: &mut i32, activator: *mut edict_t) {
+    let pv = activator.v();
+    if armor {
+        if pv.armorvalue < 100.0 {
+            *juice = 0;
+            player_take_armor(activator, 100.0);
+        }
+    } else if pv.health != pv.max_health {
+        let amount = pv.max_health - pv.health;
+        if player_take_health(activator, amount) {
+            *juice = 0;
+        }
     }
 }
 

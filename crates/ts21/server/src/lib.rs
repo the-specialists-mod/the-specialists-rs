@@ -15,6 +15,7 @@
 //! * [`explode`], [`blades`]: explosions, shrapnel and thrown knives (§3.2).
 //! * [`melee`]: blocks and disarms on the victim (§3.2; the attacks are the shared gun hooks).
 //! * [`worldgun`]: dropped guns and ammo packs.
+//! * [`items`]: the SDK's `TakeHealth`, battery and wall chargers.
 //! * [`bots`]: the native bot backend's rules for 2.1 (§3.10): `server-dll` registers [`bots::BOTS`]
 //!   with `ts_server::bots::rules` under the plugin's id (the bots are a layer of their own, so
 //!   they aren't part of [`PLUGIN`]).
@@ -29,6 +30,7 @@ pub mod cvars;
 pub mod damage;
 pub mod entities;
 pub mod explode;
+pub mod items;
 pub mod melee;
 pub mod observer;
 pub mod players;
@@ -41,7 +43,7 @@ pub mod worldgun;
 
 use goldsrc::server::MsgWriter;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
-use goldsrc::sys::{TraceResult, edict_t};
+use goldsrc::sys::{TraceResult, edict_t, entvars_t};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::Vec3;
 use shared::weapons::{Status, WeaponInfo};
@@ -184,6 +186,22 @@ impl ServerRules for Ts21Server {
     /// was added; a full player leaves the pack for the next.
     fn ammo_pack_stays_when_nothing_fits(&self) -> bool {
         true
+    }
+
+    fn player_add_health(&self, v: &mut entvars_t, amount: f32) -> Option<bool> {
+        items::add_health(v, amount)
+    }
+
+    fn battery_armor(&self, p: *mut edict_t, amount: f32) {
+        items::battery_armor(p, amount);
+    }
+
+    fn charger_capacity(&self, armor: bool) -> i32 {
+        items::charger_capacity(armor)
+    }
+
+    fn charger_charge(&self, armor: bool, juice: &mut i32, activator: *mut edict_t) {
+        items::charger_charge(armor, juice, activator);
     }
 
     fn spawns_entity(&self, class: &CStr) -> bool {

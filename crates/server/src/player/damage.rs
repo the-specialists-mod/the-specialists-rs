@@ -86,8 +86,9 @@ pub fn after_kevlar(amount: f32, armor: f32, group: i32, dmg_bits: i32, absorb: 
 
 /// `CBasePlayer::TakeHealth` (0xd8760) on the entvars: refused with `takedamage` off or health
 /// already above max; otherwise added with no cap. Returns `None` when refused, else whether the
-/// player is now over max (TS then sets the 1/s decay timer, `+0x73c`, to time + 1).
-fn add_health(v: &mut entvars_t, amount: f32) -> Option<bool> {
+/// player is now over max (TS then sets the 1/s decay timer, `+0x73c`, to time + 1). The core
+/// rules' [`ServerRules::player_add_health`](crate::gameplay::ServerRules::player_add_health).
+pub fn add_health(v: &mut entvars_t, amount: f32) -> Option<bool> {
     if v.takedamage == 0.0 || v.health > v.max_health {
         return None;
     }
@@ -103,7 +104,7 @@ pub fn take_health(p: &mut Player, cx: &mut Cx, amount: f32) -> bool {
 /// [`take_health`] without the plugins' hooks.
 fn take_health_plain(p: &mut Player, cx: &mut Cx, amount: f32) -> bool {
     let now = cx.time();
-    let Some(over) = add_health(cx.pev(), amount) else {
+    let Some(over) = crate::gameplay::active().server.player_add_health(cx.pev(), amount) else {
         return false;
     };
     if over {
@@ -123,7 +124,7 @@ pub fn take_health_edict(e: *mut edict_t, amount: f32) -> bool {
 /// [`take_health_edict`] without the plugins' hooks.
 pub fn take_health_edict_plain(e: *mut edict_t, amount: f32) -> bool {
     let timer = engine().time() + 1.0;
-    let Some(over) = add_health(e.v(), amount) else {
+    let Some(over) = crate::gameplay::active().server.player_add_health(e.v(), amount) else {
         return false;
     };
     if over {
