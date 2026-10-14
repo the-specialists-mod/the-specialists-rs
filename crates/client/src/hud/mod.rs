@@ -787,6 +787,20 @@ pub fn dead_or_observer() -> bool {
     with(|h| (!demo && h.health == 0) || h.observer)
 }
 
+/// A new `+use` press with `cl_usepowerup` on (`0x1004ce89..0x1004cee9`; 2.1 `0x10089a14..0x10089a7a`
+/// is the same): with a stored power-up (`CHudTSStatus+0x14`, `pw_flags`) the press sends
+/// `usepowerup` only while `time <= window` (`fld [+0x3720]; fcomp time`, C0 skips), then sets
+/// the window to `time + 0.3`. So it takes a double tap within 0.3 s; a single press only arms
+/// the window. Returns whether to send.
+fn usepowerup_tap(h: &mut Hud, t: f32) -> bool {
+    if h.pw_flags == 0 {
+        return false;
+    }
+    let send = t <= h.usepowerup_time;
+    h.usepowerup_time = t + 0.3;
+    send
+}
+
 /// Called from `CL_CreateMove` with this frame's button bits: the weapon menu takes `+attack` as
 /// select (`weapon_%i`) and `+attack2` as drop (`drop_%i`); `+use` triggers `usepowerup` when
 /// `cl_usepowerup` is on. Returns the bits the HUD consumed.
@@ -796,17 +810,9 @@ pub fn weapon_menu_buttons(bits: u32) -> u32 {
     let pressed = bits & !prev;
     let e = engine();
     let t = now();
-    // cl_usepowerup: +use with a stored power-up sends `usepowerup` (0.3 s debounce).
+    // cl_usepowerup: a double tap of +use with a stored power-up sends `usepowerup`.
     if input::cvars().cl_usepowerup.value() != 0.0 && pressed & IN_USE != 0 {
-        let send = with(|h| {
-            if h.pw_flags == 0 {
-                return false;
-            }
-            let ok = h.usepowerup_time <= t;
-            h.usepowerup_time = t + 0.3;
-            ok
-        });
-        if send {
+        if with(|h| usepowerup_tap(h, t)) {
             e.server_cmd("usepowerup");
         }
     }
@@ -1179,6 +1185,24 @@ mod tests {
             ts = approach_timescale(0.01, ts, 0.35);
         }
         assert_eq!(ts, 0.35, "settles exactly on the target");
+    }
+
+    /// `0x1004cebc` (2.1 `0x10089a48`): `usepowerup` goes out on the second +use press within
+    /// 0.3 s, never on the first, and only with a stored power-up.
+    #[test]
+    fn usepowerup_needs_a_double_tap() {
+        let mut h = Hud { pw_flags: 1, ..Hud::default() };
+        assert!(!usepowerup_tap(&mut h, 10.0), "the first press only arms the window");
+        assert!((h.usepowerup_time - 10.3).abs() < 1e-5);
+        assert!(usepowerup_tap(&mut h, 10.2), "a second press within 0.3 s sends");
+        assert!(!usepowerup_tap(&mut h, 11.0), "a press after the window only re-arms it");
+        let end = h.usepowerup_time;
+        assert!(usepowerup_tap(&mut h, end), "the window's end is inclusive (time <= window)");
+        h.pw_flags = 0;
+        h.usepowerup_time = 0.0;
+        assert!(!usepowerup_tap(&mut h, 20.0));
+        assert!(!usepowerup_tap(&mut h, 20.1), "no power-up: nothing sent, window untouched");
+        assert_eq!(h.usepowerup_time, 0.0);
     }
 
     #[test]
