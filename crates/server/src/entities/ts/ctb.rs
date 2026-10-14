@@ -7,7 +7,7 @@ use crate::messages::Msg;
 use crate::player::Player;
 use crate::rules::{self, lifecycle, msg, state, teams};
 use crate::save::{BaseFuncs, Fields};
-use crate::weapons::{SlowPhysics, bounce_ground_damping, give_slow_mul};
+use crate::weapons::{SlowPhysics, bounce_drops_loudly, bounce_ground_damping, give_slow_mul};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
@@ -451,13 +451,14 @@ impl Flag {
         let v = cx.pev();
         v.velocity[2] = (v.velocity[2] as f64 * 0.3) as f32;
         let slow = give_slow_mul(v.fuser1);
+        let (hspeed, speed) = crate::weapons::bounce_speeds(crate::rules::cvars::pm_arith(), v.velocity);
         if v.flags & FL_ONGROUND as i32 == 0 {
-            if spread::length(v.velocity) > slow * 18.0 && e.globals().trace_plane_normal[2] as f64 > 0.98 {
+            if bounce_drops_loudly(speed, slow) && e.globals().trace_plane_normal[2] as f64 > 0.98 {
                 let pitch = 100 + e.random_long(0, 10);
                 emit_sound_slow(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, ATTN_NORM, 0, pitch, 0.5);
             }
         } else {
-            let k = bounce_ground_damping(v.velocity[0].hypot(v.velocity[1]), slow);
+            let k = bounce_ground_damping(hspeed, slow);
             v.velocity = spread::scale(v.velocity, k);
             v.avelocity = spread::scale(v.avelocity, k);
             v.angles[2] = 0.0;

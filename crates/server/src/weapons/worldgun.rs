@@ -2,7 +2,7 @@
 //! ammo (`CTSAmmoPack`, link `TSAmmoPack`, classname `AmmoPack`).
 
 use super::host::emit;
-use super::projectiles::{self, SlowPhysics, bounce_ground_damping, give_slow_mul};
+use super::projectiles::{self, SlowPhysics, bounce_drops_loudly, bounce_ground_damping, give_slow_mul};
 use super::{assets, inventory};
 use crate::damage::{self, DamageInfo};
 use crate::entities::{self, link_entities};
@@ -284,12 +284,13 @@ impl Entity for WorldGun {
         let pev = cx.pev();
         pev.velocity[2] = (pev.velocity[2] as f64 * 0.3) as f32;
         let slow = give_slow_mul(pev.fuser1);
+        let (hspeed, speed) = crate::weapons::bounce_speeds(crate::rules::cvars::pm_arith(), pev.velocity);
         if pev.flags & FL_ONGROUND as i32 == 0 {
-            if spread::length(pev.velocity) > slow * 18.0 && e.globals().trace_plane_normal[2] as f64 > 0.98 {
+            if bounce_drops_loudly(speed, slow) && e.globals().trace_plane_normal[2] as f64 > 0.98 {
                 emit(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, 0.8, 100 + e.random_long(0, 10));
             }
         } else {
-            let k = bounce_ground_damping(pev.velocity[0].hypot(pev.velocity[1]), slow);
+            let k = bounce_ground_damping(hspeed, slow);
             pev.velocity = spread::scale(pev.velocity, k);
             pev.avelocity = spread::scale(pev.avelocity, k);
             pev.angles[2] = 0.0;

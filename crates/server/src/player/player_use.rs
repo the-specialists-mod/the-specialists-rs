@@ -65,9 +65,9 @@ pub fn player_use(p: &mut Player, cx: &mut Cx, pressed: i32, released: i32) {
             (v.absmin, v.size)
         };
         let half = spread::scale(size, 0.5);
-        let d = spread::dot(clamp_to_box(spread::sub(spread::add(absmin, half), eye), half), fwd);
-        if d > best_dot {
-            best_dot = d;
+        let d = use_dot(clamp_to_box(spread::sub(spread::add(absmin, half), eye), half), fwd);
+        if d > f64::from(best_dot) {
+            best_dot = d as f32;
             best = it;
         }
     }
@@ -111,20 +111,36 @@ pub fn player_use(p: &mut Player, cx: &mut Cx, pressed: i32, released: i32) {
     });
 }
 
-/// `UTIL_ClampVectorToBox` (0xee5d8): the part of `v` outside a box of half-size `half`,
-/// normalised; (0, 0, 1) when `v` is inside.
+/// `PlayerUse`'s `DotProduct(vecLOS, gpGlobals->v_forward)` (mp.dll 0x10033922..0x10033939):
+/// summed `z, y, x` and tested unrounded against the stored best (`> flMaxDot`), which then
+/// stores it.
+fn use_dot(los: Vec3, fwd: Vec3) -> f64 {
+    let p = |k: usize| f64::from(los[k]) * f64::from(fwd[k]);
+    p(2) + p(1) + p(0)
+}
+
+/// `UTIL_ClampVectorToBox` (0xee5d8; mp.dll 0x10077a50): the part of `v` outside a box of
+/// half-size `half`, normalised; (0, 0, 1) when `v` is inside. mp.dll stores the clamped x and y
+/// but keeps z on the FPU, sums the squares `z, y, x`, keeps the length and `1 / length`
+/// unrounded, and normalises z from its unrounded value.
 pub fn clamp_to_box(v: Vec3, half: Vec3) -> Vec3 {
-    let mut out = v;
-    for k in 0..3 {
-        out[k] = if v[k] > half[k] {
-            v[k] - half[k]
-        } else if v[k] < -half[k] {
-            v[k] + half[k]
+    let clamp = |k: usize| {
+        let (c, h) = (f64::from(v[k]), f64::from(half[k]));
+        if v[k] > half[k] {
+            c - h
+        } else if -half[k] > v[k] {
+            c + h
         } else {
             0.0
-        };
+        }
+    };
+    let (x, y, z) = (clamp(0) as f32 as f64, clamp(1) as f32 as f64, clamp(2));
+    let len = ((z * z + y * y) + x * x).sqrt();
+    if shared::pm::eq87(len, 0.0) {
+        return [0.0, 0.0, 1.0];
     }
-    spread::normalize(out)
+    let inv = 1.0 / len;
+    [(x * inv) as f32, (y * inv) as f32, (z * inv) as f32]
 }
 
 /// `CBasePlayer::ImpulseCommands` (0xdb780): `PlayerUse`, then `pev->impulse`: 201 sprays, 99
@@ -176,5 +192,10 @@ mod tests {
         assert_eq!(clamp_to_box([1.0, 1.0, 1.0], [4.0, 4.0, 4.0]), [0.0, 0.0, 1.0], "inside the box");
         let v = clamp_to_box([7.0, 8.0, 0.0], [4.0, 4.0, 0.0]);
         assert!((v[0] - 0.6).abs() < 1e-6 && (v[1] - 0.8).abs() < 1e-6);
+        // mp.dll's unrounded z and length: the old `float` arithmetic gave
+        // [0xbf1f34e9, 0x3ef1d459, 0x3f1fe717].
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let v = clamp_to_box(f([0xc345_bfe4, 0x4304_3fa3, 0x4341_5226]), f([0x4248_dc31, 0x41a1_96c8, 0x4234_90c0]));
+        assert_eq!(v.map(f32::to_bits), [0xbf1f_34e8, 0x3ef1_d457, 0x3f1f_e716]);
     }
 }

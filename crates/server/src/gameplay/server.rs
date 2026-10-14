@@ -556,10 +556,11 @@ pub trait ServerRules: Sync {
         projectiles::thrown_blade(btype)
     }
 
-    /// `CTSKnife::BounceTouch` (0x7decc): what a thrown blade deals the player it hits, `flown`
-    /// units from where it was thrown. TS 3.0: 150 katana, 100 combat knife, 50 seal knife.
-    fn thrown_blade_damage(&self, btype: i32, flown: f32) -> f32 {
-        let _ = flown;
+    /// `CTSKnife::BounceTouch` (0x7decc): what a thrown blade deals the player it hits at `at`,
+    /// thrown from `from` (a ruleset whose damage falls off measures the distance in its own
+    /// arithmetic). TS 3.0: 150 katana, 100 combat knife, 50 seal knife.
+    fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32 {
+        let _ = (from, at);
         projectiles::thrown_blade_damage(btype)
     }
 }
@@ -611,7 +612,7 @@ mod tests {
         assert_eq!(r.thrown_blade(6), projectiles::ThrownBlade { speed: 1900.0, gravity: 0.75, bits: 0x0800_1000 });
         assert_eq!(r.thrown_blade(7), projectiles::ThrownBlade { speed: 1900.0, gravity: 0.3, bits: 0x0800_1000 });
         assert_eq!(r.thrown_blade(8), projectiles::ThrownBlade { speed: 1000.0, gravity: 0.85, bits: 0x0800_1000 });
-        assert_eq!([6, 7, 8].map(|t| r.thrown_blade_damage(t, 2000.0)), [100.0, 50.0, 150.0]);
+        assert_eq!([6, 7, 8].map(|t| r.thrown_blade_damage(t, [0.0; 3], [2000.0, 0.0, 0.0])), [100.0, 50.0, 150.0]);
     }
 
     #[test]

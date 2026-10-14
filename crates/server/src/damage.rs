@@ -347,15 +347,11 @@ pub fn set_attack_dir(dir: [f32; 3]) {
     ATTACK_DIR.0.set(dir);
 }
 
-/// SDK `Vector::Normalize`: `(0, 0, 1)` for a zero vector, else each component times `1 / length`
-/// (the length and its inverse are stored as floats).
+/// mp.dll's out-of-line `Vector::Normalize` (0x100148f0), which the stock entities call:
+/// `x² + y² + z²`, the length and `1 / length` kept on the FPU, each component stored; `(0, 0, 1)`
+/// for a zero (or NaN) length. The port used to store the length and its inverse as floats.
 pub fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let len = (v[0] as f64 * v[0] as f64 + v[1] as f64 * v[1] as f64 + v[2] as f64 * v[2] as f64).sqrt() as f32;
-    if len == 0.0 {
-        return [0.0, 0.0, 1.0];
-    }
-    let inv = 1.0 / len;
-    [v[0] * inv, v[1] * inv, v[2] * inv]
+    Msvc::vec_normalize(v, ORDER_XYZ)
 }
 
 /// `CBaseEntity::Center`: `(absmax + absmin) * 0.5`.

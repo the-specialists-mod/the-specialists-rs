@@ -1523,9 +1523,26 @@ impl Entity for InfoIntermission {
         if t.is_null() {
             return;
         }
-        let dir = crate::damage::normalize(vec::sub(t.v().origin, cx.pev().origin));
+        let dir = intermission_dir(t.v().origin, cx.pev().origin);
         cx.pev().v_angle = intermission_angles(eng.vec_to_angles(dir));
     }
+}
+
+/// `CInfoIntermission::Think`'s `(target - origin).Normalize()` as mp.dll inlines it
+/// (0x10035fbc..0x10036057): `dx` stored, `dy` left on the FPU, `dz` squared as `dz · (float)dz`;
+/// the squares summed `z, y, x`, the length and `1 / length` unrounded; the normalised y from the
+/// unrounded `dy`.
+fn intermission_dir(target: [f32; 3], origin: [f32; 3]) -> [f32; 3] {
+    let dx = f64::from(target[0] - origin[0]);
+    let dy = f64::from(target[1]) - f64::from(origin[1]);
+    let dz = f64::from(target[2]) - f64::from(origin[2]);
+    let dzs = f64::from(dz as f32);
+    let len = ((dz * dzs + dy * dy) + dx * dx).sqrt();
+    if shared::pm::eq87(len, 0.0) {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = 1.0 / len;
+    [(dx * inv) as f32, (dy * inv) as f32, (dzs * inv) as f32]
 }
 
 /// `CInfoIntermission::Think`'s `v_angle`: the angles with the pitch's sign flipped.
@@ -1755,6 +1772,15 @@ mod precision_tests {
 
     fn b(v: [f32; 3]) -> [u32; 3] {
         v.map(f32::to_bits)
+    }
+
+    /// `info_intermission`'s view direction as mp.dll inlines it (unrounded `dy`, `dz·(float)dz`,
+    /// `z, y, x`): the old `float` normalisation gave `[0x3f1b9a06, 0xbeb17ffd, 0xbf36e304]`.
+    #[test]
+    fn intermission_direction() {
+        let (target, origin) = (f([0x453b_30e8, 0x4464_8dbd, 0xc4c7_1e0b]), f([0xc3c3_2848, 0x4531_d1e0, 0x4515_210d]));
+        assert_eq!(b(intermission_dir(target, origin)), [0x3f1b_9a05, 0xbeb1_7ffc, 0xbf36_e303]);
+        assert_eq!(intermission_dir([1.0; 3], [1.0; 3]), [0.0, 0.0, 1.0]);
     }
 
     /// The geiger range takes mp.dll's unrounded `Vector::Length` (issue #150); the old `float`

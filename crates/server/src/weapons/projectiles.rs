@@ -13,7 +13,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::is_player;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
-use shared::pm::{Arith, Ext, Fpu, FpuMath, Num, ORDER_XYZ, below87, not_above87, plus_double};
+use shared::pm::{Arith, Ext, Fpu, FpuMath, Num, ORDER_XYZ, below87, eq87, not_above87, plus_double};
 use shared::weapons::id;
 use shared::weapons::spread::{self, Vec3};
 use std::ffi::CStr;
@@ -39,8 +39,15 @@ pub fn spawn_entity<T: Entity + Default>(classname: &CStr, init: impl FnOnce(&mu
     e
 }
 
-fn speed(v: &entvars_t) -> f32 {
-    spread::length(v.velocity)
+/// The ground stop of `CTSGrenade::BounceTouch` and `CTSKnife::WaitTouch`: `Length() < 32`,
+/// summed `x² + y² + z²`; `ts_i386.so` stores the root (0x7be9e, 0x7dd5e), mp.dll tests it
+/// unrounded (0x100504d3, 0x10051f6f).
+fn below_32(v: &entvars_t) -> bool {
+    shared::by_arith!(crate::rules::cvars::pm_arith(), below_32_in(v.velocity))
+}
+
+fn below_32_in<F: Fpu>(v: Vec3) -> bool {
+    F::vec_length(v, ORDER_XYZ) < F::x(32.0)
 }
 
 // ---- slow motion ----------------------------------------------------------------------------
@@ -63,8 +70,28 @@ pub fn give_slow_mul(fuser1: f32) -> f32 {
 /// `40 * slow`, and by 0.7 at or below it (floats at objdump 0xf7f44 / 0xf7f50).
 /// The engine runs the touch on every frame a sliding entity scrapes the floor, so this is the
 /// only ground friction a `MOVETYPE_BOUNCE` entity gets (see docs/implementation/weapons.md).
+///
+/// The stored speed is tested against `GiveSlowMul() * 40.0f` unrounded (mp.dll 0x1007234b /
+/// 0x100744bb, `ts_i386.so` 0xa0b96), which is the exact `float` product.
 pub fn bounce_ground_damping(horizontal_speed: f32, slow: f32) -> f32 {
-    if horizontal_speed > slow * 40.0 { 0.9 } else { 0.7 }
+    if f64::from(horizontal_speed) > f64::from(slow) * 40.0 { 0.9 } else { 0.7 }
+}
+
+/// `BounceTouch`'s drop-sound speed test: the stored speed above the unrounded (exact)
+/// `GiveSlowMul() * 18.0f` (mp.dll 0x10074673, `ts_i386.so` 0xa0cc1).
+pub fn bounce_drops_loudly(speed: f32, slow: f32) -> bool {
+    f64::from(speed) > f64::from(slow) * 18.0
+}
+
+/// The speeds `CTSFlag::BounceTouch` and `CTSWorldGun::BounceTouch` test, both stored as `float`s
+/// in both builds: the horizontal `x² + y²` (0xa0b84 / mp.dll 0x100744ae) and the full
+/// `x² + y² + z²` (0xa0cb1 / 0x10074664), each summed on the build's FPU.
+pub fn bounce_speeds(arith: Arith, v: Vec3) -> (f32, f32) {
+    fn go<F: Fpu>(v: Vec3) -> (f32, f32) {
+        let h = (F::x(v[0]) * F::x(v[0]) + F::x(v[1]) * F::x(v[1])).sqrt().f();
+        (h, F::vec_length(v, ORDER_XYZ).f())
+    }
+    shared::by_arith!(arith, go(v))
 }
 
 /// `CTSPhysicObject` (0x7ba54..0x7bd98). The engine's physics ignores `fuser1`, so a slowed
@@ -289,7 +316,7 @@ impl Entity for Grenade {
             emit(me, CHAN_VOICE, s, 0.25, 0.8, 100);
         } else {
             pev.velocity = spread::scale(pev.velocity, 0.8);
-            if speed(pev) < 32.0 {
+            if below_32(pev) {
                 pev.angles[0] = 0.0;
                 pev.angles[2] = 0.0;
                 pev.velocity = [0.0; 3];
@@ -333,9 +360,31 @@ impl Grenade {
             return;
         }
         let (fwd, _, _) = spread::angle_vectors([0.0, v_angle[1], v_angle[2]]);
-        let dir = spread::normalize(spread::add(fwd, [0.0, 0.0, 0.75]));
+        let dir = kick_dir(crate::rules::cvars::pm_arith(), fwd);
         cx.pev().velocity = spread::add(velocity, spread::scale(dir, 625.0));
     }
+}
+
+/// `CM61Grenade::Use`'s `(v_forward + Vector(0, 0, 0.75)).Normalize()`. z (`fz + 0.75`) stays
+/// unrounded in its square: `ts_i386.so` (0x7cf07..0x7cfb8) squares x and y by their stored
+/// copies and z by itself, sums `x, y, z`, stores the length and normalises the stored
+/// components; mp.dll (0x10051340..0x100513bb) squares z by its stored copy, sums `z, y, x`, keeps
+/// the length and `1 / length` unrounded and normalises the stored z.
+fn kick_dir(arith: Arith, fwd: Vec3) -> Vec3 {
+    fn go<F: Fpu>(fwd: Vec3) -> Vec3 {
+        let (x, y) = (F::x(fwd[0]), F::x(fwd[1]));
+        let zu = F::x(fwd[2]) + F::x(0.75);
+        let zs = zu.f();
+        let sum = if F::MSVC { (zu * F::x(zs) + y * y) + x * x } else { (x * x + y * y) + zu * zu };
+        let len = sum.sqrt();
+        let len = if F::MSVC { len } else { F::x(len.f()) };
+        if eq87(len, F::ZERO) {
+            return [0.0, 0.0, 1.0];
+        }
+        let inv = F::x(1.0) / len;
+        [(inv * x).f(), (inv * y).f(), (inv * F::x(zs)).f()]
+    }
+    shared::by_arith!(arith, go(fwd))
 }
 
 /// Port deviation (issue #1): the player a projectile's flying impact is credited to. TS passes
@@ -561,6 +610,13 @@ pub fn thrown_blade_damage(btype: i32) -> f32 {
     }
 }
 
+fn blade_dir(velocity: Vec3) -> Vec3 {
+    fn go<F: Fpu>(v: Vec3) -> Vec3 {
+        F::vec_normalize(v, ORDER_XYZ)
+    }
+    shared::by_arith!(crate::rules::cvars::pm_arith(), go(velocity))
+}
+
 /// `KnifeFire`/`KatanaThrow` throw: from the eyes + 32 forward + 1 right (traced), at
 /// [`throw_speed`]. `time_scale` comes from [`thrower_time_scale`].
 pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
@@ -582,7 +638,9 @@ pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
         let pev = cx.pev();
         pev.origin = src;
         pev.velocity = velocity;
-        let mut ang = engine().vec_to_angles(spread::normalize(velocity));
+        // `KnifeFire` / `KatanaThrow` normalise the velocity inline, `x² + y² + z²` (0x84790,
+        // mp.dll's out-of-line `Length` at 0x100570b3 and inline 0x1005775d).
+        let mut ang = engine().vec_to_angles(blade_dir(velocity));
         ang[2] = 90.0;
         pev.angles = ang;
         pev.avelocity = [if btype == 8 { -700.0 } else { -1300.0 }, 0.0, 0.0];
@@ -626,8 +684,7 @@ impl Knife {
     /// What the blade deals the player it hits from where it is now
     /// ([`ServerRules::thrown_blade_damage`](crate::gameplay::ServerRules::thrown_blade_damage)).
     fn damage(&self, origin: Vec3) -> f32 {
-        let flown = spread::length(spread::sub(self.thrown_from, origin));
-        crate::gameplay::active().server.thrown_blade_damage(self.btype, flown)
+        crate::gameplay::active().server.thrown_blade_damage(self.btype, self.thrown_from, origin)
     }
 
     fn bits(&self) -> i32 {
@@ -661,7 +718,7 @@ fn ground_slide(pev: &mut entvars_t) {
         return;
     }
     pev.velocity = spread::scale(pev.velocity, 0.5);
-    if speed(pev) < 32.0 {
+    if below_32(pev) {
         pev.angles[0] = 0.0;
         pev.angles[2] = 0.0;
         pev.velocity = [0.0; 3];
@@ -946,6 +1003,36 @@ mod tests {
         assert!(!impact_hits(&target(1.0, 190.5), Ext::from_f32(190.0)));
         assert!(!impact_hits(&target(0.0, 200.0), Ext::from_f32(190.0)));
         assert!(!impact_hits(&target(0.0, f32::NAN), Ext::from_f32(190.0)));
+    }
+
+    /// `BounceTouch`'s speeds are stored roots of the build's sums and are tested against the
+    /// exact `slow · 18` / `slow · 40`: at slow 0.55 the `float` product 9.9000006 equals this
+    /// speed, but TS's 9.9000002 is below it. The old `float` length here was 0x43989094.
+    #[test]
+    fn bounce_speeds_and_thresholds() {
+        let slow = f32::from_bits(0x3f0c_cccd);
+        let speed = f32::from_bits(0x411e_6667);
+        assert_eq!(slow * 18.0, speed, "the float product");
+        assert!(bounce_drops_loudly(speed, slow));
+        assert!(!bounce_drops_loudly(9.9, 0.55));
+        let v = [0xc214_ce87, 0xc392_6221, 0xc29b_04ec].map(f32::from_bits);
+        assert_eq!(bounce_speeds(Arith::Msvc, v).1.to_bits(), 0x4398_9093);
+        assert_eq!(bounce_speeds(Arith::Gcc, [3.0, 4.0, 12.0]), (5.0, 13.0));
+    }
+
+    /// The grenade kick and the ground stop in each build: the old all-`float` arithmetic gave
+    /// `[.., 0xbcd92851, 0x3f7be667]` for this kick, and 32.0 (not slower) for this velocity, whose
+    /// root mp.dll tests unrounded (31.9999992) and the .so stores (32).
+    #[test]
+    fn grenade_kick_and_ground_stop_per_build() {
+        use shared::pm::{Gcc, Msvc};
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let fwd = f([0x3e9c_0bb5, 0xbd3b_bbe1, 0x3f73_89bb]);
+        assert_eq!(kick_dir(Arith::Msvc, fwd).map(f32::to_bits), [0x3e34_80b9, 0xbcd9_2852, 0x3f7b_e668]);
+        assert_eq!(kick_dir(Arith::Gcc, [0.0, 0.0, -0.75]), [0.0, 0.0, 1.0], "a zero length is straight up");
+        let v = f([0x41b7_8f1b, 0x419c_758f, 0x412b_9c79]);
+        assert!(below_32_in::<Msvc>(v));
+        assert!(!below_32_in::<Gcc>(v));
     }
 
     #[test]

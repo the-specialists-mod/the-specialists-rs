@@ -2,6 +2,7 @@
 //! 0x10048010, `Spawn` 0x10048100, `BounceTouch` 0x10048380, `WaitThink` 0x10048c70). 2.1 has no
 //! katana throw, so only the combat (6) and seal (7) knives fly.
 
+use shared::weapons::spread::Vec3;
 use ts_server::weapons::ThrownBlade;
 
 /// The combat knife's blade type.
@@ -14,6 +15,13 @@ const COMBAT_KNIFE: i32 = 6;
 pub fn thrown_blade(btype: i32) -> ThrownBlade {
     let gravity = if btype == COMBAT_KNIFE { 0.9 } else { 0.25 };
     ThrownBlade { speed: 1300.0, gravity, bits: 0x1080 }
+}
+
+/// `CTSKnife::BounceTouch`'s distance from the throw point (+0x84) to the blade (0x100483fd..
+/// 0x10048431): the differences unrounded, `(x² + z²) + y²`, the root stored as a `float`.
+pub fn flown(from: Vec3, at: Vec3) -> f32 {
+    let d = [0, 1, 2].map(|i| f64::from(from[i]) - f64::from(at[i]));
+    ((d[0] * d[0] + d[2] * d[2]) + d[1] * d[1]).sqrt() as f32
 }
 
 /// `CTSKnife::BounceTouch` (0x10048380): the combat knife deals 80 up to 512 units from where
@@ -45,6 +53,16 @@ mod tests {
         assert_eq!(thrown_blade_damage(6, 1088.0), 50.0);
         assert_eq!(thrown_blade_damage(6, 4000.0), 50.0);
         assert_eq!(thrown_blade_damage(7, 0.0), 50.0, "seal knife");
+    }
+
+    /// The distance from unrounded differences, `(x² + z²) + y²`: the old `float` length here was
+    /// 0x458b3859.
+    #[test]
+    fn flown_distance_as_mp_dll() {
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let (from, at) = (f([0xc4df_91c5, 0x4510_2b2b, 0x4486_dbcd]), f([0x4502_f6b0, 0x4458_a787, 0xc40c_2fb8]));
+        assert_eq!(flown(from, at).to_bits(), 0x458b_385a);
+        assert_eq!(flown([0.0; 3], [3.0, 4.0, 12.0]), 13.0);
     }
 
     #[test]

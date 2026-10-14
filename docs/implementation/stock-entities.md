@@ -929,7 +929,14 @@ writes out of bounds, or where the port lacks save/restore:
   `RadiationThink`'s geiger range (the unrounded `Vector::Length`, stored when at most the range
   or NaN); `CBaseMonster::TakeDamage`'s attack direction; the shrapnel's `Normalize` and speed;
   and `FireBullets`' spread for `func_tank` (`tank::spread_dir_from`: `x` stored, `y` unrounded
-  through the `<= 1` test and `y·spread.y`).
+  through the `<= 1` test and `y·spread.y`). Issue #170 adds: `damage::normalize` is the
+  out-of-line `Normalize` (length and `1/len` unrounded; `CBreakable::TakeDamage`'s attack
+  direction), whose poison damage is `× 0.1` with the `double` (`breakable::poisoned`);
+  `CBaseEntity::TakeDamage`'s attack direction (`y, z, x`) and push (`force·dir` stored before
+  the add; `DamageForce` multiplies the size `z·y·x`, the .so `x·y·z`);
+  `CInfoIntermission::Think`'s direction (`dy` unrounded, `dz·(float)dz`); and `PlayerUse`'s
+  `UTIL_ClampVectorToBox` (the clamped z unrounded) and view dot (`z, y, x`, unrounded against
+  the stored best).
 * **x87 rounding.** TS evaluates the door's open position, its `Use` destination and distance,
   the wheel's end angles, its position fraction and the `+ 0.1` think times on the x87 stack;
   the port does those steps in `f64` (`mad_x87`, `momentary_door_pos2`, `momentary_door_move`,

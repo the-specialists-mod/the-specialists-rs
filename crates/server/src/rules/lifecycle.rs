@@ -13,7 +13,7 @@ use crate::world::Cx;
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
-use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ};
+use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ, ORDER_ZYX};
 use shared::protocol::hud_wire::TsPAward;
 use shared::protocol::hud_wire::{ActItems, SetFov, Spectator, TsFade, TsHealth, TsMBlur, fade};
 use shared::protocol::rules::{GameMode, Motd, ScoreInfo, ServerName, SrvSett, hud_dest};
@@ -1123,10 +1123,18 @@ fn headshot_death_slows(last_hitgroup: i32, slow_blocked: bool) -> bool {
 }
 
 /// `CBaseMonster::DamageForce` (0xb2d08): `73728 / (size.x · size.y · size.z) · damage · 5`
-/// (computed on the x87 stack, stored as a float), at most 1000.
-pub fn damage_force(size: [f32; 3], damage: f32) -> f32 {
-    let f = ((73728.0 / (size[0] as f64 * size[1] as f64 * size[2] as f64)) * damage as f64 * 5.0) as f32;
-    if f > 1000.0 { 1000.0 } else { f }
+/// (the `double`s 73728 and 5), at most 1000, stored as a float by every caller. `ts_i386.so`
+/// multiplies the size `x · y · z` (0xb2d1e), mp.dll `z · y · x` (out of line at 0x100145b0,
+/// inline in `CBaseEntity::TakeDamage` at 0x1000e7b6), each on its own FPU. Testing the unrounded
+/// value against 1000 picks the same result as testing the stored one.
+pub fn damage_force(arith: Arith, size: [f32; 3], damage: f32) -> f32 {
+    fn go<F: Fpu>(size: [f32; 3], damage: f32) -> f32 {
+        let [i, j, k] = if F::MSVC { ORDER_ZYX } else { ORDER_XYZ };
+        let volume = F::x(size[i]) * F::x(size[j]) * F::x(size[k]);
+        let f = (F::xd(73728.0) / volume * F::x(damage) * F::xd(5.0)).f();
+        if f > 1000.0 { 1000.0 } else { f }
+    }
+    shared::by_arith!(arith, go(size, damage))
 }
 
 /// `Killed`'s push (0x8f2a0..0x8f391): `velocity += F · normalize(g_vecAttackDir)`, with
@@ -1145,7 +1153,7 @@ fn death_push(arith: Arith, velocity: [f32; 3], size: [f32; 3], last_damage: i32
         let f = F::x(f);
         [(f * dx + F::x(velocity[0])).f(), velocity[1] + (f * F::x(dy.f())).f(), velocity[2] + (f * F::x(dz.f())).f()]
     }
-    let force = damage_force(size, last_damage as f32);
+    let force = damage_force(arith, size, last_damage as f32);
     let f = if force >= 500.0 { -500.0 } else { -force };
     shared::by_arith!(arith, go(velocity, f, attack_dir))
 }
@@ -1330,9 +1338,10 @@ mod tests {
     #[test]
     fn death_push_is_away_from_the_inflictor() {
         let stand = [32.0, 32.0, 72.0];
-        assert_eq!(damage_force(stand, 30.0), 150.0);
-        assert_eq!(damage_force([32.0, 32.0, 36.0], 30.0), 300.0, "a ducked body is lighter");
-        assert_eq!(damage_force(stand, 300.0), 1000.0);
+        assert_eq!(damage_force(shared::pm::Arith::Msvc, stand, 30.0), 150.0);
+        assert_eq!(damage_force(shared::pm::Arith::Gcc, stand, 30.0), 150.0);
+        assert_eq!(damage_force(shared::pm::Arith::Msvc, [32.0, 32.0, 36.0], 30.0), 300.0, "a ducked body is lighter");
+        assert_eq!(damage_force(shared::pm::Arith::Msvc, stand, 300.0), 1000.0);
         for arith in [shared::pm::Arith::Gcc, shared::pm::Arith::Msvc] {
             // g_vecAttackDir points at the inflictor (+x): the body goes -x.
             assert_eq!(death_push(arith, [10.0, 0.0, 0.0], stand, 30, [1.0, 0.0, 0.0]), [-140.0, 0.0, 0.0]);

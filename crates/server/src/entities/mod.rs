@@ -450,7 +450,7 @@ pub fn base_take_damage(cx: &mut world::Cx, dmg: &crate::damage::DamageInfo) -> 
     if !inflictor.is_null() {
         let v = cx.pev();
         let dir = vec::sub(inflictor.v().origin, vec::mad(v.absmin, v.size, 0.5));
-        crate::damage::set_attack_dir(crate::damage::normalize(dir));
+        crate::damage::set_attack_dir(attack_dir_normalize(dir));
         let walks = v.movetype == MOVETYPE_WALK as i32 || v.movetype == MOVETYPE_STEP as i32;
         let trigger = !attacker.is_null() && attacker.v().solid == SOLID_TRIGGER as i32;
         if engine().index_of(inflictor) != 0 && walks && !trigger {
@@ -468,13 +468,23 @@ pub fn base_take_damage(cx: &mut world::Cx, dmg: &crate::damage::DamageInfo) -> 
     alive
 }
 
+/// `CBaseEntity::TakeDamage`'s inline `g_vecAttackDir = vecTemp.Normalize()` (mp.dll
+/// 0x1000e5a7..0x1000e608): the squares summed `y, z, x`, the length and `1 / length` unrounded,
+/// each component stored.
+fn attack_dir_normalize(dir: [f32; 3]) -> [f32; 3] {
+    use shared::pm::FpuMath;
+    shared::pm::Msvc::vec_normalize(dir, [1, 2, 0])
+}
+
 /// `CBaseEntity::TakeDamage`'s push: `velocity += normalize(origin - inflictor centre) ·
-/// DamageForce(damage)` (at most 1000).
+/// DamageForce(damage)` (at most 1000). mp.dll (0x1000e6fd..0x1000e81d) normalises with the
+/// out-of-line `Length` (0x1000e920, unrounded), and its `Vector` `*` and `+` (0x1000e8e0,
+/// 0x1000e8a0) store the product before the add.
 fn base_push(velocity: [f32; 3], origin: [f32; 3], inflictor: ([f32; 3], [f32; 3]), size: [f32; 3], damage: f32) -> [f32; 3] {
     let centre = [0, 1, 2].map(|i| (inflictor.0[i] + inflictor.1[i]) * 0.5);
     let dir = crate::damage::normalize([0, 1, 2].map(|i| origin[i] - centre[i]));
-    let force = crate::rules::lifecycle::damage_force(size, damage);
-    [0, 1, 2].map(|i| (velocity[i] as f64 + force as f64 * dir[i] as f64) as f32)
+    let force = crate::rules::lifecycle::damage_force(shared::pm::Arith::Msvc, size, damage);
+    [0, 1, 2].map(|i| velocity[i] + force * dir[i])
 }
 
 /// `CBaseEntity::Killed` (0xabd4c): `takedamage` off, `DEAD_DEAD`, `UTIL_Remove`.
@@ -489,6 +499,24 @@ pub fn base_killed(cx: &mut world::Cx) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    /// mp.dll's `CBaseEntity::TakeDamage`: the attack direction sums `y, z, x` with the length
+    /// unrounded, and the push stores `force · dir` before adding it. The old arithmetic gave
+    /// `[0xbe10d495, 0xbf33e31c, 0xbf32826d]` and a pushed z of 0x4367f60d.
+    #[test]
+    fn take_damage_direction_and_push_round_as_mp_dll() {
+        let f = |b: [u32; 3]| b.map(f32::from_bits);
+        let dir = attack_dir_normalize(f([0xc25b_aa10, 0xc388_6add, 0xc387_5f68]));
+        assert_eq!(dir.map(f32::to_bits), [0xbe10_d495, 0xbf33_e31b, 0xbf32_826c]);
+        // `base_push`'s steps with a force of 710.42.
+        let vel = f([0xc309_2109, 0x4363_ca6c, 0xc382_bc55]);
+        let org = f([0x42d7_0491, 0x435e_0d98, 0xc323_9be0]);
+        let cen = f([0x436d_44d9, 0x435f_5139, 0xc390_71e1]);
+        let force = f32::from_bits(0x4431_9aeb);
+        let d = crate::damage::normalize([0, 1, 2].map(|i| org[i] - cen[i]));
+        let pushed = [0, 1, 2].map(|i| vel[i] + force * d[i]);
+        assert_eq!(pushed.map(f32::to_bits), [0xc422_0d05, 0x435e_cfc6, 0x4367_f60c]);
+    }
 
     #[test]
     fn base_take_damage_pushes_away_from_the_inflictor() {

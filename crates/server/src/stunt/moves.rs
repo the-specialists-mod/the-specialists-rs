@@ -30,10 +30,6 @@ fn forward(cx: &mut Cx) -> Vec3 {
     shared::pm::angle_vectors(crate::rules::cvars::pm_arith(), cx.pev().v_angle).0
 }
 
-fn hspeed(v: Vec3) -> f32 {
-    (v[1] * v[1] + v[0] * v[0]).sqrt()
-}
-
 fn set_view(cx: &mut Cx, z: f32) {
     cx.pev().view_ofs = [0.0, 0.0, z];
 }
@@ -160,7 +156,7 @@ fn handle_stunt(p: &mut Player, cx: &mut Cx, r: Rules) {
             return;
         }
     }
-    if hspeed(cx.pev().velocity) < 80.0 {
+    if hspeed_cmp(cx.pev().velocity, 80.0, false) {
         go_bullet_time(p, cx, r);
     } else {
         go_dive(p, cx, r);
@@ -510,7 +506,7 @@ fn go_wheel(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
     }
     if ok {
         let v = cx.pev().velocity;
-        let dirn = if hspeed(v) >= 80.0 {
+        let dirn = if hspeed_stored(v) >= 80.0 {
             p.stunt.dir = normalized(v);
             get_direction(p.stunt.dir, cx.pev().v_angle, 0.6, 0.3)
         } else {
@@ -567,7 +563,7 @@ fn go_roll(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
     } else if p.stunt.roll_tap < time {
         roll = false;
     }
-    if hspeed(cx.pev().velocity) < 80.0
+    if hspeed_cmp(cx.pev().velocity, 80.0, false)
         || cx.pev().iuser4 & 0x130c30 != 0
         || clock.running(time, p.stunt.recover)
         || on_ladder(cx)

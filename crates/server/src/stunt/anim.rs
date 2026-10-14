@@ -242,11 +242,7 @@ fn gait_close_combat(cx: &mut Cx, id: i32) -> bool {
     if id == 0x24 || id == 0x23 || id == 0x3a || !kinds {
         return false;
     }
-    ducking || hspeed2(pev.velocity) > 120.0
-}
-
-fn hspeed2(v: Vec3) -> f32 {
-    (v[1] * v[1] + v[0] * v[0]).sqrt()
+    ducking || hspeed_cmp(pev.velocity, 120.0, true)
 }
 
 fn ext2_or_akimbo(p: &Player) -> String {
@@ -354,13 +350,39 @@ fn wall_jump_pose_holds(until_recovered: bool, fin: bool, alive: bool, go_duck: 
     !fin && alive && go_duck && !ladder && !let_through
 }
 
+/// The wall-jump pose's test in `Animate` (0x6bb15..0x6bc57; mp.dll 0x10044faa..0x100450dd): the
+/// velocity is zero, or its direction isn't square to `right` (`v.Normalize() · right.Normalize()
+/// != 0`). The .so stores both lengths and every component and sums `x, y, z`. mp.dll tests the
+/// unrounded length, then normalises `right` with x left on the FPU, the velocity by its *stored*
+/// length with x left on the FPU, and sums `(x + z) + y`. A NaN dot counts as zero (`test ah,0x40`).
+pub(super) fn moving_off_square<F: Fpu>(v: Vec3, right: Vec3) -> bool {
+    if eq87(F::vec_length(v, ORDER_XYZ), F::ZERO) {
+        return true;
+    }
+    let dot = if F::MSVC {
+        let [bx, by, bz] = F::vec_normalize_n(right, ORDER_XYZ);
+        let len = F::sq_in(v, ORDER_XYZ).sqrt().f();
+        let [ax, ay, az] = if eq87(len, 0.0) {
+            [F::ZERO, F::ZERO, F::x(1.0)]
+        } else {
+            let inv = F::x(1.0) / F::x(len);
+            [inv * F::x(v[0]), F::x((inv * F::x(v[1])).f()), F::x((inv * F::x(v[2])).f())]
+        };
+        (ax * bx + az * F::x(bz.f())) + ay * F::x(by.f())
+    } else {
+        let (a, b) = (F::vec_normalize(v, ORDER_XYZ), F::vec_normalize(right, ORDER_XYZ));
+        F::x(a[0]) * F::x(b[0]) + F::x(a[1]) * F::x(b[1]) + F::x(a[2]) * F::x(b[2])
+    };
+    !eq87(dot, F::ZERO)
+}
+
 /// `CTSAnimation::Animate(player, id)` (0x6b470).
 pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
     if id < 0 {
         return;
     }
     let v = cx.pev().velocity;
-    let speed = hspeed2(v);
+    let speed = hspeed_stored(v);
     let alive = is_alive(cx);
     let grounded = on_ground(cx);
     let ladder = on_ladder(cx);
@@ -411,12 +433,7 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
             }
             0x2a | 0x2b => {
                 let (_, right, _) = shared::pm::angle_vectors(crate::rules::cvars::pm_arith(), cx.pev().v_angle);
-                let len = (v[2] * v[2] + v[1] * v[1] + v[0] * v[0]).sqrt();
-                let check = len == 0.0 || {
-                    let a = normalized(v);
-                    let b = normalized(right);
-                    a[2] * b[2] + a[1] * b[1] + a[0] * b[0] != 0.0
-                };
+                let check = shared::by_arith!(crate::rules::cvars::pm_arith(), moving_off_square(v, right));
                 if check && alive && !matches!(id, 0x2a | 0x2b | 3 | 0x29) && !ladder {
                     return;
                 }
@@ -672,7 +689,7 @@ fn death(p: &mut Player, cx: &mut Cx) {
     }
     let v = cx.pev().velocity;
     let a = &p.stunt.anim;
-    let name = if hspeed2(v) >= 80.0 || a.last_damage > 50 {
+    let name = if hspeed_stored(v) >= 80.0 || a.last_damage > 50 {
         let dir = if a.last_damage <= 50 { normalized(v) } else { [-a.attack_dir[0], -a.attack_dir[1], -a.attack_dir[2]] };
         match get_direction(dir, cx.pev().v_angle, 0.6, 0.3) {
             2 => "forward_die",

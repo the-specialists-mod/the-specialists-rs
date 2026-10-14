@@ -422,7 +422,7 @@ impl<const PUSH: bool> Breakable<PUSH> {
             damage *= 2.0;
         }
         if info.bits & DMG_POISON != 0 {
-            damage *= 0.1;
+            damage = poisoned(damage);
         }
         // `g_vecAttackDir` (0xc1532), only for a breakable one.
         if let Some(d) = dir {
@@ -865,6 +865,12 @@ pub fn has_breakable_respawn(ty: std::any::TypeId) -> bool {
 /// map-placed one has no think set and `CBaseEntity::Spawn`, so it is an inert point entity.
 #[derive(Default)]
 pub struct InfoBreakable;
+/// `CBreakable::TakeDamage`'s poison damage: times the `double` 0.1 (mp.dll 0x1001f7b7 `fmul
+/// qword`), rounded once. 9 gives 0.9 (0x3f666666); the `float` 0.1f gave 0.90000004.
+fn poisoned(damage: f32) -> f32 {
+    (f64::from(damage) * 0.1) as f32
+}
+
 impl Entity for InfoBreakable {}
 
 #[cfg(test)]
@@ -893,6 +899,16 @@ mod precision_tests {
 
     fn b(v: [f32; 3]) -> [u32; 3] {
         v.map(f32::to_bits)
+    }
+
+    /// Poison damage times the `double` 0.1, and `g_vecAttackDir` through mp.dll's out-of-line
+    /// `Normalize` (the old stored length and `1/len` gave `[0xbed7b814, 0xbf609e29, ..]`).
+    #[test]
+    fn poison_and_attack_dir() {
+        assert_eq!(poisoned(9.0).to_bits(), 0x3f66_6666);
+        assert_eq!((9.0f32 * 0.1).to_bits(), 0x3f66_6667, "the float 0.1");
+        let d = f([0xc300_84e8, 0xc385_d21f, 0xc28b_f514]);
+        assert_eq!(b(crate::damage::normalize(d)), [0xbed7_b815, 0xbf60_9e2a, 0xbe6a_eb03]);
     }
 
     /// `CBreakable::TraceAttack`'s remembered direction in mp.dll's arithmetic (issue #150): the

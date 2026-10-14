@@ -23,7 +23,7 @@ use crate::player::Player;
 use crate::world::Cx;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use shared::pm::Vec3;
+use shared::pm::{Fpu, FpuMath, Num, ORDER_XYZ, ORDER_ZYX, Vec3, below87, eq87};
 use shared::ts::stunt::*;
 use std::ffi::CStr;
 
@@ -190,28 +190,68 @@ fn maybe_blur(cx: &mut Cx, rules: Rules, threshold: f32) {
 /// `GetDirection(dir, angles, 0.6, 0.3)` (0x6b008) on the yaw-only basis:
 /// 0 left, 1 right, 2 forward, 3 back.
 pub fn get_direction(dir: Vec3, angles: Vec3, side: f32, back: f32) -> i32 {
-    let (forward, right, _) = shared::pm::angle_vectors(crate::rules::cvars::pm_arith(), [0.0, angles[1], angles[2]]);
-    let d = right[0] * dir[0] + right[1] * dir[1] + right[2] * dir[2];
-    if d < -side {
-        0
-    } else if d > side {
-        1
-    } else if forward[0] * dir[0] + forward[1] * dir[1] + forward[2] * dir[2] < -back {
-        3
-    } else {
-        2
-    }
+    let arith = crate::rules::cvars::pm_arith();
+    let (forward, right, _) = shared::pm::angle_vectors(arith, [0.0, angles[1], angles[2]]);
+    shared::by_arith!(arith, direction_in(forward, right, dir, side, back))
 }
 
-/// `Vector::Normalize()`: unit vector, or (0,0,1) for a zero vector.
-fn normalized(v: Vec3) -> Vec3 {
-    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len == 0.0 {
-        [0.0, 0.0, 1.0]
-    } else {
-        let il = 1.0 / len;
-        [il * v[0], il * v[1], il * v[2]]
+/// [`get_direction`]'s tests on the basis. Both dot products stay on the FPU against the `float`
+/// thresholds: `ts_i386.so` sums `x, y, z` (0x6b04f..0x6b07a), mp.dll `z, y, x` (0x1004453e..,
+/// 0x10044584.., the same in 2.1's 0x1003d5d3). A NaN right-dot is "left" in mp.dll (`test
+/// ah,0x1`) and passes on in the .so (`jbe`); a NaN forward-dot is "back" only in the .so.
+fn direction_in<F: Fpu>(forward: Vec3, right: Vec3, dir: Vec3, side: f32, back: f32) -> i32 {
+    let dot = |b: Vec3| {
+        let [i, j, k] = if F::MSVC { ORDER_ZYX } else { ORDER_XYZ };
+        F::x(b[i]) * F::x(dir[i]) + F::x(b[j]) * F::x(dir[j]) + F::x(b[k]) * F::x(dir[k])
+    };
+    let r = dot(right);
+    let left = if F::MSVC { below87(r, F::x(-side)) } else { r < F::x(-side) };
+    if left {
+        return 0;
     }
+    if r > F::x(side) {
+        return 1;
+    }
+    let f = dot(forward);
+    let behind = if F::MSVC { f < F::x(-back) } else { below87(f, F::x(-back)) };
+    if behind { 3 } else { 2 }
+}
+
+/// The inline `Vector::Normalize()` of the stunt and animation code (`x² + y² + z²` in both
+/// builds: GoDive 0x9b434 / mp.dll 0x10069727, GoWheel 0x9cb44 / 0x1006ab70.., GoRoll 0x9d0fa /
+/// 0x1006b0d8.., Animate's jump, dive and death directions 0x6b524, 0x6c6b2.. / mp.dll's
+/// out-of-line 0x100148f0): unit vector, or (0, 0, 1) for a zero (or NaN) length.
+fn normalized(v: Vec3) -> Vec3 {
+    fn go<F: Fpu>(v: Vec3) -> Vec3 {
+        F::vec_normalize(v, ORDER_XYZ)
+    }
+    shared::by_arith!(crate::rules::cvars::pm_arith(), go(v))
+}
+
+/// The inline `Length2D()` of the velocity, `x² + y²` on the FPU in both builds.
+fn hspeed_n<F: Fpu>(v: Vec3) -> F::N {
+    (F::x(v[0]) * F::x(v[0]) + F::x(v[1]) * F::x(v[1])).sqrt()
+}
+
+/// The horizontal speed where both builds store it as a `float` (`Animate`'s `speed` 0x6b4ac /
+/// mp.dll 0x10044b93, `GoWheel`'s 0x9c9e9 / 0x1006aa53).
+fn hspeed_stored(v: Vec3) -> f32 {
+    fn go<F: Fpu>(v: Vec3) -> f32 {
+        hspeed_n::<F>(v).f()
+    }
+    shared::by_arith!(crate::rules::cvars::pm_arith(), go(v))
+}
+
+/// `Length2D() < limit` where mp.dll tests the root unrounded and `ts_i386.so` stores it first
+/// (`HandleStunt` 0x9b16a / mp.dll 0x10069457, `GoRoll` 0x9d064 / 0x1006b046), or with `above`
+/// `Length2D() > limit` (`GaitCloseCombat` 0x6dda9 / 0x1004705b).
+fn hspeed_cmp(v: Vec3, limit: f32, above: bool) -> bool {
+    fn go<F: Fpu>(v: Vec3, limit: f32, above: bool) -> bool {
+        let s = hspeed_n::<F>(v);
+        let s = if F::MSVC { s } else { F::x(s.f()) };
+        if above { s > F::x(limit) } else { s < F::x(limit) }
+    }
+    shared::by_arith!(crate::rules::cvars::pm_arith(), go(v, limit, above))
 }
 
 /// TS `UTIL_ScreenShake` (0xec978); one helper shared with the stock entities and `TSExplosion`.
@@ -492,4 +532,59 @@ pub fn fill_client_data(_p: &mut Player, cx: &mut Cx, cd: &mut clientdata_t) {
     let pev = cx.pev();
     cd.iuser4 = pev.iuser4;
     cd.fuser1 = pev.fuser1;
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use shared::pm::{Gcc, Msvc};
+
+    fn v(b: [u32; 3]) -> Vec3 {
+        b.map(f32::from_bits)
+    }
+
+    /// `GetDirection`'s right-dot stays on the FPU: here the old `float` dot was exactly -0.6f
+    /// (not left), mp.dll's `z, y, x` sum is -0.60000003 (left).
+    #[test]
+    fn direction_dots_are_unrounded() {
+        let right = v([0xbd2b_9c9d, 0xbf2e_36b3, 0x3ef0_34fe]);
+        let dir = v([0xbf45_ccc8, 0xbe5e_c3c1, 0xbfd4_ebfd]);
+        let old = right[0] * dir[0] + right[1] * dir[1] + right[2] * dir[2];
+        assert_eq!(old, -0.6f32);
+        assert_eq!(direction_in::<Msvc>([1.0, 0.0, 0.0], right, dir, 0.6, 0.3), 0);
+        // An exact basis gives the same answer in both builds.
+        let (fwd, rt) = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        for (d, want) in [([1.0, 0.0, 0.0], 2), ([-1.0, 0.0, 0.0], 3), ([0.0, -1.0, 0.0], 0), ([0.0, 1.0, 0.0], 1)] {
+            assert_eq!(direction_in::<Msvc>(fwd, rt, d, 0.6, 0.3), want);
+            assert_eq!(direction_in::<Gcc>(fwd, rt, d, 0.6, 0.3), want);
+        }
+    }
+
+    /// The 80 u/s stunt gates: the old `y² + x²` in `float` gave exactly 80 for both velocities.
+    /// mp.dll's unrounded root is below 80 for the first (HandleStunt and GoRoll take it as slow)
+    /// while its stored root is 80; the second's stored root is 79.999992 in both builds.
+    #[test]
+    fn horizontal_speed_per_build() {
+        let a = v([0x41aa_e8b2, 0xc29a_307f, 0]);
+        assert_eq!((a[1] * a[1] + a[0] * a[0]).sqrt(), 80.0, "the old float speed");
+        assert!(hspeed_n::<Msvc>(a) < 80.0);
+        assert_eq!(hspeed_n::<Msvc>(a).f(), 80.0);
+        let b = v([0xc195_f122, 0xc29b_8c01, 0]);
+        assert_eq!((b[1] * b[1] + b[0] * b[0]).sqrt(), 80.0, "the old float speed");
+        assert_eq!(hspeed_n::<Msvc>(b).f().to_bits(), 0x429f_ffff);
+        assert_eq!(hspeed_n::<Gcc>(b).f().to_bits(), 0x429f_ffff);
+    }
+
+    /// The wall-jump pose's square test: this velocity is square to `right` in the old all-`float`
+    /// maths but not in mp.dll's; zero speed always passes.
+    #[test]
+    fn wall_jump_square_test() {
+        let vel = v([0xc322_71e9, 0x431b_50d1, 0]);
+        let right = v([0x3f30_e9d9, 0x3f39_08bc, 0]);
+        assert!(anim::moving_off_square::<Msvc>(vel, right));
+        assert!(anim::moving_off_square::<Msvc>([0.0; 3], right));
+        assert!(anim::moving_off_square::<Gcc>([0.0; 3], right));
+        assert!(!anim::moving_off_square::<Msvc>([0.0, 5.0, 0.0], [1.0, 0.0, 0.0]));
+        assert!(!anim::moving_off_square::<Gcc>([0.0, 5.0, 0.0], [1.0, 0.0, 0.0]));
+    }
 }

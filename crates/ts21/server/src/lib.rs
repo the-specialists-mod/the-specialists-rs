@@ -374,8 +374,8 @@ impl ServerRules for Ts21Server {
         blades::thrown_blade(btype)
     }
 
-    fn thrown_blade_damage(&self, btype: i32, flown: f32) -> f32 {
-        blades::thrown_blade_damage(btype, flown)
+    fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32 {
+        blades::thrown_blade_damage(btype, blades::flown(from, at))
     }
 
     fn melee_block(

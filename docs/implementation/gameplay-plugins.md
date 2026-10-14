@@ -369,7 +369,7 @@ The hooks so far:
 | `ServerRules` | `explosion_pushes_world_guns()` | true | `entities/stock/explode.rs` `ts_explosion` |
 | `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
 | `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `projectiles::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
-| `ServerRules` | `thrown_blade_damage(btype, flown)` | `projectiles::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
+| `ServerRules` | `thrown_blade_damage(btype, from, at)` | `projectiles::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`
