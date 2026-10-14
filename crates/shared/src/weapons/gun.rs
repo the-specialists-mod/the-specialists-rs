@@ -1904,13 +1904,19 @@ impl Gun {
         }
     }
 
-    /// `CTSGun::HolsterWeapon` 0x85698: back to kung fu.
+    /// `CTSGun::HolsterWeapon` 0x85698: back to kung fu (whose view the rules decide,
+    /// [`GunRules::holster_draws_kungfu`](crate::gameplay::GunRules::holster_draws_kungfu)).
     pub fn holster_weapon(&mut self, host: &mut (impl GunHost + ?Sized)) {
+        let draws_kungfu = host.rules().holster_draws_kungfu();
         host.set_view_model(None);
         host.set_weapon_model(None);
         // pl+0xb58 / pl+0x478 = "" (no weapon animation extension).
         host.set_anim_extension("");
-        self.unzoom(host);
+        if draws_kungfu {
+            self.unzoom(host);
+        } else {
+            host.set_fov(0.0);
+        }
         self.next_attack = 0.5;
         self.idle = 3.0;
         if self.melee_window != 0.0 && self.melee_source != 0 {
@@ -1931,9 +1937,11 @@ impl Gun {
             }
         }
         self.current = 0;
-        host.set_view_model(Some(0));
-        host.weapon_anim(anim(0, false, 2), false, self.body);
-        host.event(Event::Draw, EventArgs::default());
+        if draws_kungfu {
+            host.set_view_model(Some(0));
+            host.weapon_anim(anim(0, false, 2), false, self.body);
+            host.event(Event::Draw, EventArgs::default());
+        }
         self.kick_combo = 0;
         self.punch_combo = 0;
         self.last_melee_anim = 0;

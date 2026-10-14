@@ -28,6 +28,9 @@ struct Mock {
     melees: u32,
     blades: u32,
     anims: u32,
+    /// The last `set_view_model` and `set_fov` (`None`: never called).
+    view_model: Option<Option<u8>>,
+    fov: Option<f32>,
 }
 
 impl GunHost for Mock {
@@ -98,8 +101,12 @@ impl GunHost for Mock {
     fn fov(&self) -> f32 {
         0.0
     }
-    fn set_fov(&mut self, _fov: f32) {}
-    fn set_view_model(&mut self, _id: Option<u8>) {}
+    fn set_fov(&mut self, fov: f32) {
+        self.fov = Some(fov);
+    }
+    fn set_view_model(&mut self, id: Option<u8>) {
+        self.view_model = Some(id);
+    }
     fn view_model_hidden(&self) -> bool {
         false
     }
@@ -213,6 +220,28 @@ fn idle_reloads_under_infinite_clip() {
         g.weapon_idle(&mut h);
         let reloaded = h.events.iter().any(|(e, _)| *e == Event::Reload);
         assert_eq!(reloaded, !core, "core {core}");
+    }
+}
+
+/// 2.1's HolsterWeapon (`FUN_1004d7a0`) leaves no view model and plays no draw; 3.0 draws kung
+/// fu's view model with its draw animation and event.
+#[test]
+fn holster_leaves_no_view_model() {
+    for core in [false, true] {
+        let (mut g, mut h) = armed(id::MP5K);
+        h.core = core;
+        h.fov = Some(40.0);
+        g.holster_weapon(&mut h);
+        assert_eq!(g.current, 0);
+        assert_eq!(h.fov, Some(0.0));
+        let drew = h.events.iter().any(|(e, _)| *e == Event::Draw);
+        if core {
+            assert_eq!(h.view_model, Some(Some(0)));
+            assert!(drew && h.anims == 1);
+        } else {
+            assert_eq!(h.view_model, Some(None));
+            assert!(!drew && h.anims == 0);
+        }
     }
 }
 

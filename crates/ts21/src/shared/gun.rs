@@ -113,6 +113,13 @@ impl GunRules for Ts21 {
     fn infinite_clip_skips_idle_reload(&self) -> bool {
         false
     }
+
+    /// 2.1's HolsterWeapon (`FUN_1004d7a0`, from `Holster`, `Deploy` of id 0 and every weapon
+    /// switch): `viewmodel = weaponmodel = fov = 0` and nothing else; 2.1 has no kung-fu view
+    /// model, draw animation or `events/draw.sc`.
+    fn holster_draws_kungfu(&self) -> bool {
+        false
+    }
 }
 
 /// 2.1's `GetBetterWeapon` (FUN_1004a410): the owned weapon other than `excluded` with the

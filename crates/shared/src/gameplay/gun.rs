@@ -118,6 +118,13 @@ pub trait GunRules: MeleeRules + Sync {
     fn infinite_clip_skips_idle_reload(&self) -> bool {
         true
     }
+
+    /// Whether `HolsterWeapon` (0x85698) unzooms (`Unzoom`, which may put the gun's view model
+    /// back) and then draws kung fu: weapon 0's view model, its draw animation and the draw
+    /// event. Otherwise it only sets the FOV to 0 and leaves no view model. 3.0: true.
+    fn holster_draws_kungfu(&self) -> bool {
+        true
+    }
 }
 
 /// One think's recoil-penalty decay ([`GunRules::decay_spread`]).
@@ -214,6 +221,7 @@ mod tests {
         let m4 = base_tables().weapon(crate::weapons::id::M4).unwrap();
         assert!(!CORE.cancel_runs_frame_in_reload(ak) && CORE.cancel_runs_frame_in_reload(m4));
         assert!(!CORE.blades_need_press() && CORE.katana_throws() && CORE.infinite_clip_skips_idle_reload());
+        assert!(CORE.holster_draws_kungfu());
         let mut g = Gun::default();
         assert_eq!(CORE.better_weapon(&g, 0), 0, "nothing owned: kung fu");
         for id in [crate::weapons::id::AK47, crate::weapons::id::BENELLI] {
