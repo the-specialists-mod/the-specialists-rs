@@ -530,7 +530,7 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
   the icons are the same. The name-tag offset uses `WorldToScreen`'s x and y (TS's z is 0 too).
 * In-eye gun: as in TS, the gun offset is whatever `V_CalcBob` last left in the normal view
   (`0x10069a70`), and the pitch takes a bob global nothing writes (`0x10191dac`, so 0). TS's `V_GetInEyePos` scales the pitch by -π (the SDK
-  uses -3); kept.
+  uses -3); kept. Like TS (`0x10068e42`) it writes nothing unless the target also has a player-info name (issue #153).
 * **Studio state copies.** `player_info_t` is copied in and written back where TS keeps the
   engine pointer, and `StudioDrawPlayer`'s engine state (`GetPlayerState`, not the entity's
   `curstate`, on FWGS) is a copy with the only two fields the renderer writes (`renderamt`,

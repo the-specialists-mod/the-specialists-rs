@@ -564,7 +564,7 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
             dc.fill(cx - 1, cy - gap, 2, 5, rgb, 75);
             dc.fill(cx - 1, cy + gap - 5, 2, 5, rgb, 75);
             let solid = input::cvars().cl_solidcross.value();
-            if solid > 0.0 && dc.g.ts.cross2 != 0 {
+            if solid_cross(solid, goldsrc::ext::studio::hardware_kind() != 0, dc.g.ts.cross2 != 0) {
                 e.spr_set(dc.g.ts.cross2, if solid > 1.0 { [0; 3] } else { rgb });
                 e.spr_draw_holes(0, cx - 32, cy - 32, None);
             } else {
@@ -585,6 +585,14 @@ fn draw_crosshair(dc: &Dc, h: &Hud) {
     if divesteps && parts.divesteps_last {
         draw_divesteps(dc, h, cx, cy);
     }
+}
+
+/// `DrawCrosshair`'s enemy/neutral sprite choice (`0x1004ecf3..0x1004ed15`): the solid `cross2`
+/// holes sprite only on a hardware renderer (`IEngineStudio.IsHardware()`) with `cl_solidcross > 0`;
+/// a software renderer always gets the additive `cross_e` (issue #153). `loaded` (the sprite
+/// handle) is the port's guard.
+fn solid_cross(cl_solidcross: f32, hardware: bool, loaded: bool) -> bool {
+    hardware && cl_solidcross > 0.0 && loaded
 }
 
 /// Divestep sprites around the crosshair (1004ef50): top/centre/bottom dive indicators plus a
@@ -642,6 +650,15 @@ fn divestep_layout(
 mod tests {
     use super::super::state::{Slot, grid_pos};
     use super::*;
+
+    #[test]
+    fn solid_cross_needs_a_hardware_renderer() {
+        assert!(solid_cross(1.0, true, true));
+        assert!(solid_cross(2.0, true, true));
+        assert!(!solid_cross(0.0, true, true));
+        assert!(!solid_cross(1.0, false, true), "software: cl_solidcross is ignored");
+        assert!(!solid_cross(f32::NAN, true, true));
+    }
 
     #[test]
     fn colour_scaling_follows_ts() {
