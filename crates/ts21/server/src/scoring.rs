@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn kill_names_are_2_1s() {
         // Issue #131: "Throwing Knife" for every blade and a bare "Stock"; 3.0 keeps its own.
-        assert!(!NAMING.describe_thrown_blades && !NAMING.stock_names_weapon);
+        assert_eq!(NAMING, core::WeaponNaming { describe_thrown_blades: false, stock_names_weapon: false });
         assert_ne!(NAMING, core::WeaponNaming::DEFAULT);
     }
 
