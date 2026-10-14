@@ -147,13 +147,8 @@ pub fn navigate(b: &mut Brain, p: &mut Player, cx: &mut Cx, goal: [f32; 3]) -> i
     }
 
     if on_ladder(cx.pev()) {
-        if 0.0 <= cx.pev().origin[2] - b.nav.waypoint[2] {
-            b.press(btn::DUCK | btn::BACK, 1.0, now);
-            b.press(btn::JUMP | btn::FORWARD, 0.0, now);
-        } else {
-            b.press(btn::DUCK | btn::FORWARD, 1.0, now);
-            b.press(btn::JUMP | btn::BACK, 0.0, now);
-        }
+        let down = 0.0 <= cx.pev().origin[2] - b.nav.waypoint[2];
+        super::rules::current().ladder_buttons(b, down, now);
         b.set_move(0.0, 0.0);
         let wp = b.nav.waypoint;
         b.look_at(cx.pev(), wp);
@@ -231,7 +226,7 @@ fn random_wander_point(b: &mut Brain, origin: [f32; 3]) -> [f32; 3] {
     let l = ((c as f64) * (c as f64) + s * s).sqrt();
     let dir = if l == 0.0 { [0.0, 0.0, 1.0] } else { [((1.0 / l) * c as f64) as f32, ((1.0 / l) * s) as f32, 0.0] };
     let dist = eng.random_long(1024, 4096) as f32;
-    let end = add(scale(dir, dist), origin);
+    let end = super::rules::current().wander_end(dir, dist, origin);
     eng.trace_line(origin, end, IGNORE_MONSTERS, std::ptr::null_mut()).vecEndPos
 }
 
@@ -259,7 +254,7 @@ fn steer_point(b: &mut Brain, cx: &mut Cx) -> [f32; 3] {
     let origin = cx.pev().origin;
     let wp = b.nav.waypoint;
     let (f, r, _) = eng.angle_vectors(eng.vec_to_angles(sub(wp, origin)));
-    let tr = eng.trace_line(origin, add(scale(f, 24.0), origin), 0, me);
+    let tr = eng.trace_line(origin, super::rules::current().steer_probe_end(f, origin), 0, me);
     if tr.flFraction < 1.0 && !is_door(tr.pHit) {
         b.nav.detour = sub(tr.vecEndPos, scale(f, 48.0));
         return b.nav.detour;

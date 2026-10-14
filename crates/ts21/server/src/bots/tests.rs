@@ -189,3 +189,68 @@ fn kung_fu_wait_is_clamped() {
     assert_eq!(kung_fu_wait(10.0, 0.1), 3.0);
     assert_eq!(kung_fu_wait(1.0, f32::NAN), 3.0);
 }
+
+#[test]
+fn ladder_releases_jump_and_the_old_direction() {
+    // Navigate 0x100621b9: a probe jump (1 s) and a climb up, then the waypoint drops below the
+    // bot: BACK and DUCK held, JUMP and FORWARD let go.
+    let r: &dyn NativeBotRules = &BOTS;
+    let mut b = Brain::new(1.0);
+    r.press(&mut b, btn::JUMP, 1.0, 10.0);
+    r.ladder_buttons(&mut b, false, 10.0);
+    r.update_buttons(&mut b, 10.1);
+    assert_eq!(b.buttons, btn::FORWARD | btn::DUCK, "climbing up: the probe's jump is released");
+    r.ladder_buttons(&mut b, true, 10.2);
+    r.update_buttons(&mut b, 10.3);
+    assert_eq!(b.buttons, btn::BACK | btn::DUCK, "the old direction is released");
+    // One mask per slot: BACK and DUCK; FORWARD's and JUMP's slots are free again.
+    assert_eq!(buttons(&mut b).mask.iter().filter(|&&m| m != 0).count(), 2);
+    r.update_buttons(&mut b, 11.2);
+    assert_eq!(b.buttons, btn::BACK | btn::DUCK, "held while time <= expire");
+    r.update_buttons(&mut b, 11.21);
+    assert_eq!(b.buttons, 0);
+}
+
+#[test]
+fn core_ladder_presses_are_3_0s_combined_masks() {
+    let c: &dyn NativeBotRules = &CORE;
+    let mut b = Brain::new(1.0);
+    b.press_bits(btn::JUMP, 1.0, 10.0);
+    c.ladder_buttons(&mut b, true, 10.0);
+    b.update_bits(10.1);
+    assert_eq!(b.buttons, btn::BACK | btn::DUCK);
+}
+
+#[test]
+fn nav_end_points_keep_one_product_on_the_x87_stack() {
+    let r: &dyn NativeBotRules = &BOTS;
+    let c: &dyn NativeBotRules = &CORE;
+    // A 22° step direction as RandomWanderPoint builds it, and the wander distances.
+    let a = (3 * 22) as f64 * 0.017_453_292_519_943_295;
+    let dir = [a.cos() as f32, a.sin() as f32, 0.0];
+    let origin = [1234.567_f32, -987.654, 64.031_25];
+    let mut differ = 0;
+    for dist in 1024..4096 {
+        let d = dist as f32;
+        let e = r.wander_end(dir, d, origin);
+        assert_eq!(e[0], (dir[0] as f64 * d as f64 + origin[0] as f64) as f32);
+        let e3 = c.wander_end(dir, d, origin);
+        assert_eq!(e3, [dir[0] * d + origin[0], dir[1] * d + origin[1], origin[2]], "3.0 unchanged");
+        assert_eq!([e[1], e[2]], [e3[1], e3[2]]);
+        differ += (e[0] != e3[0]) as u32;
+    }
+    assert!(differ > 0, "the x end point differs in the last bit for some distances");
+
+    let mut differ = 0;
+    for i in 0..2000 {
+        let t = i as f64 * 0.001;
+        let f = [t.cos() as f32 * 0.6, t.sin() as f32 * 0.6, (0.8 - t * 1e-4) as f32];
+        let e = r.steer_probe_end(f, origin);
+        assert_eq!(e[2], (f[2] as f64 * 24.0 + origin[2] as f64) as f32);
+        let e3 = c.steer_probe_end(f, origin);
+        assert_eq!(e3, [f[0] * 24.0 + origin[0], f[1] * 24.0 + origin[1], f[2] * 24.0 + origin[2]], "3.0 unchanged");
+        assert_eq!([e[0], e[1]], [e3[0], e3[1]]);
+        differ += (e[2] != e3[2]) as u32;
+    }
+    assert!(differ > 0, "the z end point differs in the last bit for some directions");
+}
