@@ -45,8 +45,10 @@ mod tests {
     use super::*;
     use ts_server::bots::nodes as core;
 
+    type Probes = fn([f32; 3], [f32; 3], &mut dyn FnMut([f32; 3]) -> bool) -> bool;
+
     /// Every probe point, all with a floor.
-    fn points(f: fn([f32; 3], [f32; 3], &mut dyn FnMut([f32; 3]) -> bool) -> bool, a: [f32; 3], b: [f32; 3]) -> Vec<[f32; 3]> {
+    fn points(f: Probes, a: [f32; 3], b: [f32; 3]) -> Vec<[f32; 3]> {
         let mut out = Vec::new();
         assert!(f(a, b, &mut |p| {
             out.push(p);
@@ -80,13 +82,14 @@ mod tests {
     /// The step is `1/steps` stored, times the difference, and x is added unrounded (#163).
     #[test]
     fn ground_probe_points() {
-        let (a, b) = ([-1_310.613_2, -106.028_27, 900.773_07], [-1_276.727_8, -210.438_98, 911.782_3]);
+        let bits = |v: [u32; 3]| v.map(f32::from_bits);
+        let (a, b) = (bits([0xc4a3_d39f, 0xc2d4_0e79, 0x4461_317a]), bits([0xc49f_974a, 0xc352_7061, 0x4463_f211]));
         let (p21, p30) = (points(ground_probes, a, b), points(core::ground_probes, a, b));
         assert_eq!((p21.len(), p30.len()), (6, 6));
-        assert_eq!(p21[1][1].to_bits(), (-140.831_85f32).to_bits());
-        assert_eq!(p30[1][1].to_bits(), (-140.831_83f32).to_bits());
-        assert_eq!(p21[5][1].to_bits(), (-210.438_995f32).to_bits());
-        assert_eq!(p30[5][1].to_bits(), (-210.438_965f32).to_bits());
+        assert_eq!(p21[1][1].to_bits(), 0xc30c_d4f4, "-140.83185");
+        assert_eq!(p30[1][1].to_bits(), 0xc30c_d4f3, "-140.83183");
+        assert_eq!(p21[5][1].to_bits(), 0xc352_7062, "-210.439");
+        assert_eq!(p30[5][1].to_bits(), 0xc352_7060, "-210.43896");
         assert_eq!(p21[0], p30[0]);
     }
 }

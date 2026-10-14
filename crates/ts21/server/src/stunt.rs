@@ -275,8 +275,8 @@ mod tests {
         assert_eq!(c.wall_chain_cooldown(100.0, 0.5, 2.0), 104.0);
         // GoWallJump's unrounded sum (0.3f + 0.35) against the float GoWallClimb would reload.
         let sum = f64::from(0.3f32) + 0.35;
-        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, sum), 1.649_999_976_158_142_1);
-        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, f64::from(sum as f32)), 1.650_000_095_367_431_6);
+        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, sum).to_bits(), 0x3fd3_3333, "1.65 - 1 ulp");
+        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, f64::from(sum as f32)).to_bits(), 0x3fd3_3334);
     }
 
     #[test]

@@ -1196,6 +1196,8 @@ pub fn death_think(p: &mut Player, cx: &mut Cx) {
 /// `v = (v.Length() - 20) * v.Normalize()`, or zero when that isn't positive. mp.dll keeps the
 /// lengths on the x87 (53 bits, `(x² + y²) + z²`), stores `f = len - 20` as a `float`, takes
 /// `1 / len` unrounded, stores each `dir_i = inv * v_i` and then each `f * dir_i`.
+// The negated compare is the x87's: an unordered (NaN) `f` stops the body.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn death_slowdown(v: [f32; 3]) -> [f32; 3] {
     use shared::pm::{FpuMath, Msvc};
     let len = Msvc::length(v);
@@ -1261,11 +1263,11 @@ mod tests {
     fn the_one_regen_rounds_once() {
         // 1.85 + 1/1.28: the f32 steps give 2.6312499.
         let (timer, _) = the_one_regen(4, 1.85, 100.0);
-        assert_eq!(timer.to_bits(), 2.631_250_1f32.to_bits());
+        assert_eq!(timer.to_bits(), 0x4028_6667, "2.6312501");
         assert_ne!(timer, 1.85f32 + 1.0 / (4.0f32 * 0.32));
         // 125.92 + 27 * 0.16: the f32 steps give 130.23999.
         let (_, h) = the_one_regen(27, 0.0, 125.92);
-        assert_eq!(h.to_bits(), 130.240_005_5f32.to_bits());
+        assert_eq!(h.to_bits(), 0x4302_3d71, "130.24001");
         assert_ne!(h, 125.92f32 + 27.0 * 0.16f32);
         // n * 0.32 below 1 is raised to 1; the cap is 150; a NaN health stays NaN.
         assert_eq!(the_one_regen(1, 10.0, 149.9), (11.0, 150.0));
