@@ -180,13 +180,19 @@ impl Player {
         // `Jump`/`Duck`, the fall speed, `UpdatePlayerState`, the node learning, the end of spawn
         // protection and the delayed suicide (issue #60).
         let tail = !crate::entities::stock::drive::pre_think(self, cx, buttons & !last);
-        crate::rules::pre_think(self, cx, tail);
-        crate::stunt::pre_think(self, cx, tail);
-        // mp.dll's node learning, between `UpdatePlayerState` and `CheckForWires` (0x1005fed2).
-        if tail {
-            crate::bot_backend::pre_think(self, cx);
+        let mut end = false;
+        for step in PRE_THINK {
+            match step {
+                PreThinkStep::Rules => end = crate::rules::pre_think(self, cx, tail),
+                PreThinkStep::Stunt => crate::stunt::pre_think(self, cx, tail),
+                // mp.dll's node learning, between `UpdatePlayerState` and `CheckForWires` (0x1005fed2).
+                PreThinkStep::NodeLearn if tail => crate::bot_backend::pre_think(self, cx),
+                PreThinkStep::NodeLearn => {}
+                PreThinkStep::Weapons => crate::weapons::pre_think(self, cx),
+                PreThinkStep::End if end => crate::rules::pre_think_end(self, cx),
+                PreThinkStep::End => {}
+            }
         }
-        crate::weapons::pre_think(self, cx);
     }
 
     /// `CBasePlayer::PostThink` (0x91610). When the game is over (intermission) or the player is
@@ -219,6 +225,28 @@ impl Player {
         crate::rules::fill_client_data(self, cx, cd);
     }
 }
+
+/// The parts of [`Player::pre_think`] after the train controls, in the order they run.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PreThinkStep {
+    /// `rules::pre_think`: water, HUD, damage over time, the time scale, power-ups, observer and
+    /// death thinks.
+    Rules,
+    /// `CTSStunt::Play`, `Jump`/`Duck`, the fall speed, `UpdatePlayerState`.
+    Stunt,
+    /// The node learning (mp.dll 0x1005fed2).
+    NodeLearn,
+    /// The weapon timers and the melee-bar regeneration (TS: PreThink's opening timer block,
+    /// gated on `IsAlive`).
+    Weapons,
+    /// `rules::pre_think_end`: the end of spawn protection, then the delayed suicide, which is
+    /// the very last thing TS's PreThink does (mp.dll 0x1006001a). Everything else in the frame
+    /// still sees the player alive (issue #155).
+    End,
+}
+
+const PRE_THINK: [PreThinkStep; 5] =
+    [PreThinkStep::Rules, PreThinkStep::Stunt, PreThinkStep::NodeLearn, PreThinkStep::Weapons, PreThinkStep::End];
 
 /// `CBasePlayer::Spawn`'s flags (0x8f5f7..0x8f61a): `flags &= FL_PROXY` (an HLTV proxy keeps
 /// the engine's mark, issue #50), `|= FL_CLIENT`, and `FL_FAKECLIENT` when `m_bIsBot` is set.
@@ -261,5 +289,17 @@ mod tests {
         assert_eq!(spawn_flags(proxy, false), (FL_PROXY | FL_CLIENT) as i32, "HLTV proxy");
         assert_eq!(spawn_flags(FL_ONGROUND as i32, true), (FL_CLIENT | FL_FAKECLIENT) as i32, "TS bot");
         assert_eq!(spawn_flags(0, false), FL_CLIENT as i32);
+    }
+
+    #[test]
+    fn delayed_suicide_is_pre_thinks_last_step() {
+        // mp.dll PreThink: ... UpdatePlayerState, node learning (0x1005fed2), CheckForWires,
+        // end of spawn protection, kick timer, ..., delayed suicide (0x1006001a), return.
+        let pos = |s| PRE_THINK.iter().position(|&x| x == s).unwrap();
+        assert_eq!(PRE_THINK.last(), Some(&PreThinkStep::End), "the suicide ends PreThink");
+        assert!(pos(PreThinkStep::Stunt) < pos(PreThinkStep::End), "stunt work sees the living player");
+        assert!(pos(PreThinkStep::NodeLearn) < pos(PreThinkStep::End), "a node is learnt on the suicide frame");
+        assert!(pos(PreThinkStep::Weapons) < pos(PreThinkStep::End), "the melee bar regenerates on the suicide frame");
+        assert!(pos(PreThinkStep::Stunt) < pos(PreThinkStep::NodeLearn), "UpdatePlayerState before the learning");
     }
 }
