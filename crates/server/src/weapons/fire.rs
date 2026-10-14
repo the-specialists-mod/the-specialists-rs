@@ -127,7 +127,7 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
         if real {
             bullets::fire(shooter, src, dir, shot.damage, shot.ammo, shot.weapon, shot.btype);
             let (end, fraction) = LAST_TRACE.0.get();
-            bubble_trail(src, end, (spread::MAX_RANGE * fraction / 64.0).round_ties_even() as i32);
+            bubble_trail(src, end, bubble_count(spread::MAX_RANGE, fraction));
             continue;
         }
         let end = spread::ma(src, spread::MAX_RANGE, dir);
@@ -144,7 +144,7 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
                 left *= 0.5;
             }
         }
-        bubble_trail(src, tr.vecEndPos, (spread::MAX_RANGE * tr.flFraction / 64.0).round_ties_even() as i32);
+        bubble_trail(src, tr.vecEndPos, bubble_count(spread::MAX_RANGE, tr.flFraction));
         last = Some((tr, dir));
     }
     if real {
@@ -225,7 +225,7 @@ fn pierce_shot(shooter: *mut edict_t, src: Vec3, dir: Vec3, dmg: f32) {
         bullet_trace_attack(shooter, &tr, amount, dir, DMG_BULLET_TS);
         projectiles::report_damage(|| format!("damage(piercing):{amount:.6}\n"));
     }
-    bubble_trail(src, tr.vecEndPos, (tr.flFraction * 4096.0 / 64.0).round_ties_even() as i32);
+    bubble_trail(src, tr.vecEndPos, bubble_count(4096.0, tr.flFraction));
     damage::multi::apply(shooter, shooter);
 }
 
@@ -252,6 +252,14 @@ fn water_level(pos: Vec3, mut minz: f32, mut maxz: f32) -> f32 {
     z
 }
 
+/// `ShootBulletsPlayer`'s bubble count, `(int)(range * fraction * 0.015625)`: the pellets' and
+/// simulated bullets' `(float)ammo.range` (8192 for every ammo, 0x6ffcf..0x6fffb) and the
+/// penetration's `4096.0f` (0x6fa5a..0x6fa85). The product is exact on the x87 (at most 48 bits)
+/// and `(int)` truncates (`fistp` under chop; mp.dll `__ftol`), issue #80.
+fn bubble_count(range: f32, fraction: f32) -> i32 {
+    (f64::from(range) * f64::from(fraction) * 0.015625).trunc_i32()
+}
+
 /// `UTIL_BubbleTrail` 0xee93c: a `TE_BUBBLETRAIL` along a bullet's path when either end is at
 /// least 8 units under water. `count` is capped at 255.
 fn bubble_trail(from: Vec3, to: Vec3, count: i32) {
@@ -274,6 +282,18 @@ mod precision_tests {
 
     fn f(b: [u32; 3]) -> [f32; 3] {
         b.map(f32::from_bits)
+    }
+
+    /// The bubble count truncates (issue #80): 0.30859375 of 8192 units is 39.5, which the old
+    /// ties-even rounding sent as 40, and 0.996 is 127.488 (was 127, but 0.9 of 4096 → 57.6 was 58).
+    #[test]
+    fn bubble_count_truncates() {
+        assert_eq!(bubble_count(spread::MAX_RANGE, 0.3), 38);
+        assert_eq!(bubble_count(spread::MAX_RANGE, 0.308_593_75), 39);
+        assert_eq!(bubble_count(spread::MAX_RANGE, 0.996), 127, "127.488");
+        assert_eq!(bubble_count(4096.0, 0.996), 63, "the penetration's 63.744");
+        assert_eq!(bubble_count(4096.0, 0.9), 57, "57.6");
+        assert_eq!(bubble_count(4096.0, 1.0), 64);
     }
 
     fn b(v: [f32; 3]) -> [u32; 3] {

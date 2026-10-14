@@ -2142,7 +2142,8 @@ impl Gun {
             if info.akimbo == -1 {
                 let k = self.kind();
                 if k == kind::AKIMBO || k == kind::AKIMBO_ONLY {
-                    let half = (clip as f32 * 0.5).round_ties_even() as i32;
+                    // `(int)(clip * 0.5)`, truncated (0x8144b, 0x814c1, 0x814f0); `clip` is even.
+                    let half = (f64::from(clip) * 0.5).trunc_i32();
                     let st = self.cur();
                     st.left = half;
                     st.right = half;
@@ -2152,7 +2153,8 @@ impl Gun {
                 }
             } else {
                 let tw = &mut self.status[info.akimbo as usize];
-                tw.clip = (clip as f32 * 0.5 + tw.clip as f32).round_ties_even() as i32;
+                // `(int)(clip * 0.5 + pair.clip)`, truncated (0x8153b).
+                tw.clip = (f64::from(clip) * 0.5 + f64::from(tw.clip)).trunc_i32();
                 tw.left = clip;
             }
             Some(0)

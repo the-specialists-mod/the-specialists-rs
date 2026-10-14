@@ -126,9 +126,12 @@ impl ActItems {
     }
 }
 
-/// `KFuPower` (1): kung-fu power as a signed char, `round(bar)`.
+/// `KFuPower` (1): kung-fu power as a signed char, `(int)bar`: `CTSGun::UpdateClientData`
+/// (0x858c8) truncates the stored `float` (`fistp` under chop at 0x85ae5; mp.dll `__ftol`),
+/// issue #80.
 pub fn write_kfu_power(w: &mut impl MsgSink, bar: f32) {
-    w.char(bar.round_ties_even() as i32);
+    use crate::pm::Num;
+    w.char(f64::from(bar).trunc_i32());
 }
 pub fn read_kfu_power(b: &[u8]) -> Option<i8> {
     Reader::new(b).char()
@@ -301,6 +304,9 @@ mod tests {
         let mut b = Vec::new();
         write_kfu_power(&mut b, 66.5);
         assert_eq!(read_kfu_power(&b), Some(66));
+        let mut b = Vec::new();
+        write_kfu_power(&mut b, 66.7);
+        assert_eq!(read_kfu_power(&b), Some(66), "truncated, as TS sends it (the port rounded to 67)");
     }
 
     #[test]

@@ -180,7 +180,8 @@ fn spray_step(frames: i32, frame: f32) -> SprayStep {
     if frames == -1 {
         SprayStep::Lambda
     } else {
-        SprayStep::Frame { frame: frame.round_ties_even() as i32, more: frame < (frames - 1) as f32 }
+        // `(int)pev->frame`, truncated (0xdb2eb, `fistp` under chop), issue #80.
+        SprayStep::Frame { frame: shared::pm::Num::trunc_i32(f64::from(frame)), more: frame < (frames - 1) as f32 }
     }
 }
 
@@ -414,6 +415,8 @@ mod tests {
         assert_eq!(spray_step(3, 0.0), SprayStep::Frame { frame: 0, more: true });
         assert_eq!(spray_step(3, 1.0), SprayStep::Frame { frame: 1, more: true });
         assert_eq!(spray_step(3, 2.0), SprayStep::Frame { frame: 2, more: false });
+        // `(int)frame` truncates (the port rounded 1.5 to 2).
+        assert_eq!(spray_step(3, 1.5), SprayStep::Frame { frame: 1, more: true });
         assert_eq!(spray_step(1, 0.0), SprayStep::Frame { frame: 0, more: false });
         // A custom spray of 0 frames can't happen (`SetCustomDecalFrames`), but TS would spray
         // frame 0 once.

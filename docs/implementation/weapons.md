@@ -243,8 +243,8 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   `mult = GetBulletVelocityMult(s, bt)`: `s` is the shooter's slow-motion "others" amount
   (`pl+0x180`) while it's an activator, else `max(fuser1, 0.01)`; `bt` is the bullet-time flag
   (`pl+0x175`, `PlayerRules::btime`: slow pause, `ts_slowmotion` flag 4).
-* Bubble trails: every pellet sends `TE_BUBBLETRAIL` (src -> end, `round(8192 * fraction / 64)`
-  bubbles, the pierce shot `round(4096 * fraction / 64)`) when either end is at least 8 u under
+* Bubble trails: every pellet sends `TE_BUBBLETRAIL` (src -> end, `(int)(8192 * fraction / 64)`
+  bubbles, the pierce shot `(int)(4096 * fraction / 64)`, both truncated: issue #80) when either end is at least 8 u under
   water. End and fraction come from `ShootBulletsPlayer`'s static trace: a simulated bullet's
   pellet reuses the last hitscan trace of anyone, as in TS (`fire::LAST_TRACE`).
 * Slow motion of projectiles: grenades, knives (not while stuck in a wall) and falling
@@ -401,7 +401,7 @@ kung fu / 0x12, an index into that weapon's set A).
 Messages: `WeaponInfo` (B id, B clip, S reserve, B mode, B items; kung fu: B 0, B bar, 0,0,0),
 `WStatus` (B id, B owned, B clip; when the owned flag changes and for the akimbo/single twin
 with each `WeaponInfo`), `ActItems` (ALL: B entindex, B active | 0x40 akimbo) and `TSSpace`
-(B free; both sent by `player::hud`, from `CBasePlayer::UpdateClientData`), `KFuPower` (C round(bar)), `CurWeapon` (0,0,0), `PlInfo` (ALL: B entindex,
+(B free; both sent by `player::hud`, from `CBasePlayer::UpdateClientData`), `KFuPower` (C `(int)bar`, truncated: 0x85ae5), `CurWeapon` (0,0,0), `PlInfo` (ALL: B entindex,
 B 0, B colour), `CustomWP` (string), `TSMBlur` (PVS, kung fu), `TSFrags` (explosion),
 `ScreenShake`, `TSFade`, `TSMessage` (custom weapons notice). `CurWeapon 0,0,0` goes out from
 `RemoveAllItems`: the first death think (not `Killed`) and `StartObserver`.

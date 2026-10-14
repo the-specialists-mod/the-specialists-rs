@@ -54,7 +54,9 @@ pub fn pick_up_weapon(p: &mut Player, cx: &mut Cx, id: u8, from: Option<&Status>
     }
     let Some(w) = info(id) else { return false };
     let Some(cost) = crate::gameplay::active().server.pick_up_cost(id, w, from) else { return false };
-    let after = (p.inv.sv.free_slots as f32 - cost).round_ties_even() as i32;
+    // `(int)(free - slots * clip)`, truncated (0x931d4..0x931ef: `fisubr`, `fistp` under chop);
+    // the operands are integers, so it is exact (issue #80).
+    let after = shared::pm::Num::trunc_i32(f64::from(p.inv.sv.free_slots) - f64::from(cost));
     if after < 0 {
         return false;
     }
