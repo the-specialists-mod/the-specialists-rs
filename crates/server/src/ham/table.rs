@@ -142,8 +142,9 @@ pub(crate) static DEFS: &[Def] = &[
         fires: Classes::None,
         exec: Classes::All,
         sig: sig::<(), i32>,
-        // `CBasePlayer::Classify` is `CLASS_PLAYER` (2); `CBaseEntity`'s `CLASS_NONE`.
-        run: |e, c, _, _| ret(c, Some(if is_player(e) { 2 } else { 0 })),
+        // TS's `Classify` overrides: `CLASS_PLAYER` (2) for a player, `CBaseEntity`'s `CLASS_NONE`
+        // for most classes.
+        run: |e, c, _, _| ret(c, Some(crate::entities::classify(e))),
     },
     Def {
         ham: id::TRACEATTACK,

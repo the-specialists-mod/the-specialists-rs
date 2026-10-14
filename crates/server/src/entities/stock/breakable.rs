@@ -261,6 +261,12 @@ impl<const PUSH: bool> Default for Breakable<PUSH> {
 pub type FuncBreakable = Breakable<false>;
 pub type FuncPushable = Breakable<true>;
 
+/// `m_Material` of a `func_breakable` or `func_pushable` (`CBreakable::DamageDecal` reads it),
+/// `None` for any other edict or one whose object is out for a dispatch further up the stack.
+pub fn material_of(e: *mut edict_t) -> Option<i32> {
+    world::with::<FuncBreakable, _>(e, |b| b.material).or_else(|| world::with::<FuncPushable, _>(e, |b| b.material))
+}
+
 impl<const PUSH: bool> Breakable<PUSH> {
     fn is_breakable(&self) -> bool {
         self.material != mat::UNBREAKABLE_GLASS

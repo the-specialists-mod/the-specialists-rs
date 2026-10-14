@@ -12,6 +12,7 @@ pub mod doors;
 pub mod drive;
 pub mod effects;
 pub mod explode;
+pub mod impact;
 pub mod items;
 pub mod levelchange;
 pub mod lights;

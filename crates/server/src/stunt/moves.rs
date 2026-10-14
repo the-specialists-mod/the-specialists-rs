@@ -591,74 +591,11 @@ fn go_roll(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
         let src = pev.origin;
         let end = [src[0], src[1], src[2] - 4000.0];
         let tr = engine().trace_line(src, end, IGNORE_MONSTERS | 0x100, cx.edict);
-        texture_type_play_sound(&tr, src, end);
+        crate::entities::stock::impact::texture_type_play_sound(&tr, src, end, 0);
     }
     p.stunt.roll_tap = 0.0;
     maybe_blur(cx, r, 9.0);
     true
-}
-
-/// `TEXTURETYPE_PlaySound(ptr, vecSrc, vecEnd, BULLET_NONE)` (0xe1330): the impact sound of
-/// the material `vecSrc -> vecEnd` hits, from the game's own table
-/// (`shared::pm::textures::texturetype`). Returns the decal volume, which `GoRoll` ignores.
-///
-/// TS first asks the hit entity's `Classify()` and plays flesh sounds for anything but
-/// `CLASS_NONE`/`CLASS_MACHINE`. The port has no `Classify`; the only caller traces with
-/// `ignore_monsters`, which only hits `SOLID_BSP` entities, and every TS class that can be
-/// one classifies as `CLASS_NONE` (0) or `CLASS_MACHINE` (`func_guntarget`), so the
-/// texture branch is the one TS takes.
-fn texture_type_play_sound(tr: &TraceResult, src: Vec3, end: Vec3) -> f32 {
-    use shared::pm::textures::texturetype;
-    let eng = engine();
-    let world = eng.entity_of_index(0);
-    let hit = if tr.pHit.is_null() { world } else { tr.pHit };
-    let entity = (!hit.is_null() && hit.has_private_data()).then_some(hit);
-    let name = eng.trace_texture(entity.unwrap_or(world), src, end).to_bytes();
-    let mut name = name;
-    if matches!(name.first(), Some(b'-' | b'+')) {
-        name = name.get(2..).unwrap_or(&[]);
-    }
-    if matches!(name.first(), Some(b'{' | b'!' | b'~' | b' ')) {
-        name = &name[1..];
-    }
-    let chtype = texturetype::find(&name[..name.len().min(15)]);
-    let mut attn = 0.8f32;
-    let (mut vol, mut volbar, samples): (f32, f32, &[&CStr]) = match chtype {
-        b'D' => (0.9, 0.1, &[c"player/pl_dirt1.wav", c"player/pl_dirt2.wav", c"player/pl_dirt3.wav"]),
-        b'F' => {
-            attn = 1.0;
-            (1.0, 0.2, &[c"weapons/bullet_hit1.wav", c"weapons/bullet_hit2.wav"])
-        }
-        b'G' => (0.9, 0.5, &[c"player/pl_grate1.wav", c"player/pl_grate4.wav"]),
-        b'M' => (0.9, 0.3, &[c"player/pl_metal1.wav", c"player/pl_metal2.wav"]),
-        b'P' | b'Y' => (0.8, 0.2, &[c"debris/glass1.wav", c"debris/glass2.wav", c"debris/glass3.wav"]),
-        b'S' => (0.9, 0.0, &[c"player/pl_slosh1.wav", c"player/pl_slosh3.wav", c"player/pl_slosh2.wav", c"player/pl_slosh4.wav"]),
-        b'T' => (0.8, 0.2, &[c"player/pl_tile1.wav", c"player/pl_tile3.wav", c"player/pl_tile2.wav", c"player/pl_tile4.wav"]),
-        b'V' => (0.5, 0.3, &[c"player/pl_duct1.wav", c"player/pl_duct1.wav"]),
-        b'W' => (0.9, 0.2, &[c"debris/wood1.wav", c"debris/wood2.wav", c"debris/wood3.wav"]),
-        _ => (0.9, 0.6, &[c"player/pl_step1.wav", c"player/pl_step2.wav"]),
-    };
-    let breakable = entity.is_some_and(|e| eng.string(e.v().classname).to_bytes() == b"func_breakable");
-    if breakable {
-        // `fvol /= 1.5` as `fvol * (2.0 / 3)`, a `double`; `fvolbar /= 2`.
-        vol = (vol as f64 * (2.0 / 3.0)) as f32;
-        volbar *= 0.5;
-    } else if chtype == b'P' && tr.flFraction != 1.0 && eng.random_long(0, 1) != 0 {
-        crate::entities::stock::explode::sparks(tr.vecEndPos);
-        let flvolume = eng.random_float(0.7, 1.0);
-        let spark = match eng.random_long(0, 1) {
-            0 => Some(c"buttons/spark5.wav"),
-            1 => Some(c"buttons/spark6.wav"),
-            _ => None,
-        };
-        if let Some(spark) = spark {
-            crate::entities::stock::sentences::emit_ambient(world, tr.vecEndPos, spark, flvolume, 0.8, 0, 100);
-        }
-    }
-    let pitch = 96 + eng.random_long(0, 0xf);
-    let sample = samples[eng.random_long(0, samples.len() as i32 - 1).clamp(0, samples.len() as i32 - 1) as usize];
-    crate::entities::stock::sentences::emit_ambient(world, tr.vecEndPos, sample, vol, attn, 0, pitch);
-    volbar
 }
 
 /// `CloseAttack`'s gate (0x9c630..0x9c6b5): no recovery lock (`+0x04`) or close-combat cooldown

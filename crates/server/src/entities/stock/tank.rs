@@ -11,7 +11,7 @@
 
 use super::base::*;
 use super::drive;
-use super::effects::{Laser, Sprite, decal_trace, explosion_create};
+use super::effects::{Laser, Sprite, explosion_create};
 use super::explode::emit_sound_slow;
 use super::tracktrain::angle_distance;
 use crate::entities::fire_targets;
@@ -380,7 +380,7 @@ impl<const K: u8> FuncTank<K> {
                     let spread = self.spread();
                     for _ in 0..count {
                         if (1..=3).contains(&self.bullet_type) {
-                            fire_bullet(me, barrel_end, forward, spread, right, up, self.bullet_damage, attacker);
+                            fire_bullet(me, barrel_end, forward, spread, right, up, 5 + self.bullet_type, self.bullet_damage, attacker);
                         }
                     }
                 }
@@ -676,9 +676,20 @@ fn tank_trace(me: *mut edict_t, start: Vec3, forward: Vec3, spread: Vec3, right:
 }
 
 /// One shot of TS `CBaseEntity::FireBullets` (0xb39a4) as `func_tank` calls it: monster bullet
-/// type, a tracer on every shot, `bullet_damage` (or TS's zero monster damage) to what it hits.
+/// type `bullet_type` (`BULLET_MONSTER_9MM` 6, `_MP5` 7, `_12MM` 8), a tracer on every shot, `bullet_damage`
+/// (or TS's zero monster damage) to what it hits, then its impact sound and decal.
 #[allow(clippy::too_many_arguments)]
-fn fire_bullet(me: *mut edict_t, src: Vec3, forward: Vec3, spread: Vec3, right: Vec3, up: Vec3, damage: i32, attacker: *mut edict_t) {
+fn fire_bullet(
+    me: *mut edict_t,
+    src: Vec3,
+    forward: Vec3,
+    spread: Vec3,
+    right: Vec3,
+    up: Vec3,
+    bullet_type: i32,
+    damage: i32,
+    attacker: *mut edict_t,
+) {
     use crate::damage::bits;
     use crate::damage::multi;
     let eng = engine();
@@ -687,7 +698,8 @@ fn fire_bullet(me: *mut edict_t, src: Vec3, forward: Vec3, spread: Vec3, right: 
     multi::clear();
     multi::set_type(0x1002);
     let dir = spread_dir(forward, spread, right, up);
-    let tr = eng.trace_line(src, vec::mad(src, dir, 4096.0), DONT_IGNORE_MONSTERS, me);
+    let end = vec::mad(src, dir, 4096.0);
+    let tr = eng.trace_line(src, end, DONT_IGNORE_MONSTERS, me);
     te_begin(MSG_PAS, Some(src), te::TRACER).vec3(src).vec3(tr.vecEndPos).end();
     if tr.flFraction != 1.0 {
         let hit = if tr.pHit.is_null() { eng.entity_of_index(0) } else { tr.pHit };
@@ -704,9 +716,10 @@ fn fire_bullet(me: *mut edict_t, src: Vec3, forward: Vec3, spread: Vec3, right: 
         info.dir = dir;
         info.pos = tr.vecEndPos;
         crate::damage::trace_attack(hit, &info);
-        // DecalGunshot: `{shot1`..`{shot5` on brush entities and the world.
-        let n = eng.random_long(1, 5);
-        decal_trace(&tr, goldsrc::server::intern(&format!("{{shot{n}")));
+        // Every bullet type reaches `LAB_000b40a0` (0xb40a0): the 12mm's skip needs a tracer
+        // frequency other than 1.
+        super::impact::texture_type_play_sound(&tr, src, end, bullet_type);
+        super::impact::decal_gunshot(&tr, bullet_type);
     }
     // `UTIL_BubbleTrail(vecSrc, tr.vecEndPos, (int)(flDistance * tr.flFraction / 64.0))` for every
     // shot, hit or miss (0xa42b9..0xa42f3; issue #89).

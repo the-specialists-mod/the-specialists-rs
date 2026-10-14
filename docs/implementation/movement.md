@@ -159,7 +159,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | `HandleStunt` / `HandleDive` / `Landing` / `HandleWheel` / `HandleSlide` / `HandleWallJump` / `HandleWallClimb` | 0x9b000 ... 0x9b9f8 | same names (snake case); wall landings share `land_wall_stunt` |
 | `GoWheel` / `GoRoll` | 0x9c9bc / 0x9cfe8 | `go_wheel`, `go_roll` |
 | `CloseAttack` (jump kick) | 0x9c630 | `moves::close_attack` (gate `close_attack_allowed`, move `close_attack_anim`); the kick itself is `weapons::jump_kick` (weapons.md), its strength `spread::jump_kick_strength` |
-| `TEXTURETYPE_PlaySound` (roll with `FREEZE_ANGLES`, dead in TS) | 0xe1330 | `moves::texture_type_play_sound` |
+| `TEXTURETYPE_PlaySound` (roll with `FREEZE_ANGLES`, dead in TS; also `func_tank` bullets) | 0xe1330 | `entities::stock::impact::texture_type_play_sound` |
 | `TEXTURETYPE_Init` / `LoadStandardMaterials` / `LoadMapMaterials` / `Find` | 0xe1244 / 0xe0e14 / 0xe1014 / 0xe12c4 | `textures::texturetype::{init, find}` (`init` from `stunt::texture_type_init`, as TS's `CWorld::Precache`) |
 | `CheckForBreakables` | 0x9bd9c | `check_for_breakables` |
 | `CBasePlayer::Jump` / `Duck` | 0x92864 / 0x927fc | `moves::jump`, `moves::duck` |

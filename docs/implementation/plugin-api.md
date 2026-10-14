@@ -368,7 +368,7 @@ so hooks don't fire. Everything else is `UNSUPPORTED`. Addresses are `ts_i386.so
 | 2 | `Keyvalue` | `Void_Int` | all | | `DispatchKeyValue`'s class part, after the entvars parser (SDK order). A superseding hook's `fHandled` counts. |
 | 3 | `ObjectCaps` | `Int_Void` | | all | `levelchange::ts_object_caps` (TS's caps by class, 0 for a name TS doesn't know) |
 | 4 | `Activate` | `Void_Void` | all | | `ServerActivate` |
-| 6 | `Classify` | `Int_Void` | | all | 2 (`CLASS_PLAYER`) for players, else 0 |
+| 6 | `Classify` | `Int_Void` | | all | `entities::classify`: TS's value by class (2 `CLASS_PLAYER` for players, 1 `func_guntarget`, 4 `monster_hevsuit_dead`, 99 `xen_tree` / `xen_hull`, else 0) |
 | 8 | `TraceAttack` | `Void_Entvar_Float_Vector_Trace_Int` | all | | `damage::trace_attack` (bullets, melee, explosions, thrown and falling objects). The trace carries `iHitgroup`, `vecEndPos` and `pHit`; changes to the attacker, damage, direction, bits, hit group and end position are used. |
 | 9 | `TakeDamage` | `Int_Entvar_Entvar_Float_Int` | all | | `damage::apply`, `ApplyMultiDamage` (`damage::multi::apply`) |
 | 10 | `TakeHealth` | `Int_Float_Int` | all | | `items::take_health` (kits, chargers, healing doors, negative `trigger_hurt`, `game_player_hurt`), a player's time-based healing (inner) |

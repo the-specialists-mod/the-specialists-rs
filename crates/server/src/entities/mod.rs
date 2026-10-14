@@ -11,6 +11,31 @@ use goldsrc::sys::*;
 use std::ffi::CStr;
 use stock::base::{kv_f, kv_i, kv_vec};
 
+/// `Classify()` (vtable +0x4c). TS overrides `CBaseEntity::Classify` (0xac65c, `CLASS_NONE`) in
+/// five classes, none of them derived from: `CBasePlayer` (0xd9e10, `CLASS_PLAYER`),
+/// `CGunTarget` (0xd7d7c, `CLASS_MACHINE`), `CDeadHEV` (0xde5ac, `CLASS_HUMAN_PASSIVE`) and
+/// `CXenTree` / `CXenHull` (0xf7130 / 0xf72ac, `CLASS_BARNACLE`). A constant per class, so it
+/// goes by the classname, as `ts::object_caps` does.
+pub fn classify(e: *mut edict_t) -> i32 {
+    if crate::rules::has_player(e) {
+        return 2;
+    }
+    if e.is_null() || e.is_free() {
+        return 0;
+    }
+    classify_class(engine().string(e.v().classname).to_bytes())
+}
+
+/// [`classify`] of a non-player classname.
+fn classify_class(class: &[u8]) -> i32 {
+    match class {
+        b"func_guntarget" => 1,
+        b"monster_hevsuit_dead" => 4,
+        b"xen_tree" | b"xen_hull" => 99,
+        _ => 0,
+    }
+}
+
 /// Exports `$class(entvars_t*)` for each classname, creating a `$ty` on the edict.
 macro_rules! link_entities {
     ($($class:ident => $ty:ty),* $(,)?) => {
@@ -499,6 +524,19 @@ pub fn base_killed(cx: &mut world::Cx) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    /// TS's `Classify` overrides by class; `func_breakable` and the rest are `CLASS_NONE`, so
+    /// `TEXTURETYPE_PlaySound` reads their texture.
+    #[test]
+    fn classify_by_class() {
+        assert_eq!(classify_class(b"func_guntarget"), 1);
+        assert_eq!(classify_class(b"monster_hevsuit_dead"), 4);
+        assert_eq!(classify_class(b"xen_tree"), 99);
+        assert_eq!(classify_class(b"xen_hull"), 99);
+        for class in [&b"func_breakable"[..], b"func_tank", b"worldspawn", b"ts_groundweapon", b"cycler"] {
+            assert_eq!(classify_class(class), 0);
+        }
+    }
 
     /// mp.dll's `CBaseEntity::TakeDamage`: the attack direction sums `y, z, x` with the length
     /// unrounded, and the push stores `force · dir` before adding it. The old arithmetic gave
