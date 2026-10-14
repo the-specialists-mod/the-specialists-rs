@@ -304,7 +304,10 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             super::add_frags(victim, Some(p), -5.0);
             ts_message_all(GREEN, 1, 30, &format!("{vname}, #TS_SpecialistSuicide"));
         }
-        super::add_frags(victim, Some(p), -1.0);
+        match frag_loser(suicide) {
+            FragLoser::Victim => super::add_frags(victim, Some(p), -1.0),
+            FragLoser::Killer => super::add_frags(attacker, None, -1.0),
+        }
     } else if let Some(mut k) = killer {
         let kname = netname(k.e);
         let kv = k.e.v();
@@ -457,6 +460,20 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
     if state::teamplay() {
         teams::recount(false);
     }
+}
+
+/// Whose `frags` a death no player scored lowers by one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FragLoser {
+    Victim,
+    Killer,
+}
+
+/// TS takes the frag off `pKiller` (0x8aedc: `pKiller->frags -= 1`, the HL SDK's "killed by the
+/// world" branch), which is the victim only for a suicide: a fall, a `trigger_hurt`, a door or a
+/// barrel lowers the world's or the trigger's `frags`, and the victim keeps its own.
+fn frag_loser(suicide: bool) -> FragLoser {
+    if suicide { FragLoser::Victim } else { FragLoser::Killer }
 }
 
 /// `DoSpectacularNess` (0x76b48): whether a frag or an explosion creates the "spectacular"
@@ -756,8 +773,8 @@ pub fn broadcast_score(e: *mut edict_t) {
 #[cfg(test)]
 mod tests {
     use super::{
-        KillTags, Snapshot, kung_fu_frag, log_id, log_weapon, own_weapon_name, rename_weapon, spectacular_roll, victims_gun,
-        weapon_info_name,
+        FragLoser, KillTags, Snapshot, frag_loser, kung_fu_frag, log_id, log_weapon, own_weapon_name, rename_weapon, spectacular_roll,
+        victims_gun, weapon_info_name,
     };
     use goldsrc::sys::edict_t;
     use shared::weapons::{id, tables};
@@ -855,6 +872,13 @@ mod tests {
         assert!(kung_fu_frag(&close, Some(12)));
         assert!(!kung_fu_frag(&none, Some(12)), "a knife or katana slash is no kung-fu frag");
         assert!(!kung_fu_frag(&Snapshot { weapon_id: 12, ..close }, Some(0)), "a simulated bullet");
+    }
+
+    #[test]
+    fn a_world_death_costs_the_killer_not_the_victim() {
+        // Issue #118: a fall or a trigger lowers the world's frags; only a suicide the victim's.
+        assert_eq!(frag_loser(false), FragLoser::Killer);
+        assert_eq!(frag_loser(true), FragLoser::Victim);
     }
 
     #[test]
