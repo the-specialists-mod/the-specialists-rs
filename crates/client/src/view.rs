@@ -1531,7 +1531,7 @@ pub fn fade_color(ts: f32, slowfade: bool, fade: Option<(f32, state_fade::Fade)>
 /// replaced, so its speed and end times stay the engine's.
 fn write_screen_fade(time: f32) {
     let ts = state::with(|s| s.time_scale);
-    // A ruleset without the tint (2.1: no `cl_slowfade`, issue #152) keeps the `TSFade` blend.
+    // A ruleset without the tint (`ClientRules::slowmo_tint`, issue #152) keeps the `TSFade` blend.
     let slowfade = crate::gameplay::current().slowmo_tint() && cv(|c| c.slowfade) != 0.0;
     let fade = with(|w| w.fade);
     let c = fade_color(ts, slowfade, fade, time);
