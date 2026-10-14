@@ -280,6 +280,7 @@ The hooks so far:
 | `ServerRules` | `pick_up_cost(id, w, from)` | `weapons::pick_up_cost`: `None` (refused) for the akimbo pair of a single gun, else `slots`, × the count for a dropped stack | `weapons/inventory.rs` `pick_up_weapon` |
 | `ServerRules` | `dead_grenades_become_powerups()` | `!weapons::grenade_buys()` (`m_mode < 2`: always) | `weapons/inventory.rs` `drop_weapon` |
 | `ServerRules` | `drop_lifetime_and_glow()` | true: `drop`/disarm gives `clamp(2 × weaponstay, 10, 120)` and the dropper's glow | `weapons/worldgun.rs` `set_drop_lifetime` (from `inventory.rs` `drop_weapon`) |
+| `ServerRules` | `stack_drop_count(held, disarm)` | the whole stack, one on a disarm (`DropWeapon` 0x94900) | `weapons/inventory.rs` `drop_weapon` |
 | `ServerRules` | `world_gun_fall_impact()` | true: `Fall`'s 0.1 s look-ahead trace hurts what it hits | `weapons/worldgun.rs` `WorldGun::think` |
 | `ServerRules` | `world_gun_touch(gun, attacker, id, other)` | nothing | `weapons/worldgun.rs` `WorldGun::touch` (flying) |
 | `ServerRules` | `ammo_pack_stays_when_nothing_fits()` | false: the touch removes the pack | `weapons/worldgun.rs` `AmmoPack::touch` |

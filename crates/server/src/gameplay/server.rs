@@ -191,6 +191,13 @@ pub trait ServerRules: Sync {
         true
     }
 
+    /// `DropWeapon`'s stack branch (0x94900, the knives' `stack` flag): how many of the `held`
+    /// stacked weapons one drop throws (as one world gun, charging back `slots` each). 3.0: the
+    /// whole stack, but one on a disarm.
+    fn stack_drop_count(&self, held: i32, disarm: bool) -> i32 {
+        if disarm { 1 } else { held }
+    }
+
     /// `CTSWorldGun::Fall` (0xa0d84): whether a flying dropped gun traces 0.1 s ahead and hurts a
     /// non-player it hits for `speed × slots × 0.001` (`DMG_NEVERGIB | DMG_CLUB`) when its health
     /// is at most `speed × slots`. 3.0: true.

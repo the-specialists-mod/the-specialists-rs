@@ -266,9 +266,7 @@ pub fn drop_weapon(p: &mut Player, cx: &mut Cx, which: Drop) {
         }
     } else {
         let mut s = p.inv.gun.status[target as usize];
-        if disarm {
-            s.clip = 1;
-        }
+        s.clip = crate::gameplay::active().server.stack_drop_count(s.clip, disarm);
         let n = s.clip;
         thrown = throw_weapon(p, cx, target, s, None);
         p.inv.sv.free_slots += w.slots * n;

@@ -177,6 +177,13 @@ impl ServerRules for Ts21Server {
         false
     }
 
+    /// `DropWeapon`'s stack branch (FUN_10056080, `info+0xd4`: the two knives) copies the status
+    /// with `clip = 1` and throws it: one knife per drop, disarm or not, so `Killed`'s per-id drop
+    /// leaves one knife by a corpse (issue #166).
+    fn stack_drop_count(&self, _held: i32, _disarm: bool) -> i32 {
+        1
+    }
+
     /// `CTSWorldGun::Fall` (0x10065550) has no impact trace ([`worldgun::touch`] instead).
     fn world_gun_fall_impact(&self) -> bool {
         false
@@ -443,6 +450,8 @@ mod tests {
         assert!(!p.dead_grenades_become_powerups(), "a corpse drops one M61");
         assert!(CORE.dead_grenades_become_powerups(), "3.0's m_mode < 2: power-ups");
         assert!(!p.drop_lifetime_and_glow() && CORE.drop_lifetime_and_glow());
+        assert_eq!([p.stack_drop_count(3, false), p.stack_drop_count(3, true), p.stack_drop_count(1, false)], [1, 1, 1]);
+        assert_eq!([CORE.stack_drop_count(3, false), CORE.stack_drop_count(3, true), CORE.stack_drop_count(1, false)], [3, 1, 1]);
         assert!(!p.world_gun_fall_impact() && CORE.world_gun_fall_impact());
         assert!(p.ammo_pack_stays_when_nothing_fits() && !CORE.ammo_pack_stays_when_nothing_fits());
     }
