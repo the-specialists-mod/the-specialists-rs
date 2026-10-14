@@ -55,10 +55,15 @@ pub trait GunRules: MeleeRules + Sync {
     /// The recoil penalty's decay in one think ([`SpreadDecay`]): TS 3.0's `PreThink` (0x80d88)
     /// while alive, and the client's `HUD_WeaponsPostThink` (`0x100040a5`) on a first prediction,
     /// both `pen -= step * 0.1` by the frame's timer step.
-    fn decay_spread(&self, gun: &mut Gun, d: &SpreadDecay) {
+    ///
+    /// Returns whether the client's crosshair copy of the penalty (`0x1018d188`) takes the gun's
+    /// penalty at the end of this prediction (the server ignores it): TS 3.0 copies it on every
+    /// first prediction (`0x100040dc..`), so always.
+    fn decay_spread(&self, gun: &mut Gun, d: &SpreadDecay) -> bool {
         if d.alive {
             gun.decay_spread(d.arith, d.step);
         }
+        true
     }
 
     /// The offset of pellet `i` (1-based) of a shot with random seed `seed`, in units of its
@@ -253,7 +258,8 @@ mod tests {
         let mut want = g.clone();
         want.decay_spread(Arith::Msvc, 0.01);
         let d = SpreadDecay { arith: Arith::Msvc, step: 0.01, time: 99.0, time_scale: 0.5, alive: true };
-        CORE.decay_spread(&mut g, &d);
+        // The crosshair's copy follows the penalty on every first prediction.
+        assert!(CORE.decay_spread(&mut g, &d));
         assert_eq!(g, want);
         CORE.decay_spread(&mut g, &SpreadDecay { alive: false, ..d });
         assert_eq!(g, want);

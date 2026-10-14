@@ -10,3 +10,6 @@ license.workspace = true
 ts21-gameplay = { path = ".." }
 ts-client     = { path = "../../client" }
 goldsrc       = { path = "../../goldsrc", features = ["client"] }
+
+[dev-dependencies]
+shared        = { path = "../../shared" }

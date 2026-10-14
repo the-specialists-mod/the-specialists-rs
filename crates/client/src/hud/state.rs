@@ -663,6 +663,11 @@ impl Hud {
                 let info_id = if (0..MAX_WEAPONS as i32).contains(&self.weapon) { self.weapon } else { 0 };
                 let t = self.ammo_type(info_id);
                 self.reserve[t] = v.reserve as i32;
+                if v.id == 0
+                    && let Some(power) = crate::gameplay::hud_rules(self.gameplay).kungfu_power_from_weapon_info(v.clip)
+                {
+                    self.kfu_power = power;
+                }
                 self.firemode = v.mode;
                 self.attachments = v.attachments as u32;
                 if self.weapon >= 1

@@ -50,13 +50,20 @@ impl GunRules for Ts21 {
     /// `pen -= (now - last) / T * 0.1` when `pen > 0` and `last <= now`, clamped at 0; `last = now`
     /// every think. `T` is the server player's `fuser1`'s, or the HUD's `TSSlowMo` on the client.
     /// There is no double-fire-rate factor.
-    fn decay_spread(&self, gun: &mut Gun, d: &SpreadDecay) {
-        if d.alive && gun.spread_penalty > 0.0 && gun.decay_time <= d.time {
+    ///
+    /// The crosshair's copy of the penalty (client `0x1031bf04`) is written only inside that
+    /// branch, with the decayed penalty (`0x10018dae`; issue #111): when the penalty is 0 (or
+    /// NaN), or the time went back, it keeps its last value. Spawning and `Spectator` zero it
+    /// with the penalty (`0x10026282`, as 3.0's `0x1000b9d0`).
+    fn decay_spread(&self, gun: &mut Gun, d: &SpreadDecay) -> bool {
+        let decays = d.alive && gun.spread_penalty > 0.0 && gun.decay_time <= d.time;
+        if decays {
             let elapsed = d.time - gun.decay_time;
             let v = gun.spread_penalty as f64 - elapsed as f64 / slow_div(d.time_scale) * 0.1;
             gun.spread_penalty = if v < 0.0 { 0.0 } else { v as f32 };
         }
         gun.decay_time = d.time;
+        decays
     }
 
     /// HL's triangle pattern (`ShootBulletsPlayer` 0x1003fd40, client `FUN_1007c190`): pellet `i`

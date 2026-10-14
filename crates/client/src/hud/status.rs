@@ -234,12 +234,16 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
         return;
     }
     let e = engine();
-    let hud = dc.hud;
+    let look = crate::gameplay::hud_rules(h.gameplay).status_look();
+    let mut hud = dc.hud;
     let (w, ht) = (dc.w(), dc.h());
     let mut y = ht - 0x30;
     dc.fill(8, y, 0x7f, 0x27, hud, 0xf);
     let stance = dc.g.ts.stance[(h.stance as usize).min(2)];
-    if stance != 0 {
+    if stance != 0 && !look.stance_health_fill {
+        e.spr_set(stance, half(hud));
+        e.spr_draw_additive(0, 8, y - 4, None);
+    } else if stance != 0 {
         let sh = e.spr_height(stance, 0);
         let sw = e.spr_width(stance, 0);
         let hp = (h.health as i32).min(100);
@@ -259,7 +263,12 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
     dc.spr(dc.g.ts.health, 0x68, y, hp_rgb);
     if h.armor != 0 {
         let rgb = if h.armor < 50 { RED } else { half(hud) };
-        dc.spr(dc.g.ts.kevlar, 0x48, y + 0x14, rgb);
+        if look.armor_number {
+            dc.number(0x48, y + 0x18, num::DIGITS_3 | num::DRAW_ZERO, h.armor as i32, rgb);
+            dc.spr(dc.g.ts.kevlar, 0x68, y + 0x14, rgb);
+        } else {
+            dc.spr(dc.g.ts.kevlar, 0x48, y + 0x14, rgb);
+        }
     }
     // Team bar (teamplay).
     y -= 0x14;
@@ -268,10 +277,16 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
         && let Some(p) = usize::try_from(me.index).ok().and_then(|i| h.players.get(i))
     {
         // `iTeamColors[team]` (`0x1004a748`); guarded: TS indexes past the five entries.
-        let t = crate::menus::widgets::TEAM_COLORS;
-        let c = t[(p.team.max(0) as usize).min(t.len() - 1)].map(i32::from);
-        dc.fill(8, y, 0x7f, 0x13, c, 0x23);
-        dc.string(10, y, &p.teamname, c);
+        if let Some(a) = look.team_bar_scale {
+            dc.fill(8, y, 0x7f, 0x13, hud, 0x23);
+            hud = scale_colors_float(hud, a);
+            dc.string(10, y, &p.teamname, hud);
+        } else {
+            let t = crate::menus::widgets::TEAM_COLORS;
+            let c = t[(p.team.max(0) as usize).min(t.len() - 1)].map(i32::from);
+            dc.fill(8, y, 0x7f, 0x13, c, 0x23);
+            dc.string(10, y, &p.teamname, c);
+        }
     }
     // Free slots and credits.
     let mut y = ht - 0x1c;
@@ -279,16 +294,18 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
     dc.fill(x, y, 0x7f, 0x13, hud, 0xf);
     let rgb = if h.slots == 0 { RED } else { half(hud) };
     let nx = dc.number(x + 8, y + 2, num::DIGITS_2 | num::DRAW_ZERO, h.slots as i32, rgb);
-    dc.string(nx + 8, y, &localise("#HUD_FreeSlots"), rgb);
+    let (slots_label, credits_label) =
+        look.labels.map_or_else(|| (localise("#HUD_FreeSlots"), localise("#HUD_Credits")), |(s, c)| (s.to_owned(), c.to_owned()));
+    dc.string(nx + 8, y, &slots_label, rgb);
     if h.gamemode > 1 || h.cashbased != 0 {
         y -= 0x14;
         dc.fill(x, y, 0x7f, 0x13, hud, 0xf);
         let rgb = if h.cash < 1000 { RED } else { half(hud) };
         let nx = dc.number(x, y + 2, num::DIGITS_5 | num::DRAW_ZERO, h.cash, rgb);
-        dc.string(nx + 8, y, &localise("#HUD_Credits"), rgb);
+        dc.string(nx + 8, y, &credits_label, rgb);
     }
     // `0x1004aa4e`, `0x1004aad2`: the HUD colour × 2/3.
-    let icon = hud.map(|c| ftol(c as f64 * 0.666_666_666_666_666_6));
+    let icon = if look.icons_divide { hud.map(|c| ftol(c as f64 / 1.5)) } else { hud.map(|c| ftol(c as f64 * 0.666_666_666_666_666_6)) };
     if h.kungfu_icon {
         dc.spr(dc.g.ts.kungfu, w / 2 - 0x30, ht - 0x38, icon);
     }
@@ -296,7 +313,8 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
         dc.spr(dc.g.ts.movement, w / 2, ht - 0x38, icon);
     }
     if crate::gameplay::hud_rules(h.gameplay).slowmo_icon() {
-        draw_slowmo_icon(dc);
+        // 2.1 reads the panel's colour, scaled by the team bar.
+        draw_slowmo_icon(dc, hud);
     }
 }
 
@@ -305,7 +323,7 @@ fn draw_status_panel(dc: &Dc, h: &Hud) {
 /// `TSSlowMo` is non-zero, `sprites/slowmotion.spr` additive at (w / 2 − 16, 16) in the HUD colour
 /// / 1.5, truncated. TS 2.1's status `Draw` tail (`0x10086651`; its other trigger, the
 /// `GloSlow` flag, is never sent).
-fn draw_slowmo_icon(dc: &Dc) {
+fn draw_slowmo_icon(dc: &Dc, hud: [i32; 3]) {
     if crate::state::with(|s| s.slowmo_factor100) == 0.0 {
         return;
     }
@@ -318,8 +336,15 @@ fn draw_slowmo_icon(dc: &Dc) {
     if spr == 0 {
         return;
     }
-    e.spr_set(spr, slowmo_icon_rgb(dc.hud));
+    e.spr_set(spr, slowmo_icon_rgb(hud));
     e.spr_draw_additive(0, dc.w() / 2 - 0x10, 0x10, None);
+}
+
+/// `ScaleColors(r, g, b, a)` as TS 2.1 has it (`0x10047e90`): `k = (float)(a / 255.0f)`, then
+/// `ftol(c × k)` per channel.
+pub(crate) fn scale_colors_float(c: [i32; 3], a: i32) -> [i32; 3] {
+    let k = (a as f64 / 255.0) as f32 as f64;
+    c.map(|v| ftol(v as f64 * k))
 }
 
 /// The slow-motion icon's colour: each HUD channel / 1.5, truncated (`0x1008668f`).
@@ -375,5 +400,17 @@ fn draw_objective_markers(dc: &Dc, h: &Hud) {
         }
         // Drawn as stored: TS doesn't localise the label (`0x10049fc0`).
         dc.string(x + 16, y - 8, &o.label, c);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TS 2.1's `ScaleColors` (`0x10047e90`) rounds `a / 255` to a `float` first.
+    #[test]
+    fn scale_colors_rounds_the_factor() {
+        assert_eq!(scale_colors_float([255, 160, 100], 200), [200, 125, 78]);
+        assert_eq!(scale_colors_float([1, 0, 255], 255), [1, 0, 255]);
     }
 }

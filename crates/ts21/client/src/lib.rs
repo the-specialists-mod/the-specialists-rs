@@ -11,6 +11,7 @@ use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
 use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
+use ts_client::hud::draw::{HudOp, StatusLook, ftol};
 use ts_client::menus::buy::MenuRules;
 use ts_client::view::{Bob, BobInput, EyeZ};
 use ts21_gameplay::TS21;
@@ -308,6 +309,48 @@ impl ClientRules for Ts21Client {
     /// prediction plays `insert-shell.wav` (0x10023660).
     fn reload_event_phases(&self) -> bool {
         false
+    }
+
+    /// `MsgFunc_WeaponInfo` (0x1008d1a0) for kung fu (id 0, 0x1008d35e): the bar becomes the clip
+    /// byte, clamped to 0..100 (issue #111). The server sends kung fu's `WeaponInfo` with the bar
+    /// as its clip when the weapon changes, so switching to kung fu resyncs the bar the client
+    /// regenerates on its own.
+    fn kungfu_power_from_weapon_info(&self, clip: u8) -> Option<f32> {
+        Some((clip as f32).min(100.0))
+    }
+
+    /// The weapon element's kung-fu bar (0x1008a0f0, issue #111), 128 wide from `w - 136`: the
+    /// full part `ftol(1.28f × power)` wide at alpha 0x40 and the empty rest at 0x1e, both 19
+    /// high at `h - 28`, both in the HUD colour (3.0: a frame and a fill scaled by the power);
+    /// above it a 0x23 box with "Kung-Fu" in the HUD colour ÷ 1.5 (the `double` at 0x10270800).
+    /// The status panel (0x10085d90, issue #111): the stance sprite whole in the HUD colour / 2
+    /// (drawn at 0x10085ea3); the armour number at (0x48, y + 0x18) with the kevlar icon at 0x68
+    /// (0x1008610c); the team bar's box in the HUD colour at alpha 0x23, then `ScaleColors(..,
+    /// 200)` on the panel's colour (0x100861b8), which the name, the slots and credits rows and
+    /// the icons then use; "free slots" and "Credits" as written (0x102716ac, 0x102716a0); the
+    /// kung-fu, movement and slow-motion icons in the colour / 1.5 (`double` 0x10270800; drawn
+    /// at 0x100865c0, 0x10086648, 0x100866e6).
+    fn status_look(&self) -> StatusLook {
+        StatusLook {
+            stance_health_fill: false,
+            armor_number: true,
+            team_bar_scale: Some(200),
+            labels: Some(("free slots", "Credits")),
+            icons_divide: true,
+        }
+    }
+
+    fn kungfu_label(&self, power: f32, hud: [i32; 3], w: i32, h: i32) -> Option<Vec<HudOp>> {
+        let (x, y) = (w - 0x88, h - 8 - 0x14);
+        let full = ftol(1.28f32 as f64 * power as f64);
+        let mut ops = vec![HudOp::Fill { x, y, w: full, h: 0x13, rgb: hud, a: 0x40 }];
+        if full < 0x80 {
+            ops.push(HudOp::Fill { x: x + full, y, w: 0x80 - full, h: 0x13, rgb: hud, a: 0x1e });
+        }
+        let y = y - 0x14;
+        ops.push(HudOp::Fill { x, y, w: 0x80, h: 0x13, rgb: hud, a: 0x23 });
+        ops.push(HudOp::Text { x: x + 2, y, text: "Kung-Fu", rgb: hud.map(|c| ftol(c as f64 / 1.5)) });
+        Some(ops)
     }
 
     /// `CashBased()` (0x1006b2f0) is `m_Teamplay ≥ 2 || SrvSett 1`, so the menu spends the live

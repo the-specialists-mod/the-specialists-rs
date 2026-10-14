@@ -343,6 +343,7 @@ name = "ts21-client"
 version = "3.0.2"
 dependencies = [
  "goldsrc",
+ "shared",
  "ts-client",
  "ts21-gameplay",
 ]

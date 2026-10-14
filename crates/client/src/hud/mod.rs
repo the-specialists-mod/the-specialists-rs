@@ -300,6 +300,12 @@ fn on_message(m: Msg, buf: &[u8]) {
     for f in fx {
         apply_effect(f);
     }
+    if m == Msg::SrvSett && shared::protocol::hud::SrvSett::decode(buf).is_some_and(|v| v.key == ts_gameplay::SRVSETT_KEY) {
+        // The ruleset's weapon tables for what the HUD reads (the buy menu's prices, slots and
+        // ammo, the weapon panel, the crosshair's accuracy) from the moment the HUD knows it, not
+        // only from the next predicted command (none with `cl_nopred 1`, issue #111).
+        shared::weapons::table::set_ruleset_tables(crate::gameplay::hud_gun_rules().tables());
+    }
     // The viewport's handlers for the same messages (scoreboard teams, team menu).
     crate::menus::on_message(m, buf);
     if m == Msg::ResetHUD {
@@ -931,6 +937,18 @@ impl Dc<'_> {
     }
     pub fn fill(&self, x: i32, y: i32, w: i32, h: i32, rgb: [i32; 3], a: i32) {
         engine().fill(x, y, w, h, rgb, a);
+    }
+    /// Draws a ruleset's layout ([`draw::HudOp`]).
+    pub fn ops(&self, ops: &[draw::HudOp]) {
+        for op in ops {
+            match *op {
+                draw::HudOp::Fill { x, y, w, h, rgb, a } if w > 0 && h > 0 => self.fill(x, y, w, h, rgb, a),
+                draw::HudOp::Fill { .. } => {}
+                draw::HudOp::Text { x, y, text, rgb } => {
+                    self.string(x, y, text, rgb);
+                }
+            }
+        }
     }
     pub fn spr(&self, h: goldsrc::sys::HSPRITE, x: i32, y: i32, rgb: [i32; 3]) {
         if h != 0 {

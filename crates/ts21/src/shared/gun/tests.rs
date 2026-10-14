@@ -534,6 +534,27 @@ fn spread_decays_by_elapsed_time() {
     assert_eq!(g.spread_penalty, 0.0);
 }
 
+/// Issue #111: the crosshair's copy (client `0x1031bf04`) is written only in the decay branch
+/// (`0x10018dae`): not at a penalty of 0 or NaN, not when the time went back, not while dead.
+#[test]
+fn crosshair_copy_only_when_decaying() {
+    setup();
+    let r = &crate::TS21;
+    let d = |time: f32, alive: bool| SpreadDecay { arith: Arith::CLIENT, step: 0.01, time, time_scale: 1.0, alive };
+    let mut g = Gun { spread_penalty: 0.05, decay_time: 10.0, ..Gun::default() };
+    assert!(r.decay_spread(&mut g, &d(10.01, true)), "a positive penalty decays and is copied");
+    g.decay_time = 11.0;
+    assert!(!r.decay_spread(&mut g, &d(10.5, true)), "time went back");
+    assert!(!r.decay_spread(&mut g, &d(12.0, false)), "dead");
+    for pen in [0.0, -0.0, f32::NAN] {
+        g.spread_penalty = pen;
+        assert!(!r.decay_spread(&mut g, &d(13.0, true)), "{pen}");
+    }
+    // TS 3.0 copies on every first prediction.
+    let mut g = Gun::default();
+    assert!(shared::gameplay::CORE.decay_spread(&mut g, &d(13.0, true)));
+}
+
 #[test]
 fn prediction_and_gate() {
     setup();

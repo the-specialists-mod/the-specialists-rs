@@ -579,6 +579,9 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         gun.weapon_post_frame(&mut host);
     }
     gun.decrement_timers(dt);
+    // Whether the crosshair's copy of the penalty follows it this time (the ruleset's
+    // [`GunRules::decay_spread`](shared::gameplay::GunRules::decay_spread)).
+    let mut copy_spread = false;
     if runfuncs {
         let decay = SpreadDecay {
             arith: Arith::CLIENT,
@@ -587,7 +590,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
             time_scale: state::with(|s| s.time_scale),
             alive: true,
         };
-        rules.decay_spread(&mut gun, &decay);
+        copy_spread = rules.decay_spread(&mut gun, &decay);
     }
 
     let (fov, viewmodel, iuser4, weaponanim) = (host.fov, host.viewmodel, host.iuser4, host.weaponanim);
@@ -608,7 +611,9 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
     if runfuncs {
         state::with(|st| {
             st.powerups = powerups as i32;
-            st.spread = gun.spread_penalty;
+            if copy_spread {
+                st.spread = gun.spread_penalty;
+            }
         });
         // 0x100040dc..0x100040ef: the predicted record goes straight into the HUD's weapon
         // element (clip, fire mode, attachments, menu cells), dead or alive.

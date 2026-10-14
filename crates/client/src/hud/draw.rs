@@ -54,6 +54,43 @@ impl HudSprites {
     }
 }
 
+/// One HUD primitive of a layout a ruleset's drawing hook returns, which the HUD then draws (a
+/// pure layout, so the hook can be tested).
+#[derive(Clone, Debug, PartialEq)]
+pub enum HudOp {
+    /// `FillRGBA(x, y, w, h, r, g, b, a)`. Guarded: a width or height below 1 draws nothing.
+    Fill { x: i32, y: i32, w: i32, h: i32, rgb: [i32; 3], a: i32 },
+    /// `DrawHudString(x, y, ScreenWidth, text, r, g, b)`.
+    Text { x: i32, y: i32, text: &'static str, rgb: [i32; 3] },
+}
+
+/// How a ruleset's status panel differs from TS 3.0's `DrawStatusPanel` (1004a3e0)
+/// ([`ClientRules::status_look`](crate::gameplay::ClientRules::status_look)). The default is 3.0's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StatusLook {
+    /// The stance sprite fills bottom-up by health, red above (3.0); false draws it whole in the
+    /// HUD colour / 2.
+    pub stance_health_fill: bool,
+    /// The armour value as a number at (0x48, y + 0x18), the kevlar icon beside it at 0x68;
+    /// false (3.0) draws the icon alone at 0x48.
+    pub armor_number: bool,
+    /// The team bar's box in the HUD colour, after which the HUD colour is `ScaleColors(.., a)`
+    /// with this `a` (`(float)(a / 255.0f)`) for the name and the rest of the panel; `None` (3.0)
+    /// draws the box and name in the team's colour.
+    pub team_bar_scale: Option<i32>,
+    /// Fixed "free slots" and "Credits" labels in place of `#HUD_FreeSlots` / `#HUD_Credits`.
+    pub labels: Option<(&'static str, &'static str)>,
+    /// The kung-fu and movement icons in the HUD colour / 1.5 (`ftol`); false (3.0) × the
+    /// `double` 2/3, which truncates one lower for some channels.
+    pub icons_divide: bool,
+}
+
+impl Default for StatusLook {
+    fn default() -> Self {
+        StatusLook { stance_health_fill: true, armor_number: false, team_bar_scale: None, labels: None, icons_divide: false }
+    }
+}
+
 /// MSVC `__ftol` (`0x1006ad1c`): truncates toward zero; out of range (or NaN) gives the integer
 /// indefinite value `0x80000000`. TS's x87 runs at 53-bit precision (the MSVC CRT default), so
 /// callers compute the operand in `f64`.

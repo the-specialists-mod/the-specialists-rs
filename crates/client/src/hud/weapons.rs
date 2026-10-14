@@ -346,9 +346,14 @@ fn draw_kungfu_bar(dc: &Dc, h: &Hud, x: i32, y: i32) {
     dc.fill(x, y, 128, 19, rgb, 30);
 }
 
-/// `DrawKungFuLabel` (1004d700): "Kung-Fu" in the HUD colour × 2/3.
+/// `DrawKungFuLabel` (1004d700): "Kung-Fu" in the HUD colour × 2/3; or the ruleset's own
+/// ([`ClientRules::kungfu_label`](crate::gameplay::ClientRules::kungfu_label)).
 fn draw_kungfu_label(dc: &Dc, h: &Hud) {
     let (w, ht) = (dc.w(), dc.h());
+    if let Some(ops) = crate::gameplay::hud_rules(h.gameplay).kungfu_label(h.kfu_power, dc.hud, w, ht) {
+        dc.ops(&ops);
+        return;
+    }
     let x = w - 136;
     draw_kungfu_bar(dc, h, x, ht - 28);
     dc.fill(x, ht - 48, 128, 19, dc.hud, 35);

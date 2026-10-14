@@ -377,4 +377,25 @@ pub trait ClientRules: Sync {
     fn reload_event_phases(&self) -> bool {
         true
     }
+
+    /// The kung-fu bar a `WeaponInfo` for kung fu (id 0) sets from its clip byte, if any. TS
+    /// 3.0's `MsgFunc_WeaponInfo` leaves the bar to `KFuPower`.
+    fn kungfu_power_from_weapon_info(&self, clip: u8) -> Option<f32> {
+        let _ = clip;
+        None
+    }
+
+    /// The kung-fu bar and its label the weapon element draws while kung fu is the weapon, as a
+    /// layout for a `w` × `h` screen with the bar at `power` in the HUD colour `hud`. `None` is
+    /// TS 3.0's `DrawKungFuLabel` (1004d700).
+    fn kungfu_label(&self, power: f32, hud: [i32; 3], w: i32, h: i32) -> Option<Vec<crate::hud::draw::HudOp>> {
+        let _ = (power, hud, w, h);
+        None
+    }
+
+    /// The status panel's look ([`StatusLook`](crate::hud::draw::StatusLook)). TS 3.0's
+    /// `DrawStatusPanel` (1004a3e0) by default.
+    fn status_look(&self) -> crate::hud::draw::StatusLook {
+        crate::hud::draw::StatusLook::default()
+    }
 }

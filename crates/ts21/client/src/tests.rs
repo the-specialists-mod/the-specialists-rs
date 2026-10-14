@@ -576,3 +576,48 @@ fn buy_menu_look() {
     assert_eq!(m21.hole_message, Some("A hole in the menu! TELL VINO IMMEDIATELY!"));
     assert!(!m30.items_red_by_cash_only && !m30.category_rows_by_teamplay && m30.hole_message.is_none() && m30.text.is_none());
 }
+
+/// Issue #111: `WeaponInfo` for kung fu sets 2.1's bar from its clip byte, clamped at 100
+/// (0x1008d35e..0x1008d3ca); 3.0 leaves it to `KFuPower`.
+#[test]
+fn kungfu_bar_from_weapon_info() {
+    assert_eq!(v21().kungfu_power_from_weapon_info(55), Some(55.0));
+    assert_eq!(v21().kungfu_power_from_weapon_info(0), Some(0.0));
+    assert_eq!(v21().kungfu_power_from_weapon_info(200), Some(100.0));
+    assert_eq!(v30().kungfu_power_from_weapon_info(55), None);
+}
+
+/// Issue #111: 2.1's kung-fu bar (0x1008a0f0) on a 640 x 480 screen.
+#[test]
+fn kungfu_bar_look() {
+    use ts_client::hud::draw::HudOp::{Fill, Text};
+    let hud = [255, 160, 0];
+    let ops = v21().kungfu_label(50.0, hud, 640, 480).unwrap();
+    // ftol(1.28f x 50) = 63 (1.2799999713897705 x 50 = 63.99...).
+    assert_eq!(
+        ops,
+        [
+            Fill { x: 504, y: 452, w: 63, h: 19, rgb: hud, a: 0x40 },
+            Fill { x: 567, y: 452, w: 65, h: 19, rgb: hud, a: 0x1e },
+            Fill { x: 504, y: 432, w: 128, h: 19, rgb: hud, a: 0x23 },
+            Text { x: 506, y: 432, text: "Kung-Fu", rgb: [170, 106, 0] },
+        ]
+    );
+    // A full bar has no empty part.
+    let ops = v21().kungfu_label(100.0, hud, 640, 480).unwrap();
+    assert_eq!(ops[0], Fill { x: 504, y: 452, w: 127, h: 19, rgb: hud, a: 0x40 });
+    assert_eq!(ops.len(), 4, "127 < 128: the 1-pixel rest is still drawn");
+    assert!(v30().kungfu_label(50.0, hud, 640, 480).is_none(), "3.0 draws its own");
+}
+
+/// Issue #111: 2.1's status panel look (0x10085d90); 3.0's is the default.
+#[test]
+fn status_panel_look() {
+    use ts_client::hud::draw::StatusLook;
+    let l = v21().status_look();
+    assert!(!l.stance_health_fill && l.armor_number && l.icons_divide);
+    assert_eq!((l.team_bar_scale, l.labels), (Some(200), Some(("free slots", "Credits"))));
+    assert_eq!(v30().status_look(), StatusLook::default());
+    let d = StatusLook::default();
+    assert!(d.stance_health_fill && !d.armor_number && !d.icons_divide && d.team_bar_scale.is_none() && d.labels.is_none());
+}
