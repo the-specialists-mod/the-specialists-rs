@@ -12,7 +12,7 @@ use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::ext::tri;
 use goldsrc::sys::*;
 use shared::weapons::spread::{self, PelletOffset, PelletSide};
-use shared::weapons::tables;
+use shared::weapons::{WeaponInfo, tables};
 use std::cell::Cell;
 
 pub fn fire(a: &Args) {
@@ -313,20 +313,27 @@ fn fire_sample(sound: &str, sound2: &str, silenced: bool) -> (String, (f32, f32)
 
 fn bullets_for(a: &Args, s: &Shot, src: Vec3, seed: i32, f1: f32, f2: f32) {
     let Some(w) = tables().weapon(s.id as u8) else { return };
-    let dmg = w.damage * if s.silenced { 0.775 } else { 1.0 };
-    fire_bullets(&Bullets {
-        shooter: a.entindex,
+    fire_bullets(&shot_bullets(w, a.entindex, s, src, seed, [f1, f2]));
+}
+
+/// The `EV_TS_FireBullets` (`0x100450c0`) arguments of one shot. The damage is the weapon
+/// info's raw `+0x1c` at every call site (`0x1003ef68`, `0x10040a23`, `0x10040ade`,
+/// `0x10040b2e`, `0x100418af`; 2.1's callers of `FUN_1007c5e0` likewise): the silencer doesn't
+/// scale it (the 0.775 in `client.dll` is only `VKickback`'s silenced recoil).
+fn shot_bullets(w: &WeaponInfo, shooter: i32, s: &Shot, src: Vec3, seed: i32, spread: [f32; 2]) -> Bullets {
+    Bullets {
+        shooter,
         right: s.right,
         up: s.up,
         pellets: w.pellets.max(1),
         src,
         dir: s.fwd,
-        spread: [f1, f2],
-        dmg,
+        spread,
+        dmg: w.damage,
         bullet_type: w.bullet,
         ammo: w.ammo as i32,
         seed,
-    });
+    }
 }
 
 /// `EV_TS_FireStandard` (`0x1003dfa0`).
@@ -1022,6 +1029,27 @@ mod tests {
         assert_eq!(crate::gameplay::CORE_PLUGIN.client.pump_shell_speeds(), [(20, 40), (0, 20)]);
         let (fwd, right, up) = ([1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
         assert_eq!(shell_velocity([10.0, 0.0, 0.0], right, up, fwd, [30.0, 5.0, 30.0]), [40.0, -30.0, 5.0]);
+    }
+
+    /// `0x1003ef68` and the akimbo/pump call sites push the weapon's raw damage: a silenced
+    /// shot's client bullets carry the same damage as an unsilenced one (both rulesets).
+    #[test]
+    fn silencer_leaves_event_bullet_damage_alone() {
+        let w = tables().weapon(13).unwrap();
+        let shot = |silenced| Shot {
+            id: 13,
+            silenced,
+            fwd: [1.0, 0.0, 0.0],
+            right: [0.0, -1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            shell: 0,
+            shell_snd: 0,
+            shell_speed: [0.0; 3],
+        };
+        let loud = shot_bullets(w, 1, &shot(false), [0.0; 3], 7, [0.01, 0.01]);
+        let quiet = shot_bullets(w, 1, &shot(true), [0.0; 3], 7, [0.01, 0.01]);
+        assert_eq!(loud.dmg, w.damage);
+        assert_eq!(quiet.dmg, w.damage);
     }
 
     #[test]
