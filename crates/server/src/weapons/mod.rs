@@ -48,7 +48,7 @@ pub use assets::max_carry;
 pub use assets::{cvars, dmgreport, restriction, set_restriction};
 pub(crate) use commands::add_armament;
 pub use host::emit;
-pub use inventory::{Drop, buy_armament, pick_up_weapon};
+pub use inventory::{Drop, buy_armament, pick_up_cost, pick_up_weapon};
 
 /// `CTSGun::AddItem(bits)` on the held weapon (the attachments a `tki` buys): false when the
 /// weapon can't take them.

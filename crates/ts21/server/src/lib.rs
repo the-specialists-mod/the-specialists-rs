@@ -42,6 +42,7 @@ use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::{TraceResult, edict_t};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::Vec3;
+use shared::weapons::{Status, WeaponInfo};
 use std::ffi::CStr;
 use ts_server::commands::Args;
 use ts_server::damage::DamageInfo;
@@ -150,6 +151,10 @@ impl ServerRules for Ts21Server {
 
     fn buy_armament(&self, p: &mut Player, cx: &mut Cx) {
         cash::buy_armament(p, cx);
+    }
+
+    fn pick_up_cost(&self, _id: u8, w: &WeaponInfo, _from: Option<&Status>) -> Option<f32> {
+        cash::pick_up_cost(w)
     }
 
     fn spawns_entity(&self, class: &CStr) -> bool {

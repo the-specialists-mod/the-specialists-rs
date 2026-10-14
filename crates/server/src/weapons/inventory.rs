@@ -53,15 +53,7 @@ pub fn pick_up_weapon(p: &mut Player, cx: &mut Cx, id: u8, from: Option<&Status>
         return false;
     }
     let Some(w) = info(id) else { return false };
-    if kind_of(id) == kind::AKIMBO && w.single != -1 {
-        return false; // the pair only comes from two singles
-    }
-    let mut cost = w.slots as f32;
-    if w.stack
-        && let Some(s) = from
-    {
-        cost *= s.clip as f32;
-    }
+    let Some(cost) = crate::gameplay::active().server.pick_up_cost(id, w, from) else { return false };
     let after = (p.inv.sv.free_slots as f32 - cost).round_ties_even() as i32;
     if after < 0 {
         return false;
@@ -87,6 +79,22 @@ pub fn pick_up_weapon(p: &mut Player, cx: &mut Cx, id: u8, from: Option<&Status>
         });
     }
     true
+}
+
+/// The slots `PickUpWeapon` (0x9314c) charges for `id`: `None` for the akimbo pair of a single
+/// gun (`kind != 4 || single == -1`: the pair only comes from two singles), else `slots`, times
+/// the count for a dropped stack (rounded with the free slots by the caller).
+pub fn pick_up_cost(_id: u8, w: &shared::weapons::WeaponInfo, from: Option<&Status>) -> Option<f32> {
+    if shared::weapons::ts_kind(w.kind) == kind::AKIMBO && w.single != -1 {
+        return None;
+    }
+    let mut cost = w.slots as f32;
+    if w.stack
+        && let Some(s) = from
+    {
+        cost *= s.clip as f32;
+    }
+    Some(cost)
 }
 
 /// The record `CTSGun::TakeWeapon` (0x80a04) copies a dropped gun's status into, given what was
@@ -509,6 +517,21 @@ mod tests {
         assert!(!drop_plays_sound(id::M61, &st(0, 0)), "nothing to throw");
         // Every other weapon, whatever its record says.
         assert!(drop_plays_sound(id::AK47, &st(1, 0)));
+    }
+
+    /// `PickUpWeapon` (0x9314c): no akimbo pair of a single gun, a dropped stack costs per item.
+    #[test]
+    fn pick_up_cost_refuses_a_single_guns_pair_and_charges_a_stack() {
+        let t = shared::weapons::table::base_tables();
+        let beretta = t.weapon(id::BERETTA).unwrap();
+        let pair = t.weapon(beretta.akimbo as u8).unwrap();
+        assert_eq!(pick_up_cost(pair.id, pair, None), None, "the pair only comes from two singles");
+        assert_eq!(pick_up_cost(id::BERETTA, beretta, None), Some(beretta.slots as f32));
+        let m61 = t.weapon(id::M61).unwrap();
+        assert!(m61.stack);
+        let three = Status { owned: true, clip: 3, ..Default::default() };
+        assert_eq!(pick_up_cost(id::M61, m61, Some(&three)), Some(m61.slots as f32 * 3.0));
+        assert_eq!(pick_up_cost(id::M61, m61, None), Some(m61.slots as f32));
     }
 
     #[test]

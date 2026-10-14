@@ -23,6 +23,7 @@ use goldsrc::server::MsgWriter;
 use goldsrc::sys::{TraceResult, edict_t};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::{self, Vec3};
+use shared::weapons::{Status, WeaponInfo};
 use std::ffi::CStr;
 
 /// A server cvar: (name, default, flags), as [`cvars::CVARS`] lists TS 3.0's.
@@ -153,6 +154,16 @@ pub trait ServerRules: Sync {
     /// the loadout the client sent (`tkw`/`tki`/`tka`).
     fn buy_armament(&self, p: &mut Player, cx: &mut Cx) {
         crate::weapons::buy_armament(p, cx);
+    }
+
+    // ---- inventory, world guns and items ------------------------------------------------------
+
+    /// `CBasePlayer::PickUpWeapon` (0x9314c): the slots weapon `id` (info `w`, copied from
+    /// `from` when it is a dropped one) costs, or `None` when it is refused before that.
+    /// 3.0: [`weapons::pick_up_cost`](crate::weapons::pick_up_cost), which refuses
+    /// the akimbo pair of a single gun and charges a stack `slots × count`.
+    fn pick_up_cost(&self, id: u8, w: &WeaponInfo, from: Option<&Status>) -> Option<f32> {
+        crate::weapons::pick_up_cost(id, w, from)
     }
 
     // ---- map entities -------------------------------------------------------------------------
