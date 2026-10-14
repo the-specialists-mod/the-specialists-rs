@@ -516,7 +516,9 @@ values it keeps on the stack are `f64`. That covers the node graph's distances (
 module delays (`brain::delay`), `UpdateView` (the punch factor `k`, the turn fraction and the
 ideal yaw straight from `UTIL_AngleMod`, `brain::angle_mod_x87`; the x/y punch products stored as
 floats), `Navigate`'s move direction (the steer yaw's unrounded `UTIL_AngleMod`), the attack
-think's tracking (the x aim point and the knife lead's decay), and the inlined distances
+think's tracking (the x aim point and the knife lead's decay), `FireWeapon`'s knife throw (the
+flight time `dist × (1/1900)f` unrounded in each product) and burst timer (`h + time + 0.3`
+rounded once), and the inlined distances
 (`brain::len_x87`: unrounded differences and `sqrt`, squares summed in each site's order, then
 compared, truncated or stored as mp.dll does: the attack range, `SelectEnemy`, the cover search,
 `Navigate`'s 48/96-unit tests, the hill's 64 units, `FindLookPoint`), `Vector::Normalize`

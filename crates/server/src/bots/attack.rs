@@ -317,14 +317,14 @@ fn fire_weapon(b: &mut Brain, p: &mut Player, cx: &mut Cx, dist: f32) {
                 // aim for the arc.
                 b.press(btn::ATTACK2, 0.1, now);
                 b.press(btn::ATTACK, 0.0, now);
-                let tt = dist * 0.000_526_315_77;
+                let tt = knife_flight_time(dist);
                 if let Some(e) = live(b.enemy) {
                     let v = e.v().velocity;
-                    let r = eng.random_float(0.75, 1.25) as f64;
-                    b.attack.lead = [((tt * v[0]) as f64 * r) as f32, ((tt * v[1]) as f64 * r) as f32, ((tt * v[2]) as f64 * r) as f32];
+                    let r = eng.random_float(0.75, 1.25);
+                    b.attack.lead = v.map(|c| knife_lead(tt, c, r));
                 }
-                let r = eng.random_float(0.75, 1.25) as f64;
-                b.attack.lead[2] = (r * (tt * 360.0) as f64) as f32;
+                let r = eng.random_float(0.75, 1.25);
+                b.attack.lead[2] = knife_lead(tt, 360.0, r);
             }
             b.attack.next_fire = (now as f64 + 0.3) as f32;
             return;
@@ -355,13 +355,48 @@ fn fire_weapon(b: &mut Brain, p: &mut Player, cx: &mut Cx, dist: f32) {
         // Auto and pump: bursts.
         let h = eng.random_float(0.3, 1.0);
         b.press(btn::ATTACK, h, now);
-        b.attack.next_fire = ((h + now) as f64 + 0.3) as f32;
+        b.attack.next_fire = burst_next_fire(h, now);
     }
+}
+
+/// The knife throw's flight time, `dist * (1/1900)f` (`FireWeapon` 0x1006d14f): mp.dll keeps it
+/// on the x87 for every product that uses it, never stored.
+fn knife_flight_time(dist: f32) -> f64 {
+    f64::from(dist) * f64::from(0.000_526_315_77f32)
+}
+
+/// One component of the knife lead (0x1006d17f..0x1006d1c9, 0x1006d1fb): `tt * v` stored as a
+/// `float`, then times the `RandomFloat(0.75, 1.25)` factor `r` and stored again. The lift is the
+/// same with `v` = 360 (`tt * 360` stored at 0x1006d169).
+fn knife_lead(tt: f64, v: f32, r: f32) -> f32 {
+    (tt * f64::from(v)) as f32 * r
+}
+
+/// The auto/pump burst's next decision (0x1006d347..0x1006d353): `h + time + 0.3` (a `double`)
+/// on the x87, stored once.
+fn burst_next_fire(h: f32, now: f32) -> f32 {
+    (f64::from(h) + f64::from(now) + 0.3) as f32
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The knife's flight time stays unrounded (#154): the `f32` `tt` gave one ulp more here.
+    #[test]
+    fn knife_lead_uses_the_unrounded_flight_time() {
+        let tt = knife_flight_time(552.132_8);
+        assert_eq!(knife_lead(tt, 26.537_535, 0.934_977_6).to_bits(), 0x40e6_ba8e);
+        let tt = knife_flight_time(1_991.725_2);
+        assert_eq!(knife_lead(tt, 360.0, 1.168_230_8).to_bits(), 0x43dc_6ee4);
+        assert_eq!(knife_lead(knife_flight_time(1900.0), 10.0, 1.0), 10.0);
+    }
+
+    /// `h + time + 0.3` rounded once (#154); `(h + time) as f32 + 0.3` gave 0x431858aa.
+    #[test]
+    fn burst_timer_rounds_once() {
+        assert_eq!(burst_next_fire(0.713_769_7, 151.332_57).to_bits(), 0x4318_58a9);
+    }
 
     #[test]
     fn tracking_rounds_as_mp_dll() {
