@@ -522,30 +522,112 @@ extern "C" fn cmd_addcustombot() {
     }
 }
 
-/// `globalslow [percent]` (0xc5580).
+/// `globalslow [percent]` (0xc5580). The argument is `(float)strtod(argv(1))`, so trailing text
+/// is ignored and garbage is 0. The query and the "is at" text read the stored amount
+/// (`TSGameRules+0x564`), not the active flag, and `SetGlobalSlowMotion` only acts on a value
+/// that differs from it. The text goes through `ALERT(at_console)`, which the engines print only
+/// with `developer` on.
 extern "C" fn cmd_globalslow() {
     if crate::gameplay::active().server.server_command("globalslow") {
         return;
     }
     let e = engine();
-    let cur = state::with(|g| if g.global_slow.active { g.global_slow.amount } else { 0.0 });
-    if e.cmd_argc() < 2 {
-        if cur != 0.0 {
-            e.print(&format!("Globalslow is at {:.0}%.\n", cur * 100.0));
-        } else {
-            e.print("Globalslow is off.\n");
-        }
-        return;
-    }
-    let pct: f32 = e.cmd_argv(1).to_string_lossy().trim().parse().unwrap_or(0.0);
-    let amount = globalslow_amount(pct);
-    if amount == 0.0 {
-        state::with(|g| g.global_slow.active = false);
-        e.print("Globalslow is off.\n");
+    let amount = if e.cmd_argc() < 2 {
+        state::with(|g| g.global_slow.amount)
     } else {
+        let amount = globalslow_amount(c_strtod(&e.cmd_argv(1).to_string_lossy()) as f32);
         frame::set_global_slow(amount, 0.0);
-        e.print(&format!("Globalslow is at {:.0}%.\n", amount * 100.0));
+        amount
+    };
+    e.alert(ALERT_TYPE::at_console, &globalslow_text(amount));
+}
+
+/// `cmd_globalslow`'s reply for the amount: `%.0f` of `amount × 100` (exact in the double TS
+/// passes).
+fn globalslow_text(amount: f32) -> String {
+    if amount != 0.0 { format!("Globalslow is at {:.0}%.\n", f64::from(amount) * 100.0) } else { "Globalslow is off.\n".to_owned() }
+}
+
+/// glibc's `strtod` read of the longest prefix that is a number: white space, a sign, then
+/// `inf`/`infinity`/`nan`, a hexadecimal float (`0x`, digits, `.`, `p` exponent) or a decimal one
+/// (digits, `.`, an `e` exponent only when digits follow); 0 when nothing is read.
+pub fn c_strtod(s: &str) -> f64 {
+    let s = s.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
+    let (neg, s) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let lower = s.get(..8).unwrap_or(s).to_ascii_lowercase();
+    let v = if lower.starts_with("inf") {
+        f64::INFINITY
+    } else if lower.starts_with("nan") {
+        f64::NAN
+    } else if (lower.starts_with("0x")) && s[2..].starts_with(|c: char| c.is_ascii_hexdigit() || c == '.') {
+        hex_float(&s[2..])
+    } else {
+        let b = s.as_bytes();
+        let digits = |mut i: usize| {
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            i
+        };
+        let int_end = digits(0);
+        let mut end = int_end;
+        if b.get(end) == Some(&b'.') {
+            end = digits(end + 1);
+        }
+        if end == 0 || (end == 1 && int_end == 0) {
+            return 0.0;
+        }
+        if matches!(b.get(end), Some(b'e' | b'E')) {
+            let sign = usize::from(matches!(b.get(end + 1), Some(b'+' | b'-')));
+            let exp_end = digits(end + 1 + sign);
+            if exp_end > end + 1 + sign {
+                end = exp_end;
+            }
+        }
+        s[..end].parse().unwrap_or(0.0)
+    };
+    if neg { -v } else { v }
+}
+
+/// The digits of a hexadecimal float after `0x` (`0x.8` is 0.5, `0x1p4` 16). A `0x` with no
+/// digits reads as just the `0`.
+fn hex_float(s: &str) -> f64 {
+    let (mut mant, mut exp, mut seen, mut dot) = (0.0f64, 0i32, false, false);
+    let mut rest = s;
+    for (i, c) in s.char_indices() {
+        if c == '.' && !dot {
+            dot = true;
+        } else if let Some(d) = c.to_digit(16) {
+            mant = mant * 16.0 + f64::from(d);
+            seen = true;
+            if dot {
+                exp -= 4;
+            }
+        } else {
+            rest = &s[i..];
+            break;
+        }
+        rest = &s[i + c.len_utf8()..];
     }
+    if !seen {
+        return 0.0;
+    }
+    if let Some(p) = rest.strip_prefix(['p', 'P']) {
+        let (neg, digits) = match p.as_bytes().first() {
+            Some(b'-') => (true, &p[1..]),
+            Some(b'+') => (false, &p[1..]),
+            _ => (false, p),
+        };
+        let n = digits.bytes().take_while(u8::is_ascii_digit).fold(0i32, |a, d| a.saturating_mul(10).saturating_add(i32::from(d - b'0')));
+        if digits.starts_with(|c: char| c.is_ascii_digit()) {
+            exp = exp.saturating_add(if neg { -n } else { n });
+        }
+    }
+    mant * 2f64.powi(exp)
 }
 
 /// `cmd_globalslow` argument → factor: ×0.01, clamped to [0, 2], ≈1 means off, tiny → 0.01.
@@ -575,7 +657,8 @@ extern "C" fn cmd_weaponrestriction() {
     }
     let e = engine();
     if e.cmd_argc() >= 2 {
-        let n: i32 = e.cmd_argv(1).to_string_lossy().trim().parse().unwrap_or(0);
+        // `strtol(argv(1), 0, 10)`: the leading integer, trailing text ignored.
+        let n = super::mapcycle::atoi(&e.cmd_argv(1).to_string_lossy());
         let (old, new) = state::with(|g| {
             let old = g.allowed_weapons;
             g.allowed_weapons = if n == 5 { 0x1f } else { restriction_by_id(n) & g.base_weapons };
@@ -585,14 +668,18 @@ extern "C" fn cmd_weaponrestriction() {
             msg::all(Msg::SrvSett, |w| SrvSett { key: 3, value: new as i16 }.write(w));
         }
     }
-    let mask = state::with(|g| g.allowed_weapons);
+    e.alert(ALERT_TYPE::at_console, &weaponrestriction_text(state::with(|g| g.allowed_weapons)));
+}
+
+/// `display_weaponrestriction` (0xc5770): the categories from `g_szRestrictions` (0x109034, the
+/// strings at 0xfcec0..), capitalised, printed with `ALERT(at_console)`.
+fn weaponrestriction_text(mask: i32) -> String {
     if mask == 0 {
-        e.print("All weapons are restricted.\n");
-    } else {
-        let names = ["knives ", "pistols ", "SMGs ", "rifles ", "shotguns "];
-        let s: String = (0..5).filter(|i| mask & (1 << i) != 0).map(|i| names[i]).collect();
-        e.print(&format!("Weapons allowed: {s}\n"));
+        return "All weapons are restricted.\n".to_owned();
     }
+    let names = ["Knives ", "Pistols ", "SMGs ", "Rifles ", "Shotguns "];
+    let s: String = (0..5).filter(|i| mask & (1 << i) != 0).map(|i| names[i]).collect();
+    format!("Weapons allowed: {s}\n")
 }
 
 /// `WeaponRestrictionByID`.
@@ -609,6 +696,41 @@ pub fn restriction_by_id(n: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_command_arguments_parse_like_c() {
+        // Issue #140: `strtod`/`strtol` read the leading number and ignore the rest.
+        assert_eq!(c_strtod("50%"), 50.0);
+        assert_eq!(globalslow_amount(c_strtod("50%") as f32), 0.5);
+        assert_eq!(c_strtod("  -12.5e1x"), -125.0);
+        assert_eq!(c_strtod("1e"), 1.0);
+        assert_eq!(c_strtod("1e+"), 1.0);
+        assert_eq!(c_strtod(".5"), 0.5);
+        assert_eq!(c_strtod("5."), 5.0);
+        assert_eq!(c_strtod("."), 0.0);
+        assert_eq!(c_strtod("abc"), 0.0);
+        assert_eq!(c_strtod(""), 0.0);
+        assert_eq!(c_strtod("0x10"), 16.0);
+        assert_eq!(c_strtod("0x.8p1"), 1.0);
+        assert_eq!(c_strtod("0xg"), 0.0);
+        assert_eq!(c_strtod("Infinity"), f64::INFINITY);
+        assert!(c_strtod("nan").is_nan());
+        assert_eq!(globalslow_amount(c_strtod("inf") as f32), 2.0);
+        assert_eq!(super::super::mapcycle::atoi("3x"), 3);
+        assert_eq!(super::super::mapcycle::atoi("2;"), 2);
+        assert_eq!(super::super::mapcycle::atoi("x3"), 0);
+    }
+
+    #[test]
+    fn server_command_replies_are_ts_text() {
+        assert_eq!(globalslow_text(0.5), "Globalslow is at 50%.\n");
+        assert_eq!(globalslow_text(0.0), "Globalslow is off.\n");
+        // `%.0f` of the double: 0.285f × 100 is 28.499999...
+        assert_eq!(globalslow_text(0.285), "Globalslow is at 28%.\n");
+        assert_eq!(weaponrestriction_text(0), "All weapons are restricted.\n");
+        assert_eq!(weaponrestriction_text(3), "Weapons allowed: Knives Pistols \n");
+        assert_eq!(weaponrestriction_text(0x1f), "Weapons allowed: Knives Pistols SMGs Rifles Shotguns \n");
+    }
 
     #[test]
     fn fullupdate_spectator_follows_deadflag() {
