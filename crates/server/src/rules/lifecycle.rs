@@ -357,8 +357,9 @@ pub fn player_think(p: &mut Player, cx: &mut Cx) -> bool {
     true
 }
 
-/// The rules part of `CBasePlayer::PreThink` (0x908cc) after `player_think`.
-pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
+/// The rules part of `CBasePlayer::PreThink` (0x908cc) after `player_think`. True when
+/// [`pre_think_end`] is due this frame.
+pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) -> bool {
     let now = cx.time();
 
     // PreThink order: WaterMove, UpdateClientData (InitHUD), CheckTimeBasedDamage, CheckSuitUpdate.
@@ -390,11 +391,11 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     if cx.pev().iuser1 != 0 {
         crate::gameplay::active().server.observer_think(p, cx, now);
         cx.pev().impulse = 0;
-        return;
+        return false;
     }
     if cx.pev().deadflag > DEAD_NO as i32 {
         death_think(p, cx);
-        return;
+        return false;
     }
 
     // No +use double tap here: TS's `CBasePlayer::TSUse` (0x956e0) is never called. The client
@@ -402,10 +403,15 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     // is `player::player_use`, from the weapons' PostThink.
 
     // TS's PreThink has returned already on the frame the train is lost (issue #60).
-    if !tail {
-        return;
-    }
+    tail
+}
 
+/// The end of `CBasePlayer::PreThink` (mp.dll 0x1005ff2b..0x1006002e): the end of spawn
+/// protection and, as PreThink's very last step, the delayed suicide of `kill`. It runs after
+/// the node learning and the weapon timers (issue #155), only when [`pre_think`] returned true
+/// (a living, non-observing player on a frame that kept its train).
+pub fn pre_think_end(p: &mut Player, cx: &mut Cx) {
+    let now = cx.time();
     // End of spawn protection.
     if p.ts.protect_until < now && cx.pev().rendermode != 0 {
         let v = cx.pev();

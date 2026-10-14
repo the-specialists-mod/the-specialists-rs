@@ -609,8 +609,19 @@ pub(crate) fn interpolate_angles(start: &mut Vec3, end: &mut Vec3, frac: f32) ->
 /// `V_GetInEyePos` (`0x10068e20`): the target's origin raised to eye height (16 ducked, 28
 /// standing, none while `NO_VIEW` stunts are on) and its angles with the model pitch undone. TS
 /// scales the pitch by -π where the SDK uses -3. A dead target (not solid) rolls 80° and drops 8.
+/// Like TS (`0x10068e42`), nothing is written unless the slot also has a player-info name
+/// (`g_PlayerInfoList[idx].name`), so a stale `player` entity around a disconnect keeps the
+/// previous values (issue #153).
 pub(crate) fn in_eye_position(target: i32, org: &mut Vec3, ang: &mut Vec3) {
-    let Some(e) = engine().entity(target).filter(|e| e.player != 0) else { return };
+    let e = engine().entity(target).filter(|e| e.player != 0);
+    let named = || !engine().player_info(target).name_bytes.is_empty();
+    in_eye_from(e.filter(|_| named()), org, ang);
+}
+
+/// The writing part of [`in_eye_position`], for a target that passed TS's checks (`None`: leave
+/// `org` and `ang` alone).
+fn in_eye_from(e: Option<&cl_entity_t>, org: &mut Vec3, ang: &mut Vec3) {
+    let Some(e) = e else { return };
     *org = e.origin;
     *ang = e.angles;
     ang[0] *= -std::f32::consts::PI;
@@ -676,6 +687,20 @@ fn in_eye_gun(p: &ref_params_t, target: i32, weaponmodel: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in_eye_leaves_the_view_alone_without_a_target() {
+        // `V_GetInEyePos` writes nothing when the entity, its `player` flag or the player-info
+        // name is missing (`in_eye_position` passes `None` then).
+        let (mut org, mut ang) = ([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]);
+        in_eye_from(None, &mut org, &mut ang);
+        assert_eq!((org, ang), ([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]));
+        let mut e = cl_entity_t { origin: [10.0, 20.0, 30.0], angles: [1.0, 90.0, 0.0], player: 1, ..Default::default() };
+        e.curstate.solid = SOLID_SLIDEBOX as i16;
+        in_eye_from(Some(&e), &mut org, &mut ang);
+        assert_eq!(org, [10.0, 20.0, 58.0]);
+        assert_eq!(ang, [-std::f32::consts::PI, 90.0, 0.0]);
+    }
 
     #[test]
     fn specmode_numbers() {

@@ -201,6 +201,17 @@ pub fn buttons(b: &mut Brain) -> &mut Buttons {
     b.ext.as_mut().and_then(|e| e.downcast_mut::<Buttons>()).expect("just set")
 }
 
+/// 2.1's `RandomWanderPoint` trace end: x at 53-bit precision (`dir.x * dist` is exact there,
+/// `dist` being an integer below 2^13), rounded once; y and z rounded after the product too.
+pub fn wander_end(dir: [f32; 3], dist: f32, origin: [f32; 3]) -> [f32; 3] {
+    [(dir[0] as f64 * dist as f64 + origin[0] as f64) as f32, dir[1] * dist + origin[1], dir[2] * dist + origin[2]]
+}
+
+/// 2.1's `GetSteerPoint` forward probe end: z at 53-bit precision, rounded once.
+pub fn steer_probe_end(f: [f32; 3], origin: [f32; 3]) -> [f32; 3] {
+    [f[0] * 24.0 + origin[0], f[1] * 24.0 + origin[1], (f[2] as f64 * 24.0 + origin[2] as f64) as f32]
+}
+
 impl NativeBotRules for Bots {
     fn random_model_in_teamplay(&self) -> bool {
         true
@@ -264,6 +275,31 @@ impl NativeBotRules for Bots {
 
     fn update_buttons(&self, b: &mut Brain, now: f32) {
         b.buttons = buttons(b).update(now);
+    }
+
+    /// `Navigate`'s ladder block (0x100621b9): `PressButtons(dir, 1)`, `PressButtons(IN_DUCK, 1)`,
+    /// `ReleaseButton(IN_JUMP)`, `ReleaseButton(other)`, one mask per slot. 3.0's combined
+    /// masks would sit in slots of their own and leave the probe's jump and the old direction
+    /// held (issue #156).
+    fn ladder_buttons(&self, b: &mut Brain, down: bool, now: f32) {
+        let (hold, other) = if down { (btn::BACK, btn::FORWARD) } else { (btn::FORWARD, btn::BACK) };
+        let t = buttons(b);
+        t.press(hold, 1.0, now);
+        t.press(btn::DUCK, 1.0, now);
+        t.release(btn::JUMP);
+        t.release(other);
+    }
+
+    /// `RandomWanderPoint` (0x10061942..0x10061969): `dir.x * dist` stays on the x87 stack for
+    /// `+ origin.x`; the y and z products are stored first.
+    fn wander_end(&self, dir: [f32; 3], dist: f32, origin: [f32; 3]) -> [f32; 3] {
+        wander_end(dir, dist, origin)
+    }
+
+    /// `GetSteerPoint` (0x10062418..0x10062421): `v_forward.z * 24` stays on the x87 stack for
+    /// `+ origin.z`; the x and y products are stored first.
+    fn steer_probe_end(&self, forward: [f32; 3], origin: [f32; 3]) -> [f32; 3] {
+        steer_probe_end(forward, origin)
     }
 
     /// Bit 0x100 in `Think` (0x1006155c): `PressButtons(IN_ATTACK, 0.1)`, `SetMove(0, 0)`. The

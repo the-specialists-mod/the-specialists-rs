@@ -157,7 +157,16 @@ pub fn slow_pitch() -> i32 {
 /// passes it (FWGS `S_StartSound` doesn't clamp it either). No random part: only the fire sound
 /// adds one (`0x1003de90`).
 pub fn fire_pitch() -> i32 {
-    100 - (time_scale() * -300.0) as i32
+    crate::gameplay::CORE_PLUGIN.client.fire_pitch(time_scale(), 0.0)
+}
+
+/// The weapon fire sound's base pitch under the active ruleset ([`ClientRules::fire_pitch`]).
+/// Ricochets and explosions keep 3.0's [`fire_pitch`].
+///
+/// [`ClientRules::fire_pitch`]: crate::gameplay::ClientRules::fire_pitch
+pub fn weapon_fire_pitch() -> i32 {
+    let factor100 = state::with(|s| s.slowmo_factor100);
+    crate::gameplay::current().fire_pitch(time_scale(), factor100)
 }
 
 /// Whether the local view currently shows a first-person view model (`g_pViewModel`: not in

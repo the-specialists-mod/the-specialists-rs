@@ -100,6 +100,23 @@ fn input() {
 fn map_effects_and_icon() {
     assert!(!v21().map_effects() && v30().map_effects());
     assert!(v21().slowmo_icon() && !v30().slowmo_icon());
+    // No `cl_slowfade` tint in 2.1 (issue #152).
+    assert!(!v21().slowmo_tint() && v30().slowmo_tint());
+}
+
+#[test]
+fn fire_pitch_is_2_1s_helper() {
+    // 0x100738a0: 100 + (s == 0 ? 300 : max(s * 300, 150)), s = TSSlowMo / 100, raw.
+    assert_eq!(v21().fire_pitch(1.0, 0.0), 400, "normal speed");
+    assert_eq!(v21().fire_pitch(0.35, 35.0), 250, "105 <= 150: the floor");
+    assert_eq!(v21().fire_pitch(0.5, 50.0), 250, "exactly 150");
+    assert_eq!(v21().fire_pitch(0.8, 80.0), 340);
+    assert_eq!(v21().fire_pitch(0.01, 1.0), 250, "never below 250");
+    assert_eq!(fire_pitch(f32::NAN), 250, "unordered compare: the floor");
+    // 3.0 unchanged: 100 - (int)(ts * -300) of the eased, clamped scale.
+    assert_eq!(v30().fire_pitch(1.0, 0.0), 400);
+    assert_eq!(v30().fire_pitch(0.35, 35.0), 205);
+    assert_eq!(v30().fire_pitch(0.01, 1.0), 103);
 }
 
 #[test]

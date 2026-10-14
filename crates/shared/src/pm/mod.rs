@@ -542,7 +542,8 @@ impl<F: Fpu> Pm<'_, F> {
             let rollspeed = self.mv().rollspeed;
             // `PM_CalcRoll(v_angle, pmove->velocity, rollangle, rollspeed)`'s arguments.
             stale = [std::ptr::addr_of!(v_angle) as usize as u32, std::ptr::addr_of!(self.p.velocity) as usize as u32, rollangle.to_bits()];
-            self.p.angles[2] = (calc_roll::<F>(v_angle, self.p.velocity, rollangle, rollspeed) * F::x(4.0)).f();
+            self.p.angles[2] =
+                (calc_roll::<F>(v_angle, self.p.velocity, rollangle, rollspeed, self.rules.roll_divides_first()) * F::x(4.0)).f();
             self.p.angles[0] = v_angle[0];
             self.p.angles[1] = v_angle[1];
             if let Some(i) = self.player_slot() {
@@ -860,11 +861,9 @@ impl<F: Fpu> Pm<'_, F> {
         let mut drop_x = F::ZERO;
         if self.p.onground != -1 {
             let z = F::x(self.p.origin[2]) + F::x(self.hull_min(self.p.usehull)[2]);
-            let start = [
-                (F::x(vel[0]) / sp * F::x(16.0) + F::x(self.p.origin[0])).f(),
-                (F::x(vel[1]) / sp * F::x(16.0) + F::x(self.p.origin[1])).f(),
-                z.f(),
-            ];
+            let recip = self.rules.friction_edge_by_reciprocal();
+            let ahead = |i: usize| edge_ahead::<F>(vel[i], sp, self.p.origin[i], recip).f();
+            let start = [ahead(0), ahead(1), z.f()];
             let stop = [start[0], start[1], (z - F::x(34.0)).f()];
             let trace = self.trace(start, stop);
             let friction =
@@ -1365,7 +1364,7 @@ impl<F: Fpu> Pm<'_, F> {
         // held is used, which `StaleArgs` reproduces.
         let angles = match mode {
             OBS_CHASE_LOCKED => [10.0 - pe.angles[0], pe.angles[1], pe.angles[2]],
-            OBS_IN_EYE => pe.angles,
+            OBS_IN_EYE => [self.rules.in_eye_pitch(pe.angles[0]), pe.angles[1], pe.angles[2]],
             OBS_LOCKED_VIEW => STALE_ARGS.get().map(f32::from_bits),
             _ => self.p.angles,
         };
@@ -1777,10 +1776,12 @@ impl<F: Fpu> Pm<'_, F> {
             *d = *s as c_char;
         }
         self.p.sztexturename[n] = 0;
-        self.p.sztexturename[15] = 0;
-        let len = self.p.sztexturename.iter().position(|&c| c == 0).unwrap_or(15);
+        // TS 3.0 ends the name at `sztexturename[15]`, the SDK at `[12]`.
+        let limits = self.rules.texture_limits();
+        self.p.sztexturename[limits.name_chars] = 0;
+        let len = self.p.sztexturename.iter().position(|&c| c == 0).unwrap_or(limits.name_chars);
         let bytes: Vec<u8> = self.p.sztexturename[..len].iter().map(|&c| c as u8).collect();
-        self.p.chtexturetype = textures::find(&bytes) as c_char;
+        self.p.chtexturetype = textures::find_in(&bytes, limits) as c_char;
     }
 }
 
@@ -1816,15 +1817,29 @@ fn spline_fraction<F: Fpu>(value: f32, scale: f32) -> F::N {
     value_squared * F::x(3.0) - (value_squared + value_squared) * value
 }
 
+/// `PM_Friction`'s edge-trace start on one axis, 16 units ahead along the velocity, unrounded:
+/// `vel / speed * 16 + origin`, or with `by_reciprocal` ([`PmRules::friction_edge_by_reciprocal`])
+/// `(1 / speed) * vel * 16 + origin`, the reciprocal kept on the stack. `speed` is the stored float.
+fn edge_ahead<F: Fpu>(vel: f32, speed: F::N, origin: f32, by_reciprocal: bool) -> F::N {
+    if by_reciprocal { F::x(1.0) / speed * F::x(vel) * F::x(16.0) + F::x(origin) } else { F::x(vel) / speed * F::x(16.0) + F::x(origin) }
+}
+
 /// `PM_CalcRoll` (0x1006d4, client 0x1002e120), returned unrounded. MSVC sums the dot product
-/// from z down and stores `side` to a `float` before `fabs`.
-fn calc_roll<F: Fpu>(angles: Vec3, velocity: Vec3, rollangle: f32, rollspeed: f32) -> F::N {
+/// from z down and stores `side` to a `float` before `fabs`. `divides_first`
+/// ([`PmRules::roll_divides_first`]): `side / rollspeed * rollangle`.
+fn calc_roll<F: Fpu>(angles: Vec3, velocity: Vec3, rollangle: f32, rollspeed: f32, divides_first: bool) -> F::N {
     let (_, right, _) = F::angle_vectors(angles);
     let side = F::dot_in(velocity, right, F::ZYX);
     let sign = if side >= F::ZERO { F::x(1.0) } else { F::x(-1.0) };
     let side = if F::MSVC { F::x(side.f()) } else { side }.abs();
     let value = F::x(rollangle);
-    let side = if side >= F::x(rollspeed) { value } else { side * value / F::x(rollspeed) };
+    let side = if side >= F::x(rollspeed) {
+        value
+    } else if divides_first {
+        side / F::x(rollspeed) * value
+    } else {
+        side * value / F::x(rollspeed)
+    };
     side * sign
 }
 

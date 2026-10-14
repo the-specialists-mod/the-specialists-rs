@@ -914,12 +914,14 @@ pub fn hud_key_event(down: bool, key: i32, binding: &CStr) -> i32 {
 const K_ESCAPE: i32 = 27;
 
 /// `HUD_Key_Event`'s first part: TS forwards keydown 'a' to the weapon element as slot 11, then
-/// opens the gate when the binding is one of the gated commands.
+/// opens the gate when the binding is one of the gated commands. `eventcode` guards only the
+/// slot-11 shortcut (0x10025a85): the gate value is `eax = 1` from 0x10025aa5, which the binding
+/// compares never touch, so a gated key's release opens the gate too (issue #144).
 pub fn key_event(down: bool, key: i32, binding: &CStr) {
     if down && key == b'a' as i32 {
         hud::select_slot(11);
     }
-    if down && binding_is_gated(binding.to_str().unwrap_or("")) {
+    if binding_is_gated(binding.to_str().unwrap_or("")) {
         REAL_KEY.0.set(true);
     }
 }
@@ -1328,6 +1330,15 @@ mod tests {
         assert!(!binding_is_gated("+duck"));
         assert!(!binding_is_gated("+alt1"));
         assert!(!binding_is_gated("+attack;wait")); // literal comparison, like TS
+        // HUD_Key_Event opens the gate on a gated key's release as well as its press.
+        for down in [true, false] {
+            REAL_KEY.0.set(false);
+            key_event(down, b'w' as i32, c"+forward");
+            assert!(REAL_KEY.0.get(), "down={down}");
+            REAL_KEY.0.set(false);
+            key_event(down, b'c' as i32, c"+duck");
+            assert!(!REAL_KEY.0.get(), "down={down}");
+        }
     }
 
     #[test]

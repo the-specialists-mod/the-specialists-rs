@@ -277,9 +277,15 @@ pub fn player_think(p: &mut Player, cx: &mut Cx) -> bool {
     lifecycle::player_think(p, cx)
 }
 
-/// `tail` is false on the frame a train is lost (TS's PreThink returns before its tail).
-pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
+/// `tail` is false on the frame a train is lost (TS's PreThink returns before its tail). True
+/// when [`pre_think_end`] is due this frame (alive, not observing, `tail`).
+pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) -> bool {
     lifecycle::pre_think(p, cx, tail)
+}
+
+/// PreThink's last steps: the end of spawn protection and the delayed suicide (issue #155).
+pub fn pre_think_end(p: &mut Player, cx: &mut Cx) {
+    lifecycle::pre_think_end(p, cx)
 }
 
 pub fn post_think(p: &mut Player, cx: &mut Cx) {

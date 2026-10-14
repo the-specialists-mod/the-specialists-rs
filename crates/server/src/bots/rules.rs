@@ -14,7 +14,7 @@
 //! module timers, the view turning, the buttons). A replacement module gets the same `Brain`,
 //! `Player` and `Cx` the native one does, and the native helpers are public for it.
 
-use super::brain::{self, Brain};
+use super::brain::{self, Brain, btn};
 use super::{attack, modules, states};
 use crate::player::Player;
 use crate::world::{Cx, DamageInfo};
@@ -114,6 +114,30 @@ pub trait NativeBotRules: Sync {
     /// `UpdateButtons` (0x1006f4b0), at the start of `Think`.
     fn update_buttons(&self, b: &mut Brain, now: f32) {
         b.update_bits(now);
+    }
+
+    // ---- navigation (`CBotNav`) ----
+
+    /// `Navigate`'s ladder buttons (0x1006fc00): on a ladder, climb down (`down`: at or above
+    /// the waypoint) or up. 3.0 presses the combined masks `DUCK|BACK` (or `DUCK|FORWARD`) for
+    /// 1 s and `JUMP|FORWARD` (or `JUMP|BACK`) for 0 s, which with per-bit timers lets go of the
+    /// jump and the other direction.
+    fn ladder_buttons(&self, b: &mut Brain, down: bool, now: f32) {
+        let (hold, other) = if down { (btn::BACK, btn::FORWARD) } else { (btn::FORWARD, btn::BACK) };
+        b.press(btn::DUCK | hold, 1.0, now);
+        b.press(btn::JUMP | other, 0.0, now);
+    }
+
+    /// `RandomWanderPoint`'s trace end (0x1006f8c0): `origin + dir * dist`, the products
+    /// rounded to float first (3.0's z product stays on the x87 stack, but `dir.z` is 0).
+    fn wander_end(&self, dir: [f32; 3], dist: f32, origin: [f32; 3]) -> [f32; 3] {
+        brain::add(brain::scale(dir, dist), origin)
+    }
+
+    /// `GetSteerPoint`'s forward probe end (0x10070400): `origin + v_forward * 24`, the whole
+    /// product vector stored as floats first.
+    fn steer_probe_end(&self, forward: [f32; 3], origin: [f32; 3]) -> [f32; 3] {
+        brain::add(brain::scale(forward, 24.0), origin)
     }
 
     /// The respawn module (bit 0x100, inline at 0x1006f5b8): the `respawn` command's

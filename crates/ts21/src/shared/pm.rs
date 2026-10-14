@@ -18,7 +18,7 @@
 
 use crate::Ts21;
 use shared::gameplay::PmRules;
-use shared::gameplay::pm::{Arith, GroundAccel, Jump, Vec3};
+use shared::gameplay::pm::{Arith, GroundAccel, Jump, TextureLimits, Vec3};
 use shared::pm::{Fpu, FpuMath, Gcc, Msvc, Num};
 
 /// `PM_Accelerate` (0x100315f0): the ground acceleration factor while not prone and not ducked,
@@ -144,7 +144,38 @@ impl PmRules for Ts21 {
     fn max_player_speed(&self) -> f32 {
         MAX_SPEED
     }
+
+    /// The SDK's table (issue #145): `PM_InitTextureTypes` (0x1002ff30) stops at 512 entries
+    /// and cuts names to 12 characters in 13-byte slots, `pfnPM_FindTextureType` (0x100301c0)
+    /// compares 12 (`strnicmp(.., 0xc)`), and `PM_CatagorizeTextureType` (0x10030a20) ends the
+    /// name at `sztexturename[12]`. The shipped `materials.txt` lists about 1140, so entries
+    /// 513 on aren't known. 2.1's `client.dll` table (0x10058610) has the same limits.
+    fn texture_limits(&self) -> TextureLimits {
+        TextureLimits::SDK
+    }
+
+    /// `PM_SpectatorMove` (0x100324c0, at 0x100325d0): in eye, the target's pitch × the float
+    /// -2.0 (0x10085f14). The engine sets every player's entity pitch to `-v_angle / 3`
+    /// (`SV_RunCmd`), in 2.1 as now, so the in-eye observer's view pitch is two thirds of the
+    /// target's, as in 2.1. The product is exact.
+    fn in_eye_pitch(&self, target_pitch: f32) -> f32 {
+        target_pitch * IN_EYE_PITCH_SCALE
+    }
+
+    /// `PM_CalcRoll` (0x10033af1): `fdiv [rollspeed]; fmul [rollangle]`.
+    fn roll_divides_first(&self) -> bool {
+        true
+    }
+
+    /// `PM_Friction` (0x10031728..0x1003174d): `fld 1.0; fdiv speed`, then `inv * vel[i] * 16 +
+    /// origin[i]` for x and y.
+    fn friction_edge_by_reciprocal(&self) -> bool {
+        true
+    }
 }
+
+/// `PM_SpectatorMove`'s in-eye pitch factor, the float at 0x10085f14.
+pub const IN_EYE_PITCH_SCALE: f32 = -2.0;
 
 /// `VectorNormalize` (0x1002fc10): 3.0's, except that its `length != 0` test is IEEE's, so a NaN
 /// length normalises. Returns the length (unrounded in MSVC, a `float` in GCC).

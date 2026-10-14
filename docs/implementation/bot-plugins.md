@@ -94,7 +94,7 @@ native backend's business, not the host's and not the gameplay plugin's:
   unchanged. Hooks: creation (`random_model_in_teamplay`, `learn_on_empty_graph`,
   `stored_skill`, `team_key`, `texts`), the `CBot` overrides (`spawn_post`, `trace_attack`), the
   brain (`delay` for every module timer, the states and the stuck window; `runs_ai`, `turn_rate`,
-  `update_view`, `look_at`, `press` / `release` / `update_buttons`, `respawn`) and whole modules
+  `update_view`, `look_at`, `press` / `release` / `update_buttons`, `respawn`), navigation (`ladder_buttons`, `wander_end`, `steer_probe_end`) and whole modules
   (`state_think`, `vision`, `attack`, `buy`, `look_around`, `stunt_mode`). Coarse where a ruleset
   replaces a module, fine where it changes one value inside shared code (the timers, the view,
   the buttons). A replacement gets the same `Brain`, `Player` and `Cx` and uses the native

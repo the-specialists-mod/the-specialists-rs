@@ -154,4 +154,19 @@ pub trait ClientRules: Sync {
     fn slowmo_icon(&self) -> bool {
         false
     }
+
+    /// Whether the end of `V_CalcRefdef` tints the screen (0, 100, 125) with alpha
+    /// `(1 - ts) * 50` while slowed and `cl_slowfade` is set. TS 3.0 does; the `TSFade` blend
+    /// doesn't depend on this.
+    fn slowmo_tint(&self) -> bool {
+        true
+    }
+
+    /// The weapon fire sound's pitch before its `RandomLong(-5, 5)` (`0x1003de90`). TS 3.0:
+    /// `100 - (int)(ts * -300)` (`0x1003eeed`), `ts` the eased time scale clamped to 0.01..1
+    /// (400 at normal speed). `slowmo_factor100` is the last `TSSlowMo` value as sent.
+    fn fire_pitch(&self, time_scale: f32, slowmo_factor100: f32) -> i32 {
+        let _ = slowmo_factor100;
+        100 - (time_scale * -300.0) as i32
+    }
 }
