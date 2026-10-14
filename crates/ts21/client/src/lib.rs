@@ -13,7 +13,7 @@ use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
 use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
-use ts_client::hud::draw::{HudOp, StatusLook, ftol};
+use ts_client::hud::draw::{HudOp, HudSprite, StatusLook, WeaponPanel, ftol, num};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
 use ts_client::view::{Bob, BobInput, EyeZ};
@@ -23,6 +23,86 @@ pub mod bullets;
 pub mod events;
 pub mod spectator;
 pub mod view;
+
+/// 2.1's attachment rows, as written (`0x10271a8c`, `0x10271a7c`, `0x1026e778`, `0x10271a74`).
+const ATTACHMENTS: [&str; 4] = ["Silencer", "Lasersight", "Flashlight", "Scope"];
+
+/// 2.1's fire-mode names (`switch (mode)` at `0x1008a9dc`; anything but 1..5 is full-auto).
+fn firemode_name(mode: u8) -> &'static str {
+    match mode {
+        1 => "Semi-auto",
+        2 => "Burst",
+        3 => "Pump-action",
+        4 => "Free Semi",
+        5 => "Free Full",
+        _ => "Full-auto",
+    }
+}
+
+/// 2.1's weapon panel (`FUN_1008a320`, from the weapon element's `Draw` at `0x10089ed3`): 128 ×
+/// 19 rows 20 apart, bottom-up from `(w − 0x88, h − 8)`, in the HUD colour (the `ftol`'d colour
+/// cvars):
+///
+/// * each owned attachment (`+0x798` bit) at alpha 15, or `15 + 30` while active (`+0x14`), its
+///   name as written in the colour / 2, and `item_installed.spr` at `x + 0x70` in the colour, or
+///   / 2 while inactive;
+/// * the ammo row at alpha 15: with an ammo type, the clip (`x + 2`), "/" at `x + 0x40` in the
+///   colour / 4 and the reserve at `ftol(x + 94.8148…)` (`0x10271a68`), each `DHN_3DIGITS |
+///   DHN_DRAWZERO` in the colour / 1.5 (`0x10270800`), red (195, 45, 45) at 0 or below; then the
+///   fire-mode and ammo-name rows (alpha 15, colour / 1.5). Without an ammo type only a stacking
+///   weapon's count, at the reserve's place on the same row, and no kung-fu bar;
+/// * the name row at alpha 0x23 (colour / 1.5);
+/// * scoped (`m_iFOV < 40`), `"%ix"` of `80 / m_iFOV` at (24, 24) in the colour.
+pub fn weapon_panel(p: &WeaponPanel) -> Vec<HudOp> {
+    const ROW: i32 = 0x14;
+    let hud = p.hud;
+    let div = |d: i32| hud.map(|c| c / d);
+    let soft = hud.map(|c| ftol(c as f64 / 1.5));
+    let count = |n: i32| if n > 0 { soft } else { [195, 45, 45] };
+    let right = ftol(p.w as f64 - 0x88 as f64 + 94.814_814_814_814_81);
+    let flags = num::DIGITS_3 | num::DRAW_ZERO;
+    let x = p.w - 0x88;
+    let mut y = p.h - 8;
+    let mut ops = Vec::new();
+    let fill = |ops: &mut Vec<HudOp>, y: i32, a: i32| ops.push(HudOp::Fill { x, y, w: 0x80, h: ROW - 1, rgb: hud, a });
+    for (bit, label) in ATTACHMENTS.iter().enumerate() {
+        let m = 1u32 << bit;
+        if p.owned & m == 0 {
+            continue;
+        }
+        y -= ROW;
+        let on = p.active & m != 0;
+        fill(&mut ops, y, if on { 15 + 30 } else { 15 });
+        ops.push(HudOp::Text { x: x + 2, y, text: label, rgb: div(2) });
+        ops.push(HudOp::Sprite { sprite: HudSprite::ItemInstalled, x: x + 0x70, y, rgb: if on { hud } else { div(2) } });
+    }
+    y -= ROW;
+    fill(&mut ops, y, 15);
+    if p.ammo == 0 {
+        if p.stack {
+            ops.push(HudOp::Number { x: right, y, flags, n: p.clip, rgb: count(p.clip) });
+        }
+    } else {
+        ops.push(HudOp::Number { x: x + 2, y, flags, n: p.clip, rgb: count(p.clip) });
+        ops.push(HudOp::Text { x: x + 0x40, y, text: "/", rgb: div(4) });
+        ops.push(HudOp::Number { x: right, y, flags, n: p.reserve, rgb: count(p.reserve) });
+        y -= ROW;
+        fill(&mut ops, y, 15);
+        ops.push(HudOp::Text { x: x + 2, y, text: firemode_name(p.firemode), rgb: soft });
+        y -= ROW;
+        fill(&mut ops, y, 15);
+        ops.push(HudOp::Label { x: x + 2, y, text: p.ammo_name.to_string(), rgb: soft });
+    }
+    y -= ROW;
+    fill(&mut ops, y, 0x23);
+    ops.push(HudOp::Label { x: x + 2, y, text: p.name.to_string(), rgb: soft });
+    // TS divides by `m_iFOV` unguarded (`idiv` at `0x1008ac57`); the port skips 0 rather than
+    // fault.
+    if p.fov < 40 && p.fov != 0 {
+        ops.push(HudOp::Label { x: 0x18, y: 0x18, text: format!("{}x", 80i32.wrapping_div(p.fov)), rgb: hud });
+    }
+    ops
+}
 
 /// 2.1's own spectator state ([`spectator::Hltv`]).
 static HLTV: Global<RefCell<spectator::Hltv>> = Global(RefCell::new(spectator::Hltv::NEW));
@@ -388,6 +468,11 @@ impl ClientRules for Ts21Client {
         ops.push(HudOp::Fill { x, y, w: 0x80, h: 0x13, rgb: hud, a: 0x23 });
         ops.push(HudOp::Text { x: x + 2, y, text: "Kung-Fu", rgb: hud.map(|c| ftol(c as f64 / 1.5)) });
         Some(ops)
+    }
+
+    /// 2.1's weapon panel (`0x1008a320`, issue #176).
+    fn weapon_panel(&self, p: &WeaponPanel) -> Option<Vec<HudOp>> {
+        Some(weapon_panel(p))
     }
 
     /// `CashBased()` (0x1006b2f0) is `m_Teamplay ≥ 2 || SrvSett 1`, so the menu spends the live

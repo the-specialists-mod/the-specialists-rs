@@ -595,6 +595,73 @@ fn kungfu_weapon_info_resets_menu_selection() {
     assert!(!v30().kungfu_weapon_info_resets_menu_selection());
 }
 
+/// Issue #176: 2.1's weapon panel (0x1008a320) on a 640 x 480 screen, HUD colour (255, 160, 0):
+/// an M4A1-style gun with the silencer and an active laser, an empty reserve, semi-auto.
+#[test]
+fn weapon_panel_look() {
+    use ts_client::hud::draw::HudOp::{Fill, Label, Number, Sprite, Text};
+    let hud = [255, 160, 0];
+    let p = WeaponPanel {
+        w: 640,
+        h: 480,
+        hud,
+        owned: 0b11,
+        active: 0b10,
+        name: "M4A1",
+        ammo: 2,
+        stack: false,
+        ammo_name: "5.56 Nato",
+        clip: 30,
+        reserve: 0,
+        firemode: 1,
+        fov: 90,
+    };
+    let half = [127, 80, 0];
+    let soft = [170, 106, 0]; // ftol(c / 1.5)
+    let item = ts_client::hud::draw::HudSprite::ItemInstalled;
+    let n = ts_client::hud::draw::num::DIGITS_3 | ts_client::hud::draw::num::DRAW_ZERO;
+    let ops = v21().weapon_panel(&p).unwrap();
+    assert_eq!(
+        ops,
+        [
+            Fill { x: 504, y: 452, w: 128, h: 19, rgb: hud, a: 15 },
+            Text { x: 506, y: 452, text: "Silencer", rgb: half },
+            Sprite { sprite: item, x: 616, y: 452, rgb: half },
+            Fill { x: 504, y: 432, w: 128, h: 19, rgb: hud, a: 45 },
+            Text { x: 506, y: 432, text: "Lasersight", rgb: half },
+            Sprite { sprite: item, x: 616, y: 432, rgb: hud },
+            Fill { x: 504, y: 412, w: 128, h: 19, rgb: hud, a: 15 },
+            Number { x: 506, y: 412, flags: n, n: 30, rgb: soft },
+            Text { x: 568, y: 412, text: "/", rgb: [63, 40, 0] },
+            Number { x: 598, y: 412, flags: n, n: 0, rgb: [195, 45, 45] },
+            Fill { x: 504, y: 392, w: 128, h: 19, rgb: hud, a: 15 },
+            Text { x: 506, y: 392, text: "Semi-auto", rgb: soft },
+            Fill { x: 504, y: 372, w: 128, h: 19, rgb: hud, a: 15 },
+            Label { x: 506, y: 372, text: "5.56 Nato".into(), rgb: soft },
+            Fill { x: 504, y: 352, w: 128, h: 19, rgb: hud, a: 0x23 },
+            Label { x: 506, y: 352, text: "M4A1".into(), rgb: soft },
+        ]
+    );
+    // No ammo type: the stack count alone (at the reserve's place, same row), no kung-fu bar;
+    // scoped, the zoom factor.
+    let knives = WeaponPanel { owned: 0, ammo: 0, stack: true, clip: 5, fov: 20, name: "Knife", ..p.clone() };
+    assert_eq!(
+        v21().weapon_panel(&knives).unwrap(),
+        [
+            Fill { x: 504, y: 452, w: 128, h: 19, rgb: hud, a: 15 },
+            Number { x: 598, y: 452, flags: n, n: 5, rgb: soft },
+            Fill { x: 504, y: 432, w: 128, h: 19, rgb: hud, a: 0x23 },
+            Label { x: 506, y: 432, text: "Knife".into(), rgb: soft },
+            Label { x: 24, y: 24, text: "4x".into(), rgb: hud },
+        ]
+    );
+    let melee = WeaponPanel { stack: false, ..knives.clone() };
+    assert_eq!(v21().weapon_panel(&melee).unwrap().len(), 4, "no count without the stack flag");
+    assert_eq!(firemode_name(0), "Full-auto");
+    assert_eq!(firemode_name(6), "Full-auto");
+    assert!(v30().weapon_panel(&p).is_none(), "3.0 draws its own DrawWeaponInfo");
+}
+
 /// Issue #111: 2.1's kung-fu bar (0x1008a0f0) on a 640 x 480 screen.
 #[test]
 fn kungfu_bar_look() {

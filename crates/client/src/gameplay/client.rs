@@ -412,6 +412,13 @@ pub trait ClientRules: Sync {
         let _ = host;
     }
 
+    /// The weapon panel the weapon element draws for a held weapon (not kung fu) while
+    /// `cl_realhud` is 0, as a layout. `None` is TS 3.0's `DrawWeaponInfo` (1004d7e0).
+    fn weapon_panel(&self, panel: &crate::hud::draw::WeaponPanel) -> Option<Vec<crate::hud::draw::HudOp>> {
+        let _ = panel;
+        None
+    }
+
     /// Whether a `WeaponInfo` for kung fu (id 0) puts the weapon menu's selection back on its
     /// first slot (`menu_row` and `menu_bucket` 0; the menu stays open). TS 3.0's
     /// `MsgFunc_WeaponInfo` doesn't touch the selection.

@@ -62,6 +62,42 @@ pub enum HudOp {
     Fill { x: i32, y: i32, w: i32, h: i32, rgb: [i32; 3], a: i32 },
     /// `DrawHudString(x, y, ScreenWidth, text, r, g, b)`.
     Text { x: i32, y: i32, text: &'static str, rgb: [i32; 3] },
+    /// [`HudOp::Text`] with text made at run time (weapon and ammo names, `"%ix"`).
+    Label { x: i32, y: i32, text: String, rgb: [i32; 3] },
+    /// `DrawHudNumber(x, y, flags, n, r, g, b)` (`num` flags).
+    Number { x: i32, y: i32, flags: u8, n: i32, rgb: [i32; 3] },
+    /// `SPR_Set(sprite, r, g, b)` then `SPR_DrawAdditive(0, x, y, NULL)`.
+    Sprite { sprite: HudSprite, x: i32, y: i32, rgb: [i32; 3] },
+}
+
+/// The HUD sprites a [`HudOp::Sprite`] can name.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HudSprite {
+    /// `sprites/weapons/item_installed.spr`.
+    ItemInstalled,
+}
+
+/// What a ruleset's weapon panel draws from
+/// ([`ClientRules::weapon_panel`](crate::gameplay::ClientRules::weapon_panel)): the screen, the
+/// HUD colour and the held weapon's state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeaponPanel<'a> {
+    pub w: i32,
+    pub h: i32,
+    pub hud: [i32; 3],
+    /// Owned attachment bits and the active ones (`ActItems`).
+    pub owned: u32,
+    pub active: u32,
+    /// The weapon info's name, ammo type and stack flag, and the ammo type's name.
+    pub name: &'a str,
+    pub ammo: u8,
+    pub stack: bool,
+    pub ammo_name: &'a str,
+    pub clip: i32,
+    pub reserve: i32,
+    pub firemode: u8,
+    /// `m_iFOV`.
+    pub fov: i32,
 }
 
 /// How a ruleset's status panel differs from TS 3.0's `DrawStatusPanel` (1004a3e0)

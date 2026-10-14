@@ -364,6 +364,7 @@ The hooks so far:
 | `ClientRules` | `kungfu_power_from_weapon_info(clip)` | none (`KFuPower` alone sets the bar) | `hud/state.rs` `WeaponInfo` (id 0) |
 | `ClientRules` | `kungfu_weapon_info_resets_menu_selection()` | false (the slot menu keeps its selection) | `hud/state.rs` `WeaponInfo` (id 0) |
 | `ClientRules` | `kungfu_label(power, hud, w, h)` | none: 3.0's `DrawKungFuLabel`; a ruleset returns its bar as `hud::draw::HudOp`s | `hud/weapons.rs` `draw_kungfu_label` |
+| `ClientRules` | `weapon_panel(panel)` | none: 3.0's `DrawWeaponInfo`; a ruleset returns its panel as `hud::draw::HudOp`s from a `WeaponPanel` (screen, HUD colour, attachments, names, clip, reserve, fire mode, FOV) | `hud/weapons.rs` `draw_weapon_info` |
 | `ClientRules` | `status_look()` | `StatusLook::default()`: 3.0's stance health fill, kevlar icon alone, team-coloured team bar, titles labels, icons × 2/3 | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_tint()` | true (the `cl_slowfade` tint while slowed) | `view.rs` `write_screen_fade` |

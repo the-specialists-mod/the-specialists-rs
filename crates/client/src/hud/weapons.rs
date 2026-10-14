@@ -381,6 +381,25 @@ fn draw_weapon_info(dc: &Dc, h: &Hud) {
     let row = 20;
     let active =
         crate::state::with(|s| s.active_items.get(engine().local_player().map_or(0, |p| p.index as usize)).copied().unwrap_or(0)) as u32;
+    let panel = super::draw::WeaponPanel {
+        w: dc.w(),
+        h: dc.h(),
+        hud: dc.hud,
+        owned: h.attachments,
+        active,
+        name: &info.name,
+        ammo: info.ammo,
+        stack: info.stack,
+        ammo_name: tables().ammo(info.ammo).map_or("", |a| a.name.as_str()),
+        clip: h.clip,
+        reserve: h.reserve[info.ammo as usize & 15],
+        firemode: h.firemode,
+        fov: crate::state::with(|s| s.fov) as i32,
+    };
+    if let Some(ops) = crate::gameplay::hud_rules(h.gameplay).weapon_panel(&panel) {
+        dc.ops(&ops);
+        return;
+    }
     for (bit, label) in ATTACHMENT_LABELS.iter().enumerate() {
         let m = 1u32 << bit;
         if h.attachments & m == 0 {

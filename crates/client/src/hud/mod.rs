@@ -951,6 +951,13 @@ impl Dc<'_> {
                 draw::HudOp::Text { x, y, text, rgb } => {
                     self.string(x, y, text, rgb);
                 }
+                draw::HudOp::Label { x, y, ref text, rgb } => {
+                    self.string(x, y, text, rgb);
+                }
+                draw::HudOp::Number { x, y, flags, n, rgb } => {
+                    self.number(x, y, flags, n, rgb);
+                }
+                draw::HudOp::Sprite { sprite: draw::HudSprite::ItemInstalled, x, y, rgb } => self.spr(self.g.ts.item_installed, x, y, rgb),
             }
         }
     }
