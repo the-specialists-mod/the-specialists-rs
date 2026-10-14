@@ -193,6 +193,20 @@ pub trait ClientRules: Sync {
         bob.calc(input)
     }
 
+    /// `V_CalcNormalRefdef`'s eye before the camera bob: `simorg` plus the view height, smoothed.
+    /// TS 3.0: [`EyeZ::eye`](crate::view::EyeZ::eye), the view height eased at `min(15·ft, 1)` on
+    /// z only, then `V_SmoothStairs` (`0x100677d0`) on the eye z (`0x100679ee..0x10067a46`).
+    fn eye_origin(&self, eye: &mut crate::view::EyeZ, simorg: Vec3, viewheight: Vec3, on_ground: bool, ft: f32) -> Vec3 {
+        eye.eye(simorg, viewheight, on_ground, ft)
+    }
+
+    /// The third-person body cam's z smoothing, on the same state as [`eye_origin`](Self::eye_origin).
+    /// TS 3.0: [`EyeZ::body_cam_z`](crate::view::EyeZ::body_cam_z), `V_SmoothStairs` again
+    /// (`0x10068313`).
+    fn body_cam_z(&self, eye: &mut crate::view::EyeZ, z: f32, on_ground: bool, ft: f32) -> f32 {
+        eye.body_cam_z(z, on_ground, ft)
+    }
+
     /// Whether `EV_TS_FireBullets` queues client bullets (`ClientBullets_Add`) instead of tracing
     /// at once. TS 3.0 (`0x10045a8b`): with `realbullet` (`SrvSett` 0) on or the eased time scale
     /// below 0.99.

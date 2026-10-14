@@ -41,10 +41,8 @@ struct View {
     /// the HUD's concussion level (`0x10024b63`), which only the TFC `Concuss` message sets.
     idlescale: f32,
     // smoothing
-    /// Smoothed view height (`0x10191d90`). Zero-initialised and never reset, as in TS, so the
-    /// first spawn after the library loads eases the eye up from the origin.
-    vh: f32,
-    stairs: Stairs,
+    /// The eye z's smoothing ([`ClientRules::eye_origin`](crate::gameplay::ClientRules::eye_origin)).
+    eye_z: EyeZ,
     roll: f32,
     // kick (`0x10191d10` target, `0x101914f8` current) and the view-shake spring
     kick_target: [f32; 2],
@@ -270,6 +268,36 @@ impl Stairs {
         self.ofs *= 1.0 - k;
         self.was_on_ground = on_ground;
         out
+    }
+}
+
+/// The eye z's smoothing state, which `V_CalcNormalRefdef` builds the eye from
+/// ([`ClientRules::eye_origin`](crate::gameplay::ClientRules::eye_origin) and
+/// [`body_cam_z`](crate::gameplay::ClientRules::body_cam_z)). Zero-initialised and never reset, as
+/// in TS, so the first spawn after the library loads eases the eye up from the origin.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EyeZ {
+    /// TS 3.0's smoothed view height (`0x10191d90`).
+    vh: f32,
+    /// TS 3.0's `V_SmoothStairs` state.
+    stairs: Stairs,
+    /// Last frame's eye z, for a ruleset that follows the whole eye z instead (TS 3.0 doesn't
+    /// use it).
+    pub follow_z: f32,
+}
+
+impl EyeZ {
+    /// TS 3.0's eye (`0x100679ee..0x10067a46`): `simorg` with the view height eased at
+    /// `min(15·ft, 1)` on z only, then `V_SmoothStairs` on that eye z.
+    pub fn eye(&mut self, simorg: Vec3, viewheight: Vec3, on_ground: bool, ft: f32) -> Vec3 {
+        self.vh = ease_view_height(self.vh, viewheight[2], ft);
+        [simorg[0], simorg[1], self.stairs.smooth(simorg[2] + self.vh, on_ground, ft)]
+    }
+
+    /// TS 3.0's third-person body cam z: a second `V_SmoothStairs` this frame (`0x10068313`) on
+    /// the same state.
+    pub fn body_cam_z(&mut self, z: f32, on_ground: bool, ft: f32) -> f32 {
+        self.stairs.smooth(z, on_ground, ft)
     }
 }
 
@@ -1257,14 +1285,12 @@ fn calc_normal(p: &mut ref_params_t) {
         p.simorg = org;
     }
 
-    // vieworg = simorg with the smoothed view height on z (only z), then stair smoothing of that
-    // eye z (`0x100679ee..0x10067a46`). During a stunt the server sends `view_ofs` 0 (`NO_VIEW`), so the eye
+    // vieworg = simorg plus the ruleset's smoothed view height (TS 3.0: on z only, then stair
+    // smoothing of that eye z). During a stunt the server sends `view_ofs` 0 (`NO_VIEW`), so the eye
     // eases down to the hull centre like TS's.
     let on_ground = p.onground != 0;
     with(|w| {
-        w.vh = ease_view_height(w.vh, p.viewheight[2], ft);
-        let z = w.stairs.smooth(p.simorg[2] + w.vh, on_ground, ft);
-        p.vieworg = [p.simorg[0], p.simorg[1], z];
+        p.vieworg = rules.eye_origin(&mut w.eye_z, p.simorg, p.viewheight, on_ground, ft);
         if let Some(eye) = w.bob.eye {
             p.vieworg = v::add(p.vieworg, eye);
         }
@@ -1375,7 +1401,7 @@ fn calc_normal(p: &mut ref_params_t) {
             let org = body_cam(v::add(ent_org, p.viewheight), state.ducked, cam_angles[0], cf, cu2);
             // TS runs `V_SmoothStairs` a second time this frame, on the body cam (`0x10068313`),
             // advancing the same state: see the client-rendering doc.
-            let z = with(|w| w.stairs.smooth(org[2], on_ground, ft));
+            let z = with(|w| rules.body_cam_z(&mut w.eye_z, org[2], on_ground, ft));
             p.vieworg = [org[0], org[1], z];
         } else {
             let want = v::add(v::add(v::ma(p.vieworg, back, cf), v::scale(cu2, up_ofs)), v::scale(cr2, right_ofs));
@@ -1991,17 +2017,17 @@ mod tests {
         // z 0: on the first frame on the ground both ease, the stair state toward an eye that is
         // itself still low.
         let mut w = View::default();
-        assert_eq!(w.vh, 0.0);
-        w.vh = ease_view_height(w.vh, 28.0, 0.01);
-        assert!((w.vh - 4.2).abs() < 1e-5, "{}", w.vh);
-        let z = w.stairs.smooth(100.0 + w.vh, true, 0.01);
+        assert_eq!(w.eye_z.vh, 0.0);
+        w.eye_z.vh = ease_view_height(w.eye_z.vh, 28.0, 0.01);
+        assert!((w.eye_z.vh - 4.2).abs() < 1e-5, "{}", w.eye_z.vh);
+        let z = w.eye_z.stairs.smooth(100.0 + w.eye_z.vh, true, 0.01);
         assert!((z - 104.2 * 0.15).abs() < 1e-4, "{z}");
         // Both settle on simorg + view height.
         for _ in 0..200 {
-            w.vh = ease_view_height(w.vh, 28.0, 0.01);
-            w.stairs.smooth(100.0 + w.vh, true, 0.01);
+            w.eye_z.vh = ease_view_height(w.eye_z.vh, 28.0, 0.01);
+            w.eye_z.stairs.smooth(100.0 + w.eye_z.vh, true, 0.01);
         }
-        assert!((w.vh - 28.0).abs() < 1e-3 && (w.stairs.smooth(128.0, true, 0.01) - 128.0).abs() < 1e-3);
+        assert!((w.eye_z.vh - 28.0).abs() < 1e-3 && (w.eye_z.stairs.smooth(128.0, true, 0.01) - 128.0).abs() < 1e-3);
         // A slow first frame (15·ft ≥ 1) takes the view height at once.
         assert_eq!(ease_view_height(0.0, 28.0, 0.1), 28.0);
     }

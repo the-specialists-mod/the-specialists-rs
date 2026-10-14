@@ -454,3 +454,36 @@ fn weapon_events() {
     assert_eq!(b"CMTPYVW".map(material_volume), [0.9, 0.9, 0.8, 0.8, 0.8, 0.5, 0.9].map(Some));
     assert_eq!(material_volume(b'F'), None, "flesh plays nothing");
 }
+
+/// The eye (issue #167): 2.1 adds the raw view height on every axis and follows the eye z at
+/// `10·ft` (0x100b6b80), in the air too; 3.0 eases the view height (z only) and smooths stairs.
+#[test]
+fn eye_origin() {
+    use ts_client::view::EyeZ;
+    let (simorg, vh) = ([1.0, 2.0, 100.0], [0.5, 0.0, 28.0]);
+
+    let mut e = EyeZ::default();
+    let org = v21().eye_origin(&mut e, simorg, vh, true, 0.01);
+    // From the static's 0: d = −128, step = −128 × 0.1 × ft × 100 on the x87.
+    let step = (-128.0f64 * 0.1 * 0.01f32 as f64 * 100.0) as f32;
+    assert_eq!(org, [1.5, 2.0, 0.0 - step]);
+    assert!((org[2] - 12.8).abs() < 1e-5);
+    assert_eq!(e.follow_z, org[2], "the static keeps the eased z");
+    // No ground test: the same frame in the air eases the same.
+    let mut air = EyeZ::default();
+    assert_eq!(v21().eye_origin(&mut air, simorg, vh, false, 0.01), org);
+    // A slow frame (step past d) lands on the target.
+    let mut slow = EyeZ::default();
+    assert_eq!(v21().eye_origin(&mut slow, simorg, vh, true, 1.5), [1.5, 2.0, 128.0]);
+    // The body cam runs the same follow on the same state.
+    let z = v21().body_cam_z(&mut slow, 120.0, false, 0.01);
+    let step = ((128.0f64 - 120.0) * 0.1 * 0.01f32 as f64 * 100.0) as f32;
+    assert_eq!((z, slow.follow_z), (128.0 - step, 128.0 - step));
+
+    // TS 3.0: the view height on z only, eased at 15·ft (4.2), then the stair smoothing from z 0.
+    let mut e = EyeZ::default();
+    let org = v30().eye_origin(&mut e, simorg, vh, true, 0.01);
+    assert_eq!((org[0], org[1]), (1.0, 2.0));
+    assert!((org[2] - 104.2 * 0.15).abs() < 1e-4, "{}", org[2]);
+    assert_eq!(e.follow_z, 0.0, "3.0 doesn't follow");
+}

@@ -12,7 +12,7 @@ use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
 use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
 use ts_client::menus::buy::MenuRules;
-use ts_client::view::{Bob, BobInput};
+use ts_client::view::{Bob, BobInput, EyeZ};
 use ts21_gameplay::TS21;
 
 pub mod bullets;
@@ -174,6 +174,16 @@ impl ClientRules for Ts21Client {
     /// `V_CalcBob` (0x100b5c80) with its camera bob ([`view::calc`]).
     fn view_bob(&self, bob: &mut Bob, input: &BobInput) -> f32 {
         view::calc(bob, input)
+    }
+
+    /// The raw view height and the eye z follow (0x100b6b80, [`view::eye_origin`]).
+    fn eye_origin(&self, eye: &mut EyeZ, simorg: [f32; 3], viewheight: [f32; 3], _on_ground: bool, ft: f32) -> [f32; 3] {
+        view::eye_origin(eye, simorg, viewheight, ft)
+    }
+
+    /// The same follow (0x100b6b80, [`view::follow_z`]).
+    fn body_cam_z(&self, eye: &mut EyeZ, z: f32, _on_ground: bool, ft: f32) -> f32 {
+        view::follow_z(eye, z, ft)
     }
 
     /// `EV_TS_FireBullets` (0x1007c5e0): `SrvSett 0 == 1 || TSSlowMo != 0` ([`bullets::queues`]).

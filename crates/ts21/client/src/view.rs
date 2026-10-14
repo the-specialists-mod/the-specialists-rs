@@ -1,7 +1,7 @@
-//! TS 2.1's view bob (`V_CalcBob` 0x100b5c80, issue #164). f64 stands in for the x87 stack, as
-//! in the port's 3.0 bob.
+//! TS 2.1's view bob (`V_CalcBob` 0x100b5c80, issue #164) and eye height (issue #167). f64 stands
+//! in for the x87 stack, as in the port's 3.0 bob.
 
-use ts_client::view::{Bob, BobInput};
+use ts_client::view::{Bob, BobInput, EyeZ};
 
 /// Degrees to radians, the double at 0x10270240.
 const DEG: f64 = 0.017453292519943295;
@@ -74,4 +74,29 @@ fn smooth_z(b: &mut Bob, ft: f32) {
     }
     b.ofs[2] = b.smooth_z - step;
     b.smooth_z = b.ofs[2];
+}
+
+/// `V_CalcNormalRefdef`'s eye (0x100b6d49..0x100b6da9): `simorg` plus the raw view height on all
+/// three axes (no easing of its own), then [`follow_z`] on z. No stair smoothing.
+pub fn eye_origin(eye: &mut EyeZ, simorg: [f32; 3], viewheight: [f32; 3], ft: f32) -> [f32; 3] {
+    let mut org = [simorg[0] + viewheight[0], simorg[1] + viewheight[1], simorg[2] + viewheight[2]];
+    org[2] = follow_z(eye, org[2], ft);
+    org
+}
+
+/// The eye z smoother (0x100b6b80, thunk 0x10001cb7), called on the eye (0x100b6da4) and again
+/// on the third-person body cam (0x100b7c85), the same static (0x103206fc): `d = last − z`, `step = (last − z) × 0.1 × ft × 100`
+/// on the x87, both stored to floats; `step = d` when `|d| < |step|`; `z = last − step`, which
+/// becomes `last`. A `10·ft` follow, on the ground or not.
+pub fn follow_z(eye: &mut EyeZ, z: f32, ft: f32) -> f32 {
+    let last = eye.follow_z;
+    let d = last - z;
+    let mut step = ((last as f64 - z as f64) * 0.1 * ft as f64 * 100.0) as f32;
+    // `fcomp 0.0; and 0x4100; jne`: the negation branch takes `<= 0` and unordered.
+    let abs = |x: f32| if x > 0.0 { x } else { 0.0 - x };
+    if abs(d) < abs(step) {
+        step = d;
+    }
+    eye.follow_z = last - step;
+    eye.follow_z
 }
