@@ -14,6 +14,7 @@ use shared::gameplay::{GunRules, Predicted, SpreadDecay};
 use shared::pm::Arith;
 use shared::ts::powerup;
 use shared::weapons::random::shared_random_float_unrounded;
+use shared::weapons::spread::{PelletOffset, PelletSide, Vec3};
 use shared::weapons::table::{Tables, WeaponInfo};
 use shared::weapons::{Event, EventArgs, Gun, GunHost, id, info, kind, kind_of, mode};
 use std::cmp::Ordering;
@@ -73,6 +74,10 @@ impl GunRules for Ts21 {
             }
         }
         Some(triangle(seed, i))
+    }
+
+    fn pellet_dir(&self, side: PelletSide, aim: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], offset: PelletOffset) -> Vec3 {
+        pellet_dir(side, aim, right, up, spread, offset)
     }
 
     /// `EV_TS_FireAkimbo` (client `FUN_10075080`): a linked shot at +4 and -4, one gun at
@@ -155,6 +160,31 @@ pub fn client_slow_div(fuser1: f32) -> f64 {
 /// The time scale divisor of this side for the fire delays and `ScaleSpread`.
 fn side_slow_div(host: &dyn GunHost) -> f64 {
     if host.prediction() { client_slow_div(host.time_scale()) } else { slow_div(host.time_scale()) }
+}
+
+/// The direction of a pellet at offset `o` ([`GunRules::pellet_dir`]), as 2.1's builds round it
+/// (issue #161). `o.y` is a `float` here (the triangle's sums are stored). With `a = x·sx` and
+/// `b = y·sy` unrounded:
+///
+/// * the server (`ShootBulletsPlayer` 0x100401b7..0x10040260): `(aim + b·up) + a·right`, the x
+///   component wholly on the FPU; for y and z the products `a·right` and `b·up` and the sum
+///   `aim + b·up` are stored. 2.1 shipped no Linux server, so `ts_pm_arith gcc` computes the same.
+/// * the client (`FUN_1007c5e0` 0x1007c97f..0x1007ca0d, unoptimised but these stay on the FPU):
+///   `(a·right + aim) + b·up`, stored once.
+pub fn pellet_dir(side: PelletSide, aim: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], o: PelletOffset) -> Vec3 {
+    let (a, b) = (o.x as f64 * spread[0] as f64, o.y * spread[1] as f64);
+    let (r, u, aim) = (right.map(f64::from), up.map(f64::from), aim.map(f64::from));
+    match side {
+        PelletSide::Server(_) => {
+            let f = |v: f64| v as f32 as f64;
+            [
+                ((aim[0] + b * u[0]) + a * r[0]) as f32,
+                (f(aim[1] + f(b * u[1])) + f(a * r[1])) as f32,
+                (f(aim[2] + f(b * u[2])) + f(a * r[2])) as f32,
+            ]
+        }
+        PelletSide::Client => [0, 1, 2].map(|i| ((a * r[i] + aim[i]) + b * u[i]) as f32),
+    }
 }
 
 /// Pellet `i`'s triangle offset ([`GunRules::pellet_offset`]): each sum is stored as a `float`.

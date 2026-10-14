@@ -4,6 +4,7 @@
 //!   (`CBulletManager` update `FUN_1003f910`, think `FUN_1003f770`).
 //! * `CBasePlayer::TraceAttack` (0x10053310) and `CBasePlayer::TakeDamage` (0x10052cf0).
 
+use shared::pm::Ext;
 use ts_server::damage::{bits, hitgroup};
 use ts_server::player::damage::{HitDamage, PlayerHit};
 
@@ -47,9 +48,10 @@ pub fn bullet_damage(ammo: u8, weapon: u8, damage: f32, falloff: f32, simulated:
     (if simulated { b * mu * f } else { b * f * mu }) as f32
 }
 
-/// The range-falloff index: MSVC's `__ftol` truncates (0x100403a9, 0x1003ffe0).
-pub fn range_index(scaled: f32) -> i32 {
-    scaled as i32
+/// The range-falloff index: MSVC's `__ftol` truncates (0x100403a9, 0x1003ffe0) the scaled
+/// distance, which 2.1 too leaves unrounded on the FPU (`fst` keeps it in st0, 0x1004039d).
+pub fn range_index(scaled: Ext) -> i32 {
+    scaled.trunc_i32()
 }
 
 /// The penetration step (0x10040513..): `min(left, 48)`, the same as the simulated bullets'.
@@ -144,8 +146,10 @@ mod tests {
 
     #[test]
     fn bullet_constants() {
-        assert_eq!(range_index(9.99), 9, "truncated, not rounded");
-        assert_eq!(range_index(10.5), 10);
+        assert_eq!(range_index(Ext::from_f64(9.99)), 9, "truncated, not rounded");
+        assert_eq!(range_index(Ext::from_f64(10.5)), 10);
+        // Unrounded: just below 7 stays 6 where its `float` (7.0) would give 7.
+        assert_eq!(range_index(Ext::from_f64(6.999_999_999)), 6);
         assert_eq!(pierce_step(10.0), 10.0, "3.0 doubles it");
         assert_eq!(pierce_step(60.0), 48.0);
         assert_eq!(bullet_velocity_mult(1.0, false), 1.0);

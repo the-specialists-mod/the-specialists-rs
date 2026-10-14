@@ -64,12 +64,27 @@ pub trait GunRules: MeleeRules + Sync {
     /// The offset of pellet `i` (1-based) of a shot with random seed `seed`, in units of its
     /// spread, `(right, up)`, for the server's `ShootBulletsPlayer` and the client fire event's
     /// re-trace (`EV_TS_FireBullets`). `None` is TS 3.0's polar pattern, which each side
-    /// computes as its build does (the server [`spread::pellet_offset`], the client event in
-    /// single precision). `bot_random` is the engine's `RandomFloat(lo, hi)` when the server fires
-    /// for a bot, for rules that don't seed a bot's pellets.
+    /// computes as its build does ([`spread::polar_offset`] of each side's random draws).
+    /// `bot_random` is the engine's `RandomFloat(lo, hi)` when the server fires for a bot, for
+    /// rules that don't seed a bot's pellets.
     fn pellet_offset(&self, seed: u32, i: u32, bot_random: Option<&mut dyn FnMut(f32, f32) -> f32>) -> Option<(f32, f32)> {
         let _ = (seed, i, bot_random);
         None
+    }
+
+    /// The direction of a pellet at offset `offset` from the aim `aim` (not normalised), for the
+    /// server's `ShootBulletsPlayer` or the client fire event (`side`): TS 3.0's
+    /// [`spread::pellet_dir`], rounded as each of its builds does (issue #161).
+    fn pellet_dir(
+        &self,
+        side: spread::PelletSide,
+        aim: spread::Vec3,
+        right: spread::Vec3,
+        up: spread::Vec3,
+        spread: [f32; 2],
+        offset: spread::PelletOffset,
+    ) -> spread::Vec3 {
+        spread::pellet_dir(side, aim, right, up, spread, offset)
     }
 
     /// The client fire event's akimbo bullet origins (`EV_TS_FireAkimbo`), units along `v_right`

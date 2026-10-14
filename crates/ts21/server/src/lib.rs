@@ -315,7 +315,7 @@ impl ServerRules for Ts21Server {
         damage::bullet_damage(ammo, weapon, damage, falloff, simulated)
     }
 
-    fn bullet_range_index(&self, scaled: f32) -> i32 {
+    fn bullet_range_index(&self, scaled: shared::pm::Ext) -> i32 {
         damage::range_index(scaled)
     }
 
@@ -333,8 +333,9 @@ impl ServerRules for Ts21Server {
         0
     }
 
-    fn bullet_velocity_mult(&self, slowmul: f32, bullet_time: bool) -> f32 {
-        damage::bullet_velocity_mult(slowmul, bullet_time)
+    /// 2.1 shipped only `mp.dll`, whose update stores the factor as a `float` in every build.
+    fn bullet_velocity_mult(&self, _arith: shared::pm::Arith, slowmul: f32, bullet_time: bool) -> shared::pm::Ext {
+        shared::pm::Ext::from_f32(damage::bullet_velocity_mult(slowmul, bullet_time))
     }
 
     fn player_hit(&self, hit: &PlayerHit) -> HitDamage {

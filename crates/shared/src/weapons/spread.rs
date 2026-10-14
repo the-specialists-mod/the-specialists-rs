@@ -5,7 +5,7 @@
 
 use super::random::shared_random_float;
 use super::{kind, tables};
-use crate::pm::{Arith, Fpu, Gcc, Msvc, Num};
+use crate::pm::{Arith, Ext, Fpu, Gcc, Msvc, Num};
 
 pub type Vec3 = [f32; 3];
 
@@ -46,29 +46,93 @@ pub fn angle_vectors(angles: Vec3) -> (Vec3, Vec3, Vec3) {
     (forward, right, up)
 }
 
-/// Offsets of pellet `i` (1-based) in units of the spread: `(cos t * m, sin t * m)` with
-/// `t = SR(seed+i, -pi, pi)`, `r = SR(seed+i+1, 0, radial)`, `m = 1 - r^3` (weapons.md §5.4,
-/// client `EV_TS_FireBullets`). `radial` is the ammo's radial spread scale (1.0 for all ammo).
-pub fn pellet_offset(seed: u32, i: u32, radial: f32) -> (f32, f32) {
-    let pi = std::f32::consts::PI;
-    let t = shared_random_float(seed.wrapping_add(i), -pi, pi) as f64;
-    let r = shared_random_float(seed.wrapping_add(i).wrapping_add(1), 0.0, radial) as f64;
+/// A pellet's offset in units of the spread, `(right, up)`. Every TS build stores `x` as a
+/// `float`; `y` is what the build multiplies by the spread: mp.dll (0x10047d6f `fst`) and
+/// `client.dll` (0x1004596e) keep it unrounded at 53 bits, `ts_i386.so` (0x6fb5d) stores it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PelletOffset {
+    pub x: f32,
+    pub y: f64,
+}
+
+impl From<(f32, f32)> for PelletOffset {
+    /// An offset whose `y` is already a `float` (2.1's triangle sums).
+    fn from((x, y): (f32, f32)) -> Self {
+        PelletOffset { x, y: y as f64 }
+    }
+}
+
+/// TS 3.0's polar offset from its two draws, `t = SR(seed+i, -π, π)` (stored as a `float`) and
+/// `r = SR(seed+i+1, 0, radial)`: `m = 1 - r·r·r` and `(cos t·m, sin t·m)` on the x87 (mp.dll
+/// 0x10047d46..0x10047d6f, `client.dll` 0x10045941..0x1004596e). `r` is a 16-bit fraction, so
+/// `m` is exact in `f64`; the sine and cosine are the platform's, where the x87's `fsin` and
+/// `fcos` can differ in the last bit.
+pub fn polar_offset(t: f32, r: f32) -> PelletOffset {
+    let (t, r) = (t as f64, r as f64);
     let m = 1.0 - r * r * r;
-    ((t.cos() * m) as f32, (t.sin() * m) as f32)
+    PelletOffset { x: (t.cos() * m) as f32, y: t.sin() * m }
 }
 
-/// Direction of pellet `i`: `aim + right * x * spread_x + up * y * spread_y` (not normalised,
-/// as in TS).
-pub fn pellet_dir(aim: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], seed: u32, i: u32, radial: f32) -> Vec3 {
-    pellet_dir_at(aim, right, up, spread, pellet_offset(seed, i, radial))
+/// Offsets of pellet `i` (1-based) in units of the spread ([`polar_offset`] of the server's
+/// shared random draws; weapons.md §5.4). `radial` is the ammo's radial spread scale (1.0 for
+/// all ammo).
+pub fn pellet_offset(seed: u32, i: u32, radial: f32) -> PelletOffset {
+    let pi = std::f32::consts::PI;
+    let t = shared_random_float(seed.wrapping_add(i), -pi, pi);
+    let r = shared_random_float(seed.wrapping_add(i).wrapping_add(1), 0.0, radial);
+    polar_offset(t, r)
 }
 
-/// [`pellet_dir`] for the pellet offset `(x, y)` (in units of the spread) a ruleset picked
-/// ([`GunRules::pellet_offset`](crate::gameplay::GunRules::pellet_offset)).
-pub fn pellet_dir_at(aim: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], (x, y): (f32, f32)) -> Vec3 {
-    let sx = x * spread[0];
-    let sy = y * spread[1];
-    [aim[0] + sx * right[0] + sy * up[0], aim[1] + sx * right[1] + sy * up[1], aim[2] + sx * right[2] + sy * up[2]]
+/// Which TS build's pellet direction to reproduce: the server's (`ShootBulletsPlayer`, per
+/// `ts_pm_arith`) or the client fire event's (`EV_TS_FireBullets`, `client.dll`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PelletSide {
+    Server(Arith),
+    Client,
+}
+
+/// The direction of a pellet at offset `o`: `aim + right·x·spread[0] + up·y·spread[1]`, not
+/// normalised, rounded as `side`'s TS build does (issue #161). Each build orders and stores the
+/// products and sums differently:
+///
+/// * mp.dll (0x10047d6f..0x10047e71): `a = x·sx`, `b = y·sy` unrounded; `a·right[i]` and
+///   `b·up[i]` stored (`Vector` constructor arguments); x is `(aim + a·right) + b·up` with the
+///   inner sum unrounded, y and z add the stored `aim + a·right` (`Vector::operator+`).
+/// * `ts_i386.so` (0x6fb63..0x6fc12): `x`, `y` stored; `a·right` and `b·up` stored for x and y,
+///   the z products unrounded; `(aim + a·right) + b·up` in extended precision, one store each.
+/// * `client.dll` (0x10045970..0x100459de): `x·right[i]·sx` and `y` times `up[i]` and `sy` (in
+///   the order `up, sy` for x and z, `sy, up` for y), summed, plus `aim[i]`, one store each.
+pub fn pellet_dir(side: PelletSide, aim: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], o: PelletOffset) -> Vec3 {
+    let (sx, sy) = (spread[0] as f64, spread[1] as f64);
+    match side {
+        PelletSide::Server(Arith::Msvc) => {
+            let (a, b) = (o.x as f64 * sx, o.y * sy);
+            let ar = |i: usize| (a * right[i] as f64) as f32 as f64;
+            let bu = |i: usize| (b * up[i] as f64) as f32 as f64;
+            let sum = |i: usize| aim[i] as f64 + ar(i);
+            [((sum(0) + bu(0)) as f32), ((sum(1) as f32 as f64 + bu(1)) as f32), ((sum(2) as f32 as f64 + bu(2)) as f32)]
+        }
+        PelletSide::Server(Arith::Gcc) => {
+            let x = Gcc::x;
+            let (a, b) = (x(o.x) * x(spread[0]), x(o.y as f32) * x(spread[1]));
+            let c = |i: usize| {
+                let (ar, bu) = (a * x(right[i]), b * x(up[i]));
+                // x and y store both products; z keeps them on the stack.
+                let (ar, bu) = if i < 2 { (x(ar.f()), x(bu.f())) } else { (ar, bu) };
+                (x(aim[i]) + ar + bu).f()
+            };
+            [c(0), c(1), c(2)]
+        }
+        PelletSide::Client => {
+            let (xf, y) = (o.x as f64, o.y);
+            let (r, u) = (right.map(f64::from), up.map(f64::from));
+            [
+                ((xf * r[0] * sx + y * u[0] * sy) + aim[0] as f64) as f32,
+                ((y * sy * u[1] + xf * r[1] * sx) + aim[1] as f64) as f32,
+                ((y * u[2] * sy + xf * r[2] * sx) + aim[2] as f64) as f32,
+            ]
+        }
+    }
 }
 
 // ---- the TS builds' arithmetic -----------------------------------------------------------------
@@ -79,14 +143,7 @@ pub fn pellet_dir_at(aim: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], (x, y):
 // the [`Arith`] of the build it stands in for, as player movement does (`shared::pm::fpu`): the
 // server passes its `ts_pm_arith` selection (default `Msvc`, `mp.dll`), the client `Arith::CLIENT`.
 
-macro_rules! by_arith {
-    ($arith:expr, $f:ident($($a:expr),* $(,)?)) => {
-        match $arith {
-            Arith::Gcc => $f::<Gcc>($($a),*),
-            Arith::Msvc => $f::<Msvc>($($a),*),
-        }
-    };
-}
+use crate::by_arith;
 
 /// `FixedSlowAmt` (0x990bc; client `0x10055aa0`), behind every `GiveSlowMul`: the time scale with
 /// a floor of 0.01. (`ts_i386.so` substitutes the `double` 0.01, `client.dll`/`mp.dll` the `float`:
@@ -266,26 +323,33 @@ pub fn jump_kick_end(arith: Arith, src: Vec3, fwd: Vec3) -> Vec3 {
     by_arith!(arith, go(src, fwd))
 }
 
-/// `GetBulletVelocityMult(slowmul, bullet_time)` 0x99160 for simulated bullets.
-pub fn bullet_velocity_mult(slowmul: f32, bullet_time: bool) -> f32 {
-    if slowmul >= 0.99 {
-        return 1.0;
+/// `GetBulletVelocityMult(slowmul, bullet_time)` (0x99160, mp.dll 0x10067080) for simulated
+/// bullets: 1 from 0.99 up, else `slowmul / max((1 - slowmul²)·k, 1)` with `k` 10 in bullet
+/// time, all on the FPU. The value is returned as the x87 holds it for the caller, which is
+/// what the two `UpdateBullet`s differ in: mp.dll stores it as a `float` (0x100472e8), so
+/// `Msvc` gives that `float`; `ts_i386.so` multiplies by it unrounded (0x6f060), so `Gcc` gives
+/// the extended-precision quotient.
+pub fn bullet_velocity_mult(arith: Arith, slowmul: f32, bullet_time: bool) -> Ext {
+    fn go<F: Fpu>(s: f32, bt: bool) -> F::N {
+        let x = F::x;
+        if s >= 0.99 {
+            return x(1.0);
+        }
+        let d = (x(1.0) - x(s) * x(s)) * x(if bt { 10.0 } else { 1.0 });
+        // `1 > d` takes 1 (a NaN `d` stays).
+        let d = if x(1.0) > d { x(1.0) } else { d };
+        x(s) / d
     }
-    let d = ((1.0 - slowmul * slowmul) * if bullet_time { 10.0 } else { 1.0 }).max(1.0);
-    slowmul / d
+    match arith {
+        Arith::Gcc => go::<Gcc>(slowmul, bullet_time),
+        Arith::Msvc => Ext::from_f32(go::<Msvc>(slowmul, bullet_time).f()),
+    }
 }
 
 /// Ammo constants shared by every type (weapons.md §3): trace length and radial spread scale.
 pub const MAX_RANGE: f32 = 8192.0;
 pub const RADIAL_SPREAD: f32 = 1.0;
 pub const UNITS_PER_METER: f32 = 40.0;
-
-/// Range-falloff index for distance `dist` with the ammo's range unit
-/// (`round(dist / (unit * 10) * 10)`, round-to-nearest like the x87 default).
-pub fn range_index(dist: f32, unit: f32) -> i32 {
-    let d = dist / (unit * 10.0);
-    (d * 10.0).round_ties_even() as i32
-}
 
 /// Range unit of ammo type `ammo` (80 for 9mm if unknown).
 pub fn ammo_range_unit(ammo: u8) -> f32 {
@@ -308,13 +372,42 @@ mod tests {
     fn pellets_are_deterministic_and_inside_the_cone() {
         for seed in [0u32, 1, 77, 31999] {
             for i in 1..=8 {
-                let (x, y) = pellet_offset(seed, i, 1.0);
-                assert!(x * x + y * y <= 1.0 + 1e-6);
-                assert_eq!(pellet_offset(seed, i, 1.0), (x, y));
+                let o = pellet_offset(seed, i, 1.0);
+                assert!(o.x as f64 * o.x as f64 + o.y * o.y <= 1.0 + 1e-6);
+                assert_eq!(pellet_offset(seed, i, 1.0), o);
             }
         }
-        let d = pellet_dir([1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0], 5, 1, 1.0);
-        assert_eq!(d, [1.0, 0.0, 0.0]);
+        for side in [PelletSide::Server(Arith::Gcc), PelletSide::Server(Arith::Msvc), PelletSide::Client] {
+            let d = pellet_dir(side, [1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0], pellet_offset(5, 1, 1.0));
+            assert_eq!(d, [1.0, 0.0, 0.0]);
+        }
+    }
+
+    /// Each TS build rounds a pellet's direction its own way (issue #161); none of them is the
+    /// all-`float` arithmetic the port used before (`[0x3f307a77, 0x3f39b0a2, 0xbc65f7ac]` here).
+    #[test]
+    fn pellet_dir_per_build() {
+        let (aim, right, up) = angle_vectors([3.0, 47.0, 0.0]);
+        assert_eq!(aim.map(f32::to_bits), [0x3f2e_5a31, 0x3f3a_f84f, 0xbd56_5e3b]);
+        let o = pellet_offset(45, 1, 1.0);
+        assert_eq!((o.x.to_bits(), o.y), (0x3e72_c94c, 0.958_810_467_690_113_6), "y kept at 53 bits");
+        let dir = |side| pellet_dir(side, aim, right, up, [0.04, 0.04], o).map(f32::to_bits);
+        assert_eq!(dir(PelletSide::Server(Arith::Gcc)), [0x3f30_7a77, 0x3f39_b0a1, 0xbc65_f7af]);
+        assert_eq!(dir(PelletSide::Server(Arith::Msvc)), [0x3f30_7a77, 0x3f39_b0a2, 0xbc65_f7b0]);
+        assert_eq!(dir(PelletSide::Client), [0x3f30_7a77, 0x3f39_b0a1, 0xbc65_f7ae]);
+    }
+
+    /// `GetBulletVelocityMult` keeps `s²`, `1 - s²` and `·10` on the FPU (issue #150): the port's
+    /// old all-`float` result was 0x3d857831. mp.dll stores the quotient, the .so keeps it.
+    #[test]
+    fn bullet_velocity_mult_per_build() {
+        let s = f32::from_bits(0x3efc_833a);
+        let m = bullet_velocity_mult(Arith::Msvc, s, true);
+        assert_eq!(m.f().to_bits(), 0x3d85_7832);
+        assert_eq!(m, Ext::from_f32(m.f()), "a float");
+        let g = bullet_velocity_mult(Arith::Gcc, s, true);
+        assert_eq!(g.f().to_bits(), 0x3d85_7832);
+        assert_ne!(g, m, "extended");
     }
 
     #[test]
@@ -434,9 +527,10 @@ mod tests {
             // The multiplier stays unrounded until the product is stored (19.56034...).
             assert_eq!(melee_damage(arith, 20.0, 95.6).to_bits(), 0x419c_7ae1);
         }
-        assert_eq!(bullet_velocity_mult(1.0, false), 1.0);
-        assert!((bullet_velocity_mult(0.35, false) - 0.35).abs() < 1e-6);
-        assert!(bullet_velocity_mult(0.35, true) < 0.05);
-        assert_eq!(range_index(800.0, 80.0), 10);
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            assert_eq!(bullet_velocity_mult(arith, 1.0, false).f(), 1.0);
+            assert!((bullet_velocity_mult(arith, 0.35, false).f() - 0.35).abs() < 1e-6);
+            assert!(bullet_velocity_mult(arith, 0.35, true).f() < 0.05);
+        }
     }
 }

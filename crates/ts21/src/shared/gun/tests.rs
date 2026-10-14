@@ -486,6 +486,21 @@ fn triangle_pellets() {
     assert_eq!(crate::TS21.pellet_offset(3, 1, Some(&mut rf)), Some((0.3, -0.3)));
 }
 
+/// 2.1's server and client sum a pellet's direction in their own orders (issue #161); the port's
+/// old all-`float` direction here was `[0x3f2dd873, 0x3f3b97f2, 0xbd34a96f]`.
+#[test]
+fn pellet_dir_per_side() {
+    use shared::pm::Arith;
+    use shared::weapons::spread::{PelletOffset, PelletSide, angle_vectors};
+    let (aim, right, up) = angle_vectors([3.0, 47.0, 0.0]);
+    let (x, y) = triangle(7, 1);
+    assert_eq!((x.to_bits(), y.to_bits()), (0xbd9f_3000, 0x3e52_f400));
+    let dir = |side| crate::TS21.pellet_dir(side, aim, right, up, [0.04, 0.04], PelletOffset::from((x, y))).map(f32::to_bits);
+    assert_eq!(dir(PelletSide::Server(Arith::Msvc)), [0x3f2d_d872, 0x3f3b_97f2, 0xbd34_a96f]);
+    assert_eq!(dir(PelletSide::Server(Arith::Gcc)), dir(PelletSide::Server(Arith::Msvc)), "2.1 had no Linux server");
+    assert_eq!(dir(PelletSide::Client), [0x3f2d_d872, 0x3f3b_97f1, 0xbd34_a96f]);
+}
+
 #[test]
 fn timers_run_on_raw_time() {
     setup();

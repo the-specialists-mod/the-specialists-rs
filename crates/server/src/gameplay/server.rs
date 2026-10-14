@@ -22,6 +22,7 @@ use crate::weapons::{fire, melee, projectiles};
 use crate::world::{Cx, Entity};
 use goldsrc::server::MsgWriter;
 use goldsrc::sys::{TraceResult, edict_t, entvars_t};
+use shared::pm::{Arith, Ext};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::{self, Vec3};
 use shared::weapons::{Status, WeaponInfo};
@@ -399,11 +400,12 @@ pub trait ServerRules: Sync {
     }
 
     /// A bullet's range-falloff index from `scaled`, the distance in tenths of the ammo's range
-    /// unit (`dist / (unit·10)·10`, or `dist·0.0033333334·10` after a penetration). The port's
-    /// 3.0 rounds it to the nearest (`spread::range_index`); issue #80 has TS 3.0 truncating
-    /// too, and fixing that here fixes every bullet path.
-    fn bullet_range_index(&self, scaled: f32) -> i32 {
-        scaled.round_ties_even() as i32
+    /// unit (`dist / (unit·10)·10`, or `dist·0.0033333334·10` after a penetration) exactly as the
+    /// x87 holds it ([`fire::range_scaled`]: nothing in it is rounded to a `float`). TS 3.0
+    /// truncates it (`ts_i386.so` `fistpl` under the chop control word, 0x6fdbb; mp.dll `__ftol`,
+    /// 0x1004801c), issue #80.
+    fn bullet_range_index(&self, scaled: Ext) -> i32 {
+        scaled.trunc_i32()
     }
 
     /// A bullet's damage where it hits, before [`bullet_damage_multiplier`](Self::bullet_damage_multiplier):
@@ -442,8 +444,10 @@ pub trait ServerRules: Sync {
     /// `GetBulletVelocityMult` (`CBulletManager::UpdateBullet` 0x6ef5c): a simulated bullet's
     /// speed factor from the shooter's time scale (`slowmul`: its slow-motion "others" amount,
     /// else its own time scale) and bullet time.
-    fn bullet_velocity_mult(&self, slowmul: f32, bullet_time: bool) -> f32 {
-        spread::bullet_velocity_mult(slowmul, bullet_time)
+    /// The value is the x87's for the caller in `arith`'s build ([`spread::bullet_velocity_mult`]:
+    /// mp.dll's stored `float`, `ts_i386.so`'s unrounded quotient).
+    fn bullet_velocity_mult(&self, arith: Arith, slowmul: f32, bullet_time: bool) -> Ext {
+        spread::bullet_velocity_mult(arith, slowmul, bullet_time)
     }
 
     // ---- the victim (`player::damage`, `rules::lifecycle`) --------------------------------------
@@ -580,8 +584,9 @@ mod tests {
     #[test]
     fn damage_defaults_are_3_0() {
         let r: &dyn ServerRules = &CORE;
-        assert_eq!(r.bullet_range_index(9.5), 10, "rounded");
-        assert_eq!(r.bullet_range_index(9.4), 9);
+        // Truncated, not rounded (issue #80).
+        assert_eq!(r.bullet_range_index(Ext::from_f64(9.99)), 9);
+        assert_eq!(r.bullet_range_index(Ext::from_f64(10.0)), 10);
         let mut acc = 1.0;
         assert_eq!(r.bullet_damage_multiplier(&mut acc, None), 1.0);
         assert_eq!(r.bullet_damage_multiplier(&mut acc, None), 1.0, "nothing accumulates");
@@ -590,7 +595,9 @@ mod tests {
         assert_eq!(r.pierce_step(10.0), 20.0);
         assert_eq!(r.pierce_step(30.0), 48.0);
         assert_eq!(r.weapon_realbullet(2), 2);
-        assert_eq!(r.bullet_velocity_mult(0.35, true), spread::bullet_velocity_mult(0.35, true));
+        for arith in [Arith::Gcc, Arith::Msvc] {
+            assert_eq!(r.bullet_velocity_mult(arith, 0.35, true), spread::bullet_velocity_mult(arith, 0.35, true));
+        }
         assert_eq!(r.damage_punch(), 0.0);
         assert_eq!(r.grenade_explosion(), (110.0, 300.0, 1024.0));
         assert!(r.explosion_pushes_world_guns());

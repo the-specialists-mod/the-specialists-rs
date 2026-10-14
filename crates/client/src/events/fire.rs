@@ -11,6 +11,7 @@ use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::ext::tri;
 use goldsrc::sys::*;
+use shared::weapons::spread::{self, PelletOffset, PelletSide};
 use shared::weapons::tables;
 use std::cell::Cell;
 
@@ -429,23 +430,18 @@ pub struct Bullets {
     pub seed: i32,
 }
 
-/// Pellet `i` direction (1-based), as both server and client compute it: TS 3.0's pattern.
+/// Pellet `i` direction (1-based) of TS 3.0's pattern, as the client fire event computes it.
 pub fn pellet_dir(dir: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], seed: i32, i: i32) -> Vec3 {
-    pellet_dir_at(dir, right, up, spread, pellet_offset(seed, i))
+    spread::pellet_dir(PelletSide::Client, dir, right, up, spread, pellet_offset(seed, i))
 }
 
-/// TS 3.0's pellet offset, in units of the spread, as the client computes it (single precision).
-fn pellet_offset(seed: i32, i: i32) -> (f32, f32) {
+/// TS 3.0's pellet offset, in units of the spread, as `client.dll` computes it
+/// (`EV_TS_FireBullets` 0x100458f0..0x1004596e): the angle stored as a `float`, `y` unrounded.
+fn pellet_offset(seed: i32, i: i32) -> PelletOffset {
     let s = (seed as u32).wrapping_add(i as u32);
     let ang = shared_random_float(s, -std::f32::consts::PI, std::f32::consts::PI);
     let r = shared_random_float(s.wrapping_add(1), 0.0, SPREAD_RADIUS);
-    let m = 1.0 - r * r * r;
-    (ang.cos() * m, ang.sin() * m)
-}
-
-/// The direction of a pellet at offset `(x, y)`.
-fn pellet_dir_at(dir: Vec3, right: Vec3, up: Vec3, spread: [f32; 2], (x, y): (f32, f32)) -> Vec3 {
-    v::add(v::add(dir, v::scale(right, x * spread[0])), v::scale(up, y * spread[1]))
+    spread::polar_offset(ang, r)
 }
 
 /// Whizz-by sound (`EV_TS_FireBullets` `0x100453b5`): another player's shot whose line (to the
@@ -509,8 +505,8 @@ pub fn fire_bullets(b: &Bullets) {
     // The pellet pattern is the ruleset's ([`GunRules::pellet_offset`]).
     let rules = crate::gameplay::hud_gun_rules();
     for i in 1..=b.pellets.max(1) {
-        let offset = rules.pellet_offset(b.seed as u32, i as u32, None).unwrap_or_else(|| pellet_offset(b.seed, i));
-        let d = pellet_dir_at(b.dir, b.right, b.up, b.spread, offset);
+        let offset = rules.pellet_offset(b.seed as u32, i as u32, None).map_or_else(|| pellet_offset(b.seed, i), PelletOffset::from);
+        let d = rules.pellet_dir(PelletSide::Client, b.dir, b.right, b.up, b.spread, offset);
         last_dir = d;
         let end = v::ma(b.src, MAX_RANGE, d);
         if slow {

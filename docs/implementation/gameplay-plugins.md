@@ -246,6 +246,7 @@ The hooks so far:
 | `GunRules` | `command_frame_time(msec)` | `(float)(msec * 0.001)` | client `prediction/gun.rs` `post_think` |
 | `GunRules` | `decay_spread(gun, decay)` | `Gun::decay_spread` by the step, while alive | server `weapons/mod.rs` `pre_think`, client `post_think` (first prediction) |
 | `GunRules` | `pellet_offset(seed, i, bot_random)` | `None`: the polar pattern as each side computes it | server `weapons/fire.rs` `shoot_bullets`, client `events/fire.rs` `fire_bullets` |
+| `GunRules` | `pellet_dir(side, aim, right, up, spread, offset)` | `spread::pellet_dir`: the direction rounded as the side's TS build does (`PelletSide::Server(arith)`: mp.dll or `ts_i386.so`; `Client`: `client.dll`), issue #161 | the same two |
 | `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked -5/+5, one gun none | client `events/fire.rs` `fire_akimbo` |
 | `GunRules` | `predicted()` | `Predicted::ALL` | `weapons/gun.rs` `weapon_post_frame` (client prediction only) |
 | `GunRules` | `cancel_runs_frame_in_reload(info)` | `info.stock != 0` | `weapons/gun.rs` `post_frame_ready` |
@@ -329,11 +330,11 @@ The hooks so far:
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11 | `menus/buy.rs`, `menus/mod.rs` |
 | `ServerRules` | `bullet_trace(start, end, shooter)` | `weapons::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |
 | `ServerRules` | `bullet_damage(ammo, weapon, damage, falloff, simulated)` | `falloff × damage` | `shoot_bullets`, `bullets.rs` `update` (first hit) |
-| `ServerRules` | `bullet_range_index(scaled)` | rounded to nearest | the same three |
+| `ServerRules` | `bullet_range_index(scaled)` | truncated (`Ext::trunc_i32`); `scaled` is the unrounded `dist / (unit·10)·10` as an exact `Ext` (`fire::range_scaled`), issue #80 | the same three |
 | `ServerRules` | `bullet_damage_multiplier(acc, cheat)` | `cheat` (`damagemult` with `sv_cheats`) or 1; `acc` unused | `shoot_bullets` (per hit, `acc` per call), `bullets.rs` `update` |
 | `ServerRules` | `pierce_step(left)` | `min(2·left, 48)` | `shoot_bullets` |
 | `ServerRules` | `weapon_realbullet(realbullet)` | `realbullet` | `shoot_bullets`, `bullets.rs` `think` |
-| `ServerRules` | `bullet_velocity_mult(slowmul, bullet_time)` | `spread::bullet_velocity_mult` | `bullets.rs` `update` |
+| `ServerRules` | `bullet_velocity_mult(arith, slowmul, bullet_time) -> Ext` | `spread::bullet_velocity_mult`: the value as `arith`'s build holds it (mp.dll's stored `float`, `ts_i386.so`'s unrounded quotient) | `bullets.rs` `update` |
 | `ServerRules` | `player_hit(&PlayerHit) -> HitDamage` | `player::damage::hit_damage` (stunt and dodge ×0.7, head ×2 / ×1.5 shotgun, legs ×0.5) | `player/damage.rs` `trace_attack` |
 | `ServerRules` | `armor_damage(armor, amount, hitgroup, bits)` | `player::damage::after_kevlar` (absorb `armor_absorb`, armour kept) | `player/damage.rs` `take_damage` |
 | `ServerRules` | `damage_punch()` | 0 | `player/damage.rs` `take_damage` |

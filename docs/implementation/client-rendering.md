@@ -586,7 +586,10 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
   `0xbfb0e2eb` for `(77, -pi, pi)`, `36` for `long(1234, 0, 100)`) should hold for both.
 * **Pellet spread** (`fire::pellet_dir`) must match the server's `ShootBulletsPlayer`: pellet `i` is
   1-based, `ang = SR(seed+i, -pi, pi)`, `r = SR(seed+i+1, 0, 1)`, `m = 1 - r^3`,
-  `dir + right*cos(ang)*m*spreadX + up*sin(ang)*m*spreadY`, range 8192.
+  `dir + right*cos(ang)*m*spreadX + up*sin(ang)*m*spreadY`, range 8192. The client rounds it as
+  `client.dll` does (`spread::pellet_dir(PelletSide::Client, ..)`, issue #161: `x` stored, `y`
+  unrounded, `x·right·sx + y·up·sy + dir` per component on the FPU, one store), which differs
+  from mp.dll's and `ts_i386.so`'s rounding in the last bit, as it did in TS.
 * **Gun prediction:** `prediction/gun.rs` unpacks the networked state with
   `shared::protocol::weapons` (`vuser3` = id/firemode/attachments, `vuser1[1..2]` = powerups/active
   items, `vuser2` = counter/reserve/alt grip, `vuser4` = hand/clip/in-reload; `weapon_data[16]`
