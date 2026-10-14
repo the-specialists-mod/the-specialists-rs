@@ -3,6 +3,10 @@
 The port is validated on six engine roots with the local TS 3.0 content. This page covers how
 each root was set up, how to run the checks, and the latest results.
 
+
+The static audit of the gameplay logic against the original TS 3.0 and 2.1 binaries, with its
+coverage tables, is in [audit/](audit/README.md).
+
 ## 1. Engine roots
 
 | Root | Engine | Build | OS | Target installed |
