@@ -65,6 +65,13 @@ pub struct StuntRules {
     /// (`RandomLong(0, 2)`). TS 3.0 does both only after a hit, so a held jump keeps trying
     /// every frame; `true` does both before the try, so a miss waits out the cooldown too.
     pub kick_cooldown_on_try: bool,
+    /// `CTSAnimation::Animate` (0x6b470) case 0x37: the wall-jump pose refuses other animations
+    /// while unfinished, alive and `GO_DUCK`. TS 3.0 holds it only in the air and lets a dive
+    /// through, so a wall-jump landing switches to the ground poses at once; `true` holds it on
+    /// the ground too (until the recovery's end clears `GO_DUCK`) and against a dive. `Play` ends
+    /// a recovery early when the sequence finishes, so this decides when the landing's
+    /// recovery (and its `RECOVER` input lock) can end.
+    pub wall_jump_pose_holds_until_recovered: bool,
     /// `GoBulletTime` (0x9a5b4): bullets do ×0.7 for this many seconds (absolute, unscaled
     /// time, `+0x34`); `None` sets no dodge window.
     pub bullet_time_dodge: Option<f32>,
@@ -93,6 +100,7 @@ pub const CORE: StuntRules = StuntRules {
     stunt_ends_close_combat: true,
     wheel_and_roll_wait_for_kick: true,
     kick_cooldown_on_try: false,
+    wall_jump_pose_holds_until_recovered: false,
     bullet_time_dodge: Some(0.55),
     bullet_time_attack_delay: None,
     recover_end_clears: ROLLING | FREEZE_ANGLES | GO_DUCK | RECOVER | DEAD_LOCK,
@@ -201,6 +209,7 @@ mod tests {
         assert_eq!(c.recover_end_clears, 0x40000 | 0x80000 | 0x4 | 0x1 | 0x2);
         assert!(c.wall_dive && c.wall_climb_while_gliding && c.stunt_ends_close_combat && c.wheel_and_roll_wait_for_kick);
         assert!(!c.wall_landing_sets_recover && c.recover_end_unblocks && !c.kick_cooldown_on_try);
+        assert!(!c.wall_jump_pose_holds_until_recovered);
         assert_eq!((c.bullet_time_dodge, c.bullet_time_attack_delay), (Some(0.55), None));
     }
 

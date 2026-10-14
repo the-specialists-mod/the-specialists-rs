@@ -43,6 +43,10 @@ pub const STUNTS: StuntRules = StuntRules {
     // `CloseAttack` (0x1005cd00): `kickCD = time + 0.7 * slowInv` and `RandomLong(0, 2)` right
     // after the gate (0x1005cdd8..), before `CloseCombatAttack`; a miss leaves it armed.
     kick_cooldown_on_try: true,
+    // `CTSAnimation::Animate` (0x1003d8b0) case 0x36 (2.1's wall-jump id, the port's 0x37): held
+    // while `!m_fSequenceFinished && alive && GO_DUCK && !ladder` against everything but the two
+    // wall poses: no on-ground release and no dive exception.
+    wall_jump_pose_holds_until_recovered: true,
     // `GoBulletTime` (0x1005b160): no dodge window (2.1 `TraceAttack` has only the stunt ×0.7),
     // and `if (m_flNextAttack < 0) m_flNextAttack = 0.55 * slowInv`.
     bullet_time_dodge: None,
@@ -212,6 +216,7 @@ mod tests {
         assert!(s.wall_landing_sets_recover && !s.wall_dive && !s.wall_climb_while_gliding);
         assert!(!s.stunt_ends_close_combat && !s.wheel_and_roll_wait_for_kick && !s.recover_end_unblocks);
         assert!(s.kick_cooldown_on_try, "2.1 arms the jump kick's cooldown on every try");
+        assert!(s.wall_jump_pose_holds_until_recovered);
         assert_eq!((s.bullet_time_dodge, s.bullet_time_attack_delay), (None, Some(0.55)));
         // 3.0's stay.
         assert_eq!((CORE.get_up_buttons, CORE.wall_landing_recover), (0x4006, 0.2625));
