@@ -5,7 +5,7 @@
 //! steps are silent while `iuser4 & (RECOVER | 0x200)`, attenuation is 1.25 (SDK `ATTN_NORM`),
 //! and `mp_footsteps` (movevars) is not checked.
 
-use super::math::{Fpu, FpuMath, Num, below87, not_above87};
+use super::math::{Fpu, FpuMath, Num};
 use super::{CHAN_BODY, Pm};
 use goldsrc_sys::{CONTENTS_WATER, MOVETYPE_FLY};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
@@ -56,8 +56,8 @@ impl<F: Fpu> Pm<'_, F> {
             return;
         }
         let hvel = [self.p.velocity[0], self.p.velocity[1], 0.0];
-        // MSVC compares the unrounded root, and returns on a NaN.
-        let slow = if F::MSVC { not_above87(F::length(hvel), F::x(220.0)) } else { F::length(hvel).f() <= 220.0 };
+        // MSVC compares the unrounded root; 3.0's returns on a NaN.
+        let slow = if F::MSVC { F::cmp_le(F::length(hvel), F::x(220.0)) } else { F::length(hvel).f() <= 220.0 };
         if self.p.multiplayer != 0 && !self.onladder && slow {
             return;
         }
@@ -125,7 +125,7 @@ impl<F: Fpu> Pm<'_, F> {
         {
             return;
         }
-        let walking = if F::MSVC { below87(speed, velrun) } else { speed < velrun };
+        let walking = if F::MSVC { F::cmp_lt(speed, velrun) } else { speed < velrun };
         let usehull = self.p.usehull as usize & 3;
         let height = F::x(self.p.player_maxs[usehull][2]) - F::x(self.p.player_mins[usehull][2]);
         let o = self.p.origin;

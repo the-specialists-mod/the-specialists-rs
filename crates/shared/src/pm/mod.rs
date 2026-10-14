@@ -36,7 +36,7 @@ use math::*;
 /// The two builds' arithmetic, for the weapon code both sides share (`weapons::spread`) and for
 /// gameplay plugins whose movement hooks compute in the build they are given
 /// (`crate::gameplay::PmRules`, docs/implementation/gameplay-plugins.md §5).
-pub use math::{Fpu, FpuMath, Gcc, Msvc, Num};
+pub use math::{Fpu, FpuMath, Gcc, Msvc, MsvcIeee, Num};
 /// The inline `Vector` helpers' summation orders and the `float + double` timer step, for the
 /// game code that reproduces TS's x87 rounding (docs/implementation/weapons.md §5).
 pub use math::{ORDER_XYZ, ORDER_ZYX, eq87, not_above87, plus_double};
@@ -262,6 +262,7 @@ fn chase_origin_in<F: Fpu>(p: &playermove_t, angles: Vec3, target: usize) -> Vec
 pub fn player_move_with(p: &mut playermove_t, arith: Arith, rules: &'static dyn PmRules, spectator: Option<SpectatorMove>) {
     let p = match arith {
         Arith::Gcc => run::<Gcc>(p, rules, spectator),
+        Arith::Msvc if rules.ieee_compares() => run::<MsvcIeee>(p, rules, spectator),
         Arith::Msvc => run::<Msvc>(p, rules, spectator),
     };
     if p.onground == -1 {
@@ -431,7 +432,7 @@ impl<F: Fpu> Pm<'_, F> {
             self.add_correct_gravity();
         }
         // Waterjumping: just move.
-        if !eq87(self.p.waterjumptime, 0.0) {
+        if !F::cmp_eq(self.p.waterjumptime, 0.0) {
             self.water_jump();
             self.fly_move();
             self.check_water();
@@ -441,9 +442,9 @@ impl<F: Fpu> Pm<'_, F> {
             if self.p.waterlevel == 2 {
                 self.check_water_jump();
             }
-            // Falling: cancel the water jump. MSVC lets a NaN velocity in and a NaN time out.
+            // Falling: cancel the water jump. 3.0's MSVC lets a NaN velocity in and a NaN time out.
             let cancel = if F::MSVC {
-                below87(self.p.velocity[2], 0.0) && !eq87(self.p.waterjumptime, 0.0)
+                F::cmp_lt(self.p.velocity[2], 0.0) && !F::cmp_eq(self.p.waterjumptime, 0.0)
             } else {
                 self.p.velocity[2] < 0.0 && self.p.waterjumptime != 0.0
             };
@@ -497,14 +498,14 @@ impl<F: Fpu> Pm<'_, F> {
         let (fm, sm, um) = (F::x(c.forwardmove), F::x(c.sidemove), F::x(c.upmove));
         let spd = (fm * fm + sm * sm + um * um).sqrt().f();
         let maxspeed = self.p.clientmaxspeed;
-        // MSVC tests `clientmaxspeed < maxspeed` on C0, so a NaN maxspeed is replaced too.
-        let lower = if F::MSVC { below87(maxspeed, self.p.maxspeed) } else { self.p.maxspeed > maxspeed };
-        if !eq87(maxspeed, 0.0) && lower {
+        // 3.0's MSVC tests `clientmaxspeed < maxspeed` on C0, so a NaN maxspeed is replaced too.
+        let lower = if F::MSVC { F::cmp_lt(maxspeed, self.p.maxspeed) } else { self.p.maxspeed > maxspeed };
+        if !F::cmp_eq(maxspeed, 0.0) && lower {
             self.p.maxspeed = maxspeed;
         }
         // TS: no IN_USE slowdown, and the command is clamped to maxspeed only for spectators
         // (walk/air move clamp the wish speed anyway). The ratio isn't rounded.
-        if !eq87(spd, 0.0) && spd > self.p.maxspeed {
+        if !F::cmp_eq(spd, 0.0) && spd > self.p.maxspeed {
             let ratio = F::x(self.p.maxspeed) / F::x(spd);
             if self.p.iuser1 > 0 {
                 let c = &mut self.p.cmd;
@@ -524,8 +525,9 @@ impl<F: Fpu> Pm<'_, F> {
             self.p.cmd.forwardmove *= 0.5;
             self.p.cmd.sidemove *= 0.25;
             self.p.cmd.upmove *= 0.25;
-            // A NaN vertical speed rises in GCC's compare and falls in MSVC's.
-            let rising = if F::MSVC { !below87(self.p.velocity[2], 0.0) } else { not_above87(0.0, self.p.velocity[2]) };
+            // `velocity[2] < 0 ? 0.75 : 0.3`: a NaN vertical speed rises in GCC's and IEEE compares
+            // and falls in 3.0's MSVC (C0).
+            let rising = if F::MSVC { !F::cmp_lt(self.p.velocity[2], 0.0) } else { not_above87(0.0, self.p.velocity[2]) };
             self.p.gravity = if self.p.cmd.buttons & IN_JUMP_ == 0 {
                 1.0
             } else if rising {
@@ -605,8 +607,8 @@ impl<F: Fpu> Pm<'_, F> {
                 self.p.con_printf(&format!("PM  Got a NaN origin on {i}\n"));
                 self.p.origin[i] = 0.0;
             }
-            // MSVC tests "too low" on C0, so a NaN `maxvelocity` lands there.
-            let too_low = |v: f32| if F::MSVC { below87(v, -max) } else { v < -max };
+            // 3.0's MSVC tests "too low" on C0, so a NaN `maxvelocity` lands there.
+            let too_low = |v: f32| if F::MSVC { F::cmp_lt(v, -max) } else { v < -max };
             if self.p.velocity[i] > max {
                 self.p.dprint(&format!("PM  Got a velocity too high on {i}\n"));
                 self.p.velocity[i] = max;
@@ -619,12 +621,12 @@ impl<F: Fpu> Pm<'_, F> {
 
     /// `pmove->gravity`, or 1 when it is 0.
     fn ent_gravity(&self) -> f32 {
-        if eq87(self.p.gravity, 0.0) { 1.0 } else { self.p.gravity }
+        if F::cmp_eq(self.p.gravity, 0.0) { 1.0 } else { self.p.gravity }
     }
 
     /// `PM_AddCorrectGravity` (0xfd304).
     fn add_correct_gravity(&mut self) {
-        if !eq87(self.p.waterjumptime, 0.0) {
+        if !F::cmp_eq(self.p.waterjumptime, 0.0) {
             return;
         }
         let g = F::x(self.ent_gravity());
@@ -637,7 +639,7 @@ impl<F: Fpu> Pm<'_, F> {
 
     /// `PM_FixupGravityVelocity` (0xfd390).
     pub(crate) fn fixup_gravity_velocity(&mut self) {
-        if !eq87(self.p.waterjumptime, 0.0) {
+        if !F::cmp_eq(self.p.waterjumptime, 0.0) {
             return;
         }
         let g = F::x(self.ent_gravity());
@@ -684,7 +686,7 @@ impl<F: Fpu> Pm<'_, F> {
         let mut time_left = self.p.frametime;
 
         for _ in 0..numbumps {
-            if eq87(self.p.velocity[0], 0.0) && eq87(self.p.velocity[1], 0.0) && eq87(self.p.velocity[2], 0.0) {
+            if F::cmp_eq(self.p.velocity[0], 0.0) && F::cmp_eq(self.p.velocity[1], 0.0) && F::cmp_eq(self.p.velocity[2], 0.0) {
                 break;
             }
             let tl = F::x(time_left);
@@ -706,7 +708,7 @@ impl<F: Fpu> Pm<'_, F> {
                 original_velocity = self.p.velocity;
                 numplanes = 0;
             }
-            if eq87(trace.fraction, 1.0) {
+            if F::cmp_eq(trace.fraction, 1.0) {
                 break;
             }
             self.add_to_touched(trace, self.p.velocity);
@@ -714,7 +716,7 @@ impl<F: Fpu> Pm<'_, F> {
             if F::x(trace.plane.normal[2]) > F::xd(0.7) {
                 blocked |= 1;
             }
-            if eq87(trace.plane.normal[2], 0.0) {
+            if F::cmp_eq(trace.plane.normal[2], 0.0) {
                 blocked |= 2;
             }
             time_left = (F::x(time_left) - F::x(time_left) * F::x(trace.fraction)).f();
@@ -749,7 +751,7 @@ impl<F: Fpu> Pm<'_, F> {
                     let mut j = 0;
                     while j < numplanes {
                         let order = if F::MSVC { [2, 0, 1] } else { [0, 1, 2] };
-                        if j != i && below87(F::dot_in(self.p.velocity, planes[j], order), F::ZERO) {
+                        if j != i && F::cmp_lt(F::dot_in(self.p.velocity, planes[j], order), F::ZERO) {
                             break;
                         }
                         j += 1;
@@ -768,13 +770,13 @@ impl<F: Fpu> Pm<'_, F> {
                     let d = F::dot_in(dir, self.p.velocity, F::ZYX).f();
                     self.p.velocity = scale(dir, d);
                 }
-                if not_above87(F::dot_in(self.p.velocity, primal_velocity, F::ZYX), F::ZERO) {
+                if F::cmp_le(F::dot_in(self.p.velocity, primal_velocity, F::ZYX), F::ZERO) {
                     self.p.velocity = ZERO;
                     break;
                 }
             }
         }
-        if eq87(all_fraction, 0.0) {
+        if F::cmp_eq(all_fraction, 0.0) {
             self.p.velocity = ZERO;
         }
         blocked
@@ -788,11 +790,11 @@ impl<F: Fpu> Pm<'_, F> {
     /// the factor; MSVC multiplies in the other order, keeps the product on the stack (the
     /// factor multiplies a stored copy) and steps the velocity with the unrounded result.
     fn accelerate(&mut self, wishdir: Vec3, wishspeed: f32, accel: f32) {
-        if self.p.dead != 0 || !eq87(self.p.waterjumptime, 0.0) {
+        if self.p.dead != 0 || !F::cmp_eq(self.p.waterjumptime, 0.0) {
             return;
         }
         let addspeed = F::x(wishspeed) - F::dot_in(self.p.velocity, wishdir, F::ZYX);
-        if not_above87(addspeed, F::ZERO) {
+        if F::cmp_le(addspeed, F::ZERO) {
             return;
         }
         let addspeed = addspeed.f();
@@ -829,12 +831,12 @@ impl<F: Fpu> Pm<'_, F> {
     /// `PM_AirAccelerate` (0xfdfdc, client 0x1002bab0): the acceleration isn't rounded. GCC
     /// clamps it to the unrounded add speed, MSVC to the stored one.
     fn air_accelerate(&mut self, wishdir: Vec3, wishspeed: f32, accel: f32) {
-        if self.p.dead != 0 || !eq87(self.p.waterjumptime, 0.0) {
+        if self.p.dead != 0 || !F::cmp_eq(self.p.waterjumptime, 0.0) {
             return;
         }
         let wishspd = if wishspeed > 30.0 { 30.0 } else { wishspeed };
         let addspeed = F::x(wishspd) - F::dot_in(self.p.velocity, wishdir, F::ZYX);
-        if not_above87(addspeed, F::ZERO) {
+        if F::cmp_le(addspeed, F::ZERO) {
             return;
         }
         let (mut accelspeed, addspeed) = if F::MSVC {
@@ -852,12 +854,12 @@ impl<F: Fpu> Pm<'_, F> {
     /// GCC stores the drop; MSVC keeps it on the stack, factored as
     /// `(friction * pmove->friction * 0.75) * (control * frametime)`, and stores the scale.
     fn friction(&mut self) {
-        if !eq87(self.p.waterjumptime, 0.0) {
+        if !F::cmp_eq(self.p.waterjumptime, 0.0) {
             return;
         }
         let vel = self.p.velocity;
         let speed = (F::x(vel[0]) * F::x(vel[0]) + F::x(vel[1]) * F::x(vel[1]) + F::x(vel[2]) * F::x(vel[2])).sqrt().f();
-        if below87(speed, 0.1) {
+        if F::cmp_lt(speed, 0.1) {
             return;
         }
         let sp = F::x(speed);
@@ -870,9 +872,13 @@ impl<F: Fpu> Pm<'_, F> {
             let start = [ahead(0), ahead(1), z.f()];
             let stop = [start[0], start[1], (z - F::x(34.0)).f()];
             let trace = self.trace(start, stop);
-            let friction =
-                if eq87(trace.fraction, 1.0) { F::x(self.mv().friction) * F::x(self.mv().edgefriction) } else { F::x(self.mv().friction) };
-            let control = if speed >= self.mv().stopspeed { speed } else { self.mv().stopspeed };
+            let friction = if F::cmp_eq(trace.fraction, 1.0) {
+                F::x(self.mv().friction) * F::x(self.mv().edgefriction)
+            } else {
+                F::x(self.mv().friction)
+            };
+            // `speed < stopspeed ? stopspeed : speed`.
+            let control = if F::cmp_lt(speed, self.mv().stopspeed) { self.mv().stopspeed } else { speed };
             if F::MSVC {
                 drop_x = friction * F::x(self.p.friction) * F::x(0.75) * (F::x(control) * F::x(self.p.frametime));
             } else {
@@ -881,7 +887,7 @@ impl<F: Fpu> Pm<'_, F> {
         }
         if F::MSVC {
             let newspeed = sp - drop_x;
-            let newspeed = if below87(newspeed, F::ZERO) { F::ZERO } else { newspeed } / sp;
+            let newspeed = if F::cmp_lt(newspeed, F::ZERO) { F::ZERO } else { newspeed } / sp;
             let ns = F::x(newspeed.f());
             self.p.velocity = [(newspeed * F::x(vel[0])).f(), (ns * F::x(vel[1])).f(), (ns * F::x(vel[2])).f()];
             return;
@@ -915,7 +921,7 @@ impl<F: Fpu> Pm<'_, F> {
     /// `PM_WalkMove` (0xfa26c). TS: backpedalling at 80 % (a `double` 0.8).
     fn walk_move(&mut self) {
         let mut fmove = self.p.cmd.forwardmove;
-        if below87(fmove, 0.0) {
+        if F::cmp_lt(fmove, 0.0) {
             fmove = (F::xd(0.8) * F::x(fmove)).f();
         }
         let smove = self.p.cmd.sidemove;
@@ -928,7 +934,7 @@ impl<F: Fpu> Pm<'_, F> {
         self.p.velocity = add(self.p.velocity, self.p.basevelocity);
 
         // MSVC compares the unrounded root (GCC's `Length` has stored it).
-        if below87(F::length(self.p.velocity), F::x(1.0)) {
+        if F::cmp_lt(F::length(self.p.velocity), F::x(1.0)) {
             self.p.velocity = ZERO;
             return;
         }
@@ -941,14 +947,14 @@ impl<F: Fpu> Pm<'_, F> {
             self.p.origin[2],
         ];
         let trace = self.trace(self.p.origin, dest);
-        if eq87(trace.fraction, 1.0) {
+        if F::cmp_eq(trace.fraction, 1.0) {
             self.p.origin = trace.endpos;
             return;
         }
         if oldonground == -1 && self.p.waterlevel == 0 {
             return;
         }
-        if !eq87(self.p.waterjumptime, 0.0) {
+        if !F::cmp_eq(self.p.waterjumptime, 0.0) {
             return;
         }
 
@@ -973,7 +979,7 @@ impl<F: Fpu> Pm<'_, F> {
         let mut dest = self.p.origin;
         dest[2] -= stepsize;
         let trace = self.trace(self.p.origin, dest);
-        let usedown = if below87(F::x(trace.plane.normal[2]), F::xd(0.7)) {
+        let usedown = if F::cmp_lt(F::x(trace.plane.normal[2]), F::xd(0.7)) {
             true
         } else {
             if trace.startsolid == 0 && trace.allsolid == 0 {
@@ -985,8 +991,8 @@ impl<F: Fpu> Pm<'_, F> {
                 let (dx, dy) = (F::x(p[0]) - F::x(original[0]), F::x(p[1]) - F::x(original[1]));
                 dx * dx + dy * dy
             };
-            // On a NaN, GCC steps up and MSVC keeps the down move.
-            if F::MSVC { below87(dist2(self.p.up), dist2(down)) } else { dist2(down) > dist2(self.p.up) }
+            // `downdist > updist`: on a NaN, GCC steps up and 3.0's MSVC keeps the down move.
+            if F::MSVC { F::cmp_lt(dist2(self.p.up), dist2(down)) } else { dist2(down) > dist2(self.p.up) }
         };
         if usedown {
             self.p.origin = down;
@@ -1057,7 +1063,7 @@ impl<F: Fpu> Pm<'_, F> {
         let w = |i: usize| F::x(self.p.forward[i]) * fm + F::x(self.p.right[i]) * sm;
         let w2 = w(2);
         let mut wishvel = [w(0).f(), w(1).f(), w2.f()];
-        if eq87(c.forwardmove, 0.0) && eq87(c.sidemove, 0.0) && eq87(c.upmove, 0.0) {
+        if F::cmp_eq(c.forwardmove, 0.0) && F::cmp_eq(c.sidemove, 0.0) && F::cmp_eq(c.upmove, 0.0) {
             // GCC subtracts from the unrounded sum still on the FPU stack, MSVC reloads it.
             wishvel[2] = (if F::MSVC { F::x(wishvel[2]) } else { w2 } - F::x(60.0)).f();
         } else {
@@ -1086,10 +1092,10 @@ impl<F: Fpu> Pm<'_, F> {
         self.p.velocity = add(self.p.velocity, self.p.basevelocity);
         let mut temp = self.p.velocity;
         let speed = F::normalize(&mut temp);
-        let newspeed = if !eq87(speed, F::ZERO) {
+        let newspeed = if !F::cmp_eq(speed, F::ZERO) {
             let (mvfric, pfric, ft) = (F::x(self.mv().friction), F::x(self.p.friction), F::x(self.p.frametime));
             let ns = if F::MSVC { speed - mvfric * pfric * ft * speed } else { speed - speed * ft * mvfric * pfric };
-            let ns = if ns >= F::ZERO { ns.f() } else { 0.0 };
+            let ns = if F::cmp_lt(ns, F::ZERO) { 0.0 } else { ns.f() };
             let s = if F::MSVC { (F::x(ns) / speed).f() } else { ns / speed.f() };
             self.p.velocity = scale(self.p.velocity, s);
             ns
@@ -1097,7 +1103,7 @@ impl<F: Fpu> Pm<'_, F> {
             0.0
         };
 
-        if below87(wishspeed, 0.1) {
+        if F::cmp_lt(wishspeed, 0.1) {
             return;
         }
         let addspeed = F::x(wishspeed) - F::x(newspeed);
@@ -1127,12 +1133,12 @@ impl<F: Fpu> Pm<'_, F> {
         if self.p.waterjumptime > 10000.0 {
             self.p.waterjumptime = 10000.0;
         }
-        // MSVC's compares take a NaN as zero here and as negative below.
-        if if F::MSVC { eq87(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime == 0.0 } {
+        // 3.0's MSVC compares take a NaN as zero here and as negative below.
+        if if F::MSVC { F::cmp_eq(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime == 0.0 } {
             return;
         }
         self.p.waterjumptime -= self.p.cmd.msec as f32;
-        let expired = if F::MSVC { below87(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime < 0.0 };
+        let expired = if F::MSVC { F::cmp_lt(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime < 0.0 };
         if expired || self.p.waterlevel == 0 {
             self.p.waterjumptime = 0.0;
             self.p.flags &= !FL_WATERJUMP_;
@@ -1145,10 +1151,10 @@ impl<F: Fpu> Pm<'_, F> {
     /// builds; MSVC's compares send a NaN the other way.
     fn check_water_jump(&mut self) {
         let msvc = F::MSVC;
-        if if msvc { !eq87(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime != 0.0 } {
+        if if msvc { !F::cmp_eq(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime != 0.0 } {
             return;
         }
-        if if msvc { below87(self.p.velocity[2], -180.0) } else { self.p.velocity[2] < -180.0 } {
+        if if msvc { F::cmp_lt(self.p.velocity[2], -180.0) } else { self.p.velocity[2] < -180.0 } {
             return;
         }
         let mut flatvelocity = [self.p.velocity[0], self.p.velocity[1], 0.0];
@@ -1156,7 +1162,7 @@ impl<F: Fpu> Pm<'_, F> {
         let mut flatforward = [self.p.forward[0], self.p.forward[1], 0.0];
         F::normalize(&mut flatforward);
         let d = F::dot_in(flatvelocity, flatforward, F::ZYX);
-        if !eq87(curspeed, 0.0) && if msvc { below87(d, F::ZERO) } else { d < F::ZERO } {
+        if !F::cmp_eq(curspeed, 0.0) && if msvc { F::cmp_lt(d, F::ZERO) } else { d < F::ZERO } {
             return;
         }
         let mut start = self.p.origin;
@@ -1166,13 +1172,13 @@ impl<F: Fpu> Pm<'_, F> {
         self.p.usehull = 2;
         let tr = self.trace(start, end);
         let (frac, n2) = (tr.fraction, tr.plane.normal[2].abs());
-        let wall = if msvc { below87(frac, 1.0) && below87(n2, 0.1) } else { frac < 1.0 && n2 < 0.1 };
+        let wall = if msvc { F::cmp_lt(frac, 1.0) && F::cmp_lt(n2, 0.1) } else { frac < 1.0 && n2 < 0.1 };
         if wall {
             start[2] = (F::x(self.hull_max(savehull)[2]) - F::x(WJ_HEIGHT) + F::x(start[2])).f();
             let end = F::ma(start, 24.0, flatforward);
             self.p.movedir = F::ma(ZERO, -50.0, tr.plane.normal);
             let tr = self.trace(start, end);
-            if if msvc { eq87(tr.fraction, 1.0) } else { tr.fraction == 1.0 } {
+            if if msvc { F::cmp_eq(tr.fraction, 1.0) } else { tr.fraction == 1.0 } {
                 self.p.waterjumptime = 2000.0;
                 self.p.velocity[2] = 225.0;
                 self.p.oldbuttons |= IN_JUMP as i32;
@@ -1210,7 +1216,7 @@ impl<F: Fpu> Pm<'_, F> {
             return;
         }
         let tr = self.trace(self.p.origin, point);
-        self.p.onground = if below87(F::x(tr.plane.normal[2]), F::xd(0.7)) { -1 } else { tr.ent };
+        self.p.onground = if F::cmp_lt(F::x(tr.plane.normal[2]), F::xd(0.7)) { -1 } else { tr.ent };
         if self.p.onground != -1 {
             self.p.waterjumptime = 0.0;
             if self.p.waterlevel < 2 && tr.startsolid == 0 && tr.allsolid == 0 {
@@ -1264,7 +1270,7 @@ impl<F: Fpu> Pm<'_, F> {
         // GCC stores `Sys_FloatTime()` to a float first; MSVC tests the double and stores after.
         let ftime = if F::MSVC { F::xd(self.p.float_time()) } else { F::x(self.p.float_time() as f32) };
         if let Some(slot) = STUCK_CHECK_TIME.get(pi as usize) {
-            if not_above87(ftime - F::xd(PM_CHECKSTUCK_MINTIME), F::x(f32::from_bits(slot[idx].load(Relaxed)))) {
+            if F::cmp_le(ftime - F::xd(PM_CHECKSTUCK_MINTIME), F::x(f32::from_bits(slot[idx].load(Relaxed)))) {
                 return true;
             }
             slot[idx].store(ftime.f().to_bits(), Relaxed);
@@ -1316,15 +1322,15 @@ impl<F: Fpu> Pm<'_, F> {
     fn spectator_move(&mut self) {
         if self.p.iuser1 == OBS_ROAMING || self.p.iuser2 == 0 {
             let speed = F::length(self.p.velocity);
-            if below87(speed, F::x(1.0)) {
+            if F::cmp_lt(speed, F::x(1.0)) {
                 self.p.velocity = ZERO;
             } else {
                 let stopspeed = F::x(self.mv().stopspeed);
-                let control = if speed >= stopspeed { speed } else { stopspeed };
+                let control = if F::cmp_lt(speed, stopspeed) { stopspeed } else { speed };
                 let newspeed = if F::MSVC {
                     let friction = F::x(self.mv().friction) * F::xd(1.5);
                     let newspeed = speed - friction * (control * F::x(self.p.frametime));
-                    if below87(newspeed, F::ZERO) { F::ZERO } else { newspeed }
+                    if F::cmp_lt(newspeed, F::ZERO) { F::ZERO } else { newspeed }
                 } else {
                     let friction = (F::xd(1.5) * F::x(self.mv().friction)).f();
                     let newspeed = speed - (control * F::x(friction) * F::x(self.p.frametime) + F::ZERO);
@@ -1346,7 +1352,7 @@ impl<F: Fpu> Pm<'_, F> {
                 wishspeed = maxspd;
             }
             let addspeed = wishspeed - F::dot_in(self.p.velocity, wishdir, F::ZYX);
-            if not_above87(addspeed, F::ZERO) {
+            if F::cmp_le(addspeed, F::ZERO) {
                 return;
             }
             // MSVC clamps to the stored add speed.
@@ -1402,8 +1408,8 @@ impl<F: Fpu> Pm<'_, F> {
         let end = add(self.p.origin, push);
         let trace = self.trace(self.p.origin, end);
         self.p.origin = trace.endpos;
-        // MSVC touches on a NaN fraction.
-        let hit = if F::MSVC { below87(trace.fraction, 1.0) } else { trace.fraction < 1.0 };
+        // 3.0's MSVC touches on a NaN fraction.
+        let hit = if F::MSVC { F::cmp_lt(trace.fraction, 1.0) } else { trace.fraction < 1.0 };
         if hit && trace.allsolid == 0 {
             self.add_to_touched(trace, self.p.velocity);
         }
@@ -1416,8 +1422,8 @@ impl<F: Fpu> Pm<'_, F> {
         if self.p.velocity[2] > 0.0 {
             self.p.onground = -1;
         }
-        // MSVC's `VectorCompare` (0x1002fa00) counts a NaN component as equal.
-        let is_zero = |v: Vec3| if F::MSVC { v.iter().all(|&c| eq87(c, 0.0)) } else { v == ZERO };
+        // 3.0's MSVC `VectorCompare` (0x1002fa00) counts a NaN component as equal.
+        let is_zero = |v: Vec3| if F::MSVC { v.iter().all(|&c| F::cmp_eq(c, 0.0)) } else { v == ZERO };
         if self.p.onground != -1 && is_zero(self.p.basevelocity) && is_zero(self.p.velocity) {
             return;
         }
@@ -1436,7 +1442,7 @@ impl<F: Fpu> Pm<'_, F> {
             self.p.velocity = ZERO;
             return;
         }
-        if eq87(trace.fraction, 1.0) {
+        if F::cmp_eq(trace.fraction, 1.0) {
             self.check_water();
             return;
         }
@@ -1454,7 +1460,7 @@ impl<F: Fpu> Pm<'_, F> {
             }
             let v = self.p.velocity;
             let vel = F::x(v[0]) * F::x(v[0]) + F::x(v[1]) * F::x(v[1]) + F::x(v[2]) * F::x(v[2]);
-            if below87(vel, F::x(30.0 * 30.0)) || (self.p.movetype != MT_BOUNCE && self.p.movetype != MT_BOUNCEMISSILE) {
+            if F::cmp_lt(vel, F::x(30.0 * 30.0)) || (self.p.movetype != MT_BOUNCE && self.p.movetype != MT_BOUNCEMISSILE) {
                 self.p.onground = trace.ent;
                 self.p.velocity = ZERO;
             } else {
@@ -1497,7 +1503,7 @@ impl<F: Fpu> Pm<'_, F> {
 
         self.p.gravity = 0.0;
         let trace = self.p.moveent_trace_model(ladder, self.p.origin, ladder_center).unwrap_or_default();
-        if eq87(trace.fraction, 1.0) {
+        if F::cmp_eq(trace.fraction, 1.0) {
             return;
         }
         let (vpn, v_right, _) = F::angle_vectors(self.p.angles);
@@ -1635,7 +1641,7 @@ impl<F: Fpu> Pm<'_, F> {
         if self.p.bInDuck == 0 {
             return;
         }
-        if not_above87(F::xd(0.001) * F::x(self.p.flDuckTime), F::xd(0.6)) || self.p.onground == -1 {
+        if F::cmp_le(F::xd(0.001) * F::x(self.p.flDuckTime), F::xd(0.6)) || self.p.onground == -1 {
             self.p.usehull = 1;
             self.p.view_ofs[2] = VIEW_DUCK;
             self.p.flags |= FL_DUCKING_;
@@ -1659,11 +1665,11 @@ impl<F: Fpu> Pm<'_, F> {
     fn prevent_mega_bunny_jumping(&mut self) {
         let m = F::x(BUNNYJUMP_MAX_SPEED_FACTOR) * F::x(self.p.maxspeed);
         let maxscaledspeed = m.f();
-        if not_above87(if F::MSVC { m } else { F::x(maxscaledspeed) }, F::ZERO) {
+        if F::cmp_le(if F::MSVC { m } else { F::x(maxscaledspeed) }, F::ZERO) {
             return;
         }
         let spd = F::length(self.p.velocity);
-        if not_above87(spd, F::x(maxscaledspeed)) {
+        if F::cmp_le(spd, F::x(maxscaledspeed)) {
             return;
         }
         let fraction = (F::x(maxscaledspeed) / spd * F::xd(0.65)).f();
@@ -1679,11 +1685,11 @@ impl<F: Fpu> Pm<'_, F> {
             if self.p.iuser4 & ts::NO_JUMP_MASK != 0 {
                 return;
             }
-            // MSVC's compares send a NaN the other way in all three tests below.
+            // 3.0's MSVC compares send a NaN the other way in all three tests below.
             let msvc = F::MSVC;
-            if if msvc { !eq87(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime != 0.0 } {
+            if if msvc { !F::cmp_eq(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime != 0.0 } {
                 self.p.waterjumptime -= self.p.cmd.msec as f32;
-                if if msvc { below87(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime < 0.0 } {
+                if if msvc { F::cmp_lt(self.p.waterjumptime, 0.0) } else { self.p.waterjumptime < 0.0 } {
                     self.p.waterjumptime = 0.0;
                 }
                 return;
@@ -1695,7 +1701,7 @@ impl<F: Fpu> Pm<'_, F> {
                     CONTENTS_SLIME => 80.0,
                     _ => 50.0,
                 };
-                if if msvc { not_above87(self.p.flSwimTime, 0.0) } else { self.p.flSwimTime <= 0.0 } {
+                if if msvc { F::cmp_le(self.p.flSwimTime, 0.0) } else { self.p.flSwimTime <= 0.0 } {
                     self.p.flSwimTime = 1000.0;
                     self.play_wade_sound();
                 }
@@ -1800,7 +1806,7 @@ fn clip_velocity<F: Fpu>(input: Vec3, normal: Vec3, out: &mut Vec3, overbounce: 
     if angle > 0.0 {
         blocked |= 1;
     }
-    if eq87(angle, 0.0) {
+    if F::cmp_eq(angle, 0.0) {
         blocked |= 2;
     }
     let order = if F::MSVC { [1, 2, 0] } else { [0, 1, 2] };
@@ -1834,10 +1840,10 @@ fn edge_ahead<F: Fpu>(vel: f32, speed: F::N, origin: f32, by_reciprocal: bool) -
 fn calc_roll<F: Fpu>(angles: Vec3, velocity: Vec3, rollangle: f32, rollspeed: f32, divides_first: bool) -> F::N {
     let (_, right, _) = F::angle_vectors(angles);
     let side = F::dot_in(velocity, right, F::ZYX);
-    let sign = if side >= F::ZERO { F::x(1.0) } else { F::x(-1.0) };
+    let sign = if F::cmp_lt(side, F::ZERO) { F::x(-1.0) } else { F::x(1.0) };
     let side = if F::MSVC { F::x(side.f()) } else { side }.abs();
     let value = F::x(rollangle);
-    let side = if side >= F::x(rollspeed) {
+    let side = if !F::cmp_lt(side, F::x(rollspeed)) {
         value
     } else if divides_first {
         side / F::x(rollspeed) * value

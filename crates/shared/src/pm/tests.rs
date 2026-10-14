@@ -1237,3 +1237,141 @@ fn friction_edge_start_order_follows_the_rules() {
     }
     assert!(differ > 0, "the orders differ in the last bit for some velocities");
 }
+
+// ---- issue #105: IEEE compares (`PmRules::ieee_compares`) -----------------------------------------
+
+/// A ruleset whose `mp.dll` compares through the parity flag (`PmRules::ieee_compares`).
+struct Ieee;
+impl crate::gameplay::PmRules for Ieee {
+    fn ieee_compares(&self) -> bool {
+        true
+    }
+}
+static IEEE: Ieee = Ieee;
+
+/// A `Pm` over the fixture in build `F` under the core rules.
+fn pm_in<F: Fpu>(f: &mut Fixture) -> Pm<'_, F> {
+    f.p.movevars = &mut *f.mv;
+    CURRENT.with(|c| c.set(&*f.p));
+    Pm::<F> { p: &mut f.p, onladder: false, spectator: None, rules: &crate::gameplay::CORE, fpu: PhantomData }
+}
+
+#[test]
+fn compares_per_build() {
+    let nan = f32::NAN;
+    // TS 3.0's builds test C3/C0: a NaN is equal and below.
+    assert!(Msvc::cmp_eq(nan, 0.0) && Msvc::cmp_lt(nan, 0.0) && Msvc::cmp_le(nan, 0.0) && Msvc::cmp_lt(0.0, nan));
+    assert!(Gcc::cmp_eq(nan, 0.0) && Gcc::cmp_lt(nan, 0.0) && Gcc::cmp_le(nan, 0.0));
+    // The parity-flag build: the C operator's IEEE result.
+    assert!(!MsvcIeee::cmp_eq(nan, 0.0) && !MsvcIeee::cmp_lt(nan, 0.0) && !MsvcIeee::cmp_le(nan, 0.0) && !MsvcIeee::cmp_lt(0.0, nan));
+    // Ordered operands: every build agrees with the C operator.
+    for (a, b) in [(1.0f32, 2.0f32), (2.0, 1.0), (1.0, 1.0), (-0.0, 0.0), (f32::INFINITY, 1.0)] {
+        for r in [
+            (Msvc::cmp_eq(a, b), Msvc::cmp_lt(a, b), Msvc::cmp_le(a, b)),
+            (MsvcIeee::cmp_eq(a, b), MsvcIeee::cmp_lt(a, b), MsvcIeee::cmp_le(a, b)),
+        ] {
+            assert_eq!(r, (a == b, a < b, a <= b), "{a} {b}");
+        }
+    }
+    // The same arithmetic as `Msvc`, and hooks see `Arith::Msvc`.
+    const { assert!(MsvcIeee::MSVC && MsvcIeee::IEEE_CMP && !Msvc::IEEE_CMP && !Gcc::IEEE_CMP) };
+    assert_eq!(MsvcIeee::ARITH, Arith::Msvc);
+    assert!(!crate::gameplay::CORE.ieee_compares());
+}
+
+#[test]
+fn nan_waterjumptime_follows_the_rules() {
+    let run = |arith: Arith, rules: &'static dyn crate::gameplay::PmRules| {
+        // In the air: on the ground `PM_CatagorizePosition` would zero the time first.
+        let mut f = Fixture::new();
+        f.p.origin = [0.0, 0.0, 100.0];
+        f.arith = arith;
+        f.p.waterjumptime = f32::NAN;
+        f.p.movedir = [5.0, 7.0, 0.0];
+        f.run_with(1, rules);
+        [f.p.velocity[0], f.p.velocity[1], f.p.waterjumptime]
+    };
+    // IEEE: `if (pmove->waterjumptime)` holds, so the player moves along `movedir`, and
+    // `PM_WaterJump` ends the water jump out of the water.
+    assert_eq!(run(Arith::Msvc, &IEEE), [5.0, 7.0, 0.0]);
+    // TS 3.0 (C3 counts the NaN as 0): a normal air move without input, and the NaN stays.
+    let [vx, vy, t] = run(Arith::Msvc, &crate::gameplay::CORE);
+    assert!(vx == 0.0 && vy == 0.0 && t.is_nan());
+    // `ts_i386.so`'s compares are kept under any rules.
+    let bits = |r: [f32; 3]| r.map(f32::to_bits);
+    assert_eq!(bits(run(Arith::Gcc, &IEEE)), bits(run(Arith::Gcc, &crate::gameplay::CORE)));
+}
+
+#[test]
+fn accelerate_nan_tests_follow_the_build() {
+    fn accel<F: Fpu>(waterjumptime: f32, wishspeed: f32) -> Vec3 {
+        let mut f = Fixture::standing();
+        f.p.waterjumptime = waterjumptime;
+        f.p.velocity = ZERO;
+        pm_in::<F>(&mut f).accelerate([1.0, 0.0, 0.0], wishspeed, 10.0);
+        f.p.velocity
+    }
+    // `waterjumptime` (2.1 0x1003160a `test ah,0x44; jp`, 3.0 0x10037de3 `test ah,0x40; je`):
+    // IEEE returns, 3.0 accelerates.
+    assert_eq!(accel::<MsvcIeee>(f32::NAN, 100.0), ZERO);
+    assert!(accel::<Msvc>(f32::NAN, 100.0)[0] > 0.0);
+    // `addspeed <= 0` (0x10031644 `test ah,0x41; jnp`, 0x10037e15 `jne`): IEEE goes on.
+    assert!(accel::<MsvcIeee>(0.0, f32::NAN)[0].is_nan());
+    assert_eq!(accel::<Msvc>(0.0, f32::NAN), ZERO);
+    // Finite values: the same arithmetic.
+    assert_eq!(accel::<MsvcIeee>(0.0, 100.0), accel::<Msvc>(0.0, 100.0));
+}
+
+#[test]
+fn jump_nan_tests_follow_the_build() {
+    fn jump<F: Fpu>(waterjumptime: f32, waterlevel: i32, swimtime: f32) -> (f32, f32, u32) {
+        let mut f = Fixture::standing();
+        f.p.waterjumptime = waterjumptime;
+        f.p.waterlevel = waterlevel;
+        f.p.watertype = CONTENTS_WATER;
+        f.p.flSwimTime = swimtime;
+        f.p.cmd.msec = 10;
+        SOUNDS.with(|c| c.set(0));
+        pm_in::<F>(&mut f).jump();
+        (f.p.velocity[2], f.p.flSwimTime, SOUNDS.with(|c| c.get()))
+    }
+    // `waterjumptime != 0` (0x100586ca `jnp`, 3.0 0x100651fa `test ah,0x40; jne`): IEEE counts
+    // the water jump down and doesn't jump, 3.0 jumps off the ground.
+    assert_eq!(jump::<MsvcIeee>(f32::NAN, 0, 0.0).0, 0.0);
+    assert!(jump::<Msvc>(f32::NAN, 0, 0.0).0 > 200.0);
+    // `flSwimTime <= 0` (0x10058775 `test ah,0x41; jp`, 0x100652a5 `je`): only 3.0 wades.
+    let (vz, swim, sounds) = jump::<MsvcIeee>(0.0, 2, f32::NAN);
+    assert!(vz == 100.0 && swim.is_nan() && sounds == 0);
+    assert_eq!(jump::<Msvc>(0.0, 2, f32::NAN), (100.0, 1000.0, 1));
+}
+
+#[test]
+fn normalize_nan_follows_the_build() {
+    // `VectorNormalize`'s `if (length)` (2.1 0x1002fc3c `test ah,0x44; jnp`): IEEE normalises
+    // a NaN length, 3.0's MSVC skips it.
+    let mut v = [f32::NAN, 1.0, 0.0];
+    assert!(MsvcIeee::normalize(&mut v).is_nan() && v[1].is_nan());
+    let mut v = [f32::NAN, 1.0, 0.0];
+    Msvc::normalize(&mut v);
+    assert_eq!(v[1], 1.0);
+    let mut v = [3.0, 4.0, 0.0];
+    assert_eq!(MsvcIeee::normalize(&mut v), 5.0);
+    assert_eq!(v, [0.6, 0.8, 0.0]);
+}
+
+#[test]
+fn pseudo_climb_nan_pitch_follows_the_build() {
+    // A NaN pitch: 3.0 returns at `pitch < -60` (0x10064a14 `test ah,0x1; jne`); 2.1 doesn't
+    // (0x10057d84 `test ah,0x5; jnp`, 0x10057d98 `and eax,0x4100; je`) and ends with
+    // `PM_CatagorizePosition`, which puts the player 1 unit above the floor on the ground.
+    fn climb<F: Fpu>() -> i32 {
+        let mut f = Fixture::new();
+        f.p.origin = [0.0, 0.0, 37.0];
+        f.p.angles[0] = f32::NAN;
+        f.p.cmd.buttons = IN_JUMP as u16;
+        pm_in::<F>(&mut f).ts_handle();
+        f.p.onground
+    }
+    assert_eq!(climb::<MsvcIeee>(), 0);
+    assert_eq!(climb::<Msvc>(), -1);
+}

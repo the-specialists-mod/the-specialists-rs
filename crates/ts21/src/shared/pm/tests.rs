@@ -60,6 +60,13 @@ fn sdk_movement_hooks() {
 }
 
 #[test]
+fn compares_are_ieee() {
+    // Issue #105: 2.1's `mp.dll` compares through the parity flag; 3.0's tests C3/C0.
+    assert!(crate::TS21.ieee_compares());
+    assert!(!CORE.ieee_compares());
+}
+
+#[test]
 fn speed_by_free_slots() {
     let t = &crate::TS21;
     // 170 + free * 2, truncated (1/70.f is just above 1/70, so whole steps stay whole).

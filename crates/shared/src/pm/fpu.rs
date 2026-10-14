@@ -132,6 +132,32 @@ pub trait Fpu: 'static {
     /// (`crate::gameplay::PmRules`).
     const ARITH: Arith;
     const ZERO: Self::N;
+    /// True when the build tests `fcom` results through the parity flag (`test ah,0x44; jp`,
+    /// `test ah,0x05; jp`, `test ah,0x41; jp`), so every compare is the C operator's IEEE result
+    /// and a NaN compares false (unequal). TS 3.0's builds test C3/C0 directly instead
+    /// ([`super::math::eq87`]), so a NaN takes the "equal" and "below" branches.
+    const IEEE_CMP: bool = false;
+
+    /// The C `a == b` (and `!` of it, `a != b`, `if (a)`) as the build compiles it: C3 set, so a
+    /// NaN counts as equal, unless [`Fpu::IEEE_CMP`].
+    #[inline]
+    fn cmp_eq<T: PartialOrd>(a: T, b: T) -> bool {
+        if Self::IEEE_CMP { a == b } else { super::math::eq87(a, b) }
+    }
+
+    /// The C `a < b` (or `b > a`) where the build tests C0, so a NaN counts as below, unless
+    /// [`Fpu::IEEE_CMP`].
+    #[inline]
+    fn cmp_lt<T: PartialOrd>(a: T, b: T) -> bool {
+        if Self::IEEE_CMP { a < b } else { super::math::below87(a, b) }
+    }
+
+    /// The C `a <= b` (or `b >= a`) where the build tests C0 or C3, so a NaN counts as below or
+    /// equal, unless [`Fpu::IEEE_CMP`].
+    #[inline]
+    fn cmp_le<T: PartialOrd>(a: T, b: T) -> bool {
+        if Self::IEEE_CMP { a <= b } else { super::math::not_above87(a, b) }
+    }
 
     /// `fld dword`: a `float` operand.
     #[inline]
@@ -170,6 +196,21 @@ impl Fpu for Msvc {
     const MSVC: bool = true;
     const ARITH: Arith = Arith::Msvc;
     const ZERO: f64 = 0.0;
+}
+
+/// [`Msvc`]'s arithmetic (53-bit precision, the same spills) from a later MSVC that compiles
+/// every `fcom` test through the parity flag ([`Fpu::IEEE_CMP`]). Only a NaN operand behaves
+/// differently. The movement runs it in place of [`Msvc`] for a ruleset whose
+/// [`PmRules::ieee_compares`](crate::gameplay::PmRules::ieee_compares) is set; its hooks see
+/// [`Arith::Msvc`].
+pub enum MsvcIeee {}
+
+impl Fpu for MsvcIeee {
+    type N = f64;
+    const MSVC: bool = true;
+    const ARITH: Arith = Arith::Msvc;
+    const ZERO: f64 = 0.0;
+    const IEEE_CMP: bool = true;
 }
 
 /// Which TS build's arithmetic movement reproduces.

@@ -143,6 +143,15 @@ pub trait PmRules: Sync {
         false
     }
 
+    /// Whether the movement's `float` compares follow IEEE (a NaN compares false and unequal)
+    /// under [`Arith::Msvc`]: the build's compiler tests `fcom` through the parity flag
+    /// ([`crate::pm::Fpu::IEEE_CMP`], [`crate::pm::MsvcIeee`]). TS 3.0's `mp.dll` and
+    /// `client.dll` test C3/C0, so a NaN takes the "equal" and "below" branches (false). Only NaN
+    /// movement state behaves differently. [`Arith::Gcc`] keeps `ts_i386.so`'s compares.
+    fn ieee_compares(&self) -> bool {
+        false
+    }
+
     /// `GetSpeedBySlots` (0x76bd4): the move speed for `free` inventory slots. Server only: the
     /// client gets it as `maxspeed`.
     fn speed_by_slots(&self, free: i32, the_one: bool) -> f32 {

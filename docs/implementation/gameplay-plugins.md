@@ -237,6 +237,7 @@ The hooks so far:
 | `PmRules` | `in_eye_pitch(target_pitch)` | the target's pitch, copied | `pm/mod.rs` `spectator_move` (in eye) |
 | `PmRules` | `roll_divides_first()` | false: `side × rollangle / rollspeed` | `pm/mod.rs` `calc_roll` |
 | `PmRules` | `friction_edge_by_reciprocal()` | false: `vel / speed × 16 + origin` | `pm/mod.rs` `friction` (`edge_ahead`) |
+| `PmRules` | `ieee_compares()` | false: under `Arith::Msvc` the movement's `float` compares test C3/C0 as 3.0's `mp.dll` does, so a NaN is equal and below; true runs the `MsvcIeee` build (same arithmetic, IEEE compares) | `pm/mod.rs` `player_move_with` (every `Fpu::cmp_eq`/`cmp_lt`/`cmp_le` and `FpuMath::normalize`) |
 | `GunRules` | `semi_auto_delay(rate)` | 0.1 | `weapons/gun.rs` `standard_fire` |
 | `GunRules` | `tables()` | `table::base_tables()` | made the active `weapons::tables()` (below) |
 | `GunRules` | `fire(gun, host)` | `Gun::fire_core` (`CTSGun::Fire` and the three shot functions) | `weapons/gun.rs` `Gun::fire` |

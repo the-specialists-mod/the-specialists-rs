@@ -107,7 +107,7 @@ The MSVC differences, function by function (client address; `mp.dll` is the same
 | `PM_PreventMegaBunnyJumping` 0x1002dba0 | `maxspeed × 1.7` tested unrounded; divides by the unrounded speed |
 | `PseudoClimb` 0x10052fd0 | eye height `fild(40 or 0) + view_ofs + origin`; speed test unrounded |
 | `PM_PlayStepSound` 0x1002a3a0 / `PM_UpdateStepSound` 0x1002aca0 | speed tests on the unrounded `Length`; `_ftol` keeps the low dword of a 64-bit `fistp` |
-| NaN-only compare directions | `PM_PlayerMove` water-jump cancel, `PM_CheckParamters` (maxspeed clamp, glide gravity), `PM_CheckVelocity` (too low), `PM_Jump`, `PM_WaterJump`, `PM_CheckWaterJump`, `PM_PushEntity`, `PM_Physics_Toss` (`VectorCompare` counts NaN as equal), `PM_UpdateStepSound` |
+| NaN-only compare directions (a ruleset can select IEEE ones: `PmRules::ieee_compares`, `MsvcIeee`) | `PM_PlayerMove` water-jump cancel, `PM_CheckParamters` (maxspeed clamp, glide gravity), `PM_CheckVelocity` (too low), `PM_Jump`, `PM_WaterJump`, `PM_CheckWaterJump`, `PM_PushEntity`, `PM_Physics_Toss` (`VectorCompare` counts NaN as equal), `PM_UpdateStepSound` |
 
 The rest (`CrossProduct`, `VectorMA`, `VectorScale`, `PM_SplineFraction`, the gravity functions,
 `PM_ReduceTimers`, `PM_GetAccelBySpeed`, `PM_CatagorizePosition`, `PM_Duck`, `PM_UnDuck`,

@@ -1,7 +1,7 @@
 //! Quake/Half-Life mathlib helpers as each TS build compiles them ([`super::fpu`]): every
 //! expression on the x87 stack ([`Fpu::N`]), rounded to `float` where the result is stored.
 
-pub use super::fpu::{Fpu, Gcc, Msvc, Num};
+pub use super::fpu::{Fpu, Gcc, Msvc, MsvcIeee, Num};
 
 pub type Vec3 = [f32; 3];
 
@@ -135,8 +135,9 @@ pub trait FpuMath: Fpu {
         let x = Self::x;
         let r = (x(v[0]) * x(v[0]) + x(v[1]) * x(v[1]) + x(v[2]) * x(v[2])).sqrt();
         let len = if Self::MSVC { r } else { x(r.f()) };
-        // GCC tests `len != 0` (a NaN normalises); MSVC skips on C3, so a NaN doesn't.
-        let zero = if Self::MSVC { eq87(len, Self::ZERO) } else { len == Self::ZERO };
+        // GCC tests `len != 0` (a NaN normalises); MSVC skips on C3, so a NaN doesn't, unless
+        // its compares are IEEE.
+        let zero = if Self::MSVC { Self::cmp_eq(len, Self::ZERO) } else { len == Self::ZERO };
         if !zero {
             let il = x(1.0) / len;
             for c in v.iter_mut() {

@@ -7,7 +7,8 @@
 //!
 //! * 2.1's compiler tests `fcom` results through the parity flag, so its comparisons follow IEEE
 //!   (a NaN is unequal to everything and compares false), which is what Rust's operators do.
-//!   3.0's `mp.dll` sends a NaN the other way ([`shared::pm`]'s `eq87`/`below87`).
+//!   3.0's `mp.dll` sends a NaN the other way ([`shared::pm`]'s `eq87`/`below87`). The shared
+//!   SDK movement follows 2.1's through `PmRules::ieee_compares` (issue #105).
 //! * 2.1's `client.dll` was built without optimisation and stores every intermediate to a
 //!   `float`, so 2.1's own prediction could differ from its server in the last bit. Both sides
 //!   here run the server's arithmetic, as the port does for 3.0 (docs/implementation/ts21.md).
@@ -143,6 +144,16 @@ impl PmRules for Ts21 {
 
     fn max_player_speed(&self) -> f32 {
         MAX_SPEED
+    }
+
+    /// Issue #105: 2.1's `mp.dll` tests every `fcom` in its movement through the parity flag
+    /// (`test ah,0x44; jp` for `==`, `test ah,0x05; jp` for `<`, `test ah,0x41; jp` for `<=`;
+    /// e.g. `PM_Accelerate` 0x1003160a / 0x10031644, `PM_Jump` 0x100586ca / 0x100586ff /
+    /// 0x10058775, `VectorNormalize` 0x1002fc3c, `PseudoClimb` 0x10057d84, the glide 0x10058c07),
+    /// so the shared SDK movement compares as IEEE: a NaN `waterjumptime`, `flSwimTime`, velocity
+    /// or trace fraction goes the C expression's way rather than 3.0's.
+    fn ieee_compares(&self) -> bool {
+        true
     }
 
     /// The SDK's table (issue #145): `PM_InitTextureTypes` (0x1002ff30) stops at 512 entries

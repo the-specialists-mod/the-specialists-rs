@@ -178,7 +178,9 @@ impl<F: Fpu> Pm<'_, F> {
     /// maxspeed, add `1600 * frametime` upward velocity.
     fn pseudo_climb(&mut self) {
         let pitch = self.p.angles[0];
-        if !(-60.0..=60.0).contains(&pitch) {
+        // `pitch < -60 || pitch > 60`: 3.0's MSVC (0x10064a14) tests the first on C0, so a NaN
+        // pitch returns.
+        if F::cmp_lt(pitch, -60.0) || pitch > 60.0 {
             return;
         }
         let climb = pitch < -30.0;
@@ -196,12 +198,12 @@ impl<F: Fpu> Pm<'_, F> {
         let fwd = |i: usize, d: f32, s: f32| (F::x(self.p.forward[i]) * F::x(d) + F::x(s)).f();
         let end = [fwd(0, 64.0, start[0]), fwd(1, 64.0, start[1]), start[2]];
         let tr = self.trace(start, end);
-        if eq87(tr.fraction, 1.0) {
+        if F::cmp_eq(tr.fraction, 1.0) {
             start[2] = self.p.origin[2] + self.p.player_mins[savehull as usize & 3][2];
             let end = [fwd(0, 32.0, start[0]), fwd(1, 32.0, start[1]), start[2]];
             self.p.usehull = 2;
             let tr = self.trace(start, end);
-            if !eq87(tr.fraction, 1.0) && F::length(self.p.velocity) < F::xd(0.5) * F::x(self.p.maxspeed) {
+            if !F::cmp_eq(tr.fraction, 1.0) && F::length(self.p.velocity) < F::xd(0.5) * F::x(self.p.maxspeed) {
                 self.p.onground = -1;
                 self.p.velocity[2] = (F::x(16.0) * F::x(self.p.frametime) * F::xd(100.0) + F::x(self.p.velocity[2])).f();
                 self.fixup_gravity_velocity();
