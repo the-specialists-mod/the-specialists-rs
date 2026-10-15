@@ -182,7 +182,11 @@ HL25 (§4.2).
 TS 3.0's own client predicts 3.0's movement and weapons and ignores `SrvSett` 4, so it can't
 play another ruleset (issue #100 §1.1). The port's client registers the `FCVAR_USERINFO` cvar
 `_tsrs`, whose value is its version (`shared::protocol::port::USERINFO_KEY`), so its userinfo
-carries the key and TS 3.0's doesn't. The engines strip `_` keys only from the userinfo they send
+carries the key and TS 3.0's doesn't. GoldSrc (the Steam client) puts a `FCVAR_USERINFO` cvar in
+the userinfo only once the cvar is set, not when it is registered (FWGS does it then too), so the
+client's `HUD_Init` sets it: `Cvar_SetValue` to `1` at once (the client API sets cvars only from a
+float), then the version string by a queued `_tsrs <version>` command, which runs after the
+command line's `+connect`/`+exec`. A client that connects before that is `Port("1")`. The engines strip `_` keys only from the userinfo they send
 to other clients (FWGS `SV_FullClientUpdate`, ReHLDS `Info_RemovePrefixedKeys`), not from the
 server's copy.
 

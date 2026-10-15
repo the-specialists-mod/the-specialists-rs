@@ -113,7 +113,8 @@ cargo xtask ts21 [--no-clients] [<root>...]
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
 cargo xtask steam [listen|<server-root>]  # the Steam HL25 client (Half-Life/ts): play's scenes + changelevel + the
                                           # Steam-only regressions on a listen server (~7 min), or joining
-                                          # hlds25-linux / rehlds-linux (~4 min); starts Steam if it can log in alone;
+                                          # hlds25-linux / rehlds-linux (~4 min), then the root in 2.1 mode (~30 s);
+                                          # starts Steam if it can log in alone;
                                           # friends status invisible meanwhile (docs/validation.md §5)
 cargo xtask dist --release                # dist/<platform>/ts/: libraries + game files (stripped)
 cargo xtask dist --release-debug          # the same release build, libraries with debug info

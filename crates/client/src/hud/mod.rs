@@ -572,6 +572,13 @@ pub fn init() {
     // server this is the port's client (`shared::protocol::port`).
     Cvar::register(shared::protocol::port::USERINFO_KEY_C, shared::protocol::port::VERSION_C, 2);
     let e = engine();
+    // GoldSrc (Steam HL) only copies a `FCVAR_USERINFO` cvar into the userinfo when it is set, not
+    // when it is registered (FWGS does both), so without a set the key is missing and a 2.1 server
+    // refuses the port's client as TS 3.0's. The client API sets cvars only from a float
+    // (`Cvar_SetValue`), which puts `1` in the userinfo at once; the version string goes in by
+    // a command, which runs only after the command line's (`+connect`, `+exec`).
+    e.cvar_set(shared::protocol::port::USERINFO_KEY_C, 1.0);
+    e.client_cmd(&format!("{} {}\n", shared::protocol::port::USERINFO_KEY, shared::protocol::port::VERSION));
     for (m, name, _) in MESSAGES {
         // The engine parses ScreenShake and ScreenFade itself (FWGS cl_parse.c; GoldSrc
         // likewise); TS hooks neither, nor SelAmmo.

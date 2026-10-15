@@ -516,7 +516,7 @@ one copy of the game can run at a time.
 
 ```sh
 cargo xtask steam [listen]        # listen server: the play scenes, changelevel, menu angles (~7 min)
-cargo xtask steam hlds25-linux    # the Steam client joins a dedicated server (~4 min each)
+cargo xtask steam hlds25-linux    # the Steam client joins a dedicated server (~4 min each), then a 2.1 one
 cargo xtask steam rehlds-linux
 cargo xtask steam listen hlds25-linux   # several, one after the other
 ```
@@ -604,6 +604,13 @@ server commands too. xtask rejects `fwgs` (FWGS servers speak only protocol 49, 
 | Third person after a respawn (old #23: leaving observer mode restored the death cam's) | `ts_test_view` after the first spawn, the respawn and the spawn on the new map | `third false` each time |
 | Server view angles held while a menu owns the cursor (old #23: `CL_CreateMove` overwrote `svc_setangle`) | `ts_face 1 100000 0 0`, `ts_test_view`; `motdfile motd.txt` and `cmd motd` (HL25's own `motd` command only prints the client's copy; the MOTD opens and stays, a script can't close it); `ts_face 1 0 100000 0`, `ts_test_view` | yaw 0, then yaw 90 with `menu true` (the points are far outside any map, so the yaw doesn't depend on where the host stands) |
 | Click-to-spawn after `changelevel` (old #23: the click timer wasn't reset on map load) | `changelevel ts_awaken`, wait for the buy menu, buy, click | a `spawned (#1) with [13]` line after the change, and the host alive in `ts_status` |
+
+**2.1 mode** (each dedicated mode, after its run): the root's server restarts with `xtask ts21`'s
+config (`ts_gameplay 21`) on port 27180.., and the Steam client connects. Passes when the server
+doesn't log `[ts] gameplay: refused`, the client logs `[ts] gameplay: the server runs ruleset 21`
+(`SrvSett` 4), and the script finishes. `xtask ts21` can't catch a missing `_tsrs` key here: its
+port client is FWGS, which puts `FCVAR_USERINFO` cvars in the userinfo when they are registered,
+and GoldSrc doesn't (`implementation/gameplay-plugins.md` §4.2).
 
 `ts_test_view` (a client dev aid) prints `third <bool> menu <bool> ... angles [pitch, yaw, roll]`;
 `menu` is whether a menu owns the cursor.

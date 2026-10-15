@@ -605,8 +605,9 @@ impl Ctx {
         ok
     }
 
-    /// Starts `root`'s 2.1 server for a client test; returns once it answers.
-    fn ts21_client_server(&self, root: &Root, port: u16) -> Option<Child> {
+    /// Starts `root`'s 2.1 server for a client test; returns once it answers. Its stdin is a pipe
+    /// (`xtask steam` feeds it server commands).
+    pub(crate) fn ts21_client_server(&self, root: &Root, port: u16) -> Option<Child> {
         let gamedir = root.path.join("ts");
         for (name, text) in configs() {
             fs::write(gamedir.join(name), text).unwrap();
@@ -614,7 +615,7 @@ impl Ctx {
         let _ = fs::remove_file(root.log_path());
         let mut cmd = root.server_command_with("ts_dojo", port, "xtask_ts21.cfg", 2);
         let out = fs::File::create(self.repo.join("target").join(format!("server-{}.log", root.name))).unwrap();
-        cmd.stdout(out.try_clone().unwrap()).stderr(out);
+        cmd.stdin(std::process::Stdio::piped()).stdout(out.try_clone().unwrap()).stderr(out);
         let mut child = cmd.spawn().expect("start server");
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(60) {
@@ -630,7 +631,7 @@ impl Ctx {
         None
     }
 
-    fn ts21_client_stop(&self, root: &Root, mut child: Child) -> String {
+    pub(crate) fn ts21_client_stop(&self, root: &Root, mut child: Child) -> String {
         let _ = child.kill();
         let _ = child.wait();
         for (name, _) in configs() {

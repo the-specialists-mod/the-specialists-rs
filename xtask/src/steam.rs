@@ -32,6 +32,8 @@ const HALF_LIFE_APP: &str = "70";
 const DEDICATED_PORT: u16 = 27160;
 /// The listen server's port.
 const LISTEN_PORT: u16 = 27170;
+/// First port for the 2.1 servers ([`Ctx::steam_ts21`]).
+const TS21_PORT: u16 = 27180;
 /// The script's end marker (`ts_dev_touch`, in the game directory that runs it).
 const MARKER: &str = "xtask_steam_done";
 /// How long to wait for Steam to log in after starting it.
@@ -948,6 +950,9 @@ impl Ctx {
                 Some(r) => self.steam_dedicated(&steam, r, DEDICATED_PORT + i as u16),
             };
             results.push((name.clone(), ok));
+            if let Some(r) = root {
+                results.push((format!("{name} 2.1"), self.steam_ts21(&steam, r, TS21_PORT + i as u16)));
+            }
         }
         drop(session);
         let failed: Vec<&String> = results.iter().filter(|r| !r.1).map(|r| &r.0).collect();
@@ -1157,6 +1162,53 @@ impl Ctx {
         checks.extend(steam_checks(text, text, &shots));
         checks.push(("the script finished, no panic or crash", run.done && !run.exited && !crashed(text)));
         self.steam_report(&run.shots, &checks, &[self.repo.join("target/steam-listen.log")])
+    }
+
+    /// The Steam client joins `root`'s server in 2.1 mode (`xtask ts21`'s server config): the
+    /// server must let the port's client in, and the client must be told ruleset 21. GoldSrc only
+    /// puts the port's `_tsrs` key in the userinfo once the cvar is set, which FWGS (`xtask ts21`'s
+    /// client) doesn't show.
+    fn steam_ts21(&self, steam: &Steam, root: &Root, port: u16) -> bool {
+        say!("== steam {}: Steam HL25 client joins a 2.1 server (port {port})", root.name);
+        let Some(mut server) = self.ts21_client_server(root, port) else {
+            say!("   FAIL: the server didn't answer");
+            return false;
+        };
+        let mut stdin = server.stdin.take().unwrap();
+        let cfg = prologue()
+            + &format!("connect 127.0.0.1:{port}\n{}echo XTASK: in game\n", secs(12.0))
+            + &srv(&format!("ts_dev_touch {MARKER}"));
+        let marker = root.path.join("ts").join(MARKER);
+        let (run, _) = self.steam_client(
+            steam,
+            &format!("steam-{}-ts21", root.name),
+            &cfg,
+            &marker,
+            &[],
+            |line| {
+                if let Some(cmd) = line.split("SRVCMD ").nth(1).filter(|_| !line.contains("echo SRVCMD")) {
+                    let _ = writeln!(stdin, "{}", cmd.trim());
+                    let _ = stdin.flush();
+                }
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(90),
+        );
+        drop(stdin);
+        let _ = fs::remove_file(&marker);
+        let stext = normalize(&self.ts21_client_stop(root, server));
+        let server_log = self.repo.join("target").join(format!("steam-{}-ts21-server.log", root.name));
+        let _ = fs::write(&server_log, &stext);
+        let text = &run.text;
+        let checks = [
+            ("the server didn't refuse the port's client", !stext.contains("[ts] gameplay: refused")),
+            (
+                "the client: \"[ts] gameplay: the server runs ruleset 21\" (SrvSett 4)",
+                text.contains("[ts] gameplay: the server runs ruleset 21"),
+            ),
+            ("the script finished, no panic or crash", run.done && !run.exited && !crashed(text) && !stext.contains("PANIC")),
+        ];
+        self.steam_report(&[], &checks, &[self.repo.join(format!("target/steam-{}-ts21.log", root.name)), server_log])
     }
 
     /// [`dedicated_script`]: the Steam client on `root`'s dedicated server.
