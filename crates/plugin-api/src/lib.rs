@@ -261,6 +261,8 @@ pub struct BotBackend {
     pub size: u32,
     /// Add one bot: `addbot` / `addcustombot` / the quota. `name` and `model` may be empty (the
     /// backend picks; in teamplay the model is the team); `skill` ≤ 0 means the backend picks.
+    /// They are the command's argument bytes as typed, not UTF-8: give them to
+    /// [`PluginApi::create_bot`] unconverted.
     /// Make the player with [`PluginApi::create_bot`] and return its index, or ≤ 0 for none.
     pub add_bot: Option<unsafe extern "C" fn(name: *const c_char, model: *const c_char, skill: f32) -> c_int>,
     /// The backend became the active one (a map start selected it).
@@ -686,7 +688,8 @@ pub struct PluginApi {
     /// Makes a bot player as TS's `BotSetup` does (a fake client, joined and spawned, in
     /// teamplay on the team `model` names) for the active backend: its index, [`FULL`] or
     /// [`INVALID`] (an empty name, or the caller's backend isn't the active one). `skill` is
-    /// only reported.
+    /// only reported. `name` and `model` are NUL-terminated byte strings (not UTF-8), used as
+    /// they are for the netname, the `model`/`team` keys and the team, as TS's `strcpy`s.
     pub create_bot: unsafe extern "C" fn(plugin: PluginId, name: *const c_char, model: *const c_char, skill: f32) -> c_int,
     /// Kicks a bot (queued as the server's `kick #<userid>`): [`OK`], [`NOT_PLAYER`], or
     /// [`INVALID`] for a human.

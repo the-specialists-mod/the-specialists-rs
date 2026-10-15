@@ -457,9 +457,10 @@ unsafe extern "C" fn add_bot(name: *const c_char, model: *const c_char, skill: f
     })
     .unwrap_or(1);
     // SAFETY: the server passes NUL-terminated strings for the call.
-    let given = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
-    let name = if given.is_empty() { format!("Test Bot {n}") } else { given };
-    let Ok(cname) = CString::new(name.clone()) else { return 0 };
+    let given = unsafe { CStr::from_ptr(name) };
+    // A given name goes back to `create_bot` as its bytes (the API's strings are bytes, #190).
+    let cname = if given.is_empty() { CString::new(format!("Test Bot {n}")).unwrap_or_default() } else { given.to_owned() };
+    let name = cname.to_string_lossy().into_owned();
     // SAFETY: as above; `create_bot` reads the strings during the call.
     let idx = unsafe { (a.create_bot)(id(), cname.as_ptr(), model, skill) };
     if idx > 0 {

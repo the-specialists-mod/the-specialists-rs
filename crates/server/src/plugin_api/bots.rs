@@ -22,8 +22,8 @@ pub fn create_bot(plugin: PluginId, name: &CStr, model: &CStr, skill: f32) -> c_
         return INVALID;
     }
     let backend = bot_backend::active();
-    let model = model.to_string_lossy();
-    match bot_backend::create_player(name.to_bytes(), &model, backend.new_state(skill), None, true) {
+    // The name and model bytes as the plugin gave them, as TS's `strcpy`s (#190).
+    match bot_backend::create_player(name.to_bytes(), model.to_bytes(), backend.new_state(skill), None, true) {
         Some(e) => engine().index_of(e),
         None => FULL,
     }
