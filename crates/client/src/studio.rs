@@ -382,7 +382,7 @@ impl Renderer {
             return None;
         }
         // Hidden while spectating this player in eye mode. TS tests g_iUser1 == 5 here (the SDK's
-        // in-eye is 4); `effects::add_entity` already drops the in-eye target for mode 4.
+        // in-eye is 4); `effects::add_entity` already drops the in-eye target for it.
         if state::with(|s| s.spec_mode == 5 && s.spec_target == number) {
             return None;
         }

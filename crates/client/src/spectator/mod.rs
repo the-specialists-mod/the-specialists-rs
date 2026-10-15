@@ -399,6 +399,12 @@ pub fn in_eye() -> bool {
     state::with(|s| s.spec_mode == obs::IN_EYE)
 }
 
+/// The inset mode (`CHudSpectator+0x14`, `0x100d000c`): 0 in TS 3.0, which has no inset; a
+/// ruleset's HLTV controls may set it ([`HltvHost::set_inset`]).
+pub fn pip() -> i32 {
+    with(|s| s.pip)
+}
+
 /// What the client `PM_SpectatorMove` (or the director reset) left for `V_CalcNormalRefdef`
 /// (`0x10067890`): the `cl_vsmoothing` flags ([`smooth`]) and the camera origin and angles it
 /// says to use (`0x101914f0`/`0x101913e4`, `0x1019149c`/`0x10190b6c`).

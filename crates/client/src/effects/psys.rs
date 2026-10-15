@@ -235,6 +235,10 @@ pub struct FxTuning {
     pub puff_interval: f32,
     /// `0x1018ca58`: muzzle dynamic lights allowed (q ≥ 0.3).
     pub dlights: bool,
+    /// `0x1018ca59`: low detail, which `HUD_AddEntity` gives `iuser4` bit 8 entities body 0 for
+    /// (`0x10044ad7`). Set for `cl_fx` other than 1 and 2 and while the adaptive quality is below
+    /// 0.3, so always the opposite of `dlights` (`0x10057d7a`, `0x10057bdb`).
+    pub low_detail: bool,
     /// `0x1018ca54`: shell life (30, 5 for `cl_fx` 0, `max(30q, 2)` adaptive).
     pub shell_life: f32,
     /// `0x1018ca40`: explosion particle scale (1, 0.35 for `cl_fx` 0, `max(q, 0.25)` adaptive).
@@ -245,7 +249,16 @@ pub struct FxTuning {
 
 impl Default for FxTuning {
     fn default() -> Self {
-        FxTuning { mult: 1.5, interval: 0.05, puff_interval: 0.05, dlights: true, shell_life: 30.0, scale: 1.0, smoke: true }
+        FxTuning {
+            mult: 1.5,
+            interval: 0.05,
+            puff_interval: 0.05,
+            dlights: true,
+            low_detail: false,
+            shell_life: 30.0,
+            scale: 1.0,
+            smoke: true,
+        }
     }
 }
 

@@ -418,7 +418,7 @@ pub fn frame(time: f64, frametime: f64) {
     }
     let ts = state::with(|s| s.time_scale);
     let cam = view::camera();
-    let cull_origin = if view::is_third_person() { view::eye() } else { cam.origin };
+    let cull_origin = cull_origin(&cam);
     with(|fx| {
         fx.psys.cam = cam;
         fx.psys.cull_origin = cull_origin;
@@ -457,7 +457,16 @@ fn apply_cvar(fx: &mut Fx, cl_fx: f32) {
         ps.tuning = if full {
             psys::FxTuning::default()
         } else {
-            psys::FxTuning { mult: 0.7, interval: 0.2, puff_interval: 0.3, dlights: false, shell_life: 5.0, scale: 0.35, smoke: true }
+            psys::FxTuning {
+                mult: 0.7,
+                interval: 0.2,
+                puff_interval: 0.3,
+                dlights: false,
+                low_detail: true,
+                shell_life: 5.0,
+                scale: 0.35,
+                smoke: true,
+            }
         };
         q.samples = [0.0; 20];
         q.n = 0;
@@ -507,6 +516,7 @@ fn adapt_quality(fx: &mut Fx, cl_fx: f32) {
         interval,
         puff_interval: interval,
         dlights: qq >= 0.3,
+        low_detail: qq < 0.3,
         shell_life: (qq * 30.0).max(2.0),
         scale: qq.max(0.25),
         smoke,
@@ -523,54 +533,136 @@ fn adapt_quality(fx: &mut Fx, cl_fx: f32) {
     ps.physics = qq > 0.374;
 }
 
-/// `HUD_AddEntity` (`0x100447f0`).
+/// `GetCullOrigin` (`0x10057270`): the eye in third person, otherwise the view origin. TS's
+/// culls measure distances and directions from here.
+fn cull_origin(cam: &Camera) -> Vec3 {
+    if view::is_third_person() { view::eye() } else { cam.origin }
+}
+
+/// `HUD_AddEntity` (`0x100447f0`). Players: the hemisphere, anti-peek and spectator tests, then
+/// the visible-this-frame flag. Other entities: the `curstate.iuser4` distance cull and fade (the
+/// server's items; client shells have 12) and the bit 8 LOD body. Then, while observing, the
+/// overview icon and the in-eye target hidden.
 pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
     let cam = view::camera();
+    let cull = cull_origin(&cam);
+    let fov = state::with(|s| s.fov);
     if kind == 1 {
-        let idx = e.index;
-        let spectator = (1..=32).contains(&idx) && state::with(|s| s.spectator[(idx - 1) as usize]);
-        // TS hides the in-eye target with mode 5 (`g_iUser1 == 5`), its numbering for in-eye.
-        let in_eye_target = state::with(|s| s.spec_mode == shared::ts::obs::IN_EYE && s.spec_target == idx);
-        let d = v::dist(e.origin, cam.origin);
-        let hemisphere = d < 256.0 || v::dot(v::sub(e.origin, cam.origin), cam.forward) >= 0.0;
-        let seen = hemisphere && !spectator && occlusion_visible(e, &cam);
-        // TS adds the overview icon after its visibility tests, before hiding the in-eye target.
-        if seen {
-            crate::spectator::add_overview_entity(kind, e);
+        if !in_view_hemisphere(e.origin, cull, cam.forward) || !occlusion_visible(e, &cam) {
+            return false;
         }
-        let visible = seen && !in_eye_target;
+        let idx = e.index;
+        if (1..=32).contains(&idx) && state::with(|s| s.spectator[(idx - 1) as usize]) {
+            return false;
+        }
+        // `g_bPlayerVisible` (`0x1018bd44`, set at `0x1004485a`): also for the in-eye target hidden
+        // below, whose shadow, laser and flashlight still draw.
         with(|fx| {
-            if let Some(v) = fx.visible.get_mut(idx as usize) {
-                *v = visible;
+            if let Some(v) = usize::try_from(idx).ok().and_then(|i| fx.visible.get_mut(i)) {
+                *v = true;
             }
         });
-        return visible;
-    }
-    // Item fade / cull by distance, `curstate.iuser4` bits (server sets them).
-    let bits = e.curstate.iuser4;
-    let fov = state::with(|s| s.fov);
-    let (max, start, k) = if bits & 1 != 0 {
-        (592.0, 492.0, 2.55)
-    } else if bits & 4 != 0 {
-        (256.0, 206.0, 5.1)
-    } else if bits & 2 != 0 {
-        (1024.0, 824.0, 1.275)
     } else {
-        return true;
-    };
-    let max = if fov < 40.0 { max * 2.0 } else { max };
-    let d = v::dist(e.origin, cam.origin);
-    // `InViewCone` measures from `GetCullOrigin` (this frame's, set by `frame`).
-    let cull = with(|fx| fx.psys.cull_origin);
-    if d >= max || !psys::in_view_cone(&cam, cull, e.origin) {
-        return false;
+        let bits = e.curstate.iuser4;
+        if let Some(cull_dist) = ItemCull::for_bits(bits) {
+            if beyond_distance(e.origin, cull, cull_dist.max, fov) || !psys::in_view_cone(&cam, cull, e.origin) {
+                return false;
+            }
+            if let Some(amt) = cull_dist.fade(v::dist(e.origin, cull), fov) {
+                e.curstate.renderfx = 0;
+                e.curstate.rendermode = kRenderTransColor as i32;
+                e.curstate.renderamt = amt;
+            }
+        }
+        // 0x10044ace: the LOD body, 0 at low detail.
+        if bits & 8 != 0 {
+            let low = with(|fx| fx.psys.tuning.low_detail);
+            e.curstate.body = if low { 0 } else { lod_body(v::dist(e.origin, cull), fov) };
+        }
     }
-    if fov >= 80.0 && d > start {
-        e.curstate.rendermode = kRenderTransColor as i32;
-        e.curstate.renderfx = 0;
-        e.curstate.renderamt = ((max - d) * k).clamp(0.0, 255.0) as i32;
+    // 0x10044af9: the SDK spectator code, for every entity that got this far.
+    let (mode, target) = state::with(|s| (s.spec_mode, s.spec_target));
+    if mode != 0 {
+        crate::spectator::add_overview_entity(kind, e);
+        // TS's in-eye mode is 5 (`g_iUser1 == 5`), or the in-eye inset.
+        if (mode == shared::ts::obs::IN_EYE || crate::spectator::pip() == 2) && e.index == target {
+            return false;
+        }
     }
     true
+}
+
+/// `InViewHemisphere` (`0x10057790`): within 256 units of the cull origin, or not behind it
+/// (the unit direction's dot with the view forward ≥ 0).
+fn in_view_hemisphere(org: Vec3, cull: Vec3, forward: Vec3) -> bool {
+    let d = v::sub(org, cull);
+    let len = v::len(d);
+    if len <= 256.0 {
+        return true;
+    }
+    v::dot(v::scale(d, 1.0 / len), forward) >= 0.0
+}
+
+/// `BeyondDistance(org, max)` (`0x10057910`): `max` doubles while zoomed in (`m_iFOV < 40`).
+fn beyond_distance(org: Vec3, cull: Vec3, max: f32, fov: f32) -> bool {
+    let max = if fov < 40.0 { max * 2.0 } else { max };
+    v::dist(org, cull) >= max
+}
+
+/// `HUD_AddEntity`'s item distances by `curstate.iuser4` bit: the first of 1, 4 and 2 set.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ItemCull {
+    /// Cull distance (`0x250`, `0x100`, `0x400`).
+    max: f32,
+    /// The fade starts beyond this.
+    start: f32,
+    /// `renderamt` per unit short of `max`.
+    k: f32,
+}
+
+impl ItemCull {
+    fn for_bits(bits: i32) -> Option<ItemCull> {
+        let (max, start, k) = if bits & 1 != 0 {
+            (592.0, 492.0, 2.55)
+        } else if bits & 4 != 0 {
+            (256.0, 206.0, 5.1)
+        } else if bits & 2 != 0 {
+            (1024.0, 824.0, 1.275)
+        } else {
+            return None;
+        };
+        Some(ItemCull { max, start, k })
+    }
+
+    /// The fade (`0x100448b4..0x10044ac8` and its copies for bits 4 and 2): beyond `start` with
+    /// `m_iFOV ≥ 80`, `renderamt = (max − d)·k` truncated. Unzoomed, so `max` isn't doubled
+    /// and `d < max` keeps it within 0..=255.
+    fn fade(&self, d: f32, fov: f32) -> Option<i32> {
+        (d > self.start && fov >= 80.0).then_some(((self.max - d) * self.k) as i32)
+    }
+}
+
+/// `GetLODBody(org)` (`0x10056fc0`) for distance `d` from the cull origin: zoomed in
+/// (`m_iFOV < 80`) a FOV under 14 within 2048 units gives 3 and under 41 within 512 gives 2;
+/// otherwise beyond 256 units 0, beyond 128 1, beyond 64 2, else 3.
+fn lod_body(d: f32, fov: f32) -> i32 {
+    if fov < 80.0 {
+        if fov < 14.0 && d < 2048.0 {
+            return 3;
+        }
+        if fov < 41.0 && d < 512.0 {
+            return 2;
+        }
+    }
+    if d > 256.0 {
+        0
+    } else if d > 128.0 {
+        1
+    } else if d > 64.0 {
+        2
+    } else {
+        3
+    }
 }
 
 /// `ThirdPersonOcclusionVisible` (`0x10057330`): in third person the camera may not reveal
@@ -656,7 +748,7 @@ pub fn draw_transparent() {
     // `ClientBullets_Draw` (`0x10034e60`): the client bullet frame while the slot counter is set.
     // The bullets are taken out for it: their impacts and trails call back into `effects`.
     if let Some(mut bullets) = with(|fx| (fx.bullets.count != 0).then(|| std::mem::take(&mut fx.bullets))) {
-        let cull = if third { view::eye() } else { cam.origin };
+        let cull = cull_origin(&cam);
         let f = crate::events::BulletFrame { cam, cull, frametime: with(|fx| fx.frametime) };
         crate::events::client_bullets_frame(&mut bullets, &f);
         with(|fx| fx.bullets = bullets);
@@ -804,6 +896,52 @@ mod tests {
         // The colour goes to glFogfv as is (GL clamps it).
         let bright = Some(emitters::Fog { near: 0.0, far: 1.0, color: [128.0, -1.0, 0.5] });
         assert_eq!(fog_params(false, 1.0, bright, user, gl), Some(([128.0, -1.0, 0.5, 1.0], 0.0, 1.0)));
+    }
+
+    #[test]
+    fn hemisphere_from_the_cull_origin() {
+        let fwd = [1.0, 0.0, 0.0];
+        assert!(in_view_hemisphere([-256.0, 0.0, 0.0], v::ZERO, fwd), "256 units behind: within reach");
+        assert!(!in_view_hemisphere([-256.5, 0.0, 0.0], v::ZERO, fwd), "further behind");
+        assert!(in_view_hemisphere([-1000.0, 1000.0, 0.0], [-1000.0, 0.0, 0.0], fwd), "level with it");
+        // Third person, the camera 128 units behind the eye at the origin: a player 300 units
+        // behind the eye is 172 from the camera, but TS measures from the eye.
+        assert!(!in_view_hemisphere([-300.0, 0.0, 0.0], v::ZERO, fwd));
+        assert!(in_view_hemisphere([-300.0, 0.0, 0.0], [-128.0, 0.0, 0.0], fwd));
+    }
+
+    #[test]
+    fn item_cull_and_fade() {
+        assert_eq!(ItemCull::for_bits(0), None);
+        assert_eq!(ItemCull::for_bits(8), None, "bit 8 alone has no cull");
+        assert_eq!(ItemCull::for_bits(1 | 2 | 4).map(|c| c.max), Some(592.0), "bit 1 first");
+        assert_eq!(ItemCull::for_bits(12).map(|c| c.max), Some(256.0), "a shell: bit 4");
+        assert_eq!(ItemCull::for_bits(2).map(|c| c.max), Some(1024.0));
+        let gun = ItemCull::for_bits(2).unwrap();
+        assert_eq!(gun.fade(824.0, 90.0), None, "the fade starts beyond 824");
+        assert_eq!(gun.fade(924.0, 90.0), Some(127), "(1024 - 924) * 1.275 truncated");
+        assert_eq!(gun.fade(1000.0, 79.0), None, "zoomed in: no fade");
+        assert_eq!(ItemCull::for_bits(1).unwrap().fade(492.5, 80.0), Some(253));
+        assert!(beyond_distance([1024.0, 0.0, 0.0], v::ZERO, 1024.0, 90.0));
+        assert!(!beyond_distance([1023.0, 0.0, 0.0], v::ZERO, 1024.0, 90.0));
+        assert!(!beyond_distance([2047.0, 0.0, 0.0], v::ZERO, 1024.0, 39.0), "zoomed in: twice as far");
+        assert!(beyond_distance([2048.0, 0.0, 0.0], v::ZERO, 1024.0, 39.0));
+    }
+
+    #[test]
+    fn lod_bodies() {
+        assert_eq!(lod_body(300.0, 90.0), 0);
+        assert_eq!(lod_body(256.0, 90.0), 1);
+        assert_eq!(lod_body(129.0, 90.0), 1);
+        assert_eq!(lod_body(128.0, 90.0), 2);
+        assert_eq!(lod_body(65.0, 90.0), 2);
+        assert_eq!(lod_body(64.0, 90.0), 3);
+        assert_eq!(lod_body(2000.0, 13.0), 3, "zoomed far in");
+        assert_eq!(lod_body(2048.0, 13.0), 0);
+        assert_eq!(lod_body(500.0, 14.0), 2, "FOV 14..40 within 512");
+        assert_eq!(lod_body(500.0, 40.0), 2);
+        assert_eq!(lod_body(500.0, 41.0), 0);
+        assert_eq!(lod_body(100.0, 79.0), 2, "zoomed in, but neither zoom case: by distance");
     }
 
     #[test]
