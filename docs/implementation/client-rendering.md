@@ -75,7 +75,7 @@ renderer reads the model from bytes. Float/flag macros bindgen can't export
 | `EV_TS_FirePump` | `0x10040c20` | `fire::fire_pump` | done; its own shell speeds (`RandomLong(20, 40)` sideways and forward, `(0, 20)` up, `0x10040e43`/`0x10040e4d`, the ruleset's `pump_shell_speeds`) and the shotgun shell's sound 2 for every gun (unit-tested) |
 | `EV_TS_FireBullets` | `0x100450c0` | `fire::fire_bullets`, `fire::pellet_dir`, `fire::range_index` | done (spread and range index unit-tested). Client bullets instead of traces while the server's `realbullet` (`SrvSett` 0, `0x1018d16c`) is non-zero or ts < 0.99 (`0x10045330`); the range index is `__ftol(dist / (unit·10) · 10)` (`0x10045b41`). Penetration (`0x10045bde..`) uses TS's global remaining damage `DAT_1018a164` (`fire::REMAINING`): only a pellet that hits writes it and nothing resets it, so an event whose pellets all miss penetrates with an earlier event's damage. It starts from the end of the last pellet's trace, hit or miss, along the last pellet's direction. Hit tests are `fraction == 1.0` with `fcomp` (a NaN is a miss), and `remaining > 5` fails on a NaN |
 | fire sound | `0x1003de90` | `fire::fire_sound`, `fire::fire_sample` | done, unit-tested: the silenced flag alone picks `sound2` (`info+0x306`) or `sound` (`info+0x2c6`), even an empty one (`0x1003de98`/`0x1003dee5`) |
-| `EV_TS_EjectShell` | `0x10056890` | `fire::eject_shell` + `effects::track_shell` | done |
+| `EV_TS_EjectShell` | `0x10056890` | `fire::eject_shell` | done. No shell limit: TS zeroes the `die` of the shell in a 64-slot ring (`0x1018bbc8`, counter `0x1018bcc8`), but nothing ever stores a shell in the ring (the only other reference to `0x1018bbc8` is the end-of-array compare in `FindParticleByTargetname`, `0x1003a849`), so every shell lives for the shell life (`0x1018ca54`) |
 | `GetWeaponBody` | `0x10007110` | `fire::weapon_body` | done |
 | `GetActiveAnimSet` + info anim tables | `0x1003df60`, builders `0x100047d0..` | `events::info` (generated; all 37 sets re-extracted from the builders' stores, kung fu's set A was missing) | done |
 | `UTIL_SharedRandomLong/Float` | `0x1001ae60` / `0x1001aea0` | `events::random` | done, bit-exact vs C reference |
@@ -352,13 +352,6 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
   port skips them, so there is no TS fog and the end-of-pass `glDisable(GL_FOG)` doesn't switch
   off the engine's own fog. On desktop GL the `glDisable` does, as in TS (e.g. FWGS's underwater
   fog, for the rest of the frame).
-* **Shell limit.** TS keeps the newest 64 shells by storing tempent pointers in a ring and setting
-  the evicted shell's `die`. The port tags each shell with a sequence number in
-  `curstate.iuser2` (`effects::track_shell`), and the temp-entity loop (`client-dll/src/tempents.rs`)
-  kills shells older than the newest 64. When the engine has already freed an evicted shell and
-  reused its slot, TS's write kills the unrelated temp entity now there; the port can't hold
-  pointers into the engine's temp-entity pool across frames (FWGS reallocates it), so that case
-  differs.
 * **Defensive checks where TS would read out of bounds or stop the game.** The studio renderer
   parses the model from the bytes the engine loaded (`studio::model`, bounds-checked), so a
   corrupt model draws a bind pose instead of reading out of bounds. Out-of-range (and negative)

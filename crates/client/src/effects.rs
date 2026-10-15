@@ -39,8 +39,6 @@ struct Fx {
     /// `CachePlayerAttachments` (`0x10056e70`, `0x1018caf8`): attachments 0-3 of every player
     /// entity as they stood at the last `TS_DrawEffects`.
     attachments: [[Vec3; 4]; 33],
-    /// Sequence number of the newest tracked shell (see [`track_shell`]).
-    shell_seq: i32,
     whizz: u32,
     time: f64,
     frametime: f32,
@@ -105,7 +103,6 @@ fn with<R>(f: impl FnOnce(&mut Fx) -> R) -> R {
         bullets: ClientBullets::default(),
         visible: [false; 33],
         attachments: [[v::ZERO; 4]; 33],
-        shell_seq: 0,
         whizz: 0,
         time: 0.0,
         frametime: 0.0,
@@ -173,31 +170,12 @@ pub fn paintball() -> bool {
     cvar(|c| c.paintball) != 0.0
 }
 
-/// Shell life (`0x1018ca54`: 30, 5 with `cl_fx 0`, `max(30q, 2)` adaptive).
+/// Shell life (`0x1018ca54`: 30, 5 with `cl_fx 0`, `max(30q, 2)` adaptive). Every shell lives
+/// this long: `EV_TS_EjectShell` (`0x10056890`) zeroes the `die` of the shell in its 64-slot ring
+/// (`0x1018bbc8`, counter `0x1018bcc8`), but nothing ever stores a shell there, so the ring stays
+/// empty and TS never removes an old shell early.
 pub fn shell_life() -> f32 {
     with(|fx| fx.psys.tuning.shell_life)
-}
-
-/// TS keeps at most 64 shells: when a new one arrives, the oldest is killed (TS kept a ring of
-/// pointers and set the old shell's `die`). Here each shell gets a sequence number in
-/// `curstate.iuser2`, and the temp-entity update kills shells that fell out of the last 64.
-pub fn track_shell(t: &mut TEMPENTITY) {
-    // Wrapping: the count only resets on `HUD_VidInit`, and a wrap must not end the game.
-    let seq = with(|fx| {
-        fx.shell_seq = fx.shell_seq.wrapping_add(1);
-        fx.shell_seq
-    });
-    t.entity.curstate.iuser2 = seq;
-}
-
-/// True if the shell with sequence number `seq` (from [`track_shell`]) is older than the newest 64.
-pub fn shell_expired(seq: i32) -> bool {
-    seq > 0 && with(|fx| shell_older(fx.shell_seq, seq))
-}
-
-/// `seq` is at least 64 shells older than `newest` (wrapping, like the counter).
-fn shell_older(newest: i32, seq: i32) -> bool {
-    newest.wrapping_sub(seq) >= 64
 }
 
 /// Whizz sounds alternate between channels 503 and 504.
@@ -328,7 +306,6 @@ extern "C" fn cmd_test_fx() {
 /// in TS (`MotionBlur_Reset` `0x10029660` has no caller).
 pub fn vid_init() {
     with(|fx| {
-        fx.shell_seq = 0;
         fx.quality.started = false;
         fx.bullets.models.forget();
     });
@@ -827,15 +804,6 @@ mod tests {
         // The colour goes to glFogfv as is (GL clamps it).
         let bright = Some(emitters::Fog { near: 0.0, far: 1.0, color: [128.0, -1.0, 0.5] });
         assert_eq!(fog_params(false, 1.0, bright, user, gl), Some(([128.0, -1.0, 0.5, 1.0], 0.0, 1.0)));
-    }
-
-    #[test]
-    fn shell_ring_wraps() {
-        assert!(!shell_older(10, 1));
-        assert!(shell_older(65, 1));
-        assert!(shell_older(i32::MIN + 10, i32::MAX - 60), "across the wrap");
-        assert!(!shell_older(i32::MIN, i32::MAX), "the shell just before the wrap is new");
-        assert!(!shell_older(0, i32::MAX));
     }
 
     #[test]

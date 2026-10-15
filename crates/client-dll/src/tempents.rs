@@ -102,11 +102,6 @@ pub unsafe fn update(
                 continue;
             }
             prev = t;
-            // TS keeps the newest 64 shells (ts_client::effects::track_shell).
-            if ts_client::effects::shell_expired(p.entity.curstate.iuser2) {
-                p.entity.curstate.iuser2 = 0;
-                p.die = ct;
-            }
             p.entity.prevstate.origin = p.entity.origin;
             let vel = p.entity.baseline.origin;
 

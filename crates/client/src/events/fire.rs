@@ -201,7 +201,6 @@ pub fn eject_shell(origin: Vec3, vel: Vec3, angles: Vec3, model: i32, snd: i32) 
         let x = r::random_float(-60.0, 60.0);
         let y = r::random_float(-60.0, 60.0);
         t.entity.baseline.angles = [x * x, y * y, y * y * 0.5];
-        effects::track_shell(t);
     }
 }
 
