@@ -42,17 +42,11 @@ pub struct ServerPlugin {
 pub(crate) struct Defaults;
 
 #[cfg(test)]
-impl PmRules for Defaults {}
-#[cfg(test)]
-impl GunRules for Defaults {}
-#[cfg(test)]
-impl shared::gameplay::MeleeRules for Defaults {}
-#[cfg(test)]
 impl ServerRules for Defaults {}
 
-/// [`Defaults`] as a plugin.
+/// [`Defaults`] as a plugin, with the 3.0 plugin's movement and gun rules.
 #[cfg(test)]
-pub(crate) static DEFAULTS: ServerPlugin = ServerPlugin { pm: &Defaults, gun: &Defaults, server: &Defaults };
+pub(crate) static DEFAULTS: ServerPlugin = ServerPlugin { pm: &ts30_gameplay::TS30, gun: &ts30_gameplay::TS30, server: &Defaults };
 
 /// The registered plugins. The first one the server library registers is the default: the
 /// fallback for an empty or unknown id, and the plugin the server runs before its first map.

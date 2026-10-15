@@ -248,9 +248,9 @@ observing).
 * **Arguments.** Shared hooks take plain values or `shared` types, because the movement code is
   generic over `Arith` and a trait object can't be. A hook that replaces a calculation, not a
   value, takes the command's `Arith` (`Fpu::ARITH` in the movement) and computes in that build
-  with the public `shared::pm::{Fpu, FpuMath, Num, Gcc, Msvc}`: a default dispatches to the 3.0
-  function (`PmRules::drop_punch_angle` calls `pm::drop_punch_angle::<F>`), and a plugin matches
-  on the `Arith` the same way. Server and client hooks may take their own crate's types. Make
+  with the public `shared::pm::{Fpu, FpuMath, Num, Gcc, Msvc}`: the 3.0 plugin's
+  `PmRules::drop_punch_angle` matches on the `Arith` and calls its `pm::drop_punch_angle::<F>`,
+  and every plugin does the same. Server and client hooks may take their own crate's types. Make
   those types `pub` (for example `rules::scoring::Frag`), so a plugin can implement the hook.
 
 The hooks so far:
@@ -260,38 +260,38 @@ The hooks so far:
 | `PmRules` | `ground_accel()` | `GroundAccel::BySpeed` (`PM_GetAccelBySpeed`); `Constant(k)` multiplies by the `double` k | `pm/mod.rs` `accelerate` |
 | `PmRules` | `recover_input_scale()` | 0.5 (a `double`) | `pm/ts.rs` `ts_handle` |
 | `PmRules` | `prone_forward_scale()` | `None`: the forward move is set to 0 while prone; `Some(k)` multiplies it | `pm/ts.rs` `ts_handle` |
-| `PmRules` | `wall_jump_speed()`, `wall_jump_up_velocity()` | `WALLJUMP_SPEED` (210), `JUMP_VELOCITY` (236.64319) | `pm/ts.rs` `ts_wall_jump` |
-| `PmRules` | `wall_climb_velocity()` | `WALLCLIMB_VELOCITY` (334.664) | `pm/ts.rs` `ts_wall_jump_climb` |
+| `PmRules` | `wall_jump_speed()`, `wall_jump_up_velocity()` | `ts30_gameplay::pm::WALLJUMP_SPEED` (210), `shared::pm::ts::JUMP_VELOCITY` (236.64319) | `pm/ts.rs` `ts_wall_jump` |
+| `PmRules` | `wall_climb_velocity()` | `ts30_gameplay::pm::WALLCLIMB_VELOCITY` (334.664) | `pm/ts.rs` `ts_wall_jump_climb` |
 | `PmRules` | `wall_dive()` | true: `WALLDIVE` dives along `forward × 3` and clears the bit | `pm/ts.rs` `ts_dive` |
 | `PmRules` | `fix_velocity(arith, velocity, limit)` | nothing (TS 3.0's `FixVelocity` is empty) | `pm/ts.rs`, after the dive, wall jump and wall climb impulses, `limit = 2 × maxspeed` |
 | `PmRules` | `jump_push(arith, jump, buttons, maxspeed, velocity)` | nothing | `pm/mod.rs` `jump`, before the upward speed of a normal or super jump |
 | `PmRules` | `scaled_frametime(frametime, fuser1)` | `fuser1 < 0.1` (or NaN) ? 0 : `frametime × fuser1` | `pm/mod.rs` `player_move` |
-| `PmRules` | `drop_punch_angle(arith, punch, dead, fuser1, frametime)` | `pm::drop_punch_angle` (zeroed while dead) | `pm/mod.rs` `check_parameters` |
-| `PmRules` | `step_interval(arith, interval, fuser1)` | `pm::step_interval`: `1/max(fuser1, 0.1) × interval`, truncated | `pm/sound.rs` `update_step_sound` |
-| `PmRules` | `speed_by_slots(free, the_one)` | `ts::speed_by_slots` | server `weapons/inventory.rs` `sync_speed` (the active plugin's) |
+| `PmRules` | `drop_punch_angle(arith, punch, dead, fuser1, frametime)` | `ts30_gameplay::pm::drop_punch_angle` (zeroed while dead) | `pm/mod.rs` `check_parameters` |
+| `PmRules` | `step_interval(arith, interval, fuser1)` | `ts30_gameplay::pm::step_interval`: `1/max(fuser1, 0.1) × interval`, truncated | `pm/sound.rs` `update_step_sound` |
+| `PmRules` | `speed_by_slots(free, the_one)` | `ts30_gameplay::pm::speed_by_slots` | server `weapons/inventory.rs` `sync_speed` (the active plugin's) |
 | `PmRules` | `max_player_speed()` | 330: `SetPlayerSpeed`'s clamp and `TSInit`'s speed | server `inventory.rs` `sync_speed`, `rules/lifecycle.rs` `on_spawn` |
-| `PmRules` | `texture_limits()` | `TextureLimits::TS30`: 1024 entries, 15 characters (`TextureLimits::SDK`: 512, 12) | `pm/mod.rs` `categorize_texture_type` (`textures::find_in`); the exported `pfnPM_FindTextureType` and the client's impact lookup keep 3.0's table |
+| `PmRules` | `texture_limits()` | `TextureLimits::LARGE`: 1024 entries, 15 characters (`TextureLimits::SDK`: 512, 12) | `pm/mod.rs` `categorize_texture_type` (`textures::find_in`); the exported `pfnPM_FindTextureType` and the client's impact lookup keep 3.0's table |
 | `PmRules` | `in_eye_pitch(target_pitch)` | the target's pitch, copied | `pm/mod.rs` `spectator_move` (in eye) |
 | `PmRules` | `roll_divides_first()` | false: `side × rollangle / rollspeed` | `pm/mod.rs` `calc_roll` |
 | `PmRules` | `friction_edge_by_reciprocal()` | false: `vel / speed × 16 + origin` | `pm/mod.rs` `friction` (`edge_ahead`) |
 | `PmRules` | `ieee_compares()` | false: under `Arith::Msvc` the movement's `float` compares test C3/C0 as 3.0's `mp.dll` does, so a NaN is equal and below; true runs the `MsvcIeee` build (same arithmetic, IEEE compares) | `pm/mod.rs` `player_move_with` (every `Fpu::cmp_eq`/`cmp_lt`/`cmp_le` and `FpuMath::normalize`) |
-| `GunRules` | `semi_auto_delay(rate)` | 0.1 | `weapons/gun.rs` `standard_fire` |
+| `GunRules` | `semi_auto_delay(rate)` | 0.1 | the plugin's `StandardFire` (3.0: `ts30_gameplay::gun::standard_fire`) |
 | `GunRules` | `tables()` | `table::base_tables()` | made the active `weapons::tables()` (below) |
-| `GunRules` | `fire(gun, host)` | `Gun::fire_core` (`CTSGun::Fire` and the three shot functions) | `weapons/gun.rs` `Gun::fire` |
+| `GunRules` | `fire(gun, host)` | `ts30_gameplay::gun::fire` (`CTSGun::Fire` and the three shot functions) | `weapons/gun.rs` `Gun::fire` |
 | `GunRules` | `timer_step(arith, frametime, fuser1, powerups)` | `Gun::timer_dt` (`frametime x GiveSlowMul x DFR 1.5`) | server `weapons/mod.rs` `post_think`, client `prediction/gun.rs` `post_think` |
 | `GunRules` | `command_frame_time(msec)` | `(float)(msec * 0.001)` | client `prediction/gun.rs` `post_think` |
-| `GunRules` | `decay_spread(gun, decay) -> bool` | `Gun::decay_spread` by the step, while alive; true: the client's crosshair copy (`state.spread`) takes the penalty on every first prediction (the server ignores the value) | server `weapons/mod.rs` `pre_think`, client `post_think` (first prediction) |
+| `GunRules` | `decay_spread(gun, decay) -> bool` | `ts30_gameplay::gun::decay_spread` by the step, while alive; true: the client's crosshair copy (`state.spread`) takes the penalty on every first prediction (the server ignores the value) | server `weapons/mod.rs` `pre_think`, client `post_think` (first prediction) |
 | `GunRules` | `pellet_offset(seed, i, bot_random)` | `None`: the polar pattern as each side computes it | server `weapons/fire.rs` `shoot_bullets`, client `events/fire.rs` `fire_bullets` |
 | `GunRules` | `pellet_dir(side, aim, right, up, spread, offset)` | `spread::pellet_dir`: the direction rounded as the side's TS build does (`PelletSide::Server(arith)`: mp.dll or `ts_i386.so`; `Client`: `client.dll`), issue #161 | the same two |
 | `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked +5 (seed) / -5 (seed + 0x21), one gun none | client `events/fire.rs` `fire_akimbo` |
 | `GunRules` | `predicted()` | `Predicted::ALL` | `weapons/gun.rs` `weapon_post_frame` (client prediction only) |
 | `GunRules` | `cancel_runs_frame_in_reload(info)` | `info.stock != 0` | `weapons/gun.rs` `post_frame_ready` |
-| `GunRules` | `better_weapon(gun, excluded)` | `Gun::better_weapon_core`: the first owned id in `g_iWeaponPriority` | `weapons/gun.rs` `get_better_weapon` (`remove_weapon`, the server's `weapons::get_better_weapon` for bots) |
+| `GunRules` | `better_weapon(gun, excluded)` | `ts30_gameplay::gun::better_weapon`: the first owned id in `g_iWeaponPriority` | `weapons/gun.rs` `get_better_weapon` (`remove_weapon`, the server's `weapons::get_better_weapon` for bots) |
 | `GunRules` | `blades_need_press()` | false: the knife and katana attack while the button is held | `weapons/gun.rs` `primary_attack`, `secondary_attack` |
 | `GunRules` | `katana_throws()` | true: +attack2 throws the katana | `weapons/gun.rs` `secondary_attack` |
 | `GunRules` | `infinite_clip_skips_idle_reload()` | true: `!InfiniteClips && clip < 1` reloads | `weapons/gun.rs` `weapon_idle` |
 | `GunRules` | `holster_draws_kungfu()` | true: `Unzoom`, then weapon 0's view model, draw animation and draw event | `weapons/gun.rs` `holster_weapon` |
-| `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | false: 3.0's `Gun` method runs | the top of each `Gun` method in `weapons/gun.rs` |
+| `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | `ts30_gameplay::melee`'s functions of the same names | the `Gun` method of the same name in `weapons/gun.rs` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start` |
 | `ServerRules` | `refuse_client(client)` | none (everyone joins) | `gameplay::refuse_client`, from `rules::client_connect` (§4.2) |
 | `ServerRules` | `game_description(mode)` | `rules::core_description`: "The Specialists v3.0.2 (DM)" (LMS, Teamplay, The One; no mode without rules), the version from `Cargo.toml` | `rules::game_description` (`pfnGetGameDescription`, the server browser's Game column); `ts_server::game_description!` builds a plugin's text |

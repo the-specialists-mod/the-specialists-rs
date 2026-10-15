@@ -13,9 +13,10 @@ addresses of `ts_i386.so`.
 | `crates/shared/src/weapons/gun.rs` | `Gun` = `CTSGun` + the player fields it uses (timers, recoil penalty, kung-fu bar, melee windows), and the `GunHost` trait. Runs on the server and in client prediction. |
 | `crates/shared/src/weapons/gun/tests.rs` | State-machine tests with a mock host. |
 | `crates/shared/src/weapons/random.rs` | SDK `U_Random`/`U_Srand`/`UTIL_SharedRandomLong/Float`, bit-exact. |
-| `crates/shared/src/weapons/spread.rs` | Pellet directions, `VKickback`, melee multiplier, bullet velocity, vector math. |
+| `crates/shared/src/weapons/spread.rs` | Pellet directions, timer steps, melee multiplier, bullet velocity, vector math. |
+| `crates/ts30/src/{gun,melee,recoil}.rs` | TS 3.0's `GunRules`/`MeleeRules` answers: `Fire` and the shot functions, the melee attacks, `GetBetterWeapon`'s `PRIORITY`, `VKickback` and the recoil penalty. |
 | `crates/shared/src/weapons/anims.rs` | View-model sequence tables A/B (`s_weapon_info+0x252/+0x28c`) for all 38 ids, extracted from the `Write_*` functions. |
-| `crates/shared/src/weapons/mod.rs` | Ids, kinds, attachment bits, fire modes, `PRIORITY`, `default_mode`, `is_restricted`, `body_by_items`, `models`, `range_multiplier`. |
+| `crates/shared/src/weapons/mod.rs` | Ids, kinds, attachment bits, fire modes, `default_mode`, `is_restricted`, `body_by_items`, `models`, `range_multiplier`. |
 | `crates/shared/src/weapons/table.rs` | `tables()` (unchanged API) + custom weapon parameters (`CustomWP`). |
 | `crates/shared/src/protocol/weapons.rs` | Message payloads (write + read), `clientdata_t` / `weapon_data_t` packing. |
 | `crates/server/src/weapons/` | `mod.rs` hooks/API, `host.rs` (server `GunHost`), `fire.rs`, `bullets.rs`, `melee.rs`, `projectiles.rs`, `worldgun.rs`, `inventory.rs`, `commands.rs`, `net.rs`, `assets.rs`, `custom.rs`. |
@@ -25,14 +26,14 @@ addresses of `ts_i386.so`.
 
 | TS (address) | Rust |
 |---|---|
-| `CTSGun::ScaleSpread` 0x802a8 | `Gun::scale_spread` |
-| `CTSGun::VKickback` 0x80414 | `spread::view_kick`, `Gun::vkickback` (server: `punchangle` for bots only) |
+| `CTSGun::ScaleSpread` 0x802a8 | `ts30_gameplay::gun::scale_spread` |
+| `CTSGun::VKickback` 0x80414 | `ts30_gameplay::recoil::view_kick`, `ts30_gameplay::gun::vkickback` (server: `punchangle` for bots only) |
 | `CTSGun::Precache` 0x80660 | `Event::ALL` / `assets::precache_events` (from `crate::precache`'s `W_Precache`) |
 | `CTSGun::AddItem` 0x80794 | `Gun::add_item` |
 | `CTSGun::AddAmmo` 0x808ac | `Gun::add_ammo` |
 | `CTSGun::DropWeapon` 0x8094c | `Gun::remove_weapon` |
 | `CTSGun::TakeWeapon` 0x80a04 | `Gun::take_weapon` |
-| `CTSGun::GetBetterWeapon` 0x80f40 | `Gun::get_better_weapon` (`PRIORITY` = `g_iWeaponPriority`) |
+| `CTSGun::GetBetterWeapon` 0x80f40 | `Gun::get_better_weapon`, `ts30_gameplay::gun::better_weapon` (`PRIORITY` = `g_iWeaponPriority`) |
 | `CTSGun::SelectWeapon` 0x80fb8 / `Deploy` 0x81030 | `Gun::select_weapon` / `Gun::deploy` / `Gun::switch_to` |
 | `CTSGun::GetActiveItems` 0x81228 | `Gun::active_items` |
 | `CTSGun::StopReload` 0x81288 | `Gun::stop_reload` |
@@ -41,16 +42,16 @@ addresses of `ts_i386.so`.
 | `CTSGun::SwitchFireMode` 0x8169c | `Gun::switch_fire_mode` (`firemode`) |
 | `CTSGun::Zoom`/`Unzoom` 0x81710/0x81748 | `Gun::zoom`/`unzoom` |
 | `CTSGun::SecondaryAttack` 0x817a8 / `PrimaryAttack` 0x81a20 / `AlternateAttack` 0x81ba8 | same names |
-| `CTSGun::EmptySound` 0x81be4 / `Fire` 0x81c78 | same names |
-| `CTSGun::ColdCock` 0x81dd0 + `CBasePlayer::ColdCockAttack` 0x96610 | `Gun::cold_cock` + `melee::attack` |
-| `CTSGun::ShotgunFire` 0x82108 / `StandardFire` 0x824a4 / `AkimboFire` 0x829c0 | same names |
+| `CTSGun::EmptySound` 0x81be4 / `Fire` 0x81c78 | same names (`Fire`'s body: `ts30_gameplay::gun::fire`) |
+| `CTSGun::ColdCock` 0x81dd0 + `CBasePlayer::ColdCockAttack` 0x96610 | `ts30_gameplay::melee::cold_cock` + `melee::attack` |
+| `CTSGun::ShotgunFire` 0x82108 / `StandardFire` 0x824a4 / `AkimboFire` 0x829c0 | same names in `ts30_gameplay::gun` |
 | `CTSGun::GrenadeFire` 0x832f0 / `GrenadeIdle` 0x84f18 | `Gun::grenade_fire` / `Gun::grenade_idle` + `Gun::grenade_throw` |
-| `CTSGun::KatanaFire` 0x833f0 / `KatanaThrow` 0x83b68 / `KnifeFire` 0x84044 | same names |
+| `CTSGun::KatanaFire` 0x833f0 / `KatanaThrow` 0x83b68 / `KnifeFire` 0x84044 | same names (`KatanaFire`'s and `KnifeFire`'s bodies in `ts30_gameplay::melee`) |
 | `CTSGun::ReloadWeapon` 0x84a14 / `ShotgunReload` 0x84aac / `Reload` 0x84d5c | same names |
 | `CTSGun::WeaponIdle` 0x854dc / `HolsterWeapon` 0x85698 | same names |
 | `CTSGun::UpdateClientData` 0x858c8 | `weapons::update_client_data` → `net::update_client` (`WStatus`, `WeaponInfo`, 10 Hz), called at the end of the player's `UpdateClientData` (`player::hud::update_client_data`, from PreThink). The caches (`SvState::next_update`, `sent_*`) are the gun entity's in TS: a new gun starts with `CTSGun::Reset`'s values (`new_gun_state`: last id 0, so a gun on kung fu sends no `WeaponInfo`; timer 0), `CTSGun::Deploy` with a weapon zeroes the timer (`GunHost::deploy_update_now`), and a spawn keeps the caches of a gun still held. `WeaponInfo`'s decision is `net::weapon_info_update`. |
 | `CBasePlayer::TSInit` 0x92a4c (weapon fields) | `weapons::ts_init`, from `rules::lifecycle::on_spawn`'s TSInit block | 81 free slots, no loadout items, the speed (330) recorded for 81. The only reset of these: `RemoveAllItems`, `StartObserver` and `Killed` leave them to the item code. |
-| `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` |
+| `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` (block's and attack's bodies in `ts30_gameplay::melee`) |
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
 | `CBasePlayer::PostThink` timer tail 0x91610 | `Gun::decrement_timers`, `Gun::timer_dt` |
 | `CBasePlayer::PreThink` 0x908cc (weapon parts) | `Gun::pre_frame`, `weapons::pre_think` (disarm decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
@@ -469,11 +470,11 @@ the prediction both compute:
 | Timer step `slow * ft * 1.5` (PostThink 0x91ae7, PreThink 0x909c5; mp 0x1006053c; client 0x10003ec5) | the unrounded product × 1.5, stored once | the product stored as a `float`, then × 1.5 | `spread::timer_step(arith)`: both. Differs only in slow motion with double fire rate, by one float ulp; no frame-count difference found |
 | `GiveSlowMul` (`FixedSlowAmt` 0x990bc, client 0x10055aa0) | floor 0.01 (`double`) | floor 0.01f | `fixed_slow_amt` (0.01f). **Was** `max(fuser1, 0)`: fixed |
 | Timer decrements and clamps (PostThink tail; mp 0x10060592; client 0x10003f40) | the difference of two floats is exact, one rounding | the same | f32: equal |
-| `ScaleSpread` elapsed test (0x802a8; mp 0x10053ee0; client 0x10008100) | stored float `>= 0.001f` | the unrounded difference | `spread::shot_interval(arith)`: equal in practice (nearby times subtract exactly) |
-| `ScaleSpread` growth | `x = (float)(slow * dt)`, the test `slow*dt >= 1` on the unrounded product, `pen + (1-x)*akick*k` in extended precision, one store | `x` unrounded, `(1-x)*k*akick + pen` at 53 bits | `spread::grow_spread_penalty(arith)`: both. **Was** f32 throughout: a product just below 1 rounded to 1.0 and added 0.5·akick·k instead of almost nothing, and about one penalty in ten was an ulp off. GCC ≠ MSVC only in slow motion (an ulp) |
-| Penalty decay (PreThink 0x80d88; mp 0x1005fa29; client 0x100040a5) | `pen - dt*0.1f`, one store, the unrounded result `< 0` clears | the same at 53 bits | `spread::decay_spread_penalty(arith)`. **Was** two roundings (an ulp off in ~6 % of frames, never a frame's difference in reaching 0) |
+| `ScaleSpread` elapsed test (0x802a8; mp 0x10053ee0; client 0x10008100) | stored float `>= 0.001f` | the unrounded difference | `ts30_gameplay::recoil::shot_interval(arith)`: equal in practice (nearby times subtract exactly) |
+| `ScaleSpread` growth | `x = (float)(slow * dt)`, the test `slow*dt >= 1` on the unrounded product, `pen + (1-x)*akick*k` in extended precision, one store | `x` unrounded, `(1-x)*k*akick + pen` at 53 bits | `ts30_gameplay::recoil::grow_spread_penalty(arith)`: both. **Was** f32 throughout: a product just below 1 rounded to 1.0 and added 0.5·akick·k instead of almost nothing, and about one penalty in ten was an ulp off. GCC ≠ MSVC only in slow motion (an ulp) |
+| Penalty decay (PreThink 0x80d88; mp 0x1005fa29; client 0x100040a5) | `pen - dt*0.1f`, one store, the unrounded result `< 0` clears | the same at 53 bits | `ts30_gameplay::recoil::decay_spread_penalty(arith)`. **Was** two roundings (an ulp off in ~6 % of frames, never a frame's difference in reaching 0) |
 | Melee bar regeneration (PreThink 0x80ddc; mp 0x1005fa65) | `bar + dt*15`, one store | the same | `spread::regen_melee_bar(arith)` (was two roundings) |
-| `VKickback` (0x80414; mp 0x10054000; client 0x10008230) | yaw from the unrounded `0.85*kick`; silenced pitch from the stored pitch | yaw the same; silenced pitch from the unrounded product | `spread::view_kick(arith)`: both (was an ulp off in ~20 % of kicks). The server applies it only to bots |
+| `VKickback` (0x80414; mp 0x10054000; client 0x10008230) | yaw from the unrounded `0.85*kick`; silenced pitch from the stored pitch | yaw the same; silenced pitch from the unrounded product | `ts30_gameplay::recoil::view_kick(arith)`: both (was an ulp off in ~20 % of kicks). The server applies it only to bots |
 | `GetMeleeMultiplier` × damage (0x965d0; mp 0x10063e60) | `(max(bar,0)*0.5f + 50f) * 0.01f` left on the FPU, product stored once | the same | `spread::melee_damage(arith)`. **Was** a `double` 0.01 and two roundings (1-2 ulp in ~30 % of hits). Server only |
 | `UTIL_SharedRandomFloat` (0xebc54; mp 0x10076190; client 0x1001aea0) | range truncated by a 64-bit `fistp` | `mp.dll`: `__ftol`, the same; `client.dll`: the float range, untruncated (TS's client bug) | server: `weapons::random` (exact for both servers); the client's fire events use `events::random`, `client.dll`'s, as TS's client did |
 | Pellet offset (`ShootBulletsPlayer` 0x6f69c; client `EV_TS_FireBullets` 0x10045941) | `1 - r³`, `fcos`/`fsin` in extended precision, `x` and `y` stored | `x` stored, `y` kept at 53 bits (mp.dll 0x10047d6f `fst`, client 0x1004596e) | `spread::polar_offset` (`PelletOffset { x: f32, y: f64 }`), `f64` trig: the x87's `fsin`/`fcos` can still differ in the last bit |
@@ -494,7 +495,7 @@ the prediction both compute:
 | Grenade +use kick (`CM61Grenade::Use` 0x7cf07; mp.dll 0x10051340) | `fz + 0.75` squared unrounded, `x, y, z`, length stored | `(fz + 0.75)·(float)`, `z, y, x`, length unrounded | `projectiles::kick_dir` |
 | Thrown blade angles (`KnifeFire` 0x84790; mp.dll 0x100570b3, 0x1005775d) | the inline `Normalize` | the same | `projectiles::blade_dir`. 2.1's blade distance (`(x² + z²) + y²` of unrounded differences) is the plugin's: `thrown_blade_damage` now gets the two points |
 | Stunt directions, 2D speed gates, `GetDirection`, the wall-jump pose's square test (`stunt/mod.rs`, `anim.rs`; issue #170) | stored roots; dots `x, y, z` unrounded | `HandleStunt`/`GoRoll`/`GaitCloseCombat` test the root unrounded; dots `z, y, x` | `stunt::normalized`, `hspeed_stored`, `hspeed_cmp`, `direction_in`, `anim::moving_off_square`. **Was** f32 throughout |
-| Melee back test (`KatanaFire` 0x833f0, `CCombatAttack` 0x86078; mp.dll 0x10056858, 0x10058c98; client.dll 0x10009fd2, 0x1000b06e; issue #170) | speed stored; standard `Normalize`, dot `x, y, z` unrounded against the `double` -0.5 | speed stored; mp.dll's katana: components stored, dot `z, y, x`; its kung fu and both client attacks: normalised x on the FPU, `(z + y) + x`; the kung-fu dot stored for its later `> 0.5` | `gun::melee_speed`, `gun::back_dot` (`BackDot::Stored` / `Kept`, by `GunHost::prediction`) |
+| Melee back test (`KatanaFire` 0x833f0, `CCombatAttack` 0x86078; mp.dll 0x10056858, 0x10058c98; client.dll 0x10009fd2, 0x1000b06e; issue #170) | speed stored; standard `Normalize`, dot `x, y, z` unrounded against the `double` -0.5 | speed stored; mp.dll's katana: components stored, dot `z, y, x`; its kung fu and both client attacks: normalised x on the FPU, `(z + y) + x`; the kung-fu dot stored for its later `> 0.5` | `ts30_gameplay::melee`'s `melee_speed`, `back_dot` (`BackDot::Stored` / `Kept`, by `GunHost::prediction`) |
 | Bullet dance `< 80`, `Killed`'s hop `> 80` (0x8fb2e, 0x8f3a2; mp.dll 0x1005ea49, 0x1005e479) | the stored 2D root | unrounded | `stunt::hspeed_cmp` |
 | `StandardFire` speed gates (Barrett 35, M60 175; 0x8257b, 0x825c9; mp.dll 0x10055b11, client.dll 0x100092e1; issue #171) | the stored root, `x, y, z` | unrounded, `x, y, z` (both builds) | `Gun::faster_than` (`gun::speed_over`, by `GunHost::arith`); 2.1's `> 80` is unrounded in its mp.dll and client.dll. **Was** an `f32` length, which can be an ulp off either build's root, so a speed just over the limit could miss |
 | `FindHullIntersection` corner distance (0x95d7f; mp.dll `FUN_10063590` 0x10063724; issue #171) | `dx·(float)dx + dy·(float)dy + dz²`, root stored | unrounded differences `z, y, x`, root unrounded; both take a NaN as closer | `melee::hull_closer` |

@@ -13,10 +13,6 @@ use goldsrc_sys::{FL_DUCKING, IN_DUCK, IN_JUMP};
 pub const JUMP_VELOCITY: f32 = 236.643_19;
 /// Super jump (physinfo `mj` = 1, ducked, duck held, within the duck window).
 pub const HIGH_JUMP_VELOCITY: f32 = 400.0;
-/// Wall jump: pushed away from the wall at 210 u/s, up at the normal jump speed.
-pub const WALLJUMP_SPEED: f32 = 210.0;
-/// Wall climb: `sqrt(2 * 800 * 70)`.
-pub const WALLCLIMB_VELOCITY: f32 = 334.664;
 
 /// "Airborne stunt": dive, flips, wall jump. Zeroes the usercmd (`PM_CheckParamters`).
 pub const AIRBORNE_MASK: i32 = DIVING | FLIP_HIGH | FLIP_LOW | WALLJUMPING; // 0x10c10

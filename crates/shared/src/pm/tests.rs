@@ -1,6 +1,7 @@
 //! Fake-world tests: a floor at z = 0 and a wall at x = 200, hull-aware.
 
 use super::*;
+use crate::gameplay::pm::{GroundAccel, Jump};
 use crate::ts::stunt;
 use goldsrc_sys::movevars_s;
 use std::alloc::{Layout, alloc_zeroed};
@@ -96,6 +97,133 @@ unsafe extern "C" fn info_value(s: *const c_char, key: *const c_char) -> *const 
     })
 }
 
+/// Movement rules for these tests: the 3.0 plugin's answers (so the pinned trajectories hold, and
+/// the tests see TS's movement), with the hooks a test varies as fields. The plugin's own
+/// answers are tested in the plugin.
+struct Rules {
+    ground_accel: GroundAccel,
+    recover_input_scale: f64,
+    prone_forward_scale: Option<f64>,
+    wall_jump_speed: f32,
+    wall_jump_up_velocity: f32,
+    wall_climb_velocity: f32,
+    wall_dive: bool,
+    fix_velocity: fn(Arith, &mut Vec3, f32),
+    jump_push: fn(Arith, Jump, u16, f32, &mut Vec3),
+    scaled_frametime: fn(f32, f32) -> f32,
+    /// `None` decays it as 3.0 does.
+    punch: Option<Vec3>,
+    /// `None` divides by `max(fuser1, 0.1)`, as 3.0 does.
+    step_interval: Option<i32>,
+    in_eye_pitch: fn(f32) -> f32,
+    roll_divides_first: bool,
+    friction_edge_by_reciprocal: bool,
+    ieee_compares: bool,
+}
+
+/// TS 3.0's numbers (the wall climb is `sqrt(2 * 800 * 70)`).
+const BASE: Rules = Rules {
+    ground_accel: GroundAccel::BySpeed,
+    recover_input_scale: 0.5,
+    prone_forward_scale: None,
+    wall_jump_speed: 210.0,
+    wall_jump_up_velocity: ts::JUMP_VELOCITY,
+    wall_climb_velocity: 334.664,
+    wall_dive: true,
+    fix_velocity: |_, _, _| {},
+    jump_push: |_, _, _, _, _| {},
+    scaled_frametime: |frametime, fuser1| if below87(fuser1, crate::ts::TIME_SCALE_FREEZE) { 0.0 } else { frametime * fuser1 },
+    punch: None,
+    step_interval: None,
+    in_eye_pitch: |pitch| pitch,
+    roll_divides_first: false,
+    friction_edge_by_reciprocal: false,
+    ieee_compares: false,
+};
+
+/// The rules most tests run.
+static RULES: Rules = BASE;
+
+impl PmRules for Rules {
+    fn ground_accel(&self) -> GroundAccel {
+        self.ground_accel
+    }
+    fn recover_input_scale(&self) -> f64 {
+        self.recover_input_scale
+    }
+    fn prone_forward_scale(&self) -> Option<f64> {
+        self.prone_forward_scale
+    }
+    fn wall_jump_speed(&self) -> f32 {
+        self.wall_jump_speed
+    }
+    fn wall_jump_up_velocity(&self) -> f32 {
+        self.wall_jump_up_velocity
+    }
+    fn wall_climb_velocity(&self) -> f32 {
+        self.wall_climb_velocity
+    }
+    fn wall_dive(&self) -> bool {
+        self.wall_dive
+    }
+    fn fix_velocity(&self, arith: Arith, velocity: &mut Vec3, limit: f32) {
+        (self.fix_velocity)(arith, velocity, limit)
+    }
+    fn jump_push(&self, arith: Arith, jump: Jump, buttons: u16, maxspeed: f32, velocity: &mut Vec3) {
+        (self.jump_push)(arith, jump, buttons, maxspeed, velocity)
+    }
+    fn scaled_frametime(&self, frametime: f32, fuser1: f32) -> f32 {
+        (self.scaled_frametime)(frametime, fuser1)
+    }
+    fn drop_punch_angle(&self, arith: Arith, punch: Vec3, dead: bool, fuser1: f32, frametime: f32) -> Vec3 {
+        fn go<F: Fpu>(punch: Vec3, dead: bool, fuser1: f32, frametime: f32) -> Vec3 {
+            let mut punch = punch;
+            let len = if !dead {
+                let len = F::normalize(&mut punch);
+                if F::MSVC {
+                    let d = len - (len * F::xd(0.5) + F::xd(10.0)) * F::x(fuser1) * F::x(frametime);
+                    if d > F::xd(0.0) { d.f() } else { 0.0 }
+                } else {
+                    let len = (len - (len * F::xd(0.5) + F::xd(10.0)) * F::x(frametime) * F::x(fuser1)).f();
+                    if 0.0 > len { 0.0 } else { len }
+                }
+            } else {
+                0.0
+            };
+            scale(punch, len)
+        }
+        self.punch.unwrap_or_else(|| crate::by_arith!(arith, go(punch, dead, fuser1, frametime)))
+    }
+    fn step_interval(&self, arith: Arith, interval: i32, fuser1: f32) -> i32 {
+        fn go<F: Fpu>(interval: i32, fuser1: f32) -> i32 {
+            let ts = if fuser1 >= 0.1 { fuser1 } else { 0.1 };
+            (F::x(1.0) / F::x(ts) * F::xi(interval)).trunc_i32()
+        }
+        self.step_interval.unwrap_or_else(|| crate::by_arith!(arith, go(interval, fuser1)))
+    }
+    fn texture_limits(&self) -> crate::gameplay::pm::TextureLimits {
+        crate::gameplay::pm::TextureLimits::LARGE
+    }
+    fn in_eye_pitch(&self, target_pitch: f32) -> f32 {
+        (self.in_eye_pitch)(target_pitch)
+    }
+    fn roll_divides_first(&self) -> bool {
+        self.roll_divides_first
+    }
+    fn friction_edge_by_reciprocal(&self) -> bool {
+        self.friction_edge_by_reciprocal
+    }
+    fn ieee_compares(&self) -> bool {
+        self.ieee_compares
+    }
+    fn speed_by_slots(&self, _free: i32, _the_one: bool) -> f32 {
+        unreachable!("server only")
+    }
+    fn max_player_speed(&self) -> f32 {
+        unreachable!("server only")
+    }
+}
+
 struct Fixture {
     p: Box<playermove_t>,
     mv: Box<movevars_s>,
@@ -153,7 +281,7 @@ impl Fixture {
 
     /// Runs `frames` usercmds of `msec` each.
     fn run(&mut self, frames: usize) {
-        self.run_with(frames, &crate::gameplay::DEFAULTS);
+        self.run_with(frames, &RULES);
     }
 
     /// [`run`](Self::run) under a gameplay plugin's movement rules.
@@ -366,26 +494,15 @@ fn wall_jump_and_climb() {
     f.p.origin = [0.0, 0.0, 200.0];
     f.p.iuser4 = stunt::GO_DUCK | stunt::WALLCLIMBING | stunt::WALLCLIMB_IMPULSE;
     f.run(1);
-    assert!((f.p.velocity[2] - (ts::WALLCLIMB_VELOCITY - 12.0)).abs() < 0.05, "vz = {}", f.p.velocity[2]);
+    assert!((f.p.velocity[2] - (RULES.wall_climb_velocity - 12.0)).abs() < 0.05, "vz = {}", f.p.velocity[2]);
     assert_eq!(f.p.iuser4 & stunt::WALLCLIMB_IMPULSE, 0);
 }
 
 /// The movement runs the rules it is given: a plugin's wall climb and recovery scale replace the
-/// core's, and the core's are TS 3.0's constants.
+/// others'.
 #[test]
 fn movement_hooks_follow_the_plugin() {
-    use crate::gameplay::{DEFAULTS, PmRules};
-    struct Other;
-    impl PmRules for Other {
-        fn recover_input_scale(&self) -> f64 {
-            0.25
-        }
-        fn wall_climb_velocity(&self) -> f32 {
-            300.0
-        }
-    }
-    static OTHER: Other = Other;
-    assert_eq!((DEFAULTS.recover_input_scale(), DEFAULTS.wall_climb_velocity()), (0.5, ts::WALLCLIMB_VELOCITY));
+    static OTHER: Rules = Rules { recover_input_scale: 0.25, wall_climb_velocity: 300.0, ..BASE };
 
     let mut f = Fixture::new();
     f.p.origin = [0.0, 0.0, 200.0];
@@ -404,49 +521,27 @@ fn movement_hooks_follow_the_plugin() {
 /// core's where the 3.0 code had its constants and helpers.
 #[test]
 fn every_movement_hook_reaches_the_movement() {
-    use crate::gameplay::PmRules;
-    use crate::gameplay::pm::{GroundAccel, Jump};
     thread_local!(static CALLS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) });
     let take = || CALLS.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    struct Other;
-    impl PmRules for Other {
-        fn ground_accel(&self) -> GroundAccel {
-            GroundAccel::Constant(0.5)
-        }
-        fn prone_forward_scale(&self) -> Option<f64> {
-            Some(0.0)
-        }
-        fn wall_jump_speed(&self) -> f32 {
-            170.0
-        }
-        fn wall_jump_up_velocity(&self) -> f32 {
-            250.0
-        }
-        fn wall_dive(&self) -> bool {
-            false
-        }
-        fn fix_velocity(&self, arith: Arith, _velocity: &mut Vec3, limit: f32) {
-            CALLS.with(|c| c.borrow_mut().push(format!("fix {arith:?} {limit}")));
-        }
-        fn jump_push(&self, arith: Arith, jump: Jump, buttons: u16, maxspeed: f32, velocity: &mut Vec3) {
-            CALLS.with(|c| c.borrow_mut().push(format!("jump {arith:?} {jump:?} {buttons:#x} {maxspeed}")));
-            velocity[0] += 50.0;
-        }
-        fn step_interval(&self, _arith: Arith, _interval: i32, _fuser1: f32) -> i32 {
-            1234
-        }
+    fn fix_velocity(arith: Arith, _velocity: &mut Vec3, limit: f32) {
+        CALLS.with(|c| c.borrow_mut().push(format!("fix {arith:?} {limit}")));
     }
-    static OTHER: Other = Other;
-    struct Scales;
-    impl PmRules for Scales {
-        fn scaled_frametime(&self, frametime: f32, _fuser1: f32) -> f32 {
-            frametime * 2.0
-        }
-        fn drop_punch_angle(&self, _arith: Arith, _punch: Vec3, _dead: bool, _fuser1: f32, _frametime: f32) -> Vec3 {
-            [1.0, 2.0, 3.0]
-        }
+    fn jump_push(arith: Arith, jump: Jump, buttons: u16, maxspeed: f32, velocity: &mut Vec3) {
+        CALLS.with(|c| c.borrow_mut().push(format!("jump {arith:?} {jump:?} {buttons:#x} {maxspeed}")));
+        velocity[0] += 50.0;
     }
-    static SCALES: Scales = Scales;
+    static OTHER: Rules = Rules {
+        ground_accel: GroundAccel::Constant(0.5),
+        prone_forward_scale: Some(0.0),
+        wall_jump_speed: 170.0,
+        wall_jump_up_velocity: 250.0,
+        wall_dive: false,
+        fix_velocity,
+        jump_push,
+        step_interval: Some(1234),
+        ..BASE
+    };
+    static SCALES: Rules = Rules { scaled_frametime: |frametime, _| frametime * 2.0, punch: Some([1.0, 2.0, 3.0]), ..BASE };
 
     for arith in [Arith::Gcc, Arith::Msvc] {
         // A constant ground factor: 0.01 s * 320 * accelerate 10 * 0.5 from rest (3.0's at 320
@@ -492,7 +587,7 @@ fn every_movement_hook_reaches_the_movement() {
         assert_eq!(take(), [format!("fix {arith:?} 640")]);
 
         // Prone: the forward move is multiplied (a -0 stays), not stored as 0.
-        for (rules, bits) in [(&OTHER as &'static dyn PmRules, (-0.0f32).to_bits()), (&crate::gameplay::DEFAULTS, 0)] {
+        for (rules, bits) in [(&OTHER as &'static dyn PmRules, (-0.0f32).to_bits()), (&RULES, 0)] {
             let mut f = Fixture::standing();
             f.arith = arith;
             f.p.iuser4 = stunt::PRONE;
@@ -632,11 +727,11 @@ fn command_is_not_clamped_for_players() {
     f.p.cmd.msec = 10;
     f.p.movevars = &mut *f.mv;
     CURRENT.with(|c| c.set(&*f.p));
-    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::DEFAULTS);
+    player_move(&mut f.p, Arith::Gcc, &RULES);
     assert_eq!(f.p.cmd.forwardmove, 1000.0);
     f.p.iuser1 = 3; // roaming spectator
     f.p.cmd.forwardmove = 1000.0;
-    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::DEFAULTS);
+    player_move(&mut f.p, Arith::Gcc, &RULES);
     assert!((f.p.cmd.forwardmove - 320.0).abs() < 1e-3);
 }
 
@@ -666,12 +761,12 @@ fn in_eye_spectator_is_mode_5() {
     f.p.physents[1].angles = [4.0, 90.0, 0.0];
     f.p.iuser1 = crate::ts::obs::IN_EYE;
     f.p.iuser2 = 2;
-    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::DEFAULTS);
+    player_move(&mut f.p, Arith::Gcc, &RULES);
     assert_eq!(f.p.origin, [50.0, 60.0, 70.0], "in-eye sits at the target's origin");
     assert_eq!(f.p.angles, [4.0, 90.0, 0.0]);
 
     f.p.iuser1 = crate::ts::obs::CHASE_LOCKED;
-    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::DEFAULTS);
+    player_move(&mut f.p, Arith::Gcc, &RULES);
     assert_eq!(f.p.angles, [6.0, 90.0, 0.0], "locked chase pitches to 10 - pitch");
     assert!(f.p.origin[1] < 60.0, "locked chase sits behind the target");
 }
@@ -727,9 +822,9 @@ fn arith_per_side() {
 /// The server's default run is the client's prediction, command for command.
 #[test]
 fn server_default_trajectory_is_the_clients() {
-    let server = trajectory_hash(|p| player_move(p, Arith::SERVER_DEFAULT, &crate::gameplay::DEFAULTS));
-    assert_eq!(server, trajectory_hash(|p| player_move(p, Arith::CLIENT, &crate::gameplay::DEFAULTS)));
-    assert_ne!(server, trajectory_hash(|p| player_move(p, Arith::from_cvar(b"gcc"), &crate::gameplay::DEFAULTS)));
+    let server = trajectory_hash(|p| player_move(p, Arith::SERVER_DEFAULT, &RULES));
+    assert_eq!(server, trajectory_hash(|p| player_move(p, Arith::CLIENT, &RULES)));
+    assert_ne!(server, trajectory_hash(|p| player_move(p, Arith::from_cvar(b"gcc"), &RULES)));
 }
 
 /// MSVC's `_ftol` keeps the low dword of a 64-bit `fistp`; GCC's `fistpl` gives 0x80000000.
@@ -746,8 +841,8 @@ fn int_casts_per_build() {
 /// client's run is pinned like the server's.
 #[test]
 fn msvc_trajectory_is_pinned() {
-    let msvc = trajectory_hash(|p| player_move(p, Arith::Msvc, &crate::gameplay::DEFAULTS));
-    assert_ne!(msvc, trajectory_hash(|p| player_move(p, Arith::Gcc, &crate::gameplay::DEFAULTS)));
+    let msvc = trajectory_hash(|p| player_move(p, Arith::Msvc, &RULES));
+    assert_ne!(msvc, trajectory_hash(|p| player_move(p, Arith::Gcc, &RULES)));
     assert_eq!(msvc, 0xb197_b0b5_2fa8_d4e3, "{msvc:#x}");
 }
 
@@ -764,7 +859,7 @@ fn locked_view_reads_stale_calc_roll_args() {
     f.p.physents[1].origin = [50.0, 60.0, 70.0];
     f.p.iuser1 = crate::ts::obs::LOCKED_VIEW;
     f.p.iuser2 = 2;
-    player_move(&mut f.p, Arith::Gcc, &crate::gameplay::DEFAULTS);
+    player_move(&mut f.p, Arith::Gcc, &RULES);
     assert_eq!(f.p.angles[2], 2.0);
 }
 
@@ -772,7 +867,6 @@ fn locked_view_reads_stale_calc_roll_args() {
 fn ts_constants_are_the_rounded_roots() {
     let xd = Gcc::xd;
     assert_eq!(ts::JUMP_VELOCITY, xd(56000.0).sqrt().f());
-    assert_eq!(ts::WALLCLIMB_VELOCITY, xd(112_000.0).sqrt().f());
     assert_eq!(ts::HIGH_JUMP_VELOCITY, xd(160_000.0).sqrt().f());
 }
 
@@ -929,7 +1023,7 @@ fn trajectory_hash(mv: fn(&mut playermove_t)) -> u64 {
 /// generic over the build.
 #[test]
 fn server_trajectory_is_unchanged() {
-    let h = trajectory_hash(|p| player_move(p, Arith::Gcc, &crate::gameplay::DEFAULTS));
+    let h = trajectory_hash(|p| player_move(p, Arith::Gcc, &RULES));
     assert_eq!(h, 0x3bb0_c84b_4c23_562f, "{h:#x}");
 }
 
@@ -1127,14 +1221,8 @@ fn msvc_friction_matches_client_dll() {
             f.p.movevars = &mut *f.mv;
             CURRENT.with(|c| c.set(&*f.p));
             match arith {
-                Arith::Gcc => {
-                    Pm::<Gcc> { p: &mut f.p, onladder: false, spectator: None, rules: &crate::gameplay::DEFAULTS, fpu: PhantomData }
-                        .friction()
-                }
-                Arith::Msvc => {
-                    Pm::<Msvc> { p: &mut f.p, onladder: false, spectator: None, rules: &crate::gameplay::DEFAULTS, fpu: PhantomData }
-                        .friction()
-                }
+                Arith::Gcc => Pm::<Gcc> { p: &mut f.p, onladder: false, spectator: None, rules: &RULES, fpu: PhantomData }.friction(),
+                Arith::Msvc => Pm::<Msvc> { p: &mut f.p, onladder: false, spectator: None, rules: &RULES, fpu: PhantomData }.friction(),
             }
             f.p.velocity
         };
@@ -1146,22 +1234,9 @@ fn msvc_friction_matches_client_dll() {
     assert!(differs_from_gcc > 0, "the test should tell the builds apart");
 }
 
-/// A ruleset with the other SDK operation orders, in-eye pitch and texture table
-/// (`PmRules::roll_divides_first`, `friction_edge_by_reciprocal`, `in_eye_pitch`,
-/// `texture_limits`). The core keeps TS 3.0's.
-struct Reordered;
-impl crate::gameplay::PmRules for Reordered {
-    fn in_eye_pitch(&self, pitch: f32) -> f32 {
-        pitch * -2.0
-    }
-    fn roll_divides_first(&self) -> bool {
-        true
-    }
-    fn friction_edge_by_reciprocal(&self) -> bool {
-        true
-    }
-}
-static REORDERED: Reordered = Reordered;
+/// A ruleset with the other SDK operation orders and in-eye pitch
+/// (`PmRules::roll_divides_first`, `friction_edge_by_reciprocal`, `in_eye_pitch`).
+static REORDERED: Rules = Rules { in_eye_pitch: |pitch| pitch * -2.0, roll_divides_first: true, friction_edge_by_reciprocal: true, ..BASE };
 
 #[test]
 fn in_eye_pitch_follows_the_rules() {
@@ -1175,7 +1250,7 @@ fn in_eye_pitch_follows_the_rules() {
     f.p.iuser2 = 2;
     player_move(&mut f.p, Arith::Msvc, &REORDERED);
     assert_eq!(f.p.angles, [9.0, 90.0, 1.0]);
-    player_move(&mut f.p, Arith::Msvc, &crate::gameplay::DEFAULTS);
+    player_move(&mut f.p, Arith::Msvc, &RULES);
     assert_eq!(f.p.angles, [-4.5, 90.0, 1.0], "3.0 copies the target's angles");
 }
 
@@ -1225,7 +1300,7 @@ fn friction_edge_start_order_follows_the_rules() {
             START.with(|c| c.get())
         };
         let recip = run(&REORDERED);
-        let core = run(&crate::gameplay::DEFAULTS);
+        let core = run(&RULES);
         let sp = speed as f64;
         for k in 0..2 {
             let r = 1.0 / sp * v[k] as f64 * 16.0 + origin[k] as f64;
@@ -1243,19 +1318,13 @@ fn friction_edge_start_order_follows_the_rules() {
 // ---- issue #105: IEEE compares (`PmRules::ieee_compares`) -----------------------------------------
 
 /// A ruleset whose `mp.dll` compares through the parity flag (`PmRules::ieee_compares`).
-struct Ieee;
-impl crate::gameplay::PmRules for Ieee {
-    fn ieee_compares(&self) -> bool {
-        true
-    }
-}
-static IEEE: Ieee = Ieee;
+static IEEE: Rules = Rules { ieee_compares: true, ..BASE };
 
 /// A `Pm` over the fixture in build `F` under the core rules.
 fn pm_in<F: Fpu>(f: &mut Fixture) -> Pm<'_, F> {
     f.p.movevars = &mut *f.mv;
     CURRENT.with(|c| c.set(&*f.p));
-    Pm::<F> { p: &mut f.p, onladder: false, spectator: None, rules: &crate::gameplay::DEFAULTS, fpu: PhantomData }
+    Pm::<F> { p: &mut f.p, onladder: false, spectator: None, rules: &RULES, fpu: PhantomData }
 }
 
 #[test]
@@ -1278,7 +1347,6 @@ fn compares_per_build() {
     // The same arithmetic as `Msvc`, and hooks see `Arith::Msvc`.
     const { assert!(MsvcIeee::MSVC && MsvcIeee::IEEE_CMP && !Msvc::IEEE_CMP && !Gcc::IEEE_CMP) };
     assert_eq!(MsvcIeee::ARITH, Arith::Msvc);
-    assert!(!crate::gameplay::DEFAULTS.ieee_compares());
 }
 
 #[test]
@@ -1297,11 +1365,11 @@ fn nan_waterjumptime_follows_the_rules() {
     // `PM_WaterJump` ends the water jump out of the water.
     assert_eq!(run(Arith::Msvc, &IEEE), [5.0, 7.0, 0.0]);
     // TS 3.0 (C3 counts the NaN as 0): a normal air move without input, and the NaN stays.
-    let [vx, vy, t] = run(Arith::Msvc, &crate::gameplay::DEFAULTS);
+    let [vx, vy, t] = run(Arith::Msvc, &RULES);
     assert!(vx == 0.0 && vy == 0.0 && t.is_nan());
     // `ts_i386.so`'s compares are kept under any rules.
     let bits = |r: [f32; 3]| r.map(f32::to_bits);
-    assert_eq!(bits(run(Arith::Gcc, &IEEE)), bits(run(Arith::Gcc, &crate::gameplay::DEFAULTS)));
+    assert_eq!(bits(run(Arith::Gcc, &IEEE)), bits(run(Arith::Gcc, &RULES)));
 }
 
 #[test]

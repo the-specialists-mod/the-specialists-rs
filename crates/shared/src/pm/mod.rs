@@ -42,7 +42,6 @@ pub use math::{Fpu, FpuMath, Gcc, Msvc, MsvcIeee, Num};
 pub use math::{ORDER_XYZ, ORDER_ZYX, eq87, not_above87, plus_double};
 /// `ts_i386.so`'s exported mathlib helpers; `server-dll` exports them under their C names.
 pub use math::{anglemod, length, q_log2};
-pub(crate) use sound::step_interval;
 use std::marker::PhantomData;
 
 // Spectator modes (`iuser1`) in TS's numbering.
@@ -1851,27 +1850,6 @@ fn calc_roll<F: Fpu>(angles: Vec3, velocity: Vec3, rollangle: f32, rollspeed: f3
         side * value / F::x(rollspeed)
     };
     side * sign
-}
-
-/// `PM_DropPunchAngle` (0x100760, client 0x1002e1c0), the default of
-/// [`PmRules::drop_punch_angle`]. TS scales by `fuser1` on top of the already-scaled frametime,
-/// and zeroes the punch while dead. MSVC multiplies by `fuser1` first and clamps the unrounded
-/// length (a NaN or a -0 becomes +0).
-pub(crate) fn drop_punch_angle<F: Fpu>(punch: Vec3, dead: bool, fuser1: f32, frametime: f32) -> Vec3 {
-    let mut punch = punch;
-    let len = if !dead {
-        let len = F::normalize(&mut punch);
-        if F::MSVC {
-            let d = len - (len * F::xd(0.5) + F::xd(10.0)) * F::x(fuser1) * F::x(frametime);
-            if d > F::xd(0.0) { d.f() } else { 0.0 }
-        } else {
-            let len = (len - (len * F::xd(0.5) + F::xd(10.0)) * F::x(frametime) * F::x(fuser1)).f();
-            if 0.0 > len { 0.0 } else { len }
-        }
-    } else {
-        0.0
-    };
-    scale(punch, len)
 }
 
 /// `PM_GetAccelBySpeed` (0xfdcc4, client 0x1002b7f0): ground acceleration factor from the

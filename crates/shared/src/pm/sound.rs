@@ -1,7 +1,8 @@
 //! Footsteps: `PM_UpdateStepSound` (0xfcc20), `PM_PlayStepSound` (0xfc344),
 //! `PM_MapTextureTypeStepType` (0xfca90).
 //!
-//! TS changes: the step interval is divided by the time scale (sparser steps in slow motion),
+//! TS changes: the step interval follows the time scale (sparser steps in slow motion, the
+//! ruleset's `PmRules::step_interval`),
 //! steps are silent while `iuser4 & (RECOVER | 0x200)`, attenuation is 1.25 (SDK `ATTN_NORM`),
 //! and `mp_footsteps` (movevars) is not checked.
 
@@ -35,14 +36,6 @@ pub fn map_texture_type_step_type(t: u8) -> i32 {
         b'V' => STEP_VENT,
         _ => STEP_CONCRETE,
     }
-}
-
-/// The slow-motion footstep interval of `PM_UpdateStepSound` (0xfe2d4), the default of
-/// [`PmRules::step_interval`](crate::gameplay::PmRules::step_interval): the interval times
-/// `1 / max(fuser1, 0.1)` (a NaN time scale counts as 0.1), the reciprocal unrounded, truncated.
-pub(crate) fn step_interval<F: Fpu>(interval: i32, fuser1: f32) -> i32 {
-    let ts = if fuser1 >= 0.1 { fuser1 } else { 0.1 };
-    (F::x(1.0) / F::x(ts) * F::xi(interval)).trunc_i32()
 }
 
 impl<F: Fpu> Pm<'_, F> {

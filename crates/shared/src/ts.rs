@@ -76,34 +76,3 @@ pub const TIME_SCALE_FREEZE: f32 = 0.1;
 
 /// Inventory: 81 slots in total; free slots set move speed.
 pub const SLOTS_TOTAL: i32 = 81;
-
-/// `GetSpeedBySlots` (0x76bd4, mp.dll 0x1004cbe0): the move speed for `free` inventory slots,
-/// `(int)(free * 0.012345679f * 120 + 210)` truncated (GCC's `fistp` under a truncating control
-/// word, MSVC's `__ftol`), or 330 for The One and an empty inventory (`free > 80`). Every step is
-/// exact in `f64` (a 24-bit float times small integers), so the truncation sees TS's value.
-/// `CBasePlayer::SetPlayerSpeed` clamps the result to `0..=330`.
-pub fn speed_by_slots(free: i32, the_one: bool) -> f32 {
-    if the_one || free > SLOTS_TOTAL - 1 {
-        return 330.0;
-    }
-    (f64::from(free) * f64::from(0.012_345_679_f32) * 120.0 + 210.0) as i32 as f32
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn slot_speed() {
-        use super::speed_by_slots;
-        assert_eq!(speed_by_slots(0, false), 210.0);
-        assert_eq!(speed_by_slots(81, false), 330.0);
-        // Truncated, not rounded: 212.96 and 319.63 (issue #9).
-        assert_eq!(speed_by_slots(2, false), 212.0);
-        assert_eq!(speed_by_slots(74, false), 319.0);
-        assert_eq!(speed_by_slots(80, false), 328.0);
-        // Exact multiples of 81/120 stay whole (the float constant is just above 1/81).
-        assert_eq!(speed_by_slots(27, false), 250.0);
-        assert_eq!(speed_by_slots(54, false), 290.0);
-        // The One runs at 330 whatever they carry.
-        assert_eq!(speed_by_slots(0, true), 330.0);
-    }
-}

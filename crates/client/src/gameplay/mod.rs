@@ -37,17 +37,11 @@ pub struct ClientPlugin {
 pub(crate) struct Defaults;
 
 #[cfg(test)]
-impl PmRules for Defaults {}
-#[cfg(test)]
-impl GunRules for Defaults {}
-#[cfg(test)]
-impl shared::gameplay::MeleeRules for Defaults {}
-#[cfg(test)]
 impl ClientRules for Defaults {}
 
-/// [`Defaults`] as a plugin.
+/// [`Defaults`] as a plugin, with the 3.0 plugin's movement and gun rules.
 #[cfg(test)]
-pub(crate) static DEFAULTS: ClientPlugin = ClientPlugin { pm: &Defaults, gun: &Defaults, client: &Defaults };
+pub(crate) static DEFAULTS: ClientPlugin = ClientPlugin { pm: &ts30_gameplay::TS30, gun: &ts30_gameplay::TS30, client: &Defaults };
 
 /// The registered plugins. The first one the client library registers is the default: the rules
 /// for a server that sends no ruleset (TS 3.0's own) or one this client doesn't have.
