@@ -1,19 +1,17 @@
 //! `StartFrame` → `CHalfLifeMultiplay::Think` (0xcf038, time/frag limits, intermission) and
 //! `CTSGameRules::Think` (0x77204: global slow, auto power-ups, The One, LMS rounds, SrvSett).
 
-use super::lifecycle::{give_cash, start_observer};
 use super::msg::{self, ts_message_all};
 use super::powerup::go_slow;
 use super::state::{self, Mode};
-use super::{cvars, other, scoring, teams, votes};
+use super::{cvars, votes};
 use crate::messages::{self, Msg};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::rules::SVC_INTERMISSION;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
-use shared::protocol::rules::{RoundTime, SrvSett, TeamScore};
-use shared::weapons::{Gun, att, id, tables};
+use shared::protocol::rules::{RoundTime, TeamScore};
 use std::cell::Cell;
 
 pub fn think() {
@@ -184,86 +182,6 @@ pub fn go_to_intermission() {
     engine().print("[ts] intermission\n");
 }
 
-/// `CTSGameRules::Think` (0x77204), TS 3.0's
-/// ([`ServerRules::think`](crate::gameplay::ServerRules::think)).
-pub fn ts_think(now: f32) {
-    // Global slow motion.
-    let (active, amount, until) = state::with(|g| (g.global_slow.active, g.global_slow.amount, g.global_slow.until));
-    if until != 0.0 && until < now {
-        state::with(|g| g.global_slow.active = false);
-    }
-    if !state::with(|g| g.global_slow.active) {
-        if amount != 0.0 {
-            global_slow2(0.0, false);
-            state::with(|g| {
-                g.global_slow.amount = 0.0;
-                g.global_slow.until = 0.0;
-            });
-        }
-    } else if active {
-        global_slow2(amount, false);
-    }
-
-    if state::with(|g| g.check_deads_at != 0.0 && g.check_deads_at < now) {
-        check_deads(now);
-    }
-
-    let (mode, lms, the_one) = state::with(|g| (g.mode, g.lms, g.the_one));
-    if matches!(mode, Mode::Dm | Mode::TeamDm) {
-        auto_powerups(now);
-        if the_one && state::with(|g| g.next_the_one_check < now) {
-            the_one_check(now);
-        }
-        crate::gameplay::active().server.entities_think(now);
-        if lms && mode == Mode::Dm {
-            let (restart, end) = state::with(|g| (g.round_restart, g.round_end));
-            if restart != 0.0 && restart < now {
-                restart_round(now);
-            } else if end < now && restart == 0.0 {
-                check_deads(now);
-            }
-        }
-    }
-
-    votes::check_votes(now);
-    srvsett_think();
-}
-
-/// The end of `CTSGameRules::Think`: the `realbullet` copy (0x775b3..0x77632), the simulated
-/// bullets (0x77635), the `usecash` copy (0x77650..0x776d5) and `ammocount` (0x776d8..0x7775b),
-/// each broadcast as `SrvSett` when it changes.
-pub fn srvsett_think() {
-    let rb = cvars::f(c"realbullet");
-    if let Some(v) = state::with(|g| refresh_copy(&mut g.last_srvsett[0], rb)) {
-        msg::all(Msg::SrvSett, |w| SrvSett { key: 0, value: v as i16 }.write(w));
-    }
-    // Between the two copies, so a bullet steps with this frame's `realbullet`.
-    crate::weapons::bullet_think();
-    let cash = cvars::f(c"usecash");
-    if let Some(v) = state::with(|g| refresh_copy(&mut g.last_srvsett[1], cash)) {
-        // `setne`: whether the truncated copy is non-zero, so 0.5 sends 0.
-        msg::all(Msg::SrvSett, |w| SrvSett { key: 1, value: (v != 0) as i16 }.write(w));
-    }
-    // `ammocount` is compared as an int (truncated first), and a change is `Set_ammo_count` too
-    // (`state::ammo_column`).
-    let v = ammocount();
-    if state::with(|g| std::mem::replace(&mut g.last_srvsett[2], v) != v) {
-        msg::all(Msg::SrvSett, |w| SrvSett { key: 2, value: v as i16 }.write(w));
-    }
-}
-
-/// The `realbullet`/`usecash` update of `CTSGameRules::Think`: `fild` the stored int, `fcomp` it
-/// with the float cvar and, unless they're equal, store `(int)cvar` (truncated) and return it to be
-/// sent. A fractional value never equals its truncation, so TS re-sends it every Think; a NaN
-/// compares unordered, which the `test ah,0x40` takes as equal, so it never updates.
-pub(crate) fn refresh_copy(stored: &mut i32, cvar: f32) -> Option<i32> {
-    if x87_eq(*stored as f64, cvar as f64) {
-        return None;
-    }
-    *stored = crate::entities::stock::maprules::x87_int(cvar);
-    Some(*stored)
-}
-
 /// An x87 `fcom` tested with `test ah,0x40` (C3): equal, or unordered when either side is NaN.
 pub fn x87_eq(a: f64, b: f64) -> bool {
     a == b || a.is_nan() || b.is_nan()
@@ -349,36 +267,6 @@ pub fn global_slow2(amount: f32, btime: bool) {
     }
 }
 
-/// Automatic power-up spawner (DM/TDM, `nopowerup != 1`, maps without their own power-ups).
-pub fn auto_powerups(now: f32) {
-    let enabled = state::with(|g| {
-        if g.powerup_spawner == 0xff {
-            g.powerup_spawner = 1;
-        }
-        g.powerup_spawner == 1
-    });
-    // `fld1; fcomp; test ah,0x40` (0x772f9): a NaN `nopowerup` counts as 1.
-    if x87_eq(cvars::f(c"nopowerup") as f64, 1.0) || !enabled {
-        return;
-    }
-    let next = state::with(|g| g.next_powerup);
-    if now <= next {
-        if next - now > 21.0 {
-            state::with(|g| g.next_powerup = 0.0);
-        }
-        return;
-    }
-    let r = engine().random_float(0.0, 1.0);
-    // A NaN `slowmatch` counts as 1 too (0x77358).
-    let kind = if r < 0.25 && !x87_eq(cvars::f(c"slowmatch") as f64, 1.0) {
-        shared::ts::powerup::SLOWMO
-    } else {
-        state::with(|g| g.random_powerup(0x1ff))
-    };
-    let ok = put_powerup(kind);
-    state::with(|g| g.next_powerup = now + if ok { 20.0 } else { 1.0 });
-}
-
 /// `PutPowerUp` (0x9797c): a random deathmatch spot, a random clear position near it, no other
 /// power-up within 128 units. False when no spot was clear.
 pub fn put_powerup(kind: u16) -> bool {
@@ -439,123 +327,6 @@ fn random_position(from: [f32; 3]) -> [f32; 3] {
     from
 }
 
-/// `CheckDeads` (0x79c00), LMS part (modes 2/3 are unreachable).
-fn check_deads(now: f32) {
-    let (restart, mode, lms, round_end, timer) = state::with(|g| {
-        g.check_deads_at = 0.0;
-        (g.round_restart, g.mode, g.lms, g.round_end, g.round_timer)
-    });
-    if restart != 0.0 || mode != Mode::Dm || !lms {
-        return;
-    }
-    let mut total = 0;
-    let mut living = Vec::new();
-    // `UTIL_PlayerByIndex` and `IsPlayer()`: a player who left counts (dead, so not living).
-    for e in super::slot_players() {
-        total += 1;
-        if super::is_alive(e) {
-            living.push(e);
-        }
-    }
-    if living.len() == 1 {
-        let last = living[0];
-        if total < 2 {
-            ts_message_all([0, 255, 0], 8, 30, "Waiting for other players.");
-        } else {
-            let name = super::netname(last);
-            ts_message_all([0, 255, 0], 1, 30, &shared::bformat!("{} is the Last Man Standing! 10 frags", name));
-            super::add_frags(last, None, 10.0);
-            scoring::broadcast_score(last);
-            msg::log(&shared::bformat!("Player \"{}\" triggered \"last_man_standing\"\n", name));
-        }
-        state::with(|g| g.round_restart = now + 3.0);
-        crate::plugins::round_end();
-        if timer {
-            // 0x79e89: no clamp here, so an overrun round sends the low byte of a negative count.
-            let rt = RoundTime { secs: round_time_byte(round_end as f64 - now as f64), state: 2 };
-            msg::all(Msg::RoundTime, |w| rt.write(w));
-        }
-    } else if (!living.is_empty() && now <= round_end && total > 1) || !timer {
-        ts_message_all([0, 255, 0], 1, 30, &format!("{} men standing!", living.len()));
-    } else {
-        ts_message_all([0, 255, 0], 8, 30, "Round over");
-        state::with(|g| g.round_restart = now + 3.0);
-        crate::plugins::round_end();
-    }
-}
-
-/// `RestartRound` (0x77920) for LMS: new round time, refunds, everyone back to observer with a
-/// forced respawn in 3 s, map items respawned.
-pub fn restart_round(now: f32) {
-    let rt = cvars::round_time();
-    let (timer, end) = state::with(|g| {
-        g.round_end = now + rt;
-        g.round_restart = 0.0;
-        (g.round_timer, g.round_end)
-    });
-    if timer {
-        // 0x779b1: the stored end time less `time` (truncated), not the round time itself, so the
-        // `f32` rounding of `m_flRoundEnd` can make it a second short.
-        let secs = round_time_byte(x87_max0(end as f64 - now as f64));
-        msg::all(Msg::RoundTime, |w| RoundTime { secs, state: 0 }.write(w));
-    }
-    // `InitObjectives` and `SetObjective` (0x785d8, 0x790b4): outside the round modes only the
-    // objective list is cleared.
-    let round = state::with(|g| matches!(g.mode, Mode::RoundTdm | Mode::Objective));
-    crate::entities::ts::objective::set_objective(round);
-    // `UTIL_PlayerByIndex` and `IsPlayer()`: a player who left (still `iuser1` 0 if it left alive)
-    // is put in observer mode as well; see `rules::set_client_maxspeed`.
-    for e in super::slot_players() {
-        crate::player::with_player(e, |p, cx| {
-            p.ts.join_deadline = now + 10.0;
-            p.respawn_at = now + 3.0;
-            p.ts.award = 11;
-            p.ts.respawns_used = 0;
-            p.powerup_until = 0.0;
-            p.ts.held_secs = 0;
-            p.active_powerup = 0;
-            p.ts.held = 0;
-            give_cash(p, round_refund(&p.inv.gun));
-            if cx.pev().iuser1 == 0 {
-                let (o, a) = (cx.pev().origin, cx.pev().v_angle);
-                start_observer(p, cx, o, a);
-            }
-        });
-    }
-    teams::recount(false);
-    crate::gameplay::active().server.respawn_entities();
-    // Port addition: plugins hear of the new round.
-    crate::plugins::round_start();
-}
-
-/// `RestartRound`'s refund of what a player carries: the price of every owned weapon (not kung fu
-/// or the briefcase) with its attachments, plus, for each ammo type holding more than one
-/// purchase, `price × rounds / per_buy` (all the rounds, as in TS).
-pub fn round_refund(gun: &Gun) -> i32 {
-    let t = tables();
-    let prices = &t.combat.attachment_price;
-    let mut total = 0;
-    for (wid, st) in gun.status.iter().enumerate().skip(1) {
-        if !st.owned || wid == id::BRIEFCASE as usize {
-            continue;
-        }
-        total += t.weapon(wid as u8).map_or(0, |w| w.cost);
-        for (bit, price) in
-            [(att::SILENCER, prices.silencer), (att::LASER, prices.laser), (att::FLASHLIGHT, prices.flashlight), (att::SCOPE, prices.scope)]
-        {
-            if st.items & bit != 0 {
-                total += price;
-            }
-        }
-    }
-    for (ty, &rounds) in gun.reserve.iter().enumerate() {
-        if let Some(a) = t.ammo(ty as u8).filter(|a| a.per_buy > 0 && rounds > a.per_buy) {
-            total = total.wrapping_add(a.price.wrapping_mul(rounds) / a.per_buy);
-        }
-    }
-    total
-}
-
 /// Whether `ResetRestartRound` acts: in the round modes 2/3 (unreachable in 3.0) or with
 /// `g_lastManStanding`, whatever the mode.
 fn restart_round_applies(mode: Mode, lms: bool) -> bool {
@@ -602,57 +373,6 @@ pub fn reset_restart_round(n: i32) {
     ts_message_all([0, 0, 0], 8, 30, "Restarting Round");
 }
 
-/// The One block of `CTSGameRules::Think` (0x77204): counts the players other than The One
-/// (`+0x5876`, The One's regeneration rate) and, when there is no One, `SelectRandomTheOne`. TS
-/// loops `i = 0 .. maxClients - 1`, so slot 0 (never a player) is tried and the last slot is never
-/// counted; dormant players (those who left) are skipped.
-pub fn the_one_check(now: f32) {
-    let eng = engine();
-    let mut exists = false;
-    let mut others = 0u8;
-    for i in 0..eng.max_clients() {
-        let e = eng.player(i);
-        if !super::has_player(e) || e.v().flags & FL_DORMANT as i32 != 0 {
-            continue;
-        }
-        if other(e, |p| p.ts.is_the_one).unwrap_or(false) {
-            exists = true;
-        } else {
-            others = others.wrapping_add(1);
-        }
-    }
-    state::with(|g| g.the_one_others = others as i32);
-    if !exists {
-        select_random_the_one(now);
-    }
-    state::with(|g| g.next_the_one_check = now + 10.0);
-}
-
-/// `CTSGameRules::SelectRandomTheOne` (0x7af28): at most every 10 s; nothing while someone is The
-/// One; otherwise a random living, non-observing player (at most 33 candidates) becomes The One and
-/// changes team.
-fn select_random_the_one(now: f32) {
-    if state::with(|g| g.next_the_one_check > now) {
-        return;
-    }
-    state::with(|g| g.next_the_one_check = now + 10.0);
-    let mut candidates = Vec::new();
-    for e in super::slot_players() {
-        if other(e, |p| p.ts.is_the_one).unwrap_or(false) {
-            return;
-        }
-        if super::is_alive(e) && e.v().iuser1 == 0 && candidates.len() < 0x21 {
-            candidates.push(e);
-        }
-    }
-    if candidates.is_empty() {
-        return;
-    }
-    let pick = candidates[engine().random_long(0, candidates.len() as i32 - 1) as usize];
-    scoring::set_player_the_one_other(pick);
-    teams::the_one_switch_other(pick);
-}
-
 #[allow(dead_code)]
 fn unused() -> MsgWriter {
     messages::all(Msg::RoundTime)
@@ -660,7 +380,7 @@ fn unused() -> MsgWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, refresh_copy, restart_round_applies, round_time_byte, time_limit, x87_eq, x87_max0};
+    use super::{Mode, restart_round_applies, round_time_byte, time_limit, x87_eq, x87_max0};
 
     #[test]
     fn the_time_limit_counts_from_the_map_start() {
@@ -686,51 +406,6 @@ mod tests {
         assert_eq!(round_time_byte(x87_max0((now + 1.0) as f64 - now as f64)), 1);
     }
 
-    /// Runs `n` Thinks with the cvar at `cvar`, returning the `SrvSett` values sent.
-    fn thinks(stored: &mut i32, cvar: f32, n: usize) -> Vec<i32> {
-        (0..n).filter_map(|_| refresh_copy(stored, cvar)).collect()
-    }
-
-    #[test]
-    fn srvsett_copy_is_truncated_and_compared_as_float() {
-        // `Init`'s -1: the first Think sends the value, later ones nothing while it stands.
-        let mut c = -1;
-        assert_eq!(thinks(&mut c, 0.0, 3), [0]);
-        assert_eq!(thinks(&mut c, 2.0, 3), [2]);
-        assert_eq!(c, 2);
-        // Truncated, not rounded: 1.9 is 1, -0.7 is 0.
-        let mut c = -1;
-        assert_eq!(refresh_copy(&mut c, 1.9), Some(1));
-        assert_eq!(refresh_copy(&mut c, -0.7), Some(0));
-        // A fractional value never equals its truncated copy: sent again every Think.
-        let mut c = -1;
-        assert_eq!(thinks(&mut c, 0.5, 3), [0, 0, 0]);
-        assert_eq!(thinks(&mut c, 2.5, 2), [2, 2]);
-        // NaN compares unordered, which TS takes as equal: never updated, never sent.
-        let mut c = 1;
-        assert_eq!(thinks(&mut c, f32::NAN, 2), []);
-        assert_eq!(c, 1);
-        // Out of range: the integer indefinite, which never equals the float either.
-        let mut c = 0;
-        assert_eq!(thinks(&mut c, 3.0e9, 2), [i32::MIN, i32::MIN]);
-        // The compare is exact (`fild` is exact), so a large integral float settles.
-        let mut c = 0;
-        assert_eq!(thinks(&mut c, 16_777_216.0, 2), [16_777_216]);
-    }
-
-    #[test]
-    fn usecash_sends_whether_the_truncated_copy_is_non_zero() {
-        let sent = |cvar: f32| {
-            let mut c = -1;
-            refresh_copy(&mut c, cvar).map(|v| (v != 0) as i16)
-        };
-        assert_eq!(sent(0.5), Some(0), "0.5 truncates to 0");
-        assert_eq!(sent(1.0), Some(1));
-        assert_eq!(sent(-1.5), Some(1));
-        assert_eq!(sent(0.0), Some(0));
-        assert_eq!(sent(f32::NAN), None);
-    }
-
     #[test]
     fn x87_compares_and_round_time_bytes() {
         assert!(x87_eq(1.0, 1.0) && x87_eq(f64::NAN, 1.0) && x87_eq(1.0, f64::NAN));
@@ -748,30 +423,5 @@ mod tests {
         let now = 1000.013f32;
         let end = now + 30.0;
         assert_eq!(round_time_byte(x87_max0(end as f64 - now as f64)), 29);
-    }
-
-    #[test]
-    fn refund() {
-        use super::round_refund;
-        use shared::weapons::{att, gun::Gun, id, tables};
-        let t = tables();
-        let mut g = Gun::default();
-        assert_eq!(round_refund(&g), 0);
-        // Kung fu and the briefcase are free.
-        g.status[id::KUNGFU as usize].owned = true;
-        g.status[id::BRIEFCASE as usize].owned = true;
-        assert_eq!(round_refund(&g), 0);
-        let m4 = id::M4 as usize;
-        g.status[m4].owned = true;
-        g.status[m4].items = att::SILENCER | att::SCOPE;
-        let gun_value = t.weapon(id::M4).unwrap().cost + 900 + 1800;
-        assert_eq!(round_refund(&g), gun_value);
-        // One purchase of ammo or less isn't refunded; more refunds every round.
-        let ammo = t.weapon(id::M4).unwrap().ammo;
-        let a = t.ammo(ammo).unwrap();
-        g.reserve[ammo as usize] = a.per_buy;
-        assert_eq!(round_refund(&g), gun_value);
-        g.reserve[ammo as usize] = a.per_buy * 3;
-        assert_eq!(round_refund(&g), gun_value + a.price * 3);
     }
 }

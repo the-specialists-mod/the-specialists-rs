@@ -1,7 +1,6 @@
 //! The game rules state: `g_pGameRules` (DM / Teamplay) and the `CTSGameRules TSGameRules`
 //! singleton folded into one struct (decomp gamerules-entities.md §1, §8).
 
-use super::cvars;
 use goldsrc::Global;
 use goldsrc::server::engine;
 use std::cell::RefCell;
@@ -91,7 +90,7 @@ pub struct GameRules {
     /// Players other than The One (regeneration rate).
     pub the_one_others: i32,
     pub check_deads_at: f32,
-    /// The `SrvSett` copies `CTSGameRules::Think` keeps (`frame::refresh_copy`): `[0]` `+0x578`
+    /// The `SrvSett` copies `CTSGameRules::Think` keeps (the 3.0 plugin's `think`): `[0]` `+0x578`
     /// `(int)realbullet`, `[1]` `+0x558` `(int)usecash`, `[2]` `+0x55c` `(int)ammocount`. `Init`
     /// sets them to -1; `[3]` is unused.
     pub last_srvsett: [i32; 4],
@@ -224,26 +223,6 @@ pub fn cash_based() -> bool {
     crate::gameplay::active().server.cash_based()
 }
 
-/// `DecideGamePlay` (0x767ac): returns (teamplay, lms, the_one).
-pub fn decide_gameplay(forced: i32, teamplay_cvar: bool, lms_cvar: bool, the_one_cvar: bool) -> (bool, bool, bool) {
-    match forced {
-        1 => (false, false, false),
-        2 => (true, false, false),
-        3 => (false, true, false),
-        4 => (true, false, true),
-        f if f >= 1 => (false, false, false),
-        _ => {
-            if the_one_cvar {
-                (true, false, true)
-            } else if lms_cvar {
-                (false, true, false)
-            } else {
-                (teamplay_cvar, false, false)
-            }
-        }
-    }
-}
-
 /// Default team models (`defTeamModels`).
 const DEFAULT_MODELS: [&[u8]; 4] = [b"seal;merc", b"gordon;laurence", b"agent", b"hitman;castor"];
 
@@ -256,48 +235,6 @@ impl GameRules {
             return;
         }
         crate::gameplay::active().server.install(self);
-    }
-
-    /// TS 3.0's multiplayer install ([`ServerRules::install`](crate::gameplay::ServerRules::install)):
-    /// `DecideGamePlay`, the rules' constructors and `CTSGameRules::Init`.
-    pub fn install_multiplayer(&mut self) {
-        let forced = self.forced_gamemode;
-        let (teamplay, lms, the_one) =
-            decide_gameplay(forced, cvars::on(c"mp_teamplay"), cvars::on(c"lastmanstanding"), cvars::on(c"mp_theonemode"));
-        let (map_teams, map_models) = (std::mem::take(&mut self.map_teams), std::mem::take(&mut self.map_team_models));
-        *self = GameRules::default();
-        self.installed = true;
-        self.single_player = engine().globals().deathmatch == 0.0;
-        self.teamplay = teamplay;
-        self.lms = lms;
-        self.the_one = the_one;
-        self.player_team = vec![Vec::new(); 33];
-        // The `CHalfLifeMultiplay` constructor (0xcedd0) starts with `CTSGameRules::Init`.
-        self.ts_init(engine().time());
-        if teamplay {
-            let list =
-                if !map_teams.is_empty() && cvars::on(c"mp_teamoverride") { map_teams.clone() } else { cvars::bytes(c"mp_teamlist") };
-            if !list.is_empty() {
-                self.set_team_list(&list);
-            }
-            self.init_teamplay_list();
-            let models = if !map_models.is_empty() { map_models.clone() } else { cvars::bytes(c"mp_teammodels") };
-            if !models.is_empty() {
-                self.set_team_model_lists(&models);
-            }
-        }
-        self.map_teams = map_teams;
-        self.map_team_models = map_models;
-        engine().print(&shared::bformat!(
-            "[ts] game rules: {} ({})\n",
-            match (self.teamplay, self.lms, self.the_one) {
-                (_, _, true) => "The One",
-                (_, true, _) => "Last Man Standing",
-                (true, _, _) => "Team DeathMatch",
-                _ => "DeathMatch",
-            },
-            self.teams.iter().filter(|t| !t.name.is_empty()).map(|t| t.name.as_slice()).collect::<Vec<_>>().join(&b';')
-        ));
     }
 
     /// `InstallGameRules` (0xc6050) with `deathmatch` 0: `g_teamplay = 0` and `CHalfLifeRules`,
@@ -614,20 +551,6 @@ mod tests {
         assert_eq!(strs(&g.team_list), ["Red", "Blue"]);
         assert!(g.team_limit);
         assert_eq!(strs(&g.team_names()), ["Red", "Blue"]);
-    }
-
-    #[test]
-    fn gameplay_decision() {
-        // worldspawn gamemode wins over cvars
-        assert_eq!(decide_gameplay(1, true, true, true), (false, false, false));
-        assert_eq!(decide_gameplay(2, false, false, false), (true, false, false));
-        assert_eq!(decide_gameplay(3, true, false, false), (false, true, false));
-        assert_eq!(decide_gameplay(4, false, false, false), (true, false, true));
-        // cvar fallback priority: The One, LMS, teamplay
-        assert_eq!(decide_gameplay(0, true, true, true), (true, false, true));
-        assert_eq!(decide_gameplay(0, true, true, false), (false, true, false));
-        assert_eq!(decide_gameplay(0, true, false, false), (true, false, false));
-        assert_eq!(decide_gameplay(0, false, false, false), (false, false, false));
     }
 
     #[test]
