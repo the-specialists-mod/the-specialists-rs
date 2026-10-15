@@ -132,13 +132,14 @@ impl Engine {
     }
 
     /// Prints to the server console (always shown, unlike `at_console` alerts).
-    pub fn print(&self, msg: &str) {
-        let s = to_cstring(msg);
+    /// `pfnServerPrint`. Takes bytes (a `&str` works too): player text goes out unconverted.
+    pub fn print(&self, msg: &(impl AsRef<[u8]> + ?Sized)) {
+        let s = crate::util::bytes_to_cstring(msg.as_ref());
         eng!(pfnServerPrint(s.as_ptr()));
     }
 
-    pub fn alert(&self, kind: ALERT_TYPE, msg: &str) {
-        let s = to_cstring(msg);
+    pub fn alert(&self, kind: ALERT_TYPE, msg: &(impl AsRef<[u8]> + ?Sized)) {
+        let s = crate::util::bytes_to_cstring(msg.as_ref());
         // Variadic: format in Rust, pass through "%s".
         eng!(pfnAlertMessage(kind, c"%s".as_ptr().cast_mut(), s.as_ptr()));
     }
@@ -327,8 +328,8 @@ impl Engine {
         if e.is_null() || self.index_of(e) == 0 { std::ptr::null_mut() } else { e }
     }
 
-    pub fn client_print(&self, e: *mut edict_t, kind: PRINT_TYPE, msg: &str) {
-        let s = to_cstring(msg);
+    pub fn client_print(&self, e: *mut edict_t, kind: PRINT_TYPE, msg: &(impl AsRef<[u8]> + ?Sized)) {
+        let s = crate::util::bytes_to_cstring(msg.as_ref());
         eng!(pfnClientPrintf(e, kind, s.as_ptr()))
     }
 

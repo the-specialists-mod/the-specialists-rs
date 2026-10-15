@@ -232,7 +232,7 @@ impl PowerUp {
         v.nextthink = engine().time() + respawn_delay(self.respawn);
         let (message, target) = (v.message, v.target);
         if message != 0 {
-            msg::ts_message_one(player, [0, 0, 0], 1, 30, &engine().string(message).to_string_lossy());
+            msg::ts_message_one(player, [0, 0, 0], 1, 30, engine().string(message).to_bytes());
         }
         if target != 0 {
             crate::entities::fire_targets(engine().string(target), cx.edict, cx.edict, UseType::Toggle, 0.0);

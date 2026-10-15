@@ -40,6 +40,14 @@ the original.
     `Custom_Encode`) are registered as TS's `RegisterEncoders` does (`ts_server::delta`).
 * **Client commands:** TS's own (`tkw`/`tki`/`tka` loadout lists, `weapon_<n>`, `drop_*`, …; decomp
   `server/architecture.md` §4).
+* **Strings are bytes.** TS copies chat, player names, map text, `hostname` and the MOTD into its
+  messages and log lines byte for byte, whatever their encoding (a Windows client's CP1252 `é` is
+  the single byte 0xE9). The port does the same: `hud_wire::Wire::string` writes and reads `&[u8]`,
+  payload fields that carry such text are `Vec<u8>` (`bytes` in the `payload!` macro), and the
+  server builds those lines with `shared::bformat!` (`shared::text`) instead of `format!`, so no
+  byte goes through a lossy UTF-8 conversion (#81). The client keeps network strings as one `char`
+  per byte (`shared::text::latin1`) and hands the bytes back to the engine's draw and print calls,
+  as TS's client passes them to `pfnDrawConsoleString`.
 
 ## 3. Repository layout
 
@@ -180,6 +188,7 @@ The player's save data (`CBasePlayer::m_playerSaveData`) is mapped in `player/sa
 ### 4.6 Messages
 
 * `messages::{one, one_unreliable, all, pvs, pas}(Msg, …)` return a `MsgWriter`; call `.byte()`, `.short()`, …, then `.end()`. The writer holds the writes until `.end()`, which drops a message that would stop the engine (§10).
+* The text helpers (`rules::msg::{say_one, say_all, text_one, text_all, ts_message_one, ts_message_all, log}`) and the engine's `print`/`alert`/`client_print`/`log`/`set_client_key` take `&impl AsRef<[u8]>`: a `&str` works, and so do the byte strings of player text (`rules::netname` returns `Vec<u8>`; build lines with `shared::bformat!`).
 * HUD values are sent from `hud::update_client_data` (TS `CBasePlayer::UpdateClientData`, 0.1 s throttle, InitHUD block included) when they change, like TS's shadow-copy approach; it ends with the gun's own `UpdateClientData` (`weapons::update_client_data`). `fullupdate` and `RemoveAllItems` (`StartObserver`, disconnect) run it inline, as TS does.
 
 ### 4.7 Time scale (slow motion)

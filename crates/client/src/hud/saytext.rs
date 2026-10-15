@@ -60,14 +60,15 @@ impl Default for SayText {
     }
 }
 
-/// Latin-1 bytes of a network string (the port decodes them one char per byte).
+/// Latin-1 bytes of a network string (the port decodes them one char per byte, so a CP1252 `é`
+/// from a TS client is drawn as the byte 0xE9, as TS's `pfnDrawConsoleString` gets it).
 pub fn bytes(s: &str) -> Vec<u8> {
-    s.chars().map(|c| if (c as u32) < 256 { c as u8 } else { b'?' }).collect()
+    shared::text::latin1_bytes(s)
 }
 
 /// The inverse of [`bytes`].
 pub fn string(b: &[u8]) -> String {
-    b.iter().map(|&c| c as char).collect()
+    shared::text::latin1(b)
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {

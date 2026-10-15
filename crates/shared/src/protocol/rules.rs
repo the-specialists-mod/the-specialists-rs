@@ -35,19 +35,19 @@ payload!(
 payload!(
     /// `TSMessage`: coloured HUD text. `effect` is the style (1, 8, 16 seen), `hold` tenths of a
     /// second. Text ≤ 127 chars; `#TS_` words are client localisation keys.
-    TsMessage { r: byte, g: byte, b: byte, effect: byte, hold: byte, text: string }
+    TsMessage { r: byte, g: byte, b: byte, effect: byte, hold: byte, text: bytes }
 );
 payload!(
     /// `SayText`: sender index and the full line (starts with `\x02`, ends with `\n`).
-    SayText { sender: byte, text: string }
+    SayText { sender: byte, text: bytes }
 );
 payload!(
     /// `MOTD`: final flag and a chunk of at most 60 characters.
-    Motd { last: byte, chunk: string }
+    Motd { last: byte, chunk: bytes }
 );
 payload!(
     /// `ServerName`: the `hostname` cvar.
-    ServerName { name: string }
+    ServerName { name: bytes }
 );
 payload!(
     /// `TSFlag` (4): state (0 home, 1 taken, 2 dropped), flag id, team+1, holder entindex.
@@ -72,7 +72,7 @@ payload!(
 payload!(
     /// `Objective` (variable, ONE; `SendObjectiveToHud` 0x7ac80): the objective's centre, its
     /// list index and the receiver's team text.
-    Objective { x: coord, y: coord, z: coord, idx: byte, text: string }
+    Objective { x: coord, y: coord, z: coord, idx: byte, text: bytes }
 );
 payload!(
     /// `Wires` (3, ONE): the three bomb wires the player sees (0 cut, 1 defuse, 2 hurry, 3
@@ -90,12 +90,12 @@ impl TeamNames {
     pub fn write(&self, w: &mut impl Wire) {
         w.byte(self.names.len() as i32);
         for n in &self.names {
-            w.string(n);
+            w.string(n.as_bytes());
         }
     }
     pub fn read(r: &mut impl WireRead) -> Self {
         let n = r.byte();
-        Self { names: (0..n).map(|_| r.string()).collect() }
+        Self { names: (0..n).map(|_| String::from_utf8_lossy(&r.string()).into_owned()).collect() }
     }
 }
 
@@ -104,8 +104,9 @@ impl TeamNames {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TextMsg {
     pub dest: u8,
-    pub text: String,
-    pub params: Vec<String>,
+    /// The format string or the text, as bytes (a player's name or chat can be any encoding).
+    pub text: Vec<u8>,
+    pub params: Vec<Vec<u8>>,
 }
 
 pub mod hud_dest {
@@ -189,7 +190,31 @@ mod tests {
 
         let mut b = Bytes::default();
         TextMsg { dest: hud_dest::TALK, text: "#Game_join".into(), params: vec!["bob".into()] }.write(&mut b);
-        assert_eq!(TextMsg::read(&mut b, 1).params, ["bob"]);
+        assert_eq!(TextMsg::read(&mut b, 1).params, [b"bob".to_vec()]);
+    }
+
+    /// Issue #81: a Latin-1/CP1252 name and chat (`é` = 0xE9, as a Windows TS client sends them)
+    /// reach the wire byte for byte, as TS's `Host_Say` (0xad02c) and `ClientUserInfoChanged`
+    /// (0xae638) write them, and the client's decoder gives the same bytes back.
+    #[test]
+    fn latin1_text_is_byte_exact() {
+        use super::super::hud;
+        let line = b"\x02Ren\xe9: caf\xe9 cr\xe8me\n".to_vec();
+        let mut b = Bytes::default();
+        SayText { sender: 3, text: line.clone() }.write(&mut b);
+        let mut want = vec![3u8];
+        want.extend_from_slice(&line);
+        want.push(0);
+        assert_eq!(b.buf, want, "no UTF-8 conversion (0xE9 must not become EF BF BD)");
+        assert_eq!(SayText::read(&mut b).text, line);
+        let client = hud::SayText::decode(&want).unwrap();
+        assert_eq!(crate::text::latin1_bytes(&client.text), line);
+
+        let mut b = Bytes::default();
+        TextMsg { dest: hud_dest::NOTIFY, text: b"#Game_join".to_vec(), params: vec![b"Ren\xe9".to_vec()] }.write(&mut b);
+        assert_eq!(b.buf, b"\x01#Game_join\0Ren\xe9\0");
+        let t = hud::TextMsg::decode(&b.buf).unwrap();
+        assert_eq!(crate::text::latin1_bytes(&t.strings[1]), b"Ren\xe9");
     }
 
     /// The readers take any bytes: short, all 0xff, unterminated or non-UTF-8 strings.

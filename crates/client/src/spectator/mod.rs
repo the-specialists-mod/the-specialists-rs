@@ -704,7 +704,8 @@ impl HltvHost for EngineHltv {
         valid_player(index)
     }
     fn player_name(&self, index: i32) -> String {
-        String::from_utf8_lossy(&engine().player_info(index).name_bytes).into_owned()
+        // One char per byte, like the HUD's network strings: no byte of the name is lost.
+        crate::hud::saytext::string(&engine().player_info(index).name_bytes)
     }
     fn player_name_bytes(&self, index: i32) -> Vec<u8> {
         engine().player_info(index).name_bytes

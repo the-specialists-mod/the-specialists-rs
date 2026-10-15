@@ -756,7 +756,7 @@ pub fn check_deads(now: f32) {
             if total < 2 {
                 ts_message_all([0, 255, 0], 1, 30, "Waiting other players.");
             } else {
-                ts_message_all([0, 255, 0], 1, 30, &format!("{} is the Last Man Standing! 10 frags", netname(last)));
+                ts_message_all([0, 255, 0], 1, 30, &shared::bformat!("{} is the Last Man Standing! 10 frags", netname(last)));
                 ts_server::rules::add_frags(last, None, 10.0);
                 scoring::broadcast_score(last);
             }

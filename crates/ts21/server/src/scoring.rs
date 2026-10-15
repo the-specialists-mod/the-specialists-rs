@@ -110,7 +110,7 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
     *sliding = slide;
     let (pts, label) = points(kind, base, stunting, slide, true);
     if let Some(label) = label {
-        ts_message_all(GREEN, 1, 30, &format!("{pts} frags for {}, {label}", netname(attacker)));
+        ts_message_all(GREEN, 1, 30, &shared::bformat!("{} frags for {}, {}", pts, netname(attacker), label));
     }
     pts
 }
@@ -296,18 +296,18 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
 /// The DM/TDM part of `PlayerKilled` for a scoring kill: double kill (1 s, always updating the
 /// last kill), stopping a spree, killing The Specialist, the killer's spree rewards, the overheal
 /// timer and the kill cash.
-fn spree(victim_spree: u8, vname: &str, k: &mut Killer, points: &mut i32, now: f32) {
+fn spree(victim_spree: u8, vname: &[u8], k: &mut Killer, points: &mut i32, now: f32) {
     let kname = netname(k.e);
     if now - k.last_kill < 1.0 {
         *points *= 2;
-        ts_message_all(GREEN, 1, 30, &format!("DoubleFrag for {kname}!"));
+        ts_message_all(GREEN, 1, 30, &shared::bformat!("DoubleFrag for {}!", kname));
     }
     if victim_spree > 2 {
         if victim_spree < 9 {
-            ts_message_all(GREEN, 1, 30, &format!("{kname} stops {vname}'s fury!"));
+            ts_message_all(GREEN, 1, 30, &shared::bformat!("{} stops {}'s fury!", kname, vname));
         } else {
             *points += 5;
-            ts_message_all(GREEN, 1, 40, &format!("{} frags for {kname}, he has killed THE SPECIALIST!", *points));
+            ts_message_all(GREEN, 1, 40, &shared::bformat!("{} frags for {}, he has killed THE SPECIALIST!", *points, kname));
             store_slow_pause(k);
         }
     }
@@ -316,17 +316,17 @@ fn spree(victim_spree: u8, vname: &str, k: &mut Killer, points: &mut i32, now: f
     let kv = k.e.v();
     match k.spree {
         3 => {
-            ts_message_all(GREEN, 1, 30, &format!("{kname} is a Killer!"));
+            ts_message_all(GREEN, 1, 30, &shared::bformat!("{} is a Killer!", kname));
             kv.health = (kv.health + 30.0).min(150.0);
             k.award = award(k.award, 2);
         }
         6 => {
-            ts_message_all(GREEN, 1, 30, &format!("{kname} is Demolition Man!"));
+            ts_message_all(GREEN, 1, 30, &shared::bformat!("{} is Demolition Man!", kname));
             kv.health = (kv.health + 50.0).min(150.0);
             k.award = award(k.award, 3);
         }
         9 => {
-            ts_message_all(GREEN, 1, 30, &format!("{kname} is The Specialist!"));
+            ts_message_all(GREEN, 1, 30, &shared::bformat!("{} is The Specialist!", kname));
             // Set, not raised: an overhealed killer can lose health.
             kv.health = 150.0;
             other(k.e, |kp| {
@@ -340,7 +340,7 @@ fn spree(victim_spree: u8, vname: &str, k: &mut Killer, points: &mut i32, now: f
             k.award = award(k.award, 4);
         }
         s if s >= 10 => {
-            ts_message_all(GREEN, 1, 30, &format!("{kname} is Unstoppable! {s} consecutive frags"));
+            ts_message_all(GREEN, 1, 30, &shared::bformat!("{} is Unstoppable! {} consecutive frags", kname, s));
             *points *= 2;
             k.award = award(k.award, 5);
         }

@@ -264,7 +264,7 @@ fn capture(cx: &mut Cx, player: *mut edict_t) {
         crate::entities::fire_targets(eng.string(target), cx.edict, cx.edict, UseType::Toggle, 0.0);
     }
     if message != 0 {
-        msg::ts_message_all([0, 255, 0], 8, 30, &eng.string(message).to_string_lossy());
+        msg::ts_message_all([0, 255, 0], 8, 30, eng.string(message).to_bytes());
     }
     if rules::slot_players().len() < 2 {
         // TS zeroes each team's cash (and an unused counter) too.
@@ -277,7 +277,7 @@ fn capture(cx: &mut Cx, player: *mut edict_t) {
         msg::ts_message_all([0, 0, 0], 8, 30, "Waiting for other players.");
     } else {
         rules::add_frags(player, None, 10.0);
-        msg::ts_message_all([0, 255, 0], 4, 30, &format!("{name} captured the briefcase! 10 #TS_Frg"));
+        msg::ts_message_all([0, 255, 0], 4, 30, &shared::bformat!("{} captured the briefcase! 10 #TS_Frg", name));
         score_info(player);
         let team = team_index_of(player);
         if team >= 0 {
@@ -361,13 +361,13 @@ fn impact(arith: Arith, velocity: Vec3) -> (Ext, f32) {
 /// The `"name<uid><authid><uid>"` log lines of `TakeFlag` 0x93830 (`aquired_briefcase`),
 /// `DropFlag` 0x9334c (`dropped_briefcase`) and `CaptureTouch` 0x8db9c (`captured_briefcase`).
 /// TS passes the user id where other lines put the team, so it appears twice.
-fn flag_log_line(name: &str, user_id: i32, auth: &str, event: &str, contents: &str) -> String {
-    format!("\"{name}<{user_id}><{auth}><{user_id}>\" triggered \"{event}\" (contents \"{contents}\")\n")
+fn flag_log_line(name: &[u8], user_id: i32, auth: &[u8], event: &str, contents: &str) -> Vec<u8> {
+    shared::bformat!("\"{}<{}><{}><{}>\" triggered \"{}\" (contents \"{}\")\n", name, user_id, auth, user_id, event, contents)
 }
 
 fn log_flag(e: *mut edict_t, event: &str, contents: &str) {
     let eng = engine();
-    msg::log(&flag_log_line(&rules::netname(e), eng.user_id(e), &eng.auth_id(e).to_string_lossy(), event, contents));
+    msg::log(&flag_log_line(&rules::netname(e), eng.user_id(e), eng.auth_id(e).to_bytes(), event, contents));
 }
 
 impl Flag {
@@ -601,7 +601,7 @@ impl Flag {
             if rules::slot_players().len() > 1 {
                 let mut p = p.map(|(p, _)| p);
                 rules::add_frags(other, p.as_deref_mut(), 5.0);
-                msg::ts_message_all([0, 255, 0], 4, 30, &format!("{} returned the briefcase! 5 #TS_Frg", rules::netname(other)));
+                msg::ts_message_all([0, 255, 0], 4, 30, &shared::bformat!("{} returned the briefcase! 5 #TS_Frg", rules::netname(other)));
                 match p {
                     Some(p) => score_info_of(other, p),
                     None => score_info(other),
@@ -627,7 +627,7 @@ fn take_flag(p: &mut Player, pcx: &mut Cx, status: &FlagStatus) -> bool {
     send_flag(1, st.id, st.team, idx);
     if idx != st.last_holder {
         let name = rules::netname(e);
-        msg::ts_message_all([0, 255, 0], 4, 30, &format!("{name} picked up a briefcase containing {}!", st.contents));
+        msg::ts_message_all([0, 255, 0], 4, 30, &shared::bformat!("{} picked up a briefcase containing {}!", name, st.contents));
     }
     st.last_holder = idx;
     log_flag(e, "aquired_briefcase", &st.contents);
@@ -935,8 +935,8 @@ mod tests {
     #[test]
     fn log_lines_repeat_the_user_id() {
         assert_eq!(
-            flag_log_line("Neo", 7, "STEAM_0:1:2", "aquired_briefcase", "two elephants"),
-            "\"Neo<7><STEAM_0:1:2><7>\" triggered \"aquired_briefcase\" (contents \"two elephants\")\n"
+            flag_log_line(b"Neo", 7, b"STEAM_0:1:2", "aquired_briefcase", "two elephants"),
+            b"\"Neo<7><STEAM_0:1:2><7>\" triggered \"aquired_briefcase\" (contents \"two elephants\")\n"
         );
     }
 

@@ -336,8 +336,15 @@ pub fn userinfo_changed(p: &mut Player, cx: &mut Cx) {
         msg::say_one(e, idx, &format!("* Server limits teams to '{list}'\n"));
         return;
     }
-    msg::say_all(idx, &format!("* {} has changed to team '{model}'\n", netname(e)));
-    msg::log(&format!("\"{}<{}><{}><{team}>\" joined team \"{model}\"\n", netname(e), eng.user_id(e), eng.auth_id(e).to_string_lossy()));
+    msg::say_all(idx, &shared::bformat!("* {} has changed to team '{}'\n", netname(e), model));
+    msg::log(&shared::bformat!(
+        "\"{}<{}><{}><{}>\" joined team \"{}\"\n",
+        netname(e),
+        eng.user_id(e),
+        eng.auth_id(e).to_bytes(),
+        team,
+        model
+    ));
     change_team(p, cx, &model, false, false);
     recount(true);
 }

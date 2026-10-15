@@ -154,8 +154,8 @@ pub fn run(e: *mut edict_t, args: &Args) {
         // `ClientPrint(HUD_PRINTCONSOLE)` (a `TextMsg`). The TS client sends `_special` on every
         // +attack2, and TS answers it with this too.
         let typed = args.argv(0).to_bytes();
-        let typed = String::from_utf8_lossy(&typed[..typed.len().min(127)]).into_owned();
-        crate::rules::msg::text_one(e, shared::protocol::rules::hud_dest::CONSOLE, &format!("Unknown command: {typed}\n"));
+        let typed = &typed[..typed.len().min(127)];
+        crate::rules::msg::text_one(e, shared::protocol::rules::hud_dest::CONSOLE, &shared::bformat!("Unknown command: {}\n", typed));
     }
 }
 

@@ -130,19 +130,17 @@ pub fn cheat_powerup(p: &mut Player, cx: &mut Cx, n: i32) {
     }
 }
 
-/// `Host_Say`'s prefix, `"%c%s: "` or `"%c(TEAM) %s: "` with `\x02` and the sender's name.
-pub fn say_prefix(name: &str, team: bool) -> String {
-    if team { format!("\x02(TEAM) {name}: ") } else { format!("\x02{name}: ") }
+/// `Host_Say`'s prefix, `"%c%s: "` or `"%c(TEAM) %s: "` with `\x02` and the sender's name (its
+/// bytes as they are: TS `sprintf`s `STRING(pev->netname)`).
+pub fn say_prefix(name: &[u8], team: bool) -> Vec<u8> {
+    if team { shared::bformat!("\x02(TEAM) {}: ", name) } else { shared::bformat!("\x02{}: ", name) }
 }
 
 /// The text as `Host_Say` cuts it, in place, so that it fits a 127-byte line after `prefix`
-/// (`p[0x7f - strlen(prefix)] = 0`). The log line shows the cut text too.
-pub fn clip_say_text<'a>(prefix: &str, text: &'a str) -> &'a str {
-    let mut room = 127usize.saturating_sub(prefix.len()).min(text.len());
-    while !text.is_char_boundary(room) {
-        room -= 1;
-    }
-    &text[..room]
+/// (`p[0x7f - strlen(prefix)] = 0`): a byte count, which may split a multi-byte UTF-8 character
+/// as TS does. The log line shows the cut text too.
+pub fn clip_say_text<'a>(prefix: &[u8], text: &'a [u8]) -> &'a [u8] {
+    &text[..127usize.saturating_sub(prefix.len()).min(text.len())]
 }
 
 /// The longest chat line (before its `\n`) that fits `Host_Say`'s 140-byte buffer with the `\n`
@@ -157,54 +155,50 @@ const SAY_LINE_MAX: usize = 138;
 /// without a bound, so enough `%a`s overrun it. The port stops at the buffer's size, which also
 /// keeps the `SayText` under the engines' 192-byte user-message limit (ReHLDS/HLDS `Host_Error`
 /// on a longer one).
-pub fn format_say(prefix: &str, text: &str, armor: f32, health: f32) -> String {
-    let mut out = prefix.to_owned();
-    let mut chars = text.chars().peekable();
-    let push = |out: &mut String, s: &str| {
-        for c in s.chars() {
-            if out.len() + c.len_utf8() > SAY_LINE_MAX {
-                return;
-            }
-            out.push(c);
-        }
+/// The text's bytes are copied unchanged (`strncat(p, c, 1)`), whatever their encoding.
+pub fn format_say(prefix: &[u8], text: &[u8], armor: f32, health: f32) -> Vec<u8> {
+    let mut out = prefix[..prefix.len().min(SAY_LINE_MAX)].to_vec();
+    let push = |out: &mut Vec<u8>, s: &[u8]| {
+        let room = SAY_LINE_MAX.saturating_sub(out.len());
+        out.extend_from_slice(&s[..s.len().min(room)]);
     };
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            match chars.peek() {
-                Some('a') => {
-                    chars.next();
-                    push(&mut out, if armor == 0.0 { "no kevlar" } else { "with kevlar" });
+    let mut i = 0;
+    while i < text.len() {
+        let c = text[i];
+        if c == b'%' {
+            match text.get(i + 1) {
+                Some(b'a') => {
+                    i += 1;
+                    push(&mut out, if armor == 0.0 { b"no kevlar" } else { b"with kevlar" });
                 }
-                Some('h') => {
-                    chars.next();
-                    push(&mut out, &crate::entities::stock::maprules::x87_int(health).to_string());
+                Some(b'h') => {
+                    i += 1;
+                    push(&mut out, crate::entities::stock::maprules::x87_int(health).to_string().as_bytes());
                 }
-                _ => push(&mut out, "%"),
+                _ => push(&mut out, b"%"),
             }
         } else {
-            push(&mut out, c.encode_utf8(&mut [0; 4]));
+            push(&mut out, &[c]);
         }
+        i += 1;
     }
-    out.push('\n');
+    out.push(b'\n');
     out
 }
 
 /// `Host_Say`'s chat text from `Cmd_Args`: a leading `"` is dropped together with the last
-/// character, whatever it is (`p[strlen(p) - 1] = 0` on the original string).
-pub fn say_text(raw: &str) -> &str {
-    match raw.strip_prefix('"') {
-        Some(t) => match t.char_indices().last() {
-            Some((i, _)) => &t[..i],
-            None => t,
-        },
+/// byte, whatever it is (`p[strlen(p) - 1] = 0` on the original string).
+pub fn say_text(raw: &[u8]) -> &[u8] {
+    match raw.strip_prefix(b"\"") {
+        Some(t) => &t[..t.len().saturating_sub(1)],
         None => raw,
     }
 }
 
 /// `Host_Say`'s empty-line test: the text needs a printable, non-space character
 /// (`__ctype_b[c] & (_ISprint | _ISspace) == _ISprint`, C locale, so bytes from 0x80 don't count).
-pub fn say_has_text(text: &str) -> bool {
-    text.bytes().any(|b| b.is_ascii_graphic())
+pub fn say_has_text(text: &[u8]) -> bool {
+    text.iter().any(|b| b.is_ascii_graphic())
 }
 
 /// `Host_Say` (0xad02c). `vote …` lines go to `PlayerVote` first.
@@ -213,7 +207,8 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
     if now < p.ts.next_say || args.argc() < 2 {
         return;
     }
-    let raw = args.rest().to_string_lossy().into_owned();
+    // The bytes of `Cmd_Args` as the client sent them (issue #81: no UTF-8 conversion).
+    let raw = args.rest().to_bytes().to_vec();
     let text = say_text(&raw);
     if !say_has_text(text) {
         return;
@@ -231,7 +226,7 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
     // `IsNetClient()` of the sender gates the `timeleft` reply and the vote: a bot's vote line is
     // broadcast as chat.
     let net_client = !p.cbot;
-    let broadcast = if text.starts_with("timeleft") {
+    let broadcast = if text.starts_with(b"timeleft") {
         // Not broadcast: in TS both exits of this branch jump to 0xad4dc, which clears the
         // broadcast flag, the same as a handled vote. `(int)mp_timeleft` truncates (0x9d3eb).
         if net_client {
@@ -239,11 +234,11 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
             msg::text_one(e, hud_dest::TALK, &format!("Time left: {}:{:02}\n", left / 60, left % 60));
         }
         false
-    } else if text.starts_with("vote") {
-        // `strlwr(text + 4)` lowers the text in place, so the log line shows it lowered too; the
-        // chat line was built before.
-        text = format!("vote{}", text[4..].to_ascii_lowercase());
-        !(net_client && votes::player_vote(e, idx, &text[4..]))
+    } else if text.starts_with(b"vote") {
+        // `strlwr(text + 4)` lowers the text in place (A-Z only, C locale), so the log line shows
+        // it lowered too; the chat line was built before.
+        text[4..].make_ascii_lowercase();
+        !(net_client && votes::player_vote(e, idx, &String::from_utf8_lossy(&text[4..])))
     } else {
         true
     };
@@ -270,14 +265,7 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
         engine().print(&line);
     }
     // `"name<uid><authid><uid>"`, the `model` key instead of the second user id in teamplay.
-    let eng = engine();
-    let uid = eng.user_id(e);
-    let tail = if state::teamplay() { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
-    msg::log(&format!(
-        "\"{name}<{uid}><{}><{tail}>\" {} \"{text}\"\n",
-        eng.auth_id(e).to_string_lossy(),
-        if team { "say_team" } else { "say" }
-    ));
+    msg::log(&shared::bformat!("{} {} \"{}\"\n", super::scoring::log_player(e), if team { "say_team" } else { "say" }, text));
     p.ts.next_say = now + 0.5;
 }
 
@@ -419,11 +407,12 @@ extern "C" fn cmd_status() {
     e.print(&format!("[ts] status: {mode:?} teamplay={teamplay} lms={lms} theone={the_one} time={:.1}\n", e.time()));
     for p in super::players() {
         let v = p.v();
+        // The name's bytes as they are, padded to 16 like `{:<16}` (port dev aid).
+        let name = netname(p);
+        let name_col = shared::bformat!("{}{}", name, " ".repeat(16usize.saturating_sub(name.len())));
         let line = other(p, |q| {
             format!(
-                "[ts]  #{} {:<16} {} hp={} ar={} frags={} deaths={} cash={} team='{}' held={:#x}/{}s active={:#x} slow={:.2}->{:.2} award={} spree={} gp={} org=({:.0} {:.0} {:.0})\n",
-                e.index_of(p),
-                netname(p),
+                "{} hp={} ar={} frags={} deaths={} cash={} team='{}' held={:#x}/{}s active={:#x} slow={:.2}->{:.2} award={} spree={} gp={} org=({:.0} {:.0} {:.0})\n",
                 if v.iuser1 != 0 {
                     "observer"
                 } else if alive(v) {
@@ -452,7 +441,7 @@ extern "C" fn cmd_status() {
             )
         });
         if let Some(l) = line {
-            e.print(&l);
+            e.print(&shared::bformat!("[ts]  #{} {} {}", e.index_of(p), name_col, l));
         }
     }
 }
@@ -746,8 +735,8 @@ mod tests {
     #[test]
     fn say_format() {
         let say = |name: &str, team: bool, text: &str, armor: f32, health: f32| {
-            let prefix = say_prefix(name, team);
-            format_say(&prefix, clip_say_text(&prefix, text), armor, health)
+            let prefix = say_prefix(name.as_bytes(), team);
+            String::from_utf8(format_say(&prefix, clip_say_text(&prefix, text.as_bytes()), armor, health)).unwrap()
         };
         assert_eq!(say("bob", false, "hi", 0.0, 100.0), "\x02bob: hi\n");
         assert_eq!(say("bob", true, "hp %h %a 100%", 50.0, 87.4), "\x02(TEAM) bob: hp 87 with kevlar 100%\n");
@@ -756,8 +745,8 @@ mod tests {
         assert_eq!(say("bob", false, "%h", 0.0, -0.5), "\x02bob: 0\n");
         // The text is cut so the unexpanded line is 127 bytes.
         let long = "x".repeat(300);
-        let prefix = say_prefix("bob", false);
-        assert_eq!(prefix.len() + clip_say_text(&prefix, &long).len(), 127);
+        let prefix = say_prefix(b"bob", false);
+        assert_eq!(prefix.len() + clip_say_text(&prefix, long.as_bytes()).len(), 127);
         assert_eq!(say("bob", false, &long, 0.0, 0.0).len(), 128);
         // Guard: expansions stop at TS's 140-byte buffer, well under the 192-byte message limit.
         let line = say("bob", false, &"%a".repeat(60), 1.0, 0.0);
@@ -765,17 +754,41 @@ mod tests {
         assert!(line.ends_with('\n') && line.starts_with("\x02bob: with kevlarwith kevlar"));
     }
 
+    /// Issue #81: a CP1252 name and chat (`é` = 0xE9, not UTF-8) go into the `SayText` and the log
+    /// line byte for byte, as `Host_Say` (0xad02c) copies `Cmd_Args` and `STRING(pev->netname)`.
+    #[test]
+    fn say_keeps_latin1_bytes() {
+        use shared::protocol::hud_wire::{Bytes, WireRead};
+        let raw: &[u8] = b"\"caf\xe9 cr\xe8me \xe9\"";
+        let text = say_text(raw);
+        assert_eq!(text, b"caf\xe9 cr\xe8me \xe9");
+        assert!(say_has_text(text));
+        let prefix = say_prefix(b"Ren\xe9", false);
+        let line = format_say(&prefix, clip_say_text(&prefix, text), 0.0, 100.0);
+        assert_eq!(line, b"\x02Ren\xe9: caf\xe9 cr\xe8me \xe9\n");
+        let mut w = Bytes::default();
+        msg::say_text(3, &line).write(&mut w);
+        assert_eq!(w.buf, b"\x03\x02Ren\xe9: caf\xe9 cr\xe8me \xe9\n\0", "SayText: byte sender, then the line unconverted");
+        assert_eq!(WireRead::byte(&mut w), 3);
+        assert_eq!(WireRead::string(&mut w), line);
+        // A leading quote takes the last byte, not the last UTF-8 character.
+        assert_eq!(say_text(b"\"ab\xc3\xa9"), b"ab\xc3");
+        // The 127-byte cut counts bytes.
+        let long = [0xe9u8; 300];
+        assert_eq!(prefix.len() + clip_say_text(&prefix, &long).len(), 127);
+    }
+
     #[test]
     fn say_text_parsing() {
         // A leading quote takes the last character with it, quote or not.
-        assert_eq!(say_text("\"hello\""), "hello");
-        assert_eq!(say_text("\"hello"), "hell");
-        assert_eq!(say_text("\""), "");
-        assert_eq!(say_text("hello\""), "hello\"");
+        assert_eq!(say_text(b"\"hello\""), b"hello");
+        assert_eq!(say_text(b"\"hello"), b"hell");
+        assert_eq!(say_text(b"\""), b"");
+        assert_eq!(say_text(b"hello\""), b"hello\"");
         // Only printable non-space ASCII counts as text.
-        assert!(!say_has_text(" \t\x01"));
-        assert!(!say_has_text("\u{e9}"));
-        assert!(say_has_text(" a "));
+        assert!(!say_has_text(b" \t\x01"));
+        assert!(!say_has_text(b"\xe9"));
+        assert!(say_has_text(b" a "));
     }
 
     #[test]

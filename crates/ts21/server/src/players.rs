@@ -175,7 +175,7 @@ pub fn set_player_the_one(p: &mut Player, cx: &mut Cx) {
     }
     p.ts.award = 10;
     state::with(|g| g.the_one_exists = true);
-    ts_message_all([100, 150, 255], 1, 30, &format!("{} is The One!", ts_server::rules::netname(e)));
+    ts_message_all([100, 150, 255], 1, 30, &shared::bformat!("{} is The One!", ts_server::rules::netname(e)));
 }
 
 /// The team `SetDefaultPlayerTeam` (`FUN_10038920`) reads: in the round modes the player's own

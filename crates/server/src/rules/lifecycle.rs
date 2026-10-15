@@ -51,7 +51,7 @@ pub fn client_disconnect(e: *mut edict_t) {
     let idx = eng.index_of(e);
     if !game_over {
         let name = netname(e);
-        msg::say_all(idx, &format!("- {name} has left the game\n"));
+        msg::say_all(idx, &shared::bformat!("- {} has left the game\n", name));
         let v = e.v();
         v.takedamage = DAMAGE_NO as f32;
         v.solid = SOLID_NOT as i32;
@@ -80,10 +80,8 @@ fn client_disconnected(e: *mut edict_t, idx: i32) {
     }
     crate::entities::fire_targets(c"game_playerleave", e, e, crate::world::UseType::Toggle, 0.0);
     let eng = engine();
-    let (uid, auth) = (eng.user_id(e), eng.auth_id(e).to_string_lossy().into_owned());
     // The fourth field is the user id again outside teamplay, the `model` key in teamplay.
-    let tail = if state::teamplay() { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
-    msg::log(&format!("\"{}<{uid}><{auth}><{tail}>\" disconnected\n", netname(e)));
+    msg::log(&shared::bformat!("{} disconnected\n", super::scoring::log_player(e)));
     crate::player::with_player(e, |p, cx| {
         // `RemoveAllItems(TRUE)`, `UpdateClientData` inline included.
         crate::weapons::remove_all_items(p, cx);
@@ -141,15 +139,14 @@ pub fn userinfo_changed(e: *mut edict_t) {
     let eng = engine();
     let old = netname(e);
     if !old.is_empty() && eng.string(e.v().netname).to_bytes() != eng.info_key(e, c"name").to_bytes() {
-        let clean = eng.info_key(e, c"name").to_string_lossy().replace('%', " ");
+        let clean = clean_name(eng.info_key(e, c"name").to_bytes());
         let idx = eng.index_of(e);
         eng.set_client_key(e, "name", &clean);
-        let new = eng.info_key(e, c"name").to_string_lossy().into_owned();
-        msg::say_all(idx, &format!("* {old} changed name to {new}\n"));
-        // The fourth field is the user id outside teamplay and the `model` key in teamplay.
-        let uid = eng.user_id(e);
-        let tail = if state::teamplay() { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
-        msg::log(&format!("\"{old}<{uid}><{}><{tail}>\" changed name to \"{new}\"\n", eng.auth_id(e).to_string_lossy()));
+        let new = eng.info_key(e, c"name").to_bytes().to_vec();
+        msg::say_all(idx, &name_change_notice(&old, &new));
+        // `"old<uid><authid><x>"`: the fourth field is the user id outside teamplay and the
+        // `model` key in teamplay; `pev->netname` is still the old name here.
+        msg::log(&shared::bformat!("{} changed name to \"{}\"\n", super::scoring::log_player(e), new));
     }
     // `CHalfLifeRules` keeps `CGameRules::ClientUserInfoChanged` (empty).
     if state::single_player() {
@@ -163,6 +160,22 @@ pub fn userinfo_changed(e: *mut edict_t) {
     });
 }
 
+/// `ClientUserInfoChanged`'s new name: `strncpy` into a 255-byte buffer, every `%` made a space.
+/// The other bytes are kept as the client sent them (a CP1252 `é` stays 0xE9, issue #81).
+pub fn clean_name(raw: &[u8]) -> Vec<u8> {
+    raw.iter().take(255).map(|&b| if b == b'%' { b' ' } else { b }).collect()
+}
+
+/// `ClientUserInfoChanged`'s `SayText` to all: `"* %s changed name to %s\n"` with both names'
+/// bytes. Guard (stack overflow in TS): TS `sprintf`s into a 256-byte stack buffer, which two
+/// 255-byte names overrun; the port cuts the line at 255 bytes. The engines keep names far
+/// shorter, so a real line is never cut.
+pub fn name_change_notice(old: &[u8], new: &[u8]) -> Vec<u8> {
+    let mut line = shared::bformat!("* {} changed name to {}\n", old, new);
+    line.truncate(255);
+    line
+}
+
 /// `CHalfLifeMultiplay::ClientUserInfoChanged` (0x8b244): a client not running weapon prediction
 /// gets `cl_lw 1` (`PlayerIsCheating`); otherwise a `model` key that differs from the team name
 /// (`""` outside teamplay) is put back to the team name when it is an HLDM model or
@@ -174,17 +187,18 @@ fn multiplay_userinfo_changed(p: &mut Player, cx: &mut Cx) {
         eng.set_client_key(e, "cl_lw", "1");
         return;
     }
-    let model = eng.info_key(e, c"model").to_string_lossy().into_owned();
+    // The key's bytes: TS echoes them unconverted.
+    let model = eng.info_key(e, c"model").to_bytes().to_vec();
     let team = p.ts.team_name.clone();
-    if model.eq_ignore_ascii_case(&team) {
+    if model.eq_ignore_ascii_case(team.as_bytes()) {
         return;
     }
-    if !cvars::on(c"mp_defaultteam") && !HLDM_MODELS.iter().any(|m| m.eq_ignore_ascii_case(&model)) {
+    if !cvars::on(c"mp_defaultteam") && !HLDM_MODELS.iter().any(|m| m.as_bytes().eq_ignore_ascii_case(&model)) {
         return;
     }
     eng.set_client_key(e, "model", &team);
     let idx = cx.index();
-    msg::say_one(e, idx, &format!("* Can't change team to '{model}'\n"));
+    msg::say_one(e, idx, &shared::bformat!("* Can't change team to '{}'\n", model));
     msg::say_one(e, idx, "* HLDM models not allowed.\n");
 }
 
@@ -520,12 +534,10 @@ fn rules_init_hud(p: &mut Player, cx: &mut Cx) {
         teams::set_default_team(p, cx);
     }
     let raw = netname(e);
-    let name = if raw.is_empty() { "unconnected" } else { raw.as_str() };
-    msg::text_all(hud_dest::NOTIFY, &format!("{name} has joined the game\n"));
+    let name: &[u8] = if raw.is_empty() { b"unconnected" } else { &raw };
+    msg::text_all(hud_dest::NOTIFY, &shared::bformat!("{} has joined the game\n", name));
     // The log has the raw `netname`, and the user id (DM) or the `model` key (teamplay) last.
-    let uid = eng.user_id(e);
-    let tail = if teamplay { eng.info_key(e, c"model").to_string_lossy().into_owned() } else { uid.to_string() };
-    msg::log(&format!("\"{raw}<{uid}><{}><{tail}>\" entered the game\n", eng.auth_id(e).to_string_lossy()));
+    msg::log(&shared::bformat!("{} entered the game\n", super::scoring::log_player(e)));
     // UpdateGameMode
     let gm = GameMode { teamplay: teamplay as u8 };
     msg::one(Msg::GameMode, e, |w| gm.write(w));
@@ -563,7 +575,7 @@ pub fn score_frags(frags: f32) -> i16 {
 /// `CHalfLifeMultiplay::SendMOTDToClient`: ServerName, then the `motdfile` in ≤60-char chunks.
 pub fn send_motd(e: *mut edict_t) {
     let eng = engine();
-    let host = eng.cvar_string(c"hostname").to_string_lossy().into_owned();
+    let host = eng.cvar_string(c"hostname").to_bytes().to_vec();
     msg::one(Msg::ServerName, e, |w| ServerName { name: host }.write(w));
     let file = {
         let f = eng.cvar_string(c"motdfile").to_string_lossy().into_owned();
@@ -578,10 +590,10 @@ pub fn send_motd(e: *mut edict_t) {
 }
 
 /// Splits MOTD text into ≤60-byte chunks; the last carries the final flag.
-pub fn motd_chunks(text: &[u8]) -> Vec<(String, bool)> {
+pub fn motd_chunks(text: &[u8]) -> Vec<(Vec<u8>, bool)> {
     let chunks: Vec<&[u8]> = text.chunks(60).collect();
     let n = chunks.len();
-    chunks.into_iter().enumerate().map(|(i, c)| (String::from_utf8_lossy(c).into_owned(), i + 1 == n)).collect()
+    chunks.into_iter().enumerate().map(|(i, c)| (c.to_vec(), i + 1 == n)).collect()
 }
 
 /// `CTSGameRules::InitHUD` (0x79134): cheat notice, custom weapons, SrvSett ×4, RoundTime, Spectator flags of
@@ -984,7 +996,7 @@ pub fn stop_observer(p: &mut Player, cx: &mut Cx) {
     cx.pev().nextthink = -1.0;
     if engine().cvar_float(c"developer") != 0.0 {
         let owned: Vec<usize> = (1..p.inv.gun.status.len()).filter(|&i| p.inv.gun.status[i].owned).collect();
-        engine().print(&format!("[ts] {} spawned (#{idx}) with {owned:?}\n", netname(cx.edict)));
+        engine().print(&shared::bformat!("[ts] {} spawned (#{}) with {}\n", netname(cx.edict), idx, format!("{owned:?}")));
     }
 }
 
@@ -1232,9 +1244,35 @@ pub fn send_award(idx: i32, award: u8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        damage_force, death_push, death_slowdown, headshot_death_slows, killer_blur, player_is_cheating, respawn_countdown_text,
-        scan_c_int, score_frags, the_one_regen,
+        clean_name, damage_force, death_push, death_slowdown, headshot_death_slows, killer_blur, motd_chunks, name_change_notice,
+        player_is_cheating, respawn_countdown_text, scan_c_int, score_frags, the_one_regen,
     };
+
+    /// Issue #81: `ClientUserInfoChanged` (0xae638) copies the `name` key's bytes (only `%`
+    /// becomes a space) and announces the change with both names unconverted.
+    #[test]
+    fn name_change_keeps_latin1_bytes() {
+        use shared::protocol::hud_wire::{Bytes, WireRead};
+        assert_eq!(clean_name(b"Ren\xe9 100%"), b"Ren\xe9 100 ");
+        assert_eq!(clean_name(&[b'x'; 300]).len(), 255, "strncpy into 255 bytes");
+        let line = name_change_notice(b"Bob", &clean_name(b"Ren\xe9"));
+        assert_eq!(line, b"* Bob changed name to Ren\xe9\n");
+        let mut w = Bytes::default();
+        crate::rules::msg::say_text(4, &line).write(&mut w);
+        assert_eq!(w.buf, b"\x04* Bob changed name to Ren\xe9\n\0");
+        assert_eq!((WireRead::byte(&mut w), WireRead::string(&mut w)), (4, line));
+        // Guard: TS's 256-byte `sprintf` buffer.
+        assert_eq!(name_change_notice(&[b'a'; 255], &[b'b'; 255]).len(), 255);
+    }
+
+    #[test]
+    fn motd_chunks_keep_bytes() {
+        let text: Vec<u8> = (1..=130u8).map(|i| i | 0x80).collect();
+        let chunks = motd_chunks(&text);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks.iter().flat_map(|(c, _)| c.clone()).collect::<Vec<u8>>(), text);
+        assert_eq!(chunks.iter().map(|(_, last)| *last).collect::<Vec<_>>(), [false, false, true]);
+    }
 
     #[test]
     fn headshot_deaths_slow_during_global_slow_too() {

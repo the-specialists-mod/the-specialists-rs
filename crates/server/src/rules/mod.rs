@@ -448,11 +448,13 @@ pub fn is_player(e: *mut edict_t) -> bool {
     v.flags & FL_CLIENT as i32 != 0 && e.has_private_data() && engine().string(v.classname) == c"player"
 }
 
-pub fn netname(e: *mut edict_t) -> String {
+/// `STRING(pev->netname)`: the player's name as bytes, unconverted (TS copies it into chat, notices
+/// and log lines as it is; a CP1252 name isn't UTF-8). Build text with `shared::bformat!`.
+pub fn netname(e: *mut edict_t) -> Vec<u8> {
     if e.is_null() {
-        return String::new();
+        return Vec::new();
     }
-    engine().string(e.v().netname).to_string_lossy().into_owned()
+    engine().string(e.v().netname).to_bytes().to_vec()
 }
 
 /// A C `(int)` cast as GCC 2.95 compiles it for `ts_i386.so`: `fnstcw`, the rounding control set

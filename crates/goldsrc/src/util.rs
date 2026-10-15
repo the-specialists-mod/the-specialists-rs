@@ -21,6 +21,12 @@ pub fn to_cstring(s: &str) -> CString {
     CString::new(s.replace('\0', "")).unwrap()
 }
 
+/// Converts bytes to a C string unchanged (no UTF-8 conversion: player text is whatever the
+/// client sent), dropping interior NULs instead of failing.
+pub fn bytes_to_cstring(b: &[u8]) -> CString {
+    CString::new(b.iter().copied().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default()
+}
+
 /// Parses a keyvalue vector such as `"128 -64 32"`. Missing components are zero.
 pub fn parse_vec3(s: &str) -> [f32; 3] {
     let mut out = [0.0; 3];
