@@ -613,6 +613,12 @@ dir, i.e. the file `Load` reads; the port writes `<gamedir>/maps/<map>.ndm`, the
 equivalent (on Linux `TS/maps` would be another, usually missing, directory).
 
 Guards where TS corrupts memory, reads garbage or hangs (behaviour otherwise kept):
+* `addbot`/`addcustombot`'s model is `strcpy`d unbounded into `char model[32]`, which the
+  name's `char name[64]` follows, so TS's bot gets a model (and team) of 32 or more bytes as its
+  first 32 bytes followed by the bot's name; the port does the same (`bots::frame_strings`,
+  #191). A name of 64 bytes or more (typed, or a long `bots.txt` entry) or a model of 96 or more
+  overwrites `BotCreate`'s return address in TS (a crash); the port cuts the name at 63 bytes
+  and builds the model as above for any length.
 * A `bots.txt` line long enough to spill past the last name slot is cut at the end of the skill
   table (TS runs on into the count and the used flags). A `%` conversion other than the first
   `%s` in a chat line prints nothing (TS reads garbage); formatted chat is cut at 127 bytes.
