@@ -57,7 +57,7 @@ pub fn kevlar_scale(armor: f32, group: i32, dmg_bits: i32, absorb: f32) -> f32 {
 }
 
 /// The fraction kevlar absorbs, `min(absorb, 1)`, or 0 where it doesn't apply.
-fn kevlar_absorb(armor: f32, group: i32, dmg_bits: i32, absorb: f32) -> f32 {
+pub fn kevlar_absorb(armor: f32, group: i32, dmg_bits: i32, absorb: f32) -> f32 {
     if armor != 0.0 && dmg_bits & bits::ARMOR_EXEMPT == 0 && (hitgroup::CHEST..=hitgroup::RIGHTARM).contains(&group) {
         absorb.min(1.0)
     } else {
@@ -72,28 +72,6 @@ pub fn ptakedam_amount(dmg: f32, dmg_bits: i32, kevlar: bool) -> u8 {
     let d = if dmg_bits & DMG_SHOTGUN != 0 { dmg * 8.0 } else { dmg };
     let a = (d * 0.5).min(127.0);
     (if kevlar { a + 128.0 } else { a }) as u8
-}
-
-/// Damage that reaches `CBaseMonster::TakeDamage` after kevlar: `CBasePlayer::TakeDamage`
-/// computes `dmg - min(absorb, 1) * dmg` on the x87 stack (0x8fc38), stores it as a float, then
-/// truncates it to an int (0x8fc5f) and passes it back as a float. The product of two floats is
-/// exact in `f64`, so only the subtraction can round differently from the 80-bit original.
-pub fn after_kevlar(amount: f32, armor: f32, group: i32, dmg_bits: i32, absorb: f32) -> f32 {
-    let absorbed = kevlar_absorb(armor, group, dmg_bits, absorb);
-    let d = amount as f64;
-    ((d - absorbed as f64 * d) as f32).trunc()
-}
-
-/// `CBasePlayer::TakeHealth` (0xd8760) on the entvars: refused with `takedamage` off or health
-/// already above max; otherwise added with no cap. Returns `None` when refused, else whether the
-/// player is now over max (TS then sets the 1/s decay timer, `+0x73c`, to time + 1). The core
-/// rules' [`ServerRules::player_add_health`](crate::gameplay::ServerRules::player_add_health).
-pub fn add_health(v: &mut entvars_t, amount: f32) -> Option<bool> {
-    if v.takedamage == 0.0 || v.health > v.max_health {
-        return None;
-    }
-    v.health += amount;
-    Some(v.health > v.max_health)
 }
 
 /// `CBasePlayer::TakeHealth` (0xd8760) for code that holds the player (time-based healing).
@@ -158,24 +136,6 @@ pub struct HitDamage {
     pub headshot: bool,
     /// The headshot is recorded for the kill (`glast_headshot`, the "headshot" message).
     pub record_headshot: bool,
-}
-
-/// TS 3.0's `TraceAttack` multipliers (0x901cc): stunting ×0.7, bullets in the dodge window ×0.7,
-/// then [`hitgroup_scale`]; a bullet or thrown hit in the head is a headshot. Each ×0.7 multiplies
-/// by the `double` and stores the `float` (0x90212/0x90241; mp.dll 0x1005efe9/0x1005f00f, issue
-/// #138).
-pub fn hit_damage(hit: &PlayerHit) -> HitDamage {
-    let c = &tables().combat;
-    let mut amount = hit.damage;
-    if hit.stunting {
-        amount = (amount as f64 * c.stunt_damage_taken) as f32;
-    }
-    if hit.dodging && hit.bits & bits::BULLET != 0 {
-        amount = (amount as f64 * c.stunt_damage_taken) as f32;
-    }
-    let headshot = hit.hitgroup == hitgroup::HEAD && hit.bits & (bits::BULLET | bits::THROWN) != 0;
-    amount *= hitgroup_scale(hit.hitgroup, hit.bits);
-    HitDamage { amount, headshot, record_headshot: headshot }
 }
 
 /// `CBasePlayer::TakeDamage` (0x8fa94): a hit arms the bullet dance when it does at most 80
@@ -494,34 +454,6 @@ mod tests {
     /// `armor_absorb` as `CTSGameRules::Init` sets it.
     const ABSORB: f32 = crate::rules::state::INIT_ARMOR_ABSORB;
 
-    /// The stunt and dodge ×0.7 multiply by the `double` 0.7 (issue #138): 9 × 0.7 is
-    /// 6.3000002 (0x40c9999a), where the `float` 0.7 gave 6.2999997 (0x40c99999).
-    #[test]
-    fn stunt_and_dodge_take_the_double_seven_tenths() {
-        let hit = |stunting, dodging| {
-            hit_damage(&PlayerHit { damage: 9.0, bits: bits::BULLET, hitgroup: hitgroup::CHEST, stunting, dodging }).amount
-        };
-        assert_eq!(hit(true, false).to_bits(), 0x40c9_999a);
-        assert_eq!(hit(false, true).to_bits(), 0x40c9_999a);
-        assert_eq!(hit(true, true), ((9.0f64 * 0.7) as f32 as f64 * 0.7) as f32, "rounded after each");
-        assert_eq!(hit(false, false), 9.0);
-    }
-
-    /// `TraceAttack`'s sounds in slow motion (issue #33): the hit sound drops by
-    /// `0.5 + 0.5 * fuser1`, the pain sound only by `0.85 + 0.15 * fuser1`.
-    #[test]
-    fn hit_and_pain_sounds_drop_pitch_with_the_time_scale() {
-        use crate::entities::stock::explode::slow_pitch;
-        assert_eq!((HIT_SLOW, PAIN_SLOW), (0.5, 0.15));
-        assert_eq!(slow_pitch(100, 1.0, PAIN_SLOW), 100, "normal speed");
-        assert_eq!(slow_pitch(100, 0.0, PAIN_SLOW), 100, "no time scale");
-        assert_eq!(slow_pitch(100, 0.5, PAIN_SLOW), 92, "pain at half speed: 92.5 truncates");
-        // 0.85 + 0.15 * 0.2 rounds to the float just under 0.88, so TS's `fistp` gives 87.
-        assert_eq!(slow_pitch(100, 0.2, PAIN_SLOW), 87, "pain at 0.2");
-        assert_eq!(slow_pitch(100, 0.5, HIT_SLOW), 75, "hit at half speed");
-        assert_eq!(slow_pitch(126, 0.5, HIT_SLOW), 94, "the hit's top pitch (95 + 31): 94.5 truncates");
-    }
-
     #[test]
     fn multipliers() {
         assert_eq!(hitgroup_scale(hitgroup::HEAD, bits::BULLET), 2.0);
@@ -566,22 +498,6 @@ mod tests {
     }
 
     #[test]
-    fn take_health_rules() {
-        let mut v = entvars_t { takedamage: 2.0, health: 90.0, max_health: 100.0, ..Default::default() };
-        assert_eq!(add_health(&mut v, 50.0), Some(true), "no cap, overheal starts the decay");
-        assert_eq!(v.health, 140.0);
-        assert_eq!(add_health(&mut v, 10.0), None, "already above max");
-        v.health = 100.0;
-        assert_eq!(add_health(&mut v, 0.0), Some(false), "at max is still allowed");
-        v.health = 50.0;
-        assert_eq!(add_health(&mut v, 10.0), Some(false));
-        assert_eq!(v.health, 60.0);
-        v.takedamage = 0.0;
-        assert_eq!(add_health(&mut v, 10.0), None, "takedamage off");
-        assert_eq!(v.health, 60.0);
-    }
-
-    #[test]
     fn suit_damage_reports() {
         let names = |bits, trivial, major, last| -> Vec<(String, i32)> {
             damage_reports(bits, Severity { trivial, major }, last).into_iter().map(|(n, t)| (n.to_str().unwrap().to_owned(), t)).collect()
@@ -599,13 +515,5 @@ mod tests {
         );
         assert_eq!(names(DMG_SONIC, false, false, 10), [], "sonic only when major");
         assert_eq!(names(bits::BLAST, false, true, 30), [], "no report for blast");
-    }
-
-    #[test]
-    fn kevlar_damage_truncates() {
-        // 30 × (1 − 0.2125) = 23.625: TS does 23.
-        assert_eq!(after_kevlar(30.0, 100.0, hitgroup::CHEST, bits::BULLET, ABSORB), 23.0);
-        assert_eq!(after_kevlar(30.9, 0.0, hitgroup::CHEST, bits::BULLET, ABSORB), 30.0, "no armour still truncates");
-        assert_eq!(after_kevlar(0.5, 0.0, hitgroup::HEAD, bits::BULLET, ABSORB), 0.0);
     }
 }

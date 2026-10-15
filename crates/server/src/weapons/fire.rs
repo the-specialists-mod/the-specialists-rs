@@ -5,7 +5,7 @@ use crate::damage::{self, DamageInfo};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{MsgWriterExt, te, te_begin};
-use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
+use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::pm::{Arith, Ext, Fpu, Num};
 use shared::weapons::gun::Shot;
@@ -15,33 +15,6 @@ use shared::weapons::{range_multiplier, tables};
 /// Damage bits: bullets, and the shotgun flag TS uses for the x1.5 headshot.
 pub const DMG_BULLET_TS: i32 = 0x1002;
 pub const DMG_SHOTGUN_TS: i32 = 0x0200_1002;
-
-/// `UTIL_TraceLine_Expanded` 0x6f4f4: grows every player's absolute box by 32 units for the
-/// trace so hitboxes outside the bounding box (arms, head while diving) can be hit.
-pub fn trace_expanded(start: Vec3, end: Vec3, skip: *mut edict_t) -> TraceResult {
-    let e = engine();
-    let n = e.max_clients();
-    let mut saved: Vec<(*mut edict_t, [f32; 3], [f32; 3])> = Vec::with_capacity(n as usize);
-    for i in 1..=n {
-        let p = e.player(i);
-        if p.is_null() {
-            continue;
-        }
-        let v = p.v();
-        saved.push((p, v.absmin, v.absmax));
-        for k in 0..3 {
-            v.absmin[k] -= 32.0;
-            v.absmax[k] += 32.0;
-        }
-    }
-    let tr = e.trace_line(start, end, DONT_IGNORE_MONSTERS, skip);
-    for (p, lo, hi) in saved {
-        let v = p.v();
-        v.absmin = lo;
-        v.absmax = hi;
-    }
-    tr
-}
 
 /// `ShootBulletsPlayer`'s static `tr` (end position, fraction): every hitscan trace writes it,
 /// and the bubble trail after each pellet reads it, so a simulated bullet's trail

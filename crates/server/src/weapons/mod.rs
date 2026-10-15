@@ -15,7 +15,7 @@ mod net;
 pub(crate) mod projectiles;
 pub mod worldgun;
 
-pub use fire::trace_expanded;
+pub use melee::sparks;
 pub use net::send_kfu_power;
 pub use projectiles::ThrownBlade;
 
@@ -48,7 +48,7 @@ pub use assets::max_carry;
 pub use assets::{cvars, dmgreport, grenade_buys, restriction, set_restriction};
 pub(crate) use commands::add_armament;
 pub use host::emit;
-pub use inventory::{Drop, pick_up_cost, pick_up_weapon};
+pub use inventory::{Drop, pick_up_weapon};
 
 /// `CTSGun::AddItem(bits)` on the held weapon (the attachments a `tki` buys): false when the
 /// weapon can't take them.

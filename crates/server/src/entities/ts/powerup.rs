@@ -82,26 +82,6 @@ pub fn body(kind: u16) -> Option<i32> {
     (0..9).find(|i| kind & (1 << i) != 0).map(|i| BODIES[i])
 }
 
-/// `SetupPowerUp`'s type (0x98014) for the type key `key` (`pwuptype`) and `spawnflags`, and
-/// whether it is drawn again on each respawn: a key below 1 draws from the spawnflags' types
-/// (all when none), never armour; armour, and the super jump on a map that gives it to everyone,
-/// are drawn from all.
-pub fn kind_for(key: i32, spawnflags: i32) -> (u16, bool) {
-    let flags = spawnflags as u16;
-    let superjump_map = state::with(|g| g.superjump_map);
-    if key < 1 {
-        let mut k = state::with(|g| g.random_powerup(flags & 0x1ff));
-        if k == 0 {
-            k = state::with(|g| g.random_powerup(0x1ff));
-        }
-        (k, true)
-    } else {
-        let k = key as u16;
-        let k = if (superjump_map && k & pw::SUPERJUMP != 0) || k & pw::ARMOR != 0 { state::with(|g| g.random_powerup(0x1ff)) } else { k };
-        (k, false)
-    }
-}
-
 /// `WaitTouch`'s pickup rules (single held slot, +use swaps) for a power-up of type `kind`
 /// touched by a player holding `held` (`held_secs` seconds) with `active` running and +use
 /// (`using`) or not: `None` leaves it, `Some(drop)` takes it and drops `drop` (0: nothing).
@@ -398,28 +378,6 @@ mod tests {
         assert_eq!(body(pw::SLOWPAUSE | pw::GRENADE), Some(9), "first matching bit");
         // No known bit: the body is left alone.
         assert_eq!(body(0x200), None);
-    }
-
-    /// `WaitTouch` (0x98600..) with TS 3.0's values.
-    #[test]
-    fn pickup_rules() {
-        let r = &crate::rules::powerup::CORE;
-        let plan = |kind, held, secs, active, using| pickup_plan(r, kind, held, secs, active, using);
-        // An empty slot takes anything; a held one refuses a second stored type.
-        assert_eq!(plan(pw::SLOWPAUSE, 0, 0, 0, false), Some(0));
-        assert_eq!(plan(pw::SLOWPAUSE, pw::SLOWMO, 2, 0, false), None);
-        // Slow motion tops up a held one below 3 s.
-        assert_eq!(plan(pw::SLOWMO, pw::SLOWMO, 2, 0, false), Some(0));
-        assert_eq!(plan(pw::SLOWMO, pw::SLOWMO, 3, 0, false), None);
-        // +use swaps, slow motion only above 2 s; never while one runs.
-        assert_eq!(plan(pw::SLOWPAUSE, pw::DOUBLE_FIRERATE, 3, 0, true), Some(pw::DOUBLE_FIRERATE));
-        assert_eq!(plan(pw::SLOWPAUSE, pw::SLOWMO, 2, 0, true), Some(0));
-        assert_eq!(plan(pw::SLOWPAUSE, pw::SLOWMO, 3, 0, true), Some(pw::SLOWMO));
-        assert_eq!(plan(pw::SLOWPAUSE, 0, 0, pw::SLOWMO, true), None);
-        // Instant types: always, and +use doesn't drop the held one. Infinite clip is one.
-        for k in [pw::INFINITE_CLIP, pw::KUNGFU, pw::GRENADE, pw::HEALTH, pw::ARMOR, pw::SUPERJUMP] {
-            assert_eq!(plan(k, pw::SLOWMO, 3, pw::SLOWMO, true), Some(0), "{k:#x}");
-        }
     }
 
     #[test]

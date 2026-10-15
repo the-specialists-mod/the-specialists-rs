@@ -316,17 +316,17 @@ The hooks so far:
 | `ServerRules` | `player_killed(p, cx, d, g)` | ts30 `scoring::player_killed` | `rules/scoring.rs` `player_killed`, once the killer can be reached |
 | `ServerRules` | `cash_based()` | false | `rules/state.rs` `cash_based` |
 | `ServerRules` | `buy_armament(p, cx)` | ts30 `players::buy_armament` | `weapons/mod.rs` spawn, without a `game_player_equip` |
-| `ServerRules` | `pick_up_cost(id, w, from)` | `weapons::pick_up_cost`: `None` (refused) for the akimbo pair of a single gun, else `slots`, × the count for a dropped stack | `weapons/inventory.rs` `pick_up_weapon` |
+| `ServerRules` | `pick_up_cost(id, w, from)` | `ts30_server::items::pick_up_cost`: `None` (refused) for the akimbo pair of a single gun, else `slots`, × the count for a dropped stack | `weapons/inventory.rs` `pick_up_weapon` |
 | `ServerRules` | `dead_grenades_become_powerups()` | `!weapons::grenade_buys()` (`m_mode < 2`: always) | `weapons/inventory.rs` `drop_weapon` |
 | `ServerRules` | `drop_lifetime_and_glow()` | true: `drop`/disarm gives `clamp(2 × weaponstay, 10, 120)` and the dropper's glow | `weapons/worldgun.rs` `set_drop_lifetime` (from `inventory.rs` `drop_weapon`) |
 | `ServerRules` | `stack_drop_count(held, disarm)` | the whole stack, one on a disarm (`DropWeapon` 0x94900) | `weapons/inventory.rs` `drop_weapon` |
 | `ServerRules` | `world_gun_fall_impact()` | true: `Fall`'s 0.1 s look-ahead trace hurts what it hits | `weapons/worldgun.rs` `WorldGun::think` |
 | `ServerRules` | `world_gun_touch(gun, attacker, id, other)` | nothing | `weapons/worldgun.rs` `WorldGun::touch` (flying) |
 | `ServerRules` | `ammo_pack_stays_when_nothing_fits()` | false: the touch removes the pack | `weapons/worldgun.rs` `AmmoPack::touch` |
-| `ServerRules` | `player_add_health(v, amount)` | `player::damage::add_health` (refused above max, uncapped, starts the overheal decay) | `player/damage.rs` `take_health_plain`, `take_health_edict_plain` |
-| `ServerRules` | `battery_armor(p, amount)` | `items::player_take_armor` (`TakeArmor`: kevlar slots, speed) | `entities/stock/items.rs` `Item::my_touch` (battery) |
+| `ServerRules` | `player_add_health(v, amount)` | `ts30_server::items::add_health` (refused above max, uncapped, starts the overheal decay) | `player/damage.rs` `take_health_plain`, `take_health_edict_plain` |
+| `ServerRules` | `battery_armor(p, amount)` | `ts30_server::items::player_take_armor` (`TakeArmor`: kevlar slots, speed) | `entities/stock/items.rs` `Item::my_touch` (battery) |
 | `ServerRules` | `charger_capacity(armor)` | 1 | `entities/stock/items.rs` `Charger::spawn`, `recharge` |
-| `ServerRules` | `charger_charge(armor, juice, activator)` | `items::charge_once`: `TakeArmor(100)` / `TakeHealth(max - health)`, then empty | `entities/stock/items.rs` `Charger::use_` |
+| `ServerRules` | `charger_charge(armor, juice, activator)` | `ts30_server::items::charge_once`: `TakeArmor(100)` / `TakeHealth(max - health)`, then empty | `entities/stock/items.rs` `Charger::use_` |
 | `ServerRules` | `entity_object(class)` | `None`: the type linked to the classname | `world::create_linked`, the body of every `link_entities!` export |
 | `ServerRules` | `precache()` | nothing; run for every registered ruleset at each map start | `gameplay::precache_rulesets`, from the world's precache after TS 3.0's |
 | `ServerRules` | `spawns_entity(class)` | true | `entities/mod.rs` `dispatch_spawn` (-1 when refused; the map load goes through it) and `dispatch_key_value` (a refused class parses no key) |
@@ -334,29 +334,29 @@ The hooks so far:
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
 | `ServerRules` | `broken_respawn_delay(respawntime)` | `Some(30 s if 0, else the key)` | `entities/stock/breakable.rs` `die`, `doors.rs` (break) |
 | `ServerRules` | `breakable_respawn_guarded()` | true (wait for clients in the box, fire `respawntarget`) | `breakable.rs`, `doors.rs` `breakable_respawn` |
-| `ServerRules` | `objectives()` | `entities::ts::objective::CORE` (`ObjectiveRules`: HUD effect 8, team indexes, the indexed list, givers enabled by pointers, the wire HUD, NaN timers run out, the list cleared outside rounds) | `entities/ts/objective.rs`, `ctb.rs` (the givers' message) |
-| `ServerRules` | `round_time_left(now)` | `objective::round_time_left_core` (timed round: manager's `targetontimeleft`, else a draw) | `objective.rs` `Bomb::think` |
-| `ServerRules` | `giver_team_win(&GiverWin)` | `ctb::giver_team_win_core` (`TeamWin(winnerteam, (int)value, restart, isScore)`) | `ctb.rs` `WinGiver::use_` |
+| `ServerRules` | `objectives()` | `ts30_server::entities::OBJECTIVES` (`ObjectiveRules`: HUD effect 8, team indexes, the indexed list, givers enabled by pointers, the wire HUD, NaN timers run out, the list cleared outside rounds) | `entities/ts/objective.rs`, `ctb.rs` (the givers' message) |
+| `ServerRules` | `round_time_left(now)` | `ts30_server::entities::round_time_left` (timed round: manager's `targetontimeleft`, else a draw) | `objective.rs` `Bomb::think` |
+| `ServerRules` | `giver_team_win(&GiverWin)` | `ts30_server::entities::giver_team_win` (`TeamWin(winnerteam, (int)value, restart, isScore)`) | `ctb.rs` `WinGiver::use_` |
 | `ServerRules` | `break_debris_from_hit()` | true (debris along the last hit, long glass `TSFrags`, attacker's `fuser1` copied) | `breakable.rs` `die`, `doors.rs` (break); false is the SDK's (`g_vecAttackDir × 200` if `explosion directed`, a door's none, 13-byte glass `TSFrags`) |
 | `ServerRules` | `breakable_attack_dir(org, absmin, size)` | `damage::normalize(org - (absmin + size × 0.5))` | `breakable.rs` `take_damage_impl` (`g_vecAttackDir`) |
-| `ServerRules` | `respawn_entities()` | `entities::ts::respawn_entities` | `rules/frame.rs` `restart_round` |
+| `ServerRules` | `respawn_entities()` | `ts30_server::entities::respawn_entities` | `rules/frame.rs` `restart_round` |
 | `ServerRules` | `entities_think(now)` | nothing | `rules/frame.rs` `ts_think` (DM/TDM branch, after The One) |
 | `ServerRules` | `map_globals(e, spawnflags)` | `Some(MapFlags::from_spawnflags)` | `entities/ts/misc.rs` `MapGlobals::spawn` |
 | `ServerRules` | `ground_weapon_lands_flying()` | false | `entities/ts/ground.rs` `Ground::fall` |
-| `ServerRules` | `give_ground_weapon(g, cx, p, pcx)` | `GroundWeapon::give` | `ground.rs` `get_weapon` (+use, `Use`, touch) |
+| `ServerRules` | `give_ground_weapon(g, cx, p, pcx)` | `ts30_server::entities::give_ground_weapon` | `ground.rs` `get_weapon` (+use, `Use`, touch) |
 | `ServerRules` | `outgoing_message(msg, w, send)` | `send(w)` | `messages.rs` `outgoing`, the filter `goldsrc::server::MsgWriter::end` runs every message through (`set_outgoing_filter`) |
-| `ServerRules` | `powerups()` | `rules::powerup::CORE` (`PowerupRules`: base durations 3/3/2/3, `pwupmult`, instant mask 0x1e6, top-up < 3, swap > 2, no swap on instant types, drop > 2, slow amounts 0.6/0.35 and 0.8/0.225, `TSSlowMo` 0.35/0.225, the grenade power-up selects the grenade) | `entities/ts/powerup.rs` `setup`/`pickup_plan`, `rules/powerup.rs` `update_state`/`add_powerup`/`hud_slow_amount`/`normal_secs`, `rules/commands.rs` `ts_givepowerup` |
-| `ServerRules` | `powerup_kind(key, spawnflags)` | `entities::ts::powerup::kind_for` (`GetRandomPowerup`, never armour) | `entities/ts/powerup.rs` `setup` |
+| `ServerRules` | `powerups()` | `ts30_server::powerup::POWERUPS` (`PowerupRules`: base durations 3/3/2/3, `pwupmult`, instant mask 0x1e6, top-up < 3, swap > 2, no swap on instant types, drop > 2, slow amounts 0.6/0.35 and 0.8/0.225, `TSSlowMo` 0.35/0.225, the grenade power-up selects the grenade) | `entities/ts/powerup.rs` `setup`/`pickup_plan`, `rules/powerup.rs` `update_state`/`add_powerup`/`hud_slow_amount`/`normal_secs`, `rules/commands.rs` `ts_givepowerup` |
+| `ServerRules` | `powerup_kind(key, spawnflags)` | `ts30_server::powerup::kind_for` (`GetRandomPowerup`, never armour) | `entities/ts/powerup.rs` `setup` |
 | `ServerRules` | `armor_powerup(p, cx, armor)` | `TakeArmor(100)` (`armor`: `PowerUp::armor`, 100; `entities::ts::powerup::set_armor`) | `rules/powerup.rs` `add_powerup` |
 | `ServerRules` | `time_scale_eases()` | `true` (`InterpolateSlowMotion`) | `rules/powerup.rs` `go_slow*`/`deactivate_flow`, `rules/lifecycle.rs` `pre_think` |
 | `ServerRules` | `on_go_slow(p, amount)` | nothing | `rules/powerup.rs` `go_slow_self`, `go_slow_plain` (a player's `GoSlow`) |
-| `ServerRules` | `grenade_fuse_step(elapsed, time_scale)` | `max(fuser1, 0.01) * 0.1f + elapsed` | `weapons/projectiles.rs` grenade `WaitThink` |
+| `ServerRules` | `grenade_fuse_step(elapsed, time_scale)` | `max(fuser1, 0.01) * 0.1f + elapsed` (`ts30_server::powerup::fuse_step`) | `weapons/projectiles.rs` grenade `WaitThink` |
 | `ServerRules` | `anim_framerate(time_scale)` | `max(fuser1, 0.01)` | `rules/lifecycle.rs` `pre_think`, `stunt/mod.rs` `pre_think` |
 | `ServerRules` | `motion_blur()` | `true` | `stunt/mod.rs` `maybe_blur`, `stunt/moves.rs` `go_bullet_time`, `rules/powerup.rs` `use_powerup`/`run_powerup`, `rules/lifecycle.rs` `killed`, `weapons/melee.rs` |
-| `ServerRules` | `sound_pitch(pitch, time_scale, s)` | `entities::stock::explode::slow_pitch` | `entities/stock/explode.rs` `emit_sound_slow` |
-| `ServerRules` | `stunts()` | `stunt::rules::CORE` (`StuntRules`: recoveries 0.5625/0.375/0.75/0.2625/0.75, get-up keys 0x4006, wall dive, glide climb, ..., and `CTSAnimation`'s priority rules, torso choices, melee leg speed and timer model) | `stunt/moves.rs`, `stunt/anim.rs` |
-| `ServerRules` | `stunt_clock()` | `stunt::rules::RELATIVE` (`StuntClock`: seconds left, counted down in the player's time) | `stunt/mod.rs`, `stunt/moves.rs`, `weapons/host.rs` (every stunt timer write and test) |
-| `ServerRules` | `can_dive(p, armor, dive)` | `stunt::rules::can_dive` (used < 42/52/62, The One bypasses) | `stunt/moves.rs` `can` |
+| `ServerRules` | `sound_pitch(pitch, time_scale, s)` | `ts30_server::powerup::slow_pitch` | `entities/stock/explode.rs` `emit_sound_slow` |
+| `ServerRules` | `stunts()` | `ts30_server::stunt::STUNTS` (`StuntRules`: recoveries 0.5625/0.375/0.75/0.2625/0.75, get-up keys 0x4006, wall dive, glide climb, ..., and `CTSAnimation`'s priority rules, torso choices, melee leg speed and timer model) | `stunt/moves.rs`, `stunt/anim.rs` |
+| `ServerRules` | `stunt_clock()` | `ts30_server::stunt::RELATIVE` (`StuntClock`: seconds left, counted down in the player's time) | `stunt/mod.rs`, `stunt/moves.rs`, `weapons/host.rs` (every stunt timer write and test) |
+| `ServerRules` | `can_dive(p, armor, dive)` | `ts30_server::stunt::can_dive` (used < 42/52/62, The One bypasses) | `stunt/moves.rs` `can` |
 | `ServerRules` | `bullet_time_allowed(time_scale)` | `max(fuser1, 0.01) <= 0.99` | `stunt/moves.rs` `go_bullet_time` |
 | `ClientRules` | `map_effects()` | true | `effects.rs` `frame` (emitters) and `fog_begin` (map fog), asked each frame |
 | `ClientRules` | `ruleset_name()` | `"TS 3.0"` | `menus::draw_buy_menu` (§4.3) |
@@ -414,26 +414,26 @@ The hooks so far:
 | `ClientRules` | `close_combat_blocks()` / `blade_hit_particles(..)` / `reload_event_phases()` | true / false (scintille + sparks) / true | `events/misc.rs` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11; the look: text through `titles.txt` (`text: None`), item rows red by money or slots, six category mouse rows, no "hole" message | `menus/buy.rs`, `menus/mod.rs` |
-| `ServerRules` | `bullet_trace(start, end, shooter)` | `weapons::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |
+| `ServerRules` | `bullet_trace(start, end, shooter)` | `ts30_server::damage::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |
 | `ServerRules` | `bullet_damage(ammo, weapon, damage, falloff, simulated)` | `falloff × damage` | `shoot_bullets`, `bullets.rs` `update` (first hit) |
 | `ServerRules` | `bullet_range_index(scaled)` | truncated (`Ext::trunc_i32`); `scaled` is the unrounded `dist / (unit·10)·10` as an exact `Ext` (`fire::range_scaled`), issue #80 | the same three |
 | `ServerRules` | `bullet_damage_multiplier(acc, cheat)` | `cheat` (`damagemult` with `sv_cheats`) or 1; `acc` unused | `shoot_bullets` (per hit, `acc` per call), `bullets.rs` `update` |
 | `ServerRules` | `pierce_step(left)` | `min(2·left, 48)` | `shoot_bullets` |
 | `ServerRules` | `weapon_realbullet(realbullet)` | `realbullet` | `shoot_bullets`, `bullets.rs` `think` |
 | `ServerRules` | `bullet_velocity_mult(arith, slowmul, bullet_time) -> Ext` | `spread::bullet_velocity_mult`: the value as `arith`'s build holds it (mp.dll's stored `float`, `ts_i386.so`'s unrounded quotient) | `bullets.rs` `update` |
-| `ServerRules` | `player_hit(&PlayerHit) -> HitDamage` | `player::damage::hit_damage` (stunt and dodge ×0.7, head ×2 / ×1.5 shotgun, legs ×0.5) | `player/damage.rs` `trace_attack` |
-| `ServerRules` | `armor_damage(armor, amount, hitgroup, bits)` | `player::damage::after_kevlar` (absorb `armor_absorb`, armour kept) | `player/damage.rs` `take_damage` |
+| `ServerRules` | `player_hit(&PlayerHit) -> HitDamage` | `ts30_server::damage::hit_damage` (stunt and dodge ×0.7, head ×2 / ×1.5 shotgun, legs ×0.5) | `player/damage.rs` `trace_attack` |
+| `ServerRules` | `armor_damage(armor, amount, hitgroup, bits)` | `ts30_server::damage::after_kevlar` (absorb `armor_absorb`, armour kept) | `player/damage.rs` `take_damage` |
 | `ServerRules` | `damage_punch()` | 0 | `player/damage.rs` `take_damage` |
-| `ServerRules` | `melee_block(kind, attacker, victim, damage, atk_block)` | `weapons::melee::hold` (3.0's victim holds) | `weapons/melee.rs` `trace_attack`, `pending_hit` (the attacker lent to its slot) |
-| `ServerRules` | `jump_kick_hit(p, cx, strength)` | `stunt::moves::jump_kick_hit_core` (`m_flNextAttack` 0.35 if run out, `UpdateMeleeBar(strength × 1.5)`) | `stunt/moves.rs` `close_attack` |
-| `ServerRules` | `backflip_kick(p, cx)` | `stunt::moves::backflip_kick_core` (22.5 power, a delayed 15/30 for 0.3 s) | `stunt/moves.rs` `go_wheel` backward |
+| `ServerRules` | `melee_block(kind, attacker, victim, damage, atk_block)` | `ts30_server::melee::hold` (3.0's victim holds) | `weapons/melee.rs` `trace_attack`, `pending_hit` (the attacker lent to its slot) |
+| `ServerRules` | `jump_kick_hit(p, cx, strength)` | `ts30_server::melee::jump_kick_hit` (`m_flNextAttack` 0.35 if run out, `UpdateMeleeBar(strength × 1.5)`) | `stunt/moves.rs` `close_attack` |
+| `ServerRules` | `backflip_kick(p, cx)` | `ts30_server::melee::backflip_kick` (22.5 power, a delayed 15/30 for 0.3 s) | `stunt/moves.rs` `go_wheel` backward |
 | `ServerRules` | `melee_disarm(damage, victim_is_the_one)` | `Some(damage)` (the disarm count) | `weapons/melee.rs` `trace_attack`, `pending_hit` |
 | `ServerRules` | `zero_delayed_hit_reaches_player()` | `false` (a spent delayed hit goes straight to its 0-damage `TraceAttack`, 0x8c1f1) | `weapons/melee.rs` `pending_hit` |
 | `ServerRules` | `grenade_explosion()` | (110, 300, 1024) | `weapons/projectiles.rs` grenade `think` |
 | `ServerRules` | `explosion_pushes_world_guns()` | true | `entities/stock/explode.rs` `ts_explosion` |
-| `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
-| `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `projectiles::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
-| `ServerRules` | `thrown_blade_damage(btype, from, at)` | `projectiles::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
+| `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `ts30_server::explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
+| `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `ts30_server::explode::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
+| `ServerRules` | `thrown_blade_damage(btype, from, at)` | `ts30_server::explode::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`

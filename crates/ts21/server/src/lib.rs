@@ -315,6 +315,10 @@ impl ServerRules for Ts21Server {
         entities::respawn_entities(true);
     }
 
+    /// Nothing: 2.1's `CTSGameRules::Think` ([`rules`], the `think` hook) does its own entity
+    /// upkeep (`RespawnEntities(false)` every 60 s).
+    fn entities_think(&self, _now: f32) {}
+
     fn map_globals(&self, e: *mut edict_t, spawnflags: i32) -> Option<MapFlags> {
         entities::map_globals(e, spawnflags)
     }
@@ -560,7 +564,7 @@ mod tests {
         let core: &dyn ServerRules = &ts30_server::Ts30Server;
         let v21: &dyn ServerRules = &Ts21Server;
         assert!(core.break_debris_from_hit() && !v21.break_debris_from_hit());
-        assert_eq!(core.objectives(), &ts_server::entities::ts::objective::CORE);
+        assert_eq!(core.objectives(), &ts30_server::entities::OBJECTIVES);
         assert_eq!(v21.objectives(), &rules::OBJECTIVES);
         assert_eq!(v21.anim_framerate(0.05), 0.0, "frozen below a tenth");
         assert_eq!(core.anim_framerate(0.05), 0.05);

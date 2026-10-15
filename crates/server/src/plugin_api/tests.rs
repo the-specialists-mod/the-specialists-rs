@@ -248,10 +248,11 @@ fn plugin_speed_floors_and_ends() {
 
 #[test]
 fn physics_speed_replaces_the_tsslowmo_amount() {
+    let rules = crate::gameplay::TEST_POWERUPS;
     let mut p = Player { active_powerup: pw::SLOWMO, ..Player::default() };
-    assert_eq!(powerup::hud_slow_amount(&p, &powerup::CORE), 0.35);
+    assert_eq!(powerup::hud_slow_amount(&p, &rules), 0.35);
     p.ts.physics_speed = Some(0.01);
-    assert_eq!(powerup::hud_slow_amount(&p, &powerup::CORE), 0.01);
+    assert_eq!(powerup::hud_slow_amount(&p, &rules), 0.01);
 }
 
 #[test]

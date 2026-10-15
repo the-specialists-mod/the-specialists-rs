@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(anim_framerate(0.099), 0.0);
         assert_eq!(anim_framerate(f32::NAN), 0.0);
     }
-    use ts_server::stunt::rules::{CORE, RELATIVE};
+    use ts30_server::stunt::{RELATIVE, STUNTS as CORE};
 
     #[test]
     fn slot_limits() {
@@ -253,7 +253,7 @@ mod tests {
         let mut p = Player { slots_used: 60, ..Player::default() };
         p.ts.is_the_one = true;
         assert!(!can_dive_in(p.slots_used, 0.0, true, Dive::High));
-        assert!(ts_server::stunt::rules::can_dive(&p, Dive::High), "3.0's does");
+        assert!(ts30_server::stunt::can_dive(&p, Dive::High), "3.0's does");
     }
 
     #[test]

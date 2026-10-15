@@ -8,7 +8,7 @@
 //! and an enabled bomb, hack or escape zone runs. Their timers read the round's end, which is 0
 //! outside a round, so in deathmatch or teamplay a bomb's countdown starts below zero and it
 //! explodes on its next think, and a hack freezes on its next think. A ruleset changes the details
-//! through [`ObjectiveRules`] (`ServerRules::objectives`); every default here is TS 3.0's.
+//! through [`ObjectiveRules`] (`ServerRules::objectives`).
 
 use super::ctb::WinGiver;
 use crate::entities::stock::base::{alloc, kv_i};
@@ -55,17 +55,6 @@ pub struct ObjectiveRules {
     /// `SetObjective` clears the list outside the round modes too (3.0's LMS restart and `Init`).
     pub clear_list_outside_rounds: bool,
 }
-
-/// TS 3.0's objective rules.
-pub const CORE: ObjectiveRules = ObjectiveRules {
-    hud_effect: 8,
-    team_names: None,
-    indexed_list: true,
-    pointer_enables_givers: true,
-    wire_hud: true,
-    nan_time_runs_out: true,
-    clear_list_outside_rounds: true,
-};
 
 fn rules() -> &'static ObjectiveRules {
     crate::gameplay::active().server.objectives()
@@ -1153,20 +1142,6 @@ pub fn has_manager() -> bool {
     !state::with(|g| g.objectives.manager).is_null()
 }
 
-/// `CTSGameRules::RoundTimeLeft` (0x79024), TS 3.0's
-/// ([`ServerRules::round_time_left`](crate::gameplay::ServerRules::round_time_left)): while a round
-/// runs with its timer, the manager's `targetontimeleft`, else a draw (`TeamWin(2, 0, restart)`).
-/// The bomb calls it when it explodes.
-pub fn round_time_left_core(_now: f32) {
-    let (end, timer) = state::with(|g| (g.round_end, g.round_timer));
-    if end == 0.0 || !timer {
-        return;
-    }
-    if !fire_manager_target(ManagerTarget::TimeLeft) {
-        super::ctb::team_win(2, 0, true, false);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1278,13 +1253,5 @@ mod tests {
         assert_eq!(scan_i("08"), Some(0), "octal stops at the 8");
         assert_eq!(scan_i("x"), None);
         assert_eq!(scan_i(""), None);
-    }
-
-    #[test]
-    fn core_rules_are_3_0() {
-        let c = CORE;
-        assert_eq!(c.hud_effect, 8);
-        assert!(c.team_names.is_none() && c.indexed_list && c.pointer_enables_givers && c.wire_hud);
-        assert!(c.nan_time_runs_out && c.clear_list_outside_rounds);
     }
 }

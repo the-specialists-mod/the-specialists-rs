@@ -808,12 +808,6 @@ pub struct GiverWin {
     pub defeat_cash: i32,
 }
 
-/// TS 3.0's giver `TeamWin`: `TeamWin(winnerteam, (int)value, restart, isScore)`; the giver's cash
-/// keys are unused.
-pub fn giver_team_win_core(w: &GiverWin) {
-    team_win(w.team, super::c_int(f64::from(w.value)), w.restart, w.is_score);
-}
-
 /// A win or score giver hasn't fired yet (its latch, reset by `EnableObjective`); `None` for
 /// anything else.
 pub fn giver_active(e: *mut edict_t) -> Option<bool> {
@@ -846,7 +840,7 @@ fn team_win_cash(winner: i32, player_team: i32, cash: i32) -> (i32, bool) {
 /// players.". Otherwise each `UTIL_PlayerByIndex` + `IsPlayer()` player gets its cash and
 /// `TSHVoice`, then `team` 2 is a draw, any other team scores ("%s Win!" / "%s Score!") and the
 /// log line. `TeamScore` only in round modes 2/3.
-pub(crate) fn team_win(team: i32, cash: i32, restart: bool, is_score: bool) {
+pub fn team_win(team: i32, cash: i32, restart: bool, is_score: bool) {
     let eng = engine();
     let now = eng.time();
     let (timer, end, mode) = state::with(|g| (g.round_timer, g.round_end, g.mode));

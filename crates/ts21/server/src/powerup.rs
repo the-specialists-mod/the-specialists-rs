@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(r.slowpause, (0.6, 0.15, true));
         assert_eq!((r.hud_slowmo, r.hud_slowpause), (0.35, 0.15));
         // The 3.0 values are untouched.
-        assert_eq!(ts_server::rules::powerup::CORE.slowpause, (0.8, 0.225, true));
+        assert_eq!(ts30_server::powerup::POWERUPS.slowpause, (0.8, 0.225, true));
     }
 
     /// The draw covers all nine types, armour (index 7) included.
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(plan(pw::ARMOR, pw::SLOWMO, 5, pw::SLOWMO, true), Some(pw::SLOWMO));
         assert_eq!(plan(pw::HEALTH, pw::DOUBLE_FIRERATE, 5, 0, false), Some(0));
         // ... and 3.0 doesn't.
-        let core = &ts_server::rules::powerup::CORE;
+        let core = &ts30_server::powerup::POWERUPS;
         assert_eq!(pickup_plan(core, pw::HEALTH, pw::DOUBLE_FIRERATE, 5, 0, true), Some(0));
     }
 }

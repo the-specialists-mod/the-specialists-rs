@@ -204,15 +204,6 @@ pub struct Grenade {
     funcs: BaseFuncs,
 }
 
-/// One fuse think: `elapsed = GiveSlowMul() * 0.1f + elapsed`, rounded once (`ts_i386.so`
-/// 0x7cbbb..0x7cbca, mp.dll 0x10051096..0x100510a5; issue #150).
-pub fn fuse_step(arith: Arith, elapsed: f32, slow: f32) -> f32 {
-    fn go<F: Fpu>(elapsed: f32, slow: f32) -> f32 {
-        (F::x(slow) * F::x(0.1) + F::x(elapsed)).f()
-    }
-    shared::by_arith!(arith, go(elapsed, slow))
-}
-
 /// `CM61Grenade::CreateGrenade(player, 3.0, origin, velocity)`, plus the throw/roll spin.
 /// `time_scale` comes from [`thrower_time_scale`].
 pub fn create_grenade(owner: *mut edict_t, origin: Vec3, velocity: Vec3, roll: bool, time_scale: f32) {
@@ -571,12 +562,6 @@ pub struct Knife {
     funcs: BaseFuncs,
 }
 
-/// The speed of a thrown blade: `KnifeFire` throws knives at 1900 u/s (objdump 0x7465b /
-/// 0x746a7), `KatanaThrow` the katana at 1000 u/s (0x73dc1, the float at 0xf7f64).
-fn throw_speed(btype: i32) -> f32 {
-    if btype == 8 { 1000.0 } else { 1900.0 }
-}
-
 /// What a ruleset decides about a thrown blade
 /// ([`ServerRules::thrown_blade`](crate::gameplay::ServerRules::thrown_blade)).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -589,27 +574,6 @@ pub struct ThrownBlade {
     pub bits: i32,
 }
 
-/// TS 3.0's thrown blades: [`throw_speed`]; gravity 0.85 katana, 0.75 combat knife, 0.3 seal
-/// knife (`CTSKnife::Spawn` 0x7db54); bits `0x08001000` (thrown: the ×2 headshot).
-pub fn thrown_blade(btype: i32) -> ThrownBlade {
-    let gravity = match btype {
-        8 => 0.85,
-        6 => 0.75,
-        _ => 0.3,
-    };
-    ThrownBlade { speed: throw_speed(btype), gravity, bits: 0x0800_1000 }
-}
-
-/// TS 3.0's thrown-blade damage (`CTSKnife::BounceTouch` 0x7decc): 150 katana, 100 combat
-/// knife, 50 seal knife, however far it flew.
-pub fn thrown_blade_damage(btype: i32) -> f32 {
-    match btype {
-        8 => 150.0,
-        6 => 100.0,
-        _ => 50.0,
-    }
-}
-
 fn blade_dir(velocity: Vec3) -> Vec3 {
     fn go<F: Fpu>(v: Vec3) -> Vec3 {
         F::vec_normalize(v, ORDER_XYZ)
@@ -618,7 +582,7 @@ fn blade_dir(velocity: Vec3) -> Vec3 {
 }
 
 /// `KnifeFire`/`KatanaThrow` throw: from the eyes + 32 forward + 1 right (traced), at
-/// [`throw_speed`]. `time_scale` comes from [`thrower_time_scale`].
+/// the ruleset's speed ([`ThrownBlade::speed`]). `time_scale` comes from [`thrower_time_scale`].
 pub fn throw_blade(owner: *mut edict_t, btype: i32, time_scale: f32) {
     let e = engine();
     let v = owner.v();
@@ -1042,13 +1006,6 @@ mod tests {
     }
 
     #[test]
-    fn katana_is_thrown_slower_than_knives() {
-        assert_eq!(throw_speed(6), 1900.0);
-        assert_eq!(throw_speed(7), 1900.0);
-        assert_eq!(throw_speed(8), 1000.0);
-    }
-
-    #[test]
     fn grenade_explodes_only_in_the_world_box() {
         let at = |origin: Vec3, velocity: Vec3| is_in_world(&entvars_t { origin, velocity, ..Default::default() });
         assert!(at([4095.9, -4095.9, 0.0], [1999.9, -1999.9, 0.0]));
@@ -1233,15 +1190,6 @@ mod precision_tests {
         for arith in [Arith::Gcc, Arith::Msvc] {
             assert!(flying_impact(arith, [64.0, 0.0, 0.0]).is_none());
             assert!(flying_impact(arith, [f32::NAN, 0.0, 0.0]).is_none());
-        }
-    }
-
-    /// The fuse step rounds once (issue #150); `elapsed + 0.1 * slow` in `float`s gave 0x3fa64a5a.
-    #[test]
-    fn fuse_step_rounds_once() {
-        let (e, s) = (f32::from_bits(0x3f9d_1368), f32::from_bits(0x3f38_4af2));
-        for arith in [Arith::Gcc, Arith::Msvc] {
-            assert_eq!(fuse_step(arith, e, s).to_bits(), 0x3fa6_4a5b);
         }
     }
 

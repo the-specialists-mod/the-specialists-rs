@@ -8,7 +8,7 @@ use super::net;
 use crate::damage::{self, DamageInfo};
 use crate::messages::{self, Msg};
 use crate::player::Player;
-use crate::world::{self, Cx};
+use crate::world::Cx;
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
@@ -80,78 +80,6 @@ pub fn check_hull(start: Vec3, end: Vec3, hull: i32, skip: *mut edict_t) -> Trac
 
 fn alive(e: *mut edict_t) -> bool {
     crate::ham::is_alive(e)
-}
-
-/// Applies a block by the victim. Returns what the attacker gets, or `None` if not blocked.
-/// Victim-side effects (its next attack, its bar) are applied here.
-/// `atk_block` is the attacker's own kung-fu block window (the attacker is the player being
-/// dispatched, so the caller passes it; victims are other players, reachable with world::with).
-pub fn hold(kind: MeleeKind, attacker: *mut edict_t, victim: *mut edict_t, atk_block: f32) -> Option<MeleeResult> {
-    if !crate::rules::has_player(victim) {
-        return None;
-    }
-    let r = world::with::<Player, _>(victim, |v| {
-        let g = &mut v.inv.gun;
-        match kind {
-            MeleeKind::KungFu | MeleeKind::ColdCock => {
-                if g.melee_bar < 0.1 {
-                    return None;
-                }
-                if g.block_kungfu > 0.0 {
-                    // the victim blocks: attacker 0.5 s lockout and -33 power, victim 0.25 s
-                    g.melee_damage = 0.0;
-                    g.next_attack = 0.25;
-                    Some((MeleeResult::Blocked { next_attack: 0.5, bar_cost: 33.0 }, None))
-                } else if atk_block > 0.0 && g.melee_source == 0 && g.melee_window > 0.0 {
-                    // the attacker was blocking while the victim was mid-attack: the victim gets
-                    // 0.5 s, then `UpdateMeleeBar(33)` (an emptied bar makes that 1.5 s)
-                    g.melee_damage = 0.0;
-                    g.next_attack = 0.5;
-                    g.charge_melee_bar(33.0);
-                    let bar = g.melee_bar;
-                    Some((MeleeResult::Blocked { next_attack: 0.25, bar_cost: 0.0 }, Some(bar)))
-                } else {
-                    None
-                }
-            }
-            MeleeKind::Knife => {
-                if g.block_knife > 0.0 || (g.block_katana > 0.0 && g.melee_bar > 0.1) {
-                    g.next_attack = 0.25;
-                    Some((MeleeResult::Blocked { next_attack: 0.5, bar_cost: 33.0 }, None))
-                } else {
-                    None
-                }
-            }
-            MeleeKind::Katana => {
-                if g.block_katana > 0.0 && g.melee_bar > 0.1 {
-                    g.next_attack = 0.35;
-                    Some((MeleeResult::Blocked { next_attack: 0.75, bar_cost: 33.0 }, None))
-                } else {
-                    None
-                }
-            }
-        }
-    })
-    .flatten()?;
-    let (result, victim_bar) = r;
-    if let Some(bar) = victim_bar {
-        net::send_kfu_power(victim, bar);
-    }
-    match kind {
-        MeleeKind::KungFu | MeleeKind::ColdCock => {
-            let who = if victim_bar.is_some() { victim } else { attacker };
-            slow_emit(who, c"player/kungfuhit.wav", 100);
-        }
-        MeleeKind::Knife | MeleeKind::Katana => {
-            let a = attacker.v();
-            let v = victim.v();
-            let mut mid = spread::scale(spread::add(a.origin, v.origin), 0.5);
-            mid[2] += 20.0;
-            sparks(mid);
-            slow_emit(attacker, c"weapons/knife/knife_hit.wav", 100);
-        }
-    }
-    Some(result)
 }
 
 /// `UTIL_Sparks` (TE_SPARKS).
@@ -452,7 +380,6 @@ mod tests {
         assert!(!delayed_player_part(true, 0.0, false), "3.0: straight to the 0-damage hit");
         assert!(delayed_player_part(true, 0.0, true));
         assert!(!delayed_player_part(false, 15.0, true), "not a player");
-        assert!(!crate::gameplay::DEFAULTS.server.zero_delayed_hit_reaches_player());
     }
 
     #[test]
