@@ -33,8 +33,7 @@ fn random_frame(ps: &PSys, sprite: i16) -> f32 {
 }
 
 /// The particle builders' parameters a ruleset can change
-/// ([`ClientRules::fx_style`](crate::gameplay::ClientRules::fx_style)); [`FxStyle::TS30`] is TS
-/// 3.0's.
+/// ([`ClientRules::fx_style`](crate::gameplay::ClientRules::fx_style)), each ruleset's own.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FxStyle {
     /// The first muzzle-flash sprite's colour (each later one ÷1.1).
@@ -72,28 +71,6 @@ pub struct FxStyle {
     pub debris_fade_any_mode: bool,
     /// Sprite debris counts are scaled by the quality's particle multiplier (at most 1).
     pub debris_count_by_quality: bool,
-}
-
-impl FxStyle {
-    pub const TS30: FxStyle = FxStyle {
-        flash_color: 0.9,
-        flash_fade: 0.2,
-        flash_scale_speed: 0.2,
-        third_person_flash: 1.3,
-        muzzle_blast: true,
-        muzzle_spark: false,
-        silenced_count: 0.7,
-        silenced_color: 0.000_585_937_5,
-        silenced_fade: None,
-        silenced_spin: 0,
-        smoke_gravity: 0.01,
-        smoke_puffs_by_cl_fx: false,
-        drag: 3.3,
-        stretch: true,
-        debris_react: 0.3,
-        debris_fade_any_mode: false,
-        debris_count_by_quality: true,
-    };
 }
 
 /// The active ruleset's builder parameters.

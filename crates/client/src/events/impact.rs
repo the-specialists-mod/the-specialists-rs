@@ -58,9 +58,6 @@ const CEMENT: [&str; 7] = [
     "debris/cement6.wav",
 ];
 
-/// Attenuation of the material sound (`0x10045034`, `0x3f7851ec`).
-pub(crate) const MATERIAL_ATTN: f32 = 0.97;
-
 /// `debris/ric1..5.wav`, picked by the ricochet roll itself: `roll % 5` (`0x10044d2e`).
 fn ricochet_sound(roll: i32) -> String {
     format!("debris/ric{}.wav", roll % 5 + 1)

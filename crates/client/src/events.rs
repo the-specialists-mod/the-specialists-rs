@@ -18,7 +18,10 @@ use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
 use std::ffi::CStr;
 
-pub use fire::{BulletDraw, BulletFrame, BulletModel, BulletModels, BulletStep, ClientBullet, ClientBullets, client_bullets_frame, ftol};
+pub use fire::{
+    BulletDraw, BulletFrame, BulletModel, BulletModels, BulletStep, ClientBullet, ClientBullets, bullet_velocity_mult,
+    client_bullets_frame, ftol, range_index,
+};
 pub use impact::AMMO_ATTENUATION;
 
 /// An event script name and its handler.

@@ -1176,8 +1176,8 @@ mod tests {
         assert_eq!((h.pw_expire, h.pw_value), (22.0, 0));
     }
 
-    /// TS 3.0's `MsgFunc_WeaponInfo` leaves the slot menu's selection on kung fu (2.1's resets
-    /// it, `ClientRules::kungfu_weapon_info_resets_menu_selection`).
+    /// `MsgFunc_WeaponInfo` leaves the slot menu's selection on kung fu unless the ruleset resets
+    /// it (`ClientRules::kungfu_weapon_info_resets_menu_selection`).
     #[test]
     fn kungfu_weapon_info_keeps_menu_selection() {
         let s = Screen::default();

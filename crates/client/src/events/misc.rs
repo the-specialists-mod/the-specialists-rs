@@ -421,19 +421,4 @@ mod tests {
         assert!(hard(b'C') && hard(b'S') && hard(b'M') && hard(b'X'));
         assert_eq!((katana_variant(1), katana_variant(0)), ("", "1"));
     }
-
-    /// TS 3.0's reaches (`0x10043427..0x100434ab`: -55.0 at `0x1007d6fc`, 45 at `0x1007a900`,
-    /// 35 at `0x1007a8d8`; coldcock 30 at `0x10043b69`).
-    #[test]
-    fn melee_reach_by_event() {
-        let core = crate::gameplay::DEFAULTS.client;
-        assert_eq!(core.melee_reach(MeleeReach::CloseCombat(1)), 35.0); // punch
-        assert_eq!(core.melee_reach(MeleeReach::CloseCombat(2)), 45.0); // kick
-        assert_eq!(core.melee_reach(MeleeReach::CloseCombat(3)), -55.0); // back kick: behind the player
-        assert_eq!(core.melee_reach(MeleeReach::Coldcock(3)), 30.0);
-        assert_eq!(core.melee_reach(MeleeReach::Knife), 35.0);
-        assert_eq!(core.melee_reach(MeleeReach::Katana(15)), -55.0);
-        assert_eq!(core.melee_reach(MeleeReach::Katana(16)), 50.0);
-        assert!(core.close_combat_blocks() && core.reload_event_phases() && core.bullet_whizz_and_push());
-    }
 }

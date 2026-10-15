@@ -332,8 +332,8 @@ fn view_bob() {
     assert_eq!(c.eye, None);
     assert!(c.phase != 3.5 && c.pitch != 0.0, "{c:?}");
     let mut d = ts_client::view::Bob::default();
-    d.calc(&bob_input(1.0, 200.0, 0.0));
-    assert_eq!(c, d, "the core plugin runs Bob::calc");
+    ts30_client::view::bob(&mut d, &bob_input(1.0, 200.0, 0.0));
+    assert_eq!(c, d, "the 3.0 plugin runs its bob");
 }
 
 /// 2.1's client bullets (issue #165): `40 × v × s` with the raw factor (÷5 in bullet time), one
@@ -428,16 +428,16 @@ fn client_bullet_looks() {
 #[test]
 fn weapon_events() {
     use crate::events::*;
-    use ts_client::effects::fx::FxStyle;
     use ts_client::gameplay::MeleeReach as M;
-    assert_eq!(v30().fx_style(), &FxStyle::TS30);
+    let fx30 = &ts30_client::fx::FX;
+    assert_eq!(v30().fx_style(), fx30);
     let fx = v21().fx_style();
     assert_eq!((fx.flash_color, fx.flash_fade, fx.flash_scale_speed, fx.third_person_flash), (1.0, 0.15, 0.1, 1.0));
-    assert!(!fx.muzzle_blast && fx.muzzle_spark && FxStyle::TS30.muzzle_blast && !FxStyle::TS30.muzzle_spark);
+    assert!(!fx.muzzle_blast && fx.muzzle_spark && fx30.muzzle_blast && !fx30.muzzle_spark);
     assert_eq!((fx.silenced_count, fx.silenced_color, fx.silenced_fade, fx.silenced_spin), (1.0, 1.0 / 640.0, Some(0.13), 60));
-    assert_eq!((FxStyle::TS30.silenced_count, FxStyle::TS30.silenced_color), (0.7, 0.3 / 512.0));
+    assert_eq!((fx30.silenced_count, fx30.silenced_color), (0.7, 0.3 / 512.0));
     assert_eq!((fx.smoke_gravity, fx.drag, fx.debris_react), (0.1, 0.0, 0.0));
-    assert_eq!((FxStyle::TS30.smoke_gravity, FxStyle::TS30.drag, FxStyle::TS30.debris_react), (0.01, 3.3, 0.3));
+    assert_eq!((fx30.smoke_gravity, fx30.drag, fx30.debris_react), (0.01, 3.3, 0.3));
     assert!(fx.smoke_puffs_by_cl_fx && !fx.stretch && fx.debris_fade_any_mode && !fx.debris_count_by_quality);
 
     // Reaches: close combat -56/48/38, the coldcock by its weapon id the same way, knife 38,
