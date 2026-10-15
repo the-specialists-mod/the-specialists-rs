@@ -661,7 +661,8 @@ fn script_start(map: &str) -> String {
 /// `0x1004cb50` re-runs the menu's `Init` `0x10036200`). Under Wine the compositor resizes the
 /// FWGS window a second or two after the join, so the keys sometimes went to a closed menu and the
 /// host spawned with nothing (issue #102). The second pass submits the same loadout again, so a
-/// resize at any one point no longer loses the purchase.
+/// resize at any one point no longer loses the purchase. A menu reopened after a resize starts
+/// from a new random loadout (issue #189), which each pass's first key (4, Reset) discards.
 fn script_join_and_spawn() -> String {
     let mut cfg = secs(8.0) + &shot("joined");
     for _ in 0..2 {

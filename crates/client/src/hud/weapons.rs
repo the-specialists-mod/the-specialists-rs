@@ -164,6 +164,14 @@ pub fn select_next_prev(h: &mut Hud, next: bool, fastswitch: bool) -> Option<Str
 static HEART: goldsrc::Global<Cell<(i32, f32)>> = goldsrc::Global(Cell::new((0, 0.0)));
 static BREATH: goldsrc::Global<Cell<(i32, f32)>> = goldsrc::Global(Cell::new((0, 0.0)));
 
+/// `CHudTSWeapons::VidInit` (`0x1004cb50`) zeroes both sounds' state and volume
+/// (`+0x3708..+0x3714`), so a sound playing or fading is no longer updated, and the next cause
+/// starts it afresh.
+pub fn reset_think_sounds() {
+    HEART.0.set((0, 0.0));
+    BREATH.0.set((0, 0.0));
+}
+
 /// `Think` (1004ce10) sound part (`0x1004cf8b..`): `sound/player/heartbeat1.wav` (channel 501)
 /// while the time scale is below 1, `sound/player/breathe2.wav` (502, volume 0.7) while kung-fu
 /// power is below 50. Starting (or restarting while fading) plays it, with `SND_CHANGE_VOL` when

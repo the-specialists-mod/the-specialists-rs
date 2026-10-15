@@ -105,20 +105,27 @@ pub fn init() {
     // `Scheme_Init` (1005c2a0), right after CHud::Init: the scheme manager (`hud::vgui`) picks
     // bitmap fonts by it.
     Cvar::register(c"bitmapfonts", c"1", 0);
-    // `FUN_10036480`: <gamedir>/tsbuylist.tsa (nine saved configs), created if missing.
-    let path = format!("{}/tsbuylist.tsa", engine().game_directory());
-    let saved = std::fs::read(&path).map(|b| buy::parse_buylist(&b)).unwrap_or_default();
-    with(|m| {
-        m.buy = BuyMenu { saved, ..BuyMenu::default() };
-        m.path = path;
-    });
 }
 
-/// The viewport's `ReInitialize` (`0x10060aa0`, every `VidInit`): menus hidden, the team menu's
-/// map name and the scoreboard's data reset, the scoreboard hidden.
+/// `FUN_10036480`: the nine saved configs from `path` (`<gamedir>/tsbuylist.tsa`). When it can't
+/// be opened for reading, it is created empty (`"wb"`); when that fails too, the path is
+/// forgotten (`+0x2c6c` = ""), so nothing is saved until the next `Init`.
+fn read_buylist(path: &str) -> ([buy::Config; buy::SAVED_CONFIGS], String) {
+    match std::fs::read(path) {
+        Ok(bytes) => (buy::parse_buylist(&bytes), path.to_owned()),
+        Err(_) => (Default::default(), if std::fs::File::create(path).is_ok() { path.to_owned() } else { String::new() }),
+    }
+}
+
+/// `HUD_VidInit`'s part here: `CHudTSWeapons::VidInit` (`0x1004cb50`) re-runs the buy menu's
+/// `Init` (`0x10036200`, [`BuyMenu::new`]), which re-reads `tsbuylist.tsa` and forgets the
+/// current and last configs. Then the viewport's `ReInitialize` (`0x10060aa0`): menus hidden,
+/// the team menu's map name and the scoreboard's data reset, the scoreboard hidden.
 pub fn vid_init(_first: bool) {
+    let (saved, path) = read_buylist(&format!("{}/tsbuylist.tsa", engine().game_directory()));
     with(|m| {
-        m.buy.close();
+        m.buy = BuyMenu::new(saved);
+        m.path = path;
         m.queue.clear();
         if let Some(t) = &mut m.team {
             t.initialize();
@@ -134,6 +141,10 @@ pub fn vid_init(_first: bool) {
 /// symlinked content file (xtask installs) is replaced rather than written through.
 fn save_file() {
     let (path, bytes) = with(|m| (m.path.clone(), buy::write_buylist(&m.buy.saved)));
+    // `Init` couldn't open the file, so TS's `fopen("")` fails too.
+    if path.is_empty() {
+        return;
+    }
     let tmp = format!("{path}.tmp");
     if std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &path)).is_err() {
         engine().print(&format!("[ts] couldn't write {path}\n"));
@@ -1066,6 +1077,32 @@ pub fn redraw(time: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `FUN_10036480`: a missing `tsbuylist.tsa` is created empty, an existing one is read, and
+    /// when it can't be created either the path is dropped so nothing is saved.
+    #[test]
+    fn read_buylist_reads_creates_or_forgets() {
+        let dir = std::env::temp_dir().join(format!("ts-buylist-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tsbuylist.tsa");
+        let path_s = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let (saved, p) = read_buylist(path_s);
+        assert_eq!(p, path_s);
+        assert!(saved.iter().all(|c| *c == buy::Config::default()));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "created empty (\"wb\")");
+
+        let mut configs: [buy::Config; buy::SAVED_CONFIGS] = Default::default();
+        configs[4].total = 4200;
+        std::fs::write(&path, buy::write_buylist(&configs)).unwrap();
+        assert_eq!(read_buylist(path_s), (configs, path_s.to_owned()));
+
+        let missing = dir.join("no-such-dir").join("tsbuylist.tsa");
+        let (saved, p) = read_buylist(missing.to_str().unwrap());
+        assert_eq!(p, "", "neither \"rb\" nor \"wb\" opened it");
+        assert!(saved.iter().all(|c| *c == buy::Config::default()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn version_lines_name_the_ruleset_and_both_libraries() {

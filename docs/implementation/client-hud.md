@@ -48,6 +48,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `CHudTSStatus::Draw` 10049ea0 and `DrawRoundTimer` 1004a130, `DrawPowerup` 1004a2e0, `DrawStatusPanel` 1004a3e0, `DrawTeammateMarkers` 1004ab40, `DrawCrosshairID` 1004acc0, `DrawTSMessages` 1004af40, the flag panel 1004b0e0, `DrawObjectiveMarkers` 10049fc0 | `hud::status::*` |
 | `CHudTSWeapons` handlers 1004f6f0..1004fb50 | `Hud::apply` (weapon arms) |
 | `CHudTSWeapons::Reset` 1004cd60, `Think` 1004ce10 | `Hud::reset_weapons`; `hud::think`, `weapons::think_sounds`, `hud::weapon_menu_buttons` |
+| `CHudTSWeapons::VidInit` 1004cb50 | `hud::vid_init` → `Hud::vid_init_weapons` (as `Reset`, but the grid stays empty, kung fu included, and fire mode, clip, attachments and reserve ammo are cleared; kung-fu power 100), `weapons::reset_think_sounds` (`+0x3708..+0x3714`), the last key bits (`+0x3724`, `Reset` clears them too), `menus::vid_init` (the buy menu's `Init` 10036200, §6). `CHud::VidInit` (100206c0) runs only the elements' VidInits, so `HideWeapon` and a `ShowMenu` menu survive it (only `CHudAmmo::Reset` / `CHudMenu::Reset` clear them). **Was** (issue #192): `HUD_VidInit` ran every element's `Reset` and kept the panel's fields |
 | `Draw` 1004d3f0, `DrawWirePanel` 1004d550, `DrawKungFuBar` 1004d5f0, `DrawKungFuLabel` 1004d700, `DrawWeaponInfo` 1004d7e0, `DrawWeaponList` 1004e030, `DrawLaserDots` 1004e6f0, `DrawCrosshair` 1004e9f0 + 1004ef50 | `hud::weapons::*`; the enemy/neutral cross is the solid `cross2` only on a hardware renderer (`IsHardware()`, 0x1004ecf3) with `cl_solidcross > 0`, else the additive `cross_e` ×0.75 (issue #153) |
 | `SelectSlot` 1004f220, `SelectNextPrev` 1004f500, `CmdBuy` 1004fda0 | `hud::select_slot` → `weapons::select_slot`; `weapons::select_next_prev`; `hud::cmd_buy` |
 | `DrawHudNumberTS` 1004c290, `DrawHudString` 10021ce0, `DrawHudStringLen` 10021ca0 | `draw::draw_number`/`number_cells` (the top place is `n / 10000` without `% 10`, as TS, so from 100000 on it draws the hud.txt entry that many after `number_0`; an index past the table draws nothing), `text::draw_string`, `text::string_len` |
@@ -417,8 +418,16 @@ Weapon element colours (issue #92; read from the TS binary). Many are `ftol(colo
 * Opens only when dead or observing (`buy`, or automatically on each local `Spectator` message with observer 1); closes
   when alive again (except the team page), from `CHudTSWeapons::Draw` (`0x1004d3f0`), so not
   while `nohud`, `HIDEHUD_ALL` or intermission hides the HUD (it stays open, unseen, with its keys
-  and cursor); first open of the session random-buys like TS, and every random config
-  (`100398e0`, also key 7) becomes the last config, so the next open shows it again.
+  and cursor); the first open after each `HUD_VidInit` random-buys like TS, and every random
+  config (`100398e0`, also key 7) becomes the last config, so the next open shows it again.
+* `CHudTSWeapons::VidInit` (`0x1004cb50`) re-runs the menu's `Init` (`0x10036200`,
+  `BuyMenu::new`): closed, the current and last configs zeroed, the saved ones re-read from
+  `tsbuylist.tsa` (`FUN_10036480`, created empty when it can't be read; if that fails too the
+  path is forgotten and nothing is saved), "new config" and the random first loadout armed again.
+  So after every connect, map change or video-mode change the next open picks a random loadout
+  and the previous map's last config is gone. TS 2.1's VidInit (`0x100894c0`) runs its `Init`
+  (`0x1006aa70`) the same way. **Was** (issue #189): the menu was built once at `HUD_Init` and
+  `VidInit` only closed it, so only a session's first map opened with a random loadout.
 * Drawing (`FUN_1004ff10`): each row is a 127×19 box in the row colour at alpha `50·scale` with the
   text in the row colour × `scale`, the scale 1.0 for the page's own column and 0.5 for the parent
   columns, except the chosen category (`0x1003788c`) and the chosen weapon (`0x10037ad4`), which

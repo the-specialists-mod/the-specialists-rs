@@ -404,6 +404,20 @@ pub trait Rng {
 }
 
 impl BuyMenu {
+    /// `Init` (`0x10036200`), run by every `CHudTSWeapons::VidInit` (`0x1004cb50`, its only
+    /// caller), given the configs `FUN_10036480` read from `tsbuylist.tsa`: closed (`+0`), page,
+    /// category and pending attachments 0 (`+4/+8/+0xc`), no pending weapon (`+0x10` = −1), the
+    /// current, last and saved configs zeroed (`+0x14`, `+0x41c`, `+0x824`) before the file is
+    /// read, "new config" set (`+0x2f08`) and the random first loadout armed again (`+0x2f10`).
+    /// So each connect, map change or video-mode change forgets the last config, and the next
+    /// open picks a random one. The category table (`+0x2d6c`) and names (`+0x2e5c`) it rebuilds
+    /// are [`table`] and [`MenuRules`]; `+0x2f14` is never read and `+0x2f1c` (the mouse's
+    /// pressed bits) is rewritten by every mouse event. `+0x2f0c` (the ammo spend) is left as it
+    /// is in TS; here it is 0, which nothing sees: only the open menu shows it, and `Open` zeroes it.
+    pub fn new(saved: [Config; SAVED_CONFIGS]) -> BuyMenu {
+        BuyMenu { saved, ..BuyMenu::default() }
+    }
+
     fn back_to_main(&mut self) {
         self.page = page::MAIN;
         self.category = 0;
@@ -1066,6 +1080,34 @@ mod tests {
         assert_eq!((c.entries[3].id, c.entries[3].att, c.entries[3].cost), (4, 2, 3800));
         assert_eq!(c.ammo[3], (60, 8));
         assert_eq!(write_buylist(&saved), bytes, "round trip is byte-exact");
+    }
+
+    /// Issue #189: `Init` (`0x10036200`), from every `VidInit`, forgets the current and last
+    /// configs and arms the random first loadout again; the saved ones come from the file.
+    #[test]
+    fn init_forgets_the_last_config_and_rerolls() {
+        let r = rules();
+        let mut m = BuyMenu::default();
+        m.open(&r, &mut FixedRng(vec![], 0));
+        assert!(!m.random_first, "the first open used up the random loadout");
+        let rolled = m.current.clone();
+        assert!(rolled.entries.iter().any(|e| e.id != 0 || e.count != 0), "a random loadout was picked");
+        m.last = rolled.clone();
+        m.close();
+        let mut saved: [Config; SAVED_CONFIGS] = Default::default();
+        saved[2].total = 1234;
+        let n = BuyMenu::new(saved.clone());
+        assert!(!n.active);
+        assert_eq!((n.page, n.category, n.pending_att, n.pending_weapon), (0, 0, 0, -1));
+        assert_eq!(n.current, Config::default());
+        assert_eq!(n.last, Config::default(), "the previous map's last config is gone");
+        assert_eq!(n.saved, saved, "saved configs as read from tsbuylist.tsa");
+        assert!(n.new_config && n.random_first);
+        // So the next open rolls again instead of reopening the last config.
+        let mut n = n;
+        n.open(&r, &mut FixedRng(vec![], 0));
+        assert!(!n.random_first);
+        assert_eq!(n.current, rolled, "the same rng rolls the same loadout, not an empty last config");
     }
 
     #[test]
