@@ -21,7 +21,7 @@ The whole layer is a port addition: TS has one hard-wired bot AI, on listen serv
 | `BotBackend` trait, registry, `ts_bot_backend`, the bot player (`BotSetup`), the owners table | `crates/server/src/bot_backend/mod.rs` |
 | `ts_bot_quota` and the bot manager's timing | `bot_backend/quota.rs` |
 | The native backend | `crates/server/src/bots/backend.rs` (`Native`), calling the functions in `bots/` |
-| The native bots' rules per gameplay ruleset (§2.2) | `crates/server/src/bots/rules.rs` (`NativeBotRules`, the registry); TS 3.0's in `crates/ts30/server/src/bots.rs`, TS 2.1's in `crates/ts21/server/src/bots/` |
+| The native bots' rules per gameplay ruleset (§2.2) | `crates/server/src/bots/rules.rs` (`NativeBotRules`, the registry); TS 3.0's in `crates/ts30/server/src/bots/` (with 3.0's state think and vision, buy, look-around and attack modules), TS 2.1's in `crates/ts21/server/src/bots/` |
 | A plugin's backend (C callbacks → `BotBackend`) | `crates/server-dll/src/plugins.rs` (`PluginBackend`) |
 | The API's bot functions | `crates/server/src/plugin_api/bots.rs` |
 
@@ -87,9 +87,9 @@ are in TS's cvar list; `ts_bot_quota`, `ts_bot_stop`, `ts_bot_backend` are the h
 A gameplay ruleset can change how TS's own bots play (TS 2.1's do: #100 §3.10). That is the
 native backend's business, not the host's and not the gameplay plugin's:
 
-* **`NativeBotRules`** (`bots/rules.rs`) is the native backend's hook trait. Every method's
-  default is TS 3.0's code (`ts30_server::bots::BOTS` implements none), so with no other rules the bots are
-  unchanged. Hooks: creation (`random_model_in_teamplay`, `learn_on_empty_graph`,
+* **`NativeBotRules`** (`bots/rules.rs`) is the native backend's hook trait. Its methods have
+  no default bodies: a ruleset's bots implement all 27 (TS 3.0's AI is `ts30_server::bots::BOTS`,
+  with the 3.0 state think and modules behind it; issue #200). Hooks: creation (`random_model_in_teamplay`, `learn_on_empty_graph`,
   `stored_skill`, `team_key`, `texts`), the `CBot` overrides (`spawn_post`, `trace_attack`), the
   brain (`delay` for every module timer, the states and the stuck window; `runs_ai`, `turn_rate`,
   `update_view`, `look_at`, `press` / `release` / `update_buttons`, `respawn`), navigation (`ladder_buttons`, `wander_end`, `steer_probe_end`) and whole modules
