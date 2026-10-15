@@ -120,6 +120,23 @@ pub trait Entity: Any {
     /// spawned, and again after a restore (`entities::server_activate`). The default is
     /// `CBaseEntity::Activate` (0xac64c), which does nothing.
     fn activate(&mut self, _cx: &mut Cx) {}
+    /// `GetDelay` (vtable +0x90): how long a train, camera or gun target waits at this entity
+    /// when its path runs through it. `CBaseEntity::GetDelay` (0xac6b0) is 0; every
+    /// `CBaseToggle` class returns its `m_flWait` (`CBaseToggle::GetDelay` 0xe3dac), and
+    /// `path_corner` its own `m_flWait` (`CPathCorner::GetDelay` 0xd1e40). Read it through
+    /// [`delay_of`].
+    fn get_delay(&self) -> f32 {
+        0.0
+    }
+}
+
+/// `pEntity->GetDelay()` for the path entity `e` ([`Entity::get_delay`]), also while its object
+/// is lent back to its slot ([`lend`]). 0 for an edict without a game object, as for one whose
+/// object a dispatch further up the stack holds without lending it: TS would read that
+/// object's `m_flWait`, which the port can't reach then (a caller whose own object is the path
+/// entry handles that case itself).
+pub fn delay_of(e: *const edict_t) -> f32 {
+    handle_of(e).and_then(|h| STORE.0.read_lent(h, |ent| ent.get_delay())).unwrap_or(0.0)
 }
 
 enum State {
@@ -376,6 +393,14 @@ impl Store {
         let mut w = self.world.borrow_mut();
         match &w.slot(h)?.state {
             State::Present(ent) | State::Parked(ent) => (&**ent as &dyn Any).downcast_ref::<T>().map(f),
+            _ => None,
+        }
+    }
+
+    fn read_lent<R>(&self, h: Handle, f: impl FnOnce(&dyn Entity) -> R) -> Option<R> {
+        let mut w = self.world.borrow_mut();
+        match &w.slot(h)?.state {
+            State::Present(ent) | State::Parked(ent) => Some(f(&**ent)),
             _ => None,
         }
     }
@@ -642,6 +667,30 @@ mod tests {
             me.value += 1;
         });
         assert_eq!(value(&s, h), Some(70), "the earlier deferred job ran after the dispatch");
+    }
+
+    /// Issue #70: `delay_of`'s read sees an object in its slot or lent back, not one a dispatch
+    /// holds.
+    #[test]
+    fn get_delay_reads_present_and_lent_objects() {
+        #[derive(Default)]
+        struct Waits(f32);
+        impl Entity for Waits {
+            fn get_delay(&self) -> f32 {
+                self.0
+            }
+        }
+        let s = store();
+        let h = s.insert(Box::new(Waits(1.5)));
+        let t = s.insert(Box::new(Thing { value: 1 }));
+        assert_eq!(s.read_lent(h, |e| e.get_delay()), Some(1.5));
+        assert_eq!(s.read_lent(t, |e| e.get_delay()), Some(0.0), "CBaseEntity::GetDelay");
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            assert_eq!(s2.read_lent(h, |e| e.get_delay()), None, "taken out");
+            let me = (ent as &mut dyn Any).downcast_mut::<Waits>().unwrap();
+            s2.lend(Some(h), me, || assert_eq!(s2.read_lent(h, |e| e.get_delay()), Some(1.5), "lent"));
+        });
     }
 
     #[test]

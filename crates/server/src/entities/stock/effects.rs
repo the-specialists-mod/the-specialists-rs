@@ -2348,6 +2348,11 @@ impl<const PROBE: bool> Cycler<PROBE> {
 }
 
 impl<const PROBE: bool> Entity for Cycler<PROBE> {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CBaseMonster::KeyValue` (0xce80c) -> `CBaseToggle::KeyValue` (0xe3534).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         self.t.key_value(key, value)
@@ -2455,6 +2460,11 @@ impl Default for Wreckage {
 }
 
 impl Entity for Wreckage {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CBaseMonster::KeyValue` (0xce80c) -> `CBaseToggle::KeyValue` (0xe3534).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         self.t.key_value(key, value)

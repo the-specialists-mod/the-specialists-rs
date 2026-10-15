@@ -538,6 +538,78 @@ mod tests {
         }
     }
 
+    /// Issue #70: `GetDelay` (vtable +0x90) is `CBaseToggle::GetDelay` (0xe3dac, `m_flWait`) in
+    /// these TS classes' vtables, `CPathCorner::GetDelay` (0xd1e40) in `CPathCorner`'s, and
+    /// `CBaseEntity::GetDelay` (0xac6b0, 0) in every other's. A `wait` key must come back from
+    /// `get_delay` for each linked class whose `KeyValue` reaches `CBaseToggle::KeyValue`.
+    #[test]
+    fn get_delay_is_the_toggle_wait() {
+        const TOGGLE: &[&str] = &[
+            "CBaseButton",
+            "CBaseDoor",
+            "CBaseTrigger",
+            "CChangeLevel",
+            "CCyclerProbe",
+            "CDeadHEV",
+            "CFuncIllusionary",
+            "CFuncPlat",
+            "CFuncPlatRot",
+            "CFuncTrackAuto",
+            "CFuncTrackChange",
+            "CFuncTrain",
+            "CGenericCycler",
+            "CGunTarget",
+            "CLadder",
+            "CMomentaryDoor",
+            "CMomentaryRotButton",
+            "CMultiManager",
+            "CRecharge",
+            "CRotButton",
+            "CRotDoor",
+            "CTriggerCDAudio",
+            "CTriggerCounter",
+            "CTriggerEndSection",
+            "CTriggerGravity",
+            "CTriggerHurt",
+            "CTriggerMonsterJump",
+            "CTriggerMultiple",
+            "CTriggerOnce",
+            "CTriggerPush",
+            "CTriggerSave",
+            "CTriggerTeleport",
+            "CTSModel",
+            "CWallHealth",
+            "CWreckage",
+            "CPathCorner",
+        ];
+        // Not listed although `CBaseToggle`s: `CEnvExplosion` and `CTSTrigger`, whose `KeyValue`
+        // (0xbfab8, 0x70890) never reaches `CBaseToggle::KeyValue`, and `CBasePlayer`, which
+        // gets no keyvalues. Their `m_flWait` stays 0, so the default `get_delay` is theirs.
+        let mut linked = stock::linked_entities();
+        linked.extend(ts::linked_entities());
+        linked.extend(stock::monsters::linked_entities());
+        linked.extend(crate::player::linked_entities());
+        let mut seen = Vec::new();
+        for (class, ctor) in linked {
+            let ts_class = crate::save::tables::class_of(class.as_bytes()).unwrap_or("");
+            let mut ent = ctor();
+            // Other classes' `KeyValue` may need the engine (string allocation), so only the
+            // toggles get the key; the rest must answer 0 regardless.
+            if !TOGGLE.contains(&ts_class) {
+                assert_eq!(ent.get_delay(), 0.0, "{class} ({ts_class})");
+                continue;
+            }
+            let mut ed = edict_t::default();
+            let mut cx = crate::world::Cx { edict: &mut ed };
+            assert!(ent.key_value(&mut cx, c"wait", c"2.5"), "{class} parses wait");
+            assert_eq!(ent.get_delay(), 2.5, "{class} ({ts_class})");
+            seen.push(ts_class);
+        }
+        for c in TOGGLE {
+            assert!(seen.contains(c), "{c} isn't linked");
+        }
+    }
+
     /// mp.dll's `CBaseEntity::TakeDamage`: the attack direction sums `y, z, x` with the length
     /// unrounded, and the push stores `force · dir` before adding it. The old arithmetic gave
     /// `[0xbe10d495, 0xbf33e31c, 0xbf32826d]` and a pushed z of 0x4367f60d.

@@ -53,8 +53,9 @@ How the SDK patterns map to Rust:
   `next_think(cx, d)` picks `ltime` or global time from the movetype.
 * **Calls between entities.** `world::dispatch` plus a downcast handles method calls (a door's
   siblings in `Blocked`, a plat trigger calling its platform, `respawn_all`). `world::with` reads
-  data that the SDK got through a pointer (`path_corner` wait, `path_track` links,
-  `multi_manager::HasTarget`).
+  data that the SDK got through a pointer (`path_track` links, `multi_manager::HasTarget`).
+  Virtuals every class answers go on the `Entity` trait instead: `GetDelay` (vtable +0x90) is
+  `Entity::get_delay`, read with `world::delay_of` (below).
 * **Masters.** A `multisource` writes its state into a registry keyed by edict
   (`base::set_master_state`). That way a door can check its master even while the multisource is
   itself mid-dispatch: during take-out dispatch the multisource object can't be reached, but the
@@ -225,7 +226,7 @@ The track change that its own train fires reads the train's path through a side 
 | `trigger_multiple`, `trigger_once`, `trigger_teleport`, `trigger_push`, `trigger_gravity` | SDK triggers.cpp | `UTIL_ShowMessage` → `HudText`. The multiple/once `noise` uses TS slow-motion pitch (0.5). `trigger_push`'s touch is the virtual `CTriggerPush::Touch` (0xe9010), not a `SetTouch`, so a restored push keeps pushing. |
 | `trigger_hurt` | SDK 2.3 | Negative damage heals with TS `TakeHealth`, with no dead-player check (2.3). The per-player bitmask in `impulse` is kept (multiplayer only: with `deathmatch` 0, `CHalfLifeRules`, nothing is hurt again before `dmgtime` except in the same frame). With `DMG_RADIATION` in `damagetype`, **TS** `RadiationThink` (0xe703c) lowers the geiger range of the player who can see the trigger's centre, every 0.25 s; `update_geiger_counter` (`UpdateGeigerCounter` 0xda1f0, from the player's PreThink) sends `Geiger` (range / 4) to suited players when it changes. |
 | `trigger_auto`, `trigger_relay`, `trigger_changetarget` | SDK | |
-| `trigger_camera` | SDK | `SET_VIEW`, `FL_FROZEN` for TAKECONTROL, `path_corner` moves. A non-player activator falls back to slot 1's edict (`Use` 0xe9c08), none when the slot is empty. A `moveto` that names nothing makes the world the path (TS uses `INDEXENT(0)`): its `speed` (`MaxRange`) and `message` apply and the camera stops on the first `Move`. Path delays are `path_corner`'s only (#70). |
+| `trigger_camera` | SDK | `SET_VIEW`, `FL_FROZEN` for TAKECONTROL, `path_corner` moves. A non-player activator falls back to slot 1's edict (`Use` 0xe9c08), none when the slot is empty. A `moveto` that names nothing makes the world the path (TS uses `INDEXENT(0)`): its `speed` (`MaxRange`) and `message` apply and the camera stops on the first `Move`. Each path entry's delay is its `GetDelay` (`world::delay_of`, §7.3). |
 | `multi_manager` | SDK | Includes thread clones. |
 | `func_ladder`, `func_friction` | SDK | `modifier` is `(float)(strtod * 0.01)`, the product in double (0xe5be4). |
 | `trigger` | **TS** `CBaseTrigger` (link 0xe67c8) | Spawn is `CBaseEntity::Spawn`: no model, not solid, no touch or use. Only `CBaseTrigger::KeyValue` (0xe68bc) runs. |
@@ -909,10 +910,19 @@ writes out of bounds, or where the port lacks save/restore:
   control volume and the platform is removed; otherwise "No train" is logged.
 * **NULL activator.** `CFuncTrackAuto::Use` reads the activator's classname first and crashes on a
   NULL one (a delayed fire from a non-player); the port ignores the use.
-* **`GetDelay`.** `CGunTarget::Wait` takes the corner's `GetDelay()`; the port reads a
-  `path_corner`'s `wait` and uses 0 for anything else, as `func_train` does (in TS a
-  `CBaseToggle` target would give its own `wait`). `trigger_camera`'s path delays do the same
-  (#70).
+* **`GetDelay` (#70).** `CGunTarget::Wait` (0xd7160), `CFuncTrain::Next` (0xd37b4) and
+  `CTriggerCamera::Use` (0xe9c08) / `Move` (0xea244) take the path entry's virtual `GetDelay()`
+  (vtable +0x90): `CPathCorner::GetDelay` (0xd1e40) and, for every `CBaseToggle` class (doors,
+  buttons, plats, trains, track changes, triggers, `multi_manager`, ladders, illusionaries,
+  chargers, cyclers, `monster_hevsuit_dead`, `ts_model`, `func_guntarget` itself),
+  `CBaseToggle::GetDelay` (0xe3dac) return `m_flWait`; every other class has
+  `CBaseEntity::GetDelay` (0xac6b0), 0. The port's `Entity::get_delay` follows the vtables
+  (pinned by `entities::tests::get_delay_is_the_toggle_wait`). `env_explosion`, `ts_trigger` and
+  the player are `CBaseToggle`s whose `m_flWait` nothing sets, so they keep the 0 default.
+  Guard: `world::delay_of` can't reach an object that a dispatch further up the stack holds
+  (one whose own call is running, unless lent), and reads 0 for it where TS reads its
+  `m_flWait`. A train or gun target whose path names itself keeps its own wait, as TS's call
+  on itself would.
 * **Crushers** (`CFuncPlat::Blocked` 0xd2e64 and the doors', trains' and rotators'
   `Blocked`) call the victim's `TakeDamage` directly, which decides itself whether `takedamage`
   matters: a stopped `func_guntarget` with health left loses it when crushed, a shootable

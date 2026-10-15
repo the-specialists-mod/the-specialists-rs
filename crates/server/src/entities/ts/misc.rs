@@ -32,6 +32,11 @@ impl Default for Model {
 }
 
 impl Entity for Model {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CBaseToggle::KeyValue` (0xe3534).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         self.t.key_value(key, value)

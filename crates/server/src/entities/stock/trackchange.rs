@@ -416,6 +416,11 @@ impl<const AUTO: bool> Plat for FuncTrackChange<AUTO> {
 }
 
 impl<const AUTO: bool> Entity for FuncTrackChange<AUTO> {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.p.t.wait
+    }
+
     /// `CFuncTrackChange::KeyValue` (0xd5ed0).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {

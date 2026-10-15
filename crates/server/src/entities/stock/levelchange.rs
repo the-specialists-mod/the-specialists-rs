@@ -178,6 +178,11 @@ impl ChangeLevel {
 }
 
 impl Entity for ChangeLevel {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CChangeLevel::KeyValue` (0xe7da0), then `CBaseTrigger::KeyValue` (0xe68bc).
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {

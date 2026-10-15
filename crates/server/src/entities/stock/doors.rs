@@ -501,6 +501,11 @@ impl Door {
 }
 
 impl Entity for Door {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CBaseDoor::KeyValue` (0xb51a0). Its `skin` branch is unreachable: `DispatchKeyValue` sets
     /// the entvars field first.
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
@@ -675,6 +680,11 @@ impl MomentaryDoor {
 }
 
 impl Entity for MomentaryDoor {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CMomentaryDoor::KeyValue` (0xb81a0): `stopsnd` and `healthvalue` are swallowed.
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
