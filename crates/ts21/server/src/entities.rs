@@ -256,7 +256,7 @@ pub fn give_ground_weapon(g: &mut GroundWeapon, cx: &mut Cx, p: &mut Player, pcx
     }
     let (message, target) = (cx.pev().message, cx.pev().target);
     if message != 0 {
-        msg::ts_message_one(pcx.edict, [0, 0, 0], 1, 30, &engine().string(message).to_string_lossy());
+        msg::ts_message_one(pcx.edict, [0, 0, 0], 1, 30, engine().string(message).to_bytes());
     }
     if target != 0 {
         ts_server::entities::fire_targets(engine().string(target), cx.edict, cx.edict, UseType::Toggle, 0.0);

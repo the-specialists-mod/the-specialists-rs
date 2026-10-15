@@ -12,6 +12,7 @@ pub mod bsp;
 pub mod gameplay;
 pub mod pm;
 pub mod protocol;
+pub mod text;
 pub mod ts;
 pub mod weapons;
 

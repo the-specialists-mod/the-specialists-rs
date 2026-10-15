@@ -1,11 +1,15 @@
 //! Sending `shared::protocol` payloads through the engine's `pfnWrite*` calls, plus the TS text
 //! helpers (`TSHudMessageOne/All`, `ClientPrint`, `SayText`).
+//!
+//! The text helpers take bytes (`&impl AsRef<[u8]>`, so `&str` and `String` work as well): chat,
+//! names and map text go to the wire exactly as TS copies them, whatever their encoding
+//! (`shared::text`, issue #81).
 
 use crate::messages::{self, Msg};
 use goldsrc::ext::rules::SVC_HLTV;
 use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
-use goldsrc::util::to_cstring;
+use goldsrc::util::bytes_to_cstring;
 use shared::protocol::hud_wire::{DirectorEvent, Wire};
 use shared::protocol::rules::{SayText, TextMsg, TsMessage};
 
@@ -35,8 +39,9 @@ impl Wire for Out {
     fn coord(&mut self, v: f32) {
         self.w(|w| w.coord(v))
     }
-    fn string(&mut self, s: &str) {
-        let c = to_cstring(s);
+    fn string(&mut self, s: &[u8]) {
+        // `WRITE_STRING` of a C string: it ends at the first NUL.
+        let c = bytes_to_cstring(&s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())]);
         self.w(|w| w.string(&c))
     }
 }
@@ -72,17 +77,14 @@ pub fn director_event(primary: i32, secondary: i32, flags: i32) {
     send(MsgWriter::begin(MSG_SPEC as i32, SVC_HLTV, None, std::ptr::null_mut()), |w| m.write(w));
 }
 
-/// Truncates like TS's `char[128]` buffers.
-fn clip(text: &str, max: usize) -> String {
-    let mut s: String = text.chars().filter(|&c| c != '\0').collect();
-    while s.len() > max {
-        s.pop();
-    }
-    s
+/// Truncates like TS's `char[128]` buffers (bytes; no character boundaries in C).
+fn clip(text: &[u8], max: usize) -> Vec<u8> {
+    shared::text::clip(text, max)
 }
 
 /// `TSHudMessageOne(r,g,b,effect,hold,text,pev)`: coloured HUD text to one player.
-pub fn ts_message_one(to: *mut edict_t, rgb: [u8; 3], effect: u8, hold: u8, text: &str) {
+pub fn ts_message_one(to: *mut edict_t, rgb: [u8; 3], effect: u8, hold: u8, text: &(impl AsRef<[u8]> + ?Sized)) {
+    let text = text.as_ref();
     if to.is_null() || text.is_empty() {
         return;
     }
@@ -93,40 +95,48 @@ pub fn ts_message_one(to: *mut edict_t, rgb: [u8; 3], effect: u8, hold: u8, text
 /// `TSHudMessageAll`. Port addition: with `developer` on, the text also goes to the server
 /// console as `[ts] hud: <text>`, so scripted tests (`cargo xtask`) can follow the rounds,
 /// wins and objectives that TS only announces on the HUD.
-pub fn ts_message_all(rgb: [u8; 3], effect: u8, hold: u8, text: &str) {
+pub fn ts_message_all(rgb: [u8; 3], effect: u8, hold: u8, text: &(impl AsRef<[u8]> + ?Sized)) {
+    let text = text.as_ref();
     if text.is_empty() {
         return;
     }
     let m = TsMessage { r: rgb[0], g: rgb[1], b: rgb[2], effect, hold, text: clip(text, 127) };
     all(Msg::TsMessage, |w| m.write(w));
     if super::cvars::on(c"developer") {
-        engine().print(&format!("[ts] hud: {}\n", m.text));
+        engine().print(&shared::bformat!("[ts] hud: {}\n", m.text));
     }
 }
 
 /// SDK `ClientPrint(pev, dest, msg)` (`TextMsg` to one).
-pub fn text_one(to: *mut edict_t, dest: u8, text: &str) {
-    let m = TextMsg { dest, text: clip(text, 190), params: Vec::new() };
+pub fn text_one(to: *mut edict_t, dest: u8, text: &(impl AsRef<[u8]> + ?Sized)) {
+    let m = TextMsg { dest, text: clip(text.as_ref(), 190), params: Vec::new() };
     one(Msg::TextMsg, to, |w| m.write(w));
 }
 
 /// SDK `UTIL_ClientPrintAll(dest, msg)`.
-pub fn text_all(dest: u8, text: &str) {
-    let m = TextMsg { dest, text: clip(text, 190), params: Vec::new() };
+pub fn text_all(dest: u8, text: &(impl AsRef<[u8]> + ?Sized)) {
+    let m = TextMsg { dest, text: clip(text.as_ref(), 190), params: Vec::new() };
     all(Msg::TextMsg, |w| m.write(w));
 }
 
-pub fn say_one(to: *mut edict_t, sender: i32, text: &str) {
-    let m = SayText { sender: sender as u8, text: text.to_owned() };
+/// `SayText` to one player: `sender`'s index and the line's bytes as given.
+pub fn say_one(to: *mut edict_t, sender: i32, text: &(impl AsRef<[u8]> + ?Sized)) {
+    let m = say_text(sender, text.as_ref());
     one(Msg::SayText, to, |w| m.write(w));
 }
 
-pub fn say_all(sender: i32, text: &str) {
-    let m = SayText { sender: sender as u8, text: text.to_owned() };
+/// `SayText` to everyone (`MSG_ALL`).
+pub fn say_all(sender: i32, text: &(impl AsRef<[u8]> + ?Sized)) {
+    let m = say_text(sender, text.as_ref());
     all(Msg::SayText, |w| m.write(w));
 }
 
+/// The `SayText` payload: no conversion of the text (issue #81).
+pub fn say_text(sender: i32, text: &[u8]) -> SayText {
+    SayText { sender: sender as u8, text: text.to_vec() }
+}
+
 /// `UTIL_LogPrintf` (the engine prefixes the timestamp).
-pub fn log(text: &str) {
+pub fn log(text: &(impl AsRef<[u8]> + ?Sized)) {
     engine().log(text);
 }

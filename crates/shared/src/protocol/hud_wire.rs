@@ -8,6 +8,11 @@
 //! small [`Wire`] / [`WireRead`] traits so the server can map them onto `pfnWrite*` (the engine
 //! encodes coords) and the client onto its message reader. `Bytes` implements both with the
 //! GoldSrc encoding (little endian, coord = short ×8) for tests and tools.
+//!
+//! Field kinds: `string` is a Rust `String` for text the server makes itself (weapon and team
+//! names); `bytes` is a `Vec<u8>` for text that comes from players, the map or the server's files
+//! (chat, names, the MOTD), which TS writes byte for byte whatever its encoding
+//! (`shared::text`).
 
 /// Writer side of a user message (`WRITE_BYTE` ...).
 pub trait Wire {
@@ -16,7 +21,8 @@ pub trait Wire {
     fn short(&mut self, v: i32);
     fn long(&mut self, v: i32);
     fn coord(&mut self, v: f32);
-    fn string(&mut self, s: &str);
+    /// `WRITE_STRING`: the bytes as given (TS writes player text unconverted; a NUL ends it).
+    fn string(&mut self, s: &[u8]);
 }
 
 /// Reader side of a user message (`READ_BYTE` ...). Readers return 0 / "" past the end.
@@ -26,7 +32,8 @@ pub trait WireRead {
     fn short(&mut self) -> i16;
     fn long(&mut self) -> i32;
     fn coord(&mut self) -> f32;
-    fn string(&mut self) -> String;
+    /// `READ_STRING`: the bytes up to the NUL, unconverted.
+    fn string(&mut self) -> Vec<u8>;
 }
 
 /// In-memory GoldSrc encoding, used by tests (and usable by tools).
@@ -52,8 +59,8 @@ impl Wire for Bytes {
     fn coord(&mut self, v: f32) {
         Wire::short(self, (v * 8.0) as i32);
     }
-    fn string(&mut self, s: &str) {
-        self.buf.extend(s.bytes().filter(|&b| b != 0));
+    fn string(&mut self, s: &[u8]) {
+        self.buf.extend(s.iter().take_while(|&&b| b != 0));
         self.buf.push(0);
     }
 }
@@ -82,10 +89,10 @@ impl WireRead for Bytes {
     fn coord(&mut self) -> f32 {
         WireRead::short(self) as f32 / 8.0
     }
-    fn string(&mut self) -> String {
+    fn string(&mut self) -> Vec<u8> {
         let rest = self.buf.get(self.pos..).unwrap_or(&[]);
         let n = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
-        let s = String::from_utf8_lossy(&rest[..n]).into_owned();
+        let s = rest[..n].to_vec();
         self.pos += n + 1;
         s
     }
@@ -112,18 +119,21 @@ macro_rules! payload {
     (@ty long) => { i32 };
     (@ty coord) => { f32 };
     (@ty string) => { String };
+    (@ty bytes) => { Vec<u8> };
     (@w $w:ident, $v:expr, byte) => { $w.byte($v as i32) };
     (@w $w:ident, $v:expr, char) => { $w.char($v as i32) };
     (@w $w:ident, $v:expr, short) => { $w.short($v as i32) };
     (@w $w:ident, $v:expr, long) => { $w.long($v) };
     (@w $w:ident, $v:expr, coord) => { $w.coord($v) };
-    (@w $w:ident, $v:expr, string) => { $w.string(&$v) };
+    (@w $w:ident, $v:expr, string) => { $w.string($v.as_bytes()) };
+    (@w $w:ident, $v:expr, bytes) => { $w.string(&$v) };
     (@r $r:ident, byte) => { $r.byte() };
     (@r $r:ident, char) => { $r.char() };
     (@r $r:ident, short) => { $r.short() };
     (@r $r:ident, long) => { $r.long() };
     (@r $r:ident, coord) => { $r.coord() };
-    (@r $r:ident, string) => { $r.string() };
+    (@r $r:ident, string) => { String::from_utf8_lossy(&$r.string()).into_owned() };
+    (@r $r:ident, bytes) => { $r.string() };
 }
 pub(crate) use payload;
 
@@ -294,11 +304,22 @@ mod tests {
             for _ in 0..8 {
                 let _ = (WireRead::string(&mut b), WireRead::long(&mut b), WireRead::coord(&mut b));
             }
-            assert_eq!((WireRead::long(&mut b), WireRead::string(&mut b)), (0, String::new()));
+            assert_eq!((WireRead::long(&mut b), WireRead::string(&mut b)), (0, Vec::new()));
         }
         let mut b = Bytes::default();
         TsFade::new([1, 2, 3], 4, f32::NAN, f32::INFINITY, fade::OUT).write(&mut b);
         assert_eq!(b.buf.len(), 10);
+    }
+
+    /// A Latin-1/CP1252 `é` (0xE9) goes out and comes back as that one byte, not as U+FFFD.
+    #[test]
+    fn strings_are_bytes() {
+        let mut b = Bytes::default();
+        Wire::string(&mut b, b"Ren\xe9: caf\xe9\n");
+        Wire::string(&mut b, b"a\0b");
+        assert_eq!(b.buf, b"Ren\xe9: caf\xe9\n\0a\0");
+        assert_eq!(WireRead::string(&mut b), b"Ren\xe9: caf\xe9\n");
+        assert_eq!(WireRead::string(&mut b), b"a");
     }
 
     #[test]

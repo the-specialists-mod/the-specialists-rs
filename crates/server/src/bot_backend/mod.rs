@@ -342,7 +342,7 @@ pub fn create_player(name: &[u8], model: &str, state: BotState, announce: Option
         p.impulse.custom_decal_frames = crate::player::impulse::custom_decal_frames(-1);
     });
     if let Some(skill) = announce {
-        eng.alert(ALERT_TYPE::at_console, &format!("{} connected with skill {:.6}\n", cname.to_string_lossy(), skill));
+        eng.alert(ALERT_TYPE::at_console, &shared::bformat!("{} connected with skill {}\n", cname, format!("{skill:.6}")));
     }
     crate::ham::spawn(e);
     eng.set_client_key(e, "model", if model.is_empty() { "seal" } else { model });

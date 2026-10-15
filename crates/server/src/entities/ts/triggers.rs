@@ -38,9 +38,10 @@ fn fire_own_target(cx: &mut Cx) {
     }
 }
 
-fn message_of(cx: &mut Cx) -> Option<String> {
+/// `pev->message` as the map's bytes (TS sends them unconverted).
+fn message_of(cx: &mut Cx) -> Option<Vec<u8>> {
     let m = cx.pev().message;
-    (m != 0).then(|| engine().string(m).to_string_lossy().into_owned()).filter(|s| !s.is_empty())
+    (m != 0).then(|| engine().string(m).to_bytes().to_vec()).filter(|s| !s.is_empty())
 }
 
 /// Invisible trigger brush setup shared by the brush entities here.
@@ -62,22 +63,23 @@ fn trigger_brush(cx: &mut Cx, classname: &CStr) {
     eng.set_origin(e, org);
 }
 
-/// `printf` with the player's name for `%s` (TS passes the format straight to `sprintf`).
-pub fn format_name(fmt: &str, name: &str) -> String {
-    let mut out = String::new();
+/// `printf` with the player's name for `%s` (TS passes the format straight to `sprintf`). Bytes
+/// in and out: the name and the map's text keep their encoding.
+pub fn format_name(fmt: &[u8], name: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
     let mut used = false;
-    let mut it = fmt.chars().peekable();
+    let mut it = fmt.iter().copied().peekable();
     while let Some(c) = it.next() {
-        if c == '%' {
+        if c == b'%' {
             match it.peek() {
-                Some('s') if !used => {
+                Some(b's') if !used => {
                     it.next();
-                    out.push_str(name);
+                    out.extend_from_slice(name);
                     used = true;
                 }
-                Some('%') => {
+                Some(b'%') => {
                     it.next();
-                    out.push('%');
+                    out.push(b'%');
                 }
                 _ => {}
             }
@@ -246,15 +248,15 @@ impl Entity for DmHill {
         // Built whenever `pev->message` is set, even to "": the name and frag count make it
         // non-empty, so `TSHudMessageAll` sends it.
         let message = cx.pev().message;
-        let mut text = (message != 0).then(|| engine().string(message).to_string_lossy().into_owned()).map(|m| {
-            let who = if teamplay { format!("Team {}", teams::team_name_of(other)) } else { rules::netname(other) };
-            format!("{who} {m}")
+        let mut text = (message != 0).then(|| engine().string(message).to_bytes().to_vec()).map(|m| {
+            let who = if teamplay { shared::bformat!("Team {}", teams::team_name_of(other)) } else { rules::netname(other) };
+            shared::bformat!("{} {}", who, m)
         });
         if !teamplay {
             rules::add_frags(other, None, self.frags as f32);
             send_score(other);
             if let Some(t) = text.as_mut() {
-                t.push_str(&format!(" ,{} frags for him", self.frags));
+                t.extend_from_slice(format!(" ,{} frags for him", self.frags).as_bytes());
             }
         } else {
             // `UTIL_FindEntityByClassname(.., "player")`, `IsPlayer()` and a case-sensitive
@@ -267,7 +269,7 @@ impl Entity for DmHill {
                 }
             }
             if let Some(t) = text.as_mut() {
-                t.push_str(&format!(" ,{} frags for they", self.frags_team));
+                t.extend_from_slice(format!(" ,{} frags for they", self.frags_team).as_bytes());
             }
         }
         if let Some(t) = text {
@@ -831,8 +833,9 @@ mod tests {
 
     #[test]
     fn printf_name() {
-        assert_eq!(super::format_name("%s reached the top", "bob"), "bob reached the top");
-        assert_eq!(super::format_name("100%% done", "x"), "100% done");
-        assert_eq!(super::format_name("no name", "x"), "no name");
+        assert_eq!(super::format_name(b"%s reached the top", b"bob"), b"bob reached the top");
+        assert_eq!(super::format_name(b"100%% done", b"x"), b"100% done");
+        assert_eq!(super::format_name(b"no name", b"x"), b"no name");
+        assert_eq!(super::format_name(b"%s \xe0 la cime", b"Ren\xe9"), b"Ren\xe9 \xe0 la cime");
     }
 }

@@ -333,7 +333,7 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
     if suicide || !killer_is_player {
         if suicide && p.ts.spree > 8 {
             super::add_frags(victim, Some(p), -5.0);
-            ts_message_all(GREEN, 1, 30, &format!("{vname}, #TS_SpecialistSuicide"));
+            ts_message_all(GREEN, 1, 30, &shared::bformat!("{}, #TS_SpecialistSuicide", vname));
         }
         match frag_loser(suicide) {
             FragLoser::Victim => super::add_frags(victim, Some(p), -1.0),
@@ -351,42 +351,42 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             // `glast_headshot`: any bullet or thrown head hit since the last ApplyMultiDamage, so
             // also another victim's from the same shotgun shot.
             if g.headshot {
-                ts_message_all(GREEN, 1, 20, &format!("#TS_Headshot #TS_FrgFr {kname}!"));
+                ts_message_all(GREEN, 1, 20, &shared::bformat!("#TS_Headshot #TS_FrgFr {}!", kname));
             }
             // The killer's current gun weapon decides (`get_weapon_info(gun+0xc8)+0xd2`), not
             // what dealt the damage.
             if d.inflictor == attacker && !close {
                 match k.gun.filter(|&c| c != 0).and_then(|c| tables().weapon(c)).map(|w| w.kind) {
-                    Some(WeaponKind::Knife) => ts_message_all(GREEN, 1, 20, &format!("#TS_KnifeKill #TS_FrgFr {kname}!")),
-                    Some(WeaponKind::Katana) => ts_message_all(GREEN, 1, 20, &format!("#TS_KatanaKill #TS_FrgFr {kname}!")),
+                    Some(WeaponKind::Knife) => ts_message_all(GREEN, 1, 20, &shared::bformat!("#TS_KnifeKill #TS_FrgFr {}!", kname)),
+                    Some(WeaponKind::Katana) => ts_message_all(GREEN, 1, 20, &shared::bformat!("#TS_KatanaKill #TS_FrgFr {}!", kname)),
                     _ => {}
                 }
             }
             if g.coldcock {
-                ts_message_all(GREEN, 1, 20, &format!("#TS_Coldcock #TS_FrgFr {kname}!"));
+                ts_message_all(GREEN, 1, 20, &shared::bformat!("#TS_Coldcock #TS_FrgFr {}!", kname));
             }
             if double_kill {
                 points *= 2;
-                ts_message_all(GREEN, 1, 20, &format!("#TS_Doublefrag #TS_FrgFr {kname}!"));
+                ts_message_all(GREEN, 1, 20, &shared::bformat!("#TS_Doublefrag #TS_FrgFr {}!", kname));
             }
             if stopped_fury {
                 if killed_specialist {
                     points += 5;
-                    ts_message_all(GREEN, 1, 30, &format!("{points} #TS_Frg #TS_FrgFr {kname}, #TS_KilledTheSpecialist"));
+                    ts_message_all(GREEN, 1, 30, &shared::bformat!("{} #TS_Frg #TS_FrgFr {}, #TS_KilledTheSpecialist", points, kname));
                     if k.active == 0 && k.held == 0 {
                         k.held = pw::SLOWPAUSE;
                         k.held_secs = 2;
                     }
                 }
                 let n = eng.random_long(1, 10);
-                ts_message_all(GREEN, 1, 30, &format!("{vname} #TS_SpreeKilled{n}"));
+                ts_message_all(GREEN, 1, 30, &shared::bformat!("{} #TS_SpreeKilled{}", vname, n));
             }
             let mut spree_msg = None;
             if is_unstoppable {
-                ts_message_all(GREEN, 1, 30, &format!("#TS_Unstoppable {kname}! {} #TS_ConsKills", k.spree));
+                ts_message_all(GREEN, 1, 30, &shared::bformat!("#TS_Unstoppable {}! {} #TS_ConsKills", kname, k.spree));
                 points *= 2;
             } else if is_specialist {
-                ts_message_all(GREEN, 1, 0x37, &format!("{kname} #TS_Specialist"));
+                ts_message_all(GREEN, 1, 0x37, &shared::bformat!("{} #TS_Specialist", kname));
                 give_specialist = true;
                 if k.active == 0 && k.held == 0 {
                     k.held = pw::SLOWPAUSE;
@@ -404,7 +404,7 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
             }
             if let Some((n, hold)) = spree_msg {
                 let r = eng.random_long(1, 16);
-                ts_message_all(GREEN, 1, hold, &format!("{kname} #TS_KillSpree{r} {n} #TS_ConsKills"));
+                ts_message_all(GREEN, 1, hold, &shared::bformat!("{} #TS_KillSpree{} {} #TS_ConsKills", kname, r, n));
             }
             let kvm = k.e.v();
             if give_specialist {
@@ -494,8 +494,8 @@ pub fn player_killed_core(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapsh
 
 /// `PlayerKilled`'s announcement of a kill with the victim's own gun (string 0x108d00); the
 /// client's titles.txt resolves the keys ("X killed Y with his own weapon").
-fn own_weapon_message(killer: &str, victim: &str) -> String {
-    format!("{killer} #TS_Killed {victim} #TS_OwnWeapon")
+fn own_weapon_message(killer: &[u8], victim: &[u8]) -> Vec<u8> {
+    shared::bformat!("{} #TS_Killed {} #TS_OwnWeapon", killer, victim)
 }
 
 /// Who gets the killer's `ScoreInfo` at the end of `PlayerKilled`.
@@ -661,7 +661,7 @@ pub fn points_for_frag(frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -
         if now - k.last_kill < 2.0 {
             shown *= 2;
         }
-        ts_message_all(GREEN, 1, 30, &format!("{shown} #TS_Frg #TS_FrgFr {}, {desc}", netname(attacker)));
+        ts_message_all(GREEN, 1, 30, &shared::bformat!("{} #TS_Frg #TS_FrgFr {}, {}", shown, netname(attacker), desc));
     }
     points
 }
@@ -690,7 +690,7 @@ pub fn death_notice(attacker: *mut edict_t, inflictor: *mut edict_t, victim: *mu
 struct KillTags {
     victims_weapon: bool,
     /// The victim's name when the kill ended a spree of three or more.
-    stopped_fury: Option<String>,
+    stopped_fury: Option<Vec<u8>>,
     killed_specialist: bool,
     double_kill: bool,
     diving: bool,
@@ -702,9 +702,9 @@ struct KillTags {
 }
 
 impl KillTags {
-    fn suffix(&self) -> String {
-        let flag = |on: bool, s: &str| if on { s.to_owned() } else { String::new() };
-        let fury = self.stopped_fury.as_ref().map(|n| format!(" (stopped_fury \"{n}\")")).unwrap_or_default();
+    fn suffix(&self) -> Vec<u8> {
+        let flag = |on: bool, s: &str| if on { s.as_bytes().to_vec() } else { Vec::new() };
+        let fury = self.stopped_fury.as_ref().map(|n| shared::bformat!(" (stopped_fury \"{}\")", n)).unwrap_or_default();
         [
             flag(self.victims_weapon, " (victims_weapon)"),
             fury,
@@ -713,7 +713,7 @@ impl KillTags {
             flag(self.diving, " (diving)"),
             flag(self.sliding, " (sliding)"),
             flag(self.killed_the_one, " (killed_the_one)"),
-            self.spree.to_owned(),
+            self.spree.as_bytes().to_vec(),
         ]
         .concat()
     }
@@ -721,11 +721,19 @@ impl KillTags {
 
 /// `"name<userid><authid><x>"` of a log line: `x` is the user id again outside teamplay, the
 /// `model` key in teamplay.
-fn log_id(name: &str, uid: i32, auth: &str, model: Option<&str>) -> String {
+fn log_id(name: &[u8], uid: i32, auth: &[u8], model: Option<&[u8]>) -> Vec<u8> {
     match model {
-        Some(m) => format!("\"{name}<{uid}><{auth}><{m}>\""),
-        None => format!("\"{name}<{uid}><{auth}><{uid}>\""),
+        Some(m) => shared::bformat!("\"{}<{}><{}><{}>\"", name, uid, auth, m),
+        None => shared::bformat!("\"{}<{}><{}><{}>\"", name, uid, auth, uid),
     }
+}
+
+/// [`log_id`] of a player now: its `netname`, user id, auth id and (teamplay) `model` key, all
+/// as the engine has them (bytes, issue #81).
+pub fn log_player(e: *mut edict_t) -> Vec<u8> {
+    let eng = engine();
+    let model = state::teamplay().then(|| eng.info_key(e, c"model").to_bytes());
+    log_id(&netname(e), eng.user_id(e), eng.auth_id(e).to_bytes(), model)
 }
 
 /// The log weapon: A-Z lowered and spaces made underscores (0x89c28..0x89c5f).
@@ -741,22 +749,17 @@ pub fn log_kill_untagged(attacker: *mut edict_t, victim: *mut edict_t, weapon: &
 }
 
 fn log_kill(attacker: *mut edict_t, victim: *mut edict_t, weapon: &str, suicide: bool, tags: &KillTags) {
-    let eng = engine();
-    let teamplay = state::teamplay();
-    let id = |e: *mut edict_t| {
-        let model = teamplay.then(|| eng.info_key(e, c"model").to_string_lossy().into_owned());
-        log_id(&netname(e), eng.user_id(e), &eng.auth_id(e).to_string_lossy(), model.as_deref())
-    };
+    let id = log_player;
     let w = log_weapon(weapon);
     if suicide {
-        msg::log(&format!("{} committed suicide with \"{w}\"\n", id(victim)));
+        msg::log(&shared::bformat!("{} committed suicide with \"{}\"\n", id(victim), w));
         return;
     }
     if super::ts_flags(attacker) & FL_CLIENT as i32 == 0 {
-        msg::log(&format!("{} committed suicide with \"{w}\" (world)\n", id(victim)));
+        msg::log(&shared::bformat!("{} committed suicide with \"{}\" (world)\n", id(victim), w));
         return;
     }
-    msg::log(&format!("{} killed {} with \"{w}\"{}\n", id(attacker), id(victim), tags.suffix()));
+    msg::log(&shared::bformat!("{} killed {} with \"{}\"{}\n", id(attacker), id(victim), w, tags.suffix()));
 }
 
 /// `PlayerKilled`'s ` (victims_weapon)` gun test (0x89703..0x8975c): the killer holds a weapon
@@ -777,24 +780,24 @@ struct TeamKillPunish {
     /// The server command.
     command: String,
     /// The `HUD_PRINTTALK` line to everyone.
-    to_all: String,
+    to_all: Vec<u8>,
 }
 
 /// The kick (`banfortk` ≤ 0) or the ban of `(int)banfortk` minutes (truncated: 0x8ad5a, 0x8adbc,
 /// 0x8ae04) for the team killer `name` with user id `uid`.
-fn team_kill_punishment(name: &str, uid: i32, ban: f32) -> TeamKillPunish {
+fn team_kill_punishment(name: &[u8], uid: i32, ban: f32) -> TeamKillPunish {
     if ban <= 0.0 {
         return TeamKillPunish {
             to_killer: "You have been kicked for teamkilling...\n".to_owned(),
             command: format!("kick #{uid}\n"),
-            to_all: format!("{name} kicked for teamkilling\n"),
+            to_all: shared::bformat!("{} kicked for teamkilling\n", name),
         };
     }
     let m = super::x87_trunc(ban as f64);
     TeamKillPunish {
         to_killer: format!("You have been banned for teamkilling ({m} minutes)...\n"),
         command: format!("banid {m} #{uid} kick\n"),
-        to_all: format!("{name} banned for teamkilling ({m} minutes)\n"),
+        to_all: shared::bformat!("{} banned for teamkilling ({} minutes)\n", name, m),
     }
 }
 
@@ -822,7 +825,7 @@ pub fn the_one_is_dead(p: &mut Player, cx: &mut Cx, killer: Option<*mut edict_t>
     match killer.filter(|&k| k != cx.edict) {
         None => ts_message_all(THE_ONE_RGB, 1, 30, "The One is dead."),
         Some(k) => {
-            ts_message_all(THE_ONE_RGB, 1, 30, &format!("The One was killed by {}!", netname(k)));
+            ts_message_all(THE_ONE_RGB, 1, 30, &shared::bformat!("The One was killed by {}!", netname(k)));
             teams::the_one_switch(p, cx);
             set_player_the_one_other(k);
             teams::the_one_switch_other(k);
@@ -874,8 +877,8 @@ pub fn set_player_the_one_core(p: &mut Player, cx: &mut Cx) {
     p.ts.award = 10;
     state::with(|g| g.the_one_exists = true);
     let name = netname(e);
-    ts_message_all(THE_ONE_RGB, 1, 30, &format!("{name} is The One!"));
-    msg::log(&format!("Player \"{name}\" triggered \"the_one\"\n"));
+    ts_message_all(THE_ONE_RGB, 1, 30, &shared::bformat!("{} is The One!", name));
+    msg::log(&shared::bformat!("Player \"{}\" triggered \"the_one\"\n", name));
 }
 
 /// ScoreInfo for any player edict (dispatched or not is handled by the caller).
@@ -922,7 +925,7 @@ mod tests {
     fn kill_log_tags_keep_ts_order() {
         let all = KillTags {
             victims_weapon: true,
-            stopped_fury: Some("Bob".into()),
+            stopped_fury: Some(b"Bob".to_vec()),
             killed_specialist: true,
             double_kill: true,
             diving: true,
@@ -932,16 +935,17 @@ mod tests {
         };
         assert_eq!(
             all.suffix(),
-            " (victims_weapon) (stopped_fury \"Bob\") (killed_specialist) (double_kill) (diving) (sliding) (killed_the_one) (is_killer)"
+            b" (victims_weapon) (stopped_fury \"Bob\") (killed_specialist) (double_kill) (diving) (sliding) (killed_the_one) (is_killer)"
         );
-        assert_eq!(KillTags::default().suffix(), "");
-        assert_eq!(KillTags { victims_weapon: true, ..Default::default() }.suffix(), " (victims_weapon)");
+        assert_eq!(KillTags::default().suffix(), b"");
+        assert_eq!(KillTags { victims_weapon: true, ..Default::default() }.suffix(), b" (victims_weapon)");
     }
 
     #[test]
     fn log_ids_repeat_the_user_id_outside_teamplay() {
-        assert_eq!(log_id("Bob", 7, "STEAM_0:1:2", None), "\"Bob<7><STEAM_0:1:2><7>\"");
-        assert_eq!(log_id("Bob", 7, "BOT", Some("merc")), "\"Bob<7><BOT><merc>\"");
+        assert_eq!(log_id(b"Bob", 7, b"STEAM_0:1:2", None), b"\"Bob<7><STEAM_0:1:2><7>\"");
+        assert_eq!(log_id(b"Bob", 7, b"BOT", Some(b"merc")), b"\"Bob<7><BOT><merc>\"");
+        assert_eq!(log_id(b"Ren\xe9", 7, b"BOT", None), b"\"Ren\xe9<7><BOT><7>\"", "issue #81: the name's bytes as they are");
         assert_eq!(log_weapon("Throwing Combat Knife"), "throwing_combat_knife");
     }
 
@@ -1042,7 +1046,7 @@ mod tests {
     #[test]
     fn own_weapon_kills_are_announced() {
         // Issue #121: "%s #TS_Killed %s #TS_OwnWeapon", killer then victim.
-        assert_eq!(own_weapon_message("Bob", "Al"), "Bob #TS_Killed Al #TS_OwnWeapon");
+        assert_eq!(own_weapon_message(b"Bob", b"Al"), b"Bob #TS_Killed Al #TS_OwnWeapon");
     }
 
     #[test]
@@ -1057,17 +1061,17 @@ mod tests {
     fn team_kill_punishment_tells_the_killer() {
         // Issue #119: the console line is the team killer's (`ClientPrint(pKiller, ...)`).
         assert_eq!(
-            team_kill_punishment("Bob", 7, 0.0),
+            team_kill_punishment(b"Bob", 7, 0.0),
             TeamKillPunish {
                 to_killer: "You have been kicked for teamkilling...\n".into(),
                 command: "kick #7\n".into(),
-                to_all: "Bob kicked for teamkilling\n".into(),
+                to_all: b"Bob kicked for teamkilling\n".to_vec(),
             }
         );
-        let ban = team_kill_punishment("Bob", 7, 5.9);
+        let ban = team_kill_punishment(b"Bob", 7, 5.9);
         assert_eq!(ban.to_killer, "You have been banned for teamkilling (5 minutes)...\n");
         assert_eq!(ban.command, "banid 5 #7 kick\n");
-        assert_eq!(ban.to_all, "Bob banned for teamkilling (5 minutes)\n");
+        assert_eq!(ban.to_all, b"Bob banned for teamkilling (5 minutes)\n");
     }
 
     #[test]

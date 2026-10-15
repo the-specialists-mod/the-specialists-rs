@@ -149,7 +149,7 @@ pub fn player_vote(e: *mut edict_t, idx: i32, text: &str) -> bool {
                 format!("{map} is the current map!\n")
             } else if eng.is_map_valid(&map) {
                 state::with(|g| g.votes.records[idx] = map.clone());
-                msg::text_all(hud_dest::TALK, &format!("{} vote for map {map}\n", netname(e)));
+                msg::text_all(hud_dest::TALK, &shared::bformat!("{} vote for map {}\n", netname(e), map));
                 return true;
             } else {
                 format!("{map} is an invalid map\n")

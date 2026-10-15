@@ -463,10 +463,10 @@ fn check_deads(now: f32) {
             ts_message_all([0, 255, 0], 8, 30, "Waiting for other players.");
         } else {
             let name = super::netname(last);
-            ts_message_all([0, 255, 0], 1, 30, &format!("{name} is the Last Man Standing! 10 frags"));
+            ts_message_all([0, 255, 0], 1, 30, &shared::bformat!("{} is the Last Man Standing! 10 frags", name));
             super::add_frags(last, None, 10.0);
             scoring::broadcast_score(last);
-            msg::log(&format!("Player \"{name}\" triggered \"last_man_standing\"\n"));
+            msg::log(&shared::bformat!("Player \"{}\" triggered \"last_man_standing\"\n", name));
         }
         state::with(|g| g.round_restart = now + 3.0);
         crate::plugins::round_end();

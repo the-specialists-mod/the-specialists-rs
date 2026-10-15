@@ -74,7 +74,7 @@ fn rules() -> &'static ObjectiveRules {
 /// The objective lines: `TSHudMessageAll(0, 255, 0, effect, 30, text)`.
 pub fn hud_line(text: string_t) {
     if text != 0 {
-        msg::ts_message_all([0, 255, 0], rules().hud_effect, 30, &engine().string(text).to_string_lossy());
+        msg::ts_message_all([0, 255, 0], rules().hud_effect, 30, engine().string(text).to_bytes());
     }
 }
 
@@ -174,8 +174,8 @@ fn team_text(texts: &[string_t; 4], team: &str, team_index: i32, names: Option<[
 }
 
 /// `strncpy(buf, text, 0x40)` with the 64th byte zeroed: at most 63 bytes.
-fn clip63(s: &[u8]) -> String {
-    String::from_utf8_lossy(&s[..s.len().min(63)]).into_owned()
+fn clip63(s: &[u8]) -> Vec<u8> {
+    s[..s.len().min(63)].to_vec()
 }
 
 fn team_index(e: *mut edict_t) -> i32 {
@@ -195,7 +195,7 @@ pub fn send_to_hud(idx: i32, player: *mut edict_t) {
         return;
     }
     let t = team_text(&texts, &teams::team_name_of(player), team_index(player), rules().team_names);
-    let text = if t == 0 { String::new() } else { clip63(engine().string(t).to_bytes()) };
+    let text = if t == 0 { Vec::new() } else { clip63(engine().string(t).to_bytes()) };
     let [x, y, z] = center(obj.v());
     msg::one(Msg::Objective, player, |w| Objective { x, y, z, idx: idx as u8, text }.write(w));
 }

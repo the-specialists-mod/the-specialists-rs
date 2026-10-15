@@ -61,12 +61,12 @@ impl Engine {
     }
 
     /// Sets a key in a client's userinfo (`pfnSetClientKeyValue`), e.g. `model` or `team`.
-    pub fn set_client_key(&self, e: *mut edict_t, key: &str, value: &str) {
+    pub fn set_client_key(&self, e: *mut edict_t, key: &str, value: &(impl AsRef<[u8]> + ?Sized)) {
         let buf = eng!(pfnGetInfoKeyBuffer(e));
         if buf.is_null() {
             return;
         }
-        let (k, v) = (to_cstring(key), to_cstring(value));
+        let (k, v) = (to_cstring(key), crate::util::bytes_to_cstring(value.as_ref()));
         eng!(pfnSetClientKeyValue(self.index_of(e), buf, k.as_ptr().cast_mut(), v.as_ptr().cast_mut()))
     }
 
@@ -82,7 +82,7 @@ impl Engine {
     }
 
     /// Writes a line to the server log (`UTIL_LogPrintf`: `at_logged`).
-    pub fn log(&self, msg: &str) {
+    pub fn log(&self, msg: &(impl AsRef<[u8]> + ?Sized)) {
         self.alert(ALERT_TYPE::at_logged, msg);
     }
 
