@@ -211,5 +211,6 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
   `addbot` ones.
 * `create_bot` is refused unless the caller's backend is active, so a backend sees only its own
   bots.
-* Licence: `ts-plugin-api` has no explicit licence yet; issue #104 §5 leaves the choice
-  (MIT/Apache-2.0) to the maintainers.
+* Licence: `ts-plugin-api` is MIT, like the rest of the workspace (`LICENSE`), so GPL bot
+  libraries such as tsmod-rcbot-rs build against a permissively licensed interface crate
+  (#104 §5).
