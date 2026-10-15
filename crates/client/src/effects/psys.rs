@@ -264,6 +264,8 @@ pub struct PSys {
     pub max: usize,
     /// `+0xa0c`: cooldown slots, client time floats.
     cooldown: [f32; 128],
+    /// `TS_MuzzleDlight`'s timer (`0x1018a45c`): not a cooldown slot, and [`PSys::init`] keeps it.
+    pub muzzle_timer: super::fx::MuzzleTimer,
     pub wind: Wind,
     pub physics: bool,
     pub divisor: f32,
@@ -289,6 +291,7 @@ impl Default for PSys {
             sprites: Vec::new(),
             max: 4096,
             cooldown: [0.0; 128],
+            muzzle_timer: Default::default(),
             wind: Wind::default(),
             physics: true,
             divisor: 1.0,

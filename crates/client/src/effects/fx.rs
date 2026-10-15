@@ -226,11 +226,41 @@ pub fn muzzle_flash(
     }
 }
 
+/// `TS_MuzzleDlight`'s rate limit: the client time of the last light (`0x1018a45c`), outside the
+/// particle system, so `PSys_Init` doesn't reset it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MuzzleTimer {
+    last: f32,
+}
+
+impl MuzzleTimer {
+    /// `0x10048e6d..0x10048ec4`: the time since the last light (`0x1018a460`). When it is
+    /// negative the client clock went back (a level change restarts it): the timer restarts from
+    /// now, with no light. Otherwise a light is due once `interval` (`SlowTime(0.1)` with this
+    /// call's time scale) has passed, and the timer restarts.
+    pub fn ready(&mut self, now: f32, interval: f32) -> bool {
+        let elapsed = now - self.last;
+        if elapsed < 0.0 {
+            self.last = now;
+            return false;
+        }
+        if interval > elapsed {
+            return false;
+        }
+        self.last = now;
+        true
+    }
+}
+
 /// `TS_MuzzleDlight` (`0x10048e60`): radius 192, colour (240, 221, 172), life 0.06/ts, at most
-/// one every 0.1/ts seconds (TS keeps its own timer; slot 127 is unused by TS's effect slots).
-/// Off while the adaptive quality is below 0.3 or with `cl_fx 0`.
-pub fn muzzle_dlight(ps: &mut PSys, now: f64, org: Vec3) {
-    if !ps.tuning.dlights || !ps.cooldown_ready(127, now, ps.slow(0.1)) {
+/// one every 0.1/ts seconds by its own timer ([`MuzzleTimer`]). Off while the adaptive quality is
+/// below 0.3 or with `cl_fx 0` (`0x1018ca58`). `_now` is unused: TS asks `GetClientTime`.
+pub fn muzzle_dlight(ps: &mut PSys, _now: f64, org: Vec3) {
+    if !ps.tuning.dlights {
+        return;
+    }
+    let interval = ps.slow(0.1);
+    if !ps.muzzle_timer.ready(engine().client_time(), interval) {
         return;
     }
     if let Some(dl) = r::alloc_dlight(0) {
@@ -818,6 +848,22 @@ pub fn bullet_trail(ps: &mut PSys, now: f64, p1: Vec3, p2: Vec3, w: f32, alpha: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn muzzle_timer() {
+        let mut t = MuzzleTimer::default();
+        assert!(t.ready(500.0, 0.1), "first light");
+        assert!(!t.ready(500.05, 0.1), "within 0.1 s");
+        assert!(t.ready(500.125, 0.1), "0.1 s later");
+        // The interval is this call's: in slow motion (ts 0.25) 0.4 s, at normal speed 0.1 s again.
+        assert!(!t.ready(500.25, 0.4));
+        assert!(t.ready(500.25, 0.1), "a refusal doesn't restart the timer");
+        // A level change restarts the client clock: no light this call, then the new clock rules.
+        assert!(!t.ready(2.0, 0.1), "the clock went back");
+        assert!(!t.ready(2.05, 0.1));
+        assert!(t.ready(2.125, 0.1));
+        assert!(t.ready(2.125, 0.0), "a zero interval allows the same instant");
+    }
 
     /// `VecToAngles` (`0x10046110`) truncates before wrapping: -45.7° yaw is 315, not 314.
     #[test]
