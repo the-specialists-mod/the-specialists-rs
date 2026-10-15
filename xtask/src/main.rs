@@ -770,13 +770,13 @@ fn fx_lines<'a>(text: &'a str, tag: &str) -> Vec<&'a str> {
     out
 }
 
-/// The laser and akimbo scene, with the stopped bot #2 in the game: the host and the bot each get
-/// akimbo Berettas with a laser sight (two `ts_give 2_2`; the laser comes on with the gun), the
-/// host switches to free semi (`firemode`) and looks at the bot side on from 200 units. Then two
-/// akimbo shots: both triggers in one frame (a linked double shot), and the triggers 0.3 s apart
-/// (one shot per gun).
+/// The laser and akimbo scene, with the stopped bot #2 in the game, which spawned with akimbo
+/// Berettas and a laser ([`Ctx::play`] step 2): the host gets the same (two `ts_give 2_2`; the
+/// laser comes on with the gun), switches to free semi (`firemode`) and looks at the bot side on
+/// from 200 units. Then two akimbo shots: both triggers in one frame (a linked double shot), and
+/// the triggers 0.3 s apart (one shot per gun).
 fn script_lasers_and_akimbo() -> String {
-    let mut cfg = "ts_dev_fxlog 1\nts_give 2_2\nwait;wait\nts_give 2_2\nts_as 2 ts_give 2_2\nwait;wait\nts_as 2 ts_give 2_2\n".to_owned();
+    let mut cfg = "ts_dev_fxlog 1\nts_give 2_2\nwait;wait\nts_give 2_2\n".to_owned();
     cfg += &secs(1.0);
     cfg += "firemode\n";
     cfg += &format!("ts_tp 2 0 -480 60 270 0\n{}ts_tp 1 200 -480 60 180 0\n{}ts_face 1 2\n", secs(0.5), secs(0.5));
@@ -1200,8 +1200,14 @@ impl Ctx {
         // 1b. shoot the dojo's front wall: flash, bullets, impacts and decals
         cfg += &script_wall_shots();
 
-        // 2. a stopped bot; it joins as an observer and respawns after the 5 s wait
-        cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}ts_bot_quota\n{}", secs(1.0), secs(8.0));
+        // 2. a stopped bot; it joins as an observer and respawns after the 5 s wait, with akimbo
+        // Berettas and a laser for the laser scene. Its own random loadout can weigh too much for
+        // the Berettas (TS's `PickUpWeapon` refuses a gun the free slots can't take, so a
+        // `ts_give` then did nothing and the bot had no beam, issue #179): it gets them as its
+        // loadout instead, the buy menu's commands (`tkw <id>_<attachments>`, the second gun
+        // bare), while it waits to respawn. That replaces what its buy module chose, or stops it
+        // from buying (a bot buys only with an empty loadout).
+        cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}ts_bot_quota\nts_as 2 rst_cfg\nts_as 2 tkw 2_2 2_0\n{}", secs(1.0), secs(8.0));
 
         // 2b. lasers (first person and on the bot) and akimbo free semi
         cfg += &script_lasers_and_akimbo();
