@@ -37,7 +37,7 @@ fn value_hooks() {
     assert_eq!(CORE.recover_input_scale(), 0.5);
     assert_eq!(CORE.prone_forward_scale(), None);
     assert_eq!((CORE.wall_jump_speed(), CORE.wall_jump_up_velocity()), (210.0, shared::pm::ts::JUMP_VELOCITY));
-    assert_eq!(CORE.wall_climb_velocity(), shared::pm::ts::WALLCLIMB_VELOCITY);
+    assert_eq!(CORE.wall_climb_velocity(), ts30_gameplay::pm::WALLCLIMB_VELOCITY);
     assert!(CORE.wall_dive());
     assert_eq!(CORE.max_player_speed(), 330.0);
 }

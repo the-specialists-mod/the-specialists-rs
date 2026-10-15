@@ -13,28 +13,23 @@ use ::shared::weapons::{Gun, GunHost};
 
 /// Every melee attack runs 2.1's own function ([`melee`]).
 impl MeleeRules for Ts21 {
-    fn knife_fire(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+    fn knife_fire(&self, gun: &mut Gun, host: &mut dyn GunHost) {
         melee::knife_fire(gun, host);
-        true
     }
 
-    fn katana_fire(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+    fn katana_fire(&self, gun: &mut Gun, host: &mut dyn GunHost) {
         melee::katana_fire(gun, host);
-        true
     }
 
-    fn ccombat_attack(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+    fn ccombat_attack(&self, gun: &mut Gun, host: &mut dyn GunHost) {
         melee::ccombat_attack(gun, host);
-        true
     }
 
-    fn ccombat_block(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+    fn ccombat_block(&self, gun: &mut Gun, host: &mut dyn GunHost) {
         melee::ccombat_block(gun, host);
-        true
     }
 
-    fn cold_cock(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
+    fn cold_cock(&self, gun: &mut Gun, host: &mut dyn GunHost) {
         melee::cold_cock(gun, host);
-        true
     }
 }

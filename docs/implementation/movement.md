@@ -334,7 +334,7 @@ the same as the GCC build once the stack is 53 bits wide.
   bullets while `cx.time() < p.stunt.dodge_until`; count kills during `in_airborne_stunt` (or
   `glast_closecombat`, `damage::glast`) as spectacular.
 * **rules or weapons** must set the move speed (`SetPlayerSpeed`: `set_client_maxspeed` with
-  `shared::ts::speed_by_slots`, TS's `GetSpeedBySlots` 0x76bd4: `210 + free * 120 / 81`
+  `ts30_gameplay::pm::speed_by_slots`, TS's `GetSpeedBySlots` 0x76bd4: `210 + free * 120 / 81`
   **truncated**, 330 for The One or an empty inventory; 330 at spawn; through the gameplay
   rules' `PmRules::speed_by_slots` and `max_player_speed`): PM's accel factor depends on it. `weapons::inventory::sync_speed` does this (issue #9: it used to round, one u/s fast for
   39 of the 81 slot counts, and ignored The One).

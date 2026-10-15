@@ -294,6 +294,7 @@ dependencies = [
  "goldsrc",
  "shared",
  "ts-gameplay",
+ "ts30-gameplay",
 ]
 
 [[package]]
@@ -325,6 +326,7 @@ dependencies = [
  "shared",
  "ts-gameplay",
  "ts-plugin-api",
+ "ts30-gameplay",
 ]
 
 [[package]]

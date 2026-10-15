@@ -29,9 +29,9 @@ pub struct TextureLimits {
 }
 
 impl TextureLimits {
-    /// TS 3.0 (`.so` 0xfc050 / 0xfc28c, `mp.dll` 0x10036630 / 0x100368d0): 1024 entries in
-    /// 16-byte slots, 15 characters.
-    pub const TS30: Self = Self { max_entries: 1024, name_chars: CMP_LEN };
+    /// 1024 entries in 16-byte slots, 15 characters: TS 3.0's (`.so` 0xfc050 / 0xfc28c, `mp.dll`
+    /// 0x10036630 / 0x100368d0), which the game code's own table and [`load`]'s count use.
+    pub const LARGE: Self = Self { max_entries: 1024, name_chars: CMP_LEN };
     /// The SDK's (`CTEXTURESMAX` 512, `CBTEXTURENAMEMAX` 13): 512 entries in 13-byte slots, 12
     /// characters.
     pub const SDK: Self = Self { max_entries: 512, name_chars: 12 };
@@ -152,7 +152,7 @@ fn table(limits: TextureLimits) -> Option<&'static Table> {
 /// once per library). Returns the number of entries in TS 3.0's table.
 pub fn load(data: &[u8]) -> usize {
     DATA.get_or_init(|| data.to_vec());
-    table(TextureLimits::TS30).map_or(0, |t| t.names.len())
+    table(TextureLimits::LARGE).map_or(0, |t| t.names.len())
 }
 
 pub fn is_loaded() -> bool {
@@ -161,7 +161,7 @@ pub fn is_loaded() -> bool {
 
 /// [`find_in`] TS 3.0's table.
 pub fn find(name: &[u8]) -> u8 {
-    find_in(name, TextureLimits::TS30)
+    find_in(name, TextureLimits::LARGE)
 }
 
 /// Binary search, as `PM_FindTextureType`, comparing `limits.name_chars` characters (the SDK:
@@ -201,8 +201,8 @@ pub mod texturetype {
         let (_, names, types) = &mut *t;
         names.clear();
         types.clear();
-        let standard = load("sound/materials.txt").map(|d| parse_into(&d, names, types, TextureLimits::TS30)).is_some();
-        let map = load(&format!("sound/{mapname}_materials.txt")).map(|d| parse_into(&d, names, types, TextureLimits::TS30)).is_some();
+        let standard = load("sound/materials.txt").map(|d| parse_into(&d, names, types, TextureLimits::LARGE)).is_some();
+        let map = load(&format!("sound/{mapname}_materials.txt")).map(|d| parse_into(&d, names, types, TextureLimits::LARGE)).is_some();
         t.0 = standard || map;
     }
 
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn parse_and_lookup() {
         let data = b"// comment\n  m ae_roof04\nw BOARD03_128X128\r\nd thisnameiswaytoolongforit\n1 bad\ny last_no_newline";
-        let t = parse(data, TextureLimits::TS30);
+        let t = parse(data, TextureLimits::LARGE);
         assert_eq!(t.names.len(), 3);
         // Sorted case-insensitively.
         assert_eq!(&t.names[0][..9], b"ae_roof04");
@@ -237,7 +237,7 @@ mod tests {
     fn sdk_limits_keep_512_entries() {
         let data: Vec<u8> = (0..1100).flat_map(|i| format!("m tex{i:04}\n").into_bytes()).collect();
         assert_eq!(parse(&data, TextureLimits::SDK).names.len(), 512);
-        assert_eq!(parse(&data, TextureLimits::TS30).names.len(), 1024);
+        assert_eq!(parse(&data, TextureLimits::LARGE).names.len(), 1024);
     }
 
     #[test]

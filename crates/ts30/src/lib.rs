@@ -13,7 +13,10 @@
 
 #![deny(unsafe_code)]
 
-use shared::gameplay::{GunRules, MeleeRules, PmRules};
+pub mod gun;
+pub mod melee;
+pub mod pm;
+pub mod recoil;
 
 /// The plugin's id: the `ts_gameplay` value, physinfo `gp` and `SrvSett` 4.
 pub const ID: &str = "30";
@@ -23,7 +26,3 @@ pub struct Ts30;
 
 /// The plugin's shared hooks object.
 pub static TS30: Ts30 = Ts30;
-
-impl PmRules for Ts30 {}
-impl GunRules for Ts30 {}
-impl MeleeRules for Ts30 {}

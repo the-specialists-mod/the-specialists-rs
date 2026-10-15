@@ -7,15 +7,14 @@
 //! [`player_move`](crate::pm::player_move), which keeps them for the whole command.
 
 pub use crate::pm::textures::TextureLimits;
-use crate::pm::ts::{JUMP_VELOCITY, WALLCLIMB_VELOCITY, WALLJUMP_SPEED};
 pub use crate::pm::{Arith, Vec3};
-use crate::pm::{Gcc, Msvc};
 
 /// How `PM_Accelerate` scales the ground acceleration of a player who is neither prone nor ducked
 /// ([`PmRules::ground_accel`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GroundAccel {
-    /// `PM_GetAccelBySpeed(maxspeed)` (0xfdcc4): 0.6 at 210 u/s up to 1.1 at 330 u/s, TS 3.0's.
+    /// `PM_GetAccelBySpeed(maxspeed)` (0xfdcc4, [`accel_by_speed`](crate::pm::accel_by_speed)):
+    /// 0.6 at 210 u/s up to 1.1 at 330 u/s.
     BySpeed,
     /// A constant factor, a `double`. MSVC multiplies the acceleration while it is still on the
     /// FPU stack (no call in between spills it); GCC multiplies the stored acceleration and
@@ -32,135 +31,83 @@ pub enum Jump {
     High,
 }
 
-/// Movement rules. Every default body is TS 3.0's (`Core`); the movement code calls these where a
-/// ruleset can differ. The movement code is generic over the build's arithmetic
-/// ([`Arith`](crate::pm::Arith)) and a trait object can't be, so a hook either takes and returns
-/// plain values (one whose result feeds the build's arithmetic returns the value the 3.0 code used
-/// as a constant), or takes the `Arith` of the command and computes in it with
-/// [`crate::pm::Fpu`]/[`crate::pm::FpuMath`].
+/// Movement rules: the movement code calls these where a ruleset can differ. The movement code is
+/// generic over the build's arithmetic ([`Arith`](crate::pm::Arith)) and a trait object can't be,
+/// so a hook either takes and returns plain values (one whose result feeds the build's arithmetic
+/// returns a value the movement uses as a constant), or takes the `Arith` of the command and
+/// computes in it with [`crate::pm::Fpu`]/[`crate::pm::FpuMath`].
 pub trait PmRules: Sync {
-    /// `PM_Accelerate` (0xfdd08, client 0x1002b830): the ground acceleration factor while not
-    /// prone and not `FL_DUCKING`.
-    fn ground_accel(&self) -> GroundAccel {
-        GroundAccel::BySpeed
-    }
+    /// `PM_Accelerate`: the ground acceleration factor while not prone and not `FL_DUCKING`.
+    fn ground_accel(&self) -> GroundAccel;
 
-    /// `TSHandle` (0xf96a0): the scale on the usercmd's forward, side and up moves while the
-    /// stunt bit `RECOVER` is set (getting up after a dive or roll). A `double` (mp.dll
-    /// 0x10089180), multiplying each move on the FPU stack.
-    fn recover_input_scale(&self) -> f64 {
-        0.5
-    }
+    /// `TSHandle`: the scale on the usercmd's forward, side and up moves while the stunt bit
+    /// `RECOVER` is set (getting up after a dive or roll), a `double` multiplying each move on the
+    /// FPU stack.
+    fn recover_input_scale(&self) -> f64;
 
-    /// `TSHandle` (0xf96a0): while `PRONE`, TS 3.0 sets the forward move to 0. `Some(k)`
-    /// multiplies it by the `double` k instead (which keeps a -0 or a NaN).
-    fn prone_forward_scale(&self) -> Option<f64> {
-        None
-    }
+    /// `TSHandle`: the forward move while `PRONE`. `None` sets it to 0; `Some(k)` multiplies it by
+    /// the `double` k instead (which keeps a -0 or a NaN).
+    fn prone_forward_scale(&self) -> Option<f64>;
 
-    /// `TSWallJump` (0xf9444): the speed the wall jump pushes the player away from the wall.
-    fn wall_jump_speed(&self) -> f32 {
-        WALLJUMP_SPEED
-    }
+    /// `TSWallJump`: the speed the wall jump pushes the player away from the wall.
+    fn wall_jump_speed(&self) -> f32;
 
-    /// `TSWallJump` (0xf9444): the wall jump's upward speed, the normal jump's.
-    fn wall_jump_up_velocity(&self) -> f32 {
-        JUMP_VELOCITY
-    }
+    /// `TSWallJump`: the wall jump's upward speed.
+    fn wall_jump_up_velocity(&self) -> f32;
 
-    /// `TSWallJumpClimb` (0xf94e0): the upward speed of a wall climb.
-    fn wall_climb_velocity(&self) -> f32 {
-        WALLCLIMB_VELOCITY
-    }
+    /// `TSWallJumpClimb`: the upward speed of a wall climb.
+    fn wall_climb_velocity(&self) -> f32;
 
-    /// `TSDive` (0xf9534): whether a dive with the stunt bit `WALLDIVE` goes along `forward × 3`
-    /// (then clearing the bit). Without it the dive follows the velocity and the bit stays.
-    fn wall_dive(&self) -> bool {
-        true
-    }
+    /// `TSDive`: whether a dive with the stunt bit `WALLDIVE` goes along `forward × 3` (then
+    /// clearing the bit). Without it the dive follows the velocity and the bit stays.
+    fn wall_dive(&self) -> bool;
 
-    /// `FixVelocity(velocity, limit)` (0xf8fc4): TS 3.0's is empty, and nothing calls it. The
-    /// movement calls this after the dive, wall jump and wall climb impulses with
-    /// `limit = 2 × maxspeed`.
-    fn fix_velocity(&self, arith: Arith, velocity: &mut Vec3, limit: f32) {
-        let _ = (arith, velocity, limit);
-    }
+    /// `FixVelocity(velocity, limit)`: the movement calls this after the dive, wall jump and wall
+    /// climb impulses with `limit = 2 × maxspeed`.
+    fn fix_velocity(&self, arith: Arith, velocity: &mut Vec3, limit: f32);
 
-    /// `PM_Jump` (0xf9944): called on a jump off the ground just before the upward speed is set,
-    /// with the command's buttons and `maxspeed`. TS 3.0 changes nothing.
-    fn jump_push(&self, arith: Arith, jump: Jump, buttons: u16, maxspeed: f32, velocity: &mut Vec3) {
-        let _ = (arith, jump, buttons, maxspeed, velocity);
-    }
+    /// `PM_Jump`: called on a jump off the ground just before the upward speed is set, with the
+    /// command's buttons and `maxspeed`.
+    fn jump_push(&self, arith: Arith, jump: Jump, buttons: u16, maxspeed: f32, velocity: &mut Vec3);
 
-    /// `PM_PlayerMove` (0x1008d8): the frame time scaled by the time scale (`fuser1`, 1.0 =
-    /// normal), frozen below 0.1 (or NaN).
-    fn scaled_frametime(&self, frametime: f32, fuser1: f32) -> f32 {
-        if crate::pm::below87(fuser1, crate::ts::TIME_SCALE_FREEZE) { 0.0 } else { frametime * fuser1 }
-    }
+    /// `PM_PlayerMove`: the frame time scaled by the time scale (`fuser1`, 1.0 = normal).
+    fn scaled_frametime(&self, frametime: f32, fuser1: f32) -> f32;
 
-    /// `PM_DropPunchAngle` (0x100760, client 0x1002e1c0): the decayed punch angle. `frametime`
-    /// is `pmove->frametime` when `PM_CheckParamters` runs.
-    fn drop_punch_angle(&self, arith: Arith, punch: Vec3, dead: bool, fuser1: f32, frametime: f32) -> Vec3 {
-        match arith {
-            Arith::Gcc => crate::pm::drop_punch_angle::<Gcc>(punch, dead, fuser1, frametime),
-            Arith::Msvc => crate::pm::drop_punch_angle::<Msvc>(punch, dead, fuser1, frametime),
-        }
-    }
+    /// `PM_DropPunchAngle`: the decayed punch angle. `frametime` is `pmove->frametime` when
+    /// `PM_CheckParamters` runs.
+    fn drop_punch_angle(&self, arith: Arith, punch: Vec3, dead: bool, fuser1: f32, frametime: f32) -> Vec3;
 
-    /// `PM_UpdateStepSound` (0xfe2d4): the footstep interval in ms in slow motion, from the
-    /// normal one: `interval / max(fuser1, 0.1)`, truncated.
-    fn step_interval(&self, arith: Arith, interval: i32, fuser1: f32) -> i32 {
-        match arith {
-            Arith::Gcc => crate::pm::step_interval::<Gcc>(interval, fuser1),
-            Arith::Msvc => crate::pm::step_interval::<Msvc>(interval, fuser1),
-        }
-    }
+    /// `PM_UpdateStepSound`: the footstep interval in ms in slow motion, from the normal one.
+    fn step_interval(&self, arith: Arith, interval: i32, fuser1: f32) -> i32;
 
-    /// `PM_InitTextureTypes` / `PM_FindTextureType` / `PM_CatagorizeTextureType` (`mp.dll`
-    /// 0x10036630 / 0x100368d0): the footstep material table's size and name length. TS 3.0:
-    /// 1024 entries, 15 characters.
-    fn texture_limits(&self) -> TextureLimits {
-        TextureLimits::TS30
-    }
+    /// `PM_InitTextureTypes` / `PM_FindTextureType` / `PM_CatagorizeTextureType`: the footstep
+    /// material table's size and name length.
+    fn texture_limits(&self) -> TextureLimits;
 
-    /// `PM_SpectatorMove` (`mp.dll` 0x10038d20) in eye: the observer's pitch from the target's
-    /// entity pitch, which TS 3.0 copies unchanged.
-    fn in_eye_pitch(&self, target_pitch: f32) -> f32 {
-        target_pitch
-    }
+    /// `PM_SpectatorMove` in eye: the observer's pitch from the target's entity pitch.
+    fn in_eye_pitch(&self, target_pitch: f32) -> f32;
 
-    /// `PM_CalcRoll` (`mp.dll` 0x1003a341): below `rollspeed` the roll is
-    /// `side * rollangle / rollspeed` (TS 3.0, false) or `side / rollspeed * rollangle` (true),
-    /// both on the FPU stack.
-    fn roll_divides_first(&self) -> bool {
-        false
-    }
+    /// `PM_CalcRoll`: below `rollspeed` the roll is `side * rollangle / rollspeed` (false) or
+    /// `side / rollspeed * rollangle` (true), both on the FPU stack.
+    fn roll_divides_first(&self) -> bool;
 
     /// `PM_Friction`'s edge-trace start, 16 units ahead: `vel[i] / speed * 16 + origin[i]`
-    /// (TS 3.0, false) or `(1 / speed) * vel[i] * 16 + origin[i]` with the reciprocal kept on
-    /// the FPU stack (true).
-    fn friction_edge_by_reciprocal(&self) -> bool {
-        false
-    }
+    /// (false) or `(1 / speed) * vel[i] * 16 + origin[i]` with the reciprocal kept on the FPU
+    /// stack (true).
+    fn friction_edge_by_reciprocal(&self) -> bool;
 
     /// Whether the movement's `float` compares follow IEEE (a NaN compares false and unequal)
     /// under [`Arith::Msvc`]: the build's compiler tests `fcom` through the parity flag
-    /// ([`crate::pm::Fpu::IEEE_CMP`], [`crate::pm::MsvcIeee`]). TS 3.0's `mp.dll` and
-    /// `client.dll` test C3/C0, so a NaN takes the "equal" and "below" branches (false). Only NaN
-    /// movement state behaves differently. [`Arith::Gcc`] keeps `ts_i386.so`'s compares.
-    fn ieee_compares(&self) -> bool {
-        false
-    }
+    /// ([`crate::pm::Fpu::IEEE_CMP`], [`crate::pm::MsvcIeee`]). False tests C3/C0, so a NaN takes
+    /// the "equal" and "below" branches. Only NaN movement state behaves differently.
+    /// [`Arith::Gcc`] keeps `ts_i386.so`'s compares.
+    fn ieee_compares(&self) -> bool;
 
-    /// `GetSpeedBySlots` (0x76bd4): the move speed for `free` inventory slots. Server only: the
-    /// client gets it as `maxspeed`.
-    fn speed_by_slots(&self, free: i32, the_one: bool) -> f32 {
-        crate::ts::speed_by_slots(free, the_one)
-    }
+    /// `GetSpeedBySlots`: the move speed for `free` inventory slots. Server only: the client gets
+    /// it as `maxspeed`.
+    fn speed_by_slots(&self, free: i32, the_one: bool) -> f32;
 
-    /// `CBasePlayer::SetPlayerSpeed` (0x93068): the top of its clamp, and the speed `TSInit`
-    /// (0x92a4c) starts a player with. Server only.
-    fn max_player_speed(&self) -> f32 {
-        330.0
-    }
+    /// `CBasePlayer::SetPlayerSpeed`: the top of its clamp, and the speed `TSInit` starts a player
+    /// with. Server only.
+    fn max_player_speed(&self) -> f32;
 }

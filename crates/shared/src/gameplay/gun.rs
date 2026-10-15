@@ -8,78 +8,54 @@
 use crate::pm::Arith;
 use crate::weapons::gun::{Gun, GunHost};
 use crate::weapons::spread;
-use crate::weapons::table::{Tables, WeaponInfo, base_tables};
+use crate::weapons::table::{Tables, WeaponInfo};
 
-/// Gun rules. Every default body is TS 3.0's (`Core`); the gun code calls these where a ruleset
-/// can differ. The melee attacks are in the supertrait [`MeleeRules`].
+/// Gun rules: the gun code calls these where a ruleset can differ. The melee attacks are in the
+/// supertrait [`MeleeRules`].
 pub trait GunRules: MeleeRules + Sync {
     /// The ruleset's weapon, ammo, asset, sequence and combat tables. Both sides make them the
     /// tables `weapons::tables()` returns while the ruleset is active
     /// ([`set_ruleset_tables`](crate::weapons::table::set_ruleset_tables)), so everything that
     /// reads weapon data (the gun, inventory, buying, the HUD, damage) follows the ruleset.
-    fn tables(&self) -> &'static Tables {
-        base_tables()
-    }
+    fn tables(&self) -> &'static Tables;
 
-    /// `CTSGun::Fire` (0x81c78) and the shot it fires: the standard, shotgun or akimbo shot, with
-    /// its spread, recoil, ammo use and next-attack delays. Called by
-    /// [`Gun::fire`](crate::weapons::Gun::fire) for every trigger pull and burst round.
-    fn fire(&self, gun: &mut Gun, host: &mut dyn GunHost) {
-        gun.fire_core(host);
-    }
+    /// `CTSGun::Fire` and the shot it fires: the standard, shotgun or akimbo shot, with its spread,
+    /// recoil, ammo use and next-attack delays. Called by [`Gun::fire`](crate::weapons::Gun::fire)
+    /// for every trigger pull and burst round.
+    fn fire(&self, gun: &mut Gun, host: &mut dyn GunHost);
 
-    /// `CTSGun::StandardFire` (0x824a4): the delay before the next primary shot of a gun in semi-auto
-    /// mode that can also fire full auto. `rate` is the weapon's own fire rate (`info.rate`),
-    /// which full auto uses.
-    fn semi_auto_delay(&self, rate: f32) -> f32 {
-        let _ = rate;
-        0.1
-    }
+    /// `CTSGun::StandardFire`: the delay before the next primary shot of a gun in semi-auto mode
+    /// that can also fire full auto. `rate` is the weapon's own fire rate (`info.rate`), which full
+    /// auto uses.
+    fn semi_auto_delay(&self, rate: f32) -> f32;
 
     /// The step the weapon timers run down by in one player think or predicted command
-    /// ([`Gun::decrement_timers`](crate::weapons::Gun::decrement_timers)): TS 3.0's
-    /// `frametime * GiveSlowMul() * (double fire rate ? 1.5 : 1)` (`CBasePlayer::PostThink`
-    /// 0x91ae7, client `0x10003ec5`). `frametime` is the engine's (`gpGlobals->frametime`) or
-    /// [`command_frame_time`](Self::command_frame_time); `fuser1` the player's time scale.
-    fn timer_step(&self, arith: Arith, frametime: f64, fuser1: f32, powerups: u16) -> f64 {
-        Gun::timer_dt(arith, frametime as f32, spread::fixed_slow_amt(fuser1), powerups) as f64
-    }
+    /// ([`Gun::decrement_timers`](crate::weapons::Gun::decrement_timers)). `frametime` is the
+    /// engine's (`gpGlobals->frametime`) or [`command_frame_time`](Self::command_frame_time);
+    /// `fuser1` the player's time scale, `powerups` the player's power-ups.
+    fn timer_step(&self, arith: Arith, frametime: f64, fuser1: f32, powerups: u16) -> f64;
 
     /// The frame time of one predicted command of `msec` milliseconds, as the client's
-    /// `HUD_PostRunCmd` computes it: TS 3.0's `(float)(msec * 0.001)` with the `double` constant
-    /// (`0x10003eb7`), which is also the engine's `frametime` for the server's `PostThink`.
-    fn command_frame_time(&self, msec: u8) -> f64 {
-        (msec as f64 * 0.001) as f32 as f64
-    }
+    /// `HUD_PostRunCmd` computes it.
+    fn command_frame_time(&self, msec: u8) -> f64;
 
-    /// The recoil penalty's decay in one think ([`SpreadDecay`]): TS 3.0's `PreThink` (0x80d88)
-    /// while alive, and the client's `HUD_WeaponsPostThink` (`0x100040a5`) on a first prediction,
-    /// both `pen -= step * 0.1` by the frame's timer step.
+    /// The recoil penalty's decay in one think ([`SpreadDecay`]): the server's `PreThink`, and the
+    /// client's `HUD_WeaponsPostThink` on a first prediction.
     ///
-    /// Returns whether the client's crosshair copy of the penalty (`0x1018d188`) takes the gun's
-    /// penalty at the end of this prediction (the server ignores it): TS 3.0 copies it on every
-    /// first prediction (`0x100040dc..`), so always.
-    fn decay_spread(&self, gun: &mut Gun, d: &SpreadDecay) -> bool {
-        if d.alive {
-            gun.decay_spread(d.arith, d.step);
-        }
-        true
-    }
+    /// Returns whether the client's crosshair copy of the penalty takes the gun's penalty at the
+    /// end of this prediction (the server ignores it).
+    fn decay_spread(&self, gun: &mut Gun, d: &SpreadDecay) -> bool;
 
     /// The offset of pellet `i` (1-based) of a shot with random seed `seed`, in units of its
     /// spread, `(right, up)`, for the server's `ShootBulletsPlayer` and the client fire event's
-    /// re-trace (`EV_TS_FireBullets`). `None` is TS 3.0's polar pattern, which each side
-    /// computes as its build does ([`spread::polar_offset`] of each side's random draws).
-    /// `bot_random` is the engine's `RandomFloat(lo, hi)` when the server fires for a bot, for
-    /// rules that don't seed a bot's pellets.
-    fn pellet_offset(&self, seed: u32, i: u32, bot_random: Option<&mut dyn FnMut(f32, f32) -> f32>) -> Option<(f32, f32)> {
-        let _ = (seed, i, bot_random);
-        None
-    }
+    /// re-trace (`EV_TS_FireBullets`). `None` is the polar pattern, which each side computes as
+    /// its build does ([`spread::polar_offset`] of each side's random draws). `bot_random` is the
+    /// engine's `RandomFloat(lo, hi)` when the server fires for a bot, for rules that don't seed a
+    /// bot's pellets.
+    fn pellet_offset(&self, seed: u32, i: u32, bot_random: Option<&mut dyn FnMut(f32, f32) -> f32>) -> Option<(f32, f32)>;
 
     /// The direction of a pellet at offset `offset` from the aim `aim` (not normalised), for the
-    /// server's `ShootBulletsPlayer` or the client fire event (`side`): TS 3.0's
-    /// [`spread::pellet_dir`], rounded as each of its builds does (issue #161).
+    /// server's `ShootBulletsPlayer` or the client fire event (`side`).
     fn pellet_dir(
         &self,
         side: spread::PelletSide,
@@ -88,72 +64,46 @@ pub trait GunRules: MeleeRules + Sync {
         up: spread::Vec3,
         spread: [f32; 2],
         offset: spread::PelletOffset,
-    ) -> spread::Vec3 {
-        spread::pellet_dir(side, aim, right, up, spread, offset)
-    }
+    ) -> spread::Vec3;
 
     /// The client fire event's akimbo bullet origins (`EV_TS_FireAkimbo`), units along `v_right`
     /// from the gun position: the first traced with the event's seed, the second (linked shots
-    /// only) with seed + 0x21. TS 3.0: +5 then -5 for a linked shot (`0x100409be..0x10040a01`,
-    /// 5.0 at `0x1007a8d0` with `b2`; `0x10040a66..0x10040aa5`, -5.0 at `0x1007d6f8` with
-    /// `b2 + 0x21`; `0x10189e50` is `AngleVectors`' right at `0x1003f1f8`), none for one gun.
-    /// `toggle` is the event's `bparam1`, the gun that fired.
-    fn akimbo_event_offsets(&self, linked: bool, toggle: bool) -> (f32, Option<f32>) {
-        let _ = toggle;
-        if linked { (5.0, Some(-5.0)) } else { (0.0, None) }
-    }
+    /// only) with seed + 0x21. `toggle` is the event's `bparam1`, the gun that fired.
+    fn akimbo_event_offsets(&self, linked: bool, toggle: bool) -> (f32, Option<f32>);
 
-    /// Which parts of `ItemPostFrame` the client's weapon prediction runs. TS 3.0's
-    /// (`0x1000b7b0`) runs them all.
-    fn predicted(&self) -> Predicted {
-        Predicted::ALL
-    }
+    /// Which parts of `ItemPostFrame` the client's weapon prediction runs.
+    fn predicted(&self) -> Predicted;
 
     /// Whether +cancel (+alt2) lets the weapon frame run during a magazine reload of weapon
-    /// `info` (`CBasePlayer::ItemPostFrame` 0xdc4d0): in TS 3.0, a weapon with a stock hit.
-    fn cancel_runs_frame_in_reload(&self, info: &WeaponInfo) -> bool {
-        info.stock != 0
-    }
+    /// `info` (`CBasePlayer::ItemPostFrame`).
+    fn cancel_runs_frame_in_reload(&self, info: &WeaponInfo) -> bool;
 
-    /// `CTSGun::GetBetterWeapon(excluded)` (0x80f40): the weapon to draw instead (0 for kung
-    /// fu), for a gun that loses its current weapon or a bot that wants another.
-    /// 3.0: [`Gun::better_weapon_core`], the first owned one in `g_iWeaponPriority`.
-    fn better_weapon(&self, gun: &Gun, excluded: u8) -> u8 {
-        gun.better_weapon_core(excluded)
-    }
+    /// `CTSGun::GetBetterWeapon(excluded)`: the weapon to draw instead (0 for kung fu), for a gun
+    /// that loses its current weapon or a bot that wants another.
+    fn better_weapon(&self, gun: &Gun, excluded: u8) -> u8;
 
     /// Whether the knife (+attack, +attack2) and the katana (+attack) attack only on the frame
-    /// the button goes down. TS 3.0's `PrimaryAttack` (0x81a20) and `SecondaryAttack` (0x817a8)
-    /// call them while the button is held: false.
-    fn blades_need_press(&self) -> bool {
-        false
-    }
+    /// the button goes down (`PrimaryAttack`, `SecondaryAttack`); otherwise while it is held.
+    fn blades_need_press(&self) -> bool;
 
-    /// Whether +attack2 throws the katana (`SecondaryAttack` 0x817a8 → `KatanaThrow`); otherwise
-    /// the katana takes the generic scope / alt-grip path. 3.0: true.
-    fn katana_throws(&self) -> bool {
-        true
-    }
+    /// Whether +attack2 throws the katana (`SecondaryAttack` → `KatanaThrow`); otherwise the
+    /// katana takes the generic scope / alt-grip path.
+    fn katana_throws(&self) -> bool;
 
-    /// Whether Infinite Clip stops `WeaponIdle` (0x854dc) reloading an empty gun
-    /// (`!InfiniteClips(pl) && clip < 1`). 3.0: true.
-    fn infinite_clip_skips_idle_reload(&self) -> bool {
-        true
-    }
+    /// Whether Infinite Clip stops `WeaponIdle` reloading an empty gun.
+    fn infinite_clip_skips_idle_reload(&self) -> bool;
 
-    /// Whether `HolsterWeapon` (0x85698) unzooms (`Unzoom`, which may put the gun's view model
-    /// back) and then draws kung fu: weapon 0's view model, its draw animation and the draw
-    /// event. Otherwise it only sets the FOV to 0 and leaves no view model. 3.0: true.
-    fn holster_draws_kungfu(&self) -> bool {
-        true
-    }
+    /// Whether `HolsterWeapon` unzooms (`Unzoom`, which may put the gun's view model back) and
+    /// then draws kung fu: weapon 0's view model, its draw animation and the draw event. Otherwise
+    /// it only sets the FOV to 0 and leaves no view model.
+    fn holster_draws_kungfu(&self) -> bool;
 }
 
 /// One think's recoil-penalty decay ([`GunRules::decay_spread`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpreadDecay {
     pub arith: Arith,
-    /// The frame's weapon timer step (TS 3.0 decays by it).
+    /// The frame's weapon timer step.
     pub step: f32,
     /// The game time of the think (the server's `gpGlobals->time`, the command's time on the
     /// client).
@@ -180,91 +130,22 @@ impl Predicted {
     pub const ALL: Predicted = Predicted { reload_finish: true, alt_attack: true, kungfu_reload: true };
 }
 
-/// Whole melee attacks a ruleset may run its own way (issue #100 §1.0: hook a whole function
-/// where a ruleset runs a different algorithm). Each returns true when it handled the attack;
-/// the default returns false and TS 3.0's [`Gun`] method runs.
+/// Whole melee attacks, which a ruleset runs its own way (issue #100 §1.0: hook a whole function
+/// where a ruleset runs a different algorithm). The gun's [`Gun`] methods of the same names call
+/// these.
 pub trait MeleeRules {
-    /// `CTSGun::KnifeFire` (0x84044): the knife's slash or throw.
-    fn knife_fire(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
-        let _ = (gun, host);
-        false
-    }
+    /// `CTSGun::KnifeFire`: the knife's slash or throw.
+    fn knife_fire(&self, gun: &mut Gun, host: &mut dyn GunHost);
 
-    /// `CTSGun::KatanaFire` (0x833f0): a katana swing.
-    fn katana_fire(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
-        let _ = (gun, host);
-        false
-    }
+    /// `CTSGun::KatanaFire`: a katana swing.
+    fn katana_fire(&self, gun: &mut Gun, host: &mut dyn GunHost);
 
-    /// `CTSGun::CCombatAttack` (0x86078): a kung-fu punch or kick.
-    fn ccombat_attack(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
-        let _ = (gun, host);
-        false
-    }
+    /// `CTSGun::CCombatAttack`: a kung-fu punch or kick.
+    fn ccombat_attack(&self, gun: &mut Gun, host: &mut dyn GunHost);
 
-    /// `CTSGun::CCombatBlock` (0x85ebc): the reload key with kung fu or a blade.
-    fn ccombat_block(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
-        let _ = (gun, host);
-        false
-    }
+    /// `CTSGun::CCombatBlock`: the reload key with kung fu or a blade.
+    fn ccombat_block(&self, gun: &mut Gun, host: &mut dyn GunHost);
 
-    /// `CTSGun::ColdCock` (0x81dd0): the stock hit (`+alt2`).
-    fn cold_cock(&self, gun: &mut Gun, host: &mut dyn GunHost) -> bool {
-        let _ = (gun, host);
-        false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::gameplay::DEFAULTS;
-    use crate::ts::powerup;
-
-    /// The core plugin's gun hooks are TS 3.0's code, unchanged.
-    #[test]
-    fn core_gun_hooks_are_ts30() {
-        assert!(std::ptr::eq(DEFAULTS.tables(), base_tables()));
-        for arith in [Arith::Gcc, Arith::Msvc] {
-            for (ft, fuser1, pw) in [(0.01f32, 1.0f32, 0u16), (0.001, 0.65, powerup::DOUBLE_FIRERATE), (0.02, 0.0, 0)] {
-                let want = Gun::timer_dt(arith, ft, spread::fixed_slow_amt(fuser1), pw);
-                assert_eq!(DEFAULTS.timer_step(arith, ft as f64, fuser1, pw), want as f64);
-            }
-        }
-        for msec in 0..=255u8 {
-            assert_eq!(DEFAULTS.command_frame_time(msec), (msec as f64 * 0.001) as f32 as f64);
-        }
-        assert_eq!(DEFAULTS.pellet_offset(5, 1, None), None);
-        assert_eq!(DEFAULTS.akimbo_event_offsets(true, true), (5.0, Some(-5.0)));
-        assert_eq!(DEFAULTS.akimbo_event_offsets(true, false), (5.0, Some(-5.0)));
-        assert_eq!(DEFAULTS.akimbo_event_offsets(false, true), (0.0, None));
-        assert_eq!(DEFAULTS.predicted(), Predicted::ALL);
-        assert_eq!(DEFAULTS.semi_auto_delay(0.07), 0.1);
-        let ak = base_tables().weapon(crate::weapons::id::AK47).unwrap();
-        let m4 = base_tables().weapon(crate::weapons::id::M4).unwrap();
-        assert!(!DEFAULTS.cancel_runs_frame_in_reload(ak) && DEFAULTS.cancel_runs_frame_in_reload(m4));
-        assert!(!DEFAULTS.blades_need_press() && DEFAULTS.katana_throws() && DEFAULTS.infinite_clip_skips_idle_reload());
-        assert!(DEFAULTS.holster_draws_kungfu());
-        let mut g = Gun::default();
-        assert_eq!(DEFAULTS.better_weapon(&g, 0), 0, "nothing owned: kung fu");
-        for id in [crate::weapons::id::AK47, crate::weapons::id::BENELLI] {
-            g.status[id as usize].owned = true;
-        }
-        assert_eq!(DEFAULTS.better_weapon(&g, 0), crate::weapons::id::AK47, "13 comes before 4 in the list");
-        assert_eq!(DEFAULTS.better_weapon(&g, crate::weapons::id::AK47), crate::weapons::id::BENELLI);
-    }
-
-    /// TS 3.0's decay: by the step, only while alive; the time isn't recorded.
-    #[test]
-    fn core_decay_is_the_step() {
-        let mut g = Gun { spread_penalty: 0.05, ..Gun::default() };
-        let mut want = g.clone();
-        want.decay_spread(Arith::Msvc, 0.01);
-        let d = SpreadDecay { arith: Arith::Msvc, step: 0.01, time: 99.0, time_scale: 0.5, alive: true };
-        // The crosshair's copy follows the penalty on every first prediction.
-        assert!(DEFAULTS.decay_spread(&mut g, &d));
-        assert_eq!(g, want);
-        DEFAULTS.decay_spread(&mut g, &SpreadDecay { alive: false, ..d });
-        assert_eq!(g, want);
-    }
+    /// `CTSGun::ColdCock`: the stock hit (`+alt2`).
+    fn cold_cock(&self, gun: &mut Gun, host: &mut dyn GunHost);
 }

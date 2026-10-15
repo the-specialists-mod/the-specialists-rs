@@ -31,21 +31,14 @@ pub struct ClientPlugin {
     pub client: &'static dyn ClientRules,
 }
 
-/// Every hook's default body, for this crate's tests of the code behind them (they move to
-/// the 3.0 plugin with the bodies, issue #200).
+/// A stand-in ruleset for this crate's tests, which run with nothing registered: inert answers
+/// for the hooks they reach (the rulesets' own crates test their bodies).
 #[cfg(test)]
 pub(crate) struct Defaults;
 
+/// [`Defaults`] as a plugin, with the 3.0 plugin's movement and gun rules.
 #[cfg(test)]
-impl PmRules for Defaults {}
-#[cfg(test)]
-impl GunRules for Defaults {}
-#[cfg(test)]
-impl shared::gameplay::MeleeRules for Defaults {}
-
-/// [`Defaults`] as a plugin.
-#[cfg(test)]
-pub(crate) static DEFAULTS: ClientPlugin = ClientPlugin { pm: &Defaults, gun: &Defaults, client: &Defaults };
+pub(crate) static DEFAULTS: ClientPlugin = ClientPlugin { pm: &ts30_gameplay::TS30, gun: &ts30_gameplay::TS30, client: &Defaults };
 
 /// The registered plugins. The first one the client library registers is the default: the rules
 /// for a server that sends no ruleset (TS 3.0's own) or one this client doesn't have.

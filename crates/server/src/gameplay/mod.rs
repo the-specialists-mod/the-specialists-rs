@@ -36,17 +36,11 @@ pub struct ServerPlugin {
     pub server: &'static dyn ServerRules,
 }
 
-/// Every hook's default body, for this crate's tests of the code behind them (they move to
-/// the 3.0 plugin with the bodies, issue #200).
+/// A stand-in ruleset for this crate's tests, which run with nothing registered: inert answers
+/// for the hooks they reach (the rulesets' own crates test their bodies).
 #[cfg(test)]
 pub(crate) struct Defaults;
 
-#[cfg(test)]
-impl PmRules for Defaults {}
-#[cfg(test)]
-impl GunRules for Defaults {}
-#[cfg(test)]
-impl shared::gameplay::MeleeRules for Defaults {}
 /// Neutral stand-ins for the rules hooks, which this crate's tests don't reach: the 3.0 plugin's
 /// own tests (`ts30-server`) check its bodies.
 #[cfg(test)]
@@ -377,9 +371,9 @@ pub(crate) const TEST_POWERUPS: crate::rules::powerup::PowerupRules = crate::rul
     grenade_selects: true,
 };
 
-/// [`Defaults`] as a plugin.
+/// [`Defaults`] as a plugin, with the 3.0 plugin's movement and gun rules.
 #[cfg(test)]
-pub(crate) static DEFAULTS: ServerPlugin = ServerPlugin { pm: &Defaults, gun: &Defaults, server: &Defaults };
+pub(crate) static DEFAULTS: ServerPlugin = ServerPlugin { pm: &ts30_gameplay::TS30, gun: &ts30_gameplay::TS30, server: &Defaults };
 
 /// The registered plugins. The first one the server library registers is the default: the
 /// fallback for an empty or unknown id, and the plugin the server runs before its first map.

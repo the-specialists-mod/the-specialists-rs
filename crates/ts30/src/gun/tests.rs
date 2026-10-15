@@ -1,21 +1,13 @@
 use super::*;
-use crate::weapons::id;
+use shared::pm::Arith;
+use shared::weapons::gun::{MeleeHit, MeleeResult, Shot, Sound, Virtual};
+use shared::weapons::spread::Vec3;
+use shared::weapons::{EventArgs, att, id, info};
 
-/// The melee back test and speed per build (issue #170): the old all-`float` dot here was exactly
-/// -0.5 (backward); every TS build's unrounded dot is -0.49999999 (not backward), and the speed is
-/// stored from the build's sum (100.0000076, where the old `float` length was 100).
-#[test]
-fn melee_back_dot_and_speed_per_build() {
-    let f = |b: [u32; 3]| b.map(f32::from_bits);
-    let fwd = f([0x3f7c_b7d3, 0xbe23_711c, 0]);
-    let vel = f([0xc298_35d3, 0x4348_2ee3, 0xbdcf_3cb1]);
-    for form in [BackDot::Kept, BackDot::Stored] {
-        assert_eq!(back_dot(Arith::Msvc, form, fwd, vel), (false, -0.5), "{form:?}");
-    }
-    assert_eq!(back_dot(Arith::Gcc, BackDot::Kept, [1.0, 0.0, 0.0], [-3.0, 0.0, 0.0]), (true, -1.0));
-    let v = f([0x410a_37da, 0x41a7_cb22, 0xc2c2_c961]);
-    assert_eq!(melee_speed(Arith::Msvc, v).to_bits(), 0x42c8_0001);
-}
+const IN_DUCK: u32 = 4;
+const IN_BACK: u32 = 16;
+const IN_RELOAD: u32 = 0x2000;
+const STUNTING_KUNGFU: i32 = 0x50c30;
 
 /// Records everything the gun asks of its host.
 #[derive(Default)]
@@ -95,8 +87,8 @@ impl GunHost for Mock {
     fn arith(&self) -> Arith {
         self.arith.unwrap_or(Arith::CLIENT)
     }
-    fn rules(&self) -> &'static dyn crate::gameplay::GunRules {
-        &crate::gameplay::DEFAULTS
+    fn rules(&self) -> &'static dyn shared::gameplay::GunRules {
+        &crate::TS30
     }
     fn first_prediction(&self) -> bool {
         !self.repredict
@@ -273,7 +265,7 @@ fn slow_motion_scales_timers() {
 #[test]
 fn double_fire_rate_is_1_5x() {
     let (mut g, mut h) = armed(id::AK47);
-    h.powerups = crate::ts::powerup::DOUBLE_FIRERATE;
+    h.powerups = shared::ts::powerup::DOUBLE_FIRERATE;
     let mut last = 0;
     for _ in 0..100 {
         frame(&mut g, &mut h, 1, &mut last, 0.01);
@@ -413,7 +405,7 @@ fn spread_penalty_grows_caps_and_decays() {
     let last_spread = h.events.iter().rev().find(|e| e.0 == Event::Fire).unwrap().1.f1;
     assert!(last_spread > 0.01);
     let p = g.spread_penalty;
-    g.decay_spread(Arith::CLIENT, 0.5);
+    decay_spread(&mut g, Arith::CLIENT, 0.5);
     assert!((g.spread_penalty - (p - 0.05).max(0.0)).abs() < 1e-6);
 }
 
@@ -424,11 +416,11 @@ fn spread_penalty_only_on_first_prediction() {
     let mut g = Gun { spread_penalty: 0.05, last_shot: 1.0, ..Default::default() };
     let mut h = Mock { time: 2.0, repredict: true, ..Default::default() };
     let mut spread = 0.04;
-    g.scale_spread(&mut spread, 0.01, true, &h);
+    scale_spread(&mut g, &mut spread, 0.01, true, &h);
     assert_eq!((spread, g.spread_penalty, g.last_shot), (0.04 * 0.875, 0.05, 1.0));
     h.repredict = false;
     let mut spread = 0.04;
-    g.scale_spread(&mut spread, 0.01, false, &h);
+    scale_spread(&mut g, &mut spread, 0.01, false, &h);
     assert_eq!(spread, 0.04 + 0.05);
     assert!(g.spread_penalty > 0.05);
     assert_eq!(g.last_shot, 2.0);
@@ -790,7 +782,7 @@ fn kungfu_view_anim_indices() {
 #[test]
 fn infinite_clip_keeps_clip_and_multiply_doubles() {
     let (mut g, mut h) = armed(id::AK47);
-    h.powerups = crate::ts::powerup::INFINITE_CLIP;
+    h.powerups = shared::ts::powerup::INFINITE_CLIP;
     let mut last = 0;
     for _ in 0..50 {
         frame(&mut g, &mut h, 1, &mut last, 0.01);
@@ -1041,20 +1033,6 @@ fn deploy_takes_its_timers_from_default_deploy() {
     assert_eq!((g.next_attack, g.idle), (0.5, 3.0));
 }
 
-/// `StandardFire`'s Barrett and M60 gates (issue #171): mp.dll and client.dll compare the unrounded
-/// root, so a speed a hair over the limit counts; `ts_i386.so` stores the root (exactly the
-/// limit), as the port's old `float` length did.
-#[test]
-fn speed_gates_per_build() {
-    use crate::pm::{Gcc, Msvc};
-    for (v, limit) in [([35.0, 0.0001, 0.0], 35.0), ([175.0, 0.0003, 0.0], 175.0)] {
-        assert!(speed_over::<Msvc>(v, limit), "{limit}");
-        assert!(!speed_over::<Gcc>(v, limit), "{limit}");
-        assert!(!speed_over::<Msvc>([limit, 0.0, 0.0], limit));
-    }
-    assert!(!speed_over::<Msvc>([f32::NAN, 0.0, 0.0], 35.0));
-}
-
 /// The virtual calls TS makes through the gun's vtable reach the host's hook points in TS's order
 /// (`CBasePlayerWeapon::ItemPostFrame` 0xa03d4), and a skipped one doesn't run.
 #[test]
@@ -1096,4 +1074,55 @@ fn virtual_calls_reach_the_host_in_ts_order() {
     assert_eq!(h.virtuals, ["pre Holster", "post Holster Some(0)"]);
     assert_eq!(g.run_virtual(&mut h, Virtual::Deploy, true), 1);
     assert_eq!(g.run_virtual(&mut h, Virtual::ShouldWeaponIdle, false), 1);
+}
+
+/// The gun hooks are TS 3.0's code.
+#[test]
+fn gun_hooks_are_3_0s() {
+    use shared::gameplay::Predicted;
+    use shared::ts::powerup;
+    let t30 = &crate::TS30;
+    assert!(std::ptr::eq(t30.tables(), base_tables()));
+    for arith in [Arith::Gcc, Arith::Msvc] {
+        for (ft, fuser1, pw) in [(0.01f32, 1.0f32, 0u16), (0.001, 0.65, powerup::DOUBLE_FIRERATE), (0.02, 0.0, 0)] {
+            let want = Gun::timer_dt(arith, ft, spread::fixed_slow_amt(fuser1), pw);
+            assert_eq!(t30.timer_step(arith, ft as f64, fuser1, pw), want as f64);
+        }
+    }
+    for msec in 0..=255u8 {
+        assert_eq!(t30.command_frame_time(msec), (msec as f64 * 0.001) as f32 as f64);
+    }
+    assert_eq!(t30.pellet_offset(5, 1, None), None);
+    assert_eq!(t30.akimbo_event_offsets(true, true), (5.0, Some(-5.0)));
+    assert_eq!(t30.akimbo_event_offsets(true, false), (5.0, Some(-5.0)));
+    assert_eq!(t30.akimbo_event_offsets(false, true), (0.0, None));
+    assert_eq!(t30.predicted(), Predicted::ALL);
+    assert_eq!(t30.semi_auto_delay(0.07), 0.1);
+    let ak = base_tables().weapon(id::AK47).unwrap();
+    let m4 = base_tables().weapon(id::M4).unwrap();
+    assert!(!t30.cancel_runs_frame_in_reload(ak) && t30.cancel_runs_frame_in_reload(m4));
+    assert!(!t30.blades_need_press() && t30.katana_throws() && t30.infinite_clip_skips_idle_reload());
+    assert!(t30.holster_draws_kungfu());
+    let mut g = Gun::default();
+    assert_eq!(t30.better_weapon(&g, 0), 0, "nothing owned: kung fu");
+    for id in [id::AK47, id::BENELLI] {
+        g.status[id as usize].owned = true;
+    }
+    assert_eq!(t30.better_weapon(&g, 0), id::AK47, "13 comes before 4 in the list");
+    assert_eq!(t30.better_weapon(&g, id::AK47), id::BENELLI);
+    assert_eq!(PRIORITY[37], 0);
+}
+
+/// TS 3.0's decay: by the step, only while alive; the time isn't recorded.
+#[test]
+fn decay_is_the_step() {
+    let mut g = Gun { spread_penalty: 0.05, ..Gun::default() };
+    let mut want = g.clone();
+    decay_spread(&mut want, Arith::Msvc, 0.01);
+    let d = SpreadDecay { arith: Arith::Msvc, step: 0.01, time: 99.0, time_scale: 0.5, alive: true };
+    // The crosshair's copy follows the penalty on every first prediction.
+    assert!(crate::TS30.decay_spread(&mut g, &d));
+    assert_eq!(g, want);
+    crate::TS30.decay_spread(&mut g, &SpreadDecay { alive: false, ..d });
+    assert_eq!(g, want);
 }

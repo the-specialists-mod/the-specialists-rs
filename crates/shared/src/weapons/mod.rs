@@ -102,12 +102,6 @@ pub mod mode {
     pub const AKIMBO_AUTO: u8 = 5;
 }
 
-/// `g_iWeaponPriority` (auto-switch order after a drop), `compile_weapons_info` 0x7fe28.
-pub const PRIORITY: [u8; 38] = [
-    18, 32, 13, 5, 15, 27, 11, 20, 4, 26, 33, 16, 37, 6, 23, 7, 3, 17, 19, 10, 8, 21, 30, 31, 12, 36, 22, 9, 2, 14, 28, 1, 34, 25, 35, 24,
-    29, 0,
-];
-
 /// Weapon table entry, or `None` for invalid ids (29, >= 38).
 pub fn info(id: u8) -> Option<&'static WeaponInfo> {
     tables().weapon(id)
@@ -317,6 +311,5 @@ mod tests {
         assert!(has_alt_grip(id::AK47));
         assert!(!has_alt_grip(id::AUG));
         assert_eq!(anim(id::KUNGFU, false, 2), 1);
-        assert_eq!(PRIORITY[37], 0);
     }
 }
