@@ -411,8 +411,8 @@ extern "C" fn cmd_status() {
         let name = netname(p);
         let name_col = shared::bformat!("{}{}", name, " ".repeat(16usize.saturating_sub(name.len())));
         let line = other(p, |q| {
-            format!(
-                "{} hp={} ar={} frags={} deaths={} cash={} team='{}' held={:#x}/{}s active={:#x} slow={:.2}->{:.2} award={} spree={} gp={} org=({:.0} {:.0} {:.0})\n",
+            let head = format!(
+                "{} hp={} ar={} frags={} deaths={} cash={}",
                 if v.iuser1 != 0 {
                     "observer"
                 } else if alive(v) {
@@ -425,7 +425,9 @@ extern "C" fn cmd_status() {
                 v.frags,
                 q.deaths,
                 q.cash,
-                q.ts.team_name,
+            );
+            let tail = format!(
+                "held={:#x}/{}s active={:#x} slow={:.2}->{:.2} award={} spree={} gp={} org=({:.0} {:.0} {:.0})\n",
                 q.ts.held,
                 q.ts.held_secs,
                 q.active_powerup,
@@ -438,7 +440,9 @@ extern "C" fn cmd_status() {
                 v.origin[0],
                 v.origin[1],
                 v.origin[2]
-            )
+            );
+            // The team name's bytes as they are (#188).
+            shared::bformat!("{} team='{}' {}", head, q.ts.team_name, tail)
         });
         if let Some(l) = line {
             e.print(&shared::bformat!("[ts]  #{} {} {}", e.index_of(p), name_col, l));

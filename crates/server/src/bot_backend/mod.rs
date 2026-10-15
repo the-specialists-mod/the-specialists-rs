@@ -352,7 +352,7 @@ pub fn create_player(name: &[u8], model: &str, state: BotState, announce: Option
     eng.set_client_key(e, "cl_lw", "1");
     if !model.is_empty() && rules::state::teamplay() {
         // `CHalfLifeMultiplay::ChangePlayerTeam` is empty; teamplay's changes the team.
-        with_player(e, |p, cx| rules::teams::change_team(p, cx, model, false, false));
+        with_player(e, |p, cx| rules::teams::change_team(p, cx, model.as_bytes(), false, false));
     }
     // `g_pGameRules->PlayerThink(pl)` (0x1002c370): in intermission the new bot's button state is
     // cleared (it has pressed nothing, so the intermission isn't ended).

@@ -174,12 +174,12 @@ fn button_slots() {
 
 #[test]
 fn team_rounds_roams_to_the_other_side() {
-    assert_eq!(team_rounds_class("Specialists", false), "info_player_deathmatch");
-    assert_eq!(team_rounds_class("specialists", false), "info_player_deathmatch");
-    assert_eq!(team_rounds_class("Mercenary", false), "info_player_start");
-    assert_eq!(team_rounds_class("", false), "info_player_start");
-    assert_eq!(team_rounds_class("Specialists", true), "info_player_start");
-    assert_eq!(team_rounds_class("Mercenary", true), "info_player_deathmatch");
+    assert_eq!(team_rounds_class(b"Specialists", false), "info_player_deathmatch");
+    assert_eq!(team_rounds_class(b"specialists", false), "info_player_deathmatch");
+    assert_eq!(team_rounds_class(b"Mercenary", false), "info_player_start");
+    assert_eq!(team_rounds_class(b"", false), "info_player_start");
+    assert_eq!(team_rounds_class(b"Specialists", true), "info_player_start");
+    assert_eq!(team_rounds_class(b"Mercenary", true), "info_player_deathmatch");
 }
 
 #[test]

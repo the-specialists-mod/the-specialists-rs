@@ -190,7 +190,7 @@ fn multiplay_userinfo_changed(p: &mut Player, cx: &mut Cx) {
     // The key's bytes: TS echoes them unconverted.
     let model = eng.info_key(e, c"model").to_bytes().to_vec();
     let team = p.ts.team_name.clone();
-    if model.eq_ignore_ascii_case(team.as_bytes()) {
+    if super::state::team_eq(&model, &team) {
         return;
     }
     if !cvars::on(c"mp_defaultteam") && !HLDM_MODELS.iter().any(|m| m.as_bytes().eq_ignore_ascii_case(&model)) {

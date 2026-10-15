@@ -9,9 +9,9 @@
 //! encodes coords) and the client onto its message reader. `Bytes` implements both with the
 //! GoldSrc encoding (little endian, coord = short ×8) for tests and tools.
 //!
-//! Field kinds: `string` is a Rust `String` for text the server makes itself (weapon and team
-//! names); `bytes` is a `Vec<u8>` for text that comes from players, the map or the server's files
-//! (chat, names, the MOTD), which TS writes byte for byte whatever its encoding
+//! Field kinds: `string` is a Rust `String` for text the server makes itself (weapon names);
+//! `bytes` is a `Vec<u8>` for text that comes from players, the map or the server's files (chat,
+//! names, team names, the MOTD), which TS writes byte for byte whatever its encoding
 //! (`shared::text`).
 
 /// Writer side of a user message (`WRITE_BYTE` ...).

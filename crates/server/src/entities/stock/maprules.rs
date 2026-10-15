@@ -673,9 +673,9 @@ fn rule_use_targets(cx: &mut Cx, activator: *mut edict_t, kind: UseType, value: 
 }
 
 /// `TeamID()` of any entity: a player's team name, a `game_team_master`'s team, `""` otherwise.
-fn team_id(e: *mut edict_t) -> String {
+fn team_id(e: *mut edict_t) -> Vec<u8> {
     if e.is_null() {
-        return String::new();
+        return Vec::new();
     }
     if has_player(e) {
         return crate::rules::teams::team_name_of(e);
@@ -683,7 +683,7 @@ fn team_id(e: *mut edict_t) -> String {
     if s(e.v().classname) == c"game_team_master" {
         return team_master_id(e);
     }
-    String::new()
+    Vec::new()
 }
 
 /// `m_teamIndex` of every spawned `game_team_master` (`+0x68`), kept outside the entity so a
@@ -706,18 +706,18 @@ fn set_team_index(e: *mut edict_t, i: i32) {
 }
 
 /// `CGameTeamMaster::TeamID` (0xccc94): `GetIndexedTeamName(m_teamIndex)`, `""` below 0.
-fn team_master_id(e: *mut edict_t) -> String {
+fn team_master_id(e: *mut edict_t) -> Vec<u8> {
     let i = team_index_of(e);
     if i < 0 {
-        return String::new();
+        return Vec::new();
     }
-    if crate::rules::state::teamplay() { crate::rules::state::with(|g| g.indexed_team_name(i)) } else { String::new() }
+    if crate::rules::state::teamplay() { crate::rules::state::with(|g| g.indexed_team_name(i)) } else { Vec::new() }
 }
 
 /// `UTIL_TeamsMatch` (0xee2b8): always outside teamplay; otherwise two non-empty names equal
 /// ignoring case.
-fn teams_match(a: &str, b: &str) -> bool {
-    !crate::rules::state::teamplay() || (!a.is_empty() && !b.is_empty() && a.eq_ignore_ascii_case(b))
+fn teams_match(a: &[u8], b: &[u8]) -> bool {
+    !crate::rules::state::teamplay() || (!a.is_empty() && !b.is_empty() && crate::rules::state::team_eq(a, b))
 }
 
 pub const SF_TEAMMASTER_FIREONCE: i32 = 1;
@@ -868,7 +868,7 @@ pub struct GamePlayerTeam {
 
 /// `CGamePlayerTeam::TargetTeamName` (0xcd764): the `TeamID` of the first entity named `target`
 /// whose classname is exactly `game_team_master`, `None` when there is none.
-fn target_team_name(target: &CStr) -> Option<String> {
+fn target_team_name(target: &CStr) -> Option<Vec<u8>> {
     let eng = engine();
     let mut it = std::ptr::null_mut();
     loop {

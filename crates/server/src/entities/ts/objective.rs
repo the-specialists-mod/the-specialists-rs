@@ -166,9 +166,9 @@ fn center(v: &entvars_t) -> [f32; 3] {
 /// The text a player reads for an objective: by team index (3.0's `GetTeamIndex`, nothing without
 /// a team) or, with the round teams' names, the first text for the first team and the second for
 /// anyone else.
-fn team_text(texts: &[string_t; 4], team: &str, team_index: i32, names: Option<[&str; 2]>) -> string_t {
+fn team_text(texts: &[string_t; 4], team: &[u8], team_index: i32, names: Option<[&str; 2]>) -> string_t {
     match names {
-        Some(n) => texts[if team.eq_ignore_ascii_case(n[0]) { 0 } else { 1 }],
+        Some(n) => texts[if state::team_eq(team, n[0].as_bytes()) { 0 } else { 1 }],
         None => usize::try_from(team_index).ok().and_then(|i| texts.get(i).copied()).unwrap_or(0),
     }
 }
@@ -234,9 +234,9 @@ fn ran_out(nan_runs_out: bool, t: f32) -> bool {
 
 /// `CTSObjective::CanInteract(player)` (0x8c344): `attackerteam` -1 or the player's team index
 /// (3.0), or the round team named for 0 / 1.
-pub fn can_interact(attacker_team: i32, team: &str, team_index: i32, names: Option<[&str; 2]>) -> bool {
+pub fn can_interact(attacker_team: i32, team: &[u8], team_index: i32, names: Option<[&str; 2]>) -> bool {
     match names {
-        Some(n) => matches!(attacker_team, 0 | 1) && team.eq_ignore_ascii_case(n[attacker_team as usize]),
+        Some(n) => matches!(attacker_team, 0 | 1) && state::team_eq(team, n[attacker_team as usize].as_bytes()),
         None => attacker_team == -1 || attacker_team == team_index,
     }
 }
@@ -247,10 +247,10 @@ fn may_use(attacker_team: i32, player: *mut edict_t) -> bool {
 
 /// `TSCountPlayers(team, true)` (0x9f238): the players on `team` (any, for an empty name) who are
 /// alive or still due to respawn (`m_flRespawnTime >= 0`, or a NaN).
-fn count_players(team: &str) -> i32 {
+fn count_players(team: &[u8]) -> i32 {
     let mut n = 0;
     for e in crate::rules::slot_players() {
-        if !team.is_empty() && !team.eq_ignore_ascii_case(&teams::team_name_of(e)) {
+        if !team.is_empty() && !state::team_eq(team, &teams::team_name_of(e)) {
             continue;
         }
         if !alive(e.v()) && other(e, |p| p.respawn_at < 0.0).unwrap_or(false) {
@@ -264,7 +264,7 @@ fn count_players(team: &str) -> i32 {
 /// The escape zone's head count of its attackers' team (`WaitTouch`).
 fn attackers_alive(attacker_team: i32) -> i32 {
     match rules().team_names {
-        Some(n) => count_players(n[if attacker_team == 0 { 0 } else { 1 }]),
+        Some(n) => count_players(n[if attacker_team == 0 { 0 } else { 1 }].as_bytes()),
         // `attackerteam` -1 counts nobody; TS reads past its four teams for a larger index, which
         // the port counts as nobody too.
         None => match usize::try_from(attacker_team).ok().and_then(|i| state::with(|g| g.teams.get(i).map(|t| t.name.clone()))) {
@@ -1177,24 +1177,24 @@ mod tests {
 
     #[test]
     fn interaction_by_team_index_or_name() {
-        assert!(can_interact(-1, "", -1, None), "3.0: -1 is anyone");
-        assert!(can_interact(2, "x", 2, None) && !can_interact(2, "x", 1, None));
+        assert!(can_interact(-1, b"", -1, None), "3.0: -1 is anyone");
+        assert!(can_interact(2, b"x", 2, None) && !can_interact(2, b"x", 1, None));
         let names = Some(["Specialists", "Mercenary"]);
-        assert!(can_interact(0, "specialists", 5, names));
-        assert!(can_interact(1, "Mercenary", 0, names) && !can_interact(1, "Specialists", 1, names));
-        assert!(!can_interact(-1, "Specialists", 0, names), "no 'anyone' by name");
-        assert!(!can_interact(2, "Mercenary", 2, names));
+        assert!(can_interact(0, b"specialists", 5, names));
+        assert!(can_interact(1, b"Mercenary", 0, names) && !can_interact(1, b"Specialists", 1, names));
+        assert!(!can_interact(-1, b"Specialists", 0, names), "no 'anyone' by name");
+        assert!(!can_interact(2, b"Mercenary", 2, names));
     }
 
     #[test]
     fn team_texts() {
         let t = [11, 12, 13, 14];
-        assert_eq!(team_text(&t, "", -1, None), 0, "no team, no text");
-        assert_eq!(team_text(&t, "a", 2, None), 13);
-        assert_eq!(team_text(&t, "a", 7, None), 0);
+        assert_eq!(team_text(&t, b"", -1, None), 0, "no team, no text");
+        assert_eq!(team_text(&t, b"a", 2, None), 13);
+        assert_eq!(team_text(&t, b"a", 7, None), 0);
         let names = Some(["Specialists", "Mercenary"]);
-        assert_eq!(team_text(&t, "SPECIALISTS", 3, names), 11);
-        assert_eq!(team_text(&t, "", -1, names), 12, "anyone else reads the second");
+        assert_eq!(team_text(&t, b"SPECIALISTS", 3, names), 11);
+        assert_eq!(team_text(&t, b"", -1, names), 12, "anyone else reads the second");
     }
 
     #[test]

@@ -181,7 +181,7 @@ pub fn set_player_the_one(p: &mut Player, cx: &mut Cx) {
 /// The team `SetDefaultPlayerTeam` (`FUN_10038920`) reads: in the round modes the player's own
 /// team stays; in The One mode `mp_theone`'s or `mp_theothers`' model, which also becomes the
 /// `model` and `team` keys; otherwise the `model` key (the SDK's model teams).
-pub fn default_team(p: &mut Player, cx: &mut Cx) -> String {
+pub fn default_team(p: &mut Player, cx: &mut Cx) -> Vec<u8> {
     let e = cx.edict;
     let (mode, the_one) = state::with(|g| (g.mode, g.the_one));
     if matches!(mode, Mode::RoundTdm | Mode::Objective) {
@@ -189,13 +189,13 @@ pub fn default_team(p: &mut Player, cx: &mut Cx) -> String {
     }
     let eng = engine();
     if the_one {
-        let name = cvars::s(if p.ts.is_the_one { c"mp_theone" } else { c"mp_theothers" });
-        let name: String = name.chars().take(15).collect();
+        let mut name = cvars::bytes(if p.ts.is_the_one { c"mp_theone" } else { c"mp_theothers" });
+        name.truncate(15);
         eng.set_client_key(e, "model", &name);
         eng.set_client_key(e, "team", &name);
         return name;
     }
-    eng.info_key(e, c"model").to_string_lossy().into_owned()
+    eng.info_key(e, c"model").to_bytes().to_vec()
 }
 
 /// Whether a team name is one of the round modes' (for logs and tests).

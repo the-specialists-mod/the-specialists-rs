@@ -129,7 +129,7 @@ pub trait ServerRules: Sync {
 
     /// The team `CHalfLifeTeamplay::SetDefaultPlayerTeam` (0xe44ac) reads before it checks it
     /// against the team list ([`teams::default_team_core`]).
-    fn default_team(&self, p: &mut Player, cx: &mut Cx) -> String {
+    fn default_team(&self, p: &mut Player, cx: &mut Cx) -> Vec<u8> {
         teams::default_team_core(p, cx)
     }
 

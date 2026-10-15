@@ -432,8 +432,8 @@ fn pick_dm(b: &mut Brain, cx: &mut Cx) {
 /// The class TeamRounds roams to: the other side's spawns. `info_player_deathmatch` for a
 /// "Specialists" bot (`_stricmp` with `TeamID()`), else `info_player_start`; the other way round
 /// once the sides are swapped (`0x100acb90`, the rules object's `+0x2d0`).
-pub fn team_rounds_class(team: &str, swapped: bool) -> &'static str {
-    if team.eq_ignore_ascii_case(crate::rules::SPECIALISTS) != swapped { "info_player_deathmatch" } else { "info_player_start" }
+pub fn team_rounds_class(team: &[u8], swapped: bool) -> &'static str {
+    if team.eq_ignore_ascii_case(crate::rules::SPECIALISTS.as_bytes()) != swapped { "info_player_deathmatch" } else { "info_player_start" }
 }
 
 /// The TeamRounds pick (0x10060a6b..): up to 32 entities of [`team_rounds_class`], one at random.

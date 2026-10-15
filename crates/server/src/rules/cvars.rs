@@ -132,6 +132,12 @@ pub fn s(name: &CStr) -> String {
     engine().cvar_string(name).to_string_lossy().into_owned()
 }
 
+/// The cvar's value as its bytes (`CVAR_GET_STRING`), for text TS copies unconverted
+/// (`mp_teamlist`, `mp_teammodels`).
+pub fn bytes(name: &CStr) -> Vec<u8> {
+    engine().cvar_string(name).to_bytes().to_vec()
+}
+
 pub fn on(name: &CStr) -> bool {
     f(name) != 0.0
 }

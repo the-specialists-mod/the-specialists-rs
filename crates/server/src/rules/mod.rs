@@ -60,8 +60,8 @@ pub struct PlayerRules {
     pub observer_at: f32,
     /// Delayed suicide (`kill`, +1 s, `+0x84c`).
     pub suicide_at: f32,
-    /// Last model accepted (HLDM model check) and the team name (`m_szTeamName`).
-    pub team_name: String,
+    /// Last model accepted (HLDM model check) and the team name (`m_szTeamName`, bytes: #188).
+    pub team_name: Vec<u8>,
     /// Spawn protection end (`+0x71c`).
     pub protect_until: f32,
     /// Observer: next allowed button action (`+0x760`), next `Observer_Idle` check (`+0x764`),
@@ -289,10 +289,13 @@ pub fn game_description() -> &'static CStr {
 /// `mp_defaultteam` (entities::stock `World`).
 pub fn world_key_value(key: &CStr, value: &CStr) -> bool {
     let v = value.to_str().unwrap_or("").trim().to_owned();
+    // `mapteams` and `teammodels` are kept as the map's bytes (`CWorld::KeyValue` 0xf4a18
+    // `ALLOC_STRING`s / `strcpy`s them; #188).
+    let raw = value.to_bytes().to_vec();
     match key.to_bytes() {
         b"gamemode" => state::with(|g| g.forced_gamemode = v.parse().unwrap_or(0)),
-        b"mapteams" => state::with(|g| g.map_teams = v),
-        b"teammodels" => state::with(|g| g.map_team_models = v),
+        b"mapteams" => state::with(|g| g.map_teams = raw),
+        b"teammodels" => state::with(|g| g.map_team_models = raw),
         _ => return false,
     }
     true
