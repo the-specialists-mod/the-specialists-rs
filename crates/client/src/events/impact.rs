@@ -71,25 +71,29 @@ fn material_roll_plays(roll: i32) -> bool {
     roll > 33
 }
 
-/// Material character of what `tr` hit: `F` for players, else the texture's type.
+/// Material character of what `tr` hit: `F` for players, else the texture's type (`C` when
+/// `pfnTraceTexture` finds no texture).
 pub fn texture_type(tr: &mut pmtrace_s, src: Vec3, end: Vec3) -> u8 {
+    traced_texture_type(tr, src, end).unwrap_or(b'C')
+}
+
+/// [`texture_type`], but `None` when `pfnTraceTexture` returns NULL, which
+/// `TS_MeleeMaterialSound` (`0x10045e6a`) tells apart from a concrete texture.
+pub fn traced_texture_type(tr: &mut pmtrace_s, src: Vec3, end: Vec3) -> Option<u8> {
     let ent = r::index_from_trace(tr);
     if ent > 0 && ent <= engine().max_clients() {
-        return b'F';
+        return Some(b'F');
     }
-    match r::trace_texture(tr.ent, src, end) {
-        Some(name) => {
-            let n = strip_texture_name(&name);
-            let mut buf: Vec<u8> = n.bytes().take(15).collect();
-            buf.push(0);
-            // The ruleset's material table (`PM_FindTextureType`, [`PmRules::texture_limits`]).
-            //
-            // [`PmRules::texture_limits`]: shared::gameplay::PmRules::texture_limits
-            let name = std::ffi::CStr::from_bytes_until_nul(&buf).unwrap_or(c"");
-            shared::pm::textures::find_in(name.to_bytes(), crate::gameplay::hud_pm_rules().texture_limits())
-        }
-        None => b'C',
-    }
+    r::trace_texture(tr.ent, src, end).map(|name| {
+        let n = strip_texture_name(&name);
+        let mut buf: Vec<u8> = n.bytes().take(15).collect();
+        buf.push(0);
+        // The ruleset's material table (`PM_FindTextureType`, [`PmRules::texture_limits`]).
+        //
+        // [`PmRules::texture_limits`]: shared::gameplay::PmRules::texture_limits
+        let name = std::ffi::CStr::from_bytes_until_nul(&buf).unwrap_or(c"");
+        shared::pm::textures::find_in(name.to_bytes(), crate::gameplay::hud_pm_rules().texture_limits())
+    })
 }
 
 /// `TS_PlayTextureSound` (`0x10044bf0`): ricochet, impact particles and material sound. Returns

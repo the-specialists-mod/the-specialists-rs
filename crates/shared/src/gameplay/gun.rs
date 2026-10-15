@@ -94,11 +94,13 @@ pub trait GunRules: MeleeRules + Sync {
 
     /// The client fire event's akimbo bullet origins (`EV_TS_FireAkimbo`), units along `v_right`
     /// from the gun position: the first traced with the event's seed, the second (linked shots
-    /// only) with seed + 0x21. TS 3.0: -5 and +5 for a linked shot, none for one gun. `toggle` is
-    /// the event's `bparam1`, the gun that fired.
+    /// only) with seed + 0x21. TS 3.0: +5 then -5 for a linked shot (`0x100409be..0x10040a01`,
+    /// 5.0 at `0x1007a8d0` with `b2`; `0x10040a66..0x10040aa5`, -5.0 at `0x1007d6f8` with
+    /// `b2 + 0x21`; `0x10189e50` is `AngleVectors`' right at `0x1003f1f8`), none for one gun.
+    /// `toggle` is the event's `bparam1`, the gun that fired.
     fn akimbo_event_offsets(&self, linked: bool, toggle: bool) -> (f32, Option<f32>) {
         let _ = toggle;
-        if linked { (-5.0, Some(5.0)) } else { (0.0, None) }
+        if linked { (5.0, Some(-5.0)) } else { (0.0, None) }
     }
 
     /// Which parts of `ItemPostFrame` the client's weapon prediction runs. TS 3.0's
@@ -233,7 +235,8 @@ mod tests {
             assert_eq!(CORE.command_frame_time(msec), (msec as f64 * 0.001) as f32 as f64);
         }
         assert_eq!(CORE.pellet_offset(5, 1, None), None);
-        assert_eq!(CORE.akimbo_event_offsets(true, true), (-5.0, Some(5.0)));
+        assert_eq!(CORE.akimbo_event_offsets(true, true), (5.0, Some(-5.0)));
+        assert_eq!(CORE.akimbo_event_offsets(true, false), (5.0, Some(-5.0)));
         assert_eq!(CORE.akimbo_event_offsets(false, true), (0.0, None));
         assert_eq!(CORE.predicted(), Predicted::ALL);
         assert_eq!(CORE.semi_auto_delay(0.07), 0.1);

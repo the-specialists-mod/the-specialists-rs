@@ -2,7 +2,7 @@
 //! (kung fu) and coldcock (stock hit). Rendering doc §4.1-4.2, server weapons.md §6.1.
 
 use super::fire::{eject_shell, weapon_body};
-use super::impact::texture_type;
+use super::impact::traced_texture_type;
 use super::{Args, first_person_view_model, info};
 use crate::gameplay::MeleeReach;
 use crate::{effects, view};
@@ -169,46 +169,83 @@ pub fn grenade(a: &Args) {
     }
 }
 
-/// `TS_MeleeMaterialSound` (`0x10045df0`): footstep-style sounds for a melee hit.
-fn melee_material_sound(tex: u8, pos: Vec3) {
-    let list: &[&str] = match tex {
+/// What a melee trace hit, as `TS_MeleeMaterialSound` (`0x10045df0`) tells it apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Surface {
+    /// The hit point is `CONTENTS_SKY` (`0x10045e0a..0x10045e1a`).
+    Sky,
+    /// `pfnTraceTexture` returned NULL (`0x10045e6a`).
+    Untextured,
+    /// A player (`F`) or the texture's type.
+    Type(u8),
+}
+
+/// `TS_MeleeMaterialSound`'s samples by texture type, in its tables' order (byte table
+/// `0x100460f8`, jump table `0x100460d0`; tile and slosh list 1, 3, 2, 4 at `0x10045f89` and
+/// `0x10045fbb`, duct its one sample twice at `0x10045f52`). Flesh has none (`0x10046038`);
+/// anything else, including no texture (0), takes the default `pl_step` pair (`0x10046044`).
+fn melee_material_samples(tex: u8) -> &'static [&'static str] {
+    match tex {
         b'M' => &["player/pl_metal1.wav", "player/pl_metal2.wav"],
         b'D' => &["player/pl_dirt1.wav", "player/pl_dirt2.wav", "player/pl_dirt3.wav"],
-        b'V' => &["player/pl_duct1.wav"],
+        b'V' => &["player/pl_duct1.wav", "player/pl_duct1.wav"],
         b'G' => &["player/pl_grate1.wav", "player/pl_grate4.wav"],
-        b'T' => &["player/pl_tile1.wav", "player/pl_tile2.wav", "player/pl_tile3.wav", "player/pl_tile4.wav"],
-        b'S' => &["player/pl_slosh1.wav", "player/pl_slosh2.wav", "player/pl_slosh3.wav", "player/pl_slosh4.wav"],
+        b'T' => &["player/pl_tile1.wav", "player/pl_tile3.wav", "player/pl_tile2.wav", "player/pl_tile4.wav"],
+        b'S' => &["player/pl_slosh1.wav", "player/pl_slosh3.wav", "player/pl_slosh2.wav", "player/pl_slosh4.wav"],
         b'W' => &["debris/wood1.wav", "debris/wood2.wav", "debris/wood3.wav"],
         b'P' | b'Y' => &["debris/glass1.wav", "debris/glass2.wav", "debris/glass3.wav"],
         b'F' => &[],
         _ => &["player/pl_step1.wav", "player/pl_step2.wav"],
-    };
-    if let Some(s) = list.get(r::random_long(0, list.len() as i32 - 1).max(0) as usize)
-        && let Some((vol, attn, pitch)) = crate::gameplay::current().melee_material_sound(tex)
-    {
-        engine().ev_play_sound(0, pos, CHAN_STATIC as i32, s, vol, attn, 0, pitch);
     }
 }
 
-/// Short melee trace from the gun position; returns (hit position, normal, texture) on a hit.
+/// `TS_MeleeMaterialSound` (`0x10045df0`): a footstep-style sound at the hit point, entity 0,
+/// `CHAN_STATIC`. Returns the texture type the knife and katana test: 0 for the sky (no sound)
+/// and for a surface with no texture (after the default sound). The ruleset's
+/// [`melee_material_sound`](crate::gameplay::ClientRules::melee_material_sound) rolls the pitch
+/// (`0x10046066`) before the sample's `RandomLong(0, n - 1)` (`0x100460a5`).
+fn melee_material_sound(surface: Surface, pos: Vec3) -> u8 {
+    let tex = match surface {
+        Surface::Sky => return 0,
+        Surface::Untextured => 0,
+        Surface::Type(t) => t,
+    };
+    let list = melee_material_samples(tex);
+    if !list.is_empty()
+        && let Some((vol, attn, pitch)) = crate::gameplay::current().melee_material_sound(tex)
+        && let Some(s) = list.get(r::random_long(0, list.len() as i32 - 1).max(0) as usize)
+    {
+        engine().ev_play_sound(0, pos, CHAN_STATIC as i32, s, vol, attn, 0, pitch);
+    }
+    tex
+}
+
+/// Short melee trace from the gun position; returns (hit position, normal, surface) on a hit.
 /// All four melee events make one hull-2 `PM_STUDIO_BOX` trace (`0x10043200`, `0x10043800`,
-/// `0x10043c90`, `0x10044230`); a fraction of 1 is a miss.
-fn melee_trace(a: &Args, reach: f32) -> Option<(Vec3, Vec3, u8)> {
+/// `0x10043c90`, `0x10044230`); a fraction of 1 is a miss. The surface is looked up as
+/// `TS_MeleeMaterialSound` does, before the events pop the player states: the sky test, then
+/// players, then the texture.
+fn melee_trace(a: &Args, reach: f32) -> Option<(Vec3, Vec3, Surface)> {
     let (fwd, _, _) = a.vectors();
     let src = a.gun_position();
     let end = v::ma(src, reach, fwd);
     r::with_solid_players(a.entindex.wrapping_sub(1), || {
         let mut tr = r::player_trace(src, end, 2, PM_STUDIO_BOX as i32, -1);
         (tr.fraction < 1.0).then(|| {
-            let tex = texture_type(&mut tr, src, end);
-            (tr.endpos, tr.plane.normal, tex)
+            let surface = if r::point_contents(tr.endpos) == CONTENTS_SKY {
+                Surface::Sky
+            } else {
+                traced_texture_type(&mut tr, src, end).map_or(Surface::Untextured, Surface::Type)
+            };
+            (tr.endpos, tr.plane.normal, surface)
         })
     })
 }
 
 /// The knife's and katana's byte tables (`0x10044140` / `0x10044708`, indexed by texture type up
-/// to `'W'`, anything above takes the spark branch): no texture, `'D'` and `'W'` are 0 and `'F'`
-/// is 1, which both skip the sparks and the hit sound; every other type, slosh included, sparks.
+/// to `'W'`, anything above takes the spark branch): 0 (the sky, no texture), `'D'` and `'W'` are
+/// 0 and `'F'` is 1, which both skip the sparks and the hit sound; every other type, slosh
+/// included, sparks.
 fn hard(tex: u8) -> bool {
     !matches!(tex, 0 | b'F' | b'D' | b'W')
 }
@@ -255,8 +292,8 @@ fn blade_anim(a: &Args, flesh: bool, seq: impl FnOnce() -> i16) {
 pub fn knife(a: &Args) {
     let mut flesh = false;
     match melee_trace(a, reach(MeleeReach::Knife)) {
-        Some((pos, n, tex)) => {
-            melee_material_sound(tex, pos);
+        Some((pos, n, surface)) => {
+            let tex = melee_material_sound(surface, pos);
             flesh = tex == b'F';
             if hard(tex) {
                 metal_hit(pos, n, 6.0, false);
@@ -269,25 +306,33 @@ pub fn knife(a: &Args) {
 }
 
 /// `EV_TS_Katana` (`0x10044230`): `i1` is the swing's index into the katana's set A (15 = back
-/// swing, trace -55), played after the trace.
+/// swing, trace -55), played after the trace. Only a played hit or miss sound rolls
+/// `RandomLong(0, 1)`, after the trace, material sound and sparks (`0x10044611`, `0x1004462e`):
+/// non-zero picks `hit.wav`/`miss.wav`, zero `hit1.wav`/`miss1.wav`.
 pub fn katana(a: &Args) {
-    let n = if r::random_long(0, 1) == 0 { "" } else { "1" };
+    let variant = || katana_variant(r::random_long(0, 1));
     let mut flesh = false;
     match melee_trace(a, reach(MeleeReach::Katana(a.i1))) {
         // As the knife (`0x10044585`..`0x100446ad`): the material sound on every hit, sparks and
         // `hit`/`hit1` only on hard surfaces.
-        Some((pos, nrm, tex)) => {
-            melee_material_sound(tex, pos);
+        Some((pos, nrm, surface)) => {
+            let tex = melee_material_sound(surface, pos);
             flesh = tex == b'F';
             if hard(tex) {
                 metal_hit(pos, nrm, 12.0, true);
-                sound(a, CHAN_WEAPON, &format!("weapons/katana/hit{n}.wav"));
+                sound(a, CHAN_WEAPON, &format!("weapons/katana/hit{}.wav", variant()));
             }
         }
-        None => sound(a, CHAN_WEAPON, &format!("weapons/katana/miss{n}.wav")),
+        None => sound(a, CHAN_WEAPON, &format!("weapons/katana/miss{}.wav", variant())),
     }
     // TS reads `set[i1]` unchecked; the server only sends 15..18.
     blade_anim(a, flesh, || set_a(34).get(a.i1 as usize).copied().unwrap_or(0));
+}
+
+/// The katana's sample suffix for its `RandomLong(0, 1)`: non-zero `hit.wav`/`miss.wav`
+/// (`0x100954c8`, `0x10095498`), zero `hit1.wav`/`miss1.wav` (`0x1004461e..0x10044644`).
+fn katana_variant(roll: i32) -> &'static str {
+    if roll != 0 { "" } else { "1" }
 }
 
 /// `EV_TS_CloseCombat` (`0x10043200`): block (`i1` 0, `f1` the weapon id) or kung-fu attack (`i1`
@@ -295,7 +340,8 @@ pub fn katana(a: &Args) {
 /// index `i2`, body 0 (`0x100433bb..0x10043401`). A block then plays `player/block.wav`
 /// (`0x100436fa`). An attack plays `player/closecombat.wav` first (`0x100435b6..0x10043619`), then
 /// traces from the gun position along `forward` by [`close_combat_reach`] (`0x1004342c..0x100435b0`)
-/// and on a hit plays the material sound and, except on flesh, the puff (`0x10043667..0x100436e3`).
+/// and on a hit plays the material sound and, except on flesh, the puff (`0x10043667..0x100436e3`;
+/// the sky and an untextured surface, type 0, take the gun-smoke puff too: `0x1004369e..0x100436ad`).
 pub fn close_combat(a: &Args) {
     if a.is_view_owner() {
         r::weapon_animation(close_combat_seq(&set_a(a.f1 as i32), a.i2), 0);
@@ -305,8 +351,8 @@ pub fn close_combat(a: &Args) {
         return;
     }
     sound(a, CHAN_WEAPON, "player/closecombat.wav");
-    if let Some((pos, n, tex)) = melee_trace(a, reach(MeleeReach::CloseCombat(a.i1))) {
-        melee_material_sound(tex, pos);
+    if let Some((pos, n, surface)) = melee_trace(a, reach(MeleeReach::CloseCombat(a.i1))) {
+        let tex = melee_material_sound(surface, pos);
         if tex != b'F' {
             puff(pos, n, tex);
         }
@@ -326,8 +372,8 @@ pub fn coldcock(a: &Args) {
         r::weapon_animation(set_a(a.i1)[28] as i32, weapon_body(a.i1, a.i2));
     }
     sound(a, CHAN_WEAPON, "player/closecombat.wav");
-    if let Some((pos, n, tex)) = melee_trace(a, reach(MeleeReach::Coldcock(a.i1))) {
-        melee_material_sound(tex, pos);
+    if let Some((pos, n, surface)) = melee_trace(a, reach(MeleeReach::Coldcock(a.i1))) {
+        let tex = melee_material_sound(surface, pos);
         if tex != b'F' {
             puff(pos, n, tex);
         }
@@ -351,6 +397,29 @@ mod tests {
         // Out of range (the port's old 10..25 move ids, -1) falls back to sequence 0.
         assert_eq!(close_combat_seq(&kf, -1), 0);
         assert_eq!(close_combat_seq(&kf, 29), 0);
+    }
+
+    /// Issue #77: `TS_MeleeMaterialSound`'s lists in table order (`0x10045f0b..0x10046054`).
+    #[test]
+    fn melee_material_lists() {
+        let tile = ["player/pl_tile1.wav", "player/pl_tile3.wav", "player/pl_tile2.wav", "player/pl_tile4.wav"];
+        assert_eq!(melee_material_samples(b'T'), tile);
+        assert_eq!(melee_material_samples(b'S')[1..3], ["player/pl_slosh3.wav", "player/pl_slosh2.wav"]);
+        assert_eq!(melee_material_samples(b'V'), ["player/pl_duct1.wav"; 2], "two entries: RandomLong(0, 1)");
+        assert!(melee_material_samples(b'F').is_empty());
+        let step = ["player/pl_step1.wav", "player/pl_step2.wav"];
+        for tex in [0, b'C', b'X', b'E'] {
+            assert_eq!(melee_material_samples(tex), step, "{tex}");
+        }
+        assert_eq!(melee_material_samples(b'Y'), melee_material_samples(b'P'));
+    }
+
+    /// The sky and an untextured hit (type 0) neither spark nor play the blades' hit sound.
+    #[test]
+    fn blades_skip_type_zero() {
+        assert!(!hard(0) && !hard(b'F') && !hard(b'D') && !hard(b'W'));
+        assert!(hard(b'C') && hard(b'S') && hard(b'M') && hard(b'X'));
+        assert_eq!((katana_variant(1), katana_variant(0)), ("", "1"));
     }
 
     /// TS 3.0's reaches (`0x10043427..0x100434ab`: -55.0 at `0x1007d6fc`, 45 at `0x1007a900`,

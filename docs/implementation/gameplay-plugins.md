@@ -270,7 +270,7 @@ The hooks so far:
 | `GunRules` | `decay_spread(gun, decay) -> bool` | `Gun::decay_spread` by the step, while alive; true: the client's crosshair copy (`state.spread`) takes the penalty on every first prediction (the server ignores the value) | server `weapons/mod.rs` `pre_think`, client `post_think` (first prediction) |
 | `GunRules` | `pellet_offset(seed, i, bot_random)` | `None`: the polar pattern as each side computes it | server `weapons/fire.rs` `shoot_bullets`, client `events/fire.rs` `fire_bullets` |
 | `GunRules` | `pellet_dir(side, aim, right, up, spread, offset)` | `spread::pellet_dir`: the direction rounded as the side's TS build does (`PelletSide::Server(arith)`: mp.dll or `ts_i386.so`; `Client`: `client.dll`), issue #161 | the same two |
-| `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked -5/+5, one gun none | client `events/fire.rs` `fire_akimbo` |
+| `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked +5 (seed) / -5 (seed + 0x21), one gun none | client `events/fire.rs` `fire_akimbo` |
 | `GunRules` | `predicted()` | `Predicted::ALL` | `weapons/gun.rs` `weapon_post_frame` (client prediction only) |
 | `GunRules` | `cancel_runs_frame_in_reload(info)` | `info.stock != 0` | `weapons/gun.rs` `post_frame_ready` |
 | `GunRules` | `better_weapon(gun, excluded)` | `Gun::better_weapon_core`: the first owned id in `g_iWeaponPriority` | `weapons/gun.rs` `get_better_weapon` (`remove_weapon`, the server's `weapons::get_better_weapon` for bots) |
@@ -348,7 +348,7 @@ The hooks so far:
 | `ClientRules` | `map_effects()` | true | `effects.rs` `frame` (emitters) and `fog_begin` (map fog), asked each frame |
 | `ClientRules` | `ruleset_name()` | `"TS 3.0"` | `menus::draw_buy_menu` (§4.3) |
 | `ClientRules` | `crosshair_parts(weapon, fov)` | divesteps first for every weapon, then the crosshair unless weapon 0/24/25/34/35 | `hud/weapons.rs` `draw_crosshair` |
-| `ClientRules` | `crosshair_gap(base, spread, accuracy)` | `base + spread × 160` (f32), clamped to ±0x10000 | `hud/weapons.rs` `draw_crosshair` |
+| `ClientRules` | `crosshair_gap(base, spread, accuracy)` | `trunc(base + spread × 160)` (f64, as the x87 stack: issue #110), clamped to ±0x10000 | `hud/weapons.rs` `draw_crosshair` |
 | `ClientRules` | `divesteps_blocked(used, armor, teamplay)` | `used ≥ 42 / 52 / 62` | `hud/weapons.rs` `draw_divesteps` |
 | `ClientRules` | `stunt_cooldown(cooldown, now)` | the `NextStunt` countdown is ≥ 0.01 | `hud/weapons.rs` `draw_divesteps` |
 | `ClientRules` | `pinned_default_fov()` | none (`default_fov` clamped to 70..110) | `hud/mod.rs` `think_fov` |
@@ -394,8 +394,8 @@ The hooks so far:
 | `ClientRules` | `ammo_attenuation(ammo)` | `AMMO_ATTENUATION`, 0.4 past it | `events/fire.rs` `fire_sound` |
 | `ClientRules` | `bullet_whizz_and_push()` | true | `events/fire.rs` `fire_bullets` |
 | `ClientRules` | `bullet_material_sound()` / `ricochet_pitch(ts, factor)` | 0.97 and `slow_pitch` / `fire_pitch` | `events/impact.rs` `texture_sound` |
-| `ClientRules` | `event_sound()` | `RandomFloat(0.92, 1)`, `ATTN_NORM`, `slow_pitch` | `events/misc.rs` (empty, pump, reload, melee) |
-| `ClientRules` | `melee_material_sound(tex)` | 0.9, `ATTN_NORM`, `slow_pitch` | `events/misc.rs` `melee_material_sound` |
+| `ClientRules` | `event_sound()` | `RandomFloat(0.92, 1)`, `ATTN_NORM`, `slow_pitch` (pitch rolled first) | `events/misc.rs` (empty, pump, reload, melee) |
+| `ClientRules` | `melee_material_sound(tex)` | 0.9 (tile, glass 0.8; duct 0.5; flesh none), `ATTN_NORM`, `slow_pitch`; called before the sample roll | `events/misc.rs` `melee_material_sound` |
 | `ClientRules` | `melee_reach(m)` | close combat -55/45/35, coldcock 30, knife 35, katana -55/50 | `events/misc.rs` |
 | `ClientRules` | `close_combat_blocks()` / `blade_hit_particles(..)` / `reload_event_phases()` | true / false (scintille + sparks) / true | `events/misc.rs` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |

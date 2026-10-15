@@ -76,11 +76,14 @@ pub trait ClientRules: Sync {
     /// The crosshair lines' distance from the centre (`0x1004eb7f`): `base + ((acc + spread) −
     /// acc) × 160`, which TS works out on the x87 stack, where it is `base + spread × 160`.
     /// `base` is 22, or 12 with the laser on; `spread` the predicted spread penalty; `accuracy`
-    /// the held weapon's table accuracy (which cancels out here). Guarded: a huge predicted spread
-    /// would overflow `cx + gap`; at that size the lines are far off screen anyway.
+    /// the held weapon's table accuracy (which cancels out here). Nothing is rounded to float
+    /// before `__ftol`, so this is `trunc(base + spread × 160)` exactly; f64 holds a 24-bit spread
+    /// times 160 without rounding (issue #110: f32 rounded a spread one ulp under `k / 160` up a
+    /// pixel). Guarded: a huge predicted spread would overflow `cx + gap`; at that size the lines
+    /// are far off screen anyway.
     fn crosshair_gap(&self, base: i32, spread: f32, accuracy: f32) -> i32 {
         let _ = accuracy;
-        ((base as f32 + spread * 160.0) as i32).clamp(-0x10000, 0x10000)
+        ((base as f64 + spread as f64 * 160.0) as i32).clamp(-0x10000, 0x10000)
     }
 
     /// The divestep indicator (`DrawCrosshair`'s helper 1004ef50, thresholds 1004eec0/1004eef0/
@@ -329,19 +332,21 @@ pub trait ClientRules: Sync {
     }
 
     /// The other events' sounds (empty, pump, reload, the melee swings): volume, attenuation and
-    /// pitch, rolled in that order. TS 3.0: `RandomFloat(0.92, 1)`, `ATTN_NORM`,
-    /// [`slow_pitch`](crate::events::slow_pitch).
+    /// pitch. TS 3.0: `RandomFloat(0.92, 1)`, `ATTN_NORM`, [`slow_pitch`](crate::events::slow_pitch),
+    /// the pitch's `RandomLong(-5, 5)` rolled before the volume (`EV_TS_Empty`
+    /// `0x10042507..0x1004256f`, `EV_TS_Knife` `0x10043feb..0x1004402e`).
     fn event_sound(&self) -> (f32, f32, i32) {
+        let pitch = crate::events::slow_pitch();
         let vol = random_float(0.92, 1.0);
-        (vol, goldsrc::ext::render::ATTN_NORM, crate::events::slow_pitch())
+        (vol, goldsrc::ext::render::ATTN_NORM, pitch)
     }
 
-    /// A melee hit's material sound (`TS_MeleeMaterialSound` `0x10045df0`) on texture type `tex`:
-    /// volume, attenuation and pitch, or `None` for none. TS 3.0: 0.9, `ATTN_NORM`, `slow_pitch`
-    /// for every type (flesh's list is empty).
+    /// A melee hit's material sound (`TS_MeleeMaterialSound` `0x10045df0`) on texture type `tex`
+    /// (0: no texture): volume, attenuation and pitch, or `None` for none. Called before the
+    /// sample roll, so the pitch is rolled first (`0x10046066`). TS 3.0: attenuation 0.8,
+    /// `slow_pitch`, volume [`melee_material_volume`].
     fn melee_material_sound(&self, tex: u8) -> Option<(f32, f32, i32)> {
-        let _ = tex;
-        Some((0.9, goldsrc::ext::render::ATTN_NORM, crate::events::slow_pitch()))
+        melee_material_volume(tex).map(|vol| (vol, goldsrc::ext::render::ATTN_NORM, crate::events::slow_pitch()))
     }
 
     /// The melee events' trace length (negative: behind). TS 3.0: close combat
@@ -481,5 +486,54 @@ pub trait ClientRules: Sync {
     /// `DrawStatusPanel` (1004a3e0) by default.
     fn status_look(&self) -> crate::hud::draw::StatusLook {
         crate::hud::draw::StatusLook::default()
+    }
+}
+
+/// `TS_MeleeMaterialSound`'s volume by texture type (`0x10045f0b..0x10046044`): 0.8 for tile
+/// and glass, 0.5 for duct, 0.9 for the rest; flesh plays nothing.
+pub fn melee_material_volume(tex: u8) -> Option<f32> {
+    match tex {
+        b'F' => None,
+        b'T' | b'P' | b'Y' => Some(0.8),
+        b'V' => Some(0.5),
+        _ => Some(0.9),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Core;
+    impl ClientRules for Core {}
+
+    /// Issue #110: `0x1004eb7f` truncates `base + spread × 160` off the x87 stack, so a spread one
+    /// ulp under `k / 160` stays below the next pixel.
+    #[test]
+    fn crosshair_gap_is_not_rounded_to_float() {
+        let under = |k: f32| f32::from_bits((k / 160.0).to_bits() - 1);
+        assert_eq!(under(1.0), 0.0062499996);
+        for (spread, want) in [(0.0062499996f32, 22), (0.049999997, 29), (0.099999994, 37), (0.19999999, 53)] {
+            assert_eq!(Core.crosshair_gap(22, spread, 0.0075), want, "spread {spread}");
+        }
+        for k in 1..=39 {
+            assert_eq!(Core.crosshair_gap(22, under(k as f32), 0.01), 22 + k - 1, "k {k}");
+        }
+        assert_eq!(Core.crosshair_gap(22, 0.2, 0.0075), 54);
+        for s in [f32::NAN, f32::INFINITY, f32::MAX, -f32::MAX] {
+            assert!(Core.crosshair_gap(22, s, 0.01).abs() <= 0x10000);
+        }
+    }
+
+    /// Issue #77: `TS_MeleeMaterialSound`'s volumes (0.9 `0x3f666666`, 0.8 `0x3f4ccccd`, 0.5
+    /// `0x3f000000`).
+    #[test]
+    fn melee_material_volumes() {
+        for (tex, want) in [(b'T', Some(0.8)), (b'P', Some(0.8)), (b'Y', Some(0.8)), (b'V', Some(0.5)), (b'F', None)] {
+            assert_eq!(melee_material_volume(tex), want, "{}", tex as char);
+        }
+        for tex in [0, b'C', b'M', b'D', b'G', b'S', b'W', b'X'] {
+            assert_eq!(melee_material_volume(tex), Some(0.9), "{}", tex as char);
+        }
     }
 }

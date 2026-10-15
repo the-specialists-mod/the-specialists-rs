@@ -230,7 +230,7 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
   (UMP 2 rounds); akimbo semi modes 0.1 s.
 * Pellets: `t = SR(seed+i, -pi, pi)` (really `[-pi, -pi+6)` due to the integer range),
   `r = SR(seed+i+1, 0, 1)`, `m = 1 - r^3`, `dir = fwd + right*cos(t)*m*s + up*sin(t)*m*s`,
-  8192 u. Linked akimbo: second ray seed + 0x21, offsets +-5 u along `v_right`.
+  8192 u. Linked akimbo: first ray +5 u along `v_right` with the seed, second -5 u with seed + 0x21.
 * Range falloff: `min(1, 1/sqrt(max(round(dist/unit),1)*0.1))`. Bits 0x1002, shotguns
   0x2001002 (x1.5 headshot flag). Penetration: `left = dmg * pierce` (x0.5 into a player),
   `btype` not 1/2 and `left > 5`: step `min(2*left, 48)` (simulated bullets: `min(left, 48)`),

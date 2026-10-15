@@ -318,7 +318,8 @@ message colour or, for a black message, the `hud_r/g/b` cvar values (`0x1004afc9
 `hud_r/g/b`, halved where TS halves them, red (195,45,45). Sprites: hud.txt `number_0..9`,
 `d_*`; `sprites/player/*.spr`, `sprites/weapons/*.spr`, `cross_e/cross2/cross_t`, `divestep*`,
 `wires/*`, `compass/uparrow/downarrow/cursor`. The crosshair gap is `22 (12 with the laser on) +
-state.spread × 160` px (constant from the TS binary, `0x1007d7ac` = 160.0).
+state.spread × 160` px, truncated with no float rounding first (constant from the TS binary,
+`0x1007d7ac` = 160.0).
 
 `DrawCrosshair` (1004e9f0) centres everything (lines, sprites, divesteps, laser-range number) on
 `(cx, cy)`: the screen centre in first person; in third person the projection of the view
