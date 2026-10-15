@@ -497,7 +497,8 @@ extern "C" fn cmd_addbot() {
     if e.cmd_argv(1) == c"help" {
         e.alert(ALERT_TYPE::at_console, "Usage: addbot [botname]\n");
     } else {
-        let model = e.cmd_argv(1).to_string_lossy().into_owned();
+        // `BotCreate(CMD_ARGV(1))`: the bytes as typed (#190).
+        let model = e.cmd_argv(1).to_bytes().to_vec();
         crate::bot_backend::add_bot(crate::bot_backend::AddBot::Addbot { model });
     }
 }
@@ -511,7 +512,7 @@ extern "C" fn cmd_addcustombot() {
         e.alert(ALERT_TYPE::at_console, "Usage: addcustombot [botname] [team] [skill]\n");
     } else {
         let skill = crate::bots::files::scan_f32(e.cmd_argv(3).to_bytes()).unwrap_or(0.0); // (float)atof
-        let model = e.cmd_argv(2).to_string_lossy().into_owned();
+        let model = e.cmd_argv(2).to_bytes().to_vec();
         let name = e.cmd_argv(1).to_bytes().to_vec();
         crate::bot_backend::add_bot(crate::bot_backend::AddBot::Custom { name, model, skill });
     }

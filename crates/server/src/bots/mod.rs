@@ -112,7 +112,7 @@ pub fn texts_for_ruleset() {
 /// `addbot [model]`: `BotCreate` (0x1006b7c0). The argument is the model/team
 /// (despite the usage text); the name always comes from `bots.txt`. Afterwards `botlearn 1`
 /// when the node graph is empty.
-pub fn add_bot(model: &str) -> Option<*mut edict_t> {
+pub fn add_bot(model: &[u8]) -> Option<*mut edict_t> {
     let eng = engine();
     let model = pick_model(model);
     let mut skill = eng.random_float(0.1, 1.0);
@@ -127,7 +127,7 @@ pub fn add_bot(model: &str) -> Option<*mut edict_t> {
 /// `addcustombot [name] [model] [skill]`: `BotCreateCustom` (0x1006b590). The
 /// skill is random in 0.1..1 when not positive, else kept in 0.1..3; an empty name is picked from
 /// `bots.txt` (whose per-name skill then wins).
-pub fn add_custom_bot(name: &[u8], model: &str, skill: f32) -> Option<*mut edict_t> {
+pub fn add_custom_bot(name: &[u8], model: &[u8], skill: f32) -> Option<*mut edict_t> {
     let eng = engine();
     let model = pick_model(model);
     let mut skill = if skill <= 0.0 {
@@ -145,20 +145,27 @@ pub fn add_custom_bot(name: &[u8], model: &str, skill: f32) -> Option<*mut edict
 
 /// The model argument, else outside teamplay one of TS's seven (`RANDOM_LONG(0, 6)`; also in
 /// teamplay when [`rules::NativeBotRules::random_model_in_teamplay`]).
-fn pick_model(arg: &str) -> String {
+fn pick_model(arg: &[u8]) -> Vec<u8> {
+    let random = rules::current().random_model_in_teamplay() || !crate::rules::state::teamplay();
+    choose_model(arg, random, || engine().random_long(0, 6))
+}
+
+/// [`pick_model`]'s choice: the argument's bytes as typed (`strcpy(model, modelArg)`, #190), else
+/// with `random` the drawn one of [`BOT_MODELS`] (no draw otherwise), else empty.
+fn choose_model(arg: &[u8], random: bool, draw: impl FnOnce() -> i32) -> Vec<u8> {
     if !arg.is_empty() {
-        arg.to_owned()
-    } else if rules::current().random_model_in_teamplay() || !crate::rules::state::teamplay() {
-        BOT_MODELS[engine().random_long(0, 6).clamp(0, 6) as usize].to_owned()
+        arg.to_vec()
+    } else if random {
+        BOT_MODELS[draw().clamp(0, 6) as usize].as_bytes().to_vec()
     } else {
-        String::new()
+        Vec::new()
     }
 }
 
 /// `BotCreate`'s tail: the bot player (`BotSetup`, the host's
 /// [`crate::bot_backend::create_player`]) with a fresh brain of `skill`, announced as TS does
 /// ("<name> connected with skill <f>", the unclamped skill) when `announce` is set.
-fn create(name: &[u8], model: &str, skill: f32, announce: bool) -> Option<*mut edict_t> {
+fn create(name: &[u8], model: &[u8], skill: f32, announce: bool) -> Option<*mut edict_t> {
     let r = rules::current();
     let brain = Box::new(Brain::new(r.stored_skill(skill)));
     crate::bot_backend::create_player(name, model, brain, announce.then_some(skill), r.team_key())
@@ -169,7 +176,7 @@ fn create(name: &[u8], model: &str, skill: f32, announce: bool) -> Option<*mut e
 /// announcement, so the dedicated-server tests can tell it from an `addbot`. Returns the bot and
 /// its skill.
 pub fn add_quota_bot(name: &str) -> Option<(*mut edict_t, f32)> {
-    let model = pick_model("");
+    let model = pick_model(b"");
     let skill = engine().random_float(0.1, 1.0);
     create(name.as_bytes(), &model, skill, false).map(|e| (e, skill))
 }
@@ -324,4 +331,21 @@ pub fn client_command(_p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> b
 pub fn testdata_content_dir(name: &str) -> Option<std::path::PathBuf> {
     let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     here.ancestors().map(|a| a.join(name)).find(|d| d.join("maps").is_dir())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `BotCreate`'s model: the argument's bytes (a CP1252 0xE9 stays 0xE9, #190), with no draw;
+    /// without one a drawn stock model, or none in TS 3.0's teamplay.
+    #[test]
+    fn model_argument_is_bytes() {
+        let no_draw = || -> i32 { panic!("drew a model for a given one") };
+        assert_eq!(choose_model(b"\xe9quipe", true, no_draw), b"\xe9quipe");
+        assert_eq!(choose_model(b"caf\xe9", false, no_draw), b"caf\xe9");
+        assert_eq!(choose_model(b"", true, || 6), b"laurence");
+        assert_eq!(choose_model(b"", true, || 99), b"laurence", "a draw outside 0..6 is clamped");
+        assert_eq!(choose_model(b"", false, no_draw), b"");
+    }
 }

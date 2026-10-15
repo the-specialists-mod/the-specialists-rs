@@ -159,7 +159,8 @@ Port cvar, default `native`. **Read at map start** (`rules::install`, right afte
    `activate`, `deactivate`, `adopt_bot`. Register commands (`rcbot ...`) and cvars, read data
    from `data_dir(id)` (`<gamedir>/tsmod/<name>/`: waypoints, learned data).
 3. `add_bot(name, model, skill)`: pick what is empty, call `create_bot(id, name, model, skill)`,
-   keep the index, return it.
+   keep the index, return it. The strings are bytes as typed (not UTF-8): pass a given name and
+   model on unconverted, or a CP1252 byte turns into U+FFFD's three bytes (#190).
 4. Every `start_frame` while active: for each bot, think and call `run_cmd` once. Read the world
    with the engine's own functions (`engine_funcs`: traces, PVS, entity searches) and the API
    (`player_info`, `player_inventory`, `entity_info`, `game_state` with the team scores,

@@ -169,7 +169,8 @@ dedicated server TS only prints "Bots only in listen servers.", which is all the
 `ts_i386.so` has; the port adds the bot there too, a chosen deviation below. `help` prints the
 usage and anything else adds a bot:
 `bots::add_bot`/`add_custom_bot`, TS's `BotCreate`/`BotCreateCustom` with TS's AI (§10): the
-`addbot` argument is the model, the name comes from `bots.txt`, "<name> connected with skill <f>",
+`addbot` argument is the model (its bytes as typed, as TS's `strcpy`: the `model`/`team` keys
+and the teamplay team get them unconverted, #190), the name comes from `bots.txt`, "<name> connected with skill <f>",
 and `botlearn 1` when the node graph is empty; the quota neither counts nor kicks them. TS's
 shipped `listenserver.cfg` runs four `addbot`s on every map, so "Create Server" starts with four
 bots, as in TS),

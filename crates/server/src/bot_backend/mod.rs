@@ -39,15 +39,36 @@ pub type BotState = Box<dyn Any>;
 /// The name of TS's own bots, the default backend.
 pub const NATIVE: &str = "native";
 
-/// What `addbot`, `addcustombot` and the quota ask a backend for.
+/// What `addbot`, `addcustombot` and the quota ask a backend for. Names and models are the
+/// argument's bytes as typed: TS `strcpy`s `CMD_ARGV` into `BotCreate`'s `char model[32]` and
+/// `char name[64]`, and the model becomes the `model`/`team` keys and, in teamplay, the team
+/// (#190).
 #[derive(Clone, Debug, PartialEq)]
 pub enum AddBot {
     /// `addbot [model]`.
-    Addbot { model: String },
+    Addbot { model: Vec<u8> },
     /// `addcustombot [name] [model] [skill]` (skill as typed, 0 when missing).
-    Custom { name: Vec<u8>, model: String, skill: f32 },
+    Custom { name: Vec<u8>, model: Vec<u8>, skill: f32 },
     /// One of the port's `ts_bot_quota` bots, named by the host ("Bot Neo", ...).
     Quota { name: String },
+}
+
+impl AddBot {
+    /// A plugin backend's `add_bot(name, model, skill)` arguments: the bytes unconverted (an
+    /// embedded NUL, which no command argument has, is dropped), empty where the request has none.
+    pub fn plugin_args(&self) -> (CString, CString, f32) {
+        let (name, model, skill): (&[u8], &[u8], f32) = match self {
+            AddBot::Addbot { model } => (b"", model, 0.0),
+            AddBot::Custom { name, model, skill } => (name, model, *skill),
+            AddBot::Quota { name } => (name.as_bytes(), b"", 0.0),
+        };
+        (c_string(name), c_string(model), skill)
+    }
+}
+
+/// `bytes` as a C string, without any NUL.
+fn c_string(bytes: &[u8]) -> CString {
+    CString::new(bytes.iter().copied().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default()
 }
 
 /// A bot backend. Every hook but [`Self::name`] and [`Self::add_bot`] defaults to nothing, which
@@ -319,9 +340,9 @@ pub fn client_command(p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> bo
 /// `PlayerThink` and the `ts_playeramount` count. No `ClientConnected`, starting cash or
 /// `EF_NOINTERP`, as in TS. The bot is recorded as the active backend's, and plugins hear of it
 /// (`client_put_in_server`).
-pub fn create_player(name: &[u8], model: &str, state: BotState, announce: Option<f32>, team_key: bool) -> Option<*mut edict_t> {
+pub fn create_player(name: &[u8], model: &[u8], state: BotState, announce: Option<f32>, team_key: bool) -> Option<*mut edict_t> {
     let eng = engine();
-    let cname = CString::new(name.iter().copied().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default();
+    let cname = c_string(name);
     let e = eng.create_fake_client(&cname);
     if e.is_null() {
         if announce.is_some() {
@@ -345,14 +366,15 @@ pub fn create_player(name: &[u8], model: &str, state: BotState, announce: Option
         eng.alert(ALERT_TYPE::at_console, &shared::bformat!("{} connected with skill {}\n", cname, format!("{skill:.6}")));
     }
     crate::ham::spawn(e);
-    eng.set_client_key(e, "model", if model.is_empty() { "seal" } else { model });
+    // The model's bytes as given (`model[0] ? model : defModel`), as the team below (#190).
+    eng.set_client_key(e, "model", if model.is_empty() { &b"seal"[..] } else { model });
     if team_key {
         eng.set_client_key(e, "team", model);
     }
     eng.set_client_key(e, "cl_lw", "1");
     if !model.is_empty() && rules::state::teamplay() {
         // `CHalfLifeMultiplay::ChangePlayerTeam` is empty; teamplay's changes the team.
-        with_player(e, |p, cx| rules::teams::change_team(p, cx, model.as_bytes(), false, false));
+        with_player(e, |p, cx| rules::teams::change_team(p, cx, model, false, false));
     }
     // `g_pGameRules->PlayerThink(pl)` (0x1002c370): in intermission the new bot's button state is
     // cleared (it has pressed nothing, so the intermission isn't ended).
@@ -396,5 +418,18 @@ mod tests {
         assert_eq!(select(&names, "  RCBot "), Some(1), "case and spaces don't matter");
         assert_eq!(select(&names, "test"), Some(2));
         assert_eq!(select(&names, "rcbot2"), None, "unknown");
+    }
+
+    /// A plugin backend gets `addbot`/`addcustombot`'s name and model bytes as typed, a CP1252
+    /// 0xE9 included (#190).
+    #[test]
+    fn plugin_args_keep_bytes() {
+        let custom = AddBot::Custom { name: b"Jos\xe9".to_vec(), model: b"caf\xe9".to_vec(), skill: 2.5 };
+        let (n, m, s) = custom.plugin_args();
+        assert_eq!((n.as_bytes(), m.as_bytes(), s), (&b"Jos\xe9"[..], &b"caf\xe9"[..], 2.5));
+        let (n, m, s) = AddBot::Addbot { model: b"\xe9quipe\0x".to_vec() }.plugin_args();
+        assert_eq!((n.as_bytes(), m.as_bytes(), s), (&b""[..], &b"\xe9quipex"[..], 0.0), "a NUL is dropped");
+        let (n, m, _) = AddBot::Quota { name: "Bot Neo".into() }.plugin_args();
+        assert_eq!((n.as_bytes(), m.as_bytes()), (&b"Bot Neo"[..], &b""[..]));
     }
 }

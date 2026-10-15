@@ -225,13 +225,7 @@ impl bot_backend::BotBackend for PluginBackend {
 
     fn add_bot(&self, req: &AddBot) -> Option<(*mut edict_t, Option<f32>)> {
         let f = self.cb.add_bot?;
-        let (name, model, skill) = match req {
-            AddBot::Addbot { model } => (Vec::new(), model.clone(), 0.0),
-            AddBot::Custom { name, model, skill } => (name.clone(), model.clone(), *skill),
-            AddBot::Quota { name } => (name.clone().into_bytes(), String::new(), 0.0),
-        };
-        let name = CString::new(name.into_iter().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default();
-        let model = CString::new(model.replace('\0', "")).unwrap_or_default();
+        let (name, model, skill) = req.plugin_args();
         // SAFETY: `name` and `model` are NUL-terminated strings that live for the call.
         let i = unsafe { f(name.as_ptr(), model.as_ptr(), skill) };
         let eng = engine();
