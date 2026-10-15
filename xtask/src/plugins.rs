@@ -29,7 +29,7 @@ fn other_arch(t: &Target) -> Target {
 const FIXTURES: [&str; 7] = ["test_badver", "test_badsize", "test_refuse", "noexport", "wrongarch", "junk", "otherplat"];
 
 /// The plugin checks the stub logs as `[tsmod_test] check <what> ok`.
-pub const CHECKS: [&str; 15] = [
+pub const CHECKS: [&str; 19] = [
     "data_dir",
     "map_name",
     "create_bot",
@@ -37,6 +37,10 @@ pub const CHECKS: [&str; 15] = [
     "player_info",
     "entity_info",
     "game_state",
+    "team_scores",
+    "objectives",
+    "create_entity",
+    "gun_hook",
     "inventory",
     "bot_command",
     "client_command",
@@ -236,7 +240,7 @@ mod tests {
         let mut log = String::from("[ts] GameInit: x\n[ts] bots: backend test: reloading ts_dojo\n[ts] bots: backend test\n");
         for l in [
             "loaded tsmod_test_amd64.so (tsmod_test 1)",
-            "tsmod_test_badver_amd64.so: built for plugin API version 4, this server has version 3, skipped",
+            "tsmod_test_badver_amd64.so: built for plugin API version 5, this server has version 4, skipped",
             "tsmod_test_badsize_amd64.so: its plugin descriptor is 8 bytes, skipped",
             "tsmod_test_refuse_amd64.so: its TSRS_PluginLoad refused to load (-2), skipped",
             "tsmod_noexport_amd64.so: has no TSRS_PluginLoad export, skipped",

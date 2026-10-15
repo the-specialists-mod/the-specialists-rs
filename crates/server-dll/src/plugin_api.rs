@@ -11,7 +11,8 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::rc::Rc;
 use std::sync::OnceLock;
 use ts_plugin_api::{
-    BotBackend, BotCmd, EntityInfo, GameState, HamCall, INVALID, NOT_PLAYER, OK, PlayerInfo, PluginApi, PluginId, VERSION, WeaponEntry, ham,
+    BotBackend, BotCmd, EntityInfo, GameState, HamCall, INVALID, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, PluginApi, PluginId, VERSION,
+    WeaponEntry, ham,
 };
 use ts_server::ham as hooks;
 use ts_server::plugin_api as api;
@@ -65,6 +66,10 @@ fn build((funcs, globals): (*const goldsrc::sys::enginefuncs_t, *mut goldsrc::sy
         entity_info,
         master_triggered,
         game_state,
+        objectives,
+        create_entity,
+        entity_key_value,
+        spawn_entity,
         create_bot,
         kick_bot,
         run_cmd,
@@ -271,6 +276,38 @@ unsafe extern "C" fn game_state(out: *mut GameState) -> c_int {
     // SAFETY: the caller passes a `GameState` valid for writes (the table's contract).
     unsafe { out.write_unaligned(s) };
     OK
+}
+
+unsafe extern "C" fn objectives(player: c_int, out: *mut ObjectiveInfo, max: c_int) -> c_int {
+    match api::world_info::objectives(player) {
+        Ok(list) => {
+            if !out.is_null() {
+                for (i, o) in list.iter().take(max.max(0) as usize).enumerate() {
+                    // SAFETY: the caller passes `out` writable for `max` entries (the table's
+                    // contract), and `i < max`.
+                    unsafe { out.add(i).write_unaligned(*o) };
+                }
+            }
+            list.len() as c_int
+        }
+        Err(code) => code,
+    }
+}
+
+unsafe extern "C" fn create_entity(classname: *const c_char) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let Some(class) = (unsafe { arg(classname) }) else { return INVALID };
+    api::world_info::create_entity(class)
+}
+
+unsafe extern "C" fn entity_key_value(entity: c_int, key: *const c_char, value: *const c_char) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let (Some(key), Some(value)) = (unsafe { arg(key) }, unsafe { arg(value) }) else { return INVALID };
+    api::world_info::entity_key_value(entity, key, value)
+}
+
+extern "C" fn spawn_entity(entity: c_int) -> c_int {
+    api::world_info::spawn_entity(entity)
 }
 
 // ---- bots -----------------------------------------------------------------------------------------

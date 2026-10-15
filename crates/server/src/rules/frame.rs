@@ -3,9 +3,9 @@
 
 use super::lifecycle::{give_cash, start_observer};
 use super::msg::{self, ts_message_all};
-use super::powerup::{entity_in_slow, go_slow};
+use super::powerup::go_slow;
 use super::state::{self, Mode};
-use super::{alive, cvars, other, scoring, teams, votes};
+use super::{cvars, other, scoring, teams, votes};
 use crate::messages::{self, Msg};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
@@ -328,7 +328,7 @@ pub fn global_slow2(amount: f32, btime: bool) {
     for e in super::slot_players() {
         if amount == 0.0 {
             go_slow(e, 1.0, false);
-        } else if !entity_in_slow(e) {
+        } else if !crate::ham::in_slow(e) {
             go_slow(e, amount, btime);
         }
     }
@@ -453,7 +453,7 @@ fn check_deads(now: f32) {
     // `UTIL_PlayerByIndex` and `IsPlayer()`: a player who left counts (dead, so not living).
     for e in super::slot_players() {
         total += 1;
-        if alive(e.v()) {
+        if super::is_alive(e) {
             living.push(e);
         }
     }
@@ -641,8 +641,7 @@ fn select_random_the_one(now: f32) {
         if other(e, |p| p.ts.is_the_one).unwrap_or(false) {
             return;
         }
-        let v = e.v();
-        if alive(v) && v.iuser1 == 0 && candidates.len() < 0x21 {
+        if super::is_alive(e) && e.v().iuser1 == 0 && candidates.len() < 0x21 {
             candidates.push(e);
         }
     }

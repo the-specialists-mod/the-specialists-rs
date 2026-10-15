@@ -59,12 +59,9 @@ fn hull_closer<F: Fpu>(end: Vec3, src: Vec3, distance: f32) -> Option<f32> {
     shared::pm::below87(len, F::x(distance)).then(|| len.f())
 }
 
+/// `IsBSPModel()` of the trace's hit (`CheckHull`); NULL counts as the world.
 fn is_bsp(e: *mut edict_t) -> bool {
-    if e.is_null() {
-        return true;
-    }
-    let v = e.v();
-    v.solid == SOLID_BSP as i32 || v.movetype == MOVETYPE_PUSHSTEP as i32
+    e.is_null() || crate::ham::is_bsp_model(e)
 }
 
 /// `CBasePlayer::CheckHull(start, end, tr, hull)`.
@@ -82,8 +79,7 @@ pub fn check_hull(start: Vec3, end: Vec3, hull: i32, skip: *mut edict_t) -> Trac
 }
 
 fn alive(e: *mut edict_t) -> bool {
-    let v = e.v();
-    v.deadflag == DEAD_NO as i32 && v.health > 0.0
+    crate::ham::is_alive(e)
 }
 
 /// Applies a block by the victim. Returns what the attacker gets, or `None` if not blocked.
@@ -173,13 +169,17 @@ pub fn sparks(pos: Vec3) {
 /// One melee attack by `attacker` (the player whose gun asked for it): the trace runs `hit.reach`
 /// from the gun position along `v_angle`.
 pub fn attack(attacker: *mut edict_t, hit: &MeleeHit, atk_block: f32) -> MeleeResult {
+    // `m_pPlayer->GetGunPosition()` (`ColdCock`, `KatanaFire`, `KnifeFire`, `CCombatAttack`).
+    let start = crate::ham::gun_position(attacker, || {
+        let v = attacker.v();
+        spread::add(v.origin, v.view_ofs)
+    });
     let pev = attacker.v();
     let mut ang = pev.v_angle;
     if hit.zero_roll {
         ang[2] = 0.0;
     }
     let (fwd, _, _) = spread::angle_vectors(ang);
-    let start = spread::add(pev.origin, pev.view_ofs);
     let end = spread::ma(start, hit.reach, fwd);
     trace_attack(attacker, hit, start, end, fwd, atk_block, false)
 }

@@ -21,7 +21,7 @@ use goldsrc::server::{self as sv, engine};
 use goldsrc::sys::*;
 use goldsrc::util::cstr;
 use std::ffi::{CStr, c_char, c_int, c_uchar, c_uint, c_void};
-use ts_server::world::{self, UseType};
+use ts_server::world::UseType;
 use ts_server::{bot_backend, commands, entities, ham, messages, net, player, rules, save, stunt, weapons};
 
 #[unsafe(no_mangle)]
@@ -556,7 +556,7 @@ unsafe extern "C" fn allow_lag_compensation() -> c_int {
 }
 
 unsafe extern "C" fn on_free_private_data(e: *mut edict_t) {
-    world::free(e);
+    ham::on_free_private_data(e);
 }
 
 unsafe extern "C" fn game_shutdown() {

@@ -37,6 +37,8 @@ pub struct ServerHost<'a> {
     block_timer: Option<f32>,
     /// The gameplay rules of this call, from the player's physinfo ([`crate::gameplay::gun_rules`]).
     rules: &'static dyn shared::gameplay::GunRules,
+    /// The gun virtuals whose plugin hook ran before them (`virtual_pre`), innermost last.
+    frames: Vec<crate::ham::GunFrame>,
 }
 
 /// Runs `f` with the player's gun and a host for it, then applies the third-person animation
@@ -65,6 +67,7 @@ pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut S
             close_attack_cd: None,
             block_timer: None,
             rules: crate::gameplay::gun_rules(cx.edict),
+            frames: Vec::new(),
         };
         let r = f(gun, &mut h);
         (r, h.anims, h.ext_changed, h.stunt_recover, h.close_attack_cd, h.block_timer)
@@ -124,6 +127,32 @@ impl ServerHost<'_> {
         std::mem::swap(&mut self.player.inv.sv, self.sv);
         r
     }
+
+    /// Runs a plugin's gun hook (`f`) with the player whole and lent to its slot, open to the API
+    /// (`world::lend_open`), as [`reach_player`](Self::reach_player) does for a shot.
+    fn reach_open(&mut self, gun: &mut Gun, f: &mut dyn FnMut()) {
+        std::mem::swap(&mut self.player.inv.gun, gun);
+        std::mem::swap(&mut self.player.inv.sv, self.sv);
+        crate::world::lend_open(self.edict, &mut *self.player, f);
+        std::mem::swap(&mut self.player.inv.gun, gun);
+        std::mem::swap(&mut self.player.inv.sv, self.sv);
+    }
+}
+
+/// `CBasePlayerWeapon::SendWeaponAnim(anim, skiplocal, body)` (0xa00d0) for `player`:
+/// `pev->weaponanim`, then `SVC_WEAPONANIM` unless the player is a bot or `skiplocal` and the
+/// client predicts its weapons.
+pub fn send_weapon_anim(player: *mut edict_t, anim: i32, skip_local: bool, body: i32) {
+    let pev = player.v();
+    pev.weaponanim = anim;
+    if pev.flags & FL_FAKECLIENT as i32 != 0 {
+        return;
+    }
+    let e = engine();
+    if skip_local && e.can_skip_player(player) {
+        return;
+    }
+    e.send_weapon_anim(player, anim, body);
 }
 
 /// The slow-motion factor every weapon and item sound passes to TS's `EMIT_SOUND_DYN`
@@ -153,8 +182,11 @@ impl GunHost for ServerHost<'_> {
     fn time(&self) -> f32 {
         engine().time()
     }
+    /// `m_pPlayer->GiveSlowMul()`, hookable (`Ham_TS_GiveSlowMul`; the player is inside its own
+    /// weapon frame, out of reach for the hook).
     fn slow_mul(&self) -> f32 {
-        shared::weapons::spread::fixed_slow_amt(self.pev().fuser1)
+        let fuser1 = self.pev().fuser1;
+        crate::ham::give_slow_mul(self.edict, || shared::weapons::spread::fixed_slow_amt(fuser1))
     }
     fn time_scale(&self) -> f32 {
         self.pev().fuser1
@@ -249,17 +281,22 @@ impl GunHost for ServerHost<'_> {
         });
         playback(self.edict, ev, args);
     }
+    /// `SendWeaponAnim` through the gun's vtable, hookable on its `weapon_tsgun`
+    /// (`Ham_Weapon_SendWeaponAnim`).
     fn weapon_anim(&mut self, anim: i32, skip_local: bool, body: i32) {
-        let pev = self.pev();
-        pev.weaponanim = anim;
-        if pev.flags & FL_FAKECLIENT as i32 != 0 {
-            return;
-        }
-        let e = engine();
-        if skip_local && e.can_skip_player(self.edict) {
-            return;
-        }
-        e.send_weapon_anim(self.edict, anim, body);
+        let player = self.edict;
+        crate::ham::send_weapon_anim(self.sv.gun_item.get(), anim, skip_local, body, |a, s, b| send_weapon_anim(player, a, s, b));
+    }
+    fn virtual_pre(&mut self, gun: &mut Gun, v: shared::weapons::Virtual, arg: &mut i32) -> bool {
+        let this = self.sv.gun_item.get();
+        let frame = crate::ham::gun_pre(v, this, arg, &mut |f| self.reach_open(gun, f));
+        let run = !frame.superseded();
+        self.frames.push(frame);
+        run
+    }
+    fn virtual_post(&mut self, gun: &mut Gun, v: shared::weapons::Virtual, arg: i32, ran: Option<i32>) -> i32 {
+        let Some(frame) = self.frames.pop() else { return ran.unwrap_or(0) };
+        crate::ham::gun_post(v, frame, arg, ran, &mut |f| self.reach_open(gun, f))
     }
     fn player_anim(&mut self, anim: i32) {
         // CTSAnimation (movement package), applied by `with_host` after the gun call.

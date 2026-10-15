@@ -290,7 +290,7 @@ impl Entity for Grenade {
         let attacker = self.owner.unwrap_or(std::ptr::null_mut());
         // 0x7cacc: only `IsInWorld()` (vtable slot 49); no sky test, so a grenade in the sky
         // explodes too.
-        if is_in_world(pev) {
+        if crate::ham::is_in_world(me, || is_in_world(me.v())) {
             // `TSExplosion(origin, pev, owner, 110, DMG_BLAST | DMG_NEVERGIB, 300, 1024)`
             // (`ServerRules::grenade_explosion`).
             let (dmg, r_full, r_max) = crate::gameplay::active().server.grenade_explosion();

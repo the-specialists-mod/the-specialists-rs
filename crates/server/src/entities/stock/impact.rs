@@ -165,7 +165,7 @@ pub fn texture_type_play_sound(tr: &TraceResult, src: Vec3, end: Vec3, bullet_ty
     let world = eng.entity_of_index(0);
     let hit = if tr.pHit.is_null() { world } else { tr.pHit };
     let entity = (!hit.is_null() && hit.has_private_data()).then_some(hit);
-    let chtype = if entity.is_none_or(|e| matches!(crate::entities::classify(e), 0 | 1)) {
+    let chtype = if entity.is_none_or(|e| matches!(crate::ham::classify(e), 0 | 1)) {
         let name = eng.trace_texture(entity.unwrap_or(world), src, end).to_bytes();
         let mut name = name;
         if matches!(name.first(), Some(b'-' | b'+')) {

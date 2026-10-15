@@ -686,7 +686,9 @@ fn object_caps_of(e: *mut edict_t) -> Option<u32> {
         return None;
     }
     let v = e.v();
-    ts_object_caps(s(v.classname), v)
+    let caps = ts_object_caps(s(v.classname), v)?;
+    // `pEntity->ObjectCaps()` (`ChangeList` 0xe87c4, `InTransitionVolume` 0xe865c): hookable.
+    Some(crate::ham::object_caps(e, || caps))
 }
 
 /// `CChangeLevel::AddTransitionToList` (0xe8438): adds `map` / `landmark` unless that map is

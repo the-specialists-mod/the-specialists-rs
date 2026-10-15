@@ -175,6 +175,8 @@ impl Player {
         if crate::rules::player_think(self, cx) {
             return;
         }
+        // `ItemPreFrame` (0xdc484): the active item's, hookable on the gun (`Ham_Item_PreFrame`).
+        crate::weapons::item_pre_frame(self, cx);
         // Losing the train ends TS's PreThink for this frame (both libraries), before
         // `Jump`/`Duck`, the fall speed, `UpdatePlayerState`, the node learning, the end of spawn
         // protection and the delayed suicide (issue #60).

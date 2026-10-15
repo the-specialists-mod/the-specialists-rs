@@ -137,7 +137,8 @@ const ATTN_NORM: f32 = 0.8;
 
 /// `GiveSlowMul`: the player's time scale, at least 0.01.
 pub fn slow_mul(cx: &mut Cx) -> f32 {
-    cx.pev().fuser1.max(0.01)
+    let e = cx.edict;
+    crate::ham::give_slow_mul(e, || goldsrc::edict::EdictPtr::v(e).fuser1.max(0.01))
 }
 
 fn frametime() -> f32 {

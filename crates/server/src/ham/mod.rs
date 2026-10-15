@@ -31,12 +31,19 @@
 //! of overflowing the stack.
 
 mod classes;
+mod gun;
 mod names;
+mod query;
 mod table;
 #[cfg(test)]
 mod tests;
 
+pub use gun::{GunFrame, gun_item, gun_post, gun_pre, item_drop, item_pre_frame, item_update_client_data, send_weapon_anim};
 pub use names::{NAMES, SIGS};
+pub use query::{
+    blood_color, can_use_through_walls, center, classify, enable_objective, eye_position, give_slow_mul, gun_position, in_slow, is_alive,
+    is_bsp_model, is_in_world, is_net_client, is_objective, is_player, killed_entity, object_caps, on_free_private_data,
+};
 
 use crate::damage::DamageInfo;
 use crate::player::Player;
@@ -78,6 +85,25 @@ pub mod id {
     pub const RESPAWN: usize = 45;
     pub const CENTER: usize = 48;
     pub const EYEPOSITION: usize = 49;
+    pub const ITEM_CANDEPLOY: usize = 65;
+    pub const ITEM_DEPLOY: usize = 66;
+    pub const ITEM_CANHOLSTER: usize = 67;
+    pub const ITEM_HOLSTER: usize = 68;
+    pub const ITEM_UPDATEITEMINFO: usize = 69;
+    pub const ITEM_PREFRAME: usize = 70;
+    pub const ITEM_POSTFRAME: usize = 71;
+    pub const ITEM_DROP: usize = 72;
+    pub const ITEM_UPDATECLIENTDATA: usize = 77;
+    pub const ITEM_GETWEAPONPTR: usize = 78;
+    pub const ITEM_ITEMSLOT: usize = 79;
+    pub const WEAPON_SENDWEAPONANIM: usize = 85;
+    pub const WEAPON_PLAYEMPTYSOUND: usize = 83;
+    pub const WEAPON_PRIMARYATTACK: usize = 87;
+    pub const WEAPON_SECONDARYATTACK: usize = 88;
+    pub const WEAPON_RELOAD: usize = 89;
+    pub const WEAPON_WEAPONIDLE: usize = 90;
+    pub const WEAPON_SHOULDWEAPONIDLE: usize = 92;
+    pub const WEAPON_USEDECREMENT: usize = 93;
     pub const PLAYER_JUMP: usize = 55;
     pub const PLAYER_DUCK: usize = 56;
     pub const PLAYER_PRETHINK: usize = 57;
@@ -92,6 +118,7 @@ pub mod id {
     pub const TS_ENABLEOBJECTIVE: usize = 127;
     pub const TS_ONFREEENTPRIVATEDATA: usize = 128;
     pub const TS_SHOULDCOLLIDE: usize = 129;
+    pub const TS_WEAPON_ALTERNATEATTACK: usize = 418;
 }
 
 /// How many hook calls may be on the stack at once (see the module docs).
@@ -583,6 +610,20 @@ fn inner_hooked<T: Entity + Default, A: Args, R: Ret>(
     ham: usize,
     obj: &mut T,
     cx: &mut Cx,
+    args: A,
+    run: impl FnOnce(&mut T, &mut Cx, &mut A) -> R,
+) -> R {
+    let e = cx.edict;
+    inner_on(ham, e, obj, cx, args, run)
+}
+
+/// An inner call of `ham` on `this` (the object of `cx.edict`, or another entity that belongs to
+/// it: the player's `weapon_tsgun`), with `obj` lent to `cx.edict`'s slot for the hooks.
+fn inner_on<T: Entity + Default, A: Args, R: Ret>(
+    ham: usize,
+    this: *mut edict_t,
+    obj: &mut T,
+    cx: &mut Cx,
     mut args: A,
     run: impl FnOnce(&mut T, &mut Cx, &mut A) -> R,
 ) -> R {
@@ -591,7 +632,7 @@ fn inner_hooked<T: Entity + Default, A: Args, R: Ret>(
         return run(obj, cx, &mut args);
     }
     let h = &HOOKS.0;
-    let Some(frame) = h.pre(&Game, ham, e, R::RET, &mut args, &mut |f| world::lend_open(e, obj, f)) else {
+    let Some(frame) = h.pre(&Game, ham, this, R::RET, &mut args, &mut |f| world::lend_open(e, obj, f)) else {
         return run(obj, cx, &mut args);
     };
     let ran = if frame.superseded() { None } else { Some(run(obj, cx, &mut args)) };

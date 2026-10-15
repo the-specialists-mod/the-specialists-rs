@@ -89,10 +89,10 @@ pub fn shoot_bullets(shooter: *mut edict_t, shot: &Shot) {
     });
     let rules = crate::gameplay::active().server;
     let arith = crate::rules::cvars::pm_arith();
+    let mut src = crate::ham::gun_position(shooter, || gun_position(shooter.v()));
     let pev = shooter.v();
     let real = rules.weapon_realbullet(assets::realbullet()) != 0 || pev.fuser1.max(0.01) < 0.99;
     let (fwd, right, up) = spread::angle_vectors(pev.v_angle);
-    let mut src = gun_position(pev);
     if shot.right_offset != 0.0 {
         src = spread::ma(src, shot.right_offset, right);
     }

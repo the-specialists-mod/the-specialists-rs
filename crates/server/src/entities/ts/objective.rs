@@ -186,18 +186,45 @@ fn team_index(e: *mut edict_t) -> i32 {
 /// `SendObjectiveToHud(idx, player)` (0x7ac80): the listed objective's centre, its index and the
 /// player's text, to that player.
 pub fn send_to_hud(idx: i32, player: *mut edict_t) {
-    let entry = state::with(|g| {
-        let o = &g.objectives;
-        (0..o.count.min(MAX_LISTED as i32)).contains(&idx).then(|| (o.slots[idx as usize], o.texts[idx as usize]))
-    });
-    let Some((obj, texts)) = entry else { return };
-    if player.is_null() || obj.is_null() {
+    if player.is_null() {
         return;
     }
-    let t = team_text(&texts, &teams::team_name_of(player), team_index(player), rules().team_names);
-    let text = if t == 0 { Vec::new() } else { clip63(engine().string(t).to_bytes()) };
-    let [x, y, z] = center(obj.v());
+    let Some((_, [x, y, z], text)) = hud_entry(idx, player) else { return };
     msg::one(Msg::Objective, player, |w| Objective { x, y, z, idx: idx as u8, text }.write(w));
+}
+
+/// What `SendObjectiveToHud` sends `player` for list entry `idx`: the objective, its `Center()`
+/// and the player's text. A null `player` reads as no team. `None` for an index past the list or
+/// an emptied slot.
+fn hud_entry(idx: i32, player: *mut edict_t) -> Option<(*mut edict_t, [f32; 3], Vec<u8>)> {
+    let (obj, texts) = state::with(|g| {
+        let o = &g.objectives;
+        (0..o.count.min(MAX_LISTED as i32)).contains(&idx).then(|| (o.slots[idx as usize], o.texts[idx as usize]))
+    })?;
+    if obj.is_null() {
+        return None;
+    }
+    let (team, index) = if player.is_null() { (Vec::new(), -1) } else { (teams::team_name_of(player), team_index(player)) };
+    let t = team_text(&texts, &team, index, rules().team_names);
+    let text = if t == 0 { Vec::new() } else { clip63(engine().string(t).to_bytes()) };
+    Some((obj, crate::ham::center(obj, center), text))
+}
+
+/// The HUD list as the `Objective` messages give it to `player` (null: no team), in list order:
+/// index, objective, centre and text (the plugin API's `objectives`, port addition).
+pub fn hud_list(player: *mut edict_t) -> Vec<(i32, *mut edict_t, [f32; 3], Vec<u8>)> {
+    let n = state::with(|g| g.objectives.count.clamp(0, MAX_LISTED as i32));
+    (0..n).filter_map(|i| hud_entry(i, player).map(|(e, c, t)| (i, e, c, t))).collect()
+}
+
+/// Whether objective `e` can be completed now: a bomb, hack or escape zone while enabled
+/// (`CTSObjective` +0x64, `Freeze`), a win or score giver until it has fired. `None` for anything
+/// else, or an object that can't be reached.
+pub fn objective_active(e: *mut edict_t) -> Option<bool> {
+    world::with_lent::<Bomb, _>(e, |b| b.enabled)
+        .or_else(|| world::with_lent::<Hack, _>(e, |h| h.enabled))
+        .or_else(|| world::with_lent::<TeamEscape, _>(e, |t| t.enabled))
+        .or_else(|| super::ctb::giver_active(e))
 }
 
 /// `SendObjectiveList` (0x7add4): the whole list to `player`, from `InitHUD` and a team change in
@@ -530,10 +557,11 @@ impl Entity for ObjectivePointer {
             if e.is_null() || engine().index_of(e) == 0 {
                 break;
             }
-            if !world::type_of(e).is_some_and(|t| is_objective(t, givers)) {
+            // `pEntity->IsObjective()`, `pEntity->EnableObjective(TRUE)`: hookable.
+            if !crate::ham::is_objective(e, || world::type_of(e).is_some_and(|t| is_objective(t, givers))) {
                 continue;
             }
-            world::dispatch(e, |ent, ecx| enable_objective(ent, ecx, true));
+            crate::ham::enable_objective(e, true);
             let idx = state::with(|g| g.objectives.add(e, self.texts, rules().indexed_list));
             if idx == -1 {
                 continue;
@@ -631,7 +659,8 @@ impl Entity for Bomb {
         if ran_out(rules().nan_time_runs_out, self.countdown) {
             crate::gameplay::active().server.round_time_left(cx.time());
             freeze(cx.edict, &mut self.enabled, true);
-            let c = center(cx.pev());
+            // `Center()`: hookable (`Ham_Center`; the bomb is in its own think, out of reach).
+            let c = crate::ham::center(cx.edict, center);
             let bits = crate::damage::bits::BLAST | crate::damage::bits::NEVERGIB;
             ts_explosion(c, cx.edict, cx.edict, 300.0, bits, 2048.0, 4096.0);
             return;
@@ -1059,10 +1088,10 @@ pub fn disable_all() {
     let eng = engine();
     for i in 1..eng.max_entities() {
         let e = eng.entity_of_index(i);
-        if e.is_null() || e.is_free() || !world::type_of(e).is_some_and(|t| is_objective(t, true)) {
+        if e.is_null() || e.is_free() || !crate::ham::is_objective(e, || world::type_of(e).is_some_and(|t| is_objective(t, true))) {
             continue;
         }
-        world::dispatch(e, |ent, cx| enable_objective(ent, cx, false));
+        crate::ham::enable_objective(e, false);
     }
 }
 

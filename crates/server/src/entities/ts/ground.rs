@@ -310,7 +310,7 @@ impl GroundWeapon {
     /// `target`, in TS's order. The gameplay plugin's `ServerRules::give_ground_weapon` runs in
     /// its place; this is TS 3.0's.
     pub fn give(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
-        if !rules::alive(pcx.pev()) || hidden(pcx) || hidden(cx) {
+        if !rules::is_alive(pcx.edict) || hidden(pcx) || hidden(cx) {
             return;
         }
         let flags = cx.pev().spawnflags;
@@ -603,7 +603,7 @@ impl Entity for GroundAmmo {
         }
         let rounds = self.rounds;
         let took = with_player_now(other, |p, pcx| {
-            if !rules::alive(pcx.pev()) {
+            if !rules::is_alive(pcx.edict) {
                 return false;
             }
             let mut any = false;

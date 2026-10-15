@@ -150,7 +150,7 @@ impl Entity for Trigger {
 
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let now = cx.time();
-        if !self.funcs.touch || now < self.ready_at || !rules::has_player(other) || !rules::alive(other.v()) {
+        if !self.funcs.touch || now < self.ready_at || !rules::has_player(other) || !rules::is_alive(other) {
             return;
         }
         // The name is read first: `team_name_of` borrows the rules itself, and a nested
@@ -224,7 +224,7 @@ impl Entity for DmHill {
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
         let now = cx.time();
         let step = self.next_check.max(0.5);
-        if !self.funcs.touch || now < self.blocked_until || !rules::has_player(other) || !rules::alive(other.v()) {
+        if !self.funcs.touch || now < self.blocked_until || !rules::has_player(other) || !rules::is_alive(other) {
             return;
         }
         let Some(king) = self.king else {
@@ -587,7 +587,7 @@ impl SlowMotion {
         let r = self.radius;
         let arith = rules::cvars::pm_arith();
         self.slowed.retain(|&e| {
-            if !rules::powerup::entity_in_slow(e) {
+            if !crate::ham::in_slow(e) {
                 return true;
             }
             let inside = shared::by_arith!(arith, slow_inside(e.v().origin, c, r));
@@ -681,7 +681,7 @@ impl Entity for SlowMotion {
         if !self.funcs.touch || self.global || !self.active() || !rules::has_player(other) {
             return;
         }
-        if !rules::powerup::entity_in_slow(other) {
+        if !crate::ham::in_slow(other) {
             rules::powerup::go_slow(other, self.amount, self.btime);
             if !self.slowed.contains(&other) {
                 self.slowed.push(other);
@@ -753,7 +753,7 @@ impl Entity for SlowMotionPoint {
         let org = cx.pev().origin;
         // `UTIL_PlayerByIndex` and `IsPlayer()` (0x717c5): players who left too.
         for p in rules::slot_players() {
-            if rules::powerup::entity_in_slow(p) {
+            if crate::ham::in_slow(p) {
                 continue;
             }
             // `UTIL_TraceLine(.., ignore_monsters, ignore_glass, NULL, ..)` (0xed4b0): glass

@@ -61,8 +61,10 @@ fn should_gib(gib: GibType, health: f32) -> bool {
 pub fn gib_player(e: *mut edict_t) {
     emit_sound_slow(e, CHAN_WEAPON, c"common/bodysplat.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
     if engine().cvar_float(c"violence_hgibs") != 0.0 {
-        Gib::spawn_head_gib(e, BLOOD_COLOR_RED);
-        Gib::spawn_random_gibs(e, 4, true, BLOOD_COLOR_RED, crate::damage::attack_dir());
+        // The gibs ask the victim's `BloodColor()` (`CGib::SpawnHeadGib` / `SpawnRandomGibs`).
+        let blood = crate::ham::blood_color(e, || BLOOD_COLOR_RED);
+        Gib::spawn_head_gib(e, blood);
+        Gib::spawn_random_gibs(e, 4, true, blood, crate::damage::attack_dir());
     }
 }
 

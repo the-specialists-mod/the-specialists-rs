@@ -942,7 +942,7 @@ pub fn observer_idle(p: &mut Player, cx: &mut Cx, now: f32) {
         return;
     }
     let t = engine().player(p.ts.obs_target);
-    if !obs_handle_valid(p.ts.obs_target) || !alive(t.v()) || t.v().iuser1 != 0 {
+    if !obs_handle_valid(p.ts.obs_target) || !super::is_alive(t) || t.v().iuser1 != 0 {
         observer_find_next_player(p, cx, false);
     }
 }
