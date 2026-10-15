@@ -311,6 +311,8 @@ fn on_message(m: Msg, buf: &[u8]) {
     if m == Msg::ResetHUD {
         // `0x100219c7`: `m_flMouseSensitivity` (`+0x18`) = 0 after the elements' `Reset`.
         ZOOM_SENS.0.set(0.0);
+        // `CHudTSWeapons::Reset` (`0x1004cd60`) zeroes the last key bits (`+0x3724`) too.
+        PREV_BITS.0.set(0);
     }
     if m == Msg::DeathMsg {
         notice::on_death_msg(buf);
@@ -611,7 +613,11 @@ pub fn vid_init() {
     crate::state::with(|st| st.time_scale = 1.0);
     crate::prediction::reset_alt_grip();
     with(|h| {
-        h.reset();
+        // The two TS elements' VidInits (`0x10049d10`, `0x1004cb50`), not `Hud::reset`: `CHud::VidInit`
+        // runs no element's `Reset`, so a `ShowMenu` menu (`CHudMenu::Reset` `0x100285e0`) and
+        // `HideWeapon` (`CHudAmmo::Reset` `0x10019ef0`) survive a video-mode change.
+        h.reset_status();
+        h.vid_init_weapons();
         // CHudTSStatus::VidInit also clears messages, objectives and flags.
         h.messages = vec![state::TsLine::default(); state::MAX_TS_MESSAGES];
         h.objectives = vec![state::Objective::default(); state::MAX_OBJECTIVES];
@@ -623,11 +629,13 @@ pub fn vid_init() {
         h.cash = 0;
         h.slots = 0;
         h.observer = false;
-        h.kfu_power = 100.0;
-        h.kfu_prev = 100.0;
         // `HUD_VidInit`'s `TeamFortressViewport::Initialize` (`0x10060aa0`).
         h.tfc.initialize();
     });
+    weapons::reset_think_sounds();
+    // `CHudTSWeapons::VidInit` (`0x1004cb50`): the last `Think`'s key bits (`+0x3724`), so a held
+    // `+use` counts as a new press.
+    PREV_BITS.0.set(0);
     crate::menus::vid_init(first);
 }
 

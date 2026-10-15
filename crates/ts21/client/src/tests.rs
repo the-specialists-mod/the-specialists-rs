@@ -252,6 +252,22 @@ fn buy_menu_reset_and_random() {
     assert_eq!(ids[2], 2);
 }
 
+/// 2.1's weapon `VidInit` (`0x100894c0`) re-runs its buy menu `Init` (`0x1006aa70`) as 3.0 does
+/// (issue #189): after it the next open rolls a 2.1 random loadout instead of the last config.
+#[test]
+fn buy_menu_init_rerolls_in_2_1() {
+    let r = Rules { cash: CASH, ..rules(v21(), 2) };
+    let mut m = BuyMenu::default();
+    m.open(&r, &mut Seq(vec![0, 1, 5, 0, 0, 0, 2, 0, 0, 0]));
+    m.close();
+    m.last = m.current.clone();
+    let mut m = BuyMenu::new(m.saved.clone());
+    assert!(m.random_first && m.last.entries.iter().all(|e| e.id == 0));
+    m.open(&r, &mut Seq(vec![0, 1, 5, 0, 0, 0, 2, 0, 0, 0]));
+    let ids: Vec<i32> = m.current.entries.iter().map(|e| e.id).filter(|&id| id != 0).collect();
+    assert_eq!(ids, [25, 8, 6], "2.1's random config again (p = 0.5)");
+}
+
 fn bob_input(time: f32, speed: f32, slowmo_factor100: f32) -> ts_client::view::BobInput {
     ts_client::view::BobInput {
         on_ground: true,

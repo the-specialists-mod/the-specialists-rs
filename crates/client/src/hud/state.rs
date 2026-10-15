@@ -403,6 +403,24 @@ impl Hud {
         self.last_laser_color = -1;
     }
 
+    /// The fields `CHudTSWeapons::VidInit` (`0x1004cb50`; 2.1 `0x100894c0` does the same) sets,
+    /// after [`Hud::reset`] in `HUD_VidInit`. Unlike `Reset` it leaves the grid empty, kung fu
+    /// included (`+0x164`, all −1), and also clears the weapon panel's state: `+0x788..+0x7b8`
+    /// (fire mode `+0x78a`, clip `+0x78c`, attachments `+0x798`), `+0x7b8` the weapon id and
+    /// `+0x748` the reserve ammo per type. Kung-fu power and its copy (`+0x3700/+0x3704`) are
+    /// 100. The buy menu (`+0x7c0`) is re-initialised by `menus::vid_init`, the think sounds'
+    /// state (`+0x3708..+0x3714`) by `weapons::reset_think_sounds`, `+0x3724` by the caller.
+    pub fn vid_init_weapons(&mut self) {
+        self.reset_weapons();
+        self.grid = [[EMPTY; GRID_BUCKETS]; GRID_ROWS];
+        self.reserve = [0; 16];
+        self.firemode = 0;
+        self.clip = 0;
+        self.attachments = 0;
+        self.kfu_power = 100.0;
+        self.kfu_prev = 100.0;
+    }
+
     /// `CHudTSStatus::Reset` (10049e70).
     /// `CHudTSStatus::Reset`.
     pub fn reset_status(&mut self) {
@@ -1030,6 +1048,25 @@ mod tests {
         fn effect(&self, key: &str) -> i32 {
             if key == "Notify" { -1 } else { 0 }
         }
+    }
+
+    /// `CHudTSWeapons::VidInit` (`0x1004cb50`): unlike `Reset`, no kung-fu slot, and the weapon
+    /// panel's fire mode, clip, attachments and reserve are cleared; power back to 100.
+    #[test]
+    fn weapons_vid_init_clears_the_panel() {
+        let mut h = Hud::default();
+        h.reset_weapons();
+        assert!(h.grid.iter().flatten().any(|s| s.id == 0), "Reset puts kung fu in its slot");
+        h.reserve = [5; 16];
+        (h.firemode, h.clip, h.attachments, h.weapon) = (2, 30, 3, 13);
+        (h.kfu_power, h.kfu_prev, h.menu_open, h.last_laser_color) = (20.0, 30.0, true, 4);
+        h.hide_hud = 1;
+        h.vid_init_weapons();
+        assert!(h.grid.iter().flatten().all(|s| *s == EMPTY), "VidInit leaves the grid all -1");
+        assert_eq!(h.reserve, [0; 16]);
+        assert_eq!((h.firemode, h.clip, h.attachments, h.weapon), (0, 0, 0, 0));
+        assert_eq!((h.kfu_power, h.kfu_prev, h.menu_open, h.last_laser_color), (100.0, 100.0, false, -1));
+        assert_eq!(h.hide_hud, 1, "only CHudAmmo::Reset clears HideWeapon");
     }
 
     fn ctx(screen: &Screen) -> Ctx<'_> {
