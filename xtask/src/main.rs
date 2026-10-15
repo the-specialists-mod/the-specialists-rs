@@ -640,10 +640,21 @@ fn script_start(map: &str) -> String {
 
 /// Join flow: wait for the buy menu (open on join with a random first loadout), Reset -> Buy ->
 /// Rifles -> AK47 -> scope -> add -> back -> done, then click `+attack` after the respawn wait.
+///
+/// The keys go through twice, each time after `buy`, which opens the menu again while the player
+/// is an observer (TS's `buy`, `0x1004fda0`; a no-op while it is open). A window resize makes the
+/// engine call `HUD_VidInit`, and that closes the menu, as TS's (`CHudTSWeapons::VidInit`
+/// `0x1004cb50` re-runs the menu's `Init` `0x10036200`). Under Wine the compositor resizes the
+/// FWGS window a second or two after the join, so the keys sometimes went to a closed menu and the
+/// host spawned with nothing (issue #102). The second pass submits the same loadout again, so a
+/// resize at any one point no longer loses the purchase.
 fn script_join_and_spawn() -> String {
     let mut cfg = secs(8.0) + &shot("joined");
-    for key in [4, 2, 3, 2, 5, 1, 10, 1] {
-        cfg += &format!("slot{key}\n{}", secs(1.0));
+    for _ in 0..2 {
+        cfg += "buy\n";
+        for key in [4, 2, 3, 2, 5, 1, 10, 1] {
+            cfg += &format!("slot{key}\n{}", secs(0.5));
+        }
     }
     cfg += &secs(5.0);
     cfg += &click();
