@@ -13,7 +13,7 @@
 
 pub mod client;
 
-pub use client::{ClientRules, CrosshairParts, KungfuRegen, MeleeReach, StuntCooldown};
+pub use client::{ClientRules, CrosshairParts, KungfuRegen, MeleeReach, StuntCooldown, ThinkParts};
 
 use goldsrc::client::engine;
 use goldsrc::pmove::PlayerMoveExt;

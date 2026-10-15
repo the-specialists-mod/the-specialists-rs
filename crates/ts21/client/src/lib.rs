@@ -12,7 +12,7 @@ use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown};
+use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown, ThinkParts};
 use ts_client::hud::draw::{HudOp, HudSprite, StatusLook, WeaponPanel, ftol, num};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -236,6 +236,16 @@ impl ClientRules for Ts21Client {
         let s = r.slowmo_factor100 / 100.0;
         let power = (dt as f64 / slowdiv(s) * 15.0 + r.power as f64) as f32;
         if power > 100.0 { 100.0 } else { power }
+    }
+
+    /// The weapons element's `Think` (0x100899f0) is the `+use` power-up press, the kung-fu
+    /// regeneration and the weapon menu's attack/attack2 pick (`weapon_%i`/`drop_%i`), nothing
+    /// else: no `cl_lasercolor` or `lasclr_`, no fire-mode `weapons/switch.wav` (the client's
+    /// only use of it is the predicted attachment toggle, 0x1001fe20; the fire-mode cycle
+    /// 0x100200f0 is silent) and no heartbeat or breathing (no `sound/player/` string at all;
+    /// `VidInit` 0x100894c0 and `Reset` 0x10089890 have no sound state) (issues #193, #194).
+    fn think_parts(&self) -> ThinkParts {
+        ThinkParts { laser_color: false, firemode_click: false, sounds: false }
     }
 
     /// The weapons element's `Reset` (0x10089890) refills the bar on every `ResetHUD`.

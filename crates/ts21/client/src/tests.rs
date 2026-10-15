@@ -104,6 +104,14 @@ fn map_effects_and_icon() {
     assert!(!v21().slowmo_tint() && v30().slowmo_tint());
 }
 
+/// Issues #193, #194: 2.1's weapon `Think` (0x100899f0) has no laser-colour send, no fire-mode click and
+/// no heartbeat or breathing; 3.0's (0x1004ce10) has all three.
+#[test]
+fn weapon_think_parts() {
+    assert_eq!(v21().think_parts(), ThinkParts { laser_color: false, firemode_click: false, sounds: false });
+    assert_eq!(v30().think_parts(), ThinkParts { laser_color: true, firemode_click: true, sounds: true });
+}
+
 #[test]
 fn fire_pitch_is_2_1s_helper() {
     // 0x100738a0: 100 + (s == 0 ? 300 : max(s * 300, 150)), s = TSSlowMo / 100, raw.

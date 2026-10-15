@@ -747,8 +747,9 @@ fn set_fov(fov: u8) {
 }
 
 /// The TS weapon element's `Think` (1004ce10), the parts that need no key bits: laser colour,
-/// kung-fu regeneration, heartbeat/breathing sounds, fire-mode switch sound. Run from
-/// [`think_elements`].
+/// kung-fu regeneration, heartbeat/breathing sounds, fire-mode switch sound. The laser colour and
+/// the sounds are the ruleset's ([`ClientRules::think_parts`](crate::gameplay::ClientRules::think_parts)).
+/// Run from [`think_elements`].
 fn think(dt: f32) {
     let e = engine();
     let ic = input::cvars();
@@ -758,25 +759,29 @@ fn think(dt: f32) {
     let step = dt * ts.max(0.01);
     let alive = !dead_or_observer();
     let now = now();
-    let (send_laser, firemode_changed, kfu_power) = with(|h| {
+    let (parts, send_laser, firemode_changed, kfu_power) = with(|h| {
+        let rules = crate::gameplay::hud_rules(h.gameplay);
+        let parts = rules.think_parts();
         let send = h.last_laser_color != laser;
         h.last_laser_color = laser;
         h.next_stunt = (h.next_stunt - step).max(0.0);
-        h.regen_kungfu(crate::gameplay::hud_rules(h.gameplay), step, now, slowmo);
+        h.regen_kungfu(rules, step, now, slowmo);
         // `0x1004d25d`: dead or observing skips the check without taking the new mode, so a
         // change made meanwhile still clicks on respawn.
         let fm = alive && h.weapon > 0 && h.last_firemode != h.firemode;
         if fm {
             h.last_firemode = h.firemode;
         }
-        (send, fm, h.kfu_power)
+        (parts, send, fm, h.kfu_power)
     });
     // `0x1004cf5e`: the copy the predicted kung-fu block gates on.
     crate::state::with(|s| s.kfu_power = kfu_power);
-    if send_laser {
+    // A ruleset without these parts (`ClientRules::think_parts`) still tracks the laser colour and
+    // fire mode; the next `Reset` sets the colour to −1, so a map with the send sends it afresh.
+    if send_laser && parts.laser_color {
         e.server_cmd(&format!("lasclr_{laser}"));
     }
-    if firemode_changed {
+    if firemode_changed && parts.firemode_click {
         // `0x1004d35e..0x1004d3cd`: on the local player, channel 3 (`CHAN_ITEM`), volume
         // `RandomFloat(0.92, 1)`, attenuation 1.25, pitch `RandomLong(-5, 5) + 25 - ftol(ts × -75)`.
         let r = goldsrc::ext::render::random_long(-5, 5);
@@ -787,7 +792,9 @@ fn think(dt: f32) {
             e.ev_play_sound(index, origin, 3, "weapons/switch.wav", vol, 1.25, 0, pitch);
         }
     }
-    weapons::think_sounds(dt);
+    if parts.sounds {
+        weapons::think_sounds(dt);
+    }
 }
 
 pub fn dead_or_observer() -> bool {

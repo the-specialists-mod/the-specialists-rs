@@ -31,6 +31,18 @@ pub struct CrosshairParts {
     pub divesteps_last: bool,
 }
 
+/// Which of TS 3.0's extra parts the weapon element's `Think` runs, besides the `+use` power-up
+/// press, the kung-fu regeneration and the stunt countdown every ruleset has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThinkParts {
+    /// Sends `lasclr_<n>` when `cl_lasercolor` differs from the last one sent.
+    pub laser_color: bool,
+    /// Plays `weapons/switch.wav` on the local player when the held weapon's fire mode changes.
+    pub firemode_click: bool,
+    /// The heartbeat (slow motion) and breathing (low kung-fu power) sounds.
+    pub sounds: bool,
+}
+
 /// What the stunt cooldown (`NextStunt`) state is when the divesteps are drawn.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StuntCooldown {
@@ -150,6 +162,14 @@ pub trait ClientRules: Sync {
             power = (power + step).min(100.0);
         }
         power
+    }
+
+    /// The weapon element's `Think` (1004ce10) parts a ruleset may lack. TS 3.0 runs all three:
+    /// the `lasclr_%i` send (`0x1004ce2e..`, on a change of `+0x3728`), the heartbeat and
+    /// breathing sounds (`0x1004cf8b..`, state `+0x3708..+0x3714`) and the fire-mode
+    /// `weapons/switch.wav` (`0x1004d25d..0x1004d3cd`).
+    fn think_parts(&self) -> ThinkParts {
+        ThinkParts { laser_color: true, firemode_click: true, sounds: true }
     }
 
     /// The kung-fu bar the weapon element's `Reset` (1004cd60, from every `ResetHUD`) sets, if

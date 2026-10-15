@@ -368,6 +368,7 @@ The hooks so far:
 | `ClientRules` | `spectator_panel_shows(nohud)` | `nohud` exactly 0 or NaN (#185) | `spectator::panel::update` |
 | `ClientRules` | `kungfu_exhausted(power)` | `power ≤ 0.01` (empty red frame) | `hud/weapons.rs` `draw_kungfu_bar` |
 | `ClientRules` | `kungfu_regen(r)` | +15 per step (1 while negative), up to 100 | `hud/state.rs` `regen_kungfu` (weapon `Think`) |
+| `ClientRules` | `think_parts()` | all three: `lasclr_` send, fire-mode `switch.wav`, heartbeat/breathing (#193, #194) | `hud/mod.rs` `think` (weapon `Think`) |
 | `ClientRules` | `kungfu_power_on_reset()` | none (only `VidInit` refills the bar) | `hud/state.rs` `reset_weapons` |
 | `ClientRules` | `kungfu_power_from_weapon_info(clip)` | none (`KFuPower` alone sets the bar) | `hud/state.rs` `WeaponInfo` (id 0) |
 | `ClientRules` | `kungfu_weapon_info_resets_menu_selection()` | false (the slot menu keeps its selection) | `hud/state.rs` `WeaponInfo` (id 0) |
