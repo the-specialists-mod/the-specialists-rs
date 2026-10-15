@@ -38,10 +38,17 @@
 //!                                                 TDM, objective rounds, a large map; then the
 //!                                                 port's and the original TS client on the Linux
 //!                                                 Steam roots (see ts21.rs; not in `all`)
-//! cargo xtask all     [--release]                 test, then play
+//! cargo xtask all     [--release]                 test, then play, then steam (only when Steam is
+//!                                                 running and logged in; skipped with a note otherwise)
 //! cargo xtask client  [--release] <server-root> [--map M] [--port P]
 //!                                                 FWGS client (Rust client library) joins a dedicated
 //!                                                 server on <server-root>; screenshot in target/
+//! cargo xtask steam   [--release] [listen | <server-root>...]
+//!                                                 the Steam Half-Life 25 client, installed into
+//!                                                 Half-Life/ts: `play`'s scenes plus changelevel on
+//!                                                 a listen server, or join/chat/kill/respawn/
+//!                                                 changelevel on hlds25-linux / rehlds-linux; the
+//!                                                 friends status is invisible meanwhile (steam.rs)
 //! cargo xtask roots                               list engine roots and whether they exist
 //! ```
 //!
@@ -57,6 +64,7 @@ mod lint;
 mod package;
 mod plugins;
 mod roots;
+mod steam;
 mod ts21;
 
 use roots::{Engine, Os, Root, Target};
@@ -142,8 +150,9 @@ fn main() {
         "all" => {
             let servers = ctx.test_all(&Root::all(), "ts_arena");
             let play = ctx.play_all(&play_roots(&[]));
-            say!("== all: dedicated servers {}, gameplay {}", pass(servers), pass(play));
-            if !(servers && play) {
+            let steam = steam::all_step(&ctx);
+            say!("== all: dedicated servers {}, gameplay {}, Steam client {}", pass(servers), pass(play), steam.map_or("skipped", pass));
+            if !(servers && play && steam.unwrap_or(true)) {
                 exit(1);
             }
         }
@@ -161,6 +170,11 @@ fn main() {
             }
             if !failed.is_empty() {
                 eprintln!("FAILED: {failed:?}");
+                exit(1);
+            }
+        }
+        "steam" => {
+            if !ctx.steam(&args) {
                 exit(1);
             }
         }
@@ -182,7 +196,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|ts21|all|client|roots> ... (see xtask/src/main.rs)"
+        "usage: cargo xtask [--release|--release-debug] <build|lint|dist|package-xash-win|install|server|test|play|meck|bots|plugins|ts21|all|client|steam|roots> ... (see xtask/src/main.rs)"
     );
     exit(2)
 }

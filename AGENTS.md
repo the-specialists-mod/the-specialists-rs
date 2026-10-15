@@ -94,7 +94,8 @@ cargo xtask build [--release]             # all four targets; must build with no
 cargo xtask lint                          # clippy --workspace --all-targets -D warnings, all four targets
                                           # (~40 s cold), plus the engine-macro check
 cargo xtask install <root>|all            # assemble <root>/ts and install the libraries
-cargo xtask all                           # test + play (meck and bots included), about 4.5 min
+cargo xtask all                           # test + play (meck and bots included), about 4.5 min; then steam, only when
+                                          # Steam is already running and logged in (skipped with a note otherwise)
 cargo xtask test [--map M]                # dedicated server + bots on every engine root, in parallel (~25 s)
 cargo xtask play [fwgs fwgs-win]          # listen-server gameplay on ts_dojo: join/buy/spawn, wall shots, lasers,
                                           # akimbo, power-up, grenade, kill, kick, death/respawn, bot fights, addbot,
@@ -110,6 +111,10 @@ cargo xtask ts21 [--no-clients] [<root>...]
                                           # teamplay, round TDM, objective rounds, a large map; then the port's
                                           # and the original client on the Linux Steam roots (~6 min, not in all)
 cargo xtask client <server-root>          # FWGS client joins a dedicated server; screenshot in target/
+cargo xtask steam [listen|<server-root>]  # the Steam HL25 client (Half-Life/ts): play's scenes + changelevel + the
+                                          # Steam-only regressions on a listen server (~7 min), or joining
+                                          # hlds25-linux / rehlds-linux (~4 min); starts Steam if it can log in alone;
+                                          # friends status invisible meanwhile (docs/validation.md §5)
 cargo xtask dist --release                # dist/<platform>/ts/: libraries + game files (stripped)
 cargo xtask dist --release-debug          # the same release build, libraries with debug info
 cargo xtask package-xash-win              # windows-i686 dist --release + stock TS 3.0 + FWGS win32
