@@ -130,8 +130,8 @@ Version 5 adds:
   `BlockPlayer`, animation or event, but the delay still runs (so a held button doesn't ask every
   frame). Plugins run in order and the first block stops the chain. It runs at once, with the
   player lent to its slot as for a gun hook (§7.5), so the API reaches it.
-* `kill_scored(&KillInfo)` (#197): every death `PlayerKilled` (0x895e4, `rules::scoring::
-  player_killed_core`) scores, kills, suicides and deaths by the world alike, once the frags,
+* `kill_scored(&KillInfo)` (#197): every death `PlayerKilled` (0x895e4, the 3.0 plugin's
+  `scoring::player_killed`) scores, kills, suicides and deaths by the world alike, once the frags,
   `DeathMsg` and `ScoreInfo` went out. `KillInfo` carries the killer (the victim for a suicide, 0
   for no player), victim, inflictor, the frags the killer got (`points`, after the double kill,
   specialist and spree; -1 a team kill), the blow's TS weapon id (by the killer's own hand

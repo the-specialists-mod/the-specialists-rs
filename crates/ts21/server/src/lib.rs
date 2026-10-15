@@ -71,6 +71,9 @@ use ts21_gameplay::TS21;
 pub struct Ts21Server;
 
 impl ServerRules for Ts21Server {
+    /// Nothing: 2.1's state is set up by its `install`.
+    fn on_activate(&self) {}
+
     fn refuse_client(&self, client: ConnectingClient) -> Option<&'static str> {
         refuse_client(client)
     }

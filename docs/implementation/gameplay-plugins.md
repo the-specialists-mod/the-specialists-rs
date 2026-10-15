@@ -294,28 +294,28 @@ The hooks so far:
 | `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | false: 3.0's `Gun` method runs | the top of each `Gun` method in `weapons/gun.rs` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start` |
 | `ServerRules` | `refuse_client(client)` | none (everyone joins) | `gameplay::refuse_client`, from `rules::client_connect` (§4.2) |
-| `ServerRules` | `game_description(mode)` | `rules::core_description`: "The Specialists v3.0.2 (DM)" (LMS, Teamplay, The One; no mode without rules), the version from `Cargo.toml` | `rules::game_description` (`pfnGetGameDescription`, the server browser's Game column); `ts_server::game_description!` builds a plugin's text |
+| `ServerRules` | `game_description(mode)` | ts30 `rules::description`: "The Specialists v3.0.2 (DM)" (LMS, Teamplay, The One; no mode without rules), the version from `Cargo.toml` | `rules::game_description` (`pfnGetGameDescription`, the server browser's Game column); `ts_server::game_description!` builds a plugin's text |
 | `ServerRules` | `cvars()` | none | `gameplay::register` (registered after 3.0's, skipping existing names) |
 | `ServerRules` | `server_command(name)` | false (3.0's command runs) | `rules/commands.rs` `globalslow`, `restartround`, `weaponrestriction` |
 | `ServerRules` | `client_command(p, cx, cmd, args)` | `None` (3.0's handlers run) | `commands.rs` `dispatch_player`, before the weapons' |
-| `ServerRules` | `install(g)` | `GameRules::install_multiplayer` | `rules/state.rs` `GameRules::install` (multiplayer maps) |
-| `ServerRules` | `think(now)` | `rules::frame::ts_think` | `rules/frame.rs` multiplay and teamplay `Think` |
-| `ServerRules` | `set_player_the_one(p, cx)` | `rules::scoring::set_player_the_one_core` | `rules/scoring.rs` `set_player_the_one` |
-| `ServerRules` | `default_team(p, cx)` | `rules::teams::default_team_core` (the `team` key) | `rules/teams.rs` `set_default_team` |
+| `ServerRules` | `install(g)` | ts30 `rules::install` (`DecideGamePlay`, `GameRules::ts_init`) | `rules/state.rs` `GameRules::install` (multiplayer maps) |
+| `ServerRules` | `think(now)` | ts30 `rules::think` | `rules/frame.rs` multiplay and teamplay `Think` |
+| `ServerRules` | `set_player_the_one(p, cx)` | ts30 `players::set_player_the_one` | `rules/scoring.rs` `set_player_the_one` |
+| `ServerRules` | `default_team(p, cx)` | ts30 `players::default_team` (the `team` key) | `rules/teams.rs` `set_default_team` |
 | `ServerRules` | `on_spawn(p, cx)` | nothing | `rules/lifecycle.rs` `on_spawn`, end of `TSInit` |
 | `ServerRules` | `put_in_server_cash()` | `cvars::INITIAL_CASH` (1200) | `rules/lifecycle.rs` `on_spawn` (first spawn) |
 | `ServerRules` | `on_start_observer(p, cx)` | nothing | `rules/lifecycle.rs` `start_observer`, before `TSCash` |
-| `ServerRules` | `observer_think(p, cx, now)` | `rules::lifecycle::observer_think_core` (countdown, join deadline, `Observer_HandleButtons`, `Observer_Idle`; 3.0 respawns with the `respawn` command) | `rules/lifecycle.rs` `pre_think`, while `iuser1` is set (PreThink zeroes `impulse` and returns after it) |
-| `ServerRules` | `observer_set_mode(p, cx, mode)` | `rules::lifecycle::observer_set_mode` (`Observer_SetMode`) | `rules/lifecycle.rs` `start_observer` and `dev_observe` (`ts_observe`); a ruleset with its own camera calls its own from its `observer_think` |
+| `ServerRules` | `observer_think(p, cx, now)` | ts30 `observer::observer_think` (countdown, join deadline, `Observer_HandleButtons`, `Observer_Idle`; 3.0 respawns with the `respawn` command) | `rules/lifecycle.rs` `pre_think`, while `iuser1` is set (PreThink zeroes `impulse` and returns after it) |
+| `ServerRules` | `observer_set_mode(p, cx, mode)` | ts30 `observer::set_mode` (`Observer_SetMode`) | `rules/lifecycle.rs` `start_observer` and `dev_observe` (`ts_observe`); a ruleset with its own camera calls its own from its `observer_think` |
 | `ServerRules` | `on_init_hud(p, cx)` | nothing | `rules/lifecycle.rs` `ts_init_hud`, at its end |
-| `ServerRules` | `set_respawn_time(p, cx, secs)` | `rules::lifecycle::set_respawn_time_core` | `rules/lifecycle.rs` `set_respawn_time` |
+| `ServerRules` | `set_respawn_time(p, cx, secs)` | ts30 `players::set_respawn_time` | `rules/lifecycle.rs` `set_respawn_time` |
 | `ServerRules` | `on_killed(p, cx)` | nothing | `rules/lifecycle.rs` `killed`, after the respawn time |
-| `ServerRules` | `change_team_tail(p, cx, kill)` | `rules::teams::change_team_tail_core` (not a kill, outside The One mode: observer, respawn in 5 s) | `rules/teams.rs` `change_team`, after `TeamInfo`/`ScoreInfo` |
-| `ServerRules` | `health_regen(p, cx, now)` | `rules::lifecycle::health_regen_core` | `rules/lifecycle.rs` `pre_think` |
-| `ServerRules` | `points_for_frag(frag, sliding, diving)` | `rules::scoring::points_for_frag` | `rules/scoring.rs` `player_killed_core` (and a plugin's own `player_killed`) |
-| `ServerRules` | `player_killed(p, cx, d, g)` | `rules::scoring::player_killed_core` | `rules/scoring.rs` `player_killed`, once the killer can be reached |
+| `ServerRules` | `change_team_tail(p, cx, kill)` | ts30 `players::change_team_tail` (not a kill, outside The One mode: observer, respawn in 5 s) | `rules/teams.rs` `change_team`, after `TeamInfo`/`ScoreInfo` |
+| `ServerRules` | `health_regen(p, cx, now)` | ts30 `players::health_regen` | `rules/lifecycle.rs` `pre_think` |
+| `ServerRules` | `points_for_frag(frag, sliding, diving)` | ts30 `scoring::points_for_frag` | ts30 `scoring::player_killed` (and a plugin's own `player_killed`) |
+| `ServerRules` | `player_killed(p, cx, d, g)` | ts30 `scoring::player_killed` | `rules/scoring.rs` `player_killed`, once the killer can be reached |
 | `ServerRules` | `cash_based()` | false | `rules/state.rs` `cash_based` |
-| `ServerRules` | `buy_armament(p, cx)` | `weapons::buy_armament` | `weapons/mod.rs` spawn, without a `game_player_equip` |
+| `ServerRules` | `buy_armament(p, cx)` | ts30 `players::buy_armament` | `weapons/mod.rs` spawn, without a `game_player_equip` |
 | `ServerRules` | `pick_up_cost(id, w, from)` | `weapons::pick_up_cost`: `None` (refused) for the akimbo pair of a single gun, else `slots`, × the count for a dropped stack | `weapons/inventory.rs` `pick_up_weapon` |
 | `ServerRules` | `dead_grenades_become_powerups()` | `!weapons::grenade_buys()` (`m_mode < 2`: always) | `weapons/inventory.rs` `drop_weapon` |
 | `ServerRules` | `drop_lifetime_and_glow()` | true: `drop`/disarm gives `clamp(2 × weaponstay, 10, 120)` and the dropper's glow | `weapons/worldgun.rs` `set_drop_lifetime` (from `inventory.rs` `drop_weapon`) |

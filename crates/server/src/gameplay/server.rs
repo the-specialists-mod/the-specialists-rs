@@ -15,9 +15,9 @@ use crate::messages::Msg;
 use crate::player::Player;
 use crate::player::damage::{self as player_damage, HitDamage, PlayerHit};
 use crate::rules::powerup::{self, PowerupRules};
-use crate::rules::scoring::{self, Frag};
+use crate::rules::scoring::Frag;
 use crate::rules::state::GameRules;
-use crate::rules::{self, cvars, frame, lifecycle, teams};
+use crate::rules::{self, cvars};
 use crate::stunt::rules::{self as stunt, Dive, StuntClock, StuntRules};
 use crate::weapons::{fire, melee, projectiles};
 use crate::world::{Cx, Entity};
@@ -69,152 +69,114 @@ pub trait ServerRules: Sync {
     /// The plugin has become active on a brand-new game: at every map start (after the rules
     /// are installed, before the map's entities spawn). The place to set up the plugin's own
     /// state.
-    fn on_activate(&self) {}
+    fn on_activate(&self);
 
     /// `ClientConnect` (port addition): `Some(reason)` refuses the client, and the engine shows
     /// the reason to it (the engines' reject buffer holds 127 bytes). Asked on each connect,
-    /// which the engines run again at every map change. 3.0: `None`, everyone may join.
-    fn refuse_client(&self, _client: ConnectingClient) -> Option<&'static str> {
-        None
-    }
+    /// which the engines run again at every map change.
+    fn refuse_client(&self, client: ConnectingClient) -> Option<&'static str>;
 
-    /// `GetGameDescription`'s text for the mode: what the server browser's Game column shows.
-    /// 3.0: "The Specialists v3.0.2 (DM)" and so on ([`rules::core_description`]).
-    fn game_description(&self, mode: rules::DescriptionMode) -> &'static CStr {
-        rules::core_description(mode)
-    }
+    /// `GetGameDescription`'s text for the mode: what the server browser's Game column shows
+    /// (`crate::game_description!` builds one with the port's version).
+    fn game_description(&self, mode: rules::DescriptionMode) -> &'static CStr;
 
     // ---- cvars and commands ----------------------------------------------------------------
 
-    /// Server cvars the ruleset needs besides TS 3.0's ([`cvars::CVARS`]). They are registered
-    /// when the plugin is ([`super::register`], at `GameDLLInit`), skipping any name that already
-    /// exists, so the server has the union of every ruleset's cvars and each ruleset reads the
-    /// ones it knows. 3.0: none.
-    fn cvars(&self) -> &'static [CvarDef] {
-        &[]
-    }
+    /// Server cvars the ruleset needs besides the server's own ([`cvars::CVARS`], TS's). They are
+    /// registered when the plugin is ([`super::register`], at `GameDLLInit`), skipping any name
+    /// that already exists, so the server has the union of every ruleset's cvars and each ruleset
+    /// reads the ones it knows.
+    fn cvars(&self) -> &'static [CvarDef];
 
-    /// A TS server command (`globalslow`, `restartround`, `weaponrestriction`) before TS 3.0's
-    /// handler runs it; true when the ruleset has handled it. The arguments are the engine's
-    /// (`Cmd_Argv`). 3.0: false, the command runs.
-    fn server_command(&self, _name: &str) -> bool {
-        false
-    }
+    /// A TS server command (`globalslow`, `restartround`, `weaponrestriction`) before the
+    /// server's handler runs it; true when the ruleset has handled it. The arguments are the
+    /// engine's (`Cmd_Argv`).
+    fn server_command(&self, name: &str) -> bool;
 
-    /// A player's client command (`ClientCommand` 0xad838) before TS 3.0's handlers (weapons,
+    /// A player's client command (`ClientCommand` 0xad838) before the server's handlers (weapons,
     /// stunts, rules, bots): `Some(handled)` decides it (false prints "Unknown command"), `None`
-    /// lets 3.0's code run.
-    fn client_command(&self, _p: &mut Player, _cx: &mut Cx, _cmd: &str, _args: &Args) -> Option<bool> {
-        None
-    }
+    /// lets the server's code run.
+    fn client_command(&self, p: &mut Player, cx: &mut Cx, cmd: &str, args: &Args) -> Option<bool>;
 
     // ---- game rules ------------------------------------------------------------------------
 
     /// `InstallGameRules` and the rules' constructors for a multiplayer map (`deathmatch` set):
-    /// the game mode, teams and `CTSGameRules::Init` ([`GameRules::install_multiplayer`]). Runs
-    /// inside the rules state's borrow, so it must not call code that reads the rules state.
-    fn install(&self, g: &mut GameRules) {
-        g.install_multiplayer();
-    }
+    /// the game mode, teams and `CTSGameRules::Init` ([`GameRules::ts_init`]), rebuilding `g`.
+    /// Runs inside the rules state's borrow, so it must not call code that reads the rules state.
+    fn install(&self, g: &mut GameRules);
 
-    /// `CTSGameRules::Think` (0x77204), from the multiplay or teamplay `Think` each frame.
-    fn think(&self, now: f32) {
-        frame::ts_think(now);
-    }
+    /// `CTSGameRules::Think` (0x77204), from the multiplay or teamplay `Think` each frame, at the
+    /// game time `now`.
+    fn think(&self, now: f32);
 
-    /// `CTSGameRules::SetPlayerTheOne` (0x7b078): makes a living, non-observing player The One.
-    fn set_player_the_one(&self, p: &mut Player, cx: &mut Cx) {
-        scoring::set_player_the_one_core(p, cx);
-    }
+    /// `CTSGameRules::SetPlayerTheOne` (0x7b078): makes player `p` The One (`scoring::set_player_the_one`,
+    /// from The One's death and the random pick). The team switch is the caller's.
+    fn set_player_the_one(&self, p: &mut Player, cx: &mut Cx);
 
     /// The team `CHalfLifeTeamplay::SetDefaultPlayerTeam` (0xe44ac) reads before it checks it
-    /// against the team list ([`teams::default_team_core`]).
-    fn default_team(&self, p: &mut Player, cx: &mut Cx) -> Vec<u8> {
-        teams::default_team_core(p, cx)
-    }
+    /// against the team list ([`teams::set_default_team`]).
+    fn default_team(&self, p: &mut Player, cx: &mut Cx) -> Vec<u8>;
 
     // ---- players ---------------------------------------------------------------------------
 
     /// End of the rules part of `TSInit` at every spawn (`lifecycle::on_spawn`), before the
-    /// team and the spawn point. 3.0: nothing.
-    fn on_spawn(&self, _p: &mut Player, _cx: &mut Cx) {}
+    /// team and the spawn point.
+    fn on_spawn(&self, p: &mut Player, cx: &mut Cx);
 
     /// The cash a player joins with (`ClientPutInServer`: `GiveCash(atoi(initial_cash.string))`).
-    /// 3.0: [`cvars::INITIAL_CASH`].
-    fn put_in_server_cash(&self) -> i32 {
-        cvars::INITIAL_CASH
-    }
+    fn put_in_server_cash(&self) -> i32;
 
     /// Start of `CBasePlayer::StartObserver` (0x99634), before the cash goes to the client.
-    /// 3.0: nothing.
-    fn on_start_observer(&self, _p: &mut Player, _cx: &mut Cx) {}
+    fn on_start_observer(&self, p: &mut Player, cx: &mut Cx);
 
     /// The observer part of `CBasePlayer::PreThink` (0x908cc), run every frame while
     /// `pev->iuser1` is set: the respawn countdown and the join deadline, then
     /// `Observer_HandleButtons` and `Observer_Idle`. PreThink zeroes `impulse` and returns after
     /// it, so a ruleset that respawns the observer here (`lifecycle::stop_observer`) just returns.
-    /// 3.0: [`lifecycle::observer_think_core`] (3.0 respawns with the `respawn` command instead).
-    fn observer_think(&self, p: &mut Player, cx: &mut Cx, now: f32) {
-        lifecycle::observer_think_core(p, cx, now);
-    }
+    fn observer_think(&self, p: &mut Player, cx: &mut Cx, now: f32);
 
     /// `CBasePlayer::Observer_SetMode` (0x99e44) as `StartObserver` and the port's `ts_observe`
-    /// call it. A ruleset with its own observer camera (see [`observer_think`](Self::observer_think))
-    /// overrides both. 3.0: [`lifecycle::observer_set_mode`].
-    fn observer_set_mode(&self, p: &mut Player, cx: &mut Cx, mode: i32) {
-        lifecycle::observer_set_mode(p, cx, mode);
-    }
+    /// call it: puts the observer in `mode`. The ruleset's observer camera
+    /// ([`observer_think`](Self::observer_think)) calls its own.
+    fn observer_set_mode(&self, p: &mut Player, cx: &mut Cx, mode: i32);
 
     /// End of `CTSGameRules::InitHUD` (0x79134), once a joiner is observing with its respawn
-    /// time set. 3.0: nothing.
-    fn on_init_hud(&self, _p: &mut Player, _cx: &mut Cx) {}
+    /// time set.
+    fn on_init_hud(&self, p: &mut Player, cx: &mut Cx);
 
     /// `SetPlayerRespawnTime` (0x75ff4): when the player may respawn (`respawn_at`, -1 for not
-    /// this round), the join deadline and the award.
-    fn set_respawn_time(&self, p: &mut Player, cx: &mut Cx, secs: f32) {
-        lifecycle::set_respawn_time_core(p, cx, secs);
-    }
+    /// this round), the join deadline and the award, `secs` from now.
+    fn set_respawn_time(&self, p: &mut Player, cx: &mut Cx, secs: f32);
 
-    /// `CBasePlayer::Killed` (0x8ed5c) right after the respawn time is set. 3.0: nothing.
-    fn on_killed(&self, _p: &mut Player, _cx: &mut Cx) {}
+    /// `CBasePlayer::Killed` (0x8ed5c) right after the respawn time is set.
+    fn on_killed(&self, p: &mut Player, cx: &mut Cx);
 
     /// The tail of `CHalfLifeTeamplay::ChangePlayerTeam` (0xe488c), after `TeamInfo`/`ScoreInfo`
-    /// and before `TeamNames`; `kill` is the call's `bKill`. 3.0: [`teams::change_team_tail_core`]
-    /// (a change that isn't a kill observes with a 5 s respawn, outside The One mode).
-    fn change_team_tail(&self, p: &mut Player, cx: &mut Cx, kill: bool) {
-        teams::change_team_tail_core(p, cx, kill);
-    }
+    /// and before `TeamNames`; `kill` is the call's `bKill`.
+    fn change_team_tail(&self, p: &mut Player, cx: &mut Cx, kill: bool);
 
-    /// The overheal and The One's regeneration in `CBasePlayer::PreThink` (0x908cc, `+0x73c`).
-    fn health_regen(&self, p: &mut Player, cx: &mut Cx, now: f32) {
-        lifecycle::health_regen_core(p, cx, now);
-    }
+    /// The overheal and The One's regeneration in `CBasePlayer::PreThink` (0x908cc, `+0x73c`),
+    /// every frame at the game time `now`.
+    fn health_regen(&self, p: &mut Player, cx: &mut Cx, now: f32);
 
     // ---- scoring and cash ------------------------------------------------------------------
 
     /// `TSGetPointsForFrag` (0x89140): the points a killing player scores for `frag`, which also
-    /// reports whether the kill was a slide or a stunt.
-    fn points_for_frag(&self, frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -> i32 {
-        scoring::points_for_frag(frag, sliding, diving)
-    }
+    /// reports whether the kill was a slide (`sliding`) or a stunt (`diving`).
+    fn points_for_frag(&self, frag: &Frag<'_>, sliding: &mut bool, diving: &mut bool) -> i32;
 
     /// The body of `CHalfLifeMultiplay::PlayerKilled` (0x895e4) for victim `p`, once the killer
     /// can be reached (`scoring::player_killed` defers it until then): points, sprees, awards,
-    /// cash, messages, `DeathMsg`, logs and `ScoreInfo`.
-    fn player_killed(&self, p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
-        scoring::player_killed_core(p, cx, d, g);
-    }
+    /// cash, messages, `DeathMsg`, logs and `ScoreInfo`. `g` holds TS's damage globals as the
+    /// kill left them.
+    fn player_killed(&self, p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot);
 
-    /// `CashBased()` (0x76abc): whether buying costs money. 3.0: hard-wired off.
-    fn cash_based(&self) -> bool {
-        false
-    }
+    /// `CashBased()` (0x76abc): whether buying costs money.
+    fn cash_based(&self) -> bool;
 
     /// `CBasePlayer::BuyArmament` (from `PlayerSpawn` when the map has no `game_player_equip`):
-    /// the loadout the client sent (`tkw`/`tki`/`tka`).
-    fn buy_armament(&self, p: &mut Player, cx: &mut Cx) {
-        crate::weapons::buy_armament(p, cx);
-    }
+    /// buys the loadout the client sent (`tkw`/`tki`/`tka`, `p.inv.sv.armament`).
+    fn buy_armament(&self, p: &mut Player, cx: &mut Cx);
 
     // ---- inventory, world guns and items ------------------------------------------------------
 
@@ -306,9 +268,9 @@ pub trait ServerRules: Sync {
     }
 
     /// The ruleset's own precaches, made at every map start for every registered ruleset (after
-    /// TS 3.0's, `gameplay::precache_rulesets`), so the precache list doesn't depend on the
-    /// ruleset. Port addition. 3.0: none.
-    fn precache(&self) {}
+    /// the server's, `gameplay::precache_rulesets`), so the precache list doesn't depend on the
+    /// ruleset. Port addition.
+    fn precache(&self);
 
     /// Whether an entity of `class` may spawn (`DispatchSpawn`, for the map's entities and the
     /// game's own): a refused one fails its spawn (-1, the engine frees it) and its class parses
@@ -417,10 +379,8 @@ pub trait ServerRules: Sync {
     // ---- protocol -----------------------------------------------------------------------------
 
     /// A user message on its way out (`msg`, written into `w`): hands `send` what goes on the
-    /// wire in its place. TS 3.0 sends it as it is.
-    fn outgoing_message(&self, _msg: Msg, w: MsgWriter, send: &mut dyn FnMut(MsgWriter)) {
-        send(w);
-    }
+    /// wire in its place (`w` itself to send it as it is).
+    fn outgoing_message(&self, msg: Msg, w: MsgWriter, send: &mut dyn FnMut(MsgWriter));
 
     // ---- power-ups and slow motion ----------------------------------------------------------
 
@@ -680,7 +640,7 @@ mod tests {
     use crate::rules::cvars;
 
     /// `ClientConnect`'s classification: bots and HLTV whatever their userinfo, then the port's
-    /// key; 3.0 refuses no one.
+    /// key.
     #[test]
     fn connecting_clients() {
         use ConnectingClient::*;
@@ -692,22 +652,12 @@ mod tests {
         assert_eq!(ConnectingClient::classify(false, "0", "0", " 3.0.2 "), Port("3.0.2"));
         assert_eq!(ConnectingClient::classify(false, "", "", ""), Other, "TS 3.0's client");
         assert_eq!(ConnectingClient::classify(false, "", "", "  "), Other);
-        let core: &dyn ServerRules = &CORE;
-        for c in [Bot, Hltv, Port("3.0.2"), Other] {
-            assert_eq!(core.refuse_client(c), None);
-        }
     }
 
     /// The core plugin's hooks that need no engine keep TS 3.0's values.
     #[test]
     fn core_hooks_are_ts_3_0() {
         let core: &dyn ServerRules = &crate::gameplay::Defaults;
-        assert!(core.cvars().is_empty(), "3.0 registers only its own cvars");
-        assert!(!core.cash_based(), "3.0's CashBased is hard-wired off");
-        assert_eq!(core.put_in_server_cash(), cvars::INITIAL_CASH);
-        assert!(!core.server_command("globalslow"), "3.0 runs its server commands");
-        assert!(!core.server_command("restartround"));
-        assert!(!core.server_command("weaponrestriction"));
         assert!(core.break_debris_from_hit(), "3.0 throws the debris along the last hit");
         let fuse = |slow| projectiles::fuse_step(cvars::pm_arith(), 0.0, slow);
         assert_eq!(core.grenade_fuse_step(0.0, 0.05), fuse(0.05));

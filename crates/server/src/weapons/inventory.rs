@@ -10,7 +10,7 @@ use crate::world::Cx;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::weapons::spread::{self, Vec3};
-use shared::weapons::{MAX_AMMO, MAX_WEAPONS, Status, att, id, info, is_restricted, kind, kind_of, restriction_type, tables};
+use shared::weapons::{MAX_AMMO, MAX_WEAPONS, Status, att, id, info, kind, kind_of, restriction_type};
 
 /// What to drop.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -348,118 +348,6 @@ pub fn take_armor(p: &mut Player, cx: &mut Cx, n: i32) -> bool {
     }
     sync_speed(p, cx);
     true
-}
-
-/// The loadout part of `TSInit` (0x92a4c): `pl+0x718 = 0`. `Player::spawn` has already zeroed
-/// `armorvalue`, so a vest still worn (a spawn that didn't go through death) gives its slots back.
-/// `CBasePlayer::AddItem(bits)` (`tki`): 0x10 kevlar, 0x20 stealth shoes, else attachments for
-/// the held weapon. Prices are never charged (`CashBased() == 0`).
-fn add_item(p: &mut Player, cx: &mut Cx, bits: u32) {
-    if bits & att::KEVLAR != 0 {
-        if cx.pev().armorvalue < 100.0 {
-            take_armor(p, cx, 100);
-        }
-        return;
-    }
-    if bits & att::STEALTH_SHOES != 0 {
-        // TS: only in round modes (m_mode >= 2), never in 3.0 DM/TDM.
-        if !assets::grenade_buys() {
-            return;
-        }
-        let pev = cx.pev();
-        if pev.iuser4 & shared::ts::stunt::STEALTH_SHOES != 0 {
-            return;
-        }
-        pev.iuser4 |= shared::ts::stunt::STEALTH_SHOES;
-        p.inv.sv.items |= att::STEALTH_SHOES;
-        emit(cx.edict, CHAN_ITEM, c"weapons/items.wav", 1.0, 0.8, 100);
-        return;
-    }
-    if !super::gun_active(p) {
-        return; // attachments go on the gun's weapon
-    }
-    with_host(p, cx, |gun, h| gun.add_item(bits, h));
-}
-
-/// `CBasePlayer::BuyWeapon(id, attachments)`.
-fn buy_weapon(p: &mut Player, cx: &mut Cx, wid: i32, attachments: u32) {
-    if !super::gun_active(p) || !(0..MAX_WEAPONS as i32).contains(&wid) {
-        return;
-    }
-    let wid = wid as u8;
-    if is_restricted(wid, assets::restriction()) {
-        return;
-    }
-    if wid == id::M61 {
-        if !assets::grenade_buys() || p.inv.sv.grenades_bought > 1 {
-            return;
-        }
-        p.inv.sv.grenades_bought += 1;
-    }
-    pick_up_weapon(p, cx, wid, None, attachments, true, true);
-}
-
-/// `CBasePlayer::BuyAmmo(type)`: one purchase (`per_buy` rounds); -1 = held weapon's type,
-/// -2 = every owned weapon's type until full. Returns whether any ammo was added.
-pub fn buy_ammo(p: &mut Player, cx: &mut Cx, t: i32) -> bool {
-    if !super::gun_active(p) {
-        return false;
-    }
-    let per_buy = |t: u8| tables().ammo(t).map(|a| a.per_buy).unwrap_or(0);
-    let mut sound = false;
-    if t == -2 {
-        for wid in (0..MAX_WEAPONS as u8).rev() {
-            if !p.inv.gun.status[wid as usize].owned {
-                continue;
-            }
-            let ammo = info(wid).map(|w| w.ammo).unwrap_or(0);
-            if ammo == 0 {
-                continue;
-            }
-            while p.inv.gun.add_ammo(ammo, per_buy(ammo), assets::max_carry(ammo)) {
-                sound = true;
-            }
-        }
-    } else {
-        if p.inv.gun.current == 0 {
-            return false;
-        }
-        let ammo = if t == -1 { info(p.inv.gun.current).map(|w| w.ammo).unwrap_or(0) } else { t as u8 };
-        if ammo == 0 || ammo as usize >= MAX_AMMO {
-            return false;
-        }
-        sound = p.inv.gun.add_ammo(ammo, per_buy(ammo), assets::max_carry(ammo));
-    }
-    if sound {
-        emit(cx.edict, CHAN_ITEM, c"items/9mmclip1.wav", 1.0, 0.8, 100);
-    }
-    sound
-}
-
-/// `CBasePlayer::BuyArmament` (from `PlayerSpawn` when the map has no `game_player_equip`).
-pub fn buy_armament(p: &mut Player, cx: &mut Cx) {
-    let list = p.inv.sv.armament.clone();
-    for a in list {
-        if a.id == 0 {
-            continue;
-        }
-        if a.item {
-            add_item(p, cx, a.id as u32);
-        } else {
-            buy_weapon(p, cx, a.id, a.attachments);
-        }
-    }
-    // Guard: `tka` takes any purchase count from the client, and TS loops that many times. A
-    // purchase that adds nothing leaves everything as it was, so every later one would too: stop
-    // there instead of spinning through billions of no-ops at spawn.
-    let ammo = p.inv.sv.armament_ammo;
-    for (t, &n) in ammo.iter().enumerate() {
-        for _ in 0..n.max(0) {
-            if !buy_ammo(p, cx, t as i32) {
-                break;
-            }
-        }
-    }
 }
 
 /// `CBasePlayer::Killed` (0x8ed5c) weapon part: the active item's `Holster` (the gun's, or a

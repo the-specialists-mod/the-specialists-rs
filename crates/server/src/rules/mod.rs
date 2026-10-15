@@ -249,22 +249,10 @@ pub enum DescriptionMode {
     TheOne,
 }
 
-/// TS 3.0's descriptions with the port's version: "The Specialists v3.0.2 (DM)" where TS says
-/// "The Specialists (DM)" (port change, so the server browser's Game column tells releases apart).
-pub fn core_description(mode: DescriptionMode) -> &'static CStr {
-    match mode {
-        DescriptionMode::Single => game_description!(),
-        DescriptionMode::Dm => game_description!("DM"),
-        DescriptionMode::Lms => game_description!("LMS"),
-        DescriptionMode::Teamplay => game_description!("Teamplay"),
-        DescriptionMode::TheOne => game_description!("The One"),
-    }
-}
-
 /// `GetGameDescription` (0xaee84): `"Half-Life"` before the rules exist, `"The Specialists"`
 /// for `CHalfLifeRules` (`deathmatch` 0 when they were installed), otherwise the multiplayer
 /// rules' text for the mode (`CHalfLifeMultiplay` 0xd0c68, `CHalfLifeTeamplay` 0xe5a04). The
-/// active ruleset words it ([`core_description`] for 3.0).
+/// active ruleset words it ([`ServerRules::game_description`](crate::gameplay::ServerRules::game_description)).
 pub fn game_description() -> &'static CStr {
     let (installed, single) = state::with(|g| (g.installed, g.single_player));
     if !installed {
@@ -524,9 +512,9 @@ mod tests {
     #[test]
     fn descriptions_carry_the_release_version() {
         let v = env!("CARGO_PKG_VERSION");
-        let dm = super::core_description(super::DescriptionMode::Dm);
+        let dm: &CStr = game_description!("DM");
         assert_eq!(dm.to_str().unwrap(), format!("The Specialists v{v} (DM)"));
-        let single = super::core_description(super::DescriptionMode::Single);
+        let single: &CStr = game_description!();
         assert_eq!(single.to_str().unwrap(), format!("The Specialists v{v}"));
         // Steam takes 64 bytes with the NUL (`k_cbMaxGameServerGameDescription`; ReHLDS
         // `sv_steam3.cpp` passes the description to `SetGameDescription`).

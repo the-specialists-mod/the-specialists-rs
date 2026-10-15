@@ -148,14 +148,6 @@ pub fn set_default_team(p: &mut Player, cx: &mut Cx) {
     }
 }
 
-/// The team `SetDefaultPlayerTeam` reads first in TS 3.0
-/// ([`ServerRules::default_team`](crate::gameplay::ServerRules::default_team)): in The One mode
-/// The One's team or the other one, otherwise the `team` key.
-pub fn default_team_core(p: &Player, cx: &mut Cx) -> Vec<u8> {
-    let (the_one, one) = state::with(|g| (g.the_one, g.the_one_team_names()));
-    if the_one { one[if p.ts.is_the_one { 0 } else { 1 }].clone() } else { engine().info_key(cx.edict, c"team").to_bytes().to_vec() }
-}
-
 /// Stores the team name on the player (`m_szTeamName`).
 fn store_team(p: &mut Player, e: *mut edict_t, name: &[u8]) {
     let name = team_field(name);
@@ -185,13 +177,6 @@ fn change_team_choice(requested: &[u8], the_one: bool, is_the_one: bool, one: &[
         return Some(one[if is_the_one { 0 } else { 1 }].clone());
     }
     (!requested.is_empty() && valid).then(|| requested.to_vec())
-}
-
-/// Whether `ChangePlayerTeam` sends the player to observer with a 5 s respawn (0xe4c38..0xe4ca1):
-/// every change that isn't a kill, outside The One mode, even to the same team or while already
-/// observing.
-fn change_team_observes(kill: bool, the_one: bool) -> bool {
-    !kill && !the_one
 }
 
 /// `CHalfLifeTeamplay::ChangePlayerTeam` (0xe488c): `jointeam` and the teamplay `InitHUD`.
@@ -226,18 +211,6 @@ pub fn change_team(p: &mut Player, cx: &mut Cx, name: &[u8], kill: bool, gib: bo
     msg::all(Msg::ScoreInfo, |w| s.write(w));
     crate::gameplay::active().server.change_team_tail(p, cx, kill);
     send_team_names(std::ptr::null_mut());
-}
-
-/// TS 3.0's tail of `ChangePlayerTeam` (0xe4c38..0xe4ca1)
-/// ([`ServerRules::change_team_tail`](crate::gameplay::ServerRules::change_team_tail)): a change
-/// that isn't a kill, outside The One mode, puts the player in observer at its origin and view
-/// angles with a 5 s respawn.
-pub fn change_team_tail_core(p: &mut Player, cx: &mut Cx, kill: bool) {
-    if change_team_observes(kill, state::with(|g| g.the_one)) {
-        let (o, a) = (cx.pev().origin, cx.pev().v_angle);
-        super::lifecycle::start_observer(p, cx, o, a);
-        super::lifecycle::set_respawn_time(p, cx, 5.0);
-    }
 }
 
 /// `TeamNames` to one player (or everyone with a null edict).
@@ -357,9 +330,7 @@ pub fn userinfo_changed(p: &mut Player, cx: &mut Cx) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        change_team_choice, change_team_model, change_team_observes, default_team_kept, init_hud_notice, team_change_notice, team_field,
-    };
+    use super::{change_team_choice, change_team_model, default_team_kept, init_hud_notice, team_change_notice, team_field};
     use shared::protocol::hud_wire::Bytes;
     use shared::protocol::rules::{TeamInfo, TeamNames, TeamScore};
 
@@ -452,13 +423,6 @@ mod tests {
         assert!(!default_team_kept(b"gordon", true, true));
         assert!(!default_team_kept(b"seal", false, false));
         assert!(!default_team_kept(b"", true, false));
-    }
-
-    #[test]
-    fn change_team_observes_unless_kill_or_the_one() {
-        assert!(change_team_observes(false, false));
-        assert!(!change_team_observes(true, false));
-        assert!(!change_team_observes(false, true));
     }
 
     #[test]

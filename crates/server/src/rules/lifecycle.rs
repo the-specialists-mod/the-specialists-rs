@@ -5,7 +5,7 @@
 //! CHalfLifeMultiplay.c (InitHUD 0xcf618), CTSGameRules.c (InitHUD 0x79134).
 
 use super::msg::{self, ts_message_one};
-use super::{PlayerRules, alive, cvars, netname, other, powerup, scoring, spawnpoint, state, teams};
+use super::{PlayerRules, cvars, netname, other, powerup, scoring, spawnpoint, state, teams};
 use crate::damage::{DamageInfo, hitgroup};
 use crate::messages::{self, Msg};
 use crate::player::Player;
@@ -453,40 +453,6 @@ pub fn pre_think_end(p: &mut Player, cx: &mut Cx) {
 /// module's PostThink together with the landing logic, so nothing to do here yet.
 pub fn post_think(_p: &mut Player, _cx: &mut Cx) {}
 
-/// TS 3.0's overheal: health above max decays 1/s; The One regenerates (`PreThink`, `+0x73c`).
-pub fn health_regen_core(p: &mut Player, cx: &mut Cx, now: f32) {
-    if p.ts.health_timer == 0.0 {
-        return;
-    }
-    if p.ts.is_the_one {
-        if p.ts.health_timer < now {
-            let n = state::with(|g| g.the_one_others);
-            let v = cx.pev();
-            (p.ts.health_timer, v.health) = the_one_regen(n, now, v.health);
-        }
-        return;
-    }
-    let v = cx.pev();
-    if v.health <= v.max_health {
-        p.ts.health_timer = 0.0;
-    } else if p.ts.health_timer < now {
-        p.ts.health_timer = now + 1.0;
-        v.health -= 1.0;
-    }
-}
-
-/// The One's regeneration tick (mp.dll `PreThink` 0x1005f8bc..0x1005f92d) with `n` other players:
-/// the next tick at `time + 1 / max(n * 0.32f, 1)` and `health + n * 0.16f` capped at 150. Each
-/// is computed on the x87 (53 bits) from `fild n` and stored to a `float` once; the cap keeps a
-/// NaN health (`fcom 150; test ah,1`).
-fn the_one_regen(n: i32, now: f32, health: f32) -> (f32, f32) {
-    let k = f64::from(n) * f64::from(0.32f32);
-    let timer = 1.0 / if 1.0 < k { k } else { 1.0 } + f64::from(now);
-    let h = f64::from(n) * f64::from(0.16f32) + f64::from(health);
-    let h = if h < 150.0 || h.is_nan() { h } else { 150.0 };
-    (timer as f32, h as f32)
-}
-
 /// `UpdateClientData`'s init block (0x91d40), inside its 0.1 s throttle: ResetHUD every spawn
 /// and observer start, InitHUD and the rules InitHUDs once. Nothing is reset for a resend here:
 /// the spawn already did that (`Spawn`/`TSInit`), and the values follow in the same update.
@@ -664,24 +630,6 @@ pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
     crate::gameplay::active().server.set_respawn_time(p, cx, secs);
 }
 
-/// TS 3.0's `SetPlayerRespawnTime` (0x75ff4).
-pub fn set_respawn_time_core(p: &mut Player, cx: &mut Cx, secs: f32) {
-    let now = cx.time();
-    let (mode, _, lms, _) = state::mode();
-    let round_end = state::with(|g| g.round_end);
-    if lms && mode == state::Mode::Dm {
-        if p.ts.respawns_used as f32 >= cvars::RESPAWN_NUMBER.max(1.0) {
-            p.respawn_at = -1.0;
-        } else {
-            p.respawn_at = secs.min(round_end - now) + now;
-            p.ts.join_deadline = (round_end - now).min(10.0) + now;
-        }
-    } else {
-        p.respawn_at = now + secs;
-    }
-    p.ts.award = if p.respawn_at < 0.0 { 1 } else { 11 };
-}
-
 // ---- observer ------------------------------------------------------------------------------------
 
 /// `CBasePlayer::StartObserver` (0x99634).
@@ -748,40 +696,6 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
     msg::all(Msg::Spectator, |w| Spectator { entindex: idx as u8, observer: 1 }.write(w));
 }
 
-/// `CBasePlayer::Observer_SetMode` (0x99e44). Only TS's modes 1, 2, 3 and 5 are accepted; the
-/// chase and in-eye modes need a target (`m_hObserverTarget`) and fall back to roaming.
-/// ([`ServerRules::observer_set_mode`](crate::gameplay::ServerRules::observer_set_mode)'s default.)
-pub fn observer_set_mode(p: &mut Player, cx: &mut Cx, mode: i32) {
-    if mode == cx.pev().iuser1 {
-        return;
-    }
-    {
-        let v = cx.pev();
-        v.view_ofs = [0.0; 3];
-        v.viewmodel = 0;
-    }
-    if mode == obs::ROAMING {
-        let v = cx.pev();
-        v.iuser1 = obs::ROAMING;
-        v.iuser2 = 0;
-        super::set_client_maxspeed(cx.edict, 420.0);
-        return;
-    }
-    if !matches!(mode, obs::CHASE_LOCKED | obs::CHASE_FREE | obs::IN_EYE) {
-        return;
-    }
-    if !obs_handle_valid(p.ts.obs_target) {
-        observer_find_next_player(p, cx, false);
-    }
-    if !obs_handle_valid(p.ts.obs_target) {
-        observer_set_mode(p, cx, obs::ROAMING);
-        return;
-    }
-    let v = cx.pev();
-    v.iuser1 = mode;
-    v.iuser2 = p.ts.obs_target;
-}
-
 /// `ts_observe` (port-only development aid): puts an observing player in observer `mode` on
 /// player `target` (0 keeps the current one), as `Observer_SetMode` would after the observer's
 /// own `+jump` and `+attack`. Scripted tests use it for clients whose input can't be scripted (the
@@ -805,146 +719,6 @@ pub fn dev_observe(p: &mut Player, cx: &mut Cx, mode: i32, target: i32) -> bool 
 /// its player.
 pub fn obs_handle_valid(idx: i32) -> bool {
     idx > 0 && super::has_player(engine().player(idx))
-}
-
-/// `CBasePlayer::Observer_FindNextPlayer` (0x99b0c): steps from the current target (or from us)
-/// to the next living, visible, non-observing player, wrapping around. In LMS (and the
-/// unreachable round modes) an observer still waiting to respawn may only watch teammates.
-fn observer_find_next_player(p: &mut Player, cx: &mut Cx, reverse: bool) {
-    let eng = engine();
-    let me = cx.index();
-    let start = if obs_handle_valid(p.ts.obs_target) { p.ts.obs_target } else { me };
-    p.ts.obs_target = 0;
-    let n = eng.max_clients();
-    let teammates_only = p.respawn_at >= 0.0 && state::with(|g| g.lms || matches!(g.mode, state::Mode::RoundTdm | state::Mode::Objective));
-    let mut i = start;
-    loop {
-        i += if reverse { -1 } else { 1 };
-        if i > n {
-            i = 1;
-        }
-        if i < 1 {
-            i = n;
-        }
-        // `UTIL_PlayerByIndex`: a player who left is still a candidate (only during intermission
-        // is it alive and visible).
-        let o = eng.player(i);
-        if i != me
-            && super::has_player(o)
-            && {
-                let v = o.v();
-                v.iuser1 == 0 && v.effects & EF_NODRAW as i32 == 0 && alive(v)
-            }
-            && (!teammates_only || teams::same_team(cx.edict, o))
-        {
-            p.ts.obs_target = i;
-            break;
-        }
-        if i == start {
-            break;
-        }
-    }
-    if p.ts.obs_target == 0 {
-        observer_set_mode(p, cx, obs::ROAMING);
-    } else {
-        cx.pev().iuser2 = p.ts.obs_target;
-        let org = eng.player(p.ts.obs_target).v().origin;
-        eng.set_origin(cx.edict, org);
-    }
-}
-
-/// TS 3.0's observer part of `CBasePlayer::PreThink` (0x908cc): respawn countdown text,
-/// `Observer_HandleButtons`, `Observer_Idle`
-/// ([`ServerRules::observer_think`](crate::gameplay::ServerRules::observer_think)). An observer
-/// leaves with the `respawn` client command ([`respawn_command`]), not from here.
-///
-/// The countdown runs only while the respawn time is ahead. "Press Fire To Play!" (30 s hold) is
-/// sent by the tick that lands in its last second, and isn't repeated after that.
-pub fn observer_think_core(p: &mut Player, cx: &mut Cx, now: f32) {
-    let e = cx.edict;
-    if p.respawn_at > 0.0 && now < p.respawn_at && p.ts.next_hud_msg < now {
-        p.ts.next_hud_msg = now + 1.0;
-        let (hold, text) = respawn_countdown_text(f64::from(p.respawn_at) - f64::from(now));
-        ts_message_one(e, [0, 0, 0], 16, hold, &text);
-    }
-    if p.ts.join_deadline != 0.0 {
-        if now <= p.ts.join_deadline {
-            if p.ts.next_hud_msg < now {
-                p.ts.next_hud_msg = now + 1.0;
-                // `(int)(deadline - time)`: truncation of the unrounded difference (mp.dll
-                // 0x1005fc49..0x1005fc51, like the countdown).
-                let left = super::x87_trunc(f64::from(p.ts.join_deadline) - f64::from(now));
-                ts_message_one(e, [0, 0, 0], 16, 20, &format!("{left} seconds left for respawn, press Fire to Play!"));
-            }
-        } else {
-            p.ts.join_deadline = 0.0;
-            p.respawn_at = -1.0;
-            p.ts.award = 1;
-            ts_message_one(e, [195, 45, 45], 16, 20, "You have to wait until the next round.");
-            state::with(|g| g.call_check_deads(now));
-        }
-    }
-
-    observer_handle_buttons(p, cx, now);
-    observer_idle(p, cx, now);
-}
-
-/// The observer respawn countdown text and hold time for `left` seconds to go (PreThink
-/// 0x90ec4..0x90fab, mp.dll 0x1005fb5e..0x1005fb93). TS converts with a plain `(int)` cast
-/// (truncation: mp.dll's `__ftol`, GCC's `fistp` under RC = 11), so 4.7 s shows "4" and the
-/// last second shows "Press Fire To Play!". The number is capped at 30. `left` is
-/// `respawn - time` as the x87 holds it, never stored to a `float`: just under a whole second
-/// it doesn't round up to it.
-fn respawn_countdown_text(left: f64) -> (u8, String) {
-    use super::x87_trunc;
-    if x87_trunc(left) < 1 {
-        (30, "Press Fire To Play!".to_owned())
-    } else {
-        (20, format!("{}", x87_trunc(if left < 30.0 { left } else { 30.0 })))
-    }
-}
-
-/// `CBasePlayer::Observer_HandleButtons` (0x99d34): jump cycles roaming → chase free → chase
-/// locked → in-eye → roaming; forward/back pick the next/previous target. 0.2 s between actions.
-pub fn observer_handle_buttons(p: &mut Player, cx: &mut Cx, now: f32) {
-    if p.ts.obs_next_input > now {
-        return;
-    }
-    let buttons = cx.pev().button;
-    if buttons & IN_JUMP as i32 != 0 {
-        let mode = match cx.pev().iuser1 {
-            obs::ROAMING => obs::CHASE_FREE,
-            obs::CHASE_FREE => obs::CHASE_LOCKED,
-            obs::CHASE_LOCKED => obs::IN_EYE,
-            _ => obs::ROAMING,
-        };
-        observer_set_mode(p, cx, mode);
-        p.ts.obs_next_input = shared::pm::plus_double(now, 0.2);
-    }
-    if buttons & IN_FORWARD as i32 != 0 && cx.pev().iuser1 != obs::ROAMING {
-        observer_find_next_player(p, cx, false);
-        p.ts.obs_next_input = shared::pm::plus_double(now, 0.2);
-    }
-    if buttons & IN_BACK as i32 != 0 && cx.pev().iuser1 != obs::ROAMING {
-        observer_find_next_player(p, cx, true);
-        p.ts.obs_next_input = shared::pm::plus_double(now, 0.2);
-    }
-}
-
-/// `CBasePlayer::Observer_Idle` (0x99ca4): twice a second, move on when the target died or
-/// became an observer. The camera itself follows `iuser2` in `PM_SpectatorMove`.
-pub fn observer_idle(p: &mut Player, cx: &mut Cx, now: f32) {
-    if p.ts.obs_next_idle > now {
-        return;
-    }
-    p.ts.obs_next_idle = now + 0.5;
-    if cx.pev().iuser1 == obs::ROAMING || p.ts.obs_target == 0 {
-        return;
-    }
-    let t = engine().player(p.ts.obs_target);
-    if !obs_handle_valid(p.ts.obs_target) || !super::is_alive(t) || t.v().iuser1 != 0 {
-        observer_find_next_player(p, cx, false);
-    }
 }
 
 /// The `respawn` client command: leave observer mode once the respawn time has passed.
@@ -1245,7 +1019,7 @@ pub fn send_award(idx: i32, award: u8) {
 mod tests {
     use super::{
         clean_name, damage_force, death_push, death_slowdown, headshot_death_slows, killer_blur, motd_chunks, name_change_notice,
-        player_is_cheating, respawn_countdown_text, scan_c_int, score_frags, the_one_regen,
+        player_is_cheating, scan_c_int, score_frags,
     };
 
     /// Issue #81: `ClientUserInfoChanged` (0xae638) copies the `name` key's bytes (only `%`
@@ -1299,33 +1073,6 @@ mod tests {
         assert!(player_is_cheating(""));
     }
 
-    /// The difference isn't stored to a `float` first (#147): 2^-25 s before a respawn at 2.0 is
-    /// "1" (the `f32` difference rounds to 2.0).
-    #[test]
-    fn respawn_countdown_subtracts_unrounded() {
-        let now = 2f32.powi(-25);
-        assert_eq!(2.0 - now, 2.0, "the f32 difference");
-        assert_eq!(respawn_countdown_text(f64::from(2.0f32) - f64::from(now)), (20, "1".to_owned()));
-        assert_eq!(respawn_countdown_text(f64::from(1.0f32) - f64::from(now)), (30, "Press Fire To Play!".to_owned()));
-        assert_eq!(respawn_countdown_text(f64::from(31.0f32) - f64::from(now)), (20, "30".to_owned()));
-    }
-
-    /// The One's tick (mp.dll 0x1005f8bc..): computed unrounded, stored once (#147).
-    #[test]
-    fn the_one_regen_rounds_once() {
-        // 1.85 + 1/1.28: the f32 steps give 2.6312499.
-        let (timer, _) = the_one_regen(4, 1.85, 100.0);
-        assert_eq!(timer.to_bits(), 0x4028_6667, "2.6312501");
-        assert_ne!(timer, 1.85f32 + 1.0 / (4.0f32 * 0.32));
-        // 125.92 + 27 * 0.16: the f32 steps give 130.23999.
-        let (_, h) = the_one_regen(27, 0.0, 125.92);
-        assert_eq!(h.to_bits(), 0x4302_3d71, "130.24001");
-        assert_ne!(h, 125.92f32 + 27.0 * 0.16f32);
-        // n * 0.32 below 1 is raised to 1; the cap is 150; a NaN health stays NaN.
-        assert_eq!(the_one_regen(1, 10.0, 149.9), (11.0, 150.0));
-        assert!(the_one_regen(1, 10.0, f32::NAN).1.is_nan());
-    }
-
     /// `PlayerDeathThink`'s slowdown (mp.dll 0x1005dd78..): the unrounded length and `1/len`
     /// (#147). The `f32` steps gave x = 0x43445d1f.
     #[test]
@@ -1335,18 +1082,6 @@ mod tests {
         assert_eq!(death_slowdown([3.0, 4.0, 12.0]), [0.0; 3], "13 u/s: not above 20");
         assert_eq!(death_slowdown([30.0, 0.0, 0.0]), [10.0, 0.0, 0.0]);
         assert_eq!(death_slowdown([f32::NAN, 0.0, 0.0]), [0.0; 3]);
-    }
-
-    #[test]
-    fn respawn_countdown_truncates_like_ts() {
-        // PreThink 0x90ec4: `(int)(m_flRespawnTime - time)`, truncated, capped at 30.
-        assert_eq!(respawn_countdown_text(4.7), (20, "4".to_owned()));
-        assert_eq!(respawn_countdown_text(1.0), (20, "1".to_owned()));
-        assert_eq!(respawn_countdown_text(45.0), (20, "30".to_owned()));
-        assert_eq!(respawn_countdown_text(30.9), (20, "30".to_owned()));
-        // The whole last second (not only the last half) says "Press Fire To Play!".
-        assert_eq!(respawn_countdown_text(0.9), (30, "Press Fire To Play!".to_owned()));
-        assert_eq!(respawn_countdown_text(0.4), (30, "Press Fire To Play!".to_owned()));
     }
 
     #[test]

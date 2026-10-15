@@ -47,8 +47,94 @@ impl PmRules for Defaults {}
 impl GunRules for Defaults {}
 #[cfg(test)]
 impl shared::gameplay::MeleeRules for Defaults {}
+/// Neutral stand-ins for the rules hooks, which this crate's tests don't reach: the 3.0 plugin's
+/// own tests (`ts30-server`) check its bodies.
 #[cfg(test)]
-impl ServerRules for Defaults {}
+impl ServerRules for Defaults {
+    fn on_activate(&self) {}
+    fn refuse_client(&self, _client: ConnectingClient) -> Option<&'static str> {
+        None
+    }
+    fn game_description(&self, _mode: crate::rules::DescriptionMode) -> &'static std::ffi::CStr {
+        crate::game_description!()
+    }
+    fn cvars(&self) -> &'static [server::CvarDef] {
+        &[]
+    }
+    fn server_command(&self, _name: &str) -> bool {
+        false
+    }
+    fn client_command(
+        &self,
+        _p: &mut crate::player::Player,
+        _cx: &mut crate::world::Cx,
+        _cmd: &str,
+        _args: &crate::commands::Args,
+    ) -> Option<bool> {
+        None
+    }
+    fn install(&self, _g: &mut crate::rules::state::GameRules) {
+        unreachable!("not in unit tests")
+    }
+    fn think(&self, _now: f32) {
+        unreachable!("not in unit tests")
+    }
+    fn set_player_the_one(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) {
+        unreachable!("not in unit tests")
+    }
+    fn default_team(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) -> Vec<u8> {
+        unreachable!("not in unit tests")
+    }
+    fn on_spawn(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) {}
+    fn put_in_server_cash(&self) -> i32 {
+        0
+    }
+    fn on_start_observer(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) {}
+    fn observer_think(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx, _now: f32) {
+        unreachable!("not in unit tests")
+    }
+    fn observer_set_mode(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx, _mode: i32) {
+        unreachable!("not in unit tests")
+    }
+    fn on_init_hud(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) {}
+    fn set_respawn_time(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx, _secs: f32) {
+        unreachable!("not in unit tests")
+    }
+    fn on_killed(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) {}
+    fn change_team_tail(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx, _kill: bool) {
+        unreachable!("not in unit tests")
+    }
+    fn health_regen(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx, _now: f32) {
+        unreachable!("not in unit tests")
+    }
+    fn points_for_frag(&self, _frag: &crate::rules::scoring::Frag<'_>, _sliding: &mut bool, _diving: &mut bool) -> i32 {
+        unreachable!("not in unit tests")
+    }
+    fn player_killed(
+        &self,
+        _p: &mut crate::player::Player,
+        _cx: &mut crate::world::Cx,
+        _d: &crate::damage::DamageInfo,
+        _g: crate::damage::glast::Snapshot,
+    ) {
+        unreachable!("not in unit tests")
+    }
+    fn cash_based(&self) -> bool {
+        false
+    }
+    fn buy_armament(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) {
+        unreachable!("not in unit tests")
+    }
+    fn precache(&self) {}
+    fn outgoing_message(
+        &self,
+        _msg: crate::messages::Msg,
+        w: goldsrc::server::MsgWriter,
+        send: &mut dyn FnMut(goldsrc::server::MsgWriter),
+    ) {
+        send(w);
+    }
+}
 
 /// [`Defaults`] as a plugin.
 #[cfg(test)]
