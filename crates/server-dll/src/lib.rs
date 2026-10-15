@@ -459,14 +459,16 @@ unsafe extern "C" fn pm_find_texture_type(name: *mut c_char) -> c_char {
     shared::pm::find_texture_type(unsafe { cstr(name) }) as c_char
 }
 
-/// The view origin's PVS/PAS decides which entities this client may see and hear.
+/// `SetupVisibility` (0xaf030): the view origin's PVS/PAS decides which entities this client may
+/// see and hear; NULL sets for an HLTV proxy (`net::visibility_origin`).
 unsafe extern "C" fn setup_visibility(view: *mut edict_t, client: *mut edict_t, pvs: *mut *mut c_uchar, pas: *mut *mut c_uchar) {
-    let v = (if view.is_null() { client } else { view }).v();
-    let org = [v.origin[0] + v.view_ofs[0], v.origin[1] + v.view_ofs[1], v.origin[2] + v.view_ofs[2]];
+    let org = net::visibility_origin(client.v().flags, (if view.is_null() { client } else { view }).v());
     // SAFETY: the engine passes valid pointers (and writable out-pointers) for the duration of this call.
     unsafe {
-        *pvs = goldsrc::eng!(pfnSetFatPVS(org.as_ptr()));
-        *pas = goldsrc::eng!(pfnSetFatPAS(org.as_ptr()));
+        (*pvs, *pas) = match org {
+            Some(org) => (goldsrc::eng!(pfnSetFatPVS(org.as_ptr())), goldsrc::eng!(pfnSetFatPAS(org.as_ptr()))),
+            None => (std::ptr::null_mut(), std::ptr::null_mut()),
+        };
     }
 }
 

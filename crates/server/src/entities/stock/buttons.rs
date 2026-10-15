@@ -478,6 +478,11 @@ impl<const ROT: bool> Button<ROT> {
 }
 
 impl<const ROT: bool> Entity for Button<ROT> {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"changetarget" => self.change_target = alloc(value),
@@ -762,6 +767,11 @@ impl MomentaryRotButton {
 }
 
 impl Entity for MomentaryRotButton {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CMomentaryRotButton::KeyValue` (0xa9758).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {

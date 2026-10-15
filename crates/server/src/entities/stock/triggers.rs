@@ -526,6 +526,11 @@ impl<const KIND: u8> Trigger<KIND> {
 }
 
 impl<const KIND: u8> Entity for Trigger<KIND> {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CBaseTrigger::KeyValue` (0xe68bc); `CTriggerEndSection::KeyValue` (0xe96fc) takes
     /// `section` first.
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
@@ -804,6 +809,11 @@ impl Ladder {
 }
 
 impl Entity for Ladder {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CLadder::KeyValue` (0xe8df8) = `CBaseTrigger::KeyValue`.
     fn key_value(&mut self, cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         trigger_key_value(&mut self.t, cx, key, value)
@@ -1125,6 +1135,11 @@ impl MultiManager {
 }
 
 impl Entity for MultiManager {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         // Every key that isn't an entvars field (those never get here) or `wait` is a target.
         if key == c"wait" {
@@ -1246,11 +1261,6 @@ pub fn enable_control(p: *mut edict_t, on: bool) {
     }
 }
 
-/// `path_corner` delay (`GetDelay`), 0 for anything else.
-fn path_delay(e: *mut edict_t) -> f32 {
-    world::with::<super::trains::PathCorner, _>(e, |p| p.wait).unwrap_or(0.0)
-}
-
 fn next_target(e: *mut edict_t) -> *mut edict_t {
     let t = e.v().target;
     if t == 0 { std::ptr::null_mut() } else { engine().find_by_target_name(std::ptr::null_mut(), s(t)) }
@@ -1347,7 +1357,7 @@ impl TriggerCamera {
                     self.target_speed = nv.speed;
                 }
                 (self.move_distance, v.movedir) = camera_path(nv.origin, v.origin);
-                self.stop_time = now + path_delay(next);
+                self.stop_time = now + world::delay_of(next);
             }
         }
         let v = cx.pev();
@@ -1466,7 +1476,7 @@ impl Entity for TriggerCamera {
             if ps != 0.0 {
                 self.target_speed = ps;
             }
-            self.stop_time += path_delay(path);
+            self.stop_time += world::delay_of(path);
         }
         let av = activator.v();
         let (aorg, aofs, aang, avel, amodel) = (av.origin, av.view_ofs, av.angles, av.velocity, av.model);

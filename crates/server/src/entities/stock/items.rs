@@ -483,6 +483,10 @@ pub struct Charger<const ARMOR: bool> {
     /// `m_pfnThink` is set: the first `Use` that charges or `Off` sets it, and nothing clears it.
     /// A restored one never runs.
     think_set: bool,
+    /// The `CBaseDelay` / `CBaseToggle` members: only `CBaseToggle::KeyValue` fills them, TS
+    /// doesn't save them, and only `m_flWait` is read back (`GetDelay`, a camera or train path
+    /// through the charger).
+    t: Toggle<Self>,
 }
 
 impl<const ARMOR: bool> Charger<ARMOR> {
@@ -548,15 +552,20 @@ impl<const ARMOR: bool> Charger<ARMOR> {
 }
 
 impl<const ARMOR: bool> Entity for Charger<ARMOR> {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CWallHealth::KeyValue` (0xc8b34) / `CRecharge::KeyValue` (0xc6dfc): `dmdelay` is
-    /// `m_iReactivate`; style/height/value1-3 are swallowed; the rest go to CBaseToggle (unused
-    /// here).
+    /// `m_iReactivate`; style/height/value1-3 are swallowed; the rest go to CBaseToggle, of which
+    /// only `wait` is read back (`GetDelay`).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key == c"dmdelay" {
             self.reactivate = kv_i(value);
             return true;
         }
-        matches!(key.to_bytes(), b"style" | b"height" | b"value1" | b"value2" | b"value3")
+        matches!(key.to_bytes(), b"style" | b"height" | b"value1" | b"value2" | b"value3") || self.t.key_value(key, value)
     }
 
     /// `CWallHealth::Save` (0xc8a70) / `CRecharge::Save` (0xc6d38). `Use` is the class's own.

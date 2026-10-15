@@ -215,6 +215,22 @@ pub fn create_baseline(
     }
 }
 
+/// `SetupVisibility` (0xaf030): the point whose fat PVS/PAS the client gets, from the view
+/// entity's entvars (`view`, the client's own without a view entity) and the client's flags.
+/// `None` for an HLTV proxy (`FL_PROXY` on the client): TS hands the engine NULL sets, so the
+/// proxy sees the whole map. A ducking view entity's eye drops by 18 units
+/// (`VEC_HULL_MIN - VEC_DUCK_HULL_MIN`).
+pub fn visibility_origin(client_flags: i32, view: &entvars_t) -> Option<[f32; 3]> {
+    if client_flags & FL_PROXY as i32 != 0 {
+        return None;
+    }
+    let mut org = [view.origin[0] + view.view_ofs[0], view.origin[1] + view.view_ofs[1], view.origin[2] + view.view_ofs[2]];
+    if view.flags & FL_DUCKING as i32 != 0 {
+        org[2] += -18.0;
+    }
+    Some(org)
+}
+
 /// `pfnUpdateClientData`: the local player's state, which client prediction starts from.
 pub fn update_client_data(ent: *const edict_t, cd: &mut clientdata_t) {
     if ent.is_null() || !ent.has_private_data() {
@@ -254,4 +270,23 @@ pub fn update_client_data(ent: *const edict_t, cd: &mut clientdata_t) {
 
     // Subsystem fields (stunt bits, time scale, weapon state, ...).
     crate::player::with_player(ent.cast_mut(), |p, cx| p.fill_client_data(cx, cd));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #51: `SetupVisibility` (0xaf030) cuts nothing for an HLTV proxy, and lowers a
+    /// ducking view entity's eye by 18.
+    #[test]
+    fn visibility_origin_follows_setup_visibility() {
+        let mut v = entvars_t { origin: [1.0, 2.0, 3.0], view_ofs: [0.0, 0.0, 28.0], ..Default::default() };
+        assert_eq!(visibility_origin(0, &v), Some([1.0, 2.0, 31.0]));
+        v.flags = FL_DUCKING as i32;
+        assert_eq!(visibility_origin(FL_CLIENT as i32, &v), Some([1.0, 2.0, 13.0]), "ducking view entity");
+        // The proxy test reads the client's flags, the duck test the view entity's.
+        assert_eq!(visibility_origin((FL_PROXY | FL_CLIENT) as i32, &v), None, "HLTV proxy");
+        v.flags = FL_PROXY as i32;
+        assert_eq!(visibility_origin(0, &v), Some([1.0, 2.0, 31.0]), "a proxy view entity isn't the proxy");
+    }
 }

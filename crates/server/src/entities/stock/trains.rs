@@ -43,6 +43,11 @@ pub struct PathCorner {
 }
 
 impl Entity for PathCorner {
+    /// `CPathCorner::GetDelay` (0xd1e40): its `wait`.
+    fn get_delay(&self) -> f32 {
+        self.wait
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         if key == c"wait" {
             self.wait = kv_f(value);
@@ -129,10 +134,6 @@ impl Mover for FuncTrain {
     }
 }
 
-fn path_delay(e: *mut edict_t) -> f32 {
-    world::with::<PathCorner, _>(e, |p| p.wait).unwrap_or(0.0)
-}
-
 impl FuncTrain {
     /// `CFuncTrain::Precache` (0xd3de8) = `CBasePlatTrain::Precache` (0xd21a4).
     fn precache(&mut self, cx: &mut Cx) {
@@ -206,7 +207,10 @@ impl FuncTrain {
         let v = cx.pev();
         v.message = v.target;
         v.target = tv.target;
-        self.t.wait = path_delay(targ);
+        // `m_flWait = pTarg->GetDelay()`: a train whose path names itself keeps its own wait.
+        if targ != cx.edict {
+            self.t.wait = world::delay_of(targ);
+        }
         if self.current_valid() {
             let cs = self.current.get().v().speed;
             if cs != 0.0 {
@@ -266,6 +270,11 @@ impl FuncTrain {
 }
 
 impl Entity for FuncTrain {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
             b"height" => self.t.height = kv_f(value),
@@ -720,6 +729,11 @@ impl Plat for FuncPlat {
 }
 
 impl Entity for FuncPlat {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.p.t.wait
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         plat_key_value(&mut self.p, key, value)
     }
@@ -845,6 +859,11 @@ impl Plat for FuncPlatRot {
 }
 
 impl Entity for FuncPlatRot {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.p.t.wait
+    }
+
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         plat_key_value(&mut self.p, key, value)
     }
@@ -1043,7 +1062,10 @@ impl GunTarget {
                 tv.message = 0;
             }
         }
-        self.t.wait = path_delay(t);
+        // `m_flWait = pTarget->GetDelay()`: a gun target on its own path keeps its own wait.
+        if t != cx.edict {
+            self.t.wait = world::delay_of(t);
+        }
         cx.pev().target = t.v().target;
         self.t.think = Some(Self::next);
         if self.t.wait == 0.0 {
@@ -1064,6 +1086,11 @@ impl GunTarget {
 }
 
 impl Entity for GunTarget {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
     /// `CBaseMonster::KeyValue` (0xce80c) = `CBaseToggle::KeyValue`.
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         self.t.key_value(key, value)

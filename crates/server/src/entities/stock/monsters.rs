@@ -323,6 +323,11 @@ impl DeadHev {
 }
 
 impl Entity for DeadHev {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.toggle.wait
+    }
+
     /// `CDeadHEV::KeyValue` (0xdda14).
     fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
         match key.to_bytes() {
