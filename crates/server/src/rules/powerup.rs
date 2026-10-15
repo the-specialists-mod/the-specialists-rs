@@ -53,24 +53,6 @@ impl PowerupRules {
     }
 }
 
-/// TS 3.0's power-up values.
-pub const CORE: PowerupRules = PowerupRules {
-    // slow motion 3, infinite clip 3, slow pause 2, double firerate 3
-    base_secs: [3, 3, 0, 2, 3, 0, 0, 0, 0],
-    multiplier: true,
-    instant: 0x1e6,
-    infinite_clip_instant: true,
-    slowmo_top_up_below: 3,
-    slowmo_swap_above: 2,
-    swap_on_instant: false,
-    slowmo_drop_above: 2,
-    slowmo: (0.6, 0.35, false),
-    slowpause: (0.8, 0.225, true),
-    hud_slowmo: 0.35,
-    hud_slowpause: 0.225,
-    grenade_selects: true,
-};
-
 /// Sets a player's time scale target (`GoSlow`); a ruleset whose time scale doesn't ease writes
 /// `fuser1` at once ([`ServerRules::time_scale_eases`](crate::gameplay::ServerRules::time_scale_eases)).
 fn set_slow_target(p: &mut Player, e: *mut edict_t, target: f32) {
@@ -592,25 +574,6 @@ mod tests {
         .map(|(name, _)| name)
         .collect();
         assert_eq!(callers, ["rules/commands.rs", "bots/modules.rs"]);
-    }
-
-    /// TS 3.0's values, as the code had them before the hook (`SetupPowerUp` 0x98014,
-    /// `UpdatePowerUpState` 0x95748).
-    #[test]
-    fn core_values() {
-        use shared::ts::powerup as pw;
-        let r = super::CORE;
-        assert_eq!(
-            [pw::SLOWMO, pw::INFINITE_CLIP, pw::KUNGFU, pw::SLOWPAUSE, pw::DOUBLE_FIRERATE, pw::GRENADE, pw::ARMOR].map(|k| r.base(k)),
-            [3, 3, 0, 2, 3, 0, 0]
-        );
-        assert_eq!(r.base(pw::SLOWPAUSE | pw::SLOWMO), 3, "the lowest bit counts");
-        assert_eq!(r.base(0x200), 0);
-        assert_eq!((r.slowmo, r.slowpause), ((0.6, 0.35, false), (0.8, 0.225, true)));
-        assert_eq!((r.hud_slowmo, r.hud_slowpause), (0.35, 0.225));
-        assert_eq!((r.instant, r.slowmo_top_up_below, r.slowmo_swap_above, r.slowmo_drop_above), (0x1e6, 3, 2, 2));
-        assert!(r.multiplier && r.infinite_clip_instant && !r.swap_on_instant);
-        assert!(r.grenade_selects, "PickUpWeapon(0x18, NULL, 0, 1, 0)");
     }
 
     #[test]

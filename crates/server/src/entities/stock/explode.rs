@@ -30,15 +30,6 @@ pub fn emit_sound_slow(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn
     engine().emit_sound(e, chan as i32, &sample, vol, attn, flags, pitch);
 }
 
-/// `EMIT_SOUND_DYN`'s pitch (0xe0aa7): the factor `(1 - s) + s * fuser1` (`s` alone when
-/// `fuser1` is 0) is stored as a float, then multiplied by the pitch on the x87 stack and
-/// truncated (0xe0b1e). `f64` holds both steps exactly enough to match.
-pub fn slow_pitch(pitch: i32, time_scale: f32, s: f32) -> i32 {
-    let k = if time_scale != 0.0 { s as f64 * time_scale as f64 } else { s as f64 };
-    let factor = ((1.0 - s as f64) + k) as f32;
-    (factor as f64 * pitch as f64) as i32
-}
-
 /// `GiveSlowMul` / `FixedSlowAmt` (0x990bc): the player's time scale, at least 0.01.
 fn slow_of(e: *mut edict_t) -> f32 {
     e.v().fuser1.max(0.01)
@@ -282,14 +273,6 @@ pub fn ts_explosion(origin: Vec3, inflictor: *mut edict_t, attacker: *mut edict_
     rules.explosion_aftermath(org, inflictor, attacker);
 }
 
-/// The end of [`ts_explosion`] (0x7d964/0x7d9ab): `DoSpectacularNess()`, then
-/// `CreateSlowMotionPoint(origin + 1z, 0.25, 1.0, 0)`.
-pub fn explosion_slow_point(org: Vec3) {
-    if crate::rules::scoring::do_spectacularness() {
-        crate::entities::ts::create_slow_motion_point(org, 0.25, 1.0, false);
-    }
-}
-
 /// The per-target damage of [`ts_explosion`] (0x7d1f7..0x7d64e).
 #[allow(clippy::too_many_arguments)]
 fn explosion_damage(
@@ -413,7 +396,7 @@ pub fn radius_damage(src: Vec3, inflictor: *mut edict_t, attacker: *mut edict_t,
 
 #[cfg(test)]
 mod tests {
-    use super::{BodyKind, body_target_of, slow_pitch};
+    use super::{BodyKind, body_target_of};
 
     /// #137: `RadiusDamage` aims at `BodyTarget`, which only players draw a random number for.
     #[test]
@@ -424,15 +407,6 @@ mod tests {
         let no_draw = || -> f32 { panic!("only players draw") };
         assert_eq!(body_target_of(BodyKind::GunTarget, c, o, ofs, no_draw), o);
         assert_eq!(body_target_of(BodyKind::Other, c, o, ofs, no_draw), c);
-    }
-
-    #[test]
-    fn slow_pitch_truncates() {
-        assert_eq!(slow_pitch(100, 0.0, 0.5), 100, "no time scale");
-        assert_eq!(slow_pitch(100, 1.0, 0.5), 100);
-        assert_eq!(slow_pitch(100, 0.5, 0.5), 75);
-        assert_eq!(slow_pitch(101, 0.5, 0.5), 75, "75.75 truncates");
-        assert_eq!(slow_pitch(126, 0.25, 0.5), 78, "78.75 truncates");
     }
 
     /// Every TS server sound that reaches `pfnEmitSound` goes through `EMIT_SOUND_DYN` (0xe0a8c)

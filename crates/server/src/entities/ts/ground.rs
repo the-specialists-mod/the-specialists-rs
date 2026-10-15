@@ -5,7 +5,7 @@
 use crate::entities::stock::base::sub_remove;
 use crate::player::{Player, with_player_now};
 use crate::rules::mapcycle::atoi;
-use crate::rules::{self, msg, state};
+use crate::rules::{self, state};
 use crate::save::{BaseFuncs, Fields};
 use crate::world::{Cx, Entity, UseType};
 use goldsrc::edict::EdictPtr;
@@ -297,71 +297,14 @@ pub struct GroundWeapon {
     pub respawn: i32,
     /// `wextraclip`: rounds given with it when the player's reserve is empty.
     pub extra_clip: i32,
-    buyable: bool,
-    attacker_team: i32,
+    /// `buyable`: in cash mode, the weapon costs [`buy_price`].
+    pub buyable: bool,
+    /// `attackerteam`: in the round modes, the only team that may buy it (-1 any).
+    pub attacker_team: i32,
     ground: Ground,
 }
 
 impl GroundWeapon {
-    /// `CTSGroundWeapon::GetWeapon` (0xa2328) past its `IsPlayer` test: a live, visible player and
-    /// a visible weapon (falling or landed). In cash mode a `buyable` one checks `attackerteam`
-    /// (round modes) and the price first; then `PickUpWeapon(id, NULL, spawnflags, id != 29,
-    /// false)`, and on success the cash, the hide/respawn, the extra magazines, `message` and
-    /// `target`, in TS's order. The gameplay plugin's `ServerRules::give_ground_weapon` runs in
-    /// its place; this is TS 3.0's.
-    pub fn give(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) {
-        if !rules::is_alive(pcx.edict) || hidden(pcx) || hidden(cx) {
-            return;
-        }
-        let flags = cx.pev().spawnflags;
-        // A negative `wextraclip` is clamped to 0 for good.
-        self.extra_clip = self.extra_clip.max(0);
-        let mut cost = 0;
-        if state::cash_based() && self.buyable {
-            if round_mode() && self.attacker_team != -1 {
-                let team = state::with(|g| g.team_index(&p.ts.team_name));
-                if team != self.attacker_team {
-                    msg::ts_message_one(pcx.edict, [0, 0, 0], 16, 30, "Your team cannot buy this weapon.");
-                    return;
-                }
-            }
-            cost = buy_price(self.id, flags, self.extra_clip);
-            if p.cash < cost {
-                msg::ts_message_one(pcx.edict, [0, 0, 0], 16, 30, "You don't have enough money for that weapon.");
-                return;
-            }
-        }
-        // `TakeWeapon` refuses an id without a valid entry (only a restored id can be one).
-        if !weapon_valid(self.id) {
-            return;
-        }
-        // The whole spawnflags go in as the attachments: `TakeWeapon` masks a new record with the
-        // allowed attachments, but ORs them unmasked into the single of a new akimbo pair.
-        if !crate::weapons::give_weapon(p, pcx, self.id as u8, flags as u32) {
-            return;
-        }
-        rules::lifecycle::give_cash(p, -cost);
-        self.ground.taken(cx, self.respawn);
-        // TS tops up only an empty reserve, checked after the pickup (`reserve[ammo] < 1`), with
-        // `CTSGun::AddAmmo(ammo, wextraclip)`: the key's raw number of rounds.
-        let extra = self.extra_clip;
-        if extra != 0
-            && let Some(w) = tables().weapon(self.id as u8)
-        {
-            let empty = p.inv.gun.reserve.get(w.ammo as usize).is_some_and(|&r| r < 1);
-            if empty && crate::weapons::give_ammo(p, pcx, w.ammo, extra) > 0 {
-                crate::entities::stock::explode::emit_sound_slow(pcx.edict, CHAN_ITEM, c"items/9mmclip1.wav", 1.0, 0.8, 0, 100, 0.5);
-            }
-        }
-        let (message, target) = (cx.pev().message, cx.pev().target);
-        if message != 0 {
-            msg::ts_message_one(pcx.edict, [0, 0, 0], 8, 30, engine().string(message).to_bytes());
-        }
-        if target != 0 {
-            crate::entities::fire_targets(engine().string(target), cx.edict, cx.edict, UseType::Toggle, 0.0);
-        }
-    }
-
     /// `CTSGroundWeapon::Fall` (0xa2150), its think, which `RespawnEntities` also calls directly:
     /// a weapon that has landed before (taken or not) shows again at once and drops its respawn
     /// timer.

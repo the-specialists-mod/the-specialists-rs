@@ -54,30 +54,6 @@ fn base_take_health(e: *mut edict_t, amount: f32) -> bool {
     true
 }
 
-/// TS `CBasePlayer::TakeArmor(amount)` (0x93da4, `weapons::take_armor`) for an edict. An HEV
-/// charger is used from the player's own `PlayerUse`, which lends the player to its slot
-/// (`player_use`), so the armour lands inside the `Use` as in TS (`world::run_now`). A player
-/// held by a dispatch that didn't lend it gets the armour once that returns, and this then
-/// reports success, which both callers ignore anyway, as TS does. Any `CBasePlayer` takes it,
-/// connected or not (`rules::has_player`): the callers have one in hand.
-pub fn player_take_armor(p: *mut edict_t, amount: f32) -> bool {
-    if !has_player(p) {
-        return false;
-    }
-    let n = amount as i32;
-    let take = move || crate::player::with_player(p, |pl, cx| crate::weapons::take_armor(pl, cx, n));
-    if let Some(Some(took)) = crate::world::run_now(p, take) {
-        return took;
-    }
-    if crate::world::is_taken_out(p) {
-        crate::world::defer(p, move || {
-            take();
-        });
-        return true;
-    }
-    false
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     HealthKit,
@@ -651,25 +627,6 @@ impl<const ARMOR: bool> Entity for Charger<ARMOR> {
         }
         crate::gameplay::active().server.charger_charge(ARMOR, &mut self.juice, activator);
         self.next_charge = plus_double(now, 0.1);
-    }
-}
-
-/// TS 3.0's charge ([`ServerRules::charger_charge`](crate::gameplay::ServerRules::charger_charge)):
-/// `CRecharge::Use` (0xc6fd0) below 100 armour sets `m_iJuice = 0` and calls `TakeArmor(100)`;
-/// `CWallHealth::Use` (0xc8d08) with health not at max calls `TakeHealth(max_health - health)` and
-/// empties the charger when it was taken.
-pub fn charge_once(armor: bool, juice: &mut i32, activator: *mut edict_t) {
-    let pv = activator.v();
-    if armor {
-        if pv.armorvalue < 100.0 {
-            *juice = 0;
-            player_take_armor(activator, 100.0);
-        }
-    } else if pv.health != pv.max_health {
-        let amount = pv.max_health - pv.health;
-        if player_take_health(activator, amount) {
-            *juice = 0;
-        }
     }
 }
 

@@ -13,7 +13,7 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, HEAD_HULL, IGNORE_MONSTERS};
 use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ, plus_double};
 
-/// `CanDiveHigh/Medium/Low` (0x9a494...), the ruleset's ([`rules::can_dive`] in TS 3.0).
+/// `CanDiveHigh/Medium/Low` (0x9a494...), the ruleset's ([`ServerRules::can_dive`](crate::gameplay::ServerRules::can_dive)).
 fn can(p: &Player, cx: &mut Cx, r: Rules, dive: Dive) -> bool {
     r.can_dive(p, cx.pev().armorvalue, dive)
 }
@@ -696,24 +696,6 @@ fn close_attack(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
     true
 }
 
-/// The end of a jump kick that hit (`CTSStunt::CloseAttack` 0x9c630): `UTIL_WeaponTimeBase()` is
-/// 0, so only a run-out `m_flNextAttack` (it rests at -0.001) is set, to 0.35; then
-/// `UpdateMeleeBar(strength * 1.5)`. (TS sets the attack time before the sound; nothing reads it
-/// in between.)
-pub fn jump_kick_hit_core(p: &mut Player, cx: &mut Cx, strength: f32) {
-    if p.inv.gun.next_attack < 0.0 {
-        p.inv.gun.next_attack = 0.35;
-    }
-    crate::weapons::update_melee_bar(p, cx, strength * 1.5);
-}
-
-/// The backflip kick (`CTSStunt::GoWheel` backward): 22.5 kung-fu power and a delayed hit of 15
-/// (30 with Kung Fu) in the gun's close-combat window.
-pub fn backflip_kick_core(p: &mut Player, cx: &mut Cx) {
-    let dmg = if p.kungfu { 30.0 } else { 15.0 };
-    crate::weapons::arm_kick(p, cx, 22.5, dmg);
-}
-
 /// `CBasePlayer::Jump` (0x92864), every frame jump is held: out of deep water and not water
 /// jumping, the jump kick ([`close_attack`]) first; if it hit, nothing else. Else a fresh press
 /// tries `GoWheel`, then plays the jump animation on the ground (conveyors add their speed).
@@ -918,7 +900,10 @@ mod tests {
     #[test]
     fn jump_kick_gate() {
         use super::super::rules::StuntClock;
-        let clock = &super::super::rules::RELATIVE;
+        /// The trait's countdown (the 3.0 plugin's clock).
+        struct Countdown;
+        impl StuntClock for Countdown {}
+        let clock = &Countdown;
         let ok = |recover: f32, cd: f32, iuser4, flags, gun, weapon| {
             close_attack_allowed(clock.running(0.0, recover), clock.running(0.0, cd), iuser4, flags, gun, weapon)
         };
@@ -940,12 +925,12 @@ mod tests {
         assert!(ok(-0.5, -0.5, 0, 0, false, 0));
     }
 
-    /// 3.0 arms the cooldown and draws the move only after a hit; a ruleset that arms it on
-    /// every try does both before the try.
+    /// Without `kick_cooldown_on_try` (3.0) the cooldown is armed and the move drawn only after
+    /// a hit; a ruleset that arms it on every try does both before the try.
     #[test]
     fn jump_kick_cooldown_order() {
         use KickStep::*;
-        assert_eq!(kick_steps(super::super::rules::CORE.kick_cooldown_on_try), [Hit, Draw, Arm]);
+        assert_eq!(kick_steps(false), [Hit, Draw, Arm]);
         assert_eq!(kick_steps(true), [Arm, Draw, Hit]);
     }
 

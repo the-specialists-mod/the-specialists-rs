@@ -420,18 +420,11 @@ impl GunHost for ServerHost<'_> {
 #[cfg(test)]
 mod tests {
     use super::SLOW;
-    use crate::entities::stock::explode::slow_pitch;
 
-    /// The weapon and item sounds' pitch in slow motion (issue #32): `(1 - 0.5) + 0.5 * fuser1`
-    /// of TS's pitch, truncated; unchanged at normal speed or with no time scale.
+    /// The weapon and item sounds' slow-motion factor (issue #32): `(1 - 0.5) + 0.5 * fuser1` of
+    /// TS's pitch (the 3.0 plugin's `sound_pitch` tests the resulting pitches).
     #[test]
     fn weapon_sounds_drop_pitch_with_the_time_scale() {
         assert_eq!(SLOW, 0.5);
-        assert_eq!(slow_pitch(100, 1.0, SLOW), 100, "normal speed");
-        assert_eq!(slow_pitch(100, 0.0, SLOW), 100, "no time scale");
-        assert_eq!(slow_pitch(100, 0.5, SLOW), 75, "draw.wav, items, drops at half speed");
-        assert_eq!(slow_pitch(101, 0.5, SLOW), 75, "switch.wav's top pitch: 75.75 truncates");
-        assert_eq!(slow_pitch(110, 0.2, SLOW), 66, "weapondrop1.wav's top pitch at 0.2");
-        assert_eq!(slow_pitch(90, 0.5, SLOW), 67, "kevlarhit.wav's top pitch: 67.5 truncates");
     }
 }

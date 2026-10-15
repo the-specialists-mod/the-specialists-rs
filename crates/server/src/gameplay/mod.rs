@@ -48,7 +48,249 @@ impl GunRules for Defaults {}
 #[cfg(test)]
 impl shared::gameplay::MeleeRules for Defaults {}
 #[cfg(test)]
-impl ServerRules for Defaults {}
+impl ServerRules for Defaults {
+    // The inventory, entity, power-up, stunt, damage, melee and explosion hooks: no test here
+    // reaches them but `powerups` (the plugin API's power-up checks); their 3.0 bodies are tested
+    // in the 3.0 plugin.
+    fn pick_up_cost(&self, _id: u8, _w: &shared::weapons::WeaponInfo, _from: Option<&shared::weapons::Status>) -> Option<f32> {
+        unimplemented!("pick_up_cost")
+    }
+    fn dead_grenades_become_powerups(&self) -> bool {
+        unimplemented!("dead_grenades_become_powerups")
+    }
+    fn drop_lifetime_and_glow(&self) -> bool {
+        unimplemented!("drop_lifetime_and_glow")
+    }
+    fn stack_drop_count(&self, _held: i32, _disarm: bool) -> i32 {
+        unimplemented!("stack_drop_count")
+    }
+    fn world_gun_fall_impact(&self) -> bool {
+        unimplemented!("world_gun_fall_impact")
+    }
+    fn world_gun_touch(
+        &self,
+        _gun: *mut goldsrc::sys::edict_t,
+        _attacker: *mut goldsrc::sys::edict_t,
+        _id: u8,
+        _other: *mut goldsrc::sys::edict_t,
+    ) {
+        unimplemented!("world_gun_touch")
+    }
+    fn ammo_pack_stays_when_nothing_fits(&self) -> bool {
+        unimplemented!("ammo_pack_stays_when_nothing_fits")
+    }
+    fn player_add_health(&self, _v: &mut goldsrc::sys::entvars_t, _amount: f32) -> Option<bool> {
+        unimplemented!("player_add_health")
+    }
+    fn battery_armor(&self, _p: *mut goldsrc::sys::edict_t, _amount: f32) {
+        unimplemented!("battery_armor")
+    }
+    fn charger_capacity(&self, _armor: bool) -> i32 {
+        unimplemented!("charger_capacity")
+    }
+    fn charger_charge(&self, _armor: bool, _juice: &mut i32, _activator: *mut goldsrc::sys::edict_t) {
+        unimplemented!("charger_charge")
+    }
+    fn entity_object(&self, _class: &std::ffi::CStr) -> Option<Box<dyn crate::world::Entity>> {
+        unimplemented!("entity_object")
+    }
+    fn spawns_entity(&self, _class: &std::ffi::CStr) -> bool {
+        unimplemented!("spawns_entity")
+    }
+    fn entity_key_value(
+        &self,
+        _ent: &mut dyn crate::world::Entity,
+        _cx: &mut crate::world::Cx,
+        _key: &std::ffi::CStr,
+        _value: &std::ffi::CStr,
+    ) -> Option<bool> {
+        unimplemented!("entity_key_value")
+    }
+    fn entity_touch(&self, _ent: &mut dyn crate::world::Entity, _cx: &mut crate::world::Cx, _other: *mut goldsrc::sys::edict_t) -> bool {
+        unimplemented!("entity_touch")
+    }
+    fn objectives(&self) -> &'static crate::entities::ts::objective::ObjectiveRules {
+        unimplemented!("objectives")
+    }
+    fn round_time_left(&self, _now: f32) {
+        unimplemented!("round_time_left")
+    }
+    fn giver_team_win(&self, _w: &crate::entities::ts::ctb::GiverWin) {
+        unimplemented!("giver_team_win")
+    }
+    fn break_debris_from_hit(&self) -> bool {
+        unimplemented!("break_debris_from_hit")
+    }
+    fn breakable_attack_dir(
+        &self,
+        _inflictor_origin: shared::weapons::spread::Vec3,
+        _absmin: shared::weapons::spread::Vec3,
+        _size: shared::weapons::spread::Vec3,
+    ) -> shared::weapons::spread::Vec3 {
+        unimplemented!("breakable_attack_dir")
+    }
+    fn broken_respawn_delay(&self, _respawn_time: f32) -> Option<f32> {
+        unimplemented!("broken_respawn_delay")
+    }
+    fn breakable_respawn_guarded(&self) -> bool {
+        unimplemented!("breakable_respawn_guarded")
+    }
+    fn respawn_entities(&self) {
+        unimplemented!("respawn_entities")
+    }
+    fn entities_think(&self, _now: f32) {
+        unimplemented!("entities_think")
+    }
+    fn map_globals(&self, _e: *mut goldsrc::sys::edict_t, _spawnflags: i32) -> Option<crate::entities::ts::misc::MapFlags> {
+        unimplemented!("map_globals")
+    }
+    fn ground_weapon_lands_flying(&self) -> bool {
+        unimplemented!("ground_weapon_lands_flying")
+    }
+    fn give_ground_weapon(
+        &self,
+        _g: &mut crate::entities::ts::ground::GroundWeapon,
+        _cx: &mut crate::world::Cx,
+        _p: &mut crate::player::Player,
+        _pcx: &mut crate::world::Cx,
+    ) {
+        unimplemented!("give_ground_weapon")
+    }
+    fn powerups(&self) -> &'static crate::rules::powerup::PowerupRules {
+        &TEST_POWERUPS
+    }
+    fn powerup_kind(&self, _key: i32, _spawnflags: i32) -> (u16, bool) {
+        unimplemented!("powerup_kind")
+    }
+    fn armor_powerup(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx, _armor: f32) {
+        unimplemented!("armor_powerup")
+    }
+    fn time_scale_eases(&self) -> bool {
+        unimplemented!("time_scale_eases")
+    }
+    fn on_go_slow(&self, _p: &mut crate::player::Player, _amount: f32) {
+        unimplemented!("on_go_slow")
+    }
+    fn grenade_fuse_step(&self, _elapsed: f32, _time_scale: f32) -> f32 {
+        unimplemented!("grenade_fuse_step")
+    }
+    fn anim_framerate(&self, _time_scale: f32) -> f32 {
+        unimplemented!("anim_framerate")
+    }
+    fn motion_blur(&self) -> bool {
+        unimplemented!("motion_blur")
+    }
+    fn sound_pitch(&self, _pitch: i32, _time_scale: f32, _s: f32) -> i32 {
+        unimplemented!("sound_pitch")
+    }
+    fn stunts(&self) -> &'static crate::stunt::rules::StuntRules {
+        unimplemented!("stunts")
+    }
+    fn stunt_clock(&self) -> &'static dyn crate::stunt::rules::StuntClock {
+        unimplemented!("stunt_clock")
+    }
+    fn can_dive(&self, _p: &crate::player::Player, _armor: f32, _dive: crate::stunt::rules::Dive) -> bool {
+        unimplemented!("can_dive")
+    }
+    fn bullet_time_allowed(&self, _time_scale: f32) -> bool {
+        unimplemented!("bullet_time_allowed")
+    }
+    fn bullet_trace(
+        &self,
+        _start: shared::weapons::spread::Vec3,
+        _end: shared::weapons::spread::Vec3,
+        _shooter: *mut goldsrc::sys::edict_t,
+    ) -> goldsrc::sys::TraceResult {
+        unimplemented!("bullet_trace")
+    }
+    fn bullet_range_index(&self, _scaled: shared::pm::Ext) -> i32 {
+        unimplemented!("bullet_range_index")
+    }
+    fn bullet_damage(&self, _ammo: u8, _weapon: u8, _damage: f32, _falloff: f32, _simulated: bool) -> f32 {
+        unimplemented!("bullet_damage")
+    }
+    fn bullet_damage_multiplier(&self, _acc: &mut f32, _cheat: Option<f32>) -> f32 {
+        unimplemented!("bullet_damage_multiplier")
+    }
+    fn pierce_step(&self, _left: f32) -> f32 {
+        unimplemented!("pierce_step")
+    }
+    fn weapon_realbullet(&self, _realbullet: i32) -> i32 {
+        unimplemented!("weapon_realbullet")
+    }
+    fn bullet_velocity_mult(&self, _arith: shared::pm::Arith, _slowmul: f32, _bullet_time: bool) -> shared::pm::Ext {
+        unimplemented!("bullet_velocity_mult")
+    }
+    fn player_hit(&self, _hit: &crate::player::damage::PlayerHit) -> crate::player::damage::HitDamage {
+        unimplemented!("player_hit")
+    }
+    fn armor_damage(&self, _armor: &mut f32, _amount: f32, _hitgroup: i32, _bits: i32) -> f32 {
+        unimplemented!("armor_damage")
+    }
+    fn damage_punch(&self) -> f32 {
+        unimplemented!("damage_punch")
+    }
+    fn melee_block(
+        &self,
+        _kind: shared::weapons::gun::MeleeKind,
+        _attacker: *mut goldsrc::sys::edict_t,
+        _victim: *mut goldsrc::sys::edict_t,
+        _damage: f32,
+        _atk_block: f32,
+    ) -> Option<shared::weapons::gun::MeleeResult> {
+        unimplemented!("melee_block")
+    }
+    fn jump_kick_hit(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx, _strength: f32) {
+        unimplemented!("jump_kick_hit")
+    }
+    fn backflip_kick(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) {
+        unimplemented!("backflip_kick")
+    }
+    fn zero_delayed_hit_reaches_player(&self) -> bool {
+        unimplemented!("zero_delayed_hit_reaches_player")
+    }
+    fn melee_disarm(&self, _damage: f32, _victim_is_the_one: bool) -> Option<f32> {
+        unimplemented!("melee_disarm")
+    }
+    fn grenade_explosion(&self) -> (f32, f32, f32) {
+        unimplemented!("grenade_explosion")
+    }
+    fn explosion_pushes_world_guns(&self) -> bool {
+        unimplemented!("explosion_pushes_world_guns")
+    }
+    fn explosion_aftermath(
+        &self,
+        _org: shared::weapons::spread::Vec3,
+        _inflictor: *mut goldsrc::sys::edict_t,
+        _attacker: *mut goldsrc::sys::edict_t,
+    ) {
+        unimplemented!("explosion_aftermath")
+    }
+    fn thrown_blade(&self, _btype: i32) -> crate::weapons::ThrownBlade {
+        unimplemented!("thrown_blade")
+    }
+    fn thrown_blade_damage(&self, _btype: i32, _from: shared::weapons::spread::Vec3, _at: shared::weapons::spread::Vec3) -> f32 {
+        unimplemented!("thrown_blade_damage")
+    }
+}
+
+/// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).
+#[cfg(test)]
+pub(crate) const TEST_POWERUPS: crate::rules::powerup::PowerupRules = crate::rules::powerup::PowerupRules {
+    base_secs: [3, 3, 0, 2, 3, 0, 0, 0, 0],
+    multiplier: true,
+    instant: 0x1e6,
+    infinite_clip_instant: true,
+    slowmo_top_up_below: 3,
+    slowmo_swap_above: 2,
+    swap_on_instant: false,
+    slowmo_drop_above: 2,
+    slowmo: (0.6, 0.35, false),
+    slowpause: (0.8, 0.225, true),
+    hud_slowmo: 0.35,
+    hud_slowpause: 0.225,
+    grenade_selects: true,
+};
 
 /// [`Defaults`] as a plugin.
 #[cfg(test)]
