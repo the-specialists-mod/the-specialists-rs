@@ -11,5 +11,7 @@ ts21-gameplay = { path = ".." }
 ts-client     = { path = "../../client" }
 goldsrc       = { path = "../../goldsrc", features = ["client"] }
 
+# Tests only; ts30-client: see ../Cargo.toml.
 [dev-dependencies]
 shared        = { path = "../../shared" }
+ts30-client   = { path = "../../ts30/client" }

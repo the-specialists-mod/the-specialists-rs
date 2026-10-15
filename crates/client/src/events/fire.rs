@@ -1025,7 +1025,7 @@ mod tests {
     /// first along both `right` and `fwd`, onto the shooter's velocity.
     #[test]
     fn pump_shell_velocity() {
-        assert_eq!(crate::gameplay::CORE_PLUGIN.client.pump_shell_speeds(), [(20, 40), (0, 20)]);
+        assert_eq!(crate::gameplay::DEFAULTS.client.pump_shell_speeds(), [(20, 40), (0, 20)]);
         let (fwd, right, up) = ([1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
         assert_eq!(shell_velocity([10.0, 0.0, 0.0], right, up, fwd, [30.0, 5.0, 30.0]), [40.0, -30.0, 5.0]);
     }

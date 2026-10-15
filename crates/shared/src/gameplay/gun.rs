@@ -218,40 +218,40 @@ pub trait MeleeRules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gameplay::CORE;
+    use crate::gameplay::DEFAULTS;
     use crate::ts::powerup;
 
     /// The core plugin's gun hooks are TS 3.0's code, unchanged.
     #[test]
     fn core_gun_hooks_are_ts30() {
-        assert!(std::ptr::eq(CORE.tables(), base_tables()));
+        assert!(std::ptr::eq(DEFAULTS.tables(), base_tables()));
         for arith in [Arith::Gcc, Arith::Msvc] {
             for (ft, fuser1, pw) in [(0.01f32, 1.0f32, 0u16), (0.001, 0.65, powerup::DOUBLE_FIRERATE), (0.02, 0.0, 0)] {
                 let want = Gun::timer_dt(arith, ft, spread::fixed_slow_amt(fuser1), pw);
-                assert_eq!(CORE.timer_step(arith, ft as f64, fuser1, pw), want as f64);
+                assert_eq!(DEFAULTS.timer_step(arith, ft as f64, fuser1, pw), want as f64);
             }
         }
         for msec in 0..=255u8 {
-            assert_eq!(CORE.command_frame_time(msec), (msec as f64 * 0.001) as f32 as f64);
+            assert_eq!(DEFAULTS.command_frame_time(msec), (msec as f64 * 0.001) as f32 as f64);
         }
-        assert_eq!(CORE.pellet_offset(5, 1, None), None);
-        assert_eq!(CORE.akimbo_event_offsets(true, true), (5.0, Some(-5.0)));
-        assert_eq!(CORE.akimbo_event_offsets(true, false), (5.0, Some(-5.0)));
-        assert_eq!(CORE.akimbo_event_offsets(false, true), (0.0, None));
-        assert_eq!(CORE.predicted(), Predicted::ALL);
-        assert_eq!(CORE.semi_auto_delay(0.07), 0.1);
+        assert_eq!(DEFAULTS.pellet_offset(5, 1, None), None);
+        assert_eq!(DEFAULTS.akimbo_event_offsets(true, true), (5.0, Some(-5.0)));
+        assert_eq!(DEFAULTS.akimbo_event_offsets(true, false), (5.0, Some(-5.0)));
+        assert_eq!(DEFAULTS.akimbo_event_offsets(false, true), (0.0, None));
+        assert_eq!(DEFAULTS.predicted(), Predicted::ALL);
+        assert_eq!(DEFAULTS.semi_auto_delay(0.07), 0.1);
         let ak = base_tables().weapon(crate::weapons::id::AK47).unwrap();
         let m4 = base_tables().weapon(crate::weapons::id::M4).unwrap();
-        assert!(!CORE.cancel_runs_frame_in_reload(ak) && CORE.cancel_runs_frame_in_reload(m4));
-        assert!(!CORE.blades_need_press() && CORE.katana_throws() && CORE.infinite_clip_skips_idle_reload());
-        assert!(CORE.holster_draws_kungfu());
+        assert!(!DEFAULTS.cancel_runs_frame_in_reload(ak) && DEFAULTS.cancel_runs_frame_in_reload(m4));
+        assert!(!DEFAULTS.blades_need_press() && DEFAULTS.katana_throws() && DEFAULTS.infinite_clip_skips_idle_reload());
+        assert!(DEFAULTS.holster_draws_kungfu());
         let mut g = Gun::default();
-        assert_eq!(CORE.better_weapon(&g, 0), 0, "nothing owned: kung fu");
+        assert_eq!(DEFAULTS.better_weapon(&g, 0), 0, "nothing owned: kung fu");
         for id in [crate::weapons::id::AK47, crate::weapons::id::BENELLI] {
             g.status[id as usize].owned = true;
         }
-        assert_eq!(CORE.better_weapon(&g, 0), crate::weapons::id::AK47, "13 comes before 4 in the list");
-        assert_eq!(CORE.better_weapon(&g, crate::weapons::id::AK47), crate::weapons::id::BENELLI);
+        assert_eq!(DEFAULTS.better_weapon(&g, 0), crate::weapons::id::AK47, "13 comes before 4 in the list");
+        assert_eq!(DEFAULTS.better_weapon(&g, crate::weapons::id::AK47), crate::weapons::id::BENELLI);
     }
 
     /// TS 3.0's decay: by the step, only while alive; the time isn't recorded.
@@ -262,9 +262,9 @@ mod tests {
         want.decay_spread(Arith::Msvc, 0.01);
         let d = SpreadDecay { arith: Arith::Msvc, step: 0.01, time: 99.0, time_scale: 0.5, alive: true };
         // The crosshair's copy follows the penalty on every first prediction.
-        assert!(CORE.decay_spread(&mut g, &d));
+        assert!(DEFAULTS.decay_spread(&mut g, &d));
         assert_eq!(g, want);
-        CORE.decay_spread(&mut g, &SpreadDecay { alive: false, ..d });
+        DEFAULTS.decay_spread(&mut g, &SpreadDecay { alive: false, ..d });
         assert_eq!(g, want);
     }
 }

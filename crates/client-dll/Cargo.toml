@@ -14,10 +14,15 @@ crate-type = ["cdylib"]
 goldsrc   = { path = "../goldsrc", features = ["client"] }
 shared    = { path = "../shared" }
 ts-client = { path = "../client" }
-# The TS 2.1 gameplay plugin (docs/implementation/ts21.md), registered at `Initialize`.
+# The gameplay plugins (docs/implementation/gameplay-plugins.md), registered at `Initialize`, each
+# behind its default-on feature: TS 3.0 (`ts30`) and TS 2.1 (`ts21`, docs/implementation/ts21.md).
+# At least one is required; the first registered (3.0 when both are on) is the default ruleset.
+ts30-gameplay = { path = "../ts30", optional = true }
+ts30-client = { path = "../ts30/client", optional = true }
 ts21-gameplay = { path = "../ts21", optional = true }
 ts21-client = { path = "../ts21/client", optional = true }
 
 [features]
-default = ["ts21"]
+default = ["ts30", "ts21"]
+ts30 = ["dep:ts30-gameplay", "dep:ts30-client"]
 ts21 = ["dep:ts21-gameplay", "dep:ts21-client"]

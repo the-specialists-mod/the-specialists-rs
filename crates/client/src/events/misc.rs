@@ -426,7 +426,7 @@ mod tests {
     /// 35 at `0x1007a8d8`; coldcock 30 at `0x10043b69`).
     #[test]
     fn melee_reach_by_event() {
-        let core = crate::gameplay::CORE_PLUGIN.client;
+        let core = crate::gameplay::DEFAULTS.client;
         assert_eq!(core.melee_reach(MeleeReach::CloseCombat(1)), 35.0); // punch
         assert_eq!(core.melee_reach(MeleeReach::CloseCombat(2)), 45.0); // kick
         assert_eq!(core.melee_reach(MeleeReach::CloseCombat(3)), -55.0); // back kick: behind the player

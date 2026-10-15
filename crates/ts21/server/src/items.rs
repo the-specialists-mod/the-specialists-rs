@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn take_health_caps_at_max() {
         let v21: &dyn ServerRules = &crate::Ts21Server;
-        let core: &dyn ServerRules = &shared::gameplay::CORE;
+        let core: &dyn ServerRules = &ts30_server::Ts30Server;
         let mut v = ent(99.0, 100.0);
         assert_eq!(v21.player_add_health(&mut v, 50.0), Some(false));
         assert_eq!(v.health, 100.0, "a healthkit at 99 gives 100");
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn item_longjump_is_an_hl_item() {
         let v21: &dyn ServerRules = &crate::Ts21Server;
-        let core: &dyn ServerRules = &shared::gameplay::CORE;
+        let core: &dyn ServerRules = &ts30_server::Ts30Server;
         let e = v21.entity_object(c"item_longjump").expect("2.1's own object");
         let any: &dyn std::any::Any = &*e;
         assert!(ts_server::entities::stock::items::is_item(any.type_id()));
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn charger_capacities() {
         let v21: &dyn ServerRules = &crate::Ts21Server;
-        let core: &dyn ServerRules = &shared::gameplay::CORE;
+        let core: &dyn ServerRules = &ts30_server::Ts30Server;
         assert_eq!((v21.charger_capacity(true), v21.charger_capacity(false)), (30, 0));
         assert_eq!((core.charger_capacity(true), core.charger_capacity(false)), (1, 1));
     }

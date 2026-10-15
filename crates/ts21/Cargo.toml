@@ -17,3 +17,8 @@ ts-gameplay = { path = "../gameplay" }
 shared      = { path = "../shared" }
 serde       = { version = "1", features = ["derive"] }
 toml        = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+
+# Tests only: the 2.1 hooks are checked against TS 3.0's answers to the same questions. 2.1 itself
+# never depends on 3.0 (`cargo xtask lint`).
+[dev-dependencies]
+ts30-gameplay = { path = "../ts30" }

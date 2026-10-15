@@ -485,7 +485,7 @@ fn refuse_client(client: ConnectingClient) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::gameplay::CORE;
+    use ts30_server::Ts30Server as CORE;
 
     #[test]
     fn descriptions_mark_the_mode_as_2_1() {
@@ -554,7 +554,7 @@ mod tests {
     /// The 2.1 hooks differ where 2.1 does, and the core plugin keeps 3.0's.
     #[test]
     fn hooks_follow_the_plugin() {
-        let core: &dyn ServerRules = &shared::gameplay::CORE;
+        let core: &dyn ServerRules = &ts30_server::Ts30Server;
         let v21: &dyn ServerRules = &Ts21Server;
         assert!(core.break_debris_from_hit() && !v21.break_debris_from_hit());
         assert_eq!(core.objectives(), &ts_server::entities::ts::objective::CORE);

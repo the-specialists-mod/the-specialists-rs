@@ -1,13 +1,17 @@
 # Gameplay plugins
 
-The port can run more than one ruleset (issue #100). TS 3.0's rules are the **core plugin**
-(`"30"`). Each other ruleset is a separate in-process Rust plugin. The first is TS 2.1
-([ts21.md](ts21.md)). The server cvar `ts_gameplay` picks the one a map runs, at the map's start;
-changing it reloads the map (§4).
+The port can run more than one ruleset (issue #100). Each ruleset is a separate in-process Rust
+plugin, and the two are peers: TS 3.0 (`"30"`, `crates/ts30`) and TS 2.1 (`"21"`,
+[ts21.md](ts21.md)). The server cvar `ts_gameplay` picks the one a map runs, at the map's start;
+changing it reloads the map (§4). Each library registers the rulesets it was built with, 3.0
+first, and the first registered is the **default**: `ts_gameplay`'s default value and the
+fallback for an empty or unknown id.
 
-The plugins keep each ruleset's code apart from 3.0's. The 3.0 crates (`shared`, `ts-server`,
-`ts-client`) contain no code, constants or `if`s for another ruleset. They call **hooks** at the
-points where a ruleset can differ, and each hook's default body is the 3.0 behaviour.
+The plugins keep each ruleset's code apart. The core crates (`shared`, `ts-server`, `ts-client`)
+contain no code, constants or `if`s for 2.1. They call **hooks** at the points where a ruleset
+can differ. Moving TS 3.0's rules out of the core into `crates/ts30` is issue #200: so far the
+plugin objects and the default ruleset have moved, and each hook's default body is still the 3.0
+behaviour, which the 3.0 plugin inherits.
 
 The C plugin API ([plugin-api.md](plugin-api.md), for AMX Mod X) is a different thing. It is a
 narrow table of player setters, and it can't reach movement, prediction or the HUD.
@@ -19,25 +23,30 @@ crates/
   gameplay/   ts-gameplay: ids, the channels that carry them, the generic Registry<P>,
               info-string lookup. No dependencies, so it sits below shared.
   shared/src/gameplay/
-    mod.rs    Core (the 3.0 plugin object, CORE), re-exports
+    mod.rs    re-exports; Defaults, every hook's default body, for the crate's tests
     pm.rs     PmRules: movement hooks (shared::pm)
     gun.rs    GunRules: gun hooks (shared::weapons::gun, through GunHost::rules)
   server/src/gameplay/
-    mod.rs    ServerPlugin { pm, gun, server } and CORE_PLUGIN, the server registry, active(),
+    mod.rs    ServerPlugin { pm, gun, server }, the server registry, active(), default_id(),
               the per-call resolvers, the latch at a map start (map_select, map_start,
               wanted_id), the client check (refuse_client)
     server.rs ServerRules: server-only hooks; ConnectingClient
   server/src/reload.rs
               the reload on a change of ts_gameplay or ts_bot_backend (§4)
   client/src/gameplay/
-    mod.rs    ClientPlugin { pm, gun, client } and CORE_PLUGIN, the client registry, resolvers
+    mod.rs    ClientPlugin { pm, gun, client }, the client registry, resolvers
     client.rs ClientRules: client-only hooks (HUD, input)
+  ts30/       the TS 3.0 plugin
+    src/         ts30-gameplay: Ts30 (impl PmRules, GunRules, MeleeRules), ID "30"
+    server/      ts30-server: impl ServerRules, the server's PLUGIN; bots::BOTS (NativeBotRules)
+    client/      ts30-client: impl ClientRules, the client's PLUGIN
   ts21/       the TS 2.1 plugin (ts21.md)
     src/shared/  ts21-gameplay: Ts21 (impl PmRules, GunRules), ID "21"
     server/      ts21-server: impl ServerRules, the server's PLUGIN
     client/      ts21-client: impl ClientRules, the client's PLUGIN
-  server-dll/, client-dll/   register "30" (CORE_PLUGIN) and, with the default-on feature `ts21`,
-                             "21" (ts21_server::PLUGIN / ts21_client::PLUGIN)
+  server-dll/, client-dll/   register "30" (ts30_server::PLUGIN / ts30_client::PLUGIN) with the
+                             feature `ts30`, then "21" (ts21_server::PLUGIN / ts21_client::PLUGIN)
+                             with the feature `ts21`; both default-on, at least one required
 ```
 
 **Why each trait lives with its types.** Issue #100 §1.0 first put all four traits in
@@ -50,9 +59,9 @@ crates/
   and its default calls `rules::scoring::points_for_frag`.
 
 So each trait is defined in the crate that owns its types, with default methods holding the 3.0
-behaviour. `ts-gameplay` keeps what every side shares and what names no game type: the ids and
-the registry. `Core` implements every trait with the defaults. A plugin implements the same
-traits and overrides only what its ruleset changes. Each trait has its own module file, so work on
+behaviour. `ts-gameplay` keeps what every side shares and what names no game type: the channels
+and the registry. The 3.0 plugin implements every trait with the defaults, and the 2.1 plugin
+overrides what its ruleset changes (by now, every hook but two empty ones). Each trait has its own module file, so work on
 different areas touches different files.
 
 **Why a plugin is a struct of hook objects, in one package per side.** On each side a plugin is
@@ -79,15 +88,15 @@ plugin's own statics (`goldsrc::Global` with a `Cell`/`RefCell`, as the game cra
 
 | What | Server | Client |
 |---|---|---|
-| The choice | `ts_gameplay` (`FCVAR_SERVER`, default `"30"`, port addition). Read at each map start; a change reloads the map (§4). | — |
+| The choice | `ts_gameplay` (`FCVAR_SERVER`, default: the default ruleset's id, `"30"` in a build with 3.0; port addition). Read at each map start; a change reloads the map (§4). | — |
 | Shared code (movement, gun) | Physinfo key `gp`, set at every spawn next to `mj`/`hl` (`rules/lifecycle.rs`, `stunt/mod.rs`, `player/save.rs`) | `pmove->physinfo` / `clientdata_t::physinfo` (`gp`) |
 | HUD | — | `SrvSett` key 4, value = the id as a number. Sent in `InitHUD` after keys 0..3. TS 3.0's client ignores it (its handler, client.dll 0x1004b840, switches on keys 0..3 only). |
 | Versions (port addition, `shared::protocol::port`) | The port client's userinfo key `_tsrs` (its version; §4.2) | `SrvSett` keys 5, 6, 7: the server library's major, minor and patch version, after key 4. Shown in the buy menu (§4.3). |
 
 Ids are short decimal numbers (`ts_gameplay::srvsett_value`), because the HUD channel is a
-`short`. `Registry::add` refuses any other id. An empty id resolves silently to the core
+`short`. `Registry::add` refuses any other id. An empty id resolves silently to the default
 plugin. So does every id when the server is TS 3.0's or an older port, since neither sends `gp`
-nor key 4. An **unknown** id resolves to the core plugin, and the console gets a warning once per
+nor key 4. An **unknown** id resolves to the default plugin, and the console gets a warning once per
 value: `[ts] gameplay: unknown ruleset "99" ...` on the server, or "the server's ruleset ... isn't
 in this client" on the client.
 
@@ -132,7 +141,7 @@ the map instead.
   matter where the change came from: the console, rcon, the server config, a script.
   * *Debounced:* a config that sets both cvars, or sets one and then back, reloads once or not at
     all; the reload is for the values of the second frame.
-  * *Resolved values:* an unknown id is the core plugin (with the warning of §2) and an unknown
+  * *Resolved values:* an unknown id is the default plugin (with the warning of §2) and an unknown
     backend native, so a value that falls back to what runs does nothing and can't reload in a
     loop. `ts_bot_backend NATIVE` while native runs is no change.
   * *One per map:* once a reload is asked for, nothing more until the next map start.
@@ -478,8 +487,10 @@ rules the raw time scale (`time_scale`) and whether it is the client's predictio
    defines `pub static PLUGIN: ServerPlugin`. The client one does the same with `ts-client`,
    `ClientRules` and `ClientPlugin`. Add the side packages to the workspace members.
 2. Register it in `server-dll` (`register_gameplay`, from `GameDLLInit`) and `client-dll`
-   (`register_gameplay`, from `Initialize`), behind a default-on cargo feature named after it.
-   Each library depends only on its own side's package.
+   (`register_gameplay`, from `Initialize`), behind a default-on cargo feature named after it,
+   after the rulesets already there (the first registered is the default). Each library depends
+   only on its own side's package. Add the feature to the libraries' `compile_error!` check and
+   to `lint::SINGLE_RULESET`.
 3. Extend the isolation check in `xtask/src/lint.rs` (`RULESET_CRATE`, `RULESET_TOKENS`) to
    cover the new crate, and add its docs.
 
@@ -492,9 +503,12 @@ checks the isolation:
   (`ts21`, `v21`, `ts_2_1`, `gp21`, ...: `lint::RULESET_TOKENS`). The two libraries may name the
   plugin crate and the `ts21` feature to register it. A crate that depends on the plugin has to
   name it in its manifest, so the same check finds those.
-* **3.0 on its own.** `cargo test -p ts-server-dll -p ts-client-dll -p ts-server -p ts-client -p
-  shared -p ts-gameplay --no-default-features`: the libraries build without the TS 2.1 plugin,
-  and the 3.0 tests pass.
+* **Each ruleset on its own** (`lint::SINGLE_RULESET`). `cargo test -p ts-server-dll -p
+  ts-client-dll -p ts-server -p ts-client -p shared -p ts-gameplay -p <the ruleset's three
+  packages> --no-default-features --features ts-server-dll/<f>,ts-client-dll/<f>` for `ts30` and
+  for `ts21`: the libraries build with that ruleset alone as the default, and the tests pass.
+  The 2.1 plugin's tests compare its hooks with 3.0's through dev-dependencies on the 3.0
+  packages; 2.1 itself never depends on 3.0.
 
 `cargo xtask play` sets the ruleset to 2.1 and back, each reloading the map
 ([validation.md](../validation.md) §2, "Gameplay reload").

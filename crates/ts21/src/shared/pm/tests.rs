@@ -2,7 +2,7 @@
 //! them (the core plugin must be unchanged).
 
 use super::*;
-use shared::gameplay::CORE;
+use ts30_gameplay::TS30 as CORE;
 
 const ARITHS: [Arith; 2] = [Arith::Msvc, Arith::Gcc];
 

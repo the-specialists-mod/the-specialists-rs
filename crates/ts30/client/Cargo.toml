@@ -1,0 +1,11 @@
+[package]
+name = "ts30-client"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# The client half of the TS 3.0 gameplay plugin (issue #200): `ClientRules` and the client's
+# plugin object. Only `client-dll` links it, behind its `ts30` feature.
+[dependencies]
+ts30-gameplay = { path = ".." }
+ts-client     = { path = "../../client" }

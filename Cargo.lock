@@ -305,6 +305,8 @@ dependencies = [
  "ts-client",
  "ts21-client",
  "ts21-gameplay",
+ "ts30-client",
+ "ts30-gameplay",
 ]
 
 [[package]]
@@ -336,6 +338,8 @@ dependencies = [
  "ts-server",
  "ts21-gameplay",
  "ts21-server",
+ "ts30-gameplay",
+ "ts30-server",
 ]
 
 [[package]]
@@ -346,6 +350,7 @@ dependencies = [
  "shared",
  "ts-client",
  "ts21-gameplay",
+ "ts30-client",
 ]
 
 [[package]]
@@ -356,6 +361,7 @@ dependencies = [
  "shared",
  "toml",
  "ts-gameplay",
+ "ts30-gameplay",
 ]
 
 [[package]]
@@ -366,6 +372,32 @@ dependencies = [
  "shared",
  "ts-server",
  "ts21-gameplay",
+ "ts30-server",
+]
+
+[[package]]
+name = "ts30-client"
+version = "3.0.5"
+dependencies = [
+ "ts-client",
+ "ts30-gameplay",
+]
+
+[[package]]
+name = "ts30-gameplay"
+version = "3.0.5"
+dependencies = [
+ "shared",
+ "ts-gameplay",
+]
+
+[[package]]
+name = "ts30-server"
+version = "3.0.5"
+dependencies = [
+ "shared",
+ "ts-server",
+ "ts30-gameplay",
 ]
 
 [[package]]

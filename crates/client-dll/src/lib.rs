@@ -13,6 +13,10 @@
 // headers document, so they carry no Rust-side `# Safety` docs.
 #![allow(clippy::missing_safety_doc)]
 
+// A library with no ruleset would have nothing to register (gameplay-plugins.md §1).
+#[cfg(not(any(feature = "ts30", feature = "ts21")))]
+compile_error!("enable at least one gameplay ruleset feature: `ts30` or `ts21`");
+
 mod tempents;
 mod vgui;
 
@@ -33,10 +37,11 @@ pub unsafe extern "C" fn Initialize(funcs: *mut cl_enginefunc_t, version: c_int)
     1
 }
 
-/// The gameplay plugins (`docs/implementation/gameplay-plugins.md`): the core (TS 3.0) and,
-/// with the `ts21` feature, the TS 2.1 plugin.
+/// The gameplay plugins (`docs/implementation/gameplay-plugins.md`): TS 3.0 with the `ts30`
+/// feature, then TS 2.1 with the `ts21` feature. The first registered is the default.
 fn register_gameplay() {
-    ts_client::gameplay::register(shared::gameplay::DEFAULT_ID, &ts_client::gameplay::CORE_PLUGIN);
+    #[cfg(feature = "ts30")]
+    ts_client::gameplay::register(ts30_gameplay::ID, &ts30_client::PLUGIN);
     #[cfg(feature = "ts21")]
     ts_client::gameplay::register(ts21_gameplay::ID, &ts21_client::PLUGIN);
 }

@@ -699,7 +699,7 @@ mod tests {
             weaponanim: 3,
             body: 0,
             silenced: false,
-            rules: &shared::gameplay::CORE,
+            rules: &crate::gameplay::Defaults,
         }
     }
 
@@ -868,7 +868,7 @@ mod tests {
     #[test]
     fn frame_time_is_the_servers() {
         use shared::gameplay::GunRules;
-        let frame_time = |msec: u8| shared::gameplay::CORE.command_frame_time(msec) as f32;
+        let frame_time = |msec: u8| crate::gameplay::Defaults.command_frame_time(msec) as f32;
         assert_eq!(frame_time(10).to_bits(), 0x3c23_d70a);
         for msec in 0..=255u8 {
             assert_eq!(frame_time(msec), (msec as f64 / 1000.0) as f32, "FWGS's frametime for {msec} ms");

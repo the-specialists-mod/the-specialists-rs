@@ -18,7 +18,7 @@ pub use client::{ClientRules, CrosshairParts, KungfuRegen, MeleeReach, StuntCool
 use goldsrc::client::engine;
 use goldsrc::pmove::PlayerMoveExt;
 use goldsrc::sys::{clientdata_t, playermove_t};
-use shared::gameplay::{CORE, GunRules, PHYSINFO_KEY, PHYSINFO_KEY_C, PmRules};
+use shared::gameplay::{GunRules, PHYSINFO_KEY, PHYSINFO_KEY_C, PmRules};
 use std::sync::{Mutex, PoisonError, RwLock};
 use ts_gameplay::Registry;
 
@@ -31,25 +31,55 @@ pub struct ClientPlugin {
     pub client: &'static dyn ClientRules,
 }
 
-impl ClientRules for shared::gameplay::Core {}
+/// Every hook's default body, for this crate's tests of the code behind them (they move to
+/// the 3.0 plugin with the bodies, issue #200).
+#[cfg(test)]
+pub(crate) struct Defaults;
 
-/// The core plugin (TS 3.0) on the client.
-pub static CORE_PLUGIN: ClientPlugin = ClientPlugin { pm: &CORE, gun: &CORE, client: &CORE };
+#[cfg(test)]
+impl PmRules for Defaults {}
+#[cfg(test)]
+impl GunRules for Defaults {}
+#[cfg(test)]
+impl shared::gameplay::MeleeRules for Defaults {}
+#[cfg(test)]
+impl ClientRules for Defaults {}
 
-static REGISTRY: RwLock<Registry<ClientPlugin>> = RwLock::new(Registry::new(&CORE_PLUGIN));
+/// [`Defaults`] as a plugin.
+#[cfg(test)]
+pub(crate) static DEFAULTS: ClientPlugin = ClientPlugin { pm: &Defaults, gun: &Defaults, client: &Defaults };
+
+/// The registered plugins. The first one the client library registers is the default: the rules
+/// for a server that sends no ruleset (TS 3.0's own) or one this client doesn't have.
+static REGISTRY: RwLock<Registry<ClientPlugin>> = RwLock::new(Registry::new());
+
+/// What stands in while nothing is registered: nothing in the library, which registers its rulesets
+/// at `Initialize` before any game code runs; [`Defaults`] in this crate's tests.
+fn unregistered() -> &'static ClientPlugin {
+    #[cfg(test)]
+    return &DEFAULTS;
+    #[cfg(not(test))]
+    panic!("no gameplay ruleset registered (client-dll registers them at Initialize)");
+}
 
 /// The last unknown id warned about, so each is reported once.
 static WARNED: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
-/// Registers a plugin (`client.dll`'s `Initialize`). False for an id that isn't a short number.
+/// Registers a plugin (`client.dll`'s `Initialize`), the default ruleset first. False for an id
+/// that isn't a short number.
 pub fn register(id: &'static str, plugin: &'static ClientPlugin) -> bool {
     REGISTRY.write().unwrap_or_else(PoisonError::into_inner).add(id, plugin)
 }
 
-/// The plugin for an id the server sent; an unknown one is the core plugin, with a console
+/// The default plugin (the first registered).
+fn fallback() -> &'static ClientPlugin {
+    REGISTRY.read().unwrap_or_else(PoisonError::into_inner).fallback().map_or_else(unregistered, |f| f.1)
+}
+
+/// The plugin for an id the server sent; an unknown one is the default plugin, with a console
 /// warning the first time.
 fn resolve(id: &[u8]) -> &'static ClientPlugin {
-    let r = REGISTRY.read().unwrap_or_else(PoisonError::into_inner).resolve_bytes(id);
+    let Some(r) = REGISTRY.read().unwrap_or_else(PoisonError::into_inner).resolve_bytes(id) else { return unregistered() };
     if r.unknown {
         let mut w = WARNED.lock().unwrap_or_else(PoisonError::into_inner);
         if w.as_deref() != Some(id) {
@@ -57,7 +87,7 @@ fn resolve(id: &[u8]) -> &'static ClientPlugin {
             engine().print(&format!(
                 "[ts] gameplay: the server's ruleset \"{}\" isn't in this client; predicting with \"{}\"\n",
                 String::from_utf8_lossy(id),
-                ts_gameplay::DEFAULT_ID
+                r.id
             ));
         }
     }
@@ -76,11 +106,16 @@ pub fn gun_rules(cd: &clientdata_t) -> &'static dyn GunRules {
 }
 
 /// The HUD's rules, from the `SrvSett` 4 value it holds (`None` before the server sent one, or
-/// from a server that doesn't: TS 3.0's).
+/// from a server that doesn't, TS 3.0's own: the default plugin's).
 pub fn hud_rules(id: Option<i16>) -> &'static dyn ClientRules {
+    hud_plugin(id).client
+}
+
+/// The plugin for a `SrvSett` 4 value ([`hud_rules`]).
+fn hud_plugin(id: Option<i16>) -> &'static ClientPlugin {
     match id {
-        Some(v) => resolve(v.to_string().as_bytes()).client,
-        None => &CORE,
+        Some(v) => resolve(v.to_string().as_bytes()),
+        None => fallback(),
     }
 }
 
@@ -93,17 +128,11 @@ pub fn current() -> &'static dyn ClientRules {
 /// The movement rules outside a predicted move, for the weapon events' material lookups: the
 /// HUD's ruleset (`SrvSett` 4), as [`hud_rules`].
 pub fn hud_pm_rules() -> &'static dyn PmRules {
-    match crate::hud::gameplay_id() {
-        Some(v) => resolve(v.to_string().as_bytes()).pm,
-        None => &CORE,
-    }
+    hud_plugin(crate::hud::gameplay_id()).pm
 }
 
 /// The gun rules outside a predicted command, for the weapon events (`EV_TS_Fire*`): the HUD's
 /// ruleset (`SrvSett` 4), as [`hud_rules`].
 pub fn hud_gun_rules() -> &'static dyn GunRules {
-    match crate::hud::with(|h| h.gameplay) {
-        Some(v) => resolve(v.to_string().as_bytes()).gun,
-        None => &CORE,
-    }
+    hud_plugin(crate::hud::with(|h| h.gameplay)).gun
 }

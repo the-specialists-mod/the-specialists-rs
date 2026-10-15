@@ -1,6 +1,7 @@
 //! Gameplay plugins: rulesets selected at runtime (`ts_gameplay`), each a set of hook objects the
-//! game code calls instead of hard-coding its rules. TS 3.0's own rules are the core plugin
-//! (`"30"`) and the default behaviour of every hook. See `docs/implementation/gameplay-plugins.md`.
+//! game code calls instead of hard-coding its rules. Each ruleset (TS 3.0, TS 2.1) is a plugin
+//! the libraries register; the first registered is the default. See
+//! `docs/implementation/gameplay-plugins.md`.
 //!
 //! This crate holds only what every side shares and nothing that names a game type: the ids, the
 //! channels that carry the active one ([`CVAR`], [`PHYSINFO_KEY`], [`SRVSETT_KEY`]) and the
@@ -18,9 +19,6 @@ mod registry;
 
 pub use info::info_value;
 pub use registry::{Registry, Resolved};
-
-/// The core plugin's id: TS 3.0's rules. Also the fallback for an unknown or empty id.
-pub const DEFAULT_ID: &str = "30";
 
 /// The server cvar that selects the active plugin by id (port addition; TS has no such cvar).
 pub const CVAR: &str = "ts_gameplay";
@@ -51,7 +49,7 @@ mod tests {
 
     #[test]
     fn srvsett_values_are_the_numeric_ids() {
-        assert_eq!(srvsett_value(DEFAULT_ID), Some(30));
+        assert_eq!(srvsett_value("30"), Some(30));
         assert_eq!(srvsett_value("7"), Some(7));
         assert_eq!(srvsett_value(""), None);
         assert_eq!(srvsett_value("+3"), None);

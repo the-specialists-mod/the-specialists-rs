@@ -17,10 +17,15 @@ ts-server = { path = "../server" }
 ts-plugin-api = { path = "../plugin-api" }
 # Loads the `tsmod_*` plugins (`plugins.rs`); already in the build through bindgen's clang-sys.
 libloading = "0.8"
-# The TS 2.1 gameplay plugin (docs/implementation/ts21.md), registered at `GameDLLInit`.
+# The gameplay plugins (docs/implementation/gameplay-plugins.md), registered at `GameDLLInit`, each
+# behind its default-on feature: TS 3.0 (`ts30`) and TS 2.1 (`ts21`, docs/implementation/ts21.md).
+# At least one is required; the first registered (3.0 when both are on) is the default ruleset.
+ts30-gameplay = { path = "../ts30", optional = true }
+ts30-server = { path = "../ts30/server", optional = true }
 ts21-gameplay = { path = "../ts21", optional = true }
 ts21-server = { path = "../ts21/server", optional = true }
 
 [features]
-default = ["ts21"]
+default = ["ts30", "ts21"]
+ts30 = ["dep:ts30-gameplay", "dep:ts30-server"]
 ts21 = ["dep:ts21-gameplay", "dep:ts21-server"]

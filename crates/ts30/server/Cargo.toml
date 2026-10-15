@@ -1,0 +1,12 @@
+[package]
+name = "ts30-server"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# The server half of the TS 3.0 gameplay plugin (issue #200): `ServerRules`, the native bots'
+# rules and the server's plugin object. Only `server-dll` links it, behind its `ts30` feature.
+[dependencies]
+ts30-gameplay = { path = ".." }
+ts-server     = { path = "../../server" }
+shared        = { path = "../../shared" }

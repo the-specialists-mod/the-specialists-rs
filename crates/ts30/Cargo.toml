@@ -1,0 +1,16 @@
+[package]
+name = "ts30-gameplay"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# The TS 3.0 gameplay plugin (issue #200, docs/implementation/gameplay-plugins.md), a peer of the
+# TS 2.1 plugin. All 3.0 rule decisions live under crates/ts30: the core crates
+# (shared, ts-server, ts-client) name no ruleset, and only the two libraries register it, behind
+# their default-on `ts30` feature (`cargo xtask lint` checks both).
+#
+# This package is the part both sides run (movement and gun hooks, the id). Each side's hooks
+# are a package of their own, `server/` (ts30-server) and `client/` (ts30-client), as for 2.1.
+[dependencies]
+ts-gameplay = { path = "../gameplay" }
+shared      = { path = "../shared" }

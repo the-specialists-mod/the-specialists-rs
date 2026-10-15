@@ -11,6 +11,10 @@
 // headers document, so they carry no Rust-side `# Safety` docs.
 #![allow(clippy::missing_safety_doc)]
 
+// A library with no ruleset would have nothing to register (gameplay-plugins.md §1).
+#[cfg(not(any(feature = "ts30", feature = "ts21")))]
+compile_error!("enable at least one gameplay ruleset feature: `ts30` or `ts21`");
+
 mod exports;
 mod plugin_api;
 mod plugins;
@@ -194,22 +198,28 @@ unsafe extern "C" fn game_init() {
     // `LinkUserMessages` registers the rest, so they take the first two message numbers.
     rules::voice::register_messages();
     messages::register_all();
+    // Before the rules' `game_init`: `ts_gameplay`'s default is the default ruleset's id, and the
+    // plugins' own cvars follow the server's.
+    register_gameplay();
     rules::game_init();
     weapons::game_init();
     stunt::game_init();
     // The bot backends: TS's own (native) first, then the `tsmod_*` plugins' (issue #104).
     bot_backend::game_init();
-    register_gameplay();
     engine().print("[ts] GameInit: Rust TS server library loaded\n");
     plugins::load_all();
     ts_server::plugins::game_init();
 }
 
-/// The gameplay plugins (`docs/implementation/gameplay-plugins.md`): the core (TS 3.0) and,
-/// with the `ts21` feature, the TS 2.1 plugin and its native bot rules (the bot layer's own
-/// registry, docs/implementation/bot-plugins.md §2.2; the core's are the default).
+/// The gameplay plugins (`docs/implementation/gameplay-plugins.md`), each with its native bot
+/// rules (the bot layer's own registry, docs/implementation/bot-plugins.md §2.2): TS 3.0 with the
+/// `ts30` feature, then TS 2.1 with the `ts21` feature. The first registered is the default.
 fn register_gameplay() {
-    ts_server::gameplay::register(shared::gameplay::DEFAULT_ID, &ts_server::gameplay::CORE_PLUGIN);
+    #[cfg(feature = "ts30")]
+    {
+        ts_server::gameplay::register(ts30_gameplay::ID, &ts30_server::PLUGIN);
+        ts_server::bots::rules::register(ts30_gameplay::ID, &ts30_server::bots::BOTS);
+    }
     #[cfg(feature = "ts21")]
     {
         ts_server::gameplay::register(ts21_gameplay::ID, &ts21_server::PLUGIN);

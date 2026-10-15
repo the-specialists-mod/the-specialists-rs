@@ -723,7 +723,7 @@ mod tests {
 
     /// TS 3.0's divestep limits ([`crate::gameplay::ClientRules::divesteps_blocked`]).
     fn blocked(free: u8) -> [bool; 3] {
-        crate::gameplay::CORE_PLUGIN.client.divesteps_blocked(81 - free as i32, 0, 0)
+        crate::gameplay::DEFAULTS.client.divesteps_blocked(81 - free as i32, 0, 0)
     }
 
     #[test]

@@ -1832,7 +1832,7 @@ mod tests {
     /// [`ease_fov`] with TS 3.0's snap rule.
     fn ease30(cur: f32, target: f32, ft: f32) -> f32 {
         use crate::gameplay::ClientRules;
-        ease_fov(cur, target, ft, shared::gameplay::CORE.fov_snaps(cur as i32))
+        ease_fov(cur, target, ft, crate::gameplay::Defaults.fov_snaps(cur as i32))
     }
 
     #[test]

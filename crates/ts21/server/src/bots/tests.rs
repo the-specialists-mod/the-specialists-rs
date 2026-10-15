@@ -1,7 +1,7 @@
 use super::attack::kung_fu_wait;
 use super::*;
 use ts_server::bots::files::{BotNames, BotSay, FREETIME, KILLED, OFFENSE};
-use ts_server::bots::rules::CORE;
+use ts30_server::bots::BOTS as CORE;
 
 fn pev(fuser1: f32) -> entvars_t {
     entvars_t { fuser1, ..Default::default() }
@@ -213,6 +213,10 @@ fn ladder_releases_jump_and_the_old_direction() {
 
 #[test]
 fn core_ladder_presses_are_3_0s_combined_masks() {
+    // `Brain::press` asks the active ruleset's bot rules, so 3.0 must be registered (as
+    // `server-dll` does) for the 3.0 hook to run under 3.0.
+    ts_server::gameplay::register("30", &ts30_server::PLUGIN);
+    ts_server::bots::rules::register("30", &CORE);
     let c: &dyn NativeBotRules = &CORE;
     let mut b = Brain::new(1.0);
     b.press_bits(btn::JUMP, 1.0, 10.0);

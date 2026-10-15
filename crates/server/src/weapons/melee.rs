@@ -452,7 +452,7 @@ mod tests {
         assert!(!delayed_player_part(true, 0.0, false), "3.0: straight to the 0-damage hit");
         assert!(delayed_player_part(true, 0.0, true));
         assert!(!delayed_player_part(false, 15.0, true), "not a player");
-        assert!(!crate::gameplay::CORE_PLUGIN.server.zero_delayed_hit_reaches_player());
+        assert!(!crate::gameplay::DEFAULTS.server.zero_delayed_hit_reaches_player());
     }
 
     #[test]

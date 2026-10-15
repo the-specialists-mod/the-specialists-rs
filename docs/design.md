@@ -60,8 +60,10 @@ crates/
                  client, edicts (edict.rs), player-move callbacks (pmove.rs), native mouse (platform.rs)
   gameplay/      ts-gameplay: gameplay-plugin ids, channels and registry (implementation/gameplay-plugins.md)
   shared/        runs on both sides: pm (movement), weapons (tables + predicted logic), protocol, ts,
-                 gameplay (the PmRules/GunRules hooks and the core plugin), bsp (entity lumps)
+                 gameplay (the PmRules/GunRules hooks), bsp (entity lumps)
     data/        weapons.toml, ammo.toml, combat.toml, assets.toml (decoded from the decomp)
+  ts30/          the TS 3.0 gameplay plugin: ts30-gameplay (shared hooks), server/ ts30-server,
+                 client/ ts30-client; linked only by the two libraries (issue #200)
   ts21/          the TS 2.1 gameplay plugin: ts21-gameplay (shared hooks), server/ ts21-server,
                  client/ ts21-client; linked only by the two libraries (implementation/ts21.md)
   server/        ts-server: server game logic (rlib, no unsafe)
@@ -304,7 +306,7 @@ renderfx 17 corpses and motion-blur ghosts. The engine side is `goldsrc::ext::st
 * `weapons`: `tables()` parses the embedded TOML once. The predicted gun state machine (fire modes, timers × `fuser1`, spread penalty, seeded pellets) goes here.
 * `protocol`: the message table and per-area payload encoders and decoders.
 * `ts`: stunt bits, power-up bits, observer modes (TS numbering: in-eye is 5), `IN_ALT1`, the slot/speed formula.
-* `gameplay`: the movement and gun hooks (`PmRules`, `GunRules`) of the gameplay plugins, and `Core`, TS 3.0's rules. Movement takes the active rules as it takes `Arith`, and the gun reads them from `GunHost::rules`. The server and client crates define their own hook traits (`ServerRules`, `ClientRules`), and `ts_gameplay` picks the ruleset at each map start (a mid-map change of it or of `ts_bot_backend` reloads the map: `ts_server::reload`). See `docs/implementation/gameplay-plugins.md`.
+* `gameplay`: the movement and gun hooks (`PmRules`, `GunRules`) of the gameplay plugins (TS 3.0's in `crates/ts30`, TS 2.1's in `crates/ts21`). Movement takes the active rules as it takes `Arith`, and the gun reads them from `GunHost::rules`. The server and client crates define their own hook traits (`ServerRules`, `ClientRules`), and `ts_gameplay` picks the ruleset at each map start (a mid-map change of it or of `ts_bot_backend` reloads the map: `ts_server::reload`). See `docs/implementation/gameplay-plugins.md`.
 * `bsp`: the BSP entity lump and its keyvalue blocks (the client's map effects and spectator cameras).
 * `protocol::port`: what tells the port's libraries from TS 3.0's on channels TS 3.0 tolerates: the client's `_tsrs` userinfo key (its version; in 2.1 mode the server refuses clients without it) and the server's version in `SrvSett` keys 5..7.
 

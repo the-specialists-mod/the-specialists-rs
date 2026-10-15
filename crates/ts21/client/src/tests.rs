@@ -9,7 +9,7 @@ fn v21() -> &'static dyn ClientRules {
 }
 
 fn v30() -> &'static dyn ClientRules {
-    ts_client::gameplay::CORE_PLUGIN.client
+    ts30_client::PLUGIN.client
 }
 
 #[test]

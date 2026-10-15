@@ -78,11 +78,13 @@ pub fn register() {
     let e = engine();
     PM_ARITH.0.set(Some(e.register_cvar("ts_pm_arith", "msvc", SERVER)));
     // Port addition, kept like `ts_pm_arith`: read every frame (`crate::reload::frame`).
-    GAMEPLAY.0.set(Some(e.register_cvar(ts_gameplay::CVAR, ts_gameplay::DEFAULT_ID, SERVER)));
+    // Its default is the default ruleset's id: the server library registers the rulesets first.
+    GAMEPLAY.0.set(Some(e.register_cvar(ts_gameplay::CVAR, crate::gameplay::default_id(), SERVER)));
+    crate::gameplay::register_cvars();
 }
 
 /// Registers `list` in order, skipping a name already registered: TS 3.0's (`CVARS`) at
-/// `GameDLLInit`, then each gameplay plugin's own (`ServerRules::cvars`).
+/// `GameDLLInit`, then each gameplay plugin's own (`ServerRules::cvars`, `gameplay::register_cvars`).
 pub fn register_extra(list: &[(&str, &str, i32)]) {
     // Skip cvars the engine already defines (FWGS and newer engines have sv_alltalk; old HLDS
     // leaves it to the game DLL, like TS's CVoiceGameMgr), so nothing is registered twice.
@@ -104,7 +106,7 @@ static GAMEPLAY: goldsrc::Global<Cell<Option<&'static cvar_t>>> = goldsrc::Globa
 pub fn gameplay() -> String {
     match GAMEPLAY.0.get() {
         Some(c) => goldsrc::server::cvar_string(c).to_string_lossy().into_owned(),
-        None => ts_gameplay::DEFAULT_ID.to_owned(),
+        None => crate::gameplay::default_id().to_owned(),
     }
 }
 

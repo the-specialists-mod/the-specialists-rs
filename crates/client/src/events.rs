@@ -158,7 +158,7 @@ pub fn slow_pitch() -> i32 {
 /// passes it (FWGS `S_StartSound` doesn't clamp it either). No random part: only the fire sound
 /// adds one (`0x1003de90`).
 pub fn fire_pitch() -> i32 {
-    crate::gameplay::CORE_PLUGIN.client.fire_pitch(time_scale(), 0.0)
+    100 - (time_scale() * -300.0) as i32
 }
 
 /// The weapon fire sound's base pitch under the active ruleset ([`ClientRules::fire_pitch`]).

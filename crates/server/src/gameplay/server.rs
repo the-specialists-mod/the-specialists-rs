@@ -62,9 +62,9 @@ impl<'a> ConnectingClient<'a> {
     }
 }
 
-/// Server rules. Every default body is TS 3.0's (`shared::gameplay::Core`); the server code calls
-/// these where a ruleset can differ. A hook needing server state takes this crate's types, so
-/// its 3.0 body can be the code it replaces.
+/// Server rules. Every default body is TS 3.0's (until they move to the 3.0 plugin, issue #200);
+/// the server code calls these where a ruleset can differ. A hook needing server state takes this
+/// crate's types, so its 3.0 body can be the code it replaces.
 pub trait ServerRules: Sync {
     /// The plugin has become active on a brand-new game: at every map start (after the rules
     /// are installed, before the map's entities spawn). The place to set up the plugin's own
@@ -676,8 +676,8 @@ pub trait ServerRules: Sync {
 mod tests {
     use super::*;
     use crate::damage::{bits, hitgroup};
+    use crate::gameplay::Defaults as CORE;
     use crate::rules::cvars;
-    use shared::gameplay::CORE;
 
     /// `ClientConnect`'s classification: bots and HLTV whatever their userinfo, then the port's
     /// key; 3.0 refuses no one.
@@ -701,7 +701,7 @@ mod tests {
     /// The core plugin's hooks that need no engine keep TS 3.0's values.
     #[test]
     fn core_hooks_are_ts_3_0() {
-        let core: &dyn ServerRules = &shared::gameplay::CORE;
+        let core: &dyn ServerRules = &crate::gameplay::Defaults;
         assert!(core.cvars().is_empty(), "3.0 registers only its own cvars");
         assert!(!core.cash_based(), "3.0's CashBased is hard-wired off");
         assert_eq!(core.put_in_server_cash(), cvars::INITIAL_CASH);

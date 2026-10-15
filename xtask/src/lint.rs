@@ -10,8 +10,8 @@
 //! The gameplay plugins keep TS 2.1 apart from the 3.0 code (issue #100,
 //! `docs/implementation/gameplay-plugins.md`): [`ruleset_leaks`] finds 2.1 identifiers outside
 //! `crates/ts21/`, other than the two libraries' registration of the plugin, and any other crate
-//! that depends on it. `cargo xtask lint` also builds and tests the libraries without their
-//! default features ([`NO_DEFAULT_FEATURES`]), so 3.0 builds and passes on its own.
+//! that depends on it. `cargo xtask lint` also builds and tests the libraries with one ruleset
+//! each ([`SINGLE_RULESET`]), so each ruleset builds and passes on its own.
 //!
 //! `cargo xtask lint` runs the whole clippy set with warnings as errors on every build target,
 //! including the `undocumented_unsafe_blocks` lint that `goldsrc` and the `*-dll` crates enable
@@ -27,8 +27,18 @@ use std::process::Command;
 pub const ENGINE_MACROS: [&str; 5] = ["eng", "cl_eng", "ev", "efx", "tri"];
 
 /// The crates that must reach the engine only through `goldsrc`'s safe API.
-pub const GAME_CRATES: [&str; 7] =
-    ["crates/server", "crates/client", "crates/shared", "crates/gameplay", "crates/ts21", "crates/ts21/server", "crates/ts21/client"];
+pub const GAME_CRATES: [&str; 10] = [
+    "crates/server",
+    "crates/client",
+    "crates/shared",
+    "crates/gameplay",
+    "crates/ts21",
+    "crates/ts21/server",
+    "crates/ts21/client",
+    "crates/ts30",
+    "crates/ts30/server",
+    "crates/ts30/client",
+];
 
 /// Every `file:line: text` in the game crates' sources that invokes (`tri!(...)`) or names
 /// (`use goldsrc::tri;`, `goldsrc::eng!`) an engine-call macro. Line comments are skipped.
@@ -116,26 +126,25 @@ fn registration(before: &str, after: &str) -> bool {
     package || path || feature
 }
 
-/// The 3.0-only check: the two libraries without their default features (so without the TS 2.1
-/// plugin) build, and their tests and the 3.0 crates' pass.
-pub const NO_DEFAULT_FEATURES: [&str; 13] = [
-    "-p",
-    "ts-server-dll",
-    "-p",
-    "ts-client-dll",
-    "-p",
-    "ts-server",
-    "-p",
-    "ts-client",
-    "-p",
-    "shared",
-    "-p",
-    "ts-gameplay",
-    "--no-default-features",
-];
+/// The one-ruleset checks: the two libraries with a single gameplay ruleset feature each (the
+/// first is the default plugin then) build, and their tests and the core crates' and that
+/// ruleset's pass. Each entry is the ruleset's name and its packages.
+pub const SINGLE_RULESET: [(&str, [&str; 3]); 2] =
+    [("ts30", ["ts30-gameplay", "ts30-server", "ts30-client"]), ("ts21", ["ts21-gameplay", "ts21-server", "ts21-client"])];
 
-/// `cargo xtask lint`: the engine-macro and ruleset-isolation checks, `cargo test` of the 3.0
-/// crates and libraries without default features ([`NO_DEFAULT_FEATURES`]), then `cargo clippy
+/// The `cargo test` arguments for one [`SINGLE_RULESET`] entry.
+pub fn single_ruleset_args(feature: &str, packages: &[&str]) -> Vec<String> {
+    let mut a = Vec::new();
+    for p in ["ts-server-dll", "ts-client-dll", "ts-server", "ts-client", "shared", "ts-gameplay"].iter().chain(packages) {
+        a.extend(["-p".to_owned(), (*p).to_owned()]);
+    }
+    a.extend(["--no-default-features".to_owned(), "--features".to_owned()]);
+    a.push(format!("ts-server-dll/{feature},ts-client-dll/{feature}"));
+    a
+}
+
+/// `cargo xtask lint`: the engine-macro and ruleset-isolation checks, `cargo test` of the core
+/// crates and libraries with each ruleset alone ([`SINGLE_RULESET`]), then `cargo clippy
 /// --workspace --all-targets -- -D warnings` for every target. A workspace build unifies
 /// `goldsrc`'s features, so both its `client` and `server` halves are linted. `xtask` is host
 /// tooling (it uses `std::os::unix`), so it's linted on the Linux targets only. Returns false on
@@ -150,9 +159,12 @@ pub fn run(repo: &Path) -> bool {
         eprintln!("TS 2.1 named outside crates/ts21 (keep 2.1 in its plugin): {h}");
     }
     let mut ok = hits.is_empty() && leaks.is_empty();
-    crate::say!("== cargo test {} (3.0 without the TS 2.1 plugin)", NO_DEFAULT_FEATURES.join(" "));
-    let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));
-    ok &= c.current_dir(repo).arg("test").args(NO_DEFAULT_FEATURES).status().expect("cargo test").success();
+    for (feature, packages) in SINGLE_RULESET {
+        let args = single_ruleset_args(feature, &packages);
+        crate::say!("== cargo test {} (the {feature} ruleset alone)", args.join(" "));
+        let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));
+        ok &= c.current_dir(repo).arg("test").args(&args).status().expect("cargo test").success();
+    }
     for t in &Target::ALL {
         crate::say!("== cargo clippy --workspace --all-targets --target {} -- -D warnings", t.triple);
         let mut c = Command::new(std::env::var("CARGO").unwrap_or("cargo".into()));

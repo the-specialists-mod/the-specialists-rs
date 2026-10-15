@@ -1,8 +1,8 @@
 use super::*;
-use shared::gameplay::CORE;
 use shared::weapons::gun::{MeleeHit, MeleeResult, Shot, Sound};
 use shared::weapons::spread::Vec3;
 use shared::weapons::{Status, att, mode_mask, table};
+use ts30_gameplay::TS30 as CORE;
 
 /// The gun code reads the active tables: these tests run with 2.1's (and none sets another).
 fn setup() {
@@ -552,7 +552,7 @@ fn crosshair_copy_only_when_decaying() {
     }
     // TS 3.0 copies on every first prediction.
     let mut g = Gun::default();
-    assert!(shared::gameplay::CORE.decay_spread(&mut g, &d(13.0, true)));
+    assert!(CORE.decay_spread(&mut g, &d(13.0, true)));
 }
 
 #[test]

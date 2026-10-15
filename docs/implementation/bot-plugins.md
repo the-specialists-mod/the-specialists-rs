@@ -21,7 +21,7 @@ The whole layer is a port addition: TS has one hard-wired bot AI, on listen serv
 | `BotBackend` trait, registry, `ts_bot_backend`, the bot player (`BotSetup`), the owners table | `crates/server/src/bot_backend/mod.rs` |
 | `ts_bot_quota` and the bot manager's timing | `bot_backend/quota.rs` |
 | The native backend | `crates/server/src/bots/backend.rs` (`Native`), calling the functions in `bots/` |
-| The native bots' rules per gameplay ruleset (§2.2) | `crates/server/src/bots/rules.rs` (`NativeBotRules`, `CORE`, the registry); TS 2.1's in `crates/ts21/server/src/bots/` |
+| The native bots' rules per gameplay ruleset (§2.2) | `crates/server/src/bots/rules.rs` (`NativeBotRules`, the registry); TS 3.0's in `crates/ts30/server/src/bots.rs`, TS 2.1's in `crates/ts21/server/src/bots/` |
 | A plugin's backend (C callbacks → `BotBackend`) | `crates/server-dll/src/plugins.rs` (`PluginBackend`) |
 | The API's bot functions | `crates/server/src/plugin_api/bots.rs` |
 
@@ -88,7 +88,7 @@ A gameplay ruleset can change how TS's own bots play (TS 2.1's do: #100 §3.10).
 native backend's business, not the host's and not the gameplay plugin's:
 
 * **`NativeBotRules`** (`bots/rules.rs`) is the native backend's hook trait. Every method's
-  default is TS 3.0's code (`CORE` implements none), so with no other rules the bots are
+  default is TS 3.0's code (`ts30_server::bots::BOTS` implements none), so with no other rules the bots are
   unchanged. Hooks: creation (`random_model_in_teamplay`, `learn_on_empty_graph`,
   `stored_skill`, `team_key`, `texts`), the `CBot` overrides (`spawn_post`, `trace_attack`), the
   brain (`delay` for every module timer, the states and the stuck window; `runs_ai`, `turn_rate`,
@@ -102,7 +102,7 @@ native backend's business, not the host's and not the gameplay plugin's:
 * **Its own registry, keyed by the gameplay id.** The server library registers a ruleset's rules
   with `bots::rules::register(id, &RULES)` next to the gameplay plugin; `bots::rules::current()`
   resolves them from `gameplay::active_id()` (cached per id), and an id without rules runs
-  `CORE`. So `ts_gameplay` picks the bots' rules and `ts_bot_backend` picks the backend,
+  the first registered (3.0's when it is built in). So `ts_gameplay` picks the bots' rules and `ts_bot_backend` picks the backend,
   independently: a plugin backend never sees these hooks, `ServerRules` keeps no bot hooks, and
   `crates/server` names no ruleset (the isolation lint).
 * Why not a field of `ServerPlugin` or hooks in `ServerRules`: the bot layer is a separate axis

@@ -1517,7 +1517,7 @@ mod tests {
                         }
                     }
                 }
-                h.regen_kungfu(crate::gameplay::CORE_PLUGIN.client, f32::INFINITY, f32::NAN, f32::NAN);
+                h.regen_kungfu(crate::gameplay::DEFAULTS.client, f32::INFINITY, f32::NAN, f32::NAN);
                 h.tick_round_timer(f32::NAN);
                 let _ = h.menu_select(i32::MIN);
                 let _ = h.menu_select(10);

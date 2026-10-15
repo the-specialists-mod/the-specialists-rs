@@ -40,6 +40,10 @@ crates/
                  FFI from end to end, so it may use `unsafe` like the *-dll crates; never in dist/)
   client/        ts-client: client game logic (rlib)
   client-dll/    ts-client-dll: the client library the engine loads (cdylib "client")
+  ts30/          the TS 3.0 gameplay plugin: ts30-gameplay (shared hooks), server/ (ts30-server)
+                 and client/ (ts30-client); only the two *-dll crates link it (feature `ts30`,
+                 registered first, so the default ruleset). TS 3.0's rule decisions move here
+                 from the core crates (issue #200; docs/implementation/gameplay-plugins.md)
   ts21/          the TS 2.1 gameplay plugin: ts21-gameplay (shared hooks), server/ (ts21-server)
                  and client/ (ts21-client). All 2.1 code goes here; only the two *-dll crates
                  link it (feature `ts21`), and `cargo xtask lint` checks that nothing else
@@ -50,7 +54,7 @@ game/ts/         liblist.gam, gameinfo.txt, delta.lst, the icons (game.tga, ts_l
 
 **`unsafe` code lives only in `goldsrc`, `server-dll` and `client-dll`** (and the test fixture
 `tsmod-test`, a plugin library that is nothing but FFI). `ts-server`,
-`ts-client`, `shared`, `ts-gameplay` and the `ts21-*` packages are `#![deny(unsafe_code)]`. The rules:
+`ts-client`, `shared`, `ts-gameplay` and the `ts30-*`/`ts21-*` packages are `#![deny(unsafe_code)]`. The rules:
 
 1. **Never add `unsafe` to a game crate, and never weaken the lint.** The only `allow`s are the
    `goldsrc::export_entity_class!` macro (`#[no_mangle]` is an unsafe attribute in Rust 2024) and

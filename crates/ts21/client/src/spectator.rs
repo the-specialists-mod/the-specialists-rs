@@ -832,7 +832,7 @@ mod tests {
     /// TS 3.0 has none of this: its key tap runs, its own `SetModes` runs, `Draw` changes nothing.
     #[test]
     fn core_rules_have_no_hltv_controls() {
-        let core = ts_client::gameplay::CORE_PLUGIN.client;
+        let core = ts30_client::PLUGIN.client;
         let mut f = Fake::default();
         assert!(!core.hltv_buttons(&mut f, IN_JUMP as i32, true));
         assert!(!core.hltv_buttons(&mut f, IN_FORWARD as i32, false));

@@ -96,7 +96,7 @@ impl GunHost for Mock {
         self.arith.unwrap_or(Arith::CLIENT)
     }
     fn rules(&self) -> &'static dyn crate::gameplay::GunRules {
-        &crate::gameplay::CORE
+        &crate::gameplay::DEFAULTS
     }
     fn first_prediction(&self) -> bool {
         !self.repredict

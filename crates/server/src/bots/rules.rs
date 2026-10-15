@@ -1,6 +1,6 @@
 //! The native bots' rules: the hook points where a gameplay ruleset's version of TS's bot AI
 //! differs (docs/implementation/bot-plugins.md §2.2). Every hook's default body is TS 3.0's
-//! behaviour, so [`CORE`] is the AI ported from `mp.dll` unchanged.
+//! behaviour (until they move to the 3.0 plugin, issue #200), the AI ported from `mp.dll`.
 //!
 //! A ruleset that ships its own bot behaviour implements [`NativeBotRules`] and the server
 //! library registers it under the gameplay id it belongs to ([`register`]). The native backend
@@ -193,12 +193,16 @@ pub trait NativeBotRules: Sync {
     }
 }
 
-/// TS 3.0's bots: every hook's default.
-pub struct Core;
+/// Every hook's default, for this crate's tests (they move to the 3.0 plugin with the bodies,
+/// issue #200).
+#[cfg(test)]
+pub(crate) struct Defaults;
 
-impl NativeBotRules for Core {}
+#[cfg(test)]
+impl NativeBotRules for Defaults {}
 
-pub static CORE: Core = Core;
+#[cfg(test)]
+pub(crate) static DEFAULTS: Defaults = Defaults;
 
 /// A gameplay id and the rules registered for it.
 type Entry = (&'static str, &'static dyn NativeBotRules);
@@ -210,18 +214,28 @@ static REGISTRY: Global<RefCell<Vec<Entry>>> = Global(RefCell::new(Vec::new()));
 static CACHE: Global<Cell<Option<Entry>>> = Global(Cell::new(None));
 
 /// Registers the native bots' rules for gameplay id `id` (the server library's `GameDLLInit`,
-/// next to the gameplay plugin). An id without rules runs [`CORE`]. A second registration of an
-/// id replaces the first.
+/// next to the gameplay plugin). An id without rules runs the first registered. A second
+/// registration of an id replaces the first, in its place.
 pub fn register(id: &'static str, rules: &'static dyn NativeBotRules) {
     let mut r = REGISTRY.0.borrow_mut();
-    r.retain(|(i, _)| *i != id);
-    r.push((id, rules));
+    match r.iter_mut().find(|(i, _)| *i == id) {
+        Some(e) => e.1 = rules,
+        None => r.push((id, rules)),
+    }
     CACHE.0.set(None);
 }
 
-/// The rules for gameplay id `id` ([`CORE`] when none are registered).
+/// The rules for gameplay id `id` (the first registered when that id has none).
 pub fn for_id(id: &str) -> &'static dyn NativeBotRules {
-    REGISTRY.0.borrow().iter().find(|(i, _)| *i == id).map_or(&CORE as &dyn NativeBotRules, |r| r.1)
+    let r = REGISTRY.0.borrow();
+    let found = r.iter().find(|(i, _)| *i == id).or_else(|| r.first());
+    match found {
+        Some(f) => f.1,
+        #[cfg(test)]
+        None => &DEFAULTS,
+        #[cfg(not(test))]
+        None => panic!("no native bot rules registered (server-dll registers them at GameDLLInit)"),
+    }
 }
 
 /// The rules of the active gameplay ruleset (`ts_gameplay`).
@@ -248,7 +262,7 @@ mod tests {
 
     #[test]
     fn core_defaults_are_ts_3_0() {
-        let c: &dyn NativeBotRules = &CORE;
+        let c: &dyn NativeBotRules = &DEFAULTS;
         assert!(!c.random_model_in_teamplay());
         assert!(c.learn_on_empty_graph());
         assert!(c.team_key());
@@ -278,7 +292,7 @@ mod tests {
 
     #[test]
     fn core_buttons_are_per_bit_timers() {
-        let c: &dyn NativeBotRules = &CORE;
+        let c: &dyn NativeBotRules = &DEFAULTS;
         let mut b = Brain::new(1.0);
         c.press(&mut b, brain::btn::ATTACK | brain::btn::DUCK, 0.5, 10.0);
         c.update_buttons(&mut b, 10.0);
