@@ -251,6 +251,7 @@ mod tests {
 
     #[test]
     fn ammocount_outside_1_to_3_keeps_the_default_carry() {
+        ts30_gameplay::tables::make_default();
         // 9 x 19mm in `Set_ammo_count` (0x7f2cc): 210 / 90 / 30, and 0 in column 3. The cvar is
         // truncated, and 0, 4, 5 or a negative value is the switch's default (the full carry).
         let carry = |cvar: f32| max_carry_in(1, ammo_column_of(x87_int(cvar)));
@@ -267,6 +268,7 @@ mod tests {
 
     #[test]
     fn restriction_mask_keeps_high_bits() {
+        ts30_gameplay::tables::make_default();
         // `ts_mapglobals` spawnflags 0x3f leave 0x1f ^ 0x3f = 0x20. TS passes it whole: every
         // category is closed, but the mask isn't 0, so a grenade is still allowed. Masked with
         // 0x1f it would be 0 and close everything.

@@ -161,6 +161,7 @@ fn fire_once(g: &mut Gun, h: &mut Mock) {
 /// the katana only on a fresh press; 3.0 attacks while the button is held.
 #[test]
 fn blades_attack_on_a_fresh_press() {
+    ts30_gameplay::tables::make_default();
     const IN_ATTACK: u32 = 1;
     const IN_ATTACK2: u32 = 0x800;
     for knife in [25, 35] {
@@ -194,6 +195,7 @@ fn blades_attack_on_a_fresh_press() {
 /// path's timers (the katana has no scope and no alt grip). 3.0 throws it.
 #[test]
 fn katana_attack2_does_not_throw() {
+    ts30_gameplay::tables::make_default();
     const IN_ATTACK2: u32 = 0x800;
     let (mut g, mut h) = armed(id::KATANA);
     h.buttons = IN_ATTACK2;
@@ -210,6 +212,7 @@ fn katana_attack2_does_not_throw() {
 /// 2.1's `WeaponIdle` (0x1004d660) reloads an empty gun under Infinite Clip; 3.0's doesn't.
 #[test]
 fn idle_reloads_under_infinite_clip() {
+    ts30_gameplay::tables::make_default();
     for core in [false, true] {
         let (mut g, mut h) = armed(id::MP5K);
         let ammo = g.status[id::MP5K as usize].ammo as usize;
@@ -227,6 +230,7 @@ fn idle_reloads_under_infinite_clip() {
 /// fu's view model with its draw animation and event.
 #[test]
 fn holster_leaves_no_view_model() {
+    ts30_gameplay::tables::make_default();
     for core in [false, true] {
         let (mut g, mut h) = armed(id::MP5K);
         h.core = core;
@@ -249,6 +253,7 @@ fn holster_leaves_no_view_model() {
 /// twice its cost, the lowest id on a tie; 3.0 walks its priority list.
 #[test]
 fn better_weapon_is_the_most_expensive() {
+    ts30_gameplay::tables::make_default();
     use crate::TS21;
     setup();
     let own = |ids: &[u8]| {
@@ -279,6 +284,7 @@ fn better_weapon_is_the_most_expensive() {
 
 #[test]
 fn the_2_1_table_set() {
+    ts30_gameplay::tables::make_default();
     setup();
     let t = tables::tables();
     assert_eq!(t.weapons().count(), 34, "33 weapons and kung fu");
@@ -292,7 +298,7 @@ fn the_2_1_table_set() {
     );
     assert_eq!(t.asset(17).unwrap().model, "tmp");
     assert_eq!(t.anims(17), &tables::TMP_SEQUENCES);
-    assert_eq!(t.anims(13), shared::weapons::table::base_tables().anims(13), "3.0's sequences for the 3.0 models");
+    assert_eq!(t.anims(13), ts30_gameplay::tables::tables().anims(13), "3.0's sequences for the 3.0 models");
     // Damage = the ammo's base damage x the weapon's multiplier.
     let dmg = |id: u8| t.weapon(id).unwrap().damage;
     assert_eq!(dmg(id::AK47), 52.5);
@@ -318,6 +324,7 @@ fn the_2_1_table_set() {
 
 #[test]
 fn delays_are_fixed_at_fire_time() {
+    ts30_gameplay::tables::make_default();
     let delay = |powerups: u16, fuser1: f32, client: bool| {
         let (mut g, mut h) = armed(id::AK47);
         h.powerups = powerups;
@@ -338,6 +345,7 @@ fn delays_are_fixed_at_fire_time() {
 
 #[test]
 fn semi_waits_the_rate_and_shotgun_semi_is_0_1() {
+    ts30_gameplay::tables::make_default();
     let (mut g, mut h) = armed(id::M4);
     g.status[id::M4 as usize].mode = shared::weapons::mode::SEMI;
     h.powerups = powerup::DOUBLE_FIRERATE;
@@ -356,6 +364,7 @@ fn semi_waits_the_rate_and_shotgun_semi_is_0_1() {
 
 #[test]
 fn silencer_widens_the_spread_and_cuts_damage() {
+    ts30_gameplay::tables::make_default();
     let (mut g, mut h) = armed(id::MP5K);
     g.status[id::MP5K as usize].items = att::SILENCER;
     fire_once(&mut g, &mut h);
@@ -367,6 +376,7 @@ fn silencer_widens_the_spread_and_cuts_damage() {
 
 #[test]
 fn moving_barrett_and_m60_set_the_penalty() {
+    ts30_gameplay::tables::make_default();
     for (wid, speed, want) in [(id::BARRETT, 81.0, 0.1), (id::BARRETT, 79.0, 0.0), (id::M60, 100.0, 0.1), (id::AK47, 300.0, 0.0)] {
         let (mut g, mut h) = armed(wid);
         h.velocity = [speed, 0.0, 0.0];
@@ -378,6 +388,7 @@ fn moving_barrett_and_m60_set_the_penalty() {
 
 #[test]
 fn scale_spread_grows_by_elapsed_over_t() {
+    ts30_gameplay::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     g.last_shot = 9.9;
     g.spread_penalty = 0.01;
@@ -401,6 +412,7 @@ fn scale_spread_grows_by_elapsed_over_t() {
 
 #[test]
 fn view_kick_is_random_and_sided() {
+    ts30_gameplay::tables::make_default();
     for seed in [0u32, 7, 123, 31999] {
         let (g, mut h) = armed(id::AK47);
         let _ = g;
@@ -430,6 +442,7 @@ fn view_kick_is_random_and_sided() {
 
 #[test]
 fn akimbo_shots_are_4_units_off_centre() {
+    ts30_gameplay::tables::make_default();
     let (mut g, mut h) = armed(id::MK23_AKIMBO);
     g.status[id::MK23_AKIMBO as usize].mode = shared::weapons::mode::AKIMBO_SEMI;
     h.buttons = IN_ATTACK | IN_ATTACK2;
@@ -455,6 +468,7 @@ fn akimbo_shots_are_4_units_off_centre() {
 
 #[test]
 fn infinite_clip_saves_the_round_but_an_empty_clip_clicks() {
+    ts30_gameplay::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     h.powerups = powerup::INFINITE_CLIP;
     fire_once(&mut g, &mut h);
@@ -503,6 +517,7 @@ fn pellet_dir_per_side() {
 
 #[test]
 fn timers_run_on_raw_time() {
+    ts30_gameplay::tables::make_default();
     setup();
     let r = &crate::TS21;
     assert_eq!(r.timer_step(Arith::CLIENT, 0.01, 0.35, powerup::DOUBLE_FIRERATE), 0.01);
@@ -515,6 +530,7 @@ fn timers_run_on_raw_time() {
 
 #[test]
 fn spread_decays_by_elapsed_time() {
+    ts30_gameplay::tables::make_default();
     setup();
     let r = &crate::TS21;
     let mut g = Gun { spread_penalty: 0.05, decay_time: 10.0, ..Gun::default() };
@@ -538,6 +554,7 @@ fn spread_decays_by_elapsed_time() {
 /// (`0x10018dae`): not at a penalty of 0 or NaN, not when the time went back, not while dead.
 #[test]
 fn crosshair_copy_only_when_decaying() {
+    ts30_gameplay::tables::make_default();
     setup();
     let r = &crate::TS21;
     let d = |time: f32, alive: bool| SpreadDecay { arith: Arith::CLIENT, step: 0.01, time, time_scale: 1.0, alive };
@@ -557,6 +574,7 @@ fn crosshair_copy_only_when_decaying() {
 
 #[test]
 fn prediction_and_gate() {
+    ts30_gameplay::tables::make_default();
     setup();
     let r = &crate::TS21;
     assert_eq!(r.predicted(), Predicted { reload_finish: false, alt_attack: false, kungfu_reload: false });

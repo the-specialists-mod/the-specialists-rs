@@ -1086,6 +1086,7 @@ mod tests {
     /// configs and arms the random first loadout again; the saved ones come from the file.
     #[test]
     fn init_forgets_the_last_config_and_rerolls() {
+        ts30_gameplay::tables::make_default();
         let r = rules();
         let mut m = BuyMenu::default();
         m.open(&r, &mut FixedRng(vec![], 0));
@@ -1112,6 +1113,7 @@ mod tests {
 
     #[test]
     fn add_and_costs() {
+        ts30_gameplay::tables::make_default();
         let r = rules();
         let mut m = BuyMenu::default();
         m.reset_config(&r);
@@ -1140,6 +1142,7 @@ mod tests {
     /// after it; `ammocount` outside 1..3 takes column 0.
     #[test]
     fn ammo_spend_and_summary() {
+        ts30_gameplay::tables::make_default();
         let r = Rules { cash: 10000, ..rules() };
         let mut m = BuyMenu::default();
         assert!(m.add(13, 0, false, false, &r));
@@ -1183,6 +1186,7 @@ mod tests {
 
     #[test]
     fn slot_limit() {
+        ts30_gameplay::tables::make_default();
         let r = rules();
         let mut m = BuyMenu::default();
         assert!(m.add(18, 0, false, false, &r)); // barrett, 70 slots
@@ -1193,6 +1197,7 @@ mod tests {
 
     #[test]
     fn restrictions() {
+        ts30_gameplay::tables::make_default();
         assert!(!weapon_restricted(13, 0x1f));
         assert!(weapon_restricted(13, 0x17), "rifles need 0x08");
         assert!(weapon_restricted(33, 0x0f), "sawed-off counts as a shotgun");
@@ -1204,6 +1209,7 @@ mod tests {
 
     #[test]
     fn submit_protocol() {
+        ts30_gameplay::tables::make_default();
         let r = rules();
         let mut m = BuyMenu::default();
         m.reset_config(&r);
@@ -1223,6 +1229,7 @@ mod tests {
 
     #[test]
     fn mouse_hit_test() {
+        ts30_gameplay::tables::make_default();
         let r = rules();
         let mut b = BuyMenu::default();
         let at = |col: i32, row: i32| (8 + col * 128 + 5, 240 + row * 20 + 3);
@@ -1256,6 +1263,7 @@ mod tests {
 
     #[test]
     fn page_machine() {
+        ts30_gameplay::tables::make_default();
         let r = rules();
         let mut rng = FixedRng(vec![], 0);
         let mut m = BuyMenu { random_first: false, ..Default::default() };
@@ -1289,6 +1297,7 @@ mod tests {
 
     #[test]
     fn random_config_is_valid() {
+        ts30_gameplay::tables::make_default();
         let r = rules();
         let mut m = BuyMenu::default();
         // melee=knife full, pistol idx 3 (deagle), rifle k=4 (AK)
@@ -1326,6 +1335,7 @@ mod tests {
     /// loaded configs (any totals, ids, counts and costs) neither panics nor hangs.
     #[test]
     fn garbage_buylist_and_keys() {
+        ts30_gameplay::tables::make_default();
         let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
         let mut files = vec![Vec::new(), vec![0xff; 3], vec![0xff; CONFIG_SIZE * SAVED_CONFIGS + 7], vec![0; CONFIG_SIZE - 1]];
         for _ in 0..40 {

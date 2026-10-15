@@ -59,7 +59,12 @@ static WARNED: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 /// Registers a plugin (`client.dll`'s `Initialize`), the default ruleset first. False for an id
 /// that isn't a short number.
 pub fn register(id: &'static str, plugin: &'static ClientPlugin) -> bool {
-    REGISTRY.write().unwrap_or_else(PoisonError::into_inner).add(id, plugin)
+    let added = REGISTRY.write().unwrap_or_else(PoisonError::into_inner).add(id, plugin);
+    if added {
+        // The first plugin's are the default ruleset's tables (`set_default_tables` keeps the first).
+        shared::weapons::table::set_default_tables(plugin.gun.tables());
+    }
+    added
 }
 
 /// The default plugin (the first registered).

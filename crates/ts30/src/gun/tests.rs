@@ -237,6 +237,7 @@ fn frame(g: &mut Gun, h: &mut Mock, buttons: u32, last: &mut u32, dt: f32) {
 
 #[test]
 fn auto_fire_rate_and_clip() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     let mut last = 0;
     for _ in 0..100 {
@@ -252,6 +253,7 @@ fn auto_fire_rate_and_clip() {
 
 #[test]
 fn slow_motion_scales_timers() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     h.slow = 0.5;
     let mut last = 0;
@@ -264,6 +266,7 @@ fn slow_motion_scales_timers() {
 
 #[test]
 fn double_fire_rate_is_1_5x() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     h.powerups = shared::ts::powerup::DOUBLE_FIRERATE;
     let mut last = 0;
@@ -276,6 +279,7 @@ fn double_fire_rate_is_1_5x() {
 
 #[test]
 fn semi_needs_a_press_and_uses_0_1s_on_auto_capable_weapons() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::GLOCK18);
     g.switch_fire_mode();
     assert_eq!(g.status[id::GLOCK18 as usize].mode, mode::SEMI);
@@ -297,6 +301,7 @@ fn semi_needs_a_press_and_uses_0_1s_on_auto_capable_weapons() {
 
 #[test]
 fn burst_fires_three_then_waits() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::M16);
     assert_eq!(g.status[id::M16 as usize].mode, mode::BURST);
     let mut last = 0;
@@ -320,6 +325,7 @@ fn burst_fires_three_then_waits() {
 
 #[test]
 fn pump_alternates_fire_and_pump() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::MOSSBERG);
     assert_eq!(g.status[id::MOSSBERG as usize].mode, mode::PUMP);
     let mut last = 0;
@@ -337,6 +343,7 @@ fn pump_alternates_fire_and_pump() {
 
 #[test]
 fn magazine_reload_moves_rounds_after_reload_time() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     g.status[id::AK47 as usize].clip = 5;
     let mut last = 0;
@@ -359,6 +366,7 @@ fn magazine_reload_moves_rounds_after_reload_time() {
 /// instead of overflowing (an abort under `panic = "abort"`).
 #[test]
 fn extreme_networked_values_wrap() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     let ammo = info(id::AK47).unwrap().ammo as usize;
     g.status[id::AK47 as usize].clip = i32::MIN;
@@ -380,6 +388,7 @@ fn extreme_networked_values_wrap() {
 
 #[test]
 fn shotgun_reload_three_phases() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::BENELLI);
     g.status[id::BENELLI as usize].clip = 5;
     let mut last = 0;
@@ -396,6 +405,7 @@ fn shotgun_reload_three_phases() {
 
 #[test]
 fn spread_penalty_grows_caps_and_decays() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::GLOCK18);
     let mut last = 0;
     for _ in 0..100 {
@@ -428,6 +438,7 @@ fn spread_penalty_only_on_first_prediction() {
 
 #[test]
 fn silencer_multipliers() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::M4);
     g.status[id::M4 as usize].items |= att::SILENCER;
     let mut last = 0;
@@ -445,6 +456,7 @@ fn silencer_multipliers() {
 
 #[test]
 fn akimbo_pickup_merges_and_linked_fire() {
+    crate::tables::make_default();
     let mut g = Gun::default();
     let mut h = Mock { flags: 0x200, time: 1.0, ..Default::default() };
     assert_eq!(g.take_weapon(id::BERETTA, None, 0), Some(id::BERETTA));
@@ -480,6 +492,7 @@ fn akimbo_pickup_merges_and_linked_fire() {
 /// time (in a later command) is dropped, as in TS.
 #[test]
 fn akimbo_free_semi_triggers() {
+    crate::tables::make_default();
     let mut g = Gun::default();
     let mut h = Mock { flags: 0x200, time: 1.0, ..Default::default() };
     g.take_weapon(id::BERETTA, None, 0);
@@ -516,6 +529,7 @@ fn akimbo_free_semi_triggers() {
 
 #[test]
 fn zoom_steps() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     g.status[id::AK47 as usize].items |= att::SCOPE;
     let mut last = 0;
@@ -537,6 +551,7 @@ fn zoom_steps() {
 
 #[test]
 fn grip_toggle_without_scope() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::M4);
     let mut last = 0;
     frame(&mut g, &mut h, IN_ATTACK2, &mut last, 0.01);
@@ -546,6 +561,7 @@ fn grip_toggle_without_scope() {
 
 #[test]
 fn grenade_pull_and_throw_on_release() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::M61);
     let mut last = 0;
     frame(&mut g, &mut h, 1, &mut last, 0.01);
@@ -572,6 +588,7 @@ fn grenade_pull_and_throw_on_release() {
 /// `Holster` once `deadflag` is set.
 #[test]
 fn observer_reset_then_holsters_throws_nothing() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::M61);
     let mut last = 0;
     frame(&mut g, &mut h, 1, &mut last, 0.01);
@@ -626,6 +643,7 @@ fn grenade_throw_rounds_as_ts() {
 
 #[test]
 fn knife_throw_consumes_stack() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::KNIFE);
     g.take_weapon(id::KNIFE, None, 0);
     assert_eq!(g.status[id::KNIFE as usize].clip, 2);
@@ -697,6 +715,7 @@ fn kungfu_melee_attack_hook() {
 /// gun's bar, and charges nothing: no bar cost, so no 1.5 s `m_flNextAttack` for an empty bar.
 #[test]
 fn client_block_gates_on_hud_power() {
+    crate::tables::make_default();
     let try_block = |bar: f32, hud: Option<f32>| {
         let mut g = Gun { melee_bar: bar, ..Default::default() };
         let mut h = Mock { kfu_power: hud, ..Default::default() };
@@ -781,6 +800,7 @@ fn kungfu_view_anim_indices() {
 
 #[test]
 fn infinite_clip_keeps_clip_and_multiply_doubles() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     h.powerups = shared::ts::powerup::INFINITE_CLIP;
     let mut last = 0;
@@ -794,6 +814,7 @@ fn infinite_clip_keeps_clip_and_multiply_doubles() {
 
 #[test]
 fn drop_switches_by_priority() {
+    crate::tables::make_default();
     let mut g = Gun::default();
     let mut h = Mock { flags: 0x200, ..Default::default() };
     g.take_weapon(id::GLOCK18, None, 0);
@@ -806,6 +827,7 @@ fn drop_switches_by_priority() {
 
 #[test]
 fn restricted_pickups() {
+    crate::tables::make_default();
     let mut g = Gun::default();
     // akimbo ids can't be taken directly when the akimbo version exists... but TakeWeapon allows
     // it (PickUpWeapon rejects them); owning the pair blocks another single.
@@ -823,6 +845,7 @@ fn restricted_pickups() {
 /// a weapon; with none it is `HolsterWeapon` (kung fu), which leaves the timer.
 #[test]
 fn deploy_with_a_weapon_updates_the_client_at_once() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     h.update_now = 0;
     g.switch_to(0, &mut h);
@@ -836,6 +859,7 @@ fn deploy_with_a_weapon_updates_the_client_at_once() {
 
 #[test]
 fn deploy_remembers_fire_mode() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     g.switch_fire_mode();
     assert_eq!(g.status[id::AK47 as usize].mode, mode::SEMI);
@@ -849,6 +873,7 @@ fn deploy_remembers_fire_mode() {
 /// (0x1000a327) and the katana's own ground-swing strength 45 x 0.2 (0x1000a156).
 #[test]
 fn melee_view_shakes() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::KNIFE);
     let mut last = 0;
     frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
@@ -913,6 +938,7 @@ fn kungfu_reach_anim_window_and_block() {
 /// index.
 #[test]
 fn katana_swings() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::KATANA);
     let mut last = 0;
     frame(&mut g, &mut h, IN_ATTACK, &mut last, 0.01);
@@ -962,6 +988,7 @@ fn charging_the_melee_bar_empties_it_with_a_lockout() {
 /// records never have it and its copy (0x10008dc8) plays the event regardless.
 #[test]
 fn cold_cock_event_owned_gate() {
+    crate::tables::make_default();
     let gun = (1..MAX_WEAPONS as u8).find(|&i| info(i).is_some_and(|w| w.stock > 0 && kind_of(i) != kind::GRENADE)).unwrap();
     for (client, owned, plays) in [(false, true, true), (false, false, false), (true, false, true)] {
         let (mut g, mut h) = armed(gun);
@@ -974,6 +1001,7 @@ fn cold_cock_event_owned_gate() {
 
 #[test]
 fn stock_hit_event_sends_no_spread() {
+    crate::tables::make_default();
     // Fire a spread shot first: TS's coldcock f1/f2 are ColdCock's never-written static vecDir.
     let (mut g, mut h) = armed(id::M4);
     h.seed = 1234;
@@ -988,6 +1016,7 @@ fn stock_hit_event_sends_no_spread() {
 
 #[test]
 fn weapon_anims_carry_the_guns_body() {
+    crate::tables::make_default();
     // A knife slash that hits a player sets pev->body 1 (the bloody blade); SendWeaponAnim sends
     // pev->body whatever the caller passed, so the draw after a throw keeps it.
     let (mut g, mut h) = armed(id::KNIFE);
@@ -1011,6 +1040,7 @@ fn weapon_anims_carry_the_guns_body() {
 
 #[test]
 fn deploy_takes_its_timers_from_default_deploy() {
+    crate::tables::make_default();
     // client.dll's DefaultDeploy (0x100035f0): 0.5 s before attacking, 3 s idle (not the SDK's 1).
     let mut g = Gun::default();
     let mut h = Mock::default();
@@ -1037,6 +1067,7 @@ fn deploy_takes_its_timers_from_default_deploy() {
 /// (`CBasePlayerWeapon::ItemPostFrame` 0xa03d4), and a skipped one doesn't run.
 #[test]
 fn virtual_calls_reach_the_host_in_ts_order() {
+    crate::tables::make_default();
     let (mut g, mut h) = armed(id::AK47);
     h.virtuals.clear();
     h.buttons = IN_ATTACK;
@@ -1082,7 +1113,7 @@ fn gun_hooks_are_3_0s() {
     use shared::gameplay::Predicted;
     use shared::ts::powerup;
     let t30 = &crate::TS30;
-    assert!(std::ptr::eq(t30.tables(), base_tables()));
+    assert!(std::ptr::eq(t30.tables(), crate::tables::tables()));
     for arith in [Arith::Gcc, Arith::Msvc] {
         for (ft, fuser1, pw) in [(0.01f32, 1.0f32, 0u16), (0.001, 0.65, powerup::DOUBLE_FIRERATE), (0.02, 0.0, 0)] {
             let want = Gun::timer_dt(arith, ft, spread::fixed_slow_amt(fuser1), pw);
@@ -1098,8 +1129,8 @@ fn gun_hooks_are_3_0s() {
     assert_eq!(t30.akimbo_event_offsets(false, true), (0.0, None));
     assert_eq!(t30.predicted(), Predicted::ALL);
     assert_eq!(t30.semi_auto_delay(0.07), 0.1);
-    let ak = base_tables().weapon(id::AK47).unwrap();
-    let m4 = base_tables().weapon(id::M4).unwrap();
+    let ak = crate::tables::tables().weapon(id::AK47).unwrap();
+    let m4 = crate::tables::tables().weapon(id::M4).unwrap();
     assert!(!t30.cancel_runs_frame_in_reload(ak) && t30.cancel_runs_frame_in_reload(m4));
     assert!(!t30.blades_need_press() && t30.katana_throws() && t30.infinite_clip_skips_idle_reload());
     assert!(t30.holster_draws_kungfu());

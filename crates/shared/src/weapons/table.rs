@@ -1,7 +1,7 @@
 //! Static weapon data. `tables()` parses the embedded TOML once.
 
 use serde::Deserialize;
-use std::sync::{OnceLock, RwLock};
+use std::sync::RwLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -185,8 +185,8 @@ pub struct Combat {
 pub type SeqTables = ([i16; 29], [i16; 29]);
 
 /// One ruleset's weapon data: weapons, ammo, client assets, view-model sequences and the combat
-/// constants. TS 3.0's are embedded ([`base_tables`]); a gameplay plugin brings its own
-/// ([`crate::gameplay::GunRules::tables`]).
+/// constants. Each gameplay plugin brings its own ([`crate::gameplay::GunRules::tables`]), built
+/// with [`parse`].
 #[derive(Clone)]
 pub struct Tables {
     weapons: Vec<Option<WeaponInfo>>,
@@ -255,28 +255,27 @@ fn by_id<T>(items: Vec<T>, id: impl Fn(&T) -> u8) -> Vec<Option<T>> {
     out
 }
 
-pub fn parse() -> Result<Tables, toml::de::Error> {
-    let w: WeaponFile = toml::from_str(include_str!("../../data/weapons.toml"))?;
-    let a: AmmoFile = toml::from_str(include_str!("../../data/ammo.toml"))?;
-    let s: AssetFile = toml::from_str(include_str!("../../data/assets.toml"))?;
-    let combat: Combat = toml::from_str(include_str!("../../data/combat.toml"))?;
+/// A ruleset's tables from its four TOML files (`weapon`, `ammo`, `asset` arrays and the combat
+/// constants), with TS's view-model sequences ([`ANIMS`](super::anims::ANIMS)).
+pub fn parse(weapons: &str, ammo: &str, assets: &str, combat: &str) -> Result<Tables, toml::de::Error> {
+    let w: WeaponFile = toml::from_str(weapons)?;
+    let a: AmmoFile = toml::from_str(ammo)?;
+    let s: AssetFile = toml::from_str(assets)?;
+    let combat: Combat = toml::from_str(combat)?;
     Ok(Tables::new(w.weapon, a.ammo, s.asset, super::anims::ANIMS.to_vec(), combat))
 }
 
-/// The embedded TS 3.0 tables, parsed once; panics on a malformed embedded table (caught by
-/// `cargo test`). The core plugin's [`GunRules::tables`](crate::gameplay::GunRules::tables).
-pub fn base_tables() -> &'static Tables {
-    static T: OnceLock<Tables> = OnceLock::new();
-    T.get_or_init(|| parse().expect("embedded weapon tables"))
-}
+/// The default ruleset's tables ([`set_default_tables`]): what [`ruleset_tables`] returns before
+/// a ruleset sets its own.
+static DEFAULT: RwLock<Option<&'static Tables>> = RwLock::new(None);
 
-/// The active ruleset's tables ([`set_ruleset_tables`]); `None` is TS 3.0's.
+/// The active ruleset's tables ([`set_ruleset_tables`]); `None`: the default's.
 static RULESET: RwLock<Option<&'static Tables>> = RwLock::new(None);
 
 /// Custom weapon parameters (`loadweapons` / `CustomWP`) replace the ruleset's tables.
 static CUSTOM: RwLock<Option<&'static Tables>> = RwLock::new(None);
 
-/// The weapon tables: the active ruleset's ([`set_ruleset_tables`], TS 3.0's until one is set),
+/// The weapon tables: the active ruleset's ([`set_ruleset_tables`], the default's until one is set),
 /// or the custom ones when a server loaded a weapons file (`CustomWP`).
 pub fn tables() -> &'static Tables {
     if let Some(t) = *CUSTOM.read().unwrap() {
@@ -285,9 +284,22 @@ pub fn tables() -> &'static Tables {
     ruleset_tables()
 }
 
-/// The active ruleset's own tables, without custom parameters.
+/// The active ruleset's own tables, without custom parameters. The libraries register a ruleset,
+/// and with it the default tables, before any game code runs.
 pub fn ruleset_tables() -> &'static Tables {
-    RULESET.read().unwrap().unwrap_or_else(base_tables)
+    if let Some(t) = *RULESET.read().unwrap() {
+        return t;
+    }
+    DEFAULT.read().unwrap().expect("no weapon tables: no gameplay ruleset registered")
+}
+
+/// Sets the default tables, the first ruleset's: the gameplay registries call it as each plugin
+/// registers, and the first call wins.
+pub fn set_default_tables(t: &'static Tables) {
+    let mut d = DEFAULT.write().unwrap();
+    if d.is_none() {
+        *d = Some(t);
+    }
 }
 
 /// Makes `t` (a gameplay plugin's [`GunRules::tables`](crate::gameplay::GunRules::tables)) the
@@ -343,31 +355,4 @@ pub fn reset_custom_tables() {
 /// True while custom parameters are in effect.
 pub fn custom_tables_active() -> bool {
     CUSTOM.read().unwrap().is_some()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tables_parse() {
-        let t = parse().unwrap();
-        assert_eq!(t.weapons().count(), 37);
-        let ak = t.weapon(13).unwrap();
-        assert_eq!(ak.name, "AK47");
-        assert_eq!(ak.clip, 30);
-        assert_eq!(ak.modes, vec![FireMode::Auto, FireMode::Semi]);
-        assert!(t.weapon(29).is_none(), "29 is the briefcase");
-        assert_eq!(t.ammo(4).unwrap().name, "5.56 Nato");
-        assert_eq!(t.asset(13).unwrap().model, "ak47");
-    }
-
-    #[test]
-    fn weapon_params_override() {
-        let t = parse().unwrap();
-        let c = t.with_weapon_params(13, 0.0, 1.0, 2.0, 50.0, 99).unwrap();
-        let ak = c.weapon(13).unwrap();
-        assert_eq!((ak.accuracy, ak.view_kick, ak.acc_kick, ak.damage, ak.cost), (0.001, 1.0, 2.0, 50.0, 99));
-        assert!(t.with_weapon_params(29, 0.0, 0.0, 0.0, 0.0, 0).is_none());
-    }
 }

@@ -7,10 +7,10 @@
 //! below fail on any hit. Each game crate's `clippy.toml` also lists the macros under
 //! `disallowed-macros`, a second guard that sees through renamed imports and local macros.
 //!
-//! The gameplay plugins keep TS 2.1 apart from the 3.0 code (issue #100,
-//! `docs/implementation/gameplay-plugins.md`): [`ruleset_leaks`] finds 2.1 identifiers outside
-//! `crates/ts21/`, other than the two libraries' registration of the plugin, and any other crate
-//! that depends on it. `cargo xtask lint` also builds and tests the libraries with one ruleset
+//! The gameplay plugins keep each ruleset (TS 3.0, TS 2.1) in its own crate and the core crates
+//! free of both (issues #100, #200, `docs/implementation/gameplay-plugins.md`): [`ruleset_leaks`]
+//! finds a ruleset's identifiers outside its directory, other than the two libraries'
+//! registration of the plugin and test code, and any other crate that depends on it. `cargo xtask lint` also builds and tests the libraries with one ruleset
 //! each ([`SINGLE_RULESET`]), so each ruleset builds and passes on its own.
 //!
 //! `cargo xtask lint` runs the whole clippy set with warnings as errors on every build target,
@@ -61,21 +61,32 @@ pub fn engine_macro_uses(repo: &Path) -> Vec<String> {
     hits
 }
 
-/// The TS 2.1 plugin's directory (`ts21-gameplay` and its `server/` and `client/` packages): the
-/// only one that may name 2.1.
-pub const RULESET_CRATE: &str = "crates/ts21";
+/// A gameplay ruleset's plugin (issue #100, #200): its directory (the shared package and its
+/// `server/` and `client/` packages), the name of its packages and feature, and the identifier
+/// fragments that name it (lower case, matched after a non-alphanumeric character, so `rules_v21`
+/// counts and `tests21` or `dev21` don't).
+pub struct Ruleset {
+    pub name: &'static str,
+    pub dir: &'static str,
+    pub package: &'static str,
+    pub tokens: &'static [&'static str],
+}
 
-/// The libraries that register the plugin (behind their `ts21` feature): they may name the
-/// plugin's crate and the feature, nothing else of 2.1.
+/// The rulesets. Each is named only inside its own directory, by the libraries that register it,
+/// and in tests.
+pub const RULESETS: [Ruleset; 2] = [
+    Ruleset { name: "TS 3.0", dir: "crates/ts30", package: "ts30", tokens: &["ts30", "ts_30", "ts3_0", "ts_3_0", "v30", "v3_0", "gp30"] },
+    Ruleset { name: "TS 2.1", dir: "crates/ts21", package: "ts21", tokens: &["ts21", "ts_21", "ts2_1", "ts_2_1", "v21", "v2_1", "gp21"] },
+];
+
+/// The libraries that register the plugins (behind their features): they may name each plugin's
+/// packages and feature, nothing else of a ruleset.
 pub const REGISTERING_CRATES: [&str; 2] = ["crates/server-dll", "crates/client-dll"];
 
-/// Identifier fragments that name TS 2.1 or a 2.1 mode (lower case, matched after a
-/// non-alphanumeric character, so `rules_v21` counts and `tests21` or `dev21` don't).
-pub const RULESET_TOKENS: [&str; 7] = ["ts21", "ts_21", "ts2_1", "ts_2_1", "v21", "v2_1", "gp21"];
-
-/// Every `file:line: text` outside [`RULESET_CRATE`] (sources, manifests and configs under
-/// `crates/`, and xtask's manifest) that names TS 2.1 ([`RULESET_TOKENS`]), except the registering
-/// libraries' references to the plugin crate and its feature. A crate that depends on the
+/// Every `file:line: text` (sources, manifests and configs under `crates/`, and xtask's manifest)
+/// that names a ruleset ([`Ruleset::tokens`]) outside that ruleset's directory, except the
+/// registering libraries' references to its packages and feature, and test code ([`TestScope`]):
+/// tests may compare one ruleset with another, and nothing ships them. A crate that depends on a
 /// plugin has to name it in its manifest, so this also finds those.
 pub fn ruleset_leaks(repo: &Path) -> Vec<String> {
     let mut files = vec![repo.join("xtask/Cargo.toml")];
@@ -84,46 +95,99 @@ pub fn ruleset_leaks(repo: &Path) -> Vec<String> {
     let mut hits = Vec::new();
     for f in files {
         let rel = f.strip_prefix(repo).unwrap_or(&f).to_string_lossy().replace('\\', "/");
-        if rel.starts_with(&format!("{RULESET_CRATE}/")) || rel.contains("/target/") {
+        if rel.contains("/target/") {
             continue;
         }
         let registering = REGISTERING_CRATES.iter().any(|c| rel.starts_with(&format!("{c}/")));
         let Ok(text) = fs::read_to_string(&f) else { continue };
+        let mut scope = TestScope::new(&rel);
         for (i, line) in text.lines().enumerate() {
-            if names_ruleset(line, registering) {
-                hits.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            if scope.line(line) {
+                continue;
+            }
+            for r in &RULESETS {
+                if !rel.starts_with(&format!("{}/", r.dir)) && names_ruleset(r, line, registering) {
+                    hits.push(format!("{rel}:{}: {} named: {}", i + 1, r.name, line.trim()));
+                }
             }
         }
     }
     hits
 }
 
-/// True if `line` names TS 2.1 ([`RULESET_TOKENS`]). With `registering`, the references a
+/// Which lines of a file are test code: all of a `tests.rs` or a file under a `tests/`
+/// directory; in a manifest, its `[dev-dependencies]`; in a source file, the item after a
+/// `#[cfg(test)]` (and, when that item is a `mod ... {`, the rest of the file, where the port
+/// keeps its test modules).
+struct TestScope {
+    all: bool,
+    manifest: bool,
+    dev_deps: bool,
+    after_cfg_test: bool,
+}
+
+impl TestScope {
+    fn new(rel: &str) -> Self {
+        let all = rel.ends_with("/tests.rs") || rel.contains("/tests/");
+        TestScope { all, manifest: rel.ends_with(".toml"), dev_deps: false, after_cfg_test: false }
+    }
+
+    /// Whether `line` (the next one) is test code.
+    fn line(&mut self, line: &str) -> bool {
+        let t = line.trim();
+        if self.all {
+            return true;
+        }
+        if self.manifest {
+            if t.starts_with('[') {
+                self.dev_deps = t.starts_with("[dev-dependencies") || t.starts_with("[target.") && t.ends_with(".dev-dependencies]");
+            }
+            return self.dev_deps;
+        }
+        if t == "#[cfg(test)]" {
+            self.after_cfg_test = true;
+            return true;
+        }
+        if self.after_cfg_test {
+            if t.starts_with("#[") || t.starts_with("///") {
+                return true;
+            }
+            self.after_cfg_test = false;
+            if t.starts_with("mod ") && t.ends_with('{') || t.starts_with("pub mod ") && t.ends_with('{') {
+                self.all = true;
+            }
+            return true;
+        }
+        false
+    }
+}
+
+/// True if `line` names ruleset `r` ([`Ruleset::tokens`]). With `registering`, the references a
 /// library needs to register the plugin are allowed: the plugin's packages (`ts21_gameplay::ID`,
 /// `ts21-server`, `ts21_client::PLUGIN`, ..., their paths `../ts21`, `../ts21/server` and the doc
-/// `ts21.md`) and the `ts21` feature (`"ts21"`, `` `ts21` ``, `ts21 = [...]`).
-fn names_ruleset(line: &str, registering: bool) -> bool {
+/// `ts21.md`) and its feature (`"ts21"`, `` `ts21` ``, `ts21 = [...]`).
+fn names_ruleset(r: &Ruleset, line: &str, registering: bool) -> bool {
     let l = line.to_ascii_lowercase();
-    RULESET_TOKENS.iter().any(|t| {
+    r.tokens.iter().any(|t| {
         l.match_indices(t).any(|(at, _)| {
             if l[..at].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric()) {
                 return false;
             }
-            !(registering && *t == "ts21" && registration(&l[..at], &l[at + t.len()..]))
+            !(registering && *t == r.package && registration(r.package, &l[..at], &l[at + t.len()..]))
         })
     })
 }
 
-/// Whether a `ts21` between `before` and `after` is one of a registering library's references
-/// ([`names_ruleset`]).
-fn registration(before: &str, after: &str) -> bool {
-    let package = ["gameplay", "server", "client"]
+/// Whether a `package` token between `before` and `after` is one of a registering library's
+/// references ([`names_ruleset`]).
+fn registration(package: &str, before: &str, after: &str) -> bool {
+    let side = ["gameplay", "server", "client"]
         .iter()
-        .any(|p| after.strip_prefix(['_', '-']).is_some_and(|a| a.starts_with(p)) || before.ends_with(&format!("ts21_{p}::")));
+        .any(|p| after.strip_prefix(['_', '-']).is_some_and(|a| a.starts_with(p)) || before.ends_with(&format!("{package}_{p}::")));
     let path = (before.ends_with("../") && (after.starts_with('"') || after.starts_with('/'))) || after.starts_with(".md");
     let quoted = |q: char| before.ends_with(q) && after.starts_with(q);
     let feature = quoted('"') || quoted('`') || (before.trim().is_empty() && after.trim_start().starts_with('='));
-    package || path || feature
+    side || path || feature
 }
 
 /// The one-ruleset checks: the two libraries with a single gameplay ruleset feature each (the
@@ -156,7 +220,7 @@ pub fn run(repo: &Path) -> bool {
     }
     let leaks = ruleset_leaks(repo);
     for h in &leaks {
-        eprintln!("TS 2.1 named outside crates/ts21 (keep 2.1 in its plugin): {h}");
+        eprintln!("a ruleset named outside its plugin (keep each ruleset in its crate): {h}");
     }
     let mut ok = hits.is_empty() && leaks.is_empty();
     for (feature, packages) in SINGLE_RULESET {
@@ -259,35 +323,59 @@ mod tests {
 
     #[test]
     fn detects_ruleset_names() {
+        let [v30, v21] = &RULESETS;
         for bad in ["use ts21_gameplay::TS21;", "if v21 {", "let gp21 = 1;", "fn rules_ts_2_1() {}", "// a TS21 rule"] {
-            assert!(names_ruleset(bad, false), "{bad}");
+            assert!(names_ruleset(v21, bad, false), "{bad}");
+            assert!(!names_ruleset(v30, bad, false), "not 3.0: {bad}");
+        }
+        for bad in ["use ts30_gameplay::TS30;", "&FxStyle::TS30", "if v30 {", "fn rules_ts_3_0() {}"] {
+            assert!(names_ruleset(v30, bad, false), "{bad}");
         }
         for bad in ["if v21 {", "const TS21_SPEED: f32 = 310.0;", "let ts21 = true;"] {
-            assert!(names_ruleset(bad, true), "registering crate: {bad}");
+            assert!(names_ruleset(v21, bad, true), "registering crate: {bad}");
         }
-        for ok in [
-            "ts21-gameplay = { path = \"../ts21\", optional = true }",
-            "ts21-server = { path = \"../ts21/server\", optional = true }",
-            "ts21 = [\"dep:ts21-gameplay\", \"dep:ts21-client\"]",
-            "    ts_client::gameplay::register(ts21_gameplay::ID, &ts21_client::PLUGIN);",
-            "default = [\"ts21\"]",
-            "    #[cfg(feature = \"ts21\")]",
-            "    ts_server::gameplay::register(ts21_gameplay::ID, &ts21_gameplay::TS21);",
+        for (r, ok) in [
+            (v21, "ts21-gameplay = { path = \"../ts21\", optional = true }"),
+            (v21, "ts21-server = { path = \"../ts21/server\", optional = true }"),
+            (v21, "ts21 = [\"dep:ts21-gameplay\", \"dep:ts21-client\"]"),
+            (v21, "    ts_client::gameplay::register(ts21_gameplay::ID, &ts21_client::PLUGIN);"),
+            (v30, "default = [\"ts30\", \"ts21\"]"),
+            (v21, "    #[cfg(feature = \"ts21\")]"),
+            (v30, "        ts_server::bots::rules::register(ts30_gameplay::ID, &ts30_server::bots::BOTS);"),
         ] {
-            assert!(!names_ruleset(ok, true), "registering crate: {ok}");
-            assert!(names_ruleset(ok, false), "other crate: {ok}");
+            assert!(!names_ruleset(r, ok, true), "registering crate: {ok}");
+            assert!(names_ruleset(r, ok, false), "other crate: {ok}");
         }
-        for ok in ["fn tests21() {}", "let dev21 = 0;", "x = 2.1;", "assert_eq!(n, 21);"] {
-            assert!(!names_ruleset(ok, false), "{ok}");
+        for ok in ["fn tests21() {}", "let dev21 = 0;", "x = 2.1;", "assert_eq!(n, 21);", "assert_eq!(n, 30);"] {
+            assert!(!names_ruleset(v21, ok, false) && !names_ruleset(v30, ok, false), "{ok}");
         }
     }
 
-    /// Issue #100: TS 2.1 lives only in its plugin crate.
     #[test]
-    fn ruleset_stays_in_its_plugin() {
+    fn test_code_may_name_any_ruleset() {
+        let scope = |rel: &str, text: &str| {
+            let mut s = TestScope::new(rel);
+            text.lines().map(|l| s.line(l)).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            scope("crates/x/src/a.rs", "fn a() {}\n#[cfg(test)]\n/// doc\nstatic B: u8 = 0;\nfn c() {}"),
+            [false, true, true, true, false]
+        );
+        assert_eq!(scope("crates/x/src/a.rs", "fn a() {}\n#[cfg(test)]\nmod tests {\n    use x;\n}"), [false, true, true, true, true]);
+        assert_eq!(scope("crates/x/src/tests.rs", "use x;"), [true]);
+        assert_eq!(scope("crates/x/tests/t.rs", "use x;"), [true]);
+        assert_eq!(
+            scope("crates/x/Cargo.toml", "[dependencies]\na = 1\n[dev-dependencies]\nb = 1\n[features]\nc = []"),
+            [false, false, true, true, false, false]
+        );
+    }
+
+    /// Issues #100 and #200: each ruleset lives only in its plugin crate.
+    #[test]
+    fn rulesets_stay_in_their_plugins() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let hits = ruleset_leaks(repo);
-        assert!(hits.is_empty(), "TS 2.1 named outside crates/ts21 (keep 2.1 in its plugin):\n{}", hits.join("\n"));
+        assert!(hits.is_empty(), "a ruleset named outside its plugin (keep each ruleset in its crate):\n{}", hits.join("\n"));
     }
 
     /// AGENTS.md rule 2: game crates reach the engine only through goldsrc's safe wrappers.

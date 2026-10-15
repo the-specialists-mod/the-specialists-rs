@@ -20,6 +20,7 @@ fn ammo_rounds(id: i32, ammocount: i32) -> (i32, i32) {
 
 #[test]
 fn buy_menu_reads_the_rulesets_tables() {
+    ts30_gameplay::tables::make_default();
     table::set_ruleset_tables(ts21_gameplay::TS21.tables());
     // Id 8, the akimbo-only Berettas: $1800 and 20 slots (2.1 client `0x1001b627`, `0x1001b610`).
     assert_eq!(buy::cost(8, 0, false, false), 1800);
@@ -34,7 +35,7 @@ fn buy_menu_reads_the_rulesets_tables() {
     assert_eq!(ammo_rounds(9, 0), (2, 200));
 
     // TS 3.0's, unchanged.
-    table::set_ruleset_tables(table::base_tables());
+    table::set_ruleset_tables(ts30_gameplay::tables::tables());
     assert_eq!((buy::cost(8, 0, false, false), buy::slots_for(8, false, false, &Rules::default())), (900, 10));
     assert_eq!((buy::cost(17, 0, false, false), buy::slots_for(17, false, false, &Rules::default())), (1100, 15));
     let skorpion = BuyMenu { pending_weapon: 17, ..BuyMenu::default() };

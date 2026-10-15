@@ -558,7 +558,7 @@ mod tests {
         assert!(p.ammo_pack_stays_when_nothing_fits() && !CORE.ammo_pack_stays_when_nothing_fits());
     }
 
-    /// The 2.1 hooks differ where 2.1 does, and the core plugin keeps 3.0's.
+    /// The 2.1 hooks differ where 2.1 does, and the 3.0 plugin keeps 3.0's.
     #[test]
     fn hooks_follow_the_plugin() {
         let core: &dyn ServerRules = &ts30_server::Ts30Server;

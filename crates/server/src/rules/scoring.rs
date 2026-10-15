@@ -479,6 +479,7 @@ mod tests {
 
     #[test]
     fn a_ruleset_may_name_stocks_and_thrown_blades_plainly() {
+        ts30_gameplay::tables::make_default();
         // Issue #131: a ruleset may say "Stock" and "Throwing Knife" (the classname, renamed).
         let plain = WeaponNaming { describe_thrown_blades: false, stock_names_weapon: false };
         let coldcock = Snapshot { coldcock: true, ..Snapshot::default() };
@@ -495,6 +496,7 @@ mod tests {
 
     #[test]
     fn own_weapon_follows_the_ts_globals() {
+        ts30_gameplay::tables::make_default();
         let none = Snapshot::default();
         let close = Snapshot { close_combat: true, ..none };
         let coldcock = Snapshot { coldcock: true, ..none };
@@ -513,6 +515,7 @@ mod tests {
 
     #[test]
     fn weapon_info_falls_back_to_entry_zero() {
+        ts30_gameplay::tables::make_default();
         assert_eq!(weapon_info_name(-1), name(0));
         assert_eq!(weapon_info_name(0x26), name(0));
         assert_eq!(weapon_info_name(1), name(1));

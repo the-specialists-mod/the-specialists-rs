@@ -273,6 +273,7 @@ mod tests {
 
     #[test]
     fn saved_file_reads_back() {
+        ts30_gameplay::tables::make_default();
         let text = saved_text(0.2125);
         assert!(text.ends_with("//Misc game variables\narmor_absorb 0.212500\n"));
         let t = tables();

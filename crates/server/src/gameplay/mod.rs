@@ -42,7 +42,7 @@ pub struct ServerPlugin {
 pub(crate) struct Defaults;
 
 /// Neutral stand-ins for the rules hooks, which this crate's tests don't reach: the 3.0 plugin's
-/// own tests (`ts30-server`) check its bodies.
+/// own tests check its bodies.
 #[cfg(test)]
 impl ServerRules for Defaults {
     fn on_activate(&self) {}
@@ -392,7 +392,12 @@ static WARNED: Global<RefCell<String>> = Global(RefCell::new(String::new()));
 /// default ruleset first. False for an id that isn't a short number. The plugins' own cvars
 /// ([`ServerRules::cvars`]) are registered later, with the server's ([`register_cvars`]).
 pub fn register(id: &'static str, plugin: &'static ServerPlugin) -> bool {
-    REGISTRY.write().unwrap_or_else(PoisonError::into_inner).add(id, plugin)
+    let added = REGISTRY.write().unwrap_or_else(PoisonError::into_inner).add(id, plugin);
+    if added {
+        // The first plugin's are the default ruleset's tables (`set_default_tables` keeps the first).
+        shared::weapons::table::set_default_tables(plugin.gun.tables());
+    }
+    added
 }
 
 /// Every registered plugin's own cvars ([`ServerRules::cvars`]), in registration order, after the

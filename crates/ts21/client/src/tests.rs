@@ -1,4 +1,4 @@
-//! TS 2.1's client hooks against the 2.1 binary's numbers, and the core plugin's (TS 3.0's)
+//! TS 2.1's client hooks against the 2.1 binary's numbers, and the 3.0 plugin's
 //! answers to the same questions, which must not change.
 
 use super::*;
@@ -210,6 +210,7 @@ fn buy_menu_items() {
 
 #[test]
 fn buy_menu_akimbo_keys_and_lists() {
+    ts30_gameplay::tables::make_default();
     // No akimbo fix-up: a Desert Eagle (no akimbo version) bought with key 6 is "akimbo".
     let r = rules(v21(), 0);
     let mut m = BuyMenu::default();
@@ -236,6 +237,7 @@ fn buy_menu_akimbo_keys_and_lists() {
 
 #[test]
 fn buy_menu_reset_and_random() {
+    ts30_gameplay::tables::make_default();
     // No `cl_buykevlar`: a reset config is empty even with the cvar on.
     let r = Rules { buy_kevlar: true, cash: CASH, ..rules(v21(), 2) };
     let mut m = BuyMenu::default();
@@ -264,6 +266,7 @@ fn buy_menu_reset_and_random() {
 /// (issue #189): after it the next open rolls a 2.1 random loadout instead of the last config.
 #[test]
 fn buy_menu_init_rerolls_in_2_1() {
+    ts30_gameplay::tables::make_default();
     let r = Rules { cash: CASH, ..rules(v21(), 2) };
     let mut m = BuyMenu::default();
     m.open(&r, &mut Seq(vec![0, 1, 5, 0, 0, 0, 2, 0, 0, 0]));
@@ -424,7 +427,7 @@ fn client_bullet_looks() {
 }
 
 /// 2.1's weapon events (issue #160): builder parameters, reaches, the block branch, pitches and
-/// attenuations; the core plugin keeps 3.0's.
+/// attenuations; the 3.0 plugin keeps 3.0's.
 #[test]
 fn weapon_events() {
     use crate::events::*;

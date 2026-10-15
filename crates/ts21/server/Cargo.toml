@@ -14,4 +14,5 @@ shared        = { path = "../../shared" }
 
 # Tests only (see ../Cargo.toml).
 [dev-dependencies]
+ts30-gameplay = { path = "../../ts30" }
 ts30-server   = { path = "../../ts30/server" }

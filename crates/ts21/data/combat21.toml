@@ -1,4 +1,4 @@
-# TS 2.1's combat constants, in the shape of crates/shared/data/combat.toml. mp.dll 2.1 sources:
+# TS 2.1's combat constants, in the shape of the 3.0 plugin's data/combat.toml. mp.dll 2.1 sources:
 #   silencer        StandardFire 0x1004b400 / AkimboFire 0x1004b8c0: spread x1.2 (`double`),
 #                   damage x0.8; VKickback 0x10049b80: yaw x0.8 (the client's pitch too)
 #   headshot, leg   CBasePlayer::TraceAttack 0x10053310: head x2 for any DMG_BULLET (shotguns

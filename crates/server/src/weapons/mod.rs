@@ -1050,6 +1050,7 @@ mod tests {
     /// (The custom set here holds the same values, so concurrent tests read the same numbers.)
     #[test]
     fn a_new_map_drops_custom_weapon_values() {
+        ts30_gameplay::tables::make_default();
         use shared::weapons::{id, info, table};
         let w = info(id::AK47).unwrap().clone();
         assert!(table::set_weapon_params(id::AK47, w.accuracy, w.view_kick, w.acc_kick, w.damage, w.cost));
@@ -1099,6 +1100,7 @@ mod tests {
 
     #[test]
     fn tsgun_reset_empties_the_gun_and_its_send_caches() {
+        ts30_gameplay::tables::make_default();
         use shared::weapons::id;
         let mut inv = Inventory::default();
         assert_eq!(inv.gun.take_weapon(id::AK47, None, 0), Some(id::AK47));
@@ -1126,6 +1128,7 @@ mod tests {
 
     #[test]
     fn ts_init_frees_the_slots_and_drops_the_loadout_items() {
+        ts30_gameplay::tables::make_default();
         use shared::weapons::{att, id};
         let mut p = Player::default();
         p.inv.sv.has_gun = true;
@@ -1148,6 +1151,7 @@ mod tests {
 
     #[test]
     fn destroying_the_items_leaves_slots_items_and_speed() {
+        ts30_gameplay::tables::make_default();
         use shared::weapons::{att, id};
         let mut inv = Inventory::default();
         inv.sv.has_gun = true;

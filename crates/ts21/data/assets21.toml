@@ -1,7 +1,7 @@
 # TS 2.1's client assets per weapon, from the same writers as weapons21.toml (`info+0x12a` v_,
 # `+0x16a` p_, `+0x1aa` silenced p_, `+0x1ea` w_ models, `+0xe0` shell, `+0x22a` animation
 # extension, `+0x120` body groups, `+0x2de`/`+0x31e` sounds, `+0x364..+0x370` effects, `+0xcc`
-# handling). Fields as in crates/shared/data/assets.toml. Every file ships with TS 3.0.
+# handling). Fields as in the 3.0 plugin's data/assets.toml. Every file ships with TS 3.0.
 asset = [
 { id = 1, model = "glock18", w_model = "glock18", p_model_sil = "p_glock18_sil.mdl", sound = "glock/glock-fire.wav", sound2 = "glock/glock-fire-sil.wav", shell = "9mm_shell", anim_ext = "onehanded", body = [1, 2, 2, 0, 2], fx = [6, 0, 18, 4], f_d4 = 1 },
 { id = 3, model = "uzi", w_model = "uzi", p_model_sil = "p_uzi_sil.mdl", sound = "uzi/uzi-fire.wav", sound2 = "uzi/uzi-fire-sil.wav", shell = "9mm_shell", anim_ext = "onehanded", body = [1, 0, 0, 0, -1], fx = [9, 2, 22, 5], f_d4 = 1 },

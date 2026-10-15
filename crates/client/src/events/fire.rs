@@ -1027,6 +1027,7 @@ mod tests {
     /// shot's client bullets carry the same damage as an unsilenced one (both rulesets).
     #[test]
     fn silencer_leaves_event_bullet_damage_alone() {
+        ts30_gameplay::tables::make_default();
         let w = tables().weapon(13).unwrap();
         let shot = |silenced| Shot {
             id: 13,
@@ -1164,6 +1165,7 @@ mod tests {
     /// Event parameters are the server's: any weapon id, ammo index, seed and float.
     #[test]
     fn event_params_out_of_range() {
+        ts30_gameplay::tables::make_default();
         for id in [i32::MIN, -1, 0, 29, 38, 255, 256, i32::MAX] {
             let _ = weapon_body(id, -1);
             let _ = super::info::info(id).map(|i| i.set(true));

@@ -223,6 +223,7 @@ mod tests {
 
     #[test]
     fn buy_checks() {
+        ts30_gameplay::tables::make_default();
         use shared::weapons::id;
         assert!(valid_buy(id::M4 as c_int, 0, 4));
         assert!(valid_buy(id::BERETTA as c_int, 3, 0));

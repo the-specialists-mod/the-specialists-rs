@@ -573,6 +573,7 @@ mod tests {
 
     #[test]
     fn victims_weapon_needs_the_victims_gun_in_hand() {
+        ts30_gameplay::tables::make_default();
         let victim: *mut edict_t = std::ptr::without_provenance_mut(0x100);
         let other: *mut edict_t = std::ptr::without_provenance_mut(0x200);
         assert!(victims_gun(Some(id::BERETTA), |_| victim, victim));

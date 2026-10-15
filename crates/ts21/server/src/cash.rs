@@ -249,7 +249,7 @@ mod tests {
         let v21: &dyn ServerRules = &crate::Ts21Server;
         assert_eq!(v21.pick_up_cost(id::M61, m61, Some(&three)), Some(m61.slots as f32));
         let core: &dyn ServerRules = &ts30_server::Ts30Server;
-        let t30 = shared::weapons::table::base_tables();
+        let t30 = ts30_gameplay::tables::tables();
         let uzis30 = t30.weapon(16).unwrap();
         assert_eq!(core.pick_up_cost(16, uzis30, None), None);
     }

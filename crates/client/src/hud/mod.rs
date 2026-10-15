@@ -1218,6 +1218,7 @@ mod tests {
     /// 0.3 s, never on the first, and only with a stored power-up.
     #[test]
     fn usepowerup_needs_a_double_tap() {
+        ts30_gameplay::tables::make_default();
         let mut h = Hud { pw_flags: 1, ..Hud::default() };
         assert!(!usepowerup_tap(&mut h, 10.0), "the first press only arms the window");
         assert!((h.usepowerup_time - 10.3).abs() < 1e-5);

@@ -647,6 +647,7 @@ mod tests {
     /// Server pack -> client unpack keeps what the predictor needs.
     #[test]
     fn networked_round_trip() {
+        ts30_gameplay::tables::make_default();
         let mut server = Gun { current: id::AK47, ..Default::default() };
         let s = &mut server.status[id::AK47 as usize];
         s.owned = true;
@@ -725,6 +726,7 @@ mod tests {
     /// (no view model, animation or `Draw` event, `m_flNextAttack` untouched).
     #[test]
     fn drop_weapon_predicts_no_switch() {
+        ts30_gameplay::tables::make_default();
         for id in [id::M61, id::KNIFE, id::KATANA] {
             let mut server = Gun { current: id, ..Default::default() };
             server.status[id as usize] = Status { owned: true, clip: 1, mode: 1, items: 0, ..Default::default() };
@@ -770,6 +772,7 @@ mod tests {
     /// rebuild (TS keeps them until the gun's Spawn); none counts as owned.
     #[test]
     fn rebuild_keeps_other_records() {
+        ts30_gameplay::tables::make_default();
         let mut server = Gun { current: id::AK47, ..Default::default() };
         server.status[id::AK47 as usize] = Status { owned: true, clip: 30, ..Default::default() };
         let mut ls = local_state_t::default();
@@ -809,6 +812,7 @@ mod tests {
     /// The rebuild writes pev->body from the current record; kung fu leaves it.
     #[test]
     fn rebuild_body() {
+        ts30_gameplay::tables::make_default();
         let mut g = Gun { current: id::AK47, ..Default::default() };
         g.status[id::AK47 as usize] = Status { owned: true, items: att::SCOPE, body: 0, ..Default::default() };
         assert_eq!(rebuilt_body(&g), Some(body_by_items(id::AK47, att::SCOPE)));
@@ -820,6 +824,7 @@ mod tests {
     /// fire-mode memory both ways; kung fu runs the (early) holster instead.
     #[test]
     fn respawn_deploy() {
+        ts30_gameplay::tables::make_default();
         let mut g = Gun { current: id::AK47, ..Default::default() };
         g.status[id::AK47 as usize] = Status { owned: true, mode: 2, state: 3, alt_grip: true, items: att::SCOPE, ..Default::default() };
         assert_eq!(deploy(&mut g), Some((id::AK47, att::SCOPE)));
@@ -841,6 +846,7 @@ mod tests {
     /// the respawn Deploy: a mode of 255 wraps the byte mode memory instead of overflowing.
     #[test]
     fn garbage_clientdata_rebuild_and_deploy() {
+        ts30_gameplay::tables::make_default();
         for v in [f32::NAN, f32::INFINITY, -f32::INFINITY, 1e20, -1e20, 255.0, 256.0, -1.0, 0.0, 16.0, 38.0] {
             let mut ls = local_state_t::default();
             let c = &mut ls.client;

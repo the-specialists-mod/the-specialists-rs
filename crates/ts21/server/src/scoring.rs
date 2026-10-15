@@ -415,6 +415,7 @@ mod tests {
 
     #[test]
     fn a_cycler_kill_is_plain() {
+        ts30_gameplay::tables::make_default();
         // Issue #148: an active item that isn't the gun is no kung fu, even under close combat.
         use shared::weapons::id;
         assert_eq!(own_kind(Active::Cycler, None, true), Kind::Plain);

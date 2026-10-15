@@ -79,6 +79,7 @@ mod tests {
     /// 6.3000002 (0x40c9999a), where the `float` 0.7 gave 6.2999997 (0x40c99999).
     #[test]
     fn stunt_and_dodge_take_the_double_seven_tenths() {
+        ts30_gameplay::tables::make_default();
         let hit = |stunting, dodging| {
             hit_damage(&PlayerHit { damage: 9.0, bits: bits::BULLET, hitgroup: hitgroup::CHEST, stunting, dodging }).amount
         };
@@ -130,6 +131,7 @@ mod tests {
 
     #[test]
     fn hit_defaults_are_3_0() {
+        ts30_gameplay::tables::make_default();
         let r: &dyn ServerRules = &Ts30Server;
         let h = r.player_hit(&hit(30.0, bits::BULLET, hitgroup::HEAD));
         assert_eq!(h, HitDamage { amount: 60.0, headshot: true, record_headshot: true });

@@ -768,6 +768,7 @@ mod tests {
     /// (255, unknown akimbo links) always ends.
     #[test]
     fn slot_selection_with_any_grid() {
+        ts30_gameplay::tables::make_default();
         let mut h = Hud::default();
         for (r, row) in h.grid.iter_mut().enumerate() {
             for (b, s) in row.iter_mut().enumerate() {
@@ -788,6 +789,7 @@ mod tests {
 
     #[test]
     fn slot_menu_cycles() {
+        ts30_gameplay::tables::make_default();
         let mut h = Hud::default();
         give(&mut h, 1); // glock [2,1]
         give(&mut h, 12); // deagle [2,3]
@@ -805,6 +807,7 @@ mod tests {
 
     #[test]
     fn fast_switch_and_wires() {
+        ts30_gameplay::tables::make_default();
         let mut h = Hud::default();
         give(&mut h, 13);
         assert_eq!(select_slot(&mut h, 4, true).as_deref(), Some("weapon_13"));
@@ -816,6 +819,7 @@ mod tests {
 
     #[test]
     fn next_prev_skips_single_when_akimbo_owned() {
+        ts30_gameplay::tables::make_default();
         let mut h = Hud::default();
         give(&mut h, 9); // mk23 [2,2]
         give(&mut h, 10); // mk23 akimbo [5,2]

@@ -456,6 +456,7 @@ mod tests {
 
     #[test]
     fn multipliers() {
+        ts30_gameplay::tables::make_default();
         assert_eq!(hitgroup_scale(hitgroup::HEAD, bits::BULLET), 2.0);
         assert_eq!(hitgroup_scale(hitgroup::HEAD, bits::BULLET | DMG_SHOTGUN), 1.5);
         assert_eq!(hitgroup_scale(hitgroup::HEAD, bits::CLUB), 1.0, "melee isn't a headshot");

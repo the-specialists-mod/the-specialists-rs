@@ -368,6 +368,7 @@ mod tests {
 
     #[test]
     fn dropped_gun_status_lands_in_takeweapons_record() {
+        ts30_gameplay::tables::make_default();
         let mut owned = [false; MAX_WEAPONS];
         assert_eq!(copied_record(id::BERETTA, &owned), Some(id::BERETTA));
         // A second single pistol becomes the akimbo pair.

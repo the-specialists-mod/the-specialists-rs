@@ -84,7 +84,7 @@ mod tests {
     /// `PickUpWeapon` (0x9314c): no akimbo pair of a single gun, a dropped stack costs per item.
     #[test]
     fn pick_up_cost_refuses_a_single_guns_pair_and_charges_a_stack() {
-        let t = shared::weapons::table::base_tables();
+        let t = ts30_gameplay::tables::tables();
         let beretta = t.weapon(id::BERETTA).unwrap();
         let pair = t.weapon(beretta.akimbo as u8).unwrap();
         assert_eq!(pick_up_cost(pair.id, pair, None), None, "the pair only comes from two singles");

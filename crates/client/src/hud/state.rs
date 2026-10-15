@@ -1054,6 +1054,7 @@ mod tests {
     /// panel's fire mode, clip, attachments and reserve are cleared; power back to 100.
     #[test]
     fn weapons_vid_init_clears_the_panel() {
+        ts30_gameplay::tables::make_default();
         let mut h = Hud::default();
         h.reset_weapons();
         assert!(h.grid.iter().flatten().any(|s| s.id == 0), "Reset puts kung fu in its slot");
@@ -1087,6 +1088,7 @@ mod tests {
 
     #[test]
     fn status_messages() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1110,6 +1112,7 @@ mod tests {
     /// change (`ResetHUD`/`HUD_VidInit`) doesn't forget it.
     #[test]
     fn gameplay_ruleset_per_map() {
+        ts30_gameplay::tables::make_default();
         use shared::protocol::hud::SrvSett;
         let s = Screen::default();
         let c = ctx(&s);
@@ -1141,6 +1144,7 @@ mod tests {
     /// and 7 without a key 5 first are ignored.
     #[test]
     fn server_version() {
+        ts30_gameplay::tables::make_default();
         use shared::protocol::hud::SrvSett;
         let s = Screen::default();
         let c = ctx(&s);
@@ -1163,6 +1167,7 @@ mod tests {
 
     #[test]
     fn powerups() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1180,6 +1185,7 @@ mod tests {
     /// it (`ClientRules::kungfu_weapon_info_resets_menu_selection`).
     #[test]
     fn kungfu_weapon_info_keeps_menu_selection() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud { menu_open: true, menu_row: 3, menu_bucket: 4, ..Hud::default() };
@@ -1190,6 +1196,7 @@ mod tests {
 
     #[test]
     fn weapon_grid() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1220,6 +1227,7 @@ mod tests {
     /// nothing. A mode change then plays the switch sound from `Think` (`h.firemode`).
     #[test]
     fn predicted_weapon_writes_the_element() {
+        ts30_gameplay::tables::make_default();
         use shared::weapons::{Gun, Status, id, info};
         let mut h = Hud { weapon: id::BERETTA as i32, ..Default::default() };
         h.reserve[info(id::BERETTA).unwrap().ammo as usize] = 45;
@@ -1241,6 +1249,7 @@ mod tests {
 
     #[test]
     fn ts_messages_stack_and_replace() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1267,6 +1276,7 @@ mod tests {
     /// rescan starts at slot 1.
     #[test]
     fn ts_message_slots_follow_ts() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut fx = Vec::new();
@@ -1289,6 +1299,7 @@ mod tests {
 
     #[test]
     fn objectives_bounds_fixed() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1306,6 +1317,7 @@ mod tests {
 
     #[test]
     fn scoreboard_messages() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1326,6 +1338,7 @@ mod tests {
     /// `strncpy(.., 16)` does.
     #[test]
     fn team_names_keep_bytes() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1351,6 +1364,7 @@ mod tests {
     /// menu 4 brings the map's name, 63 bytes at most.
     #[test]
     fn vgui_menu_message() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1366,6 +1380,7 @@ mod tests {
     /// `ScoreInfo` stores a negative team number as 0 (`0x100650f6`).
     #[test]
     fn score_info_clamps_the_team() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1380,6 +1395,7 @@ mod tests {
     /// `Geiger` turns the element on with the byte times 4.
     #[test]
     fn geiger_message() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1393,6 +1409,7 @@ mod tests {
 
     #[test]
     fn motd_chunks_and_menus() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1420,6 +1437,7 @@ mod tests {
     /// `ShowMenu` runs `KB_ConvertString` (`0x10028843`) on the localised text.
     #[test]
     fn show_menu_key_names() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let bind = |b: &[u8]| (b.eq_ignore_ascii_case(b"use")).then(|| b"e".to_vec());
         let c = Ctx { key_binding: &bind, ..ctx(&s) };
@@ -1433,6 +1451,7 @@ mod tests {
 
     #[test]
     fn spectator_opens_buy_menu() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1454,6 +1473,7 @@ mod tests {
 
     #[test]
     fn spectator_applies_cl_thirdperson() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let mut h = Hud::default();
         let mut toggles = |third: bool, cl_thirdperson: f32| {
@@ -1470,6 +1490,7 @@ mod tests {
 
     #[test]
     fn thirdperson_switch_on_weapon_info() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let mut h = Hud::default();
         let mut toggles = |old: i32, new: u8, third: bool| {
@@ -1490,6 +1511,7 @@ mod tests {
     /// its indexed state in range.
     #[test]
     fn handlers_survive_garbage() {
+        ts30_gameplay::tables::make_default();
         let mut seed = 0x2545_f491_4f6c_dd1du64;
         let mut next = || {
             seed ^= seed << 13;
@@ -1542,6 +1564,7 @@ mod tests {
 
     #[test]
     fn round_timer_ticks() {
+        ts30_gameplay::tables::make_default();
         let mut h = Hud { round_time: 3.0, ..Default::default() };
         assert_eq!(h.tick_round_timer(1.0), 2);
         assert_eq!(h.tick_round_timer(1.5), 2);
@@ -1552,6 +1575,7 @@ mod tests {
 
     #[test]
     fn text_msg_formats() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();
@@ -1578,6 +1602,7 @@ mod tests {
     /// `READ_STRING` gives ""), and `ResetHUD` runs the SDK elements' `Reset`s.
     #[test]
     fn hud_text_and_reset_hud() {
+        ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let c = ctx(&s);
         let mut h = Hud::default();

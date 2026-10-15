@@ -371,6 +371,7 @@ mod tests {
 
     #[test]
     fn sprite_names_cover_table() {
+        ts30_gameplay::tables::make_default();
         for w in shared::weapons::tables().weapons() {
             assert!(weapon_sprite(w.id as usize).is_some(), "weapon {} has a HUD sprite", w.id);
         }

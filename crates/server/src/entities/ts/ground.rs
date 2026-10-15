@@ -573,6 +573,7 @@ mod tests {
 
     #[test]
     fn remaps_are_real_weapons() {
+        ts30_gameplay::tables::make_default();
         for c in [c"weapon_shotgun", c"weapon_9MMAR", c"weapon_handgrenade", c"ammo_ARgrenades"] {
             for &id in hl_weapon_ids(c).unwrap() {
                 assert!(tables().weapon(id as u8).is_some(), "{c:?} → {id}");
@@ -601,6 +602,7 @@ mod tests {
 
     #[test]
     fn valid_ids_follow_weapon_info() {
+        ts30_gameplay::tables::make_default();
         // Kung fu and the briefcase have no `valid` byte; ids outside 0..38 read entry 0.
         for id in [0, 29, 38, 39, 255, 256 + 5, -1, i32::MIN] {
             assert!(!weapon_valid(id), "{id}");
@@ -615,6 +617,7 @@ mod tests {
 
     #[test]
     fn spawn_turns_akimbo_pairs_into_singles() {
+        ts30_gameplay::tables::make_default();
         // Berettas, MK23, Mini-Uzis, Five-seveNs, Skorpions → their single.
         for (pair, single) in [(8, 2), (10, 9), (16, 3), (30, 14), (37, 17)] {
             assert_eq!(spawn_weapon_id(pair), Some(single), "{pair}");
@@ -635,6 +638,7 @@ mod tests {
 
     #[test]
     fn hl_ammo_classes_fill_their_types() {
+        ts30_gameplay::tables::make_default();
         assert_eq!(hl_ammo_types(c"ammo_crossbow"), Some(&[8, 13][..]));
         assert_eq!(hl_ammo_types(c"ammo_buckshot"), Some(&[3][..]));
         assert_eq!(hl_ammo_types(c"ammo_gaussclip"), Some(&[6, 4][..]));
@@ -651,6 +655,7 @@ mod tests {
 
     #[test]
     fn buyable_price() {
+        ts30_gameplay::tables::make_default();
         let t = tables();
         let deagle = t.weapon(12).unwrap();
         let ammo = t.ammo(deagle.ammo).unwrap().price;

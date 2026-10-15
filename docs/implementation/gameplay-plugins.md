@@ -8,10 +8,18 @@ first, and the first registered is the **default**: `ts_gameplay`'s default valu
 fallback for an empty or unknown id.
 
 The plugins keep each ruleset's code apart. The core crates (`shared`, `ts-server`, `ts-client`)
-contain no code, constants or `if`s for 2.1. They call **hooks** at the points where a ruleset
-can differ. Moving TS 3.0's rules out of the core into `crates/ts30` is issue #200: so far the
-plugin objects and the default ruleset have moved, and each hook's default body is still the 3.0
-behaviour, which the 3.0 plugin inherits.
+name no ruleset. They hold TS's mechanics, which every ruleset runs, and call **hooks** at the
+points where a ruleset decides something. The hooks have no default bodies: each ruleset answers
+every one, TS 3.0 in `crates/ts30` (issue #200) and TS 2.1 in `crates/ts21`. Code both rulesets
+use stays in the core as a public helper; the 3.0-only code behind a hook lives in the 3.0
+plugin.
+
+Not every 3.0 rule is behind a hook yet: some paths run TS 3.0's code for every ruleset where
+2.1 is the same or not yet ported (client commands after `client_command` declines, parts of
+`lifecycle::{killed, on_spawn, start_observer, death_think}`, `teams::change_team`, the
+explosion pitch `events::fire_pitch`, the texture table's size), and the core still holds the
+branches for 2.1's round modes (`Mode::RoundTdm`, `Mode::Objective`). Moving those behind hooks is
+issue #200's phase 2.
 
 The C plugin API ([plugin-api.md](plugin-api.md), for AMX Mod X) is a different thing. It is a
 narrow table of player setters, and it can't reach movement, prediction or the HUD.
@@ -23,7 +31,7 @@ crates/
   gameplay/   ts-gameplay: ids, the channels that carry them, the generic Registry<P>,
               info-string lookup. No dependencies, so it sits below shared.
   shared/src/gameplay/
-    mod.rs    re-exports; Defaults, every hook's default body, for the crate's tests
+    mod.rs    re-exports
     pm.rs     PmRules: movement hooks (shared::pm)
     gun.rs    GunRules: gun hooks (shared::weapons::gun, through GunHost::rules)
   server/src/gameplay/
@@ -54,15 +62,21 @@ crates/
 
 * `shared`'s movement and gun code call `PmRules` and `GunRules`, so those traits must be in
   `shared` or below it.
-* A hook's 3.0 body is the code it replaces, and that code takes the owning crate's types. For
-  example, `ServerRules::points_for_frag` takes the server's `DamageInfo` and damage snapshot,
-  and its default calls `rules::scoring::points_for_frag`.
+* A hook takes the owning crate's types. For example, `ServerRules::points_for_frag` takes the
+  server's `Frag` (the damage info and snapshot), and both rulesets' bodies use the server's
+  scoring helpers.
 
-So each trait is defined in the crate that owns its types, with default methods holding the 3.0
-behaviour. `ts-gameplay` keeps what every side shares and what names no game type: the channels
-and the registry. The 3.0 plugin implements every trait with the defaults, and the 2.1 plugin
-overrides what its ruleset changes (by now, every hook but two empty ones). Each trait has its own module file, so work on
-different areas touches different files.
+So each trait is defined in the crate that owns its types, without default bodies, and each
+ruleset implements all of it. `ts-gameplay` keeps what every side shares and what names no game
+type: the channels and the registry. Each trait has its own module file, so work on different
+areas touches different files.
+
+**Tests.** A core crate's unit tests can't use a ruleset (the ruleset depends on the core crate,
+so cargo would link a second copy of it). Tests of 3.0 behaviour live in the 3.0 plugin's crates.
+The core crates' own tests use a `#[cfg(test)]` stand-in plugin (`gameplay::Defaults`, inert
+answers) and, in `ts-server`/`ts-client`, the 3.0 shared hooks (`ts30_gameplay::TS30`, a
+dev-dependency, which links the same `shared`). Tests that read the weapon tables without
+registering a ruleset first call `ts30_gameplay::tables::make_default()`.
 
 **Why a plugin is a struct of hook objects, in one package per side.** On each side a plugin is
 `ServerPlugin { pm, gun, server }` or `ClientPlugin { pm, gun, client }`. A plugin's server
@@ -229,8 +243,8 @@ observing).
 
 ## 5. The hook contract
 
-* **The default body is TS 3.0's exact behaviour.** That includes the floating point: a hook
-  whose result feeds the movement's `Arith` maths returns the value the 3.0 code used as a
+* **The 3.0 plugin's body is TS 3.0's exact behaviour.** That includes the floating point: a
+  hook whose result feeds the movement's `Arith` maths returns the value the 3.0 code used as a
   constant (`PmRules::recover_input_scale` returns `0.5f32`, which the code multiplies as
   before). Adding a hook must not change 3.0 behaviour. `cargo xtask all` has to pass unchanged.
 * **Hook at the level where rulesets differ.** Hook a whole function where another ruleset runs
@@ -276,7 +290,7 @@ The hooks so far:
 | `PmRules` | `friction_edge_by_reciprocal()` | false: `vel / speed × 16 + origin` | `pm/mod.rs` `friction` (`edge_ahead`) |
 | `PmRules` | `ieee_compares()` | false: under `Arith::Msvc` the movement's `float` compares test C3/C0 as 3.0's `mp.dll` does, so a NaN is equal and below; true runs the `MsvcIeee` build (same arithmetic, IEEE compares) | `pm/mod.rs` `player_move_with` (every `Fpu::cmp_eq`/`cmp_lt`/`cmp_le` and `FpuMath::normalize`) |
 | `GunRules` | `semi_auto_delay(rate)` | 0.1 | the plugin's `StandardFire` (3.0: `ts30_gameplay::gun::standard_fire`) |
-| `GunRules` | `tables()` | `table::base_tables()` | made the active `weapons::tables()` (below) |
+| `GunRules` | `tables()` | `ts30_gameplay::tables::tables()` (`crates/ts30/data/*.toml`, parsed by `table::parse`); the registries make the first plugin's the default (`table::set_default_tables`) | made the active `weapons::tables()` (below) |
 | `GunRules` | `fire(gun, host)` | `ts30_gameplay::gun::fire` (`CTSGun::Fire` and the three shot functions) | `weapons/gun.rs` `Gun::fire` |
 | `GunRules` | `timer_step(arith, frametime, fuser1, powerups)` | `Gun::timer_dt` (`frametime x GiveSlowMul x DFR 1.5`) | server `weapons/mod.rs` `post_think`, client `prediction/gun.rs` `post_think` |
 | `GunRules` | `command_frame_time(msec)` | `(float)(msec * 0.001)` | client `prediction/gun.rs` `post_think` |
@@ -455,11 +469,13 @@ rules the raw time scale (`time_scale`) and whether it is the client's predictio
 
 ## 6. Adding a hook
 
-1. Add a method to the trait's file with the 3.0 behaviour as its default body:
-   `shared/src/gameplay/pm.rs` (`PmRules`), `shared/src/gameplay/gun.rs` (`GunRules`),
-   `server/src/gameplay/server.rs` (`ServerRules`) or `client/src/gameplay/client.rs`
-   (`ClientRules`). Move the 3.0 code into the default, or have the default call it (make the
-   3.0 function and its argument types `pub`).
+1. Add a method, without a body, to the trait's file: `shared/src/gameplay/pm.rs` (`PmRules`),
+   `shared/src/gameplay/gun.rs` (`GunRules`), `server/src/gameplay/server.rs` (`ServerRules`),
+   `server/src/bots/rules.rs` (`NativeBotRules`) or `client/src/gameplay/client.rs`
+   (`ClientRules`). Its doc says what it decides; the TS 3.0 citation goes on the 3.0 impl.
+   Implement it in every ruleset: move the 3.0 code into `crates/ts30` (or, when another ruleset
+   uses it too, keep it in the core as a `pub` helper the 3.0 body calls), and add the core test
+   stand-in's (`Defaults`) answer if the crate has one.
 2. Call it where the 3.0 code was, through the rules the path already resolved (§3):
    * movement: `self.rules` in `Pm`
    * server code outside the movement and the gun (the move speed): `crate::gameplay::active().pm`
@@ -471,38 +487,42 @@ rules the raw time scale (`time_scale`) and whether it is the client's predictio
      fields the plugin needs are `pub` (`Trigger`, `GroundWeapon`, `MapGlobals`).
 
    Don't resolve again inside a helper. Pass the rules down instead.
-3. Override it in the plugin. For TS 2.1, the shared hooks go in `crates/ts21/src/shared/` (on
+3. The other rulesets' answers: for TS 2.1, the shared hooks go in `crates/ts21/src/shared/` (on
    `Ts21`), the server hooks in `crates/ts21/server/src/` (`Ts21Server`) and the client hooks in
-   `crates/ts21/client/src/` (`Ts21Client`).
+   `crates/ts21/client/src/` (`Ts21Client`). TS 3.0's are on `Ts30`, `Ts30Server`, `Ts30Bots`
+   and `Ts30Client` under `crates/ts30/`.
 4. Add a row to §5's table, and a unit test where the behaviour can be tested without the engine
    (e.g. `shared/src/pm/tests.rs` `movement_hooks_follow_the_plugin` and
    `every_movement_hook_reaches_the_movement`, which run the movement in a fake world).
-5. Check: `cargo test`, `cargo xtask lint` (isolation, the 3.0-only build), `cargo xtask all`.
+5. Check: `cargo test`, `cargo xtask lint` (isolation, each ruleset alone), `cargo xtask all`.
 
 ## 7. Adding a ruleset
 
-1. Create three packages, as `crates/ts21` does. The shared one depends on `ts-gameplay` and
+1. Create three packages, as `crates/ts30` and `crates/ts21` do. The shared one depends on `ts-gameplay` and
    `shared`, implements `PmRules` and `GunRules` on a unit struct with a `static`, and defines the
    id (a new number). The server one depends on it and `ts-server`, implements `ServerRules`, and
-   defines `pub static PLUGIN: ServerPlugin`. The client one does the same with `ts-client`,
+   defines `pub static PLUGIN: ServerPlugin` (and its native bots' `NativeBotRules`). The client one does the same with `ts-client`,
    `ClientRules` and `ClientPlugin`. Add the side packages to the workspace members.
 2. Register it in `server-dll` (`register_gameplay`, from `GameDLLInit`) and `client-dll`
    (`register_gameplay`, from `Initialize`), behind a default-on cargo feature named after it,
    after the rulesets already there (the first registered is the default). Each library depends
    only on its own side's package. Add the feature to the libraries' `compile_error!` check and
    to `lint::SINGLE_RULESET`.
-3. Extend the isolation check in `xtask/src/lint.rs` (`RULESET_CRATE`, `RULESET_TOKENS`) to
-   cover the new crate, and add its docs.
+3. Add it to the isolation check in `xtask/src/lint.rs` (`RULESETS`: its directory, package
+   name and tokens) and to `GAME_CRATES`, and add its docs.
 
 ## 8. Isolation checks
 
 `cargo xtask lint` (and `cargo xtask build` and `cargo test`, through `xtask`'s unit test)
 checks the isolation:
 
-* **Isolation.** It fails if a source, manifest or config outside `crates/ts21/` names TS 2.1
-  (`ts21`, `v21`, `ts_2_1`, `gp21`, ...: `lint::RULESET_TOKENS`). The two libraries may name the
-  plugin crate and the `ts21` feature to register it. A crate that depends on the plugin has to
-  name it in its manifest, so the same check finds those.
+* **Isolation.** It fails if a source, manifest or config outside a ruleset's directory names
+  that ruleset (`ts30`, `v30`, `TS30`, ... outside `crates/ts30/`; `ts21`, `v21`, `ts_2_1`,
+  `gp21`, ... outside `crates/ts21/`: `lint::RULESETS`). The two libraries may name each plugin's
+  packages and feature to register it. Test code may name any ruleset (`[dev-dependencies]`,
+  `tests.rs`, `tests/`, `#[cfg(test)]` items and test modules): tests compare rulesets, and
+  nothing ships them. A crate that depends on a plugin has to name it in its manifest, so the
+  same check finds those.
 * **Each ruleset on its own** (`lint::SINGLE_RULESET`). `cargo test -p ts-server-dll -p
   ts-client-dll -p ts-server -p ts-client -p shared -p ts-gameplay -p <the ruleset's three
   packages> --no-default-features --features ts-server-dll/<f>,ts-client-dll/<f>` for `ts30` and

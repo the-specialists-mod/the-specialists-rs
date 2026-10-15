@@ -6,7 +6,7 @@ use crate::{Ts30, recoil};
 use shared::gameplay::{GunRules, Predicted, SpreadDecay};
 use shared::pm::Arith;
 use shared::weapons::spread::{self, PelletOffset, PelletSide, Vec3};
-use shared::weapons::table::{Tables, WeaponInfo, base_tables};
+use shared::weapons::table::{Tables, WeaponInfo};
 use shared::weapons::{Event, EventArgs, Gun, GunHost, MAX_WEAPONS, id, kind, kind_of, mode, mode_mask};
 
 const IN_ATTACK: u32 = 1;
@@ -19,9 +19,9 @@ pub const PRIORITY: [u8; 38] = [
 ];
 
 impl GunRules for Ts30 {
-    /// TS 3.0's embedded tables ([`base_tables`]).
+    /// TS 3.0's embedded tables ([`crate::tables::tables`]).
     fn tables(&self) -> &'static Tables {
-        base_tables()
+        crate::tables::tables()
     }
 
     /// `CTSGun::Fire` (0x81c78): [`fire`].

@@ -1,6 +1,6 @@
 # TS 2.1's ammo table (`s_ammo_info`, 16 x 0x38 bytes at mp.dll 0x100b1e98), decoded from
 # `compile_ammo_info` (0x10049420) and `Set_ammo_count` (0x100492a0). Fields as in
-# crates/shared/data/ammo.toml, plus:
+# the 3.0 plugin's data/ammo.toml, plus:
 #   damage  `+0x1c`, the bullet's integer base damage (weapons21.toml `mult` scales it; 3.0 keeps
 #           its radial spread scale 1.0 there)
 # 2.1 has 11 types: no 11 (3.0's .454 Casull, which is 12 here), no .32ACP or 7.62x51. The range

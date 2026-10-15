@@ -216,6 +216,7 @@ mod tests {
 
     #[test]
     fn weapon_info_on_a_new_weapon_and_on_a_reserve_change() {
+        ts30_gameplay::tables::make_default();
         use shared::weapons::id;
         let mut sv = crate::weapons::SvState::default();
         let mut gun = shared::weapons::Gun::default();

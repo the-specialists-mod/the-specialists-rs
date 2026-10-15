@@ -375,7 +375,7 @@ impl Ctx {
         }
         let leaks = lint::ruleset_leaks(&self.repo);
         if !leaks.is_empty() {
-            eprintln!("TS 2.1 named outside crates/ts21 (issue #100: keep 2.1 in its plugin):");
+            eprintln!("a ruleset named outside its plugin (issues #100, #200: keep each ruleset in its crate):");
             for h in leaks {
                 eprintln!("  {h}");
             }

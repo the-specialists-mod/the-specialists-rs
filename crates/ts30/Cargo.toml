@@ -14,3 +14,7 @@ license.workspace = true
 [dependencies]
 ts-gameplay = { path = "../gameplay" }
 shared      = { path = "../shared" }
+toml        = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+
+[dev-dependencies]
+goldsrc-sys = { path = "../goldsrc-sys" }

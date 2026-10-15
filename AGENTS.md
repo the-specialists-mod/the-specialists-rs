@@ -40,14 +40,16 @@ crates/
                  FFI from end to end, so it may use `unsafe` like the *-dll crates; never in dist/)
   client/        ts-client: client game logic (rlib)
   client-dll/    ts-client-dll: the client library the engine loads (cdylib "client")
-  ts30/          the TS 3.0 gameplay plugin: ts30-gameplay (shared hooks), server/ (ts30-server)
-                 and client/ (ts30-client); only the two *-dll crates link it (feature `ts30`,
-                 registered first, so the default ruleset). TS 3.0's rule decisions move here
-                 from the core crates (issue #200; docs/implementation/gameplay-plugins.md)
+  ts30/          the TS 3.0 gameplay plugin: ts30-gameplay (shared hooks, the weapon tables in
+                 data/), server/ (ts30-server: server and native-bot hooks) and client/
+                 (ts30-client). Every TS 3.0 rule decision behind a hook lives here; only the
+                 two *-dll crates link it (feature `ts30`, registered first: the default ruleset)
   ts21/          the TS 2.1 gameplay plugin: ts21-gameplay (shared hooks), server/ (ts21-server)
                  and client/ (ts21-client). All 2.1 code goes here; only the two *-dll crates
-                 link it (feature `ts21`), and `cargo xtask lint` checks that nothing else
-                 names 2.1 (docs/implementation/ts21.md)
+                 link it (feature `ts21`) (docs/implementation/ts21.md)
+                 The hook traits have no default bodies, and `cargo xtask lint` checks that no
+                 crate but its own names a ruleset outside test code
+                 (docs/implementation/gameplay-plugins.md)
 xtask/           build, package, install and test tooling (`cargo xtask ...`)
 game/ts/         liblist.gam, gameinfo.txt, delta.lst, the icons (game.tga, ts_logo_big.tga)
 ```

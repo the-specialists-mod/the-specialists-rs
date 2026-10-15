@@ -1,6 +1,6 @@
 # TS 2.1's weapon table (`s_weapon_info`, 64 x 0x3f4 bytes at mp.dll 0x100bbea8), decoded from
 # the 33 writers `FUN_10049890` (compile_weapons_info, from W_Precache) calls; 2.1 has no Sparta()
-# pass. Each entry cites its writer. Fields as in crates/shared/data/weapons.toml, except:
+# pass. Each entry cites its writer. Fields as in the 3.0 plugin's data/weapons.toml, except:
 #   mult   `info+0x1c`, the damage multiplier: a bullet does the ammo type's integer damage
 #          (ammo21.toml `damage`) times this (3.0 stores the damage itself)
 #   stock  `info+0x10`, a flag: the weapon has the stock hit (+alt2), which always does 20

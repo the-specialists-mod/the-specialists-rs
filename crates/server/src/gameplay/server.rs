@@ -61,9 +61,8 @@ impl<'a> ConnectingClient<'a> {
     }
 }
 
-/// Server rules. Every default body is TS 3.0's (until they move to the 3.0 plugin, issue #200);
-/// the server code calls these where a ruleset can differ. A hook needing server state takes this
-/// crate's types, so its 3.0 body can be the code it replaces.
+/// Server rules: the server code calls these where a ruleset decides something, and every ruleset
+/// answers them all (no default bodies). A hook needing server state takes this crate's types.
 pub trait ServerRules: Sync {
     /// The plugin has become active on a brand-new game: at every map start (after the rules
     /// are installed, before the map's entities spawn). The place to set up the plugin's own
@@ -485,8 +484,6 @@ pub trait ServerRules: Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gameplay::Defaults as CORE;
-    use crate::rules::cvars;
 
     /// `ClientConnect`'s classification: bots and HLTV whatever their userinfo, then the port's
     /// key.

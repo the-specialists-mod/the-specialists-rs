@@ -1,5 +1,5 @@
-//! TS 2.1's movement overrides against the 2.1 `mp.dll` formulas, and TS 3.0's defaults beside
-//! them (the core plugin must be unchanged).
+//! TS 2.1's movement overrides against the 2.1 `mp.dll` formulas, and TS 3.0's beside
+//! them (the 3.0 plugin must be unchanged).
 
 use super::*;
 use ts30_gameplay::TS30 as CORE;

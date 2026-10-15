@@ -359,6 +359,7 @@ mod tests {
 
     #[test]
     fn plugin_writes_come_back() {
+        ts30_gameplay::tables::make_default();
         let l = Layout { windows: false };
         let (mut m, mut p) = setup();
         sync_with(&mut m, l, &mut p, PL, GUN, GUN);

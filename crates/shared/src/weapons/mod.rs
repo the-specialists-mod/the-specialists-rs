@@ -265,51 +265,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn modes_and_defaults() {
-        let ak = info(id::AK47).unwrap();
-        assert_eq!(mode_mask(ak), 3);
-        assert_eq!(default_mode(mode_mask(ak)), mode::AUTO);
-        assert_eq!(default_mode(mode_mask(info(id::BENELLI).unwrap())), mode::PUMP);
-        assert_eq!(default_mode(mode_mask(info(id::M16).unwrap())), mode::BURST);
-        assert_eq!(default_mode(mode_mask(info(id::BERETTA).unwrap())), mode::SEMI);
-        assert_eq!(default_mode(mode_mask(info(id::BERETTA_AKIMBO).unwrap())), mode::SEMI);
-        assert_eq!(kind_of(id::GOLDEN_COLTS), kind::AKIMBO_ONLY);
-        assert!(is_akimbo(id::UZI_AKIMBO));
-    }
-
-    #[test]
-    fn restriction() {
-        assert!(is_restricted(id::AK47, 0));
-        assert!(!is_restricted(id::M61, 0x1f));
-        assert!(!is_restricted(id::M61, 1));
-        assert!(is_restricted(id::KATANA, 0x1e));
-        assert!(!is_restricted(id::SAWEDOFF, 0x10));
-        assert!(is_restricted(id::SAWEDOFF, 0x02));
-        assert!(is_restricted(id::UZI_AKIMBO, 0x02));
-        assert!(!is_restricted(id::BARRETT, 0x08));
-    }
-
-    #[test]
     fn range_falloff() {
         assert_eq!(range_multiplier(0), 1.0);
         assert_eq!(range_multiplier(10), 1.0);
         assert!((range_multiplier(40) - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn body_groups() {
-        // Contender without scope gets +1; M4 silencer+scope = 1 + 8.
-        assert_eq!(body_by_items(id::CONTENDER, 0), 1);
-        assert_eq!(body_by_items(id::M4, att::SILENCER | att::SCOPE), 9);
-        // Glock laser+flashlight uses the combined entry.
-        assert_eq!(body_by_items(id::GLOCK18, att::LASER | att::FLASHLIGHT), 2);
-    }
-
-    #[test]
-    fn anim_tables() {
-        assert_eq!(anim(id::AK47, false, 2), 2);
-        assert!(has_alt_grip(id::AK47));
-        assert!(!has_alt_grip(id::AUG));
-        assert_eq!(anim(id::KUNGFU, false, 2), 1);
     }
 }

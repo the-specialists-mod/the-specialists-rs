@@ -438,6 +438,7 @@ mod tests {
 
     #[test]
     fn refund() {
+        ts30_gameplay::tables::make_default();
         use shared::weapons::{att, gun::Gun, id, tables};
         let t = tables();
         let mut g = Gun::default();

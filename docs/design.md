@@ -61,9 +61,9 @@ crates/
   gameplay/      ts-gameplay: gameplay-plugin ids, channels and registry (implementation/gameplay-plugins.md)
   shared/        runs on both sides: pm (movement), weapons (tables + predicted logic), protocol, ts,
                  gameplay (the PmRules/GunRules hooks), bsp (entity lumps)
-    data/        weapons.toml, ammo.toml, combat.toml, assets.toml (decoded from the decomp)
   ts30/          the TS 3.0 gameplay plugin: ts30-gameplay (shared hooks), server/ ts30-server,
                  client/ ts30-client; linked only by the two libraries (issue #200)
+    data/        weapons.toml, ammo.toml, combat.toml, assets.toml (decoded from the decomp)
   ts21/          the TS 2.1 gameplay plugin: ts21-gameplay (shared hooks), server/ ts21-server,
                  client/ ts21-client; linked only by the two libraries (implementation/ts21.md)
   server/        ts-server: server game logic (rlib, no unsafe)

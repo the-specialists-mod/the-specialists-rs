@@ -353,6 +353,7 @@ dependencies = [
  "ts-client",
  "ts21-gameplay",
  "ts30-client",
+ "ts30-gameplay",
 ]
 
 [[package]]
@@ -374,6 +375,7 @@ dependencies = [
  "shared",
  "ts-server",
  "ts21-gameplay",
+ "ts30-gameplay",
  "ts30-server",
 ]
 
@@ -390,7 +392,9 @@ dependencies = [
 name = "ts30-gameplay"
 version = "3.0.5"
 dependencies = [
+ "goldsrc-sys",
  "shared",
+ "toml",
  "ts-gameplay",
 ]
 

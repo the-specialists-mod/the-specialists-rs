@@ -17,6 +17,7 @@ pub mod gun;
 pub mod melee;
 pub mod pm;
 pub mod recoil;
+pub mod tables;
 
 /// The plugin's id: the `ts_gameplay` value, physinfo `gp` and `SrvSett` 4.
 pub const ID: &str = "30";

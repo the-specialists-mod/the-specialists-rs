@@ -62,6 +62,7 @@ fn setters_check_the_player_then_the_arguments() {
 
 #[test]
 fn a_taken_out_player_defers_and_a_refused_change_is_invalid() {
+    ts30_gameplay::tables::make_default();
     let host = Fake::new(false);
     assert_eq!(set(&host, 1, Change::award(4)), DEFERRED);
     assert_eq!(host.applied.get(), Some(Change::Award(4)));
@@ -99,6 +100,7 @@ fn snapshots_belong_to_their_client() {
 
 #[test]
 fn argument_ranges() {
+    ts30_gameplay::tables::make_default();
     assert_eq!(Change::cash(30000), Ok(Change::Cash(30000)));
     assert_eq!(Change::cash(30001), Err(INVALID));
     assert_eq!(Change::free_slots(0), Ok(Change::FreeSlots(0)));
@@ -153,6 +155,7 @@ fn powerups_that_run() {
 
 #[test]
 fn snapshot_reports_the_port_state() {
+    ts30_gameplay::tables::make_default();
     let mut p = Player { cash: 1234, joined: true, active_powerup: pw::SLOWMO, powerup_until: 50.0, kungfu: true, ..Player::default() };
     p.ts.award = 4;
     p.ts.spree = 3;
@@ -182,6 +185,7 @@ fn snapshot_reports_the_port_state() {
 
 #[test]
 fn weapon_ammo_sets_the_owned_record_and_flags_the_hud() {
+    ts30_gameplay::tables::make_default();
     use crate::weapons::{Inventory, set_weapon_ammo};
     use shared::weapons::id;
     let mut inv = Inventory::default();
@@ -213,6 +217,7 @@ fn weapon_ammo_sets_the_owned_record_and_flags_the_hud() {
 
 #[test]
 fn weapon_ammo_splits_an_akimbo_clip_as_a_reload_does() {
+    ts30_gameplay::tables::make_default();
     use crate::weapons::{Inventory, set_weapon_ammo};
     let (single, pair) = (2u8, 8u8); // Beretta, Akimbo Berettas
     assert_eq!(shared::weapons::info(pair).unwrap().single, single as i32);
