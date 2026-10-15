@@ -40,12 +40,14 @@ the original.
     `Custom_Encode`) are registered as TS's `RegisterEncoders` does (`ts_server::delta`).
 * **Client commands:** TS's own (`tkw`/`tki`/`tka` loadout lists, `weapon_<n>`, `drop_*`, …; decomp
   `server/architecture.md` §4).
-* **Strings are bytes.** TS copies chat, player names, map text, `hostname` and the MOTD into its
-  messages and log lines byte for byte, whatever their encoding (a Windows client's CP1252 `é` is
+* **Strings are bytes.** TS copies chat, player names, team names, map text, `hostname` and the
+  MOTD into its messages and log lines byte for byte, whatever their encoding (a Windows client's CP1252 `é` is
   the single byte 0xE9). The port does the same: `hud_wire::Wire::string` writes and reads `&[u8]`,
   payload fields that carry such text are `Vec<u8>` (`bytes` in the `payload!` macro), and the
   server builds those lines with `shared::bformat!` (`shared::text`) instead of `format!`, so no
-  byte goes through a lossy UTF-8 conversion (#81). The client keeps network strings as one `char`
+  byte goes through a lossy UTF-8 conversion (#81). Team and model names are `Vec<u8>` in the
+  rules state and in `TeamInfo`/`TeamScore`/`TeamNames`, compared like TS's `strcasecmp` (A-Z
+  folded only, `rules::state::team_eq`; #188). The client keeps network strings as one `char`
   per byte (`shared::text::latin1`) and hands the bytes back to the engine's draw and print calls,
   as TS's client passes them to `pfnDrawConsoleString`.
 

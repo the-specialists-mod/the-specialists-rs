@@ -389,7 +389,7 @@ impl Flag {
                 && team < 4
             {
                 let name = state::with(|g| g.teams.get(team).map(|t| t.name.clone()).unwrap_or_default());
-                msg::ts_message_all([0, 255, 0], 4, 30, &format!("{name} briefcase returned"));
+                msg::ts_message_all([0, 255, 0], 4, 30, &shared::bformat!("{} briefcase returned", name));
             }
         }
         self.destroy(cx);
@@ -881,11 +881,11 @@ pub(crate) fn team_win(team: i32, cash: i32, restart: bool, is_score: bool) {
                 Some((t.name.clone(), t.score))
             });
             if let Some((name, score)) = won {
-                msg::ts_message_all([0, 0, 0], 8, 30, &format!("{name} {}", if is_score { "Score!" } else { "Win!" }));
+                msg::ts_message_all([0, 0, 0], 8, 30, &shared::bformat!("{} {}", name, if is_score { "Score!" } else { "Win!" }));
                 // TS's format has two `%d`s it passes nothing for; the port logs the score and the
                 // team's player count.
                 let members = rules::slot_players().into_iter().filter(|&p| team_index_of(p) == team).count();
-                msg::log(&format!("Team \"{name}\" scored \"{score}\" with \"{members}\" players\n"));
+                msg::log(&shared::bformat!("Team \"{}\" scored \"{}\" with \"{}\" players\n", name, score, members));
             }
         }
     }

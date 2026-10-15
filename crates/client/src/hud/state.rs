@@ -773,7 +773,11 @@ impl Hud {
             Msg::TeamInfo => {
                 let v = dec!(p::TeamInfo);
                 if (1..=MAX_CLIENTS as u8).contains(&v.client) {
-                    self.players[v.client as usize].teamname = v.team.chars().take(15).collect();
+                    // `strncpy(teamname, READ_STRING(), 16)` (viewport `TeamInfo` 0x100651c0, into
+                    // the 16 bytes at `0x101901fe + i * 0x20`): a 16-byte name keeps all 16 (TS
+                    // leaves it unterminated and reads on into the next entry; the port stops).
+                    // One char per byte, so a 0xE9 stays 0xE9 (#188).
+                    self.players[v.client as usize].teamname = v.team.chars().take(16).collect();
                 }
             }
             Msg::TeamScore => {
@@ -1278,6 +1282,32 @@ mod tests {
         assert_eq!(p.teamname, "Specialists");
         h.apply(Msg::TeamScore, &p::TeamScore { team: "Specialists".into(), frags: 9, deaths: 3 }.encode(), &c, &mut fx);
         assert_eq!(h.team_scores[0].frags, 9);
+    }
+
+    /// #188: team names are the server's bytes: a CP1252 0xE9 stays one byte, and a 16-byte name
+    /// (here cut by the server through a UTF-8 `é`, ending in C3) keeps all 16, as TS's
+    /// `strncpy(.., 16)` does.
+    #[test]
+    fn team_names_keep_bytes() {
+        let s = Screen::default();
+        let c = ctx(&s);
+        let mut h = Hud::default();
+        let mut fx = Vec::new();
+        let cut = b"abcdefghijklmno\xc3";
+        let mut msg = vec![3u8];
+        msg.extend_from_slice(cut);
+        msg.extend_from_slice(b"xyz\0");
+        h.apply(Msg::TeamInfo, &msg, &c, &mut fx);
+        assert_eq!(shared::text::latin1_bytes(&h.players[3].teamname), cut);
+        h.apply(Msg::TeamInfo, b"\x04\xe9quipe\0", &c, &mut fx);
+        assert_eq!(shared::text::latin1_bytes(&h.players[4].teamname), b"\xe9quipe");
+        h.apply(Msg::TeamNames, b"\x01\xe9quipe\0", &c, &mut fx);
+        h.apply(Msg::TeamScore, b"\xe9QUIPE\0\x05\0\0\0", &c, &mut fx);
+        // Matched case-insensitively in A-Z only: the score lands on the TeamNames entry.
+        assert_eq!(h.team_scores.len(), 1);
+        assert_eq!((shared::text::latin1_bytes(&h.team_scores[0].name), h.team_scores[0].frags), (b"\xe9quipe".to_vec(), 5));
+        h.apply(Msg::TeamScore, b"\xc9QUIPE\0\x05\0\0\0", &c, &mut fx);
+        assert_eq!(h.team_scores.len(), 2, "0xC9 is another team");
     }
 
     /// `VGUIMenu` hands every id to `ShowVGUIMenu` (which refuses the team menu outside teamplay);

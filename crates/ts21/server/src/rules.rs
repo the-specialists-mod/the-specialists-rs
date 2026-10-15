@@ -97,10 +97,10 @@ pub fn decide_gameplay(map: &str, the_one: bool, mp_teamplay: f32) -> Mode {
 ///
 /// `spawn_round` gives the round modes' spawn classes: Specialists `info_player_start`,
 /// Mercenaries `info_player_deathmatch` (swapped by [`Rules21::swapped`]).
-pub fn setup_teams(g: &mut GameRules, mode: Mode, the_one: bool, teamlist: &str, one: [&str; 2], cash: i32) {
-    let model_team = |name: &str| Team {
-        name: name.to_owned(),
-        models: vec![name.to_owned()],
+pub fn setup_teams(g: &mut GameRules, mode: Mode, the_one: bool, teamlist: &[u8], one: [&[u8]; 2], cash: i32) {
+    let model_team = |name: &[u8]| Team {
+        name: name.to_vec(),
+        models: vec![name.to_vec()],
         spawn_class: "info_player_deathmatch".into(),
         fallback: "info_player_deathmatch".into(),
         ..Default::default()
@@ -108,8 +108,8 @@ pub fn setup_teams(g: &mut GameRules, mode: Mode, the_one: bool, teamlist: &str,
     match mode {
         Mode::RoundTdm | Mode::Objective => {
             g.teams = vec![
-                Team { name: SPECIALISTS.into(), models: vec!["seal".into()], cash, ..Default::default() },
-                Team { name: MERCENARY.into(), models: vec!["merc".into()], cash, ..Default::default() },
+                Team { name: SPECIALISTS.into(), models: vec![b"seal".to_vec()], cash, ..Default::default() },
+                Team { name: MERCENARY.into(), models: vec![b"merc".to_vec()], cash, ..Default::default() },
             ];
             set_spawn_classes(g, false);
             g.team_list = vec![SPECIALISTS.into(), MERCENARY.into()];
@@ -117,8 +117,10 @@ pub fn setup_teams(g: &mut GameRules, mode: Mode, the_one: bool, teamlist: &str,
             g.recount_teams(&[]);
         }
         Mode::TeamDm => {
-            // The SDK keeps the list's names as `strtok` cuts them, at most 16 bytes each.
-            let listed: Vec<String> = teamlist.split(';').filter(|s| !s.is_empty()).map(|s| s.chars().take(16).collect()).collect();
+            // The SDK keeps the list's names as `strtok` cuts them, at most 16 bytes each (bytes,
+            // whatever their encoding: #188).
+            let listed: Vec<Vec<u8>> =
+                teamlist.split(|&b| b == b';').filter(|s| !s.is_empty()).map(|s| s[..s.len().min(16)].to_vec()).collect();
             g.teams = if the_one { one.iter().map(|n| model_team(n)).collect() } else { Vec::new() };
             g.teams.extend(listed.iter().map(|n| model_team(n)));
             g.team_list = listed;
@@ -135,9 +137,9 @@ pub fn set_spawn_classes(g: &mut GameRules, swapped: bool) {
     let (spec, merc) =
         if swapped { ("info_player_deathmatch", "info_player_start") } else { ("info_player_start", "info_player_deathmatch") };
     for t in &mut g.teams {
-        let class = if t.name == SPECIALISTS {
+        let class = if t.name == SPECIALISTS.as_bytes() {
             spec
-        } else if t.name == MERCENARY {
+        } else if t.name == MERCENARY.as_bytes() {
             merc
         } else {
             continue;
@@ -163,19 +165,19 @@ pub fn install(g: &mut GameRules) {
     g.installed = true;
     g.teamplay = mode != Mode::Dm;
     g.the_one = the_one;
-    g.player_team = vec![String::new(); 33];
+    g.player_team = vec![Vec::new(); 33];
     // 3.0's `Init` resets the same spawner, round, slow-motion, SrvSett, vote and weapon-mask
     // state; 2.1's own part follows.
     g.ts_init(now);
     g.mode = mode;
-    let one = [cvars::s(c"mp_theone"), cvars::s(c"mp_theothers")];
-    setup_teams(g, mode, the_one, &cvars::s(c"mp_teamlist"), [&one[0], &one[1]], cv::initial_cash_int());
+    let one = [cvars::bytes(c"mp_theone"), cvars::bytes(c"mp_theothers")];
+    setup_teams(g, mode, the_one, &cvars::bytes(c"mp_teamlist"), [&one[0], &one[1]], cv::initial_cash_int());
     with(|r| {
         *r = Rules21::default();
         r.next_entity_respawn = now + 60.0;
     });
     init_objectives(g);
-    eng.print(&format!(
+    eng.print(&shared::bformat!(
         "[ts] game rules (2.1): {} ({})\n",
         match mode {
             Mode::Objective => "Objective rounds",
@@ -184,7 +186,7 @@ pub fn install(g: &mut GameRules) {
             Mode::TeamDm => "Team DeathMatch",
             Mode::Dm => "DeathMatch",
         },
-        g.team_list.join(";")
+        g.team_list.join(&b';')
     ));
 }
 
@@ -476,10 +478,10 @@ pub fn select_random_the_one(now: f32) {
 }
 
 /// The team (0 Specialists, 1 Mercenary) a player is on in the round modes.
-pub fn round_team(name: &str) -> Option<usize> {
-    if name.eq_ignore_ascii_case(SPECIALISTS) {
+pub fn round_team(name: &[u8]) -> Option<usize> {
+    if name.eq_ignore_ascii_case(SPECIALISTS.as_bytes()) {
         Some(0)
-    } else if name.eq_ignore_ascii_case(MERCENARY) {
+    } else if name.eq_ignore_ascii_case(MERCENARY.as_bytes()) {
         Some(1)
     } else {
         None
@@ -487,7 +489,7 @@ pub fn round_team(name: &str) -> Option<usize> {
 }
 
 /// `GetTeamCash` (0x100458b0): the player's team cash in the round modes, 0 otherwise.
-pub fn team_cash(team: &str) -> i32 {
+pub fn team_cash(team: &[u8]) -> i32 {
     state::with(|g| {
         if !matches!(g.mode, Mode::RoundTdm | Mode::Objective) {
             return 0;
@@ -559,7 +561,7 @@ pub fn team_win(team: i32, win: i32, lose: i32, now: f32) {
             let lost = if team == 2 {
                 true
             } else {
-                let spec = teams::team_name_of(e).eq_ignore_ascii_case(SPECIALISTS);
+                let spec = teams::team_name_of(e).eq_ignore_ascii_case(SPECIALISTS.as_bytes());
                 if spec { team != 0 } else { team != 1 }
             };
             msg::one(Msg::TsHVoice, e, |w| TsHVoice { lost: lost as u8 }.write(w));
@@ -854,13 +856,18 @@ mod tests {
         assert_eq!(decide_gameplay("", false, 0.0), Mode::Dm);
     }
 
+    /// Byte names as text, for readable asserts.
+    fn strs<T: AsRef<[u8]>>(v: &[T]) -> Vec<String> {
+        v.iter().map(|n| String::from_utf8_lossy(n.as_ref()).into_owned()).collect()
+    }
+
     #[test]
     fn round_modes_have_two_teams_with_cash() {
         let mut g = GameRules::default();
-        setup_teams(&mut g, Mode::RoundTdm, false, "hitman;gordon", ["gordon", "seal"], 3000);
-        assert_eq!(g.team_names(), [SPECIALISTS, MERCENARY]);
+        setup_teams(&mut g, Mode::RoundTdm, false, b"hitman;gordon", [b"gordon", b"seal"], 3000);
+        assert_eq!(strs(&g.team_names()), [SPECIALISTS, MERCENARY]);
         assert!(g.team_limit);
-        assert_eq!((g.teams[0].models.as_slice(), g.teams[1].models.as_slice()), (&["seal".to_owned()][..], &["merc".to_owned()][..]));
+        assert_eq!((strs(&g.teams[0].models), strs(&g.teams[1].models)), (vec!["seal".to_owned()], vec!["merc".to_owned()]));
         assert_eq!((g.teams[0].cash, g.teams[1].cash), (3000, 3000));
         assert_eq!((g.teams[0].spawn_class.as_str(), g.teams[1].spawn_class.as_str()), ("info_player_start", "info_player_deathmatch"));
         set_spawn_classes(&mut g, true);
@@ -871,18 +878,18 @@ mod tests {
     #[test]
     fn teamplay_teams_are_models() {
         let mut g = GameRules::default();
-        setup_teams(&mut g, Mode::TeamDm, false, "hitman;gordon;hitman", ["gordon", "seal"], 3000);
-        assert_eq!(g.team_names(), ["hitman", "gordon"]);
+        setup_teams(&mut g, Mode::TeamDm, false, b"hitman;gordon;hitman", [b"gordon", b"seal"], 3000);
+        assert_eq!(strs(&g.team_names()), ["hitman", "gordon"]);
         assert!(g.team_limit);
-        assert_eq!(g.teams[g.team_index("gordon") as usize].models, ["gordon"]);
+        assert_eq!(strs(&g.teams[g.team_index(b"gordon") as usize].models), ["gordon"]);
         // The One: its teams come first, from the model cvars.
         let mut g = GameRules::default();
-        setup_teams(&mut g, Mode::TeamDm, true, "hitman;gordon", ["gordon", "seal"], 3000);
-        assert_eq!(g.the_one_team_names(), ["gordon", "seal"]);
-        assert_eq!(g.team_names(), ["hitman", "gordon"]);
+        setup_teams(&mut g, Mode::TeamDm, true, b"hitman;gordon", [b"gordon", b"seal"], 3000);
+        assert_eq!(strs(&g.the_one_team_names()), ["gordon", "seal"]);
+        assert_eq!(strs(&g.team_names()), ["hitman", "gordon"]);
         // An empty list means no team limit.
         let mut g = GameRules::default();
-        setup_teams(&mut g, Mode::TeamDm, false, "", ["gordon", "seal"], 3000);
+        setup_teams(&mut g, Mode::TeamDm, false, b"", [b"gordon", b"seal"], 3000);
         assert!(!g.team_limit);
     }
 

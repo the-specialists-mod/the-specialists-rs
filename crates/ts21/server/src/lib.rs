@@ -111,7 +111,7 @@ impl ServerRules for Ts21Server {
         players::set_player_the_one(p, cx);
     }
 
-    fn default_team(&self, p: &mut Player, cx: &mut Cx) -> String {
+    fn default_team(&self, p: &mut Player, cx: &mut Cx) -> Vec<u8> {
         players::default_team(p, cx)
     }
 

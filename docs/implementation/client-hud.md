@@ -600,6 +600,9 @@ Undefined in TS:
     2^24 pixels, is refused rather than allocated. `Image::pixel` is bounds-checked.
   * `TeamNames` keeps the first four names (TS's handler `0x10064df0` only stores teams 1..4). A
     longer list used to index past the team menu's buttons.
+  * `TeamInfo` (`0x100651c0`) and `RebuildTeams` (`0x1005da20`) `strncpy(.., 16)` a team name
+    into 16-byte fields, so a 16-byte name is unterminated and TS reads on into the next entry.
+    The port keeps the 16 bytes (one char per byte, so a 0xE9 stays 0xE9; #188) and stops there.
   * The buy menu's sort stops after 256 passes. A loaded `tsbuylist.tsa` uses wrapping sums. The
     scroll panels clamp the nob to ±2^30 px for painting. `voice_ban.dt` is deduplicated through a
     set as it loads.

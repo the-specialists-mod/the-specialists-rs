@@ -201,10 +201,10 @@ pub fn touch(ent: &mut dyn Entity, cx: &mut Cx, other: *mut edict_t) -> bool {
 /// Whether a `ts_trigger` with `allowedteam` `allowed` fires for a player of team `team`
 /// (`TeamID()`): 0 only "Specialists", 1 only "Mercenary" (`stricmp`, FUN_1007e860), 2 or more
 /// anyone, a negative value no one. A trigger without the key is 0.
-fn trigger_fires(allowed: i32, team: &str) -> bool {
+fn trigger_fires(allowed: i32, team: &[u8]) -> bool {
     match allowed {
-        0 => team.eq_ignore_ascii_case("Specialists"),
-        1 => team.eq_ignore_ascii_case("Mercenary"),
+        0 => team.eq_ignore_ascii_case(b"Specialists"),
+        1 => team.eq_ignore_ascii_case(b"Mercenary"),
         a => a >= 2,
     }
 }
@@ -413,18 +413,18 @@ mod tests {
     #[test]
     fn trigger_teams_by_name() {
         // No `allowedteam` key: the Specialists only.
-        assert!(trigger_fires(0, "Specialists"));
-        assert!(trigger_fires(0, "specialists"));
-        assert!(!trigger_fires(0, "Mercenary"));
-        assert!(!trigger_fires(0, ""));
-        assert!(trigger_fires(1, "MERCENARY"));
-        assert!(!trigger_fires(1, "Specialists"));
+        assert!(trigger_fires(0, b"Specialists"));
+        assert!(trigger_fires(0, b"specialists"));
+        assert!(!trigger_fires(0, b"Mercenary"));
+        assert!(!trigger_fires(0, b""));
+        assert!(trigger_fires(1, b"MERCENARY"));
+        assert!(!trigger_fires(1, b"Specialists"));
         // 2 and up: anyone, even without a team.
-        assert!(trigger_fires(2, ""));
-        assert!(trigger_fires(7, "Specialists"));
+        assert!(trigger_fires(2, b""));
+        assert!(trigger_fires(7, b"Specialists"));
         // Negative: no one.
-        assert!(!trigger_fires(-1, "Specialists"));
-        assert!(!trigger_fires(i32::MIN, "Mercenary"));
+        assert!(!trigger_fires(-1, b"Specialists"));
+        assert!(!trigger_fires(i32::MIN, b"Mercenary"));
     }
 
     #[test]

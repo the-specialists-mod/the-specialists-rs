@@ -354,7 +354,8 @@ impl ScoreBoard {
                     k += 1;
                 }
                 self.num_teams = self.num_teams.max(k);
-                self.teams[k].name = x.teamname.chars().take(15).collect();
+                // `strncpy(name, teamname, 16)` (0x1005da20); see `TeamInfo` for the 16th byte.
+                self.teams[k].name = x.teamname.chars().take(16).collect();
                 self.teams[k].players = 0;
             }
             self.teams[j].players += 1;

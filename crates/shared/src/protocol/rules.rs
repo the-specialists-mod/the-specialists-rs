@@ -13,12 +13,12 @@ payload!(
     DeathMsg { killer: byte, victim: byte, weapon: string }
 );
 payload!(
-    /// `TeamInfo`: player index and team name.
-    TeamInfo { idx: byte, team: string }
+    /// `TeamInfo`: player index and team name (`m_szTeamName`'s bytes, #188).
+    TeamInfo { idx: byte, team: bytes }
 );
 payload!(
-    /// `TeamScore`: `string team, short score, short 0`.
-    TeamScore { team: string, score: short, deaths: short }
+    /// `TeamScore`: `string team, short score, short 0` (the team name's bytes).
+    TeamScore { team: bytes, score: short, deaths: short }
 );
 payload!(
     /// `GameMode` (1): 0 DM, otherwise `g_teamplay`.
@@ -80,22 +80,22 @@ payload!(
     Wires { w0: byte, w1: byte, w2: byte }
 );
 
-/// `TeamNames`: `byte n, n × string`.
+/// `TeamNames`: `byte n, n × string` (the names' bytes).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TeamNames {
-    pub names: Vec<String>,
+    pub names: Vec<Vec<u8>>,
 }
 
 impl TeamNames {
     pub fn write(&self, w: &mut impl Wire) {
         w.byte(self.names.len() as i32);
         for n in &self.names {
-            w.string(n.as_bytes());
+            w.string(n);
         }
     }
     pub fn read(r: &mut impl WireRead) -> Self {
         let n = r.byte();
-        Self { names: (0..n).map(|_| String::from_utf8_lossy(&r.string()).into_owned()).collect() }
+        Self { names: (0..n).map(|_| r.string()).collect() }
     }
 }
 
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn variable_messages() {
-        let t = TeamNames { names: vec!["hitman".into(), "gordon".into()] };
+        let t = TeamNames { names: vec![b"hitman".to_vec(), b"gordon".to_vec()] };
         let mut b = Bytes::default();
         t.write(&mut b);
         assert_eq!(TeamNames::read(&mut b), t);

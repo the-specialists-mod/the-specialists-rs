@@ -583,7 +583,7 @@ pub fn reset_restart_round(n: i32) {
         msg::all(Msg::RoundTime, |w| RoundTime { secs, state: 0 }.write(w));
     }
     if n > 1 {
-        let named: Vec<String> = state::with(|g| {
+        let named: Vec<Vec<u8>> = state::with(|g| {
             g.teams
                 .iter_mut()
                 .take(4)
