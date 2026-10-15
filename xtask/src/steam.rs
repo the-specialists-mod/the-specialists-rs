@@ -18,7 +18,7 @@ use crate::roots::{EXEC_SERVER_CFG, Engine, Os, Root, Target};
 use crate::{Ctx, PlayerStatus, Run, a2s, crashed, say, status, status_dumps};
 use crate::{
     addbot_checks, akimbo_checks, click, escape_checks, laser_checks, script_addbot, script_escape, script_join_and_spawn,
-    script_lasers_and_akimbo, script_wall_shots, secs, shot, wall_checks,
+    script_lasers_and_akimbo, script_stopped_laser_bot, script_wall_shots, secs, shot, wall_checks,
 };
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -569,7 +569,7 @@ fn listen_script() -> String {
     cfg += &view("spawned");
     cfg += &script_wall_shots();
 
-    cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}ts_bot_quota\n{}", secs(1.0), secs(8.0));
+    cfg += &script_stopped_laser_bot();
     cfg += &script_lasers_and_akimbo();
 
     cfg += &format!("ts_tp 1 0 -672 60 90 0\n{}ts_tp 2 0 -480 60 270 0\n{}", secs(0.5), secs(1.5));

@@ -785,6 +785,17 @@ fn fx_lines<'a>(text: &'a str, tag: &str) -> Vec<&'a str> {
     out
 }
 
+/// A stopped bot for the laser scene (`play` step 2, shared with `steam`). It joins as an observer
+/// and respawns after the 5 s wait, with akimbo Berettas and a laser. Its own random loadout can
+/// weigh too much for the Berettas (TS's `PickUpWeapon` refuses a gun the free slots can't take, so
+/// a `ts_give` then did nothing and the bot had no beam, issue #179): it gets them as its loadout
+/// instead, the buy menu's commands (`tkw <id>_<attachments>`, the second gun bare), while it waits
+/// to respawn. That replaces what its buy module chose, or stops it from buying (a bot buys only
+/// with an empty loadout).
+fn script_stopped_laser_bot() -> String {
+    format!("ts_bot_stop 1\nts_bot_quota 1\n{}ts_bot_quota\nts_as 2 rst_cfg\nts_as 2 tkw 2_2 2_0\n{}", secs(1.0), secs(8.0))
+}
+
 /// The laser and akimbo scene, with the stopped bot #2 in the game, which spawned with akimbo
 /// Berettas and a laser ([`Ctx::play`] step 2): the host gets the same (two `ts_give 2_2`; the
 /// laser comes on with the gun), switches to free semi (`firemode`) and looks at the bot side on
@@ -1215,14 +1226,8 @@ impl Ctx {
         // 1b. shoot the dojo's front wall: flash, bullets, impacts and decals
         cfg += &script_wall_shots();
 
-        // 2. a stopped bot; it joins as an observer and respawns after the 5 s wait, with akimbo
-        // Berettas and a laser for the laser scene. Its own random loadout can weigh too much for
-        // the Berettas (TS's `PickUpWeapon` refuses a gun the free slots can't take, so a
-        // `ts_give` then did nothing and the bot had no beam, issue #179): it gets them as its
-        // loadout instead, the buy menu's commands (`tkw <id>_<attachments>`, the second gun
-        // bare), while it waits to respawn. That replaces what its buy module chose, or stops it
-        // from buying (a bot buys only with an empty loadout).
-        cfg += &format!("ts_bot_stop 1\nts_bot_quota 1\n{}ts_bot_quota\nts_as 2 rst_cfg\nts_as 2 tkw 2_2 2_0\n{}", secs(1.0), secs(8.0));
+        // 2. a stopped bot with akimbo Berettas and a laser for the laser scene
+        cfg += &script_stopped_laser_bot();
 
         // 2b. lasers (first person and on the bot) and akimbo free semi
         cfg += &script_lasers_and_akimbo();
