@@ -77,12 +77,13 @@ cargo xtask lint                        # no engine-call macros in game crates; 
 cargo xtask roots                       # which roots exist
 cargo xtask install all                 # assemble <root>/ts and install libraries
 cargo xtask server rehlds-linux --map ts_awaken --bots 4 --seconds 60
-cargo xtask all                         # everything below, about 4.5 min
+cargo xtask all                         # test + play, about 4.5 min; then steam if Steam is running and logged in (§5)
 cargo xtask test                        # dedicated server + 2 bots, 15 s, every root in parallel (~25 s)
 cargo xtask play                        # gameplay on a listen server, fwgs and fwgs-win in parallel (~4 min, meck and bots included)
 cargo xtask meck                        # grenades on MecklenburgV_Rain_Final only (~30 s fwgs, ~1 min fwgs-win)
 cargo xtask bots                        # TS's bot AI on ts_dojo only: testpath, four addbot bots, botlearn (~45 s)
 cargo xtask ts21                        # TS 2.1 mode on every root's dedicated server, the team modes, the clients (~6 min, §2.y)
+cargo xtask steam [listen|<root>]       # the Steam HL25 client, scripted; friends status invisible meanwhile (§5)
 ```
 
 `cargo xtask lint` runs `cargo clippy --workspace --all-targets -- -D warnings` for each of the
@@ -501,48 +502,180 @@ port's FWGS client joins both and logs `[ts] gameplay: the server runs ruleset 2
 | `ts_hurt` on a player who has just respawned does nothing (`applied=false health=100`) | Spawn protection (`protect_until`) | Scripts hurt again a second later (`ts21::Server::hurt`) |
 | `savenodes` in a scripted test would overwrite the content's `.ndm` | The roots' `ts/maps` is a symlink to the content directory | The scripts never run `savenodes`; `resetnodes` is followed by `loadnodes` |
 
-## 5. Steam Half-Life client (HL25, issue #23)
+## 5. Steam Half-Life client (HL25, issues #23 and #5)
 
-The Steam client isn't one of xtask's roots: it needs a logged-in Steam, and only one copy can run
-at a time. This is the manual setup used for issue #62, on the Linux 25th-anniversary client
-(32-bit `hl_linux`, engine build 10211, app build 15961492).
+`cargo xtask steam` (issue #5, old #67; `xtask/src/steam.rs`) runs the Linux 25th-anniversary
+Steam client (32-bit `hl_linux`, engine build 10211) with a script, as `xtask play` does with
+FWGS. The Steam client isn't one of xtask's roots: it needs Steam running and logged in, and only
+one copy of the game can run at a time.
 
-1. Steam running and logged in, Half-Life (app 70) installed at
-   `~/.local/share/Steam/steamapps/common/Half-Life`.
-2. Assemble `Half-Life/ts` the way `cargo xtask install` does: symlink every entry of the TS
-   content directory (`../ts_custom`: maps, models, sound, wads, `resource`, ...) into it, copy the files
-   from `game/ts` over the links, and install the i686 Linux build:
+```sh
+cargo xtask steam [listen]        # listen server: the play scenes, changelevel, menu angles (~7 min)
+cargo xtask steam hlds25-linux    # the Steam client joins a dedicated server (~4 min each)
+cargo xtask steam rehlds-linux
+cargo xtask steam listen hlds25-linux   # several, one after the other
+```
+
+What it does:
+
+1. Finds Steam in `~/.local/share/Steam` or `~/.steam/steam`, and the library folder with
+   Half-Life (app 70) from `steamapps/libraryfolders.vdf`. `TS_STEAM_HL=<dir>` points it at
+   another Half-Life folder. It takes `Half-Life/ts/xtask_steam.lock` (a second `xtask steam`
+   stops with a message; a lock whose process is gone is taken over), and stops if `hl_linux`
+   is already running.
+2. **Steam login.** The logged-in account comes from `ActiveProcess/ActiveUser` in
+   `~/.steam/registry.vdf` where Steam writes it; the current Linux client doesn't, so the
+   fallback is the last state line of `Steam/logs/connection_log.txt` (`[Logged On, ...]
+   [U:1:<account id>]`). If Steam isn't running, xtask starts it with `steam -silent` (in its own
+   process group; it keeps running afterwards) when it can log in by itself: `AutoLoginUser` in the
+   registry with `RememberPassword 1` in `config/loginusers.vdf`. It waits up to 3 min for the
+   login. Without a saved login, or when the login doesn't happen in time (password, Steam Guard,
+   an update), it stops with a message saying to log in to Steam and run it again.
+3. Assembles `Half-Life/ts` the way `cargo xtask install` assembles a root: it links the TS
+   content (`TS_DIR`), copies `game/ts`, and installs the i686 Linux build as
+   `cl_dlls/client.so`, `dlls/ts_i386.so` and `dlls/ts.so`.
+4. **Friends status: invisible while testing** (user requirement), so friends don't see the
+   account playing. See §5.2.
+5. Writes `ts/xtask_steam.cfg` and starts the game through the Steam runtime from the Half-Life
+   folder, never with `steam -applaunch` (it hangs while the desktop is locked):
 
    ```sh
-   cargo build -p ts-client-dll -p ts-server-dll --target i686-unknown-linux-gnu
-   T=target/i686-unknown-linux-gnu/debug HL=~/.local/share/Steam/steamapps/common/Half-Life
-   cp $T/libclient.so $HL/ts/cl_dlls/client.so
-   cp $T/libts.so $HL/ts/dlls/ts_i386.so && cp $T/libts.so $HL/ts/dlls/ts.so
+   SteamAppId=70 SteamGameId=70 ~/.local/share/Steam/ubuntu12_32/steam-runtime/run.sh \
+     ./hl.sh -game ts -windowed -width 1280 -height 800 -condebug [-port 27170] +exec xtask_steam.cfg
    ```
 
-3. Write a cfg in `Half-Life/ts` (the `xtask play` script works as is, ending in `quit`):
-   `developer 1`, `sv_lan 1`, `maxplayers 8`, `lservercfgfile ""`, `sv_cheats 1`,
-   `ts_dev_scriptinput 1`, `map ts_dojo`, then `w10`/`w100` waits, commands, `screenshot`, `quit`.
-4. Launch through the Steam runtime, without `steam -applaunch`:
+   xtask follows `Half-Life/qconsole.log`. The script ends with `ts_dev_touch xtask_steam_done`.
+   A few seconds after that marker appears, or at the time limit (20 min listen, 10 min
+   dedicated), xtask stops the game (`pkill -x hl_linux`) and removes the cfg and the marker. The
+   game renders and takes screenshots while the desktop is locked.
+6. Moves the screenshots (`ts/HalfLifeNN.tga`; older ones are deleted before the run) to
+   `target/steam-<listen|root>-NN-<scene>.png` (ImageMagick's `magick`; the `.tga` is kept
+   without it). Each is matched to its scene by the `echo XTASK: <scene>` before its
+   `screenshot`. Logs: `target/steam-<listen|root>.log` (client console),
+   `target/steam-<root>-server.log`, the client's stdout in `target/steam-<...>-stdout.log`, and
+   `target/steam-launch.log` when xtask started Steam.
 
-   ```sh
-   cd ~/.local/share/Steam/steamapps/common/Half-Life
-   SteamAppId=70 SteamGameId=70 setsid ~/.local/share/Steam/ubuntu12_32/steam-runtime/run.sh \
-     ./hl.sh -game ts -windowed -width 1280 -height 800 -condebug +exec <cfg> &
-   ```
+The scripts reuse `play`'s scene helpers (`xtask/src/main.rs`). HL25 runs in real time (xtask
+doesn't use its `sys_timescale`), and `play`'s `secs()` counts frames for FWGS at 2x, so the Steam
+prologue makes the `w10`/`w100` aliases twice as long: at `fps_max 100` a `secs(n)` is then `n`
+seconds here too.
 
-   The console goes to `Half-Life/qconsole.log`, screenshots to `Half-Life/ts/HalfLifeNN.tga`.
-   Make sure the game exits (`quit`, or `pkill -x hl_linux`). It renders even while the desktop is
-   locked.
-5. Compare with stock Half-Life launched the same way (`-game valve`, `map crossfire`) to tell the
-   port's problems from the setup's.
+**Listen server** (`maxplayers 8`, `developer 1`, `sv_lan 1`, port 27170): `play`'s scenes and
+checks (§2) on `ts_dojo` in `play`'s order: join and buy, wall shots, a stopped bot, lasers and
+akimbo, power-up, grenade, kill, kick, death and respawn, four bots. Then, with the bots stopped,
+the Steam scenes below, then `play`'s last ones: `ts_bot_quota 0`, `addbot`, Escape. Not run on
+Steam: `play`'s gameplay-ruleset scene (`ts_gameplay 21`/`30` reload the map with a server
+command, which GoldSrc appends to the console buffer behind the running script, so the reload
+only happens after the script: in a first run it then reloaded `ts_dojo` twice and the quota's
+kicks never ran; `xtask ts21` covers the reload on the Steam engines), and `meck` and `bots`
+(`play`'s other two runs).
+
+**Dedicated server** (`hlds25-linux`, `rehlds-linux`; port 27160 and up): xtask starts the root's
+server on `ts_dojo` with `+servercfgfile xtask_steam_server.cfg`, which runs `server.cfg`, then
+`sv_cheats 1`, `ts_bot_quota 0`, `ts_bot_stop 1`, `developer 1` and console-only logging
+(`mp_logfile 0`, `log on`), on every map. The client script `connect`s and marks server commands
+with `echo SRVCMD <command>`; xtask writes each one to the server's stdin as soon as it appears in
+the client log. It doesn't use `rcon`: the HL25 client sometimes sends an `rcon` twice, which turns
+one `changelevel` into two and strands the client. The `ts_status` dumps and the end marker are
+server commands too. xtask rejects `fwgs` (FWGS servers speak only protocol 49, the Steam client
+48: §4) and the Windows roots (it drives the server console through stdin).
+
+| Scene | How | Passes when |
+|---|---|---|
+| Join | `connect`, wait for the buy menu, buy the AK47 with the `xtask play` keys, click after the respawn wait | Server: `[ts] <host> spawned (#1) with [13]` |
+| Bot | `ts_bot_quota 1` (the bot stands still) | `[ts] bots: added` |
+| Chat | `say`, `say_team` | Both in the server log (`say "..."`, `say_team "..."`) and in the client console |
+| Scoreboard | `+showscores` | (screenshot) |
+| Kill | `ts_tp` both players, `+attack` with `ts_face 1 2` every 0.2 s for 5 s | The client's kill notice `<host> killed Bot ...`, and a frag in `ts_status` |
+| Death and respawn | `ts_hurt 1 500`, click through the death cam, click after the wait | Dead with a death, then a second spawn line and alive |
+| Menu angles, `changelevel` | the Steam scenes below | |
+| End | | The marker was reached, client and server still run, no panic or crash in either log |
+
+**The Steam scenes** (both modes) check the regressions that only showed on the Steam client:
+
+| Regression | Scene | Passes when |
+|---|---|---|
+| Black world, loading dialog stuck (old #62: the client must export `IClientVGUI`) | screenshots after the respawn and on the new map | at least half of each screenshot's pixels have a channel above 4 of 255 (`lit_share`; the dim `ts_awaken` spawn scores 96%, 78% under the MOTD's dimming; a black world leaves only the HUD) |
+| Third person after a respawn (old #23: leaving observer mode restored the death cam's) | `ts_test_view` after the first spawn, the respawn and the spawn on the new map | `third false` each time |
+| Server view angles held while a menu owns the cursor (old #23: `CL_CreateMove` overwrote `svc_setangle`) | `ts_face 1 100000 0 0`, `ts_test_view`; `motdfile motd.txt` and `cmd motd` (HL25's own `motd` command only prints the client's copy; the MOTD opens and stays, a script can't close it); `ts_face 1 0 100000 0`, `ts_test_view` | yaw 0, then yaw 90 with `menu true` (the points are far outside any map, so the yaw doesn't depend on where the host stands) |
+| Click-to-spawn after `changelevel` (old #23: the click timer wasn't reset on map load) | `changelevel ts_awaken`, wait for the buy menu, buy, click | a `spawned (#1) with [13]` line after the change, and the host alive in `ts_status` |
+
+`ts_test_view` (a client dev aid) prints `third <bool> menu <bool> ... angles [pitch, yaw, roll]`;
+`menu` is whether a menu owns the cursor.
+
+**In `cargo xtask all`.** `all` runs `xtask steam listen hlds25-linux` (the dedicated run only
+when that root exists) after `play`, **only if Steam is already running and logged in** and no
+`hl_linux` is running. Otherwise it prints `== steam: skipped (<why>)` and the summary line says
+`Steam client skipped`; a skip doesn't fail `all`. `all` never starts Steam itself. This adds
+about 11 min to `all` on a machine with Steam logged in.
+
+Notes:
+* GoldSrc's tokenizer splits `XTASK:` into `XTASK` and `:`, so `echo` prints `XTASK : ...`. xtask
+  restores the markers before the checks.
+* The engine splits a `+exec` file name at a `-` on the command line
+  (`exec xtask_steam: not a .cfg or .rc file`), so the cfg is always `xtask_steam.cfg`.
+* HL25 prints `- <name> has left the game` for a kicked bot instead of `<name> was kicked`. The
+  checks accept both.
+* The engine's `exec config.cfg` and the game's `exec skill.cfg` (TS ships no `skill.cfg`, so
+  Half-Life's `valve/skill.cfg` with 393 `sk_*` lines) wait in the console buffer behind the
+  script. Run after it with the host in the game, each `sk_*` line goes to the server as a client
+  command (TS registers no `sk_*` cvars, decomp `docs/server/architecture.md`, and neither does the
+  port) and comes back as an `Unknown command` `TextMsg`; the host's reliable channel overflows
+  (`Reliable channel overflowed`, `Host_EndGame`) before the quota's kicks run. A minimal script
+  (`map ts_dojo`, waits, end; no bots) reproduces it, while the same burst of `config.cfg`'s
+  userinfo keys alone doesn't, on `-game ts` or `-game valve`. So the listen run puts an empty
+  `ts/skill.cfg` in the Half-Life folder and removes it afterwards. (On a real listen server the
+  `exec skill.cfg` runs while the map loads, before the host's client is in the game.)
+* `Sentence or Pitch shift ignored. > 16 playing!` (developer-only) appears while the AK47 fires.
+* Compare with stock Half-Life launched the same way (`-game valve`, `map crossfire`) to tell the
+  port's problems from the setup's.
+
+**Result (2026-10-15, issue #5; Steam client build 10211, `hlds25_linux` 10211):**
+`cargo xtask steam listen` passed all 23 checks (script 344 s), and `cargo xtask steam
+hlds25-linux` all 10 (script 182 s; 45 server commands forwarded). Evidence from the logs:
+`[ts] [MOS] Azerothian spawned (#1) with [13]` before and after `changelevel ts_awaken`;
+`ts_test_view` printed `third false` after the first spawn, the respawn and the spawn on the new
+map, and with the MOTD up `menu true ... angles [-0.15, 89.85, 0]` (listen) and
+`[0.04, 89.92, 0]` (dedicated) after `ts_face` along +y; screenshots 94–100% lit on the
+listen server, 81–100% on the dedicated one; 8 bot-on-bot kills; the quota's kicks after the
+script. The friends status went online → invisible → online on every run. With the three
+old #23 client fixes reverted (the menu hold, the click-timer reset, the observer-exit camera),
+the dedicated run fails exactly the menu-angles, third-person and changelevel checks (the view
+stays at yaw 0 with the menu up, `third true` after the respawn, no spawn on the new map), so the
+scenes catch those regressions. A Ctrl-C (SIGINT to xtask's process group) while the game ran
+left no `hl_linux` or `hlds_linux`, removed the lock and put the status back to online.
+`rehlds-linux` and `cargo xtask all`'s Steam step weren't run this round.
+
+### 5.2 The friends status while testing
+
+`xtask steam` sets the Steam friends status to **invisible** before it starts the game and puts
+the previous status back afterwards:
+
+* **Reading it.** Steam keeps the status the user picked as `ePersonaState` in the
+  `FriendStoreLocalPrefs_<account id>` value (JSON) of
+  `Steam/userdata/<account id>/config/localconfig.vdf`, and rewrites the file within a second of
+  every change (checked: `steam://friends/status/invisible` turned `"ePersonaState":1` into `7`
+  one second later). The values are Steam's `EPersonaState`: 0 offline, 1 online, 2 busy, 3 away,
+  4 snooze, 5 looking to trade, 6 looking to play, 7 invisible.
+* **Switching.** `steam steam://friends/status/invisible`, which hands the URL to the running
+  Steam and exits; afterwards `steam steam://friends/status/<offline|online|busy|away|snooze|trade|play>`.
+  If the status was invisible already, nothing is changed. **If it can't be read** (no
+  `localconfig.vdf`, no `ePersonaState`), it is put back to **online**, and xtask says so.
+* **On failure.** The restore runs when the run ends, whatever the checks say, and when xtask
+  panics (a drop guard). For Ctrl-C or a kill, xtask starts a watchdog (`sh`, in its own process
+  group so Ctrl-C doesn't reach it) before switching: when the xtask process is gone, it stops
+  `hl_linux` (the game runs in its own process group too), removes the lock and puts the status
+  back. The normal path stops the watchdog first. Only `kill -9` of both, or Steam itself exiting
+  first, can leave the status invisible.
+* If xtask started Steam, Steam comes up with the stored status (usually online) and shows it for
+  the few seconds between the login and the switch.
 
 For debugging, `hl.sh` runs the game under gdb when `DEBUGGER=gdb` is set, and passes
 `DEBUGGER_ARGS` through (`-batch -x <script>` with breakpoints and `run`). `hw.so` ships with its
 symbols and DWARF, so breakpoints on engine functions (`VGui_ViewportPaintBackground`,
 `CBaseUI::ActivateGameUI`) and `print cls.state` work.
 
-**Result (issue #62 fixed):** the scripted `xtask play` scenes all pass on the Steam client
+**Earlier manual result (issue #62 fixed):** the scripted `xtask play` scenes all pass on the Steam client
 (listen server, `maxplayers 8`): join and buy, spawn, slow-motion power-up, grenade, kill, kick,
 death and respawn, and four bots fighting. The world, HUD, buy menu, MOTD, view model and the
 slow-motion indicator draw; the console and the game menu open over the game and give the mouse back.
@@ -554,39 +687,11 @@ images are white.
 
 ### 5.1 Steam client on dedicated servers, `maxplayers 1`, GameUI
 
-**Dedicated server.** Start the server by hand with the dev aids on, and drive its console through
-stdin so the client script can send server commands at the right moment (`rcon` from the HL25
-client is sometimes sent twice, which turns one `changelevel` into two and strands the client):
-
-```sh
-cd ~/games/hlds25_linux          # or ~/games/hlds_linux (ReHLDS)
-cat > ts/t23_server.cfg <<'CFG'
-exec server.cfg
-sv_cheats 1
-ts_bot_quota 0
-ts_bot_stop 1
-developer 1
-CFG
-mkfifo /tmp/srv.fifo; sleep 100000 > /tmp/srv.fifo &   # keep a writer open
-LD_LIBRARY_PATH=$PWD ./hlds_linux -condebug -game ts -port 27115 +maxplayers 8 +sv_lan 1 \
-  +servercfgfile t23_server.cfg +map ts_dojo < /tmp/srv.fifo
-```
-
-The client cfg (`sv_cheats 1` and `ts_dev_scriptinput 1` on the client too, `fps_max 100`, the
-`w10`/`w100` aliases) runs `connect 127.0.0.1:27115` and marks server commands with
-`echo SRVCMD <command>`; a shell loop follows `qconsole.log` and writes each one to the fifo:
-
-```sh
-tail -F qconsole.log | grep --line-buffered SRVCMD | while read -r _ cmd; do echo "$cmd" > /tmp/srv.fifo; done
-```
-
-The script: wait 15 s, buy an AK47 with the `xtask play` key sequence and click to spawn
-(`ts_status`); `ts_bot_quota 1`; `say` and `say_team`; `+showscores`; `ts_tp 1 0 -1344 60 90 0`,
-`ts_tp 2 0 -1200 60 270 0`, then `+attack` with `ts_face 1 2` every 0.2 s for 5 s;
-`ts_hurt 1 500`, click through the death cam and click to respawn; `changelevel ts_awaken`, wait
-30 s, buy, click, `ts_status`, `+showscores`; `ts_test_view` after aiming and after each spawn.
-A second run with `mp_teamplay 1` (set, then `changelevel` so the rules reinstall) checks the team
-menu: auto-assigned team, `changeteam`, `slot2`.
+**Dedicated server.** `cargo xtask steam hlds25-linux` and `cargo xtask steam rehlds-linux` now
+run these checks (§5). The table below is from the earlier manual runs (the same scenes, driven
+through a fifo on the server's stdin, plus `ts_test_view` after aiming and after each spawn). The
+team-menu row is still manual: set `mp_teamplay 1` on the server, `changelevel` so the rules
+reinstall, then check the auto-assigned team, `changeteam` and `slot2`.
 
 | Check | `hlds25-linux` (10211) | `rehlds-linux` | `fwgs` |
 |---|---|---|---|

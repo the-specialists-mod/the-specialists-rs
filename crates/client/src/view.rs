@@ -487,11 +487,13 @@ extern "C" fn cmd_test_angles() {
     e.set_view_angles(a);
 }
 
-/// `ts_test_view`: prints the view state (developer aid).
+/// `ts_test_view`: prints the view state (developer aid). `menu` is whether a menu owns the cursor
+/// (`cargo xtask steam` checks that server-set angles still apply then).
 extern "C" fn cmd_test_view() {
+    let menu = crate::menus::wants_cursor();
     let s = with(|w| {
         format!(
-            "third {} cam_back {:.1} cam_up {:.1} model_z {:.1} amt {:.0} origin {:?} eye {:?} angles {:?}\n",
+            "third {} menu {menu} cam_back {:.1} cam_up {:.1} model_z {:.1} amt {:.0} origin {:?} eye {:?} angles {:?}\n",
             w.third, w.cam_back_ofs, w.cam_up_ofs, w.model_z, w.local_amt, w.cam.origin, w.eye, w.cam.angles
         )
     });
