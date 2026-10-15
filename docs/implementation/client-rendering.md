@@ -435,8 +435,13 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
   for a fresh roll, and reports a sprite that won't load.
 * Melee events: the knife and katana play the material sound on every hit (`0x10043f63`,
   `0x10044585`) and add metal sparks plus `knife_hit`/`hit`/`hit1` on every texture type except
-  none, `'D'`, `'W'` and `'F'` (byte tables `0x10044140`/`0x10044708`; slosh sparks too). Only a
-  miss plays `knife_miss`.
+  0, `'D'`, `'W'` and `'F'` (byte tables `0x10044140`/`0x10044708`; slosh sparks too). Only a
+  miss plays `knife_miss`. `TS_MeleeMaterialSound` returns 0 with no sound on `CONTENTS_SKY`
+  (`0x10045e0a`), and 0 after the default `pl_step1/2` when `pfnTraceTexture` finds no texture
+  (`0x10045e6a`); close combat and the coldcock still puff on a 0. Its lists keep TS's order
+  (tile and slosh 1, 3, 2, 4; duct twice), the pitch is rolled before the sample. The katana
+  rolls `hit`/`hit1` (`miss`/`miss1`) only when it plays one, after the sparks (`0x10044611`).
+  Every event sound rolls its pitch before its volume (`0x10042507..0x1004256f`).
 * Stretch lengths use TS's speed (units per 0.1 s): `stretchspeed` is a TS-unit factor in both
   the map templates and the effects.
 * `EV_TS_Pump`'s wisp blows along `v_right` (`0x10189e10`, the right vector of the

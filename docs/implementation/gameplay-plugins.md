@@ -394,8 +394,8 @@ The hooks so far:
 | `ClientRules` | `ammo_attenuation(ammo)` | `AMMO_ATTENUATION`, 0.4 past it | `events/fire.rs` `fire_sound` |
 | `ClientRules` | `bullet_whizz_and_push()` | true | `events/fire.rs` `fire_bullets` |
 | `ClientRules` | `bullet_material_sound()` / `ricochet_pitch(ts, factor)` | 0.97 and `slow_pitch` / `fire_pitch` | `events/impact.rs` `texture_sound` |
-| `ClientRules` | `event_sound()` | `RandomFloat(0.92, 1)`, `ATTN_NORM`, `slow_pitch` | `events/misc.rs` (empty, pump, reload, melee) |
-| `ClientRules` | `melee_material_sound(tex)` | 0.9, `ATTN_NORM`, `slow_pitch` | `events/misc.rs` `melee_material_sound` |
+| `ClientRules` | `event_sound()` | `RandomFloat(0.92, 1)`, `ATTN_NORM`, `slow_pitch` (pitch rolled first) | `events/misc.rs` (empty, pump, reload, melee) |
+| `ClientRules` | `melee_material_sound(tex)` | 0.9 (tile, glass 0.8; duct 0.5; flesh none), `ATTN_NORM`, `slow_pitch`; called before the sample roll | `events/misc.rs` `melee_material_sound` |
 | `ClientRules` | `melee_reach(m)` | close combat -55/45/35, coldcock 30, knife 35, katana -55/50 | `events/misc.rs` |
 | `ClientRules` | `close_combat_blocks()` / `blade_hit_particles(..)` / `reload_event_phases()` | true / false (scintille + sparks) / true | `events/misc.rs` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
