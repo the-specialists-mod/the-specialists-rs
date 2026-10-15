@@ -18,14 +18,17 @@ use std::ffi::{CStr, CString, c_char, c_int};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use ts_plugin_api::{
-    BotBackend, BotCmd, DEFERRED, EntityInfo, GameState, INVALID, LoadInfo, OK, PlayerInfo, Plugin, PluginApi, PluginId, VERSION,
-    WeaponEntry, entity, item, log,
+    BotBackend, BotCmd, DEFERRED, EntityInfo, GameState, HamCall, INVALID, LoadInfo, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, Plugin,
+    PluginApi, PluginId, VERSION, WeaponEntry, entity, ham, item, log,
 };
 
 /// TS weapon id of the M4 (`shared::weapons::id::M4`), bought for the test bots.
 const M4: c_int = 5;
 /// `IN_JUMP`.
 const IN_JUMP: c_int = goldsrc_sys::IN_JUMP as c_int;
+/// hamsandwich's `Ham_Item_PreFrame`: the gun's `ItemPreFrame`, every frame a living player's
+/// `m_flNextAttack` has run out.
+const HAM_ITEM_PREFRAME: c_int = 70;
 
 #[derive(Clone, Copy)]
 struct Bot {
@@ -210,6 +213,31 @@ extern "C" fn game_init() {
     let name = with(|s| s.name.clone()).unwrap_or_default();
     let tail = |sep: char| format!("tsmod{sep}{name}{sep}");
     check("data_dir", n > 0 && (dir.ends_with(&tail('/')) || dir.ends_with(&tail('\\'))));
+    // The gun's entity hooks: `Ham_Item_PreFrame` on our bots' `weapon_tsgun`.
+    (a.ham_set_hook)(Some(ham_hook));
+    let rc = (a.ham_watch)(HAM_ITEM_PREFRAME, 1);
+    say(log::INFO, &format!("ham_watch(Item_PreFrame): {rc}"));
+}
+
+/// The entity hook: `Item_PreFrame` must come on a `weapon_tsgun` (class `weapon_tsgun`, kind
+/// `GUN`) held by one of our bots.
+unsafe extern "C" fn ham_hook(call: *mut HamCall, post: c_int) -> c_int {
+    let Some(a) = api() else { return ham::action::CONTINUE };
+    // SAFETY: the server passes a `HamCall` valid for the call.
+    let (ham, this, class) = unsafe { ((*call).ham, (*call).this, (*call).class) };
+    if ham != HAM_ITEM_PREFRAME || post == 0 {
+        return ham::action::CONTINUE;
+    }
+    let mut e = EntityInfo::default();
+    // SAFETY: `e` is writable.
+    let rc = unsafe { (a.entity_info)(this, &mut e) };
+    let ours = with(|s| s.bots.iter().any(|b| b.idx == e.owner)).unwrap_or(false);
+    // SAFETY: a NUL-terminated name for the call.
+    let gun_class = unsafe { (a.class_id)(c"weapon_tsgun".as_ptr()) };
+    if ours {
+        check("gun_hook", rc == OK && e.kind == entity::GUN && class == gun_class && (a.ham_supported)(ham, class) == 1);
+    }
+    ham::action::CONTINUE
 }
 
 unsafe extern "C" fn server_activate(map: *const c_char) {
@@ -304,6 +332,18 @@ fn probe(a: &PluginApi, idx: c_int, i: &PlayerInfo) -> bool {
     // SAFETY: `g` is writable.
     let rc = unsafe { (a.game_state)(&mut g) };
     check("game_state", rc == OK && g.max_clients > 0 && g.time > 0.0);
+    check("team_scores", g.team_scores.iter().all(|&t| t >= 0));
+    let mut objs = [ObjectiveInfo::default(); 8];
+    // SAFETY: `objs` is writable for 8 entries; a NULL buffer only counts.
+    let (n_bot, n_none, bad) = unsafe {
+        (
+            (a.objectives)(idx, objs.as_mut_ptr(), objs.len() as c_int),
+            (a.objectives)(0, std::ptr::null_mut(), 0),
+            (a.objectives)(-1, std::ptr::null_mut(), 0),
+        )
+    };
+    check("objectives", n_bot >= 0 && n_bot == n_none && bad == NOT_PLAYER);
+    check("create_entity", create_entity(a));
     let mut inv = [WeaponEntry::default(); 40];
     // SAFETY: `inv` is writable for 40 entries.
     let n = unsafe { (a.player_inventory)(idx, inv.as_mut_ptr(), inv.len() as c_int) };
@@ -313,6 +353,33 @@ fn probe(a: &PluginApi, idx: c_int, i: &PlayerInfo) -> bool {
     let rc = unsafe { (a.bot_command)(idx, c"tsmod_test_ping 1".as_ptr()) };
     check("bot_command", rc == OK || rc == DEFERRED);
     true
+}
+
+/// Creates an `info_target` from keys (as RCBot's `givetsweapon` makes a `ts_groundweapon`),
+/// spawns it, checks it, and removes it again. An unknown class is refused.
+fn create_entity(a: &PluginApi) -> bool {
+    // SAFETY: NUL-terminated strings for the API calls; `i` is writable; the engine's
+    // `pfnPEntityOfEntIndex` returns the live edict we created, which `pfnRemoveEntity` frees.
+    unsafe {
+        if (a.create_entity)(c"tsmod_test_no_such_class".as_ptr()) != INVALID {
+            return false;
+        }
+        let e = (a.create_entity)(c"info_target".as_ptr());
+        if e <= 0 {
+            return false;
+        }
+        let kv = (a.entity_key_value)(e, c"targetname".as_ptr(), c"tsmod_test_target".as_ptr());
+        let placed = (a.entity_key_value)(e, c"origin".as_ptr(), c"1 2 3".as_ptr());
+        let spawned = (a.spawn_entity)(e);
+        let mut i = EntityInfo::default();
+        let ok = kv == 1 && placed == 1 && spawned == OK && (a.entity_info)(e, &mut i) == OK && origin(e) == Some([1.0, 2.0, 3.0]);
+        if let Some((f, _)) = engine()
+            && let (Some(get), Some(remove)) = (f.pfnPEntityOfEntIndex, f.pfnRemoveEntity)
+        {
+            remove(get(e));
+        }
+        ok
+    }
 }
 
 unsafe extern "C" fn client_command(_player: c_int, argc: c_int, argv: *const *const c_char) -> c_int {

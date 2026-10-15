@@ -23,10 +23,11 @@ const VIEW_FIELD_NARROW: f32 = 0.7;
 /// `ObjectCaps()` for the +use search: the stock classes, else the TS entities (TS has no class
 /// with both).
 pub fn object_caps(e: *mut edict_t) -> i32 {
-    match stock::object_caps(e) {
-        0 if !e.is_null() => crate::entities::ts::object_caps(engine().string(e.v().classname)),
-        caps => caps,
-    }
+    // `pObject->ObjectCaps()`: hookable (`Ham_ObjectCaps`), so a plugin can make an entity usable.
+    crate::ham::object_caps(e, || match stock::object_caps(e) {
+        0 if !e.is_null() => crate::entities::ts::object_caps(engine().string(e.v().classname)) as u32,
+        caps => caps as u32,
+    }) as i32
 }
 
 /// `CBasePlayer::PlayerUse` (0xd9848). `pressed` and `released` are this frame's
@@ -76,11 +77,8 @@ pub fn player_use(p: &mut Player, cx: &mut Cx, pressed: i32, released: i32) {
     }
     // The TS addition: objects that can't be used through walls need a clear line from the eyes
     // to their `Center()`, ignoring the object itself and all monsters.
-    let (class, center) = {
-        let v = best.v();
-        (eng.string(v.classname), spread::scale(spread::add(v.absmin, v.absmax), 0.5))
-    };
-    if !crate::entities::ts::can_use_through_walls(class) && eng.trace_line(eye, center, IGNORE_MONSTERS, best).flFraction < 1.0 {
+    let center = crate::ham::center(best, |v| spread::scale(spread::add(v.absmin, v.absmax), 0.5));
+    if !crate::ham::can_use_through_walls(best) && eng.trace_line(eye, center, IGNORE_MONSTERS, best).flFraction < 1.0 {
         return;
     }
     let caps = object_caps(best);

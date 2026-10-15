@@ -154,7 +154,7 @@ Port cvar, default `native`. **Read at map start** (`rules::install`, right afte
 
 ## 5. Writing a plugin backend
 
-1. Export `TSRS_PluginLoad` (plugin-api.md §1.2); check `api->version == 3`.
+1. Export `TSRS_PluginLoad` (plugin-api.md §1.2); check `api->version == 4`.
 2. In it (or in `game_init`): `register_bot_backend(id, "rcbot", &backend)` with `add_bot`,
    `activate`, `deactivate`, `adopt_bot`. Register commands (`rcbot ...`) and cvars, read data
    from `data_dir(id)` (`<gamedir>/tsmod/<name>/`: waypoints, learned data).
@@ -162,10 +162,13 @@ Port cvar, default `native`. **Read at map start** (`rules::install`, right afte
    keep the index, return it.
 4. Every `start_frame` while active: for each bot, think and call `run_cmd` once. Read the world
    with the engine's own functions (`engine_funcs`: traces, PVS, entity searches) and the API
-   (`player_info`, `player_inventory`, `entity_info`, `game_state`, `master_triggered`).
+   (`player_info`, `player_inventory`, `entity_info`, `game_state` with the team scores,
+   `objectives` for the HUD's objective list, `master_triggered`).
 5. Act through the port's code paths: `select_weapon` (TS 3.0 ignores `usercmd.weaponselect`),
    `buy`/`buy_item` (the loadout bought at the next spawn), `bot_command` (`usepowerup`,
-   `respawn`, `say`), `drop_weapon`, `kick_bot`.
+   `respawn`, `say`), `drop_weapon`, `kick_bot`. Make an entity from keys as a map does with
+   `create_entity`, `entity_key_value` and `spawn_entity` (RCBot's `givetsweapon`: a
+   `ts_groundweapon` with `tsweaponid`, then `ham_execute(Ham_Use)` with the bot as activator).
 6. Hear the game through the descriptor's callbacks: spawns, damage, deaths, kills, rounds,
    sounds (hearing), weapon and ammo changes, client commands (`rcbot` typed by a player).
 
@@ -174,7 +177,10 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
 `FakeClientCommand` → `bot_command`; `weaponselect` → `select_weapon`; the free-weapon loadout →
 `buy`; model-string teams → `PlayerInfo::team`; `IsTriggered`/`Classify` virtuals →
 `master_triggered`/`entity_info`; `pfnRunPlayerMove` → `run_cmd`; `rcbot/waypoints/ts` →
-`data_dir`.
+`data_dir`. Version 4 (issue #117) added what RCBot still worked around: the `TeamScore` values
+(`GameState::team_scores`, its GA's death fitness), the `Objective` messages' list
+(`objectives`: id, origin, name and whether it is active) and entities made from keys
+(`UTIL_makeTSweapon`, `ExplosionCreate`).
 
 ## 6. Tests
 
@@ -189,8 +195,10 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
   TEST`: no reload) adds bots with
   the quota, `addbot` and `addcustombot`. Checks: each skip line, `loaded tsmod_test`, `backend
   test`, at most one `reloading` line and only the backend's, and the stub's `check <what> ok` lines (data_dir, map_name, create_bot, run_cmd,
-  player_info, entity_info, game_state, inventory, bot_command, client_command, spawned, buy,
-  buy_item, moved more than 64 units, sound), no `FAIL`, no crash. The fixtures are removed
+  player_info, entity_info, game_state, team_scores, objectives, create_entity (an `info_target`
+  from keys, spawned at its `origin`, and an unknown class refused), gun_hook (`Ham_Item_PreFrame`
+  on a bot's `weapon_tsgun`), inventory, bot_command, client_command, spawned, buy, buy_item,
+  moved more than 64 units, sound), no `FAIL`, no crash. The fixtures are removed
   afterwards and by every `install`, so other scenarios run without plugins.
 * Native parity: `cargo xtask bots`, `play`, `test` unchanged.
 

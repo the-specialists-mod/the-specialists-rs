@@ -405,7 +405,7 @@ pub fn post_think(p: &mut Player, cx: &mut Cx, active: bool) {
             match active_item(p) {
                 Active::None => {}
                 Active::Gun => {
-                    host::with_host(p, cx, |gun, h| gun.weapon_post_frame(h));
+                    host::with_host(p, cx, |gun, h| gun.active_item_post_frame(h));
                     p.inv.sv.seed = engine().random_long(0, 32000) as u32;
                 }
                 Active::Cycler => p.inv.sv.seed = engine().random_long(0, 32000) as u32,
@@ -421,9 +421,38 @@ pub fn post_think(p: &mut Player, cx: &mut Cx, active: bool) {
 }
 
 /// `m_pActiveItem->UpdateClientData` (`CTSGun::UpdateClientData` 0x858c8), run at the end of
-/// `CBasePlayer::UpdateClientData` (`player::hud::update_client_data`).
+/// `CBasePlayer::UpdateClientData` (`player::hud::update_client_data`): a hookable call on the
+/// player's `weapon_tsgun` (`Ham_Item_UpdateClientData`).
 pub fn update_client_data(p: &mut Player, cx: &mut Cx) {
+    crate::ham::item_update_client_data(p, cx, net::update_client);
+}
+
+/// `CTSGun::UpdateClientData` without the hooks (a plugin's `ExecuteHam`).
+pub fn gun_update_client_data(p: &mut Player, cx: &mut Cx) {
     net::update_client(p, cx);
+}
+
+/// `m_pActiveItem->ItemPreFrame()` (`CBasePlayer::ItemPreFrame` 0xdc484, from `PreThink`): once
+/// `m_flNextAttack` has run out, the active item's `ItemPreFrame`. The gun's is empty
+/// (`CBasePlayerItem::ItemPreFrame` 0xf3450, as is the cycler's), so only a plugin's hook
+/// (`Ham_Item_PreFrame`) sees the call.
+pub fn item_pre_frame(p: &mut Player, cx: &mut Cx) {
+    if p.inv.gun.next_attack <= 0.0 && gun_active(p) {
+        crate::ham::item_pre_frame(p, cx);
+    }
+}
+
+/// A plugin's `ham_execute` of gun virtual `v` (`Ham_Weapon_PrimaryAttack`, ...) on the player's
+/// gun, with or without the hooks.
+pub fn run_gun_virtual(p: &mut Player, cx: &mut Cx, v: shared::weapons::Virtual, hooks: bool) -> i32 {
+    host::with_host(p, cx, |gun, h| gun.run_virtual(h, v, hooks))
+}
+
+/// `CBasePlayerWeapon::SendWeaponAnim(anim, skiplocal, body)` (0xa00d0) for `player`'s gun:
+/// `pev->weaponanim`, then `SVC_WEAPONANIM` to the player (not to bots; not when `skiplocal` and
+/// the client predicts its weapons).
+pub fn send_weapon_anim_plain(player: *mut edict_t, anim: i32, skip_local: bool, body: i32) {
+    host::send_weapon_anim(player, anim, skip_local, body);
 }
 
 /// `CFuncTank::StartControl` (0xc2a24): `m_pActiveItem->Holster()` (`CTSGun::Holster` 0x85674,
@@ -648,7 +677,7 @@ pub fn give_named_gun(p: &mut Player, cx: &mut Cx) {
 /// are left alone: only `TSInit` ([`ts_init`]) and the item code change them.
 pub fn remove_all_items(p: &mut Player, cx: &mut Cx) {
     holster_active(p, cx);
-    drop_player_items(p);
+    drop_player_items(p, cx);
     clear_held_items(&mut p.inv);
     remove_all_items_tail(p, cx);
 }
@@ -666,7 +695,7 @@ fn clear_held_items(inv: &mut Inventory) {
 /// suit bit (`&= 0x80000000`, set before `UpdateClientData` and `CurWeapon 0,0,0`).
 pub fn remove_all_items_keep_suit(p: &mut Player, cx: &mut Cx) {
     holster_active(p, cx);
-    drop_player_items(p);
+    drop_player_items(p, cx);
     clear_held_items(&mut p.inv);
     let v = cx.pev();
     v.viewmodel = 0;
@@ -772,7 +801,7 @@ pub fn remove_all_items_tail(p: &mut Player, cx: &mut Cx) {
 pub fn holster_active(p: &mut Player, cx: &mut Cx) {
     match active_item(p) {
         Active::None => {}
-        Active::Gun => host::with_host(p, cx, |gun, h| gun.holster_weapon(h)),
+        Active::Gun => host::with_host(p, cx, |gun, h| gun.holster(h)),
         Active::Cycler => cycler_holster(p),
     }
 }
@@ -790,13 +819,15 @@ fn deploy_active(p: &mut Player, cx: &mut Cx) {
 /// The item loop of `RemoveAllItems` (0xd8cec): every item entity the player holds is
 /// `Drop`ped (`CBasePlayerItem::Drop` 0xf1cac, removed 0.1 s later). Slot list 1 (the cycler)
 /// comes before slot list 2 (the gun). `m_pActiveItem` is cleared.
-fn drop_player_items(p: &mut Player) {
+fn drop_player_items(p: &mut Player, cx: &mut Cx) {
     let sv = &mut p.inv.sv;
     sv.cycler_active = false;
     sv.last_item = Active::None;
-    for h in [std::mem::take(&mut sv.cycler), std::mem::take(&mut sv.gun_item)] {
-        crate::entities::stock::playeritem::drop_item(h.get());
-    }
+    let (cycler, gun) = (std::mem::take(&mut sv.cycler), std::mem::take(&mut sv.gun_item));
+    crate::entities::stock::playeritem::drop_item(cycler.get());
+    // `pItem->Drop()` on the gun: hookable (`Ham_Item_Drop`).
+    let gun = gun.get();
+    crate::ham::item_drop(gun, p, cx, || crate::entities::stock::playeritem::drop_item(gun));
 }
 
 /// `CWeaponCycler::Holster` (0xc7dd4): `m_flNextAttack = UTIL_WeaponTimeBase() + 0.5` (the time

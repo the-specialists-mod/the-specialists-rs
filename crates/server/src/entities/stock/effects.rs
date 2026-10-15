@@ -782,12 +782,9 @@ mod beam {
             info.pos = tr.vecEndPos;
             let decals = v.spawnflags & SF_BEAM_DECALS != 0;
             crate::damage::apply(tr.pHit, &info);
-            if decals {
-                let hv = tr.pHit.v();
-                if hv.solid == SOLID_BSP as i32 || hv.movetype == MOVETYPE_PUSHSTEP as i32 {
-                    let n = eng.random_long(1, 5);
-                    decal_trace(tr, goldsrc::server::intern(&format!("{{bigshot{n}")));
-                }
+            if decals && crate::ham::is_bsp_model(tr.pHit) {
+                let n = eng.random_long(1, 5);
+                decal_trace(tr, goldsrc::server::intern(&format!("{{bigshot{n}")));
             }
         }
         cx.pev().dmgtime = now;
@@ -1820,10 +1817,13 @@ impl Entity for Gib {
             GibState::WaitTillLand => {
                 // `CGib::WaitTillLand` (0xb1dd4): `IsInWorld()` (the origin within ±4096 and the
                 // velocity within ±2000), so a gib still falling at 2000 u/s is removed.
-                let v = cx.pev();
-                if !crate::weapons::projectiles::is_in_world(v) {
+                let me = cx.edict;
+                if !crate::ham::is_in_world(me, || crate::weapons::projectiles::is_in_world(me.v())) {
                     remove(cx.edict);
-                } else if v.velocity == [0.0; 3] {
+                    return;
+                }
+                let v = cx.pev();
+                if v.velocity == [0.0; 3] {
                     self.state = GibState::StartFade;
                     v.nextthink = now + self.life_time;
                     // `CSoundEnt::InsertSound(bits_SOUND_MEAT, origin, 384, 25)` (0xb1e5b).

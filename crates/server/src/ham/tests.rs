@@ -145,6 +145,25 @@ fn ham_numbers_are_ham_const_incs() {
         (id::TS_ENABLEOBJECTIVE, "Ham_TS_EnableObjective"),
         (id::TS_ONFREEENTPRIVATEDATA, "Ham_TS_OnFreeEntPrivateData"),
         (id::TS_SHOULDCOLLIDE, "Ham_TS_ShouldCollide"),
+        (id::ITEM_CANDEPLOY, "Ham_Item_CanDeploy"),
+        (id::ITEM_DEPLOY, "Ham_Item_Deploy"),
+        (id::ITEM_CANHOLSTER, "Ham_Item_CanHolster"),
+        (id::ITEM_HOLSTER, "Ham_Item_Holster"),
+        (id::ITEM_UPDATEITEMINFO, "Ham_Item_UpdateItemInfo"),
+        (id::ITEM_PREFRAME, "Ham_Item_PreFrame"),
+        (id::ITEM_POSTFRAME, "Ham_Item_PostFrame"),
+        (id::ITEM_DROP, "Ham_Item_Drop"),
+        (id::ITEM_UPDATECLIENTDATA, "Ham_Item_UpdateClientData"),
+        (id::ITEM_GETWEAPONPTR, "Ham_Item_GetWeaponPtr"),
+        (id::ITEM_ITEMSLOT, "Ham_Item_ItemSlot"),
+        (id::WEAPON_SENDWEAPONANIM, "Ham_Weapon_SendWeaponAnim"),
+        (id::WEAPON_PRIMARYATTACK, "Ham_Weapon_PrimaryAttack"),
+        (id::WEAPON_SECONDARYATTACK, "Ham_Weapon_SecondaryAttack"),
+        (id::WEAPON_RELOAD, "Ham_Weapon_Reload"),
+        (id::WEAPON_WEAPONIDLE, "Ham_Weapon_WeaponIdle"),
+        (id::WEAPON_SHOULDWEAPONIDLE, "Ham_Weapon_ShouldWeaponIdle"),
+        (id::WEAPON_USEDECREMENT, "Ham_Weapon_UseDecrement"),
+        (id::TS_WEAPON_ALTERNATEATTACK, "Ham_TS_Weapon_AlternateAttack"),
     ];
     for (n, name) in ids {
         assert_eq!(NAMES[n], name, "Ham number {n}");
@@ -218,10 +237,18 @@ fn parse_sig(sig: &str) -> (Vec<c_int>, c_int) {
 }
 
 #[test]
+fn give_slow_mul_returns_its_float() {
+    let d = table::def(id::TS_GIVESLOWMUL as c_int).unwrap();
+    assert_eq!((d.sig)(), (&[][..], kind::FLOAT));
+    assert_eq!(SIGS[id::TS_GIVESLOWMUL], "Void_Void", "hamsandwich's; the port deviates");
+}
+
+#[test]
 fn every_function_takes_hamsandwichs_arguments() {
     for d in DEFS {
         let (args, ret) = (d.sig)();
-        assert_eq!((args.to_vec(), ret), parse_sig(SIGS[d.ham]), "{} ({})", NAMES[d.ham], SIGS[d.ham]);
+        let sig = table::SIG_DEVIATIONS.iter().find(|(h, _)| *h == d.ham).map_or(SIGS[d.ham], |(_, s)| s);
+        assert_eq!((args.to_vec(), ret), parse_sig(sig), "{} ({sig})", NAMES[d.ham]);
         assert!(!matches!((&d.fires, &d.exec), (Classes::None, Classes::None)), "{}", NAMES[d.ham]);
     }
     assert_eq!(parse_sig("Int_Entvar_Entvar_Float_Int"), (vec![kind::ENTITY, kind::ENTITY, kind::FLOAT, kind::INT], kind::INT));
@@ -238,10 +265,18 @@ fn classes_say_where_hooks_fire() {
     let support = |ham: usize, ty| table::def(ham as c_int).unwrap().support(ty);
     assert_eq!(support(id::SPAWN, other), 1);
     assert_eq!(support(id::KILLED, player), 1);
-    assert_eq!(support(id::KILLED, other), 0, "CBaseEntity::Killed runs on request only");
+    assert_eq!(support(id::KILLED, other), 1, "CBaseEntity::Killed from CBaseEntity::TakeDamage");
     assert_eq!(support(id::PLAYER_JUMP, player), 1);
     assert_eq!(support(id::PLAYER_JUMP, other), UNSUPPORTED);
-    assert_eq!(support(id::ISALIVE, player), 0, "a getter is execute-only");
+    assert_eq!(support(id::ISALIVE, player), 1, "queries fire where the game asks them");
+    let gun = TypeId::of::<crate::entities::stock::playeritem::WorldTsGun>();
+    assert_eq!(support(id::ITEM_HOLSTER, gun), 1, "the gun's virtuals on weapon_tsgun");
+    assert_eq!(support(id::WEAPON_PRIMARYATTACK, gun), 1);
+    assert_eq!(support(id::TS_WEAPON_ALTERNATEATTACK, gun), 1);
+    assert_eq!(support(id::ITEM_HOLSTER, player), UNSUPPORTED);
+    assert_eq!(support(id::ITEM_CANDEPLOY, gun), 0, "a constant, never a hookable call in the port");
+    assert_eq!(support(id::WEAPON_USEDECREMENT, gun), 0);
+    assert!(table::def(id::WEAPON_PLAYEMPTYSOUND as c_int).is_none(), "no call site in TS 3.0");
     assert_eq!(support(id::RESPAWN, kit), 1);
     assert_eq!(support(id::RESPAWN, player), UNSUPPORTED);
     assert_eq!(support(id::TS_BREAKABLERESPAWN, other), 1);

@@ -136,6 +136,30 @@ pub enum MeleeResult {
     },
 }
 
+/// The `CTSGun` virtual functions TS calls through the gun's vtable that a server plugin may hook
+/// (hamsandwich's `Item_*` / `Weapon_*` on `weapon_tsgun`). The gun calls
+/// [`GunHost::virtual_pre`] and [`GunHost::virtual_post`] around each call TS makes through the
+/// vtable; the prediction's host runs them plainly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Virtual {
+    /// `CTSGun::Deploy` (0x81030), returns 1.
+    Deploy,
+    /// `CTSGun::Holster(skiplocal)` (0x85674): `HolsterWeapon`.
+    Holster,
+    /// `CBasePlayerWeapon::ItemPostFrame` (0xa03d4).
+    PostFrame,
+    /// `CTSGun::PrimaryAttack` (0x81a20), `SecondaryAttack` (0x817a8), `AlternateAttack`
+    /// (0x81ba8), `Reload` (0x84d5c), `WeaponIdle` (0x854dc), from `ItemPostFrame` (`Reload`
+    /// also from `WeaponIdle`).
+    PrimaryAttack,
+    SecondaryAttack,
+    AlternateAttack,
+    Reload,
+    WeaponIdle,
+    /// `CTSGun::ShouldWeaponIdle` (0x87274), returns 1.
+    ShouldWeaponIdle,
+}
+
 /// Sounds the server emits itself (the client plays everything else from events).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sound {
@@ -302,6 +326,19 @@ pub trait GunHost {
     /// (0, 0, 28), and gravity and friction 1. The client copy (`0x1000b4ef`) writes these to its
     /// player too, but only `iuser4` leaves the command, so the client host doesn't need it.
     fn leave_wall_climb(&mut self) {}
+    /// Before the gun's virtual `v` runs, with its int argument (`Holster`'s `skiplocal`, else 0;
+    /// changes are used): false skips it. The server runs plugin entity hooks here (`ts_server::ham`);
+    /// the default runs it.
+    fn virtual_pre(&mut self, gun: &mut Gun, v: Virtual, arg: &mut i32) -> bool {
+        let _ = (gun, v, arg);
+        true
+    }
+    /// After it, also when [`virtual_pre`](Self::virtual_pre) skipped it (`ran` is then `None`;
+    /// a void function returns `Some(0)`): the value the caller goes on with.
+    fn virtual_post(&mut self, gun: &mut Gun, v: Virtual, arg: i32, ran: Option<i32>) -> i32 {
+        let _ = (gun, v, arg);
+        ran.unwrap_or(0)
+    }
 }
 
 /// `s_weapon_status` (0x38 bytes per weapon id).
@@ -572,7 +609,7 @@ impl Gun {
         if !self.post_frame_ready(host.buttons(), host.rules()) {
             return false;
         }
-        self.weapon_post_frame(host);
+        self.active_item_post_frame(host);
         true
     }
 
@@ -595,14 +632,15 @@ impl Gun {
         // What the client's copy runs (all of it in TS 3.0, `GunRules::predicted`).
         let predicted = if host.prediction() { host.rules().predicted() } else { Predicted::ALL };
         if !self.has_slot() {
+            // Kung fu goes to `WeaponIdle` without asking `ShouldWeaponIdle` (0xa04b0..0xa0538).
             if buttons & IN_ATTACK2 != 0 && self.next_secondary <= 0.0 {
-                self.secondary_attack(host);
+                self.virt(host, Virtual::SecondaryAttack, 0, Self::secondary_attack);
             } else if buttons & IN_ATTACK != 0 && self.next_primary <= 0.0 {
-                self.primary_attack(host);
+                self.virt(host, Virtual::PrimaryAttack, 0, Self::primary_attack);
             } else if buttons & IN_RELOAD != 0 && predicted.kungfu_reload {
-                self.reload(host);
+                self.virt(host, Virtual::Reload, 0, Self::reload);
             }
-            self.weapon_idle(host);
+            self.virt(host, Virtual::WeaponIdle, 0, Self::weapon_idle);
             return;
         }
         // Finish a magazine reload.
@@ -631,20 +669,90 @@ impl Gun {
             self.cur().in_reload = 0;
         }
         let contender_empty = self.current == id::CONTENDER && self.status[self.current as usize].clip == 0;
-        if buttons & IN_ATTACK2 != 0 && self.next_secondary <= 0.0 {
-            self.secondary_attack(host);
+        let acted = if buttons & IN_ATTACK2 != 0 && self.next_secondary <= 0.0 {
+            self.virt(host, Virtual::SecondaryAttack, 0, Self::secondary_attack);
+            true
         } else if buttons & IN_ATTACK != 0 && self.next_primary <= 0.0 && !contender_empty {
-            self.primary_attack(host);
+            self.virt(host, Virtual::PrimaryAttack, 0, Self::primary_attack);
+            true
         } else if buttons & IN_CANCEL != 0 && self.next_alt <= 0.0 && predicted.alt_attack {
-            self.alternate_attack(host);
+            self.virt(host, Virtual::AlternateAttack, 0, Self::alternate_attack);
+            true
         } else if buttons & IN_RELOAD != 0
             && self.has_slot()
             && self.status[self.current as usize].in_reload == 0
             && self.current != id::CONTENDER
         {
-            self.reload(host);
+            self.virt(host, Virtual::Reload, 0, Self::reload);
+            true
+        } else {
+            false
+        };
+        // After an attack or reload, or with an attack button held, `ShouldWeaponIdle` decides
+        // (0xa07a0); otherwise straight to `WeaponIdle` (0xa07b4).
+        if (acted || buttons & (IN_ATTACK | IN_ATTACK2) != 0) && self.virt(host, Virtual::ShouldWeaponIdle, 1, |_, _| ()) == 0 {
+            return;
         }
-        self.weapon_idle(host);
+        self.virt(host, Virtual::WeaponIdle, 0, Self::weapon_idle);
+    }
+
+    /// `m_pActiveItem->ItemPostFrame()` (`CBasePlayer::ItemPostFrame` 0xdc4d0) on the gun:
+    /// [`weapon_post_frame`](Self::weapon_post_frame) as a hookable virtual call.
+    pub fn active_item_post_frame(&mut self, host: &mut impl GunHost) {
+        self.virt(host, Virtual::PostFrame, 0, Self::weapon_post_frame);
+    }
+
+    /// `m_pActiveItem->Holster(skiplocal)` (`CTSGun::Holster` 0x85674, which is
+    /// [`holster_weapon`](Self::holster_weapon)) as a hookable virtual call.
+    pub fn holster(&mut self, host: &mut (impl GunHost + ?Sized)) {
+        let mut arg = 0;
+        let ran = host.virtual_pre(self, Virtual::Holster, &mut arg).then(|| {
+            self.holster_weapon(host);
+            0
+        });
+        host.virtual_post(self, Virtual::Holster, arg, ran);
+    }
+
+    /// Runs virtual `v` on request (a server plugin's `ham_execute`): with `hooked`, through the
+    /// host's [`virtual_pre`](GunHost::virtual_pre) / [`virtual_post`](GunHost::virtual_post) as
+    /// when the gun calls it, else plainly. Returns its value (1 for `Deploy` and
+    /// `ShouldWeaponIdle`, else 0).
+    pub fn run_virtual(&mut self, host: &mut impl GunHost, v: Virtual, hooked: bool) -> i32 {
+        fn plain<H: GunHost>(g: &mut Gun, h: &mut H, v: Virtual) -> i32 {
+            match v {
+                Virtual::Deploy => {
+                    g.deploy_weapon(h);
+                    return 1;
+                }
+                Virtual::Holster => g.holster_weapon(h),
+                Virtual::PostFrame => g.weapon_post_frame(h),
+                Virtual::PrimaryAttack => g.primary_attack(h),
+                Virtual::SecondaryAttack => g.secondary_attack(h),
+                Virtual::AlternateAttack => g.alternate_attack(h),
+                Virtual::Reload => g.reload(h),
+                Virtual::WeaponIdle => g.weapon_idle(h),
+                Virtual::ShouldWeaponIdle => return 1,
+            }
+            0
+        }
+        if !hooked {
+            return plain(self, host, v);
+        }
+        let mut arg = 0;
+        let ran = host.virtual_pre(self, v, &mut arg).then(|| plain(self, host, v));
+        host.virtual_post(self, v, arg, ran)
+    }
+
+    /// One of the gun's hookable virtual calls ([`Virtual`]): `f` runs unless the host's
+    /// [`virtual_pre`](GunHost::virtual_pre) skips it. `ret` is what `f` returns (`ShouldWeaponIdle`'s
+    /// 1, `Deploy`'s 1; 0 for void functions); the result is the host's.
+    fn virt<H: GunHost>(&mut self, host: &mut H, v: Virtual, ret: i32, f: impl FnOnce(&mut Self, &mut H)) -> i32 {
+        let mut arg = 0;
+        let ran = host.virtual_pre(self, v, &mut arg).then(|| {
+            f(self, host);
+            ret
+        });
+        host.virtual_post(self, v, arg, ran)
     }
 
     // ---- attacks ------------------------------------------------------------------------------
@@ -1786,7 +1894,7 @@ impl Gun {
         }
         self.clip_mirror = self.status[self.current as usize].clip;
         if self.kind() == kind::SHOTGUN && self.status[self.current as usize].state != 0 {
-            self.reload(host);
+            self.virt(host, Virtual::Reload, 0, Self::reload);
             return;
         }
         if self.status[self.current as usize].mode == mode::BURST && self.next_primary <= 0.0 {
@@ -1807,7 +1915,7 @@ impl Gun {
         } else if self.status[self.current as usize].clip < 1
             && !(host.rules().infinite_clip_skips_idle_reload() && Self::infinite_clip(host))
         {
-            self.reload(host);
+            self.virt(host, Virtual::Reload, 0, Self::reload);
         } else if self.status[self.current as usize].clip != 0 {
             self.idle = 3.0;
             host.weapon_anim(self.seq(0), false, self.body);
@@ -1907,8 +2015,19 @@ impl Gun {
         }
     }
 
-    /// `CTSGun::Deploy` 0x81030.
+    /// `m_pActiveItem->Deploy()` / `this->Deploy()`: [`deploy_weapon`](Self::deploy_weapon) as a
+    /// hookable virtual call. Every TS caller goes through the vtable.
     pub fn deploy(&mut self, host: &mut (impl GunHost + ?Sized)) {
+        let mut arg = 0;
+        let ran = host.virtual_pre(self, Virtual::Deploy, &mut arg).then(|| {
+            self.deploy_weapon(host);
+            1
+        });
+        host.virtual_post(self, Virtual::Deploy, arg, ran);
+    }
+
+    /// `CTSGun::Deploy` 0x81030.
+    pub fn deploy_weapon(&mut self, host: &mut (impl GunHost + ?Sized)) {
         if !self.has_slot() {
             self.holster_weapon(host);
             return;

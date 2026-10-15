@@ -14,8 +14,9 @@ of plugin use it:
   from their `TSRS_PluginLoad` and hand back callbacks. Bot backends are such plugins
   ([bot-plugins.md](bot-plugins.md)).
 
-The current version is **3** (issue #104). Versions don't stay compatible: a break bumps
-`VERSION` and the interface name, so a stale plugin finds nothing (§8).
+The current version is **4** (issues #117, #99; version 3 was #104). Versions don't stay
+compatible: a break bumps `VERSION` and the interface name, so a stale plugin finds nothing (§8,
+§9).
 
 | Part | Where |
 |---|---|
@@ -29,7 +30,8 @@ The current version is **3** (issue #104). Versions don't stay compatible: a bre
 | Free slots, weapon ammo | `crates/server/src/weapons/mod.rs` |
 | Projectile throwers | `crates/server/src/weapons/projectiles.rs` (`Throwers`) |
 | Private-data guard | `crates/goldsrc/src/edict.rs`, `crates/server/src/world.rs` (`private_size`) |
-| Entity hooks (version 2, §7): numbering, marshalling, pre/post calls, `ham_execute` | `crates/server/src/ham/` (`mod.rs`, `table.rs`, `classes.rs`, `names.rs`; tests in `tests.rs`) |
+| Entity hooks (version 2, §7): numbering, marshalling, pre/post calls, `ham_execute` | `crates/server/src/ham/` (`mod.rs`, `table.rs`, `classes.rs`, `names.rs`; queries `query.rs`, the gun `gun.rs`; tests in `tests.rs`) |
+| The gun's hookable virtual calls (`Item_*` / `Weapon_*`) | `shared::weapons::Virtual`, `GunHost::virtual_pre` / `virtual_post` (`crates/shared/src/weapons/gun.rs`); the server's in `crates/server/src/weapons/host.rs` |
 | Calling the plugin's hook (FFI), `ham_execute`'s pointer arguments | `crates/server-dll/src/plugin_api.rs` (`call_hook`, `ham_execute`) |
 
 ## 1. Getting the table
@@ -38,14 +40,14 @@ The current version is **3** (issue #104). Versions don't stay compatible: a bre
 
 The server library exports tier1's `CreateInterface(name, return_code)` on every platform.
 `mp.dll` always had it, with nothing registered (0x10028f70). On Linux it is the one export the
-port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi003`
+port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi004`
 (`ts_plugin_api::INTERFACE_NAME`) it returns a pointer to the `PluginApi` and writes 0
 (`IFACE_OK`) to a non-NULL `return_code`. Any other name, the earlier versions' `TSRS_PluginApi001`
-included, or a NULL name, returns NULL and writes 1 (`IFACE_FAILED`).
+and `TSRS_PluginApi003` included, or a NULL name, returns NULL and writes 1 (`IFACE_FAILED`).
 
 A plugin looks the export up in the game library that is already loaded: metamod's
 `GINFO_REALDLL_FULLPATH`, then `dlopen(RTLD_NOLOAD)` / `GetModuleHandle`. It checks
-`PluginApi::version` (3) and `size`. Such a plugin has no plugin id: it passes `NO_PLUGIN` (0)
+`PluginApi::version` (4) and `size`. Such a plugin has no plugin id: it passes `NO_PLUGIN` (0)
 where one is asked, so it can't use `data_dir`, `register_bot_backend` or `create_bot`.
 
 The table is built on first use after `GiveFnptrsToDll` (it carries the engine's table and
@@ -80,7 +82,7 @@ are never unloaded. The rule (`plugins/loader.rs`):
   (name, version, callbacks) and returns `OK`.
 * Skipped with a warning, never a crash: a library that can't be opened, has **no
   `TSRS_PluginLoad`**, returns anything but `OK`, or leaves a **descriptor `size`** other than
-  the server's or an **`api_version`** other than 3. What a refused plugin registered is dropped
+  the server's or an **`api_version`** other than 4. What a refused plugin registered is dropped
   (its commands then do nothing; its bot backend is gone). A library whose load function ran
   stays mapped.
 
@@ -165,9 +167,13 @@ Addresses are `ts_i386.so` (Ghidra numbering). "pl+" offsets are `CBasePlayer` f
 | `register_bot_backend(plugin, name, backend)` | Only loaded plugins; a plugin name, not `native`; `EXISTS` if taken. [bot-plugins.md](bot-plugins.md). |
 | `player_info` | As in §3, plus `alive` (alive and not observing), `is_bot` (`m_bIsBot`, any backend), `team` (the rules team from 1 in teamplay, 0 none) and `has_flag` (carries the CTB case). |
 | `player_inventory(player, out, max)` | Every owned weapon id 1..37: clip, the reserve of its ammo type, fire mode, owned attachments. Returns the count. Snapshot like `player_info` when the player is out of reach. |
-| `entity_info(entity, out)` | By the object's Rust type (`world::type_of`): player (team, `available` = alive), `GROUND_WEAPON` (`ts_groundweapon` and the HL names: TS id), `POWERUP` (bits), `GUN` (a dropped `WorldGun` with its id and dropper/thrower, or a `weapon_tsgun` and its holder), `CTB_FLAG` (`ts_flag`, its team), `CTB_BASE` (`ts_briefcase`: capture team, `available` = captures accepted), `OBJECTIVE` (`ts_wingiver`, `ts_scoregiver`), `PROJECTILE` (thrower known), else `OTHER` (with `projectile_owner`'s owner). `available` is "not `EF_NODRAW`" unless said otherwise. This replaces RCBot's classname guesses and its `Classify()` virtual call. |
+| `entity_info(entity, out)` | By the object's Rust type (`world::type_of`): player (team, `available` = alive), `GROUND_WEAPON` (`ts_groundweapon` and the HL names: TS id), `POWERUP` (bits), `GUN` (a dropped `WorldGun` with its id and dropper/thrower, or a `weapon_tsgun` and its holder, and since version 4 the holder's weapon in hand as `weapon`), `CTB_FLAG` (`ts_flag`, its team), `CTB_BASE` (`ts_briefcase`: capture team, `available` = captures accepted), `OBJECTIVE` (`ts_wingiver`, `ts_scoregiver`), `PROJECTILE` (thrower known), else `OTHER` (with `projectile_owner`'s owner). `available` is "not `EF_NODRAW`" unless said otherwise. This replaces RCBot's classname guesses and its `Classify()` virtual call. |
 | `master_triggered(master, activator)` | `UTIL_IsMasterTriggered` by name (`entities::stock::base::is_master_triggered_name`): what RCBot did with `CMasterEntity::IsTriggered` through a vtable the port doesn't have. As in TS, a name that isn't a master counts as triggered (and logs "Master was null or not a master!"). |
-| `game_state(out)` | `m_mode`, teamplay, LMS, The One, a CTB map (a `ts_briefcase` exists), team count, round state (`OVER` while `round_restart` is pending, `RUNNING` in a round mode with an end time), intermission, time, `maxClients`. |
+| `game_state(out)` | `m_mode`, teamplay, LMS, The One, a CTB map (a `ts_briefcase` exists), team count, round state (`OVER` while `round_restart` is pending, `RUNNING` in a round mode with an end time), intermission, time, `maxClients`. Version 4: `team_scores[4]`, the `CTSGameRules` teams' scores that `TeamScore` carries (`TeamWin` 0x78a08, `CaptureTouch` 0x8db9c, `RecountTeams` 0xe5608; round wins and captures), by `PlayerInfo::team` - 1, 0 for an unnamed team. |
+| `objectives(player, out, max)` | Version 4. The HUD objective list (`CTSGameRules +0x2d0`, filled by `CTSObjectivePointer::Use` 0x8bbd8) as `SendObjectiveToHud` (0x7ac80) sends it to `player` in the `Objective` message: `id` the list index (the message's byte), the entity, `origin` its `Center()`, `name` that player's team text cut to 63 bytes; plus `active` (a bomb, hack or escape zone enabled, not frozen; a win or score giver that hasn't fired). `player` 0 reads the texts as no team. Returns the count (emptied slots of TS 2.1's appending list skipped); `NOT_PLAYER` for any other index that isn't a connected player. |
+| `create_entity(classname)` | Version 4. `CREATE_NAMED_ENTITY`; `INVALID` (and freed) for a class without a game object, as `CBaseEntity::Create` (0xac480) refuses one. Not spawned. |
+| `entity_key_value(entity, key, value)` | Version 4. `DispatchKeyValue` (0xaad4c) with the entity's classname as `szClassName`: the entvars table (`origin`, `targetname`, ...) then the class (and its `Ham_Keyvalue` hooks). 1 handled, 0 not, `NOT_PLAYER`, `INVALID`. |
+| `spawn_entity(entity)` | Version 4. `DispatchSpawn` (0xaab8c, with `Ham_Spawn`). A spawn that fails (-1: `FL_KILLME`, a refused class, a dead global) removes the entity, as the engine does with a map entity; one that removed itself is gone: both `INVALID`. RCBot's `UTIL_makeTSweapon` and `ExplosionCreate` are `create_entity` + keys + `spawn_entity` (+ `ham_execute(Ham_Use)`). |
 | `create_bot(plugin, name, model, skill)` | Only for the active backend's plugin. The host's `BotSetup` (`bot_backend::create_player`): fake client, `Player` with `cbot`/`is_bot`, spawn, `model`/`team`/`cl_lw` keys, teamplay team from the model, `ts_playeramount`. Index, `FULL` or `INVALID`. |
 | `kick_bot(player)` | `kick #<userid>` (queued). `INVALID` for a human. |
 | `run_cmd(player, cmd)` | `pfnRunPlayerMove`. `BUSY` inside the bot's own callbacks; `INVALID` for a human or `msec` outside 1..255. `ts_bot_stop 1` clears a living bot's movement, buttons and impulse (it still turns), as the native frozen think. |
@@ -237,6 +243,12 @@ block's size and layout don't matter to them.
 
 ## 6. Tests
 
+* Version 4 (`cargo test`): the interface name, the team scores' order and unnamed teams, every
+  new `Ham` number and signature (and `TS_GiveSlowMul`'s deviation), which classes the gun's
+  functions and the queries fire for, and the gun's virtual calls reaching the host's hook points
+  in `ItemPostFrame`'s order, a skipped one not running (`shared` `weapons::gun::tests`). `cargo
+  xtask plugins` adds the stub's `team_scores`, `objectives`, `create_entity` and `gun_hook`
+  checks (bot-plugins.md §6).
 * Version 3 (`cargo test -p ts-server plugins`, `plugin_api`, `bot_backend`; `-p tsmod-test`;
   `-p xtask`): the naming rule on all four platforms (longest suffix, case on Windows, bad
   names, other files), ELF/PE machine detection, a directory scan (order, other platforms,
@@ -364,43 +376,80 @@ so hooks don't fire. Everything else is `UNSUPPORTED`. Addresses are `ts_i386.so
 
 | # | `Ham_` | Signature | Fires | Execute | Port |
 |---|---|---|---|---|---|
-| 0 | `Spawn` | `Void_Void` | all | | `DispatchSpawn`, `ClientPutInServer`, a player's respawn (inner), bots, the game's create helpers (projectiles, `ExplosionCreate`, power-ups, slow-motion points, the CTB case, the sound list) |
-| 2 | `Keyvalue` | `Void_Int` | all | | `DispatchKeyValue`'s class part, after the entvars parser (SDK order). A superseding hook's `fHandled` counts. |
-| 3 | `ObjectCaps` | `Int_Void` | | all | `levelchange::ts_object_caps` (TS's caps by class, 0 for a name TS doesn't know) |
+| 0 | `Spawn` | `Void_Void` | all | | `DispatchSpawn`, `ClientPutInServer`, a player's respawn (inner), bots, the game's create helpers (projectiles, `ExplosionCreate`, power-ups, slow-motion points, the CTB case, the sound list), the API's `spawn_entity` |
+| 2 | `Keyvalue` | `Void_Int` | all | | `DispatchKeyValue`'s class part, after the entvars parser (SDK order); also the API's `entity_key_value`. A superseding hook's `fHandled` counts. |
+| 3 | `ObjectCaps` | `Int_Void` | all | | `levelchange::ts_object_caps` (TS's caps by class, 0 for a name TS doesn't know). Fires in `PlayerUse` (0xd9848: the +use search, so a hook can make an entity usable; its `Use` hooks then fire) and the level change's `ChangeList` / `InTransitionVolume` (0xe87c4, 0xe865c) |
 | 4 | `Activate` | `Void_Void` | all | | `ServerActivate` |
-| 6 | `Classify` | `Int_Void` | | all | `entities::classify`: TS's value by class (2 `CLASS_PLAYER` for players, 1 `func_guntarget`, 4 `monster_hevsuit_dead`, 99 `xen_tree` / `xen_hull`, else 0) |
+| 6 | `Classify` | `Int_Void` | all | | `entities::classify`: TS's value by class (2 `CLASS_PLAYER` for players, 1 `func_guntarget`, 4 `monster_hevsuit_dead`, 99 `xen_tree` / `xen_hull`, else 0). Fires in `TEXTURETYPE_PlaySound` (0xe1330, a bullet's impact sound) |
 | 8 | `TraceAttack` | `Void_Entvar_Float_Vector_Trace_Int` | all | | `damage::trace_attack` (bullets, melee, explosions, thrown and falling objects). The trace carries `iHitgroup`, `vecEndPos` and `pHit`; changes to the attacker, damage, direction, bits, hit group and end position are used. |
 | 9 | `TakeDamage` | `Int_Entvar_Entvar_Float_Int` | all | | `damage::apply`, `ApplyMultiDamage` (`damage::multi::apply`) |
 | 10 | `TakeHealth` | `Int_Float_Int` | all | | `items::take_health` (kits, chargers, healing doors, negative `trigger_hurt`, `game_player_hurt`), a player's time-based healing (inner) |
-| 11 | `Killed` | `Void_Entvar_Int` | player | others | `rules::on_killed` from `CBasePlayer::TakeDamage` (inner); `iGib` is `DMG_NEVERGIB` / `DMG_ALWAYSGIB` (1 / 2) and back. Others: `CBaseEntity::Killed` (0xabd4c). |
-| 12 | `BloodColor` | `Int_Void` | | all | 247 for players, -1 (`DONT_BLEED`) else |
+| 11 | `Killed` | `Void_Entvar_Int` | all | | Players: `rules::on_killed` from `CBasePlayer::TakeDamage` (inner); `iGib` is `DMG_NEVERGIB` / `DMG_ALWAYSGIB` (1 / 2) and back. Others: `CBaseEntity::Killed` (0xabd4c) from `CBaseEntity::TakeDamage` (0xab994, `entities::base_take_damage`; `this` out of reach, §7.6) |
+| 12 | `BloodColor` | `Int_Void` | all | | 247 for players, -1 (`DONT_BLEED`) else. Fires for the gibs of a gibbed player (`GibMonster` 0xb14e0's `SpawnHeadGib` / `SpawnRandomGibs`) and the `impulse 102` gib |
 | 25 | `OverrideReset` | `Void_Void` | all | | a global entity restored over this one |
-| 32 | `IsAlive` | `Int_Void` | | all | `deadflag == DEAD_NO && health > 0` |
-| 33 | `IsBSPModel` | `Int_Void` | | all | `SOLID_BSP` or `MOVETYPE_PUSHSTEP` |
-| 36 | `IsInWorld` | `Int_Void` | | all | inside ±4096, slower than 2000 |
-| 37 | `IsPlayer` | `Int_Void` | | all | the player class |
-| 38 | `IsNetClient` | `Int_Void` | | all | false for `mp.dll`'s `CBot`s (`Player::cbot`) and non-players |
+| 32 | `IsAlive` | `Int_Void` | all | | `deadflag == DEAD_NO && health > 0` (`rules::is_alive`). Fires in `CheckDeads` (0x79c00), `SelectRandomTheOne` (0x7af28), `TSSelectSpawnSpot` (0x76244), `Observer_Idle` (0x99ca4), the TS triggers (`CTSTrigger`/`CTSDMHill::WaitTouch`), the CTB case and base, the power-up and ground weapon/ammo pickups, and the blades' targets (`KnifeFire`/`KatanaFire`) |
+| 33 | `IsBSPModel` | `Int_Void` | all | | `SOLID_BSP` or `MOVETYPE_PUSHSTEP`. Fires in `CheckHull` (0x95e28, the melee hull trace) and `CBeam::BeamDamage` (0xba1b8, `env_beam` decals) |
+| 36 | `IsInWorld` | `Int_Void` | all | | inside ±4096, slower than 2000. Fires in `CM61Grenade::WaitThink` (0x7cacc) and `CGib::WaitTillLand` (0xb1dd4), on the entity in its own think |
+| 37 | `IsPlayer` | `Int_Void` | all | | the player class. Fires wherever the port tests for a player (`rules::has_player`, which stands for TS's `IsPlayer()` and its classname / `FL_CLIENT` forms: touches, uses, damage, scoring, the rules). Guard: a hook can make a player not count, not the reverse (§7.6) |
+| 38 | `IsNetClient` | `Int_Void` | all | | false for `mp.dll`'s `CBot`s (`Player::cbot`) and non-players. Fires in `rules::is_net_client` (votes, the bots' chat, the player list); guarded as `IsPlayer` |
 | 41 | `Think` | `Void_Void` | all | | `DispatchThink` |
 | 42 | `Touch` | `Void_Cbase` | all | | `DispatchTouch`, `game_zone_player`, the Xen tree |
 | 43 | `Use` | `Void_Cbase_Cbase_Int_Float` | all | | `DispatchUse`, every target fired (`fire_targets`), buttons, trains, tanks and their controls, effects |
 | 44 | `Blocked` | `Void_Cbase` | all | | `DispatchBlocked` |
 | 45 | `Respawn` | `Cbase_Void` | HL items | | `CItem::ItemTouch` (inner); returns the item |
-| 48 | `Center` | `Vector_Void` | | all | `(absmin + absmax) / 2` |
-| 49 | `EyePosition` | `Vector_Void` | | all | `origin + view_ofs` |
+| 48 | `Center` | `Vector_Void` | all | | `(absmin + absmax) / 2`. Fires in `PlayerUse` (the line-of-sight test), `SendObjectiveToHud` (0x7ac80, the `Objective` message and the API's `objectives`) and `CTSBomb::WaitThink` (0x8c860, where the bomb explodes) |
+| 49 | `EyePosition` | `Vector_Void` | all | | `origin + view_ofs`. Execute-only in practice: TS's callers (`FVisible`, the intermission camera in `CHalfLifeMultiplay::Think`) are inlined in the port |
 | 55 | `Player_Jump` | `Void_Void` | player | | `stunt::jump` from PreThink while +jump is held (inner) |
 | 56 | `Player_Duck` | `Void_Void` | player | | `stunt::duck` from PreThink (inner) |
 | 57 | `Player_PreThink` | `Void_Void` | player | | `PlayerPreThink` |
 | 58 | `Player_PostThink` | `Void_Void` | player | | `PlayerPostThink` |
-| 59 | `Player_GetGunPosition` | `Vector_Void` | | player | `origin + view_ofs` |
+| 59 | `Player_GetGunPosition` | `Vector_Void` | player | | `origin + view_ofs`. Fires for every shot (`ShootBulletsPlayer`'s source, with the shooter lent) and melee swing (`ColdCock`, `KatanaFire`, `KnifeFire`, `CCombatAttack`) |
+| 65 | `Item_CanDeploy` | `Int_Void` | | `weapon_tsgun` | 1 (`CBasePlayerWeapon::CanDeploy` 0xa0170); the port's switches take it as a constant |
+| 66 | `Item_Deploy` | `Int_Void` | `weapon_tsgun` | | `CTSGun::Deploy` (0x81030): every weapon switch (`weapon_<id>`, pickups, drops, `GetBetterWeapon`, `SwitchWeapon`, `SelectItem`, `StopControl`) |
+| 67 | `Item_CanHolster` | `Int_Void` | | `weapon_tsgun` | 1 (`CBasePlayerItem::CanHolster` 0xf3444); TS 3.0 never calls it |
+| 68 | `Item_Holster` | `Void_Int` | `weapon_tsgun` | | `CTSGun::Holster` (0x85674 → `HolsterWeapon`): `m_pActiveItem->Holster()` in `Killed`, `StartObserver`, `RemoveAllItems`, `StartControl`, `SwitchWeapon`, `SelectItem`. The gun's own `HolsterWeapon` calls (a weapon switch, a drop) aren't virtual in TS and don't fire |
+| 69 | `Item_UpdateItemInfo` | `Void_Void` | | `weapon_tsgun` | empty (0xf3670) |
+| 70 | `Item_PreFrame` | `Void_Void` | `weapon_tsgun` | | `CBasePlayer::ItemPreFrame` (0xdc484) from PreThink once `m_flNextAttack` ran out; the gun's is empty (0xf3450) |
+| 71 | `Item_PostFrame` | `Void_Void` | `weapon_tsgun` | | `CBasePlayerWeapon::ItemPostFrame` (0xa03d4) from `CBasePlayer::ItemPostFrame` (PostThink): the attacks, reload and idle below run inside it |
+| 72 | `Item_Drop` | `Void_Void` | `weapon_tsgun` | | `CBasePlayerItem::Drop` (0xf1cac) in `RemoveAllItems` (death, observer, disconnect). `ham_execute` on a gun a player still holds does nothing (guard) |
+| 77 | `Item_UpdateClientData` | `Int_Cbase` | `weapon_tsgun` | | `CTSGun::UpdateClientData` (0x858c8, `WStatus`, `WeaponInfo`, ...) from `CBasePlayer::UpdateClientData`; returns 1 |
+| 78 | `Item_GetWeaponPtr` | `Cbase_Void` | | `weapon_tsgun` | `this`; the port reaches the gun without it |
+| 79 | `Item_ItemSlot` | `Int_Void` | | `weapon_tsgun` | 2 (`CTSGun::iItemSlot` 0x87264) |
+| 85 | `Weapon_SendWeaponAnim` | `Void_Int_Int_Int` | `weapon_tsgun` | | every view-model animation the gun plays (`DefaultDeploy`, `WeaponIdle`, `SecondaryAttack`, the grenade and reload ones); the arguments the hook leaves are sent |
+| 87 | `Weapon_PrimaryAttack` | `Void_Void` | `weapon_tsgun` | | `CTSGun::PrimaryAttack` (0x81a20) from `ItemPostFrame` |
+| 88 | `Weapon_SecondaryAttack` | `Void_Void` | `weapon_tsgun` | | `CTSGun::SecondaryAttack` (0x817a8) |
+| 89 | `Weapon_Reload` | `Void_Void` | `weapon_tsgun` | | `CTSGun::Reload` (0x84d5c) from `ItemPostFrame` and `WeaponIdle` (the empty-gun and shotgun reloads) |
+| 90 | `Weapon_WeaponIdle` | `Void_Void` | `weapon_tsgun` | | `CTSGun::WeaponIdle` (0x854dc) |
+| 92 | `Weapon_ShouldWeaponIdle` | `Int_Void` | `weapon_tsgun` | | 1 (0x87274). Asked after an attack or reload, or with an attack button held (0xa07a0); 0 skips that frame's `WeaponIdle`, as in TS |
+| 93 | `Weapon_UseDecrement` | `Int_Void` | | `weapon_tsgun` | 1 (0x8726c). The port's weapon timers only count down, the form this answer selects, so an override couldn't be honoured |
 | 94 | `TS_BreakableRespawn` | `Int_Int` | `func_breakable`, `func_pushable`, the doors | others (empty, 0xac5ac) | `RespawnEntities` on a round restart (0x77764) |
-| 95 | `TS_CanUsedThroughWalls` | `Int_Void` | | all | `entities::ts::can_use_through_walls` (0 for ground weapons, ammo, dropped guns, the case) |
-| 123 | `TS_GiveSlowMul` | `Void_Void` | | all | nothing: hamsandwich declares it void, so its `max(fuser1, 0.01)` can't be returned |
+| 95 | `TS_CanUsedThroughWalls` | `Int_Void` | all | | `entities::ts::can_use_through_walls` (0 for ground weapons, ammo, dropped guns, the case). Fires in `PlayerUse` |
+| 123 | `TS_GiveSlowMul` | `Float_Void` (port) | all | | `max(fuser1, 0.01)` (`CBaseEntity::GiveSlowMul` 0xac5b4, the player's 0x92960; the gun's `FixedSlowAmt` form). Fires for the player's weapon timers and spreads (`GunHost::slow_mul`), the stunts (`stunt::slow_mul`), and the CTB case's and dropped guns' landing and bounce. Port deviation: returns the float (§7.6) |
 | 124 | `TS_GoSlow` | `Void_Float_Int` | all | | `rules::powerup::go_slow` (slow-motion activators, `globalslow`, the slow-motion triggers) |
-| 125 | `TS_InSlow` | `Int_Void` | | all | `rules::powerup::entity_in_slow` |
-| 126 | `TS_IsObjective` | `Int_Void` | | all | true for `ts_bomb`, `ts_hack`, `ts_teamescape`, `ts_wingiver` / `ts_scoregiver` |
-| 127 | `TS_EnableObjective` | `Void_Int` | | all | the objective's `EnableObjective(on)` (a giver's counter and latch start over); nothing else |
-| 128 | `TS_OnFreeEntPrivateData` | `Void_Void` | | all | nothing (TS's is empty, 0xac650) |
+| 125 | `TS_InSlow` | `Int_Void` | all | | `rules::powerup::entity_in_slow`. Fires in the slow-motion triggers and points (`CTSSlowMotion::WaitTouch`, `CTSSlowMotionPoint::WaitThink`) and `GlobalSlowMotion2` (0x79720) |
+| 126 | `TS_IsObjective` | `Int_Void` | all | | true for `ts_bomb`, `ts_hack`, `ts_teamescape`, `ts_wingiver` / `ts_scoregiver`. Fires in `InitObjectives` (0x785d8) and `CTSObjectivePointer::Use` (0x8bbd8) |
+| 127 | `TS_EnableObjective` | `Void_Int` | all | | the objective's `EnableObjective(on)` (a giver's counter and latch start over); nothing else. Fires where `IsObjective` does |
+| 128 | `TS_OnFreeEntPrivateData` | `Void_Void` | all | | nothing (TS's is empty, 0xac650); fires as the engine frees the entity (`OnFreeEntPrivateData` 0xab788) |
 | 129 | `TS_ShouldCollide` | `Int_Cbase` | all | | `pfnShouldCollide` |
+| 418 | `TS_Weapon_AlternateAttack` | `Void_Void` | `weapon_tsgun` | | `CTSGun::AlternateAttack` (0x81ba8, +attack3: fire mode, laser, ...) from `ItemPostFrame` |
+
+**The gun's functions (`Item_*`, `Weapon_*`).** TS's weapons are one `CTSGun` per player
+(`weapon_tsgun`) holding up to six guns; the port keeps its state in the player's inventory
+(`weapons::Inventory`), and the `weapon_tsgun` entity only follows the player. Its functions fire
+on that entity's class (`class_id("weapon_tsgun")`), `this` the entity, around the calls TS makes
+through the gun's vtable. The gun in hand is the context: `entity_info(this)` gives the holder
+(`owner`) and its weapon in hand (`weapon`), and `player_info(owner)` the rest. During the hook
+the holder is lent to its slot, gun and all, so the whole API works on it, except in
+`SendWeaponAnim` (the holder is inside its weapon frame, out of reach; the gun entity isn't).
+`ham_execute` runs the function on the holder's gun (`BUSY` for a `weapon_tsgun` no player holds,
+where TS would run it without an `m_pPlayer`, or whose holder is out of reach).
+
+**Queries** (`ObjectCaps`, `Classify`, `IsPlayer`, `Center`, `GiveSlowMul`, ...) fire where the
+game asks them, listed above. They don't take the object out of its slot, so the hook reaches
+`this` when it is in its slot or lent; when the game asks about an entity inside that entity's own
+call (a grenade's think asking its own `IsInWorld`, a player's weapon frame its own
+`GiveSlowMul`), `this` is out of reach for the hook (its entvars are readable; the API answers as
+for a player inside its own callback).
 
 The rest of TS's gamedata (`virtual.games/ts/offsets-common.txt`) is `UNSUPPORTED`:
 
@@ -412,9 +461,17 @@ The rest of TS's gamedata (`virtual.games/ts/offsets-common.txt`) is `UNSUPPORTE
   has no function for them, or inlines TS's call where it ports it.
 * `Player_ShouldFadeOnDeath`, `Player_ImpulseCommands`, `Player_UpdateClientData`: plain code
   inside PreThink, PostThink and `UpdateClientData`, not yet split out as hookable units.
-* Every `Item_*` and `Weapon_*` function, and `TS_Weapon_AlternateAttack`: TS's weapons are one
-  `CTSGun` per player, whose state the port keeps in the player's inventory (`weapons::Inventory`),
-  not in an entity with its own dispatch.
+* `Item_AddToPlayer`, `Item_AddDuplicate`, `Item_AttachToPlayer`, `Item_Kill`,
+  `Weapon_ExtractAmmo`, `Weapon_ExtractClipAmmo`, `Weapon_AddWeapon`: TS calls them only while a
+  `weapon_tsgun` joins a player (`AddPlayerItem` 0xdc0c4, `DefaultTouch` 0xf1b40, the duplicate
+  path), which the port folds into `weapons::add_gun` without the entity-level calls.
+* `Item_PrimaryAmmoIndex`, `Item_SecondaryAmmoIndex`, `Weapon_PlayEmptySound`,
+  `Weapon_ResetEmptySound`, `Weapon_IsUsable`, `Weapon_RetireWeapon`: **no call site in TS 3.0**.
+  `ts_i386.so` makes no virtual call of the last four slots on the gun, and the ammo indices are
+  asked only by `PackDeadPlayerItems` (0xd8854), which nothing calls.
+* `Item_GetItemInfo`: hamsandwich's TS gamedata has no offset for it (the slot is
+  `CTSGun::GetItemInfo` 0x85dd0).
+* The `cycler_weapon`'s item functions: only `weapon_tsgun` is mapped.
 * `TS_RespawnWait` is `Deprecated` in hamsandwich itself.
 
 ### 7.6 Deviations and limits
@@ -427,9 +484,15 @@ The rest of TS's gamedata (`virtual.games/ts/offsets-common.txt`) is `UNSUPPORTE
   in TS).
 * Calls the port makes without the hook: a breakable's or door's `Spawn` inside its own
   `BreakableRespawn`, `CTestEffect`'s restore `Spawn`, and `Use` calls the game makes on an object
-  it already holds. In TS each would be a virtual call hamsandwich sees.
+  it already holds. In TS each would be a virtual call hamsandwich sees. Query call sites the port
+  inlines (listed per function above) don't fire either.
 * Outer hooks don't fire for an object a dispatch further up the stack holds (a `Touch` of a
   player during its own think); the port doesn't run the function then either.
+* `Killed` of a non-player fires inside its `TakeDamage`, which holds it: `this` is out of reach
+  for the hook (entvars readable, `ham_execute` on it `BUSY`). A superseding hook keeps it alive at
+  0 health, as in TS.
+* `IsPlayer` / `IsNetClient` guard: a hook's 0 is honoured, a 1 for an entity that isn't a player
+  is not (the port has no player object for it; TS would treat its memory as a `CBasePlayer`).
 * `TakeHealth`'s bits are always `DMG_GENERIC`, as in every TS caller; changes are ignored.
   `Keyvalue`'s strings are read-only.
 * `ham_execute(Ham_TraceAttack)` only adds to the multi-damage, as TS's `TraceAttack` does;
@@ -437,7 +500,8 @@ The rest of TS's gamedata (`virtual.games/ts/offsets-common.txt`) is `UNSUPPORTE
   and `vecEndPos`; `flFraction` is 0 and the plane fields are empty.
 * `ham_execute(Ham_Killed)` on a non-player runs `CBaseEntity::Killed`, which removes it, also
   for classes whose TS `Killed` does more (the dead monsters).
-* `Ham_TS_GiveSlowMul` returns nothing (hamsandwich's signature), so plugins read `fuser1`.
+* `Ham_TS_GiveSlowMul` returns its float (kind `FLOAT`, `Float_Void`), where hamsandwich declares
+  `Void_Void`; `tsmod-amxx-rs` maps it so `GetHamReturnFloat` / `SetHamReturnFloat` work.
 * `ts_dev_hamlog 1|0` (sv_cheats) is a dev aid that installs the server's own hook and logs
   Spawn, TakeDamage and Killed (`[ts ham]` lines). It is refused while a plugin's hook is
   installed, and a plugin's `ham_set_hook` replaces it.
@@ -457,3 +521,20 @@ same arguments and results:
 | `ham_set_hook`, `ham_watch`, `ham_supported`, `class_id`, `entity_class_id`, `ham_execute`, `HamCall`, `HamArg` | unchanged, last in the table |
 | `BUSY` "ham_execute only" | also `run_cmd` |
 | — | new: `engine_funcs`, `globals`, `log`, `data_dir`, `map_name`, `register_command`, `register_cvar`, `register_bot_backend`, `player_inventory`, `entity_info`, `master_triggered`, `game_state`, `create_bot`, `kick_bot`, `run_cmd`, `bot_command`, `select_weapon`, `buy`, `buy_item`, `clear_loadout`, `drop_weapon`; codes `FULL`, `EXISTS`; `TSRS_PluginLoad` and the `Plugin` / `BotBackend` / `LoadInfo` descriptors |
+
+## 9. Version 3 → 4
+
+Version 4 (issues #117 and #99) is a break: `CreateInterface` answers only `TSRS_PluginApi004`
+and `Plugin::api_version` must be 4. Every version-3 entry is still there, with the same
+arguments and results, except where the table says otherwise:
+
+| Version 3 | Version 4 |
+|---|---|
+| `TSRS_PluginApi003`, `version` 3 | `TSRS_PluginApi004`, `version` 4 |
+| `GameState` | gains `team_scores[MAX_TEAMS]` (4) at the end |
+| `entity_info` of a held `weapon_tsgun`: `weapon` 0 | the holder's weapon in hand |
+| `Ham_ObjectCaps`, `Classify`, `BloodColor`, `IsAlive`, `IsBSPModel`, `IsInWorld`, `IsPlayer`, `IsNetClient`, `Center`, `EyePosition`, `Player_GetGunPosition`, `TS_CanUsedThroughWalls`, `TS_GiveSlowMul`, `TS_InSlow`, `TS_IsObjective`, `TS_EnableObjective`, `TS_OnFreeEntPrivateData`: `ham_supported` 0 | 1: they fire where the game asks them (§7.5) |
+| `Ham_Killed` on non-players: 0 | 1 (`CBaseEntity::TakeDamage`) |
+| `Ham_TS_GiveSlowMul`: `Void_Void`, nothing returned | `Float_Void`: `max(fuser1, 0.01)` |
+| `Item_*` / `Weapon_*`, `TS_Weapon_AlternateAttack`: `UNSUPPORTED` | on `weapon_tsgun` (§7.5) |
+| — | new: `objectives` and `ObjectiveInfo` (`OBJECTIVE_NAME_LEN`), `create_entity`, `entity_key_value`, `spawn_entity` (after `game_state`), `MAX_TEAMS` |

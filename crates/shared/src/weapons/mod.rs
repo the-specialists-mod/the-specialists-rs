@@ -13,7 +13,7 @@ pub mod random;
 pub mod spread;
 pub mod table;
 
-pub use gun::{Event, EventArgs, Gun, GunHost, Status};
+pub use gun::{Event, EventArgs, Gun, GunHost, Status, Virtual};
 pub use table::{AmmoInfo, Asset, Combat, FireMode, Tables, WeaponInfo, WeaponKind, tables};
 
 /// Weapon ids are the TS ids (0 = kung fu .. 37); 29 is the briefcase and has no table entry.

@@ -126,7 +126,7 @@ fn telefrag(spot: *mut edict_t, self_e: *mut edict_t) {
         if it.is_null() {
             break;
         }
-        if it == self_e || !super::has_player(it) || !alive(it.v()) || it.v().effects & EF_NODRAW as i32 != 0 {
+        if it == self_e || !super::has_player(it) || !super::is_alive(it) || it.v().effects & EF_NODRAW as i32 != 0 {
             continue;
         }
         crate::damage::apply(it, &DamageInfo::new(world, world, 300.0, TELEFRAG_BITS));

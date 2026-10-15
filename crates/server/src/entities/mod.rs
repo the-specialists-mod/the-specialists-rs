@@ -17,7 +17,7 @@ use stock::base::{kv_f, kv_i, kv_vec};
 /// `CXenTree` / `CXenHull` (0xf7130 / 0xf72ac, `CLASS_BARNACLE`). A constant per class, so it
 /// goes by the classname, as `ts::object_caps` does.
 pub fn classify(e: *mut edict_t) -> i32 {
-    if crate::rules::has_player(e) {
+    if crate::rules::is_player_entity(e) {
         return 2;
     }
     if e.is_null() || e.is_free() {
@@ -488,7 +488,8 @@ pub fn base_take_damage(cx: &mut world::Cx, dmg: &crate::damage::DamageInfo) -> 
     v.health -= dmg.damage;
     let alive = v.health > 0.0;
     if !alive {
-        base_killed(cx);
+        // `Killed(pevAttacker, GIB_NORMAL)` through the vtable: hookable (`Ham_Killed`).
+        crate::ham::killed_entity(cx, dmg, base_killed);
     }
     alive
 }

@@ -397,15 +397,38 @@ pub fn slot_players() -> Vec<*mut edict_t> {
 /// its forms: the `IsPlayer()` and `IsNetClient()` virtuals (true for any `CBasePlayer`),
 /// `Classify() == CLASS_PLAYER`, a classname compare with `"player"`, and `FL_CLIENT` (see
 /// [`ts_flags`]). A player who left still passes all of them until the slot's next client spawns.
+///
+/// It stands for TS's `IsPlayer()` call sites, so it is hookable (`Ham_IsPlayer`, `crate::ham`): a
+/// plugin's hook can make a player not count as one. Use [`is_player_entity`] where the port
+/// itself needs the answer (the plugin API, bookkeeping).
 pub fn has_player(e: *mut edict_t) -> bool {
+    let real = is_player_entity(e);
+    if e.is_null() || e.is_free() {
+        return real;
+    }
+    crate::ham::is_player(e, real)
+}
+
+/// [`has_player`] without the plugin hook.
+pub fn is_player_entity(e: *mut edict_t) -> bool {
     !e.is_null() && !e.is_free() && e.has_private_data() && engine().string(e.v().classname) == c"player"
 }
 
 /// `IsNetClient()` (vtable slot 49): true for any `CBasePlayer` but TS's bots, whose `CBot`
 /// (mp.dll vtable 0x10094a9c) returns 0. A player being dispatched further up the stack counts
-/// as a net client (callers skip the player they run for).
+/// as a net client (callers skip the player they run for). Hookable (`Ham_IsNetClient`).
 pub fn is_net_client(e: *mut edict_t) -> bool {
-    has_player(e) && !other(e, |p| p.cbot).unwrap_or(false)
+    let real = is_player_entity(e) && !other(e, |p| p.cbot).unwrap_or(false);
+    if e.is_null() || e.is_free() {
+        return real;
+    }
+    crate::ham::is_net_client(e, real)
+}
+
+/// `pEntity->IsAlive()` (`deadflag == DEAD_NO && health > 0`), hookable (`Ham_IsAlive`): TS's
+/// virtual call sites. [`alive`] is the plain test on entvars.
+pub fn is_alive(e: *mut edict_t) -> bool {
+    crate::ham::is_alive(e)
 }
 
 /// `pev->flags` as TS sees them. `CBasePlayer::Spawn` (0x8f604) sets `FL_CLIENT` and nothing in

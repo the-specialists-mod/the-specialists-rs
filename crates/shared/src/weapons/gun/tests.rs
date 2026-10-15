@@ -61,9 +61,21 @@ struct Mock {
     deployed: Vec<u8>,
     /// The body passed with each `weapon_anim`.
     anim_bodies: Vec<i32>,
+    /// The hookable virtual calls, as `pre <v>` / `post <v> <ran>` (`virtual_pre` / `virtual_post`).
+    virtuals: Vec<String>,
+    /// `virtual_pre` skips this virtual (a plugin's SUPERCEDE).
+    skip: Option<Virtual>,
 }
 
 impl GunHost for Mock {
+    fn virtual_pre(&mut self, _gun: &mut Gun, v: Virtual, _arg: &mut i32) -> bool {
+        self.virtuals.push(format!("pre {v:?}"));
+        self.skip != Some(v)
+    }
+    fn virtual_post(&mut self, _gun: &mut Gun, v: Virtual, _arg: i32, ran: Option<i32>) -> i32 {
+        self.virtuals.push(format!("post {v:?} {ran:?}"));
+        ran.unwrap_or(0)
+    }
     fn time(&self) -> f32 {
         self.time
     }
@@ -1002,4 +1014,47 @@ fn speed_gates_per_build() {
         assert!(!speed_over::<Msvc>([limit, 0.0, 0.0], limit));
     }
     assert!(!speed_over::<Msvc>([f32::NAN, 0.0, 0.0], 35.0));
+}
+
+/// The virtual calls TS makes through the gun's vtable reach the host's hook points in TS's order
+/// (`CBasePlayerWeapon::ItemPostFrame` 0xa03d4), and a skipped one doesn't run.
+#[test]
+fn virtual_calls_reach_the_host_in_ts_order() {
+    let (mut g, mut h) = armed(id::AK47);
+    h.virtuals.clear();
+    h.buttons = IN_ATTACK;
+    g.item_post_frame(&mut h);
+    assert_eq!(
+        h.virtuals,
+        [
+            "pre PostFrame",
+            "pre PrimaryAttack",
+            "post PrimaryAttack Some(0)",
+            "pre ShouldWeaponIdle",
+            "post ShouldWeaponIdle Some(1)",
+            "pre WeaponIdle",
+            "post WeaponIdle Some(0)",
+            "post PostFrame Some(0)"
+        ]
+    );
+    assert_eq!(h.shots.len(), 1);
+    // No button: straight to WeaponIdle, without ShouldWeaponIdle (0xa07b4).
+    let (mut g, mut h) = armed(id::AK47);
+    h.virtuals.clear();
+    g.weapon_post_frame(&mut h);
+    assert_eq!(h.virtuals, ["pre WeaponIdle", "post WeaponIdle Some(0)"]);
+    // A skipped attack doesn't fire; the post call still follows.
+    let (mut g, mut h) = armed(id::AK47);
+    h.skip = Some(Virtual::PrimaryAttack);
+    h.buttons = IN_ATTACK;
+    g.weapon_post_frame(&mut h);
+    assert!(h.shots.is_empty());
+    assert!(h.virtuals.contains(&"post PrimaryAttack None".to_owned()));
+    // Deploy and Holster are hookable too; switching weapons deploys through the vtable.
+    let (mut g, mut h) = armed(id::AK47);
+    h.virtuals.clear();
+    g.holster(&mut h);
+    assert_eq!(h.virtuals, ["pre Holster", "post Holster Some(0)"]);
+    assert_eq!(g.run_virtual(&mut h, Virtual::Deploy, true), 1);
+    assert_eq!(g.run_virtual(&mut h, Virtual::ShouldWeaponIdle, false), 1);
 }

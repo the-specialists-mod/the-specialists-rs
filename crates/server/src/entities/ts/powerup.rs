@@ -197,7 +197,7 @@ impl PowerUp {
 
     /// `WaitTouch`: the pickup rules (single held slot, +use swaps).
     fn pickup(&mut self, cx: &mut Cx, p: &mut Player, pcx: &mut Cx) -> bool {
-        if !rules::alive(pcx.pev()) {
+        if !rules::is_alive(pcx.edict) {
             return false;
         }
         let using = pcx.pev().button & IN_USE as i32 != 0;

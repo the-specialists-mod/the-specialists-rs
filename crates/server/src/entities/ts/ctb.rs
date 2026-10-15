@@ -8,7 +8,7 @@ use crate::player::Player;
 use crate::rules::{self, lifecycle, msg, state, teams};
 use crate::save::{BaseFuncs, Fields};
 use crate::weapons::{SlowPhysics, bounce_drops_loudly, bounce_ground_damping, give_slow_mul};
-use crate::world::{Cx, Entity, UseType};
+use crate::world::{self, Cx, Entity, UseType};
 use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::{ATTN_NORM, EHandle};
@@ -232,7 +232,7 @@ impl Entity for Briefcase {
     /// `CTSBriefcase::CaptureTouch` (0x8db9c): open, a living player who carries a case and may
     /// use this zone (`CanInteract`: any team, or the zone's).
     fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
-        if !self.funcs.touch || !self.active || !rules::has_player(other) || !rules::alive(other.v()) || !has_flag(other) {
+        if !self.funcs.touch || !self.active || !rules::has_player(other) || !rules::is_alive(other) || !has_flag(other) {
             return;
         }
         if self.owner_team != -1 && self.owner_team != team_index_of(other) {
@@ -401,9 +401,13 @@ impl Flag {
     /// physics (`CTSPhysicObject::WaitThink`).
     fn fall(&mut self, cx: &mut Cx) {
         let me = cx.edict;
-        let v = cx.pev();
         let arith = crate::rules::cvars::pm_arith();
-        if v.flags & FL_ONGROUND as i32 != 0 && crate::weapons::projectiles::fall_landed(arith, v.velocity, give_slow_mul(v.fuser1)) {
+        // `this->GiveSlowMul()` only on the ground, as TS's `&&` asks it.
+        let landed = cx.pev().flags & FL_ONGROUND as i32 != 0 && {
+            let slow = crate::ham::give_slow_mul(me, || give_slow_mul(me.v().fuser1));
+            crate::weapons::projectiles::fall_landed(arith, cx.pev().velocity, slow)
+        };
+        if landed {
             emit_sound_slow(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
             let v = cx.pev();
             v.angles[0] = 0.0;
@@ -448,9 +452,9 @@ impl Flag {
     fn bounce_touch(&mut self, cx: &mut Cx) {
         let e = engine();
         let me = cx.edict;
+        cx.pev().velocity[2] = (cx.pev().velocity[2] as f64 * 0.3) as f32;
+        let slow = crate::ham::give_slow_mul(me, || give_slow_mul(me.v().fuser1));
         let v = cx.pev();
-        v.velocity[2] = (v.velocity[2] as f64 * 0.3) as f32;
-        let slow = give_slow_mul(v.fuser1);
         let (hspeed, speed) = crate::weapons::bounce_speeds(crate::rules::cvars::pm_arith(), v.velocity);
         if v.flags & FL_ONGROUND as i32 == 0 {
             if bounce_drops_loudly(speed, slow) && e.globals().trace_plane_normal[2] as f64 > 0.98 {
@@ -570,7 +574,7 @@ impl Flag {
     fn player_take_flag(&mut self, cx: &mut Cx, other: *mut edict_t, p: Option<(&mut Player, &mut Cx)>) {
         // A live, visible player (TS: the low byte of `pev->effects` taken as signed, so
         // EF_NODRAW 0x80, e.g. observers).
-        if self.destroyed || !rules::has_player(other) || !rules::alive(other.v()) || other.v().effects & EF_NODRAW as i32 != 0 {
+        if self.destroyed || !rules::has_player(other) || !rules::is_alive(other) || other.v().effects & EF_NODRAW as i32 != 0 {
             return;
         }
         let team = team_index_of(other);
@@ -808,6 +812,12 @@ pub struct GiverWin {
 /// keys are unused.
 pub fn giver_team_win_core(w: &GiverWin) {
     team_win(w.team, super::c_int(f64::from(w.value)), w.restart, w.is_score);
+}
+
+/// A win or score giver hasn't fired yet (its latch, reset by `EnableObjective`); `None` for
+/// anything else.
+pub fn giver_active(e: *mut edict_t) -> Option<bool> {
+    world::with_lent::<WinGiver<false>, _>(e, |w| !w.used).or_else(|| world::with_lent::<WinGiver<true>, _>(e, |w| !w.used))
 }
 
 /// `CTSWinGiver::EnableObjective` on `ent` if it is a wingiver or scoregiver: the call counter and

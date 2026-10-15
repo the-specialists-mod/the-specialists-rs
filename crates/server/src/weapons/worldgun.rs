@@ -229,8 +229,12 @@ impl Entity for WorldGun {
         // the rest of this think still runs: the expiry check, the impact trace and the
         // slow-motion physics.
         let arith = crate::rules::cvars::pm_arith();
-        let pev = cx.pev();
-        if pev.flags & FL_ONGROUND as i32 != 0 && projectiles::fall_landed(arith, pev.velocity, give_slow_mul(pev.fuser1)) {
+        // `this->GiveSlowMul()` only on the ground, as TS's `&&` asks it.
+        let landed = cx.pev().flags & FL_ONGROUND as i32 != 0 && {
+            let slow = crate::ham::give_slow_mul(me, || give_slow_mul(me.v().fuser1));
+            projectiles::fall_landed(arith, cx.pev().velocity, slow)
+        };
+        if landed {
             emit(me, CHAN_STATIC, c"items/weapondrop1.wav", 1.0, 0.8, 100);
             let pev = cx.pev();
             pev.angles[0] = 0.0;
@@ -281,9 +285,9 @@ impl Entity for WorldGun {
         // On the ground, damp velocity and spin and level the roll.
         let e = engine();
         let me = cx.edict;
+        cx.pev().velocity[2] = (cx.pev().velocity[2] as f64 * 0.3) as f32;
+        let slow = crate::ham::give_slow_mul(me, || give_slow_mul(me.v().fuser1));
         let pev = cx.pev();
-        pev.velocity[2] = (pev.velocity[2] as f64 * 0.3) as f32;
-        let slow = give_slow_mul(pev.fuser1);
         let (hspeed, speed) = crate::weapons::bounce_speeds(crate::rules::cvars::pm_arith(), pev.velocity);
         if pev.flags & FL_ONGROUND as i32 == 0 {
             if bounce_drops_loudly(speed, slow) && e.globals().trace_plane_normal[2] as f64 > 0.98 {

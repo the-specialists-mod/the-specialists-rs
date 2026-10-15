@@ -367,7 +367,10 @@ win32 under Wine (listen server, `ts_arena`).
   the logic, and `CreateInterface` was called outside the engine. No AMX Mod X module has driven
   them in-engine yet; that is for the `tsmod-amxx-rs` modules. The entity hooks (version 2) ran
   in-engine only with `ts_dev_hamlog` on a FWGS dedicated server with bots (§7 of that doc); the
-  hamsandwich port in `tsmod-amxx-rs` is to drive them under AMX Mod X. The private-data guard was checked
+  hamsandwich port in `tsmod-amxx-rs` is to drive them under AMX Mod X. Version 4's gun and query
+  hooks and its team scores, objectives and entity creation are unit tested; in engine, `cargo
+  xtask plugins`' stub checks `Ham_Item_PreFrame` on its bots' guns, `create_entity` and the
+  objective list (empty on ts_dojo). The private-data guard was checked
   under AMX Mod X on ReHLDS Linux and Windows (`ref/amxx-testenv`: hamsandwich fails cleanly,
   fakemeta pdata reads zeroed padding), not under xtask.
 

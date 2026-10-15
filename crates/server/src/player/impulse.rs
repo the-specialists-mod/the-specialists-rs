@@ -312,7 +312,7 @@ pub fn cheat_impulse_commands(p: &mut Player, cx: &mut Cx, impulse: i32) {
     match impulse {
         // `CGib::SpawnRandomGibs(pev, 1, 1)`: one human gib (the player's `BloodColor` is red),
         // thrown against `g_vecAttackDir`, the last damage anywhere.
-        102 => Gib::spawn_random_gibs(me, 1, true, BLOOD_COLOR_RED, crate::damage::attack_dir()),
+        102 => Gib::spawn_random_gibs(me, 1, true, crate::ham::blood_color(me, || BLOOD_COLOR_RED), crate::damage::attack_dir()),
         // `FindEntityForward(this)->MyMonsterPointer()->ReportAIState()`: TS's `ReportAIState`
         // (0xce69c) is empty, so only the trace remains.
         103 => {

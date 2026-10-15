@@ -41,7 +41,8 @@
 //! * There is no backward compatibility between versions: a plugin built for another
 //!   [`VERSION`] doesn't find the table ([`INTERFACE_NAME`] carries the version) and isn't loaded
 //!   ([`Plugin::api_version`]). Version 3 redesigned the table (docs/implementation/plugin-api.md
-//!   §8 maps version 2 to it).
+//!   §8 maps version 2 to it); version 4 added team scores, objectives, entity creation and more
+//!   entity hooks (§9).
 //!
 //! # Entity hooks
 //! AMX Mod X's hamsandwich hooks C++ virtual functions by patching vtables. The port's entities
@@ -73,6 +74,15 @@
 //!   A pre hook that supersedes it decides `fHandled`.
 //! * One hook per server ([`PluginApi::ham_set_hook`]): the AMX Mod X module dispatches to its
 //!   plugins.
+//! * TS's player weapons are one `weapon_tsgun` per player holding up to six guns. The `Item_*` and
+//!   `Weapon_*` functions fire on that entity's class with `this` the `weapon_tsgun` (its
+//!   `pev->owner` the player); the gun in hand is the context ([`PluginApi::entity_info`]'s
+//!   `weapon`, [`PluginApi::player_info`]).
+//! * Query functions (`ObjectCaps`, `IsPlayer`, `Center`, ...) fire where the game asks them. When
+//!   the game asks about an entity inside its own call (an entity's think asking its own time
+//!   scale), the entity is out of reach for the hook, as for a player inside its own callback.
+//! * Port deviation: `Ham_TS_GiveSlowMul` returns its value, kind [`ham::kind::FLOAT`]
+//!   (hamsandwich declares it `Void_Void`).
 //!
 //! # Bots
 //! A plugin offers bots by registering a [`BotBackend`] under a name
@@ -88,9 +98,9 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 
 /// The `CreateInterface` name of the table. It carries the version, so a metamod plugin built for
 /// another version gets NULL.
-pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi003";
+pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi004";
 /// [`PluginApi::version`] of this definition (and what [`Plugin::api_version`] must be).
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 /// The entry point every `tsmod_*` library exports ([`LoadFn`]).
 pub const LOAD_SYMBOL: &CStr = c"TSRS_PluginLoad";
 /// The prefix of the libraries the server loads.
@@ -451,7 +461,8 @@ pub mod entity {
     pub const POWERUP: c_int = 3;
     /// A thrown grenade, knife or gun: `owner` is the thrower.
     pub const PROJECTILE: c_int = 4;
-    /// A gun a player holds or dropped (`weapon_tsgun`, the dropped pack): `owner` its player.
+    /// A gun a player holds or dropped (`weapon_tsgun`, the dropped pack): `owner` its player,
+    /// `weapon` its TS id (a held `weapon_tsgun`: the weapon in hand).
     pub const GUN: c_int = 5;
     /// The capture-the-briefcase case lying in the map (`ts_flag`): `team` the team it belongs to.
     /// A carried case has no entity: see [`PlayerInfo::has_flag`](super::PlayerInfo::has_flag).
@@ -462,13 +473,44 @@ pub mod entity {
     pub const OBJECTIVE: c_int = 8;
 }
 
+/// TS's teams: `CTSGameRules` keeps four ([`GameState::team_scores`]).
+pub const MAX_TEAMS: usize = 4;
+
+/// Bytes of [`ObjectiveInfo::name`], its NUL included: TS cuts the `Objective` message's text to
+/// 63 bytes.
+pub const OBJECTIVE_NAME_LEN: usize = 64;
+
+/// An objective of the HUD list, as [`PluginApi::objectives`] reports it: what TS's `Objective`
+/// message carries (`SendObjectiveToHud`), plus the entity and whether it is active.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectiveInfo {
+    /// The list index the `Objective` message carries (its `idx` byte).
+    pub id: c_int,
+    /// The objective's entity (`ts_bomb`, `ts_hack`, `ts_teamescape`, ...).
+    pub entity: c_int,
+    /// The message's position: the entity's centre (`Center()`).
+    pub origin: [f32; 3],
+    /// The objective is enabled (not frozen): it can be completed now.
+    pub active: c_int,
+    /// The message's text for the asking player's team, NUL-terminated (empty for none).
+    pub name: [c_char; OBJECTIVE_NAME_LEN],
+}
+
+impl Default for ObjectiveInfo {
+    fn default() -> Self {
+        ObjectiveInfo { id: 0, entity: 0, origin: [0.0; 3], active: 0, name: [0; OBJECTIVE_NAME_LEN] }
+    }
+}
+
 /// A game entity as [`PluginApi::entity_info`] reports it.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct EntityInfo {
     /// [`entity`] kind.
     pub kind: c_int,
-    /// TS weapon id ([`entity::GROUND_WEAPON`]), else 0.
+    /// TS weapon id: of a [`entity::GROUND_WEAPON`] or a dropped [`entity::GUN`], and for a held
+    /// `weapon_tsgun` the holder's weapon in hand (0 kung fu); else 0.
     pub weapon: c_int,
     /// [`powerup`] bits ([`entity::POWERUP`]), else 0.
     pub powerup: c_int,
@@ -524,6 +566,9 @@ pub struct GameState {
     /// `gpGlobals->time`, `maxClients`.
     pub time: f32,
     pub max_clients: c_int,
+    /// Each team's score as the `TeamScore` message sends it (`CTSGameRules`' team scores: round
+    /// wins, captures), by [`PlayerInfo::team`] - 1. 0 for a team not in play.
+    pub team_scores: [c_int; MAX_TEAMS],
 }
 
 /// A bot's usercmd for [`PluginApi::run_cmd`]: `pfnRunPlayerMove`'s arguments.
@@ -619,6 +664,23 @@ pub struct PluginApi {
     pub master_triggered: unsafe extern "C" fn(master: *const c_char, activator: c_int) -> c_int,
     /// Fills `out` with the rules and round state: [`OK`].
     pub game_state: unsafe extern "C" fn(out: *mut GameState) -> c_int,
+    /// Fills `out[..max]` with the objectives on the HUD list (TS's `Objective` messages), in list
+    /// order, and returns how many there are (which may be more than `max`). The names are those
+    /// `player` would read (its team's text); `player` 0 asks for no team. [`NOT_PLAYER`] for
+    /// any other index that isn't a connected player.
+    pub objectives: unsafe extern "C" fn(player: c_int, out: *mut ObjectiveInfo, max: c_int) -> c_int,
+    /// Creates a game entity of class `classname` (`CREATE_NAMED_ENTITY`), not spawned yet: its
+    /// index, or [`INVALID`] (no such class, or no free edict). Set its keys with
+    /// [`entity_key_value`](Self::entity_key_value), then [`spawn_entity`](Self::spawn_entity).
+    pub create_entity: unsafe extern "C" fn(classname: *const c_char) -> c_int,
+    /// `DispatchKeyValue(entity, key, value)` as the engine passes a map entity's keys: the
+    /// entvars fields first, then the class. 1 if handled, 0 if not, [`NOT_PLAYER`] (not a game
+    /// entity) or [`INVALID`] (a NULL string).
+    pub entity_key_value: unsafe extern "C" fn(entity: c_int, key: *const c_char, value: *const c_char) -> c_int,
+    /// `DispatchSpawn(entity)` (its `Spawn`, with the hooks). [`OK`], [`NOT_PLAYER`], or
+    /// [`INVALID`] when the spawn failed: the entity is then removed, as the engine removes a map
+    /// entity whose spawn fails.
+    pub spawn_entity: extern "C" fn(entity: c_int) -> c_int,
 
     // ---- bots ---------------------------------------------------------------------------------
     /// Makes a bot player as TS's `BotSetup` does (a fake client, joined and spawned, in
@@ -692,7 +754,7 @@ mod tests {
 
     #[test]
     fn the_interface_name_carries_the_version() {
-        assert_eq!(VERSION, 3);
-        assert!(INTERFACE_NAME.to_bytes().ends_with(b"003"));
+        assert_eq!(VERSION, 4);
+        assert!(INTERFACE_NAME.to_bytes().ends_with(b"004"));
     }
 }
