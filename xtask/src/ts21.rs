@@ -277,12 +277,6 @@ impl Ctx {
         let log = root.log_path();
         let _ = fs::remove_file(&log);
         let mut cmd = root.server_command_with("ts_dojo", port, "xtask_ts21.cfg", BOTS as u32);
-        if root.engine == Engine::ReHlds {
-            // MecklenburgV_Rain_Final has 1046 entities; ReHLDS allows 900 + 15 per slot after
-            // the first (1005 at maxplayers 8) unless told otherwise ("ED_Alloc_internal: no free
-            // edicts" under any ruleset). HL25's default is larger.
-            cmd.args(["-num_edicts", "2048"]);
-        }
         let out = fs::File::create(self.repo.join("target").join(format!("server-{}.log", root.name))).unwrap();
         cmd.stdout(out.try_clone().unwrap()).stderr(out);
         let child = cmd.spawn().expect("start server");

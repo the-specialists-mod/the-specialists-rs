@@ -10,6 +10,7 @@ hlversion "1110"
 type "multiplayer_only"
 nomodels "0"
 mpentity "info_player_deathmatch"
+edicts "1800"
 icon "ts_logo"
 fallback_dir "valve"
 

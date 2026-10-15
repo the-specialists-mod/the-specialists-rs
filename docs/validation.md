@@ -227,10 +227,9 @@ and the loader's fixtures; see implementation/bot-plugins.md §6 for what it che
 dedicated server per root, all roots in parallel, then the clients. Each server starts on
 `ts_dojo` with four quota bots and `+servercfgfile xtask_ts21.cfg`, which runs the root's
 `server.cfg`, sets `ts_gameplay 21`, `developer 1`, `sv_cheats 1` and an `rcon_password`, and
-names a second config for every later map (so the rcon changes below stick). ReHLDS gets
-`-num_edicts 2048` for scene 8 (§4). xtask then drives the server by **rcon** (`a2s::rcon`: FWGS
-takes `rcon <password> <command>`, the GoldSrc engines want `challenge rcon` first) and reads
-`ts_status` replies; map changes go through `exec` of a one-line config, so the map load prints to
+names a second config for every later map (so the rcon changes below stick). xtask then drives
+the server by **rcon** (`a2s::rcon`: FWGS takes `rcon <password> <command>`, the GoldSrc engines
+want `challenge rcon` first) and reads `ts_status` replies; map changes go through `exec` of a one-line config, so the map load prints to
 the console log, not into the rcon reply. From scene 3 on the bots stand still (`ts_bot_stop 1`),
 so only xtask's `ts_hurt`s (repeated while a respawned player's spawn protection lasts) end lives.
 
@@ -498,7 +497,7 @@ port's FWGS client joins both and logs `[ts] gameplay: the server runs ruleset 2
 | The original TS client shows `testpath`'s and `botlearn 2`'s replies on the HUD only, not in the console log | Its say-text print doesn't echo `TextMsg` talk lines to the console | Read them from a `screenshot` (the original's MOTD and buy menu cover the chat: `motdfile` to a missing file, `slot10`) |
 | FWGS dedicated server: the first command after `exec server.cfg` in xtask's configs does nothing (`"sv_maxspeed" changed to "330ts_gameplay"`) | The content's `server.cfg` has no final newline, and FWGS's `exec` inserts the text without ending it, so its last line runs into ours (issue #187) | xtask's configs follow `exec server.cfg` with an empty line (`roots::EXEC_SERVER_CFG`) |
 | `rcon changelevel` on ReHLDS's Windows release: the new map's `[ts]` lines are missing from `qconsole.log` | A command run from rcon prints into the rcon reply (`SV_BeginRedirect`); a map load it starts prints there too | `cargo xtask ts21` writes `changelevel <map>` into a config and sends `rcon exec <config>`, which queues it for the next frame |
-| `MecklenburgV_Rain_Final` on ReHLDS: `ED_Alloc_internal: no free edicts`, under 3.0 too | The map has 1046 entities; ReHLDS allows `900 + 15 × (maxplayers − 1)` edicts (1005 at 8), and neither TS 3.0's `liblist.gam` nor the port's raises it (`edicts` key) | Start ReHLDS with `-num_edicts 2048` (`cargo xtask ts21` does). HL25's default is larger |
+| `MecklenburgV_Rain_Final` on ReHLDS: `ED_Alloc_internal: no free edicts`, under 3.0 too | The map has 1046 entities; ReHLDS allows `edicts + 15 × (maxplayers − 1)` edicts, where `edicts` comes from `liblist.gam` (900 when absent: 1005 at 8 players), and TS 3.0's `liblist.gam` doesn't set it | Deviation: the port's `liblist.gam` sets `edicts "1800"`, the same as `gameinfo.txt`'s `max_edicts` for FWGS, so the map loads without `-num_edicts` |
 | `ts_hurt` on a player who has just respawned does nothing (`applied=false health=100`) | Spawn protection (`protect_until`) | Scripts hurt again a second later (`ts21::Server::hurt`) |
 | `savenodes` in a scripted test would overwrite the content's `.ndm` | The roots' `ts/maps` is a symlink to the content directory | The scripts never run `savenodes`; `resetnodes` is followed by `loadnodes` |
 
