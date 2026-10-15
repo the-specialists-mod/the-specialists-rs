@@ -10,7 +10,7 @@ Issues filed: #144, #152, #153, #160, #164, #165; comment on #62. Existing issue
 |---|---|---|---|
 | hud/weapons.rs draw_crosshair (gate, colours, line layout, team sprite x0.7, enemy x0.75, laser number x0.7/x0.5 and -8 scoped) | DrawCrosshair 0x1004e9f0 (+disasm) | 0x1008b960 | match, except solidcross test: TS `cl_solidcross > 0 && IEngineStudio.IsHardware()` (0x100ea860 = studio api slot 40), port `cross2 sprite loaded` (software renderer only) |
 | ClientRules::crosshair_parts (3.0 default / 2.1) | 0x1004e9f0 weapon list 0/24/25/34/35, divesteps first & skipped when scoped | 0x1008b960 single gate incl. Barrett fov<40, divesteps last | match |
-| crosshair_gap 3.0 | 0x1004eb7f x87 | — | existing #110 |
+| crosshair_gap 3.0 | 0x1004eb7f x87 | — | fixed (#110) |
 | crosshair_gap 2.1 | — | 0x1008bb67 (fstp float, /0.1f, x16) | match |
 | divestep_layout / divesteps_blocked 3.0 | 0x1004ef50, thresholds 0x1004eec0/ef0/f20 (`81-free-0 <= 41/51/61`) | — | match (pitch band NaN edge differs: TS band 0, port 1; irrelevant) |
 | divesteps_blocked / stunt_cooldown 2.1 | — | 0x1008c0f0.. | match (doc) |

@@ -348,7 +348,7 @@ The hooks so far:
 | `ClientRules` | `map_effects()` | true | `effects.rs` `frame` (emitters) and `fog_begin` (map fog), asked each frame |
 | `ClientRules` | `ruleset_name()` | `"TS 3.0"` | `menus::draw_buy_menu` (§4.3) |
 | `ClientRules` | `crosshair_parts(weapon, fov)` | divesteps first for every weapon, then the crosshair unless weapon 0/24/25/34/35 | `hud/weapons.rs` `draw_crosshair` |
-| `ClientRules` | `crosshair_gap(base, spread, accuracy)` | `base + spread × 160` (f32), clamped to ±0x10000 | `hud/weapons.rs` `draw_crosshair` |
+| `ClientRules` | `crosshair_gap(base, spread, accuracy)` | `trunc(base + spread × 160)` (f64, as the x87 stack: issue #110), clamped to ±0x10000 | `hud/weapons.rs` `draw_crosshair` |
 | `ClientRules` | `divesteps_blocked(used, armor, teamplay)` | `used ≥ 42 / 52 / 62` | `hud/weapons.rs` `draw_divesteps` |
 | `ClientRules` | `stunt_cooldown(cooldown, now)` | the `NextStunt` countdown is ≥ 0.01 | `hud/weapons.rs` `draw_divesteps` |
 | `ClientRules` | `pinned_default_fov()` | none (`default_fov` clamped to 70..110) | `hud/mod.rs` `think_fov` |

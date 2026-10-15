@@ -76,11 +76,14 @@ pub trait ClientRules: Sync {
     /// The crosshair lines' distance from the centre (`0x1004eb7f`): `base + ((acc + spread) −
     /// acc) × 160`, which TS works out on the x87 stack, where it is `base + spread × 160`.
     /// `base` is 22, or 12 with the laser on; `spread` the predicted spread penalty; `accuracy`
-    /// the held weapon's table accuracy (which cancels out here). Guarded: a huge predicted spread
-    /// would overflow `cx + gap`; at that size the lines are far off screen anyway.
+    /// the held weapon's table accuracy (which cancels out here). Nothing is rounded to float
+    /// before `__ftol`, so this is `trunc(base + spread × 160)` exactly; f64 holds a 24-bit spread
+    /// times 160 without rounding (issue #110: f32 rounded a spread one ulp under `k / 160` up a
+    /// pixel). Guarded: a huge predicted spread would overflow `cx + gap`; at that size the lines
+    /// are far off screen anyway.
     fn crosshair_gap(&self, base: i32, spread: f32, accuracy: f32) -> i32 {
         let _ = accuracy;
-        ((base as f32 + spread * 160.0) as i32).clamp(-0x10000, 0x10000)
+        ((base as f64 + spread as f64 * 160.0) as i32).clamp(-0x10000, 0x10000)
     }
 
     /// The divestep indicator (`DrawCrosshair`'s helper 1004ef50, thresholds 1004eec0/1004eef0/
@@ -481,5 +484,31 @@ pub trait ClientRules: Sync {
     /// `DrawStatusPanel` (1004a3e0) by default.
     fn status_look(&self) -> crate::hud::draw::StatusLook {
         crate::hud::draw::StatusLook::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Core;
+    impl ClientRules for Core {}
+
+    /// Issue #110: `0x1004eb7f` truncates `base + spread × 160` off the x87 stack, so a spread one
+    /// ulp under `k / 160` stays below the next pixel.
+    #[test]
+    fn crosshair_gap_is_not_rounded_to_float() {
+        let under = |k: f32| f32::from_bits((k / 160.0).to_bits() - 1);
+        assert_eq!(under(1.0), 0.0062499996);
+        for (spread, want) in [(0.0062499996f32, 22), (0.049999997, 29), (0.099999994, 37), (0.19999999, 53)] {
+            assert_eq!(Core.crosshair_gap(22, spread, 0.0075), want, "spread {spread}");
+        }
+        for k in 1..=39 {
+            assert_eq!(Core.crosshair_gap(22, under(k as f32), 0.01), 22 + k - 1, "k {k}");
+        }
+        assert_eq!(Core.crosshair_gap(22, 0.2, 0.0075), 54);
+        for s in [f32::NAN, f32::INFINITY, f32::MAX, -f32::MAX] {
+            assert!(Core.crosshair_gap(22, s, 0.01).abs() <= 0x10000);
+        }
     }
 }
