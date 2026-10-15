@@ -722,23 +722,19 @@ mod tests {
     }
 
     /// TS 3.0's divestep limits ([`crate::gameplay::ClientRules::divesteps_blocked`]).
-    fn blocked(free: u8) -> [bool; 3] {
-        crate::gameplay::DEFAULTS.client.divesteps_blocked(81 - free as i32, 0, 0)
-    }
-
     #[test]
     fn divesteps_follow_ts_binary() {
         let hud = [100, 200, 60];
         let c = (320, 240);
         // Level view, light load: centre band full, the others halved; dot 32 px left.
-        let (s, dot, base) = divestep_layout(false, blocked(70), 0.0, hud, c);
+        let (s, dot, base) = divestep_layout(false, [false; 3], 0.0, hud, c);
         assert_eq!(s, [half(hud), hud, half(hud)]);
         assert_eq!((dot, base), ((288, 240), hud));
         // Looking down 30° (clamped to 90°): bottom band, dot straight below.
-        let (s, dot, _) = divestep_layout(false, blocked(70), 30.0, hud, c);
+        let (s, dot, _) = divestep_layout(false, [false; 3], 30.0, hud, c);
         assert_eq!((s[2], dot), (hud, (320, 272)));
-        // 81 - 25 = 56 used: top and centre dives too heavy; cooldown turns the rest red.
-        let (s, _, base) = divestep_layout(true, blocked(25), -20.0, hud, c);
+        // Top and centre dives too heavy; cooldown turns the rest red.
+        let (s, _, base) = divestep_layout(true, [true, true, false], -20.0, hud, c);
         assert_eq!((s, base), ([RED, RED, half(RED)], RED));
     }
 
@@ -762,7 +758,9 @@ mod tests {
                 let _ = laser_dot_positions(items, false, (0, 0), (0, 0), wild, size);
             }
         }
-        let _ = divestep_layout(true, blocked(u8::MAX), f32::NAN, [0; 3], (i32::MAX, i32::MIN));
+        for blocked in [[false; 3], [true; 3]] {
+            let _ = divestep_layout(true, blocked, f32::NAN, [0; 3], (i32::MAX, i32::MIN));
+        }
         assert!(!crosshair_scoped(f32::NAN, true));
     }
 

@@ -42,8 +42,6 @@ impl PmRules for Defaults {}
 impl GunRules for Defaults {}
 #[cfg(test)]
 impl shared::gameplay::MeleeRules for Defaults {}
-#[cfg(test)]
-impl ClientRules for Defaults {}
 
 /// [`Defaults`] as a plugin.
 #[cfg(test)]

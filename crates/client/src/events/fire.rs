@@ -603,7 +603,7 @@ fn ammo_consts(ammo: i32) -> (f32, f32, f32) {
 /// The range-falloff index of a hit `dist` units away with range unit `unit`:
 /// `__ftol(dist / (unit·10) · 10)`, truncating (`0x10045b2b`, `0x10035f94`). TS keeps the x87
 /// intermediates in extended precision, approximated here in f64.
-pub(crate) fn range_index(dist: f32, unit: f32) -> i32 {
+pub fn range_index(dist: f32, unit: f32) -> i32 {
     ftol(dist as f64 / (unit as f64 * 10.0) * 10.0)
 }
 
@@ -770,12 +770,6 @@ pub fn bullet_velocity_mult(ts: f32, bullet_time: bool) -> f32 {
         return 1.0;
     }
     ts / ((1.0 - ts * ts) * if bullet_time { 10.0 } else { 1.0 }).max(1.0)
-}
-
-/// When a slot's next trace step is due, set when one runs at client time `now` (`0x10035b97`):
-/// every 0.1 s with `realbullet` 0, every 0.05 s with 1, otherwise every frame.
-pub(crate) fn next_update(now: f32, realbullet: i32) -> f32 {
-    if (0..2).contains(&realbullet) { 0.1 / (realbullet + 1) as f32 + now } else { now }
 }
 
 /// The time a trace step covers (`0x10035d82..0x10035da2`): up to the next step, or the frame
@@ -1021,11 +1015,10 @@ fn slow_time(ts: f32, x: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// `EV_TS_FirePump`'s shell (`0x10040e43..0x1004118d`): TS 3.0 rolls 20-40 and 0-20, the
-    /// first along both `right` and `fwd`, onto the shooter's velocity.
+    /// `EV_TS_FirePump`'s shell (`0x10040e43..0x1004118d`): the first of the ruleset's two rolls
+    /// along both `right` and `fwd`, the second up, onto the shooter's velocity.
     #[test]
     fn pump_shell_velocity() {
-        assert_eq!(crate::gameplay::DEFAULTS.client.pump_shell_speeds(), [(20, 40), (0, 20)]);
         let (fwd, right, up) = ([1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
         assert_eq!(shell_velocity([10.0, 0.0, 0.0], right, up, fwd, [30.0, 5.0, 30.0]), [40.0, -30.0, 5.0]);
     }
@@ -1107,13 +1100,9 @@ mod tests {
         assert!(b.slots().iter().all(|s| *s == ClientBullet::default()));
     }
 
-    /// The trace-step throttle (0x10035b97..0x10035bc9) and the step time (0x10035d82).
+    /// The step time (0x10035d82).
     #[test]
-    fn client_bullet_throttle() {
-        assert_eq!(next_update(10.0, 0), 10.0 + 0.1f32);
-        assert_eq!(next_update(10.0, 1), 10.0 + 0.05f32);
-        assert_eq!(next_update(10.0, 2), 10.0, "2 and up: every frame");
-        assert_eq!(next_update(10.0, -1), 10.0);
+    fn client_bullet_step_time() {
         assert_eq!(step_time(10.1, 10.0, 0.016), 10.1f32 - 10.0);
         assert_eq!(step_time(10.0, 10.0, 0.016), 0.016, "due now: the frame time");
         assert_eq!(step_time(10.0005, 10.0, 0.016), 0.016);
@@ -1189,9 +1178,6 @@ mod tests {
             let _ = (bullet_velocity_mult(x, true), bullet_width(x), streak_length(x), slow_time(x, x), step_time(x, x, x));
             let _ = pellet_dir([x; 3], [x; 3], [x; 3], [x, x], i32::MIN, i32::MAX);
             let _ = near_alpha([x; 3], [0.0; 3]);
-        }
-        for rb in [i32::MIN, -1, 0, 1, 2, i32::MAX] {
-            let _ = next_update(1.0, rb);
         }
         let mut b = ClientBullets::default();
         for i in 0..1000 {

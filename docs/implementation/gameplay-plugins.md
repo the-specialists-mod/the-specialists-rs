@@ -378,7 +378,7 @@ The hooks so far:
 | `ClientRules` | `spectator_refdef(spectator, observer_mode) -> bool` | `spectator \|\| observer_mode != 0`: HLTV viewers and observing players get the spectator view | `view::calc_refdef` (`V_CalcRefdef`'s dispatch) |
 | `ClientRules` | `hltv_overview_camera(host, origin, angles) -> bool` | false: 3.0's refresh (`V_GetInEyePos` with the in-eye inset or observer mode) | `spectator::overview::draw` (the camera icon of `DrawOverviewEntities`) |
 | `ClientRules` | `hltv_panel_mode()` | `None`: the observer mode | `spectator::panel::update` (`UpdateSpectatorPanel`), HLTV viewers |
-| `ClientRules` | `spectator_panel_shows(nohud)` | `nohud` exactly 0 or NaN (#185) | `spectator::panel::update` |
+| `ClientRules` | `spectator_panel_shows(nohud)` | `ts30_client::spectator::nohud_shows`: `nohud` exactly 0 or NaN (#185) | `spectator::panel::update` |
 | `ClientRules` | `kungfu_exhausted(power)` | `power ≤ 0.01` (empty red frame) | `hud/weapons.rs` `draw_kungfu_bar` |
 | `ClientRules` | `kungfu_regen(r)` | +15 per step (1 while negative), up to 100 | `hud/state.rs` `regen_kungfu` (weapon `Think`) |
 | `ClientRules` | `think_parts()` | all three: `lasclr_` send, fire-mode `switch.wav`, heartbeat/breathing (#193, #194) | `hud/mod.rs` `think` (weapon `Think`) |
@@ -391,15 +391,15 @@ The hooks so far:
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_tint()` | true (the `cl_slowfade` tint while slowed) | `view.rs` `write_screen_fade` |
 | `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and explosions keep 3.0's `fire_pitch`) |
-| `ClientRules` | `view_bob(bob, input)` | `Bob::calc` (`V_CalcBob` 0x10066e70): the gun offset and bob pitch, no camera bob (`Bob::eye` stays `None`) | `view.rs` `calc_normal` (the gun offset and angle; `Bob::eye` is added to `vieworg`) |
-| `ClientRules` | `eye_origin(eye, simorg, viewheight, on_ground, ft)` / `body_cam_z(eye, z, on_ground, ft)` | `EyeZ::eye` (the view height eased at `min(15·ft, 1)` on z, then `V_SmoothStairs` 0x100677d0) / `EyeZ::body_cam_z` (`V_SmoothStairs` again, 0x10068313) | `view.rs` `calc_normal` (the eye before the camera bob; the third-person body cam) |
+| `ClientRules` | `view_bob(bob, input)` | `ts30_client::view::bob` (`V_CalcBob` 0x10066e70): the gun offset and bob pitch, no camera bob (`Bob::eye` stays `None`) | `view.rs` `calc_normal` (the gun offset and angle; `Bob::eye` is added to `vieworg`) |
+| `ClientRules` | `eye_origin(eye, simorg, viewheight, on_ground, ft)` / `body_cam_z(eye, z, on_ground, ft)` | `ts30_client::view::eye` (the view height eased at `min(15·ft, 1)` on z, then `V_SmoothStairs` 0x100677d0) / `view::body_cam_z` (`V_SmoothStairs` again, 0x10068313) | `view.rs` `calc_normal` (the eye before the camera bob; the third-person body cam) |
 | `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
-| `ClientRules` | `client_bullet_next_update(now, realbullet)` | `next_update`: 0.1 s, 0.05 s or every frame by `realbullet` | `events/fire.rs` `client_bullets_frame` |
+| `ClientRules` | `client_bullet_next_update(now, realbullet)` | `ts30_client::events::next_update`: 0.1 s, 0.05 s or every frame by `realbullet` | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `client_bullet_step(dir, step)` | `dir·velocity·40·dt·GetBulletVelocityMult` | `events/fire.rs` `client_bullet_impact` |
 | `ClientRules` | `client_bullet_range_index(dist, unit, exit)` | exit `ftol(dist·0.0033333334f·10)`, else `range_index` | `events/fire.rs` `client_bullet_impact` |
 | `ClientRules` | `client_bullet_draws(time_scale, slowmo_factor100)` | `ts < 0.99` | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `client_bullet_draw(bullet, draw)` | false: the core `shotgun_pellets.spr` streaks and `bullet_trail.spr` trail; a ruleset may queue `BulletModels`, which `effects::create_entities` adds (`goldsrc::ext::models`) | `events/fire.rs` `client_bullets_frame` |
-| `ClientRules` | `fx_style()` | `FxStyle::TS30`: the muzzle flash, gun smoke, impact smoke, puff and debris parameters | `effects/fx.rs` builders |
+| `ClientRules` | `fx_style()` | `ts30_client::fx::FX`: the muzzle flash, gun smoke, impact smoke, puff and debris parameters | `effects/fx.rs` builders |
 | `ClientRules` | `impact_particles(ps, now, pos, n, tex, bullet_type)` | false: `fx::impact`'s body | `effects/fx.rs` `impact` |
 | `ClientRules` | `gun_smoke_rate(id)` | `RandomLong(5, 10)` for 33, else `RandomLong(45, 55)` | `events/fire.rs` `gun_fx` |
 | `ClientRules` | `pellet_spray_gravity()` | 0 | `events/fire.rs` `gun_fx` |

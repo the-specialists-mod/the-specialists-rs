@@ -379,6 +379,7 @@ dependencies = [
 name = "ts30-client"
 version = "3.0.5"
 dependencies = [
+ "goldsrc",
  "ts-client",
  "ts30-gameplay",
 ]
