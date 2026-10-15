@@ -162,10 +162,34 @@ fn choose_model(arg: &[u8], random: bool, draw: impl FnOnce() -> i32) -> Vec<u8>
     }
 }
 
+/// `BotCreate`'s `char model[32]` (esp+0xc) and `char name[64]` (esp+0x2c), back to back in its
+/// 0x60-byte frame, with the return address right after `name` (esp+0x6c; same in
+/// `BotCreateCustom`).
+const MODEL_BUF: usize = 32;
+const NAME_BUF: usize = 64;
+
+/// The name and model `BotSetup` gets from `BotCreate`/`BotCreateCustom`'s buffers (#191).
+/// `strcpy(model, modelArg)` comes first and is unbounded, then `name[0] = 0` and the name is
+/// copied (`strcpy(name, nameArg)` or `BotPickName`). So a model of 32 bytes or more ends up as
+/// its first 32 bytes followed by the name (the name's copy writes over the rest of the model and
+/// ends it with its own NUL); a shorter one is kept whole.
+///
+/// Guard (rules.md §10.1): TS overwrites the return address with a name of 64 bytes or more
+/// (picked from a long `bots.txt` line too) or a model of 96 or more, and crashes. The port cuts
+/// the name at 63 bytes, which is all `name` (and `g_botNetnames`' 64-byte slot) holds, and
+/// builds the model the same way for every length.
+fn frame_strings(name: &[u8], model: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let name = &name[..name.len().min(NAME_BUF - 1)];
+    let model = if model.len() < MODEL_BUF { model.to_vec() } else { [&model[..MODEL_BUF], name].concat() };
+    (name.to_vec(), model)
+}
+
 /// `BotCreate`'s tail: the bot player (`BotSetup`, the host's
 /// [`crate::bot_backend::create_player`]) with a fresh brain of `skill`, announced as TS does
 /// ("<name> connected with skill <f>", the unclamped skill) when `announce` is set.
 fn create(name: &[u8], model: &[u8], skill: f32, announce: bool) -> Option<*mut edict_t> {
+    let (name, model) = frame_strings(name, model);
+    let (name, model) = (&name[..], &model[..]);
     let r = rules::current();
     let brain = Box::new(Brain::new(r.stored_skill(skill)));
     crate::bot_backend::create_player(name, model, brain, announce.then_some(skill), r.team_key())
@@ -347,5 +371,33 @@ mod tests {
         assert_eq!(choose_model(b"", true, || 6), b"laurence");
         assert_eq!(choose_model(b"", true, || 99), b"laurence", "a draw outside 0..6 is clamped");
         assert_eq!(choose_model(b"", false, no_draw), b"");
+    }
+
+    /// `BotCreate`'s buffers (#191): a model of up to 31 bytes is kept; from 32 bytes it is the
+    /// first 32 followed by the name; the name keeps 63 bytes (guard, TS overruns the frame).
+    #[test]
+    fn model_and_name_buffers() {
+        let m = |n: usize| -> Vec<u8> { (0..n).map(|i| b'a' + (i % 26) as u8).collect() };
+        let name = b"Neo".to_vec();
+        for len in [0, 1, 31] {
+            assert_eq!(frame_strings(&name, &m(len)), (name.clone(), m(len)), "model of {len} bytes");
+        }
+        for len in [32, 33, 63, 64, 95, 96, 200] {
+            assert_eq!(frame_strings(&name, &m(len)), (name.clone(), [&m(32)[..], b"Neo"].concat()), "model of {len} bytes");
+        }
+        // An empty name (an empty `bots.txt` entry): the model is cut at 32 bytes.
+        assert_eq!(frame_strings(b"", &m(40)), (Vec::new(), m(32)));
+        // Names: 63 bytes fit `char name[64]`; 64 and more are cut to 63 (guard).
+        let n = |len: usize| -> Vec<u8> { vec![0xe9; len] };
+        for len in [62, 63] {
+            assert_eq!(frame_strings(&n(len), b"seal"), (n(len), b"seal".to_vec()), "name of {len} bytes");
+        }
+        for len in [64, 65, 1000] {
+            assert_eq!(frame_strings(&n(len), b"seal"), (n(63), b"seal".to_vec()), "name of {len} bytes");
+        }
+        // Both long: 32 + 63 = 95 bytes, the most TS's frame holds without a crash.
+        let (nm, md) = frame_strings(&n(100), &m(100));
+        assert_eq!((nm.len(), md.clone()), (63, [&m(32)[..], &n(63)[..]].concat()));
+        assert_eq!(md.len(), MODEL_BUF + NAME_BUF - 1);
     }
 }
