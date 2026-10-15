@@ -119,6 +119,15 @@ fn trace_from(a: Vec3, b: Vec3, player: i32) -> pmtrace_s {
     r::with_solid_players(player - 1, || r::player_trace(a, b, 2, PM_STUDIO_BOX as i32, player))
 }
 
+/// The local beam's animation frame (`0x101899b4`) one frame on (`0x1003c628..0x1003c672`):
+/// `g_flTimeScale · frametime · 20` added, so it slows down with slow motion; back to 0 once its
+/// whole part is negative or past the sprite's last frame.
+fn beam_frame_step(frame: f32, time_scale: f32, frametime: f32, frames: i32) -> f32 {
+    let next = time_scale * frametime * 20.0 + frame;
+    let f = next as i32;
+    if f < 0 || f > frames - 1 { 0.0 } else { next }
+}
+
 /// `GetCullOrigin` (`0x10057270`): the eye in third person, otherwise the view origin.
 fn cull_origin(cam: &Camera) -> Vec3 {
     if crate::view::is_third_person() { crate::view::eye() } else { cam.origin }
@@ -154,8 +163,9 @@ fn local_beam_fade(d: f32) -> f32 {
 /// crosshair shows. With a view model (first person, not zoomed in) and `laserbeamanim.spr`, each
 /// gun also gets a beam from its view-model muzzle (attachment 0, or 2 for the second gun, one
 /// unit down) to its hit point less twice its direction: one additive quad batch, colour and
-/// width scaled by [`local_beam_fade`], the sprite animated at 20 frames a second of frame time.
-pub fn draw_local_laser(cam: &Camera, now: f64, frametime: f32, cl_laser: f32) {
+/// width scaled by [`local_beam_fade`], the sprite animated at 20 frames a second of slowed time
+/// ([`beam_frame_step`]).
+pub fn draw_local_laser(cam: &Camera, now: f64, frametime: f32, time_scale: f32, cl_laser: f32) {
     let local = engine().local_player().map_or(0, |e| e.index);
     let (items, color) =
         state::with(|st| (st.hud_items, st.laser_color.get(usize::try_from(local).unwrap_or(0)).copied().unwrap_or(0) as i32));
@@ -186,11 +196,7 @@ pub fn draw_local_laser(cam: &Camera, now: f64, frametime: f32, cl_laser: f32) {
     let Some(beam_anim) = load("sprites/laserbeamanim.spr", kRenderTransAdd) else { return };
     let frames = r::spr_frames(beam_anim);
     let frame = with(|s| {
-        s.beam_frame += frametime * 20.0;
-        let f = s.beam_frame as i32;
-        if f < 0 || f > frames - 1 {
-            s.beam_frame = 0.0;
-        }
+        s.beam_frame = beam_frame_step(s.beam_frame, time_scale, frametime, frames);
         s.beam_frame as i32
     });
     if !set_sprite(beam_anim, frame) {
@@ -441,6 +447,16 @@ pub fn draw_shadows(cam: &Camera, visible: &[bool; 33], cl_shadow: f32, third_pe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_beam_animates_with_the_time_scale() {
+        // 20 frames a second at normal speed, 5 at a quarter.
+        assert_eq!(beam_frame_step(0.0, 1.0, 0.1, 10), 2.0);
+        assert_eq!(beam_frame_step(0.0, 0.25, 0.1, 10), 0.5);
+        assert_eq!(beam_frame_step(8.5, 1.0, 0.025, 10), 9.0, "the last frame is kept");
+        assert_eq!(beam_frame_step(9.5, 1.0, 0.05, 10), 0.0, "past the last frame: back to 0");
+        assert_eq!(beam_frame_step(0.0, 1.0, 0.1, 1), 0.0, "a one-frame sprite stays on 0");
+    }
 
     #[test]
     fn local_beam_fades_in_over_128_units() {

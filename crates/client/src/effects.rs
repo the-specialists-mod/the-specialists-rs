@@ -629,7 +629,7 @@ pub fn draw_transparent() {
     }
     // `0x1003de00` (local laser, other lasers), then `0x1003bad0` (local flashlight, others').
     let (now, frametime) = (now(), with(|fx| fx.frametime));
-    laser::draw_local_laser(&cam, now, frametime, laser_mode);
+    laser::draw_local_laser(&cam, now, frametime, ts, laser_mode);
     laser::draw_other_lasers(&cam, &visible, now, frametime);
     laser::draw_local_flashlight(&cam);
     laser::draw_other_flashlights(&cam, &visible);
