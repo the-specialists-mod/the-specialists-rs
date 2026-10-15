@@ -9,4 +9,5 @@ license.workspace = true
 [dependencies]
 ts30-gameplay = { path = ".." }
 ts-server     = { path = "../../server" }
+goldsrc       = { path = "../../goldsrc", features = ["server"] }
 shared        = { path = "../../shared" }

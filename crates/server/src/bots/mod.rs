@@ -11,9 +11,12 @@
 //!   driver (`pfnStartFrame`, §5.3), node learning and the node commands (§11.2–11.3).
 //! * [`backend`]: the [`BotBackend`](crate::bot_backend::BotBackend) implementation.
 //! * [`brain`]: `CBotBrain` (buttons, module mask and order, view turning, usercmd; §5).
-//! * [`states`] (§6), [`modules`] (vision, buy, stunt, look around, power-up, chat; §7, §9,
-//!   §10), [`attack`] (§8), [`nav`] (`CBotNav`, §11.7), [`nodes`] (`CNodeGraph`, §11.1–11.6),
-//!   [`files`] (`bots.txt`, `bot_say.txt`; §3).
+//! * [`rules`]: the hooks where a ruleset's bots differ ([`rules::NativeBotRules`], the strategy
+//!   state's think and the vision, buy, look-around and attack modules among them), and the
+//!   registry the active gameplay id picks them from.
+//! * [`states`] (§6), [`modules`] (stunt, power-up, chat; the vision and buy helpers; §7, §9,
+//!   §10), [`attack`] (§8: the module's state and helpers), [`nav`] (`CBotNav`, §11.7),
+//!   [`nodes`] (`CNodeGraph`, §11.1–11.6), [`files`] (`bots.txt`, `bot_say.txt`; §3).
 //!
 //! A bot is a `Player` with a brain (the backend state in `Player::bot`, TS's `CBot` object: see
 //! [`brain_of`]) and `Player::is_bot` (`m_bIsBot`, `pl+0x160`). TS has bots only on listen servers. Deviation (chosen): `addbot`,
@@ -246,41 +249,10 @@ pub fn spawn_post(p: &mut Player, cx: &mut Cx) {
     rules::current().spawn_post(p, cx);
 }
 
-/// TS 3.0's tail of `CBot::Spawn`: a random laser-sight colour (`PlInfo` key 0: 0 for 76/101, 1
-/// for 15/101, 2 for 10/101), as the `lasclr_<n>` command sends it.
-pub fn laser_colour(p: &mut Player, cx: &mut Cx) {
-    if !p.cbot {
-        return;
-    }
-    let r = engine().random_long(0, 100);
-    let laser = if r > 90 {
-        2
-    } else if r > 75 {
-        1
-    } else {
-        0
-    };
-    crate::messages::all(shared::protocol::Msg::PlInfo).byte(cx.index()).byte(0).byte(laser).end();
-}
-
 /// `CBot::TraceAttack` (0x1006bac0), after `CBasePlayer::TraceAttack`:
 /// [`rules::NativeBotRules::trace_attack`].
 pub fn trace_attack(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
     rules::current().trace_attack(p, cx, dmg);
-}
-
-/// TS 3.0's `CBot::TraceAttack` body: a player's hit turns the wanted view toward the attacker's
-/// origin (no enemy or goal is set). TS's `GetClassPtr` would allocate a `CBaseEntity` for an
-/// attacker without private data; the port only looks.
-pub fn turn_to_attacker(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
-    let a = dmg.attacker;
-    if !p.cbot || a.is_null() || !crate::rules::has_player(a) {
-        return;
-    }
-    let target = a.v().origin;
-    if let Some(b) = brain_of(p) {
-        b.look_at(cx.pev(), target);
-    }
 }
 
 /// `CBot::Killed` (0x1006ba00), after `CBasePlayer::Killed` (whose `PlayerKilled` may already
