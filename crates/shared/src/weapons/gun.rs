@@ -339,6 +339,13 @@ pub trait GunHost {
         let _ = (gun, v, arg);
         ran.unwrap_or(0)
     }
+    /// Port addition (the server plugin API's `melee_attack`, version 5): a server plugin's say
+    /// before a kung-fu move lands ([`Gun::ccombat_attack`]). It may change the move's delay
+    /// (`time`, seconds) and the damage a hit deals; false blocks the move. The prediction's host
+    /// lets every move through unchanged.
+    fn melee_attack_pre(&mut self, _gun: &mut Gun, _time: &mut f32, _damage: &mut f32) -> bool {
+        true
+    }
 }
 
 /// `s_weapon_status` (0x38 bytes per weapon id).
@@ -1590,6 +1597,9 @@ impl Gun {
         let mut window = 0.0f32;
         let mut block_after = false;
         let mut stand_fix = true;
+        // The uppercut's and flying kick's crouch, made once the move goes ahead (the plugin hook
+        // may block it).
+        let mut crouch = None;
 
         let pick = |host: &mut dyn FnMut(i32, i32) -> i32, last: i32, table: &[(i32, i32)], choices: &[i32]| -> i32 {
             for (prev, next) in table {
@@ -1626,7 +1636,7 @@ impl Gun {
             if on_ground && buttons & IN_DUCK != 0 {
                 // uppercut kick
                 (back, atype, block_after, move_id, view_anim, reach, delay, window, dmg) = (false, 2, true, 20, 6, 45.0, 1.0, 0.35, 35.0);
-                host.melee_crouch(0x4 | 0x1);
+                crouch = Some(0x4 | 0x1);
             } else if backward {
                 (atype, move_id, view_anim, reach, window) = (3, 17, 7, 55.0, 0.3);
                 dmg = (speed * 0.303_030_3).clamp(15.0, 80.0);
@@ -1644,7 +1654,7 @@ impl Gun {
                     dmg = (speed * 0.153_846_16).clamp(15.0, 45.0);
                     (reach, delay, window, move_id, view_anim) = (45.0, 1.0, 0.25, 16, 8);
                     stand_fix = false;
-                    host.melee_crouch(0x4);
+                    crouch = Some(0x4);
                 } else if on_ground || speed <= 200.0 {
                     block_after = true;
                     reach = 45.0;
@@ -1673,7 +1683,22 @@ impl Gun {
             }
         }
 
-        if atype != 0 {
+        // Port addition (plugin API version 5): plugins see the move's delay and the damage it
+        // deals (`melee_damage` and the doubling are pure, so computing them first changes nothing
+        // TS does) and may change or block it.
+        let base_dmg = dmg;
+        let mut go = atype != 0;
+        if go {
+            dmg = spread::melee_damage(host.arith(), dmg, self.melee_bar);
+            if host.kungfu() {
+                dmg += dmg;
+            }
+            go = host.melee_attack_pre(self, &mut delay, &mut dmg);
+        }
+        if go {
+            if let Some(bits) = crouch {
+                host.melee_crouch(bits);
+            }
             let iuser4 = host.iuser4();
             if stand_fix && iuser4 & 0x20000 != 0 {
                 // leave a wall climb
@@ -1683,11 +1708,7 @@ impl Gun {
             self.last_melee_anim = move_id;
             // Client: the base damage x 0.35 (0x1000b5c7, constant 0x1007a8a8); the client copy
             // picks the same per-attack values (0x1000b09f..0x1000b4e4).
-            host.view_shake(dmg * 0.35);
-            dmg = spread::melee_damage(host.arith(), dmg, self.melee_bar);
-            if host.kungfu() {
-                dmg += dmg;
-            }
+            host.view_shake(base_dmg * 0.35);
             let res = host.melee(
                 &MeleeHit {
                     kind: MeleeKind::KungFu,

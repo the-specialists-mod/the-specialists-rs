@@ -672,6 +672,12 @@ pub fn thrown_knife_description(e: *mut edict_t) -> Option<&'static str> {
     world::with_lent::<Knife, _>(e, |k| knife_description(k.btype))
 }
 
+/// The TS weapon id of a thrown blade (`knife` entity): the knife, seal knife or katana. `None`
+/// for anything else.
+pub fn thrown_blade_id(e: *mut edict_t) -> Option<u8> {
+    world::with_lent::<Knife, _>(e, Knife::weapon_id)
+}
+
 impl Knife {
     fn weapon_id(&self) -> u8 {
         match self.btype {

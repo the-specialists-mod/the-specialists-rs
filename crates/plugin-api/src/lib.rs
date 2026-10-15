@@ -42,7 +42,16 @@
 //!   [`VERSION`] doesn't find the table ([`INTERFACE_NAME`] carries the version) and isn't loaded
 //!   ([`Plugin::api_version`]). Version 3 redesigned the table (docs/implementation/plugin-api.md
 //!   §8 maps version 2 to it); version 4 added team scores, objectives, entity creation and more
-//!   entity hooks (§9).
+//!   entity hooks (§9); version 5 added listeners for metamod plugins, the stunt, power-up,
+//!   melee-attack and scored-kill callbacks, and the private-data mirror (§10, §4).
+//!
+//! # Private data
+//! An edict's private data is the server's block, not a C++ object. Since version 5 the server
+//! mirrors a few TS 3.0 fields into it at TS's offsets (the `pev` pointer, a player's
+//! `m_pActiveItem`, the `weapon_tsgun`'s ammo and weapon records), so fakemeta's `get_pdata_*` /
+//! `set_pdata_*` and hamsandwich's `get_pdata_cbase` read them; some writes are taken back
+//! (docs/implementation/plugin-api.md §4 lists them). [`PluginApi::private_size`] gives the
+//! block's size.
 //!
 //! # Entity hooks
 //! AMX Mod X's hamsandwich hooks C++ virtual functions by patching vtables. The port's entities
@@ -98,9 +107,9 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 
 /// The `CreateInterface` name of the table. It carries the version, so a metamod plugin built for
 /// another version gets NULL.
-pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi004";
+pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi005";
 /// [`PluginApi::version`] of this definition (and what [`Plugin::api_version`] must be).
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 /// The entry point every `tsmod_*` library exports ([`LoadFn`]).
 pub const LOAD_SYMBOL: &CStr = c"TSRS_PluginLoad";
 /// The prefix of the libraries the server loads.
@@ -222,6 +231,103 @@ pub struct Plugin {
     /// reserve did: once a frame at most, from [`PluginApi::player_info`]'s fields.
     pub weapon_changed: Option<extern "C" fn(player: c_int, weapon: c_int)>,
     pub ammo_changed: Option<extern "C" fn(player: c_int, weapon: c_int, clip: c_int, ammo: c_int)>,
+    /// Version 5. The player started a stunt (a [`stunt`] kind), once the game has begun it.
+    pub player_stunt: Option<extern "C" fn(player: c_int, stunt: c_int)>,
+    /// Version 5. A power-up took effect ([`powerup`] bits): the held one was used
+    /// (`usepowerup`), or one that works at once was picked up (health, armour, kung fu,
+    /// superjump, grenade, and infinite clip where the rules apply it at once). Not for
+    /// [`PluginApi::run_powerup`].
+    pub player_powerup: Option<extern "C" fn(player: c_int, powerup: c_int)>,
+    /// Version 5. A kung-fu move is about to land (`CTSGun::CCombatAttack`): `time` is the
+    /// seconds until the next attack, `damage` what a hit deals (kung-fu power and the Kung Fu
+    /// power-up included). Change them through the pointers (valid for the call; a value that
+    /// isn't finite or is below 0 is ignored), and return non-zero to block the move (no hit,
+    /// animation or event; `time` still applies). Called before the move with the player lent to
+    /// its slot, so the API reaches it. Callbacks run in order; the first to block stops it.
+    pub melee_attack: Option<unsafe extern "C" fn(player: c_int, time: *mut f32, damage: *mut f32) -> c_int>,
+    /// Version 5. The rules scored a player's death (`CHalfLifeMultiplay::PlayerKilled`): a kill,
+    /// a suicide or a death by the world, after the frags changed and the `DeathMsg` went out.
+    /// `kill` is valid for the call. Deferred like [`on_kill`](Self::on_kill), so it comes after
+    /// the victim's `TSHealth` 0; deaths the rules don't score (a teamplay team change) have none.
+    pub kill_scored: Option<unsafe extern "C" fn(kill: *const KillInfo)>,
+}
+
+/// Bytes of [`KillInfo::weapon_name`], its NUL included.
+pub const WEAPON_NAME_LEN: usize = 32;
+
+/// A death as `PlayerKilled` scored it ([`Plugin::kill_scored`]).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KillInfo {
+    /// The killing player; the victim for a suicide; 0 when no player killed (the world, a
+    /// trigger, a monster).
+    pub killer: c_int,
+    pub victim: c_int,
+    /// The inflictor's index, -1 for none.
+    pub inflictor: c_int,
+    /// The frags the killing player got (`PlayerKilled`'s points: double kill, specialist and
+    /// spree included): -1 for a team kill, 0 for none (The One mode). 0 for a suicide or a death
+    /// by no player.
+    pub points: c_int,
+    /// The TS weapon id of the blow: by the killer's own hand the simulated bullet's weapon, else
+    /// 0 (kung fu) under `glast_closecombat`, else the gun in hand (0 for kung fu); a thrown
+    /// blade's id; 24 for a grenade; -1 for anything else.
+    pub weapon: c_int,
+    /// [`kill`] bits.
+    pub tags: c_int,
+    /// The killer's kills since its last death, this one included (0 without a killing player);
+    /// the victim's before it died.
+    pub killer_spree: c_int,
+    pub victim_spree: c_int,
+    /// The `DeathMsg` weapon (`PlayerKilled`'s name: "Kung Fu", "world", "Glock-18 Stock",
+    /// "Throwing Knife", ...), NUL-terminated, cut to fit.
+    pub weapon_name: [c_char; WEAPON_NAME_LEN],
+}
+
+impl Default for KillInfo {
+    fn default() -> Self {
+        KillInfo {
+            killer: 0,
+            victim: 0,
+            inflictor: -1,
+            points: 0,
+            weapon: -1,
+            tags: 0,
+            killer_spree: 0,
+            victim_spree: 0,
+            weapon_name: [0; WEAPON_NAME_LEN],
+        }
+    }
+}
+
+/// [`KillInfo::tags`]: `PlayerKilled`'s log tags (0x89f0d..0x89fa4) and how the kill scored.
+pub mod kill {
+    use core::ffi::c_int;
+    /// ` (victims_weapon)`: killed with a gun the victim owned first.
+    pub const VICTIMS_WEAPON: c_int = 0x1;
+    /// ` (stopped_fury)`: the victim was on a spree of three or more.
+    pub const STOPPED_FURY: c_int = 0x2;
+    /// ` (killed_specialist)`: the victim's spree was over 8.
+    pub const KILLED_SPECIALIST: c_int = 0x4;
+    /// ` (double_kill)`: under 2 s after the killer's last scoring kill.
+    pub const DOUBLE_KILL: c_int = 0x8;
+    /// ` (diving)` / ` (sliding)`: `TSGetPointsForFrag`'s stunt test.
+    pub const DIVING: c_int = 0x10;
+    pub const SLIDING: c_int = 0x20;
+    /// ` (killed_the_one)`.
+    pub const KILLED_THE_ONE: c_int = 0x40;
+    /// The spree award this kill reached: ` (is_killer)` (3), ` (is_demolition)` (6),
+    /// ` (is_specialist)` (9), ` (is_unstoppable)` (10 on).
+    pub const IS_KILLER: c_int = 0x80;
+    pub const IS_DEMOLITION: c_int = 0x100;
+    pub const IS_SPECIALIST: c_int = 0x200;
+    pub const IS_UNSTOPPABLE: c_int = 0x400;
+    /// `TSGetPointsForFrag` scored a kung-fu frag.
+    pub const KUNG_FU: c_int = 0x800;
+    /// TS's damage globals for the kill: `glast_headshot`, `glast_closecombat`, `glast_coldcock`.
+    pub const HEADSHOT: c_int = 0x1000;
+    pub const CLOSE_COMBAT: c_int = 0x2000;
+    pub const COLDCOCK: c_int = 0x4000;
 }
 
 impl Plugin {
@@ -250,6 +356,10 @@ impl Plugin {
         sound: None,
         weapon_changed: None,
         ammo_changed: None,
+        player_stunt: None,
+        player_powerup: None,
+        melee_attack: None,
+        kill_scored: None,
     };
 }
 
@@ -369,6 +479,27 @@ pub mod powerup {
     pub const HEALTH: i32 = 64;
     pub const ARMOR: i32 = 128;
     pub const SUPERJUMP: i32 = 256;
+}
+
+/// [`Plugin::player_stunt`] kinds. 2 to 5 are `tsconst.inc`'s `STUNT_*` values (TS 2.x's
+/// `TSState`, which TS 3.0 cut to stand / crouch / prone); 6 and 7 number TS 3.0 stunts 2.x
+/// lacked.
+pub mod stunt {
+    use core::ffi::c_int;
+    /// A roll: `CTSStunt::GoRoll` (0x9cfe8), rolling out of a dive's landing (`Landing`
+    /// 0x9bbf4) or sideways out of a slide (`HandleSlide` 0x9b9f8).
+    pub const ROLL: c_int = 2;
+    /// A dive (`GoDive` 0x9b1a0, wall dives included) or the slow-motion dodge (`GoBulletTime`
+    /// 0x9a5b4).
+    pub const DIVE: c_int = 3;
+    /// Getting up from lying after a dive (`HandleSlide`).
+    pub const GETUP: c_int = 4;
+    /// A flip or cartwheel (`GoWheel` 0x9c9bc).
+    pub const FLIP: c_int = 5;
+    /// Kicking off a wall (`GoWallJump` 0x9a7d4).
+    pub const WALL_JUMP: c_int = 6;
+    /// Running up a wall (`GoWallClimb` 0x9aa1c).
+    pub const WALL_CLIMB: c_int = 7;
 }
 
 /// Loadout items for [`PluginApi::buy_item`] (`tki`, `CBasePlayer::AddItem`).
@@ -741,6 +872,21 @@ pub struct PluginApi {
     /// [`NOT_PLAYER`] (not a game entity), [`INVALID`] (wrong arguments, or an `ENTITY` argument
     /// that is neither -1 nor an entity in use), [`UNSUPPORTED`] or [`BUSY`].
     pub ham_execute: unsafe extern "C" fn(call: *mut HamCall, run_hooks: c_int) -> c_int,
+
+    // ---- version 5: listeners, private data ------------------------------------------------------
+    /// Registers a [`Plugin`] descriptor's callbacks for a plugin the server didn't load (a
+    /// metamod plugin; a `tsmod_*` library has its own descriptor). The server copies it and calls
+    /// it from then on as it calls loaded plugins, after them, in registration order (callbacks of
+    /// events already past, such as `game_init`, only when they come round again). A handle (> 0)
+    /// for [`remove_listener`](Self::remove_listener), or [`INVALID`]: NULL, a `size` other than
+    /// `size_of::<Plugin>()`, or an `api_version` other than [`VERSION`].
+    pub add_listener: unsafe extern "C" fn(listener: *const Plugin) -> c_int,
+    /// Unregisters a listener: [`OK`], or [`INVALID`] for a handle that isn't registered.
+    pub remove_listener: extern "C" fn(handle: c_int) -> c_int,
+    /// Bytes of game entity `entity`'s private data (`pvPrivateData`), or [`NOT_PLAYER`] (not a
+    /// game entity). See the module docs ("Private data"): bytes 8..16 are the server's link to
+    /// the entity, never write them.
+    pub private_size: extern "C" fn(entity: c_int) -> c_int,
 }
 
 #[cfg(test)]
@@ -757,7 +903,7 @@ mod tests {
 
     #[test]
     fn the_interface_name_carries_the_version() {
-        assert_eq!(VERSION, 4);
-        assert!(INTERFACE_NAME.to_bytes().ends_with(b"004"));
+        assert_eq!(VERSION, 5);
+        assert!(INTERFACE_NAME.to_bytes().ends_with(b"005"));
     }
 }

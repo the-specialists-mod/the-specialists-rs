@@ -65,9 +65,19 @@ struct Mock {
     virtuals: Vec<String>,
     /// `virtual_pre` skips this virtual (a plugin's SUPERCEDE).
     skip: Option<Virtual>,
+    /// `melee_attack_pre`: the (time, damage) it was asked with, and its answer: `None` lets the
+    /// move through unchanged, `Some((time, damage, go))` changes it.
+    melee_pre: Vec<(f32, f32)>,
+    melee_answer: Option<(f32, f32, bool)>,
 }
 
 impl GunHost for Mock {
+    fn melee_attack_pre(&mut self, _gun: &mut Gun, time: &mut f32, damage: &mut f32) -> bool {
+        self.melee_pre.push((*time, *damage));
+        let Some((t, d, go)) = self.melee_answer else { return true };
+        (*time, *damage) = (t, d);
+        go
+    }
     fn virtual_pre(&mut self, _gun: &mut Gun, v: Virtual, _arg: &mut i32) -> bool {
         self.virtuals.push(format!("pre {v:?}"));
         self.skip != Some(v)
@@ -660,6 +670,35 @@ fn kungfu_punch_and_bar() {
     // the bar regenerates at 15/s
     g.pre_frame(Arith::CLIENT, 1.0, true);
     assert!((g.melee_bar - 82.0).abs() < 1e-4);
+}
+
+/// Port addition (plugin API version 5, `melee_attack`): the hook sees the move's delay and the
+/// damage it deals (bar and Kung Fu power-up applied), its changes reach the hit and the timers,
+/// and a block leaves only the delay.
+#[test]
+fn kungfu_melee_attack_hook() {
+    let mut g = Gun::default();
+    let mut h = Mock { flags: 0x200, ..Default::default() };
+    kungfu_move(&mut g, &mut h, IN_ATTACK, IN_ATTACK);
+    assert_eq!(h.melee_pre, vec![(0.35, 20.0)]);
+    assert_eq!(h.melee[0].damage, 20.0);
+    // Changed: the hit deals the new damage, the delay is the new time.
+    h.melee_answer = Some((1.25, 55.0, true));
+    kungfu_move(&mut g, &mut h, IN_ATTACK, IN_ATTACK);
+    assert_eq!(h.melee.last().unwrap().damage, 55.0);
+    assert_eq!((g.next_primary, g.next_secondary), (1.25, 1.25));
+    assert_eq!(h.cooldowns.last(), Some(&1.25));
+    // Blocked uppercut: no hit, event, crouch or BlockPlayer; the delay still applies.
+    let (hits, crouches) = (h.melee.len(), h.crouches.len());
+    h.melee_answer = Some((0.8, 35.0, false));
+    (g.next_attack, g.next_primary, g.next_secondary) = (0.0, 0.0, 0.0);
+    (h.buttons, h.pressed) = (IN_ATTACK2 | IN_DUCK, IN_ATTACK2);
+    h.events.clear();
+    g.ccombat_attack(&mut h);
+    assert_eq!(h.melee_pre.last(), Some(&(1.0, 35.0)), "the uppercut's own values");
+    assert_eq!((h.melee.len(), h.crouches.len()), (hits, crouches));
+    assert!(h.events.is_empty() && h.blocks.is_empty());
+    assert_eq!(g.next_primary, 0.8);
 }
 
 /// `client.dll`'s block (`0x1000adc0`) gates on the HUD's power (`0.01 <= 0x1018a718`), not the

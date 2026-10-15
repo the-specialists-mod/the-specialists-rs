@@ -23,6 +23,12 @@ fn timer(cx: &mut Cx, r: Rules, secs: f64) -> f32 {
     r.stunt_clock().start(cx.time(), cx.pev().fuser1, secs)
 }
 
+/// Port addition (plugin API version 5): tells the plugins the player started a stunt
+/// (`ts_plugin_api::stunt`; once the player's PreThink has returned).
+fn stunted(cx: &mut Cx, kind: i32) {
+    crate::plugins::player_stunt(cx.edict, kind);
+}
+
 /// `CTSStunt::NextDive`: no cooldown after dives and flips.
 const NEXT_DIVE: f64 = 0.0;
 
@@ -256,6 +262,7 @@ fn go_bullet_time(p: &mut Player, cx: &mut Cx, r: Rules) {
     if r.motion_blur() {
         motion_blur(cx, 2);
     }
+    stunted(cx, ts_plugin_api::stunt::DIVE);
 }
 
 /// The wall chain's `m_flWallChain += add`: every TS build adds a `double` constant to the
@@ -294,6 +301,7 @@ fn go_wall_jump(p: &mut Player, cx: &mut Cx, r: Rules) {
     send_next_stunt(p, cx, r);
     stunt_sound(cx, c"player/airwheel.wav");
     maybe_blur(cx, r, 5.0);
+    stunted(cx, ts_plugin_api::stunt::WALL_JUMP);
 }
 
 /// `CTSStunt::GoWallClimb` (0x9aa1c): run up the wall in front.
@@ -319,6 +327,7 @@ fn go_wall_climb(p: &mut Player, cx: &mut Cx, r: Rules) {
     send_next_stunt(p, cx, r);
     stunt_sound(cx, c"player/airwheel.wav");
     p.stunt.wall_climbs += 1;
+    stunted(cx, ts_plugin_api::stunt::WALL_CLIMB);
 }
 
 /// `CTSStunt::GoDive` (0x9b1a0): dive height by pitch and slot space.
@@ -351,6 +360,7 @@ fn go_dive(p: &mut Player, cx: &mut Cx, r: Rules) {
     maybe_blur(cx, r, 8.0);
     p.stunt.dir = if cx.pev().iuser4 & WALLDIVE == 0 { normalized(cx.pev().velocity) } else { forward(cx) };
     stunt_sound(cx, c"player/dive.wav");
+    stunted(cx, ts_plugin_api::stunt::DIVE);
 }
 
 /// Landing from a wall jump/climb: `CTSStunt::HandleWallJump` (0x9b4fc) and the ground half of
@@ -422,6 +432,7 @@ fn landing(p: &mut Player, cx: &mut Cx, r: Rules) {
         set_view(cx, 0.0);
         p.stunt.recover = timer(cx, r, rules.dive_roll_out_recover);
         anim::animate(p, cx, 0x2e);
+        stunted(cx, ts_plugin_api::stunt::ROLL);
     }
     cx.pev().gravity = 1.0;
     stunt_sound(cx, c"player/land.wav");
@@ -472,6 +483,7 @@ fn handle_slide(p: &mut Player, cx: &mut Cx, r: Rules) {
         p.stunt.anim.seq_finished = true;
         anim::animate(p, cx, 0x29);
         cx.pev().friction = 1.0;
+        stunted(cx, ts_plugin_api::stunt::GETUP);
     } else if button & IN_MOVELEFT as i32 != 0 && free {
         side_roll(p, cx, 0x2a);
     } else if button & IN_MOVERIGHT as i32 != 0 && free {
@@ -498,6 +510,7 @@ fn side_roll(p: &mut Player, cx: &mut Cx, id: i32) {
     cx.pev().friction = 1.0;
     p.stunt.dir_not_forward = false;
     p.stunt.anim.last_dir = 2;
+    stunted(cx, ts_plugin_api::stunt::ROLL);
 }
 
 /// `CTSStunt::GoWheel` (0x9c9bc): second jump press within 0.3 s. A back flip (or any flip
@@ -535,6 +548,7 @@ fn go_wheel(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
             send_next_stunt(p, cx, r);
             stunt_sound(cx, c"player/airwheel.wav");
             p.stunt.wheel_tap = 0.0;
+            stunted(cx, ts_plugin_api::stunt::FLIP);
             if dirn == 3 {
                 // Backflip kick: costs 22.5 kung-fu power and arms a delayed hit (15, 30 with
                 // Kung Fu) in the gun's close-combat window.
@@ -555,6 +569,7 @@ fn go_wheel(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
             send_next_stunt(p, cx, r);
             stunt_sound(cx, c"player/airwheel.wav");
             p.stunt.wheel_tap = 0.0;
+            stunted(cx, ts_plugin_api::stunt::FLIP);
             return true;
         }
     }
@@ -606,6 +621,7 @@ fn go_roll(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
     }
     p.stunt.roll_tap = 0.0;
     maybe_blur(cx, r, 9.0);
+    stunted(cx, ts_plugin_api::stunt::ROLL);
     true
 }
 

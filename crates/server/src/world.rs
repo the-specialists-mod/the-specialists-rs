@@ -589,6 +589,7 @@ pub fn free(e: *mut edict_t) {
     if let Some(h) = handle_of(e) {
         STORE.0.free(h);
     }
+    goldsrc::edict::forget_private(e);
 }
 
 #[cfg(test)]

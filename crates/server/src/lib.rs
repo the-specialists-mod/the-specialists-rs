@@ -21,6 +21,7 @@ pub mod gameplay;
 pub mod ham;
 pub mod messages;
 pub mod net;
+pub mod pdata;
 pub mod player;
 pub mod plugin_api;
 pub mod plugins;

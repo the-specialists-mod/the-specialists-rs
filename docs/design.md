@@ -110,7 +110,7 @@ lists match `ts_i386.so` and `mp.dll` (`implementation/stock-entities.md` §7.5)
   keeps its own server bone setup. There's no server-side bone maths in TS to port; hitboxes and
   studio traces use the engine's.
 * `CreateInterface`: mp.dll's tier1 factory has nothing registered, so TS reports `IFACE_FAILED`
-  and returns NULL. The port's answers one name, `TSRS_PluginApi004` (version 4), with the plugin
+  and returns NULL. The port's answers one name, `TSRS_PluginApi005` (version 5), with the plugin
   API table (`ts-plugin-api`, `ts_server::plugin_api`; `implementation/plugin-api.md`), and is
   exported on every platform: on Linux it is the one export `ts_i386.so` doesn't have (port
   addition). The table carries entity hooks (`ts_server::ham`, below), since version 4 also on
@@ -124,7 +124,9 @@ lists match `ts_i386.so` and `mp.dll` (`implementation/stock-entities.md` §7.5)
   holds the handle, at offset 8 of a zeroed block of at least 0x80 bytes (TS-sized for players,
   `weapon_tsgun` and thrown knives), so AMX Mod X's fakemeta and hamsandwich, which take the block
   for TS's C++ object, neither overflow it nor follow a vtable pointer
-  (`implementation/plugin-api.md` §3). `OnFreeEntPrivateData` runs the plugins' `Ham_TS_OnFreeEntPrivateData` hook and drops the object.
+  (`implementation/plugin-api.md` §4). Since plugin API version 5 the block also carries `pev`
+  and a mirror of the TS members plugins read (`m_pActiveItem`, the gun's ammo and records;
+  `pdata.rs`, plugin-api.md §4.1). `OnFreeEntPrivateData` runs the plugins' `Ham_TS_OnFreeEntPrivateData` hook and drops the object.
 * **Take-out dispatch:** during a callback the object is moved out of its slot. Engine calls that
   re-enter the game (touch, remove, create, damage to *another* entity) therefore work. Damage to
   *yourself* can't be dispatched; handle it with the `&mut self` you hold. Work for a taken-out

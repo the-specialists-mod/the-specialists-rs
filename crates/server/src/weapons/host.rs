@@ -298,6 +298,18 @@ impl GunHost for ServerHost<'_> {
         let Some(frame) = self.frames.pop() else { return ran.unwrap_or(0) };
         crate::ham::gun_post(v, frame, arg, ran, &mut |f| self.reach_open(gun, f))
     }
+    /// Port addition (plugin API version 5): the plugins' `melee_attack`, with the player whole and
+    /// lent to its slot as for a gun hook ([`reach_open`](ServerHost::reach_open)).
+    fn melee_attack_pre(&mut self, gun: &mut Gun, time: &mut f32, damage: &mut f32) -> bool {
+        if !crate::plugins::wants_melee_attack() {
+            return true;
+        }
+        let player = engine().index_of(self.edict);
+        let (mut t, mut d, mut blocked) = (*time, *damage, false);
+        self.reach_open(gun, &mut || blocked = crate::plugins::melee_attack(player, &mut t, &mut d));
+        (*time, *damage) = (t, d);
+        !blocked
+    }
     fn player_anim(&mut self, anim: i32) {
         // CTSAnimation (movement package), applied by `with_host` after the gun call.
         if anim >= 0 {

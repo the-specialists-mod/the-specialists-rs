@@ -378,6 +378,8 @@ pub fn use_powerup(p: &mut Player, cx: &mut Cx) -> bool {
         let b = TsMBlur { entindex: cx.index() as u8, mode };
         msg::pvs(Msg::TsMBlur, cx.pev().origin, |w| b.write(w));
     }
+    // Port addition (plugin API version 5): the plugins' `player_powerup`.
+    crate::plugins::player_powerup(cx.edict, p.ts.held as i32);
     true
 }
 
@@ -387,6 +389,7 @@ pub fn use_powerup(p: &mut Player, cx: &mut Cx) -> bool {
 pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32, armor: f32) -> bool {
     let e = cx.edict;
     let r = crate::gameplay::active().server;
+    let mut held = false;
     if bits & pw::ARMOR != 0 {
         r.armor_powerup(p, cx, armor);
     } else if bits & pw::KUNGFU != 0 {
@@ -421,9 +424,15 @@ pub fn add_powerup(p: &mut Player, cx: &mut Cx, bits: u16, secs: i32, armor: f32
         }
         p.ts.held = bits;
         p.ts.held_secs = secs;
+        held = true;
     }
     // `EMIT_SOUND_DYN(..., 0.5)` (call at 0x97de1): the pickup's pitch drops with the player's time scale.
     crate::entities::stock::explode::emit_sound_slow(e, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, 0.8, 0, 100, 0.5);
+    // Port addition (plugin API version 5): a power-up that works at pickup ran; a held one runs
+    // when used (`use_powerup`).
+    if !held {
+        crate::plugins::player_powerup(e, bits as i32);
+    }
     true
 }
 

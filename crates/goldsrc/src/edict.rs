@@ -78,8 +78,9 @@ pub const PRIVATE_TAG_OFFSET: usize = 8;
 ///
 /// AMX Mod X's hamsandwich hooks a class through the vtable pointer in an entity's private data,
 /// which its gamedata for TS puts at offset 0 on Windows and 0x60 on Linux (GCC 2.95's layout).
-/// The port's private data is no C++ object, so both words stay zero and `RegisterHam` fails
-/// cleanly ("Failed to retrieve vtable") instead of following the tag as a pointer. 0x80 covers
+/// The port's private data is no C++ object, so the platform's vtable word stays zero and
+/// `RegisterHam` fails cleanly ("Failed to retrieve vtable") instead of following the tag as a
+/// pointer (the other platform's word may hold [`PEV_OFFSET`]'s `pev`: Linux's at 0). 0x80 covers
 /// the Linux slot, 8 bytes wide on 64-bit builds.
 pub const MIN_PRIVATE_SIZE: usize = 0x80;
 
@@ -101,6 +102,110 @@ pub fn set_private_tag(e: *mut edict_t, tag: PrivateTag, size: usize) {
     // SAFETY: the engine just allocated at least `size` >= MIN_PRIVATE_SIZE bytes for us, which
     // holds the tag at PRIVATE_TAG_OFFSET.
     unsafe { p.cast::<u8>().add(PRIVATE_TAG_OFFSET).cast::<PrivateTag>().write_unaligned(tag) };
+    sizes().insert(p as usize, size);
+    if let Some(off) = PEV_OFFSET {
+        // SAFETY: `e` is the engine's edict the block was just allocated for (non-null: the
+        // engine dereferenced it), and `&raw mut (*e).v` only computes the field's address.
+        let pev = unsafe { &raw mut (*e).v } as usize as u32;
+        write_private_u32(e, off, pev);
+    }
+}
+
+/// Where TS 3.0's `CBaseEntity::pev` sits in an object (AMX Mod X's TS gamedata, "pev": 4 on
+/// Windows, 0 on Linux, where GCC 2.95 put the vtable at 0x60), written into every private block
+/// on 32-bit builds so plugins that turn a private-data pointer into an entity (fakemeta's
+/// `get_pdata_ent`) find it. `None` on 64-bit builds: no AMX Mod X there, and a pointer at 8
+/// would hit the tag.
+pub const PEV_OFFSET: Option<usize> = if cfg!(target_pointer_width = "32") { if cfg!(windows) { Some(4) } else { Some(0) } } else { None };
+
+/// The size [`set_private_tag`] allocated, by block address (port addition, for the private-data
+/// mirror's bounds).
+fn sizes() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<usize, usize>> {
+    static SIZES: std::sync::Mutex<std::collections::BTreeMap<usize, usize>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    SIZES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The engine is about to free the edict's private data (`pfnOnFreeEntPrivateData`).
+pub fn forget_private(e: *mut edict_t) {
+    if e.has_private_data() {
+        sizes().remove(&private_address(e));
+    }
+}
+
+/// The address of the edict's private data, 0 for none: what a TS object pointer to this entity
+/// (`m_pActiveItem`, `m_pPlayer`) holds.
+pub fn private_address(e: *const edict_t) -> usize {
+    if !e.has_private_data() {
+        return 0;
+    }
+    // SAFETY: as in `EdictPtr::v`.
+    unsafe { (*e).pvPrivateData as usize }
+}
+
+/// Bytes of the edict's private data: what [`set_private_tag`] allocated, 0 for none (or a block
+/// the game didn't allocate, which never happens: see [`PrivateTag`]).
+pub fn private_size(e: *const edict_t) -> usize {
+    let a = private_address(e);
+    if a == 0 { 0 } else { sizes().get(&a).copied().unwrap_or(0) }
+}
+
+/// The 32-bit word at byte `offset` of the edict's private data; `None` outside the block or on
+/// the tag.
+pub fn read_private_u32(e: *const edict_t, offset: usize) -> Option<u32> {
+    with_private_words(e, |w| w.read(offset)).flatten()
+}
+
+/// Writes the 32-bit word at byte `offset` of the edict's private data. False (nothing written)
+/// outside the block or on the tag.
+pub fn write_private_u32(e: *const edict_t, offset: usize, value: u32) -> bool {
+    with_private_words(e, |w| w.write(offset, value)).unwrap_or(false)
+}
+
+/// The edict's private data as 32-bit words for the length of a call, bounded by the block's size
+/// (looked up once) and clear of the tag. See [`with_private_words`].
+pub struct PrivateWords {
+    base: *mut u8,
+    size: usize,
+}
+
+impl PrivateWords {
+    fn ok(&self, offset: usize) -> bool {
+        let end = offset.saturating_add(4);
+        end <= self.size && (end <= PRIVATE_TAG_OFFSET || offset >= PRIVATE_TAG_OFFSET + size_of::<PrivateTag>())
+    }
+
+    /// The word at byte `offset`; `None` outside the block or on the tag.
+    pub fn read(&self, offset: usize) -> Option<u32> {
+        if !self.ok(offset) {
+            return None;
+        }
+        // SAFETY: `offset + 4 <= size`, the block `set_private_tag` allocated, which lives while
+        // the edict holds it (the module contract: no engine call that could free it runs inside
+        // `with_private_words`); unaligned access, single-threaded.
+        Some(unsafe { self.base.add(offset).cast::<u32>().read_unaligned() })
+    }
+
+    /// Writes the word at byte `offset`. False (nothing written) outside the block or on the tag.
+    pub fn write(&mut self, offset: usize, value: u32) -> bool {
+        if !self.ok(offset) {
+            return false;
+        }
+        // SAFETY: as in `read`; the tag is never overwritten.
+        unsafe { self.base.add(offset).cast::<u32>().write_unaligned(value) };
+        true
+    }
+}
+
+/// Runs `f` on the edict's private data as words: `None` without game private data. Don't call
+/// the engine inside `f` (it could free the block).
+pub fn with_private_words<R>(e: *const edict_t, f: impl FnOnce(&mut PrivateWords) -> R) -> Option<R> {
+    let size = private_size(e);
+    if size == 0 {
+        return None;
+    }
+    // SAFETY: as in `EdictPtr::v`; `private_size` found the block, so `pvPrivateData` is set.
+    let base = unsafe { (*e).pvPrivateData.cast::<u8>() };
+    Some(f(&mut PrivateWords { base, size }))
 }
 
 /// The tag in the edict's private data, if the game allocated any (see [`set_private_tag`]).

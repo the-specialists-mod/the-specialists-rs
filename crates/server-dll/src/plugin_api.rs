@@ -85,6 +85,9 @@ fn build((funcs, globals): (*const goldsrc::sys::enginefuncs_t, *mut goldsrc::sy
         class_id,
         entity_class_id,
         ham_execute,
+        add_listener,
+        remove_listener,
+        private_size,
     }
 }
 
@@ -447,4 +450,32 @@ unsafe extern "C" fn ham_execute(call: *mut HamCall, run_hooks: c_int) -> c_int 
     // SAFETY: as when it was read.
     unsafe { (&raw mut (*call).ret).write_unaligned(c.ret) };
     r
+}
+
+// ---- version 5: listeners, private data --------------------------------------------------------
+
+/// Guard: NULL is `INVALID`, and so is a descriptor whose `size` isn't this version's (only `size`
+/// is read then).
+unsafe extern "C" fn add_listener(listener: *const ts_plugin_api::Plugin) -> c_int {
+    if listener.is_null() {
+        return INVALID;
+    }
+    // SAFETY: a non-NULL `listener` points to a `Plugin` the caller owns for the call; its `size`
+    // (the first field) is read first, then the whole descriptor once it says it is that big.
+    let size = unsafe { (&raw const (*listener).size).read_unaligned() } as usize;
+    if size != size_of::<ts_plugin_api::Plugin>() {
+        return INVALID;
+    }
+    // SAFETY: as above; `size_of::<Plugin>()` bytes are readable. Its callbacks are the plugin's,
+    // callable on the engine's thread until it removes the listener (the table's contract).
+    let desc = unsafe { listener.read_unaligned() };
+    crate::plugins::add_listener(desc)
+}
+
+extern "C" fn remove_listener(handle: c_int) -> c_int {
+    if ts_server::plugins::remove_listener(handle) { OK } else { INVALID }
+}
+
+extern "C" fn private_size(entity: c_int) -> c_int {
+    api::private_size(entity)
 }

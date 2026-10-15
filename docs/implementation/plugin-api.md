@@ -14,9 +14,9 @@ of plugin use it:
   from their `TSRS_PluginLoad` and hand back callbacks. Bot backends are such plugins
   ([bot-plugins.md](bot-plugins.md)).
 
-The current version is **4** (issues #117, #99; version 3 was #104). Versions don't stay
-compatible: a break bumps `VERSION` and the interface name, so a stale plugin finds nothing (§8,
-§9).
+The current version is **5** (tsmod-amxx-rs#8 and #10; version 4 was #117 and #99, version 3
+#104). Versions don't stay compatible: a break bumps `VERSION` and the interface name, so a stale
+plugin finds nothing (§8, §9, §10).
 
 | Part | Where |
 |---|---|
@@ -30,6 +30,8 @@ compatible: a break bumps `VERSION` and the interface name, so a stale plugin fi
 | Free slots, weapon ammo | `crates/server/src/weapons/mod.rs` |
 | Projectile throwers | `crates/server/src/weapons/projectiles.rs` (`Throwers`) |
 | Private-data guard | `crates/goldsrc/src/edict.rs`, `crates/server/src/world.rs` (`private_size`) |
+| Private-data mirror (version 5, §4.1) | `crates/server/src/pdata.rs` (layouts, sync, take-back; tests in it); block access `goldsrc::edict::{read,write}_private_u32` |
+| Listeners and the stunt, power-up and melee-attack callbacks (version 5) | `crates/server/src/plugins/mod.rs`; the stunts `stunt/moves.rs` (`stunted`), power-ups `rules/powerup.rs`, melee `shared::weapons::GunHost::melee_attack_pre` (`Gun::ccombat_attack`) and `weapons/host.rs` |
 | Entity hooks (version 2, §7): numbering, marshalling, pre/post calls, `ham_execute` | `crates/server/src/ham/` (`mod.rs`, `table.rs`, `classes.rs`, `names.rs`; queries `query.rs`, the gun `gun.rs`; tests in `tests.rs`) |
 | The gun's hookable virtual calls (`Item_*` / `Weapon_*`) | `shared::weapons::Virtual`, `GunHost::virtual_pre` / `virtual_post` (`crates/shared/src/weapons/gun.rs`); the server's in `crates/server/src/weapons/host.rs` |
 | Calling the plugin's hook (FFI), `ham_execute`'s pointer arguments | `crates/server-dll/src/plugin_api.rs` (`call_hook`, `ham_execute`) |
@@ -40,15 +42,18 @@ compatible: a break bumps `VERSION` and the interface name, so a stale plugin fi
 
 The server library exports tier1's `CreateInterface(name, return_code)` on every platform.
 `mp.dll` always had it, with nothing registered (0x10028f70). On Linux it is the one export the
-port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi004`
+port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi005`
 (`ts_plugin_api::INTERFACE_NAME`) it returns a pointer to the `PluginApi` and writes 0
-(`IFACE_OK`) to a non-NULL `return_code`. Any other name, the earlier versions' `TSRS_PluginApi001`
-and `TSRS_PluginApi003` included, or a NULL name, returns NULL and writes 1 (`IFACE_FAILED`).
+(`IFACE_OK`) to a non-NULL `return_code`. Any other name, the earlier versions' `TSRS_PluginApi001`,
+`TSRS_PluginApi003` and `TSRS_PluginApi004` included, or a NULL name, returns NULL and writes 1
+(`IFACE_FAILED`).
 
 A plugin looks the export up in the game library that is already loaded: metamod's
 `GINFO_REALDLL_FULLPATH`, then `dlopen(RTLD_NOLOAD)` / `GetModuleHandle`. It checks
-`PluginApi::version` (4) and `size`. Such a plugin has no plugin id: it passes `NO_PLUGIN` (0)
-where one is asked, so it can't use `data_dir`, `register_bot_backend` or `create_bot`.
+`PluginApi::version` (5) and `size`. Such a plugin has no plugin id: it passes `NO_PLUGIN` (0)
+where one is asked, so it can't use `data_dir`, `register_bot_backend` or `create_bot`. Since
+version 5 it can register a `Plugin` descriptor as a **listener** (`add_listener`, §1.3) to get the
+callbacks a loaded plugin gets.
 
 The table is built on first use after `GiveFnptrsToDll` (it carries the engine's table and
 globals pointers, `engine_funcs` / `globals`).
@@ -82,7 +87,7 @@ are never unloaded. The rule (`plugins/loader.rs`):
   (name, version, callbacks) and returns `OK`.
 * Skipped with a warning, never a crash: a library that can't be opened, has **no
   `TSRS_PluginLoad`**, returns anything but `OK`, or leaves a **descriptor `size`** other than
-  the server's or an **`api_version`** other than 4. What a refused plugin registered is dropped
+  the server's or an **`api_version`** other than 5. What a refused plugin registered is dropped
   (its commands then do nothing; its bot backend is gone). A library whose load function ran
   stays mapped.
 
@@ -103,11 +108,52 @@ points), `round_start` / `round_end` (last man standing), `sound` (every `EmitSo
 `EmitAmbientSound` the game plays, through `goldsrc::server::set_sound_hook`; installed only
 when a plugin has the callback), `weapon_changed` / `ammo_changed` (from the per-frame
 snapshot's weapon, clip and reserve, at most once a frame: TS sends bots no weapon messages).
+Version 5 adds:
+
+* `player_stunt(player, kind)`: a stunt started, `ts_plugin_api::stunt` kinds. 2 roll (`GoRoll`
+  0x9cfe8, the roll out of a dive's `Landing` 0x9bbf4, a side roll out of `HandleSlide`
+  0x9b9f8), 3 dive (`GoDive` 0x9b1a0, wall dives too, and the slow-motion dodge `GoBulletTime`
+  0x9a5b4), 4 getting up from a slide (`HandleSlide`), 5 flip or cartwheel (`GoWheel` 0x9c9bc):
+  `tsconst.inc`'s `STUNT_*` numbers. 6 wall jump (`GoWallJump` 0x9a7d4) and 7 wall climb
+  (`GoWallClimb` 0x9aa1c) are the port's numbers for 3.0 stunts TS 2.x didn't have. TS 3.0's
+  `TSState` only says stand / crouch / prone, so these come from the moves themselves.
+* `player_powerup(player, bits)`: a power-up took effect: the held one was used (`UsePowerUp`
+  0x95980, `usepowerup` or the bots), or a pickup that works at once (`PlayerAddPowerUp`
+  0x97bc8: armour, kung fu, superjump, health, grenade, and infinite clip under rules that apply
+  it at once). A held pickup (slow motion, slow pause, double fire rate, infinite clip) fires when
+  used. The API's `run_powerup` doesn't fire it.
+* `melee_attack(player, &time, &damage)`: before a kung-fu move lands (`CTSGun::CCombatAttack`
+  0x86078, after the move is picked): `time` is its delay (the next attack, `pl+0x4f8`, and x0.75
+  the `BlockPlayer` time), `damage` what a hit deals (`melee_damage` of the kung-fu power, doubled
+  by the Kung Fu power-up). The plugin may change both (non-finite or negative values are
+  ignored) and return non-zero to block the move: no hit, delayed-hit window, crouch,
+  `BlockPlayer`, animation or event, but the delay still runs (so a held button doesn't ask every
+  frame). Plugins run in order and the first block stops the chain. It runs at once, with the
+  player lent to its slot as for a gun hook (§7.5), so the API reaches it.
+* `kill_scored(&KillInfo)` (#197): every death `PlayerKilled` (0x895e4, `rules::scoring::
+  player_killed_core`) scores, kills, suicides and deaths by the world alike, once the frags,
+  `DeathMsg` and `ScoreInfo` went out. `KillInfo` carries the killer (the victim for a suicide, 0
+  for no player), victim, inflictor, the frags the killer got (`points`, after the double kill,
+  specialist and spree; -1 a team kill), the blow's TS weapon id (by the killer's own hand
+  `own_weapon_name`'s choice as an id, 0 for kung fu; a thrown blade's id; 24 a grenade; else
+  -1), the `DeathMsg` name, both sprees, and `ts_plugin_api::kill` bits: the log tags
+  (`victims_weapon`, `stopped_fury`, `killed_specialist`, `double_kill`, `diving`, `sliding`,
+  `killed_the_one`, the spree award), the kung-fu frag, and `glast_headshot` /
+  `glast_closecombat` / `glast_coldcock`. It is deferred like `on_kill`, so a plugin gets it after
+  the victim's `Killed` (its `TSHealth` 0 included), also when the scoring itself was deferred
+  for a killer out of reach. A teamplay team change's death (`death_suppressed`) isn't scored and
+  has none. TS 2.1 mode scores with its own `PlayerKilled` and reports nothing (#198).
+
+**Listeners** (version 5): `add_listener(&Plugin)` registers a descriptor for a plugin the server
+didn't load (a metamod plugin, such as `tsmod-amxx-rs`'s tsx). The server checks its `size` and
+`api_version`, copies it and calls it like a loaded plugin's, after the loaded plugins, in
+registration order, until `remove_listener(handle)`. Events already past (`game_init`, a map's
+`precache`) are called when they come round again.
 
 The player callbacks the game reaches inside a player's own dispatch (spawn, damage, death,
-kill) are **deferred** until every player they name is back in its slot (`world::defer`), so a
-callback can use the whole API on them. The others run at once; `sound` can run inside another
-entity's call (the API's snapshot rules apply).
+kill, stunt, power-up) are **deferred** until every player they name is back in its slot
+(`world::defer`), so a callback can use the whole API on them. The others run at once; `sound`
+can run inside another entity's call (the API's snapshot rules apply).
 
 ## 2. Rules: snapshots and deferral
 
@@ -193,8 +239,13 @@ looks like this:
 
 * At least `MIN_PRIVATE_SIZE` = 0x80 bytes. Every engine zeroes it (FWGS and ReHLDS `Mem_Calloc`,
   HLDS `calloc`).
-* The slab tag (8 bytes) is at `PRIVATE_TAG_OFFSET` = 8. The words at 0 and 0x60, where
-  hamsandwich's TS gamedata reads the vtable on Windows and Linux, stay zero.
+* The slab tag (8 bytes) is at `PRIVATE_TAG_OFFSET` = 8. The vtable word, where hamsandwich's TS
+  gamedata reads it (0 on Windows, 0x60 on Linux), stays zero.
+* Since version 5, on 32-bit builds, `pev` at TS's place (`goldsrc::edict::PEV_OFFSET`: 4 on
+  Windows, 0 on Linux, the gamedata's "pev"), so code that turns an object pointer into an
+  entity (fakemeta's `get_pdata_ent`, hamsandwich's `get_pdata_cbase`) finds it. The block's size
+  is recorded (`goldsrc::edict::private_size`, the API's `private_size`), and the game's word
+  accesses (`read_private_u32` / `write_private_u32`) are bounded by it and never touch the tag.
 * Players get `PLAYER_PRIVATE_SIZE` = 0x3000. That covers `CBasePlayer` (0xb8c in `ts_i386.so`,
   0xb78 in `mp.dll`) and `mp.dll`'s `CBot` (0x25f0, `GetClassPtr<CBot>` 0x1006c240), plus the
   5-int Linux shift.
@@ -203,11 +254,44 @@ looks like this:
 * Thrown knives get `KNIFE_PRIVATE_SIZE` = 0x100. `CTSKnife` is 0xa4 bytes, and the stock `tsx`
   module read int 31 (35 on Linux).
 
-What plugins write there is **ignored by the game**: nothing reads the padding, so
-`set_pdata_int` on a TS offset does nothing (it no longer corrupts the heap), and `get_pdata_*`
-reads 0 or whatever a plugin last wrote. Use the plugin API for TS state. Writes to bytes 8..16
-would break the entity's link to its object; no TS offset a plugin has a reason to write lies
-there (it is `CBaseEntity`'s first members after `pev`/the vtable).
+Outside the mirrored fields (§4.1) what plugins write there is **ignored by the game**, and
+`get_pdata_*` reads 0 or whatever a plugin last wrote. Use the plugin API for TS state. Writes to
+bytes 8..16 would break the entity's link to its object; no TS offset a plugin has a reason to
+write lies there (it is `CBaseEntity`'s first members after `pev`/the vtable).
+
+### 4.1 The mirror (version 5)
+
+Plugins for TS 3.0 read a few members through fakemeta and hamsandwich (tsmod-amxx-rs#10; a
+survey of `ref/ts-plugins`: `tsxaddon.inc`'s `ts_setuserammo` and its copies in `ARP_TS`,
+`ARP_Items` and `ARP_NPCs` write the `weapon_tsgun`'s reserve per ammo type and its clip; `ARP_CS`
+reads `m_pActiveItem` at Counter-Strike's offset, in code it disables). The server writes them
+into the blocks at TS's offsets for its platform (`pdata::Layout::HOST`: `ts_i386.so`'s on
+Linux, `mp.dll`'s on Windows, bots.md §14.2.1 / §14.3.1), and takes some writes back:
+
+| Entity | Member | `ts_i386.so` | `mp.dll` (int) | Plugin writes |
+|---|---|---|---|---|
+| every block | `pev` (32-bit builds) | 0 | 4 (1) | |
+| player | `m_pActiveItem`: its `weapon_tsgun`, a deployed `cycler_weapon`, else NULL (32-bit builds) | 0xa10 | 0x9fc (639) | overwritten |
+| `weapon_tsgun` | `m_pPlayer` (32-bit builds) | 0x80 | 0x70 (28) | overwritten |
+| | `m_iId` = 16 | 0x88 | 0x78 (30) | overwritten |
+| | `m_iClip`: the gun in hand's clip | 0xb4 | 0xa4 (41) | **taken**: the current weapon's clip (not kung fu) |
+| | current weapon id | 0xc8 | 0xb8 (46) | overwritten |
+| | reserve of ammo type *t* (0..15) | 0xd4 + 4*t* | 0xc4 + 4*t* (49 + *t*) | **taken**, cut to 0..32767 |
+| | weapon *id*'s record (0..37, 0x38 bytes): owned / ammo type / fire mode bytes | 0x114 + 0x38*id* | 0x104 + 0x38*id* | overwritten |
+| | its clip | record + 4 | | **taken** for an owned weapon, cut to 0..255 (the akimbo split and twin as `set_weapon_ammo`) |
+| | its owned / switched-on attachments | record + 0x10 / 0x14 | | overwritten |
+
+`pdata::sync` takes the writes back (a word that differs from what the mirror last wrote, for
+the same gun entity) and writes the mirror anew: at the end of the player's PostThink, at every
+StartFrame (players in their slots), and around the API's setters. So reads are up to a frame
+old, as `player_info`'s snapshot, and a write takes effect within a frame; the HUD follows on the
+next update. Pointers aren't mirrored on 64-bit builds (no AMX Mod X there).
+
+The offsets are TS's: a plugin's Linux shift must match. fakemeta's default `linuxdiff` of 5 ints
+fits `CBasePlayer` (0xa10 - 0x9fc), but `CTSGun` is shifted by 4 ints (0x10). `tsxaddon.inc`
+uses `mp.dll`'s offsets (reserve = int 49 + type; `m_iClip` = int 41) with the default shift, so
+on Linux it lands one int off, as it did on TS's own Linux server; its ints 839 and 850 are past
+the end of a 3.0 `CTSGun`. The `tsmod-amxx-rs` modules ship `ts_setuserammo` as a native instead.
 
 **Stock hamsandwich is unsupported.** The port's entities have no C++ vtables. `RegisterHam`
 fails cleanly with `[HAMSANDWICH] Failed to retrieve vtable for "player"` and a native error in
@@ -239,10 +323,29 @@ block's size and layout don't matter to them.
 * `set_free_slots` doesn't change the weapons carried. The speed follows the new value as TS's
   `GetSpeedBySlots` computes it (330 for The One or an empty inventory).
 * `set_weapon_ammo` on a grenade or blade stack sets the count but not the free weight it takes.
+* Private-data mirror (§4.1): a write to `m_iClip` sets the gun in hand's clip, where in TS it only
+  changed the copy `GetWeaponData` reads; a write to any other mirrored word that isn't taken
+  back is lost at the next sync, where TS kept it (and might have read it). A write is applied up
+  to a frame late, and a write the game's own change overtook in that frame wins over it.
+* `melee_attack` is called for TS 3.0's kung fu only (not the stock hit, the blades or the
+  stunts' jump and backflip kicks, nor a ruleset's own `CCombatAttack`, such as TS 2.1 mode's, #198). A
+  blocked or changed move isn't predicted by the client, which plays its own swing.
+* `player_stunt`'s kinds are the port's reading of TS 3.0's moves (`TSState` no longer carries
+  them).
 * Entity hooks: §7.6.
 
 ## 6. Tests
 
+* Version 5 (`cargo test`): the interface name (`004` refused); the mirror's offsets against the
+  decomp (both layouts, `tsxaddon.inc`'s ints), the words it writes, the writes it takes back
+  (reserves and clips with their ranges, `m_iClip`, a weapon not owned, the read-only words
+  rewritten) and a new gun entity starting over (`pdata::tests`); the melee chain (each plugin
+  sees the last one's values, the first block stops it, bad values ignored) and listener
+  handles (`plugins::tests`); `CCombatAttack`'s hook seeing the move's delay and damage, its
+  changes reaching the hit and timers, and a block leaving only the delay
+  (`shared` `weapons::gun::tests::kungfu_melee_attack_hook`); the scored kill's weapon id, tag
+  bits and name (`rules::scoring::kill_report_tests`). The callbacks and the mirror in a
+  live server are `tsmod-amxx-rs`'s e2e (`tsx_e2e.sma`, `ham_e2e.sma`).
 * Version 4 (`cargo test`): the interface name, the team scores' order and unnamed teams, every
   new `Ham` number and signature (and `TS_GiveSlowMul`'s deviation), which classes the gun's
   functions and the queries fire for, and the gun's virtual calls reaching the host's hook points
@@ -271,7 +374,8 @@ block's size and layout don't matter to them.
 * AMX Mod X 1.10 on ReHLDS 3.15 with Metamod-R, Linux and Windows (`ref/amxx-testenv`,
   `ham_test.sma` and `pdata_test.sma`): `RegisterHam(Ham_Spawn, "player")` fails cleanly on both
   (previously a crash on Windows). `get_pdata_int(id, 100)` and `get_pdata_int(id, 0)` read 0
-  (previously heap garbage and the tag). Both servers keep running with their bots.
+  (previously heap garbage and the tag). Both servers keep running with their bots. (Version 4
+  results; since version 5 int 0 is `pev` on Linux, §4.)
 * Export lists: `nm -D --defined-only` of `ts_i386.so` / `ts_amd64.so` gains only
   `CreateInterface`. `objdump -p` of `mp.dll` / `mp_amd64.dll` is unchanged. Version 2 adds no
   export.
@@ -538,3 +642,16 @@ arguments and results, except where the table says otherwise:
 | `Ham_TS_GiveSlowMul`: `Void_Void`, nothing returned | `Float_Void`: `max(fuser1, 0.01)` |
 | `Item_*` / `Weapon_*`, `TS_Weapon_AlternateAttack`: `UNSUPPORTED` | on `weapon_tsgun` (§7.5) |
 | — | new: `objectives` and `ObjectiveInfo` (`OBJECTIVE_NAME_LEN`), `create_entity`, `entity_key_value`, `spawn_entity` (after `game_state`), `MAX_TEAMS` |
+
+## 10. Version 4 → 5
+
+Version 5 (tsmod-amxx-rs#8 and #10, #197) is a break: `CreateInterface` answers only
+`TSRS_PluginApi005` and `Plugin::api_version` must be 5. Every version-4 entry is still there,
+with the same arguments and results:
+
+| Version 4 | Version 5 |
+|---|---|
+| `TSRS_PluginApi004`, `version` 4 | `TSRS_PluginApi005`, `version` 5 |
+| `Plugin` ends with `ammo_changed` | gains `player_stunt`, `player_powerup`, `melee_attack`, `kill_scored` (§1.3) at the end; `KillInfo`, `WEAPON_NAME_LEN`, the `kill` bits |
+| — | new, last in the table: `add_listener`, `remove_listener` (§1.3), `private_size` (§4); the `stunt` kinds |
+| private data: the tag, zeroes elsewhere | `pev` and the mirror (§4.1) |

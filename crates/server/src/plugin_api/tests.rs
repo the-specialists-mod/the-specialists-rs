@@ -39,8 +39,9 @@ impl Host for Fake {
 
 #[test]
 fn the_interface_name_is_the_tables() {
-    assert!(interface(c"TSRS_PluginApi004"));
+    assert!(interface(c"TSRS_PluginApi005"));
     // Each version breaks the table: plugins built for an older one ask for its name and get NULL.
+    assert!(!interface(c"TSRS_PluginApi004"));
     assert!(!interface(c"TSRS_PluginApi003"));
     assert!(!interface(c"TSRS_PluginApi001"));
     assert!(!interface(c"TSRS_PluginApi002"));

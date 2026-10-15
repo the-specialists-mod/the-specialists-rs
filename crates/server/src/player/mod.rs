@@ -78,6 +78,8 @@ pub struct Player {
     pub death_think: bool,
     /// `m_rgItems[ITEM_SECURITY]` (+0x838): `item_security` pickups. Nothing reads it but the save.
     pub security_cards: i32,
+    /// Port addition: what the private-data mirror last wrote into the gun's block (`pdata`).
+    pub pdata: crate::pdata::Mirror,
 }
 
 impl Entity for Player {
@@ -216,7 +218,9 @@ impl Player {
             impulse::update_player_sound(self, cx);
         }
         crate::rules::post_think(self, cx);
-        // Port addition: what server plugins read while this player is out of the slab.
+        // Port addition: what server plugins read while this player is out of the slab, and the
+        // private-data mirror (with the plugins' writes taken back first).
+        crate::pdata::sync(self, cx.edict);
         crate::plugin_api::refresh(self, cx.edict);
     }
 

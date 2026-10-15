@@ -56,7 +56,8 @@ pub fn add_gun_item(p: &mut Player, cx: &mut Cx, bits: u32) -> bool {
     host::with_host(p, cx, |gun, h| gun.add_item(bits, h))
 }
 pub use projectiles::{
-    SlowPhysics, bounce_drops_loudly, bounce_ground_damping, bounce_speeds, give_slow_mul, thrower_time_scale, thrown_knife_description,
+    SlowPhysics, bounce_drops_loudly, bounce_ground_damping, bounce_speeds, give_slow_mul, thrower_time_scale, thrown_blade_id,
+    thrown_knife_description,
 };
 
 /// Free inventory slots at spawn (`TSInit`: `pl+0x548 = 81`).

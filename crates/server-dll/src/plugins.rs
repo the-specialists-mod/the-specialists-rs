@@ -188,6 +188,39 @@ impl PluginHooks for Loaded {
             f(player, weapon, clip, ammo);
         }
     }
+    fn player_stunt(&self, player: i32, stunt: i32) {
+        if let Some(f) = self.desc.player_stunt {
+            f(player, stunt);
+        }
+    }
+    fn player_powerup(&self, player: i32, powerup: i32) {
+        if let Some(f) = self.desc.player_powerup {
+            f(player, powerup);
+        }
+    }
+    fn kill_scored(&self, kill: &ts_plugin_api::KillInfo) {
+        if let Some(f) = self.desc.kill_scored {
+            // SAFETY: `kill` is a `KillInfo` that lives for the call.
+            unsafe { f(kill) };
+        }
+    }
+    fn wants_melee_attack(&self) -> bool {
+        self.desc.melee_attack.is_some()
+    }
+    fn melee_attack(&self, player: i32, time: &mut f32, damage: &mut f32) -> bool {
+        let Some(f) = self.desc.melee_attack else { return false };
+        // SAFETY: `time` and `damage` are exclusive floats that live for the call.
+        unsafe { f(player, time, damage) != 0 }
+    }
+}
+
+/// `PluginApi::add_listener` after its pointer check: a metamod plugin's descriptor, called as a
+/// loaded plugin's is. `INVALID` for a wrong size or version.
+pub fn add_listener(desc: Plugin) -> c_int {
+    if desc.size as usize != size_of::<Plugin>() || desc.api_version != ts_plugin_api::VERSION {
+        return ts_plugin_api::INVALID;
+    }
+    reg::add_listener(Rc::new(Loaded { desc }))
 }
 
 /// `PluginApi::register_bot_backend` after its pointer checks.

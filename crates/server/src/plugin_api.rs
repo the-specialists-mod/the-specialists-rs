@@ -137,6 +137,8 @@ impl Change {
 /// Makes `c` on the player being dispatched, then refreshes its snapshot. False when the change
 /// turned out impossible (a weapon the player doesn't own).
 fn apply(p: &mut Player, cx: &mut Cx, c: Change) -> bool {
+    // A plugin's private-data writes came before this call: take them back first.
+    crate::pdata::sync(p, cx.edict);
     let done = match c {
         Change::Cash(cash) => {
             p.cash = cash;
@@ -167,6 +169,7 @@ fn apply(p: &mut Player, cx: &mut Cx, c: Change) -> bool {
         }
         Change::WeaponAmmo { id, clip, ammo } => crate::weapons::set_weapon_ammo(&mut p.inv, id, clip, ammo),
     };
+    crate::pdata::sync(p, cx.edict);
     refresh(p, cx.edict);
     done
 }
@@ -374,6 +377,8 @@ pub fn start_frame() {
     for player in 1..=engine().max_clients() {
         let Some(uid) = Game.user_id(player) else { continue };
         let e = Game::edict(player);
+        // The private-data mirror (`pdata`): plugins' writes since the player's PostThink.
+        crate::player::with_player(e, |p, cx| crate::pdata::sync(p, cx.edict));
         if let Some((info, inv)) = world::with_lent::<Player, _>(e, |p| (snapshot(p, e.v()), inventory(p))) {
             SNAPSHOTS.0.borrow_mut().put(player, uid, info);
             INVENTORIES.0.borrow_mut().put(player, uid, inv);
@@ -504,6 +509,21 @@ pub fn projectile_owner(entity: c_int) -> c_int {
         if rules::is_player(o) { o } else { std::ptr::null_mut() }
     });
     if owner.is_null() { 0 } else { eng.index_of(owner) }
+}
+
+/// `PluginApi::private_size` (version 5): the bytes of a game entity's private block, `NOT_PLAYER`
+/// for an index that is out of range, free, or has no game private data (as
+/// [`projectile_owner`]).
+pub fn private_size(entity: c_int) -> c_int {
+    let eng = engine();
+    if entity < 0 || entity >= eng.globals().maxEntities {
+        return NOT_PLAYER;
+    }
+    let e = eng.entity_of_index(entity);
+    if e.is_null() || e.is_free() || !e.has_private_data() {
+        return NOT_PLAYER;
+    }
+    c_int::try_from(goldsrc::edict::private_size(e)).unwrap_or(c_int::MAX)
 }
 
 #[cfg(test)]
