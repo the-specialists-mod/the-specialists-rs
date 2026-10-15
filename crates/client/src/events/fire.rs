@@ -385,8 +385,8 @@ fn fire_pump(a: &Args) {
 }
 
 /// `EV_TS_FireAkimbo` (`0x1003f090`): `b1` selects the gun (attachment 0 when set, 2 when not:
-/// `0x1003f55c..0x1003f576`, `0x1004050e`); linked fires both, offset +-5 along right, the second
-/// batch with `seed + 0x21`. A linked shot flashes at attachments 0 and 2 (`0x1003f4b8`,
+/// `0x1003f55c..0x1003f576`, `0x1004050e`); linked fires both, the first at +5 along right with the seed
+/// (`0x100409be`), the second at -5 with `seed + 0x21` (`0x10040a66`). A linked shot flashes at attachments 0 and 2 (`0x1003f4b8`,
 /// `0x1003f579`) but smokes once, at the `b1` gun (`0x1003f5cc..0x1003f70b`). Akimbo has no
 /// pellet spray.
 fn fire_akimbo(a: &Args, linked: bool) {
@@ -431,7 +431,7 @@ fn fire_akimbo(a: &Args, linked: bool) {
     }
     fire_sound(a, s.id, s.silenced);
     let src = a.gun_position();
-    // The guns' offsets along `v_right` are the ruleset's (TS 3.0: -5 and +5 linked, none for one).
+    // The guns' offsets along `v_right` are the ruleset's (TS 3.0: +5 then -5 linked, none for one).
     let (first, second) = crate::gameplay::hud_gun_rules().akimbo_event_offsets(linked, a.b1 != 0);
     let at = |off: f32| if off == 0.0 { src } else { v::ma(src, off, s.right) };
     bullets_for(a, &s, at(first), a.b2, a.f1, a.f2);

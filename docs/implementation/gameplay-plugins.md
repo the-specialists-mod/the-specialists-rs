@@ -270,7 +270,7 @@ The hooks so far:
 | `GunRules` | `decay_spread(gun, decay) -> bool` | `Gun::decay_spread` by the step, while alive; true: the client's crosshair copy (`state.spread`) takes the penalty on every first prediction (the server ignores the value) | server `weapons/mod.rs` `pre_think`, client `post_think` (first prediction) |
 | `GunRules` | `pellet_offset(seed, i, bot_random)` | `None`: the polar pattern as each side computes it | server `weapons/fire.rs` `shoot_bullets`, client `events/fire.rs` `fire_bullets` |
 | `GunRules` | `pellet_dir(side, aim, right, up, spread, offset)` | `spread::pellet_dir`: the direction rounded as the side's TS build does (`PelletSide::Server(arith)`: mp.dll or `ts_i386.so`; `Client`: `client.dll`), issue #161 | the same two |
-| `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked -5/+5, one gun none | client `events/fire.rs` `fire_akimbo` |
+| `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked +5 (seed) / -5 (seed + 0x21), one gun none | client `events/fire.rs` `fire_akimbo` |
 | `GunRules` | `predicted()` | `Predicted::ALL` | `weapons/gun.rs` `weapon_post_frame` (client prediction only) |
 | `GunRules` | `cancel_runs_frame_in_reload(info)` | `info.stock != 0` | `weapons/gun.rs` `post_frame_ready` |
 | `GunRules` | `better_weapon(gun, excluded)` | `Gun::better_weapon_core`: the first owned id in `g_iWeaponPriority` | `weapons/gun.rs` `get_better_weapon` (`remove_weapon`, the server's `weapons::get_better_weapon` for bots) |
