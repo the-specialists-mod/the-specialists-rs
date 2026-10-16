@@ -86,6 +86,40 @@ pub fn style() -> StudioStyle {
     crate::gameplay::current().studio_style()
 }
 
+/// Which `client.dll` build's floating-point forms the renderer and the view kick replicate
+/// (`ClientRules::float_form`). Both builds run the x87 at 53-bit precision (modelled as `f64`);
+/// they differ in where a value is rounded to a float and in how a constant divisor is applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatForm {
+    /// An optimised build (TS 3.0): a division by a constant is a multiply by its double
+    /// reciprocal (`×10`, `×5`, `×(1/255)`, `×(1/3)`), and a value stays on the x87 stack until it
+    /// is stored to a float.
+    Optimised,
+    /// An unoptimised build (TS 2.1): the source's divisions (`/0.1`, `/0.2`, `/255.0`, `/3.0`),
+    /// and every statement's result stored to its float variable.
+    Unoptimised,
+}
+
+/// The current ruleset's float forms.
+pub fn float_form() -> FloatForm {
+    crate::gameplay::current().float_form()
+}
+
+/// `0x10079e68`: the double TS 3.0 multiplies by instead of dividing by 255.
+const INV255: f64 = 1.0 / 255.0;
+/// `0x1007d518` (3.0), `0x10270240` (2.1): `M_PI / 180` as a double.
+const DEG2RAD: f64 = std::f64::consts::PI / 180.0;
+
+impl FloatForm {
+    /// `x / 255` as the build applies it (`fmul 0x10079e68` or `fdiv 255.0`).
+    fn by255(self, x: f64) -> f64 {
+        match self {
+            FloatForm::Optimised => x * INV255,
+            FloatForm::Unoptimised => x / 255.0,
+        }
+    }
+}
+
 const STUDIO_RENDER: i32 = 1;
 const STUDIO_EVENTS: i32 = 2;
 const MAX_BONES: usize = es::MAX_BONES;
@@ -151,6 +185,8 @@ struct Renderer {
     vm_prevframe: f32,
     /// The ruleset's choices, read at the start of each engine draw call.
     style: StudioStyle,
+    /// The ruleset's float forms, read with `style`.
+    form: FloatForm,
 }
 
 impl Default for Renderer {
@@ -179,6 +215,7 @@ impl Default for Renderer {
             vm_frame_count: 0,
             vm_prevframe: 0.0,
             style: StudioStyle::ALL,
+            form: FloatForm::Optimised,
         }
     }
 }
@@ -205,18 +242,20 @@ pub fn init() {
 
 /// `R_StudioDrawModel` (`0x1001f3d0`) -> `StudioDrawModel`.
 pub fn draw_model(flags: i32) -> bool {
-    let style = style();
+    let (style, form) = (style(), float_form());
     with(|r| {
         r.style = style;
+        r.form = form;
         r.draw_model(flags)
     })
 }
 
 /// `R_StudioDrawPlayer` (`0x1001f3b0`) -> `StudioDrawPlayer`.
 pub fn draw_player(flags: i32, player: &mut entity_state_s) -> bool {
-    let style = style();
+    let (style, form) = (style(), float_form());
     with(|r| {
         r.style = style;
+        r.form = form;
         r.draw_player(flags, player)
     })
 }
@@ -770,7 +809,7 @@ impl Renderer {
             e.curstate.sequence = 0;
         }
         if let Some(seq) = m.seq(e.curstate.sequence) {
-            let blend = player_blend(&seq, &mut e.angles[0]);
+            let blend = player_blend(self.form, &seq, &mut e.angles[0]);
             e.latched.prevangles[0] = e.angles[0];
             e.curstate.blending[0] = blend;
             e.latched.prevblending[0] = blend;
@@ -861,17 +900,20 @@ impl Renderer {
         es::set_rotation(&rot);
     }
 
-    /// `StudioEstimateInterpolant` (`0x10030c40`).
+    /// `StudioEstimateInterpolant` (3.0 `0x10030c40`, 2.1 `0x10064520`): `(time - animtime) / 0.1`
+    /// capped at 2 once `animtime` has moved 0.01 past `prevanimtime` (the double sum). 3.0
+    /// multiplies by 10 and returns the x87 value (its callers store it to a float); 2.1 divides
+    /// and stores first. A NaN test passes in 3.0 (`test ah,0x41; je`) and fails in 2.1
+    /// (`test ah,0x41; jp`); a NaN result isn't capped in either.
     fn estimate_interpolant(&self) -> f32 {
         let e = self.ent();
-        let mut dadt = 1.0;
-        if self.do_interp && e.curstate.animtime >= e.latched.prevanimtime + 0.01 {
-            dadt = (((self.time - e.curstate.animtime as f64) / 0.1) as f32).min(2.0);
+        if !self.do_interp {
+            return 1.0;
         }
-        dadt
+        interpolant(self.form, self.time, e.curstate.animtime, e.latched.prevanimtime)
     }
 
-    /// `StudioEstimateFrame` (`0x10030f80`).
+    /// `StudioEstimateFrame` (3.0 `0x10030f80`, 2.1 `0x10064b00`): the SDK's, in doubles.
     fn estimate_frame(&self, seq: &SeqDesc) -> f64 {
         let e = self.ent();
         let dfdt = if self.do_interp && self.time >= e.curstate.animtime as f64 {
@@ -882,18 +924,21 @@ impl Renderer {
         let n = seq.numframes as f64;
         let mut f = if seq.numframes <= 1 { 0.0 } else { e.curstate.frame as f64 * (n - 1.0) / 256.0 };
         f += dfdt;
+        // The `< 0` tests: 3.0's `test ah,1` (`0x1003101f`, `0x1003105e`) also takes a NaN, 2.1's
+        // `test ah,5; jp` (`0x10064c0d`, `0x10064c59`) doesn't.
+        let below = |f: f64| f < 0.0 || (self.form == FloatForm::Optimised && f.is_nan());
         if seq.flags & model::STUDIO_LOOPING != 0 {
             if seq.numframes > 1 {
                 f -= (f / (n - 1.0)).trunc() * (n - 1.0);
             }
-            if f < 0.0 {
+            if below(f) {
                 f += n - 1.0;
             }
         } else {
             if f >= n - 1.001 {
                 f = n - 1.001;
             }
-            if f < 0.0 {
+            if below(f) {
                 f = 0.0;
             }
         }
@@ -924,7 +969,7 @@ impl Renderer {
             let e = self.ent();
             (e.curstate.controller, e.latched.prevcontroller, e.mouth.mouthopen)
         };
-        let adj = bone_adj(&m, dadt, &c1, &c2, mouth);
+        let adj = bone_adj(&m, self.form, dadt, &c1, &c2, mouth);
         sample_pose(&m, pose, seq, anim, f, &adj);
     }
 
@@ -979,20 +1024,22 @@ impl Renderer {
             let e = self.ent();
             (e.curstate.blending, e.latched)
         };
-        let blend = |cur: u8, prev: u8| (cur as f32 * dadt + prev as f32 * (1.0 - dadt)) / 255.0;
-        let s0 = blend(blending[0], l.prevblending[0]);
-        let s1 = blend(blending[1], l.prevblending[1]);
+        // `(cur·dadt + prev·(1 − dadt)) / 255` on the x87, stored as the float argument
+        // (3.0 `0x1003115c..0x10031181`, 2.1 `0x10064e16..0x10064e4c`).
+        let form = self.form;
+        let s0 = seq_blend(form, blending[0], l.prevblending[0], dadt);
+        let s1 = seq_blend(form, blending[1], l.prevblending[1], dadt);
         let mut pose = Pose::default();
         self.calc_blended(&mut pose, model, &seq, f as f32, [s0, s1]);
 
-        if self.do_interp && l.sequencetime != 0.0 && (l.sequencetime + 0.2) as f64 > self.time && l.prevsequence < m.numseq() {
+        if self.do_interp && l.sequencetime != 0.0 && l.sequencetime as f64 + 0.2 > self.time && l.prevsequence < m.numseq() {
             // blend from the last sequence
             let prev_seq = l.prevsequence.max(0);
             if let Some(pseq) = m.seq(prev_seq) {
                 let mut prev = Pose::default();
-                let pb = [l.prevseqblending[0] as f32 / 255.0, l.prevseqblending[1] as f32 / 255.0];
+                let pb = l.prevseqblending.map(|b| form.by255(b as f64) as f32);
                 self.calc_blended(&mut prev, model, &pseq, l.prevframe, pb);
-                let s = 1.0 - ((self.time - l.sequencetime as f64) / 0.2) as f32;
+                let s = prev_seq_weight(form, self.time, l.sequencetime);
                 self.slerp_bones(&mut pose, &prev, s);
             }
         } else {
@@ -1191,8 +1238,50 @@ impl Renderer {
     }
 }
 
-/// `StudioCalcBoneAdj` (`0x10030140`): controller values for this frame.
-fn bone_adj(m: &Studio, dadt: f32, c1: &[u8; 4], c2: &[u8; 4], mouth: u8) -> [f32; 8] {
+/// The `StudioEstimateInterpolant` value with interpolation on: see
+/// [`Renderer::estimate_interpolant`].
+fn interpolant(form: FloatForm, time: f64, animtime: f32, prevanimtime: f32) -> f32 {
+    let (animtime, prev) = (animtime as f64, prevanimtime as f64 + 0.01);
+    let moved = match form {
+        FloatForm::Optimised => !(prev > animtime),
+        FloatForm::Unoptimised => prev <= animtime,
+    };
+    if !moved {
+        return 1.0;
+    }
+    let x = match form {
+        FloatForm::Optimised => (time - animtime) * 10.0,
+        FloatForm::Unoptimised => ((time - animtime) / 0.1) as f32 as f64,
+    };
+    if x > 2.0 { 2.0 } else { x as f32 }
+}
+
+/// A sequence blend for `StudioSetupBones`: `(cur·dadt + prev·(1 − dadt)) / 255` on the x87,
+/// stored as the float argument (3.0 `0x1003115c..0x10031181`, 2.1 `0x10064e16..0x10064e4c`).
+fn seq_blend(form: FloatForm, cur: u8, prev: u8, dadt: f32) -> f32 {
+    form.by255(cur as f64 * dadt as f64 + prev as f64 * (1.0 - dadt as f64)) as f32
+}
+
+/// The weight of the previous sequence's pose: `1 − (time − sequencetime)·5` (3.0 `0x1003146d`)
+/// or `1 − (time − sequencetime) / 0.2` (2.1 `0x1006526f`), stored as a float.
+fn prev_seq_weight(form: FloatForm, time: f64, sequencetime: f32) -> f32 {
+    let dt = time - sequencetime as f64;
+    (match form {
+        FloatForm::Optimised => 1.0 - dt * 5.0,
+        FloatForm::Unoptimised => 1.0 - dt / 0.2,
+    }) as f32
+}
+
+/// `StudioCalcBoneAdj` (3.0 `0x10030140`, 2.1 `0x10062e70`): controller values for this frame.
+/// The blend runs on the x87 from the float `dadt`; 3.0 keeps the value there through the clamp,
+/// the lerp and the degrees-to-radians multiply (`×(1/255)`), 2.1 stores it to a float after each
+/// statement (`/255.0`, `/64.0`). Both multiply by the double `M_PI / 180`.
+fn bone_adj(m: &Studio, form: FloatForm, dadt: f32, c1: &[u8; 4], c2: &[u8; 4], mouth: u8) -> [f32; 8] {
+    let opt = form == FloatForm::Optimised;
+    // A statement's result: kept (3.0) or stored to a float (2.1).
+    let st = |x: f64| if opt { x } else { x as f32 as f64 };
+    let (d, d1) = (dadt as f64, 1.0 - dadt as f64);
+    let lerp = |v: f64, c: &model::BoneController| st((1.0 - v) * c.start as f64 + v * c.end as f64);
     let mut adj = [0.0f32; 8];
     for j in 0..m.numbonecontrollers().min(adj.len()) {
         let c = m.bone_controller(j);
@@ -1204,21 +1293,28 @@ fn bone_adj(m: &Studio, dadt: f32, c1: &[u8; 4], c2: &[u8; 4], mouth: u8) -> [f3
                     // SDK quirk kept by TS: the wrapped case indexes by controller number `j`.
                     let a = (c1.get(j).copied().unwrap_or(0) as i32 + 128) % 256;
                     let b = (c2.get(j).copied().unwrap_or(0) as i32 + 128) % 256;
-                    ((a as f32 * dadt) + (b as f32 * (1.0 - dadt)) - 128.0) * (360.0 / 256.0) + c.start
+                    st(((a as f64 * d + b as f64 * d1) - 128.0) * (360.0 / 256.0) + c.start as f64)
                 } else {
-                    (c1[i] as f32 * dadt + c2[i] as f32 * (1.0 - dadt)) * (360.0 / 256.0) + c.start
+                    st((c1[i] as f64 * d + c2[i] as f64 * d1) * (360.0 / 256.0) + c.start as f64)
                 }
             } else {
-                let v = ((c1[i] as f32 * dadt + c2[i] as f32 * (1.0 - dadt)) / 255.0).clamp(0.0, 1.0);
-                (1.0 - v) * c.start + v * c.end
+                let v = st(form.by255(c1[i] as f64 * d + c2[i] as f64 * d1));
+                // 3.0 `0x10030288`: below 0 or NaN becomes 0 (`test ah,1`); 2.1 `0x10063014`: only
+                // below 0 (`test ah,5; jp`). Above 1 becomes 1 in both.
+                let v = if if opt { !(v >= 0.0) } else { v < 0.0 } { 0.0 } else { v };
+                let v = if v > 1.0 { 1.0 } else { v };
+                lerp(v, &c)
             }
         } else {
-            let v = (mouth as f32 / 64.0).min(1.0);
-            (1.0 - v) * c.start + v * c.end
+            let v = match form {
+                FloatForm::Optimised => mouth as f64 * (1.0 / 64.0),
+                FloatForm::Unoptimised => (mouth as f64 / 64.0) as f32 as f64,
+            };
+            lerp(if v > 1.0 { 1.0 } else { v }, &c)
         };
         match c.kind & model::STUDIO_TYPES {
-            model::STUDIO_XR | model::STUDIO_YR | model::STUDIO_ZR => adj[j] = value.to_radians(),
-            model::STUDIO_X | model::STUDIO_Y | model::STUDIO_Z => adj[j] = value,
+            model::STUDIO_XR | model::STUDIO_YR | model::STUDIO_ZR => adj[j] = (value * DEG2RAD) as f32,
+            model::STUDIO_X | model::STUDIO_Y | model::STUDIO_Z => adj[j] = value as f32,
             _ => {}
         }
     }
@@ -1284,20 +1380,41 @@ fn sample_pose(m: &Studio, pose: &mut Pose, seq: &SeqDesc, anim: Anim, f: f32, a
     }
 }
 
-/// `StudioPlayerBlend` (`0x10030890`): the pitch blend of the upper body (0..255) and the pitch
-/// left over for the model angles.
-fn player_blend(seq: &SeqDesc, pitch: &mut f32) -> u8 {
-    let blend = (*pitch * 3.0) as i32;
-    let (start, end) = (seq.blendstart[0], seq.blendend[0]);
-    if (blend as f32) < start {
-        *pitch -= start / 3.0;
+/// `StudioPlayerBlend` (3.0 `0x10030890`, 2.1 `0x10063d00`): the pitch blend of the upper body
+/// (0..255) and the pitch left over for the model angles. `pitch × 3.0f` is truncated unrounded;
+/// the leftover pitch is `pitch − start × (1/3)` (3.0, double reciprocal) or `pitch − start / 3.0`
+/// (2.1), and the blend `(blend − start)·255 / (end − start)`, all on the x87. 3.0 compares the
+/// blend after a float store and takes a NaN `start` as below it (`test ah,1`).
+fn player_blend(form: FloatForm, seq: &SeqDesc, pitch: &mut f32) -> u8 {
+    let blend = (*pitch as f64 * 3.0) as i32;
+    let (start, end) = (seq.blendstart[0] as f64, seq.blendend[0] as f64);
+    let b = match form {
+        FloatForm::Optimised => blend as f32 as f64,
+        FloatForm::Unoptimised => blend as f64,
+    };
+    let third = |x: f64| match form {
+        FloatForm::Optimised => x * (1.0 / 3.0),
+        FloatForm::Unoptimised => x / 3.0,
+    };
+    let below = match form {
+        FloatForm::Optimised => !(b >= start),
+        FloatForm::Unoptimised => b < start,
+    };
+    if below {
+        *pitch = (*pitch as f64 - third(start)) as f32;
         0
-    } else if (blend as f32) > end {
-        *pitch -= end / 3.0;
+    } else if b > end {
+        *pitch = (*pitch as f64 - third(end)) as f32;
         255
     } else {
         *pitch = 0.0;
-        if end - start < 0.1 { 127 } else { (255.0 * (blend as f32 - start) / (end - start)) as i32 as u8 }
+        let d = end - start;
+        let narrow = match form {
+            FloatForm::Optimised => !(d >= 0.1),
+            FloatForm::Unoptimised => d < 0.1,
+        };
+        // `__ftol` into the int TS stores; the caller keeps its low byte.
+        if narrow { 127 } else { ((b - start) * 255.0 / d) as i32 as u8 }
     }
 }
 
@@ -1393,12 +1510,12 @@ mod tests {
     fn blend_and_controllers() {
         let seq = SeqDesc { blendstart: [-90.0, 0.0], blendend: [90.0, 0.0], ..Default::default() };
         let mut pitch = 0.0;
-        assert_eq!(player_blend(&seq, &mut pitch), 127);
+        assert_eq!(player_blend(FloatForm::Optimised, &seq, &mut pitch), 127);
         let mut pitch = 40.0; // 120 > 90
-        assert_eq!(player_blend(&seq, &mut pitch), 255);
+        assert_eq!(player_blend(FloatForm::Optimised, &seq, &mut pitch), 255);
         assert_eq!(pitch, 10.0);
         let mut pitch = -10.0;
-        assert_eq!(player_blend(&seq, &mut pitch), 85);
+        assert_eq!(player_blend(FloatForm::Optimised, &seq, &mut pitch), 85);
         assert_eq!(pitch, 0.0);
         assert_eq!(torso_controller(0.0), 127);
         assert_eq!(torso_controller(120.0), 255);
@@ -1460,11 +1577,61 @@ mod tests {
         assert_eq!(pose.pos[0], [0.0, 6.0, 12.0], "x zeroed by the motion type, z = 7 + lerp(0, 10)");
 
         // Controller 0 fully on (255): +30 degrees of yaw.
-        let adj = bone_adj(&m, 1.0, &[255, 0, 0, 0], &[0; 4], 0);
+        let adj = bone_adj(&m, FloatForm::Optimised, 1.0, &[255, 0, 0, 0], &[0; 4], 0);
         assert!((adj[0] - 30f32.to_radians()).abs() < 1e-5);
         sample_pose(&m, &mut pose, &seq, anim, 0.0, &adj);
         let a = quaternion_angles(pose.q[0]);
         assert!((a[2] - 30f32.to_radians()).abs() < 1e-4, "{a:?}");
+    }
+
+    #[test]
+    fn float_forms_are_the_builds() {
+        use super::model::tests::run;
+        use super::model::{BoneController, STUDIO_ZR};
+        use FloatForm::{Optimised as O, Unoptimised as U};
+        let fb = f32::from_bits;
+        // `StudioEstimateInterpolant`: the 0.01 test is a double sum (3.0 `0x10030c5c`, 2.1
+        // `0x10064554`): `animtime` 1.01f is short of 1.0 + 0.01. ×10 / `/0.1` capped at 2.
+        assert_eq!([interpolant(O, 1.05, 1.01, 1.0), interpolant(U, 1.05, 1.01, 1.0)], [1.0, 1.0]);
+        assert_eq!([interpolant(O, 1.5, 1.2, 1.0), interpolant(U, 1.5, 1.2, 1.0)], [2.0, 2.0]);
+        // A NaN `prevanimtime` passes 3.0's test (`test ah,0x41; je`), not 2.1's (`jp`).
+        assert_eq!(interpolant(O, 1.15, 1.1, f32::NAN), ((1.15 - 1.1f32 as f64) * 10.0) as f32);
+        assert_eq!(interpolant(U, 1.15, 1.1, f32::NAN), 1.0);
+        // The blend sums on the x87 before one float store (3.0 `0x1003115c`, 2.1 `0x10064e16`);
+        // float products gave 0x3e994a87.
+        for form in [O, U] {
+            assert_eq!(seq_blend(form, 171, 68, fb(0x3da5_f368)).to_bits(), 0x3e99_4a86);
+            assert_eq!(prev_seq_weight(form, 437.2898315981447, fb(0x43da_914c)).to_bits(), 0x3e67_efed);
+        }
+        // `StudioPlayerBlend`: `pitch × 3.0f` truncated unrounded (−84.999996 → −84, the float
+        // product rounded to −85), then `(b − start)·255 / (end − start)` on the x87 (190, the
+        // float form 191).
+        let seq = SeqDesc { blendstart: [-90.0, 0.0], blendend: [90.0, 0.0], ..Default::default() };
+        let seq2 = SeqDesc { blendstart: [fb(0xc20b_28c7), 0.0], blendend: [fb(0x4297_7b71), 0.0], ..Default::default() };
+        for form in [O, U] {
+            assert_eq!(player_blend(form, &seq, &mut fb(0xc1e2_aaaa)), 8);
+            assert_eq!(player_blend(form, &seq2, &mut 16.0), 190);
+        }
+        // A NaN start is "below" in 3.0 only (`0x100308c5` `test ah,1`, the pitch becomes NaN);
+        // 2.1 (`0x10063d31` `jp`) goes on to the NaN `__ftol` (low byte 0) and zeroes the pitch.
+        let nan = SeqDesc { blendstart: [f32::NAN, 0.0], blendend: [90.0, 0.0], ..Default::default() };
+        let (mut p3, mut p2) = (1.0, 1.0);
+        assert_eq!([player_blend(O, &nan, &mut p3), player_blend(U, &nan, &mut p2)], [0, 0]);
+        assert!(p3.is_nan() && p2 == 0.0);
+        // `StudioCalcBoneAdj`: 3.0 keeps the value on the x87 through `×(1/255)`, the lerp and
+        // `× M_PI/180` (`0x10030261..0x10030307`); 2.1 stores it after `/255.0` and after the
+        // lerp (`0x1006300e`, `0x10063069`).
+        let b = Builder {
+            bones: vec![("Bip01", -1, [0.0; 6], [1.0; 6])],
+            seqs: vec![SeqDesc { numframes: 2, ..Default::default() }],
+            anims: vec![vec![[None, None, Some(run(2, 2, &[0, 0])), None, None, None]]],
+            controllers: vec![BoneController { bone: 0, kind: STUDIO_ZR, start: -45.0, end: 30.0, index: 0 }],
+            ..Default::default()
+        };
+        let data = b.build();
+        let m = Studio::new(&data);
+        let adj = |form| bone_adj(&m, form, fb(0x3f0a_e1c6), &[206, 0, 0, 0], &[10, 0, 0, 0], 0)[0].to_bits();
+        assert_eq!([adj(O), adj(U)], [0xbe40_bfb6, 0xbe40_bfb8]);
     }
 
     /// Delta-state angles, frames and sequences and model data of any value: no overflow, no
@@ -1475,8 +1642,9 @@ mod tests {
             wrap360(x);
             torso_controller(x);
             let seq = SeqDesc { blendstart: [x, 0.0], blendend: [-x, 0.0], ..Default::default() };
-            let mut pitch = x;
-            player_blend(&seq, &mut pitch);
+            for form in [FloatForm::Optimised, FloatForm::Unoptimised] {
+                player_blend(form, &seq, &mut x.clone());
+            }
         }
         assert_eq!(wrap360(370.0), 10.0);
         let mut x = 0x1234_5678_u32;
@@ -1495,7 +1663,8 @@ mod tests {
         }
         for b in &bufs {
             let m = Studio::new(b);
-            let adj = bone_adj(&m, f32::NAN, &[255; 4], &[0; 4], 255);
+            bone_adj(&m, FloatForm::Unoptimised, f32::NAN, &[255; 4], &[0; 4], 255);
+            let adj = bone_adj(&m, FloatForm::Optimised, f32::NAN, &[255; 4], &[0; 4], 255);
             for numframes in [i32::MIN, -1, 0, 1, 2, i32::MAX] {
                 let seq = SeqDesc { numframes, motionbone: i32::MAX, motiontype: 7, ..Default::default() };
                 for f in [f32::NAN, f32::INFINITY, -f32::INFINITY, -5.0, 0.0, 1e9] {

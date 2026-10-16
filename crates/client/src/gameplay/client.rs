@@ -448,6 +448,12 @@ pub trait ClientRules: Sync {
     /// layout: an optimised `client.dll`'s float reciprocals and spills, or an unoptimised one's
     /// division.
     fn vgui_scale(&self) -> crate::hud::vgui::VguiScale;
+
+    // Audit round 4: render
+
+    /// Which `client.dll` build's float forms the studio renderer (blends, controllers,
+    /// interpolant, player blend) and the view kick (`V_ApplyKick`) replicate.
+    fn float_form(&self) -> crate::studio::FloatForm;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -754,6 +760,12 @@ mod stub {
 
         fn vgui_scale(&self) -> crate::hud::vgui::VguiScale {
             crate::hud::vgui::VguiScale::Reciprocal
+        }
+
+        // Audit round 4: render
+
+        fn float_form(&self) -> crate::studio::FloatForm {
+            crate::studio::FloatForm::Optimised
         }
     }
 }

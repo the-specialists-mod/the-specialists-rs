@@ -1063,3 +1063,12 @@ fn vgui_scale() {
     };
     assert_eq!((h(VguiScale::Division), h(VguiScale::Reciprocal)), (204, 203));
 }
+
+/// Issue #276: 2.1's renderer divides and stores each statement (`fdiv QWORD 255.0` at
+/// 0x10064e46, `/0.1` at 0x10064575); 3.0's multiplies by double reciprocals on the x87
+/// (0x10079e68, `×10` at 0x10030c76).
+#[test]
+fn float_form() {
+    use ts_client::studio::FloatForm;
+    assert_eq!((v21().float_form(), v30().float_form()), (FloatForm::Unoptimised, FloatForm::Optimised));
+}
