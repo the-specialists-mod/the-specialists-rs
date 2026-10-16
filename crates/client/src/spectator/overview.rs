@@ -356,18 +356,22 @@ struct Tile {
 
 /// `DrawOverviewLayer`'s tiling: `x_tiles × y_tiles` quads covering `8192 / zoom` units across
 /// (4:3), image frames in row order. Rotated maps run along x, the others along y with the
-/// texture turned.
+/// texture turned. Both builds compute the steps and the first row on the x87 and store them as
+/// floats once (3.0 `0x10023d72..0x10023dc5`, `0x10023f24..0x10023f76`; 2.1 `0x1004c4e5..0x1004c51d`,
+/// `0x1004c69f..0x1004c70c`): `zoom · 4/3f` stays unrounded. The steps then add up as floats.
 fn layer_tiles(data: &OverviewData, x_tiles: i32, y_tiles: i32, z: f32) -> Vec<Tile> {
-    let (xs, ys, zoom) = (data.origin[0], data.origin[1], data.zoom);
-    let aspect = 4.0 / 3.0;
+    let (xs, ys) = (data.origin[0] as f64, data.origin[1] as f64);
+    let zoom = data.zoom as f64;
+    let za = zoom * ASPECT as f64;
+    let (xt, yt) = (x_tiles as f64, y_tiles as f64);
+    let y_step = (-(8192.0 / za) / yt) as f32;
     let mut out = Vec::new();
     let mut frame = 0;
     if data.rotated {
-        let x_step = 8192.0 / zoom / x_tiles as f32;
-        let y_step = -(8192.0 / (zoom * aspect)) / y_tiles as f32;
-        let mut y = ys + 4096.0 / (zoom * aspect);
+        let x_step = (8192.0 / zoom / xt) as f32;
+        let mut y = (4096.0 / za + ys) as f32;
         for _ in 0..y_tiles {
-            let mut x = xs - 4096.0 / zoom;
+            let mut x = (xs - 4096.0 / zoom) as f32;
             for _ in 0..x_tiles {
                 let c = [
                     ([0.0, 0.0], [x, y, z]),
@@ -382,11 +386,10 @@ fn layer_tiles(data: &OverviewData, x_tiles: i32, y_tiles: i32, z: f32) -> Vec<T
             y += y_step;
         }
     } else {
-        let x_step = -(8192.0 / zoom) / x_tiles as f32;
-        let y_step = -(8192.0 / (zoom * aspect)) / y_tiles as f32;
-        let mut x = xs + 4096.0 / (zoom * aspect);
+        let x_step = (-(8192.0 / zoom / xt)) as f32;
+        let mut x = (4096.0 / za + xs) as f32;
         for _ in 0..y_tiles {
-            let mut y = ys + 4096.0 / zoom;
+            let mut y = (4096.0 / zoom + ys) as f32;
             for _ in 0..x_tiles {
                 let c = [
                     ([0.0, 0.0], [x, y, z]),
@@ -404,6 +407,10 @@ fn layer_tiles(data: &OverviewData, x_tiles: i32, y_tiles: i32, z: f32) -> Vec<T
     out
 }
 
+/// The overview's 4:3 aspect, the float TS multiplies by (3.0 `0x1007d444`, 2.1 `[ebp-0x8]`
+/// `0x3faaaaab`).
+const ASPECT: f32 = 4.0 / 3.0;
+
 /// Tiles across and down: the image's frames form a 4:3 grid of `sqrt(frames / 12)` cells (TS
 /// truncates), 8 × 6 tiles of `sprites/tile.spr` without an image. The cell count is capped at
 /// [`MAX_TILE_CELLS`] (a port guard: TS would build millions of quads every frame for a sprite
@@ -411,7 +418,8 @@ fn layer_tiles(data: &OverviewData, x_tiles: i32, y_tiles: i32, z: f32) -> Vec<T
 fn tile_counts(map_frames: Option<i32>) -> (i32, i32) {
     match map_frames {
         Some(n) => {
-            let i = (((n / 12) as f32).sqrt() as i32).min(MAX_TILE_CELLS);
+            // 3.0 `fild; fsqrt; __ftol` (0x10023ce5), 2.1 the CRT's `sqrt` of the double.
+            let i = (((n / 12) as f64).sqrt() as i32).min(MAX_TILE_CELLS);
             (i * 4, i * 3)
         }
         None => (8, 6),
@@ -434,24 +442,50 @@ pub fn draw() {
     if pip != 0 {
         refresh_camera(pip);
     }
+    let floats = crate::gameplay::current().hltv_overview_floats();
     with(|s| {
-        draw_layer(&s.overview);
-        draw_entities(s);
+        draw_layer(&s.overview, floats);
+        draw_entities(s, floats);
         s.overview.expire(engine().client_time() as f64);
     });
 }
 
-fn z_scale(ov: &Overview) -> f32 {
-    (90.0 - ov.map_angles[0]) * (1.0 / 90.0)
+/// How a TS build rounds the overview's floats
+/// ([`ClientRules::hltv_overview_floats`](crate::gameplay::ClientRules::hltv_overview_floats)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverviewFloats {
+    /// An optimised build (TS 3.0): intermediate values stay on the x87 stack at 53 bits; the z
+    /// scale is `(90 − pitch) · (1/90)f`, the layer height its unrounded product.
+    Stack,
+    /// An unoptimised build (TS 2.1): each intermediate is stored to a `float`; the z scale is
+    /// `(90 − pitch) / 90`.
+    Stored,
 }
 
-/// `DrawOverviewLayer` (`0x10023c90`).
-fn draw_layer(ov: &Overview) {
+/// The overview's z scale (the map view's pitch flattening heights) and the layer's z, as
+/// floats. 3.0 (`0x10023d19`, `0x10024166`): `fld 90; fsub pitch; fmul 1/90f (0x1007d44c); fst
+/// zscale; fmul height; fstp z`. 2.1 (`0x1004c475`, `0x1004cbc2`): `fld 90; fsub; fdiv 90; fstp
+/// zscale`, then `zscale · height`.
+fn z_scale(f: OverviewFloats, pitch: f32, height: f32) -> (f32, f32) {
+    match f {
+        OverviewFloats::Stack => {
+            let t = (90.0 - pitch as f64) * f32::from_bits(0x3c36_0b61) as f64;
+            (t as f32, (t * height as f64) as f32)
+        }
+        OverviewFloats::Stored => {
+            let zs = ((90.0 - pitch as f64) / 90.0) as f32;
+            (zs, zs * height)
+        }
+    }
+}
+
+/// `DrawOverviewLayer` (3.0 `0x10023c90`, 2.1 `0x1004c3b0`).
+fn draw_layer(ov: &Overview, f: OverviewFloats) {
     let map = ov.map_sprite.0;
     let has_map = !map.is_null();
     let dummy = r::sprite_model(ov.sprites.tile);
     let (x_tiles, y_tiles) = tile_counts(has_map.then(|| spec::model_frames(map)));
-    let z = z_scale(ov) * ov.data.height;
+    let (_, z) = z_scale(f, ov.map_angles[0], ov.data.height);
     tri::render_mode(kRenderTransTexture as i32);
     tri::cull_face(TRICULLSTYLE_TRI_NONE);
     tri::color4f(1.0, 1.0, 1.0, 1.0);
@@ -470,13 +504,12 @@ fn draw_layer(ov: &Overview) {
     }
 }
 
-/// `RGB_YELLOWISH` (255, 160, 0) as TS's floats.
+/// `RGB_YELLOWISH` (255, 160, 0) as TS's floats (3.0 `0x3f20a0a1`; 2.1 `UnpackRGB` / 255).
 const YELLOWISH: [f32; 3] = [1.0, 160.0 / 255.0, 0.0];
 
-/// `DrawOverviewEntities` (`0x10024160`).
-fn draw_entities(s: &mut Spectator) {
-    let z_scale = z_scale(&s.overview);
-    let z = s.overview.data.height * z_scale;
+/// `DrawOverviewEntities` (3.0 `0x10024160`, 2.1 `0x1004cb50`, traced in the disassembly).
+fn draw_entities(s: &mut Spectator, f: OverviewFloats) {
+    let (z_scale, z) = z_scale(f, s.overview.map_angles[0], s.overview.data.height);
     tri::cull_face(TRICULLSTYLE_TRI_NONE);
     s.overview.tags.resize(MAX_TAGS, [0.0; 3]);
     for t in &mut s.overview.tags {
@@ -484,8 +517,6 @@ fn draw_entities(s: &mut Spectator) {
     }
     let e = engine();
     let screen = e.screen();
-    let project =
-        |p: Vec3| e.world_to_screen_ndc(p).map(|[x, y]| [(x + 1.0) * screen.width as f32 * 0.5, (1.0 - y) * screen.height as f32 * 0.5]);
     for i in 0..s.overview.entities.len() {
         let en = s.overview.entities[i];
         if en.sprite == 0 {
@@ -494,12 +525,15 @@ fn draw_entities(s: &mut Spectator) {
         let Some(ent) = e.entity(en.entity) else { continue };
         tri::sprite_texture(r::sprite_model(en.sprite), 0);
         tri::render_mode(kRenderTransTexture as i32);
-        let (right, up, _) = v::angle_vectors(ent.angles);
+        // `gEngfuncs.pfnAngleVectors(angles, forward, right, NULL)` (3.0 `0x100241fe`).
+        let (forward, right, _) = e.angle_vectors(ent.angles);
         let mut origin = ent.origin;
         tri::begin(TRI_QUADS as i32);
         tri::color4f(1.0, 1.0, 1.0, 1.0);
-        for (uv, su, sr) in [([1.0, 0.0], 64.0, 64.0), ([0.0, 0.0], 64.0, -64.0), ([0.0, 1.0], -64.0, -64.0), ([1.0, 1.0], -64.0, 64.0)] {
-            let mut p = v::ma(v::ma(origin, su, up), sr, right);
+        // `VectorMA(origin, ±64, right)`, then `VectorMA(p, ±64, forward)`: the products by 64
+        // are exact, so each sum rounds once, as on the x87.
+        for (uv, sr, sf) in [([1.0, 0.0], 64.0, 64.0), ([0.0, 0.0], 64.0, -64.0), ([0.0, 1.0], -64.0, -64.0), ([1.0, 1.0], -64.0, 64.0)] {
+            let mut p = v::ma(v::ma(origin, sr, right), sf, forward);
             p[2] *= z_scale;
             tri::tex_coord2f(uv[0], uv[1]);
             tri::vertex3fv(&p);
@@ -528,32 +562,65 @@ fn draw_entities(s: &mut Spectator) {
             tri::end();
         }
         // Where `Draw` writes the name: under the icon, as far below as a point 32 units off.
-        let Some(sc) = project(origin) else { continue };
-        let off = project([ox + 32.0, oy + 32.0, oz]).map_or([0.0; 2], |o| [o[0] - sc[0], o[1] - sc[1]]);
+        // A clipped icon gets no tag; the second projection's result is not tested (issue #271).
+        let Some((s1, false)) = e.world_to_screen_raw(origin) else { continue };
+        let s2 = e.world_to_screen_raw([ox + 32.0, oy + 32.0, oz]).map_or([0.0; 3], |(p, _)| p);
         if let Some(t) = s.overview.tags.get_mut((ent.index - 1) as usize) {
-            *t = [sc[0], sc[1] + (off[0] * off[0] + off[1] * off[1]).sqrt(), 1.0];
+            let [x, y] = tag_position(f, [s1[0], s1[1]], [s2[0], s2[1]], screen.width, screen.height);
+            *t = [x, y, 1.0];
         }
     }
     if s.pip == 0 {
         return;
     }
-    // The camera icon (inset modes only, so never in TS 3.0), after [`refresh_camera`].
+    // The camera icon (inset modes only, so never in TS 3.0), after [`refresh_camera`]:
+    // `forward · 512` turned ±45° about z, its z scaled with one rounding
+    // (3.0 `0x100248a3`, 2.1 `0x1004d884`: `fld z; fadd r.z; fmul zscale; fstp`).
     let [x, y, cz] = s.saved_origin;
     tri::render_mode(kRenderTransAdd as i32);
     tri::sprite_texture(r::sprite_model(s.overview.sprites.camera), 0);
     tri::color4f(YELLOWISH[0], YELLOWISH[1], YELLOWISH[2], 1.0);
-    let fwd = v::scale(v::angle_vectors(s.saved_angles).0, 512.0);
-    let (right, left) = (rotate_yaw(fwd, 45.0), rotate_yaw(fwd, -45.0));
+    let fwd = v::scale(e.angle_vectors(s.saved_angles).0, 512.0);
+    let (right, left) = (rotate_yaw(f, fwd, 45.0), rotate_yaw(f, fwd, -45.0));
+    let zr = |rz: f32| ((cz as f64 + rz as f64) * z_scale as f64) as f32;
     tri::begin(TRI_TRIANGLES as i32);
     for (uv, p) in [
-        ([0.0, 0.0], [x + right[0], y + right[1], (cz + right[2]) * z_scale]),
+        ([0.0, 0.0], [x + right[0], y + right[1], zr(right[2])]),
         ([0.0, 1.0], [x, y, cz * z_scale]),
-        ([1.0, 1.0], [x + left[0], y + left[1], (cz + left[2]) * z_scale]),
+        ([1.0, 1.0], [x + left[0], y + left[1], zr(left[2])]),
     ] {
         tri::tex_coord2f(uv[0], uv[1]);
         tri::vertex3fv(&p);
     }
     tri::end();
+}
+
+/// A name tag's screen position from the icon's normalised device coordinates `s1` and the
+/// engine's output for the point 32 units off, `s2` (used even when clipped, as TS does):
+/// `x = (s1.x + 1) · w · 0.5`, `y = (1 − s1.y) · h · 0.5 + |s2 − s1|` in pixels.
+/// 3.0 (`0x10024657..0x10024734`): both of `s1` stored as floats, `s2.x` kept at 53 bits for its
+/// subtraction, and `Length` (`0x10058390`) sums and `fsqrt`s on the stack, rounded once with the
+/// add. 2.1 (`0x1004d40d..0x1004d6a4`): every value stored, `Length` (`0x10097fc0`) adds the
+/// squares into a float and returns `(float)sqrt`.
+fn tag_position(f: OverviewFloats, s1: [f32; 2], s2: [f32; 2], w: i32, h: i32) -> [f32; 2] {
+    let px = |x: f32| (x as f64 + 1.0) * w as f64 * 0.5;
+    let py = |y: f32| ((1.0 - y as f64) * h as f64 * 0.5) as f32;
+    let (sx, sy) = (px(s1[0]) as f32, py(s1[1]));
+    let dy = py(s2[1]) - sy;
+    // The offset's z, `0 − 0`, adds nothing.
+    let y = match f {
+        OverviewFloats::Stack => {
+            let dx = (px(s2[0]) - sx as f64) as f32;
+            let len = (dx as f64 * dx as f64 + dy as f64 * dy as f64).sqrt();
+            (len + sy as f64) as f32
+        }
+        OverviewFloats::Stored => {
+            let dx = px(s2[0]) as f32 - sx;
+            let sum = ((dx as f64 * dx as f64) as f32 as f64 + dy as f64 * dy as f64) as f32;
+            (sum as f64).sqrt() as f32 + sy
+        }
+    };
+    [sx, y]
 }
 
 /// The in-eye refresh of the camera icon (`0x10024160`): with the in-eye inset (2) or observer
@@ -572,10 +639,18 @@ fn refresh_camera(pip: i32) {
     });
 }
 
-/// `AngleMatrix((0, yaw, 0))` + `VectorTransform`: `p` turned about z.
-fn rotate_yaw(p: Vec3, yaw: f32) -> Vec3 {
-    let (s, c) = yaw.to_radians().sin_cos();
-    [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]]
+/// `AngleMatrix((0, yaw, 0))` + `VectorTransform` (3.0 `0x1002f920`/`0x1002fa30`, 2.1
+/// `0x10061ee0`/`0x100621a0`): `p` turned about z by `sin`/`cos` of `yaw · (π/180)d` stored as
+/// floats, then a 53-bit dot product rounded once. 3.0 takes the sine of the x87's radians, 2.1
+/// of the radians stored to a float.
+fn rotate_yaw(f: OverviewFloats, p: Vec3, yaw: f32) -> Vec3 {
+    let mut a = yaw as f64 * (std::f64::consts::PI / 180.0);
+    if f == OverviewFloats::Stored {
+        a = a as f32 as f64;
+    }
+    let (s, c) = (a.sin() as f32 as f64, a.cos() as f32 as f64);
+    let (x, y) = (p[0] as f64, p[1] as f64);
+    [(x * c - y * s) as f32, (x * s + y * c) as f32, p[2]]
 }
 
 /// Team colour of a name tag (`Draw`): blue team 1, red team 2, grey otherwise.
@@ -688,7 +763,63 @@ mod tests {
         assert_eq!(tag_color(2), [1.0, 0.4, 0.4]);
         assert!(under_inset([4, 4, 240, 180], [100.0, 100.0], 640, 480));
         assert!(!under_inset([4, 4, 240, 180], [300.0, 100.0], 640, 480));
-        assert!((rotate_yaw([1.0, 0.0, 0.0], 90.0)[1] - 1.0).abs() < 1e-6);
+        assert!((rotate_yaw(OverviewFloats::Stack, [1.0, 0.0, 0.0], 90.0)[1] - 1.0).abs() < 1e-6);
+    }
+
+    /// The layer's steps and first rows rounded once from the x87 (3.0 `0x10023d72..0x10023dc5`,
+    /// `0x10023f24..0x10023f76`; 2.1 `0x1004c4e5..0x1004c70c`, the same form): at zoom 0.77 the
+    /// `f32` forms were a bit off in four of them (issue #272).
+    #[test]
+    fn layer_tiles_round_once() {
+        let d = OverviewData { zoom: 0.77, origin: [100.3, -200.7, 0.0], ..Default::default() };
+        let t = layer_tiles(&d, 8, 6, 0.0);
+        assert_eq!(t[0].corners[0].1[0].to_bits(), 0x457f_9e91, "x0 = f32(4096 / (zoom · 4/3f) + x)");
+        assert_eq!(t[0].corners[0].1[1].to_bits(), 0x459f_f63f, "row y = f32(4096 / zoom + y)");
+        assert_eq!((t[0].corners[2].1[1] - t[0].corners[0].1[1]).to_bits(), 0xc4a6_3bd8, "y step");
+        let r = layer_tiles(&OverviewData { rotated: true, ..d }, 8, 6, 0.0);
+        assert_eq!(r[0].corners[0].1[1].to_bits(), 0x456c_ce91, "rotated y0");
+        let d = OverviewData { zoom: 2.9, origin: [100.3, -200.7, 0.0], rotated: true, ..Default::default() };
+        assert_eq!(layer_tiles(&d, 8, 6, 0.0)[0].corners[0].1[0].to_bits(), 0xc4a4_03a4, "rotated row x = f32(x − 4096 / zoom)");
+    }
+
+    /// The z scale and layer z per build: 3.0 multiplies by `(1/90)f` and keeps the unrounded
+    /// scale for `· height` (`0x10023d19`, `0x10024166`); 2.1 divides by 90 and stores the scale
+    /// first (`0x1004c475`, `0x1004cbc2`).
+    #[test]
+    fn z_scale_per_build() {
+        let (zs, z) = z_scale(OverviewFloats::Stack, 33.7, -48.7);
+        assert_eq!((zs.to_bits(), z.to_bits()), (0x3f20_2469, 0xc1f3_b769));
+        let (zs, z) = z_scale(OverviewFloats::Stored, 33.7, -48.7);
+        assert_eq!((zs.to_bits(), z.to_bits()), (0x3f20_2469, 0xc1f3_b76a));
+    }
+
+    /// The name tag (3.0 `0x10024657..0x10024734`, 2.1 `0x1004d40d..0x1004d6a4`): 3.0 keeps
+    /// `s2.x` and `Length` at 53 bits, 2.1 stores each value; and the clipped second projection is
+    /// used as the engine left it (issue #271).
+    #[test]
+    fn tag_position_per_build() {
+        let b = f32::from_bits;
+        let (s1, s2) = ([b(0x3e80_bcd3), b(0xbf5e_7300)], [b(0x3e4f_9fa4), b(0xbf55_cf5d)]);
+        let t = tag_position(OverviewFloats::Stack, s1, s2, 1366, 768);
+        assert_eq!((t[0].to_bits(), t[1].to_bits()), (0x4455_aef9, 0x443c_5712));
+        let t = tag_position(OverviewFloats::Stored, s1, s2, 1366, 768);
+        assert_eq!((t[0].to_bits(), t[1].to_bits()), (0x4455_aef9, 0x443c_5711));
+        // A clipped point: FWGS leaves the undivided clip coordinates, far off screen.
+        let t = tag_position(OverviewFloats::Stack, [0.25, -0.5], [-812.5, 97.25], 1366, 768);
+        assert_eq!((t[0], t[1].to_bits()), (853.75, 0x4907_f97e));
+    }
+
+    /// The camera icon's ±45° (`AngleMatrix` + `VectorTransform`): float `sin`/`cos` of
+    /// `yaw · (π/180)d` (`0x1007d518`), one rounding of the dot product.
+    #[test]
+    fn camera_turn() {
+        assert_eq!(std::f64::consts::PI / 180.0, 0.017453292519943295);
+        for f in [OverviewFloats::Stack, OverviewFloats::Stored] {
+            let r = rotate_yaw(f, [-301.7, 415.3, 7.0], 45.0);
+            assert_eq!((r[0].to_bits(), r[1].to_bits(), r[2]), (0xc3fd_7f6e, 0x42a0_a795, 7.0));
+            let l = rotate_yaw(f, [-301.7, 415.3, 7.0], -45.0);
+            assert_eq!((l[0].to_bits(), l[1].to_bits()), (0x42a0_a795, 0x43fd_7f6e));
+        }
     }
 
     /// `overviews/<map>.txt` with any content, sprite frame counts and inset values of any size.

@@ -289,7 +289,11 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   already up keeps its box and icon over the scoreboard, and one given out under the scoreboard
   stays hidden until that player stops and starts talking again (**was**: the whole label hidden
   with the scoreboard, issue #95). The local talk icon (`gfx/vgui/icntlk_pl.tga`, `icntlk_sv.tga` once the server
-  acknowledged with `voice_clientdebug` on) sits at screen height − 3 × `m_iFontHeight` (the `number_0` height) − 6.
+  acknowledged with `voice_clientdebug` on, chosen when a speaker update arrives) sits at screen height − 3 × `m_iFontHeight` (the `number_0` height) − 6.
+  The labels and the talk icon are VGUI panels parented to the viewport when shown (`0x10018271`,
+  `0x10018ad2`; VGUI1's `setParent` appends them to its children), so they paint over the
+  scoreboard, team menu and spectator bar, and over or under a message window by which was
+  parented last (`hud::vgui::raise`, issue #277).
 * `VoiceMask` gives the audible (game rules) and server ban masks; `ReqState` makes the client
   resend `VModEnable` and `vban`. Every second the client sends `vban` if its ban mask for the
   connected players differs from what the server last reported.
@@ -542,10 +546,11 @@ Drawing that TS leaves to the engine's VGUI1 surface:
   * Squelch mode centres the virtual cursor, and the first scoreboard press (entering squelch mode)
     isn't passed to the engine as a key. Panels are laid out from the current screen size each
     frame (TS builds them once with the viewport).
-  * `jointeam` from the team menu doesn't set the local `g_iTeamNumber` (TS does, `0x10064a82`,
-    until the next player state); Escape's "has a team" test reads the player state only, and so
-    does the viewport's per-frame team check (`paintBackground` `0x100648c0`), which updates the
-    shown team menu when the local team changes (issue #268).
+  * The local `g_iTeamNumber` (`state::State::team_number`) is TS's: the local player's state
+    sets it, the team menu's `jointeam 1`..`4` sets it ahead of that (`0x10064a82`, issue #275),
+    and `HUD_VidInit` and the director reset zero it. Escape's "has a team" test and the
+    viewport's per-frame team check (`paintBackground` `0x100648c0`, which updates the shown team
+    menu when the local team changes, issue #268) read it.
 
 Checks that only matter on input TS mishandles (TS writes or reads out of bounds):
 * `Objective`/`ShowObj` indexes outside 0..31 (TS's check `i >= 0 || i < 32` is always true and

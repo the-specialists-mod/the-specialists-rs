@@ -22,7 +22,7 @@ pub(crate) use panel::height as panel_height;
 
 pub(crate) use movement::smooth;
 pub use movement::{begin_player_move, in_eye_angles, spectator_move};
-pub use overview::{add_entity as add_overview_entity, death as death_notice, draw as draw_overview};
+pub use overview::{OverviewFloats, add_entity as add_overview_entity, death as death_notice, draw as draw_overview};
 
 use crate::hud::text::localise;
 use crate::state;
@@ -300,7 +300,12 @@ pub fn director_event(command: u8, primary: i32, secondary: i32, flags: i32) {
             });
             crate::input::reset_key_tap();
             crate::gameplay::current().hltv_reset(false);
-            state::with(|st| st.spec_mode = obs::NONE);
+            // `0x10023380` also zeroes `g_iPlayerClass` and `g_iTeamNumber` (2.1 `0x1004af10` too).
+            state::with(|st| {
+                st.spec_mode = obs::NONE;
+                st.player_class = 0;
+                st.team_number = 0;
+            });
             set_modes(2, 0);
             with(|s| s.overview.reset());
             // `0x10022da0`: the map camera, which the view also uses until player movement

@@ -74,7 +74,7 @@ pub unsafe extern "C" fn HUD_VidInit() -> c_int {
 pub unsafe extern "C" fn HUD_Redraw(time: f32, intermission: c_int) -> c_int {
     hud::redraw(time, intermission != 0);
     spectator::redraw();
-    voice::redraw();
+    // The voice panels paint with the viewport's (`menus`), in VGUI1's child order.
     menus::redraw(time);
     1
 }

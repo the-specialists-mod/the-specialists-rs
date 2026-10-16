@@ -717,6 +717,16 @@ impl ClientRules for Ts21Client {
     fn gl_fog(&self) -> bool {
         false
     }
+
+    // Audit round 4: gui
+
+    /// The unoptimised build stores each of the overview's intermediates to a float: the z scale
+    /// `(90 − pitch) / 90` (0x1004c475, 0x1004cbc2), the name tags' projections and `Length`
+    /// (0x1004d40d, 0x10097fc0), the camera icon's radians (`AngleMatrix` 0x10061ee0). Issues
+    /// #271, #272.
+    fn hltv_overview_floats(&self) -> ts_client::spectator::OverviewFloats {
+        ts_client::spectator::OverviewFloats::Stored
+    }
 }
 
 /// The 2.1 buy menu's text, hard-coded in `client.dll` (the port draws title keys, so each key

@@ -621,6 +621,24 @@ thread_local! {
     static FORCED: std::cell::Cell<Option<VguiScale>> = const { std::cell::Cell::new(None) };
 }
 
+thread_local! {
+    /// The last [`raise`] stamp.
+    static RAISED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A panel's place in the viewport's child list: VGUI1's `Panel::setParent` (`vgui.so`
+/// `0x32e80`) removes a panel from its parent and appends it again, so a panel parented later
+/// paints over those parented before. The viewport's own panels (team menu, scoreboard,
+/// spectator bar) are children from its constructor; the voice labels and talk icon
+/// (`CVoiceStatus`) and the message windows (`CreateTextWindow` `0x10063c00`) are parented when
+/// shown, and paint in the order of these stamps.
+pub fn raise() -> u64 {
+    RAISED.with(|r| {
+        r.set(r.get() + 1);
+        r.get()
+    })
+}
+
 /// The HUD ruleset's [`VguiScale`] (or the one [`with_scale`] forces).
 pub fn scale() -> VguiScale {
     if let Some(s) = FORCED.with(|f| f.get()) {
@@ -956,6 +974,13 @@ pub fn fg(scheme: &str) -> [u8; 3] {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// `Panel::setParent` appends: each panel parented later paints above (issue #277).
+    #[test]
+    fn raise_orders_panels() {
+        let (a, b) = (raise(), raise());
+        assert!(a < b);
+    }
 
     /// A surface that records fills.
     #[derive(Default)]

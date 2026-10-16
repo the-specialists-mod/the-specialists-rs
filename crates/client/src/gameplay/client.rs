@@ -458,6 +458,12 @@ pub trait ClientRules: Sync {
     /// Whether the client drives OpenGL fog: `V_SetFog`'s map and single-player user fog
     /// (`gl_fog`, `gl_fog_*`) and the `glDisable(GL_FOG)` that ends every transparent pass.
     fn gl_fog(&self) -> bool;
+
+    // Audit round 4: gui
+
+    /// How the HLTV overview (layer, icons, name tags) rounds its floats: an optimised
+    /// `client.dll`'s x87 stack or an unoptimised one's float stores.
+    fn hltv_overview_floats(&self) -> crate::spectator::OverviewFloats;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -773,6 +779,12 @@ mod stub {
         }
         fn gl_fog(&self) -> bool {
             true
+        }
+
+        // Audit round 4: gui
+
+        fn hltv_overview_floats(&self) -> crate::spectator::OverviewFloats {
+            crate::spectator::OverviewFloats::Stack
         }
     }
 }
