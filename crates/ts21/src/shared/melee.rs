@@ -486,21 +486,30 @@ pub fn ccombat_attack(gun: &mut Gun, host: &mut dyn GunHost) {
         kungfu_move(&input, &mut pc, &mut kc, gun.last_melee_anim, &mut roll)
     };
     (gun.punch_combo, gun.kick_combo) = (pc, kc);
-    if m.bits != 0 {
-        host.melee_hold(m.bits, 3.0, true);
+    // Port addition (plugin API version 5): plugins see the move's delay (before the time-scale
+    // factor `T`) and the damage a hit deals, and may change or block it, as on the 3.0 path.
+    // The damage and the doubling are pure, so working them out before the hold changes nothing
+    // 2.1 does; a blocked move holds nothing, spends no bar and plays nothing.
+    let mut delay = m.delay;
+    let (mut dmg, cost) = kungfu_damage(m.damage, gun.melee_bar);
+    let mut go = m.atype != 0;
+    if go {
+        if host.kungfu() {
+            dmg = (dmg as f64 * 2.0) as f32;
+        }
+        go = host.melee_attack_pre(gun, &mut delay, &mut dmg);
     }
-    if m.atype != 0 {
+    if go {
+        if m.bits != 0 {
+            host.melee_hold(m.bits, 3.0, true);
+        }
         gun.last_melee_anim = m.move_id;
-        let (mut dmg, cost) = kungfu_damage(m.damage, gun.melee_bar);
         // The One's bar isn't spent (`pl+0x731`); the bar is sent either way.
         if !host.the_one() {
             let b = gun.melee_bar - cost;
             gun.melee_bar = if b < 0.0 { 0.0 } else { b };
         }
         host.melee_bar_changed(gun.melee_bar);
-        if host.kungfu() {
-            dmg = (dmg as f64 * 2.0) as f32;
-        }
         let back = m.atype == 3;
         let mut h = hit(MeleeKind::KungFu, 0, if back { -m.reach } else { m.reach }, if back { 1 } else { 3 }, dmg, 0x0400_1080, m.move_id);
         // CloseCombatAttack's flags: disarm (the server's `melee_disarm` applies 2.1's `dmg > 15`),
@@ -520,11 +529,11 @@ pub fn ccombat_attack(gun: &mut Gun, host: &mut dyn GunHost) {
         // `BlockPlayer(T × delay × 0.9)` (`FUN_10056b60`) only acts on the ground; the stunt clock
         // applies `T` (`pl+0x460 = now + t`).
         if host.iuser4() & 1 == 0 && on_ground(host) {
-            host.block_player((m.delay as f64 * 0.9) as f32);
+            host.block_player((delay as f64 * 0.9) as f32);
         }
         host.event(Event::CloseCombat, EventArgs { f1: 0.0, f2: 0.0, i1: m.atype, i2: view_anim(&m), b1: 0, b2: 0 });
     }
-    let d = (t as f64 * m.delay as f64) as f32;
+    let d = (t as f64 * delay as f64) as f32;
     gun.next_primary = d;
     gun.next_secondary = d;
     gun.idle = d;

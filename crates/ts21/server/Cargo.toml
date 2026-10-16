@@ -16,3 +16,4 @@ shared        = { path = "../../shared" }
 [dev-dependencies]
 ts30-gameplay = { path = "../../ts30" }
 ts30-server   = { path = "../../ts30/server" }
+ts-plugin-api = { path = "../../plugin-api" }

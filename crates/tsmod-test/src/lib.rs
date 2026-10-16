@@ -7,6 +7,13 @@
 //! another API version, `tsmod_test_badsize` a wrong descriptor size, and `tsmod_test_refuse`
 //! returns an error (after registering a command and a backend, which the server then drops).
 //!
+//! Plugin API version 5 (#198): it registers a listener (and removes it once heard), its bots
+//! dive with the stunt key (`player_stunt`), use a power-up (`powerup 5` with `sv_cheats`, then
+//! `usepowerup`: `player_powerup`), punch with kung fu while they have no gun (`melee_attack`,
+//! whose answers alternate between a longer delay and a block, each checked by when the next
+//! attack comes), one bot is killed by another through `Ham_TakeDamage` (`kill_scored`), and
+//! `private_size` is asked about a bot.
+//!
 //! The plugin keeps its state behind a mutex, which it never holds while calling the API: the
 //! server calls back into the plugin from inside API calls (`create_bot` spawns the bot).
 
@@ -18,8 +25,8 @@ use std::ffi::{CStr, CString, c_char, c_int};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use ts_plugin_api::{
-    BotBackend, BotCmd, DEFERRED, EntityInfo, GameState, HamCall, INVALID, LoadInfo, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, Plugin,
-    PluginApi, PluginId, VERSION, WeaponEntry, entity, ham, item, log,
+    BotBackend, BotCmd, DEFERRED, EntityInfo, GameState, HamArg, HamCall, INVALID, KillInfo, LoadInfo, NOT_PLAYER, OK, ObjectiveInfo,
+    PlayerInfo, Plugin, PluginApi, PluginId, VERSION, WeaponEntry, entity, ham, item, log, powerup, stunt,
 };
 
 /// TS weapon id of the M4 (`shared::weapons::id::M4`), bought for the test bots.
@@ -29,6 +36,19 @@ const IN_JUMP: c_int = goldsrc_sys::IN_JUMP as c_int;
 /// hamsandwich's `Ham_Item_PreFrame`: the gun's `ItemPreFrame`, every frame a living player's
 /// `m_flNextAttack` has run out.
 const HAM_ITEM_PREFRAME: c_int = 70;
+/// hamsandwich's `Ham_TakeDamage`: the scripted kill.
+const HAM_TAKEDAMAGE: c_int = 9;
+/// `IN_ATTACK` (a punch with kung fu) and `IN_ALT1` (the stunt key: a dive while running).
+const IN_ATTACK: c_int = goldsrc_sys::IN_ATTACK as c_int;
+const IN_ALT1: c_int = goldsrc_sys::IN_ALT1 as c_int;
+/// The `melee_attack` answers: a changed move's delay (every kung-fu move's own is 1.35 s at
+/// most, a held punch's 0.65) and a blocked one's. The next attack may not come sooner than
+/// [`MELEE_SLACK`] of it (the bots' usercmd `msec` is rounded).
+const MELEE_CHANGED: f32 = 2.0;
+const MELEE_BLOCKED: f32 = 1.5;
+const MELEE_SLACK: f32 = 0.8;
+/// The game time after the backend's start at which one bot kills another.
+const KILL_AFTER: f32 = 12.0;
 
 #[derive(Clone, Copy)]
 struct Bot {
@@ -41,6 +61,45 @@ struct Bot {
     next_respawn: f32,
     /// The checks run once per bot (API calls on a bot of ours).
     probed: bool,
+    next_stunt: f32,
+    /// When it was first seen alive this life (0: dead).
+    alive_since: f32,
+    /// The last `melee_attack` answer this life, and how many were asked.
+    melee: Option<Melee>,
+    melee_calls: u32,
+}
+
+impl Bot {
+    fn new(idx: c_int, yaw: f32) -> Bot {
+        Bot {
+            idx,
+            start: None,
+            moved: 0.0,
+            yaw,
+            next_jump: 0.0,
+            next_respawn: 0.0,
+            probed: false,
+            next_stunt: 0.0,
+            alive_since: 0.0,
+            melee: None,
+            melee_calls: 0,
+        }
+    }
+}
+
+/// A `melee_attack` answer: when, and the delay it left.
+#[derive(Clone, Copy)]
+struct Melee {
+    at: f32,
+    delay: f32,
+    blocked: bool,
+}
+
+/// The scripted kill: the bots, and whether `kill_scored` came.
+#[derive(Clone, Copy)]
+struct Kill {
+    killer: c_int,
+    victim: c_int,
 }
 
 struct State {
@@ -53,6 +112,13 @@ struct State {
     next_report: f32,
     /// The `check` lines already logged.
     done: Vec<&'static str>,
+    /// When the backend started (game time), and the scripted kill once made.
+    active_since: f32,
+    kill: Option<Kill>,
+    /// The listener's handle (0: none), and whether it was heard and removed.
+    listener: c_int,
+    listener_heard: bool,
+    listener_removed: bool,
 }
 
 /// The server's table, from `TSRS_PluginLoad`.
@@ -67,6 +133,11 @@ static STATE: Mutex<State> = Mutex::new(State {
     last_time: 0.0,
     next_report: 0.0,
     done: Vec::new(),
+    active_since: 0.0,
+    kill: None,
+    listener: 0,
+    listener_heard: false,
+    listener_removed: false,
 });
 
 /// Runs `f` on the state, or not at all when it is busy further up the stack.
@@ -190,8 +261,15 @@ const DESCRIPTOR: Plugin = Plugin {
     player_killed: Some(player_killed),
     sound: Some(sound),
     weapon_changed: Some(weapon_changed),
+    player_stunt: Some(player_stunt),
+    player_powerup: Some(player_powerup),
+    melee_attack: Some(melee_attack),
+    kill_scored: Some(kill_scored),
     ..Plugin::EMPTY
 };
+
+/// The listener (version 5): what a metamod plugin registers with `add_listener`.
+const LISTENER: Plugin = Plugin { name: c"tsmod_test listener".as_ptr(), player_spawned: Some(listener_spawned), ..Plugin::EMPTY };
 
 const BACKEND: BotBackend = BotBackend {
     size: size_of::<BotBackend>() as u32,
@@ -217,6 +295,27 @@ extern "C" fn game_init() {
     (a.ham_set_hook)(Some(ham_hook));
     let rc = (a.ham_watch)(HAM_ITEM_PREFRAME, 1);
     say(log::INFO, &format!("ham_watch(Item_PreFrame): {rc}"));
+    // A listener, and one the server must refuse (a short descriptor).
+    let bad = Plugin { size: 8, ..LISTENER };
+    // SAFETY: both descriptors live for the calls; the server copies the good one.
+    let (handle, refused) = unsafe { ((a.add_listener)(&LISTENER), (a.add_listener)(&bad)) };
+    with(|s| s.listener = handle);
+    check("add_listener", handle > 0 && refused == INVALID);
+}
+
+/// The listener's `player_spawned`: heard once, and never after [`remove_listener`](PluginApi::remove_listener).
+extern "C" fn listener_spawned(idx: c_int) {
+    if !ours(idx) {
+        return;
+    }
+    let removed = with(|s| {
+        s.listener_heard = true;
+        s.listener_removed
+    });
+    check("listener", true);
+    if removed == Some(true) {
+        check("remove_listener", false);
+    }
 }
 
 /// The entity hook: `Item_PreFrame` must come on a `weapon_tsgun` (class `weapon_tsgun`, kind
@@ -260,6 +359,9 @@ extern "C" fn start_frame() {
         if report {
             s.next_report = now + 3.0;
         }
+        if s.active && s.active_since == 0.0 {
+            s.active_since = now;
+        }
         (s.active, s.bots.clone(), dt, report)
     }) else {
         return;
@@ -275,6 +377,7 @@ extern "C" fn start_frame() {
         }
         if i.alive == 0 {
             b.start = None;
+            b.alive_since = 0.0;
             if now >= b.next_respawn {
                 b.next_respawn = now + 1.0;
                 // SAFETY: a NUL-terminated command for the call.
@@ -291,15 +394,25 @@ extern "C" fn start_frame() {
                 check("moved", true);
             }
         }
+        if b.alive_since == 0.0 {
+            b.alive_since = now;
+        }
         b.yaw = (b.yaw + 45.0 * dt) % 360.0;
         let jump = now >= b.next_jump;
         if jump {
             b.next_jump = now + 1.5;
         }
+        // The stunt key now and then (never with jump, which would try a wall climb instead); a
+        // punch held while it has kung fu out.
+        let dive = !jump && now >= b.next_stunt;
+        if dive {
+            b.next_stunt = now + 2.5;
+        }
+        let buttons = if jump { IN_JUMP } else { 0 } | if dive { IN_ALT1 } else { 0 } | if i.weapon == 0 { IN_ATTACK } else { 0 };
         let cmd = BotCmd {
             angles: [0.0, b.yaw, 0.0],
             forward: 250.0,
-            buttons: if jump { IN_JUMP } else { 0 },
+            buttons,
             msec: (dt * 1000.0).round().clamp(1.0, 100.0) as c_int,
             ..BotCmd::default()
         };
@@ -312,10 +425,58 @@ extern "C" fn start_frame() {
         kept.push(b);
     }
     with(|s| {
-        // Bots added during the loop (none in practice) are kept too.
+        // Bots added during the loop (none in practice) are kept too, and the melee answers given
+        // during it (the callback wrote them to the state).
         let extra: Vec<Bot> = s.bots.iter().filter(|x| !kept.iter().any(|k| k.idx == x.idx)).copied().collect();
+        for k in kept.iter_mut() {
+            if let Some(b) = s.bots.iter().find(|b| b.idx == k.idx) {
+                (k.melee, k.melee_calls) = (b.melee, b.melee_calls);
+            }
+        }
         s.bots = kept.into_iter().chain(extra).collect();
     });
+    remove_heard_listener(a);
+    scripted_kill(a, now);
+}
+
+/// Removes the listener once it was heard: the handle goes, a second removal is refused.
+fn remove_heard_listener(a: &PluginApi) {
+    let Some(handle) = with(|s| (s.listener_heard && !s.listener_removed && s.listener > 0).then_some(s.listener)).flatten() else {
+        return;
+    };
+    let (first, second) = ((a.remove_listener)(handle), (a.remove_listener)(handle));
+    with(|s| s.listener_removed = true);
+    check("remove_listener", first == OK && second == INVALID);
+}
+
+/// Once, [`KILL_AFTER`] s into the backend's run: a bot that has been alive for 3 s kills
+/// another through `Ham_TakeDamage` (1000 damage, the killer its own inflictor), which the rules
+/// score and report (`kill_scored`).
+fn scripted_kill(a: &PluginApi, now: f32) {
+    let pick = with(|s| {
+        if s.kill.is_some() || s.active_since == 0.0 || now < s.active_since + KILL_AFTER {
+            return None;
+        }
+        let ready: Vec<c_int> =
+            s.bots.iter().filter(|b| b.probed && b.alive_since > 0.0 && now >= b.alive_since + 3.0).map(|b| b.idx).collect();
+        let k = Kill { killer: *ready.first()?, victim: *ready.get(1)? };
+        s.kill = Some(k);
+        Some(k)
+    })
+    .flatten();
+    let Some(k) = pick else { return };
+    let ent = |i| HamArg { kind: ham::kind::ENTITY, i, ..HamArg::default() };
+    let mut call = HamCall { ham: HAM_TAKEDAMAGE, this: k.victim, argc: 4, ..HamCall::default() };
+    call.args[..4].copy_from_slice(&[
+        ent(k.killer),
+        ent(k.killer),
+        HamArg { kind: ham::kind::FLOAT, f: 1000.0, ..HamArg::default() },
+        HamArg { kind: ham::kind::INT, i: 0, ..HamArg::default() },
+    ]);
+    // SAFETY: `call` is a `HamCall` valid for reads and writes during the call.
+    let rc = unsafe { (a.ham_execute)(&mut call, 1) };
+    say(log::INFO, &format!("bot #{} kills bot #{} (Ham_TakeDamage): {rc}", k.killer, k.victim));
+    check("ham_take_damage", rc == OK);
 }
 
 /// The API calls on one of our living bots, once: true when done.
@@ -352,6 +513,14 @@ fn probe(a: &PluginApi, idx: c_int, i: &PlayerInfo) -> bool {
     // SAFETY: a NUL-terminated command for the call.
     let rc = unsafe { (a.bot_command)(idx, c"tsmod_test_ping 1".as_ptr()) };
     check("bot_command", rc == OK || rc == DEFERRED);
+    check("private_size", (a.private_size)(idx) > 0 && (a.private_size)(-1) == NOT_PLAYER);
+    // A held double fire rate (the cheat; the server config turns `sv_cheats` on), then used:
+    // `player_powerup` with its bit.
+    // SAFETY: NUL-terminated commands for the calls.
+    unsafe {
+        (a.bot_command)(idx, c"powerup 5".as_ptr());
+        (a.bot_command)(idx, c"usepowerup".as_ptr());
+    }
     true
 }
 
@@ -406,6 +575,12 @@ extern "C" fn player_spawned(idx: c_int) {
     if !ours(idx) {
         return;
     }
+    // A new life: the gun's timers start over, so the melee answers do too.
+    with(|s| {
+        if let Some(b) = s.bots.iter_mut().find(|b| b.idx == idx) {
+            (b.melee, b.melee_calls) = (None, 0);
+        }
+    });
     check("spawned", true);
     let rc = (a.buy)(idx, M4, 0, 0, 4);
     check("buy", rc == OK || rc == DEFERRED);
@@ -436,6 +611,93 @@ extern "C" fn weapon_changed(idx: c_int, _weapon: c_int) {
     }
 }
 
+/// Version 5: a stunt of one of our bots (they dive; the dive's roll or getting up follow).
+extern "C" fn player_stunt(idx: c_int, kind: c_int) {
+    if ours(idx) {
+        check("player_stunt", (stunt::ROLL..=stunt::WALL_CLIMB).contains(&kind));
+    }
+}
+
+/// Version 5: the double fire rate [`probe`] had a bot use.
+extern "C" fn player_powerup(idx: c_int, bits: c_int) {
+    if ours(idx) && bits == powerup::DFIRERATE {
+        check("player_powerup", true);
+    }
+}
+
+/// Version 5: a kung-fu move of one of our bots. The answers alternate: a changed move (delay
+/// [`MELEE_CHANGED`], damage 1) and a blocked one (delay [`MELEE_BLOCKED`]); the next call of
+/// the same life checks the delay held (`melee_attack_change` / `melee_attack_block`).
+unsafe extern "C" fn melee_attack(idx: c_int, time: *mut f32, damage: *mut f32) -> c_int {
+    let Some((_, g)) = engine() else { return 0 };
+    if time.is_null() || damage.is_null() {
+        check("melee_attack", false);
+        return 0;
+    }
+    let now = g.time;
+    // SAFETY: the server passes pointers valid for the call.
+    let (t, d) = unsafe { (*time, *damage) };
+    let Some((prev, n)) = with(|s| {
+        s.bots.iter_mut().find(|b| b.idx == idx).map(|b| {
+            b.melee_calls += 1;
+            (b.melee, b.melee_calls)
+        })
+    })
+    .flatten() else {
+        return 0;
+    };
+    check("melee_attack", t.is_finite() && t > 0.0 && d.is_finite() && d >= 0.0);
+    if let Some(m) = prev {
+        check(if m.blocked { "melee_attack_block" } else { "melee_attack_change" }, now - m.at >= m.delay * MELEE_SLACK);
+    }
+    let blocked = n % 2 == 0;
+    let (nt, nd) = if blocked { (MELEE_BLOCKED, d) } else { (MELEE_CHANGED, 1.0) };
+    // SAFETY: as above.
+    unsafe { (*time, *damage) = (nt, nd) };
+    with(|s| {
+        if let Some(b) = s.bots.iter_mut().find(|b| b.idx == idx) {
+            b.melee = Some(Melee { at: now, delay: nt, blocked });
+        }
+    });
+    blocked as c_int
+}
+
+/// Version 5: the scripted kill ([`scripted_kill`]) as the rules scored it: the killer, victim
+/// and inflictor, points (TS 3.0: 1, 2 for a kung-fu frag, more for a stunt or a double kill), a
+/// spree of at least 1, the weapon and its name.
+unsafe extern "C" fn kill_scored(kill: *const KillInfo) {
+    if kill.is_null() {
+        check("kill_scored", false);
+        return;
+    }
+    // SAFETY: the server passes a `KillInfo` valid for the call.
+    let k = unsafe { *kill };
+    if with(|s| s.kill.is_some_and(|x| x.killer == k.killer && x.victim == k.victim)) != Some(true) {
+        return;
+    }
+    // SAFETY: `weapon_name` is NUL-terminated within its array (the server cuts it to fit).
+    let name = unsafe { CStr::from_ptr(k.weapon_name.as_ptr()) };
+    say(
+        log::INFO,
+        &format!(
+            "kill_scored: killer {} victim {} inflictor {} points {} weapon {} \"{}\" tags {:#x} sprees {}/{}",
+            k.killer,
+            k.victim,
+            k.inflictor,
+            k.points,
+            k.weapon,
+            name.to_string_lossy(),
+            k.tags,
+            k.killer_spree,
+            k.victim_spree
+        ),
+    );
+    check(
+        "kill_scored",
+        k.inflictor == k.killer && k.points >= 1 && k.killer_spree >= 1 && k.victim_spree >= 0 && k.weapon >= 0 && !name.is_empty(),
+    );
+}
+
 /// `tsmod_<name>_status`: our bots.
 unsafe extern "C" fn status(_argc: c_int, _argv: *const *const c_char) {
     let bots = with(|s| s.bots.clone()).unwrap_or_default();
@@ -464,9 +726,7 @@ unsafe extern "C" fn add_bot(name: *const c_char, model: *const c_char, skill: f
     // SAFETY: as above; `create_bot` reads the strings during the call.
     let idx = unsafe { (a.create_bot)(id(), cname.as_ptr(), model, skill) };
     if idx > 0 {
-        with(|s| {
-            s.bots.push(Bot { idx, start: None, moved: 0.0, yaw: (n * 97 % 360) as f32, next_jump: 0.0, next_respawn: 0.0, probed: false })
-        });
+        with(|s| s.bots.push(Bot::new(idx, (n * 97 % 360) as f32)));
         say(log::INFO, &format!("added \"{name}\" (#{idx})"));
         check("create_bot", true);
     } else {
@@ -483,13 +743,14 @@ extern "C" fn activate() {
 extern "C" fn deactivate() {
     with(|s| {
         s.active = false;
+        s.active_since = 0.0;
         s.bots.clear();
     });
     say(log::INFO, "bot backend inactive");
 }
 
 extern "C" fn adopt_bot(idx: c_int) {
-    with(|s| s.bots.push(Bot { idx, start: None, moved: 0.0, yaw: 0.0, next_jump: 0.0, next_respawn: 0.0, probed: false }));
+    with(|s| s.bots.push(Bot::new(idx, 0.0)));
 }
 
 #[cfg(test)]
@@ -501,6 +762,9 @@ mod tests {
         assert_eq!(DESCRIPTOR.size as usize, size_of::<Plugin>());
         assert_eq!(DESCRIPTOR.api_version, VERSION);
         assert_eq!(BACKEND.size as usize, size_of::<BotBackend>());
+        assert_eq!((LISTENER.size as usize, LISTENER.api_version), (size_of::<Plugin>(), VERSION));
+        assert!(DESCRIPTOR.player_stunt.is_some() && DESCRIPTOR.player_powerup.is_some());
+        assert!(DESCRIPTOR.melee_attack.is_some() && DESCRIPTOR.kill_scored.is_some());
     }
 
     #[test]

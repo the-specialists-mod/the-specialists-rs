@@ -444,6 +444,191 @@ pub fn broadcast_score(e: *mut edict_t) {
     }
 }
 
+/// Port addition (plugin API version 5, `kill_scored`): the killer dealt the blow by its own hand,
+/// `TSGetPointsForFrag`'s test in both rulesets: it is its own inflictor and a client
+/// (`FL_CLIENT`).
+pub fn own_hand(d: &DamageInfo, attacker: *mut edict_t) -> bool {
+    !d.inflictor.is_null() && d.inflictor == attacker && super::ts_flags(attacker) & FL_CLIENT as i32 != 0
+}
+
+/// Port addition (plugin API version 5): the part of a `kill_scored` report every ruleset's
+/// `PlayerKilled` fills alike. `attacker` is `PlayerKilled`'s (the world for none), `attacker_gun`
+/// the gun the `DeathMsg` name `weapon` was taken from. Sets the killer (the victim for a suicide,
+/// 0 for no player), victim, inflictor (-1 none), the blow's weapon id ([`kill_weapon_id`]) and
+/// name; the ruleset adds the points, sprees and tags ([`KillFlags`]) and sends it with
+/// [`report_kill`].
+pub fn kill_report(
+    d: &DamageInfo,
+    g: &Snapshot,
+    victim: *mut edict_t,
+    attacker: *mut edict_t,
+    killer_is_player: bool,
+    attacker_gun: Option<u8>,
+    weapon: &str,
+) -> ts_plugin_api::KillInfo {
+    let eng = engine();
+    let vidx = eng.index_of(victim);
+    let blow = kill_weapon_id(own_hand(d, attacker), g, attacker_gun, || {
+        if d.inflictor.is_null() {
+            return (None, false);
+        }
+        let thrown = crate::weapons::thrown_blade_id(d.inflictor);
+        (thrown, thrown.is_none() && classname(d.inflictor) == "grenade")
+    });
+    let mut report = ts_plugin_api::KillInfo {
+        killer: if attacker == victim {
+            vidx
+        } else if killer_is_player {
+            eng.index_of(attacker)
+        } else {
+            0
+        },
+        victim: vidx,
+        inflictor: if d.inflictor.is_null() { -1 } else { eng.index_of(d.inflictor) },
+        weapon: blow,
+        ..Default::default()
+    };
+    put_weapon_name(&mut report.weapon_name, weapon);
+    report
+}
+
+/// Port addition (plugin API version 5): sends a ruleset's finished [`kill_report`] to the
+/// plugins' `kill_scored`, deferred until the killer (when a player) and the victim are back in
+/// their slots.
+pub fn report_kill(victim: *mut edict_t, attacker: *mut edict_t, killer_is_player: bool, report: ts_plugin_api::KillInfo) {
+    crate::plugins::kill_scored(victim, if killer_is_player { attacker } else { std::ptr::null_mut() }, report);
+}
+
+/// Port addition (plugin API version 5): `KillInfo::weapon`. By the killer's own hand
+/// ([`own_hand`]): the simulated bullet's weapon, else kung fu (0) under `glast_closecombat`, else
+/// the gun in hand (0 for kung fu or none), as `own_weapon_name` names it. Otherwise `other`
+/// says whether the inflictor is a thrown blade (its id) or a grenade (24); else -1.
+fn kill_weapon_id(own_hand: bool, g: &Snapshot, killer_gun: Option<u8>, other: impl FnOnce() -> (Option<u8>, bool)) -> i32 {
+    if own_hand {
+        return if g.weapon_id != -1 {
+            g.weapon_id
+        } else if g.close_combat {
+            0
+        } else {
+            killer_gun.map_or(0, i32::from)
+        };
+    }
+    match other() {
+        (Some(id), _) => id as i32,
+        (None, true) => shared::weapons::id::M61 as i32,
+        (None, false) => -1,
+    }
+}
+
+/// `KillInfo::weapon_name`: the `DeathMsg` weapon, cut to fit with its NUL.
+fn put_weapon_name(out: &mut [std::ffi::c_char; ts_plugin_api::WEAPON_NAME_LEN], name: &str) {
+    for (o, b) in out.iter_mut().zip(name.bytes().take(ts_plugin_api::WEAPON_NAME_LEN - 1).chain(std::iter::repeat(0))) {
+        *o = b as std::ffi::c_char;
+    }
+}
+
+/// Port addition (plugin API version 5): what a ruleset's `PlayerKilled` found about a kill, as
+/// `KillInfo::tags` ([`bits`](Self::bits)). A ruleset leaves what it doesn't have unset.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct KillFlags {
+    pub victims_weapon: bool,
+    pub stopped_fury: bool,
+    pub killed_specialist: bool,
+    pub double_kill: bool,
+    pub diving: bool,
+    pub sliding: bool,
+    pub killed_the_one: bool,
+    /// The spree award this kill reached: `[killer, demolition, specialist, unstoppable]`.
+    pub award: [bool; 4],
+    /// `TSGetPointsForFrag`'s kung-fu frag.
+    pub kung_fu: bool,
+}
+
+impl KillFlags {
+    /// The `ts_plugin_api::kill` bits, with TS's damage globals for the kill from `g`.
+    pub fn bits(&self, g: &Snapshot) -> i32 {
+        use ts_plugin_api::kill as k;
+        let [killer, demolition, specialist, unstoppable] = self.award;
+        [
+            (self.victims_weapon, k::VICTIMS_WEAPON),
+            (self.stopped_fury, k::STOPPED_FURY),
+            (self.killed_specialist, k::KILLED_SPECIALIST),
+            (self.double_kill, k::DOUBLE_KILL),
+            (self.diving, k::DIVING),
+            (self.sliding, k::SLIDING),
+            (self.killed_the_one, k::KILLED_THE_ONE),
+            (killer, k::IS_KILLER),
+            (demolition, k::IS_DEMOLITION),
+            (specialist, k::IS_SPECIALIST),
+            (unstoppable, k::IS_UNSTOPPABLE),
+            (self.kung_fu, k::KUNG_FU),
+            (g.headshot, k::HEADSHOT),
+            (g.close_combat, k::CLOSE_COMBAT),
+            (g.coldcock, k::COLDCOCK),
+        ]
+        .iter()
+        .filter(|(on, _)| *on)
+        .fold(0, |b, (_, bit)| b | bit)
+    }
+}
+
+/// Port addition (plugin API version 5): what `kill_scored` reports.
+#[cfg(test)]
+mod kill_report_tests {
+    use super::{KillFlags, Snapshot, kill_weapon_id, put_weapon_name};
+    use ts_plugin_api::kill;
+
+    #[test]
+    fn the_blow_follows_own_weapon_name() {
+        let none = Snapshot::default();
+        let close = Snapshot { close_combat: true, ..none };
+        let bullet = Snapshot { weapon_id: 13, ..none };
+        let unused = || -> (Option<u8>, bool) { panic!("not asked for a kill by the killer's own hand") };
+        assert_eq!(kill_weapon_id(true, &bullet, Some(5), unused), 13, "a simulated bullet's weapon");
+        assert_eq!(kill_weapon_id(true, &close, Some(12), unused), 0, "Kung Fu");
+        assert_eq!(kill_weapon_id(true, &none, Some(12), unused), 12, "the gun in hand, a stock hit too");
+        assert_eq!(kill_weapon_id(true, &none, Some(0), unused), 0, "world: kung fu out");
+        assert_eq!(kill_weapon_id(true, &none, None, unused), 0, "no gun");
+        assert_eq!(kill_weapon_id(false, &none, Some(12), || (Some(35), false)), 35, "a thrown seal knife");
+        assert_eq!(kill_weapon_id(false, &none, Some(12), || (None, true)), 24, "a grenade");
+        assert_eq!(kill_weapon_id(false, &none, Some(12), || (None, false)), -1, "anything else");
+    }
+
+    #[test]
+    fn flags_become_bits() {
+        let none = Snapshot::default();
+        let tags = KillFlags { stopped_fury: true, double_kill: true, sliding: true, ..Default::default() };
+        assert_eq!(tags.bits(&none), kill::STOPPED_FURY | kill::DOUBLE_KILL | kill::SLIDING);
+        assert_eq!(KillFlags::default().bits(&none), 0);
+        let g = Snapshot { headshot: true, coldcock: true, ..none };
+        let f = KillFlags { award: [false, false, true, false], kung_fu: true, ..Default::default() };
+        assert_eq!(f.bits(&g), kill::IS_SPECIALIST | kill::KUNG_FU | kill::HEADSHOT | kill::COLDCOCK);
+        let all = KillFlags {
+            victims_weapon: true,
+            stopped_fury: true,
+            killed_specialist: true,
+            double_kill: true,
+            diving: true,
+            sliding: true,
+            killed_the_one: true,
+            award: [true; 4],
+            kung_fu: true,
+        };
+        assert_eq!(all.bits(&Snapshot { headshot: true, close_combat: true, coldcock: true, ..none }), 0x7fff, "every bit, once");
+    }
+
+    #[test]
+    fn the_weapon_name_is_cut_to_fit() {
+        let mut out = [1; ts_plugin_api::WEAPON_NAME_LEN];
+        put_weapon_name(&mut out, "Kung Fu");
+        assert_eq!(out[..8], b"Kung Fu\0".map(|b| b as std::ffi::c_char));
+        assert!(out[8..].iter().all(|&c| c == 0));
+        put_weapon_name(&mut out, &"x".repeat(40));
+        assert_eq!(out[30], b'x' as std::ffi::c_char);
+        assert_eq!(out[31], 0, "the NUL kept");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

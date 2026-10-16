@@ -31,7 +31,8 @@ plugin finds nothing (§8, §9, §10).
 | Projectile throwers | `crates/server/src/weapons/projectiles.rs` (`Throwers`) |
 | Private-data guard | `crates/goldsrc/src/edict.rs`, `crates/server/src/world.rs` (`private_size`) |
 | Private-data mirror (version 5, §4.1) | `crates/server/src/pdata.rs` (layouts, sync, take-back; tests in it); block access `goldsrc::edict::{read,write}_private_u32` |
-| Listeners and the stunt, power-up and melee-attack callbacks (version 5) | `crates/server/src/plugins/mod.rs`; the stunts `stunt/moves.rs` (`stunted`), power-ups `rules/powerup.rs`, melee `shared::weapons::GunHost::melee_attack_pre` (`Gun::ccombat_attack`) and `weapons/host.rs` |
+| Listeners and the stunt, power-up and melee-attack callbacks (version 5) | `crates/server/src/plugins/mod.rs`; the stunts `stunt/moves.rs` (`stunted`), power-ups `rules/powerup.rs`, melee `shared::weapons::GunHost::melee_attack_pre` (`Gun::ccombat_attack`: `crates/ts30/src/melee.rs`, `crates/ts21/src/shared/melee.rs`) and `weapons/host.rs` |
+| The scored kill (`kill_scored`, version 5) | the shared report `crates/server/src/rules/scoring.rs` (`kill_report`, `KillFlags`, `report_kill`); each ruleset's `PlayerKilled` fills in its points, sprees and tags: `crates/ts30/server/src/scoring.rs`, `crates/ts21/server/src/scoring.rs` |
 | Entity hooks (version 2, §7): numbering, marshalling, pre/post calls, `ham_execute` | `crates/server/src/ham/` (`mod.rs`, `table.rs`, `classes.rs`, `names.rs`; queries `query.rs`, the gun `gun.rs`; tests in `tests.rs`) |
 | The gun's hookable virtual calls (`Item_*` / `Weapon_*`) | `shared::weapons::Virtual`, `GunHost::virtual_pre` / `virtual_post` (`crates/shared/src/weapons/gun.rs`); the server's in `crates/server/src/weapons/host.rs` |
 | Calling the plugin's hook (FFI), `ham_execute`'s pointer arguments | `crates/server-dll/src/plugin_api.rs` (`call_hook`, `ham_execute`) |
@@ -129,7 +130,9 @@ Version 5 adds:
   ignored) and return non-zero to block the move: no hit, delayed-hit window, crouch,
   `BlockPlayer`, animation or event, but the delay still runs (so a held button doesn't ask every
   frame). Plugins run in order and the first block stops the chain. It runs at once, with the
-  player lent to its slot as for a gun hook (§7.5), so the API reaches it.
+  player lent to its slot as for a gun hook (§7.5), so the API reaches it. TS 2.1 mode asks it
+  from 2.1's own `CCombatAttack` (0x1004de10) with the same semantics: `time` is the move's delay
+  before 2.1's time-scale factor, which then applies to the answer (ts21.md, Scoring).
 * `kill_scored(&KillInfo)` (#197): every death `PlayerKilled` (0x895e4, the 3.0 plugin's
   `scoring::player_killed`) scores, kills, suicides and deaths by the world alike, once the frags,
   `DeathMsg` and `ScoreInfo` went out. `KillInfo` carries the killer (the victim for a suicide, 0
@@ -142,7 +145,11 @@ Version 5 adds:
   `glast_closecombat` / `glast_coldcock`. It is deferred like `on_kill`, so a plugin gets it after
   the victim's `Killed` (its `TSHealth` 0 included), also when the scoring itself was deferred
   for a killer out of reach. A teamplay team change's death (`death_suppressed`) isn't scored and
-  has none. TS 2.1 mode scores with its own `PlayerKilled` and reports nothing (#198).
+  has none. TS 2.1 mode reports from its own `PlayerKilled` (0x1004f7e0) with 2.1's values
+  (#198): its points, sprees and the tags it has (its spree awards at the same counts, its
+  stunt styles, the kung-fu frag); `victims_weapon` and `HEADSHOT` are never set there, as 2.1
+  has neither (ts21.md, Scoring). Both rulesets fill the shared part with
+  `ts_server::rules::scoring::kill_report`.
 
 **Listeners** (version 5): `add_listener(&Plugin)` registers a descriptor for a plugin the server
 didn't load (a metamod plugin, such as `tsmod-amxx-rs`'s tsx). The server checks its `size` and
@@ -327,9 +334,12 @@ block's size and layout don't matter to them.
   changed the copy `GetWeaponData` reads; a write to any other mirrored word that isn't taken
   back is lost at the next sync, where TS kept it (and might have read it). A write is applied up
   to a frame late, and a write the game's own change overtook in that frame wins over it.
-* `melee_attack` is called for TS 3.0's kung fu only (not the stock hit, the blades or the
-  stunts' jump and backflip kicks, nor a ruleset's own `CCombatAttack`, such as TS 2.1 mode's, #198). A
-  blocked or changed move isn't predicted by the client, which plays its own swing.
+* `melee_attack` is called for kung fu only (TS 3.0's and TS 2.1 mode's `CCombatAttack`), not the
+  stock hit, the blades or the stunts' jump and backflip kicks. A blocked or changed move isn't
+  predicted by the client, which plays its own swing.
+* `kill_scored` in TS 2.1 mode carries 2.1's scoring, which has no ` (victims_weapon)` test and no
+  `glast_headshot`: those bits are never set there. Its spree tags and `killer_spree` only change
+  on a scoring kill in DM/TDM, where 2.1's spree part runs.
 * `player_stunt`'s kinds are the port's reading of TS 3.0's moves (`TSState` no longer carries
   them).
 * Entity hooks: §7.6.
@@ -343,9 +353,16 @@ block's size and layout don't matter to them.
   sees the last one's values, the first block stops it, bad values ignored) and listener
   handles (`plugins::tests`); `CCombatAttack`'s hook seeing the move's delay and damage, its
   changes reaching the hit and timers, and a block leaving only the delay
-  (`shared` `weapons::gun::tests::kungfu_melee_attack_hook`); the scored kill's weapon id, tag
-  bits and name (`rules::scoring::kill_report_tests`). The callbacks and the mirror in a
-  live server are `tsmod-amxx-rs`'s e2e (`tsx_e2e.sma`, `ham_e2e.sma`).
+  (`ts30-gameplay` `gun::tests::kungfu_melee_attack_hook`, and 2.1's `ts21-gameplay`
+  `shared::gun::tests::kungfu_melee_attack_hook`); the scored kill's weapon id, tag bits and name
+  (`ts-server` `rules::scoring::kill_report_tests`, 3.0's log tags `ts30-server`
+  `scoring::kill_report_tests`), 2.1's spree outcomes and tags and that its `PlayerKilled` sends
+  the report (`ts21-server` `scoring::tests`). `cargo xtask plugins` exercises them in a live
+  server through the stub (bot-plugins.md §6): a listener added (and a short descriptor refused),
+  heard and removed, `private_size`, a bot's dive (`player_stunt`), a used double fire rate
+  (`player_powerup`), kung-fu moves changed and blocked (`melee_attack`, each answer checked by
+  when the next move comes), and a kill through `Ham_TakeDamage` (`kill_scored`), in TS 3.0 mode.
+  The callbacks and the mirror are also `tsmod-amxx-rs`'s e2e (`tsx_e2e.sma`, `ham_e2e.sma`).
 * Version 4 (`cargo test`): the interface name, the team scores' order and unnamed teams, every
   new `Ham` number and signature (and `TS_GiveSlowMul`'s deviation), which classes the gun's
   functions and the queries fire for, and the gun's virtual calls reaching the host's hook points
