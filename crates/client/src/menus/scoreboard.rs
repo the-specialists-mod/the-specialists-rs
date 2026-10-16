@@ -1036,6 +1036,17 @@ mod tests {
         assert_eq!(header_align(Align::East, 40, 12, 50, 16), (0, -2), "x clamps, y doesn't");
     }
 
+    /// Issue #266: an unoptimised build divides (TS 2.1 0x100a2d60: `fild; fdiv 640.0`), so
+    /// `wide - XRES(4) - end` is exact and the last column a pixel wider than 3.0's.
+    #[test]
+    fn layout_by_division() {
+        let l = crate::hud::vgui::with_scale(crate::hud::vgui::VguiScale::Division, || layout(640, 480));
+        assert_eq!(l.widths, [24, 140, 56, 40, 46, 46, 40, 36]);
+        assert_eq!((l.header.x, l.header.w, l.items.w), (4 + 105, 424, 409));
+        let l = crate::hud::vgui::with_scale(crate::hud::vgui::VguiScale::Division, || layout(1024, 768));
+        assert_eq!((l.panel.x, l.panel.y), (166, 64));
+    }
+
     #[test]
     fn squelch_highlight() {
         let mut b = ScoreBoard { rows: 2, ..ScoreBoard::default() };

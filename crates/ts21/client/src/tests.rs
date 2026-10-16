@@ -1020,3 +1020,45 @@ fn particle_model() {
     assert_eq!(v21().particle_model(), ParticleModel::Decelerate);
     assert_eq!(v30().particle_model(), ParticleModel::Drag);
 }
+
+// Audit round 3: gui
+
+/// Issue #262: 2.1's summary (0x1006b9a0) writes Kevlar and Stealth Shoes in the halved HUD
+/// colour and never red; 3.0's (0x10036af0) in the full colour, red when restricted.
+#[test]
+fn buy_summary_item_colour() {
+    let hud = [255, 160, 0];
+    let r = rules(v21(), 0);
+    assert_eq!(buy::summary_item_rgb(ITEM_KEVLAR, &r, hud), [127, 80, 0]);
+    assert_eq!(buy::summary_item_rgb(ITEM_STEALTH, &r, hud), [127, 80, 0], "never red, whatever the mode");
+    let r30 = rules(v30(), 0);
+    assert_eq!(buy::summary_item_rgb(ITEM_KEVLAR, &r30, hud), hud);
+    assert_eq!(buy::summary_item_rgb(ITEM_STEALTH, &r30, hud), [195, 45, 45], "restricted outside team modes");
+    assert_eq!(buy::summary_item_rgb(ITEM_STEALTH, &rules(v30(), 2), hud), hud);
+}
+
+/// Issue #263: 3.0's `Open` (0x10036670) returns during demo playback; 2.1's (0x1006b3f0)
+/// doesn't check.
+#[test]
+fn buy_menu_opens_in_demos() {
+    assert!(buy::opens(&v21().buy_menu(), true));
+    assert!(!buy::opens(&v30().buy_menu(), true));
+    assert!(buy::opens(&v30().buy_menu(), false) && buy::opens(&v21().buy_menu(), false));
+}
+
+/// Issue #266: 2.1's VGUI code divides (`ScreenHeight / 480.0f * n`, e.g. 0x100a0ea1) with
+/// nothing spilled; 3.0's multiplies by the float reciprocals (0x1007d43c, 0x1007d438).
+#[test]
+fn vgui_scale() {
+    use ts_client::hud::vgui::{self, VguiScale};
+    assert_eq!((v21().vgui_scale(), v30().vgui_scale()), (VguiScale::Division, VguiScale::Reciprocal));
+    let at = |s| vgui::with_scale(s, || (vgui::xs(640), vgui::ys(480), vgui::spill(1.0 + 1e-12)));
+    assert_eq!(at(VguiScale::Division), (1.0, 1.0, 1.0 + 1e-12));
+    let (x, y, sp) = at(VguiScale::Reciprocal);
+    assert!(x > 1.0 && y > 1.0 && sp == 1.0, "3.0's reciprocals sit a hair above; its spills round to float");
+    // MOTD scroll panel height at 640×480: 312 − (48 + 60) exactly in 2.1, a hair under in 3.0.
+    let h = |s| {
+        vgui::with_scale(s, || vgui::ftol(vgui::ftol(vgui::ys(480) * 312.0) as f64 - (vgui::ys(480) * 48.0 + vgui::ys(480) * 30.0 * 2.0)))
+    };
+    assert_eq!((h(VguiScale::Division), h(VguiScale::Reciprocal)), (204, 203));
+}

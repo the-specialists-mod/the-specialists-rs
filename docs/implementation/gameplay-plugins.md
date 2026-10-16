@@ -422,6 +422,7 @@ The hooks so far:
 | `ClientRules` | `local_translucency()` | true (`kRenderTransColor`, `cl_thirdtransparency`) (#240) | `view.rs` `calc_normal` (start) |
 | `ClientRules` | `say_text_style()` | `ts30_client::hud::SAY_TEXT`: muted players' chat dropped, plain lines in (1, 0.7, 0) (#260) | `hud/mod.rs` `say_text_print`, `draw_say_text` |
 | `ClientRules` | `particle_model()` | `ParticleModel::Drag` (`PSys_UpdateDraw` 0x100520d0) (#261) | `effects/psys.rs` `update_draw`, `add`, `sprite`; `effects.rs` (the step) |
+| `ClientRules` | `vgui_scale()` | `VguiScale::Reciprocal`: `XRES`/`YRES` as `ScreenWidth * (1/640)f`, `ScreenHeight * (1/480)f`, with TS's float spills (#266) | `hud::vgui::{xs, ys, spill}` (team menu, MOTD, scoreboard, spectator bar) |
 | `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
 | `ClientRules` | `client_bullet_next_update(now, realbullet)` | `ts30_client::events::next_update`: 0.1 s, 0.05 s or every frame by `realbullet` | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `client_bullet_step(dir, step)` | `dir·velocity·40·dt·GetBulletVelocityMult` | `events/fire.rs` `client_bullet_impact` |
@@ -442,7 +443,7 @@ The hooks so far:
 | `ClientRules` | `melee_reach(m)` | close combat -55/45/35, coldcock 30, knife 35, katana -55/50 | `events/misc.rs` |
 | `ClientRules` | `close_combat_blocks()` / `blade_hit_particles(..)` / `reload_event_phases()` | true / false (scintille + sparks) / true | `events/misc.rs` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
-| `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11; the look: text through `titles.txt` (`text: None`), item rows red by money or slots, six category mouse rows, no "hole" message | `menus/buy.rs`, `menus/mod.rs` |
+| `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11; the look: text through `titles.txt` (`text: None`), item rows red by money or slots, six category mouse rows, no "hole" message, summary items in the full HUD colour or red (`summary_items_dim` false, #262), `Open` refused during demo playback (`refused_in_demo`, #263) | `menus/buy.rs`, `menus/mod.rs` |
 | `ClientRules` | `ground_items_fade()` | true: items past 492 / 206 / 824 units go translucent while `m_iFOV > 79` (`0x10044a5f`) | `effects.rs` `add_entity` |
 | `ClientRules` | `add_entity_spectator() -> SpectatorTail` | `ts30_client::spectator::add_entity_tail`: while `g_iUser1 != 0`, the overview icon and the target hidden in-eye or with inset 2 (`0x10044af9`) | `effects.rs` `add_entity` |
 | `ClientRules` | `laser_style() -> &LaserStyle` | `ts30_client::fx::LASER`: the animated `PlInfo`-coloured local beam, the coloured dot at any range, other players' lasers and flashlights from `V_GetInEyePos` with the hand-line beam, fading TransAlpha shadows | `effects/laser.rs`, `hud/weapons.rs` `draw_laser_dots` |

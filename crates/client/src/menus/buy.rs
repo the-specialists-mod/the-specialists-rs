@@ -144,6 +144,13 @@ pub struct MenuRules {
     /// Centre-printed when a click finds no row and leaves the page unset ([`Hit::Unset`]).
     /// TS 3.0 prints nothing.
     pub hole_message: Option<&'static str>,
+    /// The summary writes an item's name (Kevlar, Stealth Shoes) in the halved HUD colour, never
+    /// red. TS 3.0 (`0x10036af0`) uses the full HUD colour, or red when the item is restricted.
+    pub summary_items_dim: bool,
+    /// `Open` refuses during demo playback (TS 3.0 `0x10036670`). TS 2.1's (`0x1006b3f0`) doesn't
+    /// check, and neither do its callers (`buy` `0x1008db00`, `Spectator` `0x100b28c0`), so a
+    /// played-back demo opens it when the recorded player becomes an observer.
+    pub refused_in_demo: bool,
 }
 
 impl Default for MenuRules {
@@ -173,7 +180,27 @@ impl Default for MenuRules {
             items_red_by_cash_only: false,
             category_rows_by_teamplay: false,
             hole_message: None,
+            summary_items_dim: false,
+            refused_in_demo: true,
         }
+    }
+}
+
+/// Whether `Open` goes ahead: never during demo playback if the menu refuses it
+/// ([`MenuRules::refused_in_demo`]).
+pub fn opens(m: &MenuRules, demo_playing: bool) -> bool {
+    !(demo_playing && m.refused_in_demo)
+}
+
+/// The colour of an item's name in the summary (`FUN_10036af0`'s item branch, TS 2.1
+/// `0x1006b9a0`): see [`MenuRules::summary_items_dim`].
+pub fn summary_item_rgb(id: i32, r: &Rules, hud: [i32; 3]) -> [i32; 3] {
+    if r.menu.summary_items_dim {
+        crate::hud::draw::half(hud)
+    } else if restricted(id, true, r) {
+        RED
+    } else {
+        hud
     }
 }
 
@@ -636,7 +663,9 @@ impl BuyMenu {
     }
 
     /// `RandomConfig` (100398e0): a melee weapon, then by `p`: a pistol (0.1 < p < 0.9), an SMG
-    /// (0.3 < p < 0.7) or a rifle/shotgun (p ≥ 0.7). `p <= 0` picks `p` at random. The result
+    /// (0.3 < p < 0.7) or a rifle/shotgun (p ≥ 0.7). `p <= 0` picks `p` at random. The bounds
+    /// are `double`s (`fcomp QWORD`, 3.0 `0x1007a540`.., 2.1 `0x10267838`..; issue #264): the
+    /// `float` `p` is compared exactly, so `0.1f32` is above 0.1 and `0.7f32` below 0.7. The result
     /// also becomes the last config (`+0x14` copied to `+0x41c` at the end), so the next open
     /// brings it back even if it was never bought.
     pub fn random_config(&mut self, p: f32, r: &Rules, rng: &mut dyn Rng) {
@@ -653,7 +682,8 @@ impl BuyMenu {
         };
         self.add(melee, 0, full, false, r);
         let p = if p <= 0.0 { rng.float(0.0, 1.0) } else { p };
-        if 0.1 < p && p < 0.9 {
+        let pd = p as f64;
+        if 0.1 < pd && pd < 0.9 {
             let (pistols, from) = (r.menu.random_pistols, r.menu.random_pistols_from);
             let last = pistols.len() as i32 - 1;
             // Guarded: the RNG stays in the list.
@@ -663,14 +693,15 @@ impl BuyMenu {
             let att = Self::random_attachments(id, rng);
             self.add(id, att, ak, false, r);
         }
-        if p > 0.3 && p < 0.7 {
+        // `if (p <= 0.3 || 0.7 <= p) { if (p < 0.7) skip; rifle } else SMG`.
+        if !(pd <= 0.3 || 0.7 <= pd) {
             const SMGS: [i32; 6] = [3, 6, 7, 17, 19, 23];
             let k = rng.long(1, 6).clamp(1, 6) as usize - 1;
             let id = SMGS[k];
             let ak = k == 0 && rng.long(0, 1) != 0;
             let att = Self::random_attachments(id, rng);
             self.add(id, att, ak, false, r);
-        } else if p >= 0.7 {
+        } else if pd >= 0.7 {
             const RIFLES: [i32; 11] = [4, 11, 20, 13, 5, 15, 26, 27, 33, 18, 32];
             let k = rng.long(1, 12);
             if (1..=11).contains(&k) {
@@ -1307,6 +1338,28 @@ mod tests {
         assert_eq!(ids, [ITEM_KEVLAR, 25, 12, 13]);
         assert!(m.current.slots <= SLOTS);
         assert_eq!(m.last, m.current, "RandomConfig ends by copying the config to the last one");
+    }
+
+    /// Issue #264: `RandomConfig` compares `p` with `double` bounds (`0x100398e0`): `0.1f32` and
+    /// `0.3f32` are above theirs, `0.7f32` and `0.9f32` below.
+    #[test]
+    fn random_config_double_bounds() {
+        ts30_gameplay::tables::make_default();
+        let r = Rules { buy_kevlar: false, ..rules() };
+        // Melee roll 3 (the katana, one rand), then whatever the branches draw: rand 2 picks the
+        // second pistol, SMG or rifle.
+        let kinds = |p: f32| {
+            let mut m = BuyMenu::default();
+            m.random_config(p, &r, &mut FixedRng(vec![3, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0], 0));
+            let ids: Vec<i32> = m.current.entries.iter().map(|e| e.id).filter(|&id| id != 0 && id != 34).collect();
+            let has = |list: &[i32]| ids.iter().any(|id| list.contains(id));
+            (has(&[36, 1, 9, 12, 14, 2, 21, 22, 28, 31]), has(&[3, 6, 7, 17, 19, 23]), has(&[4, 11, 20, 13, 5, 15, 26, 27, 33, 18, 32]))
+        };
+        assert_eq!(kinds(0.1), (true, false, false), "0.1f32 > 0.1: a pistol");
+        assert_eq!(kinds(0.9), (true, false, true), "0.9f32 < 0.9: a pistol and a rifle");
+        assert_eq!(kinds(0.3), (true, true, false), "0.3f32 > 0.3: an SMG");
+        assert_eq!(kinds(0.7), (true, true, false), "0.7f32 < 0.7: still an SMG, no rifle");
+        assert_eq!(kinds(0.75), (true, false, true));
     }
 
     /// A tiny xorshift for the fuzz tests.

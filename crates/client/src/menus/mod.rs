@@ -52,8 +52,8 @@ struct Menus {
     /// `m_pCurrentMenu` and its `m_pNextMenu` chain.
     queue: Vec<Menu>,
     team: Option<team::TeamMenu>,
-    /// The screen size the team menu was made for.
-    team_size: (i32, i32),
+    /// The screen size and VGUI scale the team menu was made for.
+    team_size: (i32, i32, Option<vgui::VguiScale>),
     /// The scoreboard is shown (`+showscores`).
     scores: bool,
     board: ScoreBoard,
@@ -61,6 +61,16 @@ struct Menus {
     /// The viewport's `m_sMapName` (`+0xa5c`, 64 bytes): `VGUIMenu` 4's map name, or the level's
     /// once a briefing was made from it. `ReInitialize` empties it.
     map_name: Vec<u8>,
+    /// `m_iCurrentTeamNumber` (`+0x214`): the local team number the viewport last saw.
+    team_number: i32,
+}
+
+impl Menus {
+    /// `paintBackground`'s team check (`0x100648c0`, TS 2.1 `0x100b1210`): records `team` as
+    /// `m_iCurrentTeamNumber`; true when it changed (then TS updates the shown menu).
+    fn note_team(&mut self, team: i32) -> bool {
+        std::mem::replace(&mut self.team_number, team) != team
+    }
 }
 
 static MENUS: Global<RefCell<Option<Menus>>> = Global(RefCell::new(None));
@@ -195,12 +205,13 @@ pub fn buy_open() -> bool {
     with(|m| m.buy.active)
 }
 
-/// `CTSBuyMenu::Open` (10036670): refused during demo playback; centres the cursor.
+/// `CTSBuyMenu::Open` (10036670): refused during demo playback (as the ruleset says,
+/// [`buy::MenuRules::refused_in_demo`]); centres the cursor.
 pub fn open_buy() {
-    if engine().demo_playing() {
+    let r = rules();
+    if !buy::opens(&r.menu, engine().demo_playing()) {
         return;
     }
-    let r = rules();
     let opened = with(|m| {
         let was = m.buy.active;
         m.buy.open(&r, &mut EngineRng);
@@ -295,11 +306,13 @@ fn update_team_menu() {
     with(|m| team_menu(m, w, h).update(&inp));
 }
 
-/// The viewport's team menu, made for the screen size.
+/// The viewport's team menu, made for the screen size and the ruleset's VGUI scale (a server of
+/// the other ruleset rebuilds it).
 fn team_menu(m: &mut Menus, w: i32, h: i32) -> &mut team::TeamMenu {
-    if m.team_size != (w, h) {
+    let key = (w, h, Some(vgui::scale()));
+    if m.team_size != key {
         m.team = None;
-        m.team_size = (w, h);
+        m.team_size = key;
     }
     m.team.get_or_insert_with(|| team::TeamMenu::new(w, h, &hud::text::lookup))
 }
@@ -936,8 +949,7 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
                 if bucket != 1 {
                     continue;
                 }
-                let rgb = if buy::restricted(e.id, true, r) { RED } else { dc.hud };
-                dc.string(x, y + 5, &BuyMenu::entry_name(e), rgb);
+                dc.string(x, y + 5, &BuyMenu::entry_name(e), buy::summary_item_rgb(e.id, r, dc.hud));
                 y += 0x30;
                 continue;
             }
@@ -997,6 +1009,12 @@ fn paint_vgui() {
         }
     }
     let cur = with(|m| m.queue.first().map(Menu::id));
+    // `0x10064906`: a new local team number (`g_iTeamNumber`, from the local player's state)
+    // updates the shown menu, which only the team menu acts on (issue #268).
+    let team = engine().local_player().map_or(0, |p| p.curstate.team);
+    if with(|m| m.note_team(team)) && cur == Some(2) {
+        update_team_menu();
+    }
     if wants_cursor() {
         with(|m| match m.queue.first_mut() {
             Some(Menu::Text(_, t)) => t.hover(w, h, cx, cy),
@@ -1103,6 +1121,17 @@ mod tests {
         assert_eq!(p, "", "neither \"rb\" nor \"wb\" opened it");
         assert!(saved.iter().all(|c| *c == buy::Config::default()));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Issue #268: a change of the local team number is seen once (TS then updates the shown
+    /// menu); the same number again isn't a change.
+    #[test]
+    fn team_number_changes() {
+        let mut m = Menus::default();
+        assert!(!m.note_team(0), "starts at 0");
+        assert!(m.note_team(2));
+        assert!(!m.note_team(2));
+        assert!(m.note_team(1) && m.team_number == 1);
     }
 
     #[test]

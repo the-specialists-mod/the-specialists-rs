@@ -219,6 +219,22 @@ mod tests {
         assert!(!m.ok.armed && !m.release(640, 480, 0, 0, true));
     }
 
+    /// Issue #266: TS 2.1's message window (0x100a0ad0) divides by 640/480 with nothing
+    /// spilled, so the scroll panel's `iYSize - (YRES(48) + YRES(30) * 2)` and the OK button's
+    /// `bottom - YRES(16) - YRES(30)` come out exact at 640×480: a pixel more than 3.0's.
+    #[test]
+    fn motd_layout_by_division() {
+        use crate::hud::vgui::{VguiScale, with_scale};
+        let (win, scroll) = with_scale(VguiScale::Division, || layout(640, 480));
+        assert_eq!((win.x, win.y, win.w, win.h), (112, 80, 424, 312));
+        assert_eq!((scroll.x, scroll.y, scroll.w, scroll.h), (128, 128, 392, 204));
+        let m = with_scale(VguiScale::Division, || Motd::for_motd("", "Hi", "OK", true, 640, 480, &|_, w| (w, 12)));
+        assert_eq!((m.ok.x, m.ok.y, m.ok.w, m.ok.h), (128, 346, 160, 30));
+        let (_, s30) = with_scale(VguiScale::Reciprocal, || layout(1920, 1080));
+        let (_, s21) = with_scale(VguiScale::Division, || layout(1920, 1080));
+        assert_eq!((s30.h, s21.h), (458, 459));
+    }
+
     /// The text wraps to the client clip less the forced vertical bar; a short text needs no
     /// bars, a long one gets the vertical bar back.
     #[test]

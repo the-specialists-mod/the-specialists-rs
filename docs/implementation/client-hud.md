@@ -419,7 +419,9 @@ Weapon element colours (issue #92; read from the TS binary). Many are `ftol(colo
   when alive again (except the team page), from `CHudTSWeapons::Draw` (`0x1004d3f0`), so not
   while `nohud`, `HIDEHUD_ALL` or intermission hides the HUD (it stays open, unseen, with its keys
   and cursor); the first open after each `HUD_VidInit` random-buys like TS, and every random
-  config (`100398e0`, also key 7) becomes the last config, so the next open shows it again.
+  config (`100398e0`, also key 7) becomes the last config, so the next open shows it again. Its
+  bounds are `double`s (0.1 < p < 0.9 pistol, 0.3 < p < 0.7 SMG, p ≥ 0.7 rifle), compared with the
+  `float` p exactly (issue #264).
 * `CHudTSWeapons::VidInit` (`0x1004cb50`) re-runs the menu's `Init` (`0x10036200`,
   `BuyMenu::new`): closed, the current and last configs zeroed, the saved ones re-read from
   `tsbuylist.tsa` (`FUN_10036480`, created empty when it can't be read; if that fails too the
@@ -481,7 +483,9 @@ Drawing that TS leaves to the engine's VGUI1 surface:
 * Spectator panel (`TeamFortressViewport` `+0x884`, created by `0x10064410`, filled by
   `UpdateSpectatorPanel` `0x10063870`): the same panel and labels painted with engine fills: the
   `CTransparentPanel` background (black, VGUI alpha 100), the "Primary Button Text" mode label
-  (`YRES(25)`) and "Briefing Text" help label (`YRES(15)` at `YRES(25)`), each `a_north`
+  (`YRES(25)`) and "Briefing Text" help label (`YRES(15)` at `YRES(25)`) in a bar `YRES(40)` tall
+  at `ftol(ScreenHeight − h × (1/480)f × 40)`, in the client's 53-bit arithmetic like the other
+  panels (439 at 480, a pixel above `h − YRES(40)`; **was** `f32`, 440, issue #265), each `a_north`
   (centred, top) in its scheme's foreground colour and font, clipped to the label, with VGUI1's
   `TextImage` rules (`hud::vgui`). Two engine limits remain. The fills are alpha-blended with
   `pfnFillRGBABlend`, which only engines from the 2013 update on have (FWGS, current Steam); on
@@ -495,7 +499,8 @@ Drawing that TS leaves to the engine's VGUI1 surface:
   with engine fills (`hud::vgui`, `menus::{team,motd,scoreboard}`, `voice::redraw`): TS's
   geometry (`XRES`/`YRES` with TS's float constants, which sit a hair above 1/640 and 1/480, so a
   few sizes come out one pixel short of the 640×480 numbers, as in TS; the few values TS spills to a
-  `float` are rounded the same way), colours, scheme fonts, `gfx/vgui/*.tga` images, texts,
+  `float` are rounded the same way; TS 2.1's unoptimised build divides instead and spills nothing,
+  `ClientRules::vgui_scale`, issue #266), colours, scheme fonts, `gfx/vgui/*.tga` images, texts,
   sorting, hover/arm and click behaviour, keys (`KeyInput` `0x10064b90`) and the viewport's menu
   queue. Images follow VGUI1's TGA alpha rules (Valve's `vgui.so`, `BitmapTGA::loadTGA` at
   `0x23880`, as freevgui documents them): uncompressed 32-bit images keep their alpha with
@@ -538,7 +543,9 @@ Drawing that TS leaves to the engine's VGUI1 surface:
     isn't passed to the engine as a key. Panels are laid out from the current screen size each
     frame (TS builds them once with the viewport).
   * `jointeam` from the team menu doesn't set the local `g_iTeamNumber` (TS does, `0x10064a82`,
-    until the next player state); Escape's "has a team" test reads the player state only.
+    until the next player state); Escape's "has a team" test reads the player state only, and so
+    does the viewport's per-frame team check (`paintBackground` `0x100648c0`), which updates the
+    shown team menu when the local team changes (issue #268).
 
 Checks that only matter on input TS mishandles (TS writes or reads out of bounds):
 * `Objective`/`ShowObj` indexes outside 0..31 (TS's check `i >= 0 || i < 32` is always true and

@@ -550,7 +550,9 @@ impl ClientRules for Ts21Client {
     /// items page red by money only (0x1006db50); the category column's mouse rows
     /// `(m_Teamplay != 0) + 5` (0x1006e1b0), so in mode 1 the drawn "0 Go Back" is key 6; and the
     /// centre-printed "A hole in the menu!" where the click finds no row (0x1006e1b0's end,
-    /// `pfnCenterPrint` through `FUN_10068c10`).
+    /// `pfnCenterPrint` through `FUN_10068c10`); the summary's item names in the halved HUD
+    /// colour, never red (0x1006b9a0, issue #262). `Open` (0x1006b3f0) opens during demo playback
+    /// too (issue #263).
     fn buy_menu(&self) -> MenuRules {
         MenuRules {
             handguns: &HANDGUNS,
@@ -566,6 +568,8 @@ impl ClientRules for Ts21Client {
             items_red_by_cash_only: true,
             category_rows_by_teamplay: true,
             hole_message: Some(HOLE_MESSAGE),
+            summary_items_dim: true,
+            refused_in_demo: false,
         }
     }
 
@@ -688,6 +692,16 @@ impl ClientRules for Ts21Client {
     /// 2.1's particle system (`0x10091020`, `0x100902f0`, `0x10090a00`; issue #261).
     fn particle_model(&self) -> ParticleModel {
         ParticleModel::Decelerate
+    }
+
+    // Audit round 3: gui
+
+    /// The unoptimised build's `XRES`/`YRES`: `ScreenWidth / 640.0f`, `ScreenHeight / 480.0f`
+    /// (`fdiv DWORD 0x1026f548` / `0x1026f544`), no spills: the team menu (0x100b2ca0,
+    /// 0x100b3eb0), the message window (0x100a0ad0), the scoreboard (0x100a2d60) and the
+    /// spectator bar (0x100b04d0). Issue #266.
+    fn vgui_scale(&self) -> ts_client::hud::vgui::VguiScale {
+        ts_client::hud::vgui::VguiScale::Division
     }
 }
 

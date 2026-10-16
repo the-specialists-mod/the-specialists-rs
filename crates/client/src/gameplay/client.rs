@@ -441,6 +441,13 @@ pub trait ClientRules: Sync {
 
     /// The particle update ([`ParticleModel`](crate::effects::psys::ParticleModel)).
     fn particle_model(&self) -> crate::effects::psys::ParticleModel;
+
+    // Audit round 3: gui
+
+    /// How the VGUI1 panels (team menu, MOTD, scoreboard, spectator bar) scale TS's 640×480
+    /// layout: an optimised `client.dll`'s float reciprocals and spills, or an unoptimised one's
+    /// division.
+    fn vgui_scale(&self) -> crate::hud::vgui::VguiScale;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -741,6 +748,12 @@ mod stub {
         }
         fn particle_model(&self) -> crate::effects::psys::ParticleModel {
             crate::effects::psys::ParticleModel::Drag
+        }
+
+        // Audit round 3: gui
+
+        fn vgui_scale(&self) -> crate::hud::vgui::VguiScale {
+            crate::hud::vgui::VguiScale::Reciprocal
         }
     }
 }

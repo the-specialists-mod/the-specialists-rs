@@ -600,16 +600,66 @@ fn parse(text: &str) -> Vec<Scheme> {
 
 // ---- layout ---------------------------------------------------------------------------------
 
-/// TS's `XRES` scale: `ScreenWidth * (1/640)` with the constant as the float TS multiplies by
-/// (`0x1007d43c`). The callers multiply by the 640-based size and truncate where TS does
-/// (`__ftol`); the products are exact in `f64`, as in the x87's extended precision.
-pub fn xs(width: i32) -> f64 {
-    width as f64 * 0.0015625f32 as f64
+/// How TS scales its 640×480 VGUI1 layout to the screen (`XRES`/`YRES`), which depends on how
+/// its `client.dll` was built ([`ClientRules::vgui_scale`](crate::gameplay::ClientRules::vgui_scale)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VguiScale {
+    /// An optimised build (TS 3.0): `ScreenWidth * (1/640)f` and `ScreenHeight * (1/480)f`, the
+    /// reciprocals as the floats TS multiplies by (`0x1007d43c`, `0x1007d438`, a hair above the
+    /// exact values), and the few values TS spills to a `float` rounded there ([`spill`]).
+    Reciprocal,
+    /// An unoptimised build (TS 2.1): `ScreenWidth / 640.0f` and `ScreenHeight / 480.0f`
+    /// (`fild; fdiv`), every expression kept on the x87 stack, so nothing is spilled.
+    Division,
 }
 
-/// TS's `YRES` scale: `ScreenHeight * (1/480)` (`0x1007d438`).
+thread_local! {
+    /// The scale for the last HUD ruleset seen (`SrvSett` 4), so the per-cell callers don't
+    /// resolve the ruleset each time.
+    static SCALE: std::cell::Cell<Option<(Option<i16>, VguiScale)>> = const { std::cell::Cell::new(None) };
+    /// A scale forced by [`with_scale`].
+    static FORCED: std::cell::Cell<Option<VguiScale>> = const { std::cell::Cell::new(None) };
+}
+
+/// The HUD ruleset's [`VguiScale`] (or the one [`with_scale`] forces).
+pub fn scale() -> VguiScale {
+    if let Some(s) = FORCED.with(|f| f.get()) {
+        return s;
+    }
+    let id = crate::hud::gameplay_id();
+    SCALE.with(|c| match c.get() {
+        Some((cached, s)) if cached == id => s,
+        _ => {
+            let s = crate::gameplay::hud_rules(id).vgui_scale();
+            c.set(Some((id, s)));
+            s
+        }
+    })
+}
+
+/// Runs `f` with the VGUI scale forced to `s` (tests; the previous one is restored).
+pub fn with_scale<R>(s: VguiScale, f: impl FnOnce() -> R) -> R {
+    let old = FORCED.with(|c| c.replace(Some(s)));
+    let r = f();
+    FORCED.with(|c| c.set(old));
+    r
+}
+
+/// TS's `XRES` scale ([`VguiScale`]). The callers multiply by the 640-based size and truncate
+/// where TS does (`__ftol`); the products are exact in `f64`, as in the x87's 53-bit precision.
+pub fn xs(width: i32) -> f64 {
+    match scale() {
+        VguiScale::Reciprocal => width as f64 * 0.0015625f32 as f64,
+        VguiScale::Division => width as f64 / 640.0,
+    }
+}
+
+/// TS's `YRES` scale ([`VguiScale`]).
 pub fn ys(height: i32) -> f64 {
-    height as f64 * (1.0f32 / 480.0) as f64
+    match scale() {
+        VguiScale::Reciprocal => height as f64 * (1.0f32 / 480.0) as f64,
+        VguiScale::Division => height as f64 / 480.0,
+    }
 }
 
 /// `__ftol`: truncation towards zero.
@@ -617,10 +667,14 @@ pub fn ftol(v: f64) -> i32 {
     v as i32
 }
 
-/// A value TS spills to a `float` on the stack (`fst DWORD PTR`) and reloads: MSVC's x87 code
-/// otherwise keeps double precision, so only these round to single precision.
+/// A value TS 3.0 spills to a `float` on the stack (`fst DWORD PTR`) and reloads: MSVC's x87
+/// code otherwise keeps double precision, so only these round to single precision. TS 2.1's
+/// unoptimised code ([`VguiScale::Division`]) keeps the same values on the x87 stack.
 pub fn spill(v: f64) -> f64 {
-    v as f32 as f64
+    match scale() {
+        VguiScale::Reciprocal => v as f32 as f64,
+        VguiScale::Division => v,
+    }
 }
 
 /// `vgui::Label::Alignment`.
