@@ -297,7 +297,7 @@ fn go_wall_jump(p: &mut Player, cx: &mut Cx, r: Rules) {
     anim::animate(p, cx, 0x37);
     cx.pev().gravity = 0.75;
     let sum = wall_chain_add(crate::rules::cvars::pm_arith(), &mut p.stunt.wall_chain, 0.35);
-    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, sum);
+    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, sum, p.stunt.wall_chain);
     send_next_stunt(p, cx, r);
     stunt_sound(cx, c"player/airwheel.wav");
     maybe_blur(cx, r, 5.0);
@@ -323,7 +323,8 @@ fn go_wall_climb(p: &mut Player, cx: &mut Cx, r: Rules) {
     };
     // Every build stores the sum and loads the float back for the cooldown.
     wall_chain_add(crate::rules::cvars::pm_arith(), &mut p.stunt.wall_chain, add);
-    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, f64::from(p.stunt.wall_chain));
+    let stored = p.stunt.wall_chain;
+    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, f64::from(stored), stored);
     send_next_stunt(p, cx, r);
     stunt_sound(cx, c"player/airwheel.wav");
     p.stunt.wall_climbs += 1;

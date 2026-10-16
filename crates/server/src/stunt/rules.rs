@@ -172,12 +172,12 @@ pub trait StuntClock: Sync {
     }
 
     /// `GoWallJump` (0x9a7d4) / `GoWallClimb` (0x9aa1c): the cooldown after a wall stunt with
-    /// the chain at `chain`: `max(0.5, chain)`. `chain` is the sum as the build's x87 holds it
-    /// (`GoWallJump` under `Msvc` doesn't reload the stored `float`); 3.0 stores the result as a
-    /// `float`, and rounding after the `max` is the same as before it.
-    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, chain: f64) -> f32 {
-        let _ = (now, time_scale);
-        chain.max(0.5) as f32
+    /// the chain at `sum`, as the build's x87 holds it (`GoWallJump` under `Msvc` doesn't reload
+    /// the stored `float`), and `stored`, the chain as stored (`m_flWallChain`). 3.0's is
+    /// `max(0.5, sum)` stored as a `float` (rounding after the `max` is the same as before it).
+    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, sum: f64, stored: f32) -> f32 {
+        let _ = (now, time_scale, stored);
+        sum.max(0.5) as f32
     }
 
     /// `HandleStunt` / `GoWheel`: the "coyote time" an air stunt is still allowed after leaving

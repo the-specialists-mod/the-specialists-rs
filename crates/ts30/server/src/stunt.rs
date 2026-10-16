@@ -109,10 +109,10 @@ mod tests {
         c.tick_block(&mut s, 0.1);
         assert_eq!(s.block_timer, 0.001);
         assert_eq!(c.next_stunt_byte(100.0, 0.55), 5, "truncated, as mp.dll and ts_i386.so");
-        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 0.35), 0.5);
+        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 0.35, 0.35), 0.5);
         // The 53-bit sum mp.dll's GoWallJump keeps is stored as the float the chain holds.
-        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, f64::from(0.3f32) + 0.35).to_bits(), 0x3f26_6667);
-        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 30.0), 30.0, "no cap");
+        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, f64::from(0.3f32) + 0.35, 0.65).to_bits(), 0x3f26_6667);
+        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 30.0, 30.0), 30.0, "no cap");
         assert!(c.air_stunt_allowed(10.0, 1.0, 9.4) && !c.air_stunt_allowed(10.0, 1.0, 9.2));
         // Slowed to 0.5, the window is 1.4 s of real time.
         assert!(c.air_stunt_allowed(10.0, 0.5, 8.7));

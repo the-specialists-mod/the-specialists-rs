@@ -179,13 +179,17 @@ impl StuntClock for Absolute {
     }
 
     /// `GoWallJump` (0x1005b320) / `GoWallClimb` (0x1005b550):
-    /// `time + min(10, slowInv * max(0.5, chain))`. `GoWallJump` passes the unrounded sum on as
-    /// a `double` (`fst dword [esi+0x3c]` then `fstp qword`, 0x1005b436..0x1005b442);
-    /// `GoWallClimb` reloads the stored `float` (0x1005b68c).
-    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, chain: f64) -> f32 {
-        let m = if chain <= 0.5 { 0.5 } else { chain };
-        let v = slow_inv(time_scale) * m;
-        let v = if 10.0 <= v { 10.0 } else { v };
+    /// `time + min(10, slowInv * max(0.5, chain))`. `GoWallJump` tests the cap with the
+    /// unrounded sum (`fst dword [esi+0x3c]` then `fstp qword`, 0x1005b436..0x1005b466) and,
+    /// below the cap, computes the value from the stored `float` again (0x1005b473..0x1005b494);
+    /// `GoWallClimb` reloads the stored `float` throughout (0x1005b68c). Each `max(0.5, ·)` takes
+    /// 0.5 unless the chain is above it (`and eax,0x4100; jne`: a NaN too); the cap takes 10
+    /// unless the product is below it (`test ah,0x5; jp`: a NaN too).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, sum: f64, stored: f32) -> f32 {
+        let at_least_half = |c: f64| if c > 0.5 { c } else { 0.5 };
+        let inv = slow_inv(time_scale);
+        let v = if !(inv * at_least_half(sum) < 10.0) { 10.0 } else { inv * at_least_half(f64::from(stored)) };
         (v + f64::from(now)) as f32
     }
 
@@ -330,15 +334,19 @@ mod tests {
     #[test]
     fn wall_chain_cap() {
         let c = &ABSOLUTE;
-        assert_eq!(c.wall_chain_cooldown(100.0, 1.0, 0.35), 100.5);
-        assert_eq!(c.wall_chain_cooldown(100.0, 1.0, 2.0), 102.0);
-        assert_eq!(c.wall_chain_cooldown(100.0, 1.0, 30.0), 110.0, "capped at 10");
-        assert_eq!(c.wall_chain_cooldown(100.0, 0.35, 4.0), 110.0, "the cap is after slowInv");
-        assert_eq!(c.wall_chain_cooldown(100.0, 0.5, 2.0), 104.0);
-        // GoWallJump's unrounded sum (0.3f + 0.35) against the float GoWallClimb would reload.
+        let cd = |now, ts, chain: f32| c.wall_chain_cooldown(now, ts, f64::from(chain), chain);
+        assert_eq!(cd(100.0, 1.0, 0.35), 100.5);
+        assert_eq!(cd(100.0, 1.0, 2.0), 102.0);
+        assert_eq!(cd(100.0, 1.0, 30.0), 110.0, "capped at 10");
+        assert_eq!(cd(100.0, 0.35, 4.0), 110.0, "the cap is after slowInv");
+        assert_eq!(cd(100.0, 0.5, 2.0), 104.0);
+        // GoWallJump (0x1005b473..0x1005b494): below the cap the value comes from the stored
+        // float chain (0.3f + 0.35 rounded), not the unrounded sum (1.65 - 1 ulp).
         let sum = f64::from(0.3f32) + 0.35;
-        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, sum).to_bits(), 0x3fd3_3333, "1.65 - 1 ulp");
-        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, f64::from(sum as f32)).to_bits(), 0x3fd3_3334);
+        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, sum, sum as f32).to_bits(), 0x3fd3_3334);
+        // The cap test sees the unrounded sum.
+        let sum = 10.0 + 1e-9;
+        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, sum, 9.0), 10.0, "capped on the sum, not the stored chain");
     }
 
     #[test]
