@@ -72,8 +72,9 @@ struct Quality {
     q: f32,
     samples: [f32; 20],
     n: usize,
-    next: f64,
-    next_adapt: f64,
+    /// The next sample and the next adaptation, client-time floats (`0x1018ca64`, `0x1018ca68`).
+    next: f32,
+    next_adapt: f32,
     applied: f32,
     /// The particle pool exists (`g_PSys+8`, `0x1018bdf0`): allocated by the first
     /// `TS_DrawEffects` and never freed (`PSys_Init` `0x100507e0` reallocates it in place), so
@@ -441,6 +442,7 @@ pub fn frame(time: f64, frametime: f64) {
         fx.psys.time_scale = ts;
         fx.psys.hardware = view::hardware();
         fx.psys.model = crate::gameplay::current().particle_model();
+        fx.psys.build = crate::gameplay::current().dll_build();
         fx.psys.slowmo = state::with(|s| s.slowmo_factor100) / 100.0;
         // 0x1003abef: no emission, and no emitter clock, until the first `TS_DrawEffects` has
         // allocated the particle pool (0x10056bc0). TS tests the pool pointer, not 0x1018d16a,
@@ -499,56 +501,90 @@ fn apply_cvar(fx: &mut Fx, cl_fx: f32) {
     fx.psys.tuning.smoke = cl_fx != 0.0;
 }
 
-/// `FX_AdaptQuality` (`0x10057a70`), near the end of `TS_DrawEffects` (`0x10056e45`) and only
-/// while `cl_fx` is exactly 1. It runs after the particles were updated and drawn, so what it
-/// decides takes effect from the next frame's emission and particle pass. It samples the frame
-/// time (`0x10191478`) every 0.1 s into a ring of 20; every second it derives the quality from
-/// the ring's mean (in 1/100 s, 1.11..3.33 maps to 1..0).
+/// `FX_AdaptQuality` (`0x10057a70`; 2.1 `0x100977a0`), near the end of `TS_DrawEffects`
+/// (`0x10056e45`) and only while `cl_fx` is exactly 1. It runs after the particles were updated
+/// and drawn, so what it decides takes effect from the next frame's emission and particle pass.
+/// The quality comes from [`adapt`]; a quality of exactly 0 changes nothing. The intervals are
+/// `f32(min(0.05 / q, 0.3))` from the x87 quotient and the divisor and physics thresholds are
+/// doubles (`0x10057bac..`). 2.1 writes no divisor or physics (its particle update has neither).
 fn adapt_quality(fx: &mut Fx, cl_fx: f32) {
     if cl_fx != 1.0 {
         return;
     }
-    let frametime = fx.frametime;
-    let q = &mut fx.quality;
-    if fx.time < q.next {
-        return;
-    }
-    q.next = fx.time + 0.1;
-    q.samples[q.n % 20] = frametime * 100.0;
-    q.n += 1;
-    if fx.time < q.next_adapt {
-        return;
-    }
-    q.next_adapt = fx.time + 1.0;
-    let avg = q.samples.iter().sum::<f32>() * 0.05;
-    q.q = 1.0 - (avg.clamp(1.11, 3.33) - 1.11) * 0.450_450_45;
-    if q.q == 0.0 {
-        return;
-    }
-    let qq = q.q;
+    let build = crate::gameplay::current().dll_build();
+    let Some(qq) = adapt(&mut fx.quality, fx.time as f32, fx.frametime, build) else { return };
     let ps = &mut fx.psys;
-    let interval = (0.05 / qq).min(0.3);
+    let q = qq as f64;
+    let interval = (if 0.05 / q < 0.3 { 0.05 / q } else { 0.3 }) as f32;
     let smoke = ps.tuning.smoke;
     ps.tuning = psys::FxTuning {
         mult: (qq * 2.0).max(0.1),
         interval,
         puff_interval: interval,
-        dlights: qq >= 0.3,
-        low_detail: qq < 0.3,
+        dlights: q >= 0.3,
+        low_detail: q < 0.3,
         shell_life: (qq * 30.0).max(2.0),
         scale: qq.max(0.25),
         smoke,
     };
-    ps.divisor = if qq < 0.374 {
+    if ps.model == psys::ParticleModel::Decelerate {
+        return;
+    }
+    ps.divisor = if q < 0.374 {
         6.0
-    } else if qq < 0.599 {
+    } else if q < 0.599 {
         4.0
-    } else if qq < 0.749 {
+    } else if q < 0.749 {
         2.0
     } else {
         1.0
     };
-    ps.physics = qq > 0.374;
+    ps.physics = q > 0.374;
+}
+
+/// The quality step of `FX_AdaptQuality` at client time `t`: every 0.1 s (`next = f32(t + 0.1)`)
+/// it samples `f32(frametime × 100f)` into a ring of 20; every second (`f32(t + 1f)`) it sums the
+/// ring in float steps and maps its mean, in 1/100 s, from 1.11..3.33 to 1..0. `None` when it is
+/// not time yet or the quality is exactly 0.
+///
+/// 3.0 (`0x10057b17..0x10057b8e`): the mean `f32(sum × 0.05f)`, clamped against the doubles 1.11
+/// and 3.33 on the x87 and `1 − (c − 1.11) × 0.45045045f` rounded once. 2.1
+/// (`0x10097869..0x10097932`): `f32(sum / 20f)`, the clamp stored, then `c − 1.11`, `/ 2.22f` and
+/// `1 − x` each stored, so a mean of 3.33 or more gives exactly 0 and no change.
+fn adapt(q: &mut Quality, t: f32, frametime: f32, build: crate::gameplay::DllBuild) -> Option<f32> {
+    if t < q.next {
+        return None;
+    }
+    q.next = (t as f64 + 0.1) as f32;
+    q.samples[q.n % 20] = frametime * 100.0;
+    q.n += 1;
+    if t < q.next_adapt {
+        return None;
+    }
+    q.next_adapt = t + 1.0;
+    let sum = q.samples.iter().fold(0.0f32, |s, &x| s + x);
+    let clamp = |avg: f64| {
+        if avg <= 1.11 {
+            1.11
+        } else if avg < 3.33 {
+            avg
+        } else {
+            3.33
+        }
+    };
+    q.q = match build {
+        crate::gameplay::DllBuild::Optimised => {
+            let c = clamp((sum * 0.05) as f64);
+            (1.0 - (c - 1.11) * 0.450_450_45f32 as f64) as f32
+        }
+        crate::gameplay::DllBuild::Debug => {
+            let c = clamp((sum / 20.0) as f64) as f32;
+            let x = (c as f64 - 1.11) as f32;
+            let x = x / 2.22;
+            (1.0 - x as f64) as f32
+        }
+    };
+    (q.q != 0.0).then_some(q.q)
 }
 
 /// `GetCullOrigin` (`0x10057270`): the eye in third person, otherwise the view origin. TS's
@@ -585,7 +621,9 @@ pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
     } else {
         let bits = e.curstate.iuser4;
         if let Some(cull_dist) = ItemCull::for_bits(bits) {
-            if beyond_distance(e.origin, cull, cull_dist.max, fov) || !psys::in_view_cone(&cam, cull, e.origin) {
+            if beyond_distance(e.origin, cull, cull_dist.max, fov)
+                || !psys::in_view_cone(crate::gameplay::current().dll_build(), &cam, cull, e.origin)
+            {
                 return false;
             }
             // 2.1 (`0x1007b4c0`) has no fade: the item is solid up to the cull distance.
@@ -910,6 +948,35 @@ pub fn studio_event(ev: &mstudioevent_s, ent: &cl_entity_t) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `FX_AdaptQuality` (3.0 0x10057a70, 2.1 0x100977a0): what its last adaptation over six
+    /// seconds of frames of `ft` (sampled every 0.15 s) applied.
+    fn adapted(ft: f32, build: crate::gameplay::DllBuild) -> Option<f32> {
+        let mut q = Quality::default();
+        let mut last = None;
+        for i in 0..40 {
+            let before = q.next_adapt;
+            let r = adapt(&mut q, i as f32 * 0.15, ft, build);
+            if q.next_adapt != before {
+                last = Some(r);
+            }
+        }
+        last.flatten()
+    }
+
+    /// A 25 ms frame (mean 2.5): 3.0's `1 − (c − 1.11) × 0.45045045f` rounded once
+    /// (0x10057b8e) is 0x3ebf6c65; 2.1's stored steps and `/ 2.22f` (0x10097932) 0x3ebf6c66. At
+    /// 50 ms the mean saturates: 3.0 still applies a tiny quality, 2.1's is exactly 0 and changes
+    /// nothing.
+    #[test]
+    fn adaptive_quality_forms() {
+        use crate::gameplay::DllBuild::{Debug, Optimised};
+        assert_eq!(adapted(0.025, Optimised).map(f32::to_bits), Some(0x3ebf_6c65));
+        assert_eq!(adapted(0.025, Debug).map(f32::to_bits), Some(0x3ebf_6c66));
+        let q = adapted(0.05, Optimised).expect("3.0 adapts at saturation");
+        assert!(q > 0.0 && q < 1e-6, "{q}");
+        assert_eq!(adapted(0.05, Debug), None);
+    }
 
     #[test]
     fn fog_sources() {

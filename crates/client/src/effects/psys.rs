@@ -1,9 +1,10 @@
 //! TS sprite particle system (`g_PSys` `0x1018bde8`; rendering doc §5.2-5.4). Map emitters
 //! (type 3) and every weapon effect (muzzle flashes, smoke, sparks, debris) share it.
 //!
-//! Units follow the TS structures where the doc gives them: `radius += dt*scalespeed*100`,
-//! `color -= dt*fadespeed*100`, gravity 1.0 = `sv_gravity` u/s^2. Velocities are stored in units per
-//! second here (TS keeps units per 0.1 s; templates are converted on spawn).
+//! Units are TS's own: `radius += dt*scalespeed*100`, `color -= dt*fadespeed*100`, gravity 1.0 =
+//! a tenth of `sv_gravity`, and velocities and angular velocities per 0.1 s (`origin += vel ×
+//! f32(dt × 10)`), so every sum TS rounds is rounded in the same units (issue #286). Each step
+//! keeps TS's float forms: an x87 value is an `f64`, a value TS stores a `f32`.
 //!
 //! The pool is TS's: a fixed array of slots (`PSys_Init` `0x100507e0`, 256..4096 of them),
 //! filled at the first free slot (`PSys_Add` `0x10050b60`, which drops the new particle when
@@ -28,7 +29,7 @@ pub enum ParticleModel {
     #[default]
     Drag,
     /// The older update ([`decel`]): gravity a tenth of `Drag`'s and only when positive, a fixed
-    /// deceleration toward 33 u/s instead of drag, no think step, its own collision (a particle
+    /// deceleration toward 3.3 TS units (33 u/s) instead of drag, no think step, its own collision (a particle
     /// that lands stops for good), life on the raw slow-motion factor, no stretch or fade-in; a
     /// 2048-slot pool and 32 sprites keyed by name.
     Decelerate,
@@ -92,10 +93,10 @@ pub struct Particle {
     pub sprite: i16,
     pub origin: Vec3,
     pub prev: Vec3,
-    /// Units per second.
+    /// `+0x38`: TS units, per 0.1 s.
     pub vel: Vec3,
     pub angles: Vec3,
-    /// Degrees per second.
+    /// `+0x44`: degrees per 0.1 s.
     pub avel: Vec3,
     pub randvel_lo: Vec3,
     pub randvel_hi: Vec3,
@@ -128,7 +129,7 @@ pub struct Particle {
     /// 0 none, 1 kill, 2 kill + spawn target, 3 spawn target, [`ONCOLLIDE_BLOOD`],
     /// [`ONCOLLIDE_BLOOD_DECAL`].
     pub oncollide: u8,
-    /// Random-drift accumulator (`+0x68`), units per second.
+    /// Random-drift accumulator (`+0x68`), TS units.
     pub drift: Vec3,
     pub target: Option<u16>,
     pub resting: bool,
@@ -223,16 +224,20 @@ impl Wind {
         self.base = speed;
         self.seg_start = now;
     }
-    fn lerp_k(&self, now: f64) -> f32 {
-        // `CosineLerp` (`0x10050760`) with `t = (now - start) / len`, unclamped (the step below
-        // runs first, so t <= 1 except right after `TSPSys`).
-        let t = ((now - self.seg_start) as f32) / self.seg_len;
-        (1.0 - (t * std::f32::consts::PI).cos()) * 0.5
+    /// `CosineLerp` (`0x10050760`)'s weight, in doubles: `(1 − cos(t·π)) · 0.5` with
+    /// `t = f32((now − start) / len)` (the difference unrounded), unclamped (the step below runs
+    /// first, so t <= 1 except right after `TSPSys`).
+    fn lerp_k(&self, now: f64) -> f64 {
+        let t = ((now - self.seg_start) / self.seg_len as f64) as f32;
+        (1.0 - (t as f64 * std::f64::consts::PI).cos()) * 0.5
+    }
+    /// `CosineLerp(a, b)`: `(1 − k)·a + k·b` on the x87, stored by the caller.
+    fn lerp(k: f64, a: f32, b: f32) -> f32 {
+        ((1.0 - k) * a as f64 + k * b as f64) as f32
     }
     /// The interpolated gust speed.
     pub fn speed(&self, now: f64) -> f32 {
-        let k = self.lerp_k(now);
-        (1.0 - k) * self.speed_from + k * self.speed_to
+        Self::lerp(self.lerp_k(now), self.speed_from, self.speed_to)
     }
     /// `Particle_Think`'s segment step (`0x10051aa1..0x10051b69`), run by the think of a wind
     /// particle: once `start + len < now`, `from` takes the `to` speed and direction, the new `to`
@@ -251,19 +256,21 @@ impl Wind {
         self.seg_len = shared_random_float(s, 0.001, 1.0);
         self.seed = shared_random_long(s, 0, 30000);
     }
-    /// `normalize(dir)·speed` (TS units per 0.1 s), or `None` unless the speed is positive
-    /// (`0x10051bc4`).
-    pub fn velocity(&self, now: f64) -> Option<Vec3> {
+    /// The gust's direction and speed (TS units per 0.1 s), or `None` unless the speed is positive
+    /// (`0x10051a72..0x10051bc4`): each direction component and the speed a stored `CosineLerp`,
+    /// the direction times the x87 reciprocal of its length `(z² + y²) + x²`.
+    pub fn velocity(&self, now: f64) -> Option<(Vec3, f32)> {
         let k = self.lerp_k(now);
-        let speed = (1.0 - k) * self.speed_from + k * self.speed_to;
+        let speed = Self::lerp(k, self.speed_from, self.speed_to);
         // NaN (a zero-length segment right after `TSPSys`) fails the test too.
         if speed.is_nan() || speed <= 0.0 {
             return None;
         }
-        let dir = v::add(v::scale(self.dir_from, 1.0 - k), v::scale(self.dir_to, k));
-        let l = v::len(dir);
-        let n = if l == 0.0 { [0.0, 0.0, 1.0] } else { v::scale(dir, 1.0 / l) };
-        Some(v::scale(n, speed))
+        let dir = [0, 1, 2].map(|i| Self::lerp(k, self.dir_from[i], self.dir_to[i]));
+        let d = dir.map(|c| c as f64);
+        let l = ((d[2] * d[2] + d[1] * d[1]) + d[0] * d[0]).sqrt();
+        let n = if l == 0.0 { [0.0, 0.0, 1.0] } else { dir.map(|c| (c as f64 * (1.0 / l)) as f32) };
+        Some((n, speed))
     }
 }
 
@@ -338,6 +345,8 @@ pub struct PSys {
     pub hardware: bool,
     /// The ruleset's update (set each frame).
     pub model: ParticleModel,
+    /// The ruleset's `client.dll` build, whose float forms the view cone follows (set each frame).
+    pub build: crate::gameplay::DllBuild,
     /// The last `TSSlowMo` factor as sent ÷ 100 (0 at normal speed), which
     /// [`ParticleModel::Decelerate`] runs the particles' life on (set each frame).
     pub slowmo: f32,
@@ -363,6 +372,7 @@ impl Default for PSys {
             gravity: 800.0,
             hardware: true,
             model: ParticleModel::Drag,
+            build: crate::gameplay::DllBuild::Optimised,
             slowmo: 0.0,
         }
     }
@@ -377,6 +387,13 @@ pub struct Camera {
     pub right: Vec3,
     pub up: Vec3,
     pub fov: f32,
+}
+
+/// A velocity in units per second as TS's particle units (per 0.1 s): `v / 10.0f` per component
+/// (`Vector::operator/`, 3.0 `0x1003efb0`, 2.1 `0x10069fd0`), as the fire events hand the
+/// shooter's velocity to the muzzle flash and gun smoke.
+pub fn ts_units(v: Vec3) -> Vec3 {
+    v.map(|c| c / 10.0)
 }
 
 /// TS's `GetClientTime()` (a float).
@@ -394,7 +411,7 @@ impl PSys {
     pub fn debug(&self, cam: &Camera) -> String {
         let live = || self.parts.iter().filter(|p| p.alive);
         let near = live().map(|p| v::dist(p.origin, cam.origin)).fold(f32::MAX, f32::min);
-        let inview = live().filter(|p| in_view_cone(cam, self.cull_origin, p.origin)).count();
+        let inview = live().filter(|p| in_view_cone(self.build, cam, self.cull_origin, p.origin)).count();
         let sample =
             live().next().map(|p| format!("org {:?} r {:.1} c {:.2} life {:.1} spr {}", p.origin, p.radius, p.color, p.life, p.sprite));
         format!("nearest {near:.0} inview {inview} cam {:?} first {:?} pool {} high {}", cam.origin, sample, self.parts.len(), self.high)
@@ -521,7 +538,12 @@ impl PSys {
     /// cull origin, ignoring the local player, that must not hit anything), the culls most effects
     /// start with.
     pub fn visible(&self, pos: Vec3) -> bool {
-        in_view_cone(&self.cam, self.cull_origin, pos) && point_visible(self.cull_origin, pos)
+        self.in_view(pos) && point_visible(self.cull_origin, pos)
+    }
+
+    /// [`in_view_cone`] from the last pass's camera and cull origin, in the build's float forms.
+    pub fn in_view(&self, pos: Vec3) -> bool {
+        in_view_cone(self.build, &self.cam, self.cull_origin, pos)
     }
 
     /// The live particles of the last update's push list (`+0xc14`), by slot.
@@ -529,21 +551,23 @@ impl PSys {
         self.react_list.iter().map(|&i| i as usize).filter(|&i| self.parts[i].alive).collect()
     }
 
-    /// The velocity, resting and spin kick the line pushes give (`0x10052720`, `0x10052c80`).
-    fn kick(p: &mut Particle, dv: Vec3) {
-        p.vel = v::add(p.vel, dv);
+    /// The resting hop and spin kick the line pushes give after the velocity (`0x10052c04..`,
+    /// `0x10052f60..`): a resting particle gets `|vel.z| + 2` and moves again, a rolling quad
+    /// `RandomFloat(−90, 90)` more spin.
+    fn kick(p: &mut Particle) {
         if p.resting {
-            p.vel[2] = p.vel[2].abs() + 20.0;
+            p.vel[2] = p.vel[2].abs() + 2.0;
             p.resting = false;
         }
         if p.orient == ORIENT_ROLL {
-            p.avel[2] += r::random_float(-900.0, 900.0);
+            p.avel[2] += r::random_float(-90.0, 90.0);
         }
     }
 
     /// `PSys_PushRadial(org, NULL, radius, strength)` (`0x100524c0`): particles on the push list
-    /// within `radius` get `strength·(radius − d)/radius` (TS units, ×10 here) away from `org`,
-    /// without the react factor. Resting ones hop.
+    /// within `radius` get `strength·(radius − d)/radius` away from `org`, without the react
+    /// factor. Resting ones hop. `f = f32((r − d)/r)` from the x87 length; x's push is one x87
+    /// expression, y's and z's store `n × strength` and `× f` first.
     pub fn push_radial(&mut self, org: Vec3, radius: f32, strength: f32) {
         if !self.physics {
             return;
@@ -551,77 +575,95 @@ impl PSys {
         for i in self.pushed() {
             let p = &mut self.parts[i];
             let d = v::sub(p.origin, org);
-            let dist = v::len(d);
-            if dist > radius {
+            let dist = len_x87(d);
+            if dist > radius as f64 {
                 continue;
             }
-            let f = (radius - dist) / radius;
-            let n = v::normalize(d);
-            p.vel = v::ma(p.vel, strength * f * 10.0, n);
+            let n = norm_x87(d, d);
+            let f = ((radius as f64 - dist) / radius as f64) as f32;
+            let (sf, ff) = (strength as f64, f as f64);
+            p.vel[0] = (n[0] as f64 * sf * ff + p.vel[0] as f64) as f32;
+            for (v, n) in p.vel.iter_mut().zip(n).skip(1) {
+                *v = (((n * strength) as f64 * ff) as f32 as f64 + *v as f64) as f32;
+            }
             if p.resting {
                 if p.vel[2] < 0.0 {
-                    p.vel[2] = p.vel[2].abs() * f * 0.5;
+                    p.vel[2] = (p.vel[2].abs() as f64 * ff * 0.5) as f32;
                 }
-                p.vel[2] += f * 100.0;
+                p.vel[2] = (ff * 10.0 + p.vel[2] as f64) as f32;
                 p.resting = false;
             }
             if p.orient == ORIENT_ROLL {
-                p.avel[2] += r::random_float(-900.0, 900.0) * f;
+                p.avel[2] = (r::random_float(-90.0, 90.0) as f64 * ff + p.avel[2] as f64) as f32;
             }
         }
     }
 
     /// `PSys_PushAlongLine(a, b, radius, swirl)` (`0x10052720`): particles on the push list within
     /// `radius` of the bullet line (TS's distance, see [`heron_height`]) and inside the sphere
-    /// `|mid − p| < |mid − b| − 100` are pushed *along* the bullet by `(radius − h)·react`, plus a
-    /// sideways swirl for some ammo.
+    /// `|mid − p| < |mid − b| − 100` are pushed *along* the bullet by `(radius − h)·react`, and,
+    /// for some ammo, sideways by the same amount in a second add. Each vector step is stored
+    /// (`0x1003d240`, `0x10035b10`).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // TS's x87 tests: an unordered (NaN) value fails them
     pub fn push_along_line(&mut self, a: Vec3, b: Vec3, radius: f32, swirl: bool) {
         if !self.physics {
             return;
         }
         let ab = v::sub(b, a);
-        let len = v::len(ab);
-        if len <= 0.0 {
+        let len = len_x87(ab) as f32;
+        let dir = norm_x87(ab, [0.0, 0.0, 1.0]);
+        let mid = v::scale(v::add(a, b), 0.5);
+        let reach = (len_x87(v::sub(mid, b)) - 100.0) as f32;
+        if !(reach > 0.0) {
             return;
         }
-        let dir = v::scale(ab, 1.0 / len);
-        let mid = v::scale(v::add(a, b), 0.5);
-        let reach = v::dist(mid, b) - 100.0;
         for i in self.pushed() {
             let p = &mut self.parts[i];
-            if v::dist(mid, p.origin) >= reach {
+            if !(len_x87(v::sub(mid, p.origin)) < reach as f64) {
                 continue;
             }
-            let h = heron_height(v::dist(p.origin, a), v::dist(p.origin, b), len);
-            if h >= radius {
+            let da = len_x87(v::sub(p.origin, a)) as f32;
+            let db = len_x87(v::sub(p.origin, b));
+            let h = heron_height_x87(da, db, len);
+            if !(h < radius as f64) {
                 continue;
             }
-            let k = (radius - h) * p.react * 10.0;
-            let mut dv = v::scale(dir, k);
+            let k = (radius as f64 - h) as f32;
+            let react = p.react;
+            p.vel = v::add(p.vel, v::scale(v::scale(dir, k), react));
             if swirl {
-                dv = v::ma(dv, k, v::cross(dir, v::normalize(v::sub(p.origin, a))));
+                let side = cross_x87(dir, norm_x87(v::sub(p.origin, a), [0.0, 0.0, 1.0]));
+                p.vel = v::add(p.vel, v::scale(v::scale(side, k), react));
             }
-            Self::kick(p, dv);
+            Self::kick(p);
         }
     }
 
     /// `PSys_BlastPush(org, dir, radius, fwd)` (`0x10052c80`, the muzzle blast): particles on the
-    /// push list within `radius` of `org + dir̂·fwd` get `(radius − |dir|)/4` (TS units; the same
-    /// for every particle, as in TS) away from `org`. A zero vector normalises to (0, 0, 1).
+    /// push list within `fwd` of `org + dir̂·fwd` (`0x10052e26` compares with the forward offset,
+    /// not `radius`) get `(radius − |dir|)/4` (the same for every particle, as in TS) away from
+    /// `org`. A zero vector normalises to (0, 0, 1).
     pub fn blast_push(&mut self, org: Vec3, dir: Vec3, radius: f32, fwd: f32) {
         if !self.physics {
             return;
         }
-        // TS also needs `|dir| <= radius` (0x10052e8d..0x10052ea5).
-        if v::len(dir) > radius {
+        let x = dir.map(|c| c as f64);
+        let dlen = (x[1] * x[1] + x[2] * x[2]) + x[0] * x[0];
+        // TS also needs `|dir| <= radius` (0x10052e8d..0x10052ea5), with the stored length.
+        let dlen_f = dlen.sqrt() as f32;
+        if dlen_f > radius {
             return;
         }
-        let c = v::ma(org, fwd, normalize_up(dir));
-        let k = (radius - v::len(dir)) * 0.25 * 10.0;
+        let n = if dlen == 0.0 { [0.0, 0.0, 1.0] } else { dir.map(|c| (c as f64 * (1.0 / dlen.sqrt())) as f32) };
+        let c = v::ma(org, fwd, n);
+        let k = radius - dlen_f;
         for i in self.pushed() {
             let p = &mut self.parts[i];
-            if v::dist(c, p.origin) <= radius {
-                Self::kick(p, v::scale(normalize_up(v::sub(p.origin, org)), k));
+            let d = v::sub(c, p.origin).map(|c| c as f64);
+            if ((d[2] * d[2] + d[1] * d[1]) + d[0] * d[0]).sqrt() <= fwd as f64 {
+                let push = v::scale(norm_x87(v::sub(p.origin, org), [0.0, 0.0, 1.0]), k).map(|c| c / 4.0);
+                p.vel = v::add(p.vel, push);
+                Self::kick(p);
             }
         }
     }
@@ -668,16 +710,20 @@ impl PSys {
             if p.react > 0.0 {
                 self.react_list.push(i as u16);
             }
-            // 2. fade once the life is over, clamped to 0..1 (0x10052266..0x100522ca); scale.
+            // 2. fade once the life is over, clamped to 0..1 on the x87 value (0x10052266..0x100522ca);
+            // scale (one rounding each).
             if p.fadespeed != 0.0 && p.life <= 0.0 {
-                let mut c = p.color - dt * p.fadespeed * 100.0;
-                if c <= 0.0 {
-                    c = 0.0;
-                }
-                p.color = if c > 1.0 { 1.0 } else { c };
+                let c = p.color as f64 - dt as f64 * p.fadespeed as f64 * 100.0;
+                p.color = if c <= 0.0 {
+                    0.0
+                } else if c > 1.0 {
+                    1.0
+                } else {
+                    c as f32
+                };
             }
             if p.scalespeed != 0.0 {
-                p.radius += dt * p.scalespeed * 100.0;
+                p.radius = (dt as f64 * p.scalespeed as f64 * 100.0 + p.radius as f64) as f32;
             }
             p.visible = p.sprite >= 0;
             // 3. `Particle_Move`.
@@ -689,7 +735,7 @@ impl PSys {
             }
             let p = &mut self.parts[i];
             if p.framerate != 0.0 && p.life < 0.001 {
-                p.frame += dt * p.framerate;
+                p.frame = (dt as f64 * p.framerate as f64 + p.frame as f64) as f32;
             }
             p.life -= dt;
             i += 1;
@@ -699,6 +745,7 @@ impl PSys {
 
     /// `Particle_Move` (`0x10050ce0`) for slot `i`, up to the quad (built when drawn). Nothing
     /// moves or thinks while resting (0x10050de1).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // TS's x87 tests: an unordered (NaN) value fails them
     fn particle_move(
         &mut self,
         i: usize,
@@ -708,60 +755,81 @@ impl PSys {
         players: &[(Vec3, Vec3)],
         collision: &mut dyn FnMut(&mut PSys, Collision),
     ) {
+        // `f32(divisor × 0.033333335f)`, at least the frame time (0x100512ff).
         let think_iv = (self.divisor * 0.033_333_335).max(dt);
         let (physics, sv_gravity, cull) = (self.physics, self.gravity, self.cull_origin);
         // Zoomed in, the think and trace distances halve (`gHUD.m_iFOV < 40`, 0x10051276, 0x10051e0b).
         let zoom_scale = if (cam.fov as i32) < 40 { 0.5 } else { 1.0 };
         let p = &mut self.parts[i];
         if !p.resting {
-            // `vel.z -= dt·gravity·0.1·cl_gravity` in TS units (0x10050e0c).
-            p.vel[2] -= sv_gravity * dt * p.gravity;
-            let k = (p.drag * dt).min(1.0);
-            p.vel[0] -= k * p.vel[0];
-            p.vel[1] -= k * p.vel[1];
-            p.vel[2] -= k * (1.0 - p.gravity.abs()).max(0.0) * p.vel[2];
+            // `dt × 10f`, stored (0x10050def).
+            let dt10 = dt * 10.0;
+            // `vel.z += dt·gravity·0.1·−cl_gravity` on the x87, stored, then added (0x10050e0c).
+            if p.gravity != 0.0 {
+                let gz = (dt as f64 * p.gravity as f64 * 0.1 * -(sv_gravity as f64)) as f32;
+                p.vel[2] += gz;
+            }
+            // Drag (0x10050e8b..0x10050f81): `k = min(drag·dt, 1)` and z's `1 − |g|` (0 when not
+            // above 0) on the x87, each step `k·v` stored, then subtracted.
+            let g = p.gravity.abs() as f64;
+            let fz = if 1.0 - g > 0.0 { 1.0 - g } else { 0.0 };
+            let k = p.drag as f64 * dt as f64;
+            let k = if k >= 1.0 { 1.0 } else { k };
+            let step = [(k * p.vel[0] as f64) as f32, (p.vel[1] as f64 * k) as f32, (fz * p.vel[2] as f64 * k) as f32];
+            p.vel = v::sub(p.vel, step);
             // `Particle_Think` (0x10051270) runs before the move (0x10050f84).
             if now > p.next_think {
-                let near = v::dist(p.origin, cull) * zoom_scale < 512.0;
-                // Random drift: steer an accumulator toward a fresh random target by at
-                // most `randomdelta` (3D length), then add it to the velocity.
+                let near = ((len_x87(v::sub(p.origin, cull)) * zoom_scale as f64) as f32) < 512.0;
+                // Random drift (0x1005134a..0x10051563): steer an accumulator toward a fresh
+                // random target by at most `randomdelta` (3D length), then add it to the velocity.
                 if p.randomdelta != 0.0 && near {
                     let t = [0, 1, 2].map(|i| r::random_float(p.randvel_lo[i], p.randvel_hi[i]));
-                    let step = v::sub(t, p.drift);
-                    let len = v::len(step);
-                    let step = if len > p.randomdelta { v::scale(step, p.randomdelta / len) } else { step };
-                    p.drift = v::add(p.drift, step);
+                    let mut step = v::sub(t, p.drift);
+                    let x = step.map(|c| c as f64);
+                    if ((x[0] * x[0] + x[2] * x[2]) + x[1] * x[1]).sqrt() > p.randomdelta as f64 {
+                        let rd = p.randomdelta as f64;
+                        step = norm_x87(step, [0.0, 0.0, 1.0]).map(|c| (c as f64 * rd) as f32);
+                    }
+                    p.drift = v::add(step, p.drift);
                     p.vel = v::ma(p.vel, think_iv, p.drift);
                 }
-                // React (0x10051566..0x10051a5f): players within 128 units move the
+                // React (0x10051573..0x10051a5f): players within 128 units move the
                 // particle's *origin* along the direction to it, by how far it lies along
                 // their horizontal motion (`dot` < 0 pulls it in behind them).
                 if physics && p.react != 0.0 && near {
+                    let ivr = think_iv as f64 * p.react as f64;
                     for (porg, pvel) in players {
                         let d = v::sub(p.origin, *porg);
-                        let dist = v::len(d);
-                        let speed = v::len2d(*pvel);
-                        if dist > 128.0 || dist <= 0.0 || speed <= 0.0 {
+                        let dist = len_x87(d);
+                        if !(dist <= 128.0) {
                             continue;
                         }
-                        let (dn, vd) = (v::scale(d, 1.0 / dist), [pvel[0] / speed, pvel[1] / speed]);
-                        let dot = dn[0] * vd[0] + dn[1] * vd[1];
-                        let k = (128.0 - dist) * speed * dot / 128.0 * think_iv * p.react;
-                        p.origin[0] += dn[0] * k;
-                        p.origin[1] += dn[1] * k;
+                        let (vx, vy) = (pvel[0] as f64, pvel[1] as f64);
+                        let speed = (vx * vx + vy * vy).sqrt();
+                        if !(speed > 0.0) {
+                            continue;
+                        }
+                        let vd = [(vx * (1.0 / speed)) as f32, (vy * (1.0 / speed)) as f32];
+                        let dn = norm_x87(d, [0.0, 0.0, 1.0]);
+                        let dot = (dn[0] as f64 * vd[0] as f64 + dn[1] as f64 * vd[1] as f64) as f32;
+                        let k1 = (128.0 - dist as f32 as f64) * speed as f32 as f64 * dot as f64 * 0.0078125;
+                        for (o, n) in p.origin.iter_mut().zip(dn).take(2) {
+                            *o += ((n as f64 * k1) as f32 as f64 * ivr) as f32;
+                        }
                     }
                 }
-                // Wind (0x10051a72): the segment steps here, inside a wind particle's think.
-                // TS units per 0.1 s, so x10 here.
+                // Wind (0x10051a72..0x10051ce8): the segment steps here, inside a wind
+                // particle's think; `n × ((speed × T) × wind)` stored, then added.
                 if physics && p.wind != 0.0 {
                     self.wind.advance(now as f64);
-                    if let Some(w) = self.wind.velocity(now as f64) {
-                        p.vel = v::ma(p.vel, think_iv * p.wind * 10.0, w);
+                    if let Some((n, speed)) = self.wind.velocity(now as f64) {
+                        let k = speed as f64 * think_iv as f64 * p.wind as f64;
+                        p.vel = [0, 1, 2].map(|c| p.vel[c] + (n[c] as f64 * k) as f32);
                     }
                 }
                 p.next_think = now + think_iv;
             }
-            p.origin = v::ma(p.origin, dt, p.vel);
+            p.origin = v::ma(p.origin, dt10, p.vel);
         }
         // `Particle_Collide` (0x10051d50) for TS type-3 particles that aren't resting.
         if !p.resting {
@@ -771,12 +839,19 @@ impl PSys {
                 p.prev = p.origin;
             }
         }
-        // The quad step spins moving rolling (z) and free (all) quads (0x10051076, 0x100510b3).
+        // The quad step spins moving rolling (z) and free (all) quads in degrees per 0.1 s
+        // (0x10051076: `avel.z·dt·10.0 + angle` rounded once; 0x100510b3: x's and y's `dt·avel` and
+        // `× 10f` stored, z's rounded once).
         let p = &mut self.parts[i];
         if !p.resting {
             match p.orient {
-                ORIENT_ROLL => p.angles[2] += dt * p.avel[2],
-                ORIENT_FREE => p.angles = v::ma(p.angles, dt, p.avel),
+                ORIENT_ROLL => p.angles[2] = (p.avel[2] as f64 * dt as f64 * 10.0 + p.angles[2] as f64) as f32,
+                ORIENT_FREE => {
+                    for c in 0..2 {
+                        p.angles[c] += dt * p.avel[c] * 10.0;
+                    }
+                    p.angles[2] = (dt as f64 * p.avel[2] as f64 * 10.0 + p.angles[2] as f64) as f32;
+                }
                 _ => {}
             }
         }
@@ -786,32 +861,32 @@ impl PSys {
     /// (`prev` only moves on after one, 0x10052098), only inside the view cone (which also hides
     /// the particle), at `max(d·zoom/8192 (×2 beyond 1024), 0.016)` s. It is TS's
     /// `EV_PlayerTrace(prev, origin, PM_STUDIO_BOX, -1)` with the point hull, against whatever
-    /// physents the engine has set up.
+    /// physents the engine has set up. The bounce damps by `0.3·max(1 − 7·iv, 0)` with the
+    /// interval *before* the 0.016 floor (0x10051fa0), and reflects with the x87 dot.
     fn collide(&mut self, i: usize, now: f32, cam: &Camera, zoom_scale: f32, collision: &mut dyn FnMut(&mut PSys, Collision)) {
-        let cull = self.cull_origin;
+        let (cull, build) = (self.cull_origin, self.build);
         let ts = self.time_scale;
         let p = &mut self.parts[i];
         let moved = v::sub(p.prev, p.origin);
         if v::dot(moved, moved) < 0.001 || !p.visible {
             return;
         }
-        p.visible = in_view_cone(cam, cull, p.origin);
+        p.visible = in_view_cone(build, cam, cull, p.origin);
         if !p.visible || p.next_trace > now {
             return;
         }
-        let d = v::dist(p.origin, cull) * zoom_scale;
-        let mut iv = d * (1.0 / 8192.0);
+        // 0x10051e69..0x10051ebb: `D·(1/8192)f` stored, doubled beyond 1024; the 0.016 floor
+        // only for the next trace time.
+        let d = len_x87(v::sub(p.origin, cull)) * zoom_scale as f64;
+        let mut iv = (d * (1.0f32 / 8192.0) as f64) as f32;
         if d > 1024.0 {
-            iv *= 2.0;
+            iv += iv;
         }
-        if iv <= 0.016 {
-            iv = 0.016;
-        }
-        p.next_trace = iv + now;
+        p.next_trace = if iv <= 0.016 { 0.016 } else { iv } + now;
         let tr = r::player_trace(p.prev, p.origin, 2, PM_STUDIO_BOX as i32, -1);
         if tr.fraction == 0.0 {
             // Stuck from the start: young particles die, older ones rest.
-            if p.spawn + 0.5 <= now {
+            if p.spawn as f64 + 0.5 <= now as f64 {
                 rest(p);
             } else {
                 self.kill(i);
@@ -825,12 +900,11 @@ impl PSys {
             let p = &mut self.parts[i];
             p.origin = tr.endpos;
             let n = tr.plane.normal;
-            let travelled = v::dist(p.origin, p.prev);
-            p.vel = v::scale(p.vel, 0.3 * (1.0 - 7.0 * iv).max(0.0));
-            let dn = v::dot(n, p.vel);
-            p.vel = v::ma(p.vel, -2.0 * dn, n);
+            let t = v::sub(p.origin, p.prev).map(|c| c as f64);
+            let travelled = ((t[2] * t[2] + t[1] * t[1]) + t[0] * t[0]).sqrt() as f32;
+            p.vel = bounce(p.vel, n, iv);
             // Rests once a trace interval moves it less than 3·drag (0x10052059).
-            if ts * travelled < p.drag * 3.0 {
+            if p.drag as f64 * 3.0 > ts as f64 * travelled as f64 {
                 rest(p);
             }
             let (origin, parent_vel, p_oncollide) = (p.origin, p.vel, p.oncollide);
@@ -891,10 +965,17 @@ pub fn point_visible(from: Vec3, to: Vec3) -> bool {
     r::player_trace(from, to, 2, PM_GLASS_IGNORE as i32, local).fraction == 1.0
 }
 
-/// TS's normalise with a zero vector giving (0, 0, 1) (`0x1003d5c0` + `0x1001fb70`).
-fn normalize_up(a: Vec3) -> Vec3 {
-    let l = v::len(a);
-    if l == 0.0 { [0.0, 0.0, 1.0] } else { v::scale(a, 1.0 / l) }
+/// `Particle_Collide`'s bounce (`0x10051fa0..`): the velocity damped by `0.3f·max(1 − iv·7, 0)`
+/// with the trace interval *before* its 0.016 floor (x's product rounded once, y's and z's
+/// `× 0.3f` stored first), then reflected off `n` with the x87 dot `(ny·vy + nz·vz) + nx·vx`,
+/// `s = f32(−2·dot)` and each `v + s·n` rounded once (`0x10058410`).
+fn bounce(vel: Vec3, n: Vec3, iv: f32) -> Vec3 {
+    let f = (1.0 - iv as f64 * 7.0).max(0.0);
+    let vel = [(vel[0] as f64 * 0.3f32 as f64 * f) as f32, ((vel[1] * 0.3) as f64 * f) as f32, ((vel[2] * 0.3) as f64 * f) as f32];
+    let (vv, nn) = (vel.map(|c| c as f64), n.map(|c| c as f64));
+    let dn = (nn[1] * vv[1] + nn[2] * vv[2]) + nn[0] * vv[0];
+    let s = (-2.0 * dn) as f32;
+    [0, 1, 2].map(|c| (vv[c] + s as f64 * nn[c]) as f32)
 }
 
 /// `Particle_Rest` (`0x10051d10`): resting, no velocity, no roll and no spin.
@@ -905,21 +986,92 @@ fn rest(p: &mut Particle) {
     p.angles[2] = 0.0;
 }
 
-/// `InViewCone` (`0x100570b0`), measured from the cull origin (`GetCullOrigin` `0x10057270`):
-/// points within 300 units pass; otherwise the point must be in front and
-/// `(|d̂·right| + 0.5·|d̂·up|)·(1 + dist·0.2/8192) <= 0.9` (no FOV term).
-pub fn in_view_cone(cam: &Camera, cull: Vec3, org: Vec3) -> bool {
+/// `InViewCone` (`0x100570b0`; 2.1 `0x100968f0`), measured from the cull origin
+/// (`GetCullOrigin` `0x10057270`): points within 300 units pass; otherwise the point must be in
+/// front and `(|d̂·right| + 0.5·|d̂·up|)·(1 + dist/8192·0.2) <= 0.9` (no FOV term).
+///
+/// The float forms are the build's. 3.0 keeps the length (`0x10058390`), the dots and the factor
+/// on the x87 (the length is stored for the factor, `0x1018bce0`), normalises with the x87
+/// reciprocal (`0x10029e40`) and compares the unrounded product with `0.9f` (`0x1005723d`). 2.1
+/// stores the length's running sum (`0x10097fc0`), normalises with a float reciprocal of a float
+/// length (`0x100981d0`), stores each dot's first two partial sums and the absolute dots, and
+/// stores `|r| + |u| × 0.5` and the product before the compare.
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // 3.0's x87 tests: an unordered (NaN) dot is behind, a NaN product inside
+pub fn in_view_cone(build: crate::gameplay::DllBuild, cam: &Camera, cull: Vec3, org: Vec3) -> bool {
     let d = v::sub(org, cull);
-    let dist = v::len(d);
-    if dist <= 300.0 {
-        return true;
+    match build {
+        crate::gameplay::DllBuild::Optimised => {
+            let x = d.map(|c| c as f64);
+            let dist = ((x[0] * x[0] + x[1] * x[1]) + x[2] * x[2]).sqrt();
+            if dist <= 300.0 {
+                return true;
+            }
+            let n = norm_x87(d, d).map(|c| c as f64);
+            let dot = |a: Vec3| (a[1] as f64 * n[1] + a[2] as f64 * n[2]) + a[0] as f64 * n[0];
+            if !(dot(cam.forward) >= 0.0) {
+                return false;
+            }
+            let k = dot(cam.up).abs() * 0.5 + dot(cam.right).abs();
+            let k = (dist as f32 as f64 * (1.0f32 / 8192.0) as f64 * 0.2 + 1.0) * k;
+            !(k > 0.9f32 as f64)
+        }
+        crate::gameplay::DllBuild::Debug => {
+            let dist = len_stored(d);
+            if dist <= 300.0 {
+                return true;
+            }
+            let ss = d.iter().fold(0.0f64, |s, &c| s + c as f64 * c as f64) as f32;
+            let l = (ss as f64).sqrt() as f32;
+            let n = if l != 0.0 {
+                let inv = 1.0f32 / l;
+                d.map(|c| inv * c)
+            } else {
+                d
+            };
+            let dot = |a: Vec3| {
+                let s = n[0] as f64 * a[0] as f64;
+                let s = (s as f32 as f64 + n[1] as f64 * a[1] as f64) as f32;
+                s as f64 + n[2] as f64 * a[2] as f64
+            };
+            if dot(cam.forward) < 0.0 {
+                return false;
+            }
+            let (r, u) = (dot(cam.right).abs() as f32, dot(cam.up).abs() as f32);
+            let k = (r as f64 + u as f64 * 0.5) as f32;
+            let k = ((dist as f64 / 8192.0 * 0.2 + 1.0) * k as f64) as f32;
+            k <= 0.9
+        }
     }
-    let dir = v::scale(d, 1.0 / dist);
-    if v::dot(dir, cam.forward) < 0.0 {
-        return false;
+}
+
+/// 2.1's `Length` (`0x10097fc0`): each square added to a stored float sum, the root stored.
+pub fn len_stored(a: Vec3) -> f32 {
+    let s = a.iter().fold(0.0f32, |s, &x| (x as f64 * x as f64 + s as f64) as f32);
+    (s as f64).sqrt() as f32
+}
+
+/// A vector's length as TS's optimised build takes it (`0x1003d5c0`, `0x10029e40`, `Length`
+/// `0x10058390`): `(x² + y²) + z²` and the root on the x87, unrounded.
+pub fn len_x87(a: Vec3) -> f64 {
+    let x = a.map(|c| c as f64);
+    ((x[0] * x[0] + x[1] * x[1]) + x[2] * x[2]).sqrt()
+}
+
+/// TS's optimised normalise (`0x10029e40`, `0x10051190`): each component times the x87
+/// reciprocal of [`len_x87`], stored; a zero vector gives `zero` (left alone, or (0, 0, 1)).
+pub fn norm_x87(a: Vec3, zero: Vec3) -> Vec3 {
+    let l = len_x87(a);
+    if l == 0.0 {
+        return zero;
     }
-    let k = (v::dot(dir, cam.right).abs() + 0.5 * v::dot(dir, cam.up).abs()) * (1.0 + dist * (1.0 / 8192.0) * 0.2);
-    k <= 0.9
+    let inv = 1.0 / l;
+    a.map(|c| (c as f64 * inv) as f32)
+}
+
+/// A cross product with each component rounded once (`0x10051220`).
+fn cross_x87(a: Vec3, b: Vec3) -> Vec3 {
+    let (a, b) = (a.map(|c| c as f64), b.map(|c| c as f64));
+    [(a[1] * b[2] - a[2] * b[1]) as f32, (a[2] * b[0] - a[0] * b[2]) as f32, (a[0] * b[1] - a[1] * b[0]) as f32]
 }
 
 /// TS's point-to-line distance (`PSys_PushAlongLine` 0x10052720 and the whizz in
@@ -928,6 +1080,16 @@ pub fn in_view_cone(cam: &Camera, cull: Vec3, org: Vec3) -> bool {
 pub fn heron_height(a: f32, b: f32, len: f32) -> f32 {
     let s = (a + b + len) * 0.5;
     2.0 * (s * (s - a)).max(0.0).sqrt() * (s - len) / len
+}
+
+/// [`heron_height`] as `PSys_PushAlongLine` works it out on the x87 (`0x10052aac..0x10052af6`):
+/// `s = ((b + a) + len)·0.5` with `b` unrounded, then `2·sqrt(s·((s − a)(s − len)(s − len)))/len`
+/// (a negative product gives NaN, which no particle passes).
+fn heron_height_x87(a: f32, b: f64, len: f32) -> f64 {
+    let (a, len) = (a as f64, len as f64);
+    let s = ((b + a) + len) * 0.5;
+    let t = (s - a) * (s - len) * (s - len);
+    2.0 * (s * t).sqrt() / len
 }
 
 /// The four corners (uv (0,0) (1,0) (1,1) (0,1)) for `p`: `Quad_Build` (`0x10050080`) with the
@@ -948,21 +1110,19 @@ fn quad(p: &Particle, cam: &Camera, orient: u8, stretch: bool) -> [Vec3; 4] {
     if let Some(c) = p.corners {
         return c;
     }
-    // `0x10051190`: a zero vector normalises to (0, 0, 1).
-    let to_cam_n = || {
-        let d = v::sub(cam.origin, p.origin);
-        let l = v::len(d);
-        if l == 0.0 { [0.0, 0.0, 1.0] } else { v::scale(d, 1.0 / l) }
-    };
+    // `0x10051190`: `f32(cam − origin)` normalised with the x87 reciprocal; zero gives (0, 0, 1).
+    let to_cam_n = || norm_x87(v::sub(cam.origin, p.origin), [0.0, 0.0, 1.0]);
     // Every `follow_view` but 2 and 3 (4 and up act as 0) can stretch (0x10051151).
     if stretch && !matches!(orient, ORIENT_FREE | ORIENT_AXIS) && p.stretch > 0.01 {
-        // `stretchspeed` multiplies TS's speed (units per 0.1 s).
-        let speed = v::len(p.vel) * 0.1;
-        let l = speed * p.stretch;
-        if 2.0 * p.radius < l {
-            let dir = v::scale(p.vel, 1.0 / v::len(p.vel));
-            let half = v::scale(dir, l * 0.5);
-            let w = v::scale(v::cross(to_cam_n(), dir), p.radius);
+        // `|vel|·stretchspeed` in TS units, unrounded; the direction normalised in place
+        // (`VectorNormalize` 0x10029e40); `half = f32(f32(dir × L) × 0.5f)`; the width the
+        // once-rounded cross product times the radius.
+        let len = len_x87(p.vel);
+        let l = len * p.stretch as f64;
+        if l > 2.0 * p.radius as f64 {
+            let dir = norm_x87(p.vel, p.vel);
+            let half = dir.map(|c| (c as f64 * l) as f32 * 0.5);
+            let w = v::scale(cross_x87(to_cam_n(), dir), p.radius);
             let head = v::add(p.origin, half);
             let tail = v::sub(p.origin, half);
             return [v::sub(head, w), v::add(head, w), v::add(tail, w), v::sub(tail, w)];
@@ -977,7 +1137,7 @@ fn quad(p: &Particle, cam: &Camera, orient: u8, stretch: bool) -> [Vec3; 4] {
             let (_, r2, u2) = v::angle_vectors(p.angles);
             (r2, u2)
         }
-        ORIENT_AXIS => (v::cross(to_cam_n(), p.followaxis), p.followaxis),
+        ORIENT_AXIS => (cross_x87(to_cam_n(), p.followaxis), p.followaxis),
         _ => (cam.right, cam.up),
     };
     let rr = v::scale(right, p.radius);
@@ -988,6 +1148,7 @@ fn quad(p: &Particle, cam: &Camera, orient: u8, stretch: bool) -> [Vec3; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gameplay::DllBuild;
 
     #[test]
     fn wind_is_deterministic() {
@@ -1002,7 +1163,7 @@ mod tests {
             assert_eq!(a.speed(t), b.speed(t));
             assert!(a.speed(t) <= 50.0 + 1e-3);
         }
-        let w = a.velocity(15.0).expect("a positive gust");
+        let (w, _) = a.velocity(15.0).expect("a positive gust");
         assert!(w[2].abs() < 1e-6);
         // A new message eases toward the full base speed over the old segment length.
         a.set(77, 90, 80.0, 15.0);
@@ -1016,9 +1177,9 @@ mod tests {
         let q = build_quad(&p, &cam);
         assert_eq!(q[0], [100.0, 2.0, 2.0]);
         assert_eq!(q[2], [100.0, -2.0, -2.0]);
-        assert!(in_view_cone(&cam, cam.origin, [1000.0, 0.0, 0.0]));
-        assert!(!in_view_cone(&cam, cam.origin, [-1000.0, 0.0, 0.0]));
-        assert!(in_view_cone(&cam, cam.origin, [-300.0, 0.0, 0.0]), "300 units still pass");
+        assert!(in_view_cone(DllBuild::Optimised, &cam, cam.origin, [1000.0, 0.0, 0.0]));
+        assert!(!in_view_cone(DllBuild::Optimised, &cam, cam.origin, [-1000.0, 0.0, 0.0]));
+        assert!(in_view_cone(DllBuild::Optimised, &cam, cam.origin, [-300.0, 0.0, 0.0]), "300 units still pass");
     }
 
     /// `Quad_Build`'s stretch (`0x100500af..0x10050729`): head first (v = 0), width across u,
@@ -1026,7 +1187,7 @@ mod tests {
     #[test]
     fn quad_stretch() {
         let cam = Camera { forward: [1.0, 0.0, 0.0], right: [0.0, -1.0, 0.0], up: [0.0, 0.0, 1.0], fov: 90.0, ..Default::default() };
-        let p = Particle { origin: [100.0, 0.0, 0.0], vel: [0.0, 0.0, 1000.0], stretch: 1.0, radius: 2.0, ..Default::default() };
+        let p = Particle { origin: [100.0, 0.0, 0.0], vel: [0.0, 0.0, 100.0], stretch: 1.0, radius: 2.0, ..Default::default() };
         assert_eq!(build_quad(&p, &cam), [[100.0, -2.0, 50.0], [100.0, 2.0, 50.0], [100.0, 2.0, -50.0], [100.0, -2.0, -50.0]]);
         // Too slow to stretch (L = 100·0.03 = 3 < 2r): a plain billboard.
         let p = Particle { stretch: 0.03, ..p };
@@ -1034,5 +1195,97 @@ mod tests {
         // Resting: a billboard whatever `follow_view` says.
         let p = Particle { orient: ORIENT_AXIS, resting: true, ..p };
         assert_eq!(build_quad(&p, &cam)[0], [100.0, 2.0, 2.0]);
+    }
+
+    /// `InViewCone` near the 0.9 threshold: 3.0 (0x100570b0) keeps the dots and the product on
+    /// the x87, 2.1 (0x100968f0) stores its partial sums; one ulp of y apart, the two builds
+    /// answer differently (as the old all-f32 form did from both).
+    #[test]
+    fn view_cone_forms() {
+        let cam = Camera { forward: [1.0, 0.0, 0.0], right: [0.0, -1.0, 0.0], up: [0.0, 0.0, 1.0], fov: 90.0, ..Default::default() };
+        let at = |y: u32| [f32::from_bits(0x4592_7feb), f32::from_bits(y), f32::from_bits(0xc282_25df)];
+        let both = |y| (in_view_cone(DllBuild::Optimised, &cam, v::ZERO, at(y)), in_view_cone(DllBuild::Debug, &cam, v::ZERO, at(y)));
+        assert_eq!(both(0x45ab_a629), (true, false));
+        assert_eq!(both(0x45ab_a62a), (false, true));
+        assert_eq!(both(0x45ab_a62b), (false, false));
+        assert_eq!(len_stored([3.0, 4.0, 12.0]), 13.0);
+    }
+
+    /// `Particle_Move` (0x10050ce0) in TS units: gravity `f32(dt·g·0.1·−cl_gravity)` added
+    /// (0x10050e0c), the drag steps `f32(min(drag·dt, 1)·v)` subtracted (z's times `1 − |g|`,
+    /// 0x10050ef6..0x10050f81), then `origin += f32(f32(dt × 10f)·v)` (0x10050def, 0x10050fa0).
+    /// The roll spins `avel.z·dt·10.0 + angle` rounded once (0x10051076).
+    #[test]
+    fn move_in_ts_units() {
+        let mut ps = PSys { parts: vec![Particle::default()], ..Default::default() };
+        let p0 = Particle {
+            origin: [1.0, 2.0, 3.0],
+            vel: [33.3, -7.1, 12.9],
+            gravity: 0.25,
+            drag: 1.7,
+            orient: ORIENT_ROLL,
+            avel: [0.0, 0.0, 77.7],
+            angles: [0.0, 0.0, 10.1],
+            next_think: f32::MAX,
+            ..Default::default()
+        };
+        ps.parts[0] = p0.clone();
+        let dt = 0.013f32;
+        ps.particle_move(0, 0.0, dt, &Camera { fov: 90.0, ..Default::default() }, &[], &mut |_, _| {});
+        let (d, g) = (dt as f64, p0.gravity as f64);
+        let mut vel = p0.vel;
+        vel[2] += (d * g * 0.1 * -800.0) as f32;
+        let k = p0.drag as f64 * d;
+        let step = [(k * vel[0] as f64) as f32, (vel[1] as f64 * k) as f32, ((1.0 - g) * vel[2] as f64 * k) as f32];
+        let vel = v::sub(vel, step);
+        let dt10 = dt * 10.0;
+        let origin = [0, 1, 2].map(|c| p0.origin[c] + dt10 * vel[c]);
+        let p = &ps.parts[0];
+        assert_eq!((p.vel, p.origin), (vel, origin));
+        assert_eq!(p.angles[2], (77.7f32 as f64 * d * 10.0 + 10.1f32 as f64) as f32);
+        // No gravity or drag: 1 + f32(0.13 × 33.3) is 5.3289995 in TS's units, where the
+        // per-second form (`1 + 0.013 × 333`) gives 5.329.
+        ps.parts[0] = Particle { origin: [1.0, 0.0, 0.0], vel: [33.3, 0.0, 0.0], drag: 0.0, next_think: f32::MAX, ..Default::default() };
+        ps.particle_move(0, 0.0, dt, &Camera { fov: 90.0, ..Default::default() }, &[], &mut |_, _| {});
+        assert_eq!(ps.parts[0].origin[0].to_bits(), 5.328_999_5f32.to_bits());
+        assert_ne!(ps.parts[0].origin[0], 1.0 + dt * (33.3f32 * 10.0));
+    }
+
+    /// `PSys_BlastPush` (0x10052c80): the sphere around `org + dir̂·fwd` has the forward offset as
+    /// its radius (0x10052e26), and the push is `f32(n̂ × (radius − |dir|)) / 4f` added
+    /// (0x10052f0c..0x10052f4b), then a resting particle hops `|vz| + 2`.
+    #[test]
+    fn blast_push_sphere_is_the_forward_offset() {
+        let mut ps = PSys::default();
+        let p = Particle { origin: [80.0, 0.0, 0.0], react: 1.0, resting: true, ..Default::default() };
+        ps.parts = vec![p];
+        ps.react_list = vec![0];
+        ps.blast_push(v::ZERO, [1.0, 0.0, 0.0], 10.0, 50.0);
+        let p = &ps.parts[0];
+        assert_eq!(p.vel, [2.25, 0.0, 2.0], "30 units from the centre is inside the 50-unit sphere");
+        assert!(!p.resting);
+        // Beyond `fwd`, nothing.
+        ps.parts[0] = Particle { origin: [101.0, 0.0, 0.0], react: 1.0, ..Default::default() };
+        ps.blast_push(v::ZERO, [1.0, 0.0, 0.0], 10.0, 50.0);
+        assert_eq!(ps.parts[0].vel, v::ZERO);
+    }
+
+    /// `PSys_PushAlongLine`'s distance (0x10052aac..0x10052af6): TS's Heron with `s − len` where
+    /// `s − b` belongs: 1.5 for a point 3 units off the middle of an 8-unit line (true height 3).
+    #[test]
+    fn push_line_height() {
+        assert_eq!(heron_height_x87(5.0, 5.0, 8.0), 1.5);
+        assert_eq!(heron_height(5.0, 5.0, 8.0), 1.5);
+    }
+
+    /// `Particle_Collide`'s bounce (0x10051fa0): the damping takes the interval before its 0.016
+    /// floor (0.3 × (1 − 7 × 0.004) here, not 0.3 × (1 − 7 × 0.016)), and the reflection keeps the
+    /// dot on the x87.
+    #[test]
+    fn bounce_uses_the_raw_interval() {
+        let v2 = bounce([10.0, 0.0, -20.0], [0.0, 0.0, 1.0], 0.004);
+        let f = 1.0 - 0.004f32 as f64 * 7.0;
+        assert_eq!(v2, [(10.0 * 0.3f32 as f64 * f) as f32, 0.0, -((-20.0f32 * 0.3) as f64 * f) as f32]);
+        assert!(v2[0] > 2.9, "{v2:?}");
     }
 }

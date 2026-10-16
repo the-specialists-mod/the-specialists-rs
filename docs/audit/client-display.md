@@ -111,11 +111,12 @@ Issues: **#260** (2.1 chat), **#261** (2.1 particle update), both fixed; **#267*
 - ~~The `gl_fog`/`gl_fog_*` cvars and the single-player user fog (`effects.rs` `fog_begin`) exist only in 3.0.~~ Round 4 (rendering): 2.1's `client.dll` has no GL fog at all (no `OPENGL32.DLL` import, no `fog` string, nothing in `CHud::Init` 0x10045d50). **MISMATCH #281, fixed**: `ClientRules::gl_fog` (2.1 false) turns off `fog_begin` (the `gl_fog 2` user fog still drew in 2.1 mode) and the per-pass `glDisable(GL_FOG)` (which cut the engine's underwater fog). The cvars stay registered: the client registers them once at `HUD_Init`, before a server names its ruleset, and a cvar can't be unregistered; 2.1 mode doesn't read them.
 - ~~`SpriteTexture` with a frame past the last (2.1 doesn't clamp it): GoldSrc and FWGS pick different frames; the port passes the frame through as 2.1 does.~~ Round 4: **#270**, fixed. GoldSrc's `R_GetSpriteFrame` (`hw.so` 0x143420) binds frame 0 for a frame below 0 or past the last, and FWGS binds the last frame. `tri::sprite_texture` now asks both engines for GoldSrc's frame. 3.0 never passes one: it clamps particles (0x10052333), and the laser beam wraps before `frames`. Left as is: GoldSrc binds nothing for a grouped frame (`SPR_GROUP`) where FWGS animates the group. That needs the engine's private sprite layout to detect, and a grouped particle sprite is a mapper's asset question, not a frame index.
 - ~~`effects/emitters.rs` and the 3.0 builders in `effects/fx.rs` were not re-compared against 3.0 this round (round 1/2 rows stand).~~ Round 4: emitters re-audited (#284); builders: see the `effects/fx.rs` row.
-- Round 4 (`DllBuild` hook, #279/#280/#282/#284/#285): `apply_kick`'s 2.1 float forms are the render group's #278. Still open as **#286**:
-  - the particle system's TS velocity units (×10 in the port), which affect the last bit of velocity sums in both builds;
-  - 2.1's view cone, quad corners and collision forms;
-  - 2.1's adaptive-quality forms;
-  - 3.0 glass's non-bullet throw bounds.
+- Round 4 (`DllBuild` hook, #279/#280/#282/#284/#285): `apply_kick`'s 2.1 float forms are the render group's #278. ~~Still open as #286~~, fixed in the round 4 follow-up:
+  - the particles hold TS's velocity units (per 0.1 s) in both builds, and 3.0's move, drag, think (drift, react, wind), collision, pushes, stretch, fade, scale and frame steps keep TS's x87 forms (`Particle_Move` 0x10050ce0, `Particle_Think` 0x10051270, `Particle_Collide` 0x10051d50, pushes 0x100524c0/0x10052720/0x10052c80, `Quad_Build` 0x10050080);
+  - 2.1's move, collision (stored dot, `VectorMA` 0x10098330), view cone (0x100968f0, and 3.0's x87 form of 0x100570b0) and quad corners (0x1008f470, the engine's `AngleVectors`);
+  - the adaptive quality in both builds (3.0 0x10057a70, 2.1 0x100977a0: 2.1 never adapts at a saturated mean);
+  - 3.0 glass's non-bullet bounds: x's from the unrounded `dir.x × force`, y's and z's from the stored products (0x10048093..0x1004812f).
+  - Found on the way, **3.0 MISMATCH #287, fixed**: `PSys_BlastPush`'s sphere has radius `fwd`, not `radius` (0x10052e26), and the collision damps with the interval before its 0.016 floor (0x10051fa0).
 
 ## GUI
 

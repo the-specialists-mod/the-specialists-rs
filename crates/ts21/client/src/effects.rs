@@ -7,8 +7,8 @@
 //! calls: `+0x01` collide (3), `+0x10` origin, `+0x28` the roll orientation, `+0x2c` velocity,
 //! `+0x38` angular velocity, `+0x44` gravity, `+0x48` life, `+0x50` colour, `+0x54` fade, `+0x58`
 //! scale speed, `+0x5c` frame, `+0x60` frame rate, `+0xb4` radius. They run on the port's (TS
-//! 3.0's) particle system, as the other 2.1 builders do; velocities are TS units per 0.1 s (×10
-//! here, as `ts_client::effects::fx` does).
+//! 3.0's) particle system, as the other 2.1 builders do; velocities are TS units per 0.1 s, as
+//! the particles hold them.
 
 use goldsrc::client::engine;
 use goldsrc::ext::render::{Vec3, random_float, random_long, vec3 as v};
@@ -20,9 +20,6 @@ use ts_client::effects::{PTakeDam, TsFrags};
 
 const ADD: i32 = kRenderTransAdd as i32;
 const COLOR: i32 = kRenderTransColor as i32;
-
-/// TS velocity units (per 0.1 s) to units per second.
-const TS: f32 = 10.0;
 
 /// A particle from the default (TS's zeroed scratch particle) with `f`'s fields.
 fn particle(f: impl FnOnce(&mut Particle)) -> Particle {
@@ -93,7 +90,7 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, r: i32) {
             particle(|p| {
                 p.sprite = s;
                 p.origin = v::add(org, [0.0, 0.0, size / 2.0]);
-                p.vel = v::scale(vel, TS);
+                p.vel = vel;
                 p.radius = size;
                 p.gravity = 2.0;
                 p.color = 0.7;
@@ -136,8 +133,8 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, r: i32) {
             particle(|p| {
                 p.sprite = s;
                 p.origin = org;
-                p.vel = v::scale(vel, TS);
-                p.avel = [0.0, 0.0, spin * TS];
+                p.vel = vel;
+                p.avel = [0.0, 0.0, spin];
                 p.radius = 8.0;
                 p.gravity = 13.0;
                 p.color = 0.7;
@@ -226,8 +223,8 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3) {
                 particle(|p| {
                     p.sprite = s;
                     p.origin = at;
-                    p.vel = v::scale([vx, vy, vz], TS);
-                    p.avel = [0.0, 0.0, vx * 10.0 * TS];
+                    p.vel = [vx, vy, vz];
+                    p.avel = [0.0, 0.0, vx * 10.0];
                     p.radius = radius;
                     p.gravity = 6.0;
                     p.color = 0.7;
@@ -293,7 +290,7 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32) {
             particle(|p| {
                 p.sprite = s;
                 p.origin = pos;
-                p.vel = v::scale(vel, TS);
+                p.vel = vel;
                 p.radius = 1.0;
                 p.gravity = 3.0;
                 p.color = 1.0;

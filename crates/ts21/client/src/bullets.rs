@@ -211,7 +211,7 @@ fn dir_angles(dir: Vec3) -> Vec3 {
 /// on and, when its trail is due, the trails go from the last trail point to it.
 pub fn draw(b: &mut ClientBullet, d: &mut BulletDraw) {
     let f = d.frame;
-    if !psys::in_view_cone(&f.cam, f.cull, b.draw_pos) {
+    if !psys::in_view_cone(ts_client::gameplay::DllBuild::Debug, &f.cam, f.cull, b.draw_pos) {
         return;
     }
     let factor = d.slowmo_factor100 / 100.0;

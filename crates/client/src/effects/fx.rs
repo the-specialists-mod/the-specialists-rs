@@ -1,18 +1,14 @@
 //! Weapon and impact effects built on the sprite particle system (rendering doc §4.4-4.5).
 //!
 //! Every number is read from the TS client's disassembly (the decompile hides the float
-//! arguments). TS keeps velocities in units per 0.1 s and angular velocities in degrees per
-//! 0.1 s; they are converted to per second here (×10, the `TS` constant). Fields TS leaves at zero
-//! in its scratch particle (`0x1004ffe0`) are left at zero, and `PSys::add` applies TS's drag
-//! floor of 0.1.
+//! arguments). Velocities are TS's own units per 0.1 s and angular velocities degrees per 0.1 s,
+//! as the particles hold them ([`Particle::vel`]). Fields TS leaves at zero in its scratch
+//! particle (`0x1004ffe0`) are left at zero, and `PSys::add` applies TS's drag floor of 0.1.
 
 use super::psys::{self, PSys, Particle};
 use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
-
-/// TS velocity units (per 0.1 s) to units per second.
-const TS: f32 = 10.0;
 
 const ADD: i32 = kRenderTransAdd as i32;
 
@@ -103,7 +99,8 @@ pub struct FlashInfo {
 }
 
 /// `TS_MuzzleFlash(org, vel, info, fwd, n, silenced, fwdofs, thirdperson)` (`0x100474b0`; 2.1
-/// `0x10080a30`).
+/// `0x10080a30`). `vel` is in TS units: the events pass the shooter's velocity `/ 10.0f`
+/// ([`psys::ts_units`]).
 ///
 /// Unsilenced: `max(3, n·fxmul)` roll sprites of `ts_muzzleflash1h.spr` spread over
 /// `info.length` along `fwd`, each 1.1 times smaller and dimmer, a core sprite, and the muzzle
@@ -170,7 +167,7 @@ pub fn muzzle_flash(
         orient: psys::ORIENT_ROLL,
         ..Default::default()
     };
-    let rise = |p: &mut Particle| p.vel[2] += rf(-3.0, 3.0) * TS;
+    let rise = |p: &mut Particle| p.vel[2] += rf(-3.0, 3.0);
     if silenced {
         // 3.0: the x87 length of the stored offset (`0x10047a67`); 2.1: its own float length
         // (`0x10097fc0`).
@@ -193,7 +190,7 @@ pub fn muzzle_flash(
                 rise(&mut p);
             }
             if st.silenced_spin != 0 {
-                p.avel[2] = rl(-st.silenced_spin, st.silenced_spin) as f32 * TS;
+                p.avel[2] = rl(-st.silenced_spin, st.silenced_spin) as f32;
             }
             p.frame = random_frame(ps, s1);
             if !ps.add(p, now) {
@@ -223,7 +220,7 @@ pub fn muzzle_flash(
         let mut p = sprite(origin(i, count), size, color, fade, if i == 1 { st.flash_scale_speed } else { 0.0 });
         rise(&mut p);
         p.frame = random_frame(ps, s1);
-        p.avel[2] = rl(-90, 90) as f32 * TS;
+        p.avel[2] = rl(-90, 90) as f32;
         if !ps.add(p, now) {
             return;
         }
@@ -257,7 +254,7 @@ pub fn muzzle_flash(
             drag: st.drag,
             frame,
             orient: psys::ORIENT_ROLL,
-            avel: [0.0, 0.0, spin * TS],
+            avel: [0.0, 0.0, spin],
             ..Default::default()
         },
         now,
@@ -384,7 +381,7 @@ pub fn muzzle_dlight(ps: &mut PSys, _now: f64, org: Vec3) {
 /// `TS_GunSmoke(radius, framerate, org, vel, dir, speed, force)` (`0x10047130`): five
 /// `gun_smoke_add.spr` puffs along `dir`, each ×0.8 smaller, living for one run of the animation
 /// at `framerate ± 50%`. Unless `force`, at most one burst per 0.1/ts s (slot 1). Skipped with
-/// `cl_fx 0` and when the muzzle is out of view.
+/// `cl_fx 0` and when the muzzle is out of view. `vel` is in TS units ([`psys::ts_units`]).
 #[allow(clippy::too_many_arguments)]
 pub fn gun_smoke(ps: &mut PSys, now: f64, radius: f32, framerate: i32, org: Vec3, vel: Vec3, dir: Vec3, speed: f32, force: bool) {
     if !force && !ps.cooldown_ready(1, now, cooldown(ps, 0.1)) {
@@ -408,12 +405,12 @@ pub fn gun_smoke(ps: &mut PSys, now: f64, radius: f32, framerate: i32, org: Vec3
             crate::gameplay::DllBuild::Optimised => 0.2 * r,
             crate::gameplay::DllBuild::Debug => r / 5.0,
         };
-        let jitter = [rf(-b, b) * TS, rf(-b, b) * TS, 0.0];
+        let jitter = [rf(-b, b), rf(-b, b), 0.0];
         let added = ps.add(
             Particle {
                 sprite: s,
                 origin,
-                vel: v::add(v::ma(vel, speed / k as f32 * TS, dir), jitter),
+                vel: v::add(v::ma(vel, speed / k as f32, dir), jitter),
                 radius: r,
                 gravity: st.smoke_gravity,
                 color: 0.3,
@@ -480,7 +477,7 @@ pub fn sprite_debris(
             Particle {
                 sprite: s,
                 origin: v::ma(pos, 2.0, n),
-                vel: v::scale(v::add(v::scale(n, 16.0), jitter), TS),
+                vel: v::add(v::scale(n, 16.0), jitter),
                 gravity,
                 radius,
                 color: 1.0,
@@ -489,7 +486,7 @@ pub fn sprite_debris(
                 life,
                 frame,
                 orient: psys::ORIENT_ROLL,
-                avel: [0.0, 0.0, spin * TS],
+                avel: [0.0, 0.0, spin],
                 collide,
                 ..Default::default()
             },
@@ -516,7 +513,7 @@ pub fn surface_mark(
     fadespeed: f32,
     scalespeed: f32,
 ) {
-    if !psys::in_view_cone(&ps.cam, ps.cull_origin, pos) {
+    if !ps.in_view(pos) {
         return;
     }
     let Some(s) = ps.sprite(sprite, rendermode) else { return };
@@ -595,7 +592,7 @@ fn mark_origin(pos: Vec3, n: Vec3) -> Vec3 {
 /// units (1024 zoomed). The long-lived ones collide when the quality is high.
 pub fn sparks(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, n: i32, scale: f32, spread: f32) {
     let max = if (ps.cam.fov as i32) < 40 { 1024.0 } else { 512.0 };
-    if v::dist(org, ps.cull_origin) >= max || !psys::in_view_cone(&ps.cam, ps.cull_origin, org) {
+    if v::dist(org, ps.cull_origin) >= max || !ps.in_view(org) {
         return;
     }
     let Some(s) = ps.sprite("sprites/sparks.spr", ADD) else { return };
@@ -610,7 +607,7 @@ pub fn sparks(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, n: i32, scale: f32,
             Particle {
                 sprite: s,
                 origin: org,
-                vel: v::scale(v::add(v::scale(dir, 17.0), jitter), TS),
+                vel: v::add(v::scale(dir, 17.0), jitter),
                 radius,
                 life,
                 gravity: 1.0,
@@ -647,7 +644,7 @@ pub fn scintille(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, sprite: &str, re
             Particle {
                 sprite: s,
                 origin,
-                vel: v::scale(dir, 2.0 * TS),
+                vel: v::scale(dir, 2.0),
                 radius: size - i as f32,
                 color: 0.7,
                 fadespeed: 0.05,
@@ -703,7 +700,7 @@ pub fn impact_smoke(
         let speed = style().impact_smoke_speed.unwrap_or_else(|| rf(8.0, 24.0));
         let k = (count - j) as f32 as f64;
         let b = n.map(|c| ((c as f64 * speed as f64) as f32 as f64 / k) as f32);
-        let vel = [(rf(-2.0, 2.0) + b[0]) * TS, (rf(-2.0, 2.0) + b[1]) * TS, b[2] * TS];
+        let vel = [rf(-2.0, 2.0) + b[0], rf(-2.0, 2.0) + b[1], b[2]];
         let added = ps.add(
             Particle {
                 sprite: s,
@@ -752,7 +749,7 @@ pub fn small_puff(ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, sprite: &str, ren
         Particle {
             sprite: s,
             origin,
-            vel: [0.0, 0.0, -2.0 * TS],
+            vel: [0.0, 0.0, -2.0],
             radius,
             color: 1.0,
             framerate,
@@ -873,11 +870,11 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32, kevlar:
         let frame = random_frame(ps, s);
         let life = rf(1.0, 2.0);
         let (origin, vel) = if i == 0 {
-            (pos, dir.map(|c| (c as f64 * 32.0) as f32 * TS))
+            (pos, dir.map(|c| (c as f64 * 32.0) as f32))
         } else {
             let speed = rf(8.0, 24.0);
             let b = dn.map(|c| (c as f64 * speed as f64) as f32);
-            (at, [(rf(-1.0, 1.0) + b[0]) * TS, (rf(-1.0, 1.0) + b[1]) * TS, b[2] * TS])
+            (at, [rf(-1.0, 1.0) + b[0], rf(-1.0, 1.0) + b[1], b[2]])
         };
         if r::point_contents(origin) == CONTENTS_SOLID {
             break;
@@ -969,7 +966,14 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec
                     (ten(dir[2] as f64 * push) + b[2] as f64) as f32,
                 ]
             } else {
-                v::scale(dir, force).map(|c| rf(c * 0.5, c + 15.0))
+                // `RandomFloat(c × 0.5, c + 15)` per axis, x then y then z (0x10048093..0x1004812f):
+                // x's bounds from the unrounded `dir.x × force` (0x100480c6), y's and z's from the
+                // stored products (`[esp+0x40]`, `[esp+0x44]`).
+                let x = dir[0] as f64 * force as f64;
+                let vx = rf((x * 0.5) as f32, (x + 15.0) as f32);
+                let c = [dir[1] * force, dir[2] * force];
+                let vy = rf(c[0] * 0.5, c[0] + 15.0);
+                [vx, vy, rf(c[1] * 0.5, c[1] + 15.0)]
             };
             let spin = rl(-90, 90) as f32;
             let life = rf(2.0, 5.0);
@@ -977,7 +981,7 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec
                 Particle {
                     sprite: s,
                     origin: p,
-                    vel: v::scale(vel, TS),
+                    vel,
                     gravity: 1.0,
                     radius,
                     color: 0.7,
@@ -986,7 +990,7 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec
                     life,
                     frame,
                     orient: psys::ORIENT_ROLL,
-                    avel: [0.0, 0.0, spin * TS],
+                    avel: [0.0, 0.0, spin],
                     collide: true,
                     ..Default::default()
                 },
@@ -1022,7 +1026,7 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
                 Particle {
                     sprite: s,
                     origin,
-                    vel: v::scale([rf(-speed, speed), rf(-speed, speed), rf(0.0, speed)], TS),
+                    vel: [rf(-speed, speed), rf(-speed, speed), rf(0.0, speed)],
                     radius: r as f32,
                     gravity: 0.01,
                     color: 0.3,

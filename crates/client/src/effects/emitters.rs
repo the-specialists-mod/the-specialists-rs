@@ -187,7 +187,7 @@ impl Template {
     /// template (`0x1003ae7d..`, `0x10039d50`). Each value is `RandomFloat(low, high)` (the frame
     /// `RandomLong`) with the template's raw bounds, in TS's order: life, gravity, colour, fade
     /// speed, radius, scale speed, frame, frame rate, random delta, react, wind, fade-in,
-    /// velocity, angular velocity. Velocities: TS units per 0.1 s -> u/s.
+    /// velocity, angular velocity, all in TS's units (per 0.1 s), as the particle holds them.
     pub fn roll(&self, rf: &mut impl FnMut(f32, f32) -> f32, rl: &mut impl FnMut(i32, i32) -> i32) -> Particle {
         let mut pick = |p: (f32, f32)| rf(p.1, p.0);
         let life = pick(self.life);
@@ -207,11 +207,11 @@ impl Template {
         let avel = [0, 1, 2].map(|i| rf(self.avelocity.1[i], self.avelocity.0[i]));
         Particle {
             kind: psys::KIND_MAP,
-            vel: v::scale(velocity, 10.0),
-            avel: v::scale(avel, 10.0),
-            randvel_lo: v::scale(self.randomvel.1, 10.0),
-            randvel_hi: v::scale(self.randomvel.0, 10.0),
-            randomdelta: randomdelta * 10.0,
+            vel: velocity,
+            avel,
+            randvel_lo: self.randomvel.1,
+            randvel_hi: self.randomvel.0,
+            randomdelta,
             life,
             gravity,
             color,
@@ -455,11 +455,8 @@ impl MapFx {
         let mut p = tmpl.roll(&mut r::random_float, &mut r::random_long);
         p.sprite = spr;
         p.origin = pos;
-        p.vel = if tmpl.spawnflags & 1 == 0 {
-            parent_vel
-        } else {
-            v::scale([0, 1, 2].map(|i| r::random_float(tmpl.velocity.1[i], tmpl.velocity.0[i])), 10.0)
-        };
+        p.vel =
+            if tmpl.spawnflags & 1 == 0 { parent_vel } else { [0, 1, 2].map(|i| r::random_float(tmpl.velocity.1[i], tmpl.velocity.0[i])) };
         ps.add(p, now);
     }
 }
@@ -624,7 +621,7 @@ mod tests {
         assert_eq!(e.spawnflags, 1);
 
         let p = t.roll(&mut |a, b| (a + b) * 0.5, &mut |a, _| a);
-        assert_eq!(p.vel, [0.0, 0.0, -0.5], "units per 0.1 s -> per second");
+        assert_eq!(p.vel, [0.0, 0.0, -0.05], "TS units per 0.1 s, as the template gives them");
         assert_eq!(t.sprite_trans, 5);
     }
 

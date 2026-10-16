@@ -55,7 +55,8 @@ pub fn pump(a: &Args) {
         let now = effects::now();
         let at = v::ma(muzzle, -ofs, fwd);
         eject_shell(at, shell_vel, a.angles, model, 2);
-        let vel = a.velocity;
+        // The shooter's velocity `/ 10.0f`, TS's particle units (`0x1003efb0` in `EV_TS_Pump`).
+        let vel = effects::psys::ts_units(a.velocity);
         effects::with_psys(|ps| effects::fx::gun_smoke(ps, now, 1.0, r::random_long(20, 40), at, vel, right, 4.0, true));
     };
     let owner = a.is_view_owner();

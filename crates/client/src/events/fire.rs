@@ -140,10 +140,11 @@ struct FxAt<'a> {
 
 /// Muzzle flash, gun smoke and the shotgun's pellet spray, as `EV_TS_FireStandard`/`FireAkimbo`
 /// (`pump` false) and `EV_TS_FirePump` (`pump` true) call them. The smoke and flash carry the
-/// shooter's velocity.
+/// shooter's velocity in TS's particle units, `args->velocity / 10.0f` (`Vector::operator/`
+/// `0x1003efb0` at `0x1003e382`; 2.1 `0x10069fd0`).
 fn gun_fx(a: &Args, s: &Shot, at: &FxAt, third: bool, pump: bool, pellets: i32) {
     let now = effects::now();
-    let (fwd, vel, info) = (s.fwd, a.velocity, s.flash());
+    let (fwd, vel, info) = (s.fwd, effects::psys::ts_units(a.velocity), s.flash());
     effects::with_psys(|ps| {
         use effects::fx;
         for &muzzle in at.flashes {
@@ -969,7 +970,7 @@ pub fn bullet_quads(pos: Vec3, dir: Vec3, buckshot: bool, len: f32, w: f32, up: 
 /// it, at most every `SlowTime(0.01)` s. The bullet-model path (`0x100350df`) is dead in TS
 /// (`0x1d34d` is only ever cleared, by `0x10034f90` from `HUD_CreateEntities`).
 fn client_bullet_draw(s: &mut ClientBullet, sprite: Option<i16>, f: &BulletFrame) {
-    if !psys::in_view_cone(&f.cam, f.cull, s.draw_pos) {
+    if !psys::in_view_cone(crate::gameplay::current().dll_build(), &f.cam, f.cull, s.draw_pos) {
         return;
     }
     let (ts, bt) = state::with(|st| (st.time_scale, st.bullet_time));
