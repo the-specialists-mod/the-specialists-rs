@@ -505,6 +505,13 @@ impl ServerRules for Ts30Server {
         let _ = (from, at);
         explode::thrown_blade_damage(btype)
     }
+
+    // Audit round 2: D2
+
+    /// Yes: `PickUpWeapon` (0x9314c) refuses such pairs ([`entities::GROUND_WEAPON_PAIRS_TO_SINGLE`]).
+    fn ground_weapon_pairs_to_single(&self) -> bool {
+        entities::GROUND_WEAPON_PAIRS_TO_SINGLE
+    }
 }
 
 /// The plugin as the server registers it.

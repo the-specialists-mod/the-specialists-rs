@@ -484,6 +484,13 @@ pub trait ServerRules: Sync {
     /// hits at `at`, thrown from `from` (a ruleset whose damage falls off measures the distance
     /// in its own arithmetic).
     fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32;
+
+    // Audit round 2: D2
+
+    /// `CTSGroundWeapon::Spawn` (0xa1b40) turns an akimbo pair built from two singles into its
+    /// single, the only form the ruleset's `PickUpWeapon` accepts. False keeps the id, so the
+    /// ground weapon gives the pair.
+    fn ground_weapon_pairs_to_single(&self) -> bool;
 }
 
 #[cfg(test)]

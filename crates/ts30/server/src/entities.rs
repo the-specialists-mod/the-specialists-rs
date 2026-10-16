@@ -84,6 +84,10 @@ fn hidden(cx: &mut Cx) -> bool {
     cx.pev().effects & EF_NODRAW as i32 != 0
 }
 
+/// `CTSGroundWeapon::Spawn` (0xa1b40) turns a kind-4 akimbo pair with a single (`info+0xcc` !=
+/// -1) into that single, because `PickUpWeapon` (0x9314c) refuses such pairs.
+pub const GROUND_WEAPON_PAIRS_TO_SINGLE: bool = true;
+
 /// `CTSGroundWeapon::GetWeapon` (0xa2328) past its `IsPlayer` test: a live, visible player and
 /// a visible weapon (falling or landed). In cash mode a `buyable` one checks `attackerteam`
 /// (round modes) and the price first; then `PickUpWeapon(id, NULL, spawnflags, id != 29,
@@ -147,6 +151,11 @@ mod tests {
     use super::*;
     use crate::Ts30Server;
     use ts_server::gameplay::ServerRules;
+
+    #[test]
+    fn ground_weapons_turn_pairs_into_singles() {
+        assert!(Ts30Server.ground_weapon_pairs_to_single());
+    }
 
     /// The world hooks that need no engine keep TS 3.0's values.
     #[test]

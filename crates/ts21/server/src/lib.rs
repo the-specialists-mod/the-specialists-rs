@@ -481,6 +481,13 @@ impl ServerRules for Ts21Server {
     fn zero_delayed_hit_reaches_player(&self) -> bool {
         true
     }
+
+    // Audit round 2: D2
+
+    /// No ([`entities::GROUND_WEAPON_PAIRS_TO_SINGLE`]).
+    fn ground_weapon_pairs_to_single(&self) -> bool {
+        entities::GROUND_WEAPON_PAIRS_TO_SINGLE
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.

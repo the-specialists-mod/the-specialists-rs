@@ -726,6 +726,7 @@ How the port maps TS where the structure differs (not deviations):
   entry 0) gets `SUB_Remove` 0.1 s later; an akimbo pair built from two singles (kind 4,
   `info+0xcc` != -1: 8, 10, 16, 30, 37) is turned into its single, since `PickUpWeapon` refuses
   those pairs. The Golden Colts (21, kind 5) stay. Both unit tested (`ground::spawn_weapon_id`).
+  2.1 keeps the pair (`ServerRules::ground_weapon_pairs_to_single`).
 * Power-ups: Infinite Clip -> `weapons::multiply_clip`; grenade -> `give_weapon(p, cx, 24, 0)`;
   kung fu sets `Player::kungfu` (x2 melee), DFR/slow-mo are read from `Player::active_powerup`
   and `pev->fuser1`.

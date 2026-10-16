@@ -450,6 +450,7 @@ The hooks so far:
 | `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `ts30_server::explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
 | `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `ts30_server::explode::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
 | `ServerRules` | `thrown_blade_damage(btype, from, at)` | `ts30_server::explode::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
+| `ServerRules` | `ground_weapon_pairs_to_single()` | true (`CTSGroundWeapon::Spawn` 0xa1b40 turns an akimbo pair of a single gun into the single) | `entities/ts/ground.rs` `spawn_weapon_id` |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`
