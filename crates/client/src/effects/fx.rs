@@ -38,8 +38,8 @@ pub fn random_frame(ps: &PSys, sprite: i16) -> f32 {
 pub struct FxStyle {
     /// The first muzzle-flash sprite's colour (each later one ÷1.1).
     pub flash_color: f32,
-    /// The flash sprites' fade per unit of colour.
-    pub flash_fade: f32,
+    /// The flash sprites' fade per unit of colour (a double in both builds).
+    pub flash_fade: f64,
     /// The second flash sprite's scale speed.
     pub flash_scale_speed: f32,
     /// The flash radius factor in third person and for other players.
@@ -49,10 +49,10 @@ pub struct FxStyle {
     /// An unsilenced flash ends with a `scintille_metal.spr` spark at the muzzle (radius × 3,
     /// colour 0.5, fade 0.09).
     pub muzzle_spark: bool,
-    /// The silenced flash's share of the sprites.
-    pub silenced_count: f32,
-    /// The silenced flash's colour per unit inside 512 units.
-    pub silenced_color: f32,
+    /// The silenced flash's share of the sprites (a double: `ftol(count × 0.7)`).
+    pub silenced_count: f64,
+    /// The silenced flash's colour per unit inside 512 units (a double).
+    pub silenced_color: f64,
     /// The silenced flash's first fade (÷1.1 each); `None`: `flash_fade × colour`.
     pub silenced_fade: Option<f32>,
     /// The silenced flash sprites' roll speed range (`RandomLong(-n, n)`; 0: none).
@@ -71,6 +71,17 @@ pub struct FxStyle {
     pub debris_fade_any_mode: bool,
     /// Sprite debris counts are scaled by the quality's particle multiplier (at most 1).
     pub debris_count_by_quality: bool,
+    // Audit round 4: hud
+    /// The silenced flash sprites get the unsilenced ones' `RandomFloat(-3, 3)` rise.
+    pub silenced_jitter: bool,
+    /// The muzzle spark moves with the gun's velocity.
+    pub spark_moves: bool,
+    /// The cooldowns of the gun smoke, sprite debris and small puffs stretch by the raw
+    /// `TSSlowMo` factor (`1 / max(s, 0.1f)`, 1 at normal speed) instead of `SlowTime`.
+    pub raw_slow_cooldowns: bool,
+    /// The impact smoke's speed along the normal (TS units per 0.1 s) before `/ (count − j)`:
+    /// `None` rolls `RandomFloat(8, 24)` per puff.
+    pub impact_smoke_speed: Option<f32>,
 }
 
 /// The active ruleset's builder parameters.
@@ -91,11 +102,19 @@ pub struct FlashInfo {
     pub damage: f32,
 }
 
-/// `TS_MuzzleFlash(org, vel, info, fwd, n, silenced, fwdofs, thirdperson)` (`0x100474b0`).
+/// `TS_MuzzleFlash(org, vel, info, fwd, n, silenced, fwdofs, thirdperson)` (`0x100474b0`; 2.1
+/// `0x10080a30`).
 ///
 /// Unsilenced: `max(3, n·fxmul)` roll sprites of `ts_muzzleflash1h.spr` spread over
-/// `info.length` along `fwd`, each ×0.909 smaller and dimmer, a core sprite, and the muzzle blast
-/// push. Silenced: 70% of the sprites, dim (colour ≤ 0.3), no core, gone beyond 512 units.
+/// `info.length` along `fwd`, each 1.1 times smaller and dimmer, a core sprite, and the muzzle
+/// blast push. Silenced: 70% of the sprites, dim (colour ≤ 0.3), no core, gone beyond 512 units.
+/// TS rolls each sprite's size, its rise (`RandomFloat(-3, 3)`), the frame, then its spin; a
+/// failed `PSys_Add` ends the flash.
+///
+/// The float forms follow the build ([`DllBuild`](crate::gameplay::DllBuild)): 3.0 multiplies
+/// the running colour and radius by the double `1/1.1` (`0x1004779f`) and works each origin out
+/// in one x87 expression (`0x10047673`); 2.1 divides by 1.1 and stores every value
+/// (`0x10080d8c`, `0x10080b91`).
 #[allow(clippy::too_many_arguments)]
 pub fn muzzle_flash(
     ps: &mut PSys,
@@ -109,14 +128,39 @@ pub fn muzzle_flash(
     fwdofs: f32,
     third: bool,
 ) {
+    use crate::gameplay::DllBuild;
     let st = style();
-    let Some(s1) = ps.sprite("sprites/ts_muzzleflash1h.spr", ADD) else { return };
+    let build = crate::gameplay::current().dll_build();
     let radius = if third { (info.radius as f64 * st.third_person_flash) as i32 } else { info.radius } as f32;
-    let count = ((n as f32 * ps.tuning.mult) as i32).max(3);
-    let sprite = |i: i32, count: i32, size: f32, color: f32, fadespeed: f32, scalespeed: f32, spin: f32| Particle {
+    // The blast push comes before the sprite lookup (`0x10047508..0x1004754a`).
+    if !silenced && st.muzzle_blast {
+        ps.blast_push(org, fwd, info.damage, rf(50.0, 60.0) * radius);
+    }
+    // `ftol(n × fxmul)` off the x87 (`0x1004755b`, 2.1 `0x10080a73`), at least 3.
+    let count = ((n as f64 * ps.tuning.mult as f64) as i32).max(3);
+    let Some(s1) = ps.sprite("sprites/ts_muzzleflash1h.spr", ADD) else { return };
+    let decay = |x: f64| match build {
+        DllBuild::Optimised => x * (1.0 / 1.1),
+        DllBuild::Debug => x / 1.1,
+    };
+    // Sprite `i` of `count` along `fwd`.
+    let origin = |i: i32, count: i32| -> Vec3 {
+        let (len, fo) = (info.length as f64, fwdofs as f64);
+        [0, 1, 2].map(|k| {
+            let (f, o) = (fwd[k] as f64, org[k] as f64);
+            match build {
+                DllBuild::Optimised => (len * i as f64 * f / count as f64 + fo * f + o) as f32,
+                DllBuild::Debug => {
+                    let a = (i as f32 as f64 * f * len / count as f64 + o) as f32;
+                    (fo * f + a as f64) as f32
+                }
+            }
+        })
+    };
+    let sprite = |origin: Vec3, size: f32, color: f32, fadespeed: f32, scalespeed: f32| Particle {
         sprite: s1,
-        origin: v::ma(org, fwdofs + info.length * i as f32 / count as f32, fwd),
-        vel: v::add(vel, [0.0, 0.0, rf(-3.0, 3.0) * TS]),
+        origin,
+        vel,
         radius: size,
         color,
         fadespeed,
@@ -124,39 +168,72 @@ pub fn muzzle_flash(
         life: 0.0,
         drag: st.drag,
         orient: psys::ORIENT_ROLL,
-        avel: [0.0, 0.0, spin * TS],
         ..Default::default()
     };
+    let rise = |p: &mut Particle| p.vel[2] += rf(-3.0, 3.0) * TS;
     if silenced {
-        let d = v::dist(org, ps.cull_origin);
+        // 3.0: the x87 length of the stored offset (`0x10047a67`); 2.1: its own float length
+        // (`0x10097fc0`).
+        let off = v::sub(org, ps.cull_origin);
+        let d = match build {
+            DllBuild::Optimised => len_x87(off),
+            DllBuild::Debug => len_stored(off) as f64,
+        };
         if d > 512.0 {
             return;
         }
-        let c = (512.0 - d) * st.silenced_color;
-        let count = (count as f32 * st.silenced_count) as i32;
-        let mut k = 1.0f32;
+        let mut c = ((512.0 - d) * st.silenced_color) as f32;
+        let mut fade = st.silenced_fade.unwrap_or((c as f64 * st.flash_fade) as f32);
+        let mut rr = radius;
+        let count = (count as f64 * st.silenced_count) as i32;
         for i in 0..count {
-            let spin = if st.silenced_spin != 0 { rl(-st.silenced_spin, st.silenced_spin) as f32 } else { 0.0 };
-            let fade = st.silenced_fade.map_or(st.flash_fade * (c * k), |f| f * k);
-            let mut p = sprite(i, count, rf(0.6, 1.0) * radius * k, c * k, fade, if i == 1 { 0.3 } else { 0.0 }, spin);
+            let size = (rf(0.6, 1.0) as f64 * rr as f64) as f32;
+            let mut p = sprite(origin(i, count), size, c, fade, if i == 1 { 0.3 } else { 0.0 });
+            if st.silenced_jitter {
+                rise(&mut p);
+            }
+            if st.silenced_spin != 0 {
+                p.avel[2] = rl(-st.silenced_spin, st.silenced_spin) as f32 * TS;
+            }
             p.frame = random_frame(ps, s1);
-            ps.add(p, now);
-            k *= 0.909;
+            if !ps.add(p, now) {
+                return;
+            }
+            let next = decay(c as f64);
+            c = next as f32;
+            fade = match (build, st.silenced_fade) {
+                (DllBuild::Debug, Some(_)) => decay(fade as f64) as f32,
+                (DllBuild::Debug, None) => (c as f64 * st.flash_fade) as f32,
+                (DllBuild::Optimised, _) => (next * st.flash_fade) as f32,
+            };
+            rr = decay(rr as f64) as f32;
         }
         return;
     }
-    if st.muzzle_blast {
-        ps.blast_push(org, fwd, info.damage, rf(50.0, 60.0) * radius);
-    }
-    let mut k = 1.0f32;
+    let mut color = st.flash_color;
+    let mut fade = (color as f64 * st.flash_fade) as f32;
+    let mut rr = radius;
     for i in 0..count {
-        let size = rf(0.7, 1.3) * radius * k * if i == 0 { 0.7 } else { 1.0 };
-        let color = st.flash_color * k;
-        let mut p =
-            sprite(i, count, size, color, st.flash_fade * color, if i == 1 { st.flash_scale_speed } else { 0.0 }, rl(-90, 90) as f32);
+        let t = rf(0.7, 1.3) as f64 * rr as f64;
+        let size = match (build, i) {
+            (DllBuild::Optimised, 0) => (t * 0.7) as f32,
+            (DllBuild::Debug, 0) => (t as f32 as f64 * 0.7) as f32,
+            _ => t as f32,
+        };
+        let mut p = sprite(origin(i, count), size, color, fade, if i == 1 { st.flash_scale_speed } else { 0.0 });
+        rise(&mut p);
         p.frame = random_frame(ps, s1);
-        ps.add(p, now);
-        k *= 0.909;
+        p.avel[2] = rl(-90, 90) as f32 * TS;
+        if !ps.add(p, now) {
+            return;
+        }
+        let next = decay(color as f64);
+        color = next as f32;
+        fade = match build {
+            DllBuild::Optimised => (next * st.flash_fade) as f32,
+            DllBuild::Debug => (color as f64 * st.flash_fade) as f32,
+        };
+        rr = decay(rr as f64) as f32;
     }
     // The core (`0x100477dc..0x10047a1c`). TS doesn't check the `ts_muzzleflash6.spr` lookup
     // (0x100477f3): a missing sprite still adds the particle, with no sprite (never drawn).
@@ -166,10 +243,12 @@ pub fn muzzle_flash(
     let (size, color) = if info.kind == 1 { (rf(1.4, 1.7) * radius, 0.6) } else { (rf(1.1, 1.4) * radius, 0.7) };
     let spin = rl(-10, 10) as f32;
     let frame = random_frame(ps, core);
+    // `(fwdofs − 2) × fwd + org`, rounded once.
+    let core_origin = [0, 1, 2].map(|k| ((fwdofs as f64 - 2.0) * fwd[k] as f64 + org[k] as f64) as f32);
     ps.add(
         Particle {
             sprite: core,
-            origin: v::ma(org, fwdofs - 2.0, fwd),
+            origin: core_origin,
             vel,
             radius: size,
             color,
@@ -191,6 +270,7 @@ pub fn muzzle_flash(
             Particle {
                 sprite: spark,
                 origin: org,
+                vel: if st.spark_moves { vel } else { v::ZERO },
                 radius: radius * 3.0,
                 color: 0.5,
                 fadespeed: 0.09,
@@ -201,6 +281,55 @@ pub fn muzzle_flash(
             now,
         );
     }
+}
+
+/// `0x10058390`: a vector's length on the x87, the squares summed and the root taken unrounded.
+fn len_x87(a: Vec3) -> f64 {
+    a.iter().fold(0.0f64, |s, &x| s + x as f64 * x as f64).sqrt()
+}
+
+/// 2.1's length (`0x10097fc0`): each square added to a stored float sum, the root stored.
+fn len_stored(a: Vec3) -> f32 {
+    let s = a.iter().fold(0.0f32, |s, &x| (x as f64 * x as f64 + s as f64) as f32);
+    (s as f64).sqrt() as f32
+}
+
+/// `Vector::Normalize` (`0x10029e40`): the length on the x87, then each component times its
+/// reciprocal, stored. A zero vector is left as it is.
+fn normalize_x87(a: Vec3) -> Vec3 {
+    let len = len_x87(a);
+    if len == 0.0 {
+        return a;
+    }
+    let inv = 1.0 / len;
+    a.map(|c| (inv * c as f64) as f32)
+}
+
+/// `p + n × k` as TS's optimised vector code leaves it: the products for x and y stored as
+/// floats, z's kept on the x87, then each sum stored (`0x1004660f`, `0x10047095`).
+fn ma_z_unrounded(p: Vec3, k: f64, n: Vec3) -> Vec3 {
+    [
+        (p[0] as f64 + (n[0] as f64 * k) as f32 as f64) as f32,
+        (p[1] as f64 + (n[1] as f64 * k) as f32 as f64) as f32,
+        (p[2] as f64 + n[2] as f64 * k) as f32,
+    ]
+}
+
+/// The effect cooldowns' interval for `x` seconds: `SlowTime(x)`, or with
+/// [`FxStyle::raw_slow_cooldowns`] `x × slowdiv(s)` on the raw `TSSlowMo` factor `s`
+/// (`0x100962e0`: 1 at normal speed, else `1 / max(s, 0.1f)`).
+fn cooldown(ps: &PSys, x: f32) -> f32 {
+    if !style().raw_slow_cooldowns {
+        return ps.slow(x);
+    }
+    let s = ps.slowmo;
+    let div = if s == 0.0 { 1.0 } else { 1.0 / (if s < 0.1 { 0.1f32 } else { s }) as f64 };
+    (div * x as f64) as f32
+}
+
+/// `ftol(n × min(fxmul, 1))` on the x87 (`0x10046ded`, `0x10049406`).
+fn quality_count(ps: &PSys, n: i32) -> i32 {
+    (n as f64 * ps.tuning.mult.min(1.0) as f64) as i32
 }
 
 /// `TS_MuzzleDlight`'s rate limit: the client time of the last light (`0x1018a45c`), outside the
@@ -215,13 +344,14 @@ impl MuzzleTimer {
     /// negative the client clock went back (a level change restarts it): the timer restarts from
     /// now, with no light. Otherwise a light is due once `interval` (`SlowTime(0.1)` with this
     /// call's time scale) has passed, and the timer restarts.
-    pub fn ready(&mut self, now: f32, interval: f32) -> bool {
+    /// `interval` is compared as the x87 leaves it (`0x10048e9e`).
+    pub fn ready(&mut self, now: f32, interval: f64) -> bool {
         let elapsed = now - self.last;
         if elapsed < 0.0 {
             self.last = now;
             return false;
         }
-        if interval > elapsed {
+        if interval > elapsed as f64 {
             return false;
         }
         self.last = now;
@@ -236,7 +366,7 @@ pub fn muzzle_dlight(ps: &mut PSys, _now: f64, org: Vec3) {
     if !ps.tuning.dlights {
         return;
     }
-    let interval = ps.slow(0.1);
+    let interval = ps.slow_x87(0.1);
     if !ps.muzzle_timer.ready(engine().client_time(), interval) {
         return;
     }
@@ -257,7 +387,7 @@ pub fn muzzle_dlight(ps: &mut PSys, _now: f64, org: Vec3) {
 /// `cl_fx 0` and when the muzzle is out of view.
 #[allow(clippy::too_many_arguments)]
 pub fn gun_smoke(ps: &mut PSys, now: f64, radius: f32, framerate: i32, org: Vec3, vel: Vec3, dir: Vec3, speed: f32, force: bool) {
-    if !force && !ps.cooldown_ready(1, now, ps.slow(0.1)) {
+    if !force && !ps.cooldown_ready(1, now, cooldown(ps, 0.1)) {
         return;
     }
     let st = style();
@@ -270,9 +400,16 @@ pub fn gun_smoke(ps: &mut PSys, now: f64, radius: f32, framerate: i32, org: Vec3
     let mut r = radius;
     for (j, k) in (1..=puffs).rev().enumerate() {
         let origin = if j == 0 { v::ma(org, r * 0.5, dir) } else { v::ma(org, r * (j - 1) as f32, dir) };
-        let jitter = [rf(-0.2 * r, 0.2 * r) * TS, rf(-0.2 * r, 0.2 * r) * TS, 0.0];
+        // The frame rate is rolled before the jitter (`0x1004730c`, 2.1 `0x1007fbc0`), whose
+        // bound is `r × 0.2f` (2.1: `r / 5.0f`, `0x1007fc33`).
         let half = framerate / 2;
-        ps.add(
+        let framerate = (framerate + rl(-half, half)) as f32;
+        let b = match crate::gameplay::current().dll_build() {
+            crate::gameplay::DllBuild::Optimised => 0.2 * r,
+            crate::gameplay::DllBuild::Debug => r / 5.0,
+        };
+        let jitter = [rf(-b, b) * TS, rf(-b, b) * TS, 0.0];
+        let added = ps.add(
             Particle {
                 sprite: s,
                 origin,
@@ -283,12 +420,16 @@ pub fn gun_smoke(ps: &mut PSys, now: f64, radius: f32, framerate: i32, org: Vec3
                 life: 0.0,
                 scalespeed: 0.1,
                 drag: st.drag,
-                framerate: (framerate + rl(-half, half)) as f32,
+                framerate,
                 ..Default::default()
             },
             now,
         );
-        r *= 0.8;
+        if !added {
+            return;
+        }
+        // The double 0.8 (`0x10047409`, 2.1 `0x1007fce2`).
+        r = (r as f64 * 0.8) as f32;
     }
 }
 
@@ -316,19 +457,26 @@ pub fn sprite_debris(
         return;
     }
     if !nocd {
-        let iv = ps.slow(ps.tuning.interval);
+        let iv = cooldown(ps, ps.tuning.interval);
         if !(2..=5).any(|slot| ps.cooldown_ready(slot, now, iv)) {
             return;
         }
     }
     let Some(s) = ps.sprite(sprite, rendermode) else { return };
     let st = style();
-    let count = if st.debris_count_by_quality { (rl(cnt / 2, cnt) as f32 * ps.tuning.mult.min(1.0)) as i32 } else { rl(cnt / 2, cnt) };
+    let count = if st.debris_count_by_quality { quality_count(ps, rl(cnt / 2, cnt)) } else { rl(cnt / 2, cnt) };
+    let build = crate::gameplay::current().dll_build();
     for _ in 0..count {
         let spin = rl(-180, 180) as f32;
         let jitter = [rl(-spread, spread) as f32, rl(-spread, spread) as f32, rl(-spread / 2, spread / 2) as f32];
         let frame = random_frame(ps, s);
-        ps.add(
+        // `spin × 0.001 + life` with the double 0.001 (`0x10046ee9`); 2.1 `spin / 1000.0`
+        // (`0x1007f28a`).
+        let life = match build {
+            crate::gameplay::DllBuild::Optimised => spin as f64 * 0.001 + life as f64,
+            crate::gameplay::DllBuild::Debug => spin as f64 / 1000.0 + life as f64,
+        } as f32;
+        let added = ps.add(
             Particle {
                 sprite: s,
                 origin: v::ma(pos, 2.0, n),
@@ -338,7 +486,7 @@ pub fn sprite_debris(
                 color: 1.0,
                 fadespeed: if rendermode == ADD || st.debris_fade_any_mode { 0.05 } else { 0.0 },
                 react: st.debris_react,
-                life: life + spin * 0.001,
+                life,
                 frame,
                 orient: psys::ORIENT_ROLL,
                 avel: [0.0, 0.0, spin * TS],
@@ -347,6 +495,9 @@ pub fn sprite_debris(
             },
             now,
         );
+        if !added {
+            return;
+        }
     }
 }
 
@@ -374,7 +525,7 @@ pub fn surface_mark(
     ps.add(
         Particle {
             sprite: s,
-            origin: v::ma(pos, 0.1, n),
+            origin: mark_origin(pos, n),
             radius,
             color,
             fadespeed: if rendermode == ADD { fadespeed } else { 0.0 },
@@ -392,21 +543,51 @@ pub fn surface_mark(
 /// TS's `VecToAngles` (`0x10046110`): the SDK `VectorAngles` with each angle truncated to whole
 /// degrees *before* a negative one gets 360 added, and the pitch negated (AngleVectors'
 /// convention). Straight up/down is (-90 / -270, 0, 0).
+///
+/// 3.0 takes the horizontal length on the x87 and multiplies by the double `180/π`
+/// (`0x100461be`); 2.1 (`0x1007d6c0`) stores the length as a float and takes `× 180 / π`.
 pub fn vec_to_angles(f: Vec3) -> Vec3 {
+    vec_to_angles_as(crate::gameplay::current().dll_build(), f)
+}
+
+fn vec_to_angles_as(build: crate::gameplay::DllBuild, f: Vec3) -> Vec3 {
+    use crate::gameplay::DllBuild;
     if f[0] == 0.0 && f[1] == 0.0 {
         return [if f[2] > 0.0 { -90.0 } else { -270.0 }, 0.0, 0.0];
     }
-    let deg = |y: f32, x: f32| ((y as f64).atan2(x as f64) * 57.295_779_513_082_32) as i32 as f32;
+    let deg = |y: f64, x: f64| {
+        let a = y.atan2(x);
+        (match build {
+            DllBuild::Optimised => a * 57.295_779_513_082_32,
+            DllBuild::Debug => a * 180.0 / std::f64::consts::PI,
+        }) as i32 as f32
+    };
     let wrap = |a: f32| if a < 0.0 { a + 360.0 } else { a };
     let yaw = if f[0] != 0.0 {
-        wrap(deg(f[1], f[0]))
+        wrap(deg(f[1] as f64, f[0] as f64))
     } else if f[1] > 0.0 {
         90.0
     } else {
         270.0
     };
-    let pitch = wrap(deg(f[2], (f[0] * f[0] + f[1] * f[1]).sqrt()));
+    let h = (f[0] as f64 * f[0] as f64 + f[1] as f64 * f[1] as f64).sqrt();
+    let h = match build {
+        DllBuild::Optimised => h,
+        DllBuild::Debug => h as f32 as f64,
+    };
+    let pitch = wrap(deg(f[2] as f64, h));
     [-pitch, yaw, 0.0]
+}
+
+/// The surface mark's origin, `pos + n × 0.1f`: x's product kept on the x87, y's and z's
+/// stored (`0x10046b2b..0x10046b65`).
+fn mark_origin(pos: Vec3, n: Vec3) -> Vec3 {
+    let k = 0.1f32 as f64;
+    [
+        (n[0] as f64 * k + pos[0] as f64) as f32,
+        (pos[1] as f64 + (n[1] as f64 * k) as f32 as f64) as f32,
+        (pos[2] as f64 + (n[2] as f64 * k) as f32 as f64) as f32,
+    ]
 }
 
 /// `TS_Sparks(org, dir, n, scale, spread)` (`0x100492b0`): `sprites/sparks.spr`, `n/2..n`
@@ -418,17 +599,19 @@ pub fn sparks(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, n: i32, scale: f32,
         return;
     }
     let Some(s) = ps.sprite("sprites/sparks.spr", ADD) else { return };
-    let count = (rl(n / 2, n) as f32 * ps.tuning.mult.min(1.0)) as i32;
+    let count = quality_count(ps, rl(n / 2, n));
     for _ in 0..count {
-        let life = rf(0.1, 1.0);
+        // TS's order (`0x10049472..0x1004951d`): radius, jitter, life, frame.
+        let radius = rf(0.5, 1.15) * scale;
         let jitter = [rf(-spread, spread), rf(-spread, spread), rf(0.0, spread)];
+        let life = rf(0.1, 1.0);
         let frame = random_frame(ps, s);
-        ps.add(
+        let added = ps.add(
             Particle {
                 sprite: s,
                 origin: org,
                 vel: v::scale(v::add(v::scale(dir, 17.0), jitter), TS),
-                radius: rf(0.5, 1.15) * scale,
+                radius,
                 life,
                 gravity: 1.0,
                 color: 0.9,
@@ -441,6 +624,9 @@ pub fn sparks(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, n: i32, scale: f32,
             },
             now,
         );
+        if !added {
+            return;
+        }
     }
 }
 
@@ -449,12 +635,18 @@ pub fn sparks(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, n: i32, scale: f32,
 pub fn scintille(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, sprite: &str, rendermode: i32, size: f32) {
     let Some(s) = ps.sprite(sprite, rendermode) else { return };
     let count = if size <= 24.0 { 2 } else { 1 };
+    let build = crate::gameplay::current().dll_build();
     for i in 0..count {
         let frame = random_frame(ps, s);
-        ps.add(
+        // 3.0: `(i + 1) × (double)(size × 0.5)` with z's product kept (`0x10047059..0x10047095`).
+        let origin = match build {
+            crate::gameplay::DllBuild::Optimised => ma_z_unrounded(org, (i + 1) as f64 * (size as f64 * 0.5), dir),
+            crate::gameplay::DllBuild::Debug => v::ma(org, (i + 1) as f32 * size * 0.5, dir),
+        };
+        let added = ps.add(
             Particle {
                 sprite: s,
-                origin: v::ma(org, (i + 1) as f32 * size * 0.5, dir),
+                origin,
                 vel: v::scale(dir, 2.0 * TS),
                 radius: size - i as f32,
                 color: 0.7,
@@ -466,6 +658,9 @@ pub fn scintille(ps: &mut PSys, now: f64, org: Vec3, dir: Vec3, sprite: &str, re
             },
             now,
         );
+        if !added {
+            return;
+        }
     }
 }
 
@@ -490,19 +685,26 @@ pub fn impact_smoke(
     framerate: i32,
     nocd: bool,
 ) {
-    if !nocd && !ps.cooldown_ready(0, now, ps.slow(ps.tuning.puff_interval)) {
+    if !nocd && !ps.cooldown_ready(0, now, cooldown(ps, ps.tuning.puff_interval)) {
         return;
     }
     if !ps.visible(pos) {
         return;
     }
     let Some(s) = ps.sprite(sprite, rendermode) else { return };
+    let build = crate::gameplay::current().dll_build();
     let half = (framerate as f32 * 0.5) as i32;
     let mut r = size;
+    let mut origin = v::ma(pos, size * 0.5, n);
     for j in 0..count {
-        let origin = if j == 0 { v::ma(pos, size * 0.5, n) } else { v::ma(pos, r * (j - 1) as f32, n) };
-        let vel = v::add(v::scale(n, rf(8.0, 24.0) / (count - j) as f32 * TS), [rf(-2.0, 2.0) * TS, rf(-2.0, 2.0) * TS, 0.0]);
-        ps.add(
+        // The frame rate first (`0x100468b7`), then the speed, `f32(f32(n × speed) / k)` per
+        // component, then the x and y jitter added to it (2.1 `0x1007e7f0`: the speed is 16).
+        let framerate = (framerate + rl(-half, half)) as f32;
+        let speed = style().impact_smoke_speed.unwrap_or_else(|| rf(8.0, 24.0));
+        let k = (count - j) as f32 as f64;
+        let b = n.map(|c| ((c as f64 * speed as f64) as f32 as f64 / k) as f32);
+        let vel = [(rf(-2.0, 2.0) + b[0]) * TS, (rf(-2.0, 2.0) + b[1]) * TS, b[2] * TS];
+        let added = ps.add(
             Particle {
                 sprite: s,
                 origin,
@@ -514,12 +716,22 @@ pub fn impact_smoke(
                 scalespeed: 0.1,
                 stretch: if style().stretch { 7.0 } else { 0.0 },
                 life: 0.0,
-                framerate: (framerate + rl(-half, half)) as f32,
+                framerate,
                 ..Default::default()
             },
             now,
         );
-        r *= 0.8;
+        if !added {
+            return;
+        }
+        // The double 0.8; the next origin is `pos + n × (r × 0.8 × j)`: 3.0 keeps the product
+        // (`0x100469b4`, z's sum rounded once), 2.1 stores the radius and the product.
+        let next = r as f64 * 0.8;
+        r = next as f32;
+        origin = match build {
+            crate::gameplay::DllBuild::Optimised => ma_z_unrounded(pos, next * j as f64, n),
+            crate::gameplay::DllBuild::Debug => v::ma(pos, r * j as f32, n),
+        };
     }
 }
 
@@ -527,14 +739,19 @@ pub fn impact_smoke(
 /// growing puff (melee hits, kevlar hits). Slot 0 rate-limits it.
 #[allow(clippy::too_many_arguments)]
 pub fn small_puff(ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, sprite: &str, rendermode: i32, radius: f32, framerate: f32) {
-    if !ps.cooldown_ready(0, now, ps.slow(ps.tuning.puff_interval)) || !ps.visible(pos) {
+    if !ps.cooldown_ready(0, now, cooldown(ps, ps.tuning.puff_interval)) || !ps.visible(pos) {
         return;
     }
     let Some(s) = ps.sprite(sprite, rendermode) else { return };
+    // 3.0: `n × (radius × 0.5)` with z's product kept (`0x100465d2..0x1004661b`).
+    let origin = match crate::gameplay::current().dll_build() {
+        crate::gameplay::DllBuild::Optimised => ma_z_unrounded(pos, radius as f64 * 0.5, n),
+        crate::gameplay::DllBuild::Debug => v::ma(pos, radius * 0.5, n),
+    };
     ps.add(
         Particle {
             sprite: s,
-            origin: v::ma(pos, radius * 0.5, n),
+            origin,
             vel: [0.0, 0.0, -2.0 * TS],
             radius,
             color: 1.0,
@@ -613,7 +830,8 @@ pub fn blood_count(a: i32, kevlar: bool, gore: f32) -> i32 {
         n /= 2;
     }
     if gore > 10.0 {
-        return (n as f32 * gore.min(33.0)) as i32;
+        // `ftol(n × min(gore, 33))` on the x87 (`0x10048aec`).
+        return (n as f64 * gore.min(33.0) as f64) as i32;
     }
     let k = match gore.min(5.0) as i32 {
         1 => 0.5,
@@ -636,7 +854,7 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32, kevlar:
     }
     let mut d = v::scale(dir, -1.0);
     let a = if kevlar {
-        d = v::normalize([d[0] + rf(-0.3, 0.3), d[1] + rf(-0.3, 0.3), d[2] + rf(-0.1, 0.1)]);
+        d = normalize_x87([d[0] + rf(-0.3, 0.3), d[1] + rf(-0.3, 0.3), d[2] + rf(-0.1, 0.1)]);
         small_puff(ps, now, pos, v::scale(d, 6.0), "sprites/gun_smoke_add.spr", ADD, 4.0, 20.0);
         amount
     } else {
@@ -646,19 +864,25 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32, kevlar:
     let n = blood_count(a, kevlar, gore);
     let Some(s) = ps.sprite("sprites/bloodfrag2.spr", kRenderTransColor as i32) else { return };
     d[2] += rf(0.5, 1.0);
-    let dn = v::normalize(d);
+    let dn = normalize_x87(d);
     let (mut at, mut acc) = (pos, 0.0f32);
     for i in 0..n {
+        // Per drop (`0x10048be8..0x10048d3f`): the frame, the life, then (after the first) the
+        // speed and the x and y jitter, then the contents test. Velocities are `f32(dn × s)`
+        // plus the jitter, in TS units.
+        let frame = random_frame(ps, s);
+        let life = rf(1.0, 2.0);
         let (origin, vel) = if i == 0 {
-            (pos, v::scale(dir, 32.0 * TS))
+            (pos, dir.map(|c| (c as f64 * 32.0) as f32 * TS))
         } else {
-            (at, v::add(v::scale(dn, rf(8.0, 24.0) * TS), [rf(-1.0, 1.0) * TS, rf(-1.0, 1.0) * TS, 0.0]))
+            let speed = rf(8.0, 24.0);
+            let b = dn.map(|c| (c as f64 * speed as f64) as f32);
+            (at, [(rf(-1.0, 1.0) + b[0]) * TS, (rf(-1.0, 1.0) + b[1]) * TS, b[2] * TS])
         };
         if r::point_contents(origin) == CONTENTS_SOLID {
             break;
         }
-        let frame = random_frame(ps, s);
-        ps.add(
+        let added = ps.add(
             Particle {
                 sprite: s,
                 origin,
@@ -668,7 +892,7 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32, kevlar:
                 color: 1.0,
                 stretch: 2.0,
                 scalespeed: 0.075,
-                life: rf(1.0, 2.0),
+                life,
                 frame,
                 collide: true,
                 oncollide: psys::ONCOLLIDE_BLOOD,
@@ -676,12 +900,28 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32, kevlar:
             },
             now,
         );
+        if !added {
+            return;
+        }
         if i >= 1 {
-            at = v::ma(at, radius * 0.3, dn);
-            acc += radius * 0.1;
-            at[2] -= acc / n as f32;
+            at = blood_step(at, &mut acc, radius, dn, n);
         }
     }
+}
+
+/// The blood chain's next drop position (`0x10048d42..0x10048df6`): `w = dn × r × 0.3f` (x's
+/// and y's `dn × r` stored, z's kept), each `at + w` stored, `acc = r × 0.1f + acc` stored, then
+/// `at.z −= acc / n` on the x87.
+fn blood_step(at: Vec3, acc: &mut f32, r: f32, dn: Vec3, n: i32) -> Vec3 {
+    let k = 0.3f32 as f64;
+    let w = [
+        ((dn[0] as f64 * r as f64) as f32 as f64 * k) as f32,
+        ((dn[1] as f64 * r as f64) as f32 as f64 * k) as f32,
+        (dn[2] as f64 * r as f64 * k) as f32,
+    ];
+    let next = [0, 1, 2].map(|i| (at[i] as f64 + w[i] as f64) as f32);
+    *acc = (r as f64 * 0.1f32 as f64 + *acc as f64) as f32;
+    [next[0], next[1], (next[2] as f64 - *acc as f64 / n as f64) as f32]
 }
 
 /// The thin axis of a breakable's box and the other two (`TS_GlassShatter`'s tie rules).
@@ -705,20 +945,35 @@ fn glass_axes(size: Vec3) -> (usize, usize, usize) {
 pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec3, dmg_bits: i32, force: f32) {
     let Some(s) = ps.sprite("sprites/glassfrag.spr", ADD) else { return };
     let (_, a1, a2) = glass_axes(size);
-    let radius = ((size[a1] + size[a2]) * (1.0 / 18.0) * 0.7).min(20.0);
+    // `(s1 + s2) × (1/18)f × 0.7` on the x87, capped at 20 and stored (`0x10047d43..0x10047dca`).
+    let r = (size[a1] as f64 + size[a2] as f64) * (1.0f32 / 18.0) as f64 * 0.7;
+    let radius = if r < 20.0 { r as f32 } else { 20.0 };
+    // `(org − s × 0.5f) + s × (1/9)f × k`, rounded once (`0x10047e82..0x10047ea0`).
+    let cell = |a: usize, k: i32| (org[a] as f64 - size[a] as f64 * 0.5 + size[a] as f64 * (1.0f32 / 9.0) as f64 * k as f64) as f32;
     for k1 in 0..9 {
         for k2 in 0..9 {
             let mut p = org;
-            p[a1] = org[a1] - size[a1] * 0.5 + size[a1] * (1.0 / 9.0) * k1 as f32;
-            p[a2] = org[a2] - size[a2] * 0.5 + size[a2] * (1.0 / 9.0) * k2 as f32;
+            p[a1] = cell(a1, k1);
+            p[a2] = cell(a2, k2);
+            // The frame first (`0x10047f5c`), then the velocity, spin and life.
+            let frame = random_frame(ps, s);
             let vel = if dmg_bits & 0x0800_0002 != 0 {
-                let push = force / (v::dist(p, hit) + 1.0) * 10.0;
-                v::ma([rf(-9.0, 9.0), rf(-9.0, 9.0), rl(0, 10) as f32], push, dir)
+                let b = [rf(-9.0, 9.0), rf(-9.0, 9.0), rl(0, 10) as f32];
+                // `force / (|p − hit| + 1)` on the x87; x's and y's `dir × push` and `× 10f`
+                // stored, z's kept, each plus its roll stored (`0x10047fcd..0x10048079`).
+                let push = force as f64 / (len_x87(v::sub(p, hit)) + 1.0);
+                let ten = |c: f64| c * 10.0;
+                [
+                    (ten((dir[0] as f64 * push) as f32 as f64) as f32 as f64 + b[0] as f64) as f32,
+                    (ten((dir[1] as f64 * push) as f32 as f64) as f32 as f64 + b[1] as f64) as f32,
+                    (ten(dir[2] as f64 * push) + b[2] as f64) as f32,
+                ]
             } else {
                 v::scale(dir, force).map(|c| rf(c * 0.5, c + 15.0))
             };
-            let frame = random_frame(ps, s);
-            ps.add(
+            let spin = rl(-90, 90) as f32;
+            let life = rf(2.0, 5.0);
+            let added = ps.add(
                 Particle {
                     sprite: s,
                     origin: p,
@@ -728,15 +983,18 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec
                     color: 0.7,
                     fadespeed: 0.05,
                     react: 0.5,
-                    life: rf(2.0, 5.0),
+                    life,
                     frame,
                     orient: psys::ORIENT_ROLL,
-                    avel: [0.0, 0.0, rl(-90, 90) as f32 * TS],
+                    avel: [0.0, 0.0, spin * TS],
                     collide: true,
                     ..Default::default()
                 },
                 now,
             );
+            if !added {
+                return;
+            }
         }
     }
 }
@@ -752,15 +1010,20 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
     ps.push_radial(org, 512.0, radius * 10.0);
     let scale = ps.tuning.scale;
     // A sprite that fails to load ends the whole effect (`je 0x100486e7`): no smoke, light or flash.
-    let cloud = |ps: &mut PSys, sprite: &str, count: f32, size: f32, rise: f32, speed: f32, fr: (i32, i32)| -> bool {
+    // So does a failed `PSys_Add` (`0x10048491`, `0x100485c5`). The count is `ftol(scale × n)`
+    // on the x87 (`0x1004841c`, `0x10048550`); the size `radius × k` with the double k and the
+    // rise half of it (`0x100484ca`).
+    let cloud = |ps: &mut PSys, sprite: &str, count: f32, size: f64, speed: f32, fr: (i32, i32)| -> bool {
         let Some(s) = ps.sprite(sprite, ADD) else { return false };
-        for _ in 0..(scale * count) as i32 {
-            ps.add(
+        let r = radius as f64 * size;
+        let origin = [org[0], org[1], (org[2] as f64 + r * 0.5) as f32];
+        for _ in 0..(scale as f64 * count as f64) as i32 {
+            let added = ps.add(
                 Particle {
                     sprite: s,
-                    origin: v::add(org, [0.0, 0.0, radius * rise]),
+                    origin,
                     vel: v::scale([rf(-speed, speed), rf(-speed, speed), rf(0.0, speed)], TS),
-                    radius: radius * size,
+                    radius: r as f32,
                     gravity: 0.01,
                     color: 0.3,
                     life: 0.0,
@@ -771,11 +1034,14 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
                 },
                 now,
             );
+            if !added {
+                return false;
+            }
         }
         true
     };
-    if !cloud(ps, "sprites/grenade_asplode.spr", 24.0, 0.5, 0.25, 70.0, (25, 30))
-        || !cloud(ps, "sprites/gun_smoke_add.spr", 48.0, 0.7, 0.35, 54.0, (2, 10))
+    if !cloud(ps, "sprites/grenade_asplode.spr", 24.0, 0.5, 70.0, (25, 30))
+        || !cloud(ps, "sprites/gun_smoke_add.spr", 48.0, 0.7, 54.0, (2, 10))
     {
         return;
     }
@@ -807,6 +1073,9 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, radius: f32) {
 pub fn bullet_trail(ps: &mut PSys, now: f64, p1: Vec3, p2: Vec3, w: f32, alpha: f32, view_up: Vec3) {
     let Some(s) = ps.sprite("sprites/bullet_trail.spr", ADD) else { return };
     let up = v::scale(view_up, w);
+    // The first corner's x subtracts the unrounded `up.x × w` (`0x100462f3`).
+    let mut c0 = v::sub(p2, up);
+    c0[0] = (p2[0] as f64 - view_up[0] as f64 * w as f64) as f32;
     ps.add(
         Particle {
             sprite: s,
@@ -815,7 +1084,7 @@ pub fn bullet_trail(ps: &mut PSys, now: f64, p1: Vec3, p2: Vec3, w: f32, alpha: 
             color: alpha * 0.75,
             fadespeed: 0.1,
             life: 0.0,
-            corners: Some([v::sub(p2, up), v::add(p2, up), v::add(p1, up), v::sub(p1, up)]),
+            corners: Some([c0, v::add(p2, up), v::add(p1, up), v::sub(p1, up)]),
             ..Default::default()
         },
         now,
@@ -825,6 +1094,36 @@ pub fn bullet_trail(ps: &mut PSys, now: f64, p1: Vec3, p2: Vec3, w: f32, alpha: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `VecToAngles`: 3.0 keeps the horizontal length on the x87 (`0x100461be`), 2.1 stores it
+    /// and takes `× 180 / π` (`0x1007d7d3`); a float length gave 3.0 the wrong whole degree.
+    #[test]
+    fn vec_to_angles_per_build() {
+        use crate::gameplay::DllBuild;
+        let f = [f32::from_bits(0xbe3c_185b), f32::from_bits(0x3e6f_d8e6), f32::from_bits(0x3eea_ae06)];
+        assert_eq!(vec_to_angles_as(DllBuild::Optimised, f)[0], -57.0);
+        assert_eq!(vec_to_angles_as(DllBuild::Debug, f)[0], -56.0);
+    }
+
+    /// `0x10048d42..0x10048df6`: the blood chain's step keeps TS's stores.
+    #[test]
+    fn blood_step_forms() {
+        let mut acc = 0.0;
+        let at = blood_step([0.0; 3], &mut acc, 2.0, [0.6, 0.0, 0.8], 10);
+        assert_eq!(acc, (2.0f64 * 0.1f32 as f64) as f32);
+        assert_eq!(at[0], ((0.6f32 as f64 * 2.0) as f32 as f64 * 0.3f32 as f64) as f32);
+        assert_eq!(at[2], ((0.8f32 as f64 * 2.0 * 0.3f32 as f64) as f32 as f64 - acc as f64 / 10.0) as f32);
+    }
+
+    /// TS's `Vector::Normalize` (`0x10029e40`) multiplies by the x87 reciprocal of the x87 length.
+    #[test]
+    fn normalize_on_the_x87() {
+        assert_eq!(normalize_x87([3.0, 0.0, 4.0]), [0.6, 0.0, 0.8]);
+        assert_eq!(normalize_x87([0.0; 3]), [0.0; 3]);
+        let a = [0.1f32, 0.2, 0.3];
+        let l = (0.1f32 as f64 * 0.1f32 as f64 + 0.2f32 as f64 * 0.2f32 as f64 + 0.3f32 as f64 * 0.3f32 as f64).sqrt();
+        assert_eq!(normalize_x87(a)[2], (1.0 / l * 0.3f32 as f64) as f32);
+    }
 
     #[test]
     fn muzzle_timer() {

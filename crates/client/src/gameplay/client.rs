@@ -501,6 +501,10 @@ mod stub {
         debris_react: 0.0,
         debris_fade_any_mode: false,
         debris_count_by_quality: false,
+        silenced_jitter: false,
+        spark_moves: false,
+        raw_slow_cooldowns: false,
+        impact_smoke_speed: None,
     };
 
     /// TS 3.0's look (the core's own code paths).

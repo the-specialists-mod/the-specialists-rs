@@ -423,14 +423,14 @@ The hooks so far:
 | `ClientRules` | `say_text_style()` | `ts30_client::hud::SAY_TEXT`: muted players' chat dropped, plain lines in (1, 0.7, 0) (#260) | `hud/mod.rs` `say_text_print`, `draw_say_text` |
 | `ClientRules` | `particle_model()` | `ParticleModel::Drag` (`PSys_UpdateDraw` 0x100520d0) (#261) | `effects/psys.rs` `update_draw`, `add`, `sprite`; `effects.rs` (the step) |
 | `ClientRules` | `vgui_scale()` | `VguiScale::Reciprocal`: `XRES`/`YRES` as `ScreenWidth * (1/640)f`, `ScreenHeight * (1/480)f`, with TS's float spills (#266) | `hud::vgui::{xs, ys, spill}` (team menu, MOTD, scoreboard, spectator bar) |
-| `ClientRules` | `dll_build()` | `DllBuild::Optimised`: x87 temporaries kept unrounded (2.1: `Debug`, every float assignment stored, the source's operand order) (round 4) | `hud::message` (game title, end times, write-out), `hud::status::draw_ts_messages`, `hud::geiger::volume` |
+| `ClientRules` | `dll_build()` | `DllBuild::Optimised`: x87 temporaries kept unrounded (2.1: `Debug`, every float assignment stored, the source's operand order) (round 4) | `hud::message` (game title, end times, write-out), `hud::status::draw_ts_messages`, `hud::geiger::volume`, the HUD dots and timers, `effects::fx` (flash decay and origins, smoke jitter, debris life, `VecToAngles`, impact smoke and puff origins) |
 | `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
 | `ClientRules` | `client_bullet_next_update(now, realbullet)` | `ts30_client::events::next_update`: 0.1 s, 0.05 s or every frame by `realbullet` | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `client_bullet_step(dir, step)` | `dir·velocity·40·dt·GetBulletVelocityMult` | `events/fire.rs` `client_bullet_impact` |
 | `ClientRules` | `client_bullet_range_index(dist, unit, exit)` | exit `ftol(dist·0.0033333334f·10)`, else `range_index` | `events/fire.rs` `client_bullet_impact` |
 | `ClientRules` | `client_bullet_draws(time_scale, slowmo_factor100)` | `ts < 0.99` | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `client_bullet_draw(bullet, draw)` | false: the core `shotgun_pellets.spr` streaks and `bullet_trail.spr` trail; a ruleset may queue `BulletModels`, which `effects::create_entities` adds (`goldsrc::ext::models`) | `events/fire.rs` `client_bullets_frame` |
-| `ClientRules` | `fx_style()` | `ts30_client::fx::FX`: the muzzle flash, gun smoke, impact smoke, puff and debris parameters | `effects/fx.rs` builders |
+| `ClientRules` | `fx_style()` | `ts30_client::fx::FX`: the muzzle flash, gun smoke, impact smoke, puff and debris parameters (round 4 added `silenced_jitter`, `spark_moves`, `raw_slow_cooldowns`, `impact_smoke_speed`, #285) | `effects/fx.rs` builders |
 | `ClientRules` | `impact_particles(ps, now, pos, n, tex, bullet_type)` | false: `fx::impact`'s body | `effects/fx.rs` `impact` |
 | `ClientRules` | `gun_smoke_rate(id)` | `RandomLong(5, 10)` for 33, else `RandomLong(45, 55)` | `events/fire.rs` `gun_fx` |
 | `ClientRules` | `pellet_spray_gravity()` | 0 | `events/fire.rs` `gun_fx` |

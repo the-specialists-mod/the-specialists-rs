@@ -38,6 +38,10 @@ pub static FX: FxStyle = FxStyle {
     debris_react: 0.0,
     debris_fade_any_mode: true,
     debris_count_by_quality: false,
+    silenced_jitter: false,
+    spark_moves: true,
+    raw_slow_cooldowns: true,
+    impact_smoke_speed: Some(16.0),
 };
 
 /// The unsilenced smoke's frame rate (0x10074125, 0x10074183): `RandomLong(5, 10)` for the

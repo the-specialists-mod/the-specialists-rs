@@ -471,17 +471,18 @@ impl PSys {
     /// isn't hardware. The copy starts with `prev` at its origin, no drift, not resting, the
     /// think and trace times at 0, the spawn time from the client clock, and a drag floor of 0.1.
     /// [`ParticleModel::Decelerate`] (`0x1008ffc0`) searches the first 2048 slots and has no drag
-    /// (its life clock starts at the spawn time).
-    pub fn add(&mut self, mut p: Particle, _now: f64) {
+    /// (its life clock starts at the spawn time). False when nothing was added (TS's −1, on
+    /// which every builder stops).
+    pub fn add(&mut self, mut p: Particle, _now: f64) -> bool {
         if self.parts.is_empty() {
-            return;
+            return false;
         }
         if self.slot(p.sprite).is_some_and(|s| s.mode == kRenderTransColor as i16) && !self.hardware {
-            return;
+            return false;
         }
         // `+0xc0c`, the search start, only ever moves down from 0, so the search is from 0.
         let cap = self.parts.len().min(self.model.pool_max());
-        let Some(i) = self.parts[..cap].iter().position(|q| !q.alive) else { return };
+        let Some(i) = self.parts[..cap].iter().position(|q| !q.alive) else { return false };
         p.prev = p.origin;
         p.drift = v::ZERO;
         p.resting = false;
@@ -494,6 +495,7 @@ impl PSys {
         p.next_think = 0.0;
         self.parts[i] = p;
         self.high = self.high.max(i);
+        true
     }
 
     /// `PSys_Kill` (`0x10050b20`): the slot is free and its life 0.
@@ -502,9 +504,17 @@ impl PSys {
         self.parts[i].life = 0.0;
     }
 
-    /// `SlowTime`: `x / max(ts, 0.01)` (cooldowns and light lifetimes stretch in slow motion).
+    /// `SlowTime` (`0x10056fa0`): `(1 / max(ts, 0.01f)) × x` (cooldowns and light lifetimes
+    /// stretch in slow motion), stored as a float as its callers pass it on.
     pub fn slow(&self, x: f32) -> f32 {
-        x / self.time_scale.max(0.01)
+        self.slow_x87(x) as f32
+    }
+
+    /// `SlowTime` as it leaves the x87, unrounded (a caller that compares it directly).
+    pub fn slow_x87(&self, x: f32) -> f64 {
+        let ts = self.time_scale;
+        let m = if ts < 0.01 { 0.01f32 } else { ts };
+        1.0 / m as f64 * x as f64
     }
 
     /// `InViewCone` (`0x100570b0`) and `PointVisible` (`0x100572a0`, a point-hull trace from the
