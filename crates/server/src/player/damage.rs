@@ -65,13 +65,17 @@ pub fn kevlar_absorb(armor: f32, group: i32, dmg_bits: i32, absorb: f32) -> f32 
     }
 }
 
-/// `PTakeDam` amount byte: half the damage (×8 for shotgun pellets), capped at 127, +128 on kevlar.
-/// TraceAttack truncates it (`fistp` under a round-toward-zero control word at 0x904b7), as does
-/// `as u8`.
+/// `PTakeDam` amount byte: half the damage (×8 for shotgun pellets), capped at 127 (a NaN is 127),
+/// +128 on kevlar. All of it stays on the x87 and is truncated once (`fistp` under a
+/// round-toward-zero control word at 0x904b7; mp.dll 0x1005f201..0x1005f235, `__ftol`), and
+/// `WRITE_BYTE` keeps the low byte, so a negative amount wraps (issue #219).
 pub fn ptakedam_amount(dmg: f32, dmg_bits: i32, kevlar: bool) -> u8 {
-    let d = if dmg_bits & DMG_SHOTGUN != 0 { dmg * 8.0 } else { dmg };
+    let d = f64::from(dmg) * if dmg_bits & DMG_SHOTGUN != 0 { 8.0 } else { 1.0 };
     let a = (d * 0.5).min(127.0);
-    (if kevlar { a + 128.0 } else { a }) as u8
+    let v = if kevlar { a + 128.0 } else { a };
+    // `__ftol`'s 64-bit result (0x8000000000000000 out of range, whose low byte is 0).
+    let n = if v > -9.2e18 { v as i64 } else { i64::MIN };
+    n as u8
 }
 
 /// `CBasePlayer::TakeHealth` (0xd8760) for code that holds the player (time-based healing).
@@ -497,6 +501,13 @@ mod tests {
         assert_eq!(ptakedam_amount(10.0, bits::BULLET | DMG_SHOTGUN, false), 40);
         assert_eq!(ptakedam_amount(31.0, bits::BULLET, false), 15, "15.5 truncates");
         assert_eq!(ptakedam_amount(23.6, bits::BULLET, true), 139, "139.8 truncates");
+        // #219: `a + 128` isn't rounded to a `float` before the truncation: 31.999998
+        // (0x41ffffff) on kevlar is 143.999999, not 144.
+        assert_eq!(ptakedam_amount(f32::from_bits(0x41ff_ffff), bits::BULLET, true), 143);
+        assert_eq!(ptakedam_amount(f32::NAN, bits::BULLET, false), 127, "`test ah,0x1`: a NaN is capped");
+        // The low byte of the truncated value: a negative hit wraps.
+        assert_eq!(ptakedam_amount(-10.0, bits::BULLET, false), 251);
+        assert_eq!(ptakedam_amount(-10.0, bits::BULLET, true), 123);
     }
 
     #[test]
