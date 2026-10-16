@@ -419,7 +419,9 @@ Weapon element colours (issue #92; read from the TS binary). Many are `ftol(colo
   when alive again (except the team page), from `CHudTSWeapons::Draw` (`0x1004d3f0`), so not
   while `nohud`, `HIDEHUD_ALL` or intermission hides the HUD (it stays open, unseen, with its keys
   and cursor); the first open after each `HUD_VidInit` random-buys like TS, and every random
-  config (`100398e0`, also key 7) becomes the last config, so the next open shows it again.
+  config (`100398e0`, also key 7) becomes the last config, so the next open shows it again. Its
+  bounds are `double`s (0.1 < p < 0.9 pistol, 0.3 < p < 0.7 SMG, p ≥ 0.7 rifle), compared with the
+  `float` p exactly (issue #264).
 * `CHudTSWeapons::VidInit` (`0x1004cb50`) re-runs the menu's `Init` (`0x10036200`,
   `BuyMenu::new`): closed, the current and last configs zeroed, the saved ones re-read from
   `tsbuylist.tsa` (`FUN_10036480`, created empty when it can't be read; if that fails too the
