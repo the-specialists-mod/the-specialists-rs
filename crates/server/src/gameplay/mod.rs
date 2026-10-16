@@ -379,6 +379,15 @@ impl ServerRules for Defaults {
     fn spawn_spot_master_test(&self) -> bool {
         unimplemented!("spawn_spot_master_test")
     }
+
+    // Audit round 2: D2
+
+    fn ground_weapon_pairs_to_single(&self) -> bool {
+        unimplemented!("ground_weapon_pairs_to_single")
+    }
+    fn random_position_ray(&self, _angle: i32, _dist: i32, _from: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+        unimplemented!("random_position_ray")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).

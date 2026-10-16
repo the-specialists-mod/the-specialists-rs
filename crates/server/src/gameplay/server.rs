@@ -515,6 +515,18 @@ pub trait ServerRules: Sync {
     /// Whether the spawn-spot selection (`TSSelectSpawnSpot`) skips a spot whose `master` isn't
     /// triggered for the player (`CBaseDMStart::IsTriggered`).
     fn spawn_spot_master_test(&self) -> bool;
+
+    // Audit round 2: D2
+
+    /// `CTSGroundWeapon::Spawn` (0xa1b40) turns an akimbo pair built from two singles into its
+    /// single, the only form the ruleset's `PickUpWeapon` accepts. False keeps the id, so the
+    /// ground weapon gives the pair.
+    fn ground_weapon_pairs_to_single(&self) -> bool;
+
+    /// One try of `GetRandomPosition` (0x974f4), the automatic power-up spot: the direction of
+    /// the horizontal angle `angle` (whole degrees) and the end of its `dist`-unit trace from
+    /// `from`, as the ruleset's build computes them: `([f32; 3] dir, [f32; 3] end)`.
+    fn random_position_ray(&self, angle: i32, dist: i32, from: [f32; 3]) -> ([f32; 3], [f32; 3]);
 }
 
 /// How a ruleset's `CTSGameRules::InitHUD` runs ([`ServerRules::init_hud`]).

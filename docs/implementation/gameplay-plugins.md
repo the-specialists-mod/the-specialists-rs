@@ -349,7 +349,7 @@ The hooks so far:
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
 | `ServerRules` | `broken_respawn_delay(respawntime)` | `Some(30 s if 0, else the key)` | `entities/stock/breakable.rs` `die`, `doors.rs` (break) |
 | `ServerRules` | `breakable_respawn_guarded()` | true (wait for clients in the box, fire `respawntarget`) | `breakable.rs`, `doors.rs` `breakable_respawn` |
-| `ServerRules` | `objectives()` | `ts30_server::entities::OBJECTIVES` (`ObjectiveRules`: HUD effect 8, team indexes, the indexed list, givers enabled by pointers, the wire HUD, NaN timers run out, the list cleared outside rounds) | `entities/ts/objective.rs`, `ctb.rs` (the givers' message) |
+| `ServerRules` | `objectives()` | `ts30_server::entities::OBJECTIVES` (`ObjectiveRules`: HUD effect 8, team indexes, the indexed list, givers enabled by pointers, NaN timers run out, the list cleared outside rounds) | `entities/ts/objective.rs`, `ctb.rs` (the givers' message) |
 | `ServerRules` | `round_time_left(now)` | `ts30_server::entities::round_time_left` (timed round: manager's `targetontimeleft`, else a draw) | `objective.rs` `Bomb::think` |
 | `ServerRules` | `giver_team_win(&GiverWin)` | `ts30_server::entities::giver_team_win` (`TeamWin(winnerteam, (int)value, restart, isScore)`) | `ctb.rs` `WinGiver::use_` |
 | `ServerRules` | `break_debris_from_hit()` | true (debris along the last hit, long glass `TSFrags`, attacker's `fuser1` copied) | `breakable.rs` `die`, `doors.rs` (break); false is the SDK's (`g_vecAttackDir × 200` if `explosion directed`, a door's none, 13-byte glass `TSFrags`) |
@@ -457,6 +457,8 @@ The hooks so far:
 | `ServerRules` | `init_hud() -> &InitHudRules` | `ts30_server::players::INIT_HUD`: after the rules' whole `InitHUD` (`UpdateClientData` 0x91d40), the `Spectator` list, "This server has ..." with effect 8, `SrvSett` 0 Think's copy | `rules/lifecycle.rs` `init_hud_block` / `rules_init_hud` (where `ts_init_hud` runs), `ts_init_hud` |
 | `ServerRules` | `team_changes() -> &TeamChangeRules` | `ts30_server::players::TEAM_CHANGES`: `ChangePlayerTeam` forces The One's teams and tests `IsValidTeam`; `ClientUserInfoChanged` resets the model under a team limit | `rules/teams.rs` `change_team`, `userinfo_changed` |
 | `ServerRules` | `spawn_spot_master_test()` | true (`IsTriggered` 0xe2c20) | `rules/spawnpoint.rs` `select` |
+| `ServerRules` | `ground_weapon_pairs_to_single()` | true (`CTSGroundWeapon::Spawn` 0xa1b40 turns an akimbo pair of a single gun into the single) | `entities/ts/ground.rs` `spawn_weapon_id` |
+| `ServerRules` | `random_position_ray(angle, dist, from)` | `ts30_server::powerup::random_position_ray` in the server's arithmetic (`pm_arith`: `ts_i386.so` or `mp.dll` `GetRandomPosition`) | `rules/frame.rs` `random_position` |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`

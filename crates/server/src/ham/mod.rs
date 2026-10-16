@@ -842,6 +842,12 @@ pub fn go_slow(e: *mut edict_t, amount: f32, btime: bool, run: impl FnOnce(*mut 
     });
 }
 
+/// `GoSlow(amt, flag)` of the player the caller holds: his own virtual call (`SlowMotionFlow`
+/// 0x96bb0, `DeactivateSlowMotionFlow` 0x96a9c, the headshot death in `Killed`), issue #253.
+pub fn player_go_slow(p: &mut Player, cx: &mut Cx, amount: f32, btime: bool, run: impl FnOnce(&mut Player, &mut Cx, f32, bool)) {
+    inner(id::TS_GOSLOW, p, cx, (amount, btime as i32), |p, cx, (a, b)| run(p, cx, *a, *b != 0));
+}
+
 /// `BreakableRespawn(force)` (`CTSGameRules::RespawnEntities`); `run` is the class's.
 pub fn breakable_respawn(e: *mut edict_t, force: bool, run: impl FnOnce(&mut dyn Entity, &mut Cx, bool)) {
     outer(id::TS_BREAKABLERESPAWN, e, &mut (force as i32,), |(f,)| {

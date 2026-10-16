@@ -253,7 +253,7 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
 * Slow motion of projectiles: grenades, knives (not while stuck in a wall) and falling
   `WorldGun`s start at the thrower's scale (`pl+0x180` if it's an activator, else
   `max(fuser1, 0.01)`) and run `SlowPhysics` every 0.1 s think: `velocity * s`, `avelocity * s`,
-  `gravity * s²` from the saved pre-slow values, restored when `fuser1` returns to 1. As in TS,
+  `gravity * s²` (rounded once, in the server's arithmetic: issue #229) from the saved pre-slow values, restored when `fuser1` returns to 1. As in TS,
   "saved" means a non-zero saved velocity (`CTSPhysicObject::SavePhysics` 0x7bac0): an object
   slowed at rest re-saves every think (its gravity and spin shrink by `s` each time) and is never
   restored, and a restore puts back the pre-slow velocity, so a slowed grenade or knife lying on
@@ -732,6 +732,7 @@ How the port maps TS where the structure differs (not deviations):
   entry 0) gets `SUB_Remove` 0.1 s later; an akimbo pair built from two singles (kind 4,
   `info+0xcc` != -1: 8, 10, 16, 30, 37) is turned into its single, since `PickUpWeapon` refuses
   those pairs. The Golden Colts (21, kind 5) stay. Both unit tested (`ground::spawn_weapon_id`).
+  2.1 keeps the pair (`ServerRules::ground_weapon_pairs_to_single`).
 * Power-ups: Infinite Clip -> `weapons::multiply_clip`; grenade -> `give_weapon(p, cx, 24, 0)`;
   kung fu sets `Player::kungfu` (x2 melee), DFR/slow-mo are read from `Player::active_powerup`
   and `pev->fuser1`.

@@ -547,6 +547,19 @@ impl ServerRules for Ts30Server {
     fn spawn_spot_master_test(&self) -> bool {
         true
     }
+
+    // Audit round 2: D2
+
+    /// Yes: `PickUpWeapon` (0x9314c) refuses such pairs ([`entities::GROUND_WEAPON_PAIRS_TO_SINGLE`]).
+    fn ground_weapon_pairs_to_single(&self) -> bool {
+        entities::GROUND_WEAPON_PAIRS_TO_SINGLE
+    }
+
+    /// [`powerup::random_position_ray`] in the server's arithmetic (`ts_i386.so` or `mp.dll`).
+    fn random_position_ray(&self, angle: i32, dist: i32, from: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+        use powerup::random_position_ray;
+        shared::by_arith!(ts_server::rules::cvars::pm_arith(), random_position_ray(angle, dist, from))
+    }
 }
 
 /// The plugin as the server registers it.

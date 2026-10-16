@@ -213,7 +213,8 @@ pub fn disable_objectives() {
 
 /// 2.1's objective system (the objective entities in `ts_server::entities::ts::objective`).
 pub const OBJECTIVES: ObjectiveRules = ObjectiveRules {
-    // `TSHudMessageAll(0, 255, 0, 1, 30, ...)` (FUN_10050710, `CTSBomb::Use` 0x10051430, ...).
+    // `TSHudMessageAll(0, 255, 0, 1, 30, ...)` (FUN_10050710, `CTSBomb::Use` 0x10051430, ...), and
+    // `ts_slowmotion`'s and `ts_dmhill`'s lines (0x10041240, 0x10041830).
     hud_effect: 1,
     // `CanInteract` (FUN_100513d0) and the pointer's text (`CTSObjectivePointer::Use` 0x100508f0)
     // compare the team's name (`stricmp`); the escape zone counts `TSCountPlayers` by name
@@ -224,8 +225,6 @@ pub const OBJECTIVES: ObjectiveRules = ObjectiveRules {
     indexed_list: false,
     // `CTSObjectivePointer::Use` enables `ts_hack`, `ts_bomb` and `ts_teamescape` by classname.
     pointer_enables_givers: false,
-    // No `CheckForWires`: the HUD's wires change only with `cutwire_`.
-    wire_hud: false,
     // `test ah,0x41; jp` (`CTSBomb::WaitThink` 0x1005130a, `CTSHack::WaitThink` 0x10051860).
     nan_time_runs_out: false,
     // `SetObjective` (0x10045150) does nothing outside the round modes.
@@ -847,9 +846,10 @@ mod tests {
     #[test]
     fn objective_rules_are_2_1s() {
         let r = OBJECTIVES;
+        // Also `CTSSlowMotion::Use` (0x10041240) and `CTSDMHill::WaitTouch` (0x10041830): issue #221.
         assert_eq!(r.hud_effect, 1);
         assert_eq!(r.team_names, Some([SPECIALISTS, MERCENARY]));
-        assert!(!r.indexed_list && !r.pointer_enables_givers && !r.wire_hud);
+        assert!(!r.indexed_list && !r.pointer_enables_givers);
         assert!(!r.nan_time_runs_out && !r.clear_list_outside_rounds);
     }
 

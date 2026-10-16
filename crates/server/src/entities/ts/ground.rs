@@ -31,15 +31,16 @@ pub fn weapon_valid(id: i32) -> bool {
 }
 
 /// `CTSGroundWeapon::Spawn` (0xa1b40)'s check and remap of the weapon id: `None` for an id without
-/// a valid `get_weapon_info` entry (the entity removes itself 0.1 s later); an akimbo pair built
-/// from two singles (kind 4 with `info+0xcc` != -1) becomes its single, the only form
-/// `PickUpWeapon` (0x9314c) accepts. The Golden Colts (kind 5, no single) stay.
-pub fn spawn_weapon_id(id: i32) -> Option<i32> {
+/// a valid `get_weapon_info` entry (the entity removes itself 0.1 s later); with `pairs_to_single`
+/// ([`ServerRules::ground_weapon_pairs_to_single`](crate::gameplay::ServerRules::ground_weapon_pairs_to_single)),
+/// an akimbo pair built from two singles (kind 4 with `info+0xcc` != -1) becomes its single, the
+/// only form `PickUpWeapon` (0x9314c) accepts. The Golden Colts (kind 5, no single) stay.
+pub fn spawn_weapon_id(id: i32, pairs_to_single: bool) -> Option<i32> {
     if !weapon_valid(id) {
         return None;
     }
     let w = tables().weapon(id as u8)?;
-    Some(if kind_of(id as u8) == kind::AKIMBO && w.single != -1 { w.single } else { id })
+    Some(if pairs_to_single && kind_of(id as u8) == kind::AKIMBO && w.single != -1 { w.single } else { id })
 }
 
 /// HL classname → TS weapon ids it picks from, in `Random<Kind>`'s `RANDOM_LONG(1, n)` order.
@@ -420,7 +421,7 @@ impl Entity for GroundWeapon {
         if eng.string(cx.pev().classname) == c"weapon_hornetgun" {
             self.extra_clip = MG_EXTRA_CLIP;
         }
-        let Some(id) = spawn_weapon_id(self.id) else {
+        let Some(id) = spawn_weapon_id(self.id, crate::gameplay::active().server.ground_weapon_pairs_to_single()) else {
             // `SetThink(SUB_Remove)`, 0.1 s later; nothing else is set up.
             self.ground.funcs.think = true;
             self.ground.removing = true;
@@ -606,7 +607,7 @@ mod tests {
         // Kung fu and the briefcase have no `valid` byte; ids outside 0..38 read entry 0.
         for id in [0, 29, 38, 39, 255, 256 + 5, -1, i32::MIN] {
             assert!(!weapon_valid(id), "{id}");
-            assert_eq!(spawn_weapon_id(id), None, "{id}");
+            assert_eq!(spawn_weapon_id(id, true), None, "{id}");
         }
         for id in (1..38).filter(|&id| id != 29) {
             assert!(weapon_valid(id), "{id}");
@@ -620,19 +621,23 @@ mod tests {
         ts30_gameplay::tables::make_default();
         // Berettas, MK23, Mini-Uzis, Five-seveNs, Skorpions → their single.
         for (pair, single) in [(8, 2), (10, 9), (16, 3), (30, 14), (37, 17)] {
-            assert_eq!(spawn_weapon_id(pair), Some(single), "{pair}");
+            assert_eq!(spawn_weapon_id(pair, true), Some(single), "{pair}");
         }
         // The Golden Colts (kind 5, no single) and ordinary weapons keep their id.
-        assert_eq!(spawn_weapon_id(21), Some(21));
+        assert_eq!(spawn_weapon_id(21, true), Some(21));
         for id in [1, 2, 12, 18, 24, 34] {
-            assert_eq!(spawn_weapon_id(id), Some(id));
+            assert_eq!(spawn_weapon_id(id, true), Some(id));
         }
         // Every id a ground weapon ends up with is one `PickUpWeapon` accepts.
         for id in 0..40 {
-            if let Some(got) = spawn_weapon_id(id) {
+            if let Some(got) = spawn_weapon_id(id, true) {
                 assert!(weapon_valid(got));
                 assert_ne!(kind_of(got as u8), kind::AKIMBO, "{id}");
             }
+        }
+        // Without the remap (TS 2.1's `Spawn` 0x10065c70, issue #224) every valid id stays.
+        for id in 0..40 {
+            assert_eq!(spawn_weapon_id(id, false), weapon_valid(id).then_some(id), "{id}");
         }
     }
 
