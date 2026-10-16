@@ -504,6 +504,11 @@ pub trait ServerRules: Sync {
     /// `TEXTURETYPE_PlaySound`) also reads `sound/<map>_materials.txt` after
     /// `sound/materials.txt`. Its size and name length are `PmRules::texture_limits`'.
     fn map_materials(&self) -> bool;
+
+    /// `TEXTURETYPE_PlaySound`: whether the multiplayer rules let it play the impact sound
+    /// (`g_pGameRules->PlayTextureSounds()`); otherwise it returns 0 at once. Single player
+    /// always plays them.
+    fn texture_sounds_in_multiplayer(&self) -> bool;
 }
 
 #[cfg(test)]

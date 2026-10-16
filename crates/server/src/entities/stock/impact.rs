@@ -166,8 +166,13 @@ pub fn game_textures() -> (shared::pm::textures::TextureLimits, bool) {
 /// `CLASS_NONE` or `CLASS_MACHINE` sounds as flesh (silent for the crowbar); anything else (or
 /// no entity) by the material of the texture it hits, from the game's own table
 /// (`shared::pm::textures::texturetype`, [`game_textures`]). Returns the decal volume (`fvolbar`).
+/// In multiplayer a ruleset may silence it (`ServerRules::texture_sounds_in_multiplayer`: 0 at
+/// once, as the SDK's `PlayTextureSounds` gate).
 pub fn texture_type_play_sound(tr: &TraceResult, src: Vec3, end: Vec3, bullet_type: i32) -> f32 {
     use shared::pm::textures::texturetype;
+    if !crate::rules::state::single_player() && !crate::gameplay::active().server.texture_sounds_in_multiplayer() {
+        return 0.0;
+    }
     let eng = engine();
     let world = eng.entity_of_index(0);
     let hit = if tr.pHit.is_null() { world } else { tr.pHit };

@@ -502,6 +502,12 @@ impl ServerRules for Ts21Server {
     fn map_materials(&self) -> bool {
         false
     }
+
+    /// `TEXTURETYPE_PlaySound` (0x100367b0) returns 0 unless `g_pGameRules->PlayTextureSounds()`,
+    /// which both multiplayer rules answer FALSE (slot 56, 0x100250a0: `xor eax,eax`).
+    fn texture_sounds_in_multiplayer(&self) -> bool {
+        false
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.
@@ -551,6 +557,8 @@ mod tests {
         assert_eq!(s.cvars(), cvars::CVARS);
         assert_eq!(s.put_in_server_cash(), 0, "2.1 sets the cash in InitHUD instead");
         assert!(!s.server_command("addbot"), "only the polled cvars are 2.1's");
+        assert!(!s.map_materials(), "sound/materials.txt only (#206)");
+        assert!(!s.texture_sounds_in_multiplayer(), "PlayTextureSounds is FALSE (#255)");
     }
 
     /// The 3.0 defaults the 2.1 plugin overrides, unchanged by the hooks.

@@ -365,6 +365,9 @@ impl ServerRules for Defaults {
     fn map_materials(&self) -> bool {
         unimplemented!("map_materials")
     }
+    fn texture_sounds_in_multiplayer(&self) -> bool {
+        unimplemented!("texture_sounds_in_multiplayer")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).

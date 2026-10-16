@@ -525,6 +525,11 @@ impl ServerRules for Ts30Server {
     fn map_materials(&self) -> bool {
         true
     }
+
+    /// `TEXTURETYPE_PlaySound` (0xe1330) doesn't ask the rules.
+    fn texture_sounds_in_multiplayer(&self) -> bool {
+        true
+    }
 }
 
 /// The plugin as the server registers it.
@@ -548,6 +553,9 @@ mod tests {
         assert!(!s.server_command("globalslow"), "3.0 runs its server commands");
         assert!(!s.server_command("restartround"));
         assert!(!s.server_command("weaponrestriction"));
+        assert!(!s.server_command("loadweapons") && !s.server_command("saveweapons"));
+        assert!(s.map_materials(), "TEXTURETYPE_LoadMapMaterials (#206)");
+        assert!(s.texture_sounds_in_multiplayer(), "no PlayTextureSounds test (#255)");
         let v = env!("CARGO_PKG_VERSION");
         assert_eq!(s.game_description(DescriptionMode::Lms).to_str().unwrap(), format!("The Specialists v{v} (LMS)"));
     }
