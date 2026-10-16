@@ -614,9 +614,14 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     };
     start_observer(p, cx, org, ang);
     p.ts.respawns_used = 0;
+    // The grenades bought (3.0 `+0x714`, 2.1 `+0x68c`): only here and in `RestartRound`.
+    p.inv.sv.grenades_bought = 0;
     p.ts.tk_until = 0.0;
     p.ts.tk_count = 0;
     set_respawn_time(p, cx, cvars::respawn_time());
+    // The fire-mode memory (3.0 `memset(pl + 0x49a, 0, 0x40)`, 2.1 0x10 dwords at `pl + 0x41e`),
+    // which nothing else clears, then `ResetArmament` (0x93e88, 2.1 `FUN_10055950`).
+    crate::weapons::init_hud_reset(p);
     let idx = cx.index() as usize;
     state::with(|g| g.votes.reset(idx));
     // In the round modes the objective list again (`SendObjectiveList`).

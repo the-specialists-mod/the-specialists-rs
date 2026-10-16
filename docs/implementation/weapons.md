@@ -571,7 +571,13 @@ How the port maps TS where the structure differs (not deviations):
   (`AddPlayerItem` kills the new duplicate). The port's `Gun` per player stays allocated;
   `SvState::has_gun` says whether TS's gun exists, `add_gun` sets it with an emptied inventory
   and fresh send caches (`new_gun_state`), and `remove_all_items` (death think, `StartObserver`,
-  disconnect) clears it and empties the records. `reset_for_spawn` gives the fields a fresh gun starts with. TS's gun is a
+  disconnect) clears it and empties the records. `reset_for_spawn` resets only `TSInit`'s player
+  fields (`m_flNextAttack`, bar, recoil penalty, delayed hit, blocks); the gun entity's own timers,
+  clip mirror, `fuser1`, last shot and combos stay with a gun held through the spawn and are reset
+  for a new one (`reset_gun_entity`, `CTSGun::Spawn`), and the fire-mode memory lasts until
+  `InitHUD` (#208). The spawn keeps the grenades bought (zeroed by `RestartRound` and `InitHUD`)
+  and `m_afButtonLast` (written only by a living `PostThink`), and clears the last delayed-hit
+  victim (`pl+0x798`) (#247). TS's gun is a
   `weapon_tsgun` entity attached to the player, and so is the port's (`SvState::gun_item`, from
   `GiveNamedItem` or a map-placed one, dropped with the gun), so edicts are allocated and numbered
   as in TS; the gun's state lives in the player's `Gun`, not in the entity. A `GiveNamedItem` gun

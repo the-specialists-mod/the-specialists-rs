@@ -371,11 +371,15 @@ pub fn texture_type_init() {
 /// `TSInit` (0x92a4c), the stunt and animation parts.
 pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     // Keep what weapons set earlier in the spawn order: the animation extensions of the spawn
-    // loadout.
+    // loadout. `m_afButtonLast` isn't `TSInit`'s either: only a living `PostThink` writes it
+    // (3.0 `pl+0x810`, 2.1 `+0x76c`), so the first frames after a respawn compare with the buttons
+    // held at death (#247).
     let (ext, ext2) = (std::mem::take(&mut p.stunt.anim.ext), std::mem::take(&mut p.stunt.anim.ext2));
+    let button_last = p.stunt.button_last;
     p.stunt = StuntState::default();
     p.stunt.anim.ext = ext;
     p.stunt.anim.ext2 = ext2;
+    p.stunt.button_last = button_last;
     let pev = cx.pev();
     pev.iuser4 = 0;
     pev.gaitsequence = 0;
