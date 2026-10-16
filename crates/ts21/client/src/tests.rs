@@ -1072,3 +1072,10 @@ fn float_form() {
     use ts_client::studio::FloatForm;
     assert_eq!((v21().float_form(), v30().float_form()), (FloatForm::Unoptimised, FloatForm::Optimised));
 }
+
+/// Issue #281: 2.1's `client.dll` imports nothing from `opengl32.dll` (3.0: `V_SetFog`
+/// 0x10056c20, `glDisable(GL_FOG)` 0x10056e5e).
+#[test]
+fn gl_fog() {
+    assert!(!v21().gl_fog() && v30().gl_fog());
+}

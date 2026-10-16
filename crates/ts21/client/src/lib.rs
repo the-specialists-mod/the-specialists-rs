@@ -711,6 +711,12 @@ impl ClientRules for Ts21Client {
     fn float_form(&self) -> ts_client::studio::FloatForm {
         ts_client::studio::FloatForm::Unoptimised
     }
+
+    /// None: 2.1's `client.dll` imports nothing from `opengl32.dll` and has no `gl_fog` cvars
+    /// or `ts_fog` (issue #281).
+    fn gl_fog(&self) -> bool {
+        false
+    }
 }
 
 /// The 2.1 buy menu's text, hard-coded in `client.dll` (the port draws title keys, so each key

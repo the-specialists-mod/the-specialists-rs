@@ -487,6 +487,11 @@ impl ClientRules for Ts30Client {
     fn float_form(&self) -> ts_client::studio::FloatForm {
         ts_client::studio::FloatForm::Optimised
     }
+
+    /// `V_SetFog` (`0x10056c20`) and the transparent pass's `glDisable(GL_FOG)` (`0x10056e5e`).
+    fn gl_fog(&self) -> bool {
+        true
+    }
 }
 
 /// The plugin as the client registers it.

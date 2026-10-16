@@ -423,6 +423,7 @@ The hooks so far:
 | `ClientRules` | `say_text_style()` | `ts30_client::hud::SAY_TEXT`: muted players' chat dropped, plain lines in (1, 0.7, 0) (#260) | `hud/mod.rs` `say_text_print`, `draw_say_text` |
 | `ClientRules` | `particle_model()` | `ParticleModel::Drag` (`PSys_UpdateDraw` 0x100520d0) (#261) | `effects/psys.rs` `update_draw`, `add`, `sprite`; `effects.rs` (the step) |
 | `ClientRules` | `vgui_scale()` | `VguiScale::Reciprocal`: `XRES`/`YRES` as `ScreenWidth * (1/640)f`, `ScreenHeight * (1/480)f`, with TS's float spills (#266) | `hud::vgui::{xs, ys, spill}` (team menu, MOTD, scoreboard, spectator bar) |
+| `ClientRules` | `gl_fog()` | true: `V_SetFog` (`0x10056c20`, map `ts_fog` and the single-player `gl_fog 2` user fog) and the transparent pass's `glDisable(GL_FOG)` (`0x10056e5e`) (#281) | `effects.rs` `fog_begin`, `fog_end` |
 | `ClientRules` | `float_form() -> studio::FloatForm` | `FloatForm::Optimised`: the optimised build's `×10`, `×5`, `×(1/255)`, `×(1/3)` with values kept on the x87 (#276) | `studio.rs` `interpolant`, `seq_blend`, `prev_seq_weight`, `bone_adj`, `player_blend`; `view.rs` `apply_kick` |
 | `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
 | `ClientRules` | `client_bullet_next_update(now, realbullet)` | `ts30_client::events::next_update`: 0.1 s, 0.05 s or every frame by `realbullet` | `events/fire.rs` `client_bullets_frame` |

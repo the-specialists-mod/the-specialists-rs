@@ -454,6 +454,10 @@ pub trait ClientRules: Sync {
     /// Which `client.dll` build's float forms the studio renderer (blends, controllers,
     /// interpolant, player blend) and the view kick (`V_ApplyKick`) replicate.
     fn float_form(&self) -> crate::studio::FloatForm;
+
+    /// Whether the client drives OpenGL fog: `V_SetFog`'s map and single-player user fog
+    /// (`gl_fog`, `gl_fog_*`) and the `glDisable(GL_FOG)` that ends every transparent pass.
+    fn gl_fog(&self) -> bool;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -766,6 +770,9 @@ mod stub {
 
         fn float_form(&self) -> crate::studio::FloatForm {
             crate::studio::FloatForm::Optimised
+        }
+        fn gl_fog(&self) -> bool {
+            true
         }
     }
 }

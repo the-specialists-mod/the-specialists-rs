@@ -205,6 +205,8 @@ pub fn impact(pos: Vec3, normal: Vec3, tex: u8, bullet_type: i32) {
 /// `InitInput`'s, so this shares those handles rather than registering the names again (see
 /// [`Cvar`]); `r_paintball`, `gl_fog` and `gl_fog_start/end/red/green/blue` are registered here,
 /// as `CHud::Init` (10020170) does, since no other module reads them. Runs after `input::init`.
+/// They are registered under every ruleset: this runs once, before a server names its ruleset,
+/// and a ruleset without GL fog (`ClientRules::gl_fog`) never reads them (issue #281).
 pub fn init() {
     let i = crate::input::cvars();
     *CVARS.0.borrow_mut() = Some(Cvars {
@@ -830,8 +832,12 @@ fn map_effects() -> bool {
 /// `V_SetFog` (`0x10056c20`, from `V_CalcRefdef`): linear fog through raw OpenGL, as TS calls
 /// `opengl32.dll` itself ([`goldsrc::ext::gl`], which does nothing unless the engine draws with
 /// OpenGL). The map's fog also needs `IEngineStudio.IsHardware()` to be exactly 1
-/// (`0x10056d20`); the single-player user fog doesn't ask.
+/// (`0x10056d20`); the single-player user fog doesn't ask. Nothing under a ruleset without GL
+/// fog (`ClientRules::gl_fog`).
 pub fn fog_begin() {
+    if !crate::gameplay::current().gl_fog() {
+        return;
+    }
     let user = CVARS
         .0
         .borrow()
@@ -874,9 +880,12 @@ fn fog_params(
 
 /// TS disables `GL_FOG` at the end of every transparent pass (`glDisable` at `0x10056e5e`),
 /// whatever was drawn. Being raw GL, it also switches off the engine's own fog (FWGS's underwater
-/// fog, enabled before the transparent pass) for the rest of the frame, as in TS.
+/// fog, enabled before the transparent pass) for the rest of the frame, as in TS. A ruleset
+/// without GL fog (`ClientRules::gl_fog`) leaves the engine's fog alone.
 fn fog_end() {
-    goldsrc::ext::gl::disable(goldsrc::ext::gl::GL_FOG);
+    if crate::gameplay::current().gl_fog() {
+        goldsrc::ext::gl::disable(goldsrc::ext::gl::GL_FOG);
+    }
 }
 
 /// `HUD_StudioEvent` (`0x10044b50`): only 5002 (sparks) and 5004 (sound) remain. Without
