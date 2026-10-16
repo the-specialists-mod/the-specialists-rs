@@ -448,6 +448,14 @@ impl ClientRules for Ts30Client {
     fn local_translucency(&self) -> bool {
         true
     }
+
+    // Audit round 3: gui
+
+    /// The optimised build's `XRES`/`YRES`: `* 0.0015625f` / `* (1/480)f` (`0x1007d43c`,
+    /// `0x1007d438`) with its float spills.
+    fn vgui_scale(&self) -> ts_client::hud::vgui::VguiScale {
+        ts_client::hud::vgui::VguiScale::Reciprocal
+    }
 }
 
 /// The plugin as the client registers it.

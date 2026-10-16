@@ -672,6 +672,16 @@ impl ClientRules for Ts21Client {
     fn local_translucency(&self) -> bool {
         false
     }
+
+    // Audit round 3: gui
+
+    /// The unoptimised build's `XRES`/`YRES`: `ScreenWidth / 640.0f`, `ScreenHeight / 480.0f`
+    /// (`fdiv DWORD 0x1026f548` / `0x1026f544`), no spills: the team menu (0x100b2ca0,
+    /// 0x100b3eb0), the message window (0x100a0ad0), the scoreboard (0x100a2d60) and the
+    /// spectator bar (0x100b04d0). Issue #266.
+    fn vgui_scale(&self) -> ts_client::hud::vgui::VguiScale {
+        ts_client::hud::vgui::VguiScale::Division
+    }
 }
 
 /// The 2.1 buy menu's text, hard-coded in `client.dll` (the port draws title keys, so each key

@@ -52,8 +52,8 @@ struct Menus {
     /// `m_pCurrentMenu` and its `m_pNextMenu` chain.
     queue: Vec<Menu>,
     team: Option<team::TeamMenu>,
-    /// The screen size the team menu was made for.
-    team_size: (i32, i32),
+    /// The screen size and VGUI scale the team menu was made for.
+    team_size: (i32, i32, Option<vgui::VguiScale>),
     /// The scoreboard is shown (`+showscores`).
     scores: bool,
     board: ScoreBoard,
@@ -296,11 +296,13 @@ fn update_team_menu() {
     with(|m| team_menu(m, w, h).update(&inp));
 }
 
-/// The viewport's team menu, made for the screen size.
+/// The viewport's team menu, made for the screen size and the ruleset's VGUI scale (a server of
+/// the other ruleset rebuilds it).
 fn team_menu(m: &mut Menus, w: i32, h: i32) -> &mut team::TeamMenu {
-    if m.team_size != (w, h) {
+    let key = (w, h, Some(vgui::scale()));
+    if m.team_size != key {
         m.team = None;
-        m.team_size = (w, h);
+        m.team_size = key;
     }
     m.team.get_or_insert_with(|| team::TeamMenu::new(w, h, &hud::text::lookup))
 }

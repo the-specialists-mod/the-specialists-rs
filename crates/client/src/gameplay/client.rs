@@ -426,6 +426,13 @@ pub trait ClientRules: Sync {
     /// Whether `V_CalcNormalRefdef` sets the local entity's render mode and eases its
     /// `renderamt` (the third-person translucency, `cl_thirdtransparency`).
     fn local_translucency(&self) -> bool;
+
+    // Audit round 3: gui
+
+    /// How the VGUI1 panels (team menu, MOTD, scoreboard, spectator bar) scale TS's 640×480
+    /// layout: an optimised `client.dll`'s float reciprocals and spills, or an unoptimised one's
+    /// division.
+    fn vgui_scale(&self) -> crate::hud::vgui::VguiScale;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -712,6 +719,12 @@ mod stub {
         }
         fn local_translucency(&self) -> bool {
             false
+        }
+
+        // Audit round 3: gui
+
+        fn vgui_scale(&self) -> crate::hud::vgui::VguiScale {
+            crate::hud::vgui::VguiScale::Reciprocal
         }
     }
 }

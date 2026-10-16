@@ -178,5 +178,8 @@ mod tests {
         ] {
             assert_eq!((height(h), bar_top(h), yres(h, 25.0), yres(h, 15.0)), (tall, y, y25, y15), "{h}");
         }
+        // An unoptimised build's `h - h / 480.0 * 40` (TS 2.1 0x100b052c, issue #266).
+        let v = vgui::with_scale(vgui::VguiScale::Division, || [480, 600, 768, 1080].map(|h| (height(h), bar_top(h))));
+        assert_eq!(v, [(40, 440), (50, 550), (64, 704), (90, 990)]);
     }
 }
