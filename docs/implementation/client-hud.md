@@ -44,13 +44,13 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `InterpolateSlowMotion` 10055ae0 | `hud::approach_timescale` (from `HUD_Frame`, `hud::frame`; TS's only time-scale easer) |
 | `CHud::Think` 10049760 (from `CHud::UpdateClientData` 10024b00), `UTIL_ApproachFOV` 10049620, `HUD_GetFOV` 100209f0, `SetFOV` 10049570 | `hud::think_fov` (from `view::update_client_data`), `view::ease_fov`, `hud::get_fov` (demo record type 0), `hud::set_fov` (ignored while `cl_lw` is on; sets the target and `m_iFOV`, and the sensitivity `fov·0.0125·sensitivity·zoom_sensitivity_ratio`) |
 | `CHudTSStatus` handlers 1004b730..1004c1e0 | `Hud::apply` (status arms) |
-| `AddTSMessage` 1004b520 | `Hud::add_ts_message` |
+| `AddTSMessage` 1004b520 | `Hud::add_ts_message` (text and placement per ruleset, `ClientRules::ts_message_layout`) |
 | `CHudTSStatus::Draw` 10049ea0 and `DrawRoundTimer` 1004a130, `DrawPowerup` 1004a2e0, `DrawStatusPanel` 1004a3e0, `DrawTeammateMarkers` 1004ab40, `DrawCrosshairID` 1004acc0, `DrawTSMessages` 1004af40, the flag panel 1004b0e0, `DrawObjectiveMarkers` 10049fc0 | `hud::status::*` |
 | `CHudTSWeapons` handlers 1004f6f0..1004fb50 | `Hud::apply` (weapon arms) |
 | `CHudTSWeapons::Reset` 1004cd60, `Think` 1004ce10 | `Hud::reset_weapons`; `hud::think`, `weapons::think_sounds`, `hud::weapon_menu_buttons` |
 | `CHudTSWeapons::VidInit` 1004cb50 | `hud::vid_init` → `Hud::vid_init_weapons` (as `Reset`, but the grid stays empty, kung fu included, and fire mode, clip, attachments and reserve ammo are cleared; kung-fu power 100), `weapons::reset_think_sounds` (`+0x3708..+0x3714`), the last key bits (`+0x3724`, `Reset` clears them too), `menus::vid_init` (the buy menu's `Init` 10036200, §6). `CHud::VidInit` (100206c0) runs only the elements' VidInits, so `HideWeapon` and a `ShowMenu` menu survive it (only `CHudAmmo::Reset` / `CHudMenu::Reset` clear them). **Was** (issue #192): `HUD_VidInit` ran every element's `Reset` and kept the panel's fields |
 | `Draw` 1004d3f0, `DrawWirePanel` 1004d550, `DrawKungFuBar` 1004d5f0, `DrawKungFuLabel` 1004d700, `DrawWeaponInfo` 1004d7e0, `DrawWeaponList` 1004e030, `DrawLaserDots` 1004e6f0, `DrawCrosshair` 1004e9f0 + 1004ef50 | `hud::weapons::*`; the enemy/neutral cross is the solid `cross2` only on a hardware renderer (`IsHardware()`, 0x1004ecf3) with `cl_solidcross > 0`, else the additive `cross_e` ×0.75 (issue #153) |
-| `SelectSlot` 1004f220, `SelectNextPrev` 1004f500, `CmdBuy` 1004fda0 | `hud::select_slot` → `weapons::select_slot`; `weapons::select_next_prev`; `hud::cmd_buy` |
+| `SelectSlot` 1004f220, `SelectNextPrev` 1004f500, `CmdBuy` 1004fda0 | `hud::select_slot` → `weapons::select_slot` (a ruleset may replace it after the wire keys, `ClientRules::select_slot`); `weapons::select_next_prev` (`ClientRules::slot_menu`); `hud::cmd_buy` |
 | `DrawHudNumberTS` 1004c290, `DrawHudString` 10021ce0, `DrawHudStringLen` 10021ca0 | `draw::draw_number`/`number_cells` (the top place is `n / 10000` without `% 10`, as TS, so from 100000 on it draws the hud.txt entry that many after `number_0`; an index past the table draws nothing), `text::draw_string`, `text::string_len` |
 | `LocaliseTextString` 100348d0, `BufferedLocaliseTextString` 100349a0, `LookupString` 100349c0 | `text::localise_text_string(_in)` (TS's word bytes `A`..`z` and digits, its step budget, the unterminated unknown `#`), `text::buffered_localise` / `localise_with` / `localise` (the shared 0x400-byte buffer: `AddTSMessage`, `ShowMenu`, buy menu, HUD labels), `text::lookup_string` (`TextMsg`: whole-string keys, a negative `effect` picks the destination), `text::lookup` |
 | `MsgFunc_TextMsg` 10034a60 (`StripEndNewlineFromString` 10034a10, `ConvertCRtoNL` 10034a40) | `Hud::apply` (`Msg::TextMsg`) |
@@ -313,7 +313,7 @@ crosshair or wire panel) → status element (round timer, TS messages, flag pane
 markers, crosshair ID, status panel, power-up, objective markers) → say text → `CHudMenu` → the
 logo → (VGUI pass) spectator panel, voice labels, then the viewport's
 children in their order: team menu, scoreboard, MOTD; then the cursor. As in `CHud::Redraw` (`10021aa0`), `HIDEHUD_ALL` hides every element, and
-during intermission only the say text (`HUD_INTERMISSION`) and the logo draw. TS messages fade
+during intermission only the say text (`HUD_INTERMISSION`) and the logo draw. With `hud_takesshots`, entering intermission sets the integer shot time `ftol(time + 1)` (`0x100df1a8`), and the first redraw with `(float)shot < time` sends `snapshot` (about a second later, once the scoreboard has drawn; issue #252; 2.1's `0x10047b70` is the same). TS messages fade
 over their last second: each channel is `__ftol(base × min(expire − now, 1))`, the base being the
 message colour or, for a black message, the `hud_r/g/b` cvar values (`0x1004afc9`). Colours from
 `hud_r/g/b`, halved where TS halves them, red (195,45,45). Sprites: hud.txt `number_0..9`,

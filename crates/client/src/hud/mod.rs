@@ -64,6 +64,23 @@ static TIME: Global<Cell<(f32, f32)>> = Global(Cell::new((0.0, 0.0)));
 /// `state.fov`.
 static ZOOM_SENS: Global<Cell<f32>> = Global(Cell::new(0.0));
 static INTERMISSION: Global<Cell<bool>> = Global(Cell::new(false));
+/// `CHud::Redraw`'s `m_flShotTime` (TS 3.0 `0x100df1a8`, an `int`): when `hud_takesshots` takes
+/// the intermission screenshot, 0 for none.
+static SHOT_TIME: Global<Cell<i32>> = Global(Cell::new(0));
+
+/// `CHud::Redraw`'s screenshot timer (3.0 `0x10021b4e..0x10021b80`, 2.1 `0x10047c5a..`): entering
+/// intermission with `hud_takesshots` set stores `ftol(time + 1.0)`; on every redraw, once
+/// `(float)shot < time`, `snapshot` is sent and the timer cleared. Returns whether to send it.
+fn shot_due(shot: &mut i32, time: f32, entering_with_shots: bool) -> bool {
+    if entering_with_shots {
+        *shot = draw::ftol(time as f64 + 1.0);
+    }
+    if *shot != 0 && (*shot as f32) < time {
+        *shot = 0;
+        return true;
+    }
+    false
+}
 /// A ruleset pinned `default_fov`'s value last frame ([`think_fov`]).
 static FOV_PINNED: Global<Cell<bool>> = Global(Cell::new(false));
 static ATTACK_CONSUMED: Global<Cell<bool>> = Global(Cell::new(false));
@@ -1015,15 +1032,18 @@ pub fn redraw(time: f32, intermission: bool) {
     let dt = (time - old).clamp(0.0, 1.0);
     TIME.0.set((time, dt));
 
-    // Intermission: TS hides VGUI menus and shows the scoreboard (and `snapshot` with
-    // hud_takesshots); on leaving it hides the scoreboard.
+    // Intermission: TS hides VGUI menus and shows the scoreboard (and with hud_takesshots times a
+    // `snapshot`, [`shot_due`]); on leaving it hides the scoreboard.
     let was = INTERMISSION.0.replace(intermission);
+    let entering = intermission && !was;
     if intermission != was {
         crate::menus::intermission(intermission);
-        if intermission && cvars().takesshots.value() != 0.0 {
-            e.client_cmd("snapshot\n");
-        }
     }
+    let mut shot = SHOT_TIME.0.get();
+    if shot_due(&mut shot, time, entering && cvars().takesshots.value() != 0.0) {
+        e.client_cmd("snapshot\n");
+    }
+    SHOT_TIME.0.set(shot);
     with(|h| h.intermission = intermission);
     let hide_all = with(|h| h.hide_hud & 4 != 0);
 
@@ -1199,6 +1219,20 @@ fn draw_train(dc: &Dc) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #252: `hud_takesshots` waits until `ftol(time + 1)` has passed (3.0 `0x10021b62`, 2.1
+    /// `0x10047c5a`), checked on every redraw.
+    #[test]
+    fn intermission_snapshot_waits() {
+        let mut shot = 0;
+        assert!(!shot_due(&mut shot, 10.7, true));
+        assert_eq!(shot, 11, "ftol truncates");
+        assert!(!shot_due(&mut shot, 11.0, false), "strictly later");
+        assert!(shot_due(&mut shot, 11.01, false));
+        assert_eq!(shot, 0);
+        assert!(!shot_due(&mut shot, 50.0, false), "once");
+        assert!(!shot_due(&mut shot, 0.5, false));
+    }
 
     #[test]
     fn timescale_easing() {

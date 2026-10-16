@@ -12,7 +12,9 @@ use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SpectatorTail, StuntCooldown, ThinkParts};
+use ts_client::gameplay::{
+    ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
+};
 use ts_client::hud::draw::{HudOp, HudSprite, StatusLook, WeaponPanel, ftol, num};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -22,6 +24,7 @@ use ts21_gameplay::TS21;
 pub mod bullets;
 pub mod effects;
 pub mod events;
+pub mod hud;
 pub mod spectator;
 pub mod view;
 
@@ -592,6 +595,78 @@ impl ClientRules for Ts21Client {
     fn blood_impact(&self, ps: &mut PSys, now: f64, d: &ts_client::effects::PTakeDam) -> bool {
         effects::blood_impact(ps, now, d);
         true
+    }
+
+    // Audit round 2: A2
+
+    /// The weapon element's `Draw` (0x10089d90) calls the list draw (0x1008af40) only while the
+    /// menu is open (`+0x73c`), and that draw ends each row after `SPR_DrawAdditive` and `y +=
+    /// 0x30`: no clip line, no clip bar. `SelectNextPrev` (0x1008cc40) opens the menu and then
+    /// always reloads the selection (`+0x740 = info[0x85]`, `+0x744 = info[0x84]`), and with fast
+    /// switch sends any id `> -1`.
+    fn slot_menu(&self) -> SlotMenu {
+        SlotMenu { closed_list: false, clip_info: false, next_prev_reloads: true, next_prev_sends_kungfu: true }
+    }
+
+    /// 2.1's `SelectSlot` (0x1008c6f0, [`hud::select_slot`]).
+    fn select_slot(&self, h: &mut ts_client::hud::state::Hud, n: i32, fastswitch: bool) -> Option<Option<String>> {
+        Some(hud::select_slot(h, n, fastswitch))
+    }
+
+    /// `Spectator` (0x100b28c0): 2.1 has no `cl_thirdperson`; whether entering or leaving
+    /// observer mode, `if (CL_IsThirdPerson()) ThirdPersonToggle()` (0x1008f090), so a respawn is
+    /// always in first person.
+    fn spectator_toggles_third_person(&self, _observer: bool, third_person: bool, _cl_thirdperson: f32) -> bool {
+        third_person
+    }
+
+    /// `AddTSMessage` (0x100873d0, from `TSMessage` 0x100882e0): the text copied into a 64-byte
+    /// buffer (`[63] = 0`), no `LookupString` or local-name grey, bottom messages at `h − 0x20`,
+    /// x by 6 pixels a character (centred `w/2 + (strlen >> 1) × −6`, right `w − strlen × 6 −
+    /// 32`), expiring at `(float)t / 10.0 + time`.
+    fn ts_message_layout(&self) -> TsMessageLayout {
+        TsMessageLayout { lookup_and_highlight: false, max_chars: 63, bottom_margin: 0x20, char_width: Some(6), expiry_double: true }
+    }
+
+    /// `DrawPowerup` (0x10085c00): the names hard-coded (0x10271690, 0x10271680, 0x10271670,
+    /// 0x1027165c).
+    fn powerup_label(&self, flag: u32) -> Option<&'static str> {
+        hud::powerup_label(flag)
+    }
+
+    /// The scoreboard's status column (0x100a4670): award 2 "KILLER", 3 "DEMOLITION"
+    /// (0x1027549c, 0x1027548c); the others are 3.0's.
+    fn award_title(&self, award: u8) -> Option<&'static str> {
+        hud::award_title(award)
+    }
+
+    /// `TSSlowMo` (0x100881e0): `prev = s; s = coord / 100; if (prev == 0 && s != 0)` play: the
+    /// test is on the raw factor as sent, not the eased scale.
+    fn go_slow_sound(&self, _time_scale: f32, _target: f32, prev_factor100: f32, factor100: f32) -> bool {
+        prev_factor100 / 100.0 == 0.0 && factor100 / 100.0 != 0.0
+    }
+
+    /// `V_CalcNormalRefdef`'s camera offsets (0x100b7700..0x100b7ab9, [`view::camera_offsets`]):
+    /// the SDK cvars, no `cl_camtype`; integer offsets stepped by `ft × 100`.
+    fn camera_offsets(&self, ofs: &mut ts_client::view::CamOffsets, c: &ts_client::view::CamInput) -> (f32, f32, f32) {
+        view::camera_offsets(ofs, c)
+    }
+
+    /// `V_CalcViewRoll` (0x100b6910, [`view::view_roll`]): added at once, 0.5 or 30 in a dive.
+    fn view_roll(
+        &self,
+        _roll: &mut f32,
+        p: &mut goldsrc::sys::ref_params_t,
+        view: Option<ts_client::view::RollEntity>,
+        local: Option<ts_client::view::RollEntity>,
+    ) {
+        view::view_roll(p, view, local)
+    }
+
+    /// False: 2.1's `V_CalcNormalRefdef` never writes the local entity's `rendermode` or
+    /// `renderamt`, and it has no `cl_thirdtransparency`.
+    fn local_translucency(&self) -> bool {
+        false
     }
 }
 

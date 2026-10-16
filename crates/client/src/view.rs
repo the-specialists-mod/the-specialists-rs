@@ -11,7 +11,6 @@ use goldsrc::Global;
 use goldsrc::client::{Cvar, engine};
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::sys::*;
-use shared::ts::stunt;
 use std::cell::{Cell, RefCell};
 
 struct Cvars {
@@ -70,9 +69,9 @@ struct View {
     /// `cam_thirdperson` (`0x100df390`), the `thirdperson` toggle's state. TS has no separate
     /// death cam: `TSHealth` 0 runs the toggle.
     third: bool,
-    /// Eased additions to the camera's up (`0x10191da4`) and back (`0x10191da8`) offsets.
-    cam_up_ofs: f32,
-    cam_back_ofs: f32,
+    /// The smoothed additions to the camera's up and back offsets
+    /// ([`ClientRules::camera_offsets`](crate::gameplay::ClientRules::camera_offsets)).
+    cam_ofs_smooth: CamOffsets,
     /// Smoothed z of the local player model in third person (`0x10191d94`). A BSS static in TS:
     /// it starts at 0 and only changes in third person, so the model slides in from wherever it
     /// was when third person was last left (from z 0 the first time).
@@ -452,7 +451,7 @@ extern "C" fn cmd_test_view() {
     let s = with(|w| {
         format!(
             "third {} menu {menu} cam_back {:.1} cam_up {:.1} model_z {:.1} amt {:.0} origin {:?} eye {:?} angles {:?}\n",
-            w.third, w.cam_back_ofs, w.cam_up_ofs, w.model_z, w.local_amt, w.cam.origin, w.eye, w.cam.angles
+            w.third, w.cam_ofs_smooth.back, w.cam_ofs_smooth.up, w.model_z, w.local_amt, w.cam.origin, w.eye, w.cam.angles
         )
     });
     let ts = state::with(|st| format!("ts {:.3}/{:.3} fov {:.1}/{:.1}\n", st.time_scale, st.time_scale_target, st.fov, st.fov_target));
@@ -819,63 +818,16 @@ pub fn gun_offset() -> Vec3 {
     with(|w| w.bob.ofs)
 }
 
-/// What `V_CalcViewRoll` reads from the view entity (`GetEntityByIndex(pparams->viewentity)`).
-/// TS reads `prevstate` here (`+0x260`, `+0x26c`), not `curstate` (`+0x3c0`), so the stunt bits
-/// lag the latest packet by one.
+/// What `V_CalcViewRoll` reads from an entity: its angles and its `prevstate` observer mode and
+/// stunt bits (TS reads `prevstate` here, `+0x260`, `+0x26c`, not `curstate` `+0x3c0`, so the
+/// stunt bits lag the latest packet by one).
 #[derive(Clone, Copy, Debug, Default)]
-struct RollEntity {
-    angles: Vec3,
+pub struct RollEntity {
+    pub angles: Vec3,
     /// `prevstate.iuser1`: the observer mode.
-    iuser1: i32,
+    pub iuser1: i32,
     /// `prevstate.iuser4`: the stunt bits.
-    iuser4: i32,
-}
-
-/// `V_CalcViewRoll`'s roll target and easing rate (`0x100675e8..0x10067632`): 0 at 15 on the
-/// ground; in the air a dive 35 at 7.5, a flip -10 at 5, anything else -5.5 at 15.
-fn view_roll_target(on_ground: bool, iuser4: i32) -> (f32, f32) {
-    if on_ground {
-        (0.0, 15.0)
-    } else if iuser4 & stunt::DIVING != 0 {
-        (35.0, 7.5)
-    } else if iuser4 & (stunt::FLIP_HIGH | stunt::FLIP_LOW) != 0 {
-        (-10.0, 5.0)
-    } else {
-        (-5.5, 15.0)
-    }
-}
-
-/// `V_CalcRoll` (`0x100671f0`, SDK): `side = right(angles)·velocity`, then
-/// `|side|·0.01 < rollspeed ? |side|·0.01·rollangle/rollspeed : rollangle`, with side's sign
-/// (a side of 0 counts as positive). On the x87, with the 0.01 a double; returned unrounded.
-fn calc_roll(angles: Vec3, vel: Vec3, rollangle: f32, rollspeed: f32) -> f64 {
-    let (_, right, _) = v::angle_vectors(angles);
-    let side = right[0] as f64 * vel[0] as f64 + right[1] as f64 * vel[1] as f64 + right[2] as f64 * vel[2] as f64;
-    let sign = if side >= 0.0 { 1.0 } else { -1.0 };
-    let side = if side > 0.0 { side } else { -side } * 0.01;
-    if side < rollspeed as f64 { side * rollangle as f64 / rollspeed as f64 * sign } else { rollangle as f64 * sign }
-}
-
-/// `V_CalcViewRoll` (`0x100675b0`): the stunt roll. Nothing without a view entity; an observer
-/// (`prevstate.iuser1 > 0`) gets roll 0. Otherwise the eased roll (`0x10191d80`) follows
-/// `V_CalcRoll(ent->angles, simvel, target, 10)` at `min(rate·ft, 1)` and is added to the view
-/// roll, so it scales with sideways speed and is 0 on the ground. Dead with a view height, the
-/// roll is then set to 80 (after the easing has run).
-fn calc_view_roll(roll: &mut f32, p: &mut ref_params_t, ent: Option<RollEntity>) {
-    let Some(ent) = ent else { return };
-    if ent.iuser1 > 0 {
-        p.viewangles[2] = 0.0;
-        return;
-    }
-    let (target, rate) = view_roll_target(p.onground != 0, ent.iuser4);
-    let r = calc_roll(ent.angles, p.simvel, target, 10.0);
-    let k = rate as f64 * p.frametime as f64;
-    let k = if k > 1.0 { 1.0 } else { k };
-    *roll = ((r - *roll as f64) * k + *roll as f64) as f32;
-    p.viewangles[2] += *roll;
-    if p.health < 1 && p.viewheight[2] != 0.0 {
-        p.viewangles[2] = 80.0;
-    }
+    pub iuser4: i32,
 }
 
 /// Which view `V_CalcRefdef` computes this frame.
@@ -994,43 +946,32 @@ fn local_amt_step(cur: f32, on_player: bool, enabled: bool, frame_has_time: bool
     approach(target, cur, step)
 }
 
-/// Third-person camera offsets (back, right, up) from `cl_camtype`, clamped (§7.4).
-fn cam_base(camtype: i32, cam_back: f32, cam_right: f32, cam_up: f32) -> (f32, f32, f32) {
-    let (back, right, up) = match camtype {
-        1 => (-48.0, -16.0, 12.0),
-        2 => (-90.0, 0.0, 12.0),
-        3 => (-cam_back, cam_right, cam_up),
-        _ => (-48.0, 16.0, 12.0),
-    };
-    (back.clamp(-128.0, 24.0), right.clamp(-24.0, 24.0), up.clamp(-24.0, 24.0))
-}
-
-/// What the third-person offset smoothing reads.
+/// What the third-person camera offsets read ([`ClientRules::camera_offsets`]).
+///
+/// [`ClientRules::camera_offsets`]: crate::gameplay::ClientRules::camera_offsets
 #[derive(Clone, Copy, Debug)]
-struct CamState {
+pub struct CamInput {
+    /// `cl_camtype` (a cvar not every ruleset's client has).
+    pub camtype: i32,
+    /// The SDK camera cvars `cam_back`, `cam_right`, `cam_up`.
+    pub cam_back: f32,
+    pub cam_right: f32,
+    pub cam_up: f32,
     /// Ducked view (0 < view height < 28).
-    ducked: bool,
-    alive: bool,
-    /// `iuser4 & 0x130c30`: dive, prone, flips, wall moves or super-jump glide.
-    stunt: bool,
-    ft: f32,
+    pub ducked: bool,
+    pub alive: bool,
+    /// The local player's `prevstate.iuser4 & 0x130c30`: dive, prone, flips, wall moves or
+    /// super-jump glide.
+    pub stunt: bool,
+    pub ft: f32,
 }
 
-/// The smoothing half of the third-person block of `V_CalcNormalRefdef` (`0x10068139..0x1006823e`):
-/// eases the extra up offset toward `32 - up` while ducked, and the extra back offset toward
-/// -180 (dead) or -92 (stunt), both at `ft * 5` (unclamped). Returns the offsets to use.
-fn cam_smooth(up_ofs: &mut f32, back_ofs: &mut f32, back: f32, up: f32, s: CamState) -> (f32, f32) {
-    let up_target = if s.ducked && up < 32.0 { 32.0 - up } else { 0.0 };
-    *up_ofs += (up_target - *up_ofs) * s.ft * 5.0;
-    let back_target = if !s.alive {
-        -180.0 - back
-    } else if s.stunt && back > -128.0 {
-        -92.0 - back
-    } else {
-        0.0
-    };
-    *back_ofs += (back_target - *back_ofs) * s.ft * 5.0;
-    (back + *back_ofs, if s.alive { up + *up_ofs } else { up })
+/// The camera offsets' smoothing state, kept across frames: the additions to the up and back
+/// offsets (TS 3.0's eased floats `0x10191da4`/`0x10191da8`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CamOffsets {
+    pub up: f32,
+    pub back: f32,
 }
 
 /// Body cam (`back == 0`, `0x10068255`): at the eye of the model, pushed forward and up as the
@@ -1111,6 +1052,8 @@ fn calc_normal(p: &mut ref_params_t) {
 
     // Local player translucency (step 2): `TS_IsLocalDead` (0x1004c250) is false while alive or
     // in a demo. The local model is only drawn in third person, so that's where it shows.
+    // A ruleset may leave the local entity's render mode alone (`ClientRules::local_translucency`).
+    let rules = crate::gameplay::current();
     let e = goldsrc::client::engine();
     let translucent = !state::with(|s| s.dead) || e.demo_playing() || e.demo_recording();
     let on_player = crate::hud::with(|h| h.crosshair_id.is_some());
@@ -1118,6 +1061,9 @@ fn calc_normal(p: &mut ref_params_t) {
     // TS tests `gHUD.m_flTimeDelta` (`0x10067930`), the last HUD redraw's frame time.
     let hud_dt = crate::hud::time_delta();
     engine().with_local_player_mut(|ent| {
+        if !rules.local_translucency() {
+            return;
+        }
         if translucent {
             let amt = with(|w| {
                 w.local_amt = local_amt_step(w.local_amt, on_player, transparency, hud_dt != 0.0);
@@ -1153,7 +1099,6 @@ fn calc_normal(p: &mut ref_params_t) {
     };
 
     // `V_CalcBob` (`0x100679a5`) runs before the spectator camera replaces `simorg`.
-    let rules = crate::gameplay::current();
     let (bob, gun_ofs) = with(|w| (rules.view_bob(&mut w.bob, &bob_in), w.bob.ofs));
 
     // The spectator camera origin replaces `simorg` (`0x100679aa`).
@@ -1248,9 +1193,11 @@ fn calc_normal(p: &mut ref_params_t) {
     }
     p.vieworg[2] += water_ofs;
 
-    let roll_ent =
-        engine().entity(p.viewentity).map(|e| RollEntity { angles: e.angles, iuser1: e.prevstate.iuser1, iuser4: e.prevstate.iuser4 });
-    with(|w| calc_view_roll(&mut w.roll, p, roll_ent));
+    // `V_CalcViewRoll`: the ruleset's, from the view entity and the local player.
+    let roll_of = |e: &cl_entity_s| RollEntity { angles: e.angles, iuser1: e.prevstate.iuser1, iuser4: e.prevstate.iuser4 };
+    let roll_view = engine().entity(p.viewentity).map(roll_of);
+    let roll_local = engine().local_player().map(roll_of);
+    with(|w| rules.view_roll(&mut w.roll, p, roll_view, roll_local));
     // `V_AddIdle` (`0x10067eba`) at `v_idlescale`, the HUD's concussion level (0 in TS games).
     let idlescale = with(|w| w.idlescale);
     add_idle(&mut p.viewangles, p.time, idlescale);
@@ -1266,9 +1213,17 @@ fn calc_normal(p: &mut ref_params_t) {
     if third {
         let ent_org = engine().local_player().map_or(p.simorg, |e| e.origin);
         let vh = p.viewheight[2];
-        let state = CamState { ducked: vh < 28.0 && vh != 0.0, alive: !dead, stunt: iuser4 & 0x130c30 != 0, ft };
-        let (back, right_ofs, up_ofs) = cam_base(camtype, cb, cr, cu);
-        let (back, up_ofs) = with(|w| cam_smooth(&mut w.cam_up_ofs, &mut w.cam_back_ofs, back, up_ofs, state));
+        let state = CamInput {
+            camtype,
+            cam_back: cb,
+            cam_right: cr,
+            cam_up: cu,
+            ducked: vh < 28.0 && vh != 0.0,
+            alive: !dead,
+            stunt: iuser4 & 0x130c30 != 0,
+            ft,
+        };
+        let (back, right_ofs, up_ofs) = with(|w| rules.camera_offsets(&mut w.cam_ofs_smooth, &state));
         // TS (`0x10067f53`) orbits the camera along `CL_CameraOffset`'s pitch and yaw, roll 0;
         // `cam_think` keeps that following the view.
         let cam_angles = with(|w| [w.cam_ofs[0], w.cam_ofs[1], 0.0]);
@@ -1457,51 +1412,6 @@ fn write_screen_fade(time: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `V_CalcRoll`: proportional to the sideways speed below `rollspeed / 0.01`, the full
-    /// `rollangle` above it, with the side's sign.
-    #[test]
-    fn calc_roll_scales_with_side_speed() {
-        // Yaw 0: right is -y, so moving toward -y is moving right.
-        assert!((calc_roll(v::ZERO, [0.0, -300.0, 0.0], 35.0, 10.0) - 10.5).abs() < 1e-4);
-        assert!((calc_roll(v::ZERO, [0.0, 300.0, 0.0], 35.0, 10.0) + 10.5).abs() < 1e-4);
-        assert_eq!(calc_roll(v::ZERO, [0.0, -2000.0, 0.0], -5.5, 10.0), -5.5);
-        assert_eq!(calc_roll(v::ZERO, [300.0, 0.0, 0.0], 35.0, 10.0), 0.0, "straight ahead");
-    }
-
-    /// `V_CalcViewRoll`: no roll on the ground, a speed-scaled eased roll in the air, 0 for an
-    /// observer, 80 when dead after the easing has run, nothing without a view entity.
-    #[test]
-    fn view_roll_follows_ts() {
-        let ent = RollEntity::default();
-        let mut p = ref_params_t { frametime: 0.01, onground: 1, health: 100, simvel: [0.0, -300.0, 0.0], ..Default::default() };
-        let mut roll = 0.0;
-        calc_view_roll(&mut roll, &mut p, Some(ent));
-        assert_eq!((roll, p.viewangles[2]), (0.0, 0.0), "no strafe roll on the ground");
-
-        p.onground = 0;
-        calc_view_roll(&mut roll, &mut p, Some(RollEntity { iuser4: stunt::DIVING, ..ent }));
-        // Target 10.5 (see above) at min(7.5 · 0.01, 1).
-        assert!((roll - 10.5 * 0.075).abs() < 1e-4, "{roll}");
-        assert_eq!(p.viewangles[2], roll);
-
-        p.viewangles[2] = 3.0;
-        calc_view_roll(&mut roll, &mut p, Some(RollEntity { iuser1: 4, ..ent }));
-        assert_eq!(p.viewangles[2], 0.0, "observer");
-
-        let before = roll;
-        p.health = 0;
-        p.viewheight = [0.0, 0.0, 8.0];
-        calc_view_roll(&mut roll, &mut p, Some(ent));
-        assert_eq!(p.viewangles[2], 80.0);
-        assert_ne!(roll, before, "the easing still runs when dead");
-
-        p.viewangles[2] = 3.0;
-        calc_view_roll(&mut roll, &mut p, None);
-        assert_eq!(p.viewangles[2], 3.0);
-        assert_eq!(view_roll_target(false, stunt::FLIP_LOW), (-10.0, 5.0));
-        assert_eq!(view_roll_target(false, 0), (-5.5, 15.0));
-    }
 
     /// `VKickback`'s shake: full strength for back-to-back shots, fading over 0.15 s of
     /// prediction time (scaled by the time scale, 0 = 1), none after.
@@ -1730,32 +1640,6 @@ mod tests {
         assert_eq!(local_amt_step(a, true, false, true), 105.0, "cl_thirdtransparency 0 fades back in");
         assert_eq!(local_amt_step(a, false, true, true), 105.0, "5 per frame fading in");
         assert_eq!(local_amt_step(a, false, true, false), 150.0, "50 when the frame has no time");
-    }
-
-    #[test]
-    fn third_person_offsets() {
-        assert_eq!(cam_base(0, 0.0, 0.0, 0.0), (-48.0, 16.0, 12.0));
-        assert_eq!(cam_base(3, 500.0, -50.0, 50.0), (-128.0, -24.0, 24.0));
-        assert_eq!(cam_base(3, -50.0, 0.0, 0.0).0, 24.0);
-        let s = CamState { ducked: false, alive: true, stunt: false, ft: 0.01 };
-        let (mut u, mut b) = (0.0, 0.0);
-        assert_eq!(cam_smooth(&mut u, &mut b, -48.0, 12.0, s), (-48.0, 12.0));
-        // Stunt pulls the camera back to -92, ducking raises it to 32; dead goes to -180.
-        let stunt = CamState { ducked: true, stunt: true, ..s };
-        for _ in 0..2000 {
-            cam_smooth(&mut u, &mut b, -48.0, 12.0, stunt);
-        }
-        let (back, up) = cam_smooth(&mut u, &mut b, -48.0, 12.0, stunt);
-        assert!((back + 92.0).abs() < 1e-3 && (up - 32.0).abs() < 1e-3, "{back} {up}");
-        let dead = CamState { alive: false, ..s };
-        for _ in 0..2000 {
-            cam_smooth(&mut u, &mut b, -48.0, 12.0, dead);
-        }
-        let (back, up) = cam_smooth(&mut u, &mut b, -48.0, 12.0, dead);
-        assert!((back + 180.0).abs() < 1e-3 && up == 12.0, "dead ignores the up offset: {back} {up}");
-        // No stunt pull-back when the camera is already at the -128 limit.
-        let (mut u, mut b) = (0.0, 0.0);
-        assert_eq!(cam_smooth(&mut u, &mut b, -128.0, 12.0, CamState { stunt: true, ..s }).0, -128.0);
     }
 
     #[test]

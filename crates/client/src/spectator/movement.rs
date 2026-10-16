@@ -15,6 +15,7 @@ use super::{Spectator, interpolate_angles, with};
 use goldsrc::ext::render::{Vec3, vec3 as v};
 use goldsrc::pmove::PlayerMoveExt;
 use goldsrc::sys::*;
+use shared::gameplay::PmRules;
 use shared::ts::obs;
 
 /// `cl_vsmoothing` flag bits (`0x101914ec`).
@@ -44,8 +45,10 @@ pub fn begin_player_move(pm: &playermove_t) {
 }
 
 /// The client's `PM_SpectatorMove` (`0x1002c790`), as a [`shared::pm::SpectatorMove`]: false
-/// hands roaming (mode 3, or no target) to the shared move.
-pub fn spectator_move(pm: &mut playermove_t) -> bool {
+/// hands roaming (mode 3, or no target) to the shared move. `rules` give the in-eye pitch
+/// ([`PmRules::in_eye_pitch`]): TS 3.0's client copies the target's pitch, TS 2.1's
+/// (`FUN_1005c820`, at `0x1005c9..`) multiplies it by -2 as its server does.
+pub fn spectator_move(pm: &mut playermove_t, rules: &'static dyn PmRules) -> bool {
     let runfuncs = pm.runfuncs != 0;
     with(|s| {
         if runfuncs {
@@ -64,7 +67,7 @@ pub fn spectator_move(pm: &mut playermove_t) -> bool {
             s.pin_pending = false;
             return true;
         }
-        follow(s, pm, runfuncs);
+        follow(s, pm, rules, runfuncs);
         true
     })
 }
@@ -76,7 +79,7 @@ fn physent_of(pm: &playermove_t, entity: i32) -> Option<usize> {
 }
 
 /// The follow half of `0x1002c790`.
-fn follow(s: &mut Spectator, pm: &mut playermove_t, runfuncs: bool) {
+fn follow(s: &mut Spectator, pm: &mut playermove_t, rules: &dyn PmRules, runfuncs: bool) {
     let Some(target) = physent_of(pm, pm.iuser2) else {
         // The target isn't sent (outside the PVS): keep the last camera.
         if runfuncs {
@@ -104,7 +107,7 @@ fn follow(s: &mut Spectator, pm: &mut playermove_t, runfuncs: bool) {
             if runfuncs {
                 s.smooth_flags |= smooth::ANGLES | smooth::ORIGIN | smooth::BOB;
             }
-            pe.angles
+            in_eye_angles(rules, pe.angles)
         }
         obs::LOCKED_VIEW => {
             let angles = match secondary {
@@ -143,6 +146,13 @@ fn follow(s: &mut Spectator, pm: &mut playermove_t, runfuncs: bool) {
         s.angles_override = true;
         s.origin_override = true;
     }
+}
+
+/// The in-eye camera angles from the target's entity angles: the pitch through the ruleset's
+/// [`PmRules::in_eye_pitch`] (3.0 `0x1002c790` copies it, 2.1 `FUN_1005c820` multiplies it by
+/// -2), the yaw and roll copied.
+pub fn in_eye_angles(rules: &dyn PmRules, target: Vec3) -> Vec3 {
+    [rules.in_eye_pitch(target[0]), target[1], target[2]]
 }
 
 /// The locked view looking along `dir` (primary → secondary): pitched 12.5° down (up with the

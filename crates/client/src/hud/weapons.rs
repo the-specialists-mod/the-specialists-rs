@@ -15,13 +15,18 @@ use std::cell::Cell;
 // Slot selection (pure)
 
 fn slot_id(h: &Hud, row: i32, bucket: i32) -> i32 {
-    h.grid.get(row as usize).and_then(|r| r.get(bucket as usize)).map_or(-1, |s| s.id)
+    h.slot_id(row, bucket)
 }
 
 /// `SelectSlot(n)` (1004f220) after the text-menu and buy-menu checks. Returns a server command.
+/// After the wire panel's keys a ruleset may run its own selection
+/// ([`ClientRules::select_slot`](crate::gameplay::ClientRules::select_slot)).
 pub fn select_slot(h: &mut Hud, n: i32, fastswitch: bool) -> Option<String> {
     if h.wires.iter().any(|&w| w != 0) {
         return (1..=3).contains(&n).then(|| format!("cutwire_{n}"));
+    }
+    if let Some(cmd) = crate::gameplay::hud_rules(h.gameplay).select_slot(h, n, fastswitch) {
+        return cmd;
     }
     if n == 10 {
         let cmd = (!h.menu_open).then(|| {
@@ -84,10 +89,17 @@ pub fn select_slot(h: &mut Hud, n: i32, fastswitch: bool) -> Option<String> {
 }
 
 /// `SelectNextPrev(dir)` (1004f500): walk the grid, skipping single guns whose akimbo version
-/// is owned. With fast switch the weapon is selected immediately.
+/// is owned. With fast switch the weapon is selected immediately. The ruleset's
+/// [`SlotMenu`](crate::gameplay::SlotMenu) says whether the selection reloads from the held
+/// weapon on every press and whether fast switch sends kung fu.
 pub fn select_next_prev(h: &mut Hud, next: bool, fastswitch: bool) -> Option<String> {
+    let style = crate::gameplay::hud_rules(h.gameplay).slot_menu();
+    select_next_prev_as(h, next, fastswitch, style)
+}
+
+fn select_next_prev_as(h: &mut Hud, next: bool, fastswitch: bool, style: crate::gameplay::SlotMenu) -> Option<String> {
     let last = GRID_ROWS as i32 - 1;
-    if !h.menu_open {
+    if !h.menu_open || style.next_prev_reloads {
         if let Some((r, b)) = super::state::grid_pos(h.weapon) {
             h.menu_row = r as i32;
             h.menu_bucket = b as i32;
@@ -152,7 +164,8 @@ pub fn select_next_prev(h: &mut Hud, next: bool, fastswitch: bool) -> Option<Str
     if fastswitch {
         h.menu_open = false;
         let id = slot_id(h, row, b);
-        return (id > 0).then(|| format!("weapon_{id}"));
+        let first = if style.next_prev_sends_kungfu { 0 } else { 1 };
+        return (id >= first).then(|| format!("weapon_{id}"));
     }
     None
 }
@@ -237,8 +250,13 @@ pub fn draw(dc: &Dc, nohud: bool) {
     }
     let buy_open = crate::menus::buy_open();
     super::with(|h| {
-        let demo = engine().demo_playing();
-        draw_weapon_list(dc, h, !h.menu_open || demo);
+        let style = crate::gameplay::hud_rules(h.gameplay).slot_menu();
+        if style.closed_list {
+            let demo = engine().demo_playing();
+            draw_weapon_list(dc, h, !h.menu_open || demo, true);
+        } else if h.menu_open {
+            draw_weapon_list(dc, h, false, style.clip_info);
+        }
         if h.weapon == 0 {
             draw_kungfu_label(dc, h);
         } else {
@@ -480,8 +498,9 @@ fn draw_weapon_info(dc: &Dc, h: &Hud) {
 /// `clip/clip size` of the selection, clip bar) or, with the menu closed, the equipment list
 /// when `cl_showequipment` is 1..3. Every colour goes through `ScaleColors` (`0x10021c60`) and
 /// then × `m`: 1 with the menu open, else 0.25, 0.5 or 1 for `cl_showequipment` 1, 2, 3
-/// (`0x1004e03d..0x1004e07d`).
-fn draw_weapon_list(dc: &Dc, h: &Hud, closed: bool) {
+/// (`0x1004e03d..0x1004e07d`). Without `clip_info` the selection has no clip line and no
+/// weapon has a clip bar (a ruleset's [`SlotMenu::clip_info`](crate::gameplay::SlotMenu)).
+fn draw_weapon_list(dc: &Dc, h: &Hud, closed: bool, clip_info: bool) {
     let m: f64 = if closed {
         match ftol(input::cvars().cl_showequipment.value() as f64) {
             1 => 0.25,
@@ -523,7 +542,7 @@ fn draw_weapon_list(dc: &Dc, h: &Hud, closed: bool) {
                     0 | 29 | 34 => None,
                     _ => Some(format!("{}/{}", slot.clip, info.clip)),
                 };
-                if let Some(a) = ammo {
+                if let Some(a) = ammo.filter(|_| clip_info) {
                     dc.string(x + 128, y + 16, &a, rgb);
                 }
             }
@@ -534,7 +553,8 @@ fn draw_weapon_list(dc: &Dc, h: &Hud, closed: bool) {
             }
             // Clip bar (`0x1004e534..`): 5 px wide at x+123, 44 px tall, in the sprite's
             // colour; the clip is the weapon's own grid cell's.
-            if !matches!(id, 0 | 29 | 34)
+            if clip_info
+                && !matches!(id, 0 | 29 | 34)
                 && let Some(info) = t.weapon(id as u8)
             {
                 let own = h.grid.get(info.hud[1] as usize).and_then(|r| r.get(info.hud[0] as usize)).map_or(0, |s| s.clip) as f32;
@@ -863,5 +883,34 @@ mod tests {
         h.weapon = 10;
         let c = select_next_prev(&mut h, true, true);
         assert_eq!(c.as_deref(), Some("weapon_13"), "wraps through bucket 1..3 to the AK");
+    }
+
+    /// A ruleset whose `SelectNextPrev` reloads the selection on every press (TS 2.1
+    /// 0x1008cc40) steps one weapon from the held one each time; and its fast switch sends kung
+    /// fu when the walk comes back round to it.
+    #[test]
+    fn next_prev_reload_and_kungfu_send() {
+        ts30_gameplay::tables::make_default();
+        let reloads =
+            crate::gameplay::SlotMenu { closed_list: false, clip_info: false, next_prev_reloads: true, next_prev_sends_kungfu: true };
+        let core = crate::gameplay::SlotMenu { next_prev_reloads: false, next_prev_sends_kungfu: false, ..reloads };
+        let mut h = Hud::default();
+        give(&mut h, 1); // glock [2,1]
+        give(&mut h, 12); // deagle [2,3]
+        give(&mut h, 13); // ak [4,3]
+        h.weapon = 1;
+        select_next_prev_as(&mut h, true, false, reloads);
+        assert_eq!((h.menu_bucket, h.menu_row), (2, 3));
+        select_next_prev_as(&mut h, true, false, reloads);
+        assert_eq!((h.menu_bucket, h.menu_row), (2, 3), "reloaded from the held Glock again");
+        select_next_prev_as(&mut h, true, false, core);
+        assert_eq!((h.menu_bucket, h.menu_row), (4, 3), "the core walks on from the selection");
+
+        let mut h = Hud::default();
+        h.grid[0][1] = Slot { id: 0, clip: 0 };
+        h.weapon = 0;
+        assert_eq!(select_next_prev_as(&mut h, true, true, core), None);
+        h.menu_open = false;
+        assert_eq!(select_next_prev_as(&mut h, true, true, reloads).as_deref(), Some("weapon_0"));
     }
 }

@@ -285,7 +285,7 @@ The hooks so far:
 | `PmRules` | `speed_by_slots(free, the_one)` | `ts30_gameplay::pm::speed_by_slots` | server `weapons/inventory.rs` `sync_speed` (the active plugin's) |
 | `PmRules` | `max_player_speed()` | 330: `SetPlayerSpeed`'s clamp and `TSInit`'s speed | server `inventory.rs` `sync_speed`, `rules/lifecycle.rs` `on_spawn` |
 | `PmRules` | `texture_limits()` | `TextureLimits::LARGE`: 1024 entries, 15 characters (`TextureLimits::SDK`: 512, 12) | `pm/mod.rs` `categorize_texture_type` (`textures::find_in`); the server's game-side table (`stunt::texture_type_init`, `impact::texture_type_play_sound` through `impact::game_textures`); the exported `pfnPM_FindTextureType` and the client's impact lookup keep 3.0's table |
-| `PmRules` | `in_eye_pitch(target_pitch)` | the target's pitch, copied | `pm/mod.rs` `spectator_move` (in eye) |
+| `PmRules` | `in_eye_pitch(target_pitch)` | the target's pitch, copied | `pm/mod.rs` `spectator_move` (in eye); the client's `spectator::spectator_move` (`in_eye_angles`) |
 | `PmRules` | `roll_divides_first()` | false: `side × rollangle / rollspeed` | `pm/mod.rs` `calc_roll` |
 | `PmRules` | `friction_edge_by_reciprocal()` | false: `vel / speed × 16 + origin` | `pm/mod.rs` `friction` (`edge_ahead`) |
 | `PmRules` | `ieee_compares()` | false: under `Arith::Msvc` the movement's `float` compares test C3/C0 as 3.0's `mp.dll` does, so a NaN is equal and below; true runs the `MsvcIeee` build (same arithmetic, IEEE compares) | `pm/mod.rs` `player_move_with` (every `Fpu::cmp_eq`/`cmp_lt`/`cmp_le` and `FpuMath::normalize`) |
@@ -406,11 +406,20 @@ The hooks so far:
 | `ClientRules` | `kungfu_label(power, hud, w, h)` | none: 3.0's `DrawKungFuLabel`; a ruleset returns its bar as `hud::draw::HudOp`s | `hud/weapons.rs` `draw_kungfu_label` |
 | `ClientRules` | `weapon_panel(panel)` | none: 3.0's `DrawWeaponInfo`; a ruleset returns its panel as `hud::draw::HudOp`s from a `WeaponPanel` (screen, HUD colour, attachments, names, clip, reserve, fire mode, FOV) | `hud/weapons.rs` `draw_weapon_info` |
 | `ClientRules` | `status_look()` | `StatusLook::default()`: 3.0's stance health fill, kevlar icon alone, team-coloured team bar, titles labels, icons × 2/3 | `hud/status.rs` `draw_status_panel` |
+| `ClientRules` | `slot_menu()` | `SlotMenu` all 3.0: the closed list with `cl_showequipment` and in demos, the clip line and bars, `SelectNextPrev` reloading only when it opens the menu and sending ids above 0 (#207) | `hud/weapons.rs` `draw`, `draw_weapon_list`, `select_next_prev` |
+| `ClientRules` | `select_slot(hud, n, fastswitch)` | none: the core's `SelectSlot` (1004f220); a ruleset's returns the server command (#207) | `hud/weapons.rs` `select_slot`, after the wire panel |
+| `ClientRules` | `spectator_toggles_third_person(observer, third_person, cl_thirdperson)` | `ts30_client::hud`: entering leaves third person; leaving, `cl_thirdperson` 1/0 picks the camera (#230) | `hud/state.rs` `Spectator` (local player) |
+| `ClientRules` | `ts_message_layout()` | `TsMessageLayout`: `LookupString` and the local-name grey, 127 characters, bottom at `h − 64`, the drawn width, `t × 0.1f + time` (#230) | `hud/state.rs` `add_ts_message` |
+| `ClientRules` | `powerup_label(flag)` / `award_title(award)` | none: `#Pwr_*` from `titles.txt` / 3.0's status titles (#230) | `hud/status.rs` `draw_powerup` / `menus/scoreboard.rs` `status` |
+| `ClientRules` | `go_slow_sound(time_scale, target, prev_factor100, factor100)` | `time_scale == 1 && target != 1` (#230) | `hud/state.rs` `TSSlowMo` |
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_tint()` | true (the `cl_slowfade` tint while slowed) | `view.rs` `write_screen_fade` |
 | `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and 3.0's explosion keep 3.0's `fire_pitch`; a ruleset's own `tsfrags_effects` plays its own explosion) |
 | `ClientRules` | `view_bob(bob, input)` | `ts30_client::view::bob` (`V_CalcBob` 0x10066e70): the gun offset and bob pitch, no camera bob (`Bob::eye` stays `None`) | `view.rs` `calc_normal` (the gun offset and angle; `Bob::eye` is added to `vieworg`) |
 | `ClientRules` | `eye_origin(eye, simorg, viewheight, on_ground, ft)` / `body_cam_z(eye, z, on_ground, ft)` | `ts30_client::view::eye` (the view height eased at `min(15·ft, 1)` on z, then `V_SmoothStairs` 0x100677d0) / `view::body_cam_z` (`V_SmoothStairs` again, 0x10068313) | `view.rs` `calc_normal` (the eye before the camera bob; the third-person body cam) |
+| `ClientRules` | `camera_offsets(ofs, input)` | `ts30_client::view::camera_offsets`: `cl_camtype`'s base, eased duck/stunt/death additions (#240) | `view.rs` `calc_normal` (third person) |
+| `ClientRules` | `view_roll(roll, pparams, view, local)` | `ts30_client::view::view_roll` (`V_CalcViewRoll` 0x100675b0, from the view entity) (#240) | `view.rs` `calc_normal` |
+| `ClientRules` | `local_translucency()` | true (`kRenderTransColor`, `cl_thirdtransparency`) (#240) | `view.rs` `calc_normal` (start) |
 | `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
 | `ClientRules` | `client_bullet_next_update(now, realbullet)` | `ts30_client::events::next_update`: 0.1 s, 0.05 s or every frame by `realbullet` | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `client_bullet_step(dir, step)` | `dir·velocity·40·dt·GetBulletVelocityMult` | `events/fire.rs` `client_bullet_impact` |

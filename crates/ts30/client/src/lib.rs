@@ -8,7 +8,9 @@ use goldsrc::sys::ref_params_t;
 use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SpectatorTail, StuntCooldown, ThinkParts};
+use ts_client::gameplay::{
+    ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
+};
 use ts_client::hud::draw::{HudOp, StatusLook, WeaponPanel};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -17,6 +19,7 @@ use ts30_gameplay::TS30;
 
 pub mod events;
 pub mod fx;
+pub mod hud;
 pub mod spectator;
 pub mod view;
 
@@ -382,6 +385,68 @@ impl ClientRules for Ts30Client {
     /// False: `TS_BloodImpact` (`0x10048840`) runs.
     fn blood_impact(&self, _ps: &mut PSys, _now: f64, _d: &ts_client::effects::PTakeDam) -> bool {
         false
+    }
+
+    // Audit round 2: A2
+
+    /// `DrawWeaponList` (1004e030) draws while closed with `cl_showequipment` and in demos, with
+    /// the clip line (`0x1004e324`) and bars (`0x1004e534..`); `SelectNextPrev` (1004f500) reloads
+    /// the selection only when it opens the menu and sends ids above 0.
+    fn slot_menu(&self) -> SlotMenu {
+        SlotMenu { closed_list: true, clip_info: true, next_prev_reloads: false, next_prev_sends_kungfu: false }
+    }
+
+    /// None: the core's `SelectSlot` is TS 3.0's (1004f220).
+    fn select_slot(&self, _h: &mut ts_client::hud::state::Hud, _n: i32, _fastswitch: bool) -> Option<Option<String>> {
+        None
+    }
+
+    /// `Spectator` (`0x10065250`, [`hud::spectator_toggles_third_person`]).
+    fn spectator_toggles_third_person(&self, observer: bool, third_person: bool, cl_thirdperson: f32) -> bool {
+        hud::spectator_toggles_third_person(observer, third_person, cl_thirdperson)
+    }
+
+    /// `AddTSMessage` (1004b520): `LookupString`, the local name grey, 127 characters, bottom
+    /// messages at `h − 64`, placed by the drawn width, expiring at `t × 0.1f + time`.
+    fn ts_message_layout(&self) -> TsMessageLayout {
+        TsMessageLayout { lookup_and_highlight: true, max_chars: 127, bottom_margin: 64, char_width: None, expiry_double: false }
+    }
+
+    /// None: `DrawPowerup` (1004a2e0) localises `#Pwr_SlowMotion`, ...
+    fn powerup_label(&self, _flag: u32) -> Option<&'static str> {
+        None
+    }
+
+    /// None: the core's titles are TS 3.0's (`0x1005e213`).
+    fn award_title(&self, _award: u8) -> Option<&'static str> {
+        None
+    }
+
+    /// `TSSlowMo` (`0x1004bef0`): when the eased scale is still 1 and the new target isn't.
+    fn go_slow_sound(&self, time_scale: f32, target: f32, _prev_factor100: f32, _factor100: f32) -> bool {
+        time_scale == 1.0 && target != 1.0
+    }
+
+    /// `V_CalcNormalRefdef` (`0x10068139..0x1006823e`, [`view::camera_offsets`]): `cl_camtype`'s
+    /// offsets, eased floats.
+    fn camera_offsets(&self, ofs: &mut ts_client::view::CamOffsets, c: &ts_client::view::CamInput) -> (f32, f32, f32) {
+        view::camera_offsets(ofs, c)
+    }
+
+    /// `V_CalcViewRoll` (`0x100675b0`, [`view::view_roll`]): all from the view entity.
+    fn view_roll(
+        &self,
+        roll: &mut f32,
+        p: &mut ref_params_t,
+        view: Option<ts_client::view::RollEntity>,
+        _local: Option<ts_client::view::RollEntity>,
+    ) {
+        view::view_roll(roll, p, view)
+    }
+
+    /// True: the start of `V_CalcNormalRefdef` (`kRenderTransColor`, `cl_thirdtransparency`).
+    fn local_translucency(&self) -> bool {
+        true
     }
 }
 

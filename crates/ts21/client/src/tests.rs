@@ -742,3 +742,257 @@ fn laser_style() {
         LaserStyle { animated_beam: true, dot_range: None, others_from_origin: false, other_beams: true, shadow_fade: true }
     );
 }
+
+#[test]
+fn client_spectator_in_eye_pitch() {
+    // #205: 2.1's client `PM_SpectatorMove` (FUN_1005c820, `OBS_IN_EYE`): pitch × -2.0, yaw and
+    // roll copied. 3.0's (0x1002c790) copies all three.
+    let a = [-4.5, 30.0, 2.0];
+    assert_eq!(ts_client::spectator::in_eye_angles(&ts21_gameplay::TS21, a), [9.0, 30.0, 2.0]);
+    assert_eq!(ts_client::spectator::in_eye_angles(&ts30_gameplay::TS30, a), a);
+}
+
+#[test]
+fn weapon_slot_menu() {
+    use ts_client::gameplay::SlotMenu;
+    use ts_client::hud::state::{Hud, Slot};
+    register();
+    // #207: 2.1's list draws only while open, without clip text or bars (0x10089d90,
+    // 0x1008af40); its SelectNextPrev reloads every press and sends ids > -1 (0x1008cc40).
+    let s21 = SlotMenu { closed_list: false, clip_info: false, next_prev_reloads: true, next_prev_sends_kungfu: true };
+    assert_eq!(v21().slot_menu(), s21);
+    assert_eq!(v30().slot_menu(), SlotMenu { closed_list: true, clip_info: true, next_prev_reloads: false, next_prev_sends_kungfu: false });
+    let mut h = Hud::default();
+    assert_eq!(v30().select_slot(&mut h, 2, false), None, "3.0: the core's SelectSlot");
+
+    let sel = |h: &mut Hud, n, fast| v21().select_slot(h, n, fast).expect("2.1 has its own SelectSlot");
+    h.grid = [[ts_client::hud::state::EMPTY; ts_client::hud::state::GRID_BUCKETS]; ts_client::hud::state::GRID_ROWS];
+    h.grid[0][1] = Slot { id: 0, clip: 0 }; // kung fu
+    h.grid[2][1] = Slot { id: 34, clip: 1 };
+    h.grid[4][1] = Slot { id: 25, clip: 1 };
+    h.grid[1][2] = Slot { id: 1, clip: 5 };
+
+    // Slot 10 (0x1008c6f0): weapon_0 from a closed menu, and (1, 1) every time.
+    assert_eq!(sel(&mut h, 10, false).as_deref(), Some("weapon_0"));
+    assert_eq!((h.menu_open, h.menu_row, h.menu_bucket), (false, 1, 1));
+    h.menu_open = true;
+    h.menu_row = 3;
+    assert_eq!(sel(&mut h, 10, false), None, "an open menu just closes");
+    assert_eq!((h.menu_row, h.menu_bucket), (1, 1));
+    // Slot 1 after 10 is the same bucket: the walk starts at row 2.
+    assert_eq!(sel(&mut h, 1, false), None);
+    assert_eq!((h.menu_open, h.menu_row, h.menu_bucket), (true, 2, 1));
+    assert_eq!(sel(&mut h, 1, false), None);
+    assert_eq!(h.menu_row, 4);
+    assert_eq!(sel(&mut h, 1, false), None);
+    assert_eq!(h.menu_row, 2, "wraps to row 1 and on to the knife; row 0 (kung fu) never");
+    // A new bucket searches from row 1; an empty one leaves -1.
+    assert_eq!(sel(&mut h, 2, false), None);
+    assert_eq!((h.menu_row, h.menu_bucket), (1, 2));
+    assert_eq!(sel(&mut h, 3, false), None);
+    assert_eq!((h.menu_row, h.menu_bucket), (-1, 3));
+    // The same empty bucket again: past the grid, 17.
+    assert_eq!(sel(&mut h, 3, false), None);
+    assert_eq!(h.menu_row, 17);
+
+    // Fast switch to bucket 1 from another bucket starts at row 0: kung fu.
+    h.menu_bucket = 2;
+    h.menu_row = 1;
+    assert_eq!(sel(&mut h, 1, true).as_deref(), Some("weapon_0"));
+    assert_eq!((h.menu_open, h.menu_row, h.menu_bucket), (false, 0, 2), "the bucket isn't changed");
+    // To bucket 2 (not 1): row + 1 = 1, the Glock.
+    h.menu_row = 0;
+    assert_eq!(sel(&mut h, 2, true).as_deref(), Some("weapon_1"));
+    // An empty bucket ends where it started; nothing sent, even from past the grid.
+    for row in [3, 17] {
+        h.menu_row = row;
+        assert_eq!(sel(&mut h, 5, true), None);
+    }
+    assert_eq!(sel(&mut h, 7, false), None, "slots 6..9 do nothing");
+}
+
+/// `Hud::default` and the HUD handlers ask the HUD's rules: the client library's registry, 3.0
+/// first, as `client-dll` registers them.
+fn register() {
+    ts_client::gameplay::register(ts30_gameplay::ID, &ts30_client::PLUGIN);
+    ts_client::gameplay::register(ts21_gameplay::ID, &PLUGIN);
+}
+
+struct Titles;
+impl ts_client::hud::text::Titles for Titles {
+    fn get(&self, key: &str) -> Option<String> {
+        (key == "HUD_Credits").then(|| "Credits".to_owned())
+    }
+}
+
+/// A HUD on `ruleset` with the 640 × 480 test screen (8 pixels a character) and the local player
+/// "me".
+fn hud_on(ruleset: &str) -> ts_client::hud::state::Hud {
+    register();
+    ts_client::hud::state::Hud { gameplay: ruleset.parse().ok(), ..Default::default() }
+}
+
+#[test]
+fn spectator_third_person() {
+    // #230 §1: 2.1's `Spectator` (0x100b28c0) leaves third person entering or leaving observer
+    // mode; it has no cl_thirdperson. 3.0 (0x10065250) goes back to third person on a respawn
+    // with cl_thirdperson 1.
+    for observer in [false, true] {
+        for cl in [0.0, 1.0, 2.0] {
+            assert!(v21().spectator_toggles_third_person(observer, true, cl));
+            assert!(!v21().spectator_toggles_third_person(observer, false, cl));
+        }
+    }
+    assert!(v30().spectator_toggles_third_person(false, false, 1.0), "3.0: back to third person");
+    assert!(!v30().spectator_toggles_third_person(false, true, 1.0));
+    assert!(v30().spectator_toggles_third_person(false, true, 0.0));
+    assert!(!v30().spectator_toggles_third_person(false, true, 2.0), "3.0: other values keep it");
+    assert!(v30().spectator_toggles_third_person(true, true, 1.0));
+}
+
+#[test]
+fn ts_message_layout() {
+    use shared::protocol::Msg;
+    use shared::protocol::hud::TsMessage;
+    // #230 §2: 2.1's AddTSMessage (0x100873d0): no LookupString or grey, 63 characters, bottom
+    // at h - 0x20, 6 pixels a character, (float)t / 10.0 + time.
+    let screen = goldsrc::ext::hud::Screen::default();
+    let ctx = ts_client::hud::state::Ctx {
+        now: 10.0,
+        screen: &screen,
+        titles: &Titles,
+        local_index: 1,
+        local_name: "me".into(),
+        third_person: false,
+        thirdperson_switch: false,
+        cl_thirdperson: 0.0,
+        saytext_time: 5.0,
+        deathnotice_time: 5.0,
+        key_binding: &ts_client::hud::state::no_key_binding,
+    };
+    let send = |h: &mut ts_client::hud::state::Hud, flags: u8, time: u8, text: &str| {
+        let m = TsMessage { r: 1, g: 2, b: 3, flags, time, text: text.into() };
+        assert!(h.apply(Msg::TsMessage, &m.encode(), &ctx, &mut Vec::new()));
+        h.messages.iter().find(|l| l.expire > ctx.now && l.flags == flags).cloned().unwrap()
+    };
+    let mut h = hud_on(ts21_gameplay::ID);
+    let l = send(&mut h, 8, 30, "#HUD_Credits for me");
+    assert_eq!(l.text, "#HUD_Credits for me", "no LookupString");
+    assert_eq!(l.rgb, [1, 2, 3], "no grey for the local name");
+    assert_eq!(l.y, 480 - 0x20);
+    assert_eq!(l.x, 320 + (19 >> 1) * -6);
+    assert_eq!(l.expire, (30f32 as f64 / 10.0 + 10.0) as f32);
+    let l = send(&mut h, 4, 30, "abcde");
+    assert_eq!(l.x, 640 - 5 * 6 - 32);
+    let long = "x".repeat(100);
+    assert_eq!(send(&mut h, 1, 30, &long).text.len(), 63);
+
+    let mut h = hud_on(ts30_gameplay::ID);
+    let l = send(&mut h, 8, 30, "#HUD_Credits for me");
+    assert_eq!((l.text.as_str(), l.rgb, l.y), ("Credits for me", [155; 3], 480 - 64));
+    assert_eq!(l.x, 320 - 14 * 8 / 2, "3.0: the drawn width");
+    assert_eq!(send(&mut h, 1, 30, &long).text.len(), 100);
+}
+
+#[test]
+fn powerup_labels_and_award_titles() {
+    // #230 §3: DrawPowerup (0x10085c00) writes the names out.
+    let names = [(1, "Slow-Motion"), (2, "Infinite-Ammo"), (8, "Slow-Pause"), (0x10, "Double-FireRate")];
+    for (bit, name) in names {
+        assert_eq!(v21().powerup_label(bit), Some(name));
+        assert_eq!(v30().powerup_label(bit), None, "3.0: titles.txt");
+    }
+    // #230 §4: the scoreboard's status column (0x100a4670).
+    assert_eq!(v21().award_title(2), Some("KILLER"));
+    assert_eq!(v21().award_title(3), Some("DEMOLITION"));
+    for a in [0, 1, 4, 5, 10, 11] {
+        assert_eq!(v21().award_title(a), None, "award {a} is 3.0's");
+    }
+}
+
+#[test]
+fn go_slow_sound() {
+    // #230 comment: 2.1's TSSlowMo (0x100881e0) tests the previous raw factor; 3.0 (0x1004bef0)
+    // the eased scale. A new slow motion while easing back to 1 after a `TSSlowMo 0`:
+    assert!(v21().go_slow_sound(0.6, 0.5, 0.0, 50.0));
+    assert!(!v30().go_slow_sound(0.6, 0.5, 0.0, 50.0));
+    assert!(!v21().go_slow_sound(1.0, 0.25, 50.0, 25.0), "2.1: already slowed");
+    assert!(v30().go_slow_sound(1.0, 0.25, 50.0, 25.0));
+    assert!(!v21().go_slow_sound(1.0, 1.0, 0.0, 0.0));
+}
+
+#[test]
+fn third_person_camera_offsets() {
+    use ts_client::view::{CamInput, CamOffsets};
+    // #240 §1/§2: 2.1 (0x100b7700..0x100b7ab9) has no cl_camtype; the SDK cvars' defaults
+    // (90, 0, 12) give (-90, 0, 12) whatever cl_camtype says. 3.0's cl_camtype 0: (-48, 16, 12).
+    let c = CamInput { camtype: 0, cam_back: 90.0, cam_right: 0.0, cam_up: 12.0, ducked: false, alive: true, stunt: false, ft: 0.25 };
+    let mut o = CamOffsets::default();
+    assert_eq!(v21().camera_offsets(&mut o, &c), (-90.0, 0.0, 12.0));
+    assert_eq!(v21().camera_offsets(&mut o, &CamInput { camtype: 1, ..c }), (-90.0, 0.0, 12.0));
+    assert_eq!(v30().camera_offsets(&mut CamOffsets::default(), &c), (-48.0, 16.0, 12.0));
+    let wild = CamInput { cam_back: 500.0, cam_right: -50.0, cam_up: 50.0, ..c };
+    assert_eq!(v21().camera_offsets(&mut CamOffsets::default(), &wild), (-128.0, -24.0, 24.0));
+    assert_eq!(v21().camera_offsets(&mut CamOffsets::default(), &CamInput { cam_back: -50.0, ..c }).0, 24.0);
+
+    // Integer steps of ft × 100 (25 here), set to the target once at or past it.
+    let mut o = CamOffsets::default();
+    let ducked = CamInput { ducked: true, ..c };
+    assert_eq!(v21().camera_offsets(&mut o, &ducked).2, 12.0 + 25.0, "one step past 32 - 12 = 20");
+    assert_eq!(v21().camera_offsets(&mut o, &ducked).2, 32.0);
+    assert_eq!(v21().camera_offsets(&mut o, &c).2, 12.0 + 20.0 - 25.0, "back down by a step");
+    assert_eq!(v21().camera_offsets(&mut o, &c).2, 12.0, "0 at once from 0 or below");
+    let dead = CamInput { alive: false, ..ducked };
+    let backs: Vec<f32> = (0..5).map(|_| v21().camera_offsets(&mut o, &dead).0).collect();
+    assert_eq!(backs, [-115.0, -140.0, -165.0, -190.0, -180.0], "toward -180 - back = -90");
+    assert_eq!(v21().camera_offsets(&mut o, &dead).2, 12.0, "dead: no up offset");
+    let mut o = CamOffsets::default();
+    let stunt = CamInput { stunt: true, ..c };
+    assert_eq!(v21().camera_offsets(&mut o, &stunt).0, -90.0 - 25.0);
+    assert_eq!(v21().camera_offsets(&mut o, &stunt).0, -92.0, "the target -2 is above: taken at once");
+    assert_eq!(v21().camera_offsets(&mut o, &c).0, -90.0 + 23.0, "rises past 0 by a step");
+    assert_eq!(v21().camera_offsets(&mut o, &c).0, -90.0, "then 0 at once");
+    // Above 100 fps, ftol(ft × 100) is 0: the offsets don't move.
+    let mut o = CamOffsets::default();
+    assert_eq!(v21().camera_offsets(&mut o, &CamInput { ft: 0.01, ..ducked }).2, 12.0);
+    assert_eq!(o, CamOffsets::default());
+}
+
+#[test]
+fn view_roll() {
+    use goldsrc::sys::ref_params_t;
+    use ts_client::view::RollEntity;
+    // #240 §3: 2.1's V_CalcViewRoll (0x100b6910) adds V_CalcRoll(angles, simvel, 0.5 or 30, 10)
+    // at once, on the ground too; observer and dive bits are the local player's.
+    let ent = RollEntity::default();
+    let mut p = ref_params_t { frametime: 0.01, onground: 1, health: 100, simvel: [0.0, -300.0, 0.0], ..Default::default() };
+    let mut roll = 0.0;
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(ent));
+    assert_eq!(p.viewangles[2], 0.15, "|side| 300: 3 × 0.5 / 10, on the ground");
+    v30().view_roll(&mut roll, &mut p, Some(ent), Some(ent));
+    assert_eq!(p.viewangles[2], 0.15, "3.0: no ground roll");
+    p.viewangles[2] = 0.0;
+    let dive = RollEntity { iuser4: shared::ts::stunt::DIVING, ..ent };
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(dive));
+    assert_eq!(p.viewangles[2], 9.0, "a dive: 3 × 30 / 10, at once");
+    p.viewangles[2] = 0.0;
+    v21().view_roll(&mut roll, &mut p, Some(dive), Some(ent));
+    assert_eq!(p.viewangles[2], 0.15, "the view entity's stunt bits aren't read");
+    p.simvel = [0.0, 300.0, 0.0];
+    p.viewangles[2] = 0.0;
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(ent));
+    assert_eq!(p.viewangles[2], -0.15);
+    p.viewangles[2] = 3.0;
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(RollEntity { iuser1: 1, ..ent }));
+    assert_eq!(p.viewangles[2], 0.0, "observer");
+    (p.health, p.viewheight) = (0, [0.0, 0.0, 8.0]);
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(ent));
+    assert_eq!(p.viewangles[2], 80.0);
+    p.viewangles[2] = 3.0;
+    v21().view_roll(&mut roll, &mut p, None, Some(ent));
+    assert_eq!(p.viewangles[2], 3.0, "no view entity");
+    assert_eq!(roll, 0.0, "2.1 has no eased roll");
+
+    // #240 §4: no local translucency.
+    assert!(!v21().local_translucency() && v30().local_translucency());
+}

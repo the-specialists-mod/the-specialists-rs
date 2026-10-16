@@ -80,6 +80,40 @@ pub enum SpectatorTail {
     Overview { hide: Option<i32> },
 }
 
+/// How the weapon element draws and walks its slot menu (`DrawWeaponList` 1004e030,
+/// `SelectNextPrev` 1004f500).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotMenu {
+    /// The list also draws while the menu is closed (the `cl_showequipment` equipment strip) and
+    /// during demo playback, rather than only while the menu is open.
+    pub closed_list: bool,
+    /// The selected weapon's `"%d/%d"` clip line under its name and the clip bars.
+    pub clip_info: bool,
+    /// `SelectNextPrev` reloads the selection from the held weapon's HUD position on every
+    /// press, not only when it opens the menu.
+    pub next_prev_reloads: bool,
+    /// With fast switch, `SelectNextPrev` sends `weapon_<id>` for any id from 0 (kung fu) up,
+    /// not only from 1.
+    pub next_prev_sends_kungfu: bool,
+}
+
+/// How `AddTSMessage` (`0x1004b520`) stores and places a `TSMessage`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TsMessageLayout {
+    /// The text goes through `LookupString` and a message containing the local player's name is
+    /// grey (155, 155, 155) instead of the sent colour.
+    pub lookup_and_highlight: bool,
+    /// The characters the slot keeps.
+    pub max_chars: usize,
+    /// A bottom message's (flag 8) distance from the screen's bottom edge.
+    pub bottom_margin: i32,
+    /// `Some(w)`: centred and right-aligned messages are placed by `strlen × w` (centred: `w/2 +
+    /// (strlen >> 1) × −w`); `None`: by the text's drawn width.
+    pub char_width: Option<i32>,
+    /// The expiry is `(float)t / 10.0 + time` in double; false: `t × 0.1f + time` in float.
+    pub expiry_double: bool,
+}
+
 /// Client rules: the HUD and input code call these where a ruleset can differ. Every method is
 /// required; each ruleset's plugin answers them all.
 pub trait ClientRules: Sync {
@@ -342,6 +376,56 @@ pub trait ClientRules: Sync {
     /// A ruleset's own `PTakeDam` blood: true when it made it; false runs `TS_BloodImpact`
     /// ([`fx::blood`](crate::effects::fx::blood)).
     fn blood_impact(&self, ps: &mut PSys, now: f64, d: &crate::effects::PTakeDam) -> bool;
+
+    // Audit round 2: A2
+
+    /// The weapon slot menu's drawing and `invnext`/`invprev` walk ([`SlotMenu`]).
+    fn slot_menu(&self) -> SlotMenu;
+
+    /// A ruleset's own `SelectSlot(n)` after the wire-panel test (the text-menu and buy-menu
+    /// keys are the caller's): `Some(cmd)` replaces the core's (`1004f220`), with the server
+    /// command to send, if any; `None` runs the core's.
+    fn select_slot(&self, h: &mut crate::hud::state::Hud, n: i32, fastswitch: bool) -> Option<Option<String>>;
+
+    /// Whether a `Spectator` message for the local player toggles the camera, entering
+    /// (`observer`) or leaving observer mode, with the camera now `third_person` and the
+    /// `cl_thirdperson` cvar's value.
+    fn spectator_toggles_third_person(&self, observer: bool, third_person: bool, cl_thirdperson: f32) -> bool;
+
+    /// `AddTSMessage`'s text and placement ([`TsMessageLayout`]).
+    fn ts_message_layout(&self) -> TsMessageLayout;
+
+    /// The power-up name `DrawPowerup` shows for the `PwUp` flag bit `flag` (1, 2, 8 or 0x10):
+    /// `Some(text)` as written, `None` for the core's `titles.txt` key (`#Pwr_SlowMotion`, ..).
+    fn powerup_label(&self, flag: u32) -> Option<&'static str>;
+
+    /// The scoreboard's status title for `TSPAward` `award`: `Some(text)` replaces the core's
+    /// title (the colour stays), `None` keeps it.
+    fn award_title(&self, award: u8) -> Option<&'static str>;
+
+    /// Whether a `TSSlowMo` plays `goslow.wav`: `time_scale` is the eased scale before the
+    /// message, `target` the new target scale (1 for a 0), `prev_factor100` and `factor100` the
+    /// last and the new value as sent.
+    fn go_slow_sound(&self, time_scale: f32, target: f32, prev_factor100: f32, factor100: f32) -> bool;
+
+    /// `V_CalcNormalRefdef`'s third-person camera offsets (back, right, up), after the duck and
+    /// stunt/death smoothing on the state `ofs` keeps across frames.
+    fn camera_offsets(&self, ofs: &mut crate::view::CamOffsets, c: &crate::view::CamInput) -> (f32, f32, f32);
+
+    /// `V_CalcViewRoll`: sets or adds to `p.viewangles[2]`, with the eased roll `roll` if the
+    /// ruleset eases one; `view` is the view entity (`pparams->viewentity`), `local` the local
+    /// player.
+    fn view_roll(
+        &self,
+        roll: &mut f32,
+        p: &mut goldsrc::sys::ref_params_t,
+        view: Option<crate::view::RollEntity>,
+        local: Option<crate::view::RollEntity>,
+    );
+
+    /// Whether `V_CalcNormalRefdef` sets the local entity's render mode and eases its
+    /// `renderamt` (the third-person translucency, `cl_thirdtransparency`).
+    fn local_translucency(&self) -> bool;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -587,6 +671,46 @@ mod stub {
             false
         }
         fn blood_impact(&self, _ps: &mut PSys, _now: f64, _d: &crate::effects::PTakeDam) -> bool {
+            false
+        }
+
+        // Audit round 2: A2
+
+        fn slot_menu(&self) -> SlotMenu {
+            // The core's own (TS 3.0's) menu, which its tests exercise.
+            SlotMenu { closed_list: true, clip_info: true, next_prev_reloads: false, next_prev_sends_kungfu: false }
+        }
+        fn select_slot(&self, _h: &mut crate::hud::state::Hud, _n: i32, _fastswitch: bool) -> Option<Option<String>> {
+            None
+        }
+        fn spectator_toggles_third_person(&self, _observer: bool, third_person: bool, _cl_thirdperson: f32) -> bool {
+            third_person
+        }
+        fn ts_message_layout(&self) -> TsMessageLayout {
+            // The core's own (TS 3.0's), which its tests exercise.
+            TsMessageLayout { lookup_and_highlight: true, max_chars: 127, bottom_margin: 64, char_width: None, expiry_double: false }
+        }
+        fn powerup_label(&self, _flag: u32) -> Option<&'static str> {
+            None
+        }
+        fn award_title(&self, _award: u8) -> Option<&'static str> {
+            None
+        }
+        fn go_slow_sound(&self, _time_scale: f32, _target: f32, _prev_factor100: f32, _factor100: f32) -> bool {
+            false
+        }
+        fn camera_offsets(&self, _ofs: &mut crate::view::CamOffsets, c: &crate::view::CamInput) -> (f32, f32, f32) {
+            (-c.cam_back, c.cam_right, c.cam_up)
+        }
+        fn view_roll(
+            &self,
+            _roll: &mut f32,
+            _p: &mut goldsrc::sys::ref_params_t,
+            _view: Option<crate::view::RollEntity>,
+            _local: Option<crate::view::RollEntity>,
+        ) {
+        }
+        fn local_translucency(&self) -> bool {
             false
         }
     }

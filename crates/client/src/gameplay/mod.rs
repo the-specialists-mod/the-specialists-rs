@@ -13,7 +13,9 @@
 
 pub mod client;
 
-pub use client::{ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SpectatorTail, StuntCooldown, ThinkParts};
+pub use client::{
+    ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
+};
 
 use goldsrc::client::engine;
 use goldsrc::pmove::PlayerMoveExt;

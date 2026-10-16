@@ -10,9 +10,9 @@ license.workspace = true
 ts21-gameplay = { path = ".." }
 ts-client     = { path = "../../client" }
 goldsrc       = { path = "../../goldsrc", features = ["client"] }
+shared        = { path = "../../shared" }
 
 [dev-dependencies]
 # Tests only; the 3.0 packages: see ../Cargo.toml.
-shared        = { path = "../../shared" }
 ts30-gameplay = { path = "../../ts30" }
 ts30-client   = { path = "../../ts30/client" }

@@ -90,6 +90,8 @@ pub struct Inputs<'a> {
     pub team_names: &'a [String],
     /// `BufferedLocaliseTextString`.
     pub lookup: &'a dyn Fn(&str) -> String,
+    /// The HUD's ruleset, for the status column's titles ([`status`]).
+    pub rules: &'a dyn crate::gameplay::ClientRules,
     pub time: f32,
     pub spectate_only: bool,
     /// `IsInSquelchMode`: `FillGrid` drops the highlight when it's off.
@@ -524,7 +526,7 @@ impl ScoreBoard {
                                 text.extend_from_slice(b"  ");
                             }
                             COL_CLASS => {
-                                let (s, fg) = status(x);
+                                let (s, fg) = status(x, inp.rules);
                                 text = s.as_bytes().to_vec();
                                 if let Some(fg) = fg {
                                     cell.fg = fg;
@@ -616,8 +618,14 @@ fn team_name(names: &[String], n: i32) -> Vec<u8> {
 }
 
 /// TS's status column (`0x1005e213`): the `TSPAward` byte's title and colour (VGUI alpha 5),
-/// else "WAITING" for a spectator (`0x1005e3e8`).
-pub fn status(x: &PlayerExtra) -> (&'static str, Option<Color>) {
+/// else "WAITING" for a spectator (`0x1005e3e8`). A ruleset may rename an award's title
+/// ([`ClientRules::award_title`](crate::gameplay::ClientRules::award_title)).
+pub fn status(x: &PlayerExtra, rules: &dyn crate::gameplay::ClientRules) -> (&'static str, Option<Color>) {
+    let (title, fg) = status_30(x);
+    (rules.award_title(x.award).unwrap_or(title), fg)
+}
+
+fn status_30(x: &PlayerExtra) -> (&'static str, Option<Color>) {
     match x.award {
         1 => ("DEAD", None),
         2 => ("3 KILLS", Some(Color::new(125, 255, 125, 5))),
@@ -884,6 +892,7 @@ mod tests {
             server_name: "Server",
             team_names: &[],
             lookup: &|s| s.to_owned(),
+            rules: &crate::gameplay::Defaults,
             time: 0.0,
             spectate_only: false,
             squelch: false,
@@ -1003,12 +1012,12 @@ mod tests {
     #[test]
     fn status_column() {
         let mut x = PlayerExtra { award: 1, observer: true, ..PlayerExtra::default() };
-        assert_eq!(status(&x).0, "DEAD", "the award wins over the spectator flag");
+        assert_eq!(status(&x, &crate::gameplay::Defaults).0, "DEAD", "the award wins over the spectator flag");
         x.award = 0;
-        assert_eq!(status(&x).0, "WAITING");
+        assert_eq!(status(&x, &crate::gameplay::Defaults).0, "WAITING");
         x.observer = false;
         x.award = 7;
-        assert_eq!(status(&x).0, "");
+        assert_eq!(status(&x, &crate::gameplay::Defaults).0, "");
     }
 
     #[test]
