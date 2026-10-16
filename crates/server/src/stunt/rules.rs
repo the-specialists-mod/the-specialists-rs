@@ -193,4 +193,13 @@ pub trait StuntClock: Sync {
         let _ = time_scale;
         secs as f32
     }
+
+    // Audit round 2: C
+
+    /// `BlockPlayer(t)`'s lock (`StuntState::block_timer`) for the `t` a ruleset's weapon passed
+    /// (`GunHost::block_player`), at `now` with the time scale `time_scale`. 3.0's is
+    /// [`start`](Self::start)'s timer of `t` seconds of the player's time.
+    fn block_end(&self, now: f32, time_scale: f32, t: f32) -> f32 {
+        self.start(now, time_scale, f64::from(t))
+    }
 }

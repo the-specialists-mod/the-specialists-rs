@@ -173,6 +173,14 @@ impl StuntClock for Absolute {
         let _ = (s, dt);
     }
 
+    /// `BlockPlayer` (`FUN_10056b60`): `pl+0x460 = t + gpGlobals->time`, a `float` sum. Its one
+    /// caller, the kung-fu attack, passes the slowed duration already (`ts21_gameplay`'s
+    /// `ccombat_attack`, issue #242).
+    fn block_end(&self, now: f32, time_scale: f32, t: f32) -> f32 {
+        let _ = time_scale;
+        (f64::from(t) + f64::from(now)) as f32
+    }
+
     /// `WriteByte(__ftol((next - time) * 10))`: truncated, the low byte.
     fn next_stunt_byte(&self, now: f32, t: f32) -> u8 {
         ((f64::from(t) - f64::from(now)) * 10.0) as i32 as u8
@@ -292,6 +300,15 @@ mod tests {
         assert_eq!(slow_inv(0.5), 2.0);
         assert_eq!(slow_inv(0.05), 1.0 / f64::from(0.1f32));
         assert_eq!(slow_inv(0.0), 1.0 / f64::from(0.1f32));
+    }
+
+    /// #242: `BlockPlayer`'s end is the passed (already slowed) duration plus the time, a `float`
+    /// sum, whatever the time scale.
+    #[test]
+    fn block_end_adds_the_time() {
+        let t = f32::from_bits(0x3f2c_cccc);
+        assert_eq!(Absolute.block_end(1000.25, 0.35, t), 1000.25 + t);
+        assert_eq!(Absolute.block_end(1000.25, 1.0, t), 1000.25 + t);
     }
 
     /// Timers are end times fixed at the start: a slow motion that starts or ends later doesn't

@@ -266,7 +266,7 @@ pub use crate::entities::stock::explode::screen_shake;
 /// player's time (kept by the ruleset's [`rules::StuntClock`]).
 pub fn block_player(p: &mut Player, cx: &mut Cx, t: f32) {
     let clock = crate::gameplay::active().server.stunt_clock();
-    p.stunt.block_timer = clock.start(cx.time(), cx.pev().fuser1, f64::from(t));
+    p.stunt.block_timer = clock.block_end(cx.time(), cx.pev().fuser1, t);
     cx.pev().iuser4 |= RECOVER;
 }
 

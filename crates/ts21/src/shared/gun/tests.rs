@@ -803,6 +803,16 @@ fn kungfu_melee_attack_hook() {
     assert_eq!(h.melee_damage.last(), Some(&55.0));
     assert_eq!((g.next_primary, g.next_secondary, g.idle), (1.25, 1.25, 1.25));
     assert_eq!(h.blocks.last(), Some(&((1.25f64 * 0.9) as f32)));
+    // #242: the `float` 0.9, and the slowed duration (`FixedSlowMul() × delay × 0.9f`) rounded to
+    // a `float`: 0.75 × 0.9 would be 0x3f2ccccd.
+    h.melee_answer = Some((0.75, 55.0, true));
+    attack(&mut g, &mut h, IN_ATTACK);
+    assert_eq!(h.blocks.last().map(|b| b.to_bits()), Some(0x3f2c_cccc));
+    h.fuser1 = 0.35;
+    attack(&mut g, &mut h, IN_ATTACK);
+    let slowed = (1.0 / f64::from(0.35f32) * 0.75 * f64::from(0.9f32)) as f32;
+    assert_eq!(h.blocks.last(), Some(&slowed));
+    h.fuser1 = 1.0;
     // Blocked sweep: its own values asked; nothing but the delay.
     let (hits, blocks, bar, last) = (h.melees, h.blocks.len(), g.melee_bar, g.last_melee_anim);
     h.melee_answer = Some((0.8, 1.0, false));
