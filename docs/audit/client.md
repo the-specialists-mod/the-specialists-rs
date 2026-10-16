@@ -41,8 +41,8 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 | `draw_crosshair`, `crosshair_parts`, `crosshair_gap`, `divesteps` | 0x1004e9f0, 0x1004ef50 | 0x1008b960, 0x1008c1c0 | match (hooks; #110, #153 fixed: `IsHardware()`). Round 4: the divestep pitch dot is worked out in double (3.0 `× π/180`, 2.1 `/ 180 × π`), **#280** (both), fixed |
 | weapon `Think` parts, kung-fu regen, Reset | 0x1004ce10 | 0x100899f0, 0x10089890 | match (hooks #193/#194) |
 | `weapon_panel`, `kungfu_label` | 0x1004d7e0, 0x1004d700 | 0x1008a320, 0x1008a0f0 | match (hooks #176/#111) |
-| effects/laser.rs `draw_local_laser` | 0x1003bb00 | 0x10071bd0 (`laserbeam.spr`, grey flicker, half-width 1.5) | 3.0 match; **2.1 MISMATCH #204** |
-| `draw_other_lasers` | 0x1003d600 | 0x100731a0 (origin+24, pitch ×−3, white dot only) | 3.0 match; **2.1 MISMATCH #204** |
+| effects/laser.rs `draw_local_laser` | 0x1003bb00 | 0x10071bd0 (`laserbeam.spr`, grey flicker, half-width 1.5) | 3.0 match; **2.1 MISMATCH #204**. Round 4: the jitter (`× 0.003` double) and 2.1's flicker round once, **#282** (both), fixed |
+| `draw_other_lasers` | 0x1003d600 | 0x100731a0 (origin+24, pitch ×−3, white dot only) | 3.0 match; **2.1 MISMATCH #204**. Round 4: the angle jitter (`× 0.05` double) rounds once, **#282** (both), fixed |
 | `draw_local_flashlight` | 0x1003b250 (cull origin, light only on a hit at `endpos`, flash r6/r4 colour 0.7) | 0x10070f20 (same as 3.0) | **MISMATCH #203 (both rulesets)** |
 | `draw_other_flashlights` | 0x1003b750 (V_GetInEyePos) | 0x10071630 (origin+24, pitch ×−3) | 3.0 match; **2.1 MISMATCH #204** |
 | `draw_shadows` | 0x10055760, 0x10055500 | 0x10095260, 0x10094e70 (no fade or 200 cut, flags 2, mode 2) | 3.0 match; **2.1 MISMATCH #204** |
