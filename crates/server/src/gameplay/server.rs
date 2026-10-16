@@ -19,6 +19,7 @@ use crate::rules::scoring::Frag;
 use crate::rules::state::GameRules;
 use crate::stunt::rules::{Dive, StuntClock, StuntRules};
 use crate::weapons::projectiles;
+use crate::weapons::worldgun::AmmoPackDrop;
 use crate::world::{Cx, Entity};
 use goldsrc::server::MsgWriter;
 use goldsrc::sys::{TraceResult, edict_t, entvars_t};
@@ -486,6 +487,11 @@ pub trait ServerRules: Sync {
     fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32;
 
     // Audit round 2: D1
+
+    /// `CBasePlayer::DropAmmo` / `CTSAmmoPack::CreateAmmoPack`: how the death ammo pack's start
+    /// position is rounded in the build `arith` and whether the dying player owns the pack while it
+    /// falls.
+    fn ammo_pack_drop(&self, arith: Arith) -> AmmoPackDrop;
 
     /// `TEXTURETYPE_Init`: whether the game's own material table (the impact sounds of
     /// `TEXTURETYPE_PlaySound`) also reads `sound/<map>_materials.txt` after

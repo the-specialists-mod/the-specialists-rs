@@ -13,6 +13,7 @@
 //! * [`damage`]: bullets and what a hit does to a player.
 //! * [`melee`]: blocks on the victim and the stunt kicks.
 //! * [`explode`]: explosions and thrown blades.
+//! * [`weapons`]: the death ammo pack.
 //! * [`bots::BOTS`]: the native bot backend's rules for 3.0, which `server-dll` registers with
 //!   `ts_server::bots::rules` under the plugin's id (the bots are a layer of their own, so they
 //!   aren't part of [`PLUGIN`]).
@@ -31,6 +32,7 @@ pub mod powerup;
 pub mod rules;
 pub mod scoring;
 pub mod stunt;
+pub mod weapons;
 
 use goldsrc::server::MsgWriter;
 use goldsrc::sys::{TraceResult, edict_t, entvars_t};
@@ -507,6 +509,11 @@ impl ServerRules for Ts30Server {
     }
 
     // Audit round 2: D1
+
+    /// [`weapons::ammo_pack_drop`].
+    fn ammo_pack_drop(&self, arith: Arith) -> ts_server::weapons::worldgun::AmmoPackDrop {
+        weapons::ammo_pack_drop(arith)
+    }
 
     /// `TEXTURETYPE_Init` (0xe1244): `TEXTURETYPE_LoadStandardMaterials`, then
     /// `TEXTURETYPE_LoadMapMaterials` (`sound/%s_materials.txt`).

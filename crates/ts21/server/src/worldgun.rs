@@ -7,6 +7,7 @@ use goldsrc::server::engine;
 use goldsrc::sys::edict_t;
 use shared::weapons::info;
 use ts_server::damage::{self, DamageInfo};
+use ts_server::weapons::worldgun::AmmoPackDrop;
 
 /// `DMG_CLUB`, the bits `BounceTouch` passes (0x100654fc: `push 0x80`).
 const DMG_CLUB: i32 = 0x80;
@@ -47,9 +48,35 @@ pub fn touch(gun: *mut edict_t, attacker: *mut edict_t, id: u8, other: *mut edic
     damage::apply(other, &d);
 }
 
+/// The death ammo pack (`DropAmmo` FUN_10055ef0, `CTSAmmoPack::CreateAmmoPack` 0x100657e0).
+///
+/// * The position (0x10055f82..0x1005600b): x's and z's `origin + forward·8` are stored as
+///   `float`s (`fstps 0x3c`, `fstps 0x44`) before `right·8` is added; y's stays on the FPU
+///   (`fadds 0x4(%eax)` at 0x10055fd4, added at 0x10055ff0). 2.1 shipped only `mp.dll`, so
+///   `ts_pm_arith gcc` takes the same form.
+/// * `CreateAmmoPack` takes only the reserve and sets no owner: the pack collides with the body
+///   from the start.
+pub fn ammo_pack_drop() -> AmmoPackDrop {
+    AmmoPackDrop { stored: [true, false, true], owned: false }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// y keeps `origin + forward·8` unrounded; x and z lose half an ulp to the store.
+    #[test]
+    fn ammo_pack_position_and_owner() {
+        use shared::pm::Arith;
+        use ts_server::weapons::worldgun::ammo_pack_origin;
+        let d = ammo_pack_drop();
+        assert!(!d.owned);
+        let half = [2f32.powi(-27); 3];
+        let up = 1.0f32 + 2f32.powi(-23);
+        assert_eq!(ammo_pack_origin(Arith::Msvc, [1.0; 3], half, half, d.stored), [1.0, up, 1.0]);
+        // 3.0's mp.dll rounds y instead of x.
+        assert_ne!(d, ts30_server::weapons::ammo_pack_drop(Arith::Msvc));
+    }
 
     /// Up to `slots + 50` health breaks: 60 for a pistol, 120 for the Barrett; nothing else is
     /// hurt, and a NaN health isn't.

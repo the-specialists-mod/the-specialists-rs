@@ -73,7 +73,7 @@ addresses of `ts_i386.so`.
 | `CBasePlayer::PlayerUse` 0xd9848 | `player::player_use` (all classes; from `post_think`), with `weapons::use_by_player` for the weapon entities |
 | `CM61Grenade::Use` 0x7ce64 | `Grenade::use_by` (kicks a grenade resting on the ground) |
 | `UTIL_BubbleTrail` 0xee93c / `UTIL_WaterLevel` 0xee73c | `fire::bubble_trail` / `fire::water_level` |
-| `CTSAmmoPack` 0xa1310.. / `CBasePlayer::DropAmmo` 0x946f0 | `worldgun::AmmoPack` (link `TSAmmoPack`, classname `AmmoPack`) / `worldgun::drop_ammo` |
+| `CTSAmmoPack` 0xa1310.. / `CBasePlayer::DropAmmo` 0x946f0 | `worldgun::AmmoPack` (link `TSAmmoPack`, classname `AmmoPack`) / `worldgun::drop_ammo`: the position's rounding and the dying player as `pev->owner` until `OnGround` (0xa1610) are the ruleset's (`ServerRules::ammo_pack_drop`, issue #211) |
 | `CBasePlayer::PickUpWeapon` 0x9314c | `inventory::pick_up_weapon` |
 | `CBasePlayer::DropWeapon` 0x94900 / `ThrowWeapon` 0x9529c | `inventory::drop_weapon` (`Drop::{Current, Id, Disarm}`) / `throw_weapon` |
 | `CBasePlayer::BuyArmament/BuyWeapon/BuyAmmo/AddItem/TakeArmor` | `inventory::buy_armament/buy_weapon/buy_ammo/add_item/take_armor` |

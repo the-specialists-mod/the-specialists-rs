@@ -484,6 +484,11 @@ impl ServerRules for Ts21Server {
 
     // Audit round 2: D1
 
+    /// [`worldgun::ammo_pack_drop`]: 2.1's single build.
+    fn ammo_pack_drop(&self, _arith: shared::pm::Arith) -> ts_server::weapons::worldgun::AmmoPackDrop {
+        worldgun::ammo_pack_drop()
+    }
+
     /// `TEXTURETYPE_Init` (FUN_10036580) reads `sound/materials.txt` only.
     fn map_materials(&self) -> bool {
         false

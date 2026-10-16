@@ -451,6 +451,7 @@ The hooks so far:
 | `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `ts30_server::explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
 | `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `ts30_server::explode::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
 | `ServerRules` | `thrown_blade_damage(btype, from, at)` | `ts30_server::explode::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
+| `ServerRules` | `ammo_pack_drop(arith)` | `ts30_server::weapons::ammo_pack_drop`: owned by the dying player until it lands; `origin + forward·8` stored for y, z (mp.dll) or none (`ts_i386.so`) before `+ right·8` (`AmmoPackDrop`) | `weapons/worldgun.rs` `drop_ammo` |
 | `ServerRules` | `map_materials()` | true: the game's material table also reads `sound/<map>_materials.txt` | `stunt::texture_type_init`, `impact::texture_type_play_sound` (`impact::game_textures`) |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`

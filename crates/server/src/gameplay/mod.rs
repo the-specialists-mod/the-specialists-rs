@@ -356,6 +356,9 @@ impl ServerRules for Defaults {
     }
 
     // Audit round 2: D1
+    fn ammo_pack_drop(&self, _arith: shared::pm::Arith) -> crate::weapons::worldgun::AmmoPackDrop {
+        unimplemented!("ammo_pack_drop")
+    }
     fn map_materials(&self) -> bool {
         unimplemented!("map_materials")
     }
