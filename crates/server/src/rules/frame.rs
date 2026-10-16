@@ -307,22 +307,29 @@ pub fn put_powerup(kind: u16) -> bool {
     false
 }
 
-/// `GetRandomPosition` (0x974f4): up to 16 horizontal directions (23° apart from a random start),
-/// 128..1024 units out, pulled back 64 units from what the trace hits.
+/// `GetRandomPosition`'s angle step: `(int)(360.0 / 16)` with the FPU set to truncate
+/// (`ts_i386.so` 0x87523..0x87546), 22; both `mp.dll`s multiply by 22 (`lea`/`shl`, 3.0
+/// 0x10065f72, 2.1 0x10059532) and add 0x16 per try (3.0 0x100661eb). Issue #228.
+const RANDOM_POSITION_STEP: i32 = (360.0 / 16.0) as i32;
+
+/// `GetRandomPosition` (0x974f4): up to 16 horizontal directions (22° apart from a random start,
+/// `RandomLong(0, 16) * 22`), 128..1024 units out, pulled back 64 units from what the trace hits.
+/// The ruleset computes each direction and trace end in its build's arithmetic
+/// ([`ServerRules::random_position_ray`](crate::gameplay::ServerRules::random_position_ray)).
 fn random_position(from: [f32; 3]) -> [f32; 3] {
     let eng = engine();
-    let mut angle = eng.random_long(0, 16) * 23;
+    let rules = crate::gameplay::active().server;
+    let mut angle = eng.random_long(0, 16) * RANDOM_POSITION_STEP;
     for _ in 0..16 {
-        let dist = eng.random_long(128, 1024) as f32;
-        let r = (angle as f32).to_radians();
-        let dir = [r.cos(), r.sin(), 0.0];
-        let end = [from[0] + dir[0] * dist, from[1] + dir[1] * dist, from[2]];
+        let dist = eng.random_long(128, 1024);
+        let (dir, end) = rules.random_position_ray(angle, dist, from);
         let tr = eng.trace_line(from, end, goldsrc::server::IGNORE_MONSTERS, std::ptr::null_mut());
-        let p = [tr.vecEndPos[0] - dir[0] * 64.0, tr.vecEndPos[1] - dir[1] * 64.0, tr.vecEndPos[2]];
+        // `dir * 64` is exact, so the one rounding is the difference's.
+        let p: [f32; 3] = std::array::from_fn(|i| tr.vecEndPos[i] - dir[i] * 64.0);
         if eng.point_contents(p) != CONTENTS_SOLID {
             return p;
         }
-        angle += 23;
+        angle += RANDOM_POSITION_STEP;
     }
     from
 }
@@ -380,7 +387,15 @@ fn unused() -> MsgWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, restart_round_applies, round_time_byte, time_limit, x87_eq, x87_max0};
+    use super::{Mode, RANDOM_POSITION_STEP, restart_round_applies, round_time_byte, time_limit, x87_eq, x87_max0};
+
+    /// Issue #228: `(int)(360.0 / 16)` truncated, as the three builds compute it (Ghidra's `0x17`
+    /// is its own rounding of the division).
+    #[test]
+    fn random_position_steps_22_degrees() {
+        assert_eq!(RANDOM_POSITION_STEP, 22);
+        assert_eq!(16 * RANDOM_POSITION_STEP, 352, "the last start angle");
+    }
 
     #[test]
     fn the_time_limit_counts_from_the_map_start() {

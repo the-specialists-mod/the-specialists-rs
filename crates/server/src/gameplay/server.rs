@@ -491,6 +491,11 @@ pub trait ServerRules: Sync {
     /// single, the only form the ruleset's `PickUpWeapon` accepts. False keeps the id, so the
     /// ground weapon gives the pair.
     fn ground_weapon_pairs_to_single(&self) -> bool;
+
+    /// One try of `GetRandomPosition` (0x974f4), the automatic power-up spot: the direction of
+    /// the horizontal angle `angle` (whole degrees) and the end of its `dist`-unit trace from
+    /// `from`, as the ruleset's build computes them: `([f32; 3] dir, [f32; 3] end)`.
+    fn random_position_ray(&self, angle: i32, dist: i32, from: [f32; 3]) -> ([f32; 3], [f32; 3]);
 }
 
 #[cfg(test)]

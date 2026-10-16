@@ -119,6 +119,34 @@ pub fn on_go_slow(p: &mut ts_server::player::Player, amount: f32) {
     }
 }
 
+/// One try of 2.1's `GetRandomPosition` (FUN_10059510, from `PutPowerUp` FUN_10059840), issue
+/// #228: `Vector(cos a, sin a, 0).Normalize()` with `a` the `double` `angle * 0.017453292519943295`
+/// (0x10080190). Unlike 3.0's `mp.dll`, only the cosine is stored as a `float`
+/// (0x1005956f): the sine stays on the x87 for the length (`z² + s² + c²`, 0x10059575..0x1005958d)
+/// and for `dir.y` (0x100595bc). The trace end keeps the x product `dist * dir.x` unrounded for
+/// its sum (0x10059613); y and z are stored first.
+pub fn random_position_ray(angle: i32, dist: i32, from: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let r = f64::from(angle) * 0.017453292519943295;
+    let c = f64::from(r.cos() as f32);
+    let s = r.sin();
+    let z = 0.0f64;
+    let len = (z * z + s * s + c * c).sqrt();
+    let dir = if len == 0.0 {
+        [0.0, 0.0, 1.0]
+    } else {
+        let inv = 1.0 / len;
+        [(inv * c) as f32, (inv * s) as f32, (inv * z) as f32]
+    };
+    let d = f64::from(dist);
+    let stored = |i: usize| f64::from((d * f64::from(dir[i])) as f32);
+    let end = [
+        (f64::from(from[0]) + d * f64::from(dir[0])) as f32,
+        (f64::from(from[1]) + stored(1)) as f32,
+        (f64::from(from[2]) + stored(2)) as f32,
+    ];
+    (dir, end)
+}
+
 /// `kind` is one of the types the spawner and `SetupPowerUp` draw.
 #[cfg(test)]
 fn is_type(kind: u16) -> bool {
@@ -129,6 +157,21 @@ fn is_type(kind: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #228: 2.1's `GetRandomPosition` (FUN_10059510) keeps the sine unrounded, so its
+    /// direction can differ from 3.0's `mp.dll` by an ulp (198°: 3.0's y is 0xbe9e377a), and it
+    /// adds the unrounded x product (22°, 150 units: 3.0's `mp.dll` gives 0xc488efaa).
+    #[test]
+    fn random_position_rays() {
+        let bits = |v: [f32; 3]| v.map(f32::to_bits);
+        let from = [-1234.567, 345.678, 36.03125];
+        let (d, e) = random_position_ray(198, 128, from);
+        assert_eq!(bits(d), [0xbf737871, 0xbe9e3779, 0]);
+        assert_eq!(bits(e), [0xc4a989ac, 0x43990fda, 0x42102000]);
+        let (d, e) = random_position_ray(22, 150, from);
+        assert_eq!(bits(d), [0x3f6d5bec, 0x3ebfcc6f, 0]);
+        assert_eq!(bits(e), [0xc488efa9, 0x43c8ef3b, 0x42102000]);
+    }
     use shared::ts::powerup as pw;
     use ts_server::entities::ts::powerup::pickup_plan;
 

@@ -488,6 +488,11 @@ impl ServerRules for Ts21Server {
     fn ground_weapon_pairs_to_single(&self) -> bool {
         entities::GROUND_WEAPON_PAIRS_TO_SINGLE
     }
+
+    /// [`powerup::random_position_ray`].
+    fn random_position_ray(&self, angle: i32, dist: i32, from: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+        powerup::random_position_ray(angle, dist, from)
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.
