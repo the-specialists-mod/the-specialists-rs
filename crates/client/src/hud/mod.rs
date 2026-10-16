@@ -1141,7 +1141,7 @@ fn draw_say_text(dc: &Dc) {
                 e.draw_console_bytes(x, y, None, &rest);
             }
             saytext::DrawLine::Plain { y, text } => {
-                e.draw_console_bytes(10, y, Some(saytext::SAY_COLOR), &text);
+                e.draw_console_bytes(10, y, crate::gameplay::current().say_text_style().plain_color, &text);
             }
         }
     }
@@ -1158,17 +1158,23 @@ impl saytext::SayEnv for EngineSay {
     }
 }
 
-/// Lines [`say_text_print`] couldn't add because the HUD state was borrowed (an effect that
+/// Lines [`say_text_print`] couldn't take because the HUD state was borrowed (an effect that
 /// warns from inside a HUD callback); [`with`] adds them when the borrow ends.
 static PENDING_SAY: Global<RefCell<Vec<PendingSay>>> = Global(RefCell::new(Vec::new()));
 /// A deferred `SayTextPrint`: (text, client).
 type PendingSay = (Vec<u8>, i32);
 
-/// `CHudSayText::SayTextPrint` (`0x1002ed00`): drops text from a muted player; while
-/// `AllowedToPrintText` says no it goes to the console only; otherwise it becomes a chat line
-/// (the speaker's name coloured when the text starts with `\x02`) and `misc/talk.wav` plays.
+/// `CHudSayText::SayTextPrint` (`0x1002ed00`): drops text from a muted player (when the
+/// ruleset's [`SayTextStyle`](saytext::SayTextStyle) says so); while `AllowedToPrintText` says
+/// no it goes to the console only; otherwise it becomes a chat line (the speaker's name coloured
+/// when the text starts with `\x02`) and `misc/talk.wav` plays.
 pub fn say_text_print(text: &[u8], client: i32) {
-    if crate::voice::is_player_blocked(client) {
+    let Ok(mut h) = HUD.0.try_borrow_mut() else {
+        PENDING_SAY.0.borrow_mut().push((text.to_vec(), client));
+        return;
+    };
+    let h = h.get_or_insert_with(Hud::default);
+    if crate::gameplay::hud_rules(h.gameplay).say_text_style().mute_blocked && crate::voice::is_player_blocked(client) {
         return;
     }
     let e = engine();
@@ -1176,11 +1182,6 @@ pub fn say_text_print(text: &[u8], client: i32) {
         e.print_bytes(text);
         return;
     }
-    let Ok(mut h) = HUD.0.try_borrow_mut() else {
-        PENDING_SAY.0.borrow_mut().push((text.to_vec(), client));
-        return;
-    };
-    let h = h.get_or_insert_with(Hud::default);
     let name = (text.first() == Some(&2) && client > 0).then(|| e.player_info(client).name_bytes);
     // `GetClientColor` reads the scoreboard teams, which live in the state borrowed here.
     let color = name.as_ref().and_then(|_| notice::client_color(&h.players, local_index(), client));

@@ -15,6 +15,43 @@ use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
 use goldsrc::ext::tri;
 use goldsrc::sys::*;
 
+mod decel;
+pub use decel::decel_step;
+
+/// The particle update [`PSys::update_draw`] runs, a ruleset's choice
+/// ([`ClientRules::particle_model`](crate::gameplay::ClientRules::particle_model)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ParticleModel {
+    /// `PSys_UpdateDraw` (`0x100520d0`): gravity `g · sv_gravity`, drag, the think step (drift,
+    /// react, wind), resting, stretch, fade-in; a 4096-slot pool and 64 sprites keyed by name and
+    /// render mode.
+    #[default]
+    Drag,
+    /// The older update ([`decel`]): gravity a tenth of `Drag`'s and only when positive, a fixed
+    /// deceleration toward 33 u/s instead of drag, no think step, its own collision (a particle
+    /// that lands stops for good), life on the raw slow-motion factor, no stretch or fade-in; a
+    /// 2048-slot pool and 32 sprites keyed by name.
+    Decelerate,
+}
+
+impl ParticleModel {
+    /// `PSys_Init`'s upper pool size.
+    fn pool_max(self) -> usize {
+        match self {
+            ParticleModel::Drag => 4096,
+            ParticleModel::Decelerate => 2048,
+        }
+    }
+
+    /// `PSys_LoadSprite`'s cache size.
+    fn sprite_slots(self) -> usize {
+        match self {
+            ParticleModel::Drag => 64,
+            ParticleModel::Decelerate => 32,
+        }
+    }
+}
+
 pub const KIND_EFFECT: u8 = 0;
 pub const KIND_MAP: u8 = 3;
 
@@ -101,6 +138,9 @@ pub struct Particle {
     /// `+0x110`, `+0xec`: next think and next collision trace (client time, floats).
     pub(crate) next_think: f32,
     pub(crate) next_trace: f32,
+    /// [`ParticleModel::Decelerate`]'s life clock: the client time of the last life step (the
+    /// add's time at first).
+    pub(crate) life_clock: f32,
 }
 
 impl Default for Particle {
@@ -143,6 +183,7 @@ impl Default for Particle {
             visible: false,
             next_think: 0.0,
             next_trace: 0.0,
+            life_clock: 0.0,
         }
     }
 }
@@ -154,9 +195,6 @@ struct Sprite {
     handle: HSPRITE,
     frames: i16,
 }
-
-/// `PSys_LoadSprite`'s cache size.
-const SPRITE_SLOTS: usize = 64;
 
 /// Seeded gust model (`TSPSys` subtype 3, globals `0x10189438..0x10189470`): identical gusts on
 /// every client for one seed. Speed and direction are cosine-interpolated from the `from` to the
@@ -298,6 +336,11 @@ pub struct PSys {
     pub gravity: f32,
     /// `IEngineStudio.IsHardware()` (`0x100ea860`), which `PSys_Add` asks (set each frame).
     pub hardware: bool,
+    /// The ruleset's update (set each frame).
+    pub model: ParticleModel,
+    /// The last `TSSlowMo` factor as sent ÷ 100 (0 at normal speed), which
+    /// [`ParticleModel::Decelerate`] runs the particles' life on (set each frame).
+    pub slowmo: f32,
 }
 
 impl Default for PSys {
@@ -319,6 +362,8 @@ impl Default for PSys {
             time_scale: 1.0,
             gravity: 800.0,
             hardware: true,
+            model: ParticleModel::Drag,
+            slowmo: 0.0,
         }
     }
 }
@@ -356,9 +401,10 @@ impl PSys {
     }
 
     /// `PSys_Init` (`0x100507e0`): a fresh pool of `max` slots clamped to 256..4096, an empty
-    /// sprite cache, cleared cooldowns and push list.
+    /// sprite cache, cleared cooldowns and push list. (With [`ParticleModel::Decelerate`]
+    /// [`PSys::add`] uses only the first 2048.)
     pub fn init(&mut self) {
-        let n = self.max.clamp(256, 4096);
+        let n = self.max.clamp(256, ParticleModel::Drag.pool_max());
         self.parts = vec![Particle { alive: false, ..Default::default() }; n];
         self.high = 0;
         self.react_list.clear();
@@ -368,15 +414,18 @@ impl PSys {
 
     /// Sprite slot for `name` with render mode `mode` (`PSys_LoadSprite` `0x100509d0`), loading
     /// it on first use. The cache is keyed by name (case-insensitively) and mode, and holds 64
-    /// sprites: once full, a new sprite is "no sprite" without a warning. Only loaded sprites
+    /// sprites: once full, a new sprite is "no sprite" without a warning. With
+    /// [`ParticleModel::Decelerate`] (`0x1008fd20`) the key is the name alone, so a sprite keeps
+    /// the render mode it was first loaded with, and the cache holds 32. Only loaded sprites
     /// take a slot: a miss leaves none behind (`0x10050a43` stores the null handle in the free
     /// slot, which still reads as free), so TS calls `SPR_Load` again and warns on every miss.
     pub fn sprite(&mut self, name: &str, mode: i32) -> Option<i16> {
         let mode = mode as i16;
-        if let Some(i) = self.sprites.iter().position(|s| s.name.eq_ignore_ascii_case(name) && s.mode == mode) {
+        let by_name = self.model == ParticleModel::Decelerate;
+        if let Some(i) = self.sprites.iter().position(|s| s.name.eq_ignore_ascii_case(name) && (by_name || s.mode == mode)) {
             return Some(i as i16);
         }
-        if self.sprites.len() >= SPRITE_SLOTS {
+        if self.sprites.len() >= self.model.sprite_slots() {
             return None;
         }
         let handle = engine().spr_load(name);
@@ -421,6 +470,8 @@ impl PSys {
     /// allocated yet), or when the sprite's cache slot was loaded for TransColor and the renderer
     /// isn't hardware. The copy starts with `prev` at its origin, no drift, not resting, the
     /// think and trace times at 0, the spawn time from the client clock, and a drag floor of 0.1.
+    /// [`ParticleModel::Decelerate`] (`0x1008ffc0`) searches the first 2048 slots and has no drag
+    /// (its life clock starts at the spawn time).
     pub fn add(&mut self, mut p: Particle, _now: f64) {
         if self.parts.is_empty() {
             return;
@@ -429,12 +480,14 @@ impl PSys {
             return;
         }
         // `+0xc0c`, the search start, only ever moves down from 0, so the search is from 0.
-        let Some(i) = self.parts.iter().position(|q| !q.alive) else { return };
+        let cap = self.parts.len().min(self.model.pool_max());
+        let Some(i) = self.parts[..cap].iter().position(|q| !q.alive) else { return };
         p.prev = p.origin;
         p.drift = v::ZERO;
         p.resting = false;
         p.next_trace = 0.0;
         p.spawn = client_time();
+        p.life_clock = p.spawn;
         if p.drag <= 0.1 {
             p.drag = 0.1;
         }
@@ -571,8 +624,13 @@ impl PSys {
     /// collision is still drawn and stepped that frame, as in TS; when the callback reuses its
     /// slot (`oncollide` 2 kills, then spawns into the first free slot), the rest of the pass
     /// works on the new particle there. `collision` runs each callback the moment TS calls it.
+    /// With [`ParticleModel::Decelerate`] the pass is [`decel`]'s.
     pub fn update_draw(&mut self, dt: f32, cam: &Camera, players: &[(Vec3, Vec3)], collision: &mut dyn FnMut(&mut PSys, Collision)) {
         if self.parts.is_empty() {
+            return;
+        }
+        if self.model == ParticleModel::Decelerate {
+            self.update_draw_decel(dt, cam, collision);
             return;
         }
         let now = client_time();
@@ -872,6 +930,11 @@ pub fn heron_height(a: f32, b: f32, len: f32) -> f32 {
 /// `follow_view` 3 uses `followaxis` unnormalised for the height and `toCam̂ × followaxis` for the
 /// width, as TS does.
 pub fn build_quad(p: &Particle, cam: &Camera) -> [Vec3; 4] {
+    quad(p, cam, if p.resting { ORIENT_BILLBOARD } else { p.orient }, true)
+}
+
+/// [`build_quad`] with the orientation given and, with `stretch` false, no stretching.
+fn quad(p: &Particle, cam: &Camera, orient: u8, stretch: bool) -> [Vec3; 4] {
     if let Some(c) = p.corners {
         return c;
     }
@@ -881,9 +944,8 @@ pub fn build_quad(p: &Particle, cam: &Camera) -> [Vec3; 4] {
         let l = v::len(d);
         if l == 0.0 { [0.0, 0.0, 1.0] } else { v::scale(d, 1.0 / l) }
     };
-    let orient = if p.resting { ORIENT_BILLBOARD } else { p.orient };
     // Every `follow_view` but 2 and 3 (4 and up act as 0) can stretch (0x10051151).
-    if !matches!(orient, ORIENT_FREE | ORIENT_AXIS) && p.stretch > 0.01 {
+    if stretch && !matches!(orient, ORIENT_FREE | ORIENT_AXIS) && p.stretch > 0.01 {
         // `stretchspeed` multiplies TS's speed (units per 0.1 s).
         let speed = v::len(p.vel) * 0.1;
         let l = speed * p.stretch;

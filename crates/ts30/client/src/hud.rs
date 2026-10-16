@@ -1,5 +1,13 @@
 //! TS 3.0's HUD message rules that a ruleset can change. Addresses are TS 3.0 `client.dll` VAs.
 
+use ts_client::hud::saytext::{SAY_COLOR, SayTextStyle};
+
+/// `CHudSayText`: `SayTextPrint` (`0x1002ed00`) drops a muted player's line
+/// (`GetClientVoiceMgr()->IsPlayerBlocked`, `0x10018c80`), and `Draw` (`0x1002eb40`) sets
+/// `g_ColorYellow` (`0x1009359c`: 1, 0.7, 0) before a line without a coloured name
+/// (`0x1002ec72..0x1002ec86`).
+pub const SAY_TEXT: SayTextStyle = SayTextStyle { mute_blocked: true, plain_color: Some(SAY_COLOR) };
+
 /// `Spectator` (`0x10065250`, `10065294..100652f8`) for the local player: entering observer
 /// mode leaves third person; leaving it, `cl_thirdperson` 1 or 0 picks the camera (other values
 /// keep it), so the death cam doesn't outlive the respawn.

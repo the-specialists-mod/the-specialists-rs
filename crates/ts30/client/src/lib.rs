@@ -6,12 +6,13 @@
 use goldsrc::ext::render::{ATTN_NORM, Vec3, random_float, random_long};
 use goldsrc::sys::ref_params_t;
 use ts_client::effects::fx::FxStyle;
-use ts_client::effects::psys::PSys;
+use ts_client::effects::psys::{PSys, ParticleModel};
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::{
     ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
 };
 use ts_client::hud::draw::{HudOp, StatusLook, WeaponPanel};
+use ts_client::hud::saytext::SayTextStyle;
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
 use ts_client::view::{Bob, BobInput, EyeZ};
@@ -455,6 +456,19 @@ impl ClientRules for Ts30Client {
     /// [`studio::STYLE`].
     fn studio_style(&self) -> ts_client::studio::StudioStyle {
         studio::STYLE
+    }
+
+    // Audit round 3: hud
+
+    /// `SayTextPrint` (`0x1002ed00`) drops a muted player's line (`IsPlayerBlocked`), and `Draw`
+    /// (`0x1002eb40`) sets `g_ColorYellow` (1, 0.7, 0) before a plain line (`0x1002ec72`).
+    fn say_text_style(&self) -> SayTextStyle {
+        hud::SAY_TEXT
+    }
+
+    /// `PSys_UpdateDraw` (`0x100520d0`).
+    fn particle_model(&self) -> ParticleModel {
+        ParticleModel::Drag
     }
 }
 

@@ -1,8 +1,16 @@
 //! TS 2.1's HUD differences from 3.0's that the core asks for: the weapon slot selection, the
-//! power-up names and the award titles.
+//! power-up names, the award titles and the chat element.
 //! Addresses are TS 2.1 `client.dll` VAs.
 
+use ts_client::hud::saytext::SayTextStyle;
 use ts_client::hud::state::Hud;
+
+/// 2.1's `CHudSayText` (issue #260): `MsgFunc_SayText` (`0x10060830`) and `SayTextPrint`
+/// (`0x10060890`) have no mute check, so a muted player's chat still shows; `Draw`
+/// (`0x10060540`) draws a line without a coloured name with `DrawConsoleString(10, y, line)`
+/// alone (`0x10060771`), in the engine's default text colour (its one `DrawSetTextColor`,
+/// `0x10060718`, is the name's).
+pub const SAY_TEXT: SayTextStyle = SayTextStyle { mute_blocked: false, plain_color: None };
 
 /// The slot grid's rows (`< 0x11`).
 const ROWS: i32 = 0x11;

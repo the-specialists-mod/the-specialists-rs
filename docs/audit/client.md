@@ -61,7 +61,7 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 | `view_bob` (2.1 `view::calc`) | V_CalcBob 0x10066e70 | 0x100b5c80 | match (#164 fixed; re-checked the peak branch, phase and camera bob) |
 | `eye_origin` / `body_cam_z` | 0x100679ee.. | 0x100b6b80 | match (hooks #167) |
 | `fade_color` slow tint | V_CalcRefdef tail | none | match (hook #152) |
-| `apply_kick` | 0x10057ed0 | 0x10097de0 | not re-compared for 2.1 (documented deviation in ts21.md) |
+| `apply_kick` | 0x10057ed0 | 0x10097de0 | match (round 3, `client-display.md`) |
 | input.rs `key_event` (anti-script gate, 'a' → slot 11) | HUD_Key_Event 0x10025a80 | 0x10050170 (viewport only) | 3.0 match (#144 fixed: the gate opens on press and release). 2.1: slot 11 is a no-op in 2.1 mode (buy `max_key` 10, no weapon slot 11): match in effect |
 | input `+`/`-` commands, `attack_switch`, `respawn` tap, HLTV buttons | 0x10025da0.. | 0x10050490.. | match (hooks, #177) |
 | `button_bits` | CL_ButtonBits 0x10026870 | 0x10051730 (same 15 bits incl. 0x40, forced +score dead/intermission) | match (re-checked 2.1 ✓) |
@@ -83,10 +83,10 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 | effects.rs `apply_cvar` / `adapt_quality` (`cl_fx` tuning) | FX_ApplyCvar 0x10057d50, FX_AdaptQuality 0x10057a70 | 0x10097c20, 0x100977a0 | match for the tuning values (validation, new row: 1.0/0.35 scale, 0.05/0.2 and 0.05/0.3 intervals, 1.5/0.7 count, 30/5 shell life, 4096/2048; adaptive `min(0.05/q, 0.3)`, `max(2q, 0.1)`, `max(30q, 2)`, `max(q, 0.25)`). 3.0's pool divisor and physics switch belong to the particle system, which isn't traced for 2.1 |
 
 ## Not verified / gaps
-- 2.1 particle *update* (drag/stretch/gravity semantics of 2.1's own particle struct) is still untraced (round-1 gap, ts21.md deviation). The glass and blood field values above are mapped through the sprite-debris builder's known parameters; what the zero fields (orientation, react) do in 2.1 isn't known.
-- `apply_kick` against 2.1's `0x10097de0`: documented as not compared.
+- 2.1 particle *update*: traced in round 3 (**#261**, fixed; **#267**, the follow field; `client-display.md`).
+- `apply_kick` against 2.1's `0x10097de0`: compared in round 3 (match).
 - 2.1 team menu constructor (`0x100b2ca0`) layout constants and `paint` were compared by structure only. MOTD window (`CMessageWindowPanel`) not compared for 2.1.
-- SDK HUD elements TS left alone (`CHudMessage`, `CHudSayText`, `CHudStatusBar`, `CHudStatusIcons`, geiger, train, `TextMsg`) were not compared against 2.1. The draw stubs and element list match.
+- SDK HUD elements TS left alone (`CHudMessage`, `CHudSayText`, `CHudStatusBar`, `CHudStatusIcons`, geiger, train, `TextMsg`): compared against 2.1 in round 3 (`client-display.md`; **#260**, fixed).
 - 2.1 client bullet draw (`0x10069540`: models, trail spin, spiral): traced in round 3 ([client-display.md](client-display.md) "Model rendering"); one mismatch, #259.
 - 3.0 `draw_objective_markers` compares against the local entity's origin z, where TS reads `gHUD` `m_vecOrigin` (`0x100cf960`). The two differ by prediction lag only; not filed.
 

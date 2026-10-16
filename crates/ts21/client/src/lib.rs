@@ -9,13 +9,14 @@ use goldsrc::ext::render::{Vec3, random_long};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use ts_client::effects::fx::FxStyle;
-use ts_client::effects::psys::PSys;
+use ts_client::effects::psys::{PSys, ParticleModel};
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
 use ts_client::gameplay::{
     ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
 };
 use ts_client::hud::draw::{HudOp, HudSprite, StatusLook, WeaponPanel, ftol, num};
+use ts_client::hud::saytext::SayTextStyle;
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
 use ts_client::view::{Bob, BobInput, EyeZ};
@@ -675,6 +676,18 @@ impl ClientRules for Ts21Client {
     /// [`studio::STYLE`].
     fn studio_style(&self) -> ts_client::studio::StudioStyle {
         studio::STYLE
+    }
+
+    // Audit round 3: hud
+
+    /// [`hud::SAY_TEXT`] (issue #260).
+    fn say_text_style(&self) -> SayTextStyle {
+        hud::SAY_TEXT
+    }
+
+    /// 2.1's particle system (`0x10091020`, `0x100902f0`, `0x10090a00`; issue #261).
+    fn particle_model(&self) -> ParticleModel {
+        ParticleModel::Decelerate
     }
 }
 
