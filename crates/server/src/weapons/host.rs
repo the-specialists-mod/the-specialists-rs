@@ -316,13 +316,13 @@ impl GunHost for ServerHost<'_> {
             self.anims.push(anim);
         }
     }
-    fn kick(&mut self, pitch: f32, yaw: f32, _shake: bool) {
+    fn kick(&mut self, pitch: f32, yaw: f64, _shake: bool) {
         // VKickback: the server writes pev->punchangle (pev+0x68) only for bots; humans get the
         // same kick from their client's fire-event handler. The view shake is the client's.
         let pev = self.pev();
         if pev.flags & FL_FAKECLIENT as i32 != 0 {
             pev.punchangle[0] -= pitch;
-            pev.punchangle[1] += yaw;
+            pev.punchangle[1] = (pev.punchangle[1] as f64 + yaw) as f32;
         }
     }
     fn sound(&mut self, s: Sound) {

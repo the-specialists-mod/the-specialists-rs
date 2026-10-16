@@ -22,7 +22,7 @@ struct Mock {
     repredict: bool,
     events: Vec<(Event, EventArgs)>,
     shots: Vec<Shot>,
-    kicks: Vec<(f32, f32, bool)>,
+    kicks: Vec<(f32, f64, bool)>,
     /// Run TS 3.0's gun rules instead of 2.1's (on 2.1's tables).
     core: bool,
     melees: u32,
@@ -129,7 +129,7 @@ impl GunHost for Mock {
         self.anims += 1;
     }
     fn player_anim(&mut self, _anim: i32) {}
-    fn kick(&mut self, pitch: f32, yaw: f32, shake: bool) {
+    fn kick(&mut self, pitch: f32, yaw: f64, shake: bool) {
         self.kicks.push((pitch, yaw, shake));
     }
     fn sound(&mut self, s: Sound) {
@@ -456,7 +456,8 @@ fn view_kick_is_random_and_sided() {
         // r2 = SR(seed+2, 0, 0.75) truncates to 0: yaw = (u ± 0.5) * 6 * 0.65, |u ± 0.5| in [0.5, 1).
         let u = shared::weapons::random::shared_random_float(seed, -0.5, 0.5);
         let side = if u < 0.0 { -0.5 } else { 0.5 };
-        assert_eq!(sy, ((u as f64 + side) * 6.0 * 0.65) as f32);
+        // The unrounded product: 2.1 adds it to the angle on the x87 (server `0x10049c7c`).
+        assert_eq!(sy, (u as f64 + side) * 6.0 * 0.65);
         assert!((cy - sy).abs() < 1e-5);
         assert!(sy.abs() >= 0.5 * 6.0 * 0.65 - 1e-5 && sy.abs() < 6.0 * 0.65);
     }

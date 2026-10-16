@@ -175,9 +175,9 @@ impl GunHost for Mock {
         self.anim_bodies.push(body);
     }
     fn player_anim(&mut self, _anim: i32) {}
-    fn kick(&mut self, pitch: f32, yaw: f32, shake: bool) {
+    fn kick(&mut self, pitch: f32, yaw: f64, shake: bool) {
         assert!(shake, "TS 3.0's VKickback shakes the view");
-        self.kicks.push((pitch, yaw));
+        self.kicks.push((pitch, yaw as f32));
     }
     fn view_shake(&mut self, amp: f32) {
         self.shakes.push(amp);

@@ -415,7 +415,7 @@ impl GunHost for ClientHost<'_> {
         send_weapon_anim(anim, self.body, self.runfuncs, false);
     }
     fn player_anim(&mut self, _anim: i32) {}
-    fn kick(&mut self, pitch: f32, yaw: f32, shake: bool) {
+    fn kick(&mut self, pitch: f32, yaw: f64, shake: bool) {
         // VKickback: once per predicted shot.
         if self.runfuncs {
             view::kick_angles(pitch, yaw, shake.then_some(self.silenced), self.time);

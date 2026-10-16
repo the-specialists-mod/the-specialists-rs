@@ -6,6 +6,7 @@
 //! [`on_tsfade`]).
 
 use crate::effects::psys::Camera;
+use crate::studio::FloatForm;
 use crate::{effects, state};
 use goldsrc::Global;
 use goldsrc::client::{Cvar, engine};
@@ -709,7 +710,7 @@ pub fn kick(view_kick: f32, class: u8, silenced: bool, double_rate: bool, now: f
         pitch *= 2.0 / 3.0;
         yaw *= 2.0 / 3.0;
     }
-    kick_angles(pitch, yaw, Some(silenced), now);
+    kick_angles(pitch, yaw as f64, Some(silenced), now);
 }
 
 /// Queues one shot's view kick (`pitch` up, `yaw` right, degrees) and, with `shake` =
@@ -717,11 +718,11 @@ pub fn kick(view_kick: f32, class: u8, silenced: bool, double_rate: bool, now: f
 /// alone, for rulesets without the shake). Call once per shot, with `runfuncs` only. `now` is the
 /// command's prediction time: TS times the shake with `*0x10099114`, which
 /// `HUD_WeaponsPostThink` sets to `HUD_PostRunCmd`'s `time` as a float, not with the client clock.
-pub fn kick_angles(pitch: f32, yaw: f32, shake: Option<bool>, now: f32) {
+pub fn kick_angles(pitch: f32, yaw: f64, shake: Option<bool>, now: f32) {
     let ts = state::with(|s| s.time_scale);
     with(|w| {
         w.kick_target[0] -= pitch;
-        w.kick_target[1] += yaw;
+        w.kick_target[1] = (w.kick_target[1] as f64 + yaw) as f32;
         let Some(silenced) = shake else { return };
         if let Some(amp) = shake_amplitude(now, w.last_shot, ts) {
             w.shake.start(amp * if silenced { 0.775 } else { 1.0 }, 0.1, 35.0);
@@ -996,15 +997,19 @@ fn smooth_model_z(cur: f32, z: f32, ft: f32) -> f32 {
     cur - step
 }
 
-/// `V_ApplyKick` (`0x10057ed0`): eases the current kick (`0x101914f8`) toward the target
-/// (`0x10191d10`) at `min(ft·15, 1)` and returns the step (`0x10190b38`, roll 0) TS adds to
-/// `cl_viewangles`. Within 0.1° (squared length below the double 0.01) all three are zeroed. The
-/// x87 keeps the yaw difference for the length test and the pitch step for the add to the current
-/// kick unrounded.
-fn apply_kick(target: &mut [f32; 2], cur: &mut [f32; 2], ft: f32) -> Vec3 {
+/// `V_ApplyKick` (3.0 `0x10057ed0`, 2.1 `0x10097de0`): eases the current kick (`0x101914f8`)
+/// toward the target (`0x10191d10`) at `min(ft·15, 1)` and returns the step (`0x10190b38`, roll 0)
+/// TS adds to `cl_viewangles`. Within 0.1° (squared length below the double 0.01) all three are
+/// zeroed. 3.0 keeps the yaw difference for the length test and the pitch step for the add to the
+/// current kick unrounded on the x87; a NaN length counts as settled (`0x10057f02`). 2.1 stores
+/// the differences, the squared length and both steps to floats, and a NaN length counts as
+/// moving (`test ah,5; jp` at `0x10097e2e`).
+fn apply_kick(form: FloatForm, target: &mut [f32; 2], cur: &mut [f32; 2], ft: f32) -> Vec3 {
+    if form == FloatForm::Unoptimised {
+        return apply_kick_stored(target, cur, ft);
+    }
     let d0 = (target[0] - cur[0]) as f64;
     let d1 = target[1] as f64 - cur[1] as f64;
-    // A NaN length counts as settled (`0x10057f02`).
     let moving = d0 * d0 + d1 * d1 >= 0.01;
     if !moving {
         *target = [0.0; 2];
@@ -1018,6 +1023,25 @@ fn apply_kick(target: &mut [f32; 2], cur: &mut [f32; 2], ft: f32) -> Vec3 {
     cur[0] = (s0 + cur[0] as f64) as f32;
     cur[1] += s1;
     [s0 as f32, s1, 0.0]
+}
+
+/// 2.1's `V_ApplyKick` (`0x10097de0`, see [`apply_kick`]): `d = target − cur` stored, `|d|²`
+/// stored as a float before the double 0.01 test, `k = ft × 15.0f` as a double (capped at 1.0
+/// unless NaN), each step `d × k` stored, then added to the current kick.
+fn apply_kick_stored(target: &mut [f32; 2], cur: &mut [f32; 2], ft: f32) -> Vec3 {
+    let d = [target[0] - cur[0], target[1] - cur[1]];
+    let len = (d[0] as f64 * d[0] as f64 + d[1] as f64 * d[1] as f64) as f32;
+    if (len as f64) < 0.01 {
+        *target = [0.0; 2];
+        *cur = [0.0; 2];
+        return v::ZERO;
+    }
+    let k = ft as f64 * 15.0;
+    let k = if k > 1.0 { 1.0 } else { k };
+    let s = d.map(|d| (d as f64 * k) as f32);
+    cur[0] += s[0];
+    cur[1] += s[1];
+    [s[0], s[1], 0.0]
 }
 
 /// `0x10067d14`: `pitch + bobpitch·0.1f`, rounded once (x87).
@@ -1151,8 +1175,9 @@ fn calc_normal(p: &mut ref_params_t) {
     // `V_GetRefParams`), so all three are kept and add up from frame to frame. The bob pitch is
     // added whole every frame, so the view pitch integrates it: frame-rate dependent, and the aim
     // drifts by whatever the sum is when the bob stops or its phase resets, as in TS.
+    let form = crate::studio::float_form();
     with(|w| {
-        let kick = apply_kick(&mut w.kick_target, &mut w.kick_cur, ft);
+        let kick = apply_kick(form, &mut w.kick_target, &mut w.kick_cur, ft);
         p.cl_viewangles = v::add(p.cl_viewangles, kick);
         let shake = w.shake.update(ts * ft);
         p.cl_viewangles = v::add(p.cl_viewangles, shake);
@@ -1692,18 +1717,49 @@ mod tests {
     /// `V_ApplyKick`: eases toward the target at min(ft·15, 1); within 0.1° everything is zeroed.
     #[test]
     fn kick_eases_then_settles() {
-        let (mut target, mut cur) = ([-4.0f32, 2.0], [0.0f32; 2]);
-        let k = 0.01f32 * 15.0;
-        let step = apply_kick(&mut target, &mut cur, 0.01);
-        assert_eq!(step, [-4.0 * k, 2.0 * k, 0.0]);
-        assert_eq!(cur, [step[0], step[1]]);
-        let rest = [target[0] - cur[0], target[1] - cur[1]];
-        let step = apply_kick(&mut target, &mut cur, 1.0);
-        assert_eq!(cur, target, "ft·15 is capped at 1");
-        assert_eq!(step, [rest[0], rest[1], 0.0]);
-        let (mut target, mut cur) = ([0.05f32, 0.05], [0.0f32; 2]);
-        assert_eq!(apply_kick(&mut target, &mut cur, 0.01), v::ZERO);
-        assert_eq!((target, cur), ([0.0; 2], [0.0; 2]));
+        for form in [FloatForm::Optimised, FloatForm::Unoptimised] {
+            let (mut target, mut cur) = ([-4.0f32, 2.0], [0.0f32; 2]);
+            let k = 0.01f32 * 15.0;
+            let step = apply_kick(form, &mut target, &mut cur, 0.01);
+            assert_eq!(step, [-4.0 * k, 2.0 * k, 0.0]);
+            assert_eq!(cur, [step[0], step[1]]);
+            let rest = [target[0] - cur[0], target[1] - cur[1]];
+            let step = apply_kick(form, &mut target, &mut cur, 1.0);
+            assert_eq!(cur, target, "ft·15 is capped at 1");
+            assert_eq!(step, [rest[0], rest[1], 0.0]);
+            let (mut target, mut cur) = ([0.05f32, 0.05], [0.0f32; 2]);
+            assert_eq!(apply_kick(form, &mut target, &mut cur, 0.01), v::ZERO);
+            assert_eq!((target, cur), ([0.0; 2], [0.0; 2]));
+        }
+    }
+
+    /// The kick's yaw goes into the target as the ruleset hands it over: 2.1's unrounded product
+    /// (`fmul QWORD 0.65; fadd [target+4]` at 0x1001ea26), rounded once.
+    #[test]
+    fn kick_target_adds_the_yaw_once() {
+        with(|w| w.kick_target = [0.0, f32::from_bits(0x4049_1abf)]);
+        kick_angles(0.0, -3.2646724629192247, None, 0.0);
+        assert_eq!(with(|w| std::mem::take(&mut w.kick_target))[1].to_bits(), 0xbdfa_b4b9);
+    }
+
+    /// 3.0 (`0x10057ed0`) adds the unrounded pitch step to the current kick; 2.1 (`0x10097de0`)
+    /// stores the step first (`fstp [ecx]` at 0x10097eb2), then adds. A NaN length settles in
+    /// 3.0 and keeps easing in 2.1 (`test ah,5; jp` at 0x10097e30).
+    #[test]
+    fn kick_rounding_per_build() {
+        let run = |form| {
+            let fb = f32::from_bits;
+            let (mut target, mut cur) = ([fb(0xc107_dfb9), 0.0], [fb(0xc0b3_1985), 0.0]);
+            apply_kick(form, &mut target, &mut cur, fb(0x3c50_b5b4));
+            cur[0].to_bits()
+        };
+        assert_eq!([run(FloatForm::Optimised), run(FloatForm::Unoptimised)], [0xc0c4_cd87, 0xc0c4_cd88]);
+        let nan = |form| {
+            let (mut target, mut cur) = ([f32::NAN, 0.0], [0.0f32; 2]);
+            apply_kick(form, &mut target, &mut cur, 0.01);
+            target[0].is_nan()
+        };
+        assert_eq!([nan(FloatForm::Optimised), nan(FloatForm::Unoptimised)], [false, true]);
     }
 
     /// TS adds a tenth of the bob pitch to `cl_viewangles` every frame, and the engine keeps it,

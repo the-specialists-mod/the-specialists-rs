@@ -269,8 +269,11 @@ pub trait GunHost {
     /// `CTSAnimation::Animate(n)` (third-person sequence; owned by the movement package).
     fn player_anim(&mut self, anim: i32);
     /// `VKickback` result. TS writes it to `v_angle` only for bots; the client applies it to the
-    /// local view and, with `shake`, starts the view shake (TS 3.0's client `VKickback`).
-    fn kick(&mut self, pitch: f32, yaw: f32, shake: bool);
+    /// local view and, with `shake`, starts the view shake (TS 3.0's client `VKickback`). `yaw`
+    /// is the value the ruleset adds: 3.0 a stored float, 2.1 the unrounded x87 product
+    /// (client `0x1001ea20..0x1001ea34`, server `0x10049c7c`); the host adds it in `f64` and
+    /// rounds once, which for a float `yaw` is the float sum.
+    fn kick(&mut self, pitch: f32, yaw: f64, shake: bool);
     /// The client's melee view shake, `ViewShake::Start(amp, 0.2, 10)`: the client copies of
     /// `ColdCock` (`0x10008da1`), `KatanaFire` (`0x1000a156`), `KnifeFire` (`0x1000a327`) and
     /// `CCombatAttack` (`0x1000b5c7`) start it on the first prediction of the command. The server

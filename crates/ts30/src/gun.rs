@@ -228,7 +228,7 @@ pub fn scale_spread(gun: &mut Gun, spread: &mut f32, akick: f32, silenced: bool,
 /// `CTSGun::VKickback` 0x80414.
 pub fn vkickback(view_kick: f32, k: u8, silenced: bool, host: &mut dyn GunHost) {
     let (p, y) = recoil::view_kick(host.arith(), view_kick, k, silenced, Gun::double_fire_rate(host));
-    host.kick(p, y, true);
+    host.kick(p, y as f64, true);
 }
 
 /// `CTSGun::StandardFire` 0x824a4.

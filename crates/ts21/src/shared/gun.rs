@@ -429,13 +429,13 @@ pub fn vkickback(kick: f32, k: u8, silenced: bool, host: &mut dyn GunHost) {
         let y2 = adjust(y1 as f64) as f32;
         // `test ah,0x41; jp` (`0x1001e9e4`): any kick that isn't 0 or below, NaN included.
         if matches!(kick.partial_cmp(&0.0), Some(Ordering::Greater) | None) {
-            host.kick(pitch, (y2 as f64 * kick as f64 * 0.65) as f32, false);
+            host.kick(pitch, y2 as f64 * kick as f64 * 0.65, false);
         }
     } else {
         let s = if silenced { 0.8 } else { 1.0 };
         let y0 = (s * u) as f32;
         let y = adjust(y0 as f64 + side(y0));
-        host.kick(kick, (y * kick as f64 * 0.65) as f32, false);
+        host.kick(kick, y * kick as f64 * 0.65, false);
     }
 }
 
