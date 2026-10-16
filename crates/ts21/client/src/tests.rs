@@ -477,6 +477,9 @@ fn weapon_events() {
 
     // The ricochet: `100 + 300 s` on the raw factor (400 at normal speed).
     assert_eq!([ricochet_pitch(0.0), ricochet_pitch(50.0), ricochet_pitch(10.0)], [400, 250, 130]);
+    // The product is stored to a float first (0x1007ba52, issue #251): factor 29 is 86.9999975,
+    // stored as 87.0; factor 1 gives 3.0 the same way.
+    assert_eq!([ricochet_pitch(29.0), ricochet_pitch(1.0)], [187, 103]);
 
     assert_eq!(b"CMTPYVW".map(material_volume), [0.9, 0.9, 0.8, 0.8, 0.8, 0.5, 0.9].map(Some));
     assert_eq!(material_volume(b'F'), None, "flesh plays nothing");
@@ -722,4 +725,20 @@ fn status_panel_look() {
     assert_eq!(v30().status_look(), StatusLook::default());
     let d = StatusLook::default();
     assert!(d.stance_health_fill && !d.armor_number && !d.icons_divide && d.team_bar_scale.is_none() && d.labels.is_none());
+}
+
+/// The lasers' look (issue #204): 2.1's flickering `laserbeam.spr`, the red dot faded out by
+/// 4096 units, other players' white dots (no beam) and flashlights from `origin + 24`, and the
+/// unfaded TransTexture shadows; 3.0 keeps all of its own.
+#[test]
+fn laser_style() {
+    use ts_client::effects::LaserStyle;
+    assert_eq!(
+        *Ts21Client.laser_style(),
+        LaserStyle { animated_beam: false, dot_range: Some(4096.0), others_from_origin: true, other_beams: false, shadow_fade: false }
+    );
+    assert_eq!(
+        *ts30_client::Ts30Client.laser_style(),
+        LaserStyle { animated_beam: true, dot_range: None, others_from_origin: false, other_beams: true, shadow_fade: true }
+    );
 }

@@ -105,6 +105,18 @@ pub fn duration(base: i32, mult: f32) -> i32 {
     super::c_int(f64::from(base) * f64::from(mult))
 }
 
+/// `SetupPowerUp`'s duration: `secs` when it is at least 1, else the type's `base` (times
+/// `pwupmult` when the ruleset scales it).
+pub fn setup_secs(secs: i32, base: i32, multiplier: bool, mult: f32) -> i32 {
+    if secs >= 1 {
+        secs
+    } else if multiplier {
+        duration(base, mult)
+    } else {
+        base
+    }
+}
+
 /// Respawn delay from `pwupduration`: < 1 → 60 s, 1..10 → 10 s, else min(v, 180).
 pub fn respawn_delay(v: i32) -> f32 {
     if v < 1 {
@@ -126,14 +138,7 @@ impl PowerUp {
             cx.pev().body = body;
         }
         let rules = r.powerups();
-        let base = rules.base(self.kind);
-        self.secs = if secs >= 1 {
-            secs
-        } else if rules.multiplier {
-            duration(base, self.mult)
-        } else {
-            base
-        };
+        self.secs = setup_secs(secs, rules.base(self.kind), rules.multiplier, self.mult);
         self.armor = 100.0;
         self.expire = life + cx.time();
         self.permanent = permanent;

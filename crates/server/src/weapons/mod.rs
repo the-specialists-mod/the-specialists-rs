@@ -86,7 +86,8 @@ pub struct SvState {
     pub free_slots: i32,
     /// Loadout items bought (`pl+0x718`): 0x10 kevlar, 0x20 stealth shoes.
     pub items: u32,
-    /// Grenades bought this life (`pl+0x714`).
+    /// Grenades bought this round (`pl+0x714`, 2.1 `+0x68c`): `BuyWeapon` allows two; zeroed
+    /// only by `RestartRound` and `InitHUD`.
     pub grenades_bought: u8,
     /// Accumulated disarm damage (`pl+0x7b4`, decays 5/s).
     pub disarm: f32,
@@ -327,15 +328,18 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     // already holds (`AddPlayerItem` kills the new duplicate), and with it the gun's
     // `UpdateClientData` caches, so nothing is resent. A new gun gets `CTSGun::Reset`'s caches
     // (`add_gun`). The slots and loadout items were reset by `ts_init`.
+    // The gun entity's own timers and combos stay with a gun held through the spawn (a new gun
+    // starts with `new_gun_state`'s), and the fire-mode memory until the next InitHUD.
     p.inv.gun.reset_for_spawn();
-    p.inv.gun.mode_memory = [0; MAX_WEAPONS];
     let sv = &mut p.inv.sv;
     // CBasePlayer::Spawn (0x8f568): `m_pLastItem = NULL`.
     sv.last_item = Active::None;
-    sv.grenades_bought = 0;
     sv.disarm = 0.0;
-    sv.pressed = 0;
-    sv.last_buttons = 0;
+    // TSInit: the last delayed-hit victim (3.0 `pl+0x798`, 0x82dad; 2.1 `+0x714`).
+    sv.lunge_victim = std::ptr::null_mut();
+    // Not reset (#247): the grenades bought count per round (`RestartRound`, `InitHUD`), and
+    // `m_afButtonLast` (`last_buttons`, `pressed` follows from it) is written only by a living
+    // `PostThink`, so the first frames after a respawn compare with the buttons held at death.
     cx.pev().fov = 0.0;
     // CHalfLifeMultiplay::PlayerSpawn (0x890ac): every game_player_equip touches the player;
     // only without one does it get `weapon_tsgun` (`GiveNamedItem`, an entity) and buy its
@@ -354,26 +358,51 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     net::send_kfu_power(cx.edict, p.inv.gun.melee_bar);
 }
 
+// Audit round 2: B2
+
+/// The weapon part of `CTSGameRules::InitHUD` (3.0 0x79134, 2.1 `FUN_100451c0`), the only place
+/// TS clears them: the fire-mode memory (3.0 `pl+0x49a`, 2.1 `pl+0x41e`), then `ResetArmament`
+/// (0x93e88, 2.1 `FUN_10055950`: the loadout and its ammo purchases).
+pub fn init_hud_reset(p: &mut Player) {
+    p.inv.gun.mode_memory = [0; MAX_WEAPONS];
+    p.inv.sv.armament.clear();
+    p.inv.sv.armament_ammo = [0; MAX_AMMO];
+}
+
 /// The weapon parts of `CBasePlayer::PreThink`: this frame's pressed buttons, then the ruleset's
 /// step ([`GunRules::pre_think`]: the melee window and block timers, the kung-fu bar, the recoil
 /// decay and the disarm count).
 pub fn pre_think(p: &mut Player, cx: &mut Cx) {
-    let pev = cx.pev();
-    let buttons = pev.button as u32;
+    let buttons = cx.pev().button as u32;
     p.inv.sv.pressed = buttons & !p.inv.sv.last_buttons;
+}
+
+/// The weapon timers of `CBasePlayer::PreThink` (0x908cc) before `CTSStunt::Play`
+/// ([`GunRules::pre_think_timers`](shared::gameplay::GunRules::pre_think_timers)), from
+/// `stunt::pre_think`. Returns the step's values for [`pre_think_after_play`].
+///
+/// `BlockPlayer`'s timer (`pl+0x4dc`) is the stunt package's (`StuntState::block_timer`): it runs
+/// and expires in `stunt::pre_think`, and `CTSStunt::Play` resets it.
+pub fn pre_think_timers(p: &mut Player, cx: &mut Cx) -> WeaponPreThink {
     let t = WeaponPreThink {
         arith: crate::rules::cvars::pm_arith(),
         frametime: engine().globals().frametime,
         time: engine().time(),
-        fuser1: pev.fuser1,
+        fuser1: cx.pev().fuser1,
         powerups: p.active_powerup,
         alive: Player::is_alive(cx),
     };
+    crate::gameplay::gun_rules(cx.edict).pre_think_timers(&mut p.inv.gun, &mut p.inv.sv.disarm, &t);
+    t
+}
+
+/// The rest of the weapon step (the bar, the recoil decay, the delayed-hit window's closure),
+/// after `CTSStunt::Play` and before `CheckForBreakables` lands the delayed melee hit
+/// (`pending_melee_hit`), as TS orders them (3.0 0x908cc, 2.1 0x100537e0; issue #249). `t` is
+/// [`pre_think_timers`]' step; whether the player is alive is asked again.
+pub fn pre_think_after_play(p: &mut Player, cx: &mut Cx, t: WeaponPreThink) {
+    let t = WeaponPreThink { alive: Player::is_alive(cx), ..t };
     crate::gameplay::gun_rules(cx.edict).pre_think(&mut p.inv.gun, &mut p.inv.sv.disarm, &t);
-    // `BlockPlayer`'s timer (`pl+0x4dc`) is the stunt package's (`StuntState::block_timer`): it
-    // runs and expires in `stunt::pre_think`, and `CTSStunt::Play` resets it.
-    // The delayed melee hit lands from the stunt hook (`CheckForBreakables`), which calls
-    // `pending_melee_hit`.
 }
 
 /// The `Use` of the weapons package's usable entities when a player's +use picks them
@@ -498,6 +527,7 @@ fn gun_reset(inv: &mut Inventory) {
 /// owners, `Reset`'s send caches and the `UpdateClientData` timer at 0.
 fn new_gun_state(inv: &mut Inventory) {
     inv.gun.reset_inventory();
+    inv.gun.reset_gun_entity();
     inv.sv.owners = [std::ptr::null_mut(); MAX_WEAPONS];
     inv.sv.reset_send_caches();
     inv.sv.next_update = 0.0;
@@ -1184,7 +1214,12 @@ mod tests {
         inv.sv.next_update = 12.0;
         inv.sv.owners[1] = std::ptr::dangling_mut();
         inv.gun.reserve[3] = 5;
+        // The gun entity's own timers from a gun held before (#247).
+        inv.gun.next_primary = 0.4;
+        inv.gun.clip_mirror = 7;
+        inv.gun.kick_combo = 2;
         new_gun_state(&mut inv);
+        assert_eq!((inv.gun.next_primary, inv.gun.clip_mirror, inv.gun.kick_combo), (0.0, 1, 0), "CTSGun::Spawn 0x8053c");
         // A fresh entity: CTSGun::Spawn -> Reset (0x805e0), the +0x9e0 timer zeroed memory.
         assert_eq!(inv.sv.sent_id, Some(0));
         assert_eq!(inv.sv.sent_reserve, 0);
@@ -1197,6 +1232,19 @@ mod tests {
         assert_eq!(inv.gun.current, 0);
         let fresh = SvState::default();
         assert_eq!((fresh.sent_id, fresh.sent_reserve), (inv.sv.sent_id, inv.sv.sent_reserve));
+    }
+
+    /// #208, #247: `InitHUD` clears the fire-mode memory and the loadout (`ResetArmament`).
+    #[test]
+    fn init_hud_clears_the_mode_memory_and_the_loadout() {
+        let mut p = Player::default();
+        p.inv.gun.mode_memory[3] = 2;
+        p.inv.sv.armament.push(ArmamentEntry { id: 3, attachments: 0, item: false });
+        p.inv.sv.armament_ammo[1] = 2;
+        init_hud_reset(&mut p);
+        assert_eq!(p.inv.gun.mode_memory, [0; MAX_WEAPONS]);
+        assert!(p.inv.sv.armament.is_empty());
+        assert_eq!(p.inv.sv.armament_ammo, [0; MAX_AMMO]);
     }
 
     #[test]

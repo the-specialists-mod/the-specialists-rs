@@ -47,10 +47,13 @@ pub trait GunRules: MeleeRules + Sync {
     fn decay_spread(&self, gun: &mut Gun, d: &SpreadDecay) -> bool;
 
     /// The weapon step of the server's `CBasePlayer::PreThink` (server only: neither client's
-    /// prediction has one): the delayed-hit window and the block timers, the kung-fu bar's
+    /// prediction has one) that runs after `CTSStunt::Play` and before `CheckForBreakables` (the
+    /// delayed melee hit): what of the delayed-hit window and the block timers, the kung-fu bar's
     /// regeneration, the recoil penalty's decay ([`decay_spread`](Self::decay_spread)) and the
-    /// disarm count's decay (`disarm`, the server player's `DropWeapon(-2)` count). Runs every
-    /// PreThink outside intermission, dead or alive ([`WeaponPreThink::alive`]).
+    /// disarm count's decay (`disarm`, the server player's `DropWeapon(-2)` count) the ruleset
+    /// doesn't do in [`pre_think_timers`](Self::pre_think_timers) before `Play`; the window's
+    /// closure at least. Runs every PreThink outside intermission, dead or alive
+    /// ([`WeaponPreThink::alive`], as it is after `Play`).
     fn pre_think(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink);
 
     /// The offset of pellet `i` (1-based) of a shot with random seed `seed`, in units of its
@@ -104,6 +107,12 @@ pub trait GunRules: MeleeRules + Sync {
     /// then draws kung fu: weapon 0's view model, its draw animation and the draw event. Otherwise
     /// it only sets the FOV to 0 and leaves no view model.
     fn holster_draws_kungfu(&self) -> bool;
+
+    // Audit round 2: C
+
+    /// The part of the server `PreThink`'s weapon step that runs before `CTSStunt::Play` (issue
+    /// #249), with the same `t` as [`pre_think`](Self::pre_think) after it.
+    fn pre_think_timers(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink);
 
     // Audit round 2: D1
 

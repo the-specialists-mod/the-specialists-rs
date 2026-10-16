@@ -141,6 +141,14 @@ impl GunRules for Ts21 {
         false
     }
 
+    // Audit round 2: C
+
+    /// Nothing: 2.1's whole weapon step (`pre_think`) comes after `CTSStunt::Play`
+    /// (`FUN_1005acf0`, 0x100537e0 decomp line ~95; the step at 0x10053a40..0x10053b1f).
+    fn pre_think_timers(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink) {
+        let _ = (gun, disarm, t);
+    }
+
     // Audit round 2: D1
 
     /// [`GRENADE_ROUNDING`]: 2.1's single build.

@@ -258,3 +258,41 @@ fn nav_end_points_keep_one_product_on_the_x87_stack() {
     }
     assert!(differ > 0, "the z end point differs in the last bit for some directions");
 }
+
+// Audit round 2: E
+
+#[test]
+fn nav_distances_sum_z_y_x() {
+    // 2.1's Navigate (0x10061d4f..0x10061d5f): (z² + y²) + x²; 3.0's (x² + z²) + y².
+    let r: &dyn NativeBotRules = &BOTS;
+    assert_eq!(r.nav_distance_order(), order::ZYX);
+    let c: &dyn NativeBotRules = &CORE;
+    assert_eq!(c.nav_distance_order(), order::XZY);
+}
+
+#[test]
+fn forward_detour_keeps_the_products_unrounded() {
+    // 2.1 (0x100624ac..0x100624ef) subtracts the unrounded v_forward * 48; 3.0 (0x10070617..)
+    // stores the products as floats first.
+    let (e, f) = (f32::from_bits(0x4246_386d), f32::from_bits(0x3f77_88de));
+    let r: &dyn NativeBotRules = &BOTS;
+    assert_eq!(r.forward_detour([e; 3], [f; 3]).map(f32::to_bits), [0x4049_1c68; 3]);
+    let c: &dyn NativeBotRules = &CORE;
+    assert_eq!(c.forward_detour([e; 3], [f; 3]).map(f32::to_bits), [0x4049_1c70; 3]);
+}
+
+#[test]
+fn view_cone_stores_the_reciprocal() {
+    // 2.1's FInViewCone (0x100122a0) stores 1 / len as a float (0x10012300) and keeps dx * inv
+    // unrounded: 3 * (float)(1/3) = 1.0000000298, so a forward x of 0.5 gives a dot above 0.5.
+    // 3.0's (0x10014ab0) stores the direction (float)(3 * (1/3)) = 1.0: exactly 0.5, not seen.
+    let d = cone_dot([0.0; 3], [3.0, 0.0, 0.0], [0.5, 0.0, 0.0]);
+    assert_eq!(d, 0.5 * f64::from(1.0f32 / 3.0) * 3.0);
+    assert!(d > 0.5);
+    // dy is used as dy * (float)dy in the length and (float)dy in the direction.
+    let d = cone_dot([0.0; 3], [0.0, 0.1, 0.0], [0.0, 1.0, 0.0]);
+    let dy = f64::from(0.1f32);
+    assert_eq!(d, dy * f64::from((1.0 / (dy * dy).sqrt()) as f32));
+    // A zero length: a zero direction (no NaN).
+    assert_eq!(cone_dot([1.0; 3], [1.0, 1.0, 5.0], [1.0, 0.0, 0.0]), 0.0);
+}

@@ -7,6 +7,7 @@
 use crate::commands::Args;
 use crate::damage::DamageInfo;
 use crate::damage::glast::Snapshot;
+use crate::entities::stock::explode::ScreenEffects;
 use crate::entities::ts::ground::GroundWeapon;
 use crate::entities::ts::misc::MapFlags;
 use crate::entities::ts::{ctb, objective};
@@ -14,6 +15,7 @@ use crate::messages::Msg;
 use crate::player::Player;
 use crate::player::damage::{HitDamage, PlayerHit};
 use crate::rules;
+use crate::rules::commands::SayRules;
 use crate::rules::powerup::PowerupRules;
 use crate::rules::scoring::Frag;
 use crate::rules::state::GameRules;
@@ -489,6 +491,72 @@ pub trait ServerRules: Sync {
     /// in its own arithmetic).
     fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32;
 
+    // Audit round 2: B1
+
+    /// How `Host_Say` (0xad02c) treats the chat text: the `%a`/`%h` codes, the lower-casing and
+    /// the `ff` reply.
+    fn say_rules(&self) -> &'static SayRules;
+
+    /// `Host_Say`'s dead-chat gate: whether a player out for the round (dead, `respawn_at < 0`)
+    /// only talks to other such players now.
+    fn say_dead_chat_gated(&self) -> bool;
+
+    /// The `kill` command (`ClientKill`, the engine's `pfnClientKill`) for player `p`.
+    fn client_kill(&self, p: &mut Player, cx: &mut Cx);
+
+    /// Whether `CBasePlayer::Killed` (0x8ed5c) resets the view (`SET_VIEW(edict, edict)`) and
+    /// gives control back (`EnableControl(TRUE)`, clearing `FL_FROZEN`).
+    fn killed_resets_view(&self) -> bool;
+
+    // Audit round 2: B2
+
+    /// How `CTSGameRules::InitHUD` runs and what it sends (`rules::lifecycle::init_hud_block`).
+    fn init_hud(&self) -> &'static InitHudRules;
+
+    /// The team checks of `CHalfLifeTeamplay::ChangePlayerTeam` and `ClientUserInfoChanged`
+    /// (`rules::teams`).
+    fn team_changes(&self) -> &'static TeamChangeRules;
+
+    /// Whether the spawn-spot selection (`TSSelectSpawnSpot`) skips a spot whose `master` isn't
+    /// triggered for the player (`CBaseDMStart::IsTriggered`).
+    fn spawn_spot_master_test(&self) -> bool;
+
+    // Audit round 2: D2
+
+    /// `CTSGroundWeapon::Spawn` (0xa1b40) turns an akimbo pair built from two singles into its
+    /// single, the only form the ruleset's `PickUpWeapon` accepts. False keeps the id, so the
+    /// ground weapon gives the pair.
+    fn ground_weapon_pairs_to_single(&self) -> bool;
+
+    /// One try of `GetRandomPosition` (0x974f4), the automatic power-up spot: the direction of
+    /// the horizontal angle `angle` (whole degrees) and the end of its `dist`-unit trace from
+    /// `from`, as the ruleset's build computes them: `([f32; 3] dir, [f32; 3] end)`.
+    fn random_position_ray(&self, angle: i32, dist: i32, from: [f32; 3]) -> ([f32; 3], [f32; 3]);
+
+    // Audit round 2: C
+
+    /// How `UTIL_ScreenShake` and `UTIL_ScreenFade` treat their receivers (explosions, landings,
+    /// `env_shake`/`env_fade`, the hit and spawn flashes): whether the fixed-point durations are
+    /// divided by the receiver's time scale, and the shake reach's NaN cases.
+    fn screen_effects(&self) -> ScreenEffects;
+
+    /// The `vecDir` `CTSStunt::CheckForBreakables` (0x9bd9c) passes to `TraceAttack` for its
+    /// hits, the delayed melee hit and the dive into a breakable, given the stunt direction
+    /// (`StuntState::dir`, what the last roll, dive or back move stored).
+    fn delayed_hit_dir(&self, stunt_dir: Vec3) -> Vec3;
+
+    /// `TSExplosion`'s hit on one target (0x7d1f7..0x7d64e): the damage `TraceAttack` gets and its
+    /// direction, from the blast point `org` to the target's `Center() + 1z` (`spot`), for a blast
+    /// of `dmg` full to `r_full` and fading to `r_max`. `occluder` is the thickness of what lies
+    /// between them when the line is blocked (the damage then loses it); `None` when nothing
+    /// gets through.
+    fn explosion_hit(&self, org: Vec3, spot: Vec3, dmg: f32, r_full: f32, r_max: f32, occluder: Option<f32>) -> Option<(f32, Vec3)>;
+
+    /// The `g_vecAttackDir` `CBaseMonster::TakeDamage` (0xb2430) stores: from `to` (the victim's
+    /// centre) toward `from` (the inflictor's centre 10 units down), normalised twice
+    /// ([`damage::attack_dir_ends`](crate::damage::attack_dir_ends)).
+    fn attack_dir(&self, from: Vec3, to: Vec3) -> Vec3;
+
     // Audit round 2: D1
 
     /// `CBasePlayer::DropAmmo` / `CTSAmmoPack::CreateAmmoPack`: how the death ammo pack's start
@@ -509,6 +577,39 @@ pub trait ServerRules: Sync {
     /// (`g_pGameRules->PlayTextureSounds()`); otherwise it returns 0 at once. Single player
     /// always plays them.
     fn texture_sounds_in_multiplayer(&self) -> bool;
+}
+
+/// How a ruleset's `CTSGameRules::InitHUD` runs ([`ServerRules::init_hud`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InitHudRules {
+    /// It is the last call of the rules' multiplay `InitHUD`, so in teamplay it runs before the
+    /// teamplay part (the join's `ChangePlayerTeam`) instead of after the whole rules `InitHUD`,
+    /// and single player never runs it.
+    pub inside_multiplay: bool,
+    /// It sends the joiner `Spectator(i, iuser1 != 0)` for every player.
+    pub spectator_list: bool,
+    /// The cheat notice (`TSHudMessageOne(45, 195, 45, effect, 100, ...)`) and the custom damage
+    /// one, whose text ends with `({damagemult:.2})`.
+    pub cheats_text: &'static str,
+    pub damages_text: &'static str,
+    pub notice_effect: u8,
+    /// `SrvSett` 0 is the live `realbullet != 0` (0 or 1) rather than Think's `(int)` copy.
+    pub realbullet_live: bool,
+}
+
+/// The team checks of a ruleset's teamplay ([`ServerRules::team_changes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TeamChangeRules {
+    /// `ChangePlayerTeam` puts The One on the first team and everyone else on the second in The
+    /// One mode, and sends a name `IsValidTeam` refuses to the smallest team. Without it only an
+    /// empty name does, and any other name is taken as it is.
+    pub change_checks_team: bool,
+    /// `ClientUserInfoChanged`: under a team limit a changed `model` key is replaced by a team
+    /// model (`GetPlayerModel`), as in the round modes.
+    pub model_change_team_limit: bool,
+    /// `ClientUserInfoChanged`: in The One mode a changed `model` key runs
+    /// `SetDefaultPlayerTeam` (keys back to The One's teams) and nothing else.
+    pub model_change_the_one_default: bool,
 }
 
 #[cfg(test)]

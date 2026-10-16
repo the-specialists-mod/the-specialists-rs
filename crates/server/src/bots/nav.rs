@@ -3,7 +3,7 @@
 //! ladders. Movement is relative to the body yaw, so the bot can strafe or back up while it looks
 //! elsewhere.
 
-use super::brain::{Brain, add, bit, btn, diff_x87, is_zero, len_x87, order, scale, sub};
+use super::brain::{Brain, add, bit, btn, diff_x87, is_zero, len_x87, scale, sub};
 use super::nodes;
 use crate::player::Player;
 use crate::world::Cx;
@@ -94,9 +94,11 @@ pub fn navigate(b: &mut Brain, p: &mut Player, cx: &mut Cx, goal: [f32; 3]) -> i
     }
     let me = cx.edict;
     let origin = cx.pev().origin;
+    let rules = super::rules::current();
+    let dist_order = rules.nav_distance_order();
     if is_zero(b.nav.detour) {
         let wp = b.nav.waypoint;
-        if len_x87(diff_x87(wp, origin), order::XZY) < 48.0 && clear(origin, wp, me) {
+        if len_x87(diff_x87(wp, origin), dist_order) < 48.0 && clear(origin, wp, me) {
             b.nav.path_index += 1;
             if b.nav.path_count <= b.nav.path_index {
                 b.set_move(0.0, 0.0);
@@ -111,13 +113,13 @@ pub fn navigate(b: &mut Brain, p: &mut Player, cx: &mut Cx, goal: [f32; 3]) -> i
                 return FAILED;
             }
         }
-    } else if len_x87(diff_x87(b.nav.detour, origin), order::XZY) < 48.0 && clear(origin, b.nav.detour, me) {
+    } else if len_x87(diff_x87(b.nav.detour, origin), dist_order) < 48.0 && clear(origin, b.nav.detour, me) {
         b.nav.detour = [0.0; 3]; // reached; no waypoint advance this tick
     }
 
     if b.nav.stuck_time < now {
         b.nav.stuck_time = stuck_window(now, cx.pev());
-        if len_x87(diff_x87(b.nav.stuck_pos, origin), order::XZY) < 96.0 {
+        if len_x87(diff_x87(b.nav.stuck_pos, origin), dist_order) < 96.0 {
             b.nav.waypoint = [0.0; 3];
             b.set_move(0.0, 0.0);
             b.nav.detour = [0.0; 3];
@@ -134,7 +136,7 @@ pub fn navigate(b: &mut Brain, p: &mut Player, cx: &mut Cx, goal: [f32; 3]) -> i
         let (f, _, _) = eng.angle_vectors(eng.vec_to_angles(sub(b.nav.waypoint, origin)));
         let v = cx.pev();
         let eye = add(origin, v.view_ofs);
-        let eye_clear = clear(eye, add(add(origin, v.view_ofs), scale(f, 64.0)), me);
+        let eye_clear = clear(eye, eye_probe_end(origin, v.view_ofs, f), me);
         let feet_clear = clear(origin, add(scale(f, 64.0), origin), me);
         if eye_clear {
             if !feet_clear {
@@ -162,6 +164,15 @@ pub fn navigate(b: &mut Brain, p: &mut Player, cx: &mut Cx, goal: [f32; 3]) -> i
     let (forward, side) = move_toward(cx.pev().angles[1], yaw, speed);
     b.set_move(forward, side);
     WALKING
+}
+
+/// `Navigate`'s eye probe end, `origin + view_ofs + v_forward * 64`, as both TS `mp.dll`s
+/// compute it (3.0 0x10070105..0x1007014e, 2.1 0x10062070..0x10062095): the x sum
+/// `origin.x + view_ofs.x` stays on the x87 stack for `+ v_forward.x * 64` and is rounded once;
+/// the y and z sums are stored as floats first.
+fn eye_probe_end(origin: [f32; 3], view_ofs: [f32; 3], f: [f32; 3]) -> [f32; 3] {
+    let x = (f64::from(origin[0]) + f64::from(view_ofs[0]) + f64::from(f[0]) * 64.0) as f32;
+    [x, (origin[1] + view_ofs[1]) + f[1] * 64.0, (origin[2] + view_ofs[2]) + f[2] * 64.0]
 }
 
 /// `Navigate`'s move (0x10070381..0x100703e8): full speed toward `yaw` relative to the body yaw.
@@ -256,7 +267,7 @@ fn steer_point(b: &mut Brain, cx: &mut Cx) -> [f32; 3] {
     let (f, r, _) = eng.angle_vectors(eng.vec_to_angles(sub(wp, origin)));
     let tr = eng.trace_line(origin, super::rules::current().steer_probe_end(f, origin), 0, me);
     if tr.flFraction < 1.0 && !is_door(tr.pHit) {
-        b.nav.detour = sub(tr.vecEndPos, scale(f, 48.0));
+        b.nav.detour = super::rules::current().forward_detour(tr.vecEndPos, f);
         return b.nav.detour;
     }
     let right = scale(r, 16.0);
@@ -276,6 +287,17 @@ fn steer_point(b: &mut Brain, cx: &mut Cx) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eye_probe_end_keeps_the_x_sum_unrounded() {
+        // mp.dll adds v_forward.x * 64 to the unrounded origin.x + view_ofs.x (0x10070128 faddp);
+        // y and z are stored first. Here the two differ in the last bit.
+        let (o, f) = (f32::from_bits(0x43fd_61f3), f32::from_bits(0x3f18_ccfd));
+        let e = eye_probe_end([o; 3], [17.0; 3], [f; 3]);
+        assert_eq!(e[0].to_bits(), 0x440c_7dc9);
+        assert_eq!(e[1].to_bits(), 0x440c_7dca);
+        assert_eq!(e[2].to_bits(), 0x440c_7dca);
+    }
 
     #[test]
     fn move_is_relative_to_the_body_yaw() {

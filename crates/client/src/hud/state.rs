@@ -410,7 +410,13 @@ impl Hud {
     /// `+0x748` the reserve ammo per type. Kung-fu power and its copy (`+0x3700/+0x3704`) are
     /// 100. The buy menu (`+0x7c0`) is re-initialised by `menus::vid_init`, the think sounds'
     /// state (`+0x3708..+0x3714`) by `weapons::reset_think_sounds`, `+0x3724` by the caller.
+    ///
+    /// It starts by rebuilding the client's weapon table (3.0 `FUN_10007de0`, 2.1 `FUN_1001e270`:
+    /// zeroed, then every weapon's info builder again), which drops every `CustomWP` value
+    /// (issue #248): the custom tables go, and with them the list of received values.
     pub fn vid_init_weapons(&mut self) {
+        shared::weapons::table::reset_custom_tables();
+        self.custom_weapons.clear();
         self.reset_weapons();
         self.grid = [[EMPTY; GRID_BUCKETS]; GRID_ROWS];
         self.reserve = [0; 16];
@@ -739,8 +745,10 @@ impl Hud {
                 // `0x1004fb50`: `sscanf("%i %f %f %f %f %i")` into the client's own weapon table
                 // (`GetWeaponInfo(id)` +0x28 accuracy, +0x30 view kick, +0x34 accuracy kick,
                 // +0x1c damage, +0xd8 cost), which prediction, the events and the buy menu read.
-                // The client keeps the values for the rest of the session, as TS's static table
-                // does. Guarded: an id outside the table is ignored.
+                // They last until TS rebuilds that table: at the next `CHudTSWeapons::VidInit`
+                // ([`Hud::vid_init_weapons`]) and the gun spawn after it
+                // (`prediction::gun::spawn_and_death`), issue #248. Guarded: an id outside the
+                // table is ignored.
                 let v = dec!(p::CustomWp);
                 if let Ok(id) = u8::try_from(v.id) {
                     shared::weapons::table::set_weapon_params(id, v.accuracy, v.view_kick, v.acc_kick, v.damage, v.cost);
@@ -1062,7 +1070,12 @@ mod tests {
         (h.firemode, h.clip, h.attachments, h.weapon) = (2, 30, 3, 13);
         (h.kfu_power, h.kfu_prev, h.menu_open, h.last_laser_color) = (20.0, 30.0, true, 4);
         h.hide_hud = 1;
+        // A `CustomWP` value (issue #248): the rebuilt weapon table drops it.
+        assert!(shared::weapons::table::set_weapon_params(13, 0.5, 1.0, 1.0, 99.0, 1));
+        h.custom_weapons.push(p::CustomWp { id: 13, accuracy: 0.5, view_kick: 1.0, acc_kick: 1.0, damage: 99.0, cost: 1 });
         h.vid_init_weapons();
+        assert!(!shared::weapons::table::custom_tables_active(), "VidInit rebuilds the weapon table");
+        assert!(h.custom_weapons.is_empty());
         assert!(h.grid.iter().flatten().all(|s| *s == EMPTY), "VidInit leaves the grid all -1");
         assert_eq!(h.reserve, [0; 16]);
         assert_eq!((h.firemode, h.clip, h.attachments, h.weapon), (0, 0, 0, 0));

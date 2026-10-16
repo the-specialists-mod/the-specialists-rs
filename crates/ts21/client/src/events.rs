@@ -52,11 +52,13 @@ pub fn ammo_attenuation(ammo: usize) -> f32 {
     if ammo == 12 { 0.3 } else { ts_client::events::AMMO_ATTENUATION.get(ammo).copied().unwrap_or(0.4) }
 }
 
-/// The ricochet's pitch (0x1007ba3c..0x1007ba70): `ftol(100 + (s == 0 ? 300 : s × 300))` on the
-/// raw `TSSlowMo` factor `s`.
+/// The ricochet's pitch (0x1007ba3c..0x1007ba70): `ftol(100 + (s == 0 ? 300 : (float)(s × 300)))`
+/// on the raw `TSSlowMo` factor `s`. The product is stored to a float (`fstp [ebp-0x108]`)
+/// before the `+ 100`, so a product a hair under a whole number rounds up to it (issue #251).
+/// The `TSFrags` explosion's pitch (0x10082240..0x10082274) is the same code.
 pub fn ricochet_pitch(slowmo_factor100: f32) -> i32 {
     let s = slowmo_factor100 / 100.0;
-    let x = if s == 0.0 { 300.0 } else { s as f64 * 300.0f32 as f64 };
+    let x = if s == 0.0 { 300.0 } else { (s as f64 * 300.0f32 as f64) as f32 as f64 };
     ts_client::events::ftol(100.0f32 as f64 + x)
 }
 

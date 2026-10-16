@@ -115,6 +115,16 @@ impl Default for SlowPhysics {
     }
 }
 
+/// A slowed object's gravity, `g * s * s` (`SavePhysics`: `ts_i386.so` 0x6bcaa..0x6bcb6, `mp.dll`
+/// 0x100501d4..0x100501e1 `(s * g) * s`, 2.1 0x10046a70 the same): the products stay on the x87
+/// and are rounded once, in the server's arithmetic (issue #229).
+fn slowed_gravity(g: f32, s: f32) -> f32 {
+    fn go<F: Fpu>(g: f32, s: f32) -> f32 {
+        (F::x(s) * F::x(g) * F::x(s)).f()
+    }
+    shared::by_arith!(crate::rules::cvars::pm_arith(), go(g, s))
+}
+
 impl SlowPhysics {
     /// `CTSPhysicObject::WaitThink` 0x7bd98: `InSlow()` (`fuser1 != 1`) ? `SavePhysics` :
     /// `RestorePhysycs`.
@@ -131,7 +141,7 @@ impl SlowPhysics {
         self.velocity == [0.0; 3]
     }
 
-    /// `CTSPhysicObject::SavePhysics` 0x7bac0. "Saved" means a non-zero saved velocity, so an
+    /// `CTSPhysicObject::SavePhysics` 0x7bac0 (2.1 0x10046a70). "Saved" means a non-zero saved velocity, so an
     /// object slowed while at rest saves again on every think: its gravity (and spin) shrink by
     /// the scale each time and the shrunken values are what gets restored.
     fn save(&mut self, pev: &mut entvars_t) {
@@ -139,7 +149,7 @@ impl SlowPhysics {
         if self.last != s && !self.nothing_saved() {
             pev.velocity = spread::scale(self.velocity, s);
             pev.avelocity = spread::scale(self.avelocity, s);
-            pev.gravity = self.gravity * s * s;
+            pev.gravity = slowed_gravity(self.gravity, s);
             self.last = s;
             return;
         }
@@ -151,7 +161,7 @@ impl SlowPhysics {
         self.gravity = pev.gravity;
         pev.velocity = spread::scale(pev.velocity, s);
         pev.avelocity = spread::scale(pev.avelocity, s);
-        pev.gravity = pev.gravity * s * s;
+        pev.gravity = slowed_gravity(pev.gravity, s);
         self.last = s;
     }
 
@@ -942,6 +952,17 @@ impl Knife {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #229: `SavePhysics` rounds `g * s * s` once; f32 steps give one ulp less here.
+    #[test]
+    fn slowed_gravity_rounds_once() {
+        for (g, s, bits) in [(0.75f32, 0.001f32, 0x3549539d), (0.75, 0.003, 0x36e27e0f), (0.7, 0.003, 0x36d36497), (0.7, 0.012, 0x38d36497)]
+        {
+            assert_eq!(slowed_gravity(g, s).to_bits(), bits, "{g} {s}");
+            assert_eq!((g * s * s).to_bits(), bits - 1, "{g} {s}: two roundings");
+        }
+        assert_eq!(slowed_gravity(0.75, 1.0), 0.75);
+    }
 
     #[test]
     fn throwers_match_the_edict_serial() {

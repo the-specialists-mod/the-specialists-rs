@@ -543,8 +543,8 @@ pub fn log_checks(log: &str, rcon: &str, engine: Engine) -> Vec<(String, bool)> 
             "round TDM: \"Round Team DeathMatch (Specialists;Mercenary)\"".into(),
             has("[ts] game rules (2.1): Round Team DeathMatch (Specialists;Mercenary)"),
         ),
-        ("round TDM: rounds start (\"Defeat the opposite team!\")".into(), hud("Defeat the opposite team!")),
-        ("round TDM: \"Specialists Win!\"".into(), hud("Specialists Win!")),
+        ("round TDM: rounds start (\"Defeat the opposite team\")".into(), hud("Defeat the opposite team")),
+        ("round TDM: \"Specialists Win\"".into(), hud("Specialists Win")),
         (
             "round TDM: the Specialists' team cash 4500, 6000, 7500 (cashforwin 1500), the Mercenaries' floor 3000".into(),
             spec_cash && round("Mercenary cash 3000 score 0"),

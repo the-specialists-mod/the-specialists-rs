@@ -62,9 +62,68 @@ pub fn slow_pitch(pitch: i32, time_scale: f32, s: f32) -> i32 {
     (factor as f64 * pitch as f64) as i32
 }
 
+/// One try of `GetRandomPosition` (`ts_i386.so` 0x974f4 / objdump 0x874f4, `mp.dll`
+/// FUN_10065f40), issue #228: `Vector(cos a, sin a, 0).Normalize()` with `a` the `double`
+/// `angle * 0.017453292519943295` (`fcos`/`fsin`, each stored as a `float`), then the trace end
+/// `from + dir * dist`.
+///
+/// * GCC stores the length (`fsqrt; fstp dword` 0x875de) and keeps the x product `dist * dir.x`
+///   on the stack for its sum (`fst` 0x87669, `faddp` 0x87680); y and z are stored first.
+/// * MSVC keeps the length (`Length` 0x1000e920) and `1 / len` unrounded and stores all three
+///   products (0x10066046..0x10066063) before adding `from`.
+pub fn random_position_ray<F: Fpu>(angle: i32, dist: i32, from: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let r = F::xi(angle) * F::xd(DEG_TO_RAD);
+    let v = [r.cos().f(), r.sin().f(), 0.0];
+    let [x, y, z] = v.map(F::x);
+    let len = (x * x + y * y + z * z).sqrt();
+    let len = if F::MSVC { len } else { F::x(len.f()) };
+    let dir = if F::cmp_eq(len, F::ZERO) {
+        [0.0, 0.0, 1.0]
+    } else {
+        let inv = F::x(1.0) / len;
+        v.map(|c| (F::x(c) * inv).f())
+    };
+    let d = F::xi(dist);
+    let px = d * F::x(dir[0]);
+    let px = if F::MSVC { F::x(px.f()) } else { px };
+    let stored = |i: usize| F::x((d * F::x(dir[i])).f());
+    let end = [(F::x(from[0]) + px).f(), (F::x(from[1]) + stored(1)).f(), (F::x(from[2]) + stored(2)).f()];
+    (dir, end)
+}
+
+/// `GetRandomPosition`'s degrees-to-radians `double` (`ts_i386.so` [ebx-0x6c6c0], `mp.dll`
+/// 0x10089130).
+const DEG_TO_RAD: f64 = 0.017453292519943295;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bits(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// Issue #228: `GetRandomPosition`'s direction and trace end in each build (values from an
+    /// x87 model of the machine code: GCC's extended precision, MSVC's 53 bits).
+    #[test]
+    fn random_position_rays() {
+        use shared::pm::{Gcc, Msvc};
+        let from = [-1234.567, 345.678, 36.03125];
+        // 22°, 150 units: the same direction; MSVC rounds `dist * dir.x` before adding `from`.
+        let (dm, em) = random_position_ray::<Msvc>(22, 150, from);
+        let (dg, eg) = random_position_ray::<Gcc>(22, 150, from);
+        assert_eq!(bits(dm), [0x3f6d5bec, 0x3ebfcc6f, 0]);
+        assert_eq!(dg, dm);
+        assert_eq!(bits(em), [0xc488efaa, 0x43c8ef3b, 0x42102000]);
+        assert_eq!(bits(eg), [0xc488efa9, 0x43c8ef3b, 0x42102000]);
+        // 198°, 128 units.
+        let (d, e) = random_position_ray::<Msvc>(198, 128, from);
+        assert_eq!(bits(d), [0xbf737871, 0xbe9e377a, 0]);
+        assert_eq!(bits(e), [0xc4a989ac, 0x43990fda, 0x42102000]);
+        assert_eq!(random_position_ray::<Gcc>(198, 128, from), (d, e));
+        // Straight along x.
+        assert_eq!(random_position_ray::<Msvc>(0, 1024, [0.0; 3]), ([1.0, 0.0, 0.0], [1024.0, 0.0, 0.0]));
+    }
     use ts_server::entities::ts::powerup::pickup_plan;
     use ts_server::player::damage::{HIT_SLOW, PAIN_SLOW};
 

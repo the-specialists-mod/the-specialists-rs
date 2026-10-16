@@ -247,8 +247,9 @@ enum PreThinkStep {
     Stunt,
     /// The node learning (mp.dll 0x1005fed2).
     NodeLearn,
-    /// The weapon timers and the melee-bar regeneration (TS: PreThink's opening timer block,
-    /// gated on `IsAlive`).
+    /// The weapons' pressed buttons. (The weapon timers, the melee-bar regeneration and the
+    /// delayed-hit window run inside the stunt step, around `CTSStunt::Play`, as TS orders them:
+    /// `weapons::pre_think_timers`, `pre_think_after_play`.)
     Weapons,
     /// `rules::pre_think_end`: the end of spawn protection, then the delayed suicide, which is
     /// the very last thing TS's PreThink does (mp.dll 0x1006001a). Everything else in the frame

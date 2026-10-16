@@ -16,8 +16,8 @@ plugin.
 
 Not every 3.0 rule is behind a hook yet: some paths run TS 3.0's code for every ruleset where
 2.1 is the same or not yet ported (client commands after `client_command` declines, parts of
-`lifecycle::{killed, on_spawn, start_observer, death_think}`, `teams::change_team`, the
-explosion pitch `events::fire_pitch`), and the core still holds the
+`lifecycle::{killed, on_spawn, start_observer, death_think}`, `teams::change_team`), and the
+core still holds the
 branches for 2.1's round modes (`Mode::RoundTdm`, `Mode::Objective`). Moving those behind hooks is
 issue #200's phase 2.
 
@@ -295,7 +295,7 @@ The hooks so far:
 | `GunRules` | `timer_step(arith, frametime, fuser1, powerups)` | `Gun::timer_dt` (`frametime x GiveSlowMul x DFR 1.5`) | server `weapons/mod.rs` `post_think`, client `prediction/gun.rs` `post_think` |
 | `GunRules` | `command_frame_time(msec)` | `(float)(msec * 0.001)` | client `prediction/gun.rs` `post_think` |
 | `GunRules` | `decay_spread(gun, decay) -> bool` | `ts30_gameplay::gun::decay_spread` by the step, while alive; true: the client's crosshair copy (`state.spread`) takes the penalty on every first prediction (the server ignores the value) | server `GunRules::pre_think` (below), client `post_think` (first prediction) |
-| `GunRules` | `pre_think(gun, disarm, t)` | `Gun::timer_dt`'s step (`frametime x GiveSlowMul x DFR 1.5`) for `ts30_gameplay::gun::pre_frame` (melee window, block timers, bar regen 15/s), `decay_spread` by it, disarm count `- step x 5` | server `weapons/mod.rs` `pre_think` (every PreThink outside intermission) |
+| `GunRules` | `pre_think(gun, disarm, t)` | after `CTSStunt::Play`: `Gun::timer_dt`'s step (`frametime x GiveSlowMul x DFR 1.5`) for `ts30_gameplay::gun::pre_frame` (bar regen 15/s, the melee window's closure), `decay_spread` by it | server `weapons/mod.rs` `pre_think_after_play`, from `stunt::pre_think` before the observer return and `CheckForBreakables` (every PreThink outside intermission; issue #249) |
 | `GunRules` | `pellet_offset(seed, i, bot_random)` | `None`: the polar pattern as each side computes it | server `weapons/fire.rs` `shoot_bullets`, client `events/fire.rs` `fire_bullets` |
 | `GunRules` | `pellet_dir(side, aim, right, up, spread, offset)` | `spread::pellet_dir`: the direction rounded as the side's TS build does (`PelletSide::Server(arith)`: mp.dll or `ts_i386.so`; `Client`: `client.dll`), issue #161 | the same two |
 | `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked +5 (seed) / -5 (seed + 0x21), one gun none | client `events/fire.rs` `fire_akimbo` |
@@ -306,6 +306,8 @@ The hooks so far:
 | `GunRules` | `katana_throws()` | true: +attack2 throws the katana | `weapons/gun.rs` `secondary_attack` |
 | `GunRules` | `infinite_clip_skips_idle_reload()` | true: `!InfiniteClips && clip < 1` reloads | `weapons/gun.rs` `weapon_idle` |
 | `GunRules` | `holster_draws_kungfu()` | true: `Unzoom`, then weapon 0's view model, draw animation and draw event | `weapons/gun.rs` `holster_weapon` |
+| `GunRules` | `pre_think_timers(gun, disarm, t)` | before `CTSStunt::Play`: `ts30_gameplay::gun::pre_frame_timers` (the melee window floored at 0.001, the block timers) and the disarm count `- step x 5`, by the same step as `pre_think` (2.1: nothing) | server `weapons/mod.rs` `pre_think_timers`, from `stunt::pre_think` (issue #249) |
+
 | `GunRules` | `grenade_rounding(arith)` | `ts30_gameplay::gun::grenade_rounding`: which throw/roll sum terms each build stores (`GrenadeRounding`; mp.dll: the eye's and throw product's y, z, the roll products' x, y; `ts_i386.so`: the roll's `speed·2/3`) | `weapons/gun.rs` `grenade_idle` → `Gun::grenade_throw` |
 | `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | `ts30_gameplay::melee`'s functions of the same names | the `Gun` method of the same name in `weapons/gun.rs` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start` |
@@ -350,7 +352,7 @@ The hooks so far:
 | `ServerRules` | `entity_touch(ent, cx, other)` | false (the class's `Touch`) | `ham/mod.rs` `class_touch` (`DispatchTouch`, the game's touches, `ExecuteHam`) |
 | `ServerRules` | `broken_respawn_delay(respawntime)` | `Some(30 s if 0, else the key)` | `entities/stock/breakable.rs` `die`, `doors.rs` (break) |
 | `ServerRules` | `breakable_respawn_guarded()` | true (wait for clients in the box, fire `respawntarget`) | `breakable.rs`, `doors.rs` `breakable_respawn` |
-| `ServerRules` | `objectives()` | `ts30_server::entities::OBJECTIVES` (`ObjectiveRules`: HUD effect 8, team indexes, the indexed list, givers enabled by pointers, the wire HUD, NaN timers run out, the list cleared outside rounds) | `entities/ts/objective.rs`, `ctb.rs` (the givers' message) |
+| `ServerRules` | `objectives()` | `ts30_server::entities::OBJECTIVES` (`ObjectiveRules`: HUD effect 8, team indexes, the indexed list, givers enabled by pointers, NaN timers run out, the list cleared outside rounds) | `entities/ts/objective.rs`, `ctb.rs` (the givers' message) |
 | `ServerRules` | `round_time_left(now)` | `ts30_server::entities::round_time_left` (timed round: manager's `targetontimeleft`, else a draw) | `objective.rs` `Bomb::think` |
 | `ServerRules` | `giver_team_win(&GiverWin)` | `ts30_server::entities::giver_team_win` (`TeamWin(winnerteam, (int)value, restart, isScore)`) | `ctb.rs` `WinGiver::use_` |
 | `ServerRules` | `break_debris_from_hit()` | true (debris along the last hit, long glass `TSFrags`, attacker's `fuser1` copied) | `breakable.rs` `die`, `doors.rs` (break); false is the SDK's (`g_vecAttackDir × 200` if `explosion directed`, a door's none, 13-byte glass `TSFrags`) |
@@ -406,7 +408,7 @@ The hooks so far:
 | `ClientRules` | `status_look()` | `StatusLook::default()`: 3.0's stance health fill, kevlar icon alone, team-coloured team bar, titles labels, icons × 2/3 | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_tint()` | true (the `cl_slowfade` tint while slowed) | `view.rs` `write_screen_fade` |
-| `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and explosions keep 3.0's `fire_pitch`) |
+| `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and 3.0's explosion keep 3.0's `fire_pitch`; a ruleset's own `tsfrags_effects` plays its own explosion) |
 | `ClientRules` | `view_bob(bob, input)` | `ts30_client::view::bob` (`V_CalcBob` 0x10066e70): the gun offset and bob pitch, no camera bob (`Bob::eye` stays `None`) | `view.rs` `calc_normal` (the gun offset and angle; `Bob::eye` is added to `vieworg`) |
 | `ClientRules` | `eye_origin(eye, simorg, viewheight, on_ground, ft)` / `body_cam_z(eye, z, on_ground, ft)` | `ts30_client::view::eye` (the view height eased at `min(15·ft, 1)` on z, then `V_SmoothStairs` 0x100677d0) / `view::body_cam_z` (`V_SmoothStairs` again, 0x10068313) | `view.rs` `calc_normal` (the eye before the camera bob; the third-person body cam) |
 | `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
@@ -430,6 +432,11 @@ The hooks so far:
 | `ClientRules` | `close_combat_blocks()` / `blade_hit_particles(..)` / `reload_event_phases()` | true / false (scintille + sparks) / true | `events/misc.rs` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11; the look: text through `titles.txt` (`text: None`), item rows red by money or slots, six category mouse rows, no "hole" message | `menus/buy.rs`, `menus/mod.rs` |
+| `ClientRules` | `ground_items_fade()` | true: items past 492 / 206 / 824 units go translucent while `m_iFOV > 79` (`0x10044a5f`) | `effects.rs` `add_entity` |
+| `ClientRules` | `add_entity_spectator() -> SpectatorTail` | `ts30_client::spectator::add_entity_tail`: while `g_iUser1 != 0`, the overview icon and the target hidden in-eye or with inset 2 (`0x10044af9`) | `effects.rs` `add_entity` |
+| `ClientRules` | `laser_style() -> &LaserStyle` | `ts30_client::fx::LASER`: the animated `PlInfo`-coloured local beam, the coloured dot at any range, other players' lasers and flashlights from `V_GetInEyePos` with the hand-line beam, fading TransAlpha shadows | `effects/laser.rs`, `hud/weapons.rs` `draw_laser_dots` |
+| `ClientRules` | `tsfrags_effects(ps, now, frags)` | false: the core's `TSFrags` (`fx::glass`, `fx::explosion`, `TS_Scintille` + `TS_Sparks`) | `effects.rs` `on_tsfrags` |
+| `ClientRules` | `blood_impact(ps, now, d)` | false: `fx::blood` (`TS_BloodImpact`) | `effects.rs` `on_ptakedam` |
 | `ServerRules` | `bullet_trace(start, end, shooter)` | `ts30_server::damage::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |
 | `ServerRules` | `bullet_damage(ammo, weapon, damage, falloff, simulated)` | `falloff × damage` | `shoot_bullets`, `bullets.rs` `update` (first hit) |
 | `ServerRules` | `bullet_range_index(scaled)` | truncated (`Ext::trunc_i32`); `scaled` is the unrounded `dist / (unit·10)·10` as an exact `Ext` (`fire::range_scaled`), issue #80 | the same three |
@@ -451,6 +458,20 @@ The hooks so far:
 | `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `ts30_server::explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
 | `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `ts30_server::explode::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
 | `ServerRules` | `thrown_blade_damage(btype, from, at)` | `ts30_server::explode::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
+| `ServerRules` | `say_rules() -> &SayRules` | `ts30_server::commands::SAY_RULES` (`%a`/`%h` expand, only a vote's text lowered, no `ff` reply) | `rules/commands.rs` `host_say` |
+| `ServerRules` | `say_dead_chat_gated()` | `ts30_server::commands::say_dead_chat_gated` (round modes 2/3 or LMS) | `rules/commands.rs` `host_say` |
+| `ServerRules` | `client_kill(p, cx)` | `ts30_server::commands::client_kill` (the suicide 1 s later, `PreThink`'s end) | `rules/lifecycle.rs` `client_kill` (`pfnClientKill`) |
+| `ServerRules` | `killed_resets_view()` | true (`SET_VIEW(self)`, `EnableControl(TRUE)`) | `rules/lifecycle.rs` `killed` |
+| `ServerRules` | `init_hud() -> &InitHudRules` | `ts30_server::players::INIT_HUD`: after the rules' whole `InitHUD` (`UpdateClientData` 0x91d40), the `Spectator` list, "This server has ..." with effect 8, `SrvSett` 0 Think's copy | `rules/lifecycle.rs` `init_hud_block` / `rules_init_hud` (where `ts_init_hud` runs), `ts_init_hud` |
+| `ServerRules` | `team_changes() -> &TeamChangeRules` | `ts30_server::players::TEAM_CHANGES`: `ChangePlayerTeam` forces The One's teams and tests `IsValidTeam`; `ClientUserInfoChanged` resets the model under a team limit | `rules/teams.rs` `change_team`, `userinfo_changed` |
+| `ServerRules` | `spawn_spot_master_test()` | true (`IsTriggered` 0xe2c20) | `rules/spawnpoint.rs` `select` |
+| `ServerRules` | `ground_weapon_pairs_to_single()` | true (`CTSGroundWeapon::Spawn` 0xa1b40 turns an akimbo pair of a single gun into the single) | `entities/ts/ground.rs` `spawn_weapon_id` |
+| `ServerRules` | `random_position_ray(angle, dist, from)` | `ts30_server::powerup::random_position_ray` in the server's arithmetic (`pm_arith`: `ts_i386.so` or `mp.dll` `GetRandomPosition`) | `rules/frame.rs` `random_position` |
+| `ServerRules` | `screen_effects() -> ScreenEffects` | `ts30_server::explode::SCREEN_EFFECTS`: durations (and a shake's frequency) divided by the receiver's time scale; a NaN radius or distance shakes (issues #216, #217) | `entities/stock/explode.rs` `screen_shake`, `screen_fade` (every shake and fade: explosions, landings, `env_shake`/`env_fade`, level changes, the hit and spawn flashes) |
+| `ServerRules` | `explosion_hit(org, spot, dmg, r_full, r_max, occluder) -> Option<(f32, Vec3)>` | `ts30_server::explode::explosion_hit`: `falloff_damage` by `blast_distance` (mp.dll's stored differences), the out-of-line `Normalize` of `spot − org`, behind an occluder `d − thickness` when thinner (a NaN thickness is) | `entities/stock/explode.rs` `explosion_damage` (#220) |
+| `ServerRules` | `attack_dir(from, to) -> Vec3` | `ts30_server::damage::attack_dir`: mp.dll's two inline `Normalize`s | `damage.rs` `update_attack_dir` (`g_vecAttackDir`, from `damage::attack_dir_ends`) |
+| `ServerRules` | `delayed_hit_dir(stunt_dir) -> Vec3` | `g_vecZero` (0x9c59e) | `weapons/melee.rs` `pending_hit`, `stunt/moves.rs` `check_for_breakables` (the dive hit): `TraceAttack`'s direction (`PTakeDam`, a falling body's push) |
+
 | `ServerRules` | `ammo_pack_drop(arith)` | `ts30_server::weapons::ammo_pack_drop`: owned by the dying player until it lands; `origin + forward·8` stored for y, z (mp.dll) or none (`ts_i386.so`) before `+ right·8` (`AmmoPackDrop`) | `weapons/worldgun.rs` `drop_ammo` |
 | `ServerRules` | `gun_hud_update(sv, gun)` | `ts30_server::weapons::gun_hud_update`: `WeaponInfo` on a new id or reserve (kung fu: the bar rounded), then the twins' `WStatus`; never `ClipInfo` (`GunHud`) | `weapons/net.rs` `update_client`, after the `WStatus` loop |
 | `ServerRules` | `map_materials()` | true: the game's material table also reads `sound/<map>_materials.txt` | `stunt::texture_type_init`, `impact::texture_type_play_sound` (`impact::game_textures`) |

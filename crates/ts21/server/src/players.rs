@@ -5,12 +5,16 @@ use crate::cash;
 use crate::cvars as cv;
 use crate::rules::{MERCENARY, SPECIALISTS};
 use goldsrc::server::engine;
+use goldsrc::sys::edict_t;
 use shared::protocol::hud_wire::PwUp;
 use shared::ts::powerup as pw;
+use ts_server::gameplay::server::{InitHudRules, TeamChangeRules};
 use ts_server::messages::Msg;
 use ts_server::player::Player;
 use ts_server::rules::msg::{self, ts_message_all};
+use ts_server::rules::scoring::THE_ONE_RGB;
 use ts_server::rules::state::{self, Mode};
+use ts_server::rules::teams;
 use ts_server::rules::{alive, cvars};
 use ts_server::world::Cx;
 
@@ -189,8 +193,9 @@ pub fn default_team(p: &mut Player, cx: &mut Cx) -> Vec<u8> {
     }
     let eng = engine();
     if the_one {
-        let mut name = cvars::bytes(if p.ts.is_the_one { c"mp_theone" } else { c"mp_theothers" });
-        name.truncate(15);
+        // `strncpy(m_szTeamName, cvar, 16)` (0x1003895b..0x1003897e); the keys are set from that
+        // field.
+        let name = the_one_team_field(cvars::bytes(if p.ts.is_the_one { c"mp_theone" } else { c"mp_theothers" }));
         eng.set_client_key(e, "model", &name);
         eng.set_client_key(e, "team", &name);
         return name;
@@ -198,9 +203,73 @@ pub fn default_team(p: &mut Player, cx: &mut Cx) -> Vec<u8> {
     eng.info_key(e, c"model").to_bytes().to_vec()
 }
 
+/// `m_szTeamName` from `mp_theone`/`mp_theothers`: `strncpy(.., 16)` keeps 16 bytes.
+fn the_one_team_field(mut name: Vec<u8>) -> Vec<u8> {
+    name.truncate(16);
+    name
+}
+
 /// Whether a team name is one of the round modes' (for logs and tests).
 pub fn is_round_team(name: &str) -> bool {
     name == SPECIALISTS || name == MERCENARY
+}
+
+// Audit round 2: B2
+
+/// 2.1's `CTSGameRules::InitHUD` (`FUN_100451c0`): the last call of `CHalfLifeMultiplay::InitHUD`
+/// (0x10023ec0), as `UpdateClientData` (0x100547c0) calls only the rules' `InitHUD`. So in
+/// teamplay it runs before `CHalfLifeTeamplay::InitHUD`'s (0x10038ac0) `ChangePlayerTeam`, whose
+/// forced respawn and cash floor stand. It sends no `Spectator` list (0x100453ce..0x100453fc),
+/// its own notices with effect 1 (`"This server have ..."`, 0x10098394 and 0x10098364), and
+/// `SrvSett` 0 as the live `realbullet != 0` (0x10045278).
+pub static INIT_HUD: InitHudRules = InitHudRules {
+    inside_multiplay: true,
+    spectator_list: false,
+    cheats_text: "This server have cheats enabled.",
+    damages_text: "This server have custom weapon damages",
+    notice_effect: 1,
+    realbullet_live: true,
+};
+
+/// 2.1's `ChangePlayerTeam` (`FUN_10038cb0`, 0x10038d32..0x10038d58): only an empty name goes to
+/// the smallest team; no `IsValidTeam` and no The One override. Its `ClientUserInfoChanged`
+/// (0x10038f50) has no team-limit case and in The One mode calls `SetDefaultPlayerTeam` (vtable
+/// +0xdc) first.
+pub static TEAM_CHANGES: TeamChangeRules =
+    TeamChangeRules { change_checks_team: false, model_change_team_limit: false, model_change_the_one_default: true };
+
+/// 2.1's `CTSGameRules::TheOneIsDead` (0x10046930, 0x100469af..0x100469d2) for the victim `p`;
+/// `killer` is the killing player. In The One mode a kill by another player makes the killer The
+/// One with `SetDefaultPlayerTeam` (vtable +0xdc) on the victim, `SetPlayerTheOne` on the killer,
+/// then `SetDefaultPlayerTeam` on the killer: no `ChangePlayerTeam` (3.0's), so neither goes to
+/// observer nor loses its cash. Without a killer: "The One is dead", no full stop.
+pub fn the_one_is_dead(p: &mut Player, cx: &mut Cx, killer: Option<*mut edict_t>) {
+    state::with(|g| g.the_one_exists = false);
+    p.ts.is_the_one = false;
+    if !state::the_one_mode() {
+        return;
+    }
+    let killer = killer.filter(|&k| k != cx.edict);
+    let name = killer.map(ts_server::rules::netname);
+    ts_message_all(THE_ONE_RGB, 1, 30, &the_one_death_text(name.as_deref()));
+    let Some(k) = killer else { return };
+    // The One mode is teamplay in 2.1 (`ts_` maps), so the rules are the teamplay ones.
+    if state::teamplay() {
+        teams::set_default_team(p, cx);
+    }
+    ts_server::rules::scoring::set_player_the_one_other(k);
+    if state::teamplay() {
+        ts_server::player::with_player(k, teams::set_default_team);
+    }
+}
+
+/// `TheOneIsDead`'s announcement: `"The One was killed by %s!"` (0x1009859c) or `"The One is
+/// dead"` (0x1009858c).
+fn the_one_death_text(killer: Option<&[u8]>) -> Vec<u8> {
+    match killer {
+        Some(name) => shared::bformat!("The One was killed by {}!", name),
+        None => b"The One is dead".to_vec(),
+    }
 }
 
 #[cfg(test)]
@@ -248,5 +317,31 @@ mod tests {
         // the team's cash when more).
         assert_eq!(cash::floor(cv::trunc(3000.0), 3000.0), 3000);
         assert_eq!(cash::floor(cv::trunc(800.9), 800.9), 800);
+    }
+
+    // Audit round 2: B2
+
+    /// #250: 2.1's texts (0x1009859c, 0x1009858c: no full stop).
+    #[test]
+    fn the_one_death_texts() {
+        assert_eq!(the_one_death_text(Some(b"Ren\xe9")), b"The One was killed by Ren\xe9!");
+        assert_eq!(the_one_death_text(None), b"The One is dead");
+    }
+
+    /// #238: `SetDefaultPlayerTeam` copies 16 bytes of `mp_theone` (0x1003895b..0x1003897e).
+    #[test]
+    fn the_one_team_keeps_sixteen_bytes() {
+        assert_eq!(the_one_team_field(b"abcdefghijklmnopqrst".to_vec()), b"abcdefghijklmnop");
+        assert_eq!(the_one_team_field(b"The ONE".to_vec()), b"The ONE");
+    }
+
+    /// #231, #238: the InitHUD and team-change tables.
+    #[test]
+    fn init_hud_and_team_change_rules() {
+        assert!(INIT_HUD.inside_multiplay && !INIT_HUD.spectator_list && INIT_HUD.realbullet_live);
+        assert_eq!((INIT_HUD.cheats_text, INIT_HUD.notice_effect), ("This server have cheats enabled.", 1));
+        assert_eq!(INIT_HUD.damages_text, "This server have custom weapon damages");
+        assert!(!TEAM_CHANGES.change_checks_team && !TEAM_CHANGES.model_change_team_limit);
+        assert!(TEAM_CHANGES.model_change_the_one_default);
     }
 }

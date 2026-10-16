@@ -84,7 +84,7 @@ pub fn with_host<R>(p: &mut Player, cx: &mut Cx, f: impl FnOnce(&mut Gun, &mut S
         p.stunt.close_attack_cd = clock.start(now, time_scale, f64::from(t));
     }
     if let Some(t) = block {
-        p.stunt.block_timer = clock.start(now, time_scale, f64::from(t));
+        p.stunt.block_timer = clock.block_end(now, time_scale, t);
     }
     if ext_changed {
         let ext2 = p.inv.sv.anim_ext.clone();

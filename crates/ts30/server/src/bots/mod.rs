@@ -183,6 +183,19 @@ impl NativeBotRules for Ts30Bots {
     fn ground_probes(&self, a: [f32; 3], b: [f32; 3], no_floor: &mut dyn FnMut([f32; 3]) -> bool) -> bool {
         nodes::ground_probes(a, b, no_floor)
     }
+
+    // Audit round 2: E
+
+    /// `Navigate` (0x1006fd29.., 0x1006fdbd.., 0x1006ff50..) sums `(x² + z²) + y²`.
+    fn nav_distance_order(&self) -> [usize; 3] {
+        brain::order::XZY
+    }
+
+    /// `GetSteerPoint` (0x10070617..0x10070676): the products `v_forward * 48` are stored as
+    /// floats (the `Vector` constructor's arguments), then subtracted.
+    fn forward_detour(&self, endpos: [f32; 3], forward: [f32; 3]) -> [f32; 3] {
+        brain::sub(endpos, brain::scale(forward, 48.0))
+    }
 }
 
 /// The rules `server-dll` registers under [`ts30_gameplay::ID`].

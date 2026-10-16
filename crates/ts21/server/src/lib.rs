@@ -57,12 +57,13 @@ use ts_server::damage::DamageInfo;
 use ts_server::damage::glast::Snapshot;
 use ts_server::entities::ts::ground::GroundWeapon;
 use ts_server::entities::ts::misc::MapFlags;
-use ts_server::gameplay::server::CvarDef;
+use ts_server::gameplay::server::{CvarDef, InitHudRules, TeamChangeRules};
 use ts_server::gameplay::{ConnectingClient, ServerPlugin, ServerRules};
 use ts_server::messages::Msg;
 use ts_server::player::Player;
 use ts_server::player::damage::{HitDamage, PlayerHit};
 use ts_server::rules::DescriptionMode;
+use ts_server::rules::commands::SayRules;
 use ts_server::rules::powerup::PowerupRules;
 use ts_server::rules::scoring::Frag;
 use ts_server::rules::state::{self, GameRules, Mode};
@@ -486,6 +487,82 @@ impl ServerRules for Ts21Server {
         true
     }
 
+    // Audit round 2: B1
+
+    /// [`commands::SAY_RULES`]: no `%a`/`%h`, the whole text lowered, the `ff` reply.
+    fn say_rules(&self) -> &'static SayRules {
+        &commands::SAY_RULES
+    }
+
+    /// Round modes 2/3, or `lastmanstanding` on in any mode ([`observer::waiting_rules`]).
+    fn say_dead_chat_gated(&self) -> bool {
+        observer::waiting_rules()
+    }
+
+    /// At once, a second apart ([`commands::client_kill`]).
+    fn client_kill(&self, p: &mut Player, cx: &mut Cx) {
+        commands::client_kill(p, cx);
+    }
+
+    /// 2.1's `Killed` (0x10052390) has neither `pfnSetView` nor an `FL_FROZEN` change.
+    fn killed_resets_view(&self) -> bool {
+        false
+    }
+
+    // Audit round 2: B2
+
+    /// Inside the multiplay `InitHUD`, before the teamplay team change; no `Spectator` list,
+    /// 2.1's notices ([`players::INIT_HUD`]).
+    fn init_hud(&self) -> &'static InitHudRules {
+        &players::INIT_HUD
+    }
+
+    /// The asked name or the smallest team; The One mode resets a model change
+    /// ([`players::TEAM_CHANGES`]).
+    fn team_changes(&self) -> &'static TeamChangeRules {
+        &players::TEAM_CHANGES
+    }
+
+    /// 2.1's spot selection (`FUN_10043010`) has no `IsTriggered` test: every spot of the class
+    /// is scored.
+    fn spawn_spot_master_test(&self) -> bool {
+        false
+    }
+
+    // Audit round 2: D2
+
+    /// No ([`entities::GROUND_WEAPON_PAIRS_TO_SINGLE`]).
+    fn ground_weapon_pairs_to_single(&self) -> bool {
+        entities::GROUND_WEAPON_PAIRS_TO_SINGLE
+    }
+
+    /// [`powerup::random_position_ray`].
+    fn random_position_ray(&self, angle: i32, dist: i32, from: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+        powerup::random_position_ray(angle, dist, from)
+    }
+
+    // Audit round 2: C
+
+    /// [`explode::SCREEN_EFFECTS`]: the SDK's, not divided.
+    fn screen_effects(&self) -> ts_server::entities::stock::explode::ScreenEffects {
+        explode::SCREEN_EFFECTS
+    }
+
+    /// [`melee::delayed_hit_dir`]: the stunt direction.
+    fn delayed_hit_dir(&self, stunt_dir: Vec3) -> Vec3 {
+        melee::delayed_hit_dir(stunt_dir)
+    }
+
+    /// [`explode::explosion_hit`]: 2.1's roundings and NaN branches.
+    fn explosion_hit(&self, org: Vec3, spot: Vec3, dmg: f32, r_full: f32, r_max: f32, occluder: Option<f32>) -> Option<(f32, Vec3)> {
+        explode::explosion_hit(org, spot, dmg, r_full, r_max, occluder)
+    }
+
+    /// [`damage::attack_dir`]: 2.1's roundings.
+    fn attack_dir(&self, from: Vec3, to: Vec3) -> Vec3 {
+        damage::attack_dir(from, to)
+    }
+
     // Audit round 2: D1
 
     /// [`worldgun::ammo_pack_drop`]: 2.1's single build.
@@ -557,6 +634,10 @@ mod tests {
         assert_eq!(s.cvars(), cvars::CVARS);
         assert_eq!(s.put_in_server_cash(), 0, "2.1 sets the cash in InitHUD instead");
         assert!(!s.server_command("addbot"), "only the polled cvars are 2.1's");
+        assert!(!s.killed_resets_view(), "2.1's Killed (0x10052390) has no SET_VIEW / EnableControl");
+        assert!(CORE.killed_resets_view(), "3.0's Killed (0x8ed5c) does both");
+        assert_ne!(s.say_rules(), CORE.say_rules());
+
         assert!(!s.map_materials(), "sound/materials.txt only (#206)");
         assert!(!s.texture_sounds_in_multiplayer(), "PlayTextureSounds is FALSE (#255)");
     }
@@ -622,5 +703,26 @@ mod tests {
         assert!(core.bullet_time_allowed(0.99) && !core.bullet_time_allowed(0.995));
         assert!(v21.bullet_time_allowed(0.995) && !v21.bullet_time_allowed(1.0));
         assert!(!core.zero_delayed_hit_reaches_player() && v21.zero_delayed_hit_reaches_player());
+    }
+
+    // Audit round 2: B2
+
+    /// #231, #238, #239: the InitHUD, team-change and spawn-spot hooks per plugin.
+    #[test]
+    fn init_hud_teams_and_spawn_spots_follow_the_plugin() {
+        let core: &dyn ServerRules = &CORE;
+        let v21: &dyn ServerRules = &Ts21Server;
+        // 3.0 `UpdateClientData` (0x91d40) runs `CTSGameRules::InitHUD` after the rules';
+        // 2.1's multiplay `InitHUD` (0x10023ec0) ends with it.
+        assert!(!core.init_hud().inside_multiplay && v21.init_hud().inside_multiplay);
+        assert!(core.init_hud().spectator_list && !v21.init_hud().spectator_list);
+        assert_eq!((core.init_hud().cheats_text, core.init_hud().notice_effect), ("This server has cheats enabled.", 8));
+        assert_eq!((v21.init_hud().cheats_text, v21.init_hud().notice_effect), ("This server have cheats enabled.", 1));
+        assert!(!core.init_hud().realbullet_live && v21.init_hud().realbullet_live);
+        assert!(core.team_changes().change_checks_team && !v21.team_changes().change_checks_team);
+        assert!(core.team_changes().model_change_team_limit && !v21.team_changes().model_change_team_limit);
+        assert!(!core.team_changes().model_change_the_one_default && v21.team_changes().model_change_the_one_default);
+        // `TSSelectSpawnSpot` (0x76244) asks `IsTriggered`; 2.1's `FUN_10043010` doesn't.
+        assert!(core.spawn_spot_master_test() && !v21.spawn_spot_master_test());
     }
 }

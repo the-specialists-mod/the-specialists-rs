@@ -269,6 +269,8 @@ pub fn restart_round(now: f32) {
             p.ts.join_deadline = now + 10.0;
             p.respawn_at = now + 3.0;
             p.ts.award = 11;
+            // `+0x714`, the grenades bought this round (`CTSGameRules.c:302`).
+            p.inv.sv.grenades_bought = 0;
             p.ts.respawns_used = 0;
             p.powerup_until = 0.0;
             p.ts.held_secs = 0;

@@ -1583,17 +1583,41 @@ impl Gun {
         self.body = 0;
     }
 
-    /// Per-spawn reset (`TSInit` + `CTSGun::Spawn`).
+    /// The player fields `CBasePlayer::TSInit` (3.0 0x92a4c, 2.1 0x100552f0) resets at every
+    /// spawn: `m_flNextAttack`, the kung-fu bar (100), the recoil penalty, the delayed hit
+    /// (window, damage, source) and the block windows. The gun entity's own fields (records,
+    /// attack timers, clip mirror, `fuser1`, last shot, combos, body) belong to the gun, which
+    /// keeps them through a spawn ([`reset_gun_entity`](Self::reset_gun_entity) is a new one's),
+    /// and the fire-mode memory lasts until `InitHUD`.
     pub fn reset_for_spawn(&mut self) {
-        let status = self.status;
-        let reserve = self.reserve;
-        let current = self.current;
-        let body = self.body;
-        *self = Gun::default();
-        self.status = status;
-        self.reserve = reserve;
-        self.current = current;
-        self.body = body;
+        let d = Gun::default();
+        self.next_attack = d.next_attack;
+        self.spread_penalty = d.spread_penalty;
+        self.decay_time = d.decay_time;
+        self.melee_bar = d.melee_bar;
+        self.melee_window = d.melee_window;
+        self.melee_damage = d.melee_damage;
+        self.melee_source = d.melee_source;
+        self.block_kungfu = d.block_kungfu;
+        self.block_knife = d.block_knife;
+        self.block_katana = d.block_katana;
+    }
+
+    /// A new gun entity's own fields (`CTSGun::Spawn` 0x8053c on a zeroed entity: clip mirror
+    /// `+0xb4 = 1`, last shot `+0x9e8 = 0`, the attack and idle timers, `fuser1` and the combos
+    /// `+0x9fc..+0xa04` zero). The records are [`reset_inventory`](Self::reset_inventory)'s.
+    pub fn reset_gun_entity(&mut self) {
+        let d = Gun::default();
+        self.next_primary = d.next_primary;
+        self.next_secondary = d.next_secondary;
+        self.next_alt = d.next_alt;
+        self.idle = d.idle;
+        self.clip_mirror = d.clip_mirror;
+        self.fuser1 = d.fuser1;
+        self.last_shot = d.last_shot;
+        self.punch_combo = d.punch_combo;
+        self.kick_combo = d.kick_combo;
+        self.last_melee_anim = d.last_melee_anim;
     }
 }
 
@@ -1618,5 +1642,52 @@ mod tests {
             assert!(!speed_over::<Msvc>([limit, 0.0, 0.0], limit));
         }
         assert!(!speed_over::<Msvc>([f32::NAN, 0.0, 0.0], 35.0));
+    }
+
+    // Audit round 2: B2
+
+    /// #208, #247: a spawn resets `TSInit`'s player fields (3.0 0x92a4c) and keeps the gun
+    /// entity's own and the fire-mode memory (`InitHUD` 0x79134 clears that); a new gun
+    /// (`CTSGun::Spawn` 0x8053c) starts with clip mirror 1 and every timer and combo at 0.
+    #[test]
+    fn spawn_keeps_the_gun_entity_and_the_mode_memory() {
+        let mut g = Gun {
+            next_primary: 0.3,
+            next_secondary: 0.4,
+            next_alt: 0.5,
+            idle: 2.0,
+            next_attack: 0.7,
+            clip_mirror: 9,
+            fuser1: 1.5,
+            last_shot: 12.0,
+            spread_penalty: 0.1,
+            punch_combo: 2,
+            kick_combo: 1,
+            last_melee_anim: 14,
+            melee_bar: 20.0,
+            melee_window: 0.2,
+            melee_damage: 30.0,
+            melee_source: 2,
+            block_kungfu: 0.1,
+            block_knife: 0.2,
+            block_katana: 0.3,
+            body: 3,
+            ..Gun::default()
+        };
+        g.mode_memory[5] = 2;
+        g.reset_for_spawn();
+        let d = Gun::default();
+        assert_eq!((g.next_attack, g.spread_penalty, g.melee_bar), (0.0, 0.0, 100.0));
+        assert_eq!((g.melee_window, g.melee_damage, g.melee_source), (0.0, 0.0, 0));
+        assert_eq!((g.block_kungfu, g.block_knife, g.block_katana), (0.0, 0.0, 0.0));
+        assert_eq!((g.next_primary, g.next_secondary, g.next_alt, g.idle), (0.3, 0.4, 0.5, 2.0));
+        assert_eq!((g.clip_mirror, g.fuser1, g.last_shot, g.body), (9, 1.5, 12.0, 3));
+        assert_eq!((g.punch_combo, g.kick_combo, g.last_melee_anim), (2, 1, 14));
+        assert_eq!(g.mode_memory[5], 2, "only InitHUD clears it");
+        g.reset_gun_entity();
+        assert_eq!((g.next_primary, g.next_secondary, g.next_alt, g.idle), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!((g.clip_mirror, g.fuser1, g.last_shot), (1, 0.0, 0.0));
+        assert_eq!((g.punch_combo, g.kick_combo, g.last_melee_anim), (d.punch_combo, d.kick_combo, d.last_melee_anim));
+        assert_eq!(g.mode_memory[5], 2);
     }
 }

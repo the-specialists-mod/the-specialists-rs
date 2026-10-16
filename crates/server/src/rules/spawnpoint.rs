@@ -56,6 +56,7 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
     // TS walks the classname "player" with `IsPlayer()` (0x76324): players who left are on the
     // list, and the `IsAlive`/`EF_NODRAW` tests below skip them.
     let players = super::slot_players();
+    let master_test = crate::gameplay::active().server.spawn_spot_master_test();
     let mut spots: Vec<(*mut edict_t, i32)> = Vec::new();
     let mut it = std::ptr::null_mut();
     while spots.len() < 32 {
@@ -64,8 +65,9 @@ pub fn select(self_e: *mut edict_t) -> *mut edict_t {
             break;
         }
         // `CBaseDMStart::IsTriggered` (0xe2c20): a spot whose `master` (in `netname`) isn't
-        // triggered for this player is skipped without taking one of the 32 places.
-        if !crate::entities::stock::base::is_master_triggered(it.v().netname, self_e) {
+        // triggered for this player is skipped without taking one of the 32 places, in the
+        // rulesets that ask (`ServerRules::spawn_spot_master_test`).
+        if master_test && !crate::entities::stock::base::is_master_triggered(it.v().netname, self_e) {
             continue;
         }
         let sv = it.v();

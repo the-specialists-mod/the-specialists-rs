@@ -54,7 +54,7 @@ addresses of `ts_i386.so`.
 | `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` (block's and attack's bodies in `ts30_gameplay::melee`) |
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
 | `CBasePlayer::PostThink` timer tail 0x91610 | `Gun::decrement_timers`, `Gun::timer_dt` |
-| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `weapons::pre_think` → `GunRules::pre_think` (3.0: `ts30_gameplay::gun::pre_frame`, the recoil decay and the disarm decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
+| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `stunt::pre_think` → `weapons::pre_think_timers` → `GunRules::pre_think_timers` before `Play` (3.0: `ts30_gameplay::gun::pre_frame_timers`, the disarm decay), `weapons::pre_think_after_play` → `GunRules::pre_think` after it (3.0: `pre_frame`, the recoil decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
 | `CBasePlayer::UpdateMeleeBar` 0x9650c / `GetMeleeMultiplier` 0x965d0 | `Gun::update_melee_bar` (outside the weapon frame: `weapons::update_melee_bar`) / `spread::melee_multiplier` |
 | `CBasePlayer::ShootBulletsPlayer` 0x6f69c, `UTIL_TraceLine_Expanded` 0x6f4f4 | `fire::shoot_bullets`, `fire::trace_expanded` |
 | `compile_range_damage` 0x7f1f4 | `range_multiplier` (pure function) |
@@ -130,11 +130,15 @@ addresses of `ts_i386.so`.
   `m_pActiveItem` (and `m_iId == 16`) on all these paths, so a gun holstered for a
   `cycler_weapon` counts as no gun there too (`gun_active`); holding it (`holds_gun`) matters only
   to `CanHavePlayerItem`, `HasWeapons`, `SelectItem` and `RemoveAllItems`.
-* `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, then the ruleset's step (`GunRules::pre_think`; TS 3.0:
-  `ts30_gameplay::gun::pre_frame` by `Gun::timer_dt`, i.e. bar regen 15/s, block and melee
-  windows, then recoil decay 0.1/s and disarm decay; TS 2.1: the same timers on the game time
-  since the last think, `docs/implementation/ts21.md`). The delayed melee hit lands from the stunt hook
-  (`CheckForBreakables`).
+* `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons.
+  The ruleset's timer step runs inside `stunt::pre_think`, split around `CTSStunt::Play` as TS
+  orders it (issue #249): `pre_think_timers` before `Play` (`GunRules::pre_think_timers`; TS
+  3.0: `ts30_gameplay::gun::pre_frame_timers` by `Gun::timer_dt`, the melee window and the block
+  timers, and the disarm decay), then `pre_think_after_play` after it and before the observer
+  return and `CheckForBreakables` (`GunRules::pre_think`; TS 3.0: `pre_frame`, bar regen 15/s and
+  the window's closure, and the recoil decay 0.1/s; TS 2.1: its whole step, on the game time
+  since the last think, `docs/implementation/ts21.md`). So the delayed melee hit
+  (`CheckForBreakables`) sees the window as this frame's step left it.
 * `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
   tank (dead or game over, `PostThink` skips to the timer tail): once the active item is ready
   (`item_post_frame_ready`: the gun's `Gun::post_frame_ready`; a cycler's `m_flNextAttack` run
@@ -253,7 +257,7 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
 * Slow motion of projectiles: grenades, knives (not while stuck in a wall) and falling
   `WorldGun`s start at the thrower's scale (`pl+0x180` if it's an activator, else
   `max(fuser1, 0.01)`) and run `SlowPhysics` every 0.1 s think: `velocity * s`, `avelocity * s`,
-  `gravity * s²` from the saved pre-slow values, restored when `fuser1` returns to 1. As in TS,
+  `gravity * s²` (rounded once, in the server's arithmetic: issue #229) from the saved pre-slow values, restored when `fuser1` returns to 1. As in TS,
   "saved" means a non-zero saved velocity (`CTSPhysicObject::SavePhysics` 0x7bac0): an object
   slowed at rest re-saves every think (its gravity and spin shrink by `s` each time) and is never
   restored, and a restore puts back the pre-slow velocity, so a slowed grenade or knife lying on
@@ -571,7 +575,13 @@ How the port maps TS where the structure differs (not deviations):
   (`AddPlayerItem` kills the new duplicate). The port's `Gun` per player stays allocated;
   `SvState::has_gun` says whether TS's gun exists, `add_gun` sets it with an emptied inventory
   and fresh send caches (`new_gun_state`), and `remove_all_items` (death think, `StartObserver`,
-  disconnect) clears it and empties the records. `reset_for_spawn` gives the fields a fresh gun starts with. TS's gun is a
+  disconnect) clears it and empties the records. `reset_for_spawn` resets only `TSInit`'s player
+  fields (`m_flNextAttack`, bar, recoil penalty, delayed hit, blocks); the gun entity's own timers,
+  clip mirror, `fuser1`, last shot and combos stay with a gun held through the spawn and are reset
+  for a new one (`reset_gun_entity`, `CTSGun::Spawn`), and the fire-mode memory lasts until
+  `InitHUD` (#208). The spawn keeps the grenades bought (zeroed by `RestartRound` and `InitHUD`)
+  and `m_afButtonLast` (written only by a living `PostThink`), and clears the last delayed-hit
+  victim (`pl+0x798`) (#247). TS's gun is a
   `weapon_tsgun` entity attached to the player, and so is the port's (`SvState::gun_item`, from
   `GiveNamedItem` or a map-placed one, dropped with the gun), so edicts are allocated and numbered
   as in TS; the gun's state lives in the player's `Gun`, not in the entity. A `GiveNamedItem` gun
@@ -665,7 +675,7 @@ How the port maps TS where the structure differs (not deviations):
   `stunt::moves::tests`).
 * `cargo test -p ts-server`: command argument parsing (`%i_%i`), `SlowPhysics` (scale, rescale,
   restore, TS's gravity compounding at rest), ammo pack contents (`take_ammo`), the explosion's
-  `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and damage falloff (`falloff_damage`),
+  `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and (`ts30-server`) damage falloff (`falloff_damage`),
   the thrown blade's ground slide (`ground_slide`), glance-or-stick test (`glances_off`) and
   hit pitch (`hit_pitch`), the flying impact's health-only test (`flying_impact_ignores_takedamage`), the gunless `clientdata_t` packing
   (`clientdata_without_the_gun_stops_after_the_weapon_id`), and the multi-damage
@@ -726,6 +736,7 @@ How the port maps TS where the structure differs (not deviations):
   entry 0) gets `SUB_Remove` 0.1 s later; an akimbo pair built from two singles (kind 4,
   `info+0xcc` != -1: 8, 10, 16, 30, 37) is turned into its single, since `PickUpWeapon` refuses
   those pairs. The Golden Colts (21, kind 5) stay. Both unit tested (`ground::spawn_weapon_id`).
+  2.1 keeps the pair (`ServerRules::ground_weapon_pairs_to_single`).
 * Power-ups: Infinite Clip -> `weapons::multiply_clip`; grenade -> `give_weapon(p, cx, 24, 0)`;
   kung fu sets `Player::kungfu` (x2 melee), DFR/slow-mo are read from `Player::active_powerup`
   and `pev->fuser1`.

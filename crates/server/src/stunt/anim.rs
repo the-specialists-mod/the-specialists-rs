@@ -17,6 +17,31 @@ fn stunt_rules() -> &'static StuntRules {
     crate::gameplay::active().server.stunts()
 }
 
+/// `Animate`'s velocity direction (the in-air jump blend, the jump pose, the dive start, the
+/// death pose): [`normalized`], or with [`StuntRules::anim_normalize_stores_reciprocal`] under
+/// `mp.dll`'s arithmetic, [`normalize_stored_reciprocal`].
+fn anim_dir(v: Vec3) -> Vec3 {
+    if stunt_rules().anim_normalize_stores_reciprocal && crate::rules::cvars::pm_arith() == shared::pm::Arith::Msvc {
+        normalize_stored_reciprocal(v)
+    } else {
+        normalized(v)
+    }
+}
+
+/// An out-of-line `Vector::Normalize()` that stores the reciprocal (TS 2.1 `mp.dll` FUN_10011fc0,
+/// 0x10011fc0..0x10012033): `len = sqrt((x² + y²) + z²)` unrounded; a length equal to 0 (IEEE:
+/// `test ah,0x44; jp`, so a NaN goes on) gives (0, 0, 1); otherwise `1 / len` is stored as a
+/// `float` and each component is that `float` times the component, stored.
+fn normalize_stored_reciprocal(v: Vec3) -> Vec3 {
+    let [x, y, z] = v.map(f64::from);
+    let len = (x * x + y * y + z * z).sqrt();
+    if len == 0.0 {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = (1.0 / len) as f32;
+    v.map(|c| inv * c)
+}
+
 /// A `CTSAnimation` timer of `secs` of the player's time: TS 3.0 stores the seconds and counts
 /// them down in [`update_timers`]; with [`StuntRules::anim_end_times`] the ruleset's
 /// [`StuntClock`](super::rules::StuntClock) gives the end time.
@@ -186,29 +211,84 @@ pub fn reset_sequence_info(p: &mut Player, cx: &mut Cx) {
     a.last_event_check = time;
 }
 
-/// SDK `CBaseAnimating::StudioFrameAdvance(0)`.
+/// SDK `CBaseAnimating::StudioFrameAdvance(0)`, in the server's arithmetic
+/// ([`frame_advance`]).
 pub fn studio_frame_advance(p: &mut Player, cx: &mut Cx) {
     let time = cx.time();
     let a = &mut p.stunt.anim;
     let pev = cx.pev();
-    let mut interval = time - pev.animtime;
-    if interval <= 0.001 {
-        pev.animtime = time;
-        return;
-    }
-    if pev.animtime == 0.0 {
-        interval = 0.0;
-    }
-    pev.frame += interval * a.frame_rate * pev.framerate;
+    let step = FrameStep {
+        interval: 0.0,
+        time,
+        animtime: pev.animtime,
+        frame: pev.frame,
+        frame_rate: a.frame_rate,
+        framerate: pev.framerate,
+        loops: a.seq_loops,
+    };
+    let (frame, finished) = frame_advance_in(crate::rules::cvars::pm_arith(), step);
     pev.animtime = time;
-    if pev.frame < 0.0 || pev.frame >= 256.0 {
-        if a.seq_loops {
-            pev.frame -= ((pev.frame / 256.0) as i32) as f32 * 256.0;
-        } else {
-            pev.frame = if pev.frame < 0.0 { 0.0 } else { 255.0 };
+    if let Some(frame) = frame {
+        pev.frame = frame;
+        if finished {
+            a.seq_finished = true;
         }
-        a.seq_finished = true;
     }
+}
+
+/// [`frame_advance`]'s inputs: the `flInterval` argument (0: since `animtime`),
+/// `gpGlobals->time`, `pev->animtime`, `pev->frame`, `m_flFrameRate`, `pev->framerate` and
+/// `m_fSequenceLoops`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameStep {
+    pub interval: f32,
+    pub time: f32,
+    pub animtime: f32,
+    pub frame: f32,
+    pub frame_rate: f32,
+    pub framerate: f32,
+    pub loops: bool,
+}
+
+/// [`frame_advance`] in `arith` (the player's and the stock entities' `StudioFrameAdvance`).
+pub(crate) fn frame_advance_in(arith: shared::pm::Arith, s: FrameStep) -> (Option<f32>, bool) {
+    shared::by_arith!(arith, frame_advance(s))
+}
+
+/// `StudioFrameAdvance(flInterval)` as each TS build compiles it (3.0 `mp.dll` 0x10008290, 2.1
+/// `mp.dll` 0x10006090 the same; `ts_i386.so` 0x935a0): the new `pev->frame` (`None`: the
+/// interval is at most 0.001, only `animtime` moves on) and whether the sequence finished. An
+/// `flInterval` of 0 (C3: a NaN too) is `time - animtime`, kept on the x87 (compared with the
+/// `double` 0.001; a NaN returns too); the interval is 0 when `animtime == 0` (C3 again). `frame += interval * m_flFrameRate * framerate` is
+/// rounded once (`mp.dll` multiplies `framerate * m_flFrameRate * interval`, 0x100082f6..
+/// 0x10008308; the .so `interval * m_flFrameRate * framerate`, 0x93621..0x93632). Outside
+/// `[0, 256)` (C0 tests, so a NaN frame too) the sequence finishes: a looping one subtracts
+/// `(int)(frame * (1/256)) * 256` (`_ftol` / a truncating `fistp`), another clamps to 0 or 255.
+// The negated compare is the x87 branch's: a NaN interval returns.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn frame_advance<F: Fpu>(s: FrameStep) -> (Option<f32>, bool) {
+    let mut interval = F::x(s.interval);
+    if shared::pm::eq87(s.interval, 0.0) {
+        interval = F::x(s.time) - F::x(s.animtime);
+        if !(interval > F::xd(0.001)) {
+            return (None, false);
+        }
+    }
+    let interval = if shared::pm::eq87(s.animtime, 0.0) { F::ZERO } else { interval };
+    let step = if F::MSVC { F::x(s.framerate) * F::x(s.frame_rate) * interval } else { interval * F::x(s.frame_rate) * F::x(s.framerate) };
+    let frame = (step + F::x(s.frame)).f();
+    if !below87(frame, 0.0) && below87(frame, 256.0) {
+        return (Some(frame), false);
+    }
+    let frame = if s.loops {
+        let n = (F::x(frame) * F::xd(1.0 / 256.0)).trunc_i32();
+        (F::x(frame) - F::xi(n) * F::xd(256.0)).f()
+    } else if below87(frame, 0.0) {
+        0.0
+    } else {
+        255.0
+    };
+    (Some(frame), true)
 }
 
 /// `CTSAnimation::SetAnim` (0x6d7e4).
@@ -473,7 +553,7 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
     if !grounded && alive {
         if cur == 4 && speed > 96.0 && !is_in_close_combat(id) {
             let ext2 = p.stunt.anim.ext2.clone();
-            blend_by_dir(p, cx, normalized(v), &JUMP, &ext2);
+            blend_by_dir(p, cx, anim_dir(v), &JUMP, &ext2);
         }
         if id == 2 {
             let dir = p.stunt.dir;
@@ -685,7 +765,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32, speed: f32) -> bool {
             let name = if ext2.is_empty() {
                 "standard_jump".to_owned()
             } else {
-                let d = get_direction(normalized(cx.pev().velocity), cx.pev().v_angle, 0.6, 0.3);
+                let d = get_direction(anim_dir(cx.pev().velocity), cx.pev().v_angle, 0.6, 0.3);
                 p.stunt.anim.last_dir = d;
                 format!("{}{}", JUMP[d as usize], ext2)
             };
@@ -700,7 +780,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32, speed: f32) -> bool {
         7 => death(p, cx),
         // Dive start.
         0x28 => {
-            let d = get_direction(normalized(cx.pev().velocity), cx.pev().v_angle, 0.6, 0.3);
+            let d = get_direction(anim_dir(cx.pev().velocity), cx.pev().v_angle, 0.6, 0.3);
             p.stunt.anim.last_dir = d;
             let name = format!("{}{}", DIVE[d as usize], ext2_or_akimbo(p));
             set_anim(p, cx, &name, 0x94, 0);
@@ -785,7 +865,7 @@ fn death(p: &mut Player, cx: &mut Cx) {
     let v = cx.pev().velocity;
     let a = &p.stunt.anim;
     let name = if hspeed_stored(v) >= 80.0 || a.last_damage > 50 {
-        let dir = if a.last_damage <= 50 { normalized(v) } else { [-a.attack_dir[0], -a.attack_dir[1], -a.attack_dir[2]] };
+        let dir = if a.last_damage <= 50 { anim_dir(v) } else { [-a.attack_dir[0], -a.attack_dir[1], -a.attack_dir[2]] };
         match get_direction(dir, cx.pev().v_angle, 0.6, 0.3) {
             2 => "forward_die",
             3 => {
@@ -855,6 +935,55 @@ mod tests {
     use super::{aiming, dance_due, fire_pose_2, goduck_holds, melee_legs_follow, shot_over, shot_running, wall_jump_pose_holds};
     use crate::stunt::rules::FirePose2;
     use goldsrc::sys::{FL_DUCKING, IN_DUCK};
+
+    /// #222: TS 2.1's `Animate` normalises with FUN_10011fc0, which stores `1 / len` as a float
+    /// (0x10012014) before the products; 3.0's (0x100148f0, `normalized`) keeps it unrounded.
+    #[test]
+    fn normalize_stored_reciprocal_rounds_the_reciprocal() {
+        use super::normalize_stored_reciprocal;
+        let v = [0x4427_f24a, 0x431b_b090, 0xc43d_9372].map(f32::from_bits);
+        assert_eq!(normalize_stored_reciprocal(v).map(f32::to_bits), [0x3f27_c9ac, 0x3e1b_8ae9, 0xbf3d_6599]);
+        let three: [f32; 3] = <shared::pm::Msvc as shared::pm::FpuMath>::vec_normalize(v, shared::pm::ORDER_XYZ);
+        assert_eq!(three.map(f32::to_bits), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598], "3.0's");
+        assert_eq!(normalize_stored_reciprocal([0.0; 3]), [0.0, 0.0, 1.0]);
+        assert!(normalize_stored_reciprocal([f32::NAN, 0.0, 0.0]).iter().all(|c| c.is_nan()), "IEEE zero test");
+    }
+
+    /// #243: `frame += interval * m_flFrameRate * framerate` rounded once (mp.dll 0x100082f6..
+    /// 0x10008308, ts_i386.so 0x93621..0x93632); the port's old `float` steps gave 0x4316a7fe.
+    #[test]
+    fn frame_advance_rounds_once() {
+        use super::{FrameStep, frame_advance};
+        use shared::pm::{Gcc, Msvc};
+        let b = f32::from_bits;
+        let s = FrameStep {
+            interval: 0.0,
+            time: b(0x4345_163b),
+            animtime: b(0x4345_0aaa),
+            frame: b(0x4316_2e8b),
+            frame_rate: 30.0,
+            framerate: b(0x3eb3_3333),
+            loops: true,
+        };
+        assert_eq!(frame_advance::<Msvc>(s).0.map(f32::to_bits), Some(0x4316_a7fd));
+        assert_eq!(frame_advance::<Gcc>(s).0.map(f32::to_bits), Some(0x4316_a7fd));
+        // The interval is compared unrounded with the double 0.001: 10.001f - 10 = 0.0010004.
+        let s = FrameStep { time: 10.001, animtime: 10.0, ..s };
+        assert!(frame_advance::<Msvc>(s).0.is_some());
+        assert_eq!(frame_advance::<Msvc>(FrameStep { time: 10.0009985, ..s }), (None, false));
+        // animtime 0: no step.
+        assert_eq!(frame_advance::<Msvc>(FrameStep { animtime: 0.0, ..s }), (Some(s.frame), false));
+        // Wrapping: a loop subtracts whole 256s, another clamps; a NaN frame finishes too.
+        let s = FrameStep { interval: 0.0, time: 11.0, animtime: 10.0, frame: 250.0, frame_rate: 10.0, framerate: 1.0, loops: true };
+        assert_eq!(frame_advance::<Msvc>(s), (Some(4.0), true));
+        assert_eq!(frame_advance::<Gcc>(s), (Some(4.0), true));
+        assert_eq!(frame_advance::<Msvc>(FrameStep { loops: false, ..s }), (Some(255.0), true));
+        assert_eq!(frame_advance::<Msvc>(FrameStep { frame: -20.0, loops: false, ..s }), (Some(0.0), true));
+        let (f, done) = frame_advance::<Msvc>(FrameStep { frame: f32::NAN, ..s });
+        assert!(f.unwrap().is_nan() && done);
+        // A given interval: no 0.001 test.
+        assert_eq!(frame_advance::<Msvc>(FrameStep { interval: 0.0005, frame: 1.0, ..s }), (Some(1.005), false));
+    }
 
     /// #174: TS 3.0's `2` shot pose follows the hold timer (unzoomed, one- or two-handed) and zeroes
     /// the shot timer; the slow one-handed rule reads the speed instead and keeps the shot timer.

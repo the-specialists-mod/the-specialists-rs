@@ -29,7 +29,10 @@ use std::ffi::CStr;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ObjectiveRules {
     /// The `TSHudMessageAll` effect of the objective lines (green, 30 s hold): the manager's
-    /// messages, a completed bomb, hack or escape, a defusing wire, a win giver's message.
+    /// messages, a completed bomb, hack or escape, a defusing wire, a win giver's message. The
+    /// other map entities' green lines use it too: a `ts_slowmotion`'s `message` (`Use`, 3.0
+    /// 0x71404, 2.1 0x10041240) and the `ts_dmhill` award (`WaitTouch`, 3.0 0x71be8, 2.1
+    /// 0x10041830), issue #221.
     pub hud_effect: u8,
     /// The two round teams' names: `attackerteam` 0 and 1 are the players whose team is the first
     /// or second name (`CanInteract`, the escape zone's head count), other values nobody, and a
@@ -46,9 +49,6 @@ pub struct ObjectiveRules {
     /// `ts_objective_ptr` enables any `IsObjective()` entity, the win and score givers included
     /// (which also go on the list); `false`: only `ts_bomb`, `ts_hack` and `ts_teamescape`.
     pub pointer_enables_givers: bool,
-    /// `PreThink`'s `CheckForWires` (0x92f08) in the objective mode: twice a second the player
-    /// sees the wires of an enabled bomb within 64 units it may use.
-    pub wire_hud: bool,
     /// A bomb's or hack's timer runs out at `!(t > 0)`, so a NaN runs out (3.0: `test ah,0x41;
     /// je`); `false`: at `t <= 0` only (`jp`), and a bomb's wires can be cut while `t` is NaN.
     pub nan_time_runs_out: bool,
@@ -58,6 +58,11 @@ pub struct ObjectiveRules {
 
 fn rules() -> &'static ObjectiveRules {
     crate::gameplay::active().server.objectives()
+}
+
+/// [`ObjectiveRules::hud_effect`] of the active ruleset.
+pub fn hud_effect() -> u8 {
+    rules().hud_effect
 }
 
 /// The objective lines: `TSHudMessageAll(0, 255, 0, effect, 30, text)`.
@@ -960,13 +965,14 @@ impl TeamEscape {
 
 // ---- wires --------------------------------------------------------------------------------------
 
-/// `CBasePlayer::CheckForWires` (0x92f08), from `PreThink` twice a second in the objective mode
-/// ([`ObjectiveRules::wire_hud`]): the player sees the wires of the enabled bombs within 64 units
-/// it may use (the last one found), or none.
+/// `CBasePlayer::CheckForWires` (0x92f08; 2.1 FUN_10055650), from `PreThink` twice a second in the
+/// objective mode (3.0 and 2.1 alike: 2.1's `PreThink` 0x100537e0 calls it on the same timer,
+/// issue #241): the player sees the wires of the enabled bombs within 64 units it may use (the
+/// last one found), or none.
 pub fn check_for_wires(p: &mut Player, cx: &mut Cx) {
     let now = cx.time();
     let due = p.ts.next_wire_check < now;
-    if state::with(|g| g.mode) != state::Mode::Objective || !rules().wire_hud || !due {
+    if state::with(|g| g.mode) != state::Mode::Objective || !due {
         return;
     }
     p.ts.next_wire_check = now + 0.5;

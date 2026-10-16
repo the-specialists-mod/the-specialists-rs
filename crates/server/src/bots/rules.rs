@@ -137,6 +137,17 @@ pub trait NativeBotRules: Sync {
     /// `IsGroundContinuous`: the floor probes from node `a` to node `b`; `no_floor` traces below
     /// each point, and the first one without a floor makes it false.
     fn ground_probes(&self, a: [f32; 3], b: [f32; 3], no_floor: &mut dyn FnMut([f32; 3]) -> bool) -> bool;
+
+    // Audit round 2: E
+
+    /// The order `Navigate` sums the squares of its three distances in (waypoint and detour
+    /// arrival, `< 48`; the stuck test, `< 96`), as indices into `[x, y, z]`
+    /// ([`super::brain::order`]).
+    fn nav_distance_order(&self) -> [usize; 3];
+
+    /// `GetSteerPoint`'s forward detour: `endpos - v_forward * 48`, rounded as the ruleset's code
+    /// does.
+    fn forward_detour(&self, endpos: [f32; 3], forward: [f32; 3]) -> [f32; 3];
 }
 
 /// The rules the registry falls back to in this crate's tests, where nothing is registered: the
@@ -228,6 +239,13 @@ impl NativeBotRules for Stub {
     }
     fn ground_probes(&self, a: [f32; 3], b: [f32; 3], no_floor: &mut dyn FnMut([f32; 3]) -> bool) -> bool {
         nodes::ground_probes(a, b, no_floor)
+    }
+    // Audit round 2: E
+    fn nav_distance_order(&self) -> [usize; 3] {
+        unreachable!("not used by the core tests")
+    }
+    fn forward_detour(&self, _endpos: [f32; 3], _forward: [f32; 3]) -> [f32; 3] {
+        unreachable!("not used by the core tests")
     }
 }
 
