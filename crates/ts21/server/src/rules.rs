@@ -508,6 +508,23 @@ pub fn round_cash(cash: i32, delta: i32, initial: f32, winner: bool) -> i32 {
     cv::trunc(c)
 }
 
+/// `TeamWin`'s HUD result (0x10044d00): `"Specialists Win"` (0x10098354), `"Mercenaries Win"`
+/// (0x10098344), `"Game Draw"` (0x10098338), with no `!`.
+pub fn team_win_text(team: i32) -> &'static str {
+    match team {
+        0 => "Specialists Win",
+        1 => "Mercenaries Win",
+        _ => "Game Draw",
+    }
+}
+
+/// `RestartRound`'s round-TDM line (0x100445d0, 0x100982a4).
+pub const ROUND_TDM_START: &str = "Defeat the opposite team";
+/// `TeamWin`'s line under two players (0x10098320, with its full stop).
+pub const TEAM_WIN_WAITING: &str = "Waiting other players.";
+/// `CheckDeads`' LMS line for a player alone (0x10045a1b pushes 0x10098400: no full stop).
+pub const LMS_WAITING: &str = "Waiting other players";
+
 /// `CTSGameRules::TeamWin(team, win, lose)` (0x10044d00): 0 the Specialists win, 1 the
 /// Mercenaries, 2 a draw. The round is over (`RoundTime` frozen, restart in 3 s). With fewer than
 /// two players the team cash and scores start again. Otherwise the team cash is paid out
@@ -522,11 +539,7 @@ pub fn team_win(team: i32, win: i32, lose: i32, now: f32) {
     });
     let players = slot_players();
     let initial = cv::initial_cash();
-    let result = match team {
-        0 => "Specialists Win!",
-        1 => "Mercenaries Win!",
-        _ => "Game Draw!",
-    };
+    let result = team_win_text(team);
     if players.len() < 2 {
         let cash = cv::initial_cash_int();
         state::with(|g| {
@@ -536,7 +549,7 @@ pub fn team_win(team: i32, win: i32, lose: i32, now: f32) {
             }
         });
         ts_message_all([0, 0, 0], 1, 30, result);
-        ts_message_all([0, 0, 0], 1, 30, "Waiting other players.");
+        ts_message_all([0, 0, 0], 1, 30, TEAM_WIN_WAITING);
     } else {
         state::with(|g| {
             let (spec, merc) = (g.teams[0].cash, g.teams[1].cash);
@@ -697,7 +710,7 @@ pub fn restart_round(now: f32) {
     let mode = state::with(|g| g.mode);
     objective::set_objective(matches!(mode, Mode::RoundTdm | Mode::Objective));
     if mode == Mode::RoundTdm {
-        ts_message_all([0, 0, 0], 1, 30, "Defeat the opposite team!");
+        ts_message_all([0, 0, 0], 1, 30, ROUND_TDM_START);
     }
     let per_round = with(|r| r.respawns_per_round);
     dev_round(&format!("RestartRound: {mode:?}, {rt} s, sides swapped {swapped}, respawns per round {per_round}"));
@@ -756,7 +769,7 @@ pub fn check_deads(now: f32) {
         if living.len() == 1 {
             let last = living[0];
             if total < 2 {
-                ts_message_all([0, 255, 0], 1, 30, "Waiting other players.");
+                ts_message_all([0, 255, 0], 1, 30, LMS_WAITING);
             } else {
                 ts_message_all([0, 255, 0], 1, 30, &shared::bformat!("{} is the Last Man Standing! 10 frags", netname(last)));
                 ts_server::rules::add_frags(last, None, 10.0);
@@ -808,6 +821,17 @@ pub fn check_deads(now: f32) {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #236: 2.1's round HUD strings as `mp.dll`'s `.rdata` has them.
+    #[test]
+    fn round_texts_are_2_1s() {
+        assert_eq!(team_win_text(0), "Specialists Win");
+        assert_eq!(team_win_text(1), "Mercenaries Win");
+        assert_eq!(team_win_text(2), "Game Draw");
+        assert_eq!(ROUND_TDM_START, "Defeat the opposite team");
+        assert_eq!(TEAM_WIN_WAITING, "Waiting other players.");
+        assert_eq!(LMS_WAITING, "Waiting other players");
+    }
+
     use super::*;
 
     #[test]
