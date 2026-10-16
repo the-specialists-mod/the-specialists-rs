@@ -478,6 +478,14 @@ impl ClientRules for Ts30Client {
     fn vgui_scale(&self) -> ts_client::hud::vgui::VguiScale {
         ts_client::hud::vgui::VguiScale::Reciprocal
     }
+
+    // Audit round 4: gui
+
+    /// The optimised build keeps the overview's intermediates on the x87 stack
+    /// (`DrawOverviewLayer` 0x10023c90, `DrawOverviewEntities` 0x10024160). Issues #271, #272.
+    fn hltv_overview_floats(&self) -> ts_client::spectator::OverviewFloats {
+        ts_client::spectator::OverviewFloats::Stack
+    }
 }
 
 /// The plugin as the client registers it.

@@ -448,6 +448,12 @@ pub trait ClientRules: Sync {
     /// layout: an optimised `client.dll`'s float reciprocals and spills, or an unoptimised one's
     /// division.
     fn vgui_scale(&self) -> crate::hud::vgui::VguiScale;
+
+    // Audit round 4: gui
+
+    /// How the HLTV overview (layer, icons, name tags) rounds its floats: an optimised
+    /// `client.dll`'s x87 stack or an unoptimised one's float stores.
+    fn hltv_overview_floats(&self) -> crate::spectator::OverviewFloats;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -754,6 +760,12 @@ mod stub {
 
         fn vgui_scale(&self) -> crate::hud::vgui::VguiScale {
             crate::hud::vgui::VguiScale::Reciprocal
+        }
+
+        // Audit round 4: gui
+
+        fn hltv_overview_floats(&self) -> crate::spectator::OverviewFloats {
+            crate::spectator::OverviewFloats::Stack
         }
     }
 }

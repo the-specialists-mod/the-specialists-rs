@@ -471,11 +471,20 @@ impl ClEngine {
     /// view) or the engine left the table or slot null. Not bounds-checked: the laser dots
     /// (`DrawLaserDots`) are converted to pixels without a screen check.
     pub fn world_to_screen_ndc(&self, world: [f32; 3]) -> Option<[f32; 2]> {
+        let (out, clipped) = self.world_to_screen_raw(world)?;
+        (!clipped).then_some([out[0], out[1]])
+    }
+
+    /// Triangle API `WorldToScreen` for callers that use the output whatever the result (TS's
+    /// overview name tags): what the engine wrote (the normalised device coordinates, or, when
+    /// the point is z-clipped, the undivided clip coordinates FWGS's `R_WorldToScreen` leaves) and
+    /// whether it was clipped. `None` when the engine left the table or slot null.
+    pub fn world_to_screen_raw(&self, world: [f32; 3]) -> Option<([f32; 3], bool)> {
         let f = self.tri_api()?.WorldToScreen?;
         let mut out = [0.0f32; 3];
         // SAFETY: engine callback from the triangle API table, called with a 3-float input and a 3-float output buffer.
         let clipped = unsafe { f(world.as_ptr(), out.as_mut_ptr()) };
-        (clipped == 0).then_some([out[0], out[1]])
+        Some((out, clipped != 0))
     }
 
     /// TS `WorldToScreen` (100579c0): screen pixel position of a world point,

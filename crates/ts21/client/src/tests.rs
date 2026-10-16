@@ -1062,3 +1062,12 @@ fn vgui_scale() {
     };
     assert_eq!((h(VguiScale::Division), h(VguiScale::Reciprocal)), (204, 203));
 }
+
+/// Issues #271, #272: the HLTV overview's floats are stored one by one in 2.1 (`(90 − pitch) / 90`
+/// 0x1004c475, `Length` 0x10097fc0, `AngleMatrix` 0x10061ee0) and kept on the x87 stack in 3.0
+/// (0x10023c90, 0x10024160).
+#[test]
+fn hltv_overview_floats() {
+    use ts_client::spectator::OverviewFloats;
+    assert_eq!((v21().hltv_overview_floats(), v30().hltv_overview_floats()), (OverviewFloats::Stored, OverviewFloats::Stack));
+}
