@@ -233,10 +233,11 @@ pub fn player_move(p: &mut playermove_t, arith: Arith, rules: &'static dyn PmRul
 
 /// A side's own spectator move, run in place of the shared [`PM_SpectatorMove`] step; it returns
 /// false to fall back to the shared one. The client passes TS's client-modified
-/// `PM_SpectatorMove` (`0x1002c790`).
+/// `PM_SpectatorMove` (`0x1002c790`). It gets the same movement rules as the shared step (the
+/// in-eye pitch, [`PmRules::in_eye_pitch`]).
 ///
 /// [`PM_SpectatorMove`]: Pm::spectator_move
-pub type SpectatorMove = fn(&mut playermove_t) -> bool;
+pub type SpectatorMove = fn(&mut playermove_t, &'static dyn PmRules) -> bool;
 
 /// `GetChaseOrigin` (server 0xfee5c, client 0x1002c6c0): 90 units behind `physents[target]`'s
 /// eyes (z + 35) along `angles`, pulled 4 units off any wall in between.
@@ -358,7 +359,7 @@ impl<F: Fpu> Pm<'_, F> {
         (self.p.forward, self.p.right, self.p.up) = (f, r, u);
 
         if self.p.spectator != 0 || self.p.iuser1 > 0 {
-            if !self.spectator.is_some_and(|f| f(self.p)) {
+            if !self.spectator.is_some_and(|f| f(self.p, self.rules)) {
                 self.spectator_move();
             }
             self.categorize_position();

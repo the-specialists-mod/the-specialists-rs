@@ -285,7 +285,7 @@ The hooks so far:
 | `PmRules` | `speed_by_slots(free, the_one)` | `ts30_gameplay::pm::speed_by_slots` | server `weapons/inventory.rs` `sync_speed` (the active plugin's) |
 | `PmRules` | `max_player_speed()` | 330: `SetPlayerSpeed`'s clamp and `TSInit`'s speed | server `inventory.rs` `sync_speed`, `rules/lifecycle.rs` `on_spawn` |
 | `PmRules` | `texture_limits()` | `TextureLimits::LARGE`: 1024 entries, 15 characters (`TextureLimits::SDK`: 512, 12) | `pm/mod.rs` `categorize_texture_type` (`textures::find_in`); the exported `pfnPM_FindTextureType` and the client's impact lookup keep 3.0's table |
-| `PmRules` | `in_eye_pitch(target_pitch)` | the target's pitch, copied | `pm/mod.rs` `spectator_move` (in eye) |
+| `PmRules` | `in_eye_pitch(target_pitch)` | the target's pitch, copied | `pm/mod.rs` `spectator_move` (in eye); the client's `spectator::spectator_move` (`in_eye_angles`) |
 | `PmRules` | `roll_divides_first()` | false: `side × rollangle / rollspeed` | `pm/mod.rs` `calc_roll` |
 | `PmRules` | `friction_edge_by_reciprocal()` | false: `vel / speed × 16 + origin` | `pm/mod.rs` `friction` (`edge_ahead`) |
 | `PmRules` | `ieee_compares()` | false: under `Arith::Msvc` the movement's `float` compares test C3/C0 as 3.0's `mp.dll` does, so a NaN is equal and below; true runs the `MsvcIeee` build (same arithmetic, IEEE compares) | `pm/mod.rs` `player_move_with` (every `Fpu::cmp_eq`/`cmp_lt`/`cmp_le` and `FpuMath::normalize`) |

@@ -723,3 +723,12 @@ fn status_panel_look() {
     let d = StatusLook::default();
     assert!(d.stance_health_fill && !d.armor_number && !d.icons_divide && d.team_bar_scale.is_none() && d.labels.is_none());
 }
+
+#[test]
+fn client_spectator_in_eye_pitch() {
+    // #205: 2.1's client `PM_SpectatorMove` (FUN_1005c820, `OBS_IN_EYE`): pitch × -2.0, yaw and
+    // roll copied. 3.0's (0x1002c790) copies all three.
+    let a = [-4.5, 30.0, 2.0];
+    assert_eq!(ts_client::spectator::in_eye_angles(&ts21_gameplay::TS21, a), [9.0, 30.0, 2.0]);
+    assert_eq!(ts_client::spectator::in_eye_angles(&ts30_gameplay::TS30, a), a);
+}
