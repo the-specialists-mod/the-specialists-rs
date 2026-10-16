@@ -18,10 +18,17 @@
 //! `UsePowerUp`); the rest goes out with the player's next `UpdateClientData` (`player::hud`).
 //!
 //! Version 3 (issue #104) added the host services ([`crate::plugins::host`]), the bot functions
-//! ([`bots`]), and the entity and game state ([`world_info`]).
+//! ([`bots`]), and the entity and game state ([`world_info`]). Version 6 added the frame's world
+//! ([`frame`]: every player, the items, the frame), what the new callbacks report ([`events`]) and
+//! the map keys the classes don't keep ([`keys`]).
 
 pub mod bots;
+pub mod events;
+pub mod frame;
+pub mod keys;
 pub mod world_info;
+
+pub use events::source_player;
 
 use crate::player::Player;
 use crate::rules::{self, powerup};

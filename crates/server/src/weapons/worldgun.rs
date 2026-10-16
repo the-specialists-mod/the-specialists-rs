@@ -362,6 +362,8 @@ impl WorldGun {
         }
         inventory::sync_speed(p, pcx);
         if ok {
+            // Port addition (plugin API version 6).
+            crate::plugins::item_pickup(pcx.edict, cx.edict, ts_plugin_api::entity::GUN, id as i32);
             self.taken = true;
             entities::remove(cx.edict);
         }

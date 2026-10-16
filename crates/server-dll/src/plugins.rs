@@ -143,9 +143,10 @@ impl PluginHooks for Loaded {
             f(player);
         }
     }
-    fn player_damaged(&self, victim: i32, attacker: i32, inflictor: i32, damage: f32, bits: i32, health: f32) {
-        if let Some(f) = self.desc.player_damaged {
-            f(victim, attacker, inflictor, damage, bits, health);
+    fn damage(&self, event: &ts_plugin_api::DamageEvent) {
+        if let Some(f) = self.desc.damage {
+            // SAFETY: `event` is a `DamageEvent` that lives for the call.
+            unsafe { f(event) };
         }
     }
     fn player_killed(&self, victim: i32, attacker: i32, inflictor: i32) {
@@ -171,11 +172,11 @@ impl PluginHooks for Loaded {
     fn wants_sounds(&self) -> bool {
         self.desc.sound.is_some()
     }
-    fn sound(&self, entity: i32, origin: [f32; 3], sample: &CStr, volume: f32, attenuation: f32) {
+    fn sound(&self, entity: i32, origin: [f32; 3], sample: &CStr, volume: f32, attenuation: f32, channel: i32, source: i32) {
         if let Some(f) = self.desc.sound {
             // SAFETY: `origin` is three floats and `sample` a NUL-terminated string, both living
             // for the call.
-            unsafe { f(entity, origin.as_ptr(), sample.as_ptr(), volume, attenuation) };
+            unsafe { f(entity, origin.as_ptr(), sample.as_ptr(), volume, attenuation, channel, source) };
         }
     }
     fn weapon_changed(&self, player: i32, weapon: i32) {
@@ -202,6 +203,25 @@ impl PluginHooks for Loaded {
         if let Some(f) = self.desc.kill_scored {
             // SAFETY: `kill` is a `KillInfo` that lives for the call.
             unsafe { f(kill) };
+        }
+    }
+    fn wants_entity_touch(&self) -> bool {
+        self.desc.entity_touch.is_some()
+    }
+    fn entity_touch(&self, player: i32, other: i32) {
+        if let Some(f) = self.desc.entity_touch {
+            f(player, other);
+        }
+    }
+    fn weapon_fired(&self, player: i32, weapon: i32, origin: [f32; 3], dir: [f32; 3], silenced: bool) {
+        if let Some(f) = self.desc.weapon_fired {
+            // SAFETY: `origin` and `dir` are three floats each that live for the call.
+            unsafe { f(player, weapon, origin.as_ptr(), dir.as_ptr(), silenced as c_int) };
+        }
+    }
+    fn item_pickup(&self, player: i32, entity: i32, kind: i32, id: i32) {
+        if let Some(f) = self.desc.item_pickup {
+            f(player, entity, kind, id);
         }
     }
     fn wants_melee_attack(&self) -> bool {

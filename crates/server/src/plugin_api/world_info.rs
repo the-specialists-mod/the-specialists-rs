@@ -9,10 +9,12 @@ use crate::entities::ts::{ctb, ground::GroundWeapon, powerup::PowerUp};
 use crate::rules::{self, state};
 use crate::weapons::worldgun::WorldGun;
 use crate::world;
+use goldsrc::Global;
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
 use std::any::TypeId;
+use std::cell::Cell;
 use std::ffi::{CStr, c_int};
 use ts_plugin_api::{EntityInfo, GameState, INVALID, MAX_TEAMS, NOT_PLAYER, OBJECTIVE_NAME_LEN, OK, ObjectiveInfo, entity, mode, round};
 
@@ -118,10 +120,19 @@ pub fn round_of(round_mode: bool, round_end: f32, round_restart: f32) -> c_int {
     }
 }
 
+/// Whether the map has a capture point (`ts_briefcase`), found at its start ([`map_started`]).
+static CTB: Global<Cell<bool>> = Global(Cell::new(false));
+
+/// `ServerActivate` (version 6): the map's entities exist; whether it is a capture-the-briefcase
+/// map is kept for `game_state` and `frame_info` rather than searched for on every call.
+pub fn map_started() {
+    CTB.0.set(!engine().find_by_string(std::ptr::null_mut(), c"classname", c"ts_briefcase").is_null());
+}
+
 /// `PluginApi::game_state`.
 pub fn game_state() -> GameState {
     let eng = engine();
-    let ctb = !eng.find_by_string(std::ptr::null_mut(), c"classname", c"ts_briefcase").is_null();
+    let ctb = CTB.0.get();
     let mut s = state::with(|g| {
         let m = match g.mode {
             state::Mode::Dm => mode::DEATHMATCH,

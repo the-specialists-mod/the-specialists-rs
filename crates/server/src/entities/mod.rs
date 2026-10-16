@@ -72,7 +72,21 @@ pub(crate) use link_entities;
 /// A class the gameplay plugin refuses ([`spawns_class`]) parses nothing.
 pub fn dispatch_key_value(e: *mut edict_t, class: Option<&CStr>, key: &CStr, value: &CStr) -> bool {
     let has_class = class.is_some_and(spawns_class);
-    key_value_order(|| entvars_key_value(e.v(), key, value), has_class, || crate::ham::key_value(e, class, key, value))
+    let mut entvars = false;
+    let handled = key_value_order(
+        || {
+            entvars = entvars_key_value(e.v(), key, value);
+            entvars
+        },
+        has_class,
+        || crate::ham::key_value(e, class, key, value),
+    );
+    // Port addition (plugin API version 6, `entity_key`): what the classes keep in their own
+    // objects, or drop, stays readable.
+    if !entvars {
+        crate::plugin_api::keys::record(e, key, value);
+    }
+    handled
 }
 
 /// Whether the active gameplay plugin lets an entity of `class` spawn

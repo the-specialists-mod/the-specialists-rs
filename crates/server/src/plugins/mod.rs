@@ -46,12 +46,15 @@ pub trait PluginHooks {
         false
     }
     fn player_spawned(&self, _player: i32) {}
-    fn player_damaged(&self, _victim: i32, _attacker: i32, _inflictor: i32, _damage: f32, _bits: i32, _health: f32) {}
+    /// Version 6 (replaces `player_damaged`): a player's damage.
+    fn damage(&self, _event: &ts_plugin_api::DamageEvent) {}
     fn player_killed(&self, _victim: i32, _attacker: i32, _inflictor: i32) {}
     fn on_kill(&self, _killer: i32, _victim: i32, _points: i32) {}
     fn round_start(&self) {}
     fn round_end(&self) {}
-    fn sound(&self, _entity: i32, _origin: [f32; 3], _sample: &CStr, _volume: f32, _attenuation: f32) {}
+    /// Version 6 adds the channel and the responsible player.
+    #[allow(clippy::too_many_arguments)] // the C callback's arguments
+    fn sound(&self, _entity: i32, _origin: [f32; 3], _sample: &CStr, _volume: f32, _attenuation: f32, _channel: i32, _source: i32) {}
     /// Whether [`Self::sound`] does anything (the sound hook is installed only then).
     fn wants_sounds(&self) -> bool {
         false
@@ -72,6 +75,16 @@ pub trait PluginHooks {
     }
     /// Version 5: `PlayerKilled` scored a death.
     fn kill_scored(&self, _kill: &ts_plugin_api::KillInfo) {}
+    /// Version 6: a bot touched `other` (or was touched by it).
+    fn entity_touch(&self, _player: i32, _other: i32) {}
+    /// Whether [`Self::entity_touch`] does anything (so the touch path skips the bot test).
+    fn wants_entity_touch(&self) -> bool {
+        false
+    }
+    /// Version 6: a player fired a shot.
+    fn weapon_fired(&self, _player: i32, _weapon: i32, _origin: [f32; 3], _dir: [f32; 3], _silenced: bool) {}
+    /// Version 6: a player picked up an item (`kind` an `ts_plugin_api::entity` kind).
+    fn item_pickup(&self, _player: i32, _entity: i32, _kind: i32, _id: i32) {}
 }
 
 struct Loaded {
@@ -214,6 +227,8 @@ pub fn precache() {
 }
 
 pub fn server_activate() {
+    // Version 6: for every caller of `game_state`, metamod plugins without a listener included.
+    crate::plugin_api::world_info::map_started();
     if !any() {
         return;
     }
@@ -225,9 +240,15 @@ pub fn server_deactivate() {
     each(|h| h.server_deactivate());
 }
 
-/// `StartFrame`, after the bots and before the rules: the plugins' frame, then the weapon and ammo
-/// changes since the last frame (`plugin_api::start_frame`).
+/// `StartFrame`, after the bots and before the rules: the frame's snapshot for the version 6
+/// queries (`plugin_api::frame::begin`), then the plugins' frame. The weapon and ammo changes
+/// since the last frame follow after the rules (`plugin_api::start_frame`).
 pub fn start_frame() {
+    if any() {
+        crate::plugin_api::frame::begin();
+    } else {
+        crate::plugin_api::frame::invalidate();
+    }
     each(|h| h.start_frame());
 }
 
@@ -268,11 +289,11 @@ pub fn player_spawned(e: *mut edict_t) {
     }
 }
 
-pub fn player_damaged(e: *mut edict_t, dmg: &DamageInfo, health: f32) {
+/// Version 6: player `e`'s `TakeDamage` ran (the event filled by `plugin_api::events`), deferred
+/// until the victim and attacker are back in their slots.
+pub fn damage(e: *mut edict_t, attacker: *mut edict_t, event: ts_plugin_api::DamageEvent) {
     if any() {
-        let (v, a, inf) = (index(e), index(dmg.attacker), index(dmg.inflictor));
-        let (amount, bits) = (dmg.damage, dmg.bits);
-        after(&[e, dmg.attacker], move || each(|h| h.player_damaged(v, a, inf, amount, bits, health)));
+        after(&[e, attacker], move || each(|h| h.damage(&event)));
     }
 }
 
@@ -299,12 +320,18 @@ pub fn round_end() {
 }
 
 /// The sound hook (`goldsrc::server::set_sound_hook`): every sound the game plays. `pos` is the
-/// ambient sound's position, else the entity's origin.
-fn sound(e: *mut edict_t, pos: Option<[f32; 3]>, sample: &CStr, volume: f32, attenuation: f32) {
+/// ambient sound's position, else the entity's origin. Version 6: the channel, and the player
+/// responsible (`plugin_api::source_player`).
+fn sound(e: *mut edict_t, pos: Option<[f32; 3]>, sample: &CStr, volume: f32, attenuation: f32, channel: i32) {
+    let hooks: Vec<_> = all().into_iter().filter(|h| h.wants_sounds()).collect();
+    if hooks.is_empty() {
+        return;
+    }
     let i = if e.is_null() { 0 } else { engine().index_of(e) };
     let origin = pos.unwrap_or_else(|| if e.is_null() { [0.0; 3] } else { e.v().origin });
-    for h in all().iter().filter(|h| h.wants_sounds()) {
-        h.sound(i, origin, sample, volume, attenuation);
+    let source = crate::plugin_api::source_player(i);
+    for h in hooks {
+        h.sound(i, origin, sample, volume, attenuation, channel, source);
     }
 }
 
@@ -338,6 +365,54 @@ pub fn player_powerup(e: *mut edict_t, bits: i32) {
 pub fn kill_scored(victim: *mut edict_t, killer: *mut edict_t, kill: ts_plugin_api::KillInfo) {
     if any() {
         after(&[killer, victim], move || each(|h| h.kill_scored(&kill)));
+    }
+}
+
+/// Whether anything listens for [`entity_touch`]. Asked on every touch, so it looks without
+/// copying the lists out.
+pub fn wants_entity_touch() -> bool {
+    PLUGINS.0.borrow().iter().any(|l| l.hooks.as_ref().is_some_and(|h| h.wants_entity_touch()))
+        || LISTENERS.0.borrow().list.iter().any(|(_, h)| h.wants_entity_touch())
+}
+
+/// Version 6: `DispatchTouch(e, other)` ran. When one of them is a bot (`FL_FAKECLIENT`), the
+/// listeners hear (bot, the other) once the bot is back in its slot.
+pub fn entity_touch(e: *mut edict_t, other: *mut edict_t) {
+    if e.is_null() || other.is_null() {
+        return;
+    }
+    let (bot, thing) = if is_fake(e) && crate::rules::is_player(e) {
+        (e, other)
+    } else if is_fake(other) && crate::rules::is_player(other) {
+        (other, e)
+    } else {
+        return;
+    };
+    if !wants_entity_touch() {
+        return;
+    }
+    let (b, t) = (index(bot), index(thing));
+    after(&[bot], move || {
+        for h in all().iter().filter(|h| h.wants_entity_touch()) {
+            h.entity_touch(b, t);
+        }
+    });
+}
+
+/// Version 6: player `e` fired a shot (from inside its PostThink, so deferred).
+pub fn weapon_fired(e: *mut edict_t, weapon: i32, origin: [f32; 3], dir: [f32; 3], silenced: bool) {
+    if any() {
+        let i = index(e);
+        after(&[e], move || each(|h| h.weapon_fired(i, weapon, origin, dir, silenced)));
+    }
+}
+
+/// Version 6: player `e` picked up `item` (`kind` an `ts_plugin_api::entity` kind, `id` its weapon
+/// id or power-up bits), deferred until the player is back in its slot.
+pub fn item_pickup(e: *mut edict_t, item: *mut edict_t, kind: i32, id: i32) {
+    if any() {
+        let (i, it) = (index(e), index(item));
+        after(&[e], move || each(|h| h.item_pickup(i, it, kind, id)));
     }
 }
 

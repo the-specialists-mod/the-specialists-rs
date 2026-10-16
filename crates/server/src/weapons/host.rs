@@ -347,6 +347,12 @@ impl GunHost for ServerHost<'_> {
 
     fn shoot(&mut self, shot: &Shot, gun: &mut Gun) {
         let me = self.edict;
+        // Port addition (plugin API version 6): `weapon_fired`, with the aim before the spread.
+        if crate::plugins::any() {
+            let v = me.v();
+            let dir = shared::weapons::spread::angle_vectors(v.v_angle).0;
+            crate::plugins::weapon_fired(me, shot.weapon as i32, fire::gun_position(v), dir, gun.silenced());
+        }
         self.reach_player(gun, || fire::shoot_bullets(me, shot));
     }
     fn melee(&mut self, hit: &MeleeHit, gun: &mut Gun) -> MeleeResult {

@@ -154,24 +154,31 @@ Port cvar, default `native`. **Read at map start** (`rules::install`, right afte
 
 ## 5. Writing a plugin backend
 
-1. Export `TSRS_PluginLoad` (plugin-api.md §1.2); check `api->version == 4`.
+1. Export `TSRS_PluginLoad` (plugin-api.md §1.2); check `api->version == 6` (`ts_plugin_api::VERSION`).
 2. In it (or in `game_init`): `register_bot_backend(id, "rcbot", &backend)` with `add_bot`,
    `activate`, `deactivate`, `adopt_bot`. Register commands (`rcbot ...`) and cvars, read data
    from `data_dir(id)` (`<gamedir>/tsmod/<name>/`: waypoints, learned data).
 3. `add_bot(name, model, skill)`: pick what is empty, call `create_bot(id, name, model, skill)`,
    keep the index, return it. The strings are bytes as typed (not UTF-8): pass a given name and
    model on unconverted, or a CP1252 byte turns into U+FFFD's three bytes (#190).
-4. Every `start_frame` while active: for each bot, think and call `run_cmd` once. Read the world
-   with the engine's own functions (`engine_funcs`: traces, PVS, entity searches) and the API
-   (`player_info`, `player_inventory`, `entity_info`, `game_state` with the team scores,
-   `objectives` for the HUD's objective list, `master_triggered`).
+4. Every `start_frame` while active: read the frame once (version 6: `players` for every slot,
+   `frame_info`, `items`; read `player_inventory` again only when a `PlayerSnapshot`'s
+   `inventory_serial` moved), then for each bot think and call `run_cmd` once with
+   `cmd::SET_VIEW | cmd::AUTO_MSEC`: the server turns the bot as its own bots turn, picks `msec`
+   from the frame time, and reports the result. Adopt `BotCmdResult::v_angle` after a
+   `FIXANGLE` event (a spawn or teleport turned the bot), drop the path after `TELEPORTED`.
+   Read the rest with the engine's own functions (`engine_funcs`: traces, PVS) and the API
+   (`entity_info`, `game_state` with the team scores, `objectives` for the HUD's objective list,
+   `master_triggered`, `entity_key` for a door's or button's `master`).
 5. Act through the port's code paths: `select_weapon` (TS 3.0 ignores `usercmd.weaponselect`),
    `buy`/`buy_item` (the loadout bought at the next spawn), `bot_command` (`usepowerup`,
    `respawn`, `say`), `drop_weapon`, `kick_bot`. Make an entity from keys as a map does with
    `create_entity`, `entity_key_value` and `spawn_entity` (RCBot's `givetsweapon`: a
    `ts_groundweapon` with `tsweaponid`, then `ham_execute(Ham_Use)` with the bot as activator).
-6. Hear the game through the descriptor's callbacks: spawns, damage, deaths, kills, rounds,
-   sounds (hearing), weapon and ammo changes, client commands (`rcbot` typed by a player).
+6. Hear the game through the descriptor's callbacks: spawns, damage (`DamageEvent`: who, where,
+   with what), deaths, kills, rounds, sounds (hearing; with the channel and the player
+   responsible), shots (`weapon_fired`), touches (`entity_touch`: triggers, pickups), pickups
+   (`item_pickup`), weapon and ammo changes, client commands (`rcbot` typed by a player).
 
 RCBot's needs from the research (issue #104's comment) map as: its engine hooks → the
 callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed`/`ammo_changed`;
@@ -181,7 +188,11 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
 `data_dir`. Version 4 (issue #117) added what RCBot still worked around: the `TeamScore` values
 (`GameState::team_scores`, its GA's death fitness), the `Objective` messages' list
 (`objectives`: id, origin, name and whether it is active) and entities made from keys
-(`UTIL_makeTSweapon`, `ExplosionCreate`).
+(`UTIL_makeTSweapon`, `ExplosionCreate`). Version 6 added what it still estimated or scanned for:
+the view and `msec` handling of the native bots and the move's result (`run_cmd`), one snapshot of
+every player and of the items per frame, the combat timers (when a player can attack, stunt or
+get up, and what it blocks), where a hit landed, shots, touches, pickups, and the `master` keys
+of the map's entities.
 
 ## 6. Tests
 
@@ -212,7 +223,17 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
   into the backend's run one bot kills another with `Ham_TakeDamage`, 1000 damage, by its own
   hand) and kill_scored (that kill reported: the killer as inflictor, at least a point, a killer
   spree of at least 1, a weapon id and name; the stub logs the whole report as
-  `kill_scored: killer .. victim .. ...`)), no `FAIL`, no crash. The fixtures are removed
+  `kill_scored: killer .. victim .. ...`); plugin API version 6: players_count and players
+  (every slot, a bot's agreeing with `player_info` and the engine), frame_info (against
+  `game_state` and the globals), items (against `entity_info`), inventory_serial (moved with a
+  changed `player_inventory`), combat_power and combat (the next attack ahead after a kung-fu
+  move), run_cmd_time (the game time put back), run_cmd_result, cmd_fixangle (the spawn's view,
+  adopted), set_view (the command's view kept afterwards), cmd_landed, cmd_teleported (the
+  scripted kill's victim respawned), entity_key (a `master` key on the `info_target`), sound_source,
+  entity_touch, damage (the scripted kill as a `DamageEvent`), weapon_fired (once the kung-fu
+  checks are done each bot gets an M4 with `ts_give`, which needs `sv_cheats`, and pulls the
+  trigger every second) and item_pickup (a `ts_groundweapon` Beretta spawned beside the bot and
+  handed over 2 s later with `Ham_Use`)), no `FAIL`, no crash. The fixtures are removed
   afterwards and by every `install`, so other scenarios run without plugins.
 * Native parity: `cargo xtask bots`, `play`, `test` unchanged.
 

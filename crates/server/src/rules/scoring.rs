@@ -492,6 +492,19 @@ pub fn kill_report(
     report
 }
 
+/// Port addition (plugin API version 6, `DamageEvent::weapon`): the blow's TS weapon id as
+/// [`kill_report`] counts it, from TS's damage globals now (`glast_*`, set by the hit being
+/// applied). `attacker_gun` is the attacker's gun in hand (0 kung fu), if a player.
+pub fn blow_weapon(d: &DamageInfo, attacker: *mut edict_t, attacker_gun: Option<u8>) -> i32 {
+    kill_weapon_id(own_hand(d, attacker), &crate::damage::glast::snapshot(), attacker_gun, || {
+        if d.inflictor.is_null() {
+            return (None, false);
+        }
+        let thrown = crate::weapons::thrown_blade_id(d.inflictor);
+        (thrown, thrown.is_none() && classname(d.inflictor) == "grenade")
+    })
+}
+
 /// Port addition (plugin API version 5): sends a ruleset's finished [`kill_report`] to the
 /// plugins' `kill_scored`, deferred until the killer (when a player) and the victim are back in
 /// their slots.

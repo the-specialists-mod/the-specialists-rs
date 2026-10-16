@@ -327,6 +327,8 @@ impl Entity for PowerUp {
         }
         let took = with_player(other, |p, pcx| self.pickup(cx, p, pcx)).unwrap_or(false);
         if took {
+            // Port addition (plugin API version 6): before `after_pickup` re-rolls a random kind.
+            crate::plugins::item_pickup(other, cx.edict, ts_plugin_api::entity::POWERUP, self.kind as i32);
             self.after_pickup(cx, other);
         }
     }

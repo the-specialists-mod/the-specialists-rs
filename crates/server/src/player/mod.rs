@@ -145,12 +145,18 @@ impl Entity for Player {
     fn trace_attack(&mut self, cx: &mut Cx, dmg: &DamageInfo) {
         damage::trace_attack(self, cx, dmg);
         crate::bot_backend::trace_attack(self, cx, dmg); // `CBot::TraceAttack` (0x1006bac0)
+        // Port addition (plugin API version 6): where it hit, for the damage event.
+        if crate::plugins::any() {
+            crate::plugin_api::events::traced(cx.edict, dmg);
+        }
     }
 
     fn take_damage(&mut self, cx: &mut Cx, dmg: &DamageInfo) -> bool {
         let r = damage::take_damage(self, cx, dmg);
         // Port addition: plugins hear of the damage once the player is back in reach.
-        crate::plugins::player_damaged(cx.edict, dmg, cx.pev().health);
+        if crate::plugins::any() {
+            crate::plugin_api::events::damage(cx.edict, dmg);
+        }
         r
     }
 

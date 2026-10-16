@@ -659,6 +659,8 @@ pub fn think(e: *mut edict_t) {
 /// `Touch(pOther)` (`DispatchTouch` and the game's own touches).
 pub fn touch(e: *mut edict_t, other: *mut edict_t) {
     outer(id::TOUCH, e, &mut (Ent(other),), |(o,)| world::dispatch(e, |ent, cx| class_touch(ent, cx, o.0)));
+    // Port addition (plugin API version 6): a bot's touches, for bot backends.
+    crate::plugins::entity_touch(e, other);
 }
 
 /// The class's `Touch`, unless the gameplay plugin runs its own (`ServerRules::entity_touch`).

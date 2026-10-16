@@ -11,8 +11,8 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::rc::Rc;
 use std::sync::OnceLock;
 use ts_plugin_api::{
-    BotBackend, BotCmd, EntityInfo, GameState, HamCall, INVALID, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, PluginApi, PluginId, VERSION,
-    WeaponEntry, ham,
+    BotBackend, BotCmd, BotCmdResult, EntityInfo, FrameInfo, GameState, HamCall, INVALID, ItemInfo, NOT_PLAYER, OK, ObjectiveInfo,
+    PlayerInfo, PlayerSnapshot, PluginApi, PluginId, VERSION, WeaponEntry, ham,
 };
 use ts_server::ham as hooks;
 use ts_server::plugin_api as api;
@@ -88,6 +88,10 @@ fn build((funcs, globals): (*const goldsrc::sys::enginefuncs_t, *mut goldsrc::sy
         add_listener,
         remove_listener,
         private_size,
+        players,
+        items,
+        frame_info,
+        entity_key,
     }
 }
 
@@ -106,6 +110,15 @@ unsafe fn arg<'a>(p: *const c_char) -> Option<&'a CStr> {
 /// # Safety
 /// A non-NULL `buf` is writable for `len` bytes (the table's contract).
 unsafe fn put_str(buf: *mut c_char, len: c_int, s: &str) -> c_int {
+    // SAFETY: the caller's guarantee.
+    unsafe { put_bytes(buf, len, s.as_bytes()) }
+}
+
+/// [`put_str`] for bytes that needn't be UTF-8.
+///
+/// # Safety
+/// As [`put_str`].
+unsafe fn put_bytes(buf: *mut c_char, len: c_int, s: &[u8]) -> c_int {
     if !buf.is_null() && len > 0 {
         let n = s.len().min(len as usize - 1);
         // SAFETY: `buf` is writable for `len` bytes and `n + 1 <= len`; `s` doesn't overlap it.
@@ -325,13 +338,23 @@ extern "C" fn kick_bot(player: c_int) -> c_int {
     api::bots::kick_bot(player)
 }
 
-unsafe extern "C" fn run_cmd(player: c_int, cmd: *const BotCmd) -> c_int {
+/// Guard: a NULL `cmd` is `INVALID`; a NULL `out` is allowed (no result wanted).
+unsafe extern "C" fn run_cmd(player: c_int, cmd: *const BotCmd, out: *mut BotCmdResult) -> c_int {
     if cmd.is_null() {
         return INVALID;
     }
     // SAFETY: the caller passes a `BotCmd` valid for reads (the table's contract).
     let c = unsafe { cmd.read_unaligned() };
-    api::bots::run_cmd(player, &c)
+    match api::bots::run_cmd(player, &c) {
+        Ok(r) => {
+            if !out.is_null() {
+                // SAFETY: a non-NULL `out` is a `BotCmdResult` valid for writes (the contract).
+                unsafe { out.write_unaligned(r) };
+            }
+            OK
+        }
+        Err(code) => code,
+    }
 }
 
 unsafe extern "C" fn bot_command(player: c_int, line: *const c_char) -> c_int {
@@ -478,4 +501,51 @@ extern "C" fn remove_listener(handle: c_int) -> c_int {
 
 extern "C" fn private_size(entity: c_int) -> c_int {
     api::private_size(entity)
+}
+
+// ---- version 6: the frame's world ------------------------------------------------------------------
+
+/// Copies `list[..max]` to the caller's `out` (NULL: nothing) and returns the list's length.
+///
+/// # Safety
+/// A non-NULL `out` is writable for `max` entries (the table's contract).
+unsafe fn put_list<T: Copy>(list: &[T], out: *mut T, max: c_int) -> c_int {
+    if !out.is_null() {
+        for (i, x) in list.iter().take(max.max(0) as usize).enumerate() {
+            // SAFETY: the caller's guarantee, and `i < max`.
+            unsafe { out.add(i).write_unaligned(*x) };
+        }
+    }
+    list.len().min(c_int::MAX as usize) as c_int
+}
+
+unsafe extern "C" fn players(out: *mut PlayerSnapshot, max: c_int) -> c_int {
+    // SAFETY: the table's contract for `out` and `max`.
+    unsafe { put_list(&api::frame::players(), out, max) }
+}
+
+unsafe extern "C" fn items(out: *mut ItemInfo, max: c_int) -> c_int {
+    // SAFETY: the table's contract for `out` and `max`.
+    unsafe { put_list(&api::frame::items(), out, max) }
+}
+
+unsafe extern "C" fn frame_info(out: *mut FrameInfo) -> c_int {
+    if out.is_null() {
+        return INVALID;
+    }
+    let f = api::frame::frame_info();
+    // SAFETY: the caller passes a `FrameInfo` valid for writes (the table's contract).
+    unsafe { out.write_unaligned(f) };
+    OK
+}
+
+unsafe extern "C" fn entity_key(entity: c_int, key: *const c_char, buf: *mut c_char, len: c_int) -> c_int {
+    // SAFETY: the table's contract for string arguments.
+    let Some(key) = (unsafe { arg(key) }) else { return INVALID };
+    match api::keys::entity_key(entity, key) {
+        // SAFETY: the table's contract for the buffer. The value's bytes go out as they came
+        // (a map's keys aren't UTF-8 necessarily).
+        Ok(v) => unsafe { put_bytes(buf, len, v.as_bytes()) },
+        Err(code) => code,
+    }
 }

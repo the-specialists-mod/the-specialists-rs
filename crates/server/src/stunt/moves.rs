@@ -935,6 +935,17 @@ mod tests {
         assert_eq!(FALL_SPLAT_CHANNEL, 3);
     }
 
+    /// Plugin API version 6: `CombatState`'s end times from TS 3.0's countdowns.
+    #[test]
+    fn countdown_timers_end_after_the_seconds_left() {
+        use super::super::rules::StuntClock;
+        struct Countdown;
+        impl StuntClock for Countdown {}
+        assert_eq!(Countdown.ends_at(100.0, 0.5), 100.5);
+        assert_eq!(Countdown.ends_at(100.0, 0.001), 0.0, "a resting recovery is over");
+        assert_eq!(Countdown.ends_at(100.0, 0.0), 0.0);
+    }
+
     #[test]
     fn jump_kick_gate() {
         use super::super::rules::StuntClock;

@@ -132,6 +132,8 @@ pub fn enable_objective(e: *mut edict_t, on: bool) {
 pub fn on_free_private_data(e: *mut edict_t) {
     query(id::TS_ONFREEENTPRIVATEDATA, e, (), |_| ());
     world::free(e);
+    // Port addition (plugin API version 6): the map keys `entity_key` kept for it.
+    crate::plugin_api::keys::forget(e);
 }
 
 /// `Killed(pevAttacker, iGib)` of a non-player from `CBaseEntity::TakeDamage` (0xab994), inside

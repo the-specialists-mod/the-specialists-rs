@@ -40,9 +40,10 @@ pub fn try_engine() -> Option<&'static Engine> {
 
 /// A function told of every sound the game plays through [`Engine::emit_sound`] (position
 /// `None`: the entity's) and [`Engine::emit_ambient_sound`] (its position), after the engine call:
-/// the entity, the position, the sample, the volume and the attenuation. Port addition, for the
-/// plugins' hearing (`ts_server::plugins`).
-pub type SoundHook = fn(*mut edict_t, Option<[f32; 3]>, &CStr, f32, f32);
+/// the entity, the position, the sample, the volume, the attenuation and the channel (an ambient
+/// sound's is `CHAN_STATIC`, the channel the engine plays it on). Port addition, for the plugins'
+/// hearing (`ts_server::plugins`).
+pub type SoundHook = fn(*mut edict_t, Option<[f32; 3]>, &CStr, f32, f32, i32);
 
 static SOUND_HOOK: crate::Global<std::cell::Cell<Option<SoundHook>>> = crate::Global(std::cell::Cell::new(None));
 
@@ -121,6 +122,18 @@ impl Engine {
         // SAFETY: as in `force_retouch`: the globals outlive the server and only the game thread
         // writes them.
         unsafe { (*self.globals).cdAudioTrack = track };
+    }
+
+    /// Puts `gpGlobals->time` and `frametime` back (port addition): `pfnRunPlayerMove` leaves them
+    /// at the command's end (FWGS `sv_pmove.c` `SV_RunCmd`), which the game's code after a bot's
+    /// command must not see.
+    pub fn set_frame_times(&self, time: f32, frametime: f32) {
+        // SAFETY: as in `force_retouch`: the globals outlive the server and only the game thread
+        // writes them.
+        unsafe {
+            (*self.globals).time = time;
+            (*self.globals).frametime = frametime;
+        }
     }
 
     pub fn time(&self) -> f32 {
@@ -439,7 +452,7 @@ impl Engine {
         }
         eng!(pfnEmitSound(e, channel, sample.as_ptr(), volume, attn, flags, pitch));
         if let Some(hook) = SOUND_HOOK.0.get() {
-            hook(e, None, sample, volume, attn);
+            hook(e, None, sample, volume, attn, channel);
         }
     }
 
@@ -448,7 +461,7 @@ impl Engine {
         let mut pos = pos;
         eng!(pfnEmitAmbientSound(e, pos.as_mut_ptr(), sample.as_ptr(), volume, attn, flags, pitch));
         if let Some(hook) = SOUND_HOOK.0.get() {
-            hook(e, Some(pos), sample, volume, attn);
+            hook(e, Some(pos), sample, volume, attn, CHAN_STATIC as i32);
         }
     }
 

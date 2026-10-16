@@ -14,9 +14,10 @@ of plugin use it:
   from their `TSRS_PluginLoad` and hand back callbacks. Bot backends are such plugins
   ([bot-plugins.md](bot-plugins.md)).
 
-The current version is **5** (tsmod-amxx-rs#8 and #10; version 4 was #117 and #99, version 3
-#104). Versions don't stay compatible: a break bumps `VERSION` and the interface name, so a stale
-plugin finds nothing (§8, §9, §10).
+The current version is **6** (for bot backends: tsmod-rcbot-rs's needs; version 5 was
+tsmod-amxx-rs#8 and #10, version 4 #117 and #99, version 3 #104). Versions don't stay
+compatible: a break bumps `VERSION` and the interface name, so a stale plugin finds nothing (§8,
+§9, §10, §11).
 
 | Part | Where |
 |---|---|
@@ -32,6 +33,10 @@ plugin finds nothing (§8, §9, §10).
 | Private-data guard | `crates/goldsrc/src/edict.rs`, `crates/server/src/world.rs` (`private_size`) |
 | Private-data mirror (version 5, §4.1) | `crates/server/src/pdata.rs` (layouts, sync, take-back; tests in it); block access `goldsrc::edict::{read,write}_private_u32` |
 | Listeners and the stunt, power-up and melee-attack callbacks (version 5) | `crates/server/src/plugins/mod.rs`; the stunts `stunt/moves.rs` (`stunted`), power-ups `rules/powerup.rs`, melee `shared::weapons::GunHost::melee_attack_pre` (`Gun::ccombat_attack`: `crates/ts30/src/melee.rs`, `crates/ts21/src/shared/melee.rs`) and `weapons/host.rs` |
+| The frame's world (version 6): `players`, `frame_info`, `items`, the inventory serial, `CombatState` | `crates/server/src/plugin_api/frame.rs` (built by `plugins::start_frame`); the stunt timers' end times `stunt::rules::StuntClock::ends_at` (2.1's in `crates/ts21/server/src/stunt.rs`) |
+| `run_cmd`'s view, `msec`, result and events (version 6) | `crates/server/src/plugin_api/bots.rs`; the globals put back `goldsrc::server::Engine::set_frame_times` |
+| The damage event, a sound's responsible player (version 6) | `crates/server/src/plugin_api/events.rs` (the hit from `Player::trace_attack`, the weapon `rules::scoring::blow_weapon`); the touch, shot and pickup callbacks `plugins/mod.rs`, called from `ham::touch`, `weapons/host.rs` (`shoot`), `entities/ts/ground.rs` (`get_weapon`), `entities/ts/powerup.rs` (`touch`), `weapons/worldgun.rs` (`give_to`) |
+| `entity_key` (version 6) | `crates/server/src/plugin_api/keys.rs`, recorded by `entities::dispatch_key_value`, forgotten by `ham::on_free_private_data` |
 | The scored kill (`kill_scored`, version 5) | the shared report `crates/server/src/rules/scoring.rs` (`kill_report`, `KillFlags`, `report_kill`); each ruleset's `PlayerKilled` fills in its points, sprees and tags: `crates/ts30/server/src/scoring.rs`, `crates/ts21/server/src/scoring.rs` |
 | Entity hooks (version 2, §7): numbering, marshalling, pre/post calls, `ham_execute` | `crates/server/src/ham/` (`mod.rs`, `table.rs`, `classes.rs`, `names.rs`; queries `query.rs`, the gun `gun.rs`; tests in `tests.rs`) |
 | The gun's hookable virtual calls (`Item_*` / `Weapon_*`) | `shared::weapons::Virtual`, `GunHost::virtual_pre` / `virtual_post` (`crates/shared/src/weapons/gun.rs`); the server's in `crates/server/src/weapons/host.rs` |
@@ -43,15 +48,15 @@ plugin finds nothing (§8, §9, §10).
 
 The server library exports tier1's `CreateInterface(name, return_code)` on every platform.
 `mp.dll` always had it, with nothing registered (0x10028f70). On Linux it is the one export the
-port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi005`
+port adds to `ts_i386.so`'s list (`stock-entities.md` §7.5). With `TSRS_PluginApi006`
 (`ts_plugin_api::INTERFACE_NAME`) it returns a pointer to the `PluginApi` and writes 0
 (`IFACE_OK`) to a non-NULL `return_code`. Any other name, the earlier versions' `TSRS_PluginApi001`,
-`TSRS_PluginApi003` and `TSRS_PluginApi004` included, or a NULL name, returns NULL and writes 1
-(`IFACE_FAILED`).
+`TSRS_PluginApi003`, `TSRS_PluginApi004` and `TSRS_PluginApi005` included, or a NULL name, returns
+NULL and writes 1 (`IFACE_FAILED`).
 
 A plugin looks the export up in the game library that is already loaded: metamod's
 `GINFO_REALDLL_FULLPATH`, then `dlopen(RTLD_NOLOAD)` / `GetModuleHandle`. It checks
-`PluginApi::version` (5) and `size`. Such a plugin has no plugin id: it passes `NO_PLUGIN` (0)
+`PluginApi::version` (6) and `size`. Such a plugin has no plugin id: it passes `NO_PLUGIN` (0)
 where one is asked, so it can't use `data_dir`, `register_bot_backend` or `create_bot`. Since
 version 5 it can register a `Plugin` descriptor as a **listener** (`add_listener`, §1.3) to get the
 callbacks a loaded plugin gets.
@@ -88,7 +93,7 @@ are never unloaded. The rule (`plugins/loader.rs`):
   (name, version, callbacks) and returns `OK`.
 * Skipped with a warning, never a crash: a library that can't be opened, has **no
   `TSRS_PluginLoad`**, returns anything but `OK`, or leaves a **descriptor `size`** other than
-  the server's or an **`api_version`** other than 5. What a refused plugin registered is dropped
+  the server's or an **`api_version`** other than 6. What a refused plugin registered is dropped
   (its commands then do nothing; its bot backend is gone). A library whose load function ran
   stays mapped.
 
@@ -104,12 +109,14 @@ loaded), `precache` (after the game's world precache), `server_activate(map)`,
 `shutdown` (`GameShutdown`), `client_connect` / `client_put_in_server` / `client_disconnect`
 (with `is_bot`; bots made by any backend get `client_put_in_server` only, as TS's `BotSetup`
 skips `ClientConnect`), `client_command` (before the game's commands; non-zero swallows it),
-`player_spawned`, `player_damaged`, `player_killed`, `on_kill` (a kill a player scored, with its
-points), `round_start` / `round_end` (last man standing), `sound` (every `EmitSound` /
-`EmitAmbientSound` the game plays, through `goldsrc::server::set_sound_hook`; installed only
-when a plugin has the callback), `weapon_changed` / `ammo_changed` (from the per-frame
-snapshot's weapon, clip and reserve, at most once a frame: TS sends bots no weapon messages).
-Version 5 adds:
+`player_spawned`, `damage` (version 6, below; it replaces version 5's `player_damaged`),
+`player_killed`, `on_kill` (a kill a player scored, with its points), `round_start` /
+`round_end` (last man standing), `sound` (every `EmitSound` / `EmitAmbientSound` the game plays,
+through `goldsrc::server::set_sound_hook`; installed only when a plugin has the callback; version
+6 adds the channel, `CHAN_STATIC` for an ambient sound, and the responsible player: the entity
+itself when a player, else `projectile_owner`'s answer), `weapon_changed` / `ammo_changed` (from
+the per-frame snapshot's weapon, clip and reserve, at most once a frame: TS sends bots no weapon
+messages). Version 5 adds:
 
 * `player_stunt(player, kind)`: a stunt started, `ts_plugin_api::stunt` kinds. 2 roll (`GoRoll`
   0x9cfe8, the roll out of a dive's `Landing` 0x9bbf4, a side roll out of `HandleSlide`
@@ -150,6 +157,27 @@ Version 5 adds:
   stunt styles, the kung-fu frag); `victims_weapon` and `HEADSHOT` are never set there, as 2.1
   has neither (ts21.md, Scoring). Both rulesets fill the shared part with
   `ts_server::rules::scoring::kill_report`.
+
+Version 6 adds (for bot backends; all deferred until the players they name are back in their
+slots):
+
+* `damage(&DamageEvent)`: a player's `TakeDamage` ran (`Player::take_damage`): victim, attacker,
+  inflictor (-1 none), the damage asked for and its bits, the health and armour left, and what
+  version 5 couldn't tell: the hitgroup, direction and position of the `TraceAttack` it came from
+  (TS's `TakeDamage` gets four arguments only, so the server keeps the last `TraceAttack` on the
+  player in this frame, `plugin_api::events`), and the blow's TS weapon id counted as
+  `KillInfo::weapon` (`rules::scoring::blow_weapon`, from TS's `glast_*` globals).
+* `entity_touch(player, other)`: `DispatchTouch` with a bot (`FL_FAKECLIENT`, any backend) on
+  either side, after the entity's `Touch` ran (`ham::touch`): triggers, pickups, doors, the world,
+  other players. A solid contact comes from both entities' touch, so it can come twice.
+* `weapon_fired(player, weapon, origin, dir, silenced)`: every `ShootBullets` (each round of a
+  burst; a shotgun's pellets are one call), from the gun's `shoot` (`weapons/host.rs`): the gun
+  position, the unit aim before the spread, and whether a silencer is on (`Gun::silenced`).
+  Melee, throws and grenades don't fire it.
+* `item_pickup(player, entity, kind, id)`: a ground weapon taken by `use` (whatever the ruleset's
+  `give_ground_weapon` decided, seen as a change of the inventory), a power-up (its bits, before a
+  random one re-rolls) or a dropped gun (`CTSWorldGun::GetWeapon`), with the `entity_info` kind and
+  the weapon id or power-up bits. A temporary power-up or dropped gun is removed by then.
 
 **Listeners** (version 5): `add_listener(&Plugin)` registers a descriptor for a plugin the server
 didn't load (a metamod plugin, such as `tsmod-amxx-rs`'s tsx). The server checks its `size` and
@@ -222,14 +250,18 @@ Addresses are `ts_i386.so` (Ghidra numbering). "pl+" offsets are `CBasePlayer` f
 | `player_inventory(player, out, max)` | Every owned weapon id 1..37: clip, the reserve of its ammo type, fire mode, owned attachments. Returns the count. Snapshot like `player_info` when the player is out of reach. |
 | `entity_info(entity, out)` | By the object's Rust type (`world::type_of`): player (team, `available` = alive), `GROUND_WEAPON` (`ts_groundweapon` and the HL names: TS id), `POWERUP` (bits), `GUN` (a dropped `WorldGun` with its id and dropper/thrower, or a `weapon_tsgun` and its holder, and since version 4 the holder's weapon in hand as `weapon`), `CTB_FLAG` (`ts_flag`, its team), `CTB_BASE` (`ts_briefcase`: capture team, `available` = captures accepted), `OBJECTIVE` (`ts_wingiver`, `ts_scoregiver`), `PROJECTILE` (thrower known), else `OTHER` (with `projectile_owner`'s owner). `available` is "not `EF_NODRAW`" unless said otherwise. This replaces RCBot's classname guesses and its `Classify()` virtual call. |
 | `master_triggered(master, activator)` | `UTIL_IsMasterTriggered` by name (`entities::stock::base::is_master_triggered_name`): what RCBot did with `CMasterEntity::IsTriggered` through a vtable the port doesn't have. As in TS, a name that isn't a master counts as triggered (and logs "Master was null or not a master!"). |
-| `game_state(out)` | `m_mode`, teamplay, LMS, The One, a CTB map (a `ts_briefcase` exists), team count, round state (`OVER` while `round_restart` is pending, `RUNNING` in a round mode with an end time), intermission, time, `maxClients`. Version 4: `team_scores[4]`, the `CTSGameRules` teams' scores that `TeamScore` carries (`TeamWin` 0x78a08, `CaptureTouch` 0x8db9c, `RecountTeams` 0xe5608; round wins and captures), by `PlayerInfo::team` - 1, 0 for an unnamed team. |
+| `game_state(out)` | `m_mode`, teamplay, LMS, The One, a CTB map (a `ts_briefcase` existed at `ServerActivate`; since version 6 found once per map, `world_info::map_started`, not on every call), team count, round state (`OVER` while `round_restart` is pending, `RUNNING` in a round mode with an end time), intermission, time, `maxClients`. Version 4: `team_scores[4]`, the `CTSGameRules` teams' scores that `TeamScore` carries (`TeamWin` 0x78a08, `CaptureTouch` 0x8db9c, `RecountTeams` 0xe5608; round wins and captures), by `PlayerInfo::team` - 1, 0 for an unnamed team. |
 | `objectives(player, out, max)` | Version 4. The HUD objective list (`CTSGameRules +0x2d0`, filled by `CTSObjectivePointer::Use` 0x8bbd8) as `SendObjectiveToHud` (0x7ac80) sends it to `player` in the `Objective` message: `id` the list index (the message's byte), the entity, `origin` its `Center()`, `name` that player's team text cut to 63 bytes; plus `active` (a bomb, hack or escape zone enabled, not frozen; a win or score giver that hasn't fired). `player` 0 reads the texts as no team. Returns the count (emptied slots of TS 2.1's appending list skipped); `NOT_PLAYER` for any other index that isn't a connected player. |
 | `create_entity(classname)` | Version 4. `CREATE_NAMED_ENTITY`; `INVALID` (and freed) for a class without a game object, as `CBaseEntity::Create` (0xac480) refuses one. Not spawned. |
 | `entity_key_value(entity, key, value)` | Version 4. `DispatchKeyValue` (0xaad4c) with the entity's classname as `szClassName`: the entvars table (`origin`, `targetname`, ...) then the class (and its `Ham_Keyvalue` hooks). 1 handled, 0 not, `NOT_PLAYER`, `INVALID`. |
 | `spawn_entity(entity)` | Version 4. `DispatchSpawn` (0xaab8c, with `Ham_Spawn`). A spawn that fails (-1: `FL_KILLME`, a refused class, a dead global) removes the entity, as the engine does with a map entity; one that removed itself is gone: both `INVALID`. RCBot's `UTIL_makeTSweapon` and `ExplosionCreate` are `create_entity` + keys + `spawn_entity` (+ `ham_execute(Ham_Use)`). |
 | `create_bot(plugin, name, model, skill)` | Only for the active backend's plugin. The host's `BotSetup` (`bot_backend::create_player`): fake client, `Player` with `cbot`/`is_bot`, spawn, `model`/`team`/`cl_lw` keys, teamplay team from the model, `ts_playeramount`. Index, `FULL` or `INVALID`. `name` and `model` are NUL-terminated byte strings, not UTF-8: they become the netname, the keys and the team unconverted, as TS's `strcpy`s (`BotCreate` 0x1006b7c0 / `BotCreateCustom` 0x1006b590 in Windows `mp.dll`), so pass on `add_bot`'s strings as they came (a CP1252 0xE9 stays 0xE9; #190). |
 | `kick_bot(player)` | `kick #<userid>` (queued). `INVALID` for a human. |
-| `run_cmd(player, cmd)` | `pfnRunPlayerMove`. `BUSY` inside the bot's own callbacks; `INVALID` for a human or `msec` outside 1..255. `ts_bot_stop 1` clears a living bot's movement, buttons and impulse (it still turns), as the native frozen think. |
+| `run_cmd(player, cmd, out)` | `pfnRunPlayerMove`. `BUSY` inside the bot's own callbacks; `INVALID` for a human, `msec` outside 0..255, an impulse outside 0..255, an unknown flag or a float that isn't finite. `ts_bot_stop 1` clears a living bot's movement, buttons and impulse (it still turns), as the native frozen think. Version 6 (`BotCmd::flags`): `SET_VIEW` writes `v_angle` and `angles` (pitch × -1/3, no roll) and clears `fixangle` before the move, as the native bots' `UpdateView` (0x1006e500) does. A fake client never gets the network update that clears `fixangle`, so without it a bot keeps its spawn's view for good. When the game had set `fixangle` (a spawn, a teleport, `ts_tp`), its angles (`pev->angles`, what `svc_setangle` sends a client) win for that command. `AUTO_MSEC` (or `msec` 0) runs `gpGlobals->frametime` in whole milliseconds, 1..255, carrying the fraction to the bot's next command. Afterwards the server puts `gpGlobals->time` and `frametime` back (FWGS's `SV_RunCmd` leaves them at `sv.time + frametime` and the command's length, `sv_pmove.c`) and fills `out` (`BotCmdResult`, may be NULL): `v_angle` (the game's while `fixangle` is set), origin, velocity, the `msec` used, and events `TELEPORTED` (moved farther than its speed allows: during the command, or between commands, when only a pusher moves a player), `FIXANGLE` (set before or during the command) and `LANDED` (in the air before, on the ground after). |
+| `players(out, max)` | Version 6. Slot 1..`max` as `PlayerSnapshot`s; returns `maxClients`. Built once a frame at `StartFrame` before the plugins' `start_frame` (`plugin_api::frame::begin`), when every player is in its slot: the user id (0 empty), `player_flag` bits (joined, alive, bot, `FL_ONGROUND`, `FL_DUCKING`, ladder = `MOVETYPE_FLY`, water = `waterlevel` ≥ 2, the case, observing = `iuser1`, prone and stunting from the `iuser4` stunt bits), team, the entvars vectors, health, armour, buttons, `player_info`'s weapon, stance, power-up and time-scale fields, the raw stunt bits, frags, deaths, free slots, an inventory serial (+1 whenever `player_inventory`'s list changes) and a `CombatState`: the kung-fu bar (`pl+0x774`) and the game times at which the next attack (`m_flNextAttack` / the gun's primary delay, which a kung-fu move sets), the stunt cooldown, the recovery (`CTSStunt` or `BlockPlayer`), the prone lock, the slow-motion dodge, the kung-fu / knife / katana blocks (`pl+0x7a8..`) and the delayed hit (`pl+0x79c`) run out, 0 for none. TS 3.0 keeps those as seconds left of the player's time, TS 2.1 as end times; the ruleset's `StuntClock::ends_at` converts. |
+| `items(out, max)` | Version 6. Every `ts_groundweapon` (and the HL names), `ts_powerup` and dropped gun (`CTSWorldGun`) in index order, taken ones too: index, serial number, `entity_info`'s kind, weapon, power-up bits and `available`, origin, and `respawn_at` (a hidden item's scheduled think; 0 when available, or when a round mode keeps it for `RespawnEntities`). Returns the count. |
+| `frame_info(out)` | Version 6. The frame's time and frame time (at `StartFrame`), the highest entity index in use, and `game_state`'s teamplay, CTB, mode and round. |
+| `entity_key(entity, key, buf, len)` | Version 6. A map key the entity was given (by the map or `entity_key_value`) that the `entvars_t` table doesn't take, such as `master`, `wait` or `tsweaponid`: the port's classes parse those into their objects or drop them, so `entities::dispatch_key_value` records them by index and serial number (`plugin_api/keys.rs`) and freeing the entity forgets them. The last value given wins; an exact match before one ignoring ASCII case. The bytes as given. `UNSUPPORTED` for a key it wasn't given (an entvars key: read the edict), `NOT_PLAYER`, `INVALID` for a NULL key. RCBot fills its masters list from it. |
 | `bot_command(player, line)` | `commands::run` with the line tokenized as the engine does (quotes group): plugins' `client_command`, then the game's commands, as if typed. `DEFERRED` when out of reach. |
 | `select_weapon(player, id)` | `weapon_<id>` (`CmdStart` ignores `weaponselect` in TS 3.0, which is why RCBot never switched). `INVALID` if not owned. |
 | `buy`, `buy_item`, `clear_loadout` | The loadout (`tkw`/`tka`, `tki`, `rst_cfg`: `AddItemToArmament`, `AddAmmoToArmament`), which `BuyArmament` applies at the next spawn under the server's restrictions and free slots. TS 3.0 charges nothing (`CashBased() == 0`). `akimbo` adds the second copy that makes the pair. |
@@ -342,10 +374,30 @@ block's size and layout don't matter to them.
   on a scoring kill in DM/TDM, where 2.1's spree part runs.
 * `player_stunt`'s kinds are the port's reading of TS 3.0's moves (`TSState` no longer carries
   them).
+* Version 6: `entity_touch` reports bots only, so the touch path stays cheap for everyone else.
+  `TELEPORTED` is a distance test (half again the speed's reach, plus 32 units), not a hook on
+  every teleport, so a short teleport can pass unseen and a fast push by a mover can be reported.
+  `CombatState`'s end times ignore the time scale: a slowed player's timers run out later. A
+  `DamageEvent`'s hit is the victim's last `TraceAttack` in the same frame: a refused trace (a
+  team mate) followed by a direct damage in that frame would lend its hitgroup to that damage.
+  `entity_key` keeps only the keys that aren't entvars fields.
 * Entity hooks: §7.6.
 
 ## 6. Tests
 
+* Version 6 (`cargo test`): the interface name (`005` refused), the `stunt_bits` behind
+  `STUNTING`; `run_cmd`'s argument checks (flags, `msec` 0), `AUTO_MSEC`'s carry (60 frames of
+  1/60 s add up to a second, never 0, a byte), `SET_VIEW`'s choice of view and body angles, the
+  teleport distance test (`plugin_api::bots`); the player flags, inventory serials, combat end
+  times and item respawn times (`plugin_api::frame`); the damage event's hit (`plugin_api::events`);
+  the key table (`plugin_api::keys`); the countdown and 2.1's end-time `ends_at`. `cargo xtask
+  plugins` runs the stub's version 6 checks (bot-plugins.md §6): `players` against `player_info`
+  and the engine, `frame_info` against `game_state` and the globals, `items` against
+  `entity_info`, the inventory serial moving with the inventory, the combat timers after a
+  kung-fu move, `run_cmd` with `SET_VIEW | AUTO_MSEC` (the spawn's `FIXANGLE` adopted, the view
+  kept, landings, the respawned victim's `TELEPORTED`, the game time put back), `entity_key`, the
+  sound's channel and source, touches, the scripted kill's damage event, a fired M4
+  (`ts_give`) and a Beretta handed over from a `ts_groundweapon` with `Ham_Use` (`item_pickup`).
 * Version 5 (`cargo test`): the interface name (`004` refused); the mirror's offsets against the
   decomp (both layouts, `tsxaddon.inc`'s ints), the words it writes, the writes it takes back
   (reserves and clips with their ranges, `m_iClip`, a weapon not owned, the read-only words
@@ -673,3 +725,20 @@ with the same arguments and results:
 | `Plugin` ends with `ammo_changed` | gains `player_stunt`, `player_powerup`, `melee_attack`, `kill_scored` (§1.3) at the end; `KillInfo`, `WEAPON_NAME_LEN`, the `kill` bits |
 | — | new, last in the table: `add_listener`, `remove_listener` (§1.3), `private_size` (§4); the `stunt` kinds |
 | private data: the tag, zeroes elsewhere | `pev` and the mirror (§4.1) |
+
+## 11. Version 5 → 6
+
+Version 6 is a break for bot backends (what tsmod-rcbot-rs worked around: a view stuck after a
+spawn, its own `msec` estimate, per-player `player_info` calls and entity scans every frame,
+classname guesses for items, no hit location, no `master` keys). `CreateInterface` answers only
+`TSRS_PluginApi006` and `Plugin::api_version` must be 6. Every version-5 entry not named here is
+unchanged:
+
+| Version 5 | Version 6 |
+|---|---|
+| `TSRS_PluginApi005`, `version` 5 | `TSRS_PluginApi006`, `version` 6 |
+| `run_cmd(player, cmd)`; `BotCmd` ends with `msec` (1..255) | `run_cmd(player, cmd, out)`: `BotCmd` gains `flags` (`cmd::SET_VIEW`, `cmd::AUTO_MSEC`; `msec` 0 = auto), `out` a `BotCmdResult` (`cmd_event` bits); the globals' time is put back |
+| `Plugin::player_damaged(victim, attacker, inflictor, damage, bits, health)` | `Plugin::damage(&DamageEvent)` in its place (adds armour, hitgroup, weapon, direction, position) |
+| `Plugin::sound(entity, origin, sample, volume, attenuation)` | adds `channel` and `source_player` |
+| `game_state`'s `ctb`: searched on every call | found once per map at `ServerActivate` |
+| — | new, last in `Plugin`: `entity_touch`, `weapon_fired`, `item_pickup`; last in the table: `players` (`PlayerSnapshot`, `CombatState`, `player_flag`, `stunt_bits`), `items` (`ItemInfo`), `frame_info` (`FrameInfo`), `entity_key` |

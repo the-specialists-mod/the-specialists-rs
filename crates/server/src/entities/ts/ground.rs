@@ -325,7 +325,13 @@ impl GroundWeapon {
             return;
         }
         if let Some((p, pcx)) = player {
+            // Port addition (plugin API version 6): the ruleset decides what a pickup gives, so a
+            // change of the inventory is what says one happened.
+            let before = (p.inv.gun.status, p.inv.gun.reserve);
             crate::gameplay::active().server.give_ground_weapon(self, cx, p, pcx);
+            if (p.inv.gun.status, p.inv.gun.reserve) != before {
+                crate::plugins::item_pickup(pcx.edict, cx.edict, ts_plugin_api::entity::GROUND_WEAPON, self.id);
+            }
         }
         if !repicks {
             return;

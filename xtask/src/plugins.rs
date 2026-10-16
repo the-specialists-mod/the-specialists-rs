@@ -5,7 +5,10 @@
 //! architecture, junk, another platform's name). The server starts on ts_dojo with native bots,
 //! switches `ts_bot_backend` to `test` and changes the map, and the test backend's bots must
 //! walk, jump and answer the plugin's API checks (with version 5's: a listener, a dive, a used
-//! power-up, which needs `sv_cheats`, kung-fu moves changed and blocked, a scored kill). The
+//! power-up, which needs `sv_cheats`, kung-fu moves changed and blocked, a scored kill; and
+//! version 6's: the per-frame players, items and frame, `run_cmd`'s view, `msec` and events, the
+//! touch, damage, shot and pickup callbacks, `entity_key`; the shots need `sv_cheats` too, for
+//! `ts_give`). The
 //! fixtures are removed afterwards (and by every `install`), so other scenarios run without
 //! plugins.
 
@@ -31,8 +34,8 @@ fn other_arch(t: &Target) -> Target {
 const FIXTURES: [&str; 7] = ["test_badver", "test_badsize", "test_refuse", "noexport", "wrongarch", "junk", "otherplat"];
 
 /// The plugin checks the stub logs as `[tsmod_test] check <what> ok`. From `add_listener` on:
-/// plugin API version 5 (#198).
-pub const CHECKS: [&str; 30] = [
+/// plugin API version 5 (#198); from `players_count` on, version 6.
+pub const CHECKS: [&str; 49] = [
     "data_dir",
     "map_name",
     "create_bot",
@@ -63,6 +66,25 @@ pub const CHECKS: [&str; 30] = [
     "melee_attack_block",
     "ham_take_damage",
     "kill_scored",
+    "players_count",
+    "players",
+    "frame_info",
+    "items",
+    "inventory_serial",
+    "combat_power",
+    "combat",
+    "run_cmd_time",
+    "run_cmd_result",
+    "cmd_fixangle",
+    "set_view",
+    "cmd_landed",
+    "cmd_teleported",
+    "entity_key",
+    "sound_source",
+    "entity_touch",
+    "damage",
+    "weapon_fired",
+    "item_pickup",
 ];
 
 /// Removes every `tsmod_*` file xtask may have put in `dlls/` (a run that was cut short).
@@ -256,7 +278,7 @@ mod tests {
         let mut log = String::from("[ts] GameInit: x\n[ts] bots: backend test: reloading ts_dojo\n[ts] bots: backend test\n");
         for l in [
             "loaded tsmod_test_amd64.so (tsmod_test 1)",
-            "tsmod_test_badver_amd64.so: built for plugin API version 5, this server has version 4, skipped",
+            "tsmod_test_badver_amd64.so: built for plugin API version 7, this server has version 6, skipped",
             "tsmod_test_badsize_amd64.so: its plugin descriptor is 8 bytes, skipped",
             "tsmod_test_refuse_amd64.so: its TSRS_PluginLoad refused to load (-2), skipped",
             "tsmod_noexport_amd64.so: has no TSRS_PluginLoad export, skipped",

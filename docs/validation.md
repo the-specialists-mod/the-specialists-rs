@@ -371,7 +371,9 @@ win32 under Wine (listen server, `ts_arena`).
   hamsandwich port in `tsmod-amxx-rs` is to drive them under AMX Mod X. Version 4's gun and query
   hooks and its team scores, objectives and entity creation are unit tested; in engine, `cargo
   xtask plugins`' stub checks `Ham_Item_PreFrame` on its bots' guns, `create_entity` and the
-  objective list (empty on ts_dojo). The private-data guard was checked
+  objective list (empty on ts_dojo). Version 6's per-frame queries, `run_cmd`'s view, `msec` and
+  result, `entity_key` and the touch, damage, shot and pickup callbacks are unit tested where the
+  logic allows, and `cargo xtask plugins`' stub checks them in engine (bot-plugins.md §6). The private-data guard was checked
   under AMX Mod X on ReHLDS Linux and Windows (`ref/amxx-testenv`: hamsandwich fails cleanly,
   fakemeta pdata reads zeroed padding), not under xtask.
 

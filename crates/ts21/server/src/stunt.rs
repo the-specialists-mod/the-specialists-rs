@@ -171,6 +171,11 @@ impl StuntClock for Absolute {
         t < now
     }
 
+    /// Port addition (plugin API version 6): 2.1's timers are their end times already.
+    fn ends_at(&self, now: f32, t: f32) -> f32 {
+        if t > now { t } else { 0.0 }
+    }
+
     fn tick(&self, s: &mut StuntState, dt: f32) {
         let _ = (s, dt);
     }
@@ -320,6 +325,13 @@ mod tests {
 
     /// #242: `BlockPlayer`'s end is the passed (already slowed) duration plus the time, a `float`
     /// sum, whatever the time scale.
+    #[test]
+    fn timers_end_at_their_end_times() {
+        assert_eq!(Absolute.ends_at(100.0, 101.5), 101.5);
+        assert_eq!(Absolute.ends_at(100.0, 99.0), 0.0, "run out");
+        assert_eq!(Absolute.ends_at(100.0, 0.0), 0.0, "never started");
+    }
+
     #[test]
     fn block_end_adds_the_time() {
         let t = f32::from_bits(0x3f2c_cccc);

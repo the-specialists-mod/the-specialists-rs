@@ -169,6 +169,13 @@ pub trait StuntClock: Sync {
         s.prone_lock = (s.prone_lock - dt).max(0.0);
     }
 
+    /// Port addition (plugin API version 6, `CombatState`): the game time at which timer `t`
+    /// runs out, 0 when it isn't running. TS 3.0's holds the seconds left (over below 0.01), so
+    /// `now + t`; a slowed player's runs out later than that.
+    fn ends_at(&self, now: f32, t: f32) -> f32 {
+        if self.done(now, t) { 0.0 } else { now + t }
+    }
+
     /// `PreThink`'s countdown of `BlockPlayer`'s lock (`dt` is ×1.5 under double firerate).
     fn tick_block(&self, s: &mut StuntState, dt: f32) {
         if s.block_timer != 0.0 {

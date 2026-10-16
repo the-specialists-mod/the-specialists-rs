@@ -14,6 +14,16 @@
 //! attack comes), one bot is killed by another through `Ham_TakeDamage` (`kill_scored`), and
 //! `private_size` is asked about a bot.
 //!
+//! Plugin API version 6: its bots run with the server's view handling and `msec`
+//! (`cmd::SET_VIEW | cmd::AUTO_MSEC`) and check what `run_cmd` reports (the spawn's `fixangle`,
+//! landings, the respawned victim's teleport, the view kept, the game time put back). Every frame
+//! it reads `players`, `frame_info` and `items` and checks them against `player_info`,
+//! `player_inventory` (the inventory serial) and the engine. Once the kung-fu checks are done each
+//! bot gets an M4 (`ts_give`), fires it (`weapon_fired`) and is handed a Beretta from a
+//! `ts_groundweapon` through `Ham_Use` (`item_pickup`). It hears touches (`entity_touch`), the
+//! scripted kill's `damage` event and sounds with their channel and responsible player, and reads
+//! a non-entvars key back with `entity_key`.
+//!
 //! The plugin keeps its state behind a mutex, which it never holds while calling the API: the
 //! server calls back into the plugin from inside API calls (`create_bot` spawns the bot).
 
@@ -25,12 +35,18 @@ use std::ffi::{CStr, CString, c_char, c_int};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use ts_plugin_api::{
-    BotBackend, BotCmd, DEFERRED, EntityInfo, GameState, HamArg, HamCall, INVALID, KillInfo, LoadInfo, NOT_PLAYER, OK, ObjectiveInfo,
-    PlayerInfo, Plugin, PluginApi, PluginId, VERSION, WeaponEntry, entity, ham, item, log, powerup, stunt,
+    BotBackend, BotCmd, BotCmdResult, DEFERRED, DamageEvent, EntityInfo, FrameInfo, GameState, HamArg, HamCall, INVALID, ItemInfo,
+    KillInfo, LoadInfo, NOT_PLAYER, OK, ObjectiveInfo, PlayerInfo, PlayerSnapshot, Plugin, PluginApi, PluginId, UNSUPPORTED, VERSION,
+    WeaponEntry, cmd, cmd_event, entity, ham, item, log, player_flag, powerup, stunt,
 };
 
-/// TS weapon id of the M4 (`shared::weapons::id::M4`), bought for the test bots.
+/// TS weapon id of the M4 (`shared::weapons::id::M4`), bought for the test bots, and of the
+/// Beretta (`BERETTA`), handed over from a `ts_groundweapon`.
 const M4: c_int = 5;
+const BERETTA: c_int = 2;
+/// hamsandwich's `Ham_Use` and the engine's `USE_TOGGLE`.
+const HAM_USE: c_int = 43;
+const USE_TOGGLE: c_int = 3;
 /// `IN_JUMP`.
 const IN_JUMP: c_int = goldsrc_sys::IN_JUMP as c_int;
 /// hamsandwich's `Ham_Item_PreFrame`: the gun's `ItemPreFrame`, every frame a living player's
@@ -50,7 +66,7 @@ const MELEE_SLACK: f32 = 0.8;
 /// The game time after the backend's start at which one bot kills another.
 const KILL_AFTER: f32 = 12.0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Bot {
     idx: c_int,
     /// Where it was when first seen alive this life, and the farthest it got from there.
@@ -67,6 +83,12 @@ struct Bot {
     /// The last `melee_attack` answer this life, and how many were asked.
     melee: Option<Melee>,
     melee_calls: u32,
+    /// Version 6: the gun phase (an M4 given, the ground Beretta and when to use it), the next
+    /// trigger press, and the last inventory serial with the list it stood for.
+    armed: bool,
+    ground: Option<(c_int, f32)>,
+    next_fire: f32,
+    serial: Option<(c_int, Vec<WeaponEntry>)>,
 }
 
 impl Bot {
@@ -83,6 +105,10 @@ impl Bot {
             alive_since: 0.0,
             melee: None,
             melee_calls: 0,
+            armed: false,
+            ground: None,
+            next_fire: 0.0,
+            serial: None,
         }
     }
 }
@@ -261,6 +287,10 @@ const DESCRIPTOR: Plugin = Plugin {
     player_killed: Some(player_killed),
     sound: Some(sound),
     weapon_changed: Some(weapon_changed),
+    damage: Some(damage),
+    entity_touch: Some(entity_touch),
+    weapon_fired: Some(weapon_fired),
+    item_pickup: Some(item_pickup),
     player_stunt: Some(player_stunt),
     player_powerup: Some(player_powerup),
     melee_attack: Some(melee_attack),
@@ -369,9 +399,13 @@ extern "C" fn start_frame() {
     if !active {
         return;
     }
+    let snaps = frame_checks(a, g);
     let mut kept = Vec::new();
     for mut b in bots {
         let Some(i) = info(b.idx) else { continue };
+        if let Some(snap) = snaps.get(b.idx as usize - 1) {
+            snapshot_checks(a, &mut b, snap, &i, now);
+        }
         if b.probed || probe(a, b.idx, &i) {
             b.probed = true;
         }
@@ -408,17 +442,33 @@ extern "C" fn start_frame() {
         if dive {
             b.next_stunt = now + 2.5;
         }
-        let buttons = if jump { IN_JUMP } else { 0 } | if dive { IN_ALT1 } else { 0 } | if i.weapon == 0 { IN_ATTACK } else { 0 };
+        // A gun's trigger: a fresh press every second (semi-automatic fire needs one).
+        let fire = i.weapon != 0 && now >= b.next_fire;
+        if fire {
+            b.next_fire = now + 1.0;
+        }
+        let attack = i.weapon == 0 || fire;
+        let buttons = if jump { IN_JUMP } else { 0 } | if dive { IN_ALT1 } else { 0 } | if attack { IN_ATTACK } else { 0 };
+        // Version 6: the server turns the bot and picks `msec` (from the frame time, carried).
         let cmd = BotCmd {
             angles: [0.0, b.yaw, 0.0],
             forward: 250.0,
             buttons,
-            msec: (dt * 1000.0).round().clamp(1.0, 100.0) as c_int,
+            msec: 0,
+            flags: cmd::SET_VIEW | cmd::AUTO_MSEC,
             ..BotCmd::default()
         };
-        // SAFETY: `cmd` is a `BotCmd` valid for the call.
-        let rc = unsafe { (a.run_cmd)(b.idx, &cmd) };
+        let mut r = BotCmdResult::default();
+        // SAFETY: `cmd` and `r` are valid for the call.
+        let rc = unsafe { (a.run_cmd)(b.idx, &cmd, &mut r) };
         check("run_cmd", rc == OK);
+        // SAFETY: the engine's globals, read after the call that ran the bot's command (it may have
+        // changed them; a volatile read doesn't assume it didn't).
+        let after = unsafe { std::ptr::read_volatile(&g.time) };
+        if rc == OK {
+            result_checks(&mut b, &cmd, &r, now, after);
+        }
+        gun_phase(a, &mut b, now);
         if report {
             say(log::INFO, &format!("bot #{} weapon={} moved={:.0} alive={}", b.idx, i.weapon, b.moved, i.alive));
         }
@@ -427,7 +477,7 @@ extern "C" fn start_frame() {
     with(|s| {
         // Bots added during the loop (none in practice) are kept too, and the melee answers given
         // during it (the callback wrote them to the state).
-        let extra: Vec<Bot> = s.bots.iter().filter(|x| !kept.iter().any(|k| k.idx == x.idx)).copied().collect();
+        let extra: Vec<Bot> = s.bots.iter().filter(|x| !kept.iter().any(|k| k.idx == x.idx)).cloned().collect();
         for k in kept.iter_mut() {
             if let Some(b) = s.bots.iter().find(|b| b.idx == k.idx) {
                 (k.melee, k.melee_calls) = (b.melee, b.melee_calls);
@@ -437,6 +487,166 @@ extern "C" fn start_frame() {
     });
     remove_heard_listener(a);
     scripted_kill(a, now);
+}
+
+/// Version 6, once a frame: `players` (every slot, the frame's), `frame_info` against the engine,
+/// and `items` against `entity_info`. Returns the snapshots, slot 1 first.
+fn frame_checks(a: &PluginApi, g: &globalvars_t) -> Vec<PlayerSnapshot> {
+    let mut snaps = vec![PlayerSnapshot::default(); 64];
+    // SAFETY: `snaps` is writable for 64 entries; a NULL buffer only counts.
+    let (n, counted) = unsafe { ((a.players)(snaps.as_mut_ptr(), snaps.len() as c_int), (a.players)(std::ptr::null_mut(), 0)) };
+    check("players_count", n == g.maxClients && counted == n);
+    snaps.truncate(n.clamp(0, 64) as usize);
+    let mut f = FrameInfo::default();
+    let mut s = GameState::default();
+    // SAFETY: `f` and `s` are writable; NULL is refused.
+    let (rc, rc_null, rc_s) = unsafe { ((a.frame_info)(&mut f), (a.frame_info)(std::ptr::null_mut()), (a.game_state)(&mut s)) };
+    check(
+        "frame_info",
+        rc == OK
+            && rc_null == INVALID
+            && rc_s == OK
+            && f.time == g.time
+            && f.highest_edict >= g.maxClients
+            && (f.teamplay, f.ctb, f.mode, f.round) == (s.teamplay, s.ctb, s.mode, s.round),
+    );
+    let mut items = vec![ItemInfo::default(); 256];
+    // SAFETY: `items` is writable for 256 entries.
+    let n = unsafe { (a.items)(items.as_mut_ptr(), items.len() as c_int) };
+    items.truncate(n.clamp(0, 256) as usize);
+    let consistent = items.iter().all(|it| {
+        let mut e = EntityInfo::default();
+        // SAFETY: `e` is writable.
+        let rc = unsafe { (a.entity_info)(it.index, &mut e) };
+        let kind = [entity::GROUND_WEAPON, entity::POWERUP, entity::GUN].contains(&it.kind);
+        kind && it.index > g.maxClients && it.index <= f.highest_edict && rc == OK && e.kind == it.kind && e.weapon == it.weapon
+    });
+    check("items", n >= 0 && consistent);
+    snaps
+}
+
+/// Version 6, per bot before its command: its slot in `players` agrees with `player_info` and the
+/// engine; the inventory serial moves exactly when `player_inventory` changes; the combat timers
+/// show a kung-fu move's delay.
+fn snapshot_checks(a: &PluginApi, b: &mut Bot, snap: &PlayerSnapshot, i: &PlayerInfo, now: f32) {
+    // What other bots' commands earlier in this frame can't have changed since the snapshot (a
+    // punch can kill or disarm; only the bot's own command moves it).
+    let alive = snap.flags & player_flag::ALIVE != 0;
+    let same =
+        snap.user_id > 0 && snap.flags & player_flag::BOT != 0 && snap.team == i.team && origin(b.idx).is_some_and(|o| o == snap.origin);
+    check("players", same);
+    let mut inv = vec![WeaponEntry::default(); 40];
+    // SAFETY: `inv` is writable for 40 entries.
+    let n = unsafe { (a.player_inventory)(b.idx, inv.as_mut_ptr(), inv.len() as c_int) };
+    inv.truncate(n.clamp(0, 40) as usize);
+    // Only a moved serial with a changed list counts: other bots' moves earlier in this frame
+    // (a kung-fu disarm) can change the list after the frame's snapshot was taken.
+    if let Some((s, before)) = &b.serial
+        && *s != snap.inventory_serial
+        && *before != inv
+    {
+        check("inventory_serial", true);
+    }
+    b.serial = Some((snap.inventory_serial, inv));
+    let c = &snap.combat;
+    if alive {
+        check("combat_power", (0.0..=100.0).contains(&c.melee_power));
+    }
+    // A move answered in the last half second (delay 1.5 or 2 s) keeps the next attack ahead.
+    if let Some(m) = b.melee
+        && now - m.at < 0.5
+        && alive
+    {
+        check("combat", c.next_attack_at > now);
+    }
+}
+
+/// Version 6: what `run_cmd` reported. The first command after a spawn carries the spawn's
+/// `fixangle` (the bot adopts the game's view); afterwards the view is the command's; landings
+/// come with the jumps; the respawned victim of the scripted kill was teleported; the game time is
+/// the frame's again.
+fn result_checks(b: &mut Bot, cmd: &BotCmd, r: &BotCmdResult, before: f32, after: f32) {
+    check("run_cmd_time", after == before);
+    check("run_cmd_result", (1..=255).contains(&r.msec) && origin(b.idx).is_some_and(|o| o == r.origin));
+    if r.events & cmd_event::FIXANGLE != 0 {
+        check("cmd_fixangle", true);
+        b.yaw = r.v_angle[1].rem_euclid(360.0);
+    } else {
+        let d = (r.v_angle[1] - cmd.angles[1]).rem_euclid(360.0);
+        // The stunts may hold the view (`FREEZE_ANGLES`), so only a match counts.
+        if d.min(360.0 - d) < 0.01 {
+            check("set_view", true);
+        }
+    }
+    if r.events & cmd_event::LANDED != 0 {
+        check("cmd_landed", true);
+    }
+    if r.events & cmd_event::TELEPORTED != 0 {
+        check("cmd_teleported", true);
+    }
+}
+
+/// Version 6: once the kung-fu checks are done, each bot gets an M4 (`ts_give`, a cheat the
+/// server config allows) and a `ts_groundweapon` Beretta beside it, which it is handed 2 s later
+/// (`Ham_Use` with the bot as activator, as RCBot's `givetsweapon`): `item_pickup`.
+fn gun_phase(a: &PluginApi, b: &mut Bot, now: f32) {
+    let melee_done = with(|s| s.done.contains(&"melee_attack_change") && s.done.contains(&"melee_attack_block")).unwrap_or(false);
+    if !b.armed && melee_done {
+        b.armed = true;
+        // SAFETY: a NUL-terminated command for the call.
+        unsafe { (a.bot_command)(b.idx, c"ts_give 5".as_ptr()) };
+        (a.select_weapon)(b.idx, M4);
+        b.ground = ground_weapon(a, b.idx, BERETTA).map(|e| (e, now + 2.0));
+    }
+    if let Some((e, at)) = b.ground
+        && now >= at
+    {
+        b.ground = None;
+        let ent = |i| HamArg { kind: ham::kind::ENTITY, i, ..HamArg::default() };
+        let mut call = HamCall { ham: HAM_USE, this: e, argc: 4, ..HamCall::default() };
+        call.args[..4].copy_from_slice(&[
+            ent(b.idx),
+            ent(b.idx),
+            HamArg { kind: ham::kind::INT, i: USE_TOGGLE, ..HamArg::default() },
+            HamArg { kind: ham::kind::FLOAT, f: 0.0, ..HamArg::default() },
+        ]);
+        // SAFETY: `call` is a `HamCall` valid for the call.
+        let rc = unsafe { (a.ham_execute)(&mut call, 1) };
+        say(log::INFO, &format!("bot #{} uses the ground Beretta #{e}: {rc}", b.idx));
+        remove_entity(e);
+    }
+}
+
+/// A `ts_groundweapon` of weapon `id` at the bot's origin, from keys (the map's way).
+fn ground_weapon(a: &PluginApi, bot: c_int, id: c_int) -> Option<c_int> {
+    let o = origin(bot)?;
+    let id = CString::new(id.to_string()).ok()?;
+    let at = CString::new(format!("{} {} {}", o[0], o[1], o[2])).ok()?;
+    // SAFETY: NUL-terminated strings for the calls.
+    unsafe {
+        let e = (a.create_entity)(c"ts_groundweapon".as_ptr());
+        if e <= 0 {
+            return None;
+        }
+        (a.entity_key_value)(e, c"tsweaponid".as_ptr(), id.as_ptr());
+        (a.entity_key_value)(e, c"origin".as_ptr(), at.as_ptr());
+        ((a.spawn_entity)(e) == OK).then_some(e)
+    }
+}
+
+/// Frees entity `e` with the engine's `pfnRemoveEntity`.
+fn remove_entity(e: c_int) {
+    if let Some((f, _)) = engine()
+        && let (Some(get), Some(remove)) = (f.pfnPEntityOfEntIndex, f.pfnRemoveEntity)
+    {
+        // SAFETY: the engine's functions; `get` returns NULL or a live edict.
+        unsafe {
+            let ed = get(e);
+            if !ed.is_null() && (*ed).free == 0 {
+                remove(ed);
+            }
+        }
+    }
 }
 
 /// Removes the listener once it was heard: the handle goes, a second removal is refused.
@@ -542,6 +752,16 @@ fn create_entity(a: &PluginApi) -> bool {
         let spawned = (a.spawn_entity)(e);
         let mut i = EntityInfo::default();
         let ok = kv == 1 && placed == 1 && spawned == OK && (a.entity_info)(e, &mut i) == OK && origin(e) == Some([1.0, 2.0, 3.0]);
+        // Version 6: a key the entvars table doesn't have stays readable; an entvars one isn't
+        // kept (read the edict).
+        (a.entity_key_value)(e, c"master".as_ptr(), c"tsmod_test_ms".as_ptr());
+        let mut buf = [0 as c_char; 32];
+        let n = (a.entity_key)(e, c"master".as_ptr(), buf.as_mut_ptr(), buf.len() as c_int);
+        let master = n == 13 && CStr::from_ptr(buf.as_ptr()) == c"tsmod_test_ms";
+        let others = (a.entity_key)(e, c"targetname".as_ptr(), buf.as_mut_ptr(), buf.len() as c_int) == UNSUPPORTED
+            && (a.entity_key)(-1, c"master".as_ptr(), buf.as_mut_ptr(), buf.len() as c_int) == NOT_PLAYER
+            && (a.entity_key)(e, std::ptr::null(), buf.as_mut_ptr(), buf.len() as c_int) == INVALID;
+        check("entity_key", master && others);
         if let Some((f, _)) = engine()
             && let (Some(get), Some(remove)) = (f.pfnPEntityOfEntIndex, f.pfnRemoveEntity)
         {
@@ -601,8 +821,69 @@ extern "C" fn player_killed(victim: c_int, _attacker: c_int, _inflictor: c_int) 
     }
 }
 
-unsafe extern "C" fn sound(_entity: c_int, origin: *const f32, sample: *const c_char, volume: f32, _attenuation: f32) {
-    check("sound", !origin.is_null() && !sample.is_null() && (0.0..=1.0).contains(&volume));
+unsafe extern "C" fn sound(
+    entity: c_int,
+    origin: *const f32,
+    sample: *const c_char,
+    volume: f32,
+    _attenuation: f32,
+    channel: c_int,
+    source_player: c_int,
+) {
+    check("sound", !origin.is_null() && !sample.is_null() && (0.0..=1.0).contains(&volume) && (0..=7).contains(&channel));
+    // Version 6: a sound one of our bots made (footsteps, jumps, punches) names it; one of its
+    // things (its gun entity, a thrown knife) names it as the owner.
+    if ours(source_player) {
+        let clients = engine().map_or(0, |(_, g)| g.maxClients);
+        check("sound_source", source_player == entity || entity > clients);
+    }
+}
+
+/// Version 6: the scripted kill's `Ham_TakeDamage` as a damage event; kung-fu hits on our bots
+/// carry a hitgroup.
+unsafe extern "C" fn damage(event: *const DamageEvent) {
+    if event.is_null() {
+        check("damage", false);
+        return;
+    }
+    // SAFETY: the server passes a `DamageEvent` valid for the call.
+    let d = unsafe { *event };
+    if with(|s| s.kill.is_some_and(|k| k.victim == d.victim && k.killer == d.attacker)) == Some(true) && d.damage == 1000.0 {
+        check("damage", d.inflictor == d.attacker && d.health <= 0.0 && d.weapon >= -1);
+    }
+    if ours(d.victim) && d.hitgroup > 0 {
+        check("damage_hitgroup", d.hitgroup <= 7);
+    }
+}
+
+/// Version 6: our bots touch the world, each other and triggers as they walk and jump.
+extern "C" fn entity_touch(player: c_int, other: c_int) {
+    if ours(player) {
+        check("entity_touch", other >= 0 && other != player);
+    }
+}
+
+/// Version 6: the M4 the gun phase gave a bot, fired.
+unsafe extern "C" fn weapon_fired(player: c_int, weapon: c_int, at: *const f32, dir: *const f32, _silenced: c_int) {
+    if !ours(player) {
+        return;
+    }
+    if at.is_null() || dir.is_null() {
+        check("weapon_fired", false);
+        return;
+    }
+    // SAFETY: three floats each, valid for the call.
+    let (at, dir) = unsafe { (*at.cast::<[f32; 3]>(), *dir.cast::<[f32; 3]>()) };
+    let len = dir.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let near = origin(player).is_some_and(|o| o.iter().zip(at).all(|(a, b)| (a - b).abs() < 64.0));
+    check("weapon_fired", weapon > 0 && (len - 1.0).abs() < 0.01 && near);
+}
+
+/// Version 6: the ground Beretta the gun phase handed a bot.
+extern "C" fn item_pickup(player: c_int, _entity: c_int, kind: c_int, id: c_int) {
+    if ours(player) && kind == entity::GROUND_WEAPON {
+        check("item_pickup", id == BERETTA);
+    }
 }
 
 extern "C" fn weapon_changed(idx: c_int, _weapon: c_int) {
@@ -765,6 +1046,8 @@ mod tests {
         assert_eq!((LISTENER.size as usize, LISTENER.api_version), (size_of::<Plugin>(), VERSION));
         assert!(DESCRIPTOR.player_stunt.is_some() && DESCRIPTOR.player_powerup.is_some());
         assert!(DESCRIPTOR.melee_attack.is_some() && DESCRIPTOR.kill_scored.is_some());
+        assert!(DESCRIPTOR.damage.is_some() && DESCRIPTOR.entity_touch.is_some());
+        assert!(DESCRIPTOR.weapon_fired.is_some() && DESCRIPTOR.item_pickup.is_some());
     }
 
     #[test]

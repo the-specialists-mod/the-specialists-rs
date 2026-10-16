@@ -43,7 +43,11 @@
 //!   ([`Plugin::api_version`]). Version 3 redesigned the table (docs/implementation/plugin-api.md
 //!   §8 maps version 2 to it); version 4 added team scores, objectives, entity creation and more
 //!   entity hooks (§9); version 5 added listeners for metamod plugins, the stunt, power-up,
-//!   melee-attack and scored-kill callbacks, and the private-data mirror (§10, §4).
+//!   melee-attack and scored-kill callbacks, and the private-data mirror (§10, §4); version 6
+//!   added what bot backends need to see and steer without guessing: [`PluginApi::run_cmd`]'s
+//!   view handling, server-side `msec` and [`BotCmdResult`], the per-frame [`PlayerSnapshot`]s,
+//!   [`ItemInfo`]s and [`FrameInfo`], the map keys the port doesn't keep
+//!   ([`PluginApi::entity_key`]), and the touch, damage, shot and pickup callbacks (§11).
 //!
 //! # Private data
 //! An edict's private data is the server's block, not a C++ object. Since version 5 the server
@@ -99,7 +103,9 @@
 //! bots, or a registered name) picks the backend when a map starts. The server owns the bot quota
 //! (`ts_bot_quota`) and `addbot`/`addcustombot`, and asks the active backend to add a bot
 //! ([`BotBackend::add_bot`]); the backend makes the player with [`PluginApi::create_bot`] and
-//! drives it every frame with [`PluginApi::run_cmd`] (from [`Plugin::start_frame`]).
+//! drives it every frame with [`PluginApi::run_cmd`] (from [`Plugin::start_frame`]), reading the
+//! world from [`PluginApi::players`], [`PluginApi::items`] and [`PluginApi::frame_info`], which
+//! the server builds once a frame before the plugins' `start_frame`.
 
 #![no_std]
 
@@ -107,9 +113,9 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 
 /// The `CreateInterface` name of the table. It carries the version, so a metamod plugin built for
 /// another version gets NULL.
-pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi005";
+pub const INTERFACE_NAME: &CStr = c"TSRS_PluginApi006";
 /// [`PluginApi::version`] of this definition (and what [`Plugin::api_version`] must be).
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 /// The entry point every `tsmod_*` library exports ([`LoadFn`]).
 pub const LOAD_SYMBOL: &CStr = c"TSRS_PluginLoad";
 /// The prefix of the libraries the server loads.
@@ -213,9 +219,10 @@ pub struct Plugin {
     pub client_command: Option<unsafe extern "C" fn(player: c_int, argc: c_int, argv: *const *const c_char) -> c_int>,
     /// The player spawned (a first spawn or a respawn).
     pub player_spawned: Option<extern "C" fn(player: c_int)>,
-    /// The player was damaged: `attacker` and `inflictor` are entity indices (0 the world, -1
-    /// none), `damage` what was asked for, `bits` the `DMG_*` bits, `health` what is left.
-    pub player_damaged: Option<extern "C" fn(victim: c_int, attacker: c_int, inflictor: c_int, damage: f32, bits: c_int, health: f32)>,
+    /// Version 6 (replaces version 5's `player_damaged`). A player's `TakeDamage` ran: the
+    /// [`DamageEvent`] (valid for the call) says who, with what, where and what is left. Deferred
+    /// until the victim and the attacker are back in their slots.
+    pub damage: Option<unsafe extern "C" fn(event: *const DamageEvent)>,
     /// The player died: `attacker` / `inflictor` as above.
     pub player_killed: Option<extern "C" fn(victim: c_int, attacker: c_int, inflictor: c_int)>,
     /// `killer` (a player) scored a kill of `victim`: `points` the frags it gave (-1 a team
@@ -225,8 +232,21 @@ pub struct Plugin {
     pub round_start: Option<extern "C" fn()>,
     pub round_end: Option<extern "C" fn()>,
     /// The game played a sound at `entity` (an index; 0 the world) and `origin` (`pfnEmitSound`,
-    /// `pfnEmitAmbientSound`): for bots' hearing. `volume` 0..1, `attenuation` 0..4.
-    pub sound: Option<unsafe extern "C" fn(entity: c_int, origin: *const f32, sample: *const c_char, volume: f32, attenuation: f32)>,
+    /// `pfnEmitAmbientSound`): for bots' hearing. `volume` 0..1, `attenuation` 0..4. Version 6
+    /// adds `channel` (`CHAN_*`: 0 auto .. 7; ambient sounds are `CHAN_STATIC`, 6) and
+    /// `source_player`, the player responsible: `entity` itself when it is a player, else the
+    /// thrower or holder [`PluginApi::projectile_owner`] names, 0 for none.
+    pub sound: Option<
+        unsafe extern "C" fn(
+            entity: c_int,
+            origin: *const f32,
+            sample: *const c_char,
+            volume: f32,
+            attenuation: f32,
+            channel: c_int,
+            source_player: c_int,
+        ),
+    >,
     /// The player's weapon in hand changed (`weapon` its TS id, 0 kung fu), or its clip or
     /// reserve did: once a frame at most, from [`PluginApi::player_info`]'s fields.
     pub weapon_changed: Option<extern "C" fn(player: c_int, weapon: c_int)>,
@@ -253,6 +273,49 @@ pub struct Plugin {
     /// In TS 2.1 mode it is 2.1's `PlayerKilled` with 2.1's points, sprees and tags (it never
     /// sets [`kill::VICTIMS_WEAPON`] or [`kill::HEADSHOT`], which 2.1 lacks).
     pub kill_scored: Option<unsafe extern "C" fn(kill: *const KillInfo)>,
+    /// Version 6. A bot (`FL_FAKECLIENT`, any backend) touched `other` or was touched by it
+    /// (`DispatchTouch` either way round, after the entity's `Touch` ran): a trigger, a pickup,
+    /// a door, another player. Solid contacts can come twice in a frame (both entities' touch);
+    /// triggers once. Deferred until the bot is back in its slot.
+    pub entity_touch: Option<extern "C" fn(player: c_int, other: c_int)>,
+    /// Version 6. `player` fired a shot of the TS weapon `weapon` (each `ShootBullets`: every
+    /// round of a burst, one call for a shotgun's pellets): `origin` the gun position, `dir` the
+    /// unit aim (`v_angle`'s forward, before spread), `silenced` non-zero with a silencer on.
+    /// Both pointers are three floats valid for the call. Melee, throws and grenades don't fire
+    /// it. Deferred until the player is back in its slot.
+    pub weapon_fired: Option<unsafe extern "C" fn(player: c_int, weapon: c_int, origin: *const f32, dir: *const f32, silenced: c_int)>,
+    /// Version 6. `player` picked up `entity`: `kind` [`entity::GROUND_WEAPON`] (by `use`, its
+    /// inventory changed; `id` the TS weapon id), [`entity::POWERUP`] (`id` its [`powerup`] bits)
+    /// or [`entity::GUN`] (a dropped gun; `id` its TS id). A temporary power-up or dropped gun is
+    /// removed by then, so `entity` may be free. Deferred until the player is back in its slot.
+    pub item_pickup: Option<extern "C" fn(player: c_int, entity: c_int, kind: c_int, id: c_int)>,
+}
+
+/// A player's damage as [`Plugin::damage`] reports it (version 6).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DamageEvent {
+    /// The damaged player, and the entities that did it: indices, 0 the world, -1 none.
+    pub victim: c_int,
+    pub attacker: c_int,
+    pub inflictor: c_int,
+    /// What `TakeDamage` was asked for (a shotgun shot's pellets summed), and its `DMG_*` bits.
+    pub damage: f32,
+    pub bits: c_int,
+    /// The victim's health and armour after it (health ≤ 0: it died).
+    pub health: f32,
+    pub armor: f32,
+    /// The hitgroup of the `TraceAttack` that led to it (1 head, 2 chest, 3 stomach, 4/5 arms,
+    /// 6/7 legs), 0 (generic) for damage that didn't come through one (falls, explosions without
+    /// a trace, triggers).
+    pub hitgroup: c_int,
+    /// The TS weapon id of the blow, as [`KillInfo::weapon`] counts it: by the attacker's own
+    /// hand the bullet's weapon, kung fu (0) in close combat, else the gun in hand; a thrown
+    /// blade's id; 24 a grenade; -1 anything else.
+    pub weapon: c_int,
+    /// That `TraceAttack`'s direction of travel (unit) and hit position, zero without one.
+    pub dir: [f32; 3],
+    pub pos: [f32; 3],
 }
 
 /// Bytes of [`KillInfo::weapon_name`], its NUL included.
@@ -351,7 +414,7 @@ impl Plugin {
         client_disconnect: None,
         client_command: None,
         player_spawned: None,
-        player_damaged: None,
+        damage: None,
         player_killed: None,
         on_kill: None,
         round_start: None,
@@ -363,6 +426,9 @@ impl Plugin {
         player_powerup: None,
         melee_attack: None,
         kill_scored: None,
+        entity_touch: None,
+        weapon_fired: None,
+        item_pickup: None,
     };
 }
 
@@ -707,7 +773,8 @@ pub struct GameState {
     pub team_scores: [c_int; MAX_TEAMS],
 }
 
-/// A bot's usercmd for [`PluginApi::run_cmd`]: `pfnRunPlayerMove`'s arguments.
+/// A bot's usercmd for [`PluginApi::run_cmd`]: `pfnRunPlayerMove`'s arguments, and how the
+/// server is to run it.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct BotCmd {
@@ -719,8 +786,229 @@ pub struct BotCmd {
     /// `IN_*` bits.
     pub buttons: c_int,
     pub impulse: c_int,
-    /// The command's duration in milliseconds (1..255).
+    /// The command's duration in milliseconds (1..255), or 0 for the server's choice (as
+    /// [`cmd::AUTO_MSEC`]).
     pub msec: c_int,
+    /// Version 6: [`cmd`] bits.
+    pub flags: c_int,
+}
+
+/// [`BotCmd::flags`] (version 6).
+pub mod cmd {
+    use core::ffi::c_int;
+    /// Turn the bot as the native bots do (`CBotBrain::UpdateView`): before the move, write
+    /// `angles` to `pev->v_angle` and `pev->angles` (pitch × -1/3, roll 0) and clear
+    /// `pev->fixangle`. Without it a bot the game turned (`fixangle`: a spawn, a teleport,
+    /// `ts_tp`) keeps ignoring `angles`, because only a real client's network update clears
+    /// `fixangle`. When the game had set `fixangle`, the game's angles win for this command
+    /// (`angles` is ignored) and the result says [`super::cmd_event::FIXANGLE`]: adopt
+    /// [`BotCmdResult::v_angle`](super::BotCmdResult::v_angle).
+    pub const SET_VIEW: c_int = 0x1;
+    /// The server picks `msec`: the frame time (`gpGlobals->frametime`) in whole milliseconds,
+    /// with the fraction carried over to the bot's next command, so its commands add up to the
+    /// server's time. `msec` 0 means the same.
+    pub const AUTO_MSEC: c_int = 0x2;
+}
+
+/// [`BotCmdResult::events`] (version 6).
+pub mod cmd_event {
+    use core::ffi::c_int;
+    /// The bot was moved further than it could have walked since its last command: a teleport,
+    /// a respawn, `ts_tp`. Drop path state.
+    pub const TELEPORTED: c_int = 0x1;
+    /// The game set the bot's view (`fixangle`), before the command or during it: its angles are
+    /// [`BotCmdResult::v_angle`](super::BotCmdResult::v_angle).
+    pub const FIXANGLE: c_int = 0x2;
+    /// The bot was in the air before the command and on the ground after it.
+    pub const LANDED: c_int = 0x4;
+}
+
+/// What a [`PluginApi::run_cmd`] did to the bot (version 6), read after `pfnRunPlayerMove`.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct BotCmdResult {
+    /// The bot's view angles now (the game's after [`cmd_event::FIXANGLE`]), origin and velocity.
+    pub v_angle: [f32; 3],
+    pub origin: [f32; 3],
+    pub velocity: [f32; 3],
+    /// [`cmd_event`] bits.
+    pub events: c_int,
+    /// The `msec` the command ran with (the server's choice under [`cmd::AUTO_MSEC`]).
+    pub msec: c_int,
+}
+
+/// [`PlayerSnapshot::flags`] (version 6).
+pub mod player_flag {
+    use core::ffi::c_int;
+    /// Past the team/MOTD menus and not spectating ([`PlayerInfo::joined`](super::PlayerInfo::joined)).
+    pub const JOINED: c_int = 0x1;
+    /// Alive and not observing.
+    pub const ALIVE: c_int = 0x2;
+    /// A bot of any backend.
+    pub const BOT: c_int = 0x4;
+    /// `FL_ONGROUND`, `FL_DUCKING`.
+    pub const ON_GROUND: c_int = 0x8;
+    pub const DUCKING: c_int = 0x10;
+    /// On a ladder (`MOVETYPE_FLY`, which the player movement sets there).
+    pub const ON_LADDER: c_int = 0x20;
+    /// Waist deep in water or more (`waterlevel` ≥ 2).
+    pub const IN_WATER: c_int = 0x40;
+    /// Carries the capture-the-briefcase case.
+    pub const HAS_FLAG: c_int = 0x80;
+    /// Observing (`pev->iuser1`, an observer mode).
+    pub const SPECTATOR: c_int = 0x100;
+    /// Lying after a dive or slide ([`stunt_bits::PRONE`]).
+    pub const PRONE: c_int = 0x200;
+    /// In a stunt: diving, flipping, rolling, on a wall, or ducked for one
+    /// ([`stunt_bits::STUNTING`]).
+    pub const STUNTING: c_int = 0x400;
+}
+
+/// TS's stunt bits (`pev->iuser4`, [`PlayerSnapshot::stunt_bits`]; version 6). They are the
+/// game's state, sent to the client in `clientdata`.
+pub mod stunt_bits {
+    use core::ffi::c_int;
+    /// Half speed while getting up (`BlockPlayer` too).
+    pub const RECOVER: c_int = 0x1;
+    /// Set on death.
+    pub const DEAD_LOCK: c_int = 0x2;
+    /// A stunt is in progress: duck hull, no jump or duck.
+    pub const GO_DUCK: c_int = 0x4;
+    pub const STAND_UP: c_int = 0x8;
+    pub const DIVING: c_int = 0x10;
+    /// Lying after a dive or slide.
+    pub const PRONE: c_int = 0x20;
+    /// Stealth shoes (silent footsteps).
+    pub const STEALTH_SHOES: c_int = 0x200;
+    pub const FLIP_HIGH: c_int = 0x400;
+    pub const FLIP_LOW: c_int = 0x800;
+    pub const WALLJUMPING: c_int = 0x10000;
+    pub const WALLCLIMBING: c_int = 0x20000;
+    pub const ROLLING: c_int = 0x40000;
+    pub const SUPERJUMP_GLIDE: c_int = 0x100000;
+    pub const WALLDIVE: c_int = 0x800000;
+    /// What [`player_flag::STUNTING`](super::player_flag::STUNTING) tests.
+    pub const STUNTING: c_int = GO_DUCK | DIVING | FLIP_HIGH | FLIP_LOW | WALLJUMPING | WALLCLIMBING | ROLLING | WALLDIVE;
+}
+
+/// A player's close-combat and stunt timers ([`PlayerSnapshot::combat`], version 6), as game
+/// times (`gpGlobals->time`) at which they run out, 0 for one that isn't running. TS counts most of
+/// them down in the player's own time (`pev->fuser1`): a slowed player's run out later than
+/// they say.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct CombatState {
+    /// Kung-fu power, 0..100 (`pl+0x774`): the bar a move costs and blocks drain.
+    pub melee_power: f32,
+    /// No attack before (`m_flNextAttack`, `pl+0x12c`; the gun's primary delay when that is
+    /// later).
+    pub next_attack_at: f32,
+    /// No stunt before (`CTSStunt`'s cooldown, the `NextStunt` message).
+    pub next_stunt_at: f32,
+    /// Getting up (`CTSStunt`'s recovery lock, or `BlockPlayer`'s, the later): half speed.
+    pub recover_until: f32,
+    /// Can't get up from lying before (`CTSStunt+0x30`).
+    pub prone_lock: f32,
+    /// The slow-motion dodge: bullets do ×0.7 until (`CTSStunt+0x34`).
+    pub dodge_until: f32,
+    /// Block windows (`pl+0x7a8` kung fu, `+0x7ac` knife, `+0x7b0` katana): blows of that kind
+    /// are blocked until.
+    pub block_kungfu: f32,
+    pub block_knife: f32,
+    pub block_katana: f32,
+    /// A delayed melee hit lands until (`pl+0x79c`).
+    pub melee_window: f32,
+}
+
+/// One player slot as [`PluginApi::players`] reports it (version 6): built once a frame, at
+/// `StartFrame` before the plugins' [`Plugin::start_frame`].
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct PlayerSnapshot {
+    /// The engine's user id of the client in the slot (a serial that is new for every
+    /// connection), 0 for an empty slot (then every other field is 0).
+    pub user_id: c_int,
+    /// [`player_flag`] bits.
+    pub flags: c_int,
+    /// As [`PlayerInfo::team`].
+    pub team: c_int,
+    /// `pev`'s `origin`, `velocity`, `v_angle`, `view_ofs`, `absmin` and `absmax`.
+    pub origin: [f32; 3],
+    pub velocity: [f32; 3],
+    pub v_angle: [f32; 3],
+    pub view_ofs: [f32; 3],
+    pub absmin: [f32; 3],
+    pub absmax: [f32; 3],
+    /// `pev->health`, `pev->armorvalue`.
+    pub health: f32,
+    pub armor: f32,
+    /// `pev->button` (`IN_*`) of the player's last command.
+    pub buttons: c_int,
+    /// As [`PlayerInfo`]'s weapon fields: the TS id in hand (0 kung fu), its clip (the kung-fu bar
+    /// with kung fu), reserve, fire mode and attachment bits.
+    pub weapon: c_int,
+    pub clip: c_int,
+    pub ammo: c_int,
+    pub fire_mode: c_int,
+    pub attachments: c_int,
+    /// As [`PlayerInfo::stunt_state`] (`TSState`: 0 stand, 1 crouch, 2 prone or diving), and the
+    /// [`stunt_bits`].
+    pub stance: c_int,
+    pub stunt_bits: c_int,
+    /// As [`PlayerInfo`]'s power-up fields.
+    pub active_powerup: c_int,
+    pub stored_powerup: c_int,
+    pub powerup_until: f32,
+    /// As [`PlayerInfo::time_scale`].
+    pub time_scale: f32,
+    /// The scoreboard's frags (`pev->frags`) and deaths.
+    pub frags: c_int,
+    pub deaths: c_int,
+    /// As [`PlayerInfo::free_slots`].
+    pub free_slots: c_int,
+    /// Changes (by 1) whenever [`PluginApi::player_inventory`]'s list does (a weapon got or lost,
+    /// a clip, reserve, mode or attachment changed): read the inventory again only then. Starts at
+    /// 1 for a new client.
+    pub inventory_serial: c_int,
+    pub combat: CombatState,
+}
+
+/// An item lying in the map, as [`PluginApi::items`] lists it (version 6).
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct ItemInfo {
+    /// Its entity index and the engine's serial number of the slot (an index with another
+    /// serial is another entity).
+    pub index: c_int,
+    pub serial: c_int,
+    /// [`entity::GROUND_WEAPON`], [`entity::POWERUP`] or [`entity::GUN`] (a dropped or thrown gun),
+    /// with its TS weapon id or [`powerup`] bits, as [`EntityInfo`] has them.
+    pub kind: c_int,
+    pub weapon: c_int,
+    pub powerup: c_int,
+    pub origin: [f32; 3],
+    /// It can be picked up now (as [`EntityInfo::available`]).
+    pub available: c_int,
+    /// Taken and coming back: the game time it shows again; 0 when available, or when it waits
+    /// for the next round (a round mode's weapon without a respawn time).
+    pub respawn_at: f32,
+}
+
+/// The frame, as [`PluginApi::frame_info`] reports it (version 6).
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct FrameInfo {
+    /// `gpGlobals->time` and `frametime` at `StartFrame`.
+    pub time: f32,
+    pub frametime: f32,
+    /// The highest entity index in use this frame: scan entities up to it.
+    pub highest_edict: c_int,
+    /// As [`GameState`]'s `teamplay`, `ctb` (the map had a capture point when it started),
+    /// [`mode`] and [`round`].
+    pub teamplay: c_int,
+    pub ctb: c_int,
+    pub mode: c_int,
+    pub round: c_int,
 }
 
 /// A server command a plugin registered: `argv[0]` is the command name.
@@ -829,10 +1117,13 @@ pub struct PluginApi {
     /// [`INVALID`] for a human.
     pub kick_bot: extern "C" fn(player: c_int) -> c_int,
     /// Runs one usercmd for the bot now (`pfnRunPlayerMove`: its PreThink, movement and
-    /// PostThink run). With the port's `ts_bot_stop 1` a living bot moves and presses nothing
-    /// (it still turns). [`OK`], [`NOT_PLAYER`], [`INVALID`] (a human, or a bad `msec`), [`BUSY`]
-    /// (inside one of the bot's own callbacks: call it from [`Plugin::start_frame`]).
-    pub run_cmd: unsafe extern "C" fn(player: c_int, cmd: *const BotCmd) -> c_int,
+    /// PostThink run), as [`BotCmd::flags`] say, and fills `out` (may be NULL) with what it did.
+    /// With the port's `ts_bot_stop 1` a living bot moves and presses nothing (it still turns).
+    /// `gpGlobals->time` and `frametime` are put back afterwards (the engine leaves them at the
+    /// command's end). [`OK`], [`NOT_PLAYER`], [`INVALID`] (a human, or a bad `msec`, impulse or
+    /// angle), [`BUSY`] (inside one of the bot's own callbacks: call it from
+    /// [`Plugin::start_frame`]); `out` is written only for `OK`.
+    pub run_cmd: unsafe extern "C" fn(player: c_int, cmd: *const BotCmd, out: *mut BotCmdResult) -> c_int,
     /// Runs a client command as if the player typed it (`use`, `usepowerup`, `respawn`,
     /// `jointeam 1`, `say hi`): split on spaces, double quotes group. [`OK`] (also for a command
     /// the game doesn't know), [`DEFERRED`], [`NOT_PLAYER`] or [`INVALID`] (empty).
@@ -890,6 +1181,24 @@ pub struct PluginApi {
     /// game entity). See the module docs ("Private data"): bytes 8..16 are the server's link to
     /// the entity, never write them.
     pub private_size: extern "C" fn(entity: c_int) -> c_int,
+
+    // ---- version 6: the frame's world ---------------------------------------------------------------
+    /// Fills `out[..max]` with player slots 1..=`max` (`out[0]` is slot 1) from the frame's
+    /// snapshot and returns `maxClients`; an empty slot is all zeroes. NULL `out` only counts.
+    pub players: unsafe extern "C" fn(out: *mut PlayerSnapshot, max: c_int) -> c_int,
+    /// Fills `out[..max]` with the items in the map (ground weapons, power-ups, dropped guns; taken
+    /// ones too, with their `respawn_at`), in index order, and returns how many there are (which
+    /// may be more than `max`).
+    pub items: unsafe extern "C" fn(out: *mut ItemInfo, max: c_int) -> c_int,
+    /// Fills `out` with the frame's time and rules: [`OK`], or [`INVALID`] for NULL.
+    pub frame_info: unsafe extern "C" fn(out: *mut FrameInfo) -> c_int,
+    /// The value of map key `key` that game entity `entity` was given (by the map or
+    /// [`entity_key_value`](Self::entity_key_value)) and that isn't an `entvars_t` field, such as
+    /// `master` (a button's or door's `multisource`), the last one if given twice: written to
+    /// `buf` as the module's strings, its length returned. [`NOT_PLAYER`] (not a game entity),
+    /// [`INVALID`] (a NULL key) or [`UNSUPPORTED`] (the entity wasn't given that key; read entvars
+    /// fields from the edict).
+    pub entity_key: unsafe extern "C" fn(entity: c_int, key: *const c_char, buf: *mut c_char, len: c_int) -> c_int,
 }
 
 #[cfg(test)]
@@ -906,7 +1215,14 @@ mod tests {
 
     #[test]
     fn the_interface_name_carries_the_version() {
-        assert_eq!(VERSION, 5);
-        assert!(INTERFACE_NAME.to_bytes().ends_with(b"005"));
+        assert_eq!(VERSION, 6);
+        assert!(INTERFACE_NAME.to_bytes().ends_with(b"006"));
+    }
+
+    #[test]
+    fn stunting_is_the_moving_stunt_bits() {
+        // `shared::ts::stunt`'s values: the airborne mask (0x10c10) plus duck, roll, climb, wall dive.
+        assert_eq!(stunt_bits::STUNTING, 0x10c10 | 0x4 | 0x40000 | 0x20000 | 0x800000);
+        assert_eq!(stunt_bits::STUNTING & (stunt_bits::PRONE | stunt_bits::RECOVER | stunt_bits::STEALTH_SHOES), 0);
     }
 }
