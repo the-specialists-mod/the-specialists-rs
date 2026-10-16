@@ -11,6 +11,7 @@ use crate::world::Cx;
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
+use shared::pm::{Fpu, Num};
 use shared::protocol::hud_wire::{PwUp, PwUpTime, TsMBlur};
 use shared::ts::powerup as pw;
 
@@ -62,13 +63,32 @@ fn set_slow_target(p: &mut Player, e: *mut edict_t, target: f32) {
     }
 }
 
-/// `InterpolateSlowMotion`: exponential approach at ~7/s, snapping within 0.05.
+/// `InterpolateSlowMotion`: exponential approach at ~7/s, snapping within 0.05, in the server's
+/// arithmetic ([`pm_arith`](super::cvars::pm_arith)).
 pub fn interpolate(frametime: f32, cur: &mut f32, target: f32) {
-    let mut d = target - *cur;
-    if d.abs() > 0.05 {
-        d *= (frametime * 7.0).min(1.0);
+    *cur = shared::by_arith!(super::cvars::pm_arith(), interpolate_in(frametime, *cur, target));
+}
+
+/// `InterpolateSlowMotion` (`ts_i386.so` 0x9910c, `mp.dll` 0x10067030): `d = target - cur`,
+/// `d * min(ft * 7, 1)` and the sum stay on the x87 and are rounded once, when `cur` is stored
+/// (issue #229). The 0.05 and 7 are `float`s. GCC keeps `ft * 7` unless it is above 1 (a NaN
+/// stays); MSVC takes 1 when `1 < ft * 7` (a NaN takes 1).
+fn interpolate_in<F: Fpu>(frametime: f32, cur: f32, target: f32) -> f32 {
+    let c = F::x(cur);
+    let mut d = F::x(target) - c;
+    if !F::cmp_le(d.abs(), F::x(0.05)) {
+        let k = F::x(frametime) * F::x(7.0);
+        let one = F::x(1.0);
+        let k = if F::MSVC {
+            if F::cmp_lt(one, k) { one } else { k }
+        } else if F::cmp_le(k, one) {
+            k
+        } else {
+            one
+        };
+        d = d * k;
     }
-    *cur += d;
+    (d + c).f()
 }
 
 /// `CBasePlayer::GoSlow` on the dispatched player.
@@ -593,6 +613,31 @@ mod tests {
         let mut v = 1.0;
         super::interpolate(1.0, &mut v, 0.5);
         assert_eq!(v, 0.5, "factor capped at 1");
+    }
+
+    /// Issue #229: `InterpolateSlowMotion` (0x9910c, mp.dll 0x10067030) rounds `cur + d * k` once.
+    /// 1/60 s frames from 1.0 toward 0.35: f32 steps would give 0x3f5b7030, 0x3f4c4a5a, 0x3f3ee8ee
+    /// from the second frame on.
+    #[test]
+    fn easing_rounds_once() {
+        let ft = 1.0f32 / 60.0;
+        for (name, step) in
+            [("msvc", interpolate_in::<shared::pm::Msvc> as fn(f32, f32, f32) -> f32), ("gcc", interpolate_in::<shared::pm::Gcc>)]
+        {
+            let mut v = 1.0f32;
+            let got: Vec<u32> = (0..4)
+                .map(|_| {
+                    v = step(ft, v, 0.35);
+                    v.to_bits()
+                })
+                .collect();
+            assert_eq!(got, [0x3f6c9630, 0x3f5b702f, 0x3f4c4a59, 0x3f3ee8ed], "{name}");
+            assert_eq!(step(0.01, 0.37, 0.35), 0.35, "{name}: snaps within 0.05");
+            assert_eq!(step(1.0, 1.0, 0.5), 0.5, "{name}: factor capped at 1");
+        }
+        // A NaN factor: GCC keeps it (`test ah,0x41; jne`), MSVC takes 1 (`fcomp; test ah,1`).
+        assert!(interpolate_in::<shared::pm::Gcc>(f32::NAN, 1.0, 0.35).is_nan());
+        assert_eq!(interpolate_in::<shared::pm::Msvc>(f32::NAN, 1.0, 0.35), 0.35);
     }
 
     /// Issue #245: a dead player's power-up drops with `CreatePowerUp(type, -1)` (3.0 0x858a8 /

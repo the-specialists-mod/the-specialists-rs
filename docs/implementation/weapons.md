@@ -253,7 +253,7 @@ set by `SelectItem`, cleared by `Spawn` and `RemoveAllItems`) are in the player'
 * Slow motion of projectiles: grenades, knives (not while stuck in a wall) and falling
   `WorldGun`s start at the thrower's scale (`pl+0x180` if it's an activator, else
   `max(fuser1, 0.01)`) and run `SlowPhysics` every 0.1 s think: `velocity * s`, `avelocity * s`,
-  `gravity * s²` from the saved pre-slow values, restored when `fuser1` returns to 1. As in TS,
+  `gravity * s²` (rounded once, in the server's arithmetic: issue #229) from the saved pre-slow values, restored when `fuser1` returns to 1. As in TS,
   "saved" means a non-zero saved velocity (`CTSPhysicObject::SavePhysics` 0x7bac0): an object
   slowed at rest re-saves every think (its gravity and spin shrink by `s` each time) and is never
   restored, and a restore puts back the pre-slow velocity, so a slowed grenade or knife lying on
