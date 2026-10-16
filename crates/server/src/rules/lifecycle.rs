@@ -519,6 +519,12 @@ fn rules_init_hud(p: &mut Player, cx: &mut Cx) {
         let s = if o == e { score_info_of(p, cx.pev(), i) } else { other(o, |q| score_info_of(q, o.v(), i)).unwrap_or_default() };
         msg::one(Msg::ScoreInfo, e, |w| s.write(w));
     }
+    // `if (g_fGameOver) { MESSAGE_BEGIN(MSG_ONE, SVC_INTERMISSION) }` (0xcf618 tail; 2.1
+    // 0x10023ec0): a joiner whose InitHUD runs during the intermission (`fullupdate`) gets the
+    // scoreboard. The Multiplay part ends here; Teamplay's goes on after it (0xe45d8).
+    if state::with(|g| g.game_over) {
+        MsgWriter::begin(MSG_ONE as i32, goldsrc::ext::rules::SVC_INTERMISSION, None, e).end();
+    }
     if teamplay {
         teams::init_hud(p, cx);
     }
@@ -537,28 +543,37 @@ pub fn score_frags(frags: f32) -> i16 {
     crate::entities::stock::maprules::x87_int(frags) as i16
 }
 
-/// `CHalfLifeMultiplay::SendMOTDToClient`: ServerName, then the `motdfile` in ≤60-char chunks.
+/// `CHalfLifeMultiplay::SendMOTDToClient` (0xd0ae4; 2.1 0x10024ee0): ServerName, then the
+/// `motdfile` in ≤60-byte chunks ([`motd_chunks`]). The cvar's name is loaded as it is: an empty
+/// one loads nothing (TS passes `""` to `LOAD_FILE_FOR_ME`), so no MOTD.
 pub fn send_motd(e: *mut edict_t) {
     let eng = engine();
+    let file = eng.cvar_string(c"motdfile").to_string_lossy().into_owned();
     let host = eng.cvar_string(c"hostname").to_bytes().to_vec();
     msg::one(Msg::ServerName, e, |w| ServerName { name: host }.write(w));
-    let file = {
-        let f = eng.cvar_string(c"motdfile").to_string_lossy().into_owned();
-        if f.is_empty() { "motd.txt".to_owned() } else { f }
-    };
-    let Some(data) = eng.load_file(&file) else { return };
-    let text: Vec<u8> = data.into_iter().take_while(|&b| b != 0).take(0x600).collect();
+    let Some(data) = (!file.is_empty()).then(|| eng.load_file(&file)).flatten() else { return };
+    let text: Vec<u8> = data.into_iter().take_while(|&b| b != 0).collect();
     for (chunk, last) in motd_chunks(&text) {
         let m = Motd { last: last as u8, chunk };
         msg::one(Msg::Motd, e, |w| m.write(w));
     }
 }
 
-/// Splits MOTD text into ≤60-byte chunks; the last carries the final flag.
+/// `SendMOTDToClient`'s loop (the SDK's): chunks of up to 60 bytes while fewer than 0x600 have
+/// been sent, so the chunk that takes the count past 0x600 still goes whole (a long file sends
+/// 26 × 60 = 1560 bytes); the last one carries the final flag (`*src == 0`, or the count reached
+/// 0x600, where TS writes the terminator itself).
 pub fn motd_chunks(text: &[u8]) -> Vec<(Vec<u8>, bool)> {
-    let chunks: Vec<&[u8]> = text.chunks(60).collect();
-    let n = chunks.len();
-    chunks.into_iter().enumerate().map(|(i, c)| (c.to_vec(), i + 1 == n)).collect()
+    const MAX_MOTD_LENGTH: usize = 0x600;
+    let mut out = Vec::new();
+    let mut count = 0;
+    while count < text.len() && count < MAX_MOTD_LENGTH {
+        let chunk = &text[count..text.len().min(count + 60)];
+        count += chunk.len();
+        let last = count >= MAX_MOTD_LENGTH || count >= text.len();
+        out.push((chunk.to_vec(), last));
+    }
+    out
 }
 
 /// `CTSGameRules::InitHUD` (0x79134): cheat notice, custom weapons, SrvSett ×4, RoundTime, Spectator flags of
@@ -1045,6 +1060,29 @@ mod tests {
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks.iter().flat_map(|(c, _)| c.clone()).collect::<Vec<u8>>(), text);
         assert_eq!(chunks.iter().map(|(_, last)| *last).collect::<Vec<_>>(), [false, false, true]);
+        assert!(motd_chunks(b"").is_empty(), "an empty file sends no chunk");
+    }
+
+    /// `SendMOTDToClient` (0xd0ae4; 2.1 0x10024ee0): the chunk crossing 0x600 bytes goes whole, so
+    /// a long file shows 26 chunks of 60 (1560 bytes), the last one final.
+    #[test]
+    fn motd_sends_the_chunk_that_crosses_0x600_whole() {
+        let text = vec![b'm'; 4000];
+        let chunks = motd_chunks(&text);
+        assert_eq!(chunks.len(), 26);
+        assert!(chunks.iter().all(|(c, _)| c.len() == 60));
+        assert_eq!(chunks.iter().map(|(c, _)| c.len()).sum::<usize>(), 1560);
+        assert_eq!(chunks.iter().filter(|(_, last)| *last).count(), 1);
+        assert!(chunks[25].1);
+        // Exactly 0x600 bytes: 25 chunks of 60 and one of 36, the last final.
+        let chunks = motd_chunks(&[b'm'; 0x600]);
+        assert_eq!(chunks.len(), 26);
+        assert_eq!(chunks[25].0.len(), 36);
+        assert!(chunks[25].1 && !chunks[24].1);
+        // 0x5ff bytes then more: the 26th chunk (from 1500) still goes whole.
+        let chunks = motd_chunks(&[b'm'; 0x5ff + 100]);
+        assert_eq!(chunks.len(), 26);
+        assert_eq!(chunks[25].0.len(), 60);
     }
 
     #[test]
