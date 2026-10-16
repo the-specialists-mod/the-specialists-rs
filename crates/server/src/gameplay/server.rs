@@ -89,8 +89,9 @@ pub trait ServerRules: Sync {
     /// reads the ones it knows.
     fn cvars(&self) -> &'static [CvarDef];
 
-    /// A TS server command (`globalslow`, `restartround`, `weaponrestriction`) before the
-    /// server's handler runs it; true when the ruleset has handled it. The arguments are the
+    /// A TS server command (`globalslow`, `restartround`, `weaponrestriction`, `loadweapons`,
+    /// `saveweapons`) before the server's handler runs it; true when the ruleset has handled it
+    /// (a ruleset without the command answers as the engine does for an unknown one). The arguments are the
     /// engine's (`Cmd_Argv`).
     fn server_command(&self, name: &str) -> bool;
 

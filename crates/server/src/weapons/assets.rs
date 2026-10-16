@@ -192,8 +192,8 @@ pub fn precache_weapon_assets(rulesets: &[&'static Tables]) {
     let sets = rulesets.iter().map(|t| (*t as *const Tables as usize, precache_tables(t))).collect();
     let a = Assets { events: EVENTS.0.get(), sets };
     *ASSETS.0.borrow_mut() = Some(a);
-    // `customweapons` is registered but, as in TS, never read: weapons files load with
-    // `loadweapons` only.
+    // TS 3.0 registers `customweapons` and never reads it: its weapons files load with
+    // `loadweapons` only (a ruleset's own rules may poll it).
 }
 
 /// One ruleset's part of [`precache_weapon_assets`]: the loop over the tables `t`.

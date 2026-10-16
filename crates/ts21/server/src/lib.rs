@@ -7,6 +7,7 @@
 //! * [`players`]: spawn, join, death, respawn timing, overheal and The One.
 //! * [`observer`]: the observer part of `PreThink`, where fire respawns (issue #113).
 //! * [`cvars`] and [`commands`]: 2.1's extra cvars, the polled cvars and the client commands.
+//! * [`customweapons`]: the `customweapons` cvar's weapons files.
 //! * [`entities`]: the map entities (§3.9).
 //! * [`protocol`]: 2.1 on TS 3.0's wire (§1.2).
 //! * [`powerup`]: power-ups and slow motion (§3.7).
@@ -27,6 +28,7 @@ pub mod blades;
 pub mod bots;
 pub mod cash;
 pub mod commands;
+pub mod customweapons;
 pub mod cvars;
 pub mod damage;
 pub mod entities;

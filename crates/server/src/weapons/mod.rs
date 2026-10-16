@@ -6,7 +6,7 @@
 mod assets;
 mod bullets;
 mod commands;
-mod custom;
+pub mod custom;
 pub(crate) mod fire;
 mod host;
 mod inventory;

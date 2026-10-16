@@ -312,7 +312,7 @@ The hooks so far:
 | `ServerRules` | `refuse_client(client)` | none (everyone joins) | `gameplay::refuse_client`, from `rules::client_connect` (§4.2) |
 | `ServerRules` | `game_description(mode)` | ts30 `rules::description`: "The Specialists v3.0.2 (DM)" (LMS, Teamplay, The One; no mode without rules), the version from `Cargo.toml` | `rules::game_description` (`pfnGetGameDescription`, the server browser's Game column); `ts_server::game_description!` builds a plugin's text |
 | `ServerRules` | `cvars()` | none | `gameplay::register` (registered after 3.0's, skipping existing names) |
-| `ServerRules` | `server_command(name)` | false (3.0's command runs) | `rules/commands.rs` `globalslow`, `restartround`, `weaponrestriction` |
+| `ServerRules` | `server_command(name)` | false (3.0's command runs) | `rules/commands.rs` `globalslow`, `restartround`, `weaponrestriction`; `weapons/custom.rs` `loadweapons`, `saveweapons` |
 | `ServerRules` | `client_command(p, cx, cmd, args)` | `None` (3.0's handlers run) | `commands.rs` `dispatch_player`, before the weapons' |
 | `ServerRules` | `install(g)` | ts30 `rules::install` (`DecideGamePlay`, `GameRules::ts_init`) | `rules/state.rs` `GameRules::install` (multiplayer maps) |
 | `ServerRules` | `think(now)` | ts30 `rules::think` | `rules/frame.rs` multiplay and teamplay `Think` |

@@ -327,7 +327,7 @@ pub fn think(now: f32) {
         reset_restart_round(cv::trunc(r), now);
         cv::set_polled(Polled::RestartRound, "0");
     }
-    // `customweapons` (a 2.1 weapons file, three values per weapon) is the weapon tables' part.
+    crate::customweapons::think();
     if the_one && state::with(|g| g.next_the_one_check < now) {
         let eng = engine();
         let any = the_one_check_slots(eng.max_clients())

@@ -96,7 +96,7 @@ addresses of `ts_i386.so`.
 ### Hooks
 
 * `game_init`: cvars `realbullet` 0, `ammocount` 0, `weaponstay` 15, `damagemult` 0,
-  `customweapons` "" (registered and, as in TS, never read), `ts_weapons_debug` 0 (not TS); server commands `weaponrestriction`,
+  `customweapons` "" (registered and, as in TS 3.0, never read; the 2.1 plugin polls it), `ts_weapons_debug` 0 (not TS); server commands `weaponrestriction`,
   `loadweapons`, `saveweapons`. `dmgreport` is read but, as in TS, never registered.
 * `bullet_think` (from `rules::frame`'s `CTSGameRules::Think`, 0x77635, right after the
   `realbullet` update and before `usecash`): `CBulletManager::Think` while it counts any bullet. Single

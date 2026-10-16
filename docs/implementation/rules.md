@@ -148,8 +148,9 @@ the InitHUD cheat notice, `damagemult` and `dmgreport` (`weapons::damage_adjust`
 `weapons::dmgreport`). The port's dev aids (`ts_tp`, `ts_face`, `ts_dev_touch`, `ts_give`,
 `ts_weapons_debug`; `cvars::dev_cheats`) read `sv_cheats` live.
 
-`customweapons` is registered, as in TS, and nothing reads it (one reference in `ts_i386.so`, the
-`CVarRegister` at 0xc5d97): weapons files load with `loadweapons` only.
+`customweapons` is registered, as in TS, and TS 3.0 reads nothing of it (one reference in
+`ts_i386.so`, the `CVarRegister` at 0xc5d97): its weapons files load with `loadweapons` only. TS
+2.1's Think polls it (ts21.md, issue #212).
 
 `CTSGameRules::Init` (every map) clears the custom-weapons flag (`+0x5884`) and sets
 `armor_absorb` 0.2125 and `health_absorb` 0.1 (`+0x588c`/`+0x5888`; `state::GameRules::{custom_weapons,
