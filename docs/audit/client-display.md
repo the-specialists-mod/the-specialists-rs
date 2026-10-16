@@ -6,7 +6,7 @@ Round 3 audited the client's graphical display and GUI (HUD elements, effects, m
 
 Scope: `crates/client/src/hud/{mod,draw,message,saytext,statusbar,icons,geiger,text,notice,tfc}.rs` (the SDK HUD elements TS kept, HUD init/VidInit/sprite list, number drawing, redraw), `crates/client/src/effects/{psys,emitters,fx,laser}.rs` (the particle system) and `view.rs` `apply_kick`. Round 2 did `hud/state.rs`, `status.rs`, `weapons.rs`, the death notice, `CHudMenu`, `CHud::Redraw` and the builders' values (`client.md`).
 
-Issues: **#260** (2.1 chat), **#261** (2.1 particle update), both fixed; **#267** (2.1 muzzle flash follow) filed, not fixed (it needs the 2.1 flash builder, see below).
+Issues: **#260** (2.1 chat), **#261** (2.1 particle update), both fixed; **#267** (2.1 muzzle flash follow) filed, then found invalid (the builder is dead code, see below).
 
 | Port function | 3.0 original | 2.1 original | Status |
 |---|---|---|---|
@@ -27,14 +27,12 @@ Issues: **#260** (2.1 chat), **#261** (2.1 particle update), both fixed; **#267*
 | hud/draw.rs `draw_number`, `number_cells` | `DrawHudNumberTS` 0x1004c290 | 0x10088620 | match (the 10000s place without `% 10`, reserve masks, leading zeros) |
 | effects/psys.rs `PSys::init`, `add`, `sprite` | `PSys_Init` 0x100507e0, `PSys_Add` 0x10050b60, `PSys_LoadSprite` 0x100509d0 | 0x1008fa90 (256..2048), 0x1008ffc0 (no drag floor), 0x1008fd20 (32 slots, keyed by name) | 3.0 match; **2.1 MISMATCH #261, fixed** (`particle_model`) |
 | `PSys::update_draw`, `particle_move`, `collide`, `draw_one`, `build_quad` | `PSys_UpdateDraw` 0x100520d0, `Particle_Move` 0x10050ce0, `Particle_Collide` 0x10051d50, `Quad_Build` 0x10050080 | 0x10091020, 0x100902f0, 0x10090a00, 0x1008f470 | 3.0 match (gravity `dt·g·0.1·cl_gravity` TS units re-checked at 0x10050e0c). **2.1 MISMATCH #261, fixed**: `effects/psys/decel.rs` (`ParticleModel::Decelerate`): gravity ×0.1 and positive only, 330 u/s² deceleration toward 33 u/s, no drag/think, its own collision and floor stop, life on the raw factor (step `0x10091920`), no fade-in, stretch or axis quads. 2.1's quad build and view cone (0x100968f0) are 3.0's |
-| (2.1 particle follow field `+0xba`/`+0xbb`) | none | 0x100902f0, set by the muzzle flash 0x1007fe50 | **2.1 MISMATCH #267, open** |
+| (2.1 particle follow field `+0xba`/`+0xbb`, think callback `+0xd0`) | none | 0x100902f0, 0x10091020; set only by 0x1007fe50 (attachment-following flash) and 0x10083b30 (concrete impact: `debris_concrete3.spr` chips, collision callback 0x10083590 a `gun_smoke_add.spr` puff, a smouldering chip with think 0x10083740) | no effect: neither builder is called, jumped to or referenced (thunks 0x10002d65, 0x1000405c unused; the fire events use 0x10080a30, the impacts 0x10084240). #267 invalid |
 | effects/emitters.rs (map emitters, `ts_fog`) | `CTS_CL_Emitter` 0x1003ab40.. | none (0x1004a500 reads only `info_player_start`) | match: off in 2.1 through `map_effects` (round 2); the emitter code itself was not re-audited this round |
 | effects/fx.rs builders, effects/laser.rs | see `client.md` | see `client.md` | round 2 (values per ruleset through `fx_style`, `laser_style`, `tsfrags_effects`, `blood_impact`); they now run on 2.1's particle update in 2.1 mode |
 | view.rs `apply_kick` | `V_ApplyKick` 0x10057ed0 | 0x10097de0 (from 0x100b53c0's `V_CalcNormalRefdef`) | match: the same ease (`min(ft·15, 1)`), 0.01 settle test (double) and zeroing; 2.1's debug build stores the differences and the pitch step to floats (at most one ulp of the kick), not filed. 2.1 adds only the kick to `cl_viewangles` (no view-shake step, no bob pitch), which the port gets from its hooks (no shake from 2.1's weapons, `Bob::pitch` 0) |
 
 ### Not verified
-- 2.1's think callback (`+0xd0`, e.g. 0x10083740 from the builder 0x10083b30, a smoking particle that spawns `gun_smoke_add.spr` puffs and loses colour) and the builder 0x10083b30 itself: the port's particles have no think callback, and which event uses 0x10083b30 wasn't traced.
-- 2.1's other collision callback 0x10083590 (set by 0x10083b30) wasn't traced; blood (0x10082ba0) is the port's `ONCOLLIDE_BLOOD_DECAL`.
 - The `gl_fog`/`gl_fog_*` cvars and the single-player user fog (`effects.rs` `fog_begin`) exist only in 3.0; whether 2.1 mode should register them was left to the rendering group.
 - `SpriteTexture` with a frame past the last (2.1 doesn't clamp it): GoldSrc and FWGS pick different frames; the port passes the frame through as 2.1 does.
 - `effects/emitters.rs` and the 3.0 builders in `effects/fx.rs` were not re-compared against 3.0 this round (round 1/2 rows stand).
