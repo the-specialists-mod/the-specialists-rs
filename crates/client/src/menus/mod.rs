@@ -61,6 +61,16 @@ struct Menus {
     /// The viewport's `m_sMapName` (`+0xa5c`, 64 bytes): `VGUIMenu` 4's map name, or the level's
     /// once a briefing was made from it. `ReInitialize` empties it.
     map_name: Vec<u8>,
+    /// `m_iCurrentTeamNumber` (`+0x214`): the local team number the viewport last saw.
+    team_number: i32,
+}
+
+impl Menus {
+    /// `paintBackground`'s team check (`0x100648c0`, TS 2.1 `0x100b1210`): records `team` as
+    /// `m_iCurrentTeamNumber`; true when it changed (then TS updates the shown menu).
+    fn note_team(&mut self, team: i32) -> bool {
+        std::mem::replace(&mut self.team_number, team) != team
+    }
 }
 
 static MENUS: Global<RefCell<Option<Menus>>> = Global(RefCell::new(None));
@@ -999,6 +1009,12 @@ fn paint_vgui() {
         }
     }
     let cur = with(|m| m.queue.first().map(Menu::id));
+    // `0x10064906`: a new local team number (`g_iTeamNumber`, from the local player's state)
+    // updates the shown menu, which only the team menu acts on (issue #268).
+    let team = engine().local_player().map_or(0, |p| p.curstate.team);
+    if with(|m| m.note_team(team)) && cur == Some(2) {
+        update_team_menu();
+    }
     if wants_cursor() {
         with(|m| match m.queue.first_mut() {
             Some(Menu::Text(_, t)) => t.hover(w, h, cx, cy),
@@ -1105,6 +1121,17 @@ mod tests {
         assert_eq!(p, "", "neither \"rb\" nor \"wb\" opened it");
         assert!(saved.iter().all(|c| *c == buy::Config::default()));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Issue #268: a change of the local team number is seen once (TS then updates the shown
+    /// menu); the same number again isn't a change.
+    #[test]
+    fn team_number_changes() {
+        let mut m = Menus::default();
+        assert!(!m.note_team(0), "starts at 0");
+        assert!(m.note_team(2));
+        assert!(!m.note_team(2));
+        assert!(m.note_team(1) && m.team_number == 1);
     }
 
     #[test]

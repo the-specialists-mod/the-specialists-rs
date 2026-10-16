@@ -543,7 +543,9 @@ Drawing that TS leaves to the engine's VGUI1 surface:
     isn't passed to the engine as a key. Panels are laid out from the current screen size each
     frame (TS builds them once with the viewport).
   * `jointeam` from the team menu doesn't set the local `g_iTeamNumber` (TS does, `0x10064a82`,
-    until the next player state); Escape's "has a team" test reads the player state only.
+    until the next player state); Escape's "has a team" test reads the player state only, and so
+    does the viewport's per-frame team check (`paintBackground` `0x100648c0`), which updates the
+    shown team menu when the local team changes (issue #268).
 
 Checks that only matter on input TS mishandles (TS writes or reads out of bounds):
 * `Objective`/`ShowObj` indexes outside 0..31 (TS's check `i >= 0 || i < 32` is always true and
