@@ -109,7 +109,7 @@ Issues: **#260** (2.1 chat), **#261** (2.1 particle update), both fixed; **#267*
 
 ### Not verified
 - The `gl_fog`/`gl_fog_*` cvars and the single-player user fog (`effects.rs` `fog_begin`) exist only in 3.0; whether 2.1 mode should register them was left to the rendering group.
-- `SpriteTexture` with a frame past the last (2.1 doesn't clamp it): GoldSrc and FWGS pick different frames; the port passes the frame through as 2.1 does.
+- ~~`SpriteTexture` with a frame past the last (2.1 doesn't clamp it): GoldSrc and FWGS pick different frames; the port passes the frame through as 2.1 does.~~ Round 4: **#270**, fixed. GoldSrc's `R_GetSpriteFrame` (`hw.so` 0x143420) binds frame 0 for a frame below 0 or past the last, and FWGS binds the last frame. `tri::sprite_texture` now asks both engines for GoldSrc's frame. 3.0 never passes one: it clamps particles (0x10052333), and the laser beam wraps before `frames`. Left as is: GoldSrc binds nothing for a grouped frame (`SPR_GROUP`) where FWGS animates the group. That needs the engine's private sprite layout to detect, and a grouped particle sprite is a mapper's asset question, not a frame index.
 - `effects/emitters.rs` and the 3.0 builders in `effects/fx.rs` were not re-compared against 3.0 this round (round 1/2 rows stand).
 
 ## GUI

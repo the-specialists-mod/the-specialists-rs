@@ -207,8 +207,8 @@ impl PSys {
     }
 
     /// The draw (`0x10091542..0x1009160a`): frame `ftol(frame)` (not clamped: past the last
-    /// frame the engine picks), the cache slot's render mode, `Color4f(c, c, c, 1)` (no fade-in),
-    /// no stretch.
+    /// frame GoldSrc binds frame 0, which `tri::sprite_texture` asks FWGS for too), the cache
+    /// slot's render mode, `Color4f(c, c, c, 1)` (no fade-in), no stretch.
     fn draw_decel(&self, p: &super::Particle, cam: &Camera) {
         let Some(s) = self.slot(p.sprite) else { return };
         let model = r::sprite_model(s.handle);
