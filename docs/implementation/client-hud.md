@@ -483,7 +483,9 @@ Drawing that TS leaves to the engine's VGUI1 surface:
 * Spectator panel (`TeamFortressViewport` `+0x884`, created by `0x10064410`, filled by
   `UpdateSpectatorPanel` `0x10063870`): the same panel and labels painted with engine fills: the
   `CTransparentPanel` background (black, VGUI alpha 100), the "Primary Button Text" mode label
-  (`YRES(25)`) and "Briefing Text" help label (`YRES(15)` at `YRES(25)`), each `a_north`
+  (`YRES(25)`) and "Briefing Text" help label (`YRES(15)` at `YRES(25)`) in a bar `YRES(40)` tall
+  at `ftol(ScreenHeight − h × (1/480)f × 40)`, in the client's 53-bit arithmetic like the other
+  panels (439 at 480, a pixel above `h − YRES(40)`; **was** `f32`, 440, issue #265), each `a_north`
   (centred, top) in its scheme's foreground colour and font, clipped to the label, with VGUI1's
   `TextImage` rules (`hud::vgui`). Two engine limits remain. The fills are alpha-blended with
   `pfnFillRGBABlend`, which only engines from the 2013 update on have (FWGS, current Steam); on

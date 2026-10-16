@@ -95,9 +95,16 @@ pub(crate) fn height(h: i32) -> i32 {
     yres(h, 40.0)
 }
 
-/// `YRES(n)`: `n` 480ths of the screen height (TS truncates with `__ftol`).
-fn yres(h: i32, n: f32) -> i32 {
-    (h as f32 * (1.0 / 480.0) * n) as i32
+/// `YRES(n)`: `n` 480ths of the screen height (TS truncates with `__ftol`), in the client's
+/// x87 arithmetic ([`vgui::ys`]).
+fn yres(h: i32, n: f64) -> i32 {
+    vgui::ftol(vgui::ys(h) * n)
+}
+
+/// The bar's top: `ScreenHeight - YRES(40)` (`0x1006446a`: `fsub` of the unrounded product,
+/// then `__ftol`), so at 480 it is 439 (the product is a hair above 40).
+fn bar_top(h: i32) -> i32 {
+    vgui::ftol(h as f64 - vgui::ys(h) * 40.0)
 }
 
 /// Where a VGUI1 label with `setContentAlignment(a_north)` puts text `tw` wide in a label `w`
@@ -119,7 +126,7 @@ pub(super) fn draw() {
     let sc = e.screen();
     let (w, h) = (sc.width, sc.height);
     let tall = yres(h, 40.0);
-    let y = (h as f32 - h as f32 * (1.0 / 480.0) * 40.0) as i32;
+    let y = bar_top(h);
     e.fill_blend(0, y, w, tall, [0, 0, 0], 255 - 100);
     let labels = [(top, "Primary Button Text", y, yres(h, 25.0)), (help, "Briefing Text", y + yres(h, 25.0), yres(h, 15.0))];
     for (text, scheme, ly, lh) in labels {
@@ -155,5 +162,21 @@ mod tests {
         assert_eq!(texts(4, 5, true, true, None).0.as_deref(), Some("#Spec_Mode4"));
         assert_eq!(texts(0, 4, true, true, None).0, None, "main mode 0: hidden");
         assert_eq!((yres(480, 40.0), yres(600, 25.0), yres(768, 15.0)), (40, 31, 24));
+    }
+
+    /// Issue #265: TS 3.0's bar (`0x10064410`) at 53-bit precision: `YRES(40)` tall, its top at
+    /// `ftol(h - h × (1/480)f × 40)`, a pixel above `h - YRES(40)` at most sizes.
+    #[test]
+    fn bar_geometry() {
+        for (h, tall, y, y25, y15) in [
+            (480, 40, 439, 25, 15),
+            (600, 50, 549, 31, 18),
+            (720, 60, 659, 37, 22),
+            (768, 64, 703, 40, 24),
+            (800, 66, 733, 41, 25),
+            (1080, 90, 989, 56, 33),
+        ] {
+            assert_eq!((height(h), bar_top(h), yres(h, 25.0), yres(h, 15.0)), (tall, y, y25, y15), "{h}");
+        }
     }
 }
