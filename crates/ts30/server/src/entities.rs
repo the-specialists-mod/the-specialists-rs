@@ -19,7 +19,6 @@ pub const OBJECTIVES: ObjectiveRules = ObjectiveRules {
     team_names: None,
     indexed_list: true,
     pointer_enables_givers: true,
-    wire_hud: true,
     nan_time_runs_out: true,
     clear_list_outside_rounds: true,
 };
@@ -168,7 +167,7 @@ mod tests {
     fn objective_rules_are_3_0() {
         let c = OBJECTIVES;
         assert_eq!(c.hud_effect, 8);
-        assert!(c.team_names.is_none() && c.indexed_list && c.pointer_enables_givers && c.wire_hud);
+        assert!(c.team_names.is_none() && c.indexed_list && c.pointer_enables_givers);
         assert!(c.nan_time_runs_out && c.clear_list_outside_rounds);
     }
 }

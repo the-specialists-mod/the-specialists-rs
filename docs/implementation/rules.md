@@ -267,7 +267,7 @@ objectives can: a `ts_objective_ptr` fired by anything enables its targets in an
   think), hurrying makes it think and beep ten times a second and shows the player the wires
   (`Wires`, sent by `UpdateClientData` when they change), defusing completes it. In the objective
   mode `PreThink` shows each player the wires of an enabled bomb within 64 units twice a second
-  (`CheckForWires` 0x92f08).
+  (`CheckForWires` 0x92f08; 2.1 the same, FUN_10055650).
 * **`ts_hack`**: a brush like the bomb; held `+use` for `hackingtime` (1..30 s) with
   `misc/hacking.wav` once a second, then `misc/hacked.wav`, its target and message; its own timer
   (the round's time left, once a second) freezes it when it runs out.
@@ -280,7 +280,7 @@ objectives can: a `ts_objective_ptr` fired by anything enables its targets in an
   `targetontimeleft` (`RoundTimeLeft` 0x79024) and `targetonspecdead`/`targetonmercdead`. In 3.0
   only the 2.1 plugin's round modes reach them.
 * A ruleset changes the details (`ServerRules::objectives`, `ObjectiveRules`: HUD effect, team
-  names, list style, which entities a pointer enables, the wire HUD, the timers' NaN test, the
+  names, list style, which entities a pointer enables, the timers' NaN test, the
   list's clearing), `RoundTimeLeft` and the givers' `TeamWin` (`ServerRules::giver_team_win`).
 
 ## 5. Messages sent (payloads in `shared::protocol`)
