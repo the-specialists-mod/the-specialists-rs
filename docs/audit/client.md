@@ -87,7 +87,7 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 - `apply_kick` against 2.1's `0x10097de0`: documented as not compared.
 - 2.1 team menu constructor (`0x100b2ca0`) layout constants and `paint` were compared by structure only. MOTD window (`CMessageWindowPanel`) not compared for 2.1.
 - SDK HUD elements TS left alone (`CHudMessage`, `CHudSayText`, `CHudStatusBar`, `CHudStatusIcons`, geiger, train, `TextMsg`) were not compared against 2.1. The draw stubs and element list match.
-- 2.1 client bullet draw (`0x10069540`: models, trail spin, spiral) was traced only for the draw step and the gates.
+- 2.1 client bullet draw (`0x10069540`: models, trail spin, spiral): traced in round 3 ([client-display.md](client-display.md) "Model rendering"); one mismatch, #259.
 - 3.0 `draw_objective_markers` compares against the local entity's origin z, where TS reads `gHUD` `m_vecOrigin` (`0x100cf960`). The two differ by prediction lag only; not filed.
 
 ## Validation (second pass, independent)
