@@ -145,8 +145,11 @@ pub fn vid_init(_first: bool) {
         m.scores = false;
         m.map_name.clear();
     });
-    // `Initialize` zeroes `g_iTeamNumber` (`0x10060aa0`).
-    crate::state::with(|s| s.team_number = 0);
+    // `Initialize` zeroes `g_iPlayerClass` and `g_iTeamNumber` (`0x10060aa0`).
+    crate::state::with(|s| {
+        s.player_class = 0;
+        s.team_number = 0;
+    });
     crate::voice::stop_squelch_mode();
 }
 
@@ -393,7 +396,7 @@ pub fn show_vgui_menu(id: i32) {
         }
         4 | 5 => {
             // The window shades the screen while the player has no class (`g_iPlayerClass`).
-            let shade = e.local_player().map_or(0, |p| p.curstate.playerclass) == 0;
+            let shade = crate::state::with(|s| s.player_class) == 0;
             let ok = hud::text::lookup("#Menu_OK");
             let window = if id == 5 {
                 let (server, text) = hud::with(|h| (h.server_name.clone(), h.motd.clone()));
@@ -553,13 +556,13 @@ pub fn intermission(on: bool) {
 
 /// `TeamFortressViewport::AllowedToPrintText` (`0x10064240`): false while the team menu or the
 /// MOTD (VGUI menus 2 and 5; TS also lists the class and class-help menus 3 and 6, which the
-/// port doesn't have) is shown and the local player has no class (`g_iPlayerClass`, `0x10190a10`,
-/// from the local player's state). Chat then goes to the console only.
+/// port doesn't have) is shown and the local player has no class (`g_iPlayerClass`, `0x10190a10`).
+/// Chat then goes to the console only.
 pub fn allowed_to_print_text() -> bool {
     if !matches!(current_menu(), Some(2 | 5)) {
         return true;
     }
-    engine().local_player().map_or(0, |p| p.curstate.playerclass) != 0
+    crate::state::with(|s| s.player_class) != 0
 }
 
 // ---- input -----------------------------------------------------------------------------------

@@ -64,6 +64,7 @@ pub fn process_player_state(dst: &mut entity_state_t, src: &entity_state_t) {
     dst.iuser4 = src.iuser4;
     if engine().local_player().is_some_and(|p| p.index == dst.number) {
         state::with(|s| {
+            s.player_class = dst.playerclass;
             s.team_number = dst.team;
             s.spec_mode = src.iuser1;
             s.spec_target = src.iuser2;

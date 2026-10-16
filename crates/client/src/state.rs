@@ -92,6 +92,9 @@ pub struct Shared {
     /// local player's state, set ahead of it by the team menu's `jointeam 1..4`
     /// ([`crate::menus`]), zeroed by the viewport's `Initialize` and the director reset.
     pub team_number: i32,
+    /// `g_iPlayerClass` (3.0 `0x10190a10`): the local player's state's `playerclass`, zeroed with
+    /// `g_iTeamNumber` (TS's server never sets a player's class, so it stays 0 in play).
+    pub player_class: i32,
     // ---- added by the hud package ----
     /// Local player is an observer (`Spectator` message).
     pub observer: bool,
