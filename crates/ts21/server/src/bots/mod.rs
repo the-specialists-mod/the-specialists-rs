@@ -30,7 +30,7 @@ use goldsrc::server::engine;
 use goldsrc::sys::*;
 use shared::weapons::id;
 use ts_server::bots::brain::{Brain, StateKind, bit, btn, diff_x87, gun_position, is_zero, len_x87, order, sub};
-use ts_server::bots::modules::{add_item, buy_weapon, in_view_cone, visible};
+use ts_server::bots::modules::{add_item, buy_weapon, visible};
 use ts_server::bots::rules::{BotTexts, NativeBotRules};
 use ts_server::bots::states::{armament_empty, center, find_by_class, random_entity};
 use ts_server::player::Player;
@@ -344,6 +344,53 @@ impl NativeBotRules for Bots {
     fn stunt_mode(&self) -> u8 {
         engine().random_long(1, 2) as u8
     }
+
+    // Audit round 2: E
+
+    /// `Navigate` (`FUN_10061b70`: 0x10061c62.., 0x10061d4f.., 0x10061ecf..) sums
+    /// `(z² + y²) + x²` at all three distances.
+    fn nav_distance_order(&self) -> [usize; 3] {
+        order::ZYX
+    }
+
+    /// `GetSteerPoint` (0x100624ac..0x100624ef): [`forward_detour`].
+    fn forward_detour(&self, endpos: [f32; 3], forward: [f32; 3]) -> [f32; 3] {
+        forward_detour(endpos, forward)
+    }
+}
+
+/// 2.1's `GetSteerPoint` forward detour, `endpos - v_forward * 48` (0x100624ac..0x100624ef): the
+/// three products stay on the x87 stack, each difference is rounded once (3.0 stores the
+/// products as floats first). The side detours store `v_right * 48` first, like 3.0's.
+pub fn forward_detour(endpos: [f32; 3], f: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| (f64::from(endpos[i]) - f64::from(f[i]) * 48.0) as f32)
+}
+
+/// 2.1's `CBaseEntity::FInViewCone(Vector *)` (vtable 0x10089220 slot 75, 0x100122a0): the flat
+/// direction to `point` against the flat forward of `pev->angles`, `> m_flFieldOfView` (0.5 for
+/// a player).
+pub fn in_view_cone(v: &entvars_t, point: [f32; 3]) -> bool {
+    let (f, _, _) = engine().angle_vectors(v.angles);
+    cone_dot(v.origin, point, f) > 0.5
+}
+
+/// 2.1's `FInViewCone` dot product (0x100122bf..0x10012325), rounded unlike 3.0's
+/// (`ts_server::bots::modules::in_view_cone`): `dy` is also stored as a float (`fst`) and the
+/// squared length is `dy * (float)dy + dx²`; a zero length (IEEE `==`, `test ah,0x44; jp`) gives a
+/// zero direction; otherwise `1 / len` is stored as a float, the direction `dx * inv`,
+/// `(float)dy * inv` stays unrounded, and the dot is `(dir.y·fy) + fx·dir.x`.
+pub fn cone_dot(origin: [f32; 3], point: [f32; 3], f: [f32; 3]) -> f64 {
+    let dx = f64::from(point[0]) - f64::from(origin[0]);
+    let dy = f64::from(point[1]) - f64::from(origin[1]);
+    let dyf = f64::from(dy as f32);
+    let len = (dy * dyf + dx * dx).sqrt();
+    let (ddx, ddy) = if len == 0.0 {
+        (0.0, 0.0)
+    } else {
+        let inv = f64::from((1.0 / len) as f32);
+        (dx * inv, dyf * inv)
+    };
+    ddy * f64::from(f[1]) + f64::from(f[0]) * ddx
 }
 
 // ---- states (DM 0x100605f0, TeamRounds 0x10060950, Objective 0x10061020) -------------------------

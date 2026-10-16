@@ -4,6 +4,7 @@
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::{TraceResult, edict_t};
+use shared::pm::{FpuMath, Msvc, ORDER_XYZ, ORDER_ZYX};
 use shared::weapons::spread::Vec3;
 use shared::weapons::tables;
 use ts_server::damage::{bits, hitgroup};
@@ -62,6 +63,16 @@ pub fn after_kevlar(amount: f32, armor: f32, group: i32, dmg_bits: i32, absorb: 
     let absorbed = kevlar_absorb(armor, group, dmg_bits, absorb);
     let d = amount as f64;
     ((d - absorbed as f64 * d) as f32).trunc()
+}
+
+/// The direction `CBaseMonster::TakeDamage` (0xb2430) stores in `g_vecAttackDir`, from `to` (the
+/// victim's centre) toward `from` (the inflictor's centre 10 units down), normalised twice in
+/// mp.dll's arithmetic (issue #150): each inline `Normalize` keeps the length and `1/len` on the
+/// FPU, the first sums `z² + y² + x²` (0x10013ff0..0x1001400c), the second `x² + y² + z²`
+/// (0x10014065..0x10014081).
+pub fn attack_dir(from: Vec3, to: Vec3) -> Vec3 {
+    let d = [from[0] - to[0], from[1] - to[1], from[2] - to[2]];
+    Msvc::vec_normalize(Msvc::vec_normalize(d, ORDER_ZYX), ORDER_XYZ)
 }
 
 #[cfg(test)]
@@ -145,5 +156,47 @@ mod tests {
         assert_eq!(r.player_hit(&d).amount, 100.0, "not for melee");
         d.stunting = true;
         assert!((r.player_hit(&d).amount - 70.0).abs() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod attack_dir_tests {
+    use super::attack_dir;
+    use ts_server::damage::attack_dir_ends;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn between(inflictor: ([f32; 3], [f32; 3]), victim: ([f32; 3], [f32; 3])) -> [f32; 3] {
+        let (from, to) = attack_dir_ends((&inflictor.0, &inflictor.1), (&victim.0, &victim.1));
+        attack_dir(from, to)
+    }
+
+    #[test]
+    fn attack_dir_points_from_the_victim_to_below_the_inflictor() {
+        // Victim box centred on the origin; inflictor centred 100 u ahead and 10 u up, so the
+        // `- (0, 0, 10)` makes the direction level.
+        let victim = ([-16.0, -16.0, -36.0], [16.0, 16.0, 36.0]);
+        assert_eq!(between(([96.0, -4.0, 6.0], [104.0, 4.0, 14.0]), victim), [1.0, 0.0, 0.0]);
+        // Same centre (after the 10 u drop): SDK `Normalize` gives straight up.
+        assert_eq!(between(([-16.0, -16.0, -26.0], [16.0, 16.0, 46.0]), victim), [0.0, 0.0, 1.0]);
+    }
+
+    /// Where 2.1 rounds differently (#220's comment; 2.1: x = 0x3f0a2b69).
+    #[test]
+    fn attack_dir_where_2_1_differs() {
+        let from = f([0x43e7_4f11, 0xc41a_fab3, 0x4532_987d]);
+        let to = f([0xc52a_0810, 0x4506_6cf9, 0xc49d_cb04]);
+        assert_eq!(attack_dir(from, to).map(f32::to_bits), [0x3f0a_2b68, 0xbef0_89a3, 0x3f32_d4c7]);
+    }
+
+    /// `CBaseMonster::TakeDamage`'s attack direction in mp.dll's arithmetic (issue #150); the old
+    /// normalisations gave x = 0x3f229782.
+    #[test]
+    fn attack_dir_as_mp_dll() {
+        let inf = (f([0xc372_b68a, 0xc3b4_a9e8, 0x435e_4780]), f([0xc2af_ec14, 0x43b1_95fc, 0x4378_de60]));
+        let vic = (f([0xc397_0edc, 0xc398_98a1, 0xc210_e010]), f([0xc387_4705, 0x412a_7ae0, 0x43d6_4eae]));
+        assert_eq!(between(inf, vic).map(f32::to_bits), [0x3f22_9781, 0x3f41_c1bd, 0x3e1d_e57d]);
     }
 }

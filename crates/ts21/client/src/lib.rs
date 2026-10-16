@@ -12,7 +12,9 @@ use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SlotMenu, StuntCooldown, ThinkParts, TsMessageLayout};
+use ts_client::gameplay::{
+    ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
+};
 use ts_client::hud::draw::{HudOp, HudSprite, StatusLook, WeaponPanel, ftol, num};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -20,6 +22,7 @@ use ts_client::view::{Bob, BobInput, EyeZ};
 use ts21_gameplay::TS21;
 
 pub mod bullets;
+pub mod effects;
 pub mod events;
 pub mod hud;
 pub mod spectator;
@@ -562,6 +565,36 @@ impl ClientRules for Ts21Client {
             category_rows_by_teamplay: true,
             hole_message: Some(HOLE_MESSAGE),
         }
+    }
+
+    // Audit round 2: A1
+
+    /// `HUD_AddEntity` (`0x1007b4c0`) culls ground items by distance and the view cone as 3.0
+    /// does but never sets their `rendermode`/`renderamt` (issue #244).
+    fn ground_items_fade(&self) -> bool {
+        false
+    }
+
+    /// [`spectator::add_entity_tail`]: HLTV viewers only.
+    fn add_entity_spectator(&self) -> SpectatorTail {
+        spectator::add_entity_tail(&HLTV.0.borrow(), &ts_client::spectator::EngineHltv)
+    }
+
+    /// [`effects::LASER`] (issue #204).
+    fn laser_style(&self) -> &'static ts_client::effects::LaserStyle {
+        &effects::LASER
+    }
+
+    /// [`effects::tsfrags`] (`0x10088020`, issue #232).
+    fn tsfrags_effects(&self, ps: &mut PSys, now: f64, frags: &ts_client::effects::TsFrags) -> bool {
+        effects::tsfrags(ps, now, frags);
+        true
+    }
+
+    /// [`effects::blood_impact`] (`0x10082cd0`, issue #232).
+    fn blood_impact(&self, ps: &mut PSys, now: f64, d: &ts_client::effects::PTakeDam) -> bool {
+        effects::blood_impact(ps, now, d);
+        true
     }
 
     // Audit round 2: A2

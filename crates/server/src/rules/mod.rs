@@ -58,8 +58,11 @@ pub struct PlayerRules {
     pub respawns_used: u8,
     /// Death time + 3 s: become an observer (`+0x768`).
     pub observer_at: f32,
-    /// Delayed suicide (`kill`, +1 s, `+0x84c`).
+    /// Delayed suicide (3.0's `kill`, +1 s, `+0x84c`).
     pub suicide_at: f32,
+    /// `m_fNextSuicideTime`: the SDK's `kill` cooldown, for a ruleset whose `kill` is immediate
+    /// (2.1 `+0x7a8`). Nothing else reads or writes it, so it survives a respawn.
+    pub next_suicide: f32,
     /// Last model accepted (HLDM model check) and the team name (`m_szTeamName`, bytes: #188).
     pub team_name: Vec<u8>,
     /// Spawn protection end (`+0x71c`).
@@ -72,7 +75,8 @@ pub struct PlayerRules {
     /// `m_hObserverTarget` (`+0x75c`), a player index (0 = none). Set by `Killed` and
     /// `Observer_FindNextPlayer`; survives a respawn like TS's `EHANDLE`.
     pub obs_target: i32,
-    /// Chat flood control (`+0x7c0`).
+    /// Chat flood control (`+0x7c0`; 2.1 `+0x738`): `Host_Say` sets it 0.5 s ahead, `TSInit`
+    /// zeroes it at every spawn (0x92a4c; 2.1 0x100552f0).
     pub next_say: f32,
     /// `m_iFOV` (`+0x9f0`): set only by the `fov` cheat, zeroed by `Spawn`, `Killed` and
     /// `StartObserver`; the `fov` reply prints it.

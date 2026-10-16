@@ -296,26 +296,44 @@ fn crosshair_centre(dc: &Dc) -> (i32, i32) {
     e.crosshair_trace(start, end, me.index).and_then(|(_, hit, _)| e.world_to_screen(hit, &dc.g.screen)).unwrap_or((-1, -1))
 }
 
-/// `DrawLaserDots` (1004e6f0): 2×2 dots in the local laser colour (`PlInfo`). While the gun may
-/// fire (`state.items_ready`) and `cl_laser` is below 1, the dot sits on the crosshair (akimbo:
-/// 4 px right and left of it) with a rare ±1 px jitter; otherwise it is drawn where the trace
-/// hit (`state.laser_dots`). A dot whose hit point is off screen is not drawn.
+/// `DrawLaserDots` (1004e6f0; 2.1 0x1008b410): 2×2 dots, coloured by [`laser_dot_paint`]. While
+/// the gun may fire (`state.items_ready`) and `cl_laser` is below 1, the dot sits on the
+/// crosshair (akimbo: 4 px right and left of it) with a rare ±1 px jitter; otherwise it is drawn
+/// where the trace hit (`state.laser_dots`). A dot whose hit point is off screen is not drawn.
 fn draw_laser_dots(dc: &Dc, items: i32) {
     use goldsrc::ext::render::random_long;
     let local = engine().local_player().map_or(0, |p| p.index as usize);
-    let (dots, ready, color) = crate::state::with(|s| (s.laser_dots, s.items_ready, s.laser_color.get(local).copied().unwrap_or(0)));
+    let (dots, dists, ready, color) =
+        crate::state::with(|s| (s.laser_dots, s.laser_dist, s.items_ready, s.laser_color.get(local).copied().unwrap_or(0)));
     let rgb = crate::effects::laser_color(color as i32).map(|c| (c * 255.0).round() as i32);
+    let range = crate::gameplay::current().laser_style().dot_range;
     // C integer division: ±1 only for ±10.
     let (jx, jy) = (random_long(-10, 10) / 10, random_long(-10, 10) / 10);
     let centre = crosshair_centre(dc);
     let centred = ready != 0 && input::cvars().cl_laser.value() < 1.0;
-    for (x, y) in laser_dot_positions(items, centred, centre, (jx, jy), dots, (dc.w(), dc.h())) {
-        dc.fill(x, y, 2, 2, rgb, 255);
+    for (gun, x, y) in laser_dot_positions(items, centred, centre, (jx, jy), dots, (dc.w(), dc.h())) {
+        if let Some((rgb, a)) = laser_dot_paint(range, gun, dists[gun], rgb) {
+            dc.fill(x, y, 2, 2, rgb, a);
+        }
     }
 }
 
-/// Top-left corners of the `DrawLaserDots` fills (pure, for tests). `dots` are `WorldToScreen`
-/// coordinates; `centred` pins them to `centre` (plus `jitter`, swapped for the second gun).
+/// A laser dot's colour and alpha, `None` for no dot ([`LaserStyle::dot_range`]
+/// (crate::effects::LaserStyle::dot_range)). TS 3.0: the `PlInfo` colour `rgb` at 255. With a
+/// range `r` (2.1 `0x1008b4c7..0x1008b53a`): only while the hit's distance `d < r` (a NaN draws
+/// nothing), red, the first gun's alpha `ftol((r − d) / r × 255)`, the second's 255.
+fn laser_dot_paint(range: Option<f32>, gun: usize, d: f32, rgb: [i32; 3]) -> Option<([i32; 3], i32)> {
+    let Some(r) = range else { return Some((rgb, 255)) };
+    if d.partial_cmp(&r) != Some(std::cmp::Ordering::Less) {
+        return None;
+    }
+    let a = if gun == 0 { crate::hud::draw::ftol((r as f64 - d as f64) / r as f64 * 255.0) } else { 255 };
+    Some(([255, 0, 0], a))
+}
+
+/// The gun (0, or 1 the akimbo second) and top-left corner of each `DrawLaserDots` fill (pure,
+/// for tests). `dots` are `WorldToScreen` coordinates; `centred` pins them to `centre` (plus
+/// `jitter`, swapped for the second gun).
 fn laser_dot_positions(
     items: i32,
     centred: bool,
@@ -323,7 +341,7 @@ fn laser_dot_positions(
     (jx, jy): (i32, i32),
     dots: [Option<[f32; 2]>; 2],
     (w, h): (i32, i32),
-) -> Vec<(i32, i32)> {
+) -> Vec<(usize, i32, i32)> {
     if items & 2 == 0 {
         return Vec::new();
     }
@@ -333,8 +351,9 @@ fn laser_dot_positions(
     pinned
         .iter()
         .zip(dots)
-        .filter_map(|(&p, d)| d.map(|d| if centred { p } else { to_px(d) }))
-        .map(|(x, y)| (x.wrapping_sub(1), y.wrapping_sub(1)))
+        .enumerate()
+        .filter_map(|(gun, (&p, d))| d.map(|d| (gun, if centred { p } else { to_px(d) })))
+        .map(|(gun, (x, y))| (gun, x.wrapping_sub(1), y.wrapping_sub(1)))
         .collect()
 }
 
@@ -763,10 +782,24 @@ mod tests {
         let dots = [Some([0.5, 0.5]), Some([-0.5, 0.0])];
         let (c, j, sz) = ((320, 240), (1, 0), (640, 480));
         assert_eq!(laser_dot_positions(0, true, c, j, dots, sz), [], "laser off");
-        assert_eq!(laser_dot_positions(2, true, c, j, dots, sz), [(320, 239)], "pinned to the crosshair, jitter x");
-        assert_eq!(laser_dot_positions(2, false, c, j, dots, sz), [(479, 119)], "at the projected hit");
-        assert_eq!(laser_dot_positions(0x42, true, c, j, dots, sz), [(324, 239), (315, 240)], "akimbo: +3/-5 px, jitter swapped");
-        assert_eq!(laser_dot_positions(0x42, true, c, j, [None, dots[1]], sz), [(315, 240)], "off-screen hit: no dot");
+        assert_eq!(laser_dot_positions(2, true, c, j, dots, sz), [(0, 320, 239)], "pinned to the crosshair, jitter x");
+        assert_eq!(laser_dot_positions(2, false, c, j, dots, sz), [(0, 479, 119)], "at the projected hit");
+        assert_eq!(laser_dot_positions(0x42, true, c, j, dots, sz), [(0, 324, 239), (1, 315, 240)], "akimbo: +3/-5 px, jitter swapped");
+        assert_eq!(laser_dot_positions(0x42, true, c, j, [None, dots[1]], sz), [(1, 315, 240)], "off-screen hit: no dot");
+    }
+
+    /// 3.0 (`0x1004e6f0`): the laser colour at 255 at any range. 2.1 (`0x1008b410`, issue #204):
+    /// red, faded out by 4096 units for the first gun, 255 for the second, none from 4096.
+    #[test]
+    fn laser_dot_paint_by_range() {
+        let green = [0, 205, 0];
+        assert_eq!(laser_dot_paint(None, 0, 9000.0, green), Some((green, 255)));
+        assert_eq!(laser_dot_paint(Some(4096.0), 0, 0.0, green), Some(([255, 0, 0], 255)));
+        assert_eq!(laser_dot_paint(Some(4096.0), 0, 1024.0, green), Some(([255, 0, 0], 191)));
+        assert_eq!(laser_dot_paint(Some(4096.0), 0, 4095.0, green), Some(([255, 0, 0], 0)));
+        assert_eq!(laser_dot_paint(Some(4096.0), 1, 4000.0, green), Some(([255, 0, 0], 255)));
+        assert_eq!(laser_dot_paint(Some(4096.0), 0, 4096.0, green), None);
+        assert_eq!(laser_dot_paint(Some(4096.0), 1, f32::NAN, green), None);
     }
 
     /// Projections from near the eye plane (infinite or NaN) and odd screens give no overflow.

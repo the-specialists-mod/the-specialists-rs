@@ -3,6 +3,7 @@
 //! * [`PLUGIN`]: the gameplay plugin, [`Ts30Server`] with the shared [`TS30`] hooks.
 //! * [`rules`]: the multiplayer install, the server browser's description and
 //!   `CTSGameRules::Think`.
+//! * [`commands`]: the chat's text rules and dead-chat gate, and `kill`.
 //! * [`players`]: The One, teams, the respawn time, the overheal and the spawn loadout.
 //! * [`observer`]: the observer part of `PreThink` and `Observer_SetMode`.
 //! * [`scoring`]: `PlayerKilled` and `TSGetPointsForFrag`.
@@ -20,6 +21,7 @@
 #![deny(unsafe_code)]
 
 pub mod bots;
+pub mod commands;
 pub mod damage;
 pub mod entities;
 pub mod explode;
@@ -46,12 +48,13 @@ use ts_server::entities::ts::ctb::GiverWin;
 use ts_server::entities::ts::ground::GroundWeapon;
 use ts_server::entities::ts::misc::MapFlags;
 use ts_server::entities::ts::objective::ObjectiveRules;
-use ts_server::gameplay::server::CvarDef;
+use ts_server::gameplay::server::{CvarDef, InitHudRules, TeamChangeRules};
 use ts_server::gameplay::{ConnectingClient, ServerPlugin, ServerRules};
 use ts_server::messages::Msg;
 use ts_server::player::Player;
 use ts_server::player::damage::{HitDamage, PlayerHit};
 use ts_server::rules::DescriptionMode;
+use ts_server::rules::commands::SayRules;
 use ts_server::rules::powerup::PowerupRules;
 use ts_server::rules::scoring::Frag;
 use ts_server::rules::state::GameRules;
@@ -504,6 +507,81 @@ impl ServerRules for Ts30Server {
     fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32 {
         let _ = (from, at);
         explode::thrown_blade_damage(btype)
+    }
+
+    // Audit round 2: B1
+
+    /// [`commands::SAY_RULES`]: `%a`/`%h`, a vote's text lowered, no `ff` reply.
+    fn say_rules(&self) -> &'static SayRules {
+        &commands::SAY_RULES
+    }
+
+    /// Round modes 2/3 or LMS ([`commands::say_dead_chat_gated`]).
+    fn say_dead_chat_gated(&self) -> bool {
+        commands::say_dead_chat_gated()
+    }
+
+    /// The suicide a second later ([`commands::client_kill`]).
+    fn client_kill(&self, p: &mut Player, cx: &mut Cx) {
+        commands::client_kill(p, cx);
+    }
+
+    /// `SET_VIEW(edict, edict)` and `EnableControl(TRUE)` (0x8eee0).
+    fn killed_resets_view(&self) -> bool {
+        true
+    }
+
+    // Audit round 2: B2
+
+    /// After the rules' whole `InitHUD`, with the `Spectator` list ([`players::INIT_HUD`]).
+    fn init_hud(&self) -> &'static InitHudRules {
+        &players::INIT_HUD
+    }
+
+    /// The One's teams, `IsValidTeam` and the team-limit model reset ([`players::TEAM_CHANGES`]).
+    fn team_changes(&self) -> &'static TeamChangeRules {
+        &players::TEAM_CHANGES
+    }
+
+    /// `TSSelectSpawnSpot` (0x76244) asks each spot's `IsTriggered` (0xe2c20).
+    fn spawn_spot_master_test(&self) -> bool {
+        true
+    }
+
+    // Audit round 2: D2
+
+    /// Yes: `PickUpWeapon` (0x9314c) refuses such pairs ([`entities::GROUND_WEAPON_PAIRS_TO_SINGLE`]).
+    fn ground_weapon_pairs_to_single(&self) -> bool {
+        entities::GROUND_WEAPON_PAIRS_TO_SINGLE
+    }
+
+    /// [`powerup::random_position_ray`] in the server's arithmetic (`ts_i386.so` or `mp.dll`).
+    fn random_position_ray(&self, angle: i32, dist: i32, from: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+        use powerup::random_position_ray;
+        shared::by_arith!(ts_server::rules::cvars::pm_arith(), random_position_ray(angle, dist, from))
+    }
+
+    // Audit round 2: C
+
+    /// [`explode::SCREEN_EFFECTS`]: divided by the receiver's time scale.
+    fn screen_effects(&self) -> ts_server::entities::stock::explode::ScreenEffects {
+        explode::SCREEN_EFFECTS
+    }
+
+    /// `g_vecZero` (`CheckForBreakables` 0x9bd9c, 0x9c59e: `local_ac = g_vecZero`).
+    fn delayed_hit_dir(&self, stunt_dir: Vec3) -> Vec3 {
+        let _ = stunt_dir;
+        [0.0; 3]
+    }
+
+    /// [`explode::explosion_hit`], mp.dll's arithmetic.
+    fn explosion_hit(&self, org: Vec3, spot: Vec3, dmg: f32, r_full: f32, r_max: f32, occluder: Option<f32>) -> Option<(f32, Vec3)> {
+        explode::explosion_hit(org, spot, dmg, r_full, r_max, occluder)
+    }
+
+    /// [`damage::attack_dir`], mp.dll's arithmetic.
+    fn attack_dir(&self, from: Vec3, to: Vec3) -> Vec3 {
+        damage::attack_dir(from, to)
     }
 }
 

@@ -171,8 +171,20 @@ fn change_team_model(team_limit: bool, team: &[u8], models: &[Vec<u8>], pick: im
 /// The team `ChangePlayerTeam` (0xe488c) settles on: in The One mode The One goes to the first
 /// `TSGameRules` team and everyone else to the second, whatever was asked; otherwise an empty
 /// name or one `IsValidTeam` refuses means the smallest team (`None`). Without a team limit any
-/// name is valid.
-fn change_team_choice(requested: &[u8], the_one: bool, is_the_one: bool, one: &[Vec<u8>; 2], valid: bool) -> Option<Vec<u8>> {
+/// name is valid. A ruleset that doesn't check the team
+/// ([`TeamChangeRules::change_checks_team`](crate::gameplay::server::TeamChangeRules::change_checks_team))
+/// takes any non-empty name.
+fn change_team_choice(
+    checked: bool,
+    requested: &[u8],
+    the_one: bool,
+    is_the_one: bool,
+    one: &[Vec<u8>; 2],
+    valid: bool,
+) -> Option<Vec<u8>> {
+    if !checked {
+        return (!requested.is_empty()).then(|| requested.to_vec());
+    }
     if the_one {
         return Some(one[if is_the_one { 0 } else { 1 }].clone());
     }
@@ -191,7 +203,8 @@ pub fn change_team(p: &mut Player, cx: &mut Cx, name: &[u8], kill: bool, gib: bo
         state::with(|g| g.death_suppressed = false);
     }
     let (the_one, one, valid) = state::with(|g| (g.the_one, g.the_one_team_names(), g.is_valid_team(name)));
-    let name = change_team_choice(name, the_one, p.ts.is_the_one, &one, valid).unwrap_or_else(fewest);
+    let checked = crate::gameplay::active().server.team_changes().change_checks_team;
+    let name = change_team_choice(checked, name, the_one, p.ts.is_the_one, &one, valid).unwrap_or_else(fewest);
     let e = cx.edict;
     store_team(p, e, &name);
     let name = p.ts.team_name.clone();
@@ -290,10 +303,35 @@ pub fn the_one_switch_other(e: *mut edict_t) {
     crate::player::with_player(e, the_one_switch);
 }
 
+/// What `ClientUserInfoChanged` does first with a changed `model` key, before `mp_defaultteam`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelChange {
+    /// The key becomes a team model (`GetPlayerModel`).
+    TeamModel,
+    /// `SetDefaultPlayerTeam` runs again.
+    DefaultTeam,
+    /// On to `mp_defaultteam` and the team change.
+    TeamChange,
+}
+
+/// The head of `ClientUserInfoChanged`: the round modes always reset the model; then a
+/// ruleset's team-limit reset (3.0 0xe4d18, `+0x214`) or its The One case (2.1 0x10038f50, vtable
+/// +0xdc).
+fn model_change(r: &crate::gameplay::server::TeamChangeRules, round: bool, limit: bool, the_one: bool) -> ModelChange {
+    if round || (r.model_change_team_limit && limit) {
+        ModelChange::TeamModel
+    } else if r.model_change_the_one_default && the_one {
+        ModelChange::DefaultTeam
+    } else {
+        ModelChange::TeamChange
+    }
+}
+
 /// `CHalfLifeTeamplay::ClientUserInfoChanged` (0xe4d18), after the Multiplay part: a `model` key
-/// that differs (case-insensitively) from the team name. With a team limit (or in the unreachable
-/// round modes) it is replaced by a random team model (`GetPlayerModel`). Without one it is a team
-/// change, or under `mp_defaultteam` both keys are put back.
+/// that differs (case-insensitively) from the team name. In the round modes (unreachable in 3.0)
+/// it is replaced by a random team model (`GetPlayerModel`), and so it is with a team limit or
+/// The One's teams are set again, as the ruleset has it ([`model_change`]). Otherwise it is a
+/// team change, or under `mp_defaultteam` both keys are put back.
 pub fn userinfo_changed(p: &mut Player, cx: &mut Cx) {
     let e = cx.edict;
     let eng = engine();
@@ -302,11 +340,19 @@ pub fn userinfo_changed(p: &mut Player, cx: &mut Cx) {
     if state::team_eq(&model, &team) {
         return;
     }
-    let (mode, limit) = state::with(|g| (g.mode, g.team_limit));
+    let (mode, limit, the_one) = state::with(|g| (g.mode, g.team_limit, g.the_one));
     let idx = cx.index();
-    if matches!(mode, state::Mode::RoundTdm | state::Mode::Objective) || limit {
-        eng.set_client_key(e, "model", &model_for(&team));
-        return;
+    let round = matches!(mode, state::Mode::RoundTdm | state::Mode::Objective);
+    match model_change(crate::gameplay::active().server.team_changes(), round, limit, the_one) {
+        ModelChange::TeamModel => {
+            eng.set_client_key(e, "model", &model_for(&team));
+            return;
+        }
+        ModelChange::DefaultTeam => {
+            set_default_team(p, cx);
+            return;
+        }
+        ModelChange::TeamChange => {}
     }
     if super::cvars::on(c"mp_defaultteam") {
         eng.set_client_key(e, "model", &team);
@@ -315,7 +361,7 @@ pub fn userinfo_changed(p: &mut Player, cx: &mut Cx) {
         return;
     }
     if !state::with(|g| g.is_valid_team(&model)) {
-        // Unreachable: without a team limit every name is valid.
+        // Unreachable with a team-limit reset: without a team limit every name is valid.
         eng.set_client_key(e, "model", &team);
         msg::say_one(e, idx, &bformat!("* Can't change team to '{}'\n", model));
         let list: Vec<u8> = state::with(|g| g.team_list.iter().flat_map(|t| bformat!("{};", t)).collect());
@@ -330,7 +376,10 @@ pub fn userinfo_changed(p: &mut Player, cx: &mut Cx) {
 
 #[cfg(test)]
 mod tests {
-    use super::{change_team_choice, change_team_model, default_team_kept, init_hud_notice, team_change_notice, team_field};
+    use super::{
+        ModelChange, change_team_choice, change_team_model, default_team_kept, init_hud_notice, model_change, team_change_notice,
+        team_field,
+    };
     use shared::protocol::hud_wire::Bytes;
     use shared::protocol::rules::{TeamInfo, TeamNames, TeamScore};
 
@@ -394,7 +443,7 @@ mod tests {
     #[test]
     fn change_team_picks_a_valid_team_or_the_smallest() {
         let g = teamplay("hitman;gordon");
-        let choice = |name: &str| change_team_choice(name.as_bytes(), false, false, &one(), g.is_valid_team(name.as_bytes()));
+        let choice = |name: &str| change_team_choice(true, name.as_bytes(), false, false, &one(), g.is_valid_team(name.as_bytes()));
         assert_eq!(choice("GORDON").as_deref(), Some(&b"GORDON"[..]));
         assert_eq!(choice("hitman").as_deref(), Some(&b"hitman"[..]));
         // `jointeam` out of range: GetIndexedTeamName gives "" and TS picks the smallest team.
@@ -405,15 +454,15 @@ mod tests {
     #[test]
     fn change_team_without_a_team_limit_takes_any_name() {
         let g = teamplay("hitman");
-        let choice = |name: &str| change_team_choice(name.as_bytes(), false, false, &one(), g.is_valid_team(name.as_bytes()));
+        let choice = |name: &str| change_team_choice(true, name.as_bytes(), false, false, &one(), g.is_valid_team(name.as_bytes()));
         assert_eq!(choice("seal").as_deref(), Some(&b"seal"[..]));
         assert_eq!(choice(""), None, "an empty name still goes to the smallest team");
     }
 
     #[test]
     fn change_team_in_the_one_mode_ignores_the_request() {
-        assert_eq!(change_team_choice(b"gordon", true, true, &one(), false).as_deref(), Some(&b"The ONE"[..]));
-        assert_eq!(change_team_choice(b"hitman", true, false, &one(), true).as_deref(), Some(&b"gordon"[..]));
+        assert_eq!(change_team_choice(true, b"gordon", true, true, &one(), false).as_deref(), Some(&b"The ONE"[..]));
+        assert_eq!(change_team_choice(true, b"hitman", true, false, &one(), true).as_deref(), Some(&b"gordon"[..]));
     }
 
     #[test]
@@ -435,5 +484,42 @@ mod tests {
         assert_eq!(change_team_model(true, b"hitman", &models, |_| 0), b"seal");
         // A team without models (or an unknown one) still sets the key, to "".
         assert_eq!(change_team_model(true, b"hitman", &[], |_| unreachable!()), b"");
+    }
+
+    // Audit round 2: B2
+    use crate::gameplay::server::TeamChangeRules;
+
+    /// 3.0's checks (`ChangePlayerTeam` 0xe488c, `ClientUserInfoChanged` 0xe4d18).
+    const CHECKED: TeamChangeRules =
+        TeamChangeRules { change_checks_team: true, model_change_team_limit: true, model_change_the_one_default: false };
+    /// 2.1's (0x10038cb0, 0x10038f50).
+    const UNCHECKED: TeamChangeRules =
+        TeamChangeRules { change_checks_team: false, model_change_team_limit: false, model_change_the_one_default: true };
+
+    /// #238: without the checks only an empty name goes to the smallest team; The One mode and
+    /// a name `IsValidTeam` refuses keep the request (0x10038d32..0x10038d58).
+    #[test]
+    fn unchecked_change_takes_the_requested_team() {
+        assert_eq!(change_team_choice(false, b"gordon", true, false, &one(), false).as_deref(), Some(&b"gordon"[..]));
+        assert_eq!(change_team_choice(false, b"The ONE", true, false, &one(), true).as_deref(), Some(&b"The ONE"[..]));
+        assert_eq!(change_team_choice(false, b"seal", false, false, &one(), false).as_deref(), Some(&b"seal"[..]));
+        assert_eq!(change_team_choice(false, b"", false, false, &one(), true), None);
+        assert_eq!(change_team_choice(false, b"", true, true, &one(), true), None);
+    }
+
+    /// #238: `ClientUserInfoChanged`'s first branch per ruleset.
+    #[test]
+    fn model_change_per_ruleset() {
+        use ModelChange::*;
+        // The round modes reset the model in both.
+        assert_eq!(model_change(&CHECKED, true, true, false), TeamModel);
+        assert_eq!(model_change(&UNCHECKED, true, true, false), TeamModel);
+        // A team limit: 3.0 resets the model, 2.1 changes team.
+        assert_eq!(model_change(&CHECKED, false, true, false), TeamModel);
+        assert_eq!(model_change(&UNCHECKED, false, true, false), TeamChange);
+        // The One mode: 2.1 sets The One's teams again, 3.0 has no such case.
+        assert_eq!(model_change(&UNCHECKED, false, true, true), DefaultTeam);
+        assert_eq!(model_change(&CHECKED, false, false, true), TeamChange);
+        assert_eq!(model_change(&CHECKED, false, false, false), TeamChange);
     }
 }

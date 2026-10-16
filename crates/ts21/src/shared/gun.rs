@@ -140,6 +140,14 @@ impl GunRules for Ts21 {
     fn holster_draws_kungfu(&self) -> bool {
         false
     }
+
+    // Audit round 2: C
+
+    /// Nothing: 2.1's whole weapon step (`pre_think`) comes after `CTSStunt::Play`
+    /// (`FUN_1005acf0`, 0x100537e0 decomp line ~95; the step at 0x10053a40..0x10053b1f).
+    fn pre_think_timers(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink) {
+        let _ = (gun, disarm, t);
+    }
 }
 
 /// 2.1's `GetBetterWeapon` (FUN_1004a410): the owned weapon other than `excluded` with the

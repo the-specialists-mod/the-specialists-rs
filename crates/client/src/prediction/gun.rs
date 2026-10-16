@@ -174,12 +174,15 @@ fn holster(g: &mut Gun) {
 }
 
 /// The start of `HUD_WeaponsPostThink`, before anything is read from `from`: the gun spawn after
-/// a `HUD_VidInit` (`0x100036f0`, the call at `0x10003713`, on every call) and, for `runfuncs`
+/// a `HUD_VidInit` (`0x100036f0`, the call at `0x10003713`, on every call; 2.1 `FUN_10017d30`),
+/// which first rebuilds the weapon table (`FUN_10007de0`, 2.1 `FUN_1001e270`), dropping any
+/// `CustomWP` values received since (issue #248), and, for `runfuncs`
 /// commands, the SDK's `lasthealth` check (`0x10003877..0x100038e2`, int `0x100991a4`). These
 /// act on the state carried from the last first-time prediction, which [`gun_from`] then
 /// overlays with the networked fields.
 fn spawn_and_death(c: &clientdata_t, final_origin: Vec3, runfuncs: bool) {
     if !with(|p| std::mem::replace(&mut p.gun_spawned, true)) {
+        shared::weapons::table::reset_custom_tables();
         with(|p| spawn_gun(p.gun.get_or_insert_with(Gun::default)));
     }
     if !runfuncs {

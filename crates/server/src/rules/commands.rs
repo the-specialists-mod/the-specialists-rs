@@ -136,11 +136,13 @@ pub fn say_prefix(name: &[u8], team: bool) -> Vec<u8> {
     if team { shared::bformat!("\x02(TEAM) {}: ", name) } else { shared::bformat!("\x02{}: ", name) }
 }
 
-/// The text as `Host_Say` cuts it, in place, so that it fits a 127-byte line after `prefix`
-/// (`p[0x7f - strlen(prefix)] = 0`): a byte count, which may split a multi-byte UTF-8 character
+/// The text as `Host_Say` cuts it, in place, so that prefix and text fit in 126 bytes (the SDK's
+/// `sizeof(text) - 2 - strlen(text)` with `char text[128]`): 3.0 `p[0x7f - (strlen(prefix) + 1)]
+/// = 0` (0xad02c, the `repnz scasb` count includes the terminator), 2.1 `p[0x7e -
+/// strlen(prefix)] = 0` (0x1000cf00). A byte count, which may split a multi-byte UTF-8 character
 /// as TS does. The log line shows the cut text too.
 pub fn clip_say_text<'a>(prefix: &[u8], text: &'a [u8]) -> &'a [u8] {
-    &text[..127usize.saturating_sub(prefix.len()).min(text.len())]
+    &text[..126usize.saturating_sub(prefix.len()).min(text.len())]
 }
 
 /// The longest chat line (before its `\n`) that fits `Host_Say`'s 140-byte buffer with the `\n`
@@ -186,6 +188,43 @@ pub fn format_say(prefix: &[u8], text: &[u8], armor: f32, health: f32) -> Vec<u8
     out
 }
 
+/// How a ruleset's `Host_Say` treats the chat text ([`ServerRules::say_rules`](crate::gameplay::ServerRules::say_rules)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SayRules {
+    /// `%a` and `%h` in the text become the armour and health ([`format_say`]); false appends
+    /// the text as it is ([`plain_say_line`]).
+    pub expand_codes: bool,
+    /// The whole text is lower-cased (A-Z) once the chat line is built, before the `timeleft`,
+    /// `ff` and `vote` tests, so they and the log see it lowered. False lowers only the text
+    /// after `vote`, once it matched.
+    pub lower_all: bool,
+    /// A text starting with `ff` answers the sender (a net client) "Friendly fire is on/off" and
+    /// isn't broadcast, only logged.
+    pub ff_reply: bool,
+}
+
+/// The chat line as the prefix, the [`clip_say_text`] text as it is and `\n` (a ruleset whose
+/// [`SayRules::expand_codes`] is off). The prefix and the text fit in 126 bytes, so the line
+/// needs no guard.
+pub fn plain_say_line(prefix: &[u8], text: &[u8]) -> Vec<u8> {
+    let mut out = prefix.to_vec();
+    out.extend_from_slice(text);
+    out.push(b'\n');
+    out
+}
+
+/// The `ff` reply: `"Friendly fire is %s\n"` with "on" for any `mp_friendlyfire` but 0 (a NaN
+/// included: `fcomp` against 0 and `jp`, 2.1 0x1000d19e..0x1000d1b3).
+pub fn friendly_fire_text(friendlyfire: f32) -> String {
+    format!("Friendly fire is {}\n", if friendlyfire != 0.0 { "on" } else { "off" })
+}
+
+/// `Host_Say`'s dead-chat gate, for a message to `other`: with the gate on, a sender out for the
+/// round (dead, `respawn_at < 0`) only reaches other such players.
+pub fn say_reaches(gated: bool, me_alive: bool, my_respawn: f32, other_alive: bool, other_respawn: f32) -> bool {
+    !gated || me_alive || my_respawn >= 0.0 || (!other_alive && other_respawn < 0.0)
+}
+
 /// `Host_Say`'s chat text from `Cmd_Args`: a leading `"` is dropped together with the last
 /// byte, whatever it is (`p[strlen(p) - 1] = 0` on the original string).
 pub fn say_text(raw: &[u8]) -> &[u8] {
@@ -201,7 +240,9 @@ pub fn say_has_text(text: &[u8]) -> bool {
     text.iter().any(|b| b.is_ascii_graphic())
 }
 
-/// `Host_Say` (0xad02c). `vote …` lines go to `PlayerVote` first.
+/// `Host_Say` (0xad02c; 2.1 0x1000cf00, the differences in the ruleset's [`SayRules`] and
+/// [`say_dead_chat_gated`](crate::gameplay::ServerRules::say_dead_chat_gated)). `vote …` lines go
+/// to `PlayerVote` first.
 fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
     let now = cx.time();
     if now < p.ts.next_say || args.argc() < 2 {
@@ -218,10 +259,18 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
     let name = netname(e);
     let prefix = say_prefix(&name, team);
     let mut text = clip_say_text(&prefix, text).to_owned();
-    let line = {
+    let rules = crate::gameplay::active().server.say_rules();
+    let line = if rules.expand_codes {
         let v = cx.pev();
         format_say(&prefix, &text, v.armorvalue, v.health)
+    } else {
+        plain_say_line(&prefix, &text)
     };
+    if rules.lower_all {
+        // `_strlwr(text)` after the line is built (2.1 0x1000d0ec): the tests and the log see the
+        // text lowered, the chat line keeps its case.
+        text.make_ascii_lowercase();
+    }
 
     // `IsNetClient()` of the sender gates the `timeleft` reply and the vote: a bot's vote line is
     // broadcast as chat.
@@ -234,6 +283,13 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
             msg::text_one(e, hud_dest::TALK, &format!("Time left: {}:{:02}\n", left / 60, left % 60));
         }
         false
+    } else if rules.ff_reply && text.starts_with(b"ff") {
+        // Not broadcast, whoever sent it (2.1 0x1000d164..0x1000d1da: both exits skip the
+        // broadcast to the log).
+        if net_client {
+            msg::text_one(e, hud_dest::TALK, &friendly_fire_text(cvars::f(c"mp_friendlyfire")));
+        }
+        false
     } else if text.starts_with(b"vote") {
         // `strlwr(text + 4)` lowers the text in place (A-Z only, C locale), so the log line shows
         // it lowered too; the chat line was built before.
@@ -243,7 +299,7 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
         true
     };
     if broadcast {
-        let lms = state::lms();
+        let gated = crate::gameplay::active().server.say_dead_chat_gated();
         let me_alive = alive(cx.pev());
         let my_respawn = p.respawn_at;
         // `UTIL_FindEntityByClassname(.., "player")` + `IsNetClient()`: every `CBasePlayer` but
@@ -255,9 +311,9 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
             if team && !teams::same_team(o, e) {
                 continue;
             }
-            // LMS: players out for the round only talk to each other.
+            // Round modes and LMS: players out for the round only talk to each other.
             let (o_alive, o_respawn) = (alive(o.v()), other(o, |q| q.respawn_at).unwrap_or(0.0));
-            if !lms || me_alive || my_respawn >= 0.0 || (!o_alive && o_respawn < 0.0) {
+            if say_reaches(gated, me_alive, my_respawn, o_alive, o_respawn) {
                 msg::say_one(o, idx, &line);
             }
         }
@@ -748,11 +804,13 @@ mod tests {
         // `(int)health` truncates: 87.6 is 87, -0.5 is 0.
         assert_eq!(say("bob", false, "%h", 0.0, 87.6), "\x02bob: 87\n");
         assert_eq!(say("bob", false, "%h", 0.0, -0.5), "\x02bob: 0\n");
-        // The text is cut so the unexpanded line is 127 bytes.
+        // The text is cut so the unexpanded line is 126 bytes (0xad02c, 2.1 0x1000cf00), 127 with
+        // the `\n`.
         let long = "x".repeat(300);
         let prefix = say_prefix(b"bob", false);
-        assert_eq!(prefix.len() + clip_say_text(&prefix, long.as_bytes()).len(), 127);
-        assert_eq!(say("bob", false, &long, 0.0, 0.0).len(), 128);
+        assert_eq!(prefix.len() + clip_say_text(&prefix, long.as_bytes()).len(), 126);
+        assert_eq!(say("bob", false, &long, 0.0, 0.0).len(), 127);
+        assert_eq!(clip_say_text(&prefix, &[b'x'; 120]).len(), 120, "a shorter text is kept whole");
         // Guard: expansions stop at TS's 140-byte buffer, well under the 192-byte message limit.
         let line = say("bob", false, &"%a".repeat(60), 1.0, 0.0);
         assert_eq!(line.len(), SAY_LINE_MAX + 1);
@@ -778,9 +836,34 @@ mod tests {
         assert_eq!(WireRead::string(&mut w), line);
         // A leading quote takes the last byte, not the last UTF-8 character.
         assert_eq!(say_text(b"\"ab\xc3\xa9"), b"ab\xc3");
-        // The 127-byte cut counts bytes.
+        // The 126-byte cut counts bytes.
         let long = [0xe9u8; 300];
-        assert_eq!(prefix.len() + clip_say_text(&prefix, &long).len(), 127);
+        assert_eq!(prefix.len() + clip_say_text(&prefix, &long).len(), 126);
+    }
+
+    /// The 2.1 shape of `Host_Say` (0x1000cf00): no `%a`/`%h`, the `ff` reply and the dead-chat
+    /// gate (0x1000d2d5..0x1000d33a).
+    #[test]
+    fn say_without_codes_ff_and_dead_chat() {
+        let prefix = say_prefix(b"Bob", true);
+        // The text as it is, then "\n" (0x1000d0dd..0x1000d0e3); its case is kept in the line.
+        assert_eq!(plain_say_line(&prefix, b"HP %h %a 100%"), b"\x02(TEAM) Bob: HP %h %a 100%\n");
+        let long = [b'x'; 300];
+        assert_eq!(plain_say_line(&prefix, clip_say_text(&prefix, &long)).len(), 127);
+        // "Friendly fire is %s\n" (0x10091b70), "on" (0x10091b8c) unless the cvar is 0.
+        assert_eq!(friendly_fire_text(0.0), "Friendly fire is off\n");
+        assert_eq!(friendly_fire_text(1.0), "Friendly fire is on\n");
+        assert_eq!(friendly_fire_text(-0.0), "Friendly fire is off\n");
+        assert_eq!(friendly_fire_text(f32::NAN), "Friendly fire is on\n");
+        // Gate off: everyone hears everyone.
+        assert!(say_reaches(false, false, -1.0, true, 0.0));
+        // Gate on: a sender out for the round reaches only players out for the round.
+        assert!(!say_reaches(true, false, -1.0, true, 0.0));
+        assert!(!say_reaches(true, false, -1.0, false, 2.0), "a dead player who respawns this round");
+        assert!(say_reaches(true, false, -1.0, false, -1.0));
+        // A living sender, or one still to respawn, reaches everyone.
+        assert!(say_reaches(true, true, -1.0, true, 0.0));
+        assert!(say_reaches(true, false, 0.0, true, 0.0));
     }
 
     #[test]

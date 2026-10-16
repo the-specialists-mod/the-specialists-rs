@@ -227,6 +227,11 @@ fn trigger_touch(t: &mut Trigger, cx: &mut Cx, other: *mut edict_t) {
     t.ready_at = now + if t.next_check <= 0.5 { 0.5 } else { t.next_check };
 }
 
+/// 2.1's `CTSGroundWeapon::Spawn` (0x10065c70) only checks the id (`get_weapon_info(id)->valid`)
+/// and keeps it: `PickUpWeapon` (0x10055830) has no akimbo refusal and `CTSGun::TakeWeapon`
+/// (FUN_1004a040) gives a pair outright, so an akimbo ground weapon gives the pair (issue #224).
+pub const GROUND_WEAPON_PAIRS_TO_SINGLE: bool = false;
+
 /// `ServerRules::give_ground_weapon` in 2.1: `GetWeapon` (FUN_10066250) past `IsPlayer`. A
 /// living, visible player picks a visible weapon up (`PickUpWeapon(id, NULL, spawnflags, 1)`),
 /// with no price; then the weapon hides and schedules its respawn, a negative `wextraclip` is
@@ -356,6 +361,21 @@ pub fn breakable_attack_dir(org: [f32; 3], absmin: [f32; 3], size: [f32; 3]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #224: 2.1 keeps an akimbo ground weapon's id; its pairs of a single gun (10 Akimbo
+    /// MK23, 16 Akimbo Mini-Uzi, 30 Akimbo Five-seveN) are what 3.0's remap would turn into 9, 3
+    /// and 14.
+    #[test]
+    fn ground_weapons_keep_akimbo_pairs() {
+        use ts_server::gameplay::ServerRules;
+        assert!(!crate::Ts21Server.ground_weapon_pairs_to_single());
+        let t = ts21_gameplay::shared::tables::tables();
+        for (pair, single) in [(10, 9), (16, 3), (30, 14)] {
+            let w = t.weapon(pair).unwrap();
+            assert_eq!(w.single, single, "{pair}");
+            assert_eq!(shared::weapons::ts_kind(w.kind), shared::weapons::kind::AKIMBO, "{pair}");
+        }
+    }
 
     /// The centre's x is stored, its y and z aren't: with a box at 2^24 a half unit survives in y.
     #[test]

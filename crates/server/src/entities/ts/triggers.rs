@@ -274,7 +274,7 @@ impl Entity for DmHill {
         }
         if let Some(t) = text {
             let hold = dmhill_hold(self.next_check);
-            msg::ts_message_all([0, 255, 0], 8, hold, &t);
+            msg::ts_message_all([0, 255, 0], super::objective::hud_effect(), hold, &t);
         }
         self.award_at = now + step;
         fire_own_target(cx);
@@ -692,7 +692,7 @@ impl Entity for SlowMotion {
     fn use_(&mut self, cx: &mut Cx, _a: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
         self.activate(cx);
         if let Some(m) = message_of(cx) {
-            msg::ts_message_all([0, 255, 0], 8, 30, &m);
+            msg::ts_message_all([0, 255, 0], super::objective::hud_effect(), 30, &m);
         }
         fire_own_target(cx);
     }

@@ -408,10 +408,39 @@ fn scale(a: Vec3, s: f32) -> Vec3 {
     a.map(|c| s * c)
 }
 
+/// `HUD_AddEntity`'s tail (`0x1007b4c0`, issue #244): only for an HLTV viewer
+/// (`IsSpectateOnly`), the overview icon (`0x1004de20`), and the spectator's target
+/// (`0x102db3f0`, [`HltvHost::locked_target`]) hidden in main mode 4 (in-eye) or inset 2. A
+/// player who observes gets 2.1's normal view at their own origin (issue #183), so nothing is
+/// hidden for them.
+pub fn add_entity_tail(h: &Hltv, host: &dyn HltvHost) -> ts_client::gameplay::SpectatorTail {
+    use ts_client::gameplay::SpectatorTail;
+    if !host.spectate_only() {
+        return SpectatorTail::Skip;
+    }
+    SpectatorTail::Overview { hide: (h.main == 4 || h.inset == 2).then(|| host.locked_target()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ts_client::gameplay::SpectatorTail;
     use ts_client::spectator::InEyeTarget;
+
+    /// `0x1007b4c0`'s tail (issue #244): HLTV only, hiding the spectator's target in main mode 4
+    /// or inset 2; an observing player (not `IsSpectateOnly`) hides nothing, whatever the modes.
+    #[test]
+    fn add_entity_tail_is_hltv_only() {
+        let mut f = Fake { hltv: false, locked: 3, mode: 5, ..Fake::default() };
+        let mut h = Hltv { main: 4, inset: 2, ..Hltv::NEW };
+        assert_eq!(add_entity_tail(&h, &f), SpectatorTail::Skip);
+        f.hltv = true;
+        assert_eq!(add_entity_tail(&h, &f), SpectatorTail::Overview { hide: Some(3) });
+        (h.main, h.inset) = (2, 2);
+        assert_eq!(add_entity_tail(&h, &f), SpectatorTail::Overview { hide: Some(3) });
+        (h.main, h.inset) = (5, 1);
+        assert_eq!(add_entity_tail(&h, &f), SpectatorTail::Overview { hide: None });
+    }
 
     /// An HLTV viewer with players 3 and 7 active, recording what the controls did.
     struct Fake {

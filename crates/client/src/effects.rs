@@ -11,7 +11,8 @@ pub mod fx;
 mod laser;
 pub mod mblur;
 pub mod psys;
-pub use laser::laser_color;
+pub use laser::{LaserStyle, laser_color};
+pub use shared::protocol::effects::{PTakeDam, TsFrags};
 mod scope;
 
 use crate::events::ClientBullets;
@@ -323,21 +324,30 @@ pub fn on_tspsys(b: &[u8]) {
     }
 }
 
-/// `PTakeDam` (`0x1004bcd0`) -> `TS_BloodImpact`.
+/// `PTakeDam` (`0x1004bcd0`) -> `TS_BloodImpact`, unless the ruleset draws its own
+/// ([`blood_impact`](crate::gameplay::ClientRules::blood_impact)).
 pub fn on_ptakedam(b: &[u8]) {
     let Some(d) = msg::PTakeDam::decode(b) else { return };
     let gore = cvar(|c| c.gore);
+    let rules = crate::gameplay::current();
     with(|fx| {
         let t = fx.time;
-        fx::blood(&mut fx.psys, t, d.pos, d.dir, d.strength(), d.kevlar(), gore)
+        if !rules.blood_impact(&mut fx.psys, t, &d) {
+            fx::blood(&mut fx.psys, t, d.pos, d.dir, d.strength(), d.kevlar(), gore)
+        }
     });
 }
 
-/// `TSFrags` (`0x1004bd50`).
+/// `TSFrags` (`0x1004bd50`), unless the ruleset draws its own
+/// ([`tsfrags_effects`](crate::gameplay::ClientRules::tsfrags_effects)).
 pub fn on_tsfrags(b: &[u8]) {
     let Some(f) = msg::TsFrags::decode(b) else { return };
+    let rules = crate::gameplay::current();
     with(|fx| {
         let t = fx.time;
+        if rules.tsfrags_effects(&mut fx.psys, t, &f) {
+            return;
+        }
         match f {
             msg::TsFrags::Glass { origin, size, hit, dir, dmg_bits, force } => {
                 fx::glass(&mut fx.psys, t, origin, size, dir, hit, dmg_bits, force)
@@ -540,9 +550,11 @@ fn cull_origin(cam: &Camera) -> Vec3 {
 }
 
 /// `HUD_AddEntity` (`0x100447f0`). Players: the hemisphere, anti-peek and spectator tests, then
-/// the visible-this-frame flag. Other entities: the `curstate.iuser4` distance cull and fade (the
-/// server's items; client shells have 12) and the bit 8 LOD body. Then, while observing, the
-/// overview icon and the in-eye target hidden.
+/// the visible-this-frame flag. Other entities: the `curstate.iuser4` distance cull and, if the
+/// ruleset has it ([`ground_items_fade`](crate::gameplay::ClientRules::ground_items_fade)), fade
+/// (the server's items; client shells have 12) and the bit 8 LOD body. Then the ruleset's
+/// spectator tail ([`add_entity_spectator`](crate::gameplay::ClientRules::add_entity_spectator)):
+/// the overview icon and the in-eye target hidden.
 pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
     let cam = view::camera();
     let cull = cull_origin(&cam);
@@ -568,7 +580,10 @@ pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
             if beyond_distance(e.origin, cull, cull_dist.max, fov) || !psys::in_view_cone(&cam, cull, e.origin) {
                 return false;
             }
-            if let Some(amt) = cull_dist.fade(v::dist(e.origin, cull), fov) {
+            // 2.1 (`0x1007b4c0`) has no fade: the item is solid up to the cull distance.
+            if crate::gameplay::current().ground_items_fade()
+                && let Some(amt) = cull_dist.fade(v::dist(e.origin, cull), fov)
+            {
                 e.curstate.renderfx = 0;
                 e.curstate.rendermode = kRenderTransColor as i32;
                 e.curstate.renderamt = amt;
@@ -580,16 +595,15 @@ pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
             e.curstate.body = if low { 0 } else { lod_body(v::dist(e.origin, cull), fov) };
         }
     }
-    // 0x10044af9: the SDK spectator code, for every entity that got this far.
-    let (mode, target) = state::with(|s| (s.spec_mode, s.spec_target));
-    if mode != 0 {
-        crate::spectator::add_overview_entity(kind, e);
-        // TS's in-eye mode is 5 (`g_iUser1 == 5`), or the in-eye inset.
-        if (mode == shared::ts::obs::IN_EYE || crate::spectator::pip() == 2) && e.index == target {
-            return false;
+    // 0x10044af9: the SDK spectator code, for every entity that got this far; when it runs and
+    // which entity it hides are the ruleset's.
+    match crate::gameplay::current().add_entity_spectator() {
+        crate::gameplay::SpectatorTail::Skip => true,
+        crate::gameplay::SpectatorTail::Overview { hide } => {
+            crate::spectator::add_overview_entity(kind, e);
+            hide != Some(e.index)
         }
     }
-    true
 }
 
 /// `InViewHemisphere` (`0x10057790`): within 256 units of the cull origin, or not behind it
@@ -734,7 +748,7 @@ pub fn draw_transparent() {
         let Fx { psys, map, .. } = fx;
         psys.update_draw(dt, &cam, &players, &mut |ps, c| match c {
             psys::Collision::Spawn { target, origin, parent_vel } => map.spawn_one(ps, target, origin, parent_vel, t),
-            psys::Collision::Blood(tr) => blood_hit(tr),
+            psys::Collision::Blood { tr, splat } => blood_hit(tr, splat),
         });
     });
     if cam_hardware() {
@@ -783,7 +797,7 @@ fn react_players() -> Vec<(Vec3, Vec3)> {
 /// decal (N rolled first, 1..8) on the entity the trace hit when that is a BSP model or a
 /// `MOVETYPE_PUSHSTEP` entity and `r_decals` is on, then `player/splat.wav` one time in ten at
 /// the slow-motion pitch. The particle pass then clears the drop's in-use byte.
-fn blood_hit(mut tr: pmtrace_s) {
+fn blood_hit(mut tr: pmtrace_s, splat: bool) {
     let name = format!("{{blood{}", r::random_long(1, 8));
     let pe = r::physent(tr.ent);
     if pe.is_some_and(|pe| pe.solid == SOLID_BSP as i32 || pe.movetype == MOVETYPE_PUSHSTEP as i32)
@@ -792,7 +806,7 @@ fn blood_hit(mut tr: pmtrace_s) {
         let entity = r::index_from_trace(&mut tr);
         r::decal_shoot(r::decal_index(&name), entity, 0, tr.endpos, 0);
     }
-    if r::random_long(0, 100) > 90 {
+    if splat && r::random_long(0, 100) > 90 {
         engine().ev_play_sound(-1, tr.endpos, CHAN_AUTO as i32, "player/splat.wav", 1.0, 0.99, 0, crate::events::slow_pitch());
     }
 }

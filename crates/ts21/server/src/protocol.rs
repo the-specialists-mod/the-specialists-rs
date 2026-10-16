@@ -17,6 +17,7 @@
 //! visible itself (`mov byte [slot+0xa30], 1` at 0x1004bc50).
 
 use goldsrc::server::{MsgOp, MsgWriter};
+use ts_server::damage::bits::BULLET as DMG_BULLET;
 use ts_server::messages::{self, Msg};
 use ts_server::rules::msg;
 
@@ -33,11 +34,15 @@ fn translate(m: Msg, mut w: MsgWriter, id: impl Fn(Msg) -> i32) -> MsgWriter {
         Msg::ScreenFade => w.set_msg_type(id(Msg::TsFade)),
         // 2.1's type 0 (a breakable's glass, `CBreakable::Die` 0x10042540) is 13 bytes; 3.0's
         // client reads the hit position and direction, the damage bits and the damage after the
-        // type, so a short one would give it garbage debris. No hit: zeros.
+        // type, so a short one would give it garbage debris. 2.1's client (0x10081840) throws
+        // every shard `(RandomFloat(-9, 9), RandomFloat(-9, 9), RandomLong(0, 10))`, which is
+        // 3.0's bullet branch (`dmgbits & 0x08000002`, 0x10047cb0) with no force: so the tail is
+        // a zero hit and direction, `DMG_BULLET` and a zero force (issue #232). Zero bits would
+        // take 3.0's other branch, every shard flying toward +x, +y and +z.
         Msg::TsFrags if w.ops().len() == 7 && w.ops()[6] == MsgOp::Byte(0) => {
             let ops = w.ops_mut();
             ops.extend(std::iter::repeat_n(MsgOp::Coord(0.0), 6));
-            ops.push(MsgOp::Long(0));
+            ops.push(MsgOp::Long(DMG_BULLET));
             ops.push(MsgOp::Coord(0.0));
         }
         // 2.1's `WStatus` is `id, owned` (`CTSGun::UpdateClientData` 0x1004d8c0), and its client
@@ -141,7 +146,8 @@ mod tests {
         }
         let out = translate(Msg::TsFrags, w.byte(0), id);
         assert_eq!(out.ops().len(), 7 + 8);
-        assert_eq!(out.ops()[13], MsgOp::Long(0));
+        assert_eq!(out.ops()[13], MsgOp::Long(2), "DMG_BULLET: 3.0's client scatters the shards as 2.1's does");
+        assert_eq!(out.ops()[14], MsgOp::Coord(0.0), "no force");
         // 13 bytes, then 7 coords and a long.
         assert_eq!(out.ops().iter().map(MsgOp::size).sum::<usize>(), 13 + 18);
         // Types 1 and 2 are the same 13 bytes in both, and a 3.0 type 0 is left alone.

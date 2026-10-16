@@ -58,16 +58,15 @@ impl GunRules for Ts30 {
         true
     }
 
-    /// The weapon parts of `CBasePlayer::PreThink` (0x908cc): one timer step
-    /// ([`Gun::timer_dt`], `frametime × GiveSlowMul() × (double fire rate ? 1.5 : 1)`, 0x909c5)
-    /// for the melee window, the block timers and the bar ([`pre_frame`]), the recoil decay while
-    /// alive ([`GunRules::decay_spread`]) and the disarm count's `- dt × 5`, floored at 0.
+    /// The weapon parts of `CBasePlayer::PreThink` (0x908cc) after `CTSStunt::Play`, by the
+    /// frame's timer step ([`pre_think_dt`]): the recoil decay while alive
+    /// ([`GunRules::decay_spread`]), the bar and the window's closure ([`pre_frame`]).
     fn pre_think(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink) {
-        let dt = Gun::timer_dt(t.arith, t.frametime, spread::fixed_slow_amt(t.fuser1), t.powerups);
+        let _ = disarm;
+        let dt = pre_think_dt(t);
         pre_frame(gun, t.arith, dt, t.alive);
         let decay = SpreadDecay { arith: t.arith, step: dt, time: t.time, time_scale: t.fuser1, alive: t.alive };
         self.decay_spread(gun, &decay);
-        *disarm = (*disarm - dt * 5.0).max(0.0);
     }
 
     /// TS 3.0's polar pattern, which each side computes as its build does
@@ -125,6 +124,23 @@ impl GunRules for Ts30 {
     fn holster_draws_kungfu(&self) -> bool {
         true
     }
+
+    // Audit round 2: C
+
+    /// The weapon parts of `CBasePlayer::PreThink` (0x908cc) before `CTSStunt::Play`
+    /// (0x909c5..0x90b0b): the melee window and the block timers ([`pre_frame_timers`]) and the
+    /// disarm count's `- dt × 5`, floored at 0.
+    fn pre_think_timers(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink) {
+        let dt = pre_think_dt(t);
+        pre_frame_timers(gun, dt);
+        *disarm = (*disarm - dt * 5.0).max(0.0);
+    }
+}
+
+/// `PreThink`'s timer step `local_90` (0x909c5): [`Gun::timer_dt`], `frametime × GiveSlowMul() ×
+/// (double fire rate ? 1.5 : 1)`, worked out once before `Play` and used after it too.
+fn pre_think_dt(t: &WeaponPreThink) -> f32 {
+    Gun::timer_dt(t.arith, t.frametime, spread::fixed_slow_amt(t.fuser1), t.powerups)
 }
 
 /// `CTSGun::Fire` 0x81c78: the empty and underwater
@@ -383,18 +399,24 @@ pub fn decay_spread(gun: &mut Gun, arith: Arith, dt: f32) {
     gun.spread_penalty = recoil::decay_spread_penalty(arith, gun.spread_penalty, dt);
 }
 
-/// The melee parts of `CBasePlayer::PreThink` 0x908cc by the timer step `dt`
-/// ([`Gun::timer_dt`]): the delayed-hit window (floored at 0.001, closed below 0.01 or once its
-/// damage is spent; while it is open the kung-fu block is off), the block timers and, while
-/// alive, the kung-fu bar's regeneration (15/s, [`spread::regen_melee_bar`]). Server only:
-/// `client.dll`'s `HUD_WeaponsPostThink` (`0x10003830`) has no PreThink part.
-pub fn pre_frame(gun: &mut Gun, arith: Arith, dt: f32, alive: bool) {
+/// The melee timers of `CBasePlayer::PreThink` 0x908cc before `CTSStunt::Play`, by the timer step
+/// `dt` ([`Gun::timer_dt`]): the delayed-hit window (floored at 0.001) and the block timers
+/// (`pl+0x79c`, `+0x7a8/+0x7b0/+0x7ac`). Server only, as [`pre_frame`].
+pub fn pre_frame_timers(gun: &mut Gun, dt: f32) {
     if gun.melee_window != 0.0 {
         gun.melee_window = (gun.melee_window - dt).max(0.001);
     }
     gun.block_kungfu = (gun.block_kungfu - dt).max(0.0);
     gun.block_katana = (gun.block_katana - dt).max(0.0);
     gun.block_knife = (gun.block_knife - dt).max(0.0);
+}
+
+/// The melee parts of `CBasePlayer::PreThink` 0x908cc after `CTSStunt::Play` and before
+/// `CheckForBreakables`, by the timer step `dt` ([`Gun::timer_dt`]): while alive, the kung-fu bar's
+/// regeneration (15/s, [`spread::regen_melee_bar`]), then the delayed-hit window's closure (below
+/// 0.01 or once its damage is spent; while it is open the kung-fu block is off). Server only:
+/// `client.dll`'s `HUD_WeaponsPostThink` (`0x10003830`) has no PreThink part.
+pub fn pre_frame(gun: &mut Gun, arith: Arith, dt: f32, alive: bool) {
     if alive {
         gun.melee_bar = spread::regen_melee_bar(arith, gun.melee_bar, dt);
     }

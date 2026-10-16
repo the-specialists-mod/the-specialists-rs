@@ -672,12 +672,19 @@ fn pre_think_melee_timers() {
         r.pre_think(&mut g, &mut disarm, &pre_think_at(time, 0.01, 1.0, 0, true));
     }
     assert!(time > 10.3 && time - 0.01 <= 10.3);
-    // TS 3.0 closes the kung-fu block while a window is open and decays the disarm count.
+    // TS 3.0 closes the kung-fu block while a window is open and decays the disarm count (before
+    // `Play`, #249); 2.1 does nothing before `Play`.
     let mut g = Gun { melee_window: 0.3, melee_damage: 15.0, block_kungfu: 0.3, ..Gun::default() };
     let mut disarm = 7.0;
-    CORE.pre_think(&mut g, &mut disarm, &pre_think_at(10.0, 0.1, 1.0, 0, true));
+    let t = pre_think_at(10.0, 0.1, 1.0, 0, true);
+    CORE.pre_think_timers(&mut g, &mut disarm, &t);
+    CORE.pre_think(&mut g, &mut disarm, &t);
     assert_eq!(g.block_kungfu, 0.0);
     assert_eq!(disarm, 7.0 - 0.1 * 5.0);
+    let mut g = Gun { melee_window: 10.3, melee_damage: 15.0, block_kungfu: 10.3, decay_time: 10.0, ..Gun::default() };
+    let (g0, mut disarm) = (g.clone(), 7.0);
+    r.pre_think_timers(&mut g, &mut disarm, &pre_think_at(10.5, 0.01, 1.0, 0, true));
+    assert_eq!((g, disarm), (g0, 7.0));
 }
 
 /// #202: a missed swing's window and a swing's block are `(float)(d + time)` with `d` unrounded
@@ -803,6 +810,16 @@ fn kungfu_melee_attack_hook() {
     assert_eq!(h.melee_damage.last(), Some(&55.0));
     assert_eq!((g.next_primary, g.next_secondary, g.idle), (1.25, 1.25, 1.25));
     assert_eq!(h.blocks.last(), Some(&((1.25f64 * 0.9) as f32)));
+    // #242: the `float` 0.9, and the slowed duration (`FixedSlowMul() × delay × 0.9f`) rounded to
+    // a `float`: 0.75 × 0.9 would be 0x3f2ccccd.
+    h.melee_answer = Some((0.75, 55.0, true));
+    attack(&mut g, &mut h, IN_ATTACK);
+    assert_eq!(h.blocks.last().map(|b| b.to_bits()), Some(0x3f2c_cccc));
+    h.fuser1 = 0.35;
+    attack(&mut g, &mut h, IN_ATTACK);
+    let slowed = (1.0 / f64::from(0.35f32) * 0.75 * f64::from(0.9f32)) as f32;
+    assert_eq!(h.blocks.last(), Some(&slowed));
+    h.fuser1 = 1.0;
     // Blocked sweep: its own values asked; nothing but the delay.
     let (hits, blocks, bar, last) = (h.melees, h.blocks.len(), g.melee_bar, g.last_melee_anim);
     h.melee_answer = Some((0.8, 1.0, false));

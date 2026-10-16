@@ -69,6 +69,17 @@ pub struct KungfuRegen {
     pub slowmo_factor100: f32,
 }
 
+/// What the end of `HUD_AddEntity` (the SDK's spectator code) does with an entity that passed the
+/// ruleset's tests ([`ClientRules::add_entity_spectator`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpectatorTail {
+    /// Nothing: the entity is drawn.
+    Skip,
+    /// The entity goes on the overview (`AddOverviewEntity`), and the entity `hide` (an entity
+    /// index; the in-eye target) isn't drawn.
+    Overview { hide: Option<i32> },
+}
+
 /// How the weapon element draws and walks its slot menu (`DrawWeaponList` 1004e030,
 /// `SelectNextPrev` 1004f500).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -344,6 +355,28 @@ pub trait ClientRules: Sync {
     /// `DrawStatusPanel` (1004a3e0) draws with.
     fn status_look(&self) -> crate::hud::draw::StatusLook;
 
+    // Audit round 2: A1
+
+    /// Whether `HUD_AddEntity` makes a ground item (`iuser4` bit 1, 4 or 2) translucent with
+    /// distance inside its cull distance (`effects::ItemCull::fade`).
+    fn ground_items_fade(&self) -> bool;
+
+    /// The spectator tail at the end of `HUD_AddEntity`, for every entity that got there.
+    fn add_entity_spectator(&self) -> SpectatorTail;
+
+    /// The lasers', laser dot's, flashlights' and shadows' look
+    /// ([`LaserStyle`](crate::effects::LaserStyle)).
+    fn laser_style(&self) -> &'static crate::effects::LaserStyle;
+
+    /// A ruleset's own `TSFrags` effects (glass, explosion, sparks): true when it made them; false
+    /// runs the core's (`0x1004bd50`: `TS_GlassShatter`, `TS_Explosion`, `TS_Scintille` and
+    /// `TS_Sparks`).
+    fn tsfrags_effects(&self, ps: &mut PSys, now: f64, frags: &crate::effects::TsFrags) -> bool;
+
+    /// A ruleset's own `PTakeDam` blood: true when it made it; false runs `TS_BloodImpact`
+    /// ([`fx::blood`](crate::effects::fx::blood)).
+    fn blood_impact(&self, ps: &mut PSys, now: f64, d: &crate::effects::PTakeDam) -> bool;
+
     // Audit round 2: A2
 
     /// The weapon slot menu's drawing and `invnext`/`invprev` walk ([`SlotMenu`]).
@@ -427,6 +460,15 @@ mod stub {
         debris_react: 0.0,
         debris_fade_any_mode: false,
         debris_count_by_quality: false,
+    };
+
+    /// TS 3.0's look (the core's own code paths).
+    static LASER: crate::effects::LaserStyle = crate::effects::LaserStyle {
+        animated_beam: true,
+        dot_range: None,
+        others_from_origin: false,
+        other_beams: true,
+        shadow_fade: true,
     };
 
     const NONE: CrosshairParts = CrosshairParts { crosshair: false, divesteps: false, divesteps_last: false };
@@ -612,6 +654,24 @@ mod stub {
         }
         fn status_look(&self) -> StatusLook {
             StatusLook::default()
+        }
+
+        // Audit round 2: A1
+
+        fn ground_items_fade(&self) -> bool {
+            false
+        }
+        fn add_entity_spectator(&self) -> SpectatorTail {
+            SpectatorTail::Skip
+        }
+        fn laser_style(&self) -> &'static crate::effects::LaserStyle {
+            &LASER
+        }
+        fn tsfrags_effects(&self, _ps: &mut PSys, _now: f64, _frags: &crate::effects::TsFrags) -> bool {
+            false
+        }
+        fn blood_impact(&self, _ps: &mut PSys, _now: f64, _d: &crate::effects::PTakeDam) -> bool {
+            false
         }
 
         // Audit round 2: A2

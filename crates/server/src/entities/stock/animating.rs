@@ -82,30 +82,28 @@ impl Animating {
     /// `CBaseAnimating::StudioFrameAdvance(interval)` (0xa35a0); `interval` 0 means "since
     /// `animtime`". Returns the interval used.
     pub fn frame_advance(&mut self, e: *mut edict_t, interval: f32) -> f32 {
+        use crate::stunt::anim::{FrameStep, frame_advance_in};
         let now = engine().time();
         let v = e.v();
-        let mut interval = interval;
-        if interval == 0.0 {
-            interval = now - v.animtime;
-            if interval <= 0.001 {
-                v.animtime = now;
-                return 0.0;
-            }
-        }
-        if v.animtime == 0.0 {
-            interval = 0.0;
-        }
-        v.frame += interval * self.frame_rate * v.framerate;
+        let step = FrameStep {
+            interval,
+            time: now,
+            animtime: v.animtime,
+            frame: v.frame,
+            frame_rate: self.frame_rate,
+            framerate: v.framerate,
+            loops: self.loops,
+        };
+        // The frame step in the server's arithmetic, rounded once (issue #243).
+        let (frame, finished) = frame_advance_in(crate::rules::cvars::pm_arith(), step);
+        let used = if interval == 0.0 { now - v.animtime } else { interval };
         v.animtime = now;
-        if v.frame < 0.0 || v.frame >= 256.0 {
-            if self.loops {
-                v.frame -= ((v.frame / 256.0) as i32) as f32 * 256.0;
-            } else {
-                v.frame = if v.frame < 0.0 { 0.0 } else { 255.0 };
-            }
-            self.finished = true;
-        }
-        interval
+        let Some(frame) = frame else {
+            return 0.0;
+        };
+        v.frame = frame;
+        self.finished |= finished;
+        if step.animtime == 0.0 { 0.0 } else { used }
     }
 
     /// `CBaseAnimating::DispatchAnimEvents` (0xa3884): the server-side model events crossed in

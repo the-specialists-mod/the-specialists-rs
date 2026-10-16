@@ -19,7 +19,6 @@ pub const OBJECTIVES: ObjectiveRules = ObjectiveRules {
     team_names: None,
     indexed_list: true,
     pointer_enables_givers: true,
-    wire_hud: true,
     nan_time_runs_out: true,
     clear_list_outside_rounds: true,
 };
@@ -85,6 +84,10 @@ fn hidden(cx: &mut Cx) -> bool {
     cx.pev().effects & EF_NODRAW as i32 != 0
 }
 
+/// `CTSGroundWeapon::Spawn` (0xa1b40) turns a kind-4 akimbo pair with a single (`info+0xcc` !=
+/// -1) into that single, because `PickUpWeapon` (0x9314c) refuses such pairs.
+pub const GROUND_WEAPON_PAIRS_TO_SINGLE: bool = true;
+
 /// `CTSGroundWeapon::GetWeapon` (0xa2328) past its `IsPlayer` test: a live, visible player and
 /// a visible weapon (falling or landed). In cash mode a `buyable` one checks `attackerteam`
 /// (round modes) and the price first; then `PickUpWeapon(id, NULL, spawnflags, id != 29,
@@ -149,6 +152,11 @@ mod tests {
     use crate::Ts30Server;
     use ts_server::gameplay::ServerRules;
 
+    #[test]
+    fn ground_weapons_turn_pairs_into_singles() {
+        assert!(Ts30Server.ground_weapon_pairs_to_single());
+    }
+
     /// The world hooks that need no engine keep TS 3.0's values.
     #[test]
     fn world_hooks_are_ts_3_0() {
@@ -167,8 +175,9 @@ mod tests {
     #[test]
     fn objective_rules_are_3_0() {
         let c = OBJECTIVES;
+        // Also `CTSSlowMotion::Use` (0x71404) and `CTSDMHill::WaitTouch` (0x71be8): issue #221.
         assert_eq!(c.hud_effect, 8);
-        assert!(c.team_names.is_none() && c.indexed_list && c.pointer_enables_givers && c.wire_hud);
+        assert!(c.team_names.is_none() && c.indexed_list && c.pointer_enables_givers);
         assert!(c.nan_time_runs_out && c.clear_list_outside_rounds);
     }
 }

@@ -11,6 +11,7 @@ use crate::world::Cx;
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::{IGNORE_MONSTERS, engine};
 use goldsrc::sys::*;
+use shared::pm::{Fpu, Num};
 use shared::protocol::hud_wire::{PwUp, PwUpTime, TsMBlur};
 use shared::ts::powerup as pw;
 
@@ -62,17 +63,42 @@ fn set_slow_target(p: &mut Player, e: *mut edict_t, target: f32) {
     }
 }
 
-/// `InterpolateSlowMotion`: exponential approach at ~7/s, snapping within 0.05.
+/// `InterpolateSlowMotion`: exponential approach at ~7/s, snapping within 0.05, in the server's
+/// arithmetic ([`pm_arith`](super::cvars::pm_arith)).
 pub fn interpolate(frametime: f32, cur: &mut f32, target: f32) {
-    let mut d = target - *cur;
-    if d.abs() > 0.05 {
-        d *= (frametime * 7.0).min(1.0);
-    }
-    *cur += d;
+    *cur = shared::by_arith!(super::cvars::pm_arith(), interpolate_in(frametime, *cur, target));
 }
 
-/// `CBasePlayer::GoSlow` on the dispatched player.
+/// `InterpolateSlowMotion` (`ts_i386.so` 0x9910c, `mp.dll` 0x10067030): `d = target - cur`,
+/// `d * min(ft * 7, 1)` and the sum stay on the x87 and are rounded once, when `cur` is stored
+/// (issue #229). The 0.05 and 7 are `float`s. GCC keeps `ft * 7` unless it is above 1 (a NaN
+/// stays); MSVC takes 1 when `1 < ft * 7` (a NaN takes 1).
+fn interpolate_in<F: Fpu>(frametime: f32, cur: f32, target: f32) -> f32 {
+    let c = F::x(cur);
+    let mut d = F::x(target) - c;
+    if !F::cmp_le(d.abs(), F::x(0.05)) {
+        let k = F::x(frametime) * F::x(7.0);
+        let one = F::x(1.0);
+        let k = if F::MSVC {
+            if F::cmp_lt(one, k) { one } else { k }
+        } else if F::cmp_le(k, one) {
+            k
+        } else {
+            one
+        };
+        d = d * k;
+    }
+    (d + c).f()
+}
+
+/// `CBasePlayer::GoSlow` on the dispatched player, a virtual call the plugins' hook sees
+/// ([`crate::ham::player_go_slow`]).
 pub fn go_slow_self(p: &mut Player, cx: &mut Cx, amount: f32, btime: bool) {
+    crate::ham::player_go_slow(p, cx, amount, btime, go_slow_self_plain);
+}
+
+/// [`go_slow_self`] without the plugins' hooks.
+fn go_slow_self_plain(p: &mut Player, cx: &mut Cx, amount: f32, btime: bool) {
     let target = if cx.pev().iuser1 != 0 { 1.0 } else { amount };
     set_slow_target(p, cx.edict, target);
     p.ts.slow_display = amount;
@@ -134,7 +160,7 @@ pub fn update_state(p: &mut Player, cx: &mut Cx) {
             return;
         }
         if continuous && drop_worthy(p.ts.held, p.ts.held_secs) {
-            drop_powerup(cx.pev().origin, p.ts.held, p.ts.held_secs);
+            drop_powerup(cx.pev().origin, p.ts.held);
         }
     } else {
         let active = p.active_powerup;
@@ -153,7 +179,7 @@ pub fn update_state(p: &mut Player, cx: &mut Cx) {
             return;
         }
         if !is_alive && continuous && !p.ts.plugin_powerup && drop_worthy(active, p.ts.held_secs) {
-            drop_powerup(cx.pev().origin, active, p.ts.held_secs);
+            drop_powerup(cx.pev().origin, active);
         }
         if active & pw::SUPERJUMP != 0 {
             cx.pev().gravity = 1.0;
@@ -170,9 +196,14 @@ pub fn update_state(p: &mut Player, cx: &mut Cx) {
     p.ts.held = 0;
 }
 
-/// Drops a power-up as a temporary `ts_powerup` (60 s life).
-pub fn drop_powerup(origin: [f32; 3], bits: u16, secs: i32) {
-    crate::entities::ts::create_powerup(bits, secs, origin);
+/// The seconds a dead player's power-up drops with: `UpdatePowerUpState`'s
+/// `CreatePowerUp(type, -1)` (3.0 0x858a8 and 0x8592b; 2.1 0x100569db and 0x10056a4a), so
+/// `SetupPowerUp` gives it the type's base duration whatever the player held (issue #245).
+const DEATH_DROP_SECS: i32 = -1;
+
+/// Drops a dead player's power-up as a temporary `ts_powerup` (60 s life) with the base duration.
+pub fn drop_powerup(origin: [f32; 3], bits: u16) {
+    crate::entities::ts::create_powerup(bits, DEATH_DROP_SECS, origin);
 }
 
 /// `SlowMotionFlow`'s line-of-sight traces (0x86d4c, 0x86f63, 0x870c2, 0x87221; 2.1 the same)
@@ -300,7 +331,11 @@ pub fn remove_from_slowed(e: *mut edict_t) {
     }
 }
 
-/// `DeactivateSlowMotionFlow`: back to normal time for us and everything we slowed.
+/// `DeactivateSlowMotionFlow`: back to normal time for us and everything we slowed. A slowed
+/// player who isn't an activator himself is released through his virtual `GoSlow(1, 0)` (3.0
+/// 0x96a9c, 2.1 FUN_10057610's `GoSlow(0, 0)`), so the plugins' hook and the ruleset's release
+/// ([`ServerRules::on_go_slow`](crate::gameplay::ServerRules::on_go_slow)) run for him too
+/// (issue #223).
 pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
     go_slow_self(p, cx, 1.0, false);
     p.ts.slow_self = 0.0;
@@ -316,13 +351,9 @@ pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
         if o.is_null() {
             continue;
         }
-        other(o, |q| {
-            if q.ts.slow_self == 0.0 {
-                set_slow_target(q, o, 1.0);
-                q.ts.slow_display = 1.0;
-                q.ts.btime = false;
-            }
-        });
+        if other(o, |q| q.ts.slow_self == 0.0) == Some(true) {
+            go_slow(o, 1.0, false);
+        }
     }
     for e in std::mem::take(&mut p.ts.slowed_ents) {
         // The entity may be gone; only touch edicts that are still in use.
@@ -588,5 +619,69 @@ mod tests {
         let mut v = 1.0;
         super::interpolate(1.0, &mut v, 0.5);
         assert_eq!(v, 0.5, "factor capped at 1");
+    }
+
+    /// Issue #229: `InterpolateSlowMotion` (0x9910c, mp.dll 0x10067030) rounds `cur + d * k` once.
+    /// 1/60 s frames from 1.0 toward 0.35: f32 steps would give 0x3f5b7030, 0x3f4c4a5a, 0x3f3ee8ee
+    /// from the second frame on.
+    #[test]
+    fn easing_rounds_once() {
+        let ft = 1.0f32 / 60.0;
+        for (name, step) in
+            [("msvc", interpolate_in::<shared::pm::Msvc> as fn(f32, f32, f32) -> f32), ("gcc", interpolate_in::<shared::pm::Gcc>)]
+        {
+            let mut v = 1.0f32;
+            let got: Vec<u32> = (0..4)
+                .map(|_| {
+                    v = step(ft, v, 0.35);
+                    v.to_bits()
+                })
+                .collect();
+            assert_eq!(got, [0x3f6c9630, 0x3f5b702f, 0x3f4c4a59, 0x3f3ee8ed], "{name}");
+            assert_eq!(step(0.01, 0.37, 0.35), 0.35, "{name}: snaps within 0.05");
+            assert_eq!(step(1.0, 1.0, 0.5), 0.5, "{name}: factor capped at 1");
+        }
+        // A NaN factor: GCC keeps it (`test ah,0x41; jne`), MSVC takes 1 (`fcomp; test ah,1`).
+        assert!(interpolate_in::<shared::pm::Gcc>(f32::NAN, 1.0, 0.35).is_nan());
+        assert_eq!(interpolate_in::<shared::pm::Msvc>(f32::NAN, 1.0, 0.35), 0.35);
+    }
+
+    /// Issue #245: a dead player's power-up drops with `CreatePowerUp(type, -1)` (3.0 0x858a8 /
+    /// 0x8592b, 2.1 0x100569db / 0x10056a4a), so `SetupPowerUp` (0x98014) gives it the type's base
+    /// duration (a created power-up's `pwupmult` is the constructor's 1.0, 0x989a8), whatever the
+    /// player held.
+    #[test]
+    fn death_drop_has_the_base_duration() {
+        use crate::entities::ts::powerup::setup_secs;
+        let rules = crate::gameplay::TEST_POWERUPS;
+        assert_eq!(DEATH_DROP_SECS, -1);
+        for (kind, base) in [(pw::SLOWMO, 3), (pw::INFINITE_CLIP, 3), (pw::SLOWPAUSE, 2), (pw::DOUBLE_FIRERATE, 3)] {
+            assert_eq!(rules.base(kind), base);
+            assert_eq!(setup_secs(DEATH_DROP_SECS, rules.base(kind), rules.multiplier, 1.0), base, "{kind:#x}");
+        }
+        // What the held seconds would have given: a `pwupmult 2` slow motion's 6 s stays 6.
+        assert_eq!(setup_secs(6, 3, true, 1.0), 6);
+    }
+
+    /// Issue #223: `DeactivateSlowMotionFlow` releases the players it slowed through `GoSlow`
+    /// (3.0 0x96a9c's virtual call, 2.1 FUN_10057610 → FUN_10055220), whose 2.1 release clamps
+    /// their next-attack times (`ServerRules::on_go_slow`), not by writing their state.
+    #[test]
+    fn deactivate_flow_releases_victims_through_go_slow() {
+        let src = include_str!("powerup.rs");
+        let start = src.find(concat!("pub fn deactivate_", "flow")).unwrap();
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+        assert!(body.contains("go_slow(o, 1.0, false)"));
+        assert!(!body.contains("set_slow_target"));
+    }
+
+    /// Issue #253: a player's own `GoSlow` is TS's virtual call (`vtable[5]`: `SlowMotionFlow`
+    /// 0x96bb0, `DeactivateSlowMotionFlow` 0x96a9c, `Killed`), so it goes through the hooks.
+    #[test]
+    fn own_go_slow_goes_through_the_hooks() {
+        let src = include_str!("powerup.rs");
+        let start = src.find(concat!("pub fn go_slow_", "self(")).unwrap();
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+        assert!(body.contains("crate::ham::player_go_slow(p, cx, amount, btime, go_slow_self_plain)"));
     }
 }

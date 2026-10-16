@@ -1157,3 +1157,29 @@ fn decay_is_the_step() {
     crate::TS30.decay_spread(&mut g, &SpreadDecay { alive: false, ..d });
     assert_eq!(g, want);
 }
+
+/// #249: `PreThink` runs the window and the blocks down before `CTSStunt::Play` (0x909c5..) and
+/// closes the window after it, before `CheckForBreakables` (0x91163..): a window that falls
+/// below 0.01 this frame is still open between the two and closed before the delayed hit.
+#[test]
+fn pre_think_splits_around_play() {
+    let t = WeaponPreThink { arith: Arith::Msvc, frametime: 0.01, time: 10.0, fuser1: 1.0, powerups: 0, alive: true };
+    let mut g = Gun { melee_window: 0.015, melee_damage: 15.0, block_kungfu: 0.5, melee_bar: 50.0, ..Gun::default() };
+    let mut disarm = 7.0;
+    crate::TS30.pre_think_timers(&mut g, &mut disarm, &t);
+    assert!(g.melee_window > 0.0 && g.melee_window < 0.01, "run down, not closed: {}", g.melee_window);
+    assert_eq!((g.melee_damage, g.melee_bar), (15.0, 50.0), "no bar before Play");
+    assert!(g.block_kungfu < 0.5 && disarm < 7.0);
+    let d = disarm;
+    crate::TS30.pre_think(&mut g, &mut disarm, &t);
+    assert_eq!((g.melee_window, g.melee_damage, g.block_kungfu), (0.0, 0.0, 0.0), "closed before the delayed hit");
+    assert!(g.melee_bar > 50.0);
+    assert_eq!(disarm, d, "the disarm count runs down before Play only");
+    // A window `Play` opens after the run-down isn't run down this frame.
+    let mut g = Gun::default();
+    crate::TS30.pre_think_timers(&mut g, &mut 0.0, &t);
+    g.melee_window = 0.3;
+    g.melee_damage = 15.0;
+    crate::TS30.pre_think(&mut g, &mut 0.0, &t);
+    assert_eq!(g.melee_window, 0.3);
+}
