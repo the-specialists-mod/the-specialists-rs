@@ -134,7 +134,7 @@ pub fn update_state(p: &mut Player, cx: &mut Cx) {
             return;
         }
         if continuous && drop_worthy(p.ts.held, p.ts.held_secs) {
-            drop_powerup(cx.pev().origin, p.ts.held, p.ts.held_secs);
+            drop_powerup(cx.pev().origin, p.ts.held);
         }
     } else {
         let active = p.active_powerup;
@@ -153,7 +153,7 @@ pub fn update_state(p: &mut Player, cx: &mut Cx) {
             return;
         }
         if !is_alive && continuous && !p.ts.plugin_powerup && drop_worthy(active, p.ts.held_secs) {
-            drop_powerup(cx.pev().origin, active, p.ts.held_secs);
+            drop_powerup(cx.pev().origin, active);
         }
         if active & pw::SUPERJUMP != 0 {
             cx.pev().gravity = 1.0;
@@ -170,9 +170,14 @@ pub fn update_state(p: &mut Player, cx: &mut Cx) {
     p.ts.held = 0;
 }
 
-/// Drops a power-up as a temporary `ts_powerup` (60 s life).
-pub fn drop_powerup(origin: [f32; 3], bits: u16, secs: i32) {
-    crate::entities::ts::create_powerup(bits, secs, origin);
+/// The seconds a dead player's power-up drops with: `UpdatePowerUpState`'s
+/// `CreatePowerUp(type, -1)` (3.0 0x858a8 and 0x8592b; 2.1 0x100569db and 0x10056a4a), so
+/// `SetupPowerUp` gives it the type's base duration whatever the player held (issue #245).
+const DEATH_DROP_SECS: i32 = -1;
+
+/// Drops a dead player's power-up as a temporary `ts_powerup` (60 s life) with the base duration.
+pub fn drop_powerup(origin: [f32; 3], bits: u16) {
+    crate::entities::ts::create_powerup(bits, DEATH_DROP_SECS, origin);
 }
 
 /// `SlowMotionFlow`'s line-of-sight traces (0x86d4c, 0x86f63, 0x870c2, 0x87221; 2.1 the same)
@@ -588,5 +593,22 @@ mod tests {
         let mut v = 1.0;
         super::interpolate(1.0, &mut v, 0.5);
         assert_eq!(v, 0.5, "factor capped at 1");
+    }
+
+    /// Issue #245: a dead player's power-up drops with `CreatePowerUp(type, -1)` (3.0 0x858a8 /
+    /// 0x8592b, 2.1 0x100569db / 0x10056a4a), so `SetupPowerUp` (0x98014) gives it the type's base
+    /// duration (a created power-up's `pwupmult` is the constructor's 1.0, 0x989a8), whatever the
+    /// player held.
+    #[test]
+    fn death_drop_has_the_base_duration() {
+        use crate::entities::ts::powerup::setup_secs;
+        let rules = crate::gameplay::TEST_POWERUPS;
+        assert!(DEATH_DROP_SECS < 1);
+        for (kind, base) in [(pw::SLOWMO, 3), (pw::INFINITE_CLIP, 3), (pw::SLOWPAUSE, 2), (pw::DOUBLE_FIRERATE, 3)] {
+            assert_eq!(rules.base(kind), base);
+            assert_eq!(setup_secs(DEATH_DROP_SECS, rules.base(kind), rules.multiplier, 1.0), base, "{kind:#x}");
+        }
+        // What the held seconds would have given: a `pwupmult 2` slow motion's 6 s stays 6.
+        assert_eq!(setup_secs(6, 3, true, 1.0), 6);
     }
 }
