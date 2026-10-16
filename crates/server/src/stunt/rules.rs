@@ -213,6 +213,8 @@ pub trait StuntClock: Sync {
 /// (`HandleStunt` 0x10069419..0x10069437, `fdivr`) divides at 53 bits and refuses on C0 (a NaN
 /// too); `ts_i386.so` (0x8b12b..0x8b155, the same in `GoWheel`) divides in extended precision
 /// and refuses only when the difference is above the quotient (`test ah,0x41; je`).
+// The negated compare is the x87 branch's: a NaN (unordered) takes the other way.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn coyote_allows(arith: shared::pm::Arith, now: f32, slow_mul: f32, last_ground: f32) -> bool {
     use shared::pm::{Arith, Ext, below87};
     let diff = f64::from(now) - f64::from(last_ground);

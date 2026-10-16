@@ -264,6 +264,8 @@ pub(crate) fn frame_advance_in(arith: shared::pm::Arith, s: FrameStep) -> (Optio
 /// 0x10008308; the .so `interval * m_flFrameRate * framerate`, 0x93621..0x93632). Outside
 /// `[0, 256)` (C0 tests, so a NaN frame too) the sequence finishes: a looping one subtracts
 /// `(int)(frame * (1/256)) * 256` (`_ftol` / a truncating `fistp`), another clamps to 0 or 255.
+// The negated compare is the x87 branch's: a NaN interval returns.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn frame_advance<F: Fpu>(s: FrameStep) -> (Option<f32>, bool) {
     let mut interval = F::x(s.interval);
     if shared::pm::eq87(s.interval, 0.0) {

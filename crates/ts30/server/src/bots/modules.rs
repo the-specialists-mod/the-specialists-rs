@@ -161,28 +161,6 @@ impl BuyTiers {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::BuyTiers;
-
-    /// The `float` roll against mp.dll's `double` limits (0x1006d630): 0.1f and 0.4f lie above
-    /// 0.1 and 0.4, 0.7f below 0.7.
-    #[test]
-    fn buy_tiers_compare_doubles() {
-        let t = BuyTiers::of(0.1);
-        assert!(t.pistol && !t.smg && !t.rifle);
-        let t = BuyTiers::of(0.4);
-        assert!(t.pistol && t.smg && !t.rifle);
-        let t = BuyTiers::of(0.7);
-        assert!(t.smg && !t.rifle && !t.ten_knives);
-        let t = BuyTiers::of(0.70000005);
-        assert!(!t.smg && t.rifle);
-        // Kevlar compares with the float 0.3f: 0.3f itself is not above it.
-        assert!(!BuyTiers::of(0.3).kevlar && BuyTiers::of(0.30000004).kevlar);
-        assert!(BuyTiers::of(0.75000006).ten_knives && !BuyTiers::of(0.75).ten_knives);
-    }
-}
-
 // ---- look around (bit 0x80) ----------------------------------------------------------------------
 
 /// `CBotModuleLookAround::Think` (0x1006dde0): look at a spot found by [`find_look_point`] every
@@ -225,4 +203,26 @@ fn find_look_point(cx: &mut Cx) -> [f32; 3] {
         yaw += 45.0;
     }
     best_pos
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuyTiers;
+
+    /// The `float` roll against mp.dll's `double` limits (0x1006d630): 0.1f and 0.4f lie above
+    /// 0.1 and 0.4, 0.7f below 0.7.
+    #[test]
+    fn buy_tiers_compare_doubles() {
+        let t = BuyTiers::of(0.1);
+        assert!(t.pistol && !t.smg && !t.rifle);
+        let t = BuyTiers::of(0.4);
+        assert!(t.pistol && t.smg && !t.rifle);
+        let t = BuyTiers::of(0.7);
+        assert!(t.smg && !t.rifle && !t.ten_knives);
+        let t = BuyTiers::of(0.70000005);
+        assert!(!t.smg && t.rifle);
+        // Kevlar compares with the float 0.3f: 0.3f itself is not above it.
+        assert!(!BuyTiers::of(0.3).kevlar && BuyTiers::of(0.30000004).kevlar);
+        assert!(BuyTiers::of(0.75000006).ten_knives && !BuyTiers::of(0.75).ten_knives);
+    }
 }
