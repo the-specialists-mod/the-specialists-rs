@@ -31,15 +31,16 @@ use std::ffi::CStr;
 enum Menu {
     /// 2: `CTeamMenuPanel` (the viewport's one instance).
     Team,
-    /// 4 (the map briefing) or 5 (the MOTD): a `CMessageWindowPanel`, made when it was asked for.
-    Text(i32, Box<motd::Motd>),
+    /// 4 (the map briefing) or 5 (the MOTD): a `CMessageWindowPanel`, made (and parented to the
+    /// viewport, [`vgui::raise`]) when it was asked for.
+    Text(i32, Box<motd::Motd>, u64),
 }
 
 impl Menu {
     fn id(&self) -> i32 {
         match self {
             Menu::Team => 2,
-            Menu::Text(id, _) => *id,
+            Menu::Text(id, ..) => *id,
         }
     }
 }
@@ -408,7 +409,7 @@ pub fn show_vgui_menu(id: i32) {
                 let Some((title, text)) = made else { return };
                 motd::Motd::new(&title, &text, &ok, shade, w, h, &briefing_wrapped)
             };
-            Menu::Text(id, Box::new(window))
+            Menu::Text(id, Box::new(window), vgui::raise())
         }
         _ => return,
     };
@@ -630,7 +631,7 @@ pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
     match current_menu() {
         Some(4 | 5) => {
             let close = with(|m| match m.queue.first_mut() {
-                Some(Menu::Text(_, t)) => {
+                Some(Menu::Text(_, t, _)) => {
                     if pressed != 0 {
                         t.press(w, h, x, y);
                     }
@@ -1034,7 +1035,7 @@ fn paint_vgui() {
     }
     if wants_cursor() {
         with(|m| match m.queue.first_mut() {
-            Some(Menu::Text(_, t)) => t.hover(w, h, cx, cy),
+            Some(Menu::Text(_, t, _)) => t.hover(w, h, cx, cy),
             Some(Menu::Team) => {
                 if let Some(t) = &mut m.team {
                     t.hover(w, h, cx, cy);
@@ -1061,12 +1062,24 @@ fn paint_vgui() {
             let mut voice = |p: i32| crate::voice::scoreboard_icon(p);
             with(|m| m.board.paint(s, sb, w, h, &mut voice, &list_arrows));
         }
-        with(|m| {
-            if let Some(Menu::Text(_, t)) = m.queue.first() {
-                t.paint(s, sb, w, h, &arrows);
-            }
-        });
     });
+    // Then the panels parented since: the voice labels and talk icon, and the message window,
+    // in the order they were parented (VGUI1 paints children in list order).
+    let text_z = with(|m| match m.queue.first() {
+        Some(Menu::Text(_, _, z)) => Some(*z),
+        _ => None,
+    });
+    crate::voice::redraw(shown, |z| text_z.is_none_or(|t| z < t));
+    if let Some(t) = text_z {
+        vgui::with_schemes(|sb| {
+            with(|m| {
+                if let Some(Menu::Text(_, window, _)) = m.queue.first() {
+                    window.paint(&mut EngineSurface, sb, w, h, &arrows);
+                }
+            })
+        });
+        crate::voice::redraw(shown, |z| z > t);
+    }
 }
 
 /// The buy menu's part of `CHudTSWeapons::Draw` (`0x1004d3f0`), which runs only with `nohud` 0

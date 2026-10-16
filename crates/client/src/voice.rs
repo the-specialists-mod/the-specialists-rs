@@ -152,9 +152,17 @@ struct Voice {
     /// The label's background (and with it the speaker icon, its child) visibility, set once
     /// when the label is given out (`0x10018240`: `setVisible(CanShowSpeakerLabels())`).
     label_bg: [bool; MAX_SPEAKERS],
+    /// When each label was given out ([`vgui::raise`]: `0x10018271` parents its background to the
+    /// viewport then).
+    label_z: [u64; MAX_SPEAKERS],
     /// `m_bTalking`, `m_bServerAcked`.
     local_talking: bool,
     server_acked: bool,
+    /// The talk icon as `RepositionLabels` (`0x10018900`) last left it: parented to the viewport
+    /// (raised) when shown, and `icntlk_sv.tga` rather than `icntlk_pl.tga` when the server
+    /// acknowledged with `voice_clientdebug` on at that moment.
+    icon_z: u64,
+    icon_sv: bool,
     squelch: bool,
     bans: BanList,
     ban_path: String,
@@ -373,6 +381,18 @@ pub fn update_speaker_status(entindex: i32, talking: bool) {
             if let Some(i) = v.labels.iter().position(|l| *l == Some(c)) {
                 v.label_text[i] = (text, color);
                 v.label_bg[i] = bg;
+                v.label_z[i] = vgui::raise();
+            }
+        });
+    }
+    // `RepositionLabels` ends every update but player 0's (`0x10018117`): a shown talk icon is
+    // parented again and gets its image for `voice_clientdebug` now.
+    if entindex != 0 {
+        let dbg = debug();
+        with(|v| {
+            if v.local_talking || v.server_acked {
+                v.icon_z = vgui::raise();
+                v.icon_sv = v.server_acked && dbg;
             }
         });
     }
@@ -595,13 +615,17 @@ fn player_color(player: i32) -> [i32; 3] {
 /// (`icntlk_sv.tga` once the server acknowledged, with `voice_clientdebug` on), white at VGUI
 /// alpha 1, right-aligned 10 pixels from the edge above `GetAckIconHeight` (1001fd40: screen
 /// height − 3 font heights − 6).
-pub fn redraw() {
-    let (labels, texts, bgs, local, acked) = with(|v| (v.labels, v.label_text.clone(), v.label_bg, v.local_talking, v.server_acked));
+///
+/// They are VGUI panels parented to the viewport when shown, so they paint over the viewport's
+/// own panels; `raised` picks the ones parented in the range being painted ([`vgui::raise`]),
+/// for a message window parented in between.
+pub fn redraw(scores_visible: bool, raised: impl Fn(u64) -> bool) {
+    let (labels, texts, bgs, zs, local, acked, icon_z, sv) =
+        with(|v| (v.labels, v.label_text.clone(), v.label_bg, v.label_z, v.local_talking, v.server_acked, v.icon_z, v.icon_sv));
     // `Frame` (`0x10017ea0`) shows or hides only the names with the scoreboard; the background
     // and icon keep the visibility they got when the label was given out, so a label handed
     // out under the scoreboard stays hidden, and one already up keeps its box and icon there.
-    let show_labels = !crate::menus::scores_visible();
-    let dbg = debug();
+    let show_labels = !scores_visible;
     let screen = hud::screen();
     let (w, h) = (screen.width, screen.height);
     let root = Panel::root(w, h);
@@ -613,7 +637,7 @@ pub fn redraw() {
         let sizes: Vec<(i32, i32)> = shown.iter().map(|&i| font.map_or((0, 0), |f| f.text_size(&texts[i].0))).collect();
         let isize = icon.as_ref().map_or((8, 8), |i| (i.wide, i.tall));
         for (r, &i) in label_rects(w, h, &sizes, isize).iter().zip(&shown) {
-            if !bgs[i] {
+            if !bgs[i] || !raised(zs[i]) {
                 continue;
             }
             let c = texts[i].1;
@@ -630,11 +654,12 @@ pub fn redraw() {
             }
         }
     });
-    let (pl, sv) = (vgui::image("gfx/vgui/icntlk_pl.tga", true), vgui::image("gfx/vgui/icntlk_sv.tga", true));
-    if let (Some(pl), Some(sv)) = (pl, sv)
+    let (pl, sv_img) = (vgui::image("gfx/vgui/icntlk_pl.tga", true), vgui::image("gfx/vgui/icntlk_sv.tga", true));
+    if let (Some(pl), Some(sv_img)) = (pl, sv_img)
         && (local || acked)
+        && raised(icon_z)
     {
-        let img = if acked && dbg { &sv } else { &pl };
+        let img = if sv { &sv_img } else { &pl };
         // `GetAckIconHeight` uses `m_iFontHeight`, the `number_0` height.
         let ack_height = h - (hud::font_height() * 3 + 6);
         root.image(s, img, w - pl.wide - 10, ack_height - pl.tall, Color::new(255, 255, 255, 1));

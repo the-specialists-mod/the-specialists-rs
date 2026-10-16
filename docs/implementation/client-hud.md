@@ -289,7 +289,11 @@ mask goes unreliably, at most once a second unless the server asks with `ReqStat
   already up keeps its box and icon over the scoreboard, and one given out under the scoreboard
   stays hidden until that player stops and starts talking again (**was**: the whole label hidden
   with the scoreboard, issue #95). The local talk icon (`gfx/vgui/icntlk_pl.tga`, `icntlk_sv.tga` once the server
-  acknowledged with `voice_clientdebug` on) sits at screen height − 3 × `m_iFontHeight` (the `number_0` height) − 6.
+  acknowledged with `voice_clientdebug` on, chosen when a speaker update arrives) sits at screen height − 3 × `m_iFontHeight` (the `number_0` height) − 6.
+  The labels and the talk icon are VGUI panels parented to the viewport when shown (`0x10018271`,
+  `0x10018ad2`; VGUI1's `setParent` appends them to its children), so they paint over the
+  scoreboard, team menu and spectator bar, and over or under a message window by which was
+  parented last (`hud::vgui::raise`, issue #277).
 * `VoiceMask` gives the audible (game rules) and server ban masks; `ReqState` makes the client
   resend `VModEnable` and `vban`. Every second the client sends `vban` if its ban mask for the
   connected players differs from what the server last reported.
