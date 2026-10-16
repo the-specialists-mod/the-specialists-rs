@@ -483,7 +483,7 @@ impl ClientRules for Ts30Client {
     // Audit round 4: render
 
     /// The optimised build: `×10` (`0x10030c76`), `×5` (`0x10031476`), `×(1/255)`
-    /// (`0x10079e68`), `×(1/3)` (`0x1007d670`), values kept on the x87 (issue #276).
+    /// (`0x10079e68`), `×(1/3)` (`0x1007d670`), values kept on the x87 (issues #276, #283).
     fn float_form(&self) -> ts_client::studio::FloatForm {
         ts_client::studio::FloatForm::Optimised
     }

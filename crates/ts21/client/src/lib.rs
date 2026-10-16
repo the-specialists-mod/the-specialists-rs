@@ -707,7 +707,7 @@ impl ClientRules for Ts21Client {
     // Audit round 4: render
 
     /// The unoptimised build: `/0.1` (`0x10064575`), `/0.2` (`0x1006527b`), `/255.0`
-    /// (`0x10064e46`), `/3.0` (`0x10063d3f`), statement results stored to floats (issue #276).
+    /// (`0x10064e46`), `/3.0` (`0x10063d3f`), statement results stored to floats (issues #276, #283).
     fn float_form(&self) -> ts_client::studio::FloatForm {
         ts_client::studio::FloatForm::Unoptimised
     }

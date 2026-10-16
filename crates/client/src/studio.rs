@@ -267,13 +267,16 @@ fn time_scale() -> f32 {
 /// Torso controller value for a yaw offset: `(yaw * 0.25 + 30) * 4.25` (the x87 code's doubles),
 /// truncated to a byte.
 fn torso_controller(yaw: f32) -> u8 {
-    ((yaw as f64 * 0.25 + 30.0) * 4.25) as i32 as u8
+    torso_byte(FloatForm::Optimised, yaw as f64)
 }
 
-/// `x - (int)(x * (1 / 360.f)) * 360`. The `int` product wraps as C's does, so a huge angle
-/// (any float from delta state) can't overflow.
-fn wrap360(x: f32) -> f32 {
-    x - ((x * (1.0f32 / 360.0)) as i32).wrapping_mul(360) as f32
+/// [`torso_controller`] in a build's form: 3.0 `(yaw × 0.25 + 30) × 4.25` (`0x100323be`), 2.1
+/// `(yaw / 4.0 + 30.0) / 0.23529411764705882` (`0x10066b82`), `__ftol`'s low byte.
+fn torso_byte(form: FloatForm, yaw: f64) -> u8 {
+    (match form {
+        FloatForm::Optimised => (yaw * 0.25 + 30.0) * 4.25,
+        FloatForm::Unoptimised => (yaw / 4.0 + 30.0) / 0.23529411764705882,
+    }) as i32 as u8
 }
 
 /// The view model's animation rate in slow motion (`StudioDrawModel` `0x10031b44..0x10031bf4`):
@@ -715,86 +718,66 @@ impl Renderer {
 
     // ---- gait -----------------------------------------------------------------------------------
 
+    /// `StudioProcessGait`'s `dt`: the frame time as a float, below 0 → 0 (3.0's `test ah,1`
+    /// at `0x100322d8` also takes a NaN; 2.1's `jp` at `0x10066a3e` doesn't), above 1 → 1.
     fn dt(&self) -> f32 {
-        ((self.time - self.old_time) as f32).clamp(0.0, 1.0)
+        let dt = (self.time - self.old_time) as f32;
+        if dt < 0.0 || (self.form == FloatForm::Optimised && dt.is_nan()) {
+            0.0
+        } else if dt > 1.0 {
+            1.0
+        } else {
+            dt
+        }
     }
 
-    /// `StudioEstimateGait` (`0x10031fa0`), TS version: 2-D movement, and the gait movement is
-    /// scaled by 0.75 below 180 units/s.
+    /// `StudioEstimateGait` (3.0 `0x10031fa0`, 2.1 `0x10066300`), TS version: 2-D movement, and
+    /// the gait movement is scaled by 0.75 below 180 units/s ([`gait_step`]).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
     fn estimate_gait(&mut self, player: &entity_state_s) {
+        let form = self.form;
         let dt = (self.time - self.old_time) as f32;
         let e = self.ent();
         let frame_count = self.frame_count;
         let Some(info) = self.pinfo.as_mut() else { return };
-        if dt <= 0.0 || info.renderframe == frame_count {
+        // 3.0 (`0x10031fb8`): below 0 or NaN ends it; 2.1 (`0x1006632e`): below 0 becomes 0 (and
+        // ends it as 0), a NaN goes on. Both cap at 1 and end on 0.
+        if form == FloatForm::Optimised && !(dt >= 0.0) {
             self.gait_movement = 0.0;
             return;
         }
-        let dt = dt.min(1.0);
-        let mut est: [f32; 2];
-        // The value TS compares with 180: the estimated speed (units/s), or with the velocity
-        // path the movement itself.
-        let speed;
-        if self.gait_estimation {
-            est = [e.origin[0] - info.prevgaitorigin[0], e.origin[1] - info.prevgaitorigin[1]];
-            info.prevgaitorigin = e.origin;
-            self.gait_movement = (est[0] * est[0] + est[1] * est[1]).sqrt();
-            speed = self.gait_movement / dt;
-            if speed < 5.0 {
-                self.gait_movement = 0.0;
-                est = [0.0; 2];
-            }
-        } else {
-            est = [player.velocity[0], player.velocity[1]];
-            self.gait_movement = (est[0] * est[0] + est[1] * est[1]).sqrt() * dt;
-            speed = self.gait_movement;
-        }
-
-        if est[0] == 0.0 && est[1] == 0.0 {
-            let mut d = wrap360(e.angles[1] - info.gaityaw);
-            if d > 180.0 {
-                d -= 360.0;
-            }
-            if d < -180.0 {
-                d += 360.0;
-            }
-            d *= if dt < 0.25 { dt * 4.0 } else { dt };
-            info.gaityaw = wrap360(info.gaityaw + d);
+        let dt = dt.clamp(0.0, 1.0);
+        if dt == 0.0 || info.renderframe == frame_count {
             self.gait_movement = 0.0;
+            return;
+        }
+        let est = if self.gait_estimation {
+            let est = [e.origin[0] - info.prevgaitorigin[0], e.origin[1] - info.prevgaitorigin[1]];
+            info.prevgaitorigin = e.origin;
+            Gait::Origin(est)
         } else {
-            info.gaityaw = (est[1].atan2(est[0]).to_degrees()).clamp(-180.0, 180.0);
-        }
-        if speed < 180.0 {
-            self.gait_movement *= 0.75;
-        }
+            Gait::Velocity([player.velocity[0], player.velocity[1]])
+        };
+        let (movement, gaityaw) = gait_step(form, dt, est, e.angles[1], info.gaityaw);
+        self.gait_movement = movement;
+        info.gaityaw = gaityaw;
     }
 
     /// The side-to-side turn of `StudioProcessGait`: torso controllers from the view yaw relative
     /// to the gait yaw, then the body faces the gait yaw. Also the ghost's torso (TS
     /// `StudioDrawGhostPlayer` repeats this block).
     fn turn_torso(&mut self) {
+        let form = self.form;
         let e = self.ent();
         let Some(info) = self.pinfo.as_mut() else { return };
-        let mut yaw = wrap360(e.angles[1] - info.gaityaw);
-        if yaw < -180.0 {
-            yaw += 360.0;
-        }
-        if yaw > 180.0 {
-            yaw -= 360.0;
-        }
-        if yaw > 120.0 {
-            info.gaityaw -= 180.0;
-            self.gait_movement = -self.gait_movement;
-            yaw -= 180.0;
-        } else if yaw < -120.0 {
-            info.gaityaw += 180.0;
-            self.gait_movement = -self.gait_movement;
-            yaw += 180.0;
-        }
-        e.curstate.controller[..4].fill(torso_controller(yaw));
+        let (byte, gaityaw, movement) = torso_turn(form, e.angles[1], info.gaityaw, self.gait_movement);
+        info.gaityaw = gaityaw;
+        self.gait_movement = movement;
+        e.curstate.controller[..4].fill(byte);
         e.latched.prevcontroller = e.curstate.controller;
         e.angles[1] = info.gaityaw;
-        if e.angles[1] < 0.0 {
+        // 3.0 `test ah,1` (`0x10032458`) also takes a NaN; 2.1 (`0x10066cb6`) doesn't.
+        if e.angles[1] < 0.0 || (form == FloatForm::Optimised && e.angles[1].is_nan()) {
             e.angles[1] += 360.0;
         }
         e.latched.prevangles[1] = e.angles[1];
@@ -816,6 +799,7 @@ impl Renderer {
             e.latched.prevseqblending[0] = blend;
         }
         let dt = self.dt();
+        let form = self.form;
         self.estimate_gait(player);
         self.turn_torso();
 
@@ -826,19 +810,7 @@ impl Renderer {
         let Some(seq) = m.seq(player.gaitsequence) else { return };
         let framerate = self.ent().curstate.framerate;
         let Some(info) = self.pinfo.as_mut() else { return };
-        let numframes = seq.numframes as f32;
-        if seq.linearmovement[0] > 0.0 {
-            info.gaitframe += self.gait_movement / seq.linearmovement[0] * numframes;
-        } else {
-            info.gaitframe += framerate * seq.fps * dt;
-        }
-        if seq.numframes > 0 {
-            // C `int` product: wraps (rather than overflowing) for a runaway gait frame.
-            info.gaitframe -= ((info.gaitframe / numframes) as i32).wrapping_mul(seq.numframes) as f32;
-            if info.gaitframe < 0.0 {
-                info.gaitframe += numframes;
-            }
-        }
+        info.gaitframe = gait_frame(form, info.gaitframe, self.gait_movement, &seq, framerate, dt);
     }
 
     // ---- transforms and bones -------------------------------------------------------------------
@@ -1238,8 +1210,183 @@ impl Renderer {
     }
 }
 
+/// `StudioProcessGait`'s torso turn (3.0 `0x10032312..0x10032469`, 2.1 `0x10066a88..0x10066ce0`;
+/// also 3.0's `StudioDrawGhostPlayer`): the view yaw relative to the gait yaw, wrapped to ±180;
+/// beyond ±120 the gait turns round (gait yaw ∓ 180, movement negated). Returns the torso
+/// controller byte, the gait yaw and the movement. 3.0 keeps the yaw on the x87 (a NaN reads as
+/// below −180 and −120); 2.1 stores every step.
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
+fn torso_turn(form: FloatForm, view_yaw: f32, gaityaw: f32, movement: f32) -> (u8, f32, f32) {
+    let (mut g, mut m) = (gaityaw, movement);
+    let y = if form == FloatForm::Optimised {
+        let mut y = view_yaw as f64 - gaityaw as f64;
+        y = wrap360_by(y, y * f32::from_bits(0x3b36_0b61) as f64);
+        if !(y >= -180.0) {
+            y += 360.0;
+        }
+        if y > 180.0 {
+            y -= 360.0;
+        }
+        if y > 120.0 {
+            g -= 180.0;
+            m = -m;
+            y -= 180.0;
+        }
+        if !(y >= -120.0) {
+            g += 180.0;
+            m = -m;
+            y += 180.0;
+        }
+        y
+    } else {
+        let mut y = view_yaw - gaityaw;
+        y = wrap360_by(y as f64, y as f64 / 360.0) as f32;
+        if y < -180.0 {
+            y += 360.0;
+        }
+        if y > 180.0 {
+            y -= 360.0;
+        }
+        if y > 120.0 {
+            g -= 180.0;
+            m = -m;
+            y -= 180.0;
+        }
+        if y < -120.0 {
+            g += 180.0;
+            m = -m;
+            y += 180.0;
+        }
+        y as f64
+    };
+    (torso_byte(form, y), g, m)
+}
+
+/// `StudioProcessGait`'s gait frame (3.0 `0x1003249a..0x10032523`, 2.1 `0x10066d3d..0x10066e21`):
+/// `movement / linearmovement.x × numframes` when the sequence moves, else 3.0's
+/// `framerate × fps × dt` or 2.1's `dt × fps × framerate` (the x87 products in that order), added
+/// and stored; then `− ftol(frame / numframes) × numframes` (the quotient unrounded, the `int`
+/// product wrapping) and `+ numframes` below 0 (3.0 also on NaN). The port skips the wrap for a
+/// sequence without frames, where TS divides by 0.
+fn gait_frame(form: FloatForm, frame: f32, movement: f32, seq: &SeqDesc, framerate: f32, dt: f32) -> f32 {
+    let n = seq.numframes as f64;
+    let add = if seq.linearmovement[0] > 0.0 {
+        movement as f64 / seq.linearmovement[0] as f64 * n
+    } else {
+        match form {
+            FloatForm::Optimised => framerate as f64 * seq.fps as f64 * dt as f64,
+            FloatForm::Unoptimised => dt as f64 * seq.fps as f64 * framerate as f64,
+        }
+    };
+    let mut f = (add + frame as f64) as f32;
+    if seq.numframes > 0 {
+        f = (f as f64 - ((f as f64 / n) as i32).wrapping_mul(seq.numframes) as f64) as f32;
+        if f < 0.0 || (form == FloatForm::Optimised && f.is_nan()) {
+            f = (n + f as f64) as f32;
+        }
+    }
+    f
+}
+
+/// Where `StudioEstimateGait` takes the movement from: the origin's change since the last
+/// estimate (`m_fGaitEstimation`), or the player's velocity.
+#[derive(Clone, Copy, Debug)]
+enum Gait {
+    Origin([f32; 2]),
+    Velocity([f32; 2]),
+}
+
+/// `x − ftol(x · (1/360))·360` with the `int` product wrapping as C's does (the gait yaw wraps).
+fn wrap360_by(x: f64, q: f64) -> f64 {
+    x - (q as i32).wrapping_mul(360) as f64
+}
+
+/// The body of `StudioEstimateGait` once `dt` is in (0, 1]: the gait movement and the new gait
+/// yaw. 3.0 (`0x10032005..0x1003222c`) keeps the length, speed, yaw difference and products on the
+/// x87 (`fsqrt`, `fpatan`, `× 57.29577951308232`, `× (1/360)f`) and compares the unrounded speed
+/// with 180; a NaN movement counts as stationary. 2.1 (`0x1006638b..0x10066802`) stores `x²` to a
+/// float before adding `y²` and every statement after (CRT `sqrt`/`atan2`, `× 180 / π`,
+/// `/ 360.0f`), tests the speed against 5 unrounded and against 180 stored.
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
+fn gait_step(form: FloatForm, dt: f32, est: Gait, yaw: f32, gaityaw: f32) -> (f32, f32) {
+    let opt = form == FloatForm::Optimised;
+    let len = |v: [f32; 2]| {
+        let (x, y) = (v[0] as f64, v[1] as f64);
+        if opt { (y * y + x * x).sqrt() } else { ((x * x) as f32 as f64 + y * y).sqrt() }
+    };
+    let dtd = dt as f64;
+    let (mut movement, speed, est, mut still) = match est {
+        Gait::Origin(v) => {
+            let l = len(v);
+            let movement = l as f32;
+            let (speed, slow) = if opt {
+                // `fst` keeps `l / dt` for the 180 test; the 5 test reads the stored float.
+                let sp = l / dtd;
+                (sp, !(dt > 0.0) || !(sp as f32 >= 5.0))
+            } else {
+                let sp = movement as f64 / dtd;
+                ((sp as f32) as f64, !(dt > 0.0 || dt.is_nan()) || sp < 5.0)
+            };
+            if slow { (0.0, speed, [0.0; 2], true) } else { (movement, speed, v, false) }
+        }
+        Gait::Velocity(v) => {
+            let p = len(v) * dtd;
+            (p as f32, if opt { p } else { (p as f32) as f64 }, v, false)
+        }
+    };
+    // 3.0 `test ah,0x40; je` (`0x100320e6`): a NaN reads as 0; 2.1 `test ah,0x44; jp`: not.
+    let zero = |x: f32| x == 0.0 || (opt && x.is_nan());
+    still |= zero(est[1]) && zero(est[0]);
+    let mut g;
+    if still {
+        if opt {
+            let mut d = yaw as f64 - gaityaw as f64;
+            d = wrap360_by(d, d * f32::from_bits(0x3b36_0b61) as f64);
+            if d > 180.0 {
+                d -= 360.0;
+            }
+            if !(d >= -180.0) {
+                d += 360.0;
+            }
+            d *= dtd;
+            if dtd < 0.25 {
+                d *= 4.0;
+            }
+            g = (d + gaityaw as f64) as f32;
+            g = wrap360_by(g as f64, g as f64 * f32::from_bits(0x3b36_0b61) as f64) as f32;
+        } else {
+            let mut d = yaw - gaityaw;
+            d = wrap360_by(d as f64, d as f64 / 360.0) as f32;
+            if d > 180.0 {
+                d -= 360.0;
+            }
+            if d < -180.0 {
+                d += 360.0;
+            }
+            d = if dtd < 0.25 { (dtd * 4.0 * d as f64) as f32 } else { d * dt };
+            g = d + gaityaw;
+            g = wrap360_by(g as f64, g as f64 / 360.0) as f32;
+        }
+        movement = 0.0;
+    } else {
+        let a = (est[1] as f64).atan2(est[0] as f64);
+        g = if opt { a * 57.29577951308232 } else { a * 180.0 / std::f64::consts::PI } as f32;
+        if g > 180.0 {
+            g = 180.0;
+        }
+        if if opt { !(g >= -180.0) } else { g < -180.0 } {
+            g = -180.0;
+        }
+    }
+    if if opt { !(speed >= 180.0) } else { speed < 180.0 } {
+        movement = (movement as f64 * 0.75) as f32;
+    }
+    (movement, g)
+}
+
 /// The `StudioEstimateInterpolant` value with interpolation on: see
 /// [`Renderer::estimate_interpolant`].
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
 fn interpolant(form: FloatForm, time: f64, animtime: f32, prevanimtime: f32) -> f32 {
     let (animtime, prev) = (animtime as f64, prevanimtime as f64 + 0.01);
     let moved = match form {
@@ -1276,6 +1423,7 @@ fn prev_seq_weight(form: FloatForm, time: f64, sequencetime: f32) -> f32 {
 /// The blend runs on the x87 from the float `dadt`; 3.0 keeps the value there through the clamp,
 /// the lerp and the degrees-to-radians multiply (`×(1/255)`), 2.1 stores it to a float after each
 /// statement (`/255.0`, `/64.0`). Both multiply by the double `M_PI / 180`.
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
 fn bone_adj(m: &Studio, form: FloatForm, dadt: f32, c1: &[u8; 4], c2: &[u8; 4], mouth: u8) -> [f32; 8] {
     let opt = form == FloatForm::Optimised;
     // A statement's result: kept (3.0) or stored to a float (2.1).
@@ -1385,6 +1533,7 @@ fn sample_pose(m: &Studio, pose: &mut Pose, seq: &SeqDesc, anim: Anim, f: f32, a
 /// the leftover pitch is `pitch − start × (1/3)` (3.0, double reciprocal) or `pitch − start / 3.0`
 /// (2.1), and the blend `(blend − start)·255 / (end − start)`, all on the x87. 3.0 compares the
 /// blend after a float store and takes a NaN `start` as below it (`test ah,1`).
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
 fn player_blend(form: FloatForm, seq: &SeqDesc, pitch: &mut f32) -> u8 {
     let blend = (*pitch as f64 * 3.0) as i32;
     let (start, end) = (seq.blendstart[0] as f64, seq.blendend[0] as f64);
@@ -1520,8 +1669,12 @@ mod tests {
         assert_eq!(torso_controller(0.0), 127);
         assert_eq!(torso_controller(120.0), 255);
         assert_eq!(torso_controller(-120.0), 0);
-        assert_eq!(wrap360(370.0), 10.0);
-        assert_eq!(wrap360(-370.0), -10.0);
+        // The gait yaw turns round past ±120 and wraps to ±180 in both builds.
+        for form in [FloatForm::Optimised, FloatForm::Unoptimised] {
+            assert_eq!(torso_turn(form, 370.0, 0.0, 2.0), (torso_controller(10.0), 0.0, 2.0));
+            assert_eq!(torso_turn(form, 150.0, 0.0, 2.0), (torso_controller(-30.0), -180.0, -2.0));
+            assert_eq!(torso_turn(form, -150.0, 0.0, 2.0), (torso_controller(30.0), 180.0, -2.0));
+        }
     }
 
     #[test]
@@ -1634,19 +1787,54 @@ mod tests {
         assert_eq!([adj(O), adj(U)], [0xbe40_bfb6, 0xbe40_bfb8]);
     }
 
+    #[test]
+    fn gait_forms_are_the_builds() {
+        use FloatForm::{Optimised as O, Unoptimised as U};
+        let fb = f32::from_bits;
+        // Velocity path: 3.0 `fsqrt(vy² + vx²) · dt` on the x87 (`0x100320bf..0x100320d7`); 2.1
+        // stores `vx²` first (`0x100665ca`). Both × 0.75 below 180; the gait yaw from atan2.
+        let v = Gait::Velocity([fb(0xc331_4b59), fb(0x4200_f3ef)]);
+        let (m3, g3) = gait_step(O, fb(0x3d48_352f), v, 0.0, 0.0);
+        let (m2, g2) = gait_step(U, fb(0x3d48_352f), v, 0.0, 0.0);
+        assert_eq!([m3.to_bits(), m2.to_bits()], [0x40d3_649c, 0x40d3_649a]);
+        assert_eq!([g3.to_bits(), g2.to_bits()], [0x4329_b1ba; 2]);
+        // Standing: the yaw difference wraps, then `× dt × 4` below 0.25 s. 3.0 keeps it on the
+        // x87 (`0x1003210b..0x1003217c`), 2.1 stores each step (`0x10066656..0x100666fb`).
+        let still = Gait::Origin([0.0; 2]);
+        let step = |form| gait_step(form, fb(0x3e47_f583), still, fb(0x431f_800d), fb(0x4082_7e50));
+        assert_eq!([step(O), step(U)].map(|(m, g)| (m, g.to_bits())), [(0.0, 0x42fa_f412), (0.0, 0x42fa_f411)]);
+        // The gait frame's `framerate × fps × dt + frame` is one x87 expression stored once
+        // (3.0 `0x100324bb..0x100324ce`, 2.1 `0x10066d8a..0x10066da8`); float steps gave 0x40da7904.
+        let gseq = SeqDesc { numframes: 30, fps: fb(0x4213_c69f), ..Default::default() };
+        for form in [O, U] {
+            let f = gait_frame(form, fb(0x4085_5e76), 0.0, &gseq, fb(0x3fb9_0932), fb(0x3d4b_f8a6));
+            assert_eq!(f.to_bits(), 0x40da_7905);
+        }
+        // Under 5 u/s from the origin: no movement, the standing branch.
+        let (m, _) = gait_step(O, 0.1, Gait::Origin([0.3, 0.0]), 10.0, 0.0);
+        assert_eq!(m, 0.0);
+        // A NaN velocity reads as standing in 3.0 (`test ah,0x40`) and goes to atan2 in 2.1.
+        let nan = Gait::Velocity([f32::NAN, f32::NAN]);
+        assert_eq!(gait_step(O, 0.1, nan, 0.0, 10.0), (0.0, 6.0));
+        assert!(gait_step(U, 0.1, nan, 0.0, 10.0).1.is_nan());
+    }
+
     /// Delta-state angles, frames and sequences and model data of any value: no overflow, no
     /// out-of-range bone or controller index.
     #[test]
     fn garbage_inputs_never_panic() {
         for x in [f32::MAX, f32::MIN, f32::INFINITY, f32::NAN, 1e12, -1e12, 0.0] {
-            wrap360(x);
             torso_controller(x);
             let seq = SeqDesc { blendstart: [x, 0.0], blendend: [-x, 0.0], ..Default::default() };
             for form in [FloatForm::Optimised, FloatForm::Unoptimised] {
                 player_blend(form, &seq, &mut x.clone());
+                torso_turn(form, x, -x, x);
+                gait_step(form, 0.5, Gait::Origin([x, -x]), x, x);
+                gait_step(form, 0.5, Gait::Velocity([x, 0.0]), x, -x);
+                let gseq = SeqDesc { numframes: 3, fps: x, linearmovement: [x, 0.0, 0.0], ..Default::default() };
+                gait_frame(form, x, x, &gseq, x, 0.5);
             }
         }
-        assert_eq!(wrap360(370.0), 10.0);
         let mut x = 0x1234_5678_u32;
         let mut bufs: Vec<Vec<u8>> = vec![vec![], vec![0xff; 1024]];
         for n in 1..30 {
