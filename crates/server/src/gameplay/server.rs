@@ -18,6 +18,8 @@ use crate::rules::powerup::PowerupRules;
 use crate::rules::scoring::Frag;
 use crate::rules::state::GameRules;
 use crate::stunt::rules::{Dive, StuntClock, StuntRules};
+use crate::weapons::SvState;
+use crate::weapons::net::GunHud;
 use crate::weapons::projectiles;
 use crate::weapons::worldgun::AmmoPackDrop;
 use crate::world::{Cx, Entity};
@@ -492,6 +494,10 @@ pub trait ServerRules: Sync {
     /// position is rounded in the build `arith` and whether the dying player owns the pack while it
     /// falls.
     fn ammo_pack_drop(&self, arith: Arith) -> AmmoPackDrop;
+
+    /// The `WeaponInfo` part of `CTSGun::UpdateClientData` (10 Hz, after the `WStatus` loop): what
+    /// goes to the player, given the gun and the network caches the ruleset keeps up to date.
+    fn gun_hud_update(&self, sv: &mut SvState, gun: &Gun) -> GunHud;
 
     /// `TEXTURETYPE_Init`: whether the game's own material table (the impact sounds of
     /// `TEXTURETYPE_PlaySound`) also reads `sound/<map>_materials.txt` after

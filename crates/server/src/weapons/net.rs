@@ -77,9 +77,23 @@ pub fn force_update(p: &mut Player) {
     p.inv.sv.force_resend();
 }
 
+/// What `CTSGun::UpdateClientData` sends after its `WStatus` loop
+/// ([`ServerRules::gun_hud_update`](crate::gameplay::ServerRules::gun_hud_update)).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GunHud {
+    /// Nothing changed.
+    Nothing,
+    /// `WeaponInfo`; with `twins`, a `WStatus` for each owned akimbo or single twin of the
+    /// current weapon follows.
+    WeaponInfo { msg: WeaponInfo, twins: bool },
+    /// `ClipInfo` with the current clip.
+    ClipInfo(u8),
+}
+
 /// `CTSGun::UpdateClientData` (0x858c8), from the end of `CBasePlayer::UpdateClientData`
-/// (`player::hud::update_client_data`): `WStatus` and `WeaponInfo` on change, 10 Hz on the gun's
-/// own timer. `ActItems` and `TSSpace` are the player's part, sent from there.
+/// (`player::hud::update_client_data`): `WStatus` on change, then what the ruleset's
+/// [`GunHud`] says, 10 Hz on the gun's own timer. `ActItems` and `TSSpace` are the player's
+/// part, sent from there.
 pub fn update_client(p: &mut Player, cx: &mut Cx) {
     let me = cx.edict;
     if bot(me) {
@@ -101,56 +115,31 @@ pub fn update_client(p: &mut Player, cx: &mut Cx) {
             send_wstatus(me, id as u8, st.owned, st.clip);
         }
     }
-    let Some(m) = weapon_info_update(sv, gun) else { return };
-    let mut s = Sink::new(messages::one(Msg::WeaponInfo, me));
-    m.write(&mut s);
-    s.end();
-    let cur = gun.current;
-    if gun.slot().is_some()
-        && let Some(w) = info(cur)
-    {
-        for twin in [w.akimbo, w.single] {
-            if twin != -1 && twin as u8 != cur && gun.status[twin as usize].owned {
-                let t = &gun.status[twin as usize];
-                send_wstatus(me, twin as u8, t.owned, t.clip);
+    match crate::gameplay::active().server.gun_hud_update(sv, gun) {
+        GunHud::Nothing => {}
+        GunHud::ClipInfo(clip) => {
+            let mut s = Sink::new(messages::one(Msg::ClipInfo, me));
+            s.byte(clip as i32);
+            s.end();
+        }
+        GunHud::WeaponInfo { msg, twins } => {
+            let mut s = Sink::new(messages::one(Msg::WeaponInfo, me));
+            msg.write(&mut s);
+            s.end();
+            let cur = gun.current;
+            if twins
+                && gun.slot().is_some()
+                && let Some(w) = info(cur)
+            {
+                for twin in [w.akimbo, w.single] {
+                    if twin != -1 && twin as u8 != cur && gun.status[twin as usize].owned {
+                        let t = &gun.status[twin as usize];
+                        send_wstatus(me, twin as u8, t.owned, t.clip);
+                    }
+                }
             }
         }
     }
-}
-
-/// The `WeaponInfo` half of `CTSGun::UpdateClientData` (0x858c8): with a weapon record, the
-/// message goes out when the current id (+0xc8) differs from the last one sent (+0x97a) or the
-/// reserve from +0x9b4, with the record copied at that moment; on kung fu only when the id
-/// differs, carrying the kung-fu bar. Updates the caches and returns the message to send.
-fn weapon_info_update(sv: &mut super::SvState, gun: &shared::weapons::Gun) -> Option<WeaponInfo> {
-    let cur = gun.current;
-    let Some(st) = gun.slot() else {
-        if sv.sent_id == Some(cur) {
-            return None;
-        }
-        sv.sent_id = Some(cur);
-        return Some(WeaponInfo { id: cur, clip: gun.melee_bar.round_ties_even().clamp(0.0, 255.0) as u8, reserve: 0, mode: 0, items: 0 });
-    };
-    let reserve = gun.current_reserve();
-    let mut changed = false;
-    if sv.sent_id != Some(cur) {
-        changed = true;
-        sv.sent_id = Some(cur);
-        sv.sent_status = *st;
-        sv.sent_reserve = reserve;
-    }
-    if sv.sent_reserve != reserve {
-        changed = true;
-        sv.sent_status = *st;
-        sv.sent_reserve = reserve;
-    }
-    changed.then(|| WeaponInfo {
-        id: cur,
-        clip: sv.sent_status.clip.clamp(0, 255) as u8,
-        reserve: sv.sent_reserve.clamp(-32768, 32767) as i16,
-        mode: sv.sent_status.mode,
-        items: sv.sent_status.items as u8,
-    })
 }
 
 /// TS `UpdateClientData` weapon fields + the view model index.
@@ -198,36 +187,5 @@ mod tests {
         assert_eq!((cd.m_flNextAttack, cd.vuser1[1], cd.ammo_shells), (0.25, 16.0, 0));
         assert_eq!(cd.vuser3, [0.0, 6.0, 7.0], "only the weapon id is cleared");
         assert_eq!((cd.m_iId, cd.vuser4[1]), (7, 9.0), "the weapon fields are left alone");
-    }
-
-    #[test]
-    fn a_new_gun_on_kung_fu_sends_no_weapon_info() {
-        // CTSGun::Reset leaves +0x97a at 0, the kung-fu id: UpdateClientData has nothing to say.
-        let mut sv = crate::weapons::SvState::default();
-        let gun = shared::weapons::Gun::default();
-        assert_eq!(gun.current, 0);
-        assert!(weapon_info_update(&mut sv, &gun).is_none());
-        // The port-only `ts_give` reset does send it.
-        sv.force_resend();
-        let m = weapon_info_update(&mut sv, &gun).expect("forced");
-        assert_eq!((m.id, m.clip, m.reserve), (0, gun.melee_bar.round_ties_even() as u8, 0));
-        assert!(weapon_info_update(&mut sv, &gun).is_none(), "sent once");
-    }
-
-    #[test]
-    fn weapon_info_on_a_new_weapon_and_on_a_reserve_change() {
-        ts30_gameplay::tables::make_default();
-        use shared::weapons::id;
-        let mut sv = crate::weapons::SvState::default();
-        let mut gun = shared::weapons::Gun::default();
-        gun.take_weapon(id::AK47, None, 0).unwrap();
-        gun.current = id::AK47;
-        let m = weapon_info_update(&mut sv, &gun).expect("new id");
-        assert_eq!(m.id, id::AK47);
-        assert!(weapon_info_update(&mut sv, &gun).is_none(), "nothing changed");
-        let t = shared::weapons::info(id::AK47).unwrap().ammo as usize;
-        gun.reserve[t] += 30;
-        let m = weapon_info_update(&mut sv, &gun).expect("reserve changed");
-        assert_eq!(m.reserve as i32, gun.current_reserve());
     }
 }

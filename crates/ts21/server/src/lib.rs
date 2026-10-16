@@ -15,6 +15,7 @@
 //! * [`explode`], [`blades`]: explosions, shrapnel and thrown knives (§3.2).
 //! * [`melee`]: blocks and disarms on the victim (§3.2; the attacks are the shared gun hooks).
 //! * [`worldgun`]: dropped guns and ammo packs.
+//! * [`weapons`]: the gun's `WeaponInfo` and `ClipInfo` updates.
 //! * [`items`]: the SDK's `TakeHealth`, battery and wall chargers.
 //! * [`bots`]: the native bot backend's rules for 2.1 (§3.10): `server-dll` registers [`bots::BOTS`]
 //!   with `ts_server::bots::rules` under the plugin's id (the bots are a layer of their own, so
@@ -39,6 +40,7 @@ pub mod protocol;
 pub mod rules;
 pub mod scoring;
 pub mod stunt;
+pub mod weapons;
 pub mod worldgun;
 
 use goldsrc::server::MsgWriter;
@@ -487,6 +489,11 @@ impl ServerRules for Ts21Server {
     /// [`worldgun::ammo_pack_drop`]: 2.1's single build.
     fn ammo_pack_drop(&self, _arith: shared::pm::Arith) -> ts_server::weapons::worldgun::AmmoPackDrop {
         worldgun::ammo_pack_drop()
+    }
+
+    /// [`weapons::gun_hud_update`].
+    fn gun_hud_update(&self, sv: &mut ts_server::weapons::SvState, gun: &Gun) -> ts_server::weapons::net::GunHud {
+        weapons::gun_hud_update(sv, gun)
     }
 
     /// `TEXTURETYPE_Init` (FUN_10036580) reads `sound/materials.txt` only.

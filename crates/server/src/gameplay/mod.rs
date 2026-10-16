@@ -359,6 +359,9 @@ impl ServerRules for Defaults {
     fn ammo_pack_drop(&self, _arith: shared::pm::Arith) -> crate::weapons::worldgun::AmmoPackDrop {
         unimplemented!("ammo_pack_drop")
     }
+    fn gun_hud_update(&self, _sv: &mut crate::weapons::SvState, _gun: &shared::weapons::Gun) -> crate::weapons::net::GunHud {
+        unimplemented!("gun_hud_update")
+    }
     fn map_materials(&self) -> bool {
         unimplemented!("map_materials")
     }
