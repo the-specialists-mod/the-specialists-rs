@@ -10,7 +10,8 @@ use ts_client::studio::StudioStyle;
 /// * the dead and ghost draws: slots 4 and 5, `0x10033540` and `0x100337f0`, picked at
 ///   `0x10031c9a..`;
 /// * the hardware abs bbox: `StudioRenderFinal_Hardware` `0x10034750`;
-/// * the slowed 5004 sound: `HUD_StudioEvent` `0x10044b50`.
+/// * the slowed 5004 sound: `HUD_StudioEvent` `0x10044b50`;
+/// * the view model's zoom push: `V_CalcNormalRefdef` `0x100685a7..0x100685bb`.
 pub const STYLE: StudioStyle = StudioStyle::ALL;
 
 #[cfg(test)]
@@ -22,5 +23,6 @@ mod tests {
         let s = STYLE;
         assert!(s.view_model_slowmo && s.torso_yaw_fix && s.player_renderamt && s.dead_player_copy && s.hw_abs_bbox);
         assert!(s.slowed_event_sound, "0x10044b69: EV_PlaySound with the slow-motion pitch");
+        assert!(s.view_model_fov_push, "0x100685a7: (80 - m_iFOV) * 0.15 along the view");
     }
 }

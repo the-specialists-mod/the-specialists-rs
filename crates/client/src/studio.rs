@@ -63,6 +63,9 @@ pub struct StudioStyle {
     /// with `pfnPlaySoundByNameAtLocation`, at volume 1 and normal pitch
     /// (`effects::studio_event`).
     pub slowed_event_sound: bool,
+    /// `V_CalcNormalRefdef` pushes the view model `(80 − m_iFOV) × 0.15` units along the view
+    /// after the bob offset (`view::view_model_fov_push`).
+    pub view_model_fov_push: bool,
 }
 
 impl StudioStyle {
@@ -74,6 +77,7 @@ impl StudioStyle {
         dead_player_copy: true,
         hw_abs_bbox: true,
         slowed_event_sound: true,
+        view_model_fov_push: true,
     };
 }
 

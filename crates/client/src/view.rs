@@ -1274,7 +1274,7 @@ fn calc_normal(p: &mut ref_params_t) {
         goldsrc::ext::spectator::apply_shake(&mut org, &mut ang, 0.9);
         vm.angles = ang;
         org = v::add(org, gun_ofs);
-        org = v::ma(org, ((80.0 - fov) as i32) as f32 * 0.15, fwd);
+        org = v::ma(org, view_model_fov_push(fov, crate::studio::style().view_model_fov_push), fwd);
         org[2] -= 1.0;
         org[2] += match p.viewsize as i32 {
             110 => 1.0,
@@ -1341,6 +1341,14 @@ fn calc_normal(p: &mut ref_params_t) {
         w.playback_angles = p.viewangles;
         finish(w, p, v_angles);
     });
+}
+
+/// How far the view model moves along the view for the zoom (`0x100685a7..0x100685bb`):
+/// `(80 − m_iFOV)` (`fild`) `× 0.15f`, back above FOV 80. 0 without
+/// [`StudioStyle::view_model_fov_push`](crate::studio::StudioStyle::view_model_fov_push) (TS 2.1
+/// `V_CalcNormalRefdef` 0x100b6c90 has no FOV term, issue #258).
+fn view_model_fov_push(fov: f32, push: bool) -> f32 {
+    if push { ((80.0 - fov) as i32) as f32 * 0.15 } else { 0.0 }
 }
 
 /// The local model's pitch in third person (`0x100689ef..0x10068a64`): the camera pitch brought
@@ -1590,6 +1598,14 @@ mod tests {
             d.update(&drift_input(0.0, 3.3), &mut pitch);
         }
         assert_eq!(pitch, 0.0);
+    }
+
+    #[test]
+    fn view_model_zoom_push() {
+        assert_eq!(view_model_fov_push(90.0, true), -1.5, "pulled back at FOV 90");
+        assert_eq!(view_model_fov_push(80.0, true), 0.0);
+        assert_eq!(view_model_fov_push(20.0, true), 60.0 * 0.15);
+        assert_eq!(view_model_fov_push(20.0, false), 0.0, "TS 2.1: no push");
     }
 
     #[test]

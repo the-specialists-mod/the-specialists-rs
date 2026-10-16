@@ -16,7 +16,9 @@ use ts_client::studio::StudioStyle;
 ///   player's own `player_info`;
 /// * `StudioRenderFinal_Hardware` 0x10068310 has no `r_drawentities 5` case;
 /// * `HUD_StudioEvent` 0x1007b780 plays 5004 with `pfnPlaySoundByNameAtLocation(options, 1.0,
-///   attachment[0])` (`cl_enginefuncs` slot 63 at 0x102e1554, issue #257).
+///   attachment[0])` (`cl_enginefuncs` slot 63 at 0x102e1554, issue #257);
+/// * `V_CalcNormalRefdef` 0x100b6c90 places the view model at the eye plus the bob offset with no
+///   `(80 − fov) × 0.15` push (issue #258).
 pub const STYLE: StudioStyle = StudioStyle {
     view_model_slowmo: false,
     torso_yaw_fix: false,
@@ -24,6 +26,7 @@ pub const STYLE: StudioStyle = StudioStyle {
     dead_player_copy: false,
     hw_abs_bbox: false,
     slowed_event_sound: false,
+    view_model_fov_push: false,
 };
 
 #[cfg(test)]
@@ -39,5 +42,6 @@ mod tests {
         assert!(!s.dead_player_copy, "0x10065da0: corpses through StudioDrawPlayer, no ghosts");
         assert!(!s.hw_abs_bbox, "0x10068310: no r_drawentities 5 case");
         assert!(!s.slowed_event_sound, "0x1007b780: 5004 through PlaySoundByNameAtLocation");
+        assert!(!s.view_model_fov_push, "0x100b6c90: no zoom push on the view model");
     }
 }
