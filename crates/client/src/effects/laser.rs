@@ -238,40 +238,50 @@ fn fmt(p: Vec3) -> String {
     format!("[{:.1}, {:.1}, {:.1}]", p[0], p[1], p[2])
 }
 
-/// The local flashlight (`0x1003b250`, the HUD's item bits `& 4`, second sprite `& 0x40`): a
-/// dynamic light where the view points, and a flash sprite at the view model's muzzle(s), looked
-/// up while there is a view model (`0x1003b4e5`).
+/// The local flashlight's light radius (`0x1003b3f1..`): `1024 − d` for the hit `d` units from
+/// the cull origin, at most 120.
+fn local_flashlight_radius(d: f32) -> f32 {
+    let r = 1024.0 - d;
+    if 120.0 <= r { 120.0 } else { r }
+}
+
+/// The local flashlight (`DrawLocalFlashlight` `0x1003b250`; 2.1's `0x10070f20` is the same),
+/// gated on the HUD's item bits (`& 4`, the second sprite `& 0x40`). A 1024-unit trace from the
+/// cull origin along the view forward (hull 2, `PM_STUDIO_BOX`, ignoring the local player); when
+/// it hits (`fraction != 1`), a dynamic light (key 2) at the hit with radius
+/// [`local_flashlight_radius`]. With a view model, `flash.spr` billboards one unit below the
+/// muzzle (attachment 0, radius 6; the second gun's attachment 2, radius 4), colour 0.7, alpha 1
+/// (issue #203).
 pub fn draw_local_flashlight(cam: &Camera) {
     let items = state::with(|st| st.hud_items);
     if items & ITEM_FLASHLIGHT == 0 {
         return;
     }
-    let local = engine().local_player().map_or(0, |e| e.index);
-    let vm = crate::events::first_person_view_model();
-    let akimbo = items & ITEM_AKIMBO != 0;
-    let tr = r::with_solid_players(local - 1, || {
-        r::player_trace(cam.origin, v::ma(cam.origin, 1024.0, cam.forward), 2, PM_STUDIO_BOX as i32, -1)
-    });
-    let d = v::dist(cam.origin, tr.endpos);
-    if let Some(dl) = r::alloc_dlight(2) {
-        dl.origin = v::ma(tr.endpos, -8.0, cam.forward);
-        dl.radius = (1024.0 - d).clamp(0.0, 120.0);
-        dl.color.r = 255;
-        dl.color.g = 255;
-        dl.color.b = 255;
-        dl.die = engine().client_time() + 0.1;
+    let cull = cull_origin(cam);
+    let tr = trace_from(cull, v::ma(cull, 1024.0, cam.forward), engine().local_player().map_or(0, |e| e.index));
+    if tr.fraction != 1.0 {
+        let d = v::dist(tr.endpos, cull);
+        if let Some(dl) = r::alloc_dlight(2) {
+            dl.origin = tr.endpos;
+            dl.radius = local_flashlight_radius(d);
+            dl.color.r = 255;
+            dl.color.g = 255;
+            dl.color.b = 255;
+            dl.die = engine().client_time() + 0.1;
+        }
     }
-    if let Some(vm) = &vm
+    if let Some(vm) = crate::events::first_person_view_model()
         && let Some(flash) = load("sprites/flash.spr", kRenderTransAdd)
         && set_sprite(flash, 0)
     {
         tri::render_mode(kRenderTransAdd as i32);
-        sprite_quad(cam, vm.attachment[0], 2.0, [1.0, 1.0, 1.0], 0.5);
-        if akimbo {
-            sprite_quad(cam, vm.attachment[2], 2.0, [1.0, 1.0, 1.0], 0.5);
+        tri::cull_face(TRICULLSTYLE_TRI_NONE);
+        sprite_quad(cam, v::sub(vm.attachment[0], cam.up), 6.0, [0.7; 3], 1.0);
+        if items & ITEM_AKIMBO != 0 {
+            sprite_quad(cam, v::sub(vm.attachment[2], cam.up), 4.0, [0.7; 3], 1.0);
         }
+        tri::render_mode(kRenderNormal as i32);
     }
-    tri::render_mode(kRenderNormal as i32);
 }
 
 /// The other players with `item` on (`ActItems`) whose entity is a player the last
@@ -456,6 +466,15 @@ mod tests {
         assert_eq!(beam_frame_step(8.5, 1.0, 0.025, 10), 9.0, "the last frame is kept");
         assert_eq!(beam_frame_step(9.5, 1.0, 0.05, 10), 0.0, "past the last frame: back to 0");
         assert_eq!(beam_frame_step(0.0, 1.0, 0.1, 1), 0.0, "a one-frame sprite stays on 0");
+    }
+
+    /// `0x1003b3f1..`: `1024 − d`, capped at 120 (issue #203).
+    #[test]
+    fn local_flashlight_radius_is_capped_at_120() {
+        assert_eq!(local_flashlight_radius(0.0), 120.0);
+        assert_eq!(local_flashlight_radius(904.0), 120.0);
+        assert_eq!(local_flashlight_radius(1000.0), 24.0);
+        assert_eq!(local_flashlight_radius(1024.0), 0.0);
     }
 
     #[test]
