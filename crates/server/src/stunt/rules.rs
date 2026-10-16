@@ -181,10 +181,12 @@ pub trait StuntClock: Sync {
     }
 
     /// `HandleStunt` / `GoWheel`: the "coyote time" an air stunt is still allowed after leaving
-    /// the ground at `last_ground`: 0.7 s of the player's time (`GiveSlowMul`, at least 0.01).
-    fn air_stunt_allowed(&self, now: f32, time_scale: f32, last_ground: f32) -> bool {
-        // TS refuses when `0.7 / slowmul < now - last_ground`; the floor keeps a NaN out.
-        0.7 / time_scale.max(0.01) >= now - last_ground
+    /// the ground at `last_ground`: 0.7 s of the player's time. `slow_mul` is `GiveSlowMul`
+    /// (`stunt::slow_mul`: the time scale, at least 0.01, through the plugin hook), called only
+    /// by a ruleset that reads it. TS 3.0's: [`coyote_allows`] in the server's arithmetic.
+    fn air_stunt_allowed(&self, now: f32, time_scale: f32, slow_mul: &mut dyn FnMut() -> f32, last_ground: f32) -> bool {
+        let _ = time_scale;
+        coyote_allows(crate::rules::cvars::pm_arith(), now, slow_mul(), last_ground)
     }
 
     /// A weapon delay (`m_flNextAttack`, a relative timer of the gun) a stunt sets, of `secs`
@@ -192,5 +194,19 @@ pub trait StuntClock: Sync {
     fn attack_delay(&self, time_scale: f32, secs: f64) -> f32 {
         let _ = time_scale;
         secs as f32
+    }
+}
+
+/// TS 3.0's coyote-time test: refused when `0.7 / slowmul < time - lastGroundTime`, the
+/// difference stored as a `double` and the `double` 0.7 divided on the x87. `mp.dll`
+/// (`HandleStunt` 0x10069419..0x10069437, `fdivr`) divides at 53 bits and refuses on C0 (a NaN
+/// too); `ts_i386.so` (0x8b12b..0x8b155, the same in `GoWheel`) divides in extended precision
+/// and refuses only when the difference is above the quotient (`test ah,0x41; je`).
+pub fn coyote_allows(arith: shared::pm::Arith, now: f32, slow_mul: f32, last_ground: f32) -> bool {
+    use shared::pm::{Arith, Ext, below87};
+    let diff = f64::from(now) - f64::from(last_ground);
+    match arith {
+        Arith::Msvc => !below87(0.7 / f64::from(slow_mul), diff),
+        Arith::Gcc => !(Ext::from_f64(diff) > Ext::from_f64(0.7) / Ext::from_f32(slow_mul)),
     }
 }

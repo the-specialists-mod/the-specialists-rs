@@ -197,7 +197,7 @@ impl StuntClock for Absolute {
     // The negated compare is the x87's: a NaN `slowInv` (a NaN `fuser1`) is unordered, so it
     // doesn't refuse.
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
-    fn air_stunt_allowed(&self, now: f32, time_scale: f32, last_ground: f32) -> bool {
+    fn air_stunt_allowed(&self, now: f32, time_scale: f32, _slow_mul: &mut dyn FnMut() -> f32, last_ground: f32) -> bool {
         !(slow_inv(time_scale) * 0.7 < f64::from(now) - f64::from(last_ground))
     }
 
@@ -352,8 +352,9 @@ mod tests {
     #[test]
     fn coyote_time_and_attack_delay() {
         let c = &ABSOLUTE;
-        assert!(c.air_stunt_allowed(10.0, 1.0, 9.4) && !c.air_stunt_allowed(10.0, 1.0, 9.2));
-        assert!(c.air_stunt_allowed(10.0, 0.5, 8.7));
+        let mut no = || -> f32 { unreachable!("2.1 reads fuser1 (FixedSlowMul), not GiveSlowMul") };
+        assert!(c.air_stunt_allowed(10.0, 1.0, &mut no, 9.4) && !c.air_stunt_allowed(10.0, 1.0, &mut no, 9.2));
+        assert!(c.air_stunt_allowed(10.0, 0.5, &mut no, 8.7));
         assert_eq!(c.attack_delay(1.0, 0.75), 0.75);
         assert_eq!(c.attack_delay(0.5, 0.55), 1.1);
     }

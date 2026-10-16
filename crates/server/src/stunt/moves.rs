@@ -158,7 +158,8 @@ fn handle_stunt(p: &mut Player, cx: &mut Cx, r: Rules) {
             return;
         }
         // Coyote time: 0.7 s (slowed) after leaving the ground.
-        if !clock.air_stunt_allowed(now, cx.pev().fuser1, p.stunt.last_ground_time) {
+        let ts = cx.pev().fuser1;
+        if !clock.air_stunt_allowed(now, ts, &mut || slow_mul(cx), p.stunt.last_ground_time) {
             return;
         }
     }
@@ -526,7 +527,8 @@ fn go_wheel(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
         && cx.pev().iuser4 & 0x130c30 == 0
         && time <= s.wheel_tap
         && !clock.running(time, s.next_stunt);
-    if !on_ground(cx) && !clock.air_stunt_allowed(time, cx.pev().fuser1, p.stunt.last_ground_time) {
+    let ts = cx.pev().fuser1;
+    if !on_ground(cx) && !clock.air_stunt_allowed(time, ts, &mut || slow_mul(cx), p.stunt.last_ground_time) {
         ok = false;
     }
     if ok {
