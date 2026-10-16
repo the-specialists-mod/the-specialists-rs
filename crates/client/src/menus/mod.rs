@@ -936,8 +936,7 @@ fn draw_summary(dc: &Dc, b: &BuyMenu, r: &Rules) {
                 if bucket != 1 {
                     continue;
                 }
-                let rgb = if buy::restricted(e.id, true, r) { RED } else { dc.hud };
-                dc.string(x, y + 5, &BuyMenu::entry_name(e), rgb);
+                dc.string(x, y + 5, &BuyMenu::entry_name(e), buy::summary_item_rgb(e.id, r, dc.hud));
                 y += 0x30;
                 continue;
             }

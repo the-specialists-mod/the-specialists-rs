@@ -144,6 +144,9 @@ pub struct MenuRules {
     /// Centre-printed when a click finds no row and leaves the page unset ([`Hit::Unset`]).
     /// TS 3.0 prints nothing.
     pub hole_message: Option<&'static str>,
+    /// The summary writes an item's name (Kevlar, Stealth Shoes) in the halved HUD colour, never
+    /// red. TS 3.0 (`0x10036af0`) uses the full HUD colour, or red when the item is restricted.
+    pub summary_items_dim: bool,
 }
 
 impl Default for MenuRules {
@@ -173,7 +176,20 @@ impl Default for MenuRules {
             items_red_by_cash_only: false,
             category_rows_by_teamplay: false,
             hole_message: None,
+            summary_items_dim: false,
         }
+    }
+}
+
+/// The colour of an item's name in the summary (`FUN_10036af0`'s item branch, TS 2.1
+/// `0x1006b9a0`): see [`MenuRules::summary_items_dim`].
+pub fn summary_item_rgb(id: i32, r: &Rules, hud: [i32; 3]) -> [i32; 3] {
+    if r.menu.summary_items_dim {
+        crate::hud::draw::half(hud)
+    } else if restricted(id, true, r) {
+        RED
+    } else {
+        hud
     }
 }
 

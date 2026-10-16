@@ -548,7 +548,8 @@ impl ClientRules for Ts21Client {
     /// items page red by money only (0x1006db50); the category column's mouse rows
     /// `(m_Teamplay != 0) + 5` (0x1006e1b0), so in mode 1 the drawn "0 Go Back" is key 6; and the
     /// centre-printed "A hole in the menu!" where the click finds no row (0x1006e1b0's end,
-    /// `pfnCenterPrint` through `FUN_10068c10`).
+    /// `pfnCenterPrint` through `FUN_10068c10`); the summary's item names in the halved HUD
+    /// colour, never red (0x1006b9a0, issue #262).
     fn buy_menu(&self) -> MenuRules {
         MenuRules {
             handguns: &HANDGUNS,
@@ -564,6 +565,7 @@ impl ClientRules for Ts21Client {
             items_red_by_cash_only: true,
             category_rows_by_teamplay: true,
             hole_message: Some(HOLE_MESSAGE),
+            summary_items_dim: true,
         }
     }
 

@@ -996,3 +996,19 @@ fn view_roll() {
     // #240 §4: no local translucency.
     assert!(!v21().local_translucency() && v30().local_translucency());
 }
+
+// Audit round 3: gui
+
+/// Issue #262: 2.1's summary (0x1006b9a0) writes Kevlar and Stealth Shoes in the halved HUD
+/// colour and never red; 3.0's (0x10036af0) in the full colour, red when restricted.
+#[test]
+fn buy_summary_item_colour() {
+    let hud = [255, 160, 0];
+    let r = rules(v21(), 0);
+    assert_eq!(buy::summary_item_rgb(ITEM_KEVLAR, &r, hud), [127, 80, 0]);
+    assert_eq!(buy::summary_item_rgb(ITEM_STEALTH, &r, hud), [127, 80, 0], "never red, whatever the mode");
+    let r30 = rules(v30(), 0);
+    assert_eq!(buy::summary_item_rgb(ITEM_KEVLAR, &r30, hud), hud);
+    assert_eq!(buy::summary_item_rgb(ITEM_STEALTH, &r30, hud), [195, 45, 45], "restricted outside team modes");
+    assert_eq!(buy::summary_item_rgb(ITEM_STEALTH, &rules(v30(), 2), hud), hud);
+}
