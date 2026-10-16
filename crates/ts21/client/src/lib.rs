@@ -26,6 +26,7 @@ pub mod effects;
 pub mod events;
 pub mod hud;
 pub mod spectator;
+pub mod studio;
 pub mod view;
 
 /// 2.1's attachment rows, as written (`0x10271a8c`, `0x10271a7c`, `0x1026e778`, `0x10271a74`).
@@ -667,6 +668,13 @@ impl ClientRules for Ts21Client {
     /// `renderamt`, and it has no `cl_thirdtransparency`.
     fn local_translucency(&self) -> bool {
         false
+    }
+
+    // Audit round 3: render
+
+    /// [`studio::STYLE`].
+    fn studio_style(&self) -> ts_client::studio::StudioStyle {
+        studio::STYLE
     }
 }
 

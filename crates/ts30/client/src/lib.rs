@@ -21,6 +21,7 @@ pub mod events;
 pub mod fx;
 pub mod hud;
 pub mod spectator;
+pub mod studio;
 pub mod view;
 
 /// TS 3.0's client-only rules.
@@ -447,6 +448,13 @@ impl ClientRules for Ts30Client {
     /// True: the start of `V_CalcNormalRefdef` (`kRenderTransColor`, `cl_thirdtransparency`).
     fn local_translucency(&self) -> bool {
         true
+    }
+
+    // Audit round 3: render
+
+    /// [`studio::STYLE`].
+    fn studio_style(&self) -> ts_client::studio::StudioStyle {
+        studio::STYLE
     }
 }
 

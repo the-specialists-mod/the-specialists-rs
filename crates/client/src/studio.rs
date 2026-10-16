@@ -17,6 +17,9 @@
 //!   (`StudioDrawGhostPlayer` `0x100337f0`), anything else a corpse (`StudioDrawDeadPlayer`
 //!   `0x10033540`).
 //!
+//! The ruleset picks which of these run ([`StudioStyle`], `ClientRules::studio_style`): an older
+//! renderer can keep the gait changes and drop the rest.
+//!
 //! Engine access goes through `goldsrc::ext::studio`; the model data is parsed from bytes
 //! (`studio::model`).
 
@@ -33,6 +36,40 @@ use goldsrc::sys::*;
 use math::*;
 use model::{Anim, Bytes, SeqDesc, Studio};
 use std::cell::RefCell;
+
+/// The renderer's ruleset choices (`ClientRules::studio_style`). With every flag set the
+/// renderer is the one the module docs describe. With a flag cleared, that part is the SDK's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StudioStyle {
+    /// `StudioDrawModel` slows the view model's animation with the time scale and the local
+    /// power-ups ([`Renderer::latch_view_model_rate`]).
+    pub view_model_slowmo: bool,
+    /// `StudioSetupBones` turns the split bone by the yaw between the upper-body and gait roots
+    /// ([`split_torso`]). Without it the gait bones are copied up to the split bone and the split
+    /// bone keeps the upper sequence's own rotation.
+    pub torso_yaw_fix: bool,
+    /// `StudioDrawPlayer` sets `pplayer->renderamt = 255` first.
+    pub player_renderamt: bool,
+    /// renderfx 17 draws a corpse from a private copy of its player's `player_info`
+    /// (`StudioDrawDeadPlayer`), and `rendercolor.b == 1` a motion-blur ghost. Without it every
+    /// renderfx 17 entity is a corpse that `StudioDrawPlayer` draws on the player's own
+    /// `player_info` (gait sequence 0, `renderframe` written), with no ghost branch.
+    pub dead_player_copy: bool,
+    /// `StudioRenderFinal_Hardware` draws the absolute bounding box at `r_drawentities 5`. The
+    /// software path always does.
+    pub hw_abs_bbox: bool,
+}
+
+impl StudioStyle {
+    /// Every renderer change on.
+    pub const ALL: StudioStyle =
+        StudioStyle { view_model_slowmo: true, torso_yaw_fix: true, player_renderamt: true, dead_player_copy: true, hw_abs_bbox: true };
+}
+
+/// The current ruleset's renderer choices.
+pub fn style() -> StudioStyle {
+    crate::gameplay::current().studio_style()
+}
 
 const STUDIO_RENDER: i32 = 1;
 const STUDIO_EVENTS: i32 = 2;
@@ -97,6 +134,8 @@ struct Renderer {
     vm_framerate: f32,
     vm_frame_count: i32,
     vm_prevframe: f32,
+    /// The ruleset's choices, read at the start of each engine draw call.
+    style: StudioStyle,
 }
 
 impl Default for Renderer {
@@ -124,6 +163,7 @@ impl Default for Renderer {
             vm_framerate: 1.0,
             vm_frame_count: 0,
             vm_prevframe: 0.0,
+            style: StudioStyle::ALL,
         }
     }
 }
@@ -150,12 +190,20 @@ pub fn init() {
 
 /// `R_StudioDrawModel` (`0x1001f3d0`) -> `StudioDrawModel`.
 pub fn draw_model(flags: i32) -> bool {
-    with(|r| r.draw_model(flags))
+    let style = style();
+    with(|r| {
+        r.style = style;
+        r.draw_model(flags)
+    })
 }
 
 /// `R_StudioDrawPlayer` (`0x1001f3b0`) -> `StudioDrawPlayer`.
 pub fn draw_player(flags: i32, player: &mut entity_state_s) -> bool {
-    with(|r| r.draw_player(flags, player))
+    let style = style();
+    with(|r| {
+        r.style = style;
+        r.draw_player(flags, player)
+    })
 }
 
 fn time_scale() -> f32 {
@@ -255,14 +303,21 @@ impl Renderer {
     fn draw_model(&mut self, flags: i32) -> bool {
         let Some(ent) = self.begin() else { return false };
         self.pinfo = None;
-        if let Some(rate) = view_model_rate(state::with(|s| s.powerups), time_scale())
+        if self.style.view_model_slowmo
+            && let Some(rate) = view_model_rate(state::with(|s| s.powerups), time_scale())
             && es::is_view_model(ent)
         {
             self.latch_view_model_rate(ent.get(), rate);
         }
         let e = ent.get();
         if e.curstate.renderfx == kRenderFxDeadPlayer as i32 {
-            return if e.curstate.rendercolor.b != 1 { self.draw_corpse(flags) } else { self.draw_ghost(flags) };
+            return if !self.style.dead_player_copy {
+                self.draw_corpse_as_player(flags)
+            } else if e.curstate.rendercolor.b != 1 {
+                self.draw_corpse(flags)
+            } else {
+                self.draw_ghost(flags)
+            };
         }
 
         let Some(model) = ent.model() else { return false };
@@ -323,22 +378,42 @@ impl Renderer {
     /// renderfx 17, `rendercolor.b != 1`: a corpse draws as its player, from a copy of the player's
     /// state and `player_info` so the live player's gait isn't disturbed.
     fn draw_corpse(&mut self, flags: i32) -> bool {
+        let Some((who, mut dead)) = self.corpse_state() else { return false };
+        let Some(info) = es::player_info(who - 1) else { return false };
+        self.local_info = info;
+        let interp = std::mem::replace(&mut self.do_interp, false);
+        let res = self.draw_dead_player(flags, &mut dead);
+        self.do_interp = interp;
+        res
+    }
+
+    /// The corpse's player (`rendercolor.r`, 1..maxclients) and the state it is drawn from: a copy
+    /// of the player's state with no weapon, no gait and `MOVETYPE_NONE`, numbered as the player,
+    /// at the entity's origin and angles.
+    fn corpse_state(&self) -> Option<(i32, entity_state_s)> {
         let e = self.ent();
         let who = e.curstate.rendercolor.r as i32;
         if who == 0 || who > engine().max_clients() {
-            return false;
+            return None;
         }
-        let Some(mut dead) = es::player_state(who - 1) else { return false };
+        // (The SDK-style renderer copies the state without a NULL check.)
+        let mut dead = es::player_state(who - 1)?;
         dead.number = who;
         dead.weaponmodel = 0;
         dead.gaitsequence = 0;
         dead.movetype = MOVETYPE_NONE as i32;
         dead.angles = e.curstate.angles;
         dead.origin = e.curstate.origin;
-        let Some(info) = es::player_info(who - 1) else { return false };
-        self.local_info = info;
+        Some((who, dead))
+    }
+
+    /// renderfx 17 without [`StudioStyle::dead_player_copy`] (TS 2.1 `StudioDrawModel` 0x10065d50,
+    /// `0x10065da0..`): every such entity is a corpse, drawn by `StudioDrawPlayer` with
+    /// interpolation off. That draw works on the player's own `player_info`.
+    fn draw_corpse_as_player(&mut self, flags: i32) -> bool {
+        let Some((_, mut dead)) = self.corpse_state() else { return false };
         let interp = std::mem::replace(&mut self.do_interp, false);
-        let res = self.draw_dead_player(flags, &mut dead);
+        let res = self.draw_player(flags, &mut dead);
         self.do_interp = interp;
         res
     }
@@ -451,9 +526,12 @@ impl Renderer {
         *self.ent() = save;
     }
 
-    /// `StudioDrawPlayer` (`0x10032540`): the SDK flow; forces `renderamt = 255` on the state.
+    /// `StudioDrawPlayer` (`0x10032540`): the SDK flow; forces `renderamt = 255` on the state
+    /// ([`StudioStyle::player_renderamt`]).
     fn draw_player(&mut self, flags: i32, player: &mut entity_state_s) -> bool {
-        player.renderamt = 255;
+        if self.style.player_renderamt {
+            player.renderamt = 255;
+        }
         let Some(ent) = self.begin() else { return false };
         if self.player_model(player.number).is_none() {
             return false;
@@ -919,7 +997,7 @@ impl Renderer {
             let mut legs = Pose::default();
             let anim = self.get_anim(model, &gseq);
             self.calc_rotations(&mut legs, &gseq, anim, info.gaitframe);
-            split_torso(&m, &mut pose, &legs);
+            split_torso(&m, &mut pose, &legs, self.style.torso_yaw_fix);
         }
 
         self.write_bones(&m, &pose, |_| None);
@@ -1091,7 +1169,7 @@ impl Renderer {
             es::draw_hulls();
             tri::render_mode(kRenderNormal as i32);
         }
-        if de == 5.0 {
+        if de == 5.0 && (!hw || self.style.hw_abs_bbox) {
             es::draw_abs_bbox();
         }
         es::restore_renderer();
@@ -1212,12 +1290,16 @@ fn player_blend(seq: &SeqDesc, pitch: &mut f32) -> u8 {
 /// `Bip01 Spine` take the gait pose; that bone is then turned about its own (x) axis by the yaw
 /// difference between the upper-body root and the gait root, so the torso keeps the upper-body
 /// sequence's facing. (R§2.3 reads the asm as `a3[2] = a3[0] + d`; the stores are to `a3[0]`,
-/// i.e. `a3[0] += d`, which Ghidra's C shows too.)
-fn split_torso(m: &Studio, upper: &mut Pose, legs: &Pose) {
+/// i.e. `a3[0] += d`, which Ghidra's C shows too.) Without `yaw_fix` (TS 2.1 `StudioSetupBones`
+/// 0x10064ce0, the same `_strcmp` loop) the split bone keeps the upper pose untouched.
+fn split_torso(m: &Studio, upper: &mut Pose, legs: &Pose, yaw_fix: bool) {
     let root_upper = upper.q[0];
     for i in 0..m.numbones() {
         let name = m.bone(i).name;
         if name == b"Bip01 Dorso" || name == b"Bip01 Spine" {
+            if !yaw_fix {
+                return;
+            }
             let a1 = quaternion_angles(root_upper);
             let a2 = quaternion_angles(upper.q[0]);
             let d = a1[2] - a2[2];
@@ -1260,13 +1342,22 @@ mod tests {
         // upper body faces yaw 0.5 rad at the root, legs face yaw 0.2
         let mut upper = pose_of(4, |i| ([1.0, 0.0, 0.0], angle_quaternion([0.0, 0.0, if i == 0 { 0.5 } else { 0.0 }])));
         let legs = pose_of(4, |i| ([2.0, 0.0, 0.0], angle_quaternion([0.0, 0.0, if i == 0 { 0.2 } else { 0.1 }])));
-        split_torso(&m, &mut upper, &legs);
+        let unfixed = {
+            let mut u = upper.clone();
+            split_torso(&m, &mut u, &legs, false);
+            u
+        };
+        split_torso(&m, &mut upper, &legs, true);
         assert_eq!(upper.pos[0], [2.0, 0.0, 0.0], "root from the legs");
         assert_eq!(upper.q[1], legs.q[1], "pelvis from the legs");
         assert_eq!(upper.pos[2], [1.0, 0.0, 0.0], "split bone keeps the upper position");
         let a = quaternion_angles(upper.q[2]);
         assert!((a[0] - 0.3).abs() < 1e-4, "spine turned about x by 0.5 - 0.2: {a:?}");
         assert_eq!(upper.q[3], angle_quaternion([0.0; 3]), "bones after the split stay upper");
+
+        // TS 2.1 (`StudioSetupBones` 0x10064ce0): the same copy, the split bone left alone.
+        assert_eq!((unfixed.pos[0], unfixed.q[0], unfixed.q[1]), (legs.pos[0], legs.q[0], legs.q[1]));
+        assert_eq!((unfixed.pos[2], unfixed.q[2], unfixed.q[3]), ([1.0, 0.0, 0.0], angle_quaternion([0.0; 3]), angle_quaternion([0.0; 3])));
     }
 
     #[test]
@@ -1279,7 +1370,7 @@ mod tests {
         let m = Studio::new(&data);
         let mut upper = pose_of(3, |_| ([1.0; 3], [0.0, 0.0, 0.0, 1.0]));
         let legs = pose_of(3, |_| ([2.0; 3], [0.0, 0.0, 0.0, 1.0]));
-        split_torso(&m, &mut upper, &legs);
+        split_torso(&m, &mut upper, &legs, true);
         assert_eq!((upper.pos[0], upper.pos[1], upper.pos[2]), ([2.0; 3], [1.0; 3], [1.0; 3]));
     }
 
@@ -1399,7 +1490,7 @@ mod tests {
                 }
             }
             let mut legs = Pose::default();
-            split_torso(&m, &mut legs, &Pose::default());
+            split_torso(&m, &mut legs, &Pose::default(), true);
         }
     }
 }

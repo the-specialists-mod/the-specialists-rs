@@ -426,6 +426,13 @@ pub trait ClientRules: Sync {
     /// Whether `V_CalcNormalRefdef` sets the local entity's render mode and eases its
     /// `renderamt` (the third-person translucency, `cl_thirdtransparency`).
     fn local_translucency(&self) -> bool;
+
+    // Audit round 3: render
+
+    /// Which of TS's studio-renderer changes run (`crate::studio`): the view-model slow motion,
+    /// the torso yaw fix, the forced player `renderamt`, the renderfx 17 corpse and ghost draws and
+    /// the hardware abs-bbox debug view.
+    fn studio_style(&self) -> crate::studio::StudioStyle;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -712,6 +719,10 @@ mod stub {
         }
         fn local_translucency(&self) -> bool {
             false
+        }
+        fn studio_style(&self) -> crate::studio::StudioStyle {
+            // The core's own code paths, which its tests exercise.
+            crate::studio::StudioStyle::ALL
         }
     }
 }
