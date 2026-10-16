@@ -191,7 +191,8 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
   `tsmod_test` and fixtures the loader must skip (`tsmod_test_badver`, `_badsize`, `_refuse`, a
   copy of the server library as `tsmod_noexport`, the other architecture's build as
   `tsmod_wrongarch`, junk, another platform's name), runs a dedicated server on ts_dojo whose
-  first config (the server config, on the first map) sets `ts_bot_backend test` (one reload on the
+  first config (the server config, on the first map) sets `sv_cheats 1` (for the stub's `powerup`
+  cheat; TS latches it at a map's start) and `ts_bot_backend test` (one reload on the
   Steam engines, none on FWGS, which ran the config before the first map; no `changelevel`) and `ts_gameplay` 21 and back (no reload), and whose second (`ts_bot_backend
   TEST`: no reload) adds bots with
   the quota, `addbot` and `addcustombot`. Checks: each skip line, `loaded tsmod_test`, `backend
@@ -199,7 +200,19 @@ callbacks; message sniffing → `player_info`/`player_inventory`/`weapon_changed
   player_info, entity_info, game_state, team_scores, objectives, create_entity (an `info_target`
   from keys, spawned at its `origin`, and an unknown class refused), gun_hook (`Ham_Item_PreFrame`
   on a bot's `weapon_tsgun`), inventory, bot_command, client_command, spawned, buy, buy_item,
-  moved more than 64 units, sound), no `FAIL`, no crash. The fixtures are removed
+  moved more than 64 units, sound; plugin API version 5, #198: add_listener (a listener
+  registered in `game_init`, a short descriptor refused), listener (its `player_spawned` heard
+  for a bot of ours), remove_listener (removed once heard, a second removal refused, never heard
+  again), private_size (a bot's > 0, -1 refused), player_stunt (the bots press the stunt key
+  every 2.5 s while running: a dive), player_powerup (each bot runs `powerup 5` then
+  `usepowerup`: double fire rate), melee_attack (the bots hold attack while they have kung fu
+  out, in their first life), melee_attack_change (the stub answers a move with a 2 s delay and 1
+  damage; the next move must come at least 1.6 s later) and melee_attack_block (it blocks the
+  next with a 1.5 s delay; the one after must come at least 1.2 s later), ham_take_damage (12 s
+  into the backend's run one bot kills another with `Ham_TakeDamage`, 1000 damage, by its own
+  hand) and kill_scored (that kill reported: the killer as inflictor, at least a point, a killer
+  spree of at least 1, a weapon id and name; the stub logs the whole report as
+  `kill_scored: killer .. victim .. ...`)), no `FAIL`, no crash. The fixtures are removed
   afterwards and by every `install`, so other scenarios run without plugins.
 * Native parity: `cargo xtask bots`, `play`, `test` unchanged.
 

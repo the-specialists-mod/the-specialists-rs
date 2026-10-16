@@ -184,6 +184,11 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
     let attacker = if d.attacker.is_null() { eng.entity_of_index(0) } else { d.attacker };
     let suicide = attacker == victim;
     let killer_is_player = !suicide && has_player(attacker);
+    // Port addition (plugin API version 5, `kill_scored`): the victim's spree and The One before
+    // the death changes them.
+    let (victim_spree, killed_the_one) = (p.ts.spree, p.ts.is_the_one);
+    let (mut scored_points, mut killer_spree) = (0, 0);
+    let (mut stunt, mut kung_fu, mut spree_outcome) = ((false, false), false, None);
 
     // DeathNotice first (2.1 `FUN_1004ede0`), with its log line.
     let attacker_gun = if suicide { core::active_gun(p) } else { other(attacker, |k| core::active_gun(k)).flatten() };
@@ -241,13 +246,15 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
             let frag = Frag { damage: d, glast: &g, killer: &shim, base, now };
             let (mut sliding, mut diving) = (false, false);
             let mut points = ts_server::gameplay::active().server.points_for_frag(&frag, &mut sliding, &mut diving);
+            stunt = (diving, sliding);
+            kung_fu = core::own_hand(d, attacker) && kill_kind(d, &g, k.item, k.gun, attacker) == Kind::KungFu;
             let kv = attacker.v();
             if (kv.iuser4 & STUNTING != 0 || g.close_combat || points > 2) && core::do_spectacularness() {
                 ts_server::entities::ts::create_slow_motion_point(cx.pev().origin, 0.15, 1.5, false);
             }
             let dm = state::with(|g| matches!(g.mode, Mode::Dm | Mode::TeamDm));
             if dm && points > 0 {
-                spree(p.ts.spree, &netname(victim), k, &mut points, now);
+                spree_outcome = Some(spree(p.ts.spree, &netname(victim), k, &mut points, now));
             }
             kv.frags += points as f32;
             other(k.e, |kp| kp.frags = kv.frags as i32);
@@ -264,6 +271,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
             }
             // Port addition: plugins hear of every kill a player scored, as on the 3.0 path.
             ts_server::plugins::on_kill(k.e, victim, points);
+            (scored_points, killer_spree) = (points, k.spree as i32);
             let kick = points == -1 && other(k.e, |kp| team_kill(kp, now)).unwrap_or(false);
             let (spree, award, held, held_secs, active, last_kill) = (k.spree, k.award, k.held, k.held_secs, k.active, k.last_kill);
             other(k.e, |kp| {
@@ -291,19 +299,72 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
         the_one_kill_bonus(attacker);
         teams::recount(false);
     }
+    // Port addition (plugin API version 5): `kill_scored`, with 2.1's values.
+    let mut report = core::kill_report(d, &g, victim, attacker, killer_is_player, attacker_gun, &weapon);
+    report.points = scored_points;
+    report.tags = kill_flags(killed_the_one, stunt, kung_fu, spree_outcome).bits(&g);
+    (report.killer_spree, report.victim_spree) = (killer_spree, victim_spree as i32);
+    core::report_kill(victim, attacker, killer_is_player, report);
+}
+
+/// What 2.1's spree part of `PlayerKilled` found (port addition, for `kill_scored`'s tags).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct SpreeOutcome {
+    /// Under a second after the killer's last kill.
+    double_kill: bool,
+    /// The victim's spree was over 2 ("stops X's fury!") / over 8 ("has killed THE SPECIALIST!").
+    stopped_fury: bool,
+    killed_specialist: bool,
+    /// The award the killer's new spree reached: Killer (3), Demolition Man (6), The Specialist
+    /// (9), Unstoppable (10 on).
+    award: [bool; 4],
+}
+
+/// [`spree`]'s tests, given the victim's spree, the killer's before this kill and the seconds
+/// since its last kill.
+fn spree_outcome(victim_spree: u8, killer_spree: u8, since_last_kill: f32) -> SpreeOutcome {
+    // `if (spree != 255) spree++`.
+    let s = killer_spree.saturating_add(1);
+    SpreeOutcome {
+        double_kill: since_last_kill < 1.0,
+        stopped_fury: victim_spree > 2,
+        killed_specialist: victim_spree > 8,
+        award: [s == 3, s == 6, s == 9, s >= 10],
+    }
+}
+
+/// Port addition (plugin API version 5): `kill_scored`'s tags for a 2.1 kill: The One killed,
+/// `TSGetPointsForFrag`'s stunt test (`(diving, sliding)`: 2.1's "Stuntman" and "Sliding" styles)
+/// and kung-fu frag, and what the spree part found (`None` when it didn't run: no killing
+/// player, a round mode, or no points). 2.1 has no ` (victims_weapon)` test, so that bit is
+/// never set.
+fn kill_flags(killed_the_one: bool, (diving, sliding): (bool, bool), kung_fu: bool, spree: Option<SpreeOutcome>) -> core::KillFlags {
+    let o = spree.unwrap_or_default();
+    core::KillFlags {
+        victims_weapon: false,
+        stopped_fury: o.stopped_fury,
+        killed_specialist: o.killed_specialist,
+        double_kill: o.double_kill,
+        diving,
+        sliding,
+        killed_the_one,
+        award: o.award,
+        kung_fu,
+    }
 }
 
 /// The DM/TDM part of `PlayerKilled` for a scoring kill: double kill (1 s, always updating the
 /// last kill), stopping a spree, killing The Specialist, the killer's spree rewards, the overheal
 /// timer and the kill cash.
-fn spree(victim_spree: u8, vname: &[u8], k: &mut Killer, points: &mut i32, now: f32) {
+fn spree(victim_spree: u8, vname: &[u8], k: &mut Killer, points: &mut i32, now: f32) -> SpreeOutcome {
     let kname = netname(k.e);
-    if now - k.last_kill < 1.0 {
+    let o = spree_outcome(victim_spree, k.spree, now - k.last_kill);
+    if o.double_kill {
         *points *= 2;
         ts_message_all(GREEN, 1, 30, &shared::bformat!("DoubleFrag for {}!", kname));
     }
-    if victim_spree > 2 {
-        if victim_spree < 9 {
+    if o.stopped_fury {
+        if !o.killed_specialist {
             ts_message_all(GREEN, 1, 30, &shared::bformat!("{} stops {}'s fury!", kname, vname));
         } else {
             *points += 5;
@@ -311,7 +372,6 @@ fn spree(victim_spree: u8, vname: &[u8], k: &mut Killer, points: &mut i32, now: 
             store_slow_pause(k);
         }
     }
-    // `if (spree != 255) spree++`.
     k.spree = k.spree.saturating_add(1);
     let kv = k.e.v();
     match k.spree {
@@ -352,6 +412,7 @@ fn spree(victim_spree: u8, vname: &[u8], k: &mut Killer, points: &mut i32, now: 
     k.last_kill = now;
     let pts = *points;
     other(k.e, |kp| cash::give_kill_cash(kp, if pts == -1 { -1000 } else { pts.wrapping_mul(900) }));
+    o
 }
 
 /// The team-kill window (identical to 3.0): 3 team kills within rolling 30 s windows.
@@ -435,6 +496,64 @@ mod tests {
         assert!(!src.contains(concat!("ts_server::bots", "::on_kill")));
         assert!(src.contains(concat!("ts_server::bot_backend", "::on_kill(kp, victim, now)")));
         assert!(src.contains(concat!("ts_server::plugins", "::on_kill(k.e, victim, points)")));
+    }
+
+    /// #198: 2.1's spree part, as `kill_scored` reports it: a double kill within a second, the
+    /// fury stopped from a victim's spree of 3 (the Specialist from 9), and 2.1's awards at 3, 6,
+    /// 9 and 10 on (the killer's spree after this kill, capped at 255).
+    #[test]
+    fn spree_outcomes_are_2_1s() {
+        let o = spree_outcome(0, 0, 5.0);
+        assert_eq!(o, SpreeOutcome::default());
+        assert!(spree_outcome(0, 0, 0.99).double_kill);
+        assert!(!spree_outcome(0, 0, 1.0).double_kill, "1 s, not 3.0's 2");
+        assert_eq!(spree_outcome(2, 0, 5.0), SpreeOutcome::default());
+        let o = spree_outcome(3, 0, 5.0);
+        assert!(o.stopped_fury && !o.killed_specialist);
+        let o = spree_outcome(9, 0, 5.0);
+        assert!(o.stopped_fury && o.killed_specialist);
+        let award = |k| spree_outcome(0, k, 5.0).award;
+        assert_eq!(
+            [award(1), award(2), award(5), award(8)],
+            [[false; 4], [true, false, false, false], [false, true, false, false], [false, false, true, false]]
+        );
+        assert_eq!([award(9), award(254), award(255)], [[false, false, false, true]; 3]);
+        assert_eq!(award(3), [false; 4], "only the kill that reaches it");
+    }
+
+    /// #198: a 2.1 kill's `kill_scored` tags. No ` (victims_weapon)` in 2.1; no `glast_headshot`
+    /// either, so a head kill reports no `HEADSHOT` (the damage never records one: `damage.rs`).
+    #[test]
+    fn kill_report_tags_are_2_1s() {
+        use ts_plugin_api::kill;
+        let none = Snapshot::default();
+        assert_eq!(kill_flags(false, (false, false), false, None).bits(&none), 0);
+        let specialist = spree_outcome(3, 8, 0.5);
+        assert_eq!(
+            kill_flags(true, (true, false), true, Some(specialist)).bits(&Snapshot { close_combat: true, ..none }),
+            kill::KILLED_THE_ONE
+                | kill::DIVING
+                | kill::KUNG_FU
+                | kill::STOPPED_FURY
+                | kill::DOUBLE_KILL
+                | kill::IS_SPECIALIST
+                | kill::CLOSE_COMBAT
+        );
+        assert_eq!(
+            kill_flags(false, (false, true), false, Some(spree_outcome(12, 9, 5.0))).bits(&none),
+            kill::SLIDING | kill::STOPPED_FURY | kill::KILLED_SPECIALIST | kill::IS_UNSTOPPABLE
+        );
+        // The stock hit's global, as 2.1's "Stock" names it.
+        assert_eq!(kill_flags(false, (false, false), false, None).bits(&Snapshot { coldcock: true, ..none }), kill::COLDCOCK);
+        assert!(!kill_flags(false, (false, false), false, None).victims_weapon);
+    }
+
+    #[test]
+    fn kills_are_reported_to_the_plugins() {
+        // #198: 2.1's `PlayerKilled` sends `kill_scored` through the shared report.
+        let src = include_str!("scoring.rs");
+        assert!(src.contains(concat!("core::kill_report", "(d, &g, victim, attacker, killer_is_player, attacker_gun, &weapon)")));
+        assert!(src.contains(concat!("core::report_kill", "(victim, attacker, killer_is_player, report)")));
     }
 
     #[test]

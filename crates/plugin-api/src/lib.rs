@@ -243,12 +243,15 @@ pub struct Plugin {
     /// power-up included). Change them through the pointers (valid for the call; a value that
     /// isn't finite or is below 0 is ignored), and return non-zero to block the move (no hit,
     /// animation or event; `time` still applies). Called before the move with the player lent to
-    /// its slot, so the API reaches it. Callbacks run in order; the first to block stops it.
+    /// its slot, so the API reaches it. Callbacks run in order; the first to block stops it. In
+    /// TS 2.1 mode `time` is the move's delay before the player's time scale stretches it.
     pub melee_attack: Option<unsafe extern "C" fn(player: c_int, time: *mut f32, damage: *mut f32) -> c_int>,
     /// Version 5. The rules scored a player's death (`CHalfLifeMultiplay::PlayerKilled`): a kill,
     /// a suicide or a death by the world, after the frags changed and the `DeathMsg` went out.
     /// `kill` is valid for the call. Deferred like [`on_kill`](Self::on_kill), so it comes after
     /// the victim's `TSHealth` 0; deaths the rules don't score (a teamplay team change) have none.
+    /// In TS 2.1 mode it is 2.1's `PlayerKilled` with 2.1's points, sprees and tags (it never
+    /// sets [`kill::VICTIMS_WEAPON`] or [`kill::HEADSHOT`], which 2.1 lacks).
     pub kill_scored: Option<unsafe extern "C" fn(kill: *const KillInfo)>,
 }
 

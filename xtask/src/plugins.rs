@@ -4,8 +4,10 @@
 //! warning (another API version, a bad descriptor size, a refusal, no export, the other
 //! architecture, junk, another platform's name). The server starts on ts_dojo with native bots,
 //! switches `ts_bot_backend` to `test` and changes the map, and the test backend's bots must
-//! walk, jump and answer the plugin's API checks. The fixtures are removed afterwards (and by
-//! every `install`), so other scenarios run without plugins.
+//! walk, jump and answer the plugin's API checks (with version 5's: a listener, a dive, a used
+//! power-up, which needs `sv_cheats`, kung-fu moves changed and blocked, a scored kill). The
+//! fixtures are removed afterwards (and by every `install`), so other scenarios run without
+//! plugins.
 
 use crate::roots::{Os, Root, Target};
 use crate::{Ctx, say};
@@ -28,8 +30,9 @@ fn other_arch(t: &Target) -> Target {
 /// The fixtures' names (`<name>` of `tsmod_<name>`), besides `test` itself.
 const FIXTURES: [&str; 7] = ["test_badver", "test_badsize", "test_refuse", "noexport", "wrongarch", "junk", "otherplat"];
 
-/// The plugin checks the stub logs as `[tsmod_test] check <what> ok`.
-pub const CHECKS: [&str; 19] = [
+/// The plugin checks the stub logs as `[tsmod_test] check <what> ok`. From `add_listener` on:
+/// plugin API version 5 (#198).
+pub const CHECKS: [&str; 30] = [
     "data_dir",
     "map_name",
     "create_bot",
@@ -49,6 +52,17 @@ pub const CHECKS: [&str; 19] = [
     "buy_item",
     "moved",
     "sound",
+    "add_listener",
+    "listener",
+    "remove_listener",
+    "private_size",
+    "player_stunt",
+    "player_powerup",
+    "melee_attack",
+    "melee_attack_change",
+    "melee_attack_block",
+    "ham_take_damage",
+    "kill_scored",
 ];
 
 /// Removes every `tsmod_*` file xtask may have put in `dlls/` (a run that was cut short).
@@ -111,10 +125,12 @@ impl Ctx {
         // the map (`ts_bot_backend` is read at map start; no `changelevel`), and sets
         // `ts_gameplay` to 2.1 and back, which must not. The reloaded map's config (and every
         // later map's) adds bots and names the running backend in capitals: no second reload.
+        // `sv_cheats 1` before the reload (TS latches it at the map's start) for the stub's
+        // `powerup` cheat.
         fs::write(
             gamedir.join("xtask_plugins.cfg"),
             format!(
-                "// Written by cargo xtask plugins.\n{}ts_bot_quota 2\nts_bot_backend test\nts_gameplay 21\nts_gameplay 30\nservercfgfile xtask_plugins2.cfg\n",
+                "// Written by cargo xtask plugins.\n{}sv_cheats 1\nts_bot_quota 2\nts_bot_backend test\nts_gameplay 21\nts_gameplay 30\nservercfgfile xtask_plugins2.cfg\n",
                 crate::roots::EXEC_SERVER_CFG
             ),
         )

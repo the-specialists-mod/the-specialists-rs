@@ -26,6 +26,15 @@ struct Mock {
     /// Run TS 3.0's gun rules instead of 2.1's (on 2.1's tables).
     core: bool,
     melees: u32,
+    /// The damage of each melee hit asked for.
+    melee_damage: Vec<f32>,
+    /// `melee_attack_pre`: the (time, damage) it was asked with, and its answer (`None` lets the
+    /// move through unchanged; else the new time and damage, and whether it goes ahead).
+    melee_pre: Vec<(f32, f32)>,
+    melee_answer: Option<(f32, f32, bool)>,
+    /// `melee_hold` bits and `block_player` times.
+    holds: Vec<i32>,
+    blocks: Vec<f32>,
     blades: u32,
     anims: u32,
     /// The last `set_view_model` and `set_fov` (`None`: never called).
@@ -125,9 +134,19 @@ impl GunHost for Mock {
     fn shoot(&mut self, shot: &Shot, _gun: &mut Gun) {
         self.shots.push(*shot);
     }
-    fn melee(&mut self, _hit: &MeleeHit, _gun: &mut Gun) -> MeleeResult {
+    fn melee(&mut self, hit: &MeleeHit, _gun: &mut Gun) -> MeleeResult {
         self.melees += 1;
+        self.melee_damage.push(hit.damage);
         MeleeResult::Miss
+    }
+    fn melee_attack_pre(&mut self, _gun: &mut Gun, time: &mut f32, damage: &mut f32) -> bool {
+        self.melee_pre.push((*time, *damage));
+        let Some((t, d, go)) = self.melee_answer else { return true };
+        (*time, *damage) = (t, d);
+        go
+    }
+    fn melee_hold(&mut self, bits: i32, _recover: f32, _crouch: bool) {
+        self.holds.push(bits);
     }
     fn throw_grenade(&mut self, _origin: Vec3, _velocity: Vec3, _roll: bool) {}
     fn throw_blade(&mut self, _btype: i32) {
@@ -135,7 +154,9 @@ impl GunHost for Mock {
     }
     fn slots_changed(&mut self, _delta_free: i32) {}
     fn melee_bar_changed(&mut self, _bar: f32) {}
-    fn block_player(&mut self, _t: f32) {}
+    fn block_player(&mut self, t: f32) {
+        self.blocks.push(t);
+    }
 }
 
 /// A gun holding weapon `id` (full clip, default mode) and the host, fuser1 1.0 (normal).
@@ -596,4 +617,48 @@ fn speed_gate_keeps_the_root_unrounded() {
     use shared::weapons::gun::speed_over;
     assert!(speed_over::<shared::pm::Msvc>([80.0, 0.0001, 0.0], 80.0));
     assert!(!speed_over::<shared::pm::Msvc>([80.0, 0.0, 0.0], 80.0));
+}
+
+/// #198 (plugin API version 5, `melee_attack`): 2.1's kung fu asks the hook as 3.0's does: it sees
+/// the move's delay (before the time-scale factor) and the damage a hit deals (2.1's bar scaling
+/// applied), its changes reach the hit and the timers, and a block leaves only the delay: no
+/// hold, bar cost, hit, `BlockPlayer` or event.
+#[test]
+fn kungfu_melee_attack_hook() {
+    ts30_gameplay::tables::make_default();
+    setup();
+    const IN_ATTACK: u32 = 1;
+    const IN_DUCK: u32 = 4;
+    const IN_ATTACK2: u32 = 0x800;
+    let mut g = Gun { melee_bar: 100.0, ..Gun::default() };
+    let mut h = Mock { fuser1: 1.0, ..Default::default() };
+    let attack = |g: &mut Gun, h: &mut Mock, buttons: u32| {
+        (g.next_attack, g.next_primary, g.next_secondary) = (0.0, 0.0, 0.0);
+        (h.buttons, h.pressed) = (buttons, buttons);
+        h.events.clear();
+        g.ccombat_attack(h);
+    };
+    // A straight punch: 10 × 0.9 at a full bar, 0.15 s.
+    attack(&mut g, &mut h, IN_ATTACK);
+    assert_eq!(h.melee_pre, vec![(0.15, 9.0)]);
+    assert_eq!((h.melee_damage.clone(), g.next_primary, g.melee_bar), (vec![9.0], 0.15, 91.0));
+    // Changed: the hit deals the new damage; the delay is the new time, `BlockPlayer` 0.9 of it.
+    h.melee_answer = Some((1.25, 55.0, true));
+    attack(&mut g, &mut h, IN_ATTACK);
+    assert_eq!(h.melee_damage.last(), Some(&55.0));
+    assert_eq!((g.next_primary, g.next_secondary, g.idle), (1.25, 1.25, 1.25));
+    assert_eq!(h.blocks.last(), Some(&((1.25f64 * 0.9) as f32)));
+    // Blocked sweep: its own values asked; nothing but the delay.
+    let (hits, blocks, bar, last) = (h.melees, h.blocks.len(), g.melee_bar, g.last_melee_anim);
+    h.melee_answer = Some((0.8, 1.0, false));
+    attack(&mut g, &mut h, IN_ATTACK2 | IN_DUCK);
+    assert_eq!(h.melee_pre.last(), Some(&(1.0, 27.0 * bar * 0.01)), "the sweep's delay and damage");
+    assert_eq!((h.melees, h.blocks.len(), g.melee_bar, g.last_melee_anim), (hits, blocks, bar, last));
+    assert!(h.holds.is_empty() && h.events.is_empty());
+    assert_eq!((g.next_primary, g.next_secondary), (0.8, 0.8));
+    // Let through, the sweep holds the player.
+    h.melee_answer = None;
+    attack(&mut g, &mut h, IN_ATTACK2 | IN_DUCK);
+    assert_eq!(h.holds, vec![4 | 1]);
+    assert_eq!(h.events.len(), 1);
 }
