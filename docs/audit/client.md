@@ -26,7 +26,7 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 | status Reset | 0x10049e70 | 0x100854a0 | match (re-checked ✓; 2.1 also clears `+0xfc0`, the `GloSlow` icon flag, which no server sends) |
 | status Draw order (`draw`) | 0x10049ea0 | 0x10085560 (no flag panel; the 2.1 server spawns no `ts_flag`) | match |
 | `draw_round_timer` | 0x1004a130 (×0.5f) | 0x10085970 (/2.0) | match (re-checked both: tick 1 s / 0.1 s in mode 1, frozen in mode 2, red below 60, flags 3 / 0x23 ✓) |
-| `draw_ts_messages` | 0x1004af40 | 0x10086ec0 | match (2.1 stores the min(1, t) factor to a float first: at most one colour step, not filed) |
+| `draw_ts_messages` | 0x1004af40 | 0x10086ec0 | match. Round 4: **#279** (2.1 stores the min(1, t) factor to a float first, `0x1008700d`: one colour step) and **#280** (the 10 s cap compares the unrounded difference), fixed |
 | `draw_teammate_markers` | 0x1004ab40 | 0x10086950 (teamname strcmp, alpha 235·½ = 117) | match |
 | `crosshair_trace` (crosshair ID) | 0x1004acc0 | 0x10086b00 | match |
 | `draw_powerup` | 0x1004a2e0 (titles) | 0x10085c00 (hard-coded "Slow-Motion"…) | 3.0 match; **2.1 MISMATCH #230** |
@@ -36,9 +36,9 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 | hud/weapons.rs `draw` (order, nohud, buy menu, wires) | 0x1004d3f0 | 0x10089d90 | match except the weapon list (next row) |
 | `draw_weapon_list` (closed equipment list, open slot menu, clip text, clip bar) | 0x1004e030 | 0x1008af40 (open only; no clip text or bar) | 3.0 match; **2.1 MISMATCH #207** |
 | `select_slot` | 0x1004f220 | 0x1008c6f0 (slot 10 → (1,1), fastswitch bucket-1 start, row −1) | 3.0 match; **2.1 MISMATCH #207** |
-| `select_next_prev` (+0.1 s throttle) | 0x1004f500, 0x1004fce0 | 0x1008cc40 (always reloads the held weapon's cell), 0x1008d9c0 | 3.0 match; **2.1 MISMATCH #207** |
-| `draw_laser_dots` | 0x1004e6f0 | 0x1008b410 (red, alpha by distance, none ≥ 4096) | 3.0 match; **2.1 MISMATCH #204** |
-| `draw_crosshair`, `crosshair_parts`, `crosshair_gap`, `divesteps` | 0x1004e9f0, 0x1004ef50 | 0x1008b960, 0x1008c1c0 | match (hooks; #110, #153 fixed: `IsHardware()`) |
+| `select_next_prev` (+0.1 s throttle) | 0x1004f500, 0x1004fce0 | 0x1008cc40 (always reloads the held weapon's cell), 0x1008d9c0 | 3.0 match; **2.1 MISMATCH #207**. Round 4: the throttle adds the double 0.1 (`0x1004fd1f`), **#280**, fixed |
+| `draw_laser_dots` | 0x1004e6f0 | 0x1008b410 (red, alpha by distance, none ≥ 4096) | 3.0 match; **2.1 MISMATCH #204**. Round 4: the dot position is `WorldToScreen`'s unrounded `(x + 1) × w × 0.5`, **#280** (both), fixed |
+| `draw_crosshair`, `crosshair_parts`, `crosshair_gap`, `divesteps` | 0x1004e9f0, 0x1004ef50 | 0x1008b960, 0x1008c1c0 | match (hooks; #110, #153 fixed: `IsHardware()`). Round 4: the divestep pitch dot is worked out in double (3.0 `× π/180`, 2.1 `/ 180 × π`), **#280** (both), fixed |
 | weapon `Think` parts, kung-fu regen, Reset | 0x1004ce10 | 0x100899f0, 0x10089890 | match (hooks #193/#194) |
 | `weapon_panel`, `kungfu_label` | 0x1004d7e0, 0x1004d700 | 0x1008a320, 0x1008a0f0 | match (hooks #176/#111) |
 | effects/laser.rs `draw_local_laser` | 0x1003bb00 | 0x10071bd0 (`laserbeam.spr`, grey flicker, half-width 1.5) | 3.0 match; **2.1 MISMATCH #204** |

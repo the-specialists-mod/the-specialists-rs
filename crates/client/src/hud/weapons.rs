@@ -345,7 +345,9 @@ fn laser_dot_positions(
     if items & 2 == 0 {
         return Vec::new();
     }
-    let to_px = |d: [f32; 2]| (((1.0 + d[0]) * w as f32 * 0.5) as i32, ((1.0 - d[1]) * h as f32 * 0.5) as i32);
+    // `WorldToScreen` (`0x100579c0`, 2.1 `0x10097650`): `ftol((x + 1) × w × 0.5)` on the x87,
+    // unrounded.
+    let to_px = |d: [f32; 2]| (ftol((d[0] as f64 + 1.0) * w as f64 * 0.5), ftol((1.0 - d[1] as f64) * h as f64 * 0.5));
     let pinned: &[(i32, i32)] = if items & 0x40 == 0 { &[(cx + jx, cy + jy)] } else { &[(cx + 4 + jx, cy + jy), (cx - 4 + jy, cy + jx)] };
     // A hit point projected from near the eye plane can saturate the cast; C would wrap.
     pinned
@@ -672,7 +674,7 @@ fn draw_divesteps(dc: &Dc, h: &Hud, cx: i32, cy: i32) {
     let rules = crate::gameplay::hud_rules(h.gameplay);
     let cooldown = rules.stunt_cooldown(h.stunt_cooldown(), super::now());
     let blocked = rules.divesteps_blocked(81 - h.slots as i32, h.armor, h.gamemode);
-    let (sprites, (dx, dy), dot) = divestep_layout(cooldown, blocked, engine().view_angles()[0], dc.hud, (cx, cy));
+    let (sprites, (dx, dy), dot) = divestep_layout(rules.dll_build(), cooldown, blocked, engine().view_angles()[0], dc.hud, (cx, cy));
     for (i, rgb) in sprites.into_iter().enumerate() {
         dc.spr(dc.g.ts.divestep[i], cx - 40, cy - 40, rgb);
     }
@@ -688,7 +690,14 @@ fn draw_divesteps(dc: &Dc, h: &Hud, cx: i32, cy: i32) {
 /// full strength for the band the view pitch points at (< −10°, −10..10°, > 10°) and halved for
 /// the other two. The dot sits 32 px from the centre at angle `clamp(3·pitch, ±90°)`, on the left:
 /// `(cx − 32·cos a, cy + 32·sin a)`, in the base colour.
+///
+/// The pitch is stored as a float `(float)(pitch × 3.0)`, then the angle and the position are
+/// worked out in double: 3.0 compares the unrounded product with 90 (`0x1004f180`), multiplies
+/// by the double π/180 (`0x1004f1c0`) and uses the x87's `fsin`/`fcos`; 2.1 compares the
+/// stored float (`0x1008c50d`) and takes `p / 180.0 × π` (`0x1008c571`) into the CRT's
+/// `sin`/`cos`.
 fn divestep_layout(
+    build: crate::gameplay::DllBuild,
     cooldown: bool,
     blocked: [bool; 3],
     pitch: f32,
@@ -712,8 +721,23 @@ fn divestep_layout(
             half(base)
         }
     });
-    let a = (pitch * 3.0).clamp(-90.0, 90.0).to_radians();
-    let dot = ((cx as f32 - a.cos() * 32.0) as i32, (a.sin() * 32.0 + cy as f32) as i32);
+    let scaled = pitch as f64 * 3.0;
+    let mut p = scaled as f32;
+    let over = match build {
+        crate::gameplay::DllBuild::Optimised => scaled > 90.0,
+        crate::gameplay::DllBuild::Debug => p > 90.0,
+    };
+    if over {
+        p = 90.0;
+    }
+    if p < -90.0 {
+        p = -90.0;
+    }
+    let a = match build {
+        crate::gameplay::DllBuild::Optimised => p as f64 * (std::f64::consts::PI / 180.0),
+        crate::gameplay::DllBuild::Debug => p as f64 / 180.0 * std::f64::consts::PI,
+    };
+    let dot = (ftol(cx as f64 - a.cos() * 32.0), ftol(a.sin() * 32.0 + cy as f64));
     (sprites, dot, base)
 }
 
@@ -721,6 +745,7 @@ fn divestep_layout(
 mod tests {
     use super::super::state::{Slot, grid_pos};
     use super::*;
+    use crate::gameplay::DllBuild;
 
     #[test]
     fn solid_cross_needs_a_hardware_renderer() {
@@ -766,15 +791,20 @@ mod tests {
         let hud = [100, 200, 60];
         let c = (320, 240);
         // Level view, light load: centre band full, the others halved; dot 32 px left.
-        let (s, dot, base) = divestep_layout(false, [false; 3], 0.0, hud, c);
+        let (s, dot, base) = divestep_layout(DllBuild::Optimised, false, [false; 3], 0.0, hud, c);
         assert_eq!(s, [half(hud), hud, half(hud)]);
         assert_eq!((dot, base), ((288, 240), hud));
         // Looking down 30° (clamped to 90°): bottom band, dot straight below.
-        let (s, dot, _) = divestep_layout(false, [false; 3], 30.0, hud, c);
+        let (s, dot, _) = divestep_layout(DllBuild::Optimised, false, [false; 3], 30.0, hud, c);
         assert_eq!((s[2], dot), (hud, (320, 272)));
         // Top and centre dives too heavy; cooldown turns the rest red.
-        let (s, _, base) = divestep_layout(true, [true, true, false], -20.0, hud, c);
+        let (s, _, base) = divestep_layout(DllBuild::Optimised, true, [true, true, false], -20.0, hud, c);
         assert_eq!((s, base), ([RED, RED, half(RED)], RED));
+        // Just under 90°: 32·sin a is 31.99999..., truncated to 31 in double, where a float
+        // sine rounds it to 32 (`0x1004f1db`, 2.1 `0x1008c583`).
+        let p = f32::from_bits(0x41ef_f9ae);
+        assert_eq!(divestep_layout(DllBuild::Optimised, false, [false; 3], p, hud, c).1, (319, 271));
+        assert_eq!(divestep_layout(DllBuild::Debug, false, [false; 3], p, hud, c).1, (319, 271));
     }
 
     #[test]
@@ -786,6 +816,9 @@ mod tests {
         assert_eq!(laser_dot_positions(2, false, c, j, dots, sz), [(0, 479, 119)], "at the projected hit");
         assert_eq!(laser_dot_positions(0x42, true, c, j, dots, sz), [(0, 324, 239), (1, 315, 240)], "akimbo: +3/-5 px, jitter swapped");
         assert_eq!(laser_dot_positions(0x42, true, c, j, [None, dots[1]], sz), [(1, 315, 240)], "off-screen hit: no dot");
+        // `(x + 1) × w × 0.5` = 385.99999 unrounded (`0x100579c0`); a float sum rounds it to 386.
+        let x = f32::from_bits(0x3e53_3331);
+        assert_eq!(laser_dot_positions(2, false, c, j, [Some([x, 0.0]), None], sz), [(0, 384, 239)]);
     }
 
     /// 3.0 (`0x1004e6f0`): the laser colour at 255 at any range. 2.1 (`0x1008b410`, issue #204):
@@ -812,7 +845,7 @@ mod tests {
             }
         }
         for blocked in [[false; 3], [true; 3]] {
-            let _ = divestep_layout(true, blocked, f32::NAN, [0; 3], (i32::MAX, i32::MIN));
+            let _ = divestep_layout(DllBuild::Debug, true, blocked, f32::NAN, [0; 3], (i32::MAX, i32::MIN));
         }
         assert!(!crosshair_scoped(f32::NAN, true));
     }

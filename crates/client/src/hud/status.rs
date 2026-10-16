@@ -77,11 +77,13 @@ fn draw_round_timer(dc: &Dc, h: &mut Hud) {
 /// `DrawTSMessages` (1004af40): timed messages, capped at 10 s, fading over the last second.
 /// Black (0,0,0) means "HUD colour".
 fn draw_ts_messages(dc: &Dc, h: &mut Hud) {
+    let build = crate::gameplay::hud_rules(h.gameplay).dll_build();
     for m in h.messages.iter_mut() {
         if m.expire <= dc.now {
             continue;
         }
-        if m.expire - dc.now > 10.0 {
+        // `expire - now > 10.0f` on the x87, unrounded (`0x1004af74`, 2.1 `0x10086f1f`).
+        if m.expire as f64 - dc.now as f64 > 10.0 {
             m.expire = dc.now + 10.0;
         }
         // `0x1004afc9..0x1004b085`: each channel is `__ftol(base * min(expire - now, 1))`, the
@@ -89,11 +91,27 @@ fn draw_ts_messages(dc: &Dc, h: &mut Hud) {
         // themselves (floats, not rounded first).
         let ic = crate::input::cvars();
         let base = if m.rgb == [0; 3] { [ic.hud_r.value(), ic.hud_g.value(), ic.hud_b.value()] } else { m.rgb.map(|c| c as f32) };
-        // x87 keeps the difference and the product unrounded; f64 is as close as Rust gets.
-        let f = (m.expire as f64 - dc.now as f64).min(1.0);
-        let rgb = base.map(|c| (c as f64 * f) as i32);
+        let rgb = base.map(|c| ts_message_channel(build, c, m.expire, dc.now));
         dc.string(m.x, m.y, &m.text, rgb);
     }
+}
+
+/// One `DrawTSMessages` colour channel: `__ftol(base × min(expire − now, 1))`. 3.0 keeps the
+/// difference and the product on the x87 (`0x1004afe3..0x1004b003`); 2.1 stores the factor to a
+/// float first (`0x1008700d`, or 1.0 at `0x10087012`), then multiplies on the x87.
+fn ts_message_channel(build: crate::gameplay::DllBuild, base: f32, expire: f32, now: f32) -> i32 {
+    let diff = expire as f64 - now as f64;
+    let f = match build {
+        crate::gameplay::DllBuild::Optimised => diff.min(1.0),
+        crate::gameplay::DllBuild::Debug => {
+            if diff < 1.0 {
+                diff as f32 as f64
+            } else {
+                1.0
+            }
+        }
+    };
+    (base as f64 * f) as i32
 }
 
 /// `DrawHudStringLen(0, max, text)` (`0x10021ca0`): the width up to the first character that
@@ -413,6 +431,18 @@ fn objective_arrow(z: f32, origin: [f32; 3]) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2.1 stores `min(expire − now, 1)` to a float (`0x1008700d`) before `base ×` it: early in a
+    /// map the difference needs more than a float's bits, and the channel can come out a step
+    /// apart.
+    #[test]
+    fn ts_message_fade_factor_is_a_float_in_2_1() {
+        use crate::gameplay::DllBuild;
+        let (now, expire) = (f32::from_bits(0x3efc_8d11), f32::from_bits(0x3f8d_f213));
+        assert_eq!(ts_message_channel(DllBuild::Optimised, 255.0, expire, now), 156);
+        assert_eq!(ts_message_channel(DllBuild::Debug, 255.0, expire, now), 157);
+        assert_eq!(ts_message_channel(DllBuild::Debug, 255.0, now + 2.0, now), 255);
+    }
 
     /// `DrawObjectiveMarkers` measures from `gHUD.m_vecOrigin` (`0x100cf960`), the client data
     /// origin, not the local entity's.

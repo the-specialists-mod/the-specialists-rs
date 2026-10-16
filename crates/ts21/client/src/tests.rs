@@ -1062,3 +1062,11 @@ fn vgui_scale() {
     };
     assert_eq!((h(VguiScale::Division), h(VguiScale::Reciprocal)), (204, 203));
 }
+
+/// Round 4: 2.1's `client.dll` is an unoptimised build that stores every float assignment
+/// (e.g. `MessageScanNextChar` 0x10054e3b, `DrawTSMessages` 0x1008700d); 3.0's is optimised.
+#[test]
+fn dll_build() {
+    use ts_client::gameplay::DllBuild;
+    assert_eq!((v21().dll_build(), v30().dll_build()), (DllBuild::Debug, DllBuild::Optimised));
+}

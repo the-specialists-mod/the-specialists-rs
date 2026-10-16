@@ -478,6 +478,13 @@ impl ClientRules for Ts30Client {
     fn vgui_scale(&self) -> ts_client::hud::vgui::VguiScale {
         ts_client::hud::vgui::VguiScale::Reciprocal
     }
+
+    // Audit round 4: hud
+
+    /// TS 3.0's `client.dll` is an optimised build.
+    fn dll_build(&self) -> ts_client::gameplay::DllBuild {
+        ts_client::gameplay::DllBuild::Optimised
+    }
 }
 
 /// The plugin as the client registers it.

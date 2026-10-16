@@ -114,6 +114,20 @@ pub struct TsMessageLayout {
     pub expiry_double: bool,
 }
 
+/// How the ruleset's original `client.dll` was compiled, as far as float temporaries go
+/// ([`ClientRules::dll_build`]). The HUD and particle code follow it where the two builds round
+/// differently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DllBuild {
+    /// An optimised MSVC build (TS 3.0): temporaries stay on the x87 stack at 53-bit precision,
+    /// and only the values the compiler spills are rounded to `float`.
+    Optimised,
+    /// An unoptimised (debug) MSVC build (TS 2.1): every assignment to a `float` variable or
+    /// member is stored, so it's rounded to `float` before the next use, and the source's
+    /// operand order is kept.
+    Debug,
+}
+
 /// Client rules: the HUD and input code call these where a ruleset can differ. Every method is
 /// required; each ruleset's plugin answers them all.
 pub trait ClientRules: Sync {
@@ -448,6 +462,11 @@ pub trait ClientRules: Sync {
     /// layout: an optimised `client.dll`'s float reciprocals and spills, or an unoptimised one's
     /// division.
     fn vgui_scale(&self) -> crate::hud::vgui::VguiScale;
+
+    // Audit round 4: hud
+
+    /// How the original `client.dll` rounds float temporaries ([`DllBuild`]).
+    fn dll_build(&self) -> DllBuild;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -754,6 +773,12 @@ mod stub {
 
         fn vgui_scale(&self) -> crate::hud::vgui::VguiScale {
             crate::hud::vgui::VguiScale::Reciprocal
+        }
+
+        // Audit round 4: hud
+
+        fn dll_build(&self) -> DllBuild {
+            DllBuild::Optimised
         }
     }
 }
