@@ -260,7 +260,6 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
         obs_target: old.obs_target,
         tk_until: old.tk_until,
         tk_count: old.tk_count,
-        next_say: old.next_say,
         respawns_used: old.respawns_used,
         team_name: old.team_name,
         flag: old.flag,

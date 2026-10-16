@@ -72,7 +72,8 @@ pub struct PlayerRules {
     /// `m_hObserverTarget` (`+0x75c`), a player index (0 = none). Set by `Killed` and
     /// `Observer_FindNextPlayer`; survives a respawn like TS's `EHANDLE`.
     pub obs_target: i32,
-    /// Chat flood control (`+0x7c0`).
+    /// Chat flood control (`+0x7c0`; 2.1 `+0x738`): `Host_Say` sets it 0.5 s ahead, `TSInit`
+    /// zeroes it at every spawn (0x92a4c; 2.1 0x100552f0).
     pub next_say: f32,
     /// `m_iFOV` (`+0x9f0`): set only by the `fov` cheat, zeroed by `Spawn`, `Killed` and
     /// `StartObserver`; the `fov` reply prints it.

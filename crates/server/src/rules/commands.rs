@@ -136,11 +136,13 @@ pub fn say_prefix(name: &[u8], team: bool) -> Vec<u8> {
     if team { shared::bformat!("\x02(TEAM) {}: ", name) } else { shared::bformat!("\x02{}: ", name) }
 }
 
-/// The text as `Host_Say` cuts it, in place, so that it fits a 127-byte line after `prefix`
-/// (`p[0x7f - strlen(prefix)] = 0`): a byte count, which may split a multi-byte UTF-8 character
+/// The text as `Host_Say` cuts it, in place, so that prefix and text fit in 126 bytes (the SDK's
+/// `sizeof(text) - 2 - strlen(text)` with `char text[128]`): 3.0 `p[0x7f - (strlen(prefix) + 1)]
+/// = 0` (0xad02c, the `repnz scasb` count includes the terminator), 2.1 `p[0x7e -
+/// strlen(prefix)] = 0` (0x1000cf00). A byte count, which may split a multi-byte UTF-8 character
 /// as TS does. The log line shows the cut text too.
 pub fn clip_say_text<'a>(prefix: &[u8], text: &'a [u8]) -> &'a [u8] {
-    &text[..127usize.saturating_sub(prefix.len()).min(text.len())]
+    &text[..126usize.saturating_sub(prefix.len()).min(text.len())]
 }
 
 /// The longest chat line (before its `\n`) that fits `Host_Say`'s 140-byte buffer with the `\n`
@@ -748,11 +750,13 @@ mod tests {
         // `(int)health` truncates: 87.6 is 87, -0.5 is 0.
         assert_eq!(say("bob", false, "%h", 0.0, 87.6), "\x02bob: 87\n");
         assert_eq!(say("bob", false, "%h", 0.0, -0.5), "\x02bob: 0\n");
-        // The text is cut so the unexpanded line is 127 bytes.
+        // The text is cut so the unexpanded line is 126 bytes (0xad02c, 2.1 0x1000cf00), 127 with
+        // the `\n`.
         let long = "x".repeat(300);
         let prefix = say_prefix(b"bob", false);
-        assert_eq!(prefix.len() + clip_say_text(&prefix, long.as_bytes()).len(), 127);
-        assert_eq!(say("bob", false, &long, 0.0, 0.0).len(), 128);
+        assert_eq!(prefix.len() + clip_say_text(&prefix, long.as_bytes()).len(), 126);
+        assert_eq!(say("bob", false, &long, 0.0, 0.0).len(), 127);
+        assert_eq!(clip_say_text(&prefix, &[b'x'; 120]).len(), 120, "a shorter text is kept whole");
         // Guard: expansions stop at TS's 140-byte buffer, well under the 192-byte message limit.
         let line = say("bob", false, &"%a".repeat(60), 1.0, 0.0);
         assert_eq!(line.len(), SAY_LINE_MAX + 1);
@@ -778,9 +782,9 @@ mod tests {
         assert_eq!(WireRead::string(&mut w), line);
         // A leading quote takes the last byte, not the last UTF-8 character.
         assert_eq!(say_text(b"\"ab\xc3\xa9"), b"ab\xc3");
-        // The 127-byte cut counts bytes.
+        // The 126-byte cut counts bytes.
         let long = [0xe9u8; 300];
-        assert_eq!(prefix.len() + clip_say_text(&prefix, &long).len(), 127);
+        assert_eq!(prefix.len() + clip_say_text(&prefix, &long).len(), 126);
     }
 
     #[test]
