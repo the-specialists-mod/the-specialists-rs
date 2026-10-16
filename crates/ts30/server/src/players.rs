@@ -6,6 +6,7 @@ use goldsrc::sys::CHAN_ITEM;
 use shared::protocol::hud_wire::PwUp;
 use shared::ts::powerup as pw;
 use shared::weapons::{MAX_AMMO, MAX_WEAPONS, att, id, info, is_restricted, tables};
+use ts_server::gameplay::server::{InitHudRules, TeamChangeRules};
 use ts_server::messages::Msg;
 use ts_server::player::Player;
 use ts_server::rules::msg::{self, ts_message_all};
@@ -236,6 +237,27 @@ pub fn buy_armament(p: &mut Player, cx: &mut Cx) {
         }
     }
 }
+
+// Audit round 2: B2
+
+/// `CTSGameRules::InitHUD` (0x79134): `UpdateClientData` (0x91d40) calls it after the rules'
+/// `InitHUD`, in single player too. It sends every player's `Spectator` flag, the notices with
+/// effect 8 (`TSHudMessageOne(0x2d, 0xc3, 0x2d, 8, 100, ...)`), and `SrvSett` 0 from Think's
+/// `(int)realbullet` copy (`this + 0x578`).
+pub static INIT_HUD: InitHudRules = InitHudRules {
+    inside_multiplay: false,
+    spectator_list: true,
+    cheats_text: "This server has cheats enabled.",
+    damages_text: "This server has custom weapon damages",
+    notice_effect: 8,
+    realbullet_live: false,
+};
+
+/// `ChangePlayerTeam` (0xe488c): The One's teams in The One mode, else `IsValidTeam` or the
+/// smallest team. `ClientUserInfoChanged` (0xe4d18): a team limit (`+0x214`) resets a changed
+/// `model` key to a team model, and there is no The One case.
+pub static TEAM_CHANGES: TeamChangeRules =
+    TeamChangeRules { change_checks_team: true, model_change_team_limit: true, model_change_the_one_default: false };
 
 #[cfg(test)]
 mod tests {

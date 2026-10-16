@@ -450,6 +450,9 @@ The hooks so far:
 | `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `ts30_server::explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
 | `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `ts30_server::explode::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
 | `ServerRules` | `thrown_blade_damage(btype, from, at)` | `ts30_server::explode::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
+| `ServerRules` | `init_hud() -> &InitHudRules` | `ts30_server::players::INIT_HUD`: after the rules' whole `InitHUD` (`UpdateClientData` 0x91d40), the `Spectator` list, "This server has ..." with effect 8, `SrvSett` 0 Think's copy | `rules/lifecycle.rs` `init_hud_block` / `rules_init_hud` (where `ts_init_hud` runs), `ts_init_hud` |
+| `ServerRules` | `team_changes() -> &TeamChangeRules` | `ts30_server::players::TEAM_CHANGES`: `ChangePlayerTeam` forces The One's teams and tests `IsValidTeam`; `ClientUserInfoChanged` resets the model under a team limit | `rules/teams.rs` `change_team`, `userinfo_changed` |
+| `ServerRules` | `spawn_spot_master_test()` | true (`IsTriggered` 0xe2c20) | `rules/spawnpoint.rs` `select` |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`

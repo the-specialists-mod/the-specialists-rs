@@ -354,6 +354,17 @@ impl ServerRules for Defaults {
     fn thrown_blade_damage(&self, _btype: i32, _from: shared::weapons::spread::Vec3, _at: shared::weapons::spread::Vec3) -> f32 {
         unimplemented!("thrown_blade_damage")
     }
+
+    // Audit round 2: B2
+    fn init_hud(&self) -> &'static server::InitHudRules {
+        unimplemented!("init_hud")
+    }
+    fn team_changes(&self) -> &'static server::TeamChangeRules {
+        unimplemented!("team_changes")
+    }
+    fn spawn_spot_master_test(&self) -> bool {
+        unimplemented!("spawn_spot_master_test")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).

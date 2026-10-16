@@ -484,6 +484,52 @@ pub trait ServerRules: Sync {
     /// hits at `at`, thrown from `from` (a ruleset whose damage falls off measures the distance
     /// in its own arithmetic).
     fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32;
+
+    // Audit round 2: B2
+
+    /// How `CTSGameRules::InitHUD` runs and what it sends (`rules::lifecycle::init_hud_block`).
+    fn init_hud(&self) -> &'static InitHudRules;
+
+    /// The team checks of `CHalfLifeTeamplay::ChangePlayerTeam` and `ClientUserInfoChanged`
+    /// (`rules::teams`).
+    fn team_changes(&self) -> &'static TeamChangeRules;
+
+    /// Whether the spawn-spot selection (`TSSelectSpawnSpot`) skips a spot whose `master` isn't
+    /// triggered for the player (`CBaseDMStart::IsTriggered`).
+    fn spawn_spot_master_test(&self) -> bool;
+}
+
+/// How a ruleset's `CTSGameRules::InitHUD` runs ([`ServerRules::init_hud`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InitHudRules {
+    /// It is the last call of the rules' multiplay `InitHUD`, so in teamplay it runs before the
+    /// teamplay part (the join's `ChangePlayerTeam`) instead of after the whole rules `InitHUD`,
+    /// and single player never runs it.
+    pub inside_multiplay: bool,
+    /// It sends the joiner `Spectator(i, iuser1 != 0)` for every player.
+    pub spectator_list: bool,
+    /// The cheat notice (`TSHudMessageOne(45, 195, 45, effect, 100, ...)`) and the custom damage
+    /// one, whose text ends with `({damagemult:.2})`.
+    pub cheats_text: &'static str,
+    pub damages_text: &'static str,
+    pub notice_effect: u8,
+    /// `SrvSett` 0 is the live `realbullet != 0` (0 or 1) rather than Think's `(int)` copy.
+    pub realbullet_live: bool,
+}
+
+/// The team checks of a ruleset's teamplay ([`ServerRules::team_changes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TeamChangeRules {
+    /// `ChangePlayerTeam` puts The One on the first team and everyone else on the second in The
+    /// One mode, and sends a name `IsValidTeam` refuses to the smallest team. Without it only an
+    /// empty name does, and any other name is taken as it is.
+    pub change_checks_team: bool,
+    /// `ClientUserInfoChanged`: under a team limit a changed `model` key is replaced by a team
+    /// model (`GetPlayerModel`), as in the round modes.
+    pub model_change_team_limit: bool,
+    /// `ClientUserInfoChanged`: in The One mode a changed `model` key runs
+    /// `SetDefaultPlayerTeam` (keys back to The One's teams) and nothing else.
+    pub model_change_the_one_default: bool,
 }
 
 #[cfg(test)]
