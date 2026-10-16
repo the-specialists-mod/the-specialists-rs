@@ -9,7 +9,8 @@ use ts_client::studio::StudioStyle;
 /// * `renderamt = 255`: `StudioDrawPlayer` `0x10032540`;
 /// * the dead and ghost draws: slots 4 and 5, `0x10033540` and `0x100337f0`, picked at
 ///   `0x10031c9a..`;
-/// * the hardware abs bbox: `StudioRenderFinal_Hardware` `0x10034750`.
+/// * the hardware abs bbox: `StudioRenderFinal_Hardware` `0x10034750`;
+/// * the slowed 5004 sound: `HUD_StudioEvent` `0x10044b50`.
 pub const STYLE: StudioStyle = StudioStyle::ALL;
 
 #[cfg(test)]
@@ -18,9 +19,8 @@ mod tests {
 
     #[test]
     fn every_renderer_change() {
-        assert_eq!(
-            STYLE,
-            StudioStyle { view_model_slowmo: true, torso_yaw_fix: true, player_renderamt: true, dead_player_copy: true, hw_abs_bbox: true }
-        );
+        let s = STYLE;
+        assert!(s.view_model_slowmo && s.torso_yaw_fix && s.player_renderamt && s.dead_player_copy && s.hw_abs_bbox);
+        assert!(s.slowed_event_sound, "0x10044b69: EV_PlaySound with the slow-motion pitch");
     }
 }

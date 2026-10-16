@@ -874,12 +874,17 @@ fn fog_end() {
     goldsrc::ext::gl::disable(goldsrc::ext::gl::GL_FOG);
 }
 
-/// `HUD_StudioEvent` (`0x10044b50`): only 5002 (sparks) and 5004 (sound) remain.
+/// `HUD_StudioEvent` (`0x10044b50`): only 5002 (sparks) and 5004 (sound) remain. Without
+/// [`StudioStyle::slowed_event_sound`](crate::studio::StudioStyle::slowed_event_sound) 5004 is
+/// `pfnPlaySoundByNameAtLocation(options, 1.0, attachment[0])` (issue #257).
 pub fn studio_event(ev: &mstudioevent_s, ent: &cl_entity_t) {
     let opts = goldsrc::util::c_array_str(&ev.options);
     match ev.event {
         5002 => r::spark_effect(ent.attachment[0], opts.trim().parse().unwrap_or(0), -100, 100),
-        5004 => engine().ev_play_sound(ent.index, ent.attachment[0], CHAN_BODY as i32, &opts, 1.0, 0.8, 0, crate::events::slow_pitch()),
+        5004 if crate::studio::style().slowed_event_sound => {
+            engine().ev_play_sound(ent.index, ent.attachment[0], CHAN_BODY as i32, &opts, 1.0, 0.8, 0, crate::events::slow_pitch())
+        }
+        5004 => engine().play_sound_at(&opts, 1.0, ent.attachment[0]),
         _ => {}
     }
 }

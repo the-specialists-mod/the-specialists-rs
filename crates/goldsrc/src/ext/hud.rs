@@ -356,6 +356,16 @@ impl ClEngine {
         let s = to_cstring(name);
         cl_eng!(pfnPlaySoundByName(s.as_ptr().cast_mut(), volume));
     }
+    /// `pfnPlaySoundByNameAtLocation`: a sound at a point, no entity or channel, normal pitch.
+    /// Guarded like [`Self::play_sound`].
+    pub fn play_sound_at(&self, name: &str, volume: f32, origin: [f32; 3]) {
+        if !self.sound_name_ok("PlaySoundByNameAtLocation", name) {
+            return;
+        }
+        let s = to_cstring(name);
+        let mut o = origin;
+        cl_eng!(pfnPlaySoundByNameAtLocation(s.as_ptr().cast_mut(), volume, o.as_mut_ptr()));
+    }
 
     /// Steam GoldSrc's `S_FindName` `Sys_Error`s on a sound name over 63 bytes ("Sound name too
     /// long"); FWGS refuses the same names without a word, so they are dropped on every engine.

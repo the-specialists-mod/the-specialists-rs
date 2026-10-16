@@ -58,12 +58,23 @@ pub struct StudioStyle {
     /// `StudioRenderFinal_Hardware` draws the absolute bounding box at `r_drawentities 5`. The
     /// software path always does.
     pub hw_abs_bbox: bool,
+    /// `HUD_StudioEvent` 5004 plays its sound on the entity (`EV_PlaySound`, `CHAN_BODY`,
+    /// attenuation 0.8, the slow-motion pitch). Without it the sound plays at the attachment
+    /// with `pfnPlaySoundByNameAtLocation`, at volume 1 and normal pitch
+    /// (`effects::studio_event`).
+    pub slowed_event_sound: bool,
 }
 
 impl StudioStyle {
     /// Every renderer change on.
-    pub const ALL: StudioStyle =
-        StudioStyle { view_model_slowmo: true, torso_yaw_fix: true, player_renderamt: true, dead_player_copy: true, hw_abs_bbox: true };
+    pub const ALL: StudioStyle = StudioStyle {
+        view_model_slowmo: true,
+        torso_yaw_fix: true,
+        player_renderamt: true,
+        dead_player_copy: true,
+        hw_abs_bbox: true,
+        slowed_event_sound: true,
+    };
 }
 
 /// The current ruleset's renderer choices.
