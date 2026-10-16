@@ -45,7 +45,7 @@ addresses of `ts_i386.so`.
 | `CTSGun::EmptySound` 0x81be4 / `Fire` 0x81c78 | same names (`Fire`'s body: `ts30_gameplay::gun::fire`) |
 | `CTSGun::ColdCock` 0x81dd0 + `CBasePlayer::ColdCockAttack` 0x96610 | `ts30_gameplay::melee::cold_cock` + `melee::attack` |
 | `CTSGun::ShotgunFire` 0x82108 / `StandardFire` 0x824a4 / `AkimboFire` 0x829c0 | same names in `ts30_gameplay::gun` |
-| `CTSGun::GrenadeFire` 0x832f0 / `GrenadeIdle` 0x84f18 | `Gun::grenade_fire` / `Gun::grenade_idle` + `Gun::grenade_throw` |
+| `CTSGun::GrenadeFire` 0x832f0 / `GrenadeIdle` 0x84f18 | `Gun::grenade_fire` / `Gun::grenade_idle` + `Gun::grenade_throw` (the sums' rounding per build: `GunRules::grenade_rounding`, issues #129, #225) |
 | `CTSGun::KatanaFire` 0x833f0 / `KatanaThrow` 0x83b68 / `KnifeFire` 0x84044 | same names (`KatanaFire`'s and `KnifeFire`'s bodies in `ts30_gameplay::melee`) |
 | `CTSGun::ReloadWeapon` 0x84a14 / `ShotgunReload` 0x84aac / `Reload` 0x84d5c | same names |
 | `CTSGun::WeaponIdle` 0x854dc / `HolsterWeapon` 0x85698 | same names |

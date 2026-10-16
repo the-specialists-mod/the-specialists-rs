@@ -6,7 +6,7 @@
 //! [`GunHost::rules`](crate::weapons::GunHost::rules).
 
 use crate::pm::Arith;
-use crate::weapons::gun::{Gun, GunHost};
+use crate::weapons::gun::{GrenadeRounding, Gun, GunHost};
 use crate::weapons::spread;
 use crate::weapons::table::{Tables, WeaponInfo};
 
@@ -104,6 +104,12 @@ pub trait GunRules: MeleeRules + Sync {
     /// then draws kung fu: weapon 0's view model, its draw animation and the draw event. Otherwise
     /// it only sets the FOV to 0 and leaves no view model.
     fn holster_draws_kungfu(&self) -> bool;
+
+    // Audit round 2: D1
+
+    /// `CTSGun::GrenadeIdle`: how the build `arith` rounds the throw's and the roll's vector sums
+    /// ([`Gun::grenade_throw`]).
+    fn grenade_rounding(&self, arith: Arith) -> GrenadeRounding;
 }
 
 /// One think's recoil-penalty decay ([`GunRules::decay_spread`]).

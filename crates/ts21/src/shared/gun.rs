@@ -16,7 +16,7 @@ use shared::ts::powerup;
 use shared::weapons::random::shared_random_float_unrounded;
 use shared::weapons::spread::{PelletOffset, PelletSide, Vec3};
 use shared::weapons::table::{Tables, WeaponInfo};
-use shared::weapons::{Event, EventArgs, Gun, GunHost, id, info, kind, kind_of, mode};
+use shared::weapons::{Event, EventArgs, GrenadeRounding, Gun, GunHost, id, info, kind, kind_of, mode};
 use std::cmp::Ordering;
 
 impl GunRules for Ts21 {
@@ -140,7 +140,33 @@ impl GunRules for Ts21 {
     fn holster_draws_kungfu(&self) -> bool {
         false
     }
+
+    // Audit round 2: D1
+
+    /// [`GRENADE_ROUNDING`]: 2.1's single build.
+    fn grenade_rounding(&self, _arith: Arith) -> GrenadeRounding {
+        GRENADE_ROUNDING
+    }
 }
+
+/// `CTSGun::GrenadeIdle` (mp.dll 0x1004d260). 2.1 shipped no Linux server, so `ts_pm_arith gcc`
+/// takes this form too.
+///
+/// * The eye as 3.0's mp.dll: x on the FPU, y and z stored (`fstps 0x34`/`0x38`, 0x1004d366,
+///   0x1004d373).
+/// * Throw (0x1004d3a7..0x1004d439): only `speed·f.z` is stored (`fstps 0x20` at 0x1004d3c0);
+///   x and y are added to the velocity from the stack (`fadds 0x20(%eax)` 0x1004d3c6,
+///   `fadds 0x24(%eax)` 0x1004d42a). 3.0's mp.dll stores y's too.
+/// * Roll (0x1004d3fa..0x1004d439): `speed·(2/3)` stays on the FPU; `k·f.y` and `k·f.z` are stored
+///   (`fstps 0x1c` 0x1004d412, `fstps 0x20` 0x1004d41b), `k·f.x` is added from the stack. 3.0's
+///   mp.dll stores x and y and keeps z.
+pub const GRENADE_ROUNDING: GrenadeRounding = GrenadeRounding {
+    arith: Arith::Msvc,
+    eye_stored: [false, true, true],
+    throw_stored: [false, false, true],
+    roll_speed_stored: false,
+    roll_stored: [false, true, true],
+};
 
 /// 2.1's `GetBetterWeapon` (FUN_1004a410): the owned weapon other than `excluded` with the
 /// highest `cost × (akimbo ? 2 : 1)` (`info+0xd0`, the kind byte `FUN_10049a10` tests for 4),

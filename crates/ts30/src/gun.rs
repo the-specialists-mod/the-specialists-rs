@@ -7,7 +7,7 @@ use shared::gameplay::{GunRules, Predicted, SpreadDecay, WeaponPreThink};
 use shared::pm::Arith;
 use shared::weapons::spread::{self, PelletOffset, PelletSide, Vec3};
 use shared::weapons::table::{Tables, WeaponInfo};
-use shared::weapons::{Event, EventArgs, Gun, GunHost, MAX_WEAPONS, id, kind, kind_of, mode, mode_mask};
+use shared::weapons::{Event, EventArgs, GrenadeRounding, Gun, GunHost, MAX_WEAPONS, id, kind, kind_of, mode, mode_mask};
 
 const IN_ATTACK: u32 = 1;
 const IN_ATTACK2: u32 = 0x800;
@@ -124,6 +124,36 @@ impl GunRules for Ts30 {
     /// `HolsterWeapon` (0x85698) unzooms and draws kung fu.
     fn holster_draws_kungfu(&self) -> bool {
         true
+    }
+
+    // Audit round 2: D1
+
+    /// [`grenade_rounding`].
+    fn grenade_rounding(&self, arith: Arith) -> GrenadeRounding {
+        grenade_rounding(arith)
+    }
+}
+
+/// `CTSGun::GrenadeIdle`'s sums per build:
+///
+/// * mp.dll (0x10057e4b..0x10057f2e, roll 0x10057fa0..0x1005800c): the eye's x and the
+///   velocity's x product stay on the FPU, y and z are stored before the add; the roll's
+///   `speed·2/3` stays unrounded and its z product too.
+/// * `ts_i386.so` (0x8503a..0x850c3, 0x850d3..0x8511e, roll 0x851a4..0x85203): the eye and
+///   every velocity product stay on the FPU (the `16·forward` products are stored); the roll's
+///   `speed·2/3` is stored as a `float`.
+pub fn grenade_rounding(arith: Arith) -> GrenadeRounding {
+    match arith {
+        Arith::Msvc => GrenadeRounding {
+            arith,
+            eye_stored: [false, true, true],
+            throw_stored: [false, true, true],
+            roll_speed_stored: false,
+            roll_stored: [true, true, false],
+        },
+        Arith::Gcc => {
+            GrenadeRounding { arith, eye_stored: [false; 3], throw_stored: [false; 3], roll_speed_stored: true, roll_stored: [false; 3] }
+        }
     }
 }
 

@@ -817,3 +817,35 @@ fn kungfu_melee_attack_hook() {
     assert_eq!(h.holds, vec![4 | 1]);
     assert_eq!(h.events.len(), 1);
 }
+
+/// `GrenadeIdle` (0x1004d260): the throw adds x's and y's `speed·forward` unrounded (3.0's mp.dll
+/// rounds y's first), with 3.0's eye; the roll keeps `k·f.x` unrounded and stores y's and z's
+/// (3.0's mp.dll: x and y stored, z not). Same inputs as 3.0's `grenade_throw_rounds_as_ts`.
+#[test]
+fn grenade_throw_rounds_as_2_1() {
+    use shared::pm::Arith;
+    let p = f32::from_bits(0xc2b0_6666);
+    let r = Ts21.grenade_rounding(Arith::Gcc);
+    assert_eq!(r, Ts21.grenade_rounding(Arith::Msvc), "one build");
+    let throw = |r: &GrenadeRounding, roll| {
+        Gun::grenade_throw(r, [100.3, -20.7, 64.1], [0.0, 0.0, 28.0], [120.5, -33.3, 7.7], [p, 30.0, 0.0], roll)
+    };
+    let (src, vel) = throw(&r, false);
+    assert_eq!(src.map(f32::to_bits), [0x42c9_5fb1, 0xc1a3_d022, 0x42d8_3001]);
+    assert_eq!(vel.map(f32::to_bits), [0x430a_a2bc, 0xc1b6_a289, 0x443d_5a16]);
+    let v30 = CORE.grenade_rounding(Arith::Msvc);
+    assert_eq!(throw(&v30, false).1[1].to_bits(), 0xc1b6_a288, "3.0's mp.dll stores y's product");
+    // The roll: compare per component with sums done by hand.
+    let (src, vel) = throw(&r, true);
+    let (f, _, _) = shared::weapons::spread::angle_vectors([(p as f64 * (8.0 / 9.0) - 10.0) as f32, 30.0, 0.0]);
+    let speed = (((90.0 - (p as f64 * (8.0 / 9.0) - 10.0) as f32 as f64) * 7.0) as f32).min(750.0);
+    let k = speed as f64 * (2.0 / 3.0);
+    let v = [120.5f32, -33.3, 7.7];
+    let want = [
+        (k * f[0] as f64 + v[0] as f64) as f32,
+        ((k * f[1] as f64) as f32 as f64 + v[1] as f64) as f32,
+        ((k * f[2] as f64) as f32 as f64 + v[2] as f64) as f32,
+    ];
+    assert_eq!(vel, want);
+    assert_eq!(src, shared::weapons::spread::ma([100.3, -20.7, 64.1], 16.0, f));
+}

@@ -306,6 +306,7 @@ The hooks so far:
 | `GunRules` | `katana_throws()` | true: +attack2 throws the katana | `weapons/gun.rs` `secondary_attack` |
 | `GunRules` | `infinite_clip_skips_idle_reload()` | true: `!InfiniteClips && clip < 1` reloads | `weapons/gun.rs` `weapon_idle` |
 | `GunRules` | `holster_draws_kungfu()` | true: `Unzoom`, then weapon 0's view model, draw animation and draw event | `weapons/gun.rs` `holster_weapon` |
+| `GunRules` | `grenade_rounding(arith)` | `ts30_gameplay::gun::grenade_rounding`: which throw/roll sum terms each build stores (`GrenadeRounding`; mp.dll: the eye's and throw product's y, z, the roll products' x, y; `ts_i386.so`: the roll's `speed·2/3`) | `weapons/gun.rs` `grenade_idle` → `Gun::grenade_throw` |
 | `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | `ts30_gameplay::melee`'s functions of the same names | the `Gun` method of the same name in `weapons/gun.rs` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start` |
 | `ServerRules` | `refuse_client(client)` | none (everyone joins) | `gameplay::refuse_client`, from `rules::client_connect` (§4.2) |
