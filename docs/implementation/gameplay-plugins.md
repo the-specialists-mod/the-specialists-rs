@@ -17,7 +17,7 @@ plugin.
 Not every 3.0 rule is behind a hook yet: some paths run TS 3.0's code for every ruleset where
 2.1 is the same or not yet ported (client commands after `client_command` declines, parts of
 `lifecycle::{killed, on_spawn, start_observer, death_think}`, `teams::change_team`, the
-explosion pitch `events::fire_pitch`, the texture table's size), and the core still holds the
+texture table's size), and the core still holds the
 branches for 2.1's round modes (`Mode::RoundTdm`, `Mode::Objective`). Moving those behind hooks is
 issue #200's phase 2.
 
@@ -406,7 +406,7 @@ The hooks so far:
 | `ClientRules` | `status_look()` | `StatusLook::default()`: 3.0's stance health fill, kevlar icon alone, team-coloured team bar, titles labels, icons × 2/3 | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_tint()` | true (the `cl_slowfade` tint while slowed) | `view.rs` `write_screen_fade` |
-| `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and explosions keep 3.0's `fire_pitch`) |
+| `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and 3.0's explosion keep 3.0's `fire_pitch`; a ruleset's own `tsfrags_effects` plays its own explosion) |
 | `ClientRules` | `view_bob(bob, input)` | `ts30_client::view::bob` (`V_CalcBob` 0x10066e70): the gun offset and bob pitch, no camera bob (`Bob::eye` stays `None`) | `view.rs` `calc_normal` (the gun offset and angle; `Bob::eye` is added to `vieworg`) |
 | `ClientRules` | `eye_origin(eye, simorg, viewheight, on_ground, ft)` / `body_cam_z(eye, z, on_ground, ft)` | `ts30_client::view::eye` (the view height eased at `min(15·ft, 1)` on z, then `V_SmoothStairs` 0x100677d0) / `view::body_cam_z` (`V_SmoothStairs` again, 0x10068313) | `view.rs` `calc_normal` (the eye before the camera bob; the third-person body cam) |
 | `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
@@ -430,6 +430,11 @@ The hooks so far:
 | `ClientRules` | `close_combat_blocks()` / `blade_hit_particles(..)` / `reload_event_phases()` | true / false (scintille + sparks) / true | `events/misc.rs` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11; the look: text through `titles.txt` (`text: None`), item rows red by money or slots, six category mouse rows, no "hole" message | `menus/buy.rs`, `menus/mod.rs` |
+| `ClientRules` | `ground_items_fade()` | true: items past 492 / 206 / 824 units go translucent while `m_iFOV > 79` (`0x10044a5f`) | `effects.rs` `add_entity` |
+| `ClientRules` | `add_entity_spectator() -> SpectatorTail` | `ts30_client::spectator::add_entity_tail`: while `g_iUser1 != 0`, the overview icon and the target hidden in-eye or with inset 2 (`0x10044af9`) | `effects.rs` `add_entity` |
+| `ClientRules` | `laser_style() -> &LaserStyle` | `ts30_client::fx::LASER`: the animated `PlInfo`-coloured local beam, the coloured dot at any range, other players' lasers and flashlights from `V_GetInEyePos` with the hand-line beam, fading TransAlpha shadows | `effects/laser.rs`, `hud/weapons.rs` `draw_laser_dots` |
+| `ClientRules` | `tsfrags_effects(ps, now, frags)` | false: the core's `TSFrags` (`fx::glass`, `fx::explosion`, `TS_Scintille` + `TS_Sparks`) | `effects.rs` `on_tsfrags` |
+| `ClientRules` | `blood_impact(ps, now, d)` | false: `fx::blood` (`TS_BloodImpact`) | `effects.rs` `on_ptakedam` |
 | `ServerRules` | `bullet_trace(start, end, shooter)` | `ts30_server::damage::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |
 | `ServerRules` | `bullet_damage(ammo, weapon, damage, falloff, simulated)` | `falloff × damage` | `shoot_bullets`, `bullets.rs` `update` (first hit) |
 | `ServerRules` | `bullet_range_index(scaled)` | truncated (`Ext::trunc_i32`); `scaled` is the unrounded `dist / (unit·10)·10` as an exact `Ext` (`fire::range_scaled`), issue #80 | the same three |

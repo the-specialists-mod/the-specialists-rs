@@ -75,6 +75,9 @@ pub struct Shared {
     pub laser_dots: [Option<[f32; 2]>; 2],
     /// Laser range shown next to the crosshair (TS `0x100d0cb8`): distance to the first dot ×0.025.
     pub laser_range: i32,
+    /// Each local laser hit's distance from the cull origin this frame (2.1 keeps it with the dot,
+    /// `+0x24`/`+0x30`, for the dot's range fade: `LaserStyle::dot_range`); 0 for a gun not drawn.
+    pub laser_dist: [f32; 2],
     /// Active attachment bits while the gun may fire (TS `0x1018a628`: `from` weapon state's
     /// switched-on items, 0 while `m_flNextAttack > 0`). Written by prediction, read by
     /// `DrawLaserDots` to pin the dot to the crosshair.
