@@ -726,3 +726,19 @@ fn status_panel_look() {
     let d = StatusLook::default();
     assert!(d.stance_health_fill && !d.armor_number && !d.icons_divide && d.team_bar_scale.is_none() && d.labels.is_none());
 }
+
+/// The lasers' look (issue #204): 2.1's flickering `laserbeam.spr`, the red dot faded out by
+/// 4096 units, other players' white dots (no beam) and flashlights from `origin + 24`, and the
+/// unfaded TransTexture shadows; 3.0 keeps all of its own.
+#[test]
+fn laser_style() {
+    use ts_client::effects::LaserStyle;
+    assert_eq!(
+        *Ts21Client.laser_style(),
+        LaserStyle { animated_beam: false, dot_range: Some(4096.0), others_from_origin: true, other_beams: false, shadow_fade: false }
+    );
+    assert_eq!(
+        *ts30_client::Ts30Client.laser_style(),
+        LaserStyle { animated_beam: true, dot_range: None, others_from_origin: false, other_beams: true, shadow_fade: true }
+    );
+}

@@ -1,6 +1,14 @@
-//! TS 3.0's particle builder parameters.
+//! TS 3.0's particle builder parameters and its lasers' look.
 
+use ts_client::effects::LaserStyle;
 use ts_client::effects::fx::FxStyle;
+
+/// TS 3.0's lasers, laser dot, flashlights and shadows: the animated, coloured local beam
+/// (`0x1003c5f9`), the `PlInfo`-coloured dot at any range (`0x1004e6f0`), other players' lasers
+/// and flashlights from `V_GetInEyePos` with the hand-line beam (`0x1003d600`, `0x1003b750`), the
+/// fading TransAlpha shadows (`0x10055760`).
+pub static LASER: LaserStyle =
+    LaserStyle { animated_beam: true, dot_range: None, others_from_origin: false, other_beams: true, shadow_fade: true };
 
 /// TS 3.0's particle builder parameters (muzzle flash, gun smoke, impact smoke, puffs, debris).
 pub static FX: FxStyle = FxStyle {

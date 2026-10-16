@@ -368,6 +368,11 @@ impl ClientRules for Ts30Client {
         let (mode, target) = ts_client::state::with(|s| (s.spec_mode, s.spec_target));
         spectator::add_entity_tail(mode, target, ts_client::spectator::in_eye(), ts_client::spectator::pip())
     }
+
+    /// [`fx::LASER`].
+    fn laser_style(&self) -> &'static ts_client::effects::LaserStyle {
+        &fx::LASER
+    }
 }
 
 /// The plugin as the client registers it.

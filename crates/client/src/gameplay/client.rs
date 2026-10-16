@@ -329,6 +329,10 @@ pub trait ClientRules: Sync {
 
     /// The spectator tail at the end of `HUD_AddEntity`, for every entity that got there.
     fn add_entity_spectator(&self) -> SpectatorTail;
+
+    /// The lasers', laser dot's, flashlights' and shadows' look
+    /// ([`LaserStyle`](crate::effects::LaserStyle)).
+    fn laser_style(&self) -> &'static crate::effects::LaserStyle;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -363,6 +367,15 @@ mod stub {
         debris_react: 0.0,
         debris_fade_any_mode: false,
         debris_count_by_quality: false,
+    };
+
+    /// TS 3.0's look (the core's own code paths).
+    static LASER: crate::effects::LaserStyle = crate::effects::LaserStyle {
+        animated_beam: true,
+        dot_range: None,
+        others_from_origin: false,
+        other_beams: true,
+        shadow_fade: true,
     };
 
     const NONE: CrosshairParts = CrosshairParts { crosshair: false, divesteps: false, divesteps_last: false };
@@ -557,6 +570,9 @@ mod stub {
         }
         fn add_entity_spectator(&self) -> SpectatorTail {
             SpectatorTail::Skip
+        }
+        fn laser_style(&self) -> &'static crate::effects::LaserStyle {
+            &LASER
         }
     }
 }

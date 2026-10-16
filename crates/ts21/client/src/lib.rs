@@ -20,6 +20,7 @@ use ts_client::view::{Bob, BobInput, EyeZ};
 use ts21_gameplay::TS21;
 
 pub mod bullets;
+pub mod effects;
 pub mod events;
 pub mod spectator;
 pub mod view;
@@ -574,6 +575,11 @@ impl ClientRules for Ts21Client {
     /// [`spectator::add_entity_tail`]: HLTV viewers only.
     fn add_entity_spectator(&self) -> SpectatorTail {
         spectator::add_entity_tail(&HLTV.0.borrow(), &ts_client::spectator::EngineHltv)
+    }
+
+    /// [`effects::LASER`] (issue #204).
+    fn laser_style(&self) -> &'static ts_client::effects::LaserStyle {
+        &effects::LASER
     }
 }
 

@@ -26,6 +26,35 @@ pub fn laser_color(n: i32) -> Vec3 {
     }
 }
 
+/// The lasers', flashlights' and shadows' look, each ruleset's own
+/// ([`ClientRules::laser_style`](crate::gameplay::ClientRules::laser_style)).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaserStyle {
+    /// The local beam is `laserbeamanim.spr` stepped at 20 frames a second of slowed time, in the
+    /// `PlInfo` colour, faded in and widened over 128 units (half-width `0.5 × fade`). Otherwise
+    /// `laserbeam.spr` frame 0 in a grey flicker `(j + 1) / 8 + 0.75` (`j` the frame's first
+    /// jitter roll), half-width 1.5, no fade.
+    pub animated_beam: bool,
+    /// The HUD dot's range. `Some(r)`: a red dot, drawn only while its hit is less than `r` from
+    /// the cull origin, the first gun's at alpha `(r − d) / r × 255` and the second's at 255.
+    /// `None`: the `PlInfo` colour at alpha 255, at any distance.
+    pub dot_range: Option<f32>,
+    /// Other players' lasers and flashlights aim from `origin + 24` along the model angles with
+    /// the pitch × −3, not from `V_GetInEyePos`.
+    pub others_from_origin: bool,
+    /// Other players' lasers take the hand-line direction (eased) and draw a laser-coloured dot
+    /// and a beam from the gun hand. Otherwise a white dot along the aim, and no beam.
+    pub other_beams: bool,
+    /// Shadows are TransAlpha with alpha `1 − d·0.005`, none from 200 units up, traced with
+    /// `PM_NORMAL`. Otherwise TransTexture at full strength at any height, traced with
+    /// `PM_STUDIO_BOX`.
+    pub shadow_fade: bool,
+}
+
+fn style() -> &'static LaserStyle {
+    crate::gameplay::current().laser_style()
+}
+
 /// The laser code's globals.
 struct LaserState {
     /// `0x101899b4`: the local beam's animation frame.
@@ -154,17 +183,25 @@ fn local_beam_fade(d: f32) -> f32 {
     1.0 - (128.0 - d).max(0.0) * 0.0078125
 }
 
-/// `DrawLocalLaser` (`0x1003bb00`), gated on the HUD's item bits (laser `& 2`, second gun
-/// `& 0x40`).
+/// The local beams' grey flicker without the animated beam ([`LaserStyle::animated_beam`]; 2.1
+/// `0x10071bd0`, `Color4f` at `0x1007284d`): `(j + 1) / 8 + 0.75` of the frame's first jitter
+/// roll `j` (−1..1), so 0.75..1.
+fn flicker(j: f32) -> f32 {
+    (j + 1.0) / 8.0 + 0.75
+}
+
+/// `DrawLocalLaser` (`0x1003bb00`; 2.1 `0x10071bd0`), gated on the HUD's item bits (laser `& 2`,
+/// second gun `& 0x40`).
 ///
 /// The laser is traced from the cull origin (offset 4 units right/left per gun with akimbo), not
 /// from the view model, ignoring the local player. The hit point minus `2·v_forward` is projected
-/// for the HUD dot, and the first gun's range from the cull origin ×0.025 is the number the
-/// crosshair shows. With a view model (first person, not zoomed in) and `laserbeamanim.spr`, each
-/// gun also gets a beam from its view-model muzzle (attachment 0, or 2 for the second gun, one
-/// unit down) to its hit point less twice its direction: one additive quad batch, colour and
-/// width scaled by [`local_beam_fade`], the sprite animated at 20 frames a second of slowed time
-/// ([`beam_frame_step`]).
+/// for the HUD dot, with its distance from the cull origin; the first gun's distance ×0.025 is
+/// the number the crosshair shows. With a view model (first person, not zoomed in), each gun also
+/// gets a beam from its view-model muzzle (attachment 0, or 2 for the second gun, one unit down)
+/// to its hit point less twice its direction, in one additive quad batch: TS 3.0's
+/// `laserbeamanim.spr`, colour and width scaled by [`local_beam_fade`], animated at 20 frames a
+/// second of slowed time ([`beam_frame_step`]), or the ruleset's flickering `laserbeam.spr`
+/// ([`LaserStyle::animated_beam`]).
 pub fn draw_local_laser(cam: &Camera, now: f64, frametime: f32, time_scale: f32, cl_laser: f32) {
     let local = engine().local_player().map_or(0, |e| e.index);
     let (items, color) =
@@ -180,36 +217,42 @@ pub fn draw_local_laser(cam: &Camera, now: f64, frametime: f32, time_scale: f32,
     let cull = cull_origin(cam);
     let guns: &[(usize, f32)] = if akimbo { &[(0, 4.0), (1, -4.0)] } else { &[(0, 0.0)] };
     let mut hits = [[0.0; 3]; 2];
+    let mut dists = [0.0; 2];
     for &(i, side) in guns {
         let start = v::ma(cull, side, cam.right);
         let hit = trace_from(start, v::ma(start, 8192.0, dirs[i]), local).endpos;
         hits[i] = hit;
+        dists[i] = v::dist(hit, cull);
         let dot = engine().world_to_screen_ndc(v::ma(hit, -2.0, cam.forward));
-        state::with(|st| {
-            st.laser_dots[i] = dot;
-            if i == 0 {
-                st.laser_range = (v::dist(hit, cull) * 0.025) as i32;
-            }
-        });
+        state::with(|st| st.laser_dots[i] = dot);
     }
-    let Some(vm) = vm else { return };
-    let Some(beam_anim) = load("sprites/laserbeamanim.spr", kRenderTransAdd) else { return };
-    let frames = r::spr_frames(beam_anim);
-    let frame = with(|s| {
-        s.beam_frame = beam_frame_step(s.beam_frame, time_scale, frametime, frames);
-        s.beam_frame as i32
+    state::with(|st| {
+        st.laser_dist = dists;
+        st.laser_range = (dists[0] * 0.025) as i32;
     });
-    if !set_sprite(beam_anim, frame) {
+    let Some(vm) = vm else { return };
+    let (beam, frame, rgb, half_width) = if style().animated_beam {
+        let Some(beam) = load("sprites/laserbeamanim.spr", kRenderTransAdd) else { return };
+        let frames = r::spr_frames(beam);
+        let frame = with(|s| {
+            s.beam_frame = beam_frame_step(s.beam_frame, time_scale, frametime, frames);
+            s.beam_frame as i32
+        });
+        let fade = local_beam_fade(dists[0]);
+        (beam, frame, v::scale(laser_color(color), fade), 0.5 * fade)
+    } else {
+        let Some(beam) = load("sprites/laserbeam.spr", kRenderTransAdd) else { return };
+        (beam, 0, [flicker(jitter[0]); 3], 1.5)
+    };
+    if !set_sprite(beam, frame) {
         return;
     }
-    let fade = local_beam_fade(v::dist(hits[0], cull));
-    let rgb = laser_color(color);
-    let w = v::scale(cam.up, 0.5 * fade);
+    let w = v::scale(cam.up, half_width);
     let log = log_due(0, now);
     tri::render_mode(kRenderTransAdd as i32);
     tri::cull_face(TRICULLSTYLE_TRI_NONE);
     tri::begin(TRI_QUADS as i32);
-    tri::color4f(rgb[0] * fade, rgb[1] * fade, rgb[2] * fade, 1.0);
+    tri::color4f(rgb[0], rgb[1], rgb[2], 1.0);
     for &(i, _) in guns {
         let muzzle = vm.attachment[i * 2];
         let start = v::sub(muzzle, cam.up);
@@ -299,6 +342,18 @@ fn others_with(item: i32, visible: &[bool; 33]) -> Vec<i32> {
         .collect()
 }
 
+/// Where another player's laser or flashlight aims from without the in-eye view
+/// ([`LaserStyle::others_from_origin`]; 2.1 `0x100731a0`, `0x10071630`): the entity's origin
+/// raised 24 units, and its angles with the model pitch turned back into the view pitch (× −3).
+fn origin_aim(idx: i32) -> Option<(Vec3, Vec3)> {
+    engine().entity(idx).map(|e| origin_aim_of(e.origin, e.angles))
+}
+
+/// [`origin_aim`] of an entity's origin and angles.
+fn origin_aim_of(origin: Vec3, angles: Vec3) -> (Vec3, Vec3) {
+    (v::add(origin, [0.0, 0.0, 24.0]), [angles[0] * -3.0, angles[1], angles[2]])
+}
+
 /// `DrawOtherLasers`' direction (`0x1003d80e`): the in-eye view (jittered by up to 0.05° in pitch
 /// and yaw), unless it is more than ~45° off the line from the player's cached attachment 0 to 1
 /// (the `p_` model's right hand), then that line; eased toward at `15·frametime` per frame and
@@ -310,13 +365,14 @@ fn other_laser_dir(aim: Vec3, hand: Vec3, prev: Vec3, frametime: f32) -> Vec3 {
     v::normalize(v::add(prev, v::scale(v::sub(f, prev), k)))
 }
 
-/// `DrawOtherLasers` (`0x1003d600`): nothing at all unless both `laserdot.spr` and
-/// `laserbeam.spr` load (`0x1003d6e6`, `0x1003d705`). For each other visible player with the
-/// laser on: the direction from [`other_laser_dir`], traced 8192 units from the player's in-eye
-/// position (`V_GetInEyePos`); `laserdot.spr` (size 4) two units short of the hit; and, if
-/// `laserbeam.spr` binds, a beam from 16 units ahead of the player's cached attachment 0 (the
-/// gun hand) to 16 units short of the dot. One beam per player, akimbo or not: TS has no second
-/// world beam.
+/// `DrawOtherLasers` (`0x1003d600`; 2.1 `0x100731a0`): nothing at all unless both
+/// `laserdot.spr` and `laserbeam.spr` load (`0x1003d6e6`, `0x1003d705`). For each other visible
+/// player with the laser on: the direction from [`other_laser_dir`], traced 8192 units from the
+/// player's in-eye position (`V_GetInEyePos`); `laserdot.spr` (size 4) two units short of the
+/// hit; and, if `laserbeam.spr` binds, a beam from 16 units ahead of the player's cached
+/// attachment 0 (the gun hand) to 16 units short of the dot. One beam per player, akimbo or not:
+/// TS has no second world beam. A ruleset may aim from [`origin_aim`] and draw only a white dot
+/// along the jittered aim ([`LaserStyle`]).
 pub fn draw_other_lasers(cam: &Camera, visible: &[bool; 33], now: f64, frametime: f32) {
     let Some(dot) = load("sprites/laserdot.spr", kRenderTransAdd) else { return };
     let Some(beam) = load("sprites/laserbeam.spr", kRenderTransAdd) else { return };
@@ -327,13 +383,30 @@ pub fn draw_other_lasers(cam: &Camera, visible: &[bool; 33], now: f64, frametime
         if !set_sprite(dot, 0) {
             continue;
         }
-        let (eye, angles) = with(|s| {
-            crate::spectator::in_eye_position(idx, &mut s.eye_origin, &mut s.eye_angles);
-            s.eye_angles[0] += jitter[0] * 0.05;
-            s.eye_angles[1] += jitter[1] * 0.05;
-            (s.eye_origin, s.eye_angles)
-        });
+        let st = style();
+        let (eye, angles) = if st.others_from_origin {
+            let Some((org, mut angles)) = origin_aim(idx) else { continue };
+            angles[0] += jitter[0] * 0.05;
+            angles[1] += jitter[1] * 0.05;
+            (org, angles)
+        } else {
+            with(|s| {
+                crate::spectator::in_eye_position(idx, &mut s.eye_origin, &mut s.eye_angles);
+                s.eye_angles[0] += jitter[0] * 0.05;
+                s.eye_angles[1] += jitter[1] * 0.05;
+                (s.eye_origin, s.eye_angles)
+            })
+        };
         let aim = v::angle_vectors(angles).0;
+        if !st.other_beams {
+            // 2.1 (`0x100731a0`): the dot alone, white, along the aim.
+            let tr = trace_from(eye, v::ma(eye, 8192.0, aim), idx);
+            tri::render_mode(kRenderTransAdd as i32);
+            tri::cull_face(TRICULLSTYLE_TRI_NONE);
+            sprite_quad(cam, v::ma(tr.endpos, -2.0, aim), 4.0, [1.0; 3], 1.0);
+            tri::render_mode(kRenderNormal as i32);
+            continue;
+        }
         let hand = super::player_attachment(idx, 0);
         let hand_dir = v::sub(super::player_attachment(idx, 1), hand);
         let dir = with(|s| {
@@ -377,17 +450,24 @@ pub fn draw_other_lasers(cam: &Camera, visible: &[bool; 33], now: f64, frametime
     }
 }
 
-/// `DrawOtherFlashlights` (`0x1003b750`): for each other visible player with the flashlight on,
-/// a 1024-unit trace along the in-eye view (`V_GetInEyePos`, no jitter); when it hits, a dynamic
-/// light (key `index + 3`) at the hit, radius `1024 − d` capped at 120, `d` the hit's distance from
-/// the cull origin.
+/// `DrawOtherFlashlights` (`0x1003b750`; 2.1 `0x10071630`): for each other visible player with
+/// the flashlight on, a 1024-unit trace along the in-eye view (`V_GetInEyePos`, no jitter), or
+/// from [`origin_aim`] ([`LaserStyle::others_from_origin`]); when it hits, a dynamic light (key
+/// `index + 3`) at the hit, radius `1024 − d` capped at 120, `d` the hit's distance from the cull
+/// origin.
 pub fn draw_other_flashlights(cam: &Camera, visible: &[bool; 33]) {
     let cull = cull_origin(cam);
+    let from_origin = style().others_from_origin;
     for idx in others_with(ITEM_FLASHLIGHT, visible) {
-        let (org, angles) = with(|s| {
-            crate::spectator::in_eye_position(idx, &mut s.light_origin, &mut s.light_angles);
-            (s.light_origin, s.light_angles)
-        });
+        let (org, angles) = if from_origin {
+            let Some(aim) = origin_aim(idx) else { continue };
+            aim
+        } else {
+            with(|s| {
+                crate::spectator::in_eye_position(idx, &mut s.light_origin, &mut s.light_angles);
+                (s.light_origin, s.light_angles)
+            })
+        };
         let fwd = v::angle_vectors(angles).0;
         let tr = trace_from(org, v::ma(org, 1024.0, fwd), idx);
         if tr.fraction == 1.0 {
@@ -413,7 +493,9 @@ pub fn draw_other_flashlights(cam: &Camera, visible: &[bool; 33]) {
 /// `0x10055500`). Each traces 8192 units straight down with the point hull and `PM_NORMAL`,
 /// ignoring physent number = the player's entity index, against whatever physents the engine has
 /// set up, and lays a 24-unit quad facing `VecToAngles(normal)` one unit off the floor, at alpha
-/// `1 − d·0.005` while the floor is less than 200 units down.
+/// `1 − d·0.005` while the floor is less than 200 units down. Without
+/// [`LaserStyle::shadow_fade`] (2.1 `0x10095260`/`0x10094e70`) the batch is TransTexture at colour
+/// and alpha 1, every quad is drawn whatever the height, and the traces use `PM_STUDIO_BOX`.
 pub fn draw_shadows(cam: &Camera, visible: &[bool; 33], cl_shadow: f32, third_person: bool) {
     if cl_shadow == 0.0 {
         return;
@@ -422,17 +504,24 @@ pub fn draw_shadows(cam: &Camera, visible: &[bool; 33], cl_shadow: f32, third_pe
     if !set_sprite(shadow, 0) {
         return;
     }
-    tri::render_mode(kRenderTransAlpha as i32);
+    let fade = style().shadow_fade;
+    tri::render_mode(if fade { kRenderTransAlpha } else { kRenderTransTexture } as i32);
     tri::cull_face(TRICULLSTYLE_TRI_NONE);
     tri::begin(TRI_QUADS as i32);
+    if !fade {
+        tri::color4f(1.0, 1.0, 1.0, 1.0);
+    }
+    let flags = if fade { PM_NORMAL } else { PM_STUDIO_BOX } as i32;
     let local = engine().local_player().map_or(0, |e| e.index);
     let shadow_quad = |from: Vec3, ignore: i32, less: f32| {
-        let tr = r::player_trace(from, v::add(from, [0.0, 0.0, -8192.0]), 2, PM_NORMAL as i32, ignore);
+        let tr = r::player_trace(from, v::add(from, [0.0, 0.0, -8192.0]), 2, flags, ignore);
         let n = tr.plane.normal;
         let angles = super::fx::vec_to_angles(n);
         let d = v::dist(tr.endpos, from) - less;
-        if d < 200.0 {
-            tri::color4f(1.0, 1.0, 1.0, 1.0 - d * 0.005);
+        if !fade || d < 200.0 {
+            if fade {
+                tri::color4f(1.0, 1.0, 1.0, 1.0 - d * 0.005);
+            }
             let p = Particle { origin: v::add(tr.endpos, n), angles, radius: 24.0, orient: ORIENT_FREE, ..Default::default() };
             for (uv, vtx) in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].iter().zip(build_quad(&p, cam).iter()) {
                 tri::tex_coord2f(uv[0], uv[1]);
@@ -475,6 +564,19 @@ mod tests {
         assert_eq!(local_flashlight_radius(904.0), 120.0);
         assert_eq!(local_flashlight_radius(1000.0), 24.0);
         assert_eq!(local_flashlight_radius(1024.0), 0.0);
+    }
+
+    /// 2.1's beam colour (`0x1007284d`): 0.75..1 from the first jitter roll.
+    #[test]
+    fn flicker_spans_three_quarters_to_one() {
+        assert_eq!([flicker(-1.0), flicker(0.0), flicker(1.0)], [0.75, 0.875, 1.0]);
+    }
+
+    /// 2.1's other lasers and flashlights (`0x100731a0`, `0x10071630`): 24 units above the
+    /// origin, the model pitch × −3.
+    #[test]
+    fn origin_aim_raises_and_unscales_the_pitch() {
+        assert_eq!(origin_aim_of([1.0, 2.0, 3.0], [-5.0, 90.0, 0.0]), ([1.0, 2.0, 27.0], [15.0, 90.0, 0.0]));
     }
 
     #[test]

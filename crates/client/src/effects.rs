@@ -11,7 +11,7 @@ pub mod fx;
 mod laser;
 pub mod mblur;
 pub mod psys;
-pub use laser::laser_color;
+pub use laser::{LaserStyle, laser_color};
 mod scope;
 
 use crate::events::ClientBullets;
