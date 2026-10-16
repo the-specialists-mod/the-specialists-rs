@@ -141,6 +141,19 @@ mod tests {
         assert!(go_slow_release(f32::NAN).is_nan(), "a NaN stays");
     }
 
+    /// Issue #223: a player the flow slowed is released through `GoSlow` too (FUN_10057610 →
+    /// FUN_10055220), so a victim holding a long slow-motion delay keeps at most 1 s of it.
+    #[test]
+    fn released_victim_keeps_at_most_a_second() {
+        let mut p = ts_server::player::Player::default();
+        p.inv.sv.has_gun = true;
+        (p.inv.gun.next_attack, p.inv.gun.next_primary, p.inv.gun.next_secondary) = (2.5, 4.0, 4.0);
+        on_go_slow(&mut p, 0.35);
+        assert_eq!(p.inv.gun.next_attack, 2.5, "slowing down leaves the delays");
+        on_go_slow(&mut p, 1.0);
+        assert_eq!((p.inv.gun.next_attack, p.inv.gun.next_primary, p.inv.gun.next_secondary), (1.0, 1.0, 1.0));
+    }
+
     #[test]
     fn durations() {
         let r = POWERUPS;

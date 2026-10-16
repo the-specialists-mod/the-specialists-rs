@@ -305,7 +305,11 @@ pub fn remove_from_slowed(e: *mut edict_t) {
     }
 }
 
-/// `DeactivateSlowMotionFlow`: back to normal time for us and everything we slowed.
+/// `DeactivateSlowMotionFlow`: back to normal time for us and everything we slowed. A slowed
+/// player who isn't an activator himself is released through his virtual `GoSlow(1, 0)` (3.0
+/// 0x96a9c, 2.1 FUN_10057610's `GoSlow(0, 0)`), so the plugins' hook and the ruleset's release
+/// ([`ServerRules::on_go_slow`](crate::gameplay::ServerRules::on_go_slow)) run for him too
+/// (issue #223).
 pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
     go_slow_self(p, cx, 1.0, false);
     p.ts.slow_self = 0.0;
@@ -321,13 +325,9 @@ pub fn deactivate_flow(p: &mut Player, cx: &mut Cx) {
         if o.is_null() {
             continue;
         }
-        other(o, |q| {
-            if q.ts.slow_self == 0.0 {
-                set_slow_target(q, o, 1.0);
-                q.ts.slow_display = 1.0;
-                q.ts.btime = false;
-            }
-        });
+        if other(o, |q| q.ts.slow_self == 0.0) == Some(true) {
+            go_slow(o, 1.0, false);
+        }
     }
     for e in std::mem::take(&mut p.ts.slowed_ents) {
         // The entity may be gone; only touch edicts that are still in use.
@@ -610,5 +610,17 @@ mod tests {
         }
         // What the held seconds would have given: a `pwupmult 2` slow motion's 6 s stays 6.
         assert_eq!(setup_secs(6, 3, true, 1.0), 6);
+    }
+
+    /// Issue #223: `DeactivateSlowMotionFlow` releases the players it slowed through `GoSlow`
+    /// (3.0 0x96a9c's virtual call, 2.1 FUN_10057610 → FUN_10055220), whose 2.1 release clamps
+    /// their next-attack times (`ServerRules::on_go_slow`), not by writing their state.
+    #[test]
+    fn deactivate_flow_releases_victims_through_go_slow() {
+        let src = include_str!("powerup.rs");
+        let start = src.find(concat!("pub fn deactivate_", "flow")).unwrap();
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+        assert!(body.contains("go_slow(o, 1.0, false)"));
+        assert!(!body.contains("set_slow_target"));
     }
 }
