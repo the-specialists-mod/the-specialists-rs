@@ -80,7 +80,13 @@ pub const STUNTS: StuntRules = StuntRules {
     // `Play` (0x1005acf0): the recovery's end clears 0x40000, 0x4 and 0x1 and leaves
     // `BlockPlayer`'s lock (`pl+0x460`) to `PreThink`.
     recover_end_clears: ROLLING | GO_DUCK | RECOVER,
-    recover_end_unblocks: false,
+    recover_end_unblocks: false, // Audit round 2: E
+    // Animate (0x1003d8b0) normalises with FUN_10011fc0: 1/len stored as a float
+    // (0x10012014), IEEE zero test (0x10011fe9).
+    anim_normalize_stores_reciprocal: true,
+    // CheckForBreakables (0x1005c680): x, y, z (0x1005c7c8..0x1005c7e5), IEEE speed gate
+    // (0x1005c712) and zero test (0x1005c7f7).
+    breakables_ieee_xyz: true,
 };
 
 /// `CanDiveHigh/Medium/Low` (0x1005b0b0, 0x1005b110, 0x1005b130): used slots (`81 - free`)
@@ -187,13 +193,17 @@ impl StuntClock for Absolute {
     }
 
     /// `GoWallJump` (0x1005b320) / `GoWallClimb` (0x1005b550):
-    /// `time + min(10, slowInv * max(0.5, chain))`. `GoWallJump` passes the unrounded sum on as
-    /// a `double` (`fst dword [esi+0x3c]` then `fstp qword`, 0x1005b436..0x1005b442);
-    /// `GoWallClimb` reloads the stored `float` (0x1005b68c).
-    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, chain: f64) -> f32 {
-        let m = if chain <= 0.5 { 0.5 } else { chain };
-        let v = slow_inv(time_scale) * m;
-        let v = if 10.0 <= v { 10.0 } else { v };
+    /// `time + min(10, slowInv * max(0.5, chain))`. `GoWallJump` tests the cap with the
+    /// unrounded sum (`fst dword [esi+0x3c]` then `fstp qword`, 0x1005b436..0x1005b466) and,
+    /// below the cap, computes the value from the stored `float` again (0x1005b473..0x1005b494);
+    /// `GoWallClimb` reloads the stored `float` throughout (0x1005b68c). Each `max(0.5, ·)` takes
+    /// 0.5 unless the chain is above it (`and eax,0x4100; jne`: a NaN too); the cap takes 10
+    /// unless the product is below it (`test ah,0x5; jp`: a NaN too).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, sum: f64, stored: f32) -> f32 {
+        let at_least_half = |c: f64| if c > 0.5 { c } else { 0.5 };
+        let inv = slow_inv(time_scale);
+        let v = if !(inv * at_least_half(sum) < 10.0) { 10.0 } else { inv * at_least_half(f64::from(stored)) };
         (v + f64::from(now)) as f32
     }
 
@@ -201,7 +211,7 @@ impl StuntClock for Absolute {
     // The negated compare is the x87's: a NaN `slowInv` (a NaN `fuser1`) is unordered, so it
     // doesn't refuse.
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
-    fn air_stunt_allowed(&self, now: f32, time_scale: f32, last_ground: f32) -> bool {
+    fn air_stunt_allowed(&self, now: f32, time_scale: f32, _slow_mul: &mut dyn FnMut() -> f32, last_ground: f32) -> bool {
         !(slow_inv(time_scale) * 0.7 < f64::from(now) - f64::from(last_ground))
     }
 
@@ -278,6 +288,12 @@ mod tests {
         assert_eq!(s.recover_end_clears, 0x40005);
         assert!(s.wall_landing_sets_recover && !s.wall_dive && !s.wall_climb_while_gliding);
         assert!(!s.stunt_ends_close_combat && !s.wheel_and_roll_wait_for_kick && !s.recover_end_unblocks);
+        assert!(
+            s.anim_normalize_stores_reciprocal
+                && s.breakables_ieee_xyz
+                && !CORE.anim_normalize_stores_reciprocal
+                && !CORE.breakables_ieee_xyz
+        );
         assert!(s.kick_cooldown_on_try, "2.1 arms the jump kick's cooldown on every try");
         assert!(s.wall_jump_pose_holds_until_recovered);
         assert!(!s.wall_climb_pose_lets_dive_through && !s.melee_gait_follows && !s.gait_idle_anim_extension);
@@ -347,22 +363,27 @@ mod tests {
     #[test]
     fn wall_chain_cap() {
         let c = &ABSOLUTE;
-        assert_eq!(c.wall_chain_cooldown(100.0, 1.0, 0.35), 100.5);
-        assert_eq!(c.wall_chain_cooldown(100.0, 1.0, 2.0), 102.0);
-        assert_eq!(c.wall_chain_cooldown(100.0, 1.0, 30.0), 110.0, "capped at 10");
-        assert_eq!(c.wall_chain_cooldown(100.0, 0.35, 4.0), 110.0, "the cap is after slowInv");
-        assert_eq!(c.wall_chain_cooldown(100.0, 0.5, 2.0), 104.0);
-        // GoWallJump's unrounded sum (0.3f + 0.35) against the float GoWallClimb would reload.
+        let cd = |now, ts, chain: f32| c.wall_chain_cooldown(now, ts, f64::from(chain), chain);
+        assert_eq!(cd(100.0, 1.0, 0.35), 100.5);
+        assert_eq!(cd(100.0, 1.0, 2.0), 102.0);
+        assert_eq!(cd(100.0, 1.0, 30.0), 110.0, "capped at 10");
+        assert_eq!(cd(100.0, 0.35, 4.0), 110.0, "the cap is after slowInv");
+        assert_eq!(cd(100.0, 0.5, 2.0), 104.0);
+        // GoWallJump (0x1005b473..0x1005b494): below the cap the value comes from the stored
+        // float chain (0.3f + 0.35 rounded), not the unrounded sum (1.65 - 1 ulp).
         let sum = f64::from(0.3f32) + 0.35;
-        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, sum).to_bits(), 0x3fd3_3333, "1.65 - 1 ulp");
-        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, f64::from(sum as f32)).to_bits(), 0x3fd3_3334);
+        assert_eq!(c.wall_chain_cooldown(1.0, 1.0, sum, sum as f32).to_bits(), 0x3fd3_3334);
+        // The cap test sees the unrounded sum.
+        let sum = 10.0 + 1e-9;
+        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, sum, 9.0), 10.0, "capped on the sum, not the stored chain");
     }
 
     #[test]
     fn coyote_time_and_attack_delay() {
         let c = &ABSOLUTE;
-        assert!(c.air_stunt_allowed(10.0, 1.0, 9.4) && !c.air_stunt_allowed(10.0, 1.0, 9.2));
-        assert!(c.air_stunt_allowed(10.0, 0.5, 8.7));
+        let mut no = || -> f32 { unreachable!("2.1 reads fuser1 (FixedSlowMul), not GiveSlowMul") };
+        assert!(c.air_stunt_allowed(10.0, 1.0, &mut no, 9.4) && !c.air_stunt_allowed(10.0, 1.0, &mut no, 9.2));
+        assert!(c.air_stunt_allowed(10.0, 0.5, &mut no, 8.7));
         assert_eq!(c.attack_delay(1.0, 0.75), 0.75);
         assert_eq!(c.attack_delay(0.5, 0.55), 1.1);
     }

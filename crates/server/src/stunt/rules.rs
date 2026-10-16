@@ -118,6 +118,17 @@ pub struct StuntRules {
     /// also ends a `BlockPlayer` lock (`pl+0x4dc`).
     pub recover_end_clears: i32,
     pub recover_end_unblocks: bool,
+
+    // Audit round 2: E
+    /// `Animate`'s velocity directions (the in-air jump blend, the jump pose, the dive start and
+    /// the death pose) under `mp.dll`'s arithmetic: `Vector::Normalize()` stores `1 / len` as a
+    /// `float` before the products and tests the zero length IEEE (a NaN length normalises).
+    /// TS 3.0's keeps the reciprocal unrounded and takes (0, 0, 1) for a NaN.
+    pub anim_normalize_stores_reciprocal: bool,
+    /// `CheckForBreakables`' dive under `mp.dll`'s arithmetic: the speed gate and the trace
+    /// direction's zero test are IEEE (a NaN speed goes on, a NaN length normalises) and the
+    /// direction sums `x² + y² + z²`. TS 3.0's sums `z² + x² + y²` and a NaN stops at the gate.
+    pub breakables_ieee_xyz: bool,
 }
 
 /// How the stunt timers keep time: the cooldown (`next_stunt`), the recovery (`recover`), the
@@ -172,19 +183,21 @@ pub trait StuntClock: Sync {
     }
 
     /// `GoWallJump` (0x9a7d4) / `GoWallClimb` (0x9aa1c): the cooldown after a wall stunt with
-    /// the chain at `chain`: `max(0.5, chain)`. `chain` is the sum as the build's x87 holds it
-    /// (`GoWallJump` under `Msvc` doesn't reload the stored `float`); 3.0 stores the result as a
-    /// `float`, and rounding after the `max` is the same as before it.
-    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, chain: f64) -> f32 {
-        let _ = (now, time_scale);
-        chain.max(0.5) as f32
+    /// the chain at `sum`, as the build's x87 holds it (`GoWallJump` under `Msvc` doesn't reload
+    /// the stored `float`), and `stored`, the chain as stored (`m_flWallChain`). 3.0's is
+    /// `max(0.5, sum)` stored as a `float` (rounding after the `max` is the same as before it).
+    fn wall_chain_cooldown(&self, now: f32, time_scale: f32, sum: f64, stored: f32) -> f32 {
+        let _ = (now, time_scale, stored);
+        sum.max(0.5) as f32
     }
 
     /// `HandleStunt` / `GoWheel`: the "coyote time" an air stunt is still allowed after leaving
-    /// the ground at `last_ground`: 0.7 s of the player's time (`GiveSlowMul`, at least 0.01).
-    fn air_stunt_allowed(&self, now: f32, time_scale: f32, last_ground: f32) -> bool {
-        // TS refuses when `0.7 / slowmul < now - last_ground`; the floor keeps a NaN out.
-        0.7 / time_scale.max(0.01) >= now - last_ground
+    /// the ground at `last_ground`: 0.7 s of the player's time. `slow_mul` is `GiveSlowMul`
+    /// (`stunt::slow_mul`: the time scale, at least 0.01, through the plugin hook), called only
+    /// by a ruleset that reads it. TS 3.0's: [`coyote_allows`] in the server's arithmetic.
+    fn air_stunt_allowed(&self, now: f32, time_scale: f32, slow_mul: &mut dyn FnMut() -> f32, last_ground: f32) -> bool {
+        let _ = time_scale;
+        coyote_allows(crate::rules::cvars::pm_arith(), now, slow_mul(), last_ground)
     }
 
     /// A weapon delay (`m_flNextAttack`, a relative timer of the gun) a stunt sets, of `secs`
@@ -201,5 +214,21 @@ pub trait StuntClock: Sync {
     /// [`start`](Self::start)'s timer of `t` seconds of the player's time.
     fn block_end(&self, now: f32, time_scale: f32, t: f32) -> f32 {
         self.start(now, time_scale, f64::from(t))
+    }
+}
+
+/// TS 3.0's coyote-time test: refused when `0.7 / slowmul < time - lastGroundTime`, the
+/// difference stored as a `double` and the `double` 0.7 divided on the x87. `mp.dll`
+/// (`HandleStunt` 0x10069419..0x10069437, `fdivr`) divides at 53 bits and refuses on C0 (a NaN
+/// too); `ts_i386.so` (0x8b12b..0x8b155, the same in `GoWheel`) divides in extended precision
+/// and refuses only when the difference is above the quotient (`test ah,0x41; je`).
+// The negated compare is the x87 branch's: a NaN (unordered) takes the other way.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn coyote_allows(arith: shared::pm::Arith, now: f32, slow_mul: f32, last_ground: f32) -> bool {
+    use shared::pm::{Arith, Ext, below87};
+    let diff = f64::from(now) - f64::from(last_ground);
+    match arith {
+        Arith::Msvc => !below87(0.7 / f64::from(slow_mul), diff),
+        Arith::Gcc => !(Ext::from_f64(diff) > Ext::from_f64(0.7) / Ext::from_f32(slow_mul)),
     }
 }

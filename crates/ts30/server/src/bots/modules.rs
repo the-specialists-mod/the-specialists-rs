@@ -61,20 +61,23 @@ pub fn vision(b: &mut Brain, _p: &mut Player, cx: &mut Cx) {
 /// `CBotModuleBuy::Think` (0x1006d630): one roll `f` decides the loadout tier; no money involved.
 /// Kevlar 70 % (`botarmor` other than 0 always, -1 never), a katana or knives, a pistol above
 /// 0.1, an SMG in (0.4, 0.7), a rifle from 0.7. `BuyArmament` applies the list at the respawn.
+/// The roll is a `float`; only the kevlar test compares it with a `float` constant (0.3f,
+/// 0x10094d80), the others with `double`s ([`BuyTiers::of`]).
 pub fn buy(b: &mut Brain, p: &mut Player, _cx: &mut Cx) {
     use shared::weapons::id::*;
     let eng = engine();
     let f = eng.random_float(0.0, 1.0);
+    let tiers = BuyTiers::of(f);
     reset_armament(p);
     let armor = cvars::f(c"botarmor");
-    if (f > 0.3 || armor != 0.0) && armor != -1.0 {
+    if (tiers.kevlar || armor != 0.0) && armor != -1.0 {
         add_item(p, 0x10, 0, true); // kevlar
     }
     let k = eng.random_long(0, 5);
     if k == 5 {
         add_item(p, KATANA as i32, 0, false);
     } else if k != 0 {
-        let n = if f > 0.75 { 10 } else { 1 };
+        let n = if tiers.ten_knives { 10 } else { 1 };
         let t = eng.random_long(0, 2); // 0 seal knife, 1 combat knife, 2 both
         for _ in 0..n {
             if t == 0 || t == 2 {
@@ -85,7 +88,7 @@ pub fn buy(b: &mut Brain, p: &mut Player, _cx: &mut Cx) {
             }
         }
     }
-    if f > 0.1 {
+    if tiers.pistol {
         let (id, akimbo, ammo) = match eng.random_long(0, 9) {
             0 => (CONTENDER, false, 13),
             1 => (GLOCK18, false, 1),
@@ -103,7 +106,7 @@ pub fn buy(b: &mut Brain, p: &mut Player, _cx: &mut Cx) {
             buy_weapon(p, id, akimbo, ammo);
         }
     }
-    if f > 0.4 && f < 0.7 {
+    if tiers.smg {
         let (id, akimbo, ammo) = match eng.random_long(1, 6) {
             1 => (UZI, true, 1),
             2 => (MP5SD, false, 1),
@@ -116,7 +119,7 @@ pub fn buy(b: &mut Brain, p: &mut Player, _cx: &mut Cx) {
         if id != 0 {
             buy_weapon(p, id, akimbo, ammo);
         }
-    } else if f >= 0.7 {
+    } else if tiers.rifle {
         let (id, ammo) = match eng.random_long(1, 11) {
             1 => (BENELLI, 3),
             2 => (USAS, 3),
@@ -136,6 +139,26 @@ pub fn buy(b: &mut Brain, p: &mut Player, _cx: &mut Cx) {
         }
     }
     b.disable(bit::BUY);
+}
+
+/// The tiers one buy roll `f` selects in `CBotModuleBuy::Think` (0x1006d630). The kevlar test
+/// compares with the `float` 0.3f (`fcomp DWORD [0x10094d80]` at 0x1006d655); the knife count,
+/// pistol, SMG and rifle tests with the `double`s 0.75, 0.1, 0.4 and 0.7 (`fcomp QWORD` at
+/// 0x1006d6b1, 0x1006d718, 0x1006d8d2, 0x1006d8e7, 0x1006da10), so `f` widens first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuyTiers {
+    pub kevlar: bool,
+    pub ten_knives: bool,
+    pub pistol: bool,
+    pub smg: bool,
+    pub rifle: bool,
+}
+
+impl BuyTiers {
+    pub fn of(f: f32) -> BuyTiers {
+        let d = f64::from(f);
+        BuyTiers { kevlar: f > 0.3, ten_knives: d > 0.75, pistol: d > 0.1, smg: d > 0.4 && d < 0.7, rifle: d >= 0.7 }
+    }
 }
 
 // ---- look around (bit 0x80) ----------------------------------------------------------------------
@@ -180,4 +203,26 @@ fn find_look_point(cx: &mut Cx) -> [f32; 3] {
         yaw += 45.0;
     }
     best_pos
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuyTiers;
+
+    /// The `float` roll against mp.dll's `double` limits (0x1006d630): 0.1f and 0.4f lie above
+    /// 0.1 and 0.4, 0.7f below 0.7.
+    #[test]
+    fn buy_tiers_compare_doubles() {
+        let t = BuyTiers::of(0.1);
+        assert!(t.pistol && !t.smg && !t.rifle);
+        let t = BuyTiers::of(0.4);
+        assert!(t.pistol && t.smg && !t.rifle);
+        let t = BuyTiers::of(0.7);
+        assert!(t.smg && !t.rifle && !t.ten_knives);
+        let t = BuyTiers::of(0.70000005);
+        assert!(!t.smg && t.rifle);
+        // Kevlar compares with the float 0.3f: 0.3f itself is not above it.
+        assert!(!BuyTiers::of(0.3).kevlar && BuyTiers::of(0.30000004).kevlar);
+        assert!(BuyTiers::of(0.75000006).ten_knives && !BuyTiers::of(0.75).ten_knives);
+    }
 }

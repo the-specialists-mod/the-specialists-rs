@@ -49,7 +49,11 @@ pub const STUNTS: StuntRules = StuntRules {
     bullet_time_dodge: Some(0.55),
     bullet_time_attack_delay: None,
     recover_end_clears: ROLLING | FREEZE_ANGLES | GO_DUCK | RECOVER | DEAD_LOCK,
-    recover_end_unblocks: true,
+    recover_end_unblocks: true, // Audit round 2: E
+    // Animate's directions: mp.dll's out-of-line Normalize (0x100148f0) keeps 1/len unrounded.
+    anim_normalize_stores_reciprocal: false,
+    // CheckForBreakables: z, x, y (0x1006a100..0x1006a121), C0/C3 tests.
+    breakables_ieee_xyz: false,
 };
 
 /// TS 3.0's [`StuntClock`].
@@ -109,13 +113,14 @@ mod tests {
         c.tick_block(&mut s, 0.1);
         assert_eq!(s.block_timer, 0.001);
         assert_eq!(c.next_stunt_byte(100.0, 0.55), 5, "truncated, as mp.dll and ts_i386.so");
-        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 0.35), 0.5);
+        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 0.35, 0.35), 0.5);
         // The 53-bit sum mp.dll's GoWallJump keeps is stored as the float the chain holds.
-        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, f64::from(0.3f32) + 0.35).to_bits(), 0x3f26_6667);
-        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 30.0), 30.0, "no cap");
-        assert!(c.air_stunt_allowed(10.0, 1.0, 9.4) && !c.air_stunt_allowed(10.0, 1.0, 9.2));
-        // Slowed to 0.5, the window is 1.4 s of real time.
-        assert!(c.air_stunt_allowed(10.0, 0.5, 8.7));
+        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, f64::from(0.3f32) + 0.35, 0.65).to_bits(), 0x3f26_6667);
+        assert_eq!(c.wall_chain_cooldown(0.0, 1.0, 30.0, 30.0), 30.0, "no cap");
+        assert!(c.air_stunt_allowed(10.0, 1.0, &mut || 1.0, 9.4) && !c.air_stunt_allowed(10.0, 1.0, &mut || 1.0, 9.2));
+        // Slowed to 0.5, the window is 1.4 s of real time; the window comes from GiveSlowMul.
+        assert!(c.air_stunt_allowed(10.0, 0.5, &mut || 0.5, 8.7));
+        assert!(!c.air_stunt_allowed(10.0, 0.5, &mut || 1.0, 8.7), "GiveSlowMul, not fuser1");
         assert_eq!(c.attack_delay(0.35, 0.75), 0.75);
     }
 

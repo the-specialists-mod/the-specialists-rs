@@ -88,11 +88,11 @@ A gameplay ruleset can change how TS's own bots play (TS 2.1's do: #100 §3.10).
 native backend's business, not the host's and not the gameplay plugin's:
 
 * **`NativeBotRules`** (`bots/rules.rs`) is the native backend's hook trait. Its methods have
-  no default bodies: a ruleset's bots implement all 27 (TS 3.0's AI is `ts30_server::bots::BOTS`,
+  no default bodies: a ruleset's bots implement all 29 (TS 3.0's AI is `ts30_server::bots::BOTS`,
   with the 3.0 state think and modules behind it; issue #200). Hooks: creation (`random_model_in_teamplay`, `learn_on_empty_graph`,
   `stored_skill`, `team_key`, `texts`), the `CBot` overrides (`spawn_post`, `trace_attack`), the
   brain (`delay` for every module timer, the states and the stuck window; `runs_ai`, `turn_rate`,
-  `update_view`, `look_at`, `press` / `release` / `update_buttons`, `respawn`), navigation (`ladder_buttons`, `wander_end`, `steer_probe_end`) and whole modules
+  `update_view`, `look_at`, `press` / `release` / `update_buttons`, `respawn`), navigation (`ladder_buttons`, `wander_end`, `steer_probe_end`, `nav_distance_order`, `forward_detour`) and whole modules
   (`state_think`, `vision`, `attack`, `buy`, `look_around`, `stunt_mode`), and the node graph's
   link arithmetic (`ladder_link_distance`, `IsReachable`'s ladder shortcuts; `ground_probes`,
   `IsGroundContinuous`'s floor probes). Coarse where a ruleset

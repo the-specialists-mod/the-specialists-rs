@@ -183,9 +183,23 @@ fn maybe_blur(cx: &mut Cx, rules: Rules, threshold: f32) {
         return;
     }
     let r = engine().random_long(0, 10);
-    if slow_mul(cx) * 10.0 + r as f32 > threshold {
+    if blur_roll(crate::rules::cvars::pm_arith(), slow_mul(cx), r, threshold) {
         motion_blur(cx, 2);
     }
+}
+
+/// [`maybe_blur`]'s test, `RandomLong(0, 10) + 10 * slowmul > threshold` (`GoDive`, `GoWheel`,
+/// `GoRoll`, `GoWallJump`). `mp.dll` (`GoDive` 0x10069670..0x1006969e) stores the product as a
+/// `float` across the `RandomLong` call and adds the integer unrounded; `ts_i386.so`
+/// (0x8b388..0x8b3a3) keeps the product and the sum in extended precision. Both blur only when
+/// the sum is above (`test ah,0x41; jne`).
+fn blur_roll(arith: shared::pm::Arith, slow_mul: f32, r: i32, threshold: f32) -> bool {
+    fn go<F: Fpu>(slow_mul: f32, r: i32, threshold: f32) -> bool {
+        let p = F::x(slow_mul) * F::x(10.0);
+        let p = if F::MSVC { F::x(p.f()) } else { p };
+        F::xi(r) + p > F::x(threshold)
+    }
+    shared::by_arith!(arith, go(slow_mul, r, threshold))
 }
 
 /// `GetDirection(dir, angles, 0.6, 0.3)` (0x6b008) on the yaw-only basis:
@@ -552,6 +566,40 @@ mod precision_tests {
 
     fn v(b: [u32; 3]) -> Vec3 {
         b.map(f32::from_bits)
+    }
+
+    /// #246: the motion-blur roll. 10 * 0.8f is 8.0000001 on the .so's x87 (blurs a dive) but 8
+    /// as mp.dll's stored float; mp.dll adds the integer unrounded, so 7.0000005f + 1 is above 8
+    /// where the old `float` sum rounded it to 8.
+    #[test]
+    fn blur_roll_per_build() {
+        use shared::pm::Arith;
+        let b = f32::from_bits;
+        assert!(blur_roll(Arith::Gcc, b(0x3f4c_cccd), 0, 8.0));
+        assert!(!blur_roll(Arith::Msvc, b(0x3f4c_cccd), 0, 8.0));
+        assert!(blur_roll(Arith::Msvc, b(0x3f33_3334), 1, 8.0));
+        assert!(b(0x3f33_3334) * 10.0 + 1.0 <= 8.0, "the old float sum");
+        assert!(blur_roll(Arith::Msvc, 1.0, 0, 9.0) && !blur_roll(Arith::Msvc, 0.5, 3, 8.0));
+    }
+
+    /// #246: the coyote time divides the double 0.7 by `GiveSlowMul` unrounded (mp.dll
+    /// 0x10069428, ts_i386.so 0x8b146). At a time scale of 0.3f the `float` quotient
+    /// `0.7f / 0.3f` (0x40155555) lies above the exact one, so a difference of exactly that float
+    /// was let through by the old `f32` test; TS refuses it.
+    #[test]
+    fn coyote_per_build() {
+        use crate::stunt::rules::coyote_allows;
+        use shared::pm::Arith;
+        let qf = 0.7f32 / 0.3f32;
+        assert!(f64::from(qf) > 0.7 / f64::from(0.3f32));
+        let last = 0.0;
+        let now = qf; // now - last == the float quotient
+        assert!(!coyote_allows(Arith::Msvc, now, 0.3, last));
+        assert!(!coyote_allows(Arith::Gcc, now, 0.3, last));
+        assert!(coyote_allows(Arith::Msvc, 1.0, 1.0, 0.3) && !coyote_allows(Arith::Msvc, 1.0, 1.0, 0.29));
+        // A NaN difference: mp.dll refuses (C0), the .so lets it through.
+        assert!(!coyote_allows(Arith::Msvc, f32::NAN, 1.0, 0.0));
+        assert!(coyote_allows(Arith::Gcc, f32::NAN, 1.0, 0.0));
     }
 
     /// `GetDirection`'s right-dot stays on the FPU: here the old `float` dot was exactly -0.6f

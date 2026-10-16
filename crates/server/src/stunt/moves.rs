@@ -158,7 +158,8 @@ fn handle_stunt(p: &mut Player, cx: &mut Cx, r: Rules) {
             return;
         }
         // Coyote time: 0.7 s (slowed) after leaving the ground.
-        if !clock.air_stunt_allowed(now, cx.pev().fuser1, p.stunt.last_ground_time) {
+        let ts = cx.pev().fuser1;
+        if !clock.air_stunt_allowed(now, ts, &mut || slow_mul(cx), p.stunt.last_ground_time) {
             return;
         }
     }
@@ -297,7 +298,7 @@ fn go_wall_jump(p: &mut Player, cx: &mut Cx, r: Rules) {
     anim::animate(p, cx, 0x37);
     cx.pev().gravity = 0.75;
     let sum = wall_chain_add(crate::rules::cvars::pm_arith(), &mut p.stunt.wall_chain, 0.35);
-    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, sum);
+    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, sum, p.stunt.wall_chain);
     send_next_stunt(p, cx, r);
     stunt_sound(cx, c"player/airwheel.wav");
     maybe_blur(cx, r, 5.0);
@@ -323,7 +324,8 @@ fn go_wall_climb(p: &mut Player, cx: &mut Cx, r: Rules) {
     };
     // Every build stores the sum and loads the float back for the cooldown.
     wall_chain_add(crate::rules::cvars::pm_arith(), &mut p.stunt.wall_chain, add);
-    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, f64::from(p.stunt.wall_chain));
+    let stored = p.stunt.wall_chain;
+    p.stunt.next_stunt = r.stunt_clock().wall_chain_cooldown(cx.time(), cx.pev().fuser1, f64::from(stored), stored);
     send_next_stunt(p, cx, r);
     stunt_sound(cx, c"player/airwheel.wav");
     p.stunt.wall_climbs += 1;
@@ -525,7 +527,8 @@ fn go_wheel(p: &mut Player, cx: &mut Cx, r: Rules) -> bool {
         && cx.pev().iuser4 & 0x130c30 == 0
         && time <= s.wheel_tap
         && !clock.running(time, s.next_stunt);
-    if !on_ground(cx) && !clock.air_stunt_allowed(time, cx.pev().fuser1, p.stunt.last_ground_time) {
+    let ts = cx.pev().fuser1;
+    if !on_ground(cx) && !clock.air_stunt_allowed(time, ts, &mut || slow_mul(cx), p.stunt.last_ground_time) {
         ok = false;
     }
     if ok {
@@ -749,8 +752,8 @@ pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
     }
     if pev.watertype != CONTENTS_WATER && fallvel > shared::pm::PLAYER_MAX_SAFE_FALL_SPEED {
         p.stunt.fall_velocity = fallvel - 680.0;
-        let dmg = (fallvel - 680.0) * 100.0 * 0.002_252_252_3;
-        if pev.health < dmg {
+        let (dmg, splat) = fall_damage_of(crate::rules::cvars::pm_arith(), fallvel, pev.health);
+        if splat {
             emit_sound_slow(cx.edict, FALL_SPLAT_CHANNEL, c"common/bodysplat.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
         }
         if dmg > 0.0 {
@@ -762,6 +765,22 @@ pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
     if is_alive(cx) {
         anim::animate(p, cx, 1);
     }
+}
+
+/// [`fall_damage`]'s damage and fatal-fall test for a fall at `fallvel` with `health` left, in
+/// the server's arithmetic. Both `mp.dll`s (3.0 `PostThink` 0x10060232..0x1006024e, 2.1
+/// 0x10054291..0x100542ad, the same code) keep `v - 680` on the x87 (`fst` stores it back as the
+/// fall velocity), multiply by `0.22522523f` once and store the damage; `ts_i386.so`
+/// (0x8176c..0x81788) multiplies by `100.0f` and `0.0022522523f` in extended precision and
+/// stores once. Each compares the unrounded product with the health (`fcomp`, a NaN doesn't
+/// splat).
+fn fall_damage_of(arith: Arith, fallvel: f32, health: f32) -> (f32, bool) {
+    fn go<F: Fpu>(fallvel: f32, health: f32) -> (f32, bool) {
+        let d = F::x(fallvel) - F::x(680.0);
+        let x = if F::MSVC { d * F::x(0.225_225_23) } else { d * F::x(100.0) * F::x(0.002_252_252_3) };
+        (x.f(), F::x(health) < x)
+    }
+    shared::by_arith!(arith, go(fallvel, health))
 }
 
 /// Super-jump landing (PostThink): shake, then a forced roll if duck is held, else a hard
@@ -792,20 +811,36 @@ pub(super) fn super_jump_landing(p: &mut Player, cx: &mut Cx, r: Rules) {
 /// `CheckForBreakables`' speed gate, `|velocity| >= 64` (issue #150): mp.dll compares the
 /// unrounded root of `x² + y² + z²` (0x10069ffd..0x1006a029), `ts_i386.so` its stored `float`
 /// (0x9be2f..0x9be55). Both go on only when C0 is clear, so a NaN speed stops here.
-fn dive_fast_enough(arith: Arith, v: Vec3) -> bool {
-    fn go<F: Fpu>(v: Vec3) -> bool {
-        F::vec_length(v, ORDER_XYZ) >= F::x(64.0)
+/// TS 2.1's `mp.dll` (`ieee`, [`StuntRules::breakables_ieee_xyz`](super::rules::StuntRules))
+/// computes the same root but goes on unless it is below 64 (`test ah,0x5; jp` at 0x1005c712),
+/// so a NaN speed goes on.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn dive_fast_enough(arith: Arith, ieee: bool, v: Vec3) -> bool {
+    fn go<F: Fpu>(v: Vec3, ieee: bool) -> bool {
+        let len = F::vec_length(v, ORDER_XYZ);
+        if F::MSVC && ieee { !(len < F::x(64.0)) } else { len >= F::x(64.0) }
     }
-    shared::by_arith!(arith, go(v))
+    shared::by_arith!(arith, go(v, ieee))
 }
 
 /// The dive's trace direction, the inline `Normalize` of the velocity: mp.dll sums
 /// `z² + x² + y²` (0x1006a100..0x1006a121), `ts_i386.so` `x² + y² + z²` (0x9bf48..0x9bfb0).
-fn dive_dir(arith: Arith, v: Vec3) -> Vec3 {
-    fn go<F: Fpu>(v: Vec3) -> Vec3 {
+/// TS 2.1's `mp.dll` (`ieee`) sums `x² + y² + z²` (0x1005c7c8..0x1005c7e5) and tests the zero
+/// length IEEE (`test ah,0x44; jp` at 0x1005c7f7: a NaN length normalises); the reciprocal stays
+/// unrounded in all three.
+fn dive_dir(arith: Arith, ieee: bool, v: Vec3) -> Vec3 {
+    fn go<F: Fpu>(v: Vec3, ieee: bool) -> Vec3 {
+        if F::MSVC && ieee {
+            let len = F::vec_length(v, ORDER_XYZ);
+            if len == F::ZERO {
+                return [0.0, 0.0, 1.0];
+            }
+            let inv = F::x(1.0) / len;
+            return v.map(|c| (inv * F::x(c)).f());
+        }
         F::vec_normalize(v, if F::MSVC { [2, 0, 1] } else { ORDER_XYZ })
     }
-    shared::by_arith!(arith, go(v))
+    shared::by_arith!(arith, go(v, ieee))
 }
 
 /// The damage a dive does to what it breaks into: `|velocity|`, times the `double` 0.1 while the
@@ -846,11 +881,12 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
     }
     let v = cx.pev().velocity;
     let arith = crate::rules::cvars::pm_arith();
-    if !dive_fast_enough(arith, v) {
+    let ieee = crate::gameplay::active().server.stunts().breakables_ieee_xyz;
+    if !dive_fast_enough(arith, ieee, v) {
         return;
     }
     let o = cx.pev().origin;
-    let d = dive_dir(arith, v);
+    let d = dive_dir(arith, ieee, v);
     // `64·dir` is exact, so adding it rounds once in either build.
     let end = [o[0] + d[0] * 64.0, o[1] + d[1] * 64.0, o[2] + d[2] * 64.0];
     let tr = engine().trace_hull(o, end, DONT_IGNORE_MONSTERS, HEAD_HULL, cx.edict);
@@ -978,6 +1014,33 @@ mod precision_tests {
         v.map(f32::to_bits)
     }
 
+    /// Fall damage (issue #227): mp.dll (3.0 0x10060232.., 2.1 0x10054291..) multiplies the
+    /// unrounded `v - 680` by `0.22522523f` (0x3e66a171) and rounds once; ts_i386.so
+    /// (0x8176c..0x81784) by `100.0f` then `0.0022522523f` in extended precision; the port's
+    /// old `float` maths rounded after each step. The splat compares the unrounded product.
+    #[test]
+    fn fall_damage_per_build() {
+        let v = |b: u32| f32::from_bits(b);
+        let dmg = |a, b| fall_damage_of(a, v(b), 100.0).0.to_bits();
+        // [fall velocity, mp.dll, ts_i386.so, the old f32 maths]
+        for [fv, ms, gc, old] in [
+            [0x4463_8025, 0x424f_3591, 0x424f_3591, 0x424f_3592],
+            [0x4483_da73, 0x42a8_d73e, 0x42a8_d73e, 0x42a8_d73d],
+            [0x4489_1352, 0x42bb_a8cb, 0x42bb_a8cc, 0x42bb_a8cb],
+        ] {
+            assert_eq!(dmg(Arith::Msvc, fv), ms, "{fv:#x}");
+            assert_eq!(dmg(Arith::Gcc, fv), gc, "{fv:#x}");
+            assert!(old != ms || old != gc, "the old value differs from one build");
+        }
+        // The product is just above its float: health equal to the stored damage still splats.
+        let (d, splat) = fall_damage_of(Arith::Msvc, v(0x4485_5270), 0.0);
+        assert_eq!(d.to_bits(), 0x42ae_2227);
+        assert!(splat);
+        assert!(fall_damage_of(Arith::Msvc, v(0x4485_5270), d).1, "health == (float)dmg < product");
+        assert!(!fall_damage_of(Arith::Msvc, v(0x4463_8025), f32::from_bits(0x424f_3591)).1);
+        assert_eq!(fall_damage_of(Arith::Msvc, 1124.0, 0.0).0, 100.0, "fatal at 1124");
+    }
+
     /// The dive's speed, direction and damage (issues #138, #150): mp.dll keeps the root unrounded
     /// and multiplies by the `double` 0.1; the port's old `float` maths gave 0x42ccfe62 and the
     /// .so's direction.
@@ -987,12 +1050,20 @@ mod precision_tests {
         assert_eq!(dive_impact_damage(Arith::Msvc, v, true).to_bits(), 0x42cc_fe61);
         assert_eq!(dive_impact_damage(Arith::Gcc, v, true).to_bits(), 0x42cc_fe62);
         assert_eq!(dive_impact_damage(Arith::Msvc, [300.0, 0.0, 400.0], false), 500.0, "a dead diver deals the speed");
-        assert_eq!(b(dive_dir(Arith::Msvc, v)), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598]);
-        assert_eq!(b(dive_dir(Arith::Gcc, v)), [0x3f27_c9ab, 0x3e1b_8ae8, 0xbf3d_6598]);
+        assert_eq!(b(dive_dir(Arith::Msvc, false, v)), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598]);
+        assert_eq!(b(dive_dir(Arith::Gcc, false, v)), [0x3f27_c9ab, 0x3e1b_8ae8, 0xbf3d_6598]);
+        // TS 2.1's mp.dll (#222): x, y, z sum (0x1005c7c8..), the reciprocal unrounded; IEEE tests.
+        assert_eq!(b(dive_dir(Arith::Msvc, true, v)), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598]);
+        assert!(dive_fast_enough(Arith::Msvc, true, [f32::NAN, 0.0, 0.0]), "2.1: a NaN speed goes on");
+        assert!(dive_dir(Arith::Msvc, true, [f32::NAN, 0.0, 0.0]).iter().all(|c| c.is_nan()), "2.1: a NaN normalises");
+        assert_eq!(dive_dir(Arith::Msvc, false, [f32::NAN, 0.0, 0.0]), [0.0, 0.0, 1.0], "3.0: C3 takes the zero branch");
+        assert_eq!(dive_dir(Arith::Msvc, true, [0.0; 3]), [0.0, 0.0, 1.0]);
         for arith in [Arith::Gcc, Arith::Msvc] {
-            assert!(dive_fast_enough(arith, [0.0, 64.0, 0.0]));
-            assert!(!dive_fast_enough(arith, [0.0, 63.99, 0.0]));
-            assert!(!dive_fast_enough(arith, [f32::NAN, 0.0, 0.0]), "a NaN speed stops");
+            assert!(dive_fast_enough(arith, false, [0.0, 64.0, 0.0]));
+            assert!(!dive_fast_enough(arith, false, [0.0, 63.99, 0.0]));
+            assert!(!dive_fast_enough(arith, false, [f32::NAN, 0.0, 0.0]), "a NaN speed stops");
+            // TS 2.1 (#222): only below 64 stops (0x1005c712), a NaN goes on.
+            assert!(dive_fast_enough(arith, true, [0.0, 64.0, 0.0]) && !dive_fast_enough(arith, true, [0.0, 63.99, 0.0]));
         }
     }
 }
