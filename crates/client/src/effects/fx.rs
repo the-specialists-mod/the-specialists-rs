@@ -966,14 +966,7 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec
                     (ten(dir[2] as f64 * push) + b[2] as f64) as f32,
                 ]
             } else {
-                // `RandomFloat(c × 0.5, c + 15)` per axis, x then y then z (0x10048093..0x1004812f):
-                // x's bounds from the unrounded `dir.x × force` (0x100480c6), y's and z's from the
-                // stored products (`[esp+0x40]`, `[esp+0x44]`).
-                let x = dir[0] as f64 * force as f64;
-                let vx = rf((x * 0.5) as f32, (x + 15.0) as f32);
-                let c = [dir[1] * force, dir[2] * force];
-                let vy = rf(c[0] * 0.5, c[0] + 15.0);
-                [vx, vy, rf(c[1] * 0.5, c[1] + 15.0)]
+                glass_throw(dir, force, &mut rf)
             };
             let spin = rl(-90, 90) as f32;
             let life = rf(2.0, 5.0);
@@ -1001,6 +994,18 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3, dir: Vec3, hit: Vec
             }
         }
     }
+}
+
+/// `TS_GlassShatter`'s throw for damage that isn't bullet-like: `RandomFloat(c × 0.5, c + 15)`
+/// per axis, x then y then z (`0x10048093..0x1004812f`), in TS units. x's bounds come from the
+/// unrounded `dir.x × force` (`0x100480c6`), y's and z's from the products stored at
+/// `[esp+0x40]`, `[esp+0x44]`. `rf` is `RandomFloat` (a parameter for tests).
+fn glass_throw(dir: Vec3, force: f32, rf: &mut impl FnMut(f32, f32) -> f32) -> Vec3 {
+    let x = dir[0] as f64 * force as f64;
+    let vx = rf((x * 0.5) as f32, (x + 15.0) as f32);
+    let c = [dir[1] * force, dir[2] * force];
+    let vy = rf(c[0] * 0.5, c[0] + 15.0);
+    [vx, vy, rf(c[1] * 0.5, c[1] + 15.0)]
 }
 
 /// `TS_Explosion(org, radius)` (`0x100481b0`, `TSFrags` type 1): sound, particle push, a
@@ -1098,6 +1103,27 @@ pub fn bullet_trail(ps: &mut PSys, now: f64, p1: Vec3, p2: Vec3, w: f32, alpha: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `TS_GlassShatter`'s non-bullet throw (0x10048093..0x1004812f) through a recording
+    /// `RandomFloat`: x, y, z in that order, x's high bound `f32(dir.x × force + 15)` from the
+    /// unrounded product (0x100480c6: 0x41bceabf here, where the stored product gives
+    /// 0x41bceac0), y's and z's from the stored products.
+    #[test]
+    fn glass_throw_bounds() {
+        let (dx, force) = (f32::from_bits(0x3e8e_67e1), f32::from_bits(0x41f7_c806));
+        let dir = [dx, 0.5, -0.25];
+        let mut calls = Vec::new();
+        let vel = glass_throw(dir, force, &mut |lo, hi| {
+            calls.push((lo, hi));
+            hi
+        });
+        let x = dx as f64 * force as f64;
+        assert_eq!(calls[0], ((x * 0.5) as f32, f32::from_bits(0x41bc_eabf)));
+        assert_ne!(calls[0].1, dx * force + 15.0);
+        let (cy, cz) = (0.5 * force, -0.25 * force);
+        assert_eq!(&calls[1..], &[(cy * 0.5, cy + 15.0), (cz * 0.5, cz + 15.0)]);
+        assert_eq!(vel, [calls[0].1, calls[1].1, calls[2].1]);
+    }
 
     /// `VecToAngles`: 3.0 keeps the horizontal length on the x87 (`0x100461be`), 2.1 stores it
     /// and takes `× 180 / π` (`0x1007d7d3`); a float length gave 3.0 the wrong whole degree.

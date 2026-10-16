@@ -482,6 +482,9 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
   `follow_view`. A stretched quad runs head (v = 0) to tail, `radius·(toCam̂ × vel̂)` wide, so it
   narrows as the velocity turns toward the camera; `follow_view` 3 uses `followaxis` unnormalised
   (no default: a template without one draws nothing, as in TS) and `toCam̂ × followaxis` across.
+  The corners add the stored up offset first, `(o + U) − R`, `(o + U) + R`, `(o − U) + R`,
+  `(o − U) − R` (`0x1005063b..0x10050729`), and rolling and free quads take the engine's
+  `AngleVectors` (`0x100505c1`), as in 2.1's quad (#288).
 * **In-eye flash at the gun.** Spectating in-eye, the target's muzzle flashes and pellet spray
   come from the view model's attachments (while `r_drawviewmodel` lets the view model's events
   run), not from TS's player-attachment cache, which holds the target's origin there (see "Player

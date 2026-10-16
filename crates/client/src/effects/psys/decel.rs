@@ -266,9 +266,7 @@ pub(super) fn quad(p: &Particle, cam: &Camera, angle_vectors: &dyn Fn(Vec3) -> (
             (r2, u2)
         }
     };
-    let (rr, uu) = (v::scale(right, p.radius), v::scale(up, p.radius));
-    let (top, bottom) = (v::add(p.origin, uu), v::sub(p.origin, uu));
-    [v::sub(top, rr), v::add(top, rr), v::add(bottom, rr), v::sub(bottom, rr)]
+    super::corners(p.origin, right, up, p.radius)
 }
 
 #[cfg(test)]

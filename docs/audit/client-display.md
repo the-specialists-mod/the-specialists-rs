@@ -116,6 +116,7 @@ Issues: **#260** (2.1 chat), **#261** (2.1 particle update), both fixed; **#267*
   - 2.1's move, collision (stored dot, `VectorMA` 0x10098330), view cone (0x100968f0, and 3.0's x87 form of 0x100570b0) and quad corners (0x1008f470, the engine's `AngleVectors`);
   - the adaptive quality in both builds (3.0 0x10057a70, 2.1 0x100977a0: 2.1 never adapts at a saturated mean);
   - 3.0 glass's non-bullet bounds: x's from the unrounded `dir.x × force`, y's and z's from the stored products (0x10048093..0x1004812f).
+  - 3.0's quad corners (`Quad_Build` 0x10050080), traced afterwards: **3.0 MISMATCH #288, fixed**. TS adds the stored up offset before the right one (`0x1005063b..0x10050729`) and rolls with the engine's `AngleVectors` (`0x100505c1`); the port applied the right offset first and used its own f32 `AngleVectors`. Both builds now share `psys::corners`.
   - Found on the way, **3.0 MISMATCH #287, fixed**: `PSys_BlastPush`'s sphere has radius `fwd`, not `radius` (0x10052e26), and the collision damps with the interval before its 0.016 floor (0x10051fa0).
 
 ## GUI

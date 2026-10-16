@@ -1102,18 +1102,19 @@ fn heron_height_x87(a: f32, b: f64, len: f32) -> f64 {
 /// `follow_view` 3 uses `followaxis` unnormalised for the height and `toCam̂ × followaxis` for the
 /// width, as TS does.
 pub fn build_quad(p: &Particle, cam: &Camera) -> [Vec3; 4] {
-    quad(p, cam, if p.resting { ORIENT_BILLBOARD } else { p.orient }, true)
+    quad(p, cam, if p.resting { ORIENT_BILLBOARD } else { p.orient }, &|a| engine().angle_vectors(a))
 }
 
-/// [`build_quad`] with the orientation given and, with `stretch` false, no stretching.
-fn quad(p: &Particle, cam: &Camera, orient: u8, stretch: bool) -> [Vec3; 4] {
+/// [`build_quad`] with the orientation given and `angle_vectors` standing in for the engine's
+/// `pfnAngleVectors` (`0x100505c1`; a parameter for tests).
+fn quad(p: &Particle, cam: &Camera, orient: u8, angle_vectors: &dyn Fn(Vec3) -> (Vec3, Vec3, Vec3)) -> [Vec3; 4] {
     if let Some(c) = p.corners {
         return c;
     }
     // `0x10051190`: `f32(cam − origin)` normalised with the x87 reciprocal; zero gives (0, 0, 1).
     let to_cam_n = || norm_x87(v::sub(cam.origin, p.origin), [0.0, 0.0, 1.0]);
     // Every `follow_view` but 2 and 3 (4 and up act as 0) can stretch (0x10051151).
-    if stretch && !matches!(orient, ORIENT_FREE | ORIENT_AXIS) && p.stretch > 0.01 {
+    if !matches!(orient, ORIENT_FREE | ORIENT_AXIS) && p.stretch > 0.01 {
         // `|vel|·stretchspeed` in TS units, unrounded; the direction normalised in place
         // (`VectorNormalize` 0x10029e40); `half = f32(f32(dir × L) × 0.5f)`; the width the
         // once-rounded cross product times the radius.
@@ -1128,21 +1129,30 @@ fn quad(p: &Particle, cam: &Camera, orient: u8, stretch: bool) -> [Vec3; 4] {
             return [v::sub(head, w), v::add(head, w), v::add(tail, w), v::sub(tail, w)];
         }
     }
+    // Rolling quads take the engine's `AngleVectors` of (view pitch, view yaw, roll), free ones of
+    // the particle's angles (0x100505c1); the billboard the view's right and up (0x10050600).
     let (right, up) = match orient {
         ORIENT_ROLL => {
-            let (_, r2, u2) = v::angle_vectors([cam.angles[0], cam.angles[1], p.angles[2]]);
+            let (_, r2, u2) = angle_vectors([cam.angles[0], cam.angles[1], p.angles[2]]);
             (r2, u2)
         }
         ORIENT_FREE => {
-            let (_, r2, u2) = v::angle_vectors(p.angles);
+            let (_, r2, u2) = angle_vectors(p.angles);
             (r2, u2)
         }
         ORIENT_AXIS => (cross_x87(to_cam_n(), p.followaxis), p.followaxis),
         _ => (cam.right, cam.up),
     };
-    let rr = v::scale(right, p.radius);
-    let uu = v::scale(up, p.radius);
-    [v::add(v::sub(p.origin, rr), uu), v::add(v::add(p.origin, rr), uu), v::sub(v::add(p.origin, rr), uu), v::sub(v::sub(p.origin, rr), uu)]
+    corners(p.origin, right, up, p.radius)
+}
+
+/// A quad's corners as both builds' `Quad_Build` adds them (3.0 `0x1005063b..0x10050729`, 2.1
+/// `0x1008f470`): `R = f32(right × radius)` and `U = f32(up × radius)` stored, then
+/// `(o + U) − R`, `(o + U) + R`, `(o − U) + R`, `(o − U) − R`, each operation stored.
+pub(crate) fn corners(origin: Vec3, right: Vec3, up: Vec3, radius: f32) -> [Vec3; 4] {
+    let (rr, uu) = (v::scale(right, radius), v::scale(up, radius));
+    let (top, bottom) = (v::add(origin, uu), v::sub(origin, uu));
+    [v::sub(top, rr), v::add(top, rr), v::add(bottom, rr), v::sub(bottom, rr)]
 }
 
 #[cfg(test)]
@@ -1287,5 +1297,34 @@ mod tests {
         let f = 1.0 - 0.004f32 as f64 * 7.0;
         assert_eq!(v2, [(10.0 * 0.3f32 as f64 * f) as f32, 0.0, -((-20.0f32 * 0.3) as f64 * f) as f32]);
         assert!(v2[0] > 2.9, "{v2:?}");
+    }
+
+    /// `Quad_Build`'s corners (0x1005063b..0x10050729): `U = f32(up × r)` is added before
+    /// `R = f32(right × r)` is applied, each step stored, `(o + U) − R` first; a rolling quad
+    /// takes the engine's `AngleVectors` (0x100505c1) of (view pitch, view yaw, roll).
+    #[test]
+    fn quad_corners_add_up_first() {
+        // Right and up share the x axis here (a tilted view), so the order shows in x.
+        let cam = Camera { right: [0.45, 0.0, 0.0], up: [0.123, 0.0, 1.0], angles: [10.0, 20.0, 0.0], ..Default::default() };
+        let p = Particle { origin: [1.0, 0.0, 3.0], radius: 3.0, ..Default::default() };
+        let (rr, uu) = (v::scale(cam.right, 3.0), v::scale(cam.up, 3.0));
+        let q = build_quad(&p, &cam);
+        assert_eq!(
+            q,
+            [
+                v::sub(v::add(p.origin, uu), rr),
+                v::add(v::add(p.origin, uu), rr),
+                v::add(v::sub(p.origin, uu), rr),
+                v::sub(v::sub(p.origin, uu), rr)
+            ]
+        );
+        // R first, as the port had it, rounds x differently at this origin.
+        assert_ne!(q[0], v::add(v::sub(p.origin, rr), uu));
+        let p = Particle { orient: ORIENT_ROLL, angles: [0.0, 0.0, 45.0], ..p };
+        let q = quad(&p, &cam, ORIENT_ROLL, &|a| {
+            assert_eq!(a, [10.0, 20.0, 45.0]);
+            (v::ZERO, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
+        });
+        assert_eq!(q[1], [1.0, 3.0, 6.0]);
     }
 }
