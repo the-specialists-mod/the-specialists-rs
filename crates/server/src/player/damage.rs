@@ -17,7 +17,7 @@ use crate::world::{Cx, DamageInfo};
 use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::*;
-use shared::protocol::hud_wire::{PTakeDam, TsFade, director, fade};
+use shared::protocol::hud_wire::{PTakeDam, director};
 use shared::weapons::tables;
 use std::ffi::CStr;
 
@@ -301,9 +301,10 @@ pub fn take_damage(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) -> bool {
     if punch != 0.0 {
         cx.pev().punchangle[0] -= punch;
     }
+    // `UTIL_ScreenFade(this, (150, 10, 10), 0.3, 0.15, 0x4b, 0)`: TS 3.0's divides the times by
+    // the victim's slow motion (0x8fa94, issue #216), 2.1's (0x1005319c) is the SDK's.
     if after >= 1.0 {
-        let f = TsFade::new([150, 10, 10], 0x4b, 0.3, 0.15, fade::IN);
-        msg::one(Msg::TsFade, e, |w| f.write(w));
+        crate::entities::stock::explode::screen_fade(e, [150.0, 10.0, 10.0], 0.3, 0.15, 0x4b, 0);
     }
     if took {
         health_reports(p, cx, severity, health < 30.0, health_prev, dmg.bits);

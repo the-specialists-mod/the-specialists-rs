@@ -505,6 +505,13 @@ impl ServerRules for Ts30Server {
         let _ = (from, at);
         explode::thrown_blade_damage(btype)
     }
+
+    // Audit round 2: C
+
+    /// [`explode::SCREEN_EFFECTS`]: divided by the receiver's time scale.
+    fn screen_effects(&self) -> ts_server::entities::stock::explode::ScreenEffects {
+        explode::SCREEN_EFFECTS
+    }
 }
 
 /// The plugin as the server registers it.

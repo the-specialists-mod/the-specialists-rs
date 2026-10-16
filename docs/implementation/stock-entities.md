@@ -394,10 +394,16 @@ The track change that its own train fires reads the train's path through a side 
 * **`UTIL_ScreenShake`** (0xec978). Only players on the ground shake. The fixed-point duration
   and frequency (`FixedUnsigned16`) are divided by `GiveSlowMul()` = `max(fuser1, 0.01)` and
   truncated, without clamping again (the x87 control word is set to truncate at 0xecad3 and
-  0xecb11). `explode::screen_shake` is the only copy; `stunt::screen_shake` re-exports it.
+  0xecb11). The quotient isn't rounded to a `float` before the truncation (mp.dll `fdivr` then
+  `__ftol`, 0x100767ef / 0x1007681d; issue #219). `explode::screen_shake` is the only copy;
+  `stunt::screen_shake` re-exports it.
 * **`UTIL_ScreenFade`** (0xecdec). Always sent as `TSFade` (`short dur, short hold, short flags,
   byte r,g,b,a`) to net clients, with the fixed-point durations divided by the time scale the same
-  way. The stock `ScreenFade` message is never sent.
+  way. The stock `ScreenFade` message is never sent. `CBasePlayer::TakeDamage`'s red flash
+  (0x8fa94) and `TSInit`'s spawn fade (0x92a4c, held for `m_flProtect - time`) go through it too
+  (issue #216).
+* Whether shakes and fades divide by the time scale is the ruleset's
+  (`ServerRules::screen_effects`): TS 2.1's are the SDK's, not divided (issue #217).
 * **`EMIT_SOUND_DYN`** (0xe0a8c). It has an extra factor `s`: pitch becomes
   `(s*fuser1 + 1 - s) * pitch`, the factor stored as a float and the product truncated (0xe0b1e;
   `explode::slow_pitch`, unit tested), with `fuser1` the emitting entity's time scale (no change

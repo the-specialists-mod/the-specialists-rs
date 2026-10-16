@@ -481,6 +481,13 @@ impl ServerRules for Ts21Server {
     fn zero_delayed_hit_reaches_player(&self) -> bool {
         true
     }
+
+    // Audit round 2: C
+
+    /// [`explode::SCREEN_EFFECTS`]: the SDK's, not divided.
+    fn screen_effects(&self) -> ts_server::entities::stock::explode::ScreenEffects {
+        explode::SCREEN_EFFECTS
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.

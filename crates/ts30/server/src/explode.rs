@@ -1,7 +1,14 @@
 //! TS 3.0's explosions and thrown blades.
 
 use shared::weapons::spread::Vec3;
+use ts_server::entities::stock::explode::ScreenEffects;
 use ts_server::weapons::ThrownBlade;
+
+/// TS 3.0's `UTIL_ScreenShake` (0xec978, mp.dll 0x100766b0: `fdivr` by `GiveSlowMul()` at
+/// 0x100767ef / 0x1007681d) and `UTIL_ScreenFadeWrite` (0xecc54, mp.dll `FUN_10076900`) divide the
+/// fixed-point durations and frequency by the receiver's time scale; a NaN radius shakes everyone
+/// and a NaN distance shakes (mp.dll 0x10076738..0x10076778, `test ah,0x41` / `test ah,0x1`).
+pub const SCREEN_EFFECTS: ScreenEffects = ScreenEffects { slowed: true, nan_shakes: true };
 
 /// The end of `TSExplosion` (0x7d964/0x7d9ab): `DoSpectacularNess()`, then
 /// `CreateSlowMotionPoint(origin + 1z, 0.25, 1.0, 0)`.

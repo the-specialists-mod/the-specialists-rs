@@ -5,6 +5,14 @@ use goldsrc::edict::EdictPtr;
 use goldsrc::server::engine;
 use goldsrc::sys::{EF_NODRAW, edict_t};
 use shared::weapons::spread::Vec3;
+use ts_server::entities::stock::explode::ScreenEffects;
+
+/// TS 2.1's `UTIL_ScreenShake` (0x10066f50) and `UTIL_ScreenFade` / `UTIL_ScreenFadeAll`
+/// (0x10067290 / 0x10067220 → `FUN_10067110` + `FUN_10067180`) are the SDK's: the fixed-point
+/// values go out as `FixedUnsigned16` made them, never divided by the receiver's slow motion.
+/// The shake's reach skips a NaN radius (`test ah,0x41; jnp` at 0x10066fe3 takes it to the
+/// distance test) and a NaN distance (`test ah,0x5; jp` at 0x1006701b).
+pub const SCREEN_EFFECTS: ScreenEffects = ScreenEffects { slowed: false, nan_shakes: false };
 
 /// `CM61Grenade::WaitThink` (0x100477e0, pushes at 0x10047848..): `TSExplosion(origin, pev,
 /// owner, 100, DMG_BLAST | DMG_NEVERGIB, 128, 1024)`.

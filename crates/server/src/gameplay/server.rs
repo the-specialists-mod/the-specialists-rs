@@ -7,6 +7,7 @@
 use crate::commands::Args;
 use crate::damage::DamageInfo;
 use crate::damage::glast::Snapshot;
+use crate::entities::stock::explode::ScreenEffects;
 use crate::entities::ts::ground::GroundWeapon;
 use crate::entities::ts::misc::MapFlags;
 use crate::entities::ts::{ctb, objective};
@@ -484,6 +485,13 @@ pub trait ServerRules: Sync {
     /// hits at `at`, thrown from `from` (a ruleset whose damage falls off measures the distance
     /// in its own arithmetic).
     fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32;
+
+    // Audit round 2: C
+
+    /// How `UTIL_ScreenShake` and `UTIL_ScreenFade` treat their receivers (explosions, landings,
+    /// `env_shake`/`env_fade`, the hit and spawn flashes): whether the fixed-point durations are
+    /// divided by the receiver's time scale, and the shake reach's NaN cases.
+    fn screen_effects(&self) -> ScreenEffects;
 }
 
 #[cfg(test)]

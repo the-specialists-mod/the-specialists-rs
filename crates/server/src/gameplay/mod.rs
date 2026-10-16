@@ -354,6 +354,12 @@ impl ServerRules for Defaults {
     fn thrown_blade_damage(&self, _btype: i32, _from: shared::weapons::spread::Vec3, _at: shared::weapons::spread::Vec3) -> f32 {
         unimplemented!("thrown_blade_damage")
     }
+
+    // Audit round 2: C
+
+    fn screen_effects(&self) -> crate::entities::stock::explode::ScreenEffects {
+        unimplemented!("screen_effects")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).

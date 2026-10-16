@@ -1,7 +1,7 @@
 //! Explosions and screen effects as TS implements them: `TSExplosion` (grenades and breakables), the SDK
-//! `RadiusDamage` (env_explosion), `UTIL_ScreenShake` and `UTIL_ScreenFade` (both divided by the
-//! player's time scale, fades sent as `TSFade`), `UTIL_Sparks`/`UTIL_Ricochet`, and TS's
-//! `EMIT_SOUND_DYN` pitch scaling.
+//! `RadiusDamage` (env_explosion), `UTIL_ScreenShake` and `UTIL_ScreenFade` (fades sent as
+//! `TSFade`; the ruleset decides whether both divide by the player's time scale,
+//! [`ScreenEffects`]), `UTIL_Sparks`/`UTIL_Ricochet`, and TS's `EMIT_SOUND_DYN` pitch scaling.
 
 use crate::damage::{self, DamageInfo};
 use crate::messages::{self, Msg};
@@ -41,23 +41,41 @@ fn fixed_u16(v: f32, scale: f32) -> i32 {
     goldsrc::ext::entities::fixed_unsigned16(v, scale)
 }
 
-/// The slow-motion step of TS's `UTIL_ScreenShake`/`UTIL_ScreenFadeWrite`: the already fixed-point
-/// value divided by the receiver's `GiveSlowMul()` and truncated. Not clamped again; `WriteShort`
-/// keeps the low 16 bits.
-fn slowed(fixed: i32, slow: f32) -> i32 {
-    (fixed as f32 / slow) as i32
+/// How a ruleset's `UTIL_ScreenShake` and `UTIL_ScreenFade` treat their receivers
+/// ([`ServerRules::screen_effects`](crate::gameplay::ServerRules::screen_effects)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenEffects {
+    /// The fixed-point durations (and a shake's frequency) are divided by the receiver's time
+    /// scale ([`slowed`]).
+    pub slowed: bool,
+    /// A NaN shake radius shakes everyone and a NaN distance shakes ([`shakes`]); otherwise
+    /// neither shakes.
+    pub nan_shakes: bool,
 }
 
-/// `UTIL_ScreenShake`'s reach (mp.dll 0x10076738..0x10076778; issue #171): `radius > 0` (a NaN
-/// radius shakes everyone), then `(center - origin).Length() < radius` with the unrounded
-/// differences summed `(z² + x²) + y²` and the root unrounded (a NaN length shakes).
-fn shakes(center: Vec3, origin: Vec3, radius: f32) -> bool {
+/// The slow-motion step of TS's `UTIL_ScreenShake`/`UTIL_ScreenFadeWrite`: the already fixed-point
+/// value divided by the receiver's `GiveSlowMul()` and truncated. Not clamped again; `WriteShort`
+/// keeps the low 16 bits. The quotient stays on the x87 until `__ftol` truncates it (mp.dll
+/// `fdivr` at 0x100767ef / 0x1007681d; issue #219), so it is not rounded to a `float` first.
+fn slowed(fixed: i32, slow: f32) -> i32 {
+    (f64::from(fixed) / f64::from(slow)) as i32
+}
+
+/// A fixed-point duration for `p`: [`slowed`] by its `GiveSlowMul()` when `fx` says so.
+fn for_receiver(fx: ScreenEffects, fixed: i32, p: *mut edict_t) -> i32 {
+    if fx.slowed { slowed(fixed, slow_of(p)) } else { fixed }
+}
+
+/// `UTIL_ScreenShake`'s reach: `radius <= 0` shakes everyone, else `(center - origin).Length() <
+/// radius` with the unrounded differences summed `(z² + x²) + y²` and the root unrounded (TS 3.0
+/// mp.dll 0x10076738..0x10076778, issue #171; TS 2.1 0x10066fd4..0x1006701b sums the same way).
+/// `nan_shakes` (3.0: `test ah,0x41` / `test ah,0x1`): a NaN radius shakes everyone and a NaN
+/// length shakes; without it (2.1: `jnp` to the distance test, `test ah,0x5; jp`) neither does.
+fn shakes(center: Vec3, origin: Vec3, radius: f32, nan_shakes: bool) -> bool {
     use shared::pm::{below87, not_above87};
-    if not_above87(radius, 0.0) {
-        return true;
-    }
     let d = [0, 1, 2].map(|i| f64::from(center[i]) - f64::from(origin[i]));
-    below87(((d[2] * d[2] + d[0] * d[0]) + d[1] * d[1]).sqrt(), f64::from(radius))
+    let len = || ((d[2] * d[2] + d[0] * d[0]) + d[1] * d[1]).sqrt();
+    if nan_shakes { not_above87(radius, 0.0) || below87(len(), f64::from(radius)) } else { radius <= 0.0 || len() < f64::from(radius) }
 }
 
 /// `RadiusDamage`'s `flDamage - (vecSpot - tr.vecEndPos).Length() * falloff`, at least 0 (mp.dll
@@ -71,9 +89,11 @@ fn falloff_adjusted(dmg: f32, spot: Vec3, end: Vec3, falloff: f32) -> f32 {
 }
 
 /// TS `UTIL_ScreenShake` (0xec978): players on the ground within `radius` (0 = everyone) get a
-/// `ScreenShake`; the fixed-point duration and frequency are divided by their time scale.
+/// `ScreenShake`; in TS 3.0 the fixed-point duration and frequency are divided by their time
+/// scale (TS 2.1's, 0x10066f50, is the SDK's: not divided; [`ScreenEffects`]).
 pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32, radius: f32) {
     let eng = engine();
+    let fx = crate::gameplay::active().server.screen_effects();
     let duration = fixed_u16(duration, 4096.0);
     let frequency = fixed_u16(frequency, 256.0);
     for i in 1..=eng.max_clients() {
@@ -85,13 +105,12 @@ pub fn screen_shake(center: Vec3, amplitude: f32, frequency: f32, duration: f32,
         if v.flags & FL_ONGROUND as i32 == 0 {
             continue;
         }
-        let local = if shakes(center, v.origin, radius) { amplitude } else { 0.0 };
+        let local = if shakes(center, v.origin, radius, fx.nan_shakes) { amplitude } else { 0.0 };
         if local != 0.0 {
-            let slow = slow_of(p);
             messages::one(Msg::ScreenShake, p)
                 .short(fixed_u16(local, 4096.0))
-                .short(slowed(duration, slow))
-                .short(slowed(frequency, slow))
+                .short(for_receiver(fx, duration, p))
+                .short(for_receiver(fx, frequency, p))
                 .end();
         }
     }
@@ -103,15 +122,16 @@ pub const FFADE_MODULATE: i32 = 2;
 pub const FFADE_STAYOUT: i32 = 4;
 
 /// TS `UTIL_ScreenFade` (0xecdec, `UTIL_ScreenFadeBuild`/`UTIL_ScreenFadeWrite`): sent as `TSFade`
-/// to one net client, the fixed-point durations divided by its time scale.
+/// to one net client; in TS 3.0 the fixed-point durations are divided by its time scale (TS 2.1's,
+/// 0x10067290 → `FUN_10067180`, is the SDK's: not divided; [`ScreenEffects`]).
 pub fn screen_fade(p: *mut edict_t, color: Vec3, fade_time: f32, hold: f32, alpha: i32, flags: i32) {
     if !has_player(p) || p.v().flags & FL_FAKECLIENT as i32 != 0 {
         return; // IsNetClient()
     }
-    let slow = slow_of(p);
+    let fx = crate::gameplay::active().server.screen_effects();
     messages::one(Msg::TsFade, p)
-        .short(slowed(fixed_u16(fade_time, 4096.0), slow))
-        .short(slowed(fixed_u16(hold, 4096.0), slow))
+        .short(for_receiver(fx, fixed_u16(fade_time, 4096.0), p))
+        .short(for_receiver(fx, fixed_u16(hold, 4096.0), p))
         .short(flags)
         .byte(color[0] as i32)
         .byte(color[1] as i32)
@@ -218,6 +238,9 @@ mod explosion_tests {
         assert_eq!(slowed(fixed_u16(0.3, 4096.0), 0.35), 3508);
         // No clamp after the division: `WriteShort` keeps the low 16 bits.
         assert_eq!(slowed(fixed_u16(1.0, 4096.0), 0.01), 409_600);
+        // #219: the quotient isn't rounded to a `float` before the truncation: 1228 /
+        // 0.34995726 (0x3eb32d99) = 3508.99995, which a `float` makes 3509.
+        assert_eq!(slowed(1228, f32::from_bits(0x3eb3_2d99)), 3508);
         assert_eq!(fixed_u16(20.0, 4096.0), 0xffff);
         // Past i32's range x87 gives 0x80000000, which the clamp takes to 0.
         assert_eq!(fixed_u16(1.0e6, 4096.0), 0);
@@ -449,9 +472,17 @@ mod precision_tests {
         let (spot, end) = (f([0x43c4_deef, 0xc349_360b, 0xc30a_cf60]), f([0xc3a7_05a0, 0xc3b1_2628, 0xc3d9_6e1e]));
         assert_eq!(falloff_adjusted(f32::from_bits(0x4342_fc12), spot, end, f32::from_bits(0x3e1f_3505)).to_bits(), 0x428d_0fd5);
         assert_eq!(falloff_adjusted(10.0, [0.0; 3], [100.0, 0.0, 0.0], 1.0), 0.0);
-        assert!(shakes([0.0; 3], [100.0, 0.0, 0.0], f32::NAN));
-        assert!(!shakes([0.0; 3], [100.0, 0.0, 0.0], 100.0));
-        assert!(shakes([0.0; 3], [99.0, 0.0, 0.0], 100.0));
+        for nan_shakes in [true, false] {
+            assert!(!shakes([0.0; 3], [100.0, 0.0, 0.0], 100.0, nan_shakes));
+            assert!(shakes([0.0; 3], [99.0, 0.0, 0.0], 100.0, nan_shakes));
+            assert!(shakes([0.0; 3], [1e9, 0.0, 0.0], 0.0, nan_shakes), "radius 0: everyone");
+        }
+        // 3.0 (mp.dll): a NaN radius shakes everyone, a NaN distance shakes.
+        assert!(shakes([0.0; 3], [100.0, 0.0, 0.0], f32::NAN, true));
+        assert!(shakes([f32::NAN, 0.0, 0.0], [100.0, 0.0, 0.0], 50.0, true));
+        // 2.1 (0x10066fe3 `jnp`, 0x1006701b `test ah,0x5; jp`): neither does.
+        assert!(!shakes([0.0; 3], [100.0, 0.0, 0.0], f32::NAN, false));
+        assert!(!shakes([f32::NAN, 0.0, 0.0], [100.0, 0.0, 0.0], 50.0, false));
     }
 
     fn f(b: [u32; 3]) -> [f32; 3] {
