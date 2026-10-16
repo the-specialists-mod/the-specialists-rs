@@ -91,8 +91,14 @@ fn interpolate_in<F: Fpu>(frametime: f32, cur: f32, target: f32) -> f32 {
     (d + c).f()
 }
 
-/// `CBasePlayer::GoSlow` on the dispatched player.
+/// `CBasePlayer::GoSlow` on the dispatched player, a virtual call the plugins' hook sees
+/// ([`crate::ham::player_go_slow`]).
 pub fn go_slow_self(p: &mut Player, cx: &mut Cx, amount: f32, btime: bool) {
+    crate::ham::player_go_slow(p, cx, amount, btime, go_slow_self_plain);
+}
+
+/// [`go_slow_self`] without the plugins' hooks.
+fn go_slow_self_plain(p: &mut Player, cx: &mut Cx, amount: f32, btime: bool) {
     let target = if cx.pev().iuser1 != 0 { 1.0 } else { amount };
     set_slow_target(p, cx.edict, target);
     p.ts.slow_display = amount;
@@ -667,5 +673,15 @@ mod tests {
         let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
         assert!(body.contains("go_slow(o, 1.0, false)"));
         assert!(!body.contains("set_slow_target"));
+    }
+
+    /// Issue #253: a player's own `GoSlow` is TS's virtual call (`vtable[5]`: `SlowMotionFlow`
+    /// 0x96bb0, `DeactivateSlowMotionFlow` 0x96a9c, `Killed`), so it goes through the hooks.
+    #[test]
+    fn own_go_slow_goes_through_the_hooks() {
+        let src = include_str!("powerup.rs");
+        let start = src.find(concat!("pub fn go_slow_", "self(")).unwrap();
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+        assert!(body.contains("crate::ham::player_go_slow(p, cx, amount, btime, go_slow_self_plain)"));
     }
 }

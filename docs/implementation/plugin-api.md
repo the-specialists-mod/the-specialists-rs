@@ -445,7 +445,8 @@ Each function's callers go through `ts_server::ham` instead of `world::dispatch`
   entvars, or reach a player lent to its slot through `world::run_now`), so they also fire for a
   lent player.
 * **Inner calls** happen inside the object's own dispatch, on the `&mut` its caller holds:
-  `Player_Jump` and `Player_Duck` from `PreThink`, `Killed` from `CBasePlayer::TakeDamage`, the
+  `Player_Jump` and `Player_Duck` from `PreThink`, `Killed` from `CBasePlayer::TakeDamage`, a
+  player's own `TS_GoSlow` (slow-motion flow and release, headshot death), the
   player's respawn `Spawn`, its time-based `TakeHealth`, the HL items' `Respawn`. Each hook call
   lends the object back to its slot and opens it (`world::lend_open`: `lend`, then `run_now`), so
   the hook reaches the entity exactly as for an outer call, and the function goes on with the
@@ -546,7 +547,7 @@ so hooks don't fire. Everything else is `UNSUPPORTED`. Addresses are `ts_i386.so
 | 94 | `TS_BreakableRespawn` | `Int_Int` | `func_breakable`, `func_pushable`, the doors | others (empty, 0xac5ac) | `RespawnEntities` on a round restart (0x77764) |
 | 95 | `TS_CanUsedThroughWalls` | `Int_Void` | all | | `entities::ts::can_use_through_walls` (0 for ground weapons, ammo, dropped guns, the case). Fires in `PlayerUse` |
 | 123 | `TS_GiveSlowMul` | `Float_Void` (port) | all | | `max(fuser1, 0.01)` (`CBaseEntity::GiveSlowMul` 0xac5b4, the player's 0x92960; the gun's `FixedSlowAmt` form). Fires for the player's weapon timers and spreads (`GunHost::slow_mul`), the stunts (`stunt::slow_mul`), and the CTB case's and dropped guns' landing and bounce. Port deviation: returns the float (§7.6) |
-| 124 | `TS_GoSlow` | `Void_Float_Int` | all | | `rules::powerup::go_slow` (slow-motion activators and, when their power-up ends, the players they slowed; `globalslow`, the slow-motion triggers) |
+| 124 | `TS_GoSlow` | `Void_Float_Int` | all | | `rules::powerup::go_slow` and `go_slow_self` (slow-motion activators and, when their power-up ends, the players they slowed; the headshot death; `globalslow`, the slow-motion triggers) |
 | 125 | `TS_InSlow` | `Int_Void` | all | | `rules::powerup::entity_in_slow`. Fires in the slow-motion triggers and points (`CTSSlowMotion::WaitTouch`, `CTSSlowMotionPoint::WaitThink`) and `GlobalSlowMotion2` (0x79720) |
 | 126 | `TS_IsObjective` | `Int_Void` | all | | true for `ts_bomb`, `ts_hack`, `ts_teamescape`, `ts_wingiver` / `ts_scoregiver`. Fires in `InitObjectives` (0x785d8) and `CTSObjectivePointer::Use` (0x8bbd8) |
 | 127 | `TS_EnableObjective` | `Void_Int` | all | | the objective's `EnableObjective(on)` (a giver's counter and latch start over); nothing else. Fires where `IsObjective` does |
