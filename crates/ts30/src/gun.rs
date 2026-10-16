@@ -3,7 +3,7 @@
 //! pick: the `GunRules` answers. Server addresses are `ts_i386.so`'s.
 
 use crate::{Ts30, recoil};
-use shared::gameplay::{GunRules, Predicted, SpreadDecay};
+use shared::gameplay::{GunRules, Predicted, SpreadDecay, WeaponPreThink};
 use shared::pm::Arith;
 use shared::weapons::spread::{self, PelletOffset, PelletSide, Vec3};
 use shared::weapons::table::{Tables, WeaponInfo};
@@ -56,6 +56,18 @@ impl GunRules for Ts30 {
             decay_spread(gun, d.arith, d.step);
         }
         true
+    }
+
+    /// The weapon parts of `CBasePlayer::PreThink` (0x908cc): one timer step
+    /// ([`Gun::timer_dt`], `frametime × GiveSlowMul() × (double fire rate ? 1.5 : 1)`, 0x909c5)
+    /// for the melee window, the block timers and the bar ([`pre_frame`]), the recoil decay while
+    /// alive ([`GunRules::decay_spread`]) and the disarm count's `- dt × 5`, floored at 0.
+    fn pre_think(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink) {
+        let dt = Gun::timer_dt(t.arith, t.frametime, spread::fixed_slow_amt(t.fuser1), t.powerups);
+        pre_frame(gun, t.arith, dt, t.alive);
+        let decay = SpreadDecay { arith: t.arith, step: dt, time: t.time, time_scale: t.fuser1, alive: t.alive };
+        self.decay_spread(gun, &decay);
+        *disarm = (*disarm - dt * 5.0).max(0.0);
     }
 
     /// TS 3.0's polar pattern, which each side computes as its build does
@@ -369,6 +381,31 @@ pub fn akimbo_fire(gun: &mut Gun, host: &mut dyn GunHost) -> bool {
 /// a first prediction only, dead or alive (`0x100040a5`).
 pub fn decay_spread(gun: &mut Gun, arith: Arith, dt: f32) {
     gun.spread_penalty = recoil::decay_spread_penalty(arith, gun.spread_penalty, dt);
+}
+
+/// The melee parts of `CBasePlayer::PreThink` 0x908cc by the timer step `dt`
+/// ([`Gun::timer_dt`]): the delayed-hit window (floored at 0.001, closed below 0.01 or once its
+/// damage is spent; while it is open the kung-fu block is off), the block timers and, while
+/// alive, the kung-fu bar's regeneration (15/s, [`spread::regen_melee_bar`]). Server only:
+/// `client.dll`'s `HUD_WeaponsPostThink` (`0x10003830`) has no PreThink part.
+pub fn pre_frame(gun: &mut Gun, arith: Arith, dt: f32, alive: bool) {
+    if gun.melee_window != 0.0 {
+        gun.melee_window = (gun.melee_window - dt).max(0.001);
+    }
+    gun.block_kungfu = (gun.block_kungfu - dt).max(0.0);
+    gun.block_katana = (gun.block_katana - dt).max(0.0);
+    gun.block_knife = (gun.block_knife - dt).max(0.0);
+    if alive {
+        gun.melee_bar = spread::regen_melee_bar(arith, gun.melee_bar, dt);
+    }
+    if gun.melee_window != 0.0 {
+        if gun.melee_window < 0.01 || gun.melee_damage == 0.0 {
+            gun.melee_window = 0.0;
+            gun.melee_damage = 0.0;
+            gun.melee_source = 0;
+        }
+        gun.block_kungfu = 0.0;
+    }
 }
 
 /// `GetBetterWeapon`'s pick (0x80f40): the first owned weapon in

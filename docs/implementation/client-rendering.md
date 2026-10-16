@@ -591,7 +591,7 @@ last frame found in use; `TS_DrawEffects` runs the frame at its very end, just b
 * **Gun prediction:** `prediction/gun.rs` unpacks the networked state with
   `shared::protocol::weapons` (`vuser3` = id/firemode/attachments, `vuser1[1..2]` = powerups/active
   items, `vuser2` = counter/reserve/alt grip, `vuser4` = hand/clip/in-reload; `weapon_data[16]`
-  timers incl. `fuser4`), runs one usercmd of the shared `Gun` (`pre_frame`, `weapon_post_frame`
+  timers incl. `fuser4`), runs one usercmd of the shared `Gun` (`weapon_post_frame`
   behind TS's client gate, `decrement_timers`: `msec*0.001*max(fuser1,0.01)`, x1.5 with DFR) through
   a client `GunHost` that plays the events locally with `FEV_NOTHOST` and applies `VKickback` and
   the melee view shake (runfuncs only), and packs the result into `to`. Note `alt_grip` is read

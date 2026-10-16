@@ -678,7 +678,7 @@ fn kungfu_punch_and_bar() {
     assert!((g.melee_bar - 67.0).abs() < 1e-4);
     assert!(g.block_kungfu > 0.0);
     // the bar regenerates at 15/s
-    g.pre_frame(Arith::CLIENT, 1.0, true);
+    pre_frame(&mut g, Arith::CLIENT, 1.0, true);
     assert!((g.melee_bar - 82.0).abs() < 1e-4);
 }
 

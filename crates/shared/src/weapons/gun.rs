@@ -553,30 +553,6 @@ impl Gun {
         spread::timer_step(arith, frametime, slowmul, powerups & powerup::DOUBLE_FIRERATE != 0)
     }
 
-    /// The weapon parts of `CBasePlayer::PreThink` 0x908cc: melee windows and kung-fu power
-    /// regeneration (15/s); the server's PreThink also runs [`Gun::decay_spread`] while alive.
-    /// `dt` as for [`Gun::timer_dt`]. Server only: `client.dll`'s `HUD_WeaponsPostThink`
-    /// (`0x10003830`) has no PreThink part.
-    pub fn pre_frame(&mut self, arith: Arith, dt: f32, alive: bool) {
-        if self.melee_window != 0.0 {
-            self.melee_window = (self.melee_window - dt).max(0.001);
-        }
-        self.block_kungfu = (self.block_kungfu - dt).max(0.0);
-        self.block_katana = (self.block_katana - dt).max(0.0);
-        self.block_knife = (self.block_knife - dt).max(0.0);
-        if alive {
-            self.melee_bar = spread::regen_melee_bar(arith, self.melee_bar, dt);
-        }
-        if self.melee_window != 0.0 {
-            if self.melee_window < 0.01 || self.melee_damage == 0.0 {
-                self.melee_window = 0.0;
-                self.melee_damage = 0.0;
-                self.melee_source = 0;
-            }
-            self.block_kungfu = 0.0;
-        }
-    }
-
     /// `CBasePlayer::UpdateMeleeBar(cost)` 0x9650c.
     pub fn update_melee_bar(&mut self, cost: f32, host: &mut (impl GunHost + ?Sized)) {
         self.charge_melee_bar(cost);

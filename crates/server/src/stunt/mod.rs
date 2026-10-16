@@ -441,7 +441,7 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
         dt *= 1.5;
     }
     // The close-combat window and block timers (pl+0x79c..0x7b0) live in the gun
-    // (`Gun::pre_frame`, weapons pre_think).
+    // (`GunRules::pre_think`, weapons pre_think).
     clock.tick_block(&mut p.stunt, dt);
 
     moves::play(p, cx, r);

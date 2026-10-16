@@ -4,7 +4,7 @@
 //! [`GunHost`]: the networked state (`clientdata` `vuser*`/`ammo_*`/`m_flNextAttack` and
 //! `weapon_data[16]`) is unpacked with `shared::protocol::weapons`, the gun runs one usercmd
 //! (`weapon_post_frame` behind TS's client gate, `decrement_timers`, `decay_spread`; no
-//! `pre_frame`) and the result is packed into `to`.
+//! PreThink part, `GunRules::pre_think`) and the result is packed into `to`.
 //!
 //! The server plays every weapon event with `FEV_NOTHOST`, so the shooter only sees and hears
 //! its own shots through these predicted events (`runfuncs` only). Traces, damage, projectiles
@@ -571,7 +571,7 @@ pub fn post_think(from: &local_state_t, to: &mut local_state_t, cmd: &usercmd_t,
         silenced,
         rules,
     };
-    // The weapon frame, then the timers. There is no PreThink part ([`Gun::pre_frame`]): the
+    // The weapon frame, then the timers. There is no PreThink part ([`GunRules::pre_think`]): the
     // windows are never decremented and the HUD keeps the kung-fu power. The penalty decays after
     // the timers, on a first prediction only, dead or alive (`0x100040a5`).
     let dt = rules.timer_step(Arith::CLIENT, rules.command_frame_time(cmd.msec), c.fuser1, powerups);

@@ -9,6 +9,6 @@
 pub mod gun;
 pub mod pm;
 
-pub use gun::{GunRules, MeleeRules, Predicted, SpreadDecay};
+pub use gun::{GunRules, MeleeRules, Predicted, SpreadDecay, WeaponPreThink};
 pub use pm::PmRules;
 pub use ts_gameplay::{PHYSINFO_KEY, PHYSINFO_KEY_C};

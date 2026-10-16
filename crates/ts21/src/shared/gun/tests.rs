@@ -550,6 +550,102 @@ fn spread_decays_by_elapsed_time() {
     assert_eq!(g.spread_penalty, 0.0);
 }
 
+fn pre_think_at(time: f32, frametime: f32, fuser1: f32, powerups: u16, alive: bool) -> WeaponPreThink {
+    WeaponPreThink { arith: Arith::Msvc, frametime, time, fuser1, powerups, alive }
+}
+
+/// Issue #201: 2.1's `PreThink` (0x100537e0) regenerates the bar by `(float)(time − last)` over
+/// the slow divisor × 15, with no double-fire-rate factor; TS 3.0's by `frametime × fuser1`,
+/// ×1.5 with double fire rate.
+#[test]
+fn pre_think_bar_regen_on_elapsed_game_time() {
+    ts30_gameplay::tables::make_default();
+    setup();
+    let r = &crate::TS21;
+    let (last, now) = (100.0f32, 100.1f32);
+    let elapsed = now - last;
+    for (fuser1, div) in [(1.0f32, 1.0f64), (0.5, 2.0), (0.05, 10.0)] {
+        for powerups in [0, powerup::DOUBLE_FIRERATE] {
+            let mut g = Gun { melee_bar: 50.0, decay_time: last, ..Gun::default() };
+            let mut disarm = 0.0;
+            // A frame time unlike the elapsed game time: 2.1 doesn't read it.
+            r.pre_think(&mut g, &mut disarm, &pre_think_at(now, 0.25, fuser1, powerups, true));
+            assert_eq!(g.melee_bar, (elapsed as f64 / div * 15.0 + 50.0) as f32, "fuser1 {fuser1} powerups {powerups}");
+            assert_eq!(g.decay_time, now);
+        }
+    }
+    // TS 3.0: the frame time, slowed and sped up by double fire rate.
+    let bar = |fuser1: f32, powerups: u16| {
+        let mut g = Gun { melee_bar: 50.0, decay_time: last, ..Gun::default() };
+        CORE.pre_think(&mut g, &mut 0.0, &pre_think_at(now, 0.1, fuser1, powerups, true));
+        g.melee_bar
+    };
+    assert_eq!(bar(1.0, 0), 51.5);
+    assert_eq!(bar(1.0, powerup::DOUBLE_FIRERATE), (0.1f64 as f32 as f64 * 1.5 * 15.0 + 50.0) as f32);
+    assert_eq!(bar(0.5, 0), (0.05f32 as f64 * 15.0 + 50.0) as f32);
+    let mut g = Gun { melee_bar: 50.0, decay_time: last, ..Gun::default() };
+    r.pre_think(&mut g, &mut 0.0, &pre_think_at(now, 0.1, 1.0, powerup::DOUBLE_FIRERATE, true));
+    assert!(g.melee_bar < bar(1.0, powerup::DOUBLE_FIRERATE));
+}
+
+/// 2.1's regeneration: capped at 100 from the unrounded sum, none at 100 or NaN, no 1/s branch
+/// below 0, time going back drains it, and none while dead (the time still moves on).
+#[test]
+fn pre_think_bar_regen_edges() {
+    assert_eq!(regen_melee_bar(99.0, 1.0, 1.0), 100.0);
+    assert_eq!(regen_melee_bar(100.0, 1.0, 1.0), 100.0);
+    assert!(regen_melee_bar(f32::NAN, 1.0, 1.0).is_nan());
+    assert_eq!(regen_melee_bar(-5.0, 0.5, 1.0), 2.5);
+    assert_eq!(regen_melee_bar(50.0, -1.0, 1.0), 35.0);
+    // `fuser1` 0 (2.1's normal speed) divides by 1.
+    assert_eq!(regen_melee_bar(50.0, 1.0, 0.0), 65.0);
+    let mut g = Gun { melee_bar: 50.0, decay_time: 10.0, ..Gun::default() };
+    crate::TS21.pre_think(&mut g, &mut 0.0, &pre_think_at(11.0, 1.0, 1.0, 0, false));
+    assert_eq!((g.melee_bar, g.decay_time), (50.0, 11.0));
+}
+
+/// 2.1's melee window and block timers run on the same elapsed game time, unslowed and without
+/// double fire rate; the window closes once its end is behind the time (or its damage is spent)
+/// and doesn't close the kung-fu block. 2.1 has no disarm count to decay.
+#[test]
+fn pre_think_melee_timers() {
+    let r = &crate::TS21;
+    let mut g = Gun {
+        melee_window: 0.3,
+        melee_damage: 15.0,
+        melee_source: 1,
+        block_kungfu: 0.3,
+        block_knife: 0.1,
+        block_katana: 0.2,
+        decay_time: 10.0,
+        ..Gun::default()
+    };
+    let mut disarm = 7.0;
+    r.pre_think(&mut g, &mut disarm, &pre_think_at(10.25, 0.01, 0.5, powerup::DOUBLE_FIRERATE, true));
+    let e = 10.25f32 - 10.0;
+    assert_eq!(g.melee_window, 0.3 - e);
+    assert_eq!((g.block_kungfu, g.block_knife, g.block_katana), (0.3 - e, 0.0, 0.0));
+    assert_eq!((g.melee_damage, g.melee_source, disarm), (15.0, 1, 7.0));
+    // Past its end: the window, damage and source go.
+    r.pre_think(&mut g, &mut disarm, &pre_think_at(10.5, 0.01, 1.0, 0, true));
+    assert_eq!((g.melee_window, g.melee_damage, g.melee_source, g.block_kungfu), (0.0, 0.0, 0, 0.0));
+    // Exactly at its end it stays open for this think; a spent window closes at once.
+    let mut g = Gun { melee_window: 0.5, melee_damage: 15.0, decay_time: 10.0, ..Gun::default() };
+    r.pre_think(&mut g, &mut disarm, &pre_think_at(10.5, 0.01, 1.0, 0, true));
+    assert!(g.melee_window > 0.0 && g.melee_damage == 15.0);
+    r.pre_think(&mut g, &mut disarm, &pre_think_at(10.51, 0.01, 1.0, 0, true));
+    assert_eq!(g.melee_window, 0.0);
+    let mut g = Gun { melee_window: 0.5, melee_damage: 0.0, melee_source: 2, decay_time: 10.0, ..Gun::default() };
+    r.pre_think(&mut g, &mut disarm, &pre_think_at(10.01, 0.01, 1.0, 0, true));
+    assert_eq!((g.melee_window, g.melee_source), (0.0, 0));
+    // TS 3.0 closes the kung-fu block while a window is open and decays the disarm count.
+    let mut g = Gun { melee_window: 0.3, melee_damage: 15.0, block_kungfu: 0.3, ..Gun::default() };
+    let mut disarm = 7.0;
+    CORE.pre_think(&mut g, &mut disarm, &pre_think_at(10.0, 0.1, 1.0, 0, true));
+    assert_eq!(g.block_kungfu, 0.0);
+    assert_eq!(disarm, 7.0 - 0.1 * 5.0);
+}
+
 /// Issue #111: the crosshair's copy (client `0x1031bf04`) is written only in the decay branch
 /// (`0x10018dae`): not at a penalty of 0 or NaN, not when the time went back, not while dead.
 #[test]

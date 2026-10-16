@@ -9,7 +9,9 @@
 //! 2.1 keeps its weapon timers as absolute times with the delays fixed when they're set:
 //! `delay × (Double Fire Rate ? 0.5 : 1) × (own Slow Pause ? 6.6666665 : T)`, `T` the time
 //! scale's inverse ([`time_scale_inverse`]). The port's gun timers count down, so they get the
-//! same delays; how fast they count down is the gun timer model's (checklist item 3).
+//! same delays; how fast they count down is the gun timer model's (checklist item 3): the fire
+//! timers by the frame time, the melee window and block timers by the game time since the last
+//! `PreThink` ([`pre_think_step`](crate::shared::gun::pre_think_step)).
 //!
 //! The stunt timers (`BlockPlayer`, the `3·T` hold of the crouched moves, `pl+0x470`) are
 //! started in seconds of the player's time: the server's stunt clock applies `T`.

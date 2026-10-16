@@ -46,6 +46,13 @@ pub trait GunRules: MeleeRules + Sync {
     /// end of this prediction (the server ignores it).
     fn decay_spread(&self, gun: &mut Gun, d: &SpreadDecay) -> bool;
 
+    /// The weapon step of the server's `CBasePlayer::PreThink` (server only: neither client's
+    /// prediction has one): the delayed-hit window and the block timers, the kung-fu bar's
+    /// regeneration, the recoil penalty's decay ([`decay_spread`](Self::decay_spread)) and the
+    /// disarm count's decay (`disarm`, the server player's `DropWeapon(-2)` count). Runs every
+    /// PreThink outside intermission, dead or alive ([`WeaponPreThink::alive`]).
+    fn pre_think(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink);
+
     /// The offset of pellet `i` (1-based) of a shot with random seed `seed`, in units of its
     /// spread, `(right, up)`, for the server's `ShootBulletsPlayer` and the client fire event's
     /// re-trace (`EV_TS_FireBullets`). `None` is the polar pattern, which each side computes as
@@ -111,6 +118,23 @@ pub struct SpreadDecay {
     /// The time scale: the server player's `pev->fuser1`, the client HUD's slow-motion scale.
     pub time_scale: f32,
     /// The player is alive (the client passes true: its decay runs dead or alive).
+    pub alive: bool,
+}
+
+/// One server `PreThink`'s weapon step inputs ([`GunRules::pre_think`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeaponPreThink {
+    /// The server build's arithmetic (`ts_pm_arith`).
+    pub arith: Arith,
+    /// `gpGlobals->frametime`.
+    pub frametime: f32,
+    /// `gpGlobals->time`.
+    pub time: f32,
+    /// The player's time scale (`pev->fuser1`).
+    pub fuser1: f32,
+    /// The player's power-ups.
+    pub powerups: u16,
+    /// The player is alive.
     pub alive: bool,
 }
 

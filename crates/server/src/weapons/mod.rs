@@ -40,7 +40,7 @@ use crate::world::Cx;
 use goldsrc::ext::entities::EHandle;
 use goldsrc::server::engine;
 use goldsrc::sys::{clientdata_t, edict_t, usercmd_t, weapon_data_t};
-use shared::gameplay::{GunRules, SpreadDecay};
+use shared::gameplay::{GunRules, WeaponPreThink};
 use shared::weapons::{Gun, MAX_AMMO, MAX_WEAPONS, Status};
 
 pub use assets::max_carry;
@@ -354,18 +354,22 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
     net::send_kfu_power(cx.edict, p.inv.gun.melee_bar);
 }
 
+/// The weapon parts of `CBasePlayer::PreThink`: this frame's pressed buttons, then the ruleset's
+/// step ([`GunRules::pre_think`]: the melee window and block timers, the kung-fu bar, the recoil
+/// decay and the disarm count).
 pub fn pre_think(p: &mut Player, cx: &mut Cx) {
     let pev = cx.pev();
     let buttons = pev.button as u32;
     p.inv.sv.pressed = buttons & !p.inv.sv.last_buttons;
-    let arith = crate::rules::cvars::pm_arith();
-    let fuser1 = pev.fuser1;
-    let dt = Gun::timer_dt(arith, engine().globals().frametime, shared::weapons::spread::fixed_slow_amt(fuser1), p.active_powerup);
-    let alive = Player::is_alive(cx);
-    p.inv.gun.pre_frame(arith, dt, alive);
-    let decay = SpreadDecay { arith, step: dt, time: engine().time(), time_scale: fuser1, alive };
-    crate::gameplay::gun_rules(cx.edict).decay_spread(&mut p.inv.gun, &decay);
-    p.inv.sv.disarm = (p.inv.sv.disarm - dt * 5.0).max(0.0);
+    let t = WeaponPreThink {
+        arith: crate::rules::cvars::pm_arith(),
+        frametime: engine().globals().frametime,
+        time: engine().time(),
+        fuser1: pev.fuser1,
+        powerups: p.active_powerup,
+        alive: Player::is_alive(cx),
+    };
+    crate::gameplay::gun_rules(cx.edict).pre_think(&mut p.inv.gun, &mut p.inv.sv.disarm, &t);
     // `BlockPlayer`'s timer (`pl+0x4dc`) is the stunt package's (`StuntState::block_timer`): it
     // runs and expires in `stunt::pre_think`, and `CTSStunt::Play` resets it.
     // The delayed melee hit lands from the stunt hook (`CheckForBreakables`), which calls

@@ -10,7 +10,7 @@
 
 use crate::Ts21;
 use crate::shared::tables;
-use shared::gameplay::{GunRules, Predicted, SpreadDecay};
+use shared::gameplay::{GunRules, Predicted, SpreadDecay, WeaponPreThink};
 use shared::pm::Arith;
 use shared::ts::powerup;
 use shared::weapons::random::shared_random_float_unrounded;
@@ -64,6 +64,14 @@ impl GunRules for Ts21 {
         }
         gun.decay_time = d.time;
         decays
+    }
+
+    /// `CBasePlayer::PreThink` (0x100537e0, 0x10053a40..0x10053b1f): every step runs on game
+    /// time since the last think, `(float)(gpGlobals->time − pl+0x6f0)` ([`Gun::decay_time`],
+    /// written every PreThink outside intermission and at spawn), not on the frame time, with no
+    /// double-fire-rate factor: [`pre_think_step`].
+    fn pre_think(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink) {
+        pre_think_step(self, gun, disarm, t);
     }
 
     /// HL's triangle pattern (`ShootBulletsPlayer` 0x1003fd40, client `FUN_1007c190`): pellet `i`
@@ -151,6 +159,52 @@ pub fn better_weapon(gun: &Gun, excluded: u8) -> u8 {
         }
     }
     pick
+}
+
+/// 2.1's `PreThink` weapon step ([`GunRules::pre_think`]), in its order:
+///
+/// * while alive, the recoil penalty's decay ([`GunRules::decay_spread`]) and the kung-fu bar's
+///   regeneration ([`regen_melee_bar`]), both by `elapsed = (float)(time − last)`;
+/// * the delayed-hit window (`pl+0x718`, an end time in 2.1): over once `end < time` or its damage
+///   (`+0x71c`) is spent, clearing the window, the damage and the source (`+0x720`). The block
+///   timers (`+0x724..0x72c`) are end times that PreThink doesn't touch. The port's timers count
+///   the time left, so they lose `elapsed` here: what is left is `end − time`, as 2.1 tests it.
+///   2.1 doesn't close the kung-fu block while the window is open (3.0 does);
+/// * `last = time` ([`GunRules::decay_spread`] writes it).
+///
+/// 2.1 keeps no disarm count (a disarming hit drops the gun at once), so `disarm` stays as it is.
+pub fn pre_think_step(rules: &Ts21, gun: &mut Gun, _disarm: &mut f32, t: &WeaponPreThink) {
+    let elapsed = t.time - gun.decay_time;
+    rules.decay_spread(gun, &SpreadDecay { arith: t.arith, step: elapsed, time: t.time, time_scale: t.fuser1, alive: t.alive });
+    if t.alive {
+        gun.melee_bar = regen_melee_bar(gun.melee_bar, elapsed, t.fuser1);
+    }
+    if gun.melee_window != 0.0 {
+        let left = gun.melee_window - elapsed;
+        if left < 0.0 || gun.melee_damage == 0.0 {
+            gun.melee_window = 0.0;
+            gun.melee_damage = 0.0;
+            gun.melee_source = 0;
+        } else {
+            // `end == time` is still open in 2.1; 0 would mean no window here.
+            gun.melee_window = if left == 0.0 { f32::MIN_POSITIVE } else { left };
+        }
+    }
+    gun.block_kungfu = (gun.block_kungfu - elapsed).max(0.0);
+    gun.block_knife = (gun.block_knife - elapsed).max(0.0);
+    gun.block_katana = (gun.block_katana - elapsed).max(0.0);
+}
+
+/// The kung-fu bar's regeneration in 2.1's `PreThink` (0x10053ab6..0x10053b04): below 100,
+/// `bar + elapsed / slow_div(fuser1) × 15` on the FPU, 100 if that is over 100, else stored. No
+/// 1/s branch for a negative bar, no floor, and no `last <= time` test (time going back drains
+/// it). The client's weapons `Think` (0x100899f0) regenerates its copy the same way.
+pub fn regen_melee_bar(bar: f32, elapsed: f32, fuser1: f32) -> f32 {
+    if bar.partial_cmp(&100.0) != Some(Ordering::Less) {
+        return bar;
+    }
+    let v = elapsed as f64 / slow_div(fuser1) * 15.0 + bar as f64;
+    if v > 100.0 { 100.0 } else { v as f32 }
 }
 
 /// The server's slow-motion divisor (`FUN_100551c0` -> `FUN_1005a3d0`, `FUN_1005a3b0`):

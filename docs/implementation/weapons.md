@@ -54,7 +54,7 @@ addresses of `ts_i386.so`.
 | `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` (block's and attack's bodies in `ts30_gameplay::melee`) |
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
 | `CBasePlayer::PostThink` timer tail 0x91610 | `Gun::decrement_timers`, `Gun::timer_dt` |
-| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `Gun::pre_frame`, `weapons::pre_think` (disarm decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
+| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `weapons::pre_think` → `GunRules::pre_think` (3.0: `ts30_gameplay::gun::pre_frame`, the recoil decay and the disarm decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
 | `CBasePlayer::UpdateMeleeBar` 0x9650c / `GetMeleeMultiplier` 0x965d0 | `Gun::update_melee_bar` (outside the weapon frame: `weapons::update_melee_bar`) / `spread::melee_multiplier` |
 | `CBasePlayer::ShootBulletsPlayer` 0x6f69c, `UTIL_TraceLine_Expanded` 0x6f4f4 | `fire::shoot_bullets`, `fire::trace_expanded` |
 | `compile_range_damage` 0x7f1f4 | `range_multiplier` (pure function) |
@@ -130,8 +130,10 @@ addresses of `ts_i386.so`.
   `m_pActiveItem` (and `m_iId == 16`) on all these paths, so a gun holstered for a
   `cycler_weapon` counts as no gun there too (`gun_active`); holding it (`holds_gun`) matters only
   to `CanHavePlayerItem`, `HasWeapons`, `SelectItem` and `RemoveAllItems`.
-* `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, `Gun::pre_frame` (recoil decay 0.1/s, bar regen 15/s, block and
-  melee windows), disarm decay. The delayed melee hit lands from the stunt hook
+* `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, then the ruleset's step (`GunRules::pre_think`; TS 3.0:
+  `ts30_gameplay::gun::pre_frame` by `Gun::timer_dt`, i.e. bar regen 15/s, block and melee
+  windows, then recoil decay 0.1/s and disarm decay; TS 2.1: the same timers on the game time
+  since the last think, `docs/implementation/ts21.md`). The delayed melee hit lands from the stunt hook
   (`CheckForBreakables`).
 * `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
   tank (dead or game over, `PostThink` skips to the timer tail): once the active item is ready
@@ -418,7 +420,7 @@ client calls them). The client rebuilds the akimbo right clip as `clip - left`, 
 (`0x10003ae1..0x10003aed`). The client prediction runs `Gun::weapon_post_frame` behind TS's client
 gate (`deadflag != 5`, last `TSHealth` > 0, `m_flNextAttack <= 0`), not `Gun::post_frame_ready`.
 `HUD_WeaponsPostThink` (`0x10003830`) has no `PreThink` part, so the prediction runs no
-`Gun::pre_frame`: the melee windows are never decremented (the client never arms `pl+0x788` and
+`GunRules::pre_think`: the melee windows are never decremented (the client never arms `pl+0x788` and
 never reads `+0x794..+0x79c`; the death holster's check `0x1000abae` is the only reader) and
 `client.dll` keeps no kung-fu bar. Its kung-fu block (`0x1000adc0`) gates on the HUD's power
 instead, `0.01 <= 0x1018a718`, the copy the TS weapon element's `Think` (`0x1004cf5e`) makes of
@@ -762,7 +764,7 @@ sends its model index, which the client draws merged onto the player (third pers
 players, motion-blur ghosts) and shows in-eye as the spectated player's view model.
 
 **Client / prediction package**: drive `shared::weapons::Gun` with a client `GunHost`:
-`unpack_clientdata` + `unpack_weapon_data` before the command (no `Gun::pre_frame`, §4),
+`unpack_clientdata` + `unpack_weapon_data` before the command (no PreThink step, `GunRules::pre_think`, §4),
 `item_post_frame`, `decrement_timers(Gun::timer_dt(Arith::CLIENT, frame_time(msec), fixed_slow_amt(fuser1), powerups))`; host events
 go to the local event handlers, `shoot` can be a no-op (the `fire` event re-traces with
 `spread::pellet_dir` and the same seed), `kick` feeds the view kick (timed with the prediction
