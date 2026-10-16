@@ -49,7 +49,11 @@ pub const STUNTS: StuntRules = StuntRules {
     bullet_time_dodge: Some(0.55),
     bullet_time_attack_delay: None,
     recover_end_clears: ROLLING | FREEZE_ANGLES | GO_DUCK | RECOVER | DEAD_LOCK,
-    recover_end_unblocks: true,
+    recover_end_unblocks: true, // Audit round 2: E
+    // Animate's directions: mp.dll's out-of-line Normalize (0x100148f0) keeps 1/len unrounded.
+    anim_normalize_stores_reciprocal: false,
+    // CheckForBreakables: z, x, y (0x1006a100..0x1006a121), C0/C3 tests.
+    breakables_ieee_xyz: false,
 };
 
 /// TS 3.0's [`StuntClock`].

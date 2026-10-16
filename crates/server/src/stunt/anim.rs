@@ -17,6 +17,31 @@ fn stunt_rules() -> &'static StuntRules {
     crate::gameplay::active().server.stunts()
 }
 
+/// `Animate`'s velocity direction (the in-air jump blend, the jump pose, the dive start, the
+/// death pose): [`normalized`], or with [`StuntRules::anim_normalize_stores_reciprocal`] under
+/// `mp.dll`'s arithmetic, [`normalize_stored_reciprocal`].
+fn anim_dir(v: Vec3) -> Vec3 {
+    if stunt_rules().anim_normalize_stores_reciprocal && crate::rules::cvars::pm_arith() == shared::pm::Arith::Msvc {
+        normalize_stored_reciprocal(v)
+    } else {
+        normalized(v)
+    }
+}
+
+/// An out-of-line `Vector::Normalize()` that stores the reciprocal (TS 2.1 `mp.dll` FUN_10011fc0,
+/// 0x10011fc0..0x10012033): `len = sqrt((x² + y²) + z²)` unrounded; a length equal to 0 (IEEE:
+/// `test ah,0x44; jp`, so a NaN goes on) gives (0, 0, 1); otherwise `1 / len` is stored as a
+/// `float` and each component is that `float` times the component, stored.
+fn normalize_stored_reciprocal(v: Vec3) -> Vec3 {
+    let [x, y, z] = v.map(f64::from);
+    let len = (x * x + y * y + z * z).sqrt();
+    if len == 0.0 {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = (1.0 / len) as f32;
+    v.map(|c| inv * c)
+}
+
 /// A `CTSAnimation` timer of `secs` of the player's time: TS 3.0 stores the seconds and counts
 /// them down in [`update_timers`]; with [`StuntRules::anim_end_times`] the ruleset's
 /// [`StuntClock`](super::rules::StuntClock) gives the end time.
@@ -526,7 +551,7 @@ pub fn animate(p: &mut Player, cx: &mut Cx, id: i32) {
     if !grounded && alive {
         if cur == 4 && speed > 96.0 && !is_in_close_combat(id) {
             let ext2 = p.stunt.anim.ext2.clone();
-            blend_by_dir(p, cx, normalized(v), &JUMP, &ext2);
+            blend_by_dir(p, cx, anim_dir(v), &JUMP, &ext2);
         }
         if id == 2 {
             let dir = p.stunt.dir;
@@ -738,7 +763,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32, speed: f32) -> bool {
             let name = if ext2.is_empty() {
                 "standard_jump".to_owned()
             } else {
-                let d = get_direction(normalized(cx.pev().velocity), cx.pev().v_angle, 0.6, 0.3);
+                let d = get_direction(anim_dir(cx.pev().velocity), cx.pev().v_angle, 0.6, 0.3);
                 p.stunt.anim.last_dir = d;
                 format!("{}{}", JUMP[d as usize], ext2)
             };
@@ -753,7 +778,7 @@ fn torso(p: &mut Player, cx: &mut Cx, id: &mut i32, speed: f32) -> bool {
         7 => death(p, cx),
         // Dive start.
         0x28 => {
-            let d = get_direction(normalized(cx.pev().velocity), cx.pev().v_angle, 0.6, 0.3);
+            let d = get_direction(anim_dir(cx.pev().velocity), cx.pev().v_angle, 0.6, 0.3);
             p.stunt.anim.last_dir = d;
             let name = format!("{}{}", DIVE[d as usize], ext2_or_akimbo(p));
             set_anim(p, cx, &name, 0x94, 0);
@@ -838,7 +863,7 @@ fn death(p: &mut Player, cx: &mut Cx) {
     let v = cx.pev().velocity;
     let a = &p.stunt.anim;
     let name = if hspeed_stored(v) >= 80.0 || a.last_damage > 50 {
-        let dir = if a.last_damage <= 50 { normalized(v) } else { [-a.attack_dir[0], -a.attack_dir[1], -a.attack_dir[2]] };
+        let dir = if a.last_damage <= 50 { anim_dir(v) } else { [-a.attack_dir[0], -a.attack_dir[1], -a.attack_dir[2]] };
         match get_direction(dir, cx.pev().v_angle, 0.6, 0.3) {
             2 => "forward_die",
             3 => {
@@ -908,6 +933,19 @@ mod tests {
     use super::{aiming, dance_due, fire_pose_2, goduck_holds, melee_legs_follow, shot_over, shot_running, wall_jump_pose_holds};
     use crate::stunt::rules::FirePose2;
     use goldsrc::sys::{FL_DUCKING, IN_DUCK};
+
+    /// #222: TS 2.1's `Animate` normalises with FUN_10011fc0, which stores `1 / len` as a float
+    /// (0x10012014) before the products; 3.0's (0x100148f0, `normalized`) keeps it unrounded.
+    #[test]
+    fn normalize_stored_reciprocal_rounds_the_reciprocal() {
+        use super::normalize_stored_reciprocal;
+        let v = [0x4427_f24a, 0x431b_b090, 0xc43d_9372].map(f32::from_bits);
+        assert_eq!(normalize_stored_reciprocal(v).map(f32::to_bits), [0x3f27_c9ac, 0x3e1b_8ae9, 0xbf3d_6599]);
+        let three: [f32; 3] = <shared::pm::Msvc as shared::pm::FpuMath>::vec_normalize(v, shared::pm::ORDER_XYZ);
+        assert_eq!(three.map(f32::to_bits), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598], "3.0's");
+        assert_eq!(normalize_stored_reciprocal([0.0; 3]), [0.0, 0.0, 1.0]);
+        assert!(normalize_stored_reciprocal([f32::NAN, 0.0, 0.0]).iter().all(|c| c.is_nan()), "IEEE zero test");
+    }
 
     /// #243: `frame += interval * m_flFrameRate * framerate` rounded once (mp.dll 0x100082f6..
     /// 0x10008308, ts_i386.so 0x93621..0x93632); the port's old `float` steps gave 0x4316a7fe.

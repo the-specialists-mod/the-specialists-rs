@@ -118,6 +118,17 @@ pub struct StuntRules {
     /// also ends a `BlockPlayer` lock (`pl+0x4dc`).
     pub recover_end_clears: i32,
     pub recover_end_unblocks: bool,
+
+    // Audit round 2: E
+    /// `Animate`'s velocity directions (the in-air jump blend, the jump pose, the dive start and
+    /// the death pose) under `mp.dll`'s arithmetic: `Vector::Normalize()` stores `1 / len` as a
+    /// `float` before the products and tests the zero length IEEE (a NaN length normalises).
+    /// TS 3.0's keeps the reciprocal unrounded and takes (0, 0, 1) for a NaN.
+    pub anim_normalize_stores_reciprocal: bool,
+    /// `CheckForBreakables`' dive under `mp.dll`'s arithmetic: the speed gate and the trace
+    /// direction's zero test are IEEE (a NaN speed goes on, a NaN length normalises) and the
+    /// direction sums `x² + y² + z²`. TS 3.0's sums `z² + x² + y²` and a NaN stops at the gate.
+    pub breakables_ieee_xyz: bool,
 }
 
 /// How the stunt timers keep time: the cooldown (`next_stunt`), the recovery (`recover`), the

@@ -80,7 +80,13 @@ pub const STUNTS: StuntRules = StuntRules {
     // `Play` (0x1005acf0): the recovery's end clears 0x40000, 0x4 and 0x1 and leaves
     // `BlockPlayer`'s lock (`pl+0x460`) to `PreThink`.
     recover_end_clears: ROLLING | GO_DUCK | RECOVER,
-    recover_end_unblocks: false,
+    recover_end_unblocks: false, // Audit round 2: E
+    // Animate (0x1003d8b0) normalises with FUN_10011fc0: 1/len stored as a float
+    // (0x10012014), IEEE zero test (0x10011fe9).
+    anim_normalize_stores_reciprocal: true,
+    // CheckForBreakables (0x1005c680): x, y, z (0x1005c7c8..0x1005c7e5), IEEE speed gate
+    // (0x1005c712) and zero test (0x1005c7f7).
+    breakables_ieee_xyz: true,
 };
 
 /// `CanDiveHigh/Medium/Low` (0x1005b0b0, 0x1005b110, 0x1005b130): used slots (`81 - free`)
@@ -274,6 +280,12 @@ mod tests {
         assert_eq!(s.recover_end_clears, 0x40005);
         assert!(s.wall_landing_sets_recover && !s.wall_dive && !s.wall_climb_while_gliding);
         assert!(!s.stunt_ends_close_combat && !s.wheel_and_roll_wait_for_kick && !s.recover_end_unblocks);
+        assert!(
+            s.anim_normalize_stores_reciprocal
+                && s.breakables_ieee_xyz
+                && !CORE.anim_normalize_stores_reciprocal
+                && !CORE.breakables_ieee_xyz
+        );
         assert!(s.kick_cooldown_on_try, "2.1 arms the jump kick's cooldown on every try");
         assert!(s.wall_jump_pose_holds_until_recovered);
         assert!(!s.wall_climb_pose_lets_dive_through && !s.melee_gait_follows && !s.gait_idle_anim_extension);

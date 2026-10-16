@@ -811,20 +811,36 @@ pub(super) fn super_jump_landing(p: &mut Player, cx: &mut Cx, r: Rules) {
 /// `CheckForBreakables`' speed gate, `|velocity| >= 64` (issue #150): mp.dll compares the
 /// unrounded root of `x² + y² + z²` (0x10069ffd..0x1006a029), `ts_i386.so` its stored `float`
 /// (0x9be2f..0x9be55). Both go on only when C0 is clear, so a NaN speed stops here.
-fn dive_fast_enough(arith: Arith, v: Vec3) -> bool {
-    fn go<F: Fpu>(v: Vec3) -> bool {
-        F::vec_length(v, ORDER_XYZ) >= F::x(64.0)
+/// TS 2.1's `mp.dll` (`ieee`, [`StuntRules::breakables_ieee_xyz`](super::rules::StuntRules))
+/// computes the same root but goes on unless it is below 64 (`test ah,0x5; jp` at 0x1005c712),
+/// so a NaN speed goes on.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn dive_fast_enough(arith: Arith, ieee: bool, v: Vec3) -> bool {
+    fn go<F: Fpu>(v: Vec3, ieee: bool) -> bool {
+        let len = F::vec_length(v, ORDER_XYZ);
+        if F::MSVC && ieee { !(len < F::x(64.0)) } else { len >= F::x(64.0) }
     }
-    shared::by_arith!(arith, go(v))
+    shared::by_arith!(arith, go(v, ieee))
 }
 
 /// The dive's trace direction, the inline `Normalize` of the velocity: mp.dll sums
 /// `z² + x² + y²` (0x1006a100..0x1006a121), `ts_i386.so` `x² + y² + z²` (0x9bf48..0x9bfb0).
-fn dive_dir(arith: Arith, v: Vec3) -> Vec3 {
-    fn go<F: Fpu>(v: Vec3) -> Vec3 {
+/// TS 2.1's `mp.dll` (`ieee`) sums `x² + y² + z²` (0x1005c7c8..0x1005c7e5) and tests the zero
+/// length IEEE (`test ah,0x44; jp` at 0x1005c7f7: a NaN length normalises); the reciprocal stays
+/// unrounded in all three.
+fn dive_dir(arith: Arith, ieee: bool, v: Vec3) -> Vec3 {
+    fn go<F: Fpu>(v: Vec3, ieee: bool) -> Vec3 {
+        if F::MSVC && ieee {
+            let len = F::vec_length(v, ORDER_XYZ);
+            if len == F::ZERO {
+                return [0.0, 0.0, 1.0];
+            }
+            let inv = F::x(1.0) / len;
+            return v.map(|c| (inv * F::x(c)).f());
+        }
         F::vec_normalize(v, if F::MSVC { [2, 0, 1] } else { ORDER_XYZ })
     }
-    shared::by_arith!(arith, go(v))
+    shared::by_arith!(arith, go(v, ieee))
 }
 
 /// The damage a dive does to what it breaks into: `|velocity|`, times the `double` 0.1 while the
@@ -865,11 +881,12 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
     }
     let v = cx.pev().velocity;
     let arith = crate::rules::cvars::pm_arith();
-    if !dive_fast_enough(arith, v) {
+    let ieee = crate::gameplay::active().server.stunts().breakables_ieee_xyz;
+    if !dive_fast_enough(arith, ieee, v) {
         return;
     }
     let o = cx.pev().origin;
-    let d = dive_dir(arith, v);
+    let d = dive_dir(arith, ieee, v);
     // `64·dir` is exact, so adding it rounds once in either build.
     let end = [o[0] + d[0] * 64.0, o[1] + d[1] * 64.0, o[2] + d[2] * 64.0];
     let tr = engine().trace_hull(o, end, DONT_IGNORE_MONSTERS, HEAD_HULL, cx.edict);
@@ -1031,12 +1048,20 @@ mod precision_tests {
         assert_eq!(dive_impact_damage(Arith::Msvc, v, true).to_bits(), 0x42cc_fe61);
         assert_eq!(dive_impact_damage(Arith::Gcc, v, true).to_bits(), 0x42cc_fe62);
         assert_eq!(dive_impact_damage(Arith::Msvc, [300.0, 0.0, 400.0], false), 500.0, "a dead diver deals the speed");
-        assert_eq!(b(dive_dir(Arith::Msvc, v)), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598]);
-        assert_eq!(b(dive_dir(Arith::Gcc, v)), [0x3f27_c9ab, 0x3e1b_8ae8, 0xbf3d_6598]);
+        assert_eq!(b(dive_dir(Arith::Msvc, false, v)), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598]);
+        assert_eq!(b(dive_dir(Arith::Gcc, false, v)), [0x3f27_c9ab, 0x3e1b_8ae8, 0xbf3d_6598]);
+        // TS 2.1's mp.dll (#222): x, y, z sum (0x1005c7c8..), the reciprocal unrounded; IEEE tests.
+        assert_eq!(b(dive_dir(Arith::Msvc, true, v)), [0x3f27_c9ac, 0x3e1b_8ae8, 0xbf3d_6598]);
+        assert!(dive_fast_enough(Arith::Msvc, true, [f32::NAN, 0.0, 0.0]), "2.1: a NaN speed goes on");
+        assert!(dive_dir(Arith::Msvc, true, [f32::NAN, 0.0, 0.0]).iter().all(|c| c.is_nan()), "2.1: a NaN normalises");
+        assert_eq!(dive_dir(Arith::Msvc, false, [f32::NAN, 0.0, 0.0]), [0.0, 0.0, 1.0], "3.0: C3 takes the zero branch");
+        assert_eq!(dive_dir(Arith::Msvc, true, [0.0; 3]), [0.0, 0.0, 1.0]);
         for arith in [Arith::Gcc, Arith::Msvc] {
-            assert!(dive_fast_enough(arith, [0.0, 64.0, 0.0]));
-            assert!(!dive_fast_enough(arith, [0.0, 63.99, 0.0]));
-            assert!(!dive_fast_enough(arith, [f32::NAN, 0.0, 0.0]), "a NaN speed stops");
+            assert!(dive_fast_enough(arith, false, [0.0, 64.0, 0.0]));
+            assert!(!dive_fast_enough(arith, false, [0.0, 63.99, 0.0]));
+            assert!(!dive_fast_enough(arith, false, [f32::NAN, 0.0, 0.0]), "a NaN speed stops");
+            // TS 2.1 (#222): only below 64 stops (0x1005c712), a NaN goes on.
+            assert!(dive_fast_enough(arith, true, [0.0, 64.0, 0.0]) && !dive_fast_enough(arith, true, [0.0, 63.99, 0.0]));
         }
     }
 }
