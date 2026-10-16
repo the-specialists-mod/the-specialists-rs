@@ -136,9 +136,13 @@ impl GunRules for Ts21 {
 
     /// 2.1's HolsterWeapon (`FUN_1004d7a0`, from `Holster`, `Deploy` of id 0 and every weapon
     /// switch): `viewmodel = weaponmodel = fov = 0` and nothing else; 2.1 has no kung-fu view
-    /// model, draw animation or `events/draw.sc`.
+    /// model, draw animation or `events/draw.sc`. True all the same (a visual compatibility
+    /// deviation): the punches' and kicks' view animations (the `CloseCombat` event, idle) play
+    /// on TS 3.0's `v_melee.mdl`, so without it first-person kung fu shows nothing. `Unzoom`
+    /// against 2.1's `fov = 0` only differs in the view model it may put back, which kung fu's
+    /// replaces at once.
     fn holster_draws_kungfu(&self) -> bool {
-        false
+        true
     }
 
     // Audit round 2: C

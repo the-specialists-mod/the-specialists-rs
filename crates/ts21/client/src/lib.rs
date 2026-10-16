@@ -408,9 +408,11 @@ impl ClientRules for Ts21Client {
         true
     }
 
-    /// The reload event (0x10078940) plays no view animation and ignores `fparam1`; 2.1's
-    /// prediction plays `insert-shell.wav` (0x10023660).
-    fn reload_event_phases(&self) -> bool {
+    /// The reload event (0x10078940) ignores `fparam1`; 2.1's prediction plays `insert-shell.wav`
+    /// (0x10023660). 2.1 played the reload view animation from `ReloadWeapon`'s `SendWeaponAnim`
+    /// (mp.dll 0x1004ce20, the same sequence slots); the 3.0 view models take it from the event,
+    /// so the event still plays it (a visual compatibility deviation).
+    fn reload_sound_phases(&self) -> bool {
         false
     }
 

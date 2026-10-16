@@ -306,8 +306,10 @@ pub trait ClientRules: Sync {
     /// runs `TS_Scintille` and `TS_Sparks(7, 1.15, 25)`.
     fn blade_hit_particles(&self, ps: &mut PSys, now: f64, pos: Vec3, n: Vec3, katana: bool) -> bool;
 
-    /// Whether `EV_TS_Reload` plays the view animation and the shotgun phases (`fparam1` 8/9/10).
-    fn reload_event_phases(&self) -> bool;
+    /// Whether `EV_TS_Reload`'s sounds follow the shotgun phases (`fparam1` 8/9/10); otherwise
+    /// every reload event sounds as a magazine reload. The view owner's animation follows the
+    /// phase either way: TS 3.0's view models only animate a reload from this event.
+    fn reload_sound_phases(&self) -> bool;
 
     /// The kung-fu bar a `WeaponInfo` for kung fu (id 0) sets from its `clip` byte, if any
     /// (`None` leaves the bar to `KFuPower`).
@@ -521,6 +523,7 @@ mod stub {
         others_from_origin: false,
         other_beams: true,
         shadow_fade: true,
+        sprite_tint: [1.0; 3],
     };
 
     const NONE: CrosshairParts = CrosshairParts { crosshair: false, divesteps: false, divesteps_last: false };
@@ -661,7 +664,7 @@ mod stub {
         fn blade_hit_particles(&self, _ps: &mut PSys, _now: f64, _pos: Vec3, _n: Vec3, _katana: bool) -> bool {
             false
         }
-        fn reload_event_phases(&self) -> bool {
+        fn reload_sound_phases(&self) -> bool {
             false
         }
         fn kungfu_power_from_weapon_info(&self, _clip: u8) -> Option<f32> {

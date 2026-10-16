@@ -39,8 +39,19 @@ fn particle(f: impl FnOnce(&mut Particle)) -> Particle {
 ///   the angles' pitch × −3; the lasers a white `laserdot.spr` (radius 4) and no beam;
 /// * shadows (`0x10095260`, `0x10094e70`): `RenderMode(2)`, `Color4f(1, 1, 1, 1)` once, no
 ///   distance fade or cut-off, traces with flags 2.
-pub static LASER: LaserStyle =
-    LaserStyle { animated_beam: false, dot_range: Some(4096.0), others_from_origin: true, other_beams: false, shadow_fade: false };
+///
+/// 2.1's `laserbeam.spr` and `laserdot.spr` are red in the texture (red channel only; the beam
+/// peaks at 41, the dot at 232), which is why its code draws them grey and white. The port plays
+/// with TS 3.0's grey sprites, so [`LaserStyle::sprite_tint`] keeps the red: a visual
+/// compatibility deviation.
+pub static LASER: LaserStyle = LaserStyle {
+    animated_beam: false,
+    dot_range: Some(4096.0),
+    others_from_origin: true,
+    other_beams: false,
+    shadow_fade: false,
+    sprite_tint: [1.0, 0.0, 0.0],
+};
 
 /// `TSFrags` (`0x10088020`): type 0 [`glass`] from the centre and size alone, type 1
 /// [`explosion`] with the radius `ftol`'d, type 2 a `scintille_metal.spr` burst (9) and a

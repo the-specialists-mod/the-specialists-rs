@@ -284,7 +284,7 @@ impl ClientRules for Ts30Client {
         false
     }
 
-    fn reload_event_phases(&self) -> bool {
+    fn reload_sound_phases(&self) -> bool {
         true
     }
 
@@ -552,6 +552,6 @@ mod tests {
         assert_eq!(core.melee_reach(MeleeReach::Knife), 35.0);
         assert_eq!(core.melee_reach(MeleeReach::Katana(15)), -55.0);
         assert_eq!(core.melee_reach(MeleeReach::Katana(16)), 50.0);
-        assert!(core.close_combat_blocks() && core.reload_event_phases() && core.bullet_whizz_and_push());
+        assert!(core.close_combat_blocks() && core.reload_sound_phases() && core.bullet_whizz_and_push());
     }
 }

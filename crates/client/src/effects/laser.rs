@@ -49,6 +49,10 @@ pub struct LaserStyle {
     /// `PM_NORMAL`. Otherwise TransTexture at full strength at any height, traced with
     /// `PM_STUDIO_BOX`.
     pub shadow_fade: bool,
+    /// What the ruleset's own colours (the flickering beam's grey, the other players' white dot)
+    /// are multiplied by. TS 3.0's `laserbeam.spr` and `laserdot.spr` are grey and take their
+    /// colour from the code; a ruleset written for coloured sprites puts the colour back here.
+    pub sprite_tint: Vec3,
 }
 
 fn style() -> &'static LaserStyle {
@@ -249,7 +253,7 @@ pub fn draw_local_laser(cam: &Camera, now: f64, frametime: f32, time_scale: f32,
         (beam, frame, v::scale(laser_color(color), fade), 0.5 * fade)
     } else {
         let Some(beam) = load("sprites/laserbeam.spr", kRenderTransAdd) else { return };
-        (beam, 0, [flicker(jitter[0]); 3], 1.5)
+        (beam, 0, v::scale(style().sprite_tint, flicker(jitter[0])), 1.5)
     };
     if !set_sprite(beam, frame) {
         return;
@@ -406,11 +410,11 @@ pub fn draw_other_lasers(cam: &Camera, visible: &[bool; 33], now: f64, frametime
         };
         let aim = v::angle_vectors(angles).0;
         if !st.other_beams {
-            // 2.1 (`0x100731a0`): the dot alone, white, along the aim.
+            // 2.1 (`0x100731a0`): the dot alone, white (times the sprite tint), along the aim.
             let tr = trace_from(eye, v::ma(eye, 8192.0, aim), idx);
             tri::render_mode(kRenderTransAdd as i32);
             tri::cull_face(TRICULLSTYLE_TRI_NONE);
-            sprite_quad(cam, v::ma(tr.endpos, -2.0, aim), 4.0, [1.0; 3], 1.0);
+            sprite_quad(cam, v::ma(tr.endpos, -2.0, aim), 4.0, st.sprite_tint, 1.0);
             tri::render_mode(kRenderNormal as i32);
             continue;
         }

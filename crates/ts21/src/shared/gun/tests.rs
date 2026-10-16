@@ -253,10 +253,11 @@ fn idle_reloads_under_infinite_clip() {
     }
 }
 
-/// 2.1's HolsterWeapon (`FUN_1004d7a0`) leaves no view model and plays no draw; 3.0 draws kung
-/// fu's view model with its draw animation and event.
+/// 2.1's HolsterWeapon (`FUN_1004d7a0`) left no view model, but the 3.0 models animate kung fu
+/// on `v_melee.mdl`, so both rulesets draw kung fu's view model with its draw animation and event
+/// (a visual compatibility deviation).
 #[test]
-fn holster_leaves_no_view_model() {
+fn holster_draws_the_kungfu_view_model() {
     ts30_gameplay::tables::make_default();
     for core in [false, true] {
         let (mut g, mut h) = armed(id::MP5K);
@@ -265,14 +266,8 @@ fn holster_leaves_no_view_model() {
         g.holster_weapon(&mut h);
         assert_eq!(g.current, 0);
         assert_eq!(h.fov, Some(0.0));
-        let drew = h.events.iter().any(|(e, _)| *e == Event::Draw);
-        if core {
-            assert_eq!(h.view_model, Some(Some(0)));
-            assert!(drew && h.anims == 1);
-        } else {
-            assert_eq!(h.view_model, Some(None));
-            assert!(!drew && h.anims == 0);
-        }
+        assert_eq!(h.view_model, Some(Some(0)), "core {core}");
+        assert!(h.events.iter().any(|(e, _)| *e == Event::Draw) && h.anims == 1, "core {core}");
     }
 }
 
@@ -809,7 +804,7 @@ fn kungfu_melee_attack_hook() {
     h.melee_answer = Some((1.25, 55.0, true));
     attack(&mut g, &mut h, IN_ATTACK);
     assert_eq!(h.melee_damage.last(), Some(&55.0));
-    assert_eq!((g.next_primary, g.next_secondary, g.idle), (1.25, 1.25, 1.25));
+    assert_eq!((g.next_primary, g.next_secondary, g.idle), (1.25, 1.25, 2.0), "the idle animation waits 3.0's 2 s");
     assert_eq!(h.blocks.last(), Some(&((1.25f64 * 0.9) as f32)));
     // #242: the `float` 0.9, and the slowed duration (`FixedSlowMul() × delay × 0.9f`) rounded to
     // a `float`: 0.75 × 0.9 would be 0x3f2ccccd.

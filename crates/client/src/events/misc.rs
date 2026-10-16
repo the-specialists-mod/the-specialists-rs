@@ -88,17 +88,17 @@ pub fn pump(a: &Args) {
 /// `insert-shell` for everyone; phase 10's pump sound and phase 0's `generic_reload` (then, for a
 /// visible player, the dropped casings or magazine) are only for others and third person.
 ///
-/// A ruleset without the view animation and phases
-/// ([`ClientRules::reload_event_phases`](crate::gameplay::ClientRules::reload_event_phases))
-/// treats every reload event as a magazine reload.
+/// A ruleset without the sound phases
+/// ([`ClientRules::reload_sound_phases`](crate::gameplay::ClientRules::reload_sound_phases))
+/// sounds every reload event as a magazine reload; the view animation still follows the phase.
 pub fn reload(a: &Args) {
     let id = a.i1;
-    let phases = crate::gameplay::current().reload_event_phases();
-    let phase = if phases { a.f1 as i32 } else { 0 };
+    let anim_phase = a.f1 as i32;
+    let phase = if crate::gameplay::current().reload_sound_phases() { anim_phase } else { 0 };
     let owner = a.is_view_owner();
-    if owner && phases {
+    if owner {
         let s = set(id);
-        let seq = if phase == 0 { s[1] } else { s.get(phase as usize).copied().unwrap_or(0) };
+        let seq = if anim_phase == 0 { s[1] } else { s.get(anim_phase as usize).copied().unwrap_or(0) };
         r::weapon_animation(seq as i32, weapon_body(id, a.i2));
     }
     let first_person = owner && !view::is_third_person();

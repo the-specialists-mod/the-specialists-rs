@@ -472,7 +472,7 @@ fn weapon_events() {
     assert_eq!(reach(v30()), [-55.0, 45.0, 35.0, 30.0, 30.0, 30.0, 35.0, -55.0, 50.0]);
 
     assert!(!v21().close_combat_blocks() && v30().close_combat_blocks(), "2.1's event has no block branch");
-    assert!(!v21().reload_event_phases() && v30().reload_event_phases());
+    assert!(!v21().reload_sound_phases() && v30().reload_sound_phases());
     assert!(!v21().bullet_whizz_and_push() && v30().bullet_whizz_and_push());
     assert_eq!((v21().pellet_spray_gravity(), v30().pellet_spray_gravity()), (2.0, 0.0));
     assert_eq!((v21().shell_sound(11), v30().shell_sound(11), v30().shell_sound(5)), (1, 2, 1));
@@ -744,11 +744,25 @@ fn laser_style() {
     use ts_client::effects::LaserStyle;
     assert_eq!(
         *Ts21Client.laser_style(),
-        LaserStyle { animated_beam: false, dot_range: Some(4096.0), others_from_origin: true, other_beams: false, shadow_fade: false }
+        LaserStyle {
+            animated_beam: false,
+            dot_range: Some(4096.0),
+            others_from_origin: true,
+            other_beams: false,
+            shadow_fade: false,
+            sprite_tint: [1.0, 0.0, 0.0]
+        }
     );
     assert_eq!(
         *ts30_client::Ts30Client.laser_style(),
-        LaserStyle { animated_beam: true, dot_range: None, others_from_origin: false, other_beams: true, shadow_fade: true }
+        LaserStyle {
+            animated_beam: true,
+            dot_range: None,
+            others_from_origin: false,
+            other_beams: true,
+            shadow_fade: true,
+            sprite_tint: [1.0; 3]
+        }
     );
 }
 

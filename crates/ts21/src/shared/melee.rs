@@ -575,7 +575,11 @@ pub fn ccombat_attack(gun: &mut Gun, host: &mut dyn GunHost) {
     let d = (t as f64 * delay as f64) as f32;
     gun.next_primary = d;
     gun.next_secondary = d;
-    gun.idle = d;
+    // 2.1 stores `d`, but its kung-fu idle (`FUN_1004dc40`) only re-arms that timer, so it times
+    // nothing else. The port's kung-fu idle plays 3.0's idle animation on `v_melee.mdl`, which
+    // would cut a move's 3.0 view animation short after `d` (0.15 s for a jab): a played move
+    // waits 3.0's 2 s (visual compatibility deviation, docs/implementation/ts21.md).
+    gun.idle = if go { 2.0 } else { d };
     host.set_close_combat_cooldown(d);
 }
 
