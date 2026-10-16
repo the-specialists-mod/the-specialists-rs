@@ -186,29 +186,82 @@ pub fn reset_sequence_info(p: &mut Player, cx: &mut Cx) {
     a.last_event_check = time;
 }
 
-/// SDK `CBaseAnimating::StudioFrameAdvance(0)`.
+/// SDK `CBaseAnimating::StudioFrameAdvance(0)`, in the server's arithmetic
+/// ([`frame_advance`]).
 pub fn studio_frame_advance(p: &mut Player, cx: &mut Cx) {
     let time = cx.time();
     let a = &mut p.stunt.anim;
     let pev = cx.pev();
-    let mut interval = time - pev.animtime;
-    if interval <= 0.001 {
-        pev.animtime = time;
-        return;
-    }
-    if pev.animtime == 0.0 {
-        interval = 0.0;
-    }
-    pev.frame += interval * a.frame_rate * pev.framerate;
+    let step = FrameStep {
+        interval: 0.0,
+        time,
+        animtime: pev.animtime,
+        frame: pev.frame,
+        frame_rate: a.frame_rate,
+        framerate: pev.framerate,
+        loops: a.seq_loops,
+    };
+    let (frame, finished) = frame_advance_in(crate::rules::cvars::pm_arith(), step);
     pev.animtime = time;
-    if pev.frame < 0.0 || pev.frame >= 256.0 {
-        if a.seq_loops {
-            pev.frame -= ((pev.frame / 256.0) as i32) as f32 * 256.0;
-        } else {
-            pev.frame = if pev.frame < 0.0 { 0.0 } else { 255.0 };
+    if let Some(frame) = frame {
+        pev.frame = frame;
+        if finished {
+            a.seq_finished = true;
         }
-        a.seq_finished = true;
     }
+}
+
+/// [`frame_advance`]'s inputs: the `flInterval` argument (0: since `animtime`),
+/// `gpGlobals->time`, `pev->animtime`, `pev->frame`, `m_flFrameRate`, `pev->framerate` and
+/// `m_fSequenceLoops`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameStep {
+    pub interval: f32,
+    pub time: f32,
+    pub animtime: f32,
+    pub frame: f32,
+    pub frame_rate: f32,
+    pub framerate: f32,
+    pub loops: bool,
+}
+
+/// [`frame_advance`] in `arith` (the player's and the stock entities' `StudioFrameAdvance`).
+pub(crate) fn frame_advance_in(arith: shared::pm::Arith, s: FrameStep) -> (Option<f32>, bool) {
+    shared::by_arith!(arith, frame_advance(s))
+}
+
+/// `StudioFrameAdvance(flInterval)` as each TS build compiles it (3.0 `mp.dll` 0x10008290, 2.1
+/// `mp.dll` 0x10006090 the same; `ts_i386.so` 0x935a0): the new `pev->frame` (`None`: the
+/// interval is at most 0.001, only `animtime` moves on) and whether the sequence finished. An
+/// `flInterval` of 0 (C3: a NaN too) is `time - animtime`, kept on the x87 (compared with the
+/// `double` 0.001; a NaN returns too); the interval is 0 when `animtime == 0` (C3 again). `frame += interval * m_flFrameRate * framerate` is
+/// rounded once (`mp.dll` multiplies `framerate * m_flFrameRate * interval`, 0x100082f6..
+/// 0x10008308; the .so `interval * m_flFrameRate * framerate`, 0x93621..0x93632). Outside
+/// `[0, 256)` (C0 tests, so a NaN frame too) the sequence finishes: a looping one subtracts
+/// `(int)(frame * (1/256)) * 256` (`_ftol` / a truncating `fistp`), another clamps to 0 or 255.
+fn frame_advance<F: Fpu>(s: FrameStep) -> (Option<f32>, bool) {
+    let mut interval = F::x(s.interval);
+    if shared::pm::eq87(s.interval, 0.0) {
+        interval = F::x(s.time) - F::x(s.animtime);
+        if !(interval > F::xd(0.001)) {
+            return (None, false);
+        }
+    }
+    let interval = if shared::pm::eq87(s.animtime, 0.0) { F::ZERO } else { interval };
+    let step = if F::MSVC { F::x(s.framerate) * F::x(s.frame_rate) * interval } else { interval * F::x(s.frame_rate) * F::x(s.framerate) };
+    let frame = (step + F::x(s.frame)).f();
+    if !below87(frame, 0.0) && below87(frame, 256.0) {
+        return (Some(frame), false);
+    }
+    let frame = if s.loops {
+        let n = (F::x(frame) * F::xd(1.0 / 256.0)).trunc_i32();
+        (F::x(frame) - F::xi(n) * F::xd(256.0)).f()
+    } else if below87(frame, 0.0) {
+        0.0
+    } else {
+        255.0
+    };
+    (Some(frame), true)
 }
 
 /// `CTSAnimation::SetAnim` (0x6d7e4).
@@ -855,6 +908,42 @@ mod tests {
     use super::{aiming, dance_due, fire_pose_2, goduck_holds, melee_legs_follow, shot_over, shot_running, wall_jump_pose_holds};
     use crate::stunt::rules::FirePose2;
     use goldsrc::sys::{FL_DUCKING, IN_DUCK};
+
+    /// #243: `frame += interval * m_flFrameRate * framerate` rounded once (mp.dll 0x100082f6..
+    /// 0x10008308, ts_i386.so 0x93621..0x93632); the port's old `float` steps gave 0x4316a7fe.
+    #[test]
+    fn frame_advance_rounds_once() {
+        use super::{FrameStep, frame_advance};
+        use shared::pm::{Gcc, Msvc};
+        let b = f32::from_bits;
+        let s = FrameStep {
+            interval: 0.0,
+            time: b(0x4345_163b),
+            animtime: b(0x4345_0aaa),
+            frame: b(0x4316_2e8b),
+            frame_rate: 30.0,
+            framerate: b(0x3eb3_3333),
+            loops: true,
+        };
+        assert_eq!(frame_advance::<Msvc>(s).0.map(f32::to_bits), Some(0x4316_a7fd));
+        assert_eq!(frame_advance::<Gcc>(s).0.map(f32::to_bits), Some(0x4316_a7fd));
+        // The interval is compared unrounded with the double 0.001: 10.001f - 10 = 0.0010004.
+        let s = FrameStep { time: 10.001, animtime: 10.0, ..s };
+        assert!(frame_advance::<Msvc>(s).0.is_some());
+        assert_eq!(frame_advance::<Msvc>(FrameStep { time: 10.0009985, ..s }), (None, false));
+        // animtime 0: no step.
+        assert_eq!(frame_advance::<Msvc>(FrameStep { animtime: 0.0, ..s }), (Some(s.frame), false));
+        // Wrapping: a loop subtracts whole 256s, another clamps; a NaN frame finishes too.
+        let s = FrameStep { interval: 0.0, time: 11.0, animtime: 10.0, frame: 250.0, frame_rate: 10.0, framerate: 1.0, loops: true };
+        assert_eq!(frame_advance::<Msvc>(s), (Some(4.0), true));
+        assert_eq!(frame_advance::<Gcc>(s), (Some(4.0), true));
+        assert_eq!(frame_advance::<Msvc>(FrameStep { loops: false, ..s }), (Some(255.0), true));
+        assert_eq!(frame_advance::<Msvc>(FrameStep { frame: -20.0, loops: false, ..s }), (Some(0.0), true));
+        let (f, done) = frame_advance::<Msvc>(FrameStep { frame: f32::NAN, ..s });
+        assert!(f.unwrap().is_nan() && done);
+        // A given interval: no 0.001 test.
+        assert_eq!(frame_advance::<Msvc>(FrameStep { interval: 0.0005, frame: 1.0, ..s }), (Some(1.005), false));
+    }
 
     /// #174: TS 3.0's `2` shot pose follows the hold timer (unzoomed, one- or two-handed) and zeroes
     /// the shot timer; the slow one-handed rule reads the speed instead and keeps the shot timer.

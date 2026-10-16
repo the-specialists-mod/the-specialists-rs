@@ -182,7 +182,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | `BlendAnimationsByDir` / `BlendAnimationsForSlide` | 0x6d538 / 0x6d400 | `blend_by_dir`, `blend_for_slide` |
 | `HandleCloseCombat` / `IsInCloseCombat` / `GaitCloseCombat` | 0x6d8d0 / 0x6dcf4 / 0x6dd14 | same names |
 | `BulletDance` / `Enable/DisableBulletDance` | 0x6d338 / 0x6d314 / 0x6d2f0 | same names |
-| `CBaseAnimating::LookupSequence` / `ResetSequenceInfo` / `StudioFrameAdvance` (SDK) | | `goldsrc::ext::movement::lookup_sequence`, `anim::reset_sequence_info`, `anim::studio_frame_advance` |
+| `CBaseAnimating::LookupSequence` / `ResetSequenceInfo` / `StudioFrameAdvance` (SDK) | mp.dll 0x10008290, .so 0x935a0 | `goldsrc::ext::movement::lookup_sequence`, `anim::reset_sequence_info`, `anim::studio_frame_advance` (the frame step in the server's arithmetic, rounded once: `framerate * m_flFrameRate * interval` in `mp.dll`, `interval * m_flFrameRate * framerate` in the .so; the stock entities' `frame_advance` shares it, issue #243) |
 
 `BlendJumpAnimations` (0x6d630) has no callers in the server and isn't ported.
 
