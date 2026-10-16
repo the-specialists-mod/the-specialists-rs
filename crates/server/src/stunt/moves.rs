@@ -750,8 +750,8 @@ pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
     }
     if pev.watertype != CONTENTS_WATER && fallvel > shared::pm::PLAYER_MAX_SAFE_FALL_SPEED {
         p.stunt.fall_velocity = fallvel - 680.0;
-        let dmg = (fallvel - 680.0) * 100.0 * 0.002_252_252_3;
-        if pev.health < dmg {
+        let (dmg, splat) = fall_damage_of(crate::rules::cvars::pm_arith(), fallvel, pev.health);
+        if splat {
             emit_sound_slow(cx.edict, FALL_SPLAT_CHANNEL, c"common/bodysplat.wav", 1.0, ATTN_NORM, 0, 100, 0.5);
         }
         if dmg > 0.0 {
@@ -763,6 +763,22 @@ pub(super) fn fall_damage(p: &mut Player, cx: &mut Cx) {
     if is_alive(cx) {
         anim::animate(p, cx, 1);
     }
+}
+
+/// [`fall_damage`]'s damage and fatal-fall test for a fall at `fallvel` with `health` left, in
+/// the server's arithmetic. Both `mp.dll`s (3.0 `PostThink` 0x10060232..0x1006024e, 2.1
+/// 0x10054291..0x100542ad, the same code) keep `v - 680` on the x87 (`fst` stores it back as the
+/// fall velocity), multiply by `0.22522523f` once and store the damage; `ts_i386.so`
+/// (0x8176c..0x81788) multiplies by `100.0f` and `0.0022522523f` in extended precision and
+/// stores once. Each compares the unrounded product with the health (`fcomp`, a NaN doesn't
+/// splat).
+fn fall_damage_of(arith: Arith, fallvel: f32, health: f32) -> (f32, bool) {
+    fn go<F: Fpu>(fallvel: f32, health: f32) -> (f32, bool) {
+        let d = F::x(fallvel) - F::x(680.0);
+        let x = if F::MSVC { d * F::x(0.225_225_23) } else { d * F::x(100.0) * F::x(0.002_252_252_3) };
+        (x.f(), F::x(health) < x)
+    }
+    shared::by_arith!(arith, go(fallvel, health))
 }
 
 /// Super-jump landing (PostThink): shake, then a forced roll if duck is held, else a hard
@@ -975,6 +991,33 @@ mod precision_tests {
 
     fn b(v: [f32; 3]) -> [u32; 3] {
         v.map(f32::to_bits)
+    }
+
+    /// Fall damage (issue #227): mp.dll (3.0 0x10060232.., 2.1 0x10054291..) multiplies the
+    /// unrounded `v - 680` by `0.22522523f` (0x3e66a171) and rounds once; ts_i386.so
+    /// (0x8176c..0x81784) by `100.0f` then `0.0022522523f` in extended precision; the port's
+    /// old `float` maths rounded after each step. The splat compares the unrounded product.
+    #[test]
+    fn fall_damage_per_build() {
+        let v = |b: u32| f32::from_bits(b);
+        let dmg = |a, b| fall_damage_of(a, v(b), 100.0).0.to_bits();
+        // [fall velocity, mp.dll, ts_i386.so, the old f32 maths]
+        for [fv, ms, gc, old] in [
+            [0x4463_8025, 0x424f_3591, 0x424f_3591, 0x424f_3592],
+            [0x4483_da73, 0x42a8_d73e, 0x42a8_d73e, 0x42a8_d73d],
+            [0x4489_1352, 0x42bb_a8cb, 0x42bb_a8cc, 0x42bb_a8cb],
+        ] {
+            assert_eq!(dmg(Arith::Msvc, fv), ms, "{fv:#x}");
+            assert_eq!(dmg(Arith::Gcc, fv), gc, "{fv:#x}");
+            assert!(old != ms || old != gc, "the old value differs from one build");
+        }
+        // The product is just above its float: health equal to the stored damage still splats.
+        let (d, splat) = fall_damage_of(Arith::Msvc, v(0x4485_5270), 0.0);
+        assert_eq!(d.to_bits(), 0x42ae_2227);
+        assert!(splat);
+        assert!(fall_damage_of(Arith::Msvc, v(0x4485_5270), d).1, "health == (float)dmg < product");
+        assert!(!fall_damage_of(Arith::Msvc, v(0x4463_8025), f32::from_bits(0x424f_3591)).1);
+        assert_eq!(fall_damage_of(Arith::Msvc, 1124.0, 0.0).0, 100.0, "fatal at 1124");
     }
 
     /// The dive's speed, direction and damage (issues #138, #150): mp.dll keeps the root unrounded
