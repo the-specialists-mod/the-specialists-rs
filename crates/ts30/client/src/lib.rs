@@ -8,7 +8,7 @@ use goldsrc::sys::ref_params_t;
 use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, StuntCooldown, ThinkParts};
+use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SlotMenu, StuntCooldown, ThinkParts};
 use ts_client::hud::draw::{HudOp, StatusLook, WeaponPanel};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -353,6 +353,20 @@ impl ClientRules for Ts30Client {
     /// [`StatusLook`]'s default, TS 3.0's `DrawStatusPanel` (1004a3e0).
     fn status_look(&self) -> StatusLook {
         StatusLook::default()
+    }
+
+    // Audit round 2: A2
+
+    /// `DrawWeaponList` (1004e030) draws while closed with `cl_showequipment` and in demos, with
+    /// the clip line (`0x1004e324`) and bars (`0x1004e534..`); `SelectNextPrev` (1004f500) reloads
+    /// the selection only when it opens the menu and sends ids above 0.
+    fn slot_menu(&self) -> SlotMenu {
+        SlotMenu { closed_list: true, clip_info: true, next_prev_reloads: false, next_prev_sends_kungfu: false }
+    }
+
+    /// None: the core's `SelectSlot` is TS 3.0's (1004f220).
+    fn select_slot(&self, _h: &mut ts_client::hud::state::Hud, _n: i32, _fastswitch: bool) -> Option<Option<String>> {
+        None
     }
 }
 

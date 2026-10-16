@@ -403,6 +403,8 @@ The hooks so far:
 | `ClientRules` | `kungfu_label(power, hud, w, h)` | none: 3.0's `DrawKungFuLabel`; a ruleset returns its bar as `hud::draw::HudOp`s | `hud/weapons.rs` `draw_kungfu_label` |
 | `ClientRules` | `weapon_panel(panel)` | none: 3.0's `DrawWeaponInfo`; a ruleset returns its panel as `hud::draw::HudOp`s from a `WeaponPanel` (screen, HUD colour, attachments, names, clip, reserve, fire mode, FOV) | `hud/weapons.rs` `draw_weapon_info` |
 | `ClientRules` | `status_look()` | `StatusLook::default()`: 3.0's stance health fill, kevlar icon alone, team-coloured team bar, titles labels, icons × 2/3 | `hud/status.rs` `draw_status_panel` |
+| `ClientRules` | `slot_menu()` | `SlotMenu` all 3.0: the closed list with `cl_showequipment` and in demos, the clip line and bars, `SelectNextPrev` reloading only when it opens the menu and sending ids above 0 (#207) | `hud/weapons.rs` `draw`, `draw_weapon_list`, `select_next_prev` |
+| `ClientRules` | `select_slot(hud, n, fastswitch)` | none: the core's `SelectSlot` (1004f220); a ruleset's returns the server command (#207) | `hud/weapons.rs` `select_slot`, after the wire panel |
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_tint()` | true (the `cl_slowfade` tint while slowed) | `view.rs` `write_screen_fade` |
 | `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and explosions keep 3.0's `fire_pitch`) |

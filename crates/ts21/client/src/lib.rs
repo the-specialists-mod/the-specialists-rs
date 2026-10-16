@@ -12,7 +12,7 @@ use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown, ThinkParts};
+use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SlotMenu, StuntCooldown, ThinkParts};
 use ts_client::hud::draw::{HudOp, HudSprite, StatusLook, WeaponPanel, ftol, num};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -21,6 +21,7 @@ use ts21_gameplay::TS21;
 
 pub mod bullets;
 pub mod events;
+pub mod hud;
 pub mod spectator;
 pub mod view;
 
@@ -561,6 +562,22 @@ impl ClientRules for Ts21Client {
             category_rows_by_teamplay: true,
             hole_message: Some(HOLE_MESSAGE),
         }
+    }
+
+    // Audit round 2: A2
+
+    /// The weapon element's `Draw` (0x10089d90) calls the list draw (0x1008af40) only while the
+    /// menu is open (`+0x73c`), and that draw ends each row after `SPR_DrawAdditive` and `y +=
+    /// 0x30`: no clip line, no clip bar. `SelectNextPrev` (0x1008cc40) opens the menu and then
+    /// always reloads the selection (`+0x740 = info[0x85]`, `+0x744 = info[0x84]`), and with fast
+    /// switch sends any id `> -1`.
+    fn slot_menu(&self) -> SlotMenu {
+        SlotMenu { closed_list: false, clip_info: false, next_prev_reloads: true, next_prev_sends_kungfu: true }
+    }
+
+    /// 2.1's `SelectSlot` (0x1008c6f0, [`hud::select_slot`]).
+    fn select_slot(&self, h: &mut ts_client::hud::state::Hud, n: i32, fastswitch: bool) -> Option<Option<String>> {
+        Some(hud::select_slot(h, n, fastswitch))
     }
 }
 

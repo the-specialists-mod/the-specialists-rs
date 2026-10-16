@@ -357,6 +357,12 @@ pub fn grid_pos(id: i32) -> Option<(usize, usize)> {
 }
 
 impl Hud {
+    /// The weapon id in the slot grid at (`row`, `bucket`), -1 for an empty or out-of-grid cell.
+    pub fn slot_id(&self, row: i32, bucket: i32) -> i32 {
+        let (Ok(r), Ok(b)) = (usize::try_from(row), usize::try_from(bucket)) else { return -1 };
+        self.grid.get(r).and_then(|r| r.get(b)).map_or(-1, |s| s.id)
+    }
+
     /// `0x100581c0`, which the prediction runs through `0x1000acd0` at the end of a first
     /// prediction with a weapon record (`0x100040dc..0x100040ef`): the record's clip (`+0x78c`),
     /// fire mode (`+0x78a`) and attachments (`+0x798`) go straight into the element, the weapon's

@@ -69,6 +69,23 @@ pub struct KungfuRegen {
     pub slowmo_factor100: f32,
 }
 
+/// How the weapon element draws and walks its slot menu (`DrawWeaponList` 1004e030,
+/// `SelectNextPrev` 1004f500).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotMenu {
+    /// The list also draws while the menu is closed (the `cl_showequipment` equipment strip) and
+    /// during demo playback, rather than only while the menu is open.
+    pub closed_list: bool,
+    /// The selected weapon's `"%d/%d"` clip line under its name and the clip bars.
+    pub clip_info: bool,
+    /// `SelectNextPrev` reloads the selection from the held weapon's HUD position on every
+    /// press, not only when it opens the menu.
+    pub next_prev_reloads: bool,
+    /// With fast switch, `SelectNextPrev` sends `weapon_<id>` for any id from 0 (kung fu) up,
+    /// not only from 1.
+    pub next_prev_sends_kungfu: bool,
+}
+
 /// Client rules: the HUD and input code call these where a ruleset can differ. Every method is
 /// required; each ruleset's plugin answers them all.
 pub trait ClientRules: Sync {
@@ -309,6 +326,16 @@ pub trait ClientRules: Sync {
     /// The status panel's look ([`StatusLook`](crate::hud::draw::StatusLook)), which
     /// `DrawStatusPanel` (1004a3e0) draws with.
     fn status_look(&self) -> crate::hud::draw::StatusLook;
+
+    // Audit round 2: A2
+
+    /// The weapon slot menu's drawing and `invnext`/`invprev` walk ([`SlotMenu`]).
+    fn slot_menu(&self) -> SlotMenu;
+
+    /// A ruleset's own `SelectSlot(n)` after the wire-panel test (the text-menu and buy-menu
+    /// keys are the caller's): `Some(cmd)` replaces the core's (`1004f220`), with the server
+    /// command to send, if any; `None` runs the core's.
+    fn select_slot(&self, h: &mut crate::hud::state::Hud, n: i32, fastswitch: bool) -> Option<Option<String>>;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -528,6 +555,16 @@ mod stub {
         }
         fn status_look(&self) -> StatusLook {
             StatusLook::default()
+        }
+
+        // Audit round 2: A2
+
+        fn slot_menu(&self) -> SlotMenu {
+            // The core's own (TS 3.0's) menu, which its tests exercise.
+            SlotMenu { closed_list: true, clip_info: true, next_prev_reloads: false, next_prev_sends_kungfu: false }
+        }
+        fn select_slot(&self, _h: &mut crate::hud::state::Hud, _n: i32, _fastswitch: bool) -> Option<Option<String>> {
+            None
         }
     }
 }

@@ -732,3 +732,64 @@ fn client_spectator_in_eye_pitch() {
     assert_eq!(ts_client::spectator::in_eye_angles(&ts21_gameplay::TS21, a), [9.0, 30.0, 2.0]);
     assert_eq!(ts_client::spectator::in_eye_angles(&ts30_gameplay::TS30, a), a);
 }
+
+#[test]
+fn weapon_slot_menu() {
+    use ts_client::gameplay::SlotMenu;
+    use ts_client::hud::state::{Hud, Slot};
+    // `Hud::default` asks the HUD's rules: the client library's registry, 3.0 first.
+    ts_client::gameplay::register(ts30_gameplay::ID, &ts30_client::PLUGIN);
+    ts_client::gameplay::register(ts21_gameplay::ID, &PLUGIN);
+    // #207: 2.1's list draws only while open, without clip text or bars (0x10089d90,
+    // 0x1008af40); its SelectNextPrev reloads every press and sends ids > -1 (0x1008cc40).
+    let s21 = SlotMenu { closed_list: false, clip_info: false, next_prev_reloads: true, next_prev_sends_kungfu: true };
+    assert_eq!(v21().slot_menu(), s21);
+    assert_eq!(v30().slot_menu(), SlotMenu { closed_list: true, clip_info: true, next_prev_reloads: false, next_prev_sends_kungfu: false });
+    let mut h = Hud::default();
+    assert_eq!(v30().select_slot(&mut h, 2, false), None, "3.0: the core's SelectSlot");
+
+    let sel = |h: &mut Hud, n, fast| v21().select_slot(h, n, fast).expect("2.1 has its own SelectSlot");
+    h.grid = [[ts_client::hud::state::EMPTY; ts_client::hud::state::GRID_BUCKETS]; ts_client::hud::state::GRID_ROWS];
+    h.grid[0][1] = Slot { id: 0, clip: 0 }; // kung fu
+    h.grid[2][1] = Slot { id: 34, clip: 1 };
+    h.grid[4][1] = Slot { id: 25, clip: 1 };
+    h.grid[1][2] = Slot { id: 1, clip: 5 };
+
+    // Slot 10 (0x1008c6f0): weapon_0 from a closed menu, and (1, 1) every time.
+    assert_eq!(sel(&mut h, 10, false).as_deref(), Some("weapon_0"));
+    assert_eq!((h.menu_open, h.menu_row, h.menu_bucket), (false, 1, 1));
+    h.menu_open = true;
+    h.menu_row = 3;
+    assert_eq!(sel(&mut h, 10, false), None, "an open menu just closes");
+    assert_eq!((h.menu_row, h.menu_bucket), (1, 1));
+    // Slot 1 after 10 is the same bucket: the walk starts at row 2.
+    assert_eq!(sel(&mut h, 1, false), None);
+    assert_eq!((h.menu_open, h.menu_row, h.menu_bucket), (true, 2, 1));
+    assert_eq!(sel(&mut h, 1, false), None);
+    assert_eq!(h.menu_row, 4);
+    assert_eq!(sel(&mut h, 1, false), None);
+    assert_eq!(h.menu_row, 2, "wraps to row 1 and on to the knife; row 0 (kung fu) never");
+    // A new bucket searches from row 1; an empty one leaves -1.
+    assert_eq!(sel(&mut h, 2, false), None);
+    assert_eq!((h.menu_row, h.menu_bucket), (1, 2));
+    assert_eq!(sel(&mut h, 3, false), None);
+    assert_eq!((h.menu_row, h.menu_bucket), (-1, 3));
+    // The same empty bucket again: past the grid, 17.
+    assert_eq!(sel(&mut h, 3, false), None);
+    assert_eq!(h.menu_row, 17);
+
+    // Fast switch to bucket 1 from another bucket starts at row 0: kung fu.
+    h.menu_bucket = 2;
+    h.menu_row = 1;
+    assert_eq!(sel(&mut h, 1, true).as_deref(), Some("weapon_0"));
+    assert_eq!((h.menu_open, h.menu_row, h.menu_bucket), (false, 0, 2), "the bucket isn't changed");
+    // To bucket 2 (not 1): row + 1 = 1, the Glock.
+    h.menu_row = 0;
+    assert_eq!(sel(&mut h, 2, true).as_deref(), Some("weapon_1"));
+    // An empty bucket ends where it started; nothing sent, even from past the grid.
+    for row in [3, 17] {
+        h.menu_row = row;
+        assert_eq!(sel(&mut h, 5, true), None);
+    }
+    assert_eq!(sel(&mut h, 7, false), None, "slots 6..9 do nothing");
+}
