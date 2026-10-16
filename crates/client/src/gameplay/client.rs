@@ -426,6 +426,11 @@ pub trait ClientRules: Sync {
     /// Whether `V_CalcNormalRefdef` sets the local entity's render mode and eases its
     /// `renderamt` (the third-person translucency, `cl_thirdtransparency`).
     fn local_translucency(&self) -> bool;
+
+    // Audit round 3: hud
+
+    /// The say-text element's mute check and plain-line colour ([`SayTextStyle`](crate::hud::saytext::SayTextStyle)).
+    fn say_text_style(&self) -> crate::hud::saytext::SayTextStyle;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -712,6 +717,13 @@ mod stub {
         }
         fn local_translucency(&self) -> bool {
             false
+        }
+
+        // Audit round 3: hud
+
+        fn say_text_style(&self) -> crate::hud::saytext::SayTextStyle {
+            // The core's own (TS 3.0's), which its tests exercise.
+            crate::hud::saytext::SayTextStyle { mute_blocked: true, plain_color: Some(crate::hud::saytext::SAY_COLOR) }
         }
     }
 }

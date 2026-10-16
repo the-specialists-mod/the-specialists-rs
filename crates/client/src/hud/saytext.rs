@@ -17,6 +17,17 @@ const MAX_WRAP_DEPTH: usize = LINE_SIZE;
 /// The say text colour (`0x1009359c`, also team 3's): 1.0 0.7 0.0.
 pub const SAY_COLOR: [f32; 3] = [1.0, 0.7, 0.0];
 
+/// A ruleset's say-text element ([`ClientRules::say_text_style`](crate::gameplay::ClientRules::say_text_style)).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SayTextStyle {
+    /// `SayTextPrint` drops a line from a player the local player muted
+    /// (`IsPlayerBlocked`, TS 3.0 `0x1002ed00`).
+    pub mute_blocked: bool,
+    /// The colour `Draw` sets before a line without a coloured name; `None` sets none, so the
+    /// line takes the engine's default text colour.
+    pub plain_color: Option<[f32; 3]>,
+}
+
 /// What `SayTextPrint` and the wrap need from the engine.
 pub trait SayEnv {
     /// `GetConsoleStringSize` (`pfnDrawConsoleStringLen`): (width, height).
@@ -233,7 +244,7 @@ impl SayText {
 
 /// One line of [`SayText::draw_plan`]: the coloured name part (drawn at `LINE_START`) and the
 /// rest (drawn after it without a colour, i.e. in the engine's default), or the whole line in
-/// [`SAY_COLOR`].
+/// the ruleset's [`SayTextStyle::plain_color`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum DrawLine {
     Name { y: i32, name: Vec<u8>, color: [f32; 3], rest: Vec<u8> },

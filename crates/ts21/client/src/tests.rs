@@ -996,3 +996,15 @@ fn view_roll() {
     // #240 §4: no local translucency.
     assert!(!v21().local_translucency() && v30().local_translucency());
 }
+
+// Audit round 3: hud
+
+/// #260: 2.1's `SayTextPrint` (0x10060890) has no mute check and its `Draw` (0x10060540) sets no
+/// colour for a plain line; 3.0's (0x1002ed00, 0x1002eb40) mutes and sets (1, 0.7, 0).
+#[test]
+fn say_text_style() {
+    use ts_client::hud::saytext::{SAY_COLOR, SayTextStyle};
+    assert_eq!(v21().say_text_style(), SayTextStyle { mute_blocked: false, plain_color: None });
+    assert_eq!(v30().say_text_style(), SayTextStyle { mute_blocked: true, plain_color: Some(SAY_COLOR) });
+    assert_eq!(SAY_COLOR, [1.0, 0.7, 0.0], "g_ColorYellow 0x1009359c (2.1's 0x10289f9c is the same)");
+}

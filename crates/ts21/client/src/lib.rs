@@ -16,6 +16,7 @@ use ts_client::gameplay::{
     ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
 };
 use ts_client::hud::draw::{HudOp, HudSprite, StatusLook, WeaponPanel, ftol, num};
+use ts_client::hud::saytext::SayTextStyle;
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
 use ts_client::view::{Bob, BobInput, EyeZ};
@@ -667,6 +668,13 @@ impl ClientRules for Ts21Client {
     /// `renderamt`, and it has no `cl_thirdtransparency`.
     fn local_translucency(&self) -> bool {
         false
+    }
+
+    // Audit round 3: hud
+
+    /// [`hud::SAY_TEXT`] (issue #260).
+    fn say_text_style(&self) -> SayTextStyle {
+        hud::SAY_TEXT
     }
 }
 

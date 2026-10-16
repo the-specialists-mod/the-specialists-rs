@@ -420,6 +420,7 @@ The hooks so far:
 | `ClientRules` | `camera_offsets(ofs, input)` | `ts30_client::view::camera_offsets`: `cl_camtype`'s base, eased duck/stunt/death additions (#240) | `view.rs` `calc_normal` (third person) |
 | `ClientRules` | `view_roll(roll, pparams, view, local)` | `ts30_client::view::view_roll` (`V_CalcViewRoll` 0x100675b0, from the view entity) (#240) | `view.rs` `calc_normal` |
 | `ClientRules` | `local_translucency()` | true (`kRenderTransColor`, `cl_thirdtransparency`) (#240) | `view.rs` `calc_normal` (start) |
+| `ClientRules` | `say_text_style()` | `ts30_client::hud::SAY_TEXT`: muted players' chat dropped, plain lines in (1, 0.7, 0) (#260) | `hud/mod.rs` `say_text_print`, `draw_say_text` |
 | `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
 | `ClientRules` | `client_bullet_next_update(now, realbullet)` | `ts30_client::events::next_update`: 0.1 s, 0.05 s or every frame by `realbullet` | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `client_bullet_step(dir, step)` | `dir·velocity·40·dt·GetBulletVelocityMult` | `events/fire.rs` `client_bullet_impact` |
