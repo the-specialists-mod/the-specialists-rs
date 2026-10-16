@@ -215,9 +215,24 @@ fn kungfu_block(attacker: *mut edict_t, victim: *mut edict_t, damage: f32, atk_b
     true
 }
 
+/// The direction both hits of 2.1's `CTSStunt::CheckForBreakables` (`FUN_1005c680`), the delayed
+/// melee hit and the dive into a breakable, pass to `TraceAttack`: the stunt's stored direction
+/// (`CTSStunt+0x24`, copied at 0x1005ccb5 for the one call at 0x1005ccce), which `GoRoll`
+/// (0x1005d600, `velocity.Normalize()`), the dives and the back moves write (3.0: `g_vecZero`).
+pub fn delayed_hit_dir(stunt_dir: Vec3) -> Vec3 {
+    stunt_dir
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #218: `CheckForBreakables`' hits carry the stunt direction (`CTSStunt+0x24`), not 3.0's
+    /// `g_vecZero`.
+    #[test]
+    fn delayed_hits_carry_the_stunt_direction() {
+        assert_eq!(delayed_hit_dir([0.6, -0.8, 0.0]), [0.6, -0.8, 0.0]);
+    }
 
     #[test]
     fn kicks_cost_no_power() {

@@ -266,7 +266,7 @@ pub use crate::entities::stock::explode::screen_shake;
 /// player's time (kept by the ruleset's [`rules::StuntClock`]).
 pub fn block_player(p: &mut Player, cx: &mut Cx, t: f32) {
     let clock = crate::gameplay::active().server.stunt_clock();
-    p.stunt.block_timer = clock.start(cx.time(), cx.pev().fuser1, f64::from(t));
+    p.stunt.block_timer = clock.block_end(cx.time(), cx.pev().fuser1, t);
     cx.pev().iuser4 |= RECOVER;
 }
 
@@ -444,8 +444,9 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
     if p.active_powerup & shared::ts::powerup::DOUBLE_FIRERATE != 0 {
         dt *= 1.5;
     }
-    // The close-combat window and block timers (pl+0x79c..0x7b0) live in the gun
-    // (`GunRules::pre_think`, weapons pre_think).
+    // The close-combat window and block timers (pl+0x79c..0x7b0) live in the gun: the ruleset
+    // runs them down before `Play` and closes the window after it (issue #249).
+    let weapon_step = crate::weapons::pre_think_timers(p, cx);
     clock.tick_block(&mut p.stunt, dt);
 
     moves::play(p, cx, r);
@@ -463,6 +464,9 @@ pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) {
         cx.pev().iuser4 &= !RECOVER;
         p.stunt.block_timer = 0.0;
     }
+    // The bar, the recoil decay and the window's closure, before the observer return and the
+    // delayed hit.
+    crate::weapons::pre_think_after_play(p, cx, weapon_step);
     if cx.pev().iuser1 != 0 {
         return; // observer
     }

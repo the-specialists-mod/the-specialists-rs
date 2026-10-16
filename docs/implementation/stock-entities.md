@@ -394,10 +394,16 @@ The track change that its own train fires reads the train's path through a side 
 * **`UTIL_ScreenShake`** (0xec978). Only players on the ground shake. The fixed-point duration
   and frequency (`FixedUnsigned16`) are divided by `GiveSlowMul()` = `max(fuser1, 0.01)` and
   truncated, without clamping again (the x87 control word is set to truncate at 0xecad3 and
-  0xecb11). `explode::screen_shake` is the only copy; `stunt::screen_shake` re-exports it.
+  0xecb11). The quotient isn't rounded to a `float` before the truncation (mp.dll `fdivr` then
+  `__ftol`, 0x100767ef / 0x1007681d; issue #219). `explode::screen_shake` is the only copy;
+  `stunt::screen_shake` re-exports it.
 * **`UTIL_ScreenFade`** (0xecdec). Always sent as `TSFade` (`short dur, short hold, short flags,
   byte r,g,b,a`) to net clients, with the fixed-point durations divided by the time scale the same
-  way. The stock `ScreenFade` message is never sent.
+  way. The stock `ScreenFade` message is never sent. `CBasePlayer::TakeDamage`'s red flash
+  (0x8fa94) and `TSInit`'s spawn fade (0x92a4c, held for `m_flProtect - time`) go through it too
+  (issue #216).
+* Whether shakes and fades divide by the time scale is the ruleset's
+  (`ServerRules::screen_effects`): TS 2.1's are the SDK's, not divided (issue #217).
 * **`EMIT_SOUND_DYN`** (0xe0a8c). It has an extra factor `s`: pitch becomes
   `(s*fuser1 + 1 - s) * pitch`, the factor stored as a float and the product truncated (0xe0b1e;
   `explode::slow_pitch`, unit tested), with `fuser1` the emitting entity's time scale (no change
@@ -424,8 +430,10 @@ The track change that its own train fires reads the train's path through a side 
     truncate, Ghidra's `ROUND` notwithstanding), `0`, `0`, `byte 1`.
   * For each entity in the rMax sphere except the inflictor that takes damage and isn't
     `DEAD_DEAD`: a white `TSFade` (222, 227, 189, 0.1 s, hold 0.05, alpha 75) if it's a living
-    player, then `falloff_damage` by the distance to `Center() + 1z`: full inside rFull, linear to
-    0 at rMax, never below 0. No `rMax == rFull` guard (no caller passes it).
+    player, then the falloff damage by the distance to `Center() + 1z`: full inside rFull, linear
+    to 0 at rMax, never below 0. No `rMax == rFull` guard (no caller passes it). The distance,
+    the damage, the direction and the occluder test are the ruleset's arithmetic
+    (`ServerRules::explosion_hit`; 3.0's `ts30_server::explode::falloff_damage`).
   * In line of sight (fraction 1 or the trace hits the target) the damage goes through
     `TraceAttack` with that trace (impact point and hitgroup). Otherwise a trace back from the
     target, ignoring it, measures the obstacle from the forward trace's end (the blast point if it
@@ -936,14 +944,16 @@ writes out of bounds, or where the port lacks save/restore:
   port's re-entrant dispatch of the entity being dispatched is skipped, so the button just turns.
 * **x87 rounding of the damage code** (issues #89, #150). These follow mp.dll's 53-bit arithmetic
   (`shared::pm::Msvc`), the server's default, whatever `ts_pm_arith` says: `TSExplosion`'s
-  distance (`explode::blast_distance`: stored differences, `z² + y² + x²`, the root unrounded)
+  distance (`ts30_server::explode::blast_distance`: stored differences, `z² + y² + x²`, the root
+  unrounded)
   goes into `falloff_damage` unrounded with the falloff stored as a `float`, rounded once (so 110
   at r_max leaves 1.3e-6, as in TS); the occluder's thickness and the `TraceAttack` direction
   (the out-of-line `Normalize`, 0x100148f0); the `WorldGun` push (`worldgun::blast_velocity`,
   0x100519f2..); `CBreakable::TraceAttack`'s remembered direction (`breakable::hit_direction`:
   MSVC stores the direction's `x²` as a `float`, so a direction under ~1e-23 counts as zero);
   `RadiationThink`'s geiger range (the unrounded `Vector::Length`, stored when at most the range
-  or NaN); `CBaseMonster::TakeDamage`'s attack direction; the shrapnel's `Normalize` and speed;
+  or NaN); `CBaseMonster::TakeDamage`'s attack direction (`ts30_server::damage::attack_dir`,
+  through `ServerRules::attack_dir`); the shrapnel's `Normalize` and speed;
   and `FireBullets`' spread for `func_tank` (`tank::spread_dir_from`: `x` stored, `y` unrounded
   through the `<= 1` test and `y·spread.y`). Issue #170 adds: `damage::normalize` is the
   out-of-line `Normalize` (length and `1/len` unrounded; `CBreakable::TakeDamage`'s attack

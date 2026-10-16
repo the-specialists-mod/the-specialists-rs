@@ -492,6 +492,12 @@ fn view_anim(m: &KungFuMove) -> i32 {
     }
 }
 
+/// The kung-fu attack's `BlockPlayer` argument (0x1004e98f..0x1004e9a4): `FixedSlowMul()` (left on
+/// the FPU) × the delay × the `float` 0.9 (0x3f666666), stored as a `float`.
+pub fn block_duration(slow_div: f64, delay: f32) -> f32 {
+    (slow_div * f64::from(delay) * f64::from(0.9f32)) as f32
+}
+
 /// `CCombatAttack` (`FUN_1004de10`).
 pub fn ccombat_attack(gun: &mut Gun, host: &mut dyn GunHost) {
     // `PrimaryAttack` / `SecondaryAttack` enter only on a fresh press.
@@ -558,10 +564,11 @@ pub fn ccombat_attack(gun: &mut Gun, host: &mut dyn GunHost) {
                 gun.melee_source = 0;
             }
         }
-        // `BlockPlayer(T × delay × 0.9)` (`FUN_10056b60`) only acts on the ground; the stunt clock
-        // applies `T` (`pl+0x460 = now + t`).
+        // `BlockPlayer` (`FUN_10056b60`) only acts on the ground. Its argument (0x1004e98f..
+        // 0x1004e9a4) is `(float)(FixedSlowMul() × delay × 0.9f)`, the slowed duration; the stunt
+        // clock adds the time to it as a `float` (`pl+0x460 = t + time`, issue #242).
         if host.iuser4() & 1 == 0 && on_ground(host) {
-            host.block_player((delay as f64 * 0.9) as f32);
+            host.block_player(block_duration(t_end(host), delay));
         }
         host.event(Event::CloseCombat, EventArgs { f1: 0.0, f2: 0.0, i1: m.atype, i2: view_anim(&m), b1: 0, b2: 0 });
     }

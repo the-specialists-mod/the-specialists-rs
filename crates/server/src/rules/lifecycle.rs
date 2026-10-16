@@ -15,7 +15,7 @@ use goldsrc::server::{MsgWriter, engine};
 use goldsrc::sys::*;
 use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ, ORDER_ZYX};
 use shared::protocol::hud_wire::TsPAward;
-use shared::protocol::hud_wire::{ActItems, SetFov, Spectator, TsFade, TsHealth, TsMBlur, fade};
+use shared::protocol::hud_wire::{ActItems, SetFov, Spectator, TsHealth, TsMBlur};
 use shared::protocol::rules::{GameMode, Motd, ScoreInfo, ServerName, SrvSett, hud_dest};
 use shared::protocol::rules::{RoundTime, TeamInfo};
 use shared::ts::{obs, powerup as pw, stunt};
@@ -317,8 +317,10 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
         v.velocity = [0.0; 3];
         v.punchangle = [0.0; 3];
     }
-    let fadecol = TsFade::new([200, 200, 250], 0x19, 0.2, 1.0, fade::IN);
-    msg::one(Msg::TsFade, cx.edict, |w| fadecol.write(w));
+    // `UTIL_ScreenFade(this, (200, 200, 250), 0.2, m_flProtect - time, 0x19, 0)` (3.0 0x92a4c, 2.1
+    // 0x10055414: the spawn protection's end less the time, a `float` difference; issue #216).
+    let hold = p.ts.protect_until - now;
+    crate::entities::stock::explode::screen_fade(cx.edict, [200.0, 200.0, 250.0], 0.2, hold, 0x19, 0);
     if was_observer {
         let s = Spectator { entindex: cx.index() as u8, observer: 0 };
         msg::all(Msg::Spectator, |w| s.write(w));

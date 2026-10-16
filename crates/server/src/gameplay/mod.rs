@@ -388,6 +388,29 @@ impl ServerRules for Defaults {
     fn random_position_ray(&self, _angle: i32, _dist: i32, _from: [f32; 3]) -> ([f32; 3], [f32; 3]) {
         unimplemented!("random_position_ray")
     }
+
+    // Audit round 2: C
+
+    fn screen_effects(&self) -> crate::entities::stock::explode::ScreenEffects {
+        unimplemented!("screen_effects")
+    }
+    fn delayed_hit_dir(&self, _stunt_dir: shared::weapons::spread::Vec3) -> shared::weapons::spread::Vec3 {
+        unimplemented!("delayed_hit_dir")
+    }
+    fn explosion_hit(
+        &self,
+        _org: shared::weapons::spread::Vec3,
+        _spot: shared::weapons::spread::Vec3,
+        _dmg: f32,
+        _r_full: f32,
+        _r_max: f32,
+        _occluder: Option<f32>,
+    ) -> Option<(f32, shared::weapons::spread::Vec3)> {
+        unimplemented!("explosion_hit")
+    }
+    fn attack_dir(&self, _from: shared::weapons::spread::Vec3, _to: shared::weapons::spread::Vec3) -> shared::weapons::spread::Vec3 {
+        unimplemented!("attack_dir")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).
