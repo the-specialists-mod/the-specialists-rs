@@ -518,6 +518,16 @@ impl ServerRules for Ts30Server {
         let _ = stunt_dir;
         [0.0; 3]
     }
+
+    /// [`explode::explosion_hit`], mp.dll's arithmetic.
+    fn explosion_hit(&self, org: Vec3, spot: Vec3, dmg: f32, r_full: f32, r_max: f32, occluder: Option<f32>) -> Option<(f32, Vec3)> {
+        explode::explosion_hit(org, spot, dmg, r_full, r_max, occluder)
+    }
+
+    /// [`damage::attack_dir`], mp.dll's arithmetic.
+    fn attack_dir(&self, from: Vec3, to: Vec3) -> Vec3 {
+        damage::attack_dir(from, to)
+    }
 }
 
 /// The plugin as the server registers it.

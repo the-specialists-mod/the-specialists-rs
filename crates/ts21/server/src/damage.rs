@@ -5,6 +5,7 @@
 //! * `CBasePlayer::TraceAttack` (0x10053310) and `CBasePlayer::TakeDamage` (0x10052cf0).
 
 use shared::pm::Ext;
+use shared::weapons::spread::Vec3;
 use ts_server::damage::{bits, hitgroup};
 use ts_server::player::damage::{HitDamage, PlayerHit};
 
@@ -110,9 +111,50 @@ pub fn armor_damage(armor: &mut f32, amount: f32, group: i32, dmg_bits: i32) -> 
 /// `TakeDamage`'s view punch on the victim (after the suit reports): `punchangle.x -= 3`.
 pub const DAMAGE_PUNCH: f32 = 3.0;
 
+/// The direction 2.1's `CBaseMonster::TakeDamage` (0x10011630) stores in `g_vecAttackDir`, from
+/// `to` (the victim's centre) toward `from` (the inflictor's centre 10 units down), normalised
+/// twice (issue #220's comment):
+///
+/// * the first `Normalize` (0x10011735..0x100117a6) keeps the x difference unrounded, stores y,
+///   and stores z (`fst`) while keeping it: the sum is `(z·z_f + y_f²) + x²`, `1/len` stays on the
+///   FPU and x is `1/len × x` unrounded;
+/// * the second (0x100117b0..) sums `(x² + y²) + z²` of the stored components, `1/len` on the FPU.
+///
+/// Each gives `(0, 0, 1)` for a zero length; a NaN one counts as non-zero (`test ah,0x44; jp`).
+pub fn attack_dir(from: Vec3, to: Vec3) -> Vec3 {
+    let x = f64::from(from[0]) - f64::from(to[0]);
+    let y = f64::from((f64::from(from[1]) - f64::from(to[1])) as f32);
+    let z = f64::from(from[2]) - f64::from(to[2]);
+    let zf = f64::from(z as f32);
+    let first = normalized([x, y, zf], ((z * zf + y * y) + x * x).sqrt());
+    let v = first.map(f64::from);
+    normalized(v, ((v[0] * v[0] + v[1] * v[1]) + v[2] * v[2]).sqrt())
+}
+
+/// `v / len` with `1/len` unrounded, each component stored; `(0, 0, 1)` for a zero `len` (a NaN
+/// isn't zero).
+fn normalized(v: [f64; 3], len: f64) -> Vec3 {
+    if len == 0.0 {
+        return [0.0, 0.0, 1.0];
+    }
+    let inv = 1.0 / len;
+    v.map(|c| (inv * c) as f32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #220's comment: the first normalisation keeps x unrounded and multiplies z by its stored
+    /// copy (mp.dll 3.0, which stores the differences: x = 0x3f0a2b68).
+    #[test]
+    fn attack_dir_rounds_as_2_1() {
+        let from = [0x43e7_4f11, 0xc41a_fab3, 0x4532_987d].map(f32::from_bits);
+        let to = [0xc52a_0810, 0x4506_6cf9, 0xc49d_cb04].map(f32::from_bits);
+        assert_eq!(attack_dir(from, to).map(f32::to_bits), [0x3f0a_2b69, 0xbef0_89a3, 0x3f32_d4c7]);
+        assert_eq!(attack_dir([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]), [0.0, 0.0, 1.0]);
+        assert_eq!(attack_dir([100.0, 0.0, 0.0], [0.0; 3]), [1.0, 0.0, 0.0]);
+    }
 
     fn hit(damage: f32, bits: i32, hitgroup: i32) -> PlayerHit {
         PlayerHit { damage, bits, hitgroup, stunting: false, dodging: false }

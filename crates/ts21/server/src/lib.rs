@@ -493,6 +493,16 @@ impl ServerRules for Ts21Server {
     fn delayed_hit_dir(&self, stunt_dir: Vec3) -> Vec3 {
         melee::delayed_hit_dir(stunt_dir)
     }
+
+    /// [`explode::explosion_hit`]: 2.1's roundings and NaN branches.
+    fn explosion_hit(&self, org: Vec3, spot: Vec3, dmg: f32, r_full: f32, r_max: f32, occluder: Option<f32>) -> Option<(f32, Vec3)> {
+        explode::explosion_hit(org, spot, dmg, r_full, r_max, occluder)
+    }
+
+    /// [`damage::attack_dir`]: 2.1's roundings.
+    fn attack_dir(&self, from: Vec3, to: Vec3) -> Vec3 {
+        damage::attack_dir(from, to)
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.

@@ -497,6 +497,18 @@ pub trait ServerRules: Sync {
     /// hits, the delayed melee hit and the dive into a breakable, given the stunt direction
     /// (`StuntState::dir`, what the last roll, dive or back move stored).
     fn delayed_hit_dir(&self, stunt_dir: Vec3) -> Vec3;
+
+    /// `TSExplosion`'s hit on one target (0x7d1f7..0x7d64e): the damage `TraceAttack` gets and its
+    /// direction, from the blast point `org` to the target's `Center() + 1z` (`spot`), for a blast
+    /// of `dmg` full to `r_full` and fading to `r_max`. `occluder` is the thickness of what lies
+    /// between them when the line is blocked (the damage then loses it); `None` when nothing
+    /// gets through.
+    fn explosion_hit(&self, org: Vec3, spot: Vec3, dmg: f32, r_full: f32, r_max: f32, occluder: Option<f32>) -> Option<(f32, Vec3)>;
+
+    /// The `g_vecAttackDir` `CBaseMonster::TakeDamage` (0xb2430) stores: from `to` (the victim's
+    /// centre) toward `from` (the inflictor's centre 10 units down), normalised twice
+    /// ([`damage::attack_dir_ends`](crate::damage::attack_dir_ends)).
+    fn attack_dir(&self, from: Vec3, to: Vec3) -> Vec3;
 }
 
 #[cfg(test)]

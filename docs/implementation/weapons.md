@@ -665,7 +665,7 @@ How the port maps TS where the structure differs (not deviations):
   `stunt::moves::tests`).
 * `cargo test -p ts-server`: command argument parsing (`%i_%i`), `SlowPhysics` (scale, rescale,
   restore, TS's gravity compounding at rest), ammo pack contents (`take_ammo`), the explosion's
-  `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and damage falloff (`falloff_damage`),
+  `WorldGun` knock-back (`blast_velocity`, `ground_hop`) and (`ts30-server`) damage falloff (`falloff_damage`),
   the thrown blade's ground slide (`ground_slide`), glance-or-stick test (`glances_off`) and
   hit pitch (`hit_pitch`), the flying impact's health-only test (`flying_impact_ignores_takedamage`), the gunless `clientdata_t` packing
   (`clientdata_without_the_gun_stops_after_the_weapon_id`), and the multi-damage
