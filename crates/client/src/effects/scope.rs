@@ -17,18 +17,22 @@ pub type Quad = [([f32; 2], Vec3); 4];
 
 /// The four quads for a view (`origin`, `forward`, `right`, `up`) and integer FOV.
 ///
-/// Half the size of one quad is `max(fov·0.1, 1)·0.5`, and the quads sit at `origin + forward·10`.
-/// Quadrant order and vertex order are TS's: (+right, +up), (−right, +up), (+right, −up),
-/// (−right, −up); each quad's outer corner gets uv (0, 0) and the shared centre uv (1, 1).
+/// Half the size of one quad is `max(fov·0.1, 1)·0.5`, the product and the clamp on the x87 and
+/// the result stored as a float (`0x100545fe..0x10054620`), and the quads sit at
+/// `origin + forward·10`. Quadrant order and vertex order are TS's: (+right, +up), (−right, +up),
+/// (+right, −up), (−right, −up); each quad's outer corner gets uv (0, 0) and the shared centre
+/// uv (1, 1). Every sum is a float vector operation (`Vector::operator+/-`, `0x10035b10` and
+/// `0x1003d200`, or inlined), and TS adds the up offset before the right one: the quad's centre is
+/// `(c ± up) ± right` and each corner `(centre ± up) ± right` (2.1's `0x10094300` is the same; issue #274).
 pub fn quads(cam: &Camera, fov: i32) -> [Quad; 4] {
-    let s = (fov as f32 * 0.1).max(1.0) * 0.5;
+    let s = ((fov as f64 * 0.1).max(1.0) * 0.5) as f32;
     let c = v::ma(cam.origin, 10.0, cam.forward);
     let (r, u) = (v::scale(cam.right, s), v::scale(cam.up, s));
     let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
     [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(sx, sy): (f32, f32)| {
         let (r, u) = (v::scale(r, sx), v::scale(u, sy));
-        let a = v::add(v::add(c, r), u);
-        let corners = [v::add(v::add(a, r), u), v::add(v::sub(a, r), u), v::sub(v::sub(a, r), u), v::sub(v::add(a, r), u)];
+        let a = v::add(v::add(c, u), r);
+        let corners = [v::add(v::add(a, u), r), v::sub(v::add(a, u), r), v::sub(v::sub(a, u), r), v::add(v::sub(a, u), r)];
         [0, 1, 2, 3].map(|i| (uv[i], corners[i]))
     })
 }
@@ -81,6 +85,26 @@ mod tests {
         // First quad is +right (−y here), +up.
         assert_eq!(q[0][0].1, [20.0, 18.0, 32.0]);
         assert_eq!(q[3][0].1, [20.0, 22.0, 28.0]);
+    }
+
+    #[test]
+    fn sums_round_as_ts_adds_them() {
+        // `0x10054790..0x100547f9`: centre `(c + up) + right`, corner `(centre + up) + right`, in
+        // floats. Adding right first rounds the corner's x to 0x447ff1ec.
+        let cam = Camera {
+            origin: [1019.54, -1994.98, 64.1],
+            forward: [0.36, 0.48, 0.8],
+            right: [0.8, -0.6, 0.0],
+            up: [-0.48, -0.64, 0.6],
+            ..Default::default()
+        };
+        let q = quads(&cam, 20);
+        assert_eq!(q[0][0].1.map(f32::to_bits), [0x447f_f1eb, 0xc4f9_151e, 0x4292_9999]);
+        assert_eq!(q[0][2].1.map(f32::to_bits), [0x447f_c8f5, 0xc4f8_c5c2, 0x4290_3333]);
+        // fov 13: 13 × 0.1 on the x87 is 1.3 → half size 0.65; the float product 1.3000001 gave
+        // 0.65000004.
+        let cam = Camera { forward: [0.0, 1.0, 0.0], right: [1.0, 0.0, 0.0], up: [0.0, 0.0, 1.0], ..Default::default() };
+        assert_eq!(quads(&cam, 13)[0][0].1, [1.3, 10.0, 1.3]);
     }
 
     #[test]
