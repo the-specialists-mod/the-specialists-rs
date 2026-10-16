@@ -144,6 +144,8 @@ pub fn vid_init(_first: bool) {
         m.scores = false;
         m.map_name.clear();
     });
+    // `Initialize` zeroes `g_iTeamNumber` (`0x10060aa0`).
+    crate::state::with(|s| s.team_number = 0);
     crate::voice::stop_squelch_mode();
 }
 
@@ -475,13 +477,28 @@ fn team_slot(n: i32) -> bool {
     }
 }
 
-/// A team menu button's action: `CMenuHandler_StringCommandWatch` (`0x10064a20`) runs the command
-/// and closes the menu; cancel closes it.
+/// A team menu button's action: `CMenuHandler_StringCommandWatch` (3.0 `0x10064a20`, 2.1
+/// `0x100b0bf0`) runs the command, closes the menu and, for `jointeam 1`..`jointeam 4`, sets
+/// `g_iTeamNumber` ahead of the next player state (`0x10064a82..0x10064b5a`, issue #275); cancel
+/// closes it.
 fn run_team_action(a: team::Action) {
-    if let team::Action::Command(c) = a {
-        engine().client_cmd(&c);
-    }
+    let cmd = match a {
+        team::Action::Command(c) => {
+            engine().client_cmd(&c);
+            Some(c)
+        }
+        team::Action::Close => None,
+    };
     hide_top_menu();
+    if let Some(n) = cmd.as_deref().and_then(local_team_of) {
+        crate::state::with(|s| s.team_number = n);
+    }
+}
+
+/// The team `CMenuHandler_StringCommandWatch` stores for its command: TS compares the whole
+/// string with `"jointeam 1"`..`"jointeam 4"` (`strcmp`), so auto-assign (`jointeam 5`) sets none.
+fn local_team_of(cmd: &str) -> Option<i32> {
+    (1..=4).find(|n| cmd == format!("jointeam {n}"))
 }
 
 // ---- scoreboard ------------------------------------------------------------------------------
@@ -565,7 +582,7 @@ const K_KP_ENTER: i32 = 169;
 /// `TeamFortressViewport::KeyInput` (`0x10064b90`, from `HUD_Key_Event`), with the console up:
 /// * Enter (or keypad Enter) while spectating asks for the team menu;
 /// * with the team menu shown, Escape closes it once the player has a team (`g_iTeamNumber`,
-///   `0x10190b24`, the local player's state), a digit goes to its `SlotInput` and `+jump`
+///   `0x10190b24`), a digit goes to its `SlotInput` and `+jump`
 ///   auto-assigns;
 /// * with the map briefing or the MOTD shown (menus 4 and 5; TS's list also has the class help,
 ///   6), Enter, keypad Enter, Space or Escape close it.
@@ -582,7 +599,7 @@ pub fn key_event(down: bool, key: i32, binding: &CStr) -> bool {
         return false;
     }
     if cur == 2 {
-        if key == K_ESCAPE && e.local_player().is_some_and(|p| p.curstate.team != 0) {
+        if key == K_ESCAPE && crate::state::with(|s| s.team_number) != 0 {
             hide_top_menu();
             return true;
         }
@@ -1009,9 +1026,9 @@ fn paint_vgui() {
         }
     }
     let cur = with(|m| m.queue.first().map(Menu::id));
-    // `0x10064906`: a new local team number (`g_iTeamNumber`, from the local player's state)
-    // updates the shown menu, which only the team menu acts on (issue #268).
-    let team = engine().local_player().map_or(0, |p| p.curstate.team);
+    // `0x10064906`: a new local team number (`g_iTeamNumber`) updates the shown menu, which
+    // only the team menu acts on (issue #268).
+    let team = crate::state::with(|s| s.team_number);
     if with(|m| m.note_team(team)) && cur == Some(2) {
         update_team_menu();
     }
@@ -1096,6 +1113,18 @@ pub fn redraw(time: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `CMenuHandler_StringCommandWatch` (`0x10064a82..0x10064b5a`, 2.1 `0x100b0bf0`): only the
+    /// exact `jointeam 1`..`4` strings set `g_iTeamNumber` (issue #275).
+    #[test]
+    fn jointeam_sets_the_local_team() {
+        assert_eq!(
+            (1..=5).map(|n| local_team_of(&format!("jointeam {n}"))).collect::<Vec<_>>(),
+            [Some(1), Some(2), Some(3), Some(4), None]
+        );
+        assert_eq!(local_team_of("jointeam 1 "), None);
+        assert_eq!(local_team_of("jointeam 01"), None);
+    }
 
     /// `FUN_10036480`: a missing `tsbuylist.tsa` is created empty, an existing one is read, and
     /// when it can't be created either the path is dropped so nothing is saved.

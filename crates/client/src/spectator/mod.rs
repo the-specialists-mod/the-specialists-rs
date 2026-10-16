@@ -300,7 +300,11 @@ pub fn director_event(command: u8, primary: i32, secondary: i32, flags: i32) {
             });
             crate::input::reset_key_tap();
             crate::gameplay::current().hltv_reset(false);
-            state::with(|st| st.spec_mode = obs::NONE);
+            // `0x10023380` also zeroes `g_iTeamNumber` (2.1 `0x1004af10` too).
+            state::with(|st| {
+                st.spec_mode = obs::NONE;
+                st.team_number = 0;
+            });
             set_modes(2, 0);
             with(|s| s.overview.reset());
             // `0x10022da0`: the map camera, which the view also uses until player movement

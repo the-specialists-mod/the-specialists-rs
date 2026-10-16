@@ -30,7 +30,7 @@ pub fn txfer_local_overrides(s: &mut entity_state_t, c: &clientdata_t) {
 }
 
 /// `HUD_ProcessPlayerState` (`0x1001b950`): the SDK field list plus `iuser4`; for the local
-/// player the spectator globals.
+/// player the team number and the spectator globals.
 pub fn process_player_state(dst: &mut entity_state_t, src: &entity_state_t) {
     dst.origin = src.origin;
     dst.angles = src.angles;
@@ -64,6 +64,7 @@ pub fn process_player_state(dst: &mut entity_state_t, src: &entity_state_t) {
     dst.iuser4 = src.iuser4;
     if engine().local_player().is_some_and(|p| p.index == dst.number) {
         state::with(|s| {
+            s.team_number = dst.team;
             s.spec_mode = src.iuser1;
             s.spec_target = src.iuser2;
             s.spec_flags = src.iuser3;

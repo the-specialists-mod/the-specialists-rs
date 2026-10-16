@@ -158,5 +158,4 @@ Scope: `crates/client/src/menus/{mod,buy,motd,team,scoreboard,scroll,widgets}.rs
 ### Not verified
 - Scroll bars (`menus/scroll.rs`, `CTFScrollPanel`) and `CommandButton` painting (`widgets.rs`): not compared against 2.1 (SDK code in both).
 - Voice labels (`voice::redraw`): not in this group's comparison.
-- `jointeam` setting `g_iTeamNumber` locally (`0x10064a82`) is still not emulated (documented in client-hud.md). #268's team check reads the player state.
 - 2.1's VGUI scaling was brute-forced over every width 320..3840 and height 240..2400 for the MOTD expressions, and at the common resolutions for the rest. Expressions not compared operation by operation (the scoreboard's `FillGrid` row heights) take the same `vgui_scale`.

@@ -542,10 +542,11 @@ Drawing that TS leaves to the engine's VGUI1 surface:
   * Squelch mode centres the virtual cursor, and the first scoreboard press (entering squelch mode)
     isn't passed to the engine as a key. Panels are laid out from the current screen size each
     frame (TS builds them once with the viewport).
-  * `jointeam` from the team menu doesn't set the local `g_iTeamNumber` (TS does, `0x10064a82`,
-    until the next player state); Escape's "has a team" test reads the player state only, and so
-    does the viewport's per-frame team check (`paintBackground` `0x100648c0`), which updates the
-    shown team menu when the local team changes (issue #268).
+  * The local `g_iTeamNumber` (`state::State::team_number`) is TS's: the local player's state
+    sets it, the team menu's `jointeam 1`..`4` sets it ahead of that (`0x10064a82`, issue #275),
+    and `HUD_VidInit` and the director reset zero it. Escape's "has a team" test and the
+    viewport's per-frame team check (`paintBackground` `0x100648c0`, which updates the shown team
+    menu when the local team changes, issue #268) read it.
 
 Checks that only matter on input TS mishandles (TS writes or reads out of bounds):
 * `Objective`/`ShowObj` indexes outside 0..31 (TS's check `i >= 0 || i < 32` is always true and

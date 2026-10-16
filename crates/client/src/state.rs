@@ -88,6 +88,10 @@ pub struct Shared {
     pub spec_mode: i32,
     pub spec_target: i32,
     pub spec_flags: i32,
+    /// `g_iTeamNumber` (3.0 `0x10190b24`, 2.1 `0x10320644`): the local team number, from the
+    /// local player's state, set ahead of it by the team menu's `jointeam 1..4`
+    /// ([`crate::menus`]), zeroed by the viewport's `Initialize` and the director reset.
+    pub team_number: i32,
     // ---- added by the hud package ----
     /// Local player is an observer (`Spectator` message).
     pub observer: bool,
