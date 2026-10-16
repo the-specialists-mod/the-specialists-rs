@@ -6,7 +6,7 @@
 use goldsrc::ext::render::{ATTN_NORM, Vec3, random_float, random_long};
 use goldsrc::sys::ref_params_t;
 use ts_client::effects::fx::FxStyle;
-use ts_client::effects::psys::PSys;
+use ts_client::effects::psys::{PSys, ParticleModel};
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::{
     ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
@@ -456,6 +456,11 @@ impl ClientRules for Ts30Client {
     /// (`0x1002eb40`) sets `g_ColorYellow` (1, 0.7, 0) before a plain line (`0x1002ec72`).
     fn say_text_style(&self) -> SayTextStyle {
         hud::SAY_TEXT
+    }
+
+    /// `PSys_UpdateDraw` (`0x100520d0`).
+    fn particle_model(&self) -> ParticleModel {
+        ParticleModel::Drag
     }
 }
 

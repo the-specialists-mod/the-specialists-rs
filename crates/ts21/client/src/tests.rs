@@ -1008,3 +1008,12 @@ fn say_text_style() {
     assert_eq!(v30().say_text_style(), SayTextStyle { mute_blocked: true, plain_color: Some(SAY_COLOR) });
     assert_eq!(SAY_COLOR, [1.0, 0.7, 0.0], "g_ColorYellow 0x1009359c (2.1's 0x10289f9c is the same)");
 }
+
+/// #261: 2.1's particles run the core's `Decelerate` update (0x10091020); 3.0's the `Drag` one
+/// (0x100520d0).
+#[test]
+fn particle_model() {
+    use ts_client::effects::psys::ParticleModel;
+    assert_eq!(v21().particle_model(), ParticleModel::Decelerate);
+    assert_eq!(v30().particle_model(), ParticleModel::Drag);
+}

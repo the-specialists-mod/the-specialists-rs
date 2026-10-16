@@ -434,6 +434,8 @@ pub fn frame(time: f64, frametime: f64) {
         fx.psys.cull_origin = cull_origin;
         fx.psys.time_scale = ts;
         fx.psys.hardware = view::hardware();
+        fx.psys.model = crate::gameplay::current().particle_model();
+        fx.psys.slowmo = state::with(|s| s.slowmo_factor100) / 100.0;
         // 0x1003abef: no emission, and no emitter clock, until the first `TS_DrawEffects` has
         // allocated the particle pool (0x10056bc0). TS tests the pool pointer, not 0x1018d16a,
         // so this does not wait again after a `HUD_VidInit`.
@@ -742,7 +744,10 @@ pub fn draw_transparent() {
 
     let players = react_players();
     with(|fx| {
-        let dt = fx.frametime * ts;
+        let dt = match fx.psys.model {
+            psys::ParticleModel::Drag => fx.frametime * ts,
+            psys::ParticleModel::Decelerate => psys::decel_step(fx.frametime, fx.psys.slowmo),
+        };
         fx.draws += 1;
         let t = fx.time;
         let Fx { psys, map, .. } = fx;
