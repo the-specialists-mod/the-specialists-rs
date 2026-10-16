@@ -160,7 +160,7 @@ the same as the GCC build once the stack is 53 bits wide.
 | `GoWheel` / `GoRoll` | 0x9c9bc / 0x9cfe8 | `go_wheel`, `go_roll` |
 | `CloseAttack` (jump kick) | 0x9c630 | `moves::close_attack` (gate `close_attack_allowed`, move `close_attack_anim`); the kick itself is `weapons::jump_kick` (weapons.md), its strength `spread::jump_kick_strength` |
 | `TEXTURETYPE_PlaySound` (roll with `FREEZE_ANGLES`, dead in TS; also `func_tank` bullets) | 0xe1330 | `entities::stock::impact::texture_type_play_sound` |
-| `TEXTURETYPE_Init` / `LoadStandardMaterials` / `LoadMapMaterials` / `Find` | 0xe1244 / 0xe0e14 / 0xe1014 / 0xe12c4 | `textures::texturetype::{init, find}` (`init` from `stunt::texture_type_init`, as TS's `CWorld::Precache`) |
+| `TEXTURETYPE_Init` / `LoadStandardMaterials` / `LoadMapMaterials` / `Find` | 0xe1244 / 0xe0e14 / 0xe1014 / 0xe12c4 | `textures::texturetype::{init, find}` (`init` from `stunt::texture_type_init`, as TS's `CWorld::Precache`), a table per ruleset: its `PmRules::texture_limits` and `ServerRules::map_materials` (`impact::game_textures`; TS 2.1: 512 entries, 12 characters, no map file, issue #206) |
 | `CheckForBreakables` | 0x9bd9c | `check_for_breakables` |
 | `CBasePlayer::Jump` / `Duck` | 0x92864 / 0x927fc | `moves::jump`, `moves::duck` |
 | `CBasePlayer::PreThink` (stunt parts) | 0x908cc | `stunt::pre_think` (not during intermission: `Player::pre_think` stops after `rules::player_think`, as TS returns on `g_fGameOver`): button edges, `framerate = slowmul`, last-ground time, close-combat/block timers, `Play`, `UpdateTimers`, `NO_VIEW` bit, `BlockPlayer` expiry, breakables, `Jump()`/`Duck()`, `m_flFallVelocity`, `UpdatePlayerState` (the stance `player::hud` sends as `TSState` from `UpdateClientData`, its only sender in TS) |

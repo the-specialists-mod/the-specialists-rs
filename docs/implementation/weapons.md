@@ -45,11 +45,11 @@ addresses of `ts_i386.so`.
 | `CTSGun::EmptySound` 0x81be4 / `Fire` 0x81c78 | same names (`Fire`'s body: `ts30_gameplay::gun::fire`) |
 | `CTSGun::ColdCock` 0x81dd0 + `CBasePlayer::ColdCockAttack` 0x96610 | `ts30_gameplay::melee::cold_cock` + `melee::attack` |
 | `CTSGun::ShotgunFire` 0x82108 / `StandardFire` 0x824a4 / `AkimboFire` 0x829c0 | same names in `ts30_gameplay::gun` |
-| `CTSGun::GrenadeFire` 0x832f0 / `GrenadeIdle` 0x84f18 | `Gun::grenade_fire` / `Gun::grenade_idle` + `Gun::grenade_throw` |
+| `CTSGun::GrenadeFire` 0x832f0 / `GrenadeIdle` 0x84f18 | `Gun::grenade_fire` / `Gun::grenade_idle` + `Gun::grenade_throw` (the sums' rounding per build: `GunRules::grenade_rounding`, issues #129, #225) |
 | `CTSGun::KatanaFire` 0x833f0 / `KatanaThrow` 0x83b68 / `KnifeFire` 0x84044 | same names (`KatanaFire`'s and `KnifeFire`'s bodies in `ts30_gameplay::melee`) |
 | `CTSGun::ReloadWeapon` 0x84a14 / `ShotgunReload` 0x84aac / `Reload` 0x84d5c | same names |
 | `CTSGun::WeaponIdle` 0x854dc / `HolsterWeapon` 0x85698 | same names |
-| `CTSGun::UpdateClientData` 0x858c8 | `weapons::update_client_data` → `net::update_client` (`WStatus`, `WeaponInfo`, 10 Hz), called at the end of the player's `UpdateClientData` (`player::hud::update_client_data`, from PreThink). The caches (`SvState::next_update`, `sent_*`) are the gun entity's in TS: a new gun starts with `CTSGun::Reset`'s values (`new_gun_state`: last id 0, so a gun on kung fu sends no `WeaponInfo`; timer 0), `CTSGun::Deploy` with a weapon zeroes the timer (`GunHost::deploy_update_now`), and a spawn keeps the caches of a gun still held. `WeaponInfo`'s decision is `net::weapon_info_update`. |
+| `CTSGun::UpdateClientData` 0x858c8 | `weapons::update_client_data` → `net::update_client` (`WStatus`, `WeaponInfo`, 10 Hz), called at the end of the player's `UpdateClientData` (`player::hud::update_client_data`, from PreThink). The caches (`SvState::next_update`, `sent_*`) are the gun entity's in TS: a new gun starts with `CTSGun::Reset`'s values (`new_gun_state`: last id 0, so a gun on kung fu sends no `WeaponInfo`; timer 0), `CTSGun::Deploy` with a weapon zeroes the timer (`GunHost::deploy_update_now`), and a spawn keeps the caches of a gun still held. What follows the `WStatus` loop is the ruleset's (`ServerRules::gun_hud_update`, `net::GunHud`: 3.0's `ts30_server::weapons::gun_hud_update`; 2.1 also resends on a fire-mode or attachment change and sends `ClipInfo`, issue #214). |
 | `CBasePlayer::TSInit` 0x92a4c (weapon fields) | `weapons::ts_init`, from `rules::lifecycle::on_spawn`'s TSInit block | 81 free slots, no loadout items, the speed (330) recorded for 81. The only reset of these: `RemoveAllItems`, `StartObserver` and `Killed` leave them to the item code. |
 | `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` (block's and attack's bodies in `ts30_gameplay::melee`) |
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
@@ -73,7 +73,7 @@ addresses of `ts_i386.so`.
 | `CBasePlayer::PlayerUse` 0xd9848 | `player::player_use` (all classes; from `post_think`), with `weapons::use_by_player` for the weapon entities |
 | `CM61Grenade::Use` 0x7ce64 | `Grenade::use_by` (kicks a grenade resting on the ground) |
 | `UTIL_BubbleTrail` 0xee93c / `UTIL_WaterLevel` 0xee73c | `fire::bubble_trail` / `fire::water_level` |
-| `CTSAmmoPack` 0xa1310.. / `CBasePlayer::DropAmmo` 0x946f0 | `worldgun::AmmoPack` (link `TSAmmoPack`, classname `AmmoPack`) / `worldgun::drop_ammo` |
+| `CTSAmmoPack` 0xa1310.. / `CBasePlayer::DropAmmo` 0x946f0 | `worldgun::AmmoPack` (link `TSAmmoPack`, classname `AmmoPack`) / `worldgun::drop_ammo`: the position's rounding and the dying player as `pev->owner` until `OnGround` (0xa1610) are the ruleset's (`ServerRules::ammo_pack_drop`, issue #211) |
 | `CBasePlayer::PickUpWeapon` 0x9314c | `inventory::pick_up_weapon` |
 | `CBasePlayer::DropWeapon` 0x94900 / `ThrowWeapon` 0x9529c | `inventory::drop_weapon` (`Drop::{Current, Id, Disarm}`) / `throw_weapon` |
 | `CBasePlayer::BuyArmament/BuyWeapon/BuyAmmo/AddItem/TakeArmor` | `inventory::buy_armament/buy_weapon/buy_ammo/add_item/take_armor` |
@@ -96,7 +96,7 @@ addresses of `ts_i386.so`.
 ### Hooks
 
 * `game_init`: cvars `realbullet` 0, `ammocount` 0, `weaponstay` 15, `damagemult` 0,
-  `customweapons` "" (registered and, as in TS, never read), `ts_weapons_debug` 0 (not TS); server commands `weaponrestriction`,
+  `customweapons` "" (registered and, as in TS 3.0, never read; the 2.1 plugin polls it), `ts_weapons_debug` 0 (not TS); server commands `weaponrestriction`,
   `loadweapons`, `saveweapons`. `dmgreport` is read but, as in TS, never registered.
 * `bullet_think` (from `rules::frame`'s `CTSGameRules::Think`, 0x77635, right after the
   `realbullet` update and before `usecash`): `CBulletManager::Think` while it counts any bullet. Single

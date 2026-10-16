@@ -30,10 +30,12 @@ pub struct TextureLimits {
 
 impl TextureLimits {
     /// 1024 entries in 16-byte slots, 15 characters: TS 3.0's (`.so` 0xfc050 / 0xfc28c, `mp.dll`
-    /// 0x10036630 / 0x100368d0), which the game code's own table and [`load`]'s count use.
+    /// 0x10036630 / 0x100368d0), which [`load`]'s count uses; also its game-side table's
+    /// (`TEXTURETYPE_LoadStandardMaterials`).
     pub const LARGE: Self = Self { max_entries: 1024, name_chars: CMP_LEN };
     /// The SDK's (`CTEXTURESMAX` 512, `CBTEXTURENAMEMAX` 13): 512 entries in 13-byte slots, 12
-    /// characters.
+    /// characters. TS 2.1's movement and game-side tables (`TEXTURETYPE_Init` FUN_10036580:
+    /// `count < 0x200`, `j = min(j, i + 13)` from the type letter).
     pub const SDK: Self = Self { max_entries: 512, name_chars: 12 };
 }
 
@@ -181,35 +183,53 @@ pub fn find_in(name: &[u8], limits: TextureLimits) -> u8 {
 }
 
 /// The game code's own material table (`TEXTURETYPE_*`, server 0xe0e14..0xe1330), which
-/// `TEXTURETYPE_PlaySound` reads: `sound/materials.txt` followed by `sound/<map>_materials.txt`,
-/// unsorted, searched linearly (the first match wins).
+/// `TEXTURETYPE_PlaySound` reads: `sound/materials.txt`, followed by `sound/<map>_materials.txt`
+/// where the ruleset reads map files, unsorted, searched linearly (the first match wins). The
+/// size and name length are the ruleset's [`TextureLimits`]; each set of rules has its own table.
 pub mod texturetype {
     use super::*;
     use std::sync::Mutex;
 
-    /// The table and `fTextureTypeInit`.
-    static TABLE: Mutex<(bool, Vec<[u8; NAME_LEN]>, Vec<u8>)> = Mutex::new((false, Vec::new(), Vec::new()));
+    /// What a table is built with: the limits and whether the map's file is read.
+    type Key = (TextureLimits, bool);
+
+    /// A table: its key, `fTextureTypeInit`, the names and the types.
+    type Built = (Key, bool, Vec<[u8; NAME_LEN]>, Vec<u8>);
+
+    /// One table per [`Key`].
+    static TABLES: Mutex<Vec<Built>> = Mutex::new(Vec::new());
 
     /// `TEXTURETYPE_Init` (0xe1244), from `CWorld::Precache`. Only loads while no file has been
     /// found yet, so the map file of the first map that has either file sticks for the whole
-    /// process, as in TS. `load` reads a game file.
-    pub fn init(mapname: &str, mut load: impl FnMut(&str) -> Option<Vec<u8>>) {
-        let mut t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
-        if t.0 {
+    /// process, as in TS. `load` reads a game file. With `map_files` false (the SDK's, TS 2.1's
+    /// FUN_10036580) only `sound/materials.txt` is read.
+    pub fn init(limits: TextureLimits, map_files: bool, mapname: &str, mut load: impl FnMut(&str) -> Option<Vec<u8>>) {
+        let mut tables = TABLES.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (limits, map_files);
+        let i = match tables.iter().position(|t| t.0 == key) {
+            Some(i) => i,
+            None => {
+                tables.push((key, false, Vec::new(), Vec::new()));
+                tables.len() - 1
+            }
+        };
+        let (_, done, names, types) = &mut tables[i];
+        if *done {
             return;
         }
-        let (_, names, types) = &mut *t;
         names.clear();
         types.clear();
-        let standard = load("sound/materials.txt").map(|d| parse_into(&d, names, types, TextureLimits::LARGE)).is_some();
-        let map = load(&format!("sound/{mapname}_materials.txt")).map(|d| parse_into(&d, names, types, TextureLimits::LARGE)).is_some();
-        t.0 = standard || map;
+        let standard = load("sound/materials.txt").map(|d| parse_into(&d, names, types, limits)).is_some();
+        let map = map_files && load(&format!("sound/{mapname}_materials.txt")).map(|d| parse_into(&d, names, types, limits)).is_some();
+        *done = standard || map;
     }
 
-    /// `TEXTURETYPE_Find` (0xe12c4): `CHAR_TEX_CONCRETE` when the name isn't listed.
-    pub fn find(name: &[u8]) -> u8 {
-        let t = TABLE.lock().unwrap_or_else(|e| e.into_inner());
-        t.1.iter().position(|n| strncasecmp(name, n, CMP_LEN) == Ordering::Equal).map_or(CHAR_TEX_CONCRETE, |i| t.2[i])
+    /// `TEXTURETYPE_Find` (0xe12c4; TS 2.1 0x10036760): the first entry whose name matches
+    /// `limits.name_chars` characters, `CHAR_TEX_CONCRETE` when the name isn't listed.
+    pub fn find(name: &[u8], limits: TextureLimits, map_files: bool) -> u8 {
+        let tables = TABLES.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((_, _, names, types)) = tables.iter().find(|t| t.0 == (limits, map_files)) else { return CHAR_TEX_CONCRETE };
+        names.iter().position(|n| strncasecmp(name, n, limits.name_chars) == Ordering::Equal).map_or(CHAR_TEX_CONCRETE, |i| types[i])
     }
 }
 
@@ -242,14 +262,33 @@ mod tests {
 
     #[test]
     fn texturetype_table_is_unsorted_first_match() {
-        texturetype::init("dojo", |path| match path {
-            "sound/materials.txt" => Some(b"m crate\nw crate\n".to_vec()),
+        let files = |path: &str| match path {
+            "sound/materials.txt" => Some(b"m crate\nw crate\nt tile_longname\n".to_vec()),
             "sound/dojo_materials.txt" => Some(b"g grid\n".to_vec()),
             _ => None,
-        });
-        assert_eq!(texturetype::find(b"CRATE"), b'M');
-        assert_eq!(texturetype::find(b"grid"), b'G');
-        assert_eq!(texturetype::find(b"other"), b'C');
+        };
+        let large = TextureLimits::LARGE;
+        texturetype::init(large, true, "dojo", files);
+        assert_eq!(texturetype::find(b"CRATE", large, true), b'M');
+        assert_eq!(texturetype::find(b"grid", large, true), b'G');
+        assert_eq!(texturetype::find(b"other", large, true), b'C');
+        assert_eq!(texturetype::find(b"tile_longnamX", large, true), b'C', "the 13th character differs");
+        // The SDK's table (TS 2.1): no map file, 12 characters.
+        let sdk = TextureLimits::SDK;
+        texturetype::init(sdk, false, "dojo", files);
+        assert_eq!(texturetype::find(b"crate", sdk, false), b'M');
+        assert_eq!(texturetype::find(b"grid", sdk, false), b'C', "no map file");
+        assert_eq!(texturetype::find(b"tile_longnamX", sdk, false), b'T', "12 characters match");
+    }
+
+    #[test]
+    fn texturetype_sdk_table_keeps_512() {
+        let data: Vec<u8> = (0..600).flat_map(|i| format!("m tex{i:04}\n").into_bytes()).collect();
+        // (A key of its own: the tables are per process.)
+        let key = TextureLimits::SDK;
+        texturetype::init(key, true, "x", |p| (p == "sound/materials.txt").then(|| data.clone()));
+        assert_eq!(texturetype::find(b"tex0511", key, true), b'M');
+        assert_eq!(texturetype::find(b"tex0512", key, true), b'C');
     }
 
     #[test]

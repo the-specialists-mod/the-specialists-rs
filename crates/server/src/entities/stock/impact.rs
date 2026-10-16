@@ -154,13 +154,25 @@ pub fn gunshot_decal_trace(tr: &TraceResult, decal: i32) {
     te_begin(MSG_PAS, Some(pos), te::GUNSHOTDECAL).vec3(pos).short(eng.index_of(tr.pHit) as i16 as i32).byte(index).end();
 }
 
+/// The game's own material table as the active ruleset builds it: its size and name length
+/// (`PmRules::texture_limits`) and whether it reads the map's file (`ServerRules::map_materials`).
+pub fn game_textures() -> (shared::pm::textures::TextureLimits, bool) {
+    let rules = crate::gameplay::active();
+    (rules.pm.texture_limits(), rules.server.map_materials())
+}
+
 /// `TEXTURETYPE_PlaySound(ptr, vecSrc, vecEnd, iBulletType)` (0xe1330): the impact sound of what
 /// `vecSrc -> vecEnd` hits. A hit entity whose `Classify()` ([`crate::entities::classify`]) isn't
 /// `CLASS_NONE` or `CLASS_MACHINE` sounds as flesh (silent for the crowbar); anything else (or
 /// no entity) by the material of the texture it hits, from the game's own table
-/// (`shared::pm::textures::texturetype`). Returns the decal volume (`fvolbar`).
+/// (`shared::pm::textures::texturetype`, [`game_textures`]). Returns the decal volume (`fvolbar`).
+/// In multiplayer a ruleset may silence it (`ServerRules::texture_sounds_in_multiplayer`: 0 at
+/// once, as the SDK's `PlayTextureSounds` gate).
 pub fn texture_type_play_sound(tr: &TraceResult, src: Vec3, end: Vec3, bullet_type: i32) -> f32 {
     use shared::pm::textures::texturetype;
+    if !crate::rules::state::single_player() && !crate::gameplay::active().server.texture_sounds_in_multiplayer() {
+        return 0.0;
+    }
     let eng = engine();
     let world = eng.entity_of_index(0);
     let hit = if tr.pHit.is_null() { world } else { tr.pHit };
@@ -174,7 +186,9 @@ pub fn texture_type_play_sound(tr: &TraceResult, src: Vec3, end: Vec3, bullet_ty
         if matches!(name.first(), Some(b'{' | b'!' | b'~' | b' ')) {
             name = &name[1..];
         }
-        texturetype::find(&name[..name.len().min(15)])
+        // `strcpy` into a buffer whose last byte is zeroed: 15 characters (TS 3.0), the SDK's 12.
+        let (limits, map_files) = game_textures();
+        texturetype::find(&name[..name.len().min(limits.name_chars)], limits, map_files)
     } else {
         b'F'
     };

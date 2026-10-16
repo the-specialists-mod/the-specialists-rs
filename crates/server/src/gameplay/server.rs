@@ -20,7 +20,10 @@ use crate::rules::powerup::PowerupRules;
 use crate::rules::scoring::Frag;
 use crate::rules::state::GameRules;
 use crate::stunt::rules::{Dive, StuntClock, StuntRules};
+use crate::weapons::SvState;
+use crate::weapons::net::GunHud;
 use crate::weapons::projectiles;
+use crate::weapons::worldgun::AmmoPackDrop;
 use crate::world::{Cx, Entity};
 use goldsrc::server::MsgWriter;
 use goldsrc::sys::{TraceResult, edict_t, entvars_t};
@@ -88,8 +91,9 @@ pub trait ServerRules: Sync {
     /// reads the ones it knows.
     fn cvars(&self) -> &'static [CvarDef];
 
-    /// A TS server command (`globalslow`, `restartround`, `weaponrestriction`) before the
-    /// server's handler runs it; true when the ruleset has handled it. The arguments are the
+    /// A TS server command (`globalslow`, `restartround`, `weaponrestriction`, `loadweapons`,
+    /// `saveweapons`) before the server's handler runs it; true when the ruleset has handled it
+    /// (a ruleset without the command answers as the engine does for an unknown one). The arguments are the
     /// engine's (`Cmd_Argv`).
     fn server_command(&self, name: &str) -> bool;
 
@@ -552,6 +556,27 @@ pub trait ServerRules: Sync {
     /// centre) toward `from` (the inflictor's centre 10 units down), normalised twice
     /// ([`damage::attack_dir_ends`](crate::damage::attack_dir_ends)).
     fn attack_dir(&self, from: Vec3, to: Vec3) -> Vec3;
+
+    // Audit round 2: D1
+
+    /// `CBasePlayer::DropAmmo` / `CTSAmmoPack::CreateAmmoPack`: how the death ammo pack's start
+    /// position is rounded in the build `arith` and whether the dying player owns the pack while it
+    /// falls.
+    fn ammo_pack_drop(&self, arith: Arith) -> AmmoPackDrop;
+
+    /// The `WeaponInfo` part of `CTSGun::UpdateClientData` (10 Hz, after the `WStatus` loop): what
+    /// goes to the player, given the gun and the network caches the ruleset keeps up to date.
+    fn gun_hud_update(&self, sv: &mut SvState, gun: &Gun) -> GunHud;
+
+    /// `TEXTURETYPE_Init`: whether the game's own material table (the impact sounds of
+    /// `TEXTURETYPE_PlaySound`) also reads `sound/<map>_materials.txt` after
+    /// `sound/materials.txt`. Its size and name length are `PmRules::texture_limits`'.
+    fn map_materials(&self) -> bool;
+
+    /// `TEXTURETYPE_PlaySound`: whether the multiplayer rules let it play the impact sound
+    /// (`g_pGameRules->PlayTextureSounds()`); otherwise it returns 0 at once. Single player
+    /// always plays them.
+    fn texture_sounds_in_multiplayer(&self) -> bool;
 }
 
 /// How a ruleset's `CTSGameRules::InitHUD` runs ([`ServerRules::init_hud`]).

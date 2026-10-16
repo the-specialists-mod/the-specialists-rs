@@ -6,7 +6,7 @@
 //! [`GunHost::rules`](crate::weapons::GunHost::rules).
 
 use crate::pm::Arith;
-use crate::weapons::gun::{Gun, GunHost};
+use crate::weapons::gun::{GrenadeRounding, Gun, GunHost};
 use crate::weapons::spread;
 use crate::weapons::table::{Tables, WeaponInfo};
 
@@ -113,6 +113,12 @@ pub trait GunRules: MeleeRules + Sync {
     /// The part of the server `PreThink`'s weapon step that runs before `CTSStunt::Play` (issue
     /// #249), with the same `t` as [`pre_think`](Self::pre_think) after it.
     fn pre_think_timers(&self, gun: &mut Gun, disarm: &mut f32, t: &WeaponPreThink);
+
+    // Audit round 2: D1
+
+    /// `CTSGun::GrenadeIdle`: how the build `arith` rounds the throw's and the roll's vector sums
+    /// ([`Gun::grenade_throw`]).
+    fn grenade_rounding(&self, arith: Arith) -> GrenadeRounding;
 }
 
 /// One think's recoil-penalty decay ([`GunRules::decay_spread`]).

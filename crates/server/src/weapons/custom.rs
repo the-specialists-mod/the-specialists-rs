@@ -8,8 +8,8 @@
 //! `global_weapon_info` on every map (`compile_weapons_info` 0x7fe28,
 //! [`rebuild_weapon_info`](super::rebuild_weapon_info)). The absorb values and the "custom weapons" flag are game-rules state that
 //! `CTSGameRules::Init` resets at the same time (`rules::state`), so the flag and the values
-//! agree. TS registers the `customweapons` cvar but never reads
-//! it, and neither does the port.
+//! agree. TS 3.0 registers the `customweapons` cvar but never reads it (TS 2.1's Think does:
+//! the 2.1 plugin), and a ruleset may refuse the two commands (`ServerRules::server_command`).
 
 use crate::messages::{self, Msg};
 use crate::rules::{msg, state};
@@ -24,7 +24,7 @@ use shared::weapons::table::{set_custom_tables, tables};
 use std::fmt::Write;
 
 /// `"%s%s%s"` of the game directory, `/` and the file name.
-fn path(file: &str) -> String {
+pub fn path(file: &str) -> String {
     format!("{}/{}", engine().game_dir(), file)
 }
 
@@ -50,9 +50,9 @@ enum Line {
 }
 
 /// `adjust_weapon_value`'s view of one `fgets` chunk: copied into a 256-byte buffer (the port
-/// truncates where TS's `strcpy` would overflow it), trailing non-graphic characters cut, then
-/// the `//`, `armor_absorb`, `health_absorb` tests in that order.
-fn parse_line(raw: &[u8]) -> Line {
+/// truncates where TS's `strcpy` would overflow it), up to a NUL, trailing non-graphic
+/// characters cut. `None` when nothing is left or the line contains `//` (a comment).
+pub fn line_text(raw: &[u8]) -> Option<&[u8]> {
     let mut line = &raw[..raw.len().min(255)];
     if let Some(nul) = line.iter().position(|&b| b == 0) {
         line = &line[..nul];
@@ -62,9 +62,18 @@ fn parse_line(raw: &[u8]) -> Line {
     {
         line = rest;
     }
-    if line.is_empty() || find(line, b"//").is_some() {
-        return Line::Skip;
-    }
+    (!line.is_empty() && find(line, b"//").is_none()).then_some(line)
+}
+
+/// The `fgets(buf, 0x400)` chunks of a file: lines, and pieces of 1023 bytes of a longer one.
+pub fn chunks(data: &[u8]) -> impl Iterator<Item = &[u8]> {
+    data.split_inclusive(|&b| b == b'\n').flat_map(|l| l.chunks(0x3ff))
+}
+
+/// [`line_text`], then the `armor_absorb`, `health_absorb` tests and the weapon line, in that
+/// order.
+fn parse_line(raw: &[u8]) -> Line {
+    let Some(line) = line_text(raw) else { return Line::Skip };
     let text = String::from_utf8_lossy(line);
     if let Some(i) = find(line, b"armor_absorb") {
         return Line::ArmorAbsorb(scan_float(&String::from_utf8_lossy(&line[i + 12..])).map(|(v, _)| v));
@@ -90,7 +99,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// `sscanf`'s `%i`: whitespace, a sign, then hexadecimal after `0x`, octal after `0`, else
 /// decimal.
-fn scan_int(s: &str) -> Option<(i64, &str)> {
+pub fn scan_int(s: &str) -> Option<(i64, &str)> {
     let s = s.trim_start();
     let (neg, body) = match s.as_bytes().first() {
         Some(b'-') => (true, &s[1..]),
@@ -116,7 +125,7 @@ fn scan_int(s: &str) -> Option<(i64, &str)> {
 }
 
 /// `sscanf`'s `%f`: whitespace, then the longest prefix that reads as a number.
-fn scan_float(s: &str) -> Option<(f32, &str)> {
+pub fn scan_float(s: &str) -> Option<(f32, &str)> {
     let s = s.trim_start();
     let len = s.bytes().take_while(|c| c.is_ascii_digit() || matches!(c, b'+' | b'-' | b'.' | b'e' | b'E')).count();
     (1..=len).rev().find_map(|n| s[..n].parse::<f32>().ok().map(|v| (v, &s[n..])))
@@ -133,8 +142,7 @@ fn absorb_value(v: f32) -> f32 {
 pub fn load(file: &str) -> bool {
     let Ok(data) = std::fs::read(path(file)) else { return false };
     let mut t = tables().clone();
-    // `fgets(buf, 0x400)`: lines, and pieces of 1023 bytes of a longer one.
-    for raw in data.split_inclusive(|&b| b == b'\n').flat_map(|l| l.chunks(0x3ff)) {
+    for raw in chunks(&data) {
         match parse_line(raw) {
             Line::Skip | Line::ArmorAbsorb(None) | Line::HealthAbsorb(None) => {}
             Line::ArmorAbsorb(Some(v)) => state::with(|g| g.armor_absorb = absorb_value(v)),
@@ -210,6 +218,9 @@ pub fn inform(to: Option<*mut edict_t>) {
 
 /// `cmd_loadweapons` (0xc59ac).
 pub extern "C" fn cmd_loadweapons() {
+    if crate::gameplay::active().server.server_command("loadweapons") {
+        return;
+    }
     let e = engine();
     if e.cmd_argc() < 2 {
         e.alert(ALERT_TYPE::at_console, "ERROR: specify a file!; example: \"loadweapons weapons.txt\"\n");
@@ -225,6 +236,9 @@ pub extern "C" fn cmd_loadweapons() {
 
 /// `cmd_saveweapons` (0xc5a2c).
 pub extern "C" fn cmd_saveweapons() {
+    if crate::gameplay::active().server.server_command("saveweapons") {
+        return;
+    }
     let e = engine();
     if e.cmd_argc() < 2 {
         e.alert(ALERT_TYPE::at_console, "ERROR: specify a file!; example: \"saveweapons weapons.txt\"\n");

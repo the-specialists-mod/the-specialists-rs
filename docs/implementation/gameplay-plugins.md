@@ -16,8 +16,8 @@ plugin.
 
 Not every 3.0 rule is behind a hook yet: some paths run TS 3.0's code for every ruleset where
 2.1 is the same or not yet ported (client commands after `client_command` declines, parts of
-`lifecycle::{killed, on_spawn, start_observer, death_think}`, `teams::change_team`, the
-texture table's size), and the core still holds the
+`lifecycle::{killed, on_spawn, start_observer, death_think}`, `teams::change_team`), and the
+core still holds the
 branches for 2.1's round modes (`Mode::RoundTdm`, `Mode::Objective`). Moving those behind hooks is
 issue #200's phase 2.
 
@@ -284,7 +284,7 @@ The hooks so far:
 | `PmRules` | `step_interval(arith, interval, fuser1)` | `ts30_gameplay::pm::step_interval`: `1/max(fuser1, 0.1) × interval`, truncated | `pm/sound.rs` `update_step_sound` |
 | `PmRules` | `speed_by_slots(free, the_one)` | `ts30_gameplay::pm::speed_by_slots` | server `weapons/inventory.rs` `sync_speed` (the active plugin's) |
 | `PmRules` | `max_player_speed()` | 330: `SetPlayerSpeed`'s clamp and `TSInit`'s speed | server `inventory.rs` `sync_speed`, `rules/lifecycle.rs` `on_spawn` |
-| `PmRules` | `texture_limits()` | `TextureLimits::LARGE`: 1024 entries, 15 characters (`TextureLimits::SDK`: 512, 12) | `pm/mod.rs` `categorize_texture_type` (`textures::find_in`); the exported `pfnPM_FindTextureType` and the client's impact lookup keep 3.0's table |
+| `PmRules` | `texture_limits()` | `TextureLimits::LARGE`: 1024 entries, 15 characters (`TextureLimits::SDK`: 512, 12) | `pm/mod.rs` `categorize_texture_type` (`textures::find_in`); the server's game-side table (`stunt::texture_type_init`, `impact::texture_type_play_sound` through `impact::game_textures`); the exported `pfnPM_FindTextureType` and the client's impact lookup keep 3.0's table |
 | `PmRules` | `in_eye_pitch(target_pitch)` | the target's pitch, copied | `pm/mod.rs` `spectator_move` (in eye); the client's `spectator::spectator_move` (`in_eye_angles`) |
 | `PmRules` | `roll_divides_first()` | false: `side × rollangle / rollspeed` | `pm/mod.rs` `calc_roll` |
 | `PmRules` | `friction_edge_by_reciprocal()` | false: `vel / speed × 16 + origin` | `pm/mod.rs` `friction` (`edge_ahead`) |
@@ -307,12 +307,14 @@ The hooks so far:
 | `GunRules` | `infinite_clip_skips_idle_reload()` | true: `!InfiniteClips && clip < 1` reloads | `weapons/gun.rs` `weapon_idle` |
 | `GunRules` | `holster_draws_kungfu()` | true: `Unzoom`, then weapon 0's view model, draw animation and draw event | `weapons/gun.rs` `holster_weapon` |
 | `GunRules` | `pre_think_timers(gun, disarm, t)` | before `CTSStunt::Play`: `ts30_gameplay::gun::pre_frame_timers` (the melee window floored at 0.001, the block timers) and the disarm count `- step x 5`, by the same step as `pre_think` (2.1: nothing) | server `weapons/mod.rs` `pre_think_timers`, from `stunt::pre_think` (issue #249) |
+
+| `GunRules` | `grenade_rounding(arith)` | `ts30_gameplay::gun::grenade_rounding`: which throw/roll sum terms each build stores (`GrenadeRounding`; mp.dll: the eye's and throw product's y, z, the roll products' x, y; `ts_i386.so`: the roll's `speed·2/3`) | `weapons/gun.rs` `grenade_idle` → `Gun::grenade_throw` |
 | `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | `ts30_gameplay::melee`'s functions of the same names | the `Gun` method of the same name in `weapons/gun.rs` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start` |
 | `ServerRules` | `refuse_client(client)` | none (everyone joins) | `gameplay::refuse_client`, from `rules::client_connect` (§4.2) |
 | `ServerRules` | `game_description(mode)` | ts30 `rules::description`: "The Specialists v3.0.2 (DM)" (LMS, Teamplay, The One; no mode without rules), the version from `Cargo.toml` | `rules::game_description` (`pfnGetGameDescription`, the server browser's Game column); `ts_server::game_description!` builds a plugin's text |
 | `ServerRules` | `cvars()` | none | `gameplay::register` (registered after 3.0's, skipping existing names) |
-| `ServerRules` | `server_command(name)` | false (3.0's command runs) | `rules/commands.rs` `globalslow`, `restartround`, `weaponrestriction` |
+| `ServerRules` | `server_command(name)` | false (3.0's command runs) | `rules/commands.rs` `globalslow`, `restartround`, `weaponrestriction`; `weapons/custom.rs` `loadweapons`, `saveweapons` |
 | `ServerRules` | `client_command(p, cx, cmd, args)` | `None` (3.0's handlers run) | `commands.rs` `dispatch_player`, before the weapons' |
 | `ServerRules` | `install(g)` | ts30 `rules::install` (`DecideGamePlay`, `GameRules::ts_init`) | `rules/state.rs` `GameRules::install` (multiplayer maps) |
 | `ServerRules` | `think(now)` | ts30 `rules::think` | `rules/frame.rs` multiplay and teamplay `Think` |
@@ -478,6 +480,11 @@ The hooks so far:
 | `ServerRules` | `explosion_hit(org, spot, dmg, r_full, r_max, occluder) -> Option<(f32, Vec3)>` | `ts30_server::explode::explosion_hit`: `falloff_damage` by `blast_distance` (mp.dll's stored differences), the out-of-line `Normalize` of `spot − org`, behind an occluder `d − thickness` when thinner (a NaN thickness is) | `entities/stock/explode.rs` `explosion_damage` (#220) |
 | `ServerRules` | `attack_dir(from, to) -> Vec3` | `ts30_server::damage::attack_dir`: mp.dll's two inline `Normalize`s | `damage.rs` `update_attack_dir` (`g_vecAttackDir`, from `damage::attack_dir_ends`) |
 | `ServerRules` | `delayed_hit_dir(stunt_dir) -> Vec3` | `g_vecZero` (0x9c59e) | `weapons/melee.rs` `pending_hit`, `stunt/moves.rs` `check_for_breakables` (the dive hit): `TraceAttack`'s direction (`PTakeDam`, a falling body's push) |
+
+| `ServerRules` | `ammo_pack_drop(arith)` | `ts30_server::weapons::ammo_pack_drop`: owned by the dying player until it lands; `origin + forward·8` stored for y, z (mp.dll) or none (`ts_i386.so`) before `+ right·8` (`AmmoPackDrop`) | `weapons/worldgun.rs` `drop_ammo` |
+| `ServerRules` | `gun_hud_update(sv, gun)` | `ts30_server::weapons::gun_hud_update`: `WeaponInfo` on a new id or reserve (kung fu: the bar rounded), then the twins' `WStatus`; never `ClipInfo` (`GunHud`) | `weapons/net.rs` `update_client`, after the `WStatus` loop |
+| `ServerRules` | `map_materials()` | true: the game's material table also reads `sound/<map>_materials.txt` | `stunt::texture_type_init`, `impact::texture_type_play_sound` (`impact::game_textures`) |
+| `ServerRules` | `texture_sounds_in_multiplayer()` | true (3.0's `TEXTURETYPE_PlaySound` asks no rules) | `impact::texture_type_play_sound`, outside single player |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`

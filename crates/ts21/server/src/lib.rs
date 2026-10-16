@@ -7,6 +7,7 @@
 //! * [`players`]: spawn, join, death, respawn timing, overheal and The One.
 //! * [`observer`]: the observer part of `PreThink`, where fire respawns (issue #113).
 //! * [`cvars`] and [`commands`]: 2.1's extra cvars, the polled cvars and the client commands.
+//! * [`customweapons`]: the `customweapons` cvar's weapons files.
 //! * [`entities`]: the map entities (§3.9).
 //! * [`protocol`]: 2.1 on TS 3.0's wire (§1.2).
 //! * [`powerup`]: power-ups and slow motion (§3.7).
@@ -15,6 +16,7 @@
 //! * [`explode`], [`blades`]: explosions, shrapnel and thrown knives (§3.2).
 //! * [`melee`]: blocks and disarms on the victim (§3.2; the attacks are the shared gun hooks).
 //! * [`worldgun`]: dropped guns and ammo packs.
+//! * [`weapons`]: the gun's `WeaponInfo` and `ClipInfo` updates.
 //! * [`items`]: the SDK's `TakeHealth`, battery and wall chargers.
 //! * [`bots`]: the native bot backend's rules for 2.1 (§3.10): `server-dll` registers [`bots::BOTS`]
 //!   with `ts_server::bots::rules` under the plugin's id (the bots are a layer of their own, so
@@ -26,6 +28,7 @@ pub mod blades;
 pub mod bots;
 pub mod cash;
 pub mod commands;
+pub mod customweapons;
 pub mod cvars;
 pub mod damage;
 pub mod entities;
@@ -39,6 +42,7 @@ pub mod protocol;
 pub mod rules;
 pub mod scoring;
 pub mod stunt;
+pub mod weapons;
 pub mod worldgun;
 
 use goldsrc::server::MsgWriter;
@@ -558,6 +562,29 @@ impl ServerRules for Ts21Server {
     fn attack_dir(&self, from: Vec3, to: Vec3) -> Vec3 {
         damage::attack_dir(from, to)
     }
+
+    // Audit round 2: D1
+
+    /// [`worldgun::ammo_pack_drop`]: 2.1's single build.
+    fn ammo_pack_drop(&self, _arith: shared::pm::Arith) -> ts_server::weapons::worldgun::AmmoPackDrop {
+        worldgun::ammo_pack_drop()
+    }
+
+    /// [`weapons::gun_hud_update`].
+    fn gun_hud_update(&self, sv: &mut ts_server::weapons::SvState, gun: &Gun) -> ts_server::weapons::net::GunHud {
+        weapons::gun_hud_update(sv, gun)
+    }
+
+    /// `TEXTURETYPE_Init` (FUN_10036580) reads `sound/materials.txt` only.
+    fn map_materials(&self) -> bool {
+        false
+    }
+
+    /// `TEXTURETYPE_PlaySound` (0x100367b0) returns 0 unless `g_pGameRules->PlayTextureSounds()`,
+    /// which both multiplayer rules answer FALSE (slot 56, 0x100250a0: `xor eax,eax`).
+    fn texture_sounds_in_multiplayer(&self) -> bool {
+        false
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.
@@ -610,6 +637,9 @@ mod tests {
         assert!(!s.killed_resets_view(), "2.1's Killed (0x10052390) has no SET_VIEW / EnableControl");
         assert!(CORE.killed_resets_view(), "3.0's Killed (0x8ed5c) does both");
         assert_ne!(s.say_rules(), CORE.say_rules());
+
+        assert!(!s.map_materials(), "sound/materials.txt only (#206)");
+        assert!(!s.texture_sounds_in_multiplayer(), "PlayTextureSounds is FALSE (#255)");
     }
 
     /// The 3.0 defaults the 2.1 plugin overrides, unchanged by the hooks.

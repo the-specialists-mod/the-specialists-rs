@@ -6,12 +6,12 @@
 mod assets;
 mod bullets;
 mod commands;
-mod custom;
+pub mod custom;
 pub(crate) mod fire;
 mod host;
 mod inventory;
 pub(crate) mod melee;
-mod net;
+pub mod net;
 pub(crate) mod projectiles;
 pub mod worldgun;
 

@@ -380,7 +380,34 @@ pub struct AmmoPack {
     funcs: BaseFuncs,
 }
 
-/// `CBasePlayer::DropAmmo` 0x946f0 (on death): all reserve ammo in one pack.
+/// How a ruleset drops the death ammo pack ([`ServerRules::ammo_pack_drop`](crate::gameplay::ServerRules::ammo_pack_drop)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AmmoPackDrop {
+    /// Per component, whether `origin + forward·8` is stored as a `float` before `right·8` is
+    /// added; otherwise the sum stays on the FPU and the position is rounded once
+    /// ([`ammo_pack_origin`]).
+    pub stored: [bool; 3],
+    /// `CreateAmmoPack` makes the dying player the pack's `pev->owner` after its `Spawn` (which
+    /// clears it), so the falling pack doesn't collide with the body until it lands (`OnGround`
+    /// clears it again).
+    pub owned: bool,
+}
+
+/// `pev->origin + v_forward·8 + v_right·8`, left to right, in `arith`'s build: each product is
+/// exact (×8), the first sum rounded to a `float` where `stored` says so, the second always.
+pub fn ammo_pack_origin(arith: Arith, origin: Vec3, forward: Vec3, right: Vec3, stored: [bool; 3]) -> Vec3 {
+    fn go<F: Fpu>(origin: Vec3, forward: Vec3, right: Vec3, stored: [bool; 3]) -> Vec3 {
+        [0, 1, 2].map(|i| {
+            let a = F::x(origin[i]) + F::x(forward[i] * 8.0);
+            let a = if stored[i] { F::x(a.f()) } else { a };
+            (a + F::x(right[i] * 8.0)).f()
+        })
+    }
+    shared::by_arith!(arith, go(origin, forward, right, stored))
+}
+
+/// `CBasePlayer::DropAmmo` 0x946f0 (on death): all reserve ammo in one pack, placed and owned as
+/// the ruleset says ([`AmmoPackDrop`]).
 pub fn drop_ammo(owner: *mut edict_t, reserve: [i32; MAX_AMMO]) {
     if reserve.iter().all(|&r| r <= 0) {
         return;
@@ -389,14 +416,19 @@ pub fn drop_ammo(owner: *mut edict_t, reserve: [i32; MAX_AMMO]) {
     let v = owner.v();
     let ang = [e.random_long(-100, 100) as f32, e.random_long(-100, 100) as f32, 0.0];
     let (f, r, _) = spread::angle_vectors(ang);
-    let origin = spread::add(v.origin, spread::add(spread::scale(f, 8.0), spread::scale(r, 8.0)));
-    super::projectiles::spawn_entity::<AmmoPack>(c"TSAmmoPack", |a, cx| {
+    let arith = crate::rules::cvars::pm_arith();
+    let how = crate::gameplay::active().server.ammo_pack_drop(arith);
+    let origin = ammo_pack_origin(arith, v.origin, f, r, how.stored);
+    let pack = super::projectiles::spawn_entity::<AmmoPack>(c"TSAmmoPack", |a, cx| {
         a.reserve = reserve;
         let pev = cx.pev();
         pev.origin = origin;
         pev.angles = [0.0; 3];
         pev.avelocity = [0.0, e.random_long(-300, 300) as f32, e.random_long(-300, 300) as f32];
     });
+    if how.owned && !pack.is_null() && !pack.is_free() {
+        pack.v().owner = owner;
+    }
 }
 
 impl Entity for AmmoPack {
@@ -436,9 +468,11 @@ impl Entity for AmmoPack {
         let me = cx.edict;
         cx.pev().nextthink = plus_double(e.time(), 0.1);
         if !self.on_ground && cx.pev().flags & FL_ONGROUND as i32 != 0 {
+            // `CTSAmmoPack::OnGround` (0xa1610).
             self.on_ground = true;
             self.funcs.touch = true;
             let pev = cx.pev();
+            pev.owner = std::ptr::null_mut();
             pev.angles[0] = 0.0;
             pev.angles[2] = 0.0;
             pev.solid = SOLID_TRIGGER as i32;

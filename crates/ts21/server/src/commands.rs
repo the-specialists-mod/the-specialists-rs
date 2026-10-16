@@ -60,9 +60,10 @@ fn store_powerup(p: &mut Player, cx: &mut Cx, bits: u16) {
     p.powerup_until = 0.0;
 }
 
-/// A TS server command (`globalslow`, `restartround`, `weaponrestriction`): a polled cvar in 2.1.
+/// A TS server command: `globalslow`, `restartround`, `weaponrestriction` are polled cvars in
+/// 2.1; `loadweapons`, `saveweapons` don't exist ([`crate::customweapons::server_command`]).
 pub fn server_command(name: &str) -> bool {
-    crate::cvars::server_command(name)
+    crate::cvars::server_command(name) || crate::customweapons::server_command(name)
 }
 
 /// `Host_Say` (0x1000cf00): the text goes after the prefix as it is (no `%a`/`%h`, 0x1000d0dd),

@@ -411,6 +411,20 @@ impl ServerRules for Defaults {
     fn attack_dir(&self, _from: shared::weapons::spread::Vec3, _to: shared::weapons::spread::Vec3) -> shared::weapons::spread::Vec3 {
         unimplemented!("attack_dir")
     }
+
+    // Audit round 2: D1
+    fn ammo_pack_drop(&self, _arith: shared::pm::Arith) -> crate::weapons::worldgun::AmmoPackDrop {
+        unimplemented!("ammo_pack_drop")
+    }
+    fn gun_hud_update(&self, _sv: &mut crate::weapons::SvState, _gun: &shared::weapons::Gun) -> crate::weapons::net::GunHud {
+        unimplemented!("gun_hud_update")
+    }
+    fn map_materials(&self) -> bool {
+        unimplemented!("map_materials")
+    }
+    fn texture_sounds_in_multiplayer(&self) -> bool {
+        unimplemented!("texture_sounds_in_multiplayer")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).
