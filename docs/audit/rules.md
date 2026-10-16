@@ -1,113 +1,184 @@
-# Audit: rules (3.0 + 2.1) — port c49ee1a
+# Audit: rules (3.0 + 2.1), round 2 — port 661d918
 
-Method: decomp + objdump (ts_i386.so: Ghidra addr = file vaddr + 0x10000; 2.1 mp.dll ~/dev/hl/ts21/dlls/mp.dll).
-Binaries used: ~/scratch/agents/servers/orig/ts/dlls/ts_i386.so, ~/dev/hl/ts21/dlls/mp.dll.
+Method: decomp + disassembly, function by function (method.md). Binaries: `ts_i386.so`
+(~/scratch/agents/servers/orig/ts/dlls; Ghidra addr = objdump addr + 0x10000), 2.1 `mp.dll`
+(~/dev/hl/ts21/dlls; disassembly `objdump -M intel`, strings read from `.rdata`). Scratch helpers in
+scripts/round2/ (`fn.py` dumps a decomp function by address or name, `pe.py` reads 2.1 data/strings and
+lists the cvar_t table). Focus of this round: the core code both rulesets run with no hook (after
+#200 phase 1) checked against 2.1's own functions, and the 2.1 plugin's new round/objective code.
 
-## Issues filed
-- #118 Audit 3.0: PlayerKilled non-player killer: TS `pKiller->frags -= 1` (0x8aedc, 0xf8(%esp)=pKiller); port subtracts the victim's frag. (2.1 port correct.)
-- #119 Audit 3.0 (+2.1): TK kick/ban ClientPrint goes to pKiller (0x8ae58 push 0x114(%esp)=0xf8; 2.1 FUN_100675b0(param_2)); port `team_kill_punish` sends to the victim.
-- #120 Audit 3.0 (+2.1): killer ScoreInfo block: Classify()==CLASS_PLAYER on pKiller (suicide too -> second ScoreInfo) and `m_flNextDecalTime = time` (0xb44; 2.1 +0xa9c). Port: no suicide case, no decal reset.
-- #121 Audit 3.0: missing "%s #TS_Killed %s #TS_OwnWeapon" HUD message (victims_weapon).
-- #122 Audit 3.0: `restartround` (ResetRestartRound 0x78750) port only zeroes scores; missing round_end=0, TSRoundTime, team cash reset, 4x TeamScore, "Restarting Round". (2.1 port correct.)
-- #123 Audit 3.0 (both): gameplay switch reset doesn't restart the mp_timelimit clock (frame.rs uses absolute time; #100 §1.3 requires the reset).
-- #127 Audit 2.1: end-of-Think One check loops slots 1..maxClients-1 in TS (last slot skipped -> extra One every 10 s); port checks all slots.
-- #128 Audit 3.0: spawn telefrag passes 0x1000 (DMG_NEVERGIB) at 0x6675a; port uses ALWAYSGIB (decomp doc also wrong).
+## Issues filed (round 2)
+- #231 Audit 2.1: InitHUD order — 2.1's `CHalfLifeMultiplay::InitHUD` (0x10023ec0) calls
+  `CTSGameRules::InitHUD` (0x100451c0) at its end, before the teamplay part's
+  `ChangePlayerTeam(team,0,0)` (forced `SetPlayerRespawnTime(5,1)`, cash floor); the port runs
+  `ts_init_hud` after `teams::init_hud` and overrides the forced respawn (round-TDM joiners play the
+  current round) and the floor. Also: 2.1 sends no `Spectator` list, and its cheat notices are
+  "This server have ..." with effect 1.
+- #233 Audit 2.1: `Host_Say` (0x1000cf00): no `%a`/`%h`, whole text `_strlwr`'d, `ff` reply (not
+  broadcast), dead-chat gate in modes 2/3 and with the `lastmanstanding` cvar in any mode.
+- #234 Audit 3.0 (+2.1): chat cut at 127 − prefix (TS 126 − prefix: 0xad02c `0x7f - ~len`,
+  0x1000cf00 `0x7e - len`); `TSInit` zeroes the chat flood timer (3.0 +0x7c0, 2.1 +0x738), the port
+  keeps `next_say`.
+- #235 Audit 3.0 (+2.1): `SendMOTDToClient` sends the chunk crossing 0x600 whole (port cuts at
+  0x600), no `motd.txt` fallback; `CHalfLifeMultiplay::InitHUD`'s `SVC_INTERMISSION` for a joiner
+  during the intermission (reachable through `fullupdate`) is missing.
+- #236 Audit 2.1: round HUD texts: "Specialists Win", "Mercenaries Win", "Game Draw",
+  "Defeat the opposite team", LMS "Waiting other players" (no "!"/".").
+- #237 Audit 2.1: `kill` is the SDK's immediate suicide with a 1 s cooldown (`pfnClientKill`
+  0x1000ce50); 2.1's `Killed` (0x10052390) has no `SET_VIEW` / `EnableControl(TRUE)`.
+- #238 Audit 2.1: `ChangePlayerTeam` (0x10038cb0) takes any non-empty name (no `IsValidTeam`, no
+  The One override); `SetDefaultPlayerTeam` keeps 16 bytes of `mp_theone`/`mp_theothers` (port 15);
+  comment: `ClientUserInfoChanged` (0x10038f50) has no team-limit branch, so a model change is a team
+  change in 2.1 TDM (port silently resets the model).
+- #239 Audit 2.1: `TSSelectSpawnSpot` (FUN_10043010) has no `IsTriggered` (master) test.
 
-## Coverage (3.0)
+- #250 (validation pass) Audit 2.1: `TheOneIsDead` (0x10046930) calls only `SetDefaultPlayerTeam`
+  (vtable +0xdc = FUN_10038920) on the victim and the new One; the port's core `the_one_is_dead` runs
+  3.0's `SetDefaultPlayerTeam` + `ChangePlayerTeam`, whose 2.1 tail sends the new One to observer
+  with a 5 s respawn and resets both players' cash; also "The One is dead" (no full stop).
+- #231 comment (validation pass): 2.1's `InitHUD` sends `SrvSett` 0 as `realbullet.value != 0`
+  (0x10045278); the port's core sends 3.0's truncated copy (`realbullet 2` → 2, which 2.1's client
+  bullet queue (`== 1`) ignores).
+
+All are #200 phase-2 paths (core code with no hook) except #234/#235 (both rulesets wrong) and
+#236 (2.1 plugin).
+
+## Coverage (core, both rulesets) — `crates/server/src/rules`
+| Port function | 3.0 original | 2.1 original | Status |
+|---|---|---|---|
+| mod.rs `game_init`, `install`, `exec_server_config`, `start_rules` | GameDLLInit 0xc5aa0, InstallGameRules 0xc6050, multiplay ctor 0xcedd0 | pfnGameInit 0x1001e750, InstallGameRules 0x1001eba0, ctor 0x10023850 | match (round 1; plugin selection is a port addition, per gameplay-plugins.md §4) |
+| mod.rs `game_description` | GetGameDescription 0xaee84/0xd0c68/0xe5a04 | — | match; 2.1 text is a documented deviation |
+| lifecycle `client_connect` | ClientConnect / ClientConnected 0xcf59c | pfnClientConnect 0x1000cd30 | match (ts_playeramount is a 3.0 entity, refused in 2.1) |
+| lifecycle `client_disconnect`, `client_disconnected` | 0xacd4c, 0xcf960, TSPlayerDisconnect 0x9f94c | 0x1000cd50, 0x10024120, FUN_100648e0 | match (2.1 sets no FL_DORMANT: no observable effect, ts21 never tests it) |
+| lifecycle `client_kill`, `pre_think_end` suicide | ClientKill 0xacec8 | pfnClientKill 0x1000ce50 | 3.0 match; 2.1 mismatch #237 |
+| lifecycle `userinfo_changed`, `clean_name`, `name_change_notice` | 0xae638 | pfnClientUserInfoChanged 0x1000e110 | match |
+| lifecycle `multiplay_userinfo_changed`, `player_is_cheating` | 0x8b244, 0x9fae0 | 0x10050210, FUN_10064a20, IsValidTeam 0x10050140 | match |
+| lifecycle `on_spawn` (TSInit part) | TSInit 0x92a4c | TSInit 0x100552f0 | mismatch #234 (chat timer, both); render/fade/speed/mj/Spectator/the-One reset match |
+| lifecycle `player_think` | PreThink head, PlayerThink 0xcfb60 | PreThink 0x100537e0 head | match |
+| lifecycle `pre_think` order | PreThink 0x908cc | PreThink 0x100537e0 | match for the rules steps (water, UpdateClientData, TBD, suit, framerate, power-ups, overheal, observer, death think) |
+| lifecycle `init_hud_block` | UpdateClientData 0x91d00 | 0x100547c0 | 3.0 match; 2.1 mismatch #231 (order) |
+| lifecycle `rules_init_hud` | CHalfLifeMultiplay::InitHUD 0xcf618 | 0x10023ec0 | mismatch #235 (SVC_INTERMISSION, both) |
+| lifecycle `ts_init_hud` | CTSGameRules::InitHUD 0x79134 | FUN_100451c0 | 3.0 match; 2.1 mismatch #231 (Spectator loop, notice text/effect; **V**: also `SrvSett` 0 = live `realbullet != 0` in 2.1, #231 comment); keys 1..3, RoundTime (2.1 round timer always on, same clamp), tail resets (respawns, grenades, tk, respawn time, armament, objective list, vote slot) **V** match |
+| lifecycle `send_motd`, `motd_chunks` | SendMOTDToClient 0xd0ae4 | 0x10024ee0 | mismatch #235 |
+| lifecycle `start_observer` | StartObserver 0x99634 | 0x1005a400 | match (2.1 has no DropFlag: no CTB in 2.1) |
+| lifecycle `stop_observer` | StopObserver 0x99a14 | FUN_1005a700 | match |
+| lifecycle `killed` | Killed 0x8ed5c | Killed 0x10052390 | 3.0 match; 2.1 mismatch #237 (SET_VIEW, EnableControl); 2.1's headshot slow writes fuser1/display directly (port `go_slow_self` also clears the bullet-time flag: not observable on a dead player) |
+| lifecycle `death_think`, `death_slowdown` | PlayerDeathThink 0x8eaec | 0x10052140 | match (2.1's IEEE NaN compares only differ for a NaN velocity) |
+| lifecycle `respawn_command`, `can_respawn` | ClientCommand "respawn" | — (2.1 refuses the command) | match |
+| frame `multiplay_think`, `time_limit`, `update_limit_cvars` | 0xcf038 | FUN_10023a60 | match (2.1's IEEE compares give the same results for NaN limits) |
+| frame `teamplay_think` | 0xe412c | 0x100386d0 | match |
+| frame `intermission_think`, `go_to_intermission` | 0xcf038 game-over branch, 0xd0050 | FUN_10023a60 game-over branch | match |
+| frame `set_global_slow`, `global_slow2` | SetGlobalSlowMotion, GlobalSlowMotion2 0x79720 | FUN_10045500, FUN_100455f0 | match (2.1's 0 = normal encoding mapped to 1) |
+| frame `reset_restart_round` (3.0) | ResetRestartRound 0x78750 | — | match (#122 fixed) **V** (+1 s, RoundTime clamp, score/cash 0 and TeamScore per named team, "Restarting Round" channel 8) |
+| frame `put_powerup`, `random_position` | PutPowerUp 0x9797c, GetRandomPosition 0x974f4 | 0x10059840 | see #228 (other area) |
+| commands `client_command` (core part) | ClientCommand 0xad838 | pfnClientCommand 0x1000d4b0 | match for fov/use/changeteam/jointeam/cutwire_/voice/menuselect/unknown text |
+| commands `host_say`, `say_*`, `format_say`, `clip_say_text` | Host_Say 0xad02c | 0x1000cf00 | mismatch #234 (both), #233 (2.1) |
+| commands `force_client_dll_update`, `cheat_powerup` | 0x92594, ClientCommand | — / 2.1 powerup (ts21 hook) | match |
+| commands server commands (globalslow, weaponrestriction, restartround) | 0xc5580, 0xc58a0, 0xc5748 | cvars polled by Think | match (#140 fixed; 2.1 as polled cvars, documented) |
+| teams `set_default_team`, `default_team_kept` | SetDefaultPlayerTeam 0xe44ac | FUN_10038920 | match (2.1 hook `default_team`: 15 vs 16 bytes, #238) |
+| teams `change_team`, `change_team_choice`, `change_team_model` | ChangePlayerTeam 0xe488c | FUN_10038cb0 | 3.0 match; 2.1 mismatch #238 (head; tail hooked, #142) |
+| teams `init_hud`, `init_hud_notice` | Teamplay InitHUD 0xe45d8 | 0x10038ac0 | 3.0 match; 2.1 order #231 |
+| teams `userinfo_changed` | 0xe4d18 | 0x10038f50 | 3.0 match; 2.1 mismatch #238 (comment: no team-limit branch, The One re-runs SetDefaultPlayerTeam) |
+| teams `recount`, `score_team`, `fewest`, `same_team` | RecountTeams 0xe5608, GetTeamIndex 0xe5434, 0xe5510, PlayerRelationship 0xe5278 | FUN_10039730, FUN_10039620 | match **V** 2.1 (`fild score; fadd frags; ftol`, append without a limit, TeamInfo for valid teams; fewest counts every slot's TeamID, strict `<` from 32) |
+| scoring `player_killed` (core part), `killer_score_info` | PlayerKilled 0x895e4 / Teamplay 0xe51b8 | 0x1004f7e0 / FUN_100392e0 | match (death-penalty skip, ScoreInfo tail) **V** (2.1: victim then Classify-2 killer ScoreInfo + decal timer, `FUN_10045910` CheckDeads timer) |
+| scoring `the_one_is_dead`, teams `the_one_switch(_other)` (not listed before) | TheOneIsDead 0x7b258 (+0xe0 SetDefaultPlayerTeam, +0xdc ChangePlayerTeam) | TheOneIsDead 0x10046930 (+0xdc = SetDefaultPlayerTeam only) | 3.0 match; 2.1 **mismatch #250** (core runs 3.0's ChangePlayerTeam: new One to observer, cash reset; "The One is dead" text) |
+| scoring `team_kill_punish`, `team_kill_punishment` | PlayerKilled tail | 0x1004fe1b.. (strings 0x10098a48..0x10098ad8, `banfortk`, ClientPrint console / PrintAll talk) | **V** match both |
+| scoring `death_notice` | DeathNotice 0x88f7c / 0xe509c | FUN_1004ede0 / 0x10039200 | match (teammate test, director event) |
+| scoring `weapon_name_with`, `log_kill*`, `team_kill_punish`, `points_for_kill`, `active_item_kung_fu`, `do_spectacularness` | PlayerKilled parts, 0x76b48 | 0x1004f7e0 parts | match (round 1 + #119/#131/#148 fixes) |
+| spawnpoint `select`, `spot_score`, `telefrag`, `place` | EntSelectSpawnPoint 0x76128, TSSelectSpawnSpot 0x76244 | FUN_10042f50, FUN_10043010 | 3.0 match; 2.1 mismatch #239 (master test); the rest matches |
+| votes `parse`, `player_vote`, `check_votes`, `min_votes` | 0x7a1c8, 0x7a5c4, 0x7a1b0 | 0x10045df0, 0x10046150, 0x10045dd0 | match (same strings, trimming, thresholds, "nextmap" after a teamplay toggle) |
+| state `ts_init`, `init_teams` (3.0 part both run) | CTSGameRules::Init 0x77d6c | FUN_10044810 | match (round restart +5, entity respawn +60 (2.1), vote/The One timers +10) |
+| cvars (core) | GameDLLInit cvar_t | 0x10093a0c.. table | match (round 1; table re-dumped) |
+| voice `can_player_hear_player` (not listed before) | CMultiplayGameMgrHelper::CanPlayerHearPlayer 0xd0ed0 | helper vtable 0x10084b40 slot 1 = FUN_10023780 | 3.0 match (round 1); **V** 2.1 match: teamplay `PlayerRelationship` (+0xc8) == 1, then modes 2/3 or the live `lastmanstanding` (port's `g.lms` is `cvar && DM` in 2.1, but outside LMS DM and the round modes no player has a negative respawn time, so the same answers), dead talker with respawn < 0 (or NaN) heard only by such listeners |
+| voice `client_command`, `update_masks`, `rules_mask` (not listed before) | CVoiceGameMgr::ClientCommand 0xf7438.., UpdateMasks 0xf79bc | 0x10069d70, FUN_10069f90 | 3.0 match (round 1); **V** 2.1 match (vban first mask only, VModEnable sets/clears and drops the request bit, then UpdateMasks) |
+| mapcycle `change_level`, `pick`, `parse_cycle`, `extract_commands` (not listed before) | ChangeLevel 0xd0784, CountPlayers 0xd0640 | ChangeLevel 0x10024c60, FUN_10024b20, FUN_10024b60 | 3.0 match (round 1); **V** 2.1 match (same cycle walk that never tests the last item, `nextmap` vote override, Init, IsMapValid fallback, RULES line, commands after the change); unverified detail: 2.1's `PLAYER COUNT` console line may print the min where 3.0 prints the max (console only) |
+| lifecycle `give_cash`, `on_spawn` put-in-server cash (not listed before) | GiveCash 0x9310c (clamp 0..30000), ClientPutInServer 0xacf44 (`sscanf` of the unregistered cvar's "1200") | FUN_10042c50 (same clamp), pfnClientPutInServer 0x1000cec0 (no cash) | **V** match both (ts21 `put_in_server_cash` 0) |
+| lifecycle `killed` parts `killer_blur`, `death_push`, `damage_force`, `send_award`, `headshot_death_slows`; `post_think`; commands `fullupdate_spectator`, `set_view_angles`, `globalslow_*`, `weaponrestriction_text`; mod `world_key_value`, `add_frags` | parts of the rows above | — | covered by the `killed` / `client_command` / server-command rows (round 1); not re-checked separately |
+
+## Coverage (TS 3.0 plugin) — `crates/ts30/server/src`
+The #200 moves (fb65775, b60f5bc) were checked by diffing the removed core lines against the
+added ts30 lines: renames only (`self.` → `g.`, `*_core` → plugin names). Bodies as round 1.
 | Port function | Original | Status |
 |---|---|---|
-| rules::game_init, cvars::CVARS/register | GameDLLInit 0xc5aa0 + cvar_t data | match |
-| rules::install / exec_server_config | InstallGameRules 0xc6050, CHalfLifeMultiplay ctor | match |
-| state::decide_gameplay | DecideGamePlay 0x767ac | match |
-| rules::game_description | GetGameDescription 0xd0c68 / 0xe5a04 | match |
-| GameRules::ts_init | CTSGameRules::Init 0x77d6c | match (IsCTB cache +0x5890/91 not modelled; both callers run after map load -> harmless) |
-| GameRules::init_teams | InitTeams 0x77f60 | match |
-| GameRules::is_ctb | IsCTB 0x77f08 | match (uncached, see above) |
-| frame::multiplay_think, update_limit_cvars | CHalfLifeMultiplay::Think 0xcf038 | match (x87 product kept in register, file 0xbf162) |
-| frame::teamplay_think | CHalfLifeTeamplay::Think 0xe412c | match |
-| frame::intermission_think | Think game-over branch | match |
-| frame::go_to_intermission | GoToIntermission 0xd0050 | match (chattime clamp one frame later, unobservable) |
-| frame::ts_think | CTSGameRules::Think 0x77204 | match |
-| frame::srvsett_think / refresh_copy | Think tail | match |
-| frame::auto_powerups | Think power-up block | match |
-| frame::put_powerup | PutPowerUp 0x9797c | match |
-| state::random_powerup | GetRandomPowerup 0x97894 | match |
-| frame::check_deads | CheckDeads 0x79c00 (LMS part) | match |
-| frame::restart_round, round_refund | RestartRound 0x77920 | match (TS refunds only with the gun as active item; observers have none via RemoveAllItems -> equivalent in practice) |
-| frame::reset_restart_round | ResetRestartRound 0x78750 | mismatch #122 |
-| entities::ts::respawn_entities | RespawnEntities 0x77764 | match |
-| frame::the_one_check | Think The One block | match |
-| frame::select_random_the_one | SelectRandomTheOne 0x7af28 | match |
-| scoring::set_player_the_one_core | SetPlayerTheOne 0x7b078 | match |
-| scoring::the_one_is_dead | TheOneIsDead 0x7b258 | match |
-| scoring::player_killed_core | CHalfLifeMultiplay::PlayerKilled 0x895e4 | mismatch #118 #119 #120 #121; spree/award/double kill/cash/slowmatch/TK window/log tags otherwise match |
-| scoring::weapon_name, rename_weapon, log_kill, log_weapon | PlayerKilled weapon-name + log part | match |
-| scoring::team_kill_punish | PlayerKilled TK block | mismatch #119 |
-| scoring::points_for_frag | TSGetPointsForFrag 0x89140 | match (edge: active non-gun item under closecombat counts as kung fu in the port; TS needs the gun or no item) |
-| scoring::death_notice, teams::same_team | DeathNotice 0x88f7c / 0xe509c, PlayerRelationship 0xe5278 | match |
-| votes::parse/player_vote/min_votes | PlayerVote 0x7a1c8, CalcMiniminVotants 0x7a1b0 | match (token >63 chars truncated before IsMapValid: edge) |
-| votes::check_votes/tally | CheckVotes 0x7a5c4 | match |
-| lifecycle::health_regen_core | CBasePlayer::PreThink 0x908cc (+0x73c) | match (`(short)` read of +0x5876; +0x5877 only ever 0; ulp-level x87 rounding only) |
-| lifecycle::set_respawn_time_core | SetPlayerRespawnTime 0x75ff4 | match |
-| lifecycle::ts_init_hud | CTSGameRules::InitHUD 0x79134 | match (its +0x714/+0x538/+0x53c/+0x7cc/+0x49a/ResetArmament resets are redundant with the port's fresh Player per connection) |
-| spawnpoint::select, spot_score | EntSelectSpawnPoint 0x76128 / TSSelectSpawnSpot 0x76244 | match |
-| spawnpoint::telefrag | TSSelectSpawnSpot tail | mismatch #128 |
-| teams::change_team | CHalfLifeTeamplay::ChangePlayerTeam 0xe488c | match |
-| gameplay::reset::begin/finish | (real map start) | mismatch #123; rest matches gameplay-plugins.md §4 |
+| rules `decide_gameplay`, `install` | DecideGamePlay 0x767ac, InstallGameRules | match |
+| rules `think` | CTSGameRules::Think 0x77204 | match (LMS `else if` equivalent: RestartRound moves the round end ahead) |
+| rules `srvsett_think`, `auto_powerups`, `check_deads`, `restart_round`, `round_refund`, `the_one_check`, `select_random_the_one` | 0x775b3.., 0x79c00, 0x77920, 0x7af28 | match (round 1) |
+| players `set_player_the_one`, `default_team`, `change_team_tail`, `set_respawn_time`, `health_regen`, `buy_armament` | 0x7b078, 0xe44ac, 0xe488c tail, 0x75ff4, PreThink 0x908cc | match (round 1; tail re-read from 0xe488c) |
+| observer `observer_think`, `set_mode` | PreThink observer block, Observer_SetMode 0x99e44 | match (round 1) |
+| scoring `player_killed`, `points_for_frag`, kill tags | 0x895e4, 0x89140 | match (round 1 + #118-#121, #148); 4d498e7 (#198) moved the plugin kill report into core helpers (`kill_report`, `report_kill`): reporting only, no game change |
+| scoring kill cash (not listed before) | 0x895e4: `GiveCash(killer, pts == -1 ? -1000 : pts*500+400)`, `GiveCash(victim, 900)` in DM/TDM, unconditional; mode > 1 branch (±1000) unreachable in 3.0 | **V** match |
 
-## Coverage (2.1)
-| Port function | Original (2.1 mp.dll) | Status |
+## Coverage (TS 2.1 plugin) — `crates/ts21/server/src`
+| Port function | 2.1 original | Status |
 |---|---|---|
-| ts21 scoring::player_killed, spree, team_kill, the_one_kill_bonus | PlayerKilled 0x1004f7e0 | match except shared #119/#120 (frag var 0x20(%esp): all writes checked) |
-| ts21 rules::think | CTSGameRules::Think 0x10043cc0 | mismatch #127; globalslow/powerup/LMS/SrvSett/weaponrestriction/restartround order match |
-| ts21 rules::check_deads | CheckDeads 0x10045940 | match |
-| ts21 rules::restart_round | RestartRound 0x100445d0 | match |
-| ts21 rules::reset_restart_round | ResetRestartRound 0x10044ba0 | match |
-| ts21 rules::select_random_the_one | SelectRandomTheOne 0x100466e0 | match |
-| ts21 rules::decide_gameplay/install/setup_teams | DecideGamePlay 0x100433b0 (prefixes de_/cs_/tr_/tm_/ts_ dumped), Init 0x10044810 | match (Init's +0x54c8 = -1 vs port mask_sent 0: unobservable, InitHUD sends the mask) |
-| ts21 scoring::points_for_frag/kill_kind/points | TSGetPointsForFrag 0x1004f3c0 | match (same non-gun-item edge as 3.0) |
-| ts21 rules::team_win | TeamWin 0x10044d00, player count 0x10045d80 | match |
-| ts21 kill weapon name (core::weapon_name) | DeathNotice FUN_1004ede0 | mismatch #131 |
-| ts21 cvars::CVARS, Polled | GameDLLInit cvar_t table 0x10093a0c.. (dumped) | match (respawntime 5 vs 3: both clamped to 5..30, verified 0x1004543c) |
-| ts21 commands::client_command | ClientCommand 0x1000d4b0 (give, powerup, cashala) | match |
-| ts21 players::set_respawn_time/respawn_time | SetPlayerRespawnTime 0x10042d50 | match without force; forced call missing -> #142 |
-| ts21 team change (core teams::change_team) | FUN_10038cb0 | mismatch #142 |
-| ts21 players::on_spawn/on_init_hud/health_regen/set_player_the_one | TSInit / InitHUD / PreThink / 0x100467c0 | match (SetPlayerTheOne read) |
-| ts21 observer::observer_think | PreThink 0x100537e0 observer block | match (camera = documented deviation) |
-| ts21 cash::cash_floor, give_kill_cash, buy_weapon, add_item, cash_based | 0x10042c90, 0x10042d00/0x10042c50, 0x10055e00, 0x10055c30, 0x100435f0 | match |
-| ts21 spawn telefrag (core) | FUN_10043010 (0x1004335e push 0x1000) | mismatch, covered by #128 (commented) |
+| rules `decide_gameplay`, `install`, `setup_teams`, `set_spawn_classes` | DecideGamePlay 0x100433b0, Init 0x10044810, FUN_10042f50 | match |
+| rules `init_objectives`, `disable_objectives` | InitObjectives 0x100449b0 | match |
+| rules `think` (mapglobals, globalslow, check deads, power-ups, The One, RespawnEntities 60 s, LMS, round end, SrvSett, weapon restriction, restartround, 10 s The One check) | Think 0x10043cc0 | match (TeamWin(2, cashforlose, cashforlose) on round TDM expiry confirmed in the disassembly) |
+| rules `globalslow_value`, `globalslow_step`, `global_slow` | Think 0x10043cc0 head | match |
+| rules `srvsett_think`, `refresh`, `restriction_mask`, `weapon_restriction_think` | Think tail, FUN_10043630, FUN_10043620 (0x1f) | match |
+| rules `select_random_the_one`, `the_one_check_slots` | 0x100466e0, 0x1004439c | match |
+| rules `team_win`, `round_cash`, `send_round_scores` | TeamWin 0x10044d00 | mismatch #236 (texts); cash, scores, TSHVoice, under-two-players reset match **V** (disasm 0x10044dd0..: `fild(c + d)`, `<=` initial → initial, winner `> 30000` → 30000; +0x84/+0x88 also zeroed with fewer than two players: written nowhere else, unobservable) |
+| rules `round_time_left`, `giver_team_win`, `giver_cash` | RoundTimeLeft 0x100450f0, CTSWinGiver::Use 0x10050d10 | match |
+| rules `reset_restart_round` | 0x10044ba0 | match |
+| rules `restart_round` | 0x100445d0 | mismatch #236 (text); roundtime clamp (NaN → 30, `and 0x4100`), side swap, deadlines, resets match **V** (per-player fields +0x6c4/+0x68c/+0x732/+0x69c..+0x6a8/+0x6e8, StartObserver if not observing, Recount, RespawnEntities(1)) |
+| rules `check_deads` | CheckDeads 0x10045940 | mismatch #236 (LMS text); LMS/mode 2/mode 3 logic matches **V** (LMS +10 frags and ScoreInfo, `%i` = 10; mode 3 manager +0x88/+0x8c targets) |
+| rules `team_cash`, `round_team` | FUN_100458b0 | match **V** (`stricmp` FUN_1007e860, modes 2/3 only) |
+| players `on_spawn`, `on_init_hud` | TSInit 0x100552f0, InitHUD 0x100451c0 tail | match as hooks; order #231 |
+| players `set_respawn_time(_with)`, `respawn_time`, `force_waits` | FUN_10042d50 | match (incl. award 1/11 set inside) **V** |
+| players `change_team_tail` | 0x10038e99..0x10038ef3 | match **V** (no The One test in 2.1's tail; its caller from TheOneIsDead is #250) |
+| players `health_regen`, `set_player_the_one`, `default_team` | PreThink overheal, 0x100467c0, FUN_10038920 | match (default_team 15 vs 16 bytes, #238) |
+| cash `cash_floor`, `floor`, `cash_based`, `give_kill_cash` | FUN_10042c90, 0x100435f0, 0x10042d00 | match **V** (GiveKillCash's `mode != 0 && mode != 1` is CashBased's test: 2.1 has modes 0..3 only) |
+| cvars `initial_cash`, `cash_for_win`, `cash_for_lose`, `CVARS` defaults; lib `put_in_server_cash`, `on_start_observer`, `on_init_hud` cash (not listed before) | cvar_t 0x10093b74/0x10093b88/0x10093b9c ("3000", "1500", "-1000"), StartObserver → FUN_10042c90, InitHUD tail `cash = (int)initial_cash` | **V** match |
+| commands `client_command` (give, powerup 4, cashala, refusals) | pfnClientCommand 0x1000d4b0 | match (lasclr_ is #215, other area) |
+| cvars `respawn_number`, `trunc`, polled cvars | SetPlayerRespawnTime, Think | match |
+| observer `observer_think`, `fire`, `countdown`, `deadline_*` | PreThink 0x10053b25..0x10053d63 | match (round 1) |
+| scoring `player_killed`, `the_one_kill_bonus`, `spree`, `team_kill`, `points_for_frag` | 0x1004f7e0, FUN_100392e0, 0x1004f3c0 | match (round 1; #198 fixed in 4d498e7) **V** (decompile + disasm: The One gate before the FL_CLIENT test, labels and 2 points, stunt +2 / slide +1 as a byte, double frag `< 1.0`, fury > 2 / Specialist > 8 (+5, hold 40, slow pause), spree byte saturating at 255, 3/6/9/≥10 awards and health (+30/+50 capped 150, 150 set), kill cash `pts*900` / -1000, frags `fild pts + frags`, slowmatch == 1.0, bot OnKill, team-kill window, The One bonus `+10·players` over slots 0..max-1 capped 200; FUN_100445c0 called after the frags is an empty `ret 8`). Edge not filed: 2.1's team-kill window does nothing when `time == until` exactly (port counts it). The `the_one_is_dead` call is #250 |
+| lib `on_killed` (cash floor, armour power-up) | Killed 0x10052390 | match |
 
-
-
-## Coverage (3.0, round 2)
-| Port function | Original | Status |
+## Gameplay switch and SrvSett (port additions, no original; validated against the docs)
+| Port function | Checked against | Status |
 |---|---|---|
-| commands::client_command (fov, use, changeteam, jointeam, motd, fullupdate, powerup/cashala cheats) | ClientCommand 0xad838 | match |
-| commands::host_say + say helpers | Host_Say 0xad02c | match (LMS dead chat, timeleft, vote strlwr, 0.5 s flood) |
-| commands::cmd_globalslow / globalslow_amount | cmd_globalslow 0xc5580 | mismatch #140 |
-| commands::cmd_weaponrestriction / restriction_by_id | cmd_weaponrestriction 0xc58a0, display 0xc5770, WeaponRestrictionByID 0x76ad8 | mismatch #140 (ids match) |
-| commands::cmd_restartround | cmd_restartround 0xc5748 | -> #122 |
-| lifecycle::respawn_command | ClientCommand "respawn" | match |
-| lifecycle::client_connect / client_disconnect / client_disconnected | ClientDisconnect 0xacd4c, CHalfLifeMultiplay::ClientDisconnected 0xcf960, TSPlayerDisconnect 0x9f94c | match |
-| lifecycle::client_kill | ClientKill 0xacec8 (float store verified) | match |
-| lifecycle::userinfo_changed / multiplay_userinfo_changed / teams::userinfo_changed | 0xae638, 0x8b244, 0xe4d18 | match |
-| lifecycle::start_observer / stop_observer | 0x99634 / 0x99a14 | match |
-| lifecycle::observer_set_mode / find_next_player / handle_buttons / idle | 0x99e44 / 0x99b0c / 0x99d34 / 0x99ca4 | match |
-| lifecycle::observer_think_core | PreThink 0x908cc observer block | match |
-| lifecycle::death_think | PlayerDeathThink 0x8eaec | match (ulp-level velocity normalisation) |
-| lifecycle::killed | CBasePlayer::Killed 0x8ed5c | mismatch #139 (headshot slow gate); rest match (gib test confirms #128's NEVERGIB effect) |
-| msg::ts_message_one/all, text, say | TSHudMessageOne/All 0x768d4/0x769d4 | match (127-byte cut) |
-| voice::* | CVoiceGameMgr 0xf7438.., CanPlayerHearPlayer 0xd0ed0 | match |
-| mapcycle::change_level / pick / parse | ChangeLevel 0xd0784, CountPlayers 0xd0640 | match |
-| powerup::use_powerup / add_powerup / update_state (rules side) | UsePowerUp 0x95980, PlayerAddPowerUp 0x97bc8, UpdatePowerUpState 0x95748 | match |
+| `rules::install` → `gameplay::map_select` / `bot_backend::map_start` / `start_rules` / `exec_server_config` / `gameplay::map_start` / `reload::map_start` | gameplay-plugins.md §4 (selection after `exec game.cfg` + `server_execute`, before the rules are built; `on_activate` after; the server config queued as TS's constructor does) | match the docs **V** |
+| `reload::frame`, `Watcher::{frame, map_start}` | §4 (two-frame debounce on resolved values, one reload per map, no loop through a map start, `pfnChangeLevel` to the same map), its unit tests | match the docs **V** (the debounce needs *a* difference on two frames running and reloads for the second frame's values, as documented) |
+| `gameplay::refuse_client`, `ConnectingClient::classify`, ts21 `refuse_client`, server-dll `client_connect` reject buffer | §4.2 (bot by FL_FAKECLIENT or `*bot`, HLTV by `*hltv`/`hltv`, port by `_tsrs`; 2.1 refuses `Other` with the documented text; checked before TS's own ClientConnect and the plugins; ≤127 bytes + NUL) | match the docs **V**; the engines run ClientConnect again at a map change, so TS 3.0 clients are dropped when a reload switches to 2.1 (tested by `cargo xtask ts21`, not re-run) |
+| `ts_init_hud` `SrvSett` 4..7 | §2, §4.3: key 4 = numeric id (`srvsett_value`), keys 5..7 = `version_numbers()`, sent after 0..3 to the joiner; TS 3.0's client.dll handler 0x1004b840 switches on 0..3 only (re-read) | match **V** |
+| client `Hud::apply` `SrvSett` 4..7, `InitHUD` clearing `gameplay`/`server_version`, the weapon-table switch on key 4 | §4 (cleared on InitHUD, not VidInit; key 5 starts the version, 6/7 fill it) | match the docs **V** |
+| `ts_gameplay` cvar default, unknown/empty id fallback with one warning | §2 (`default_id()` = first registered; FCVAR_SERVER) | match the docs **V** |
 
-## Remaining unverifiable
-- ulp-level x87 vs f32 rounding (health regen, death-think velocity, countdown seconds): not filed.
-- `IsCTB` cache not modelled (harmless: callers run after map load).
-- Port's FL_CLIENT-free points_for_frag path (TS checks pKiller FL_CLIENT): unreachable with a player killer.
+## Not verified / notes
+- ulp-level x87 vs f32 differences in 2.1's spawn-spot distance (2.1 sums x, y, z; the port's MSVC
+  path sums z, y, x as 3.0 mp.dll), `TeamWin`'s RoundTime byte (`round_end - time` rounded to f32
+  before the truncation), and the death push normalisation: not filed (same class as #213/#220).
+- 2.1's `PlayerIsCheating` reads a bot flag (+0x14c); bots set `cl_lw` themselves, so no effect.
+- 2.1's PreThink steps outside the rules (kung-fu power, stunt timers, `FAllowFlashlight` hide bit)
+  belong to other areas (#201 known).
+- `motdfile ""`: assumed `LOAD_FILE_FOR_ME("")` loads nothing (engine behaviour), #235.
 
-## Round 3
-- #147 Audit 3.0: float arithmetic rounds to f32 per step where TS keeps x87 extended (The One regen 0x80c0e.., death-think 0x7eb16.., countdown/deadline 0x80ed4..). Measured: 30/3769 health steps, 368/620k timers, ~24% death-think velocity components differ.
-- #148 Audit 3.0 (+2.1): close-combat kill holding a non-gun active item (cycler_weapon) scores kung fu in the port; TS gives base points (stunt CheckForBreakables 0x9bd9c sets glast_closecombat).
-- Not filed: 2.1 Init's last-sent weapon mask (+0x54c8) -1 vs port 0: no observable effect (InitHUD sends the mask to every client before any Think could; ChangeLevel's Init is followed only by intermission thinks).
-- Not filed: IsCTB cache (+0x5890/91) not modelled: harmless, both callers run after map load, ts_briefcase never spawns later.
+## Validation (independent pass, after #198 merged; main 5032209)
+- Completeness: listed the non-test `fn`s of `crates/server/src/rules/*`, `crates/ts21/server/src/{rules,cash,players,scoring,cvars,lib}.rs`
+  and the ts30 rules/scoring hooks. Missing before and now added: the core `the_one_is_dead` /
+  `the_one_switch` path (→ #250), `team_kill_punish`, voice (`can_player_hear_player`,
+  `client_command`, `update_masks`), mapcycle (`change_level`), `give_cash` / put-in-server cash,
+  3.0's kill cash, 2.1's cash cvars and cash hooks, and the gameplay-switch functions (now a table).
+  The `killed`/`client_command` helper functions are folded into their parent rows (not re-checked).
+- Re-checked "match" rows (22, decompile and, for compares/rounding, disassembly): ts21 scoring
+  (points_for_frag, player_killed, spree, team_kill, the_one_kill_bonus), cash (floor, cash_based,
+  give_kill_cash, team_cash/round_team), team_win cash, restart_round, check_deads,
+  set_respawn_time, change_team_tail, select_random_the_one, on_killed + 2.1 respawntime clamp,
+  2.1 TeamWin TSHVoice, 2.1 DeathNotice (teamplay), RecountTeams/fewest (2.1), ts_init_hud (2.1),
+  3.0 GiveCash/ClientPutInServer, 3.0 kill cash, 3.0 ResetRestartRound, 2.1 cvar defaults,
+  team_kill_punish strings. Wrong: 2 — the `ts_init_hud` row missed `SrvSett` 0 (#231 comment),
+  and the ts21 scoring/players "match" rows hid the core `TheOneIsDead` team switch (#250).
+- Mismatch rows: #231, #233, #234, #235, #236, #237, #238, #239 exist, are open and describe the
+  rows; cited port lines (spawnpoint.rs:63-68, commands.rs:142/:205, lifecycle.rs:124/:263/:459,
+  teams.rs:175/:194, players.rs:29) are right at 5032209.
+- Addresses spot-checked: 0x10044d00, 0x10045940, 0x100445d0, 0x10042d50, 0x10042c90,
+  0x100435f0, 0x10042d00, 0x1004f3c0, 0x1004f7e0, 0x100392e0, 0x10039200, 0x10038cb0,
+  0x10038920, 0x10038f50, 0x10046930, 0x100466e0, 0x100451c0, 0x10039730, 0x10039620,
+  0x10024c60, 0x10023780, 0x10069d70, 0x9310c, 0xacf44, 0x78750, 0x7b258, client 0x1004b840: all
+  exist and are the functions named.
+- "Not verified" items: the reasons stand (ulp-level x87 orderings, bot-flag read, other areas,
+  engine behaviour for an empty `motdfile`); not re-verified.
+- Remaining gaps: the objective/round entities themselves (`entities::ts::objective`, ctb, ground
+  weapons' round-mode branches) belong to the entities audit; 2.1's `teamplay_think`, votes and
+  `death_think` were not re-checked in this pass; 2.1's `PLAYER COUNT` console line.

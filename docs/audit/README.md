@@ -18,8 +18,20 @@ every area followed.
 | Client HUD, input, effects and events | [client.md](client.md) |
 | Bots | [bots.md](bots.md) |
 
-Every verified mismatch was filed as an issue titled "Audit 3.0:" or "Audit 2.1:" (#118-#165),
-or added to an existing issue (#62, #74, #80, #89, #105, #112, #128). Out of scope: purely
+The tables are from **round 2** (16 October 2026), run after #200 split the code into the
+ruleset-neutral core, the 3.0 plugin (`crates/ts30`) and the 2.1 plugin (`crates/ts21`). Each area
+was audited again from round 1's table, and then a second, independent pass checked the table
+itself: it listed the area's functions to find missing rows, re-checked a sample of at least 15
+"match" rows (25% or more, biased to rounding, timers and core code 2.1 runs without a hook)
+against the decompile and disassembly, and checked every cited issue and address. Each table ends
+with that pass's "Validation" section. [method.md](method.md) is round 1's brief; round 2 used the
+same method.
+
+Round 1 filed #118-#165 (or added to #62, #74, #80, #89, #105, #112, #128). Round 2 filed
+#203-#255 (#215 turned out not to be a bug), most of them 2.1 paths in core code that ran 3.0's
+logic with no hook, and fixed them in the same round, mostly with new ruleset hooks
+(docs/implementation/gameplay-plugins.md). A table row marked "mismatch #N" names the issue that
+fixed it. Out of scope: purely
 cosmetic code (sprite/beam rendering fields, ambient sound modulation, gibs, sentences) and the
 HUD modules TS left as stock SDK (listed in client.md).
 
