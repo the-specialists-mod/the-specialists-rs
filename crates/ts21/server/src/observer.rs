@@ -130,7 +130,7 @@ pub fn next_mode(mode: i32) -> i32 {
 
 /// Whether the round modes or LMS hold a waiting observer back (FUN_1005a7d0, FUN_1005aad0): mode
 /// 2 or 3, or `lastmanstanding` on in any mode.
-fn waiting_rules() -> bool {
+pub fn waiting_rules() -> bool {
     matches!(state::with(|g| g.mode), Mode::RoundTdm | Mode::Objective) || cvars::on(c"lastmanstanding")
 }
 

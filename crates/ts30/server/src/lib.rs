@@ -3,6 +3,7 @@
 //! * [`PLUGIN`]: the gameplay plugin, [`Ts30Server`] with the shared [`TS30`] hooks.
 //! * [`rules`]: the multiplayer install, the server browser's description and
 //!   `CTSGameRules::Think`.
+//! * [`commands`]: the chat's text rules and dead-chat gate, and `kill`.
 //! * [`players`]: The One, teams, the respawn time, the overheal and the spawn loadout.
 //! * [`observer`]: the observer part of `PreThink` and `Observer_SetMode`.
 //! * [`scoring`]: `PlayerKilled` and `TSGetPointsForFrag`.
@@ -20,6 +21,7 @@
 #![deny(unsafe_code)]
 
 pub mod bots;
+pub mod commands;
 pub mod damage;
 pub mod entities;
 pub mod explode;
@@ -52,6 +54,7 @@ use ts_server::messages::Msg;
 use ts_server::player::Player;
 use ts_server::player::damage::{HitDamage, PlayerHit};
 use ts_server::rules::DescriptionMode;
+use ts_server::rules::commands::SayRules;
 use ts_server::rules::powerup::PowerupRules;
 use ts_server::rules::scoring::Frag;
 use ts_server::rules::state::GameRules;
@@ -504,6 +507,28 @@ impl ServerRules for Ts30Server {
     fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32 {
         let _ = (from, at);
         explode::thrown_blade_damage(btype)
+    }
+
+    // Audit round 2: B1
+
+    /// [`commands::SAY_RULES`]: `%a`/`%h`, a vote's text lowered, no `ff` reply.
+    fn say_rules(&self) -> &'static SayRules {
+        &commands::SAY_RULES
+    }
+
+    /// Round modes 2/3 or LMS ([`commands::say_dead_chat_gated`]).
+    fn say_dead_chat_gated(&self) -> bool {
+        commands::say_dead_chat_gated()
+    }
+
+    /// The suicide a second later ([`commands::client_kill`]).
+    fn client_kill(&self, p: &mut Player, cx: &mut Cx) {
+        commands::client_kill(p, cx);
+    }
+
+    /// `SET_VIEW(edict, edict)` and `EnableControl(TRUE)` (0x8eee0).
+    fn killed_resets_view(&self) -> bool {
+        true
     }
 }
 

@@ -354,6 +354,20 @@ impl ServerRules for Defaults {
     fn thrown_blade_damage(&self, _btype: i32, _from: shared::weapons::spread::Vec3, _at: shared::weapons::spread::Vec3) -> f32 {
         unimplemented!("thrown_blade_damage")
     }
+
+    // Audit round 2: B1
+    fn say_rules(&self) -> &'static crate::rules::commands::SayRules {
+        unreachable!("not in unit tests")
+    }
+    fn say_dead_chat_gated(&self) -> bool {
+        unreachable!("not in unit tests")
+    }
+    fn client_kill(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) {
+        unreachable!("not in unit tests")
+    }
+    fn killed_resets_view(&self) -> bool {
+        unreachable!("not in unit tests")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).

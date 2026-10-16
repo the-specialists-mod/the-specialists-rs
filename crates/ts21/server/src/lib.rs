@@ -59,6 +59,7 @@ use ts_server::messages::Msg;
 use ts_server::player::Player;
 use ts_server::player::damage::{HitDamage, PlayerHit};
 use ts_server::rules::DescriptionMode;
+use ts_server::rules::commands::SayRules;
 use ts_server::rules::powerup::PowerupRules;
 use ts_server::rules::scoring::Frag;
 use ts_server::rules::state::{self, GameRules, Mode};
@@ -481,6 +482,28 @@ impl ServerRules for Ts21Server {
     fn zero_delayed_hit_reaches_player(&self) -> bool {
         true
     }
+
+    // Audit round 2: B1
+
+    /// [`commands::SAY_RULES`]: no `%a`/`%h`, the whole text lowered, the `ff` reply.
+    fn say_rules(&self) -> &'static SayRules {
+        &commands::SAY_RULES
+    }
+
+    /// Round modes 2/3, or `lastmanstanding` on in any mode ([`observer::waiting_rules`]).
+    fn say_dead_chat_gated(&self) -> bool {
+        observer::waiting_rules()
+    }
+
+    /// At once, a second apart ([`commands::client_kill`]).
+    fn client_kill(&self, p: &mut Player, cx: &mut Cx) {
+        commands::client_kill(p, cx);
+    }
+
+    /// 2.1's `Killed` (0x10052390) has neither `pfnSetView` nor an `FL_FROZEN` change.
+    fn killed_resets_view(&self) -> bool {
+        false
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.
@@ -530,6 +553,9 @@ mod tests {
         assert_eq!(s.cvars(), cvars::CVARS);
         assert_eq!(s.put_in_server_cash(), 0, "2.1 sets the cash in InitHUD instead");
         assert!(!s.server_command("addbot"), "only the polled cvars are 2.1's");
+        assert!(!s.killed_resets_view(), "2.1's Killed (0x10052390) has no SET_VIEW / EnableControl");
+        assert!(CORE.killed_resets_view(), "3.0's Killed (0x8ed5c) does both");
+        assert_ne!(s.say_rules(), CORE.say_rules());
     }
 
     /// The 3.0 defaults the 2.1 plugin overrides, unchanged by the hooks.

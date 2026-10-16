@@ -1,12 +1,14 @@
 //! TS 2.1's client commands where they differ from 3.0's (`pfnClientCommand` 0x1000d4b0, decomp
-//! `docs/ts21/rules.md` §10).
+//! `docs/ts21/rules.md` §10), the chat's text rules (`Host_Say` 0x1000cf00) and `kill`
+//! (`pfnClientKill` 0x1000ce50).
 
 use shared::protocol::hud_wire::PwUp;
 use shared::ts::powerup as pw;
 use ts_server::commands::Args;
 use ts_server::messages::Msg;
 use ts_server::player::Player;
-use ts_server::rules::lifecycle::give_cash;
+use ts_server::rules::commands::SayRules;
+use ts_server::rules::lifecycle::{self, give_cash};
 use ts_server::rules::{alive, cvars, msg};
 use ts_server::world::Cx;
 
@@ -61,4 +63,46 @@ fn store_powerup(p: &mut Player, cx: &mut Cx, bits: u16) {
 /// A TS server command (`globalslow`, `restartround`, `weaponrestriction`): a polled cvar in 2.1.
 pub fn server_command(name: &str) -> bool {
     crate::cvars::server_command(name)
+}
+
+/// `Host_Say` (0x1000cf00): the text goes after the prefix as it is (no `%a`/`%h`, 0x1000d0dd),
+/// the whole of it is lowered (`_strlwr` at 0x1000d0ec, after the line is built), and a text
+/// starting with `ff` (`strncmp(text, "ff", 2)`, 0x1000d164) answers the sender instead of being
+/// broadcast.
+pub const SAY_RULES: SayRules = SayRules { expand_codes: false, lower_all: true, ff_reply: true };
+
+/// `pfnClientKill` (0x1000ce50), the SDK's with TS's observer test: when not observing and
+/// `m_fNextSuicideTime` (`+0x7a8`) has passed, it moves a second on and the player dies at once
+/// (`health = 0`, `Killed(pev, GIB_NEVER)`). There is no alive test (as in the SDK), and no
+/// delayed suicide in 2.1.
+pub fn client_kill(p: &mut Player, cx: &mut Cx) {
+    let now = cx.time();
+    if kill_allowed(cx.pev().iuser1, p.ts.next_suicide, now) {
+        p.ts.next_suicide = now + 1.0;
+        lifecycle::suicide(p, cx);
+    }
+}
+
+/// `pev->iuser1 == 0 && m_fNextSuicideTime <= time` (0x1000ce7a).
+fn kill_allowed(iuser1: i32, next_suicide: f32, now: f32) -> bool {
+    iuser1 == 0 && next_suicide <= now
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn say_rules_are_2_1s() {
+        assert_eq!(SAY_RULES, SayRules { expand_codes: false, lower_all: true, ff_reply: true });
+    }
+
+    /// `pfnClientKill` (0x1000ce50): not while observing, and a second apart.
+    #[test]
+    fn kill_cooldown() {
+        assert!(kill_allowed(0, 0.0, 5.0));
+        assert!(kill_allowed(0, 5.0, 5.0), "`<=`: the second has passed");
+        assert!(!kill_allowed(0, 5.5, 5.0));
+        assert!(!kill_allowed(3, 0.0, 5.0), "observing");
+    }
 }

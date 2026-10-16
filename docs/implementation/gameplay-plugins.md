@@ -450,6 +450,10 @@ The hooks so far:
 | `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `ts30_server::explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
 | `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `ts30_server::explode::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
 | `ServerRules` | `thrown_blade_damage(btype, from, at)` | `ts30_server::explode::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
+| `ServerRules` | `say_rules() -> &SayRules` | `ts30_server::commands::SAY_RULES` (`%a`/`%h` expand, only a vote's text lowered, no `ff` reply) | `rules/commands.rs` `host_say` |
+| `ServerRules` | `say_dead_chat_gated()` | `ts30_server::commands::say_dead_chat_gated` (round modes 2/3 or LMS) | `rules/commands.rs` `host_say` |
+| `ServerRules` | `client_kill(p, cx)` | `ts30_server::commands::client_kill` (the suicide 1 s later, `PreThink`'s end) | `rules/lifecycle.rs` `client_kill` (`pfnClientKill`) |
+| `ServerRules` | `killed_resets_view()` | true (`SET_VIEW(self)`, `EnableControl(TRUE)`) | `rules/lifecycle.rs` `killed` |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`

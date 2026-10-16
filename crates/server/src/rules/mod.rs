@@ -58,8 +58,11 @@ pub struct PlayerRules {
     pub respawns_used: u8,
     /// Death time + 3 s: become an observer (`+0x768`).
     pub observer_at: f32,
-    /// Delayed suicide (`kill`, +1 s, `+0x84c`).
+    /// Delayed suicide (3.0's `kill`, +1 s, `+0x84c`).
     pub suicide_at: f32,
+    /// `m_fNextSuicideTime`: the SDK's `kill` cooldown, for a ruleset whose `kill` is immediate
+    /// (2.1 `+0x7a8`). Nothing else reads or writes it, so it survives a respawn.
+    pub next_suicide: f32,
     /// Last model accepted (HLDM model check) and the team name (`m_szTeamName`, bytes: #188).
     pub team_name: Vec<u8>,
     /// Spawn protection end (`+0x71c`).

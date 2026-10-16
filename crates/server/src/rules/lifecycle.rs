@@ -120,14 +120,19 @@ fn client_disconnected(e: *mut edict_t, idx: i32) {
     });
 }
 
-/// `ClientKill`: suicide one second later (handled in `pre_think`), not while observing.
+/// `ClientKill` (the engine's `pfnClientKill`): the ruleset's
+/// [`client_kill`](crate::gameplay::ServerRules::client_kill).
 pub fn client_kill(e: *mut edict_t) {
-    crate::player::with_player(e, |p, cx| {
-        let now = cx.time();
-        if cx.pev().iuser1 == 0 && p.ts.suicide_at <= 0.001 {
-            p.ts.suicide_at = now + 1.0;
-        }
-    });
+    crate::player::with_player(e, |p, cx| crate::gameplay::active().server.client_kill(p, cx));
+}
+
+/// The `kill` command's `Killed(pev, GIB_NEVER)`, outside `TakeDamage` (so with no inflictor:
+/// `g_pevLastInflictor` is NULL), at once: `pev->health = 0` first.
+pub fn suicide(p: &mut Player, cx: &mut Cx) {
+    cx.pev().health = 0.0;
+    let me = cx.edict;
+    let info = DamageInfo::new(std::ptr::null_mut(), me, 0.0, crate::damage::bits::NEVERGIB);
+    killed(p, cx, &info);
 }
 
 /// `ClientUserInfoChanged` (0xae638): a name change (`%` turned into spaces, announced, logged),
@@ -260,6 +265,7 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
         obs_target: old.obs_target,
         tk_until: old.tk_until,
         tk_count: old.tk_count,
+        next_suicide: old.next_suicide,
         respawns_used: old.respawns_used,
         team_name: old.team_name,
         flag: old.flag,
@@ -437,14 +443,11 @@ pub fn pre_think_end(p: &mut Player, cx: &mut Cx) {
         v.renderfx = 0;
     }
 
-    // Delayed suicide.
+    // Delayed suicide (a ruleset's `kill` that schedules one).
     if p.ts.suicide_at > 0.001 && p.ts.suicide_at < now {
         p.ts.suicide_at = 0.0;
-        cx.pev().health = 0.0;
         // `Killed(pev, GIB_NEVER)` straight from PreThink: no inflictor.
-        let me = cx.edict;
-        let info = DamageInfo::new(std::ptr::null_mut(), me, 0.0, crate::damage::bits::NEVERGIB);
-        killed(p, cx, &info);
+        suicide(p, cx);
     }
 }
 
@@ -816,9 +819,11 @@ pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
 
     p.ts.observer_at = now + 3.0;
     p.hud.cash = None;
-    eng.set_view(e, e);
-    // `EnableControl(TRUE)` (0x8eee0): a player frozen by a camera or trigger is let go.
-    cx.pev().flags &= !(FL_FROZEN as i32);
+    if crate::gameplay::active().server.killed_resets_view() {
+        eng.set_view(e, e);
+        // `EnableControl(TRUE)` (0x8eee0): a player frozen by a camera or trigger is let go.
+        cx.pev().flags &= !(FL_FROZEN as i32);
+    }
     p.ts.respawns_used = p.ts.respawns_used.saturating_add(1);
     p.ts.suicide_at = 0.0;
     // `g_pevLastInflictor`, the inflictor while `TakeDamage` kills (NULL for the `kill` command's

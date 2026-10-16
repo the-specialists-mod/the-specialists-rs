@@ -188,6 +188,43 @@ pub fn format_say(prefix: &[u8], text: &[u8], armor: f32, health: f32) -> Vec<u8
     out
 }
 
+/// How a ruleset's `Host_Say` treats the chat text ([`ServerRules::say_rules`](crate::gameplay::ServerRules::say_rules)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SayRules {
+    /// `%a` and `%h` in the text become the armour and health ([`format_say`]); false appends
+    /// the text as it is ([`plain_say_line`]).
+    pub expand_codes: bool,
+    /// The whole text is lower-cased (A-Z) once the chat line is built, before the `timeleft`,
+    /// `ff` and `vote` tests, so they and the log see it lowered. False lowers only the text
+    /// after `vote`, once it matched.
+    pub lower_all: bool,
+    /// A text starting with `ff` answers the sender (a net client) "Friendly fire is on/off" and
+    /// isn't broadcast, only logged.
+    pub ff_reply: bool,
+}
+
+/// The chat line as the prefix, the [`clip_say_text`] text as it is and `\n` (a ruleset whose
+/// [`SayRules::expand_codes`] is off). The prefix and the text fit in 126 bytes, so the line
+/// needs no guard.
+pub fn plain_say_line(prefix: &[u8], text: &[u8]) -> Vec<u8> {
+    let mut out = prefix.to_vec();
+    out.extend_from_slice(text);
+    out.push(b'\n');
+    out
+}
+
+/// The `ff` reply: `"Friendly fire is %s\n"` with "on" for any `mp_friendlyfire` but 0 (a NaN
+/// included: `fcomp` against 0 and `jp`, 2.1 0x1000d19e..0x1000d1b3).
+pub fn friendly_fire_text(friendlyfire: f32) -> String {
+    format!("Friendly fire is {}\n", if friendlyfire != 0.0 { "on" } else { "off" })
+}
+
+/// `Host_Say`'s dead-chat gate, for a message to `other`: with the gate on, a sender out for the
+/// round (dead, `respawn_at < 0`) only reaches other such players.
+pub fn say_reaches(gated: bool, me_alive: bool, my_respawn: f32, other_alive: bool, other_respawn: f32) -> bool {
+    !gated || me_alive || my_respawn >= 0.0 || (!other_alive && other_respawn < 0.0)
+}
+
 /// `Host_Say`'s chat text from `Cmd_Args`: a leading `"` is dropped together with the last
 /// byte, whatever it is (`p[strlen(p) - 1] = 0` on the original string).
 pub fn say_text(raw: &[u8]) -> &[u8] {
@@ -203,7 +240,9 @@ pub fn say_has_text(text: &[u8]) -> bool {
     text.iter().any(|b| b.is_ascii_graphic())
 }
 
-/// `Host_Say` (0xad02c). `vote …` lines go to `PlayerVote` first.
+/// `Host_Say` (0xad02c; 2.1 0x1000cf00, the differences in the ruleset's [`SayRules`] and
+/// [`say_dead_chat_gated`](crate::gameplay::ServerRules::say_dead_chat_gated)). `vote …` lines go
+/// to `PlayerVote` first.
 fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
     let now = cx.time();
     if now < p.ts.next_say || args.argc() < 2 {
@@ -220,10 +259,18 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
     let name = netname(e);
     let prefix = say_prefix(&name, team);
     let mut text = clip_say_text(&prefix, text).to_owned();
-    let line = {
+    let rules = crate::gameplay::active().server.say_rules();
+    let line = if rules.expand_codes {
         let v = cx.pev();
         format_say(&prefix, &text, v.armorvalue, v.health)
+    } else {
+        plain_say_line(&prefix, &text)
     };
+    if rules.lower_all {
+        // `_strlwr(text)` after the line is built (2.1 0x1000d0ec): the tests and the log see the
+        // text lowered, the chat line keeps its case.
+        text.make_ascii_lowercase();
+    }
 
     // `IsNetClient()` of the sender gates the `timeleft` reply and the vote: a bot's vote line is
     // broadcast as chat.
@@ -236,6 +283,13 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
             msg::text_one(e, hud_dest::TALK, &format!("Time left: {}:{:02}\n", left / 60, left % 60));
         }
         false
+    } else if rules.ff_reply && text.starts_with(b"ff") {
+        // Not broadcast, whoever sent it (2.1 0x1000d164..0x1000d1da: both exits skip the
+        // broadcast to the log).
+        if net_client {
+            msg::text_one(e, hud_dest::TALK, &friendly_fire_text(cvars::f(c"mp_friendlyfire")));
+        }
+        false
     } else if text.starts_with(b"vote") {
         // `strlwr(text + 4)` lowers the text in place (A-Z only, C locale), so the log line shows
         // it lowered too; the chat line was built before.
@@ -245,7 +299,7 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
         true
     };
     if broadcast {
-        let lms = state::lms();
+        let gated = crate::gameplay::active().server.say_dead_chat_gated();
         let me_alive = alive(cx.pev());
         let my_respawn = p.respawn_at;
         // `UTIL_FindEntityByClassname(.., "player")` + `IsNetClient()`: every `CBasePlayer` but
@@ -257,9 +311,9 @@ fn host_say(p: &mut Player, cx: &mut Cx, args: &Args, team: bool) {
             if team && !teams::same_team(o, e) {
                 continue;
             }
-            // LMS: players out for the round only talk to each other.
+            // Round modes and LMS: players out for the round only talk to each other.
             let (o_alive, o_respawn) = (alive(o.v()), other(o, |q| q.respawn_at).unwrap_or(0.0));
-            if !lms || me_alive || my_respawn >= 0.0 || (!o_alive && o_respawn < 0.0) {
+            if say_reaches(gated, me_alive, my_respawn, o_alive, o_respawn) {
                 msg::say_one(o, idx, &line);
             }
         }
@@ -785,6 +839,31 @@ mod tests {
         // The 126-byte cut counts bytes.
         let long = [0xe9u8; 300];
         assert_eq!(prefix.len() + clip_say_text(&prefix, &long).len(), 126);
+    }
+
+    /// The 2.1 shape of `Host_Say` (0x1000cf00): no `%a`/`%h`, the `ff` reply and the dead-chat
+    /// gate (0x1000d2d5..0x1000d33a).
+    #[test]
+    fn say_without_codes_ff_and_dead_chat() {
+        let prefix = say_prefix(b"Bob", true);
+        // The text as it is, then "\n" (0x1000d0dd..0x1000d0e3); its case is kept in the line.
+        assert_eq!(plain_say_line(&prefix, b"HP %h %a 100%"), b"\x02(TEAM) Bob: HP %h %a 100%\n");
+        let long = [b'x'; 300];
+        assert_eq!(plain_say_line(&prefix, clip_say_text(&prefix, &long)).len(), 127);
+        // "Friendly fire is %s\n" (0x10091b70), "on" (0x10091b8c) unless the cvar is 0.
+        assert_eq!(friendly_fire_text(0.0), "Friendly fire is off\n");
+        assert_eq!(friendly_fire_text(1.0), "Friendly fire is on\n");
+        assert_eq!(friendly_fire_text(-0.0), "Friendly fire is off\n");
+        assert_eq!(friendly_fire_text(f32::NAN), "Friendly fire is on\n");
+        // Gate off: everyone hears everyone.
+        assert!(say_reaches(false, false, -1.0, true, 0.0));
+        // Gate on: a sender out for the round reaches only players out for the round.
+        assert!(!say_reaches(true, false, -1.0, true, 0.0));
+        assert!(!say_reaches(true, false, -1.0, false, 2.0), "a dead player who respawns this round");
+        assert!(say_reaches(true, false, -1.0, false, -1.0));
+        // A living sender, or one still to respawn, reaches everyone.
+        assert!(say_reaches(true, true, -1.0, true, 0.0));
+        assert!(say_reaches(true, false, 0.0, true, 0.0));
     }
 
     #[test]

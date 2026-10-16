@@ -14,6 +14,7 @@ use crate::messages::Msg;
 use crate::player::Player;
 use crate::player::damage::{HitDamage, PlayerHit};
 use crate::rules;
+use crate::rules::commands::SayRules;
 use crate::rules::powerup::PowerupRules;
 use crate::rules::scoring::Frag;
 use crate::rules::state::GameRules;
@@ -484,6 +485,23 @@ pub trait ServerRules: Sync {
     /// hits at `at`, thrown from `from` (a ruleset whose damage falls off measures the distance
     /// in its own arithmetic).
     fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32;
+
+    // Audit round 2: B1
+
+    /// How `Host_Say` (0xad02c) treats the chat text: the `%a`/`%h` codes, the lower-casing and
+    /// the `ff` reply.
+    fn say_rules(&self) -> &'static SayRules;
+
+    /// `Host_Say`'s dead-chat gate: whether a player out for the round (dead, `respawn_at < 0`)
+    /// only talks to other such players now.
+    fn say_dead_chat_gated(&self) -> bool;
+
+    /// The `kill` command (`ClientKill`, the engine's `pfnClientKill`) for player `p`.
+    fn client_kill(&self, p: &mut Player, cx: &mut Cx);
+
+    /// Whether `CBasePlayer::Killed` (0x8ed5c) resets the view (`SET_VIEW(edict, edict)`) and
+    /// gives control back (`EnableControl(TRUE)`, clearing `FL_FROZEN`).
+    fn killed_resets_view(&self) -> bool;
 }
 
 #[cfg(test)]
