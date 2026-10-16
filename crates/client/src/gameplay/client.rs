@@ -374,6 +374,25 @@ pub trait ClientRules: Sync {
     /// message, `target` the new target scale (1 for a 0), `prev_factor100` and `factor100` the
     /// last and the new value as sent.
     fn go_slow_sound(&self, time_scale: f32, target: f32, prev_factor100: f32, factor100: f32) -> bool;
+
+    /// `V_CalcNormalRefdef`'s third-person camera offsets (back, right, up), after the duck and
+    /// stunt/death smoothing on the state `ofs` keeps across frames.
+    fn camera_offsets(&self, ofs: &mut crate::view::CamOffsets, c: &crate::view::CamInput) -> (f32, f32, f32);
+
+    /// `V_CalcViewRoll`: sets or adds to `p.viewangles[2]`, with the eased roll `roll` if the
+    /// ruleset eases one; `view` is the view entity (`pparams->viewentity`), `local` the local
+    /// player.
+    fn view_roll(
+        &self,
+        roll: &mut f32,
+        p: &mut goldsrc::sys::ref_params_t,
+        view: Option<crate::view::RollEntity>,
+        local: Option<crate::view::RollEntity>,
+    );
+
+    /// Whether `V_CalcNormalRefdef` sets the local entity's render mode and eases its
+    /// `renderamt` (the third-person translucency, `cl_thirdtransparency`).
+    fn local_translucency(&self) -> bool;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -618,6 +637,20 @@ mod stub {
             None
         }
         fn go_slow_sound(&self, _time_scale: f32, _target: f32, _prev_factor100: f32, _factor100: f32) -> bool {
+            false
+        }
+        fn camera_offsets(&self, _ofs: &mut crate::view::CamOffsets, c: &crate::view::CamInput) -> (f32, f32, f32) {
+            (-c.cam_back, c.cam_right, c.cam_up)
+        }
+        fn view_roll(
+            &self,
+            _roll: &mut f32,
+            _p: &mut goldsrc::sys::ref_params_t,
+            _view: Option<crate::view::RollEntity>,
+            _local: Option<crate::view::RollEntity>,
+        ) {
+        }
+        fn local_translucency(&self) -> bool {
             false
         }
     }

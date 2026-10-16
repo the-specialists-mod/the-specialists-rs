@@ -397,6 +397,28 @@ impl ClientRules for Ts30Client {
     fn go_slow_sound(&self, time_scale: f32, target: f32, _prev_factor100: f32, _factor100: f32) -> bool {
         time_scale == 1.0 && target != 1.0
     }
+
+    /// `V_CalcNormalRefdef` (`0x10068139..0x1006823e`, [`view::camera_offsets`]): `cl_camtype`'s
+    /// offsets, eased floats.
+    fn camera_offsets(&self, ofs: &mut ts_client::view::CamOffsets, c: &ts_client::view::CamInput) -> (f32, f32, f32) {
+        view::camera_offsets(ofs, c)
+    }
+
+    /// `V_CalcViewRoll` (`0x100675b0`, [`view::view_roll`]): all from the view entity.
+    fn view_roll(
+        &self,
+        roll: &mut f32,
+        p: &mut ref_params_t,
+        view: Option<ts_client::view::RollEntity>,
+        _local: Option<ts_client::view::RollEntity>,
+    ) {
+        view::view_roll(roll, p, view)
+    }
+
+    /// True: the start of `V_CalcNormalRefdef` (`kRenderTransColor`, `cl_thirdtransparency`).
+    fn local_translucency(&self) -> bool {
+        true
+    }
 }
 
 /// The plugin as the client registers it.

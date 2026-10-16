@@ -901,3 +901,79 @@ fn go_slow_sound() {
     assert!(v30().go_slow_sound(1.0, 0.25, 50.0, 25.0));
     assert!(!v21().go_slow_sound(1.0, 1.0, 0.0, 0.0));
 }
+
+#[test]
+fn third_person_camera_offsets() {
+    use ts_client::view::{CamInput, CamOffsets};
+    // #240 §1/§2: 2.1 (0x100b7700..0x100b7ab9) has no cl_camtype; the SDK cvars' defaults
+    // (90, 0, 12) give (-90, 0, 12) whatever cl_camtype says. 3.0's cl_camtype 0: (-48, 16, 12).
+    let c = CamInput { camtype: 0, cam_back: 90.0, cam_right: 0.0, cam_up: 12.0, ducked: false, alive: true, stunt: false, ft: 0.25 };
+    let mut o = CamOffsets::default();
+    assert_eq!(v21().camera_offsets(&mut o, &c), (-90.0, 0.0, 12.0));
+    assert_eq!(v21().camera_offsets(&mut o, &CamInput { camtype: 1, ..c }), (-90.0, 0.0, 12.0));
+    assert_eq!(v30().camera_offsets(&mut CamOffsets::default(), &c), (-48.0, 16.0, 12.0));
+    let wild = CamInput { cam_back: 500.0, cam_right: -50.0, cam_up: 50.0, ..c };
+    assert_eq!(v21().camera_offsets(&mut CamOffsets::default(), &wild), (-128.0, -24.0, 24.0));
+    assert_eq!(v21().camera_offsets(&mut CamOffsets::default(), &CamInput { cam_back: -50.0, ..c }).0, 24.0);
+
+    // Integer steps of ft × 100 (25 here), set to the target once at or past it.
+    let mut o = CamOffsets::default();
+    let ducked = CamInput { ducked: true, ..c };
+    assert_eq!(v21().camera_offsets(&mut o, &ducked).2, 12.0 + 25.0, "one step past 32 - 12 = 20");
+    assert_eq!(v21().camera_offsets(&mut o, &ducked).2, 32.0);
+    assert_eq!(v21().camera_offsets(&mut o, &c).2, 12.0 + 20.0 - 25.0, "back down by a step");
+    assert_eq!(v21().camera_offsets(&mut o, &c).2, 12.0, "0 at once from 0 or below");
+    let dead = CamInput { alive: false, ..ducked };
+    let backs: Vec<f32> = (0..5).map(|_| v21().camera_offsets(&mut o, &dead).0).collect();
+    assert_eq!(backs, [-115.0, -140.0, -165.0, -190.0, -180.0], "toward -180 - back = -90");
+    assert_eq!(v21().camera_offsets(&mut o, &dead).2, 12.0, "dead: no up offset");
+    let mut o = CamOffsets::default();
+    let stunt = CamInput { stunt: true, ..c };
+    assert_eq!(v21().camera_offsets(&mut o, &stunt).0, -90.0 - 25.0);
+    assert_eq!(v21().camera_offsets(&mut o, &stunt).0, -92.0, "the target -2 is above: taken at once");
+    assert_eq!(v21().camera_offsets(&mut o, &c).0, -90.0 + 23.0, "rises past 0 by a step");
+    assert_eq!(v21().camera_offsets(&mut o, &c).0, -90.0, "then 0 at once");
+    // Above 100 fps, ftol(ft × 100) is 0: the offsets don't move.
+    let mut o = CamOffsets::default();
+    assert_eq!(v21().camera_offsets(&mut o, &CamInput { ft: 0.01, ..ducked }).2, 12.0);
+    assert_eq!(o, CamOffsets::default());
+}
+
+#[test]
+fn view_roll() {
+    use goldsrc::sys::ref_params_t;
+    use ts_client::view::RollEntity;
+    // #240 §3: 2.1's V_CalcViewRoll (0x100b6910) adds V_CalcRoll(angles, simvel, 0.5 or 30, 10)
+    // at once, on the ground too; observer and dive bits are the local player's.
+    let ent = RollEntity::default();
+    let mut p = ref_params_t { frametime: 0.01, onground: 1, health: 100, simvel: [0.0, -300.0, 0.0], ..Default::default() };
+    let mut roll = 0.0;
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(ent));
+    assert_eq!(p.viewangles[2], 0.15, "|side| 300: 3 × 0.5 / 10, on the ground");
+    v30().view_roll(&mut roll, &mut p, Some(ent), Some(ent));
+    assert_eq!(p.viewangles[2], 0.15, "3.0: no ground roll");
+    p.viewangles[2] = 0.0;
+    let dive = RollEntity { iuser4: shared::ts::stunt::DIVING, ..ent };
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(dive));
+    assert_eq!(p.viewangles[2], 9.0, "a dive: 3 × 30 / 10, at once");
+    p.viewangles[2] = 0.0;
+    v21().view_roll(&mut roll, &mut p, Some(dive), Some(ent));
+    assert_eq!(p.viewangles[2], 0.15, "the view entity's stunt bits aren't read");
+    p.simvel = [0.0, 300.0, 0.0];
+    p.viewangles[2] = 0.0;
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(ent));
+    assert_eq!(p.viewangles[2], -0.15);
+    p.viewangles[2] = 3.0;
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(RollEntity { iuser1: 1, ..ent }));
+    assert_eq!(p.viewangles[2], 0.0, "observer");
+    (p.health, p.viewheight) = (0, [0.0, 0.0, 8.0]);
+    v21().view_roll(&mut roll, &mut p, Some(ent), Some(ent));
+    assert_eq!(p.viewangles[2], 80.0);
+    p.viewangles[2] = 3.0;
+    v21().view_roll(&mut roll, &mut p, None, Some(ent));
+    assert_eq!(p.viewangles[2], 3.0, "no view entity");
+    assert_eq!(roll, 0.0, "2.1 has no eased roll");
+
+    // #240 §4: no local translucency.
+    assert!(!v21().local_translucency() && v30().local_translucency());
+}

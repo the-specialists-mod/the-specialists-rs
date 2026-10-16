@@ -414,6 +414,9 @@ The hooks so far:
 | `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and explosions keep 3.0's `fire_pitch`) |
 | `ClientRules` | `view_bob(bob, input)` | `ts30_client::view::bob` (`V_CalcBob` 0x10066e70): the gun offset and bob pitch, no camera bob (`Bob::eye` stays `None`) | `view.rs` `calc_normal` (the gun offset and angle; `Bob::eye` is added to `vieworg`) |
 | `ClientRules` | `eye_origin(eye, simorg, viewheight, on_ground, ft)` / `body_cam_z(eye, z, on_ground, ft)` | `ts30_client::view::eye` (the view height eased at `min(15·ft, 1)` on z, then `V_SmoothStairs` 0x100677d0) / `view::body_cam_z` (`V_SmoothStairs` again, 0x10068313) | `view.rs` `calc_normal` (the eye before the camera bob; the third-person body cam) |
+| `ClientRules` | `camera_offsets(ofs, input)` | `ts30_client::view::camera_offsets`: `cl_camtype`'s base, eased duck/stunt/death additions (#240) | `view.rs` `calc_normal` (third person) |
+| `ClientRules` | `view_roll(roll, pparams, view, local)` | `ts30_client::view::view_roll` (`V_CalcViewRoll` 0x100675b0, from the view entity) (#240) | `view.rs` `calc_normal` |
+| `ClientRules` | `local_translucency()` | true (`kRenderTransColor`, `cl_thirdtransparency`) (#240) | `view.rs` `calc_normal` (start) |
 | `ClientRules` | `client_bullets_queue(realbullet, time_scale, slowmo_factor100)` | `realbullet != 0 \|\| ts < 0.99` | `events/fire.rs` `fire_bullets` |
 | `ClientRules` | `client_bullet_next_update(now, realbullet)` | `ts30_client::events::next_update`: 0.1 s, 0.05 s or every frame by `realbullet` | `events/fire.rs` `client_bullets_frame` |
 | `ClientRules` | `client_bullet_step(dir, step)` | `dir·velocity·40·dt·GetBulletVelocityMult` | `events/fire.rs` `client_bullet_impact` |

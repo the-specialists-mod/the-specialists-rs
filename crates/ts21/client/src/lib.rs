@@ -612,6 +612,29 @@ impl ClientRules for Ts21Client {
     fn go_slow_sound(&self, _time_scale: f32, _target: f32, prev_factor100: f32, factor100: f32) -> bool {
         prev_factor100 / 100.0 == 0.0 && factor100 / 100.0 != 0.0
     }
+
+    /// `V_CalcNormalRefdef`'s camera offsets (0x100b7700..0x100b7ab9, [`view::camera_offsets`]):
+    /// the SDK cvars, no `cl_camtype`; integer offsets stepped by `ft × 100`.
+    fn camera_offsets(&self, ofs: &mut ts_client::view::CamOffsets, c: &ts_client::view::CamInput) -> (f32, f32, f32) {
+        view::camera_offsets(ofs, c)
+    }
+
+    /// `V_CalcViewRoll` (0x100b6910, [`view::view_roll`]): added at once, 0.5 or 30 in a dive.
+    fn view_roll(
+        &self,
+        _roll: &mut f32,
+        p: &mut goldsrc::sys::ref_params_t,
+        view: Option<ts_client::view::RollEntity>,
+        local: Option<ts_client::view::RollEntity>,
+    ) {
+        view::view_roll(p, view, local)
+    }
+
+    /// False: 2.1's `V_CalcNormalRefdef` never writes the local entity's `rendermode` or
+    /// `renderamt`, and it has no `cl_thirdtransparency`.
+    fn local_translucency(&self) -> bool {
+        false
+    }
 }
 
 /// The 2.1 buy menu's text, hard-coded in `client.dll` (the port draws title keys, so each key

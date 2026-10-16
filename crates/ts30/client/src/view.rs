@@ -1,8 +1,11 @@
-//! TS 3.0's view: the bob (`V_CalcBob`) and the eye height (the view-height easing and
-//! `V_SmoothStairs`), on the core's state types ([`Bob`], [`EyeZ`], [`Stairs`]).
+//! TS 3.0's view: the bob (`V_CalcBob`), the eye height (the view-height easing and
+//! `V_SmoothStairs`), the third-person camera offsets and the view roll, on the core's state
+//! types ([`Bob`], [`EyeZ`], [`Stairs`], [`CamOffsets`]).
 
-use goldsrc::ext::render::Vec3;
-use ts_client::view::{Bob, BobInput, EyeZ, Stairs};
+use goldsrc::ext::render::{Vec3, vec3 as v};
+use goldsrc::sys::ref_params_t;
+use shared::ts::stunt;
+use ts_client::view::{Bob, BobInput, CamInput, CamOffsets, EyeZ, RollEntity, Stairs};
 
 /// `V_CalcBob` (`0x10066e70`): returns the amplitude, which `V_CalcGunAngle` adds to the gun's
 /// pitch, or 0 when skipped.
@@ -127,6 +130,89 @@ pub fn smooth_stairs(s: &mut Stairs, z: f32, on_ground: bool, ft: f32) -> f32 {
     s.ofs *= 1.0 - k;
     s.was_on_ground = on_ground;
     out
+}
+
+/// Third-person camera offsets (back, right, up) from `cl_camtype`, clamped (§7.4).
+fn cam_base(camtype: i32, cam_back: f32, cam_right: f32, cam_up: f32) -> (f32, f32, f32) {
+    let (back, right, up) = match camtype {
+        1 => (-48.0, -16.0, 12.0),
+        2 => (-90.0, 0.0, 12.0),
+        3 => (-cam_back, cam_right, cam_up),
+        _ => (-48.0, 16.0, 12.0),
+    };
+    (back.clamp(-128.0, 24.0), right.clamp(-24.0, 24.0), up.clamp(-24.0, 24.0))
+}
+
+/// The smoothing half of the third-person block of `V_CalcNormalRefdef` (`0x10068139..0x1006823e`):
+/// eases the extra up offset toward `32 - up` while ducked, and the extra back offset toward
+/// -180 (dead) or -92 (stunt), both at `ft * 5` (unclamped). Returns the offsets to use.
+fn cam_smooth(up_ofs: &mut f32, back_ofs: &mut f32, back: f32, up: f32, s: &CamInput) -> (f32, f32) {
+    let up_target = if s.ducked && up < 32.0 { 32.0 - up } else { 0.0 };
+    *up_ofs += (up_target - *up_ofs) * s.ft * 5.0;
+    let back_target = if !s.alive {
+        -180.0 - back
+    } else if s.stunt && back > -128.0 {
+        -92.0 - back
+    } else {
+        0.0
+    };
+    *back_ofs += (back_target - *back_ofs) * s.ft * 5.0;
+    (back + *back_ofs, if s.alive { up + *up_ofs } else { up })
+}
+
+/// The third-person camera offsets: [`cam_base`] of `cl_camtype`, then [`cam_smooth`].
+pub fn camera_offsets(ofs: &mut CamOffsets, c: &CamInput) -> (f32, f32, f32) {
+    let (back, right, up) = cam_base(c.camtype, c.cam_back, c.cam_right, c.cam_up);
+    let (back, up) = cam_smooth(&mut ofs.up, &mut ofs.back, back, up, c);
+    (back, right, up)
+}
+
+/// `V_CalcViewRoll`'s roll target and easing rate (`0x100675e8..0x10067632`): 0 at 15 on the
+/// ground; in the air a dive 35 at 7.5, a flip -10 at 5, anything else -5.5 at 15.
+fn view_roll_target(on_ground: bool, iuser4: i32) -> (f32, f32) {
+    if on_ground {
+        (0.0, 15.0)
+    } else if iuser4 & stunt::DIVING != 0 {
+        (35.0, 7.5)
+    } else if iuser4 & (stunt::FLIP_HIGH | stunt::FLIP_LOW) != 0 {
+        (-10.0, 5.0)
+    } else {
+        (-5.5, 15.0)
+    }
+}
+
+/// `V_CalcRoll` (`0x100671f0`, SDK): `side = right(angles)·velocity`, then
+/// `|side|·0.01 < rollspeed ? |side|·0.01·rollangle/rollspeed : rollangle`, with side's sign
+/// (a side of 0 counts as positive). On the x87, with the 0.01 a double; returned unrounded.
+fn calc_roll(angles: Vec3, vel: Vec3, rollangle: f32, rollspeed: f32) -> f64 {
+    let (_, right, _) = v::angle_vectors(angles);
+    let side = right[0] as f64 * vel[0] as f64 + right[1] as f64 * vel[1] as f64 + right[2] as f64 * vel[2] as f64;
+    let sign = if side >= 0.0 { 1.0 } else { -1.0 };
+    let side = if side > 0.0 { side } else { -side } * 0.01;
+    if side < rollspeed as f64 { side * rollangle as f64 / rollspeed as f64 * sign } else { rollangle as f64 * sign }
+}
+
+/// `V_CalcViewRoll` (`0x100675b0`): the stunt roll, all from the view entity
+/// (`GetEntityByIndex(pparams->viewentity)`). Nothing without one; an observer
+/// (`prevstate.iuser1 > 0`) gets roll 0. Otherwise the eased roll (`0x10191d80`) follows
+/// `V_CalcRoll(ent->angles, simvel, target, 10)` at `min(rate·ft, 1)` and is added to the view
+/// roll, so it scales with sideways speed and is 0 on the ground. Dead with a view height, the
+/// roll is then set to 80 (after the easing has run).
+pub fn view_roll(roll: &mut f32, p: &mut ref_params_t, ent: Option<RollEntity>) {
+    let Some(ent) = ent else { return };
+    if ent.iuser1 > 0 {
+        p.viewangles[2] = 0.0;
+        return;
+    }
+    let (target, rate) = view_roll_target(p.onground != 0, ent.iuser4);
+    let r = calc_roll(ent.angles, p.simvel, target, 10.0);
+    let k = rate as f64 * p.frametime as f64;
+    let k = if k > 1.0 { 1.0 } else { k };
+    *roll = ((r - *roll as f64) * k + *roll as f64) as f32;
+    p.viewangles[2] += *roll;
+    if p.health < 1 && p.viewheight[2] != 0.0 {
+        p.viewangles[2] = 80.0;
+    }
 }
 
 #[cfg(test)]
@@ -343,5 +429,78 @@ mod tests {
         assert!((w.vh - 28.0).abs() < 1e-3 && (smooth_stairs(&mut w.stairs, 128.0, true, 0.01) - 128.0).abs() < 1e-3);
         // A slow first frame (15·ft ≥ 1) takes the view height at once.
         assert_eq!(ease_view_height(0.0, 28.0, 0.1), 28.0);
+    }
+
+    /// `V_CalcRoll`: proportional to the sideways speed below `rollspeed / 0.01`, the full
+    /// `rollangle` above it, with the side's sign.
+    #[test]
+    fn calc_roll_scales_with_side_speed() {
+        // Yaw 0: right is -y, so moving toward -y is moving right.
+        assert!((calc_roll(v::ZERO, [0.0, -300.0, 0.0], 35.0, 10.0) - 10.5).abs() < 1e-4);
+        assert!((calc_roll(v::ZERO, [0.0, 300.0, 0.0], 35.0, 10.0) + 10.5).abs() < 1e-4);
+        assert_eq!(calc_roll(v::ZERO, [0.0, -2000.0, 0.0], -5.5, 10.0), -5.5);
+        assert_eq!(calc_roll(v::ZERO, [300.0, 0.0, 0.0], 35.0, 10.0), 0.0, "straight ahead");
+    }
+
+    /// `V_CalcViewRoll`: no roll on the ground, a speed-scaled eased roll in the air, 0 for an
+    /// observer, 80 when dead after the easing has run, nothing without a view entity.
+    #[test]
+    fn view_roll_follows_ts() {
+        let ent = RollEntity::default();
+        let mut p = ref_params_t { frametime: 0.01, onground: 1, health: 100, simvel: [0.0, -300.0, 0.0], ..Default::default() };
+        let mut roll = 0.0;
+        view_roll(&mut roll, &mut p, Some(ent));
+        assert_eq!((roll, p.viewangles[2]), (0.0, 0.0), "no strafe roll on the ground");
+
+        p.onground = 0;
+        view_roll(&mut roll, &mut p, Some(RollEntity { iuser4: stunt::DIVING, ..ent }));
+        // Target 10.5 (see above) at min(7.5 · 0.01, 1).
+        assert!((roll - 10.5 * 0.075).abs() < 1e-4, "{roll}");
+        assert_eq!(p.viewangles[2], roll);
+
+        p.viewangles[2] = 3.0;
+        view_roll(&mut roll, &mut p, Some(RollEntity { iuser1: 4, ..ent }));
+        assert_eq!(p.viewangles[2], 0.0, "observer");
+
+        let before = roll;
+        p.health = 0;
+        p.viewheight = [0.0, 0.0, 8.0];
+        view_roll(&mut roll, &mut p, Some(ent));
+        assert_eq!(p.viewangles[2], 80.0);
+        assert_ne!(roll, before, "the easing still runs when dead");
+
+        p.viewangles[2] = 3.0;
+        view_roll(&mut roll, &mut p, None);
+        assert_eq!(p.viewangles[2], 3.0);
+        assert_eq!(view_roll_target(false, stunt::FLIP_LOW), (-10.0, 5.0));
+        assert_eq!(view_roll_target(false, 0), (-5.5, 15.0));
+    }
+
+    #[test]
+    fn third_person_offsets() {
+        assert_eq!(cam_base(0, 0.0, 0.0, 0.0), (-48.0, 16.0, 12.0));
+        assert_eq!(cam_base(3, 500.0, -50.0, 50.0), (-128.0, -24.0, 24.0));
+        assert_eq!(cam_base(3, -50.0, 0.0, 0.0).0, 24.0);
+        let s = CamInput { camtype: 0, cam_back: 90.0, cam_right: 0.0, cam_up: 12.0, ducked: false, alive: true, stunt: false, ft: 0.01 };
+        let (mut u, mut b) = (0.0, 0.0);
+        assert_eq!(cam_smooth(&mut u, &mut b, -48.0, 12.0, &s), (-48.0, 12.0));
+        // Stunt pulls the camera back to -92, ducking raises it to 32; dead goes to -180.
+        let stunt = CamInput { ducked: true, stunt: true, ..s };
+        for _ in 0..2000 {
+            cam_smooth(&mut u, &mut b, -48.0, 12.0, &stunt);
+        }
+        let (back, up) = cam_smooth(&mut u, &mut b, -48.0, 12.0, &stunt);
+        assert!((back + 92.0).abs() < 1e-3 && (up - 32.0).abs() < 1e-3, "{back} {up}");
+        let dead = CamInput { alive: false, ..s };
+        for _ in 0..2000 {
+            cam_smooth(&mut u, &mut b, -48.0, 12.0, &dead);
+        }
+        let (back, up) = cam_smooth(&mut u, &mut b, -48.0, 12.0, &dead);
+        assert!((back + 180.0).abs() < 1e-3 && up == 12.0, "dead ignores the up offset: {back} {up}");
+        // No stunt pull-back when the camera is already at the -128 limit.
+        let (mut u, mut b) = (0.0, 0.0);
+        assert_eq!(cam_smooth(&mut u, &mut b, -128.0, 12.0, &CamInput { stunt: true, ..s }).0, -128.0);
+        // The whole: cl_camtype 0's (-48, 16, 12), whatever the cam_* cvars say.
+        assert_eq!(camera_offsets(&mut CamOffsets::default(), &s), (-48.0, 16.0, 12.0));
     }
 }
