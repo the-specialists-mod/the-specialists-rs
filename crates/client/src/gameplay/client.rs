@@ -69,6 +69,17 @@ pub struct KungfuRegen {
     pub slowmo_factor100: f32,
 }
 
+/// What the end of `HUD_AddEntity` (the SDK's spectator code) does with an entity that passed the
+/// ruleset's tests ([`ClientRules::add_entity_spectator`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpectatorTail {
+    /// Nothing: the entity is drawn.
+    Skip,
+    /// The entity goes on the overview (`AddOverviewEntity`), and the entity `hide` (an entity
+    /// index; the in-eye target) isn't drawn.
+    Overview { hide: Option<i32> },
+}
+
 /// Client rules: the HUD and input code call these where a ruleset can differ. Every method is
 /// required; each ruleset's plugin answers them all.
 pub trait ClientRules: Sync {
@@ -309,6 +320,15 @@ pub trait ClientRules: Sync {
     /// The status panel's look ([`StatusLook`](crate::hud::draw::StatusLook)), which
     /// `DrawStatusPanel` (1004a3e0) draws with.
     fn status_look(&self) -> crate::hud::draw::StatusLook;
+
+    // Audit round 2: A1
+
+    /// Whether `HUD_AddEntity` makes a ground item (`iuser4` bit 1, 4 or 2) translucent with
+    /// distance inside its cull distance (`effects::ItemCull::fade`).
+    fn ground_items_fade(&self) -> bool;
+
+    /// The spectator tail at the end of `HUD_AddEntity`, for every entity that got there.
+    fn add_entity_spectator(&self) -> SpectatorTail;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -528,6 +548,15 @@ mod stub {
         }
         fn status_look(&self) -> StatusLook {
             StatusLook::default()
+        }
+
+        // Audit round 2: A1
+
+        fn ground_items_fade(&self) -> bool {
+            false
+        }
+        fn add_entity_spectator(&self) -> SpectatorTail {
+            SpectatorTail::Skip
         }
     }
 }

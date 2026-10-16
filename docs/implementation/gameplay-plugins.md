@@ -429,6 +429,8 @@ The hooks so far:
 | `ClientRules` | `close_combat_blocks()` / `blade_hit_particles(..)` / `reload_event_phases()` | true / false (scintille + sparks) / true | `events/misc.rs` |
 | `ClientRules` | `buy_cash_based(teamplay, cashbased)` | false (`CashBased()` hard-wired off: 30000) | `menus/mod.rs` `rules` → `buy::cash` |
 | `ClientRules` | `buy_menu()` | `MenuRules::default()`: 3.0's handguns and random pistols, kevlar 10 slots, stealth shoes restricted below team modes, `cl_buykevlar`, the akimbo fix-up, keys 1..11; the look: text through `titles.txt` (`text: None`), item rows red by money or slots, six category mouse rows, no "hole" message | `menus/buy.rs`, `menus/mod.rs` |
+| `ClientRules` | `ground_items_fade()` | true: items past 492 / 206 / 824 units go translucent while `m_iFOV > 79` (`0x10044a5f`) | `effects.rs` `add_entity` |
+| `ClientRules` | `add_entity_spectator() -> SpectatorTail` | `ts30_client::spectator::add_entity_tail`: while `g_iUser1 != 0`, the overview icon and the target hidden in-eye or with inset 2 (`0x10044af9`) | `effects.rs` `add_entity` |
 | `ServerRules` | `bullet_trace(start, end, shooter)` | `ts30_server::damage::trace_expanded` (players' boxes +32) | `weapons/fire.rs` `shoot_bullets`, `pierce_shot`; `weapons/bullets.rs` `update` |
 | `ServerRules` | `bullet_damage(ammo, weapon, damage, falloff, simulated)` | `falloff × damage` | `shoot_bullets`, `bullets.rs` `update` (first hit) |
 | `ServerRules` | `bullet_range_index(scaled)` | truncated (`Ext::trunc_i32`); `scaled` is the unrounded `dist / (unit·10)·10` as an exact `Ext` (`fire::range_scaled`), issue #80 | the same three |

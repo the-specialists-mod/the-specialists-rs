@@ -8,7 +8,7 @@ use goldsrc::sys::ref_params_t;
 use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, StuntCooldown, ThinkParts};
+use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SpectatorTail, StuntCooldown, ThinkParts};
 use ts_client::hud::draw::{HudOp, StatusLook, WeaponPanel};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -353,6 +353,20 @@ impl ClientRules for Ts30Client {
     /// [`StatusLook`]'s default, TS 3.0's `DrawStatusPanel` (1004a3e0).
     fn status_look(&self) -> StatusLook {
         StatusLook::default()
+    }
+
+    // Audit round 2: A1
+
+    /// `HUD_AddEntity` (`0x10044a5f..0x10044ac8`) fades an item past 492 / 206 / 824 units while
+    /// `m_iFOV > 79`.
+    fn ground_items_fade(&self) -> bool {
+        true
+    }
+
+    /// [`spectator::add_entity_tail`] of `g_iUser1`, `g_iUser2` and the inset.
+    fn add_entity_spectator(&self) -> SpectatorTail {
+        let (mode, target) = ts_client::state::with(|s| (s.spec_mode, s.spec_target));
+        spectator::add_entity_tail(mode, target, ts_client::spectator::in_eye(), ts_client::spectator::pip())
     }
 }
 

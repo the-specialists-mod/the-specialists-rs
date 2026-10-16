@@ -12,7 +12,7 @@ use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, StuntCooldown, ThinkParts};
+use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SpectatorTail, StuntCooldown, ThinkParts};
 use ts_client::hud::draw::{HudOp, HudSprite, StatusLook, WeaponPanel, ftol, num};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -561,6 +561,19 @@ impl ClientRules for Ts21Client {
             category_rows_by_teamplay: true,
             hole_message: Some(HOLE_MESSAGE),
         }
+    }
+
+    // Audit round 2: A1
+
+    /// `HUD_AddEntity` (`0x1007b4c0`) culls ground items by distance and the view cone as 3.0
+    /// does but never sets their `rendermode`/`renderamt` (issue #244).
+    fn ground_items_fade(&self) -> bool {
+        false
+    }
+
+    /// [`spectator::add_entity_tail`]: HLTV viewers only.
+    fn add_entity_spectator(&self) -> SpectatorTail {
+        spectator::add_entity_tail(&HLTV.0.borrow(), &ts_client::spectator::EngineHltv)
     }
 }
 

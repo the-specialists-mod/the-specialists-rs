@@ -540,9 +540,11 @@ fn cull_origin(cam: &Camera) -> Vec3 {
 }
 
 /// `HUD_AddEntity` (`0x100447f0`). Players: the hemisphere, anti-peek and spectator tests, then
-/// the visible-this-frame flag. Other entities: the `curstate.iuser4` distance cull and fade (the
-/// server's items; client shells have 12) and the bit 8 LOD body. Then, while observing, the
-/// overview icon and the in-eye target hidden.
+/// the visible-this-frame flag. Other entities: the `curstate.iuser4` distance cull and, if the
+/// ruleset has it ([`ground_items_fade`](crate::gameplay::ClientRules::ground_items_fade)), fade
+/// (the server's items; client shells have 12) and the bit 8 LOD body. Then the ruleset's
+/// spectator tail ([`add_entity_spectator`](crate::gameplay::ClientRules::add_entity_spectator)):
+/// the overview icon and the in-eye target hidden.
 pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
     let cam = view::camera();
     let cull = cull_origin(&cam);
@@ -568,7 +570,10 @@ pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
             if beyond_distance(e.origin, cull, cull_dist.max, fov) || !psys::in_view_cone(&cam, cull, e.origin) {
                 return false;
             }
-            if let Some(amt) = cull_dist.fade(v::dist(e.origin, cull), fov) {
+            // 2.1 (`0x1007b4c0`) has no fade: the item is solid up to the cull distance.
+            if crate::gameplay::current().ground_items_fade()
+                && let Some(amt) = cull_dist.fade(v::dist(e.origin, cull), fov)
+            {
                 e.curstate.renderfx = 0;
                 e.curstate.rendermode = kRenderTransColor as i32;
                 e.curstate.renderamt = amt;
@@ -580,16 +585,15 @@ pub fn add_entity(kind: i32, e: &mut cl_entity_t) -> bool {
             e.curstate.body = if low { 0 } else { lod_body(v::dist(e.origin, cull), fov) };
         }
     }
-    // 0x10044af9: the SDK spectator code, for every entity that got this far.
-    let (mode, target) = state::with(|s| (s.spec_mode, s.spec_target));
-    if mode != 0 {
-        crate::spectator::add_overview_entity(kind, e);
-        // TS's in-eye mode is 5 (`g_iUser1 == 5`), or the in-eye inset.
-        if (mode == shared::ts::obs::IN_EYE || crate::spectator::pip() == 2) && e.index == target {
-            return false;
+    // 0x10044af9: the SDK spectator code, for every entity that got this far; when it runs and
+    // which entity it hides are the ruleset's.
+    match crate::gameplay::current().add_entity_spectator() {
+        crate::gameplay::SpectatorTail::Skip => true,
+        crate::gameplay::SpectatorTail::Overview { hide } => {
+            crate::spectator::add_overview_entity(kind, e);
+            hide != Some(e.index)
         }
     }
-    true
 }
 
 /// `InViewHemisphere` (`0x10057790`): within 256 units of the cull origin, or not behind it
