@@ -360,12 +360,14 @@ fn debug_air(p: &mut Player, cx: &mut Cx) {
 }
 
 /// `TEXTURETYPE_Init`, from `CWorld::Precache` (0xf449c): the texture table `GoRoll`'s impact
-/// sound reads. (The stunt and footstep sounds are in `ClientPrecache` / `TSPrecache`,
-/// `crate::precache`.)
+/// sound reads, with the active ruleset's limits and map file
+/// ([`crate::entities::stock::impact::game_textures`]). (The stunt and footstep sounds are in
+/// `ClientPrecache` / `TSPrecache`, `crate::precache`.)
 pub fn texture_type_init() {
     let e = engine();
     let map = e.string(e.globals().mapname).to_string_lossy().into_owned();
-    shared::pm::textures::texturetype::init(&map, |path| e.load_file(path));
+    let (limits, map_files) = crate::entities::stock::impact::game_textures();
+    shared::pm::textures::texturetype::init(limits, map_files, &map, |path| e.load_file(path));
 }
 
 /// `TSInit` (0x92a4c), the stunt and animation parts.

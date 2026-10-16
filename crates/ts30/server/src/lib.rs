@@ -505,6 +505,14 @@ impl ServerRules for Ts30Server {
         let _ = (from, at);
         explode::thrown_blade_damage(btype)
     }
+
+    // Audit round 2: D1
+
+    /// `TEXTURETYPE_Init` (0xe1244): `TEXTURETYPE_LoadStandardMaterials`, then
+    /// `TEXTURETYPE_LoadMapMaterials` (`sound/%s_materials.txt`).
+    fn map_materials(&self) -> bool {
+        true
+    }
 }
 
 /// The plugin as the server registers it.

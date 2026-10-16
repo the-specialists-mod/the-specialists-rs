@@ -484,6 +484,13 @@ pub trait ServerRules: Sync {
     /// hits at `at`, thrown from `from` (a ruleset whose damage falls off measures the distance
     /// in its own arithmetic).
     fn thrown_blade_damage(&self, btype: i32, from: Vec3, at: Vec3) -> f32;
+
+    // Audit round 2: D1
+
+    /// `TEXTURETYPE_Init`: whether the game's own material table (the impact sounds of
+    /// `TEXTURETYPE_PlaySound`) also reads `sound/<map>_materials.txt` after
+    /// `sound/materials.txt`. Its size and name length are `PmRules::texture_limits`'.
+    fn map_materials(&self) -> bool;
 }
 
 #[cfg(test)]

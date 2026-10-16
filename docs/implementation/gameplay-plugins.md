@@ -17,7 +17,7 @@ plugin.
 Not every 3.0 rule is behind a hook yet: some paths run TS 3.0's code for every ruleset where
 2.1 is the same or not yet ported (client commands after `client_command` declines, parts of
 `lifecycle::{killed, on_spawn, start_observer, death_think}`, `teams::change_team`, the
-explosion pitch `events::fire_pitch`, the texture table's size), and the core still holds the
+explosion pitch `events::fire_pitch`), and the core still holds the
 branches for 2.1's round modes (`Mode::RoundTdm`, `Mode::Objective`). Moving those behind hooks is
 issue #200's phase 2.
 
@@ -284,7 +284,7 @@ The hooks so far:
 | `PmRules` | `step_interval(arith, interval, fuser1)` | `ts30_gameplay::pm::step_interval`: `1/max(fuser1, 0.1) × interval`, truncated | `pm/sound.rs` `update_step_sound` |
 | `PmRules` | `speed_by_slots(free, the_one)` | `ts30_gameplay::pm::speed_by_slots` | server `weapons/inventory.rs` `sync_speed` (the active plugin's) |
 | `PmRules` | `max_player_speed()` | 330: `SetPlayerSpeed`'s clamp and `TSInit`'s speed | server `inventory.rs` `sync_speed`, `rules/lifecycle.rs` `on_spawn` |
-| `PmRules` | `texture_limits()` | `TextureLimits::LARGE`: 1024 entries, 15 characters (`TextureLimits::SDK`: 512, 12) | `pm/mod.rs` `categorize_texture_type` (`textures::find_in`); the exported `pfnPM_FindTextureType` and the client's impact lookup keep 3.0's table |
+| `PmRules` | `texture_limits()` | `TextureLimits::LARGE`: 1024 entries, 15 characters (`TextureLimits::SDK`: 512, 12) | `pm/mod.rs` `categorize_texture_type` (`textures::find_in`); the server's game-side table (`stunt::texture_type_init`, `impact::texture_type_play_sound` through `impact::game_textures`); the exported `pfnPM_FindTextureType` and the client's impact lookup keep 3.0's table |
 | `PmRules` | `in_eye_pitch(target_pitch)` | the target's pitch, copied | `pm/mod.rs` `spectator_move` (in eye) |
 | `PmRules` | `roll_divides_first()` | false: `side × rollangle / rollspeed` | `pm/mod.rs` `calc_roll` |
 | `PmRules` | `friction_edge_by_reciprocal()` | false: `vel / speed × 16 + origin` | `pm/mod.rs` `friction` (`edge_ahead`) |
@@ -451,6 +451,7 @@ The hooks so far:
 | `ServerRules` | `explosion_aftermath(org, inflictor, attacker)` | `ts30_server::explode::explosion_slow_point` (0.25 for 1 s) | `ts_explosion` |
 | `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `ts30_server::explode::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
 | `ServerRules` | `thrown_blade_damage(btype, from, at)` | `ts30_server::explode::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
+| `ServerRules` | `map_materials()` | true: the game's material table also reads `sound/<map>_materials.txt` | `stunt::texture_type_init`, `impact::texture_type_play_sound` (`impact::game_textures`) |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`

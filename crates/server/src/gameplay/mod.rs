@@ -354,6 +354,11 @@ impl ServerRules for Defaults {
     fn thrown_blade_damage(&self, _btype: i32, _from: shared::weapons::spread::Vec3, _at: shared::weapons::spread::Vec3) -> f32 {
         unimplemented!("thrown_blade_damage")
     }
+
+    // Audit round 2: D1
+    fn map_materials(&self) -> bool {
+        unimplemented!("map_materials")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).
