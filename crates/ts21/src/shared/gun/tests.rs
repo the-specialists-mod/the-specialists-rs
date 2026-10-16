@@ -672,12 +672,19 @@ fn pre_think_melee_timers() {
         r.pre_think(&mut g, &mut disarm, &pre_think_at(time, 0.01, 1.0, 0, true));
     }
     assert!(time > 10.3 && time - 0.01 <= 10.3);
-    // TS 3.0 closes the kung-fu block while a window is open and decays the disarm count.
+    // TS 3.0 closes the kung-fu block while a window is open and decays the disarm count (before
+    // `Play`, #249); 2.1 does nothing before `Play`.
     let mut g = Gun { melee_window: 0.3, melee_damage: 15.0, block_kungfu: 0.3, ..Gun::default() };
     let mut disarm = 7.0;
-    CORE.pre_think(&mut g, &mut disarm, &pre_think_at(10.0, 0.1, 1.0, 0, true));
+    let t = pre_think_at(10.0, 0.1, 1.0, 0, true);
+    CORE.pre_think_timers(&mut g, &mut disarm, &t);
+    CORE.pre_think(&mut g, &mut disarm, &t);
     assert_eq!(g.block_kungfu, 0.0);
     assert_eq!(disarm, 7.0 - 0.1 * 5.0);
+    let mut g = Gun { melee_window: 10.3, melee_damage: 15.0, block_kungfu: 10.3, decay_time: 10.0, ..Gun::default() };
+    let (g0, mut disarm) = (g.clone(), 7.0);
+    r.pre_think_timers(&mut g, &mut disarm, &pre_think_at(10.5, 0.01, 1.0, 0, true));
+    assert_eq!((g, disarm), (g0, 7.0));
 }
 
 /// #202: a missed swing's window and a swing's block are `(float)(d + time)` with `d` unrounded

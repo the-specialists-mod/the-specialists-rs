@@ -358,22 +358,36 @@ pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
 /// step ([`GunRules::pre_think`]: the melee window and block timers, the kung-fu bar, the recoil
 /// decay and the disarm count).
 pub fn pre_think(p: &mut Player, cx: &mut Cx) {
-    let pev = cx.pev();
-    let buttons = pev.button as u32;
+    let buttons = cx.pev().button as u32;
     p.inv.sv.pressed = buttons & !p.inv.sv.last_buttons;
+}
+
+/// The weapon timers of `CBasePlayer::PreThink` (0x908cc) before `CTSStunt::Play`
+/// ([`GunRules::pre_think_timers`](shared::gameplay::GunRules::pre_think_timers)), from
+/// `stunt::pre_think`. Returns the step's values for [`pre_think_after_play`].
+///
+/// `BlockPlayer`'s timer (`pl+0x4dc`) is the stunt package's (`StuntState::block_timer`): it runs
+/// and expires in `stunt::pre_think`, and `CTSStunt::Play` resets it.
+pub fn pre_think_timers(p: &mut Player, cx: &mut Cx) -> WeaponPreThink {
     let t = WeaponPreThink {
         arith: crate::rules::cvars::pm_arith(),
         frametime: engine().globals().frametime,
         time: engine().time(),
-        fuser1: pev.fuser1,
+        fuser1: cx.pev().fuser1,
         powerups: p.active_powerup,
         alive: Player::is_alive(cx),
     };
+    crate::gameplay::gun_rules(cx.edict).pre_think_timers(&mut p.inv.gun, &mut p.inv.sv.disarm, &t);
+    t
+}
+
+/// The rest of the weapon step (the bar, the recoil decay, the delayed-hit window's closure),
+/// after `CTSStunt::Play` and before `CheckForBreakables` lands the delayed melee hit
+/// (`pending_melee_hit`), as TS orders them (3.0 0x908cc, 2.1 0x100537e0; issue #249). `t` is
+/// [`pre_think_timers`]' step; whether the player is alive is asked again.
+pub fn pre_think_after_play(p: &mut Player, cx: &mut Cx, t: WeaponPreThink) {
+    let t = WeaponPreThink { alive: Player::is_alive(cx), ..t };
     crate::gameplay::gun_rules(cx.edict).pre_think(&mut p.inv.gun, &mut p.inv.sv.disarm, &t);
-    // `BlockPlayer`'s timer (`pl+0x4dc`) is the stunt package's (`StuntState::block_timer`): it
-    // runs and expires in `stunt::pre_think`, and `CTSStunt::Play` resets it.
-    // The delayed melee hit lands from the stunt hook (`CheckForBreakables`), which calls
-    // `pending_melee_hit`.
 }
 
 /// The `Use` of the weapons package's usable entities when a player's +use picks them

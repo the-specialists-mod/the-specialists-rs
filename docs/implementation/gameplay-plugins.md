@@ -295,7 +295,7 @@ The hooks so far:
 | `GunRules` | `timer_step(arith, frametime, fuser1, powerups)` | `Gun::timer_dt` (`frametime x GiveSlowMul x DFR 1.5`) | server `weapons/mod.rs` `post_think`, client `prediction/gun.rs` `post_think` |
 | `GunRules` | `command_frame_time(msec)` | `(float)(msec * 0.001)` | client `prediction/gun.rs` `post_think` |
 | `GunRules` | `decay_spread(gun, decay) -> bool` | `ts30_gameplay::gun::decay_spread` by the step, while alive; true: the client's crosshair copy (`state.spread`) takes the penalty on every first prediction (the server ignores the value) | server `GunRules::pre_think` (below), client `post_think` (first prediction) |
-| `GunRules` | `pre_think(gun, disarm, t)` | `Gun::timer_dt`'s step (`frametime x GiveSlowMul x DFR 1.5`) for `ts30_gameplay::gun::pre_frame` (melee window, block timers, bar regen 15/s), `decay_spread` by it, disarm count `- step x 5` | server `weapons/mod.rs` `pre_think` (every PreThink outside intermission) |
+| `GunRules` | `pre_think(gun, disarm, t)` | after `CTSStunt::Play`: `Gun::timer_dt`'s step (`frametime x GiveSlowMul x DFR 1.5`) for `ts30_gameplay::gun::pre_frame` (bar regen 15/s, the melee window's closure), `decay_spread` by it | server `weapons/mod.rs` `pre_think_after_play`, from `stunt::pre_think` before the observer return and `CheckForBreakables` (every PreThink outside intermission; issue #249) |
 | `GunRules` | `pellet_offset(seed, i, bot_random)` | `None`: the polar pattern as each side computes it | server `weapons/fire.rs` `shoot_bullets`, client `events/fire.rs` `fire_bullets` |
 | `GunRules` | `pellet_dir(side, aim, right, up, spread, offset)` | `spread::pellet_dir`: the direction rounded as the side's TS build does (`PelletSide::Server(arith)`: mp.dll or `ts_i386.so`; `Client`: `client.dll`), issue #161 | the same two |
 | `GunRules` | `akimbo_event_offsets(linked, toggle)` | linked +5 (seed) / -5 (seed + 0x21), one gun none | client `events/fire.rs` `fire_akimbo` |
@@ -306,6 +306,7 @@ The hooks so far:
 | `GunRules` | `katana_throws()` | true: +attack2 throws the katana | `weapons/gun.rs` `secondary_attack` |
 | `GunRules` | `infinite_clip_skips_idle_reload()` | true: `!InfiniteClips && clip < 1` reloads | `weapons/gun.rs` `weapon_idle` |
 | `GunRules` | `holster_draws_kungfu()` | true: `Unzoom`, then weapon 0's view model, draw animation and draw event | `weapons/gun.rs` `holster_weapon` |
+| `GunRules` | `pre_think_timers(gun, disarm, t)` | before `CTSStunt::Play`: `ts30_gameplay::gun::pre_frame_timers` (the melee window floored at 0.001, the block timers) and the disarm count `- step x 5`, by the same step as `pre_think` (2.1: nothing) | server `weapons/mod.rs` `pre_think_timers`, from `stunt::pre_think` (issue #249) |
 | `MeleeRules` (supertrait of `GunRules`) | `knife_fire(gun, host)`, `katana_fire`, `ccombat_attack`, `ccombat_block`, `cold_cock` | `ts30_gameplay::melee`'s functions of the same names | the `Gun` method of the same name in `weapons/gun.rs` |
 | `ServerRules` | `on_activate()` | nothing | `gameplay::map_start` |
 | `ServerRules` | `refuse_client(client)` | none (everyone joins) | `gameplay::refuse_client`, from `rules::client_connect` (§4.2) |

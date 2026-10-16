@@ -54,7 +54,7 @@ addresses of `ts_i386.so`.
 | `CTSGun::CCombatIdle/Block/Attack` 0x85e54/0x85ebc/0x86078 | `Gun::ccombat_idle/block/attack` (block's and attack's bodies in `ts30_gameplay::melee`) |
 | `CBasePlayer::ItemPostFrame` 0xdc4d0 + `CBasePlayerWeapon::ItemPostFrame` 0xa03d4 | `Gun::item_post_frame` |
 | `CBasePlayer::PostThink` timer tail 0x91610 | `Gun::decrement_timers`, `Gun::timer_dt` |
-| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `weapons::pre_think` → `GunRules::pre_think` (3.0: `ts30_gameplay::gun::pre_frame`, the recoil decay and the disarm decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
+| `CBasePlayer::PreThink` 0x908cc (weapon parts) | `stunt::pre_think` → `weapons::pre_think_timers` → `GunRules::pre_think_timers` before `Play` (3.0: `ts30_gameplay::gun::pre_frame_timers`, the disarm decay), `weapons::pre_think_after_play` → `GunRules::pre_think` after it (3.0: `pre_frame`, the recoil decay); `BlockPlayer`'s timer and expiry are `stunt::pre_think`'s |
 | `CBasePlayer::UpdateMeleeBar` 0x9650c / `GetMeleeMultiplier` 0x965d0 | `Gun::update_melee_bar` (outside the weapon frame: `weapons::update_melee_bar`) / `spread::melee_multiplier` |
 | `CBasePlayer::ShootBulletsPlayer` 0x6f69c, `UTIL_TraceLine_Expanded` 0x6f4f4 | `fire::shoot_bullets`, `fire::trace_expanded` |
 | `compile_range_damage` 0x7f1f4 | `range_multiplier` (pure function) |
@@ -130,11 +130,15 @@ addresses of `ts_i386.so`.
   `m_pActiveItem` (and `m_iId == 16`) on all these paths, so a gun holstered for a
   `cycler_weapon` counts as no gun there too (`gun_active`); holding it (`holds_gun`) matters only
   to `CanHavePlayerItem`, `HasWeapons`, `SelectItem` and `RemoveAllItems`.
-* `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons, then the ruleset's step (`GunRules::pre_think`; TS 3.0:
-  `ts30_gameplay::gun::pre_frame` by `Gun::timer_dt`, i.e. bar regen 15/s, block and melee
-  windows, then recoil decay 0.1/s and disarm decay; TS 2.1: the same timers on the game time
-  since the last think, `docs/implementation/ts21.md`). The delayed melee hit lands from the stunt hook
-  (`CheckForBreakables`).
+* `pre_think` (skipped during intermission, where TS `PreThink` returns after `PlayerThink`): pressed buttons.
+  The ruleset's timer step runs inside `stunt::pre_think`, split around `CTSStunt::Play` as TS
+  orders it (issue #249): `pre_think_timers` before `Play` (`GunRules::pre_think_timers`; TS
+  3.0: `ts30_gameplay::gun::pre_frame_timers` by `Gun::timer_dt`, the melee window and the block
+  timers, and the disarm decay), then `pre_think_after_play` after it and before the observer
+  return and `CheckForBreakables` (`GunRules::pre_think`; TS 3.0: `pre_frame`, bar regen 15/s and
+  the window's closure, and the recoil decay 0.1/s; TS 2.1: its whole step, on the game time
+  since the last think, `docs/implementation/ts21.md`). So the delayed melee hit
+  (`CheckForBreakables`) sees the window as this frame's step left it.
 * `post_think`: `ItemPostFrame` while alive, not in intermission (`game_over`) and not on a
   tank (dead or game over, `PostThink` skips to the timer tail): once the active item is ready
   (`item_post_frame_ready`: the gun's `Gun::post_frame_ready`; a cycler's `m_flNextAttack` run
