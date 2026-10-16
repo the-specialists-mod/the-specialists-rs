@@ -313,7 +313,7 @@ crosshair or wire panel) → status element (round timer, TS messages, flag pane
 markers, crosshair ID, status panel, power-up, objective markers) → say text → `CHudMenu` → the
 logo → (VGUI pass) spectator panel, voice labels, then the viewport's
 children in their order: team menu, scoreboard, MOTD; then the cursor. As in `CHud::Redraw` (`10021aa0`), `HIDEHUD_ALL` hides every element, and
-during intermission only the say text (`HUD_INTERMISSION`) and the logo draw. TS messages fade
+during intermission only the say text (`HUD_INTERMISSION`) and the logo draw. With `hud_takesshots`, entering intermission sets the integer shot time `ftol(time + 1)` (`0x100df1a8`), and the first redraw with `(float)shot < time` sends `snapshot` (about a second later, once the scoreboard has drawn; issue #252; 2.1's `0x10047b70` is the same). TS messages fade
 over their last second: each channel is `__ftol(base × min(expire − now, 1))`, the base being the
 message colour or, for a black message, the `hud_r/g/b` cvar values (`0x1004afc9`). Colours from
 `hud_r/g/b`, halved where TS halves them, red (195,45,45). Sprites: hud.txt `number_0..9`,
