@@ -198,7 +198,7 @@ pub fn player_killed(p: &mut Player, cx: &mut Cx, d: &DamageInfo, g: Snapshot) {
     p.deaths += 1;
     ts_server::world::lend(victim, p, || ts_server::entities::fire_targets(c"game_playerdie", victim, victim, UseType::Toggle, 0.0));
     if p.ts.is_the_one {
-        core::the_one_is_dead(p, cx, killer_is_player.then_some(attacker));
+        crate::players::the_one_is_dead(p, cx, killer_is_player.then_some(attacker));
         p.ts.spree = 0;
     }
 

@@ -467,12 +467,15 @@ pub fn init_hud_block(p: &mut Player, cx: &mut Cx) {
     if !p.ts.game_hud_initialized {
         messages::one(Msg::InitHUD, e).end();
         // `CHalfLifeRules::InitHUD` (0xde79c) is empty; `game_playerjoin` only fires when
-        // `IsMultiplayer()`. `CTSGameRules::InitHUD` runs either way.
+        // `IsMultiplayer()`. `CTSGameRules::InitHUD` runs either way, unless the ruleset runs
+        // it from the multiplay `InitHUD` (`rules_init_hud`).
         let single = state::single_player();
         if !single {
             rules_init_hud(p, cx);
         }
-        ts_init_hud(p, cx);
+        if !crate::gameplay::active().server.init_hud().inside_multiplay {
+            ts_init_hud(p, cx);
+        }
         p.ts.game_hud_initialized = true;
         if !single {
             crate::world::lend(e, p, || crate::entities::fire_targets(c"game_playerjoin", e, e, crate::world::UseType::Toggle, 0.0));
@@ -528,6 +531,11 @@ fn rules_init_hud(p: &mut Player, cx: &mut Cx) {
     if state::with(|g| g.game_over) {
         MsgWriter::begin(MSG_ONE as i32, goldsrc::ext::rules::SVC_INTERMISSION, None, e).end();
     }
+    // A ruleset whose multiplay `InitHUD` ends with `CTSGameRules::InitHUD` runs it here: before
+    // the teamplay part, whose team change has the last word ([`InitHudRules::inside_multiplay`](crate::gameplay::server::InitHudRules::inside_multiplay)).
+    if crate::gameplay::active().server.init_hud().inside_multiplay {
+        ts_init_hud(p, cx);
+    }
     if teamplay {
         teams::init_hud(p, cx);
     }
@@ -580,14 +588,17 @@ pub fn motd_chunks(text: &[u8]) -> Vec<(Vec<u8>, bool)> {
 }
 
 /// `CTSGameRules::InitHUD` (0x79134): cheat notice, custom weapons, SrvSett ×4, RoundTime, Spectator flags of
-/// everyone, then the joiner starts as an observer with a respawn delay.
+/// everyone, then the joiner starts as an observer with a respawn delay. Where it runs, the
+/// `Spectator` list, the notices and `SrvSett` 0 are the ruleset's
+/// ([`InitHudRules`](crate::gameplay::server::InitHudRules)).
 fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     let e = cx.edict;
+    let r = crate::gameplay::active().server.init_hud();
     if cvars::cheats() {
-        ts_message_one(e, [45, 195, 45], 8, 100, "This server has cheats enabled.");
+        ts_message_one(e, [45, 195, 45], r.notice_effect, 100, r.cheats_text);
         let dm = cvars::f(c"damagemult");
         if dm > 0.0 {
-            ts_message_one(e, [45, 195, 45], 8, 100, &format!("This server has custom weapon damages ({dm:.2})"));
+            ts_message_one(e, [45, 195, 45], r.notice_effect, 100, &damages_notice(r.damages_text, dm));
         }
     }
     // `+0x5884`, set by `loadweapons` on this map (`CTSGameRules::Init` clears it).
@@ -597,7 +608,8 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     // 0x79214..0x7930a: `realbullet` is Think's copy (-1 before the first Think), `usecash` the live
     // cvar `!= 0` (`fldz; fcomp; sete`, so 0.5 sends 1 and a NaN 0), `ammocount` the live cvar
     // truncated, and the weapon mask.
-    let (rb, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0], g.allowed_weapons, g.round_end, g.round_timer));
+    let (copy, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0], g.allowed_weapons, g.round_end, g.round_timer));
+    let rb = srvsett_realbullet(r.realbullet_live, copy, cvars::f(c"realbullet"));
     let cash = !super::frame::x87_eq(cvars::f(c"usecash") as f64, 0.0);
     // Port additions: key 4, the gameplay ruleset for the HUD (`crate::gameplay`), and keys 5..7,
     // the server library's version (`shared::protocol::port`). TS's client ignores keys past 3.
@@ -619,7 +631,7 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     // `UTIL_PlayerByIndex` + `IsPlayer`: players who left are listed too.
     for i in 1..=eng.max_clients() {
         let o = eng.player(i);
-        if !super::has_player(o) {
+        if !r.spectator_list || !super::has_player(o) {
             continue;
         }
         let s = Spectator { entindex: i as u8, observer: (o.v().iuser1 != 0) as u8 };
@@ -631,14 +643,30 @@ fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
     };
     start_observer(p, cx, org, ang);
     p.ts.respawns_used = 0;
+    // The grenades bought (3.0 `+0x714`, 2.1 `+0x68c`): only here and in `RestartRound`.
+    p.inv.sv.grenades_bought = 0;
     p.ts.tk_until = 0.0;
     p.ts.tk_count = 0;
     set_respawn_time(p, cx, cvars::respawn_time());
+    // The fire-mode memory (3.0 `memset(pl + 0x49a, 0, 0x40)`, 2.1 0x10 dwords at `pl + 0x41e`),
+    // which nothing else clears, then `ResetArmament` (0x93e88, 2.1 `FUN_10055950`).
+    crate::weapons::init_hud_reset(p);
     let idx = cx.index() as usize;
     state::with(|g| g.votes.reset(idx));
     // In the round modes the objective list again (`SendObjectiveList`).
     crate::entities::ts::objective::resend_list(cx.edict);
     crate::gameplay::active().server.on_init_hud(p, cx);
+}
+
+/// The custom-damage notice: the ruleset's text, then `(%.2f)` of `damagemult`.
+fn damages_notice(text: &str, damagemult: f32) -> String {
+    format!("{text} ({damagemult:.2})")
+}
+
+/// `SrvSett` 0 in `InitHUD`: Think's `(int)realbullet` copy, or with `live` the cvar's
+/// `value != 0` (`fcomp 0`: 0.5 gives 1, a NaN 0).
+fn srvsett_realbullet(live: bool, copy: i32, value: f32) -> i32 {
+    if live { !super::frame::x87_eq(value as f64, 0.0) as i32 } else { copy }
 }
 
 /// `SetPlayerRespawnTime` as the ruleset has it
@@ -1194,5 +1222,31 @@ mod precision_tests {
         let stand = [32.0, 32.0, 72.0];
         assert_eq!(b(death_push(Arith::Msvc, v, stand, 37, a)), [0xc222_66ae, 0xc1a7_0543, 0xc0e4_41a8]);
         assert_eq!(b(death_push(Arith::Gcc, v, stand, 37, a)), [0xc222_66ae, 0xc1a7_0543, 0xc0e4_41b0]);
+    }
+}
+
+// Audit round 2: B2
+#[cfg(test)]
+mod init_hud_tests {
+    use super::{damages_notice, srvsett_realbullet};
+
+    /// `SrvSett` 0: TS 3.0 sends Think's `(int)` copy (0x79214), TS 2.1 the live `realbullet != 0`
+    /// (0x10045278, `fcomp 0`).
+    #[test]
+    fn srvsett_realbullet_is_the_copy_or_the_live_test() {
+        assert_eq!(srvsett_realbullet(false, 2, 2.0), 2);
+        assert_eq!(srvsett_realbullet(false, 0, 0.5), 0);
+        assert_eq!(srvsett_realbullet(false, -1, 1.0), -1, "before the first Think");
+        assert_eq!(srvsett_realbullet(true, 2, 2.0), 1);
+        assert_eq!(srvsett_realbullet(true, 0, 0.5), 1);
+        assert_eq!(srvsett_realbullet(true, -1, 0.0), 0);
+        assert_eq!(srvsett_realbullet(true, 0, f32::NAN), 0);
+    }
+
+    /// `UTIL_VarArgs("... (%.2f)", damagemult)`.
+    #[test]
+    fn damages_notice_has_two_decimals() {
+        assert_eq!(damages_notice("This server has custom weapon damages", 1.5), "This server has custom weapon damages (1.50)");
+        assert_eq!(damages_notice("This server have custom weapon damages", 2.0), "This server have custom weapon damages (2.00)");
     }
 }

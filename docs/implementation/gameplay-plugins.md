@@ -454,6 +454,9 @@ The hooks so far:
 | `ServerRules` | `say_dead_chat_gated()` | `ts30_server::commands::say_dead_chat_gated` (round modes 2/3 or LMS) | `rules/commands.rs` `host_say` |
 | `ServerRules` | `client_kill(p, cx)` | `ts30_server::commands::client_kill` (the suicide 1 s later, `PreThink`'s end) | `rules/lifecycle.rs` `client_kill` (`pfnClientKill`) |
 | `ServerRules` | `killed_resets_view()` | true (`SET_VIEW(self)`, `EnableControl(TRUE)`) | `rules/lifecycle.rs` `killed` |
+| `ServerRules` | `init_hud() -> &InitHudRules` | `ts30_server::players::INIT_HUD`: after the rules' whole `InitHUD` (`UpdateClientData` 0x91d40), the `Spectator` list, "This server has ..." with effect 8, `SrvSett` 0 Think's copy | `rules/lifecycle.rs` `init_hud_block` / `rules_init_hud` (where `ts_init_hud` runs), `ts_init_hud` |
+| `ServerRules` | `team_changes() -> &TeamChangeRules` | `ts30_server::players::TEAM_CHANGES`: `ChangePlayerTeam` forces The One's teams and tests `IsValidTeam`; `ClientUserInfoChanged` resets the model under a team limit | `rules/teams.rs` `change_team`, `userinfo_changed` |
+| `ServerRules` | `spawn_spot_master_test()` | true (`IsTriggered` 0xe2c20) | `rules/spawnpoint.rs` `select` |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`

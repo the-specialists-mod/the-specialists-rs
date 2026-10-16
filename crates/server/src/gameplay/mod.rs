@@ -368,6 +368,17 @@ impl ServerRules for Defaults {
     fn killed_resets_view(&self) -> bool {
         unreachable!("not in unit tests")
     }
+
+    // Audit round 2: B2
+    fn init_hud(&self) -> &'static server::InitHudRules {
+        unimplemented!("init_hud")
+    }
+    fn team_changes(&self) -> &'static server::TeamChangeRules {
+        unimplemented!("team_changes")
+    }
+    fn spawn_spot_master_test(&self) -> bool {
+        unimplemented!("spawn_spot_master_test")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).

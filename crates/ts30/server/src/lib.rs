@@ -48,7 +48,7 @@ use ts_server::entities::ts::ctb::GiverWin;
 use ts_server::entities::ts::ground::GroundWeapon;
 use ts_server::entities::ts::misc::MapFlags;
 use ts_server::entities::ts::objective::ObjectiveRules;
-use ts_server::gameplay::server::CvarDef;
+use ts_server::gameplay::server::{CvarDef, InitHudRules, TeamChangeRules};
 use ts_server::gameplay::{ConnectingClient, ServerPlugin, ServerRules};
 use ts_server::messages::Msg;
 use ts_server::player::Player;
@@ -528,6 +528,23 @@ impl ServerRules for Ts30Server {
 
     /// `SET_VIEW(edict, edict)` and `EnableControl(TRUE)` (0x8eee0).
     fn killed_resets_view(&self) -> bool {
+        true
+    }
+
+    // Audit round 2: B2
+
+    /// After the rules' whole `InitHUD`, with the `Spectator` list ([`players::INIT_HUD`]).
+    fn init_hud(&self) -> &'static InitHudRules {
+        &players::INIT_HUD
+    }
+
+    /// The One's teams, `IsValidTeam` and the team-limit model reset ([`players::TEAM_CHANGES`]).
+    fn team_changes(&self) -> &'static TeamChangeRules {
+        &players::TEAM_CHANGES
+    }
+
+    /// `TSSelectSpawnSpot` (0x76244) asks each spot's `IsTriggered` (0xe2c20).
+    fn spawn_spot_master_test(&self) -> bool {
         true
     }
 }
