@@ -195,12 +195,13 @@ pub fn buy_open() -> bool {
     with(|m| m.buy.active)
 }
 
-/// `CTSBuyMenu::Open` (10036670): refused during demo playback; centres the cursor.
+/// `CTSBuyMenu::Open` (10036670): refused during demo playback (as the ruleset says,
+/// [`buy::MenuRules::refused_in_demo`]); centres the cursor.
 pub fn open_buy() {
-    if engine().demo_playing() {
+    let r = rules();
+    if !buy::opens(&r.menu, engine().demo_playing()) {
         return;
     }
-    let r = rules();
     let opened = with(|m| {
         let was = m.buy.active;
         m.buy.open(&r, &mut EngineRng);

@@ -147,6 +147,10 @@ pub struct MenuRules {
     /// The summary writes an item's name (Kevlar, Stealth Shoes) in the halved HUD colour, never
     /// red. TS 3.0 (`0x10036af0`) uses the full HUD colour, or red when the item is restricted.
     pub summary_items_dim: bool,
+    /// `Open` refuses during demo playback (TS 3.0 `0x10036670`). TS 2.1's (`0x1006b3f0`) doesn't
+    /// check, and neither do its callers (`buy` `0x1008db00`, `Spectator` `0x100b28c0`), so a
+    /// played-back demo opens it when the recorded player becomes an observer.
+    pub refused_in_demo: bool,
 }
 
 impl Default for MenuRules {
@@ -177,8 +181,15 @@ impl Default for MenuRules {
             category_rows_by_teamplay: false,
             hole_message: None,
             summary_items_dim: false,
+            refused_in_demo: true,
         }
     }
+}
+
+/// Whether `Open` goes ahead: never during demo playback if the menu refuses it
+/// ([`MenuRules::refused_in_demo`]).
+pub fn opens(m: &MenuRules, demo_playing: bool) -> bool {
+    !(demo_playing && m.refused_in_demo)
 }
 
 /// The colour of an item's name in the summary (`FUN_10036af0`'s item branch, TS 2.1

@@ -1012,3 +1012,12 @@ fn buy_summary_item_colour() {
     assert_eq!(buy::summary_item_rgb(ITEM_STEALTH, &r30, hud), [195, 45, 45], "restricted outside team modes");
     assert_eq!(buy::summary_item_rgb(ITEM_STEALTH, &rules(v30(), 2), hud), hud);
 }
+
+/// Issue #263: 3.0's `Open` (0x10036670) returns during demo playback; 2.1's (0x1006b3f0)
+/// doesn't check.
+#[test]
+fn buy_menu_opens_in_demos() {
+    assert!(buy::opens(&v21().buy_menu(), true));
+    assert!(!buy::opens(&v30().buy_menu(), true));
+    assert!(buy::opens(&v30().buy_menu(), false) && buy::opens(&v21().buy_menu(), false));
+}

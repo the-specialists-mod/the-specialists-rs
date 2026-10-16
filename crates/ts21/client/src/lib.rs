@@ -549,7 +549,8 @@ impl ClientRules for Ts21Client {
     /// `(m_Teamplay != 0) + 5` (0x1006e1b0), so in mode 1 the drawn "0 Go Back" is key 6; and the
     /// centre-printed "A hole in the menu!" where the click finds no row (0x1006e1b0's end,
     /// `pfnCenterPrint` through `FUN_10068c10`); the summary's item names in the halved HUD
-    /// colour, never red (0x1006b9a0, issue #262).
+    /// colour, never red (0x1006b9a0, issue #262). `Open` (0x1006b3f0) opens during demo playback
+    /// too (issue #263).
     fn buy_menu(&self) -> MenuRules {
         MenuRules {
             handguns: &HANDGUNS,
@@ -566,6 +567,7 @@ impl ClientRules for Ts21Client {
             category_rows_by_teamplay: true,
             hole_message: Some(HOLE_MESSAGE),
             summary_items_dim: true,
+            refused_in_demo: false,
         }
     }
 
