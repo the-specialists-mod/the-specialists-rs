@@ -28,6 +28,7 @@
 //! transparent); the engine's surface (FWGS `VGUI_SetupDrawingRect`) draws with `255 - a` and skips
 //! fully transparent fills.
 
+use crate::gameplay::DllBuild;
 use goldsrc::client::engine;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -600,25 +601,18 @@ fn parse(text: &str) -> Vec<Scheme> {
 
 // ---- layout ---------------------------------------------------------------------------------
 
-/// How TS scales its 640×480 VGUI1 layout to the screen (`XRES`/`YRES`), which depends on how
-/// its `client.dll` was built ([`ClientRules::vgui_scale`](crate::gameplay::ClientRules::vgui_scale)).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VguiScale {
-    /// An optimised build (TS 3.0): `ScreenWidth * (1/640)f` and `ScreenHeight * (1/480)f`, the
-    /// reciprocals as the floats TS multiplies by (`0x1007d43c`, `0x1007d438`, a hair above the
-    /// exact values), and the few values TS spills to a `float` rounded there ([`spill`]).
-    Reciprocal,
-    /// An unoptimised build (TS 2.1): `ScreenWidth / 640.0f` and `ScreenHeight / 480.0f`
-    /// (`fild; fdiv`), every expression kept on the x87 stack, so nothing is spilled.
-    Division,
-}
-
+// TS scales its 640×480 VGUI1 layout to the screen (`XRES`/`YRES`) by its `client.dll`'s
+// build ([`DllBuild`]): an optimised build (TS 3.0) multiplies by `(1/640)f` and `(1/480)f`, the
+// reciprocals as the floats TS stores (`0x1007d43c`, `0x1007d438`, a hair above the exact
+// values), and rounds the few values it spills to a `float` ([`spill`]); an unoptimised one
+// (TS 2.1) divides, `ScreenWidth / 640.0f` (`fild; fdiv`), with every expression kept on the x87
+// stack, so nothing is spilled.
 thread_local! {
     /// The scale for the last HUD ruleset seen (`SrvSett` 4), so the per-cell callers don't
     /// resolve the ruleset each time.
-    static SCALE: std::cell::Cell<Option<(Option<i16>, VguiScale)>> = const { std::cell::Cell::new(None) };
+    static SCALE: std::cell::Cell<Option<(Option<i16>, DllBuild)>> = const { std::cell::Cell::new(None) };
     /// A scale forced by [`with_scale`].
-    static FORCED: std::cell::Cell<Option<VguiScale>> = const { std::cell::Cell::new(None) };
+    static FORCED: std::cell::Cell<Option<DllBuild>> = const { std::cell::Cell::new(None) };
 }
 
 thread_local! {
@@ -639,8 +633,8 @@ pub fn raise() -> u64 {
     })
 }
 
-/// The HUD ruleset's [`VguiScale`] (or the one [`with_scale`] forces).
-pub fn scale() -> VguiScale {
+/// The HUD ruleset's [`DllBuild`] (or the one [`with_scale`] forces).
+pub fn scale() -> DllBuild {
     if let Some(s) = FORCED.with(|f| f.get()) {
         return s;
     }
@@ -648,7 +642,7 @@ pub fn scale() -> VguiScale {
     SCALE.with(|c| match c.get() {
         Some((cached, s)) if cached == id => s,
         _ => {
-            let s = crate::gameplay::hud_rules(id).vgui_scale();
+            let s = crate::gameplay::hud_rules(id).dll_build();
             c.set(Some((id, s)));
             s
         }
@@ -656,27 +650,27 @@ pub fn scale() -> VguiScale {
 }
 
 /// Runs `f` with the VGUI scale forced to `s` (tests; the previous one is restored).
-pub fn with_scale<R>(s: VguiScale, f: impl FnOnce() -> R) -> R {
+pub fn with_scale<R>(s: DllBuild, f: impl FnOnce() -> R) -> R {
     let old = FORCED.with(|c| c.replace(Some(s)));
     let r = f();
     FORCED.with(|c| c.set(old));
     r
 }
 
-/// TS's `XRES` scale ([`VguiScale`]). The callers multiply by the 640-based size and truncate
+/// TS's `XRES` scale ([`DllBuild`]). The callers multiply by the 640-based size and truncate
 /// where TS does (`__ftol`); the products are exact in `f64`, as in the x87's 53-bit precision.
 pub fn xs(width: i32) -> f64 {
     match scale() {
-        VguiScale::Reciprocal => width as f64 * 0.0015625f32 as f64,
-        VguiScale::Division => width as f64 / 640.0,
+        DllBuild::Optimised => width as f64 * 0.0015625f32 as f64,
+        DllBuild::Debug => width as f64 / 640.0,
     }
 }
 
-/// TS's `YRES` scale ([`VguiScale`]).
+/// TS's `YRES` scale ([`DllBuild`]).
 pub fn ys(height: i32) -> f64 {
     match scale() {
-        VguiScale::Reciprocal => height as f64 * (1.0f32 / 480.0) as f64,
-        VguiScale::Division => height as f64 / 480.0,
+        DllBuild::Optimised => height as f64 * (1.0f32 / 480.0) as f64,
+        DllBuild::Debug => height as f64 / 480.0,
     }
 }
 
@@ -687,11 +681,11 @@ pub fn ftol(v: f64) -> i32 {
 
 /// A value TS 3.0 spills to a `float` on the stack (`fst DWORD PTR`) and reloads: MSVC's x87
 /// code otherwise keeps double precision, so only these round to single precision. TS 2.1's
-/// unoptimised code ([`VguiScale::Division`]) keeps the same values on the x87 stack.
+/// unoptimised code ([`DllBuild::Debug`]) keeps the same values on the x87 stack.
 pub fn spill(v: f64) -> f64 {
     match scale() {
-        VguiScale::Reciprocal => v as f32 as f64,
-        VguiScale::Division => v,
+        DllBuild::Optimised => v as f32 as f64,
+        DllBuild::Debug => v,
     }
 }
 

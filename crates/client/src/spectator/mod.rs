@@ -22,7 +22,7 @@ pub(crate) use panel::height as panel_height;
 
 pub(crate) use movement::smooth;
 pub use movement::{begin_player_move, in_eye_angles, spectator_move};
-pub use overview::{OverviewFloats, add_entity as add_overview_entity, death as death_notice, draw as draw_overview};
+pub use overview::{add_entity as add_overview_entity, death as death_notice, draw as draw_overview};
 
 use crate::hud::text::localise;
 use crate::state;

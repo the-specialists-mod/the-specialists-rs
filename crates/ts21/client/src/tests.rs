@@ -1056,26 +1056,17 @@ fn buy_menu_opens_in_demos() {
 /// nothing spilled; 3.0's multiplies by the float reciprocals (0x1007d43c, 0x1007d438).
 #[test]
 fn vgui_scale() {
-    use ts_client::hud::vgui::{self, VguiScale};
-    assert_eq!((v21().vgui_scale(), v30().vgui_scale()), (VguiScale::Division, VguiScale::Reciprocal));
+    use ts_client::gameplay::DllBuild;
+    use ts_client::hud::vgui;
     let at = |s| vgui::with_scale(s, || (vgui::xs(640), vgui::ys(480), vgui::spill(1.0 + 1e-12)));
-    assert_eq!(at(VguiScale::Division), (1.0, 1.0, 1.0 + 1e-12));
-    let (x, y, sp) = at(VguiScale::Reciprocal);
+    assert_eq!(at(DllBuild::Debug), (1.0, 1.0, 1.0 + 1e-12));
+    let (x, y, sp) = at(DllBuild::Optimised);
     assert!(x > 1.0 && y > 1.0 && sp == 1.0, "3.0's reciprocals sit a hair above; its spills round to float");
     // MOTD scroll panel height at 640×480: 312 − (48 + 60) exactly in 2.1, a hair under in 3.0.
     let h = |s| {
         vgui::with_scale(s, || vgui::ftol(vgui::ftol(vgui::ys(480) * 312.0) as f64 - (vgui::ys(480) * 48.0 + vgui::ys(480) * 30.0 * 2.0)))
     };
-    assert_eq!((h(VguiScale::Division), h(VguiScale::Reciprocal)), (204, 203));
-}
-
-/// Issue #276: 2.1's renderer divides and stores each statement (`fdiv QWORD 255.0` at
-/// 0x10064e46, `/0.1` at 0x10064575); 3.0's multiplies by double reciprocals on the x87
-/// (0x10079e68, `×10` at 0x10030c76).
-#[test]
-fn float_form() {
-    use ts_client::studio::FloatForm;
-    assert_eq!((v21().float_form(), v30().float_form()), (FloatForm::Unoptimised, FloatForm::Optimised));
+    assert_eq!((h(DllBuild::Debug), h(DllBuild::Optimised)), (204, 203));
 }
 
 /// Issue #281: 2.1's `client.dll` imports nothing from `opengl32.dll` (3.0: `V_SetFog`
@@ -1085,17 +1076,12 @@ fn gl_fog() {
     assert!(!v21().gl_fog() && v30().gl_fog());
 }
 
-/// Issues #271, #272: the HLTV overview's floats are stored one by one in 2.1 (`(90 − pitch) / 90`
-/// 0x1004c475, `Length` 0x10097fc0, `AngleMatrix` 0x10061ee0) and kept on the x87 stack in 3.0
-/// (0x10023c90, 0x10024160).
-#[test]
-fn hltv_overview_floats() {
-    use ts_client::spectator::OverviewFloats;
-    assert_eq!((v21().hltv_overview_floats(), v30().hltv_overview_floats()), (OverviewFloats::Stored, OverviewFloats::Stack));
-}
-
-/// Round 4: 2.1's `client.dll` is an unoptimised build that stores every float assignment
-/// (e.g. `MessageScanNextChar` 0x10054e3b, `DrawTSMessages` 0x1008700d); 3.0's is optimised.
+/// 2.1's `client.dll` is an unoptimised build that divides and stores every float assignment
+/// (`MessageScanNextChar` 0x10054e3b, `DrawTSMessages` 0x1008700d; the VGUI `/ 480.0f`
+/// 0x100a0ea1, #266; the renderer's `fdiv QWORD 255.0` 0x10064e46 and `/0.1` 0x10064575, #276;
+/// the overview's `(90 − pitch) / 90` 0x1004c475, `Length` 0x10097fc0, `AngleMatrix`
+/// 0x10061ee0, #271, #272); 3.0's is optimised: reciprocals on the x87 (0x10079e68, `×10` at
+/// 0x10030c76, 0x1007d43c, 0x10023c90, 0x10024160).
 #[test]
 fn dll_build() {
     use ts_client::gameplay::DllBuild;

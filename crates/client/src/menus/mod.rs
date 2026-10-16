@@ -54,7 +54,7 @@ struct Menus {
     queue: Vec<Menu>,
     team: Option<team::TeamMenu>,
     /// The screen size and VGUI scale the team menu was made for.
-    team_size: (i32, i32, Option<vgui::VguiScale>),
+    team_size: (i32, i32, Option<crate::gameplay::DllBuild>),
     /// The scoreboard is shown (`+showscores`).
     scores: bool,
     board: ScoreBoard,

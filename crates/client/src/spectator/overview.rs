@@ -20,6 +20,7 @@
 //! with its own HLTV controls (TS 2.1, [`super::HltvHost`]) sets the inset and the map view.
 
 use super::{Spectator, in_eye_position, with};
+use crate::gameplay::DllBuild;
 use crate::state;
 use goldsrc::client::engine;
 use goldsrc::ext::render::{self as r, Vec3, vec3 as v};
@@ -442,7 +443,7 @@ pub fn draw() {
     if pip != 0 {
         refresh_camera(pip);
     }
-    let floats = crate::gameplay::current().hltv_overview_floats();
+    let floats = crate::gameplay::current().dll_build();
     with(|s| {
         draw_layer(&s.overview, floats);
         draw_entities(s, floats);
@@ -450,29 +451,17 @@ pub fn draw() {
     });
 }
 
-/// How a TS build rounds the overview's floats
-/// ([`ClientRules::hltv_overview_floats`](crate::gameplay::ClientRules::hltv_overview_floats)).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OverviewFloats {
-    /// An optimised build (TS 3.0): intermediate values stay on the x87 stack at 53 bits; the z
-    /// scale is `(90 − pitch) · (1/90)f`, the layer height its unrounded product.
-    Stack,
-    /// An unoptimised build (TS 2.1): each intermediate is stored to a `float`; the z scale is
-    /// `(90 − pitch) / 90`.
-    Stored,
-}
-
 /// The overview's z scale (the map view's pitch flattening heights) and the layer's z, as
 /// floats. 3.0 (`0x10023d19`, `0x10024166`): `fld 90; fsub pitch; fmul 1/90f (0x1007d44c); fst
 /// zscale; fmul height; fstp z`. 2.1 (`0x1004c475`, `0x1004cbc2`): `fld 90; fsub; fdiv 90; fstp
 /// zscale`, then `zscale · height`.
-fn z_scale(f: OverviewFloats, pitch: f32, height: f32) -> (f32, f32) {
+fn z_scale(f: DllBuild, pitch: f32, height: f32) -> (f32, f32) {
     match f {
-        OverviewFloats::Stack => {
+        DllBuild::Optimised => {
             let t = (90.0 - pitch as f64) * f32::from_bits(0x3c36_0b61) as f64;
             (t as f32, (t * height as f64) as f32)
         }
-        OverviewFloats::Stored => {
+        DllBuild::Debug => {
             let zs = ((90.0 - pitch as f64) / 90.0) as f32;
             (zs, zs * height)
         }
@@ -480,7 +469,7 @@ fn z_scale(f: OverviewFloats, pitch: f32, height: f32) -> (f32, f32) {
 }
 
 /// `DrawOverviewLayer` (3.0 `0x10023c90`, 2.1 `0x1004c3b0`).
-fn draw_layer(ov: &Overview, f: OverviewFloats) {
+fn draw_layer(ov: &Overview, f: DllBuild) {
     let map = ov.map_sprite.0;
     let has_map = !map.is_null();
     let dummy = r::sprite_model(ov.sprites.tile);
@@ -508,7 +497,7 @@ fn draw_layer(ov: &Overview, f: OverviewFloats) {
 const YELLOWISH: [f32; 3] = [1.0, 160.0 / 255.0, 0.0];
 
 /// `DrawOverviewEntities` (3.0 `0x10024160`, 2.1 `0x1004cb50`, traced in the disassembly).
-fn draw_entities(s: &mut Spectator, f: OverviewFloats) {
+fn draw_entities(s: &mut Spectator, f: DllBuild) {
     let (z_scale, z) = z_scale(f, s.overview.map_angles[0], s.overview.data.height);
     tri::cull_face(TRICULLSTYLE_TRI_NONE);
     s.overview.tags.resize(MAX_TAGS, [0.0; 3]);
@@ -602,19 +591,19 @@ fn draw_entities(s: &mut Spectator, f: OverviewFloats) {
 /// subtraction, and `Length` (`0x10058390`) sums and `fsqrt`s on the stack, rounded once with the
 /// add. 2.1 (`0x1004d40d..0x1004d6a4`): every value stored, `Length` (`0x10097fc0`) adds the
 /// squares into a float and returns `(float)sqrt`.
-fn tag_position(f: OverviewFloats, s1: [f32; 2], s2: [f32; 2], w: i32, h: i32) -> [f32; 2] {
+fn tag_position(f: DllBuild, s1: [f32; 2], s2: [f32; 2], w: i32, h: i32) -> [f32; 2] {
     let px = |x: f32| (x as f64 + 1.0) * w as f64 * 0.5;
     let py = |y: f32| ((1.0 - y as f64) * h as f64 * 0.5) as f32;
     let (sx, sy) = (px(s1[0]) as f32, py(s1[1]));
     let dy = py(s2[1]) - sy;
     // The offset's z, `0 − 0`, adds nothing.
     let y = match f {
-        OverviewFloats::Stack => {
+        DllBuild::Optimised => {
             let dx = (px(s2[0]) - sx as f64) as f32;
             let len = (dx as f64 * dx as f64 + dy as f64 * dy as f64).sqrt();
             (len + sy as f64) as f32
         }
-        OverviewFloats::Stored => {
+        DllBuild::Debug => {
             let dx = px(s2[0]) as f32 - sx;
             let sum = ((dx as f64 * dx as f64) as f32 as f64 + dy as f64 * dy as f64) as f32;
             (sum as f64).sqrt() as f32 + sy
@@ -643,9 +632,9 @@ fn refresh_camera(pip: i32) {
 /// `0x10061ee0`/`0x100621a0`): `p` turned about z by `sin`/`cos` of `yaw · (π/180)d` stored as
 /// floats, then a 53-bit dot product rounded once. 3.0 takes the sine of the x87's radians, 2.1
 /// of the radians stored to a float.
-fn rotate_yaw(f: OverviewFloats, p: Vec3, yaw: f32) -> Vec3 {
+fn rotate_yaw(f: DllBuild, p: Vec3, yaw: f32) -> Vec3 {
     let mut a = yaw as f64 * (std::f64::consts::PI / 180.0);
-    if f == OverviewFloats::Stored {
+    if f == DllBuild::Debug {
         a = a as f32 as f64;
     }
     let (s, c) = (a.sin() as f32 as f64, a.cos() as f32 as f64);
@@ -763,7 +752,7 @@ mod tests {
         assert_eq!(tag_color(2), [1.0, 0.4, 0.4]);
         assert!(under_inset([4, 4, 240, 180], [100.0, 100.0], 640, 480));
         assert!(!under_inset([4, 4, 240, 180], [300.0, 100.0], 640, 480));
-        assert!((rotate_yaw(OverviewFloats::Stack, [1.0, 0.0, 0.0], 90.0)[1] - 1.0).abs() < 1e-6);
+        assert!((rotate_yaw(DllBuild::Optimised, [1.0, 0.0, 0.0], 90.0)[1] - 1.0).abs() < 1e-6);
     }
 
     /// The layer's steps and first rows rounded once from the x87 (3.0 `0x10023d72..0x10023dc5`,
@@ -787,9 +776,9 @@ mod tests {
     /// first (`0x1004c475`, `0x1004cbc2`).
     #[test]
     fn z_scale_per_build() {
-        let (zs, z) = z_scale(OverviewFloats::Stack, 33.7, -48.7);
+        let (zs, z) = z_scale(DllBuild::Optimised, 33.7, -48.7);
         assert_eq!((zs.to_bits(), z.to_bits()), (0x3f20_2469, 0xc1f3_b769));
-        let (zs, z) = z_scale(OverviewFloats::Stored, 33.7, -48.7);
+        let (zs, z) = z_scale(DllBuild::Debug, 33.7, -48.7);
         assert_eq!((zs.to_bits(), z.to_bits()), (0x3f20_2469, 0xc1f3_b76a));
     }
 
@@ -800,12 +789,12 @@ mod tests {
     fn tag_position_per_build() {
         let b = f32::from_bits;
         let (s1, s2) = ([b(0x3e80_bcd3), b(0xbf5e_7300)], [b(0x3e4f_9fa4), b(0xbf55_cf5d)]);
-        let t = tag_position(OverviewFloats::Stack, s1, s2, 1366, 768);
+        let t = tag_position(DllBuild::Optimised, s1, s2, 1366, 768);
         assert_eq!((t[0].to_bits(), t[1].to_bits()), (0x4455_aef9, 0x443c_5712));
-        let t = tag_position(OverviewFloats::Stored, s1, s2, 1366, 768);
+        let t = tag_position(DllBuild::Debug, s1, s2, 1366, 768);
         assert_eq!((t[0].to_bits(), t[1].to_bits()), (0x4455_aef9, 0x443c_5711));
         // A clipped point: FWGS leaves the undivided clip coordinates, far off screen.
-        let t = tag_position(OverviewFloats::Stack, [0.25, -0.5], [-812.5, 97.25], 1366, 768);
+        let t = tag_position(DllBuild::Optimised, [0.25, -0.5], [-812.5, 97.25], 1366, 768);
         assert_eq!((t[0], t[1].to_bits()), (853.75, 0x4907_f97e));
     }
 
@@ -814,7 +803,7 @@ mod tests {
     #[test]
     fn camera_turn() {
         assert_eq!(std::f64::consts::PI / 180.0, 0.017453292519943295);
-        for f in [OverviewFloats::Stack, OverviewFloats::Stored] {
+        for f in [DllBuild::Optimised, DllBuild::Debug] {
             let r = rotate_yaw(f, [-301.7, 415.3, 7.0], 45.0);
             assert_eq!((r[0].to_bits(), r[1].to_bits(), r[2]), (0xc3fd_7f6e, 0x42a0_a795, 7.0));
             let l = rotate_yaw(f, [-301.7, 415.3, 7.0], -45.0);

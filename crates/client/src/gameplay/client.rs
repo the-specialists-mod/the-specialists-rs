@@ -115,16 +115,21 @@ pub struct TsMessageLayout {
 }
 
 /// How the ruleset's original `client.dll` was compiled, as far as float temporaries go
-/// ([`ClientRules::dll_build`]). The HUD and particle code follow it where the two builds round
-/// differently.
+/// ([`ClientRules::dll_build`]). Both builds run the x87 at 53-bit precision (modelled as `f64`);
+/// they differ in where a value is rounded to a `float` and in how a constant divisor is applied.
+/// The HUD, the particle builders, the VGUI1 layout (`hud::vgui::xs`/`ys`/`spill`), the studio
+/// renderer, the view kick and the HLTV overview follow it where the two builds round differently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DllBuild {
     /// An optimised MSVC build (TS 3.0): temporaries stay on the x87 stack at 53-bit precision,
-    /// and only the values the compiler spills are rounded to `float`.
+    /// and only the values the compiler spills are rounded to `float`; a division by a constant
+    /// is a multiply by its reciprocal (`×10`, `×(1/255)`, the VGUI `* (1/640)f`, the overview's
+    /// `· (1/90)f`).
     Optimised,
     /// An unoptimised (debug) MSVC build (TS 2.1): every assignment to a `float` variable or
-    /// member is stored, so it's rounded to `float` before the next use, and the source's
-    /// operand order is kept.
+    /// member is stored, so it's rounded to `float` before the next use; the source's divisions
+    /// (`/0.1`, `/255.0`, `/ 640.0f`, `/ 90`) and operand order are kept, and an expression's
+    /// temporaries are never spilled.
     Debug,
 }
 
@@ -456,32 +461,18 @@ pub trait ClientRules: Sync {
     /// The particle update ([`ParticleModel`](crate::effects::psys::ParticleModel)).
     fn particle_model(&self) -> crate::effects::psys::ParticleModel;
 
-    // Audit round 3: gui
-
-    /// How the VGUI1 panels (team menu, MOTD, scoreboard, spectator bar) scale TS's 640×480
-    /// layout: an optimised `client.dll`'s float reciprocals and spills, or an unoptimised one's
-    /// division.
-    fn vgui_scale(&self) -> crate::hud::vgui::VguiScale;
-
     // Audit round 4: render
-
-    /// Which `client.dll` build's float forms the studio renderer (blends, controllers,
-    /// interpolant, player blend) and the view kick (`V_ApplyKick`) replicate.
-    fn float_form(&self) -> crate::studio::FloatForm;
 
     /// Whether the client drives OpenGL fog: `V_SetFog`'s map and single-player user fog
     /// (`gl_fog`, `gl_fog_*`) and the `glDisable(GL_FOG)` that ends every transparent pass.
     fn gl_fog(&self) -> bool;
 
-    // Audit round 4: gui
+    // Audit round 4: unify
 
-    /// How the HLTV overview (layer, icons, name tags) rounds its floats: an optimised
-    /// `client.dll`'s x87 stack or an unoptimised one's float stores.
-    fn hltv_overview_floats(&self) -> crate::spectator::OverviewFloats;
-
-    // Audit round 4: hud
-
-    /// How the original `client.dll` rounds float temporaries ([`DllBuild`]).
+    /// How the ruleset's original `client.dll` was compiled ([`DllBuild`]), which decides its
+    /// float forms wherever the two builds round differently: the HUD, the particle builders, the
+    /// VGUI1 panels' `XRES`/`YRES` (`hud::vgui`), the studio renderer and the view kick
+    /// (`studio`, `view`) and the HLTV overview (`spectator::overview`).
     fn dll_build(&self) -> DllBuild;
 }
 
@@ -789,28 +780,13 @@ mod stub {
             crate::effects::psys::ParticleModel::Drag
         }
 
-        // Audit round 3: gui
-
-        fn vgui_scale(&self) -> crate::hud::vgui::VguiScale {
-            crate::hud::vgui::VguiScale::Reciprocal
-        }
-
         // Audit round 4: render
 
-        fn float_form(&self) -> crate::studio::FloatForm {
-            crate::studio::FloatForm::Optimised
-        }
         fn gl_fog(&self) -> bool {
             true
         }
 
-        // Audit round 4: gui
-
-        fn hltv_overview_floats(&self) -> crate::spectator::OverviewFloats {
-            crate::spectator::OverviewFloats::Stack
-        }
-
-        // Audit round 4: hud
+        // Audit round 4: unify
 
         fn dll_build(&self) -> DllBuild {
             DllBuild::Optimised

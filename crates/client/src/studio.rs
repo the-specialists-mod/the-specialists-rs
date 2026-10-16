@@ -26,6 +26,7 @@
 pub mod math;
 pub mod model;
 
+use crate::gameplay::DllBuild;
 use crate::{state, view};
 use goldsrc::Global;
 use goldsrc::client::{Cvar, engine};
@@ -86,36 +87,17 @@ pub fn style() -> StudioStyle {
     crate::gameplay::current().studio_style()
 }
 
-/// Which `client.dll` build's floating-point forms the renderer and the view kick replicate
-/// (`ClientRules::float_form`). Both builds run the x87 at 53-bit precision (modelled as `f64`);
-/// they differ in where a value is rounded to a float and in how a constant divisor is applied.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FloatForm {
-    /// An optimised build (TS 3.0): a division by a constant is a multiply by its double
-    /// reciprocal (`×10`, `×5`, `×(1/255)`, `×(1/3)`), and a value stays on the x87 stack until it
-    /// is stored to a float.
-    Optimised,
-    /// An unoptimised build (TS 2.1): the source's divisions (`/0.1`, `/0.2`, `/255.0`, `/3.0`),
-    /// and every statement's result stored to its float variable.
-    Unoptimised,
-}
-
-/// The current ruleset's float forms.
-pub fn float_form() -> FloatForm {
-    crate::gameplay::current().float_form()
-}
-
 /// `0x10079e68`: the double TS 3.0 multiplies by instead of dividing by 255.
 const INV255: f64 = 1.0 / 255.0;
 /// `0x1007d518` (3.0), `0x10270240` (2.1): `M_PI / 180` as a double.
 const DEG2RAD: f64 = std::f64::consts::PI / 180.0;
 
-impl FloatForm {
+impl DllBuild {
     /// `x / 255` as the build applies it (`fmul 0x10079e68` or `fdiv 255.0`).
     fn by255(self, x: f64) -> f64 {
         match self {
-            FloatForm::Optimised => x * INV255,
-            FloatForm::Unoptimised => x / 255.0,
+            DllBuild::Optimised => x * INV255,
+            DllBuild::Debug => x / 255.0,
         }
     }
 }
@@ -186,7 +168,7 @@ struct Renderer {
     /// The ruleset's choices, read at the start of each engine draw call.
     style: StudioStyle,
     /// The ruleset's float forms, read with `style`.
-    form: FloatForm,
+    form: DllBuild,
 }
 
 impl Default for Renderer {
@@ -215,7 +197,7 @@ impl Default for Renderer {
             vm_frame_count: 0,
             vm_prevframe: 0.0,
             style: StudioStyle::ALL,
-            form: FloatForm::Optimised,
+            form: DllBuild::Optimised,
         }
     }
 }
@@ -242,7 +224,7 @@ pub fn init() {
 
 /// `R_StudioDrawModel` (`0x1001f3d0`) -> `StudioDrawModel`.
 pub fn draw_model(flags: i32) -> bool {
-    let (style, form) = (style(), float_form());
+    let (style, form) = (style(), crate::gameplay::current().dll_build());
     with(|r| {
         r.style = style;
         r.form = form;
@@ -252,7 +234,7 @@ pub fn draw_model(flags: i32) -> bool {
 
 /// `R_StudioDrawPlayer` (`0x1001f3b0`) -> `StudioDrawPlayer`.
 pub fn draw_player(flags: i32, player: &mut entity_state_s) -> bool {
-    let (style, form) = (style(), float_form());
+    let (style, form) = (style(), crate::gameplay::current().dll_build());
     with(|r| {
         r.style = style;
         r.form = form;
@@ -267,15 +249,15 @@ fn time_scale() -> f32 {
 /// Torso controller value for a yaw offset: `(yaw * 0.25 + 30) * 4.25` (the x87 code's doubles),
 /// truncated to a byte.
 fn torso_controller(yaw: f32) -> u8 {
-    torso_byte(FloatForm::Optimised, yaw as f64)
+    torso_byte(DllBuild::Optimised, yaw as f64)
 }
 
 /// [`torso_controller`] in a build's form: 3.0 `(yaw × 0.25 + 30) × 4.25` (`0x100323be`), 2.1
 /// `(yaw / 4.0 + 30.0) / 0.23529411764705882` (`0x10066b82`), `__ftol`'s low byte.
-fn torso_byte(form: FloatForm, yaw: f64) -> u8 {
+fn torso_byte(form: DllBuild, yaw: f64) -> u8 {
     (match form {
-        FloatForm::Optimised => (yaw * 0.25 + 30.0) * 4.25,
-        FloatForm::Unoptimised => (yaw / 4.0 + 30.0) / 0.23529411764705882,
+        DllBuild::Optimised => (yaw * 0.25 + 30.0) * 4.25,
+        DllBuild::Debug => (yaw / 4.0 + 30.0) / 0.23529411764705882,
     }) as i32 as u8
 }
 
@@ -722,7 +704,7 @@ impl Renderer {
     /// at `0x100322d8` also takes a NaN; 2.1's `jp` at `0x10066a3e` doesn't), above 1 → 1.
     fn dt(&self) -> f32 {
         let dt = (self.time - self.old_time) as f32;
-        if dt < 0.0 || (self.form == FloatForm::Optimised && dt.is_nan()) {
+        if dt < 0.0 || (self.form == DllBuild::Optimised && dt.is_nan()) {
             0.0
         } else if dt > 1.0 {
             1.0
@@ -742,7 +724,7 @@ impl Renderer {
         let Some(info) = self.pinfo.as_mut() else { return };
         // 3.0 (`0x10031fb8`): below 0 or NaN ends it; 2.1 (`0x1006632e`): below 0 becomes 0 (and
         // ends it as 0), a NaN goes on. Both cap at 1 and end on 0.
-        if form == FloatForm::Optimised && !(dt >= 0.0) {
+        if form == DllBuild::Optimised && !(dt >= 0.0) {
             self.gait_movement = 0.0;
             return;
         }
@@ -777,7 +759,7 @@ impl Renderer {
         e.latched.prevcontroller = e.curstate.controller;
         e.angles[1] = info.gaityaw;
         // 3.0 `test ah,1` (`0x10032458`) also takes a NaN; 2.1 (`0x10066cb6`) doesn't.
-        if e.angles[1] < 0.0 || (form == FloatForm::Optimised && e.angles[1].is_nan()) {
+        if e.angles[1] < 0.0 || (form == DllBuild::Optimised && e.angles[1].is_nan()) {
             e.angles[1] += 360.0;
         }
         e.latched.prevangles[1] = e.angles[1];
@@ -898,7 +880,7 @@ impl Renderer {
         f += dfdt;
         // The `< 0` tests: 3.0's `test ah,1` (`0x1003101f`, `0x1003105e`) also takes a NaN, 2.1's
         // `test ah,5; jp` (`0x10064c0d`, `0x10064c59`) doesn't.
-        let below = |f: f64| f < 0.0 || (self.form == FloatForm::Optimised && f.is_nan());
+        let below = |f: f64| f < 0.0 || (self.form == DllBuild::Optimised && f.is_nan());
         if seq.flags & model::STUDIO_LOOPING != 0 {
             if seq.numframes > 1 {
                 f -= (f / (n - 1.0)).trunc() * (n - 1.0);
@@ -1216,9 +1198,9 @@ impl Renderer {
 /// controller byte, the gait yaw and the movement. 3.0 keeps the yaw on the x87 (a NaN reads as
 /// below −180 and −120); 2.1 stores every step.
 #[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
-fn torso_turn(form: FloatForm, view_yaw: f32, gaityaw: f32, movement: f32) -> (u8, f32, f32) {
+fn torso_turn(form: DllBuild, view_yaw: f32, gaityaw: f32, movement: f32) -> (u8, f32, f32) {
     let (mut g, mut m) = (gaityaw, movement);
-    let y = if form == FloatForm::Optimised {
+    let y = if form == DllBuild::Optimised {
         let mut y = view_yaw as f64 - gaityaw as f64;
         y = wrap360_by(y, y * f32::from_bits(0x3b36_0b61) as f64);
         if !(y >= -180.0) {
@@ -1268,20 +1250,20 @@ fn torso_turn(form: FloatForm, view_yaw: f32, gaityaw: f32, movement: f32) -> (u
 /// and stored; then `− ftol(frame / numframes) × numframes` (the quotient unrounded, the `int`
 /// product wrapping) and `+ numframes` below 0 (3.0 also on NaN). The port skips the wrap for a
 /// sequence without frames, where TS divides by 0.
-fn gait_frame(form: FloatForm, frame: f32, movement: f32, seq: &SeqDesc, framerate: f32, dt: f32) -> f32 {
+fn gait_frame(form: DllBuild, frame: f32, movement: f32, seq: &SeqDesc, framerate: f32, dt: f32) -> f32 {
     let n = seq.numframes as f64;
     let add = if seq.linearmovement[0] > 0.0 {
         movement as f64 / seq.linearmovement[0] as f64 * n
     } else {
         match form {
-            FloatForm::Optimised => framerate as f64 * seq.fps as f64 * dt as f64,
-            FloatForm::Unoptimised => dt as f64 * seq.fps as f64 * framerate as f64,
+            DllBuild::Optimised => framerate as f64 * seq.fps as f64 * dt as f64,
+            DllBuild::Debug => dt as f64 * seq.fps as f64 * framerate as f64,
         }
     };
     let mut f = (add + frame as f64) as f32;
     if seq.numframes > 0 {
         f = (f as f64 - ((f as f64 / n) as i32).wrapping_mul(seq.numframes) as f64) as f32;
-        if f < 0.0 || (form == FloatForm::Optimised && f.is_nan()) {
+        if f < 0.0 || (form == DllBuild::Optimised && f.is_nan()) {
             f = (n + f as f64) as f32;
         }
     }
@@ -1308,8 +1290,8 @@ fn wrap360_by(x: f64, q: f64) -> f64 {
 /// float before adding `y²` and every statement after (CRT `sqrt`/`atan2`, `× 180 / π`,
 /// `/ 360.0f`), tests the speed against 5 unrounded and against 180 stored.
 #[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
-fn gait_step(form: FloatForm, dt: f32, est: Gait, yaw: f32, gaityaw: f32) -> (f32, f32) {
-    let opt = form == FloatForm::Optimised;
+fn gait_step(form: DllBuild, dt: f32, est: Gait, yaw: f32, gaityaw: f32) -> (f32, f32) {
+    let opt = form == DllBuild::Optimised;
     let len = |v: [f32; 2]| {
         let (x, y) = (v[0] as f64, v[1] as f64);
         if opt { (y * y + x * x).sqrt() } else { ((x * x) as f32 as f64 + y * y).sqrt() }
@@ -1387,35 +1369,35 @@ fn gait_step(form: FloatForm, dt: f32, est: Gait, yaw: f32, gaityaw: f32) -> (f3
 /// The `StudioEstimateInterpolant` value with interpolation on: see
 /// [`Renderer::estimate_interpolant`].
 #[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
-fn interpolant(form: FloatForm, time: f64, animtime: f32, prevanimtime: f32) -> f32 {
+fn interpolant(form: DllBuild, time: f64, animtime: f32, prevanimtime: f32) -> f32 {
     let (animtime, prev) = (animtime as f64, prevanimtime as f64 + 0.01);
     let moved = match form {
-        FloatForm::Optimised => !(prev > animtime),
-        FloatForm::Unoptimised => prev <= animtime,
+        DllBuild::Optimised => !(prev > animtime),
+        DllBuild::Debug => prev <= animtime,
     };
     if !moved {
         return 1.0;
     }
     let x = match form {
-        FloatForm::Optimised => (time - animtime) * 10.0,
-        FloatForm::Unoptimised => ((time - animtime) / 0.1) as f32 as f64,
+        DllBuild::Optimised => (time - animtime) * 10.0,
+        DllBuild::Debug => ((time - animtime) / 0.1) as f32 as f64,
     };
     if x > 2.0 { 2.0 } else { x as f32 }
 }
 
 /// A sequence blend for `StudioSetupBones`: `(cur·dadt + prev·(1 − dadt)) / 255` on the x87,
 /// stored as the float argument (3.0 `0x1003115c..0x10031181`, 2.1 `0x10064e16..0x10064e4c`).
-fn seq_blend(form: FloatForm, cur: u8, prev: u8, dadt: f32) -> f32 {
+fn seq_blend(form: DllBuild, cur: u8, prev: u8, dadt: f32) -> f32 {
     form.by255(cur as f64 * dadt as f64 + prev as f64 * (1.0 - dadt as f64)) as f32
 }
 
 /// The weight of the previous sequence's pose: `1 − (time − sequencetime)·5` (3.0 `0x1003146d`)
 /// or `1 − (time − sequencetime) / 0.2` (2.1 `0x1006526f`), stored as a float.
-fn prev_seq_weight(form: FloatForm, time: f64, sequencetime: f32) -> f32 {
+fn prev_seq_weight(form: DllBuild, time: f64, sequencetime: f32) -> f32 {
     let dt = time - sequencetime as f64;
     (match form {
-        FloatForm::Optimised => 1.0 - dt * 5.0,
-        FloatForm::Unoptimised => 1.0 - dt / 0.2,
+        DllBuild::Optimised => 1.0 - dt * 5.0,
+        DllBuild::Debug => 1.0 - dt / 0.2,
     }) as f32
 }
 
@@ -1424,8 +1406,8 @@ fn prev_seq_weight(form: FloatForm, time: f64, sequencetime: f32) -> f32 {
 /// the lerp and the degrees-to-radians multiply (`×(1/255)`), 2.1 stores it to a float after each
 /// statement (`/255.0`, `/64.0`). Both multiply by the double `M_PI / 180`.
 #[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
-fn bone_adj(m: &Studio, form: FloatForm, dadt: f32, c1: &[u8; 4], c2: &[u8; 4], mouth: u8) -> [f32; 8] {
-    let opt = form == FloatForm::Optimised;
+fn bone_adj(m: &Studio, form: DllBuild, dadt: f32, c1: &[u8; 4], c2: &[u8; 4], mouth: u8) -> [f32; 8] {
+    let opt = form == DllBuild::Optimised;
     // A statement's result: kept (3.0) or stored to a float (2.1).
     let st = |x: f64| if opt { x } else { x as f32 as f64 };
     let (d, d1) = (dadt as f64, 1.0 - dadt as f64);
@@ -1455,8 +1437,8 @@ fn bone_adj(m: &Studio, form: FloatForm, dadt: f32, c1: &[u8; 4], c2: &[u8; 4], 
             }
         } else {
             let v = match form {
-                FloatForm::Optimised => mouth as f64 * (1.0 / 64.0),
-                FloatForm::Unoptimised => (mouth as f64 / 64.0) as f32 as f64,
+                DllBuild::Optimised => mouth as f64 * (1.0 / 64.0),
+                DllBuild::Debug => (mouth as f64 / 64.0) as f32 as f64,
             };
             lerp(if v > 1.0 { 1.0 } else { v }, &c)
         };
@@ -1534,20 +1516,20 @@ fn sample_pose(m: &Studio, pose: &mut Pose, seq: &SeqDesc, anim: Anim, f: f32, a
 /// (2.1), and the blend `(blend − start)·255 / (end − start)`, all on the x87. 3.0 compares the
 /// blend after a float store and takes a NaN `start` as below it (`test ah,1`).
 #[allow(clippy::neg_cmp_op_on_partial_ord)] // the x87 tests: a NaN goes the way TS's flags send it
-fn player_blend(form: FloatForm, seq: &SeqDesc, pitch: &mut f32) -> u8 {
+fn player_blend(form: DllBuild, seq: &SeqDesc, pitch: &mut f32) -> u8 {
     let blend = (*pitch as f64 * 3.0) as i32;
     let (start, end) = (seq.blendstart[0] as f64, seq.blendend[0] as f64);
     let b = match form {
-        FloatForm::Optimised => blend as f32 as f64,
-        FloatForm::Unoptimised => blend as f64,
+        DllBuild::Optimised => blend as f32 as f64,
+        DllBuild::Debug => blend as f64,
     };
     let third = |x: f64| match form {
-        FloatForm::Optimised => x * (1.0 / 3.0),
-        FloatForm::Unoptimised => x / 3.0,
+        DllBuild::Optimised => x * (1.0 / 3.0),
+        DllBuild::Debug => x / 3.0,
     };
     let below = match form {
-        FloatForm::Optimised => !(b >= start),
-        FloatForm::Unoptimised => b < start,
+        DllBuild::Optimised => !(b >= start),
+        DllBuild::Debug => b < start,
     };
     if below {
         *pitch = (*pitch as f64 - third(start)) as f32;
@@ -1559,8 +1541,8 @@ fn player_blend(form: FloatForm, seq: &SeqDesc, pitch: &mut f32) -> u8 {
         *pitch = 0.0;
         let d = end - start;
         let narrow = match form {
-            FloatForm::Optimised => !(d >= 0.1),
-            FloatForm::Unoptimised => d < 0.1,
+            DllBuild::Optimised => !(d >= 0.1),
+            DllBuild::Debug => d < 0.1,
         };
         // `__ftol` into the int TS stores; the caller keeps its low byte.
         if narrow { 127 } else { ((b - start) * 255.0 / d) as i32 as u8 }
@@ -1659,18 +1641,18 @@ mod tests {
     fn blend_and_controllers() {
         let seq = SeqDesc { blendstart: [-90.0, 0.0], blendend: [90.0, 0.0], ..Default::default() };
         let mut pitch = 0.0;
-        assert_eq!(player_blend(FloatForm::Optimised, &seq, &mut pitch), 127);
+        assert_eq!(player_blend(DllBuild::Optimised, &seq, &mut pitch), 127);
         let mut pitch = 40.0; // 120 > 90
-        assert_eq!(player_blend(FloatForm::Optimised, &seq, &mut pitch), 255);
+        assert_eq!(player_blend(DllBuild::Optimised, &seq, &mut pitch), 255);
         assert_eq!(pitch, 10.0);
         let mut pitch = -10.0;
-        assert_eq!(player_blend(FloatForm::Optimised, &seq, &mut pitch), 85);
+        assert_eq!(player_blend(DllBuild::Optimised, &seq, &mut pitch), 85);
         assert_eq!(pitch, 0.0);
         assert_eq!(torso_controller(0.0), 127);
         assert_eq!(torso_controller(120.0), 255);
         assert_eq!(torso_controller(-120.0), 0);
         // The gait yaw turns round past ±120 and wraps to ±180 in both builds.
-        for form in [FloatForm::Optimised, FloatForm::Unoptimised] {
+        for form in [DllBuild::Optimised, DllBuild::Debug] {
             assert_eq!(torso_turn(form, 370.0, 0.0, 2.0), (torso_controller(10.0), 0.0, 2.0));
             assert_eq!(torso_turn(form, 150.0, 0.0, 2.0), (torso_controller(-30.0), -180.0, -2.0));
             assert_eq!(torso_turn(form, -150.0, 0.0, 2.0), (torso_controller(30.0), 180.0, -2.0));
@@ -1730,7 +1712,7 @@ mod tests {
         assert_eq!(pose.pos[0], [0.0, 6.0, 12.0], "x zeroed by the motion type, z = 7 + lerp(0, 10)");
 
         // Controller 0 fully on (255): +30 degrees of yaw.
-        let adj = bone_adj(&m, FloatForm::Optimised, 1.0, &[255, 0, 0, 0], &[0; 4], 0);
+        let adj = bone_adj(&m, DllBuild::Optimised, 1.0, &[255, 0, 0, 0], &[0; 4], 0);
         assert!((adj[0] - 30f32.to_radians()).abs() < 1e-5);
         sample_pose(&m, &mut pose, &seq, anim, 0.0, &adj);
         let a = quaternion_angles(pose.q[0]);
@@ -1741,7 +1723,7 @@ mod tests {
     fn float_forms_are_the_builds() {
         use super::model::tests::run;
         use super::model::{BoneController, STUDIO_ZR};
-        use FloatForm::{Optimised as O, Unoptimised as U};
+        use DllBuild::{Debug as U, Optimised as O};
         let fb = f32::from_bits;
         // `StudioEstimateInterpolant`: the 0.01 test is a double sum (3.0 `0x10030c5c`, 2.1
         // `0x10064554`): `animtime` 1.01f is short of 1.0 + 0.01. ×10 / `/0.1` capped at 2.
@@ -1789,7 +1771,7 @@ mod tests {
 
     #[test]
     fn gait_forms_are_the_builds() {
-        use FloatForm::{Optimised as O, Unoptimised as U};
+        use DllBuild::{Debug as U, Optimised as O};
         let fb = f32::from_bits;
         // Velocity path: 3.0 `fsqrt(vy² + vx²) · dt` on the x87 (`0x100320bf..0x100320d7`); 2.1
         // stores `vx²` first (`0x100665ca`). Both × 0.75 below 180; the gait yaw from atan2.
@@ -1826,7 +1808,7 @@ mod tests {
         for x in [f32::MAX, f32::MIN, f32::INFINITY, f32::NAN, 1e12, -1e12, 0.0] {
             torso_controller(x);
             let seq = SeqDesc { blendstart: [x, 0.0], blendend: [-x, 0.0], ..Default::default() };
-            for form in [FloatForm::Optimised, FloatForm::Unoptimised] {
+            for form in [DllBuild::Optimised, DllBuild::Debug] {
                 player_blend(form, &seq, &mut x.clone());
                 torso_turn(form, x, -x, x);
                 gait_step(form, 0.5, Gait::Origin([x, -x]), x, x);
@@ -1851,8 +1833,8 @@ mod tests {
         }
         for b in &bufs {
             let m = Studio::new(b);
-            bone_adj(&m, FloatForm::Unoptimised, f32::NAN, &[255; 4], &[0; 4], 255);
-            let adj = bone_adj(&m, FloatForm::Optimised, f32::NAN, &[255; 4], &[0; 4], 255);
+            bone_adj(&m, DllBuild::Debug, f32::NAN, &[255; 4], &[0; 4], 255);
+            let adj = bone_adj(&m, DllBuild::Optimised, f32::NAN, &[255; 4], &[0; 4], 255);
             for numframes in [i32::MIN, -1, 0, 1, 2, i32::MAX] {
                 let seq = SeqDesc { numframes, motionbone: i32::MAX, motiontype: 7, ..Default::default() };
                 for f in [f32::NAN, f32::INFINITY, -f32::INFINITY, -5.0, 0.0, 1e9] {

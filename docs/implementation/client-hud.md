@@ -504,7 +504,7 @@ Drawing that TS leaves to the engine's VGUI1 surface:
   geometry (`XRES`/`YRES` with TS's float constants, which sit a hair above 1/640 and 1/480, so a
   few sizes come out one pixel short of the 640×480 numbers, as in TS; the few values TS spills to a
   `float` are rounded the same way; TS 2.1's unoptimised build divides instead and spills nothing,
-  `ClientRules::vgui_scale`, issue #266), colours, scheme fonts, `gfx/vgui/*.tga` images, texts,
+  `ClientRules::dll_build`, issue #266), colours, scheme fonts, `gfx/vgui/*.tga` images, texts,
   sorting, hover/arm and click behaviour, keys (`KeyInput` `0x10064b90`) and the viewport's menu
   queue. Images follow VGUI1's TGA alpha rules (Valve's `vgui.so`, `BitmapTGA::loadTGA` at
   `0x23880`, as freevgui documents them): uncompressed 32-bit images keep their alpha with

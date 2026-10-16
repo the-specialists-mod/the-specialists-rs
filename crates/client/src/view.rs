@@ -6,7 +6,7 @@
 //! [`on_tsfade`]).
 
 use crate::effects::psys::Camera;
-use crate::studio::FloatForm;
+use crate::gameplay::DllBuild;
 use crate::{effects, state};
 use goldsrc::Global;
 use goldsrc::client::{Cvar, engine};
@@ -1005,8 +1005,8 @@ fn smooth_model_z(cur: f32, z: f32, ft: f32) -> f32 {
 /// current kick unrounded on the x87; a NaN length counts as settled (`0x10057f02`). 2.1 stores
 /// the differences, the squared length and both steps to floats, and a NaN length counts as
 /// moving (`test ah,5; jp` at `0x10097e2e`).
-fn apply_kick(form: FloatForm, target: &mut [f32; 2], cur: &mut [f32; 2], ft: f32) -> Vec3 {
-    if form == FloatForm::Unoptimised {
+fn apply_kick(form: DllBuild, target: &mut [f32; 2], cur: &mut [f32; 2], ft: f32) -> Vec3 {
+    if form == DllBuild::Debug {
         return apply_kick_stored(target, cur, ft);
     }
     let d0 = (target[0] - cur[0]) as f64;
@@ -1176,7 +1176,7 @@ fn calc_normal(p: &mut ref_params_t) {
     // `V_GetRefParams`), so all three are kept and add up from frame to frame. The bob pitch is
     // added whole every frame, so the view pitch integrates it: frame-rate dependent, and the aim
     // drifts by whatever the sum is when the bob stops or its phase resets, as in TS.
-    let form = crate::studio::float_form();
+    let form = crate::gameplay::current().dll_build();
     with(|w| {
         let kick = apply_kick(form, &mut w.kick_target, &mut w.kick_cur, ft);
         p.cl_viewangles = v::add(p.cl_viewangles, kick);
@@ -1718,7 +1718,7 @@ mod tests {
     /// `V_ApplyKick`: eases toward the target at min(ft·15, 1); within 0.1° everything is zeroed.
     #[test]
     fn kick_eases_then_settles() {
-        for form in [FloatForm::Optimised, FloatForm::Unoptimised] {
+        for form in [DllBuild::Optimised, DllBuild::Debug] {
             let (mut target, mut cur) = ([-4.0f32, 2.0], [0.0f32; 2]);
             let k = 0.01f32 * 15.0;
             let step = apply_kick(form, &mut target, &mut cur, 0.01);
@@ -1754,13 +1754,13 @@ mod tests {
             apply_kick(form, &mut target, &mut cur, fb(0x3c50_b5b4));
             cur[0].to_bits()
         };
-        assert_eq!([run(FloatForm::Optimised), run(FloatForm::Unoptimised)], [0xc0c4_cd87, 0xc0c4_cd88]);
+        assert_eq!([run(DllBuild::Optimised), run(DllBuild::Debug)], [0xc0c4_cd87, 0xc0c4_cd88]);
         let nan = |form| {
             let (mut target, mut cur) = ([f32::NAN, 0.0], [0.0f32; 2]);
             apply_kick(form, &mut target, &mut cur, 0.01);
             target[0].is_nan()
         };
-        assert_eq!([nan(FloatForm::Optimised), nan(FloatForm::Unoptimised)], [false, true]);
+        assert_eq!([nan(DllBuild::Optimised), nan(DllBuild::Debug)], [false, true]);
     }
 
     /// TS adds a tenth of the bob pitch to `cl_viewangles` every frame, and the engine keeps it,

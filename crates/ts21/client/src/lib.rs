@@ -694,23 +694,7 @@ impl ClientRules for Ts21Client {
         ParticleModel::Decelerate
     }
 
-    // Audit round 3: gui
-
-    /// The unoptimised build's `XRES`/`YRES`: `ScreenWidth / 640.0f`, `ScreenHeight / 480.0f`
-    /// (`fdiv DWORD 0x1026f548` / `0x1026f544`), no spills: the team menu (0x100b2ca0,
-    /// 0x100b3eb0), the message window (0x100a0ad0), the scoreboard (0x100a2d60) and the
-    /// spectator bar (0x100b04d0). Issue #266.
-    fn vgui_scale(&self) -> ts_client::hud::vgui::VguiScale {
-        ts_client::hud::vgui::VguiScale::Division
-    }
-
     // Audit round 4: render
-
-    /// The unoptimised build: `/0.1` (`0x10064575`), `/0.2` (`0x1006527b`), `/255.0`
-    /// (`0x10064e46`), `/3.0` (`0x10063d3f`), statement results stored to floats (issues #276, #283).
-    fn float_form(&self) -> ts_client::studio::FloatForm {
-        ts_client::studio::FloatForm::Unoptimised
-    }
 
     /// None: 2.1's `client.dll` imports nothing from `opengl32.dll` and has no `gl_fog` cvars
     /// or `ts_fog` (issue #281).
@@ -718,20 +702,16 @@ impl ClientRules for Ts21Client {
         false
     }
 
-    // Audit round 4: gui
+    // Audit round 4: unify
 
-    /// The unoptimised build stores each of the overview's intermediates to a float: the z scale
-    /// `(90 − pitch) / 90` (0x1004c475, 0x1004cbc2), the name tags' projections and `Length`
-    /// (0x1004d40d, 0x10097fc0), the camera icon's radians (`AngleMatrix` 0x10061ee0). Issues
-    /// #271, #272.
-    fn hltv_overview_floats(&self) -> ts_client::spectator::OverviewFloats {
-        ts_client::spectator::OverviewFloats::Stored
-    }
-
-    // Audit round 4: hud
-
-    /// TS 2.1's `client.dll` is an unoptimised build: every `float` assignment is stored (the
-    /// HUD message's `0x10054d90`/`0x10055800`, `DrawTSMessages` `0x10086ec0`, ...).
+    /// TS 2.1's `client.dll` is an unoptimised build: the source's divisions, and every `float`
+    /// assignment stored. The HUD message (`0x10054d90`/`0x10055800`), `DrawTSMessages`
+    /// (`0x10086ec0`); the VGUI `XRES`/`YRES` `ScreenWidth / 640.0f`, `ScreenHeight / 480.0f`
+    /// (`fdiv DWORD 0x1026f548` / `0x1026f544`), no spills (team menu 0x100b2ca0, message window
+    /// 0x100a0ad0, scoreboard 0x100a2d60, spectator bar 0x100b04d0; #266); the renderer's `/0.1`
+    /// (`0x10064575`), `/0.2` (`0x1006527b`), `/255.0` (`0x10064e46`), `/3.0` (`0x10063d3f`)
+    /// (#276, #283); the HLTV overview's `(90 − pitch) / 90` (0x1004c475, 0x1004cbc2), name-tag
+    /// projections and `Length` (0x1004d40d, 0x10097fc0), `AngleMatrix` (0x10061ee0) (#271, #272).
     fn dll_build(&self) -> ts_client::gameplay::DllBuild {
         ts_client::gameplay::DllBuild::Debug
     }

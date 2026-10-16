@@ -472,38 +472,21 @@ impl ClientRules for Ts30Client {
         ParticleModel::Drag
     }
 
-    // Audit round 3: gui
-
-    /// The optimised build's `XRES`/`YRES`: `* 0.0015625f` / `* (1/480)f` (`0x1007d43c`,
-    /// `0x1007d438`) with its float spills.
-    fn vgui_scale(&self) -> ts_client::hud::vgui::VguiScale {
-        ts_client::hud::vgui::VguiScale::Reciprocal
-    }
-
     // Audit round 4: render
-
-    /// The optimised build: `×10` (`0x10030c76`), `×5` (`0x10031476`), `×(1/255)`
-    /// (`0x10079e68`), `×(1/3)` (`0x1007d670`), values kept on the x87 (issues #276, #283).
-    fn float_form(&self) -> ts_client::studio::FloatForm {
-        ts_client::studio::FloatForm::Optimised
-    }
 
     /// `V_SetFog` (`0x10056c20`) and the transparent pass's `glDisable(GL_FOG)` (`0x10056e5e`).
     fn gl_fog(&self) -> bool {
         true
     }
 
-    // Audit round 4: gui
+    // Audit round 4: unify
 
-    /// The optimised build keeps the overview's intermediates on the x87 stack
-    /// (`DrawOverviewLayer` 0x10023c90, `DrawOverviewEntities` 0x10024160). Issues #271, #272.
-    fn hltv_overview_floats(&self) -> ts_client::spectator::OverviewFloats {
-        ts_client::spectator::OverviewFloats::Stack
-    }
-
-    // Audit round 4: hud
-
-    /// TS 3.0's `client.dll` is an optimised build.
+    /// TS 3.0's `client.dll` is an optimised build: a constant divisor is a multiply by its
+    /// reciprocal and values stay on the x87 stack. The VGUI `XRES`/`YRES` `* 0.0015625f` /
+    /// `* (1/480)f` (`0x1007d43c`, `0x1007d438`) with their float spills (#266); the renderer's
+    /// `×10` (`0x10030c76`), `×5` (`0x10031476`), `×(1/255)` (`0x10079e68`), `×(1/3)`
+    /// (`0x1007d670`) (#276, #283); the HLTV overview's `DrawOverviewLayer` (0x10023c90) and
+    /// `DrawOverviewEntities` (0x10024160) (#271, #272).
     fn dll_build(&self) -> ts_client::gameplay::DllBuild {
         ts_client::gameplay::DllBuild::Optimised
     }

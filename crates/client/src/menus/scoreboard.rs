@@ -1040,10 +1040,10 @@ mod tests {
     /// `wide - XRES(4) - end` is exact and the last column a pixel wider than 3.0's.
     #[test]
     fn layout_by_division() {
-        let l = crate::hud::vgui::with_scale(crate::hud::vgui::VguiScale::Division, || layout(640, 480));
+        let l = crate::hud::vgui::with_scale(crate::gameplay::DllBuild::Debug, || layout(640, 480));
         assert_eq!(l.widths, [24, 140, 56, 40, 46, 46, 40, 36]);
         assert_eq!((l.header.x, l.header.w, l.items.w), (4 + 105, 424, 409));
-        let l = crate::hud::vgui::with_scale(crate::hud::vgui::VguiScale::Division, || layout(1024, 768));
+        let l = crate::hud::vgui::with_scale(crate::gameplay::DllBuild::Debug, || layout(1024, 768));
         assert_eq!((l.panel.x, l.panel.y), (166, 64));
     }
 
