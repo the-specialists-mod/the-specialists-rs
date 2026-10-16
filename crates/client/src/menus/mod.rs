@@ -256,6 +256,7 @@ fn with_board_inputs(f: impl FnOnce(&mut ScoreBoard, &scoreboard::Inputs, &vgui:
         server_name: &server,
         team_names: &names,
         lookup: &hud::text::lookup,
+        rules: crate::gameplay::hud_rules(hud::gameplay_id()),
         time: hud::now(),
         spectate_only: goldsrc::ext::spectator::is_spectate_only(),
         squelch: crate::voice::in_squelch_mode(),

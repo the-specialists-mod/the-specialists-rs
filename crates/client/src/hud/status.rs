@@ -358,19 +358,12 @@ fn slowmo_icon_rgb(hud: [i32; 3]) -> [i32; 3] {
 /// again (`Hud::pw_label`, which nothing else clears, as nothing clears the buffer).
 fn draw_powerup(dc: &Dc, h: &mut Hud) {
     let f = h.pw_flags;
-    let label = if f & 1 != 0 {
-        Some("#Pwr_SlowMotion")
-    } else if f & 2 != 0 {
-        Some("#Pwr_InfiniteAmmo")
-    } else if f & 8 != 0 {
-        Some("#Pwr_SlowPause")
-    } else if f & 0x10 != 0 {
-        Some("#Pwr_DoubleFireRate")
-    } else {
-        None
-    };
-    if let Some(label) = label {
-        h.pw_label = localise(label);
+    let label = [(1, "#Pwr_SlowMotion"), (2, "#Pwr_InfiniteAmmo"), (8, "#Pwr_SlowPause"), (0x10, "#Pwr_DoubleFireRate")]
+        .into_iter()
+        .find(|&(bit, _)| f & bit != 0);
+    if let Some((bit, key)) = label {
+        // A ruleset may write the name out instead (`ClientRules::powerup_label`).
+        h.pw_label = crate::gameplay::hud_rules(h.gameplay).powerup_label(bit).map_or_else(|| localise(key), str::to_owned);
     }
     let x = dc.string(8, 8, &h.pw_label, GREEN);
     // `0x1004a38b..0x1004a3d3`: the seconds left while timed (0 included), else the stored

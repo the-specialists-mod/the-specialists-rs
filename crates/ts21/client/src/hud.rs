@@ -1,4 +1,5 @@
-//! TS 2.1's HUD differences from 3.0's that the core asks for: the weapon slot selection.
+//! TS 2.1's HUD differences from 3.0's that the core asks for: the weapon slot selection, the
+//! power-up names and the award titles.
 //! Addresses are TS 2.1 `client.dll` VAs.
 
 use ts_client::hud::state::Hud;
@@ -69,4 +70,24 @@ pub fn select_slot(h: &mut Hud, n: i32, fastswitch: bool) -> Option<String> {
     h.menu_open = false;
     let id = h.slot_id(row, n);
     (id > -1).then(|| format!("weapon_{id}"))
+}
+
+/// `DrawPowerup` (0x10085c00): the name for `PwUp` flag bit `flag`.
+pub fn powerup_label(flag: u32) -> Option<&'static str> {
+    match flag {
+        1 => Some("Slow-Motion"),
+        2 => Some("Infinite-Ammo"),
+        8 => Some("Slow-Pause"),
+        0x10 => Some("Double-FireRate"),
+        _ => None,
+    }
+}
+
+/// The scoreboard's status title for the awards 2.1 names differently (0x100a4670).
+pub fn award_title(award: u8) -> Option<&'static str> {
+    match award {
+        2 => Some("KILLER"),
+        3 => Some("DEMOLITION"),
+        _ => None,
+    }
 }

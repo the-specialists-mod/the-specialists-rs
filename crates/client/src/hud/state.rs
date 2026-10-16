@@ -462,8 +462,10 @@ impl Hud {
         shared::weapons::tables().weapon(id.max(0) as u8).map_or(0, |w| w.ammo as usize).min(15)
     }
 
-    /// `AddTSMessage` (1004b520).
+    /// `AddTSMessage` (1004b520), with the ruleset's text and placement
+    /// ([`ClientRules::ts_message_layout`]).
     pub fn add_ts_message(&mut self, ctx: &Ctx, text: &str, rgb: [i32; 3], tenths: i32, flags: u8) {
+        let layout = crate::gameplay::hud_rules(self.gameplay).ts_message_layout();
         let now = ctx.now;
         // `0x1004b52d..0x1004b559`: the first of slots 0..14 that has expired, else slot 15 if it
         // isn't still showing.
@@ -471,23 +473,27 @@ impl Hud {
         if self.messages.get(i).is_none_or(|m| m.expire > now) {
             return;
         }
-        let mut line = TsLine { text: localise_with(ctx.titles, text).chars().take(127).collect(), flags, ..Default::default() };
-        line.rgb = if !ctx.local_name.is_empty() && line.text.contains(&ctx.local_name) { [155; 3] } else { rgb };
+        let text = if layout.lookup_and_highlight { localise_with(ctx.titles, text) } else { text.to_owned() };
+        let mut line = TsLine { text: text.chars().take(layout.max_chars).collect(), flags, ..Default::default() };
+        let highlight = layout.lookup_and_highlight && !ctx.local_name.is_empty() && line.text.contains(&ctx.local_name);
+        line.rgb = if highlight { [155; 3] } else { rgb };
         let (w, h) = (ctx.screen.width, ctx.screen.height);
         line.y = if flags & 1 != 0 {
             32
         } else if flags & 8 != 0 {
-            h - 64
+            h - layout.bottom_margin
         } else {
             h / 2
         };
-        let len = super::text::string_len(ctx.screen, &line.text);
         line.x = if flags & 2 != 0 {
             32
-        } else if flags & 4 != 0 {
-            w - len - 32
+        } else if let Some(cw) = layout.char_width {
+            // `strlen` is a `size_t`: the products wrap as C's do.
+            let n = line.text.chars().count() as i32;
+            if flags & 4 != 0 { w.wrapping_sub(n.wrapping_mul(cw)).wrapping_sub(32) } else { w / 2 + (n >> 1).wrapping_mul(-cw) }
         } else {
-            w / 2 - len / 2
+            let len = super::text::string_len(ctx.screen, &line.text);
+            if flags & 4 != 0 { w - len - 32 } else { w / 2 - len / 2 }
         };
         // Stack below/above messages already at the same spot, or replace one (flag 0x10).
         let mut moved = 0;
@@ -508,7 +514,7 @@ impl Hud {
             }
             j += 1;
         }
-        line.expire = tenths as f32 * 0.1 + now;
+        line.expire = if layout.expiry_double { (tenths as f32 as f64 / 10.0 + now as f64) as f32 } else { tenths as f32 * 0.1 + now };
         self.messages[i] = line;
     }
 
@@ -598,13 +604,13 @@ impl Hud {
                 if target == 0.0 {
                     target = 1.0;
                 }
-                let current = crate::state::with(|s| {
-                    let c = s.time_scale;
+                let (current, prev) = crate::state::with(|s| {
+                    let c = (s.time_scale, s.slowmo_factor100);
                     s.time_scale_target = target;
                     s.slowmo_factor100 = v.factor100;
                     c
                 });
-                if current == 1.0 && target != 1.0 {
+                if crate::gameplay::hud_rules(self.gameplay).go_slow_sound(current, target, prev, v.factor100) {
                     fx.push(Effect::GoSlow);
                 }
             }
@@ -858,19 +864,13 @@ impl Hud {
                     self.players[cl].active_items = 0;
                 }
                 // The local player (`10065294..100652f8`), on every message, not only on a change:
-                // observer (`0x100d4401`) is `observer == 1`. Entering leaves third person and
-                // opens the buy menu; otherwise `cl_thirdperson` 1 or 0 picks the camera (other
-                // values keep it), so the death cam doesn't outlive the respawn.
+                // observer (`0x100d4401`) is `observer == 1`. Whether the camera toggles is the
+                // ruleset's (`ClientRules::spectator_toggles_third_person`); entering opens the
+                // buy menu.
                 if cl as i32 == ctx.local_index {
                     self.observer = v.observer == 1;
-                    let toggle = if self.observer {
-                        ctx.third_person
-                    } else if ctx.cl_thirdperson == 1.0 {
-                        !ctx.third_person
-                    } else {
-                        ctx.cl_thirdperson == 0.0 && ctx.third_person
-                    };
-                    if toggle {
+                    let rules = crate::gameplay::hud_rules(self.gameplay);
+                    if rules.spectator_toggles_third_person(self.observer, ctx.third_person, ctx.cl_thirdperson) {
                         fx.push(Effect::ToggleThirdPerson);
                     }
                     if self.observer {
@@ -1477,21 +1477,20 @@ mod tests {
         assert!(!h.observer, "only 1 is an observer");
     }
 
+    /// The core asks the ruleset whether to toggle (`ClientRules::spectator_toggles_third_person`,
+    /// the stub: whenever in third person); the rulesets' answers are tested in their crates.
     #[test]
-    fn spectator_applies_cl_thirdperson() {
+    fn spectator_asks_the_ruleset_to_toggle() {
         ts30_gameplay::tables::make_default();
         let s = Screen::default();
         let mut h = Hud::default();
-        let mut toggles = |third: bool, cl_thirdperson: f32| {
-            let c = Ctx { third_person: third, cl_thirdperson, ..ctx(&s) };
+        let mut toggles = |third: bool| {
+            let c = Ctx { third_person: third, cl_thirdperson: 1.0, ..ctx(&s) };
             let mut fx = Vec::new();
             h.apply(Msg::Spectator, &Spectator { client: 1, observer: 0 }.encode(), &c, &mut fx);
             fx.contains(&Effect::ToggleThirdPerson)
         };
-        assert!(toggles(true, 0.0), "the death cam doesn't survive the respawn");
-        assert!(toggles(false, 1.0));
-        assert!(!toggles(true, 1.0) && !toggles(false, 0.0));
-        assert!(!toggles(true, 2.0) && !toggles(false, 2.0), "other values keep the camera");
+        assert!(toggles(true) && !toggles(false));
     }
 
     #[test]

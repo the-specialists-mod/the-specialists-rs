@@ -8,7 +8,9 @@ use goldsrc::sys::ref_params_t;
 use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SlotMenu, StuntCooldown, ThinkParts};
+use ts_client::gameplay::{
+    ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SlotMenu, StuntCooldown, ThinkParts, TsMessageLayout,
+};
 use ts_client::hud::draw::{HudOp, StatusLook, WeaponPanel};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -17,6 +19,7 @@ use ts30_gameplay::TS30;
 
 pub mod events;
 pub mod fx;
+pub mod hud;
 pub mod spectator;
 pub mod view;
 
@@ -367,6 +370,32 @@ impl ClientRules for Ts30Client {
     /// None: the core's `SelectSlot` is TS 3.0's (1004f220).
     fn select_slot(&self, _h: &mut ts_client::hud::state::Hud, _n: i32, _fastswitch: bool) -> Option<Option<String>> {
         None
+    }
+
+    /// `Spectator` (`0x10065250`, [`hud::spectator_toggles_third_person`]).
+    fn spectator_toggles_third_person(&self, observer: bool, third_person: bool, cl_thirdperson: f32) -> bool {
+        hud::spectator_toggles_third_person(observer, third_person, cl_thirdperson)
+    }
+
+    /// `AddTSMessage` (1004b520): `LookupString`, the local name grey, 127 characters, bottom
+    /// messages at `h − 64`, placed by the drawn width, expiring at `t × 0.1f + time`.
+    fn ts_message_layout(&self) -> TsMessageLayout {
+        TsMessageLayout { lookup_and_highlight: true, max_chars: 127, bottom_margin: 64, char_width: None, expiry_double: false }
+    }
+
+    /// None: `DrawPowerup` (1004a2e0) localises `#Pwr_SlowMotion`, ...
+    fn powerup_label(&self, _flag: u32) -> Option<&'static str> {
+        None
+    }
+
+    /// None: the core's titles are TS 3.0's (`0x1005e213`).
+    fn award_title(&self, _award: u8) -> Option<&'static str> {
+        None
+    }
+
+    /// `TSSlowMo` (`0x1004bef0`): when the eased scale is still 1 and the new target isn't.
+    fn go_slow_sound(&self, time_scale: f32, target: f32, _prev_factor100: f32, _factor100: f32) -> bool {
+        time_scale == 1.0 && target != 1.0
     }
 }
 

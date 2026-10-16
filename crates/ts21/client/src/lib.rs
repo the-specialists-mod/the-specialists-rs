@@ -12,7 +12,7 @@ use ts_client::effects::fx::FxStyle;
 use ts_client::effects::psys::PSys;
 use ts_client::events::{BulletDraw, BulletStep, ClientBullet};
 use ts_client::gameplay::MeleeReach;
-use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SlotMenu, StuntCooldown, ThinkParts};
+use ts_client::gameplay::{ClientPlugin, ClientRules, CrosshairParts, KungfuRegen, SlotMenu, StuntCooldown, ThinkParts, TsMessageLayout};
 use ts_client::hud::draw::{HudOp, HudSprite, StatusLook, WeaponPanel, ftol, num};
 use ts_client::menus::buy::MenuRules;
 use ts_client::spectator::HltvHost;
@@ -578,6 +578,39 @@ impl ClientRules for Ts21Client {
     /// 2.1's `SelectSlot` (0x1008c6f0, [`hud::select_slot`]).
     fn select_slot(&self, h: &mut ts_client::hud::state::Hud, n: i32, fastswitch: bool) -> Option<Option<String>> {
         Some(hud::select_slot(h, n, fastswitch))
+    }
+
+    /// `Spectator` (0x100b28c0): 2.1 has no `cl_thirdperson`; whether entering or leaving
+    /// observer mode, `if (CL_IsThirdPerson()) ThirdPersonToggle()` (0x1008f090), so a respawn is
+    /// always in first person.
+    fn spectator_toggles_third_person(&self, _observer: bool, third_person: bool, _cl_thirdperson: f32) -> bool {
+        third_person
+    }
+
+    /// `AddTSMessage` (0x100873d0, from `TSMessage` 0x100882e0): the text copied into a 64-byte
+    /// buffer (`[63] = 0`), no `LookupString` or local-name grey, bottom messages at `h − 0x20`,
+    /// x by 6 pixels a character (centred `w/2 + (strlen >> 1) × −6`, right `w − strlen × 6 −
+    /// 32`), expiring at `(float)t / 10.0 + time`.
+    fn ts_message_layout(&self) -> TsMessageLayout {
+        TsMessageLayout { lookup_and_highlight: false, max_chars: 63, bottom_margin: 0x20, char_width: Some(6), expiry_double: true }
+    }
+
+    /// `DrawPowerup` (0x10085c00): the names hard-coded (0x10271690, 0x10271680, 0x10271670,
+    /// 0x1027165c).
+    fn powerup_label(&self, flag: u32) -> Option<&'static str> {
+        hud::powerup_label(flag)
+    }
+
+    /// The scoreboard's status column (0x100a4670): award 2 "KILLER", 3 "DEMOLITION"
+    /// (0x1027549c, 0x1027548c); the others are 3.0's.
+    fn award_title(&self, award: u8) -> Option<&'static str> {
+        hud::award_title(award)
+    }
+
+    /// `TSSlowMo` (0x100881e0): `prev = s; s = coord / 100; if (prev == 0 && s != 0)` play: the
+    /// test is on the raw factor as sent, not the eased scale.
+    fn go_slow_sound(&self, _time_scale: f32, _target: f32, prev_factor100: f32, factor100: f32) -> bool {
+        prev_factor100 / 100.0 == 0.0 && factor100 / 100.0 != 0.0
     }
 }
 

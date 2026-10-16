@@ -737,9 +737,7 @@ fn client_spectator_in_eye_pitch() {
 fn weapon_slot_menu() {
     use ts_client::gameplay::SlotMenu;
     use ts_client::hud::state::{Hud, Slot};
-    // `Hud::default` asks the HUD's rules: the client library's registry, 3.0 first.
-    ts_client::gameplay::register(ts30_gameplay::ID, &ts30_client::PLUGIN);
-    ts_client::gameplay::register(ts21_gameplay::ID, &PLUGIN);
+    register();
     // #207: 2.1's list draws only while open, without clip text or bars (0x10089d90,
     // 0x1008af40); its SelectNextPrev reloads every press and sends ids > -1 (0x1008cc40).
     let s21 = SlotMenu { closed_list: false, clip_info: false, next_prev_reloads: true, next_prev_sends_kungfu: true };
@@ -792,4 +790,114 @@ fn weapon_slot_menu() {
         assert_eq!(sel(&mut h, 5, true), None);
     }
     assert_eq!(sel(&mut h, 7, false), None, "slots 6..9 do nothing");
+}
+
+/// `Hud::default` and the HUD handlers ask the HUD's rules: the client library's registry, 3.0
+/// first, as `client-dll` registers them.
+fn register() {
+    ts_client::gameplay::register(ts30_gameplay::ID, &ts30_client::PLUGIN);
+    ts_client::gameplay::register(ts21_gameplay::ID, &PLUGIN);
+}
+
+struct Titles;
+impl ts_client::hud::text::Titles for Titles {
+    fn get(&self, key: &str) -> Option<String> {
+        (key == "HUD_Credits").then(|| "Credits".to_owned())
+    }
+}
+
+/// A HUD on `ruleset` with the 640 × 480 test screen (8 pixels a character) and the local player
+/// "me".
+fn hud_on(ruleset: &str) -> ts_client::hud::state::Hud {
+    register();
+    ts_client::hud::state::Hud { gameplay: ruleset.parse().ok(), ..Default::default() }
+}
+
+#[test]
+fn spectator_third_person() {
+    // #230 §1: 2.1's `Spectator` (0x100b28c0) leaves third person entering or leaving observer
+    // mode; it has no cl_thirdperson. 3.0 (0x10065250) goes back to third person on a respawn
+    // with cl_thirdperson 1.
+    for observer in [false, true] {
+        for cl in [0.0, 1.0, 2.0] {
+            assert!(v21().spectator_toggles_third_person(observer, true, cl));
+            assert!(!v21().spectator_toggles_third_person(observer, false, cl));
+        }
+    }
+    assert!(v30().spectator_toggles_third_person(false, false, 1.0), "3.0: back to third person");
+    assert!(!v30().spectator_toggles_third_person(false, true, 1.0));
+    assert!(v30().spectator_toggles_third_person(false, true, 0.0));
+    assert!(!v30().spectator_toggles_third_person(false, true, 2.0), "3.0: other values keep it");
+    assert!(v30().spectator_toggles_third_person(true, true, 1.0));
+}
+
+#[test]
+fn ts_message_layout() {
+    use shared::protocol::Msg;
+    use shared::protocol::hud::TsMessage;
+    // #230 §2: 2.1's AddTSMessage (0x100873d0): no LookupString or grey, 63 characters, bottom
+    // at h - 0x20, 6 pixels a character, (float)t / 10.0 + time.
+    let screen = goldsrc::ext::hud::Screen::default();
+    let ctx = ts_client::hud::state::Ctx {
+        now: 10.0,
+        screen: &screen,
+        titles: &Titles,
+        local_index: 1,
+        local_name: "me".into(),
+        third_person: false,
+        thirdperson_switch: false,
+        cl_thirdperson: 0.0,
+        saytext_time: 5.0,
+        deathnotice_time: 5.0,
+        key_binding: &ts_client::hud::state::no_key_binding,
+    };
+    let send = |h: &mut ts_client::hud::state::Hud, flags: u8, time: u8, text: &str| {
+        let m = TsMessage { r: 1, g: 2, b: 3, flags, time, text: text.into() };
+        assert!(h.apply(Msg::TsMessage, &m.encode(), &ctx, &mut Vec::new()));
+        h.messages.iter().find(|l| l.expire > ctx.now && l.flags == flags).cloned().unwrap()
+    };
+    let mut h = hud_on(ts21_gameplay::ID);
+    let l = send(&mut h, 8, 30, "#HUD_Credits for me");
+    assert_eq!(l.text, "#HUD_Credits for me", "no LookupString");
+    assert_eq!(l.rgb, [1, 2, 3], "no grey for the local name");
+    assert_eq!(l.y, 480 - 0x20);
+    assert_eq!(l.x, 320 + (19 >> 1) * -6);
+    assert_eq!(l.expire, (30f32 as f64 / 10.0 + 10.0) as f32);
+    let l = send(&mut h, 4, 30, "abcde");
+    assert_eq!(l.x, 640 - 5 * 6 - 32);
+    let long = "x".repeat(100);
+    assert_eq!(send(&mut h, 1, 30, &long).text.len(), 63);
+
+    let mut h = hud_on(ts30_gameplay::ID);
+    let l = send(&mut h, 8, 30, "#HUD_Credits for me");
+    assert_eq!((l.text.as_str(), l.rgb, l.y), ("Credits for me", [155; 3], 480 - 64));
+    assert_eq!(l.x, 320 - 14 * 8 / 2, "3.0: the drawn width");
+    assert_eq!(send(&mut h, 1, 30, &long).text.len(), 100);
+}
+
+#[test]
+fn powerup_labels_and_award_titles() {
+    // #230 §3: DrawPowerup (0x10085c00) writes the names out.
+    let names = [(1, "Slow-Motion"), (2, "Infinite-Ammo"), (8, "Slow-Pause"), (0x10, "Double-FireRate")];
+    for (bit, name) in names {
+        assert_eq!(v21().powerup_label(bit), Some(name));
+        assert_eq!(v30().powerup_label(bit), None, "3.0: titles.txt");
+    }
+    // #230 §4: the scoreboard's status column (0x100a4670).
+    assert_eq!(v21().award_title(2), Some("KILLER"));
+    assert_eq!(v21().award_title(3), Some("DEMOLITION"));
+    for a in [0, 1, 4, 5, 10, 11] {
+        assert_eq!(v21().award_title(a), None, "award {a} is 3.0's");
+    }
+}
+
+#[test]
+fn go_slow_sound() {
+    // #230 comment: 2.1's TSSlowMo (0x100881e0) tests the previous raw factor; 3.0 (0x1004bef0)
+    // the eased scale. A new slow motion while easing back to 1 after a `TSSlowMo 0`:
+    assert!(v21().go_slow_sound(0.6, 0.5, 0.0, 50.0));
+    assert!(!v30().go_slow_sound(0.6, 0.5, 0.0, 50.0));
+    assert!(!v21().go_slow_sound(1.0, 0.25, 50.0, 25.0), "2.1: already slowed");
+    assert!(v30().go_slow_sound(1.0, 0.25, 50.0, 25.0));
+    assert!(!v21().go_slow_sound(1.0, 1.0, 0.0, 0.0));
 }

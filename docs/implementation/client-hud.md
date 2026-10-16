@@ -44,7 +44,7 @@ Port of the TS 3.0 `client.dll` input layer, HUD elements and menus. Source of t
 | `InterpolateSlowMotion` 10055ae0 | `hud::approach_timescale` (from `HUD_Frame`, `hud::frame`; TS's only time-scale easer) |
 | `CHud::Think` 10049760 (from `CHud::UpdateClientData` 10024b00), `UTIL_ApproachFOV` 10049620, `HUD_GetFOV` 100209f0, `SetFOV` 10049570 | `hud::think_fov` (from `view::update_client_data`), `view::ease_fov`, `hud::get_fov` (demo record type 0), `hud::set_fov` (ignored while `cl_lw` is on; sets the target and `m_iFOV`, and the sensitivity `fov·0.0125·sensitivity·zoom_sensitivity_ratio`) |
 | `CHudTSStatus` handlers 1004b730..1004c1e0 | `Hud::apply` (status arms) |
-| `AddTSMessage` 1004b520 | `Hud::add_ts_message` |
+| `AddTSMessage` 1004b520 | `Hud::add_ts_message` (text and placement per ruleset, `ClientRules::ts_message_layout`) |
 | `CHudTSStatus::Draw` 10049ea0 and `DrawRoundTimer` 1004a130, `DrawPowerup` 1004a2e0, `DrawStatusPanel` 1004a3e0, `DrawTeammateMarkers` 1004ab40, `DrawCrosshairID` 1004acc0, `DrawTSMessages` 1004af40, the flag panel 1004b0e0, `DrawObjectiveMarkers` 10049fc0 | `hud::status::*` |
 | `CHudTSWeapons` handlers 1004f6f0..1004fb50 | `Hud::apply` (weapon arms) |
 | `CHudTSWeapons::Reset` 1004cd60, `Think` 1004ce10 | `Hud::reset_weapons`; `hud::think`, `weapons::think_sounds`, `hud::weapon_menu_buttons` |

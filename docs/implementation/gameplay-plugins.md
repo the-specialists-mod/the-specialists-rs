@@ -405,6 +405,10 @@ The hooks so far:
 | `ClientRules` | `status_look()` | `StatusLook::default()`: 3.0's stance health fill, kevlar icon alone, team-coloured team bar, titles labels, icons × 2/3 | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slot_menu()` | `SlotMenu` all 3.0: the closed list with `cl_showequipment` and in demos, the clip line and bars, `SelectNextPrev` reloading only when it opens the menu and sending ids above 0 (#207) | `hud/weapons.rs` `draw`, `draw_weapon_list`, `select_next_prev` |
 | `ClientRules` | `select_slot(hud, n, fastswitch)` | none: the core's `SelectSlot` (1004f220); a ruleset's returns the server command (#207) | `hud/weapons.rs` `select_slot`, after the wire panel |
+| `ClientRules` | `spectator_toggles_third_person(observer, third_person, cl_thirdperson)` | `ts30_client::hud`: entering leaves third person; leaving, `cl_thirdperson` 1/0 picks the camera (#230) | `hud/state.rs` `Spectator` (local player) |
+| `ClientRules` | `ts_message_layout()` | `TsMessageLayout`: `LookupString` and the local-name grey, 127 characters, bottom at `h − 64`, the drawn width, `t × 0.1f + time` (#230) | `hud/state.rs` `add_ts_message` |
+| `ClientRules` | `powerup_label(flag)` / `award_title(award)` | none: `#Pwr_*` from `titles.txt` / 3.0's status titles (#230) | `hud/status.rs` `draw_powerup` / `menus/scoreboard.rs` `status` |
+| `ClientRules` | `go_slow_sound(time_scale, target, prev_factor100, factor100)` | `time_scale == 1 && target != 1` (#230) | `hud/state.rs` `TSSlowMo` |
 | `ClientRules` | `slowmo_icon()` | false | `hud/status.rs` `draw_status_panel` |
 | `ClientRules` | `slowmo_tint()` | true (the `cl_slowfade` tint while slowed) | `view.rs` `write_screen_fade` |
 | `ClientRules` | `fire_pitch(time_scale, slowmo_factor100)` | `100 - (int)(ts * -300)` | `events.rs` `weapon_fire_pitch` (the weapon fire sound only; ricochets and explosions keep 3.0's `fire_pitch`) |
