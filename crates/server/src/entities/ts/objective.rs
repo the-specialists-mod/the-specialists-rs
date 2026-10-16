@@ -29,7 +29,10 @@ use std::ffi::CStr;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ObjectiveRules {
     /// The `TSHudMessageAll` effect of the objective lines (green, 30 s hold): the manager's
-    /// messages, a completed bomb, hack or escape, a defusing wire, a win giver's message.
+    /// messages, a completed bomb, hack or escape, a defusing wire, a win giver's message. The
+    /// other map entities' green lines use it too: a `ts_slowmotion`'s `message` (`Use`, 3.0
+    /// 0x71404, 2.1 0x10041240) and the `ts_dmhill` award (`WaitTouch`, 3.0 0x71be8, 2.1
+    /// 0x10041830), issue #221.
     pub hud_effect: u8,
     /// The two round teams' names: `attackerteam` 0 and 1 are the players whose team is the first
     /// or second name (`CanInteract`, the escape zone's head count), other values nobody, and a
@@ -55,6 +58,11 @@ pub struct ObjectiveRules {
 
 fn rules() -> &'static ObjectiveRules {
     crate::gameplay::active().server.objectives()
+}
+
+/// [`ObjectiveRules::hud_effect`] of the active ruleset.
+pub fn hud_effect() -> u8 {
+    rules().hud_effect
 }
 
 /// The objective lines: `TSHudMessageAll(0, 255, 0, effect, 30, text)`.

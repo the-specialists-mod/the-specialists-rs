@@ -166,6 +166,7 @@ mod tests {
     #[test]
     fn objective_rules_are_3_0() {
         let c = OBJECTIVES;
+        // Also `CTSSlowMotion::Use` (0x71404) and `CTSDMHill::WaitTouch` (0x71be8): issue #221.
         assert_eq!(c.hud_effect, 8);
         assert!(c.team_names.is_none() && c.indexed_list && c.pointer_enables_givers);
         assert!(c.nan_time_runs_out && c.clear_list_outside_rounds);
