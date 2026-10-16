@@ -85,7 +85,7 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 ## Not verified / gaps
 - 2.1 particle *update* (drag/stretch/gravity semantics of 2.1's own particle struct) is still untraced (round-1 gap, ts21.md deviation). The glass and blood field values above are mapped through the sprite-debris builder's known parameters; what the zero fields (orientation, react) do in 2.1 isn't known.
 - `apply_kick` against 2.1's `0x10097de0`: documented as not compared.
-- 2.1 team menu constructor (`0x100b2ca0`) layout constants and `paint` were compared by structure only. MOTD window (`CMessageWindowPanel`) not compared for 2.1.
+- ~~2.1 team menu constructor (`0x100b2ca0`) layout constants and `paint` were compared by structure only. MOTD window (`CMessageWindowPanel`) not compared for 2.1.~~ Closed in round 3 ([client-display.md](client-display.md) GUI: same constants; 2.1 divides by 640/480, #266).
 - SDK HUD elements TS left alone (`CHudMessage`, `CHudSayText`, `CHudStatusBar`, `CHudStatusIcons`, geiger, train, `TextMsg`) were not compared against 2.1. The draw stubs and element list match.
 - 2.1 client bullet draw (`0x10069540`: models, trail spin, spiral) was traced only for the draw step and the gates.
 - 3.0 `draw_objective_markers` compares against the local entity's origin z, where TS reads `gHUD` `m_vecOrigin` (`0x100cf960`). The two differ by prediction lag only; not filed.
