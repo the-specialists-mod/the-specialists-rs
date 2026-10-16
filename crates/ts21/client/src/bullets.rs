@@ -74,8 +74,14 @@ pub fn model_for(ammo: i32) -> &'static str {
     }
 }
 
-/// The model's body (0x100967d0, from `HUD_CreateEntities`): a detail level by the distance from
-/// the cull origin and `m_iFOV`; a scope (FOV below 80) keeps detail further out.
+/// The model's body as the add (0x10069450, from `HUD_CreateEntities`) sets it: 0 at low effects
+/// detail (`0x1031b819`, the core's `FxTuning::low_detail`), else [`lod_body`] (issue #259).
+pub fn model_body(low_detail: bool, dist: f32, fov: i32) -> i32 {
+    if low_detail { 0 } else { lod_body(dist, fov) }
+}
+
+/// `GetLODBody` (0x100967d0): a detail level by the distance from the cull origin and `m_iFOV`; a
+/// scope (FOV below 80) keeps detail further out.
 pub fn lod_body(dist: f32, fov: i32) -> i32 {
     if fov < 0x50 {
         if fov < 0xe && dist < 2048.0 {
@@ -210,7 +216,8 @@ pub fn draw(b: &mut ClientBullet, d: &mut BulletDraw) {
     }
     let factor = d.slowmo_factor100 / 100.0;
     if (d.bullet_time || factor as f64 <= 0.1) && d.models.queued().len() < MAX_MODELS && d.models.loaded(&MODELS) {
-        let body = lod_body(v::dist(b.draw_pos, f.cull), d.fov as i32);
+        let low = effects::with_psys(|ps| ps.tuning.low_detail);
+        let body = model_body(low, v::dist(b.draw_pos, f.cull), d.fov as i32);
         d.models.queue(BulletModel { name: model_for(b.ammo), origin: b.draw_pos, angles: dir_angles(b.dir), body });
     }
     let s = speed_factor(d.slowmo_factor100, d.bullet_time);

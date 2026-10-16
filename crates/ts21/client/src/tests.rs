@@ -392,6 +392,9 @@ fn client_bullet_looks() {
     );
     assert_eq!([lod_body(50.0, 90), lod_body(100.0, 90), lod_body(200.0, 90), lod_body(300.0, 90)], [3, 2, 1, 0]);
     assert_eq!([lod_body(1000.0, 10), lod_body(400.0, 40), lod_body(400.0, 41)], [3, 2, 0], "scoped: more detail further out");
+    // The add (0x10069450): body 0 at low effects detail (`0x1031b819`), at any distance (#259).
+    assert_eq!([model_body(true, 50.0, 90), model_body(true, 1000.0, 10)], [0, 0]);
+    assert_eq!([model_body(false, 50.0, 90), model_body(false, 1000.0, 10)], [3, 3]);
 
     assert_eq!(trails(0.0, true), Trails::None);
     assert_eq!(trails(1.0, true), Trails::Trail);
