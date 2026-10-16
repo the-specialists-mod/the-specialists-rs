@@ -121,10 +121,11 @@ fn fire_pitch_is_2_1s_helper() {
     assert_eq!(v21().fire_pitch(0.8, 80.0), 340);
     assert_eq!(v21().fire_pitch(0.01, 1.0), 250, "never below 250");
     assert_eq!(fire_pitch(f32::NAN), 250, "unordered compare: the floor");
-    // 3.0 unchanged: 100 - (int)(ts * -300) of the eased, clamped scale.
+    // 3.0 unchanged: 100 - (int)(ts * -300) of the eased scale, the product unrounded (#273):
+    // 0.35f × −300 = −104.9999982 and 0.01f × −300 = −2.9999999, so 204 and 102.
     assert_eq!(v30().fire_pitch(1.0, 0.0), 400);
-    assert_eq!(v30().fire_pitch(0.35, 35.0), 205);
-    assert_eq!(v30().fire_pitch(0.01, 1.0), 103);
+    assert_eq!(v30().fire_pitch(0.35, 35.0), 204);
+    assert_eq!(v30().fire_pitch(0.01, 1.0), 102);
 }
 
 #[test]

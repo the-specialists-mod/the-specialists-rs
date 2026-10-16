@@ -134,9 +134,10 @@ impl ClientRules for Ts30Client {
         true
     }
 
-    /// `100 - (int)(ts * -300)` (`0x1003eeed`), 400 at normal speed.
+    /// `100 - (int)(ts * -300)` (`0x1003eeed`), 400 at normal speed
+    /// ([`fire_pitch_for`](ts_client::events::fire_pitch_for)).
     fn fire_pitch(&self, time_scale: f32, _slowmo_factor100: f32) -> i32 {
-        100 - (time_scale * -300.0) as i32
+        ts_client::events::fire_pitch_for(time_scale)
     }
 
     /// [`view::bob`] (`0x10066e70`).

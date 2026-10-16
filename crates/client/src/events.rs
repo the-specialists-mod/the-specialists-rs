@@ -144,16 +144,24 @@ pub fn is_local_entity(entindex: i32) -> bool {
     entindex != i32::MIN && r::is_local(entindex)
 }
 
-/// Eased cosmetic time scale (`g_flTimeScale`).
+/// Eased cosmetic time scale (`g_flTimeScale`, `0x100963e8`), as TS reads it: unclamped. Every
+/// pitch TS derives from it (`fld 0x100963e8; fmul -75.0f / -300.0f; __ftol`, e.g. `0x10044b73`,
+/// `0x1003eee7`) takes the raw value (issue #273).
 pub fn time_scale() -> f32 {
-    state::with(|s| s.time_scale).clamp(0.01, 1.0)
+    state::with(|s| s.time_scale)
 }
 
-/// TS slow-motion pitch: `25 + 75*ts + rand(-5, 5)` (~100 at normal speed). `(int)` truncation
-/// as `__ftol` does.
+/// TS slow-motion pitch: `25 + 75*ts + rand(-5, 5)` (~100 at normal speed).
 pub fn slow_pitch() -> i32 {
-    let ts = time_scale();
-    25 - (ts * -75.0) as i32 + r::random_long(-5, 5)
+    slow_pitch_for(time_scale(), r::random_long(-5, 5))
+}
+
+/// [`slow_pitch`] for a time scale and the pitch's `RandomLong(-5, 5)` roll:
+/// `25 - __ftol(ts * -75.0f) + roll` (`0x10044b73..0x10044b8e`). The product stays on the x87
+/// (53-bit), so it is truncated unrounded: a float product would round 0.1733333 × −75 up to −13
+/// where TS truncates −12.9999999 to −12.
+pub fn slow_pitch_for(ts: f32, roll: i32) -> i32 {
+    25 - (ts as f64 * -75.0) as i32 + roll
 }
 
 /// Weapon fire, ricochet and explosion pitch: `100 - (int)(ts * -300)` (`0x1003eeed`,
@@ -161,7 +169,12 @@ pub fn slow_pitch() -> i32 {
 /// passes it (FWGS `S_StartSound` doesn't clamp it either). No random part: only the fire sound
 /// adds one (`0x1003de90`).
 pub fn fire_pitch() -> i32 {
-    100 - (time_scale() * -300.0) as i32
+    fire_pitch_for(time_scale())
+}
+
+/// [`fire_pitch`] for a time scale, the product truncated unrounded (x87) as in [`slow_pitch_for`].
+pub fn fire_pitch_for(ts: f32) -> i32 {
+    100 - (ts as f64 * -300.0) as i32
 }
 
 /// The weapon fire sound's base pitch under the active ruleset ([`ClientRules::fire_pitch`]).
@@ -255,6 +268,20 @@ pub fn register_test_commands() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn pitches_truncate_the_unrounded_raw_time_scale() {
+        // 0x3e428f5c (0.19): ts × −300 = −56.9999993 on the x87, so TS's fire pitch is 156 (`0x1003eeed`);
+        // a float product rounds to −57 (157).
+        assert_eq!(fire_pitch_for(f32::from_bits(0x3e42_8f5c)), 156);
+        // 0x3e317e4b: ts × −75 = −12.9999999, so `25 + 12 + roll` (`0x10044b79`).
+        assert_eq!(slow_pitch_for(f32::from_bits(0x3e31_7e4b), 0), 37);
+        assert_eq!([fire_pitch_for(1.0), slow_pitch_for(1.0, -5)], [400, 95]);
+        // No clamp: TS reads `g_flTimeScale` as it is, so a factor past 1 pitches past 400.
+        assert_eq!([fire_pitch_for(2.0), slow_pitch_for(0.001, 0)], [700, 25]);
+    }
+
     #[test]
     fn event_names_fit() {
         for (n, _) in super::EVENTS {
