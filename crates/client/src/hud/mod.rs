@@ -359,12 +359,10 @@ fn apply_effect(f: Effect) {
     match f {
         Effect::GameplayRuleset(id) => e.print(&format!("[ts] gameplay: the server runs ruleset {id}\n")),
         Effect::Sound(name) => e.play_sound(name, 1.0),
-        // `gHUD.m_vecOrigin` is the client data origin, the local player's.
+        // At `gHUD.m_vecOrigin`, the client data origin (`0x1004bf6e`).
         Effect::GoSlow => {
-            if let Some(me) = e.local_player() {
-                let origin = me.origin;
-                e.ev_play_sound(-1, origin, 0, "goslow.wav", 1.0, 0.8, 0, 100);
-            }
+            let origin = with(|h| h.vec_origin);
+            e.ev_play_sound(-1, origin, 0, "goslow.wav", 1.0, 0.8, 0, 100);
         }
         Effect::ToggleThirdPerson => crate::view::toggle_third_person(),
         Effect::OpenBuyMenu => crate::menus::open_buy(),
@@ -709,7 +707,8 @@ fn get_fov() -> f32 {
 /// `Think`, with `m_flTimeDelta` (the last redraw's, [`time_delta`]). Of TS's elements only the
 /// weapon element's has a body ([`think`]); its Init and Reset set `HUD_ACTIVE` and nothing
 /// clears it. Runs before [`think_fov`], from `HUD_UpdateClientData`.
-pub fn think_elements() {
+pub fn think_elements(origin: [f32; 3]) {
+    with(|h| h.vec_origin = origin);
     think(time_delta());
     with(|h| sync_shared(h));
 }
@@ -743,7 +742,12 @@ pub fn think_fov(ft: f32) -> f32 {
     let target = if (want as f32) < 0.001 { default as i32 } else { want };
     let mut cur = crate::state::with(|s| crate::view::ease_fov(s.fov, target as f32, ft, rules.fov_snaps(s.fov as i32)));
     let sens = if (cur - default).abs() >= 0.01 {
-        want as f32 / default * input::cvars().sensitivity.value() * c.zoom_sensitivity_ratio.value()
+        mouse_sensitivity(
+            rules.dll_build(),
+            want as f64 / default as f64,
+            input::cvars().sensitivity.value(),
+            c.zoom_sensitivity_ratio.value(),
+        )
     } else {
         0.0
     };
@@ -765,9 +769,33 @@ fn set_fov(fov: u8) {
         s.fov_target = fov as f32;
         s.fov = cur as f32;
     });
-    let sens =
-        if cur == 80 { 0.0 } else { fov as f32 * 0.0125 * input::cvars().sensitivity.value() * cvars().zoom_sensitivity_ratio.value() };
+    let fov_ratio = match crate::gameplay::current().dll_build() {
+        crate::gameplay::DllBuild::Optimised => fov as f64 * 0.0125f32 as f64,
+        crate::gameplay::DllBuild::Debug => fov as f64 / 80.0,
+    };
+    let sens = if cur == 80 {
+        0.0
+    } else {
+        mouse_sensitivity(
+            crate::gameplay::current().dll_build(),
+            fov_ratio,
+            input::cvars().sensitivity.value(),
+            cvars().zoom_sensitivity_ratio.value(),
+        )
+    };
     ZOOM_SENS.0.set(sens);
+}
+
+/// `m_flMouseSensitivity = fov_ratio × sensitivity × zoom_sensitivity_ratio`, stored as a float:
+/// 3.0 keeps the product on the x87 (`0x1004986e`, `0x10049606`); 2.1 stores `fov_ratio ×
+/// sensitivity` to a float first (`0x10084b96`, `0x100847a5`). `fov_ratio` is the FOV over the
+/// default as the caller worked it out (unrounded).
+fn mouse_sensitivity(build: crate::gameplay::DllBuild, fov_ratio: f64, sensitivity: f32, zoom_ratio: f32) -> f32 {
+    let t = fov_ratio * sensitivity as f64;
+    match build {
+        crate::gameplay::DllBuild::Optimised => (t * zoom_ratio as f64) as f32,
+        crate::gameplay::DllBuild::Debug => (zoom_ratio as f64 * t as f32 as f64) as f32,
+    }
 }
 
 /// The TS weapon element's `Think` (1004ce10), the parts that need no key bits: laser colour,
@@ -836,7 +864,8 @@ fn usepowerup_tap(h: &mut Hud, t: f32) -> bool {
         return false;
     }
     let send = t <= h.usepowerup_time;
-    h.usepowerup_time = t + 0.3;
+    // `now + 0.3` with the double 0.3 (`0x1004cee3`, 2.1 `0x10089a6b`), stored as a float.
+    h.usepowerup_time = (t as f64 + 0.3) as f32;
     send
 }
 
@@ -933,7 +962,8 @@ fn select_next_prev(next: bool) {
         if h.invnext_time > t {
             return None;
         }
-        h.invnext_time = t + 0.1;
+        // `now + 0.1` with the double 0.1 (`0x1004fd1f`, 2.1 `0x1008da11`), stored as a float.
+        h.invnext_time = (t as f64 + 0.1) as f32;
         weapons::select_next_prev(h, next, fast)
     });
     if let Some(c) = cmd {
@@ -1066,13 +1096,20 @@ pub fn redraw(time: f32, intermission: bool) {
         // TS element order (§4.1), each needing `HUD_ACTIVE` and no `HIDEHUD_ALL`: CHudGeiger,
         // CHudTrain, CHudMessage, CHudStatusBar, CHudDeathNotice, CHudStatusIcons, CHudSpectator
         // (HLTV name tags), CHudTSWeapons, CHudTSStatus, CHudSayText, CHudMenu.
-        if let Some((sample, vol)) = with(|h| if h.geiger_active { geiger::draw(h.geiger_range, &mut h.crt) } else { None }) {
+        if let Some((sample, vol)) = with(|h| {
+            if h.geiger_active {
+                geiger::draw(crate::gameplay::hud_rules(h.gameplay).dll_build(), h.geiger_range, &mut h.crt)
+            } else {
+                None
+            }
+        }) {
             e.play_sound(&sample, vol);
         }
         draw_train(&dc);
         let mut canvas = draw::EngineCanvas(&g.sprites);
         with(|h| {
             if h.message.active {
+                h.message.build = crate::gameplay::hud_rules(h.gameplay).dll_build();
                 h.message.draw(time, &g.screen, &g.sprites, &mut canvas, &mut h.crt)
             }
         });
@@ -1116,7 +1153,8 @@ fn draw_logo(g: &Gfx, time: f32) {
     e.spr_set(spr, [250, 250, 250]);
     let x = g.screen.width - e.spr_width(spr, 0);
     let y = e.spr_height(spr, 0) / 2;
-    let i = ((time * 20.0) as i32 % 56).unsigned_abs() as usize;
+    // `ftol(time × 20.0f)` off the x87, unrounded (`0x10021c21`).
+    let i = (draw::ftol(time as f64 * 20.0) % 56).unsigned_abs() as usize;
     e.spr_draw_additive(FRAMES[i] - 1, x, y, None);
 }
 
@@ -1220,6 +1258,15 @@ fn draw_train(dc: &Dc) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2.1 stores `fov / default × sensitivity` to a float before `× zoom_sensitivity_ratio`
+    /// (`0x10084b96`); 3.0 keeps it on the x87 (`0x1004986e`).
+    #[test]
+    fn zoom_sensitivity_follows_the_build() {
+        use crate::gameplay::DllBuild;
+        assert_eq!(mouse_sensitivity(DllBuild::Optimised, 11.0 / 80.0, 1.0, 0.8).to_bits(), 0x3de1_47ae);
+        assert_eq!(mouse_sensitivity(DllBuild::Debug, 11.0 / 80.0, 1.0, 0.8).to_bits(), 0x3de1_47af);
+    }
 
     /// #252: `hud_takesshots` waits until `ftol(time + 1)` has passed (3.0 `0x10021b62`, 2.1
     /// `0x10047c5a`), checked on every redraw.

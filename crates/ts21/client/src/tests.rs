@@ -446,6 +446,11 @@ fn weapon_events() {
     assert_eq!((fx.smoke_gravity, fx.drag, fx.debris_react), (0.1, 0.0, 0.0));
     assert_eq!((fx30.smoke_gravity, fx30.drag, fx30.debris_react), (0.01, 3.3, 0.3));
     assert!(fx.smoke_puffs_by_cl_fx && !fx.stretch && fx.debris_fade_any_mode && !fx.debris_count_by_quality);
+    // Round 4: 2.1's silenced flash has no rise (0x10081324..0x100814a0), its spark moves with
+    // the gun (0x1008118a), its cooldowns stretch by the raw factor (0x100962e0) and its impact
+    // smoke flies at 16 (0x1007ea4b).
+    assert_eq!((fx.silenced_jitter, fx.spark_moves, fx.raw_slow_cooldowns, fx.impact_smoke_speed), (false, true, true, Some(16.0)));
+    assert_eq!((fx30.silenced_jitter, fx30.spark_moves, fx30.raw_slow_cooldowns, fx30.impact_smoke_speed), (true, false, false, None));
 
     // Reaches: close combat -56/48/38, the coldcock by its weapon id the same way, knife 38,
     // katana -54/48 (3.0: -55/45/35, 30, 35, -55/50).
@@ -1087,4 +1092,12 @@ fn gl_fog() {
 fn hltv_overview_floats() {
     use ts_client::spectator::OverviewFloats;
     assert_eq!((v21().hltv_overview_floats(), v30().hltv_overview_floats()), (OverviewFloats::Stored, OverviewFloats::Stack));
+}
+
+/// Round 4: 2.1's `client.dll` is an unoptimised build that stores every float assignment
+/// (e.g. `MessageScanNextChar` 0x10054e3b, `DrawTSMessages` 0x1008700d); 3.0's is optimised.
+#[test]
+fn dll_build() {
+    use ts_client::gameplay::DllBuild;
+    assert_eq!((v21().dll_build(), v30().dll_build()), (DllBuild::Debug, DllBuild::Optimised));
 }

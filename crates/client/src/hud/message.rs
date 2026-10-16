@@ -6,6 +6,7 @@
 
 use super::draw::{Canvas, HudSprites, ftol};
 use super::text::Titles;
+use crate::gameplay::DllBuild;
 use goldsrc::ext::hud::Screen;
 
 /// `maxHUDMessages`.
@@ -103,6 +104,8 @@ pub struct HudMessage {
     pub custom: TitleMsg,
     /// `HUD_ACTIVE`.
     pub active: bool,
+    /// The HUD ruleset's float forms ([`DllBuild`]), set before each draw.
+    pub build: DllBuild,
     parms: Parms,
 }
 
@@ -115,6 +118,7 @@ impl Default for HudMessage {
             game_title: None,
             custom: TitleMsg::default(),
             active: false,
+            build: DllBuild::Optimised,
             parms: Parms::default(),
         }
     }
@@ -158,7 +162,9 @@ pub fn y_position(y: f32, height: i32, screen_height: i32) -> i32 {
     }
 }
 
-/// `FadeBlend` (`0x100289b0`): the game title's brightness.
+/// `FadeBlend` (`0x100289b0`): the game title's brightness. 2.1's (`0x10054b30`) stores the
+/// result to a float before returning it, which its caller does anyway (`0x100558de`, 3.0
+/// `0x1002916a`), so the two agree.
 pub fn fade_blend(fadein: f32, fadeout: f32, hold: f32, t: f32) -> f64 {
     let fade_time = (fadein as f64 + hold as f64) as f32;
     if t < 0.0 {
@@ -171,6 +177,23 @@ pub fn fade_blend(fadein: f32, fadeout: f32, hold: f32, t: f32) -> f64 {
         return 1.0;
     }
     if fadeout > 0.0 { 1.0 - (t as f64 - fade_time as f64) / fadeout as f64 } else { 0.0 }
+}
+
+/// A message's end time in `Draw` for effects 0..2 (`None` for any other). 3.0 sums `start +
+/// hold + fadeout + fadein` (`0x1002937e`) and, for effect 2, `strlen × fadein + start + hold +
+/// fadeout` (`0x1002936c`); 2.1 adds the fade-in before the fade-out and that before the hold
+/// (`0x10055bce`, `0x10055bff`). The x87 sums are rounded once, to the stored float.
+fn end_time_of(build: DllBuild, m: &TitleMsg, start: f32) -> Option<f32> {
+    let start = start as f64;
+    let (fadein, fadeout, hold) = (m.fadein as f64, m.fadeout as f64, m.holdtime as f64);
+    let t = match (m.effect, build) {
+        (0 | 1, DllBuild::Optimised) => start + hold + fadeout + fadein,
+        (0 | 1, DllBuild::Debug) => start + fadein + fadeout + hold,
+        (2, DllBuild::Optimised) => m.text.len() as f64 * fadein + start + hold + fadeout,
+        (2, DllBuild::Debug) => m.text.len() as f64 * fadein + start + fadeout + hold,
+        _ => return None,
+    };
+    Some(t as f32)
 }
 
 /// `gHUD.m_scrinfo.charWidths[c]`. The line-counting pass in `MessageDrawScan` indexes it with a
@@ -250,11 +273,19 @@ impl HudMessage {
         if self.game_title_time > 0.0
             && let Some(t) = self.game_title.clone()
         {
-            let local = now - self.game_title_time;
+            // 3.0 compares the unrounded difference (`fst` at `0x100290e2`, then `fcompp`) with
+            // `fadein + fadeout + holdtime`; 2.1 stores it (`0x10055841`) and sums `fadein +
+            // holdtime + fadeout` (`0x1005587d`).
+            let diff = now as f64 - self.game_title_time as f64;
+            let local = diff as f32;
             if self.game_title_time > now {
                 self.game_title_time = now;
             }
-            if (local as f64) <= t.fadein as f64 + t.fadeout as f64 + t.holdtime as f64 {
+            let visible = match self.build {
+                DllBuild::Optimised => diff <= t.fadein as f64 + t.fadeout as f64 + t.holdtime as f64,
+                DllBuild::Debug => local as f64 <= t.fadein as f64 + t.holdtime as f64 + t.fadeout as f64,
+            };
+            if visible {
                 let brightness = fade_blend(t.fadein, t.fadeout, t.holdtime, local) as f32;
                 // Guarded: a missing hud.txt entry is index -1, whose rectangle TS reads from
                 // before the table; the port uses an empty one and skips that sprite.
@@ -295,12 +326,8 @@ impl HudMessage {
             let Some(slot) = &self.slots[i] else { continue };
             let m = self.resolve(slot).clone();
             let start = self.start_time[i] as f64;
-            match m.effect {
-                0 | 1 => end_time = (start + m.holdtime as f64 + m.fadeout as f64 + m.fadein as f64) as f32,
-                2 => {
-                    end_time = (m.text.len() as f64 * m.fadein as f64 + start + m.holdtime as f64 + m.fadeout as f64) as f32;
-                }
-                _ => {}
+            if let Some(t) = end_time_of(self.build, &m, self.start_time[i]) {
+                end_time = t;
             }
             if now > end_time {
                 self.slots[i] = None;
@@ -389,9 +416,14 @@ impl HudMessage {
         let blend = match m.effect {
             0 | 1 => p.fade_blend,
             2 => {
-                // `fcoms` compares the unrounded sum; `fsts` then stores it as a float.
-                let sum = p.char_time as f64 + m.fadein as f64;
+                // 3.0's `fcom` compares the unrounded sum, then `fst` stores it as a float
+                // (`0x10028bab`); 2.1 stores it first and compares and subtracts the float
+                // (`0x10054e3b`).
+                let mut sum = p.char_time as f64 + m.fadein as f64;
                 p.char_time = sum as f32;
+                if self.build == DllBuild::Debug {
+                    sum = p.char_time as f64;
+                }
                 if sum > p.time as f64 {
                     src = [0; 3];
                     0
@@ -571,6 +603,53 @@ mod tests {
         assert_eq!(r.chars[0].1, y_position(0.7, 10, 480));
     }
 
+    /// 2.1's unoptimised build sums the end time in another order (`0x10055bce`): with a far
+    /// start and a long hold the stored float can come out one step apart.
+    #[test]
+    fn end_time_sum_order_follows_the_build() {
+        let m = TitleMsg {
+            fadein: f32::from_bits(0x3412_a5aa),
+            fadeout: f32::from_bits(0x320b_94bb),
+            holdtime: 585202176.0,
+            ..Default::default()
+        };
+        let start = 1024828992.0;
+        assert_eq!(end_time_of(DllBuild::Optimised, &m, start), Some(1610031232.0));
+        assert_eq!(end_time_of(DllBuild::Debug, &m, start), Some(1610031104.0));
+        assert_eq!(end_time_of(DllBuild::Debug, &TitleMsg { effect: 3, ..m }, start), None);
+    }
+
+    /// The write-out effect's fourth character with a 0.1 s fade-in, at 0.4 s: the character
+    /// time sums to 0.40000001341 on the x87, which rounds down to 0.4f. 3.0 compares the
+    /// unrounded sum (`0x10028bab`: past the message time, black); 2.1 stores it first
+    /// (`0x10054e3b`: not past, so it starts its fx in the second colour).
+    #[test]
+    fn write_out_char_time_is_stored_before_the_compare_in_2_1() {
+        let s = screen();
+        let m = TitleMsg {
+            effect: 2,
+            color1: [100, 100, 100, 255],
+            color2: [240, 110, 0, 255],
+            fadein: 0.1,
+            holdtime: 5.0,
+            fxtime: 0.25,
+            text: b"abcd".to_vec(),
+            ..Default::default()
+        };
+        let fourth = |build| {
+            let mut h = HudMessage { build, ..Default::default() };
+            let mut r = Rec::default();
+            h.draw_scan(&m, 0.4, &s, &mut r, &mut CrtRand(1));
+            r.chars[3].3
+        };
+        assert_eq!(fourth(DllBuild::Optimised), [0, 0, 0]);
+        let blend = 254; // ftol(255 - (0 * 255 + 0.5))
+        assert_eq!(
+            fourth(DllBuild::Debug),
+            [100 * (255 - blend) + 240 * blend, 100 * (255 - blend) + 110 * blend, 100 * (255 - blend)].map(|v| v >> 8)
+        );
+    }
+
     #[test]
     fn level_transition_moves_start_back() {
         let s = screen();
@@ -601,6 +680,19 @@ mod tests {
         assert_eq!(r.sprites, [(0, [127, 127, 127], x, y), (1, [127, 127, 127], x + 100, y)]);
         h.draw(7.6, &s, &sprites, &mut Rec::default(), &mut CrtRand(1)); // past 0.5 + 1 + 2
         assert_eq!(h.game_title_time, 0.0);
+        // The last moment: 3.0 compares the unrounded `now − start` (`0x100290e2`), 3.50000012,
+        // past 3.5, so the title is over; 2.1 stores it (`0x10055841`) as 3.5 and draws it once
+        // more at brightness 0.
+        let (start, now) = (f32::from_bits(0x3fcf_0fd3), f32::from_bits(0x40a3_c3f5));
+        let last = |build| {
+            let mut h = HudMessage { build, ..Default::default() };
+            h.msg_game_title(start, &T);
+            let mut r = Rec::default();
+            h.draw(now, &s, &sprites, &mut r, &mut CrtRand(1));
+            (r.sprites.len(), h.game_title_time)
+        };
+        assert_eq!(last(DllBuild::Optimised), (0, 0.0));
+        assert_eq!(last(DllBuild::Debug), (2, start));
     }
 
     /// titles.txt entries with wild values (positions, times, colours, huge rectangles) and

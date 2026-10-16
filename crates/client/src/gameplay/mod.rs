@@ -14,7 +14,7 @@
 pub mod client;
 
 pub use client::{
-    ClientRules, CrosshairParts, KungfuRegen, MeleeReach, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
+    ClientRules, CrosshairParts, DllBuild, KungfuRegen, MeleeReach, SlotMenu, SpectatorTail, StuntCooldown, ThinkParts, TsMessageLayout,
 };
 
 use goldsrc::client::engine;

@@ -406,10 +406,14 @@ pub fn frame(time: f64, frametime: f64) {
     // A server on another ruleset rebuilds them too: with or without the map's effects
     // ([`ClientRules::map_effects`](crate::gameplay::ClientRules::map_effects)).
     let map_effects = crate::gameplay::current().map_effects();
-    let changed = with(|fx| fx.level != level || fx.map_effects != map_effects);
+    // TS compares the level name with `stricmp` (`0x1003ab5a`).
+    let changed = with(|fx| !fx.level.eq_ignore_ascii_case(&level) || fx.map_effects != map_effects);
     if changed {
         let map = if level.is_empty() || !map_effects { None } else { r::load_file(&level) };
         let fxmap = map.as_deref().and_then(emitters::entity_lump).map(MapFx::from_lump).unwrap_or_default();
+        for m in &fxmap.messages {
+            goldsrc::client::engine().print(m);
+        }
         if !level.is_empty() && map_effects {
             goldsrc::client::engine().print(&format!(
                 "[ts] effects: {} emitters, {} particle templates{} from {level}\n",

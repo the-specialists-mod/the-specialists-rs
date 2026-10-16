@@ -727,6 +727,14 @@ impl ClientRules for Ts21Client {
     fn hltv_overview_floats(&self) -> ts_client::spectator::OverviewFloats {
         ts_client::spectator::OverviewFloats::Stored
     }
+
+    // Audit round 4: hud
+
+    /// TS 2.1's `client.dll` is an unoptimised build: every `float` assignment is stored (the
+    /// HUD message's `0x10054d90`/`0x10055800`, `DrawTSMessages` `0x10086ec0`, ...).
+    fn dll_build(&self) -> ts_client::gameplay::DllBuild {
+        ts_client::gameplay::DllBuild::Debug
+    }
 }
 
 /// The 2.1 buy menu's text, hard-coded in `client.dll` (the port draws title keys, so each key

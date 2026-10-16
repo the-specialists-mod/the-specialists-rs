@@ -82,12 +82,14 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, r: i32) {
     engine().ev_play_sound(0, org, CHAN_STATIC as i32, snd, random_float(0.92, 1.0), 0.2, 0, pitch);
     let scale = ps.tuning.scale;
     let Some(s) = ps.sprite("sprites/gun_smoke_add.spr", ADD) else { return };
-    let size = r as f32 * 0.7;
+    // `fild r; fmul QWORD 0.7` (`0x10082513`), stored.
+    let size = (r as f64 * 0.7) as f32;
     let mut i = 0;
-    while (i as f32) < scale * 24.0 {
+    // The unrounded `scale × 24.0f` (`0x10082587`).
+    while (i as f64) < scale as f64 * 24.0 {
         let vel = [random_long(-54, 54) as f32, random_long(-54, 54) as f32, random_long(0, 32) as f32];
         let framerate = random_long(2, 10) as f32;
-        ps.add(
+        if !ps.add(
             particle(|p| {
                 p.sprite = s;
                 p.origin = v::add(org, [0.0, 0.0, size / 2.0]);
@@ -100,13 +102,15 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, r: i32) {
                 p.life = 0.0;
             }),
             now,
-        );
+        ) {
+            return;
+        }
         i += 1;
     }
     let Some(s) = ps.sprite("sprites/scintille_metal.spr", ADD) else { return };
     let size = r.wrapping_shl(1) as f32;
     let frame = random_frame(ps, s);
-    ps.add(
+    if !ps.add(
         particle(|p| {
             p.sprite = s;
             p.origin = v::add(org, [0.0, 0.0, size / 2.0]);
@@ -118,15 +122,17 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, r: i32) {
             p.life = 0.0;
         }),
         now,
-    );
+    ) {
+        return;
+    }
     let Some(s) = ps.sprite("sprites/debris_concrete2.spr", ADD) else { return };
     let mut i = 0;
-    while (i as f32) < scale * 64.0 {
+    while (i as f64) < scale as f64 * 64.0 {
         let spin = random_long(-180, 180) as f32;
         let life = (spin as f64 / 1000.0 + 2.0) as f32;
         let frame = random_frame(ps, s);
         let vel = [random_long(-64, 64) as f32, random_long(-64, 64) as f32, random_long(0, 64) as f32];
-        ps.add(
+        if !ps.add(
             particle(|p| {
                 p.sprite = s;
                 p.origin = org;
@@ -142,7 +148,9 @@ pub fn explosion(ps: &mut PSys, now: f64, org: Vec3, r: i32) {
                 p.collide = true;
             }),
             now,
-        );
+        ) {
+            return;
+        }
         i += 1;
     }
 }
@@ -214,7 +222,7 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3) {
             let vy = random_float(-9.0, 9.0);
             let vz = random_long(0, 10) as f32;
             let life = ((random_long(30, 50) - 25) as f64 * 0.1) as f32;
-            ps.add(
+            if !ps.add(
                 particle(|p| {
                     p.sprite = s;
                     p.origin = at;
@@ -230,7 +238,9 @@ pub fn glass(ps: &mut PSys, now: f64, org: Vec3, size: Vec3) {
                     p.collide = true;
                 }),
                 now,
-            );
+            ) {
+                return;
+            }
         }
     }
 }
@@ -279,7 +289,7 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32) {
         let speed = random_long(16, 48) as f32;
         let mut vel = d.map(|c| c * speed * k);
         vel[2] += random_long(0, 8) as f32;
-        ps.add(
+        if !ps.add(
             particle(|p| {
                 p.sprite = s;
                 p.origin = pos;
@@ -295,7 +305,9 @@ pub fn blood(ps: &mut PSys, now: f64, pos: Vec3, dir: Vec3, amount: i32) {
                 p.oncollide = psys::ONCOLLIDE_BLOOD_DECAL;
             }),
             now,
-        );
+        ) {
+            return;
+        }
     }
 }
 

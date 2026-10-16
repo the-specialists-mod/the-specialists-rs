@@ -29,4 +29,8 @@ pub static FX: FxStyle = FxStyle {
     debris_react: 0.3,
     debris_fade_any_mode: false,
     debris_count_by_quality: true,
+    silenced_jitter: true,
+    spark_moves: false,
+    raw_slow_cooldowns: false,
+    impact_smoke_speed: None,
 };

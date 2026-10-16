@@ -77,11 +77,13 @@ fn draw_round_timer(dc: &Dc, h: &mut Hud) {
 /// `DrawTSMessages` (1004af40): timed messages, capped at 10 s, fading over the last second.
 /// Black (0,0,0) means "HUD colour".
 fn draw_ts_messages(dc: &Dc, h: &mut Hud) {
+    let build = crate::gameplay::hud_rules(h.gameplay).dll_build();
     for m in h.messages.iter_mut() {
         if m.expire <= dc.now {
             continue;
         }
-        if m.expire - dc.now > 10.0 {
+        // `expire - now > 10.0f` on the x87, unrounded (`0x1004af74`, 2.1 `0x10086f1f`).
+        if m.expire as f64 - dc.now as f64 > 10.0 {
             m.expire = dc.now + 10.0;
         }
         // `0x1004afc9..0x1004b085`: each channel is `__ftol(base * min(expire - now, 1))`, the
@@ -89,11 +91,27 @@ fn draw_ts_messages(dc: &Dc, h: &mut Hud) {
         // themselves (floats, not rounded first).
         let ic = crate::input::cvars();
         let base = if m.rgb == [0; 3] { [ic.hud_r.value(), ic.hud_g.value(), ic.hud_b.value()] } else { m.rgb.map(|c| c as f32) };
-        // x87 keeps the difference and the product unrounded; f64 is as close as Rust gets.
-        let f = (m.expire as f64 - dc.now as f64).min(1.0);
-        let rgb = base.map(|c| (c as f64 * f) as i32);
+        let rgb = base.map(|c| ts_message_channel(build, c, m.expire, dc.now));
         dc.string(m.x, m.y, &m.text, rgb);
     }
+}
+
+/// One `DrawTSMessages` colour channel: `__ftol(base × min(expire − now, 1))`. 3.0 keeps the
+/// difference and the product on the x87 (`0x1004afe3..0x1004b003`); 2.1 stores the factor to a
+/// float first (`0x1008700d`, or 1.0 at `0x10087012`), then multiplies on the x87.
+fn ts_message_channel(build: crate::gameplay::DllBuild, base: f32, expire: f32, now: f32) -> i32 {
+    let diff = expire as f64 - now as f64;
+    let f = match build {
+        crate::gameplay::DllBuild::Optimised => diff.min(1.0),
+        crate::gameplay::DllBuild::Debug => {
+            if diff < 1.0 {
+                diff as f32 as f64
+            } else {
+                1.0
+            }
+        }
+    };
+    (base as f64 * f) as i32
 }
 
 /// `DrawHudStringLen(0, max, text)` (`0x10021ca0`): the width up to the first character that
@@ -374,11 +392,11 @@ fn draw_powerup(dc: &Dc, h: &mut Hud) {
     }
 }
 
-/// `DrawObjectiveMarkers` (10049fc0): compass sprite at each visible objective, up/down arrow
-/// when it's more than 72 units above/below, and the label.
+/// `DrawObjectiveMarkers` (10049fc0; 2.1 `0x10085700`): compass sprite at each visible
+/// objective, up/down arrow when it's more than 72 units above/below `gHUD.m_vecOrigin`'s z
+/// (`0x100cf960`; 2.1 `0x102da408`), and the label.
 fn draw_objective_markers(dc: &Dc, h: &Hud) {
     let e = engine();
-    let my_z = e.local_player().map_or(0.0, |p| p.origin[2]);
     let c = [100, 100, 205];
     for o in h.objectives.iter().take(h.obj_max.max(0) as usize + 1) {
         if !o.visible || o.label.is_empty() {
@@ -386,19 +404,56 @@ fn draw_objective_markers(dc: &Dc, h: &Hud) {
         }
         let Some((x, y)) = e.world_to_screen(o.pos, &dc.g.screen) else { continue };
         dc.spr(dc.g.ts.compass, x - 16, y - 16, c);
-        if o.pos[2] > my_z + 72.0 {
-            dc.spr(dc.g.ts.uparrow, x - 16, y - 0x30, c);
-        } else if o.pos[2] < my_z - 72.0 {
-            dc.spr(dc.g.ts.downarrow, x - 16, y + 16, c);
+        match objective_arrow(o.pos[2], h.vec_origin) {
+            Some(true) => dc.spr(dc.g.ts.uparrow, x - 16, y - 0x30, c),
+            Some(false) => dc.spr(dc.g.ts.downarrow, x - 16, y + 16, c),
+            None => {}
         }
         // Drawn as stored: TS doesn't localise the label (`0x10049fc0`).
         dc.string(x + 16, y - 8, &o.label, c);
     }
 }
 
+/// The objective marker's arrow for an objective at height `z`: up (`Some(true)`) more than
+/// 72 units above `gHUD.m_vecOrigin` (`origin`), down below it, else none. `z ± 72.0f` stays on
+/// the x87, unrounded, in both rulesets (`0x1004a05c`, 2.1 `0x100857e0`).
+fn objective_arrow(z: f32, origin: [f32; 3]) -> Option<bool> {
+    let my_z = origin[2] as f64;
+    if z as f64 > my_z + 72.0 {
+        Some(true)
+    } else if (z as f64) < my_z - 72.0 {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2.1 stores `min(expire − now, 1)` to a float (`0x1008700d`) before `base ×` it: early in a
+    /// map the difference needs more than a float's bits, and the channel can come out a step
+    /// apart.
+    #[test]
+    fn ts_message_fade_factor_is_a_float_in_2_1() {
+        use crate::gameplay::DllBuild;
+        let (now, expire) = (f32::from_bits(0x3efc_8d11), f32::from_bits(0x3f8d_f213));
+        assert_eq!(ts_message_channel(DllBuild::Optimised, 255.0, expire, now), 156);
+        assert_eq!(ts_message_channel(DllBuild::Debug, 255.0, expire, now), 157);
+        assert_eq!(ts_message_channel(DllBuild::Debug, 255.0, now + 2.0, now), 255);
+    }
+
+    /// `DrawObjectiveMarkers` measures from `gHUD.m_vecOrigin` (`0x100cf960`), the client data
+    /// origin, not the local entity's.
+    #[test]
+    fn objective_arrow_uses_the_client_data_origin() {
+        let origin = [0.0, 0.0, 100.0];
+        assert_eq!(objective_arrow(172.0, origin), None);
+        assert_eq!(objective_arrow(172.5, origin), Some(true));
+        assert_eq!(objective_arrow(28.0, origin), None);
+        assert_eq!(objective_arrow(27.5, origin), Some(false));
+    }
 
     /// TS 2.1's `ScaleColors` (`0x10047e90`) rounds `a / 255` to a `float` first.
     #[test]

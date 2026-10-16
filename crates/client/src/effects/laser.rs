@@ -171,7 +171,8 @@ fn beam_dirs(vm: Option<&cl_entity_s>, cam: &Camera, cl_laser: f32, jitter: [f32
     let dir = |a: usize, j: [f32; 2]| {
         let d = v::sub(vm.attachment[a + 1], vm.attachment[a]);
         let d = if v::len(d) == 0.0 { [0.0, 0.0, 1.0] } else { v::normalize(d) };
-        [d[0] + j[0] * 0.003, d[1] + j[1] * 0.003, d[2]]
+        // `j × 0.003 + d` with the double 0.003 (`0x1003bd59`, 2.1 alike), rounded once.
+        [(j[0] as f64 * 0.003 + d[0] as f64) as f32, (j[1] as f64 * 0.003 + d[1] as f64) as f32, d[2]]
     };
     [dir(0, jitter), dir(2, [jitter[1], jitter[0]])]
 }
@@ -187,7 +188,13 @@ fn local_beam_fade(d: f32) -> f32 {
 /// `0x10071bd0`, `Color4f` at `0x1007284d`): `(j + 1) / 8 + 0.75` of the frame's first jitter
 /// roll `j` (−1..1), so 0.75..1.
 fn flicker(j: f32) -> f32 {
-    (j + 1.0) / 8.0 + 0.75
+    ((j as f64 + 1.0) / 8.0 + 0.75) as f32
+}
+
+/// Another player's laser angle jittered by `j` (−1..1): `j × 0.05 + a` with the double 0.05
+/// (`0x1003d814`), rounded once.
+fn jitter_angle(a: f32, j: f32) -> f32 {
+    (j as f64 * 0.05 + a as f64) as f32
 }
 
 /// `DrawLocalLaser` (`0x1003bb00`; 2.1 `0x10071bd0`), gated on the HUD's item bits (laser `& 2`,
@@ -386,14 +393,14 @@ pub fn draw_other_lasers(cam: &Camera, visible: &[bool; 33], now: f64, frametime
         let st = style();
         let (eye, angles) = if st.others_from_origin {
             let Some((org, mut angles)) = origin_aim(idx) else { continue };
-            angles[0] += jitter[0] * 0.05;
-            angles[1] += jitter[1] * 0.05;
+            angles[0] = jitter_angle(angles[0], jitter[0]);
+            angles[1] = jitter_angle(angles[1], jitter[1]);
             (org, angles)
         } else {
             with(|s| {
                 crate::spectator::in_eye_position(idx, &mut s.eye_origin, &mut s.eye_angles);
-                s.eye_angles[0] += jitter[0] * 0.05;
-                s.eye_angles[1] += jitter[1] * 0.05;
+                s.eye_angles[0] = jitter_angle(s.eye_angles[0], jitter[0]);
+                s.eye_angles[1] = jitter_angle(s.eye_angles[1], jitter[1]);
                 (s.eye_origin, s.eye_angles)
             })
         };
@@ -568,8 +575,17 @@ mod tests {
 
     /// 2.1's beam colour (`0x1007284d`): 0.75..1 from the first jitter roll.
     #[test]
+    fn other_laser_jitter_rounds_once() {
+        // `j × 0.05 + a` with the double 0.05 (`0x1003d814`): a float product then sum would
+        // give `0xbcdc50d9`.
+        assert_eq!(jitter_angle(f32::from_bits(0x3bae_31c5), f32::from_bits(0xbf24_ea4e)).to_bits(), 0xbcdc_50d8);
+    }
+
+    #[test]
     fn flicker_spans_three_quarters_to_one() {
         assert_eq!([flicker(-1.0), flicker(0.0), flicker(1.0)], [0.75, 0.875, 1.0]);
+        // One rounding on the x87 with the double 0.75 (2.1 `0x1007250c`).
+        assert_eq!(flicker(f32::from_bits(0xbef2_7069)).to_bits(), 0x3f50_d8f9);
     }
 
     /// 2.1's other lasers and flashlights (`0x100731a0`, `0x10071630`): 24 units above the

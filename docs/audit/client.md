@@ -26,23 +26,23 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 | status Reset | 0x10049e70 | 0x100854a0 | match (re-checked ✓; 2.1 also clears `+0xfc0`, the `GloSlow` icon flag, which no server sends) |
 | status Draw order (`draw`) | 0x10049ea0 | 0x10085560 (no flag panel; the 2.1 server spawns no `ts_flag`) | match |
 | `draw_round_timer` | 0x1004a130 (×0.5f) | 0x10085970 (/2.0) | match (re-checked both: tick 1 s / 0.1 s in mode 1, frozen in mode 2, red below 60, flags 3 / 0x23 ✓) |
-| `draw_ts_messages` | 0x1004af40 | 0x10086ec0 | match (2.1 stores the min(1, t) factor to a float first: at most one colour step, not filed) |
+| `draw_ts_messages` | 0x1004af40 | 0x10086ec0 | match. Round 4: **#279** (2.1 stores the min(1, t) factor to a float first, `0x1008700d`: one colour step) and **#280** (the 10 s cap compares the unrounded difference), fixed |
 | `draw_teammate_markers` | 0x1004ab40 | 0x10086950 (teamname strcmp, alpha 235·½ = 117) | match |
 | `crosshair_trace` (crosshair ID) | 0x1004acc0 | 0x10086b00 | match |
 | `draw_powerup` | 0x1004a2e0 (titles) | 0x10085c00 (hard-coded "Slow-Motion"…) | 3.0 match; **2.1 MISMATCH #230** |
-| `draw_objective_markers` | 0x10049fc0 | 0x10085700 | match |
+| `draw_objective_markers` | 0x10049fc0 | 0x10085700 | match, except both read `gHUD.m_vecOrigin` z (`0x100cf960`, 2.1 `0x102da408`): **MISMATCH #269 (both rulesets), fixed in round 4** (also the `goslow.wav` origin) |
 | `draw_status_panel` / `status_look` | 0x1004a3e0 | 0x10085d90 | match (hook, #111) |
 | scoreboard `status` (award titles) | 0x1005e213 | 0x100a4670 ("KILLER", "DEMOLITION") | 3.0 match (re-checked colours 125/135/145/155/175 alpha 5 ✓); **2.1 MISMATCH #230** |
 | hud/weapons.rs `draw` (order, nohud, buy menu, wires) | 0x1004d3f0 | 0x10089d90 | match except the weapon list (next row) |
 | `draw_weapon_list` (closed equipment list, open slot menu, clip text, clip bar) | 0x1004e030 | 0x1008af40 (open only; no clip text or bar) | 3.0 match; **2.1 MISMATCH #207** |
 | `select_slot` | 0x1004f220 | 0x1008c6f0 (slot 10 → (1,1), fastswitch bucket-1 start, row −1) | 3.0 match; **2.1 MISMATCH #207** |
-| `select_next_prev` (+0.1 s throttle) | 0x1004f500, 0x1004fce0 | 0x1008cc40 (always reloads the held weapon's cell), 0x1008d9c0 | 3.0 match; **2.1 MISMATCH #207** |
-| `draw_laser_dots` | 0x1004e6f0 | 0x1008b410 (red, alpha by distance, none ≥ 4096) | 3.0 match; **2.1 MISMATCH #204** |
-| `draw_crosshair`, `crosshair_parts`, `crosshair_gap`, `divesteps` | 0x1004e9f0, 0x1004ef50 | 0x1008b960, 0x1008c1c0 | match (hooks; #110, #153 fixed: `IsHardware()`) |
+| `select_next_prev` (+0.1 s throttle) | 0x1004f500, 0x1004fce0 | 0x1008cc40 (always reloads the held weapon's cell), 0x1008d9c0 | 3.0 match; **2.1 MISMATCH #207**. Round 4: the throttle adds the double 0.1 (`0x1004fd1f`), **#280**, fixed |
+| `draw_laser_dots` | 0x1004e6f0 | 0x1008b410 (red, alpha by distance, none ≥ 4096) | 3.0 match; **2.1 MISMATCH #204**. Round 4: the dot position is `WorldToScreen`'s unrounded `(x + 1) × w × 0.5`, **#280** (both), fixed |
+| `draw_crosshair`, `crosshair_parts`, `crosshair_gap`, `divesteps` | 0x1004e9f0, 0x1004ef50 | 0x1008b960, 0x1008c1c0 | match (hooks; #110, #153 fixed: `IsHardware()`). Round 4: the divestep pitch dot is worked out in double (3.0 `× π/180`, 2.1 `/ 180 × π`), **#280** (both), fixed |
 | weapon `Think` parts, kung-fu regen, Reset | 0x1004ce10 | 0x100899f0, 0x10089890 | match (hooks #193/#194) |
 | `weapon_panel`, `kungfu_label` | 0x1004d7e0, 0x1004d700 | 0x1008a320, 0x1008a0f0 | match (hooks #176/#111) |
-| effects/laser.rs `draw_local_laser` | 0x1003bb00 | 0x10071bd0 (`laserbeam.spr`, grey flicker, half-width 1.5) | 3.0 match; **2.1 MISMATCH #204** |
-| `draw_other_lasers` | 0x1003d600 | 0x100731a0 (origin+24, pitch ×−3, white dot only) | 3.0 match; **2.1 MISMATCH #204** |
+| effects/laser.rs `draw_local_laser` | 0x1003bb00 | 0x10071bd0 (`laserbeam.spr`, grey flicker, half-width 1.5) | 3.0 match; **2.1 MISMATCH #204**. Round 4: the jitter (`× 0.003` double) and 2.1's flicker round once, **#282** (both), fixed |
+| `draw_other_lasers` | 0x1003d600 | 0x100731a0 (origin+24, pitch ×−3, white dot only) | 3.0 match; **2.1 MISMATCH #204**. Round 4: the angle jitter (`× 0.05` double) rounds once, **#282** (both), fixed |
 | `draw_local_flashlight` | 0x1003b250 (cull origin, light only on a hit at `endpos`, flash r6/r4 colour 0.7) | 0x10070f20 (same as 3.0) | **MISMATCH #203 (both rulesets)** |
 | `draw_other_flashlights` | 0x1003b750 (V_GetInEyePos) | 0x10071630 (origin+24, pitch ×−3) | 3.0 match; **2.1 MISMATCH #204** |
 | `draw_shadows` | 0x10055760, 0x10055500 | 0x10095260, 0x10094e70 (no fade or 200 cut, flags 2, mode 2) | 3.0 match; **2.1 MISMATCH #204** |
@@ -88,7 +88,7 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 - ~~2.1 team menu constructor (`0x100b2ca0`) layout constants and `paint` were compared by structure only. MOTD window (`CMessageWindowPanel`) not compared for 2.1.~~ Closed in round 3 ([client-display.md](client-display.md) GUI: same constants; 2.1 divides by 640/480, #266).
 - SDK HUD elements TS left alone (`CHudMessage`, `CHudSayText`, `CHudStatusBar`, `CHudStatusIcons`, geiger, train, `TextMsg`): compared against 2.1 in round 3 (`client-display.md`; **#260**, fixed).
 - 2.1 client bullet draw (`0x10069540`: models, trail spin, spiral): traced in round 3 ([client-display.md](client-display.md) "Model rendering"); one mismatch, #259.
-- 3.0 `draw_objective_markers` compares against the local entity's origin z, where TS reads `gHUD` `m_vecOrigin` (`0x100cf960`). The two differ by prediction lag only; not filed.
+- ~~3.0 `draw_objective_markers` compares against the local entity's origin z, where TS reads `gHUD` `m_vecOrigin` (`0x100cf960`). The two differ by prediction lag only; not filed.~~ Round 4: **#269** (both rulesets; the `TSSlowMo` sound too), fixed: `Hud::vec_origin` is set from `cdata->origin` in `HUD_UpdateClientData`.
 
 ## Validation (second pass, independent)
 - Checked: all seven filed issues exist, are open, are labelled `bug`, and describe the rows that cite them. Port line references spot-checked: `hud/state.rs:858-873` (#230), `effects.rs:546-593`/`571-575` (#244), `effects/fx.rs:610` (#232). Cited original addresses spot-checked against the decomps: 0x100877b0, 0x10087ad0, 0x10085970, 0x100967d0, 0x10051730, 0x100a4670, 0x10081840, 0x10082cd0, 0x100b6820, 0x1008d000, 0x100854a0. All correct.
