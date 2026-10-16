@@ -648,7 +648,7 @@ mod tests {
     fn death_drop_has_the_base_duration() {
         use crate::entities::ts::powerup::setup_secs;
         let rules = crate::gameplay::TEST_POWERUPS;
-        assert!(DEATH_DROP_SECS < 1);
+        assert_eq!(DEATH_DROP_SECS, -1);
         for (kind, base) in [(pw::SLOWMO, 3), (pw::INFINITE_CLIP, 3), (pw::SLOWPAUSE, 2), (pw::DOUBLE_FIRERATE, 3)] {
             assert_eq!(rules.base(kind), base);
             assert_eq!(setup_secs(DEATH_DROP_SECS, rules.base(kind), rules.multiplier, 1.0), base, "{kind:#x}");
