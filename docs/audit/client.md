@@ -30,7 +30,7 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 | `draw_teammate_markers` | 0x1004ab40 | 0x10086950 (teamname strcmp, alpha 235·½ = 117) | match |
 | `crosshair_trace` (crosshair ID) | 0x1004acc0 | 0x10086b00 | match |
 | `draw_powerup` | 0x1004a2e0 (titles) | 0x10085c00 (hard-coded "Slow-Motion"…) | 3.0 match; **2.1 MISMATCH #230** |
-| `draw_objective_markers` | 0x10049fc0 | 0x10085700 | match |
+| `draw_objective_markers` | 0x10049fc0 | 0x10085700 | match, except both read `gHUD.m_vecOrigin` z (`0x100cf960`, 2.1 `0x102da408`): **MISMATCH #269 (both rulesets), fixed in round 4** (also the `goslow.wav` origin) |
 | `draw_status_panel` / `status_look` | 0x1004a3e0 | 0x10085d90 | match (hook, #111) |
 | scoreboard `status` (award titles) | 0x1005e213 | 0x100a4670 ("KILLER", "DEMOLITION") | 3.0 match (re-checked colours 125/135/145/155/175 alpha 5 ✓); **2.1 MISMATCH #230** |
 | hud/weapons.rs `draw` (order, nohud, buy menu, wires) | 0x1004d3f0 | 0x10089d90 | match except the weapon list (next row) |
@@ -88,7 +88,7 @@ Method note: since #200, every `ClientRules` hook has a 3.0 answer in `ts30-clie
 - ~~2.1 team menu constructor (`0x100b2ca0`) layout constants and `paint` were compared by structure only. MOTD window (`CMessageWindowPanel`) not compared for 2.1.~~ Closed in round 3 ([client-display.md](client-display.md) GUI: same constants; 2.1 divides by 640/480, #266).
 - SDK HUD elements TS left alone (`CHudMessage`, `CHudSayText`, `CHudStatusBar`, `CHudStatusIcons`, geiger, train, `TextMsg`): compared against 2.1 in round 3 (`client-display.md`; **#260**, fixed).
 - 2.1 client bullet draw (`0x10069540`: models, trail spin, spiral): traced in round 3 ([client-display.md](client-display.md) "Model rendering"); one mismatch, #259.
-- 3.0 `draw_objective_markers` compares against the local entity's origin z, where TS reads `gHUD` `m_vecOrigin` (`0x100cf960`). The two differ by prediction lag only; not filed.
+- ~~3.0 `draw_objective_markers` compares against the local entity's origin z, where TS reads `gHUD` `m_vecOrigin` (`0x100cf960`). The two differ by prediction lag only; not filed.~~ Round 4: **#269** (both rulesets; the `TSSlowMo` sound too), fixed: `Hud::vec_origin` is set from `cdata->origin` in `HUD_UpdateClientData`.
 
 ## Validation (second pass, independent)
 - Checked: all seven filed issues exist, are open, are labelled `bug`, and describe the rows that cite them. Port line references spot-checked: `hud/state.rs:858-873` (#230), `effects.rs:546-593`/`571-575` (#244), `effects/fx.rs:610` (#232). Cited original addresses spot-checked against the decomps: 0x100877b0, 0x10087ad0, 0x10085970, 0x100967d0, 0x10051730, 0x100a4670, 0x10081840, 0x10082cd0, 0x100b6820, 0x1008d000, 0x100854a0. All correct.

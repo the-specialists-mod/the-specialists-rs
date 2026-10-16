@@ -258,6 +258,10 @@ pub struct Hud {
     pub train_pos: u8,
     /// `gHUD.m_iHideHUDDisplay` (`HideWeapon`): HIDEHUD_WEAPONS 1 (tank in use), HIDEHUD_ALL 4.
     pub hide_hud: u8,
+    /// `gHUD.m_vecOrigin` (3.0 `0x100cf958`, 2.1 `0x102da400`): `cdata->origin` as
+    /// `CHud::UpdateClientData` (3.0 `0x10024b00`, 2.1 `0x1004e060`) last copied it, the local
+    /// player's predicted origin.
+    pub vec_origin: [f32; 3],
 }
 
 impl Default for Hud {
@@ -342,6 +346,7 @@ impl Default for Hud {
             intermission: false,
             train_pos: 0,
             hide_hud: 0,
+            vec_origin: [0.0; 3],
         };
         h.reset_weapons();
         h

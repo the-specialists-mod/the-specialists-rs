@@ -359,12 +359,10 @@ fn apply_effect(f: Effect) {
     match f {
         Effect::GameplayRuleset(id) => e.print(&format!("[ts] gameplay: the server runs ruleset {id}\n")),
         Effect::Sound(name) => e.play_sound(name, 1.0),
-        // `gHUD.m_vecOrigin` is the client data origin, the local player's.
+        // At `gHUD.m_vecOrigin`, the client data origin (`0x1004bf6e`).
         Effect::GoSlow => {
-            if let Some(me) = e.local_player() {
-                let origin = me.origin;
-                e.ev_play_sound(-1, origin, 0, "goslow.wav", 1.0, 0.8, 0, 100);
-            }
+            let origin = with(|h| h.vec_origin);
+            e.ev_play_sound(-1, origin, 0, "goslow.wav", 1.0, 0.8, 0, 100);
         }
         Effect::ToggleThirdPerson => crate::view::toggle_third_person(),
         Effect::OpenBuyMenu => crate::menus::open_buy(),
@@ -709,7 +707,8 @@ fn get_fov() -> f32 {
 /// `Think`, with `m_flTimeDelta` (the last redraw's, [`time_delta`]). Of TS's elements only the
 /// weapon element's has a body ([`think`]); its Init and Reset set `HUD_ACTIVE` and nothing
 /// clears it. Runs before [`think_fov`], from `HUD_UpdateClientData`.
-pub fn think_elements() {
+pub fn think_elements(origin: [f32; 3]) {
+    with(|h| h.vec_origin = origin);
     think(time_delta());
     with(|h| sync_shared(h));
 }
