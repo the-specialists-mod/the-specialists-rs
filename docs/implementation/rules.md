@@ -584,10 +584,13 @@ flight time `dist × (1/1900)f` unrounded in each product) and burst timer (`h +
 rounded once), and the inlined distances
 (`brain::len_x87`: unrounded differences and `sqrt`, squares summed in each site's order, then
 compared, truncated or stored as mp.dll does: the attack range, `SelectEnemy`, the cover search,
-`Navigate`'s 48/96-unit tests, the hill's 64 units, `FindLookPoint`), `Vector::Normalize`
+`Navigate`'s 48/96-unit tests (the order through `NativeBotRules::nav_distance_order`), the hill's 64 units, `FindLookPoint`), `Vector::Normalize`
 (times the unrounded reciprocal; the melee circle's inline one sums `z, y, x`,
 `brain::normalize_in`, issue #171) and vision's `FInViewCone` (unrounded flat length, the dot
-compared unrounded with the 0.5 field of view). Unit tested.
+compared unrounded with the 0.5 field of view). `Navigate`'s eye probe end keeps `origin.x +
+view_ofs.x` on the x87 for `+ v_forward.x * 64` (0x10070105..0x1007014e, 2.1 too; y and z
+store the sum first; issue #210). The buy roll is a `float` compared with the `double`s 0.75,
+0.1, 0.4 and 0.7 (only kevlar's 0.3 is a `float`; `BuyTiers`, issue #209). Unit tested.
 
 ### 10.1 Deviations
 
