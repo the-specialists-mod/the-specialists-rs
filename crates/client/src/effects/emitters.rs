@@ -335,10 +335,8 @@ impl MapFx {
                 match key(k).as_str() {
                     "near" => f.near = num(val),
                     "far" => f.far = num(val),
-                    "color" => {
-                        if scan_vec3(val, &mut f.color) != 3 {
-                            fx.messages.push("color has bad value. Should be \"r g b\"\n".into());
-                        }
+                    "color" if scan_vec3(val, &mut f.color) != 3 => {
+                        fx.messages.push("color has bad value. Should be \"r g b\"\n".into());
                     }
                     _ => {}
                 }
