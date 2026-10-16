@@ -492,6 +492,11 @@ pub trait ServerRules: Sync {
     /// `env_shake`/`env_fade`, the hit and spawn flashes): whether the fixed-point durations are
     /// divided by the receiver's time scale, and the shake reach's NaN cases.
     fn screen_effects(&self) -> ScreenEffects;
+
+    /// The `vecDir` `CTSStunt::CheckForBreakables` (0x9bd9c) passes to `TraceAttack` for its
+    /// hits, the delayed melee hit and the dive into a breakable, given the stunt direction
+    /// (`StuntState::dir`, what the last roll, dive or back move stored).
+    fn delayed_hit_dir(&self, stunt_dir: Vec3) -> Vec3;
 }
 
 #[cfg(test)]

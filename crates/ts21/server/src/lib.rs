@@ -488,6 +488,11 @@ impl ServerRules for Ts21Server {
     fn screen_effects(&self) -> ts_server::entities::stock::explode::ScreenEffects {
         explode::SCREEN_EFFECTS
     }
+
+    /// [`melee::delayed_hit_dir`]: the stunt direction.
+    fn delayed_hit_dir(&self, stunt_dir: Vec3) -> Vec3 {
+        melee::delayed_hit_dir(stunt_dir)
+    }
 }
 
 /// The plugin on the server: TS 2.1's shared hooks and its server hooks.

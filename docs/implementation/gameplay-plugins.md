@@ -451,6 +451,7 @@ The hooks so far:
 | `ServerRules` | `thrown_blade(btype) -> ThrownBlade` | `ts30_server::explode::thrown_blade` (1900 / 1000 u/s, gravity 0.75 / 0.3 / 0.85, bits `0x08001000`) | `projectiles.rs` `throw_blade`, `Knife::spawn`, `think`, `bounce_touch` |
 | `ServerRules` | `thrown_blade_damage(btype, from, at)` | `ts30_server::explode::thrown_blade_damage` (100 / 50 / 150) | `projectiles.rs` `Knife::bounce_touch` |
 | `ServerRules` | `screen_effects() -> ScreenEffects` | `ts30_server::explode::SCREEN_EFFECTS`: durations (and a shake's frequency) divided by the receiver's time scale; a NaN radius or distance shakes (issues #216, #217) | `entities/stock/explode.rs` `screen_shake`, `screen_fade` (every shake and fade: explosions, landings, `env_shake`/`env_fade`, level changes, the hit and spawn flashes) |
+| `ServerRules` | `delayed_hit_dir(stunt_dir) -> Vec3` | `g_vecZero` (0x9c59e) | `weapons/melee.rs` `pending_hit`, `stunt/moves.rs` `check_for_breakables` (the dive hit): `TraceAttack`'s direction (`PTakeDam`, a falling body's push) |
 
 **Melee.** `MeleeRules`' hooks replace a whole attack and take `&mut dyn GunHost`, so the `Gun`
 helpers a plugin calls take `?Sized` hosts. `GunHost` gained `melee_hold(bits, recover, crouch)`

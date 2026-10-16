@@ -512,6 +512,12 @@ impl ServerRules for Ts30Server {
     fn screen_effects(&self) -> ts_server::entities::stock::explode::ScreenEffects {
         explode::SCREEN_EFFECTS
     }
+
+    /// `g_vecZero` (`CheckForBreakables` 0x9bd9c, 0x9c59e: `local_ac = g_vecZero`).
+    fn delayed_hit_dir(&self, stunt_dir: Vec3) -> Vec3 {
+        let _ = stunt_dir;
+        [0.0; 3]
+    }
 }
 
 /// The plugin as the server registers it.

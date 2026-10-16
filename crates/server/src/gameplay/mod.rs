@@ -360,6 +360,9 @@ impl ServerRules for Defaults {
     fn screen_effects(&self) -> crate::entities::stock::explode::ScreenEffects {
         unimplemented!("screen_effects")
     }
+    fn delayed_hit_dir(&self, _stunt_dir: shared::weapons::spread::Vec3) -> shared::weapons::spread::Vec3 {
+        unimplemented!("delayed_hit_dir")
+    }
 }
 
 /// Power-up values for this crate's tests: the 3.0 plugin's (its own tests pin them).

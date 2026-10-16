@@ -870,6 +870,8 @@ pub(super) fn check_for_breakables(p: &mut Player, cx: &mut Cx) {
     }
     let dmg = dive_impact_damage(arith, v, is_alive(cx));
     let mut info = DamageInfo::new(cx.edict, cx.edict, dmg, bits::CLUB | bits::NEVERGIB).traced();
+    // The ruleset's direction: 3.0 passes `g_vecZero`, 2.1 the stunt direction.
+    info.dir = crate::gameplay::active().server.delayed_hit_dir(p.stunt.dir);
     info.hitgroup = tr.iHitgroup;
     info.pos = tr.vecEndPos;
     crate::damage::apply(victim, &info);

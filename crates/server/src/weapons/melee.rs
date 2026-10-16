@@ -326,8 +326,9 @@ pub fn pending_hit(p: &mut Player, cx: &mut Cx) {
         }
     }
     p.inv.sv.lunge_victim = victim;
-    // TS passes `g_vecZero` as the direction (`TraceAttack(attacker, dmg, g_vecZero, tr, bits)`).
+    // The ruleset's direction: 3.0 passes `g_vecZero`, 2.1 the stunt direction.
     let mut info = DamageInfo::new(me, me, dmg, bits).traced();
+    info.dir = rules.delayed_hit_dir(p.stunt.dir);
     info.hitgroup = tr.iHitgroup;
     info.pos = tr.vecEndPos;
     // `glast_closecombat` only for a stored kung-fu attack (`pl+0x7a4 == 0`, set at 0x9c19d).
