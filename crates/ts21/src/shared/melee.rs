@@ -8,10 +8,13 @@
 //!
 //! 2.1 keeps its weapon timers as absolute times with the delays fixed when they're set:
 //! `delay × (Double Fire Rate ? 0.5 : 1) × (own Slow Pause ? 6.6666665 : T)`, `T` the time
-//! scale's inverse ([`time_scale_inverse`]). The port's gun timers count down, so they get the
-//! same delays; how fast they count down is the gun timer model's (checklist item 3): the fire
-//! timers by the frame time, the melee window and block timers by the game time since the last
-//! `PreThink` ([`pre_think_step`](crate::shared::gun::pre_think_step)).
+//! scale's inverse ([`time_scale_inverse`]). The port's fire timers count down, so they get the
+//! same delays, run down by the frame time (the gun timer model, checklist item 3). The
+//! delayed-hit window and the block timers (`Gun::melee_window`, `block_*`) are end times in 2.1
+//! mode, as in 2.1 (issue #202): `(float)(d + time)` with the duration `d` unrounded
+//! ([`whiff_end`], [`block_end`]), compared with the current time wherever they're read (the
+//! window's expiry in [`pre_think_step`](crate::shared::gun::pre_think_step), the blocks at the
+//! attacker's think in the server's `melee_block`). 0 is none, as for 3.0's countdowns.
 //!
 //! The stunt timers (`BlockPlayer`, the `3·T` hold of the crouched moves, `pl+0x470`) are
 //! started in seconds of the player's time: the server's stunt clock applies `T`.
@@ -57,6 +60,35 @@ pub fn block_window(hold: f32, t: f32) -> f32 {
     let cap = (hold * 5.0) as f64;
     let w = t as f64 * hold as f64 * 0.5;
     if cap <= w { cap as f32 } else { w as f32 }
+}
+
+/// [`whiff_window`] as an end time (`KnifeFire` 0x1004ca04, `KatanaFire` 0x1004c5c8,
+/// `CCombatAttack`): `(float)(min(3, 0.3·T) + time)`, `T` unrounded (`FUN_100551c0`).
+pub fn whiff_end(t: f64, time: f32) -> f32 {
+    let w = t * 0.3;
+    ((if 3.0 <= w { 3.0 } else { w }) + time as f64) as f32
+}
+
+/// [`block_window`] as an end time (knife `pl+0x728`, katana `+0x72c`, mp.dll's kung-fu block
+/// `+0x724`): `(float)(min((float)(hold·5), T·hold·0.5) + time)`, `T` and the product unrounded.
+pub fn block_end(hold: f32, t: f64, time: f32) -> f32 {
+    let cap = (hold * 5.0) as f64;
+    let w = t * hold as f64 * 0.5;
+    ((if cap <= w { cap } else { w }) + time as f64) as f32
+}
+
+/// `CCombatBlock`'s block.wav (`FUN_1004dc70`, client `FUN_100245b0`): when the last block
+/// ended over a second ago, `1.0 < time − end` on the FPU. 0 (none yet) is `time` seconds ago.
+pub fn block_sound(time: f32, end: f32) -> bool {
+    1.0 < time as f64 - end as f64
+}
+
+/// `CCombatBlock`'s hold (`DAT_100b2230`, client `DAT_10299698`).
+const BLOCK_HOLD: f32 = 0.6;
+
+/// `T` for a melee end time, unrounded as the side computes it.
+fn t_end(host: &dyn GunHost) -> f64 {
+    crate::shared::gun::side_slow_div(host)
 }
 
 fn t_of(host: &dyn GunHost) -> f32 {
@@ -160,7 +192,7 @@ pub fn knife_fire(gun: &mut Gun, host: &mut dyn GunHost) {
         host.player_anim(0x1d + r);
     }
     // Swinging opens a block window against knives (`pl+0x728`).
-    gun.block_knife = block_window(info.rate, t);
+    gun.block_knife = block_end(info.rate, t_end(host), host.time());
     // 35 for the combat knife, 15 for the seal knife (0x1004c78a: `btype == 6 ? 35 : 15`).
     let dmg = if info.bullet == 6 { 35.0 } else { 15.0 };
     match host.melee(&hit(MeleeKind::Knife, gun.current, 38.0, 3, dmg, 0x1080, -1), gun) {
@@ -173,7 +205,7 @@ pub fn knife_fire(gun: &mut Gun, host: &mut dyn GunHost) {
         }
         MeleeResult::Blocked { .. } => gun.melee_damage = 0.0,
         MeleeResult::Miss => {
-            gun.melee_window = whiff_window(t);
+            gun.melee_window = whiff_end(t_end(host), host.time());
             gun.melee_damage = dmg;
             gun.melee_source = 1;
         }
@@ -276,7 +308,7 @@ pub fn katana_fire(gun: &mut Gun, host: &mut dyn GunHost) {
         host.melee_hold(swing.bits, 3.0, swing.crouch);
     }
     host.player_anim(swing.anim);
-    gun.block_katana = block_window(swing.hold, t);
+    gun.block_katana = block_end(swing.hold, t_end(host), host.time());
     let v = katana_damage(swing.base);
     let behind = v < 0;
     let reach = if behind { -swing.reach } else { swing.reach };
@@ -290,7 +322,7 @@ pub fn katana_fire(gun: &mut Gun, host: &mut dyn GunHost) {
         }
         MeleeResult::Blocked { .. } => gun.melee_damage = 0.0,
         MeleeResult::Miss => {
-            gun.melee_window = whiff_window(t);
+            gun.melee_window = whiff_end(t_end(host), host.time());
             gun.melee_damage = v as f32;
             gun.melee_source = 2;
         }
@@ -521,7 +553,7 @@ pub fn ccombat_attack(gun: &mut Gun, host: &mut dyn GunHost) {
             MeleeResult::Hit { .. } => {}
             MeleeResult::Blocked { next_attack, bar_cost } => blocked(gun, host, next_attack, bar_cost),
             MeleeResult::Miss => {
-                gun.melee_window = whiff_window(t);
+                gun.melee_window = whiff_end(t_end(host), host.time());
                 gun.melee_damage = if back { -dmg } else { dmg };
                 gun.melee_source = 0;
             }
@@ -555,8 +587,11 @@ fn blocked(gun: &mut Gun, host: &mut dyn GunHost, next_attack: f32, bar_cost: f3
 }
 
 /// `CCombatBlock` (`FUN_1004dc70`), from `Reload` with kung fu only: a blade's reload key does
-/// nothing. No bar cost and no animation; block for `min(3, 0.3·T)`, and so long before the
-/// next attack.
+/// nothing. No bar cost and no animation; block for `min(3, 0.3·T)` (until that past the time,
+/// [`block_end`]), and so long before the next attack. block.wav when the last block ended over
+/// a second ago ([`block_sound`]). Server only in 2.1 mode: client.dll's copy (`FUN_100245b0`,
+/// which keeps `pl+0x724` the same way) is never reached, its `ItemPostFrame` (`FUN_10025f40`)
+/// having no kung-fu reload key ([`Predicted::kungfu_reload`](::shared::gameplay::Predicted)).
 pub fn ccombat_block(gun: &mut Gun, host: &mut dyn GunHost) {
     if gun.has_slot() {
         return;
@@ -564,13 +599,12 @@ pub fn ccombat_block(gun: &mut Gun, host: &mut dyn GunHost) {
     if gun.next_attack > 0.0 || gun.next_primary > 0.0 || gun.next_secondary > 0.0 || gun.next_alt > 0.0 || host.iuser4() & 0x70c30 != 0 {
         return;
     }
-    // block.wav plays when the last block ended over a second ago; the port's countdown only
-    // knows whether one is running.
-    if gun.block_kungfu <= 0.0 {
+    let time = host.time();
+    if block_sound(time, gun.block_kungfu) {
         host.sound(Sound::Block);
     }
-    let w = block_window(0.6, t_of(host));
-    gun.block_kungfu = w;
+    gun.block_kungfu = block_end(BLOCK_HOLD, t_end(host), time);
+    let w = block_window(BLOCK_HOLD, t_of(host));
     gun.next_primary = w;
     gun.next_secondary = w;
 }

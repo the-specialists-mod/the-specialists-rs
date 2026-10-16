@@ -967,7 +967,8 @@ pub fn update_melee_bar(p: &mut Player, cx: &mut Cx, cost: f32) {
 /// `CloseCombatAttack(GetGunPosition(), + v_forward * 48, v_forward, hull 3, damage, no anim,
 /// disarm, players or not, knockback, never a teammate)`, `v_forward` from
 /// `UTIL_MakeVectors(v_angle)`. First the attacker's own kung-fu block window (`pl+0x7a8`)
-/// closes, so `VictimKungfuHold` can only find the victim blocking. True when something was hit;
+/// closes, so `VictimKungfuHold` can only find the victim blocking (the rules decide:
+/// [`ServerRules::jump_kick_attacker_block`](crate::gameplay::ServerRules::jump_kick_attacker_block)). True when something was hit;
 /// a block is no hit, and charges the attacker as `VictimKungfuHold` does (stored delayed damage
 /// 0, `m_flNextAttack` 0.5, `UpdateMeleeBar(33)`).
 pub fn jump_kick(p: &mut Player, cx: &mut Cx, damage: f32) -> bool {
@@ -978,7 +979,7 @@ pub fn jump_kick(p: &mut Player, cx: &mut Cx, damage: f32) -> bool {
     let pev = cx.pev();
     let src = spread::add(pev.origin, pev.view_ofs);
     let end = spread::jump_kick_end(crate::rules::cvars::pm_arith(), src, fwd);
-    p.inv.gun.block_kungfu = 0.0;
+    let atk_block = crate::gameplay::active().server.jump_kick_attacker_block(&mut p.inv.gun);
     let hit = MeleeHit {
         kind: MeleeKind::KungFu,
         weapon: 0,
@@ -993,7 +994,7 @@ pub fn jump_kick(p: &mut Player, cx: &mut Cx, damage: f32) -> bool {
     };
     // The hit runs inside the attacker in TS: lend it to its slot, as the weapon frame does
     // (`ServerHost::reach_player`).
-    match crate::world::lend(me, p, || melee::trace_attack(me, &hit, src, end, fwd, 0.0, true)) {
+    match crate::world::lend(me, p, || melee::trace_attack(me, &hit, src, end, fwd, atk_block, true)) {
         MeleeResult::Hit { .. } => true,
         MeleeResult::Blocked { next_attack, bar_cost } => {
             p.inv.gun.melee_damage = 0.0;

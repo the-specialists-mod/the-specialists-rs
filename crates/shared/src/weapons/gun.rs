@@ -410,7 +410,9 @@ pub struct Gun {
     /// `pl+0x774`: kung-fu power (0..100).
     pub melee_bar: f32,
     /// `pl+0x79c` / `+0x7a0` / `+0x7a4`: delayed melee hit window, its damage and source
-    /// (0 kung fu, 1 knife, 2 katana).
+    /// (0 kung fu, 1 knife, 2 katana). The window and the block windows below are the rules'
+    /// timers: the time left (TS 3.0) or an end time against the game time (TS 2.1); 0 is none
+    /// either way, and only the rules read them beyond that.
     pub melee_window: f32,
     pub melee_damage: f32,
     pub melee_source: u8,

@@ -439,8 +439,9 @@ The hooks so far:
 | `ServerRules` | `player_hit(&PlayerHit) -> HitDamage` | `ts30_server::damage::hit_damage` (stunt and dodge ×0.7, head ×2 / ×1.5 shotgun, legs ×0.5) | `player/damage.rs` `trace_attack` |
 | `ServerRules` | `armor_damage(armor, amount, hitgroup, bits)` | `ts30_server::damage::after_kevlar` (absorb `armor_absorb`, armour kept) | `player/damage.rs` `take_damage` |
 | `ServerRules` | `damage_punch()` | 0 | `player/damage.rs` `take_damage` |
-| `ServerRules` | `melee_block(kind, attacker, victim, damage, atk_block)` | `ts30_server::melee::hold` (3.0's victim holds) | `weapons/melee.rs` `trace_attack`, `pending_hit` (the attacker lent to its slot) |
+| `ServerRules` | `melee_block(kind, attacker, victim, damage, atk_block)` | `ts30_server::melee::hold` (3.0's victim holds) | `weapons/melee.rs` `trace_attack`, `pending_hit` (the attacker lent to its slot). `atk_block` and the gun's melee window and block timers are the ruleset's own timers (3.0: the time left; 2.1: end times, issue #202): the core only tests them against 0 (none) and zeroes them |
 | `ServerRules` | `jump_kick_hit(p, cx, strength)` | `ts30_server::melee::jump_kick_hit` (`m_flNextAttack` 0.35 if run out, `UpdateMeleeBar(strength × 1.5)`) | `stunt/moves.rs` `close_attack` |
+| `ServerRules` | `jump_kick_attacker_block(gun) -> f32` | closes the attacker's kung-fu block (`block_kungfu = 0`) and returns 0, so the kick's `melee_block` sees none | `weapons/mod.rs` `jump_kick`, before the hit (`atk_block`) |
 | `ServerRules` | `backflip_kick(p, cx)` | `ts30_server::melee::backflip_kick` (22.5 power, a delayed 15/30 for 0.3 s) | `stunt/moves.rs` `go_wheel` backward |
 | `ServerRules` | `melee_disarm(damage, victim_is_the_one)` | `Some(damage)` (the disarm count) | `weapons/melee.rs` `trace_attack`, `pending_hit` |
 | `ServerRules` | `zero_delayed_hit_reaches_player()` | `false` (a spent delayed hit goes straight to its 0-damage `TraceAttack`, 0x8c1f1) | `weapons/melee.rs` `pending_hit` |

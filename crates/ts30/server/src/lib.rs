@@ -37,7 +37,7 @@ use goldsrc::sys::{TraceResult, edict_t, entvars_t};
 use shared::pm::{Arith, Ext};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::Vec3;
-use shared::weapons::{Status, WeaponInfo};
+use shared::weapons::{Gun, Status, WeaponInfo};
 use std::ffi::CStr;
 use ts_server::commands::Args;
 use ts_server::damage::DamageInfo;
@@ -454,6 +454,13 @@ impl ServerRules for Ts30Server {
     /// ([`melee::jump_kick_hit`]).
     fn jump_kick_hit(&self, p: &mut Player, cx: &mut Cx, strength: f32) {
         melee::jump_kick_hit(p, cx, strength);
+    }
+
+    /// The jump kick closes the attacker's kung-fu block first (`CTSStunt::CloseAttack`), so the
+    /// hit's own block test sees none.
+    fn jump_kick_attacker_block(&self, gun: &mut Gun) -> f32 {
+        gun.block_kungfu = 0.0;
+        0.0
     }
 
     /// 22.5 kung-fu power and a delayed hit of 15 (30 with Kung Fu) ([`melee::backflip_kick`]).

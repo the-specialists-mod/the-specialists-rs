@@ -25,7 +25,7 @@ use goldsrc::sys::{TraceResult, edict_t, entvars_t};
 use shared::pm::{Arith, Ext};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::Vec3;
-use shared::weapons::{Status, WeaponInfo};
+use shared::weapons::{Gun, Status, WeaponInfo};
 use std::ffi::CStr;
 
 /// A server cvar: (name, default, flags), as [`cvars::CVARS`](crate::rules::cvars::CVARS) lists TS 3.0's.
@@ -441,6 +441,11 @@ pub trait ServerRules: Sync {
     /// A jump kick (`CTSStunt::CloseAttack` 0x9c630) has hit; `strength` is its damage before
     /// Kung Fu's doubling.
     fn jump_kick_hit(&self, p: &mut Player, cx: &mut Cx, strength: f32);
+
+    /// Before a jump kick's hit (`CTSStunt::CloseAttack` 0x9c630): the attacker's kung-fu block
+    /// as the hit's block test sees it (`melee_block`'s `atk_block`), after whatever the kick does
+    /// to it in `gun`.
+    fn jump_kick_attacker_block(&self, gun: &mut Gun) -> f32;
 
     /// The backflip kick (`CTSStunt::GoWheel` backward): its kung-fu power and delayed hit.
     fn backflip_kick(&self, p: &mut Player, cx: &mut Cx);

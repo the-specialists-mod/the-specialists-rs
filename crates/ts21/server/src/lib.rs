@@ -46,7 +46,7 @@ use goldsrc::server::{DONT_IGNORE_MONSTERS, engine};
 use goldsrc::sys::{TraceResult, edict_t, entvars_t};
 use shared::weapons::gun::{MeleeKind, MeleeResult};
 use shared::weapons::spread::Vec3;
-use shared::weapons::{Status, WeaponInfo};
+use shared::weapons::{Gun, Status, WeaponInfo};
 use std::ffi::CStr;
 use ts_server::commands::Args;
 use ts_server::damage::DamageInfo;
@@ -463,7 +463,13 @@ impl ServerRules for Ts21Server {
     }
 
     fn backflip_kick(&self, p: &mut Player, cx: &mut Cx) {
-        melee::backflip_kick(p, melee::player_t(cx.pev().fuser1));
+        melee::backflip_kick(p, ts21_gameplay::shared::gun::slow_div(cx.pev().fuser1), cx.time());
+    }
+
+    /// 2.1's jump kick (`FUN_1005cd00`) leaves the kung-fu block (an end time) alone, and its
+    /// `CloseCombatAttack` lets the attacker block with it.
+    fn jump_kick_attacker_block(&self, gun: &mut Gun) -> f32 {
+        gun.block_kungfu
     }
 
     fn melee_disarm(&self, damage: f32, victim_is_the_one: bool) -> Option<f32> {

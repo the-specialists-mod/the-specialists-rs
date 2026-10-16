@@ -165,11 +165,11 @@ pub fn better_weapon(gun: &Gun, excluded: u8) -> u8 {
 ///
 /// * while alive, the recoil penalty's decay ([`GunRules::decay_spread`]) and the kung-fu bar's
 ///   regeneration ([`regen_melee_bar`]), both by `elapsed = (float)(time − last)`;
-/// * the delayed-hit window (`pl+0x718`, an end time in 2.1): over once `end < time` or its damage
-///   (`+0x71c`) is spent, clearing the window, the damage and the source (`+0x720`). The block
-///   timers (`+0x724..0x72c`) are end times that PreThink doesn't touch. The port's timers count
-///   the time left, so they lose `elapsed` here: what is left is `end − time`, as 2.1 tests it.
-///   2.1 doesn't close the kung-fu block while the window is open (3.0 does);
+/// * the delayed-hit window (`pl+0x718`, an end time, as are the port's in 2.1 mode): over once
+///   `end < time` (still open at `end == time`) or its damage (`+0x71c`) is spent, clearing the
+///   window, the damage and the source (`+0x720`). The block timers (`+0x724..0x72c`) are end
+///   times that PreThink doesn't touch; 2.1 doesn't close the kung-fu block while the window is
+///   open (3.0 does);
 /// * `last = time` ([`GunRules::decay_spread`] writes it).
 ///
 /// 2.1 keeps no disarm count (a disarming hit drops the gun at once), so `disarm` stays as it is.
@@ -179,20 +179,11 @@ pub fn pre_think_step(rules: &Ts21, gun: &mut Gun, _disarm: &mut f32, t: &Weapon
     if t.alive {
         gun.melee_bar = regen_melee_bar(gun.melee_bar, elapsed, t.fuser1);
     }
-    if gun.melee_window != 0.0 {
-        let left = gun.melee_window - elapsed;
-        if left < 0.0 || gun.melee_damage == 0.0 {
-            gun.melee_window = 0.0;
-            gun.melee_damage = 0.0;
-            gun.melee_source = 0;
-        } else {
-            // `end == time` is still open in 2.1; 0 would mean no window here.
-            gun.melee_window = if left == 0.0 { f32::MIN_POSITIVE } else { left };
-        }
+    if gun.melee_window != 0.0 && (gun.melee_window < t.time || gun.melee_damage == 0.0) {
+        gun.melee_window = 0.0;
+        gun.melee_damage = 0.0;
+        gun.melee_source = 0;
     }
-    gun.block_kungfu = (gun.block_kungfu - elapsed).max(0.0);
-    gun.block_knife = (gun.block_knife - elapsed).max(0.0);
-    gun.block_katana = (gun.block_katana - elapsed).max(0.0);
 }
 
 /// The kung-fu bar's regeneration in 2.1's `PreThink` (0x10053ab6..0x10053b04): below 100,
@@ -218,8 +209,9 @@ pub fn client_slow_div(fuser1: f32) -> f64 {
     if fuser1 == 0.0 { 1.0 } else { 1.0 / fuser1 as f64 }
 }
 
-/// The time scale divisor of this side for the fire delays and `ScaleSpread`.
-fn side_slow_div(host: &dyn GunHost) -> f64 {
+/// The time scale divisor of this side for the fire delays, `ScaleSpread` and the melee end
+/// times (server `FUN_100551c0`, client `FUN_100261b0`), unrounded.
+pub(crate) fn side_slow_div(host: &dyn GunHost) -> f64 {
     if host.prediction() { client_slow_div(host.time_scale()) } else { slow_div(host.time_scale()) }
 }
 

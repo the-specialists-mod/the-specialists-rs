@@ -6,6 +6,7 @@
 
 use goldsrc::edict::EdictPtr;
 use goldsrc::ext::entities::MsgWriterExt;
+use goldsrc::server::engine;
 use goldsrc::sys::{CHAN_BODY, edict_t};
 use shared::protocol::hud_wire::PTakeDam;
 use shared::weapons::gun::{MeleeKind, MeleeResult};
@@ -14,7 +15,8 @@ use ts_server::damage::{self, DamageInfo};
 use ts_server::messages::{self, Msg};
 use ts_server::player::Player;
 use ts_server::weapons::{emit, send_kfu_power};
-use ts21_gameplay::shared::melee::{time_scale_inverse, whiff_window};
+use ts21_gameplay::shared::gun::slow_div;
+use ts21_gameplay::shared::melee::time_scale_inverse;
 
 /// The kung-fu block's and the stock hit's damage bits (pushed at 0x10043b30).
 const CLOSE_COMBAT_BITS: i32 = 0x0400_1080;
@@ -35,11 +37,11 @@ pub fn jump_kick_hit(p: &mut Player, t: f32) {
 }
 
 /// The backflip kick (`GoWheel` `FUN_1005d0e0` 0x1005d2xx): no kung-fu power spent; a delayed
-/// hit of `15 × (Kung Fu ? 2 : 1)` (the doubles 2.0/1.0 × 15) for `0.3·T`, with no 3 s cap, and
-/// the kung-fu block left alone (3.0 closes it).
-pub fn backflip_kick(p: &mut Player, t: f32) {
+/// hit of `15 × (Kung Fu ? 2 : 1)` (the doubles 2.0/1.0 × 15) until `(float)(T·0.3 + time)` (`T`
+/// unrounded, [`slow_div`]), with no 3 s cap, and the kung-fu block left alone (3.0 closes it).
+pub fn backflip_kick(p: &mut Player, t: f64, time: f32) {
     let g = &mut p.inv.gun;
-    g.melee_window = (t as f64 * 0.3) as f32;
+    g.melee_window = (t * 0.3 + time as f64) as f32;
     g.melee_damage = ((if p.kungfu { 2.0 } else { 1.0 }) * 15.0f64) as f32;
     g.melee_source = 0;
 }
@@ -63,9 +65,47 @@ pub fn block_bar_left(bar: f32, damage: f32) -> f32 {
     if b < 0.0 { 0.0 } else { b }
 }
 
-/// The blocker's hold-up: its block time left plus `min(3, 0.3·T)` (0x10043c02..).
-pub fn block_hold(block_left: f32, t: f32) -> f32 {
-    (block_left as f64 + whiff_window(t) as f64) as f32
+/// The blocker's hold-up (0x10043c02..): `(block end − time) + min(3, 0.3·T)` on the FPU, `T`
+/// the blocker's (unrounded, [`slow_div`]) and `time` the attacker's, stored as a `float`.
+pub fn block_hold(block_end: f32, time: f32, t: f64) -> f32 {
+    let w = t * 0.3;
+    ((block_end as f64 - time as f64) + if 3.0 <= w { 3.0 } else { w }) as f32
+}
+
+/// A block timer (an end time) is running at `time`: `time < end` (2.1 tests `end <= time` or
+/// `end < time || end == time` for "over").
+pub fn running(end: f32, time: f32) -> bool {
+    time < end
+}
+
+/// `FUN_10043720`: the victim's katana swing (`pl+0x72c`) blocks a katana.
+pub fn katana_blocks(katana: f32, time: f32) -> bool {
+    running(katana, time)
+}
+
+/// `FUN_10043870`: the victim's knife or katana swing (`pl+0x728`, `+0x72c`) blocks a knife.
+pub fn knife_blocks(knife: f32, katana: f32, time: f32) -> bool {
+    running(knife, time) || running(katana, time)
+}
+
+/// Who blocks a kung-fu hit in `FUN_100439e0`, all at the attacker's `time`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocker {
+    Victim,
+    Attacker,
+}
+
+/// `FUN_100439e0`'s test: the victim while its kung-fu block (`+0x724`) runs; else the attacker
+/// while its own runs and the victim is in a kung-fu attack's (source `+0x720` 0) delayed-hit
+/// window (`+0x718`) that hasn't ended.
+pub fn kungfu_blocker(v_block: f32, v_source: u8, v_window: f32, atk_block: f32, time: f32) -> Option<Blocker> {
+    if running(v_block, time) {
+        Some(Blocker::Victim)
+    } else if running(atk_block, time) && v_source == 0 && running(v_window, time) {
+        Some(Blocker::Attacker)
+    } else {
+        None
+    }
 }
 
 /// The two players' midpoint, 20 units up.
@@ -83,15 +123,17 @@ fn gun_of<R>(e: *mut edict_t, f: impl FnOnce(&mut Player) -> R) -> Option<R> {
 /// The victim's block (`ServerRules::melee_block`). The attacker is lent to its slot (a direct
 /// hit runs inside its weapon frame, the delayed hit is lent around this), so both sides are
 /// changed here. The result only carries the attacker's `next_attack` as it now is: the gun
-/// drops its stored hit and keeps that.
+/// drops its stored hit and keeps that. The block timers are end times, tested against
+/// `gpGlobals->time` at the attacker's think.
 pub fn melee_block(kind: MeleeKind, attacker: *mut edict_t, victim: *mut edict_t, damage: f32, atk_block: f32) -> Option<MeleeResult> {
     if !ts_server::rules::has_player(victim) {
         return None;
     }
+    let time = engine().time();
     let blocked = match kind {
-        MeleeKind::Katana => blade_block(attacker, victim, |p| p.inv.gun.block_katana > 0.0),
-        MeleeKind::Knife => blade_block(attacker, victim, |p| p.inv.gun.block_knife > 0.0 || p.inv.gun.block_katana > 0.0),
-        MeleeKind::KungFu | MeleeKind::ColdCock => kungfu_block(attacker, victim, damage, atk_block),
+        MeleeKind::Katana => blade_block(attacker, victim, |p| katana_blocks(p.inv.gun.block_katana, time)),
+        MeleeKind::Knife => blade_block(attacker, victim, |p| knife_blocks(p.inv.gun.block_knife, p.inv.gun.block_katana, time)),
+        MeleeKind::KungFu | MeleeKind::ColdCock => kungfu_block(attacker, victim, damage, atk_block, time),
     };
     if !blocked {
         return None;
@@ -121,20 +163,18 @@ fn blade_block(attacker: *mut edict_t, victim: *mut edict_t, blocks: impl FnOnce
 /// `FUN_100439e0`: the victim blocks while its kung-fu block (`pl+0x724`) runs; or the attacker
 /// does, while its own block runs and the victim is in a kung-fu attack's delayed-hit window. The
 /// blocker takes `(1 − bar/100)` of the hit from the attacker (`TraceAttack`, close combat), is
-/// held up (`m_flNextAttack`), its gun's timers are cleared (2.1 writes the relative hold-up into
+/// held up (`m_flNextAttack`, [`block_hold`]), its gun's timers are cleared (2.1 writes the relative hold-up into
 /// the absolute timers, which have then passed), its bar pays the hit's full damage (not The
 /// One's; [`block_bar_left`]), and both stored hits are dropped. kungfuhit.wav on the attacker.
-fn kungfu_block(attacker: *mut edict_t, victim: *mut edict_t, damage: f32, atk_block: f32) -> bool {
+fn kungfu_block(attacker: *mut edict_t, victim: *mut edict_t, damage: f32, atk_block: f32, time: f32) -> bool {
     let Some((v_block, v_source, v_window)) = gun_of(victim, |p| (p.inv.gun.block_kungfu, p.inv.gun.melee_source, p.inv.gun.melee_window))
     else {
         return false;
     };
-    let blocker = if v_block > 0.0 {
-        victim
-    } else if atk_block > 0.0 && v_source == 0 && v_window > 0.0 {
-        attacker
-    } else {
-        return false;
+    let blocker = match kungfu_blocker(v_block, v_source, v_window, atk_block, time) {
+        Some(Blocker::Victim) => victim,
+        Some(Blocker::Attacker) => attacker,
+        None => return false,
     };
     let Some(bar) = gun_of(blocker, |p| p.inv.gun.melee_bar) else { return false };
     let through = blocked_damage(bar, damage);
@@ -155,11 +195,11 @@ fn kungfu_block(attacker: *mut edict_t, victim: *mut edict_t, damage: f32, atk_b
     damage::glast::close_combat(|| damage::apply(blocker, &info));
     emit(attacker, CHAN_BODY, c"player/kungfuhit.wav", 1.0, 0.8, 100);
     gun_of(victim, |p| p.inv.gun.melee_damage = 0.0);
-    let t = time_scale_inverse(shared::weapons::spread::fixed_slow_amt(blocker.v().fuser1));
+    let t = slow_div(blocker.v().fuser1);
     let bar_left = gun_of(blocker, |p| {
         let g = &mut p.inv.gun;
         g.melee_damage = 0.0;
-        g.next_attack = block_hold(g.block_kungfu, t);
+        g.next_attack = block_hold(g.block_kungfu, time, t);
         g.next_primary = 0.0;
         g.next_secondary = 0.0;
         if p.ts.is_the_one {
@@ -188,13 +228,18 @@ mod tests {
         assert!((p.inv.gun.next_attack - 0.7).abs() < 1e-6 && p.inv.gun.melee_bar == 40.0);
         jump_kick_hit(&mut p, 1.0);
         assert!((p.inv.gun.next_attack - 0.7).abs() < 1e-6, "only a run-out one");
-        p.inv.gun.block_kungfu = 0.2;
-        backflip_kick(&mut p, 2.0);
+        p.inv.gun.block_kungfu = 10.2;
+        backflip_kick(&mut p, 2.0, 10.0);
         let g = &p.inv.gun;
-        assert_eq!((g.melee_window, g.melee_damage, g.melee_source, g.block_kungfu, g.melee_bar), (0.6, 15.0, 0, 0.2, 40.0));
+        assert_eq!((g.melee_window, g.melee_damage, g.melee_source, g.block_kungfu, g.melee_bar), (10.6, 15.0, 0, 10.2, 40.0));
         p.kungfu = true;
-        backflip_kick(&mut p, 20.0);
-        assert_eq!((p.inv.gun.melee_window, p.inv.gun.melee_damage), (6.0, 30.0), "no cap");
+        backflip_kick(&mut p, 20.0, 10.0);
+        assert_eq!((p.inv.gun.melee_window, p.inv.gun.melee_damage), (16.0, 30.0), "no cap");
+        // `(float)(T·0.3 + time)` rounded once (#202): at time scale 0.45 and 1 s that is
+        // 1.6666666, where the duration stored first gives 1.6666667.
+        backflip_kick(&mut p, slow_div(0.45), 1.0);
+        assert_eq!(p.inv.gun.melee_window, 1.666_666_6);
+        assert_ne!(1.0 + (slow_div(0.45) * 0.3) as f32, 1.666_666_6);
     }
 
     #[test]
@@ -209,8 +254,39 @@ mod tests {
         assert_eq!(blocked_damage(100.0, 40.0), 0.0);
         assert_eq!(blocked_damage(0.0, 40.0), 40.0);
         assert!((blocked_damage(75.0, 40.0) - 10.0).abs() < 1e-5);
-        assert!((block_hold(0.1, 1.0) - 0.4).abs() < 1e-6);
-        assert_eq!(block_hold(0.0, 100.0), 3.0);
+        assert!((block_hold(10.1, 10.0, 1.0) - 0.4).abs() < 1e-6);
+        assert_eq!(block_hold(10.0, 10.0, 100.0), 3.0);
+    }
+
+    /// #202: the blocks are end times tested at the attacker's time: running while `time < end`
+    /// (over at `end == time`), whatever the victim's last PreThink saw.
+    #[test]
+    fn blocks_are_end_times_at_the_attackers_time() {
+        assert!(katana_blocks(10.5, 10.4));
+        assert!(!katana_blocks(10.5, 10.5), "over at its end");
+        assert!(!katana_blocks(0.0, 10.0), "none");
+        assert!(knife_blocks(10.5, 0.0, 10.4) && knife_blocks(0.0, 10.5, 10.4));
+        assert!(!knife_blocks(10.4, 10.4, 10.4));
+        let b = |v_block, v_source, v_window, atk_block, time| kungfu_blocker(v_block, v_source, v_window, atk_block, time);
+        assert_eq!(b(10.5, 0, 0.0, 0.0, 10.4), Some(Blocker::Victim));
+        assert_eq!(b(10.5, 0, 0.0, 0.0, 10.5), None, "the victim's block is over at its end");
+        // The attacker's own block against a victim in a kung-fu window that hasn't ended.
+        assert_eq!(b(0.0, 0, 10.6, 10.5, 10.4), Some(Blocker::Attacker));
+        assert_eq!(b(0.0, 1, 10.6, 10.5, 10.4), None, "a blade's window");
+        assert_eq!(b(0.0, 0, 10.4, 10.5, 10.4), None, "the window ends at the time");
+        assert_eq!(b(0.0, 0, 10.6, 10.4, 10.4), None, "the attacker's block ended");
+        // An attacker whose time is ahead of the victim's last PreThink sees the block ended.
+        assert_eq!(b(10.5, 0, 0.0, 0.0, 10.55), None);
+    }
+
+    /// The hold-up is `(end − time) + min(3, 0.3·T)` on the FPU, stored once; a block that ended
+    /// before the attacker's time shortens it.
+    #[test]
+    fn block_hold_from_the_end_time() {
+        let (end, time) = (f32::from_bits(0x4479_8a3d), 1000.0f32);
+        assert_eq!(block_hold(end, time, 1.0), ((end as f64 - 1000.0) + 0.3) as f32);
+        assert!((block_hold(9.9, 10.0, 1.0) - 0.2).abs() < 1e-6);
+        assert_eq!(block_hold(10.0, 10.0, slow_div(0.3)), (slow_div(0.3) * 0.3) as f32);
     }
 
     /// The bar pays the whole hit (#136): a 40 kick blocked with 75 costs 40, not the 10 let

@@ -37,6 +37,8 @@ struct Mock {
     blocks: Vec<f32>,
     blades: u32,
     anims: u32,
+    /// block.wav plays.
+    block_sounds: u32,
     /// The last `set_view_model` and `set_fov` (`None`: never called).
     view_model: Option<Option<u8>>,
     fov: Option<f32>,
@@ -130,7 +132,11 @@ impl GunHost for Mock {
     fn kick(&mut self, pitch: f32, yaw: f32, shake: bool) {
         self.kicks.push((pitch, yaw, shake));
     }
-    fn sound(&mut self, _s: Sound) {}
+    fn sound(&mut self, s: Sound) {
+        if matches!(s, Sound::Block) {
+            self.block_sounds += 1;
+        }
+    }
     fn shoot(&mut self, shot: &Shot, _gun: &mut Gun) {
         self.shots.push(*shot);
     }
@@ -625,46 +631,99 @@ fn pre_think_bar_regen_edges() {
     assert_eq!((g.melee_bar, g.decay_time), (50.0, 11.0));
 }
 
-/// 2.1's melee window and block timers run on the same elapsed game time, unslowed and without
-/// double fire rate; the window closes once its end is behind the time (or its damage is spent)
-/// and doesn't close the kung-fu block. 2.1 has no disarm count to decay.
+/// 2.1's melee window and block timers are end times (#202): PreThink closes the window once its
+/// end is behind the time (still open at `end == time`) or its damage is spent, leaves the block
+/// timers alone and doesn't close the kung-fu block. 2.1 has no disarm count to decay.
 #[test]
 fn pre_think_melee_timers() {
     let r = &crate::TS21;
     let mut g = Gun {
-        melee_window: 0.3,
+        melee_window: 10.3,
         melee_damage: 15.0,
         melee_source: 1,
-        block_kungfu: 0.3,
-        block_knife: 0.1,
-        block_katana: 0.2,
+        block_kungfu: 10.3,
+        block_knife: 10.1,
+        block_katana: 10.2,
         decay_time: 10.0,
         ..Gun::default()
     };
     let mut disarm = 7.0;
     r.pre_think(&mut g, &mut disarm, &pre_think_at(10.25, 0.01, 0.5, powerup::DOUBLE_FIRERATE, true));
-    let e = 10.25f32 - 10.0;
-    assert_eq!(g.melee_window, 0.3 - e);
-    assert_eq!((g.block_kungfu, g.block_knife, g.block_katana), (0.3 - e, 0.0, 0.0));
-    assert_eq!((g.melee_damage, g.melee_source, disarm), (15.0, 1, 7.0));
-    // Past its end: the window, damage and source go.
+    assert_eq!((g.melee_window, g.melee_damage, g.melee_source, disarm), (10.3, 15.0, 1, 7.0));
+    assert_eq!((g.block_kungfu, g.block_knife, g.block_katana), (10.3, 10.1, 10.2), "end times, untouched");
+    // Past its end: the window, damage and source go; the blocks stay as they are.
     r.pre_think(&mut g, &mut disarm, &pre_think_at(10.5, 0.01, 1.0, 0, true));
-    assert_eq!((g.melee_window, g.melee_damage, g.melee_source, g.block_kungfu), (0.0, 0.0, 0, 0.0));
+    assert_eq!((g.melee_window, g.melee_damage, g.melee_source, g.block_kungfu), (0.0, 0.0, 0, 10.3));
     // Exactly at its end it stays open for this think; a spent window closes at once.
-    let mut g = Gun { melee_window: 0.5, melee_damage: 15.0, decay_time: 10.0, ..Gun::default() };
+    let mut g = Gun { melee_window: 10.5, melee_damage: 15.0, decay_time: 10.0, ..Gun::default() };
     r.pre_think(&mut g, &mut disarm, &pre_think_at(10.5, 0.01, 1.0, 0, true));
-    assert!(g.melee_window > 0.0 && g.melee_damage == 15.0);
+    assert_eq!((g.melee_window, g.melee_damage), (10.5, 15.0));
     r.pre_think(&mut g, &mut disarm, &pre_think_at(10.51, 0.01, 1.0, 0, true));
     assert_eq!(g.melee_window, 0.0);
-    let mut g = Gun { melee_window: 0.5, melee_damage: 0.0, melee_source: 2, decay_time: 10.0, ..Gun::default() };
+    let mut g = Gun { melee_window: 10.5, melee_damage: 0.0, melee_source: 2, decay_time: 10.0, ..Gun::default() };
     r.pre_think(&mut g, &mut disarm, &pre_think_at(10.01, 0.01, 1.0, 0, true));
     assert_eq!((g.melee_window, g.melee_source), (0.0, 0));
+    // The end doesn't drift with how often PreThink runs: many short thinks close it at the
+    // same think as one long one (a countdown of `float` steps could end a think apart).
+    let mut g = Gun { melee_window: 10.3, melee_damage: 15.0, decay_time: 10.0, ..Gun::default() };
+    let mut time = 10.0f32;
+    while g.melee_window != 0.0 {
+        time += 0.01;
+        r.pre_think(&mut g, &mut disarm, &pre_think_at(time, 0.01, 1.0, 0, true));
+    }
+    assert!(time > 10.3 && time - 0.01 <= 10.3);
     // TS 3.0 closes the kung-fu block while a window is open and decays the disarm count.
     let mut g = Gun { melee_window: 0.3, melee_damage: 15.0, block_kungfu: 0.3, ..Gun::default() };
     let mut disarm = 7.0;
     CORE.pre_think(&mut g, &mut disarm, &pre_think_at(10.0, 0.1, 1.0, 0, true));
     assert_eq!(g.block_kungfu, 0.0);
     assert_eq!(disarm, 7.0 - 0.1 * 5.0);
+}
+
+/// #202: a missed swing's window and a swing's block are `(float)(d + time)` with `d` unrounded
+/// (here `T = 1 / 0.45`: 1.6666666 at 1 s, where `d` stored first gives 1.6666667).
+#[test]
+fn melee_windows_are_end_times() {
+    ts30_gameplay::tables::make_default();
+    let mut h = Mock { time: 1.0, fuser1: 0.45, pressed: 1, buttons: 1, ..Mock::default() };
+    let mut g = Gun { melee_bar: 100.0, ..Gun::default() };
+    crate::shared::melee::ccombat_attack(&mut g, &mut h);
+    assert_eq!(h.melees, 1);
+    assert_eq!((g.melee_window, g.melee_source), (1.666_666_6, 0));
+    assert_eq!(crate::shared::melee::whiff_end(slow_div(0.45), 1.0), 1.666_666_6);
+    assert_eq!(crate::shared::melee::whiff_end(100.0, 5.0), 8.0, "capped at 3 s");
+    assert_eq!(crate::shared::melee::block_end(0.5, 1.0, 10.0), 10.25);
+    assert_eq!(crate::shared::melee::block_end(0.5, 100.0, 10.0), 12.5, "capped at hold × 5");
+}
+
+/// `CCombatBlock` (#202): the kung-fu block ends at `time + min(3, 0.3·T)`; block.wav plays when
+/// the last block ended over a second ago (also at the first, 0), not just when none is running.
+#[test]
+fn kungfu_block_end_and_sound() {
+    use crate::shared::melee::{block_sound, ccombat_block};
+    ts30_gameplay::tables::make_default();
+    let mut h = Mock { time: 20.0, fuser1: 1.0, ..Mock::default() };
+    let mut g = Gun::default();
+    ccombat_block(&mut g, &mut h);
+    assert!((g.block_kungfu - 20.3).abs() < 1e-5 && g.next_primary == 0.3);
+    assert_eq!(h.block_sounds, 1, "the first block");
+    // The block ended 0.9 s ago: no sound, though none is running.
+    (g.next_primary, g.next_secondary) = (0.0, 0.0);
+    h.time = g.block_kungfu + 0.9;
+    ccombat_block(&mut g, &mut h);
+    assert_eq!(h.block_sounds, 1);
+    // Over a second after the last one ended: block.wav.
+    (g.next_primary, g.next_secondary) = (0.0, 0.0);
+    h.time = g.block_kungfu + 1.5;
+    ccombat_block(&mut g, &mut h);
+    assert_eq!(h.block_sounds, 2);
+    assert!(!block_sound(11.0, 10.0) && block_sound(11.000_001, 10.0) && block_sound(1.5, 0.0));
+    // `(float)(min(3, T·0.6f·0.5) + time)`, `T` unrounded.
+    let mut h = Mock { time: 1.0, fuser1: 0.45, ..Mock::default() };
+    let mut g = Gun::default();
+    ccombat_block(&mut g, &mut h);
+    assert_eq!(g.block_kungfu, (slow_div(0.45) * 0.6f32 as f64 * 0.5 + 1.0) as f32);
+    assert_eq!(g.block_kungfu, 1.666_666_7);
 }
 
 /// Issue #111: the crosshair's copy (client `0x1031bf04`) is written only in the decay branch

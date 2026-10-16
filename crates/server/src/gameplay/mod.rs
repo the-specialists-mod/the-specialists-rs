@@ -322,6 +322,9 @@ impl ServerRules for Defaults {
     fn jump_kick_hit(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx, _strength: f32) {
         unimplemented!("jump_kick_hit")
     }
+    fn jump_kick_attacker_block(&self, _gun: &mut shared::weapons::Gun) -> f32 {
+        unimplemented!("jump_kick_attacker_block")
+    }
     fn backflip_kick(&self, _p: &mut crate::player::Player, _cx: &mut crate::world::Cx) {
         unimplemented!("backflip_kick")
     }
