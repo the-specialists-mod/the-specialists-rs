@@ -373,6 +373,16 @@ impl ClientRules for Ts30Client {
     fn laser_style(&self) -> &'static ts_client::effects::LaserStyle {
         &fx::LASER
     }
+
+    /// False: the core's `TSFrags` handler (`0x1004bd50`) runs.
+    fn tsfrags_effects(&self, _ps: &mut PSys, _now: f64, _frags: &ts_client::effects::TsFrags) -> bool {
+        false
+    }
+
+    /// False: `TS_BloodImpact` (`0x10048840`) runs.
+    fn blood_impact(&self, _ps: &mut PSys, _now: f64, _d: &ts_client::effects::PTakeDam) -> bool {
+        false
+    }
 }
 
 /// The plugin as the client registers it.

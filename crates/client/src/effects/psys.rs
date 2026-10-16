@@ -28,6 +28,10 @@ pub const ORIENT_AXIS: u8 = 3;
 /// and the particle dies ([`Collision::Blood`]).
 pub const ONCOLLIDE_BLOOD: u8 = 4;
 
+/// `oncollide` for blood whose callback only leaves the decal, with no `player/splat.wav` (TS
+/// 2.1's `0x10082ba0`): otherwise as [`ONCOLLIDE_BLOOD`].
+pub const ONCOLLIDE_BLOOD_DECAL: u8 = 5;
+
 /// What a particle's collision callback (`+0x11c`) asks the caller to do, run inside the
 /// particle pass at the moment TS calls it (`0x10052093`), so the particles it spawns land in
 /// the pool (and are walked this frame if their slot lies ahead) and the engine random numbers
@@ -37,8 +41,8 @@ pub enum Collision {
     /// particle of template `target` at the particle's origin, inheriting its velocity
     /// (`parent_vel`) unless the template says otherwise.
     Spawn { target: u16, origin: Vec3, parent_vel: Vec3 },
-    /// [`ONCOLLIDE_BLOOD`] with the trace that hit.
-    Blood(pmtrace_s),
+    /// [`ONCOLLIDE_BLOOD`] (`splat` true) or [`ONCOLLIDE_BLOOD_DECAL`] with the trace that hit.
+    Blood { tr: pmtrace_s, splat: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -84,7 +88,8 @@ pub struct Particle {
     pub uv: Option<[[f32; 2]; 4]>,
     /// World collision (TS: type 3 with `collide` set).
     pub collide: bool,
-    /// 0 none, 1 kill, 2 kill + spawn target, 3 spawn target, [`ONCOLLIDE_BLOOD`].
+    /// 0 none, 1 kill, 2 kill + spawn target, 3 spawn target, [`ONCOLLIDE_BLOOD`],
+    /// [`ONCOLLIDE_BLOOD_DECAL`].
     pub oncollide: u8,
     /// Random-drift accumulator (`+0x68`), units per second.
     pub drift: Vec3,
@@ -760,8 +765,8 @@ impl PSys {
             if ts * travelled < p.drag * 3.0 {
                 rest(p);
             }
-            let (origin, parent_vel) = (p.origin, p.vel);
-            match (p.oncollide, p.target) {
+            let (origin, parent_vel, p_oncollide) = (p.origin, p.vel, p.oncollide);
+            match (p_oncollide, p.target) {
                 (1, _) => self.kill(i),
                 (2, target) => {
                     self.kill(i);
@@ -770,8 +775,8 @@ impl PSys {
                     }
                 }
                 (3, Some(target)) => collision(self, Collision::Spawn { target, origin, parent_vel }),
-                (ONCOLLIDE_BLOOD, _) => {
-                    collision(self, Collision::Blood(tr));
+                (ONCOLLIDE_BLOOD | ONCOLLIDE_BLOOD_DECAL, _) => {
+                    collision(self, Collision::Blood { tr, splat: p_oncollide == ONCOLLIDE_BLOOD });
                     // The callback clears only the in-use byte (0x10048826).
                     self.parts[i].alive = false;
                 }

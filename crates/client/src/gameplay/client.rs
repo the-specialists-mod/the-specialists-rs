@@ -333,6 +333,15 @@ pub trait ClientRules: Sync {
     /// The lasers', laser dot's, flashlights' and shadows' look
     /// ([`LaserStyle`](crate::effects::LaserStyle)).
     fn laser_style(&self) -> &'static crate::effects::LaserStyle;
+
+    /// A ruleset's own `TSFrags` effects (glass, explosion, sparks): true when it made them; false
+    /// runs the core's (`0x1004bd50`: `TS_GlassShatter`, `TS_Explosion`, `TS_Scintille` and
+    /// `TS_Sparks`).
+    fn tsfrags_effects(&self, ps: &mut PSys, now: f64, frags: &crate::effects::TsFrags) -> bool;
+
+    /// A ruleset's own `PTakeDam` blood: true when it made it; false runs `TS_BloodImpact`
+    /// ([`fx::blood`](crate::effects::fx::blood)).
+    fn blood_impact(&self, ps: &mut PSys, now: f64, d: &crate::effects::PTakeDam) -> bool;
 }
 
 /// The test plugin's client hooks (`gameplay::Defaults`): inert answers (no, none, zero, the
@@ -573,6 +582,12 @@ mod stub {
         }
         fn laser_style(&self) -> &'static crate::effects::LaserStyle {
             &LASER
+        }
+        fn tsfrags_effects(&self, _ps: &mut PSys, _now: f64, _frags: &crate::effects::TsFrags) -> bool {
+            false
+        }
+        fn blood_impact(&self, _ps: &mut PSys, _now: f64, _d: &crate::effects::PTakeDam) -> bool {
+            false
         }
     }
 }

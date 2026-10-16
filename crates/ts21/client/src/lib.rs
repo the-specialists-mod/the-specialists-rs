@@ -581,6 +581,18 @@ impl ClientRules for Ts21Client {
     fn laser_style(&self) -> &'static ts_client::effects::LaserStyle {
         &effects::LASER
     }
+
+    /// [`effects::tsfrags`] (`0x10088020`, issue #232).
+    fn tsfrags_effects(&self, ps: &mut PSys, now: f64, frags: &ts_client::effects::TsFrags) -> bool {
+        effects::tsfrags(ps, now, frags);
+        true
+    }
+
+    /// [`effects::blood_impact`] (`0x10082cd0`, issue #232).
+    fn blood_impact(&self, ps: &mut PSys, now: f64, d: &ts_client::effects::PTakeDam) -> bool {
+        effects::blood_impact(ps, now, d);
+        true
+    }
 }
 
 /// The 2.1 buy menu's text, hard-coded in `client.dll` (the port draws title keys, so each key

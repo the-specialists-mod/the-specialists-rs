@@ -12,6 +12,7 @@ mod laser;
 pub mod mblur;
 pub mod psys;
 pub use laser::{LaserStyle, laser_color};
+pub use shared::protocol::effects::{PTakeDam, TsFrags};
 mod scope;
 
 use crate::events::ClientBullets;
@@ -323,21 +324,30 @@ pub fn on_tspsys(b: &[u8]) {
     }
 }
 
-/// `PTakeDam` (`0x1004bcd0`) -> `TS_BloodImpact`.
+/// `PTakeDam` (`0x1004bcd0`) -> `TS_BloodImpact`, unless the ruleset draws its own
+/// ([`blood_impact`](crate::gameplay::ClientRules::blood_impact)).
 pub fn on_ptakedam(b: &[u8]) {
     let Some(d) = msg::PTakeDam::decode(b) else { return };
     let gore = cvar(|c| c.gore);
+    let rules = crate::gameplay::current();
     with(|fx| {
         let t = fx.time;
-        fx::blood(&mut fx.psys, t, d.pos, d.dir, d.strength(), d.kevlar(), gore)
+        if !rules.blood_impact(&mut fx.psys, t, &d) {
+            fx::blood(&mut fx.psys, t, d.pos, d.dir, d.strength(), d.kevlar(), gore)
+        }
     });
 }
 
-/// `TSFrags` (`0x1004bd50`).
+/// `TSFrags` (`0x1004bd50`), unless the ruleset draws its own
+/// ([`tsfrags_effects`](crate::gameplay::ClientRules::tsfrags_effects)).
 pub fn on_tsfrags(b: &[u8]) {
     let Some(f) = msg::TsFrags::decode(b) else { return };
+    let rules = crate::gameplay::current();
     with(|fx| {
         let t = fx.time;
+        if rules.tsfrags_effects(&mut fx.psys, t, &f) {
+            return;
+        }
         match f {
             msg::TsFrags::Glass { origin, size, hit, dir, dmg_bits, force } => {
                 fx::glass(&mut fx.psys, t, origin, size, dir, hit, dmg_bits, force)
@@ -738,7 +748,7 @@ pub fn draw_transparent() {
         let Fx { psys, map, .. } = fx;
         psys.update_draw(dt, &cam, &players, &mut |ps, c| match c {
             psys::Collision::Spawn { target, origin, parent_vel } => map.spawn_one(ps, target, origin, parent_vel, t),
-            psys::Collision::Blood(tr) => blood_hit(tr),
+            psys::Collision::Blood { tr, splat } => blood_hit(tr, splat),
         });
     });
     if cam_hardware() {
@@ -787,7 +797,7 @@ fn react_players() -> Vec<(Vec3, Vec3)> {
 /// decal (N rolled first, 1..8) on the entity the trace hit when that is a BSP model or a
 /// `MOVETYPE_PUSHSTEP` entity and `r_decals` is on, then `player/splat.wav` one time in ten at
 /// the slow-motion pitch. The particle pass then clears the drop's in-use byte.
-fn blood_hit(mut tr: pmtrace_s) {
+fn blood_hit(mut tr: pmtrace_s, splat: bool) {
     let name = format!("{{blood{}", r::random_long(1, 8));
     let pe = r::physent(tr.ent);
     if pe.is_some_and(|pe| pe.solid == SOLID_BSP as i32 || pe.movetype == MOVETYPE_PUSHSTEP as i32)
@@ -796,7 +806,7 @@ fn blood_hit(mut tr: pmtrace_s) {
         let entity = r::index_from_trace(&mut tr);
         r::decal_shoot(r::decal_index(&name), entity, 0, tr.endpos, 0);
     }
-    if r::random_long(0, 100) > 90 {
+    if splat && r::random_long(0, 100) > 90 {
         engine().ev_play_sound(-1, tr.endpos, CHAN_AUTO as i32, "player/splat.wav", 1.0, 0.99, 0, crate::events::slow_pitch());
     }
 }

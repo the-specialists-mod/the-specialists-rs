@@ -24,8 +24,8 @@ fn rl(a: i32, b: i32) -> i32 {
     r::random_long(a, b)
 }
 
-/// `0x100509a0`: a random frame of `sprite`.
-fn random_frame(ps: &PSys, sprite: i16) -> f32 {
+/// `0x100509a0`: a random frame of `sprite` (`RandomLong(0, frames − 1)`).
+pub fn random_frame(ps: &PSys, sprite: i16) -> f32 {
     if sprite < 0 {
         return 0.0;
     }
