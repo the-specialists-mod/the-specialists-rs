@@ -70,14 +70,14 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "goldsrc"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc-sys",
 ]
 
 [[package]]
 name = "goldsrc-sys"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "bindgen",
 ]
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc",
  "goldsrc-sys",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "ts-client"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc",
  "shared",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "ts-client-dll"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc",
  "shared",
@@ -312,15 +312,15 @@ dependencies = [
 
 [[package]]
 name = "ts-gameplay"
-version = "3.0.7"
+version = "3.0.8"
 
 [[package]]
 name = "ts-plugin-api"
-version = "3.0.7"
+version = "3.0.8"
 
 [[package]]
 name = "ts-server"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc",
  "shared",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "ts-server-dll"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc",
  "libloading",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "ts21-client"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc",
  "shared",
@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "ts21-gameplay"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "serde",
  "shared",
@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "ts21-server"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc",
  "shared",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "ts30-client"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc",
  "shared",
@@ -392,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "ts30-gameplay"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc-sys",
  "shared",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "ts30-server"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc",
  "shared",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "tsmod-test"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "goldsrc-sys",
  "ts-plugin-api",
@@ -445,7 +445,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "xtask"
-version = "3.0.7"
+version = "3.0.8"
 dependencies = [
  "ts-plugin-api",
 ]
