@@ -407,9 +407,12 @@ team menus).
 * `cl_plugins_menu`: a panel listing plugins. From it the player can revoke an approval, unblock,
   delete a plugin, and see every file and hash. Revoking takes effect at the next start (§9).
 * `cl_plugins_verify`: re-hashes every plugin now and prints the result. It never approves.
+* `tsrs_reconnect <address> [password]`: connects, first asking for the password in a card when
+  `password` is given (§13.5). The launcher's relaunch uses it.
 
 None of these can approve. A server that stuffs `cl_plugins 0` or `cl_plugins_menu` can, at
-worst, disable plugins for the next start or open the panel. Both are harmless and visible.
+worst, disable plugins for the next start or open the panel. Both are harmless and visible. A
+stuffed `tsrs_reconnect` does no more than a stuffed `connect`.
 
 ## 9. Loading
 
@@ -480,11 +483,28 @@ tsmod-launcher.
      * Restart and reconnect, with a fake launcher that records requests:
        * with `TSMOD_LAUNCHER_IPC` set, the client must send `relaunch` and quit;
        * with only `ts/launcher.toml`, it must start the fake launcher with the `relaunch`
-         arguments, and the password must arrive in the environment, not in argv;
+         arguments;
+       * on a passworded server, the password must appear nowhere in the request, argv, the
+         environment or `.reconnect`. Only `password_required` is set, and the relaunched
+         client must show the password card before connecting;
        * with neither, it must show the quit-and-inform card;
        * after a quit, the next start must show "Reconnect to …" and must not connect without a
          click.
-  6. Steam HL25: manual for v1 (validation.md §5, Steam status invisible while testing).
+  6. **The real relaunch, end to end.** Each starts a game connected to a test server, triggers
+     a restart with op 5 or a `match = "exact"` offer, and passes only when the new game process
+     is connected to the same server (the server log shows the join) and the old pid is gone:
+     * FWGS Linux and FWGS win32 under Wine: through the real tsmod-launcher, running (IPC)
+       and not running (`relaunch`), headless under Xvfb with its dialog answered by its test
+       hook; and the self-relaunch with no launcher;
+     * the update and downgrade paths: the launcher installs a release from a local release
+       feed, `validate` passes, and the relaunched client reports the new `_tsrs` version;
+     * a passworded server: the password card appears, and the test enters the password through
+       the e2e hook;
+     * Steam HL25 Linux, in `cargo xtask steam` (Steam status invisible while testing,
+       validation.md §5): the `steam://run` self-relaunch, and the launcher path. HL25 Windows is
+       manual until the Steam roots run under Wine.
+
+     A failing platform keeps its self-relaunch disabled (§13.5 case 3).
 
 ## 12. Wire compatibility
 
@@ -671,7 +691,7 @@ first. Without a launcher, the card says where to get the version and offers to 
 
   ```json
   {"op": "relaunch", "instance": "ab12", "pid": 41733,
-   "connect": "203.0.113.5:27015", "password": "",
+   "connect": "203.0.113.5:27015", "password_required": true,
    "reason": "port" | "plugin", "port_version": ">=3.0.8, <3.1", "plugin": "webview@0.2.0",
    "server_name": "Bob's TS"}
   ```
@@ -681,8 +701,9 @@ first. Without a launcher, the card says where to get the version and offers to 
   2. The launcher waits for that pid to exit, up to 30 s. It has the `Child` handle when it
      started the game itself.
   3. If the request is for a port update, it asks the player (below).
-  4. It relaunches the installation with `+connect <address>`, and `+password` when one was
-     given. This is the launcher's existing `launch(install, opts, extra)`.
+  4. It relaunches the installation with `+connect <address>`, or with
+     `+tsrs_reconnect <address> password` when `password_required` is set (see "Passwords"
+     below). This is the launcher's existing `launch(install, opts, extra)`.
 * **No answer within 2 s,** or an error: fall back to case 2.
 
 #### 2. Launcher installed, not running: relaunch arguments
@@ -690,16 +711,33 @@ first. Without a launcher, the card says where to get the version and offers to 
 The client starts the launcher detached, then quits:
 
 ```
-ts-launcher relaunch --instance ID --wait-pid PID --connect ADDR [--password-env TSMOD_RECONNECT_PASSWORD]
+ts-launcher relaunch --instance ID --wait-pid PID --connect ADDR [--password-required]
                      [--port-version REQ] [--plugin ID@VERSION] [--server-name NAME]
 ```
 
-* The password goes in the environment variable `--password-env` names, never on the command
-  line, where other users could read it.
 * `relaunch` is a new launcher subcommand. It opens the launcher's window on a "Reconnecting to
   <server>" view that waits for the game to exit, then runs the same steps as the IPC request.
   When the launcher already has an instance open, the new process hands the request to it over
   IPC and exits.
+
+#### Passwords
+
+The password is asked for again after the relaunch; it's never passed on.
+
+* **The client never reads the `password` cvar to send it anywhere.** The IPC request, the
+  `relaunch` arguments, the environment and `.reconnect` carry only `password_required`: whether
+  the `password` cvar was set when the restart was needed.
+* **After the relaunch:** the game starts with `+tsrs_reconnect <address> password` instead of
+  `+connect`. `tsrs_reconnect` is a port-only client command. With `password`, it shows a card
+  with the server's name and address and a masked password field ("Connect" / "Cancel"), sets
+  the `password` cvar from it and connects. Without it, it's the same as `connect`. It can do
+  nothing a server's `connect` stufftext can't already do.
+* **The launcher doesn't ask:** it would have to pass the password on the game's command line,
+  where other users can read it.
+* **If the password is wrong,** the engine's refusal ("Bad server password") shows as usual, and
+  the player can reconnect from the console or the server browser.
+* The quit-and-inform card (case 4) and the next start's "Reconnect to <server>?" card ask the
+  same way: that card has the password field when `.reconnect` says one is needed.
 
 #### Updating the port through the launcher
 
@@ -721,9 +759,18 @@ The choices are:
 
 Notes:
 
-* **Downgrades:** a requirement that only an older release satisfies is shown as a downgrade:
-  "This server runs an older version. Installing it changes this installation for every
-  server." The default is Cancel. A second installation for that server is open question 7.
+* **Downgrades:** when only an older release satisfies the requirement, the launcher offers to
+  downgrade. The dialog says so: "This server runs an older version (3.0.6). Downgrading changes
+  this installation for every server; you can update again later." The choices are:
+  * **"Downgrade and reconnect":** installs the older release the same way, validates it and
+    relaunches. The launcher records the version it replaced, so its main view offers "Update to
+    3.0.9 again", and a newer server's requirement brings the normal update dialog.
+  * **"Reconnect without changing"** and **"Cancel",** as above.
+
+  The default button is Cancel, so a stray Enter doesn't downgrade. Approved plugins stay in
+  `cl_plugins/`; a plugin whose `requires` the older port doesn't meet is skipped at start, with
+  the reason, until the port is updated again. The launcher doesn't keep a second installation
+  per server.
 * **Plugin updates** need no launcher update step. The new plugin version was already approved
   in game, and the launcher's start-up check (§7.1) finds it approved.
 * **Before joining:** in the launcher's own server browser, the launcher compares a server's
@@ -738,8 +785,12 @@ Notes:
   then quits.
 * **Steam HL25:** the client opens `steam://run/70//-game ts +connect <address>/`, through
   `xdg-open` or `ShellExecuteW`, then quits. Steam starts the game again once it has exited.
-* Each is used only where §11's e2e has shown it works on that engine and platform (open
-  question 8). Otherwise it falls to case 4.
+* Each is enabled per engine and platform only once §11's relaunch tests pass there, and
+  those tests run in `cargo xtask all` (FWGS) and `cargo xtask steam` (HL25), so a regression
+  shows up. Until then, and on a platform where a test fails, the client uses case 4. The
+  things to prove are that Steam starts the game again while the old process is still exiting,
+  and that the FWGS re-exec rebuilds the right command line under Wine, where the original
+  arguments are the Windows command line.
 
 #### 4. Nothing else: quit and inform
 
@@ -784,14 +835,6 @@ Notes:
    start of the helper?
 6. Should the launcher be able to install packages from the mod's own release feed, with the
    same cards, so players needn't wait for a server to offer them?
-7. **Downgrades** (§13.5): when a server needs an older port release, should the launcher offer
-   a second installation for that server instead of changing the player's main one?
-8. **Self-relaunch** (§13.5 case 3): does `steam://run/70//-game ts +connect …` relaunch
-   reliably while the old process is still exiting? Does an FWGS re-exec work under Wine, where
-   the "original arguments" are the Windows command line? Each must pass e2e before it's
-   enabled; until then, those platforms use case 4.
-9. **Passwords:** the client can read the `password` cvar to pass it on, but should it? The
-   alternative is asking the player again after the relaunch.
 
 ## 15. Milestones (port issues)
 
@@ -805,7 +848,7 @@ Notes:
 5. tsmod-launcher: the same verification and approval UI, using `plugin-pkg`. Also:
    * the `TSMOD_LAUNCHER*` environment variables and `ts/launcher.toml`;
    * the IPC endpoint and the `relaunch` subcommand;
-   * the update-and-reconnect dialog;
+   * the update-and-reconnect dialog, with downgrade and "update again";
    * the server browser's version check.
 
    These are launcher issues, filed in `the-specialists-mod/tsmod-launcher`.
@@ -814,6 +857,7 @@ Notes:
      with its tag, `cl_version_strict` and `client_port_version`. This part needs no plugins,
      and can ship first. Op 5 and the update card come with `TSPkg`.
    * restart and reconnect (§13.5): finding the launcher, the IPC request and `relaunch`
-     arguments, self-relaunch where e2e passes, the quit-and-inform card and `.reconnect`.
+     arguments, `tsrs_reconnect` and its password card, self-relaunch where its tests pass, the
+     quit-and-inform card and `.reconnect`, and the relaunch e2e (§11 e2e 6) on every root.
    * plugins: `match`, `[[block]]` and `[policy]`, `tspkg list`, ops 3 and 4, suspend and
      resume, restart and reconnect, and the plugin API events.
